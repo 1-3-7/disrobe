@@ -1,7 +1,5 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 #[cfg(feature = "sandbox")]
-use std::fs;
-#[cfg(feature = "sandbox")]
 use std::path::Path;
 
 #[cfg(feature = "sandbox")]
@@ -11,15 +9,36 @@ use disrobe_pass_wasm_deob::{
 #[cfg(feature = "sandbox")]
 use wasmparser::{FunctionBody, Parser, Payload, ValType};
 #[cfg(feature = "sandbox")]
-use wasmtime::{Config, Engine, Linker, Module, Store, Val};
+use wasmtime::{Config, Engine, Linker, Module, Store, StoreLimits, StoreLimitsBuilder, Val};
+
+#[cfg(feature = "sandbox")]
+#[path = "common/wat_corpus.rs"]
+mod wat_corpus;
+
+#[cfg(feature = "sandbox")]
+const FUEL_BUDGET: u64 = 2_000_000;
+#[cfg(feature = "sandbox")]
+const STORE_MEMORY_LIMIT_BYTES: usize = 16 * 1024 * 1024;
 
 #[cfg(feature = "sandbox")]
 fn rich() -> Config {
     let mut c: Config = Config::new();
     c.wasm_gc(true)
         .wasm_function_references(true)
-        .wasm_tail_call(true);
+        .wasm_tail_call(true)
+        .consume_fuel(true);
     c
+}
+
+#[cfg(feature = "sandbox")]
+fn store_limits() -> StoreLimits {
+    StoreLimitsBuilder::new()
+        .memory_size(STORE_MEMORY_LIMIT_BYTES)
+        .table_elements(10_000)
+        .instances(1)
+        .tables(1)
+        .memories(1)
+        .build()
 }
 
 #[cfg(feature = "sandbox")]
@@ -84,8 +103,10 @@ fn battery(params: &[ValType], cap: usize) -> Vec<Vec<Val>> {
 #[cfg(feature = "sandbox")]
 fn run(eng: &Engine, bytes: &[u8], export: &str, arg: &[Val], arity: usize) -> Option<Vec<i64>> {
     let m: Module = Module::new(eng, bytes).ok()?;
-    let mut store: Store<()> = Store::new(eng, ());
-    let mut linker: Linker<()> = Linker::new(eng);
+    let mut store: Store<StoreLimits> = Store::new(eng, store_limits());
+    store.limiter(|limits: &mut StoreLimits| limits);
+    store.set_fuel(FUEL_BUDGET).ok()?;
+    let mut linker: Linker<StoreLimits> = Linker::new(eng);
     linker.define_unknown_imports_as_traps(&m).ok()?;
     let inst: wasmtime::Instance = linker.instantiate(&mut store, &m).ok()?;
     let f: wasmtime::Func = inst.get_func(&mut store, export)?;
@@ -105,6 +126,35 @@ fn run(eng: &Engine, bytes: &[u8], export: &str, arg: &[Val], arity: usize) -> O
 }
 
 #[cfg(feature = "sandbox")]
+#[test]
+fn execution_store_rejects_modules_above_the_memory_limit() {
+    let eng: Engine = Engine::new(&rich()).expect("bounded engine");
+    let oversized: Vec<u8> =
+        wat::parse_str("(module (memory 257) (func (export \"value\") (result i32) i32.const 7))")
+            .expect("oversized test module");
+    assert_eq!(
+        run(&eng, &oversized, "value", &[], 1),
+        None,
+        "the Wasmtime store memory limit must reject oversized modules"
+    );
+}
+
+#[cfg(feature = "sandbox")]
+#[test]
+fn execution_store_rejects_fuel_exhausting_loops() {
+    let eng: Engine = Engine::new(&rich()).expect("bounded engine");
+    let loop_forever: Vec<u8> = wat::parse_str(
+        "(module (func (export \"spin\") (result i32) (loop $spin br $spin) unreachable))",
+    )
+    .expect("infinite-loop mutation-control module");
+    assert_eq!(
+        run(&eng, &loop_forever, "spin", &[], 1),
+        None,
+        "the fuel budget must reject an infinite Wasmtime execution"
+    );
+}
+
+#[cfg(feature = "sandbox")]
 const fn numeric(ty: ValType) -> bool {
     matches!(ty, ValType::I32 | ValType::I64)
 }
@@ -112,7 +162,7 @@ const fn numeric(ty: ValType) -> bool {
 #[cfg(feature = "sandbox")]
 fn check(path: &Path) {
     let eng: Engine = Engine::new(&rich()).expect("eng");
-    let text: String = fs::read_to_string(path).expect("read");
+    let text: String = wat_corpus::verified_wat_text(path);
     let original: Vec<u8> = wat::parse_str(&text).expect("wat");
     let sigs: ModuleSignatures = extract_signatures(&original).expect("sigs");
     let defined: &[FunctionSig] = sigs.defined();

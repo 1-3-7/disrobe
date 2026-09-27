@@ -1,0 +1,193 @@
+schema = "disrobe.wasm.build-records/v2"
+
+[[artifact]]
+path = "cff_computed_state.mutant.wat"
+sha256 = "6aec0b160485645f4b1fd825af779073c515ae4eaa89daee2384fdde02dfd551"
+origin.authored.note = "hand-written mutation control: cff_computed_state.obf.wat with the guard's two successor states swapped"
+
+[[artifact]]
+path = "cff_computed_state.obf.wat"
+sha256 = "4716443a601235ad365623f48a19f8429c5b7dba2fc5aa250759d5a5b006e05c"
+origin.authored.note = "hand-written: the cff_local_state.obf.wat dispatcher with the entry state written as 12 ^ 12 and the two edges into the return state written as 7 ^ 4 and 11 - 8; the guard's successors stay plain constants 1 and 2"
+
+[[artifact]]
+path = "cff_cond_select.clean.wasm"
+sha256 = "a5d20ef31bc3984584fdec9658afd4daa1ebaf9af053937f18dec0e691bd2568"
+origin.built.source = "cff_cond_select.clean.c"
+origin.built.toolchain = "clang 22.1.6 (llvm-project fc4aad7b5db3) --target=wasm32 with wasm-ld"
+origin.built.command = "clang --target=wasm32 -O3 -nostdlib -Wl,--no-entry -Wl,--strip-all -Wl,--no-stack-first -o cff_cond_select.clean.wasm cff_cond_select.clean.c"
+origin.built.rebuilt_sha256 = "a5d20ef31bc3984584fdec9658afd4daa1ebaf9af053937f18dec0e691bd2568"
+
+[[artifact]]
+path = "cff_cond_select.mutant.wasm"
+sha256 = "589e82d358fa7a4d971dc8aa10cc6381f02b782127b97b815f5f3f29227b3232"
+origin.built.source = "cff_cond_select.mutant.c"
+origin.built.toolchain = "clang 22.1.6 (llvm-project fc4aad7b5db3) --target=wasm32 with wasm-ld"
+origin.built.command = "clang --target=wasm32 -O0 -nostdlib -Wl,--no-entry -Wl,--strip-all -Wl,--no-stack-first -o cff_cond_select.mutant.wasm cff_cond_select.mutant.c"
+origin.built.rebuilt_sha256 = "589e82d358fa7a4d971dc8aa10cc6381f02b782127b97b815f5f3f29227b3232"
+
+[[artifact]]
+path = "cff_cond_select.obf.wasm"
+sha256 = "9aa3fc55f1207580fd29eb079d010a4d36ef7240702694f40e74f82d84db7208"
+origin.built.source = "cff_cond_select.c"
+origin.built.toolchain = "clang 22.1.6 (llvm-project fc4aad7b5db3) --target=wasm32 with wasm-ld"
+origin.built.command = "clang --target=wasm32 -O0 -nostdlib -Wl,--no-entry -Wl,--strip-all -Wl,--no-stack-first -o cff_cond_select.obf.wasm cff_cond_select.c"
+origin.built.rebuilt_sha256 = "9aa3fc55f1207580fd29eb079d010a4d36ef7240702694f40e74f82d84db7208"
+
+[[artifact]]
+path = "cff_default_entry_cond.clean.wat"
+sha256 = "99f4e2be2ef9faf8e0c2e2ffd2d9788aabcf28696f5ee6cb337df4ca1b7637a3"
+origin.authored.note = "hand-written clean reference: entry_cond returns 4 for every input"
+
+[[artifact]]
+path = "cff_default_entry_cond.obf.wat"
+sha256 = "599fa99340ad87ed04c415b31941b7e82284853e1791598faae3ad9a22ecd360"
+origin.authored.note = "hand-written: a memory-slot dispatch loop entered through out-of-range state 6, which the br_table default sends to state 0; state 0 counts to 4, looping through out-of-range state -3 until it selects exit state 1"
+
+[[artifact]]
+path = "cff_default_state.clean.wat"
+sha256 = "e4e6b230bbfb23ac15b2d623f5f3727ba3911099a69d4ba2fa38ec89362da6ed"
+origin.authored.note = "hand-written clean reference: classify(x) = x > 4 ? (x + 2) * 5 : x - 1, beside a clang-style table, two-page memory and stack-pointer global"
+
+[[artifact]]
+path = "cff_default_state.obf.wat"
+sha256 = "0d55f0ee1447c3c12bd274655454dea765628c868b3c4d3e741062bc66092e23"
+origin.authored.note = "hand-written in the shape of clang -O0 output: a stack-frame dispatch loop over classify whose terminal states 9 and -1 reach the exit through the br_table default, after a discarded bounds check"
+
+[[artifact]]
+path = "cff_global_state.clean.wat"
+sha256 = "be0d9bf5559ecba7bc693e12cc7bac62cdb3b439877aa1e60b591e6b3daa051c"
+origin.authored.note = "hand-written clean reference: classify_global(x) = x > 7 ? 5 * x - 30 : 2 * x - 11"
+
+[[artifact]]
+path = "cff_global_state.obf.wat"
+sha256 = "f758d4652eabaef5751fd9f4f41417dde2d5f50b3d4d323271172280cbbad737"
+origin.authored.note = "hand-written: classify_global flattened into a four-state br_table dispatch loop whose state lives in mutable global 0; state 0 computes x << 1 and branches on 7 < x to state 1 (2 * (x << 1) + x - 30) or state 2 ((x << 1) - 11)"
+
+[[artifact]]
+path = "cff_global_state_observable.obf.wat"
+sha256 = "c1cae5ccee848d2439e108156fb24041e87ca5796aed80655a8f40885dcccb64"
+origin.authored.note = "hand-written: cff_global_state.obf.wat with the state global exported as `state`"
+
+[[artifact]]
+path = "cff_global_state_shared.obf.wat"
+sha256 = "5e77a9f68f6c370dbe747d20cd4aeac328c7606a4ac73c94da18fbf5fe2c1f7b"
+origin.authored.note = "hand-written: cff_global_state.obf.wat plus peek_state, a second function that reads the state global"
+
+[[artifact]]
+path = "cff_global_tee_state.mutant.wat"
+sha256 = "00dc2783e7ebddeb0ba7c39127f22dee653abac7d90072aa8eda8fe9065a2290"
+origin.authored.note = "hand-written mutation control: cff_global_tee_state.obf.wat with the guard's two successor states swapped"
+
+[[artifact]]
+path = "cff_global_tee_state.obf.wat"
+sha256 = "c48ef76065bad8d13bfa7b2063f26b525f661560944105c91d474bb1f254751e"
+origin.authored.note = "hand-written: the cff_global_state.obf.wat program with each dispatch copying global 0 through local.tee into local 2 before br_table"
+
+[[artifact]]
+path = "cff_global_tee_state_effectful_prefix.obf.wat"
+sha256 = "819640d01a804d921001b33c0105ea0711173f252f5beb89921cd8487d13b7fc"
+origin.authored.note = "hand-written: cff_global_tee_state.obf.wat with a call that increments the exported effect_count global before each dispatch"
+
+[[artifact]]
+path = "cff_global_tee_state_suffix_read.obf.wat"
+sha256 = "936cecb5024cf661343c276490258a4eddb29a5e2a0f61d6e14b9e836133c456"
+origin.authored.note = "hand-written: cff_global_tee_state.obf.wat with a nested read of the state global after the dispatch loop"
+
+[[artifact]]
+path = "cff_local_state.clean.wat"
+sha256 = "5f3c62039728d576331862973dc9324f72de786725f7f679f877dc49481ef7ab"
+origin.authored.note = "hand-written clean reference: classify_local(x) = x > 6 ? (x - 3) * 4 : 5 - 2 * (x - 3)"
+
+[[artifact]]
+path = "cff_local_state.mutant.wat"
+sha256 = "499eb103510c091a5d5c2500cca53eb0b26d88c3a321234bfc3c8fc9677cdb3e"
+origin.authored.note = "hand-written mutation control: cff_local_state.obf.wat with the guard's two successor states swapped"
+
+[[artifact]]
+path = "cff_local_state.obf.wat"
+sha256 = "13a5eac12ade7ee4fea3f867016f081fda04ed13d29a9f248c050b15bd6798f7"
+origin.authored.note = "hand-written: classify_local flattened into a four-state br_table dispatch loop whose state lives in local 2; state 0 branches on x <= 6 to state 2 (5 - ((x - 3) << 1)) and otherwise to state 1 ((x - 3) << 2)"
+
+[[artifact]]
+path = "cff_memory_state.clean.wat"
+sha256 = "c44d283aa812554444aa7b79b7c44007b3cf5548d1dea78e624812987d3fc70e"
+origin.authored.note = "hand-written clean reference: classify_memory(x) = x > 8 ? 3 * x + 7 : 4 - x"
+
+[[artifact]]
+path = "cff_memory_state.obf.wat"
+sha256 = "3722cac6e3aaa0a99b57d36bc12e615eda6f0cabac4c9bd3326addddce5bd381"
+origin.authored.note = "hand-written: classify_memory flattened into a four-state br_table dispatch loop whose state lives in linear memory at local 2 plus offset 4, with local 2 fixed at 32; state 0 computes 3 * x and branches on x > 8 to state 1 (add 7) or state 2 (4 - x)"
+
+[[artifact]]
+path = "cff_memory_state_shared.obf.wat"
+sha256 = "6ac206a7a75a7adaf6ebde65f18c7e53adb29fcfe190d21af3505df3c37b5061"
+origin.authored.note = "hand-written: cff_memory_state.obf.wat plus peek_state, a second function that loads the state slot"
+
+[[artifact]]
+path = "cff_multi_exit_join.clean.wat"
+sha256 = "682cb0de0e87922d848cccebe42098b04cf90580e44afaaf679f736547305a4a"
+origin.authored.note = "hand-written clean reference: reduce_join, a counting loop whose two exits (n <= 0 subtracts 11, acc > 60 multiplies by 7) rejoin one return"
+
+[[artifact]]
+path = "cff_multi_exit_join.mutant.wat"
+sha256 = "0636be0412a365a112b0531febca510137fea41c09ca45ac157fe9292dffa59d"
+origin.authored.note = "hand-written mutation control: cff_multi_exit_join.obf.wat with the bodies of its two exit states swapped"
+
+[[artifact]]
+path = "cff_multi_exit_join.obf.wat"
+sha256 = "a9b7c0d56be365886fea38e74be3fb04d026fa150d511062bba41465221c268f"
+origin.authored.note = "hand-written: reduce_join flattened into a six-state br_table dispatch loop whose two exit states fall through to a shared return state"
+
+[[artifact]]
+path = "cff_multi_exit_loop.clean.wat"
+sha256 = "e3222801ab747e1a178ccb99a6f390d2df3ed5b114cdcd9d39169943d98703c1"
+origin.authored.note = "hand-written clean reference: reduce_bounded, a counting loop with two exits (n <= 0 returns acc - 9, acc > 40 returns acc * 5)"
+
+[[artifact]]
+path = "cff_multi_exit_loop.mutant.wat"
+sha256 = "056ccc06d1c032f8a1aabb4e02476e10a3a78531131ed889961c093c138ecd4e"
+origin.authored.note = "hand-written mutation control: cff_multi_exit_loop.obf.wat with state 1's two successor states swapped"
+
+[[artifact]]
+path = "cff_multi_exit_loop.obf.wat"
+sha256 = "61ff3f2285eca245e0147eb22e14b7b2893eb9d9b5204032ee07c37e0d22cb50"
+origin.authored.note = "hand-written: reduce_bounded flattened into a five-state br_table dispatch loop that leaves through two return states"
+
+[[artifact]]
+path = "cff_nested_dispatch.clean.wat"
+sha256 = "566623e9bec3c1ded5412e28a3223d64ae6220e9950b0f1fc7d44438fee3e141"
+origin.authored.note = "hand-written clean reference: nested_dispatch(x) = x > 7 ? ((x + 1) * 5 - 4) + 100 : ((x + 1) * 5 - 4) * 2"
+
+[[artifact]]
+path = "cff_nested_dispatch.mutant.wat"
+sha256 = "a43b3c20eb8e7f9a08f79c9b8e81b9031baf5369b2943796fc649fa993645134"
+origin.authored.note = "hand-written mutation control: the nested_dispatch clean reference with the multiplier 5 changed to 6"
+
+[[artifact]]
+path = "cff_nested_dispatch.obf.wat"
+sha256 = "d1fa49dd67b71f758279abb5b03ee42132369c530c5070aba16136193d3fa4e0"
+origin.authored.note = "hand-written: nested_dispatch as a four-state br_table dispatch loop whose state 0 runs a second four-state dispatch loop, with one unreachable state, before its guard"
+
+[[artifact]]
+path = "cff_root_exit_suffix.clean.wat"
+sha256 = "9c8c31bf9c1e97e63dfa2aadf0d67e6f8be92ea56963e836047dee61878adcf0"
+origin.authored.note = "hand-written clean reference: scale_then_leave(x) = x * 3 - 5"
+
+[[artifact]]
+path = "cff_root_exit_suffix.obf.wat"
+sha256 = "0a7aa4eed0650d01d4e171f4877cbd8d9f76ece3282d218dca772d6fab423666"
+origin.authored.note = "hand-written: a three-state br_table dispatch loop inside a root block; state 1 branches out of the root block past a dead suffix that would overwrite the result"
+
+[[artifact]]
+path = "cff_rustc_temp_state.obf.wasm"
+sha256 = "7c8ddbca3de23d75858e8153b1759a4fbf157f3a201e1e253cf9229069ea7239"
+origin.built.source = "cff_rustc_temp_state.rs"
+origin.built.toolchain = "rustc 1.96.1 (31fca3adb 2026-06-26) --target wasm32-unknown-unknown"
+origin.built.command = "rustc --target wasm32-unknown-unknown -C opt-level=0 -C panic=abort --crate-type cdylib -o loc.O0.wasm cff_rustc_temp_state.rs && mv loc.O0.wasm cff_rustc_temp_state.obf.wasm"
+origin.built.rebuilt_sha256 = "7c8ddbca3de23d75858e8153b1759a4fbf157f3a201e1e253cf9229069ea7239"
+
+[[artifact]]
+path = "cff_select_stack_alias.obf.wat"
+sha256 = "dd1fe2f8e4237d543cf7ca04434da2103f7de4e88b4319b7528221ad82035f7a"
+origin.authored.note = "hand-written: scaled_magnitude, a memory-slot dispatcher at address 24 whose state 0 chooses state 1 (negate the stored 7 * x) or state 2 (return it) with a select over constants pushed after two dropped candidate values"

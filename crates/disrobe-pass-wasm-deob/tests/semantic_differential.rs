@@ -2,6 +2,9 @@
 #[cfg(feature = "sandbox")]
 #[path = "common/published.rs"]
 mod published;
+#[cfg(feature = "sandbox")]
+#[path = "common/wat_corpus.rs"]
+mod wat_corpus;
 
 #[cfg(feature = "sandbox")]
 use std::collections::BTreeMap;
@@ -64,35 +67,6 @@ const STORE_INSTANCE_LIMIT: usize = 4;
 const STORE_TABLE_LIMIT: usize = 8;
 #[cfg(feature = "sandbox")]
 const STORE_LINEAR_MEMORY_LIMIT: usize = 8;
-
-#[cfg(feature = "sandbox")]
-fn corpus_dirs() -> Vec<PathBuf> {
-    let root: &Path = Path::new(env!("CARGO_MANIFEST_DIR"));
-    vec![
-        root.join("../../corpus/src/wasm/sources"),
-        root.join("../../corpus/src/wasm/edge_cases"),
-        root.join("../../corpus/wasm/wat"),
-        root.join("../../corpus/wasm/plugins"),
-    ]
-}
-
-#[cfg(feature = "sandbox")]
-fn wat_files() -> Vec<PathBuf> {
-    let mut out: Vec<PathBuf> = Vec::new();
-    for dir in corpus_dirs() {
-        let Ok(entries): Result<fs::ReadDir, _> = fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path: PathBuf = entry.path();
-            if path.extension().is_some_and(|e| e == "wat") {
-                out.push(path);
-            }
-        }
-    }
-    out.sort();
-    out
-}
 
 #[cfg(feature = "sandbox")]
 fn callees(sigs: &ModuleSignatures) -> CalleeNames {
@@ -721,7 +695,7 @@ struct Candidate {
 
 #[cfg(feature = "sandbox")]
 fn collect_candidates(wat_path: &Path, tally: &mut DiffTally) -> Option<(Vec<u8>, Vec<Candidate>)> {
-    let text: String = fs::read_to_string(wat_path).expect("read wat");
+    let text: String = wat_corpus::verified_wat_text(wat_path);
     let original: Vec<u8> = wat::parse_str(&text).ok()?;
     let sigs: ModuleSignatures = extract_signatures(&original).ok()?;
     let defined: &[FunctionSig] = sigs.defined();
@@ -809,7 +783,7 @@ fn expose_memory(wat_text: &str) -> String {
 
 #[cfg(feature = "sandbox")]
 fn lifted_single_module(wat_path: &Path, target_export: &str) -> Option<Vec<u8>> {
-    let text: String = fs::read_to_string(wat_path).ok()?;
+    let text: String = wat_corpus::verified_wat_text(wat_path);
     let original: Vec<u8> = wat::parse_str(&text).ok()?;
     let sigs: ModuleSignatures = extract_signatures(&original).ok()?;
     let defined: &[FunctionSig] = sigs.defined();
@@ -830,7 +804,7 @@ fn lifted_single_module(wat_path: &Path, target_export: &str) -> Option<Vec<u8>>
 
 #[cfg(feature = "sandbox")]
 fn whole_module_gc_phase(wat_path: &Path, tally: &mut DiffTally, eng: &Engine) {
-    let text: String = fs::read_to_string(wat_path).expect("read wat");
+    let text: String = wat_corpus::verified_wat_text(wat_path);
     let Ok(original): Result<Vec<u8>, _> = wat::parse_str(&text) else {
         return;
     };
@@ -954,7 +928,7 @@ fn per_function_eligible(body: &FunctionBody<'_>, sig: &FunctionSig, nonzero_dat
 
 #[cfg(feature = "sandbox")]
 fn whole_module_plain_phase(wat_path: &Path, tally: &mut DiffTally, eng: &Engine) {
-    let text: String = fs::read_to_string(wat_path).expect("read wat");
+    let text: String = wat_corpus::verified_wat_text(wat_path);
     let Ok(original): Result<Vec<u8>, _> = wat::parse_str(&text) else {
         return;
     };
@@ -1098,9 +1072,7 @@ fn file_label(wat_path: &Path) -> String {
 
 #[cfg(feature = "sandbox")]
 fn flag_unsupported_construct(wat_path: &Path, tally: &mut DiffTally, construct: ModuleConstruct) {
-    let Ok(text): Result<String, _> = fs::read_to_string(wat_path) else {
-        return;
-    };
+    let text: String = wat_corpus::verified_wat_text(wat_path);
     let Ok(original): Result<Vec<u8>, _> = wat::parse_str(&text) else {
         return;
     };
@@ -1357,11 +1329,9 @@ fn differential_execution_equivalence_under_wasmtime() {
     let mut tally: DiffTally = DiffTally::default();
     let eng: Engine = engine();
 
-    for wat_path in wat_files() {
-        let Ok(bytes): Result<Vec<u8>, _> = fs::read_to_string(&wat_path)
-            .map_err(|_| ())
-            .and_then(|t| wat::parse_str(&t).map_err(|_| ()))
-        else {
+    for wat_path in wat_corpus::verified_wat_files() {
+        let text: String = wat_corpus::verified_wat_text(&wat_path);
+        let Ok(bytes): Result<Vec<u8>, _> = wat::parse_str(&text) else {
             continue;
         };
         match classify_module_construct(&bytes) {

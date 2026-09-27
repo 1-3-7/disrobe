@@ -1,0 +1,251 @@
+schema = "disrobe.authored-wat-provenance/v1"
+execution_fixture_claim = "repository-authored WAT execution-differential fixtures"
+execution_fixture_limit = "These hand-written proposal fixtures are pinned as source text; changing their behavior requires reviewing this provenance record and the caller's mutation control."
+
+[[root]]
+path = "corpus/src/wasm/sources"
+claim = "repository-authored WAT playground sources"
+limit = "README identifies these WAT files as source inputs; this record pins their exact current text."
+
+[[artifact]]
+path = "corpus/src/wasm/sources/add.wat"
+sha256 = "3b3d81e40ac6b136f8d9a82d29394f72fe9133dfc2ceb63d1d195eaed85855fd"
+
+[[artifact]]
+path = "corpus/src/wasm/sources/branching.wat"
+sha256 = "b5160bde35d5e298712c7cc9c8a83078ccaaf057b7b078bd199041f937eaef4f"
+
+[[artifact]]
+path = "corpus/src/wasm/sources/exceptions.wat"
+sha256 = "1c55a1a39fee86c1dda7bbba1fa51a19f088f0c1d826cd0d8816bae563b2afac"
+
+[[artifact]]
+path = "corpus/src/wasm/sources/gc_types.wat"
+sha256 = "507b5ae7fe7b251dff574ea4a3cb214e7353cb489ad682ed87c38ff6603f746d"
+
+[[artifact]]
+path = "corpus/src/wasm/sources/idiomatic_control.wat"
+sha256 = "0c73fe8eed6a0fc99cdbe829c91fb744935cd247967a9d32200eafc8b8475001"
+
+[[artifact]]
+path = "corpus/src/wasm/sources/memory.wat"
+sha256 = "7455b11dabebebf28baaddec44f65f102fc10a6f7165803aa3742b8fa0ae99e1"
+
+[[root]]
+path = "corpus/src/wasm/edge_cases"
+claim = "repository-authored WAT edge-case sources"
+limit = "README and the edge-case manifest enumerate this proposal-coverage playground; this record pins their exact current text."
+
+[[artifact]]
+path = "corpus/src/wasm/edge_cases/br_table_large.wat"
+sha256 = "c491c740ea89f590f5c4f4a40da1e7cf12e9fa903633fea684bd4ba9f3ff3991"
+
+[[artifact]]
+path = "corpus/src/wasm/edge_cases/branch_hints.wat"
+sha256 = "23d158f1a6f2650ca2fe7fc4a31a2e31c8ea226387b83b9be5a41be9fb52913f"
+
+[[artifact]]
+path = "corpus/src/wasm/edge_cases/bulk_memory.wat"
+sha256 = "d132db7ac59db48f58bd9344d055be6981724e579222a9ba7f940e363d198d6f"
+
+[[artifact]]
+path = "corpus/src/wasm/edge_cases/component_adapter.wat"
+sha256 = "80437e012ed502f860a2192460a8012881a0c52ff3c72ba5171505e10068c962"
+
+[[artifact]]
+path = "corpus/src/wasm/edge_cases/component_preamble.wat"
+sha256 = "3900e5f854a87b4607176e18c137177f924ef0fe96881cf20240c4a2873ad996"
+
+[[artifact]]
+path = "corpus/src/wasm/edge_cases/dwarf_custom_section.wat"
+sha256 = "72d5c1a6cf0af4e24be50c29c4128f499dfba2b5960a0c5839d002c51be53d1b"
+
+[[artifact]]
+path = "corpus/src/wasm/edge_cases/eh_try_table.wat"
+sha256 = "b3e446401258ec8c82f3a6717224abb561e1d92474804c659f067769a67894fb"
+
+[[artifact]]
+path = "corpus/src/wasm/edge_cases/gc_types.wat"
+sha256 = "c2bf6ba1701c6dc3d79dbbde543f036cd33e1b0daf23ac2d82bdb470227c4229"
+
+[[artifact]]
+path = "corpus/src/wasm/edge_cases/memory64.wat"
+sha256 = "3215fc9582213b76f19cc5ace9c616fa216229613197d100f381cdc99bb590a8"
+
+[[artifact]]
+path = "corpus/src/wasm/edge_cases/multi_memory.wat"
+sha256 = "b01cab6c4781beac3bbe6471068f2bed57d048190728f27eda0a38dd2ab3389a"
+
+[[artifact]]
+path = "corpus/src/wasm/edge_cases/reference_types.wat"
+sha256 = "84742517ad217dd5cc2322d50020d3ffa4afe594289f634d3690bf0791a6f293"
+
+[[artifact]]
+path = "corpus/src/wasm/edge_cases/segments_modes.wat"
+sha256 = "a639717d1f5c9b638605fa1d8cd3c0507bc36f7220bb3b398ec41ced755c6c07"
+
+[[artifact]]
+path = "corpus/src/wasm/edge_cases/simd128.wat"
+sha256 = "09182490342cdb3e70d864f5aa31f8c98055e7591ae610fa7a3ecf73653cbe93"
+
+[[artifact]]
+path = "corpus/src/wasm/edge_cases/table_ops.wat"
+sha256 = "b0acf9573fbc47bb2c5693bc57cbe88ee0959baf44d4b942f0fa8e9ebcff4386"
+
+[[artifact]]
+path = "corpus/src/wasm/edge_cases/tail_calls.wat"
+sha256 = "f7a1282833500f4cb028c701825b9a9fed2bee4ee894c64abb5ab33798e0c4fb"
+
+[[artifact]]
+path = "corpus/src/wasm/edge_cases/threads_atomics.wat"
+sha256 = "c88bae798ac091f5481d5cbe785201b490bc5a270c1d4dfa513c3185f8f878f2"
+
+[[root]]
+path = "corpus/wasm/wat"
+claim = "repository-authored WAT recovery sources"
+limit = "Source-level structure and focused proposal tests indicate hand-written WAT; history does not provide an independent build record, so this record is a provenance assertion and must be reviewed when changed."
+
+[[artifact]]
+path = "corpus/wasm/wat/custom_page_size.wat"
+sha256 = "eb5e7428438085075877914c2895909c6a17a761c617b28f65964631a51e2696"
+
+[[artifact]]
+path = "corpus/wasm/wat/eh_numeric_roundtrip.wat"
+sha256 = "e139171210358d38aec75fa67a2b1a2cfb5c75330a427e274a601dcf141ac267"
+
+[[artifact]]
+path = "corpus/wasm/wat/eh_try_table_modern.wat"
+sha256 = "605e0423d46b228971fec3f9aca05608080312a7fa0d1eca5c90e74c6009d3d3"
+
+[[artifact]]
+path = "corpus/wasm/wat/funcref_numeric.wat"
+sha256 = "842d0bcb1c0960d898b0d7f00fb129f0a36ef4eaf46a25c1d71fc10c4fceb04a"
+
+[[artifact]]
+path = "corpus/wasm/wat/function_refs.wat"
+sha256 = "0dca6ac1aa0c038912b2f0ab2cb2c8d0ae9813d2c1a6e6f66396e747e71725b8"
+
+[[artifact]]
+path = "corpus/wasm/wat/gc_extern_convert.wat"
+sha256 = "905e0c9f4a7c58744d7e6f08aa7d6365759ce365fda9f51e4eebbdd23ad2c068"
+
+[[artifact]]
+path = "corpus/wasm/wat/gc_numeric_roundtrip.wat"
+sha256 = "7310986935248ccb1e77534aaa9d1fd5ad39c53c4dcfac65e9551c0b655f6ffd"
+
+[[artifact]]
+path = "corpus/wasm/wat/gc_selfref_field.wat"
+sha256 = "62e0262d1b36f5aa3ac41eea46918c2100da69628c1b230c6183a475fea63e6b"
+
+[[artifact]]
+path = "corpus/wasm/wat/gc_subtype_roundtrip.wat"
+sha256 = "2724f614f4c15ba3449dca7ff87ddaa12eed44a7d1e9d3abe29be25426d182c7"
+
+[[artifact]]
+path = "corpus/wasm/wat/js_string_builtins.wat"
+sha256 = "8227a0438cb23d0e53f972fc7f124afbde620b0e10933811653f8eca73f0384a"
+
+[[artifact]]
+path = "corpus/wasm/wat/multi_memory.wat"
+sha256 = "4e659ed2dbd5dda68a9f0ce1f83d966b81b09551a65b63d52c4a4d6af42b2474"
+
+[[artifact]]
+path = "corpus/wasm/wat/stack_switching.wat"
+sha256 = "2a7db3c3e11a6efaef36c9e73205494ac198b63f3df775cc10bf1fdc4e2e9afd"
+
+[[artifact]]
+path = "corpus/wasm/wat/stack_switching_bind_throw.wat"
+sha256 = "0b74acab9f6242dcc3cf80cafd4ce28877252c898ef69d650ccd902fdcc5b420"
+
+[[root]]
+path = "corpus/wasm/plugins"
+claim = "repository-authored WAT plugin-host fixtures"
+limit = "Sandbox-capability tests name each fixture and its intended denial or resource-limit scenario; history does not provide an independent build record, so this record is a provenance assertion and must be reviewed when changed."
+
+[[artifact]]
+path = "corpus/wasm/plugins/busyloop_timeout.wat"
+sha256 = "a89217eb8318bb652a49db8d44e76e9afe1a74743ebef1a794622d95e3a419a8"
+
+[[artifact]]
+path = "corpus/wasm/plugins/compute_xor.wat"
+sha256 = "069d2b2ffdb50f24ea6aa2fca61eb0973655538a95ef79bfb66bd374365d155c"
+
+[[artifact]]
+path = "corpus/wasm/plugins/deny_fs_fd_write.wat"
+sha256 = "97604aad74889d3fbaaa74a622e0151d54c8253488e0ad8a3d6cb3fd472125a9"
+
+[[artifact]]
+path = "corpus/wasm/plugins/deny_net_sock_open.wat"
+sha256 = "30b0b9a7c7ba62d3e32562ae617b61617c8a51541258f16cf6b9670164bcafef"
+
+[[artifact]]
+path = "corpus/wasm/plugins/memgrow_bomb.wat"
+sha256 = "9f4e11ae73a12d066b719e5448d2ee954bc4af572bc9ae7cd06f54b2f8e55040"
+
+[[execution_fixture]]
+path = "crates/disrobe-pass-wasm-deob/tests/fixtures/atomics_diff.wat"
+sha256 = "e87cf54639ec8b21b1903dc72e17649ea1716cb869e05b7bcd80752471ad09cf"
+
+[[execution_fixture]]
+path = "crates/disrobe-pass-wasm-deob/tests/fixtures/atomics_misaligned_diff.wat"
+sha256 = "cee042785785771be965211a3fffbded5132ec8ef6e7b887ed03778be45c955e"
+
+[[execution_fixture]]
+path = "crates/disrobe-pass-wasm-deob/tests/fixtures/atomics_aligned_oob_diff.wat"
+sha256 = "34bdf9f71365321c91165e59c29d173ed5033d4b39d14ac6cbc3c90ca0ec7a9d"
+
+[[execution_fixture]]
+path = "crates/disrobe-pass-wasm-deob/tests/fixtures/atomics_address_overflow_diff.wat"
+sha256 = "a78d8579d429a9b18f57bf1d71a1a1dcde200eef65a11e3c8b77e2e01d344357"
+
+[[execution_fixture]]
+path = "crates/disrobe-pass-wasm-deob/tests/fixtures/atomics_memory64_overflow_misaligned_diff.wat"
+sha256 = "16b557ba6a0765069a690c9baabd52715cf6bf6c2522bc32f6f63fa792605721"
+
+[[execution_fixture]]
+path = "crates/disrobe-pass-wasm-deob/tests/fixtures/atomics_memory64_aligned_offset_2pow53_diff.wat"
+sha256 = "9f601f3827bdf36907639e5fecec31837d254ca1d64ef1af8aab9446bac87c16"
+
+[[execution_fixture]]
+path = "crates/disrobe-pass-wasm-deob/tests/fixtures/atomics_memory64_uint64_max_offset_diff.wat"
+sha256 = "430f90906a3201c95aac28df0f6ca27a2aed90230430213d8667395836fc85de"
+
+[[execution_fixture]]
+path = "crates/disrobe-pass-wasm-deob/tests/fixtures/atomics_narrow_cmpxchg_diff.wat"
+sha256 = "aba70df6354e581b807ffdf04d5c1fc461fd3ab4ba157a72f4252ad4a50ade11"
+
+[[execution_fixture]]
+path = "crates/disrobe-pass-wasm-deob/tests/fixtures/atomics_wait_notify_diff.wat"
+sha256 = "c83129150726025a23c098b14faf15cc9472ff03df7e924ac8091977f60af806"
+
+[[execution_fixture]]
+path = "crates/disrobe-pass-wasm-deob/tests/fixtures/atomics_every_opcode_diff.wat"
+sha256 = "ec47cf2de04caeb98eaa2a36642d28e657f3b0a5b6044c48e7ea96387532c253"
+
+[[execution_fixture]]
+path = "crates/disrobe-pass-wasm-deob/tests/fixtures/wide_diff.wat"
+sha256 = "010e3b0108906c7a5c1ed09dfcc9328c2afc258733cfd52e210e88ff01737b3b"
+
+[[execution_fixture]]
+path = "crates/disrobe-pass-wasm-deob/tests/fixtures/reftable_diff.wat"
+sha256 = "257058e83036d2555d9d16c75e89eabd23da4f8ace62dc24514543fb95695527"
+
+[[execution_fixture]]
+path = "crates/disrobe-pass-wasm-deob/tests/fixtures/shared_everything_diff.wat"
+sha256 = "75a9fab06ebe5bd82a987ab1f33e413879ad99d2e1775fe95af87c984083000b"
+
+[[execution_fixture]]
+path = "crates/disrobe-pass-wasm-deob/tests/fixtures/shared_everything_ref.wat"
+sha256 = "1cd9671f5513e17a94b3bf8deb9408a75d8fd3841d4a414443e617371bed398e"
+
+[[execution_fixture]]
+path = "crates/disrobe-pass-wasm-deob/tests/fixtures/divrem_trunc_diff.wat"
+sha256 = "3d1a6705d26943c1e20655ddddf1d639a9ba508ed6458d2a639dbefb05953a67"
+
+[[execution_fixture]]
+path = "crates/disrobe-pass-wasm-deob/tests/fixtures/simd_diff.wat"
+sha256 = "27145dc8a1de9ac8655d245659137fdc6c574eb0112e089407fb269fe9007000"
+
+[[execution_fixture]]
+path = "crates/disrobe-pass-wasm-deob/tests/fixtures/simd_lanes_diff.wat"
+sha256 = "40e9554a2d37a056e2ce5d067fe23f62a999f075de78f2ea1ccdd5f9e1e48ca2"

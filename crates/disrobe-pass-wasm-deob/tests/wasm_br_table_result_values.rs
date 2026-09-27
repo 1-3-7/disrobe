@@ -15,7 +15,34 @@ use disrobe_pass_wasm_deob::{
 #[cfg(feature = "sandbox")]
 use wasmparser::{FunctionBody, Parser, Payload};
 #[cfg(feature = "sandbox")]
-use wasmtime::{Engine, Linker, Module, Store, Val};
+use wasmtime::{Config, Engine, Linker, Module, Store, StoreLimits, StoreLimitsBuilder, Val};
+
+#[cfg(feature = "sandbox")]
+const FUEL_BUDGET: u64 = 2_000_000;
+
+#[cfg(feature = "sandbox")]
+fn bounded_engine() -> Result<Engine, String> {
+    let mut config: Config = Config::new();
+    config.consume_fuel(true);
+    Engine::new(&config).map_err(|error| error.to_string())
+}
+
+#[cfg(feature = "sandbox")]
+fn bounded_store(engine: &Engine) -> Result<Store<StoreLimits>, String> {
+    let limits: StoreLimits = StoreLimitsBuilder::new()
+        .memory_size(16 * 1024 * 1024)
+        .table_elements(10_000)
+        .instances(1)
+        .tables(1)
+        .memories(1)
+        .build();
+    let mut store: Store<StoreLimits> = Store::new(engine, limits);
+    store.limiter(|limits: &mut StoreLimits| limits);
+    store
+        .set_fuel(FUEL_BUDGET)
+        .map_err(|error| error.to_string())?;
+    Ok(store)
+}
 
 #[cfg(feature = "sandbox")]
 const BR_TABLE_RESULT_VALUES: &str = r#"
@@ -80,8 +107,11 @@ fn call_i64(
     value: i64,
 ) -> Result<i64, String> {
     let module: Module = Module::new(engine, bytes).map_err(|error| error.to_string())?;
-    let mut store: Store<()> = Store::new(engine, ());
-    let linker: Linker<()> = Linker::new(engine);
+    let mut store: Store<StoreLimits> = bounded_store(engine)?;
+    let mut linker: Linker<StoreLimits> = Linker::new(engine);
+    linker
+        .define_unknown_imports_as_traps(&module)
+        .map_err(|error| error.to_string())?;
     let instance: wasmtime::Instance = linker
         .instantiate(&mut store, &module)
         .map_err(|error| error.to_string())?;
@@ -105,8 +135,11 @@ fn call_i64(
 #[cfg(feature = "sandbox")]
 fn call_void(engine: &Engine, bytes: &[u8], export: &str, argument: i32) -> Result<(), String> {
     let module: Module = Module::new(engine, bytes).map_err(|error| error.to_string())?;
-    let mut store: Store<()> = Store::new(engine, ());
-    let linker: Linker<()> = Linker::new(engine);
+    let mut store: Store<StoreLimits> = bounded_store(engine)?;
+    let mut linker: Linker<StoreLimits> = Linker::new(engine);
+    linker
+        .define_unknown_imports_as_traps(&module)
+        .map_err(|error| error.to_string())?;
     let instance: wasmtime::Instance = linker
         .instantiate(&mut store, &module)
         .map_err(|error| error.to_string())?;
@@ -116,7 +149,7 @@ fn call_void(engine: &Engine, bytes: &[u8], export: &str, argument: i32) -> Resu
     let mut results: [Val; 0] = [];
     function
         .call(&mut store, &[Val::I32(argument)], &mut results)
-        .map_err(|error| error.to_string())
+        .map_err(|error| format!("{error:#}"))
 }
 
 #[cfg(feature = "sandbox")]
@@ -216,7 +249,7 @@ fn br_table_carries_i64_results_to_all_typed_label_targets() -> Result<(), Strin
     let recovered: Vec<u8> = compile_recovered_wasm(&source)?;
     wasmparser::validate(&recovered).map_err(|error| error.to_string())?;
 
-    let engine: Engine = Engine::default();
+    let engine: Engine = bounded_engine()?;
     let selectors: [i32; 5] = [-1, 0, 1, 2, 3];
     let values: [i64; 3] = [-5, 0, 7];
     for selector in selectors {
@@ -249,9 +282,18 @@ fn loop_result_labels_do_not_consume_outer_stack_values() -> Result<(), String> 
     );
     let recovered: Vec<u8> = compile_recovered_wasm(&source)?;
     wasmparser::validate(&recovered).map_err(|error| error.to_string())?;
-    let engine: Engine = Engine::default();
+    let engine: Engine = bounded_engine()?;
     call_void(&engine, &original, "loop_result", 0)?;
     call_void(&engine, &recovered, "recovered_loop_result", 0)?;
+    let runaway: String = match call_void(&engine, &original, "loop_result", 1) {
+        Ok(()) => return Err("loop mutation did not exhaust Wasmtime fuel".to_owned()),
+        Err(error) => error,
+    };
+    if !runaway.contains("fuel") {
+        return Err(format!(
+            "loop mutation failed for a reason other than fuel: {runaway}"
+        ));
+    }
     Ok(())
 }
 

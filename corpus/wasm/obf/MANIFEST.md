@@ -1,54 +1,63 @@
 # WASM obfuscation recovery corpus
 
 Benign, self-authored WebAssembly used to grade `disrobe-pass-wasm-deob`'s
-`recover_module` against a wasmtime execution differential. Every `.obf.wat`
-under `real/` is the output of a **real compiler toolchain** applied to the
-benign C source in `src/`; the matching `.clean.wat` is the same program written
-without the obfuscation, also compiled by the real toolchain. The oracle is
-wasmtime execution of the clean original; the recovered module must produce
-identical exported-function outputs over the input battery in
+`recover_module` against a wasmtime execution differential. `records.toml`
+identifies whether each `.wat` under `real/` is a real compiler printout or
+hand-written WAT; compiler sources are under `src/`. The oracle is wasmtime
+execution of the clean original; the recovered module must produce identical
+exported-function outputs over the input battery in
 `tests/recover_differential.rs`.
 
 No malware. No third-party binaries. Every C source in `src/` is hand-authored.
 
 ## How produced (real toolchain)
 
-- C to wasm: `clang` 22.1.6 (LLVM `fc4aad7b5db3`) targeting `wasm32` with
-  `wasm-ld`. This is the same LLVM wasm backend Emscripten drives; these kernels
-  are pure computation, so the emscripten libc/JS shim is not needed and is
-  omitted. `build.sh` prefers `emcc` if it is on `PATH` and otherwise falls back
-  to `clang --target=wasm32` (identical backend).
-- text emission + validation: `wasm-tools` 1.250.0 (`wasm-tools validate`,
+- C to wasm: `clang` 22.1.6 targeting `wasm32` with `wasm-ld`. These kernels
+  are pure computation, so no libc or JavaScript shim is linked.
+- text emission and validation: `wasm-tools` 1.250.0 (`wasm-tools validate`,
   `wasm-tools print`).
 - `wasmixer_ondemand` is the one Rust source (`src/wasmixer_ondemand.rs`), built by
   `rustc` 1.95.0 targeting `wasm32-unknown-unknown` at `-O`. It models WASMixer's
   on-demand string decryption (arXiv 2308.03123): an encrypted literal sits in an
   active data segment and a `dec_load(off, len)` thunk XOR-walks it in place at
-  use time. The rustc LLVM backend is a real production wasm toolchain; this is
-  the same wat-at-test-time convention as the clang fixtures.
+  use time. `wasm-ld` writes the output file name into the module name, so the
+  command links it as `wasmixer_ondemand.wasm` and renames it afterwards.
 
-Run `corpus/wasm/obf/build.sh` (optionally with `CLANG=/path/to/clang.exe`) to
-regenerate. It writes the real `.wasm` binaries and their `.wat` disassembly to
-`real/`. The `.wasm` blobs are git-ignored (`corpus/**/*.wasm`); the committed,
-reviewable artifact is the real-toolchain `.wat` (the compiler's bytes printed
-by `wasm-tools print`), which the differential assembles with the `wat` crate at
-test time. This matches the rest of the repo's wat-at-test-time convention.
+The toolchains the records pin, installed outside the repository:
 
-### Exact per-sample commands
+| tool | version | download | sha256 of the download |
+|------|---------|----------|------------------------|
+| clang and wasm-ld | 22.1.6 (llvm-project `fc4aad7b5db3`) | `https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.6/clang+llvm-22.1.6-x86_64-pc-windows-msvc.tar.xz` | `657343edf361ca463bd642e39c74b251c6338b96cdbd55ff277555298b027696` |
+| wasm-tools | 1.250.0 (`4a72fcd2e` 2026-05-21) | `https://github.com/bytecodealliance/wasm-tools/releases/download/v1.250.0/wasm-tools-1.250.0-x86_64-windows.zip` | `e6ab7924618d1caeb6eaa9debdf2a20ad9248f830731493776b283e42e1cd62e` |
+| rustc | 1.95.0 (`59807616e` 2026-04-14) | `https://static.rust-lang.org/dist/2026-04-16/rustc-1.95.0-x86_64-pc-windows-msvc.tar.xz` | `4cb1f3b578adc6541cbe13a6f85f1fd8c0ce643d90b506a36dee24c680864c67` |
+| rust-std for `wasm32-unknown-unknown` | 1.95.0 | `https://static.rust-lang.org/dist/2026-04-16/rust-std-1.95.0-wasm32-unknown-unknown.tar.xz` | `5587b89ff69623d09e476439d44a24453b4e4ea3d5e0b53a5c0a935151ff3fd1` |
 
-```
-clang --target=wasm32 -O2 -nostdlib -Wl,--no-entry -Wl,--strip-all \
-  -Wl,--export=mix -Wl,--export=checksum -Wl,--export=blend \
-  -o real/mba_checksum.obf.wasm src/mba_checksum.c
-clang --target=wasm32 -O0 -nostdlib -Wl,--no-entry -Wl,--strip-all \
-  -Wl,--export=run -o real/callind_dispatch.obf.wasm src/callind_dispatch.c
-clang --target=wasm32 -O2 -nostdlib -Wl,--no-entry -Wl,--strip-all \
-  -Wl,--export=pipeline -o real/cff_pipeline.obf.wasm src/cff_pipeline.c
-clang --target=wasm32 -O0 -nostdlib -Wl,--no-entry -Wl,--strip-all \
-  -Wl,--export=pick -Wl,--export=scale -o real/opaque_select.obf.wasm src/opaque_select.c
-clang --target=wasm32 -O0 -nostdlib -Wl,--no-entry -Wl,--strip-all \
-  -Wl,--export=plaintext_ptr -o real/decrypt_stub.obf.wasm src/decrypt_stub.c
-```
+Run `corpus/wasm/obf/build.sh` (with `CLANG`, `WASM_TOOLS` and `RUSTC` pointing
+at the pinned tools when they are not first on `PATH`) to regenerate. It refuses
+any other version, writes the `.wasm` binaries and their `.wat` printouts to
+`real/`, and runs exactly the commands `records.toml` records. The `.wasm`
+blobs are git-ignored (`corpus/**/*.wasm`); the committed, reviewable artifact
+is the `.wat` printout, which the differential assembles with the `wat` crate
+at test time.
+
+`records.toml` pins every committed `.wat` under `real/`. A built printout
+records its source, toolchain, exact command, the sha256 of the committed file,
+and `rebuilt_sha256`, the digest the recorded command produced when it was run
+again with the pinned toolchains. Fourteen of the fifteen built printouts rebuild
+byte for byte; the two `cff_cond_diamond` printouts and `cff_cond_loop.obf.wat`
+need `-Wl,--no-stack-first`, which their commands carry. `cff_cond_loop.clean.wat`
+does not rebuild: clang 22.1.6 lays out its unrolled loop differently at -O0
+through -O3, -Os and -Oz, so its record carries a `difference` note and the
+committed printout stays the graded clean reference. The other eight printouts
+(`cff_loop` and the three named-obfuscator pairs below) are hand-written and
+recorded with a note. `cargo xtask health` fails on any `.wat` under `real/`
+without a record, on a record whose sha256 does not match its file, and on a
+rebuild digest that differs without a `difference` note. The wasmtime
+differentials and sandbox-unwrap test refuse to assemble or run a module whose
+bytes differ from its record. The differentials run each module in a Wasmtime
+store with a fuel budget, a 16 MiB linear-memory cap and trapping stubs in place
+of host imports; the `wasmixer_ondemand` thunk runs in the library's `sandbox`
+feature, which adds an epoch deadline and caps linear memory at 64 MiB.
 
 ## Pairs, real-tool transform, and recovery
 
@@ -77,7 +86,7 @@ Recovered end to end from **real clang output** and graded by the differential:
   rebuilds `if/else` and `loop` structure over a real `-O0` `br_table` dispatcher,
   graded by wasmtime equivalence to the clean original in
   `tests/cff_conditional_reloop.rs`. Genuinely irreducible transition graphs (for
-  example a loop with two distinct exits) stay reported, not faked.
+   example a cycle with incompatible entry states) stay reported, not faked.
 - constant-key byte decrypt loops a real `-O0` build leaves intact.
 
 Walled, with the physical reason:
@@ -102,9 +111,9 @@ Walled, with the physical reason:
   subexpression `k = i+3` through a `local.tee` mid-expression, and folding
   across a side-effecting tee is unsound without dataflow, so the straight-line
   lifter leaves it. The differential still proves it behaviorally equivalent.
-- control-flow flattening whose recovered state graph branches (a state with two
-  successors) is not re-linearized; the deobfuscator reports it walled rather
-  than emit an unproven restructuring.
+- control-flow flattening whose recovered state graph has no equivalent nested
+  `if`/`else` and `loop` form is reported walled rather than emitted with an
+  unproven restructuring.
 - decrypt stubs whose key is derived at runtime (not a constant in the artifact)
   are walled: the plaintext is not recoverable from static bytes alone.
 

@@ -16,6 +16,11 @@ use walrus::ir::BinaryOp;
 use walrus::{ConstExpr, DataKind, FunctionBuilder, FunctionId, Module, ValType};
 use wasmparser::{Operator, Parser, Payload, Validator, WasmFeatures};
 
+#[cfg(feature = "sandbox")]
+const FUEL_BUDGET: u64 = 1_000_000;
+#[cfg(feature = "sandbox")]
+const MEMORY_LIMIT_BYTES: usize = 16 * 1024 * 1024;
+
 fn data_segment_bytes(bytes: &[u8]) -> Vec<u8> {
     for payload in Parser::new(0).parse_all(bytes) {
         if let Payload::DataSection(reader) = payload.expect("payload parses")
@@ -275,15 +280,25 @@ fn arith_battery() -> Vec<i32> {
 
 #[cfg(feature = "sandbox")]
 fn run_export_i32(bytes: &[u8], export: &str, args: &[i32]) -> Vec<Option<i32>> {
-    use wasmtime::{Config, Engine, Linker, Module as WtModule, Store, Val};
+    use wasmtime::{
+        Config, Engine, Linker, Module as WtModule, Store, StoreLimits, StoreLimitsBuilder, Val,
+    };
 
     let mut config: Config = Config::new();
     config.consume_fuel(true);
     let eng: Engine = Engine::new(&config).expect("engine");
     let module: WtModule = WtModule::new(&eng, bytes).expect("module compiles");
-    let mut store: Store<()> = Store::new(&eng, ());
-    store.set_fuel(1_000_000).expect("fuel");
-    let linker: Linker<()> = Linker::new(&eng);
+    let limits: StoreLimits = StoreLimitsBuilder::new()
+        .memory_size(MEMORY_LIMIT_BYTES)
+        .table_elements(1_024)
+        .instances(4)
+        .tables(8)
+        .memories(8)
+        .build();
+    let mut store: Store<StoreLimits> = Store::new(&eng, limits);
+    store.limiter(|limits: &mut StoreLimits| limits);
+    store.set_fuel(FUEL_BUDGET).expect("fuel");
+    let linker: Linker<StoreLimits> = Linker::new(&eng);
     let instance: wasmtime::Instance = linker
         .instantiate(&mut store, &module)
         .expect("module instantiates");
@@ -293,7 +308,7 @@ fn run_export_i32(bytes: &[u8], export: &str, args: &[i32]) -> Vec<Option<i32>> 
     let mut out: Vec<Option<i32>> = Vec::with_capacity(args.len());
     for a in args {
         let mut results: [Val; 1] = [Val::I32(0)];
-        store.set_fuel(1_000_000).ok();
+        store.set_fuel(FUEL_BUDGET).ok();
         let got: Option<i32> = match func.call(&mut store, &[Val::I32(*a)], &mut results) {
             Ok(()) => match results[0] {
                 Val::I32(v) => Some(v),
@@ -304,6 +319,47 @@ fn run_export_i32(bytes: &[u8], export: &str, args: &[i32]) -> Vec<Option<i32>> 
         out.push(got);
     }
     out
+}
+
+#[cfg(feature = "sandbox")]
+#[test]
+fn reverse_oracle_sandbox_refuses_growth_past_16_mib() {
+    use wasmtime::{
+        Config, Engine, Linker, Module as WtModule, Store, StoreLimits, StoreLimitsBuilder, Val,
+    };
+
+    let bytes: Vec<u8> = wat::parse_str(
+        "(module (memory 0) (func (export \"grow\") (result i32) i32.const 257 memory.grow))",
+    )
+    .expect("assemble growth control");
+    let mut config: Config = Config::new();
+    config.consume_fuel(true);
+    let eng: Engine = Engine::new(&config).expect("engine");
+    let module: WtModule = WtModule::new(&eng, &bytes).expect("module compiles");
+    let limits: StoreLimits = StoreLimitsBuilder::new()
+        .memory_size(MEMORY_LIMIT_BYTES)
+        .table_elements(1_024)
+        .instances(4)
+        .tables(8)
+        .memories(8)
+        .build();
+    let mut store: Store<StoreLimits> = Store::new(&eng, limits);
+    store.limiter(|limits: &mut StoreLimits| limits);
+    store.set_fuel(FUEL_BUDGET).expect("fuel");
+    let linker: Linker<StoreLimits> = Linker::new(&eng);
+    let instance: wasmtime::Instance = linker
+        .instantiate(&mut store, &module)
+        .expect("growth control instantiates");
+    let grow: wasmtime::Func = instance
+        .get_func(&mut store, "grow")
+        .expect("growth export");
+    let mut result: [Val; 1] = [Val::I32(0)];
+    grow.call(&mut store, &[], &mut result)
+        .expect("memory.grow reports refusal as -1");
+    assert!(
+        matches!(result[0], Val::I32(-1)),
+        "memory growth beyond the 16 MiB store limit returned {result:?}"
+    );
 }
 
 #[cfg(feature = "sandbox")]

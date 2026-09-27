@@ -1,102 +1,102 @@
 (module
-  (func (export "nested_dispatch") (param i32) (result i32)
+  (func $nested_dispatch (export "nested_dispatch") (param i32) (result i32)
     (local i32 i32 i32)
     i32.const 0
     local.set 1
     i32.const 0
     local.set 2
-    loop (result i32)
-      block
-        block
-          block
-            block
-              block
+    loop $dispatch (result i32)
+      block $next
+        block $state3
+          block $state2
+            block $state1
+              block $state0
                 local.get 2
-                br_table 0 1 2 3
+                br_table $state0 $state1 $state2 $state3
               end
               local.get 0
               i32.const 1
               i32.add
               local.set 1
-              block $inner_exit
+              block $inner_done
                 i32.const 0
                 local.set 3
-                loop $inner_loop
-                  block $inner_default
-                    block $inner_case3
-                      block $inner_case2
-                        block $inner_case1
-                          block $inner_case0
+                loop $inner_dispatch
+                  block $inner_next
+                    block $inner3
+                      block $inner2
+                        block $inner1
+                          block $inner0
                             local.get 3
-                            br_table $inner_case0 $inner_case1 $inner_case2 $inner_case3
+                            br_table $inner0 $inner1 $inner2 $inner3
                           end
                           local.get 1
-                          i32.const 2
+                          i32.const 5
                           i32.mul
                           local.set 1
                           i32.const 1
                           local.set 3
-                          br $inner_default
+                          br $inner_next
                         end
                         local.get 1
-                        i32.const 3
-                        i32.add
+                        i32.const 4
+                        i32.sub
                         local.set 1
                         i32.const 3
                         local.set 3
-                        br $inner_default
+                        br $inner_next
                       end
                       local.get 1
-                      i32.const 0
+                      i32.const 9
                       i32.add
                       local.set 1
                       i32.const 3
                       local.set 3
-                      br $inner_default
+                      br $inner_next
                     end
-                    br $inner_exit
+                    br $inner_done
                   end
-                  br $inner_loop
+                  br $inner_dispatch
                 end
               end
-              block
-                block
+              block $chosen
+                block $otherwise
                   local.get 0
-                  i32.const 10
+                  i32.const 7
                   i32.gt_s
                   i32.const 1
                   i32.and
                   i32.eqz
-                  br_if 0
+                  br_if $otherwise
                   i32.const 1
                   local.set 2
-                  br 1
+                  br $chosen
                 end
                 i32.const 2
                 local.set 2
               end
-              br 3
+              br $next
             end
             local.get 1
-            i32.const 3
-            i32.mul
+            i32.const 100
+            i32.add
             local.set 1
             i32.const 3
             local.set 2
-            br 2
+            br $next
           end
           local.get 1
-          i32.const 7
-          i32.sub
+          i32.const 2
+          i32.mul
           local.set 1
           i32.const 3
           local.set 2
-          br 1
+          br $next
         end
         local.get 1
         return
       end
-      br 0
+      br $dispatch
     end
   )
 )

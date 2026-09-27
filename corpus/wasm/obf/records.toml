@@ -1,0 +1,162 @@
+schema = "disrobe.wasm.build-records/v2"
+
+[[artifact]]
+path = "real/callind_dispatch.clean.wat"
+sha256 = "d5de9661efdacd05c1d5abaf8559d9bdf948ab4e35589c9f6c71aabc90261add"
+origin.built.source = "src/callind_dispatch.clean.c"
+origin.built.toolchain = "clang 22.1.6 (llvm-project fc4aad7b5db3) --target=wasm32 with wasm-ld; wasm-tools 1.250.0 (4a72fcd2e 2026-05-21)"
+origin.built.command = "clang --target=wasm32 -O0 -nostdlib -Wl,--no-entry -Wl,--strip-all -Wl,--export=run -o real/callind_dispatch.clean.wasm src/callind_dispatch.clean.c && wasm-tools validate real/callind_dispatch.clean.wasm && wasm-tools print real/callind_dispatch.clean.wasm > real/callind_dispatch.clean.wat"
+origin.built.rebuilt_sha256 = "d5de9661efdacd05c1d5abaf8559d9bdf948ab4e35589c9f6c71aabc90261add"
+
+[[artifact]]
+path = "real/callind_dispatch.obf.wat"
+sha256 = "48d2031f1ee1b867238ddfff994f79668da924a01f03d5ff855b7c7c9d8a8fc0"
+origin.built.source = "src/callind_dispatch.c"
+origin.built.toolchain = "clang 22.1.6 (llvm-project fc4aad7b5db3) --target=wasm32 with wasm-ld; wasm-tools 1.250.0 (4a72fcd2e 2026-05-21)"
+origin.built.command = "clang --target=wasm32 -O0 -nostdlib -Wl,--no-entry -Wl,--strip-all -Wl,--export=run -o real/callind_dispatch.obf.wasm src/callind_dispatch.c && wasm-tools validate real/callind_dispatch.obf.wasm && wasm-tools print real/callind_dispatch.obf.wasm > real/callind_dispatch.obf.wat"
+origin.built.rebuilt_sha256 = "48d2031f1ee1b867238ddfff994f79668da924a01f03d5ff855b7c7c9d8a8fc0"
+
+[[artifact]]
+path = "real/cff_cond_diamond.clean.wat"
+sha256 = "61f202fd482aff1ae35a81e16972e1fdb7c0d0d5ee3d4132742fd7febc633707"
+origin.built.source = "src/cff_cond_diamond.clean.c"
+origin.built.toolchain = "clang 22.1.6 (llvm-project fc4aad7b5db3) --target=wasm32 with wasm-ld; wasm-tools 1.250.0 (4a72fcd2e 2026-05-21)"
+origin.built.command = "clang --target=wasm32 -O2 -nostdlib -Wl,--no-entry -Wl,--strip-all -Wl,--no-stack-first -Wl,--export=classify -o real/cff_cond_diamond.clean.wasm src/cff_cond_diamond.clean.c && wasm-tools validate real/cff_cond_diamond.clean.wasm && wasm-tools print real/cff_cond_diamond.clean.wasm > real/cff_cond_diamond.clean.wat"
+origin.built.rebuilt_sha256 = "61f202fd482aff1ae35a81e16972e1fdb7c0d0d5ee3d4132742fd7febc633707"
+
+[[artifact]]
+path = "real/cff_cond_diamond.obf.wat"
+sha256 = "3479436c60fc2d394a931150842bacdd8ecd9c9f66fe001b9c055d8f745233db"
+origin.built.source = "src/cff_cond_diamond.c"
+origin.built.toolchain = "clang 22.1.6 (llvm-project fc4aad7b5db3) --target=wasm32 with wasm-ld; wasm-tools 1.250.0 (4a72fcd2e 2026-05-21)"
+origin.built.command = "clang --target=wasm32 -O0 -nostdlib -Wl,--no-entry -Wl,--strip-all -Wl,--no-stack-first -Wl,--export=classify -o real/cff_cond_diamond.obf.wasm src/cff_cond_diamond.c && wasm-tools validate real/cff_cond_diamond.obf.wasm && wasm-tools print real/cff_cond_diamond.obf.wasm > real/cff_cond_diamond.obf.wat"
+origin.built.rebuilt_sha256 = "3479436c60fc2d394a931150842bacdd8ecd9c9f66fe001b9c055d8f745233db"
+
+[[artifact]]
+path = "real/cff_cond_loop.clean.wat"
+sha256 = "4348f36d6748e894112e9606cdf27ea186bf63d9ad024f9adbe570edd198837d"
+origin.built.source = "src/cff_cond_loop.clean.c"
+origin.built.toolchain = "clang 22.1.6 (llvm-project fc4aad7b5db3) --target=wasm32 with wasm-ld; wasm-tools 1.250.0 (4a72fcd2e 2026-05-21)"
+origin.built.command = "clang --target=wasm32 -O2 -nostdlib -Wl,--no-entry -Wl,--strip-all -Wl,--no-stack-first -Wl,--export=accumulate -o real/cff_cond_loop.clean.wasm src/cff_cond_loop.clean.c && wasm-tools validate real/cff_cond_loop.clean.wasm && wasm-tools print real/cff_cond_loop.clean.wasm > real/cff_cond_loop.clean.wat"
+origin.built.rebuilt_sha256 = "f86af49cc76e4db28d9c27b414237543a8cfe8ce55bd705102eb61eaaf6990fd"
+origin.built.difference = "clang 22.1.6 at -O2 lays out the unrolled even-sum loop differently from the committed printout: the rebuild uses 4 locals and places the 2x-unrolled loop inside the guard block, where the committed file uses 5 locals and places it after that block; no other level (-O0, -O1, -O3, -Os, -Oz), with or without -Wl,--no-stack-first, reproduces it, so the committed printout stays the graded clean reference"
+
+[[artifact]]
+path = "real/cff_cond_loop.obf.wat"
+sha256 = "7ce55f98c6b8cbcb31924d89a739a8286d2d869e66a944651ebd59f227c65d35"
+origin.built.source = "src/cff_cond_loop.c"
+origin.built.toolchain = "clang 22.1.6 (llvm-project fc4aad7b5db3) --target=wasm32 with wasm-ld; wasm-tools 1.250.0 (4a72fcd2e 2026-05-21)"
+origin.built.command = "clang --target=wasm32 -O0 -nostdlib -Wl,--no-entry -Wl,--strip-all -Wl,--no-stack-first -Wl,--export=accumulate -o real/cff_cond_loop.obf.wasm src/cff_cond_loop.c && wasm-tools validate real/cff_cond_loop.obf.wasm && wasm-tools print real/cff_cond_loop.obf.wasm > real/cff_cond_loop.obf.wat"
+origin.built.rebuilt_sha256 = "7ce55f98c6b8cbcb31924d89a739a8286d2d869e66a944651ebd59f227c65d35"
+
+[[artifact]]
+path = "real/cff_loop.clean.wat"
+sha256 = "2d0e12dd60517ce21262b5fe1f2de09e631afe3a32d9e352fcde00b2c7ab3cc3"
+origin.authored.note = "hand-written clean reference for the cyclic cff_loop pair; no compiler produced it and build.sh has no rule for it"
+
+[[artifact]]
+path = "real/cff_loop.obf.wat"
+sha256 = "4a0eeeb7f56f853deda8a8fe1d0b8740336445176aef79505d05795657923d52"
+origin.authored.note = "hand-written br_table dispatcher over the cff_loop reference; no compiler produced it and build.sh has no rule for it"
+
+[[artifact]]
+path = "real/cff_pipeline.clean.wat"
+sha256 = "673ec62768e05efafb2344d6df692d549f6ad5f5547d55a39aec39512a283e0f"
+origin.built.source = "src/cff_pipeline.clean.c"
+origin.built.toolchain = "clang 22.1.6 (llvm-project fc4aad7b5db3) --target=wasm32 with wasm-ld; wasm-tools 1.250.0 (4a72fcd2e 2026-05-21)"
+origin.built.command = "clang --target=wasm32 -O2 -nostdlib -Wl,--no-entry -Wl,--strip-all -Wl,--export=pipeline -o real/cff_pipeline.clean.wasm src/cff_pipeline.clean.c && wasm-tools validate real/cff_pipeline.clean.wasm && wasm-tools print real/cff_pipeline.clean.wasm > real/cff_pipeline.clean.wat"
+origin.built.rebuilt_sha256 = "673ec62768e05efafb2344d6df692d549f6ad5f5547d55a39aec39512a283e0f"
+
+[[artifact]]
+path = "real/cff_pipeline.obf.wat"
+sha256 = "e941dfae2dad50ac1f7e17c29f6612b44092c997c31d8bd66ca750c89335f1ba"
+origin.built.source = "src/cff_pipeline.c"
+origin.built.toolchain = "clang 22.1.6 (llvm-project fc4aad7b5db3) --target=wasm32 with wasm-ld; wasm-tools 1.250.0 (4a72fcd2e 2026-05-21)"
+origin.built.command = "clang --target=wasm32 -O2 -nostdlib -Wl,--no-entry -Wl,--strip-all -Wl,--export=pipeline -o real/cff_pipeline.obf.wasm src/cff_pipeline.c && wasm-tools validate real/cff_pipeline.obf.wasm && wasm-tools print real/cff_pipeline.obf.wasm > real/cff_pipeline.obf.wat"
+origin.built.rebuilt_sha256 = "e941dfae2dad50ac1f7e17c29f6612b44092c997c31d8bd66ca750c89335f1ba"
+
+[[artifact]]
+path = "real/decrypt_stub.obf.wat"
+sha256 = "2758047dd68a9340380edd04511ac35f767fd77f5ddc791a11ebe86b721122ec"
+origin.built.source = "src/decrypt_stub.c"
+origin.built.toolchain = "clang 22.1.6 (llvm-project fc4aad7b5db3) --target=wasm32 with wasm-ld; wasm-tools 1.250.0 (4a72fcd2e 2026-05-21)"
+origin.built.command = "clang --target=wasm32 -O0 -nostdlib -Wl,--no-entry -Wl,--strip-all -Wl,--export=plaintext_ptr -o real/decrypt_stub.obf.wasm src/decrypt_stub.c && wasm-tools validate real/decrypt_stub.obf.wasm && wasm-tools print real/decrypt_stub.obf.wasm > real/decrypt_stub.obf.wat"
+origin.built.rebuilt_sha256 = "2758047dd68a9340380edd04511ac35f767fd77f5ddc791a11ebe86b721122ec"
+
+[[artifact]]
+path = "real/jscrambler_guard.clean.wat"
+sha256 = "df3bced33f3bf50abbb15c90c6249c7aac2c6a9f2b041a8b4217a3de81dcceb4"
+origin.authored.note = "hand-written clean original of the spec-faithful Jscrambler pair (MANIFEST.md, named-obfuscator family pairs)"
+
+[[artifact]]
+path = "real/jscrambler_guard.obf.wat"
+sha256 = "5c667cd4f046250b2e0391ab69b5a9c2fc4b98f89ed6b32b48aeacfe1795716f"
+origin.authored.note = "hand-written spec-faithful Jscrambler integrity-guard transform (MANIFEST.md, named-obfuscator family pairs)"
+
+[[artifact]]
+path = "real/mba_checksum.clean.wat"
+sha256 = "0071d1d01dd6033e26202c8f45946de34d52abc868a528a35f238dd14e3f929b"
+origin.built.source = "src/mba_checksum.clean.c"
+origin.built.toolchain = "clang 22.1.6 (llvm-project fc4aad7b5db3) --target=wasm32 with wasm-ld; wasm-tools 1.250.0 (4a72fcd2e 2026-05-21)"
+origin.built.command = "clang --target=wasm32 -O2 -nostdlib -Wl,--no-entry -Wl,--strip-all -Wl,--export=mix -Wl,--export=checksum -Wl,--export=blend -o real/mba_checksum.clean.wasm src/mba_checksum.clean.c && wasm-tools validate real/mba_checksum.clean.wasm && wasm-tools print real/mba_checksum.clean.wasm > real/mba_checksum.clean.wat"
+origin.built.rebuilt_sha256 = "0071d1d01dd6033e26202c8f45946de34d52abc868a528a35f238dd14e3f929b"
+
+[[artifact]]
+path = "real/mba_checksum.obf.wat"
+sha256 = "5875bce027e156e9f08fd2d3bde2c9431d90c5ad1e269e8d0f1014e8d68972a0"
+origin.built.source = "src/mba_checksum.c"
+origin.built.toolchain = "clang 22.1.6 (llvm-project fc4aad7b5db3) --target=wasm32 with wasm-ld; wasm-tools 1.250.0 (4a72fcd2e 2026-05-21)"
+origin.built.command = "clang --target=wasm32 -O2 -nostdlib -Wl,--no-entry -Wl,--strip-all -Wl,--export=mix -Wl,--export=checksum -Wl,--export=blend -o real/mba_checksum.obf.wasm src/mba_checksum.c && wasm-tools validate real/mba_checksum.obf.wasm && wasm-tools print real/mba_checksum.obf.wasm > real/mba_checksum.obf.wat"
+origin.built.rebuilt_sha256 = "5875bce027e156e9f08fd2d3bde2c9431d90c5ad1e269e8d0f1014e8d68972a0"
+
+[[artifact]]
+path = "real/opaque_select.clean.wat"
+sha256 = "930b25b14d63adb0517bf8c7bf86c345c9718f3fef6295efd740b368bb86fd3c"
+origin.built.source = "src/opaque_select.clean.c"
+origin.built.toolchain = "clang 22.1.6 (llvm-project fc4aad7b5db3) --target=wasm32 with wasm-ld; wasm-tools 1.250.0 (4a72fcd2e 2026-05-21)"
+origin.built.command = "clang --target=wasm32 -O2 -nostdlib -Wl,--no-entry -Wl,--strip-all -Wl,--export=pick -Wl,--export=scale -o real/opaque_select.clean.wasm src/opaque_select.clean.c && wasm-tools validate real/opaque_select.clean.wasm && wasm-tools print real/opaque_select.clean.wasm > real/opaque_select.clean.wat"
+origin.built.rebuilt_sha256 = "930b25b14d63adb0517bf8c7bf86c345c9718f3fef6295efd740b368bb86fd3c"
+
+[[artifact]]
+path = "real/opaque_select.obf.wat"
+sha256 = "4e2ea3edc5a2b9e7e34b19dbbfe39fe1d557e32942dbe75cfdc4f82c2564b196"
+origin.built.source = "src/opaque_select.c"
+origin.built.toolchain = "clang 22.1.6 (llvm-project fc4aad7b5db3) --target=wasm32 with wasm-ld; wasm-tools 1.250.0 (4a72fcd2e 2026-05-21)"
+origin.built.command = "clang --target=wasm32 -O0 -nostdlib -Wl,--no-entry -Wl,--strip-all -Wl,--export=pick -Wl,--export=scale -o real/opaque_select.obf.wasm src/opaque_select.c && wasm-tools validate real/opaque_select.obf.wasm && wasm-tools print real/opaque_select.obf.wasm > real/opaque_select.obf.wat"
+origin.built.rebuilt_sha256 = "4e2ea3edc5a2b9e7e34b19dbbfe39fe1d557e32942dbe75cfdc4f82c2564b196"
+
+[[artifact]]
+path = "real/trunc_sat.obf.wat"
+sha256 = "7b84a38019f8bc9f865b69665ab5414afa658a3d2b276269e8d3919db9c89924"
+origin.built.source = "src/trunc_sat.c"
+origin.built.toolchain = "clang 22.1.6 (llvm-project fc4aad7b5db3) --target=wasm32 with wasm-ld; wasm-tools 1.250.0 (4a72fcd2e 2026-05-21)"
+origin.built.command = "clang --target=wasm32 -O0 -nostdlib -Wl,--no-entry -Wl,--strip-all -Wl,--export=i32_from_f32_s -Wl,--export=i32_from_f32_u -Wl,--export=i32_from_f64_s -Wl,--export=i32_from_f64_u -Wl,--export=i64_from_f32_s -Wl,--export=i64_from_f32_u -Wl,--export=i64_from_f64_s -Wl,--export=i64_from_f64_u -Wl,--export=mixed -o real/trunc_sat.obf.wasm src/trunc_sat.c && wasm-tools validate real/trunc_sat.obf.wasm && wasm-tools print real/trunc_sat.obf.wasm > real/trunc_sat.obf.wat"
+origin.built.rebuilt_sha256 = "7b84a38019f8bc9f865b69665ab5414afa658a3d2b276269e8d3919db9c89924"
+
+[[artifact]]
+path = "real/wasmixer_inflate.clean.wat"
+sha256 = "395f93231b1c66376942a4f02920405746cff3898a4cbb5ad9192fb1c113fc33"
+origin.authored.note = "hand-written clean original of the spec-faithful WasmMixer pair (MANIFEST.md, named-obfuscator family pairs)"
+
+[[artifact]]
+path = "real/wasmixer_inflate.obf.wat"
+sha256 = "74db85554fe1870b4284cc33303ef47e0626164109ebdf439a21c397c8a2378d"
+origin.authored.note = "hand-written spec-faithful WasmMixer table-dispatch transform (MANIFEST.md, named-obfuscator family pairs)"
+
+[[artifact]]
+path = "real/wasmixer_ondemand.obf.wat"
+sha256 = "3b86894ffed8e87fa0b78e60fcda32bd0ddfa5f713c021f6821ce88177bb593f"
+origin.built.source = "src/wasmixer_ondemand.rs"
+origin.built.toolchain = "rustc 1.95.0 (59807616e 2026-04-14) --target wasm32-unknown-unknown; wasm-tools 1.250.0 (4a72fcd2e 2026-05-21)"
+origin.built.command = "rustc --target wasm32-unknown-unknown -O --crate-type cdylib -C panic=abort -o real/wasmixer_ondemand.wasm src/wasmixer_ondemand.rs && mv real/wasmixer_ondemand.wasm real/wasmixer_ondemand.obf.wasm && wasm-tools validate real/wasmixer_ondemand.obf.wasm && wasm-tools print real/wasmixer_ondemand.obf.wasm > real/wasmixer_ondemand.obf.wat"
+origin.built.rebuilt_sha256 = "3b86894ffed8e87fa0b78e60fcda32bd0ddfa5f713c021f6821ce88177bb593f"
+
+[[artifact]]
+path = "real/wobfuscator_import.clean.wat"
+sha256 = "588ab47dfc800891be6c6e3fc9bf34cf932b3d65d2129393c19249c64c9a5707"
+origin.authored.note = "hand-written clean original of the spec-faithful Wobfuscator pair (MANIFEST.md, named-obfuscator family pairs)"
+
+[[artifact]]
+path = "real/wobfuscator_import.obf.wat"
+sha256 = "40c53af4117be0c198568b34a69ad580b6ca7c6f056fbc79507068777d0bc572"
+origin.authored.note = "hand-written spec-faithful Wobfuscator import-hoisting transform (MANIFEST.md, named-obfuscator family pairs)"

@@ -6,6 +6,9 @@ use std::collections::BTreeMap;
 #[cfg(feature = "sandbox")]
 #[path = "common/exec_diff.rs"]
 mod exec_diff;
+#[cfg(feature = "sandbox")]
+#[path = "common/wat_corpus.rs"]
+mod wat_corpus;
 
 #[cfg(feature = "sandbox")]
 use exec_diff::{
@@ -51,6 +54,12 @@ const SHARED_REF: &str = include_str!("fixtures/shared_everything_ref.wat");
 const DIVREM_TRUNC_DIFF: &str = include_str!("fixtures/divrem_trunc_diff.wat");
 
 #[cfg(feature = "sandbox")]
+fn verified_fixture<'a>(name: &str, embedded: &'a str) -> &'a str {
+    wat_corpus::verify_execution_fixture(name, embedded);
+    embedded
+}
+
+#[cfg(feature = "sandbox")]
 fn atomics_config(config: &mut Config) {
     config
         .wasm_threads(true)
@@ -82,7 +91,7 @@ fn baseline_config(config: &mut Config) {
 fn lifted_targets_execute_atomics_equivalently_to_wasmtime() {
     grade(&Spec {
         label: "atomics",
-        wat: ATOMICS_DIFF,
+        wat: verified_fixture("atomics_diff.wat", ATOMICS_DIFF),
         configure: atomics_config,
         langs: &ALL_LANGS,
         min_exports: 28,
@@ -162,9 +171,11 @@ const EVERY_LINEAR_MEMORY_ATOMIC: [&str; 63] = [
 #[cfg(feature = "sandbox")]
 #[test]
 fn every_linear_memory_atomic_opcode_executes_like_wasmtime() {
+    let atomics: &str =
+        verified_fixture("atomics_every_opcode_diff.wat", ATOMICS_EVERY_OPCODE_DIFF);
     let mut absent: Vec<&str> = Vec::new();
     for mnemonic in EVERY_LINEAR_MEMORY_ATOMIC {
-        if !ATOMICS_EVERY_OPCODE_DIFF.contains(mnemonic) {
+        if !atomics.contains(mnemonic) {
             absent.push(mnemonic);
         }
     }
@@ -177,7 +188,7 @@ fn every_linear_memory_atomic_opcode_executes_like_wasmtime() {
     );
     grade(&Spec {
         label: "atomics_every_opcode",
-        wat: ATOMICS_EVERY_OPCODE_DIFF,
+        wat: atomics,
         configure: atomics_config,
         langs: &ALL_LANGS,
         min_exports: 70,
@@ -192,7 +203,7 @@ fn every_linear_memory_atomic_opcode_executes_like_wasmtime() {
 fn lifted_targets_block_and_report_wait_and_notify_like_wasmtime() {
     grade(&Spec {
         label: "atomics_wait_notify",
-        wat: ATOMICS_WAIT_NOTIFY_DIFF,
+        wat: verified_fixture("atomics_wait_notify_diff.wat", ATOMICS_WAIT_NOTIFY_DIFF),
         configure: atomics_config,
         langs: &ALL_LANGS,
         min_exports: 13,
@@ -208,7 +219,7 @@ fn lifted_targets_trap_misaligned_atomics_like_wasmtime() {
     grade_traps(
         &Spec {
             label: "atomics_misaligned",
-            wat: ATOMICS_MISALIGNED_DIFF,
+            wat: verified_fixture("atomics_misaligned_diff.wat", ATOMICS_MISALIGNED_DIFF),
             configure: atomics_config,
             langs: &ALL_LANGS,
             min_exports: 1,
@@ -227,7 +238,7 @@ fn lifted_targets_trap_aligned_atomic_oob_like_wasmtime() {
     grade_traps(
         &Spec {
             label: "atomics_aligned_oob",
-            wat: ATOMICS_ALIGNED_OOB_DIFF,
+            wat: verified_fixture("atomics_aligned_oob_diff.wat", ATOMICS_ALIGNED_OOB_DIFF),
             configure: atomics_config,
             langs: &ALL_LANGS,
             min_exports: 1,
@@ -246,7 +257,10 @@ fn lifted_targets_trap_atomic_effective_address_overflow_like_wasmtime() {
     grade_traps(
         &Spec {
             label: "atomics_address_overflow",
-            wat: ATOMICS_ADDRESS_OVERFLOW_DIFF,
+            wat: verified_fixture(
+                "atomics_address_overflow_diff.wat",
+                ATOMICS_ADDRESS_OVERFLOW_DIFF,
+            ),
             configure: atomics_config,
             langs: &ALL_LANGS,
             min_exports: 1,
@@ -265,7 +279,10 @@ fn lifted_targets_trap_memory64_overflowing_misalignment_like_wasmtime() {
     grade_traps(
         &Spec {
             label: "atomics_memory64_overflow_misaligned",
-            wat: ATOMICS_MEMORY64_OVERFLOW_MISALIGNED_DIFF,
+            wat: verified_fixture(
+                "atomics_memory64_overflow_misaligned_diff.wat",
+                ATOMICS_MEMORY64_OVERFLOW_MISALIGNED_DIFF,
+            ),
             configure: atomics_config,
             langs: &ALL_LANGS,
             min_exports: 1,
@@ -284,7 +301,10 @@ fn lifted_targets_trap_aligned_memory64_2pow53_offset_like_wasmtime() {
     grade_traps(
         &Spec {
             label: "atomics_memory64_aligned_offset_2pow53",
-            wat: ATOMICS_MEMORY64_ALIGNED_OFFSET_2POW53_DIFF,
+            wat: verified_fixture(
+                "atomics_memory64_aligned_offset_2pow53_diff.wat",
+                ATOMICS_MEMORY64_ALIGNED_OFFSET_2POW53_DIFF,
+            ),
             configure: atomics_config,
             langs: &ALL_LANGS,
             min_exports: 1,
@@ -303,7 +323,10 @@ fn lifted_targets_trap_memory64_uint64_max_offset_like_wasmtime() {
     grade_traps(
         &Spec {
             label: "atomics_memory64_uint64_max_offset",
-            wat: ATOMICS_MEMORY64_UINT64_MAX_OFFSET_DIFF,
+            wat: verified_fixture(
+                "atomics_memory64_uint64_max_offset_diff.wat",
+                ATOMICS_MEMORY64_UINT64_MAX_OFFSET_DIFF,
+            ),
             configure: atomics_config,
             langs: &ALL_LANGS,
             min_exports: 1,
@@ -360,7 +383,10 @@ fn output_comparator_rejects_corrupted_and_unexpected_values() {
 fn lifted_targets_execute_narrow_atomic_cmpxchg_like_wasmtime() {
     grade(&Spec {
         label: "atomics_narrow_cmpxchg",
-        wat: ATOMICS_NARROW_CMPXCHG_DIFF,
+        wat: verified_fixture(
+            "atomics_narrow_cmpxchg_diff.wat",
+            ATOMICS_NARROW_CMPXCHG_DIFF,
+        ),
         configure: atomics_config,
         langs: &ALL_LANGS,
         min_exports: 5,
@@ -375,7 +401,7 @@ fn lifted_targets_execute_narrow_atomic_cmpxchg_like_wasmtime() {
 fn lifted_targets_execute_wide_arithmetic_equivalently_to_wasmtime() {
     grade(&Spec {
         label: "wide",
-        wat: WIDE_DIFF,
+        wat: verified_fixture("wide_diff.wat", WIDE_DIFF),
         configure: wide_config,
         langs: &ALL_LANGS,
         min_exports: 10,
@@ -390,7 +416,7 @@ fn lifted_targets_execute_wide_arithmetic_equivalently_to_wasmtime() {
 fn lifted_targets_execute_reference_and_table_equivalently_to_wasmtime() {
     grade(&Spec {
         label: "reftable",
-        wat: REFTABLE_DIFF,
+        wat: verified_fixture("reftable_diff.wat", REFTABLE_DIFF),
         configure: reftable_config,
         langs: &ALL_LANGS,
         min_exports: 12,
@@ -405,8 +431,8 @@ fn lifted_targets_execute_reference_and_table_equivalently_to_wasmtime() {
 fn lifted_targets_execute_shared_everything_like_its_non_atomic_equivalent() {
     grade_against_reference(&ReferenceSpec {
         label: "shared_everything",
-        wat: SHARED_DIFF,
-        reference_wat: SHARED_REF,
+        wat: verified_fixture("shared_everything_diff.wat", SHARED_DIFF),
+        reference_wat: verified_fixture("shared_everything_ref.wat", SHARED_REF),
         configure: reftable_config,
         langs: &ALL_LANGS,
         min_exports: 16,
@@ -419,7 +445,7 @@ fn lifted_targets_execute_shared_everything_like_its_non_atomic_equivalent() {
 fn lifted_targets_execute_divide_remainder_and_truncation_on_non_trapping_inputs() {
     grade(&Spec {
         label: "divrem_trunc",
-        wat: DIVREM_TRUNC_DIFF,
+        wat: verified_fixture("divrem_trunc_diff.wat", DIVREM_TRUNC_DIFF),
         configure: baseline_config,
         langs: &ALL_LANGS,
         min_exports: 16,

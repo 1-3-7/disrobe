@@ -4,13 +4,16 @@ use std::fmt::Write as _;
 #[cfg(feature = "sandbox")]
 use std::fs;
 #[cfg(feature = "sandbox")]
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 #[cfg(feature = "sandbox")]
 use std::process::Command;
 
 #[cfg(feature = "sandbox")]
 #[path = "common/div_cases.rs"]
 mod div_cases;
+#[cfg(feature = "sandbox")]
+#[path = "common/wat_corpus.rs"]
+mod wat_corpus;
 
 #[cfg(feature = "sandbox")]
 use disrobe_pass_wasm_deob::{
@@ -22,39 +25,12 @@ use div_cases::{DIV_REM_MODULE, I32Case, I64Case, i32_cases, i64_cases};
 #[cfg(feature = "sandbox")]
 use wasmparser::{FunctionBody, Operator, Parser, Payload, ValType};
 #[cfg(feature = "sandbox")]
-use wasmtime::{Config, Engine, Linker, Module, Store, Val};
+use wasmtime::{Config, Engine, Linker, Module, Store, StoreLimits, StoreLimitsBuilder, Val};
 
 #[cfg(feature = "sandbox")]
 const FUEL_BUDGET: u64 = 4_000_000;
-
 #[cfg(feature = "sandbox")]
-fn corpus_dirs() -> Vec<PathBuf> {
-    let root: &Path = Path::new(env!("CARGO_MANIFEST_DIR"));
-    vec![
-        root.join("../../corpus/src/wasm/sources"),
-        root.join("../../corpus/src/wasm/edge_cases"),
-        root.join("../../corpus/wasm/wat"),
-        root.join("../../corpus/wasm/plugins"),
-    ]
-}
-
-#[cfg(feature = "sandbox")]
-fn wat_files() -> Vec<PathBuf> {
-    let mut out: Vec<PathBuf> = Vec::new();
-    for dir in corpus_dirs() {
-        let Ok(entries): Result<fs::ReadDir, _> = fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path: PathBuf = entry.path();
-            if path.extension().is_some_and(|e| e == "wat") {
-                out.push(path);
-            }
-        }
-    }
-    out.sort();
-    out
-}
+const STORE_MEMORY_LIMIT_BYTES: usize = 16 * 1024 * 1024;
 
 #[cfg(feature = "sandbox")]
 fn defined_bodies(bytes: &[u8]) -> Vec<FunctionBody<'_>> {
@@ -313,20 +289,62 @@ fn rich_config() -> Config {
 }
 
 #[cfg(feature = "sandbox")]
+fn store_limits() -> StoreLimits {
+    StoreLimitsBuilder::new()
+        .memory_size(STORE_MEMORY_LIMIT_BYTES)
+        .table_elements(10_000)
+        .instances(1)
+        .tables(1)
+        .memories(1)
+        .build()
+}
+
+#[cfg(feature = "sandbox")]
 struct Sandbox {
-    store: Store<()>,
+    store: Store<StoreLimits>,
     instance: wasmtime::Instance,
 }
 
 #[cfg(feature = "sandbox")]
 fn instantiate(eng: &Engine, bytes: &[u8]) -> Option<Sandbox> {
     let module: Module = Module::new(eng, bytes).ok()?;
-    let mut store: Store<()> = Store::new(eng, ());
+    let mut store: Store<StoreLimits> = Store::new(eng, store_limits());
+    store.limiter(|limits: &mut StoreLimits| limits);
     store.set_fuel(FUEL_BUDGET).ok()?;
-    let mut linker: Linker<()> = Linker::new(eng);
+    let mut linker: Linker<StoreLimits> = Linker::new(eng);
     linker.define_unknown_imports_as_traps(&module).ok()?;
     let instance: wasmtime::Instance = linker.instantiate(&mut store, &module).ok()?;
     Some(Sandbox { store, instance })
+}
+
+#[cfg(feature = "sandbox")]
+#[test]
+fn runtime_store_rejects_modules_above_the_memory_limit() {
+    let engine: Engine = Engine::new(&rich_config()).expect("bounded engine");
+    let oversized: Vec<u8> =
+        wat::parse_str("(module (memory 257) (func (export \"value\") (result i32) i32.const 7))")
+            .expect("oversized test module");
+    assert!(
+        instantiate(&engine, &oversized).is_none(),
+        "the Wasmtime store memory limit must reject oversized modules"
+    );
+}
+
+#[cfg(feature = "sandbox")]
+#[test]
+fn runtime_store_rejects_fuel_exhausting_loops() {
+    let engine: Engine = Engine::new(&rich_config()).expect("bounded engine");
+    let loop_forever: Vec<u8> = wat::parse_str(
+        "(module (func (export \"spin\") (result i32) (loop $spin br $spin) unreachable))",
+    )
+    .expect("infinite-loop mutation-control module");
+    let mut sandbox: Sandbox = instantiate(&engine, &loop_forever)
+        .expect("the bounded store instantiates the finite-memory mutation-control module");
+    assert_eq!(
+        wasm_outcome(&mut sandbox, "spin", &[], ValType::I32),
+        None,
+        "the fuel budget must reject an infinite Wasmtime execution"
+    );
 }
 
 #[cfg(feature = "sandbox")]
@@ -385,10 +403,8 @@ fn recovered_rust_executes_identically_to_original_under_wasmtime() {
     let mut total_labeled_loops: usize = 0;
     let mut nested_loop_functions: usize = 0;
 
-    for wat_path in wat_files() {
-        let Ok(text): Result<String, _> = fs::read_to_string(&wat_path) else {
-            continue;
-        };
+    for wat_path in wat_corpus::verified_wat_files() {
+        let text: String = wat_corpus::verified_wat_text(&wat_path);
         let Ok(bytes): Result<Vec<u8>, _> = wat::parse_str(&text) else {
             continue;
         };

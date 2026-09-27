@@ -18,7 +18,7 @@ use disrobe_pass_wasm_deob::{
 };
 use published::published_bar;
 use serde::{Deserialize, Serialize};
-use wat_corpus::{callees, corpus_key, defined_bodies, wat_files};
+use wat_corpus::{callees, corpus_key, defined_bodies, verified_wat_files, verified_wat_text};
 
 const EXTERNAL_TOOL: &str = "wasm-tools";
 const EXTERNAL_TOOL_VERSION: &str = "wasm-tools 1.250.0";
@@ -76,9 +76,8 @@ fn inventory_path() -> PathBuf {
 }
 
 fn source_blake3(path: &Path) -> String {
-    let bytes: Vec<u8> = fs::read(path)
-        .unwrap_or_else(|error: std::io::Error| panic!("read {}: {error}", path.display()));
-    blake3::hash(&bytes).to_hex().to_string()
+    let text: String = verified_wat_text(path);
+    blake3::hash(text.as_bytes()).to_hex().to_string()
 }
 
 fn run_tool(args: &[OsString]) -> CapturedOutput {
@@ -246,8 +245,7 @@ struct OurTally {
 }
 
 fn measure_ours(path: &Path) -> Option<OurTally> {
-    let text: String = fs::read_to_string(path)
-        .unwrap_or_else(|error: std::io::Error| panic!("read {}: {error}", path.display()));
+    let text: String = verified_wat_text(path);
     let bytes: Vec<u8> = wat::parse_str(&text).ok()?;
     let sigs: ModuleSignatures = extract_signatures(&bytes).ok()?;
     let defined: &[FunctionSig] = sigs.defined();
@@ -290,7 +288,7 @@ fn load_inventory() -> ExternalInventory {
 #[ignore = "regenerates the pinned third-party inventory and needs wasm-tools on PATH"]
 fn regenerate_external_inventory() {
     pinned_tool_or_panic();
-    let files: Vec<PathBuf> = wat_files();
+    let files: Vec<PathBuf> = verified_wat_files();
     assert!(
         !files.is_empty(),
         "the wat corpus resolved to nothing, so regeneration would freeze an empty inventory"
@@ -343,7 +341,7 @@ fn op_coverage_is_divided_by_the_external_instruction_inventory() {
     );
     assert_eq!(inventory.tool, EXTERNAL_TOOL, "unexpected inventory tool");
 
-    let files: Vec<PathBuf> = wat_files();
+    let files: Vec<PathBuf> = verified_wat_files();
     let corpus_keys: Vec<String> = files
         .iter()
         .map(|path: &PathBuf| corpus_key(path))

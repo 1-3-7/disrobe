@@ -8,10 +8,12 @@ use disrobe_pass_wasm_deob::lift_module_faithful_wat;
 #[cfg(feature = "sandbox")]
 use div_cases::{DIV_REM_MODULE as SOURCE, i32_cases, i64_cases};
 #[cfg(feature = "sandbox")]
-use wasmtime::{Config, Engine, Linker, Module, Store, Val};
+use wasmtime::{Config, Engine, Linker, Module, Store, StoreLimits, StoreLimitsBuilder, Val};
 
 #[cfg(feature = "sandbox")]
 const FUEL_BUDGET: u64 = 2_000_000;
+#[cfg(feature = "sandbox")]
+const MEMORY_LIMIT_BYTES: usize = 16 * 1024 * 1024;
 
 #[cfg(feature = "sandbox")]
 const OPCODES: [&str; 8] = [
@@ -27,7 +29,7 @@ const OPCODES: [&str; 8] = [
 
 #[cfg(feature = "sandbox")]
 struct Inst {
-    store: Store<()>,
+    store: Store<StoreLimits>,
     instance: wasmtime::Instance,
 }
 
@@ -41,14 +43,44 @@ fn engine() -> Engine {
 #[cfg(feature = "sandbox")]
 fn instantiate(eng: &Engine, bytes: &[u8]) -> Inst {
     let module: Module = Module::new(eng, bytes).expect("module compiles");
-    let mut store: Store<()> = Store::new(eng, ());
+    let limits: StoreLimits = StoreLimitsBuilder::new()
+        .memory_size(MEMORY_LIMIT_BYTES)
+        .table_elements(1_024)
+        .instances(4)
+        .tables(8)
+        .memories(8)
+        .build();
+    let mut store: Store<StoreLimits> = Store::new(eng, limits);
+    store.limiter(|limits: &mut StoreLimits| limits);
     store.set_fuel(FUEL_BUDGET).expect("fuel");
-    let mut linker: Linker<()> = Linker::new(eng);
+    let mut linker: Linker<StoreLimits> = Linker::new(eng);
     linker
         .define_unknown_imports_as_traps(&module)
         .expect("trap imports");
     let instance: wasmtime::Instance = linker.instantiate(&mut store, &module).expect("instance");
     Inst { store, instance }
+}
+
+#[cfg(feature = "sandbox")]
+#[test]
+fn sandbox_refuses_growth_past_16_mib() {
+    let bytes: Vec<u8> = wat::parse_str(
+        "(module (memory 0) (func (export \"grow\") (result i32) i32.const 257 memory.grow))",
+    )
+    .expect("assemble growth control");
+    let eng: Engine = engine();
+    let mut inst: Inst = instantiate(&eng, &bytes);
+    let grow: wasmtime::Func = inst
+        .instance
+        .get_func(&mut inst.store, "grow")
+        .expect("growth control export");
+    let mut result: [Val; 1] = [Val::I32(0)];
+    grow.call(&mut inst.store, &[], &mut result)
+        .expect("memory.grow reports refusal as -1");
+    assert!(
+        matches!(result[0], Val::I32(-1)),
+        "memory growth beyond the 16 MiB store limit returned {result:?}"
+    );
 }
 
 #[cfg(feature = "sandbox")]

@@ -3,6 +3,9 @@
 #[cfg(feature = "sandbox")]
 #[path = "common/exec_diff.rs"]
 mod exec_diff;
+#[cfg(feature = "sandbox")]
+#[path = "common/wat_corpus.rs"]
+mod wat_corpus;
 
 #[cfg(feature = "sandbox")]
 use exec_diff::{ALL_LANGS, BATTERY, Spec, grade};
@@ -15,6 +18,12 @@ const SIMD_DIFF: &str = include_str!("fixtures/simd_diff.wat");
 const SIMD_LANES_DIFF: &str = include_str!("fixtures/simd_lanes_diff.wat");
 
 #[cfg(feature = "sandbox")]
+fn verified_fixture<'a>(name: &str, embedded: &'a str) -> &'a str {
+    wat_corpus::verify_execution_fixture(name, embedded);
+    embedded
+}
+
+#[cfg(feature = "sandbox")]
 fn simd_config(config: &mut Config) {
     config.wasm_simd(true).wasm_relaxed_simd(true);
 }
@@ -24,7 +33,7 @@ fn simd_config(config: &mut Config) {
 fn lifted_targets_execute_simd_equivalently_to_wasmtime() {
     grade(&Spec {
         label: "simd",
-        wat: SIMD_DIFF,
+        wat: verified_fixture("simd_diff.wat", SIMD_DIFF),
         configure: simd_config,
         langs: &ALL_LANGS,
         min_exports: 17,
@@ -39,7 +48,7 @@ fn lifted_targets_execute_simd_equivalently_to_wasmtime() {
 fn lifted_targets_execute_every_deterministic_lane_op_equivalently_to_wasmtime() {
     grade(&Spec {
         label: "simd_lanes",
-        wat: SIMD_LANES_DIFF,
+        wat: verified_fixture("simd_lanes_diff.wat", SIMD_LANES_DIFF),
         configure: simd_config,
         langs: &ALL_LANGS,
         min_exports: 221,

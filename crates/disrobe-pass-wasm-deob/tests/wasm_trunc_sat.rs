@@ -1,7 +1,16 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
-#[cfg(feature = "sandbox")]
-use std::path::{Path, PathBuf};
 
+#[cfg(feature = "sandbox")]
+#[path = "common/bounded_wasmtime.rs"]
+mod bounded_wasmtime;
+#[cfg(feature = "sandbox")]
+#[path = "common/build_records.rs"]
+mod build_records;
+
+#[cfg(feature = "sandbox")]
+use bounded_wasmtime::{Bounded, fuel_engine};
+#[cfg(feature = "sandbox")]
+use build_records::{RecordSet, recorded_text};
 #[cfg(feature = "sandbox")]
 use disrobe_pass_wasm_deob::{
     CalleeNames, FunctionSig, LiftResult, LiftTarget, ModuleSignatures, extract_signatures,
@@ -10,21 +19,14 @@ use disrobe_pass_wasm_deob::{
 #[cfg(feature = "sandbox")]
 use wasmparser::{FunctionBody, Parser, Payload};
 #[cfg(feature = "sandbox")]
-use wasmtime::{Config, Engine, Linker, Module, Store, Val};
+use wasmtime::{Engine, Val};
 
 #[cfg(feature = "sandbox")]
 const FUEL_BUDGET: u64 = 2_000_000;
 
 #[cfg(feature = "sandbox")]
 fn real_wat() -> String {
-    let path: PathBuf =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/wasm/obf/real/trunc_sat.obf.wat");
-    std::fs::read_to_string(&path).unwrap_or_else(|e| {
-        panic!(
-            "read {}: {e}\nrun corpus/wasm/obf/build.sh to produce the real -O0 toolchain wat",
-            path.display()
-        )
-    })
+    recorded_text(RecordSet::Corpus, "real/trunc_sat.obf.wat")
 }
 
 #[cfg(feature = "sandbox")]
@@ -48,32 +50,6 @@ fn callees(sigs: &ModuleSignatures) -> CalleeNames {
 }
 
 #[cfg(feature = "sandbox")]
-fn engine() -> Engine {
-    let mut config: Config = Config::new();
-    config.consume_fuel(true);
-    Engine::new(&config).expect("engine")
-}
-
-#[cfg(feature = "sandbox")]
-struct Inst {
-    store: Store<()>,
-    instance: wasmtime::Instance,
-}
-
-#[cfg(feature = "sandbox")]
-fn instantiate(eng: &Engine, bytes: &[u8]) -> Inst {
-    let module: Module = Module::new(eng, bytes).expect("module compiles");
-    let mut store: Store<()> = Store::new(eng, ());
-    store.set_fuel(FUEL_BUDGET).expect("fuel");
-    let mut linker: Linker<()> = Linker::new(eng);
-    linker
-        .define_unknown_imports_as_traps(&module)
-        .expect("trap imports");
-    let instance: wasmtime::Instance = linker.instantiate(&mut store, &module).expect("instance");
-    Inst { store, instance }
-}
-
-#[cfg(feature = "sandbox")]
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Outcome {
     F32ToI32(i32),
@@ -84,17 +60,11 @@ enum Outcome {
 }
 
 #[cfg(feature = "sandbox")]
-fn call(inst: &mut Inst, export: &str, arg: Val, want: ResultKind) -> Outcome {
-    let func: wasmtime::Func = match inst.instance.get_func(&mut inst.store, export) {
-        Some(f) => f,
-        None => return Outcome::Trap,
-    };
-    let mut results: [Val; 1] = [Val::I32(0)];
-    inst.store.set_fuel(FUEL_BUDGET).ok();
-    if func.call(&mut inst.store, &[arg], &mut results).is_err() {
+fn call(inst: &mut Bounded, export: &str, arg: Val, want: ResultKind) -> Outcome {
+    let Some(result): Option<Val> = inst.call(export, &[arg], Val::I32(0)) else {
         return Outcome::Trap;
-    }
-    match (want, results[0]) {
+    };
+    match (want, result) {
         (ResultKind::I32, Val::I32(v)) => match arg {
             Val::F32(_) => Outcome::F32ToI32(v),
             _ => Outcome::F64ToI32(v),
@@ -208,9 +178,9 @@ fn real_o0_trunc_sat_lifts_fully_and_executes_identically_under_wasmtime() {
     let lifted_bytes: Vec<u8> = wat::parse_str(&lifted_wat)
         .unwrap_or_else(|e| panic!("lifted trunc_sat wat must reassemble: {e}\n{lifted_wat}"));
 
-    let eng: Engine = engine();
-    let mut original_inst: Inst = instantiate(&eng, &original);
-    let mut lifted_inst: Inst = instantiate(&eng, &lifted_bytes);
+    let eng: Engine = fuel_engine();
+    let mut original_inst: Bounded = Bounded::instantiate(&eng, &original, FUEL_BUDGET);
+    let mut lifted_inst: Bounded = Bounded::instantiate(&eng, &lifted_bytes, FUEL_BUDGET);
 
     let mut checked: usize = 0;
     for sig in defined {

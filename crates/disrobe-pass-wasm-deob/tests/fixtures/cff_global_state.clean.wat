@@ -1,20 +1,20 @@
 (module
-  (type (;0;) (func (param i32) (result i32)))
-  (export "classify_global" (func 0))
-  (func (;0;) (type 0) (param i32) (result i32)
+  (func $classify_global (export "classify_global") (param i32) (result i32)
     local.get 0
-    i32.const 1
-    i32.add
-    i32.const 3
-    i32.mul
-    local.get 0
-    i32.const 1
-    i32.add
     i32.const 7
-    i32.sub
-    local.get 0
-    i32.const 10
     i32.gt_s
-    select
+    if
+      local.get 0
+      i32.const 5
+      i32.mul
+      i32.const 30
+      i32.sub
+      return
+    end
+    local.get 0
+    local.get 0
+    i32.add
+    i32.const -11
+    i32.add
   )
 )

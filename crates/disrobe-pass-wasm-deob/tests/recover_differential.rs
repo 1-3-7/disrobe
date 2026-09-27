@@ -1,59 +1,30 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
-#[cfg(feature = "sandbox")]
-use std::path::{Path, PathBuf};
 
+#[cfg(feature = "sandbox")]
+#[path = "common/bounded_wasmtime.rs"]
+mod bounded_wasmtime;
+#[path = "common/build_records.rs"]
+mod build_records;
+
+#[cfg(feature = "sandbox")]
+use bounded_wasmtime::{Bounded, fuel_engine};
+#[cfg(feature = "sandbox")]
+use build_records::recorded_wat;
+use build_records::{RecordSet, assert_recorded};
 #[cfg(feature = "sandbox")]
 use disrobe_pass_wasm_deob::{
     RecoveredModule, RecoveryReport, WasmFamilySupport, WasmObfuscator, WasmPipelineSupport,
     recover_module,
 };
 #[cfg(feature = "sandbox")]
-use wasmtime::{Config, Engine, Linker, Module, Store, Val};
+use wasmtime::{Engine, Val};
 
 #[cfg(feature = "sandbox")]
 const FUEL_BUDGET: u64 = 5_000_000;
 
 #[cfg(feature = "sandbox")]
-fn real_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/wasm/obf/real")
-}
-
-#[cfg(feature = "sandbox")]
 fn assemble(name: &str) -> Vec<u8> {
-    let path: PathBuf = real_dir().join(name);
-    let text: String = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-        panic!(
-            "read {}: {e}\nrun corpus/wasm/obf/build.sh to produce the real toolchain wat",
-            path.display()
-        )
-    });
-    wat::parse_str(&text).unwrap_or_else(|e| panic!("assemble {}: {e}", path.display()))
-}
-
-#[cfg(feature = "sandbox")]
-fn engine() -> Engine {
-    let mut config: Config = Config::new();
-    config.consume_fuel(true);
-    Engine::new(&config).expect("engine")
-}
-
-#[cfg(feature = "sandbox")]
-struct Inst {
-    store: Store<()>,
-    instance: wasmtime::Instance,
-}
-
-#[cfg(feature = "sandbox")]
-fn instantiate(eng: &Engine, bytes: &[u8]) -> Inst {
-    let module: Module = Module::new(eng, bytes).expect("module compiles");
-    let mut store: Store<()> = Store::new(eng, ());
-    store.set_fuel(FUEL_BUDGET).expect("fuel");
-    let mut linker: Linker<()> = Linker::new(eng);
-    linker
-        .define_unknown_imports_as_traps(&module)
-        .expect("trap imports");
-    let instance: wasmtime::Instance = linker.instantiate(&mut store, &module).expect("instance");
-    Inst { store, instance }
+    recorded_wat(RecordSet::Corpus, &format!("real/{name}"))
 }
 
 #[cfg(feature = "sandbox")]
@@ -64,19 +35,10 @@ enum Outcome {
 }
 
 #[cfg(feature = "sandbox")]
-fn call_i32(inst: &mut Inst, export: &str, args: &[i32]) -> Outcome {
-    let func: wasmtime::Func = match inst.instance.get_func(&mut inst.store, export) {
-        Some(f) => f,
-        None => return Outcome::Trap,
-    };
-    let argv: Vec<Val> = args.iter().map(|a| Val::I32(*a)).collect();
-    let mut results: [Val; 1] = [Val::I32(0)];
-    inst.store.set_fuel(FUEL_BUDGET).ok();
-    if func.call(&mut inst.store, &argv, &mut results).is_err() {
-        return Outcome::Trap;
-    }
-    match results[0] {
-        Val::I32(v) => Outcome::Ret(v),
+fn call_i32(inst: &mut Bounded, export: &str, args: &[i32]) -> Outcome {
+    let argv: Vec<Val> = args.iter().map(|arg: &i32| Val::I32(*arg)).collect();
+    match inst.call(export, &argv, Val::I32(0)) {
+        Some(Val::I32(value)) => Outcome::Ret(value),
         _ => Outcome::Trap,
     }
 }
@@ -94,7 +56,12 @@ fn battery() -> Vec<[i32; 2]> {
 }
 
 #[cfg(feature = "sandbox")]
-fn assert_export_equivalent(clean: &mut Inst, recovered: &mut Inst, export: &str, arity: usize) {
+fn assert_export_equivalent(
+    clean: &mut Bounded,
+    recovered: &mut Bounded,
+    export: &str,
+    arity: usize,
+) {
     for inputs in battery() {
         let args: &[i32] = &inputs[..arity];
         let want: Outcome = call_i32(clean, export, args);
@@ -147,18 +114,18 @@ fn cases() -> Vec<Case> {
 #[cfg(feature = "sandbox")]
 #[test]
 fn obfuscated_recovers_to_clean_behavior_under_wasmtime() {
-    let eng: Engine = engine();
+    let eng: Engine = fuel_engine();
     for case in cases() {
         let clean_bytes: Vec<u8> = assemble(case.clean);
         let obf_bytes: Vec<u8> = assemble(case.obf);
 
         let pre_clean: Outcome = call_i32(
-            &mut instantiate(&eng, &clean_bytes),
+            &mut Bounded::instantiate(&eng, &clean_bytes, FUEL_BUDGET),
             case.exports[0].0,
             &[3, 5],
         );
         let pre_obf: Outcome = call_i32(
-            &mut instantiate(&eng, &obf_bytes),
+            &mut Bounded::instantiate(&eng, &obf_bytes, FUEL_BUDGET),
             case.exports[0].0,
             &[3, 5],
         );
@@ -177,8 +144,8 @@ fn obfuscated_recovers_to_clean_behavior_under_wasmtime() {
             recovered.report
         );
 
-        let mut clean_inst: Inst = instantiate(&eng, &clean_bytes);
-        let mut recovered_inst: Inst = instantiate(&eng, &recovered.bytes);
+        let mut clean_inst: Bounded = Bounded::instantiate(&eng, &clean_bytes, FUEL_BUDGET);
+        let mut recovered_inst: Bounded = Bounded::instantiate(&eng, &recovered.bytes, FUEL_BUDGET);
         for (export, arity) in case.exports {
             assert_export_equivalent(&mut clean_inst, &mut recovered_inst, export, *arity);
         }
@@ -240,7 +207,7 @@ fn decrypt_stub_static_extraction_reveals_plaintext() {
 #[cfg(feature = "sandbox")]
 #[test]
 fn opaque_predicate_o0_folds_interprocedurally_and_stays_intact() {
-    let eng: Engine = engine();
+    let eng: Engine = fuel_engine();
     let obf_bytes: Vec<u8> = assemble("opaque_select.obf.wat");
     let recovered: RecoveredModule = recover_module(&obf_bytes).expect("recover");
     assert_eq!(
@@ -255,8 +222,8 @@ fn opaque_predicate_o0_folds_interprocedurally_and_stays_intact() {
     );
 
     let clean_bytes: Vec<u8> = assemble("opaque_select.clean.wat");
-    let mut clean_inst: Inst = instantiate(&eng, &clean_bytes);
-    let mut recovered_inst: Inst = instantiate(&eng, &recovered.bytes);
+    let mut clean_inst: Bounded = Bounded::instantiate(&eng, &clean_bytes, FUEL_BUDGET);
+    let mut recovered_inst: Bounded = Bounded::instantiate(&eng, &recovered.bytes, FUEL_BUDGET);
     assert_export_equivalent(&mut clean_inst, &mut recovered_inst, "pick", 2);
     assert_export_equivalent(&mut clean_inst, &mut recovered_inst, "scale", 1);
 }
@@ -304,7 +271,7 @@ fn family_cases() -> Vec<FamilyCase> {
 #[cfg(feature = "sandbox")]
 #[test]
 fn named_obfuscator_families_recover_to_clean_behavior_under_wasmtime() {
-    let eng: Engine = engine();
+    let eng: Engine = fuel_engine();
     let cases: Vec<FamilyCase> = family_cases();
     let pipeline_delivered: Vec<WasmObfuscator> = WasmObfuscator::NAMED_FAMILIES
         .into_iter()
@@ -349,8 +316,8 @@ fn named_obfuscator_families_recover_to_clean_behavior_under_wasmtime() {
             case.obf
         );
 
-        let mut clean_inst: Inst = instantiate(&eng, &clean_bytes);
-        let mut recovered_inst: Inst = instantiate(&eng, &recovered.bytes);
+        let mut clean_inst: Bounded = Bounded::instantiate(&eng, &clean_bytes, FUEL_BUDGET);
+        let mut recovered_inst: Bounded = Bounded::instantiate(&eng, &recovered.bytes, FUEL_BUDGET);
         for (export, arity) in case.exports {
             assert_export_equivalent(&mut clean_inst, &mut recovered_inst, export, *arity);
         }
@@ -393,7 +360,7 @@ fn named_family_recovery_is_idempotent_and_import_free() {
 #[cfg(feature = "sandbox")]
 #[test]
 fn tabulated_expected_outputs_match_clean_originals() {
-    let eng: Engine = engine();
+    let eng: Engine = fuel_engine();
     let checks: &[(&str, &str, &[i32], i32)] = &[
         ("callind_dispatch.clean.wat", "run", &[3, 5], 37),
         ("callind_dispatch.clean.wat", "run", &[2, 4], 22),
@@ -412,7 +379,7 @@ fn tabulated_expected_outputs_match_clean_originals() {
     ];
     for (file, export, args, want) in checks {
         let bytes: Vec<u8> = assemble(file);
-        let mut inst: Inst = instantiate(&eng, &bytes);
+        let mut inst: Bounded = Bounded::instantiate(&eng, &bytes, FUEL_BUDGET);
         let got: Outcome = call_i32(&mut inst, export, args);
         assert_eq!(
             got,
@@ -432,4 +399,24 @@ fn recover_differential_refuses_to_report_success_without_the_sandbox_feature() 
         "recover_differential`. Without that feature every graded test in this target is ",
         "compiled out and its `ok` result line grades nothing."
     ));
+}
+
+#[test]
+#[should_panic(expected = "real/cff_loop.obf.wat no longer matches its build record")]
+fn a_committed_module_whose_bytes_drift_from_its_record_is_refused() {
+    assert_recorded(RecordSet::Corpus, "real/cff_loop.obf.wat", b"(module)");
+}
+
+#[test]
+#[should_panic(expected = "real/unrecorded.obf.wat has no build record")]
+fn a_committed_module_without_a_record_is_refused() {
+    assert_recorded(RecordSet::Corpus, "real/unrecorded.obf.wat", b"(module)");
+}
+
+#[cfg(feature = "sandbox")]
+#[test]
+#[should_panic(expected = "module instantiates within the store limits")]
+fn the_grading_store_refuses_a_module_past_its_memory_cap() {
+    let bytes: Vec<u8> = wat::parse_str("(module (memory 257))").expect("assemble");
+    let _instance: Bounded = Bounded::instantiate(&fuel_engine(), &bytes, FUEL_BUDGET);
 }

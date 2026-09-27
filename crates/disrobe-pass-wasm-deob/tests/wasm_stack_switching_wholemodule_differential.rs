@@ -1,11 +1,13 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
-use std::fs;
 use std::path::Path;
 
 use disrobe_pass_wasm_deob::{
     StackSwitchOpKind, StackSwitchReport, lift_module_faithful_wat, scan_stack_switching,
 };
 use wasmparser::{Validator, WasmFeatures};
+
+#[path = "common/wat_corpus.rs"]
+mod wat_corpus;
 
 fn validate(bytes: &[u8]) -> Result<(), String> {
     Validator::new_with_features(WasmFeatures::all())
@@ -15,7 +17,7 @@ fn validate(bytes: &[u8]) -> Result<(), String> {
 }
 
 fn lift(path: &Path) -> (Vec<u8>, Vec<u8>, String) {
-    let text: String = fs::read_to_string(path).expect("read corpus wat");
+    let text: String = wat_corpus::verified_wat_text(path);
     let original: Vec<u8> = wat::parse_str(&text).expect("source wat must assemble");
     let lifted_wat: String =
         lift_module_faithful_wat(&original).expect("faithful lift must produce output");
@@ -98,22 +100,44 @@ fn faithful_lift_preserves_cont_types_and_block_signatures() {
 #[cfg(feature = "sandbox")]
 mod execution {
     use super::{corpus, lift};
-    use wasmtime::{Config, Engine, Linker, Module, Store, Val};
+    use wasmtime::{Config, Engine, Linker, Module, Store, StoreLimits, StoreLimitsBuilder, Val};
+
+    const FUEL_BUDGET: u64 = 2_000_000;
+    const STORE_MEMORY_LIMIT_BYTES: usize = 16 * 1024 * 1024;
 
     fn stack_switching_config() -> Config {
         let mut c: Config = Config::new();
         c.wasm_gc(true)
             .wasm_function_references(true)
             .wasm_tail_call(true)
-            .wasm_exceptions(true);
+            .wasm_exceptions(true)
+            .consume_fuel(true);
         let _ = c.wasm_stack_switching(true);
         c
     }
 
+    fn bounds_engine() -> Engine {
+        let mut config: Config = Config::new();
+        config.consume_fuel(true);
+        Engine::new(&config).expect("core Wasmtime engine with fuel metering")
+    }
+
+    fn store_limits() -> StoreLimits {
+        StoreLimitsBuilder::new()
+            .memory_size(STORE_MEMORY_LIMIT_BYTES)
+            .table_elements(10_000)
+            .instances(1)
+            .tables(1)
+            .memories(1)
+            .build()
+    }
+
     fn run(eng: &Engine, bytes: &[u8], export: &str) -> Option<Vec<i64>> {
         let m: Module = Module::new(eng, bytes).ok()?;
-        let mut store: Store<()> = Store::new(eng, ());
-        let mut linker: Linker<()> = Linker::new(eng);
+        let mut store: Store<StoreLimits> = Store::new(eng, store_limits());
+        store.limiter(|limits: &mut StoreLimits| limits);
+        store.set_fuel(FUEL_BUDGET).ok()?;
+        let mut linker: Linker<StoreLimits> = Linker::new(eng);
         linker.define_unknown_imports_as_traps(&m).ok()?;
         let inst: wasmtime::Instance = linker.instantiate(&mut store, &m).ok()?;
         let f: wasmtime::Func = inst.get_func(&mut store, export)?;
@@ -131,6 +155,34 @@ mod execution {
                 })
                 .collect(),
         )
+    }
+
+    #[test]
+    fn execution_store_rejects_modules_above_the_memory_limit() {
+        let eng: Engine = bounds_engine();
+        let oversized: Vec<u8> = wat::parse_str(
+            "(module (memory 257) (func (export \"value\") (result i32) i32.const 7))",
+        )
+        .expect("oversized test module");
+        assert_eq!(
+            run(&eng, &oversized, "value"),
+            None,
+            "the Wasmtime store memory limit must reject oversized modules"
+        );
+    }
+
+    #[test]
+    fn execution_store_rejects_fuel_exhausting_loops() {
+        let eng: Engine = bounds_engine();
+        let loop_forever: Vec<u8> = wat::parse_str(
+            "(module (func (export \"spin\") (result i32) (loop $spin br $spin) unreachable))",
+        )
+        .expect("infinite-loop mutation-control module");
+        assert_eq!(
+            run(&eng, &loop_forever, "spin"),
+            None,
+            "the fuel budget must reject an infinite Wasmtime execution"
+        );
     }
 
     #[test]

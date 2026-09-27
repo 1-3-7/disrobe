@@ -1,6 +1,6 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 #[cfg(feature = "sandbox")]
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 #[cfg(feature = "sandbox")]
 use std::process::{Command, Output};
 
@@ -16,69 +16,31 @@ use disrobe_pass_wasm_deob::chain_detector::WASM_DEOB_PASS;
 #[cfg(feature = "sandbox")]
 use disrobe_pass_wasm_deob::{RecoveredModule, recover_module};
 #[cfg(feature = "sandbox")]
-use wasmtime::{Config, Engine, Linker, Module, Store, Val};
+use wasmtime::{Engine, Val};
+
+#[cfg(feature = "sandbox")]
+#[path = "common/bounded_wasmtime.rs"]
+mod bounded_wasmtime;
+#[cfg(feature = "sandbox")]
+#[path = "common/build_records.rs"]
+mod build_records;
+
+#[cfg(feature = "sandbox")]
+use bounded_wasmtime::{Bounded, fuel_engine};
+#[cfg(feature = "sandbox")]
+use build_records::{RecordSet, recorded_bytes, recorded_text, recorded_wat};
 
 #[cfg(feature = "sandbox")]
 const FUEL_BUDGET: u64 = 20_000_000;
 
 #[cfg(feature = "sandbox")]
-fn real_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/wasm/obf/real")
-}
-
-#[cfg(feature = "sandbox")]
-fn fixture_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
-}
-
-#[cfg(feature = "sandbox")]
-fn assemble_path(path: PathBuf, hint: Option<&str>) -> Vec<u8> {
-    let text: String = std::fs::read_to_string(&path).unwrap_or_else(|e: std::io::Error| {
-        hint.map_or_else(
-            || panic!("read {}: {e}", path.display()),
-            |hint: &str| panic!("read {}: {e}\n{hint}", path.display()),
-        )
-    });
-    wat::parse_str(&text).unwrap_or_else(|e| panic!("assemble {}: {e}", path.display()))
-}
-
-#[cfg(feature = "sandbox")]
 fn assemble(name: &str) -> Vec<u8> {
-    assemble_path(
-        real_dir().join(name),
-        Some("run corpus/wasm/obf/build.sh to produce the real toolchain wat"),
-    )
+    recorded_wat(RecordSet::Corpus, &format!("real/{name}"))
 }
 
 #[cfg(feature = "sandbox")]
 fn assemble_fixture(name: &str) -> Vec<u8> {
-    assemble_path(fixture_dir().join(name), None)
-}
-
-#[cfg(feature = "sandbox")]
-fn engine() -> Engine {
-    let mut config: Config = Config::new();
-    config.consume_fuel(true);
-    Engine::new(&config).expect("engine")
-}
-
-#[cfg(feature = "sandbox")]
-struct Inst {
-    store: Store<()>,
-    instance: wasmtime::Instance,
-}
-
-#[cfg(feature = "sandbox")]
-fn instantiate(eng: &Engine, bytes: &[u8]) -> Inst {
-    let module: Module = Module::new(eng, bytes).expect("module compiles");
-    let mut store: Store<()> = Store::new(eng, ());
-    store.set_fuel(FUEL_BUDGET).expect("fuel");
-    let mut linker: Linker<()> = Linker::new(eng);
-    linker
-        .define_unknown_imports_as_traps(&module)
-        .expect("trap imports");
-    let instance: wasmtime::Instance = linker.instantiate(&mut store, &module).expect("instance");
-    Inst { store, instance }
+    recorded_wat(RecordSet::Fixtures, name)
 }
 
 #[cfg(feature = "sandbox")]
@@ -89,21 +51,9 @@ enum Outcome {
 }
 
 #[cfg(feature = "sandbox")]
-fn call_i32(inst: &mut Inst, export: &str, arg: i32) -> Outcome {
-    let func: wasmtime::Func = match inst.instance.get_func(&mut inst.store, export) {
-        Some(f) => f,
-        None => return Outcome::Trap,
-    };
-    let mut results: [Val; 1] = [Val::I32(0)];
-    inst.store.set_fuel(FUEL_BUDGET).ok();
-    if func
-        .call(&mut inst.store, &[Val::I32(arg)], &mut results)
-        .is_err()
-    {
-        return Outcome::Trap;
-    }
-    match results[0] {
-        Val::I32(v) => Outcome::Ret(v),
+fn call_i32(inst: &mut Bounded, export: &str, arg: i32) -> Outcome {
+    match inst.call(export, &[Val::I32(arg)], Val::I32(0)) {
+        Some(Val::I32(value)) => Outcome::Ret(value),
         _ => Outcome::Trap,
     }
 }
@@ -116,7 +66,7 @@ fn battery() -> Vec<i32> {
 }
 
 #[cfg(feature = "sandbox")]
-fn assert_equivalent(reference: &mut Inst, candidate: &mut Inst, export: &str) {
+fn assert_equivalent(reference: &mut Bounded, candidate: &mut Bounded, export: &str) {
     for arg in battery() {
         let want: Outcome = call_i32(reference, export, arg);
         let got: Outcome = call_i32(candidate, export, arg);
@@ -128,7 +78,7 @@ fn assert_equivalent(reference: &mut Inst, candidate: &mut Inst, export: &str) {
 }
 
 #[cfg(feature = "sandbox")]
-fn assert_distinguished(reference: &mut Inst, candidate: &mut Inst, export: &str) {
+fn assert_distinguished(reference: &mut Bounded, candidate: &mut Bounded, export: &str) {
     let distinguished: bool = battery()
         .into_iter()
         .any(|arg: i32| call_i32(reference, export, arg) != call_i32(candidate, export, arg));
@@ -168,10 +118,10 @@ fn assert_reloops_to_clean_behavior(
     export: &str,
     name: &str,
 ) {
-    let eng: Engine = engine();
+    let eng: Engine = fuel_engine();
 
-    let mut clean_pre: Inst = instantiate(&eng, clean_bytes);
-    let mut obf_pre: Inst = instantiate(&eng, obf_bytes);
+    let mut clean_pre: Bounded = Bounded::instantiate(&eng, clean_bytes, FUEL_BUDGET);
+    let mut obf_pre: Bounded = Bounded::instantiate(&eng, obf_bytes, FUEL_BUDGET);
     assert_equivalent(&mut clean_pre, &mut obf_pre, export);
 
     let recovered: RecoveredModule =
@@ -191,8 +141,8 @@ fn assert_reloops_to_clean_behavior(
         "recovered {name} must remove the br_table dispatcher"
     );
 
-    let mut clean_inst: Inst = instantiate(&eng, clean_bytes);
-    let mut recovered_inst: Inst = instantiate(&eng, &recovered.bytes);
+    let mut clean_inst: Bounded = Bounded::instantiate(&eng, clean_bytes, FUEL_BUDGET);
+    let mut recovered_inst: Bounded = Bounded::instantiate(&eng, &recovered.bytes, FUEL_BUDGET);
     assert_equivalent(&mut clean_inst, &mut recovered_inst, export);
 }
 
@@ -213,12 +163,12 @@ fn nested_dispatch_loops_reloop_inner_first_under_wasmtime() {
     let clean_bytes: Vec<u8> = assemble_fixture("cff_nested_dispatch.clean.wat");
     let obf_bytes: Vec<u8> = assemble_fixture("cff_nested_dispatch.obf.wat");
     let mutant_bytes: Vec<u8> = assemble_fixture("cff_nested_dispatch.mutant.wat");
-    let eng: Engine = engine();
-    let mut clean: Inst = instantiate(&eng, &clean_bytes);
-    let mut obfuscated: Inst = instantiate(&eng, &obf_bytes);
+    let eng: Engine = fuel_engine();
+    let mut clean: Bounded = Bounded::instantiate(&eng, &clean_bytes, FUEL_BUDGET);
+    let mut obfuscated: Bounded = Bounded::instantiate(&eng, &obf_bytes, FUEL_BUDGET);
     assert_equivalent(&mut clean, &mut obfuscated, "nested_dispatch");
-    let mut clean: Inst = instantiate(&eng, &clean_bytes);
-    let mut mutant: Inst = instantiate(&eng, &mutant_bytes);
+    let mut clean: Bounded = Bounded::instantiate(&eng, &clean_bytes, FUEL_BUDGET);
+    let mut mutant: Bounded = Bounded::instantiate(&eng, &mutant_bytes, FUEL_BUDGET);
     assert_distinguished(&mut clean, &mut mutant, "nested_dispatch");
 
     let recovered: RecoveredModule =
@@ -232,8 +182,8 @@ fn nested_dispatch_loops_reloop_inner_first_under_wasmtime() {
         !contains_br_table(&recovered.bytes),
         "both nested br_table dispatchers must be removed"
     );
-    let mut clean: Inst = instantiate(&eng, &clean_bytes);
-    let mut recovered: Inst = instantiate(&eng, &recovered.bytes);
+    let mut clean: Bounded = Bounded::instantiate(&eng, &clean_bytes, FUEL_BUDGET);
+    let mut recovered: Bounded = Bounded::instantiate(&eng, &recovered.bytes, FUEL_BUDGET);
     assert_equivalent(&mut clean, &mut recovered, "nested_dispatch");
 
     let input: Artifact = Artifact::new(Rung::Raw, obf_bytes, [0x25; 32]);
@@ -249,9 +199,7 @@ fn nested_dispatch_loops_reloop_inner_first_under_wasmtime() {
 #[cfg(feature = "sandbox")]
 #[test]
 fn nested_dispatch_refusals_preserve_ancestor_reads_and_loop_branch_semantics() {
-    let fixture: String =
-        std::fs::read_to_string(fixture_dir().join("cff_nested_dispatch.obf.wat"))
-            .expect("read nested dispatcher fixture");
+    let fixture: String = recorded_text(RecordSet::Fixtures, "cff_nested_dispatch.obf.wat");
     let module_prefix: &str = fixture
         .strip_suffix(")\n")
         .expect("fixture module terminator");
@@ -328,9 +276,9 @@ fn nested_dispatch_refusals_preserve_ancestor_reads_and_loop_branch_semantics() 
     assert_eq!(recovered.report.flattened_conditional_restructured, 2);
     assert_eq!(recovered.report.flattened_dispatchers_walled, 2);
     assert_eq!(count_br_tables(&recovered.bytes), 2);
-    let eng: Engine = engine();
-    let mut original: Inst = instantiate(&eng, &bytes);
-    let mut candidate: Inst = instantiate(&eng, &recovered.bytes);
+    let eng: Engine = fuel_engine();
+    let mut original: Bounded = Bounded::instantiate(&eng, &bytes, FUEL_BUDGET);
+    let mut candidate: Bounded = Bounded::instantiate(&eng, &recovered.bytes, FUEL_BUDGET);
     assert_eq!(
         call_no_args(&mut original, "observe_nested_state"),
         call_no_args(&mut candidate, "observe_nested_state")
@@ -340,8 +288,8 @@ fn nested_dispatch_refusals_preserve_ancestor_reads_and_loop_branch_semantics() 
 #[cfg(feature = "sandbox")]
 #[test]
 fn clang_select_transition_reloops_through_the_public_recovery_api() {
-    let clean_bytes: &[u8] = include_bytes!("fixtures/cff_cond_select.clean.wasm");
-    let obf_bytes: &[u8] = include_bytes!("fixtures/cff_cond_select.obf.wasm");
+    let clean_bytes: &[u8] = &recorded_bytes(RecordSet::Fixtures, "cff_cond_select.clean.wasm");
+    let obf_bytes: &[u8] = &recorded_bytes(RecordSet::Fixtures, "cff_cond_select.obf.wasm");
     assert_reloops_to_clean_behavior(
         clean_bytes,
         obf_bytes,
@@ -368,9 +316,9 @@ fn arithmetic_select_successors_reloop_under_wasmtime() {
 fn runtime_differential_rejects_swapped_arithmetic_select_successors() {
     let clean_bytes: Vec<u8> = assemble_fixture("cff_local_state.clean.wat");
     let mutant_bytes: Vec<u8> = computed_select_state_variant(true);
-    let eng: Engine = engine();
-    let mut clean: Inst = instantiate(&eng, &clean_bytes);
-    let mut mutant: Inst = instantiate(&eng, &mutant_bytes);
+    let eng: Engine = fuel_engine();
+    let mut clean: Bounded = Bounded::instantiate(&eng, &clean_bytes, FUEL_BUDGET);
+    let mut mutant: Bounded = Bounded::instantiate(&eng, &mutant_bytes, FUEL_BUDGET);
     assert_distinguished(&mut clean, &mut mutant, "classify_local");
 }
 
@@ -392,11 +340,11 @@ fn effectful_select_successor_expression_remains_walled() {
 #[cfg(feature = "sandbox")]
 #[test]
 fn runtime_differential_rejects_swapped_select_successors() {
-    let clean_bytes: &[u8] = include_bytes!("fixtures/cff_cond_select.clean.wasm");
-    let mutant_bytes: &[u8] = include_bytes!("fixtures/cff_cond_select.mutant.wasm");
-    let eng: Engine = engine();
-    let mut clean: Inst = instantiate(&eng, clean_bytes);
-    let mut mutant: Inst = instantiate(&eng, mutant_bytes);
+    let clean_bytes: &[u8] = &recorded_bytes(RecordSet::Fixtures, "cff_cond_select.clean.wasm");
+    let mutant_bytes: &[u8] = &recorded_bytes(RecordSet::Fixtures, "cff_cond_select.mutant.wasm");
+    let eng: Engine = fuel_engine();
+    let mut clean: Bounded = Bounded::instantiate(&eng, clean_bytes, FUEL_BUDGET);
+    let mut mutant: Bounded = Bounded::instantiate(&eng, mutant_bytes, FUEL_BUDGET);
     assert_distinguished(&mut clean, &mut mutant, "classify_select");
 }
 
@@ -449,7 +397,7 @@ fn a_dispatch_loop_with_two_exit_states_reloops_under_wasmtime() {
 #[cfg(feature = "sandbox")]
 #[test]
 fn runtime_differential_rejects_swapped_multi_exit_successors() {
-    let eng: Engine = engine();
+    let eng: Engine = fuel_engine();
     let clean_bytes: Vec<u8> = assemble_fixture("cff_multi_exit_loop.clean.wat");
     let mutant_bytes: Vec<u8> = assemble_fixture("cff_multi_exit_loop.mutant.wat");
     let recovered: RecoveredModule =
@@ -463,8 +411,8 @@ fn runtime_differential_rejects_swapped_multi_exit_successors() {
         wasmparser::validate(&recovered.bytes).is_ok(),
         "the recovered mutant must validate"
     );
-    let mut clean_inst: Inst = instantiate(&eng, &clean_bytes);
-    let mut mutant_inst: Inst = instantiate(&eng, &recovered.bytes);
+    let mut clean_inst: Bounded = Bounded::instantiate(&eng, &clean_bytes, FUEL_BUDGET);
+    let mut mutant_inst: Bounded = Bounded::instantiate(&eng, &recovered.bytes, FUEL_BUDGET);
     assert_distinguished(&mut clean_inst, &mut mutant_inst, "reduce_bounded");
 }
 
@@ -491,7 +439,7 @@ fn two_exit_states_that_rejoin_reloop_under_wasmtime() {
 #[cfg(feature = "sandbox")]
 #[test]
 fn runtime_differential_rejects_swapped_rejoining_exit_bodies() {
-    let eng: Engine = engine();
+    let eng: Engine = fuel_engine();
     let clean_bytes: Vec<u8> = assemble_fixture("cff_multi_exit_join.clean.wat");
     let mutant_bytes: Vec<u8> = assemble_fixture("cff_multi_exit_join.mutant.wat");
     let recovered: RecoveredModule =
@@ -505,8 +453,8 @@ fn runtime_differential_rejects_swapped_rejoining_exit_bodies() {
         wasmparser::validate(&recovered.bytes).is_ok(),
         "the recovered mutant must validate"
     );
-    let mut clean_inst: Inst = instantiate(&eng, &clean_bytes);
-    let mut mutant_inst: Inst = instantiate(&eng, &recovered.bytes);
+    let mut clean_inst: Bounded = Bounded::instantiate(&eng, &clean_bytes, FUEL_BUDGET);
+    let mut mutant_inst: Bounded = Bounded::instantiate(&eng, &recovered.bytes, FUEL_BUDGET);
     assert_distinguished(&mut clean_inst, &mut mutant_inst, "reduce_join");
 }
 
@@ -561,11 +509,10 @@ fn wrapping_and_masked_shift_state_updates_reloop_under_wasmtime() {
 #[cfg(feature = "sandbox")]
 #[test]
 fn observed_entry_state_write_is_preserved_when_relooping() {
-    let path: PathBuf = fixture_dir().join("cff_computed_state.obf.wat");
-    let source: String = std::fs::read_to_string(&path).expect("read computed-state fixture");
-    let original: &str = "i32.const 5\n    i32.const 5\n    i32.xor\n    local.set 2";
+    let source: String = recorded_text(RecordSet::Fixtures, "cff_computed_state.obf.wat");
+    let original: &str = "i32.const 12\n    i32.const 12\n    i32.xor\n    local.set 2";
     let replacement: &str = concat!(
-        "i32.const 5\n    i32.const 5\n    i32.xor\n    local.set 2\n    ",
+        "i32.const 12\n    i32.const 12\n    i32.xor\n    local.set 2\n    ",
         "local.get 2\n    drop"
     );
     let variant: String = source.replacen(original, replacement, 1);
@@ -600,17 +547,16 @@ fn guarded_arithmetic_state_updates_reloop_under_wasmtime() {
 fn runtime_differential_rejects_swapped_guarded_arithmetic_successors() {
     let clean_bytes: Vec<u8> = assemble_fixture("cff_local_state.clean.wat");
     let mutant_bytes: Vec<u8> = computed_guard_state_variant(true);
-    let eng: Engine = engine();
-    let mut clean: Inst = instantiate(&eng, &clean_bytes);
-    let mut mutant: Inst = instantiate(&eng, &mutant_bytes);
+    let eng: Engine = fuel_engine();
+    let mut clean: Bounded = Bounded::instantiate(&eng, &clean_bytes, FUEL_BUDGET);
+    let mut mutant: Bounded = Bounded::instantiate(&eng, &mutant_bytes, FUEL_BUDGET);
     assert_distinguished(&mut clean, &mut mutant, "classify_local");
 }
 
 #[cfg(feature = "sandbox")]
 #[test]
 fn effectful_guarded_state_expression_remains_walled() {
-    let path: PathBuf = fixture_dir().join("cff_computed_state.obf.wat");
-    let source: String = std::fs::read_to_string(&path).expect("read computed-state fixture");
+    let source: String = recorded_text(RecordSet::Fixtures, "cff_computed_state.obf.wat");
     let mut variant: String = source.replacen(
         "i32.const 1\n                  local.set 2",
         "call 1\n                  local.set 2",
@@ -662,18 +608,17 @@ fn unsafe_or_oversized_state_expressions_remain_walled() {
 fn runtime_differential_rejects_swapped_computed_state_successors() {
     let clean_bytes: Vec<u8> = assemble_fixture("cff_local_state.clean.wat");
     let mutant_bytes: Vec<u8> = assemble_fixture("cff_computed_state.mutant.wat");
-    let eng: Engine = engine();
-    let mut clean: Inst = instantiate(&eng, &clean_bytes);
-    let mut mutant: Inst = instantiate(&eng, &mutant_bytes);
+    let eng: Engine = fuel_engine();
+    let mut clean: Bounded = Bounded::instantiate(&eng, &clean_bytes, FUEL_BUDGET);
+    let mut mutant: Bounded = Bounded::instantiate(&eng, &mutant_bytes, FUEL_BUDGET);
 
     assert_distinguished(&mut clean, &mut mutant, "classify_local");
 }
 
 #[cfg(feature = "sandbox")]
 fn computed_state_variant(replacement: &str) -> Vec<u8> {
-    let path: PathBuf = fixture_dir().join("cff_computed_state.obf.wat");
-    let source: String = std::fs::read_to_string(&path).expect("read computed-state fixture");
-    let original: &str = "i32.const 5\n            i32.const 6\n            i32.xor";
+    let source: String = recorded_text(RecordSet::Fixtures, "cff_computed_state.obf.wat");
+    let original: &str = "i32.const 7\n            i32.const 4\n            i32.xor";
     let variant: String = source.replacen(original, replacement, 1);
     assert_ne!(
         variant, source,
@@ -684,9 +629,8 @@ fn computed_state_variant(replacement: &str) -> Vec<u8> {
 
 #[cfg(feature = "sandbox")]
 fn computed_state_call_variant() -> Vec<u8> {
-    let path: PathBuf = fixture_dir().join("cff_computed_state.obf.wat");
-    let source: String = std::fs::read_to_string(&path).expect("read computed-state fixture");
-    let original: &str = "i32.const 5\n            i32.const 6\n            i32.xor";
+    let source: String = recorded_text(RecordSet::Fixtures, "cff_computed_state.obf.wat");
+    let original: &str = "i32.const 7\n            i32.const 4\n            i32.xor";
     let mut variant: String = source.replacen(original, "call 1", 1);
     assert_ne!(
         variant, source,
@@ -699,8 +643,7 @@ fn computed_state_call_variant() -> Vec<u8> {
 
 #[cfg(feature = "sandbox")]
 fn computed_guard_state_variant(swapped: bool) -> Vec<u8> {
-    let path: PathBuf = fixture_dir().join("cff_computed_state.obf.wat");
-    let source: String = std::fs::read_to_string(&path).expect("read computed-state fixture");
+    let source: String = recorded_text(RecordSet::Fixtures, "cff_computed_state.obf.wat");
     let (nonzero, zero): (&str, &str) = if swapped {
         (
             "i32.const 6\n                  i32.const 4\n                  i32.xor",
@@ -748,26 +691,22 @@ fn computed_select_state_variant(swapped: bool) -> Vec<u8> {
 
 #[cfg(feature = "sandbox")]
 fn computed_select_state_source(then_expression: &str, else_expression: &str) -> String {
-    let path: PathBuf = fixture_dir().join("cff_local_state.obf.wat");
-    let source: String = std::fs::read_to_string(&path).expect("read local-state fixture");
-    let original: &str = r"block ;; label = @6
-                block ;; label = @7
+    let source: String = recorded_text(RecordSet::Fixtures, "cff_local_state.obf.wat");
+    let original: &str = r"block $chosen
+                block $otherwise
                   local.get 0
-                  i32.const 10
-                  i32.gt_s
-                  i32.const 1
-                  i32.and
-                  i32.eqz
-                  br_if 0 (;@7;)
+                  i32.const 6
+                  i32.le_s
+                  br_if $otherwise
                   i32.const 1
                   local.set 2
-                  br 1 (;@6;)
+                  br $chosen
                 end
                 i32.const 2
                 local.set 2
               end";
     let replacement: String = format!(
-        "{then_expression}\n              {else_expression}\n              local.get 0\n              i32.const 10\n              i32.gt_s\n              select\n              local.set 2"
+        "{then_expression}\n              {else_expression}\n              local.get 0\n              i32.const 6\n              i32.gt_s\n              select\n              local.set 2"
     );
     let variant: String = source.replacen(original, &replacement, 1);
     assert_ne!(variant, source, "select transition must be replaced");
@@ -799,9 +738,9 @@ fn state_global_copied_through_local_tee_reloops_under_wasmtime() {
 fn runtime_differential_rejects_swapped_global_tee_successors() {
     let clean_bytes: Vec<u8> = assemble_fixture("cff_global_state.clean.wat");
     let mutant_bytes: Vec<u8> = assemble_fixture("cff_global_tee_state.mutant.wat");
-    let eng: Engine = engine();
-    let mut clean: Inst = instantiate(&eng, &clean_bytes);
-    let mut mutant: Inst = instantiate(&eng, &mutant_bytes);
+    let eng: Engine = fuel_engine();
+    let mut clean: Bounded = Bounded::instantiate(&eng, &clean_bytes, FUEL_BUDGET);
+    let mut mutant: Bounded = Bounded::instantiate(&eng, &mutant_bytes, FUEL_BUDGET);
     assert_distinguished(&mut clean, &mut mutant, "classify_global");
 }
 
@@ -826,9 +765,9 @@ fn a_nested_suffix_read_of_the_tee_source_global_is_walled() {
         "a walled dispatcher must retain its br_table"
     );
 
-    let eng: Engine = engine();
-    let mut original: Inst = instantiate(&eng, &bytes);
-    let mut candidate: Inst = instantiate(&eng, &recovered.bytes);
+    let eng: Engine = fuel_engine();
+    let mut original: Bounded = Bounded::instantiate(&eng, &bytes, FUEL_BUDGET);
+    let mut candidate: Bounded = Bounded::instantiate(&eng, &recovered.bytes, FUEL_BUDGET);
     assert_equivalent(&mut original, &mut candidate, "classify_global");
 }
 
@@ -848,9 +787,9 @@ fn an_effectful_global_tee_selector_prefix_is_not_relooped() {
         "an effectful selector prefix must retain the dispatcher"
     );
 
-    let eng: Engine = engine();
-    let mut original: Inst = instantiate(&eng, &bytes);
-    let mut candidate: Inst = instantiate(&eng, &recovered.bytes);
+    let eng: Engine = fuel_engine();
+    let mut original: Bounded = Bounded::instantiate(&eng, &bytes, FUEL_BUDGET);
+    let mut candidate: Bounded = Bounded::instantiate(&eng, &recovered.bytes, FUEL_BUDGET);
     assert_eq!(
         call_i32(&mut candidate, "classify_global", 5),
         call_i32(&mut original, "classify_global", 5),
@@ -867,17 +806,15 @@ fn an_effectful_global_tee_selector_prefix_is_not_relooped() {
         "the dispatcher executes the selector prefix once per dispatched state"
     );
 
-    let mut original: Inst = instantiate(&eng, &bytes);
-    let mut candidate: Inst = instantiate(&eng, &recovered.bytes);
+    let mut original: Bounded = Bounded::instantiate(&eng, &bytes, FUEL_BUDGET);
+    let mut candidate: Bounded = Bounded::instantiate(&eng, &recovered.bytes, FUEL_BUDGET);
     assert_equivalent(&mut original, &mut candidate, "classify_global");
 }
 
 #[cfg(feature = "sandbox")]
 #[test]
 fn a_trapping_global_tee_selector_prefix_is_not_relooped() {
-    let source: String =
-        std::fs::read_to_string(fixture_dir().join("cff_global_tee_state.obf.wat"))
-            .expect("read global tee fixture");
+    let source: String = recorded_text(RecordSet::Fixtures, "cff_global_tee_state.obf.wat");
     let marker: &str = "      global.get 0\n      local.tee 2\n      drop\n      block";
     let replacement: &str = "      global.get 0\n      local.tee 2\n      drop\n      i32.const 1\n      i32.const 0\n      i32.div_s\n      drop\n      block";
     let variant: String = source.replacen(marker, replacement, 1);
@@ -895,9 +832,9 @@ fn a_trapping_global_tee_selector_prefix_is_not_relooped() {
         "a trapping selector prefix must retain the dispatcher"
     );
 
-    let eng: Engine = engine();
-    let mut original: Inst = instantiate(&eng, &bytes);
-    let mut candidate: Inst = instantiate(&eng, &recovered.bytes);
+    let eng: Engine = fuel_engine();
+    let mut original: Bounded = Bounded::instantiate(&eng, &bytes, FUEL_BUDGET);
+    let mut candidate: Bounded = Bounded::instantiate(&eng, &recovered.bytes, FUEL_BUDGET);
     assert_eq!(
         call_i32(&mut original, "classify_global", 5),
         Outcome::Trap,
@@ -957,9 +894,9 @@ fn input_dependent_memory_address_remains_walled_and_preserves_traps() {
     assert_eq!(recovered.report.flattened_dispatchers_walled, 1);
     assert!(contains_br_table(&recovered.bytes));
 
-    let eng: Engine = engine();
-    let mut original: Inst = instantiate(&eng, &bytes);
-    let mut candidate: Inst = instantiate(&eng, &recovered.bytes);
+    let eng: Engine = fuel_engine();
+    let mut original: Bounded = Bounded::instantiate(&eng, &bytes, FUEL_BUDGET);
+    let mut candidate: Bounded = Bounded::instantiate(&eng, &recovered.bytes, FUEL_BUDGET);
     assert_eq!(
         call_i32(&mut original, "classify_memory", -1),
         Outcome::Trap
@@ -981,9 +918,9 @@ fn out_of_bounds_local_memory_address_remains_walled_and_preserves_traps() {
     assert_eq!(recovered.report.flattened_dispatchers_walled, 1);
     assert!(contains_br_table(&recovered.bytes));
 
-    let eng: Engine = engine();
-    let mut original: Inst = instantiate(&eng, &bytes);
-    let mut candidate: Inst = instantiate(&eng, &recovered.bytes);
+    let eng: Engine = fuel_engine();
+    let mut original: Bounded = Bounded::instantiate(&eng, &bytes, FUEL_BUDGET);
+    let mut candidate: Bounded = Bounded::instantiate(&eng, &recovered.bytes, FUEL_BUDGET);
     assert_eq!(call_i32(&mut original, "classify_memory", 0), Outcome::Trap);
     assert_eq!(
         call_i32(&mut candidate, "classify_memory", 0),
@@ -1014,9 +951,9 @@ fn unresolved_local_address_rejects_a_later_access_before_observable_effects_mov
     assert_eq!(recovered.report.flattened_dispatchers_walled, 1);
     assert!(contains_br_table(&recovered.bytes));
 
-    let eng: Engine = engine();
-    let mut original: Inst = instantiate(&eng, &bytes);
-    let mut candidate: Inst = instantiate(&eng, &recovered.bytes);
+    let eng: Engine = fuel_engine();
+    let mut original: Bounded = Bounded::instantiate(&eng, &bytes, FUEL_BUDGET);
+    let mut candidate: Bounded = Bounded::instantiate(&eng, &recovered.bytes, FUEL_BUDGET);
     assert_eq!(call_i32(&mut original, "classify_memory", 0), Outcome::Trap);
     assert_eq!(
         call_i32(&mut candidate, "classify_memory", 0),
@@ -1055,9 +992,9 @@ fn unresolved_local_address_rejects_conditional_or_incompatible_bounds_evidence(
 fn runtime_differential_rejects_swapped_fixed_memory_successors() {
     let clean_bytes: Vec<u8> = assemble_fixture("cff_memory_state.clean.wat");
     let mutant_bytes: Vec<u8> = fixed_memory_state_variant(FixedMemoryMutation::SwapSuccessors);
-    let eng: Engine = engine();
-    let mut clean: Inst = instantiate(&eng, &clean_bytes);
-    let mut mutant: Inst = instantiate(&eng, &mutant_bytes);
+    let eng: Engine = fuel_engine();
+    let mut clean: Bounded = Bounded::instantiate(&eng, &clean_bytes, FUEL_BUDGET);
+    let mut mutant: Bounded = Bounded::instantiate(&eng, &mutant_bytes, FUEL_BUDGET);
     assert_distinguished(&mut clean, &mut mutant, "classify_memory");
 }
 
@@ -1111,8 +1048,7 @@ enum FixedMemoryMutation {
 
 #[cfg(feature = "sandbox")]
 fn fixed_memory_state_variant(mutation: FixedMemoryMutation) -> Vec<u8> {
-    let path: PathBuf = fixture_dir().join("cff_memory_state.obf.wat");
-    let source: String = std::fs::read_to_string(&path).expect("read memory-state fixture");
+    let source: String = recorded_text(RecordSet::Fixtures, "cff_memory_state.obf.wat");
     let mut variant: String = source.replace("local.get 2", "i32.const 32");
     match mutation {
         FixedMemoryMutation::None => {}
@@ -1164,15 +1100,15 @@ fn fixed_memory_state_variant(mutation: FixedMemoryMutation) -> Vec<u8> {
             );
         }
         FixedMemoryMutation::ZeroPageMemory => {
-            variant = variant.replacen("(memory (;0;) 1)", "(memory (;0;) 0)", 1);
+            variant = variant.replacen("(memory 1)", "(memory 0)", 1);
         }
         FixedMemoryMutation::OutOfBoundsAddress => {
             variant = variant.replace("i32.const 32", "i32.const 65532");
         }
         FixedMemoryMutation::ExportedMemory => {
             variant = variant.replacen(
-                "(memory (;0;) 1)",
-                "(memory (;0;) 1)\n  (export \"state_memory\" (memory 0))",
+                "(memory 1)",
+                "(memory 1)\n  (export \"state_memory\" (memory 0))",
                 1,
             );
         }
@@ -1193,8 +1129,7 @@ enum UnresolvedLocalProof {
 
 #[cfg(feature = "sandbox")]
 fn unresolved_local_memory_state_variant(proof: UnresolvedLocalProof) -> Vec<u8> {
-    let path: PathBuf = fixture_dir().join("cff_memory_state.obf.wat");
-    let source: String = std::fs::read_to_string(&path).expect("read memory-state fixture");
+    let source: String = recorded_text(RecordSet::Fixtures, "cff_memory_state.obf.wat");
     let global_value: i32 = match proof {
         UnresolvedLocalProof::Later => 65_532,
         UnresolvedLocalProof::Preceding
@@ -1204,8 +1139,8 @@ fn unresolved_local_memory_state_variant(proof: UnresolvedLocalProof) -> Vec<u8>
         | UnresolvedLocalProof::Weaker => 32,
     };
     let mut variant: String = source.replacen(
-        "(memory (;0;) 1)",
-        &format!("(global (;0;) (mut i32) (i32.const {global_value}))\n  (memory (;0;) 1)"),
+        "(memory 1)",
+        &format!("(global (mut i32) (i32.const {global_value}))\n  (memory 1)"),
         1,
     );
     variant = variant.replacen(
@@ -1220,8 +1155,8 @@ fn unresolved_local_memory_state_variant(proof: UnresolvedLocalProof) -> Vec<u8>
         }
         UnresolvedLocalProof::Later => {
             variant = variant.replacen(
-                "(memory (;0;) 1)",
-                "(memory (;0;) 1)\n  (global (;1;) (mut i32) (i32.const 0))\n  (export \"marker\" (global 1))",
+                "(memory 1)",
+                "(memory 1)\n  (global (mut i32) (i32.const 0))\n  (export \"marker\" (global 1))",
                 1,
             );
             format!(
@@ -1250,14 +1185,14 @@ fn unresolved_local_memory_state_variant(proof: UnresolvedLocalProof) -> Vec<u8>
 fn runtime_differential_rejects_swapped_local_state_successors() {
     let clean_bytes: Vec<u8> = assemble_fixture("cff_local_state.clean.wat");
     let mutant_bytes: Vec<u8> = assemble_fixture("cff_local_state.mutant.wat");
-    let eng: Engine = engine();
-    let mut clean: Inst = instantiate(&eng, &clean_bytes);
-    let mut mutant: Inst = instantiate(&eng, &mutant_bytes);
+    let eng: Engine = fuel_engine();
+    let mut clean: Bounded = Bounded::instantiate(&eng, &clean_bytes, FUEL_BUDGET);
+    let mut mutant: Bounded = Bounded::instantiate(&eng, &mutant_bytes, FUEL_BUDGET);
     assert_distinguished(&mut clean, &mut mutant, "classify_local");
 }
 
 #[cfg(feature = "sandbox")]
-fn read_global_i32(inst: &mut Inst, name: &str) -> Option<i32> {
+fn read_global_i32(inst: &mut Bounded, name: &str) -> Option<i32> {
     let global: wasmtime::Global = inst.instance.get_global(&mut inst.store, name)?;
     match global.get(&mut inst.store) {
         Val::I32(v) => Some(v),
@@ -1266,18 +1201,9 @@ fn read_global_i32(inst: &mut Inst, name: &str) -> Option<i32> {
 }
 
 #[cfg(feature = "sandbox")]
-fn call_no_args(inst: &mut Inst, export: &str) -> Outcome {
-    let func: wasmtime::Func = match inst.instance.get_func(&mut inst.store, export) {
-        Some(f) => f,
-        None => return Outcome::Trap,
-    };
-    let mut results: [Val; 1] = [Val::I32(0)];
-    inst.store.set_fuel(FUEL_BUDGET).ok();
-    if func.call(&mut inst.store, &[], &mut results).is_err() {
-        return Outcome::Trap;
-    }
-    match results[0] {
-        Val::I32(v) => Outcome::Ret(v),
+fn call_no_args(inst: &mut Bounded, export: &str) -> Outcome {
+    match inst.call(export, &[], Val::I32(0)) {
+        Some(Val::I32(value)) => Outcome::Ret(value),
         _ => Outcome::Trap,
     }
 }
@@ -1299,9 +1225,9 @@ fn an_exported_state_global_is_walled_rather_than_elided() {
         recovered.report
     );
 
-    let eng: Engine = engine();
-    let mut original: Inst = instantiate(&eng, &bytes);
-    let mut candidate: Inst = instantiate(&eng, &recovered.bytes);
+    let eng: Engine = fuel_engine();
+    let mut original: Bounded = Bounded::instantiate(&eng, &bytes, FUEL_BUDGET);
+    let mut candidate: Bounded = Bounded::instantiate(&eng, &recovered.bytes, FUEL_BUDGET);
     assert_equivalent(&mut original, &mut candidate, "classify_global");
     assert_eq!(
         call_i32(&mut original, "classify_global", 5),
@@ -1340,9 +1266,9 @@ fn a_state_global_read_by_another_function_is_walled_rather_than_elided() {
         recovered.report
     );
 
-    let eng: Engine = engine();
-    let mut original: Inst = instantiate(&eng, &bytes);
-    let mut candidate: Inst = instantiate(&eng, &recovered.bytes);
+    let eng: Engine = fuel_engine();
+    let mut original: Bounded = Bounded::instantiate(&eng, &bytes, FUEL_BUDGET);
+    let mut candidate: Bounded = Bounded::instantiate(&eng, &recovered.bytes, FUEL_BUDGET);
     assert_equivalent(&mut original, &mut candidate, "classify_global");
     assert_eq!(
         call_i32(&mut original, "classify_global", 5),
@@ -1381,9 +1307,9 @@ fn a_state_memory_slot_read_by_another_function_is_walled_rather_than_elided() {
         recovered.report
     );
 
-    let eng: Engine = engine();
-    let mut original: Inst = instantiate(&eng, &bytes);
-    let mut candidate: Inst = instantiate(&eng, &recovered.bytes);
+    let eng: Engine = fuel_engine();
+    let mut original: Bounded = Bounded::instantiate(&eng, &bytes, FUEL_BUDGET);
+    let mut candidate: Bounded = Bounded::instantiate(&eng, &recovered.bytes, FUEL_BUDGET);
     assert_equivalent(&mut original, &mut candidate, "classify_memory");
     assert_eq!(
         call_i32(&mut original, "classify_memory", 5),
@@ -1458,7 +1384,7 @@ fn every_wall_names_the_reason_it_refused() {
 #[test]
 #[cfg(feature = "chain")]
 fn a_real_rustc_next_state_temporary_reloops_through_the_registered_pass() {
-    let bytes: &[u8] = include_bytes!("fixtures/cff_rustc_temp_state.obf.wasm");
+    let bytes: &[u8] = &recorded_bytes(RecordSet::Fixtures, "cff_rustc_temp_state.obf.wasm");
     let recovered: RecoveredModule =
         recover_module(bytes).expect("recover rustc next-state-temporary module");
     assert_eq!(
@@ -1479,9 +1405,9 @@ fn a_real_rustc_next_state_temporary_reloops_through_the_registered_pass() {
         !contains_br_table(&recovered.bytes),
         "the recovered module must remove the dispatcher"
     );
-    let eng: Engine = engine();
-    let mut original: Inst = instantiate(&eng, bytes);
-    let mut candidate: Inst = instantiate(&eng, &recovered.bytes);
+    let eng: Engine = fuel_engine();
+    let mut original: Bounded = Bounded::instantiate(&eng, bytes, FUEL_BUDGET);
+    let mut candidate: Bounded = Bounded::instantiate(&eng, &recovered.bytes, FUEL_BUDGET);
     assert_equivalent(&mut original, &mut candidate, "classify_local");
 
     let input: Artifact = Artifact::new(Rung::Raw, bytes.to_vec(), [0x25; 32]);
@@ -1623,17 +1549,17 @@ fn mutate_first_successor(bytes: &[u8], offset: u32, from: i32, to: i32) -> Vec<
 #[cfg(feature = "sandbox")]
 #[test]
 fn rustc_temporary_state_runtime_evidence_rejects_a_successor_mutation() {
-    let original: &[u8] = include_bytes!("fixtures/cff_rustc_temp_state.obf.wasm");
+    let original: &[u8] = &recorded_bytes(RecordSet::Fixtures, "cff_rustc_temp_state.obf.wasm");
     let mutant: Vec<u8> = mutate_first_successor(original, 12, 2, 1);
     let recovered: RecoveredModule =
         recover_module(&mutant).expect("recover mutated successor mapping");
     assert_eq!(recovered.report.flattened_conditional_restructured, 1);
-    let eng: Engine = engine();
-    let mut reference: Inst = instantiate(&eng, original);
-    let mut candidate: Inst = instantiate(&eng, &recovered.bytes);
+    let eng: Engine = fuel_engine();
+    let mut reference: Bounded = Bounded::instantiate(&eng, original, FUEL_BUDGET);
+    let mut candidate: Bounded = Bounded::instantiate(&eng, &recovered.bytes, FUEL_BUDGET);
     assert_distinguished(&mut reference, &mut candidate, "classify_local");
-    let mut mutant_runtime: Inst = instantiate(&eng, &mutant);
-    let mut recovered_runtime: Inst = instantiate(&eng, &recovered.bytes);
+    let mut mutant_runtime: Bounded = Bounded::instantiate(&eng, &mutant, FUEL_BUDGET);
+    let mut recovered_runtime: Bounded = Bounded::instantiate(&eng, &recovered.bytes, FUEL_BUDGET);
     assert_equivalent(
         &mut mutant_runtime,
         &mut recovered_runtime,
@@ -1644,7 +1570,7 @@ fn rustc_temporary_state_runtime_evidence_rejects_a_successor_mutation() {
 #[cfg(feature = "sandbox")]
 #[test]
 fn rustc_temporary_state_escape_and_partial_transfer_remain_walled() {
-    let original: &[u8] = include_bytes!("fixtures/cff_rustc_temp_state.obf.wasm");
+    let original: &[u8] = &recorded_bytes(RecordSet::Fixtures, "cff_rustc_temp_state.obf.wasm");
     for (name, mutant) in [
         ("extra temporary read", add_temporary_read(original)),
         (

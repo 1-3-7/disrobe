@@ -2,20 +2,41 @@
 #[cfg(feature = "sandbox")]
 use disrobe_pass_wasm_deob::lift_module_faithful_wat;
 #[cfg(feature = "sandbox")]
-use wasmtime::{Config, Engine, Linker, Module, Store, Val};
+use wasmtime::{Config, Engine, Linker, Module, Store, StoreLimits, StoreLimitsBuilder, Val};
+
+#[cfg(feature = "sandbox")]
+const FUEL_BUDGET: u64 = 2_000_000;
 
 #[cfg(feature = "sandbox")]
 fn engine() -> Engine {
     let mut c: Config = Config::new();
-    c.wasm_multi_memory(true);
+    c.wasm_multi_memory(true).consume_fuel(true);
     Engine::new(&c).expect("engine")
+}
+
+#[cfg(feature = "sandbox")]
+fn bounded_store(eng: &Engine) -> Store<StoreLimits> {
+    let limits: StoreLimits = StoreLimitsBuilder::new()
+        .memory_size(16 * 1024 * 1024)
+        .table_elements(10_000)
+        .instances(1)
+        .tables(8)
+        .memories(8)
+        .build();
+    let mut store: Store<StoreLimits> = Store::new(eng, limits);
+    store.limiter(|limits: &mut StoreLimits| limits);
+    store.set_fuel(FUEL_BUDGET).expect("fuel-enabled engine");
+    store
 }
 
 #[cfg(feature = "sandbox")]
 fn call_i32(eng: &Engine, bytes: &[u8], export: &str) -> i32 {
     let m: Module = Module::new(eng, bytes).expect("module compiles");
-    let mut store: Store<()> = Store::new(eng, ());
-    let linker: Linker<()> = Linker::new(eng);
+    let mut store: Store<StoreLimits> = bounded_store(eng);
+    let mut linker: Linker<StoreLimits> = Linker::new(eng);
+    linker
+        .define_unknown_imports_as_traps(&m)
+        .expect("trap unknown imports");
     let inst: wasmtime::Instance = linker.instantiate(&mut store, &m).expect("instantiate");
     let f: wasmtime::Func = inst.get_func(&mut store, export).expect("export present");
     let mut res: [Val; 1] = [Val::I32(0)];
@@ -29,8 +50,11 @@ fn call_i32(eng: &Engine, bytes: &[u8], export: &str) -> i32 {
 #[cfg(feature = "sandbox")]
 fn call_i64(eng: &Engine, bytes: &[u8], export: &str) -> i64 {
     let m: Module = Module::new(eng, bytes).expect("module compiles");
-    let mut store: Store<()> = Store::new(eng, ());
-    let linker: Linker<()> = Linker::new(eng);
+    let mut store: Store<StoreLimits> = bounded_store(eng);
+    let mut linker: Linker<StoreLimits> = Linker::new(eng);
+    linker
+        .define_unknown_imports_as_traps(&m)
+        .expect("trap unknown imports");
     let inst: wasmtime::Instance = linker.instantiate(&mut store, &m).expect("instantiate");
     let f: wasmtime::Func = inst.get_func(&mut store, export).expect("export present");
     let mut res: [Val; 1] = [Val::I64(0)];
@@ -39,6 +63,48 @@ fn call_i64(eng: &Engine, bytes: &[u8], export: &str) -> i64 {
         Val::I64(x) => x,
         other => panic!("expected i64 result, got {other:?}"),
     }
+}
+
+#[cfg(feature = "sandbox")]
+#[test]
+fn authored_loop_exhausts_the_wasmtime_fuel_budget() {
+    let eng: Engine = engine();
+    let bytes: Vec<u8> =
+        wat::parse_str("(module (func (export \"spin\") (result i32) (loop br 0) i32.const 0))")
+            .expect("assemble authored loop");
+    let module: Module = Module::new(&eng, &bytes).expect("compile authored loop");
+    let mut store: Store<StoreLimits> = bounded_store(&eng);
+    let mut linker: Linker<StoreLimits> = Linker::new(&eng);
+    linker
+        .define_unknown_imports_as_traps(&module)
+        .expect("trap unknown imports");
+    let instance: wasmtime::Instance = linker
+        .instantiate(&mut store, &module)
+        .expect("loop module instantiates");
+    let function: wasmtime::Func = instance.get_func(&mut store, "spin").expect("spin export");
+    let mut result: [Val; 1] = [Val::I32(0)];
+    let error: wasmtime::Error = function
+        .call(&mut store, &[], &mut result)
+        .expect_err("infinite loop must exhaust fuel");
+    assert!(format!("{error:#}").contains("fuel"), "{error:#}");
+}
+
+#[cfg(feature = "sandbox")]
+#[test]
+fn authored_memory_above_the_store_limit_is_rejected() {
+    let eng: Engine = engine();
+    let bytes: Vec<u8> = wat::parse_str("(module (memory 257))").expect("assemble authored memory");
+    let module: Module = Module::new(&eng, &bytes).expect("compile authored memory");
+    let mut store: Store<StoreLimits> = bounded_store(&eng);
+    let mut linker: Linker<StoreLimits> = Linker::new(&eng);
+    linker
+        .define_unknown_imports_as_traps(&module)
+        .expect("trap unknown imports");
+    let error: wasmtime::Error = match linker.instantiate(&mut store, &module) {
+        Ok(_) => panic!("a 257-page memory must exceed the 16 MiB store limit"),
+        Err(error) => error,
+    };
+    assert!(format!("{error:#}").contains("memory"), "{error:#}");
 }
 
 #[cfg(feature = "sandbox")]

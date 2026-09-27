@@ -4,16 +4,14 @@ mod published;
 #[path = "common/wat_corpus.rs"]
 mod wat_corpus;
 
-use std::collections::BTreeMap;
-use std::fs;
-
 use disrobe_pass_wasm_deob::{
     CalleeNames, FunctionSig, LiftResult, LiftTarget, ModuleSignatures, extract_signatures,
     lift_function_body,
 };
 use published::{published_bar, published_group};
+use std::collections::BTreeMap;
 use wasmparser::FunctionBody;
-use wat_corpus::{callees, defined_bodies, wat_files};
+use wat_corpus::{callees, defined_bodies, verified_wat_files, verified_wat_text};
 
 const CORPUS_MODULES: usize = 38;
 const CORPUS_FUNCTIONS: usize = 133;
@@ -35,8 +33,8 @@ struct Tally {
 
 fn measure() -> Tally {
     let mut tally: Tally = Tally::default();
-    for wat_path in wat_files() {
-        let text: String = fs::read_to_string(&wat_path).expect("read wat");
+    for wat_path in verified_wat_files() {
+        let text: String = verified_wat_text(&wat_path);
         let Ok(bytes): Result<Vec<u8>, _> = wat::parse_str(&text) else {
             tally.modules_skipped += 1;
             continue;
@@ -223,8 +221,8 @@ fn corpus_recovery_requires_full_op_coverage_not_just_parseability() {
 fn recovered_bodies_are_non_trivial() {
     let mut saw_branch: bool = false;
     let mut saw_arith: bool = false;
-    for wat_path in wat_files() {
-        let text: String = fs::read_to_string(&wat_path).expect("read");
+    for wat_path in verified_wat_files() {
+        let text: String = verified_wat_text(&wat_path);
         let Ok(bytes): Result<Vec<u8>, _> = wat::parse_str(&text) else {
             continue;
         };

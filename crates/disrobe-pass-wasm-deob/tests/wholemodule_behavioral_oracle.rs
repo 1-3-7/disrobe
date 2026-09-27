@@ -1,42 +1,29 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 #[cfg(feature = "sandbox")]
-use std::fs;
+use std::path::PathBuf;
 #[cfg(feature = "sandbox")]
-use std::path::{Path, PathBuf};
+#[path = "common/wat_corpus.rs"]
+mod wat_corpus;
 
 #[cfg(feature = "sandbox")]
 use disrobe_pass_wasm_deob::{ModuleSignatures, extract_signatures, lift_module_faithful_wat};
 #[cfg(feature = "sandbox")]
 use wasmparser::ValType;
 #[cfg(feature = "sandbox")]
-use wasmtime::{Config, Engine, Linker, Module, Store, Val};
+use wasmtime::{Config, Engine, Linker, Module, Store, StoreLimits, StoreLimitsBuilder, Val};
 
 #[cfg(feature = "sandbox")]
-fn corpus_dirs() -> Vec<PathBuf> {
-    let root: &Path = Path::new(env!("CARGO_MANIFEST_DIR"));
-    vec![
-        root.join("../../corpus/src/wasm/sources"),
-        root.join("../../corpus/src/wasm/edge_cases"),
-        root.join("../../corpus/wasm/wat"),
-    ]
-}
+const STORE_MEMORY_LIMIT_BYTES: usize = 16 * 1024 * 1024;
 
 #[cfg(feature = "sandbox")]
-fn wat_files() -> Vec<PathBuf> {
-    let mut out: Vec<PathBuf> = Vec::new();
-    for dir in corpus_dirs() {
-        let Ok(entries): Result<fs::ReadDir, _> = fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path: PathBuf = entry.path();
-            if path.extension().is_some_and(|e| e == "wat") {
-                out.push(path);
-            }
-        }
-    }
-    out.sort();
-    out
+fn store_limits() -> StoreLimits {
+    StoreLimitsBuilder::new()
+        .memory_size(STORE_MEMORY_LIMIT_BYTES)
+        .table_elements(10_000)
+        .instances(1)
+        .tables(8)
+        .memories(8)
+        .build()
 }
 
 #[cfg(feature = "sandbox")]
@@ -92,9 +79,10 @@ fn battery(params: &[ValType], cap: usize) -> Vec<Vec<Val>> {
 #[cfg(feature = "sandbox")]
 fn run(eng: &Engine, bytes: &[u8], export: &str, arg: &[Val], arity: usize) -> Option<Vec<i64>> {
     let m: Module = Module::new(eng, bytes).ok()?;
-    let mut store: Store<()> = Store::new(eng, ());
+    let mut store: Store<StoreLimits> = Store::new(eng, store_limits());
+    store.limiter(|limits: &mut StoreLimits| limits);
     store.set_fuel(2_000_000).ok()?;
-    let mut linker: Linker<()> = Linker::new(eng);
+    let mut linker: Linker<StoreLimits> = Linker::new(eng);
     linker.define_unknown_imports_as_traps(&m).ok()?;
     let inst: wasmtime::Instance = linker.instantiate(&mut store, &m).ok()?;
     let f: wasmtime::Func = inst.get_func(&mut store, export)?;
@@ -111,6 +99,38 @@ fn run(eng: &Engine, bytes: &[u8], export: &str, arg: &[Val], arity: usize) -> O
             })
             .collect(),
     )
+}
+
+#[cfg(feature = "sandbox")]
+#[test]
+fn oversized_module_is_rejected_by_store_limit() {
+    let eng: Engine = Engine::new(&config()).expect("engine");
+    let oversized: Vec<u8> =
+        wat::parse_str("(module (memory 257) (func (export \"value\") (result i32) i32.const 7))")
+            .expect("assemble oversized authored module");
+    assert_eq!(
+        run(&eng, &oversized, "value", &[], 1),
+        None,
+        "a module larger than the bounded Wasmtime store must be refused"
+    );
+}
+
+#[cfg(feature = "sandbox")]
+#[test]
+fn infinite_loop_exhausts_the_wasmtime_fuel_budget() {
+    let eng: Engine = Engine::new(&config()).expect("engine");
+    let finite: Vec<u8> =
+        wat::parse_str("(module (func (export \"value\") (result i32) i32.const 7))")
+            .expect("assemble finite authored module");
+    let runaway: Vec<u8> =
+        wat::parse_str("(module (func (export \"value\") (result i32) (loop br 0) i32.const 7))")
+            .expect("assemble looping authored module");
+    assert_eq!(run(&eng, &finite, "value", &[], 1), Some(vec![7]));
+    assert_eq!(
+        run(&eng, &runaway, "value", &[], 1),
+        None,
+        "the valid infinite loop must exhaust the bounded store's fuel"
+    );
 }
 
 #[cfg(feature = "sandbox")]
@@ -133,9 +153,13 @@ fn measure() -> Outcome {
     let mut equiv: usize = 0;
     let mut diverged: Vec<String> = Vec::new();
     let mut lift_failures: Vec<String> = Vec::new();
+    let plugin_dir: PathBuf = wat_corpus::workspace_root().join("corpus/wasm/plugins");
 
-    for path in wat_files() {
-        let text: String = fs::read_to_string(&path).expect("read wat");
+    for path in wat_corpus::verified_wat_files()
+        .into_iter()
+        .filter(|path: &PathBuf| !path.starts_with(&plugin_dir))
+    {
+        let text: String = wat_corpus::verified_wat_text(&path);
         let Ok(original): Result<Vec<u8>, _> = wat::parse_str(&text) else {
             continue;
         };

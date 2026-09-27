@@ -19,7 +19,10 @@ use disrobe_pass_wasm_deob::{
 
 const REFUSAL_CODE: &str = "DR-WASMDEOB-0003";
 use wasmparser::{FunctionBody, Parser, Payload, ValType};
-use wasmtime::{Config, Engine, Linker, Module, Store, Trap, Val};
+use wasmtime::{Config, Engine, Linker, Module, Store, StoreLimits, StoreLimitsBuilder, Trap, Val};
+
+const FUEL_BUDGET: u64 = 2_000_000;
+const STORE_MEMORY_LIMIT_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lang {
@@ -182,7 +185,27 @@ pub fn exports(sigs: &ModuleSignatures, ungraded: &[&str]) -> Vec<Export> {
 pub fn engine(configure: fn(&mut Config)) -> Engine {
     let mut config: Config = Config::new();
     configure(&mut config);
+    config.consume_fuel(true);
     Engine::new(&config).expect("wasmtime engine for the configured proposal set")
+}
+
+fn store_limits() -> StoreLimits {
+    StoreLimitsBuilder::new()
+        .memory_size(STORE_MEMORY_LIMIT_BYTES)
+        .table_elements(10_000)
+        .instances(1)
+        .tables(8)
+        .memories(8)
+        .build()
+}
+
+fn bounded_store(engine: &Engine) -> Store<StoreLimits> {
+    let mut store: Store<StoreLimits> = Store::new(engine, store_limits());
+    store.limiter(|limits: &mut StoreLimits| limits);
+    store
+        .set_fuel(FUEL_BUDGET)
+        .expect("the differential engine enables fuel metering");
+    store
 }
 
 #[must_use]
@@ -194,8 +217,11 @@ pub fn wasmtime_results(
 ) -> Vec<(String, Option<i32>)> {
     let eng: Engine = engine(configure);
     let module: Module = Module::new(&eng, bytes).expect("corpus compiles under wasmtime");
-    let mut store: Store<()> = Store::new(&eng, ());
-    let linker: Linker<()> = Linker::new(&eng);
+    let mut store: Store<StoreLimits> = bounded_store(&eng);
+    let mut linker: Linker<StoreLimits> = Linker::new(&eng);
+    linker
+        .define_unknown_imports_as_traps(&module)
+        .expect("untrusted WAT imports resolve only to traps");
     let instance: wasmtime::Instance = linker
         .instantiate(&mut store, &module)
         .expect("corpus instantiates");
@@ -207,6 +233,9 @@ pub fn wasmtime_results(
         for combo in arg_combos(exp.arity, battery) {
             let argv: Vec<Val> = combo.iter().map(|a: &i32| Val::I32(*a)).collect();
             let mut res: [Val; 1] = [Val::I32(0)];
+            store
+                .set_fuel(FUEL_BUDGET)
+                .expect("the differential engine enables fuel metering");
             let got: Option<i32> = match func.call(&mut store, &argv, &mut res) {
                 Ok(()) => match res[0] {
                     Val::I32(v) => Some(v),
@@ -237,8 +266,11 @@ pub fn wasmtime_trap(
     );
     let eng: Engine = engine(configure);
     let module: Module = Module::new(&eng, bytes).expect("corpus compiles under wasmtime");
-    let mut store: Store<()> = Store::new(&eng, ());
-    let linker: Linker<()> = Linker::new(&eng);
+    let mut store: Store<StoreLimits> = bounded_store(&eng);
+    let mut linker: Linker<StoreLimits> = Linker::new(&eng);
+    linker
+        .define_unknown_imports_as_traps(&module)
+        .expect("untrusted WAT imports resolve only to traps");
     let instance: wasmtime::Instance = linker
         .instantiate(&mut store, &module)
         .expect("corpus instantiates");
@@ -257,6 +289,43 @@ pub fn wasmtime_trap(
         );
     };
     *trap
+}
+
+#[test]
+fn bounded_store_rejects_a_module_above_the_memory_limit() {
+    let engine: Engine = engine(|_: &mut Config| {});
+    let module_bytes: Vec<u8> =
+        wat::parse_str("(module (memory 257) (func (export \"value\") (result i32) i32.const 7))")
+            .expect("oversized mutation-control module parses");
+    let module: Module = Module::new(&engine, module_bytes).expect("oversized module compiles");
+    let mut store: Store<StoreLimits> = bounded_store(&engine);
+    let linker: Linker<StoreLimits> = Linker::new(&engine);
+    assert!(
+        linker.instantiate(&mut store, &module).is_err(),
+        "removing the store memory limit would let this mutation-control module instantiate"
+    );
+}
+
+#[test]
+fn bounded_store_reports_fuel_exhaustion_for_an_infinite_loop() {
+    let loop_forever: Vec<u8> = wat::parse_str(
+        "(module (func (export \"spin\") (result i32) (loop $spin br $spin) unreachable))",
+    )
+    .expect("infinite-loop mutation-control module parses");
+    let results: Vec<(String, Option<i32>)> = wasmtime_results(
+        |_| {},
+        &loop_forever,
+        &[Export {
+            name: "spin".to_owned(),
+            arity: 0,
+        }],
+        &[0],
+    );
+    assert_eq!(
+        results,
+        vec![("spin ".to_owned(), None)],
+        "the fuel budget must reject an infinite Wasmtime execution"
+    );
 }
 
 #[must_use]

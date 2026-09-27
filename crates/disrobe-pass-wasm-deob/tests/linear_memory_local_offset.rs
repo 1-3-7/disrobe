@@ -1,15 +1,20 @@
 #![cfg(all(feature = "sandbox", feature = "chain"))]
 #![allow(clippy::expect_used, clippy::panic)]
 
+#[path = "common/bounded_wasmtime.rs"]
+mod bounded_wasmtime;
+#[path = "common/build_records.rs"]
+mod build_records;
+
+use bounded_wasmtime::{Bounded, fuel_engine};
+use build_records::{RecordSet, recorded_text};
 use disrobe_core::chain::Pass;
 use disrobe_core::{Artifact, Rung};
 use disrobe_pass_wasm_deob::chain_detector::WASM_DEOB_PASS;
 use disrobe_pass_wasm_deob::{RecoveredModule, recover_module};
 use walrus::ir::{Instr, InstrSeqId};
-use wasmtime::{Config, Engine, Linker, Module, Store, Val};
+use wasmtime::{Engine, Val};
 
-const CLEAN: &str = include_str!("fixtures/cff_memory_state.clean.wat");
-const OBFUSCATED: &str = include_str!("fixtures/cff_memory_state.obf.wat");
 const FUEL_BUDGET: u64 = 20_000_000;
 const ADDRESS: &str = "local.get 2\n    i32.const 16\n    i32.add";
 
@@ -19,48 +24,13 @@ enum Outcome {
     Trap,
 }
 
-struct Instance {
-    store: Store<()>,
-    instance: wasmtime::Instance,
+fn clean_source() -> String {
+    recorded_text(RecordSet::Fixtures, "cff_memory_state.clean.wat")
 }
 
-fn engine() -> Engine {
-    let mut config: Config = Config::new();
-    config.consume_fuel(true);
-    Engine::new(&config).expect("create Wasmtime engine")
-}
-
-fn instantiate(engine: &Engine, bytes: &[u8]) -> Instance {
-    let module: Module = Module::new(engine, bytes).expect("compile module");
-    let mut store: Store<()> = Store::new(engine, ());
-    store.set_fuel(FUEL_BUDGET).expect("set fuel");
-    let mut linker: Linker<()> = Linker::new(engine);
-    linker
-        .define_unknown_imports_as_traps(&module)
-        .expect("define imports");
-    let instance: wasmtime::Instance = linker
-        .instantiate(&mut store, &module)
-        .expect("instantiate module");
-    Instance { store, instance }
-}
-
-fn call(instance: &mut Instance, argument: i32) -> Outcome {
-    let Some(function): Option<wasmtime::Func> = instance
-        .instance
-        .get_func(&mut instance.store, "classify_memory")
-    else {
-        return Outcome::Trap;
-    };
-    let mut results: [Val; 1] = [Val::I32(0)];
-    let _ignored: Result<(), wasmtime::Error> = instance.store.set_fuel(FUEL_BUDGET);
-    if function
-        .call(&mut instance.store, &[Val::I32(argument)], &mut results)
-        .is_err()
-    {
-        return Outcome::Trap;
-    }
-    match results[0] {
-        Val::I32(value) => Outcome::Return(value),
+fn call(instance: &mut Bounded, argument: i32) -> Outcome {
+    match instance.call("classify_memory", &[Val::I32(argument)], Val::I32(0)) {
+        Some(Val::I32(value)) => Outcome::Return(value),
         _ => Outcome::Trap,
     }
 }
@@ -70,9 +40,9 @@ const fn battery() -> [i32; 13] {
 }
 
 fn assert_equivalent(reference: &[u8], candidate: &[u8]) {
-    let engine: Engine = engine();
-    let mut reference: Instance = instantiate(&engine, reference);
-    let mut candidate: Instance = instantiate(&engine, candidate);
+    let engine: Engine = fuel_engine();
+    let mut reference: Bounded = Bounded::instantiate(&engine, reference, FUEL_BUDGET);
+    let mut candidate: Bounded = Bounded::instantiate(&engine, candidate, FUEL_BUDGET);
     for argument in battery() {
         assert_eq!(
             call(&mut candidate, argument),
@@ -119,12 +89,13 @@ fn sequence_ids(function: &walrus::LocalFunction) -> Vec<InstrSeqId> {
 }
 
 fn local_offset_source() -> String {
-    let initialized: String = OBFUSCATED.replacen(
+    let obfuscated: String = recorded_text(RecordSet::Fixtures, "cff_memory_state.obf.wat");
+    let initialized: String = obfuscated.replacen(
         "i32.const 32\n    local.set 2",
         "i32.const 16\n    local.set 2",
         1,
     );
-    assert_ne!(initialized, OBFUSCATED);
+    assert_ne!(initialized, obfuscated);
     assert_eq!(initialized.matches("local.get 2").count(), 6);
     initialized.replace("local.get 2", ADDRESS)
 }
@@ -153,9 +124,9 @@ fn insert_before_dispatch(source: &str, instructions: &str) -> String {
 }
 
 fn assert_behavior_changed(reference: &str, mutant: &str) {
-    let engine: Engine = engine();
-    let mut reference: Instance = instantiate(&engine, &assemble(reference));
-    let mut mutant: Instance = instantiate(&engine, &assemble(mutant));
+    let engine: Engine = fuel_engine();
+    let mut reference: Bounded = Bounded::instantiate(&engine, &assemble(reference), FUEL_BUDGET);
+    let mut mutant: Bounded = Bounded::instantiate(&engine, &assemble(mutant), FUEL_BUDGET);
     assert!(
         battery()
             .into_iter()
@@ -195,7 +166,7 @@ fn mutate_store(bytes: &[u8], memory: bool) -> Vec<u8> {
 
 #[test]
 fn immutable_local_plus_offset_reloops_through_public_callers_under_wasmtime() {
-    let clean: Vec<u8> = assemble(CLEAN);
+    let clean: Vec<u8> = assemble(&clean_source());
     let obfuscated: Vec<u8> = assemble(&local_offset_source());
     assert_equivalent(&clean, &obfuscated);
 
@@ -220,7 +191,7 @@ fn immutable_local_plus_offset_reloops_through_public_callers_under_wasmtime() {
 
 #[test]
 fn wrong_successor_mutation_is_distinguished_under_wasmtime() {
-    let clean: Vec<u8> = assemble(CLEAN);
+    let clean: Vec<u8> = assemble(&clean_source());
     let mut mutant: String = local_offset_source();
     mutant = mutant.replacen(
         "i32.const 1\n                  i32.store offset=4",
@@ -233,9 +204,9 @@ fn wrong_successor_mutation_is_distinguished_under_wasmtime() {
         1,
     );
     let mutant: Vec<u8> = assemble(&mutant);
-    let engine: Engine = engine();
-    let mut clean: Instance = instantiate(&engine, &clean);
-    let mut mutant: Instance = instantiate(&engine, &mutant);
+    let engine: Engine = fuel_engine();
+    let mut clean: Bounded = Bounded::instantiate(&engine, &clean, FUEL_BUDGET);
+    let mut mutant: Bounded = Bounded::instantiate(&engine, &mutant, FUEL_BUDGET);
     assert!(
         battery()
             .into_iter()
@@ -285,11 +256,11 @@ fn aliases_mismatched_accesses_and_observable_memories_remain_walled() {
         1,
     );
     let exported: String = base.replacen(
-        "(memory (;0;) 1)",
-        "(memory (;0;) 1)\n  (export \"state_memory\" (memory 0))",
+        "(memory 1)",
+        "(memory 1)\n  (export \"state_memory\" (memory 0))",
         1,
     );
-    let shared: String = base.replacen("(memory (;0;) 1)", "(memory (;0;) 1 1 shared)", 1);
+    let shared: String = base.replacen("(memory 1)", "(memory 1 1 shared)", 1);
     for source in [&alias, &exported] {
         assert_walled(source);
     }
@@ -344,8 +315,11 @@ fn bulk_memory_writes_that_can_touch_the_selector_remain_walled() {
         &base,
         "i32.const 36\n    i32.const 0\n    i32.const 1\n    memory.init 0\n    data.drop 0",
     );
-    let initialized: String =
-        initialized.replacen("  (func (;0;)", "  (data \"\\01\")\n  (func (;0;)", 1);
+    let initialized: String = initialized.replacen(
+        "  (func $classify_memory",
+        "  (data \"\\01\")\n  (func $classify_memory",
+        1,
+    );
     let copied: String = insert_before_dispatch(
         &base,
         "i32.const 40\n    i32.const 1\n    i32.store8\n    i32.const 36\n    i32.const 40\n    i32.const 1\n    memory.copy",

@@ -1,65 +1,62 @@
 (module
-  (type (;0;) (func (param i32) (result i32)))
-  (global (;0;) (mut i32) (i32.const 0))
-  (export "classify_global" (func 0))
-  (export "state" (global 0))
-  (func (;0;) (type 0) (param i32) (result i32)
+  (global (export "state") (mut i32) (i32.const 0))
+  (func $classify_global (export "classify_global") (param i32) (result i32)
     (local i32)
     i32.const 0
-    local.set 1
-    i32.const 0
     global.set 0
-    loop (result i32) ;; label = @1
-      block ;; label = @2
-        block ;; label = @3
-          block ;; label = @4
-            block ;; label = @5
-              block ;; label = @6
+    loop $dispatch (result i32)
+      block $next
+        block $state3
+          block $state2
+            block $state1
+              block $state0
                 global.get 0
-                br_table 0 (;@6;) 1 (;@5;) 2 (;@4;) 3 (;@3;)
+                br_table $state0 $state1 $state2 $state3
               end
               local.get 0
               i32.const 1
-              i32.add
+              i32.shl
               local.set 1
-              block ;; label = @6
-                block ;; label = @7
+              block $chosen
+                block $otherwise
+                  i32.const 7
                   local.get 0
-                  i32.const 10
-                  i32.gt_s
-                  i32.const 1
-                  i32.and
+                  i32.lt_s
                   i32.eqz
-                  br_if 0 (;@7;)
+                  br_if $otherwise
                   i32.const 1
                   global.set 0
-                  br 1 (;@6;)
+                  br $chosen
                 end
                 i32.const 2
                 global.set 0
               end
-              br 3 (;@2;)
+              br $next
             end
             local.get 1
-            i32.const 3
+            i32.const 2
             i32.mul
+            local.get 0
+            i32.add
+            i32.const 30
+            i32.sub
             local.set 1
             i32.const 3
             global.set 0
-            br 2 (;@2;)
+            br $next
           end
           local.get 1
-          i32.const 7
+          i32.const 11
           i32.sub
           local.set 1
           i32.const 3
           global.set 0
-          br 1 (;@2;)
+          br $next
         end
         local.get 1
         return
       end
-      br 0 (;@1;)
+      br $dispatch
     end
   )
 )

@@ -40,6 +40,8 @@ gimli = { version = "0.32.3", default-features = false, features = ["read-all"],
 
 [dev-dependencies]
 divan = { workspace = true }
+sha2 = { workspace = true }
+toml = { workspace = true }
 wat = "1"
 wit-parser = "0.250"
 gimli = { version = "0.32.3", default-features = false, features = ["read-all", "write"] }

@@ -1,24 +1,21 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
 #[cfg(feature = "sandbox")]
-use disrobe_pass_wasm_deob::{StubInfo, UnwrapReport, detect_decrypt_stubs, unwrap_decryption};
+#[path = "common/build_records.rs"]
+mod build_records;
 
 #[cfg(feature = "sandbox")]
-const REAL_ONDEMAND_WAT: &str =
-    include_str!("../../../corpus/wasm/obf/real/wasmixer_ondemand.obf.wat");
+use build_records::{RecordSet, recorded_wat};
+#[cfg(feature = "sandbox")]
+use disrobe_pass_wasm_deob::{StubInfo, UnwrapReport, detect_decrypt_stubs, unwrap_decryption};
 
 #[cfg(feature = "sandbox")]
 const KNOWN_PLAINTEXT: &[u8] = b"disrobe/wasm/on-demand-decrypt";
 
 #[cfg(feature = "sandbox")]
-fn assemble(wat_text: &str) -> Vec<u8> {
-    wat::parse_str(wat_text).expect("corpus wat must assemble")
-}
-
-#[cfg(feature = "sandbox")]
 #[test]
 fn real_compiler_ondemand_thunk_decrypts_to_known_plaintext() {
-    let bytes: Vec<u8> = assemble(REAL_ONDEMAND_WAT);
+    let bytes: Vec<u8> = recorded_wat(RecordSet::Corpus, "real/wasmixer_ondemand.obf.wat");
 
     let stubs: Vec<StubInfo> = detect_decrypt_stubs(&bytes).expect("stub detection runs");
     assert!(

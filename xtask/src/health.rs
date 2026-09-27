@@ -2,9 +2,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 
 use eyre::{Result, WrapErr, bail};
+use serde::Deserialize;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
-use crate::fileio::read_text_bounded;
+use crate::fileio::{read_bytes_bounded, read_text_bounded, tracked_or_nonignored_files};
 
 const MAX_MANIFEST_BYTES: u64 = 256 * 1024;
 
@@ -107,6 +109,7 @@ pub(crate) fn run(root: &Path, as_json: bool) -> Result<()> {
     check_unwired_members(root, &member_manifests, &mut report);
     check_generator_disjointness(root, &mut report);
     check_feature_hidden_tests(root, &mut report);
+    check_wasm_build_records(root, &mut report);
 
     report.fact("workspace_members", json!(members.len()));
     report.fact("crate_directories", json!(crate_dirs.len()));
@@ -211,6 +214,303 @@ fn check_generator_disjointness(root: &Path, report: &mut Report) {
         }));
     }
     report.fact("corpus_generators", json!(audited));
+}
+
+const WASM_BUILD_RECORDS_SCHEMA: &str = "disrobe.wasm.build-records/v2";
+const MAX_WASM_RECORDS_BYTES: u64 = 256 * 1024;
+const MAX_WASM_ARTIFACT_BYTES: u64 = 8 * 1024 * 1024;
+
+#[derive(Debug, Clone, Copy)]
+struct WasmRecordSet {
+    directory: &'static str,
+    artifact_dir: Option<&'static str>,
+    name_prefix: &'static str,
+}
+
+const WASM_RECORD_SETS: [WasmRecordSet; 2] = [
+    WasmRecordSet {
+        directory: "corpus/wasm/obf",
+        artifact_dir: Some("real"),
+        name_prefix: "",
+    },
+    WasmRecordSet {
+        directory: "crates/disrobe-pass-wasm-deob/tests/fixtures",
+        artifact_dir: None,
+        name_prefix: "cff_",
+    },
+];
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WasmBuildRecords {
+    schema: String,
+    artifact: Vec<WasmBuildRecord>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WasmBuildRecord {
+    path: String,
+    sha256: String,
+    origin: WasmOrigin,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum WasmOrigin {
+    Built(WasmBuilt),
+    Authored(WasmAuthored),
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WasmBuilt {
+    source: String,
+    toolchain: String,
+    command: String,
+    rebuilt_sha256: String,
+    difference: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WasmAuthored {
+    note: String,
+}
+
+#[derive(Debug, Default)]
+struct WasmRecordAudit {
+    rebuilt_identical: usize,
+    rebuild_differences: usize,
+    authored: usize,
+    unrecorded: Vec<String>,
+    problems: Vec<String>,
+}
+
+fn check_wasm_build_records(root: &Path, report: &mut Report) {
+    const INTEGRITY: &str = "wasm-build-record";
+    let public_files: BTreeSet<String> = match tracked_or_nonignored_files(root) {
+        Ok(files) => files,
+        Err(error) => {
+            report.fail(
+                INTEGRITY,
+                format!("could not list tracked wasm artifacts: {error:#}"),
+            );
+            return;
+        }
+    };
+    check_wasm_build_records_with_files(root, &public_files, report);
+}
+
+fn check_wasm_build_records_with_files(
+    root: &Path,
+    public_files: &BTreeSet<String>,
+    report: &mut Report,
+) {
+    const INTEGRITY: &str = "wasm-build-record";
+    const RATCHET: &str = "wasm-unrecorded-artifact";
+    let mut totals: WasmRecordAudit = WasmRecordAudit::default();
+    for set in WASM_RECORD_SETS {
+        match audit_wasm_record_set(root, set, Some(public_files)) {
+            Ok(audit) => {
+                totals.rebuilt_identical += audit.rebuilt_identical;
+                totals.rebuild_differences += audit.rebuild_differences;
+                totals.authored += audit.authored;
+                totals.unrecorded.extend(audit.unrecorded);
+                totals.problems.extend(audit.problems);
+            }
+            Err(error) => report.fail(
+                INTEGRITY,
+                format!("could not audit {}/records.toml: {error:#}", set.directory),
+            ),
+        }
+    }
+    for problem in totals.problems {
+        report.fail(INTEGRITY, problem);
+    }
+    if !totals.unrecorded.is_empty() {
+        report.fail(
+            RATCHET,
+            format!(
+                "{} tracked or nonignored wasm artifact(s) in the wasm corpus and cff fixture scan have no build record: {}; the unrecorded count stays at zero, so record each one in its records.toml with the source, toolchain, command and rebuilt sha256 that produce it, or as hand-written WAT with a note",
+                totals.unrecorded.len(),
+                totals.unrecorded.join(", ")
+            ),
+        );
+    }
+    report.fact(
+        "wasm_build_records",
+        json!({
+            "rebuilt_identical": totals.rebuilt_identical,
+            "rebuild_differences": totals.rebuild_differences,
+            "authored": totals.authored,
+            "unrecorded": totals.unrecorded.len(),
+            "scanned_sets": WASM_RECORD_SETS.iter().map(|set: &WasmRecordSet| set.directory).collect::<Vec<&str>>(),
+        }),
+    );
+}
+
+fn is_sha256_hex(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte: u8| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn is_relative_inside(path: &str) -> bool {
+    !path.is_empty()
+        && Path::new(path)
+            .components()
+            .all(|component: Component<'_>| matches!(component, Component::Normal(_)))
+}
+
+fn audit_wasm_record_set(
+    root: &Path,
+    set: WasmRecordSet,
+    public_files: Option<&BTreeSet<String>>,
+) -> Result<WasmRecordAudit> {
+    let directory: PathBuf = root.join(set.directory);
+    let records_path: PathBuf = directory.join("records.toml");
+    let text: String = read_text_bounded(&records_path, MAX_WASM_RECORDS_BYTES)?;
+    let records: WasmBuildRecords =
+        toml::from_str(&text).wrap_err_with(|| format!("parsing {}", records_path.display()))?;
+    let label: String = format!("{}/records.toml", set.directory);
+    let mut audit: WasmRecordAudit = WasmRecordAudit::default();
+    if records.schema != WASM_BUILD_RECORDS_SCHEMA {
+        audit.problems.push(format!(
+            "{label} declares schema {}, not {WASM_BUILD_RECORDS_SCHEMA}",
+            records.schema
+        ));
+    }
+    let mut recorded: BTreeSet<&str> = BTreeSet::new();
+    for record in &records.artifact {
+        let path: &str = record.path.as_str();
+        if !recorded.insert(path) {
+            audit.problems.push(format!("{label} records {path} twice"));
+            continue;
+        }
+        if !is_relative_inside(path) {
+            audit.problems.push(format!(
+                "{label} records {path}, which is not a relative path inside {}",
+                set.directory
+            ));
+            continue;
+        }
+        match read_bytes_bounded(&directory.join(path), MAX_WASM_ARTIFACT_BYTES) {
+            Ok(bytes) => {
+                let digest: String = format!("{:x}", Sha256::digest(&bytes));
+                if digest != record.sha256 {
+                    audit.problems.push(format!(
+                        "{label}: {path} hashes to {digest}, not the recorded {}; a test refuses to run it until the record names the build that produced these bytes",
+                        record.sha256
+                    ));
+                }
+            }
+            Err(error) => audit
+                .problems
+                .push(format!("{label}: {path} cannot be read: {error:#}")),
+        }
+        match &record.origin {
+            WasmOrigin::Built(built) => {
+                let source_path: String =
+                    format!("{}/{source}", set.directory, source = built.source);
+                if !is_relative_inside(&built.source)
+                    || !directory.join(&built.source).is_file()
+                    || public_files
+                        .is_some_and(|files: &BTreeSet<String>| !files.contains(&source_path))
+                {
+                    audit.problems.push(format!(
+                        "{label}: {path} names the source {}, which is not committed beside it",
+                        built.source
+                    ));
+                }
+                if built.toolchain.trim().is_empty() || !built.command.contains(&built.source) {
+                    audit.problems.push(format!(
+                        "{label}: {path} must record its toolchain and a command that compiles {}",
+                        built.source
+                    ));
+                }
+                if !is_sha256_hex(&built.rebuilt_sha256) {
+                    audit.problems.push(format!(
+                        "{label}: {path} records rebuilt_sha256 {:?}, which is not a lowercase sha256 digest",
+                        built.rebuilt_sha256
+                    ));
+                }
+                let identical: bool = built.rebuilt_sha256 == record.sha256;
+                let difference: Option<&str> = built
+                    .difference
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|note: &&str| !note.is_empty());
+                match (identical, difference) {
+                    (true, None) => audit.rebuilt_identical += 1,
+                    (false, Some(_)) => audit.rebuild_differences += 1,
+                    (true, Some(_)) => audit.problems.push(format!(
+                        "{label}: {path} rebuilds to its committed bytes but still records a difference"
+                    )),
+                    (false, None) => audit.problems.push(format!(
+                        "{label}: {path} rebuilds to {}, not its committed {}, and records no difference; describe it, or regenerate the file from the recorded command",
+                        built.rebuilt_sha256, record.sha256
+                    )),
+                }
+            }
+            WasmOrigin::Authored(authored) => {
+                if authored.note.trim().is_empty() {
+                    audit.problems.push(format!(
+                        "{label}: {path} is recorded as hand-written without a note"
+                    ));
+                } else {
+                    audit.authored += 1;
+                }
+            }
+        }
+    }
+    let artifact_directory: PathBuf = match set.artifact_dir {
+        Some(name) => directory.join(name),
+        None => directory,
+    };
+    let mut committed: BTreeSet<String> = BTreeSet::new();
+    for entry in std::fs::read_dir(&artifact_directory)
+        .wrap_err_with(|| format!("listing {}", artifact_directory.display()))?
+    {
+        let entry: std::fs::DirEntry =
+            entry.wrap_err_with(|| format!("listing {}", artifact_directory.display()))?;
+        let Ok(name) = entry.file_name().into_string() else {
+            audit.problems.push(format!(
+                "{} holds a file whose name is not UTF-8",
+                artifact_directory.display()
+            ));
+            continue;
+        };
+        let loaded_by_graders: bool =
+            Path::new(&name)
+                .extension()
+                .is_some_and(|extension: &std::ffi::OsStr| {
+                    extension.eq_ignore_ascii_case("wat") || extension.eq_ignore_ascii_case("wasm")
+                });
+        if loaded_by_graders && name.starts_with(set.name_prefix) {
+            let path: String = match set.artifact_dir {
+                Some(dir) => format!("{dir}/{name}"),
+                None => name,
+            };
+            let workspace_path: String = format!("{}/{path}", set.directory);
+            if public_files.is_none_or(|files: &BTreeSet<String>| files.contains(&workspace_path)) {
+                committed.insert(path);
+            }
+        }
+    }
+    if committed.is_empty() {
+        audit.problems.push(format!(
+            "{} holds no wasm artifact, so the record audit compared nothing",
+            artifact_directory.display()
+        ));
+    }
+    audit.unrecorded = committed
+        .into_iter()
+        .filter(|path: &String| !recorded.contains(path.as_str()))
+        .map(|path: String| format!("{}/{path}", set.directory))
+        .collect();
+    Ok(audit)
 }
 
 pub(crate) fn workspace_members(root_doc: &toml::Value) -> BTreeSet<String> {
@@ -746,6 +1046,7 @@ fn collect_workspace_refs(section: Option<&toml::Value>, out: &mut BTreeSet<Stri
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -898,6 +1199,220 @@ mod tests {
                 .iter()
                 .any(|finding: &Finding| finding.check == "internal-version-pin")
         );
+        Ok(())
+    }
+
+    const TEST_WASM_SET: WasmRecordSet = WasmRecordSet {
+        directory: "set",
+        artifact_dir: Some("real"),
+        name_prefix: "",
+    };
+
+    const AUTHORED_MODULE: &[u8] = b"(module)\n";
+
+    fn sha256_hex(bytes: &[u8]) -> String {
+        format!("{:x}", Sha256::digest(bytes))
+    }
+
+    fn wasm_record_set(records: &str, files: &[(&str, &[u8])]) -> Result<tempfile::TempDir> {
+        let root: tempfile::TempDir = tempfile::tempdir()?;
+        let directory: PathBuf = root.path().join(TEST_WASM_SET.directory);
+        std::fs::create_dir_all(directory.join("real"))?;
+        std::fs::write(directory.join("records.toml"), records)?;
+        for (path, bytes) in files {
+            std::fs::write(directory.join(path), bytes)?;
+        }
+        Ok(root)
+    }
+
+    fn authored_record(path: &str, sha256: &str) -> String {
+        format!(
+            r#"schema = "{WASM_BUILD_RECORDS_SCHEMA}"
+
+[[artifact]]
+path = "{path}"
+sha256 = "{sha256}"
+origin.authored.note = "hand-written for this test"
+"#
+        )
+    }
+
+    fn built_record(sha256: &str, rebuilt_sha256: &str, difference: Option<&str>) -> String {
+        let difference_line: String = difference.map_or_else(String::new, |note: &str| {
+            format!("origin.built.difference = \"{note}\"\n")
+        });
+        format!(
+            r#"schema = "{WASM_BUILD_RECORDS_SCHEMA}"
+
+[[artifact]]
+path = "real/a.wat"
+sha256 = "{sha256}"
+origin.built.source = "a.c"
+origin.built.toolchain = "clang 22.1.6"
+origin.built.command = "clang --target=wasm32 -o real/a.wasm a.c && wasm-tools print real/a.wasm > real/a.wat"
+origin.built.rebuilt_sha256 = "{rebuilt_sha256}"
+{difference_line}"#
+        )
+    }
+
+    fn wasm_record_sets(
+        corpus_records: &str,
+        corpus_files: &[(&str, &[u8])],
+        fixture_records: &str,
+        fixture_files: &[(&str, &[u8])],
+    ) -> Result<(tempfile::TempDir, BTreeSet<String>)> {
+        let root: tempfile::TempDir = tempfile::tempdir()?;
+        let corpus: PathBuf = root.path().join(WASM_RECORD_SETS[0].directory);
+        let fixtures: PathBuf = root.path().join(WASM_RECORD_SETS[1].directory);
+        std::fs::create_dir_all(corpus.join("real"))?;
+        std::fs::create_dir_all(&fixtures)?;
+        std::fs::write(corpus.join("records.toml"), corpus_records)?;
+        std::fs::write(fixtures.join("records.toml"), fixture_records)?;
+        let mut public_files: BTreeSet<String> = BTreeSet::new();
+        for (path, bytes) in corpus_files {
+            std::fs::write(corpus.join(path), bytes)?;
+            public_files.insert(format!("{}/{path}", WASM_RECORD_SETS[0].directory));
+        }
+        for (path, bytes) in fixture_files {
+            std::fs::write(fixtures.join(path), bytes)?;
+            public_files.insert(format!("{}/{path}", WASM_RECORD_SETS[1].directory));
+        }
+        Ok((root, public_files))
+    }
+
+    #[test]
+    fn a_fully_recorded_wasm_set_passes_the_record_audit() -> Result<()> {
+        let root: tempfile::TempDir = wasm_record_set(
+            &authored_record("real/a.wat", &sha256_hex(AUTHORED_MODULE)),
+            &[("real/a.wat", AUTHORED_MODULE)],
+        )?;
+        let audit: WasmRecordAudit = audit_wasm_record_set(root.path(), TEST_WASM_SET, None)?;
+        assert_eq!(audit.problems, Vec::<String>::new());
+        assert_eq!(audit.unrecorded, Vec::<String>::new());
+        assert_eq!(audit.authored, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn a_wasm_artifact_without_a_record_breaks_the_zero_ratchet() -> Result<()> {
+        let root: tempfile::TempDir = wasm_record_set(
+            &authored_record("real/a.wat", &sha256_hex(AUTHORED_MODULE)),
+            &[
+                ("real/a.wat", AUTHORED_MODULE),
+                ("real/b.obf.wat", AUTHORED_MODULE),
+                ("real/notes.txt", b"not a module"),
+            ],
+        )?;
+        let audit: WasmRecordAudit = audit_wasm_record_set(root.path(), TEST_WASM_SET, None)?;
+        assert_eq!(audit.unrecorded, vec!["set/real/b.obf.wat".to_owned()]);
+        Ok(())
+    }
+
+    #[test]
+    fn a_wasm_artifact_whose_bytes_drift_from_its_record_fails_the_audit() -> Result<()> {
+        let root: tempfile::TempDir = wasm_record_set(
+            &authored_record("real/a.wat", &sha256_hex(b"(module (memory 1))\n")),
+            &[("real/a.wat", AUTHORED_MODULE)],
+        )?;
+        let audit: WasmRecordAudit = audit_wasm_record_set(root.path(), TEST_WASM_SET, None)?;
+        assert_eq!(audit.problems.len(), 1, "{:?}", audit.problems);
+        assert!(
+            audit.problems[0].starts_with(&format!(
+                "set/records.toml: real/a.wat hashes to {}",
+                sha256_hex(AUTHORED_MODULE)
+            )),
+            "{:?}",
+            audit.problems
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn wasm_build_record_health_reports_unrecorded_and_drifted_artifacts() -> Result<()> {
+        let correct: String = sha256_hex(AUTHORED_MODULE);
+        let drifted: String = sha256_hex(b"(module (memory 1))\n");
+        let (root, public_files): (tempfile::TempDir, BTreeSet<String>) = wasm_record_sets(
+            &authored_record("real/a.wat", &drifted),
+            &[
+                ("real/a.wat", AUTHORED_MODULE),
+                ("real/b.wat", AUTHORED_MODULE),
+            ],
+            &authored_record("cff_fixture.wat", &correct),
+            &[("cff_fixture.wat", AUTHORED_MODULE)],
+        )?;
+        let mut report: Report = Report::default();
+        check_wasm_build_records_with_files(root.path(), &public_files, &mut report);
+        let json: Value = report.to_json();
+        let findings: &[Value] = json["findings"]
+            .as_array()
+            .expect("health findings are an array");
+        assert!(findings.iter().any(|finding: &Value| {
+            finding["check"] == "wasm-unrecorded-artifact"
+                && finding["detail"]
+                    .as_str()
+                    .is_some_and(|detail: &str| detail.contains("corpus/wasm/obf/real/b.wat"))
+        }));
+        assert!(
+            findings
+                .iter()
+                .any(|finding: &Value| finding["check"] == "wasm-build-record")
+        );
+        assert_eq!(json["facts"]["wasm_build_records"]["unrecorded"], 1);
+        Ok(())
+    }
+
+    #[test]
+    fn a_differing_rebuild_must_record_its_difference() -> Result<()> {
+        let committed: String = sha256_hex(AUTHORED_MODULE);
+        let rebuilt: String = sha256_hex(b"(module (func))\n");
+        let files: [(&str, &[u8]); 2] = [("real/a.wat", AUTHORED_MODULE), ("a.c", b"int a;\n")];
+
+        let silent: tempfile::TempDir =
+            wasm_record_set(&built_record(&committed, &rebuilt, None), &files)?;
+        let audit: WasmRecordAudit = audit_wasm_record_set(silent.path(), TEST_WASM_SET, None)?;
+        assert_eq!(
+            audit.problems,
+            vec![format!(
+                "set/records.toml: real/a.wat rebuilds to {rebuilt}, not its committed {committed}, and records no difference; describe it, or regenerate the file from the recorded command"
+            )]
+        );
+
+        let described: tempfile::TempDir = wasm_record_set(
+            &built_record(
+                &committed,
+                &rebuilt,
+                Some("the rebuild orders one loop differently"),
+            ),
+            &files,
+        )?;
+        let audit: WasmRecordAudit = audit_wasm_record_set(described.path(), TEST_WASM_SET, None)?;
+        assert_eq!(audit.problems, Vec::<String>::new());
+        assert_eq!(audit.rebuild_differences, 1);
+
+        let identical: tempfile::TempDir = wasm_record_set(
+            &built_record(&committed, &committed, Some("nothing differs")),
+            &files,
+        )?;
+        let audit: WasmRecordAudit = audit_wasm_record_set(identical.path(), TEST_WASM_SET, None)?;
+        assert_eq!(
+            audit.problems,
+            vec![
+                "set/records.toml: real/a.wat rebuilds to its committed bytes but still records a difference"
+                    .to_owned()
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_committed_wasm_build_records_pass_the_audit() -> Result<()> {
+        let root: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let public_files: BTreeSet<String> = tracked_or_nonignored_files(&root)?;
+        for set in WASM_RECORD_SETS {
+            let audit: WasmRecordAudit = audit_wasm_record_set(&root, set, Some(&public_files))?;
+            assert_eq!(audit.problems, Vec::<String>::new(), "{}", set.directory);
+            assert_eq!(audit.unrecorded, Vec::<String>::new(), "{}", set.directory);
+        }
         Ok(())
     }
 }

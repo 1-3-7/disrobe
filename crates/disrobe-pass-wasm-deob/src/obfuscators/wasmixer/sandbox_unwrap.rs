@@ -13,6 +13,12 @@ const EPOCH_DEADLINE_TICKS: u64 = 1;
 #[cfg(feature = "sandbox")]
 const WALL_DEADLINE_MS: u64 = 2_000;
 
+#[cfg(feature = "sandbox")]
+const MEMORY_LIMIT_BYTES: usize = 64 * 1024 * 1024;
+
+#[cfg(feature = "sandbox")]
+const TABLE_ELEMENT_LIMIT: usize = 1 << 16;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnwrappedSegment {
     pub call_site_offset: usize,
@@ -348,12 +354,18 @@ fn run_probe(
     bytes: &[u8],
     probe: &DecryptProbe,
 ) -> Option<Vec<u8>> {
-    use wasmtime::{Linker, Store};
+    use wasmtime::{Linker, Store, StoreLimits, StoreLimitsBuilder};
 
-    let mut store: Store<()> = Store::new(engine, ());
+    let limits: StoreLimits = StoreLimitsBuilder::new()
+        .memory_size(MEMORY_LIMIT_BYTES)
+        .table_elements(TABLE_ELEMENT_LIMIT)
+        .instances(1)
+        .build();
+    let mut store: Store<StoreLimits> = Store::new(engine, limits);
+    store.limiter(|limits: &mut StoreLimits| limits);
     store.set_fuel(FUEL_BUDGET).ok()?;
     store.set_epoch_deadline(EPOCH_DEADLINE_TICKS);
-    let mut linker: Linker<()> = Linker::new(engine);
+    let mut linker: Linker<StoreLimits> = Linker::new(engine);
     linker.define_unknown_imports_as_traps(module).ok()?;
     let instance: wasmtime::Instance = linker.instantiate(&mut store, module).ok()?;
 
@@ -411,7 +423,7 @@ fn export_name_for_func_index(bytes: &[u8], fn_index: u32) -> Option<String> {
 #[cfg(feature = "sandbox")]
 fn lookup_typed_decrypt(
     instance: &wasmtime::Instance,
-    store: &mut wasmtime::Store<()>,
+    store: &mut wasmtime::Store<wasmtime::StoreLimits>,
     bytes: &[u8],
     fn_index: u32,
 ) -> Option<wasmtime::TypedFunc<(i32, i32), i32>> {
@@ -442,7 +454,7 @@ fn lookup_typed_decrypt(
 #[cfg(feature = "sandbox")]
 fn read_instance_memory(
     instance: &wasmtime::Instance,
-    store: &mut wasmtime::Store<()>,
+    store: &mut wasmtime::Store<wasmtime::StoreLimits>,
     offset: i32,
     len: i32,
 ) -> Option<Vec<u8>> {
@@ -668,6 +680,70 @@ mod sandbox_tests {
         assert_eq!(segment.off, 0, "relative thunk is driven with off=0");
         assert_eq!(segment.len, plain.len() as i32);
         assert_eq!(segment.source, ProbeSource::ActiveDataSegment);
+    }
+
+    #[test]
+    fn a_thunk_that_grows_memory_past_the_cap_is_declined() {
+        let key: u8 = 0x4b;
+        let cipher: String = hex_escape(b"helloworld!", key);
+        let wat_text: String = format!(
+            r#"
+            (module
+              (memory (export "memory") 1)
+              (data (i32.const 256) "{cipher}")
+              (func (export "__disrobe_decrypt_0") (param i32 i32) (result i32)
+                (local i32 i32 i32)
+                i32.const 1024
+                memory.grow
+                i32.const -1
+                i32.eq
+                if
+                  unreachable
+                end
+                local.get 0
+                i32.const 256
+                i32.add
+                local.set 2
+                block
+                  loop
+                    local.get 3
+                    local.get 1
+                    i32.ge_s
+                    br_if 1
+                    local.get 2
+                    local.get 3
+                    i32.add
+                    local.tee 4
+                    local.get 4
+                    i32.load8_u
+                    i32.const {key}
+                    i32.xor
+                    i32.store8
+                    local.get 3
+                    i32.const 1
+                    i32.add
+                    local.set 3
+                    br 0
+                  end
+                end
+                local.get 2))
+        "#
+        );
+        let Some(bytes): Option<Vec<u8>> = assemble(&wat_text) else {
+            panic!("memory-growth fixture must assemble");
+        };
+        let report: UnwrapReport =
+            unwrap_decryption(&bytes, &[stub(0)]).expect("the sandbox runs the growing thunk");
+        assert_eq!(
+            report.recovered(),
+            0,
+            "a thunk that needs 65 MiB of linear memory must not run past the 64 MiB cap: {:?}",
+            report.segments
+        );
+        assert_eq!(
+            report.unresolved[0].reason,
+            UnresolvedReason::SandboxDeclined
+        );
     }
 
     #[test]
