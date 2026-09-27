@@ -38,13 +38,26 @@ fn corpus(rel: &str) -> PathBuf {
     workspace_root().join("corpus").join(rel)
 }
 
+const REQUIRE_LOCAL_CORPUS_VAR: &str = "DISROBE_REQUIRE_DISCORD_LOCAL_CORPUS";
+
 fn read_fixture(rel: &str) -> Option<Vec<u8>> {
     let path: PathBuf = corpus(rel);
-    if !path.exists() {
-        eprintln!("SKIP fixture missing: {path:?}");
+    if !path.is_file() {
+        assert!(
+            std::env::var_os(REQUIRE_LOCAL_CORPUS_VAR).is_none(),
+            "{REQUIRE_LOCAL_CORPUS_VAR} is set, so the local-only sample {} must exist",
+            path.display()
+        );
+        eprintln!(
+            "UNGRADED: the local-only sample {} is absent; set {REQUIRE_LOCAL_CORPUS_VAR}=1 to fail instead",
+            path.display()
+        );
         return None;
     }
-    std::fs::read(&path).ok()
+    Some(
+        std::fs::read(&path)
+            .unwrap_or_else(|error: std::io::Error| panic!("reading {}: {error}", path.display())),
+    )
 }
 
 fn first_occurrence(haystack: &[u8], needle: &[u8]) -> Option<usize> {

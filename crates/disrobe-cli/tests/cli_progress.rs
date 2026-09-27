@@ -287,10 +287,9 @@ fn compile_pyc(python: &std::path::Path, src: &std::path::Path, dst: &std::path:
 
 #[test]
 fn py_decompile_json_output_is_clean_with_no_progress_bleed() {
-    let Some(python): Option<PathBuf> = locate_python() else {
-        eprintln!("skipping py_decompile_json clean test: no python on PATH");
-        return;
-    };
+    let python: PathBuf = locate_python().expect(
+        "python is on PATH in every CI job that runs these tests, and the pyc under test is compiled by it",
+    );
     let (_dir_scratch, dir): (disrobe_core::scratch::ScratchDir, PathBuf) =
         temp_path("py-dec-progress", "dir");
     std::fs::create_dir_all(&dir).unwrap();
@@ -298,10 +297,11 @@ fn py_decompile_json_output_is_clean_with_no_progress_bleed() {
     let pyc_path: PathBuf = dir.join("greet.pyc");
     let out_dir: PathBuf = dir.join("recovered");
     write_bytes(&py_path, b"def greet(name):\n    return f'hi {name}'\n");
-    if !compile_pyc(&python, &py_path, &pyc_path) {
-        eprintln!("skipping py_decompile_json clean test: py_compile failed");
-        return;
-    }
+    assert!(
+        compile_pyc(&python, &py_path, &pyc_path),
+        "py_compile failed for {}",
+        py_path.display()
+    );
     let r: Run = run_disrobe(&[
         "--json",
         "py",
@@ -329,10 +329,9 @@ fn py_decompile_json_output_is_clean_with_no_progress_bleed() {
 
 #[test]
 fn py_decompile_progress_always_stays_plain_on_a_non_tty() {
-    let Some(python): Option<PathBuf> = locate_python() else {
-        eprintln!("skipping py_decompile progress-always test: no python on PATH");
-        return;
-    };
+    let python: PathBuf = locate_python().expect(
+        "python is on PATH in every CI job that runs these tests, and the pyc under test is compiled by it",
+    );
     let (_dir_scratch, dir): (disrobe_core::scratch::ScratchDir, PathBuf) =
         temp_path("py-dec-always", "dir");
     std::fs::create_dir_all(&dir).unwrap();
@@ -340,10 +339,11 @@ fn py_decompile_progress_always_stays_plain_on_a_non_tty() {
     let pyc_path: PathBuf = dir.join("greet.pyc");
     let out_dir: PathBuf = dir.join("recovered");
     write_bytes(&py_path, b"def greet(name):\n    return f'hi {name}'\n");
-    if !compile_pyc(&python, &py_path, &pyc_path) {
-        eprintln!("skipping py_decompile progress-always test: py_compile failed");
-        return;
-    }
+    assert!(
+        compile_pyc(&python, &py_path, &pyc_path),
+        "py_compile failed for {}",
+        py_path.display()
+    );
     let r: Run = run_disrobe(&[
         "--progress",
         "always",

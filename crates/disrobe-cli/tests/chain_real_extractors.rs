@@ -77,13 +77,16 @@ fn corpus(rel: &str) -> PathBuf {
     workspace_root().join("corpus").join(rel)
 }
 
-fn read_fixture(rel: &str) -> Option<Vec<u8>> {
+fn read_fixture(rel: &str) -> Vec<u8> {
     let path: PathBuf = corpus(rel);
-    if !path.exists() {
-        eprintln!("SKIP fixture missing: {path:?}");
-        return None;
-    }
-    std::fs::read(&path).ok()
+    assert!(
+        path.is_file(),
+        "the committed fixture {} is missing; restore it from git, because these tests never \
+         rebuild fixtures",
+        path.display()
+    );
+    std::fs::read(&path)
+        .unwrap_or_else(|error: std::io::Error| panic!("reading {}: {error}", path.display()))
 }
 
 fn run_wasm_auto_cli(
@@ -194,9 +197,7 @@ fn assert_pass_fans_out_recovered_children(doc: &ChainDocument, expected: &str) 
 
 #[test]
 fn real_extractor_jvm_classfile() {
-    let Some(bytes): Option<Vec<u8>> = read_fixture("jvm/proguard/Hello-baseline.class") else {
-        return;
-    };
+    let bytes: Vec<u8> = read_fixture("jvm/proguard/Hello-baseline.class");
     let doc: ChainDocument = run_chain_auto(bytes, "corpus://jvm/Hello-baseline.class");
     assert_pass_id(&doc, "jvm.classify");
     assert_pass_fans_out_recovered_children(&doc, "jvm.classify");
@@ -204,9 +205,7 @@ fn real_extractor_jvm_classfile() {
 
 #[test]
 fn real_extractor_jvm_dex() {
-    let Some(bytes): Option<Vec<u8>> = read_fixture("jvm/dex/Hello.dex") else {
-        return;
-    };
+    let bytes: Vec<u8> = read_fixture("jvm/dex/Hello.dex");
     let doc: ChainDocument = run_chain_auto(bytes, "corpus://jvm/Hello.dex");
     assert_pass_id(&doc, "jvm.classify");
     assert_pass_fans_out_recovered_children(&doc, "jvm.classify");
@@ -214,9 +213,7 @@ fn real_extractor_jvm_dex() {
 
 #[test]
 fn real_extractor_dotnet_pe() {
-    let Some(bytes): Option<Vec<u8>> = read_fixture("dotnet/HelloApp.dll") else {
-        return;
-    };
+    let bytes: Vec<u8> = read_fixture("dotnet/HelloApp.dll");
     let doc: ChainDocument = run_chain_auto(bytes, "corpus://dotnet/HelloApp.dll");
     let node: &disrobe_core::chain::NodeDoc =
         pick_first_pass_node(&doc).expect("must dispatch at least one pass");
@@ -229,9 +226,7 @@ fn real_extractor_dotnet_pe() {
 
 #[test]
 fn real_extractor_beam_module() {
-    let Some(bytes): Option<Vec<u8>> = read_fixture("beam/erlang/hello.beam") else {
-        return;
-    };
+    let bytes: Vec<u8> = read_fixture("beam/erlang/hello.beam");
     let doc: ChainDocument = run_chain_auto(bytes, "corpus://beam/hello.beam");
     assert_pass_id(&doc, "beam.classify");
     assert_pass_completes(&doc, "beam.classify");
@@ -239,9 +234,7 @@ fn real_extractor_beam_module() {
 
 #[test]
 fn real_extractor_lua_bytecode() {
-    let Some(bytes): Option<Vec<u8>> = read_fixture("lua/luac/hello.5_3.luac") else {
-        return;
-    };
+    let bytes: Vec<u8> = read_fixture("lua/luac/hello.5_3.luac");
     let doc: ChainDocument = run_chain_auto(bytes, "corpus://lua/hello.5_3.luac");
     assert_pass_id(&doc, "lua.deob");
     assert_pass_fans_out_recovered_children(&doc, "lua.deob");
@@ -249,9 +242,9 @@ fn real_extractor_lua_bytecode() {
 
 #[test]
 fn real_extractor_wasm_module() {
-    let Some(bytes): Option<Vec<u8>> = read_fixture("wasm/wat/custom_page_size.wasm") else {
-        return;
-    };
+    let text: String = String::from_utf8(read_fixture("wasm/wat/custom_page_size.wat"))
+        .expect("the committed wat fixture is utf-8");
+    let bytes: Vec<u8> = wat::parse_str(&text).expect("the committed wat fixture assembles");
     let doc: ChainDocument = run_chain_auto(bytes, "corpus://wasm/module.wasm");
     assert_pass_id(&doc, "wasm.deob");
     assert_pass_completes(&doc, "wasm.deob");
@@ -364,9 +357,7 @@ fn wasm_auto_json_names_a_static_recovery_refusal() {
 
 #[test]
 fn real_extractor_php_source() {
-    let Some(bytes): Option<Vec<u8>> = read_fixture("php/baseline/hello.php") else {
-        return;
-    };
+    let bytes: Vec<u8> = read_fixture("php/baseline/hello.php");
     let doc: ChainDocument = run_chain_auto(bytes, "corpus://php/hello.php");
     assert_pass_id(&doc, "php.peel");
     assert_pass_completes(&doc, "php.peel");
@@ -374,9 +365,7 @@ fn real_extractor_php_source() {
 
 #[test]
 fn real_extractor_ruby_yarv_binary() {
-    let Some(bytes): Option<Vec<u8>> = read_fixture("ruby/mri/yarv/hello.rb.yarvc") else {
-        return;
-    };
+    let bytes: Vec<u8> = read_fixture("ruby/mri/yarv/hello.rb.yarvc");
     let doc: ChainDocument = run_chain_auto(bytes, "corpus://ruby/hello.rb.yarvc");
     assert_pass_id(&doc, "ruby.classify");
     assert_pass_completes(&doc, "ruby.classify");
@@ -401,9 +390,7 @@ fn real_extractor_py_decompile_cpython_pyc() {
         "python/decompile/playground/__pycache__/edge_cases_3_10.cpython-310.pyc",
     ];
     for rel in candidates {
-        let Some(bytes): Option<Vec<u8>> = read_fixture(rel) else {
-            continue;
-        };
+        let bytes: Vec<u8> = read_fixture(rel);
         let doc: ChainDocument = run_chain_auto(bytes, &format!("corpus://{rel}"));
         let node: &disrobe_core::chain::NodeDoc =
             pick_first_pass_node(&doc).expect("must dispatch a pyc-handling pass");
@@ -412,9 +399,7 @@ fn real_extractor_py_decompile_cpython_pyc() {
             pass == "py.decompile" || pass == "py.disasm",
             "expected py.decompile or py.disasm for {rel}, got {pass}",
         );
-        return;
     }
-    eprintln!("SKIP: no cpython pyc fixtures available");
 }
 
 #[derive(Debug, Default)]
@@ -462,10 +447,7 @@ impl PassRunner for CapturingPassRunner {
 #[test]
 fn real_extractor_py_decompile_3_12_emits_python_source() {
     let rel: &str = "python/decompile/playground/__pycache__/edge_cases_3_12.cpython-312.pyc";
-    let Some(bytes): Option<Vec<u8>> = read_fixture(rel) else {
-        eprintln!("SKIP: 3.12 pyc fixture missing");
-        return;
-    };
+    let bytes: Vec<u8> = read_fixture(rel);
     let registry: PassRegistry = registry_full();
     let runner: CapturingPassRunner = CapturingPassRunner::default();
     let driver: ChainDriver<'_, CapturingPassRunner> =
@@ -537,10 +519,7 @@ fn utf8(envelope: &[u8], pass_id: &str) -> String {
 #[test]
 fn real_extractor_dotnet_emits_csharp_source_not_summary() {
     let rel: &str = "dotnet/HelloApp.dll";
-    let Some(bytes): Option<Vec<u8>> = read_fixture(rel) else {
-        eprintln!("SKIP: dotnet fixture missing");
-        return;
-    };
+    let bytes: Vec<u8> = read_fixture(rel);
     let Some(envelope): Option<Vec<u8>> =
         capture_pass(bytes, &format!("corpus://{rel}"), "dotnet.classify")
     else {
@@ -563,10 +542,7 @@ fn real_extractor_dotnet_emits_csharp_source_not_summary() {
 #[test]
 fn real_extractor_jvm_dex_emits_java_source_not_summary() {
     let rel: &str = "jvm/dex/Hello.dex";
-    let Some(bytes): Option<Vec<u8>> = read_fixture(rel) else {
-        eprintln!("SKIP: dex fixture missing");
-        return;
-    };
+    let bytes: Vec<u8> = read_fixture(rel);
     let envelope: Vec<u8> = capture_pass(bytes, &format!("corpus://{rel}"), "jvm.classify")
         .expect("jvm.classify must dispatch for a dex");
     let source: String = utf8(&envelope, "jvm.classify");
@@ -587,9 +563,7 @@ fn real_extractor_ruby_yarv_emits_ruby_source_not_analysis() {
         "ruby/mri/yarv/greeter.rb.yarvc",
         "ruby/mri/yarv/hello.rb.yarvc",
     ] {
-        let Some(bytes): Option<Vec<u8>> = read_fixture(rel) else {
-            continue;
-        };
+        let bytes: Vec<u8> = read_fixture(rel);
         let envelope: Vec<u8> = capture_pass(bytes, &format!("corpus://{rel}"), "ruby.classify")
             .expect("ruby.classify must dispatch for a yarv binary");
         let source: String = utf8(&envelope, "ruby.classify");
@@ -602,18 +576,13 @@ fn real_extractor_ruby_yarv_emits_ruby_source_not_analysis() {
             !source.contains("\"flavor\"") && !source.contains("\"input_hash\""),
             "ruby yarv chain output still leaks the RubyAnalysis json for {rel}",
         );
-        return;
     }
-    eprintln!("SKIP: no ruby yarv fixtures available");
 }
 
 #[test]
 fn real_extractor_swift_emits_swift_source_not_report() {
     let rel: &str = "mobile/macho-mac/SwiftHello.original";
-    let Some(bytes): Option<Vec<u8>> = read_fixture(rel) else {
-        eprintln!("SKIP: swift macho fixture missing");
-        return;
-    };
+    let bytes: Vec<u8> = read_fixture(rel);
     let Some(envelope): Option<Vec<u8>> =
         capture_pass(bytes, &format!("corpus://{rel}"), "swift-objc.classify")
     else {
@@ -643,14 +612,9 @@ fn real_extractor_py_disasm_emits_listing_not_json() {
         "python/decompile/legacy/compiled/binary_ops.3.11.pyc",
         "python/decompile/legacy/compiled/binary_slice.3.12.pyc",
     ] {
-        let Some(bytes): Option<Vec<u8>> = read_fixture(rel) else {
-            continue;
-        };
-        let Some(envelope): Option<Vec<u8>> =
-            capture_pass(bytes, &format!("corpus://{rel}"), "py.disasm")
-        else {
-            continue;
-        };
+        let bytes: Vec<u8> = read_fixture(rel);
+        let envelope: Vec<u8> = capture_pass(bytes, &format!("corpus://{rel}"), "py.disasm")
+            .unwrap_or_else(|| panic!("py.disasm must dispatch for {rel}"));
         let text: String = utf8(&envelope, "py.disasm");
         assert!(
             !text.trim_start().starts_with('{') && !text.contains("\"instruction_count\""),
@@ -662,9 +626,7 @@ fn real_extractor_py_disasm_emits_listing_not_json() {
             "py.disasm chain output has no recognizable cpython opcode for {rel}; first 200: {:?}",
             text.chars().take(200).collect::<String>(),
         );
-        return;
     }
-    eprintln!("SKIP: no cpython pyc fixtures available for py.disasm");
 }
 
 type NamedMember = (String, Vec<u8>);
@@ -774,10 +736,7 @@ fn real_extractor_container_zip_carves_each_member_through_chain() {
 #[test]
 fn real_extractor_pyfreeze_emits_manifest_not_input_unchanged() {
     let rel: &str = "python/freezers/shiv/hello.pyz";
-    let Some(bytes): Option<Vec<u8>> = read_fixture(rel) else {
-        eprintln!("SKIP: shiv pyz fixture missing");
-        return;
-    };
+    let bytes: Vec<u8> = read_fixture(rel);
     let original: Vec<u8> = bytes.clone();
     let Some(envelope): Option<Vec<u8>> =
         capture_pass(bytes, &format!("corpus://{rel}"), "pyfreeze.extract")
@@ -814,10 +773,12 @@ fn real_extractor_go_emits_symbol_listing_not_json() {
         p.push("hello_normal.exe");
         p
     };
-    let Ok(bytes): std::io::Result<Vec<u8>> = std::fs::read(&fixture) else {
-        eprintln!("SKIP: go fixture missing at {}", fixture.display());
-        return;
-    };
+    let bytes: Vec<u8> = std::fs::read(&fixture).unwrap_or_else(|error: std::io::Error| {
+        panic!(
+            "the committed go fixture {} is unreadable; restore it from git: {error}",
+            fixture.display()
+        )
+    });
     let Some(envelope): Option<Vec<u8>> =
         capture_pass(bytes, "corpus://go/hello_normal.exe", "go.classify")
     else {

@@ -295,18 +295,24 @@ fn find_on_path(name: &str) -> Option<PathBuf> {
     None
 }
 
+const REQUIRE_ANDROID_TOOLCHAIN_VAR: &str = "DISROBE_REQUIRE_ANDROID_TOOLCHAIN";
+
 #[test]
 fn jni_link_statically_resolves_a_real_ndk_and_d8_built_pair() {
-    let Some(javac): Option<PathBuf> = find_on_path("javac") else {
-        eprintln!("SKIP jni link ndk/d8 leg: javac (JDK) not on PATH");
-        return;
-    };
-    let Some(d8): Option<PathBuf> = find_on_path("d8") else {
-        eprintln!("SKIP jni link ndk/d8 leg: d8 (Android build-tools) not on PATH");
-        return;
-    };
-    let Some(clang): Option<PathBuf> = find_on_path("clang") else {
-        eprintln!("SKIP jni link ndk/d8 leg: clang (Android NDK) not on PATH");
+    let tools: [Option<PathBuf>; 3] = [
+        find_on_path("javac"),
+        find_on_path("d8"),
+        find_on_path("clang"),
+    ];
+    let [Some(javac), Some(d8), Some(clang)]: [Option<PathBuf>; 3] = tools else {
+        assert!(
+            std::env::var_os(REQUIRE_ANDROID_TOOLCHAIN_VAR).is_none(),
+            "{REQUIRE_ANDROID_TOOLCHAIN_VAR} is set, so javac, d8 and clang must all be on PATH"
+        );
+        eprintln!(
+            "UNGRADED: the NDK and d8 leg needs javac, d8 and clang on PATH; set \
+             {REQUIRE_ANDROID_TOOLCHAIN_VAR}=1 to fail instead"
+        );
         return;
     };
 

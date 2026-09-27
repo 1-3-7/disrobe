@@ -20,7 +20,7 @@ fn cli_binary() -> PathBuf {
     dir
 }
 
-fn corpus_fixture(rel: &str) -> Option<PathBuf> {
+fn corpus_fixture(rel: &str) -> PathBuf {
     let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     p.pop();
     p.pop();
@@ -28,7 +28,12 @@ fn corpus_fixture(rel: &str) -> Option<PathBuf> {
     for seg in rel.split('/') {
         p.push(seg);
     }
-    p.exists().then_some(p)
+    assert!(
+        p.is_file(),
+        "the committed fixture {} is missing; restore it from git",
+        p.display()
+    );
+    p
 }
 
 fn temp_path(stem: &str, ext: &str) -> (disrobe_core::scratch::ScratchDir, PathBuf) {
@@ -93,12 +98,8 @@ fn py_deob_list_enumerates_supported_obfuscators() {
 
 #[test]
 fn py_decompile_auto_deobfuscates_real_obfuscated_fixture() {
-    let Some(fixture): Option<PathBuf> =
-        corpus_fixture("python/obfuscators/blankobf/edge-cases/real_hello_world.py")
-    else {
-        eprintln!("skip: blankobf real_hello_world fixture absent");
-        return;
-    };
+    let fixture: PathBuf =
+        corpus_fixture("python/obfuscators/blankobf/edge-cases/real_hello_world.py");
     let (_out_dir_scratch, out_dir): (disrobe_core::scratch::ScratchDir, PathBuf) =
         temp_path("blankobf", "out");
     let _ = std::fs::remove_dir_all(&out_dir);
@@ -205,10 +206,7 @@ const NEWLY_WIRED_CHAIN_FAMILIES: &[(&str, &str)] = &[
 fn auto_chain_recovers_newly_wired_python_families() {
     let mut proved: usize = 0;
     for (family, rel) in NEWLY_WIRED_CHAIN_FAMILIES {
-        let Some(fixture): Option<PathBuf> = corpus_fixture(rel) else {
-            eprintln!("skip: {family} fixture absent at {rel}");
-            continue;
-        };
+        let fixture: PathBuf = corpus_fixture(rel);
         let (_out_dir_scratch, out_dir): (disrobe_core::scratch::ScratchDir, PathBuf) =
             temp_path(family, "out");
         let _ = std::fs::remove_dir_all(&out_dir);

@@ -121,10 +121,9 @@ fn assert_recompiles(python: &Path, source_path: &Path) {
 }
 
 fn case(stem: &str, source: &str) {
-    let Some(python): Option<PathBuf> = locate_python() else {
-        eprintln!("skipping {stem}: no python on PATH");
-        return;
-    };
+    let python: PathBuf = locate_python().expect(
+        "python is on PATH in every CI job that runs these tests, and it compiles the pyc under test",
+    );
     let dir_scratch: disrobe_core::scratch::ScratchDir = temp_dir(stem);
     let dir: PathBuf = dir_scratch.path().to_path_buf();
     let py_path: PathBuf = dir.join(format!("{stem}.py"));
@@ -181,10 +180,9 @@ fn native_decompile_recovers_greet_function() {
 
 #[test]
 fn no_roundtrip_skips_interpreter_and_marks_skipped() {
-    let Some(python): Option<PathBuf> = locate_python() else {
-        eprintln!("skipping no_roundtrip: no python on PATH");
-        return;
-    };
+    let python: PathBuf = locate_python().expect(
+        "python is on PATH in every CI job that runs these tests, and it compiles the pyc under test",
+    );
     let dir_scratch: disrobe_core::scratch::ScratchDir = temp_dir("no_roundtrip");
     let dir: PathBuf = dir_scratch.path().to_path_buf();
     let py_path: PathBuf = dir.join("no_roundtrip.py");

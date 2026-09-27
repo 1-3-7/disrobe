@@ -4519,15 +4519,12 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_arch = "x86_64")]
     fn native_backend_decompiles_leaf_functions_to_c() {
-        if !cfg!(target_arch = "x86_64") {
-            eprintln!("skip: in-tree native decompiler is x86-64 only; host is not x86-64");
-            return;
-        }
-        let Some(compiler): Option<String> = find_c_compiler() else {
-            eprintln!("skip: no C compiler (clang/gcc/cc) on PATH");
-            return;
-        };
+        let compiler: String = find_c_compiler().expect(
+            "a C compiler (clang, gcc or cc) is on PATH in every CI job that runs this test, and \
+             it builds the object under test",
+        );
         let scratch: disrobe_core::scratch::ScratchDir =
             disrobe_core::scratch::ScratchDir::create("disrobe-native-decompile-oracle")
                 .expect("create scratch directory");
@@ -4546,13 +4543,11 @@ mod tests {
             .arg(&obj)
             .output()
             .expect("invoke compiler");
-        if !compile.status.success() {
-            eprintln!(
-                "skip: object compile failed: {}",
-                String::from_utf8_lossy(&compile.stderr)
-            );
-            return;
-        }
+        assert!(
+            compile.status.success(),
+            "the object under test failed to compile: {}",
+            String::from_utf8_lossy(&compile.stderr)
+        );
         let out_dir: PathBuf = dir.join("out");
         decompile_native(obj, Some(out_dir.clone()), DecompileLang::C, false)
             .expect("native decompile ok");

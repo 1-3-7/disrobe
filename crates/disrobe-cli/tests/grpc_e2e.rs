@@ -66,15 +66,13 @@ impl Drop for ServeHandle {
     }
 }
 
-fn spawn_grpc_serve() -> Option<ServeHandle> {
-    if std::env::consts::OS == "windows" {
-        eprintln!("skip: grpc serve e2e is fragile on the windows runner; covered on linux/macos");
-        return None;
-    }
+fn spawn_grpc_serve() -> ServeHandle {
     let bin: PathBuf = cli_binary();
-    if !bin.exists() {
-        return None;
-    }
+    assert!(
+        bin.is_file(),
+        "the disrobe binary {} is missing; build it with `cargo build -p disrobe-cli --bin disrobe`",
+        bin.display()
+    );
     let guard: ServeSpawnLock = ServeSpawnLock::acquire();
     let http_port: u16 = ephemeral_port_pair();
     let http_addr: SocketAddr = SocketAddr::from(([127, 0, 0, 1], http_port));
@@ -103,13 +101,13 @@ fn spawn_grpc_serve() -> Option<ServeHandle> {
         }
     });
     wait_for_listen(grpc_addr, Duration::from_secs(10));
-    Some(ServeHandle {
+    ServeHandle {
         child,
         http_addr,
         grpc_addr,
         finished,
         _spawn_guard: guard,
-    })
+    }
 }
 
 fn wait_for_listen(addr: SocketAddr, timeout: Duration) {
@@ -128,11 +126,12 @@ fn temp_dir(stem: &str) -> disrobe_core::scratch::ScratchDir {
 }
 
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "serve on the windows runner is unreliable; linux and macos run it"
+)]
 fn grpc_serve_starts_with_flag_enabled() {
-    let Some(handle) = spawn_grpc_serve() else {
-        eprintln!("disrobe binary missing; skip");
-        return;
-    };
+    let handle: ServeHandle = spawn_grpc_serve();
     let http_ok: bool =
         std::net::TcpStream::connect_timeout(&handle.http_addr, Duration::from_secs(2)).is_ok();
     let grpc_ok: bool =
@@ -142,11 +141,12 @@ fn grpc_serve_starts_with_flag_enabled() {
 }
 
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "serve on the windows runner is unreliable; linux and macos run it"
+)]
 fn grpc_serve_ports_are_offset_by_one() {
-    let Some(handle) = spawn_grpc_serve() else {
-        eprintln!("disrobe binary missing; skip");
-        return;
-    };
+    let handle: ServeHandle = spawn_grpc_serve();
     assert_eq!(handle.grpc_addr.port(), handle.http_addr.port() + 1);
 }
 

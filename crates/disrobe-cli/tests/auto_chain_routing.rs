@@ -129,10 +129,11 @@ fn winner_id(rel: &str) -> String {
 #[test]
 fn d_pe_report_is_terminal_and_never_re_detected_as_javascript() {
     let input: PathBuf = corpus_path("native/d/hello.d.exe");
-    if !input.exists() {
-        eprintln!("SKIP: d corpus fixture missing");
-        return;
-    }
+    assert!(
+        input.is_file(),
+        "the committed fixture {} is missing; restore it from git",
+        input.display()
+    );
     let out: disrobe_core::scratch::ScratchDir = tmp_out("d-report");
     let _: Output = run_auto(&input, out.path());
     let chain: serde_json::Value = chain_of(out.path());
@@ -161,10 +162,11 @@ fn d_pe_report_is_terminal_and_never_re_detected_as_javascript() {
 #[test]
 fn prometheus_lua_receives_the_original_bytes_and_recovers_the_program() {
     let input: PathBuf = corpus_path("lua/prometheus/weak/obfuscated.lua");
-    if !input.exists() {
-        eprintln!("SKIP: lua corpus fixture missing");
-        return;
-    }
+    assert!(
+        input.is_file(),
+        "the committed fixture {} is missing; restore it from git",
+        input.display()
+    );
     let out: disrobe_core::scratch::ScratchDir = tmp_out("lua-prometheus");
     let _: Output = run_auto(&input, out.path());
     let chain: serde_json::Value = chain_of(out.path());
@@ -211,10 +213,11 @@ fn prometheus_lua_receives_the_original_bytes_and_recovers_the_program() {
 #[test]
 fn a_report_is_not_re_fed_until_the_depth_cap() {
     let input: PathBuf = corpus_path("scriptlang/perl/hello.pl");
-    if !input.exists() {
-        eprintln!("SKIP: perl corpus fixture missing");
-        return;
-    }
+    assert!(
+        input.is_file(),
+        "the committed fixture {} is missing; restore it from git",
+        input.display()
+    );
     let out: disrobe_core::scratch::ScratchDir = tmp_out("perl-report-loop");
     let _: Output = run_auto(&input, out.path());
     let chain: serde_json::Value = chain_of(out.path());
@@ -238,10 +241,11 @@ fn a_report_is_not_re_fed_until_the_depth_cap() {
 #[test]
 fn a_downstream_failure_does_not_discard_the_recovered_ancestor_output() {
     let input: PathBuf = corpus_path("shell/powershell/invoke-obfuscation/launcher/hello.ps1");
-    if !input.exists() {
-        eprintln!("SKIP: powershell corpus fixture missing");
-        return;
-    }
+    assert!(
+        input.is_file(),
+        "the committed fixture {} is missing; restore it from git",
+        input.display()
+    );
     let out: disrobe_core::scratch::ScratchDir = tmp_out("ps1-speculative");
     let _: Output = run_auto(&input, out.path());
     let chain: serde_json::Value = chain_of(out.path());

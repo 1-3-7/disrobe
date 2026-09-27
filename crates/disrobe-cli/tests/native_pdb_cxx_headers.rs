@@ -13,18 +13,20 @@ fn workspace_root() -> PathBuf {
     p
 }
 
-fn fixture_pdb() -> Option<PathBuf> {
+fn fixture_pdb() -> PathBuf {
     let path: PathBuf =
         workspace_root().join("crates/disrobe-pass-native/tests/fixtures/pdb_cxx_recovery.pdb");
-    path.exists().then_some(path)
+    assert!(
+        path.is_file(),
+        "the committed pdb fixture {} is missing; restore it from git",
+        path.display()
+    );
+    path
 }
 
 #[test]
 fn native_pdb_cxx_reconstructs_headers_from_the_real_fixture() {
-    let Some(pdb): Option<PathBuf> = fixture_pdb() else {
-        eprintln!("SKIP: real pdb fixture missing (pdb_cxx_recovery.pdb)");
-        return;
-    };
+    let pdb: PathBuf = fixture_pdb();
     let out_scratch: disrobe_core::scratch::ScratchDir = temp_dir("pdb-cxx-headers");
     let out: PathBuf = out_scratch.path().to_path_buf();
 
@@ -90,10 +92,7 @@ fn native_pdb_cxx_reconstructs_headers_from_the_real_fixture() {
 
 #[test]
 fn native_pdb_cxx_json_summary_reports_deferred_reasons_shape() {
-    let Some(pdb): Option<PathBuf> = fixture_pdb() else {
-        eprintln!("SKIP: real pdb fixture missing (pdb_cxx_recovery.pdb)");
-        return;
-    };
+    let pdb: PathBuf = fixture_pdb();
     let out_scratch: disrobe_core::scratch::ScratchDir = temp_dir("pdb-cxx-json");
     let out: PathBuf = out_scratch.path().to_path_buf();
 
