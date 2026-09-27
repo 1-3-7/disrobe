@@ -715,13 +715,19 @@ mod tests {
         }
     }
 
-    fn corpus_shell(relative: &str) -> std::path::PathBuf {
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    fn corpus_bytes(relative: &str) -> Vec<u8> {
+        let path: std::path::PathBuf = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("..")
             .join("corpus")
             .join("shell")
-            .join(relative)
+            .join(relative);
+        std::fs::read(&path).unwrap_or_else(|e: std::io::Error| {
+            panic!(
+                "required tracked fixture {} is unreadable: {e}",
+                path.display()
+            )
+        })
     }
 
     #[test]
@@ -773,13 +779,9 @@ mod tests {
         let out: Artifact = SHELL_PASS.run(&a).expect("classify must succeed");
         assert_eq!(out.rung, Rung::Surface);
         let s: &str = std::str::from_utf8(&out.envelope).expect("utf8 source");
-        assert!(
-            !s.trim_start().starts_with('{') && !s.contains("\"dialect\""),
-            "shell chain output must be source text, not the extract json; got {s:?}",
-        );
-        assert!(
-            s.contains("echo hello"),
-            "must contain the real, IFS-substituted shell source; got {s:?}"
+        assert_eq!(
+            s, "#!/bin/bash\necho hello\n",
+            "chain output must be the IFS-substituted command with the eval peeled, not the extract json",
         );
         match SHELL_PASS.output_kind(&out) {
             OutputKind::Source { language, .. } => assert_eq!(language, Language::Bash),
@@ -789,12 +791,7 @@ mod tests {
 
     #[test]
     fn pass_run_recovers_real_node_bash_obfuscate_to_source() {
-        let Ok(bytes): std::io::Result<Vec<u8>> = std::fs::read(corpus_shell(
-            "bash/node-bash-obfuscate/obfuscated_chunk4.sh",
-        )) else {
-            eprintln!("SKIP: node-bash-obfuscate fixture missing");
-            return;
-        };
+        let bytes: Vec<u8> = corpus_bytes("bash/node-bash-obfuscate/obfuscated_chunk4.sh");
         let detection: Detection = detect_shell(&bytes);
         assert_eq!(detection.family, Family::NodeBashObfuscate);
         let a: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
@@ -803,45 +800,23 @@ mod tests {
             .expect("node-bash-obfuscate chain run must recover");
         assert_eq!(out.rung, Rung::Surface);
         let recovered: &str = std::str::from_utf8(&out.envelope).expect("utf8 recovered source");
-        assert!(
-            recovered.contains("GREETING='hello world'")
-                && recovered.contains("for i in 1 2 3; do"),
-            "chain output must be the recovered plaintext bash script; got {:?}",
-            recovered.chars().take(200).collect::<String>(),
-        );
-        assert!(
-            !recovered.contains("eval \"$"),
-            "chain output must not leave the eval chunk table intact; got {:?}",
-            recovered.chars().take(200).collect::<String>(),
+        assert_eq!(
+            recovered,
+            "GREETING='hello world'\necho \"$GREETING\"\nfor i in 1 2 3; do\necho \"line $i\"\ndone\nprintf 'done:%s\\n' \"$GREETING\"",
+            "chain output must be the string the eval chunk table concatenates",
         );
     }
 
     #[test]
     fn pass_run_deobfuscates_real_batch_to_text() {
-        let fixture: std::path::PathBuf = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("corpus")
-            .join("shell")
-            .join("batch")
-            .join("seta")
-            .join("hello.bat");
-        let Ok(bytes): std::io::Result<Vec<u8>> = std::fs::read(&fixture) else {
-            eprintln!("SKIP: batch fixture missing at {}", fixture.display());
-            return;
-        };
+        let bytes: Vec<u8> = corpus_bytes("batch/seta/hello.bat");
         let a: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
         let out: Artifact = SHELL_PASS.run(&a).expect("batch deob must succeed");
         let s: &str = std::str::from_utf8(&out.envelope).expect("utf8 source");
-        assert!(
-            !s.trim_start().starts_with('{') && !s.contains("\"batch\""),
-            "batch chain output must be the deobfuscated script, not json; got {:?}",
-            s.chars().take(160).collect::<String>(),
-        );
-        assert!(
-            s.contains("set PORT=4443"),
-            "batch deob must fold the real `set /a` arithmetic in the chain output; got {:?}",
-            s.chars().take(200).collect::<String>(),
+        assert_eq!(
+            s,
+            "@echo off\nsetlocal EnableDelayedExpansion\nset PORT=4443\nset SHIFT=8\nset MASK=255\necho connecting on port 4443 shift 8 mask 255\nrem [emulated output] connecting on port 4443 shift 8 mask 255",
+            "batch chain output must be the script with cmd's `set /a` arithmetic folded, the delayed expansions substituted and the echo's emulated output",
         );
     }
 
@@ -863,14 +838,9 @@ mod tests {
             .expect("a decodable EncodedCommand must deobfuscate to a Surface artifact");
         assert_eq!(out.rung, Rung::Surface);
         let recovered: String = String::from_utf8(out.envelope).expect("utf8 source");
-        assert_ne!(
-            recovered.trim(),
-            std::str::from_utf8(src).expect("utf8").trim(),
-            "genuine recovery must transform the input, not echo it back"
-        );
-        assert!(
-            recovered.contains("AAAA"),
-            "EncodedCommand QQBBAEEAQQBBAEEA decodes to the utf16-le payload AAAA; got {recovered:?}"
+        assert_eq!(
+            recovered, "AAAAAA",
+            "EncodedCommand QQBBAEEAQQBBAEEA decodes to the utf16-le payload AAAAAA"
         );
     }
 
@@ -971,16 +941,6 @@ mod tests {
         );
     }
 
-    fn corpus_bytes(relative: &str) -> Option<Vec<u8>> {
-        let path: std::path::PathBuf = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("corpus")
-            .join("shell")
-            .join(relative);
-        std::fs::read(&path).ok()
-    }
-
     fn chain_recovered(bytes: &[u8]) -> String {
         let a: Artifact = Artifact::new(Rung::Raw, bytes.to_vec(), [0u8; 32]);
         let out: Artifact = SHELL_PASS.run(&a).expect("chain run must succeed");
@@ -990,12 +950,7 @@ mod tests {
 
     #[test]
     fn chain_powershell_matches_cli_encoding_reverse_and_deobfuscates() {
-        let Some(bytes): Option<Vec<u8>> =
-            corpus_bytes("powershell/invoke-obfuscation/encoding/hello.ps1")
-        else {
-            eprintln!("SKIP: powershell encoding fixture missing");
-            return;
-        };
+        let bytes: Vec<u8> = corpus_bytes("powershell/invoke-obfuscation/encoding/hello.ps1");
         let obf: &str = std::str::from_utf8(&bytes).expect("utf8");
         let detection: Detection = detect_shell(&bytes);
         assert_eq!(detection.dialect, Dialect::PowerShell);
@@ -1007,23 +962,15 @@ mod tests {
             chained, cli_equivalent,
             "chain must emit the same deobfuscated PowerShell the CLI reverse_for_family produces"
         );
-        assert_ne!(
-            chained.trim(),
-            obf.trim(),
-            "chain must not pass the EncodedCommand PowerShell through unchanged"
-        );
-        assert!(
-            chained.contains("Write-Host") && chained.contains("hello world"),
-            "deobfuscated PowerShell must decode to the Write-Host payload; got {chained:?}"
+        assert_eq!(
+            chained, "Write-Host \"hello world\"",
+            "deobfuscated PowerShell must be the utf16-le base64 EncodedCommand payload"
         );
     }
 
     #[test]
     fn chain_bash_matches_cli_bashfuscator_reverse_and_deobfuscates() {
-        let Some(bytes): Option<Vec<u8>> = corpus_bytes("bash/bashfuscator/token/hello.sh") else {
-            eprintln!("SKIP: bash bashfuscator fixture missing");
-            return;
-        };
+        let bytes: Vec<u8> = corpus_bytes("bash/bashfuscator/token/hello.sh");
         let obf: &str = std::str::from_utf8(&bytes).expect("utf8");
         let detection: Detection = detect_shell(&bytes);
         assert_eq!(detection.dialect, Dialect::Bash);
@@ -1045,23 +992,15 @@ mod tests {
             chained, cli_equivalent,
             "chain must emit the same recovery the CLI bashfuscator reverse produces"
         );
-        assert_ne!(
-            chained.trim(),
-            obf.trim(),
-            "chain must not pass the obfuscated bash through unchanged"
-        );
-        assert!(
-            chained.to_ascii_lowercase().contains("hello world"),
-            "recovered bash must surface the hello-world payload; got {chained:?}"
+        assert_eq!(
+            chained, "echo hello world\n",
+            "recovered bash must be the hello-world payload Bashfuscator wrapped"
         );
     }
 
     #[test]
     fn chain_vbs_matches_cli_deobfuscate_vbs_and_deobfuscates() {
-        let Some(bytes): Option<Vec<u8>> = corpus_bytes("vbs/chr_chain/hello.vbs") else {
-            eprintln!("SKIP: vbs chr_chain fixture missing");
-            return;
-        };
+        let bytes: Vec<u8> = corpus_bytes("vbs/chr_chain/hello.vbs");
         let obf: &str = std::str::from_utf8(&bytes).expect("utf8");
         let detection: Detection = detect_shell(&bytes);
         assert_eq!(detection.dialect, Dialect::Vbs);
@@ -1071,14 +1010,10 @@ mod tests {
             chained, cli_equivalent,
             "chain must emit the same deobfuscated VBS the CLI deobfuscate_vbs produces"
         );
-        assert_ne!(
-            chained.trim(),
-            obf.trim(),
-            "chain must not pass the Chr()-obfuscated VBS through unchanged"
-        );
-        assert!(
-            chained.to_ascii_lowercase().contains("wscript"),
-            "deobfuscated VBS must reveal the WScript.Echo payload; got {chained:?}"
+        assert_eq!(
+            chained.lines().take(2).collect::<Vec<&str>>(),
+            ["Dim cmd", "cmd = \"WScript.Echo\""],
+            "deobfuscated VBS must fold the twelve-call Chr() chain to the WScript.Echo literal"
         );
     }
 
@@ -1118,8 +1053,7 @@ mod tests {
 
     #[test]
     fn chain_stomped_vba_recovers_from_pcode_when_source_is_gone() {
-        let raw: Vec<u8> =
-            corpus_bytes("vba/vbaProject.bin").expect("committed vbaProject.bin fixture");
+        let raw: Vec<u8> = corpus_bytes("vba/vbaProject.bin");
         for (label, payload) in [
             (
                 "source replaced with an empty compressed container",
@@ -1161,10 +1095,7 @@ mod tests {
 
     #[test]
     fn chain_pdf_recovers_javascript_and_manifest_carries_full_report() {
-        let Some(bytes): Option<Vec<u8>> = corpus_bytes("pdf/openaction_table.pdf") else {
-            eprintln!("SKIP: pdf openaction_table fixture missing");
-            return;
-        };
+        let bytes: Vec<u8> = corpus_bytes("pdf/openaction_table.pdf");
         let detection: Detection = detect_shell(&bytes);
         assert_eq!(detection.dialect, Dialect::Pdf);
         assert!(
@@ -1172,9 +1103,10 @@ mod tests {
             "a real pdf document must clear the shell chain detector gate"
         );
         let chained: String = chain_recovered(&bytes);
-        assert!(
-            chained.contains("OPENACTION_TABLE_MARKER"),
-            "chain must surface the pdf's embedded javascript; got {chained:?}"
+        assert_eq!(
+            chained,
+            "%PDF-1.3 objects=5 xref=table recovered_by_scan=false\nopen-action: present\n== javascript [OpenAction]\napp.alert('OPENACTION_TABLE_MARKER');",
+            "chain must surface the pdf's header facts and its OpenAction javascript with the string escapes removed"
         );
         let a: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
         let children: Vec<ChildArtifact> = SHELL_PASS
@@ -1191,11 +1123,20 @@ mod tests {
         let parsed: serde_json::Value =
             serde_json::from_slice(&manifest.bytes).expect("manifest is json");
         assert_eq!(parsed["schema"], RECOVERY_MANIFEST_SCHEMA);
-        assert!(
-            parsed["pdf"]["javascript"]
-                .as_array()
-                .is_some_and(|v: &Vec<serde_json::Value>| !v.is_empty()),
-            "manifest must carry the full structured pdf report: {parsed}"
+        let scripts: Vec<&str> = parsed["pdf"]["javascript"]
+            .as_array()
+            .unwrap_or_else(|| panic!("manifest must carry the pdf javascript array: {parsed}"))
+            .iter()
+            .map(|finding: &serde_json::Value| {
+                finding["script"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("javascript finding without a script: {finding}"))
+            })
+            .collect();
+        assert_eq!(
+            scripts,
+            ["app.alert('OPENACTION_TABLE_MARKER');"],
+            "manifest must carry exactly the one OpenAction script: {parsed}"
         );
     }
 
@@ -1341,14 +1282,9 @@ mod tests {
     fn chain_bash_base64_pipe_dropper_recovers_to_plaintext() {
         let src: &[u8] = b"#!/bin/bash\necho aWQ= | base64 -d | bash\n";
         let chained: String = chain_recovered(src);
-        assert!(
-            chained.contains("id"),
-            "chain must recover the base64-piped dropper payload; got {chained:?}"
-        );
-        assert_ne!(
-            chained.trim(),
-            std::str::from_utf8(src).expect("utf8").trim(),
-            "chain must not pass the base64 pipe through unchanged"
+        assert_eq!(
+            chained, "id\n",
+            "chain must replace the base64 pipe with its decoded payload `id`"
         );
     }
 

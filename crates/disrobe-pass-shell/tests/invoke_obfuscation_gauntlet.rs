@@ -238,7 +238,7 @@ fn string_layer_format_op_preserves_alignment_placeholder_verbatim() {
     );
 }
 
-fn locate_powershell() -> Option<&'static str> {
+fn locate_powershell() -> &'static str {
     for candidate in ["pwsh", "powershell"] {
         let ok: bool = std::process::Command::new(candidate)
             .args(["-NoProfile", "-Command", "exit 0"])
@@ -248,10 +248,13 @@ fn locate_powershell() -> Option<&'static str> {
             .status()
             .is_ok_and(|s: std::process::ExitStatus| s.success());
         if ok {
-            return Some(candidate);
+            return candidate;
         }
     }
-    None
+    panic!(
+        "required tool missing: neither pwsh nor powershell runs `-NoProfile -Command exit 0` \
+         from PATH, so the live String.Format oracle cannot grade the fold"
+    );
 }
 
 fn real_powershell_eval(exe: &str, expr: &str) -> Option<String> {
@@ -269,10 +272,7 @@ fn real_powershell_eval(exe: &str, expr: &str) -> Option<String> {
 
 #[test]
 fn string_format_fold_matches_live_powershell_string_format() {
-    let Some(exe): Option<&str> = locate_powershell() else {
-        eprintln!("skip: no pwsh/powershell on PATH; live String.Format oracle unavailable");
-        return;
-    };
+    let exe: &str = locate_powershell();
     let expressions: [&str; 6] = [
         "(\"{0}{1}{2}\" -f 'a,','b',',c')",
         "(\"{1}{0}\" -f ',World','Hello')",
