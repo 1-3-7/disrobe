@@ -126,13 +126,7 @@ fn mruby_pool_string_length_near_the_wire_ceiling_is_bounded() {
         common::synth_section(*b"END\0", &[]),
     ];
     let bytes: Vec<u8> = common::synth_rite(*b"0300", &sections);
-    let start: std::time::Instant = std::time::Instant::now();
     let analysis = analyze_bytes(&bytes, "evil.mrb").expect("must not OOM or panic");
-    let elapsed: std::time::Duration = start.elapsed();
-    assert!(
-        elapsed < std::time::Duration::from_secs(2),
-        "a pool string claiming the u16 wire-format ceiling must not stall parsing, took {elapsed:?}"
-    );
     let mrb = analysis.mruby.expect("mruby");
     assert!(
         mrb.irep.is_none(),

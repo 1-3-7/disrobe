@@ -305,6 +305,30 @@ mod tests {
     }
 
     #[test]
+    fn pool_string_length_past_the_body_is_refused_at_its_payload() {
+        let payload: &[u8] = b"only four bytes follow";
+        let mut rec: Vec<u8> = Vec::new();
+        rec.extend_from_slice(&0u32.to_be_bytes());
+        rec.extend_from_slice(&0u16.to_be_bytes());
+        rec.extend_from_slice(&0u16.to_be_bytes());
+        rec.extend_from_slice(&0u16.to_be_bytes());
+        rec.extend_from_slice(&0u16.to_be_bytes());
+        rec.extend_from_slice(&0u32.to_be_bytes());
+        rec.extend_from_slice(&1u16.to_be_bytes());
+        rec.push(0x00);
+        rec.extend_from_slice(&u16::MAX.to_be_bytes());
+        rec.extend_from_slice(payload);
+        let mut body: Vec<u8> = Vec::new();
+        body.extend_from_slice(&0u32.to_be_bytes());
+        body.extend_from_slice(&rec);
+        let payload_offset: usize = body.len() - payload.len();
+        assert!(matches!(
+            parse_irep(&body, *b"0300"),
+            Err(RubyError::MrubyIrepTruncated { at }) if at == payload_offset
+        ));
+    }
+
+    #[test]
     fn pool_int32_is_decoded_as_signed_decimal() {
         let mut rec: Vec<u8> = Vec::new();
         rec.extend_from_slice(&0u32.to_be_bytes());
