@@ -15,7 +15,12 @@ const SUBPROCESS_HEADING: &str = "**Subprocess-capable code**";
 const NETWORK_HEADING: &str = "**Network-capable code**";
 const CRYPTOGRAPHY_HEADING: &str = "## Cryptography";
 const CFG_ATTR_PREFIX: &str = "#[cfg(";
-const COMMAND_NEW_CALL: &str = "Command::new(";
+const SPAWN_CALLS: [&str; 4] = [
+    "Command::new(",
+    "CommandSpec::new(",
+    "run_captured(",
+    "run_captured_with_env(",
+];
 const NETWORK_DEP_NAMES: &[&str] = &[
     "attohttpc",
     "axum",
@@ -387,12 +392,12 @@ fn check_subprocess_inventory(
 
     for path in real.difference(&documented) {
         drift.push(format!(
-            "{path} calls `Command::new` outside any #[cfg(test)] scope but is not listed in SECURITY.md's Subprocess-capable code table"
+            "{path} spawns a process (`Command::new`, `CommandSpec::new` or `run_captured`) outside any #[cfg(test)] scope but is not listed in SECURITY.md's Subprocess-capable code table"
         ));
     }
     for path in documented.difference(&real) {
         drift.push(format!(
-            "SECURITY.md's Subprocess-capable code table lists `{path}`, but no non-test `Command::new` call site was found there anymore"
+            "SECURITY.md's Subprocess-capable code table lists `{path}`, but no non-test spawn site was found there anymore"
         ));
     }
     Ok(())
@@ -425,7 +430,7 @@ fn find_real_subprocess_sites(root: &Path) -> Result<BTreeSet<String>> {
         }
         let source: String = read_text_bounded(path, MAX_SOURCE_FILE_BYTES)
             .wrap_err_with(|| format!("reading {}", path.display()))?;
-        if !has_real_command_new(&source) {
+        if !has_real_spawn(&source) {
             continue;
         }
         let relative: &Path = path.strip_prefix(root).wrap_err_with(|| {
@@ -461,20 +466,22 @@ fn to_forward_slash(path: &Path) -> String {
         .join("/")
 }
 
-fn has_real_command_new(source: &str) -> bool {
+fn has_real_spawn(source: &str) -> bool {
     let spans: Vec<(usize, usize)> = cfg_test_spans(source);
-    let mut search_from: usize = 0;
-    while let Some(relative) = source[search_from..].find(COMMAND_NEW_CALL) {
-        let offset: usize = search_from + relative;
-        let inside_test_span: bool = spans
-            .iter()
-            .any(|(start, end): &(usize, usize)| offset >= *start && offset < *end);
-        if !inside_test_span {
-            return true;
+    SPAWN_CALLS.iter().any(|call: &&str| {
+        let mut search_from: usize = 0;
+        while let Some(relative) = source[search_from..].find(call) {
+            let offset: usize = search_from + relative;
+            let inside_test_span: bool = spans
+                .iter()
+                .any(|(start, end): &(usize, usize)| offset >= *start && offset < *end);
+            if !inside_test_span {
+                return true;
+            }
+            search_from = offset + call.len();
         }
-        search_from = offset + COMMAND_NEW_CALL.len();
-    }
-    false
+        false
+    })
 }
 
 fn cfg_test_spans(source: &str) -> Vec<(usize, usize)> {
@@ -920,51 +927,68 @@ mod tests {
     }
 
     #[test]
+    fn contained_spawn_apis_count_as_spawn_sites() {
+        assert!(has_real_spawn("fn f() { run_captured(p, &a, t, n); }"));
+        assert!(has_real_spawn(
+            "fn f() { run_captured_with_env(p, &a, e, t, n); }"
+        ));
+        assert!(has_real_spawn("fn f() { CommandSpec::new(p, t).run(); }"));
+        assert!(!has_real_spawn("pub fn run_captured<S>(p: &Path) {}"));
+        assert!(!has_real_spawn(
+            "#[cfg(test)]
+mod tests {
+    fn g() { run_captured(p, &a, t, n); }
+}
+"
+        ));
+    }
+
+    #[test]
     fn cfg_test_spans_covers_trailing_test_module_only() {
         let source: &str = "fn real() {\n    Command::new(\"x\");\n}\n\n#[cfg(test)]\nmod tests {\n    fn helper() {\n        Command::new(\"y\");\n    }\n}\n";
-        assert!(has_real_command_new(source));
+        assert!(has_real_spawn(source));
     }
 
     #[test]
     fn cfg_test_spans_excludes_purely_test_only_call() {
         let source: &str = "fn setup() {\n    let x = 1;\n}\n\n#[cfg(test)]\nmod tests {\n    fn helper() {\n        Command::new(\"y\");\n    }\n}\n";
-        assert!(!has_real_command_new(source));
+        assert!(!has_real_spawn(source));
     }
 
     #[test]
     fn cfg_test_spans_excludes_compound_test_configuration() {
         let source: &str = "#[cfg(all(test, not(target_arch = \"wasm32\")))]\nmod tests {\n    fn helper() {\n        Command::new(\"y\");\n    }\n}\n";
-        assert!(!has_real_command_new(source));
+        assert!(!has_real_spawn(source));
     }
 
     #[test]
     fn cfg_test_spans_does_not_treat_feature_values_as_test_configuration() {
         let source: &str = "#[cfg(feature = \"test\")]\nmod support {\n    fn helper() {\n        Command::new(\"y\");\n    }\n}\n";
-        assert!(has_real_command_new(source));
+        assert!(has_real_spawn(source));
     }
 
     #[test]
     fn cfg_test_spans_does_not_treat_identifier_substrings_as_test_configuration() {
         let source: &str = "#[cfg(contest)]\nmod support {\n    fn helper() {\n        Command::new(\"y\");\n    }\n}\n";
-        assert!(has_real_command_new(source));
+        assert!(has_real_spawn(source));
     }
 
     #[test]
     fn cfg_test_spans_survives_leading_cfg_test_helper_before_real_code() {
         let source: &str = "#[cfg(test)]\nfn lock() -> u8 {\n    1\n}\n\nfn real() {\n    Command::new(\"z\");\n}\n";
-        assert!(has_real_command_new(source));
+        assert!(has_real_spawn(source));
     }
 
     #[test]
     fn cfg_test_spans_ignores_lifetimes_and_raw_strings_inside_body() {
         let source: &str = "#[cfg(test)]\nmod tests {\n    fn helper<'a>(x: &'a str) -> &'a str {\n        let script = r#\"{ \"nested\": true }\"#;\n        let _ = script;\n        Command::new(x);\n        x\n    }\n}\n";
-        assert!(!has_real_command_new(source));
+        assert!(!has_real_spawn(source));
     }
 
     #[test]
     fn cfg_test_spans_bareword_attribute_without_body_is_skipped() {
         let source: &str = "#[cfg(test)]\nuse std::process::Command;\n\nfn real() {\n    Command::new(\"z\");\n}\n";
-        assert!(has_real_command_new(source));
+        assert!(has_real_spawn(source));
     }
 
     #[test]
