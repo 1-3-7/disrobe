@@ -5,50 +5,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
+mod common;
+
+use common::lua_toolchain::{self, Dialect};
 use disrobe_pass_lua::LuaDialect;
 use disrobe_pass_lua::decompile::decompile_auto;
 use disrobe_pass_lua::decompile::opcode::{Decoded, Op, decode};
 use disrobe_pass_lua::reader::common::{LuaChunk, LuaProto};
 use disrobe_pass_lua::reader::read_auto;
-
-fn luac_51_candidates() -> Vec<String> {
-    let mut v: Vec<String> = vec![
-        "C:/Program Files (x86)/Lua/5.1/luac.exe".to_owned(),
-        "C:/Program Files/Lua/5.1/luac.exe".to_owned(),
-        "luac5.1.exe".to_owned(),
-        "luac5.1".to_owned(),
-    ];
-    if let Ok(home) = std::env::var("LOCALAPPDATA") {
-        v.push(format!("{home}/Programs/Lua/5.1/luac.exe"));
-    }
-    v
-}
-
-fn luac_54_candidates() -> Vec<String> {
-    let mut v: Vec<String> = vec![
-        "C:/Program Files/Lua/5.4/luac.exe".to_owned(),
-        "luac5.4.exe".to_owned(),
-        "luac5.4".to_owned(),
-        "luac".to_owned(),
-    ];
-    if let Ok(home) = std::env::var("LOCALAPPDATA") {
-        v.push(format!("{home}/Programs/Lua/bin/luac.exe"));
-    }
-    v
-}
-
-fn find_luac(candidates: &[String]) -> Option<String> {
-    for c in candidates {
-        if c.contains('/') || c.contains('\\') {
-            if Path::new(c).exists() {
-                return Some(c.clone());
-            }
-        } else if Command::new(c).arg("-v").output().is_ok() {
-            return Some(c.clone());
-        }
-    }
-    None
-}
 
 fn src_path(name: &str) -> PathBuf {
     let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -141,8 +105,7 @@ const FIXTURES: [&str; 6] = ["ifelse", "loops", "tables", "nested", "logic", "ct
 
 #[test]
 fn recompile_equivalence_lua_5_1() {
-    let Some(luac): Option<String> = find_luac(&luac_51_candidates()) else {
-        eprintln!("skip: luac 5.1 not found on box");
+    let Some(luac): Option<String> = lua_toolchain::compiler(Dialect::Lua51) else {
         return;
     };
     for name in FIXTURES {
@@ -152,51 +115,13 @@ fn recompile_equivalence_lua_5_1() {
 
 #[test]
 fn recompile_equivalence_lua_5_4() {
-    let Some(luac): Option<String> = find_luac(&luac_54_candidates()) else {
-        eprintln!("skip: luac 5.4 not found on box");
+    let Some(luac): Option<String> = lua_toolchain::compiler(Dialect::Lua54) else {
         return;
     };
     for name in FIXTURES {
         assert_recompile_equivalent(&luac, name, "5_4");
     }
 }
-
-fn find_lua_interp() -> Option<String> {
-    let mut candidates: Vec<String> =
-        vec!["lua".to_owned(), "lua5.4".to_owned(), "lua5.1".to_owned()];
-    if let Ok(home) = std::env::var("LOCALAPPDATA") {
-        candidates.push(format!("{home}/Programs/Lua/bin/lua.exe"));
-    }
-    for c in &candidates {
-        if c.contains('/') || c.contains('\\') {
-            if Path::new(c).exists() {
-                return Some(c.clone());
-            }
-        } else if Command::new(c).arg("-v").output().is_ok() {
-            return Some(c.clone());
-        }
-    }
-    None
-}
-
-const SERIALIZE_HARNESS: &str = r#"
-local function ser(v, depth)
-  depth = depth or 0
-  local t = type(v)
-  if t == "table" and depth < 12 then
-    local keys = {}
-    for k in pairs(v) do keys[#keys + 1] = k end
-    table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
-    local parts = {}
-    for _, k in ipairs(keys) do
-      parts[#parts + 1] = tostring(k) .. "=" .. ser(v[k], depth + 1)
-    end
-    return "{" .. table.concat(parts, ",") .. "}"
-  end
-  if t == "function" then return "fn" end
-  return tostring(v)
-end
-"#;
 
 fn run_lua_capture(interp: &str, source: &str) -> Option<String> {
     let seq: u64 = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
@@ -219,14 +144,8 @@ fn run_lua_capture(interp: &str, source: &str) -> Option<String> {
 
 #[test]
 fn constructor_recovery_is_runtime_equivalent() {
-    let mut candidates: Vec<String> = luac_51_candidates();
-    candidates.extend(luac_54_candidates());
-    let Some(luac): Option<String> = find_luac(&candidates) else {
-        eprintln!("skip: no luac on box");
-        return;
-    };
-    let Some(interp): Option<String> = find_lua_interp() else {
-        eprintln!("skip: no lua interpreter on box");
+    let Some((luac, interp)): Option<(String, String)> = lua_toolchain::toolchain(Dialect::Lua54)
+    else {
         return;
     };
     let scratch: disrobe_core::scratch::ScratchDir =
@@ -263,10 +182,7 @@ fn constructor_recovery_is_runtime_equivalent() {
 
 #[test]
 fn decompiled_output_is_structured_not_goto_soup() {
-    let mut candidates: Vec<String> = luac_51_candidates();
-    candidates.extend(luac_54_candidates());
-    let Some(luac): Option<String> = find_luac(&candidates) else {
-        eprintln!("skip: no luac on box");
+    let Some(luac): Option<String> = lua_toolchain::compiler(Dialect::Lua54) else {
         return;
     };
     for name in FIXTURES {

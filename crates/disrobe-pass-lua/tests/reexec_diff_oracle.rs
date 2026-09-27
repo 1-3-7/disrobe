@@ -1,4 +1,5 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+mod common;
 
 #[path = "support/prometheus_residue.rs"]
 #[allow(clippy::redundant_pub_crate)]
@@ -227,7 +228,9 @@ fn assert_lane(tag: &str) {
         _ => None,
     };
     let Some(tc): Option<Toolchain> = tc else {
-        eprintln!("skip: lua {tag} toolchain (luac+lua) not found on box");
+        common::lua_toolchain::missing_tool(&format!(
+            "lua {tag} toolchain (luac+lua) not found on box"
+        ));
         return;
     };
     let res: LaneResult = run_lane(&tc);
@@ -280,7 +283,7 @@ fn reexec_equivalence_lua_5_4() {
 #[test]
 fn vararg_table_constructor_reexecutes_lua_5_1() {
     let Some(tc): Option<Toolchain> = toolchain_51() else {
-        eprintln!("skip: lua 5.1 toolchain not found");
+        common::lua_toolchain::missing_tool("lua 5.1 toolchain not found");
         return;
     };
     assert_vararg_table_constructor_reexecutes(&tc);
@@ -289,7 +292,7 @@ fn vararg_table_constructor_reexecutes_lua_5_1() {
 #[test]
 fn vararg_table_constructor_reexecutes_lua_5_4() {
     let Some(tc): Option<Toolchain> = toolchain_54() else {
-        eprintln!("skip: lua 5.4 toolchain not found");
+        common::lua_toolchain::missing_tool("lua 5.4 toolchain not found");
         return;
     };
     assert_vararg_table_constructor_reexecutes(&tc);
@@ -320,7 +323,7 @@ const GOTO_PROGRAM: &str = "local acc = 0\nlocal i = 1\n::top::\nif i > 5 then g
 #[test]
 fn goto_edges_preserved_not_dropped_lua_5_4() {
     let Some(tc): Option<Toolchain> = toolchain_54() else {
-        eprintln!("skip: lua 5.4 toolchain not found");
+        common::lua_toolchain::missing_tool("lua 5.4 toolchain not found");
         return;
     };
     let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();

@@ -1,4 +1,6 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+mod common;
+
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -284,13 +286,15 @@ fn assert_lane(
         _ => None,
     };
     let Some(tc): Option<Toolchain> = tc else {
-        eprintln!("skip: lua {dialect_tag} toolchain (luac+lua) not found on box");
+        common::lua_toolchain::missing_tool(&format!(
+            "lua {dialect_tag} toolchain (luac+lua) not found on box"
+        ));
         return;
     };
     let goto_capable_runtime: Option<Toolchain> = toolchain_54();
     let run_lua: &str = if force_goto_capable_runtime {
         let Some(rt): Option<&Toolchain> = goto_capable_runtime.as_ref() else {
-            eprintln!("skip: no goto-capable (5.2+) lua runtime found on box");
+            common::lua_toolchain::missing_tool("no goto-capable (5.2+) lua runtime found on box");
             return;
         };
         &rt.lua

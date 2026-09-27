@@ -1153,7 +1153,9 @@ jobs:
       - name: install lua5.4 and luajit
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends lua5.4 luajit
+          sudo apt-get install -y --no-install-recommends lua5.1 lua5.4 luajit
+          lua5.1 -v
+          luac5.1 -v
           lua5.4 -v
           luajit -v
       - name: install C11 compiler
@@ -1268,8 +1270,10 @@ jobs:
         run: cargo test -p disrobe-pass-wasm-deob --features sandbox,dwarf -- --nocapture
       - name: lua interpreter re-execution differential
         run: cargo test -p disrobe-pass-lua --test ironbrew2_real_oracle -- --nocapture
-      - name: luajit decompile re-execution differential
-        run: cargo test -p disrobe-pass-lua --test luajit_decompile_oracle -- --nocapture
+      - name: lua 5.1, 5.4 and luajit re-execution oracles
+        env:
+          DISROBE_REQUIRE_LUA_TOOLCHAIN: "1"
+        run: cargo test -p disrobe-pass-lua --all-features --tests -- --nocapture
       - name: luau decompile re-execution differential
         run: cargo test -p disrobe-pass-lua --test luau_decompile_oracle -- --nocapture
       - name: ruby yarv recompile differential

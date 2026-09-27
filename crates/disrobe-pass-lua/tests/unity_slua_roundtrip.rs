@@ -1,4 +1,6 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+mod common;
+
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -259,7 +261,7 @@ fn slua_recovered_bytecode_executes_like_original_under_real_lua() {
         decompile_auto(&peel.deobfuscated).expect("decompile recovered bytecode");
 
     let Some(interp): Option<String> = find_lua() else {
-        eprintln!("no lua interpreter on PATH; skipping slua execution oracle");
+        common::lua_toolchain::missing_tool("no lua interpreter on PATH");
         return;
     };
     let expected: String = run_lua(&interp, &runnable_from_decompiled(&original_source.source))

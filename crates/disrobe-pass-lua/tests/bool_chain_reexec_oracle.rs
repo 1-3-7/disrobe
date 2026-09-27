@@ -1,4 +1,6 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -132,7 +134,7 @@ const CASES: &[(&str, &str)] = &[
 #[test]
 fn boolean_and_or_chain_survives_recompile_and_reexec_lua_5_4() {
     let Some(tc): Option<Toolchain> = toolchain_54() else {
-        eprintln!("skip: lua 5.4 toolchain (luac+lua) not found on box");
+        common::lua_toolchain::missing_tool("lua 5.4 toolchain (luac+lua) not found on box");
         return;
     };
     let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();

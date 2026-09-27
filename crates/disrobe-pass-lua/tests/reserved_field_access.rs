@@ -1,4 +1,6 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod common;
+
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
@@ -64,7 +66,7 @@ fn find_lua_interp() -> Option<String> {
 #[test]
 fn recovered_body_reparses_under_real_lua() {
     let Some(interp): Option<String> = find_lua_interp() else {
-        eprintln!("skip: no lua interpreter on box");
+        common::lua_toolchain::missing_tool("no lua interpreter on box");
         return;
     };
     let src: String = recovered_body();

@@ -1,4 +1,5 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+mod common;
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -139,7 +140,7 @@ fn moonsec_v1_base64_xor_loader_recovers_original_source() {
 #[test]
 fn moonsec_v1_recovered_source_executes_identically() {
     let Some(interp): Option<String> = find_lua() else {
-        eprintln!("no lua interpreter on PATH; skipping execution oracle");
+        common::lua_toolchain::missing_tool("no lua interpreter on PATH");
         return;
     };
     let original: &str =
@@ -241,7 +242,7 @@ fn clean_lua_does_not_trigger_markerless_detection() {
 #[test]
 fn markerless_recovered_source_executes_identically() {
     let Some(interp): Option<String> = find_lua() else {
-        eprintln!("no lua interpreter on PATH; skipping execution oracle");
+        common::lua_toolchain::missing_tool("no lua interpreter on PATH");
         return;
     };
     let original: &str = "local function fact(n)\n  if n <= 1 then return 1 end\n  return n * fact(n - 1)\nend\nfor i = 1, 6 do print(fact(i)) end\n";

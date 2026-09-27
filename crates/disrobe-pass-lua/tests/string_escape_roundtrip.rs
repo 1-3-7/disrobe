@@ -1,4 +1,6 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -153,7 +155,7 @@ fn assert_string_constants_survive(luac: &str, tag: &str) {
 #[test]
 fn string_constants_round_trip_lua_5_1() {
     let Some(luac): Option<String> = find_luac(&luac_51_candidates()) else {
-        eprintln!("skip: luac 5.1 not found on box");
+        common::lua_toolchain::missing_tool("luac 5.1 not found on box");
         return;
     };
     assert_string_constants_survive(&luac, "5_1");
@@ -162,7 +164,7 @@ fn string_constants_round_trip_lua_5_1() {
 #[test]
 fn string_constants_round_trip_lua_5_4() {
     let Some(luac): Option<String> = find_luac(&luac_54_candidates()) else {
-        eprintln!("skip: luac 5.4 not found on box");
+        common::lua_toolchain::missing_tool("luac 5.4 not found on box");
         return;
     };
     assert_string_constants_survive(&luac, "5_4");
