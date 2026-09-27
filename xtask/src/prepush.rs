@@ -253,9 +253,17 @@ fn gate_test(root: &Path, scope: &Scope) -> Result<GateOutcome> {
 }
 
 fn binary_test_command(name: &str, binaries: &BTreeSet<String>, chain: bool) -> Vec<String> {
-    let mut args: Vec<String> = ["nextest", "run", "--profile", "pre-push", "-p", name]
-        .map(str::to_owned)
-        .to_vec();
+    let mut args: Vec<String> = [
+        "nextest",
+        "run",
+        "--profile",
+        "pre-push",
+        "--ignore-default-filter",
+        "-p",
+        name,
+    ]
+    .map(str::to_owned)
+    .to_vec();
     if chain {
         args.extend(["--features".to_owned(), format!("{name}/chain")]);
     }
@@ -813,6 +821,7 @@ mod tests {
                 "run",
                 "--profile",
                 "pre-push",
+                "--ignore-default-filter",
                 "-p",
                 "c",
                 "--features",
