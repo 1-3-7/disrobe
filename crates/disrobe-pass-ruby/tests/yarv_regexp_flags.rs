@@ -1,17 +1,16 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
+#[path = "support/ruby_toolchain.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code)]
+mod ruby_toolchain;
+
 use std::path::PathBuf;
 use std::process::Command;
 
 use disrobe_core::scratch::ScratchFile;
 use disrobe_pass_ruby::{RubyAnalysis, analyze_bytes};
 
-fn ruby_available() -> bool {
-    Command::new("ruby")
-        .arg("--version")
-        .output()
-        .is_ok_and(|o| o.status.success())
-}
+const GRADED: &str = "YARV regexp flag recovery";
 
 fn compile_regexp(literal: &str) -> Option<(Vec<u8>, String)> {
     let purpose: String = format!(
@@ -50,10 +49,11 @@ fn recovered_regexp(literal: &str) -> Option<(String, String)> {
 
 #[test]
 fn regexp_literals_preserve_flags_against_real_ruby() {
-    if !ruby_available() {
-        eprintln!("skip: ruby not on PATH; install ruby 3.4.x to grade regexp flag recovery");
+    let Some(_toolchain): Option<ruby_toolchain::ToolchainBanner> =
+        ruby_toolchain::require_mri_measured_series(GRADED)
+    else {
         return;
-    }
+    };
     for literal in ["/abc/", "/abc/i", "/abc/m", "/abc/x", "/abc/imx", "/abc/n"] {
         let (recovered, expected): (String, String) = recovered_regexp(literal)
             .unwrap_or_else(|| panic!("failed to recover regexp for {literal}"));

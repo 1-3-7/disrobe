@@ -5,20 +5,17 @@
     clippy::print_stderr
 )]
 
+#[path = "support/ruby_toolchain.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code)]
+mod ruby_toolchain;
+
 use std::path::PathBuf;
 use std::process::Command;
 
 use disrobe_core::scratch::ScratchFile;
 use disrobe_pass_ruby::analyze_bytes;
 
-fn ruby_available() -> bool {
-    let Ok(out): Result<std::process::Output, std::io::Error> =
-        Command::new("ruby").arg("--version").output()
-    else {
-        return false;
-    };
-    out.status.success() && String::from_utf8_lossy(&out.stdout).contains("ruby 3.4")
-}
+const GRADED: &str = "YARV rescue and ensure recovery";
 
 fn compile_to_yarb(source: &str, tag: &str) -> Option<Vec<u8>> {
     let script_purpose: String = format!("disrobe_rescue_gen_{tag}");
@@ -90,15 +87,14 @@ fn ruby_opcode_count(source: &str, opcode: &str, tag: &str) -> Option<usize> {
 
 #[test]
 fn rescue_recovers_exception_class_and_bound_variable_from_real_yarv() {
-    if !ruby_available() {
-        eprintln!("skip: ruby not on PATH; install ruby 3.4.x to run the rescue oracle");
-        return;
-    }
-    let source: &str = "def risky(a, b)\n  begin\n    a / b\n  rescue ZeroDivisionError => e\n    puts e.message\n  rescue TypeError\n    puts \"type\"\n  end\nend\n";
-    let Some(src): Option<String> = recover(source, "classvar") else {
-        eprintln!("skip: ruby could not compile the rescue source");
+    let Some(_toolchain): Option<ruby_toolchain::ToolchainBanner> =
+        ruby_toolchain::require_mri_measured_series(GRADED)
+    else {
         return;
     };
+    let source: &str = "def risky(a, b)\n  begin\n    a / b\n  rescue ZeroDivisionError => e\n    puts e.message\n  rescue TypeError\n    puts \"type\"\n  end\nend\n";
+    let src: String = recover(source, "classvar")
+        .unwrap_or_else(|| panic!("ruby 3.4 could not compile or decompile the rescue source"));
     assert!(
         src.contains("rescue ZeroDivisionError => e"),
         "expected the discriminated class plus bound variable, got:\n{src}"
@@ -124,15 +120,14 @@ fn rescue_recovers_exception_class_and_bound_variable_from_real_yarv() {
 
 #[test]
 fn rescue_multiple_classes_in_one_clause_from_real_yarv() {
-    if !ruby_available() {
-        eprintln!("skip: ruby not on PATH; install ruby 3.4.x to run the rescue oracle");
-        return;
-    }
-    let source: &str = "def h(x)\n  begin\n    Integer(x)\n  rescue ArgumentError, TypeError => e\n    puts e.message\n  end\nend\n";
-    let Some(src): Option<String> = recover(source, "multiclass") else {
-        eprintln!("skip: ruby could not compile the rescue source");
+    let Some(_toolchain): Option<ruby_toolchain::ToolchainBanner> =
+        ruby_toolchain::require_mri_measured_series(GRADED)
+    else {
         return;
     };
+    let source: &str = "def h(x)\n  begin\n    Integer(x)\n  rescue ArgumentError, TypeError => e\n    puts e.message\n  end\nend\n";
+    let src: String = recover(source, "multiclass")
+        .unwrap_or_else(|| panic!("ruby 3.4 could not compile or decompile the rescue source"));
     assert!(
         src.contains("rescue ArgumentError, TypeError => e"),
         "expected the short-circuit class list plus bound var recovered as one clause, got:\n{src}"
@@ -150,15 +145,14 @@ fn rescue_multiple_classes_in_one_clause_from_real_yarv() {
 
 #[test]
 fn rescue_bare_class_without_binding_omits_arrow_from_real_yarv() {
-    if !ruby_available() {
-        eprintln!("skip: ruby not on PATH; install ruby 3.4.x to run the rescue oracle");
-        return;
-    }
-    let source: &str = "def f\n  begin\n    raise \"boom\"\n  rescue RuntimeError\n    puts \"caught\"\n  end\nend\n";
-    let Some(src): Option<String> = recover(source, "bare") else {
-        eprintln!("skip: ruby could not compile the rescue source");
+    let Some(_toolchain): Option<ruby_toolchain::ToolchainBanner> =
+        ruby_toolchain::require_mri_measured_series(GRADED)
+    else {
         return;
     };
+    let source: &str = "def f\n  begin\n    raise \"boom\"\n  rescue RuntimeError\n    puts \"caught\"\n  end\nend\n";
+    let src: String = recover(source, "bare")
+        .unwrap_or_else(|| panic!("ruby 3.4 could not compile or decompile the rescue source"));
     assert!(
         src.contains("rescue RuntimeError"),
         "expected the recovered class, got:\n{src}"
@@ -176,16 +170,15 @@ fn rescue_bare_class_without_binding_omits_arrow_from_real_yarv() {
 
 #[test]
 fn ensure_body_survives_once_and_retains_runtime_opcode_count() {
-    if !ruby_available() {
-        eprintln!("skip: ruby not on PATH; install ruby 3.4.x to run the ensure check");
-        return;
-    }
-    let source: &str =
-        "begin\n  risky\nrescue RuntimeError => e\n  warn e.message\nensure\n  cleanup\nend\n";
-    let Some(recovered): Option<String> = recover(source, "ensure") else {
-        eprintln!("skip: ruby could not compile the ensure source");
+    let Some(_toolchain): Option<ruby_toolchain::ToolchainBanner> =
+        ruby_toolchain::require_mri_measured_series(GRADED)
+    else {
         return;
     };
+    let source: &str =
+        "begin\n  risky\nrescue RuntimeError => e\n  warn e.message\nensure\n  cleanup\nend\n";
+    let recovered: String = recover(source, "ensure")
+        .unwrap_or_else(|| panic!("ruby 3.4 could not compile or decompile the ensure source"));
     let code: String = code_only(&recovered);
     assert_eq!(
         code.matches("cleanup()").count(),
@@ -206,15 +199,14 @@ fn ensure_body_survives_once_and_retains_runtime_opcode_count() {
 
 #[test]
 fn zero_arg_inline_block_statement_remains_recompilable() {
-    if !ruby_available() {
-        eprintln!("skip: ruby not on PATH; install ruby 3.4.x to run the block check");
-        return;
-    }
-    let source: &str = "def f\n  tap { 1 }\n  :done\nend\n";
-    let Some(recovered): Option<String> = recover(source, "inline_block") else {
-        eprintln!("skip: ruby could not compile the block source");
+    let Some(_toolchain): Option<ruby_toolchain::ToolchainBanner> =
+        ruby_toolchain::require_mri_measured_series(GRADED)
+    else {
         return;
     };
+    let source: &str = "def f\n  tap { 1 }\n  :done\nend\n";
+    let recovered: String = recover(source, "inline_block")
+        .unwrap_or_else(|| panic!("ruby 3.4 could not compile or decompile the block source"));
     let code: String = code_only(&recovered);
     assert!(
         code.contains("tap { 1 }") && !code.contains("}()"),

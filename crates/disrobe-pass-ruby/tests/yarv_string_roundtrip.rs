@@ -5,18 +5,17 @@
     clippy::print_stderr
 )]
 
+#[path = "support/ruby_toolchain.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code)]
+mod ruby_toolchain;
+
 use std::path::PathBuf;
 use std::process::Command;
 
 use disrobe_core::scratch::ScratchFile;
 use disrobe_pass_ruby::analyze_bytes;
 
-fn ruby_available() -> bool {
-    Command::new("ruby")
-        .arg("--version")
-        .output()
-        .is_ok_and(|o| o.status.success())
-}
+const GRADED: &str = "YARV string literal round trip";
 
 fn compile_to_ibf(src: &str, tag: &str) -> Option<Vec<u8>> {
     let src_purpose: String = format!("disrobe_ruby_rt_src_{tag}");
@@ -56,10 +55,11 @@ fn run_ruby_stdout(src: &str, tag: &str) -> Option<Vec<u8>> {
 
 #[test]
 fn recovered_string_literals_reproduce_original_bytes() {
-    if !ruby_available() {
-        eprintln!("skip: ruby not on PATH; install ruby 3.x to run the string round-trip check");
+    let Some(_toolchain): Option<ruby_toolchain::ToolchainBanner> =
+        ruby_toolchain::require_mri_measured_series(GRADED)
+    else {
         return;
-    }
+    };
     let source: &str = concat!(
         "puts '#{1 + 1}'\n",
         "puts 'ivar #@a global #$b cvar #@@c'\n",
