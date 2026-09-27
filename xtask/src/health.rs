@@ -111,6 +111,7 @@ pub(crate) fn run(root: &Path, as_json: bool) -> Result<()> {
     check_feature_hidden_tests(root, &mut report);
     check_wasm_build_records(root, &mut report);
     check_private_references(root, &mut report);
+    check_host_paths(root, &mut report);
 
     report.fact("workspace_members", json!(members.len()));
     report.fact("crate_directories", json!(crate_dirs.len()));
@@ -223,6 +224,43 @@ const MAX_SCANNED_TEXT_BYTES: u64 = 8 * 1024 * 1024;
 const FINDING_ID_PREFIXES: [&str; 9] = [
     "SEC-", "HYG-", "BUG-", "FEAT-", "CPF-", "NAT-", "WIRE-", "TEST-", "BLN-",
 ];
+
+fn check_host_paths(root: &Path, report: &mut Report) {
+    const CHECK: &str = "host-path";
+    let scan: crate::host_paths::HomeScan = match tracked_or_nonignored_files(root)
+        .and_then(|files: BTreeSet<String>| crate::host_paths::scan_homes(root, &files))
+    {
+        Ok(scan) => scan,
+        Err(error) => {
+            report.fail(
+                CHECK,
+                format!("could not scan tracked files for home directories: {error:#}"),
+            );
+            return;
+        }
+    };
+    report.fact("host_home_paths", json!(scan.unexpected.len()));
+    if !scan.unexpected.is_empty() {
+        report.fail(
+            CHECK,
+            format!(
+                "{} home directory path(s) in tracked files; rebuild the artifact with a prefix map or replace the path with a same-length neutral one and record it: {}",
+                scan.unexpected.len(),
+                scan.unexpected.join("; ")
+            ),
+        );
+    }
+    if !scan.stale_allowances.is_empty() {
+        report.fail(
+            CHECK,
+            format!(
+                "{} allowed home path(s) no longer occur; remove them from the allow-list: {}",
+                scan.stale_allowances.len(),
+                scan.stale_allowances.join("; ")
+            ),
+        );
+    }
+}
 
 fn check_private_references(root: &Path, report: &mut Report) {
     const CHECK: &str = "private-reference";

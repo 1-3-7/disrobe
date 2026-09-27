@@ -64,6 +64,10 @@ pub(crate) fn run(root: &Path, full: bool) -> Result<()> {
     let mut total: Duration = Duration::ZERO;
     total += gate("fmt", || gate_fmt(root, &scope))?;
     total += gate("regen", || gate_regen(root, &scope))?;
+    total += gate("health", || {
+        crate::health::run(root, false)?;
+        Ok(GateOutcome::Ran)
+    })?;
     total += gate("clippy", || gate_clippy(root, &scope))?;
     total += gate("test", || gate_test(root, &scope))?;
     println!(

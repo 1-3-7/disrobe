@@ -34,6 +34,7 @@ mod golden;
 mod graph_disjointness;
 mod graphs;
 mod health;
+mod host_paths;
 mod local_tags;
 mod metrics;
 mod packer_roster;
