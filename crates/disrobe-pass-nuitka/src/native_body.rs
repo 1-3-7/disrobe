@@ -1042,8 +1042,8 @@ fn build_notes(
     notes.push(
         "native body lift: operator identity, control flow, and per-slot constant values are \
          specialized into type-slot dispatch by the optimizing C compiler, so remaining functions \
-         surface an operation trace and the resolved CPython C-API call set rather than an \
-         invented body"
+         surface an operation trace and the resolved CPython C-API call set instead of a \
+         reconstructed body"
             .to_owned(),
     );
     match plan {
