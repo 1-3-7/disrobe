@@ -148,61 +148,22 @@ fn compile_program(name: &str, body: &str) -> CompiledFixture {
     }
 }
 
-fn workspace_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-}
-
-fn target_profile_dir() -> PathBuf {
-    let test_executable: PathBuf = std::env::current_exe().expect("current test executable");
-    let mut dir: PathBuf = test_executable
-        .parent()
-        .expect("test executable directory")
-        .to_path_buf();
-    while dir.file_name().and_then(OsStr::to_str) != Some("debug")
-        && dir.file_name().and_then(OsStr::to_str) != Some("release")
-    {
-        assert!(
-            dir.pop(),
-            "no debug or release directory above the test executable"
-        );
-    }
-    dir
-}
-
-fn build_cli() -> PathBuf {
-    let workspace: PathBuf = workspace_path();
-    let profile_dir: PathBuf = target_profile_dir();
-    let mut args: Vec<&str> = vec!["build", "--quiet", "-p", "disrobe-cli"];
-    if profile_dir.file_name().and_then(OsStr::to_str) == Some("release") {
-        args.push("--release");
-    }
-    let output: Output = Command::new(env!("CARGO"))
-        .current_dir(&workspace)
-        .args(&args)
-        .output()
-        .expect("build disrobe CLI");
-    assert!(
-        output.status.success(),
-        "disrobe CLI build failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    profile_dir.join(host_executable_name("disrobe"))
-}
-
 fn cli_path() -> &'static PathBuf {
     CLI_PATH.get_or_init(|| {
-        resolve_cli(std::env::var_os("DISROBE_BIN").as_deref(), build_cli)
+        resolve_cli(std::env::var_os("DISROBE_BIN").as_deref())
             .unwrap_or_else(|error: String| panic!("resolve disrobe CLI: {error}"))
     })
 }
 
-fn resolve_cli(
-    explicit: Option<&OsStr>,
-    build: impl FnOnce() -> PathBuf,
-) -> Result<PathBuf, String> {
-    let path: PathBuf = explicit.map_or_else(build, PathBuf::from);
+fn resolve_cli(explicit: Option<&OsStr>) -> Result<PathBuf, String> {
+    let Some(explicit): Option<&OsStr> = explicit else {
+        return Err(
+            "DISROBE_BIN is not set; build the CLI with `cargo build -p disrobe-cli --bin \
+             disrobe` and point DISROBE_BIN at it, because this test never starts cargo"
+                .to_owned(),
+        );
+    };
+    let path: PathBuf = PathBuf::from(explicit);
     validate_cli(&path)?;
     Ok(path)
 }
@@ -228,13 +189,20 @@ fn validate_cli(path: &Path) -> Result<(), String> {
 }
 
 #[test]
+fn an_unset_cli_path_fails_without_starting_cargo() {
+    let error: String = resolve_cli(None).expect_err("an unset DISROBE_BIN must fail");
+    assert!(
+        error.starts_with("DISROBE_BIN is not set") && error.contains("never starts cargo"),
+        "{error}"
+    );
+}
+
+#[test]
 fn an_explicit_missing_cli_fails_without_building_a_replacement() {
     let directory: FixtureDirectory = FixtureDirectory::create("missing-cli");
     let path: PathBuf = directory.path.join(host_executable_name("missing"));
-    let error: String = resolve_cli(Some(path.as_os_str()), || {
-        panic!("an explicit CLI path must not invoke the fallback build")
-    })
-    .expect_err("a missing explicit CLI must fail");
+    let error: String =
+        resolve_cli(Some(path.as_os_str())).expect_err("a missing explicit CLI must fail");
     assert!(error.contains("is not a CLI executable file"), "{error}");
 }
 
@@ -243,10 +211,8 @@ fn an_explicit_invalid_cli_fails_without_building_a_replacement() {
     let directory: FixtureDirectory = FixtureDirectory::create("invalid-cli");
     let path: PathBuf = directory.path.join(host_executable_name("invalid"));
     fs::write(&path, b"not an executable").expect("write invalid CLI file");
-    let error: String = resolve_cli(Some(path.as_os_str()), || {
-        panic!("an explicit CLI path must not invoke the fallback build")
-    })
-    .expect_err("an invalid explicit CLI must fail");
+    let error: String =
+        resolve_cli(Some(path.as_os_str())).expect_err("an invalid explicit CLI must fail");
     assert!(error.starts_with("execute "), "{error}");
 }
 
