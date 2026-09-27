@@ -413,6 +413,15 @@ mod tests {
             .to_path_buf()
     }
 
+    fn required_fixture(path: &std::path::Path) -> Vec<u8> {
+        std::fs::read(path).unwrap_or_else(|e: std::io::Error| {
+            panic!(
+                "required tracked fixture {} is unreadable: {e}",
+                path.display()
+            )
+        })
+    }
+
     #[test]
     fn classify_rejects_a_real_native_pe_whose_strings_incidentally_read_as_script_markers() {
         let path: std::path::PathBuf = workspace_root()
@@ -421,10 +430,7 @@ mod tests {
             .join("dotnet-single-file")
             .join("expected")
             .join("libcustom.dll");
-        let Ok(bytes): std::io::Result<Vec<u8>> = std::fs::read(&path) else {
-            eprintln!("SKIP: {} missing", path.display());
-            return;
-        };
+        let bytes: Vec<u8> = required_fixture(&path);
         assert!(
             classify(&bytes).is_none(),
             "a real native pe dll must not classify as a windows script just because its \
@@ -444,10 +450,7 @@ mod tests {
             .join("native")
             .join("discovery")
             .join("disc.unstripped.elf");
-        let Ok(bytes): std::io::Result<Vec<u8>> = std::fs::read(&path) else {
-            eprintln!("SKIP: {} missing", path.display());
-            return;
-        };
+        let bytes: Vec<u8> = required_fixture(&path);
         assert!(is_native_binary_format(&bytes));
     }
 
