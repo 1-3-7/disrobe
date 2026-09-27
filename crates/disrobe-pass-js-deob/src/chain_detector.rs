@@ -59,6 +59,7 @@ const TAG_ARXAN: &str = "js-arxan";
 const TAG_PACE: &str = "js-pace";
 const TAG_NODE_SEA: &str = "js-node-sea";
 const TAG_BYTENODE: &str = "js-bytenode-jsc";
+const TAG_TS_HELPERS: &str = "js-typescript-helpers";
 const PROTECTOR_SPECIFICITY: u16 = 20;
 const SEA_SPECIFICITY: u16 = 40;
 
@@ -133,6 +134,17 @@ impl Detector for JsObfDetector {
         let det: Detection = detect_obfuscator(bytes);
         if let Some(v) = verdict_from_obfuscator(bytes, &det) {
             return Some(v);
+        }
+        if text.is_some_and(has_typescript_async_helpers) {
+            return Some(DetectVerdict::new(
+                PASS_ID,
+                TAG_TS_HELPERS,
+                FAMILY_OBFUSCATOR_WRAPPER,
+                0.8,
+                50,
+                vec!["typescript-awaiter-generator"],
+                "typescript __awaiter/__generator helper output".to_string(),
+            ));
         }
         eso.as_ref().and_then(verdict_from_weak_esoteric)
     }
@@ -263,6 +275,11 @@ impl JsObfPass {
             JsObfuscator::JsObfu => run_jsobfu(bytes, artifact),
             JsObfuscator::Webpack | JsObfuscator::Vite => run_unbundle(bytes, det.family, artifact),
             JsObfuscator::Minified => run_unminify(bytes, artifact),
+            JsObfuscator::Unknown
+                if std::str::from_utf8(bytes).is_ok_and(has_typescript_async_helpers) =>
+            {
+                run_unminify(bytes, artifact)
+            }
             other => Err(CoreError::PassFailure(format!(
                 "DR-JS-0901: js.deob: family {other:?} not yet wired through chain runner",
             ))),
@@ -492,6 +509,10 @@ fn verdict_from_weak_esoteric(eso: &EsotericClassification) -> Option<DetectVerd
         )),
         _ => None,
     }
+}
+
+fn has_typescript_async_helpers(text: &str) -> bool {
+    text.contains("__awaiter") && text.contains("__generator")
 }
 
 fn is_structured_document(bytes: &[u8]) -> bool {
@@ -813,7 +834,8 @@ fn run_unminify(bytes: &[u8], artifact: &Artifact) -> CoreResult<Artifact> {
     let (peeled, _peephole_stats): (String, UnminifyStats) = unminify(source);
     let (beautified, ast_stats): (String, AstUnminifyStats) = try_unminify_ast(&peeled)
         .map_err(|error: crate::error::Error| CoreError::PassFailure(error.to_string()))?;
-    let module_parameters_recovered: bool = ast_stats.amd_parameters_renamed > 0
+    let module_parameters_recovered: bool = ast_stats.ts_async_functions_restored > 0
+        || ast_stats.amd_parameters_renamed > 0
         || ast_stats.commonjs_parameters_renamed > 0
         || ast_stats.global_iife_parameters_renamed > 0
         || ast_stats.system_register_parameters_renamed > 0;
@@ -1007,6 +1029,26 @@ mod tests {
             },
         );
         assert_eq!(child.handle.hint, None);
+    }
+
+    #[test]
+    fn typescript_helper_output_is_claimed_and_recovered_to_async_functions() {
+        let path: std::path::PathBuf = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/ts_helpers/es5/try_finally.js");
+        let body: Vec<u8> = std::fs::read(&path).expect("committed tsc ES5 fixture");
+        let verdict: DetectVerdict = detect_bytes(&body).expect("tsc helper output is claimed");
+        assert_eq!(verdict.format_tag, TAG_TS_HELPERS);
+        let artifact: Artifact = Artifact::new(Rung::Surface, body.clone(), [0; 32]);
+        let recovered: Artifact = run_unminify(&body, &artifact).expect("helpers are rewritten");
+        let text: String = String::from_utf8(recovered.envelope).expect("utf-8 output");
+        assert!(
+            text.contains("async function") && text.contains("await "),
+            "{text}"
+        );
+        assert!(
+            !text.contains("__awaiter(") && !text.contains("__generator("),
+            "{text}"
+        );
     }
 
     fn detect_bytes(src: &[u8]) -> Option<DetectVerdict> {
