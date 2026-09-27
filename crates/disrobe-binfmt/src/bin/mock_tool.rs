@@ -1,4 +1,5 @@
 #![deny(unreachable_pub)]
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
@@ -20,6 +21,7 @@ fn main() -> ExitCode {
         "unrar" => mock_unrar(&args[1..]),
         "unrar-fail" => mock_unrar_fail(&args[1..]),
         "sevenz" => mock_sevenz(&args[1..]),
+        "flood" => mock_flood(),
         "sleep" => mock_sleep(&args[1..]),
         other => {
             eprintln!("mock_tool: unknown mode `{other}`");
@@ -89,5 +91,20 @@ fn mock_sleep(rest: &[String]) -> ExitCode {
         .and_then(|s: &String| s.parse::<u64>().ok())
         .map_or(60, |value: u64| value);
     std::thread::sleep(Duration::from_secs(secs));
+    ExitCode::SUCCESS
+}
+
+fn mock_flood() -> ExitCode {
+    let chunk: [u8; 8192] = [b'x'; 8192];
+    let mut stdout: std::io::StdoutLock<'_> = std::io::stdout().lock();
+    for _ in 0..=(4 * 1024 * 1024 / chunk.len()) {
+        if let Err(error) = stdout.write_all(&chunk) {
+            if error.kind() == std::io::ErrorKind::BrokenPipe {
+                return ExitCode::SUCCESS;
+            }
+            eprintln!("mock_flood: write failed: {error}");
+            return ExitCode::from(4);
+        }
+    }
     ExitCode::SUCCESS
 }

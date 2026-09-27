@@ -1,11 +1,13 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
 use disrobe_core::scratch::{ScratchDir, ScratchFile};
+use disrobe_core::subprocess::{
+    CaptureOutcome, CommandSpec, Completion, ExecutionError, LaunchError, LaunchStage, StdinOutcome,
+};
 
 use crate::container::ContainerKind;
 use crate::error::{Error, Result};
@@ -207,32 +209,75 @@ fn first_nonempty_line(s: &str) -> Option<String> {
 
 fn run_capture(program: &Path, args: &[&str], timeout: Duration) -> Result<(i32, String, String)> {
     let mut spawn_attempt: u32 = 0;
-    let child: std::process::Child = loop {
-        match Command::new(program)
-            .args(args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-        {
-            Ok(spawned) => break spawned,
-            Err(e) if e.raw_os_error() == Some(26) && spawn_attempt < 8 => {
+    let execution: disrobe_core::subprocess::Execution = loop {
+        let command: CommandSpec = CommandSpec::new(program, timeout)
+            .args(args.iter().map(|arg: &&str| std::ffi::OsString::from(*arg)))
+            .capture_limits(MAX_CAPTURE_OUTPUT, MAX_CAPTURE_OUTPUT);
+        match command.run() {
+            Ok(execution) => break execution,
+            Err(ExecutionError::Launch(LaunchError::Platform {
+                stage: LaunchStage::Spawn,
+                source,
+            })) if source.raw_os_error() == Some(26) && spawn_attempt < 8 => {
                 spawn_attempt += 1;
                 std::thread::sleep(Duration::from_millis(20 * u64::from(spawn_attempt)));
             }
-            Err(e) => return Err(Error::Io(e)),
+            Err(ExecutionError::Launch(
+                LaunchError::Resolve { source, .. } | LaunchError::Platform { source, .. },
+            )) => {
+                return Err(Error::Io(source));
+            }
+            Err(error) => return Err(Error::Io(std::io::Error::other(error))),
         }
     };
-    let captured: disrobe_core::subprocess::CapturedOutput =
-        disrobe_core::subprocess::wait_with_output_timeout(child, timeout, MAX_CAPTURE_OUTPUT)
-            .ok_or(Error::ExternalToolTimeout {
+    let code: i32 = match execution.completion {
+        Completion::Exited(status) => status.code().unwrap_or(-1),
+        Completion::TimedOut(_) => {
+            return Err(Error::ExternalToolTimeout {
                 tool: "external",
                 seconds: timeout.as_secs(),
-            })?;
-    let code: i32 = captured.exit_code.map_or(-1, |value: i32| value);
-    let stdout_s: String = String::from_utf8_lossy(&captured.stdout).into_owned();
-    let stderr_s: String = String::from_utf8_lossy(&captured.stderr).into_owned();
+            });
+        }
+    };
+    let stdout: Vec<u8> = capture_bytes(execution.stdout, "stdout").map_err(Error::Io)?;
+    let stderr: Vec<u8> = capture_bytes(execution.stderr, "stderr").map_err(Error::Io)?;
+    match execution.stdin {
+        StdinOutcome::Closed | StdinOutcome::Delivered => {}
+        StdinOutcome::Failed(source) => return Err(Error::Io(source)),
+        StdinOutcome::NotStarted => {
+            return Err(Error::Io(std::io::Error::other("stdin worker not started")));
+        }
+        StdinOutcome::WorkerPanicked => {
+            return Err(Error::Io(std::io::Error::other("stdin worker panicked")));
+        }
+        StdinOutcome::WorkerUnresponsive => {
+            return Err(Error::Io(std::io::Error::other(
+                "stdin worker did not finish",
+            )));
+        }
+    }
+    let stdout_s: String = String::from_utf8_lossy(&stdout).into_owned();
+    let stderr_s: String = String::from_utf8_lossy(&stderr).into_owned();
     Ok((code, stdout_s, stderr_s))
+}
+
+fn capture_bytes(outcome: CaptureOutcome, stream: &'static str) -> std::io::Result<Vec<u8>> {
+    match outcome {
+        CaptureOutcome::Complete(captured) if captured.truncated => Err(std::io::Error::other(
+            format!("{stream} capture exceeded the configured limit"),
+        )),
+        CaptureOutcome::Complete(captured) => Ok(captured.bytes),
+        CaptureOutcome::Failed { source, .. } => Err(source),
+        CaptureOutcome::NotStarted => Err(std::io::Error::other(format!(
+            "{stream} capture worker not started"
+        ))),
+        CaptureOutcome::WorkerPanicked => Err(std::io::Error::other(format!(
+            "{stream} capture worker panicked"
+        ))),
+        CaptureOutcome::WorkerUnresponsive => Err(std::io::Error::other(format!(
+            "{stream} capture worker did not finish"
+        ))),
+    }
 }
 
 const DEFAULT_TIMEOUT_SECS: u64 = 180;
@@ -605,29 +650,12 @@ mod tests {
         if alt.is_file() {
             return alt;
         }
-        ensure_mock_bin_built(&candidate);
-        candidate
-    }
-
-    fn ensure_mock_bin_built(expected: &Path) {
-        if expected.is_file() {
-            return;
-        }
-        let status: std::process::ExitStatus = std::process::Command::new("cargo")
-            .args([
-                "build",
-                "-p",
-                "disrobe-binfmt",
-                "--bin",
-                "disrobe-binfmt-mock-tool",
-            ])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .expect("spawn cargo build for mock");
-        assert!(status.success(), "cargo build mock_tool failed");
-        assert!(expected.is_file(), "mock binary not at expected path");
+        panic!(
+            "{} is not built; cargo builds it with this crate's integration tests, or run `cargo \
+             build -p disrobe-binfmt --bin disrobe-binfmt-mock-tool` first, because this test \
+             never starts cargo",
+            candidate.display()
+        );
     }
 
     fn write_wrapper(dir: &Path, stem: &str, mode: &str) -> PathBuf {
@@ -727,6 +755,21 @@ mod tests {
         assert!(failed_as_expected, "expected the external tool to fail");
         assert_eq!(scratch_after_stage, scratch_before_stage);
         assert_eq!(scratch_after_input, scratch_before_input);
+    }
+
+    #[test]
+    fn captured_output_overflow_is_rejected() {
+        let mock: PathBuf = mock_bin_path();
+        let result: Result<(i32, String, String)> =
+            run_capture(&mock, &["flood"], Duration::from_secs(5));
+        match result {
+            Err(Error::Io(error)) => assert!(
+                error
+                    .to_string()
+                    .contains("stdout capture exceeded the configured limit")
+            ),
+            other => panic!("expected bounded-capture I/O error, got {other:?}"),
+        }
     }
 
     #[test]
