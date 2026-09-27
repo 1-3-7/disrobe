@@ -2,11 +2,20 @@
 
 use boa_engine::{Context, Source};
 use disrobe_pass_js_deob::{AstPipeline, AstRuleId, AstUnminifyStats, unminify_ast};
+use sha2::{Digest, Sha256};
 
 const LOOP_LIMIT: u64 = 2_000_000;
 const RECURSION_LIMIT: usize = 1_500;
 const STACK_LIMIT: usize = 50_000;
 const REAL_AMD_DEFINE: &str = include_str!("../corpus/bundlers/amd/define/bundle.js");
+const REAL_AMD_DEFINE_SHA256: &str =
+    "abd2be41a8ea4db96bcc7c89c03f129c39f85d70e75abf614b69dbc7e15b5d78";
+const REAL_AMD_REFERENCE_SOURCE: &str = r#"
+define("my/lib/core", ["jquery"], function (jquery) {
+    return { init: function () { return jquery.fn ? "ok" : "fail"; } };
+});
+"#;
+const REAL_AMD_REFERENCE_OUTPUT: &str = "ok";
 
 fn eval_capture(program: &str) -> String {
     let mut context: Context = Context::default();
@@ -29,7 +38,9 @@ var __modules = {{
 var define = function(first, second, third) {{
     var dependencies = Array.isArray(first) ? first : second;
     var factory = typeof second === "function" ? second : third;
-    return factory.apply(undefined, dependencies.map(function(id) {{ return __modules[id]; }}));
+    var built = factory.apply(undefined, dependencies.map(function(id) {{ return __modules[id]; }}));
+    if (built && typeof built.init === "function") print(built.init());
+    return built;
 }};
 {program}
 __out.join("\u0001");
@@ -177,6 +188,15 @@ fn a_dynamic_dependency_abstains_before_any_parameter_rename() {
 
 #[test]
 fn tracked_amd_bundle_uses_its_dependency_names() {
+    assert_eq!(
+        format!("{:x}", Sha256::digest(REAL_AMD_DEFINE.as_bytes())),
+        REAL_AMD_DEFINE_SHA256,
+        "the AMD bundle changed without revalidating its reference"
+    );
+    assert_eq!(
+        eval_capture(REAL_AMD_REFERENCE_SOURCE),
+        REAL_AMD_REFERENCE_OUTPUT
+    );
     let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(REAL_AMD_DEFINE);
     assert_eq!(stats.amd_parameters_renamed, 2);
     assert!(
@@ -187,7 +207,17 @@ fn tracked_amd_bundle_uses_its_dependency_names() {
         recovered.contains("return jquery.fn ? \"ok\" : \"fail\";"),
         "the tracked factory reference must follow the positional rename:\n{recovered}"
     );
-    assert_behavior_preserved(REAL_AMD_DEFINE, &recovered);
+    assert_eq!(eval_capture(&recovered), REAL_AMD_REFERENCE_OUTPUT);
+    let mutated: String = recovered.replacen("\"ok\"", "\"wrong\"", 1);
+    assert_ne!(
+        mutated, recovered,
+        "the recovered init branch must remain present"
+    );
+    assert_ne!(
+        eval_capture(&mutated),
+        REAL_AMD_REFERENCE_OUTPUT,
+        "the reference grade must detect a changed recovered init result"
+    );
 }
 
 #[test]

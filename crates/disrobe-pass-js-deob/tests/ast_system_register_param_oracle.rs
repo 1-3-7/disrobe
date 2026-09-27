@@ -1,11 +1,8 @@
 #![cfg(feature = "chain")]
 #![allow(clippy::expect_used, clippy::panic)]
 
-use std::ffi::OsStr;
-use std::path::Path;
-use std::time::Duration;
+mod common;
 
-use disrobe_core::subprocess::{CapturedOutput, run_captured};
 use disrobe_core::{Artifact, Rung, chain::Pass};
 use disrobe_pass_js_deob::chain_detector::JS_OBF_PASS;
 use disrobe_pass_js_deob::{AstUnminifyStats, unminify_ast};
@@ -13,47 +10,66 @@ use sha2::{Digest, Sha256};
 
 const FIXTURE: &str = include_str!("fixtures/rollup_system_param/fixture.min.js");
 const FIXTURE_SHA256: &str = "38ec01876c2ba99ed64c8669d74e88e300f9bb9d1d09857f34221f768c4f58bd";
+const ROLLUP_ENTRY: &str = include_str!("fixtures/rollup_system_param/entry.js");
+const ROLLUP_ENTRY_SHA256: &str =
+    "a8c01c25bb4aa4999071aa0f1d5db1d5c1eb6dd04282e11187a353aac903474d";
+const ROLLUP_OUTPUT: &str = include_str!("fixtures/rollup_system_param/rollup.js");
+const ROLLUP_OUTPUT_SHA256: &str =
+    "721bbf6542426b955e3da88431757e553ef342b4cb330e4cbfa1479a2bed2d2c";
 const NAMED_FIXTURE: &str = include_str!("fixtures/babel_system_named_param/fixture.min.js");
 const NAMED_FIXTURE_SHA256: &str =
     "d0917269bffeaddf4021cb3eae4780e433b6a881c34e0412a40f42f9f43cdb3d";
-const REFERENCE_STDOUT: &[u8] = b"value=42";
-const DIFFERENCE_STDOUT: &[u8] = b"value=-2";
-const REFERENCE_LIVE_OUTPUTS: &[u8] = b"value=42|updated=-2";
-const NODE_TIMEOUT: Duration = Duration::from_secs(30);
-const NODE_CAPTURE: usize = 1usize << 18;
+const NAMED_ENTRY: &str = include_str!("fixtures/babel_system_named_param/entry.js");
+const NAMED_ENTRY_SHA256: &str = "a8c01c25bb4aa4999071aa0f1d5db1d5c1eb6dd04282e11187a353aac903474d";
+const BABEL_OUTPUT: &str = include_str!("fixtures/babel_system_named_param/babel.js");
+const BABEL_OUTPUT_SHA256: &str =
+    "835884cb556285b0b2f1d0d43665c53d71db3f34f6b51bb9b9bb6fb5def811e8";
+const AUTHORED_REFERENCE: &str = r#"System.register(["@fixture/math-utils", "@fixture/text-format"], function () {
+    let sum;
+    let textFormat;
+    return {
+        setters: [
+            function (mathUtils) { sum = mathUtils.sum; },
+            function (format) { textFormat = format.default; },
+        ],
+        execute: function () { globalThis.__result = textFormat(sum(20, 22)); },
+    };
+});
+"#;
+const AUTHORED_REFERENCE_SHA256: &str =
+    "8b99d30796b6115c84450e24d2b3d7d53c786ce6a5fe7469f2c65c959c19cd11";
+const NAMED_AUTHORED_REFERENCE: &str = r#"System.register("fixture/main", ["@fixture/math-utils", "@fixture/text-format"], function () {
+    let sum;
+    let textFormat;
+    return {
+        setters: [
+            function (mathUtils) { sum = mathUtils.sum; },
+            function (format) { textFormat = format.default; },
+        ],
+        execute: function () { globalThis.__result = textFormat(sum(20, 22)); },
+    };
+});
+"#;
+const NAMED_AUTHORED_REFERENCE_SHA256: &str =
+    "4803ad7e24be6b06028d0af2ef8af977d43b437b52da0724fa27eb436360716d";
+const REFERENCE_OUTPUT: &str = "value=42";
+const DIFFERENCE_OUTPUT: &str = "value=-2";
+const REFERENCE_LIVE_OUTPUTS: &str = "value=42|updated=-2";
 
-fn node_output(source: &str) -> Vec<u8> {
+fn recovered_output(source: &str) -> String {
     let harness: String = format!(
-        r#"const modules={{"@fixture/math-utils":{{sum:(left,right)=>left+right}},"@fixture/difference-math":{{sum:(left,right)=>left-right}},"@fixture/text-format":{{default:value=>`value=${{value}}`}}}};globalThis.System={{register(...args){{const [dependencies,declare]=args.length===3?args.slice(1):args;const registration=declare(()=>{{}},{{id:"fixture"}});registration.setters.forEach((setter,index)=>setter(modules[dependencies[index]]));registration.execute();}}}};{source};process.stdout.write(globalThis.__result);"#
+        r#"const modules={{"@fixture/math-utils":{{sum:(left,right)=>left+right}},"@fixture/difference-math":{{sum:(left,right)=>left-right}},"@fixture/text-format":{{default:value=>`value=${{value}}`}}}};globalThis.System={{register(...args){{const [dependencies,declare]=args.length===3?args.slice(1):args;const registration=declare(()=>{{}},{{id:"fixture"}});registration.setters.forEach((setter,index)=>setter(modules[dependencies[index]]));registration.execute();}}}};{source};console.log(globalThis.__result);"#
     );
-    let args: [&OsStr; 2] = [OsStr::new("-e"), OsStr::new(&harness)];
-    let output: CapturedOutput = run_captured(Path::new("node"), &args, NODE_TIMEOUT, NODE_CAPTURE)
-        .expect("Node is required for the System.register semantic reference")
-        .expect("the System.register semantic reference must finish within the timeout");
-    assert_eq!(
-        output.exit_code,
-        Some(0),
-        "Node must execute the System.register fixture: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    output.stdout
+    common::eval_capture(&harness)
+        .expect("bounded Boa evaluation of recovered System.register must finish")
 }
 
-fn node_live_outputs(source: &str) -> Vec<u8> {
+fn recovered_live_outputs(source: &str) -> String {
     let harness: String = format!(
-        r#"let captured;globalThis.System={{register(...args){{const [dependencies,declare]=args.length===3?args.slice(1):args;captured={{dependencies,registration:declare(()=>{{}},{{id:"fixture"}})}};}}}};{source};const initial=[{{sum:(left,right)=>left+right}},{{default:value=>`value=${{value}}`}}];const updated=[{{sum:(left,right)=>left-right}},{{default:value=>`updated=${{value}}`}}];captured.registration.setters.forEach((setter,index)=>setter(initial[index]));captured.registration.execute();const first=globalThis.__result;captured.registration.setters.forEach((setter,index)=>setter(updated[index]));captured.registration.execute();process.stdout.write(`${{first}}|${{globalThis.__result}}`);"#
+        r#"let captured;globalThis.System={{register(...args){{const [dependencies,declare]=args.length===3?args.slice(1):args;captured={{dependencies,registration:declare(()=>{{}},{{id:"fixture"}})}};}}}};{source};const initial=[{{sum:(left,right)=>left+right}},{{default:value=>`value=${{value}}`}}];const updated=[{{sum:(left,right)=>left-right}},{{default:value=>`updated=${{value}}`}}];captured.registration.setters.forEach((setter,index)=>setter(initial[index]));captured.registration.execute();const first=globalThis.__result;captured.registration.setters.forEach((setter,index)=>setter(updated[index]));captured.registration.execute();console.log(`${{first}}|${{globalThis.__result}}`);"#
     );
-    let args: [&OsStr; 2] = [OsStr::new("-e"), OsStr::new(&harness)];
-    let output: CapturedOutput = run_captured(Path::new("node"), &args, NODE_TIMEOUT, NODE_CAPTURE)
-        .expect("Node is required for the System.register live-update reference")
-        .expect("the System.register live-update reference must finish within the timeout");
-    assert_eq!(
-        output.exit_code,
-        Some(0),
-        "Node must execute both setter updates: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    output.stdout
+    common::eval_capture(&harness)
+        .expect("bounded Boa evaluation of recovered live setters must finish")
 }
 
 fn compact(source: &str) -> String {
@@ -63,12 +79,33 @@ fn compact(source: &str) -> String {
         .collect()
 }
 
-fn assert_pinned_bundle(bundle: &str, pinned: &str) {
+fn assert_pinned_artifact(artifact: &str, pinned: &str, label: &str) {
     assert_eq!(
-        format!("{:x}", Sha256::digest(bundle.as_bytes())),
+        format!("{:x}", Sha256::digest(artifact.as_bytes())),
         pinned,
-        "the System.register bundle is not the one its PROVENANCE.txt records, so the pinned \
-         reference outputs no longer apply"
+        "the {label} is not the one its provenance records, so the pinned reference outputs no \
+         longer apply"
+    );
+}
+
+fn assert_authored_reference(source: &str, hash: &str) {
+    assert_eq!(
+        format!("{:x}", Sha256::digest(source.as_bytes())),
+        hash,
+        "the authored System.register reference changed, so its pinned stdout no longer applies"
+    );
+    assert_eq!(
+        recovered_output(source),
+        REFERENCE_OUTPUT,
+        "the authored System.register reference must produce the pinned stdout"
+    );
+}
+
+fn assert_authored_entry(entry: &str) {
+    assert_eq!(
+        entry,
+        "import { sum } from \"@fixture/math-utils\";\nimport format from \"@fixture/text-format\";\n\nglobalThis.__result = format(sum(20, 22));\n",
+        "the authored entry must remain the independently modeled sum-and-format program"
     );
 }
 
@@ -80,10 +117,9 @@ fn assert_mutated_dependency_changes_output(recovered_source: &str) {
         "the recovered registration must still import @fixture/math-utils"
     );
     assert_eq!(
-        node_output(&mutated),
-        DIFFERENCE_STDOUT,
-        "binding the first setter to a different module must change the output, or the stdout \
-         comparison cannot see a wrong setter binding"
+        recovered_output(&mutated),
+        DIFFERENCE_OUTPUT,
+        "the behavioral comparator must detect a wrong setter dependency"
     );
 }
 
@@ -91,7 +127,20 @@ fn assert_mutated_dependency_changes_output(recovered_source: &str) {
 fn registered_pass_recovers_rollup_system_setter_parameter_names() {
     assert!(FIXTURE.len() > 200);
     assert_eq!(FIXTURE.lines().count(), 1);
-    assert_pinned_bundle(FIXTURE, FIXTURE_SHA256);
+    assert_pinned_artifact(ROLLUP_ENTRY, ROLLUP_ENTRY_SHA256, "authored Rollup entry");
+    assert_pinned_artifact(
+        ROLLUP_OUTPUT,
+        ROLLUP_OUTPUT_SHA256,
+        "Rollup compiler output",
+    );
+    assert_pinned_artifact(FIXTURE, FIXTURE_SHA256, "Rollup/Terser bundle");
+    assert_authored_entry(ROLLUP_ENTRY);
+    assert_authored_reference(AUTHORED_REFERENCE, AUTHORED_REFERENCE_SHA256);
+    assert_eq!(
+        recovered_live_outputs(AUTHORED_REFERENCE),
+        REFERENCE_LIVE_OUTPUTS,
+        "the authored System.register reference must preserve setter liveness"
+    );
 
     let (_direct, direct_stats): (String, AstUnminifyStats) = unminify_ast(FIXTURE);
     assert_eq!(direct_stats.system_register_parameters_renamed, 2);
@@ -108,9 +157,12 @@ fn registered_pass_recovers_rollup_system_setter_parameter_names() {
     let compact_recovered: String = compact(&recovered_source);
     assert!(compact_recovered.contains("function(mathUtils){t=mathUtils.sum}"));
     assert!(compact_recovered.contains("function(textFormat){e=textFormat.default}"));
-    assert_eq!(node_output(&recovered_source), REFERENCE_STDOUT);
+    assert_eq!(recovered_output(&recovered_source), REFERENCE_OUTPUT);
+    assert_eq!(
+        recovered_live_outputs(&recovered_source),
+        REFERENCE_LIVE_OUTPUTS
+    );
     assert_mutated_dependency_changes_output(&recovered_source);
-    assert_eq!(node_live_outputs(&recovered_source), REFERENCE_LIVE_OUTPUTS);
 
     let repeated: Artifact = JS_OBF_PASS
         .run(&input)
@@ -122,7 +174,16 @@ fn registered_pass_recovers_rollup_system_setter_parameter_names() {
 fn registered_pass_recovers_named_system_setter_parameter_names() {
     assert_eq!(NAMED_FIXTURE.len(), 232);
     assert_eq!(NAMED_FIXTURE.lines().count(), 1);
-    assert_pinned_bundle(NAMED_FIXTURE, NAMED_FIXTURE_SHA256);
+    assert_pinned_artifact(NAMED_ENTRY, NAMED_ENTRY_SHA256, "authored Babel entry");
+    assert_pinned_artifact(BABEL_OUTPUT, BABEL_OUTPUT_SHA256, "Babel compiler output");
+    assert_pinned_artifact(NAMED_FIXTURE, NAMED_FIXTURE_SHA256, "Babel/Terser bundle");
+    assert_authored_entry(NAMED_ENTRY);
+    assert_authored_reference(NAMED_AUTHORED_REFERENCE, NAMED_AUTHORED_REFERENCE_SHA256);
+    assert_eq!(
+        recovered_live_outputs(NAMED_AUTHORED_REFERENCE),
+        REFERENCE_LIVE_OUTPUTS,
+        "the named authored System.register reference must preserve setter liveness"
+    );
 
     let (_direct, direct_stats): (String, AstUnminifyStats) = unminify_ast(NAMED_FIXTURE);
     assert_eq!(direct_stats.system_register_parameters_renamed, 2);
@@ -141,9 +202,12 @@ fn registered_pass_recovers_named_system_setter_parameter_names() {
     assert!(compact_recovered.contains("System.register(\"fixture/main\",["));
     assert!(compact_recovered.contains("function(mathUtils){u=mathUtils.sum}"));
     assert!(compact_recovered.contains("function(textFormat){i=textFormat.default}"));
-    assert_eq!(node_output(&recovered_source), REFERENCE_STDOUT);
+    assert_eq!(recovered_output(&recovered_source), REFERENCE_OUTPUT);
+    assert_eq!(
+        recovered_live_outputs(&recovered_source),
+        REFERENCE_LIVE_OUTPUTS
+    );
     assert_mutated_dependency_changes_output(&recovered_source);
-    assert_eq!(node_live_outputs(&recovered_source), REFERENCE_LIVE_OUTPUTS);
     let repeated: Artifact = JS_OBF_PASS
         .run(&input)
         .expect("the registered pass must deterministically recover the named registry module");

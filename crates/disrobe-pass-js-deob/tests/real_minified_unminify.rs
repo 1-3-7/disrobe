@@ -1,14 +1,33 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 use boa_engine::{Context, Source};
 use disrobe_pass_js_deob::{AstUnminifyStats, unminify_ast};
+use sha2::{Digest, Sha256};
 
 const LOOP_LIMIT: u64 = 2_000_000;
 const RECURSION_LIMIT: usize = 1_500;
 const STACK_LIMIT: usize = 50_000;
 
 const PARITY_FIXTURE: &str = include_str!("../corpus/unminify/parity/min.js");
+const PARITY_FIXTURE_SHA256: &str =
+    "eea4274c36cf6156a85cf80574b0858706f0a5a91d9337f6987da27de0fee1e8";
+const PARITY_REFERENCE_SOURCE: &str = r#"
+var built = [0, 1, 2].map(function (item) { return "row " + item + " of 3"; });
+var label = { label: "ok" }.label;
+var none = undefined;
+var joined = ["a", "b", "c"].join(",");
+"#;
+const PARITY_REFERENCE_OUTPUT: &str =
+    "row 0 of 3|row 1 of 3|row 2 of 3\u{1}ok\u{1}undefined\u{1}a,b,c";
 
 const TERSER_MINIFIED: &str = "function greet(e,t){if(null!=e){for(var n=\"user \"+e.name+\" has \"+t+\" items\";!(t<=0);)t--;return\"active\"===e.status?n:\"inactive\"}}";
+const TERSER_REFERENCE_SOURCE: &str = r#"
+function greet(user, count) {
+  if (user == null) return undefined;
+  if (user.status !== "active") return "inactive";
+  return "user " + user.name + " has " + count + " items";
+}
+"#;
+const TERSER_REFERENCE_OUTPUT: &str = "user ann has 3 items\u{1}inactive\u{1}undefined";
 
 fn eval_capture(program: &str, tail: &str) -> Option<String> {
     let mut context: Context = Context::default();
@@ -37,9 +56,15 @@ probe;
 
 #[test]
 fn real_minified_fixture_recovers_and_preserves_behavior() {
-    let want: String = eval_capture(PARITY_FIXTURE, PROBE)
-        .expect("minified fixture must evaluate before transform");
-
+    assert_eq!(
+        format!("{:x}", Sha256::digest(PARITY_FIXTURE.as_bytes())),
+        PARITY_FIXTURE_SHA256,
+        "the minified input changed without revalidating its reference"
+    );
+    assert_eq!(
+        eval_capture(PARITY_REFERENCE_SOURCE, PROBE),
+        Some(PARITY_REFERENCE_OUTPUT.to_owned())
+    );
     let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(PARITY_FIXTURE);
 
     assert_eq!(
@@ -77,8 +102,18 @@ fn real_minified_fixture_recovers_and_preserves_behavior() {
     let got: String = eval_capture(&recovered, PROBE)
         .unwrap_or_else(|| panic!("recovered must evaluate:\n{recovered}"));
     assert_eq!(
-        want, got,
-        "recovered diverged from the real minified fixture\n--want--\n{want}\n--got--\n{got}\n--src--\n{recovered}"
+        got, PARITY_REFERENCE_OUTPUT,
+        "recovered diverged from the pinned reference output\n--got--\n{got}\n--src--\n{recovered}"
+    );
+    let mutated: String = recovered.replacen("row ", "item ", 1);
+    assert_ne!(
+        mutated, recovered,
+        "the output template must remain present"
+    );
+    assert_ne!(
+        eval_capture(&mutated, PROBE),
+        Some(PARITY_REFERENCE_OUTPUT.to_owned()),
+        "the grade must detect a changed recovered output template"
     );
 }
 
@@ -93,16 +128,24 @@ probe;
 
 #[test]
 fn real_terser_output_unminifies_equivalently() {
-    let want: String =
-        eval_capture(TERSER_MINIFIED, TERSER_PROBE).expect("terser output must evaluate");
-
+    assert_eq!(
+        eval_capture(TERSER_REFERENCE_SOURCE, TERSER_PROBE),
+        Some(TERSER_REFERENCE_OUTPUT.to_owned())
+    );
     let (recovered, _stats): (String, AstUnminifyStats) = unminify_ast(TERSER_MINIFIED);
 
     let got: String = eval_capture(&recovered, TERSER_PROBE)
         .unwrap_or_else(|| panic!("recovered terser output must evaluate:\n{recovered}"));
     assert_eq!(
-        want, got,
-        "recovered diverged from real terser output\n--want--\n{want}\n--got--\n{got}\n--src--\n{recovered}"
+        got, TERSER_REFERENCE_OUTPUT,
+        "recovered diverged from the pinned Terser reference output\n--got--\n{got}\n--src--\n{recovered}"
+    );
+    let mutated: String = recovered.replacen("active", "inactive", 1);
+    assert_ne!(mutated, recovered, "the active branch must remain present");
+    assert_ne!(
+        eval_capture(&mutated, TERSER_PROBE),
+        Some(TERSER_REFERENCE_OUTPUT.to_owned()),
+        "the grade must detect a changed recovered branch"
     );
     assert!(
         reparses(&recovered),

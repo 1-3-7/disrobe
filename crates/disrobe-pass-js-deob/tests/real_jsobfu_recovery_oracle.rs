@@ -4,6 +4,11 @@ use std::path::PathBuf;
 
 use boa_engine::{Context, Source};
 use disrobe_pass_js_deob::{Detection, JsObfuRecovery, JsObfuscator, detect, recover_jsobfu};
+use sha2::{Digest, Sha256};
+
+const INPUT_SHA256: &str = "7576a69b3e0dd823087c56f5705d8b5c28d0c30a5a90a306e1b9ccca574aedfe";
+const OBFUSCATED_SHA256: &str = "fb8a0fa445ef48d791834b971a7621c1e23a2f64480c8ee9aa07c4d33380e329";
+const AUTHORED_OUTPUT: &str = "{\"greeting\":\"hi world!\",\"sum\":3,\"product\":12,\"fib10\":55,\"factorial5\":120,\"count\":5,\"registered\":\"greet,add,mul,fib,factorial\"}";
 
 fn corpus(rel: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -14,12 +19,15 @@ fn corpus(rel: &str) -> PathBuf {
         .join(rel)
 }
 
-fn load(rel: &str) -> Option<String> {
+fn load(rel: &str) -> String {
     let p: PathBuf = corpus(rel);
-    if !p.exists() {
-        return None;
-    }
-    fs::read_to_string(&p).ok()
+    fs::read_to_string(&p)
+        .unwrap_or_else(|error| panic!("required corpus fixture {}: {error}", p.display()))
+}
+
+fn assert_sha256(label: &str, source: &str, expected: &str) {
+    let actual: String = format!("{:x}", Sha256::digest(source.as_bytes()));
+    assert_eq!(actual, expected, "{label} fixture hash changed");
 }
 
 const CAPTURE_HARNESS: &str = "\
@@ -48,10 +56,7 @@ fn eval_console_output(script: &str) -> Option<String> {
 
 #[test]
 fn real_jsobfu_classifies_as_jsobfu_family() {
-    let Some(src): Option<String> = load("jsobfu/obfuscated.js") else {
-        eprintln!("SKIP: jsobfu/obfuscated.js fixture missing");
-        return;
-    };
+    let src: String = load("jsobfu/obfuscated.js");
     let det: Detection = detect(src.as_bytes());
     assert_eq!(
         det.family,
@@ -64,10 +69,7 @@ fn real_jsobfu_classifies_as_jsobfu_family() {
 
 #[test]
 fn clean_source_not_misclassified_as_jsobfu() {
-    let Some(src): Option<String> = load("jsobfu/input.js") else {
-        eprintln!("SKIP: jsobfu/input.js fixture missing");
-        return;
-    };
+    let src: String = load("jsobfu/input.js");
     let det: Detection = detect(src.as_bytes());
     assert_ne!(
         det.family,
@@ -78,10 +80,7 @@ fn clean_source_not_misclassified_as_jsobfu() {
 
 #[test]
 fn real_jsobfu_recovery_folds_fromcharcode_chains() {
-    let Some(src): Option<String> = load("jsobfu/obfuscated.js") else {
-        eprintln!("SKIP: jsobfu/obfuscated.js fixture missing");
-        return;
-    };
+    let src: String = load("jsobfu/obfuscated.js");
     let out: JsObfuRecovery = recover_jsobfu(&src);
     assert!(
         out.char_fold.from_char_code_calls_folded >= 20,
@@ -96,19 +95,15 @@ fn real_jsobfu_recovery_folds_fromcharcode_chains() {
 
 #[test]
 fn recovered_jsobfu_is_behaviorally_identical_to_ground_truth() {
-    let Some(obf): Option<String> = load("jsobfu/obfuscated.js") else {
-        eprintln!("SKIP: jsobfu/obfuscated.js fixture missing");
-        return;
-    };
-    let Some(original): Option<String> = load("jsobfu/input.js") else {
-        eprintln!("SKIP: jsobfu/input.js fixture missing");
-        return;
-    };
+    let obf: String = load("jsobfu/obfuscated.js");
+    let original: String = load("jsobfu/input.js");
+    assert_sha256("obfuscated", &obf, OBFUSCATED_SHA256);
+    assert_sha256("authored input", &original, INPUT_SHA256);
     let ground_truth: String =
         eval_console_output(&original).expect("ground-truth source must run under boa");
-    assert!(
-        !ground_truth.is_empty(),
-        "ground-truth program must produce console output"
+    assert_eq!(
+        ground_truth, AUTHORED_OUTPUT,
+        "authored source output changed"
     );
 
     let out: JsObfuRecovery = recover_jsobfu(&obf);
@@ -116,26 +111,34 @@ fn recovered_jsobfu_is_behaviorally_identical_to_ground_truth() {
         eval_console_output(&out.source).expect("recovered jsobfu must re-parse and run under boa");
 
     assert_eq!(
-        recovered_output, ground_truth,
+        recovered_output, AUTHORED_OUTPUT,
         "recovered jsobfu must produce the same program output as the original source"
     );
 }
 
 #[test]
-fn raw_obfuscated_and_recovered_agree_under_boa() {
-    let Some(obf): Option<String> = load("jsobfu/obfuscated.js") else {
-        eprintln!("SKIP: jsobfu/obfuscated.js fixture missing");
-        return;
-    };
-    let raw_output: Option<String> = eval_console_output(&obf);
+fn recovered_jsobfu_output_mutation_is_rejected() {
+    let obf: String = load("jsobfu/obfuscated.js");
+    let authored: String = load("jsobfu/input.js");
+    assert_sha256("obfuscated", &obf, OBFUSCATED_SHA256);
+    assert_sha256("authored input", &authored, INPUT_SHA256);
+    let authored_output: String =
+        eval_console_output(&authored).expect("ground-truth source must run under boa");
+    assert_eq!(
+        authored_output, AUTHORED_OUTPUT,
+        "authored source output changed"
+    );
+
     let out: JsObfuRecovery = recover_jsobfu(&obf);
-    let recovered_output: Option<String> = eval_console_output(&out.source);
-    if let (Some(raw), Some(rec)) = (raw_output.as_ref(), recovered_output.as_ref())
-        && !raw.is_empty()
-    {
-        assert_eq!(
-            rec, raw,
-            "recovery must preserve the obfuscated program's runtime behavior"
-        );
-    }
+    let recovered_output: String =
+        eval_console_output(&out.source).expect("recovered jsobfu must re-parse and run under boa");
+    assert_eq!(recovered_output, AUTHORED_OUTPUT);
+
+    let mutated: String = format!("{}\nconsole.log('mutation');", out.source);
+    let mutated_output: String =
+        eval_console_output(&mutated).expect("mutated recovered code must produce console output");
+    assert_ne!(
+        mutated_output, AUTHORED_OUTPUT,
+        "mutation control must turn the grade red"
+    );
 }

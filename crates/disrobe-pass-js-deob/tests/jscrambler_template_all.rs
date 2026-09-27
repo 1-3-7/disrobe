@@ -1,11 +1,8 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
-mod common;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
-
-use common::{EvalOutcome, Terminal, try_eval_outcome_with_argv};
 
 use disrobe_pass_js_deob::{
     JscramblerTransform, JscramblerTransformOpts, JscramblerTransformOutput,
@@ -551,14 +548,31 @@ fn measure(template: &Template, witness: &BTreeSet<String>) -> Option<Measuremen
         .unwrap_or_else(|error: disrobe_pass_js_deob::Error| {
             panic!("{}: template chain failed: {error}", template.name)
         });
-    Some(Measurement {
-        protected_recall: recall_percent(witness, &plain_literals(&protected)),
-        recovered_recall: recall_percent(witness, &plain_literals(&out.source)),
-        protected_escapes: escape_sequences(&protected),
-        recovered_escapes: escape_sequences(&out.source),
-        reparsed: reparses(&out.source),
-        changed: out.source != protected,
-    })
+    Some(measure_sources(&protected, &out.source, witness))
+}
+
+fn measure_sources(protected: &str, recovered: &str, witness: &BTreeSet<String>) -> Measurement {
+    Measurement {
+        protected_recall: recall_percent(witness, &plain_literals(protected)),
+        recovered_recall: recall_percent(witness, &plain_literals(recovered)),
+        protected_escapes: escape_sequences(protected),
+        recovered_escapes: escape_sequences(recovered),
+        reparsed: reparses(recovered),
+        changed: recovered != protected,
+    }
+}
+
+fn static_grade_failure(measurement: &Measurement) -> Option<&'static str> {
+    if !measurement.reparsed {
+        return Some("recovered output must still parse as JavaScript");
+    }
+    if measurement.recovered_recall < measurement.protected_recall {
+        return Some("recovery lost literals the protected input still exposed");
+    }
+    if measurement.recovered_escapes > measurement.protected_escapes {
+        return Some("recovery added escape sequences instead of folding them");
+    }
+    None
 }
 
 fn witness_literals() -> BTreeSet<String> {
@@ -566,7 +580,7 @@ fn witness_literals() -> BTreeSet<String> {
     let literals: BTreeSet<String> = plain_literals(&witness);
     assert!(
         literals.len() >= WITNESS_LITERAL_FLOOR,
-        "the minification witness must expose the original program's literals; got {}",
+        "the minification witness must expose enough fixture literals; got {}",
         literals.len()
     );
     literals
@@ -698,7 +712,7 @@ fn literal_recall_measure_is_not_vacuous() {
     let protected_recall: f64 = recall_percent(&witness, &plain_literals(&protected));
     assert!(
         protected_recall < 100.0,
-        "the obfuscation template must conceal part of the original literal set, otherwise the \
+        "the obfuscation template must conceal part of the minification witness literals, otherwise the \
          measure grades nothing; protected recall was {protected_recall:.1}%"
     );
 }
@@ -725,22 +739,9 @@ fn acquired_templates_recover_measurably_against_the_minification_witness() {
     }
     assert_eq!(measurements.len(), ACQUIRED_TEMPLATE_COUNT);
     for (name, measurement) in &measurements {
-        assert!(
-            measurement.reparsed,
-            "{name}: recovered output must still parse as JavaScript"
-        );
-        assert!(
-            measurement.recovered_recall >= measurement.protected_recall,
-            "{name}: recovery lost literals the protected input still exposed ({:.1}% -> {:.1}%)",
-            measurement.protected_recall,
-            measurement.recovered_recall
-        );
-        assert!(
-            measurement.recovered_escapes <= measurement.protected_escapes,
-            "{name}: recovery added escape sequences instead of folding them ({} -> {})",
-            measurement.protected_escapes,
-            measurement.recovered_escapes
-        );
+        if let Some(reason) = static_grade_failure(measurement) {
+            panic!("{name}: {reason}: {measurement:?}");
+        }
     }
     let full_literal_recovery: Vec<&&str> = measurements
         .iter()
@@ -771,53 +772,10 @@ fn acquired_templates_recover_measurably_against_the_minification_witness() {
 }
 
 const ORIGINAL_FILE_NAMES: &[&str] = &["source.js", "original.js", "src.js", "source.zip"];
-const BEHAVIOR_PRESERVED_COUNT: usize = 3;
-
-#[derive(Debug, Clone)]
-enum BehaviorVerdict {
-    Preserved,
-    NotComparable(String),
-    Diverged(String),
-}
-
-fn comparable(outcome: &EvalOutcome) -> Option<String> {
-    match &outcome.terminal {
-        Terminal::ParseFailed { kind, message } => Some(format!(
-            "Boa cannot parse it as a script: {kind}: {message}"
-        )),
-        Terminal::ObservationLimitExceeded(reason) => {
-            Some(format!("observation limit reached: {reason}"))
-        }
-        Terminal::Completed(_) | Terminal::Threw { .. } | Terminal::ExecutionLimitExceeded => None,
-    }
-}
-
-fn grade_behavior(protected: &str, recovered: &str) -> BehaviorVerdict {
-    let before: EvalOutcome = match try_eval_outcome_with_argv(protected, &[]) {
-        Ok(outcome) => outcome,
-        Err(reason) => {
-            return BehaviorVerdict::NotComparable(format!("protected input: {reason}"));
-        }
-    };
-    if let Some(reason) = comparable(&before) {
-        return BehaviorVerdict::NotComparable(format!("protected input: {reason}"));
-    }
-    let after: EvalOutcome = match try_eval_outcome_with_argv(recovered, &[]) {
-        Ok(outcome) => outcome,
-        Err(reason) => {
-            return BehaviorVerdict::Diverged(format!("recovered output: {reason}"));
-        }
-    };
-    if before == after {
-        return BehaviorVerdict::Preserved;
-    }
-    BehaviorVerdict::Diverged(format!(
-        "--protected--\n{before:?}\n--recovered--\n{after:?}"
-    ))
-}
+const MINIFICATION_WITNESS_LITERAL: &str = "Browser Lock Activated";
 
 #[test]
-fn no_template_ships_an_original_so_source_level_grading_is_impossible() {
+fn protected_templates_have_no_original_source_for_behavior_grading() {
     let mut with_original: Vec<&'static str> = Vec::new();
     for template in TEMPLATES {
         let Provenance::Acquired { directory, .. } = template.provenance else {
@@ -833,108 +791,41 @@ fn no_template_ships_an_original_so_source_level_grading_is_impossible() {
     }
     assert!(
         with_original.is_empty(),
-        "these templates now ship an original, so their recovery must be graded against that \
-         original instead of by literal recall and behavior preservation; raise the grading in the \
-         same change that adds the file: {with_original:?}"
+        "these templates now ship original source, so replace the static-only grade with pinned \
+         original-source behavior grading in the same change: {with_original:?}"
     );
     eprintln!(
-        "the acquired Jscrambler {PRODUCT_VERSION} template set publishes protected bundles only, \
-         so no template can be graded against an original source; the graded properties are \
-         literal recall against the minification witness, escape folding, re-parse, and behavior \
-         preservation under a real engine"
+        "the acquired Jscrambler {PRODUCT_VERSION} template set publishes protected bundles only; \
+         its grade is limited to static reparse, literal recall, and escape folding"
     );
 }
 
 #[test]
-fn recovery_preserves_behavior_of_every_acquired_template_under_a_real_engine() {
-    let mut preserved: Vec<&'static str> = Vec::new();
-    let mut not_comparable: Vec<String> = Vec::new();
-    let mut diverged: Vec<String> = Vec::new();
-    let verdicts: Vec<(&'static str, BehaviorVerdict)> = std::thread::scope(
-        |scope: &std::thread::Scope<'_, '_>| -> Vec<(&'static str, BehaviorVerdict)> {
-            let mut handles: Vec<
-                std::thread::ScopedJoinHandle<'_, (&'static str, BehaviorVerdict)>,
-            > = Vec::with_capacity(ACQUIRED_TEMPLATE_COUNT);
-            for template in TEMPLATES {
-                let Provenance::Acquired { directory, .. } = template.provenance else {
-                    continue;
-                };
-                handles.push(scope.spawn(move || -> (&'static str, BehaviorVerdict) {
-                    let protected: String = read_sample(directory);
-                    let out: TemplateOutput =
-                        (template.chain)(&protected, &JscramblerTransformOpts::default())
-                            .unwrap_or_else(|error: disrobe_pass_js_deob::Error| {
-                                panic!("{}: template chain failed: {error}", template.name)
-                            });
-                    (template.name, grade_behavior(&protected, &out.source))
-                }));
-            }
-            let mut verdicts: Vec<(&'static str, BehaviorVerdict)> =
-                Vec::with_capacity(handles.len());
-            for handle in handles {
-                verdicts.push(handle.join().expect("behavior grading thread must finish"));
-            }
-            verdicts
-        },
-    );
-    for (name, verdict) in verdicts {
-        match verdict {
-            BehaviorVerdict::Preserved => {
-                eprintln!("  behavior preserved: {name}");
-                preserved.push(name);
-            }
-            BehaviorVerdict::NotComparable(reason) => {
-                not_comparable.push(format!("{name}: {reason}"));
-            }
-            BehaviorVerdict::Diverged(reason) => {
-                diverged.push(format!("{name}: {reason}"));
-            }
-        }
-    }
-    for reason in &not_comparable {
-        eprintln!("  not comparable: {reason}");
-    }
-    eprintln!(
-        "behavior preservation under a real engine: {} preserved, {} not comparable, {} diverged (of {ACQUIRED_TEMPLATE_COUNT} acquired templates)",
-        preserved.len(),
-        not_comparable.len(),
-        diverged.len()
-    );
-    assert!(
-        diverged.is_empty(),
-        "recovery changed what real Jscrambler output does:\n\n{}",
-        diverged.join("\n\n")
-    );
-    assert_eq!(
-        preserved.len(),
-        BEHAVIOR_PRESERVED_COUNT,
-        "the behaviorally graded template count is pinned by equality, so a template that stops \
-         executing cannot silently leave the measurement"
-    );
-    assert_eq!(
-        preserved.len() + not_comparable.len(),
-        ACQUIRED_TEMPLATE_COUNT
-    );
-}
-
-#[test]
-fn behavior_preservation_rejects_a_deliberately_broken_recovery() {
+fn static_witness_grade_rejects_removed_literal() {
+    let witness: BTreeSet<String> = witness_literals();
     let protected: String = read_sample("minification");
     let out: TemplateOutput =
         deobfuscate_template_minification(&protected, &JscramblerTransformOpts::default())
             .expect("minification template runs");
-    assert!(matches!(
-        grade_behavior(&protected, &out.source),
-        BehaviorVerdict::Preserved
-    ));
-    let broken: String = format!("console.log('injected');\n{}", out.source);
+    let original: Measurement = measure_sources(&protected, &out.source, &witness);
+    assert!(static_grade_failure(&original).is_none());
     assert!(
-        matches!(
-            grade_behavior(&protected, &broken),
-            BehaviorVerdict::Diverged(_)
-        ),
-        "a recovery that adds an observable effect must fail behavior preservation, otherwise the \
-         comparison grades nothing"
+        plain_literals(&out.source).contains(MINIFICATION_WITNESS_LITERAL),
+        "the static minification witness must remain in recovered output"
+    );
+    let removed: String = out.source.replace(MINIFICATION_WITNESS_LITERAL, "removed");
+    assert_ne!(
+        removed, out.source,
+        "the recovered output must carry the pinned static witness as source text"
+    );
+    assert!(
+        !plain_literals(&removed).contains(MINIFICATION_WITNESS_LITERAL),
+        "a recovered output that loses the pinned static witness must fail the grade"
+    );
+    let mutated: Measurement = measure_sources(&protected, &removed, &witness);
+    assert!(
+        static_grade_failure(&mutated).is_some(),
+        "the static grade must reject the literal-removal mutation"
     );
 }
 

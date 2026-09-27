@@ -9,8 +9,8 @@ sha256 = "aefef83a730c3e2efff221eb456d355796f33574ef581bfc94bfe378e2d5e23b"
 source = "src_checksum.js"
 produced_by = "real-js-confuser"
 options = "{ target: 'node', stringConcealing: true, compact: true }"
-recovered = "base91 string pool decoded back to literals at every accessor call site; the top-level concealed pool is fully recovered and the program is byte-identical under node"
-notes = "the base91 alphabet and the pool array are static in the output, so the decode (basE91 then utf-8) is reproduced in-tree. js-confuser nests a second inner pool; the in-tree pass recovers the outer pool layer and behavior is preserved end to end"
+recovered = "base91 string pools decoded to literals at the outer and nested numeric accessor call sites; recovered stdout matches the authored source under node"
+notes = "the alphabets and pool arrays are static. Each accessor is matched by its own index parameter, including nested accessors inside adler32 and band. The grade refuses any remaining numeric __p_*_STR or __p_*_STR_n call before node runs"
 
 [[sample]]
 file = "obf_stringcompression.real.js"

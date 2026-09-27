@@ -1,11 +1,18 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 use boa_engine::{Context, Source};
 use disrobe_pass_js_deob::{PackerDecode, PackerDetection, detect_packer, unpack_packer};
+use sha2::{Digest, Sha256};
 
-const GROUND_TRUTH: &str = include_str!("../../../corpus/js/packer/real/ground-truth.js");
+const AUTHORED_REFERENCE: &str = include_str!("../../../corpus/js/packer/real/ground-truth.js");
+const AUTHORED_REFERENCE_SHA256: &str =
+    "737c57e181b1d1c0171b5d600411e919944ca8554cc1a82e528cbb6e7a0725e6";
+const REFERENCE_OUTPUT: &str = "Hello, Alice! Welcome aboard.\u{1}Sum is 68";
 const SINGLE: &str = include_str!("../../../corpus/js/packer/real/single-layer.packed.js");
+const SINGLE_SHA256: &str = "7c27aaa178e1c159a55d04fbda2582a99a301c7bba2138f61330d82f22492a72";
 const DOUBLE: &str = include_str!("../../../corpus/js/packer/real/double-layer.packed.js");
+const DOUBLE_SHA256: &str = "1261b6f7ca909afcc6cd27de3491f7bb2976ced6c8a2c4b5a8a235585b545486";
 const TRIPLE: &str = include_str!("../../../corpus/js/packer/real/triple-layer.packed.js");
+const TRIPLE_SHA256: &str = "ce182be3bd2a80d7c4713e9671a0a0d890bf0cdb64edeb3c00735c18d2eacf80";
 
 const LOOP_LIMIT: u64 = 2_000_000;
 const RECURSION_LIMIT: usize = 1_500;
@@ -28,34 +35,61 @@ fn eval_console(program: &str) -> Option<String> {
         .map(boa_engine::JsString::to_std_string_escaped)
 }
 
-fn re_evals_equivalent(label: &str, recovered: &str) {
-    let want: String =
-        eval_console(GROUND_TRUTH).unwrap_or_else(|| panic!("{label}: ground truth must evaluate"));
+fn assert_fixture_identity(label: &str, fixture: &str, expected_sha256: &str) {
+    assert_eq!(
+        format!("{:x}", Sha256::digest(fixture.as_bytes())),
+        expected_sha256,
+        "{label}: the tracked fixture changed without revalidating its reference"
+    );
+}
+
+fn authored_reference_output() -> String {
+    assert_fixture_identity(
+        "authored reference",
+        AUTHORED_REFERENCE,
+        AUTHORED_REFERENCE_SHA256,
+    );
+    let output: String = eval_console(AUTHORED_REFERENCE)
+        .expect("the bounded authored reference evaluation must finish");
+    assert_eq!(
+        output, REFERENCE_OUTPUT,
+        "the authored reference must produce its pinned output"
+    );
+    output
+}
+
+fn assert_recovered_behavior(label: &str, recovered: &str) {
+    let want: String = authored_reference_output();
     let got: String = eval_console(recovered)
         .unwrap_or_else(|| panic!("{label}: recovered must re-evaluate; src=\n{recovered}"));
     assert_eq!(
         want, got,
         "{label}: recovered behavior diverged from ground truth\n--want--\n{want}\n--got--\n{got}"
     );
+    let mutated: String = recovered.replacen("Hello, ", "Goodbye, ", 1);
+    assert_ne!(
+        mutated, recovered,
+        "{label}: recovered output must retain the greeting literal"
+    );
+    assert_ne!(
+        eval_console(&mutated),
+        Some(want),
+        "{label}: the reference grade must reject a changed recovered greeting"
+    );
 }
 
 #[test]
-fn ground_truth_and_packed_samples_are_behaviorally_identical() {
-    let truth: String = eval_console(GROUND_TRUTH).expect("ground truth evals");
-    let single_live: String = eval_console(SINGLE).expect("single-layer evals");
-    let double_live: String = eval_console(DOUBLE).expect("double-layer evals");
-    assert_eq!(
-        truth, single_live,
-        "the real single-layer packer fixture must run identically to its source"
-    );
-    assert_eq!(
-        truth, double_live,
-        "the real double-layer packer fixture must run identically to its source"
-    );
+fn packed_samples_are_pinned_to_the_authored_reference() {
+    let output: String = authored_reference_output();
+    assert_fixture_identity("single-layer packed input", SINGLE, SINGLE_SHA256);
+    assert_fixture_identity("double-layer packed input", DOUBLE, DOUBLE_SHA256);
+    assert_fixture_identity("triple-layer packed input", TRIPLE, TRIPLE_SHA256);
+    assert_eq!(output, REFERENCE_OUTPUT);
 }
 
 #[test]
 fn single_layer_recovers_to_one_unpacked_layer() {
+    assert_fixture_identity("single-layer packed input", SINGLE, SINGLE_SHA256);
     let det: PackerDetection = detect_packer(SINGLE);
     assert!(det.matched, "single-layer must detect: {det:?}");
 
@@ -71,11 +105,12 @@ fn single_layer_recovers_to_one_unpacked_layer() {
     );
     assert!(recovered.contains("function greet"));
     assert!(recovered.contains("function compute"));
-    re_evals_equivalent("single-layer", &recovered);
+    assert_recovered_behavior("single-layer", &recovered);
 }
 
 #[test]
 fn double_layer_recovers_through_both_nested_packers() {
+    assert_fixture_identity("double-layer packed input", DOUBLE, DOUBLE_SHA256);
     let decode: PackerDecode = unpack_packer(DOUBLE);
     let recovered: String = decode.recovered.expect("double-layer must recover");
     assert_eq!(
@@ -90,11 +125,12 @@ fn double_layer_recovers_through_both_nested_packers() {
     assert!(recovered.contains("function greet"));
     assert!(recovered.contains("function compute"));
     assert!(recovered.contains("console"));
-    re_evals_equivalent("double-layer", &recovered);
+    assert_recovered_behavior("double-layer", &recovered);
 }
 
 #[test]
 fn triple_layer_recovers_through_three_nested_packers() {
+    assert_fixture_identity("triple-layer packed input", TRIPLE, TRIPLE_SHA256);
     let decode: PackerDecode = unpack_packer(TRIPLE);
     let recovered: String = decode.recovered.expect("triple-layer must recover");
     assert_eq!(
@@ -108,7 +144,7 @@ fn triple_layer_recovers_through_three_nested_packers() {
     );
     assert!(recovered.contains("function greet"));
     assert!(recovered.contains("function compute"));
-    re_evals_equivalent("triple-layer", &recovered);
+    assert_recovered_behavior("triple-layer", &recovered);
 }
 
 #[test]

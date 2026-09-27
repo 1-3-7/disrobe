@@ -1,11 +1,8 @@
 #![cfg(feature = "chain")]
 #![allow(clippy::expect_used, clippy::panic)]
 
-use std::ffi::OsStr;
-use std::path::Path;
-use std::time::Duration;
+mod common;
 
-use disrobe_core::subprocess::{CapturedOutput, run_captured};
 use disrobe_core::{Artifact, Rung, chain::Pass};
 use disrobe_pass_js_deob::chain_detector::JS_OBF_PASS;
 use disrobe_pass_js_deob::{AstUnminifyStats, unminify_ast};
@@ -13,28 +10,19 @@ use sha2::{Digest, Sha256};
 
 const FIXTURE: &str = include_str!("fixtures/rollup_iife_param/fixture.min.js");
 const FIXTURE_SHA256: &str = "e9f7c5c0e6ca1dadfb87f0d4da77133da9f0457f41db0a74db39a6c92a409932";
-const REFERENCE_STDOUT: &[u8] =
-    b"value=42|value=3|value=7|value=11|value=15|value=19|value=23|value=27";
-const DIFFERENCE_STDOUT: &[u8] =
-    b"value=-2|value=-1|value=-1|value=-1|value=-1|value=-1|value=-1|value=-1";
-const NODE_TIMEOUT: Duration = Duration::from_secs(30);
-const NODE_CAPTURE: usize = 1usize << 18;
+const AUTHORED_REFERENCE: &str = "globalThis.__result = [\n    TextFormat(MathUtils.sum(20, 22)),\n    TextFormat(MathUtils.sum(1, 2)),\n    TextFormat(MathUtils.sum(3, 4)),\n    TextFormat(MathUtils.sum(5, 6)),\n    TextFormat(MathUtils.sum(7, 8)),\n    TextFormat(MathUtils.sum(9, 10)),\n    TextFormat(MathUtils.sum(11, 12)),\n    TextFormat(MathUtils.sum(13, 14)),\n].join(\"|\");\n";
+const AUTHORED_REFERENCE_SHA256: &str =
+    "024de721d78f02420a86bdbde39dcf7b4e69e4a7bd8cb9981b0734c50b27a9d9";
+const REFERENCE_OUTPUT: &str =
+    "value=42|value=3|value=7|value=11|value=15|value=19|value=23|value=27";
+const DIFFERENCE_OUTPUT: &str =
+    "value=-2|value=-1|value=-1|value=-1|value=-1|value=-1|value=-1|value=-1";
 
-fn node_output(source: &str) -> Vec<u8> {
+fn harness_output(source: &str) -> String {
     let harness: String = format!(
-        "globalThis.MathUtils={{sum:(left,right)=>left+right}};globalThis.TextFormat=value=>`value=${{value}}`;globalThis.DifferenceMath={{sum:(left,right)=>left-right}};{source};process.stdout.write(globalThis.__result);"
+        "globalThis.MathUtils={{sum:(left,right)=>left+right}};globalThis.TextFormat=value=>`value=${{value}}`;globalThis.DifferenceMath={{sum:(left,right)=>left-right}};{source};console.log(globalThis.__result);"
     );
-    let args: [&OsStr; 2] = [OsStr::new("-e"), OsStr::new(&harness)];
-    let output: CapturedOutput = run_captured(Path::new("node"), &args, NODE_TIMEOUT, NODE_CAPTURE)
-        .expect("Node is required for the Rollup IIFE semantic reference")
-        .expect("the Rollup IIFE semantic reference must finish within the timeout");
-    assert_eq!(
-        output.exit_code,
-        Some(0),
-        "Node must execute the Rollup IIFE fixture: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    output.stdout
+    common::eval_capture(&harness).expect("bounded Boa evaluation of the IIFE must finish")
 }
 
 fn compact(source: &str) -> String {
@@ -53,6 +41,16 @@ fn registered_pass_recovers_rollup_iife_global_parameter_names() {
         "the Rollup and Terser bundle is not the one PROVENANCE.txt records, so its pinned \
          reference output no longer applies"
     );
+    assert_eq!(
+        format!("{:x}", Sha256::digest(AUTHORED_REFERENCE.as_bytes())),
+        AUTHORED_REFERENCE_SHA256,
+        "the authored IIFE reference changed, so its pinned stdout no longer applies"
+    );
+    let authored_output: String = harness_output(AUTHORED_REFERENCE);
+    assert_eq!(
+        authored_output, REFERENCE_OUTPUT,
+        "the authored IIFE reference must produce the pinned independent stdout"
+    );
 
     let input: Artifact = Artifact::new(Rung::Raw, FIXTURE.as_bytes().to_vec(), [0x24_u8; 32]);
     let recovered: Artifact = JS_OBF_PASS
@@ -69,7 +67,8 @@ fn registered_pass_recovers_rollup_iife_global_parameter_names() {
         compact_recovered.contains("TextFormat(MathUtils.sum(20,22))"),
         "resolved IIFE references must follow both renames:\n{recovered_source}"
     );
-    assert_eq!(node_output(&recovered_source), REFERENCE_STDOUT);
+    assert!(compact_recovered.contains("globalThis.MathUtils"));
+    assert_eq!(harness_output(&recovered_source), authored_output);
     let mutated: String =
         recovered_source.replacen("globalThis.MathUtils", "globalThis.DifferenceMath", 1);
     assert_ne!(
@@ -77,10 +76,9 @@ fn registered_pass_recovers_rollup_iife_global_parameter_names() {
         "the recovered IIFE must still receive globalThis.MathUtils as an argument"
     );
     assert_eq!(
-        node_output(&mutated),
-        DIFFERENCE_STDOUT,
-        "binding the first IIFE argument to a different global must change the output, or the \
-         stdout comparison cannot see a wrong parameter binding"
+        harness_output(&mutated),
+        DIFFERENCE_OUTPUT,
+        "the reference comparator must reject a wrong IIFE global binding"
     );
 
     let repeated: Artifact = JS_OBF_PASS

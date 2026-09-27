@@ -1,12 +1,14 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::Write;
 use std::path::PathBuf;
-use std::process::Command;
 
 use disrobe_pass_js_deob::{DeobOptions, DeobOutput, deobfuscate_all};
+use regex::Regex;
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
+
+mod common;
 
 const OBFUSCATED_SHA256: [(&str, &str); 12] = [
     (
@@ -71,26 +73,12 @@ fn recovery_dir() -> PathBuf {
         .join("recovery")
 }
 
-fn node_available() -> bool {
-    Command::new("node")
-        .arg("--version")
-        .output()
-        .is_ok_and(|o: std::process::Output| o.status.success())
-}
-
-fn run_node(code: &str) -> Option<String> {
-    run_node_with_args(code, &[])
-}
-
-fn run_node_with_args(code: &str, args: &[&str]) -> Option<String> {
-    let (scratch, mut f): (disrobe_core::scratch::ScratchFile, fs::File) =
-        disrobe_core::scratch::ScratchFile::create("disrobe_jsc_oracle", "js").ok()?;
-    let tmp: PathBuf = scratch.path().to_path_buf();
-    f.write_all(code.as_bytes()).ok()?;
-    drop(f);
-    let output: std::process::Output = Command::new("node")
+fn run_authored_node(source_file: &str, args: &[&str]) -> Option<String> {
+    let output: std::process::Output = std::process::Command::new("node")
+        .env_remove("FORCE_COLOR")
+        .env("NO_COLOR", "1")
         .arg("--")
-        .arg(&tmp)
+        .arg(recovery_dir().join(source_file))
         .args(args)
         .output()
         .ok()?;
@@ -118,8 +106,19 @@ fn read_obfuscated(file: &str) -> String {
     source
 }
 
-fn read_source(file: &str) -> String {
-    fs::read_to_string(recovery_dir().join(file)).unwrap_or_else(|_| panic!("read {file}"))
+#[test]
+fn recovered_stdout_oracle_detects_an_extra_line() {
+    let source: String = read_obfuscated("obf_tokenizer.rgf.js");
+    let recovered: DeobOutput = deobfuscate_all(&source, &DeobOptions::all());
+    let original: String = common::eval_stdout_with_argv(&recovered.source, &[])
+        .expect("recovered tokenizer must evaluate inside the bounded engine");
+    let mutated: String = format!("{}\nconsole.log('extra');", recovered.source);
+    let changed: String = common::eval_stdout_with_argv(&mutated, &[])
+        .expect("mutated tokenizer must evaluate inside the bounded engine");
+    assert_ne!(
+        original, changed,
+        "extra output must fail the behavior grade"
+    );
 }
 
 fn load_expectations() -> Option<BTreeMap<String, String>> {
@@ -135,6 +134,12 @@ fn load_expectations() -> Option<BTreeMap<String, String>> {
 }
 
 fn assert_markers_gone(label: &str, out: &DeobOutput, markers: &[&str]) {
+    let concealed_call: Regex =
+        Regex::new(r"\b__p_\w+?_STR(?:_\d+)?\s*\(\s*\d").expect("concealed accessor call pattern");
+    assert!(
+        !concealed_call.is_match(&out.source),
+        "{label}: concealed accessor calls remain and must be refused before execution"
+    );
     for marker in markers {
         assert!(
             !out.source.contains(marker),
@@ -168,22 +173,20 @@ fn grade(
     );
     assert_markers_gone(sample_file, &out, removed_markers);
 
-    if !node_available() {
-        return;
-    }
-    let authored_runs: String = run_node(&read_source(source_file))
+    let authored_runs: String = run_authored_node(source_file, &[])
         .unwrap_or_else(|| panic!("the authored {source_file} must run under node"));
     assert_eq!(
         &authored_runs, want,
         "expected.json no longer records what {source_file} prints, so it cannot grade \
          {sample_file}"
     );
-    let recovered_runs: String = run_node(&out.source).unwrap_or_else(|| {
-        panic!(
-            "recovered {sample_file} must still execute under node; recovered:\n{}",
-            out.source
-        )
-    });
+    let recovered_runs: String =
+        common::eval_stdout_with_argv(&out.source, &[]).unwrap_or_else(|| {
+            panic!(
+                "recovered {sample_file} must evaluate inside bounded Boa; recovered:\n{}",
+                out.source
+            )
+        });
     assert_eq!(
         &recovered_runs, want,
         "behavioral divergence after deob of {sample_file}\nrecovered source:\n{}",
@@ -218,27 +221,21 @@ fn state_sum_cff_dispatcher_is_actually_collapsed() {
     );
 }
 
-const STRING_CONCEAL_CALL_SITES: [&str; 10] = [
-    "__p_qIDb_MAIN_STR(0",
-    "__p_qIDb_MAIN_STR(1",
-    "__p_qIDb_MAIN_STR(2",
-    "__p_qIDb_MAIN_STR(3",
-    "__p_qIDb_MAIN_STR(4",
-    "__p_qIDb_MAIN_STR(5",
-    "__p_qIDb_MAIN_STR(6",
-    "__p_qIDb_MAIN_STR(7",
-    "__p_qIDb_MAIN_STR(8",
-    "__p_qIDb_MAIN_STR(9",
-];
-
 #[test]
 fn string_conceal_pool_recovered_behavior_matches_node() {
     grade(
         "obf_checksum.stringconceal.js",
         "src_checksum.js",
-        &STRING_CONCEAL_CALL_SITES,
+        &[],
         |out: &DeobOutput| out.string_conceal_call_sites_decoded,
     );
+}
+
+#[test]
+#[should_panic(expected = "concealed accessor calls remain")]
+fn nested_concealed_accessor_is_refused_before_execution() {
+    let out: DeobOutput = deobfuscate_all("__p_inner_STR_1(123)", &DeobOptions::all());
+    assert_markers_gone("nested accessor mutant", &out, &[]);
 }
 
 #[test]
@@ -246,6 +243,7 @@ fn string_conceal_literals_actually_decoded() {
     let obf_src: String = read_obfuscated("obf_checksum.stringconceal.js");
     let opts: DeobOptions = DeobOptions::all();
     let out: DeobOutput = deobfuscate_all(&obf_src, &opts);
+    assert_markers_gone("obf_checksum.stringconceal.js", &out, &[]);
     assert!(
         out.string_conceal_call_sites_decoded > 0,
         "the concealed string pool must be decoded at the call sites; got {}",
@@ -309,35 +307,11 @@ fn rgf_eval_bodies_actually_inlined() {
 
 #[test]
 fn real_jsconfuser_cff_is_devirtualized_to_straight_line() {
-    let expectations: BTreeMap<String, String> =
-        load_expectations().expect("expected.json must load");
-    let want: &String = expectations
-        .get("obf_statesum.real.js")
-        .expect("real cff expectation");
-    let obf_src: String = read_obfuscated("obf_statesum.real.js");
-
-    let opts: DeobOptions = DeobOptions::all();
-    let out: DeobOutput = deobfuscate_all(&obf_src, &opts);
-
-    assert!(
-        out.cff_generators_devirtualized > 0,
-        "the real generator/with-wrapped cff must be devirtualized, not passed through; got 0"
-    );
-    assert_markers_gone("obf_statesum.real.js", &out, &CFF_ENVELOPE_MARKERS);
-
-    if !node_available() {
-        return;
-    }
-    let recovered_runs: String = run_node(&out.source).unwrap_or_else(|| {
-        panic!(
-            "the devirtualized cff must still execute under node; recovered:\n{}",
-            out.source
-        )
-    });
-    assert_eq!(
-        &recovered_runs, want,
-        "behavioral divergence after devirtualizing the real cff envelope\nrecovered:\n{}",
-        out.source
+    grade(
+        "obf_statesum.real.js",
+        "src_statesum.js",
+        &CFF_ENVELOPE_MARKERS,
+        |out: &DeobOutput| out.cff_generators_devirtualized,
     );
 }
 
@@ -352,16 +326,16 @@ fn assert_recovered_matches_source(
     out: &DeobOutput,
     battery: &[&[&str]],
 ) {
-    let original_src: String = read_source(src_file);
     for args in battery {
-        let original: String = run_node_with_args(&original_src, args)
+        let original: String = run_authored_node(src_file, args)
             .unwrap_or_else(|| panic!("{src_file} must run under node for {args:?}"));
-        let recovered: String = run_node_with_args(&out.source, args).unwrap_or_else(|| {
-            panic!(
-                "recovered {obf_file} must run under node for {args:?}:\n{}",
-                out.source
-            )
-        });
+        let recovered: String =
+            common::eval_stdout_with_argv(&out.source, args).unwrap_or_else(|| {
+                panic!(
+                    "recovered {obf_file} must evaluate inside bounded Boa for {args:?}:\n{}",
+                    out.source
+                )
+            });
         assert_eq!(
             original, recovered,
             "{obf_file}: recovered output diverges from {src_file} at {args:?}\nrecovered:\n{}",
@@ -384,9 +358,6 @@ fn grade_runtime_cff(obf_file: &str, src_file: &str, battery: &'static [&'static
     );
     assert_markers_gone(obf_file, &out, &CFF_ENVELOPE_MARKERS);
 
-    if !node_available() {
-        return;
-    }
     assert_recovered_matches_source(obf_file, src_file, &out, &single_argument_battery(battery));
 }
 
@@ -447,9 +418,6 @@ fn real_dead_code_branches_removed_behavior_matches_node() {
     );
     assert_markers_gone("obf_deadcode.real.js", &out, &["dummyFunction", "_dead_"]);
 
-    if !node_available() {
-        return;
-    }
     assert_recovered_matches_source(
         "obf_deadcode.real.js",
         "src_deadcode.js",
@@ -467,9 +435,6 @@ fn real_dead_code_with_cff_behavior_matches_node() {
     );
     assert_markers_gone("obf_deadcode_cff.real.js", &out, &CFF_ENVELOPE_MARKERS);
 
-    if !node_available() {
-        return;
-    }
     assert_recovered_matches_source(
         "obf_deadcode_cff.real.js",
         "src_deadcode.js",
@@ -491,9 +456,6 @@ fn real_integrity_self_check_unwrapped_behavior_matches_node() {
         &["while (true)", "while(true)"],
     );
 
-    if !node_available() {
-        return;
-    }
     let battery: &[&[&str]] = &[
         &["2", "3"],
         &["10", "20"],
@@ -535,14 +497,33 @@ fn runtime_tripcount_loop_is_relooped_not_unrolled() {
 
 #[test]
 fn every_obfuscated_sample_is_pinned_here_and_in_the_manifest() {
-    let manifest: String =
-        fs::read_to_string(recovery_dir().join("MANIFEST.toml")).expect("read MANIFEST.toml");
-    for (file, digest) in OBFUSCATED_SHA256 {
-        assert!(
-            manifest.contains(&format!("file = \"{file}\"\nsha256 = \"{digest}\"\n")),
-            "MANIFEST.toml must record {file} at the sha256 this test pins"
-        );
+    #[derive(Deserialize)]
+    struct Manifest {
+        sample: Vec<Sample>,
     }
+    #[derive(Deserialize)]
+    struct Sample {
+        file: String,
+        sha256: String,
+    }
+    let raw: String =
+        fs::read_to_string(recovery_dir().join("MANIFEST.toml")).expect("read MANIFEST.toml");
+    let manifest: Manifest = toml::from_str(&raw).expect("parse corpus manifest");
+    let recorded: BTreeSet<(&str, &str)> = manifest
+        .sample
+        .iter()
+        .map(|sample: &Sample| (sample.file.as_str(), sample.sha256.as_str()))
+        .collect();
+    let expected: BTreeSet<(&str, &str)> = OBFUSCATED_SHA256.into_iter().collect();
+    assert_eq!(
+        recorded.len(),
+        manifest.sample.len(),
+        "duplicate corpus record"
+    );
+    assert_eq!(
+        recorded, expected,
+        "manifest digests must match the pinned corpus"
+    );
     let mut on_disk: Vec<String> = fs::read_dir(recovery_dir())
         .expect("list the recovery corpus")
         .map(|entry: std::io::Result<fs::DirEntry>| {

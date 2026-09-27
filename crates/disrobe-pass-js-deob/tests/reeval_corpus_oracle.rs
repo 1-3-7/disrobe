@@ -18,6 +18,7 @@ use disrobe_pass_js_deob::{
     ObfuscatorIoControl, ObfuscatorIoOptions, ObfuscatorIoOutput, deobfuscate_all, detect,
     obfuscator_io_deobfuscate,
 };
+use sha2::{Digest, Sha256};
 
 const DIFFERENTIAL_FLOOR: usize = 37;
 const SAMPLE_COUNT: usize = 41;
@@ -28,6 +29,8 @@ const WORKER_REQUEST_ENV: &str = "DISROBE_JS_BOA_ORACLE_REQUEST";
 const WORKER_RESPONSE_ENV: &str = "DISROBE_JS_BOA_ORACLE_RESPONSE";
 const WORKER_CAPTURE_LIMIT: usize = 256 * 1024;
 const WORKER_RESPONSE_LIMIT: u64 = 32 * 1024 * 1024;
+const BROWSER_SOURCE_SHA256: &str =
+    "01f077df59472afab8a2662fa6d972d39daa2ddf376e973f69a7a517d1a080e5";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum RewriterFamily {
@@ -666,7 +669,10 @@ fn discover_regex_rewriter_modules() -> Result<BTreeSet<String>, String> {
 #[derive(Clone, Copy)]
 enum Reference {
     Clean(&'static str),
-    Obfuscated,
+    PinnedClean {
+        path: &'static str,
+        sha256: &'static str,
+    },
 }
 
 struct Sample {
@@ -821,13 +827,19 @@ const SAMPLES: &[Sample] = &[
     Sample {
         name: "javascript-obfuscator/browser-cff",
         obf: "js/javascript-obfuscator/browser/obf_cff.js",
-        reference: Reference::Clean("js/javascript-obfuscator/browser/source.js"),
+        reference: Reference::PinnedClean {
+            path: "js/javascript-obfuscator/browser/source.js",
+            sha256: BROWSER_SOURCE_SHA256,
+        },
         argv_battery: NO_ARGS,
     },
     Sample {
         name: "javascript-obfuscator/browser-base64",
         obf: "js/javascript-obfuscator/browser/obf_base64.js",
-        reference: Reference::Clean("js/javascript-obfuscator/browser/source.js"),
+        reference: Reference::PinnedClean {
+            path: "js/javascript-obfuscator/browser/source.js",
+            sha256: BROWSER_SOURCE_SHA256,
+        },
         argv_battery: NO_ARGS,
     },
     Sample {
@@ -1122,9 +1134,11 @@ fn requested_manifest() -> Result<RequestedManifest, String> {
                 "duplicate requested manifest path: {normalized_obfuscated}"
             ));
         }
-        if let Reference::Clean(reference) = sample.reference
-            && path_is_requested(reference)
-        {
+        let reference: &str = match sample.reference {
+            Reference::Clean(reference) => reference,
+            Reference::PinnedClean { path, .. } => path,
+        };
+        if path_is_requested(reference) {
             let normalized_reference: String = normalize_corpus_relative(Path::new(reference))?;
             references.insert(normalized_reference);
         }
@@ -1151,6 +1165,28 @@ fn try_load(rel: &str) -> Result<String, String> {
 
 fn load(rel: &str) -> String {
     try_load(rel).unwrap_or_else(|error: String| panic!("failed to read fixture: {error}"))
+}
+
+fn verify_pinned_reference(path: &str, source: &str, expected_sha256: &str) -> Result<(), String> {
+    let actual_sha256: String = format!("{:x}", Sha256::digest(source.as_bytes()));
+    if actual_sha256 == expected_sha256 {
+        Ok(())
+    } else {
+        Err(format!(
+            "{path}: clean reference SHA-256 was {actual_sha256}, expected {expected_sha256}"
+        ))
+    }
+}
+
+fn load_reference(reference: Reference) -> Result<String, String> {
+    match reference {
+        Reference::Clean(path) => try_load(path),
+        Reference::PinnedClean { path, sha256 } => {
+            let source: String = try_load(path)?;
+            verify_pinned_reference(path, &source, sha256)?;
+            Ok(source)
+        }
+    }
 }
 
 #[test]
@@ -2014,10 +2050,9 @@ fn run_differential(case: &DifferentialCase<'_>) -> Outcome {
 
 fn comparison_description(sample: &Sample) -> String {
     match sample.reference {
-        Reference::Clean(reference) => {
-            format!("clean {reference} vs recovered from {}", sample.obf)
+        Reference::Clean(path) | Reference::PinnedClean { path, .. } => {
+            format!("clean {path} vs recovered from {}", sample.obf)
         }
-        Reference::Obfuscated => format!("obfuscated {} vs recovered", sample.obf),
     }
 }
 
@@ -2031,27 +2066,20 @@ fn check_sample(sample: &Sample) -> Outcome {
             ));
         }
     };
-    let clean_src: Option<String> = match sample.reference {
-        Reference::Clean(reference) => match try_load(reference) {
-            Ok(source) => Some(source),
-            Err(reason) => {
-                return Outcome::CannotExecute(format!(
-                    "{}: clean source unavailable: {reason}",
-                    sample.name
-                ));
-            }
-        },
-        Reference::Obfuscated => None,
+    let clean_src: String = match load_reference(sample.reference) {
+        Ok(source) => source,
+        Err(reason) => {
+            return Outcome::CannotExecute(format!(
+                "{}: clean source unavailable: {reason}",
+                sample.name
+            ));
+        }
     };
-    let (reference_kind, reference_src): (&str, &str) = clean_src.as_deref().map_or_else(
-        || ("obfuscated", obf_src.as_str()),
-        |source: &str| ("clean", source),
-    );
     run_differential(&DifferentialCase {
         name: sample.name,
         pipeline: Pipeline::for_path(sample.obf),
-        reference_kind,
-        reference_src,
+        reference_kind: "clean",
+        reference_src: &clean_src,
         obf_src: &obf_src,
         argv_battery: sample.argv_battery,
     })
@@ -2231,18 +2259,47 @@ fn assert_sample_verified(name: &str) {
 }
 
 #[test]
-fn sample_without_clean_original_uses_obfuscated_reference() {
+fn browser_base64_uses_pinned_authored_reference() {
     let sample: Sample = Sample {
-        name: "javascript-obfuscator/unpaired-browser-base64",
+        name: "javascript-obfuscator/browser-base64-pinned-reference",
         obf: "js/javascript-obfuscator/browser/obf_base64.js",
-        reference: Reference::Obfuscated,
+        reference: Reference::PinnedClean {
+            path: "js/javascript-obfuscator/browser/source.js",
+            sha256: BROWSER_SOURCE_SHA256,
+        },
         argv_battery: NO_ARGS,
     };
     assert_eq!(
         comparison_description(&sample),
-        "obfuscated js/javascript-obfuscator/browser/obf_base64.js vs recovered"
+        "clean js/javascript-obfuscator/browser/source.js vs recovered from js/javascript-obfuscator/browser/obf_base64.js"
     );
     assert_verified(check_sample(&sample));
+}
+
+#[test]
+fn pinned_browser_reference_rejects_source_mutation() {
+    let original: String = load("js/javascript-obfuscator/browser/source.js");
+    verify_pinned_reference(
+        "js/javascript-obfuscator/browser/source.js",
+        &original,
+        BROWSER_SOURCE_SHA256,
+    )
+    .expect("the authored browser source must match its pinned SHA-256");
+    let mutated: String = original.replacen("score(6)", "score(5)", 1);
+    assert_ne!(
+        mutated, original,
+        "the mutation control must change the source"
+    );
+    let error: String = verify_pinned_reference(
+        "js/javascript-obfuscator/browser/source.js",
+        &mutated,
+        BROWSER_SOURCE_SHA256,
+    )
+    .expect_err("a changed authored reference must fail its SHA-256 pin");
+    assert!(
+        error.contains("clean reference SHA-256"),
+        "the failed pin must identify the reference checksum: {error}"
+    );
 }
 
 #[test]
@@ -2318,11 +2375,10 @@ fn browser_host_samples_move_from_skipped_to_verified() {
             .iter()
             .find(|s: &&Sample| s.name == *name)
             .unwrap_or_else(|| panic!("unknown browser sample {name}"));
-        let clean_reference: &str = match sample.reference {
-            Reference::Clean(reference) => reference,
-            Reference::Obfuscated => panic!("{name}: browser sample must have a clean reference"),
-        };
-        let clean_src: String = load(clean_reference);
+        let clean_src: String =
+            load_reference(sample.reference).unwrap_or_else(|reason: String| {
+                panic!("{name}: clean reference unavailable: {reason}")
+            });
 
         let bare: Option<EvalOutcome> = eval_outcome_bare(&clean_src);
         assert!(

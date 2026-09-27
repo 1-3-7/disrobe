@@ -184,7 +184,7 @@ fn find_accessor(source: &str, decoder_fn: &str) -> Option<Accessor> {
         Regex::new(r"(?ms)function\s+([A-Za-z_$][\w$]*)\s*\(\s*([A-Za-z_$][\w$]*)\s*\)\s*\{")
             .ok()?;
     let array_probe: Regex = Regex::new(&format!(
-        r"(?ms){escaped}\s*\(\s*([A-Za-z_$][\w$]*)\s*\[\s*[A-Za-z_$][\w$]*\s*\]\s*\)"
+        r"(?ms){escaped}\s*\(\s*([A-Za-z_$][\w$]*)\s*\[\s*([A-Za-z_$][\w$]*)\s*\]\s*\)"
     ))
     .ok()?;
     for cap in header_re.captures_iter(source) {
@@ -194,6 +194,9 @@ fn find_accessor(source: &str, decoder_fn: &str) -> Option<Accessor> {
         if name.as_str() == decoder_fn {
             continue;
         }
+        let Some(parameter): Option<regex::Match<'_>> = cap.get(2) else {
+            continue;
+        };
         let Some(whole): Option<regex::Match<'_>> = cap.get(0) else {
             continue;
         };
@@ -204,7 +207,15 @@ fn find_accessor(source: &str, decoder_fn: &str) -> Option<Accessor> {
         let Some(body): Option<&str> = source.get(body_open + 1..body_close) else {
             continue;
         };
-        let Some(probe): Option<regex::Captures<'_>> = array_probe.captures(body) else {
+        let Some(probe): Option<regex::Captures<'_>> =
+            array_probe
+                .captures_iter(body)
+                .find(|probe: &regex::Captures<'_>| {
+                    probe
+                        .get(2)
+                        .is_some_and(|index: regex::Match<'_>| index.as_str() == parameter.as_str())
+                })
+        else {
             continue;
         };
         let Some(array_id): Option<String> = probe
@@ -420,6 +431,14 @@ mod tests {
         assert_eq!(sites.len(), 2);
         assert_eq!(sites[0].index, 7);
         assert_eq!(sites[1].index, 12);
+    }
+
+    #[test]
+    fn nested_accessor_uses_its_own_index_parameter() {
+        let source: &str = "function checksum(text) { function pick(index) { return decode(pool[index]); } return pick(0); }";
+        let accessor: Accessor = find_accessor(source, "decode").expect("nested accessor");
+        assert_eq!(accessor.fn_name, "pick");
+        assert_eq!(accessor.array_id, "pool");
     }
 
     fn build_conceal_source(words: &[&str]) -> String {

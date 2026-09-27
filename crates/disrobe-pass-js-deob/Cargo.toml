@@ -43,6 +43,7 @@ llm-metadata = ["dep:disrobe-llm-metadata"]
 [dev-dependencies]
 divan = { workspace = true }
 sha2 = { workspace = true }
+toml = { workspace = true }
 
 [[bench]]
 name = "full_pipeline"

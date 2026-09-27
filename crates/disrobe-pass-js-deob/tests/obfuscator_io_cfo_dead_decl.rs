@@ -1,30 +1,19 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
-use boa_engine::{Context, Source};
 use disrobe_pass_js_deob::{ObfuscatorIoOptions, ObfuscatorIoOutput, obfuscator_io_deobfuscate};
+use sha2::{Digest, Sha256};
+
+mod common;
 
 const CFF: &str = include_str!(
     "../../../corpus/src/javascript/obfuscator-io-samples/controls/controlFlowFlattening.js"
 );
+const CFF_SHA256: &str = "7efcf2ec6c1ac802cb329b76e9a0ba48d69569aab9f5dcaf70f609c95e913963";
+const AUTHORED_SOURCE: &str = include_str!("../../../corpus/src/javascript/obfuscator-io-high.js");
+const AUTHORED_SOURCE_SHA256: &str =
+    "e29f6f162e5297b68f8dca7037e9b1cb343f2fec65a0e436ca27905f2d049887";
 
-const HARNESS: &str =
-    "var __log = [];var console = { log: function(x){ __log.push(String(x)); } };";
-
-const PROBE: &str = "var __out = [String(calculate('add', 10, 5)),String(calculate('sub', 10, 5)),String(calculate('mul', 10, 5)),String(calculate('div', 10, 5)),greet('disrobe'),runSamples().join('|'),__log.join('#')].join(';');__out;";
-
-fn eval_capture(program: &str) -> Option<String> {
-    let mut context: Context = Context::default();
-    {
-        let runtime: &mut boa_engine::vm::RuntimeLimits = context.runtime_limits_mut();
-        runtime.set_loop_iteration_limit(2_000_000);
-        runtime.set_recursion_limit(1_500);
-        runtime.set_stack_size_limit(50_000);
-    }
-    let harness: String = format!("{HARNESS}\n{program}\n{PROBE}");
-    let value: boa_engine::JsValue = context.eval(Source::from_bytes(harness.as_bytes())).ok()?;
-    value
-        .as_string()
-        .map(boa_engine::JsString::to_std_string_escaped)
-}
+const PROBE: &str = "console.log('probe:' + [calculate('add', 10, 5), calculate('sub', 10, 5), calculate('mul', 10, 5), calculate('div', 10, 5), greet('disrobe'), runSamples().join('|')].join(';'));";
+const AUTHORED_REFERENCE_STDOUT: &str = "calculator ready :: hello, disrobe\nadd(10,5) = 15\nsub(10,5) = 5\nmul(10,5) = 50\ndiv(10,5) = 2\nprobe:15;5;50;2;calculator ready :: hello, disrobe;add(10,5) = 15|sub(10,5) = 5|mul(10,5) = 50|div(10,5) = 2\n";
 
 fn reparses(source: &str) -> bool {
     use oxc_allocator::Allocator;
@@ -36,10 +25,36 @@ fn reparses(source: &str) -> bool {
     parsed.errors.is_empty() && !parsed.panicked
 }
 
+fn sha256(source: &str) -> String {
+    format!("{:x}", Sha256::digest(source.as_bytes()))
+}
+
+fn mutate_add_case(source: &str) -> String {
+    for (from, to) in [
+        ("case 'add':return add(", "case 'add':return subtract("),
+        ("case 'add': return add(", "case 'add': return subtract("),
+    ] {
+        let mutated: String = source.replacen(from, to, 1);
+        if mutated != source {
+            return mutated;
+        }
+    }
+    panic!("recovered add case is unavailable for the behavior mutation");
+}
+
 #[test]
 fn control_flow_object_proxy_declaration_is_removed_after_full_inline() {
-    let want: String =
-        eval_capture(CFF).expect("obfuscated control-flow fixture must evaluate before transform");
+    assert_eq!(
+        sha256(CFF),
+        CFF_SHA256,
+        "protected control-flow fixture drifted"
+    );
+    assert_eq!(
+        sha256(AUTHORED_SOURCE),
+        AUTHORED_SOURCE_SHA256,
+        "authored obfuscator.io reference drifted"
+    );
+    let want: &str = AUTHORED_REFERENCE_STDOUT;
 
     let opts: ObfuscatorIoOptions = ObfuscatorIoOptions::all();
     let out: ObfuscatorIoOutput = obfuscator_io_deobfuscate(CFF, &opts).expect("deob ok");
@@ -71,11 +86,21 @@ fn control_flow_object_proxy_declaration_is_removed_after_full_inline() {
         out.source
     );
 
-    let got: String = eval_capture(&out.source)
+    let recovered_program: String = format!("{}\n{PROBE}", out.source);
+    let got: String = common::eval_stdout_with_argv(&recovered_program, &[])
         .unwrap_or_else(|| panic!("recovered source must evaluate:\n{}", out.source));
     assert_eq!(
         want, got,
-        "recovered behavior diverged from the real obfuscated fixture\n--want--\n{want}\n--got--\n{got}\n--src--\n{}",
+        "recovered behavior diverged from the authored obfuscator.io source\n--want--\n{want}\n--got--\n{got}\n--src--\n{}",
         out.source
+    );
+
+    let mutated: String = mutate_add_case(&out.source);
+    let mutated_program: String = format!("{mutated}\n{PROBE}");
+    let mutated_output: String = common::eval_stdout_with_argv(&mutated_program, &[])
+        .unwrap_or_else(|| panic!("behavior mutant must evaluate:\n{mutated}"));
+    assert_ne!(
+        want, mutated_output,
+        "changing the recovered add dispatch must make the behavior predicate fail"
     );
 }

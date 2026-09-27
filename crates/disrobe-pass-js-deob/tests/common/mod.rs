@@ -683,6 +683,33 @@ pub(crate) fn eval_capture_with_argv(program: &str, argv: &[&str]) -> Option<Str
     }
 }
 
+pub(crate) fn eval_stdout_with_argv(program: &str, argv: &[&str]) -> Option<String> {
+    let EvalOutcome {
+        trace,
+        terminal: Terminal::Completed(_),
+    } = eval_outcome_with_argv(program, argv)?
+    else {
+        return None;
+    };
+    let mut stdout: String = String::new();
+    for event in trace {
+        if !matches!(
+            event.call.as_str(),
+            "console.log" | "console.info" | "console.debug"
+        ) {
+            continue;
+        }
+        let values: Vec<String> = event
+            .arguments
+            .iter()
+            .map(legacy_render)
+            .collect::<Option<Vec<String>>>()?;
+        stdout.push_str(&values.join(" "));
+        stdout.push('\n');
+    }
+    Some(stdout)
+}
+
 pub(crate) fn eval_capture(program: &str) -> Option<String> {
     eval_capture_with_argv(program, &[])
 }
