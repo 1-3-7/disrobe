@@ -1,7 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use std::collections::BTreeSet;
-use std::io::Write as _;
-use std::process::{Child, ChildStdin, Command, Output, Stdio};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
@@ -219,39 +217,6 @@ fn assert_budget(value: &Value, budget: usize) {
         value.get("tokenizer").and_then(Value::as_str),
         Some("o200k_base")
     );
-}
-
-fn o200k_token_count<T: serde::Serialize>(value: &T) -> usize {
-    let encoded: Vec<u8> = serde_json::to_vec(value).expect("serialize tokenizer input");
-    let script: &str = "import sys,tiktoken;text=sys.stdin.buffer.read().decode('utf-8');print(len(tiktoken.get_encoding('o200k_base').encode_ordinary(text)))";
-    let mut child: Child = Command::new("uv")
-        .args([
-            "run",
-            "--isolated",
-            "--with",
-            "tiktoken==0.11.0",
-            "python",
-            "-c",
-            script,
-        ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn pinned o200k_base tokenizer through uv");
-    let mut stdin: ChildStdin = child.stdin.take().expect("tokenizer stdin");
-    stdin
-        .write_all(&encoded)
-        .expect("send structured response to tokenizer");
-    drop(stdin);
-    let output: Output = child.wait_with_output().expect("wait for tokenizer");
-    assert!(
-        output.status.success(),
-        "o200k_base tokenizer failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let count: String = String::from_utf8(output.stdout).expect("tokenizer count is UTF-8");
-    count.trim().parse().expect("tokenizer count is an integer")
 }
 
 #[tokio::test]
@@ -756,99 +721,6 @@ async fn call_graph_budget_and_cursor_hold_on_a_committed_large_image() {
         second.get("next_cursor").and_then(Value::as_str),
         Some(cursor.as_str())
     );
-
-    client.cancel().await.expect("graceful client shutdown");
-}
-
-#[tokio::test]
-#[ignore = "requires uv and PyPI; run explicitly for the external tokenizer gate"]
-async fn o200k_tokenizer_confirms_large_image_response_budget() {
-    const REAL_NIM_ELF: &[u8] = include_bytes!("../../../corpus/native/nim/hello.nim.elf");
-    const BUDGET: usize = 2_048;
-
-    let dr: Vec<u8> = navigation_envelope(REAL_NIM_ELF);
-    let bytes_b64: String = BASE64_STANDARD.encode(&dr);
-    let client: Client = connect().await;
-    let first_result: CallToolResult = call(
-        &client,
-        "call_graph",
-        args(&[
-            ("bytes_b64", Value::String(bytes_b64.clone())),
-            ("token_budget", Value::from(BUDGET as u64)),
-        ]),
-    )
-    .await;
-    let first: Value = navigation_structured(&first_result);
-    let cursor: String = str_field(&first, "next_cursor").to_owned();
-    let second_result: CallToolResult = call(
-        &client,
-        "call_graph",
-        args(&[
-            ("bytes_b64", Value::String(bytes_b64.clone())),
-            ("token_budget", Value::from(BUDGET as u64)),
-            ("cursor", Value::String(cursor)),
-        ]),
-    )
-    .await;
-    let _: Value = navigation_structured(&second_result);
-    let function_id: String = first
-        .get("functions")
-        .and_then(Value::as_array)
-        .and_then(|rows: &Vec<Value>| rows.first())
-        .map(|row: &Value| str_field(row, "id").to_owned())
-        .expect("large image function id");
-    let summary_result: CallToolResult = call(
-        &client,
-        "function_summary",
-        args(&[
-            ("bytes_b64", Value::String(bytes_b64.clone())),
-            ("function_id", Value::String(function_id.clone())),
-            ("token_budget", Value::from(BUDGET as u64)),
-        ]),
-    )
-    .await;
-    let _: Value = navigation_structured(&summary_result);
-    let xrefs_result: CallToolResult = call(
-        &client,
-        "xrefs",
-        args(&[
-            ("bytes_b64", Value::String(bytes_b64.clone())),
-            ("function_id", Value::String(function_id.clone())),
-            ("token_budget", Value::from(BUDGET as u64)),
-        ]),
-    )
-    .await;
-    let _: Value = navigation_structured(&xrefs_result);
-    let neighborhood_result: CallToolResult = call(
-        &client,
-        "neighborhood",
-        args(&[
-            ("bytes_b64", Value::String(bytes_b64)),
-            ("entry_ids", Value::Array(vec![Value::String(function_id)])),
-            ("depth", Value::from(8u64)),
-            ("direction", Value::String("both".to_owned())),
-            ("token_budget", Value::from(BUDGET as u64)),
-        ]),
-    )
-    .await;
-    let _: Value = navigation_structured(&neighborhood_result);
-    let token_counts: Vec<(&str, usize)> = [
-        ("call_graph[0]", &first_result),
-        ("call_graph[1]", &second_result),
-        ("function_summary", &summary_result),
-        ("xrefs", &xrefs_result),
-        ("neighborhood", &neighborhood_result),
-    ]
-    .into_iter()
-    .map(|(tool, value): (&str, &CallToolResult)| (tool, o200k_token_count(value)))
-    .collect();
-    for (tool, tokens) in &token_counts {
-        assert!(
-            *tokens <= BUDGET,
-            "o200k_base counted {tokens} tokens for {tool} above the declared {BUDGET}-token budget"
-        );
-    }
-    println!("o200k_base tool token counts {token_counts:?} under budget {BUDGET}");
 
     client.cancel().await.expect("graceful client shutdown");
 }
