@@ -17,6 +17,7 @@ mod datamodel;
 mod demo;
 mod denominator_floor;
 mod doc_region;
+mod docs_index;
 mod dotnet_string_evidence;
 mod errdocs;
 mod evidence;
