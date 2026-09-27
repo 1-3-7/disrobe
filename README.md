@@ -155,7 +155,7 @@ These comparisons are re-measured weekly and on pushes that touch their evidence
 | OLLVM flattening | <!-- m:native_cff_cover_states -->9<!-- /m --> of <!-- m:native_cff_dispatcher_states -->9<!-- /m --> dispatcher states reached in two committed functions from one compiler and optimization level | `coverage-self-reported` | weekly |
 | Luau opcode table | <!-- m:luau_opcode_lift_count -->86 of 88<!-- /m --> declared opcodes lifted; `BREAK` and `NEWCLASSMEMBER` decode but are not lifted | `coverage-self-reported` | weekly |
 | Android, three real open-source APKs | <!-- m:dalvik_body_frac -->83662 / 83943<!-- /m --> method bodies lowered; <!-- m:dalvik_body_attested_frac -->2988 of 2998<!-- /m --> bodies placed in isolated carriers also pass the JVM verifier | `coverage-self-reported` | local |
-| Containers | <!-- roster-breadth:containers-exercised -->26<!-- /roster-breadth --> generic extraction routes write member bytes from a committed input that match what bsdtar, 7-Zip or the format's own decompressor extracts from it | `coverage-self-reported` | weekly |
+| Containers | <!-- roster-breadth:containers-exercised -->27<!-- /roster-breadth --> generic extraction routes write member bytes from a committed input that match what bsdtar, 7-Zip or the format's own decompressor extracts from it | `coverage-self-reported` | weekly |
 
 [Evidence records](evidence/results/EVIDENCE.md).
 
