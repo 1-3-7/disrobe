@@ -1361,14 +1361,14 @@ fn decompile_ghidra(input: PathBuf, out: Option<PathBuf>, emit: Vec<String>) -> 
 
     let spinner: StageSpinner = StageSpinner::start("native decompile", "running ghidra-headless");
     let args: Vec<std::ffi::OsString> = vec![
-        project_dir.clone().into_os_string(),
+        project_dir.into_os_string(),
         "disrobe-native".into(),
         "-import".into(),
         input.clone().into_os_string(),
         "-postScript".into(),
         script_name.into(),
         "-scriptPath".into(),
-        script_dir.clone().into_os_string(),
+        script_dir.into_os_string(),
         "-deleteProject".into(),
         "-overwrite".into(),
         "-noanalysis".into(),
