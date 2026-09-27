@@ -4,7 +4,7 @@ Install `disrobe` from **GitHub Releases** or build the CLI from source. GitHub 
 
 ## Prebuilt binaries (recommended)
 
-Each tagged release includes prebuilt binaries for the common targets, alongside `SHA256SUMS`, a cosign keyless signature bundle per archive, a GitHub build-provenance attestation, and a CycloneDX SBOM. See [Security](security.md#verifying-release-artifacts) for artifact verification.
+Each tagged release includes prebuilt binaries for the common targets, alongside `SHA256SUMS`, a cosign keyless signature bundle per archive, a GitHub build-provenance attestation, and a CycloneDX SBOM. See [SECURITY.md](https://github.com/1-3-7/disrobe/blob/main/SECURITY.md#sigstore-transparency-log) for artifact verification.
 
 | OS | Architectures |
 |---|---|

@@ -242,7 +242,7 @@ Apart from `prowl`, which queries public web archives and threat-intel services,
 
 - [Documentation site](https://1-3-7.github.io/disrobe/), with the [quickstart](docs/src/quickstart.md), the [result guide](docs/src/reading-a-result.md), and the [family catalog](docs/src/catalog.md).
 - [Evidence harness](evidence/README.md) and [evidence records](evidence/results/EVIDENCE.md).
-- [Contributing guide](.github/CONTRIBUTING.md), [threat model](docs/src/threat-model.md), [security policy](SECURITY.md), and [legal considerations](docs/src/legal.md). Whether you may analyze a given artifact depends on your circumstances.
+- [Contributing guide](.github/CONTRIBUTING.md), [threat model](docs/src/threat-model.md), [security policy](SECURITY.md), [changelog](CHANGELOG.md), and [legal considerations](docs/src/legal.md). Whether you may analyze a given artifact depends on your circumstances.
 
 ## License
 

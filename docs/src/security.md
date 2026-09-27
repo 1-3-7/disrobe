@@ -1,45 +1,5 @@
 # Security
 
-This is the short form. The full security policy lives in [SECURITY.md](https://github.com/1-3-7/disrobe/blob/main/SECURITY.md).
+Report a vulnerability privately through GitHub's advisory channel, never in a public issue: <https://github.com/1-3-7/disrobe/security/advisories/new>. Include a description and its impact, a minimal reproducer (input bytes, command line, expected and observed behaviour), the `disrobe --version` output, and your OS and architecture.
 
-## Reporting a vulnerability
-
-**Do not open a public issue for security reports.** Use GitHub's private advisory channel:
-
-Report at: <https://github.com/1-3-7/disrobe/security/advisories/new>
-
-Include a description and impact, a minimal reproducer (input bytes, command line, expected vs observed), the `disrobe --version` output, the OS/arch, and whether you have a candidate fix. Reports are acknowledged within 72 hours; high-severity fixes target 30 days, with same-week turnaround for critical issues affecting parsing of untrusted input. Reporters are credited (with their preferred handle) in the advisory and release notes; anonymous reports are welcome.
-
-## In scope
-
-- **Memory safety in the parsing surface.** Any panic/abort on adversarial input that is not a clean `Result::Err`; any heap corruption is high severity.
-- **Resource exhaustion.** Zip-bombs, decompression bombs, recursion bombs, and malformed-length-field bombs: bypasses of the `crates/disrobe-binfmt/src/quota.rs` quotas.
-- **Path traversal.** zip-slip and equivalents on every container extraction path.
-- **Server input handling.** Analysis requests carry inline bytes. Making an analysis method read a client-selected path, or escaping the workspace bounds of MCP annotation and rename tools, is high severity. See the [daemon security posture](./cli/serve.md#security-posture).
-- **Subprocess invocation.** Command injection or argument smuggling in backend invocation.
-- **`.dr` envelope handling.** Read-past-end, integer overflow, or BLAKE3-mismatch acceptance.
-- **Supply chain.** Tampering with published binaries, signature bypass, replay, cosign-bundle manipulation, or a forged build-provenance attestation.
-
-## Out of scope
-
-- Decompilation output correctness on adversarial input: that is correctness work flagged by the round-trip metric, not a security bug. File a normal issue.
-- Compute exhaustion from legitimate input (a slow decompile of a 66 MiB bundle is not a vulnerability).
-- Issues in third-party tools `disrobe` wraps: report to their upstreams.
-
-## Hardening posture
-
-The format decoders are Rust without `unsafe`, but the parsing surface also links C libraries that decode untrusted bytes: Capstone, zlib, liblzma, and zstd. In shipped code, `unsafe` is confined to process containment in `disrobe-tool-process`, the PyArmor extension that `--allow-dynamic` loads, the WebAssembly exports and `getrandom` backend, one memory map, and one environment-variable call. CI runs strict clippy and `cargo deny` (RustSec advisories, bans, licenses, and sources) on every push to `main` and weekly. Shared container quota machinery, loopback-default servers, and a warning banner on non-loopback binds backstop the runtime surface.
-
-## Verifying release artifacts
-
-Release binaries are signed with cosign keyless OIDC and recorded in the Rekor transparency log. For a Windows archive, replace `.tar.zst` with `.zip` in the command below:
-
-```sh
-cosign verify-blob \
-  --certificate-identity-regexp '^https://github.com/1-3-7/disrobe/' \
-  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
-  --bundle    disrobe-<version>-<target>.tar.zst.cosign.bundle \
-  disrobe-<version>-<target>.tar.zst
-```
-
-Release binaries are also built with `cargo auditable`, which embeds a dependency manifest readable with `cargo audit bin disrobe` (five of seven targets; the two cross-compiled Linux targets are a disclosed gap, see [SECURITY.md](https://github.com/1-3-7/disrobe/blob/main/SECURITY.md#build-provenance-and-sbom)). A CycloneDX SBOM ships as a release asset. GitHub build-provenance attestations are verifiable with `gh attestation verify disrobe-<version>-<target>.tar.zst --repo 1-3-7/disrobe`. `.github/workflows/verify-release.yml` re-checks a published release's checksums, cosign bundles, and attestations when run by manual dispatch; its `release: published` trigger does not fire for releases that `release.yml` publishes with the default `GITHUB_TOKEN`.
+The full policy lives in [SECURITY.md](https://github.com/1-3-7/disrobe/blob/main/SECURITY.md): supported versions, response times, what is in and out of scope, the hardening posture, the attack-surface inventory, and how to verify release signatures.
