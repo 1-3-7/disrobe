@@ -10,3 +10,7 @@ node terser/bin/terser rollup.js --compress --mangle --output fixture.min.js
 SHA-256 entry.js: E897DA67F2163E1619094ADB1267C65D9461792C28A90A09B21A5C12CE5329AB
 SHA-256 rollup.js: 768754F23D8D7EB210F10BBA41B7FFCCC725AE44CC6070E4894901E40F654B2A
 SHA-256 fixture.min.js: E9F7C5C0E6CA1DADFB87F0D4DA77133DA9F0457F41DB0A74DB39A6C92A409932
+
+Reference output of entry.js under the test harness globals (MathUtils.sum adds, TextFormat
+renders value=<n>), pinned in ast_iife_param_oracle.rs; the committed bundle never runs:
+value=42|value=3|value=7|value=11|value=15|value=19|value=23|value=27

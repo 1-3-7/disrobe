@@ -1,11 +1,9 @@
 use std::error::Error;
-use std::ffi::OsString;
-use std::path::{Path, PathBuf};
-use std::time::Duration;
 
-use disrobe_core::subprocess::{CapturedOutput, run_captured};
 use disrobe_pass_dotnet::peel::dotnet_reactor::peel_dotnet_reactor;
 use disrobe_pass_dotnet::peel::{PeelReport, PeelStrategy};
+use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 const FIXTURE: &[u8] = include_bytes!("fixtures/dotnet_reactor_strings/ReactorStringsCompat.dll");
 const AMBIGUOUS_FIXTURE: &[u8] =
@@ -19,11 +17,20 @@ const DISCARDED_FIXTURE: &[u8] =
 const POST_SET_REVERSE_FIXTURE: &[u8] =
     include_bytes!("fixtures/dotnet_reactor_strings/ReactorStringsPostSetReverse.dll");
 const EXPECTED_JSON: &str = include_str!("fixtures/dotnet_reactor_strings/expected.json");
+const MANIFEST: &str = include_str!("fixtures/dotnet_reactor_strings/MANIFEST.toml");
 
 type TestResult<T = ()> = std::result::Result<T, Box<dyn Error>>;
 
-const DOTNET_TIMEOUT: Duration = Duration::from_secs(90);
-const DOTNET_CAPTURE_LIMIT: usize = 1024 * 1024;
+#[derive(Debug, Deserialize)]
+struct FixtureManifest {
+    fixture: Vec<PinnedFixture>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PinnedFixture {
+    name: String,
+    sha256: String,
+}
 
 fn expected_strings() -> TestResult<Vec<String>> {
     Ok(serde_json::from_str(EXPECTED_JSON)?)
@@ -113,55 +120,62 @@ fn reactor_post_set_iv_reversal_remains_unknown() -> TestResult {
 }
 
 #[test]
-fn committed_fixture_runtime_matches_fixed_ground_truth() -> TestResult {
-    let runtime_args: [OsString; 1] = [OsString::from("--list-runtimes")];
-    let runtimes: Option<CapturedOutput> = match run_captured(
-        Path::new("dotnet"),
-        &runtime_args,
-        DOTNET_TIMEOUT,
-        DOTNET_CAPTURE_LIMIT,
-    ) {
-        Ok(output) => output,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error.into()),
-    };
-    let Some(runtimes): Option<CapturedOutput> = runtimes else {
-        return Ok(());
-    };
-    if runtimes.exit_code != Some(0)
-        || !String::from_utf8_lossy(&runtimes.stdout)
-            .lines()
-            .any(|line: &str| line.starts_with("Microsoft.NETCore.App 9."))
-    {
-        return Ok(());
-    }
-    let fixture_dir: PathBuf =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dotnet_reactor_strings");
-    for name in [
-        "ReactorStringsCompat.dll",
-        "ReactorStringsAmbiguous.dll",
-        "ReactorStringsMixedInstance.dll",
-        "ReactorStringsCatch.dll",
-        "ReactorStringsDiscarded.dll",
-        "ReactorStringsPostSetReverse.dll",
-    ] {
-        let args: [OsString; 1] = [fixture_dir.join(name).into_os_string()];
-        let output: CapturedOutput = run_captured(
-            Path::new("dotnet"),
-            &args,
-            DOTNET_TIMEOUT,
-            DOTNET_CAPTURE_LIMIT,
-        )?
-        .ok_or_else(|| std::io::Error::other(format!("fixture runtime timed out for {name}")))?;
-        if output.exit_code != Some(0) {
-            return Err(std::io::Error::other(format!(
-                "fixture runtime failed for {name}: {}",
-                String::from_utf8_lossy(&output.stderr),
-            ))
-            .into());
-        }
-        let runtime: Vec<String> = serde_json::from_slice(&output.stdout)?;
-        assert_eq!(runtime, expected_strings()?);
+fn committed_fixtures_match_the_digests_their_manifest_pins() -> TestResult {
+    let lf_expected_json: String = EXPECTED_JSON.replace("\r\n", "\n");
+    let fixtures: [(&str, &[u8], &str); 7] = [
+        (
+            "expected.json",
+            lf_expected_json.as_bytes(),
+            "16c59ae88f6bedff6a6656afb6ba6dec47a4ebbc1a4c9671e5e54d1d6282b3d0",
+        ),
+        (
+            "ReactorStringsCompat.dll",
+            FIXTURE,
+            "2dc53f5906042ffe72f72bf2c4d90c82dbac9e9a4d341516f9fac9fb12de6b4f",
+        ),
+        (
+            "ReactorStringsAmbiguous.dll",
+            AMBIGUOUS_FIXTURE,
+            "8a5a68fbe657e23c7b7b98cad86c2091d43685be5b84e441a0bb58007fb90fb7",
+        ),
+        (
+            "ReactorStringsMixedInstance.dll",
+            MIXED_INSTANCE_FIXTURE,
+            "2610d3ea0d62e6c37067a5076c4d2136423487025c0a0e01b5c97e07ca81abbd",
+        ),
+        (
+            "ReactorStringsCatch.dll",
+            CATCH_FIXTURE,
+            "98acdc150f2d9151975c0264056ac7b557d04d530ab815aad3dd8f47f01939c1",
+        ),
+        (
+            "ReactorStringsDiscarded.dll",
+            DISCARDED_FIXTURE,
+            "ade436fd2a3e0d5fffa83596bb2d2205609e57fc3d8ca7029e23f14f6a6210b8",
+        ),
+        (
+            "ReactorStringsPostSetReverse.dll",
+            POST_SET_REVERSE_FIXTURE,
+            "89717d35f8b2ec98c95f9556bac584b235a74fa30a08fa760d68ad32ca839538",
+        ),
+    ];
+    let manifest: FixtureManifest = toml::from_str(MANIFEST)?;
+    for (name, bytes, pinned) in fixtures {
+        let digest: String = format!("{:x}", Sha256::digest(bytes));
+        assert_eq!(
+            digest, pinned,
+            "{name} is not the build whose CLR output expected.json records; rebuild it with \
+             build.ps1 and re-pin it here and in MANIFEST.toml"
+        );
+        let entry: &PinnedFixture = manifest
+            .fixture
+            .iter()
+            .find(|entry: &&PinnedFixture| entry.name == name)
+            .ok_or_else(|| format!("MANIFEST.toml has no [[fixture]] block named {name}"))?;
+        assert_eq!(
+            entry.sha256, pinned,
+            "the [[fixture]] block for {name} in MANIFEST.toml must pin {pinned}"
+        );
     }
     Ok(())
 }

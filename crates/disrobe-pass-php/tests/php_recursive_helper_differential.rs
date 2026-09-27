@@ -44,6 +44,89 @@ fn xored_payload_b64() -> String {
         .collect::<Vec<u8>>())
 }
 
+fn assert_helper_evaluated(label: &str, report: &RecoveryReport) {
+    assert_ne!(
+        report.stage,
+        RecoveryStage::PlainSource,
+        "{label}: an obfuscated helper loader must not be reported as plain source"
+    );
+    assert!(
+        !report.output.is_empty(),
+        "{label}: recovery produced no source to grade"
+    );
+    let residual: Vec<&'static str> = residual_decode_primitives(&report.output);
+    assert!(
+        residual.is_empty(),
+        "{label}: the recovered source still calls {residual:?}, so the helper was never actually \
+         evaluated and the loader is not run again.\n--- recovered ---\n{}",
+        report.output
+    );
+}
+
+fn passthrough_report(loader: &[u8], stage: RecoveryStage) -> RecoveryReport {
+    RecoveryReport {
+        stage,
+        php_kind: "Source".to_owned(),
+        encoder: None,
+        key_provenance: None,
+        output: String::from_utf8_lossy(loader).into_owned(),
+        decompilation: None,
+        residual_ciphertext_len: 0,
+        notes: Vec::new(),
+    }
+}
+
+fn helper_loader() -> Vec<u8> {
+    format!(
+        "<?php function dd($s){{ return $s === '' ? '' : chr(ord($s[0]) ^ {XOR_BYTE}) . dd(substr($s, 1)); }} $c = base64_decode('{}'); $o = dd($c); ev\x61l($o);",
+        xored_payload_b64()
+    )
+    .into_bytes()
+}
+
+#[test]
+#[should_panic(
+    expected = "so the helper was never actually evaluated and the loader is not run again"
+)]
+fn a_recovery_that_hands_back_the_helper_loader_is_refused_before_php_runs() {
+    let loader: Vec<u8> = helper_loader();
+    assert_helper_evaluated(
+        "passthrough",
+        &passthrough_report(&loader, RecoveryStage::EvalChainPeeled),
+    );
+}
+
+fn loop_beside_helper_loader() -> Vec<u8> {
+    format!(
+        "<?php function strrev2($s){{ return strrev($s); }} $c = base64_decode('{}'); $o = ''; for ($i = 0; $i < strlen($c); $i++) {{ $o .= chr(ord($c[$i]) ^ {XOR_BYTE}); }} ev\x61l($o);",
+        xored_payload_b64()
+    )
+    .into_bytes()
+}
+
+fn assert_loop_payload_decoded(report: &RecoveryReport) {
+    assert_ne!(
+        report.stage,
+        RecoveryStage::PlainSource,
+        "a decode loop beside a helper declaration must not be reported as plain source"
+    );
+    assert!(
+        report.output.contains(MARKER) && !report.output.contains("eval("),
+        "the loop's payload must be decoded to its literal and the eval sink removed before the \
+         recovery runs\n--- recovered ---\n{}",
+        report.output
+    );
+}
+
+#[test]
+#[should_panic(
+    expected = "the loop's payload must be decoded to its literal and the eval sink removed"
+)]
+fn a_recovery_that_hands_back_the_decode_loop_is_refused_before_php_runs() {
+    let loader: Vec<u8> = loop_beside_helper_loader();
+    assert_loop_payload_decoded(&passthrough_report(&loader, RecoveryStage::EvalChainPeeled));
+}
+
 fn recover_and_grade(label: &str, obfuscated: &[u8]) -> String {
     let graded: String = format!("the {label} recursive helper against the real php interpreter");
     let Some(php): Option<PhpRuntime> = require_php(&graded) else {
@@ -61,15 +144,7 @@ fn recover_and_grade(label: &str, obfuscated: &[u8]) -> String {
 
     let report: RecoveryReport = recover_php(obfuscated, None)
         .unwrap_or_else(|e: disrobe_pass_php::Error| panic!("{label}: recover failed: {e}"));
-    assert_ne!(
-        report.stage,
-        RecoveryStage::PlainSource,
-        "{label}: an obfuscated helper loader must not be reported as plain source"
-    );
-    assert!(
-        !report.output.is_empty(),
-        "{label}: recovery produced no source to grade"
-    );
+    assert_helper_evaluated(label, &report);
 
     let recovered_source: String = with_open_tag(&report.output);
     let recovered_stdout: Vec<u8> = php.stdout_of(label, recovered_source.as_bytes());
@@ -80,24 +155,12 @@ fn recover_and_grade(label: &str, obfuscated: &[u8]) -> String {
          {}\n--- recovered ---\n{recovered_source}",
         php.banner
     );
-
-    let residual: Vec<&'static str> = residual_decode_primitives(&report.output);
-    assert!(
-        residual.is_empty(),
-        "{label}: the recovered source runs to the same output but still calls {residual:?}, so \
-         the helper was never actually evaluated.\n--- recovered ---\n{recovered_source}"
-    );
     report.output
 }
 
 #[test]
 fn tail_recursive_helper_over_a_string_runtime_equivalent() {
-    let blob: Vec<u8> = format!(
-        "<?php function dd($s){{ return $s === '' ? '' : chr(ord($s[0]) ^ {XOR_BYTE}) . dd(substr($s, 1)); }} $c = base64_decode('{}'); $o = dd($c); ev\x61l($o);",
-        xored_payload_b64()
-    )
-    .into_bytes();
-    recover_and_grade("tail-recursive-over-string", &blob);
+    recover_and_grade("tail-recursive-over-string", &helper_loader());
 }
 
 #[test]
@@ -249,16 +312,13 @@ fn a_helper_reading_a_runtime_key_still_walls() {
 
 #[test]
 fn a_declaration_beside_a_loop_does_not_break_the_loops_own_recovery() {
+    let blob: Vec<u8> = loop_beside_helper_loader();
+    let report: RecoveryReport = recover_php(&blob, None).expect("recover");
+    assert_loop_payload_decoded(&report);
     let graded: String = String::from("a helper declared beside a decode loop");
     let Some(php): Option<PhpRuntime> = require_php(&graded) else {
         return;
     };
-    let blob: Vec<u8> = format!(
-        "<?php function strrev2($s){{ return strrev($s); }} $c = base64_decode('{}'); $o = ''; for ($i = 0; $i < strlen($c); $i++) {{ $o .= chr(ord($c[$i]) ^ {XOR_BYTE}); }} ev\x61l($o);",
-        xored_payload_b64()
-    )
-    .into_bytes();
-    let report: RecoveryReport = recover_php(&blob, None).expect("recover");
     let recovered: String = with_open_tag(&report.output);
     let out: Vec<u8> = php.stdout_of("builtin-shadow", recovered.as_bytes());
     assert!(

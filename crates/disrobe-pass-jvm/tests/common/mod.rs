@@ -6,6 +6,7 @@
     clippy::print_stderr
 )]
 
+use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -15,6 +16,166 @@ use disrobe_core::scratch::ScratchDir;
 use sha2::{Digest, Sha256};
 
 pub const VERIFIER_SRC: &str = include_str!("V.java");
+
+const REVIEWED_VERIFIER_CALLS: [&str; 83] = [
+    ").asSymbol",
+    ").build",
+    ").endsWith",
+    ").equals",
+    ").flagsMask",
+    ").get",
+    ").getName",
+    ").ifPresent",
+    ").isEmpty",
+    ").isPresent",
+    ").length",
+    ").parse",
+    ").replace",
+    ").stringValue",
+    ").substring",
+    ").withSuperclass",
+    "ClassDesc.of",
+    "ClassFile.of",
+    "Collections.sort",
+    "Integer.parseInt",
+    "Math.min",
+    "MethodTypeDesc.of",
+    "String.valueOf",
+    "System.exit",
+    "attested.add",
+    "b.withFlags",
+    "bodyErrs.add",
+    "bodyErrs.size",
+    "bos.toByteArray",
+    "bos.write",
+    "c.getDeclaredConstructors",
+    "c.getDeclaredMethods",
+    "cb.withFlags",
+    "cb.withMethod",
+    "cb.withSuperclass",
+    "ce.asInternalName",
+    "class.getClassLoader",
+    "cm.constantPool",
+    "cm.methods",
+    "cm.thisClass",
+    "e.getName",
+    "err.println",
+    "errs.add",
+    "ii.opcode",
+    "key.hashCode",
+    "l.defineRaw",
+    "l.isStubbed",
+    "l.link",
+    "l.resolveTop",
+    "le.getClass",
+    "le.getMessage",
+    "m.code",
+    "m.length",
+    "m.replace",
+    "mb.withCode",
+    "mm.code",
+    "mm.flags",
+    "mm.methodName",
+    "mm.methodType",
+    "mm.methodTypeSymbol",
+    "mname.equals",
+    "mode.equals",
+    "nm.startsWith",
+    "origType.parameterList",
+    "origType.returnType",
+    "out.println",
+    "pc.getDeclaredMethods",
+    "pool.get",
+    "pool.keySet",
+    "pool.put",
+    "ps.add",
+    "ps.addAll",
+    "stubbed.add",
+    "stubbed.contains",
+    "stubbed.size",
+    "super.findClass",
+    "t.getClass",
+    "t.getMessage",
+    "ve.getMessage",
+    "verdicts.add",
+    "xb.with",
+    "z.getNextEntry",
+    "z.read",
+];
+
+const fn is_identifier_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+pub fn verifier_calls(java_source: &str) -> BTreeSet<String> {
+    let bytes: &[u8] = java_source.as_bytes();
+    let mut calls: BTreeSet<String> = BTreeSet::new();
+    let mut index: usize = 0;
+    while index < bytes.len() {
+        let separator: &str = if bytes[index..].starts_with(b"::") {
+            "::"
+        } else if bytes[index] == b'.' {
+            "."
+        } else {
+            index += 1;
+            continue;
+        };
+        let name_start: usize = index + separator.len();
+        let mut name_end: usize = name_start;
+        while name_end < bytes.len() && is_identifier_byte(bytes[name_end]) {
+            name_end += 1;
+        }
+        if name_end == name_start || bytes[name_start].is_ascii_digit() {
+            index = name_start;
+            continue;
+        }
+        let mut after: usize = name_end;
+        while after < bytes.len() && matches!(bytes[after], b' ' | b'\t') {
+            after += 1;
+        }
+        if separator == "::" || bytes.get(after) == Some(&b'(') {
+            let mut receiver_start: usize = index;
+            while receiver_start > 0 && is_identifier_byte(bytes[receiver_start - 1]) {
+                receiver_start -= 1;
+            }
+            let receiver: &str = if receiver_start < index {
+                &java_source[receiver_start..index]
+            } else {
+                java_source[..index]
+                    .trim_end()
+                    .char_indices()
+                    .next_back()
+                    .map_or("", |(at, found): (usize, char)| {
+                        &java_source[at..at + found.len_utf8()]
+                    })
+            };
+            calls.insert(format!(
+                "{receiver}{separator}{}",
+                &java_source[name_start..name_end]
+            ));
+        }
+        index = name_end;
+    }
+    calls
+}
+
+pub fn unlisted_verifier_calls(java_source: &str) -> Vec<String> {
+    verifier_calls(java_source)
+        .into_iter()
+        .filter(|call: &String| !REVIEWED_VERIFIER_CALLS.contains(&call.as_str()))
+        .collect()
+}
+
+pub fn assert_verifier_never_initialises(java_source: &str) {
+    let unlisted: Vec<String> = unlisted_verifier_calls(java_source);
+    assert!(
+        unlisted.is_empty(),
+        "the jvm verifier helper makes calls outside its reviewed list {unlisted:?}; it defines \
+         and links translations of third-party and protector bytecode, so a call joins \
+         REVIEWED_VERIFIER_CALLS only once it is known not to run their static initialisers or \
+         methods"
+    );
+}
 
 pub fn find_on_path(name: &str) -> Option<PathBuf> {
     let path_var: std::ffi::OsString = std::env::var_os("PATH")?;
@@ -194,6 +355,7 @@ pub struct JvmVerifier {
 
 impl JvmVerifier {
     pub fn prepare(purpose: &str) -> Result<Self, String> {
+        assert_verifier_never_initialises(VERIFIER_SRC);
         let java: PathBuf =
             find_on_path("java").ok_or_else(|| "java (JDK 24+) not on PATH".to_string())?;
         let javac: PathBuf =

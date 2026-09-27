@@ -1,10 +1,11 @@
 title = "JSConfuser recovery corpus (state-sum CFF, RGF eval-payload, base91 string concealing)"
-oracle = "node execution of the original source, compared byte-for-byte against node execution of the deobfuscated source (crates/disrobe-pass-js-deob/tests/jsconfuser_node_oracle.rs). expected.json records the original-source stdout. the obfuscated and recovered forms must both reproduce it; recovery is additionally proven by asserting the obfuscation markers are gone and a recovery counter is non-zero, so a no-op pass-through fails."
+oracle = "node execution of the original source, compared byte-for-byte against node execution of the deobfuscated source (crates/disrobe-pass-js-deob/tests/jsconfuser_node_oracle.rs). expected.json records the original-source stdout and the recovered form must reproduce it. the obfuscated outputs never run: each is pinned by the sha256 recorded with its sample, so the recorded behavior stays bound to the exact bytes it was captured from. recovery is additionally proven by asserting the obfuscation markers are gone and a recovery counter is non-zero before anything runs, so a no-op pass-through fails."
 node_version = "24.16.0"
 js_confuser_version = "2.0.1"
 
 [[sample]]
 file = "obf_checksum.stringconceal.js"
+sha256 = "aefef83a730c3e2efff221eb456d355796f33574ef581bfc94bfe378e2d5e23b"
 source = "src_checksum.js"
 produced_by = "real-js-confuser"
 options = "{ target: 'node', stringConcealing: true, compact: true }"
@@ -13,6 +14,7 @@ notes = "the base91 alphabet and the pool array are static in the output, so the
 
 [[sample]]
 file = "obf_stringcompression.real.js"
+sha256 = "58faa0a51ae71f6b08a8f4647bba61abde4076e3b6c7442ccfc8fcd3ba629085"
 source = "src_stringcompression.js"
 produced_by = "real-js-confuser"
 options = "{ target: 'node', stringCompression: true, compact: true, renameVariables: false, stringConcealing: false, stringEncoding: false, controlFlowFlattening: false }"
@@ -21,6 +23,7 @@ notes = "generated with js-confuser 2.0.1. this fixture uses the real bracket-pr
 
 [[sample]]
 file = "obf_tokenizer.rgf.js"
+sha256 = "6725454bf66219571d38ddbf55840b81c2e001e248f17ba11254da946c552fd1"
 source = "src_tokenizer.js"
 produced_by = "real-js-confuser"
 options = "{ target: 'node', rgf: true, compact: true }"
@@ -29,6 +32,7 @@ notes = "the payloads are static string literals, so the inner functions are sta
 
 [[sample]]
 file = "obf_statesum.real.js"
+sha256 = "2f98fa53da1e905e0df0dca424e4069f503f20dc9376b08a9289f58371c5b0ae"
 source = "src_statesum.js"
 produced_by = "real-js-confuser"
 options = "{ target: 'node', controlFlowFlattening: true, compact: true }"
@@ -37,6 +41,7 @@ notes = "the real js-confuser 2.0.1 controlFlowFlattening emitter wraps the stat
 
 [[sample]]
 file = "obf_statesum.spec.js"
+sha256 = "a585bac3f3f7422b181f5dfe430be901f9ace34b918f6ba4cc91da4cc2aa5434"
 source = "src_statesum.js"
 produced_by = "spec-constructed-per-documented-algorithm"
 algorithm = "state-sum control-flow flattening: the dispatched block id is the SUM of several state variables (block = s0+s1+...+sN), case labels are arithmetic over those variables, and each block's successor is encoded as relative compound-adds to the state variables. this is the documented JSConfuser controlFlowFlattening state model, hand-applied to the benign source"
@@ -45,6 +50,7 @@ notes = "the documented/non-generator state-sum form, kept as a minimal regressi
 
 [[sample]]
 file = "obf_statesum_runtime.real.js"
+sha256 = "3ce67fb4fd819b3d6eba10adf2585f8ac7069313382f4dab3a46dd2abe7aafdd"
 source = "src_statesum_runtime.js"
 produced_by = "real-js-confuser"
 options = "{ target: 'node', controlFlowFlattening: true, compact: true }"
@@ -52,6 +58,7 @@ recovered = "devirtualized with the runtime input preserved: the source reads pr
 
 [[sample]]
 file = "obf_statesum_branch.real.js"
+sha256 = "5cf89a6d1f0a005bc52e8fff2b6281b3785badada6f46dc272c126f076583e52"
 source = "src_statesum_branch.js"
 produced_by = "real-js-confuser"
 options = "{ target: 'node', controlFlowFlattening: true, compact: true }"
@@ -59,6 +66,7 @@ recovered = "devirtualized with both control-flow edges kept: classify(n) branch
 
 [[sample]]
 file = "obf_statesum_strings.real.js"
+sha256 = "0f6ddf23bd1b99c174e7986ea8b3afdf625602b4fd8b11e5521c3e0d73a782dd"
 source = "src_statesum_strings.js"
 produced_by = "real-js-confuser"
 options = "{ target: 'node', controlFlowFlattening: true, compact: true }"
@@ -66,6 +74,7 @@ recovered = "devirtualized with a static-trip-count loop unrolled and the runtim
 
 [[sample]]
 file = "obf_statesum_loop.real.js"
+sha256 = "8bcb45258e538becec707eb9a2baaddc84f22e6af85e6c4d629982e69d8bb0de"
 source = "src_statesum_loop.js"
 produced_by = "real-js-confuser"
 options = "{ target: 'node', controlFlowFlattening: true, compact: true }"
@@ -73,6 +82,7 @@ recovered = "devirtualized with the runtime-trip-count loop relooped into a stru
 
 [[sample]]
 file = "obf_deadcode.real.js"
+sha256 = "4d38daaacd0ef6474a7633983aa7bd833f592c6ea853d602159222f6510f5c33"
 source = "src_deadcode.js"
 produced_by = "real-js-confuser"
 options = "{ target: 'node', deadCode: true, compact: true }"
@@ -80,6 +90,7 @@ recovered = "the deadCode injections are removed: js-confuser plants `if(\"<rand
 
 [[sample]]
 file = "obf_deadcode_cff.real.js"
+sha256 = "0df41a192ebb82a06ad72d1564dd08ddcc9269a4ac4096b722b62edd7ba25af3"
 source = "src_deadcode.js"
 produced_by = "real-js-confuser"
 options = "{ target: 'node', controlFlowFlattening: true, deadCode: true, compact: true }"
@@ -87,6 +98,7 @@ recovered = "deadCode combined with controlFlowFlattening: the dead `\"<rand>\" 
 
 [[sample]]
 file = "obf_integrity.real.js"
+sha256 = "40a2bf771693b854dd2a49cb2b957ef58d858ab16bbc9316b34dca5733500657"
 source = "src_integrity.js"
 produced_by = "real-js-confuser"
 options = "{ target: 'node', deadCode: true, lock: { integrity: true }, compact: true }"

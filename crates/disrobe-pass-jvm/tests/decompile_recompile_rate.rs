@@ -1300,10 +1300,10 @@ fn repeatable_class_annotations_recompile_with_reflection_equivalence() {
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
     let root: PathBuf = scratch.path().to_path_buf();
-    let original_dir: PathBuf = root.join("original");
+    let probe_dir: PathBuf = root.join("probe");
     let recovered_dir: PathBuf = root.join("recovered");
     let standalone_dir: PathBuf = root.join("standalone");
-    std::fs::create_dir_all(&original_dir).expect("mkdir original");
+    std::fs::create_dir_all(&probe_dir).expect("mkdir probe");
     std::fs::create_dir_all(&recovered_dir).expect("mkdir recovered");
     std::fs::create_dir_all(&standalone_dir).expect("mkdir standalone");
 
@@ -1325,11 +1325,12 @@ fn repeatable_class_annotations_recompile_with_reflection_equivalence() {
         String::from_utf8_lossy(&tagged_built.stderr)
     );
 
-    let probe_path: PathBuf = original_dir.join("AnnotationProbe.java");
+    let probe_path: PathBuf = probe_dir.join("AnnotationProbe.java");
     std::fs::write(&probe_path, ANNOTATION_PROBE_SRC).expect("write annotation probe");
     let probe_built: std::process::Output = Command::new(&javac)
+        .arg("-proc:none")
         .arg("-d")
-        .arg(&original_dir)
+        .arg(&probe_dir)
         .arg(&probe_path)
         .output()
         .expect("javac annotation probe");
@@ -1357,15 +1358,14 @@ fn repeatable_class_annotations_recompile_with_reflection_equivalence() {
         String::from_utf8_lossy(&recovered_built.stderr)
     );
 
-    let original_cp: std::ffi::OsString =
-        std::env::join_paths([original_dir.as_path(), jar.as_path()]).expect("original classpath");
     let recovered_cp: std::ffi::OsString =
-        std::env::join_paths([recovered_dir.as_path(), original_dir.as_path()])
+        std::env::join_paths([recovered_dir.as_path(), probe_dir.as_path()])
             .expect("recovered classpath");
-    let original: String = run_annotation_probe(&java, original_cp);
     let recovered: String = run_annotation_probe(&java, recovered_cp);
-    assert_eq!(original, "default:0\nalpha:1\nbeta:2\n");
-    assert_eq!(recovered, original);
+    assert_eq!(
+        recovered, "default:0\nalpha:1\nbeta:2\n",
+        "the recompiled annotations must reflect exactly what EdgeCases.java declares on TaggedBox"
+    );
 }
 
 const CLASS_RETENTION_SRC: &str = r"import java.lang.annotation.Retention;

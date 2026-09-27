@@ -10,7 +10,10 @@ pub mod common;
 
 use std::path::PathBuf;
 
-use common::{JvmVerifier, VerifyScope, assert_permille, lines_with_prefix, parse_metric};
+use common::{
+    JvmVerifier, VERIFIER_SRC, VerifyScope, assert_permille, assert_verifier_never_initialises,
+    lines_with_prefix, parse_metric, unlisted_verifier_calls,
+};
 use disrobe_pass_jvm::assemble_jar;
 use disrobe_pass_jvm::dex2jar::{Dex2JarResult, translate_dex_bytes};
 
@@ -225,6 +228,73 @@ fn link_skipped_metric_counter_mutation_is_rejected() {
         ),
         "the published link-skipped metric must reject a corrupted numerator"
     );
+}
+
+const VERIFIER_LINK: &str = "Class<?> c = l.resolveTop(cn);";
+const VERIFIER_REFLECT: &str = "c.getDeclaredMethods();";
+
+#[test]
+fn the_verifier_helper_makes_only_reviewed_calls() {
+    assert_eq!(
+        unlisted_verifier_calls(VERIFIER_SRC),
+        Vec::<String>::new(),
+        "tests/common/V.java must define and link translations through reviewed calls only"
+    );
+    assert!(
+        VERIFIER_SRC.contains(VERIFIER_LINK) && VERIFIER_SRC.contains(VERIFIER_REFLECT),
+        "the seeded calls below must land in V.java, or this control checks nothing"
+    );
+    let seeded: [(&str, &str, &str); 6] = [
+        (
+            VERIFIER_LINK,
+            "Class<?> c = Class.forName(cn, true, l);",
+            "Class.forName",
+        ),
+        (
+            VERIFIER_REFLECT,
+            "c.getDeclaredConstructor().newInstance();",
+            ").newInstance",
+        ),
+        (
+            VERIFIER_REFLECT,
+            "c.getDeclaredMethods()[0].invoke(null);",
+            "].invoke",
+        ),
+        (
+            VERIFIER_REFLECT,
+            "c.getDeclaredField(\"VALUE\").get(null);",
+            "c.getDeclaredField",
+        ),
+        (
+            VERIFIER_REFLECT,
+            "c.getEnumConstants();",
+            "c.getEnumConstants",
+        ),
+        (
+            VERIFIER_REFLECT,
+            "UNSAFE.allocateInstance(c);",
+            "UNSAFE.allocateInstance",
+        ),
+    ];
+    for (anchor, call_site, call) in seeded {
+        let source: String = VERIFIER_SRC.replacen(anchor, call_site, 1);
+        assert!(
+            unlisted_verifier_calls(&source).contains(&call.to_owned()),
+            "a V.java that adds `{call_site}` must be caught before java starts"
+        );
+    }
+}
+
+#[test]
+#[should_panic(
+    expected = "the jvm verifier helper makes calls outside its reviewed list [\"Class.forName\"]"
+)]
+fn a_verifier_helper_that_initialises_a_translation_is_refused_before_java_starts() {
+    assert_verifier_never_initialises(&VERIFIER_SRC.replacen(
+        VERIFIER_LINK,
+        "Class<?> c = Class.forName(cn, true, l);",
+        1,
+    ));
 }
 
 #[test]

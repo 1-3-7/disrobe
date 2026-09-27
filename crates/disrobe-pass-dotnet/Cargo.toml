@@ -49,6 +49,7 @@ des = { workspace = true }
 aes = { workspace = true }
 cbc = { workspace = true }
 flate2 = { workspace = true }
+toml = { workspace = true }
 
 [[test]]
 name = "seed_reach"

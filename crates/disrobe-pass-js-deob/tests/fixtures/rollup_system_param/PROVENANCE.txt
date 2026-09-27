@@ -13,3 +13,7 @@ node terser/bin/terser rollup.js --compress --mangle --output fixture.min.js
 SHA-256 entry.js: A8C01C25BB4AA4999071AA0F1D5DB1D5C1EB6DD04282E11187A353AAC903474D
 SHA-256 rollup.js: 721BBF6542426B955E3DA88431757E553EF342B4CB330E4CBFA1479A2BED2D2C
 SHA-256 fixture.min.js: 38EC01876C2BA99ED64C8669D74E88E300F9BB9D1D09857F34221F768C4F58BD
+
+Reference outputs of entry.js under the test harness modules, pinned in
+ast_system_register_param_oracle.rs; the committed bundle never runs:
+value=42 for one registration, value=42|updated=-2 across the live setter update.

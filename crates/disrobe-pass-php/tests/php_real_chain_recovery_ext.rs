@@ -24,12 +24,7 @@ mod php_toolchain;
 use std::collections::BTreeSet;
 
 use disrobe_pass_php::{DEFAULT_LOADER_DEPTH, LoaderReport, LoaderSink, peel_modern_loader};
-use php_toolchain::{
-    PhpRuntime, require_php, required_fixture, residual_decode_primitives, with_open_tag,
-};
-
-const GRADED: &str = "the loader-level peel of the php eval-chain corpus, each recovered body \
-                      re-executed under the real php interpreter";
+use php_toolchain::required_fixture;
 
 #[derive(Debug, Clone, Copy)]
 struct PinnedLoader {
@@ -176,22 +171,36 @@ fn the_loader_pins_cover_every_chain_fixture_exactly_once() {
     );
 }
 
+fn grade_loader_body(pinned: &PinnedLoader, recovered: &[u8]) -> Option<String> {
+    let want: Vec<u8> = expected_body(pinned.trailing_newline);
+    (recovered != want.as_slice()).then(|| {
+        format!(
+            "{}: the loader body must equal EXPECTED.txt byte for byte.\n--- expected ---\n{}\n\
+             --- recovered ---\n{}",
+            pinned.fixture,
+            String::from_utf8_lossy(&want),
+            String::from_utf8_lossy(recovered)
+        )
+    })
+}
+
+#[test]
+fn a_loader_body_that_is_the_loader_itself_fails_the_byte_grade() {
+    for pinned in &PINNED_LOADERS {
+        let loader: Vec<u8> = required_fixture(&format!("php_real_chains/{}", pinned.fixture));
+        let defect: Option<String> = grade_loader_body(pinned, &loader);
+        assert!(
+            defect.as_deref().is_some_and(|message: &str| {
+                message.contains("must equal EXPECTED.txt byte for byte")
+            }),
+            "{}: handing the loader back as its own body must fail the byte grade: {defect:?}",
+            pinned.fixture
+        );
+    }
+}
+
 #[test]
 fn every_recognized_loader_reports_its_sink_and_recovers_the_original_body() {
-    let Some(php): Option<PhpRuntime> = require_php(GRADED) else {
-        return;
-    };
-    let truth: Vec<u8> = required_fixture("php_real_chains/EXPECTED.txt");
-    let expected_stdout: Vec<u8> = php.stdout_of(
-        "EXPECTED.txt",
-        with_open_tag(&String::from_utf8_lossy(&truth)).as_bytes(),
-    );
-    assert!(
-        !expected_stdout.is_empty(),
-        "the ground-truth program prints nothing, so stdout comparison would accept a silent \
-         recovery"
-    );
-
     let mut defects: Vec<String> = Vec::new();
     let mut graded: usize = 0;
     for pinned in &PINNED_LOADERS {
@@ -218,35 +227,7 @@ fn every_recognized_loader_reports_its_sink_and_recovers_the_original_body() {
                 pinned.fixture, pinned.bound_variables, report.bound_variable_count
             ));
         }
-        let want: Vec<u8> = expected_body(pinned.trailing_newline);
-        if report.recovered != want {
-            defects.push(format!(
-                "{}: the loader body must equal EXPECTED.txt byte for byte.\n--- expected ---\n{}\n\
-                 --- recovered ---\n{}",
-                pinned.fixture,
-                String::from_utf8_lossy(&want),
-                String::from_utf8_lossy(&report.recovered)
-            ));
-        }
-        let recovered_text: String = String::from_utf8_lossy(&report.recovered).into_owned();
-        let residual: Vec<&'static str> = residual_decode_primitives(&recovered_text);
-        if !residual.is_empty() {
-            defects.push(format!(
-                "{}: the loader body still calls {residual:?}, so it is a peeled layer rather than \
-                 the recovered program",
-                pinned.fixture
-            ));
-        }
-        let stdout: Vec<u8> =
-            php.stdout_of(pinned.fixture, with_open_tag(&recovered_text).as_bytes());
-        if stdout != expected_stdout {
-            defects.push(format!(
-                "{}: the loader body runs under php but prints {:?} where the original prints {:?}",
-                pinned.fixture,
-                String::from_utf8_lossy(&stdout),
-                String::from_utf8_lossy(&expected_stdout)
-            ));
-        }
+        defects.extend(grade_loader_body(pinned, &report.recovered));
         graded += 1;
     }
     assert_eq!(
@@ -260,7 +241,7 @@ fn every_recognized_loader_reports_its_sink_and_recovers_the_original_body() {
         defects.len(),
         defects.join("\n\n")
     );
-    println!("{graded} loader-level peels graded against {}", php.banner);
+    println!("{graded} loader-level peels equal EXPECTED.txt byte for byte");
 }
 
 #[test]

@@ -258,6 +258,14 @@ fn bounded_output(command: &mut Command, label: &str, binary: &Path, script: &Pa
 }
 
 impl PhpRuntime {
+    pub(crate) fn unstartable() -> Self {
+        Self {
+            binary: PathBuf::from("a-php-that-this-test-must-never-start"),
+            banner: String::new(),
+            settings: Vec::new(),
+        }
+    }
+
     pub(crate) fn run(&self, label: &str, source: &[u8]) -> PhpRun {
         self.run_with(label, source, &["error_reporting=0", "display_errors=0"])
     }
@@ -352,6 +360,14 @@ impl PhpRuntime {
         );
         run.stdout
     }
+}
+
+pub(crate) fn goto_count(source: &[u8]) -> usize {
+    let lower: Vec<u8> = source.to_ascii_lowercase();
+    lower
+        .windows(5)
+        .filter(|window: &&[u8]| *window == b"goto ")
+        .count()
 }
 
 pub(crate) fn with_open_tag(source: &str) -> String {

@@ -112,8 +112,9 @@ source = "ReactorStringsPostSetReverse.csproj"
 [grade]
 strings_recovered_before = 0
 strings_recovered_after = 7
-comparison = "recovered strings equal fixed expected.json and CLR runtime stdout"
+comparison = "recovered strings equal the fixed expected.json; build.ps1 checks that each freshly built assembly prints it under the CLR, and the test pins every committed assembly and expected.json by the sha256 recorded here instead of running them"
 test = "reactor_static_strings_match_committed_clr_fixture"
+digest_test = "committed_fixtures_match_the_digests_their_manifest_pins"
 ambiguity_test = "reactor_two_reachable_tuples_remain_unknown"
 mixed_instance_test = "reactor_mixed_aes_instances_remain_unknown"
 exception_test = "reactor_catch_path_remains_unknown"

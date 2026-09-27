@@ -4,11 +4,15 @@
     clippy::panic,
     clippy::print_stderr
 )]
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use disrobe_core::scratch::{ScratchDir, scratch_root};
 use disrobe_pass_pyarmor::{UnpackOptions, UnpackOutput, unpack_wrapper_text_with_options};
+use disrobe_py_marshal::{
+    CodeObject, Object, PyVersion, PycFile, PycHeader, code_era_for, read_pyc, write_pyc,
+};
 
 fn workspace_root() -> PathBuf {
     let mut dir: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -122,11 +126,78 @@ fn magic_ascii(pyc: &[u8]) -> String {
     pyc[..4].iter().map(|&b| b as char).collect()
 }
 
+const PYARMOR_RUNTIME_NAMES: [&str; 3] = ["pyarmor", "armor_", "pytransform"];
+const PYARMOR_RUNTIME_MODULES: [&str; 3] = ["pyarmor_runtime", "pyarmor_mini", "pytransform"];
+
+const fn text_of(object: &Object) -> Option<&str> {
+    match object {
+        Object::String { value, .. }
+        | Object::Unicode { value, .. }
+        | Object::ShortAscii { value, .. } => Some(value.as_str()),
+        _ => None,
+    }
+}
+
+fn collect_runtime_module_constants(constant: &Object, residual: &mut BTreeSet<String>) {
+    match constant {
+        Object::Code(inner) => collect_runtime_references(inner, residual),
+        Object::Tuple(items)
+        | Object::List(items)
+        | Object::Set(items)
+        | Object::FrozenSet(items) => {
+            for item in items {
+                collect_runtime_module_constants(item, residual);
+            }
+        }
+        other => {
+            if let Some(text) = text_of(other)
+                && PYARMOR_RUNTIME_MODULES
+                    .iter()
+                    .any(|module: &&str| text.contains(module))
+            {
+                residual.insert(format!("constant {text:?}"));
+            }
+        }
+    }
+}
+
+fn collect_runtime_references(code: &CodeObject, residual: &mut BTreeSet<String>) {
+    for name in code.names.iter().filter_map(text_of) {
+        if PYARMOR_RUNTIME_NAMES
+            .iter()
+            .any(|marker: &&str| name.contains(marker))
+        {
+            residual.insert(format!("name {name}"));
+        }
+    }
+    for constant in &code.consts {
+        collect_runtime_module_constants(constant, residual);
+    }
+}
+
+fn assert_no_pyarmor_runtime_reference(rel: &str, pyc: &[u8]) {
+    let file: PycFile = read_pyc(pyc).unwrap_or_else(|error: disrobe_py_marshal::Error| {
+        panic!("{rel}: the recovered pyc does not load ({error}), so it is not run")
+    });
+    let Object::Code(module): &Object = &file.code else {
+        panic!("{rel}: the recovered pyc holds no module code object, so it is not run");
+    };
+    let mut residual: BTreeSet<String> = BTreeSet::new();
+    collect_runtime_references(module, &mut residual);
+    assert!(
+        residual.is_empty(),
+        "{rel}: the recovered pyc still reaches the PyArmor runtime through {residual:?}, so \
+         executing it could hand control back to protector code; recovery must remove every \
+         runtime import and lookup before the execution oracle runs it"
+    );
+}
+
 fn run_cpython_oracle(rel: &str) {
     let Some((pyc, minor)): Option<(Vec<u8>, u8)> = recover_pyc(rel) else {
         eprintln!("{rel}: sample absent; skipping");
         return;
     };
+    assert_no_pyarmor_runtime_reference(rel, &pyc);
     let Some(python): Option<String> = python_for_minor(minor) else {
         eprintln!(
             "{rel}: no CPython 3.{minor} on PATH; skipping the execution oracle (env-robust skip)"
@@ -215,6 +286,50 @@ fn magic_is_real_cpython_pyc_header() {
         "recovered pyc must carry a real CPython pyc header (0x0D 0x0A at [2..4]); head {:?}",
         &pyc[..pyc.len().min(4)]
     );
+}
+
+fn text(value: &str) -> Object {
+    Object::ShortAscii {
+        value: value.to_owned(),
+        interned: true,
+    }
+}
+
+#[test]
+#[should_panic(
+    expected = "still reaches the PyArmor runtime through {\"name __pyarmor__\", \"name pyarmor_runtime_000000\"}"
+)]
+fn a_pyc_compiled_from_the_wrapper_is_refused_before_it_runs() {
+    let version: PyVersion = PyVersion::new(3, 14);
+    let mut wrapper: CodeObject = CodeObject::new(code_era_for(version));
+    wrapper.consts = vec![
+        Object::Int(0),
+        Object::Tuple(vec![text("__pyarmor__")]),
+        Object::Bytes(b"PY000000".to_vec()),
+        Object::None,
+    ];
+    wrapper.names = vec![
+        text("pyarmor_runtime_000000"),
+        text("__pyarmor__"),
+        text("__name__"),
+        text("__file__"),
+    ];
+    let pyc: Vec<u8> = write_pyc(&PycFile {
+        header: PycHeader::deterministic(version).expect("3.14 has a pyc magic"),
+        code: Object::Code(Box::new(wrapper)),
+    })
+    .expect("the wrapper module marshals");
+    assert_no_pyarmor_runtime_reference("wrapper compiled to a pyc", &pyc);
+}
+
+#[test]
+#[should_panic(expected = "v9_latest_925/default: the recovered pyc does not load")]
+fn a_recovery_that_hands_back_the_wrapper_is_refused_before_it_runs() {
+    let wrapper: Vec<u8> = std::fs::read(
+        workspace_root().join("corpus/python/pyarmor/v9_latest_925/default/known_plaintext.py"),
+    )
+    .expect("corpus/python/pyarmor/v9_latest_925/default/known_plaintext.py is committed");
+    assert_no_pyarmor_runtime_reference("v9_latest_925/default", &wrapper);
 }
 
 #[test]

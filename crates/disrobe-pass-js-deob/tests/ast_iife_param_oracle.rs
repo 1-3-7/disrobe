@@ -9,8 +9,14 @@ use disrobe_core::subprocess::{CapturedOutput, run_captured};
 use disrobe_core::{Artifact, Rung, chain::Pass};
 use disrobe_pass_js_deob::chain_detector::JS_OBF_PASS;
 use disrobe_pass_js_deob::{AstUnminifyStats, unminify_ast};
+use sha2::{Digest, Sha256};
 
 const FIXTURE: &str = include_str!("fixtures/rollup_iife_param/fixture.min.js");
+const FIXTURE_SHA256: &str = "e9f7c5c0e6ca1dadfb87f0d4da77133da9f0457f41db0a74db39a6c92a409932";
+const REFERENCE_STDOUT: &[u8] =
+    b"value=42|value=3|value=7|value=11|value=15|value=19|value=23|value=27";
+const DIFFERENCE_STDOUT: &[u8] =
+    b"value=-2|value=-1|value=-1|value=-1|value=-1|value=-1|value=-1|value=-1";
 const NODE_TIMEOUT: Duration = Duration::from_secs(30);
 const NODE_CAPTURE: usize = 1usize << 18;
 
@@ -41,13 +47,12 @@ fn compact(source: &str) -> String {
 #[test]
 fn registered_pass_recovers_rollup_iife_global_parameter_names() {
     assert_eq!(FIXTURE.len(), 224);
-    let original_stdout: Vec<u8> = node_output(FIXTURE);
-    let mutated: String = FIXTURE.replacen(
-        "globalThis.MathUtils,globalThis.TextFormat",
-        "globalThis.DifferenceMath,globalThis.TextFormat",
-        1,
+    assert_eq!(
+        format!("{:x}", Sha256::digest(FIXTURE.as_bytes())),
+        FIXTURE_SHA256,
+        "the Rollup and Terser bundle is not the one PROVENANCE.txt records, so its pinned \
+         reference output no longer applies"
     );
-    assert_ne!(node_output(&mutated), original_stdout);
 
     let input: Artifact = Artifact::new(Rung::Raw, FIXTURE.as_bytes().to_vec(), [0x24_u8; 32]);
     let recovered: Artifact = JS_OBF_PASS
@@ -64,7 +69,19 @@ fn registered_pass_recovers_rollup_iife_global_parameter_names() {
         compact_recovered.contains("TextFormat(MathUtils.sum(20,22))"),
         "resolved IIFE references must follow both renames:\n{recovered_source}"
     );
-    assert_eq!(node_output(&recovered_source), original_stdout);
+    assert_eq!(node_output(&recovered_source), REFERENCE_STDOUT);
+    let mutated: String =
+        recovered_source.replacen("globalThis.MathUtils", "globalThis.DifferenceMath", 1);
+    assert_ne!(
+        mutated, recovered_source,
+        "the recovered IIFE must still receive globalThis.MathUtils as an argument"
+    );
+    assert_eq!(
+        node_output(&mutated),
+        DIFFERENCE_STDOUT,
+        "binding the first IIFE argument to a different global must change the output, or the \
+         stdout comparison cannot see a wrong parameter binding"
+    );
 
     let repeated: Artifact = JS_OBF_PASS
         .run(&input)

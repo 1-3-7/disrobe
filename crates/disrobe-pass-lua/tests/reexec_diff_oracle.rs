@@ -1,4 +1,9 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+
+#[path = "support/prometheus_residue.rs"]
+#[allow(clippy::redundant_pub_crate)]
+mod prometheus_residue;
+
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -6,6 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use disrobe_pass_lua::decompile::{DecompiledChunk, Fidelity, decompile_auto};
+use prometheus_residue::{assert_no_prometheus_layer, prometheus_layer_residue};
 
 static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -668,6 +674,7 @@ fn prometheus_weak_preset_recovers_and_reexecutes_identically() {
 
     let recovered_src: String =
         String::from_utf8(peeled.deobfuscated).expect("recovered source must be UTF-8");
+    assert_no_prometheus_layer("Weak preset", &recovered_src);
     let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
     let expected: String = run_source(
@@ -699,17 +706,6 @@ fn prometheus_medium_preset_recovers_and_reexecutes_identically() {
         PROMETHEUS_MEDIUM_CLEAN,
     )
     .expect("the tracked clean Medium-preset input must run under real Lua 5.1");
-    let protected: String = run_source(
-        &tc.lua,
-        &dir,
-        "prometheus_medium_obfuscated",
-        PROMETHEUS_MEDIUM_OBFUSCATED,
-    )
-    .expect("the tracked Medium-preset output must run under real Lua 5.1");
-    assert_eq!(
-        expected, protected,
-        "the pinned upstream transform must preserve the tracked program's output"
-    );
     let peeled: PeelResult = prometheus::peel(
         PROMETHEUS_MEDIUM_OBFUSCATED.as_bytes(),
         &DeobfOptions::default(),
@@ -731,6 +727,7 @@ fn prometheus_medium_preset_recovers_and_reexecutes_identically() {
     let recovered: String =
         String::from_utf8(peeled.deobfuscated).expect("recovered source must be UTF-8");
     assert!(!recovered.contains("__pc"));
+    assert_no_prometheus_layer("Medium preset", &recovered);
     let actual: String = run_source(&tc.lua, &dir, "prometheus_medium_recovered", &recovered)
         .unwrap_or_else(|| {
             let stderr: String = std::fs::read_to_string(
@@ -769,17 +766,6 @@ fn prometheus_numbers_before_vmify_recovers_and_reexecutes_identically() {
         PROMETHEUS_NUMBERS_BEFORE_VMIFY_CLEAN,
     )
     .expect("the authored pipeline-order input must run under real Lua 5.1");
-    let protected: String = run_source(
-        &tc.lua,
-        &dir,
-        "prometheus_numbers_before_vmify_obfuscated",
-        PROMETHEUS_NUMBERS_BEFORE_VMIFY_OBFUSCATED,
-    )
-    .expect("the pinned upstream pipeline-order output must run under real Lua 5.1");
-    assert_eq!(
-        expected, protected,
-        "NumbersToExpressions before Vmify must preserve the tracked program's output"
-    );
 
     let peeled: PeelResult = prometheus::peel(
         PROMETHEUS_NUMBERS_BEFORE_VMIFY_OBFUSCATED.as_bytes(),
@@ -803,6 +789,7 @@ fn prometheus_numbers_before_vmify_recovers_and_reexecutes_identically() {
 
     let recovered: String =
         String::from_utf8(peeled.deobfuscated).expect("recovered source must be UTF-8");
+    assert_no_prometheus_layer("NumbersToExpressions before Vmify", &recovered);
     let actual: String = run_source(
         &tc.lua,
         &dir,
@@ -852,6 +839,7 @@ fn prometheus_vmify_recovers_and_reexecutes_identically_to_the_original() {
 
     let recovered_src: String =
         String::from_utf8(peeled.deobfuscated).expect("recovered source must be UTF-8");
+    assert_no_prometheus_layer("Vmify", &recovered_src);
 
     let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
@@ -881,13 +869,22 @@ const PROMETHEUS_VMIFY_SIMPLE_CLEAN: &str =
     include_str!("../../../corpus/lua/prometheus/vmify_simple/clean.lua");
 const PROMETHEUS_VMIFY_SIMPLE_OBFUSCATED: &str =
     include_str!("../../../corpus/lua/prometheus/vmify_simple/obfuscated.lua");
+const VMIFY_SIMPLE_DISPATCH_THRESHOLD: i64 = 6_778_318;
+const COMPUTED_THRESHOLD_MINUEND: i64 = 7_815_703;
+const COMPUTED_THRESHOLD_SUBTRAHEND: i64 = 1_037_385;
+const _: () = assert!(
+    COMPUTED_THRESHOLD_MINUEND - COMPUTED_THRESHOLD_SUBTRAHEND == VMIFY_SIMPLE_DISPATCH_THRESHOLD
+);
 
 #[test]
 fn prometheus_vmify_computed_dispatch_threshold_recovers_and_reexecutes_identically() {
     use disrobe_pass_lua::obfuscator::{DeobfOptions, PeelResult, prometheus};
 
+    let threshold: String = format!("z>{VMIFY_SIMPLE_DISPATCH_THRESHOLD}");
+    let computed_threshold: String =
+        format!("z>{COMPUTED_THRESHOLD_MINUEND}-{COMPUTED_THRESHOLD_SUBTRAHEND}");
     let obfuscated: String =
-        PROMETHEUS_VMIFY_SIMPLE_OBFUSCATED.replacen("z>6778318", "z>7815703-1037385", 1);
+        PROMETHEUS_VMIFY_SIMPLE_OBFUSCATED.replacen(&threshold, &computed_threshold, 1);
     assert_ne!(
         obfuscated, PROMETHEUS_VMIFY_SIMPLE_OBFUSCATED,
         "the tracked real Vmify fixture must retain the selected dispatch threshold"
@@ -895,30 +892,8 @@ fn prometheus_vmify_computed_dispatch_threshold_recovers_and_reexecutes_identica
     let folded: String =
         disrobe_pass_lua::obfuscator::prometheus_vmlift::fold_numeric_expressions(&obfuscated);
     assert!(
-        folded.contains("z>7815703-1037385"),
+        folded.contains(&computed_threshold),
         "the dispatcher AST must receive the computed threshold rather than a value already handled by the textual fold"
-    );
-
-    let tc: Toolchain = require_toolchain("5.1");
-    let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
-    let dir: PathBuf = scratch.path().to_path_buf();
-    let expected: String = run_source(
-        &tc.lua,
-        &dir,
-        "vmify_computed_threshold_clean",
-        PROMETHEUS_VMIFY_SIMPLE_CLEAN,
-    )
-    .expect("the clean source must run under real Lua 5.1");
-    let protected: String = run_source(
-        &tc.lua,
-        &dir,
-        "vmify_computed_threshold_obfuscated",
-        &obfuscated,
-    )
-    .expect("the computed-threshold Vmify source must run under real Lua 5.1");
-    assert_eq!(
-        expected, protected,
-        "the computed dispatch threshold must preserve the real fixture's behavior"
     );
 
     let peeled: PeelResult = prometheus::peel(obfuscated.as_bytes(), &DeobfOptions::default())
@@ -930,6 +905,18 @@ fn prometheus_vmify_computed_dispatch_threshold_recovers_and_reexecutes_identica
     );
     let recovered: String =
         String::from_utf8(peeled.deobfuscated).expect("recovered source must be UTF-8");
+    assert_no_prometheus_layer("computed dispatch threshold", &recovered);
+
+    let tc: Toolchain = require_toolchain("5.1");
+    let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
+    let expected: String = run_source(
+        &tc.lua,
+        &dir,
+        "vmify_computed_threshold_clean",
+        PROMETHEUS_VMIFY_SIMPLE_CLEAN,
+    )
+    .expect("the clean source must run under real Lua 5.1");
     let actual: String = run_source(
         &tc.lua,
         &dir,
@@ -960,6 +947,7 @@ fn prometheus_vmify_loop_free_sample_recovers_fully_structured() {
 
     let recovered_src: String =
         String::from_utf8(peeled.deobfuscated).expect("recovered source must be UTF-8");
+    assert_no_prometheus_layer("loop-free Vmify", &recovered_src);
     let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
     let expected: String = run_source(
@@ -983,28 +971,35 @@ const PROMETHEUS_VMIFY_NESTED_OBFUSCATED: &str =
     include_str!("../../../corpus/lua/prometheus/vmify_nested/obfuscated.lua");
 
 #[test]
-fn prometheus_vmify_nested_double_layer_fixtures_already_agree() {
-    let tc: Toolchain = require_toolchain("5.1");
-    let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
-    let dir: PathBuf = scratch.path().to_path_buf();
-    let expected: String = run_source(
-        &tc.lua,
-        &dir,
-        "vmify_nested_fixture_clean",
-        PROMETHEUS_VMIFY_NESTED_CLEAN,
-    )
-    .expect("clean fixture must run under real Lua 5.1");
-    let actual: String = run_source(
-        &tc.lua,
-        &dir,
-        "vmify_nested_fixture_obfuscated",
-        PROMETHEUS_VMIFY_NESTED_OBFUSCATED,
-    )
-    .expect("real Prometheus Vmify-applied-twice output must run under real Lua 5.1");
-    assert_eq!(
-        expected, actual,
-        "the committed nested obfuscated fixture must be a faithful Vmify-applied-twice transform of the committed clean fixture"
-    );
+fn a_passthrough_of_any_prometheus_sample_is_refused_before_lua_runs() {
+    for (label, obfuscated) in [
+        ("weak", PROMETHEUS_WEAK_OBFUSCATED),
+        ("medium", PROMETHEUS_MEDIUM_OBFUSCATED),
+        (
+            "numbers before vmify",
+            PROMETHEUS_NUMBERS_BEFORE_VMIFY_OBFUSCATED,
+        ),
+        ("vmify", PROMETHEUS_VMIFY_OBFUSCATED),
+        ("vmify simple", PROMETHEUS_VMIFY_SIMPLE_OBFUSCATED),
+        ("vmify nested", PROMETHEUS_VMIFY_NESTED_OBFUSCATED),
+        ("vmify upvalue", PROMETHEUS_VMIFY_UPVALUE_OBFUSCATED),
+        (
+            "vmify loop capture",
+            PROMETHEUS_VMIFY_LOOP_CAPTURE_OBFUSCATED,
+        ),
+    ] {
+        assert!(
+            prometheus_layer_residue(obfuscated).is_some(),
+            "{label}: handing the obfuscated sample back as its recovery must be refused before \
+             lua runs it"
+        );
+    }
+}
+
+#[test]
+#[should_panic(expected = "vmify nested: the recovered source still carries a Prometheus layer")]
+fn the_residue_gate_names_the_layer_it_refuses() {
+    assert_no_prometheus_layer("vmify nested", PROMETHEUS_VMIFY_NESTED_OBFUSCATED);
 }
 
 #[test]
@@ -1025,6 +1020,7 @@ fn prometheus_vmify_nested_double_layer_sample_recovers_and_reexecutes_identical
         !emitted.contains("__pc"),
         "both Vmify layers must recover to real Lua control flow\n--- emitted ---\n{emitted}"
     );
+    assert_no_prometheus_layer("double Vmify", &emitted);
 
     let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
@@ -1058,27 +1054,6 @@ fn prometheus_vmify_dispatch_leaf_with_nested_local_function_recovers_and_reexec
         "the tracked real nested fixture must retain the selected reachable handler expression"
     );
 
-    let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
-    let dir: PathBuf = scratch.path().to_path_buf();
-    let expected: String = run_source(
-        &tc.lua,
-        &dir,
-        "vmify_nested_local_function_orig",
-        PROMETHEUS_VMIFY_NESTED_CLEAN,
-    )
-    .expect("the clean nested source must run under real Lua 5.1");
-    let obfuscated_output: String = run_source(
-        &tc.lua,
-        &dir,
-        "vmify_nested_local_function_obfuscated",
-        &obfuscated,
-    )
-    .expect("the nested-closure variant must run under real Lua 5.1");
-    assert_eq!(
-        expected, obfuscated_output,
-        "the nested local function must preserve the real fixture's behavior"
-    );
-
     let peeled: PeelResult = prometheus::peel(obfuscated.as_bytes(), &DeobfOptions::default())
         .expect(
             "prometheus peel must run on a dispatch leaf that constructs a nested local function",
@@ -1090,6 +1065,17 @@ fn prometheus_vmify_dispatch_leaf_with_nested_local_function_recovers_and_reexec
     );
     let recovered: String =
         String::from_utf8(peeled.deobfuscated).expect("recovered source must be UTF-8");
+    assert_no_prometheus_layer("nested local function", &recovered);
+
+    let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
+    let expected: String = run_source(
+        &tc.lua,
+        &dir,
+        "vmify_nested_local_function_orig",
+        PROMETHEUS_VMIFY_NESTED_CLEAN,
+    )
+    .expect("the clean nested source must run under real Lua 5.1");
     let actual: String = run_source(
         &tc.lua,
         &dir,
@@ -1107,31 +1093,6 @@ const PROMETHEUS_VMIFY_UPVALUE_CLEAN: &str =
     include_str!("../../../corpus/lua/prometheus/vmify_upvalue/clean.lua");
 const PROMETHEUS_VMIFY_UPVALUE_OBFUSCATED: &str =
     include_str!("../../../corpus/lua/prometheus/vmify_upvalue/obfuscated.lua");
-
-#[test]
-fn prometheus_vmify_upvalue_fixtures_already_agree() {
-    let tc: Toolchain = require_toolchain("5.1");
-    let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
-    let dir: PathBuf = scratch.path().to_path_buf();
-    let expected: String = run_source(
-        &tc.lua,
-        &dir,
-        "vmify_upvalue_fixture_clean",
-        PROMETHEUS_VMIFY_UPVALUE_CLEAN,
-    )
-    .expect("clean fixture must run under real Lua 5.1");
-    let actual: String = run_source(
-        &tc.lua,
-        &dir,
-        "vmify_upvalue_fixture_obfuscated",
-        PROMETHEUS_VMIFY_UPVALUE_OBFUSCATED,
-    )
-    .expect("real Prometheus Vmify output must run under real Lua 5.1");
-    assert_eq!(
-        expected, actual,
-        "the committed upvalue-closure obfuscated fixture must be a faithful Prometheus Vmify transform of the committed clean fixture"
-    );
-}
 
 #[test]
 fn prometheus_vmify_upvalue_closure_recovers_and_reexecutes_identically() {
@@ -1154,6 +1115,7 @@ fn prometheus_vmify_upvalue_closure_recovers_and_reexecutes_identically() {
 
     let recovered_src: String =
         String::from_utf8(peeled.deobfuscated).expect("recovered source must be UTF-8");
+    assert_no_prometheus_layer("upvalue closure", &recovered_src);
     let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
     let expected: String = run_source(
@@ -1238,36 +1200,6 @@ const PROMETHEUS_VMIFY_LOOP_CAPTURE_OBFUSCATED: &str =
     include_str!("../../../corpus/lua/prometheus/vmify_loop_capture/obfuscated.lua");
 
 #[test]
-fn prometheus_vmify_loop_capture_fixtures_already_agree() {
-    let tc: Toolchain = require_toolchain("5.1");
-    let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
-    let dir: PathBuf = scratch.path().to_path_buf();
-    let expected: String = run_source(
-        &tc.lua,
-        &dir,
-        "vmify_loop_capture_fixture_clean",
-        PROMETHEUS_VMIFY_LOOP_CAPTURE_CLEAN,
-    )
-    .expect("clean fixture must run under real Lua 5.1");
-    let actual: String = run_source(
-        &tc.lua,
-        &dir,
-        "vmify_loop_capture_fixture_obfuscated",
-        PROMETHEUS_VMIFY_LOOP_CAPTURE_OBFUSCATED,
-    )
-    .expect("real Prometheus Vmify output must run under real Lua 5.1");
-    assert_eq!(
-        expected, actual,
-        "the committed loop-capture obfuscated fixture must be a faithful Prometheus Vmify transform of the committed clean fixture"
-    );
-    assert_eq!(
-        expected.replace('\r', ""),
-        "10\n20\n30\n",
-        "the fixture must actually distinguish per-iteration capture from a shared variable; three identical lines would make the refusal it drives untestable"
-    );
-}
-
-#[test]
 fn prometheus_vmify_per_iteration_capture_recovers_and_reexecutes_identically() {
     use disrobe_pass_lua::obfuscator::{DeobfOptions, PeelResult, prometheus};
 
@@ -1289,6 +1221,7 @@ fn prometheus_vmify_per_iteration_capture_recovers_and_reexecutes_identically() 
 
     let recovered_src: String =
         String::from_utf8(peeled.deobfuscated).expect("recovered source must be UTF-8");
+    assert_no_prometheus_layer("per-iteration capture", &recovered_src);
     let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
     let expected: String = run_source(
@@ -1298,6 +1231,11 @@ fn prometheus_vmify_per_iteration_capture_recovers_and_reexecutes_identically() 
         PROMETHEUS_VMIFY_LOOP_CAPTURE_CLEAN,
     )
     .expect("the clean per-iteration-capture source must run under real Lua 5.1");
+    assert_eq!(
+        expected.replace('\r', ""),
+        "10\n20\n30\n",
+        "the fixture must actually distinguish per-iteration capture from a shared variable; three identical lines would make the refusal it drives untestable"
+    );
     let actual: String = run_source(
         &tc.lua,
         &dir,
@@ -1342,6 +1280,7 @@ fn prometheus_vmify_loop_recovers_real_lua_control_flow_not_a_dispatch_state_mac
             "{name}: every dispatch leaf is structured, so recovery must report itself complete; residual_markers={:?}\n--- recovered ---\n{recovered_src}",
             peeled.residual_markers
         );
+        assert_no_prometheus_layer(name, &recovered_src);
 
         let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
         let dir: PathBuf = scratch.path().to_path_buf();
@@ -1358,24 +1297,4 @@ fn prometheus_vmify_loop_recovers_real_lua_control_flow_not_a_dispatch_state_mac
             "{name}: structured loop recovery must re-execute identically to the real original\n--- recovered ---\n{recovered_src}"
         );
     }
-}
-
-#[test]
-fn prometheus_vmify_obfuscated_and_clean_fixtures_already_agree() {
-    let tc: Toolchain = require_toolchain("5.1");
-    let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
-    let dir: PathBuf = scratch.path().to_path_buf();
-    let expected: String = run_source(&tc.lua, &dir, "vmify_fixture_clean", PROMETHEUS_VMIFY_CLEAN)
-        .expect("clean fixture must run under real Lua 5.1");
-    let actual: String = run_source(
-        &tc.lua,
-        &dir,
-        "vmify_fixture_obfuscated",
-        PROMETHEUS_VMIFY_OBFUSCATED,
-    )
-    .expect("real Prometheus Vmify output must run under real Lua 5.1");
-    assert_eq!(
-        expected, actual,
-        "the committed obfuscated fixture must be a faithful Prometheus Vmify transform of the committed clean fixture"
-    );
 }

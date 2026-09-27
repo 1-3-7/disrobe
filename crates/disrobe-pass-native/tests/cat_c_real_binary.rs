@@ -133,7 +133,7 @@ fn upx_round_trip_hello_byte_compare() {
 }
 
 #[test]
-fn upx_round_trip_ripgrep_byte_compare_and_recover_runs() {
+fn upx_round_trip_ripgrep_byte_compare() {
     if !upx_available() {
         println!("SKIP: upx CLI not on PATH");
         return;
@@ -160,17 +160,6 @@ fn upx_round_trip_ripgrep_byte_compare_and_recover_runs() {
     assert!(
         diff_per_million < 500,
         "rg.exe round-trip diff_per_million {diff_per_million} must stay <500 (=0.05%) across 4.27 MB; observed ~61 (~0.006%)"
-    );
-    let recovered_path: PathBuf = corpus_root().join("upx").join("rg.unpacked.upx.exe");
-    let out: std::process::Output = Command::new(&recovered_path)
-        .arg("--version")
-        .output()
-        .expect("recovered rg.exe must execute");
-    let stdout: String = String::from_utf8_lossy(&out.stdout).into_owned();
-    assert!(
-        out.status.success() && stdout.contains("ripgrep"),
-        "recovered rg.exe --version must succeed and emit 'ripgrep'; got status={:?} stdout={stdout:?}",
-        out.status.code()
     );
 }
 

@@ -4,14 +4,20 @@
 #[allow(clippy::redundant_pub_crate, dead_code)]
 mod lua_toolchain;
 
+#[path = "support/prometheus_residue.rs"]
+#[allow(clippy::redundant_pub_crate)]
+mod prometheus_residue;
+
 use std::fmt::Write as _;
 use std::fs;
 use std::path::PathBuf;
 
-use disrobe_pass_lua::prometheus_vmlift;
+use disrobe_pass_lua::obfuscator::{DeobfOptions, PeelResult};
+use disrobe_pass_lua::{prometheus, prometheus_vmlift};
 use lua_toolchain::{
     InterpreterRequirement, LuaInterpreter, require_interpreter, require_interpreter_with, run_lua,
 };
+use prometheus_residue::assert_no_prometheus_layer;
 
 fn corpus_path(rel: &str) -> PathBuf {
     let manifest_dir: &str = env!("CARGO_MANIFEST_DIR");
@@ -29,30 +35,6 @@ fn corpus_path(rel: &str) -> PathBuf {
 fn load(rel: &str) -> String {
     let path: PathBuf = corpus_path(rel);
     fs::read_to_string(&path).unwrap_or_else(|e| panic!("missing fixture {}: {e}", path.display()))
-}
-
-fn fold_preserves_behavior(rel: &str) -> Option<(usize, usize)> {
-    let graded: String = format!("the Prometheus numeric-fold behavior differential for {rel}");
-    let interp: LuaInterpreter = require_interpreter(&graded)?;
-    let obf: String = load(rel);
-    let expected: String = run_lua(&interp, rel, &obf);
-
-    let before: usize = prometheus_vmlift::count_arithmetic_operators(&obf);
-    let folded: String = prometheus_vmlift::fold_numeric_expressions(&obf);
-    let after: usize = prometheus_vmlift::count_arithmetic_operators(&folded);
-
-    let actual: String = run_lua(&interp, &format!("{rel} (folded)"), &folded);
-
-    assert_eq!(
-        actual.trim_end(),
-        expected.trim_end(),
-        "{rel}: numeric-expression fold must preserve runtime stdout exactly"
-    );
-    eprintln!(
-        "fold oracle {rel}: OK stdout={:?} arithmetic-ops {before} -> {after}",
-        expected.trim_end()
-    );
-    Some((before, after))
 }
 
 #[test]
@@ -93,6 +75,81 @@ fn fold_reconstruction_preserves_inter_span_text() {
     }
 }
 
+fn assert_admitted_arithmetic(rel: &str, role: &str, text: &str) {
+    assert!(
+        prometheus_vmlift::fold_one_expression(text).is_some() && !text.contains("--"),
+        "{rel}: the {role} {text:?} is not an arithmetic expression the vmlift lexer admits, so \
+         it must not reach lua"
+    );
+}
+
+fn span_check_program(rel: &str, pairs: &[(String, String)]) -> String {
+    let mut prog: String = String::new();
+    for (idx, (orig, folded)) in pairs.iter().enumerate() {
+        assert_admitted_arithmetic(rel, "sample span", orig);
+        assert_admitted_arithmetic(rel, "folded value", folded);
+        let _ = writeln!(
+            prog,
+            "do local a={folded} local b=({orig}) if a~=b then print({idx},a,b) end end"
+        );
+    }
+    prog
+}
+
+const NAMES_AND_CALLS: [&str; 14] = [
+    "os.execute('echo reached')",
+    "1 + os.exit(1)",
+    "2 * f(3)",
+    "(1)(2)",
+    "1 + a",
+    "-x + 1",
+    "#t + 1",
+    "('x'):rep(3)",
+    "1 .. 2",
+    "2 ^ n",
+    "load('return 1')() + 1",
+    "1 + ...",
+    "1 + 2 + f(3)",
+    "f(1 + 2) * 2",
+];
+
+#[test]
+fn the_vmlift_lexer_refuses_names_and_calls_before_lua_starts() {
+    for hostile in NAMES_AND_CALLS {
+        assert_eq!(
+            prometheus_vmlift::fold_one_expression(hostile),
+            None,
+            "the vmlift lexer admitted {hostile:?}, which names a variable or makes a call"
+        );
+        let source: String = format!("local v = {hostile}\n");
+        for (span, folded) in prometheus_vmlift::folded_span_pairs(&source) {
+            assert_admitted_arithmetic(hostile, "sample span", &span);
+            assert_admitted_arithmetic(hostile, "folded value", &folded);
+        }
+    }
+    let folded: String = prometheus_vmlift::fold_numeric_expressions("local v = 1 + 2 + f(3)\n");
+    assert_eq!(
+        folded, "local v = 3 + f(3)\n",
+        "the arithmetic beside a call folds and the call is left as written"
+    );
+}
+
+#[test]
+#[should_panic(
+    expected = "the sample span \"os.exit(1)\" is not an arithmetic expression the vmlift lexer admits"
+)]
+fn a_span_that_calls_a_function_is_refused_before_lua_starts() {
+    span_check_program("seeded", &[("os.exit(1)".to_owned(), "1".to_owned())]);
+}
+
+#[test]
+#[should_panic(
+    expected = "the sample span \"1--2\" is not an arithmetic expression the vmlift lexer admits"
+)]
+fn a_span_that_opens_a_lua_comment_is_refused_before_lua_starts() {
+    span_check_program("seeded", &[("1--2".to_owned(), "3".to_owned())]);
+}
+
 #[test]
 fn every_folded_span_matches_lua_evaluation() {
     let Some(interp): Option<LuaInterpreter> =
@@ -111,13 +168,7 @@ fn every_folded_span_matches_lua_evaluation() {
             eprintln!("{rel}: no NumbersToExpressions layer present (nothing to fold)");
             continue;
         }
-        let mut prog: String = String::new();
-        for (idx, (orig, folded)) in pairs.iter().enumerate() {
-            let _ = writeln!(
-                prog,
-                "do local a={folded} local b=({orig}) if a~=b then print({idx},a,b) end end"
-            );
-        }
+        let prog: String = span_check_program(rel, &pairs);
         let out: String = run_lua(&interp, &format!("{rel} (span check)"), &prog);
         assert!(
             out.trim().is_empty(),
@@ -126,6 +177,46 @@ fn every_folded_span_matches_lua_evaluation() {
         );
         eprintln!("{rel}: all {} folded spans match Lua exactly", pairs.len());
     }
+}
+
+#[test]
+fn the_numeric_fold_leaves_the_minify_sample_untouched() {
+    let minify: String = load("obfuscators/edge_cases.prometheus_minify.lua");
+    assert_eq!(
+        prometheus_vmlift::fold_numeric_expressions(&minify),
+        minify,
+        "the minify preset's only arithmetic text sits inside a string literal, so the fold must \
+         hand the sample back unchanged"
+    );
+}
+
+#[test]
+fn the_weak_megafile_peel_recovers_only_the_string_pool_and_says_so() {
+    let obf: String = load("obfuscators/edge_cases.prometheus_weak.lua");
+    let out: PeelResult =
+        prometheus::peel(obf.as_bytes(), &DeobfOptions::default()).expect("peel the weak megafile");
+    let recovered: &str =
+        std::str::from_utf8(&out.deobfuscated).expect("recovered output is UTF-8");
+    let lines: Vec<&str> = recovered.trim().lines().map(str::trim).collect();
+    let only_the_pool: bool = lines.len() > 2
+        && lines.first() == Some(&"local PROMETHEUS_STRINGS = {")
+        && lines.last() == Some(&"}")
+        && lines[1..lines.len() - 1]
+            .iter()
+            .all(|line: &&str| line.starts_with('"') && line.ends_with("\","));
+    assert!(
+        only_the_pool,
+        "the weak megafile peel is pinned to hand back only its decoded string pool; if it now \
+         recovers the program, grade it against corpus/lua/megafile/edge_cases.lua instead:\n\
+         {recovered}"
+    );
+    assert!(
+        !out.fully_recovered && !out.residual_markers.is_empty(),
+        "a peel that recovers only the string pool must not report a full recovery and must name \
+         what it left; fully_recovered={}, residual_markers={:?}",
+        out.fully_recovered,
+        out.residual_markers
+    );
 }
 
 #[test]
@@ -145,40 +236,10 @@ fn fold_hello_strips_numbers_to_expressions_layer() {
         "fold must remove the majority of the NumbersToExpressions layer ({static_before} -> \
          {static_after})"
     );
-
-    let Some((before, after)): Option<(usize, usize)> =
-        fold_preserves_behavior("obfuscators/hello.prometheus.lua")
-    else {
-        return;
-    };
-    assert_eq!(
-        (before, after),
-        (static_before, static_after),
-        "the operator counts taken with and without the interpreter must agree, otherwise the two \
-         paths are measuring different text"
-    );
-}
-
-#[test]
-fn fold_weak_preserves_runtime_output() {
-    let _ = fold_preserves_behavior("obfuscators/edge_cases.prometheus_weak.lua");
-}
-
-#[test]
-fn fold_gauntlet_weak_preserves_runtime_output() {
-    let _ = fold_preserves_behavior("prometheus/gauntlet/gauntlet_weak_obfuscated.lua");
-}
-
-#[test]
-fn fold_minify_preserves_runtime_output() {
-    let _ = fold_preserves_behavior("obfuscators/edge_cases.prometheus_minify.lua");
 }
 
 #[test]
 fn peel_path_applies_fold_and_dispatch_recovery() {
-    use disrobe_pass_lua::obfuscator::{DeobfOptions, PeelResult};
-    use disrobe_pass_lua::prometheus;
-
     let obf: String = load("obfuscators/hello.prometheus.lua");
     let out: PeelResult =
         prometheus::peel(obf.as_bytes(), &DeobfOptions::default()).expect("peel hello");
@@ -211,6 +272,7 @@ fn peel_path_applies_fold_and_dispatch_recovery() {
         "recovered output must contain no VM wrapper, dispatcher or recovery stub; got {:?}",
         deob.chars().take(80).collect::<String>(),
     );
+    assert_no_prometheus_layer("peeled greeting", deob);
     let Some(interpreter): Option<LuaInterpreter> = require_interpreter_with(
         "Prometheus baseline greeting recovery",
         InterpreterRequirement::Mandatory,
@@ -230,6 +292,7 @@ fn peel_path_applies_fold_and_dispatch_recovery() {
             .run(&input)
             .expect("recover greeting through the chain pass");
         let source: &str = std::str::from_utf8(&output.envelope).expect("chain source is UTF-8");
+        assert_no_prometheus_layer("chain greeting", source);
         assert_eq!(run_lua(&interpreter, "chain greeting", source), expected);
     }
 }

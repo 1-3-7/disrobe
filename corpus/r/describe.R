@@ -96,7 +96,7 @@ collect <- function(x, depth) {
       for (nm in ls(x, all.names = TRUE)) {
         add_symbol(nm)
         if (!bindingIsActive(nm, x)) {
-          bound <- tryCatch(get(nm, envir = x, inherits = FALSE),
+          bound <- tryCatch(eval(call("substitute", as.name(nm), x)),
                             error = function(e) NULL)
           collect(bound, depth + 1L)
         }

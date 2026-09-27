@@ -10,13 +10,10 @@ script = "DexGuardReflectStrings.build.sh"
 dex = "DexGuardReflectStrings.dex"
 dex_bytes = 1952
 dex_sha256 = "ff10daa91aefba5f57aba67a1584cbe4a21679ebc8dcbe39215602c2d2c7d8be"
-jar = "crates/disrobe-pass-jvm/tests/fixtures/dexguard/DexGuardReflectStrings.jar"
-jar_bytes = 1856
 reproducibility = """
 Re-running the script reproduces DexGuardReflectStrings.dex byte for byte, which is why the
-dex carries a pinned digest and the test asserts it. The jar is not pinned by digest: a zip
-archive records entry timestamps, so its bytes differ between runs even though its class
-content does not.
+dex carries a pinned digest and the test asserts it. No compiled class or jar is committed:
+the test compiles DexGuardReflectStrings.java itself whenever it needs the reference output.
 """
 key = "0x66"
 compiler = "javac 25.0.3 (Eclipse Temurin 25.0.3+9), --release 11"
@@ -29,11 +26,11 @@ exhibits the same technique: an encrypted String[] held in a static field, a dec
 routine that XORs each char against an embedded key, and call sites that fetch strings
 through java.lang.reflect.Method.invoke rather than a direct call.
 
-The .java is the only hand-written artifact. Both binaries are produced by third-party
-tools: javac compiles the class and d8 dexes it. Nothing in disrobe assembles either one.
+The .java is the only hand-written artifact. The dex is produced by third-party tools:
+javac compiles the class and d8 dexes it. Nothing in disrobe assembles it.
 The plaintext the recovery is graded against is not read from this file; it is whatever
-the jar prints when a real JVM runs it, which is what dexguard_reflection_strings.rs
-derives at test time.
+the program prints when dexguard_reflection_strings.rs compiles the .java with javac into
+a scratch directory and runs the fresh classes under a real JVM. No committed binary runs.
 
 Prior state, recorded because it was wrong in a way worth remembering: the dex used to be
 assembled by this crate's own dex_builder, and the .java beside it could never have
@@ -43,5 +40,5 @@ The literals are octal now, which is a string-level escape, and the file compile
 """
 
 [ground_truth]
-source = "stdout of `java -cp DexGuardReflectStrings.jar com.disrobe.sample.DexGuardReflectStrings`"
+source = "stdout of `java -cp <classes> com.disrobe.sample.DexGuardReflectStrings` after `javac -proc:none --release 11 -d <classes> DexGuardReflectStrings.java`, both run by the test"
 lines = 6

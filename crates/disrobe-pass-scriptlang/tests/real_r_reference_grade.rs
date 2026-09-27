@@ -578,6 +578,27 @@ fn recovered_objects_match_what_real_r_reports() {
          reference is incomplete",
         references.len()
     );
+    let promises: Vec<&Reference> = references
+        .iter()
+        .filter(|reference: &&Reference| reference.file.starts_with("environment_promise."))
+        .collect();
+    assert_eq!(
+        promises.len(),
+        6,
+        "the corpus holds the environment promise in six serializations"
+    );
+    for reference in &promises {
+        assert!(
+            reference
+                .symbols
+                .iter()
+                .any(|symbol: &String| symbol == "*"),
+            "{}: describe.R must read the promise unforced, as the expression `6 * 7`, so its \
+             reference lists the `*` symbol that a forced read replaces with 42; got {:?}",
+            reference.file,
+            reference.symbols
+        );
+    }
 
     let mut graded: usize = 0usize;
     let mut checks: usize = 0usize;

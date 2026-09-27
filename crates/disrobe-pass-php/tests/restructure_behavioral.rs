@@ -8,93 +8,23 @@
     clippy::nursery
 )]
 
-use std::io::Write as _;
-use std::path::PathBuf;
-use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
+#[path = "support/php_toolchain.rs"]
+#[allow(
+    dead_code,
+    clippy::redundant_pub_crate,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
+mod php_toolchain;
 
 use disrobe_pass_php::restructure::{RestructureReport, restructure};
+use php_toolchain::{PhpRuntime, goto_count, require_php, required_corpus};
 
-static SEQ: AtomicU64 = AtomicU64::new(0);
+const OBFUSCATED: &str = "yakpro/controlflow_yakpro_3.0.0.php";
+const ORIGINAL: &str = "yakpro/controlflow_original.php";
 
-fn php_bin() -> Option<String> {
-    let out: std::io::Result<std::process::Output> = Command::new("php").arg("--version").output();
-    match out {
-        Ok(o) if o.status.success() => Some("php".to_owned()),
-        _ => None,
-    }
-}
-
-fn run_php_source(php: &str, source: &[u8]) -> (bool, Vec<u8>) {
-    let unique: String = format!(
-        "disrobe_restructure_oracle_{}_{}",
-        std::process::id(),
-        SEQ.fetch_add(1, Ordering::Relaxed)
-    );
-    let (scratch, mut f): (disrobe_core::scratch::ScratchFile, std::fs::File) =
-        disrobe_core::scratch::ScratchFile::create(&unique, "php").expect("create temp php");
-    let path: PathBuf = scratch.path().to_path_buf();
-    f.write_all(source).expect("write temp php");
-    drop(f);
-    let out: std::process::Output = Command::new(php)
-        .arg("-d")
-        .arg("error_reporting=0")
-        .arg("-d")
-        .arg("display_errors=0")
-        .arg(&path)
-        .output()
-        .expect("spawn php");
-    (out.status.success(), out.stdout)
-}
-
-fn corpus(name: &str) -> PathBuf {
-    let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    p.pop();
-    p.pop();
-    p.push("corpus");
-    p.push("php");
-    p.push("yakpro");
-    p.push(name);
-    p
-}
-
-fn goto_count(src: &[u8]) -> usize {
-    let lower: Vec<u8> = src.to_ascii_lowercase();
-    let needle: &[u8] = b"goto ";
-    lower.windows(needle.len()).filter(|w| *w == needle).count()
-}
-
-#[test]
-fn oracle_controlflow_restructures_and_runs_identically() {
-    let Some(php): Option<String> = php_bin() else {
-        eprintln!("SKIP: php not on PATH");
-        return;
-    };
-    let obfuscated: Vec<u8> = match std::fs::read(corpus("controlflow_yakpro_3.0.0.php")) {
-        Ok(b) => b,
-        Err(_) => {
-            eprintln!("SKIP: corpus sample absent");
-            return;
-        }
-    };
-    let original: Vec<u8> = std::fs::read(corpus("controlflow_original.php")).expect("original");
-    let (orig_ok, orig_out): (bool, Vec<u8>) = run_php_source(&php, &original);
-    assert!(orig_ok, "original must run");
-
-    let report: RestructureReport = restructure(&obfuscated).expect("restructure");
-    let (rec_ok, rec_out): (bool, Vec<u8>) = run_php_source(&php, &report.source);
-    assert!(
-        rec_ok,
-        "restructured php must run; source:\n{}",
-        String::from_utf8_lossy(&report.source)
-    );
-    assert_eq!(
-        rec_out,
-        orig_out,
-        "restructured output must equal original output\nsource:\n{}",
-        String::from_utf8_lossy(&report.source)
-    );
-
+fn assert_structure_recovered(obfuscated: &[u8], report: &RestructureReport) {
     assert!(
         report.whiles_recovered >= 1,
         "the for/while loop must be recovered to a native while; source:\n{}",
@@ -105,11 +35,52 @@ fn oracle_controlflow_restructures_and_runs_identically() {
         "the if/else must be recovered to native if/else; source:\n{}",
         String::from_utf8_lossy(&report.source)
     );
-
-    let before: usize = goto_count(&obfuscated);
+    let before: usize = goto_count(obfuscated);
     let after: usize = goto_count(&report.source);
     assert!(
         after < before,
-        "restructure must reduce goto count: before={before} after={after}"
+        "restructure must reduce goto count before its output runs: before={before} after={after}"
+    );
+}
+
+#[test]
+#[should_panic(expected = "restructure must reduce goto count before its output runs")]
+fn a_restructure_that_hands_back_its_input_is_refused_before_php_runs() {
+    let obfuscated: Vec<u8> = required_corpus(OBFUSCATED);
+    let passthrough: RestructureReport = RestructureReport {
+        source: obfuscated.clone(),
+        whiles_recovered: 1,
+        ifs_recovered: 1,
+        gotos_remaining: goto_count(&obfuscated),
+    };
+    assert_structure_recovered(&obfuscated, &passthrough);
+}
+
+#[test]
+fn oracle_controlflow_restructures_and_runs_identically() {
+    let obfuscated: Vec<u8> = required_corpus(OBFUSCATED);
+    let original: Vec<u8> = required_corpus(ORIGINAL);
+
+    let report: RestructureReport = restructure(&obfuscated).expect("restructure");
+    assert_structure_recovered(&obfuscated, &report);
+
+    let Some(php): Option<PhpRuntime> = require_php(
+        "the yakpro-po restructure of corpus/php/yakpro/controlflow_yakpro_3.0.0.php, \
+         re-executed under the real php interpreter",
+    ) else {
+        return;
+    };
+    let original_stdout: Vec<u8> = php.stdout_of(ORIGINAL, &original);
+    assert!(
+        !original_stdout.is_empty(),
+        "{ORIGINAL}: the reference program prints nothing, so comparing stdout against it would \
+         accept a recovery that also prints nothing"
+    );
+    let recovered_stdout: Vec<u8> = php.stdout_of("restructured controlflow", &report.source);
+    assert_eq!(
+        String::from_utf8_lossy(&recovered_stdout),
+        String::from_utf8_lossy(&original_stdout),
+        "restructured output must equal original output\nsource:\n{}",
+        String::from_utf8_lossy(&report.source)
     );
 }

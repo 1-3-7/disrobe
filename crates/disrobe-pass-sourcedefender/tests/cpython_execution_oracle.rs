@@ -17,6 +17,7 @@ use disrobe_pass_sourcedefender::{
 use disrobe_py_marshal::PyVersion;
 
 const REAL_HELLO_PYE: &[u8] = include_bytes!("../../../corpus/python/sourcedefender/hello.pye");
+const REAL_HELLO_PLAINTEXT: &str = include_str!("../../../corpus/python/sourcedefender/hello.py");
 const CRAFTED_MODERN_KNOWN_KEY: &[u8] =
     include_bytes!("../../../corpus/python/sourcedefender/crafted_modern_aesgcm_known_key.pye");
 const REAL_LEGACY_BYTECODE_PYE: &[u8] =
@@ -237,8 +238,7 @@ fn recover_legacy_bytecode_source() -> String {
 }
 
 #[test]
-fn legacy_free_recovered_source_executes_like_original_in_real_cpython() {
-    let python: CpythonInvocation = require_cpython_314();
+fn legacy_free_hello_decrypts_to_the_published_plaintext() {
     let Ok(out): Result<SourceRecoverOutput, _> =
         decrypt_pye_to_source(REAL_HELLO_PYE, "hello.pye", SourceRecoverOpts::default())
     else {
@@ -247,8 +247,10 @@ fn legacy_free_recovered_source_executes_like_original_in_real_cpython() {
     let Some(recovered): Option<String> = out.recovered_source else {
         unreachable!("free-version hello.pye must recover an inline source string")
     };
-
-    assert_recovered_behaves_like_ground_truth("legacy_hello", &python, &recovered, "hello.py");
+    assert_eq!(
+        recovered, REAL_HELLO_PLAINTEXT,
+        "hello.pye must decrypt to the plaintext published beside it, byte for byte"
+    );
 }
 
 #[test]

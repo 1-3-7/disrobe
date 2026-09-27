@@ -9,8 +9,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::path::PathBuf;
 
 #[cfg(feature = "chain")]
 use disrobe_core::chain::{ChildArtifact, Pass};
@@ -18,9 +17,13 @@ use disrobe_core::chain::{ChildArtifact, Pass};
 use disrobe_core::{Artifact, Rung};
 #[cfg(feature = "chain")]
 use disrobe_pass_dotnet::chain_detector::DOTNET_PASS;
+use disrobe_pass_dotnet::cil::{MethodBody, ONE_BYTE_OPCODES, OpcodeDef, parse_method_body};
+use disrobe_pass_dotnet::cil_emulator::{EmulationError, StubInput, StubOutput, emulate_stub};
 use disrobe_pass_dotnet::peel::eazvm::grade::{
     OrderedInstr, OrderedScore, grade_ordered_lifted, known_method_ordered, ordered_lifted,
 };
+use disrobe_pass_dotnet::peel::eazvm::lift::{LiftedBody, LiftedInstr, LiftedOperand};
+use disrobe_pass_dotnet::peel::eazvm::opcodes::{CilOp, CilOperand};
 use disrobe_pass_dotnet::peel::eazvm::{
     EazVmDetection, EazVmMethod, EazVmRecovery, detect, devirtualize, lookup_method,
 };
@@ -42,47 +45,174 @@ fn corpus(rel: &str) -> Vec<u8> {
     })
 }
 
-fn execute_ordered_i4(cil: &[String], arguments: &[i32]) -> i32 {
-    let mut stack: Vec<i32> = Vec::new();
-    for line in cil {
-        let mut fields: std::str::SplitWhitespace<'_> = line.split_whitespace();
-        let label: &str = fields.next().unwrap_or_default();
-        assert!(label.starts_with("IL_"), "expected ordered CIL, got {line}");
-        match fields.next().unwrap_or_default() {
-            "ldarg.0" => stack.push(arguments[0]),
-            "ldarg.1" => stack.push(arguments[1]),
-            "ldc.i4.1" => stack.push(1),
-            "ldc.i4.3" => stack.push(3),
-            "add" => {
-                let right: i32 = stack.pop().expect("right add operand");
-                let left: i32 = stack.pop().expect("left add operand");
-                stack.push(left.wrapping_add(right));
+const TINY_HEADER_CODE_LIMIT: usize = 64;
+const FAT_HEADER_FLAGS: u16 = 0x3003;
+const FAT_HEADER_MAX_STACK: u16 = 8;
+
+fn opcode_byte(op: CilOp) -> u8 {
+    let key: &str = op.handler_key();
+    let definition: &OpcodeDef = ONE_BYTE_OPCODES
+        .iter()
+        .find(|definition: &&OpcodeDef| definition.name == key)
+        .unwrap_or_else(|| panic!("{key} is not a one-byte CIL opcode"));
+    u8::try_from(definition.code)
+        .unwrap_or_else(|_| panic!("{key} has the two-byte code {:#x}", definition.code))
+}
+
+const fn operand_len(op: CilOp) -> usize {
+    match op.operand() {
+        CilOperand::None => 0,
+        CilOperand::InlineI8 | CilOperand::VarByte | CilOperand::ShortBranch => 1,
+        CilOperand::VarWord => 2,
+        CilOperand::InlineI32 | CilOperand::InlineMember | CilOperand::InlineString => 4,
+    }
+}
+
+fn encode_code(method: &str, body: &LiftedBody) -> Vec<u8> {
+    let mut offsets: Vec<usize> = Vec::with_capacity(body.instrs.len() + 1);
+    let mut end: usize = 0;
+    for instr in &body.instrs {
+        offsets.push(end);
+        end += 1 + operand_len(instr.op);
+    }
+    offsets.push(end);
+    let mut code: Vec<u8> = Vec::with_capacity(end);
+    for (index, instr) in body.instrs.iter().enumerate() {
+        code.push(opcode_byte(instr.op));
+        match (instr.op.operand(), &instr.operand) {
+            (CilOperand::None, LiftedOperand::None) => {}
+            (CilOperand::InlineI8, LiftedOperand::I32(value)) => {
+                let short: i8 = i8::try_from(*value)
+                    .unwrap_or_else(|_| panic!("{method}: ldc.i4.s operand {value} overflows i8"));
+                code.extend_from_slice(&short.to_le_bytes());
             }
-            "sub" => {
-                let right: i32 = stack.pop().expect("right subtract operand");
-                let left: i32 = stack.pop().expect("left subtract operand");
-                stack.push(left.wrapping_sub(right));
+            (CilOperand::InlineI32, LiftedOperand::I32(value)) => {
+                code.extend_from_slice(&value.to_le_bytes());
             }
-            "mul" => {
-                let right: i32 = stack.pop().expect("right multiply operand");
-                let left: i32 = stack.pop().expect("left multiply operand");
-                stack.push(left.wrapping_mul(right));
+            (CilOperand::VarByte, LiftedOperand::Var(slot)) => {
+                code.push(
+                    u8::try_from(*slot)
+                        .unwrap_or_else(|_| panic!("{method}: slot {slot} overflows a byte")),
+                );
             }
-            "and" => {
-                let right: i32 = stack.pop().expect("right and operand");
-                let left: i32 = stack.pop().expect("left and operand");
-                stack.push(left & right);
+            (CilOperand::VarWord, LiftedOperand::Var(slot)) => {
+                code.extend_from_slice(&slot.to_le_bytes());
             }
-            "xor" => {
-                let right: i32 = stack.pop().expect("right xor operand");
-                let left: i32 = stack.pop().expect("left xor operand");
-                stack.push(left ^ right);
+            (CilOperand::ShortBranch, LiftedOperand::BranchTo(target)) => {
+                let target_offset: usize = *offsets
+                    .get(*target)
+                    .unwrap_or_else(|| panic!("{method}: branch to missing instruction {target}"));
+                let displacement: i64 = i64::try_from(target_offset).expect("offset fits i64")
+                    - i64::try_from(offsets[index + 1]).expect("offset fits i64");
+                let short: i8 = i8::try_from(displacement).unwrap_or_else(|_| {
+                    panic!("{method}: short branch displacement {displacement} overflows i8")
+                });
+                code.extend_from_slice(&short.to_le_bytes());
             }
-            "ret" => return stack.pop().expect("return value"),
-            opcode => panic!("unsupported ordered i4 opcode {opcode} in {line}"),
+            (CilOperand::InlineMember, LiftedOperand::Member(token))
+            | (CilOperand::InlineString, LiftedOperand::StringLit(token)) => {
+                code.extend_from_slice(&token.to_le_bytes());
+            }
+            (expected, found) => panic!(
+                "{method}: {} carries {found:?} where its encoding needs {expected:?}",
+                instr.op.handler_key()
+            ),
         }
     }
-    panic!("ordered i4 method has no return")
+    code
+}
+
+fn method_body(method: &str, body: &LiftedBody) -> MethodBody {
+    let code: Vec<u8> = encode_code(method, body);
+    let mut image: Vec<u8> = Vec::with_capacity(code.len() + 12);
+    if code.len() < TINY_HEADER_CODE_LIMIT {
+        image.push(u8::try_from((code.len() << 2) | 0x02).expect("a tiny header fits a byte"));
+    } else {
+        image.extend_from_slice(&FAT_HEADER_FLAGS.to_le_bytes());
+        image.extend_from_slice(&FAT_HEADER_MAX_STACK.to_le_bytes());
+        image.extend_from_slice(
+            &u32::try_from(code.len())
+                .expect("code size fits u32")
+                .to_le_bytes(),
+        );
+        image.extend_from_slice(&0_u32.to_le_bytes());
+    }
+    image.extend_from_slice(&code);
+    parse_method_body(&image).unwrap_or_else(|error| {
+        panic!("{method}: the re-encoded CIL body does not decode: {error}")
+    })
+}
+
+fn evaluate(method: &str, body: &LiftedBody, arguments: &[i32]) -> Result<i32, EmulationError> {
+    let input: StubInput = StubInput {
+        int_args: arguments
+            .iter()
+            .map(|argument: &i32| i64::from(*argument))
+            .collect(),
+        ..StubInput::default()
+    };
+    match emulate_stub(&method_body(method, body), &input)? {
+        StubOutput::Int(value) => Ok(i32::try_from(value)
+            .unwrap_or_else(|_| panic!("{method}: the emulator returned {value}, outside i4"))),
+        other => panic!("{method}: the emulator returned {other:?} for an i4 method"),
+    }
+}
+
+fn lifted_from_rendered(method: &str, lines: &[String]) -> LiftedBody {
+    let instrs: Vec<LiftedInstr> = lines
+        .iter()
+        .enumerate()
+        .map(|(index, line): (usize, &String)| {
+            let mut fields: std::str::SplitWhitespace<'_> = line.split_whitespace();
+            assert_eq!(
+                fields.next(),
+                Some(format!("IL_{index:04}").as_str()),
+                "{method}: expected ordered CIL indexed by instruction, got {line}"
+            );
+            let key: &str = fields
+                .next()
+                .unwrap_or_else(|| panic!("{method}: no opcode in {line}"));
+            let op: CilOp = CilOp::from_handler_key(key)
+                .unwrap_or_else(|| panic!("{method}: {key} is not an EazVM opcode"));
+            let operand: LiftedOperand = match (op.operand(), fields.next()) {
+                (CilOperand::None, None) => LiftedOperand::None,
+                (CilOperand::InlineI8 | CilOperand::InlineI32, Some(text)) => LiftedOperand::I32(
+                    text.parse::<i32>()
+                        .unwrap_or_else(|_| panic!("{method}: bad integer in {line}")),
+                ),
+                (CilOperand::VarByte | CilOperand::VarWord, Some(text)) => LiftedOperand::Var(
+                    text.parse::<u16>()
+                        .unwrap_or_else(|_| panic!("{method}: bad slot in {line}")),
+                ),
+                (CilOperand::ShortBranch, Some(text)) => LiftedOperand::BranchTo(
+                    text.strip_prefix("IL_")
+                        .and_then(|target: &str| target.parse::<usize>().ok())
+                        .unwrap_or_else(|| panic!("{method}: bad branch target in {line}")),
+                ),
+                (CilOperand::InlineMember, Some(text)) => {
+                    LiftedOperand::Member(rendered_token(method, text, "member#", line))
+                }
+                (CilOperand::InlineString, Some(text)) => {
+                    LiftedOperand::StringLit(rendered_token(method, text, "string#", line))
+                }
+                (expected, found) => {
+                    panic!("{method}: {line} has operand {found:?} where {key} needs {expected:?}")
+                }
+            };
+            LiftedInstr { op, operand }
+        })
+        .collect();
+    LiftedBody { instrs }
+}
+
+fn rendered_token(method: &str, text: &str, prefix: &str, line: &str) -> i32 {
+    let Some(token): Option<u32> = text
+        .strip_prefix(prefix)
+        .and_then(|hex: &str| u32::from_str_radix(hex, 16).ok())
+    else {
+        panic!("{method}: bad {prefix} token in {line}");
+    };
+    token.cast_signed()
 }
 
 const fn clean_poly_i4(argument: i32) -> i32 {
@@ -90,6 +220,37 @@ const fn clean_poly_i4(argument: i32) -> i32 {
         .wrapping_mul(argument)
         .wrapping_add(3_i32.wrapping_mul(argument))
         .wrapping_sub(1)
+}
+
+const fn clean_classify(value: i32) -> i32 {
+    if value < 0 {
+        -1
+    } else if value == 0 {
+        0
+    } else {
+        1
+    }
+}
+
+const fn clean_max3(a: i32, b: i32, c: i32) -> i32 {
+    let mut m: i32 = a;
+    if b > m {
+        m = b;
+    }
+    if c > m {
+        m = c;
+    }
+    m
+}
+
+const fn clean_sum_to(n: i32) -> i32 {
+    let mut total: i32 = 0;
+    let mut i: i32 = 1;
+    while i <= n {
+        total = total.wrapping_add(i);
+        i += 1;
+    }
+    total
 }
 
 #[test]
@@ -261,7 +422,12 @@ fn peel_keeps_i4_overflow_semantics_when_handler_analysis_succeeds() {
     );
 
     let argument: i32 = 50_000;
-    let recovered: i32 = execute_ordered_i4(&poly.cil, &[argument]);
+    let recovered: i32 = evaluate(
+        "Poly",
+        &lifted_from_rendered("Poly", &poly.cil),
+        &[argument],
+    )
+    .expect("the product CIL emulator evaluates the recovered Poly body");
     let clean_reference: i32 = clean_poly_i4(argument);
     let promoted_i64: i64 =
         i64::from(argument) * i64::from(argument) + 3_i64 * i64::from(argument) - 1_i64;
@@ -302,13 +468,18 @@ fn mixed_differential_rejects_a_deliberate_operator_mutation() {
         .iter()
         .find(|method: &&disrobe_pass_dotnet::RecoveredMethod| method.method_name == "Mixed")
         .expect("Mixed recovery");
-    let mut mutated: Vec<String> = mixed.cil.clone();
-    mutated[2] = "IL_0002 sub".to_string();
+    let recovered: LiftedBody = lifted_from_rendered("Mixed", &mixed.cil);
+    assert_eq!(recovered.instrs[2].op, CilOp::Add);
+    let mut mutated: LiftedBody = recovered.clone();
+    mutated.instrs[2].op = CilOp::Sub;
 
     for argument in [0, 1, -1, i32::MIN, i32::MAX, 0x5555_5555] {
         let reference: i32 = argument.wrapping_add(-1);
-        assert_eq!(execute_ordered_i4(&mixed.cil, &[argument, -1]), reference);
-        assert_ne!(execute_ordered_i4(&mutated, &[argument, -1]), reference);
+        assert_eq!(
+            evaluate("Mixed", &recovered, &[argument, -1]),
+            Ok(reference)
+        );
+        assert_ne!(evaluate("Mixed", &mutated, &[argument, -1]), Ok(reference));
     }
 }
 
@@ -339,60 +510,30 @@ fn auto_chain_emits_width_preserving_eazvm_cil() {
     );
 }
 
-fn render_recovered_cil(recovery: &EazVmRecovery) -> String {
+const MAIN_CALLS: [(&str, &[i32]); 6] = [
+    ("Add", &[2, 3]),
+    ("Poly", &[7]),
+    ("Mixed", &[i32::MIN, -1]),
+    ("SumTo", &[10]),
+    ("Classify", &[-5]),
+    ("Max3", &[3, 9, 4]),
+];
+
+fn main_output(bodies: &BTreeMap<String, LiftedBody>) -> String {
     let mut out: String = String::new();
-    for m in &recovery.methods {
-        let ret: &str = if m.info.returns_void { "void" } else { "i4" };
-        writeln!(
-            out,
-            "method {} params={} locals={} ret={}",
-            m.name, m.info.param_count, m.info.local_count, ret
-        )
-        .expect("write method header");
-        for line in m.lifted.render() {
-            writeln!(out, "{line}").expect("write il line");
+    for (name, arguments) in MAIN_CALLS {
+        let body: &LiftedBody = bodies
+            .get(name)
+            .unwrap_or_else(|| panic!("{name} was not recovered"));
+        match evaluate(name, body, arguments) {
+            Ok(value) => writeln!(out, "{value}").expect("write an output line"),
+            Err(error) => writeln!(out, "{name}: {error:?}").expect("write an output line"),
         }
-        writeln!(out, "end").expect("write end");
     }
     out
 }
 
-#[must_use]
-fn find_dotnet() -> Option<PathBuf> {
-    let exe: &str = if cfg!(windows) {
-        "dotnet.exe"
-    } else {
-        "dotnet"
-    };
-    let probe: Result<std::process::Output, _> = Command::new(exe)
-        .arg("--version")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .output();
-    match probe {
-        Ok(out) if out.status.success() => Some(PathBuf::from(exe)),
-        _ => None,
-    }
-}
-
-fn run_dotnet(dotnet: &Path, args: &[&Path], cwd: Option<&Path>) -> std::process::Output {
-    let mut cmd: Command = Command::new(dotnet);
-    for a in args {
-        cmd.arg(a);
-    }
-    if let Some(dir) = cwd {
-        cmd.current_dir(dir);
-    }
-    cmd.env("DOTNET_CLI_TELEMETRY_OPTOUT", "1")
-        .env("DOTNET_NOLOGO", "1")
-        .stdin(Stdio::null())
-        .output()
-        .expect("spawn dotnet")
-}
-
-#[test]
-fn recovered_cil_reinjects_and_runs_identically() {
+fn recovered_bodies() -> BTreeMap<String, LiftedBody> {
     let vm: Vec<u8> = corpus("EazSample.eazvm.dll");
     let recovery: EazVmRecovery = devirtualize(&vm).expect("devirtualize");
     assert_eq!(
@@ -400,100 +541,172 @@ fn recovered_cil_reinjects_and_runs_identically() {
         6,
         "all six bodies must devirtualize"
     );
-    let recovered_cil: String = render_recovered_cil(&recovery);
-    assert!(
-        recovered_cil.contains("method Add") && recovered_cil.contains("method SumTo"),
-        "the disrobe-produced CIL artifact is empty or malformed:\n{recovered_cil}"
-    );
+    recovery
+        .methods
+        .iter()
+        .map(|method: &EazVmMethod| (method.name.clone(), method.lifted.clone()))
+        .collect()
+}
 
-    let scratch_guard: disrobe_core::scratch::ScratchDir =
-        disrobe_core::scratch::ScratchDir::create("disrobe_eazvm_reinject")
-            .expect("create scratch dir");
-    let scratch: PathBuf = scratch_guard.path().to_path_buf();
-
-    let cil_path: PathBuf = scratch.join("EazSample.recovered.cil");
-    std::fs::write(&cil_path, recovered_cil.as_bytes()).expect("write recovered cil");
-
-    let Some(dotnet): Option<PathBuf> = find_dotnet() else {
-        eprintln!(
-            "skip: no dotnet on PATH; the recovered CIL was produced in-process and written to {}, \
-             but the .NET runtime is needed to rebuild and execute the re-injected assembly. The \
-             in-process ordered-CIL equivalence (devirtualizes_every_method_to_ordered_cil) still \
-             gates this run.",
-            cil_path.display()
-        );
-        return;
-    };
-
-    let reinject_csproj: PathBuf = corpus_dir().join("reinject").join("reinject.csproj");
-    assert!(
-        reinject_csproj.is_file(),
-        "reinject project missing at {}",
-        reinject_csproj.display()
-    );
-
-    let build_out: PathBuf = scratch.join("reinject_bin");
-    let build: std::process::Output = run_dotnet(
-        &dotnet,
-        &[
-            Path::new("build"),
-            reinject_csproj.as_path(),
-            Path::new("-c"),
-            Path::new("Release"),
-            Path::new("-o"),
-            build_out.as_path(),
-        ],
-        None,
-    );
-    assert!(
-        build.status.success(),
-        "dotnet build of the re-injection harness failed:\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&build.stdout),
-        String::from_utf8_lossy(&build.stderr)
-    );
-
-    let reinject_dll: PathBuf = build_out.join("reinject.dll");
-    let devirt_dll: PathBuf = scratch.join("EazSample.devirt.dll");
-    let reinject_run: std::process::Output = run_dotnet(
-        &dotnet,
-        &[
-            reinject_dll.as_path(),
-            cil_path.as_path(),
-            devirt_dll.as_path(),
-        ],
-        None,
-    );
-    assert!(
-        reinject_run.status.success(),
-        "re-injection failed:\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&reinject_run.stdout),
-        String::from_utf8_lossy(&reinject_run.stderr)
-    );
-    assert!(
-        devirt_dll.is_file(),
-        "re-injection did not emit {}",
-        devirt_dll.display()
-    );
-
-    let runtimeconfig: PathBuf = scratch.join("EazSample.devirt.runtimeconfig.json");
-    std::fs::copy(
-        corpus_dir().join("EazSample.devirt.runtimeconfig.json"),
-        &runtimeconfig,
-    )
-    .expect("stage runtimeconfig next to rebuilt assembly");
-
-    let exec: std::process::Output = run_dotnet(&dotnet, &[devirt_dll.as_path()], None);
-    let stdout: String = String::from_utf8_lossy(&exec.stdout).replace("\r\n", "\n");
-    let stderr: String = String::from_utf8_lossy(&exec.stderr).into_owned();
-    println!("re-injected assembly stdout:\n{stdout}");
-    assert!(
-        exec.status.success(),
-        "rebuilt assembly exited {:?}\nstdout:\n{stdout}\nstderr:\n{stderr}",
-        exec.status.code()
-    );
+#[test]
+fn recovered_cil_computes_the_clean_baseline_output() {
+    let bodies: BTreeMap<String, LiftedBody> = recovered_bodies();
     assert_eq!(
-        stdout, EXPECTED_STDOUT,
-        "the assembly rebuilt from the devirtualized CIL must print the clean baseline output \
-         byte-for-byte; got {stdout:?}"
+        main_output(&bodies),
+        EXPECTED_STDOUT,
+        "the devirtualized CIL, evaluated by the product CIL emulator with Main's arguments, must \
+         print what EazSample.cs prints"
     );
+}
+
+#[derive(Debug, Clone, Copy)]
+enum BranchMutation {
+    Opcode { from: CilOp, to: CilOp },
+    Retarget { from: usize, to: usize },
+}
+
+struct BranchCase {
+    method: &'static str,
+    index: usize,
+    mutation: BranchMutation,
+}
+
+const BRANCH_CASES: [BranchCase; 6] = [
+    BranchCase {
+        method: "Classify",
+        index: 2,
+        mutation: BranchMutation::Opcode {
+            from: CilOp::BgeS,
+            to: CilOp::BgtS,
+        },
+    },
+    BranchCase {
+        method: "Classify",
+        index: 6,
+        mutation: BranchMutation::Opcode {
+            from: CilOp::BrtrueS,
+            to: CilOp::BrfalseS,
+        },
+    },
+    BranchCase {
+        method: "Max3",
+        index: 4,
+        mutation: BranchMutation::Opcode {
+            from: CilOp::BleS,
+            to: CilOp::BgtS,
+        },
+    },
+    BranchCase {
+        method: "Max3",
+        index: 9,
+        mutation: BranchMutation::Opcode {
+            from: CilOp::BleS,
+            to: CilOp::BgtS,
+        },
+    },
+    BranchCase {
+        method: "SumTo",
+        index: 4,
+        mutation: BranchMutation::Retarget { from: 13, to: 5 },
+    },
+    BranchCase {
+        method: "SumTo",
+        index: 15,
+        mutation: BranchMutation::Opcode {
+            from: CilOp::BleS,
+            to: CilOp::BltS,
+        },
+    },
+];
+
+fn battery(method: &str) -> Vec<(Vec<i32>, i32)> {
+    match method {
+        "Classify" => [-5, -1, 0, 1, 7, i32::MIN, i32::MAX]
+            .into_iter()
+            .map(|value: i32| (vec![value], clean_classify(value)))
+            .collect(),
+        "Max3" => [
+            [1, 2, 3],
+            [1, 3, 2],
+            [2, 1, 3],
+            [2, 3, 1],
+            [3, 1, 2],
+            [3, 2, 1],
+            [3, 9, 4],
+            [2, 2, 1],
+            [1, 2, 2],
+            [2, 1, 2],
+            [5, 5, 5],
+            [i32::MIN, 0, i32::MAX],
+        ]
+        .into_iter()
+        .map(|[a, b, c]: [i32; 3]| (vec![a, b, c], clean_max3(a, b, c)))
+        .collect(),
+        "SumTo" => [-3, 0, 1, 2, 10, 100]
+            .into_iter()
+            .map(|n: i32| (vec![n], clean_sum_to(n)))
+            .collect(),
+        other => panic!("no battery for {other}"),
+    }
+}
+
+fn disagreements(method: &str, body: &LiftedBody) -> Vec<String> {
+    battery(method)
+        .into_iter()
+        .filter_map(|(arguments, expected): (Vec<i32>, i32)| {
+            let got: Result<i32, EmulationError> = evaluate(method, body, &arguments);
+            (got != Ok(expected))
+                .then(|| format!("{method}{arguments:?}: expected {expected}, got {got:?}"))
+        })
+        .collect()
+}
+
+#[test]
+fn every_recovered_branch_is_graded_on_both_sides() {
+    let bodies: BTreeMap<String, LiftedBody> = recovered_bodies();
+    for method in ["Classify", "Max3", "SumTo"] {
+        let body: &LiftedBody = bodies
+            .get(method)
+            .unwrap_or_else(|| panic!("{method} was not recovered"));
+        assert_eq!(
+            disagreements(method, body),
+            Vec::<String>::new(),
+            "the recovered {method} must agree with EazSample.cs on every input of its battery"
+        );
+    }
+    for case in &BRANCH_CASES {
+        let mut mutated: LiftedBody = bodies
+            .get(case.method)
+            .unwrap_or_else(|| panic!("{} was not recovered", case.method))
+            .clone();
+        let instr: &mut LiftedInstr = &mut mutated.instrs[case.index];
+        match case.mutation {
+            BranchMutation::Opcode { from, to } => {
+                assert_eq!(
+                    instr.op, from,
+                    "{} IL_{:04} must hold the branch this mutation targets",
+                    case.method, case.index
+                );
+                instr.op = to;
+            }
+            BranchMutation::Retarget { from, to } => {
+                assert_eq!(
+                    instr.operand,
+                    LiftedOperand::BranchTo(from),
+                    "{} IL_{:04} must jump where this mutation expects",
+                    case.method,
+                    case.index
+                );
+                instr.operand = LiftedOperand::BranchTo(to);
+            }
+        }
+        assert!(
+            !disagreements(case.method, &mutated).is_empty(),
+            "mutating {} IL_{:04} with {:?} changes no result on its battery, so the battery does \
+             not exercise both sides of that branch",
+            case.method,
+            case.index,
+            case.mutation
+        );
+    }
 }

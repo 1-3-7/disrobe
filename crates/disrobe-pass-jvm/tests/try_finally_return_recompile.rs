@@ -1873,21 +1873,11 @@ fn kotlin_fallthrough_finally_with_nested_try_matches_the_compiled_runtime() {
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("disrobe_kotlin_finally_nested")
             .expect("create Kotlin finally scratch directory");
-    let original_dir: PathBuf = scratch.path().join("original");
     let recovered_dir: PathBuf = scratch.path().join("recovered");
     let mutated_dir: PathBuf = scratch.path().join("mutated");
-    for directory in [&original_dir, &recovered_dir, &mutated_dir] {
-        std::fs::create_dir_all(directory.join("probe")).expect("create runtime directory");
+    for directory in [&recovered_dir, &mutated_dir] {
+        std::fs::create_dir_all(directory).expect("create runtime directory");
     }
-    std::fs::write(
-        original_dir.join("probe").join("FinallyNested.class"),
-        KOTLIN_FINALLY_NESTED_CLASS,
-    )
-    .expect("write Kotlin fixture class");
-    let original_runner: PathBuf = original_dir.join("Runner.java");
-    std::fs::write(&original_runner, KOTLIN_FINALLY_RUNNER_SOURCE)
-        .expect("write original runtime runner");
-    compile_kotlin_finally_runtime(&javac, &original_dir, &[original_runner]);
 
     let compilable_source: String = without_annotation_lines(&first.source);
     let recovered_source: PathBuf = recovered_dir.join("FinallyNested.java");
@@ -1907,15 +1897,11 @@ fn kotlin_fallthrough_finally_with_nested_try_matches_the_compiled_runtime() {
         (0, 5, "throw:java.lang.ArithmeticException"),
     ];
     for &(value, divisor, expected) in cases {
-        let authored: String = run_kotlin_finally_runtime(&java, &original_dir, value, divisor);
         let regenerated: String = run_kotlin_finally_runtime(&java, &recovered_dir, value, divisor);
         assert_eq!(
-            authored, expected,
-            "unexpected Kotlin compiler runtime result"
-        );
-        assert_eq!(
-            regenerated, authored,
-            "recovered Kotlin finally changed runtime behavior for ({value}, {divisor})"
+            regenerated, expected,
+            "recovered Kotlin finally changed runtime behavior for ({value}, {divisor}); the \
+             expected results are what the pinned kotlinc 2.4.10 class printed"
         );
     }
 

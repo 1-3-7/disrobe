@@ -46,8 +46,8 @@
     },
     {
       "ecosystem": ".NET Eazfuscator VM",
-      "oracle": "re-inject CIL, byte-identical stdout",
-      "result": "57 / 57 instructions",
+      "oracle": "emulate recovered CIL, clean output",
+      "result": "67 / 67 instructions",
       "ci": true,
       "source": "real_eazvm.rs"
     },

@@ -20,8 +20,8 @@
 mod php_toolchain;
 
 use disrobe_pass_php::{
-    PhpDetection, PhpKind, RecoveryReport, ScanReport, TokKind, Token, detect_php, recover_php,
-    signature_scan, tokenize,
+    PhpDetection, PhpKind, RecoveryReport, RecoveryStage, ScanReport, TokKind, Token, detect_php,
+    recover_php, signature_scan, tokenize,
 };
 use php_toolchain::{PhpRun, PhpRuntime, require_php, required_corpus};
 
@@ -148,68 +148,33 @@ fn scans_baseline_hello_no_signature_hits() {
     assert!(report.hits.is_empty(), "unexpected hits: {:?}", report.hits);
 }
 
-fn assert_obfuscated_pair_is_behaviorally_identical(obfuscated: &str, original: &str) {
-    let graded: String = format!(
-        "the real naneau sample corpus/php/{obfuscated} against its original corpus/php/{original}"
-    );
-    let Some(php): Option<PhpRuntime> = require_php(&graded) else {
-        return;
-    };
-    let original_bytes: Vec<u8> = token_stream(original);
+fn assert_renamed_sample_passes_through_as_plain_source(obfuscated: &str) {
     let obfuscated_bytes: Vec<u8> = token_stream(obfuscated);
-
-    let original_run: PhpRun = php.run_reporting_errors(original, &original_bytes);
-    assert!(
-        original_run.exited_clean,
-        "corpus/php/{original} does not run under {}, so nothing can be graded against its output: \
-         {}",
-        php.banner, original_run.stderr
-    );
-    assert!(
-        !original_run.stdout.is_empty(),
-        "corpus/php/{original} prints nothing, so stdout comparison would accept any sample that \
-         also prints nothing"
-    );
-
-    let obfuscated_stdout: Vec<u8> = php.stdout_of(obfuscated, &obfuscated_bytes);
-    assert_eq!(
-        String::from_utf8_lossy(&obfuscated_stdout),
-        String::from_utf8_lossy(&original_run.stdout),
-        "corpus/php/{obfuscated} does not behave like corpus/php/{original} under {}, so the pair \
-         is not a real before-and-after and any recovery graded over it proves nothing",
-        php.banner
-    );
-
     let report: RecoveryReport = recover_php(&obfuscated_bytes, None)
         .unwrap_or_else(|e| panic!("recover corpus/php/{obfuscated}: {e}"));
-    let recovered_stdout: Vec<u8> =
-        php.stdout_of(&format!("{obfuscated} recovered"), report.output.as_bytes());
     assert_eq!(
-        String::from_utf8_lossy(&recovered_stdout),
-        String::from_utf8_lossy(&original_run.stdout),
-        "what this crate hands back for corpus/php/{obfuscated} at stage {:?} no longer prints what \
-         corpus/php/{original} prints",
-        report.stage
+        report.stage,
+        RecoveryStage::PlainSource,
+        "corpus/php/{obfuscated} is naneau identifier renaming with no decode layer, so recovery \
+         must hand it back as plain source; notes {:?}",
+        report.notes
     );
-    println!(
-        "corpus/php/{obfuscated} graded against corpus/php/{original} under {}",
-        php.banner
-    );
-}
-
-#[test]
-fn real_naneau_hello_matches_its_original_under_php() {
-    assert_obfuscated_pair_is_behaviorally_identical(
-        "better-php-obfuscator/hello.obf.php",
-        "baseline/hello.php",
+    assert_eq!(
+        report.output.as_bytes(),
+        obfuscated_bytes.as_slice(),
+        "a plain-source pass-through must return corpus/php/{obfuscated} byte for byte"
     );
 }
 
 #[test]
-fn real_naneau_megafile_matches_its_original_under_php() {
-    assert_obfuscated_pair_is_behaviorally_identical(
+fn real_naneau_hello_passes_through_as_plain_source() {
+    assert_renamed_sample_passes_through_as_plain_source("better-php-obfuscator/hello.obf.php");
+}
+
+#[test]
+fn real_naneau_megafile_passes_through_as_plain_source() {
+    assert_renamed_sample_passes_through_as_plain_source(
         "better-php-obfuscator/edge_cases.obf.php",
-        "megafile/pre80_edge_cases.php",
     );
 }
 

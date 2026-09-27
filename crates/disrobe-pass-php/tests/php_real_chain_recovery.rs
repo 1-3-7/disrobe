@@ -46,7 +46,7 @@ enum SourceMatch {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Behavior {
     MatchesOriginal,
-    WalledWithoutFabricating,
+    WalledNeverRun,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -134,7 +134,7 @@ const GOLDEN: [Golden; 24] = [
         fixture: "runtime_key.php",
         stage: RecoveryStage::PlainSource,
         source_match: SourceMatch::NoBodyRecovered,
-        behavior: Behavior::WalledWithoutFabricating,
+        behavior: Behavior::WalledNeverRun,
     },
     Golden {
         fixture: "s_doubleb64.php",
@@ -318,47 +318,32 @@ fn grade_behavior(
     fixture: &str,
     recovered: &str,
     expected_stdout: &[u8],
-    pinned: Behavior,
 ) -> Result<(), String> {
-    let run: PhpRun = php.run(fixture, with_open_tag(recovered).as_bytes());
-    match pinned {
-        Behavior::MatchesOriginal => {
-            if !run.exited_clean {
-                return Err(format!(
-                    "{fixture}: the recovered source does not run under php (stderr `{}`), so it \
-                     cannot be the program that was obfuscated:\n{recovered}",
-                    run.stderr
-                ));
-            }
-            if run.stdout != expected_stdout {
-                return Err(format!(
-                    "{fixture}: the recovered source runs but prints {:?} where the original \
-                     prints {:?}\n--- recovered ---\n{recovered}",
-                    String::from_utf8_lossy(&run.stdout),
-                    String::from_utf8_lossy(expected_stdout)
-                ));
-            }
-            let residual: Vec<&'static str> = residual_decode_primitives(recovered);
-            if !residual.is_empty() {
-                return Err(format!(
-                    "{fixture}: the recovered source runs to the right output but still calls \
-                     {residual:?}, so a layer was left unpeeled; a partly peeled loader executes \
-                     identically and must not pass as recovered source:\n{recovered}"
-                ));
-            }
-            Ok(())
-        }
-        Behavior::WalledWithoutFabricating => {
-            if run.exited_clean && run.stdout == expected_stdout {
-                return Err(format!(
-                    "{fixture}: this loader takes its key from $_GET, so nothing recovered from \
-                     the file alone can reproduce the original output; a run that does means the \
-                     body was fabricated:\n{recovered}"
-                ));
-            }
-            Ok(())
-        }
+    let residual: Vec<&'static str> = residual_decode_primitives(recovered);
+    if !residual.is_empty() {
+        return Err(format!(
+            "{fixture}: the recovered source still calls {residual:?}, so a layer was left \
+             unpeeled; a partly peeled loader executes identically, must not pass as recovered \
+             source, and is never run:\n{recovered}"
+        ));
     }
+    let run: PhpRun = php.run(fixture, with_open_tag(recovered).as_bytes());
+    if !run.exited_clean {
+        return Err(format!(
+            "{fixture}: the recovered source does not run under php (stderr `{}`), so it cannot \
+             be the program that was obfuscated:\n{recovered}",
+            run.stderr
+        ));
+    }
+    if run.stdout != expected_stdout {
+        return Err(format!(
+            "{fixture}: the recovered source runs but prints {:?} where the original prints \
+             {:?}\n--- recovered ---\n{recovered}",
+            String::from_utf8_lossy(&run.stdout),
+            String::from_utf8_lossy(expected_stdout)
+        ));
+    }
+    Ok(())
 }
 
 fn grade_fixture(
@@ -381,24 +366,62 @@ fn grade_fixture(
             golden.fixture, golden.stage, report.stage, report.notes
         ));
     }
-    if let Err(defect) = grade_source_match(
-        golden.fixture,
+    defects.extend(grade_output(
+        php,
+        golden,
         &report.output,
         expected,
-        golden.source_match,
-    ) {
-        defects.push(defect);
-    }
-    if let Err(defect) = grade_behavior(
-        php,
-        golden.fixture,
-        &report.output,
         expected_stdout,
-        golden.behavior,
-    ) {
-        defects.push(defect);
-    }
+    ));
     defects
+}
+
+fn grade_output(
+    php: &PhpRuntime,
+    golden: &Golden,
+    output: &str,
+    expected: &[u8],
+    expected_stdout: &[u8],
+) -> Vec<String> {
+    let source_graded: Result<(), String> =
+        grade_source_match(golden.fixture, output, expected, golden.source_match);
+    match source_graded {
+        Err(defect) => vec![defect],
+        Ok(()) if golden.behavior == Behavior::MatchesOriginal => {
+            grade_behavior(php, golden.fixture, output, expected_stdout)
+                .err()
+                .into_iter()
+                .collect()
+        }
+        Ok(()) => Vec::new(),
+    }
+}
+
+#[test]
+fn a_recovery_that_hands_back_its_loader_is_refused_before_php_runs() {
+    let unstartable: PhpRuntime = PhpRuntime::unstartable();
+    let expected: Vec<u8> = expected_source();
+    let mut refused: usize = 0;
+    for golden in GOLDEN.iter().filter(|golden: &&Golden| {
+        golden.behavior == Behavior::MatchesOriginal
+            && golden.source_match != SourceMatch::PlainPassthrough
+    }) {
+        let loader: Vec<u8> = required_fixture(&format!("php_real_chains/{}", golden.fixture));
+        let passthrough: String = String::from_utf8_lossy(&loader).into_owned();
+        let defects: Vec<String> = grade_output(&unstartable, golden, &passthrough, &expected, b"");
+        assert!(
+            !defects.is_empty(),
+            "{}: handing the loader back unchanged must fail the static grade",
+            golden.fixture
+        );
+        refused += 1;
+    }
+    assert_eq!(
+        refused,
+        GOLDEN.len() - 2,
+        "every recoverable chain fixture must be exercised; only clean_control and the runtime-keyed \
+         wall are handed back unchanged by design"
+    );
 }
 
 #[test]
@@ -496,42 +519,48 @@ fn message_from_seeded_defect(what: &str, check: impl FnOnce() + UnwindSafe) -> 
 
 #[test]
 fn the_chain_grade_rejects_a_corrupted_body_a_left_over_layer_and_a_fabricated_wall() {
+    let expected: Vec<u8> = expected_source();
+    let truth: String = String::from_utf8_lossy(&expected).into_owned();
+    grade_source_match("control", &truth, &expected, SourceMatch::Exact)
+        .expect("the untouched ground truth must satisfy the exact grade");
+
+    let corrupted: String = truth.replace("hello ", "goodbye ");
+    let corrupted_bytes: String =
+        grade_source_match("corrupted", &corrupted, &expected, SourceMatch::Exact)
+            .expect_err("a body whose string literal changed must be rejected on bytes");
+    assert!(
+        corrupted_bytes.contains("no longer does"),
+        "the byte grade must name the drifted body, got: {corrupted_bytes}"
+    );
+
+    let fabricated_wall: String = grade_source_match(
+        "fabricated-wall",
+        &truth,
+        &expected,
+        SourceMatch::NoBodyRecovered,
+    )
+    .expect_err("a wall that hands back the recovered body must be rejected");
+    assert!(
+        fabricated_wall.contains("fabricated it"),
+        "a wall that prints the body its key would decrypt must be reported as fabrication, got: \
+         {fabricated_wall}"
+    );
+
+    let under_peeled: String = format!("{truth}\n$unused = base64_decode('aGVsbG8=');\n");
     let Some(php): Option<PhpRuntime> = require_php(GRADED) else {
         return;
     };
-    let expected: Vec<u8> = expected_source();
     let expected_stdout: Vec<u8> = php.stdout_of(
         "EXPECTED.txt",
         with_open_tag(&String::from_utf8_lossy(&expected)).as_bytes(),
     );
-    let truth: String = String::from_utf8_lossy(&expected).into_owned();
+    grade_behavior(&php, "control", &truth, &expected_stdout)
+        .expect("the untouched ground truth must satisfy the behavioral grade");
 
-    grade_source_match("control", &truth, &expected, SourceMatch::Exact)
-        .expect("the untouched ground truth must satisfy the exact grade");
-    grade_behavior(
-        &php,
-        "control",
-        &truth,
-        &expected_stdout,
-        Behavior::MatchesOriginal,
-    )
-    .expect("the untouched ground truth must satisfy the behavioral grade");
-
-    let corrupted: String = truth.replace("hello ", "goodbye ");
-    assert!(
-        grade_source_match("corrupted", &corrupted, &expected, SourceMatch::Exact).is_err(),
-        "a body whose string literal changed must be rejected on bytes"
-    );
     let corrupted_defect: String =
         message_from_seeded_defect("one changed string literal in the recovered body", || {
-            grade_behavior(
-                &php,
-                "corrupted",
-                &corrupted,
-                &expected_stdout,
-                Behavior::MatchesOriginal,
-            )
-            .unwrap_or_else(|defect: String| panic!("{defect}"));
+            grade_behavior(&php, "corrupted", &corrupted, &expected_stdout)
+                .unwrap_or_else(|defect: String| panic!("{defect}"));
         });
     assert!(
         corrupted_defect.contains("prints"),
@@ -539,53 +568,16 @@ fn the_chain_grade_rejects_a_corrupted_body_a_left_over_layer_and_a_fabricated_w
          divergence, got: {corrupted_defect}"
     );
 
-    let under_peeled: String = format!("{truth}\n$unused = base64_decode('aGVsbG8=');\n");
     let residual_defect: String = message_from_seeded_defect(
-        "a decode primitive left in a recovery that still prints the right output",
+        "a decode primitive left in a recovery that would still print the right output",
         || {
-            grade_behavior(
-                &php,
-                "under-peeled",
-                &under_peeled,
-                &expected_stdout,
-                Behavior::MatchesOriginal,
-            )
-            .unwrap_or_else(|defect: String| panic!("{defect}"));
+            grade_behavior(&php, "under-peeled", &under_peeled, &expected_stdout)
+                .unwrap_or_else(|defect: String| panic!("{defect}"));
         },
     );
     assert!(
-        residual_defect.contains("unpeeled"),
-        "a recovery that executes correctly while still calling a decoder must be rejected as \
-         partly peeled, got: {residual_defect}"
-    );
-
-    let fabricated_defect: String = message_from_seeded_defect(
-        "a body invented for a loader whose key never appears in the file",
-        || {
-            grade_behavior(
-                &php,
-                "fabricated-wall",
-                &truth,
-                &expected_stdout,
-                Behavior::WalledWithoutFabricating,
-            )
-            .unwrap_or_else(|defect: String| panic!("{defect}"));
-        },
-    );
-    assert!(
-        fabricated_defect.contains("fabricated"),
-        "producing the original output for a runtime-keyed loader must be rejected as fabrication, \
-         got: {fabricated_defect}"
-    );
-
-    assert!(
-        grade_source_match(
-            "fabricated-wall",
-            &truth,
-            &expected,
-            SourceMatch::NoBodyRecovered
-        )
-        .is_err(),
-        "a wall that hands back the recovered body must be rejected"
+        residual_defect.contains("unpeeled") && residual_defect.contains("never run"),
+        "a recovery that still calls a decoder must be rejected as partly peeled before it runs, \
+         got: {residual_defect}"
     );
 }

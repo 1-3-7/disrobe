@@ -134,7 +134,6 @@ unpacked_sha256 = "852B4AC43B4D5C72192A20F53D64A5CC26E83594BCC5215DD29CF7F27C678
 unpacked_size_bytes = 4266496
 unpacked_byte_diff_count = 261
 unpacked_byte_diff_pct = 0.01
-unpacked_runtime_ok = true
 notes = "round-trip byte-identical modulo 261 bytes (0.01%) across 4.27 MB - confirms 'modulo section-padding/timestamps/Rich-header' tolerance. Exercises real segment-rewrite logic."
 
 [[packers.runs]]

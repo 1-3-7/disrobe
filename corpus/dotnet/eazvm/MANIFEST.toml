@@ -2,14 +2,14 @@ schema = "disrobe.corpus.v1"
 crate = "disrobe-pass-dotnet"
 generated = "2026-06-14"
 toolchain = "in-repo EazVM-format virtualizer built on System.Reflection.Metadata (no vendor tool, nothing downloaded)"
-note = "benign self-authored sample virtualized by our own in-repo encoder that implements the documented Eazfuscator.NET VM wire format; the Eazfuscator.NET product was not used (it is a paid proprietary download). This differs from the koivm corpus, which runs the real KoiVM tool. The devirtualizer recovers this sample and is graded against the independently compiled clean DLL's CIL, compared instruction-for-instruction in order (opcode and operand), plus a behavioral re-injection that runs byte-identical to the clean baseline."
+note = "benign self-authored sample virtualized by our own in-repo encoder that implements the documented Eazfuscator.NET VM wire format; the Eazfuscator.NET product was not used (it is a paid proprietary download). This differs from the koivm corpus, which runs the real KoiVM tool. The devirtualizer recovers this sample and is graded against the independently compiled clean DLL's CIL, compared instruction-for-instruction in order (opcode and operand), plus an evaluation of the recovered CIL in the product's bounded CIL emulator with the arguments Main passes, which must compute the clean baseline output, and a check of both sides of every recovered branch against EazSample.cs; the tests run no assembly."
 
 [provenance]
 compiler = "Roslyn csc (.NET 9 SDK), -optimize+"
 virtualizer = "corpus/dotnet/eazvm/virtualizer (our implementation of the Eaz VM wire format)"
 isa_reference = "the publicly documented Eazfuscator.NET VM as captured by the eazdevirt project: CryptoStreamV1 position-keyed XOR, base-85 PositionString over an Int64 with the DefaultPseudoRandomInts, ReadInt32Special jumbled opcode/operand reader, per-build randomized virtual-opcode table, by-name member resolution"
 seed = 24226
-verified = "the recovered CIL matches the independently compiled clean DLL 67/67 instructions in order (opcode and operand, branch targets resolved to instruction index), and re-injected into a runnable assembly prints output byte-identical to the unobfuscated baseline under the .NET 9 runtime"
+verified = "the recovered CIL matches the independently compiled clean DLL 67/67 instructions in order (opcode and operand, branch targets resolved to instruction index), and evaluated in the product CIL emulator it computes 5 / 69 / 2147483647 / 55 / -1 / 9, the clean baseline output"
 
 [[fixture]]
 name = "EazSample.cs"
@@ -45,14 +45,7 @@ name = "EazSample.recovered.cil"
 path = "EazSample.recovered.cil"
 kind = "recovered-listing"
 provenance = "derived"
-description = "the CIL the devirtualizer lifts out of EazSample.eazvm.dll, written by the devirtualizer; input to the behavioral re-injection check"
-
-[[fixture]]
-name = "EazSample.devirt.dll"
-path = "EazSample.devirt.dll"
-kind = "reinjected-pe"
-provenance = "derived"
-description = "a runnable assembly rebuilt purely from EazSample.recovered.cil; running it prints 5 / 69 / 2147483647 / 55 / -1 / 9, byte-identical to the clean baseline, proving the lift is semantically correct"
+description = "the CIL the devirtualizer lifts out of EazSample.eazvm.dll, written by the devirtualizer"
 
 [virtualized_methods]
 Add = "(int a, int b) => a + b; Add(2,3)=5"

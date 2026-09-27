@@ -31,6 +31,11 @@ generated = "2026-05-25"
 "hello" = { path = "corpus/python/obfuscators/pyobfuscate_com/real_hello.py", sha256 = "e7ffaed3f3a84dc1662906c06efabc2786b106747f602d1941ac81cd85375c4b", bytes = 516 }
 "sample" = { path = "corpus/python/obfuscators/pyobfuscate_com/real_sample.py", sha256 = "920e7edbb66bdceb974dd2828b2713ef2ce8cab77d5d21ccd6b3be6af857217b", bytes = 3358 }
 
+[obfuscators.pyobfuscate_com.behaviour]
+source = "the plain programs pasted into pyobfuscate.com were not kept; each program's exit code and stdout were derived by decoding its XOR-obfuscated literals by hand, without running it, and pyobfuscate_com_xor_real.rs pins them"
+"hello" = { exit_code = 0, stdout = "hello world\n" }
+"sample" = { exit_code = 0, stdout = "240\n" }
+
 [obfuscators.online_family]
 "hello" = { path = "corpus/python/obfuscators/online_family/real_hello.py", sha256 = "2d8d1312c47304737b14de0efd6e9861dee116f2cfb460ba79b000921c3f7ba3", bytes = 184 }
 "sample" = { path = "corpus/python/obfuscators/online_family/real_sample.py", sha256 = "944d4fbcb4e1a7928347139723d9a24b06b65a1c6e4eccd93e318bf9ab5a9433", bytes = 360 }

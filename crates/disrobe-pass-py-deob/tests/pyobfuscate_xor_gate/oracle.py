@@ -31,17 +31,17 @@ def main(argv: list[str], /) -> int:
         print("OK" if reparses(target) else "FAIL")
         return 0
     if mode == "equivalent":
-        original: Path = Path(argv[2])
-        recovered: Path = Path(argv[3])
+        recovered: Path = Path(argv[2])
+        expected_rc: int = int(argv[3])
+        expected_out: str = Path(argv[4]).read_text(encoding="utf-8")
         if not reparses(recovered):
             print("RECOVERED_PARSE_FAIL")
             return 0
-        rc_o, out_o = run_capture(original)
         rc_r, out_r = run_capture(recovered)
-        equivalent: bool = rc_o == rc_r and out_o == out_r
+        equivalent: bool = rc_r == expected_rc and out_r == expected_out
         print("EQUIVALENT" if equivalent else "MISMATCH")
         if not equivalent:
-            print(f"original rc={rc_o} stdout={out_o!r}", file=sys.stderr)
+            print(f"pinned rc={expected_rc} stdout={expected_out!r}", file=sys.stderr)
             print(f"recovered rc={rc_r} stdout={out_r!r}", file=sys.stderr)
         return 0
     print(f"unknown mode {mode}", file=sys.stderr)

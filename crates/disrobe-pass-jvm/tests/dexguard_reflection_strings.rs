@@ -3,24 +3,28 @@
 pub mod common;
 
 use std::collections::BTreeSet;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::time::Duration;
 
 use common::find_on_path;
 use disrobe_core::scratch::ScratchDir;
+use disrobe_core::subprocess::{CapturedOutput, run_captured};
 use disrobe_pass_jvm::dalvik_strdec::{self, DexStringRecovery};
 use disrobe_pass_jvm::dex_builder::dexguard_reflect_sample;
 use disrobe_pass_jvm::dexguard_protector::{self, DexGuardAuthorization};
 use disrobe_pass_jvm::{DexFile, PeelStatus, ProtectorPeelReport, parse_dex};
 
 const DEX: &[u8] = include_bytes!("../../../corpus/jvm/dexguard/DexGuardReflectStrings.dex");
-const JAR: &[u8] = include_bytes!("fixtures/dexguard/DexGuardReflectStrings.jar");
+const SOURCE: &str = include_str!("../../../corpus/jvm/dexguard/DexGuardReflectStrings.java");
 
 const DEX_BYTES: usize = 1952;
 const DEX_SHA256: &str = "ff10daa91aefba5f57aba67a1584cbe4a21679ebc8dcbe39215602c2d2c7d8be";
 const MAIN_CLASS: &str = "com.disrobe.sample.DexGuardReflectStrings";
 const XOR_KEY: u8 = 0x66;
 const DECRYPT_METHOD: &str = "decrypt";
+const JDK_TIMEOUT: Duration = Duration::from_mins(2);
+const JDK_CAPTURE_LIMIT: usize = 1 << 20;
 
 fn sha256_hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
@@ -35,33 +39,56 @@ fn sha256_hex(bytes: &[u8]) -> String {
     out
 }
 
-fn java_binary() -> PathBuf {
-    find_on_path("java").unwrap_or_else(|| {
+fn jdk_tool(name: &str) -> PathBuf {
+    find_on_path(name).unwrap_or_else(|| {
         panic!(
-            "java is not on PATH. This gate derives its expected plaintext by running the \
-             committed jar under a real JVM; skipping it would leave the recovery graded against \
-             nothing. CI provisions Temurin 25 (.github/workflows/ci.yml), so an absent java here \
-             is a broken environment, not a reason to report green."
+            "{name} is not on PATH. This gate derives its expected plaintext by compiling the \
+             committed source and running it under a real JVM; skipping it would leave the \
+             recovery graded against nothing. CI provisions Temurin 25 (.github/workflows/ci.yml), \
+             so an absent {name} here is a broken environment, not a reason to report green."
         )
     })
 }
 
+fn run_jdk_tool(program: &Path, args: &[OsString], operation: &str) -> CapturedOutput {
+    let output: CapturedOutput = run_captured(program, args, JDK_TIMEOUT, JDK_CAPTURE_LIMIT)
+        .unwrap_or_else(|error: std::io::Error| panic!("failed to launch {operation}: {error}"))
+        .unwrap_or_else(|| panic!("{operation} exceeded its wall-clock bound"));
+    assert_eq!(
+        output.exit_code,
+        Some(0),
+        "{operation} failed; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output
+}
+
 fn run_reference_program() -> Vec<String> {
-    let java: PathBuf = java_binary();
+    let javac: PathBuf = jdk_tool("javac");
+    let java: PathBuf = jdk_tool("java");
     let scratch: ScratchDir =
         ScratchDir::create("dexguard-reference").expect("create scratch directory");
-    let jar: PathBuf = scratch.path().join("DexGuardReflectStrings.jar");
-    std::fs::write(&jar, JAR).expect("materialize the committed jar");
-    let run: Output = Command::new(&java)
-        .arg("-cp")
-        .arg(&jar)
-        .arg(MAIN_CLASS)
-        .output()
-        .expect("launch the reference program");
-    assert!(
-        run.status.success(),
-        "the committed jar must run under a real JVM; stderr: {}",
-        String::from_utf8_lossy(&run.stderr)
+    let source: PathBuf = scratch.path().join("DexGuardReflectStrings.java");
+    let classes: PathBuf = scratch.path().join("classes");
+    std::fs::write(&source, SOURCE).expect("materialize the committed source");
+    let compile_args: [OsString; 6] = [
+        OsString::from("-proc:none"),
+        OsString::from("--release"),
+        OsString::from("11"),
+        OsString::from("-d"),
+        classes.clone().into_os_string(),
+        source.into_os_string(),
+    ];
+    run_jdk_tool(&javac, &compile_args, "javac on the committed source");
+    let run_args: [OsString; 3] = [
+        OsString::from("-cp"),
+        classes.into_os_string(),
+        OsString::from(MAIN_CLASS),
+    ];
+    let run: CapturedOutput = run_jdk_tool(
+        &java,
+        &run_args,
+        "the reference program rebuilt from the committed source",
     );
     let stdout: String = String::from_utf8(run.stdout).expect("reference stdout is utf-8");
     let lines: Vec<String> = stdout
@@ -240,20 +267,28 @@ fn peel_without_authorization_is_rejected() {
 }
 
 #[test]
-fn committed_jar_and_dex_come_from_the_same_recorded_build() {
+fn committed_source_and_dex_come_from_the_same_recorded_build() {
     let manifest: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../corpus/jvm/dexguard/MANIFEST.toml")
         .canonicalize()
         .expect("locate the corpus manifest");
     let text: String = std::fs::read_to_string(&manifest).expect("read the corpus manifest");
-    for needle in ["javac", "d8", DEX_SHA256] {
+    for needle in ["javac", "d8", "DexGuardReflectStrings.java", DEX_SHA256] {
         assert!(
             text.contains(needle),
             "MANIFEST.toml must record {needle:?} so a reader can re-derive the fixture"
         );
     }
-    assert!(
-        !JAR.is_empty(),
-        "the runnable jar is the reference program and must stay committed"
-    );
+    for declaration in [
+        "package com.disrobe.sample;",
+        "public final class DexGuardReflectStrings",
+        "private static final int KEY = 0x66;",
+        "getDeclaredMethod(\"decrypt\", int.class)",
+    ] {
+        assert!(
+            SOURCE.contains(declaration),
+            "the committed source is the reference program the dex was built from and must still \
+             declare {declaration:?}"
+        );
+    }
 }

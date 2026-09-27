@@ -9,9 +9,16 @@ use disrobe_core::subprocess::{CapturedOutput, run_captured};
 use disrobe_core::{Artifact, Rung, chain::Pass};
 use disrobe_pass_js_deob::chain_detector::JS_OBF_PASS;
 use disrobe_pass_js_deob::{AstUnminifyStats, unminify_ast};
+use sha2::{Digest, Sha256};
 
 const FIXTURE: &str = include_str!("fixtures/rollup_system_param/fixture.min.js");
+const FIXTURE_SHA256: &str = "38ec01876c2ba99ed64c8669d74e88e300f9bb9d1d09857f34221f768c4f58bd";
 const NAMED_FIXTURE: &str = include_str!("fixtures/babel_system_named_param/fixture.min.js");
+const NAMED_FIXTURE_SHA256: &str =
+    "d0917269bffeaddf4021cb3eae4780e433b6a881c34e0412a40f42f9f43cdb3d";
+const REFERENCE_STDOUT: &[u8] = b"value=42";
+const DIFFERENCE_STDOUT: &[u8] = b"value=-2";
+const REFERENCE_LIVE_OUTPUTS: &[u8] = b"value=42|updated=-2";
 const NODE_TIMEOUT: Duration = Duration::from_secs(30);
 const NODE_CAPTURE: usize = 1usize << 18;
 
@@ -56,13 +63,35 @@ fn compact(source: &str) -> String {
         .collect()
 }
 
+fn assert_pinned_bundle(bundle: &str, pinned: &str) {
+    assert_eq!(
+        format!("{:x}", Sha256::digest(bundle.as_bytes())),
+        pinned,
+        "the System.register bundle is not the one its PROVENANCE.txt records, so the pinned \
+         reference outputs no longer apply"
+    );
+}
+
+fn assert_mutated_dependency_changes_output(recovered_source: &str) {
+    let mutated: String =
+        recovered_source.replacen("@fixture/math-utils", "@fixture/difference-math", 1);
+    assert_ne!(
+        mutated, recovered_source,
+        "the recovered registration must still import @fixture/math-utils"
+    );
+    assert_eq!(
+        node_output(&mutated),
+        DIFFERENCE_STDOUT,
+        "binding the first setter to a different module must change the output, or the stdout \
+         comparison cannot see a wrong setter binding"
+    );
+}
+
 #[test]
 fn registered_pass_recovers_rollup_system_setter_parameter_names() {
     assert!(FIXTURE.len() > 200);
     assert_eq!(FIXTURE.lines().count(), 1);
-    let original_stdout: Vec<u8> = node_output(FIXTURE);
-    let mutated: String = FIXTURE.replacen("@fixture/math-utils", "@fixture/difference-math", 1);
-    assert_ne!(node_output(&mutated), original_stdout);
+    assert_pinned_bundle(FIXTURE, FIXTURE_SHA256);
 
     let (_direct, direct_stats): (String, AstUnminifyStats) = unminify_ast(FIXTURE);
     assert_eq!(direct_stats.system_register_parameters_renamed, 2);
@@ -79,12 +108,9 @@ fn registered_pass_recovers_rollup_system_setter_parameter_names() {
     let compact_recovered: String = compact(&recovered_source);
     assert!(compact_recovered.contains("function(mathUtils){t=mathUtils.sum}"));
     assert!(compact_recovered.contains("function(textFormat){e=textFormat.default}"));
-    assert_eq!(node_output(&recovered_source), original_stdout);
-    assert_eq!(node_live_outputs(FIXTURE), b"value=42|updated=-2");
-    assert_eq!(
-        node_live_outputs(&recovered_source),
-        node_live_outputs(FIXTURE)
-    );
+    assert_eq!(node_output(&recovered_source), REFERENCE_STDOUT);
+    assert_mutated_dependency_changes_output(&recovered_source);
+    assert_eq!(node_live_outputs(&recovered_source), REFERENCE_LIVE_OUTPUTS);
 
     let repeated: Artifact = JS_OBF_PASS
         .run(&input)
@@ -96,10 +122,7 @@ fn registered_pass_recovers_rollup_system_setter_parameter_names() {
 fn registered_pass_recovers_named_system_setter_parameter_names() {
     assert_eq!(NAMED_FIXTURE.len(), 232);
     assert_eq!(NAMED_FIXTURE.lines().count(), 1);
-    let original_stdout: Vec<u8> = node_output(NAMED_FIXTURE);
-    let mutated: String =
-        NAMED_FIXTURE.replacen("@fixture/math-utils", "@fixture/difference-math", 1);
-    assert_ne!(node_output(&mutated), original_stdout);
+    assert_pinned_bundle(NAMED_FIXTURE, NAMED_FIXTURE_SHA256);
 
     let (_direct, direct_stats): (String, AstUnminifyStats) = unminify_ast(NAMED_FIXTURE);
     assert_eq!(direct_stats.system_register_parameters_renamed, 2);
@@ -118,11 +141,9 @@ fn registered_pass_recovers_named_system_setter_parameter_names() {
     assert!(compact_recovered.contains("System.register(\"fixture/main\",["));
     assert!(compact_recovered.contains("function(mathUtils){u=mathUtils.sum}"));
     assert!(compact_recovered.contains("function(textFormat){i=textFormat.default}"));
-    assert_eq!(node_output(&recovered_source), original_stdout);
-    assert_eq!(
-        node_live_outputs(&recovered_source),
-        node_live_outputs(NAMED_FIXTURE)
-    );
+    assert_eq!(node_output(&recovered_source), REFERENCE_STDOUT);
+    assert_mutated_dependency_changes_output(&recovered_source);
+    assert_eq!(node_live_outputs(&recovered_source), REFERENCE_LIVE_OUTPUTS);
     let repeated: Artifact = JS_OBF_PASS
         .run(&input)
         .expect("the registered pass must deterministically recover the named registry module");
