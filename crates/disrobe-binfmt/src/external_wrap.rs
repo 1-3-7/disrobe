@@ -731,8 +731,8 @@ mod tests {
         install_path_override(ExternalTool::Unrar, &script);
         let out: ScratchDir = temp_dir("failing-tool-out");
         let bytes: &[u8] = b"Rar!\x1a\x07\x00failure";
-        let stage_prefix: &str = "external-stage-unrar-";
-        let scratch_input_prefix: &str = "external-input-unrar-";
+        let stage_prefix: &str = &format!("external-stage-unrar-{}-", std::process::id());
+        let scratch_input_prefix: &str = &format!("external-input-unrar-{}-", std::process::id());
         let scratch_before_stage: BTreeSet<PathBuf> =
             paths_with_prefix(&scratch_root(), stage_prefix);
         let scratch_before_input: BTreeSet<PathBuf> =
