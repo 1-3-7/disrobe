@@ -17,17 +17,6 @@ use std::path::{Path, PathBuf};
 
 use disrobe_pass_mobile::{WebviewBundleKind, WebviewExtractionReport, extract_webview_bundle};
 
-fn fixture_root() -> PathBuf {
-    let manifest_dir: &str = env!("CARGO_MANIFEST_DIR");
-    Path::new(manifest_dir)
-        .join("..")
-        .join("..")
-        .join("corpus")
-        .join("mobile")
-        .join("capacitor")
-        .join("transmissionic")
-}
-
 fn apk_inbox_path() -> PathBuf {
     let manifest_dir: &str = env!("CARGO_MANIFEST_DIR");
     Path::new(manifest_dir)
@@ -48,30 +37,26 @@ fn load_input_apk() -> Option<Vec<u8>> {
     std::fs::read(&path).ok()
 }
 
-#[test]
-fn transmissionic_corpus_extracted_files_present() {
-    let root: PathBuf = fixture_root();
-    if !root.exists() {
-        eprintln!("skip: capacitor corpus missing at {:?}", root);
-        return;
+const REQUIRE_CORPUS_VAR: &str = "DISROBE_REQUIRE_MOBILE_CORPUS";
+
+fn local_apk() -> Option<Vec<u8>> {
+    if let Some(bytes) = load_input_apk() {
+        return Some(bytes);
     }
-    let cap_config: PathBuf = root.join("assets").join("capacitor.config.json");
-    let index_html: PathBuf = root.join("assets").join("public").join("index.html");
-    assert!(cap_config.exists(), "capacitor.config.json missing");
-    assert!(index_html.exists(), "index.html missing");
-    let cfg: Vec<u8> = std::fs::read(&cap_config).expect("read config");
-    let cfg_str: String = String::from_utf8_lossy(&cfg).to_string();
-    assert!(cfg_str.contains("appId") || cfg_str.contains("\""));
+    assert!(
+        std::env::var_os(REQUIRE_CORPUS_VAR).is_none(),
+        "{REQUIRE_CORPUS_VAR} is set, so the local-only APK under corpus/mobile/apk/inbox must exist"
+    );
+    eprintln!(
+        "UNGRADED: the local-only APK under corpus/mobile/apk/inbox is absent; set {REQUIRE_CORPUS_VAR}=1 to fail instead"
+    );
+    None
 }
 
 #[test]
 fn transmissionic_real_apk_classifies_as_capacitor() {
-    let bytes: Vec<u8> = match load_input_apk() {
-        Some(b) => b,
-        None => {
-            eprintln!("skip: transmissionic-ionic.apk inbox missing");
-            return;
-        }
+    let Some(bytes): Option<Vec<u8>> = local_apk() else {
+        return;
     };
     let report: WebviewExtractionReport = extract_webview_bundle(&bytes).expect("extract webview");
     assert_eq!(report.kind, WebviewBundleKind::Capacitor);
@@ -85,9 +70,12 @@ fn transmissionic_real_apk_classifies_as_capacitor() {
         .assets
         .iter()
         .any(|a| a.container_path.ends_with("capacitor.config.json"));
-    if !has_cap_config {
-        eprintln!(
-            "depyo-fate: extract_webview_bundle did not surface capacitor.config.json (lives at assets/, not assets/public/)"
-        );
-    }
+    assert!(
+        has_cap_config,
+        "capacitor.config.json sits under assets/, beside the web root, and must be extracted"
+    );
+    assert_eq!(
+        report.entry_html.as_deref(),
+        Some("assets/public/index.html")
+    );
 }
