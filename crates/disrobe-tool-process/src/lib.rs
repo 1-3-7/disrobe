@@ -810,6 +810,7 @@ mod tests {
             std::process::id()
         ));
         std::fs::create_dir_all(&root)?;
+        let root: PathBuf = root.canonicalize()?;
         let execution: Execution = CommandSpec::new("/bin/pwd", Duration::from_secs(2))
             .current_dir(root.clone())
             .run()?;
