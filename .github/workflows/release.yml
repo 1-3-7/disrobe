@@ -84,6 +84,16 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
+      - name: remap build paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          native() { if command -v cygpath >/dev/null 2>&1; then cygpath -w "$1"; else printf '%s' "$1"; fi; }
+          CARGO_DIR="$(native "${CARGO_HOME:-$HOME/.cargo}")"
+          RUSTUP_DIR="$(native "${RUSTUP_HOME:-$HOME/.rustup}")"
+          WORKSPACE_DIR="$(native "$GITHUB_WORKSPACE")"
+          echo "RUSTFLAGS=${RUSTFLAGS} --remap-path-prefix=${CARGO_DIR}=/cargo --remap-path-prefix=${RUSTUP_DIR}=/rustup --remap-path-prefix=${WORKSPACE_DIR}=/disrobe" >> "$GITHUB_ENV"
+
       - name: install cargo-auditable
         if: matrix.cross == false
         uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172
@@ -110,6 +120,23 @@ jobs:
         run: |
           BIN="target/${{ matrix.target }}/release/disrobe"
           if [ -f "$BIN" ]; then strip "$BIN" || true; fi
+
+      - name: reject runner paths in the binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN="target/${{ matrix.target }}/release/disrobe"
+          [ -f "$BIN" ] || BIN="${BIN}.exe"
+          NEEDLES=("$HOME" "$GITHUB_WORKSPACE")
+          if command -v cygpath >/dev/null 2>&1; then
+            NEEDLES+=("$(cygpath -w "$HOME")" "$(cygpath -m "$HOME")" "$(cygpath -w "$GITHUB_WORKSPACE")")
+          fi
+          for needle in "${NEEDLES[@]}"; do
+            if grep -a -F -q -- "$needle" "$BIN"; then
+              echo "::error::$BIN embeds the runner path $needle"
+              exit 1
+            fi
+          done
 
       - name: stage artifact (unix)
         if: runner.os != 'Windows'
