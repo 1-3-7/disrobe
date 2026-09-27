@@ -94,11 +94,7 @@ skip = [
     { crate = "cfb", reason = "0.10 vs 0.14 via msi vs ole container readers" },
     { crate = "wasmparser", reason = "0.240 vs 0.250 via wasm-tools sub-crate pins" },
     { crate = "wasm-encoder", reason = "matched majors of the wasmparser straddle" },
-    { crate = "wasmprinter", reason = "matched majors of the wasmparser straddle" },
     { crate = "wit-bindgen", reason = "component-model tooling straddle" },
-    { crate = "wit-parser", reason = "component-model tooling straddle" },
-    { crate = "anstream", reason = "0.6 vs 1.0 via clap vs other terminal renderers" },
-    { crate = "anstyle-parse", reason = "matched majors of the anstream straddle" },
     { crate = "compact_str", reason = "0.8 vs 0.9 via ruff vs other consumers" },
     { crate = "socket2", reason = "0.5 vs 0.6 via tokio vs hyper transitive pins" },
     { crate = "icu_collections", reason = "transitive ICU split via idna majors" },
@@ -124,16 +120,9 @@ skip = [
     { crate = "windows_x86_64_gnu", reason = "windows-targets generation straddle" },
     { crate = "windows_x86_64_gnullvm", reason = "windows-targets generation straddle" },
     { crate = "windows_x86_64_msvc", reason = "windows-targets generation straddle" },
-    { crate = "windows", reason = "umbrella-crate generation straddle, dev-only via the rmcp child-process transport in the mcp round-trip test" },
-    { crate = "windows-core", reason = "matched generations of the windows umbrella straddle" },
-    { crate = "windows-implement", reason = "matched generations of the windows umbrella straddle" },
-    { crate = "windows-interface", reason = "matched generations of the windows umbrella straddle" },
-    { crate = "windows-result", reason = "matched generations of the windows umbrella straddle" },
     { crate = "r-efi", reason = "1.x vs 5.x via getrandom uefi backend majors" },
     { crate = "heapless", reason = "0.7 via postcard vs 0.8 via gix's faster-hex git-history scanner dep" },
     { crate = "hash32", reason = "matched majors of the heapless straddle (0.2 vs 0.3)" },
-    { crate = "egg", reason = "0.6 via wasm-tools' wasm-mutate vs 0.11 via oxiz's own e-graph equality-saturation theory solver" },
-    { crate = "env_logger", reason = "0.9 transitive via oxiz vs 0.11 via wasm-tools" },
 ]
 skip-tree = []
 
