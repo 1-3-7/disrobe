@@ -453,10 +453,7 @@ mod tests {
 
     #[test]
     fn catalog_detect_fires_on_real_garble_image() {
-        let Some(bytes): Option<Vec<u8>> = garble_fixture() else {
-            eprintln!("SKIP: go garble fixture missing");
-            return;
-        };
+        let bytes: Vec<u8> = garble_fixture();
         let out: DetectorOutput = ObfuscatorCatalog::detect(&GoDetector, &ctx(&bytes))
             .expect("a real garble image must be catalog-detected");
         assert_eq!(out.entry_id, GARBLE_ID);
@@ -602,10 +599,12 @@ mod tests {
             .join("tests")
             .join("fixtures")
             .join("hello_normal.exe");
-        let Ok(bytes): std::io::Result<Vec<u8>> = std::fs::read(&fixture) else {
-            eprintln!("SKIP: go fixture missing at {}", fixture.display());
-            return;
-        };
+        let bytes: Vec<u8> = std::fs::read(&fixture).unwrap_or_else(|error: std::io::Error| {
+            panic!(
+                "the tracked fixture {} must be readable: {error}",
+                fixture.display()
+            )
+        });
         let a: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
         let out: Artifact = GO_PASS.run(&a).expect("go analyze must succeed");
         let s: &str = std::str::from_utf8(&out.envelope).expect("utf8 report");
@@ -727,20 +726,22 @@ mod tests {
         assert!(format!("{err}").contains("DR-GO-0902"));
     }
 
-    fn embed_fixture() -> Option<Vec<u8>> {
+    fn embed_fixture() -> Vec<u8> {
         let fixture: std::path::PathBuf = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests")
             .join("fixtures")
             .join("hello_embed.exe");
-        std::fs::read(&fixture).ok()
+        std::fs::read(&fixture).unwrap_or_else(|error: std::io::Error| {
+            panic!(
+                "the tracked fixture {} must be readable: {error}",
+                fixture.display()
+            )
+        })
     }
 
     #[test]
     fn extract_children_carves_embed_bytes_and_analysis_sidecar() {
-        let Some(bytes): Option<Vec<u8>> = embed_fixture() else {
-            eprintln!("SKIP: go embed fixture missing");
-            return;
-        };
+        let bytes: Vec<u8> = embed_fixture();
         let a: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
         let children: Vec<ChildArtifact> = GO_PASS
             .extract_children(&a)
@@ -806,10 +807,7 @@ mod tests {
 
     #[test]
     fn extract_children_refuses_headerless_unpacked_image() {
-        let Some(pe): Option<Vec<u8>> = embed_fixture() else {
-            eprintln!("SKIP: go embed fixture missing");
-            return;
-        };
+        let pe: Vec<u8> = embed_fixture();
         let flat: Vec<u8> = carve_in_memory_image(&pe);
         assert!(
             object::read::FileKind::parse(flat.as_slice()).is_err(),
@@ -835,20 +833,22 @@ mod tests {
         }
     }
 
-    fn garble_fixture() -> Option<Vec<u8>> {
+    fn garble_fixture() -> Vec<u8> {
         let fixture: std::path::PathBuf = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests")
             .join("fixtures")
             .join("hello_garble.exe");
-        std::fs::read(&fixture).ok()
+        std::fs::read(&fixture).unwrap_or_else(|error: std::io::Error| {
+            panic!(
+                "the tracked fixture {} must be readable: {error}",
+                fixture.display()
+            )
+        })
     }
 
     #[test]
     fn chain_rejects_headerless_garble_image_without_children() {
-        let Some(pe): Option<Vec<u8>> = garble_fixture() else {
-            eprintln!("SKIP: go garble fixture missing");
-            return;
-        };
+        let pe: Vec<u8> = garble_fixture();
         let flat: Vec<u8> = carve_in_memory_image(&pe);
         assert!(
             object::read::FileKind::parse(flat.as_slice()).is_err(),

@@ -191,23 +191,23 @@ fn method_sets_reconstructed_on_32bit_binary() {
 #[test]
 fn recovered_methods_are_subset_of_go_tool_nm_ground_truth() {
     let path: std::path::PathBuf = common::fixture_path(common::HELLO_NORMAL);
-    if !path.exists() {
-        eprintln!("SKIPPED: hello_normal fixture absent; not CI-enforced");
-        return;
-    }
-    let Ok(out): std::io::Result<std::process::Output> =
-        Command::new("go").args(["tool", "nm"]).arg(&path).output()
-    else {
-        eprintln!(
-            "SKIPPED: `go` toolchain not on PATH; the go-tool-nm ground-truth cross-check did not \
-             run and is NOT CI-enforced here"
-        );
-        return;
-    };
-    if !out.status.success() {
-        eprintln!("SKIPPED: `go tool nm` failed; skipping ground-truth cross-check");
-        return;
-    }
+    assert!(
+        path.is_file(),
+        "the tracked fixture {} must exist",
+        path.display()
+    );
+    let out: std::process::Output = Command::new("go")
+        .args(["tool", "nm"])
+        .arg(&path)
+        .output()
+        .unwrap_or_else(|error: std::io::Error| {
+            panic!("`go tool nm` is the ground truth here, so the Go toolchain must be on PATH: {error}")
+        });
+    assert!(
+        out.status.success(),
+        "`go tool nm` failed on the tracked fixture: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let nm_text: String = String::from_utf8_lossy(&out.stdout).into_owned();
     let nm_functions: BTreeSet<String> = nm_text
         .lines()
