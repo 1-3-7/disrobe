@@ -8,7 +8,7 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
-keywords = ["decompiler", "deobfuscator", "reverse-engineering", "pyarmor", "forensics"]
+keywords = ["decompiler", "deobfuscator", "unpacker", "python", "javascript"]
 categories = ["command-line-utilities", "development-tools", "parser-implementations"]
 
 [lints]

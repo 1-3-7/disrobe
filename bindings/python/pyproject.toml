@@ -9,6 +9,21 @@ description = "deobfuscator and decompiler suite, Python bindings"
 readme = "README.md"
 license = { text = "LicenseRef-Disrobe-Source-Available-1.1" }
 requires-python = ">=3.9"
+keywords = [
+    "decompiler",
+    "deobfuscator",
+    "unpacker",
+    "reverse-engineering",
+    "malware-analysis",
+    "python-decompiler",
+    "pyinstaller",
+    "pyarmor",
+    "javascript-deobfuscator",
+    "dotnet",
+    "android",
+    "java",
+    "webassembly",
+]
 classifiers = [
     "License :: Other/Proprietary License",
     "Programming Language :: Rust",
