@@ -22,6 +22,7 @@ const MAX_CANDIDATE_PARAMS: usize = 2;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SkipReason {
     BudgetExhausted,
+    WallClockBackstop,
     UnsupportedOpcode(u8),
     UnsupportedCall(String),
     Unsound,
@@ -33,6 +34,10 @@ impl std::fmt::Display for SkipReason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::BudgetExhausted => write!(f, "budget exhausted"),
+            Self::WallClockBackstop => write!(
+                f,
+                "wall-clock backstop reached before the step budget; this outcome depends on host speed"
+            ),
             Self::UnsupportedOpcode(op) => write!(f, "unsupported opcode 0x{op:02X}"),
             Self::UnsupportedCall(m) => write!(f, "unsupported call {m}"),
             Self::Unsound => write!(f, "unsound register or heap access"),
@@ -46,6 +51,7 @@ impl From<dalvik_interp::SkipReason> for SkipReason {
     fn from(value: dalvik_interp::SkipReason) -> Self {
         match value {
             dalvik_interp::SkipReason::BudgetExhausted => Self::BudgetExhausted,
+            dalvik_interp::SkipReason::WallClockBackstop => Self::WallClockBackstop,
             dalvik_interp::SkipReason::UnsupportedOpcode(op) => Self::UnsupportedOpcode(op),
             dalvik_interp::SkipReason::UnsupportedCall(m) => Self::UnsupportedCall(m),
             dalvik_interp::SkipReason::Unsound => Self::Unsound,

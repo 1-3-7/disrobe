@@ -7,17 +7,19 @@ use crate::dalvik::{self, ArrayDataPayload, DalvikInsn, SwitchPayload};
 use crate::dex::{CodeItem, DexFile, FieldId, MethodId};
 
 pub(crate) const STEP_BUDGET: u64 = 2_000_000;
+const TOTAL_STEP_BUDGET: u64 = 16 * STEP_BUDGET;
 pub(crate) const MAX_ARRAY_LEN: usize = 1 << 20;
 const MAX_RECURSION_DEPTH: u32 = 12;
 const MAX_BACKWARD_BRANCHES: u32 = 500_000;
 const MAX_HEAP_OBJECTS: usize = 65_536;
 const MAX_HEAP_BYTES: usize = 8 << 20;
-const WALL_CLOCK_BACKSTOP: Duration = Duration::from_millis(750);
+const WALL_CLOCK_BACKSTOP: Duration = Duration::from_secs(10);
 const STEP_CHECK_INTERVAL: u64 = 4096;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SkipReason {
     BudgetExhausted,
+    WallClockBackstop,
     UnsupportedOpcode(u8),
     UnsupportedCall(String),
     Unsound,
@@ -29,6 +31,10 @@ impl std::fmt::Display for SkipReason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::BudgetExhausted => write!(f, "budget exhausted"),
+            Self::WallClockBackstop => write!(
+                f,
+                "wall-clock backstop reached before the step budget; this outcome depends on host speed"
+            ),
             Self::UnsupportedOpcode(op) => write!(f, "unsupported opcode 0x{op:02X}"),
             Self::UnsupportedCall(m) => write!(f, "unsupported call {m}"),
             Self::Unsound => write!(f, "unsound register or heap access"),
@@ -108,25 +114,33 @@ enum JdkOutcome {
 }
 
 struct Budget {
-    steps: u64,
+    site_steps: u64,
+    total_steps: u64,
     deadline: Instant,
 }
 
 impl Budget {
     fn new() -> Self {
         Self {
-            steps: 0,
+            site_steps: 0,
+            total_steps: 0,
             deadline: Instant::now() + WALL_CLOCK_BACKSTOP,
         }
     }
 
+    fn begin_site(&mut self) {
+        self.site_steps = 0;
+        self.deadline = Instant::now() + WALL_CLOCK_BACKSTOP;
+    }
+
     fn tick(&mut self) -> Result<(), SkipReason> {
-        self.steps += 1;
-        if self.steps > STEP_BUDGET {
+        self.site_steps += 1;
+        self.total_steps += 1;
+        if self.site_steps > STEP_BUDGET || self.total_steps > TOTAL_STEP_BUDGET {
             return Err(SkipReason::BudgetExhausted);
         }
-        if self.steps.is_multiple_of(STEP_CHECK_INTERVAL) && Instant::now() > self.deadline {
-            return Err(SkipReason::BudgetExhausted);
+        if self.site_steps.is_multiple_of(STEP_CHECK_INTERVAL) && Instant::now() > self.deadline {
+            return Err(SkipReason::WallClockBackstop);
         }
         Ok(())
     }
@@ -232,6 +246,9 @@ impl<'a> Interp<'a> {
     ) -> Result<Option<RegSlot>, SkipReason> {
         if self.depth >= MAX_RECURSION_DEPTH {
             return Err(SkipReason::BudgetExhausted);
+        }
+        if self.depth == 0 {
+            self.budget.begin_site();
         }
         self.depth += 1;
         let result: Result<Option<RegSlot>, SkipReason> = self.execute_body(code, args);

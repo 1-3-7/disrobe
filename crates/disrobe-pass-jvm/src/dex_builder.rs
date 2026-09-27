@@ -2890,7 +2890,9 @@ pub fn infinite_loop_sample() -> Vec<u8> {
     let mut spin: MethodBuilder = MethodBuilder::default();
     spin.op11n(0x12, 0, 0);
     let loop_start: usize = spin.mark();
-    spin.op22b(0xD8, 0, 0, 1);
+    for _ in 0..5 {
+        spin.op22b(0xD8, 0, 0, 1);
+    }
     spin.goto_back(loop_start);
 
     let spin_method: EncodedMethod = EncodedMethod {
@@ -2912,6 +2914,28 @@ pub fn infinite_loop_sample() -> Vec<u8> {
         relocations: spin.relocations,
     };
 
+    let mut answer: MethodBuilder = MethodBuilder::default();
+    answer.op11n(0x12, 0, 7);
+    answer.op11x(0x0F, 0);
+    let answer_method: EncodedMethod = EncodedMethod {
+        tries: Vec::new(),
+        method: MethodRef {
+            class: class.clone(),
+            proto: ProtoRef {
+                return_type: "I".to_owned(),
+                params: Vec::new(),
+            },
+            name: "answer".to_owned(),
+        },
+        access_flags: 0x000A,
+        is_direct: true,
+        registers_size: 1,
+        ins_size: 0,
+        outs_size: 0,
+        insns: answer.units,
+        relocations: answer.relocations,
+    };
+
     let mut builder: DexBuilder = DexBuilder::new();
     builder.add_class(ClassDef {
         class,
@@ -2919,7 +2943,7 @@ pub fn infinite_loop_sample() -> Vec<u8> {
         access_flags: 0x11,
         static_fields: Vec::new(),
         static_values: Vec::new(),
-        direct_methods: vec![spin_method],
+        direct_methods: vec![answer_method, spin_method],
         virtual_methods: Vec::new(),
     });
     builder.build()

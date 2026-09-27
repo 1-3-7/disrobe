@@ -129,3 +129,54 @@ fn a_loop_that_allocates_forever_stops_at_the_heap_budget_not_a_hang_or_oom() {
     let regs: Vec<RegSlot> = vec![RegSlot::Undefined; usize::from(bomb.registers_size).max(1)];
     assert_eq!(interp.execute(bomb, regs), Err(SkipReason::OutputTooLarge));
 }
+
+#[test]
+fn an_exhausted_call_site_leaves_the_next_site_its_own_step_budget() {
+    let bytes: Vec<u8> = infinite_loop_sample();
+    let dex: DexFile = parse_dex(&bytes).expect("fixture parses");
+    let items: Vec<CodeItem> = parse_code_items(&dex, &bytes)
+        .into_complete()
+        .expect("fixture code items");
+    let spin: &CodeItem = find_method(&items, "spin");
+    let answer: &CodeItem = find_method(&items, "answer");
+    let mut interp: Interp<'_> =
+        Interp::new(&dex, "Lcom/disrobe/sample/GenericInfiniteLoop;", &items);
+    let spin_regs: Vec<RegSlot> = vec![RegSlot::Undefined; usize::from(spin.registers_size).max(1)];
+    assert_eq!(
+        interp.execute(spin, spin_regs),
+        Err(SkipReason::BudgetExhausted)
+    );
+    let answer_regs: Vec<RegSlot> =
+        vec![RegSlot::Undefined; usize::from(answer.registers_size).max(1)];
+    assert_eq!(
+        interp.execute(answer, answer_regs),
+        Ok(Some(RegSlot::I32(7)))
+    );
+}
+
+#[test]
+fn step_exhaustion_is_the_same_outcome_on_eight_concurrent_workers() {
+    let bytes: Vec<u8> = infinite_loop_sample();
+    let outcomes: Vec<Result<Option<RegSlot>, SkipReason>> = std::thread::scope(|scope| {
+        let workers: [std::thread::ScopedJoinHandle<'_, Result<Option<RegSlot>, SkipReason>>; 8] =
+            std::array::from_fn(|_| {
+                scope.spawn(|| {
+                    let dex: DexFile = parse_dex(&bytes).expect("fixture parses");
+                    let items: Vec<CodeItem> = parse_code_items(&dex, &bytes)
+                        .into_complete()
+                        .expect("fixture code items");
+                    let spin: &CodeItem = find_method(&items, "spin");
+                    let mut interp: Interp<'_> =
+                        Interp::new(&dex, "Lcom/disrobe/sample/GenericInfiniteLoop;", &items);
+                    let regs: Vec<RegSlot> =
+                        vec![RegSlot::Undefined; usize::from(spin.registers_size).max(1)];
+                    interp.execute(spin, regs)
+                })
+            });
+        workers
+            .into_iter()
+            .map(|worker| worker.join().expect("worker joins"))
+            .collect()
+    });
+    assert_eq!(outcomes, vec![Err(SkipReason::BudgetExhausted); 8]);
+}
