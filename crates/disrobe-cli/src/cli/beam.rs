@@ -318,11 +318,10 @@ mod tests {
 
     #[test]
     fn lift_writes_real_erlang_source_text() {
-        let scratch: PathBuf = std::env::current_dir()
-            .expect("cwd")
-            .join("tmp")
-            .join("beam-lift-test");
-        let _ = std::fs::remove_dir_all(&scratch);
+        let scratch_guard: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("beam-lift-test")
+                .expect("create scratch directory");
+        let scratch: PathBuf = scratch_guard.path().join("beam-lift-test");
         std::fs::create_dir_all(&scratch).expect("mk scratch");
         let Some(beam_path): Option<PathBuf> = extract_beam(&scratch) else {
             return;
@@ -346,11 +345,10 @@ mod tests {
 
     #[test]
     fn disasm_writes_flat_text_listing_next_to_json() {
-        let scratch: PathBuf = std::env::current_dir()
-            .expect("cwd")
-            .join("tmp")
-            .join("beam-disasm-test");
-        let _ = std::fs::remove_dir_all(&scratch);
+        let scratch_guard: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("beam-disasm-test")
+                .expect("create scratch directory");
+        let scratch: PathBuf = scratch_guard.path().join("beam-disasm-test");
         std::fs::create_dir_all(&scratch).expect("mk scratch");
         let Some(beam_path): Option<PathBuf> = extract_beam(&scratch) else {
             return;

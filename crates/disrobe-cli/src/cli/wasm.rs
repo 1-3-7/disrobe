@@ -489,16 +489,18 @@ mod tests {
         0x03, 0x02, 0x01, 0x00, 0x0a, 0x06, 0x01, 0x04, 0x00, 0x41, 0x2a, 0x0b,
     ];
 
-    fn scratch(name: &str) -> PathBuf {
-        let base: PathBuf = std::env::current_dir().expect("cwd").join("tmp").join(name);
-        let _ = std::fs::remove_dir_all(&base);
+    fn scratch(name: &str) -> (disrobe_core::scratch::ScratchDir, PathBuf) {
+        let guard: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create(name).expect("create scratch directory");
+        let base: PathBuf = guard.path().join(name);
         std::fs::create_dir_all(&base).expect("mk base");
-        base
+        (guard, base)
     }
 
     #[test]
     fn decompile_default_target_writes_real_wat_source() {
-        let base: PathBuf = scratch("wasm-decompile-wat-test");
+        let (_base_guard, base): (disrobe_core::scratch::ScratchDir, PathBuf) =
+            scratch("wasm-decompile-wat-test");
         let in_path: PathBuf = base.join("mod.wasm");
         std::fs::write(&in_path, MINIMAL_WASM).expect("write wasm");
         let out_path: PathBuf = base.join("mod.wat");
@@ -520,7 +522,8 @@ mod tests {
 
     #[test]
     fn deob_writes_real_lifted_source_not_only_json() {
-        let base: PathBuf = scratch("wasm-deob-test");
+        let (_base_guard, base): (disrobe_core::scratch::ScratchDir, PathBuf) =
+            scratch("wasm-deob-test");
         let in_path: PathBuf = base.join("mod.wasm");
         std::fs::write(&in_path, MINIMAL_WASM).expect("write wasm");
         let out_path: PathBuf = base.join("mod.deob.wat");
@@ -568,7 +571,8 @@ mod tests {
 
     #[test]
     fn component_carves_embedded_modules_as_standalone_wasm() {
-        let base: PathBuf = scratch("wasm-component-carve-test");
+        let (_base_guard, base): (disrobe_core::scratch::ScratchDir, PathBuf) =
+            scratch("wasm-component-carve-test");
         let comp_bytes: Vec<u8> =
             wat::parse_str(COMPONENT_WITH_NESTED_MODULE).expect("encode component");
         let in_path: PathBuf = base.join("comp.wasm");

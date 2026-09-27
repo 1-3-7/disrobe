@@ -1047,11 +1047,10 @@ mod tests {
         let Some(build_dir): Option<PathBuf> = nuitka_build_dir("bytecode-module/app.build") else {
             return;
         };
-        let scratch: PathBuf = std::env::current_dir()
-            .expect("cwd")
-            .join("tmp")
-            .join("nuitka-decompile-bytecode-test");
-        let _ = std::fs::remove_dir_all(&scratch);
+        let scratch_guard: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("nuitka-decompile-bytecode-test")
+                .expect("create scratch directory");
+        let scratch: PathBuf = scratch_guard.path().join("nuitka-decompile-bytecode-test");
         std::fs::create_dir_all(&scratch).expect("mk scratch");
         let out_json: PathBuf = scratch.join("app.nuitka-constants.json");
 
@@ -1088,11 +1087,10 @@ mod tests {
         let Some(exe): Option<PathBuf> = real_corpus_exe("sample_app-standalone.exe") else {
             return;
         };
-        let scratch: PathBuf = std::env::current_dir()
-            .expect("cwd")
-            .join("tmp")
-            .join("nuitka-cli-skeleton-test");
-        let _ = std::fs::remove_dir_all(&scratch);
+        let scratch_guard: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("nuitka-cli-skeleton-test")
+                .expect("create scratch directory");
+        let scratch: PathBuf = scratch_guard.path().join("nuitka-cli-skeleton-test");
         std::fs::create_dir_all(&scratch).expect("mk scratch");
         let out_json: PathBuf = scratch.join("x.json");
 
@@ -1133,11 +1131,10 @@ mod tests {
         let Some(build_dir): Option<PathBuf> = nuitka_build_dir("module/hello.build") else {
             return;
         };
-        let scratch: PathBuf = std::env::current_dir()
-            .expect("cwd")
-            .join("tmp")
-            .join("nuitka-decompile-surface-test");
-        let _ = std::fs::remove_dir_all(&scratch);
+        let scratch_guard: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("nuitka-decompile-surface-test")
+                .expect("create scratch directory");
+        let scratch: PathBuf = scratch_guard.path().join("nuitka-decompile-surface-test");
         std::fs::create_dir_all(&scratch).expect("mk scratch");
         let out_json: PathBuf = scratch.join("hello.nuitka-constants.json");
 

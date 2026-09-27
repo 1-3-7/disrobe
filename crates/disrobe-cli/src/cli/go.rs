@@ -381,11 +381,10 @@ mod tests {
         let Some(input): Option<PathBuf> = hello_embed_fixture() else {
             return;
         };
-        let scratch: PathBuf = std::env::current_dir()
-            .expect("cwd")
-            .join("tmp")
-            .join("go-embed-carve-test");
-        let _ = std::fs::remove_dir_all(&scratch);
+        let scratch_guard: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("go-embed-carve-test")
+                .expect("create scratch directory");
+        let scratch: PathBuf = scratch_guard.path().join("go-embed-carve-test");
         std::fs::create_dir_all(&scratch).expect("mk scratch");
         let out_json: PathBuf = scratch.join("hello_embed-go.json");
 

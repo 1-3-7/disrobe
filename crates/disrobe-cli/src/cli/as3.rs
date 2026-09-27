@@ -256,11 +256,10 @@ mod tests {
         if !input.is_file() {
             return;
         }
-        let out_dir: PathBuf = std::env::current_dir()
-            .expect("cwd")
-            .join("tmp")
-            .join("as3-disasm-test");
-        let _ = std::fs::remove_dir_all(&out_dir);
+        let out_dir_guard: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("as3-disasm-test")
+                .expect("create scratch directory");
+        let out_dir: PathBuf = out_dir_guard.path().join("as3-disasm-test");
 
         disasm(input, Some(out_dir.clone()), Vec::new()).expect("disasm ok");
 
@@ -291,11 +290,10 @@ mod tests {
 
     #[test]
     fn disasm_flat_text_lands_for_synthetic_block() {
-        let out_dir: PathBuf = std::env::current_dir()
-            .expect("cwd")
-            .join("tmp")
-            .join("as3-disasm-flat-test");
-        let _ = std::fs::remove_dir_all(&out_dir);
+        let out_dir_guard: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("as3-disasm-flat-test")
+                .expect("create scratch directory");
+        let out_dir: PathBuf = out_dir_guard.path().join("as3-disasm-flat-test");
         let swf_path: PathBuf = out_dir.join("synthetic.swf");
         std::fs::create_dir_all(&out_dir).expect("mk out dir");
         std::fs::write(&swf_path, super::tests_support::build_swf()).expect("write swf");

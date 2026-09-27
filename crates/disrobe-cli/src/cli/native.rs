@@ -4465,10 +4465,9 @@ mod tests {
         if !input.is_file() {
             return;
         }
-        let out_path: PathBuf = std::env::current_dir()
-            .expect("cwd")
-            .join("tmp")
-            .join(scratch);
+        let out_path_guard: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create(scratch).expect("create scratch directory");
+        let out_path: PathBuf = out_path_guard.path().join(scratch);
         let _ = std::fs::remove_file(&out_path);
         if let Some(parent) = out_path.parent() {
             std::fs::create_dir_all(parent).expect("mk out dir");
@@ -4599,11 +4598,10 @@ mod tests {
             CryptoPrimitive, FingerprintSidecar, StringXref as PnStringXref,
         };
 
-        let base: PathBuf = std::env::current_dir()
-            .expect("cwd")
-            .join("tmp")
-            .join("fp-cli-test");
-        let _ = std::fs::remove_dir_all(&base);
+        let base_guard: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("fp-cli-test")
+                .expect("create scratch directory");
+        let base: PathBuf = base_guard.path().join("fp-cli-test");
         std::fs::create_dir_all(&base).expect("mk base");
 
         let mut buf: Vec<u8> = vec![0u8; 8];
@@ -4674,11 +4672,10 @@ mod tests {
 
     #[test]
     fn entropy_svg_written_and_deterministic() {
-        let base: PathBuf = std::env::current_dir()
-            .expect("cwd")
-            .join("tmp")
-            .join("entropy-svg-test");
-        let _ = std::fs::remove_dir_all(&base);
+        let base_guard: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("entropy-svg-test")
+                .expect("create scratch directory");
+        let base: PathBuf = base_guard.path().join("entropy-svg-test");
         std::fs::create_dir_all(&base).expect("mk base");
 
         let mut bytes: Vec<u8> = vec![0u8; 4096];

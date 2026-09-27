@@ -118,6 +118,14 @@ pub fn run_disrobe(args: &[&str]) -> Run {
 }
 
 pub fn run_disrobe_env(args: &[&str], env: &[(&str, &str)]) -> Run {
+    run_disrobe_command(args, env, None)
+}
+
+pub fn run_disrobe_in(dir: &Path, args: &[&str]) -> Run {
+    run_disrobe_command(args, &[], Some(dir))
+}
+
+fn run_disrobe_command(args: &[&str], env: &[(&str, &str)], dir: Option<&Path>) -> Run {
     let bin: PathBuf = cli_binary();
     assert!(
         bin.exists(),
@@ -130,6 +138,9 @@ pub fn run_disrobe_env(args: &[&str], env: &[(&str, &str)]) -> Run {
         .env_remove("DISROBE_LOG");
     for (k, v) in env {
         cmd.env(k, v);
+    }
+    if let Some(dir) = dir {
+        cmd.current_dir(dir);
     }
     let output: std::process::Output = cmd.output().expect("spawn disrobe");
     Run {

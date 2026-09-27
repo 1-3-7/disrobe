@@ -297,11 +297,10 @@ mod tests {
 
     #[test]
     fn decompile_writes_real_python_file() {
-        let base: PathBuf = std::env::current_dir()
-            .expect("cwd")
-            .join("tmp")
-            .join("pickle-decompile-test");
-        let _ = std::fs::remove_dir_all(&base);
+        let base_guard: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("pickle-decompile-test")
+                .expect("create scratch directory");
+        let base: PathBuf = base_guard.path().join("pickle-decompile-test");
         std::fs::create_dir_all(&base).expect("mk base");
 
         let pickle: [u8; 12] = [
@@ -325,11 +324,10 @@ mod tests {
 
     #[test]
     fn read_input_rejects_file_over_cap() {
-        let base: PathBuf = std::env::current_dir()
-            .expect("cwd")
-            .join("tmp")
-            .join("pickle-read-cap-test");
-        let _ = std::fs::remove_dir_all(&base);
+        let base_guard: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("pickle-read-cap-test")
+                .expect("create scratch directory");
+        let base: PathBuf = base_guard.path().join("pickle-read-cap-test");
         std::fs::create_dir_all(&base).expect("mk base");
         let in_path: PathBuf = base.join("oversize.pkl");
         std::fs::write(&in_path, b"abcd").expect("write input");

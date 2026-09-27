@@ -3,7 +3,7 @@ mod common;
 
 use std::path::PathBuf;
 
-use common::{Run, run_disrobe, temp_path, write_bytes};
+use common::{Run, run_disrobe, run_disrobe_in, temp_path, write_bytes};
 
 #[test]
 fn in_place_rewrites_input_file_for_py_deob() {
@@ -32,14 +32,28 @@ fn in_place_rewrites_input_file_for_py_deob() {
 
 #[test]
 fn without_in_place_writes_mirror_path() {
-    let (_src_scratch, src): (disrobe_core::scratch::ScratchDir, PathBuf) =
+    let (src_scratch, src): (disrobe_core::scratch::ScratchDir, PathBuf) =
         temp_path("noninplace", "py");
     write_bytes(&src, b"y = 2\n");
     let original: Vec<u8> = std::fs::read(&src).expect("read");
 
-    let r: Run = run_disrobe(&["py", "deob", src.to_str().unwrap()]);
+    let r: Run = run_disrobe_in(src_scratch.path(), &["py", "deob", src.to_str().unwrap()]);
     assert_eq!(r.code, 0, "stdout={} stderr={}", r.stdout, r.stderr);
 
     let after: Vec<u8> = std::fs::read(&src).expect("read after");
     assert_eq!(after, original, "default path must not mutate input");
+    let stem: String = src
+        .file_stem()
+        .expect("scratch source has a stem")
+        .to_string_lossy()
+        .into_owned();
+    let mirror: PathBuf = src_scratch
+        .path()
+        .join("out")
+        .join(format!("{stem}.deobfuscated.py"));
+    assert!(
+        mirror.is_file(),
+        "the default output must land under out/ in the working directory: {}",
+        mirror.display()
+    );
 }

@@ -447,11 +447,10 @@ mod tests {
         if !input.is_file() {
             return;
         }
-        let out_dir: PathBuf = std::env::current_dir()
-            .expect("cwd")
-            .join("tmp")
-            .join("macho-classdump-test");
-        let _ = std::fs::remove_dir_all(&out_dir);
+        let out_dir_guard: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("macho-classdump-test")
+                .expect("create scratch directory");
+        let out_dir: PathBuf = out_dir_guard.path().join("macho-classdump-test");
 
         classdump(input, Some(out_dir.clone()), Vec::new()).expect("classdump ok");
 

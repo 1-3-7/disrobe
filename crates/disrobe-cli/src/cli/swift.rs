@@ -217,11 +217,10 @@ mod tests {
         if !input.is_file() {
             return;
         }
-        let out_dir: PathBuf = std::env::current_dir()
-            .expect("cwd")
-            .join("tmp")
-            .join("swift-classdump-test");
-        let _ = std::fs::remove_dir_all(&out_dir);
+        let out_dir_guard: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("swift-classdump-test")
+                .expect("create scratch directory");
+        let out_dir: PathBuf = out_dir_guard.path().join("swift-classdump-test");
         std::fs::create_dir_all(&out_dir).expect("mk out dir");
         let out_path: PathBuf = out_dir.join("hello.json");
 

@@ -1065,11 +1065,10 @@ mod tests {
             "fixture must parse as a kernel"
         );
 
-        let scratch: PathBuf = std::env::current_dir()
-            .expect("cwd")
-            .join("tmp")
-            .join("flutter-kernel-test");
-        let _ = std::fs::remove_dir_all(&scratch);
+        let scratch_guard: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("flutter-kernel-test")
+                .expect("create scratch directory");
+        let scratch: PathBuf = scratch_guard.path().join("flutter-kernel-test");
         std::fs::create_dir_all(&scratch).expect("mk scratch");
         let in_path: PathBuf = scratch.join("kernel_blob.bin");
         std::fs::write(&in_path, &kernel_bytes).expect("write kernel");

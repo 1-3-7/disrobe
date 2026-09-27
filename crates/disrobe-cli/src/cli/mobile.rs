@@ -779,11 +779,10 @@ mod tests {
         let Some(bytes): Option<Vec<u8>> = hello_hermes_bundle() else {
             return;
         };
-        let scratch: PathBuf = std::env::current_dir()
-            .expect("cwd")
-            .join("tmp")
-            .join("mobile-hermes-test");
-        let _ = std::fs::remove_dir_all(&scratch);
+        let scratch_guard: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("mobile-hermes-test")
+                .expect("create scratch directory");
+        let scratch: PathBuf = scratch_guard.path().join("mobile-hermes-test");
         std::fs::create_dir_all(&scratch).expect("mk scratch");
         let in_path: PathBuf = scratch.join("index.android.bundle");
         std::fs::write(&in_path, &bytes).expect("write hermes bundle");

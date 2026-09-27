@@ -3,7 +3,7 @@ mod common;
 
 use std::path::PathBuf;
 
-use common::{Run, run_disrobe, temp_path, write_bytes};
+use common::{Run, run_disrobe, run_disrobe_in, temp_path, write_bytes};
 use disrobe_core::progress::{CapturingProgress, Progress, ProgressEvent};
 
 #[test]
@@ -36,10 +36,13 @@ fn progress_trait_fires_under_simulated_pipeline() {
 
 #[test]
 fn cli_accepts_progress_flag_without_crashing() {
-    let (_src_scratch, src): (disrobe_core::scratch::ScratchDir, PathBuf) =
+    let (src_scratch, src): (disrobe_core::scratch::ScratchDir, PathBuf) =
         temp_path("progress-cli", "py");
     write_bytes(&src, b"k = 9\n");
-    let r: Run = run_disrobe(&["--progress", "always", "py", "deob", src.to_str().unwrap()]);
+    let r: Run = run_disrobe_in(
+        src_scratch.path(),
+        &["--progress", "always", "py", "deob", src.to_str().unwrap()],
+    );
     assert_eq!(
         r.code, 0,
         "--progress always must succeed. stdout={} stderr={}",

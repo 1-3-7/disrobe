@@ -310,11 +310,10 @@ mod tests {
         let Some(input): Option<PathBuf> = hello_pye_fixture() else {
             return;
         };
-        let scratch: PathBuf = std::env::current_dir()
-            .expect("cwd")
-            .join("tmp")
-            .join("sourcedefender-extract-test");
-        let _ = std::fs::remove_dir_all(&scratch);
+        let scratch_guard: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("sourcedefender-extract-test")
+                .expect("create scratch directory");
+        let scratch: PathBuf = scratch_guard.path().join("sourcedefender-extract-test");
         std::fs::create_dir_all(&scratch).expect("mk scratch");
         let out_bin: PathBuf = scratch.join("hello.decrypted.bin");
 

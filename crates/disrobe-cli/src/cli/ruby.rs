@@ -226,11 +226,10 @@ mod tests {
         if !input.is_file() {
             return;
         }
-        let out_dir: PathBuf = std::env::current_dir()
-            .expect("cwd")
-            .join("tmp")
-            .join("ruby-decompile-test");
-        let _ = std::fs::remove_dir_all(&out_dir);
+        let out_dir_guard: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("ruby-decompile-test")
+                .expect("create scratch directory");
+        let out_dir: PathBuf = out_dir_guard.path().join("ruby-decompile-test");
         std::fs::create_dir_all(&out_dir).expect("mk out dir");
         let out_path: PathBuf = out_dir.join("greeter.json");
 
@@ -275,11 +274,12 @@ mod tests {
             .join("mruby")
             .join("breadth")
             .join("exceptions.mrb");
-        let out_dir: PathBuf = std::env::current_dir()
-            .expect("cwd")
-            .join("tmp")
+        let out_dir_guard: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("ruby-decompile-stale-source-test")
+                .expect("create scratch directory");
+        let out_dir: PathBuf = out_dir_guard
+            .path()
             .join("ruby-decompile-stale-source-test");
-        let _ = std::fs::remove_dir_all(&out_dir);
         std::fs::create_dir_all(&out_dir).expect("mk out dir");
         let out_path: PathBuf = out_dir.join("exceptions.json");
         let rb_path: PathBuf = out_path.with_extension("rb");
@@ -305,11 +305,12 @@ mod tests {
             .join("mruby")
             .join("breadth")
             .join("exceptions.mrb");
-        let out_dir: PathBuf = std::env::current_dir()
-            .expect("cwd")
-            .join("tmp")
+        let out_dir_guard: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("ruby-decompile-output-collision-test")
+                .expect("create scratch directory");
+        let out_dir: PathBuf = out_dir_guard
+            .path()
             .join("ruby-decompile-output-collision-test");
-        let _ = std::fs::remove_dir_all(&out_dir);
         std::fs::create_dir_all(&out_dir).expect("mk out dir");
         let out_path: PathBuf = out_dir.join("analysis.RB");
 
