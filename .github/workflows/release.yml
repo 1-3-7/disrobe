@@ -146,7 +146,7 @@ jobs:
           STAGE="disrobe-${REL_TAG}-${{ matrix.target }}"
           mkdir -p "dist/${STAGE}"
           cp "target/${{ matrix.target }}/release/disrobe" "dist/${STAGE}/"
-          cp README.md LICENSE NOTICE ATTRIBUTION.md COMMERCIAL.md LICENSE-SUMMARY.md RELICENSING-NOTICE.md SECURITY.md "dist/${STAGE}/" 2>/dev/null || true
+          cp README.md LICENSE NOTICE ATTRIBUTION.md COMMERCIAL.md LICENSE-SUMMARY.md RELICENSING-NOTICE.md SECURITY.md "dist/${STAGE}/"
           cd dist
           tar --zstd -cf "${STAGE}.tar.zst" "${STAGE}"
           if command -v sha256sum >/dev/null 2>&1; then
@@ -163,7 +163,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path "dist/$stage" | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/disrobe.exe" "dist/$stage/"
           foreach ($f in @("README.md","LICENSE","NOTICE","ATTRIBUTION.md","COMMERCIAL.md","LICENSE-SUMMARY.md","RELICENSING-NOTICE.md","SECURITY.md")) {
-            if (Test-Path $f) { Copy-Item $f "dist/$stage/" }
+            Copy-Item $f "dist/$stage/" -ErrorAction Stop
           }
           Push-Location dist
           Compress-Archive -Path $stage -DestinationPath "$stage.zip" -Force
