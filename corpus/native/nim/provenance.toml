@@ -1,0 +1,16 @@
+schema = "disrobe.nativelang.source-build/v1"
+producer = "nim 2.0.8"
+source = "hello.nim"
+source_sha256 = "527d7013eecca1c2dd13c20ba7ed5da61caef562846a11600556619dd33208e7"
+toolchains = [
+  "Nim 2.0.8",
+  "Zig 0.13.0 clang 18.1.6 cross C compiler and linker for x86_64-linux-gnu",
+]
+target = "x86_64-linux-gnu"
+memory_manager = "orc"
+build_mode = "release with runtime checks"
+
+[[artifacts]]
+path = "hello.nim.elf"
+sha256 = "af776eac1850898ff941c918f6929797b1daf68956004f68c0c53f1b23b2a6ed"
+build_command = "nim c -d:release --mm:orc --cpu:amd64 --os:linux --cc:clang --clang.exe:zig --clang.linkerexe:zig --out:hello.nim.elf hello.nim"

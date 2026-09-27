@@ -1,0 +1,12 @@
+schema = "disrobe.nativelang.source-build/v1"
+producer = "zig 0.13.0"
+source = "hello.zig"
+source_sha256 = "c570ef7fca02a29dbcdd58a162b5e578f97d66ee7af4f0e7bcd0044e27f720aa"
+toolchains = ["Zig 0.13.0"]
+target = "x86_64-linux-gnu"
+build_mode = "ReleaseSafe"
+
+[[artifacts]]
+path = "hello.zig.elf"
+sha256 = "b85fa149b49bdcf1ec9011d92b55dde9d9cf308d8bc28e83d28323add8852994"
+build_command = "zig build-exe hello.zig -OReleaseSafe -target x86_64-linux-gnu -femit-bin=hello.zig.elf"

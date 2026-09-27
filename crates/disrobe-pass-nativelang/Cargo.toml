@@ -34,3 +34,5 @@ chain = ["disrobe-core/chain"]
 
 [dev-dependencies]
 disrobe-testkit = { workspace = true }
+sha2 = { workspace = true }
+toml = { workspace = true }
