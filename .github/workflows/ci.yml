@@ -1410,8 +1410,22 @@ jobs:
         run: cargo test -p disrobe-cli --no-default-features --test slim_wasm_bail -- --nocapture
       - name: the network and async surfaces bail when they are compiled out
         run: cargo test -p disrobe-cli --no-default-features --test slim_network_bail -- --nocapture
-      - name: build the slim release binary
-        run: cargo build -p disrobe-cli --release --no-default-features --bin disrobe
+      - name: build the slim release binary with the release path remap
+        shell: bash
+        run: |
+          set -euo pipefail
+          export RUSTFLAGS="${RUSTFLAGS} --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo --remap-path-prefix=${RUSTUP_HOME:-$HOME/.rustup}=/rustup --remap-path-prefix=${GITHUB_WORKSPACE}=/disrobe"
+          cargo build -p disrobe-cli --release --no-default-features --bin disrobe
+      - name: the slim release binary embeds no runner path
+        shell: bash
+        run: |
+          set -euo pipefail
+          for needle in "$HOME" "$GITHUB_WORKSPACE"; do
+            if grep -a -F -q -- "$needle" target/release/disrobe; then
+              echo "target/release/disrobe embeds the runner path $needle" >&2
+              exit 1
+            fi
+          done
       - name: the wasm decompiler tree is absent from the slim binary
         shell: bash
         run: |
