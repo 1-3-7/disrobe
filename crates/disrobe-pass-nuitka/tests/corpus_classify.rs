@@ -6,7 +6,6 @@
 )]
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use disrobe_pass_nuitka::{
     BinaryFormat, FilenameEncoding, NuitkaPlugin, NuitkaVariant, NuitkaVariantManifest,
@@ -29,39 +28,20 @@ fn variant_path(variant: &str, leaf: &str) -> Option<PathBuf> {
     candidate.exists().then_some(candidate)
 }
 
-fn ensure_onefile_fixture() -> Option<PathBuf> {
-    if let Some(path) = variant_path("onefile", "hello.exe") {
-        return Some(path);
-    }
-    let regen: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR")).join("regen.ps1");
-    if !regen.exists() || !powershell_available() {
-        return None;
-    }
-    let status: Option<std::process::ExitStatus> = Command::new("powershell")
-        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
-        .arg(&regen)
-        .args(["-Only", "onefile"])
-        .status()
-        .ok();
-    if !matches!(status, Some(s) if s.success()) {
-        return None;
-    }
-    variant_path("onefile", "hello.exe")
-}
-
-fn powershell_available() -> bool {
-    Command::new("powershell")
-        .args(["-NoProfile", "-Command", "$PSVersionTable.PSVersion.Major"])
-        .output()
-        .is_ok_and(|o| o.status.success())
+fn onefile_fixture() -> PathBuf {
+    let path: PathBuf = corpus_root().join("onefile").join("hello.exe");
+    assert!(
+        path.is_file(),
+        "the committed onefile fixture {} is missing; restore it from git, because this test \
+         never rebuilds fixtures",
+        path.display()
+    );
+    path
 }
 
 #[test]
 fn corpus_onefile_classifies_as_onefile_variant() {
-    let Some(path): Option<PathBuf> = ensure_onefile_fixture() else {
-        eprintln!("[ignore] no onefile fixture and Nuitka/PowerShell unavailable to build one");
-        return;
-    };
+    let path: PathBuf = onefile_fixture();
     let classification: VariantClassification = classify_in_file(&path).expect("classify");
     assert!(
         matches!(
@@ -77,10 +57,7 @@ fn corpus_onefile_classifies_as_onefile_variant() {
 
 #[test]
 fn corpus_onefile_extracts_real_embedded_files() {
-    let Some(path): Option<PathBuf> = ensure_onefile_fixture() else {
-        eprintln!("[ignore] no onefile fixture and Nuitka/PowerShell unavailable to build one");
-        return;
-    };
+    let path: PathBuf = onefile_fixture();
     let bytes: Vec<u8> = std::fs::read(&path).expect("read onefile");
     let located = locate_onefile_payload(&bytes).expect("locate validated KA payload");
     assert!(located.compressed, "default --onefile uses zstd (KAY)");
@@ -190,10 +167,7 @@ fn corpus_standalone_dist_exe_classifies_as_standalone() {
 
 #[test]
 fn corpus_onefile_manifest_serialises() {
-    let Some(path): Option<PathBuf> = ensure_onefile_fixture() else {
-        eprintln!("[ignore] onefile fixture unavailable");
-        return;
-    };
+    let path: PathBuf = onefile_fixture();
     let manifest: NuitkaVariantManifest = build_manifest_from_file(&path).expect("manifest");
     let json: String = serde_json::to_string(&manifest).expect("json");
     assert!(json.contains("disrobe.nuitka.manifest/v0"));

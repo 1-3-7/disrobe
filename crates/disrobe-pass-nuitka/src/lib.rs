@@ -74,10 +74,7 @@ pub use extract::{
     ModuleSurface, OnefileExtraction, SignedPeExtraction, StandaloneSurface, VariantExtraction,
     extract_for_classification, extract_variant,
 };
-pub use frozen::{
-    FrozenModules, FrozenStatus, RecompileReport, frozen_status, recover_frozen_bytecode,
-    verify_recompile,
-};
+pub use frozen::{FrozenModules, FrozenStatus, frozen_status, recover_frozen_bytecode};
 pub use manifest::{NuitkaVariantManifest, build_manifest, build_manifest_from_file};
 pub use markers::{CSourceMarker, DecompReadyMarkers, NuitkaEraGuess, scan_c_source_markers};
 pub use name_map::{NameMapEntry, NameRef, NativeNameMap, map_names};

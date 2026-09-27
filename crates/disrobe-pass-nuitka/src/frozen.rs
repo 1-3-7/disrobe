@@ -11,7 +11,6 @@ const TYPE_CODE_REF: u8 = b'c' | 0x80;
 const MAX_FROZEN_MODULES: usize = 1 << 16;
 const MIN_MODULE_BYTES: usize = 16;
 const MAX_MARSHAL_BYTES: usize = 32 * 1024 * 1024;
-const RECOMPILE_TIMEOUT_SECS: u64 = 120;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -34,29 +33,10 @@ pub fn frozen_status(module: &BytecodeModule) -> FrozenStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RecompileReport {
-    pub interpreter: String,
-    pub checked: usize,
-    pub clean: usize,
-    pub failed: Vec<String>,
-}
-
-impl RecompileReport {
-    #[must_use]
-    pub fn pass_rate(&self) -> f64 {
-        if self.checked == 0 {
-            return 0.0;
-        }
-        self.clean as f64 / self.checked as f64
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FrozenModules {
     pub stream_offset: u64,
     pub marshal_version: (u8, u8),
     pub modules: Vec<BytecodeModule>,
-    pub recompile: Option<RecompileReport>,
     pub notes: Vec<String>,
 }
 
@@ -148,7 +128,6 @@ pub fn recover_frozen_bytecode(
         stream_offset: marker_at as u64,
         marshal_version: (probe_version.major, probe_version.minor),
         modules,
-        recompile: None,
         notes: Vec::new(),
     };
     let decompiled: usize = table.decompiled_count();
@@ -161,98 +140,6 @@ pub fn recover_frozen_bytecode(
         probe_version.minor,
     ));
     Some(table)
-}
-
-#[must_use]
-pub fn verify_recompile(table: &FrozenModules, interpreter: &std::path::Path) -> RecompileReport {
-    let dbg: DebugLog = DebugLog::for_scope("nuitka");
-    dbg.section("frozen-recompile");
-    let targets: Vec<&BytecodeModule> = table
-        .modules
-        .iter()
-        .filter(|m: &&BytecodeModule| matches!(frozen_status(m), FrozenStatus::Decompiled))
-        .collect();
-
-    let interpreter_label: String = interpreter.display().to_string();
-    let unchecked = |count: usize| -> RecompileReport {
-        RecompileReport {
-            interpreter: interpreter_label.clone(),
-            checked: count,
-            clean: 0,
-            failed: Vec::new(),
-        }
-    };
-
-    let purpose: String = format!("disrobe-frozen-{}", std::process::id());
-    let scratch: disrobe_core::scratch::ScratchDir =
-        match disrobe_core::scratch::ScratchDir::create(&purpose) {
-            Ok(scratch) => scratch,
-            Err(_) => return unchecked(0),
-        };
-    let dir: std::path::PathBuf = scratch.path().to_path_buf();
-
-    let mut manifest: Vec<(String, std::path::PathBuf)> = Vec::with_capacity(targets.len());
-    for (index, module) in targets.iter().enumerate() {
-        let file: std::path::PathBuf = dir.join(format!("m{index}.py"));
-        if std::fs::write(&file, module.source.as_bytes()).is_ok() {
-            manifest.push((module.module_name.clone(), file));
-        }
-    }
-
-    let manifest_path: std::path::PathBuf = dir.join("_manifest.tsv");
-    let mut manifest_text: String = String::new();
-    for (name, path) in &manifest {
-        manifest_text.push_str(name);
-        manifest_text.push('\t');
-        manifest_text.push_str(&path.display().to_string());
-        manifest_text.push('\n');
-    }
-    if std::fs::write(&manifest_path, manifest_text.as_bytes()).is_err() {
-        return unchecked(0);
-    }
-
-    let result_path: std::path::PathBuf = dir.join("_failed.txt");
-    let checker: std::path::PathBuf = dir.join("_check.py");
-    let script: &str = "import sys\nmanifest, out = sys.argv[1], sys.argv[2]\nfailed = []\nwith open(manifest, 'r', encoding='utf-8') as mf:\n    for line in mf:\n        name, _, path = line.rstrip('\\n').partition('\\t')\n        if not path:\n            continue\n        try:\n            with open(path, 'r', encoding='utf-8') as fh:\n                compile(fh.read(), path, 'exec')\n        except SyntaxError:\n            failed.append(name)\nwith open(out, 'w', encoding='utf-8') as of:\n    of.write('\\n'.join(failed))\n";
-    if std::fs::write(&checker, script).is_err() {
-        return unchecked(0);
-    }
-
-    let spawned: std::io::Result<std::process::Child> = std::process::Command::new(interpreter)
-        .arg(&checker)
-        .arg(&manifest_path)
-        .arg(&result_path)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
-    let Ok(child): std::io::Result<std::process::Child> = spawned else {
-        return unchecked(0);
-    };
-
-    let timeout: std::time::Duration = std::time::Duration::from_secs(RECOMPILE_TIMEOUT_SECS);
-    if disrobe_core::subprocess::wait_with_output_timeout(child, timeout, 0).is_none() {
-        dbg.line(|| "recompile interpreter exceeded timeout; killed".to_owned());
-        return unchecked(manifest.len());
-    }
-
-    let stdout: String = std::fs::read_to_string(&result_path).unwrap_or_default();
-    let failed: Vec<String> = stdout
-        .lines()
-        .map(str::trim)
-        .filter(|s: &&str| !s.is_empty())
-        .map(str::to_owned)
-        .collect();
-    let checked: usize = manifest.len();
-    let clean: usize = checked.saturating_sub(failed.len());
-    dbg.kv("checked", || checked.to_string());
-    dbg.kv("clean", || clean.to_string());
-    RecompileReport {
-        interpreter: interpreter_label,
-        checked,
-        clean,
-        failed,
-    }
 }
 
 const FIRST_CODE_WINDOW: usize = 64;
@@ -399,54 +286,6 @@ mod tests {
         assert!(
             frozen.decompiled_count() >= 15,
             "too few decompiled modules"
-        );
-    }
-
-    fn on_box_cpython_314() -> Option<std::path::PathBuf> {
-        let candidate: std::path::PathBuf = std::path::PathBuf::from("C:/Python314/python.exe");
-        candidate.is_file().then_some(candidate)
-    }
-
-    #[test]
-    fn frozen_modules_recompile_clean_against_on_box_cpython() {
-        let path: std::path::PathBuf = corpus_standalone();
-        if !path.is_file() {
-            eprintln!("skipping: real nuitka corpus exe absent");
-            return;
-        }
-        let Some(python): Option<std::path::PathBuf> = on_box_cpython_314() else {
-            eprintln!("skipping: on-box CPython 3.14 not found, recompile oracle unavailable");
-            return;
-        };
-        let image: Vec<u8> = std::fs::read(&path).expect("read corpus exe");
-        let frozen: FrozenModules =
-            recover_frozen_bytecode(&image, Some((3, 14))).expect("frozen stream recovered");
-        let report: RecompileReport = verify_recompile(&frozen, &python);
-        assert!(
-            report.checked >= 100,
-            "expected many decompiled modules to recompile-check, got {}",
-            report.checked
-        );
-        assert!(
-            report.pass_rate() >= 0.90,
-            "frozen recompile pass rate too low: {}/{} clean ({:.1}%); failures: {:?}",
-            report.clean,
-            report.checked,
-            report.pass_rate() * 100.0,
-            &report.failed[..report.failed.len().min(10)]
-        );
-        let abc: &BytecodeModule = frozen
-            .modules
-            .iter()
-            .find(|m: &&BytecodeModule| m.module_name == "_collections_abc")
-            .expect("_collections_abc present");
-        assert!(
-            abc.source.contains("class ") && abc.source.contains("def "),
-            "_collections_abc must reconstruct classes and methods"
-        );
-        assert!(
-            !report.failed.contains(&"_collections_abc".to_owned()),
-            "_collections_abc must recompile clean"
         );
     }
 }

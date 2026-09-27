@@ -1,15 +1,9 @@
 #![allow(clippy::needless_pass_by_value)]
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
-use std::time::Duration;
 
 use clap::Subcommand;
-use disrobe_core::subprocess::{CapturedOutput, wait_with_output_timeout};
 
 use crate::cli::progress_ui::StageSpinner;
-
-const CPYTHON_PROBE_TIMEOUT_SECS: u64 = 5;
-const CAPTURE_CAP_BYTES: usize = 1024 * 1024;
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum NuitkaCmd {
@@ -224,12 +218,11 @@ fn decompile(input: PathBuf, out: Option<PathBuf>, python: Option<PathBuf>) -> m
         .unwrap_or("nuitka")
         .to_owned();
     let spinner: StageSpinner = StageSpinner::start(&label, "decompiling nuitka constants");
-    let mut result: disrobe_pass_nuitka::NuitkaDecompilation = if input.is_dir() {
+    let result: disrobe_pass_nuitka::NuitkaDecompilation = if input.is_dir() {
         disrobe_pass_nuitka::decompile_build_dir(&input).map_err(|e| miette::miette!("{e}"))?
     } else {
         disrobe_pass_nuitka::decompile_binary(&input).map_err(|e| miette::miette!("{e}"))?
     };
-    measure_frozen_recompile(&mut result);
     spinner.finish(&format!("{:?}", result.source_kind));
 
     let stem: String = input
@@ -473,56 +466,6 @@ fn print_skeleton(skeleton: Option<&disrobe_pass_nuitka::NuitkaSkeleton>) {
     }
 }
 
-fn measure_frozen_recompile(result: &mut disrobe_pass_nuitka::NuitkaDecompilation) {
-    let Some(frozen): Option<&disrobe_pass_nuitka::FrozenModules> = result.frozen_modules.as_ref()
-    else {
-        return;
-    };
-    if frozen.recompile.is_some() || frozen.decompiled_count() == 0 {
-        return;
-    }
-    let (major, minor): (u8, u8) = frozen.marshal_version;
-    let Some(python): Option<PathBuf> = locate_cpython(major, minor) else {
-        return;
-    };
-    let report: disrobe_pass_nuitka::RecompileReport =
-        disrobe_pass_nuitka::verify_recompile(frozen, &python);
-    if let Some(frozen_mut) = result.frozen_modules.as_mut() {
-        frozen_mut.recompile = Some(report);
-    }
-}
-
-fn locate_cpython(major: u8, minor: u8) -> Option<PathBuf> {
-    let exact: String = format!("python{major}.{minor}");
-    for name in [exact.as_str(), "python3", "python"] {
-        let spawned: Result<std::process::Child, std::io::Error> = Command::new(name)
-            .arg("-c")
-            .arg("import sys;print(f'{sys.version_info.major}.{sys.version_info.minor}')")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn();
-        let Ok(child): Result<std::process::Child, std::io::Error> = spawned else {
-            continue;
-        };
-        let Some(captured): Option<CapturedOutput> = wait_with_output_timeout(
-            child,
-            Duration::from_secs(CPYTHON_PROBE_TIMEOUT_SECS),
-            CAPTURE_CAP_BYTES,
-        ) else {
-            continue;
-        };
-        if captured.exit_code != Some(0) {
-            continue;
-        }
-        let reported: String = String::from_utf8_lossy(&captured.stdout).trim().to_owned();
-        if reported == format!("{major}.{minor}") {
-            return Some(PathBuf::from(name));
-        }
-    }
-    None
-}
-
 fn print_frozen(frozen: Option<&disrobe_pass_nuitka::FrozenModules>) {
     let Some(frozen): Option<&disrobe_pass_nuitka::FrozenModules> = frozen else {
         return;
@@ -533,23 +476,12 @@ fn print_frozen(frozen: Option<&disrobe_pass_nuitka::FrozenModules>) {
     let decompiled: usize = frozen.decompiled_count();
     let empty: usize = frozen.empty_count();
     let failed: usize = frozen.failed_count();
-    match &frozen.recompile {
-        Some(report) => println!(
-            "  frozen bytecode:  {} module(s) from .bytecode stream, python {}.{}: {decompiled} decompiled, {empty} empty/comment-only, {failed} failed; {}/{} recompile-clean on {}",
-            frozen.modules.len(),
-            frozen.marshal_version.0,
-            frozen.marshal_version.1,
-            report.clean,
-            report.checked,
-            report.interpreter,
-        ),
-        None => println!(
-            "  frozen bytecode:  {} module(s) from .bytecode stream, python {}.{}: {decompiled} decompiled (recompile unverified), {empty} empty/comment-only, {failed} failed",
-            frozen.modules.len(),
-            frozen.marshal_version.0,
-            frozen.marshal_version.1,
-        ),
-    }
+    println!(
+        "  frozen bytecode:  {} module(s) from .bytecode stream, python {}.{}: {decompiled} decompiled (static recovery, runtime compilation unverified), {empty} empty/comment-only, {failed} failed",
+        frozen.modules.len(),
+        frozen.marshal_version.0,
+        frozen.marshal_version.1,
+    );
     for module in frozen.modules.iter().take(40) {
         let label: &str = match disrobe_pass_nuitka::frozen_status(module) {
             disrobe_pass_nuitka::FrozenStatus::Decompiled => " (decompiled source)",
