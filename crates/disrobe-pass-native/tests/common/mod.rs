@@ -216,9 +216,27 @@ pub fn gcc() -> Option<String> {
     compiler_toolchain::probe_one("gcc")
 }
 
+const CALIBRATED_CLANG_MAJORS: std::ops::RangeInclusive<u32> = 18..=21;
+
 #[must_use]
 pub fn clang() -> Option<String> {
-    compiler_toolchain::probe_one("clang")
+    let bin: String = compiler_toolchain::probe_one("clang")?;
+    let output: std::process::Output = std::process::Command::new(&bin)
+        .arg("--version")
+        .output()
+        .expect("run clang --version");
+    let banner: String = String::from_utf8_lossy(&output.stdout).into_owned();
+    let first_line: &str = banner.lines().next().unwrap_or_default();
+    let major: Option<u32> = first_line
+        .split("clang version ")
+        .nth(1)
+        .and_then(|rest: &str| rest.split('.').next())
+        .and_then(|digits: &str| digits.trim().parse::<u32>().ok());
+    assert!(
+        major.is_some_and(|found: u32| CALIBRATED_CLANG_MAJORS.contains(&found)),
+        "the first clang on PATH reports `{first_line}`; the native graders are calibrated          against clang 18 to 21 (CI: 18 on Linux, 20 on macOS; this repository's fixtures:          19.1.7), so put one of those first on PATH"
+    );
+    Some(bin)
 }
 
 #[must_use]
