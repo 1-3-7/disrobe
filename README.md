@@ -114,7 +114,7 @@ A wider CPython 3.14.5 population of <!-- m:py_stdlib_full_modules -->574<!-- /m
 | Java class files to Java | <!-- m:jvm_per_method_count -->131 of 131<!-- /m --> top-level methods of the EdgeCases corpus recompile | Real `javac` | `recompile-only` | weekly |
 | Java behaviour | 117 / 131 of the same methods behave identically; 8 diverge and 6 cannot be driven in isolation | A real JVM | `strong` | weekly |
 | Android DEX to Java | <!-- m:dalvik_verifier_frac -->118 / 118<!-- /m --> verifier-presented classes pass; <!-- m:dalvik_link_skipped_count -->37 of 155<!-- /m --> classes are link-skipped and ungraded | `java -Xverify:all` | `strong` | weekly |
-| .NET assemblies to C# | 18 / 35 complete EdgeCases types recompile standalone | Roslyn `csc` | `recompile-only` | weekly |
+| .NET assemblies to C# | 18 / 35 EdgeCases types' method bodies recompile inside harness-built type shells | Roslyn `csc` | `recompile-only` | weekly |
 | WebAssembly | <!-- m:wasm_execution_frac -->57 / 57<!-- /m --> eligible functions return the same values, traps, and first 4,096 bytes of linear memory | wasmtime | `strong` | weekly |
 | Stripped BEAM modules | <!-- m:beam_recompile_frac -->19 / 19<!-- /m --> modules recompile, keep their exports, and print the same `test/0` result | Erlang/OTP 27.3.4 | `strong` | weekly |
 | Go type names, stripped binary | <!-- m:go_typename_count -->838 of 838<!-- /m --> names | None: the names come from the binary's own type data | `coverage-self-reported` | weekly |

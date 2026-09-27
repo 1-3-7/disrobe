@@ -1,9 +1,9 @@
 {
   "ci_attested": true,
-  "claim": "disrobe decompiles a .NET CIL type to C# that recompiles error-free standalone under the real csc, across the EdgeCases corpus.",
+  "claim": "disrobe decompiles .NET CIL method bodies to C# that recompile error-free under the real csc inside type declarations the test harness derives from metadata, across the EdgeCases corpus.",
   "comparison_basis": null,
   "competitors": [],
-  "detail": "18 of the 35 EdgeCases types recompile standalone with real csc from their recovered source, each type built as its own single-file compilation unit with no reference back to the origin assembly. This is recompile-only: it proves the recovered source is legal C#, not that it means what the original IL meant. A type that parses but states a refusal for at least one member, a state machine that was not reconstructed or a compiler-generated construct left unlowered, does not count as recovered even when the file compiles.",
+  "detail": "For 18 of the 35 EdgeCases types, the recovered method bodies recompile with real csc inside type and field declarations the test harness derives from metadata, each type built as its own single-file compilation unit with no reference back to the origin assembly. This is recompile-only: it proves the recovered source is legal C#, not that it means what the original IL meant. A type that parses but states a refusal for at least one member, a state machine that was not reconstructed or a compiler-generated construct left unlowered, does not count as recovered even when the file compiles.",
   "disrobe_leads": null,
   "ecosystem": "dotnet",
   "floor": 51.42857142857143,
@@ -12,7 +12,7 @@
   "id": "dotnet-whole-type-recompile",
   "measured": "51.43%",
   "oracle": {
-    "external": "real csc (dotnet SDK 9.0.316): recovered C# must recompile standalone as its own single-file compilation unit",
+    "external": "real csc (dotnet SDK 9.0.316): recovered method bodies, wrapped in type and field declarations the harness builds from metadata, must recompile as one single-file compilation unit per type",
     "kind": "recovery-import",
     "note": "Oracle strength is recompile-only: the recovered source compiling proves it is legal C#, not that it means what the original IL meant. A member that states a refusal (an unreconstructed state machine or an unlowered compiler-generated construct) does not count as recovered even when the type compiles. Measured locally; CI does not assert the percentage, only that the named members in EDGECASES_RECOMPILE_MEMBERS keep recompiling."
   },
