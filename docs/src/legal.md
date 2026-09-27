@@ -44,7 +44,7 @@ Comparable provisions exist in the United Kingdom (CDPA §50B/50BA), Canada (Cop
 
 ### What `disrobe` does and does not ship
 
-- The repository **does not ship** third-party copyrighted obfuscated bytecode in its public test corpus. Test inputs include project-authored fixtures, licensed third-party regression inputs identified in [NOTICE](NOTICE), and samples referenced by hash whose bytes must be fetched separately under their applicable terms.
+- The repository **does not ship** third-party copyrighted obfuscated bytecode in its public test corpus. Test inputs include project-authored fixtures, licensed third-party regression inputs identified in [NOTICE](https://github.com/1-3-7/disrobe/blob/main/NOTICE), and samples referenced by hash whose bytes must be fetched separately under their applicable terms.
 - The repository **does ship** parsers, decoders, decompilers, and orchestrator wrappers (Ghidra / jadx / CFR / Vineflower / ILSpy / de4dot, headless). Applied to a sample, those can produce output that may be considered a derivative work of that sample under applicable copyright law. Producing that output lawfully is the user's responsibility.
 
 ### Responsible disclosure
@@ -87,7 +87,7 @@ Each section records the project's posture toward one protector's output and the
 
 Jscrambler is a commercial JavaScript protection platform. It ships a free tier and paid tiers, and it applies protection as a configurable list of named transforms grouped into obfuscation, optimization, runtime application self-protection (RASP), and code locks. `disrobe` ships a Jscrambler detector, a reverser for each of the 36 transforms, 12 template chains, and an integrity-loop strip, so the project owes an explicit account of *what* it acts on, *when*, and *why*. The project commits to a written stance in this section before any gray-zone protector escalates from recognition to a peel; this is that file for Jscrambler.
 
-This file also serves as the gate document for the whole JavaScript deobfuscation pass. `DR-JSDEOB-0010`, the authorization-required error, names this page whenever a gated reverser refuses to run. The other protectors that pass gates share it and keep their own stance files: [PreEmptive JSDefender](jsdefender-stance.md), [PACE (JS)](pace-js-stance.md), and [Digital.ai / Arxan (JS)](digital-ai-arxan-stance.md).
+This file also serves as the gate document for the whole JavaScript deobfuscation pass. `DR-JSDEOB-0010`, the authorization-required error, names this page whenever a gated reverser refuses to run. The other protectors that pass gates share it and keep their own stance files: [PreEmptive JSDefender](#jsdefender), [PACE (JS)](#pace), and [Digital.ai / Arxan (JS)](#arxan).
 
 #### What `disrobe` does to Jscrambler input
 
@@ -170,7 +170,7 @@ The legal posture rests on the narrowness of the act, so each item below states 
 
 The AMBER floor still applies. JSDefender is a commercial product, and its deployment normally attaches EULA terms. Those terms commonly include anti-reverse-engineering or no-circumvention language. Enforceability of that language against a lawful acquirer performing statutorily permitted acts is jurisdiction-sensitive. `disrobe` therefore detects JSDefender by default and runs the static-layer peel only after the caller asserts authorization.
 
-The gate is an assertion by the operator, not an adjudication by the tool. Passing `--i-have-authorization` is the operator's representation that they are authorized to analyze the input for the intended activity. The operator carries that responsibility. The peel entry point refuses to run without the assertion and returns `DR-JSDEOB-0010`, which names the flag and points to the pass-wide gate document, [Jscrambler](jscrambler-stance.md). Detection output names this file as the governing stance.
+The gate is an assertion by the operator, not an adjudication by the tool. Passing `--i-have-authorization` is the operator's representation that they are authorized to analyze the input for the intended activity. The operator carries that responsibility. The peel entry point refuses to run without the assertion and returns `DR-JSDEOB-0010`, which names the flag and points to the pass-wide gate document, [Jscrambler](#jscrambler). Detection output names this file as the governing stance.
 
 #### The contractual surface
 
@@ -306,7 +306,7 @@ Disrobe classifies PyArmor as AMBER because permission to analyze protected outp
 
 The dedicated `pyarmor unpack` command does not enforce a free-versus-paid authorization gate. Its static v8/v9 recovery paths are available without `--i-have-authorization`; callers must establish permission independently. The `decryption-keys` LLM category separately requires that assertion. This flag records the user's assertion and does not establish legal permission.
 
-Dynamic execution in the v6/v7 fallback requires `--allow-dynamic` and runs the wrapper in a watchdog-controlled subprocess. BCC native-body lifting separately requires `--allow-bcc` and analyzes native blobs in process. These flags select technical behavior; they do not grant rights to the input. See [Forensics and malware safety](../src/forensics-safety.md).
+Dynamic execution in the v6/v7 fallback requires `--allow-dynamic` and runs the wrapper in a watchdog-controlled subprocess. BCC native-body lifting separately requires `--allow-bcc` and analyzes native blobs in process. These flags select technical behavior; they do not grant rights to the input. See [Forensics and malware safety](forensics-safety.md).
 
 #### Statutory scope
 
