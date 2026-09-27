@@ -1,9 +1,8 @@
 #![allow(clippy::needless_pass_by_value)]
-use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use disrobe_core::subprocess::{CapturedOutput, wait_with_output_timeout};
+use disrobe_core::subprocess::{CapturedOutput, run_captured};
 
 use super::util::push_format;
 
@@ -136,21 +135,16 @@ fn build_report() -> String {
 }
 
 fn first_line_of(cmd: &str, args: &[&str]) -> String {
-    let child: std::process::Child = match Command::new(cmd)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
-        Ok(c) => c,
+    let out: CapturedOutput = match run_captured(
+        Path::new(cmd),
+        args,
+        Duration::from_secs(3),
+        CAPTURE_CAP_BYTES,
+    ) {
+        Ok(Some(output)) => output,
+        Ok(None) => return "(timed out)".to_owned(),
         Err(_) => return "(not installed)".to_owned(),
     };
-    let out: CapturedOutput =
-        match wait_with_output_timeout(child, Duration::from_secs(3), CAPTURE_CAP_BYTES) {
-            Some(o) => o,
-            None => return "(timed out)".to_owned(),
-        };
     let s_out: String = String::from_utf8_lossy(&out.stdout).trim().to_owned();
     let s_err: String = String::from_utf8_lossy(&out.stderr).trim().to_owned();
     s_out

@@ -1,12 +1,11 @@
 #![allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use serde::Serialize;
 
-use disrobe_core::subprocess::{CapturedOutput, wait_with_output_timeout};
+use disrobe_core::subprocess::{CapturedOutput, run_captured};
 
 use super::install::{self, InstallSpec, Platform};
 use super::output::{OutputFormat, emit};
@@ -420,15 +419,8 @@ fn probe_version_at(path: &std::path::Path, args: &[&str]) -> Option<String> {
     } else {
         args.to_vec()
     };
-    let child: Result<std::process::Child, std::io::Error> = Command::new(path)
-        .args(arg_list)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn();
-    let child: std::process::Child = child.ok()?;
     let out: CapturedOutput =
-        wait_with_output_timeout(child, Duration::from_secs(3), CAPTURE_CAP_BYTES)?;
+        run_captured(path, &arg_list, Duration::from_secs(3), CAPTURE_CAP_BYTES).ok()??;
     let stdout: String = String::from_utf8_lossy(&out.stdout).trim().to_owned();
     let stderr: String = String::from_utf8_lossy(&out.stderr).trim().to_owned();
     let first: String = stdout

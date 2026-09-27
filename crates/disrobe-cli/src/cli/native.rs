@@ -3,7 +3,6 @@ use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use object::{Object, ObjectSection, ObjectSegment, ObjectSymbol, SectionFlags, SectionKind};
@@ -29,15 +28,14 @@ struct CappedRun {
     stderr: Vec<u8>,
 }
 
-fn run_capped(mut command: Command, timeout: Duration) -> miette::Result<CappedRun> {
-    let child: std::process::Child = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| miette::miette!("DR-NATIVE-0004: ghidra-headless spawn failed: {e}"))?;
+fn run_capped(
+    program: &Path,
+    args: &[std::ffi::OsString],
+    timeout: Duration,
+) -> miette::Result<CappedRun> {
     Ok(
-        match disrobe_core::subprocess::wait_with_output_timeout(child, timeout, MAX_CAPTURE_OUTPUT)
+        match disrobe_core::subprocess::run_captured(program, args, timeout, MAX_CAPTURE_OUTPUT)
+            .map_err(|e| miette::miette!("DR-NATIVE-0004: ghidra-headless spawn failed: {e}"))?
         {
             Some(captured) => CappedRun {
                 exit_code: captured.exit_code,
@@ -1362,20 +1360,20 @@ fn decompile_ghidra(input: PathBuf, out: Option<PathBuf>, emit: Vec<String>) -> 
     write_decompile_script(&script_path, &decompile_out)?;
 
     let spinner: StageSpinner = StageSpinner::start("native decompile", "running ghidra-headless");
-    let mut command: Command = Command::new(&ghidra);
-    command
-        .arg(&project_dir)
-        .arg("disrobe-native")
-        .arg("-import")
-        .arg(&input)
-        .arg("-postScript")
-        .arg(script_name)
-        .arg("-scriptPath")
-        .arg(&script_dir)
-        .arg("-deleteProject")
-        .arg("-overwrite")
-        .arg("-noanalysis");
-    let capped: CappedRun = run_capped(command, GHIDRA_DECOMPILE_TIMEOUT)?;
+    let args: Vec<std::ffi::OsString> = vec![
+        project_dir.clone().into_os_string(),
+        "disrobe-native".into(),
+        "-import".into(),
+        input.clone().into_os_string(),
+        "-postScript".into(),
+        script_name.into(),
+        "-scriptPath".into(),
+        script_dir.clone().into_os_string(),
+        "-deleteProject".into(),
+        "-overwrite".into(),
+        "-noanalysis".into(),
+    ];
+    let capped: CappedRun = run_capped(&ghidra, &args, GHIDRA_DECOMPILE_TIMEOUT)?;
     if capped.timed_out {
         spinner.finish("ghidra-headless timed out");
         return Err(miette::miette!(
