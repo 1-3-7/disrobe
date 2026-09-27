@@ -139,14 +139,15 @@ fn every_recovered_pseudo_c_body_compiles_under_a_real_c_compiler() {
         );
         let scratch: ScratchDir = scratch_dir(&format!("{}-c", fixture.tag));
         let dir: &Path = scratch.path();
-        let mut inputs: Vec<PathBuf> = Vec::new();
+        let mut inputs: Vec<String> = Vec::new();
         for (body, source) in bodies.iter().take(MAX_GRADED_C_BODIES) {
-            let file: PathBuf = dir.join(format!("{:016x}.c", body.start));
-            std::fs::write(&file, source).expect("write a graded body");
-            inputs.push(file);
+            let name: String = format!("{:016x}.c", body.start);
+            std::fs::write(dir.join(&name), source).expect("write a graded body");
+            inputs.push(name);
         }
         let graded: usize = inputs.len();
         let output: Output = Command::new(&compiler)
+            .current_dir(dir)
             .arg("-fsyntax-only")
             .arg("-std=c11")
             .arg("-Werror=implicit-function-declaration")
