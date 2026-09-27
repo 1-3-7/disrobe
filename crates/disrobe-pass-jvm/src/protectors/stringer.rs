@@ -51,7 +51,7 @@ pub fn peel(cf: &ClassFile, _class_name: &str, _method_name: &str) -> ProtectorP
                  getResourceAsStream method, invoking it, and walking the resulting \
                  ZipInputStream: it consumes the enclosing jar's ZIP directory (every sibling \
                  entry's name and size in central-directory order), not an empty stream. On the \
-                 real bundled sample the genuine fold is 1738644257434835613 (verified against \
+                 real bundled sample the correct fold is 1738644257434835613 (verified against \
                  ube.tms.uh.B() run from the full 305 KB jar under a JVM); the empty-input fold \
                  disrobe can evaluate is a different value (2202906307356721367) that does not \
                  decrypt the constants. That jar directory is absent from the committed \

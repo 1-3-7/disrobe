@@ -127,10 +127,8 @@ fn recover_via_char_array_scheme(cf: &ClassFile, report: &mut ProtectorPeelRepor
             report.status = PeelStatus::CipherRecovered;
         }
         report.notes.push(format!(
-            "recovered {recovered} string(s) by executing the class's injected char-array decrypt \
-             method against the encrypted constant pool: the two byte masks are folded from the \
-             method's own constant prologue and applied as an alternating XOR walked from the last \
-             code unit toward the first"
+            "recovered {recovered} string(s) with the class's char-array decrypt method: a \
+             two-mask alternating XOR over the encrypted constant-pool strings"
         ));
     }
     recovered

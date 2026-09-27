@@ -53,8 +53,8 @@ pub fn peel(cf: &ClassFile) -> ProtectorPeelReport {
     report.cff_branches_recovered = cff.edges_redirected;
     if cff.flattened_methods > 0 {
         report.notes.push(format!(
-            "control-flow-flattening: {} of {} state-dispatcher method(s) un-flattened and \
-             re-structured to fully reducible straight-line control flow ({} dispatcher edge(s) \
+            "control-flow-flattening: {} of {} state-dispatcher method(s) un-flattened to \
+             reducible control flow with no residual switch region ({} dispatcher edge(s) \
              rewired to their resolved successors)",
             cff.methods_fully_structured, cff.flattened_methods, cff.edges_redirected
         ));
