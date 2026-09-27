@@ -131,10 +131,7 @@ fn oracle_with_runtime(name: &str, interp: &str, recovered: String) {
 }
 
 fn oracle(name: &str) {
-    let Some(interp): Option<String> = find_tool(&["luau", "luau.exe"]) else {
-        eprintln!("no luau runtime on PATH; skipping execution oracle for {name}");
-        return;
-    };
+    let interp: String = require_tool(&["luau", "luau.exe"], "runtime");
     oracle_with_runtime(name, &interp, recovered_source(name));
 }
 
@@ -187,6 +184,13 @@ fn oracle_luau_continue_else() {
         .unwrap_or_else(|error: std::io::Error| panic!("fixture must be tracked: {error}"));
     let regenerated: Vec<u8> = compile_fixture(&compiler, &source_path);
     assert_eq!(
+        regenerated.first(),
+        fixture.first(),
+        "{compiler} emits Luau bytecode version {:?}, but the committed fixture is version {:?} from Luau 0.725; put Luau 0.725 first on PATH",
+        regenerated.first(),
+        fixture.first()
+    );
+    assert_eq!(
         regenerated, fixture,
         "Luau 0.725 compiler must reproduce the committed continue/else fixture"
     );
@@ -202,10 +206,7 @@ fn oracle_luau_continue_else() {
 
 #[test]
 fn closures_recursion_recompiles() {
-    let Some(compiler): Option<String> = find_tool(&["luau-compile", "luau-compile.exe"]) else {
-        eprintln!("no luau-compile on PATH; skipping recompile check");
-        return;
-    };
+    let compiler: String = require_tool(&["luau-compile", "luau-compile.exe"], "compiler");
     let recovered: String = recovered_source("closures_recursion");
     assert!(
         recompiles(&compiler, &recovered),
