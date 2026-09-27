@@ -36,6 +36,8 @@ const CAPACITOR_MARKERS: &[&str] = &[
     "App/App/public/capacitor.config.json",
 ];
 
+const CAPACITOR_SIDECARS: &[&str] = &["assets/capacitor.plugins.json"];
+
 pub fn extract_webview_bundle(bytes: &[u8]) -> Result<WebviewExtractionReport> {
     let cursor: Cursor<&[u8]> = Cursor::new(bytes);
     let mut archive: ZipArchive<Cursor<&[u8]>> = ZipArchive::new(cursor)?;
@@ -92,6 +94,9 @@ pub fn extract_webview_bundle(bytes: &[u8]) -> Result<WebviewExtractionReport> {
 
 #[must_use]
 pub fn is_webview_asset(path: &str) -> bool {
+    if CAPACITOR_MARKERS.contains(&path) || CAPACITOR_SIDECARS.contains(&path) {
+        return true;
+    }
     let lower_ok: bool = path.starts_with("assets/www/")
         || path.starts_with("assets/public/")
         || path.starts_with("App/App/public/");
@@ -189,6 +194,42 @@ mod tests {
                 .assets
                 .iter()
                 .any(|a: &WebviewAsset| a.container_path.ends_with("/app.js"))
+        );
+    }
+
+    #[test]
+    fn capacitor_config_beside_the_web_root_is_extracted() {
+        let mut buf: Vec<u8> = Vec::new();
+        {
+            let cursor: Cursor<&mut Vec<u8>> = Cursor::new(&mut buf);
+            let mut zw: ZipWriter<Cursor<&mut Vec<u8>>> = ZipWriter::new(cursor);
+            let opts: SimpleFileOptions =
+                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+            for (name, contents) in [
+                ("assets/public/index.html", &b"<html></html>"[..]),
+                ("assets/capacitor.config.json", &b"{\"appId\":\"x\"}"[..]),
+                ("assets/capacitor.plugins.json", &b"[]"[..]),
+                ("assets/other.json", &b"{}"[..]),
+            ] {
+                zw.start_file::<&str, ()>(name, opts).expect("start");
+                zw.write_all(contents).expect("write");
+            }
+            zw.finish().expect("finish");
+        }
+        let report: WebviewExtractionReport = extract_webview_bundle(&buf).expect("extract");
+        let mut paths: Vec<&str> = report
+            .assets
+            .iter()
+            .map(|a: &WebviewAsset| a.container_path.as_str())
+            .collect();
+        paths.sort_unstable();
+        assert_eq!(
+            paths,
+            [
+                "assets/capacitor.config.json",
+                "assets/capacitor.plugins.json",
+                "assets/public/index.html"
+            ]
         );
     }
 
