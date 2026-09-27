@@ -50,3 +50,6 @@ object = { workspace = true }
 [[bench]]
 name = "ssa_build"
 harness = false
+
+[package.metadata.disrobe]
+level = 8

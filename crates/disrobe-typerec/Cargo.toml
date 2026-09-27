@@ -23,3 +23,6 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 disrobe-core = { workspace = true }
+
+[package.metadata.disrobe]
+level = 5

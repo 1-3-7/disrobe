@@ -70,3 +70,6 @@ path = "src/bin/mock_proc.rs"
 name = "chain_bench"
 harness = false
 required-features = ["chain"]
+
+[package.metadata.disrobe]
+level = 1

@@ -25,3 +25,7 @@ disrobe-pass-native = { workspace = true }
 disrobe-query = { workspace = true }
 object = { workspace = true }
 wat = "1"
+
+[package.metadata.disrobe]
+level = 7
+group = "analysis"

@@ -32,3 +32,6 @@ tokio = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
+
+[package.metadata.disrobe]
+level = 7

@@ -75,3 +75,6 @@ path = "tests/fixtures/gen_container.rs"
 [dev-dependencies]
 disrobe-testkit = { workspace = true }
 rpm = { workspace = true }
+
+[package.metadata.disrobe]
+level = 2

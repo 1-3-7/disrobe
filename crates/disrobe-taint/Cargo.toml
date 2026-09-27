@@ -29,3 +29,7 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 wat = "1"
 zip = { workspace = true }
+
+[package.metadata.disrobe]
+level = 7
+group = "analysis"

@@ -259,3 +259,7 @@ serde_yaml_ng = "0.10"
 tempfile = "3"
 tokio-stream = { version = "0.1", features = ["net"] }
 wat = "1"
+
+[package.metadata.disrobe]
+level = 10
+group = "front-end"

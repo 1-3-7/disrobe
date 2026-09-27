@@ -37,3 +37,6 @@ harness = false
 [[test]]
 name = "seed_reach"
 required-features = ["semantic-reach"]
+
+[package.metadata.disrobe]
+level = 2

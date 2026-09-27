@@ -41,3 +41,6 @@ serde_json = { workspace = true }
 disrobe-pass-pickle = { workspace = true }
 disrobe-testkit = { workspace = true }
 blake3 = { workspace = true }
+
+[package.metadata.disrobe]
+level = 8

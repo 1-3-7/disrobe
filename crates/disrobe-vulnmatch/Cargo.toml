@@ -28,3 +28,7 @@ default = []
 chain = ["disrobe-core/chain"]
 
 [dev-dependencies]
+
+[package.metadata.disrobe]
+level = 7
+group = "analysis"

@@ -32,3 +32,6 @@ divan = { workspace = true }
 [[bench]]
 name = "envelope_codec"
 harness = false
+
+[package.metadata.disrobe]
+level = 4

@@ -83,3 +83,7 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
+
+[package.metadata.disrobe]
+level = 9
+group = "engine"

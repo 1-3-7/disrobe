@@ -26,3 +26,6 @@ disrobe-ir = { workspace = true }
 disrobe-ir = { workspace = true }
 disrobe-core = { workspace = true }
 blake3 = { workspace = true }
+
+[package.metadata.disrobe]
+level = 5

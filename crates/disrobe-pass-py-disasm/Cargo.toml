@@ -44,3 +44,6 @@ yaxpeax-arm = { workspace = true }
 
 [dev-dependencies]
 disrobe-testkit = { workspace = true }
+
+[package.metadata.disrobe]
+level = 5

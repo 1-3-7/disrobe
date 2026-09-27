@@ -81,3 +81,6 @@ disrobe-query = { workspace = true }
 
 [lints]
 workspace = true
+
+[package.metadata.disrobe]
+level = 10

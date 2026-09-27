@@ -42,3 +42,6 @@ semantic-reach = []
 
 [dev-dependencies]
 object = { workspace = true, features = ["write"] }
+
+[package.metadata.disrobe]
+level = 6

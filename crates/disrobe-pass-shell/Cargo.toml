@@ -41,3 +41,6 @@ base64 = "0.22"
 flate2 = { workspace = true }
 zip = { workspace = true }
 cfb = "0.10"
+
+[package.metadata.disrobe]
+level = 8

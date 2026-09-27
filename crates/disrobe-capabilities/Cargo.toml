@@ -34,3 +34,6 @@ thiserror = { workspace = true }
 goblin = { workspace = true }
 object = { workspace = true }
 serde_json = { workspace = true }
+
+[package.metadata.disrobe]
+level = 7

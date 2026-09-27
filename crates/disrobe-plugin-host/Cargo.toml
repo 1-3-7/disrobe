@@ -22,3 +22,7 @@ thiserror = { workspace = true }
 [dev-dependencies]
 minisign = "0.9.1"
 wat = "1"
+
+[package.metadata.disrobe]
+level = 7
+group = "plugin"

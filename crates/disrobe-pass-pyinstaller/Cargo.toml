@@ -45,3 +45,6 @@ disrobe-py-marshal = { workspace = true }
 [[bench]]
 name = "cookie_find"
 harness = false
+
+[package.metadata.disrobe]
+level = 8

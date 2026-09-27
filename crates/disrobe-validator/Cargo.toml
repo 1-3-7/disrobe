@@ -33,3 +33,6 @@ blake3 = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
+
+[package.metadata.disrobe]
+level = 9

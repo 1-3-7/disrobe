@@ -34,3 +34,7 @@ iced-x86 = { workspace = true, features = ["code_asm"] }
 object = { workspace = true }
 wasmparser = { workspace = true }
 wat = "1"
+
+[package.metadata.disrobe]
+level = 7
+group = "analysis"

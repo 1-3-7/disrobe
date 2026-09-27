@@ -17,3 +17,6 @@ workspace = true
 
 [dependencies]
 tempfile = "3"
+
+[package.metadata.disrobe]
+level = "dev"

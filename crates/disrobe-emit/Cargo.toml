@@ -25,3 +25,6 @@ prettyplease.workspace = true
 [dev-dependencies]
 disrobe-core = { workspace = true }
 proptest.workspace = true
+
+[package.metadata.disrobe]
+level = 3

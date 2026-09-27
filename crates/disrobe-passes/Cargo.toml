@@ -103,3 +103,7 @@ disrobe-pass-as3 = { workspace = true, optional = true }
 disrobe-pass-scriptlang = { workspace = true, optional = true }
 disrobe-pass-nativelang = { workspace = true, optional = true }
 disrobe-pass-webview = { workspace = true, optional = true }
+
+[package.metadata.disrobe]
+level = 9
+group = "engine"

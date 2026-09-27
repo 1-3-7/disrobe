@@ -23,3 +23,7 @@ disrobe-core = { workspace = true }
 iced-x86.workspace = true
 rand.workspace = true
 sha2.workspace = true
+
+[package.metadata.disrobe]
+level = 5
+group = "lift"

@@ -23,3 +23,6 @@ pyo3 = { workspace = true }
 
 [lints]
 workspace = true
+
+[package.metadata.disrobe]
+level = 8

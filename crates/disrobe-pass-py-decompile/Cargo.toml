@@ -35,3 +35,6 @@ chain = ["disrobe-core/chain"]
 llm-metadata = ["dep:disrobe-llm-metadata"]
 
 [dev-dependencies]
+
+[package.metadata.disrobe]
+level = 6

@@ -48,3 +48,6 @@ toml = { workspace = true }
 [[bench]]
 name = "full_pipeline"
 harness = false
+
+[package.metadata.disrobe]
+level = 8

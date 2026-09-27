@@ -35,3 +35,6 @@ serde_json = { workspace = true }
 [[test]]
 name = "default_build_parity"
 required-features = ["smt-verify"]
+
+[package.metadata.disrobe]
+level = 5

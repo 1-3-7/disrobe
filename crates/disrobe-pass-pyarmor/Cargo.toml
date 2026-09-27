@@ -56,3 +56,6 @@ llm-metadata = ["dep:disrobe-llm-metadata"]
 [[bench]]
 name = "v9_unpack"
 harness = false
+
+[package.metadata.disrobe]
+level = 8

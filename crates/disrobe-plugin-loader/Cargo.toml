@@ -25,3 +25,7 @@ thiserror = { workspace = true }
 [dev-dependencies]
 wat = "1"
 base64 = { workspace = true }
+
+[package.metadata.disrobe]
+level = 7
+group = "plugin"

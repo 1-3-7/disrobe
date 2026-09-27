@@ -87,3 +87,6 @@ divan = { workspace = true }
 name = "snapshot_declarations"
 harness = false
 required-features = ["benchmarks"]
+
+[package.metadata.disrobe]
+level = 8

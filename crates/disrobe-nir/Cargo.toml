@@ -22,3 +22,6 @@ rkyv = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+
+[package.metadata.disrobe]
+level = 4

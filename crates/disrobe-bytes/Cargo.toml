@@ -19,3 +19,6 @@ workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+
+[package.metadata.disrobe]
+level = 0

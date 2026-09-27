@@ -59,3 +59,7 @@ required-features = ["wasm"]
 name = "hir_structurize_oracle"
 path = "tests/hir_structurize_oracle.rs"
 required-features = ["wasm"]
+
+[package.metadata.disrobe]
+level = 5
+group = "lift"

@@ -94,3 +94,7 @@ object = { workspace = true }
 [[bin]]
 name = "disrobe-mcp"
 path = "src/main.rs"
+
+[package.metadata.disrobe]
+level = 10
+group = "front-end"

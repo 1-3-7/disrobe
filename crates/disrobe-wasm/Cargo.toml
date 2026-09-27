@@ -49,3 +49,6 @@ getrandom = { version = "0.4", default-features = false }
 
 [dev-dependencies]
 wat = "1"
+
+[package.metadata.disrobe]
+level = 10
