@@ -335,6 +335,7 @@ erl_crash.dump
 /corpus/python/freezers/py2exe/extracted/hello.exe
 /corpus/python/freezers/shiv/extracted/site-packages/bin/
 /corpus/python/nuitka/module/__pycache__/
+/corpus/python/nuitka/module/*.pyd
 /corpus/python/nuitka/plugin-anti-bloat/
 /corpus/python/nuitka/standalone/
 /corpus/python/obfuscators/kramer/edge-cases/real_async_fn.pyc
