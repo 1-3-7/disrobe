@@ -125,7 +125,7 @@ fn missing_columns(
     true
 }
 
-fn column_str<'row>(row: &'row msi::Row<'_>, column: &str) -> Option<&'row str> {
+fn column_str<'row>(row: &'row msi::Row, column: &str) -> Option<&'row str> {
     if row.has_column(column) {
         row[column].as_str()
     } else {
