@@ -1,4 +1,4 @@
-#![cfg(feature = "smt-solver")]
+#![cfg(all(feature = "smt-solver", target_arch = "x86_64"))]
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use std::collections::BTreeSet;
@@ -237,14 +237,21 @@ fn unique_dir() -> disrobe_core::scratch::ScratchDir {
 
 #[test]
 fn gcc_o2_switch_resolves_against_objdump_ground_truth() {
-    if !tool_present("gcc", "-dumpmachine") || !tool_present("objdump", "--version") {
-        eprintln!("skip: gcc/objdump not on PATH");
-        return;
-    }
-    if !gcc_is_x86_64() {
-        eprintln!("skip: gcc is not an x86_64 target");
-        return;
-    }
+    assert!(
+        tool_present("gcc", "-dumpmachine"),
+        "gcc is required on PATH (probed `gcc -dumpmachine`) to build the switch this case grades; \
+         CI provisions it on every x86_64 leg"
+    );
+    assert!(
+        tool_present("objdump", "--version"),
+        "objdump is required on PATH (probed `objdump --version`) as the disassembly ground truth; \
+         CI provisions it beside gcc on every x86_64 leg"
+    );
+    assert!(
+        gcc_is_x86_64(),
+        "gcc on PATH must target x86_64 on this x86_64 host, since the recogniser grades the x86_64 \
+         lowering of SWITCH_SOURCE"
+    );
     let scratch: disrobe_core::scratch::ScratchDir = unique_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
     let source: PathBuf = dir.join("sw.c");

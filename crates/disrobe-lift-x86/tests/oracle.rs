@@ -146,7 +146,16 @@ fn committed_gcc_text_matches_gnu_objdump_boundaries_and_mnemonics() {
 #[test]
 fn live_gcc_text_matches_live_gnu_objdump() {
     let Some(toolchain): Option<Toolchain> = find_toolchain() else {
-        eprintln!("x86-64 live GNU validation skipped because the toolchain is unavailable");
+        assert!(
+            cfg!(target_os = "macos") && env::var_os("DISROBE_REQUIRE_X86_GNU_TOOLCHAIN").is_none(),
+            "GNU gcc, objcopy and objdump are required for the live x86-64 validation; looked in \
+             DISROBE_X86_GNU_BIN, C:/Strawberry/c/bin on Windows, and every PATH directory"
+        );
+        eprintln!(
+            "UNGRADED: live x86-64 GNU validation needs GNU gcc, objcopy and objdump, which macOS \
+             does not carry under those names; point DISROBE_X86_GNU_BIN at them and set \
+             DISROBE_REQUIRE_X86_GNU_TOOLCHAIN=1 to make their absence fatal"
+        );
         return;
     };
     let (scratch, directory): (ScratchDir, PathBuf) = temporary_directory();
@@ -212,7 +221,15 @@ fn live_gcc_text_matches_live_gnu_objdump() {
 #[test]
 fn live_pypcode_reproduces_committed_effects() {
     let Some(python): Option<PathBuf> = find_python_with_pypcode() else {
-        eprintln!("x86-64 live pypcode validation skipped because pypcode 4.0.0 is unavailable");
+        assert!(
+            env::var_os("DISROBE_REQUIRE_PYPCODE").is_none(),
+            "DISROBE_REQUIRE_PYPCODE is set, so a python or python3 on PATH must import pypcode \
+             4.0.0 for the live effect validation"
+        );
+        eprintln!(
+            "UNGRADED: live x86-64 pypcode validation needs pypcode 4.0.0 importable from python \
+             or python3 on PATH; set DISROBE_REQUIRE_PYPCODE=1 to make its absence fatal"
+        );
         return;
     };
     let (scratch, directory): (ScratchDir, PathBuf) = temporary_directory();

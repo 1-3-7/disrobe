@@ -11,17 +11,8 @@ const MIN_SCANNED_CRATES: usize = 20;
 const SKIP_CEILING: &[(&str, usize)] = &[
     ("disrobe-binfmt", 2),
     ("disrobe-cli", 18),
-    ("disrobe-irsummary", 1),
-    ("disrobe-lift-x86", 2),
-    ("disrobe-mba", 3),
-    ("disrobe-nir-lift", 6),
-    ("disrobe-pass-dotnet", 2),
     ("disrobe-pass-native", 273),
     ("disrobe-pass-php", 3),
-    ("disrobe-pass-py-decompile", 7),
-    ("disrobe-pass-py-disasm", 1),
-    ("disrobe-pass-shell", 2),
-    ("disrobe-pass-wasm-deob", 12),
     ("disrobe-pyarmor-cextract", 5),
 ];
 

@@ -217,7 +217,7 @@ fn simplifications_match_an_external_bitvector_solver() {
     enforce_solver_requirement(detected.as_ref(), solver_is_required());
     let Some(solver): Option<Solver> = detected else {
         eprintln!(
-            "external_smt_differential: neither z3 nor bitwuzla found on PATH; skipping cleanly"
+            "UNGRADED: external_smt_differential needs z3 or bitwuzla on PATH; set DISROBE_REQUIRE_SOLVER=1 to make their absence fatal"
         );
         return;
     };

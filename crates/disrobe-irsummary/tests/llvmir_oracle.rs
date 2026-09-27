@@ -654,7 +654,15 @@ fn emitted_module_assembles_and_runs_under_real_llvm_if_available() {
     let (Some(llvm_as), Some(lli)): (Option<PathBuf>, Option<PathBuf>) =
         (which("llvm-as"), which("lli"))
     else {
-        eprintln!("skipping real-LLVM leg: llvm-as / lli not found on PATH");
+        assert!(
+            std::env::var_os("DISROBE_REQUIRE_LLVM_IR_TOOLS").is_none(),
+            "DISROBE_REQUIRE_LLVM_IR_TOOLS is set, so llvm-as and lli must both be on PATH to \
+             assemble and execute the emitted module"
+        );
+        eprintln!(
+            "UNGRADED: the real-LLVM leg needs llvm-as and lli on PATH; set \
+             DISROBE_REQUIRE_LLVM_IR_TOOLS=1 to make their absence fatal"
+        );
         return;
     };
 

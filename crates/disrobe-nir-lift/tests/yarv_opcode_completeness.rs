@@ -322,8 +322,10 @@ fn lifted_streams(module: &NirModule) -> Vec<Vec<String>> {
 #[test]
 fn yarv_lift_agrees_with_ruby_disasm_and_surfaces_unmodeled() {
     let Some((major, minor)): Option<(u32, u32)> = ruby_version() else {
-        eprintln!("skipping RubyVM#disasm agreement: ruby not on PATH");
-        return;
+        panic!(
+            "ruby is required on PATH for the RubyVM#disasm agreement (probed `ruby --version`); \
+             CI provisions Ruby 3.4.10 on every test leg"
+        );
     };
 
     let scratch: PathBuf =

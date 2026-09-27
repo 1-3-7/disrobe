@@ -140,6 +140,15 @@ fn cross_toolchain() -> Option<(String, String)> {
             return Some((gcc.to_owned(), objcopy.to_owned()));
         }
     }
+    assert!(
+        std::env::var_os("DISROBE_REQUIRE_AARCH64_ORACLES").is_none(),
+        "DISROBE_REQUIRE_AARCH64_ORACLES is set, so an aarch64 GNU gcc and objcopy must be on \
+         PATH; tried aarch64-linux-gnu-, aarch64-none-linux-gnu- and aarch64-linux-android-"
+    );
+    eprintln!(
+        "UNGRADED: the cross aarch64 check needs an aarch64 GNU gcc and objcopy on PATH; set \
+         DISROBE_REQUIRE_AARCH64_ORACLES=1 to make their absence fatal"
+    );
     None
 }
 
@@ -186,7 +195,6 @@ fn cross_compile(gcc: &str, objcopy: &str, name: &str, source: &str) -> Vec<u8> 
 #[test]
 fn cross_compiled_if_reaches_structured_surface() {
     let Some((gcc, objcopy)): Option<(String, String)> = cross_toolchain() else {
-        eprintln!("skipping cross aarch64 check: no aarch64 GNU toolchain on PATH");
         return;
     };
     let bytes: Vec<u8> = cross_compile(
@@ -205,7 +213,6 @@ fn cross_compiled_if_reaches_structured_surface() {
 #[test]
 fn cross_compiled_loop_reaches_structured_surface() {
     let Some((gcc, objcopy)): Option<(String, String)> = cross_toolchain() else {
-        eprintln!("skipping cross aarch64 check: no aarch64 GNU toolchain on PATH");
         return;
     };
     let bytes: Vec<u8> = cross_compile(

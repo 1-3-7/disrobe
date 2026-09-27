@@ -5,7 +5,12 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[path = "support/solver_requirement.rs"]
+#[allow(clippy::redundant_pub_crate)]
+mod solver_requirement;
+
 use disrobe_mba::{Expr, PermutationPolynomial, Width, equivalence_query};
+use solver_requirement::{enforce_solver_requirement, solver_is_required};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Answer {
@@ -196,8 +201,12 @@ fn permutation_inverses_are_proven_by_an_external_bitvector_solver() {
         }
     }
 
-    let Some(solver): Option<Solver> = detect_solver() else {
-        eprintln!("perm_poly_smt: neither z3 nor bitwuzla found on PATH; skipping the solver leg");
+    let detected: Option<Solver> = detect_solver();
+    enforce_solver_requirement(detected.as_ref(), solver_is_required());
+    let Some(solver): Option<Solver> = detected else {
+        eprintln!(
+            "UNGRADED: perm_poly_smt solver leg needs z3 or bitwuzla on PATH; set DISROBE_REQUIRE_SOLVER=1 to make their absence fatal"
+        );
         return;
     };
     eprintln!(

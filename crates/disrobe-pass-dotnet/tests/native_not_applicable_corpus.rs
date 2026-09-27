@@ -46,8 +46,10 @@ int main(void){ const char* s = "Themida .themida .vmp0 WinLicense ConfuserEx"; 
 #[test]
 fn native_benign_is_not_a_dotnet_assembly() {
     let Some(cc): Option<&'static str> = first_c_compiler() else {
-        eprintln!("SKIP: no C compiler available");
-        return;
+        panic!(
+            "a C compiler is required on PATH to build the native benign; tried cc, gcc and clang \
+             with `--version`"
+        );
     };
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
@@ -61,10 +63,11 @@ fn native_benign_is_not_a_dotnet_assembly() {
         .arg(&out)
         .status()
         .is_ok_and(|s: std::process::ExitStatus| s.success());
-    if !built {
-        eprintln!("SKIP: {cc} build failed");
-        return;
-    }
+    assert!(
+        built,
+        "{cc} answered --version but failed to build the fixed native benign {}",
+        src.display()
+    );
     let bytes: Vec<u8> = std::fs::read(&out).expect("read native binary");
     assert!(
         !is_dotnet_assembly(&bytes),

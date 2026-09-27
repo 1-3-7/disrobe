@@ -326,7 +326,15 @@ fn disrobe_offset_mnemonics(bytes: &[u8]) -> Vec<Vec<(u32, String)>> {
 #[test]
 fn cil_lift_agrees_with_ilspycmd() {
     if !ilspycmd_available() {
-        eprintln!("skipping ilspycmd agreement: no runnable ilspycmd on PATH");
+        assert!(
+            std::env::var_os("DISROBE_REQUIRE_ILSPYCMD").is_none(),
+            "DISROBE_REQUIRE_ILSPYCMD is set, so a runnable ilspycmd must be on PATH (probed \
+             `ilspycmd --version`)"
+        );
+        eprintln!(
+            "UNGRADED: the ilspycmd agreement needs a runnable ilspycmd on PATH; set \
+             DISROBE_REQUIRE_ILSPYCMD=1 to make its absence fatal"
+        );
         return;
     }
     for (rel, bytes) in FIXTURES {

@@ -243,9 +243,12 @@ fn committed_class_surfaces_unmodeled_opcodes_without_silent_nop() {
 
 #[test]
 fn jvm_lift_agrees_with_javap_and_surfaces_unmodeled_opcodes() {
-    if !tool_available("javac") || !tool_available("javap") {
-        eprintln!("skipping javap agreement: JDK javac/javap not on PATH");
-        return;
+    for tool in ["javac", "javap"] {
+        assert!(
+            tool_available(tool),
+            "{tool} is required on PATH for the javap agreement (probed `{tool} -version`); CI \
+             provisions JDK 25 on every test leg"
+        );
     }
 
     let dir: PathBuf = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("jvm_opcode_completeness");

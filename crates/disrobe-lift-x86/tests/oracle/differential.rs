@@ -370,8 +370,14 @@ fn lifted_state_matches_committed_cpu_reference() {
 #[test]
 fn live_cpu_reference_reproduces_the_committed_corpus() {
     let Some(python): Option<PathBuf> = find_python_with_unicorn() else {
+        assert!(
+            env::var_os("DISROBE_REQUIRE_UNICORN").is_none(),
+            "DISROBE_REQUIRE_UNICORN is set, so a python on PATH must import {REFERENCE_TOOL} to \
+             regenerate the executed differential"
+        );
         eprintln!(
-            "x86-64 executed differential regeneration skipped because {REFERENCE_TOOL} is unavailable"
+            "UNGRADED: x86-64 executed differential regeneration needs {REFERENCE_TOOL}; set \
+             DISROBE_REQUIRE_UNICORN=1 to make its absence fatal"
         );
         return;
     };

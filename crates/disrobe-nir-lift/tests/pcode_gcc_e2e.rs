@@ -1,3 +1,4 @@
+#![cfg(target_arch = "x86_64")]
 #![allow(clippy::expect_used, clippy::panic)]
 
 use std::fs;
@@ -81,7 +82,17 @@ fn gcc_targets_x86_64() -> bool {
 
 fn decompile(name: &str, source: &str, extra: &[&str]) -> Option<(SurfaceFunction, String)> {
     if !gnu_toolchain_available() {
-        eprintln!("skipping GCC x86-64 check: GNU GCC and objcopy are unavailable");
+        assert!(
+            cfg!(target_os = "macos")
+                && std::env::var_os("DISROBE_REQUIRE_X86_GNU_TOOLCHAIN").is_none(),
+            "GNU gcc targeting x86_64 and GNU objcopy are required on PATH (probed `gcc --version`, \
+             `gcc -dumpmachine` and `objcopy --version`)"
+        );
+        eprintln!(
+            "UNGRADED: the GCC x86-64 check needs GNU gcc and objcopy on PATH, which macOS does not \
+             carry under those names; set DISROBE_REQUIRE_X86_GNU_TOOLCHAIN=1 to make their \
+             absence fatal"
+        );
         return None;
     }
     let bytes: Vec<u8> = compile_text(name, source, extra);

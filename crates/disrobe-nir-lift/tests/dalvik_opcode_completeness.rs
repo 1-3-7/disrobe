@@ -442,7 +442,14 @@ fn run_dexdump(path: &Path) -> Output {
 #[test]
 fn dalvik_lift_agrees_with_dexdump() {
     if !tool_available("dexdump") {
-        eprintln!("skipping dexdump agreement: Android build-tools dexdump not on PATH");
+        assert!(
+            std::env::var_os("DISROBE_REQUIRE_ANDROID_TOOLCHAIN").is_none(),
+            "DISROBE_REQUIRE_ANDROID_TOOLCHAIN is set, so Android build-tools dexdump must be on PATH"
+        );
+        eprintln!(
+            "UNGRADED: the dexdump agreement needs Android build-tools dexdump on PATH; set \
+             DISROBE_REQUIRE_ANDROID_TOOLCHAIN=1 to make its absence fatal"
+        );
         return;
     }
     let mut corpus: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));

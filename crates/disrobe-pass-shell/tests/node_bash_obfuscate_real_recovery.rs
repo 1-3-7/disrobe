@@ -64,7 +64,12 @@ fn bash_path() -> Option<String> {
 fn dash_path() -> Option<String> {
     shell_path(
         &["dash"],
-        &["/usr/bin/dash", "/bin/dash", "C:/cygwin64/bin/dash.exe"],
+        &[
+            "/usr/bin/dash",
+            "/bin/dash",
+            "C:/msys64/usr/bin/dash.exe",
+            "C:/cygwin64/bin/dash.exe",
+        ],
     )
 }
 
@@ -122,8 +127,11 @@ fn clean_script_is_not_misdetected() {
 #[test]
 fn recovery_matches_original_behavior_under_bash() {
     let Some(bash): Option<String> = bash_path() else {
-        eprintln!("skip: no on-box bash for non-circular exec-diff grading");
-        return;
+        panic!(
+            "bash is required for the non-circular exec-diff grading; tried /usr/bin/bash, \
+             /bin/bash, C:/Program Files/Git/usr/bin/bash.exe, C:/cygwin64/bin/bash.exe and \
+             `bash` on PATH"
+        );
     };
     for (obf_rel, label) in [
         ("bash/node-bash-obfuscate/obfuscated_chunk4.sh", "chunk4"),
@@ -145,7 +153,15 @@ fn recovery_matches_original_behavior_under_bash() {
 #[test]
 fn recovery_matches_original_behavior_under_dash() {
     let Some(dash): Option<String> = dash_path() else {
-        eprintln!("skip: no on-box dash for non-circular exec-diff grading");
+        assert!(
+            cfg!(windows) && std::env::var_os("DISROBE_REQUIRE_DASH").is_none(),
+            "dash is required for the non-circular exec-diff grading; tried /usr/bin/dash, \
+             /bin/dash, C:/msys64/usr/bin/dash.exe, C:/cygwin64/bin/dash.exe and `dash` on PATH"
+        );
+        eprintln!(
+            "UNGRADED: the dash exec-diff grading needs dash, which Windows does not carry by \
+             default; set DISROBE_REQUIRE_DASH=1 to make its absence fatal"
+        );
         return;
     };
     let original: String = read_corpus("bash/node-bash-obfuscate/clean_original.sh");
