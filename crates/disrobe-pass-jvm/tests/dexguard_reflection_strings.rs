@@ -23,7 +23,7 @@ const DEX_SHA256: &str = "ff10daa91aefba5f57aba67a1584cbe4a21679ebc8dcbe39215602
 const MAIN_CLASS: &str = "com.disrobe.sample.DexGuardReflectStrings";
 const XOR_KEY: u8 = 0x66;
 const DECRYPT_METHOD: &str = "decrypt";
-const JDK_TIMEOUT: Duration = Duration::from_mins(2);
+const JDK_BACKSTOP: Duration = Duration::from_mins(5);
 const JDK_CAPTURE_LIMIT: usize = 1 << 20;
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -51,9 +51,11 @@ fn jdk_tool(name: &str) -> PathBuf {
 }
 
 fn run_jdk_tool(program: &Path, args: &[OsString], operation: &str) -> CapturedOutput {
-    let output: CapturedOutput = run_captured(program, args, JDK_TIMEOUT, JDK_CAPTURE_LIMIT)
+    let output: CapturedOutput = run_captured(program, args, JDK_BACKSTOP, JDK_CAPTURE_LIMIT)
         .unwrap_or_else(|error: std::io::Error| panic!("failed to launch {operation}: {error}"))
-        .unwrap_or_else(|| panic!("{operation} exceeded its wall-clock bound"));
+        .unwrap_or_else(|| {
+            panic!("{operation} did not exit within the {JDK_BACKSTOP:?} process backstop")
+        });
     assert_eq!(
         output.exit_code,
         Some(0),
