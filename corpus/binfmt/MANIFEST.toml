@@ -32,9 +32,11 @@ note = "real snap pack tooling requires snapd + meta/snap.yaml schema, which add
 [[fixtures]]
 path = "appimage/hello.AppImage"
 format = "AppImage type 2"
-tool = "disrobe baker: ELF stub (0x10000 header) + real squashfs concat"
-provenance = ".developer/scratch/binfmt-build/baker/src/main.rs::bake_appimage"
-note = "tail squashfs is the same real mksquashfs output as squashfs/hello.squashfs; ELF header has correct e_ident + AppImage type-2 magic (AI\\x02) at offset 8"
+tool = "appimage/bake.py: a 0x10000-byte ELF64 runtime stub followed by squashfs/hello.squashfs"
+provenance = "appimage/bake.py"
+size_bytes = 5_312_512
+sha256 = "86bcc0fec6bf83e70499a645926df6e0c72c5392e1ee152e3b3d7db7adf0a9aa"
+note = "tail squashfs is the same real mksquashfs output as squashfs/hello.squashfs; the stub is an x86-64 executable ELF header with one read-execute PT_LOAD segment covering the file, its entry at the segment base, and the AppImage type-2 magic (AI\\x02) at offset 8"
 
 [[fixtures]]
 path = "appimage-type1/AppImageAssistant.AppImage"
