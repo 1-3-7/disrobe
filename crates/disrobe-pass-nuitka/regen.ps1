@@ -14,14 +14,14 @@
     message rather than fabricating a fixture.
 
 .PARAMETER Only
-    Restrict to a single variant: onefile | standalone | module. Omit to build all.
+    Restrict to a single variant: onefile | standalone | module | console-disable. Omit to build all.
 
 .PARAMETER Force
     Rebuild even when the output already exists.
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('onefile', 'standalone', 'module')]
+    [ValidateSet('onefile', 'standalone', 'module', 'console-disable')]
     [string]$Only,
     [switch]$Force
 )
@@ -135,13 +135,14 @@ $variants = @{
     onefile    = @('--onefile')
     standalone = @('--standalone')
     module     = @('--module')
+    'console-disable' = @('--windows-console-mode=disable', '--file-reference-choice=frozen')
 }
 
 if ($Only) {
     Invoke-Variant -Name $Only -ExtraArgs $variants[$Only]
 }
 else {
-    foreach ($name in 'onefile', 'standalone', 'module') {
+    foreach ($name in 'onefile', 'standalone', 'module', 'console-disable') {
         Invoke-Variant -Name $name -ExtraArgs $variants[$name]
     }
 }
