@@ -230,15 +230,8 @@ fn large_onefile_recovers_without_oom() {
         return;
     }
     let bytes: Vec<u8> = std::fs::read(&path).expect("read scale-gate onefile");
-    let started: std::time::Instant = std::time::Instant::now();
     let decomp: NuitkaDecompilation =
         disrobe_pass_nuitka::decompile_bytes(&bytes).expect("large onefile must decompile");
-    let elapsed: std::time::Duration = started.elapsed();
-    eprintln!(
-        "large onefile decompiled in {:.1}s ({} MB input)",
-        elapsed.as_secs_f64(),
-        bytes.len() / 1024 / 1024
-    );
     assert_eq!(decomp.source_kind, DecompSourceKind::OnefilePayload);
 
     let frozen: &disrobe_pass_nuitka::FrozenModules = decomp
