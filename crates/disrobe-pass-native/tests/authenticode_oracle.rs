@@ -7,6 +7,8 @@ use std::process::Command;
 
 use disrobe_pass_native::{AuthenticodeReport, AuthenticodeVerdict, verify_authenticode};
 
+const NOW_SECS: u64 = 1_798_761_600;
+
 fn fixture_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -21,11 +23,11 @@ fn read_fixture(name: &str) -> Option<Vec<u8>> {
 #[test]
 fn committed_corpus_verdicts_are_correct() {
     let unsigned: Vec<u8> = read_fixture("unsigned.exe").expect("unsigned fixture present");
-    let unsigned_report: AuthenticodeReport = verify_authenticode(&unsigned);
+    let unsigned_report: AuthenticodeReport = verify_authenticode(&unsigned, NOW_SECS);
     assert_eq!(unsigned_report.verdict, AuthenticodeVerdict::NoSignature);
 
     let mismatch: Vec<u8> = read_fixture("hash_mismatch.exe").expect("byte-flip fixture present");
-    let mismatch_report: AuthenticodeReport = verify_authenticode(&mismatch);
+    let mismatch_report: AuthenticodeReport = verify_authenticode(&mismatch, NOW_SECS);
     assert_eq!(mismatch_report.verdict, AuthenticodeVerdict::HashMismatch);
     assert_ne!(
         mismatch_report.computed_hash, mismatch_report.claimed_hash,
@@ -34,7 +36,7 @@ fn committed_corpus_verdicts_are_correct() {
     assert!(!mismatch_report.claimed_hash.is_empty());
 
     let expired: Vec<u8> = read_fixture("expired_leaf.exe").expect("expired fixture present");
-    let expired_report: AuthenticodeReport = verify_authenticode(&expired);
+    let expired_report: AuthenticodeReport = verify_authenticode(&expired, NOW_SECS);
     assert_eq!(expired_report.verdict, AuthenticodeVerdict::Expired);
     assert_eq!(
         expired_report.computed_hash, expired_report.claimed_hash,
@@ -43,7 +45,7 @@ fn committed_corpus_verdicts_are_correct() {
 
     let self_signed: Vec<u8> =
         read_fixture("self_signed.exe").expect("self-signed fixture present");
-    let self_report: AuthenticodeReport = verify_authenticode(&self_signed);
+    let self_report: AuthenticodeReport = verify_authenticode(&self_signed, NOW_SECS);
     assert_eq!(self_report.verdict, AuthenticodeVerdict::SelfSigned);
     assert_eq!(self_report.computed_hash, self_report.claimed_hash);
     assert_eq!(self_report.chain.len(), 1);
@@ -51,7 +53,7 @@ fn committed_corpus_verdicts_are_correct() {
 
     let valid_untrusted: Vec<u8> =
         read_fixture("valid_untrusted.exe").expect("valid-untrusted fixture present");
-    let vu_report: AuthenticodeReport = verify_authenticode(&valid_untrusted);
+    let vu_report: AuthenticodeReport = verify_authenticode(&valid_untrusted, NOW_SECS);
     assert_eq!(vu_report.verdict, AuthenticodeVerdict::UntrustedChain);
     assert_eq!(
         vu_report.computed_hash, vu_report.claimed_hash,
@@ -65,7 +67,7 @@ fn committed_corpus_verdicts_are_correct() {
 #[test]
 fn wrong_eku_leaf_never_reaches_valid() {
     let bytes: Vec<u8> = read_fixture("wrong_eku.exe").expect("wrong-eku fixture present");
-    let report: AuthenticodeReport = verify_authenticode(&bytes);
+    let report: AuthenticodeReport = verify_authenticode(&bytes, NOW_SECS);
     assert_ne!(
         report.verdict,
         AuthenticodeVerdict::Valid,
@@ -86,7 +88,7 @@ fn wrong_eku_leaf_never_reaches_valid() {
 fn injected_timestamp_cannot_unexpire_a_signature() {
     let bytes: Vec<u8> =
         read_fixture("timestamp_forged_expired.exe").expect("forged-timestamp fixture present");
-    let report: AuthenticodeReport = verify_authenticode(&bytes);
+    let report: AuthenticodeReport = verify_authenticode(&bytes, NOW_SECS);
     assert_ne!(
         report.verdict,
         AuthenticodeVerdict::Valid,
@@ -126,7 +128,10 @@ fn real_binary_rfc3161_timestamp_is_extracted() {
         let Ok(bytes): Result<Vec<u8>, _> = fs::read(system32.join(name)) else {
             continue;
         };
-        let report: AuthenticodeReport = verify_authenticode(&bytes);
+        let report: AuthenticodeReport = verify_authenticode(
+            &bytes,
+            disrobe_core::time::now_secs().expect("SOURCE_DATE_EPOCH is unset or whole seconds"),
+        );
         if let Some(ts) = report.timestamp.as_ref() {
             eprintln!(
                 "TIMESTAMP via {name}: signing_time={}, hash={}, tsa={}",
@@ -225,7 +230,7 @@ fn osslsigncode_cross_check_of_hash_and_verdict() {
     for name in signed_samples {
         let path: PathBuf = fixture_dir().join(name);
         let bytes: Vec<u8> = fs::read(&path).expect("fixture present");
-        let report: AuthenticodeReport = verify_authenticode(&bytes);
+        let report: AuthenticodeReport = verify_authenticode(&bytes, NOW_SECS);
         let Some((digest, mismatch, no_sig)): Option<(String, bool, bool)> =
             ossl_calculated_digest(&tool, &path)
         else {
@@ -252,7 +257,7 @@ fn osslsigncode_cross_check_of_hash_and_verdict() {
     );
     let unsigned: Vec<u8> = fs::read(&unsigned_path).expect("unsigned fixture");
     assert_eq!(
-        verify_authenticode(&unsigned).verdict,
+        verify_authenticode(&unsigned, NOW_SECS).verdict,
         AuthenticodeVerdict::NoSignature
     );
 }
@@ -277,7 +282,10 @@ fn real_trusted_binary_reaches_valid() {
         let Ok(bytes): Result<Vec<u8>, _> = fs::read(system32.join(name)) else {
             continue;
         };
-        let report: AuthenticodeReport = verify_authenticode(&bytes);
+        let report: AuthenticodeReport = verify_authenticode(
+            &bytes,
+            disrobe_core::time::now_secs().expect("SOURCE_DATE_EPOCH is unset or whole seconds"),
+        );
         if report.verdict == AuthenticodeVerdict::Valid {
             eprintln!(
                 "VALID via {name}: digest={}, chain len={}, timestamp={}",

@@ -2,7 +2,8 @@
 use std::path::{Path, PathBuf};
 
 use disrobe_core::chain::{
-    ChainPassRecovery, ChainRecoveryReport, VerdictDoc, VerdictGrade, VerdictThreshold,
+    ChainPassRecovery, ChainRecoveryReport, RUN_FILE_NAME, RunRecord, VerdictDoc, VerdictGrade,
+    VerdictThreshold,
 };
 use disrobe_core::recovery::{ConfidenceTier, TierHistogram};
 use serde::Serialize;
@@ -14,7 +15,6 @@ struct PassRow {
     name: String,
     status: &'static str,
     confidence: &'static str,
-    duration_ms: Option<u128>,
     format_in: Option<String>,
     format_out: Option<String>,
 }
@@ -43,9 +43,9 @@ struct ContextReport {
     input: InputView,
     verdict: VerdictDoc,
     terminal_reason: Option<String>,
-    total_ms: u128,
     histogram: HistogramView,
     passes: Vec<PassRow>,
+    run: Option<RunRecord>,
 }
 
 fn load_recovery(path: &Path) -> miette::Result<ChainRecoveryReport> {
@@ -57,10 +57,32 @@ fn load_recovery(path: &Path) -> miette::Result<ChainRecoveryReport> {
     })?;
     serde_json::from_slice::<ChainRecoveryReport>(&bytes).map_err(|e: serde_json::Error| {
         miette::miette!(
-            "DR-CLI-0321: {} is not a valid disrobe.recovery/v1 report: {e}",
+            "DR-CLI-0321: {} is not a valid disrobe.recovery/v2 report: {e}",
             path.display()
         )
     })
+}
+
+fn load_run(out_dir: &Path) -> miette::Result<Option<RunRecord>> {
+    let path: PathBuf = out_dir.join(RUN_FILE_NAME);
+    let bytes: Vec<u8> = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(miette::miette!(
+                "DR-CLI-0319: cannot read {}: {error}",
+                path.display()
+            ));
+        }
+    };
+    serde_json::from_slice::<RunRecord>(&bytes)
+        .map(Some)
+        .map_err(|error: serde_json::Error| {
+            miette::miette!(
+                "DR-CLI-0319: {} is not a valid disrobe.run/v1 record: {error}",
+                path.display()
+            )
+        })
 }
 
 fn read_terminal_reason(out_dir: &Path) -> Option<String> {
@@ -178,7 +200,6 @@ pub(crate) fn run(
             name: p.name.clone(),
             status: p.status.as_str(),
             confidence: p.confidence.as_str(),
-            duration_ms: p.duration_ms,
             format_in: p.format_in.clone(),
             format_out: p.format_out.clone(),
         })
@@ -192,9 +213,8 @@ pub(crate) fn run(
             blake3: report.input.blake3.clone(),
             size: report.input.size,
         },
-        verdict: report.verdict.clone(),
+        verdict: report.verdict,
         terminal_reason: read_terminal_reason(&out_dir),
-        total_ms: report.total_ms,
         histogram: HistogramView {
             exact: histogram.get(ConfidenceTier::Exact),
             semantic: histogram.get(ConfidenceTier::Semantic),
@@ -203,6 +223,7 @@ pub(crate) fn run(
             total: histogram.total(),
         },
         passes,
+        run: load_run(&out_dir)?,
     };
     emit(fmt, &context_report, || {
         println!("disrobe context  ({})", context_report.out_dir);
@@ -218,7 +239,6 @@ pub(crate) fn run(
         if let Some(ref reason) = context_report.terminal_reason {
             println!("  terminal:  {reason}");
         }
-        println!("  total_ms:  {}", context_report.total_ms);
         println!(
             "  tiers:     exact={} semantic={} partial={} skeleton={} (total {})",
             context_report.histogram.exact,
@@ -229,14 +249,19 @@ pub(crate) fn run(
         );
         println!("  passes:");
         for row in &context_report.passes {
+            println!("    {:<28} {:<10} {}", row.name, row.status, row.confidence);
+        }
+        if let Some(run) = context_report.run.as_ref() {
             println!(
-                "    {:<28} {:<10} {:<9} {}",
-                row.name,
-                row.status,
-                row.confidence,
-                row.duration_ms
-                    .map_or_else(|| "-".to_string(), |d: u128| format!("{d}ms"))
+                "  run:       {} to {}, {} ms, {} job(s)",
+                run.started_at, run.ended_at, run.total_ms, run.jobs
             );
+            for (node, millis) in &run.nodes {
+                println!("    node {node:<4} {millis} ms");
+            }
+            for (file, millis) in &run.files {
+                println!("    {file:<32} {millis} ms");
+            }
         }
     })
 }

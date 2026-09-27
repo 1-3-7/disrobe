@@ -109,11 +109,9 @@ fn maybe_emit_llm_disasm(
     let Some(selection): Option<MetadataSelection> = llm_flags.to_selection()? else {
         return Ok(None);
     };
-    let started: std::time::Instant = std::time::Instant::now();
     let names: Vec<String> = code.names.iter().map(py_obj_label).collect();
     let varnames: Vec<String> = code.varnames.iter().map(py_obj_label).collect();
     let consts: Vec<String> = code.consts.iter().map(py_obj_label).collect();
-    let duration_ms: f64 = started.elapsed().as_secs_f64() * 1000.0_f64;
     let emitter: disrobe_pass_py_disasm::PyDisasmLlmInput =
         disrobe_pass_py_disasm::PyDisasmLlmInput {
             bytecode_version: format!("python.{}.{}", version.major, version.minor),
@@ -121,7 +119,6 @@ fn maybe_emit_llm_disasm(
             names,
             varnames,
             consts,
-            duration_ms,
         };
     let envelope_map: serde_json::Value = emitter.emit_metadata(&selection);
     let step: disrobe_llm_metadata::PipelineStep = llm_cli::make_step(
@@ -129,7 +126,6 @@ fn maybe_emit_llm_disasm(
         disrobe_pass_py_disasm::VERSION,
         "raw",
         "disasm",
-        duration_ms,
     );
     let mut passes: Vec<(disrobe_llm_metadata::PipelineStep, serde_json::Value)> =
         vec![(step, envelope_map)];

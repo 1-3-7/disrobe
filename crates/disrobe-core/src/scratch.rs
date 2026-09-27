@@ -4,9 +4,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
-use crate::time::now as sanctioned_now;
-
 use crate::debug::DebugLog;
+use crate::time::WallClock;
 
 pub const SCRATCH_ROOT_NAME: &str = "disrobe-scratch";
 
@@ -208,7 +207,7 @@ pub fn sweep_stale(older_than: Duration) -> io::Result<usize> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(0),
         Err(error) => return Err(error),
     };
-    let now: SystemTime = sanctioned_now();
+    let now: SystemTime = WallClock::now().system_time();
     let mut swept: usize = 0;
     for entry in entries.flatten() {
         let Ok(metadata): io::Result<std::fs::Metadata> = entry.metadata() else {

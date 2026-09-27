@@ -114,7 +114,7 @@ fn recovery_json_emits_real_per_pass_signals() {
         ChainRecoveryReport::from_plan(&plan, "9.9.9", Some("in.pyc".to_string()));
     let v: Value = serde_json::to_value(&report).expect("serialize recovery report");
 
-    assert_eq!(v["schema"], "disrobe.recovery/v1");
+    assert_eq!(v["schema"], "disrobe.recovery/v2");
     assert_eq!(v["tool_version"], "9.9.9");
     assert!(v["tool_version"].is_string());
 
@@ -131,7 +131,11 @@ fn recovery_json_emits_real_per_pass_signals() {
     assert_eq!(passes[0]["status"], "recovered");
     assert_eq!(passes[0]["confidence"], "semantic");
     assert_eq!(passes[0]["format_out"], "Python");
-    assert_eq!(passes[0]["duration_ms"].as_u64(), Some(11));
+    assert!(
+        passes[0].get("duration_ms").is_none(),
+        "a pass records no duration: {}",
+        passes[0]
+    );
     assert_eq!(passes[0]["name"], "py.decompile");
 
     assert_eq!(passes[1]["status"], "advanced");
@@ -155,7 +159,10 @@ fn recovery_json_emits_real_per_pass_signals() {
     assert_eq!(skeleton, 1);
     assert_eq!(semantic, 1);
 
-    assert_eq!(v["total_ms"].as_u64(), Some(42));
+    assert!(
+        v.get("total_ms").is_none(),
+        "the report records no total: {v}"
+    );
     assert!(v["verdict"].is_string());
     assert_eq!(v["verdict"], "fan-out-partial");
 }

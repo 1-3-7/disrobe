@@ -123,7 +123,7 @@ pub(crate) fn run(tool: &str, dry_run: bool, yes: bool, fmt: OutputFormat) -> mi
         ));
     };
     let platform: Platform = Platform::detect();
-    let report: InstallReport = perform_install(canonical, spec, platform, dry_run, yes);
+    let report: InstallReport = perform_install(canonical, spec, platform, dry_run, yes)?;
     let _: Result<(), std::io::Error> = log_install_attempt(&report);
     let exit_nonzero: bool = !matches!(
         report.status.as_str(),
@@ -215,11 +215,11 @@ pub(crate) fn perform_install(
     platform: Platform,
     dry_run: bool,
     yes: bool,
-) -> InstallReport {
+) -> miette::Result<InstallReport> {
     let start: std::time::Instant = std::time::Instant::now();
-    let ts: u64 = epoch_seconds();
+    let ts: u64 = crate::cli::util::now_secs()?;
     let Some(action): Option<&InstallAction> = spec.per_platform.get(&platform) else {
-        return InstallReport {
+        return Ok(InstallReport {
             tool: tool.to_owned(),
             platform: platform.as_str(),
             action_cmd: None,
@@ -231,11 +231,11 @@ pub(crate) fn perform_install(
             timestamp_unix_s: ts,
             duration_ms: start.elapsed().as_millis(),
             note: spec.note.map(str::to_owned),
-        };
+        });
     };
     let cmd_str: String = format_cmd(action);
     if dry_run {
-        return InstallReport {
+        return Ok(InstallReport {
             tool: tool.to_owned(),
             platform: platform.as_str(),
             action_cmd: Some(cmd_str),
@@ -247,10 +247,10 @@ pub(crate) fn perform_install(
             timestamp_unix_s: ts,
             duration_ms: start.elapsed().as_millis(),
             note: spec.note.map(str::to_owned),
-        };
+        });
     }
     if !yes && !confirm_prompt(tool, &cmd_str) {
-        return InstallReport {
+        return Ok(InstallReport {
             tool: tool.to_owned(),
             platform: platform.as_str(),
             action_cmd: Some(cmd_str),
@@ -262,7 +262,7 @@ pub(crate) fn perform_install(
             timestamp_unix_s: ts,
             duration_ms: start.elapsed().as_millis(),
             note: spec.note.map(str::to_owned),
-        };
+        });
     }
     let exec_res: ExecResult = execute_action(action);
     let status: &'static str = if exec_res.exit_code == Some(0) {
@@ -270,7 +270,7 @@ pub(crate) fn perform_install(
     } else {
         "install-failed"
     };
-    InstallReport {
+    Ok(InstallReport {
         tool: tool.to_owned(),
         platform: platform.as_str(),
         action_cmd: Some(cmd_str),
@@ -282,7 +282,7 @@ pub(crate) fn perform_install(
         timestamp_unix_s: ts,
         duration_ms: start.elapsed().as_millis(),
         note: spec.note.map(str::to_owned),
-    }
+    })
 }
 
 struct ExecResult {
@@ -439,10 +439,6 @@ fn trim_install_log(log: &Path) -> std::io::Result<()> {
     let mut trimmed: String = keep.join("\n");
     trimmed.push('\n');
     std::fs::write(log, trimmed)
-}
-
-fn epoch_seconds() -> u64 {
-    disrobe_core::time::now_secs()
 }
 
 pub(crate) fn disrobe_state_dir() -> PathBuf {

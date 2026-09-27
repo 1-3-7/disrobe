@@ -2,13 +2,17 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
+use disrobe_core::time::SourceDate;
 use disrobe_llm_metadata::{
     BundleBuilder, Category, InputDescriptor, MetadataFormat, MetadataSelection, Pack,
     PerPassEnvelope, PipelineStep, SelectionBuilder, ToolDescriptor, bundle::MAX_PIPELINE_STEPS,
-    envelope_map, serialize,
+    envelope_map, serialize, shape,
 };
 use jsonschema::Validator;
 use serde_json::{Value as Json, json};
+
+const SOURCE_DATE_SECONDS: u64 = 1_700_000_000;
+const SOURCE_DATE_RFC3339: &str = "2023-11-14T22:13:20.000Z";
 
 fn schema_root() -> Json {
     let root: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -16,9 +20,13 @@ fn schema_root() -> Json {
         .and_then(std::path::Path::parent)
         .unwrap()
         .join("schemas")
-        .join("disrobe-metadata-llm-v1.json");
+        .join("disrobe-metadata-llm-v2.json");
     let bytes: Vec<u8> = std::fs::read(&root).expect("read schema");
     serde_json::from_slice(&bytes).expect("schema parse")
+}
+
+fn fixed_source_date() -> SourceDate {
+    SourceDate::from_seconds(SOURCE_DATE_SECONDS).expect("a 2023 date is representable")
 }
 
 fn synthetic_step() -> PipelineStep {
@@ -27,7 +35,6 @@ fn synthetic_step() -> PipelineStep {
         version: "0.1.0".to_owned(),
         rung_in: "raw".to_owned(),
         rung_out: "disasm".to_owned(),
-        duration_ms: 1.0_f64,
         input_hash_blake3: None,
         output_hash_blake3: None,
         capabilities_required: Vec::new(),
@@ -46,19 +53,7 @@ fn synthetic_input() -> InputDescriptor {
     }
 }
 
-fn build_synthetic_bundle(selection: &MetadataSelection) -> Json {
-    let step: PipelineStep = PipelineStep {
-        pass: "disrobe-pass-py-disasm".to_owned(),
-        version: "0.1.0".to_owned(),
-        rung_in: "raw".to_owned(),
-        rung_out: "disasm".to_owned(),
-        duration_ms: 1.0_f64,
-        input_hash_blake3: None,
-        output_hash_blake3: None,
-        capabilities_required: Vec::new(),
-        capabilities_produced: Vec::new(),
-        config: None,
-    };
+fn build_synthetic_bundle(selection: &MetadataSelection, date: Option<SourceDate>) -> Json {
     let mut entries: BTreeMap<&'static str, PerPassEnvelope> = BTreeMap::new();
     entries.insert(
         Category::Disasm.label(),
@@ -78,35 +73,96 @@ fn build_synthetic_bundle(selection: &MetadataSelection) -> Json {
         PerPassEnvelope::applicable(
             "disrobe-pass-py-disasm",
             "0.1.0",
-            json!({
-                "chain": [{
-                    "pass": "disrobe-pass-py-disasm",
-                    "version": "0.1.0",
-                    "rung_in": "raw",
-                    "rung_out": "disasm",
-                    "duration_ms": 1.0,
-                }]
-            }),
+            shape::make_provenance_value(
+                vec![shape::make_pipeline_step(
+                    "disrobe-pass-py-disasm",
+                    "0.1.0",
+                    "raw",
+                    "disasm",
+                    BTreeMap::new(),
+                )],
+                BTreeMap::new(),
+            ),
         ),
     );
-    let envelope: Json = envelope_map(entries);
     let mut builder: BundleBuilder = BundleBuilder::new();
-    builder.record_pass(step, envelope);
-    let input: InputDescriptor = InputDescriptor {
-        path: "/tmp/x.pyc".to_owned(),
-        size_bytes: 8u64,
-        hash_blake3: "0".repeat(64),
-        magic_bytes_hex: None,
-        detected_formats: Vec::new(),
-    };
+    builder.record_pass(synthetic_step(), envelope_map(entries));
     builder
         .finalize(
-            "2026-05-26T00:00:00.000000000Z".to_owned(),
+            date,
             ToolDescriptor::default(),
             selection,
-            input,
+            synthetic_input(),
         )
         .expect("synthetic bundle must finalize")
+}
+
+fn collect_key_paths(value: &Json, key: &str, at: &str, found: &mut Vec<String>) {
+    match value {
+        Json::Object(fields) => {
+            for (name, child) in fields {
+                let path: String = format!("{at}/{name}");
+                if name == key {
+                    found.push(path.clone());
+                }
+                collect_key_paths(child, key, &path, found);
+            }
+        }
+        Json::Array(items) => {
+            for (index, child) in items.iter().enumerate() {
+                collect_key_paths(child, key, &format!("{at}/{index}"), found);
+            }
+        }
+        Json::Null | Json::Bool(_) | Json::Number(_) | Json::String(_) => {}
+    }
+}
+
+fn key_paths(value: &Json, key: &str) -> Vec<String> {
+    let mut found: Vec<String> = Vec::new();
+    collect_key_paths(value, key, "", &mut found);
+    found
+}
+
+fn schema_errors(bundle: &Json) -> Vec<(String, String)> {
+    let schema: Json = schema_root();
+    let validator: Validator = jsonschema::validator_for(&schema).expect("compile");
+    let mut errors: Vec<(String, String)> = validator
+        .iter_errors(bundle)
+        .map(|e: jsonschema::ValidationError<'_>| {
+            (e.instance_path.as_str().to_owned(), e.to_string())
+        })
+        .collect();
+    errors.sort();
+    errors
+}
+
+#[test]
+fn a_finalized_bundle_carries_no_duration_and_takes_its_only_clock_from_the_source_date() {
+    let selection: MetadataSelection = SelectionBuilder::new().pack(Pack::Pack4).build();
+    let unstamped: Json = build_synthetic_bundle(&selection, None);
+    let stamped: Json = build_synthetic_bundle(&selection, Some(fixed_source_date()));
+
+    assert_eq!(key_paths(&unstamped, "duration_ms"), Vec::<String>::new());
+    assert_eq!(key_paths(&stamped, "duration_ms"), Vec::<String>::new());
+    assert_eq!(key_paths(&unstamped, "generated_at"), Vec::<String>::new());
+    assert_eq!(
+        key_paths(&stamped, "generated_at"),
+        vec!["/generated_at".to_owned()]
+    );
+    assert_eq!(
+        stamped.get("generated_at").and_then(Json::as_str),
+        Some(SOURCE_DATE_RFC3339)
+    );
+
+    let mut stamp_removed: Json = stamped;
+    stamp_removed
+        .as_object_mut()
+        .expect("a bundle is a JSON object")
+        .remove("generated_at");
+    assert_eq!(
+        stamp_removed, unstamped,
+        "the source date is the only field a stamped bundle adds"
+    );
 }
 
 #[test]
@@ -116,7 +172,7 @@ fn finalize_rejects_mismatched_pipeline_and_envelopes() {
     builder.steps.push(synthetic_step());
     let err: disrobe_llm_metadata::LlmMetadataError = builder
         .finalize(
-            "2026-05-26T00:00:00.000000000Z".to_owned(),
+            None,
             ToolDescriptor::default(),
             &selection,
             synthetic_input(),
@@ -138,7 +194,7 @@ fn finalize_rejects_too_many_pipeline_steps() {
     builder.per_pass = (0..count).map(|_: usize| json!({})).collect();
     let err: disrobe_llm_metadata::LlmMetadataError = builder
         .finalize(
-            "2026-05-26T00:00:00.000000000Z".to_owned(),
+            None,
             ToolDescriptor::default(),
             &selection,
             synthetic_input(),
@@ -151,42 +207,53 @@ fn finalize_rejects_too_many_pipeline_steps() {
 }
 
 #[test]
-fn bundle_validates_against_schema_for_pack1() {
+fn bundle_validates_against_schema_with_and_without_a_source_date() {
     let selection: MetadataSelection = SelectionBuilder::new().pack(Pack::Pack1).build();
-    let bundle: Json = build_synthetic_bundle(&selection);
-    let schema: Json = schema_root();
-    let validator: Validator = jsonschema::validator_for(&schema).expect("compile");
-    let errors: Vec<String> = validator
-        .iter_errors(&bundle)
-        .map(|e: jsonschema::ValidationError<'_>| e.to_string())
-        .collect();
-    assert!(
-        errors.is_empty(),
-        "bundle failed schema:\n{}\nbundle={}",
-        errors.join("\n"),
-        serde_json::to_string_pretty(&bundle).unwrap()
+    for date in [None, Some(fixed_source_date())] {
+        let bundle: Json = build_synthetic_bundle(&selection, date);
+        assert_eq!(
+            schema_errors(&bundle),
+            Vec::<(String, String)>::new(),
+            "bundle={}",
+            serde_json::to_string_pretty(&bundle).unwrap()
+        );
+    }
+}
+
+#[test]
+fn the_schema_rejects_a_duration_in_the_pipeline_or_the_provenance_chain() {
+    let selection: MetadataSelection = SelectionBuilder::new().pack(Pack::Pack2).build();
+    let mut bundle: Json = build_synthetic_bundle(&selection, None);
+    bundle["pipeline"][0]["duration_ms"] = json!(1.0);
+    bundle["categories"]["provenance"]["chain"][0]["duration_ms"] = json!(1.0);
+    let unexpected: String =
+        "Additional properties are not allowed ('duration_ms' was unexpected)".to_owned();
+    assert_eq!(
+        schema_errors(&bundle),
+        vec![
+            (
+                "/categories/provenance/chain/0".to_owned(),
+                unexpected.clone()
+            ),
+            ("/pipeline/0".to_owned(), unexpected),
+        ]
     );
 }
 
 #[test]
 fn bundle_top_level_required_fields_present() {
     let selection: MetadataSelection = SelectionBuilder::new().pack(Pack::Pack4).build();
-    let bundle: Json = build_synthetic_bundle(&selection);
+    let bundle: Json = build_synthetic_bundle(&selection, None);
 
     assert_eq!(
         bundle.get("schema").and_then(Json::as_str),
-        Some("disrobe.metadata.llm.v1"),
-        "schema must be the exact v1 tag"
+        Some("disrobe.metadata.llm.v2"),
+        "schema must be the exact v2 tag"
     );
     assert_eq!(
         bundle.get("schema_version").and_then(Json::as_str),
-        Some("1.0.0"),
-        "schema_version must be the pinned 1.0.0"
-    );
-    assert_eq!(
-        bundle.get("generated_at").and_then(Json::as_str),
-        Some("2026-05-26T00:00:00.000000000Z"),
-        "generated_at must round-trip the timestamp we passed to finalize"
+        Some("2.0.0"),
+        "schema_version must be the pinned 2.0.0"
     );
     for key in ["tool", "selection", "input"] {
         assert!(
@@ -226,7 +293,7 @@ fn bundle_top_level_required_fields_present() {
 #[test]
 fn empty_selection_filters_categories() {
     let selection: MetadataSelection = SelectionBuilder::new().build();
-    let bundle: Json = build_synthetic_bundle(&selection);
+    let bundle: Json = build_synthetic_bundle(&selection, None);
     let categories: &serde_json::Map<String, Json> = bundle
         .get("categories")
         .and_then(Json::as_object)
@@ -244,7 +311,7 @@ fn serialize_jsonl_returns_one_record_per_line() {
         .pack(Pack::Pack1)
         .format(MetadataFormat::Jsonl)
         .build();
-    let bundle: Json = build_synthetic_bundle(&selection);
+    let bundle: Json = build_synthetic_bundle(&selection, None);
     let bytes: Vec<u8> = serialize(&bundle, MetadataFormat::Jsonl).expect("serialize jsonl");
     let text: String = String::from_utf8(bytes).expect("utf8");
     let lines: Vec<&str> = text.lines().collect();
@@ -254,8 +321,8 @@ fn serialize_jsonl_returns_one_record_per_line() {
         .collect();
     assert_eq!(
         records.len(),
-        9,
-        "six scalar/object top-level fields + one pipeline step + two categories = nine records"
+        8,
+        "five scalar/object top-level fields + one pipeline step + two categories = eight records"
     );
     for record in &records {
         let kind: &str = record
@@ -286,7 +353,7 @@ fn serialize_jsonl_returns_one_record_per_line() {
 #[test]
 fn serialize_cbor_roundtrips() {
     let selection: MetadataSelection = SelectionBuilder::new().pack(Pack::Pack1).build();
-    let bundle: Json = build_synthetic_bundle(&selection);
+    let bundle: Json = build_synthetic_bundle(&selection, None);
     let bytes: Vec<u8> = serialize(&bundle, MetadataFormat::Cbor).expect("serialize cbor");
     let decoded: Json = ciborium::from_reader(&bytes[..]).expect("cbor decode");
     assert_eq!(
@@ -295,11 +362,11 @@ fn serialize_cbor_roundtrips() {
     );
     assert_eq!(
         decoded.get("schema").and_then(Json::as_str),
-        Some("disrobe.metadata.llm.v1")
+        Some("disrobe.metadata.llm.v2")
     );
     assert_eq!(
         decoded.get("schema_version").and_then(Json::as_str),
-        Some("1.0.0")
+        Some("2.0.0")
     );
     assert_eq!(
         decoded
@@ -321,76 +388,21 @@ fn serialize_cbor_roundtrips() {
 #[test]
 fn serialize_msgpack_roundtrips() {
     let selection: MetadataSelection = SelectionBuilder::new().pack(Pack::Pack1).build();
-    let bundle: Json = build_synthetic_bundle(&selection);
+    let bundle: Json = build_synthetic_bundle(&selection, None);
     let bytes: Vec<u8> = serialize(&bundle, MetadataFormat::Msgpack).expect("serialize msgpack");
     let decoded: Json = rmp_serde::from_slice(&bytes).expect("msgpack decode");
     assert_eq!(
         decoded.get("schema").and_then(Json::as_str),
-        Some("disrobe.metadata.llm.v1")
-    );
-}
-
-#[test]
-fn finalize_rejects_non_finite_pipeline_duration() {
-    let selection: MetadataSelection = SelectionBuilder::new().pack(Pack::Pack1).build();
-    let step: PipelineStep = PipelineStep {
-        pass: "disrobe-pass-py-disasm".to_owned(),
-        version: "0.1.0".to_owned(),
-        rung_in: "raw".to_owned(),
-        rung_out: "disasm".to_owned(),
-        duration_ms: f64::NAN,
-        input_hash_blake3: None,
-        output_hash_blake3: None,
-        capabilities_required: Vec::new(),
-        capabilities_produced: Vec::new(),
-        config: None,
-    };
-    let mut entries: BTreeMap<&'static str, PerPassEnvelope> = BTreeMap::new();
-    entries.insert(
-        Category::Disasm.label(),
-        PerPassEnvelope::applicable("disrobe-pass-py-disasm", "0.1.0", json!({})),
-    );
-    let mut builder: BundleBuilder = BundleBuilder::new();
-    builder.record_pass(step, envelope_map(entries));
-    let input: InputDescriptor = InputDescriptor {
-        path: "/tmp/x.pyc".to_owned(),
-        size_bytes: 8u64,
-        hash_blake3: "0".repeat(64),
-        magic_bytes_hex: None,
-        detected_formats: Vec::new(),
-    };
-    let err: disrobe_llm_metadata::LlmMetadataError = builder
-        .finalize(
-            "2026-05-26T00:00:00.000000000Z".to_owned(),
-            ToolDescriptor::default(),
-            &selection,
-            input,
-        )
-        .expect_err("non-finite duration must reject");
-    assert!(
-        err.to_string().contains("invalid duration_ms"),
-        "unexpected error: {err}"
+        Some("disrobe.metadata.llm.v2")
     );
 }
 
 #[test]
 fn finalize_rejects_unknown_per_pass_category_label() {
     let selection: MetadataSelection = SelectionBuilder::new().pack(Pack::Pack1).build();
-    let step: PipelineStep = PipelineStep {
-        pass: "disrobe-pass-py-disasm".to_owned(),
-        version: "0.1.0".to_owned(),
-        rung_in: "raw".to_owned(),
-        rung_out: "disasm".to_owned(),
-        duration_ms: 1.0_f64,
-        input_hash_blake3: None,
-        output_hash_blake3: None,
-        capabilities_required: Vec::new(),
-        capabilities_produced: Vec::new(),
-        config: None,
-    };
     let mut builder: BundleBuilder = BundleBuilder::new();
     builder.record_pass(
-        step,
+        synthetic_step(),
         json!({
             "not_a_category": {
                 "pass": "disrobe-pass-py-disasm",
@@ -401,19 +413,12 @@ fn finalize_rejects_unknown_per_pass_category_label() {
             }
         }),
     );
-    let input: InputDescriptor = InputDescriptor {
-        path: "/tmp/x.pyc".to_owned(),
-        size_bytes: 8u64,
-        hash_blake3: "0".repeat(64),
-        magic_bytes_hex: None,
-        detected_formats: Vec::new(),
-    };
     let err: disrobe_llm_metadata::LlmMetadataError = builder
         .finalize(
-            "2026-05-26T00:00:00.000000000Z".to_owned(),
+            None,
             ToolDescriptor::default(),
             &selection,
-            input,
+            synthetic_input(),
         )
         .expect_err("unknown category must reject");
     assert!(
@@ -444,7 +449,7 @@ fn unauthorized_decryption_key_envelope_does_not_aggregate_entries() {
     builder.record_pass(synthetic_step(), envelope_map(entries));
     let bundle: Json = builder
         .finalize(
-            "2026-05-26T00:00:00.000000000Z".to_owned(),
+            None,
             ToolDescriptor::default(),
             &selection,
             synthetic_input(),

@@ -40,7 +40,6 @@ pub struct JsLlmInput {
     pub input_path: String,
     pub input_size_bytes: u64,
     pub input_hash_blake3: String,
-    pub duration_ms: f64,
 }
 
 impl LlmMetadataEmitter for JsLlmInput {
@@ -77,14 +76,8 @@ impl LlmMetadataEmitter for JsLlmInput {
         let mut kv: BTreeMap<String, String> = BTreeMap::new();
         kv.insert("dialect".to_owned(), self.dialect.clone());
         kv.insert("obfuscator".to_owned(), self.obfuscator.clone());
-        let step: Json = shape::make_pipeline_step(
-            PASS,
-            VERSION,
-            "surface",
-            "surface",
-            self.duration_ms,
-            BTreeMap::new(),
-        );
+        let step: Json =
+            shape::make_pipeline_step(PASS, VERSION, "surface", "surface", BTreeMap::new());
         Some(shape::make_provenance_value(vec![step], kv))
     }
 

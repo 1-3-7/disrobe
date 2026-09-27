@@ -21,6 +21,18 @@ pub(crate) fn init_tracing(verbose: u8, quiet: bool) {
         .init();
 }
 
+pub(crate) fn source_date() -> miette::Result<Option<disrobe_core::time::SourceDate>> {
+    disrobe_core::time::source_date().map_err(invalid_source_date)
+}
+
+pub(crate) fn now_secs() -> miette::Result<u64> {
+    disrobe_core::time::now_secs().map_err(invalid_source_date)
+}
+
+fn invalid_source_date(error: disrobe_core::time::SourceDateError) -> miette::Report {
+    miette::miette!("DR-CLI-0318: {error}")
+}
+
 pub(crate) fn push_format(out: &mut String, args: std::fmt::Arguments<'_>) {
     let result: Result<(), std::fmt::Error> = std::fmt::write(out, args);
     if let Err(error) = result {

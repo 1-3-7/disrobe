@@ -12,9 +12,9 @@
 )]
 
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
 use clap::Args;
+use disrobe_core::time::SourceDate;
 use disrobe_llm_metadata::{
     BundleBuilder, Category, InputDescriptor, MetadataFormat, MetadataSelection, PII_CAPABILITY,
     Pack, PerPassEnvelope, PipelineStep, SelectionBuilder, ToolDescriptor, envelope_map, pii,
@@ -327,62 +327,6 @@ pub(crate) fn blake3_hex(bytes: &[u8]) -> String {
     hash.to_hex().to_string()
 }
 
-#[must_use]
-#[allow(clippy::disallowed_methods)]
-pub(crate) fn iso8601_now() -> String {
-    let now: SystemTime = SystemTime::now();
-    let dur: std::time::Duration = now
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    iso8601_from_epoch(
-        dur.as_secs(),
-        FractionDigits::Nanoseconds(dur.subsec_nanos()),
-    )
-}
-
-#[cfg(feature = "chain")]
-#[must_use]
-pub(crate) fn iso8601_millis_from_epoch(seconds: u64) -> String {
-    iso8601_from_epoch(seconds, FractionDigits::Milliseconds(0))
-}
-
-#[derive(Debug, Clone, Copy)]
-enum FractionDigits {
-    #[cfg(feature = "chain")]
-    Milliseconds(u32),
-    Nanoseconds(u32),
-}
-
-fn iso8601_from_epoch(seconds: u64, fraction: FractionDigits) -> String {
-    let seconds_per_day: u64 = 86_400;
-    let days_since_epoch: u64 = seconds / seconds_per_day;
-    let time_in_day: u64 = seconds % seconds_per_day;
-    let hh: u64 = time_in_day / 3600;
-    let mm: u64 = (time_in_day % 3600) / 60;
-    let ss: u64 = time_in_day % 60;
-    let (year, month, day): (i32, u32, u32) = civil_from_days(days_since_epoch as i64);
-    let head: String = format!("{year:04}-{month:02}-{day:02}T{hh:02}:{mm:02}:{ss:02}");
-    match fraction {
-        #[cfg(feature = "chain")]
-        FractionDigits::Milliseconds(value) => format!("{head}.{value:03}Z"),
-        FractionDigits::Nanoseconds(value) => format!("{head}.{value:09}Z"),
-    }
-}
-
-fn civil_from_days(z: i64) -> (i32, u32, u32) {
-    let z: i64 = z + 719_468;
-    let era: i64 = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe: u64 = (z - era * 146_097) as u64;
-    let yoe: u64 = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y: i64 = (yoe as i64) + era * 400;
-    let doy: u64 = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp: u64 = (5 * doy + 2) / 153;
-    let d: u64 = doy - (153 * mp + 2) / 5 + 1;
-    let m: u64 = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year_out: i32 = (y + i64::from(m <= 2)) as i32;
-    (year_out, m as u32, d as u32)
-}
-
 #[derive(Debug, Clone)]
 pub(crate) struct LlmOutputs {
     pub(crate) bundle: PathBuf,
@@ -398,6 +342,7 @@ pub(crate) fn write_llm_bundle(
     primary_output: &Path,
     per_pass_envelope_maps: Vec<(PipelineStep, Json)>,
 ) -> miette::Result<LlmOutputs> {
+    let date: Option<SourceDate> = super::util::source_date()?;
     let out_path: PathBuf = flags.resolve_out_path(primary_output);
     if out_path.exists() && !crate::cli::globals::current().force {
         return Err(miette::miette!(
@@ -424,11 +369,11 @@ pub(crate) fn write_llm_bundle(
     if let Some((step, envelope_map)) = pii_pass_for_bytes(selection, input_bytes) {
         builder.record_pass(step, envelope_map);
     }
-    let bundle: Json = builder
-        .finalize(iso8601_now(), tool, selection, input)
-        .map_err(|e: disrobe_llm_metadata::LlmMetadataError| {
+    let bundle: Json = builder.finalize(date, tool, selection, input).map_err(
+        |e: disrobe_llm_metadata::LlmMetadataError| {
             miette::miette!("DR-CLI-0440: build LLM bundle failed: {e}")
-        })?;
+        },
+    )?;
 
     let bytes: Vec<u8> = serialize(&bundle, selection.format).map_err(
         |e: disrobe_llm_metadata::LlmMetadataError| {
@@ -471,19 +416,12 @@ fn hex_lower(bytes: &[u8]) -> String {
 }
 
 #[must_use]
-pub(crate) fn make_step(
-    pass: &str,
-    version: &str,
-    rung_in: &str,
-    rung_out: &str,
-    duration_ms: f64,
-) -> PipelineStep {
+pub(crate) fn make_step(pass: &str, version: &str, rung_in: &str, rung_out: &str) -> PipelineStep {
     PipelineStep {
         pass: pass.to_owned(),
         version: version.to_owned(),
         rung_in: rung_in.to_owned(),
         rung_out: rung_out.to_owned(),
-        duration_ms,
         input_hash_blake3: None,
         output_hash_blake3: None,
         capabilities_required: Vec::new(),
@@ -533,9 +471,7 @@ fn pii_pass_for_bytes(selection: &MetadataSelection, bytes: &[u8]) -> Option<(Pi
     if !selection.contains(Category::PiiMap) {
         return None;
     }
-    let started: std::time::Instant = std::time::Instant::now();
     let outcome: disrobe_llm_metadata::PiiScanOutcome = pii::scan(bytes);
-    let duration_ms: f64 = started.elapsed().as_secs_f64() * 1000.0_f64;
     let envelope: PerPassEnvelope = if outcome.entries.is_empty() {
         PerPassEnvelope::not_applicable(
             PII_CAPABILITY.pass,
@@ -561,7 +497,6 @@ fn pii_pass_for_bytes(selection: &MetadataSelection, bytes: &[u8]) -> Option<(Pi
             PII_CAPABILITY.pass_version,
             "raw",
             "raw",
-            duration_ms,
         ),
         envelope_map(entries),
     ))
@@ -646,13 +581,6 @@ mod tests {
     }
 
     #[test]
-    fn iso8601_format_smoke() {
-        let s: String = iso8601_now();
-        assert!(s.ends_with('Z'));
-        assert!(s.len() >= 20);
-    }
-
-    #[test]
     fn out_path_default_uses_stem() {
         let flags: LlmFlags = LlmFlags::default();
         let primary: PathBuf = PathBuf::from("./out/foo.py");
@@ -661,15 +589,18 @@ mod tests {
     }
 
     #[test]
-    fn make_step_serializes_with_required_fields() {
-        let s: PipelineStep =
-            make_step("disrobe-pass-py-disasm", "0.1.0", "raw", "disasm", 1.5_f64);
+    fn make_step_serializes_only_the_pass_identity_and_rungs() {
+        let s: PipelineStep = make_step("disrobe-pass-py-disasm", "0.1.0", "raw", "disasm");
         let v: Json = serde_json::to_value(&s).expect("ok");
         assert_eq!(
-            v.get("pass").and_then(Json::as_str),
-            Some("disrobe-pass-py-disasm")
+            v,
+            serde_json::json!({
+                "pass": "disrobe-pass-py-disasm",
+                "version": "0.1.0",
+                "rung_in": "raw",
+                "rung_out": "disasm",
+            })
         );
-        assert_eq!(v.get("rung_in").and_then(Json::as_str), Some("raw"));
     }
 
     fn pii_selection() -> MetadataSelection {

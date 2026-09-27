@@ -6,7 +6,7 @@ use super::chain_json::VerdictDoc;
 use super::detection::OutputKind;
 use super::state_machine::{ChainPlan, Node, Verdict, continues_a_recovery};
 
-pub const RECOVERY_SCHEMA_VERSION: &str = "disrobe.recovery/v1";
+pub const RECOVERY_SCHEMA_VERSION: &str = "disrobe.recovery/v2";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -44,7 +44,6 @@ pub struct ChainPassRecovery {
     pub name: String,
     pub status: RecoveryStatus,
     pub confidence: ConfidenceTier,
-    pub duration_ms: Option<u128>,
     pub format_in: Option<String>,
     pub format_out: Option<String>,
 }
@@ -56,7 +55,6 @@ pub struct ChainRecoveryReport {
     pub input: RecoveryInputDoc,
     pub passes: Vec<ChainPassRecovery>,
     pub histogram: TierHistogram,
-    pub total_ms: u128,
     pub verdict: VerdictDoc,
 }
 
@@ -123,7 +121,6 @@ impl ChainRecoveryReport {
                 name: n.pass_id.clone().unwrap_or_else(|| "terminal".to_string()),
                 status: status_in_chain(&plan.nodes, n),
                 confidence: tier_from_node(n),
-                duration_ms: n.duration.map(|d: std::time::Duration| d.as_millis()),
                 format_in: n.format_tag_in.clone(),
                 format_out: format_out_of(n.output_kind.as_ref()),
             })
@@ -141,7 +138,6 @@ impl ChainRecoveryReport {
             },
             passes,
             histogram,
-            total_ms: plan.total.as_millis(),
             verdict: VerdictDoc::from(&plan.verdict),
         }
     }
@@ -221,8 +217,8 @@ mod tests {
     }
 
     #[test]
-    fn schema_constant_is_v1() {
-        assert_eq!(RECOVERY_SCHEMA_VERSION, "disrobe.recovery/v1");
+    fn schema_constant_is_v2() {
+        assert_eq!(RECOVERY_SCHEMA_VERSION, "disrobe.recovery/v2");
     }
 
     #[test]
@@ -483,19 +479,22 @@ mod tests {
         );
         let report: ChainRecoveryReport =
             ChainRecoveryReport::from_plan(&plan, "9.9.9", Some("in.pyc".to_string()));
-        assert_eq!(report.schema, "disrobe.recovery/v1");
+        assert_eq!(report.schema, "disrobe.recovery/v2");
         assert_eq!(report.tool_version, "9.9.9");
         assert_eq!(report.input.path.as_deref(), Some("in.pyc"));
         assert_eq!(report.input.blake3.len(), 64);
         assert_eq!(report.input.size, 128);
-        assert_eq!(report.total_ms, 42);
         assert_eq!(report.verdict, VerdictDoc::Complete);
         let only: &ChainPassRecovery = &report.passes[0];
         assert_eq!(only.name, "py.decompile");
         assert_eq!(only.status, RecoveryStatus::Recovered);
         assert_eq!(only.confidence, ConfidenceTier::Semantic);
-        assert_eq!(only.duration_ms, Some(7));
         assert_eq!(only.format_out.as_deref(), Some("Python"));
+        let written: String = serde_json::to_string(&report).expect("serialize the report");
+        assert!(
+            !written.contains("_ms\""),
+            "the recovery report records no duration: {written}"
+        );
     }
 
     #[test]

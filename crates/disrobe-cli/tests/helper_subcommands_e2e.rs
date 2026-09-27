@@ -59,7 +59,7 @@ fn run_disrobe_in(work: &Path, args: &[&str]) -> Run {
 }
 
 const RECOVERY_FIXTURE: &str = r#"{
-  "schema": "disrobe.recovery/v1",
+  "schema": "disrobe.recovery/v2",
   "tool_version": "0.10.0",
   "input": { "path": "in.pyc", "blake3": "aa", "size": 4 },
   "passes": [
@@ -67,13 +67,11 @@ const RECOVERY_FIXTURE: &str = r#"{
       "name": "pyarmor.unpack",
       "status": "recovered",
       "confidence": "semantic",
-      "duration_ms": 7,
       "format_in": "pyarmor",
       "format_out": "Python"
     }
   ],
   "histogram": { "exact": 0, "semantic": 1, "partial": 0, "skeleton": 0 },
-  "total_ms": 7,
   "verdict": "complete"
 }"#;
 
@@ -213,6 +211,61 @@ fn context_missing_recovery_fails() {
         "expected DR-CLI-0320, stderr: {}",
         run.stderr
     );
+}
+
+#[test]
+fn auto_timings_write_a_run_record_for_every_node_that_context_reads() {
+    let work_scratch: disrobe_core::scratch::ScratchDir = temp_dir("timings");
+    let work: PathBuf = work_scratch.path().to_path_buf();
+    std::fs::write(
+        work.join("sample.txt"),
+        b"plain text that names https://example.com/path once",
+    )
+    .expect("write sample");
+    let plain: Run = run_disrobe_in(&work, &["auto", "sample.txt", "--out", "plain"]);
+    assert_eq!(plain.code, 0, "auto stderr: {}", plain.stderr);
+    assert!(
+        !work.join("plain").join("run.json").exists(),
+        "run.json is written only with --timings"
+    );
+    let timed: Run = run_disrobe_in(
+        &work,
+        &["auto", "sample.txt", "--out", "timed", "--timings"],
+    );
+    assert_eq!(timed.code, 0, "auto --timings stderr: {}", timed.stderr);
+    let out: PathBuf = work.join("timed");
+    let record: serde_json::Value = read_json(&out.join("run.json"));
+    assert_eq!(record["schema"], "disrobe.run/v1");
+    assert_eq!(record["jobs"], 1);
+    assert!(record["started_at"].is_string() && record["ended_at"].is_string());
+    let chain: serde_json::Value = read_json(&out.join("chain.json"));
+    let chain_nodes: std::collections::BTreeSet<u64> = chain["nodes"]
+        .as_array()
+        .expect("chain nodes")
+        .iter()
+        .map(|node: &serde_json::Value| node["id"].as_u64().expect("node id"))
+        .collect();
+    let timed_nodes: std::collections::BTreeSet<u64> = record["nodes"]
+        .as_object()
+        .expect("node durations")
+        .iter()
+        .map(|(id, millis): (&String, &serde_json::Value)| {
+            assert!(millis.is_u64(), "node {id} duration: {millis}");
+            id.parse::<u64>().expect("node ids are integers")
+        })
+        .collect();
+    assert!(chain_nodes.len() >= 2, "{chain}");
+    assert_eq!(timed_nodes, chain_nodes, "every node carries a duration");
+    for name in ["chain.json", "recovery.json", "report.json", "report.sarif"] {
+        let written: String =
+            std::fs::read_to_string(out.join(name)).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert!(!written.contains("_ms\""), "{name} records a duration");
+    }
+    let context: Run = run_disrobe_in(&work, &["--json", "context", "--out", "timed"]);
+    assert_eq!(context.code, 0, "context stderr: {}", context.stderr);
+    let summary: serde_json::Value =
+        serde_json::from_str(&context.stdout).expect("parse context json");
+    assert_eq!(summary["run"], record, "context reads run.json as written");
 }
 
 #[test]

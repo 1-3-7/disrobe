@@ -36,7 +36,6 @@ pub struct PyarmorLlmInput {
     pub input_path: String,
     pub input_size_bytes: u64,
     pub input_hash_blake3: String,
-    pub duration_ms: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -61,14 +60,7 @@ impl LlmMetadataEmitter for PyarmorLlmInput {
             kv.insert("protection".to_owned(), format!("{:?}", d.protection));
             kv.insert("confidence".to_owned(), format!("{:?}", d.confidence));
         }
-        let step: Json = shape::make_pipeline_step(
-            PASS,
-            VERSION,
-            "raw",
-            "disasm",
-            self.duration_ms,
-            BTreeMap::new(),
-        );
+        let step: Json = shape::make_pipeline_step(PASS, VERSION, "raw", "disasm", BTreeMap::new());
         Some(shape::make_provenance_value(vec![step], kv))
     }
 

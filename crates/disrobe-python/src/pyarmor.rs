@@ -1,5 +1,4 @@
 use std::path::Path;
-use std::time::Instant;
 
 use disrobe_pass_pyarmor::{
     Detection as PyarmorDetection, ModeClassification, PyarmorLlmInput, StaticDecryptStatus,
@@ -87,11 +86,9 @@ struct PyarmorWrapperUnpackReport {
 #[pyo3(text_signature = "(source, *, pack='pack-1')")]
 fn pyarmor_detect(source: &str, pack: Option<&str>) -> PyResult<PyPyarmorDetection> {
     let pack_kind: disrobe_llm_metadata::Pack = parse_pack(pack)?;
-    let started: Instant = Instant::now();
     let (det, _payload): (PyarmorDetection, Vec<u8>) =
         detect_from_wrapper(source).map_err(map("pyarmor detect"))?;
     let report: PyarmorDetectionReport = PyarmorDetectionReport::from(&det);
-    let duration_ms: f64 = started.elapsed().as_secs_f64() * 1000.0_f64;
     let llm_input: PyarmorLlmInput = PyarmorLlmInput {
         detection: Some(det),
         recovered_keys: Vec::new(),
@@ -99,15 +96,9 @@ fn pyarmor_detect(source: &str, pack: Option<&str>) -> PyResult<PyPyarmorDetecti
         input_path: "<source>".to_owned(),
         input_size_bytes: crate::llm::usize_to_u64_saturating(source.len()),
         input_hash_blake3: crate::llm::blake3_hex(source.as_bytes()),
-        duration_ms,
     };
-    let step: disrobe_llm_metadata::PipelineStep = make_step(
-        PASS_PYARMOR,
-        PASS_PYARMOR_VERSION,
-        "raw",
-        "disasm",
-        duration_ms,
-    );
+    let step: disrobe_llm_metadata::PipelineStep =
+        make_step(PASS_PYARMOR, PASS_PYARMOR_VERSION, "raw", "disasm");
     let input: disrobe_llm_metadata::InputDescriptor =
         make_input_descriptor("<source>", source.as_bytes());
     let value: serde_json::Value = bundled_value(&report, &llm_input, pack_kind, step, input)?;
@@ -141,7 +132,6 @@ fn pyarmor_unpack(
         runtime_bytes: runtime.map(<[u8]>::to_vec),
         ..StaticUnpackConfig::default()
     };
-    let started: Instant = Instant::now();
     let out: StaticUnpackOutput =
         unpack_static_with_config(payload, &config).map_err(map("pyarmor unpack"))?;
     let detection: PyarmorDetection = PyarmorDetection {
@@ -174,7 +164,6 @@ fn pyarmor_unpack(
         inner_cipher_recovered_bytes: out.inner_cipher_stats.recovered_co_code_bytes,
         diagnostics: out.diagnostics,
     };
-    let duration_ms: f64 = started.elapsed().as_secs_f64() * 1000.0_f64;
     let llm_input: PyarmorLlmInput = PyarmorLlmInput {
         detection: Some(detection),
         recovered_keys: Vec::new(),
@@ -182,15 +171,9 @@ fn pyarmor_unpack(
         input_path: "<payload>".to_owned(),
         input_size_bytes: crate::llm::usize_to_u64_saturating(payload.len()),
         input_hash_blake3: crate::llm::blake3_hex(payload),
-        duration_ms,
     };
-    let step: disrobe_llm_metadata::PipelineStep = make_step(
-        PASS_PYARMOR,
-        PASS_PYARMOR_VERSION,
-        "raw",
-        "surface",
-        duration_ms,
-    );
+    let step: disrobe_llm_metadata::PipelineStep =
+        make_step(PASS_PYARMOR, PASS_PYARMOR_VERSION, "raw", "surface");
     let input: disrobe_llm_metadata::InputDescriptor = make_input_descriptor("<payload>", payload);
     let value: serde_json::Value = bundled_value(&report, &llm_input, pack_kind, step, input)?;
     Ok(PyarmorUnpack::from_value(value))
@@ -205,7 +188,6 @@ fn pyarmor_unpack_wrapper(
     pack: Option<&str>,
 ) -> PyResult<PyarmorWrapperUnpack> {
     let pack_kind: disrobe_llm_metadata::Pack = parse_pack(pack)?;
-    let started: Instant = Instant::now();
     let output: WrapperUnpackOutput = unpack_wrapper_text(wrapper_source, Path::new(wrapper_path))
         .map_err(map("pyarmor wrapper unpack"))?;
     let detection: PyarmorDetection = output.detection.clone();
@@ -219,7 +201,6 @@ fn pyarmor_unpack_wrapper(
         bcc_blob_count: output.bcc_blobs.len(),
         fallback_reason: output.fallback_reason,
     };
-    let duration_ms: f64 = started.elapsed().as_secs_f64() * 1000.0_f64;
     let llm_input: PyarmorLlmInput = PyarmorLlmInput {
         detection: Some(detection),
         recovered_keys: Vec::new(),
@@ -227,15 +208,9 @@ fn pyarmor_unpack_wrapper(
         input_path: wrapper_path.to_owned(),
         input_size_bytes: crate::llm::usize_to_u64_saturating(wrapper_source.len()),
         input_hash_blake3: crate::llm::blake3_hex(wrapper_source.as_bytes()),
-        duration_ms,
     };
-    let step: disrobe_llm_metadata::PipelineStep = make_step(
-        PASS_PYARMOR,
-        PASS_PYARMOR_VERSION,
-        "raw",
-        "surface",
-        duration_ms,
-    );
+    let step: disrobe_llm_metadata::PipelineStep =
+        make_step(PASS_PYARMOR, PASS_PYARMOR_VERSION, "raw", "surface");
     let input: disrobe_llm_metadata::InputDescriptor =
         make_input_descriptor(wrapper_path, wrapper_source.as_bytes());
     let value: serde_json::Value = bundled_value(&report, &llm_input, pack_kind, step, input)?;

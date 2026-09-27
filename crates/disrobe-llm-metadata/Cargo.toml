@@ -1,6 +1,6 @@
 [package]
 name = "disrobe-llm-metadata"
-description = "Versioned LLM metadata envelope, per-pass emitter trait, selection/builder, and category/pack model for the `disrobe --llm` bundle (`disrobe.metadata.llm.v1`)."
+description = "Versioned LLM metadata envelope, per-pass emitter trait, selection/builder, and category/pack model for the `disrobe --llm` bundle (`disrobe.metadata.llm.v2`)."
 version.workspace = true
 readme.workspace = true
 edition.workspace = true

@@ -462,22 +462,19 @@ fn render_stage_table(report: &SingleReport, out: &mut String) {
     );
     out.push_str(
         "<div class=\"panel\" tabindex=\"0\" role=\"region\" aria-label=\"Per-stage recovery table\"><table><colgroup><col style=\"width:3ch\">\
-<col><col style=\"width:13ch\"><col style=\"width:26%\"><col><col style=\"width:9ch\">\
+<col><col style=\"width:13ch\"><col style=\"width:26%\"><col>\
 </colgroup><thead><tr>\
 <th class=\"r\">#</th><th>pass</th><th>tier</th><th>recovery</th>\
-<th>format</th><th class=\"r\">time</th></tr></thead><tbody>",
+<th>format</th></tr></thead><tbody>",
     );
     for stage in &report.stages {
         let tier: &str = tier_label(stage.recovery_score);
         let color: &str = tier_color(tier);
-        let dur: String = stage
-            .duration_ms
-            .map_or_else(|| "\u{2014}".to_owned(), |d: u128| format!("{d} ms"));
         let _: Result<(), std::fmt::Error> = write!(
             out,
             "<tr><td class=\"r idx\">{idx}</td><td><span class=\"mono\">{pass}</span></td>\
 <td>{chip}</td><td>{score}</td>\
-<td><span class=\"mono\">{fmt_cell}</span></td><td class=\"r num\">{dur}</td></tr>",
+<td><span class=\"mono\">{fmt_cell}</span></td></tr>",
             idx = stage.index,
             pass = html_escape(&stage.pass),
             chip = status_chip(tier, color),
@@ -1083,7 +1080,7 @@ mod tests {
     fn sample_single() -> SingleReport {
         SingleReport {
             kind: "single",
-            schema: "disrobe.report/v1".to_owned(),
+            schema: "disrobe.report/v2".to_owned(),
             tool_version: "0.9.0".to_owned(),
             source_dir: None,
             input: InputIdentity {
@@ -1095,7 +1092,6 @@ mod tests {
             },
             topology: "Linear".to_owned(),
             verdict: "Complete".to_owned(),
-            total_ms: 7,
             recovery_score: 0.6666,
             tiers: super::super::report::tier_totals_for_test(0, 1, 0, 0),
             stages: vec![StageView {
@@ -1105,7 +1101,6 @@ mod tests {
                 verdict: "Complete".to_owned(),
                 confidence: "semantic",
                 recovery_score: 0.6666,
-                duration_ms: Some(7),
                 format_in: Some("pyc-3.11".to_owned()),
                 format_out: Some("Python".to_owned()),
                 artifacts: vec!["app.py".to_owned()],

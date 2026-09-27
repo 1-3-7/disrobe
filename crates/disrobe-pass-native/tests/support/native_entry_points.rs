@@ -9,6 +9,8 @@ use disrobe_pass_native::sigmaker::SigmakerOptions;
 use disrobe_pass_native::vm_devirt::detect::Bitness;
 use disrobe_pass_native::*;
 
+const NOW_SECS: u64 = 1_798_761_600;
+
 pub(crate) struct Ctx<'a> {
     pub(crate) bytes: &'a [u8],
     pub(crate) other: &'a [u8],
@@ -80,7 +82,7 @@ pub(crate) const ENTRY_POINTS: &[Entry] = &[
         path: "authenticode::verify",
         cheap: false,
         drive: |ctx: &Ctx<'_>| {
-            let _ = authenticode::verify(ctx.bytes);
+            let _ = authenticode::verify(ctx.bytes, NOW_SECS);
             Verdict::NotFallible
         },
     },
@@ -249,7 +251,7 @@ pub(crate) const ENTRY_POINTS: &[Entry] = &[
         path: "fileid::identify",
         cheap: true,
         drive: |ctx: &Ctx<'_>| {
-            let _ = fileid::identify(ctx.bytes);
+            let _ = fileid::identify(ctx.bytes, NOW_SECS);
             Verdict::NotFallible
         },
     },
@@ -275,7 +277,7 @@ pub(crate) const ENTRY_POINTS: &[Entry] = &[
         path: "identify::detect",
         cheap: false,
         drive: |ctx: &Ctx<'_>| {
-            let _ = identify::detect(ctx.bytes);
+            let _ = identify::detect(ctx.bytes, NOW_SECS);
             Verdict::NotFallible
         },
     },

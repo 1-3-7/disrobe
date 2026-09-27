@@ -5,7 +5,7 @@ use std::fmt::Arguments;
 use serde_json::Value as Json;
 
 use crate::category::Category;
-use crate::{SCHEMA_VERSION, VERSION};
+use crate::{SCHEMA, VERSION};
 
 macro_rules! push_line {
     ($output:expr) => {
@@ -29,7 +29,7 @@ struct BundleView<'a> {
     tool_name: &'a str,
     tool_version: &'a str,
     git_commit: Option<&'a str>,
-    generated_at: &'a str,
+    generated_at: Option<&'a str>,
     input_path: &'a str,
     input_size_bytes: u64,
     input_hash: &'a str,
@@ -340,7 +340,7 @@ impl<'a> BundleView<'a> {
                 .and_then(|t: &Json| str_field(t, "version"))
                 .map_or(VERSION, |value: &str| value),
             git_commit: tool.and_then(|t: &Json| str_field(t, "git_commit")),
-            generated_at: option_str_or(str_field(bundle, "generated_at"), "unknown"),
+            generated_at: str_field(bundle, "generated_at"),
             input_path: input
                 .and_then(|i: &Json| str_field(i, "path"))
                 .map_or("unknown", |value: &str| value),
@@ -430,8 +430,10 @@ pub fn render_agents_md(bundle: &Json) -> String {
     if let Some(gc) = view.git_commit {
         push_line!(md, "| tool commit | {} |", inline_code(gc));
     }
-    push_line!(md, "| generated | {} |", inline_code(view.generated_at));
-    push_line!(md, "| schema | `disrobe.metadata.llm.v{SCHEMA_VERSION}` |");
+    if let Some(at) = view.generated_at {
+        push_line!(md, "| generated | {} |", inline_code(at));
+    }
+    push_line!(md, "| schema | `{SCHEMA}` |");
     push_line!(md);
 
     if !view.pipeline.is_empty() {
@@ -602,7 +604,7 @@ pub fn render_agents_md(bundle: &Json) -> String {
     push_line!(
         md,
         "- Full machine-readable detail lives in the sibling `*.disrobe.llm.json` bundle \
-         (schema `disrobe.metadata.llm.v{SCHEMA_VERSION}`)."
+         (schema `{SCHEMA}`)."
     );
 
     md
@@ -639,7 +641,7 @@ pub fn render_skill_md(bundle: &Json) -> String {
         md,
         "This skill briefs any coding assistant \
          on the recovered artifact in this directory & how to safely reconstruct it. \
-         All facts below are distilled from the `disrobe.metadata.llm.v{SCHEMA_VERSION}` bundle."
+         All facts below are distilled from the `{SCHEMA}` bundle."
     );
     push_line!(md);
 
@@ -825,9 +827,9 @@ mod tests {
 
     fn sample_bundle() -> Json {
         json!({
-            "schema": "disrobe.metadata.llm.v1",
-            "schema_version": "1.0.0",
-            "generated_at": "2026-01-02T03:04:05.000000000Z",
+            "schema": "disrobe.metadata.llm.v2",
+            "schema_version": "2.0.0",
+            "generated_at": "2023-11-14T22:13:20.000Z",
             "tool": { "name": "disrobe", "version": "0.9.0", "git_commit": "abc123" },
             "input": {
                 "path": "fixtures/app.pyc",
@@ -835,7 +837,7 @@ mod tests {
                 "hash_blake3": "ab".repeat(32)
             },
             "pipeline": [
-                { "pass": "disrobe-pass-py-decompile", "version": "0.1.0", "rung_in": "disasm", "rung_out": "surface", "duration_ms": 1.0 }
+                { "pass": "disrobe-pass-py-decompile", "version": "0.1.0", "rung_in": "disasm", "rung_out": "surface" }
             ],
             "categories": {
                 "ast": { "entries": [
@@ -912,11 +914,50 @@ mod tests {
         assert!(md.contains("## Dependencies"));
     }
 
+    fn artifact_rows(md: &str) -> Vec<&str> {
+        md.lines()
+            .skip_while(|line: &&str| *line != "## Artifact")
+            .skip(2)
+            .take_while(|line: &&str| !line.is_empty())
+            .collect()
+    }
+
+    #[test]
+    fn the_generated_row_appears_only_when_the_bundle_carries_a_source_date() {
+        let stamped_bundle: Json = sample_bundle();
+        let mut unstamped_bundle: Json = sample_bundle();
+        unstamped_bundle
+            .as_object_mut()
+            .expect("the sample bundle is an object")
+            .remove("generated_at");
+        let blake3_row: String = format!("| blake3 | `{}` |", "ab".repeat(32));
+        let unstamped_rows: Vec<&str> = vec![
+            "| field | value |",
+            "|-------|-------|",
+            "| source | `fixtures/app.pyc` |",
+            "| size | 4096 bytes |",
+            blake3_row.as_str(),
+            "| dialect | `python.3.12` |",
+            "| roundtrip | `pass` |",
+            "| tool commit | `abc123` |",
+            "| schema | `disrobe.metadata.llm.v2` |",
+        ];
+        let mut stamped_rows: Vec<&str> = unstamped_rows.clone();
+        stamped_rows.insert(
+            stamped_rows.len() - 1,
+            "| generated | `2023-11-14T22:13:20.000Z` |",
+        );
+        let unstamped: String = render_agents_md(&unstamped_bundle);
+        let stamped: String = render_agents_md(&stamped_bundle);
+        assert_eq!(artifact_rows(&unstamped), unstamped_rows);
+        assert_eq!(artifact_rows(&stamped), stamped_rows);
+    }
+
     #[test]
     fn generated_briefs_escape_artifact_metadata_fields() {
         let bundle: Json = json!({
-            "schema": "disrobe.metadata.llm.v1",
-            "schema_version": "1.0.0",
+            "schema": "disrobe.metadata.llm.v2",
+            "schema_version": "2.0.0",
             "generated_at": "2026-01-02T03:04:05Z\n## injected time",
             "tool": {
                 "name": "disrobe\n## injected tool",
@@ -962,9 +1003,8 @@ mod tests {
     #[test]
     fn empty_categories_are_skipped() {
         let bundle: Json = json!({
-            "schema": "disrobe.metadata.llm.v1",
-            "schema_version": "1.0.0",
-            "generated_at": "2026-01-02T03:04:05Z",
+            "schema": "disrobe.metadata.llm.v2",
+            "schema_version": "2.0.0",
             "tool": { "name": "disrobe", "version": "0.9.0" },
             "input": { "path": "x.pyc", "size_bytes": 1, "hash_blake3": "00".repeat(32) },
             "pipeline": [],
@@ -986,9 +1026,8 @@ mod tests {
     #[test]
     fn pii_and_unknown_opcodes_surface_risks() {
         let bundle: Json = json!({
-            "schema": "disrobe.metadata.llm.v1",
-            "schema_version": "1.0.0",
-            "generated_at": "2026-01-02T03:04:05Z",
+            "schema": "disrobe.metadata.llm.v2",
+            "schema_version": "2.0.0",
             "tool": { "name": "disrobe", "version": "0.9.0" },
             "input": { "path": "x.pyc", "size_bytes": 1, "hash_blake3": "00".repeat(32) },
             "pipeline": [],

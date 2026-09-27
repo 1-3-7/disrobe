@@ -2816,7 +2816,8 @@ generated at runtime or fetched remotely is the one genuine residual.",
 pub(crate) fn identify(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
     let bytes: Vec<u8> = std::fs::read(&input)
         .map_err(|e| miette::miette!("DR-NATIVE-0090: cannot read input: {e}"))?;
-    let report: disrobe_pass_native::IdentityReport = disrobe_pass_native::detect_identity(&bytes);
+    let report: disrobe_pass_native::IdentityReport =
+        disrobe_pass_native::detect_identity(&bytes, super::util::now_secs()?);
     let stem: String = input
         .file_stem()
         .and_then(OsStr::to_str)

@@ -22,7 +22,7 @@ inputs:
     required: false
     default: ""
   fail-on:
-    description: Fail the step when the chain verdict is at or above this threshold. One of `never`, `incomplete`, `failed`, `any`. The verdict comes from the chain recovery report, not from the number of SARIF findings, so a clean chain that reported a secret stays `ok`.
+    description: Fail the step when the chain verdict is at or above this threshold. One of `never`, `incomplete`, `failed`, `any`. The verdict comes from the chain recovery report (`recovery.json`, schema `disrobe.recovery/v2`, read through `disrobe context`), not from the number of SARIF findings, so a clean chain that reported a secret stays `ok`. From v2 on, `chain.json`, `recovery.json`, `report.json` and `report.sarif` in `out-dir` record no durations, worker count or wall-clock values by default; pass `--timings` in `args` to get them in `run.json`, and set `SOURCE_DATE_EPOCH` in the job environment to date `report.sarif` and emit its STIX bundle.
     required: false
     default: never
   sarif-file:

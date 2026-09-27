@@ -16,7 +16,7 @@ struct IdentifyWithCoverage<'a> {
 pub(crate) fn run(path: PathBuf, fmt: OutputFormat, coverage: bool) -> miette::Result<()> {
     let bytes: Vec<u8> = std::fs::read(&path)
         .map_err(|e| miette::miette!("DR-IDENTIFY-0050: cannot read target: {e}"))?;
-    let report: FileIdReport = identify_file(&bytes);
+    let report: FileIdReport = identify_file(&bytes, super::util::now_secs()?);
     if !coverage {
         return output::emit(fmt, &report, || render_text(&report));
     }

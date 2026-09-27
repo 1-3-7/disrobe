@@ -46,7 +46,7 @@ pub(crate) fn unavailable(
         );
     }
     Some((
-        make_step(pass, version, "raw", "raw", 0.0_f64),
+        make_step(pass, version, "raw", "raw"),
         envelope_map(entries),
     ))
 }
@@ -60,17 +60,14 @@ pub(crate) fn summarize(
     use disrobe_llm_metadata::LlmMetadataEmitter;
 
     let narrowed: MetadataSelection = owned_selection(selection)?;
-    let started: std::time::Instant = std::time::Instant::now();
     let emitter: IrSummaryEmitter<'_> = IrSummaryEmitter::new(module);
     let envelopes: Json = emitter.emit_metadata(&narrowed);
-    let duration_ms: f64 = started.elapsed().as_secs_f64() * 1000.0_f64;
     Some((
         make_step(
             METADATA_CAPABILITY.pass,
             METADATA_CAPABILITY.pass_version,
             "mir",
             "mir",
-            duration_ms,
         ),
         envelopes,
     ))

@@ -32,6 +32,6 @@ pub use usage_inference::{
     FunctionUsage, InferredType, UsageInferenceEngine, UsageObservation, VariableUsage,
 };
 
-pub const SCHEMA: &str = "disrobe.metadata.llm.v1";
-pub const SCHEMA_VERSION: &str = "1.0.0";
+pub const SCHEMA: &str = "disrobe.metadata.llm.v2";
+pub const SCHEMA_VERSION: &str = "2.0.0";
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

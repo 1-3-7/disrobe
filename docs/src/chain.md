@@ -57,7 +57,7 @@ recovered/
 ├── final/                 # terminal stage(s), linked
 │   └── 03-py-decompile/   # symlink, or a recursive copy when symlinks are unavailable
 ├── chain.json             # the chain topology descriptor
-└── recovery.json          # per-pass status, confidence histogram, timings
+└── recovery.json          # per-pass status and confidence histogram
 ```
 
 The `final/` link prefers a symlink and falls back to a recursive copy, so `final/` always resolves to the terminal artifact regardless of platform and privilege. On Windows without the symlink privilege or Developer Mode, `final/` is a copy.
@@ -72,10 +72,14 @@ Each node includes a `metadata` object whose keys and values are strings. The ob
 
 ## recovery.json: the provenance sidecar
 
-`recovery.json` is the per-run report: each pass's status, a confidence-tier histogram, and timings. Summarize it without reading raw JSON:
+`recovery.json` is the per-run report: each pass's status and a confidence-tier histogram. Summarize it without reading raw JSON:
 
 ```sh
 disrobe context --out recovered/
 ```
+
+## run.json: timings on request
+
+`chain.json`, `recovery.json`, `report.json`, and `report.sarif` record no duration, no worker count, and no clock, so two runs over one input write identical bytes. Pass `--timings` to `auto` or `chain` to also write `run.json` (schema `disrobe.run/v1`): the start and end clocks, the worker count, the tool version, the run's duration, and each node's duration in milliseconds keyed by node id. Node 0, the input, covers the whole run; a node that ran a pass holds that pass's run time; any other node holds the time spent on it. `disrobe context` prints `run.json` when the directory holds one.
 
 This prints per-pass status, confidence tiers, the overall verdict, and provenance, which is the human-facing view of what the chain actually managed to recover and how much to trust it.

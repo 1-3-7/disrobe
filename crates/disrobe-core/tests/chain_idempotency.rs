@@ -22,7 +22,6 @@ use disrobe_core::chain::{
 use disrobe_core::pass::PassId;
 use disrobe_core::provenance::Language;
 use disrobe_core::{Artifact, Rung};
-use serde_json::Value;
 
 const PASS_PEEL: PassId = "test.peel";
 const PASS_DECOMPILE: PassId = "test.decompile";
@@ -159,22 +158,6 @@ fn build_registry() -> PassRegistry {
     r
 }
 
-fn scrub(value: &mut Value) {
-    match value {
-        Value::Object(m) => {
-            for (k, v) in m.iter_mut() {
-                if k == "total_ms" || k == "duration_ms" {
-                    *v = Value::from(0u64);
-                } else {
-                    scrub(v);
-                }
-            }
-        }
-        Value::Array(a) => a.iter_mut().for_each(scrub),
-        _ => {}
-    }
-}
-
 fn run_chain(seed: &[u8]) -> (ChainPlan, String) {
     let registry: PassRegistry = build_registry();
     let runner: RealPassRunner = RealPassRunner;
@@ -193,9 +176,7 @@ fn run_chain(seed: &[u8]) -> (ChainPlan, String) {
         Some("synthetic://idem".to_string()),
     )
     .expect("valid chain metadata");
-    let mut v: Value = serde_json::to_value(&doc).expect("doc serializes");
-    scrub(&mut v);
-    let rendered: String = serde_json::to_string_pretty(&v).expect("render");
+    let rendered: String = serde_json::to_string_pretty(&doc).expect("render");
     (plan, rendered)
 }
 
@@ -253,7 +234,7 @@ fn rerunning_the_chain_on_recovered_output_is_a_stable_fixed_point() {
     let (_, second_doc_again): (ChainPlan, String) = run_chain(&recovered);
     assert_eq!(
         second_doc, second_doc_again,
-        "run(run(x)) must be byte-identical across repeated runs (timings scrubbed)",
+        "run(run(x)) must be byte-identical across repeated runs",
     );
 }
 

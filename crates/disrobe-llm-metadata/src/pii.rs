@@ -727,7 +727,6 @@ mod tests {
                 version: VERSION.to_owned(),
                 rung_in: "raw".to_owned(),
                 rung_out: "raw".to_owned(),
-                duration_ms: 0.0_f64,
                 input_hash_blake3: None,
                 output_hash_blake3: None,
                 capabilities_required: Vec::new(),
@@ -746,12 +745,7 @@ mod tests {
             detected_formats: Vec::new(),
         };
         let bundle: Json = builder
-            .finalize(
-                "2026-01-01T00:00:00.000000000Z".to_owned(),
-                ToolDescriptor::default(),
-                &selection,
-                input,
-            )
+            .finalize(None, ToolDescriptor::default(), &selection, input)
             .expect("bundle finalizes");
 
         let agents_md: String = render_agents_md(&bundle);

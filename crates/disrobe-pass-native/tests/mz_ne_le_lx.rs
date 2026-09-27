@@ -15,6 +15,7 @@ use disrobe_pass_native::{
     DetectedFormat, FileIdReport, NativeFormat, detect_format, identify_file,
 };
 
+const NOW_SECS: u64 = 1_798_761_600;
 const REAL_NE: &[u8] = include_bytes!("../../../corpus/native/formats/hello_ne.exe");
 const REAL_OS2_NE: &[u8] = include_bytes!("../../../corpus/native/formats/hello_os2_ne.exe");
 const REAL_LX: &[u8] = include_bytes!("../../../corpus/native/formats/hello_lx.exe");
@@ -124,7 +125,7 @@ fn detect_classification_names_ne_and_retains_its_parsed_model() {
 
 #[test]
 fn identify_reports_the_ne_format_target_and_bitness() {
-    let report: FileIdReport = identify_file(REAL_NE);
+    let report: FileIdReport = identify_file(REAL_NE, NOW_SECS);
     assert_eq!(report.format, "ne");
     assert_eq!(report.bits, 16);
     assert_eq!(report.subsystem.as_deref(), Some("windows"));

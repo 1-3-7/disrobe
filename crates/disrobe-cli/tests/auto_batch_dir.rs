@@ -37,14 +37,21 @@ fn auto_directory_writes_manifest_and_per_file_dirs() {
     assert_eq!(r.code, 0, "batch auto must exit 0; stderr={}", r.stderr);
 
     let manifest: serde_json::Value = read_manifest(&out);
-    assert_eq!(manifest["schema"], "disrobe.batch.manifest/v1");
+    assert_eq!(manifest["schema"], "disrobe.batch.manifest/v2");
+    assert!(
+        manifest.get("jobs").is_none(),
+        "the manifest records no worker count: {manifest}"
+    );
     assert_eq!(manifest["summary"]["processed"], serde_json::json!(2));
     let entries: &Vec<serde_json::Value> = manifest["entries"].as_array().expect("entries array");
     assert_eq!(entries.len(), 2);
     for e in entries {
         assert!(e["relative"].is_string());
         assert!(e["size"].is_number());
-        assert!(e["duration_ms"].is_number());
+        assert!(
+            e.get("duration_ms").is_none(),
+            "a manifest entry records no duration: {e}"
+        );
     }
 }
 
@@ -147,7 +154,7 @@ fn auto_directory_json_output_is_machine_readable() {
     assert_eq!(r.code, 0, "stderr={}", r.stderr);
     let parsed: serde_json::Value =
         serde_json::from_str(&r.stdout).expect("--json batch must emit valid json to stdout");
-    assert_eq!(parsed["schema"], "disrobe.batch.manifest/v1");
+    assert_eq!(parsed["schema"], "disrobe.batch.manifest/v2");
     assert_eq!(parsed["summary"]["processed"], serde_json::json!(1));
 }
 

@@ -40,7 +40,7 @@ fn load(path: &Path) -> miette::Result<ChainDocument> {
     })?;
     serde_json::from_slice::<ChainDocument>(&bytes).map_err(|e| {
         miette::miette!(
-            "DR-CLI-0311: {} is not a valid disrobe.chain/v1 document: {e}",
+            "DR-CLI-0311: {} is not a valid disrobe.chain/v2 document: {e}",
             path.display()
         )
     })
@@ -225,7 +225,7 @@ mod tests {
     use super::*;
 
     const DOC_A: &str = r#"{
-      "schema": "disrobe.chain/v1",
+      "schema": "disrobe.chain/v2",
       "tool_version": "0.10.0",
       "input": { "path": "a.bin", "blake3": "aa", "size": 4, "detected": [] },
       "spec": { "raw": "auto:8", "kind": "auto", "cap": 8 },
@@ -236,13 +236,12 @@ mod tests {
           "pass": "pyarmor.unpack", "format_tag_in": "pyarmor",
           "input_blake3": "aa", "input_size": 4,
           "output_kind": null, "output_blake3": "bb", "output_size": 8,
-          "duration_ms": 1, "detector_picks": [], "artifacts": [],
+          "detector_picks": [], "artifacts": [],
           "metadata": {}, "verdict": "ok", "error": null }
       ],
       "verdict": "complete",
       "final_format": "py-source",
-      "stats": { "layers": 1, "branches": 1, "total_ms": 1,
-        "max_branch_depth": 0, "detector_calls": 1, "rejected_passes": 0 }
+      "stats": { "layers": 1, "branches": 1, "max_branch_depth": 0, "detector_calls": 1, "rejected_passes": 0 }
     }"#;
 
     fn doc_from(json: &str) -> ChainDocument {
@@ -271,11 +270,12 @@ mod tests {
     fn guard_filters_to_integrity_fields_only() {
         let reference: ChainDocument = doc_from(DOC_A);
         let subject: ChainDocument =
-            doc_from(&DOC_A.replace("\"total_ms\": 1", "\"total_ms\": 99"));
+            doc_from(&DOC_A.replace("\"detector_calls\": 1", "\"detector_calls\": 99"));
+        assert_eq!(subject.stats.detector_calls, 99);
         let cosmetic: Vec<Difference> = compare(&reference, &subject);
         assert!(
             cosmetic.is_empty(),
-            "total_ms is not a compared field; expected no diffs, got {cosmetic:?}"
+            "detector_calls is not a compared field; expected no diffs, got {cosmetic:?}"
         );
     }
 

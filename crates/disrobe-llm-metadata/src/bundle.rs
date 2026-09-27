@@ -2,6 +2,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+use disrobe_core::time::SourceDate;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value as Json};
 
@@ -57,7 +58,6 @@ pub struct PipelineStep {
     pub version: String,
     pub rung_in: String,
     pub rung_out: String,
-    pub duration_ms: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_hash_blake3: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -90,7 +90,7 @@ impl BundleBuilder {
 
     pub fn finalize(
         self,
-        generated_at: String,
+        source_date: Option<SourceDate>,
         tool: ToolDescriptor,
         selection: &MetadataSelection,
         input: InputDescriptor,
@@ -109,7 +109,9 @@ impl BundleBuilder {
             "schema_version".to_owned(),
             Json::String(SCHEMA_VERSION.to_owned()),
         );
-        top.insert("generated_at".to_owned(), Json::String(generated_at));
+        if let Some(date) = source_date {
+            top.insert("generated_at".to_owned(), Json::String(date.rfc3339()));
+        }
         top.insert("tool".to_owned(), tool_descriptor_json(&tool));
         top.insert("selection".to_owned(), selection_json(selection));
         top.insert("input".to_owned(), input_descriptor_json(&input));
@@ -302,10 +304,6 @@ fn pipeline_step_json(step: &PipelineStep) -> Result<Json, LlmMetadataError> {
     obj.insert("version".to_owned(), Json::String(step.version.clone()));
     obj.insert("rung_in".to_owned(), Json::String(step.rung_in.clone()));
     obj.insert("rung_out".to_owned(), Json::String(step.rung_out.clone()));
-    obj.insert(
-        "duration_ms".to_owned(),
-        duration_json(step.duration_ms, &step.pass)?,
-    );
     insert_optional_string(
         &mut obj,
         "input_hash_blake3",
@@ -336,20 +334,6 @@ fn pipeline_step_json(step: &PipelineStep) -> Result<Json, LlmMetadataError> {
         obj.insert("config".to_owned(), Json::Object(config_obj.clone()));
     }
     Ok(Json::Object(obj))
-}
-
-fn duration_json(duration_ms: f64, pass: &str) -> Result<Json, LlmMetadataError> {
-    if !duration_ms.is_finite() || duration_ms.is_sign_negative() {
-        return Err(LlmMetadataError::Serialization(format!(
-            "pipeline step `{pass}` has invalid duration_ms"
-        )));
-    }
-    let Some(number): Option<serde_json::Number> = serde_json::Number::from_f64(duration_ms) else {
-        return Err(LlmMetadataError::Serialization(format!(
-            "pipeline step `{pass}` has invalid duration_ms"
-        )));
-    };
-    Ok(Json::Number(number))
 }
 
 fn required_envelope_field(

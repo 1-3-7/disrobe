@@ -13,6 +13,14 @@ if (args.length !== 4 || args[0] !== "--binary" || args[2] !== "--grpcurl") {
 }
 const binary = resolve(args[1]);
 const grpcurl = resolve(args[3]);
+const grpcurlVersion = (() => {
+  const result = spawnSync(grpcurl, ["-version"], { windowsHide: true, timeout: 10_000, maxBuffer: 4096, encoding: "utf8" });
+  if (result.error) throw result.error;
+  assert.equal(result.status, 0, result.stderr);
+  const version = /\bv\d+\.\d+\.\d+\b/u.exec(result.stdout + result.stderr);
+  assert(version !== null, `grpcurl -version printed no version: ${result.stdout}${result.stderr}`);
+  return version[0];
+})();
 const wasm = await readFile(join(root, "playground/public/samples/add.wasm"));
 const text = Buffer.from("Documentation: https://docs.example.com/guide Contact: help@example.com");
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -174,7 +182,7 @@ try {
   assert.equal(grpcAnalysis.blake3Hash, httpAnalysis.blake3_hash);
   service.process.kill();
   await service.exited;
-  const receipt = { schema: "disrobe.demo.services/v1", captured_at: new Date().toISOString(), binary_sha256: hash(await readFile(binary)), grpcurl_sha256: hash(await readFile(grpcurl)), inputs: [{ path: "playground/public/samples/add.wasm", bytes: wasm.length, sha256: hash(wasm) }, { text: text.toString("utf8"), bytes: text.length, sha256: hash(text) }], sessions: sessions.map((session) => session.record), exchanges };
+  const receipt = { schema: "disrobe.demo.services/v1", captured_at: new Date().toISOString(), binary_sha256: hash(await readFile(binary)), grpcurl_version: grpcurlVersion, grpcurl_sha256: hash(await readFile(grpcurl)), inputs: [{ path: "playground/public/samples/add.wasm", bytes: wasm.length, sha256: hash(wasm) }, { text: text.toString("utf8"), bytes: text.length, sha256: hash(text) }], sessions: sessions.map((session) => session.record), exchanges };
   const encoded = JSON.stringify(receipt, null, 2) + "\n";
   if (Buffer.byteLength(encoded) > maximumOutput) throw new Error("Service receipt exceeds 256 KiB");
   await writeFile(join(root, "docs/demo/services.json"), encoded);

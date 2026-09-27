@@ -1,5 +1,3 @@
-use std::time::Instant;
-
 use disrobe_pass_py_decompile::engine::{NativeDecompile, decompile_pyc};
 use disrobe_pass_py_decompile::llm::{DisasmIns, PyDecompileLlmInput};
 use disrobe_pass_py_decompile::recompile::{RoundtripOutcome, RoundtripStatus, roundtrip_native};
@@ -70,7 +68,6 @@ fn py_decompile(
     pack: Option<&str>,
 ) -> PyResult<PyDecompileReport> {
     let pack_kind: disrobe_llm_metadata::Pack = parse_pack(pack)?;
-    let started: Instant = Instant::now();
     let result: NativeDecompile = decompile_pyc(pyc_bytes).map_err(map("py.decompile"))?;
     let marshal: MarshalVersion = result.marshal_version;
     let decompile_v: (u8, u8) = (
@@ -107,7 +104,6 @@ fn py_decompile(
         fallback_reason: result.fallback_reason.clone(),
         roundtrip: roundtrip_report.clone(),
     };
-    let duration_ms: f64 = started.elapsed().as_secs_f64() * 1000.0_f64;
     let disasm_ins: Vec<PyDisasmInstruction> =
         disrobe_pass_py_disasm::disassemble(&result.code, marshal);
     let llm_input: PyDecompileLlmInput = PyDecompileLlmInput {
@@ -133,15 +129,9 @@ fn py_decompile(
         roundtrip_status: roundtrip_report
             .as_ref()
             .map(|r: &RoundtripReport| r.status.clone()),
-        duration_ms,
     };
-    let step: disrobe_llm_metadata::PipelineStep = make_step(
-        PASS_DECOMPILE,
-        PASS_DECOMPILE_VERSION,
-        "disasm",
-        "surface",
-        duration_ms,
-    );
+    let step: disrobe_llm_metadata::PipelineStep =
+        make_step(PASS_DECOMPILE, PASS_DECOMPILE_VERSION, "disasm", "surface");
     let input: disrobe_llm_metadata::InputDescriptor = make_input_descriptor("<pyc>", pyc_bytes);
     let value: serde_json::Value = bundled_value(&report, &llm_input, pack_kind, step, input)?;
     Ok(PyDecompileReport::from_value(value))
@@ -152,12 +142,10 @@ fn py_decompile(
 #[pyo3(text_signature = "(pyc_bytes, *, pack='pack-1')")]
 fn py_disasm(pyc_bytes: &[u8], pack: Option<&str>) -> PyResult<PyDisasmReport> {
     let pack_kind: disrobe_llm_metadata::Pack = parse_pack(pack)?;
-    let started: Instant = Instant::now();
     let result: NativeDecompile = decompile_pyc(pyc_bytes).map_err(map("py.disasm"))?;
     let marshal: MarshalVersion = result.marshal_version;
     let ins: Vec<PyDisasmInstruction> = disrobe_pass_py_disasm::disassemble(&result.code, marshal);
     let text: String = disrobe_pass_py_disasm::render_dis(&ins);
-    let duration_ms: f64 = started.elapsed().as_secs_f64() * 1000.0_f64;
     let report: DisasmReport = DisasmReport {
         marshal_version: format!("{}.{}", marshal.major, marshal.minor),
         instruction_count: ins.len(),
@@ -184,15 +172,9 @@ fn py_disasm(pyc_bytes: &[u8], pack: Option<&str>) -> PyResult<PyDisasmReport> {
         input_size_bytes: crate::llm::usize_to_u64_saturating(pyc_bytes.len()),
         input_hash_blake3: crate::llm::blake3_hex(pyc_bytes),
         roundtrip_status: None,
-        duration_ms,
     };
-    let step: disrobe_llm_metadata::PipelineStep = make_step(
-        PASS_DECOMPILE,
-        PASS_DECOMPILE_VERSION,
-        "raw",
-        "disasm",
-        duration_ms,
-    );
+    let step: disrobe_llm_metadata::PipelineStep =
+        make_step(PASS_DECOMPILE, PASS_DECOMPILE_VERSION, "raw", "disasm");
     let input: disrobe_llm_metadata::InputDescriptor = make_input_descriptor("<pyc>", pyc_bytes);
     let value: serde_json::Value = bundled_value(&report, &llm_input, pack_kind, step, input)?;
     Ok(PyDisasmReport::from_value(value))

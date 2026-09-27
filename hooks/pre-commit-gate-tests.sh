@@ -13,10 +13,10 @@ cat >"${scratch}/bin/disrobe-stand-in" <<'EOF'
 #!/usr/bin/env bash
 case "${STANDIN_RESULT:?}" in
   clean)
-    printf '{"schema":"disrobe.chain/v1","tool_version":"test","input":{"path":"fixture","blake3":"0000000000000000000000000000000000000000000000000000000000000000","size":17,"detected":[]},"spec":{"raw":"auto","kind":"auto","cap":8},"topology":"linear","root_node_id":0,"nodes":[{"id":0,"parent_id":null,"depth":0,"branch_id":"root","pass":null,"format_tag_in":null,"input_blake3":"0000000000000000000000000000000000000000000000000000000000000000","input_size":17,"output_kind":null,"output_blake3":null,"output_size":null,"duration_ms":null,"detector_picks":[],"artifacts":[],"metadata":{},"rule_pack_id":null,"verdict":"ok","error":null}],"verdict":"ok","final_format":null,"stats":{"layers":1,"branches":1,"total_ms":0,"max_branch_depth":0,"detector_calls":0,"rejected_passes":0}}\n'
+    printf '{"schema":"disrobe.chain/v2","tool_version":"test","input":{"path":"fixture","blake3":"0000000000000000000000000000000000000000000000000000000000000000","size":17,"detected":[]},"spec":{"raw":"auto","kind":"auto","cap":8},"topology":"linear","root_node_id":0,"nodes":[{"id":0,"parent_id":null,"depth":0,"branch_id":"root","pass":null,"format_tag_in":null,"input_blake3":"0000000000000000000000000000000000000000000000000000000000000000","input_size":17,"output_kind":null,"output_blake3":null,"output_size":null,"detector_picks":[],"artifacts":[],"metadata":{},"rule_pack_id":null,"verdict":"ok","error":null}],"verdict":"ok","final_format":null,"stats":{"layers":1,"branches":1,"max_branch_depth":0,"detector_calls":0,"rejected_passes":0}}\n'
     ;;
   empty)
-    printf '{"schema":"disrobe.chain/v1","nodes":[]}\n'
+    printf '{"schema":"disrobe.chain/v2","nodes":[]}\n'
     ;;
   blocked)
     printf '{"nodes":[{"detector_picks":[{"chosen":true,"pass_id":"native.packer-unpack","family":"packer-archive"}]}]}\n'

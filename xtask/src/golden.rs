@@ -31,8 +31,6 @@ const MAX_OUTPUT_FILE_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_JOBS: usize = 8;
 const MAX_THREAD_NAME_BYTES: usize = 256;
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
-const TIMED_FILES: [&str; 4] = ["chain.json", "recovery.json", "report.json", "report.sarif"];
-const VOLATILE_JSON_KEYS: [&[u8]; 2] = [b"\"duration_ms\"", b"\"total_ms\""];
 const TIMESTAMP_SHAPE: &[u8; 19] = b"0000-00-00T00:00:00";
 const PASSTHROUGH_ENV: [&str; 2] = ["SystemRoot", "windir"];
 const HOME_ENV: [&str; 8] = [
@@ -586,7 +584,7 @@ fn run_input(
     let outcome: Outcome = Outcome {
         exit,
         input: input_hash,
-        stdout: blake3::hash(&blank_volatile_values(&stdout_bytes)),
+        stdout: blake3::hash(&stdout_bytes),
         stderr: blake3::hash(&normalize_stderr(&stderr_bytes)),
         tree: hash_tree(&out, guard)?,
     };
@@ -671,12 +669,7 @@ fn hash_tree(dir: &Path, guard: &HostPaths) -> Result<OutputTree> {
         } else if kind.is_file() {
             let bytes: Vec<u8> = read_bytes_bounded(entry.path(), MAX_OUTPUT_FILE_BYTES)?;
             guard.refuse(&bytes, &relative)?;
-            let hash: blake3::Hash = if TIMED_FILES.contains(&relative.as_str()) {
-                blake3::hash(&blank_volatile_values(&bytes))
-            } else {
-                blake3::hash(&bytes)
-            };
-            tree.files.insert(relative, hash);
+            tree.files.insert(relative, blake3::hash(&bytes));
         } else {
             bail!("output {relative} is neither a regular file nor a directory");
         }
@@ -820,79 +813,6 @@ fn thread_id_span(bytes: &[u8]) -> Option<(usize, usize)> {
     }
     let keep: usize = OPEN.len() + name_len + CLOSE.len();
     Some((keep, keep + digits + 1))
-}
-
-fn blank_volatile_values(bytes: &[u8]) -> Vec<u8> {
-    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
-    let mut index: usize = 0;
-    while let Some(rest) = bytes.get(index..).filter(|rest: &&[u8]| !rest.is_empty()) {
-        let key: Option<&&[u8]> = VOLATILE_JSON_KEYS
-            .iter()
-            .find(|key: &&&[u8]| rest.starts_with(key));
-        let Some(key) = key else {
-            out.push(rest[0]);
-            index += 1;
-            continue;
-        };
-        let value_start: usize =
-            index + key.len() + json_separator_len(&bytes[index + key.len()..]);
-        let value_len: usize = json_scalar_len(&bytes[value_start..]);
-        if value_start == index + key.len() || value_len == 0 {
-            out.extend_from_slice(key);
-            index += key.len();
-            continue;
-        }
-        out.extend_from_slice(&bytes[index..value_start]);
-        out.extend_from_slice(if bytes[value_start] == b'"' {
-            b"\"\""
-        } else {
-            b"0"
-        });
-        index = value_start + value_len;
-    }
-    out
-}
-
-fn json_separator_len(bytes: &[u8]) -> usize {
-    let before: usize = bytes
-        .iter()
-        .take_while(|byte: &&u8| is_json_space(**byte))
-        .count();
-    if bytes.get(before) != Some(&b':') {
-        return 0;
-    }
-    let after: usize = bytes[before + 1..]
-        .iter()
-        .take_while(|byte: &&u8| is_json_space(**byte))
-        .count();
-    before + 1 + after
-}
-
-fn json_scalar_len(bytes: &[u8]) -> usize {
-    match bytes.first() {
-        Some(b'"') => {
-            let mut index: usize = 1;
-            while let Some(byte) = bytes.get(index) {
-                match byte {
-                    b'\\' => index += 2,
-                    b'"' => return index + 1,
-                    _ => index += 1,
-                }
-            }
-            0
-        }
-        Some(_) => bytes
-            .iter()
-            .take_while(|byte: &&u8| {
-                byte.is_ascii_digit() || matches!(byte, b'-' | b'+' | b'.' | b'e' | b'E')
-            })
-            .count(),
-        None => 0,
-    }
-}
-
-const fn is_json_space(byte: u8) -> bool {
-    matches!(byte, b' ' | b'\t' | b'\n' | b'\r')
 }
 
 fn render_listing(listing: &Listing) -> String {
@@ -1143,32 +1063,31 @@ mod tests {
     }
 
     #[test]
-    fn volatile_values_are_blanked_without_touching_their_neighbours() -> Result<()> {
-        let input: &[u8] = b"{\"duration_ms\": 1234, \"total_ms\":5.5e3,\"name\":\"duration_ms\",\"x\":\"\\\"duration_ms\\\": 9\"}";
-        assert_eq!(
-            String::from_utf8(blank_volatile_values(input))?,
-            "{\"duration_ms\": 0, \"total_ms\":0,\"name\":\"duration_ms\",\"x\":\"\\\"duration_ms\\\": 9\"}"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn durations_are_blanked_only_in_the_top_level_reports() -> Result<()> {
-        let dir: tempfile::TempDir = tempfile::tempdir()?;
-        let timed: &[u8] = b"{\"duration_ms\": 17}";
-        fs::create_dir_all(dir.path().join("extracted/empty"))?;
-        fs::write(dir.path().join("report.json"), timed)?;
-        fs::write(dir.path().join("extracted/report.json"), timed)?;
-        let tree: OutputTree = hash_tree(dir.path(), &guard()?)?;
-        assert_eq!(
-            tree.files.get("report.json"),
-            Some(&blake3::hash(b"{\"duration_ms\": 0}"))
-        );
-        assert_eq!(
-            tree.files.get("extracted/report.json"),
-            Some(&blake3::hash(timed))
-        );
-        assert_eq!(tree.dirs, BTreeSet::from(["extracted/empty".to_owned()]));
+    fn a_recorded_duration_in_any_output_is_a_difference() -> Result<()> {
+        let recorded = |duration: u32, name: &str| -> Result<OutputTree> {
+            let dir: tempfile::TempDir = tempfile::tempdir()?;
+            fs::create_dir_all(dir.path().join("extracted"))?;
+            fs::write(
+                dir.path().join(name),
+                format!("{{\"duration_ms\": {duration}}}"),
+            )?;
+            hash_tree(dir.path(), &guard()?)
+        };
+        for name in ["report.json", "extracted/report.json"] {
+            let id: InputId = InputId::parse("a")?;
+            let mut want: Outcome = outcome(&[]);
+            want.tree = recorded(7, name)?;
+            let mut got: Outcome = outcome(&[]);
+            got.tree = recorded(8, name)?;
+            assert_eq!(
+                compare(
+                    &Listing::from([(id.clone(), want)]),
+                    &Listing::from([(id, got)])
+                ),
+                [format!("a: {name} changed")],
+                "the gate compares raw bytes, so a duration that moves between runs is a difference"
+            );
+        }
         Ok(())
     }
 

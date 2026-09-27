@@ -25,7 +25,6 @@ use disrobe_core::chain::{
 use disrobe_core::pass::PassId;
 use disrobe_core::provenance::Language;
 use disrobe_core::{Artifact, Rung};
-use serde_json::Value;
 
 const PASS_PEEL: PassId = "test.peel";
 const PASS_DECOMPILE: PassId = "test.decompile";
@@ -162,22 +161,6 @@ fn build_registry() -> PassRegistry {
     r
 }
 
-fn scrub(value: &mut Value) {
-    match value {
-        Value::Object(m) => {
-            for (k, v) in m.iter_mut() {
-                if k == "total_ms" || k == "duration_ms" {
-                    *v = Value::from(0u64);
-                } else {
-                    scrub(v);
-                }
-            }
-        }
-        Value::Array(a) => a.iter_mut().for_each(scrub),
-        _ => {}
-    }
-}
-
 fn run_once(seed: &[u8]) -> String {
     let registry: PassRegistry = build_registry();
     let runner: RealPassRunner = RealPassRunner;
@@ -193,9 +176,7 @@ fn run_once(seed: &[u8]) -> String {
         Some("synthetic://det".to_string()),
     )
     .expect("valid chain metadata");
-    let mut v: Value = serde_json::to_value(&doc).expect("doc serializes");
-    scrub(&mut v);
-    serde_json::to_string_pretty(&v).expect("render")
+    serde_json::to_string_pretty(&doc).expect("render")
 }
 
 #[test]
@@ -213,7 +194,7 @@ fn chain_json_is_byte_identical_across_100_runs() {
     assert_eq!(
         variants.len(),
         1,
-        "expected exactly 1 distinct chain.json across 100 runs (timings scrubbed); got {n}",
+        "expected exactly 1 distinct chain.json across 100 runs; got {n}",
         n = variants.len(),
     );
     assert_eq!(counter.load(AtomicOrdering::SeqCst), 100);

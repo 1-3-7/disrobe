@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import marshal
+import re
 import struct
 from collections.abc import Callable
 from typing import Any
@@ -49,6 +50,41 @@ def test_provenance_accepts_typed_reports() -> None:
         from_report: disrobe.Provenance = disrobe.provenance(report)
         assert from_report == disrobe.provenance(raw)
         assert from_report.schema is not None
+
+
+def _llm_bundle(report: disrobe.PyDecompileReport) -> dict[str, JsonValue]:
+    return json_object(json_object(report.raw)["llm"])
+
+
+def test_the_bundle_records_no_duration_and_takes_its_date_only_from_source_date_epoch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pyc: bytes = _make_pyc()
+    monkeypatch.delenv("SOURCE_DATE_EPOCH", raising=False)
+    unstamped: dict[str, JsonValue] = _llm_bundle(disrobe.py_decompile(pyc, pack="pack-2"))
+    assert "generated_at" not in unstamped
+    version: JsonValue = json_object(unstamped["tool"])["version"]
+    step: dict[str, JsonValue] = {
+        "pass": "disrobe-pass-py-decompile",
+        "version": version,
+        "rung_in": "disasm",
+        "rung_out": "surface",
+    }
+    assert unstamped["pipeline"] == [step]
+    assert json_object(json_object(unstamped["categories"])["provenance"])["chain"] == [step]
+
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "1700000000")
+    stamped: dict[str, JsonValue] = _llm_bundle(disrobe.py_decompile(pyc, pack="pack-2"))
+    assert stamped.pop("generated_at") == "2023-11-14T22:13:20.000Z"
+    assert stamped == unstamped
+
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "yesterday")
+    rejected: str = (
+        "llm bundle: SOURCE_DATE_EPOCH must be a whole number of seconds since 1970, "
+        "got `yesterday`"
+    )
+    with pytest.raises(disrobe.DisrobeError, match=re.escape(rejected)):
+        disrobe.py_decompile(pyc, pack="pack-2")
 
 
 def test_from_obj_accepts_another_typed_report() -> None:

@@ -205,12 +205,14 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
         nodes.push(root);
 
         if spec.is_plan_only() {
+            let total: Duration = started.elapsed();
+            nodes[0].duration = Some(total);
             let plan: ChainPlan = ChainPlan {
                 nodes,
                 root_id: 0,
                 verdict: Verdict::DryRun,
                 final_format: None,
-                total: started.elapsed(),
+                total,
                 detector_calls: 0,
                 rejected_passes: 0,
                 has_multiple_branches: false,
@@ -240,6 +242,7 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
         let mut output_budget_exceeded: bool = false;
 
         while let Some(item) = queue.pop_front() {
+            let item_started: Instant = Instant::now();
             if item.depth > spec.cap() {
                 push_terminal_layer(
                     &mut nodes,
@@ -249,6 +252,7 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
                     blake3_of(&item.bytes),
                     item.bytes.len() as u64,
                     Verdict::CapReached,
+                    item_started.elapsed(),
                 );
                 continue;
             }
@@ -261,6 +265,7 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
                     blake3_of(&item.bytes),
                     item.bytes.len() as u64,
                     Verdict::CapReached,
+                    item_started.elapsed(),
                 );
                 continue;
             }
@@ -275,6 +280,7 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
                     in_hash,
                     in_size,
                     Verdict::Cycle,
+                    item_started.elapsed(),
                 );
                 continue;
             }
@@ -312,6 +318,7 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
                     in_hash,
                     in_size,
                     Verdict::Stalled,
+                    item_started.elapsed(),
                 );
                 continue;
             };
@@ -341,6 +348,7 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
                         }
                     }
                     nodes.push(Node {
+                        duration: Some(item_started.elapsed()),
                         verdict: Verdict::Error { message: msg },
                         ..pass_node_base(
                             layer_id,
@@ -652,6 +660,7 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
                                                 ch.artifact_index
                                             ),
                                         },
+                                        Duration::ZERO,
                                     );
                                     continue;
                                 };
@@ -676,6 +685,7 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
                                         blake3_of(&next_bytes),
                                         0,
                                         Verdict::Stalled,
+                                        Duration::ZERO,
                                     );
                                     continue;
                                 }
@@ -702,6 +712,7 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
                                         child_hash,
                                         child_len,
                                         Verdict::Extracted,
+                                        Duration::ZERO,
                                     );
                                     continue;
                                 }
@@ -751,12 +762,14 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
             Verdict::Complete { formats } => formats.first().cloned(),
             _ => None,
         });
+        let total: Duration = started.elapsed();
+        nodes[0].duration = Some(total);
         ChainPlan {
             nodes,
             root_id: 0,
             verdict: final_verdict,
             final_format,
-            total: started.elapsed(),
+            total,
             detector_calls,
             rejected_passes: rejected,
             has_multiple_branches,
@@ -935,6 +948,7 @@ fn push_terminal_layer(
     input_hash: [u8; 32],
     input_size: u64,
     verdict: Verdict,
+    duration: Duration,
 ) {
     let id: NodeId = u32::try_from(nodes.len()).unwrap_or(u32::MAX);
     nodes.push(Node {
@@ -950,7 +964,7 @@ fn push_terminal_layer(
         output_blake3: None,
         output_size: None,
         output_bytes: None,
-        duration: None,
+        duration: Some(duration),
         picks: Vec::new(),
         artifacts: Vec::new(),
         metadata: BTreeMap::new(),
@@ -1170,6 +1184,36 @@ mod tests {
         assert_eq!(
             by_path.get("sub/_wmi.pyd").copied(),
             Some(b"MZ-wmi-payload".as_slice())
+        );
+    }
+
+    #[test]
+    fn every_node_of_a_run_carries_a_duration() {
+        let r: PassRegistry = registry_with_a();
+        let runner: CountingRunner = CountingRunner {
+            calls: AtomicU32::new(0),
+            produce: fanout_then_terminal(),
+        };
+        let d: ChainDriver<'_, CountingRunner> =
+            ChainDriver::new(&r, &runner, ChainConfig::default());
+        let plan: ChainPlan = d.run(b"root-onefile".to_vec(), &ChainSpec::Auto { cap: 8 }, None);
+        assert!(
+            plan.nodes
+                .iter()
+                .any(|n: &Node| n.pass_id.is_none() && n.id != 0),
+            "the run must reach a node that ran no pass"
+        );
+        let unmeasured: Vec<NodeId> = plan
+            .nodes
+            .iter()
+            .filter(|n: &&Node| n.duration.is_none())
+            .map(|n: &Node| n.id)
+            .collect();
+        assert_eq!(unmeasured, Vec::<NodeId>::new());
+        assert_eq!(
+            plan.nodes[0].duration,
+            Some(plan.total),
+            "the input node spans the whole run"
         );
     }
 

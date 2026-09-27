@@ -9,6 +9,7 @@
 use disrobe_pass_native::packers::pe_sections::{PeImage, parse_pe_image};
 use disrobe_pass_native::{FileIdReport, NativeFormat, detect_format, identify_file, minimal_pe32};
 
+const NOW_SECS: u64 = 1_798_761_600;
 const REAL_PE64: &[u8] = include_bytes!("../../../corpus/native/formats/hello.pe64.exe");
 
 #[test]
@@ -43,7 +44,7 @@ fn real_pe64_directory_and_sections_parse() {
         "the executable code section .text must be present in a real PE"
     );
 
-    let report: FileIdReport = identify_file(REAL_PE64);
+    let report: FileIdReport = identify_file(REAL_PE64, NOW_SECS);
     assert_eq!(report.format, "pe64");
     assert_eq!(report.bits, 64);
     assert!(REAL_PE64.len() < 256 * 1024, "fixture under 256KB budget");

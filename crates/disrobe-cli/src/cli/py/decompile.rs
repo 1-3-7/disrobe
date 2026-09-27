@@ -310,7 +310,6 @@ fn maybe_emit_llm_decompile(
     let Some(selection): Option<MetadataSelection> = llm_flags.to_selection()? else {
         return Ok(None);
     };
-    let started: std::time::Instant = std::time::Instant::now();
     let ins: Vec<disrobe_pass_py_disasm::Instruction> =
         disrobe_pass_py_disasm::disassemble(code, pyc.header.version);
     let disasm_v: Vec<disrobe_pass_py_decompile::LlmDisasmIns> = ins
@@ -330,7 +329,6 @@ fn maybe_emit_llm_decompile(
     let consts: Vec<String> = code.consts.iter().map(py_obj_label).collect();
     let input_size_bytes: u64 = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
     let hash: String = llm_cli::blake3_hex(bytes);
-    let duration_ms: f64 = started.elapsed().as_secs_f64() * 1000.0_f64;
     let emitter: disrobe_pass_py_decompile::PyDecompileLlmInput =
         disrobe_pass_py_decompile::PyDecompileLlmInput {
             module_path: input.display().to_string(),
@@ -344,7 +342,6 @@ fn maybe_emit_llm_decompile(
             input_size_bytes,
             input_hash_blake3: hash,
             roundtrip_status: roundtrip_status.map(str::to_owned),
-            duration_ms,
         };
     let envelope_map: serde_json::Value = emitter.emit_metadata(&selection);
     let step: disrobe_llm_metadata::PipelineStep = llm_cli::make_step(
@@ -352,7 +349,6 @@ fn maybe_emit_llm_decompile(
         disrobe_pass_py_decompile::VERSION,
         "disasm",
         "surface",
-        duration_ms,
     );
     let mut passes: Vec<(disrobe_llm_metadata::PipelineStep, serde_json::Value)> =
         vec![(step, envelope_map)];

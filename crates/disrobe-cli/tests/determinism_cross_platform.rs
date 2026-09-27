@@ -6,8 +6,10 @@
     clippy::print_stderr
 )]
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::time::Duration;
 
 fn workspace_root() -> PathBuf {
     let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -20,28 +22,17 @@ fn corpus_path(rel: &str) -> PathBuf {
     workspace_root().join("corpus").join(rel)
 }
 
-fn cargo_bin() -> PathBuf {
-    let exe: PathBuf = std::env::current_exe().expect("current exe");
-    let mut dir: PathBuf = exe.parent().expect("exe dir").to_path_buf();
-    while dir
-        .file_name()
-        .and_then(|part: &std::ffi::OsStr| part.to_str())
-        != Some("debug")
-        && dir
-            .file_name()
-            .and_then(|part: &std::ffi::OsStr| part.to_str())
-            != Some("release")
-    {
-        if !dir.pop() {
-            break;
-        }
-    }
-    dir.push(if cfg!(windows) {
-        "disrobe.exe"
-    } else {
-        "disrobe"
-    });
-    dir
+fn disrobe_bin() -> PathBuf {
+    let bin: PathBuf = PathBuf::from(
+        std::env::var_os("DISROBE_BIN")
+            .expect("DISROBE_BIN must name the current disrobe binary built for this caller test"),
+    );
+    assert!(
+        bin.is_file(),
+        "DISROBE_BIN does not name a file: {}",
+        bin.display()
+    );
+    bin
 }
 
 fn temp_dir(stem: &str) -> disrobe_core::scratch::ScratchDir {
@@ -50,16 +41,12 @@ fn temp_dir(stem: &str) -> disrobe_core::scratch::ScratchDir {
 }
 
 fn run_disrobe(args: &[String]) -> Output {
-    let bin: PathBuf = cargo_bin();
-    assert!(
-        bin.exists(),
-        "disrobe binary missing at {}; run `cargo build -p disrobe-cli` first",
-        bin.display()
-    );
+    let bin: PathBuf = disrobe_bin();
     Command::new(&bin)
         .args(args)
         .env_remove("RUST_LOG")
         .env_remove("DISROBE_LOG")
+        .env_remove("SOURCE_DATE_EPOCH")
         .output()
         .expect("spawn disrobe")
 }
@@ -175,124 +162,134 @@ fn cross_platform_fixture_hashes() {
     );
 }
 
-const BATCH_PROVENANCE_NAMES: &[&str] = &[
-    "manifest.json",
-    "chain.json",
-    "recovery.json",
-    "report.json",
-    "report.sarif",
-];
+type Snapshot = BTreeMap<String, Vec<u8>>;
 
-const RUN_DURATION_KEYS: &[&str] = &["duration_ms", "total_ms"];
-
-const RUN_CONFIGURATION_KEYS: &[&str] = &["jobs"];
-
-const RUN_CLOCK_KEYS: &[&str] = &[
-    "generated_at",
-    "analysis_started",
-    "analysis_ended",
-    "startTimeUtc",
-    "endTimeUtc",
-    "timestamp",
-    "created",
-    "modified",
-];
-
-const CANONICAL_OUT_ROOT: &str = "<batch-out>";
-
-const CANONICAL_RUN_CLOCK: &str = "\"<run-clock>\"";
-
-fn json_string_body(text: &str) -> String {
-    let quoted: String = serde_json::to_string(text).expect("encode path as JSON string");
-    quoted[1..quoted.len() - 1].to_owned()
+fn snapshot(root: &Path) -> Snapshot {
+    let mut files: Snapshot = BTreeMap::new();
+    for entry in walkdir::WalkDir::new(root)
+        .sort_by_file_name()
+        .into_iter()
+        .filter_map(std::result::Result::ok)
+    {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let relative: String = entry
+            .path()
+            .strip_prefix(root)
+            .expect("walked entry is under root")
+            .to_string_lossy()
+            .replace('\\', "/");
+        let bytes: Vec<u8> = std::fs::read(entry.path()).unwrap_or_else(|e: std::io::Error| {
+            panic!("reading run output {}: {e}", entry.path().display())
+        });
+        files.insert(relative, bytes);
+    }
+    assert!(
+        !files.is_empty(),
+        "the run at {} produced no output files",
+        root.display()
+    );
+    files
 }
 
-fn out_root_spellings(root: &Path) -> Vec<String> {
-    let mut roots: Vec<String> = vec![root.display().to_string()];
-    if let Ok(resolved) = std::fs::canonicalize(root) {
-        let resolved: String = resolved.display().to_string();
-        if let Some(verbatim_free) = resolved.strip_prefix(r"\\?\") {
-            roots.push(verbatim_free.to_owned());
-        }
-        roots.push(resolved);
-    }
-    let mut spellings: Vec<String> = Vec::new();
-    for native in roots {
-        let slashed: String = native.replace('\\', "/");
-        for form in [
-            json_string_body(&native),
-            json_string_body(&slashed),
-            native,
-            slashed,
-        ] {
-            if !spellings.contains(&form) {
-                spellings.push(form);
-            }
-        }
-    }
-    spellings.sort_by_key(|form: &String| std::cmp::Reverse(form.len()));
-    spellings
+fn differing_files(left: &Snapshot, right: &Snapshot) -> Vec<String> {
+    left.keys()
+        .chain(right.keys())
+        .filter(|name: &&String| left.get(*name) != right.get(*name))
+        .cloned()
+        .collect::<BTreeSet<String>>()
+        .into_iter()
+        .collect()
 }
 
-fn json_scalar_end(text: &str, start: usize) -> Option<usize> {
-    let bytes: &[u8] = text.as_bytes();
-    match bytes.get(start)? {
-        b'"' => {
-            let mut index: usize = start + 1;
-            while let Some(byte) = bytes.get(index) {
-                match byte {
-                    b'\\' => index += 2,
-                    b'"' => return Some(index + 1),
-                    _ => index += 1,
-                }
-            }
-            None
-        }
-        b'0'..=b'9' => Some(
-            bytes[start..]
-                .iter()
-                .position(|byte: &u8| !byte.is_ascii_digit())
-                .map_or(bytes.len(), |offset: usize| start + offset),
-        ),
-        _ => None,
+fn run_into(out: &Path, args: &[String]) -> (Output, Snapshot) {
+    if out.exists() {
+        std::fs::remove_dir_all(out).expect("clear the previous run");
     }
+    let output: Output = run_disrobe(args);
+    assert!(
+        output.status.success(),
+        "disrobe {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let files: Snapshot = snapshot(out);
+    (output, files)
 }
 
-fn replace_key_values(text: &str, key: &str, numeric: bool, placeholder: &str) -> String {
-    let needle: String = format!("\"{key}\": ");
-    let mut canonical: String = String::with_capacity(text.len());
-    let mut cursor: usize = 0;
-    while let Some(offset) = text[cursor..].find(&needle) {
-        let value_start: usize = cursor + offset + needle.len();
-        canonical.push_str(&text[cursor..value_start]);
-        let shape_matches: bool = text
-            .as_bytes()
-            .get(value_start)
-            .is_some_and(|byte: &u8| byte.is_ascii_digit() == numeric);
-        match json_scalar_end(text, value_start).filter(|_: &usize| shape_matches) {
-            Some(value_end) => {
-                canonical.push_str(placeholder);
-                cursor = value_end;
-            }
-            None => cursor = value_start,
-        }
-    }
-    canonical.push_str(&text[cursor..]);
-    canonical
+#[test]
+fn two_auto_runs_over_one_input_write_identical_bytes() {
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir("auto-twice");
+    let input: PathBuf = scratch.path().join("edge_cases_2_7.pyc");
+    std::fs::copy(
+        corpus_path("python/decompile/playground/edge_cases_2_7.pyc"),
+        &input,
+    )
+    .expect("stage the fixture");
+    let out: PathBuf = scratch.path().join("out");
+    let args: Vec<String> = vec![
+        "--json".to_string(),
+        "auto".to_string(),
+        input.to_string_lossy().into_owned(),
+        "--out".to_string(),
+        out.to_string_lossy().into_owned(),
+    ];
+    let (first_run, first): (Output, Snapshot) = run_into(&out, &args);
+    std::thread::sleep(Duration::from_millis(1_100));
+    let (second_run, second): (Output, Snapshot) = run_into(&out, &args);
+    assert_eq!(
+        first_run.stdout, second_run.stdout,
+        "auto --json stdout differs between two runs over one input"
+    );
+    assert_eq!(
+        differing_files(&first, &second),
+        Vec::<String>::new(),
+        "output files differ between two runs over one input"
+    );
 }
 
-fn canonical_provenance(bytes: &[u8], spellings: &[String]) -> Vec<u8> {
-    let mut text: String = String::from_utf8(bytes.to_vec()).expect("provenance file is UTF-8");
-    for spelling in spellings {
-        text = text.replace(spelling.as_str(), CANONICAL_OUT_ROOT);
-    }
-    for key in RUN_DURATION_KEYS.iter().chain(RUN_CONFIGURATION_KEYS) {
-        text = replace_key_values(&text, key, true, "0");
-    }
-    for key in RUN_CLOCK_KEYS {
-        text = replace_key_values(&text, key, false, CANONICAL_RUN_CLOCK);
-    }
-    text.into_bytes()
+fn add_recorded_duration(report_path: &Path, duration: u32) {
+    let report: Vec<u8> = std::fs::read(report_path)
+        .unwrap_or_else(|error: std::io::Error| panic!("read {}: {error}", report_path.display()));
+    let mut document: serde_json::Value =
+        serde_json::from_slice(&report).unwrap_or_else(|error: serde_json::Error| {
+            panic!("parse {}: {error}", report_path.display())
+        });
+    document
+        .as_object_mut()
+        .unwrap_or_else(|| panic!("{} is not an object", report_path.display()))
+        .insert("duration_ms".to_string(), serde_json::Value::from(duration));
+    let mutated: Vec<u8> =
+        serde_json::to_vec_pretty(&document).expect("serialize the duration mutant");
+    std::fs::write(report_path, mutated)
+        .unwrap_or_else(|error: std::io::Error| panic!("write {}: {error}", report_path.display()));
+}
+
+#[test]
+fn a_duration_mutant_in_actual_auto_output_turns_the_comparison_red() {
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir("auto-duration-mutant");
+    let input: PathBuf = scratch.path().join("edge_cases_2_7.pyc");
+    std::fs::copy(
+        corpus_path("python/decompile/playground/edge_cases_2_7.pyc"),
+        &input,
+    )
+    .expect("stage the fixture");
+    let out: PathBuf = scratch.path().join("out");
+    let args: Vec<String> = vec![
+        "--json".to_string(),
+        "auto".to_string(),
+        input.to_string_lossy().into_owned(),
+        "--out".to_string(),
+        out.to_string_lossy().into_owned(),
+    ];
+    let (_, baseline): (Output, Snapshot) = run_into(&out, &args);
+    add_recorded_duration(&out.join("report.json"), 7);
+    let mutated: Snapshot = snapshot(&out);
+    assert_eq!(
+        differing_files(&baseline, &mutated),
+        vec!["report.json".to_string()],
+        "the direct-byte comparison must reject a duration field in auto output"
+    );
 }
 
 fn stage_batch_input() -> (disrobe_core::scratch::ScratchDir, PathBuf) {
@@ -310,70 +307,16 @@ fn stage_batch_input() -> (disrobe_core::scratch::ScratchDir, PathBuf) {
     (scratch, dir)
 }
 
-fn run_batch(input_dir: &Path, jobs: u32) -> (disrobe_core::scratch::ScratchDir, PathBuf) {
-    let scratch: disrobe_core::scratch::ScratchDir = temp_dir("batch-out");
-    let out_dir: PathBuf = scratch.path().to_path_buf();
-    let args: Vec<String> = vec![
+fn batch_args(input_dir: &Path, out: &Path, jobs: u32) -> Vec<String> {
+    vec![
+        "--json".to_string(),
         "auto".to_string(),
         input_dir.to_string_lossy().into_owned(),
         "--out".to_string(),
-        out_dir.to_string_lossy().into_owned(),
+        out.to_string_lossy().into_owned(),
         "--jobs".to_string(),
         jobs.to_string(),
-    ];
-    let output: Output = run_disrobe(&args);
-    assert!(
-        output.status.success(),
-        "disrobe auto (batch, jobs={jobs}) failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    (scratch, out_dir)
-}
-
-fn hash_batch_tree(root: &Path) -> blake3::Hash {
-    let spellings: Vec<String> = out_root_spellings(root);
-    let mut entries: Vec<(String, blake3::Hash)> = Vec::new();
-    for entry in walkdir::WalkDir::new(root)
-        .sort_by_file_name()
-        .into_iter()
-        .filter_map(std::result::Result::ok)
-    {
-        if !entry.file_type().is_file() {
-            continue;
-        }
-        let is_provenance: bool = entry
-            .file_name()
-            .to_str()
-            .is_some_and(|n: &str| BATCH_PROVENANCE_NAMES.contains(&n));
-        let relative: PathBuf = entry
-            .path()
-            .strip_prefix(root)
-            .expect("walked entry is under root")
-            .to_path_buf();
-        let relative_display: String = relative.to_string_lossy().replace('\\', "/");
-        let bytes: Vec<u8> = std::fs::read(entry.path()).unwrap_or_else(|e: std::io::Error| {
-            panic!("reading batch output {}: {e}", entry.path().display())
-        });
-        let hashed: Vec<u8> = if is_provenance {
-            canonical_provenance(&bytes, &spellings)
-        } else {
-            bytes
-        };
-        entries.push((relative_display, blake3::hash(&hashed)));
-    }
-    assert!(
-        !entries.is_empty(),
-        "batch run at {} produced no output files",
-        root.display()
-    );
-    entries.sort_by(|a: &(String, blake3::Hash), b: &(String, blake3::Hash)| a.0.cmp(&b.0));
-    let mut combined: Vec<u8> = Vec::new();
-    for (relative, hash) in &entries {
-        combined.extend_from_slice(relative.as_bytes());
-        combined.push(0);
-        combined.extend_from_slice(hash.as_bytes());
-    }
-    blake3::hash(&combined)
+    ]
 }
 
 #[test]
@@ -381,14 +324,17 @@ fn hash_batch_tree(root: &Path) -> blake3::Hash {
 fn batch_jobs_does_not_change_recovered_output() {
     let (_input_scratch, input_dir): (disrobe_core::scratch::ScratchDir, PathBuf) =
         stage_batch_input();
-    let (_single_jobs_scratch, single_jobs_out): (disrobe_core::scratch::ScratchDir, PathBuf) =
-        run_batch(&input_dir, 1);
-    let (_multi_jobs_scratch, multi_jobs_out): (disrobe_core::scratch::ScratchDir, PathBuf) =
-        run_batch(&input_dir, 4);
-    let single_hash: blake3::Hash = hash_batch_tree(&single_jobs_out);
-    let multi_hash: blake3::Hash = hash_batch_tree(&multi_jobs_out);
+    let out_scratch: disrobe_core::scratch::ScratchDir = temp_dir("batch-out");
+    let out: PathBuf = out_scratch.path().join("out");
+    let (single_run, single): (Output, Snapshot) = run_into(&out, &batch_args(&input_dir, &out, 1));
+    let (multi_run, multi): (Output, Snapshot) = run_into(&out, &batch_args(&input_dir, &out, 4));
     assert_eq!(
-        single_hash, multi_hash,
-        "batch recovery output differs between --jobs 1 and --jobs 4 over the same input directory"
+        single_run.stdout, multi_run.stdout,
+        "auto --json stdout differs between --jobs 1 and --jobs 4"
+    );
+    assert_eq!(
+        differing_files(&single, &multi),
+        Vec::<String>::new(),
+        "batch output differs between --jobs 1 and --jobs 4 over the same input directory"
     );
 }

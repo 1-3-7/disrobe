@@ -14,7 +14,7 @@ fn schema_root() -> Json {
         .and_then(std::path::Path::parent)
         .unwrap()
         .join("schemas")
-        .join("disrobe-metadata-llm-v1.json");
+        .join("disrobe-metadata-llm-v2.json");
     let bytes: Vec<u8> =
         std::fs::read(&root).unwrap_or_else(|e| panic!("read schema {}: {e}", root.display()));
     serde_json::from_slice(&bytes).expect("schema must parse as JSON")

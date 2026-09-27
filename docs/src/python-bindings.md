@@ -93,8 +93,8 @@ Metadata-wired passes: `py_decompile`, `py_disasm`, `py_deob`, `pyarmor_detect`,
 
 ### `LlmBundle`
 
-A `TypedDict(total=False)` mirroring the `disrobe.metadata.llm.v1` on-disk schema. The type name and schema id are stable API names; the payload is deterministic metadata, not model output.
-Keys present depend on which `pack` was requested.
+A `TypedDict` mirroring the `disrobe.metadata.llm.v2` on-disk schema. The type name is stable; the schema id changes only when the bundle shape breaks compatibility. The payload is deterministic metadata, not model output.
+Every top-level key except `generated_at` is always present, and the categories present depend on which `pack` was requested. Pipeline steps record no durations. `generated_at` appears only when `SOURCE_DATE_EPOCH` is set, as an RFC 3339 UTC timestamp; a value that is not a whole number of seconds up to 9999-12-31T23:59:59Z raises `DisrobeError`.
 
 The `LlmBundle` name describes a type in the stub; it is not a runtime export.
 To retain a complete report and its metadata, serialize the report:
@@ -293,8 +293,10 @@ The registered pass tree covers pyarmor, pyinstaller, nuitka,
 py-decompile, py-deob, container, js, jvm, dotnet, wasm, mobile, swift-objc,
 and the native packer detector.
 
-The accessors read the `disrobe.chain/v1` document. `to_json()` returns the
-complete plan, including per-node hashes, detector picks, and statistics.
+The accessors read the `disrobe.chain/v2` document. `to_json()` returns the
+complete plan, including per-node hashes, detector picks, and statistics. The
+document carries no clock and no duration, so one input gives the same JSON on
+every call.
 
 | Accessor | Value |
 |---|---|
@@ -498,7 +500,7 @@ Behavioral summary by category with MITRE ATT&CK IDs.
 def identify(data: bytes) -> IdentifyReport: ...
 ```
 
-Compiler/linker/packer/protector/installer fingerprint.
+Compiler/linker/packer/protector/installer fingerprint. A signed PE's Authenticode certificate validity is judged at the time `SOURCE_DATE_EPOCH` names, or at the current time when it is unset; a value that is not a whole number of seconds raises `DisrobeError`.
 
 ### `secret_scan`
 
@@ -795,6 +797,8 @@ schema_version: str | None = prov.schema_version
 | `schema` | `str \| None` |
 | `schema_version` | `str \| None` |
 | `generated_at` | `str \| None` |
+
+`generated_at` is `None` unless `SOURCE_DATE_EPOCH` was set when the bundle was built.
 
 ## Python passes
 

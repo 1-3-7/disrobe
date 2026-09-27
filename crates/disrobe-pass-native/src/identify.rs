@@ -1014,7 +1014,7 @@ fn bytes_find(haystack: &[u8], needle: &[u8]) -> bool {
 }
 
 #[must_use]
-pub fn detect(bytes: &[u8]) -> IdentityReport {
+pub fn detect(bytes: &[u8], now_secs: u64) -> IdentityReport {
     let format: &'static str = detect_format(bytes);
     let mut hits: Vec<IdentityHit> = Vec::new();
     for sig in SIGNATURES {
@@ -1056,7 +1056,7 @@ pub fn detect(bytes: &[u8]) -> IdentityReport {
             .iter()
             .any(|h: &IdentityHit| h.kind == IdentityKind::Sign)
     {
-        let report: AuthenticodeReport = crate::authenticode::verify(bytes);
+        let report: AuthenticodeReport = crate::authenticode::verify(bytes, now_secs);
         for hit in &mut hits {
             if hit.kind == IdentityKind::Sign {
                 hit.detail = format!(
@@ -1126,12 +1126,14 @@ fn read_u32_le(bytes: &[u8], at: usize) -> Option<u32> {
 mod tests {
     use super::*;
 
+    const NOW_SECS: u64 = 1_798_761_600;
+
     #[test]
     fn detects_upx_in_pe() {
         let mut buf: Vec<u8> = b"MZ".to_vec();
         buf.extend(std::iter::repeat_n(0u8, 512));
         buf.extend_from_slice(b"some data UPX! more data");
-        let report: IdentityReport = detect(&buf);
+        let report: IdentityReport = detect(&buf, NOW_SECS);
         assert_eq!(report.format, "pe");
         let hit: &IdentityHit = report
             .hits
@@ -1147,7 +1149,7 @@ mod tests {
         let mut buf: Vec<u8> = b"MZ".to_vec();
         buf.extend(std::iter::repeat_n(0u8, 64));
         buf.extend_from_slice(b".vmp0\x00\x00\x00 Go build ID: \"abc\"");
-        let report: IdentityReport = detect(&buf);
+        let report: IdentityReport = detect(&buf, NOW_SECS);
         let go: &IdentityHit = report
             .hits
             .iter()
@@ -1167,7 +1169,7 @@ mod tests {
         let mut buf: Vec<u8> = vec![0x7F, b'E', b'L', b'F'];
         buf.extend(std::iter::repeat_n(0u8, 64));
         buf.extend_from_slice(b"GCC: (Ubuntu 13.2.0) 13.2.0");
-        let report: IdentityReport = detect(&buf);
+        let report: IdentityReport = detect(&buf, NOW_SECS);
         assert_eq!(report.format, "elf");
         let gcc: &IdentityHit = report
             .hits
@@ -1182,7 +1184,7 @@ mod tests {
         let mut buf: Vec<u8> = vec![0x7F, b'E', b'L', b'F'];
         buf.extend(std::iter::repeat_n(0u8, 64));
         buf.extend_from_slice(b"section .note.go.buildid here");
-        let report: IdentityReport = detect(&buf);
+        let report: IdentityReport = detect(&buf, NOW_SECS);
         assert_eq!(report.format, "elf");
         let go: &IdentityHit = report
             .hits
@@ -1197,7 +1199,7 @@ mod tests {
         let mut buf: Vec<u8> = vec![0xCF, 0xFA, 0xED, 0xFE];
         buf.extend(std::iter::repeat_n(0u8, 64));
         buf.extend_from_slice(b"__swift5_proto __objc_classlist");
-        let report: IdentityReport = detect(&buf);
+        let report: IdentityReport = detect(&buf, NOW_SECS);
         assert_eq!(report.format, "macho");
         assert!(report.hits.iter().any(|h: &IdentityHit| h.name == "Swift"));
         assert!(
@@ -1276,7 +1278,7 @@ mod tests {
             let mut buf: Vec<u8> = vec![0x7F, b'E', b'L', b'F'];
             buf.extend(std::iter::repeat_n(0u8, 64));
             buf.extend_from_slice(marker);
-            let report: IdentityReport = detect(&buf);
+            let report: IdentityReport = detect(&buf, NOW_SECS);
             let hit: &IdentityHit = report
                 .hits
                 .iter()
@@ -1292,7 +1294,7 @@ mod tests {
         let buf: Vec<u8> = (0..2048u16)
             .map(|i: u16| (i.wrapping_mul(7) & 0xff) as u8)
             .collect();
-        let report: IdentityReport = detect(&buf);
+        let report: IdentityReport = detect(&buf, NOW_SECS);
         assert!(
             report.hits.is_empty(),
             "random data must not match: {:?}",
@@ -1362,7 +1364,7 @@ mod tests {
             let mut buf: Vec<u8> = vec![0x7F, b'E', b'L', b'F'];
             buf.extend(std::iter::repeat_n(0u8, 64));
             buf.extend_from_slice(marker);
-            let report: IdentityReport = detect(&buf);
+            let report: IdentityReport = detect(&buf, NOW_SECS);
             let hit: &IdentityHit = report
                 .hits
                 .iter()
@@ -1378,7 +1380,7 @@ mod tests {
         let mut buf: Vec<u8> = b"MZ".to_vec();
         buf.extend(std::iter::repeat_n(0u8, 512));
         buf.extend_from_slice(b"random compressed bytes \x00#~\xb5 more \x00#- tail");
-        let report: IdentityReport = detect(&buf);
+        let report: IdentityReport = detect(&buf, NOW_SECS);
         assert!(
             !report.hits.iter().any(|h: &IdentityHit| h.name == ".NET"),
             "#~/#- without a BSJB metadata root must not be flagged as .NET: {:?}",
@@ -1391,7 +1393,7 @@ mod tests {
         let mut buf: Vec<u8> = b"MZ".to_vec();
         buf.extend(std::iter::repeat_n(0u8, 256));
         buf.extend_from_slice(b"BSJBv4.0.30319\x00\x00#~\x00#Strings\x00#Blob");
-        let report: IdentityReport = detect(&buf);
+        let report: IdentityReport = detect(&buf, NOW_SECS);
         let dotnet: &IdentityHit = report
             .hits
             .iter()
@@ -1405,7 +1407,7 @@ mod tests {
     fn bsjb_root_without_stream_marker_does_not_flag() {
         let mut buf: Vec<u8> = vec![0x7F, b'E', b'L', b'F'];
         buf.extend_from_slice(b"BSJB but no metadata stream marker present here");
-        let report: IdentityReport = detect(&buf);
+        let report: IdentityReport = detect(&buf, NOW_SECS);
         assert!(
             !report.hits.iter().any(|h: &IdentityHit| h.name == ".NET"),
             "BSJB alone (no #~/#-) must not be flagged as .NET: {:?}",
@@ -1432,14 +1434,14 @@ mod tests {
                 .collect(),
         ];
         for input in &inputs {
-            let report: IdentityReport = detect(input);
+            let report: IdentityReport = detect(input, NOW_SECS);
             let _ = report.format;
             let _ = report.hits.len();
         }
         let mut header_only: Vec<u8> = b"MZ".to_vec();
         header_only.extend(std::iter::repeat_n(0x90u8, 60));
         header_only.extend_from_slice(&[0x00, 0x01, 0x00, 0x00]);
-        let report: IdentityReport = detect(&header_only);
+        let report: IdentityReport = detect(&header_only, NOW_SECS);
         assert_eq!(report.format, "pe");
     }
 
@@ -1447,7 +1449,7 @@ mod tests {
     fn dedups_repeated_signatures() {
         let mut buf: Vec<u8> = b"MZ".to_vec();
         buf.extend_from_slice(b"UPX! padding UPX! again UPX!");
-        let report: IdentityReport = detect(&buf);
+        let report: IdentityReport = detect(&buf, NOW_SECS);
         let upx_count: usize = report
             .hits
             .iter()

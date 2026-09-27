@@ -2411,3 +2411,120 @@ fn go_info_renders_build_info_settings() {
         r.stdout
     );
 }
+
+fn run_disrobe_with_env(args: &[&str], env: &[(&str, &std::ffi::OsStr)]) -> Run {
+    let bin: PathBuf = cli_binary();
+    assert!(
+        bin.exists(),
+        "disrobe binary not built at {} - run `cargo build -p disrobe-cli` before tests",
+        bin.display()
+    );
+    let output: std::process::Output = Command::new(&bin)
+        .args(args)
+        .env_remove("RUST_LOG")
+        .env_remove("DISROBE_LOG")
+        .env_remove("SOURCE_DATE_EPOCH")
+        .envs(env.iter().copied())
+        .output()
+        .expect("spawn disrobe");
+    Run {
+        code: output.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    }
+}
+
+fn signed_pe_fixture() -> PathBuf {
+    let path: PathBuf = workspace_root()
+        .join("crates")
+        .join("disrobe-pass-native")
+        .join("tests")
+        .join("fixtures")
+        .join("authenticode")
+        .join("valid_untrusted.exe");
+    assert!(
+        path.is_file(),
+        "{} is tracked in git and carries the signature these cases judge, so its absence is a \
+         damaged checkout",
+        path.display()
+    );
+    path
+}
+
+#[test]
+fn a_malformed_source_date_epoch_is_refused_where_the_clock_would_have_been_read() {
+    let signed: PathBuf = signed_pe_fixture();
+    let signed_arg: &str = signed.to_str().expect("utf-8 fixture path");
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir("malformed-source-date");
+    let identity_out: PathBuf = scratch.path().join("identity.json");
+    let identity_arg: &str = identity_out.to_str().expect("utf-8 scratch path");
+    let env: [(&str, &std::ffi::OsStr); 2] = [
+        ("SOURCE_DATE_EPOCH", std::ffi::OsStr::new("yesterday")),
+        ("HOME", scratch.path().as_os_str()),
+    ];
+    let callers: [&[&str]; 3] = [
+        &["identify", signed_arg],
+        &["native", "identify", signed_arg, "--out", identity_arg],
+        &["install", "bat", "--dry-run"],
+    ];
+    for args in callers {
+        let run: Run = run_disrobe_with_env(args, &env);
+        assert_ne!(
+            run.code, 0,
+            "disrobe {args:?} must refuse a malformed SOURCE_DATE_EPOCH rather than read the wall \
+             clock:\n{}",
+            run.stdout
+        );
+        assert!(
+            run.stderr.contains("DR-CLI-0318") && run.stderr.contains("`yesterday`"),
+            "disrobe {args:?} names the code and the rejected value: {}",
+            run.stderr
+        );
+    }
+    assert!(
+        !identity_out.exists(),
+        "a refused native identify writes no identity"
+    );
+    assert!(
+        !scratch.path().join(".disrobe").exists(),
+        "a refused install dry run logs no attempt"
+    );
+}
+
+#[test]
+fn source_date_epoch_is_the_reference_time_of_the_authenticode_validity_check() {
+    let signed: PathBuf = signed_pe_fixture();
+    let signed_arg: &str = signed.to_str().expect("utf-8 fixture path");
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir("authenticode-reference-time");
+    let verdict_at = |epoch: &str| -> String {
+        let out: PathBuf = scratch.path().join(format!("identity-{epoch}.json"));
+        let run: Run = run_disrobe_with_env(
+            &[
+                "native",
+                "identify",
+                signed_arg,
+                "--out",
+                out.to_str().expect("utf-8 scratch path"),
+            ],
+            &[("SOURCE_DATE_EPOCH", std::ffi::OsStr::new(epoch))],
+        );
+        assert_eq!(run.code, 0, "stderr: {}", run.stderr);
+        let report: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&out).expect("identity written"))
+                .expect("identity json");
+        report["authenticode"]["verdict"]
+            .as_str()
+            .unwrap_or_else(|| panic!("a signed PE carries an Authenticode verdict: {report}"))
+            .to_string()
+    };
+    assert_eq!(
+        verdict_at("0"),
+        "expired",
+        "in 1970 the fixture leaf is not yet valid"
+    );
+    assert_eq!(
+        verdict_at("1798761600"),
+        "untrusted-chain",
+        "on 2027-01-01 the leaf is valid and only its test root is untrusted"
+    );
+}

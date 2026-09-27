@@ -24,6 +24,7 @@ pub(crate) struct AutoOptions {
     pub(crate) backend_export: Option<BackendExportTarget>,
     pub(crate) engine_symbol_map: Option<PathBuf>,
     pub(crate) i_have_authorization: bool,
+    pub(crate) timings: bool,
 }
 
 pub(crate) fn run(
@@ -42,6 +43,7 @@ pub(crate) fn run(
         backend_export,
         engine_symbol_map,
         i_have_authorization,
+        timings,
     } = options;
     #[cfg(not(any(feature = "jvm", feature = "flutter")))]
     if backend_export.is_some() {
@@ -82,6 +84,7 @@ pub(crate) fn run(
             capture_stages,
             backend_export,
             i_have_authorization,
+            timings,
         };
         return batch::run_dir(input, opts, fmt);
     }
@@ -105,6 +108,7 @@ pub(crate) fn run(
             backend_export,
             engine_symbol_map,
             i_have_authorization,
+            timings,
         },
     )
 }

@@ -1,5 +1,3 @@
-use std::time::Instant;
-
 use disrobe_pass_py_deob::llm::PyDeobLlmInput;
 use disrobe_pass_py_deob::{
     CleanupStats, Detection, Error as PyDeobError, Obfuscator, ObfuscatorDetectReport,
@@ -37,7 +35,6 @@ struct CleanupReport {
 #[pyo3(text_signature = "(source, *, cleanup=True, pack='pack-1')")]
 fn py_deob(source: &str, cleanup: bool, pack: Option<&str>) -> PyResult<PyDeobReportObj> {
     let pack_kind: disrobe_llm_metadata::Pack = parse_pack(pack)?;
-    let started: Instant = Instant::now();
     let detection: Detection = detect(source.as_bytes());
     let peel_result: Option<PeelResult> = peel_result_from_result(peel(source.as_bytes()))?;
     let final_source: String = peel_result.as_ref().map_or_else(
@@ -59,18 +56,12 @@ fn py_deob(source: &str, cleanup: bool, pack: Option<&str>) -> PyResult<PyDeobRe
         peel: peel_result.clone(),
         cleanup: cleanup_report,
     };
-    let duration_ms: f64 = started.elapsed().as_secs_f64() * 1000.0_f64;
     let value: serde_json::Value = peel_result.map_or_else(
         || null_bundled_value(&report),
         |peel: PeelResult| {
-            let llm_input: PyDeobLlmInput = PyDeobLlmInput { peel, duration_ms };
-            let step: disrobe_llm_metadata::PipelineStep = make_step(
-                PASS_DEOB,
-                PASS_DEOB_VERSION,
-                "surface",
-                "surface",
-                duration_ms,
-            );
+            let llm_input: PyDeobLlmInput = PyDeobLlmInput { peel };
+            let step: disrobe_llm_metadata::PipelineStep =
+                make_step(PASS_DEOB, PASS_DEOB_VERSION, "surface", "surface");
             let input: disrobe_llm_metadata::InputDescriptor =
                 make_input_descriptor("<source>", source.as_bytes());
             bundled_value(&report, &llm_input, pack_kind, step, input)

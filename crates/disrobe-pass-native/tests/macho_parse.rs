@@ -11,6 +11,7 @@ use disrobe_pass_native::{
     FileIdReport, NativeFormat, detect_format, identify_file, minimal_macho64,
 };
 
+const NOW_SECS: u64 = 1_798_761_600;
 const REAL_MACHO64: &[u8] = include_bytes!("../../../corpus/native/formats/hello.macho64.o");
 
 #[test]
@@ -48,7 +49,7 @@ fn real_macho64_object_classified() {
 
 #[test]
 fn real_macho64_identify_reports_macho_format() {
-    let report: FileIdReport = identify_file(REAL_MACHO64);
+    let report: FileIdReport = identify_file(REAL_MACHO64, NOW_SECS);
     assert_eq!(report.format, "macho64");
     assert!(
         REAL_MACHO64.len() < 256 * 1024,

@@ -14,7 +14,6 @@
       "branch_id": "a",
       "depth": 0,
       "detector_picks": [],
-      "duration_ms": 0,
       "error": null,
       "format_tag_in": null,
       "id": 0,
@@ -48,7 +47,6 @@
           "specificity": 30
         }
       ],
-      "duration_ms": 0,
       "error": null,
       "format_tag_in": "js-javascript-obfuscator",
       "id": 1,
@@ -87,7 +85,6 @@
       "branch_id": "b",
       "depth": 2,
       "detector_picks": [],
-      "duration_ms": 0,
       "error": null,
       "format_tag_in": null,
       "id": 2,
@@ -107,7 +104,6 @@
       "branch_id": "c",
       "depth": 2,
       "detector_picks": [],
-      "duration_ms": 0,
       "error": null,
       "format_tag_in": null,
       "id": 3,
@@ -127,7 +123,6 @@
       "branch_id": "d",
       "depth": 2,
       "detector_picks": [],
-      "duration_ms": 0,
       "error": null,
       "format_tag_in": null,
       "id": 4,
@@ -144,7 +139,7 @@
     }
   ],
   "root_node_id": 0,
-  "schema": "disrobe.chain/v1",
+  "schema": "disrobe.chain/v2",
   "spec": {
     "cap": 8,
     "kind": "auto",
@@ -155,8 +150,7 @@
     "detector_calls": 1,
     "layers": 4,
     "max_branch_depth": 2,
-    "rejected_passes": 0,
-    "total_ms": 0
+    "rejected_passes": 0
   },
   "tool_version": "0.1.0-golden",
   "topology": "tree",

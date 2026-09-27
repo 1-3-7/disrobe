@@ -1,13 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://disrobe.dev/schemas/disrobe-metadata-llm-v1.json",
-  "title": "Disrobe LLM Metadata Bundle",
-  "description": "Versioned JSON envelope emitted by `disrobe --llm` (and individual --<category> / --metadata-pack-N flags). Carries every metadata category any pass crate can produce, so a downstream LLM has maximum reconstructive context for the original source.",
+  "$id": "https://disrobe.dev/schemas/disrobe-metadata-llm-v2.json",
+  "title": "Disrobe LLM Metadata Bundle v2",
+  "description": "Versioned JSON envelope emitted by `disrobe --llm` (and individual --<category> / --metadata-pack-N flags). Carries every metadata category any pass crate can produce, so a downstream LLM has maximum reconstructive context for the original source. The bundle records no durations. Its only timestamp is `generated_at`, present only when SOURCE_DATE_EPOCH is set, so repeated runs over the same input with the same flags write identical bytes.",
   "type": "object",
   "required": [
     "schema",
     "schema_version",
-    "generated_at",
     "tool",
     "selection",
     "input",
@@ -17,17 +16,18 @@
   "additionalProperties": false,
   "properties": {
     "schema": {
-      "const": "disrobe.metadata.llm.v1",
+      "const": "disrobe.metadata.llm.v2",
       "description": "Stable schema URI; do not change without bumping schema_version."
     },
     "schema_version": {
       "type": "string",
-      "pattern": "^1\\.\\d+\\.\\d+$",
+      "pattern": "^2\\.\\d+\\.\\d+$",
       "description": "SemVer of this JSON shape. Major bumps break compatibility."
     },
     "generated_at": {
       "type": "string",
-      "format": "date-time"
+      "format": "date-time",
+      "description": "SOURCE_DATE_EPOCH as an RFC 3339 UTC timestamp with millisecond precision. Absent when that variable is unset."
     },
     "tool": {
       "type": "object",
@@ -130,14 +130,13 @@
     },
     "PipelineStep": {
       "type": "object",
-      "required": ["pass", "version", "rung_in", "rung_out", "duration_ms"],
+      "required": ["pass", "version", "rung_in", "rung_out"],
       "additionalProperties": false,
       "properties": {
         "pass": { "type": "string" },
         "version": { "type": "string" },
         "rung_in": { "$ref": "#/$defs/Rung" },
         "rung_out": { "$ref": "#/$defs/Rung" },
-        "duration_ms": { "type": "number", "minimum": 0 },
         "input_hash_blake3": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
         "output_hash_blake3": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
         "capabilities_required": { "type": "array", "items": { "type": "string" } },

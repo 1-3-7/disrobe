@@ -1,5 +1,3 @@
-use std::time::SystemTime;
-
 use disrobe_llm_metadata::{
     BundleBuilder, InputDescriptor, LlmMetadataEmitter, MetadataFormat, MetadataSelection, Pack,
     PipelineStep, SelectionBuilder, ToolDescriptor,
@@ -53,7 +51,7 @@ pub(crate) fn build_bundle<E: LlmMetadataEmitter>(
     let mut builder: BundleBuilder = BundleBuilder::new();
     builder.record_pass(step, envelope_map);
     builder
-        .finalize(iso8601_now(), ToolDescriptor::default(), &selection, input)
+        .finalize(None, ToolDescriptor::default(), &selection, input)
         .map_err(|e: disrobe_llm_metadata::LlmMetadataError| {
             DisrobeError::new_err(format!("serialize llm bundle: {e}"))
         })
@@ -74,19 +72,12 @@ pub(crate) fn usize_to_u64_saturating(value: usize) -> u64 {
     u64::try_from(value).map_or(u64::MAX, |converted: u64| converted)
 }
 
-pub(crate) fn make_step(
-    pass: &str,
-    version: &str,
-    rung_in: &str,
-    rung_out: &str,
-    duration_ms: f64,
-) -> PipelineStep {
+pub(crate) fn make_step(pass: &str, version: &str, rung_in: &str, rung_out: &str) -> PipelineStep {
     PipelineStep {
         pass: pass.to_owned(),
         version: version.to_owned(),
         rung_in: rung_in.to_owned(),
         rung_out: rung_out.to_owned(),
-        duration_ms,
         input_hash_blake3: None,
         output_hash_blake3: None,
         capabilities_required: Vec::new(),
@@ -176,46 +167,4 @@ pub(crate) fn hex_lower(bytes: &[u8]) -> String {
         out.push(LOWER_HEX[(byte & 0x0f) as usize] as char);
     }
     out
-}
-
-#[allow(clippy::disallowed_methods)]
-fn iso8601_now() -> String {
-    let now: SystemTime = SystemTime::now();
-    let dur: std::time::Duration = now
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(std::time::Duration::ZERO, |duration| duration);
-    let secs: u64 = dur.as_secs();
-    let nanos: u32 = dur.subsec_nanos();
-    let seconds_per_day: u64 = 86_400;
-    let days_since_epoch: u64 = secs / seconds_per_day;
-    let time_in_day: u64 = secs % seconds_per_day;
-    let hh: u64 = time_in_day / 3600;
-    let mm: u64 = (time_in_day % 3600) / 60;
-    let ss: u64 = time_in_day % 60;
-    let (year, month, day): (i32, u32, u32) = civil_from_days(i64_from_u64(days_since_epoch));
-    format!("{year:04}-{month:02}-{day:02}T{hh:02}:{mm:02}:{ss:02}.{nanos:09}Z")
-}
-
-#[inline]
-const fn i64_from_u64(value: u64) -> i64 {
-    if value > (i64::MAX as u64) {
-        i64::MAX
-    } else {
-        value as i64
-    }
-}
-
-#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-fn civil_from_days(z: i64) -> (i32, u32, u32) {
-    let z: i64 = z + 719_468;
-    let era: i64 = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe: u64 = (z - era * 146_097) as u64;
-    let yoe: u64 = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y: i64 = (yoe as i64) + era * 400;
-    let doy: u64 = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp: u64 = (5 * doy + 2) / 153;
-    let d: u64 = doy - (153 * mp + 2) / 5 + 1;
-    let m: u64 = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year_out: i32 = (y + i64::from(m <= 2)) as i32;
-    (year_out, m as u32, d as u32)
 }

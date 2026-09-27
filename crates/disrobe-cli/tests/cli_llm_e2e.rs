@@ -7,7 +7,7 @@
     clippy::same_item_push
 )]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use jsonschema::Validator;
@@ -70,6 +70,10 @@ fn write_decodable_pyc(path: &PathBuf) {
 }
 
 fn run_disrobe(args: &[&str]) -> (i32, String, String) {
+    run_disrobe_with_env(args, &[])
+}
+
+fn run_disrobe_with_env(args: &[&str], env: &[(&str, &str)]) -> (i32, String, String) {
     let bin: PathBuf = cli_binary();
     assert!(
         bin.exists(),
@@ -80,6 +84,8 @@ fn run_disrobe(args: &[&str]) -> (i32, String, String) {
         .args(args)
         .env_remove("RUST_LOG")
         .env_remove("DISROBE_LOG")
+        .env_remove("SOURCE_DATE_EPOCH")
+        .envs(env.iter().copied())
         .output()
         .expect("spawn disrobe");
     (
@@ -94,10 +100,19 @@ fn schema_root() -> Json {
     p.pop();
     p.pop();
     p.push("schemas");
-    p.push("disrobe-metadata-llm-v1.json");
+    p.push("disrobe-metadata-llm-v2.json");
     let bytes: Vec<u8> =
         std::fs::read(&p).unwrap_or_else(|e| panic!("read schema {}: {e}", p.display()));
     serde_json::from_slice(&bytes).expect("schema parse")
+}
+
+fn schema_violations(bundle: &Json) -> Vec<String> {
+    let schema: Json = schema_root();
+    let validator: Validator = jsonschema::validator_for(&schema).expect("compile");
+    validator
+        .iter_errors(bundle)
+        .map(|e: jsonschema::ValidationError<'_>| e.to_string())
+        .collect()
 }
 
 fn tracked_fixture(relative: &str) -> PathBuf {
@@ -132,12 +147,7 @@ fn bundle_for(args: &[&str], stem: &str) -> (disrobe_core::scratch::ScratchDir, 
         )
     });
     let bundle: Json = serde_json::from_slice(&bytes).expect("parse bundle");
-    let schema: Json = schema_root();
-    let validator: Validator = jsonschema::validator_for(&schema).expect("compile");
-    let errors: Vec<String> = validator
-        .iter_errors(&bundle)
-        .map(|e: jsonschema::ValidationError<'_>| e.to_string())
-        .collect();
+    let errors: Vec<String> = schema_violations(&bundle);
     assert!(
         errors.is_empty(),
         "an emitted category that the published schema rejects is a broken promise to every \
@@ -466,7 +476,7 @@ fn llm_briefs_writes_agents_and_skill_markdown() {
         "AGENTS.md missing artifact section"
     );
     assert!(
-        agents.contains("disrobe.metadata.llm.v1"),
+        agents.contains("disrobe.metadata.llm.v2"),
         "AGENTS.md missing schema reference"
     );
 
@@ -523,18 +533,143 @@ fn llm_flag_writes_schema_conforming_bundle() {
     let bundle: Json = serde_json::from_slice(&bytes).expect("parse bundle");
     assert_eq!(
         bundle.get("schema").and_then(Json::as_str),
-        Some("disrobe.metadata.llm.v1")
+        Some("disrobe.metadata.llm.v2")
     );
-    let schema: Json = schema_root();
-    let validator: Validator = jsonschema::validator_for(&schema).expect("compile");
-    let errors: Vec<String> = validator
-        .iter_errors(&bundle)
-        .map(|e: jsonschema::ValidationError<'_>| e.to_string())
-        .collect();
+    let errors: Vec<String> = schema_violations(&bundle);
     assert!(
         errors.is_empty(),
         "bundle failed schema:\n{}\nbundle={}",
         errors.join("\n"),
         serde_json::to_string_pretty(&bundle).unwrap()
+    );
+}
+
+fn written_bundle(args: &[&str], bundle: &Path, env: &[(&str, &str)]) -> String {
+    let (code, stdout, stderr): (i32, String, String) = run_disrobe_with_env(args, env);
+    assert_eq!(
+        code, 0,
+        "the run this case grades must succeed, or the bundle it inspects never exists:\n\
+         args={args:?}\nenv={env:?}\nstdout=\n{stdout}\nstderr=\n{stderr}"
+    );
+    std::fs::read_to_string(bundle).unwrap_or_else(|e: std::io::Error| {
+        panic!(
+            "the run was asked to write {} and this case reads it: {e}",
+            bundle.display()
+        )
+    })
+}
+
+#[test]
+fn the_bundle_records_no_duration_and_takes_its_only_date_from_source_date_epoch() {
+    let (_pyc_scratch, pyc): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("clock", "pyc");
+    write_decodable_pyc(&pyc);
+    let (_out_scratch, out_path): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("clock-out", "txt");
+    let (_bundle_scratch, bundle_out): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("clock-bundle", "json");
+    let (_rejected_scratch, rejected_out): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("clock-rejected", "json");
+    let pyc_str: String = pyc.to_string_lossy().into_owned();
+    let out_str: String = out_path.to_string_lossy().into_owned();
+    let bundle_str: String = bundle_out.to_string_lossy().into_owned();
+    let rejected_str: String = rejected_out.to_string_lossy().into_owned();
+    let args: [&str; 10] = [
+        "--provenance",
+        "--pii-map",
+        "--metadata-out",
+        &bundle_str,
+        "--force",
+        "py",
+        "disasm",
+        &pyc_str,
+        "--out",
+        &out_str,
+    ];
+    let version: &str = env!("CARGO_PKG_VERSION");
+
+    let first: String = written_bundle(&args, &bundle_out, &[]);
+    let second: String = written_bundle(&args, &bundle_out, &[]);
+    assert_eq!(
+        first, second,
+        "without SOURCE_DATE_EPOCH the bundle holds no clock, so two runs over one input write \
+         identical bytes"
+    );
+    let unstamped: Json = serde_json::from_str(&first).expect("parse bundle");
+    assert_eq!(unstamped.get("generated_at"), None);
+    assert_eq!(schema_violations(&unstamped), Vec::<String>::new());
+    assert_eq!(
+        unstamped.get("pipeline"),
+        Some(&serde_json::json!([
+            {
+                "pass": "disrobe-pass-py-disasm",
+                "version": version,
+                "rung_in": "raw",
+                "rung_out": "disasm"
+            },
+            {
+                "pass": "disrobe-llm-metadata-pii",
+                "version": version,
+                "rung_in": "raw",
+                "rung_out": "raw"
+            }
+        ])),
+        "a pipeline step names its pass and rungs and records no duration"
+    );
+    assert_eq!(
+        unstamped.pointer("/categories/provenance/chain"),
+        Some(&serde_json::json!([
+            {
+                "pass": "disrobe-pass-py-disasm",
+                "version": version,
+                "rung_in": "raw",
+                "rung_out": "disasm"
+            }
+        ])),
+        "a provenance chain entry records no duration either"
+    );
+
+    let stamped_text: String =
+        written_bundle(&args, &bundle_out, &[("SOURCE_DATE_EPOCH", "1700000000")]);
+    let stamped: Json = serde_json::from_str(&stamped_text).expect("parse bundle");
+    assert_eq!(
+        stamped.get("generated_at").and_then(Json::as_str),
+        Some("2023-11-14T22:13:20.000Z")
+    );
+    assert_eq!(schema_violations(&stamped), Vec::<String>::new());
+    let mut stamp_removed: Json = stamped;
+    stamp_removed
+        .as_object_mut()
+        .expect("a bundle is a JSON object")
+        .remove("generated_at");
+    assert_eq!(
+        stamp_removed, unstamped,
+        "SOURCE_DATE_EPOCH adds generated_at and changes nothing else"
+    );
+
+    let (code, _stdout, stderr): (i32, String, String) = run_disrobe_with_env(
+        &[
+            "--provenance",
+            "--metadata-out",
+            &rejected_str,
+            "py",
+            "disasm",
+            &pyc_str,
+            "--out",
+            &out_str,
+        ],
+        &[("SOURCE_DATE_EPOCH", "yesterday")],
+    );
+    assert_ne!(
+        code, 0,
+        "a malformed SOURCE_DATE_EPOCH must fail the run: {stderr}"
+    );
+    assert!(
+        stderr.contains("DR-CLI-0318") && stderr.contains("`yesterday`"),
+        "the failure names its code and the rejected value: {stderr}"
+    );
+    assert!(
+        !rejected_out.exists(),
+        "a malformed SOURCE_DATE_EPOCH must not fall back to writing an undated bundle"
     );
 }

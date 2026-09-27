@@ -40,7 +40,6 @@ pub struct WasmLlmInput {
     pub input_path: String,
     pub input_size_bytes: u64,
     pub input_hash_blake3: String,
-    pub duration_ms: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -147,14 +146,8 @@ impl LlmMetadataEmitter for WasmLlmInput {
     }
 
     fn emit_provenance(&self) -> Option<Json> {
-        let step: Json = shape::make_pipeline_step(
-            PASS,
-            VERSION,
-            "raw",
-            "surface",
-            self.duration_ms,
-            BTreeMap::new(),
-        );
+        let step: Json =
+            shape::make_pipeline_step(PASS, VERSION, "raw", "surface", BTreeMap::new());
         Some(shape::make_provenance_value(vec![step], BTreeMap::new()))
     }
 

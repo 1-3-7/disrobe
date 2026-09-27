@@ -49,8 +49,8 @@ try {
   assert.match(recovered, /def add\(/u);
   assert.match(recovered, /return left \+ right/u);
   const metadata = JSON.parse(readFileSync(join(scratch, "metadata.json"), "utf8"));
-  assert.equal(metadata.schema, "disrobe.metadata.llm.v1");
-  assert.equal(metadata.schema_version, "1.0.0");
+  assert.equal(metadata.schema, "disrobe.metadata.llm.v2");
+  assert.equal(metadata.schema_version, "2.0.0");
   assert.equal(metadata.selection.pack, "pack-4");
   assert.equal(metadata.selection.authorized_decryption_keys, false);
   assert.equal(metadata.input.size_bytes, readFileSync(join(scratch, bytecode)).length);

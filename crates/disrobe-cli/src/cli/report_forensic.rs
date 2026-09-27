@@ -5,9 +5,9 @@ use std::path::Path;
 use disrobe_core::behavior::{BehaviorReport, CategoryFinding};
 use disrobe_core::interop::{IndicatorBundle, IndicatorClass, UnifiedIndicator};
 use disrobe_core::ioc::{Indicator as IocIndicator, IocReport};
+use serde::Serialize;
 use serde_json::{Map, Value, json};
 
-use super::llm::iso8601_millis_from_epoch;
 use super::report::{
     BatchReport, EvidenceItem, EvidenceRole, FailureView, HashSource, ReportDocument, SingleReport,
     WallView,
@@ -33,41 +33,7 @@ const RULE_INDICATOR: &str = "disrobe.indicator";
 const RULE_BEHAVIOR: &str = "disrobe.behavior";
 const RULE_BATCH_FILE: &str = "disrobe.batch-file";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TimestampSource {
-    SystemClock,
-    SourceDateEpoch,
-}
-
-impl TimestampSource {
-    const fn label(self) -> &'static str {
-        match self {
-            Self::SystemClock => "system-clock",
-            Self::SourceDateEpoch => "source-date-epoch",
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-struct Generated {
-    at: String,
-    source: TimestampSource,
-}
-
-fn generated() -> Generated {
-    let source: TimestampSource = if std::env::var("SOURCE_DATE_EPOCH")
-        .ok()
-        .is_some_and(|raw: String| raw.parse::<u64>().is_ok())
-    {
-        TimestampSource::SourceDateEpoch
-    } else {
-        TimestampSource::SystemClock
-    };
-    Generated {
-        at: iso8601_millis_from_epoch(disrobe_core::time::now_secs()),
-        source,
-    }
-}
+const STIX_NEEDS_A_DATE: &str = "STIX 2.1 objects require created, modified and valid_from timestamps, and this render carries no clock; set SOURCE_DATE_EPOCH to a Unix timestamp to emit the bundle";
 
 fn deterministic_uuid(seed: &str) -> String {
     let digest: blake3::Hash = blake3::hash(seed.as_bytes());
@@ -120,12 +86,91 @@ const fn stix_object_path(class: IndicatorClass) -> Option<&'static str> {
     }
 }
 
-fn attack_reference(technique: &str) -> Value {
-    json!({
-        "source_name": ATTACK_SOURCE_NAME,
-        "external_id": technique,
-        "url": format!("https://attack.mitre.org/techniques/{technique}/"),
-    })
+#[derive(Debug, Serialize)]
+struct ExternalReference {
+    source_name: &'static str,
+    external_id: String,
+    url: String,
+}
+
+fn attack_reference(technique: &str) -> ExternalReference {
+    ExternalReference {
+        source_name: ATTACK_SOURCE_NAME,
+        external_id: technique.to_string(),
+        url: format!("https://attack.mitre.org/techniques/{technique}/"),
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct StixBundle {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    id: String,
+    objects: Vec<StixObject>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+enum StixObject {
+    Identity(StixIdentity),
+    Analysis(Box<StixMalwareAnalysis>),
+    Indicator(StixIndicator),
+}
+
+#[derive(Debug, Serialize)]
+struct StixIdentity {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    spec_version: &'static str,
+    id: String,
+    created: String,
+    modified: String,
+    name: &'static str,
+    identity_class: &'static str,
+    description: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct StixMalwareAnalysis {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    spec_version: &'static str,
+    id: String,
+    created: String,
+    modified: String,
+    created_by_ref: String,
+    product: &'static str,
+    version: String,
+    analysis_started: String,
+    analysis_ended: String,
+    result: &'static str,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    modules: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    external_references: Vec<ExternalReference>,
+    x_disrobe_result_basis: &'static str,
+    x_disrobe_verdict: String,
+    x_disrobe_recovery_score: f64,
+    x_disrobe_input_blake3: String,
+    x_disrobe_input_size: u64,
+    x_disrobe_wall_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct StixIndicator {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    spec_version: &'static str,
+    id: String,
+    created: String,
+    modified: String,
+    created_by_ref: String,
+    name: String,
+    description: String,
+    indicator_types: [&'static str; 1],
+    pattern: String,
+    pattern_type: &'static str,
+    valid_from: String,
 }
 
 #[derive(Debug, Default)]
@@ -526,153 +571,150 @@ fn target_uri_of(report: &SingleReport) -> String {
         )
 }
 
-fn stix_bundle(
-    report: &SingleReport,
-    generated: &Generated,
-    indicators: Option<&IndicatorBundle>,
-    behavior: Option<&BehaviorReport>,
-) -> (Value, Vec<String>) {
-    let identity_id: String = stix_id("identity", "disrobe/identity/v1");
-    let mut objects: Vec<Value> = vec![json!({
-        "type": "identity",
-        "spec_version": STIX_SPEC_VERSION,
-        "id": identity_id,
-        "created": generated.at,
-        "modified": generated.at,
-        "name": PRODUCER_NAME,
-        "identity_class": "system",
-        "description": "static recovery of readable source, structure and unpacked bytes",
-    })];
-
-    let mut analysis: Map<String, Value> = Map::new();
-    analysis.insert("type".to_string(), json!("malware-analysis"));
-    analysis.insert("spec_version".to_string(), json!(STIX_SPEC_VERSION));
-    analysis.insert(
-        "id".to_string(),
-        json!(stix_id(
-            "malware-analysis",
-            &format!("disrobe/analysis/{}", report.input.blake3)
-        )),
-    );
-    analysis.insert("created".to_string(), json!(generated.at));
-    analysis.insert("modified".to_string(), json!(generated.at));
-    analysis.insert("created_by_ref".to_string(), json!(identity_id));
-    analysis.insert("product".to_string(), json!(PRODUCER_NAME));
-    analysis.insert("version".to_string(), json!(report.tool_version));
-    analysis.insert("analysis_started".to_string(), json!(generated.at));
-    analysis.insert("analysis_ended".to_string(), json!(generated.at));
-    analysis.insert("result".to_string(), json!("unknown"));
-    analysis.insert(
-        "x_disrobe_result_basis".to_string(),
-        json!("disrobe performs deterministic static recovery and never classifies a sample, so the malware-av-result-ov value stays `unknown`"),
-    );
-    analysis.insert("x_disrobe_verdict".to_string(), json!(report.verdict));
-    analysis.insert(
-        "x_disrobe_recovery_score".to_string(),
-        json!(report.recovery_score),
-    );
-    analysis.insert(
-        "x_disrobe_input_blake3".to_string(),
-        json!(report.input.blake3),
-    );
-    analysis.insert("x_disrobe_input_size".to_string(), json!(report.input.size));
-    analysis.insert(
-        "x_disrobe_wall_count".to_string(),
-        json!(report.walls.len()),
-    );
-    if !report.stages.is_empty() {
-        analysis.insert(
-            "modules".to_string(),
-            json!(
-                report
-                    .stages
-                    .iter()
-                    .map(|s: &super::report::StageView| s.pass.clone())
-                    .collect::<Vec<String>>()
-            ),
-        );
-    }
-    let attack_ids: BTreeSet<&str> = behavior.map_or_else(BTreeSet::new, |b: &BehaviorReport| {
-        b.attack_ids.iter().copied().collect()
-    });
-    if !attack_ids.is_empty() {
-        analysis.insert(
-            "external_references".to_string(),
-            json!(
-                attack_ids
-                    .iter()
-                    .map(|id: &&str| attack_reference(id))
-                    .collect::<Vec<Value>>()
-            ),
-        );
-    }
-    objects.push(Value::Object(analysis));
-
+fn unmapped_indicator_notes(indicators: Option<&IndicatorBundle>) -> Vec<String> {
     let mut unmapped: BTreeMap<&'static str, usize> = BTreeMap::new();
-    if let Some(bundle) = indicators {
-        for indicator in &bundle.indicators {
-            let Some(path): Option<&'static str> = stix_object_path(indicator.class) else {
-                *unmapped.entry(indicator.class.label()).or_insert(0) += 1;
-                continue;
-            };
-            objects.push(indicator_object(
-                indicator,
-                path,
-                &identity_id,
-                generated,
-                &report.input.blake3,
-            ));
+    for indicator in indicators.map_or(&[][..], |bundle: &IndicatorBundle| {
+        bundle.indicators.as_slice()
+    }) {
+        if stix_object_path(indicator.class).is_none() {
+            *unmapped.entry(indicator.class.label()).or_insert(0) += 1;
         }
     }
-
-    let bundle: Value = json!({
-        "type": "bundle",
-        "id": stix_id("bundle", &format!("disrobe/bundle/{}", report.input.blake3)),
-        "objects": objects,
-    });
-    let unmapped_notes: Vec<String> = unmapped
+    unmapped
         .into_iter()
         .map(|(class, count): (&'static str, usize)| {
             format!("{count} `{class}` indicators have no STIX 2.1 pattern object path and stay in the sarif results only")
         })
-        .collect();
-    (bundle, unmapped_notes)
+        .collect()
+}
+
+fn stix_bundle(
+    report: &SingleReport,
+    stamp: &str,
+    indicators: Option<&IndicatorBundle>,
+    behavior: Option<&BehaviorReport>,
+) -> StixBundle {
+    let identity_id: String = stix_id("identity", "disrobe/identity/v1");
+    let mut objects: Vec<StixObject> = vec![StixObject::Identity(StixIdentity {
+        kind: "identity",
+        spec_version: STIX_SPEC_VERSION,
+        id: identity_id.clone(),
+        created: stamp.to_string(),
+        modified: stamp.to_string(),
+        name: PRODUCER_NAME,
+        identity_class: "system",
+        description: "static recovery of readable source, structure and unpacked bytes",
+    })];
+    let attack_ids: BTreeSet<&str> = behavior.map_or_else(BTreeSet::new, |b: &BehaviorReport| {
+        b.attack_ids.iter().copied().collect()
+    });
+    objects.push(StixObject::Analysis(Box::new(StixMalwareAnalysis {
+        kind: "malware-analysis",
+        spec_version: STIX_SPEC_VERSION,
+        id: stix_id(
+            "malware-analysis",
+            &format!("disrobe/analysis/{}", report.input.blake3),
+        ),
+        created: stamp.to_string(),
+        modified: stamp.to_string(),
+        created_by_ref: identity_id.clone(),
+        product: PRODUCER_NAME,
+        version: report.tool_version.clone(),
+        analysis_started: stamp.to_string(),
+        analysis_ended: stamp.to_string(),
+        result: "unknown",
+        modules: report
+            .stages
+            .iter()
+            .map(|s: &super::report::StageView| s.pass.clone())
+            .collect(),
+        external_references: attack_ids.into_iter().map(attack_reference).collect(),
+        x_disrobe_result_basis: "disrobe performs deterministic static recovery and never classifies a sample, so the malware-av-result-ov value stays `unknown`",
+        x_disrobe_verdict: report.verdict.clone(),
+        x_disrobe_recovery_score: report.recovery_score,
+        x_disrobe_input_blake3: report.input.blake3.clone(),
+        x_disrobe_input_size: report.input.size,
+        x_disrobe_wall_count: report.walls.len(),
+    })));
+    if let Some(bundle) = indicators {
+        objects.extend(
+            bundle
+                .indicators
+                .iter()
+                .filter_map(|indicator: &UnifiedIndicator| {
+                    stix_object_path(indicator.class).map(|path: &'static str| {
+                        StixObject::Indicator(indicator_object(
+                            indicator,
+                            path,
+                            &identity_id,
+                            stamp,
+                            &report.input.blake3,
+                        ))
+                    })
+                }),
+        );
+    }
+    StixBundle {
+        kind: "bundle",
+        id: stix_id("bundle", &format!("disrobe/bundle/{}", report.input.blake3)),
+        objects,
+    }
+}
+
+fn stix_block(
+    report: &SingleReport,
+    stamp: Option<&str>,
+    indicators: Option<&IndicatorBundle>,
+    behavior: Option<&BehaviorReport>,
+) -> Value {
+    stamp.map_or_else(
+        || json!({ "available": false, "reason": STIX_NEEDS_A_DATE }),
+        |at: &str| {
+            json!({
+                "available": true,
+                "bundle": stix_bundle(report, at, indicators, behavior),
+            })
+        },
+    )
 }
 
 fn indicator_object(
     indicator: &UnifiedIndicator,
     object_path: &str,
     identity_id: &str,
-    generated: &Generated,
+    stamp: &str,
     input_blake3: &str,
-) -> Value {
+) -> StixIndicator {
     let pattern: String = format!(
         "[{object_path} = '{}']",
         quote_stix_literal(&indicator.value)
     );
-    json!({
-        "type": "indicator",
-        "spec_version": STIX_SPEC_VERSION,
-        "id": stix_id("indicator", &format!("disrobe/indicator/{input_blake3}/{pattern}")),
-        "created": generated.at,
-        "modified": generated.at,
-        "created_by_ref": identity_id,
-        "name": format!("{} observed by static recovery", indicator.class.label()),
-        "description": format!(
+    StixIndicator {
+        kind: "indicator",
+        spec_version: STIX_SPEC_VERSION,
+        id: stix_id(
+            "indicator",
+            &format!("disrobe/indicator/{input_blake3}/{pattern}"),
+        ),
+        created: stamp.to_string(),
+        modified: stamp.to_string(),
+        created_by_ref: identity_id.to_string(),
+        name: format!("{} observed by static recovery", indicator.class.label()),
+        description: format!(
             "read from the analysis target by {}",
             indicator.sources.join(", ")
         ),
-        "indicator_types": ["unknown"],
-        "pattern": pattern,
-        "pattern_type": STIX_PATTERN_TYPE,
-        "valid_from": generated.at,
-    })
+        indicator_types: ["unknown"],
+        pattern,
+        pattern_type: STIX_PATTERN_TYPE,
+        valid_from: stamp.to_string(),
+    }
 }
 
 fn maec_package(
     report: &SingleReport,
     behavior: Option<&BehaviorReport>,
-    generated: &Generated,
+    stamp: Option<&str>,
 ) -> Value {
     let Some(behavior): Option<&BehaviorReport> = behavior else {
         return json!({
@@ -705,7 +747,9 @@ fn maec_package(
             );
             object.insert("name".to_string(), json!(finding.category.label()));
             object.insert("description".to_string(), json!(finding.description));
-            object.insert("timestamp".to_string(), json!(generated.at));
+            if let Some(at) = stamp {
+                object.insert("timestamp".to_string(), json!(at));
+            }
             if !finding.attack_ids.is_empty() {
                 object.insert(
                     "technique_refs".to_string(),
@@ -714,7 +758,7 @@ fn maec_package(
                             .attack_ids
                             .iter()
                             .map(|id: &&str| attack_reference(id))
-                            .collect::<Vec<Value>>()
+                            .collect::<Vec<ExternalReference>>()
                     ),
                 );
             }
@@ -735,7 +779,19 @@ fn maec_package(
     })
 }
 
-fn standards_block(generated: &Generated, unmapped: &[String]) -> Value {
+fn standards_block(stamp: Option<&str>, unmapped: &[String]) -> Value {
+    let timestamp: Value = if stamp.is_some() {
+        json!({
+            "field": "generated_at",
+            "source": "source-date-epoch",
+            "note": "every timestamp in this document holds the value of SOURCE_DATE_EPOCH",
+        })
+    } else {
+        json!({
+            "source": "none",
+            "note": "this render carries no clock and no STIX bundle; set SOURCE_DATE_EPOCH to date it",
+        })
+    };
     json!({
         "sarif": { "version": SARIF_SPEC_VERSION },
         "stix": {
@@ -752,12 +808,15 @@ fn standards_block(generated: &Generated, unmapped: &[String]) -> Value {
             { "standard": "OpenIOC 1.1", "reason": "superseded by STIX 2.1 patterning" },
             { "standard": "CybOX 2.x", "reason": "folded into STIX 2.1 cyber-observable objects" }
         ],
-        "timestamp": {
-            "field": "generated_at",
-            "source": generated.source.label(),
-            "note": "every timestamp in this document holds the value of generated_at; set SOURCE_DATE_EPOCH to fix it",
-        },
+        "timestamp": timestamp,
     })
+}
+
+fn dated(mut properties: Value, stamp: Option<&str>) -> Value {
+    if let (Some(at), Value::Object(map)) = (stamp, &mut properties) {
+        map.insert("generated_at".to_string(), json!(at));
+    }
+    properties
 }
 
 fn capabilities_block(report: &SingleReport) -> Value {
@@ -781,7 +840,7 @@ fn capabilities_block(report: &SingleReport) -> Value {
     }
 }
 
-fn single_run(document: &ReportDocument, report: &SingleReport, generated: &Generated) -> Run {
+fn single_run(document: &ReportDocument, report: &SingleReport, stamp: Option<&str>) -> Run {
     let enrichment: &super::report_html::Enrichment = &report.enrichment;
     let artifacts: ArtifactTable = ArtifactTable::from_evidence(&report.evidence);
     let target_uri: String = target_uri_of(report);
@@ -823,18 +882,19 @@ fn single_run(document: &ReportDocument, report: &SingleReport, generated: &Gene
         .bundle
         .as_ref()
         .filter(|_| report.indicators.available);
-    let (bundle, unmapped): (Value, Vec<String>) =
-        stix_bundle(report, generated, indicators, enrichment.behavior.as_ref());
-    let properties: Value = json!({
-        "generated_at": generated.at,
-        "disrobe": document,
-        "stix": { "available": true, "bundle": bundle },
-        "maec": maec_package(report, enrichment.behavior.as_ref(), generated),
-        "capabilities": capabilities_block(report),
-        "indicators": report.indicators,
-        "reproduction": report.reproduction,
-        "standards": standards_block(generated, &unmapped),
-    });
+    let unmapped: Vec<String> = unmapped_indicator_notes(indicators);
+    let properties: Value = dated(
+        json!({
+            "disrobe": document,
+            "stix": stix_block(report, stamp, indicators, enrichment.behavior.as_ref()),
+            "maec": maec_package(report, enrichment.behavior.as_ref(), stamp),
+            "capabilities": capabilities_block(report),
+            "indicators": report.indicators,
+            "reproduction": report.reproduction,
+            "standards": standards_block(stamp, &unmapped),
+        }),
+        stamp,
+    );
 
     Run {
         tool: Tool {
@@ -847,7 +907,7 @@ fn single_run(document: &ReportDocument, report: &SingleReport, generated: &Gene
             execution_successful: report.failures.is_empty(),
             arguments: Vec::new(),
             command_line: Some(report.reproduction.command.clone()),
-            end_time_utc: Some(generated.at.clone()),
+            end_time_utc: stamp.map(str::to_string),
         }],
         artifacts: artifacts.entries,
         results,
@@ -855,7 +915,7 @@ fn single_run(document: &ReportDocument, report: &SingleReport, generated: &Gene
     }
 }
 
-fn batch_run(document: &ReportDocument, report: &BatchReport, generated: &Generated) -> Run {
+fn batch_run(document: &ReportDocument, report: &BatchReport, stamp: Option<&str>) -> Run {
     let mut order: BTreeMap<String, usize> = BTreeMap::new();
     let mut entries: Vec<SarifArtifact> = Vec::with_capacity(report.files.len());
     for file in &report.files {
@@ -920,7 +980,6 @@ fn batch_run(document: &ReportDocument, report: &BatchReport, generated: &Genera
                     "chain": file.chain,
                     "verdict": file.verdict,
                     "recovery_score": file.recovery_score,
-                    "duration_ms": file.duration_ms,
                     "error": file.error,
                 })),
             }
@@ -930,27 +989,29 @@ fn batch_run(document: &ReportDocument, report: &BatchReport, generated: &Genera
     if !results.is_empty() {
         used.insert(RULE_BATCH_FILE);
     }
-    let properties: Value = json!({
-        "generated_at": generated.at,
-        "disrobe": document,
-        "stix": {
-            "available": false,
-            "reason": "a batch report aggregates per-file manifests and holds no analysis-target bytes to observe",
-        },
-        "maec": {
-            "available": false,
-            "reason": "a batch report aggregates per-file manifests and holds no analysis-target bytes to observe",
-        },
-        "capabilities": {
-            "available": false,
-            "reason": "a batch report aggregates per-file manifests and holds no analysis-target bytes to observe",
-        },
-        "indicators": {
-            "available": false,
-            "reason": "a batch report aggregates per-file manifests and holds no analysis-target bytes to observe",
-        },
-        "standards": standards_block(generated, &[]),
-    });
+    let properties: Value = dated(
+        json!({
+            "disrobe": document,
+            "stix": {
+                "available": false,
+                "reason": "a batch report aggregates per-file manifests and holds no analysis-target bytes to observe",
+            },
+            "maec": {
+                "available": false,
+                "reason": "a batch report aggregates per-file manifests and holds no analysis-target bytes to observe",
+            },
+            "capabilities": {
+                "available": false,
+                "reason": "a batch report aggregates per-file manifests and holds no analysis-target bytes to observe",
+            },
+            "indicators": {
+                "available": false,
+                "reason": "a batch report aggregates per-file manifests and holds no analysis-target bytes to observe",
+            },
+            "standards": standards_block(stamp, &[]),
+        }),
+        stamp,
+    );
     Run {
         tool: Tool {
             driver: Driver::disrobe(rules_for(&used)),
@@ -962,7 +1023,7 @@ fn batch_run(document: &ReportDocument, report: &BatchReport, generated: &Genera
             execution_successful: report.errors == 0,
             arguments: Vec::new(),
             command_line: Some(format!("disrobe report {}", report.source_dir)),
-            end_time_utc: Some(generated.at.clone()),
+            end_time_utc: stamp.map(str::to_string),
         }],
         artifacts: entries,
         results,
@@ -971,10 +1032,11 @@ fn batch_run(document: &ReportDocument, report: &BatchReport, generated: &Genera
 }
 
 pub(crate) fn render_sarif(document: &ReportDocument) -> miette::Result<String> {
-    let generated: Generated = generated();
+    let stamp: Option<String> =
+        super::util::source_date()?.map(disrobe_core::time::SourceDate::rfc3339);
     let run: Run = match document {
-        ReportDocument::Single(report) => single_run(document, report, &generated),
-        ReportDocument::Batch(report) => batch_run(document, report, &generated),
+        ReportDocument::Single(report) => single_run(document, report, stamp.as_deref()),
+        ReportDocument::Batch(report) => batch_run(document, report, stamp.as_deref()),
     };
     let log: SarifLog = SarifLog::from_run(run);
     serde_json::to_string_pretty(&log)

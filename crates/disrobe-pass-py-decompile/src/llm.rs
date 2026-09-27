@@ -58,7 +58,6 @@ pub struct PyDecompileLlmInput {
     pub input_size_bytes: u64,
     pub input_hash_blake3: String,
     pub roundtrip_status: Option<String>,
-    pub duration_ms: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -68,20 +67,6 @@ pub struct DisasmIns {
     pub arg: Option<u32>,
     pub argrepr: Option<String>,
     pub line: Option<u32>,
-}
-
-impl PyDecompileLlmInput {
-    fn provenance_chain(&self) -> Json {
-        let step: Json = shape::make_pipeline_step(
-            PASS,
-            VERSION,
-            "disasm",
-            "surface",
-            self.duration_ms,
-            BTreeMap::new(),
-        );
-        shape::make_provenance_value(vec![step], BTreeMap::new())
-    }
 }
 
 impl LlmMetadataEmitter for PyDecompileLlmInput {
@@ -229,7 +214,9 @@ impl LlmMetadataEmitter for PyDecompileLlmInput {
     }
 
     fn emit_provenance(&self) -> Option<Json> {
-        Some(self.provenance_chain())
+        let step: Json =
+            shape::make_pipeline_step(PASS, VERSION, "disasm", "surface", BTreeMap::new());
+        Some(shape::make_provenance_value(vec![step], BTreeMap::new()))
     }
 
     fn emit_roundtrip_verdict(&self) -> Option<Json> {

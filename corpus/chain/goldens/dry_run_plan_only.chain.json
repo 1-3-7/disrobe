@@ -12,7 +12,6 @@
       "branch_id": "a",
       "depth": 0,
       "detector_picks": [],
-      "duration_ms": 0,
       "error": null,
       "format_tag_in": null,
       "id": 0,
@@ -29,7 +28,7 @@
     }
   ],
   "root_node_id": 0,
-  "schema": "disrobe.chain/v1",
+  "schema": "disrobe.chain/v2",
   "spec": {
     "cap": 4,
     "kind": "plan-only",
@@ -40,8 +39,7 @@
     "detector_calls": 0,
     "layers": 0,
     "max_branch_depth": 0,
-    "rejected_passes": 0,
-    "total_ms": 0
+    "rejected_passes": 0
   },
   "tool_version": "0.1.0-golden",
   "topology": "linear",

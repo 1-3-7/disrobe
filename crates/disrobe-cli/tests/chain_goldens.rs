@@ -143,26 +143,6 @@ fn run_to_document(seed: Vec<u8>, spec: &ChainSpec, path: Option<String>) -> Cha
         .expect("valid chain metadata")
 }
 
-fn scrub_timings(value: &mut Value) {
-    match value {
-        Value::Object(map) => {
-            for (k, v) in map.iter_mut() {
-                if k == "total_ms" || k == "duration_ms" {
-                    *v = Value::from(0u64);
-                } else {
-                    scrub_timings(v);
-                }
-            }
-        }
-        Value::Array(arr) => {
-            for v in arr.iter_mut() {
-                scrub_timings(v);
-            }
-        }
-        _ => {}
-    }
-}
-
 fn scrub_errors(value: &mut Value) {
     match value {
         Value::Object(map) => {
@@ -197,7 +177,6 @@ fn scrub_error_text(s: &str) -> String {
 
 fn render_canonical(doc: &ChainDocument) -> String {
     let mut v: Value = serde_json::to_value(doc).expect("chain doc serializes");
-    scrub_timings(&mut v);
     scrub_errors(&mut v);
     serde_json::to_string_pretty(&v).expect("canonical render")
 }
@@ -518,10 +497,7 @@ fn snapshot_is_byte_identical_across_two_runs() {
         &spec,
         Some("synthetic://twice".to_string()),
     ));
-    assert_eq!(
-        a, b,
-        "chain.json must be byte-identical across runs once timings scrubbed"
-    );
+    assert_eq!(a, b, "chain.json must be byte-identical across runs");
 }
 
 const _: Duration = Duration::from_secs(0);

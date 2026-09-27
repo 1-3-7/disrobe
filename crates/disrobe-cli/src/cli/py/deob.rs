@@ -223,19 +223,14 @@ fn maybe_emit_llm_deob(
     let Some(selection): Option<MetadataSelection> = llm_flags.to_selection()? else {
         return Ok(None);
     };
-    let started: std::time::Instant = std::time::Instant::now();
-    let duration_ms: f64 = started.elapsed().as_secs_f64() * 1000.0_f64;
-    let emitter: disrobe_pass_py_deob::PyDeobLlmInput = disrobe_pass_py_deob::PyDeobLlmInput {
-        peel: peel.clone(),
-        duration_ms,
-    };
+    let emitter: disrobe_pass_py_deob::PyDeobLlmInput =
+        disrobe_pass_py_deob::PyDeobLlmInput { peel: peel.clone() };
     let envelope_map: serde_json::Value = emitter.emit_metadata(&selection);
     let step: disrobe_llm_metadata::PipelineStep = llm_cli::make_step(
         "disrobe-pass-py-deob",
         disrobe_pass_py_deob::VERSION,
         "surface",
         "surface",
-        duration_ms,
     );
     let mut passes: Vec<(disrobe_llm_metadata::PipelineStep, serde_json::Value)> =
         vec![(step, envelope_map)];

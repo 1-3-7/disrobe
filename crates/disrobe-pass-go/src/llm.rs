@@ -41,7 +41,6 @@ pub struct GoLlmInput {
     pub input_path: String,
     pub input_size_bytes: u64,
     pub input_hash_blake3: String,
-    pub duration_ms: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -102,14 +101,8 @@ impl LlmMetadataEmitter for GoLlmInput {
                 .unwrap_or_else(|| "unknown".to_owned()),
         );
         kv.insert("pclntab_version".to_owned(), self.pclntab_version.clone());
-        let step: Json = shape::make_pipeline_step(
-            PASS,
-            VERSION,
-            "raw",
-            "surface",
-            self.duration_ms,
-            BTreeMap::new(),
-        );
+        let step: Json =
+            shape::make_pipeline_step(PASS, VERSION, "raw", "surface", BTreeMap::new());
         Some(shape::make_provenance_value(vec![step], kv))
     }
 

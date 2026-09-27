@@ -1,6 +1,6 @@
 ﻿# Run reports (`disrobe report`)
 
-`disrobe report` consolidates a completed run into a single forensic summary: input identity, chain topology, per-stage verdicts and recovery scores, the layers that stopped short, the recovered-artifact inventory, a cited byte range and digest for every artifact the run read, the steps that re-check each one, and timings. It is the read-side companion to `auto` and `chain`.
+`disrobe report` consolidates a completed run into a single forensic summary: input identity, chain topology, per-stage verdicts and recovery scores, the layers that stopped short, the recovered-artifact inventory, a cited byte range and digest for every artifact the run read, and the steps that re-check each one. It is the read-side companion to `auto` and `chain`.
 
 ## Usage
 
@@ -38,6 +38,7 @@ A run document that is missing, unreadable, or truncated stops the command with 
 | `manifest.json` cannot be read | `DR-CLI-0355` |
 | `manifest.json` is not a valid batch manifest | `DR-CLI-0356` |
 | A raw input file cannot be read | `DR-CLI-0358` |
+| `SOURCE_DATE_EPOCH` is set but is not a whole number of seconds up to 9999-12-31 | `DR-CLI-0318` |
 
 ## The report a run writes
 
@@ -51,7 +52,7 @@ A batch run writes an aggregate `report.json` beside `manifest.json`; it is the 
 
 - `text`: an aligned human report for the terminal.
 - `markdown`: a report with tables, ready to paste into an issue or PR.
-- `json`: the machine-readable `disrobe.report/v1` document.
+- `json`: the machine-readable `disrobe.report/v2` document. It records no duration, no worker count, and no clock.
 - `html`: a single self-contained HTML file (printed to stdout; redirect to a `.html`). CSS is inlined from the shared docs theme token file, with no JavaScript and no external/CDN reference, so it renders offline when double-clicked. Sections include input identity, a chain-topology flow, per-stage verdicts with generated recovery bars, a generated tier histogram, walls and failures, capabilities, recovered artifacts, the evidence table, the reproduction steps, and, when the input is still readable, defanged IOC plus behavior / MITRE ATT&CK tables. Every interpolated value is HTML-escaped, and the renderer uses no clock or randomness, so identical report data produces byte-stable HTML.
 - `sarif`: a SARIF 2.1.0 log printed to stdout. See [SARIF output](#sarif-output).
 
@@ -61,7 +62,7 @@ A batch run writes an aggregate `report.json` beside `manifest.json`; it is the 
 - Topology and verdict: linear or tree, and the overall chain verdict.
 - Recovery score: the mean per-stage confidence-tier rank normalized to `[0, 1]`, plus a tier label (skeleton / partial / semantic / exact).
 - Tier histogram: exact / semantic / partial / skeleton counts.
-- Per-stage table: index, pass id, confidence, score, duration.
+- Per-stage table: index, pass id, confidence, score.
 - Walls: every layer that stopped short, with the input it lacks.
 - Capabilities: ATT&CK- and MBC-tagged rule matches with addresses and evidence scope. Text, JSON, markdown, HTML, and SARIF consume the same result.
 - Failures: every layer that returned an error, with its message.
@@ -122,7 +123,7 @@ A single-run report carries the command that rebuilds it and the steps a third p
 2. Hash each evidence entry marked `recomputed-from-file` and compare each digest with the recorded one.
 3. Read each `ni:///blake3;` evidence entry as the digest of an intermediate the chain held in memory.
 4. Re-run the reported command and compare the output.
-5. Set `SOURCE_DATE_EPOCH` to make the SARIF `generated_at` field byte-identical too.
+5. Set `SOURCE_DATE_EPOCH` to a Unix timestamp to date the SARIF render and emit its STIX bundle; without it the render carries no clock.
 
 When any entry carries no digest, a further step counts those entries and points at their `unavailable_reason`.
 
@@ -150,22 +151,22 @@ Only two results are reported as `level: error` with `kind: fail`: a failure, an
 
 An indicator result records the offset and length of the value inside the analysis target, and a `range_within_target` flag. When a recorded offset lies outside the target, the result is kept, the flag is false, and the message says the range lies outside the analysis target.
 
-`run.invocations[0].commandLine` holds the reproduction command. `executionSuccessful` is false when a single run recorded a failure, or when a batch manifest recorded an error.
+`run.invocations[0].commandLine` holds the reproduction command. `executionSuccessful` is false when a single run recorded a failure, or when a batch manifest recorded an error. `endTimeUtc` appears only when `SOURCE_DATE_EPOCH` is set, and then holds that date.
 
 ### `run.properties`
 
 | Key | Contents |
 |---|---|
-| `generated_at` | The one timestamp value the document uses. |
-| `disrobe` | The `disrobe.report/v1` document. |
-| `stix` | A STIX 2.1 bundle, or `available: false` with a reason. |
+| `generated_at` | The value of `SOURCE_DATE_EPOCH` as an RFC 3339 timestamp. Absent when the variable is unset. |
+| `disrobe` | The `disrobe.report/v2` document. |
+| `stix` | A STIX 2.1 bundle when `SOURCE_DATE_EPOCH` is set; otherwise `available: false` with a reason that names the variable. |
 | `maec` | A MAEC 5.0 package of behavior objects, or `available: false` with a reason. |
 | `capabilities` | The capability report for the analysis target, or `available: false` with a reason. |
 | `indicators` | The aggregated indicator bundle, or `available: false` with a reason. |
 | `reproduction` | The command and the steps. Single-run reports only. |
 | `standards` | The standards this render targets, and the ones it excludes. |
 
-The STIX bundle carries an `identity` object for the tool and a `malware-analysis` object for the run. Its `result` field stays `unknown`, because disrobe performs static recovery and does not classify a sample. Identifiers are derived from the first 16 bytes of BLAKE3 over a stable seed, stamped with the RFC 9562 version 4 and variant bits, so repeated runs over one input produce one identifier.
+STIX 2.1 requires `created`, `modified`, and `valid_from` on its objects, and a render without `SOURCE_DATE_EPOCH` carries no clock to put there, so the bundle is emitted only when the variable is set; every STIX date then equals it. The bundle carries an `identity` object for the tool and a `malware-analysis` object for the run. Its `result` field stays `unknown`, because disrobe performs static recovery and does not classify a sample. Identifiers are derived from the first 16 bytes of BLAKE3 over a stable seed, stamped with the RFC 9562 version 4 and variant bits, so repeated runs over one input produce one identifier.
 
 URL, domain, IPv4, IPv6, email, and registry indicators become STIX indicator objects. Hash, ASN, wallet, path, secret, and other indicators have no STIX pattern object path. They are counted by class in `standards.stix.unmapped_indicator_classes` and stay in the SARIF results only.
 
@@ -177,6 +178,6 @@ The STIX, MAEC, capability, and indicator blocks read the original analysis targ
 
 ## Determinism
 
-Text, JSON, markdown, and HTML output is byte-identical across runs over one target.
+Text, JSON, markdown, HTML, and SARIF output is byte-identical across renders of one run, and the documents a run writes are byte-identical at any `--jobs` value. No document records a duration, the worker count, or the time of the run; `auto --timings` writes those to `run.json` instead.
 
-`generated_at` is the only wall-clock field in the SARIF render, and every timestamp in that document holds its value. Two SARIF renders over one target therefore differ only in that value. Set `SOURCE_DATE_EPOCH` to a Unix timestamp to fix it. The SARIF render is then byte-identical too, and `standards.timestamp.source` reads `source-date-epoch` instead of `system-clock`.
+Without `SOURCE_DATE_EPOCH` the SARIF render holds no timestamp at all: `generated_at`, `endTimeUtc`, and the MAEC behavior timestamps are left out, the STIX block reports itself unavailable, and `standards.timestamp.source` reads `none`. Set `SOURCE_DATE_EPOCH` to a Unix timestamp to date the render: every timestamp in the document then holds that value, the STIX bundle is emitted, and `standards.timestamp.source` reads `source-date-epoch`. A value that is not a whole number of seconds is refused with `DR-CLI-0318` rather than replaced by the clock.

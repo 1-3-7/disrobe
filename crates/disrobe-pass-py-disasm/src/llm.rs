@@ -36,7 +36,6 @@ pub struct PyDisasmLlmInput {
     pub names: Vec<String>,
     pub varnames: Vec<String>,
     pub consts: Vec<String>,
-    pub duration_ms: f64,
 }
 
 impl LlmMetadataEmitter for PyDisasmLlmInput {
@@ -140,14 +139,7 @@ impl LlmMetadataEmitter for PyDisasmLlmInput {
     }
 
     fn emit_provenance(&self) -> Option<Json> {
-        let step: Json = shape::make_pipeline_step(
-            PASS,
-            VERSION,
-            "raw",
-            "disasm",
-            self.duration_ms,
-            BTreeMap::new(),
-        );
+        let step: Json = shape::make_pipeline_step(PASS, VERSION, "raw", "disasm", BTreeMap::new());
         Some(shape::make_provenance_value(vec![step], BTreeMap::new()))
     }
 }

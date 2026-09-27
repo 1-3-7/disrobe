@@ -3,6 +3,7 @@ use cms::signed_data::{SignedData, SignerIdentifier, SignerInfo};
 use const_oid::ObjectIdentifier;
 use der::asn1::{Any, OctetString};
 use der::{Decode, Encode, Sequence};
+use disrobe_core::time::{Fraction, rfc3339};
 use rsa::RsaPublicKey;
 use rsa::pkcs1::DecodeRsaPublicKey;
 use serde::{Deserialize, Serialize};
@@ -205,7 +206,7 @@ struct HashGeometry {
 }
 
 #[must_use]
-pub fn verify(pe_bytes: &[u8]) -> AuthenticodeReport {
+pub fn verify(pe_bytes: &[u8], now_secs: u64) -> AuthenticodeReport {
     let Some(geom): Option<HashGeometry> = hash_geometry(pe_bytes) else {
         return AuthenticodeReport::shell(AuthenticodeVerdict::NoSignature);
     };
@@ -221,7 +222,7 @@ pub fn verify(pe_bytes: &[u8]) -> AuthenticodeReport {
     let Some(pkcs7): Option<&[u8]> = first_pkcs7_blob(pe_bytes, geom.security_offset, end) else {
         return AuthenticodeReport::shell(AuthenticodeVerdict::MalformedSignature);
     };
-    match verify_signed(pe_bytes, &geom, pkcs7) {
+    match verify_signed(pe_bytes, &geom, pkcs7, now_secs) {
         Ok(report) => report,
         Err(verdict) => AuthenticodeReport::shell(verdict),
     }
@@ -231,6 +232,7 @@ fn verify_signed(
     pe_bytes: &[u8],
     geom: &HashGeometry,
     pkcs7: &[u8],
+    now_secs: u64,
 ) -> Result<AuthenticodeReport, AuthenticodeVerdict> {
     let real_len: usize =
         der_tlv_total_len(pkcs7).ok_or(AuthenticodeVerdict::MalformedSignature)?;
@@ -313,7 +315,8 @@ fn verify_signed(
         SignerVerification::Ok | SignerVerification::Unsupported => {}
     }
 
-    let reference_time: i64 = verified_timestamp_time(signer).unwrap_or_else(now_unix);
+    let reference_time: i64 = verified_timestamp_time(signer)
+        .unwrap_or_else(|| i64::try_from(now_secs).unwrap_or(i64::MAX));
 
     let Some(leaf): Option<&Certificate> = chain.first() else {
         report.verdict = AuthenticodeVerdict::MalformedSignature;
@@ -840,8 +843,14 @@ fn cert_info(cert: &Certificate) -> CertInfo {
     let subject: String = cert.tbs_certificate.subject.to_string();
     let issuer: String = cert.tbs_certificate.issuer.to_string();
     let serial: String = hex_upper(cert.tbs_certificate.serial_number.as_bytes());
-    let not_before: String = unix_to_iso(time_to_unix(&cert.tbs_certificate.validity.not_before));
-    let not_after: String = unix_to_iso(time_to_unix(&cert.tbs_certificate.validity.not_after));
+    let not_before: String = rfc3339(
+        time_to_unix(&cert.tbs_certificate.validity.not_before),
+        Fraction::Omitted,
+    );
+    let not_after: String = rfc3339(
+        time_to_unix(&cert.tbs_certificate.validity.not_after),
+        Fraction::Omitted,
+    );
     CertInfo {
         subject,
         issuer,
@@ -1102,13 +1111,15 @@ fn signed_attr_time(
     let value: &Any = attr.values.iter().next()?;
     let der: Vec<u8> = value.to_der().ok()?;
     if let Ok(utc) = der::asn1::UtcTime::from_der(&der) {
-        return Some(unix_to_iso(
+        return Some(rfc3339(
             i64::try_from(utc.to_unix_duration().as_secs()).ok()?,
+            Fraction::Omitted,
         ));
     }
     if let Ok(gen_time) = der::asn1::GeneralizedTime::from_der(&der) {
-        return Some(unix_to_iso(
+        return Some(rfc3339(
             i64::try_from(gen_time.to_unix_duration().as_secs()).ok()?,
+            Fraction::Omitted,
         ));
     }
     None
@@ -1171,7 +1182,7 @@ fn generalized_time_to_unix(body: &[u8]) -> Option<i64> {
 }
 
 fn generalized_time_to_iso(body: &[u8]) -> Option<String> {
-    Some(unix_to_iso(generalized_time_to_unix(body)?))
+    Some(rfc3339(generalized_time_to_unix(body)?, Fraction::Omitted))
 }
 
 fn der_tlv_total_len(bytes: &[u8]) -> Option<usize> {
@@ -1247,10 +1258,6 @@ fn hex_upper(bytes: &[u8]) -> String {
     out
 }
 
-fn now_unix() -> i64 {
-    i64::try_from(disrobe_core::time::now_secs()).unwrap_or(i64::MAX)
-}
-
 fn civil_to_unix(year: i64, month: i64, day: i64, hour: i64, minute: i64, second: i64) -> i64 {
     let y: i64 = if month <= 2 { year - 1 } else { year };
     let era: i64 = if y >= 0 { y } else { y - 399 } / 400;
@@ -1261,29 +1268,12 @@ fn civil_to_unix(year: i64, month: i64, day: i64, hour: i64, minute: i64, second
     days * 86_400 + hour * 3_600 + minute * 60 + second
 }
 
-fn unix_to_iso(unix: i64) -> String {
-    let days: i64 = unix.div_euclid(86_400);
-    let secs: i64 = unix.rem_euclid(86_400);
-    let z: i64 = days + 719_468;
-    let era: i64 = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe: i64 = z - era * 146_097;
-    let yoe: i64 = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-    let year: i64 = yoe + era * 400;
-    let doy: i64 = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp: i64 = (5 * doy + 2) / 153;
-    let day: i64 = doy - (153 * mp + 2) / 5 + 1;
-    let month: i64 = if mp < 10 { mp + 3 } else { mp - 9 };
-    let full_year: i64 = if month <= 2 { year + 1 } else { year };
-    let hour: i64 = secs / 3_600;
-    let minute: i64 = (secs % 3_600) / 60;
-    let second: i64 = secs % 60;
-    format!("{full_year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    const NOW_SECS: u64 = 1_798_761_600;
 
     #[test]
     fn unsigned_or_malformed_never_panics() {
@@ -1296,7 +1286,7 @@ mod tests {
             (0..512u16).map(|i: u16| (i & 0xFF) as u8).collect(),
         ];
         for input in &inputs {
-            let report: AuthenticodeReport = verify(input);
+            let report: AuthenticodeReport = verify(input, NOW_SECS);
             let _ = report.verdict;
         }
     }
@@ -1304,7 +1294,7 @@ mod tests {
     #[test]
     fn empty_security_directory_is_no_signature() {
         let bytes: Vec<u8> = crate::fixtures::minimal_pe32();
-        let report: AuthenticodeReport = verify(&bytes);
+        let report: AuthenticodeReport = verify(&bytes, NOW_SECS);
         assert_eq!(report.verdict, AuthenticodeVerdict::NoSignature);
     }
 
@@ -1323,8 +1313,23 @@ mod tests {
 
     #[test]
     fn iso_round_trip_matches_known_epochs() {
-        assert_eq!(unix_to_iso(0), "1970-01-01T00:00:00Z");
-        assert_eq!(unix_to_iso(1_700_000_000), "2023-11-14T22:13:20Z");
+        assert_eq!(
+            generalized_time_to_iso(b"19700101000000").as_deref(),
+            Some("1970-01-01T00:00:00Z")
+        );
+        assert_eq!(
+            generalized_time_to_iso(b"20231114221320").as_deref(),
+            Some("2023-11-14T22:13:20Z")
+        );
+        assert_eq!(
+            generalized_time_to_iso(b"19500101000000").as_deref(),
+            Some("1950-01-01T00:00:00Z"),
+            "a GeneralizedTime before 1970 keeps its date"
+        );
+        assert_eq!(
+            generalized_time_to_unix(b"19500101000000"),
+            Some(-631_152_000)
+        );
         assert_eq!(
             generalized_time_to_unix(b"20231114221320"),
             Some(1_700_000_000)

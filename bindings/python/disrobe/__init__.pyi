@@ -131,7 +131,6 @@ _LlmPipelineStep = TypedDict(
         "version": str,
         "rung_in": str,
         "rung_out": str,
-        "duration_ms": float,
         "input_hash_blake3": NotRequired[str],
         "output_hash_blake3": NotRequired[str],
         "capabilities_required": NotRequired[list[str]],
@@ -143,14 +142,15 @@ _LlmPipelineStep = TypedDict(
 class LlmBundle(TypedDict):
     """Top-level shape of ``result["llm"]`` when an LLM metadata pack was emitted.
 
-    Mirrors the on-disk ``disrobe.metadata.llm.v1`` schema produced by the CLI
-    ``--llm`` flag family. All top-level keys are present; category entries
-    depend on which ``pack`` was requested.
+    Mirrors the on-disk ``disrobe.metadata.llm.v2`` schema produced by the CLI
+    ``--llm`` flag family. Every top-level key except ``generated_at`` is always
+    present; ``generated_at`` appears only when ``SOURCE_DATE_EPOCH`` is set.
+    Category entries depend on which ``pack`` was requested.
     """
 
-    schema: Literal["disrobe.metadata.llm.v1"]
-    schema_version: Literal["1.0.0"]
-    generated_at: str
+    schema: Literal["disrobe.metadata.llm.v2"]
+    schema_version: Literal["2.0.0"]
+    generated_at: NotRequired[str]
     tool: _LlmToolDescriptor
     selection: _LlmSelection
     input: _LlmInputDescriptor

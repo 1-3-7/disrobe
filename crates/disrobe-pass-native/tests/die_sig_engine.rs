@@ -7,6 +7,8 @@ use disrobe_pass_native::{
     native_struct_findings,
 };
 
+const NOW_SECS: u64 = 1_798_761_600;
+
 fn corpus_bytes(rel: &str) -> Option<Vec<u8>> {
     let path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
@@ -146,7 +148,7 @@ fn identify_file_surfaces_aspack_version_through_cli_report() {
         eprintln!("skip: aspack sample absent");
         return;
     };
-    let report: FileIdReport = identify_file(&bytes);
+    let report: FileIdReport = identify_file(&bytes, NOW_SECS);
     let aspack: &Finding = report
         .of_kind(IdentityKind::Packer)
         .find(|f: &&Finding| f.family == "aspack")
@@ -160,7 +162,7 @@ fn identify_file_surfaces_msvc_exact_build_through_cli_report() {
         eprintln!("skip: msvc original absent");
         return;
     };
-    let report: FileIdReport = identify_file(&bytes);
+    let report: FileIdReport = identify_file(&bytes, NOW_SECS);
     let msvc: &Finding = report
         .of_kind(IdentityKind::Compiler)
         .find(|f: &&Finding| f.family == "msvc")
@@ -178,7 +180,7 @@ fn identify_file_surfaces_go_version_through_cli_report() {
         eprintln!("skip: go sample absent");
         return;
     };
-    let report: FileIdReport = identify_file(&bytes);
+    let report: FileIdReport = identify_file(&bytes, NOW_SECS);
     let go: &Finding = report
         .of_kind(IdentityKind::Compiler)
         .find(|f: &&Finding| f.family == "go")

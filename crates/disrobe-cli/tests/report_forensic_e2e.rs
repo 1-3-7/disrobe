@@ -133,8 +133,24 @@ fn assert_valid(validator: &Validator, instance: &Value, label: &str) {
     assert!(errors.is_empty(), "{label} is not valid: {errors:#?}");
 }
 
+const PINNED_EPOCH: &str = "1700000000";
+const PINNED_STAMP: &str = "2023-11-14T22:13:20.000Z";
+
 fn report_sarif(target: &Path) -> Value {
     let r: Run = run_disrobe(&["report", target.to_str().unwrap(), "--format", "sarif"]);
+    assert_eq!(
+        r.code, 0,
+        "report --format sarif must succeed; stderr={}",
+        r.stderr
+    );
+    serde_json::from_str(&r.stdout).expect("sarif output must be valid json")
+}
+
+fn dated_report_sarif(target: &Path) -> Value {
+    let r: Run = common::run_disrobe_env(
+        &["report", target.to_str().unwrap(), "--format", "sarif"],
+        &[("SOURCE_DATE_EPOCH", PINNED_EPOCH)],
+    );
     assert_eq!(
         r.code, 0,
         "report --format sarif must succeed; stderr={}",
@@ -202,8 +218,20 @@ fn the_forensic_report_validates_against_the_pinned_sarif_schema() {
 
 #[test]
 fn auto_writes_a_standards_report_that_validates_against_sarif_and_stix() {
-    let (_scratch, out): (disrobe_core::scratch::ScratchDir, PathBuf) =
-        completed_run("forensic-auto-sidecar", &(0u8..96).collect::<Vec<u8>>());
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir("forensic-auto-sidecar");
+    let input: PathBuf = scratch.path().join("sample.bin");
+    write(&input, &(0u8..96).collect::<Vec<u8>>());
+    let out: PathBuf = scratch.path().join("run");
+    let r: Run = common::run_disrobe_env(
+        &[
+            "auto",
+            input.to_str().unwrap(),
+            "--out",
+            out.to_str().unwrap(),
+        ],
+        &[("SOURCE_DATE_EPOCH", PINNED_EPOCH)],
+    );
+    assert_eq!(r.code, 0, "auto setup must succeed; stderr={}", r.stderr);
     let path: PathBuf = out.join("report.sarif");
     let bytes: Vec<u8> = std::fs::read(&path)
         .unwrap_or_else(|e: std::io::Error| panic!("auto must write {}: {e}", path.display()));
@@ -279,7 +307,7 @@ fn every_cited_range_names_the_artifact_it_indexes() {
 }
 
 const RECOVERED_CHAIN_JSON: &str = r#"{
-  "schema": "disrobe.chain/v1",
+  "schema": "disrobe.chain/v2",
   "tool_version": "0.9.0",
   "input": { "path": "app.pyc", "blake3": "abcd", "size": 128, "detected": ["pyc-3.11"] },
   "spec": { "raw": "auto:8", "kind": "auto", "cap": 8 },
@@ -289,31 +317,29 @@ const RECOVERED_CHAIN_JSON: &str = r#"{
     { "id": 0, "parent_id": null, "depth": 0, "branch_id": "root",
       "pass": null, "format_tag_in": null, "input_blake3": "abcd", "input_size": 128,
       "output_kind": null, "output_blake3": null, "output_size": null,
-      "duration_ms": null, "detector_picks": [], "artifacts": [], "metadata": {},
+      "detector_picks": [], "artifacts": [], "metadata": {},
       "verdict": "ok", "error": null },
     { "id": 1, "parent_id": 0, "depth": 1, "branch_id": "root",
       "pass": "py.decompile", "format_tag_in": "pyc-3.11", "input_blake3": "abcd", "input_size": 128,
       "output_kind": { "kind": "source", "language": "Python", "formatted": true },
       "output_blake3": "ef01", "output_size": 15,
-      "duration_ms": 7, "detector_picks": [], "artifacts": ["app.py"], "metadata": {},
+      "detector_picks": [], "artifacts": ["app.py"], "metadata": {},
       "verdict": "complete", "error": null }
   ],
   "verdict": "complete",
   "final_format": "Python",
-  "stats": { "layers": 1, "branches": 1, "total_ms": 7,
-    "max_branch_depth": 1, "detector_calls": 1, "rejected_passes": 0 }
+  "stats": { "layers": 1, "branches": 1, "max_branch_depth": 1, "detector_calls": 1, "rejected_passes": 0 }
 }"#;
 
 const RECOVERED_RECOVERY_JSON: &str = r#"{
-  "schema": "disrobe.recovery/v1",
+  "schema": "disrobe.recovery/v2",
   "tool_version": "0.9.0",
   "input": { "path": "app.pyc", "blake3": "abcd", "size": 128 },
   "passes": [
     { "name": "py.decompile", "status": "recovered", "confidence": "semantic",
-      "duration_ms": 7, "format_in": "pyc-3.11", "format_out": "Python" }
+      "format_in": "pyc-3.11", "format_out": "Python" }
   ],
   "histogram": { "exact": 0, "semantic": 1, "partial": 0, "skeleton": 0 },
-  "total_ms": 7,
   "verdict": "complete"
 }"#;
 
@@ -380,7 +406,7 @@ fn every_recomputed_digest_matches_the_file_it_names() {
 fn the_embedded_bundle_validates_object_by_object_against_the_pinned_stix_schemas() {
     let (_scratch, out): (disrobe_core::scratch::ScratchDir, PathBuf) =
         completed_run("forensic-stix", &(0u8..96).collect::<Vec<u8>>());
-    let log: Value = report_sarif(&out);
+    let log: Value = dated_report_sarif(&out);
     let stix: &Value = &log["runs"][0]["properties"]["stix"];
     assert_eq!(stix["available"], serde_json::json!(true));
     let bundle: &Value = &stix["bundle"];
@@ -580,7 +606,7 @@ fn walls_are_first_class_and_never_reported_as_an_error() {
 fn two_runs_over_one_target_agree_byte_for_byte_in_every_render() {
     let (_scratch, out): (disrobe_core::scratch::ScratchDir, PathBuf) =
         completed_run("forensic-determinism", &(0u8..96).collect::<Vec<u8>>());
-    for format in ["text", "json", "markdown", "html"] {
+    for format in ["text", "json", "markdown", "html", "sarif"] {
         let first: Run = run_disrobe(&["report", out.to_str().unwrap(), "--format", format]);
         let second: Run = run_disrobe(&["report", out.to_str().unwrap(), "--format", format]);
         assert_eq!(first.code, 0, "{format}: stderr={}", first.stderr);
@@ -591,49 +617,73 @@ fn two_runs_over_one_target_agree_byte_for_byte_in_every_render() {
             "`report --format {format}` is not byte-identical across runs"
         );
     }
-
-    let first: Value = report_sarif(&out);
-    let second: Value = report_sarif(&out);
-    let generated: &str = first["runs"][0]["properties"]["generated_at"]
-        .as_str()
-        .expect("generated_at");
-    let mut first_stamps: BTreeSet<String> = BTreeSet::new();
-    collect_timestamps(&first, &mut first_stamps);
-    assert_eq!(
-        first_stamps.len(),
-        1,
-        "the sarif document must hold exactly one distinct timestamp value: {first_stamps:?}"
-    );
-    assert!(first_stamps.contains(generated));
-
-    let mut second_stamps: BTreeSet<String> = BTreeSet::new();
-    collect_timestamps(&second, &mut second_stamps);
-    let second_generated: &str = second["runs"][0]["properties"]["generated_at"]
-        .as_str()
-        .expect("generated_at");
-    let masked_first: String = serde_json::to_string_pretty(&first)
-        .unwrap()
-        .replace(generated, "<generated_at>");
-    let masked_second: String = serde_json::to_string_pretty(&second)
-        .unwrap()
-        .replace(second_generated, "<generated_at>");
-    assert_eq!(
-        masked_first, masked_second,
-        "`report --format sarif` differs by more than its timestamp"
-    );
 }
 
 #[test]
-fn a_pinned_source_date_epoch_fixes_the_only_wall_clock_field() {
+fn without_a_source_date_the_sarif_render_carries_no_clock_and_names_why_stix_is_absent() {
     let (_scratch, out): (disrobe_core::scratch::ScratchDir, PathBuf) =
-        completed_run("forensic-epoch", &(0u8..96).collect::<Vec<u8>>());
+        completed_run("forensic-undated", &(0u8..96).collect::<Vec<u8>>());
+    let written: Value = serde_json::from_slice(
+        &std::fs::read(out.join("report.sarif")).expect("auto writes report.sarif"),
+    )
+    .expect("report.sarif is json");
+    for log in [written, report_sarif(&out)] {
+        let mut stamps: BTreeSet<String> = BTreeSet::new();
+        collect_timestamps(&log, &mut stamps);
+        assert!(
+            stamps.is_empty(),
+            "an undated render holds no clock: {stamps:?}"
+        );
+        let properties: &Value = &log["runs"][0]["properties"];
+        assert!(properties.get("generated_at").is_none(), "{properties}");
+        assert!(
+            log["runs"][0]["invocations"][0].get("endTimeUtc").is_none(),
+            "{}",
+            log["runs"][0]["invocations"][0]
+        );
+        assert_eq!(properties["stix"]["available"], serde_json::json!(false));
+        assert!(
+            properties["stix"]["reason"]
+                .as_str()
+                .is_some_and(|reason: &str| reason.contains("SOURCE_DATE_EPOCH")),
+            "the unavailable STIX block names the variable: {}",
+            properties["stix"]
+        );
+        assert_eq!(
+            properties["standards"]["timestamp"]["source"],
+            serde_json::json!("none")
+        );
+    }
+}
+
+#[test]
+fn a_malformed_source_date_is_refused_rather_than_replaced_by_the_clock() {
+    let (_scratch, out): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        completed_run("forensic-bad-epoch", &(0u8..96).collect::<Vec<u8>>());
+    let r: Run = common::run_disrobe_env(
+        &["report", out.to_str().unwrap(), "--format", "sarif"],
+        &[("SOURCE_DATE_EPOCH", "yesterday")],
+    );
+    assert_ne!(
+        r.code, 0,
+        "a malformed SOURCE_DATE_EPOCH must fail the render"
+    );
+    assert!(r.stderr.contains("DR-CLI-0318"), "stderr={}", r.stderr);
+}
+
+#[test]
+fn a_pinned_source_date_epoch_dates_every_timestamp_and_the_stix_bundle() {
+    let (_scratch, out): (disrobe_core::scratch::ScratchDir, PathBuf) = completed_run(
+        "forensic-epoch",
+        b"fetch http://malware-example.com/payload.bin then exit",
+    );
     let first: Run = common::run_disrobe_env(
         &["report", out.to_str().unwrap(), "--format", "sarif"],
-        &[("SOURCE_DATE_EPOCH", "1700000000")],
+        &[("SOURCE_DATE_EPOCH", PINNED_EPOCH)],
     );
     let second: Run = common::run_disrobe_env(
         &["report", out.to_str().unwrap(), "--format", "sarif"],
-        &[("SOURCE_DATE_EPOCH", "1700000000")],
+        &[("SOURCE_DATE_EPOCH", PINNED_EPOCH)],
     );
     assert_eq!(first.code, 0, "stderr={}", first.stderr);
     assert_eq!(
@@ -641,14 +691,31 @@ fn a_pinned_source_date_epoch_fixes_the_only_wall_clock_field() {
         "a pinned SOURCE_DATE_EPOCH must make the sarif render byte-identical"
     );
     let log: Value = serde_json::from_str(&first.stdout).expect("valid json");
+    let properties: &Value = &log["runs"][0]["properties"];
+    assert_eq!(properties["generated_at"], serde_json::json!(PINNED_STAMP));
     assert_eq!(
-        log["runs"][0]["properties"]["generated_at"],
-        serde_json::json!("2023-11-14T22:13:20.000Z")
+        log["runs"][0]["invocations"][0]["endTimeUtc"],
+        serde_json::json!(PINNED_STAMP)
     );
     assert_eq!(
-        log["runs"][0]["properties"]["standards"]["timestamp"]["source"],
+        properties["standards"]["timestamp"]["source"],
         serde_json::json!("source-date-epoch")
     );
+    let mut stamps: BTreeSet<String> = BTreeSet::new();
+    collect_timestamps(&log, &mut stamps);
+    assert_eq!(stamps, BTreeSet::from([PINNED_STAMP.to_string()]));
+    let objects: &Vec<Value> = properties["stix"]["bundle"]["objects"]
+        .as_array()
+        .expect("a dated render carries the STIX bundle");
+    let indicator: &Value = objects
+        .iter()
+        .find(|object: &&Value| object["type"] == "indicator")
+        .unwrap_or_else(|| {
+            panic!("the sample holds no STIX-mapped indicator: {objects:#?}");
+        });
+    for field in ["created", "modified", "valid_from"] {
+        assert_eq!(indicator[field], serde_json::json!(PINNED_STAMP), "{field}");
+    }
 }
 
 #[test]
@@ -656,20 +723,19 @@ fn a_batch_of_only_errors_still_produces_a_valid_document() {
     let scratch: disrobe_core::scratch::ScratchDir = temp_dir("forensic-batch");
     let work: PathBuf = scratch.path().to_path_buf();
     let manifest: &str = r#"{
-      "schema": "disrobe.batch.manifest/v1",
+      "schema": "disrobe.batch.manifest/v2",
       "tool_version": "0.9.0",
       "root": "samples",
       "out_root": "out/samples-batch",
       "chain": "auto:8",
-      "jobs": 1,
       "summary": { "processed": 2, "recovered": 0, "detect_only": 0, "errors": 2 },
       "entries": [
         { "input": "samples/a", "relative": "a", "size": 0, "detected_format": null,
           "chain": [], "verdict": null, "recovery_score": null, "output_dir": null,
-          "duration_ms": 1, "error": "read failed" },
+          "error": "read failed" },
         { "input": "samples/b", "relative": "b", "size": 0, "detected_format": null,
           "chain": [], "verdict": null, "recovery_score": null, "output_dir": null,
-          "duration_ms": 1, "error": "read failed" }
+          "error": "read failed" }
       ]
     }"#;
     write(&work.join("manifest.json"), manifest.as_bytes());
@@ -886,7 +952,7 @@ fn every_file_of_a_batch_run_leaves_its_own_citable_report() {
 }
 
 const DRY_RUN_CHAIN_JSON: &str = r#"{
-  "schema": "disrobe.chain/v1",
+  "schema": "disrobe.chain/v2",
   "tool_version": "0.9.0",
   "input": { "path": "app.pyc", "blake3": "abcd", "size": 128, "detected": ["pyc-3.11"] },
   "spec": { "raw": "auto:8", "kind": "auto", "cap": 8 },
@@ -896,30 +962,28 @@ const DRY_RUN_CHAIN_JSON: &str = r#"{
     { "id": 0, "parent_id": null, "depth": 0, "branch_id": "root",
       "pass": null, "format_tag_in": null, "input_blake3": "abcd", "input_size": 128,
       "output_kind": null, "output_blake3": null, "output_size": null,
-      "duration_ms": null, "detector_picks": [], "artifacts": [], "metadata": {},
+      "detector_picks": [], "artifacts": [], "metadata": {},
       "verdict": "ok", "error": null },
     { "id": 1, "parent_id": 0, "depth": 1, "branch_id": "root",
       "pass": "py.decompile", "format_tag_in": "pyc-3.11", "input_blake3": "abcd", "input_size": 128,
       "output_kind": null, "output_blake3": null, "output_size": null,
-      "duration_ms": null, "detector_picks": [], "artifacts": ["app.py"], "metadata": {},
+      "detector_picks": [], "artifacts": ["app.py"], "metadata": {},
       "verdict": "dry-run", "error": null }
   ],
   "verdict": "dry-run",
   "final_format": null,
-  "stats": { "layers": 1, "branches": 1, "total_ms": 0,
-    "max_branch_depth": 1, "detector_calls": 1, "rejected_passes": 0 }
+  "stats": { "layers": 1, "branches": 1, "max_branch_depth": 1, "detector_calls": 1, "rejected_passes": 0 }
 }"#;
 
 const DRY_RUN_RECOVERY_JSON: &str = r#"{
-  "schema": "disrobe.recovery/v1",
+  "schema": "disrobe.recovery/v2",
   "tool_version": "0.9.0",
   "input": { "path": "app.pyc", "blake3": "abcd", "size": 128 },
   "passes": [
     { "name": "py.decompile", "status": "skipped", "confidence": "skeleton",
-      "duration_ms": null, "format_in": "pyc-3.11", "format_out": null }
+      "format_in": "pyc-3.11", "format_out": null }
   ],
   "histogram": { "exact": 0, "semantic": 0, "partial": 0, "skeleton": 1 },
-  "total_ms": 0,
   "verdict": "dry-run"
 }"#;
 

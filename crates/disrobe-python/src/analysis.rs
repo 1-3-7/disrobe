@@ -66,7 +66,8 @@ fn behavior_analyze(data: &[u8]) -> PyResult<PyBehaviorReport> {
 #[pyfunction]
 #[pyo3(name = "identify", text_signature = "(data)")]
 fn identify_binary(data: &[u8]) -> PyResult<PyIdentifyReport> {
-    let report: FileIdReport = identify_file(data);
+    let now_secs: u64 = disrobe_core::time::now_secs().map_err(map("identify"))?;
+    let report: FileIdReport = identify_file(data, now_secs);
     PyIdentifyReport::from_serialize(&report)
 }
 

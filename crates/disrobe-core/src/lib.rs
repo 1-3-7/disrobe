@@ -114,7 +114,6 @@ pub use strings::{
     STRINGS_SCHEMA, StringsReport, Tagging as StringTagging, extract as strings_extract,
     report as strings_report,
 };
-pub use time::{now as time_now, now_secs as time_now_secs};
 pub use yara::{
     Rule as YaraRule, YARA_SCHEMA, YaraLoaderReport, YaraParseError, YaraRuleset, YaraString,
     YaraStringKind, parse_report as parse_yara_report, parse_rule as parse_yara_rule,

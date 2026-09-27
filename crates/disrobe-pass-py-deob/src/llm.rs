@@ -32,7 +32,6 @@ pub const METADATA_CAPABILITY: MetadataCapability = MetadataCapability::new(
 #[derive(Debug, Clone)]
 pub struct PyDeobLlmInput {
     pub peel: PeelResult,
-    pub duration_ms: f64,
 }
 
 impl LlmMetadataEmitter for PyDeobLlmInput {
@@ -108,14 +107,8 @@ impl LlmMetadataEmitter for PyDeobLlmInput {
         );
         kv.insert("converged".to_owned(), self.peel.converged.to_string());
         kv.insert("steps".to_owned(), self.peel.steps.len().to_string());
-        let step: Json = shape::make_pipeline_step(
-            PASS,
-            VERSION,
-            "surface",
-            "surface",
-            self.duration_ms,
-            BTreeMap::new(),
-        );
+        let step: Json =
+            shape::make_pipeline_step(PASS, VERSION, "surface", "surface", BTreeMap::new());
         Some(shape::make_provenance_value(vec![step], kv))
     }
 

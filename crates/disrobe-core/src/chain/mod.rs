@@ -7,6 +7,7 @@ pub mod obfuscator_catalog;
 pub mod precedence;
 pub mod recovery;
 pub mod registry;
+pub mod run_record;
 pub mod spec;
 pub mod state_machine;
 
@@ -33,6 +34,7 @@ pub use recovery::{
 pub use registry::{
     DetectorPick, PassRegistry, PickOutcome, PolicyOutcome, SelectionPolicy, TieBreak,
 };
+pub use run_record::{RUN_FILE_NAME, RUN_SCHEMA_VERSION, RunClock, RunRecord, RunRecordError};
 pub use spec::{ChainSpec, ChainSpecError, PassToken, SpecCursor, SpecKind};
 pub use state_machine::{
     ChainConfig, ChainDriver, ChainPlan, ExtractedArtifact, Node, NodeId, Verdict, WorkItem,

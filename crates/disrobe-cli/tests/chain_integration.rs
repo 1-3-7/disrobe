@@ -228,7 +228,7 @@ fn test_chain_emits_v1_schema() {
     );
     let json: String = read_chain_json(&out);
     assert!(
-        json.contains("disrobe.chain/v1"),
-        "expected schema v1 in chain.json"
+        json.contains("disrobe.chain/v2"),
+        "expected schema v2 in chain.json"
     );
 }

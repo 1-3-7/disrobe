@@ -498,7 +498,7 @@ const RICH_PRODUCTS: &[RichProduct] = &[
 ];
 
 #[must_use]
-pub fn identify(bytes: &[u8]) -> FileIdReport {
+pub fn identify(bytes: &[u8], now_secs: u64) -> FileIdReport {
     let detected: crate::format::DetectedFormat =
         detect_format(bytes).unwrap_or_else(|_| crate::format::DetectedFormat {
             kind: NativeFormat::Unknown,
@@ -524,7 +524,7 @@ pub fn identify(bytes: &[u8]) -> FileIdReport {
         _ => {}
     }
 
-    merge_byte_identity(bytes, &mut builder);
+    merge_byte_identity(bytes, now_secs, &mut builder);
     merge_struct_findings(bytes, &mut builder);
 
     FileIdReport {
@@ -1040,8 +1040,8 @@ fn analyze_fat(bytes: &[u8], builder: &mut Builder) {
     analyze_object(bytes, MACHO_SECTION_SIGNATURES, builder);
 }
 
-fn merge_byte_identity(bytes: &[u8], builder: &mut Builder) {
-    let report: crate::identify::IdentityReport = detect_byte_identity(bytes);
+fn merge_byte_identity(bytes: &[u8], now_secs: u64, builder: &mut Builder) {
+    let report: crate::identify::IdentityReport = detect_byte_identity(bytes, now_secs);
     for hit in report.hits {
         let family: &'static str = canonical_family(&hit.name);
         let display: &'static str = canonical_display(family);
@@ -1220,9 +1220,11 @@ fn read_u32_le(bytes: &[u8], at: usize) -> Option<u32> {
 mod tests {
     use super::*;
 
+    const NOW_SECS: u64 = 1_798_761_600;
+
     #[test]
     fn unknown_format_yields_empty_findings() {
-        let report: FileIdReport = identify(&[0x00, 0x01, 0x02, 0x03, 0x04, 0x05]);
+        let report: FileIdReport = identify(&[0x00, 0x01, 0x02, 0x03, 0x04, 0x05], NOW_SECS);
         assert_eq!(report.format, "unknown");
         assert!(report.findings.is_empty());
     }
@@ -1328,7 +1330,7 @@ mod tests {
         for (rel, family) in cases {
             let bytes: Vec<u8> = corpus_bytes(rel);
             present += 1;
-            let report: FileIdReport = identify(&bytes);
+            let report: FileIdReport = identify(&bytes, NOW_SECS);
             if has_packer_or_protector_family(&report, family) {
                 hit += 1;
             } else {
@@ -1379,7 +1381,7 @@ mod tests {
         for (rel, family) in originals {
             let bytes: Vec<u8> = corpus_bytes(rel);
             checked += 1;
-            let report: FileIdReport = identify(&bytes);
+            let report: FileIdReport = identify(&bytes, NOW_SECS);
             assert!(
                 !has_packer_or_protector_family(&report, family),
                 "clean original {rel} falsely flagged as {family}: {:?}",
@@ -1402,8 +1404,8 @@ mod tests {
         let packed: Vec<u8> = corpus_bytes("native/packers/upx/hello.packed.nrv2b.exe");
         let clean: Vec<u8> = corpus_bytes("native/packers/upx/hello.original.exe");
 
-        let packed_report: FileIdReport = identify(&packed);
-        let clean_report: FileIdReport = identify(&clean);
+        let packed_report: FileIdReport = identify(&packed, NOW_SECS);
+        let clean_report: FileIdReport = identify(&clean, NOW_SECS);
 
         let packed_entropy: bool = packed_report.findings.iter().any(|f: &Finding| {
             f.evidence

@@ -10,6 +10,7 @@ use disrobe_pass_native::{
     FileIdReport, NativeFormat, detect_format, identify_file, minimal_elf64,
 };
 
+const NOW_SECS: u64 = 1_798_761_600;
 const REAL_ELF64: &[u8] = include_bytes!("../../../corpus/native/formats/hello.elf64");
 
 #[test]
@@ -38,7 +39,7 @@ fn real_elf64_executable_classified() {
 
 #[test]
 fn real_elf64_identify_reports_elf_format() {
-    let report: FileIdReport = identify_file(REAL_ELF64);
+    let report: FileIdReport = identify_file(REAL_ELF64, NOW_SECS);
     assert_eq!(report.format, "elf64");
     assert_eq!(report.bits, 64);
     assert!(

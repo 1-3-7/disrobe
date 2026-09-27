@@ -22,7 +22,7 @@ If `--out` is omitted, batch output lands in `./out/<dir-name>-batch/`.
 | `--exclude <GLOB>` | Skip files matching this glob. Repeatable. Exclude wins over include. |
 | `--jobs <N>` | Bounded worker concurrency. Default is `1`, kept conservative because chains can be memory-heavy. Raise it on machines with headroom. |
 
-The `--max-depth <N>` (default 8), `--capture-stages`, `--emit recovery`, and global flags continue to apply. `--max-depth` is the per-file chain depth; `--batch-max-depth` is the directory recursion depth.
+The `--max-depth <N>` (default 8), `--capture-stages`, `--emit recovery`, `--timings`, and global flags continue to apply. `--max-depth` is the per-file chain depth; `--batch-max-depth` is the directory recursion depth.
 
 ### Glob syntax
 
@@ -39,16 +39,15 @@ A bare pattern with no `/` (for example `*.bin`) also matches files in subdirect
 
 ## `manifest.json`
 
-Schema `disrobe.batch.manifest/v1`:
+Schema `disrobe.batch.manifest/v2`:
 
 ```json
 {
-  "schema": "disrobe.batch.manifest/v1",
+  "schema": "disrobe.batch.manifest/v2",
   "tool_version": "0.10.5",
   "root": "samples",
   "out_root": "out/samples-batch",
   "chain": "auto:8",
-  "jobs": 4,
   "summary": { "processed": 12, "recovered": 9, "detect_only": 2, "errors": 1 },
   "entries": [
     {
@@ -60,7 +59,6 @@ Schema `disrobe.batch.manifest/v1`:
       "verdict": "Complete",
       "recovery_score": 0.67,
       "output_dir": "out/samples-batch/app.pyc",
-      "duration_ms": 31,
       "error": null
     }
   ]
@@ -70,5 +68,6 @@ Schema `disrobe.batch.manifest/v1`:
 - **recovery_score** is the mean per-pass confidence-tier rank across the chain, normalized to `[0, 1]` (skeleton 0, partial 0.33, semantic 0.67, exact 1.0), or `null` when no pass ran.
 - A file that fails (unreadable, or its chain errors) is recorded with a non-null `error` and counted under `summary.errors`; one bad file never aborts the batch.
 - Files with no pass in their chain are counted as `detect_only`.
+- The manifest records no duration and no worker count, so `--jobs 1` and `--jobs 4` over one directory write the same bytes. `--timings` writes `run.json` beside the manifest, with the start and end clocks, the worker count, the whole run's duration, and each file's duration, and a `run.json` in each file's directory with that file's per-node durations.
 
 The human-readable summary line mirrors the manifest: `N processed, M recovered, K detect-only, E errors`.

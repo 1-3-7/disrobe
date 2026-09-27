@@ -1,10 +1,10 @@
 #![allow(clippy::needless_pass_by_value)]
 use std::path::{Path, PathBuf};
 
+use disrobe_core::time::WallClock;
 use serde::{Deserialize, Serialize};
 
 use super::output::{OutputFormat, emit};
-use crate::cli::llm::iso8601_now;
 
 const RENAMES_SCHEMA: &str = "disrobe.renames/v1";
 
@@ -83,7 +83,7 @@ pub(crate) fn run(
         old: old.clone(),
         new: new.clone(),
         note,
-        recorded_at: iso8601_now(),
+        recorded_at: WallClock::now().rfc3339_nanos(),
     });
     let json: String = serde_json::to_string_pretty(&file)
         .map_err(|e: serde_json::Error| miette::miette!("DR-CLI-0334: renames serialize: {e}"))?;

@@ -9,7 +9,7 @@ use super::metadata_keys::keys;
 use super::spec::SpecKind;
 use super::state_machine::{ChainPlan, Node, NodeId, Verdict};
 
-pub const SCHEMA_VERSION: &str = "disrobe.chain/v1";
+pub const SCHEMA_VERSION: &str = "disrobe.chain/v2";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -93,7 +93,6 @@ pub struct NodeDoc {
     pub output_kind: Option<OutputKindDoc>,
     pub output_blake3: Option<String>,
     pub output_size: Option<u64>,
-    pub duration_ms: Option<u128>,
     pub detector_picks: Vec<DetectorPickDoc>,
     pub artifacts: Vec<String>,
     pub metadata: BTreeMap<String, String>,
@@ -219,7 +218,6 @@ impl From<&Verdict> for VerdictDoc {
 pub struct ChainStats {
     pub layers: u32,
     pub branches: u32,
-    pub total_ms: u128,
     pub max_branch_depth: u8,
     pub detector_calls: u32,
     pub rejected_passes: u32,
@@ -267,7 +265,6 @@ impl ChainDocument {
         let stats: ChainStats = ChainStats {
             layers: u32::try_from(plan.nodes.len().saturating_sub(1)).unwrap_or(u32::MAX),
             branches: plan.branch_count(),
-            total_ms: plan.total.as_millis(),
             max_branch_depth: plan.max_branch_depth(),
             detector_calls: plan.detector_calls,
             rejected_passes: plan.rejected_passes,
@@ -315,7 +312,6 @@ impl NodeDoc {
             output_kind: n.output_kind.as_ref().map(OutputKindDoc::from),
             output_blake3: n.output_blake3.as_ref().map(|h: &[u8; 32]| hex32(h)),
             output_size: n.output_size,
-            duration_ms: n.duration.map(|d: std::time::Duration| d.as_millis()),
             detector_picks: n
                 .picks
                 .iter()
@@ -388,8 +384,8 @@ mod tests {
     }
 
     #[test]
-    fn schema_constant_is_v1() {
-        assert_eq!(SCHEMA_VERSION, "disrobe.chain/v1");
+    fn schema_constant_is_v2() {
+        assert_eq!(SCHEMA_VERSION, "disrobe.chain/v2");
     }
 
     #[test]
@@ -470,7 +466,7 @@ mod tests {
         let spec: ChainSpec = ChainSpec::Auto { cap: 8 };
         let doc: ChainDocument = ChainDocument::from_plan(&plan, &spec, "auto:8", "0.1.0", None)
             .expect("valid chain metadata");
-        assert_eq!(doc.schema, "disrobe.chain/v1");
+        assert_eq!(doc.schema, "disrobe.chain/v2");
         assert_eq!(doc.spec.cap, 8);
         assert!(matches!(doc.topology, Topology::Linear));
         assert_eq!(doc.verdict, VerdictDoc::Stalled);
@@ -479,8 +475,12 @@ mod tests {
             j.contains("\"topology\":\"linear\""),
             "the topology JSON key and Linear text must be byte-for-byte unchanged: {j}"
         );
+        assert!(
+            !j.contains("_ms\""),
+            "the chain document records no duration: {j}"
+        );
         let parsed: ChainDocument = serde_json::from_str(&j).unwrap();
-        assert_eq!(parsed.schema, "disrobe.chain/v1");
+        assert_eq!(parsed.schema, "disrobe.chain/v2");
     }
 
     #[test]

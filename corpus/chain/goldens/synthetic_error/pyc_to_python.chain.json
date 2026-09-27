@@ -14,7 +14,6 @@
       "branch_id": "a",
       "depth": 0,
       "detector_picks": [],
-      "duration_ms": 0,
       "error": null,
       "format_tag_in": null,
       "id": 0,
@@ -48,7 +47,6 @@
           "specificity": 50
         }
       ],
-      "duration_ms": 0,
       "error": "DR-CORE-0003: pass returned an unwrapped error: DR-PYDEC-0908: py.decompile engine: marshal error: DR-MARSHAL-0007: pyc header too short (need 16 bytes, got 14)",
       "format_tag_in": "pyc-3.11",
       "id": 1,
@@ -65,7 +63,7 @@
     }
   ],
   "root_node_id": 0,
-  "schema": "disrobe.chain/v1",
+  "schema": "disrobe.chain/v2",
   "spec": {
     "cap": 8,
     "kind": "auto",
@@ -76,8 +74,7 @@
     "detector_calls": 2,
     "layers": 1,
     "max_branch_depth": 1,
-    "rejected_passes": 0,
-    "total_ms": 0
+    "rejected_passes": 0
   },
   "tool_version": "0.1.0-golden",
   "topology": "linear",

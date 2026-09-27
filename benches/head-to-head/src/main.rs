@@ -207,7 +207,7 @@ fn create_run_dir(root: &Path, artifact_root: Option<&Path>) -> Result<PathBuf> 
     );
     fs::create_dir_all(&parent)
         .wrap_err_with(|| format!("creating run archive root {}", parent.display()))?;
-    let seconds: u64 = disrobe_core::time::now_secs();
+    let seconds: u64 = disrobe_core::time::now_secs().wrap_err("naming the run archive")?;
     create_unique_run_dir(&parent, &format!("{seconds}-{}", std::process::id()))
 }
 

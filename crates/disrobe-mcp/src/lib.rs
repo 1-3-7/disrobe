@@ -12,7 +12,6 @@ mod wasm;
 
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
@@ -210,8 +209,6 @@ pub struct ChainPassOut {
     pub format_in: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub format_out: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub duration_ms: Option<u128>,
 }
 
 #[cfg(feature = "chain")]
@@ -728,7 +725,7 @@ impl DisrobeMcp {
             old: p.old.clone(),
             new: p.new.clone(),
             note: p.note,
-            recorded_at: iso8601_now(),
+            recorded_at: disrobe_core::time::WallClock::now().rfc3339_nanos(),
         });
         let json: String =
             serde_json::to_string_pretty(&file).map_err(|e: serde_json::Error| {
@@ -848,7 +845,6 @@ impl DisrobeMcp {
                 confidence: r.confidence.as_str().to_owned(),
                 format_in: r.format_in,
                 format_out: r.format_out,
-                duration_ms: r.duration_ms,
             })
             .collect();
         Ok(Json(AutoOut {
@@ -1433,62 +1429,6 @@ fn read_bounded_open_file(
     Ok(bytes)
 }
 
-#[allow(clippy::disallowed_methods)]
-fn iso8601_now() -> String {
-    let now: SystemTime = SystemTime::now();
-    let dur: Duration = now
-        .duration_since(UNIX_EPOCH)
-        .map_or(Duration::ZERO, |value: Duration| value);
-    let secs: u64 = dur.as_secs();
-    let nanos: u32 = dur.subsec_nanos();
-    let seconds_per_day: u64 = 86_400;
-    let days_since_epoch: u64 = secs / seconds_per_day;
-    let time_in_day: u64 = secs % seconds_per_day;
-    let hh: u64 = time_in_day / 3600;
-    let mm: u64 = (time_in_day % 3600) / 60;
-    let ss: u64 = time_in_day % 60;
-    let days_i64: i64 = u64_to_i64(days_since_epoch);
-    let (year, month, day): (i32, u32, u32) = civil_from_days(days_i64);
-    format!("{year:04}-{month:02}-{day:02}T{hh:02}:{mm:02}:{ss:02}.{nanos:09}Z")
-}
-
-fn civil_from_days(z: i64) -> (i32, u32, u32) {
-    let z: i64 = z + 719_468;
-    let era: i64 = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe: u64 = i64_to_u64(z - era * 146_097);
-    let yoe: u64 = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y: i64 = u64_to_i64(yoe) + era * 400;
-    let doy: u64 = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp: u64 = (5 * doy + 2) / 153;
-    let d: u64 = doy - (153 * mp + 2) / 5 + 1;
-    let m: u64 = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year_full: i64 = y + i64::from(m <= 2);
-    let year_out: i32 = i64_to_i32(year_full);
-    (year_out, u64_to_u32(m), u64_to_u32(d))
-}
-
-fn i64_to_u64(value: i64) -> u64 {
-    u64::try_from(value).map_or(0, std::convert::identity)
-}
-
-fn u64_to_i64(value: u64) -> i64 {
-    i64::try_from(value).map_or(i64::MAX, std::convert::identity)
-}
-
-fn i64_to_i32(value: i64) -> i32 {
-    i32::try_from(value).unwrap_or_else(|_: std::num::TryFromIntError| {
-        if value.is_negative() {
-            i32::MIN
-        } else {
-            i32::MAX
-        }
-    })
-}
-
-fn u64_to_u32(value: u64) -> u32 {
-    u32::try_from(value).map_or(u32::MAX, std::convert::identity)
-}
-
 pub fn run_stdio() -> miette::Result<()> {
     let runtime: tokio::runtime::Runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -1790,14 +1730,6 @@ mod tests {
     }
 
     #[test]
-    fn iso8601_now_ends_with_z() {
-        let ts: String = iso8601_now();
-        assert!(ts.ends_with('Z'));
-        assert_eq!(ts.as_bytes()[4], b'-');
-        assert_eq!(ts.as_bytes()[10], b'T');
-    }
-
-    #[test]
     fn annotation_path_uses_stem() {
         let disrobe: PathBuf = PathBuf::from("/work/.disrobe");
         let target: PathBuf = PathBuf::from("/work/build/chain.json");
@@ -2087,7 +2019,7 @@ mod tests {
                 max_depth: None,
             }))
             .unwrap();
-        assert_eq!(out.schema, "disrobe.chain/v1");
+        assert_eq!(out.schema, "disrobe.chain/v2");
         assert_eq!(out.final_format.as_deref(), Some("Python"));
         assert!(out.layers >= 1);
         assert!(

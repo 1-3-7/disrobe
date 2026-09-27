@@ -32,10 +32,9 @@ The work directory defaults to `target/golden`, or `golden` under `CARGO_TARGET_
 
 ## What is normalized
 
-- `duration_ms` and `total_ms` values in stdout and in the top-level `chain.json`, `recovery.json`, `report.json`, and `report.sarif`, because they measure time.
 - Timestamps and thread IDs in stderr.
 
-Nothing else is rewritten.
+Nothing else is rewritten: stdout and every output file are compared byte for byte. The default run documents record no duration, worker count, or wall-clock value, so a document that starts recording one again changes its hash on every run and fails the gate. The `chain.json` and `report.json` hashes are re-recorded for their v2 schemas because run timings moved to the opt-in `run.json`.
 
 ## What fails
 

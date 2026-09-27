@@ -81,7 +81,8 @@ fn unknown_tool_passes_through() {
 fn dry_run_does_not_execute() {
     let m: BTreeMap<&'static str, InstallSpec> = install_action_map();
     let spec: &InstallSpec = m.get("bat").expect("bat");
-    let r: InstallReport = perform_install("bat", spec, Platform::Windows, true, true);
+    let r: InstallReport = perform_install("bat", spec, Platform::Windows, true, true)
+        .expect("a dry run with no SOURCE_DATE_EPOCH problem reports");
     assert_eq!(r.status, "dry-run");
     assert!(r.action_cmd.is_some());
 }
@@ -101,7 +102,8 @@ fn unsupported_platform_reported() {
         per_platform: per,
         note: None,
     };
-    let r: InstallReport = perform_install("x", &spec, Platform::MacOs, true, true);
+    let r: InstallReport = perform_install("x", &spec, Platform::MacOs, true, true)
+        .expect("an unsupported platform is a report, not an error");
     assert_eq!(r.status, "unsupported-platform");
 }
 

@@ -4,14 +4,15 @@ Start by confirming the input identity, then inspect the recovered artifacts and
 
 ## What a run leaves behind
 
-`disrobe auto` and `disrobe chain` write four documents into the output directory.
+`disrobe auto` and `disrobe chain` write four documents into the output directory, and a fifth, `run.json`, when `--timings` is given.
 
 | File | Contents |
 |---|---|
-| `chain.json` | The executed topology, schema `disrobe.chain/v1`. One node per stage with its pass id, input and output BLAKE3, sizes, the detector pick that selected it, a per-stage verdict, optional registered string metadata, and an `error` string when a stage failed. |
-| `recovery.json` | The per-run report, schema `disrobe.recovery/v1`. Each stage's status and confidence tier, a tier histogram, and timings. |
+| `chain.json` | The executed topology, schema `disrobe.chain/v2`. One node per stage with its pass id, input and output BLAKE3, sizes, the detector pick that selected it, a per-stage verdict, optional registered string metadata, and an `error` string when a stage failed. |
+| `recovery.json` | The per-run report, schema `disrobe.recovery/v2`. Each stage's status and confidence tier, and a tier histogram. |
 | `anti-analysis.json` | Anti-analysis techniques observed across the run. See [anti-analysis defeat](./anti-analysis.md). |
 | `report.json` | The forensic summary rendered by [`disrobe report`](./cli/report.md), including findings and their evidence. |
+| `run.json` | Written only with `--timings`, schema `disrobe.run/v1`: the start and end clocks, the worker count, the tool version, the run's duration, and each node's duration keyed by node id. No other document records a duration, the worker count, or a clock, so two runs over one input write identical documents. |
 
 Use `disrobe context` for a terminal summary of `recovery.json`:
 

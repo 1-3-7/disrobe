@@ -940,6 +940,11 @@ enum Cmd {
             help = "batch only: bounded worker concurrency (default: 1, conservative for memory-heavy chains)"
         )]
         jobs: Option<usize>,
+        #[arg(
+            long,
+            help = "also write run.json: start and end clocks, jobs, the tool version, and each node's duration; the other documents never carry a clock or a duration"
+        )]
+        timings: bool,
     },
     #[cfg(feature = "chain")]
     #[command(
@@ -963,6 +968,11 @@ enum Cmd {
             help = "mirror each executed pass's byte-exact output under <out>/NN-<pass>/ (1-based) and link terminal stage(s) (symlink, else copy) under <out>/final/NN-<pass>/"
         )]
         capture_stages: bool,
+        #[arg(
+            long,
+            help = "also write run.json: start and end clocks, jobs, the tool version, and each node's duration; the other documents never carry a clock or a duration"
+        )]
+        timings: bool,
     },
     #[cfg(feature = "chain")]
     #[command(
@@ -2030,6 +2040,7 @@ fn main() -> miette::Result<()> {
             include,
             exclude,
             jobs,
+            timings,
         } => {
             if llm_flags.is_active() {
                 return Err(miette::miette!(
@@ -2073,6 +2084,7 @@ fn main() -> miette::Result<()> {
                     backend_export: format,
                     engine_symbol_map: engine_symbol_map.or(auto_default_engine_symbol_map),
                     i_have_authorization: llm_flags.i_have_authorization,
+                    timings,
                 },
                 auto::BatchArgs {
                     max_depth: batch_max_depth,
@@ -2089,6 +2101,7 @@ fn main() -> miette::Result<()> {
             chain,
             chain_pin,
             capture_stages,
+            timings,
         } => chain_v1::run_with_disk(
             input,
             out,
@@ -2103,6 +2116,7 @@ fn main() -> miette::Result<()> {
                 backend_export: None,
                 engine_symbol_map: None,
                 i_have_authorization: llm_flags.i_have_authorization,
+                timings,
             },
         ),
         #[cfg(feature = "chain")]

@@ -11,6 +11,8 @@ use std::path::PathBuf;
 
 use disrobe_pass_native::{FileIdReport, IdentityKind, identify_file};
 
+const NOW_SECS: u64 = 1_798_761_600;
+
 fn corpus(rel: &str) -> Option<Vec<u8>> {
     let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     p.push("..");
@@ -37,7 +39,7 @@ fn finding_family<'a>(
 #[test]
 fn upx_packed_pe_detected_by_structure() {
     let bytes: Vec<u8> = require("native/packers/upx/hello.packed.nrv2b.exe");
-    let report: FileIdReport = identify_file(&bytes);
+    let report: FileIdReport = identify_file(&bytes, NOW_SECS);
     assert!(
         report.format.starts_with("pe"),
         "format was {}",
@@ -63,7 +65,7 @@ fn upx_packed_pe_detected_by_structure() {
 #[test]
 fn upx_original_is_not_flagged_as_upx() {
     let bytes: Vec<u8> = require("native/packers/upx/hello.original.exe");
-    let report: FileIdReport = identify_file(&bytes);
+    let report: FileIdReport = identify_file(&bytes, NOW_SECS);
     assert!(
         finding_family(&report, "upx").is_none(),
         "the unpacked original must not be tagged UPX: {:?}",
@@ -74,7 +76,7 @@ fn upx_original_is_not_flagged_as_upx() {
 #[test]
 fn aspack_packed_pe_detected() {
     let bytes: Vec<u8> = require("native/packers/aspack/AccessEnum.packed.aspack.exe");
-    let report: FileIdReport = identify_file(&bytes);
+    let report: FileIdReport = identify_file(&bytes, NOW_SECS);
     let hit: &disrobe_pass_native::Finding =
         finding_family(&report, "aspack").expect("aspack must be detected");
     assert_eq!(hit.kind, IdentityKind::Packer);
@@ -84,7 +86,7 @@ fn aspack_packed_pe_detected() {
 #[test]
 fn pecompact_packed_pe_detected() {
     let bytes: Vec<u8> = require("native/packers/pecompact/AccessEnum.packed.pecompact.exe");
-    let report: FileIdReport = identify_file(&bytes);
+    let report: FileIdReport = identify_file(&bytes, NOW_SECS);
     let hit: &disrobe_pass_native::Finding =
         finding_family(&report, "pecompact").expect("pecompact must be detected");
     assert_eq!(hit.kind, IdentityKind::Packer);
@@ -93,7 +95,7 @@ fn pecompact_packed_pe_detected() {
 #[test]
 fn kkrunchy_packed_pe_detected() {
     let bytes: Vec<u8> = require("native/packers/kkrunchy/hello.packed.kkrunchy.exe");
-    let report: FileIdReport = identify_file(&bytes);
+    let report: FileIdReport = identify_file(&bytes, NOW_SECS);
     let hit: &disrobe_pass_native::Finding =
         finding_family(&report, "kkrunchy").expect("kkrunchy must be detected");
     assert_eq!(hit.kind, IdentityKind::Packer);
@@ -102,7 +104,7 @@ fn kkrunchy_packed_pe_detected() {
 #[test]
 fn mew_packed_pe_detected() {
     let bytes: Vec<u8> = require("native/packers/mew/AccessEnum.packed.mew.exe");
-    let report: FileIdReport = identify_file(&bytes);
+    let report: FileIdReport = identify_file(&bytes, NOW_SECS);
     let hit: &disrobe_pass_native::Finding =
         finding_family(&report, "mew").expect("mew must be detected");
     assert_eq!(hit.kind, IdentityKind::Packer);
@@ -112,7 +114,7 @@ fn mew_packed_pe_detected() {
 fn yodas_protector_packed_pe_detected() {
     let bytes: Vec<u8> =
         require("native/packers/yodas_protector/AccessEnum.packed.yodasprotector.exe");
-    let report: FileIdReport = identify_file(&bytes);
+    let report: FileIdReport = identify_file(&bytes, NOW_SECS);
     assert!(
         report.format.starts_with("pe"),
         "format was {}",
@@ -133,7 +135,7 @@ fn yodas_protector_packed_pe_detected() {
 #[test]
 fn managed_dotnet_pe_detected_structurally() {
     let bytes: Vec<u8> = require("dotnet/HelloApp.dll");
-    let report: FileIdReport = identify_file(&bytes);
+    let report: FileIdReport = identify_file(&bytes, NOW_SECS);
     let hit: &disrobe_pass_native::Finding =
         finding_family(&report, "dotnet").expect(".NET assembly must be detected");
     assert_eq!(hit.kind, IdentityKind::Compiler);
@@ -156,7 +158,7 @@ fn managed_dotnet_pe_detected_structurally() {
 #[test]
 fn confuserex_obfuscated_dotnet_detected() {
     let bytes: Vec<u8> = require("dotnet/megafile/EdgeCases.confuserex2.dll");
-    let report: FileIdReport = identify_file(&bytes);
+    let report: FileIdReport = identify_file(&bytes, NOW_SECS);
     assert!(
         finding_family(&report, "confuserex").is_some(),
         "ConfuserEx marker must be detected: {:?}",
@@ -171,7 +173,7 @@ fn confuserex_obfuscated_dotnet_detected() {
 #[test]
 fn nim_elf_compiler_detected() {
     let bytes: Vec<u8> = require("native/nim/hello.nim.elf");
-    let report: FileIdReport = identify_file(&bytes);
+    let report: FileIdReport = identify_file(&bytes, NOW_SECS);
     assert!(
         report.format.starts_with("elf"),
         "format was {}",
@@ -187,7 +189,7 @@ fn nim_elf_compiler_detected() {
 #[test]
 fn swift_macho_detected_by_section() {
     let bytes: Vec<u8> = require("mobile/macho-mac/SwiftHello.original");
-    let report: FileIdReport = identify_file(&bytes);
+    let report: FileIdReport = identify_file(&bytes, NOW_SECS);
     assert!(
         report.format.starts_with("macho"),
         "format was {}",
@@ -210,7 +212,7 @@ fn swift_macho_detected_by_section() {
 #[test]
 fn macho_fat_universal_recognized() {
     let bytes: Vec<u8> = require("mac/megafile/EdgeCases.fat");
-    let report: FileIdReport = identify_file(&bytes);
+    let report: FileIdReport = identify_file(&bytes, NOW_SECS);
     assert_eq!(report.format, "macho-fat");
     assert!(
         finding_family(&report, "macho-fat").is_some(),
@@ -232,7 +234,7 @@ fn every_finding_has_evidence_and_route() {
             eprintln!("skip {rel}: sample missing");
             continue;
         };
-        let report: FileIdReport = identify_file(&bytes);
+        let report: FileIdReport = identify_file(&bytes, NOW_SECS);
         for finding in &report.findings {
             assert!(
                 !finding.evidence.is_empty(),

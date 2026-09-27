@@ -176,7 +176,7 @@ pub(crate) fn run_with_options(
                 Vec::with_capacity(classified.attempts.len());
             for target in classified.attempts {
                 let r: install::InstallReport =
-                    install::perform_install(target.canonical, target.spec, platform, false, yes);
+                    install::perform_install(target.canonical, target.spec, platform, false, yes)?;
                 let _: Result<(), std::io::Error> = install::log_install_attempt(&r);
                 attempts.push(r);
             }

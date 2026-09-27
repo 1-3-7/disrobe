@@ -4,7 +4,7 @@ disallowed-types = [
     { path = "std::collections::HashSet", reason = "use IndexSet or BTreeSet in IR emit paths for determinism" },
 ]
 disallowed-methods = [
-    { path = "std::time::SystemTime::now", reason = "non-deterministic; route through disrobe_core::time::now / disrobe_core::time::now_secs which honor SOURCE_DATE_EPOCH" },
+    { path = "std::time::SystemTime::now", reason = "non-deterministic; date an output with disrobe_core::time::source_date (SOURCE_DATE_EPOCH or no date), read a clock for run.json or a user note with disrobe_core::time::WallClock, and use disrobe_core::time::now / now_secs elsewhere" },
     { path = "rand::thread_rng", reason = "seed every RNG explicitly via disrobe_core::rng::seeded for determinism; use disrobe_core::rng::os only in tests and non-deterministic paths", allow-invalid = true },
 ]
 cognitive-complexity-threshold = 30

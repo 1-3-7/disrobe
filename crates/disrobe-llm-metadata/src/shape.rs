@@ -270,7 +270,6 @@ pub fn make_pipeline_step(
     version: impl Into<String>,
     rung_in: impl Into<String>,
     rung_out: impl Into<String>,
-    duration_ms: f64,
     config: BTreeMap<String, Json>,
 ) -> Json {
     let mut obj: Map<String, Json> = Map::new();
@@ -278,7 +277,6 @@ pub fn make_pipeline_step(
     obj.insert("version".to_owned(), Json::String(version.into()));
     obj.insert("rung_in".to_owned(), Json::String(rung_in.into()));
     obj.insert("rung_out".to_owned(), Json::String(rung_out.into()));
-    obj.insert("duration_ms".to_owned(), json!(duration_ms));
     if !config.is_empty() {
         let mut c: Map<String, Json> = Map::new();
         for (k, v) in config {

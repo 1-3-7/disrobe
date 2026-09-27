@@ -14,8 +14,10 @@ use disrobe_core::chain::state_machine::{PassRunner, Verdict};
 use disrobe_core::chain::{
     ChainConfig, ChainDocument, ChainDriver, ChainPlan, ChainRecoveryReport, ChainSpec,
     ChildArtifact, ChildHandle, DetectorPick, Node, OutputKind, PassRegistry, PassRunOutcome,
+    RUN_FILE_NAME, RunClock, RunRecord,
 };
 use disrobe_core::pass::PassContext;
+use disrobe_core::time::WallClock;
 use disrobe_core::{Artifact, Redactor, Rung};
 
 use super::backend_export::{BackendExportTarget, SupplementalOutput, write_supplemental_output};
@@ -445,6 +447,7 @@ pub(crate) struct ChainRunOptions {
     pub(crate) backend_export: Option<BackendExportTarget>,
     pub(crate) engine_symbol_map: Option<PathBuf>,
     pub(crate) i_have_authorization: bool,
+    pub(crate) timings: bool,
 }
 
 impl ChainRunOptions {
@@ -583,6 +586,7 @@ pub(crate) fn run_with_disk(
     fmt: OutputFormat,
     options: ChainRunOptions,
 ) -> miette::Result<()> {
+    let started: WallClock = WallClock::now();
     let write_to_disk: bool = options.write_to_disk;
     let redact: bool = options.redact;
     let capture_stages: bool = options.capture_stages;
@@ -806,6 +810,25 @@ pub(crate) fn run_with_disk(
         None
     };
     super::report::write_single_forensic(&doc, &report, &out_dir, redact)?;
+    let run_path_str: Option<String> = if options.timings {
+        let clock: RunClock = RunClock {
+            started,
+            ended: WallClock::now(),
+            jobs: 1,
+        };
+        let record: RunRecord = RunRecord::for_chain(&plan, clock, env!("CARGO_PKG_VERSION"))
+            .map_err(|error: disrobe_core::chain::RunRecordError| {
+                miette::miette!("cannot write run.json: {error}")
+            })?;
+        Some(redacted_text(
+            write_run_record(&out_dir, &record, redact)?
+                .display()
+                .to_string(),
+            redact,
+        )?)
+    } else {
+        None
+    };
     let forensic_path: PathBuf = out_dir.join("report.json");
     let forensic_sarif_path: PathBuf = out_dir.join("report.sarif");
     let forensic_path_str: String = redacted_text(forensic_path.display().to_string(), redact)?;
@@ -834,6 +857,9 @@ pub(crate) fn run_with_disk(
         println!("anti-analysis.json written: {anti_path_str}");
         println!("report.json written: {forensic_path_str}");
         println!("report.sarif written: {forensic_sarif_path_str}");
+        if let Some(path) = run_path_str.as_ref() {
+            println!("run.json written: {path}");
+        }
         if let (Some(label), Some(path)) = (supplemental_label, supplemental_path_str.as_ref()) {
             println!("{label} symbol export written: {path}");
         }
@@ -972,16 +998,44 @@ pub(crate) struct ChainOutcome {
     pub(crate) supplemental_outputs: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DirRun<'a> {
+    pub(crate) chain_arg: &'a str,
+    pub(crate) redact: bool,
+    pub(crate) capture_stages: bool,
+    pub(crate) backend_export: Option<BackendExportTarget>,
+    pub(crate) i_have_authorization: bool,
+    pub(crate) timings: Option<usize>,
+}
+
+pub(crate) fn write_run_record(
+    out_dir: &Path,
+    record: &RunRecord,
+    redact: bool,
+) -> miette::Result<PathBuf> {
+    let path: PathBuf = out_dir.join(RUN_FILE_NAME);
+    let bytes: Vec<u8> = serialized_report(record, redact)
+        .map_err(|e| miette::miette!("DR-CLI-0316: run.json serialize: {e}"))?;
+    std::fs::write(&path, &bytes)
+        .map_err(|e| miette::miette!("DR-CLI-0317: cannot write run.json: {e}"))?;
+    Ok(path)
+}
+
 pub(crate) fn run_chain_to_dir(
     input_label: &str,
     bytes: Vec<u8>,
     out_dir: &Path,
-    chain_arg: &str,
-    redact: bool,
-    capture_stages: bool,
-    backend_export: Option<BackendExportTarget>,
-    i_have_authorization: bool,
+    run: DirRun<'_>,
 ) -> miette::Result<ChainOutcome> {
+    let started: WallClock = WallClock::now();
+    let DirRun {
+        chain_arg,
+        redact,
+        capture_stages,
+        backend_export,
+        i_have_authorization,
+        timings,
+    } = run;
     let spec: ChainSpec = ChainSpec::parse(chain_arg)
         .map_err(|e| miette::miette!("DR-CLI-0291: --chain parse error: {e}"))?;
     let registry: PassRegistry = build_registry();
@@ -996,6 +1050,7 @@ pub(crate) fn run_chain_to_dir(
         backend_export,
         engine_symbol_map: None,
         i_have_authorization,
+        timings: timings.is_some(),
     }
     .chain_config(false);
     let driver: ChainDriver<'_, ChainPassRunner<'_>> = ChainDriver::new(&registry, &runner, config);
@@ -1052,6 +1107,18 @@ pub(crate) fn run_chain_to_dir(
         let _: StageMirror = write_stage_mirror(out_dir, &plan)?;
     }
     super::report::write_single_forensic(&doc, &report, out_dir, redact)?;
+    if let Some(jobs) = timings {
+        let clock: RunClock = RunClock {
+            started,
+            ended: WallClock::now(),
+            jobs,
+        };
+        let record: RunRecord = RunRecord::for_chain(&plan, clock, env!("CARGO_PKG_VERSION"))
+            .map_err(|error: disrobe_core::chain::RunRecordError| {
+                miette::miette!("cannot write run.json: {error}")
+            })?;
+        let _: PathBuf = write_run_record(out_dir, &record, redact)?;
+    }
     let supplemental_outputs: Vec<String> = supplemental_output
         .as_ref()
         .map(|output: &SupplementalOutput| write_supplemental_output(out_dir, output))
@@ -1332,6 +1399,7 @@ mod tests {
             backend_export: None,
             engine_symbol_map: None,
             i_have_authorization,
+            timings: false,
         }
     }
 
@@ -1619,6 +1687,7 @@ mod tests {
                 backend_export: None,
                 engine_symbol_map: None,
                 i_have_authorization: false,
+                timings: false,
             },
         )
         .expect("run matrix auto");
@@ -1841,6 +1910,7 @@ mod tests {
                 backend_export: None,
                 engine_symbol_map: None,
                 i_have_authorization: false,
+                timings: false,
             },
         )
         .expect("run overflow auto");

@@ -3,17 +3,20 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use walkdir::{DirEntry, WalkDir};
 
 use super::backend_export::BackendExportTarget;
-use super::chain_v1::{self, ChainOutcome};
+use super::chain_v1::{self, ChainOutcome, DirRun};
 use super::glob::GlobMatcher;
 use super::output::{OutputFormat, emit};
 use super::progress_ui::{self, ActiveProgress};
+use disrobe_core::chain::run_record::millis;
+use disrobe_core::chain::{RunClock, RunRecord};
 use disrobe_core::progress::Progress as _;
+use disrobe_core::time::WallClock;
 
 #[derive(Clone, Debug)]
 pub(crate) struct BatchOptions {
@@ -27,6 +30,7 @@ pub(crate) struct BatchOptions {
     pub(crate) capture_stages: bool,
     pub(crate) backend_export: Option<BackendExportTarget>,
     pub(crate) i_have_authorization: bool,
+    pub(crate) timings: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -43,7 +47,6 @@ pub(crate) struct ManifestEntry {
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub(crate) supplemental_outputs: Vec<String>,
     pub(crate) output_dir: Option<String>,
-    pub(crate) duration_ms: u128,
     pub(crate) error: Option<String>,
 }
 
@@ -62,12 +65,11 @@ pub(crate) struct BatchManifest {
     pub(crate) root: String,
     pub(crate) out_root: String,
     pub(crate) chain: String,
-    pub(crate) jobs: usize,
     pub(crate) summary: BatchSummary,
     pub(crate) entries: Vec<ManifestEntry>,
 }
 
-pub(crate) const MANIFEST_SCHEMA_VERSION: &str = "disrobe.batch.manifest/v1";
+pub(crate) const MANIFEST_SCHEMA_VERSION: &str = "disrobe.batch.manifest/v2";
 
 fn is_hidden(entry: &DirEntry) -> bool {
     entry
@@ -205,8 +207,22 @@ fn collect_files(root: &Path, opts: &BatchOptions) -> miette::Result<Vec<(PathBu
     Ok(files)
 }
 
-fn process_one(path: &Path, relative: &Path, stem: &str, opts: &BatchOptions) -> ManifestEntry {
+#[derive(Debug)]
+struct Processed {
+    entry: ManifestEntry,
+    elapsed: Duration,
+}
+
+fn process_one(path: &Path, relative: &Path, stem: &str, opts: &BatchOptions) -> Processed {
     let started: Instant = Instant::now();
+    let entry: ManifestEntry = manifest_entry(path, relative, stem, opts);
+    Processed {
+        entry,
+        elapsed: started.elapsed(),
+    }
+}
+
+fn manifest_entry(path: &Path, relative: &Path, stem: &str, opts: &BatchOptions) -> ManifestEntry {
     let size: u64 = std::fs::metadata(path).map_or(0, |m: std::fs::Metadata| m.len());
     let rel_display: String = relative.to_string_lossy().replace('\\', "/");
     let out_dir: PathBuf = opts.out_root.join(stem);
@@ -224,21 +240,19 @@ fn process_one(path: &Path, relative: &Path, stem: &str, opts: &BatchOptions) ->
                 anti_analysis: Vec::new(),
                 supplemental_outputs: Vec::new(),
                 output_dir: None,
-                duration_ms: started.elapsed().as_millis(),
                 error: Some(format!("read failed: {e}")),
             };
         }
     };
-    match chain_v1::run_chain_to_dir(
-        &path.display().to_string(),
-        bytes,
-        &out_dir,
-        &opts.chain_arg,
-        opts.redact,
-        opts.capture_stages,
-        opts.backend_export,
-        opts.i_have_authorization,
-    ) {
+    let run: DirRun<'_> = DirRun {
+        chain_arg: &opts.chain_arg,
+        redact: opts.redact,
+        capture_stages: opts.capture_stages,
+        backend_export: opts.backend_export,
+        i_have_authorization: opts.i_have_authorization,
+        timings: opts.timings.then_some(opts.jobs),
+    };
+    match chain_v1::run_chain_to_dir(&path.display().to_string(), bytes, &out_dir, run) {
         Ok(ChainOutcome {
             doc,
             report,
@@ -255,7 +269,6 @@ fn process_one(path: &Path, relative: &Path, stem: &str, opts: &BatchOptions) ->
             anti_analysis: anti_analysis_lines(&anti),
             supplemental_outputs,
             output_dir: Some(out_dir.display().to_string()),
-            duration_ms: started.elapsed().as_millis(),
             error: None,
         },
         Err(e) => ManifestEntry {
@@ -269,7 +282,6 @@ fn process_one(path: &Path, relative: &Path, stem: &str, opts: &BatchOptions) ->
             anti_analysis: Vec::new(),
             supplemental_outputs: Vec::new(),
             output_dir: None,
-            duration_ms: started.elapsed().as_millis(),
             error: Some(format!("{e}")),
         },
     }
@@ -287,26 +299,36 @@ const fn classify(entry: &ManifestEntry, summary: &mut BatchSummary) {
 }
 
 pub(crate) fn compute_manifest(root: &Path, opts: &BatchOptions) -> miette::Result<BatchManifest> {
+    let started: WallClock = WallClock::now();
+    let started_at: Instant = Instant::now();
     let files: Vec<(PathBuf, PathBuf)> = collect_files(root, opts)?;
     let stems: Vec<String> = output_stems(&files, opts.backend_export.is_some())?;
     let bar: ActiveProgress = progress_ui::make_progress("disrobe auto");
     bar.set_total(u64::try_from(files.len()).unwrap_or(u64::MAX));
-    let entries: Vec<ManifestEntry> = if opts.jobs <= 1 || files.len() <= 1 {
+    let processed: Vec<Processed> = if opts.jobs <= 1 || files.len() <= 1 {
         files
             .iter()
             .zip(&stems)
             .map(|((path, relative), stem): (&(PathBuf, PathBuf), &String)| {
                 let label: String = relative.to_string_lossy().replace('\\', "/");
                 bar.set_message(&label);
-                let entry: ManifestEntry = process_one(path, relative, stem, opts);
+                let done: Processed = process_one(path, relative, stem, opts);
                 bar.tick();
-                entry
+                done
             })
             .collect()
     } else {
         run_parallel(&files, &stems, opts, &bar)?
     };
-    bar.finish(&format!("{} file(s) processed", entries.len()));
+    bar.finish(&format!("{} file(s) processed", processed.len()));
+    let durations: BTreeMap<String, u64> = processed
+        .iter()
+        .map(|done: &Processed| (done.entry.relative.clone(), millis(done.elapsed)))
+        .collect();
+    let entries: Vec<ManifestEntry> = processed
+        .into_iter()
+        .map(|done: Processed| done.entry)
+        .collect();
     let mut summary: BatchSummary = BatchSummary::default();
     for entry in &entries {
         classify(entry, &mut summary);
@@ -319,7 +341,6 @@ pub(crate) fn compute_manifest(root: &Path, opts: &BatchOptions) -> miette::Resu
         root: root.display().to_string(),
         out_root: opts.out_root.display().to_string(),
         chain: opts.chain_arg.clone(),
-        jobs: opts.jobs,
         summary,
         entries,
     };
@@ -329,6 +350,20 @@ pub(crate) fn compute_manifest(root: &Path, opts: &BatchOptions) -> miette::Resu
     std::fs::write(&manifest_path, &manifest_bytes)
         .map_err(|e| miette::miette!("DR-CLI-0342: cannot write manifest.json: {e}"))?;
     super::report::write_batch_forensic(&manifest, &opts.out_root, opts.redact)?;
+    if opts.timings {
+        let clock: RunClock = RunClock {
+            started,
+            ended: WallClock::now(),
+            jobs: opts.jobs,
+        };
+        let record: RunRecord = RunRecord::for_batch(
+            durations,
+            started_at.elapsed(),
+            clock,
+            env!("CARGO_PKG_VERSION"),
+        );
+        let _: PathBuf = chain_v1::write_run_record(&opts.out_root, &record, opts.redact)?;
+    }
     Ok(manifest)
 }
 
@@ -344,7 +379,6 @@ pub(crate) fn run_dir(root: PathBuf, opts: BatchOptions, fmt: OutputFormat) -> m
         println!("  root:        {}", display_manifest.root);
         println!("  out:         {}", display_manifest.out_root);
         println!("  chain:       {}", display_manifest.chain);
-        println!("  jobs:        {}", display_manifest.jobs);
         println!(
             "  files:       {} processed, {} recovered, {} detect-only, {} errors",
             display_manifest.summary.processed,
@@ -379,32 +413,31 @@ fn run_parallel(
     stems: &[String],
     opts: &BatchOptions,
     bar: &ActiveProgress,
-) -> miette::Result<Vec<ManifestEntry>> {
+) -> miette::Result<Vec<Processed>> {
     let pool: rayon::ThreadPool = rayon::ThreadPoolBuilder::new()
         .num_threads(opts.jobs)
         .build()
         .map_err(|e| miette::miette!("DR-CLI-0343: cannot build batch thread pool: {e}"))?;
-    let slots: Vec<Mutex<Option<ManifestEntry>>> =
-        (0..files.len()).map(|_| Mutex::new(None)).collect();
+    let slots: Vec<Mutex<Option<Processed>>> = (0..files.len()).map(|_| Mutex::new(None)).collect();
     pool.scope(|scope: &rayon::Scope<'_>| {
         for (idx, ((path, relative), stem)) in files.iter().zip(stems).enumerate() {
-            let slot: &Mutex<Option<ManifestEntry>> = &slots[idx];
+            let slot: &Mutex<Option<Processed>> = &slots[idx];
             scope.spawn(move |_| {
-                let entry: ManifestEntry = process_one(path, relative, stem, opts);
+                let done: Processed = process_one(path, relative, stem, opts);
                 bar.tick();
                 if let Ok(mut guard) = slot.lock() {
-                    *guard = Some(entry);
+                    *guard = Some(done);
                 }
             });
         }
     });
-    let mut out: Vec<ManifestEntry> = Vec::with_capacity(files.len());
+    let mut out: Vec<Processed> = Vec::with_capacity(files.len());
     for slot in slots {
-        let entry: ManifestEntry = slot
+        let done: Processed = slot
             .into_inner()
             .map_err(|_e| miette::miette!("DR-CLI-0344: batch worker slot poisoned"))?
             .ok_or_else(|| miette::miette!("DR-CLI-0345: batch worker produced no result"))?;
-        out.push(entry);
+        out.push(done);
     }
     Ok(out)
 }
@@ -432,6 +465,7 @@ mod tests {
             capture_stages: false,
             backend_export: None,
             i_have_authorization: false,
+            timings: false,
         }
     }
 
@@ -497,6 +531,14 @@ mod tests {
         let manifest_path: PathBuf = out.join("manifest.json");
         assert!(manifest_path.is_file(), "manifest.json must be written");
         let text: String = std::fs::read_to_string(&manifest_path).expect("read manifest");
+        assert!(
+            !text.contains("\"jobs\"") && !text.contains("_ms\""),
+            "the manifest records neither the worker count nor a duration: {text}"
+        );
+        assert!(
+            !out.join("run.json").exists(),
+            "run.json is written only on request"
+        );
         let manifest: BatchManifest = serde_json::from_str(&text).expect("parse manifest");
         assert_eq!(manifest.schema, MANIFEST_SCHEMA_VERSION);
         assert_eq!(manifest.summary.processed, 2);

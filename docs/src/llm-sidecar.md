@@ -74,12 +74,22 @@ An input that never reaches Mir gets `applicable: false` and a `reason` naming t
 
 The `decryption-keys` category exposes recovered keys and IVs and is gated: passing `--decryption-keys` without `--i-have-authorization` fails with `DR-CLI-0420`. Other legally sensitive recovery paths document their own authorization gate where the CLI exposes one. The `pii-map` category itself carries no such gate: it emits only a placeholder and a location for each finding, never the matched value, so it adds no secret material of its own. Other categories such as `strings` and `ast` still report full recovered text by design, so a pack-4 bundle as a whole is not a scrubbed artifact.
 
+## Schema and reproducible output
+
+Every bundle names its shape in `schema` (`disrobe.metadata.llm.v2`) and `schema_version` (`2.0.0`) and validates against [`schemas/disrobe-metadata-llm-v2.json`](https://github.com/1-3-7/disrobe/blob/main/schemas/disrobe-metadata-llm-v2.json). Each `pipeline` step and each `provenance` chain entry names a pass, its version, and the rungs it read and wrote. They record no durations.
+
+The only timestamp is the top-level `generated_at`, and it appears only when `SOURCE_DATE_EPOCH` is set. It holds that Unix time as an RFC 3339 UTC timestamp with millisecond precision: `SOURCE_DATE_EPOCH=1700000000` gives `2023-11-14T22:13:20.000Z`. Without the variable the bundle carries no clock, so repeating a command on the same host with the same input and flags writes byte-identical bundles. A value that is not a whole number of seconds, or that falls after 9999-12-31T23:59:59Z, fails the command with `DR-CLI-0318` and no bundle is written. The `AGENTS.md` brief lists a `generated` row only when the bundle carries `generated_at`.
+
+Version 2 removed the per-step `duration_ms` and made `generated_at` optional, so a consumer written for `disrobe.metadata.llm.v1` must stop requiring either field.
+
 ## Provenance sidecars
 
 Independently of the metadata bundle, a chain run records its stages and recovery results:
 
-- `recovery.json`: per-pass status, confidence-tier histogram, and timings. Summarize with `disrobe context --out <dir>`.
+- `recovery.json`: per-pass status and the confidence-tier histogram. Summarize with `disrobe context --out <dir>`.
 - `chain.json`: stage identities, input and output hashes, detector choices, and verdicts.
+
+Neither file carries a clock or a duration. With `--timings`, the run also writes `run.json`, which holds the start and end clocks, the job count, the tool version, and each node's duration; `disrobe context` prints it.
 
 See [Reading a result](./reading-a-result.md) for the full output contract. A line-level provenance map is not a guaranteed output of every chain run.
 

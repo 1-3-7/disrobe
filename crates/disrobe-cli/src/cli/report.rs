@@ -36,7 +36,6 @@ pub(crate) struct StageView {
     pub(crate) verdict: String,
     pub(crate) confidence: &'static str,
     pub(crate) recovery_score: f64,
-    pub(crate) duration_ms: Option<u128>,
     pub(crate) format_in: Option<String>,
     pub(crate) format_out: Option<String>,
     pub(crate) artifacts: Vec<String>,
@@ -173,7 +172,6 @@ pub(crate) struct SingleReport {
     pub(crate) input: InputIdentity,
     pub(crate) topology: String,
     pub(crate) verdict: String,
-    pub(crate) total_ms: u128,
     pub(crate) recovery_score: f64,
     pub(crate) tiers: TierTotals,
     pub(crate) stages: Vec<StageView>,
@@ -386,7 +384,6 @@ pub(crate) struct BatchFileView {
     pub(crate) chain: Vec<String>,
     pub(crate) verdict: Option<String>,
     pub(crate) recovery_score: Option<f64>,
-    pub(crate) duration_ms: u128,
     pub(crate) error: Option<String>,
 }
 
@@ -405,7 +402,7 @@ pub(crate) struct BatchReport {
     pub(crate) files: Vec<BatchFileView>,
 }
 
-const RECOVERY_REPORT_SCHEMA: &str = "disrobe.report/v1";
+const RECOVERY_REPORT_SCHEMA: &str = "disrobe.report/v2";
 const MAX_REPORT_ANALYSIS_INPUT_BYTES: u64 = 256 * 1024 * 1024;
 
 pub(crate) fn tier_label(score: f64) -> &'static str {
@@ -854,8 +851,8 @@ fn reproduction_for(target: &Path, evidence: &[EvidenceItem]) -> Reproduction {
             plural(recomputable, "entry", "entries")
         ),
         format!("read every `{CONTENT_URI_SCHEME}` evidence entry as the blake3 digest of an intermediate the chain held in memory; it names the artifact a byte range indexes"),
-        format!("re-run `{command}`; text, json, markdown and html output is byte-identical, and sarif output differs only in `generated_at`"),
-        "set SOURCE_DATE_EPOCH to a fixed value to make the sarif `generated_at` byte-identical too".to_string(),
+        format!("re-run `{command}`; every format, sarif included, is byte-identical across renders"),
+        "set SOURCE_DATE_EPOCH to a Unix timestamp to date the sarif render and emit its STIX bundle; without it the render carries no clock".to_string(),
     ];
     if unavailable > 0 {
         steps.push(format!(
@@ -925,7 +922,6 @@ fn build_single(
                     ),
                     confidence: pass.confidence.as_str(),
                     recovery_score: score,
-                    duration_ms: pass.duration_ms,
                     format_in: pass.format_in.clone(),
                     format_out: pass.format_out.clone(),
                     artifacts,
@@ -974,7 +970,6 @@ fn build_single(
         input,
         topology: format!("{:?}", doc.topology),
         verdict: format!("{:?}", doc.verdict),
-        total_ms: recovery.total_ms,
         recovery_score: mean_score(recovery),
         tiers: TierTotals {
             exact: recovery.histogram.exact,
@@ -1006,7 +1001,6 @@ fn build_batch(manifest: &BatchManifest, source_dir: &Path) -> BatchReport {
             chain: e.chain.clone(),
             verdict: e.verdict.clone(),
             recovery_score: e.recovery_score,
-            duration_ms: e.duration_ms,
             error: e.error.clone(),
         })
         .collect();
@@ -1167,6 +1161,7 @@ fn resolve_document(
             capture_stages: false,
             backend_export: None,
             i_have_authorization: false,
+            timings: false,
         };
         let manifest: BatchManifest = batch::compute_manifest(target, &opts)?;
         return Ok(ReportDocument::Batch(Box::new(build_batch(
@@ -1185,11 +1180,14 @@ fn resolve_document(
             &target.display().to_string(),
             bytes,
             &out_dir,
-            "auto:8",
-            redact,
-            false,
-            None,
-            false,
+            chain_v1::DirRun {
+                chain_arg: "auto:8",
+                redact,
+                capture_stages: false,
+                backend_export: None,
+                i_have_authorization: false,
+                timings: None,
+            },
         )?;
         return Ok(ReportDocument::Single(Box::new(build_single(
             &outcome.doc,
@@ -1236,18 +1234,15 @@ fn render_text_single(r: &SingleReport, out: &mut String) {
         "  tiers:       exact={} semantic={} partial={} skeleton={} (total {})",
         r.tiers.exact, r.tiers.semantic, r.tiers.partial, r.tiers.skeleton, r.tiers.total
     );
-    let _ = writeln!(out, "  total_ms:    {}", r.total_ms);
     let _ = writeln!(out, "  stages:");
     for s in &r.stages {
         let _ = writeln!(
             out,
-            "    {:>2}. {:<26} {:<10} {:>3.0}%  {}",
+            "    {:>2}. {:<26} {:<10} {:>3.0}%",
             s.index,
             s.pass,
             s.confidence,
-            s.recovery_score * 100.0,
-            s.duration_ms
-                .map_or_else(|| "-".to_string(), |d: u128| format!("{d}ms"))
+            s.recovery_score * 100.0
         );
     }
     if !r.walls.is_empty() {
@@ -1436,22 +1431,19 @@ fn render_markdown_single(r: &SingleReport, out: &mut String) {
         r.recovery_score * 100.0,
         tier_label(r.recovery_score)
     );
-    let _ = writeln!(out, "| total | {} ms |", r.total_ms);
     let _ = writeln!(out);
     let _ = writeln!(out, "## Stages");
     let _ = writeln!(out);
-    let _ = writeln!(out, "| # | pass | confidence | score | duration |");
-    let _ = writeln!(out, "|---:|---|---|---:|---:|");
+    let _ = writeln!(out, "| # | pass | confidence | score |");
+    let _ = writeln!(out, "|---:|---|---|---:|");
     for s in &r.stages {
         let _ = writeln!(
             out,
-            "| {} | `{}` | {} | {:.0}% | {} |",
+            "| {} | `{}` | {} | {:.0}% |",
             s.index,
             s.pass,
             s.confidence,
-            s.recovery_score * 100.0,
-            s.duration_ms
-                .map_or_else(|| "-".to_string(), |d: u128| format!("{d} ms"))
+            s.recovery_score * 100.0
         );
     }
     if !r.walls.is_empty() {
@@ -1802,7 +1794,6 @@ pub(crate) fn batch_report_for_test() -> BatchReport {
                 chain: vec!["py.decompile".to_string()],
                 verdict: Some("Complete".to_string()),
                 recovery_score: Some(0.67),
-                duration_ms: 5,
                 error: None,
             },
             BatchFileView {
@@ -1811,7 +1802,6 @@ pub(crate) fn batch_report_for_test() -> BatchReport {
                 chain: Vec::new(),
                 verdict: None,
                 recovery_score: None,
-                duration_ms: 1,
                 error: Some("read failed".to_string()),
             },
         ],
@@ -1836,7 +1826,7 @@ mod tests {
     }
 
     const CHAIN_JSON: &str = r#"{
-      "schema": "disrobe.chain/v1",
+      "schema": "disrobe.chain/v2",
       "tool_version": "0.9.0",
       "input": { "path": "app.pyc", "blake3": "abcd", "size": 128, "detected": ["pyc-3.11"] },
       "spec": { "raw": "auto:8", "kind": "auto", "cap": 8 },
@@ -1846,31 +1836,29 @@ mod tests {
         { "id": 0, "parent_id": null, "depth": 0, "branch_id": "root",
           "pass": null, "format_tag_in": null, "input_blake3": "abcd", "input_size": 128,
           "output_kind": null, "output_blake3": null, "output_size": null,
-          "duration_ms": null, "detector_picks": [], "artifacts": [], "metadata": {},
+          "detector_picks": [], "artifacts": [], "metadata": {},
           "verdict": "ok", "error": null },
         { "id": 1, "parent_id": 0, "depth": 1, "branch_id": "root",
           "pass": "py.decompile", "format_tag_in": "pyc-3.11", "input_blake3": "abcd", "input_size": 128,
           "output_kind": { "kind": "source", "language": "Python", "formatted": true },
           "output_blake3": "ef01", "output_size": 64,
-          "duration_ms": 7, "detector_picks": [], "artifacts": ["app.py"], "metadata": {},
+          "detector_picks": [], "artifacts": ["app.py"], "metadata": {},
           "verdict": "complete", "error": null }
       ],
       "verdict": "complete",
       "final_format": "Python",
-      "stats": { "layers": 1, "branches": 1, "total_ms": 7,
-        "max_branch_depth": 1, "detector_calls": 1, "rejected_passes": 0 }
+      "stats": { "layers": 1, "branches": 1, "max_branch_depth": 1, "detector_calls": 1, "rejected_passes": 0 }
     }"#;
 
     const RECOVERY_JSON: &str = r#"{
-      "schema": "disrobe.recovery/v1",
+      "schema": "disrobe.recovery/v2",
       "tool_version": "0.9.0",
       "input": { "path": "app.pyc", "blake3": "abcd", "size": 128 },
       "passes": [
         { "name": "py.decompile", "status": "recovered", "confidence": "semantic",
-          "duration_ms": 7, "format_in": "pyc-3.11", "format_out": "Python" }
+          "format_in": "pyc-3.11", "format_out": "Python" }
       ],
       "histogram": { "exact": 0, "semantic": 1, "partial": 0, "skeleton": 0 },
-      "total_ms": 7,
       "verdict": "complete"
     }"#;
 
@@ -1883,7 +1871,7 @@ mod tests {
     }
 
     const TREE_CHAIN_JSON: &str = r#"{
-      "schema": "disrobe.chain/v1",
+      "schema": "disrobe.chain/v2",
       "tool_version": "0.9.0",
       "input": { "path": "bundle.zip", "blake3": "0000", "size": 256, "detected": ["zip"] },
       "spec": { "raw": "auto:8", "kind": "auto", "cap": 8 },
@@ -1893,44 +1881,42 @@ mod tests {
         { "id": 0, "parent_id": null, "depth": 0, "branch_id": "root",
           "pass": null, "format_tag_in": null, "input_blake3": "0000", "input_size": 256,
           "output_kind": null, "output_blake3": null, "output_size": null,
-          "duration_ms": null, "detector_picks": [], "artifacts": [], "metadata": {},
+          "detector_picks": [], "artifacts": [], "metadata": {},
           "verdict": "fan-out", "error": null },
         { "id": 1, "parent_id": 0, "depth": 1, "branch_id": "a",
           "pass": "py.decompile", "format_tag_in": "pyc-3.11", "input_blake3": "1111", "input_size": 64,
           "output_kind": { "kind": "source", "language": "Python", "formatted": true },
           "output_blake3": "aaaa", "output_size": 32,
-          "duration_ms": 3, "detector_picks": [], "artifacts": ["left.py"], "metadata": {},
+          "detector_picks": [], "artifacts": ["left.py"], "metadata": {},
           "verdict": "complete", "error": null },
         { "id": 2, "parent_id": 0, "depth": 1, "branch_id": "b",
           "pass": "py.decompile", "format_tag_in": "pyc-3.11", "input_blake3": "2222", "input_size": 96,
           "output_kind": { "kind": "source", "language": "Python", "formatted": true },
           "output_blake3": "bbbb", "output_size": 48,
-          "duration_ms": 4, "detector_picks": [], "artifacts": ["right.py"], "metadata": {},
+          "detector_picks": [], "artifacts": ["right.py"], "metadata": {},
           "verdict": "complete", "error": null }
       ],
       "verdict": "complete",
       "final_format": "Python",
-      "stats": { "layers": 2, "branches": 2, "total_ms": 7,
-        "max_branch_depth": 1, "detector_calls": 2, "rejected_passes": 0 }
+      "stats": { "layers": 2, "branches": 2, "max_branch_depth": 1, "detector_calls": 2, "rejected_passes": 0 }
     }"#;
 
     const TREE_RECOVERY_JSON: &str = r#"{
-      "schema": "disrobe.recovery/v1",
+      "schema": "disrobe.recovery/v2",
       "tool_version": "0.9.0",
       "input": { "path": "bundle.zip", "blake3": "0000", "size": 256 },
       "passes": [
         { "name": "py.decompile", "status": "recovered", "confidence": "semantic",
-          "duration_ms": 3, "format_in": "pyc-3.11", "format_out": "Python" },
+          "format_in": "pyc-3.11", "format_out": "Python" },
         { "name": "py.decompile", "status": "recovered", "confidence": "semantic",
-          "duration_ms": 4, "format_in": "pyc-3.11", "format_out": "Python" }
+          "format_in": "pyc-3.11", "format_out": "Python" }
       ],
       "histogram": { "exact": 0, "semantic": 2, "partial": 0, "skeleton": 0 },
-      "total_ms": 7,
       "verdict": "complete"
     }"#;
 
     const STALLED_CHAIN_JSON: &str = r#"{
-      "schema": "disrobe.chain/v1",
+      "schema": "disrobe.chain/v2",
       "tool_version": "0.9.0",
       "input": { "path": "opaque.bin", "blake3": "dead", "size": 512, "detected": [] },
       "spec": { "raw": "auto:8", "kind": "auto", "cap": 8 },
@@ -1940,27 +1926,25 @@ mod tests {
         { "id": 0, "parent_id": null, "depth": 0, "branch_id": "root",
           "pass": null, "format_tag_in": null, "input_blake3": "dead", "input_size": 512,
           "output_kind": null, "output_blake3": null, "output_size": null,
-          "duration_ms": null, "detector_picks": [], "artifacts": [], "metadata": {},
+          "detector_picks": [], "artifacts": [], "metadata": {},
           "verdict": "stalled", "error": null }
       ],
       "verdict": "stalled",
       "final_format": null,
-      "stats": { "layers": 0, "branches": 1, "total_ms": 1,
-        "max_branch_depth": 0, "detector_calls": 3, "rejected_passes": 3 }
+      "stats": { "layers": 0, "branches": 1, "max_branch_depth": 0, "detector_calls": 3, "rejected_passes": 3 }
     }"#;
 
     const STALLED_RECOVERY_JSON: &str = r#"{
-      "schema": "disrobe.recovery/v1",
+      "schema": "disrobe.recovery/v2",
       "tool_version": "0.9.0",
       "input": { "path": "opaque.bin", "blake3": "dead", "size": 512 },
       "passes": [],
       "histogram": { "exact": 0, "semantic": 0, "partial": 0, "skeleton": 0 },
-      "total_ms": 1,
       "verdict": "stalled"
     }"#;
 
     const DRY_RUN_CHAIN_JSON: &str = r#"{
-      "schema": "disrobe.chain/v1",
+      "schema": "disrobe.chain/v2",
       "tool_version": "0.9.0",
       "input": { "path": "app.pyc", "blake3": "abcd", "size": 128, "detected": ["pyc-3.11"] },
       "spec": { "raw": "auto:8", "kind": "auto", "cap": 8 },
@@ -1970,30 +1954,28 @@ mod tests {
         { "id": 0, "parent_id": null, "depth": 0, "branch_id": "root",
           "pass": null, "format_tag_in": null, "input_blake3": "abcd", "input_size": 128,
           "output_kind": null, "output_blake3": null, "output_size": null,
-          "duration_ms": null, "detector_picks": [], "artifacts": [], "metadata": {},
+          "detector_picks": [], "artifacts": [], "metadata": {},
           "verdict": "ok", "error": null },
         { "id": 1, "parent_id": 0, "depth": 1, "branch_id": "root",
           "pass": "py.decompile", "format_tag_in": "pyc-3.11", "input_blake3": "abcd", "input_size": 128,
           "output_kind": null, "output_blake3": null, "output_size": null,
-          "duration_ms": null, "detector_picks": [], "artifacts": ["app.py"], "metadata": {},
+          "detector_picks": [], "artifacts": ["app.py"], "metadata": {},
           "verdict": "dry-run", "error": null }
       ],
       "verdict": "dry-run",
       "final_format": null,
-      "stats": { "layers": 1, "branches": 1, "total_ms": 0,
-        "max_branch_depth": 1, "detector_calls": 1, "rejected_passes": 0 }
+      "stats": { "layers": 1, "branches": 1, "max_branch_depth": 1, "detector_calls": 1, "rejected_passes": 0 }
     }"#;
 
     const DRY_RUN_RECOVERY_JSON: &str = r#"{
-      "schema": "disrobe.recovery/v1",
+      "schema": "disrobe.recovery/v2",
       "tool_version": "0.9.0",
       "input": { "path": "app.pyc", "blake3": "abcd", "size": 128 },
       "passes": [
         { "name": "py.decompile", "status": "skipped", "confidence": "skeleton",
-          "duration_ms": null, "format_in": "pyc-3.11", "format_out": null }
+          "format_in": "pyc-3.11", "format_out": null }
       ],
       "histogram": { "exact": 0, "semantic": 0, "partial": 0, "skeleton": 1 },
-      "total_ms": 0,
       "verdict": "dry-run"
     }"#;
 
@@ -2509,22 +2491,20 @@ mod tests {
         let scratch: ScratchDir = tmp_dir("batch");
         let dir: PathBuf = scratch.path().to_path_buf();
         let manifest: &str = r#"{
-          "schema": "disrobe.batch.manifest/v1",
+          "schema": "disrobe.batch.manifest/v2",
           "tool_version": "0.9.0",
           "root": "samples",
           "out_root": "out/samples-batch",
           "chain": "auto:8",
-          "jobs": 1,
           "summary": { "processed": 2, "recovered": 1, "detect_only": 0, "errors": 1 },
           "entries": [
             { "input": "samples/a.pyc", "relative": "a.pyc", "size": 64,
               "detected_format": "Python", "chain": ["py.decompile"], "verdict": "Complete",
               "recovery_score": 0.67, "output_dir": "out/samples-batch/a.pyc",
-              "duration_ms": 5, "error": null },
+              "error": null },
             { "input": "samples/bad", "relative": "bad", "size": 0,
               "detected_format": null, "chain": [], "verdict": null,
-              "recovery_score": null, "output_dir": null, "duration_ms": 1,
-              "error": "read failed" }
+              "recovery_score": null, "output_dir": null, "error": "read failed" }
           ]
         }"#;
         std::fs::write(dir.join("manifest.json"), manifest).expect("w manifest");
