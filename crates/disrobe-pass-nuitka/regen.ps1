@@ -32,7 +32,7 @@ $ErrorActionPreference = 'Stop'
 $CrateDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot = Resolve-Path (Join-Path $CrateDir '..\..')
 $CorpusRoot = Join-Path $RepoRoot 'corpus\python\nuitka'
-$StageRoot = Join-Path $RepoRoot '.developer\nuitka-bake'
+$StageRoot = Join-Path $RepoRoot '.fixture-build\nuitka-bake'
 $FixtureDir = Join-Path $CrateDir 'tests\fixtures'
 $HelloPy = Join-Path $StageRoot 'hello.py'
 
