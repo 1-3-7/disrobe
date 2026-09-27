@@ -236,11 +236,13 @@ fn extract_to_emits_carved_module_and_summary() {
 #[test]
 #[ignore = "requires DISROBE_MINIDUMP pointing at a real dbghelp .dmp; run manually"]
 fn real_dbghelp_dump_oracle() {
-    let Ok(dump_path): Result<String, std::env::VarError> = std::env::var("DISROBE_MINIDUMP")
-    else {
-        eprintln!("set DISROBE_MINIDUMP to a real .dmp path");
-        return;
-    };
+    let dump_path: String =
+        std::env::var("DISROBE_MINIDUMP").unwrap_or_else(|error: std::env::VarError| {
+            panic!(
+                "real_dbghelp_dump_oracle grades a real dbghelp dump and nothing else; set \
+                 DISROBE_MINIDUMP to a .dmp path ({error})"
+            )
+        });
     let dump: Vec<u8> = std::fs::read(&dump_path).expect("read dump");
     assert!(
         detect_minidump(&dump),

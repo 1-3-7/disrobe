@@ -9,7 +9,7 @@ const MIN_SCANNED_FILES: usize = 3_400;
 const MIN_SCANNED_CRATES: usize = 20;
 
 const SKIP_CEILING: &[(&str, usize)] = &[
-    ("disrobe-binfmt", 3),
+    ("disrobe-binfmt", 2),
     ("disrobe-cli", 59),
     ("disrobe-core", 1),
     ("disrobe-irsummary", 1),

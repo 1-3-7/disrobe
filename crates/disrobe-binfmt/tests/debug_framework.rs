@@ -57,9 +57,11 @@ fn run_harness(debug: Option<&str>, json: bool) -> Output {
 #[test]
 #[ignore = "spawned as a subprocess by the debug-framework contract tests"]
 fn harness_entrypoint() {
-    if std::env::var_os(HARNESS_ENV).is_none() {
-        return;
-    }
+    assert!(
+        std::env::var_os(HARNESS_ENV).is_some(),
+        "harness_entrypoint grades nothing on its own; the debug-framework contract tests spawn it \
+         with {HARNESS_ENV} set and grade its output"
+    );
     let bytes: Vec<u8> = synth_zip();
     let kind: disrobe_binfmt::ContainerKind =
         disrobe_binfmt::detect_container(&bytes).expect("synth zip is detected");

@@ -289,9 +289,9 @@ pub fn regenerable_fixture(format_dir: &str, filename: &str, graded: &str) -> Op
         path.display()
     );
     eprintln!(
-        "\nNOT MEASURED: {graded} graded nothing, because {} is absent. It is a multi-megabyte \
+        "\nUNGRADED: {} is absent, so {graded} graded nothing. It is a local-only multi-megabyte \
          artifact a blanket .gitignore rule keeps out of the tree; corpus/binfmt/MANIFEST.toml \
-         records how to rebuild it. Set {REQUIRE_FIXTURES_VAR}=1 to fail instead of skipping.\n",
+         records how to rebuild it. Set {REQUIRE_FIXTURES_VAR}=1 to fail instead.\n",
         path.display()
     );
     None
