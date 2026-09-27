@@ -11,6 +11,7 @@
 | Reverser library | JS-Confuser (string encoding/compression, dispatcher, flatten, opaque predicates, RGF, shuffle, variable masking, locks and integrity) and Jscrambler template reversals; Arxan-JS, JSDefender, and PACE protector detectors |
 | Esoteric encoders | jsfuck, JJEncode, AAEncode, JSFiretruck, Dean Edwards Packer, atob/eval indirection |
 | Renaming | `--rename` (hex idents to `var_N`) and `--rename-scope-aware` (oxc_semantic, conflict-checked) |
+| TypeScript helpers (`--unminify`) | `__awaiter` with `__generator` (inline, `tslib` namespace, or renamed), identified by helper body shape, rewritten to `async`/`await`: 41 of 41 async functions across 9 authored programs compiled by tsc 6.0.3 for ES5 and ES2015, and for the ES2015 output after terser 5.51.2 compress and compress-plus-mangle; 3 of 41 for terser-minified ES5 state machines. Node output of every rewritten program matches the compiled original |
 | Bundlers | Webpack 4/5, Vite, Rollup, Rolldown, esbuild, Turbopack, Bun, Browserify, Parcel, SystemJS, AMD |
 | Packaged runtimes | V8 cached-data `.jsc` (bytenode), Node SEA blobs, nexe, nw.js zip-suffix, Electron `.asar` |
 | Compiled webview hosts | Electron ASAR plus embedded Tauri and Wails frontend trees through the direct `webview` command |
@@ -45,4 +46,5 @@ For `.jsc`, Disrobe recovers user strings and structure and detects serializer v
 ## Limits
 
 - `.jsc` internalized identifiers (most variable and property names, for example `console` and `log`) are serialized as references into V8's read-only snapshot heap, not as inline bytes in the `.jsc`. Resolving them needs the exact V8 binary's RO heap. `disrobe` reports that as a lossy-internalized-roots boundary rather than fabricating past it.
+- TypeScript `async` recovery assumes the global `Promise` is the built-in one when the module runs. A module that visibly rebinds `Promise` is left compiled; a replacement installed by another script (for example zone.js) is outside a single-file check. State-machine shapes the rule cannot prove equivalent, such as terser's conditional instruction returns, also stay compiled.
 - For V8 snapshots `disrobe` reports a `SnapshotDeserializeWall`: the format prevents full bytecode recovery, so it scrapes the string pool (tunable via `--scrape-min`) and states the boundary rather than fabricating past it.

@@ -1,0 +1,452 @@
+schema = "disrobe.js.ts-helpers.build-records/v1"
+
+[[artifact]]
+path = "tsconfig.es2015.json"
+sha256 = "9a167aff2ccdf732ebf37b9f88646170ac75157a594eb2d2999e23312d68edda"
+origin.authored.note = "compiler configuration: importHelpers off, CommonJS modules"
+
+[[artifact]]
+path = "tsconfig.es5.json"
+sha256 = "1eae07e9251cf768bdfdb1657cc7f692cf769295ec7e19be09935751a0d269ab"
+origin.authored.note = "compiler configuration: importHelpers off, CommonJS modules"
+
+[[artifact]]
+path = "src/arguments_defaults.ts"
+sha256 = "7a72fc58f2c6696ae0ea55d54444bd42300fb41cb3a3181f37e8e260b6d35500"
+origin.authored.note = "authored TypeScript program; prints deterministic output with console.log"
+
+[[artifact]]
+path = "src/early_return.ts"
+sha256 = "6a2331d933f4d6adb0168ba49196a92fd440e1c53b2dea3e23f58a46c6a43963"
+origin.authored.note = "authored TypeScript program; prints deterministic output with console.log"
+
+[[artifact]]
+path = "src/interleave.ts"
+sha256 = "15e8d04bd65fb1362fe21ce006b542ed1b110833181106a7dd446ebf95ce9ebf"
+origin.authored.note = "authored TypeScript program; prints deterministic output with console.log"
+
+[[artifact]]
+path = "src/loops.ts"
+sha256 = "9c69adabf9119f3b5d52768213e9a87daed8e795b0a3d22ae9a8a7c1f5c5183d"
+origin.authored.note = "authored TypeScript program; prints deterministic output with console.log"
+
+[[artifact]]
+path = "src/methods.ts"
+sha256 = "9404733987480caa4390e37bfaea2dff8aa0bc05b296c75c0c79bfdefcc4f467"
+origin.authored.note = "authored TypeScript program; prints deterministic output with console.log"
+
+[[artifact]]
+path = "src/nested.ts"
+sha256 = "deb684ee232afad08212f2f0df0fa06dce2dbecff3da5ebb570fbca4921aac8c"
+origin.authored.note = "authored TypeScript program; prints deterministic output with console.log"
+
+[[artifact]]
+path = "src/sequential.ts"
+sha256 = "4fb295bb094e91b4d3b82b5c6eb435c1b8079d0c8c3678e33a6981feba9f2edd"
+origin.authored.note = "authored TypeScript program; prints deterministic output with console.log"
+
+[[artifact]]
+path = "src/switch_labels.ts"
+sha256 = "ff21630cc92364516968f622ddee687867de507a7325b03b158415e3e9862800"
+origin.authored.note = "authored TypeScript program; prints deterministic output with console.log"
+
+[[artifact]]
+path = "src/try_finally.ts"
+sha256 = "585c400fdaeadd60ee6a8eaf67a8856c9a6b0e3fa5953bd902b0c9f306dc964b"
+origin.authored.note = "authored TypeScript program; prints deterministic output with console.log"
+
+[[artifact]]
+path = "es2015/arguments_defaults.js"
+sha256 = "8ec685f197c80bc264f0433b14fabb9b11e2c6a4bbcc371865c59bde0890f4e1"
+origin.built.source = "src/arguments_defaults.ts"
+origin.built.config = "tsconfig.es2015.json"
+origin.built.toolchain = "TypeScript 6.0.3 (npm package typescript, global install) on Node.js v24.21.0"
+origin.built.command = "tsc -p tsconfig.es2015.json"
+
+[[artifact]]
+path = "es2015/early_return.js"
+sha256 = "23664f849e5984d67ebe32dec9b21facf6dd34e3d3cc1acd25ab582d85215da6"
+origin.built.source = "src/early_return.ts"
+origin.built.config = "tsconfig.es2015.json"
+origin.built.toolchain = "TypeScript 6.0.3 (npm package typescript, global install) on Node.js v24.21.0"
+origin.built.command = "tsc -p tsconfig.es2015.json"
+
+[[artifact]]
+path = "es2015/interleave.js"
+sha256 = "2e80914e21b598b83ec06129547cb26f890d16c03ef9e7be41f56104f6e484cf"
+origin.built.source = "src/interleave.ts"
+origin.built.config = "tsconfig.es2015.json"
+origin.built.toolchain = "TypeScript 6.0.3 (npm package typescript, global install) on Node.js v24.21.0"
+origin.built.command = "tsc -p tsconfig.es2015.json"
+
+[[artifact]]
+path = "es2015/loops.js"
+sha256 = "7e850fe46bee43c37683c7db4e97ef83e12a690cc15959dcc45f15b56d938d9e"
+origin.built.source = "src/loops.ts"
+origin.built.config = "tsconfig.es2015.json"
+origin.built.toolchain = "TypeScript 6.0.3 (npm package typescript, global install) on Node.js v24.21.0"
+origin.built.command = "tsc -p tsconfig.es2015.json"
+
+[[artifact]]
+path = "es2015/methods.js"
+sha256 = "f9702380458720272d474e8cdbdf84f527e431ac25aa8c634e3fdb4f6e1d1f14"
+origin.built.source = "src/methods.ts"
+origin.built.config = "tsconfig.es2015.json"
+origin.built.toolchain = "TypeScript 6.0.3 (npm package typescript, global install) on Node.js v24.21.0"
+origin.built.command = "tsc -p tsconfig.es2015.json"
+
+[[artifact]]
+path = "es2015/nested.js"
+sha256 = "f6f10687550934eefa955ffb63abe0b64b71df770536dc18467dc2fb03f93d3c"
+origin.built.source = "src/nested.ts"
+origin.built.config = "tsconfig.es2015.json"
+origin.built.toolchain = "TypeScript 6.0.3 (npm package typescript, global install) on Node.js v24.21.0"
+origin.built.command = "tsc -p tsconfig.es2015.json"
+
+[[artifact]]
+path = "es2015/sequential.js"
+sha256 = "c7944daae9199e674fdbdde80c7e50ebf00ecb508b8e1f71f21dbb143617a8f8"
+origin.built.source = "src/sequential.ts"
+origin.built.config = "tsconfig.es2015.json"
+origin.built.toolchain = "TypeScript 6.0.3 (npm package typescript, global install) on Node.js v24.21.0"
+origin.built.command = "tsc -p tsconfig.es2015.json"
+
+[[artifact]]
+path = "es2015/switch_labels.js"
+sha256 = "d2b79b3aab009fb9f418108279ed8174856429796be5c83291bbfba94fcae5ee"
+origin.built.source = "src/switch_labels.ts"
+origin.built.config = "tsconfig.es2015.json"
+origin.built.toolchain = "TypeScript 6.0.3 (npm package typescript, global install) on Node.js v24.21.0"
+origin.built.command = "tsc -p tsconfig.es2015.json"
+
+[[artifact]]
+path = "es2015/try_finally.js"
+sha256 = "ab25a21f615f454aead08137630a9655ac174df7eec7533c4dde3713b4cba14c"
+origin.built.source = "src/try_finally.ts"
+origin.built.config = "tsconfig.es2015.json"
+origin.built.toolchain = "TypeScript 6.0.3 (npm package typescript, global install) on Node.js v24.21.0"
+origin.built.command = "tsc -p tsconfig.es2015.json"
+
+[[artifact]]
+path = "es5/arguments_defaults.js"
+sha256 = "f6676a4308d1a4de8426917e2df5ea7791543b92e7e22639487a009d3460aa7e"
+origin.built.source = "src/arguments_defaults.ts"
+origin.built.config = "tsconfig.es5.json"
+origin.built.toolchain = "TypeScript 6.0.3 (npm package typescript, global install) on Node.js v24.21.0"
+origin.built.command = "tsc -p tsconfig.es5.json"
+
+[[artifact]]
+path = "es5/early_return.js"
+sha256 = "f8c8f3f67a62baedf3af9265fb6bc45ee8d193596bc674dd6e6a2f9f577658c4"
+origin.built.source = "src/early_return.ts"
+origin.built.config = "tsconfig.es5.json"
+origin.built.toolchain = "TypeScript 6.0.3 (npm package typescript, global install) on Node.js v24.21.0"
+origin.built.command = "tsc -p tsconfig.es5.json"
+
+[[artifact]]
+path = "es5/interleave.js"
+sha256 = "65c281442d69a24db2c4af3668496348fdfcb102c2d64e1719dff13845d0567f"
+origin.built.source = "src/interleave.ts"
+origin.built.config = "tsconfig.es5.json"
+origin.built.toolchain = "TypeScript 6.0.3 (npm package typescript, global install) on Node.js v24.21.0"
+origin.built.command = "tsc -p tsconfig.es5.json"
+
+[[artifact]]
+path = "es5/loops.js"
+sha256 = "e98478dc1893c8c3aac28bb1d29646dbe479b9843e3f2a26cfa927a008a08153"
+origin.built.source = "src/loops.ts"
+origin.built.config = "tsconfig.es5.json"
+origin.built.toolchain = "TypeScript 6.0.3 (npm package typescript, global install) on Node.js v24.21.0"
+origin.built.command = "tsc -p tsconfig.es5.json"
+
+[[artifact]]
+path = "es5/methods.js"
+sha256 = "6bed931da19cd9c013447e1d8c828ef4d322a7fd05c2997023aacab26c7b78e3"
+origin.built.source = "src/methods.ts"
+origin.built.config = "tsconfig.es5.json"
+origin.built.toolchain = "TypeScript 6.0.3 (npm package typescript, global install) on Node.js v24.21.0"
+origin.built.command = "tsc -p tsconfig.es5.json"
+
+[[artifact]]
+path = "es5/nested.js"
+sha256 = "c326a401bcc0abe894f152377de2a6a357bf8b78c2d9dec12e7d8deca925fad0"
+origin.built.source = "src/nested.ts"
+origin.built.config = "tsconfig.es5.json"
+origin.built.toolchain = "TypeScript 6.0.3 (npm package typescript, global install) on Node.js v24.21.0"
+origin.built.command = "tsc -p tsconfig.es5.json"
+
+[[artifact]]
+path = "es5/sequential.js"
+sha256 = "5fcf31fd655ad9c7e55dded471eb9c9da9c10e10b9cae245097b9c9ff4efc136"
+origin.built.source = "src/sequential.ts"
+origin.built.config = "tsconfig.es5.json"
+origin.built.toolchain = "TypeScript 6.0.3 (npm package typescript, global install) on Node.js v24.21.0"
+origin.built.command = "tsc -p tsconfig.es5.json"
+
+[[artifact]]
+path = "es5/switch_labels.js"
+sha256 = "fc53387f975e27a247e2106030a8dbeff19c2035e9bfc3aa81631c7cc7b0e42a"
+origin.built.source = "src/switch_labels.ts"
+origin.built.config = "tsconfig.es5.json"
+origin.built.toolchain = "TypeScript 6.0.3 (npm package typescript, global install) on Node.js v24.21.0"
+origin.built.command = "tsc -p tsconfig.es5.json"
+
+[[artifact]]
+path = "es5/try_finally.js"
+sha256 = "7c6da5fa1c80a58e4d0735f3073b11bed29283d61b14c2b5af727bacf1767234"
+origin.built.source = "src/try_finally.ts"
+origin.built.config = "tsconfig.es5.json"
+origin.built.toolchain = "TypeScript 6.0.3 (npm package typescript, global install) on Node.js v24.21.0"
+origin.built.command = "tsc -p tsconfig.es5.json"
+
+[[artifact]]
+path = "es2015-terser/arguments_defaults.js"
+sha256 = "d7c2074e92fcd2754ad5e73c5c4c370dc4835d30a535ec6065a64a6049f13079"
+origin.built.source = "es2015/arguments_defaults.js"
+origin.built.toolchain = "terser 5.51.2 (npm package terser) on Node.js v24.21.0"
+origin.built.command = "terser es2015/arguments_defaults.js --compress -o es2015-terser/arguments_defaults.js"
+
+[[artifact]]
+path = "es2015-terser/early_return.js"
+sha256 = "9c9463eade4c0e1946a3b27007ba161a66b4c609392a01be3be83665b5cf1e85"
+origin.built.source = "es2015/early_return.js"
+origin.built.toolchain = "terser 5.51.2 (npm package terser) on Node.js v24.21.0"
+origin.built.command = "terser es2015/early_return.js --compress -o es2015-terser/early_return.js"
+
+[[artifact]]
+path = "es2015-terser/interleave.js"
+sha256 = "bb2e0652c36d3d1239239d56c2d514f101a3333036cbe2e2fdb8a0e5c8929556"
+origin.built.source = "es2015/interleave.js"
+origin.built.toolchain = "terser 5.51.2 (npm package terser) on Node.js v24.21.0"
+origin.built.command = "terser es2015/interleave.js --compress -o es2015-terser/interleave.js"
+
+[[artifact]]
+path = "es2015-terser/loops.js"
+sha256 = "fcf18c69582f4d41697085f758482caec4404144fdfc0c9a41f0405eb4da3019"
+origin.built.source = "es2015/loops.js"
+origin.built.toolchain = "terser 5.51.2 (npm package terser) on Node.js v24.21.0"
+origin.built.command = "terser es2015/loops.js --compress -o es2015-terser/loops.js"
+
+[[artifact]]
+path = "es2015-terser/methods.js"
+sha256 = "1c88e494ccaa717daffcffa92651c988a8afa16270310c7fa654799bc69b184c"
+origin.built.source = "es2015/methods.js"
+origin.built.toolchain = "terser 5.51.2 (npm package terser) on Node.js v24.21.0"
+origin.built.command = "terser es2015/methods.js --compress -o es2015-terser/methods.js"
+
+[[artifact]]
+path = "es2015-terser/nested.js"
+sha256 = "274d349af306fa0e033c56a66ada899299ae107c38bf78c978835e17331b2329"
+origin.built.source = "es2015/nested.js"
+origin.built.toolchain = "terser 5.51.2 (npm package terser) on Node.js v24.21.0"
+origin.built.command = "terser es2015/nested.js --compress -o es2015-terser/nested.js"
+
+[[artifact]]
+path = "es2015-terser/sequential.js"
+sha256 = "d844d3c70c92262ffdfe9b80ed4bee07a738c36c8fc72b5f47bcbee262ec917f"
+origin.built.source = "es2015/sequential.js"
+origin.built.toolchain = "terser 5.51.2 (npm package terser) on Node.js v24.21.0"
+origin.built.command = "terser es2015/sequential.js --compress -o es2015-terser/sequential.js"
+
+[[artifact]]
+path = "es2015-terser/switch_labels.js"
+sha256 = "7b22084e2e742230551b1dcfbddde8158d1317c2551761434618ecc069f0343c"
+origin.built.source = "es2015/switch_labels.js"
+origin.built.toolchain = "terser 5.51.2 (npm package terser) on Node.js v24.21.0"
+origin.built.command = "terser es2015/switch_labels.js --compress -o es2015-terser/switch_labels.js"
+
+[[artifact]]
+path = "es2015-terser/try_finally.js"
+sha256 = "c5cb1dcd04fba793021c8a314e96b4c78a8f4641047ef0925aa285390b6be4d5"
+origin.built.source = "es2015/try_finally.js"
+origin.built.toolchain = "terser 5.51.2 (npm package terser) on Node.js v24.21.0"
+origin.built.command = "terser es2015/try_finally.js --compress -o es2015-terser/try_finally.js"
+
+[[artifact]]
+path = "es2015-terser-mangle/arguments_defaults.js"
+sha256 = "92e3e120201a191c1a867eabb6034eef41bd1b0bb2e26e71ea01bd14107af7ee"
+origin.built.source = "es2015/arguments_defaults.js"
+origin.built.toolchain = "terser 5.51.2 (npm package terser) on Node.js v24.21.0"
+origin.built.command = "terser es2015/arguments_defaults.js --compress --mangle -o es2015-terser-mangle/arguments_defaults.js"
+
+[[artifact]]
+path = "es2015-terser-mangle/early_return.js"
+sha256 = "0fa6d3b346deae008cab9882bc606ce872d8ce166631ae04960700aa4ad63bdb"
+origin.built.source = "es2015/early_return.js"
+origin.built.toolchain = "terser 5.51.2 (npm package terser) on Node.js v24.21.0"
+origin.built.command = "terser es2015/early_return.js --compress --mangle -o es2015-terser-mangle/early_return.js"
+
+[[artifact]]
+path = "es2015-terser-mangle/interleave.js"
+sha256 = "f60a0d48359d5d21127ae511bf7ae57fd92360062a2d150b4ed7cbbfb33107a1"
+origin.built.source = "es2015/interleave.js"
+origin.built.toolchain = "terser 5.51.2 (npm package terser) on Node.js v24.21.0"
+origin.built.command = "terser es2015/interleave.js --compress --mangle -o es2015-terser-mangle/interleave.js"
+
+[[artifact]]
+path = "es2015-terser-mangle/loops.js"
+sha256 = "be43aa27b0a36c960aed39a9a42ec727680aff60ffb79dad5c3ba3ab0d9d616d"
+origin.built.source = "es2015/loops.js"
+origin.built.toolchain = "terser 5.51.2 (npm package terser) on Node.js v24.21.0"
+origin.built.command = "terser es2015/loops.js --compress --mangle -o es2015-terser-mangle/loops.js"
+
+[[artifact]]
+path = "es2015-terser-mangle/methods.js"
+sha256 = "f730fc2e28dfd14c652acfc196da42222c5b1f93f9cd0fb4a1126e8b3b6018c0"
+origin.built.source = "es2015/methods.js"
+origin.built.toolchain = "terser 5.51.2 (npm package terser) on Node.js v24.21.0"
+origin.built.command = "terser es2015/methods.js --compress --mangle -o es2015-terser-mangle/methods.js"
+
+[[artifact]]
+path = "es2015-terser-mangle/nested.js"
+sha256 = "f5cad3eb3a967b828c61ab938df4d9032fbcb26077d527775da1f17c942df306"
+origin.built.source = "es2015/nested.js"
+origin.built.toolchain = "terser 5.51.2 (npm package terser) on Node.js v24.21.0"
+origin.built.command = "terser es2015/nested.js --compress --mangle -o es2015-terser-mangle/nested.js"
+
+[[artifact]]
+path = "es2015-terser-mangle/sequential.js"
+sha256 = "7dc33c417b0bdf962d2ab576146bc136e0516875bbf389c341428133014f940c"
+origin.built.source = "es2015/sequential.js"
+origin.built.toolchain = "terser 5.51.2 (npm package terser) on Node.js v24.21.0"
+origin.built.command = "terser es2015/sequential.js --compress --mangle -o es2015-terser-mangle/sequential.js"
+
+[[artifact]]
+path = "es2015-terser-mangle/switch_labels.js"
+sha256 = "10a18cbb8dccefa901cd610435f818badaea2185c256eba2169fa239b77f55ba"
+origin.built.source = "es2015/switch_labels.js"
+origin.built.toolchain = "terser 5.51.2 (npm package terser) on Node.js v24.21.0"
+origin.built.command = "terser es2015/switch_labels.js --compress --mangle -o es2015-terser-mangle/switch_labels.js"
+
+[[artifact]]
+path = "es2015-terser-mangle/try_finally.js"
+sha256 = "5190244017126134e5fc21ad2ebbaef6dedbdd767b170ca14af2cb73e9cef8f5"
+origin.built.source = "es2015/try_finally.js"
+origin.built.toolchain = "terser 5.51.2 (npm package terser) on Node.js v24.21.0"
+origin.built.command = "terser es2015/try_finally.js --compress --mangle -o es2015-terser-mangle/try_finally.js"
+
+[[artifact]]
+path = "es5-terser/arguments_defaults.js"
+sha256 = "b6fe14aa906d6d01a9fb03b16f8e605e753ed1995b01621b69c27e90e019cd76"
+origin.built.source = "es5/arguments_defaults.js"
+origin.built.toolchain = "terser 5.51.2 (npm package terser) on Node.js v24.21.0"
+origin.built.command = "terser es5/arguments_defaults.js --compress -o es5-terser/arguments_defaults.js"
+
+[[artifact]]
+path = "es5-terser/early_return.js"
+sha256 = "b42149e7983e725aba1802d66f1c6c35afce29432fde09ed25b3b55fade518c5"
+origin.built.source = "es5/early_return.js"
+origin.built.toolchain = "terser 5.51.2 (npm package terser) on Node.js v24.21.0"
+origin.built.command = "terser es5/early_return.js --compress -o es5-terser/early_return.js"
+
+[[artifact]]
+path = "es5-terser/interleave.js"
+sha256 = "146940eed5c91a9d0cedc6a3231bed2e08808bdffe95e567c7647d23d5555246"
+origin.built.source = "es5/interleave.js"
+origin.built.toolchain = "terser 5.51.2 (npm package terser) on Node.js v24.21.0"
+origin.built.command = "terser es5/interleave.js --compress -o es5-terser/interleave.js"
+
+[[artifact]]
+path = "es5-terser/loops.js"
+sha256 = "15c3d7d67aba7c755c90656e399afcc5fb972386a701e3f778035b46aefc34cb"
+origin.built.source = "es5/loops.js"
+origin.built.toolchain = "terser 5.51.2 (npm package terser) on Node.js v24.21.0"
+origin.built.command = "terser es5/loops.js --compress -o es5-terser/loops.js"
+
+[[artifact]]
+path = "es5-terser/methods.js"
+sha256 = "ebfa53a2e0dd9aa3295f6e61800fd6aede0ee4a61efce3cda830dc4ed3cc939c"
+origin.built.source = "es5/methods.js"
+origin.built.toolchain = "terser 5.51.2 (npm package terser) on Node.js v24.21.0"
+origin.built.command = "terser es5/methods.js --compress -o es5-terser/methods.js"
+
+[[artifact]]
+path = "es5-terser/nested.js"
+sha256 = "8db395e1cf0c8fa90cfea5aa96f4287a566d5bfeef8966a8f2a668194758b84b"
+origin.built.source = "es5/nested.js"
+origin.built.toolchain = "terser 5.51.2 (npm package terser) on Node.js v24.21.0"
+origin.built.command = "terser es5/nested.js --compress -o es5-terser/nested.js"
+
+[[artifact]]
+path = "es5-terser/sequential.js"
+sha256 = "db8e06637c1394f147eec2934247e1dab1811f8a62bdfc568b5cd224463dc272"
+origin.built.source = "es5/sequential.js"
+origin.built.toolchain = "terser 5.51.2 (npm package terser) on Node.js v24.21.0"
+origin.built.command = "terser es5/sequential.js --compress -o es5-terser/sequential.js"
+
+[[artifact]]
+path = "es5-terser/switch_labels.js"
+sha256 = "6f8f32d827f4f1ac659e622e2721aedd7cc4645a7c16988c9892ac570d37388f"
+origin.built.source = "es5/switch_labels.js"
+origin.built.toolchain = "terser 5.51.2 (npm package terser) on Node.js v24.21.0"
+origin.built.command = "terser es5/switch_labels.js --compress -o es5-terser/switch_labels.js"
+
+[[artifact]]
+path = "es5-terser/try_finally.js"
+sha256 = "11b0049494c0f29bf38ebb8b9122cd86019ed679ff3f392bcd87c53aed40a1f2"
+origin.built.source = "es5/try_finally.js"
+origin.built.toolchain = "terser 5.51.2 (npm package terser) on Node.js v24.21.0"
+origin.built.command = "terser es5/try_finally.js --compress -o es5-terser/try_finally.js"
+
+[[artifact]]
+path = "es5-terser-mangle/arguments_defaults.js"
+sha256 = "abd94af6ecf6401cb5810a39d8ab8e9a87554206d871299548ed617b52d78651"
+origin.built.source = "es5/arguments_defaults.js"
+origin.built.toolchain = "terser 5.51.2 (npm package terser) on Node.js v24.21.0"
+origin.built.command = "terser es5/arguments_defaults.js --compress --mangle -o es5-terser-mangle/arguments_defaults.js"
+
+[[artifact]]
+path = "es5-terser-mangle/early_return.js"
+sha256 = "23425592a38ed55872f4d624553e7a53cc794357c8eeace9a810652cb36ed8ce"
+origin.built.source = "es5/early_return.js"
+origin.built.toolchain = "terser 5.51.2 (npm package terser) on Node.js v24.21.0"
+origin.built.command = "terser es5/early_return.js --compress --mangle -o es5-terser-mangle/early_return.js"
+
+[[artifact]]
+path = "es5-terser-mangle/interleave.js"
+sha256 = "e5bc98005dcabda85c6ac031d3c6fe2bf5617df23cc40ef3fedd972035cdb72c"
+origin.built.source = "es5/interleave.js"
+origin.built.toolchain = "terser 5.51.2 (npm package terser) on Node.js v24.21.0"
+origin.built.command = "terser es5/interleave.js --compress --mangle -o es5-terser-mangle/interleave.js"
+
+[[artifact]]
+path = "es5-terser-mangle/loops.js"
+sha256 = "6be48c8944bbb7fe0dec744c0959a1d5cbfe5936ca0039b130da0e403a559b41"
+origin.built.source = "es5/loops.js"
+origin.built.toolchain = "terser 5.51.2 (npm package terser) on Node.js v24.21.0"
+origin.built.command = "terser es5/loops.js --compress --mangle -o es5-terser-mangle/loops.js"
+
+[[artifact]]
+path = "es5-terser-mangle/methods.js"
+sha256 = "eddd5045f0c7d8576e4e586cd154a5e3d032aed421ecad206512b670e45a7d5c"
+origin.built.source = "es5/methods.js"
+origin.built.toolchain = "terser 5.51.2 (npm package terser) on Node.js v24.21.0"
+origin.built.command = "terser es5/methods.js --compress --mangle -o es5-terser-mangle/methods.js"
+
+[[artifact]]
+path = "es5-terser-mangle/nested.js"
+sha256 = "ca4c6c9d054dba6b1ed5be4a012a58114acfddba2c142327004233ea519f68c6"
+origin.built.source = "es5/nested.js"
+origin.built.toolchain = "terser 5.51.2 (npm package terser) on Node.js v24.21.0"
+origin.built.command = "terser es5/nested.js --compress --mangle -o es5-terser-mangle/nested.js"
+
+[[artifact]]
+path = "es5-terser-mangle/sequential.js"
+sha256 = "f08e728a0907cefec141a13cb6971ecf0099a904dcaec8a9f21f77d273ea3b2b"
+origin.built.source = "es5/sequential.js"
+origin.built.toolchain = "terser 5.51.2 (npm package terser) on Node.js v24.21.0"
+origin.built.command = "terser es5/sequential.js --compress --mangle -o es5-terser-mangle/sequential.js"
+
+[[artifact]]
+path = "es5-terser-mangle/switch_labels.js"
+sha256 = "f29eebcbea0074226c259114490b44b75a84b9956f3ddaa3c970f221efc1f0ff"
+origin.built.source = "es5/switch_labels.js"
+origin.built.toolchain = "terser 5.51.2 (npm package terser) on Node.js v24.21.0"
+origin.built.command = "terser es5/switch_labels.js --compress --mangle -o es5-terser-mangle/switch_labels.js"
+
+[[artifact]]
+path = "es5-terser-mangle/try_finally.js"
+sha256 = "207793c36be759ab847dbef39fda0db43950befacb152d46d314dbd3012b98d7"
+origin.built.source = "es5/try_finally.js"
+origin.built.toolchain = "terser 5.51.2 (npm package terser) on Node.js v24.21.0"
+origin.built.command = "terser es5/try_finally.js --compress --mangle -o es5-terser-mangle/try_finally.js"

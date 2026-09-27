@@ -46,6 +46,7 @@ mod spread_rebuild;
 mod system_register_param;
 mod template_literal;
 mod then_catch;
+mod ts_async;
 mod type_constructor;
 mod undefined_init;
 mod var_to_block;
@@ -105,6 +106,7 @@ use spread_rebuild::SpreadRebuildStats;
 use system_register_param::SystemRegisterParamStats;
 use template_literal::TemplateLiteralStats;
 use then_catch::ThenCatchStats;
+use ts_async::TsAsyncStats;
 use type_constructor::TypeConstructorStats;
 use undefined_init::UndefinedInitStats;
 use var_to_block::VarToBlockStats;
@@ -184,6 +186,7 @@ fn repeatable_binding_symbol(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum RuleStage {
+    TsAsync = -1,
     IifeUnwrap = 0,
     IndirectCall = 1,
     ArgumentSpread = 2,
@@ -237,6 +240,7 @@ enum RuleStage {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AstRuleId {
+    TsAsync,
     IifeUnwrap,
     IndirectCall,
     ArgumentSpread,
@@ -392,6 +396,9 @@ pub struct AstUnminifyStats {
     pub accessors_lifted: usize,
     pub async_functions_restored: usize,
     pub regenerator_functions_restored: usize,
+    pub ts_async_functions_restored: usize,
+    pub ts_async_state_machines_restored: usize,
+    pub ts_async_helpers_removed: usize,
     pub infinity_folds: usize,
     pub typeof_undefined_normalized: usize,
     pub yoda_flips: usize,
@@ -479,6 +486,7 @@ pub struct AstUnminifyStats {
 }
 
 enum RuleStats {
+    TsAsync(TsAsyncStats),
     IifeUnwrap(IifeUnwrapStats),
     IndirectCall(IndirectCallStats),
     ArgumentSpread(ArgumentSpreadStats),
@@ -559,6 +567,12 @@ impl Default for AstPipeline {
     fn default() -> Self {
         Self {
             rules: vec![
+                Rule {
+                    id: AstRuleId::TsAsync,
+                    stage: RuleStage::TsAsync,
+                    requires: &[],
+                    enabled: true,
+                },
                 Rule {
                     id: AstRuleId::IifeUnwrap,
                     stage: RuleStage::IifeUnwrap,
@@ -976,6 +990,10 @@ const fn syntax_limit_reason(error: &crate::error::Error) -> &'static str {
 
 fn apply_rule(id: AstRuleId, source: &str) -> (RuleOutcome, RuleStats) {
     match id {
+        AstRuleId::TsAsync => {
+            let (outcome, ts_stats): (RuleOutcome, TsAsyncStats) = ts_async::recover(source);
+            (outcome, RuleStats::TsAsync(ts_stats))
+        }
         AstRuleId::IifeUnwrap => {
             let (outcome, iife_stats): (RuleOutcome, IifeUnwrapStats) =
                 iife_unwrap::recover(source);
@@ -1215,6 +1233,11 @@ fn apply_rule(id: AstRuleId, source: &str) -> (RuleOutcome, RuleStats) {
 
 const fn merge_stats(stats: &mut AstUnminifyStats, rule_stats: &RuleStats) {
     match rule_stats {
+        RuleStats::TsAsync(ts_stats) => {
+            stats.ts_async_functions_restored += ts_stats.functions_restored;
+            stats.ts_async_state_machines_restored += ts_stats.state_machines_restored;
+            stats.ts_async_helpers_removed += ts_stats.helpers_removed;
+        }
         RuleStats::IifeUnwrap(iife_stats) => {
             stats.iifes_unwrapped += iife_stats.iifes_unwrapped;
             stats.iife_statements_hoisted += iife_stats.statements_hoisted;

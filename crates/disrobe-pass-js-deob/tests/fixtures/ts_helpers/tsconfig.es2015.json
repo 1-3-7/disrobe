@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "target": "es2015",
+    "module": "commonjs",
+    "lib": ["es2017", "dom"],
+    "importHelpers": false,
+    "strict": true,
+    "types": [],
+    "newLine": "lf",
+    "rootDir": "src",
+    "outDir": "es2015"
+  },
+  "include": ["src/*.ts"]
+}
