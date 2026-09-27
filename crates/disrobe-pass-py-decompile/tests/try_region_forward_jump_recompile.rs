@@ -183,8 +183,9 @@ const fn op_name(op: &NormalizedOp) -> &str {
 #[test]
 fn close_stdin_forward_jumps_land_on_try_body_entry() {
     let Some(interpreter): Option<PathBuf> = find_python_314() else {
-        eprintln!("skip: no CPython 3.14 interpreter found");
-        return;
+        panic!(
+            "CPython 3.14 is required (probed `py -3.14` and `uv python find 3.14`); CI provisions it"
+        );
     };
     let scratch: ScratchDir = ScratchDir::create("py-decompile-try-region-shape").expect("scratch");
     let tmp: &Path = scratch.path();
@@ -217,8 +218,9 @@ fn close_stdin_forward_jumps_land_on_try_body_entry() {
 #[test]
 fn try_region_functions_recompile_equivalent() {
     let Some(interpreter): Option<PathBuf> = find_python_314() else {
-        eprintln!("skip: no CPython 3.14 interpreter found");
-        return;
+        panic!(
+            "CPython 3.14 is required (probed `py -3.14` and `uv python find 3.14`); CI provisions it"
+        );
     };
     let scratch: ScratchDir = ScratchDir::create("py-decompile-try-region-equiv").expect("scratch");
     let tmp: &Path = scratch.path();

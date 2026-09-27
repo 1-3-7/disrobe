@@ -377,18 +377,15 @@ fn read_code(pyc_path: &Path) -> Result<(CodeObject, MarshalVersion), String> {
     }
 }
 
-fn recover(
-    scratch: &Path,
-    alias: &str,
-    fixture: &str,
-) -> Option<(CodeObject, MarshalVersion, String)> {
-    let interpreter: PathBuf = find_interpreter(alias)?;
+fn recover(scratch: &Path, alias: &str, fixture: &str) -> (CodeObject, MarshalVersion, String) {
+    let interpreter: PathBuf = find_interpreter(alias).unwrap_or_else(|| {
+        panic!("CPython {alias} is required (probed `uv python find {alias}`); CI provisions it")
+    });
     let source_path: PathBuf = scratch.join(format!("src.{alias}.py"));
     fs::write(&source_path, fixture).expect("write fixture");
     let orig_pyc: PathBuf = scratch.join(format!("orig.{alias}.pyc"));
     if let Err(e) = compile_source(&interpreter, &source_path, &orig_pyc) {
-        eprintln!("SKIP {alias}: orig compile {e}");
-        return None;
+        panic!("py{alias} failed to compile the original fixture: {e}");
     }
     let (original, marshal_version): (CodeObject, MarshalVersion) =
         read_code(&orig_pyc).unwrap_or_else(|e| panic!("{alias} read orig: {e}"));
@@ -396,7 +393,7 @@ fn recover(
         .unwrap_or_else(|e| panic!("{alias} version map: {e:?}"));
     let source: String = build_real_source(&original, &version, marshal_version)
         .unwrap_or_else(|e| panic!("{alias} decompile: {e}"));
-    Some((original, marshal_version, source))
+    (original, marshal_version, source)
 }
 
 #[test]
@@ -407,13 +404,8 @@ fn try_inside_loop_recompiles_equivalent() {
     let mut checked: usize = 0;
     let mut failures: Vec<String> = Vec::new();
     for &alias in ALIASES {
-        let Some((original, marshal_version, source)): Option<(
-            CodeObject,
-            MarshalVersion,
-            String,
-        )> = recover(&scratch, alias, TRY_INSIDE_LOOP) else {
-            continue;
-        };
+        let (original, marshal_version, source): (CodeObject, MarshalVersion, String) =
+            recover(&scratch, alias, TRY_INSIDE_LOOP);
         let recovered_path: PathBuf = scratch.join(format!("recovered.{alias}.py"));
         fs::write(&recovered_path, &source).expect("write recovered");
         checked += 1;
@@ -455,11 +447,8 @@ fn try_wrapping_loop_handler_not_orphaned() {
     let mut checked: usize = 0;
     let mut failures: Vec<String> = Vec::new();
     for &alias in PRE311_ALIASES {
-        let Some((_, _, source)): Option<(CodeObject, MarshalVersion, String)> =
-            recover(&scratch, alias, TRY_WRAPPING_LOOP)
-        else {
-            continue;
-        };
+        let (_, _, source): (CodeObject, MarshalVersion, String) =
+            recover(&scratch, alias, TRY_WRAPPING_LOOP);
         let recovered_path: PathBuf = scratch.join(format!("recovered.{alias}.py"));
         fs::write(&recovered_path, &source).expect("write recovered");
         checked += 1;
@@ -501,13 +490,8 @@ fn assert_recompiles_equivalent(scratch_name: &str, fixture: &str, label: &str, 
     let mut checked: usize = 0;
     let mut failures: Vec<String> = Vec::new();
     for &alias in aliases {
-        let Some((original, marshal_version, source)): Option<(
-            CodeObject,
-            MarshalVersion,
-            String,
-        )> = recover(&scratch, alias, fixture) else {
-            continue;
-        };
+        let (original, marshal_version, source): (CodeObject, MarshalVersion, String) =
+            recover(&scratch, alias, fixture);
         let recovered_path: PathBuf = scratch.join(format!("recovered.{alias}.py"));
         fs::write(&recovered_path, &source).expect("write recovered");
         checked += 1;

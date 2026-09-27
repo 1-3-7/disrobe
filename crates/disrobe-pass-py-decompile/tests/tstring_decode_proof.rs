@@ -77,8 +77,7 @@ const PROOF_CASES: &[(&str, &str)] = &[
 #[test]
 fn tstring_decode_roundtrip_3_14() {
     let Some(interp): Option<PathBuf> = find_interpreter("3.14") else {
-        eprintln!("skip tstring_decode_roundtrip_3_14: no 3.14 interpreter");
-        return;
+        panic!("CPython 3.14 is required (probed `uv python find 3.14`); CI provisions it");
     };
     let scratch: ScratchDir = ScratchDir::create("py-decompile-tstring-proof").expect("scratch");
     let tmp: &Path = scratch.path();

@@ -130,6 +130,19 @@ fn resolve_py_launcher(version: &str) -> Option<PathBuf> {
     (!text.is_empty()).then(|| PathBuf::from(text))
 }
 
+fn find_via_uv(version: &str) -> Option<PathBuf> {
+    let output: std::process::Output = Command::new("uv")
+        .args(["python", "find", version])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text: String = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    let path: PathBuf = PathBuf::from(text);
+    path.is_file().then_some(path)
+}
+
 fn discover_interpreters() -> Vec<Interpreter> {
     let mut out: Vec<Interpreter> = Vec::new();
     if let Some(home) = home_dir() {
@@ -164,6 +177,9 @@ fn discover_interpreters() -> Vec<Interpreter> {
         let version: String = format!("3.{minor}");
         if let Some(path) = resolve_py_launcher(&version) {
             push_candidate(&mut out, format!("py-{version}"), path);
+        }
+        if let Some(path) = find_via_uv(&version) {
+            push_candidate(&mut out, format!("uv-{version}"), path);
         }
     }
     out.sort_by_key(|i: &Interpreter| i.version);
@@ -275,10 +291,12 @@ fn run_interpreter(interp: &Interpreter, work: &Path) -> Option<String> {
 #[test]
 fn frozenset_const_order_matches_reloaded_pyc_dis() {
     let interpreters: Vec<Interpreter> = discover_interpreters();
-    if interpreters.is_empty() {
-        eprintln!("no CPython interpreters discovered; skipping reloaded-pyc frozenset oracle");
-        return;
-    }
+    assert!(
+        !interpreters.is_empty(),
+        "a CPython 3.6+ interpreter is required for the reloaded-pyc frozenset oracle; tried the \
+         uv python store under the home directory, `py -3.N` and `uv python find 3.N` for N in \
+         6..=15"
+    );
 
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("disrobe_frozenset_order")

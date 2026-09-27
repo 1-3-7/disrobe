@@ -630,13 +630,13 @@ fn loop_continue_before_try_recompiles_equivalent() {
     let mut failures: Vec<String> = Vec::new();
     for &alias in ALIASES {
         let Some(interpreter): Option<PathBuf> = find_interpreter(alias) else {
-            eprintln!("SKIP {alias}: no interpreter");
-            continue;
+            panic!(
+                "CPython {alias} is required (probed `uv python find {alias}`); CI provisions it"
+            );
         };
         let orig_pyc: PathBuf = scratch.join(format!("orig.{alias}.pyc"));
         if let Err(e) = compile_source(&interpreter, &source_path, &orig_pyc) {
-            eprintln!("SKIP {alias}: orig compile {e}");
-            continue;
+            panic!("py{alias} failed to compile the original fixture: {e}");
         }
         let (original, marshal_version): (CodeObject, MarshalVersion) =
             read_code(&orig_pyc).unwrap_or_else(|e| panic!("{alias} read orig: {e}"));

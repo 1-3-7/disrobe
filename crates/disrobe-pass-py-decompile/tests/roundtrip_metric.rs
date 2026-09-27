@@ -722,13 +722,11 @@ fn tstring_snippet_roundtrip(interpreter: &Path, tag: &str) {
 fn roundtrip_metric_tstring_snippet() {
     let interpreters: BTreeMap<&'static str, PathBuf> = resolve_interpreters();
     let Some(py314): Option<&PathBuf> = interpreters.get("3.14") else {
-        eprintln!("skip roundtrip_metric_tstring_snippet: no 3.14 interpreter");
-        return;
+        panic!("CPython 3.14 is required (probed `uv python find 3.14`); CI provisions it");
     };
     tstring_snippet_roundtrip(py314, "3.14");
-    if let Some(py315) = interpreters.get("3.15") {
-        tstring_snippet_roundtrip(py315, "3.15");
-    } else {
-        eprintln!("note: 3.15 interpreter unavailable; t-string snippet verified on 3.14 only");
-    }
+    let Some(py315): Option<&PathBuf> = interpreters.get("3.15") else {
+        panic!("CPython 3.15 is required (probed `uv python find 3.15`); CI provisions 3.15.0b4");
+    };
+    tstring_snippet_roundtrip(py315, "3.15");
 }

@@ -467,13 +467,11 @@ fn strict_full_corpus_per_object_roundtrip() {
 
     let band: Vec<BandInterpreter> = resolve_band(&["3.14"], &[]);
     let Some(interp): Option<&BandInterpreter> = band.first() else {
-        eprintln!(
-            "skip: no CPython 3.14 interpreter found (uv python find 3.14 / known install paths). \
-             The edge-cases corpus is 3.14-shaped, so per-code-object recompile-equivalence cannot \
-             be measured here; floor {CORPUS_OBJECT_PCT_FLOOR} not enforced this run. Install one \
-             with `uv python install 3.14`."
+        panic!(
+            "CPython 3.14 is required to measure the edge-cases corpus against the \
+             {CORPUS_OBJECT_PCT_FLOOR} floor (probed `uv python find 3.14` and the known install \
+             paths); CI provisions it"
         );
-        return;
     };
 
     let scratch: PathBuf = band_scratch("edge_cases_full");

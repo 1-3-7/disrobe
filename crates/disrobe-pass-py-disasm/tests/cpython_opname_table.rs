@@ -208,13 +208,12 @@ fn is_placeholder(name: &str) -> bool {
 #[test]
 fn opname_table_matches_cpython_dis_opname_across_versions() {
     let interpreters: Vec<Interpreter> = discover_interpreters();
-    if interpreters.is_empty() {
-        eprintln!(
-            "no CPython 3.6+ interpreters discovered; skipping opname-table oracle \
-             (install uv toolchains or the py launcher to exercise it)"
-        );
-        return;
-    }
+    assert!(
+        !interpreters.is_empty(),
+        "a CPython 3.6+ interpreter is required for the opname-table oracle; tried \
+         `uv python find 3.N`, the uv python store, ~/.local/bin and /usr/bin python3.N, and the \
+         py launcher for N in 6..=15"
+    );
 
     let mut failures: Vec<String> = Vec::new();
     let mut checked: Vec<(u8, u8)> = Vec::new();

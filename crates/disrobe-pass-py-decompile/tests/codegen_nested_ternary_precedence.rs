@@ -115,10 +115,7 @@ fn eval_via_cpython(interpreter: &Path, params: &[&str], expr_src: &str, args: &
 #[test]
 fn emitted_nested_ternary_reparses_to_intended_semantics() {
     let Some(interpreter): Option<PathBuf> = find_interpreter("3.14") else {
-        eprintln!(
-            "skip emitted_nested_ternary_reparses_to_intended_semantics: no 3.14 interpreter"
-        );
-        return;
+        panic!("CPython 3.14 is required (probed `uv python find 3.14`); CI provisions it");
     };
     let em: DefaultEmitter = DefaultEmitter::new();
     let v: PyVersion = PyVersion::V3_12;

@@ -57,25 +57,27 @@ fn py_decompile_band_3_0_to_3_8() {
     let mut failures: Vec<String> = Vec::new();
 
     let interp_38: Option<&BandInterpreter> = interpreters.iter().find(|i| i.alias == "3.8");
-    if let Some(interp) = interp_38 {
-        for &construct in CASES_38 {
-            match recompile_equiv_construct(interp, construct, &scratch) {
-                BandOutcome::RecompileEquiv => recompiled += 1,
-                BandOutcome::SourceTokenMatch => {
-                    failures.push(format!(
-                        "py3.8 {construct}: unexpected token-match in recompile leg"
-                    ));
-                }
-                BandOutcome::Tolerated(detail) => {
-                    failures.push(format!(
-                        "py3.8 {construct}: Tolerated outcome in a stable-only band is a real failure: {detail}"
-                    ));
-                }
-                BandOutcome::Failed(e) => failures.push(e),
+    let Some(interp): Option<&BandInterpreter> = interp_38 else {
+        panic!(
+            "CPython 3.8 is required for the construct-case recompile leg of band 3.0-3.8 (probed \
+             `uv python find 3.8` and the known install paths); CI provisions it"
+        );
+    };
+    for &construct in CASES_38 {
+        match recompile_equiv_construct(interp, construct, &scratch) {
+            BandOutcome::RecompileEquiv => recompiled += 1,
+            BandOutcome::SourceTokenMatch => {
+                failures.push(format!(
+                    "py3.8 {construct}: unexpected token-match in recompile leg"
+                ));
             }
+            BandOutcome::Tolerated(detail) => {
+                failures.push(format!(
+                    "py3.8 {construct}: Tolerated outcome in a stable-only band is a real failure: {detail}"
+                ));
+            }
+            BandOutcome::Failed(e) => failures.push(e),
         }
-    } else {
-        eprintln!("SKIP: no 3.8 interpreter for the construct-case recompile leg of band 3.0-3.8");
     }
 
     for (pyc, ver, stem) in legacy_pycs_in_range((3, 6), (3, 8)) {
@@ -88,7 +90,15 @@ fn py_decompile_band_3_0_to_3_8() {
                 is_prerelease: false,
             })
         else {
-            eprintln!("SKIP recompile {label}: no {alias} interpreter installed");
+            assert!(
+                alias != "3.8" && std::env::var_os("DISROBE_REQUIRE_PYTHON_RECOMPILE").is_none(),
+                "CPython {alias} is required to recompile {label} (probed `uv python find {alias}` \
+                 and the known install paths)"
+            );
+            eprintln!(
+                "UNGRADED: recompile {label} needs a CPython {alias} interpreter, which CI does not \
+                 provision; set DISROBE_REQUIRE_PYTHON_RECOMPILE=1 to make its absence fatal"
+            );
             continue;
         };
         match recompile_equiv_legacy_pyc(&interp, &pyc, &label, &scratch) {

@@ -185,8 +185,7 @@ fn run_roundtrip_matrix(interp: &Path, tag: &str) {
 #[test]
 fn tstring_roundtrip_3_14() {
     let Some(interp): Option<PathBuf> = find_interpreter("3.14") else {
-        eprintln!("skip tstring_roundtrip_3_14: no 3.14 interpreter");
-        return;
+        panic!("CPython 3.14 is required (probed `uv python find 3.14`); CI provisions it");
     };
     run_roundtrip_matrix(&interp, "3.14");
 }
@@ -194,8 +193,7 @@ fn tstring_roundtrip_3_14() {
 #[test]
 fn tstring_roundtrip_3_15() {
     let Some(interp): Option<PathBuf> = find_interpreter("3.15") else {
-        eprintln!("skip tstring_roundtrip_3_15: 3.15 interpreter unavailable (structural-only)");
-        return;
+        panic!("CPython 3.15 is required (probed `uv python find 3.15`); CI provisions 3.15.0b4");
     };
     run_roundtrip_matrix(&interp, "3.15");
 }

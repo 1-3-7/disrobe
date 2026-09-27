@@ -101,8 +101,7 @@ fn spurious_leading_literal(source: &str) -> Option<String> {
 #[test]
 fn tstring_leading_literal_controlflow_3_14() {
     let Some(interp): Option<PathBuf> = find_interpreter("3.14") else {
-        eprintln!("skip tstring_leading_literal_controlflow_3_14: no 3.14 interpreter");
-        return;
+        panic!("CPython 3.14 is required (probed `uv python find 3.14`); CI provisions it");
     };
     let scratch: ScratchDir =
         ScratchDir::create("py-decompile-tstring-leading-literal").expect("scratch");

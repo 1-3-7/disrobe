@@ -200,8 +200,7 @@ const CASES: &[(&str, &str)] = &[
 
 fn run_matrix(alias: &str) {
     let Some(interpreter): Option<PathBuf> = find_interpreter(alias) else {
-        eprintln!("no {alias} interpreter; skipping");
-        return;
+        panic!("CPython {alias} is required (probed `uv python find {alias}`); CI provisions it");
     };
     let mut failures: Vec<String> = Vec::new();
     for (name, src) in CASES {
