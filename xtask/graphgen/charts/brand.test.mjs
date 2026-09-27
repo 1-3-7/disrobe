@@ -29,10 +29,7 @@ test("brand generation detects changed outputs, unowned files, bad contrast and 
     assert.equal(generated.status, 0, generated.stderr);
     const checked = run("--check");
     assert.equal(checked.status, 0, checked.stderr);
-    assert.deepEqual(readdirSync(join(root, "docs/assets/brand")).sort(), [
-      "section-banner-dark.svg", "section-banner-light.svg", "section-mark-dark.svg",
-      "section-mark-light.svg", "section-social.png", "section-social.svg",
-    ]);
+    assert.deepEqual(readdirSync(join(root, "docs/assets/brand")), ["section-mark-dark.svg"]);
     assert.deepEqual(readdirSync(join(root, "docs/src/assets/brand")).sort(), [
       "section-mark-dark.svg", "section-mark-light.svg",
     ]);
@@ -45,27 +42,25 @@ test("brand generation detects changed outputs, unowned files, bad contrast and 
     assert.deepEqual(readdirSync(join(root, "playground/public/brand/fonts")).sort(), [
       "Manrope-OFL.txt", "Manrope.ttf",
     ]);
-    const png = readFileSync(join(root, "docs/assets/brand/section-social.png"));
+    const png = readFileSync(join(root, "docs/assets/social-card.png"));
     assert.deepEqual(png.subarray(0, 8), Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
     assert.equal(png.readUInt32BE(16), 1280);
     assert.equal(png.readUInt32BE(20), 640);
     assert.ok(png.length < 1_000_000);
-    for (const directory of ["docs/assets", "docs/src/assets"]) {
-      assert.deepEqual(readFileSync(join(root, directory, "social-card.png")), png);
-    }
-    for (const mode of ["light", "dark"]) {
-      const svg = readFileSync(join(root, "docs/assets/brand", `section-banner-${mode}.svg`), "utf8");
+    assert.deepEqual(readFileSync(join(root, "docs/src/assets/social-card.png")), png);
+    for (const path of ["docs/assets/social-card.svg", "docs/assets/brand/section-mark-dark.svg", "docs/src/assets/brand/section-mark-light.svg"]) {
+      const svg = readFileSync(join(root, path), "utf8");
       assert.match(svg, /<title>/u);
       assert.match(svg, /<desc>/u);
       assert.doesNotMatch(svg, /<text(?:\s|>)/u);
     }
 
-    const exported = join(root, "docs/assets/banner-light.svg");
+    const exported = join(root, "docs/assets/brand/section-mark-dark.svg");
     const expected = readFileSync(exported);
     writeFileSync(exported, "changed export");
     const stale = run("--check");
     assert.notEqual(stale.status, 0);
-    assert.match(stale.stderr, /docs\/assets\/banner-light\.svg/u);
+    assert.match(stale.stderr, /docs\/assets\/brand\/section-mark-dark\.svg/u);
     assert.equal(readFileSync(exported, "utf8"), "changed export");
     writeFileSync(exported, expected);
 

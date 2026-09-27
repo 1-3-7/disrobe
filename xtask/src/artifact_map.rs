@@ -44,25 +44,18 @@ const PLUGIN_CHECKER: &str = "xtask/src/plugins.rs";
 const PLUGIN_INPUT: &str =
     "xtask/data/ecosystems.json and the plugin templates in xtask/src/plugins.rs";
 
-const SWEPT_DIRS: [&str; 5] = [
+const SWEPT_DIRS: [&str; 4] = [
     "docs/assets",
     "docs/src/assets",
-    "docs/src/demo",
     "editors",
     "playground/public/brand",
 ];
 
-const GENERATED_ARTIFACTS: [GeneratedArtifact; 43] = [
+const GENERATED_ARTIFACTS: [GeneratedArtifact; 37] = [
     GeneratedArtifact {
         path: "docs/assets/architecture.png",
         classes: RENDERED,
         input: "docs/assets/architecture.svg rasterized with pinned fonts; regenerated and byte-compared by graphgen --check",
-        checker: CHART_CHECKER,
-    },
-    GeneratedArtifact {
-        path: "docs/assets/ecosystems.png",
-        classes: RENDERED,
-        input: "docs/assets/ecosystems.svg rasterized with pinned fonts; regenerated and byte-compared by graphgen --check",
         checker: CHART_CHECKER,
     },
     GeneratedArtifact {
@@ -84,12 +77,6 @@ const GENERATED_ARTIFACTS: [GeneratedArtifact; 43] = [
         checker: CHART_CHECKER,
     },
     GeneratedArtifact {
-        path: "docs/assets/verification.png",
-        classes: RENDERED,
-        input: "docs/assets/verification.svg rasterized with pinned fonts; regenerated and byte-compared by graphgen --check",
-        checker: CHART_CHECKER,
-    },
-    GeneratedArtifact {
         path: "docs/src/assets/ir-ladder.svg",
         classes: RENDERED,
         input: "docs/assets/ir-ladder.svg; the mdbook copy is byte-compared by graphgen --check",
@@ -108,15 +95,9 @@ const GENERATED_ARTIFACTS: [GeneratedArtifact; 43] = [
         checker: CHART_CHECKER,
     },
     GeneratedArtifact {
-        path: "docs/assets/banner-light.svg",
+        path: "docs/assets/brand/section-mark-dark.svg",
         classes: RENDERED,
-        input: "xtask/data/brand.json and pinned display fonts",
-        checker: CARD_CHECKER,
-    },
-    GeneratedArtifact {
-        path: "docs/assets/banner-dark.svg",
-        classes: RENDERED,
-        input: "xtask/data/brand.json and pinned display fonts",
+        input: "xtask/data/brand.json",
         checker: CARD_CHECKER,
     },
     GeneratedArtifact {
@@ -150,12 +131,6 @@ const GENERATED_ARTIFACTS: [GeneratedArtifact; 43] = [
         checker: CHART_CHECKER,
     },
     GeneratedArtifact {
-        path: "docs/assets/ecosystems.svg",
-        classes: CHART_CLASSES,
-        input: "xtask/data/ecosystems.json",
-        checker: CHART_CHECKER,
-    },
-    GeneratedArtifact {
         path: "docs/assets/ir-ladder.svg",
         classes: CHART_CLASSES,
         input: "xtask/data/ir_ladder.json",
@@ -171,12 +146,6 @@ const GENERATED_ARTIFACTS: [GeneratedArtifact; 43] = [
         path: "docs/assets/recovery.svg",
         classes: CHART_CLASSES,
         input: "xtask/data/recovery.json and evidence/descriptors",
-        checker: CHART_CHECKER,
-    },
-    GeneratedArtifact {
-        path: "docs/assets/verification.svg",
-        classes: CHART_CLASSES,
-        input: "xtask/data/verification.json",
         checker: CHART_CHECKER,
     },
     GeneratedArtifact {
@@ -208,12 +177,6 @@ const GENERATED_ARTIFACTS: [GeneratedArtifact; 43] = [
         classes: RENDERED,
         input: "the same raster as docs/assets/social-card.png",
         checker: CARD_CHECKER,
-    },
-    GeneratedArtifact {
-        path: "docs/src/demo/disrobe-demo.svg",
-        classes: RENDERED,
-        input: "docs/demo/disrobe.cast",
-        checker: "xtask/src/demo.rs",
     },
     GeneratedArtifact {
         path: "editors/binja/README.md",
@@ -313,11 +276,7 @@ const GENERATED_ARTIFACTS: [GeneratedArtifact; 43] = [
     },
 ];
 
-const ARTIFACT_FAMILIES: [ArtifactFamily; 11] = [
-    ArtifactFamily {
-        dir: "docs/assets/brand",
-        checker: CARD_CHECKER,
-    },
+const ARTIFACT_FAMILIES: [ArtifactFamily; 10] = [
     ArtifactFamily {
         dir: "docs/src/assets/brand",
         checker: CARD_CHECKER,
@@ -561,22 +520,22 @@ mod tests {
     #[test]
     fn a_family_owns_descendants_without_owning_similarly_named_siblings() -> Result<()> {
         let dir: tempfile::TempDir = tempfile::tempdir()?;
-        let assets: PathBuf = dir.path().join("docs/assets");
+        let assets: PathBuf = dir.path().join("docs/src/assets");
         std::fs::create_dir_all(assets.join("brand/nested"))?;
         std::fs::create_dir_all(assets.join("branding"))?;
         std::fs::write(assets.join("brand/nested/mark.svg"), b"<svg></svg>")?;
         std::fs::write(assets.join("branding/unowned.svg"), b"<svg></svg>")?;
         let mut faults: Vec<String> = Vec::new();
         let files: BTreeSet<String> = [
-            "docs/assets/brand/nested/mark.svg".to_owned(),
-            "docs/assets/branding/unowned.svg".to_owned(),
+            "docs/src/assets/brand/nested/mark.svg".to_owned(),
+            "docs/src/assets/branding/unowned.svg".to_owned(),
         ]
         .into_iter()
         .collect();
-        sweep("docs/assets", &files, &mut faults);
+        sweep("docs/src/assets", &files, &mut faults);
         assert_eq!(faults.len(), 1, "{faults:?}");
         assert!(
-            faults[0].contains("docs/assets/branding/unowned.svg"),
+            faults[0].contains("docs/src/assets/branding/unowned.svg"),
             "{faults:?}"
         );
         Ok(())

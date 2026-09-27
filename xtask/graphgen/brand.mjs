@@ -108,60 +108,38 @@ function card(id, direction) {
     footer, 1280, 640, "disrobe: static recovery with explicit limits");
 }
 
-function banner(id, direction, mode) {
-  const palette = brand.themes[mode];
-  return svg('<rect width="1280" height="360" fill="' + palette.canvas + '"/>' +
-    '<g transform="translate(64 93) scale(1.3)">' + mark(id, palette.accent) + "</g>" +
-    text("disrobe", 284, 192, 140, direction.display, palette.text, direction.weight) +
-    text("Decompile, deobfuscate and unpack compiled software.", 292, 255, 29, brand.body, palette.muted) +
-    '<path d="M1170 72v216m-26-190h52m-52 82h52m-52 82h52" stroke="' + palette.line + '" stroke-width="3"/>',
-    1280, 360, "disrobe: decompile, deobfuscate and unpack");
-}
-
-function writeVector(name, source, raster = false) {
+function outline(name, source) {
   const renderer = new Resvg(source, {
     font: { fontFiles, loadSystemFonts: false, defaultFontFamily: brand.body },
     logLevel: "error",
   });
-  const outlined = renderer.toString();
-  const vector = outlined.replace(/<svg\b[^>]*>/u, (opening) =>
+  const vector = renderer.toString().replace(/<svg\b[^>]*>/u, (opening) =>
     opening.replace(/>$/u, ' role="img" aria-label="' + esc(name.replaceAll("-", " ")) + '">') +
     '<title>' + esc(name.replaceAll("-", " ")) + '</title><desc>Editable source: xtask/graphgen/brand.mjs. ' +
     'Design tokens sha256:' + digest + '</desc>');
   if (/<text(?:\s|>)/u.test(vector)) {
     throw new Error(name + " retains text dependent on fonts outside the exported SVG");
   }
-  sync("docs/assets/brand/" + name + ".svg", vector);
-  const png = raster ? renderer.render().asPng() : null;
-  if (png !== null) {
-    if (png.length >= 1_000_000) {
-      throw new Error(name + " exceeds GitHub's social-preview size limit");
-    }
-    sync("docs/assets/brand/" + name + ".png", png);
-  }
-  return { vector, png };
+  return { vector, renderer };
 }
 
-for (const [id, direction] of Object.entries(brand.directions).filter(([id]) => id === brand.active)) {
-  const social = writeVector(id + "-social", card(id, direction), true);
-  if (id === brand.active) {
-    for (const dir of ["docs/assets", "docs/src/assets"]) {
-      sync(dir + "/social-card.svg", social.vector);
-      sync(dir + "/social-card.png", social.png);
-    }
+const active = brand.active;
+const social = outline(active + "-social", card(active, brand.directions[active]));
+const socialPng = social.renderer.render().asPng();
+if (socialPng.length >= 1_000_000) {
+  throw new Error(active + "-social exceeds GitHub's social-preview size limit");
+}
+for (const dir of ["docs/assets", "docs/src/assets"]) {
+  sync(dir + "/social-card.svg", social.vector);
+  sync(dir + "/social-card.png", socialPng);
+}
+for (const mode of ["light", "dark"]) {
+  const name = active + "-mark-" + mode;
+  const logo = outline(name, svg(mark(active, brand.themes[mode].accent), 128, 128, "disrobe " + active + " mark")).vector;
+  for (const path of ["docs/src/assets/brand/" + name, "playground/public/brand/" + name, "docs/src/assets/brand-mark-" + mode, "playground/public/brand/mark-" + mode]) {
+    sync(path + ".svg", logo);
   }
-  for (const mode of ["light", "dark"]) {
-    const hero = writeVector(id + "-banner-" + mode, banner(id, direction, mode));
-    const color = brand.themes[mode].accent;
-    const logo = writeVector(id + "-mark-" + mode, svg(mark(id, color), 128, 128, "disrobe " + id + " mark"));
-    sync("docs/src/assets/brand/" + id + "-mark-" + mode + ".svg", logo.vector);
-    sync("playground/public/brand/" + id + "-mark-" + mode + ".svg", logo.vector);
-    if (id === brand.active) {
-      sync("docs/assets/banner-" + mode + ".svg", hero.vector);
-      sync("docs/src/assets/brand-mark-" + mode + ".svg", logo.vector);
-      sync("playground/public/brand/mark-" + mode + ".svg", logo.vector);
-    }
-  }
+  if (mode === "dark") sync("docs/assets/brand/" + name + ".svg", logo);
 }
 
 function properties(id, direction, mode, assetPrefix) {

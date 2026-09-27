@@ -14,7 +14,6 @@ mod codegen;
 mod comments;
 mod crossdata;
 mod datamodel;
-mod demo;
 mod denominator_floor;
 mod doc_region;
 mod docs_index;
@@ -114,10 +113,6 @@ enum Cmd {
         #[arg(long, action = clap::ArgAction::SetTrue)]
         check: bool,
     },
-    Demo {
-        #[arg(long, action = clap::ArgAction::SetTrue)]
-        check: bool,
-    },
     Card {
         #[arg(long, action = clap::ArgAction::SetTrue)]
         check: bool,
@@ -179,7 +174,6 @@ fn main() -> ExitCode {
         Cmd::FuzzSeeds { target } => run_fuzz_seeds(target.as_deref()),
         Cmd::Metrics { write, check } => run_metrics(write, check),
         Cmd::Graphs { check } => run_graphs(check),
-        Cmd::Demo { check } => run_demo(check),
         Cmd::Card { check } => run_card(check),
         Cmd::Plugins { check } => run_plugins(check),
         Cmd::Sync { check } => run_sync(check),
@@ -508,11 +502,6 @@ fn run_metrics(write: bool, check: bool) -> Result<()> {
 fn run_graphs(check: bool) -> Result<()> {
     let root: PathBuf = workspace_root()?;
     graphs::run(&root, check)
-}
-
-fn run_demo(check: bool) -> Result<()> {
-    let root: PathBuf = workspace_root()?;
-    demo::run(&root, check)
 }
 
 fn run_card(check: bool) -> Result<()> {

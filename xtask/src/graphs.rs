@@ -6,28 +6,23 @@ use eyre::{Result, WrapErr, bail};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-use crate::datamodel::{VerificationDoc, load_verification};
 use crate::fileio::read_bytes_bounded;
 use crate::metrics::group_thousands;
 
 const MAX_ASSET_BYTES: u64 = 4 * 1024 * 1024;
 
-const ASSETS: [&str; 6] = [
+const ASSETS: [&str; 4] = [
     "recovery.svg",
     "python-versions.svg",
     "architecture.svg",
     "ir-ladder.svg",
-    "ecosystems.svg",
-    "verification.svg",
 ];
 
-const DATA_BACKED: [(&str, &str); 6] = [
+const DATA_BACKED: [(&str, &str); 4] = [
     ("recovery.svg", "recovery.json"),
     ("python-versions.svg", "python_versions.json"),
     ("architecture.svg", "architecture.json"),
     ("ir-ladder.svg", "ir_ladder.json"),
-    ("ecosystems.svg", "ecosystems.json"),
-    ("verification.svg", "verification.json"),
 ];
 
 const MAX_DATA_BYTES: u64 = 4 * 1024 * 1024;
@@ -41,14 +36,12 @@ const MIRRORED: [&str; 4] = [
 
 const MAX_RENDERER_SOURCE_BYTES: u64 = 8 * 1024 * 1024;
 
-const CHART_RENDERER_SOURCES: [&str; 15] = [
+const CHART_RENDERER_SOURCES: [&str; 13] = [
     "build.mjs",
     "charts/architecture.mjs",
-    "charts/ecosystems.mjs",
     "charts/ladder.mjs",
     "charts/python.mjs",
     "charts/recovery.mjs",
-    "charts/verification.mjs",
     "lib/data.mjs",
     "lib/echart.mjs",
     "lib/kit.mjs",
@@ -59,18 +52,13 @@ const CHART_RENDERER_SOURCES: [&str; 15] = [
     "pnpm-lock.yaml",
 ];
 
-const CHART_RENDERER_OWNED_ELSEWHERE: [&str; 4] = [
-    "brand.mjs",
-    "lib/social_card.mjs",
-    "render_social_card.mjs",
-    "rasterize_all.mjs",
-];
+const CHART_RENDERER_OWNED_ELSEWHERE: [&str; 3] =
+    ["brand.mjs", "lib/social_card.mjs", "render_social_card.mjs"];
 
 const CHART_RENDERER_SCANNED_DIRS: [&str; 3] = [".", "charts", "lib"];
 
-const CHART_RENDERER_DIGEST: &str = "bc2089693951e24532491592bec320b4";
+const CHART_RENDERER_DIGEST: &str = "dbb13a3b2963858aac6f99a5c9890eb4";
 
-const VERIFICATION_CHART: &str = "verification.svg";
 const RECOVERY_CHART: &str = "recovery.svg";
 const RECOVERY_DATA: &str = "recovery.json";
 const PERCENT_KIND: &str = "percent";
@@ -121,21 +109,6 @@ const RECOVERY_FORBIDDEN_PRESENTATION_ATTRIBUTES: [&str; 9] = [
     "clip-path",
     "overflow",
 ];
-
-#[derive(Debug, Deserialize)]
-struct EcosystemsDoc {
-    title: String,
-    subtitle: String,
-    kinds: BTreeMap<String, String>,
-    cells: Vec<EcosystemsCell>,
-}
-
-#[derive(Debug, Deserialize)]
-struct EcosystemsCell {
-    label: String,
-    #[serde(default)]
-    note: Option<String>,
-}
 
 #[derive(Debug, Deserialize)]
 struct ArchitectureDoc {
@@ -247,9 +220,6 @@ pub(crate) fn run(root: &Path, check: bool) -> Result<()> {
             .find(|(chart, _): &&(&str, &str)| *chart == name)
         {
             svg_reflects_its_data(root, name, data_file, rendered)?;
-        }
-        if name == VERIFICATION_CHART {
-            verification_cells_are_rendered(root, name, rendered)?;
         }
         data_cells_are_rendered(root, name, rendered)?;
         if name == RECOVERY_CHART {
@@ -483,24 +453,6 @@ fn load_chart_data<T: serde::de::DeserializeOwned>(root: &Path, data_file: &str)
     serde_json::from_slice(&raw).wrap_err_with(|| format!("parsing {}", path.display()))
 }
 
-fn ecosystems_cells(root: &Path) -> Result<Vec<(String, String)>> {
-    let doc: EcosystemsDoc = load_chart_data(root, "ecosystems.json")?;
-    let mut cells: Vec<(String, String)> = vec![
-        ("title".to_owned(), doc.title),
-        ("subtitle".to_owned(), doc.subtitle),
-    ];
-    for (key, name) in doc.kinds {
-        cells.push((format!("kinds.{key}"), name));
-    }
-    for cell in doc.cells {
-        cells.push((format!("cell `{}` label", cell.label), cell.label.clone()));
-        if let Some(note) = cell.note {
-            cells.push((format!("cell `{}` note", cell.label), note));
-        }
-    }
-    Ok(cells)
-}
-
 fn architecture_cells(root: &Path) -> Result<Vec<(String, String)>> {
     let doc: ArchitectureDoc = load_chart_data(root, "architecture.json")?;
     let mut cells: Vec<(String, String)> = vec![
@@ -571,7 +523,6 @@ fn missing_data_cells(cells: &[(String, String)], rendered: &str) -> Vec<String>
 
 fn data_cells_are_rendered(root: &Path, asset: &str, rendered: &str) -> Result<()> {
     let Some((data_file, cells)): Option<(&str, Vec<(String, String)>)> = (match asset {
-        "ecosystems.svg" => Some(("ecosystems.json", ecosystems_cells(root)?)),
         "architecture.svg" => Some(("architecture.json", architecture_cells(root)?)),
         "ir-ladder.svg" => Some(("ir_ladder.json", ladder_cells(root)?)),
         "python-versions.svg" => Some(("python_versions.json", python_versions_cells(root)?)),
@@ -588,33 +539,6 @@ fn data_cells_are_rendered(root: &Path, asset: &str, rendered: &str) -> Result<(
              file untouched. regenerate with `node xtask/graphgen/build.mjs`",
             missing.len(),
             cells.len(),
-            missing.join("; ")
-        );
-    }
-    Ok(())
-}
-
-fn verification_cells_are_rendered(root: &Path, asset: &str, rendered: &str) -> Result<()> {
-    let doc: VerificationDoc = load_verification(root)?;
-    let mut missing: Vec<String> = Vec::new();
-    for row in &doc.rows {
-        for cell in [row.ecosystem.as_str(), row.result.as_str()] {
-            if cell.is_empty() {
-                continue;
-            }
-            let escaped: String = escape_svg_text(cell);
-            if !rendered.contains(&escaped) {
-                missing.push(format!("{} -> {cell:?}", row.ecosystem));
-            }
-        }
-    }
-    if !missing.is_empty() {
-        bail!(
-            "docs/assets/{asset} does not render {} cell(s) that verification.json states, so the \
-             published chart shows something other than the data behind it: {}. the digest stamp \
-             cannot catch this on its own, because editing the chart text by hand leaves the data \
-             file untouched. regenerate with `node xtask/graphgen/build.mjs`",
-            missing.len(),
             missing.join("; ")
         );
     }
@@ -1612,7 +1536,7 @@ mod tests {
         seed_renderer_tree(dir.path())?;
         let before: String = chart_renderer_digest(dir.path())?;
         std::fs::write(
-            renderer_source_path(dir.path(), "charts/ecosystems.mjs"),
+            renderer_source_path(dir.path(), "charts/recovery.mjs"),
             b"const CELL_H = 52;",
         )?;
         let after: String = chart_renderer_digest(dir.path())?;

@@ -21,7 +21,6 @@ if (WebAssembly.Module.imports(module_).length !== 0 ||
 }
 const scratch = mkdtempSync(join(root, "docs", "demo", ".capture-"));
 const receipt = join(root, "docs", "demo", "quickstart.json");
-const castPath = join(root, "docs", "demo", "disrobe.cast");
 const temporaryReceipt = join(scratch, "receipt.json");
 const captureTime = new Date();
 const captureStart = performance.now();
@@ -112,17 +111,6 @@ try {
   mkdirSync(dirname(receipt), { recursive: true });
   writeFileSync(temporaryReceipt, encoded, { flag: "wx" });
   renameSync(temporaryReceipt, receipt);
-  const events = steps.flatMap((step) => [
-    [step.started_ms / 1000, "o", `$ ${step.argv.join(" ")}\r\n`],
-    [(step.started_ms + step.elapsed_ms) / 1000, "o", `${step.stdout}${step.stderr}`.replaceAll("\n", "\r\n")],
-  ]);
-  const cast = [
-    { version: 2, width: 128, height: 24, timestamp: Math.floor(captureTime.getTime() / 1000), title: "Disrobe quickstart", theme: { fg: "#ededed", bg: "#0a0a0a" }, description: "Command output captured at process completion. Timings come from quickstart.json." },
-    ...events,
-  ].map((value) => JSON.stringify(value)).join("\n") + "\n";
-  const temporaryCast = join(scratch, "disrobe.cast");
-  writeFileSync(temporaryCast, cast, { flag: "wx" });
-  renameSync(temporaryCast, castPath);
   process.stdout.write(`captured ${steps.length} commands in ${relative(root, receipt)}\n`);
 } finally {
   const owned = resolve(scratch);

@@ -6,16 +6,12 @@ import { vendoredFontFiles } from "./lib/social_card.mjs";
 import { load, ASSETS_DIR } from "./lib/data.mjs";
 import { renderRecovery } from "./charts/recovery.mjs";
 import { renderPython } from "./charts/python.mjs";
-import { renderEcosystems } from "./charts/ecosystems.mjs";
-import { renderVerification } from "./charts/verification.mjs";
 import { renderArchitecture } from "./charts/architecture.mjs";
 import { renderLadder } from "./charts/ladder.mjs";
 
 const graphs = [
   ["recovery.svg", "recovery.json", renderRecovery],
   ["python-versions.svg", "python_versions.json", renderPython],
-  ["ecosystems.svg", "ecosystems.json", renderEcosystems],
-  ["verification.svg", "verification.json", renderVerification],
   ["architecture.svg", "architecture.json", renderArchitecture],
   ["ir-ladder.svg", "ir_ladder.json", renderLadder],
 ];

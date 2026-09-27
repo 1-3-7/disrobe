@@ -12,7 +12,6 @@ pub(crate) fn run(root: &Path, check: bool) -> Result<()> {
         &mut stale,
     )?;
     run_one("card", check, || crate::card::run(root, check), &mut stale)?;
-    run_one("demo", check, || crate::demo::run(root, check), &mut stale)?;
     run_one(
         "docs-index",
         check,
