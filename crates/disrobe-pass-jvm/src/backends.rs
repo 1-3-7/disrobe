@@ -1,5 +1,4 @@
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -166,11 +165,8 @@ fn spawn_captured_with_timeout(
     timeout: Duration,
     label: &str,
 ) -> Result<BackendInvocation> {
-    let mut cmd: Command = Command::new(path);
-    cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
-    let child: std::process::Child = cmd.spawn()?;
     let Some(captured): Option<disrobe_core::subprocess::CapturedOutput> =
-        disrobe_core::subprocess::wait_with_output_timeout(child, timeout, MAX_BACKEND_CAPTURE)
+        disrobe_core::subprocess::run_captured(&path, args, timeout, MAX_BACKEND_CAPTURE)?
     else {
         return Err(Error::BackendTimeout(
             label.to_string(),
