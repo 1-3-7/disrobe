@@ -850,7 +850,7 @@ fn ci_routes_full_coverage_to_scheduled_and_tag_runs() {
                 .get("env")
                 .and_then(|value: &Value| value.get("DISROBE_TYPEREC_CC"))
                 .and_then(Value::as_str),
-            Some("${{ matrix.os != 'ubuntu-latest' && 'optional' || '' }}"),
+            Some("${{ matrix.os != 'ubuntu-latest' && 'optional' || 'require-gnu' }}"),
             "Linux must retain its required type-recovery compiler oracle"
         );
         assert_eq!(

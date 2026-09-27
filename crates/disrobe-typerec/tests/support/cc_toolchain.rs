@@ -89,12 +89,20 @@ pub(crate) enum Probe {
 }
 
 pub(crate) fn requirement() -> Requirement {
-    let Some(raw): Option<OsString> = std::env::var_os(REQUIREMENT_VAR) else {
-        return Requirement::RequirePresent;
-    };
-    match raw.to_string_lossy().trim().to_ascii_lowercase().as_str() {
-        "" | "0" | "false" | "no" | "off" | "optional" => Requirement::Optional,
-        "gnu" | "require-gnu" | "strict" => Requirement::RequireGnu,
+    parse_requirement(
+        std::env::var_os(REQUIREMENT_VAR)
+            .map(|raw: OsString| raw.to_string_lossy().into_owned())
+            .as_deref(),
+    )
+}
+
+pub(crate) fn parse_requirement(raw: Option<&str>) -> Requirement {
+    match raw
+        .map(|value: &str| value.trim().to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("0" | "false" | "no" | "off" | "optional") => Requirement::Optional,
+        Some("gnu" | "require-gnu" | "strict") => Requirement::RequireGnu,
         _ => Requirement::RequirePresent,
     }
 }

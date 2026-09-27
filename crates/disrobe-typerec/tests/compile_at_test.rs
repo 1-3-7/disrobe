@@ -210,6 +210,19 @@ fn measure(image: &DebugImage, leg: Leg) -> Measured {
 }
 
 #[test]
+fn an_empty_or_unset_compiler_requirement_keeps_the_compiler_mandatory() {
+    use cc_toolchain::{Requirement, parse_requirement};
+    assert_eq!(parse_requirement(None), Requirement::RequirePresent);
+    assert_eq!(parse_requirement(Some("")), Requirement::RequirePresent);
+    assert_eq!(parse_requirement(Some("  ")), Requirement::RequirePresent);
+    assert_eq!(parse_requirement(Some("optional")), Requirement::Optional);
+    assert_eq!(
+        parse_requirement(Some("Require-GNU")),
+        Requirement::RequireGnu
+    );
+}
+
+#[test]
 fn recompiled_corpus_reproduces_measured_floors() {
     let Some(toolchain): Option<CcToolchain> = cc_toolchain::require(GRADED) else {
         return;

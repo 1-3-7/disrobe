@@ -815,7 +815,7 @@ jobs:
         timeout-minutes: 160
         env:
           DISROBE_YARV_EVIDENCE_DIR: ${{ runner.temp }}/yarv-evidence
-          DISROBE_TYPEREC_CC: ${{ matrix.os != 'ubuntu-latest' && 'optional' || '' }}
+          DISROBE_TYPEREC_CC: ${{ matrix.os != 'ubuntu-latest' && 'optional' || 'require-gnu' }}
       - name: workspace shard two
         if: matrix.shard == 'two'
         run: >-
@@ -831,7 +831,7 @@ jobs:
           -p disrobe-wasm -p disrobe-tool-process
         timeout-minutes: 160
         env:
-          DISROBE_TYPEREC_CC: ${{ matrix.os != 'ubuntu-latest' && 'optional' || '' }}
+          DISROBE_TYPEREC_CC: ${{ matrix.os != 'ubuntu-latest' && 'optional' || 'require-gnu' }}
       - name: JavaScript differentials within the Boa CPU budget
         if: matrix.shard == 'three'
         uses: ./.github/actions/javascript-tests
@@ -845,7 +845,7 @@ jobs:
           --test body_equivalence --test body_recovery_oracle
         timeout-minutes: 160
         env:
-          DISROBE_TYPEREC_CC: ${{ matrix.os != 'ubuntu-latest' && 'optional' || '' }}
+          DISROBE_TYPEREC_CC: ${{ matrix.os != 'ubuntu-latest' && 'optional' || 'require-gnu' }}
       - name: native language unit and remaining integration coverage
         if: matrix.shard == 'nativelang-remainder'
         run: >-
@@ -856,13 +856,13 @@ jobs:
           --test zig_detection
         timeout-minutes: 160
         env:
-          DISROBE_TYPEREC_CC: ${{ matrix.os != 'ubuntu-latest' && 'optional' || '' }}
+          DISROBE_TYPEREC_CC: ${{ matrix.os != 'ubuntu-latest' && 'optional' || 'require-gnu' }}
       - name: native language documentation coverage
         if: matrix.shard == 'nativelang-remainder'
         run: cargo test -p disrobe-pass-nativelang --all-features --no-fail-fast --doc
         timeout-minutes: 160
         env:
-          DISROBE_TYPEREC_CC: ${{ matrix.os != 'ubuntu-latest' && 'optional' || '' }}
+          DISROBE_TYPEREC_CC: ${{ matrix.os != 'ubuntu-latest' && 'optional' || 'require-gnu' }}
       - name: build the Python extension used by the bindings caller test
         if: matrix.shard == 'three'
         shell: pwsh
@@ -900,7 +900,7 @@ jobs:
           --exclude disrobe-pass-js-deob
         timeout-minutes: 160
         env:
-          DISROBE_TYPEREC_CC: ${{ matrix.os != 'ubuntu-latest' && 'optional' || '' }}
+          DISROBE_TYPEREC_CC: ${{ matrix.os != 'ubuntu-latest' && 'optional' || 'require-gnu' }}
       - name: retain Ruby opcode measurement
         if: always() && (matrix.shard == 'one')
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
