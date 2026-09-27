@@ -178,43 +178,6 @@ disrobe indicators frisk.json prowl.json --targets-only > targets.txt
 
 `disrobe indicators` ingests `disrobe.recon/v0`, `disrobe.ioc/v0`, and `disrobe.prowl/v0`, deduplicates indicators by class and value, preserves each value's source provenance, and emits `disrobe.indicators/v0`. `--targets-only` prints network indicators ready for `prowl --targets-file`.
 
-## String harvest from a write log
+## String reader
 
-`disrobe_core::recon::string_emu` holds the wide-run reader behind the endpoint and `.onion` pass in `disrobe frisk`. It also holds two APIs that no `disrobe` command reaches: a string harvest over a write log, and a call-site argument reader. Both read state the caller already holds, a list of address and byte pairs in the first case and captured registers and stack bytes in the second. `disrobe` does not run the sample to produce either input.
-
-The caller supplies a sandbox window of allowed address ranges alongside the write log. A write to an address outside the window is counted in `writes_outside_sandbox` and dropped, so it never reaches the harvest and never allocates host memory. A window holds at most 64 regions. A region whose base plus length passes the end of the 64-bit address space is refused with `DR-RECON-EMU-0001`, and a refused region is not recorded. A 65th region is refused with `DR-RECON-EMU-0002`.
-
-Bytes recovered inside the window are read as UTF-8, UTF-16LE, UTF-16BE, UTF-32LE, and UTF-32BE. A narrow run that holds only ASCII carries the `ascii` label. When two readings overlap, the longer run wins. A region that the text readings do not cover is also kept as raw bytes with no text. Bytes that do not decode keep their exact values, and no reading substitutes a replacement character.
-
-Harvest properties:
-
-- A string overwritten in place is still harvested, together with the value that replaced it.
-- Runs never join across the end of the address space. A write near the top of memory and a write at address zero stay separate.
-- Results are deduplicated by address and bytes together. The same value at two addresses is two results.
-- Two harvests of the same write log return the same strings.
-- A truncated write log still yields the strings it contains.
-- A code unit that is not a Unicode scalar value ends the run. The scan continues past it, so a run behind an unpaired surrogate is still recovered.
-
-The harvest stops on the caller's wall-clock deadline or when it has recorded the caller's byte budget, and `bound` names which of the two stopped it. It reads at most 4194304 log entries. A caller that takes the default limits gets a 750 millisecond deadline and a 262144-byte budget. The harvest itself reports at most 4096 strings, needs four characters to start a run, and stops a single run at 65536 bytes.
-
-## Call-site argument slots
-
-`argument_slot` maps an argument index to a register or a stack offset. `extract_arguments` reads the values from a `CallSiteState` that carries the captured registers and the captured stack image.
-
-| Convention | Register arguments | First stack offset | Stack step |
-|---|---|---|---|
-| `sysv64` | `rdi`, `rsi`, `rdx`, `rcx`, `r8`, `r9` | 8 | 8 |
-| `win64` | `rcx`, `rdx`, `r8`, `r9` | 0x28 | 8 |
-| `aapcs64` | `x0` to `x7` | 0 | 8 |
-| `cdecl32` | none | 4 | 4 |
-| `stdcall32` | none | 4 | 4 |
-| `fastcall32` | `ecx`, `edx` | 4 | 4 |
-| `thiscall32` | `ecx` | 4 | 4 |
-
-Stack words are read little endian. `callee_cleans_stack` reports true for `stdcall32`, `fastcall32`, and `thiscall32`, and false for `cdecl32`.
-
-Extraction refuses rather than guesses:
-
-- An argument index of 64 or higher is refused with `DR-RECON-EMU-0003`.
-- A register the call site did not capture is refused with `DR-RECON-EMU-0004`. It is never read as zero.
-- A stack offset past the captured stack image is refused with `DR-RECON-EMU-0005`. The error names the convention, the argument index, the offset, and the number of bytes captured.
+`disrobe_core::recon::string_emu` holds the wide-run reader behind the endpoint and `.onion` pass in `disrobe frisk`. It reads UTF-16LE and UTF-16BE runs from the input bytes and reports each run's encoding and offset.
