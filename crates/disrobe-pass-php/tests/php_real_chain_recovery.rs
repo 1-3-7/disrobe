@@ -547,6 +547,18 @@ fn the_chain_grade_rejects_a_corrupted_body_a_left_over_layer_and_a_fabricated_w
     );
 
     let under_peeled: String = format!("{truth}\n$unused = base64_decode('aGVsbG8=');\n");
+    let residual_defect: String = grade_behavior(
+        &PhpRuntime::unstartable(),
+        "under-peeled",
+        &under_peeled,
+        &[],
+    )
+    .expect_err("a remaining decoder must be refused before PHP starts");
+    assert!(
+        residual_defect.contains("unpeeled") && residual_defect.contains("never run"),
+        "a recovery that still calls a decoder must be rejected as partly peeled before it runs, \
+         got: {residual_defect}"
+    );
     let Some(php): Option<PhpRuntime> = require_php(GRADED) else {
         return;
     };
@@ -566,18 +578,5 @@ fn the_chain_grade_rejects_a_corrupted_body_a_left_over_layer_and_a_fabricated_w
         corrupted_defect.contains("prints"),
         "a recovery that runs but prints the wrong thing must be reported as a behavioral \
          divergence, got: {corrupted_defect}"
-    );
-
-    let residual_defect: String = message_from_seeded_defect(
-        "a decode primitive left in a recovery that would still print the right output",
-        || {
-            grade_behavior(&php, "under-peeled", &under_peeled, &expected_stdout)
-                .unwrap_or_else(|defect: String| panic!("{defect}"));
-        },
-    );
-    assert!(
-        residual_defect.contains("unpeeled") && residual_defect.contains("never run"),
-        "a recovery that still calls a decoder must be rejected as partly peeled before it runs, \
-         got: {residual_defect}"
     );
 }

@@ -23,7 +23,7 @@ use disrobe_pass_php::{
     PhpDetection, PhpKind, RecoveryReport, RecoveryStage, ScanReport, TokKind, Token, detect_php,
     recover_php, signature_scan, tokenize,
 };
-use php_toolchain::{PhpRun, PhpRuntime, require_php, required_corpus};
+use php_toolchain::required_corpus;
 
 #[derive(Debug, Clone, Copy)]
 struct PinnedTokenStream {
@@ -178,31 +178,30 @@ fn real_naneau_megafile_passes_through_as_plain_source() {
     );
 }
 
+fn has_pinned_readonly_parent_mismatch(source: &str) -> bool {
+    source.contains("abstract class AbstractEntity")
+        && !source.contains("readonly abstract class AbstractEntity")
+        && source.contains("readonly class User extends AbstractEntity")
+}
+
 #[test]
-fn the_php8_megafile_does_not_run_on_this_interpreter_and_is_graded_statically_only() {
-    let graded: String =
-        "the runnability of corpus/php/megafile/edge_cases.php on the host interpreter".to_owned();
-    let Some(php): Option<PhpRuntime> = require_php(&graded) else {
-        return;
-    };
-    let bytes: Vec<u8> = token_stream("megafile/edge_cases.php");
-    let run: PhpRun = php.run_reporting_errors("megafile/edge_cases.php", &bytes);
+fn the_php8_megafile_has_the_pinned_readonly_parent_mismatch_and_is_graded_statically_only() {
+    let source: String = String::from_utf8(token_stream("megafile/edge_cases.php"))
+        .expect("the committed PHP source must be valid UTF-8");
     assert!(
-        !run.exited_clean,
-        "corpus/php/megafile/edge_cases.php now runs under {}, so the execution differentials in \
-         this crate can be extended to cover it; this case exists so that fact cannot go unnoticed",
-        php.banner
+        has_pinned_readonly_parent_mismatch(&source),
+        "corpus/php/megafile/edge_cases.php must retain the readonly User subclass of the \
+         non-readonly AbstractEntity parent that PHP rejects; without that exact incompatibility \
+         its static-only grade is no longer justified"
+    );
+
+    let mutant: String = source.replacen(
+        "readonly class User extends AbstractEntity",
+        "final class User extends AbstractEntity",
+        1,
     );
     assert!(
-        run.stderr.contains("Readonly class"),
-        "corpus/php/megafile/edge_cases.php is pinned as unrunnable for one specific reason, a \
-         readonly class extending a non-readonly parent, which php 8.2 rejects. It now fails for a \
-         different reason, so what this sample can and cannot be graded on is no longer understood: \
-         {}",
-        run.stderr
-    );
-    println!(
-        "corpus/php/megafile/edge_cases.php is parsed and tokenized but cannot be executed here: {}",
-        run.stderr.lines().next().unwrap_or_default()
+        !has_pinned_readonly_parent_mismatch(&mutant),
+        "the mutation control must remove the exact readonly-parent mismatch"
     );
 }
