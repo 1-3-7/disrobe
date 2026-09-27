@@ -154,7 +154,7 @@ pub(crate) enum DotnetCmd {
     },
     #[command(
         visible_alias = "peel",
-        about = "detect the .NET obfuscator/protector and peel it: decrypt resources, recover constants/strings, classify renamable identifiers, strip watermarks, or honestly wall native-VM/runtime-key protections"
+        about = "detect the .NET obfuscator/protector and peel it: decrypt resources, recover constants/strings, classify renamable identifiers, strip watermarks, or report native-VM and runtime-key protections as unrecoverable"
     )]
     Deobfuscate {
         #[arg(help = "input obfuscated .NET PE file (.dll / .exe)")]

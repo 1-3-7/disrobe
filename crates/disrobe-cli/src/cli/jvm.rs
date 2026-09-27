@@ -1554,7 +1554,7 @@ fn print_peel_summaries(summaries: &[PeelSummary]) {
         uniq.sort_unstable();
         uniq.dedup();
         println!(
-            "  honest wall:  {} string decrypt is runtime-keyed; plaintext absent from the static artifact",
+            "  walled:       {} string decrypt is runtime-keyed; plaintext absent from the static artifact",
             uniq.join(", ")
         );
     }

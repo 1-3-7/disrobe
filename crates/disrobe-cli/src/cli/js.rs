@@ -376,7 +376,7 @@ fn recover_deployed(input: PathBuf, out_dir: PathBuf, no_stubs: bool) -> miette:
             report.with_content
         );
         println!(
-            "  honest stubs (sourcesContent absent):    {}",
+            "  stubs (sourcesContent absent):           {}",
             report.reconstructed_stubs
         );
         println!(
@@ -582,7 +582,7 @@ fn v8_inspect(
                 "    recovered string bytes: {}",
                 structural.recovered_byte_total
             );
-            println!("  lossy limits (honest):");
+            println!("  lossy limits:");
             for note in &structural.lossy_notes {
                 println!("    - {note}");
             }

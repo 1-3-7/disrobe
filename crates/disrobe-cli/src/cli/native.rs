@@ -1606,7 +1606,7 @@ fn recover_packed_image(input: &Path, bytes: &[u8]) -> miette::Result<RecoveredA
             }
             Packer::YodasCrypter => {
                 return Err(miette::miette!(
-                    "DR-NATIVE-0054: yoda's crypter recovery is diff-based against the original binary (unpack_yodas_crypter needs both the packed and original images); single-file `native unpack` cannot recover it honestly. detection is production-grade; supply the original for a real comparison-based carve."
+                    "DR-NATIVE-0054: yoda's crypter recovery is diff-based against the original binary (unpack_yodas_crypter needs both the packed and original images); single-file `native unpack` cannot recover it. detection works on the packed file alone; supply the original for a comparison-based carve."
                 ));
             }
             other => {
@@ -1618,7 +1618,7 @@ fn recover_packed_image(input: &Path, bytes: &[u8]) -> miette::Result<RecoveredA
         },
         UnpackerStatus::StubEvalPending => {
             return Err(miette::miette!(
-                "DR-NATIVE-0041: {} detected; Rust byte-recovery is stub-eval pending (detection is production-grade)",
+                "DR-NATIVE-0041: {} detected; byte recovery by stub evaluation is not confirmed on a real packed sample",
                 packer.label()
             ));
         }
@@ -2756,8 +2756,8 @@ pub(crate) fn devirt(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()>
     .map_err(|e| {
         miette::miette!(
             "DR-NATIVE-0122: no recoverable bytecode VM in {} ({:?}). disrobe locates the VM by \
-its export table or by scanning for a handler-dispatch loop; a binary whose handler stream is \
-generated at runtime or fetched remotely is the one genuine residual.",
+its export table or by scanning for a handler-dispatch loop; the one unrecoverable case is a \
+handler stream generated at runtime or fetched remotely.",
             input.display(),
             e
         )
