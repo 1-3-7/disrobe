@@ -7,4 +7,4 @@ Educational/recreation-only per legal stance:
 - `arxan/` - docs/src/legal.md#arxan (AMBER, detect-default, strip behind --i-have-authorization for publicly-documented patterns only)
 - `pace/` - docs/src/legal.md#pace (AMBER, detect-default, static-marker strip behind --i-have-authorization)
 
-Regenerate via `scripts/bake/js_protectors.{ps1,sh}`.
+The three files are hand-written; edit them directly.
