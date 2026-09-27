@@ -303,10 +303,10 @@ mod tests {
 
     #[test]
     fn finds_secret_deleted_in_a_later_commit() {
-        if !git_available() {
-            eprintln!("skipping: git not available");
-            return;
-        }
+        assert!(
+            git_available(),
+            "git history recon is graded against real git, which must be on PATH"
+        );
         let scratch: crate::scratch::ScratchDir = temp_repo();
         let repo: &Path = scratch.path();
         let secret_file: std::path::PathBuf = repo.join("config.env");
@@ -355,10 +355,10 @@ mod tests {
 
     #[test]
     fn report_serializes_with_commit_attribution() {
-        if !git_available() {
-            eprintln!("skipping: git not available");
-            return;
-        }
+        assert!(
+            git_available(),
+            "git history recon is graded against real git, which must be on PATH"
+        );
         let scratch: crate::scratch::ScratchDir = temp_repo();
         let repo: &Path = scratch.path();
         let key: String = aws_akid();

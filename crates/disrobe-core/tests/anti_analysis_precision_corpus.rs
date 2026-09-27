@@ -2459,10 +2459,21 @@ fn wine_pe_oracle_rejects_unbound_literals_wrong_abi_and_impure_thunks() {
     );
 }
 
+const NATIVE_TOOLCHAIN_VAR: &str = "DISROBE_REQUIRE_NATIVE_TOOLCHAIN";
+const UPX_VAR: &str = "DISROBE_REQUIRE_UPX";
+
+fn missing_prerequisite(what: &str, require_var: &str) {
+    assert!(
+        std::env::var_os(require_var).is_none(),
+        "{require_var} is set, so {what} must be callable on PATH"
+    );
+    eprintln!("UNGRADED: {what} is not callable on PATH; set {require_var}=1 to fail instead");
+}
+
 #[test]
 fn benign_c_binaries_yield_zero_verdicts() {
     let Some(cc): Option<&'static str> = first_c_compiler() else {
-        eprintln!("SKIP: no C compiler (cc/gcc/clang) available");
+        missing_prerequisite("a C compiler (cc, gcc or clang)", NATIVE_TOOLCHAIN_VAR);
         return;
     };
     let scratch: ScratchDir = scratch_dir();
@@ -2489,10 +2500,10 @@ fn benign_c_binaries_yield_zero_verdicts() {
 
 #[test]
 fn benign_rust_binary_yields_zero_verdicts() {
-    if !tool_available("rustc") {
-        eprintln!("SKIP: rustc unavailable");
-        return;
-    }
+    assert!(
+        tool_available("rustc"),
+        "rustc runs this test, so it must be callable"
+    );
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
     let src_path: PathBuf = dir.join("aa_rust.rs");
@@ -2515,31 +2526,24 @@ fn benign_rust_binary_yields_zero_verdicts() {
             .arg(&out_path)
             .status()
             .is_ok_and(|s: std::process::ExitStatus| s.success());
-        if !ok {
-            eprintln!("SKIP: rustc {label} build failed");
-            continue;
-        }
-        let Ok(bytes): std::io::Result<Vec<u8>> = std::fs::read(&out_path) else {
-            continue;
-        };
+        assert!(
+            ok,
+            "rustc {label} failed on a fixed source in this file, which is a defect in the probe"
+        );
+        let bytes: Vec<u8> = std::fs::read(&out_path).expect("read the rustc output");
         compiled_any = true;
         assert_zero_anti_analysis_verdicts(&format!("rust/{label}"), &bytes);
     }
-    if !compiled_any {
-        eprintln!("SKIP: no rust build succeeded");
-    }
+    assert!(compiled_any, "both rust builds must be graded");
 }
 
 #[test]
+#[cfg(windows)]
 fn positive_recall_real_binary_calling_two_debugger_checks() {
-    if !tool_available("rustc") {
-        eprintln!("SKIP: rustc unavailable");
-        return;
-    }
-    if !cfg!(windows) {
-        eprintln!("SKIP: IsDebuggerPresent/CheckRemoteDebuggerPresent are win32-only");
-        return;
-    }
+    assert!(
+        tool_available("rustc"),
+        "rustc runs this test, so it must be callable"
+    );
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
     let src_path: PathBuf = dir.join("aa_two_debug_checks.rs");
@@ -2568,10 +2572,10 @@ fn positive_recall_real_binary_calling_two_debugger_checks() {
         .arg(&out_path)
         .status()
         .is_ok_and(|s: std::process::ExitStatus| s.success());
-    if !ok {
-        eprintln!("SKIP: rustc build of the two-debugger-check probe failed");
-        return;
-    }
+    assert!(
+        ok,
+        "rustc failed on the fixed two-debugger-check probe, which is a defect in the probe"
+    );
     let bytes: Vec<u8> = std::fs::read(&out_path).expect("read compiled probe");
     let report: AntiAnalysisReport = scan(&bytes, Some("rust/two-debugger-checks"));
     assert!(
@@ -2781,11 +2785,11 @@ fn committed_large_benign_fixture_has_no_detected_findings() {
 #[test]
 fn upx_packed_benign_reports_only_packing() {
     let Some(cc): Option<&'static str> = first_c_compiler() else {
-        eprintln!("SKIP: no C compiler for upx corpus");
+        missing_prerequisite("a C compiler (cc, gcc or clang)", NATIVE_TOOLCHAIN_VAR);
         return;
     };
     if !tool_available("upx") {
-        eprintln!("SKIP: upx unavailable");
+        missing_prerequisite("upx", UPX_VAR);
         return;
     }
     let scratch: ScratchDir = scratch_dir();
