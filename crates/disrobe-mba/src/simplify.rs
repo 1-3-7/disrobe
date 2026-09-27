@@ -50,6 +50,7 @@ pub struct Simplification {
     pub verification: Verification,
     pub original_nodes: usize,
     pub simplified_nodes: usize,
+    pub budget_exhausted: bool,
 }
 
 impl Simplification {
@@ -78,6 +79,30 @@ const MAX_LINEAR_VARS: u32 = 4;
 const MAX_BASIS_VARS: u32 = 3;
 const MAX_TEMPLATE_VARS: u32 = 2;
 const VERIFY_BUDGET_LOG2: u32 = 22;
+const SIMPLIFY_BDD_OPS: usize = 1usize << 25;
+
+#[derive(Debug)]
+pub(crate) struct ProofBudget {
+    #[cfg_attr(not(feature = "smt-verify"), allow(dead_code))]
+    pub(crate) bdd_ops_remaining: usize,
+    #[cfg_attr(not(feature = "smt-verify"), allow(dead_code))]
+    pub(crate) unblastable: Vec<(Expr, Width)>,
+    pub(crate) exhausted: bool,
+}
+
+impl ProofBudget {
+    pub(crate) const fn bounded_default() -> Self {
+        Self::new(SIMPLIFY_BDD_OPS)
+    }
+
+    pub(crate) const fn new(bdd_ops: usize) -> Self {
+        Self {
+            bdd_ops_remaining: bdd_ops,
+            unblastable: Vec::new(),
+            exhausted: false,
+        }
+    }
+}
 
 #[derive(Debug)]
 struct DenseExpression {
@@ -104,25 +129,30 @@ impl DenseExpression {
 
 #[must_use]
 pub fn simplify(expr: &Expr, width: Width) -> Simplification {
+    simplify_within(expr, width, &mut ProofBudget::bounded_default())
+}
+
+fn simplify_within(expr: &Expr, width: Width, budget: &mut ProofBudget) -> Simplification {
     if expr.depth() > crate::expr::MAX_MBA_DEPTH {
-        return unchanged_simplification(expr, width);
+        return unchanged_simplification(expr, width, budget);
     }
     let original_nodes: usize = expr.node_count();
     let Some(dense): Option<DenseExpression> = compact_expression(expr) else {
-        return unchanged_simplification(expr, width);
+        return unchanged_simplification(expr, width, budget);
     };
     let (candidate, verification): (Expr, Verification) =
-        simplify_dense(&dense.expr, width, dense.var_count);
+        simplify_dense(&dense.expr, width, dense.var_count, budget);
     if candidate == dense.expr || !verification.is_proven() {
-        return unchanged_simplification(expr, width);
+        return unchanged_simplification(expr, width, budget);
     }
     let Some(restored): Option<Expr> = dense.restore(&candidate) else {
-        return unchanged_simplification(expr, width);
+        return unchanged_simplification(expr, width, budget);
     };
     let simplified: Expr = if dense.indices_changed {
-        let Some(accepted): Option<Expr> = accept_expression_candidate(expr, restored, width)
+        let Some(accepted): Option<Expr> =
+            accept_expression_candidate(expr, restored, width, budget)
         else {
-            return unchanged_simplification(expr, width);
+            return unchanged_simplification(expr, width, budget);
         };
         accepted
     } else {
@@ -136,10 +166,11 @@ pub fn simplify(expr: &Expr, width: Width) -> Simplification {
         verification,
         original_nodes,
         simplified_nodes,
+        budget_exhausted: budget.exhausted,
     }
 }
 
-fn unchanged_simplification(expr: &Expr, width: Width) -> Simplification {
+fn unchanged_simplification(expr: &Expr, width: Width, budget: &ProofBudget) -> Simplification {
     let nodes: usize = expr.node_count();
     Simplification {
         original: expr.clone(),
@@ -148,6 +179,7 @@ fn unchanged_simplification(expr: &Expr, width: Width) -> Simplification {
         verification: Verification::Unverified,
         original_nodes: nodes,
         simplified_nodes: nodes,
+        budget_exhausted: budget.exhausted,
     }
 }
 
@@ -176,23 +208,34 @@ fn compact_expression(expr: &Expr) -> Option<DenseExpression> {
     })
 }
 
-fn simplify_dense(expr: &Expr, width: Width, var_count: u32) -> (Expr, Verification) {
-    let mut best: (Expr, Verification) = simplify_l0_l5(expr, width, var_count);
+fn simplify_dense(
+    expr: &Expr,
+    width: Width,
+    var_count: u32,
+    budget: &mut ProofBudget,
+) -> (Expr, Verification) {
+    let mut best: (Expr, Verification) = simplify_l0_l5(expr, width, var_count, budget);
     if best.0 == *expr
         && expr_is_eval_faithful(expr)
-        && let Some((candidate, proof)) = crate::enum_synth::synthesize(expr, width, var_count)
+        && let Some((candidate, proof)) =
+            crate::enum_synth::synthesize(expr, width, var_count, budget)
     {
         best = (candidate, proof);
     }
     best
 }
 
-pub(crate) fn simplify_l0_l5(expr: &Expr, width: Width, var_count: u32) -> (Expr, Verification) {
+pub(crate) fn simplify_l0_l5(
+    expr: &Expr,
+    width: Width,
+    var_count: u32,
+    budget: &mut ProofBudget,
+) -> (Expr, Verification) {
     let original_nodes: usize = expr.node_count();
     let original_is_mba: bool = expr.is_linear_mba();
 
     let mut best: (Expr, Verification) = (expr.clone(), Verification::Unverified);
-    let mut consider = |candidate: Expr| {
+    let mut consider = |candidate: Expr, budget: &mut ProofBudget| {
         if candidate.node_count() >= original_nodes {
             return;
         }
@@ -200,7 +243,7 @@ pub(crate) fn simplify_l0_l5(expr: &Expr, width: Width, var_count: u32) -> (Expr
             return;
         }
         let proof: Verification =
-            verify_equivalent(expr, &candidate, width, var_count, original_is_mba);
+            verify_equivalent(expr, &candidate, width, var_count, original_is_mba, budget);
         if proof.is_proven() {
             best = (candidate, proof);
         }
@@ -208,63 +251,63 @@ pub(crate) fn simplify_l0_l5(expr: &Expr, width: Width, var_count: u32) -> (Expr
 
     let folded: Expr = canonicalize(expr, width);
     if folded != *expr {
-        consider(folded);
+        consider(folded, budget);
     }
 
     #[cfg(feature = "smt-verify")]
     {
-        let minimized: Option<Expr> = minimize_boolean_verified(expr, width);
+        let minimized: Option<Expr> = minimize_boolean_verified(expr, width, budget);
         if let Some(minimized) = minimized {
-            consider(minimized);
+            consider(minimized, budget);
         }
     }
 
     if var_count <= MAX_TEMPLATE_VARS {
         for candidate in template_candidates(var_count) {
-            consider(candidate);
+            consider(candidate, budget);
         }
     }
     if var_count <= MAX_LINEAR_VARS
         && original_is_mba
         && let Some(synth) = synthesize_linear(expr, width, var_count)
     {
-        consider(synth);
+        consider(synth, budget);
     }
     if (2..=MAX_BASIS_VARS).contains(&var_count)
         && original_is_mba
         && let Some(synth) = synthesize_linear_basis(expr, width, var_count)
     {
-        consider(synth);
+        consider(synth, budget);
     }
     if (1..=MAX_SOLVER_VARS).contains(&var_count)
         && let Some(solved) = solve_linear_mba(expr, width, var_count)
     {
-        consider(solved);
+        consider(solved, budget);
     }
     if var_count == 1 && is_bitwise(expr) {
-        consider(synthesize_bitwise_unary(expr, width));
+        consider(synthesize_bitwise_unary(expr, width), budget);
     }
     if (2..=MAX_BITWISE_SYNTH_VARS).contains(&var_count)
         && let Some(synth) = synthesize_bitwise_masked(expr, width, var_count)
     {
-        consider(synth);
+        consider(synth, budget);
     }
     if !original_is_mba
         && (1..=crate::poly_mba::MAX_POLY_MBA_VARS).contains(&var_count)
         && let Some(reduced) = crate::poly_mba::solve_polynomial_mba(expr, width, var_count)
     {
-        consider(reduced);
+        consider(reduced, budget);
     }
     if !original_is_mba
         && (1..=crate::mixed_mba::MAX_MIXED_MBA_VARS).contains(&var_count)
         && let Some(mixed) = crate::mixed_mba::simplify_mixed(expr, width)
     {
-        consider(mixed);
+        consider(mixed, budget);
     }
 
     if let Some(saturated) = crate::egraph::saturate_simplify(expr, width)
         && saturated.node_count() < best.0.node_count()
-        && let Some(proof) = accept_verified(expr, &saturated, width, var_count)
+        && let Some(proof) = accept_verified(expr, &saturated, width, var_count, budget)
     {
         best = (saturated, proof);
     }
@@ -294,13 +337,14 @@ pub(crate) fn accept_verified(
     candidate: &Expr,
     width: Width,
     var_count: u32,
+    budget: &mut ProofBudget,
 ) -> Option<Verification> {
     if candidate.node_count() >= original.node_count() {
         return None;
     }
     let faithful: bool = expr_is_eval_faithful(original) && expr_is_eval_faithful(candidate);
     let bdd: crate::verify::Equivalence =
-        crate::verify::verify_equivalent(original, candidate, width);
+        crate::verify::verify_equivalent_metered(original, candidate, width, budget);
     if faithful && width.is_exhaustible() && equivalent_exhaustive_runnable(width, var_count) {
         let exhaustive: bool = equivalent_exhaustive(original, candidate, width, var_count);
         if exhaustive != bdd.is_proven() {
@@ -324,6 +368,7 @@ pub(crate) fn accept_verified(
     candidate: &Expr,
     width: Width,
     var_count: u32,
+    _budget: &mut ProofBudget,
 ) -> Option<Verification> {
     if candidate.node_count() >= original.node_count() {
         return None;
@@ -408,17 +453,26 @@ fn accept_predicate_candidate(
 
 #[cfg(feature = "smt-verify")]
 #[must_use]
-pub(crate) fn minimize_boolean_verified(expr: &Expr, width: Width) -> Option<Expr> {
+pub(crate) fn minimize_boolean_verified(
+    expr: &Expr,
+    width: Width,
+    budget: &mut ProofBudget,
+) -> Option<Expr> {
     let candidate: Expr = boolean_minimization_candidate(expr, width)?;
     if candidate.node_count() >= expr.node_count() {
         return None;
     }
-    accept_expression_candidate(expr, candidate, width)
+    accept_expression_candidate(expr, candidate, width, budget)
 }
 
 #[cfg(feature = "smt-verify")]
-fn accept_expression_candidate(original: &Expr, candidate: Expr, width: Width) -> Option<Expr> {
-    if crate::verify::verify_equivalent(original, &candidate, width).is_proven() {
+fn accept_expression_candidate(
+    original: &Expr,
+    candidate: Expr,
+    width: Width,
+    budget: &mut ProofBudget,
+) -> Option<Expr> {
+    if crate::verify::verify_equivalent_metered(original, &candidate, width, budget).is_proven() {
         Some(candidate)
     } else {
         None
@@ -426,7 +480,12 @@ fn accept_expression_candidate(original: &Expr, candidate: Expr, width: Width) -
 }
 
 #[cfg(not(feature = "smt-verify"))]
-fn accept_expression_candidate(_original: &Expr, _candidate: Expr, _width: Width) -> Option<Expr> {
+fn accept_expression_candidate(
+    _original: &Expr,
+    _candidate: Expr,
+    _width: Width,
+    _budget: &mut ProofBudget,
+) -> Option<Expr> {
     None
 }
 
@@ -874,6 +933,7 @@ fn verify_equivalent(
     width: Width,
     var_count: u32,
     original_is_mba: bool,
+    budget: &mut ProofBudget,
 ) -> Verification {
     let budget_width: Width = largest_verifiable_width(var_count);
     let enumerable: bool = expr_is_eval_faithful(original)
@@ -894,9 +954,13 @@ fn verify_equivalent(
         return Verification::LinearColumnIdentity(width);
     }
     #[cfg(feature = "smt-verify")]
-    if crate::verify::verify_equivalent(original, candidate, width).is_proven() {
-        return Verification::SmtProvenAtWidth(width);
+    match crate::verify::verify_equivalent_metered(original, candidate, width, budget) {
+        crate::verify::Equivalence::Proven => return Verification::SmtProvenAtWidth(width),
+        crate::verify::Equivalence::Disproven { .. } => return Verification::Unverified,
+        crate::verify::Equivalence::Unknown => {}
     }
+    #[cfg(not(feature = "smt-verify"))]
+    let _: &mut ProofBudget = budget;
     if crate::poly_oracle::polynomial_identity_proves(original, candidate, width) {
         return Verification::PolynomialIdentity(width);
     }
@@ -1184,12 +1248,27 @@ mod tests {
         assert!(corrupted.node_count() < original.node_count());
         for width in [Width::W8, Width::W16, Width::W32, Width::W64] {
             assert_eq!(
-                verify_equivalent(&original, &corrupted, width, 2, original_is_mba),
+                verify_equivalent(
+                    &original,
+                    &corrupted,
+                    width,
+                    2,
+                    original_is_mba,
+                    &mut ProofBudget::bounded_default()
+                ),
                 Verification::Unverified,
                 "{width:?}: a smaller but non-equivalent rewrite was accepted"
             );
             assert!(
-                verify_equivalent(&original, &correct, width, 2, original_is_mba).is_proven(),
+                verify_equivalent(
+                    &original,
+                    &correct,
+                    width,
+                    2,
+                    original_is_mba,
+                    &mut ProofBudget::bounded_default()
+                )
+                .is_proven(),
                 "{width:?}: the same gate cannot establish the correct rewrite, so the refusal above proves nothing"
             );
             let result: Simplification = simplify(&original, width);
@@ -1212,7 +1291,14 @@ mod tests {
             );
             for width in [Width::W32, Width::W64] {
                 assert_eq!(
-                    verify_equivalent(&scaled, &zero, width, var_count, scaled_is_mba),
+                    verify_equivalent(
+                        &scaled,
+                        &zero,
+                        width,
+                        var_count,
+                        scaled_is_mba,
+                        &mut ProofBudget::bounded_default()
+                    ),
                     Verification::Unverified,
                     "{width:?}: `{scaled}` was accepted as zero on the strength of a narrower width"
                 );
@@ -1229,8 +1315,14 @@ mod tests {
                 if !result.changed() {
                     continue;
                 }
-                let rederived: Verification =
-                    verify_equivalent(&shape, &result.simplified, width, 2, shape.is_linear_mba());
+                let rederived: Verification = verify_equivalent(
+                    &shape,
+                    &result.simplified,
+                    width,
+                    2,
+                    shape.is_linear_mba(),
+                    &mut ProofBudget::bounded_default(),
+                );
                 assert!(
                     rederived.is_proven(),
                     "{width:?}: `{shape}` was rewritten to `{}` and tagged {:?}, but no independent checker reproduces that proof",
@@ -1486,12 +1578,46 @@ mod tests {
 
     #[cfg(feature = "smt-verify")]
     #[test]
+    fn an_exhausted_proof_budget_never_admits_a_bit_blast_proof_and_repeats() {
+        let obfuscated: Expr = Expr::sub(Expr::neg(Expr::var(0)), Expr::konst(1));
+        let open: Simplification = simplify(&obfuscated, Width::W64);
+        assert_eq!(
+            open.verification,
+            Verification::SmtProvenAtWidth(Width::W64)
+        );
+        assert!(!open.budget_exhausted);
+        for ops in [0_usize, 1] {
+            let first: Simplification =
+                simplify_within(&obfuscated, Width::W64, &mut ProofBudget::new(ops));
+            assert!(first.budget_exhausted, "{ops} operations");
+            assert_ne!(
+                first.verification,
+                Verification::SmtProvenAtWidth(Width::W64),
+                "{ops} operations"
+            );
+            assert!(!first.changed() || first.verification.is_proven());
+            for _ in 0..3 {
+                assert_eq!(
+                    simplify_within(&obfuscated, Width::W64, &mut ProofBudget::new(ops)),
+                    first
+                );
+            }
+        }
+    }
+
+    #[cfg(feature = "smt-verify")]
+    #[test]
     fn boolean_acceptance_rejects_disproven_candidate() {
         let input: Expr = Expr::and(Expr::var(0), Expr::var(1));
         let incorrect: Expr = Expr::var(0);
         assert!(crate::verify::verify_equivalent(&input, &incorrect, Width::W32).is_disproven());
         assert_eq!(
-            accept_expression_candidate(&input, incorrect, Width::W32),
+            accept_expression_candidate(
+                &input,
+                incorrect,
+                Width::W32,
+                &mut ProofBudget::bounded_default()
+            ),
             None
         );
     }
@@ -1503,7 +1629,12 @@ mod tests {
         let incorrect: Expr = Expr::sub(Expr::var(7), Expr::var(19));
         assert!(crate::verify::verify_equivalent(&input, &incorrect, Width::W64).is_disproven());
         assert_eq!(
-            accept_expression_candidate(&input, incorrect, Width::W64),
+            accept_expression_candidate(
+                &input,
+                incorrect,
+                Width::W64,
+                &mut ProofBudget::bounded_default()
+            ),
             None
         );
     }
@@ -1518,7 +1649,12 @@ mod tests {
             crate::verify::Equivalence::Unknown
         );
         assert_eq!(
-            accept_expression_candidate(&input, candidate, Width::W8),
+            accept_expression_candidate(
+                &input,
+                candidate,
+                Width::W8,
+                &mut ProofBudget::bounded_default()
+            ),
             None
         );
     }

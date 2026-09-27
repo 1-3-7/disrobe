@@ -46,7 +46,6 @@ pub(crate) fn independent_refutation(
 #[allow(clippy::unwrap_used, clippy::panic, clippy::expect_used)]
 mod tests {
     use std::collections::BTreeMap;
-    use std::time::Duration;
 
     use super::super::solver_cert::{Certified, certified_check, model_satisfies};
     use super::{Procedure, Refutation, independent_refutation};
@@ -56,7 +55,6 @@ mod tests {
     use super::CertBudget;
 
     const CROSS_BUDGET: CertBudget = CertBudget {
-        timeout: Duration::from_millis(250),
         max_conflicts: 20_000,
         max_decisions: 100_000,
         node_budget: 1usize << 16,

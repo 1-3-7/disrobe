@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::time::Duration;
 
 use disrobe_nir::{BlockKind, NirBlock, NirFunction, NirInstr, basic_blocks};
 
@@ -16,10 +15,9 @@ pub struct SymexecBudget {
     pub max_retired: u64,
     pub loop_cap: u32,
     pub memory_ceiling: usize,
-    pub solver_query_timeout: Duration,
     pub solver_max_conflicts: u64,
     pub solver_max_decisions: u64,
-    pub solver_cumulative: Duration,
+    pub solver_cumulative_work: u64,
     pub solver_max_queries: u64,
 }
 
@@ -33,20 +31,18 @@ impl SymexecBudget {
             max_retired: 200_000,
             loop_cap: 8,
             memory_ceiling: 4_096,
-            solver_query_timeout: Duration::from_millis(250),
             solver_max_conflicts: 20_000,
             solver_max_decisions: 100_000,
-            solver_cumulative: Duration::from_secs(5),
+            solver_cumulative_work: 2_400_000,
             solver_max_queries: 4_096,
         }
     }
 
     pub(crate) const fn solver(self) -> SolverBudget {
         SolverBudget {
-            per_query_timeout: self.solver_query_timeout,
             max_conflicts: self.solver_max_conflicts,
             max_decisions: self.solver_max_decisions,
-            cumulative: self.solver_cumulative,
+            cumulative_work: self.solver_cumulative_work,
             max_queries: self.solver_max_queries,
         }
     }

@@ -61,8 +61,61 @@ pub fn verify_equivalent_budgeted(
     width: Width,
     node_budget: usize,
 ) -> Equivalence {
-    if lhs.depth() > crate::expr::MAX_MBA_DEPTH || rhs.depth() > crate::expr::MAX_MBA_DEPTH {
+    expr_equivalence(lhs, rhs, width, node_budget, node_budget.saturating_mul(8)).verdict
+}
+
+pub(crate) const DEFAULT_OP_BUDGET: usize = DEFAULT_NODE_BUDGET * 8;
+
+pub(crate) fn verify_equivalent_metered(
+    lhs: &Expr,
+    rhs: &Expr,
+    width: Width,
+    budget: &mut crate::simplify::ProofBudget,
+) -> Equivalence {
+    let shares_lhs_inputs: bool = rhs.vars().is_subset(&lhs.vars());
+    if shares_lhs_inputs && budget.unblastable.contains(&(lhs.clone(), width)) {
         return Equivalence::Unknown;
+    }
+    if budget.bdd_ops_remaining == 0 {
+        budget.exhausted = true;
+        return Equivalence::Unknown;
+    }
+    let op_budget: usize = budget.bdd_ops_remaining.min(DEFAULT_OP_BUDGET);
+    let outcome: BlastOutcome = expr_equivalence(lhs, rhs, width, DEFAULT_NODE_BUDGET, op_budget);
+    budget.bdd_ops_remaining = budget
+        .bdd_ops_remaining
+        .saturating_sub(outcome.ops.min(op_budget));
+    let truncated: bool = op_budget < DEFAULT_OP_BUDGET;
+    if outcome.verdict == Equivalence::Unknown && truncated && outcome.ops > op_budget {
+        budget.exhausted = true;
+    }
+    if outcome.lhs_unblastable && shares_lhs_inputs && !truncated {
+        budget.unblastable.push((lhs.clone(), width));
+    }
+    outcome.verdict
+}
+
+#[derive(Debug)]
+struct BlastOutcome {
+    verdict: Equivalence,
+    ops: usize,
+    lhs_unblastable: bool,
+}
+
+fn expr_equivalence(
+    lhs: &Expr,
+    rhs: &Expr,
+    width: Width,
+    node_budget: usize,
+    op_budget: usize,
+) -> BlastOutcome {
+    let unknown = |ops: usize, lhs_unblastable: bool| BlastOutcome {
+        verdict: Equivalence::Unknown,
+        ops,
+        lhs_unblastable,
+    };
+    if lhs.depth() > crate::expr::MAX_MBA_DEPTH || rhs.depth() > crate::expr::MAX_MBA_DEPTH {
+        return unknown(0, false);
     }
     let bits: usize = width.bits() as usize;
     let mut vars: BTreeSet<u32> = BTreeSet::new();
@@ -71,59 +124,67 @@ pub fn verify_equivalent_budgeted(
     let var_count: usize = vars.len();
     let original_vars: Vec<u32> = vars.iter().copied().collect();
     let Some(input_bits): Option<usize> = var_count.checked_mul(bits) else {
-        return Equivalence::Unknown;
+        return unknown(0, false);
     };
     if input_bits > MAX_INPUT_BITS || input_bits.saturating_add(2) > node_budget {
-        return Equivalence::Unknown;
+        return unknown(0, false);
     }
     let mut remap: BTreeMap<u32, u32> = BTreeMap::new();
     for (dense, original) in original_vars.iter().copied().enumerate() {
         let Ok(dense): Result<u32, _> = u32::try_from(dense) else {
-            return Equivalence::Unknown;
+            return unknown(0, false);
         };
         remap.insert(original, dense);
     }
     let lhs: Expr = lhs.remap_vars(&remap);
     let rhs: Expr = rhs.remap_vars(&remap);
 
-    let mut bdd: Bdd = Bdd::new(node_budget);
-    let inputs: Vec<Vec<NodeId>> = match bdd.fresh_inputs(var_count, bits) {
-        Some(inputs) => inputs,
-        None => return Equivalence::Unknown,
+    let mut bdd: Bdd = Bdd::with_op_budget(node_budget, op_budget);
+    let Some(inputs): Option<Vec<Vec<NodeId>>> = bdd.fresh_inputs(var_count, bits) else {
+        return unknown(bdd.ops, true);
     };
+    let Some(lhs_bits): Option<Vec<NodeId>> = blast(&mut bdd, &lhs, &inputs, bits) else {
+        return unknown(bdd.ops, true);
+    };
+    let verdict: Equivalence =
+        compare_with_blasted(&mut bdd, &lhs_bits, &rhs, &inputs, bits, &original_vars);
+    BlastOutcome {
+        verdict,
+        ops: bdd.ops,
+        lhs_unblastable: false,
+    }
+}
 
-    let lhs_bits: Vec<NodeId> = match blast(&mut bdd, &lhs, &inputs, bits) {
-        Some(bits) => bits,
-        None => return Equivalence::Unknown,
+fn compare_with_blasted(
+    bdd: &mut Bdd,
+    lhs_bits: &[NodeId],
+    rhs: &Expr,
+    inputs: &[Vec<NodeId>],
+    bits: usize,
+    original_vars: &[u32],
+) -> Equivalence {
+    let Some(rhs_bits): Option<Vec<NodeId>> = blast(bdd, rhs, inputs, bits) else {
+        return Equivalence::Unknown;
     };
-    let rhs_bits: Vec<NodeId> = match blast(&mut bdd, &rhs, &inputs, bits) {
-        Some(bits) => bits,
-        None => return Equivalence::Unknown,
-    };
-
     let mut difference: NodeId = ZERO;
     for (left, right) in lhs_bits.iter().copied().zip(rhs_bits.iter().copied()) {
-        let bit_diff: NodeId = match bdd.xor(left, right) {
-            Some(node) => node,
-            None => return Equivalence::Unknown,
+        let Some(bit_diff): Option<NodeId> = bdd.xor(left, right) else {
+            return Equivalence::Unknown;
         };
-        difference = match bdd.or(difference, bit_diff) {
-            Some(node) => node,
-            None => return Equivalence::Unknown,
+        let Some(joined): Option<NodeId> = bdd.or(difference, bit_diff) else {
+            return Equivalence::Unknown;
         };
+        difference = joined;
     }
-
     if difference == ZERO {
         return Equivalence::Proven;
     }
     let assignment: BTreeMap<u32, bool> = bdd.witness(difference);
-    let dense_counterexample: Vec<u64> = decode_witness(&assignment, var_count, bits);
-    let counterexample: Vec<u64> =
-        match expand_counterexample(&dense_counterexample, &original_vars) {
-            Some(counterexample) => counterexample,
-            None => return Equivalence::Unknown,
-        };
-    Equivalence::Disproven { counterexample }
+    let dense_counterexample: Vec<u64> = decode_witness(&assignment, original_vars.len(), bits);
+    expand_counterexample(&dense_counterexample, original_vars)
+        .map_or(Equivalence::Unknown, |counterexample: Vec<u64>| {
+            Equivalence::Disproven { counterexample }
+        })
 }
 
 #[must_use]
@@ -313,6 +374,10 @@ const ONE: NodeId = 1;
 
 impl Bdd {
     fn new(node_budget: usize) -> Self {
+        Self::with_op_budget(node_budget, node_budget.saturating_mul(8))
+    }
+
+    fn with_op_budget(node_budget: usize, op_budget: usize) -> Self {
         let terminal: Node = Node {
             var: u32::MAX,
             low: 0,
@@ -328,7 +393,7 @@ impl Bdd {
             mem_vars: BTreeMap::new(),
             mem_next_label: MEM_VAR_BASE,
             node_budget,
-            op_budget: node_budget.saturating_mul(8),
+            op_budget,
             ops: 0,
         }
     }
@@ -1991,6 +2056,73 @@ mod tests {
                 lifted: false
             }
         );
+    }
+
+    fn wide_product() -> Expr {
+        Expr::add(Expr::mul(Expr::var(0), Expr::var(1)), Expr::var(0))
+    }
+
+    #[test]
+    fn an_unblastable_original_is_charged_once_and_the_memo_matches_a_fresh_check() {
+        let lhs: Expr = wide_product();
+        let mut budget: crate::simplify::ProofBudget =
+            crate::simplify::ProofBudget::bounded_default();
+        let start: usize = budget.bdd_ops_remaining;
+        assert_eq!(
+            verify_equivalent_metered(&lhs, &Expr::var(0), Width::W64, &mut budget),
+            Equivalence::Unknown
+        );
+        let after_first: usize = budget.bdd_ops_remaining;
+        assert!(after_first < start, "the first blow-up must be charged");
+        assert_eq!(budget.unblastable, vec![(lhs.clone(), Width::W64)]);
+        for candidate in [Expr::var(1), Expr::add(Expr::var(0), Expr::var(1))] {
+            assert_eq!(
+                verify_equivalent_budgeted(&lhs, &candidate, Width::W64, DEFAULT_NODE_BUDGET),
+                Equivalence::Unknown,
+                "the memo must agree with a fresh check against the same original"
+            );
+            assert_eq!(
+                verify_equivalent_metered(&lhs, &candidate, Width::W64, &mut budget),
+                Equivalence::Unknown
+            );
+            assert_eq!(budget.bdd_ops_remaining, after_first);
+        }
+        assert!(!budget.exhausted);
+    }
+
+    #[test]
+    fn an_exhausted_shared_budget_returns_unknown_the_same_way_on_every_run() {
+        let lhs: Expr = wide_product();
+        let rhs: Expr = Expr::add(Expr::mul(Expr::var(1), Expr::var(0)), Expr::var(0));
+        for ops in [0_usize, 1, 1000] {
+            let mut first: crate::simplify::ProofBudget = crate::simplify::ProofBudget::new(ops);
+            let verdict: Equivalence =
+                verify_equivalent_metered(&lhs, &rhs, Width::W64, &mut first);
+            assert_eq!(verdict, Equivalence::Unknown, "{ops} operations");
+            assert!(first.exhausted, "{ops} operations");
+            assert_eq!(first.bdd_ops_remaining, 0);
+            assert!(
+                first.unblastable.is_empty(),
+                "a truncated check proves nothing about the original"
+            );
+            for _ in 0..3 {
+                let mut again: crate::simplify::ProofBudget =
+                    crate::simplify::ProofBudget::new(ops);
+                assert_eq!(
+                    verify_equivalent_metered(&lhs, &rhs, Width::W64, &mut again),
+                    verdict
+                );
+                assert_eq!(again.exhausted, first.exhausted);
+                assert_eq!(again.bdd_ops_remaining, first.bdd_ops_remaining);
+            }
+        }
+        let mut open: crate::simplify::ProofBudget =
+            crate::simplify::ProofBudget::bounded_default();
+        assert_eq!(
+            verify_equivalent_metered(&Expr::var(0), &Expr::var(0), Width::W64, &mut open),
+            Equivalence::Proven
+        );
+        assert!(!open.exhausted);
     }
 }
 

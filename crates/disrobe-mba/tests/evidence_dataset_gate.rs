@@ -7,15 +7,11 @@ mod evidence_corpus;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
-use std::thread;
-use std::time::Duration;
 
 use disrobe_mba::{Expr, Simplification, Width, simplify};
 use evidence_corpus::{Case, Truth, load_cases, load_truths, parse_prefix, width_from_bits};
 
 const DATASET_CORPUS_VAR: &str = "DISROBE_MBA_DATASET_CORPUS";
-const PER_ENTRY_BUDGET: Duration = Duration::from_secs(2);
 const MINIMUM_DATASET_ENTRIES: usize = 100;
 
 fn dataset_directory() -> Option<PathBuf> {
@@ -27,18 +23,12 @@ fn dataset_directory() -> Option<PathBuf> {
     Some(PathBuf::from(text))
 }
 
-fn bounded_simplify(obfuscated: &Expr, width: Width) -> Option<Expr> {
-    let (sender, receiver): (mpsc::Sender<Expr>, mpsc::Receiver<Expr>) = mpsc::channel();
-    let payload: Expr = obfuscated.clone();
-    let handle: thread::JoinHandle<()> = thread::spawn(move || {
-        let simplification: Simplification = simplify(&payload, width);
-        let _ = sender.send(simplification.simplified);
-    });
-    let produced: Option<Expr> = receiver.recv_timeout(PER_ENTRY_BUDGET).ok();
-    if produced.is_some() {
-        let _ = handle.join();
+fn budgeted_simplify(obfuscated: &Expr, width: Width) -> Option<Expr> {
+    let simplification: Simplification = simplify(obfuscated, width);
+    if simplification.budget_exhausted && !simplification.changed() {
+        return None;
     }
-    produced
+    Some(simplification.simplified)
 }
 
 #[test]
@@ -90,7 +80,7 @@ fn published_dataset_originals_grade_the_recovery_when_the_cache_is_present() {
                 case.id
             );
         }
-        let Some(recovered) = bounded_simplify(&obfuscated, width) else {
+        let Some(recovered) = budgeted_simplify(&obfuscated, width) else {
             refusals += 1;
             continue;
         };
@@ -109,7 +99,7 @@ fn published_dataset_originals_grade_the_recovery_when_the_cache_is_present() {
     }
 
     eprintln!(
-        "published-dataset lane: {graded} graded of {} entries, {refusals} refused the {PER_ENTRY_BUDGET:?} budget, {} rejected",
+        "published-dataset lane: {graded} graded of {} entries, {refusals} exhausted the deterministic proof budget, {} rejected",
         cases.len(),
         failures.len()
     );

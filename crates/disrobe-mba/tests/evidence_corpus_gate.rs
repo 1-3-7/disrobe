@@ -14,9 +14,7 @@ mod solver_requirement;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::{OnceLock, mpsc};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::sync::OnceLock;
 
 use disrobe_mba::{BinOp, Expr, Simplification, Width, equivalence_query, simplify};
 use evidence_corpus::{
@@ -26,18 +24,17 @@ use evidence_corpus::{
 use external_solver::{Answer, Solver, detect, run_bounded};
 use solver_requirement::{enforce_solver_requirement, solver_is_required};
 
-const PER_ENTRY_BUDGET: Duration = Duration::from_secs(2);
 const GRADED_FLOOR: usize = 180;
 const SOLVER_SECONDS: u32 = 5;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Recovered {
     expression: Expr,
     proven: bool,
     changed: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Attempt {
     Produced(Recovered),
     BudgetRefusal,
@@ -48,7 +45,6 @@ struct Landed {
     id: String,
     width: Width,
     attempt: Attempt,
-    elapsed: Duration,
     original: Expr,
     original_nodes: usize,
     checks: Vec<(Vec<u64>, u64)>,
@@ -64,26 +60,28 @@ struct Report {
     proven: usize,
 }
 
-fn bounded_simplify(obfuscated: &Expr, width: Width) -> (Attempt, Duration) {
-    let (sender, receiver): (mpsc::Sender<Recovered>, mpsc::Receiver<Recovered>) = mpsc::channel();
-    let payload: Expr = obfuscated.clone();
-    let started: Instant = Instant::now();
-    let handle: thread::JoinHandle<()> = thread::spawn(move || {
-        let simplification: Simplification = simplify(&payload, width);
-        let _ = sender.send(Recovered {
-            proven: simplification.verification.is_proven(),
-            changed: simplification.changed(),
-            expression: simplification.simplified,
-        });
-    });
-    receiver.recv_timeout(PER_ENTRY_BUDGET).map_or_else(
-        |_| (Attempt::BudgetRefusal, started.elapsed()),
-        |recovered: Recovered| {
-            let elapsed: Duration = started.elapsed();
-            let _ = handle.join();
-            (Attempt::Produced(recovered), elapsed)
-        },
-    )
+fn budgeted_simplify(obfuscated: &Expr, width: Width) -> Attempt {
+    let simplification: Simplification = simplify(obfuscated, width);
+    if simplification.budget_exhausted && !simplification.changed() {
+        return Attempt::BudgetRefusal;
+    }
+    Attempt::Produced(Recovered {
+        proven: simplification.verification.is_proven(),
+        changed: simplification.changed(),
+        expression: simplification.simplified,
+    })
+}
+
+fn attempts() -> Vec<(String, Attempt)> {
+    let (cases, _): &(Vec<Case>, BTreeMap<String, Truth>) = corpus();
+    cases
+        .iter()
+        .map(|case: &Case| {
+            let width: Width = width_from_bits(case.width);
+            let obfuscated: Expr = parse_prefix(&case.obfuscated);
+            (case.id.clone(), budgeted_simplify(&obfuscated, width))
+        })
+        .collect()
 }
 
 fn corpus() -> &'static (Vec<Case>, BTreeMap<String, Truth>) {
@@ -111,18 +109,15 @@ fn landings() -> &'static Vec<Landed> {
     LANDED.get_or_init(|| {
         let (cases, truths): &(Vec<Case>, BTreeMap<String, Truth>) = corpus();
         let mut landed: Vec<Landed> = Vec::with_capacity(cases.len());
-        for case in cases {
+        for (case, (id, attempt)) in cases.iter().zip(attempts()) {
+            assert_eq!(case.id, id, "the attempts follow the corpus order");
             let truth: &Truth = truths
                 .get(&case.id)
                 .unwrap_or_else(|| panic!("{}: no held-out original for this case", case.id));
-            let width: Width = width_from_bits(case.width);
-            let obfuscated: Expr = parse_prefix(&case.obfuscated);
-            let (attempt, elapsed): (Attempt, Duration) = bounded_simplify(&obfuscated, width);
             landed.push(Landed {
-                id: case.id.clone(),
-                width,
+                id,
+                width: width_from_bits(case.width),
                 attempt,
-                elapsed,
                 original: parse_prefix(&truth.original),
                 original_nodes: truth.original_nodes,
                 checks: truth
@@ -131,12 +126,6 @@ fn landings() -> &'static Vec<Landed> {
                     .map(|check| (check.inputs.clone(), check.output))
                     .collect(),
             });
-        }
-        let mut slowest: Vec<&Landed> = landed.iter().collect();
-        slowest.sort_by_key(|entry: &&Landed| std::cmp::Reverse(entry.elapsed));
-        eprintln!("slowest corpus entries under simplify:");
-        for entry in slowest.iter().take(5) {
-            eprintln!("  {:>8?}  {}", entry.elapsed, entry.id);
         }
         landed
     })
@@ -422,7 +411,7 @@ fn recovery_agrees_with_the_held_out_originals() {
         .map(|entry: &Landed| entry.id.as_str())
         .collect();
     eprintln!(
-        "{} of {} entries refused the {PER_ENTRY_BUDGET:?} budget and are reported rather than counted as recovered: {refusals:?}",
+        "{} of {} entries exhausted the deterministic proof budget before any rewrite was proven and are reported rather than counted as recovered: {refusals:?}",
         refusals.len(),
         landings().len()
     );
@@ -472,5 +461,33 @@ fn a_seeded_wrong_recovery_is_rejected_by_the_corpus() {
         honest.graded >= GRADED_FLOOR,
         "the seeded-wrong comparison is only meaningful over a real population, {} entries were graded",
         honest.graded
+    );
+}
+
+#[test]
+fn the_gate_outcome_is_identical_across_two_runs() {
+    let first: Vec<(String, Attempt)> = landings()
+        .iter()
+        .map(|entry: &Landed| (entry.id.clone(), entry.attempt.clone()))
+        .collect();
+    let second: Vec<(String, Attempt)> = attempts();
+    assert_eq!(first.len(), second.len());
+    let differing: Vec<&str> = first
+        .iter()
+        .zip(&second)
+        .filter(|(left, right): &(&(String, Attempt), &(String, Attempt))| left != right)
+        .map(|(left, _): (&(String, Attempt), &(String, Attempt))| left.0.as_str())
+        .collect();
+    assert!(
+        differing.is_empty(),
+        "a second run of the same corpus changed the outcome of {differing:?}; the budgets are not deterministic"
+    );
+    let refused: usize = first
+        .iter()
+        .filter(|(_, attempt): &&(String, Attempt)| matches!(attempt, Attempt::BudgetRefusal))
+        .count();
+    eprintln!(
+        "two runs agree on all {} entries, {refused} of them budget refusals",
+        first.len()
     );
 }

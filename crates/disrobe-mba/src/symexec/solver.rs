@@ -1,29 +1,33 @@
-use std::time::{Duration, Instant};
-
 use oxiz::{TermId, TermManager};
 
-use super::solver_cert::{CertBudget, Certified, certified_check};
+use super::solver_cert::{CertBudget, Certified, Metered, certified_check_metered};
 use super::value::{AluOp, BitWidth, CmpOp, Sym, UnaryOp, fold_alu, fold_unary};
 
 const CERT_NODE_BUDGET: usize = 1usize << 18;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SolverBudget {
-    pub(crate) per_query_timeout: Duration,
     pub(crate) max_conflicts: u64,
     pub(crate) max_decisions: u64,
-    pub(crate) cumulative: Duration,
+    pub(crate) cumulative_work: u64,
     pub(crate) max_queries: u64,
 }
 
 impl SolverBudget {
     pub(crate) const fn bounded_default() -> Self {
         Self {
-            per_query_timeout: Duration::from_millis(250),
             max_conflicts: 20_000,
             max_decisions: 100_000,
-            cumulative: Duration::from_secs(5),
+            cumulative_work: 2_400_000,
             max_queries: 4_096,
+        }
+    }
+
+    const fn cert(self) -> CertBudget {
+        CertBudget {
+            max_conflicts: self.max_conflicts,
+            max_decisions: self.max_decisions,
+            node_budget: CERT_NODE_BUDGET,
         }
     }
 }
@@ -52,7 +56,7 @@ pub(crate) enum Guard {
 pub(crate) struct SymSolver {
     manager: TermManager,
     budget: SolverBudget,
-    elapsed: Duration,
+    work: u64,
     queries: u64,
     fresh: u64,
 }
@@ -62,7 +66,7 @@ impl SymSolver {
         Self {
             manager: TermManager::new(),
             budget,
-            elapsed: Duration::ZERO,
+            work: 0,
             queries: 0,
             fresh: 0,
         }
@@ -230,8 +234,10 @@ impl SymSolver {
         }
     }
 
-    pub(crate) fn cumulative_exhausted(&self) -> bool {
-        self.elapsed.saturating_add(self.budget.per_query_timeout) > self.budget.cumulative
+    pub(crate) const fn cumulative_exhausted(&self) -> bool {
+        self.work
+            .saturating_add(self.budget.cert().solver_work_ceiling())
+            > self.budget.cumulative_work
             || self.queries >= self.budget.max_queries
     }
 
@@ -255,17 +261,11 @@ impl SymSolver {
     }
 
     fn check(&mut self, assumptions: &[TermId]) -> Feasible {
-        let start: Instant = Instant::now();
-        let cert_budget: CertBudget = CertBudget {
-            timeout: self.budget.per_query_timeout,
-            max_conflicts: self.budget.max_conflicts,
-            max_decisions: self.budget.max_decisions,
-            node_budget: CERT_NODE_BUDGET,
-        };
-        let verdict: Certified = certified_check(&mut self.manager, assumptions, cert_budget);
-        self.elapsed = self.elapsed.saturating_add(start.elapsed());
-        self.queries = self.queries.wrapping_add(1);
-        match verdict {
+        let metered: Metered =
+            certified_check_metered(&mut self.manager, assumptions, self.budget.cert());
+        self.work = self.work.saturating_add(metered.solver_work);
+        self.queries = self.queries.saturating_add(1);
+        match metered.verdict {
             Certified::Sat => Feasible::Sat,
             Certified::Unsat => Feasible::Unsat,
             Certified::Abstain => Feasible::Unknown,
@@ -323,10 +323,9 @@ mod tests {
     #[test]
     fn tiny_budget_degrades_to_unknown_not_a_guess() {
         let budget: SolverBudget = SolverBudget {
-            per_query_timeout: Duration::from_nanos(1),
             max_conflicts: 0,
             max_decisions: 0,
-            cumulative: Duration::from_secs(1),
+            cumulative_work: 1,
             max_queries: 16,
         };
         let mut solver: SymSolver = SymSolver::new(budget);
@@ -339,5 +338,59 @@ mod tests {
         let equal: Sym = solver.compare(CmpOp::Eq, masked, one, width32);
         let guard: Guard = solver.nonzero_guard(equal);
         assert_eq!(solver.feasible(&[], guard), Feasible::Unknown);
+    }
+
+    fn product_queries(budget: SolverBudget) -> (Vec<Feasible>, u64, u64) {
+        let mut solver: SymSolver = SymSolver::new(budget);
+        let width16: BitWidth = width(16);
+        let a: Sym = solver.fresh_havoc(width16);
+        let b: Sym = solver.fresh_havoc(width16);
+        let product: Sym = solver.alu(AluOp::Mul, a, b, width16);
+        let mut verdicts: Vec<Feasible> = Vec::new();
+        for target in [0x3579_u64, 0x2469, 0x0f0f, 0x7531, 0x1357, 0x0bad] {
+            if solver.cumulative_exhausted() {
+                break;
+            }
+            let equal: Sym =
+                solver.compare(CmpOp::Eq, product, Sym::constant(width16, target), width16);
+            let guard: Guard = solver.nonzero_guard(equal);
+            verdicts.push(solver.feasible(&[], guard));
+        }
+        (verdicts, solver.work, solver.queries)
+    }
+
+    #[test]
+    fn solver_work_is_charged_and_repeats_exactly() {
+        let first: (Vec<Feasible>, u64, u64) = product_queries(SolverBudget::default());
+        assert_eq!(first.2, 6);
+        assert!(first.1 > 0, "a factoring query must charge solver work");
+        assert_eq!(product_queries(SolverBudget::default()), first);
+    }
+
+    #[test]
+    fn cumulative_work_exhaustion_stops_at_the_same_query_on_every_run() {
+        let ceiling: u64 = SolverBudget::default().cert().solver_work_ceiling();
+        for (cumulative_work, expected_queries) in [(ceiling, 1), (ceiling - 1, 0), (0, 0)] {
+            let budget: SolverBudget = SolverBudget {
+                cumulative_work,
+                ..SolverBudget::default()
+            };
+            let run: (Vec<Feasible>, u64, u64) = product_queries(budget);
+            assert_eq!(run.2, expected_queries, "cumulative work {cumulative_work}");
+            assert_eq!(product_queries(budget), run);
+        }
+    }
+
+    #[test]
+    fn the_query_count_bound_stops_at_the_same_query_on_every_run() {
+        for max_queries in [0_u64, 1, 3] {
+            let budget: SolverBudget = SolverBudget {
+                max_queries,
+                ..SolverBudget::default()
+            };
+            let run: (Vec<Feasible>, u64, u64) = product_queries(budget);
+            assert_eq!(run.2, max_queries);
+            assert_eq!(product_queries(budget), run);
+        }
     }
 }

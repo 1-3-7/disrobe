@@ -1,6 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::panic::{self, AssertUnwindSafe};
-use std::time::Duration;
 
 use oxiz::{TermId, TermManager};
 
@@ -25,14 +24,16 @@ impl SmtVerdict {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "every field is a public ceiling that callers set by name"
+)]
 pub struct SmtBudget {
-    pub timeout: Duration,
     pub max_conflicts: u64,
     pub max_decisions: u64,
     pub max_encode_nodes: usize,
 }
 
-const DEFAULT_TIMEOUT: Duration = Duration::from_millis(750);
 const DEFAULT_MAX_CONFLICTS: u64 = 50_000;
 const DEFAULT_MAX_DECISIONS: u64 = 200_000;
 const DEFAULT_MAX_ENCODE_NODES: usize = 1 << 16;
@@ -41,7 +42,6 @@ impl SmtBudget {
     #[must_use]
     pub const fn bounded_default() -> Self {
         Self {
-            timeout: DEFAULT_TIMEOUT,
             max_conflicts: DEFAULT_MAX_CONFLICTS,
             max_decisions: DEFAULT_MAX_DECISIONS,
             max_encode_nodes: DEFAULT_MAX_ENCODE_NODES,
@@ -610,7 +610,6 @@ fn solve(
         asserted.push(term);
     }
     let cert_budget: CertBudget = CertBudget {
-        timeout: budget.timeout,
         max_conflicts: budget.max_conflicts,
         max_decisions: budget.max_decisions,
         node_budget: CERT_NODE_BUDGET,
@@ -693,7 +692,6 @@ mod tests {
             ),
         ];
         let exhausted_backend: SmtBudget = SmtBudget {
-            timeout: Duration::ZERO,
             max_conflicts: 0,
             max_decisions: 0,
             ..SmtBudget::bounded_default()
@@ -965,28 +963,73 @@ mod tests {
     }
 
     #[test]
-    fn an_exhausted_timeout_never_yields_an_unconfirmed_refutation() {
-        let budget: SmtBudget = SmtBudget {
-            timeout: Duration::from_nanos(1),
-            ..SmtBudget::bounded_default()
-        };
+    fn a_one_step_solver_budget_never_yields_an_unconfirmed_refutation_and_repeats() {
         let predicate: Predicate = live_masked_product();
         let constraints: [(Predicate, bool, Width); 1] = [(predicate.clone(), true, Width::W64)];
-        let verdict: SmtVerdict = check_unsat(&constraints, budget);
-        assert_ne!(verdict, SmtVerdict::Unsat);
-        if verdict == SmtVerdict::Sat {
-            let env: [u64; 5] = [0, 0, 0, 0, 0];
-            assert!(
-                predicate.evaluate(&env, Width::W64),
-                "a Sat verdict under an exhausted timeout must still describe a satisfiable query"
-            );
+        for budget in [
+            SmtBudget {
+                max_conflicts: 1,
+                ..SmtBudget::bounded_default()
+            },
+            SmtBudget {
+                max_decisions: 1,
+                ..SmtBudget::bounded_default()
+            },
+            SmtBudget {
+                max_conflicts: 1,
+                max_decisions: 1,
+                ..SmtBudget::bounded_default()
+            },
+        ] {
+            let verdict: SmtVerdict = check_unsat(&constraints, budget);
+            assert_ne!(verdict, SmtVerdict::Unsat);
+            if verdict == SmtVerdict::Sat {
+                let env: [u64; 5] = [0, 0, 0, 0, 0];
+                assert!(
+                    predicate.evaluate(&env, Width::W64),
+                    "a Sat verdict under an exhausted budget must still describe a satisfiable query"
+                );
+            }
+            for _ in 0..4 {
+                assert_eq!(
+                    check_unsat(&constraints, budget),
+                    verdict,
+                    "the same budget must give the same verdict on every run"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_zero_step_budget_gives_the_same_indeterminate_verdict_on_every_run() {
+        let odd_square_plus: Predicate = Predicate::eq(
+            Expr::and(x_squared_plus_x(), Expr::konst(1)),
+            Expr::konst(1),
+        );
+        let constraints: [(Predicate, bool, Width); 1] = [(odd_square_plus, true, Width::W8)];
+        assert_eq!(
+            check_unsat(&constraints, SmtBudget::default()),
+            SmtVerdict::Unsat
+        );
+        for budget in [
+            SmtBudget {
+                max_conflicts: 0,
+                ..SmtBudget::bounded_default()
+            },
+            SmtBudget {
+                max_decisions: 0,
+                ..SmtBudget::bounded_default()
+            },
+        ] {
+            for _ in 0..4 {
+                assert_eq!(check_unsat(&constraints, budget), SmtVerdict::Indeterminate);
+            }
         }
     }
 
     #[test]
     fn tiny_conflict_budget_yields_indeterminate_not_a_guess() {
         let budget: SmtBudget = SmtBudget {
-            timeout: Duration::from_nanos(1),
             max_conflicts: 0,
             max_decisions: 0,
             max_encode_nodes: 0,

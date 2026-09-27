@@ -1484,13 +1484,25 @@ mod tests {
             "the poisoned rewrite `{wrong}` is equivalent, so it cannot probe the gate"
         );
         assert_eq!(
-            crate::simplify::accept_verified(&original, &wrong, width, 2),
+            crate::simplify::accept_verified(
+                &original,
+                &wrong,
+                width,
+                2,
+                &mut crate::simplify::ProofBudget::bounded_default()
+            ),
             None,
             "the acceptance gate admitted a non-equivalent saturation result"
         );
         for gate_width in [Width::W16, Width::W32, Width::W64] {
             assert_eq!(
-                crate::simplify::accept_verified(&original, &wrong, gate_width, 2),
+                crate::simplify::accept_verified(
+                    &original,
+                    &wrong,
+                    gate_width,
+                    2,
+                    &mut crate::simplify::ProofBudget::bounded_default()
+                ),
                 None,
                 "{gate_width:?}: the acceptance gate admitted a non-equivalent saturation result"
             );
@@ -1501,7 +1513,14 @@ mod tests {
             Expr::mul(Expr::konst(2), Expr::and(Expr::var(0), Expr::var(1))),
         );
         assert!(
-            crate::simplify::accept_verified(&source, &clean, width, 2).is_some(),
+            crate::simplify::accept_verified(
+                &source,
+                &clean,
+                width,
+                2,
+                &mut crate::simplify::ProofBudget::bounded_default()
+            )
+            .is_some(),
             "the same gate must admit a correct rewrite, otherwise the refusal above proves nothing"
         );
         for pipeline_width in [Width::W8, Width::W16, Width::W32, Width::W64] {

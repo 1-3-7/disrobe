@@ -1,6 +1,6 @@
 use crate::expr::{BinOp, Expr, UnOp, Width};
 use crate::rewrite::order_key;
-use crate::simplify::{Verification, accept_verified};
+use crate::simplify::{ProofBudget, Verification, accept_verified};
 use std::collections::BTreeSet;
 
 const MAX_ATOMS: usize = 3;
@@ -29,6 +29,7 @@ pub(crate) fn synthesize(
     original: &Expr,
     width: Width,
     var_count: u32,
+    proof_budget: &mut ProofBudget,
 ) -> Option<(Expr, Verification)> {
     if var_count == 0 || var_count > MAX_VARS {
         return None;
@@ -65,6 +66,7 @@ pub(crate) fn synthesize(
         tried: BTreeSet::new(),
         gens: 0,
         verify_attempts: 0,
+        proof_budget,
         result: None,
     };
     engine.seed_terminals(&atoms, &consts);
@@ -92,6 +94,7 @@ struct Enumerator<'a> {
     tried: BTreeSet<Vec<u64>>,
     gens: u64,
     verify_attempts: u32,
+    proof_budget: &'a mut ProofBudget,
     result: Option<(Expr, Verification)>,
 }
 
@@ -122,9 +125,13 @@ impl Enumerator<'_> {
             && self.tried.insert(order_key(&candidate))
         {
             self.verify_attempts += 1;
-            if let Some(proof) =
-                accept_verified(self.original, &candidate, self.width, self.var_count)
-            {
+            if let Some(proof) = accept_verified(
+                self.original,
+                &candidate,
+                self.width,
+                self.var_count,
+                self.proof_budget,
+            ) {
                 self.result = Some((candidate, proof));
                 return;
             }
@@ -357,7 +364,7 @@ mod tests {
 
     fn l0_l5_untouched(expr: &Expr, width: Width, var_count: u32) -> bool {
         let (candidate, verification): (Expr, Verification) =
-            simplify_l0_l5(expr, width, var_count);
+            simplify_l0_l5(expr, width, var_count, &mut ProofBudget::bounded_default());
         candidate == *expr && !verification.is_proven()
     }
 
@@ -447,7 +454,7 @@ mod tests {
     fn abstains_on_irreducible_opaque_expression() {
         let expr: Expr = Expr::xor(Expr::add(a(), b()), Expr::sub(a(), b()));
         assert!(
-            synthesize(&expr, Width::W8, 2).is_none(),
+            synthesize(&expr, Width::W8, 2, &mut ProofBudget::bounded_default()).is_none(),
             "an irreducible mixed opaque expression must abstain"
         );
         let result: Simplification = simplify(&expr, Width::W8);
@@ -464,13 +471,13 @@ mod tests {
             collect_atoms(&expr).is_none(),
             "four distinct opaque leaves exceed the atom budget and must abstain"
         );
-        assert!(synthesize(&expr, Width::W8, 4).is_none());
+        assert!(synthesize(&expr, Width::W8, 4, &mut ProofBudget::bounded_default()).is_none());
     }
 
     #[test]
     fn abstains_below_node_floor() {
         let expr: Expr = shr(0, 1);
-        assert!(synthesize(&expr, Width::W8, 1).is_none());
+        assert!(synthesize(&expr, Width::W8, 1, &mut ProofBudget::bounded_default()).is_none());
     }
 
     #[test]

@@ -1,10 +1,9 @@
 use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet};
 use std::panic::{self, AssertUnwindSafe};
-use std::time::Duration;
 
 use oxiz::core::ast::TermKind;
-use oxiz::resource_limits::ResourceLimits;
+use oxiz::resource_limits::{ResourceExhausted, ResourceLimits};
 use oxiz::solver::Model;
 use oxiz::{Solver, SolverResult, Term, TermId, TermManager};
 
@@ -19,7 +18,6 @@ pub(crate) enum Certified {
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct CertBudget {
-    pub(crate) timeout: Duration,
     pub(crate) max_conflicts: u64,
     pub(crate) max_decisions: u64,
     pub(crate) node_budget: usize,
@@ -345,6 +343,18 @@ pub(crate) fn model_satisfies(
     true
 }
 
+impl CertBudget {
+    pub(crate) const fn solver_work_ceiling(self) -> u64 {
+        self.max_conflicts.saturating_add(self.max_decisions)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Metered {
+    pub(crate) verdict: Certified,
+    pub(crate) solver_work: u64,
+}
+
 #[derive(Debug)]
 enum RawOutcome {
     Sat(Option<BTreeMap<TermId, u64>>),
@@ -436,18 +446,35 @@ pub(crate) fn certified_check(
     assumptions: &[TermId],
     budget: CertBudget,
 ) -> Certified {
-    let outcome: Result<Certified, Box<dyn Any + Send>> =
-        panic::catch_unwind(AssertUnwindSafe(|| run(manager, assumptions, budget)));
-    outcome.unwrap_or(Certified::Abstain)
+    certified_check_metered(manager, assumptions, budget).verdict
 }
 
-fn run(manager: &mut TermManager, assumptions: &[TermId], budget: CertBudget) -> Certified {
+pub(crate) fn certified_check_metered(
+    manager: &mut TermManager,
+    assumptions: &[TermId],
+    budget: CertBudget,
+) -> Metered {
+    let outcome: Result<Metered, Box<dyn Any + Send>> =
+        panic::catch_unwind(AssertUnwindSafe(|| run(manager, assumptions, budget)));
+    outcome.unwrap_or_else(|_| Metered {
+        verdict: Certified::Abstain,
+        solver_work: budget.solver_work_ceiling(),
+    })
+}
+
+fn run(manager: &mut TermManager, assumptions: &[TermId], budget: CertBudget) -> Metered {
     if assumptions.is_empty() {
-        return Certified::Sat;
+        return Metered {
+            verdict: Certified::Sat,
+            solver_work: 0,
+        };
     }
     let free: Vec<TermId> = collect_free_vars(manager, assumptions);
-    let raw: RawOutcome = raw_solve(manager, assumptions, &free, budget);
-    certify(manager, assumptions, &free, raw, budget)
+    let (raw, solver_work): (RawOutcome, u64) = raw_solve(manager, assumptions, &free, budget);
+    Metered {
+        verdict: certify(manager, assumptions, &free, raw, budget),
+        solver_work,
+    }
 }
 
 fn raw_solve(
@@ -455,19 +482,23 @@ fn raw_solve(
     assumptions: &[TermId],
     free: &[TermId],
     budget: CertBudget,
-) -> RawOutcome {
+) -> (RawOutcome, u64) {
     let mut solver: Solver = Solver::new();
     for &assumption in assumptions {
         solver.assert(assumption, manager);
     }
-    solver.set_timeout(budget.timeout);
     solver.set_conflict_limit(budget.max_conflicts);
     solver.set_decision_limit(budget.max_decisions);
     let limits: ResourceLimits = ResourceLimits::new()
-        .with_timeout(budget.timeout)
         .with_max_conflicts(budget.max_conflicts)
         .with_max_decisions(budget.max_decisions);
-    match solver.check_with_limits(manager, &limits) {
+    let result: Result<SolverResult, ResourceExhausted> =
+        solver.check_with_limits(manager, &limits);
+    let spent: u64 = solver
+        .stats()
+        .conflicts
+        .saturating_add(solver.stats().decisions);
+    let raw: RawOutcome = match result {
         Ok(SolverResult::Sat) => {
             let env: Option<BTreeMap<TermId, u64>> = solver
                 .model()
@@ -476,7 +507,8 @@ fn raw_solve(
         }
         Ok(SolverResult::Unsat) => RawOutcome::Unsat,
         Ok(SolverResult::Unknown) | Err(_) => RawOutcome::Unknown,
-    }
+    };
+    (raw, spent)
 }
 
 fn certify(
@@ -508,7 +540,6 @@ mod tests {
     use crate::verify::{term_conjunction_unsat, term_conjunction_unsat_via_polynomial};
 
     const FUZZ_BUDGET: CertBudget = CertBudget {
-        timeout: Duration::from_millis(250),
         max_conflicts: 20_000,
         max_decisions: 100_000,
         node_budget: 1usize << 16,

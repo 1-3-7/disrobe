@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::time::{Duration, Instant};
 
 use disrobe_nir::{NirBlock, NirFunction, NirOp, basic_blocks};
 
@@ -92,23 +91,25 @@ pub struct NirDevirtOutcome {
     pub report: NirDevirtReport,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BinaryBudget {
-    deadline: Option<Instant>,
+    remaining_functions: usize,
 }
 
 impl BinaryBudget {
     #[must_use]
-    pub fn new(total: Duration) -> Self {
+    pub const fn new(max_functions: usize) -> Self {
         Self {
-            deadline: Instant::now().checked_add(total),
+            remaining_functions: max_functions,
         }
     }
 
-    #[must_use]
-    pub fn exhausted(&self) -> bool {
-        self.deadline
-            .is_some_and(|deadline: Instant| Instant::now() >= deadline)
+    pub const fn admit(&mut self) -> bool {
+        if self.remaining_functions == 0 {
+            return false;
+        }
+        self.remaining_functions -= 1;
+        true
     }
 }
 
@@ -283,8 +284,6 @@ fn edge_set(function: &NirFunction) -> BTreeSet<(u64, u64)> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic, clippy::expect_used)]
 mod tests {
-    use std::time::Duration;
-
     use disrobe_nir::{NirInstr, NirOp, SourceLang, SourceRef, ValueOp};
 
     use super::*;
@@ -407,7 +406,6 @@ mod tests {
             ],
         );
         let starved: SymexecBudget = SymexecBudget {
-            solver_query_timeout: Duration::from_nanos(1),
             solver_max_conflicts: 0,
             solver_max_decisions: 0,
             ..SymexecBudget::bounded_default()
@@ -445,10 +443,71 @@ mod tests {
     }
 
     #[test]
-    fn exhausted_binary_budget_reports_exhaustion() {
-        let budget: BinaryBudget = BinaryBudget::new(Duration::ZERO);
-        assert!(budget.exhausted());
-        let open: BinaryBudget = BinaryBudget::new(Duration::from_hours(1));
-        assert!(!open.exhausted());
+    fn the_binary_budget_admits_exactly_its_function_count() {
+        for max_functions in [0_usize, 1, 3] {
+            let mut budget: BinaryBudget = BinaryBudget::new(max_functions);
+            let admitted: Vec<bool> = (0..5).map(|_| budget.admit()).collect();
+            let expected: Vec<bool> = (0..5).map(|index: usize| index < max_functions).collect();
+            assert_eq!(admitted, expected);
+            assert_eq!(budget, BinaryBudget::new(0));
+        }
+    }
+
+    #[test]
+    fn a_starved_solver_budget_gives_the_same_report_on_every_run() {
+        let fixture: NirFunction = function(
+            0x0,
+            0xe,
+            vec![
+                value(0x0, ValueOp::IntMult, "sq", &["a", "a"], &[4, 4], 4),
+                value(0x2, ValueOp::IntAdd, "p", &["sq", "a"], &[4, 4], 4),
+                value(0x4, ValueOp::IntAnd, "lo", &["p", "1"], &[4, 4], 4),
+                value(0x6, ValueOp::IntEqual, "c", &["lo", "1"], &[4, 4], 1),
+                raw(0x8, NirOp::CondBranch { target: Some(0xc) }, &["c"]),
+                raw(0xa, NirOp::Return, &[]),
+                raw(0xc, NirOp::Return, &[]),
+            ],
+        );
+        let spent: Option<DevirtAbstain> =
+            Some(DevirtAbstain::OpaqueBudget(AbstainReason::SolverBudget));
+        for (budget, expected) in [
+            (
+                SymexecBudget {
+                    solver_cumulative_work: 0,
+                    ..SymexecBudget::bounded_default()
+                },
+                Some(spent),
+            ),
+            (
+                SymexecBudget {
+                    solver_max_queries: 0,
+                    ..SymexecBudget::bounded_default()
+                },
+                Some(spent),
+            ),
+            (
+                SymexecBudget {
+                    solver_max_conflicts: 1,
+                    solver_max_decisions: 1,
+                    ..SymexecBudget::bounded_default()
+                },
+                None,
+            ),
+        ] {
+            let first: NirDevirtOutcome = devirtualize_nir_with(&fixture, budget);
+            if let Some(abstain) = expected {
+                assert_eq!(first.report.abstain, abstain, "{budget:?}");
+                assert_eq!(first.function, fixture, "{budget:?}");
+                assert!(first.report.folded.is_empty(), "{budget:?}");
+            }
+            for _ in 0..3 {
+                let again: NirDevirtOutcome = devirtualize_nir_with(&fixture, budget);
+                assert_eq!(again.function, first.function);
+                assert_eq!(again.report.folded, first.report.folded);
+                assert_eq!(again.report.abstain, first.report.abstain);
+                assert_eq!(again.report.status, first.report.status);
+                assert_eq!(again.report.cff, first.report.cff);
+            }
+        }
     }
 }

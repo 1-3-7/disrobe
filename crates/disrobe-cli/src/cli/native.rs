@@ -20,6 +20,9 @@ const MAX_CAPTURE_OUTPUT: usize = 4 * 1024 * 1024;
 const MAX_NATIVE_SBOM_INPUT_BYTES: u64 = 256 * 1024 * 1024;
 const NATIVE_SBOM_READ_CHUNK_BYTES: usize = 64 * 1024;
 
+#[cfg(feature = "devirt")]
+const DEVIRT_FUNCTION_LIMIT: usize = 2048;
+
 struct CappedRun {
     exit_code: Option<i32>,
     success: bool,
@@ -1011,8 +1014,8 @@ fn decompile_native_pcode<'data>(
     #[cfg(not(feature = "devirt"))]
     let devirt_active: bool = false;
     #[cfg(feature = "devirt")]
-    let binary_budget: Option<disrobe_mba::BinaryBudget> =
-        devirt_active.then(|| disrobe_mba::BinaryBudget::new(std::time::Duration::from_mins(1)));
+    let mut binary_budget: Option<disrobe_mba::BinaryBudget> =
+        devirt_active.then(|| disrobe_mba::BinaryBudget::new(DEVIRT_FUNCTION_LIMIT));
     #[cfg(feature = "devirt")]
     let mut devirt_self_disabled: bool = false;
 
@@ -1054,14 +1057,13 @@ fn decompile_native_pcode<'data>(
         let effective_devirt: bool = {
             #[cfg(feature = "devirt")]
             {
-                devirt_active
-                    && match &binary_budget {
-                        Some(budget) if budget.exhausted() => {
-                            devirt_self_disabled = true;
-                            false
-                        }
-                        _ => true,
-                    }
+                devirt_active && {
+                    let admitted: bool = binary_budget
+                        .as_mut()
+                        .is_none_or(disrobe_mba::BinaryBudget::admit);
+                    devirt_self_disabled |= !admitted;
+                    admitted
+                }
             }
             #[cfg(not(feature = "devirt"))]
             {

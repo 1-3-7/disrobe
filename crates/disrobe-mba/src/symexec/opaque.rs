@@ -61,7 +61,6 @@ pub fn analyze_opaque_with(function: &NirFunction, budget: SymexecBudget) -> Res
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic, clippy::expect_used)]
 mod tests {
-    use std::time::Duration;
 
     use disrobe_nir::{NirInstr, NirOp, SourceLang, SourceRef, ValueOp};
 
@@ -245,7 +244,6 @@ mod tests {
             ],
         );
         let starved: SymexecBudget = SymexecBudget {
-            solver_query_timeout: Duration::from_nanos(1),
             solver_max_conflicts: 0,
             solver_max_decisions: 0,
             ..SymexecBudget::bounded_default()

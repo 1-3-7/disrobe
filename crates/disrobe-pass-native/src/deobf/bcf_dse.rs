@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::time::Duration;
 
 use disrobe_mba::{CmpOp, Expr, Predicate, SmtBudget, SmtVerdict, Width, check_unsat};
 use iced_x86::{Decoder, DecoderOptions, FlowControl, Instruction, Mnemonic, OpKind, Register};
@@ -17,7 +16,6 @@ const DEFAULT_MAX_BACKWARD_INSNS: usize = 768;
 pub struct BackwardBudget {
     pub max_blocks: usize,
     pub max_instructions: usize,
-    pub solver_timeout: Duration,
     pub solver_max_conflicts: u64,
     pub solver_max_decisions: u64,
 }
@@ -29,7 +27,6 @@ impl BackwardBudget {
         Self {
             max_blocks: DEFAULT_MAX_BACKWARD_BLOCKS,
             max_instructions: DEFAULT_MAX_BACKWARD_INSNS,
-            solver_timeout: smt.timeout,
             solver_max_conflicts: smt.max_conflicts,
             solver_max_decisions: smt.max_decisions,
         }
@@ -38,7 +35,6 @@ impl BackwardBudget {
     const fn smt_budget(self) -> SmtBudget {
         let defaults: SmtBudget = SmtBudget::bounded_default();
         SmtBudget {
-            timeout: self.solver_timeout,
             max_conflicts: self.solver_max_conflicts,
             max_decisions: self.solver_max_decisions,
             max_encode_nodes: defaults.max_encode_nodes,
