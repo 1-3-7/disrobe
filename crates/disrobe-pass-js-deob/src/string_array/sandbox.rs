@@ -24,7 +24,6 @@ const MAX_BATCH_JSON_BYTES: usize = 8 * 1024 * 1024;
 const MAX_BATCH_OUTPUT_UNITS: usize = 1024 * 1024;
 const MAX_ENVIRONMENT_CALLS: u64 = 10_000_000;
 const MAX_CONCURRENT_PROBES: usize = 1;
-const MAX_ADMISSION_WAIT_MS: u64 = 30_000;
 pub(super) const MAX_PROBE_EXPRESSIONS: usize = 65_536;
 const BATCH_SCRIPT_PREFIX: &str = "(function(){var b=0,t=0,fs=[";
 const BATCH_SCRIPT_SUFFIX_VALUE: &str = "],r=[];for(var i=0;i<fs.length;i++){var f=fs[i];if(b){r[i]=[2,''];continue;}try{var v=f();t+=v.length;if(v.length>";
@@ -32,7 +31,9 @@ const BATCH_SCRIPT_SUFFIX_TOTAL: &str = "||t>";
 const BATCH_SCRIPT_SUFFIX_END: &str = "){b=1;r[i]=[2,''];}else{r[i]=[1,v];}}catch(e){r[i]=[0,e instanceof __disrobe_native_reference_error?'ReferenceError':'Error'];}}return __disrobe_native_json_stringify(r);})()";
 const BATCH_WRAPPER_PREFIX: &str = "function(){return __disrobe_native_string(";
 const BATCH_WRAPPER_SUFFIX: &str = ");}";
-const DEFAULT_WALL_TIMEOUT_MS: u64 = 4_000;
+const FUEL_SLICE_COST: u32 = 256;
+const DEFAULT_FUEL_SLICES: u64 = 2_000_000;
+const DEFAULT_WALL_CLOCK_BACKSTOP_SECS: u64 = 60;
 const DEFAULT_LOOP_ITERATION_LIMIT: u64 = 100_000;
 const DEFAULT_RECURSION_LIMIT: usize = 256;
 const DEFAULT_STACK_SIZE_LIMIT: usize = 8 * 1024;
@@ -116,7 +117,7 @@ pub enum ProbeRefusal {
     InputTooLarge,
     UnsafeNesting,
     WorkerSpawn,
-    WallTimeout,
+    WallClockBackstop,
     BoundExceeded,
     EnvironmentAbsent,
     EvaluationFailed,
@@ -161,13 +162,39 @@ impl ProbeDeadline {
         Self { expires_at }
     }
 
-    fn remaining(self) -> Option<Duration> {
-        self.expires_at.checked_duration_since(Instant::now())
+    fn expired(self) -> bool {
+        Instant::now() >= self.expires_at
+    }
+}
+
+#[derive(Debug)]
+struct ProbeMeter {
+    fuel_slices: u64,
+    backstop: ProbeDeadline,
+}
+
+impl ProbeMeter {
+    const fn new(fuel_slices: u64, backstop: ProbeDeadline) -> Self {
+        Self {
+            fuel_slices,
+            backstop,
+        }
     }
 
-    fn expired(self) -> bool {
-        self.remaining()
-            .is_none_or(|remaining: Duration| remaining.is_zero())
+    fn check_backstop(&self) -> Result<(), ProbeRefusal> {
+        if self.backstop.expired() {
+            Err(ProbeRefusal::WallClockBackstop)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn spend_slice(&mut self) -> Result<(), ProbeRefusal> {
+        self.fuel_slices = self
+            .fuel_slices
+            .checked_sub(1)
+            .ok_or(ProbeRefusal::BoundExceeded)?;
+        self.check_backstop()
     }
 }
 
@@ -196,45 +223,28 @@ impl OutputBudget {
     }
 }
 
-fn acquire_probe_permit(deadline: ProbeDeadline) -> Result<ProbePermit, ProbeRefusal> {
+fn acquire_probe_permit() -> ProbePermit {
     let slots: &'static ProbeSlots = PROBE_SLOTS.get_or_init(|| ProbeSlots {
         active: Mutex::new(0),
         available: Condvar::new(),
     });
-    acquire_probe_permit_from(slots, deadline)
+    acquire_probe_permit_from(slots)
 }
 
-fn acquire_probe_permit_from(
-    slots: &'static ProbeSlots,
-    deadline: ProbeDeadline,
-) -> Result<ProbePermit, ProbeRefusal> {
+fn acquire_probe_permit_from(slots: &'static ProbeSlots) -> ProbePermit {
     let mut active: std::sync::MutexGuard<'_, usize> = match slots.active.lock() {
         Ok(active) => active,
         Err(poisoned) => poisoned.into_inner(),
     };
-    loop {
-        if deadline.expired() {
-            return Err(ProbeRefusal::WallTimeout);
-        }
-        if *active < MAX_CONCURRENT_PROBES {
-            *active += 1;
-            return Ok(ProbePermit { slots });
-        }
-        let Some(remaining): Option<Duration> = deadline.remaining() else {
-            return Err(ProbeRefusal::WallTimeout);
-        };
-        let (next, wait): (
-            std::sync::MutexGuard<'_, usize>,
-            std::sync::WaitTimeoutResult,
-        ) = match slots.available.wait_timeout(active, remaining) {
-            Ok(result) => result,
+    while *active >= MAX_CONCURRENT_PROBES {
+        active = match slots.available.wait(active) {
+            Ok(active) => active,
             Err(poisoned) => poisoned.into_inner(),
         };
-        active = next;
-        if wait.timed_out() && *active >= MAX_CONCURRENT_PROBES {
-            return Err(ProbeRefusal::WallTimeout);
-        }
     }
+    *active += 1;
+    drop(active);
+    ProbePermit { slots }
 }
 
 fn run_scoped_probe<T, F>(name: &str, limits: ProbeLimits, run: F) -> Result<T, ProbeRefusal>
@@ -242,31 +252,24 @@ where
     T: Send,
     F: FnOnce(ProbeDeadline) -> Result<T, ProbeRefusal> + Send,
 {
-    let admission_deadline: ProbeDeadline =
-        ProbeDeadline::from_timeout(Duration::from_millis(MAX_ADMISSION_WAIT_MS));
-    let _permit: ProbePermit = acquire_probe_permit(admission_deadline)?;
-    let deadline: ProbeDeadline = ProbeDeadline::from_timeout(limits.wall_timeout);
-    run_joined_worker(name, deadline, run)
+    let _permit: ProbePermit = acquire_probe_permit();
+    let backstop: ProbeDeadline = ProbeDeadline::from_timeout(limits.wall_clock_backstop);
+    run_joined_worker(name, backstop, run)
 }
 
-fn run_joined_worker<T, F>(name: &str, deadline: ProbeDeadline, run: F) -> Result<T, ProbeRefusal>
+fn run_joined_worker<T, F>(name: &str, backstop: ProbeDeadline, run: F) -> Result<T, ProbeRefusal>
 where
     T: Send,
     F: FnOnce(ProbeDeadline) -> Result<T, ProbeRefusal> + Send,
 {
-    let outcome: Result<T, ProbeRefusal> = thread::scope(|scope: &thread::Scope<'_, '_>| {
+    thread::scope(|scope: &thread::Scope<'_, '_>| {
         let worker: thread::ScopedJoinHandle<'_, Result<T, ProbeRefusal>> = thread::Builder::new()
             .name(name.to_owned())
             .stack_size(WORKER_STACK_BYTES)
-            .spawn_scoped(scope, move || run(deadline))
+            .spawn_scoped(scope, move || run(backstop))
             .map_err(|_| ProbeRefusal::WorkerSpawn)?;
         worker.join().map_err(|_| ProbeRefusal::EvaluationFailed)?
-    });
-    if outcome.is_ok() && deadline.expired() {
-        Err(ProbeRefusal::WallTimeout)
-    } else {
-        outcome
-    }
+    })
 }
 
 fn validate_expressions(expressions: &[String]) -> Result<(), ProbeRefusal> {
@@ -470,7 +473,8 @@ performance = {{ now: function () {{ __disrobe_performance_calls++; return {perf
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) struct ProbeLimits {
-    pub(super) wall_timeout: Duration,
+    pub(super) fuel_slices: u64,
+    pub(super) wall_clock_backstop: Duration,
     pub(super) loop_iteration_limit: u64,
     pub(super) recursion_limit: usize,
     pub(super) stack_size_limit: usize,
@@ -481,7 +485,8 @@ pub(super) struct ProbeLimits {
 impl Default for ProbeLimits {
     fn default() -> Self {
         Self {
-            wall_timeout: Duration::from_millis(DEFAULT_WALL_TIMEOUT_MS),
+            fuel_slices: DEFAULT_FUEL_SLICES,
+            wall_clock_backstop: Duration::from_secs(DEFAULT_WALL_CLOCK_BACKSTOP_SECS),
             loop_iteration_limit: DEFAULT_LOOP_ITERATION_LIMIT,
             recursion_limit: DEFAULT_RECURSION_LIMIT,
             stack_size_limit: DEFAULT_STACK_SIZE_LIMIT,
@@ -523,8 +528,8 @@ pub(super) fn probe_expressions(
     let limits: ProbeLimits = ProbeLimits::default();
     validate_prelude(prelude)?;
     validate_batched_expressions(expressions)?;
-    run_scoped_probe("disrobe-boa-expr", limits, |deadline: ProbeDeadline| {
-        run_expressions(prelude, expressions, limits, deadline)
+    run_scoped_probe("disrobe-boa-expr", limits, |backstop: ProbeDeadline| {
+        run_expressions(prelude, expressions, limits, backstop)
     })
 }
 
@@ -537,7 +542,8 @@ pub(super) struct RotationSearchOutcome {
     failed_evaluations: usize,
 }
 
-const ROTATION_SEARCH_TIMEOUT_MS: u64 = 180_000;
+const ROTATION_SEARCH_FUEL_SLICES: u64 = 16_000_000;
+const ROTATION_SEARCH_WALL_CLOCK_BACKSTOP_SECS: u64 = 600;
 const ROTATION_SEARCH_MAX_K: u32 = 4_096;
 const ROTATION_SAMPLE_TARGET: usize = 24;
 const ROTATION_MIN_SCORE_PER_SAMPLE: u64 = 6;
@@ -561,8 +567,8 @@ pub(super) fn probe_with_rotation_search(
     run_scoped_probe(
         "disrobe-boa-rotsearch",
         limits,
-        |deadline: ProbeDeadline| {
-            run_rotation_search(prelude, provider_name, expressions, max_k, limits, deadline)
+        |backstop: ProbeDeadline| {
+            run_rotation_search(prelude, provider_name, expressions, max_k, limits, backstop)
         },
     )
 }
@@ -573,7 +579,7 @@ fn run_rotation_search(
     expressions: &[String],
     max_k: u32,
     limits: ProbeLimits,
-    deadline: ProbeDeadline,
+    backstop: ProbeDeadline,
 ) -> Result<RotationSearchOutcome, ProbeRefusal> {
     let (first, second): (
         Result<EnvironmentResult<RotationSearchOutcome>, ProbeRefusal>,
@@ -587,10 +593,9 @@ fn run_rotation_search(
                 max_k,
                 limits,
                 environment,
-                deadline,
+                backstop,
             )
         },
-        deadline,
         tracks_activity(limits),
     )?;
     compare_rotation_search_results(first, second)
@@ -598,7 +603,8 @@ fn run_rotation_search(
 
 const fn rotation_probe_limits() -> ProbeLimits {
     ProbeLimits {
-        wall_timeout: Duration::from_millis(ROTATION_SEARCH_TIMEOUT_MS),
+        fuel_slices: ROTATION_SEARCH_FUEL_SLICES,
+        wall_clock_backstop: Duration::from_secs(ROTATION_SEARCH_WALL_CLOCK_BACKSTOP_SECS),
         loop_iteration_limit: 10_000_000,
         recursion_limit: DEFAULT_RECURSION_LIMIT,
         stack_size_limit: DEFAULT_STACK_SIZE_LIMIT,
@@ -637,22 +643,17 @@ fn run_rotation_search_once(
     max_k: u32,
     limits: ProbeLimits,
     environment: ProbeEnvironment,
-    deadline: ProbeDeadline,
+    backstop: ProbeDeadline,
 ) -> Result<EnvironmentResult<RotationSearchOutcome>, ProbeRefusal> {
-    let mut context: Context = Context::default();
+    let mut context: Context = probe_context(limits);
+    let mut meter: ProbeMeter = ProbeMeter::new(limits.fuel_slices, backstop);
     let mut output_budget: OutputBudget = OutputBudget::new();
     let first_runtime_preamble: String = runtime_preamble(environment);
-    {
-        let runtime: &mut boa_engine::vm::RuntimeLimits = context.runtime_limits_mut();
-        runtime.set_loop_iteration_limit(limits.loop_iteration_limit);
-        runtime.set_recursion_limit(limits.recursion_limit);
-        runtime.set_stack_size_limit(limits.stack_size_limit);
-    }
-    evaluate(&mut context, &first_runtime_preamble, deadline)?;
-    evaluate(&mut context, prelude, deadline)?;
+    evaluate(&mut context, &first_runtime_preamble, &mut meter)?;
+    evaluate(&mut context, prelude, &mut meter)?;
     let materialise: String = format!("var __disrobe_arr = {provider_name}();");
     validate_generated_script(&materialise)?;
-    evaluate(&mut context, &materialise, deadline)?;
+    evaluate(&mut context, &materialise, &mut meter)?;
     let sample_indices: Vec<usize> = pick_sample_indices(expressions.len(), ROTATION_SAMPLE_TARGET);
     let sample_exprs: Vec<&String> = sample_indices.iter().map(|&i| &expressions[i]).collect();
     let batch_script: String = build_batch_decode_script(&sample_exprs)?;
@@ -669,7 +670,7 @@ fn run_rotation_search_once(
             &batch_script,
             sample_exprs.len(),
             &mut output_budget,
-            deadline,
+            &mut meter,
         )?;
         failed_evaluations = failed_evaluations
             .checked_add(sample_run.failed)
@@ -685,33 +686,27 @@ fn run_rotation_search_once(
         evaluate(
             &mut context,
             "__disrobe_arr.push(__disrobe_arr.shift());",
-            deadline,
+            &mut meter,
         )?;
     }
     if best_score < min_score {
         return Err(ProbeRefusal::RotationNotFound);
     }
-    let search_calls: [u64; 3] = environment_calls(&mut context, deadline)?;
-    let mut fresh: Context = Context::default();
+    let search_calls: [u64; 3] = environment_calls(&mut context, &mut meter)?;
+    let mut fresh: Context = probe_context(limits);
     let fresh_runtime_preamble: String = runtime_preamble(environment);
-    {
-        let runtime: &mut boa_engine::vm::RuntimeLimits = fresh.runtime_limits_mut();
-        runtime.set_loop_iteration_limit(limits.loop_iteration_limit);
-        runtime.set_recursion_limit(limits.recursion_limit);
-        runtime.set_stack_size_limit(limits.stack_size_limit);
-    }
-    evaluate(&mut fresh, &fresh_runtime_preamble, deadline)?;
-    evaluate(&mut fresh, prelude, deadline)?;
-    evaluate(&mut fresh, &materialise, deadline)?;
+    evaluate(&mut fresh, &fresh_runtime_preamble, &mut meter)?;
+    evaluate(&mut fresh, prelude, &mut meter)?;
+    evaluate(&mut fresh, &materialise, &mut meter)?;
     let rotate_to: String =
         format!("for (var __i=0;__i<{best_k};__i++) __disrobe_arr.push(__disrobe_arr.shift());");
     validate_generated_script(&rotate_to)?;
-    evaluate(&mut fresh, &rotate_to, deadline)?;
-    let full: BatchRun = decode_all(&mut fresh, expressions, &mut output_budget, deadline)?;
+    evaluate(&mut fresh, &rotate_to, &mut meter)?;
+    let full: BatchRun = decode_all(&mut fresh, expressions, &mut output_budget, &mut meter)?;
     failed_evaluations = failed_evaluations
         .checked_add(full.failed)
         .ok_or(ProbeRefusal::BoundExceeded)?;
-    let fresh_calls: [u64; 3] = environment_calls(&mut fresh, deadline)?;
+    let fresh_calls: [u64; 3] = environment_calls(&mut fresh, &mut meter)?;
     let calls: [u64; 3] = add_environment_calls(search_calls, fresh_calls)?;
     Ok(EnvironmentResult {
         value: RotationSearchOutcome {
@@ -755,7 +750,7 @@ pub(super) fn probe_rotation_to_match(
         .unwrap_or(u32::MAX)
         .min(ROTATION_SEARCH_MAX_K);
     let limits: ProbeLimits = rotation_probe_limits();
-    run_scoped_probe("disrobe-boa-rotmatch", limits, |deadline: ProbeDeadline| {
+    run_scoped_probe("disrobe-boa-rotmatch", limits, |backstop: ProbeDeadline| {
         run_rotation_to_match(
             prelude,
             provider_name,
@@ -763,7 +758,7 @@ pub(super) fn probe_rotation_to_match(
             reference,
             max_k,
             limits,
-            deadline,
+            backstop,
         )
     })
 }
@@ -775,7 +770,7 @@ fn run_rotation_to_match(
     reference: &[Option<String>],
     max_k: u32,
     limits: ProbeLimits,
-    deadline: ProbeDeadline,
+    backstop: ProbeDeadline,
 ) -> Result<u32, ProbeRefusal> {
     let (first, second): (
         Result<EnvironmentResult<RotationMatchRun>, ProbeRefusal>,
@@ -790,10 +785,9 @@ fn run_rotation_to_match(
                 max_k,
                 limits,
                 environment,
-                deadline,
+                backstop,
             )
         },
-        deadline,
         tracks_activity(limits),
     )?;
     compare_rotation_match_results(first, second)
@@ -839,7 +833,7 @@ fn run_rotation_to_match_once(
     max_k: u32,
     limits: ProbeLimits,
     environment: ProbeEnvironment,
-    deadline: ProbeDeadline,
+    backstop: ProbeDeadline,
 ) -> Result<EnvironmentResult<RotationMatchRun>, ProbeRefusal> {
     let sample_indices: Vec<usize> = reference
         .iter()
@@ -856,20 +850,15 @@ fn run_rotation_to_match_once(
         .collect();
     let sample_exprs: Vec<&String> = sample_indices.iter().map(|&i| &expressions[i]).collect();
     let batch_script: String = build_batch_decode_script(&sample_exprs)?;
-    let mut context: Context = Context::default();
+    let mut context: Context = probe_context(limits);
+    let mut meter: ProbeMeter = ProbeMeter::new(limits.fuel_slices, backstop);
     let mut output_budget: OutputBudget = OutputBudget::new();
     let runtime_preamble: String = runtime_preamble(environment);
-    {
-        let runtime: &mut boa_engine::vm::RuntimeLimits = context.runtime_limits_mut();
-        runtime.set_loop_iteration_limit(limits.loop_iteration_limit);
-        runtime.set_recursion_limit(limits.recursion_limit);
-        runtime.set_stack_size_limit(limits.stack_size_limit);
-    }
-    evaluate(&mut context, &runtime_preamble, deadline)?;
-    evaluate(&mut context, prelude, deadline)?;
+    evaluate(&mut context, &runtime_preamble, &mut meter)?;
+    evaluate(&mut context, prelude, &mut meter)?;
     let materialise: String = format!("var __disrobe_arr = {provider_name}();");
     validate_generated_script(&materialise)?;
-    evaluate(&mut context, &materialise, deadline)?;
+    evaluate(&mut context, &materialise, &mut meter)?;
     let mut failed_evaluations: usize = 0;
     for k in 0..max_k {
         let results: BatchRun = eval_batch(
@@ -877,7 +866,7 @@ fn run_rotation_to_match_once(
             &batch_script,
             sample_exprs.len(),
             &mut output_budget,
-            deadline,
+            &mut meter,
         )?;
         failed_evaluations = failed_evaluations
             .checked_add(results.failed)
@@ -889,7 +878,7 @@ fn run_rotation_to_match_once(
                 .zip(expected.iter())
                 .all(|(got, want): (&Option<String>, &&String)| got.as_ref() == Some(*want));
         if all_match {
-            let calls: [u64; 3] = environment_calls(&mut context, deadline)?;
+            let calls: [u64; 3] = environment_calls(&mut context, &mut meter)?;
             return Ok(EnvironmentResult {
                 value: RotationMatchRun {
                     rotation: k,
@@ -901,7 +890,7 @@ fn run_rotation_to_match_once(
         evaluate(
             &mut context,
             "__disrobe_arr.push(__disrobe_arr.shift());",
-            deadline,
+            &mut meter,
         )?;
     }
     Err(ProbeRefusal::RotationNotFound)
@@ -952,9 +941,9 @@ fn eval_batch(
     batch_script: &str,
     expected: usize,
     output_budget: &mut OutputBudget,
-    deadline: ProbeDeadline,
+    meter: &mut ProbeMeter,
 ) -> Result<BatchRun, ProbeRefusal> {
-    let rendered: boa_engine::JsValue = evaluate(context, batch_script, deadline)?;
+    let rendered: boa_engine::JsValue = evaluate(context, batch_script, meter)?;
     let rendered_string: &boa_engine::JsString =
         rendered.as_string().ok_or(ProbeRefusal::EvaluationFailed)?;
     if rendered_string.len() > MAX_BATCH_JSON_BYTES {
@@ -995,7 +984,7 @@ fn decode_all(
     context: &mut Context,
     expressions: &[String],
     output_budget: &mut OutputBudget,
-    deadline: ProbeDeadline,
+    meter: &mut ProbeMeter,
 ) -> Result<BatchRun, ProbeRefusal> {
     validate_batched_expressions(expressions)?;
     let mut out: Vec<Option<String>> = Vec::new();
@@ -1005,7 +994,7 @@ fn decode_all(
     for chunk in expressions.chunks(DECODE_BATCH_CHUNK) {
         let refs: Vec<&String> = chunk.iter().collect();
         let script: String = build_batch_decode_script(&refs)?;
-        let decoded: BatchRun = eval_batch(context, &script, refs.len(), output_budget, deadline)?;
+        let decoded: BatchRun = eval_batch(context, &script, refs.len(), output_budget, meter)?;
         failed = failed
             .checked_add(decoded.failed)
             .ok_or(ProbeRefusal::BoundExceeded)?;
@@ -1166,16 +1155,15 @@ fn run_expressions(
     prelude: &str,
     expressions: &[String],
     limits: ProbeLimits,
-    deadline: ProbeDeadline,
+    backstop: ProbeDeadline,
 ) -> Result<Vec<Option<String>>, ProbeRefusal> {
     let (first, second): (
         Result<EnvironmentResult<ExpressionRun>, ProbeRefusal>,
         Result<EnvironmentResult<ExpressionRun>, ProbeRefusal>,
     ) = run_environment_pair(
         |environment: ProbeEnvironment| {
-            run_expressions_once(prelude, expressions, limits, environment, deadline)
+            run_expressions_once(prelude, expressions, limits, environment, backstop)
         },
-        deadline,
         tracks_activity(limits),
     )?;
     compare_expression_results(first, second)
@@ -1192,27 +1180,22 @@ fn run_expressions_once(
     expressions: &[String],
     limits: ProbeLimits,
     environment: ProbeEnvironment,
-    deadline: ProbeDeadline,
+    backstop: ProbeDeadline,
 ) -> Result<EnvironmentResult<ExpressionRun>, ProbeRefusal> {
-    let mut context: Context = Context::default();
+    let mut context: Context = probe_context(limits);
+    let mut meter: ProbeMeter = ProbeMeter::new(limits.fuel_slices, backstop);
     let mut output_budget: OutputBudget = OutputBudget::new();
     let runtime_preamble: String = runtime_preamble(environment);
-    {
-        let runtime: &mut boa_engine::vm::RuntimeLimits = context.runtime_limits_mut();
-        runtime.set_loop_iteration_limit(limits.loop_iteration_limit);
-        runtime.set_recursion_limit(limits.recursion_limit);
-        runtime.set_stack_size_limit(limits.stack_size_limit);
-    }
-    evaluate(&mut context, &runtime_preamble, deadline)?;
-    evaluate(&mut context, prelude, deadline)?;
-    let decoded: BatchRun = decode_all(&mut context, expressions, &mut output_budget, deadline)?;
+    evaluate(&mut context, &runtime_preamble, &mut meter)?;
+    evaluate(&mut context, prelude, &mut meter)?;
+    let decoded: BatchRun = decode_all(&mut context, expressions, &mut output_budget, &mut meter)?;
     let failed: Vec<usize> = decoded
         .values
         .iter()
         .enumerate()
         .filter_map(|(index, value): (usize, &Option<String>)| value.is_none().then_some(index))
         .collect();
-    let calls: [u64; 3] = environment_calls(&mut context, deadline)?;
+    let calls: [u64; 3] = environment_calls(&mut context, &mut meter)?;
     Ok(EnvironmentResult {
         value: ExpressionRun {
             values: decoded.values,
@@ -1287,14 +1270,14 @@ pub(super) fn probe_decoder_with_limits(
     if !nesting_is_safe(decoder_source) || !nesting_is_safe(string_array_source) {
         return Err(ProbeRefusal::UnsafeNesting);
     }
-    run_scoped_probe("disrobe-boa-probe", limits, |deadline: ProbeDeadline| {
+    run_scoped_probe("disrobe-boa-probe", limits, |backstop: ProbeDeadline| {
         run_probe(
             decoder_source,
             string_array_source,
             decoder_name,
             indices,
             limits,
-            deadline,
+            backstop,
         )
     })
 }
@@ -1307,16 +1290,12 @@ struct EnvironmentResult<T> {
 
 fn run_environment_pair<T, F>(
     run: F,
-    deadline: ProbeDeadline,
     track_activity: bool,
 ) -> Result<EnvironmentPair<T>, ProbeRefusal>
 where
     T: Send,
     F: Fn(ProbeEnvironment) -> Result<EnvironmentResult<T>, ProbeRefusal> + Sync,
 {
-    if deadline.expired() {
-        return Err(ProbeRefusal::WallTimeout);
-    }
     thread::scope(|scope: &thread::Scope<'_, '_>| {
         let second: thread::ScopedJoinHandle<'_, Result<EnvironmentResult<T>, ProbeRefusal>> =
             thread::Builder::new()
@@ -1372,7 +1351,7 @@ fn run_probe(
     decoder_name: &str,
     indices: &[i64],
     limits: ProbeLimits,
-    deadline: ProbeDeadline,
+    backstop: ProbeDeadline,
 ) -> Result<DecoderProbe, ProbeRefusal> {
     let (first, second): (
         Result<EnvironmentResult<DecoderRun>, ProbeRefusal>,
@@ -1386,10 +1365,9 @@ fn run_probe(
                 indices,
                 limits,
                 environment,
-                deadline,
+                backstop,
             )
         },
-        deadline,
         tracks_activity(limits),
     )?;
     compare_decoder_results(first, second)
@@ -1437,9 +1415,8 @@ fn compare_environment_results<T: PartialEq>(
             Err(ProbeRefusal::EnvironmentDisagreement)
         }
         (Ok(left), Ok(_)) => Ok(left.value),
-        (Ok(_), Err(ProbeRefusal::WallTimeout)) | (Err(ProbeRefusal::WallTimeout), Ok(_)) => {
-            Err(ProbeRefusal::WallTimeout)
-        }
+        (Ok(_), Err(ProbeRefusal::WallClockBackstop))
+        | (Err(ProbeRefusal::WallClockBackstop), Ok(_)) => Err(ProbeRefusal::WallClockBackstop),
         (Ok(_), Err(ProbeRefusal::BoundExceeded)) | (Err(ProbeRefusal::BoundExceeded), Ok(_)) => {
             Err(ProbeRefusal::BoundExceeded)
         }
@@ -1447,9 +1424,8 @@ fn compare_environment_results<T: PartialEq>(
         | (Err(ProbeRefusal::EnvironmentAbsent), Ok(_)) => Err(ProbeRefusal::EnvironmentAbsent),
         (Ok(_), Err(_)) | (Err(_), Ok(_)) => Err(ProbeRefusal::SeedConditionalThrow),
         (Err(left), Err(right)) if left == right => Err(left),
-        (Err(ProbeRefusal::WallTimeout), Err(_)) | (Err(_), Err(ProbeRefusal::WallTimeout)) => {
-            Err(ProbeRefusal::WallTimeout)
-        }
+        (Err(ProbeRefusal::WallClockBackstop), Err(_))
+        | (Err(_), Err(ProbeRefusal::WallClockBackstop)) => Err(ProbeRefusal::WallClockBackstop),
         (Err(ProbeRefusal::BoundExceeded), Err(_)) | (Err(_), Err(ProbeRefusal::BoundExceeded)) => {
             Err(ProbeRefusal::BoundExceeded)
         }
@@ -1466,20 +1442,15 @@ fn run_probe_once(
     indices: &[i64],
     limits: ProbeLimits,
     environment: ProbeEnvironment,
-    deadline: ProbeDeadline,
+    backstop: ProbeDeadline,
 ) -> Result<EnvironmentResult<DecoderRun>, ProbeRefusal> {
-    let mut context: Context = Context::default();
+    let mut context: Context = probe_context(limits);
+    let mut meter: ProbeMeter = ProbeMeter::new(limits.fuel_slices, backstop);
     let mut output_budget: OutputBudget = OutputBudget::new();
-    {
-        let runtime: &mut boa_engine::vm::RuntimeLimits = context.runtime_limits_mut();
-        runtime.set_loop_iteration_limit(limits.loop_iteration_limit);
-        runtime.set_recursion_limit(limits.recursion_limit);
-        runtime.set_stack_size_limit(limits.stack_size_limit);
-    }
     let preamble: String = runtime_preamble(environment);
-    evaluate(&mut context, &preamble, deadline)?;
-    evaluate(&mut context, string_array_source, deadline)?;
-    evaluate(&mut context, decoder_source, deadline)?;
+    evaluate(&mut context, &preamble, &mut meter)?;
+    evaluate(&mut context, string_array_source, &mut meter)?;
+    evaluate(&mut context, decoder_source, &mut meter)?;
     let mut expressions: Vec<String> = Vec::new();
     expressions
         .try_reserve_exact(indices.len())
@@ -1489,7 +1460,7 @@ fn run_probe_once(
         expressions.push(expression);
     }
     validate_expressions(&expressions)?;
-    let decoded: BatchRun = decode_all(&mut context, &expressions, &mut output_budget, deadline)?;
+    let decoded: BatchRun = decode_all(&mut context, &expressions, &mut output_budget, &mut meter)?;
     let mut samples: Vec<DecoderSample> = Vec::with_capacity(indices.len() - decoded.failed);
     let mut failed: Vec<i64> = Vec::with_capacity(decoded.failed);
     for (&index, value) in indices.iter().zip(decoded.values) {
@@ -1500,7 +1471,7 @@ fn run_probe_once(
         }
     }
     let successful: usize = samples.len();
-    let calls: [u64; 3] = environment_calls(&mut context, deadline)?;
+    let calls: [u64; 3] = environment_calls(&mut context, &mut meter)?;
     Ok(EnvironmentResult {
         value: DecoderRun {
             probe: DecoderProbe {
@@ -1516,12 +1487,12 @@ fn run_probe_once(
 
 fn environment_calls(
     context: &mut Context,
-    deadline: ProbeDeadline,
+    meter: &mut ProbeMeter,
 ) -> Result<[u64; 3], ProbeRefusal> {
     let counts: [u64; 3] = [
-        environment_call_count(context, "__disrobe_random_calls", deadline)?,
-        environment_call_count(context, "__disrobe_date_calls", deadline)?,
-        environment_call_count(context, "__disrobe_performance_calls", deadline)?,
+        environment_call_count(context, "__disrobe_random_calls", meter)?,
+        environment_call_count(context, "__disrobe_date_calls", meter)?,
+        environment_call_count(context, "__disrobe_performance_calls", meter)?,
     ];
     let total: u64 = counts
         .iter()
@@ -1540,9 +1511,9 @@ fn environment_calls(
 fn environment_call_count(
     context: &mut Context,
     binding: &str,
-    deadline: ProbeDeadline,
+    meter: &mut ProbeMeter,
 ) -> Result<u64, ProbeRefusal> {
-    let value: boa_engine::JsValue = evaluate(context, binding, deadline)?;
+    let value: boa_engine::JsValue = evaluate(context, binding, meter)?;
     let count: f64 = value.as_number().ok_or(ProbeRefusal::EvaluationFailed)?;
     if !count.is_finite() || count.is_sign_negative() || count.fract() != 0.0 {
         return Err(ProbeRefusal::EvaluationFailed);
@@ -1582,37 +1553,33 @@ fn add_environment_calls(left: [u64; 3], right: [u64; 3]) -> Result<[u64; 3], Pr
 fn evaluate(
     context: &mut Context,
     source: &str,
-    deadline: ProbeDeadline,
+    meter: &mut ProbeMeter,
 ) -> Result<boa_engine::JsValue, ProbeRefusal> {
-    if deadline.expired() {
-        return Err(ProbeRefusal::WallTimeout);
-    }
+    meter.check_backstop()?;
     let script: Script = Script::parse(Source::from_bytes(source.as_bytes()), None, context)
         .map_err(|error: JsError| refusal_from_error(&error, context))?;
-    if deadline.expired() {
-        return Err(ProbeRefusal::WallTimeout);
-    }
+    meter.check_backstop()?;
     let outcome: Result<boa_engine::JsValue, JsError> = {
-        let mut evaluation = Box::pin(script.evaluate_async_with_budget(context, 256));
+        let mut evaluation = Box::pin(script.evaluate_async_with_budget(context, FUEL_SLICE_COST));
         let waker: &Waker = Waker::noop();
         let mut task_context: TaskContext<'_> = TaskContext::from_waker(waker);
         loop {
-            if deadline.expired() {
-                return Err(ProbeRefusal::WallTimeout);
-            }
             match evaluation.as_mut().poll(&mut task_context) {
                 Poll::Ready(result) => break result,
-                Poll::Pending => {}
+                Poll::Pending => meter.spend_slice()?,
             }
         }
     };
-    let outcome: Result<boa_engine::JsValue, ProbeRefusal> =
-        outcome.map_err(|error: JsError| refusal_from_error(&error, context));
-    if outcome.is_ok() && deadline.expired() {
-        Err(ProbeRefusal::WallTimeout)
-    } else {
-        outcome
-    }
+    outcome.map_err(|error: JsError| refusal_from_error(&error, context))
+}
+
+fn probe_context(limits: ProbeLimits) -> Context {
+    let mut context: Context = Context::default();
+    let runtime: &mut boa_engine::vm::RuntimeLimits = context.runtime_limits_mut();
+    runtime.set_loop_iteration_limit(limits.loop_iteration_limit);
+    runtime.set_recursion_limit(limits.recursion_limit);
+    runtime.set_stack_size_limit(limits.stack_size_limit);
+    context
 }
 
 fn refusal_from_error(error: &JsError, context: &mut Context) -> ProbeRefusal {
@@ -1633,7 +1600,6 @@ fn refusal_from_error(error: &JsError, context: &mut Context) -> ProbeRefusal {
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use std::sync::atomic::Ordering;
-    use std::time::Instant;
 
     use super::*;
 
@@ -1697,13 +1663,7 @@ mod tests {
     fn probe_rejects_infinite_loop_within_deadline() {
         let arr: &str = "var _arr = ['a'];";
         let dec: &str = "function _decode(i) { while(true) {} return ''; }";
-        let started: Instant = Instant::now();
         let probe: Result<DecoderProbe, ProbeRefusal> = probe_decoder(dec, arr, "_decode", &[0]);
-        let elapsed: Duration = started.elapsed();
-        assert!(
-            elapsed < Duration::from_secs(3),
-            "infinite loop should be killed within 3s, took {elapsed:?}",
-        );
         assert_eq!(probe, Err(ProbeRefusal::BoundExceeded));
     }
 
@@ -1711,14 +1671,32 @@ mod tests {
     fn probe_rejects_unbounded_recursion() {
         let arr: &str = "var _arr = ['a'];";
         let dec: &str = "function _decode(i) { return _decode(i); }";
-        let started: Instant = Instant::now();
         let probe: Result<DecoderProbe, ProbeRefusal> = probe_decoder(dec, arr, "_decode", &[0]);
-        let elapsed: Duration = started.elapsed();
-        assert!(
-            elapsed < Duration::from_secs(3),
-            "recursion bomb should be killed within 3s, took {elapsed:?}",
-        );
         assert_eq!(probe, Err(ProbeRefusal::BoundExceeded));
+    }
+
+    #[test]
+    fn step_budget_exhaustion_is_identical_across_runs_and_concurrent_workers() {
+        let arr: &str = "var _arr = ['a'];";
+        let dec: &str = "function _inner() { var n = 0; for (var j = 0; j < 90000; j++) { n += j; } return n; } function _decode(i) { var s = 0; for (var k = 0; k < 90000; k++) { s += _inner(); } return _arr[i]; }";
+        let sequential: Result<DecoderProbe, ProbeRefusal> =
+            probe_decoder(dec, arr, "_decode", &[0]);
+        assert_eq!(sequential, Err(ProbeRefusal::BoundExceeded));
+        let concurrent: [Result<DecoderProbe, ProbeRefusal>; 8] =
+            thread::scope(|scope: &thread::Scope<'_, '_>| {
+                let workers: [thread::ScopedJoinHandle<'_, Result<DecoderProbe, ProbeRefusal>>; 8] =
+                    std::array::from_fn(|_| {
+                        scope.spawn(|| probe_decoder(dec, arr, "_decode", &[0]))
+                    });
+                workers.map(
+                    |worker: thread::ScopedJoinHandle<'_, Result<DecoderProbe, ProbeRefusal>>| {
+                        worker.join().expect("probe worker")
+                    },
+                )
+            });
+        for outcome in &concurrent {
+            assert_eq!(outcome, &sequential);
+        }
     }
 
     #[test]
@@ -1873,7 +1851,7 @@ for (var _i = _arr.length - 1; _i > 0; _i--) {
             (ProbeRefusal::InputTooLarge, "\"input-too-large\""),
             (ProbeRefusal::UnsafeNesting, "\"unsafe-nesting\""),
             (ProbeRefusal::WorkerSpawn, "\"worker-spawn\""),
-            (ProbeRefusal::WallTimeout, "\"wall-timeout\""),
+            (ProbeRefusal::WallClockBackstop, "\"wall-clock-backstop\""),
             (ProbeRefusal::BoundExceeded, "\"bound-exceeded\""),
             (ProbeRefusal::EnvironmentAbsent, "\"environment-absent\""),
             (ProbeRefusal::EvaluationFailed, "\"evaluation-failed\""),
@@ -1901,53 +1879,58 @@ for (var _i = _arr.length - 1; _i > 0; _i--) {
     }
 
     #[test]
-    fn timed_out_probe_has_no_live_environment_after_return() {
+    fn backstopped_probe_has_no_live_environment_after_return() {
         let baseline: usize = ACTIVE_ENVIRONMENTS.load(Ordering::SeqCst);
         PEAK_ENVIRONMENTS.store(baseline, Ordering::SeqCst);
         let limits: ProbeLimits = ProbeLimits {
-            wall_timeout: Duration::from_millis(100),
-            loop_iteration_limit: 20_000_000,
+            fuel_slices: u64::MAX,
+            wall_clock_backstop: Duration::from_secs(1),
+            loop_iteration_limit: u64::MAX,
             recursion_limit: DEFAULT_RECURSION_LIMIT,
             stack_size_limit: DEFAULT_STACK_SIZE_LIMIT,
             track_activity: true,
         };
         let arr: &str = "var _arr=['x'];";
-        let dec: &str =
-            "function _decode(i){var n=0;for(var j=0;j<10000000;j++){n+=j;}return _arr[i];}";
-        let deadline: ProbeDeadline = ProbeDeadline::from_timeout(limits.wall_timeout);
-        let started: Instant = Instant::now();
+        let dec: &str = "function _decode(i){while(true){}return _arr[i];}";
+        let backstop: ProbeDeadline = ProbeDeadline::from_timeout(limits.wall_clock_backstop);
         let result: Result<DecoderProbe, ProbeRefusal> =
-            run_joined_worker("disrobe-boa-lifecycle-test", deadline, |deadline| {
-                run_probe(dec, arr, "_decode", &[0], limits, deadline)
+            run_joined_worker("disrobe-boa-lifecycle-test", backstop, |backstop| {
+                run_probe(dec, arr, "_decode", &[0], limits, backstop)
             });
-        assert_eq!(result, Err(ProbeRefusal::WallTimeout));
-        assert!(started.elapsed() < Duration::from_secs(1));
+        assert_eq!(result, Err(ProbeRefusal::WallClockBackstop));
         assert!(PEAK_ENVIRONMENTS.load(Ordering::SeqCst) > baseline);
         assert_eq!(ACTIVE_ENVIRONMENTS.load(Ordering::SeqCst), baseline);
     }
 
     #[test]
-    fn global_probe_admission_is_bounded() {
+    fn probe_admission_queues_until_a_slot_is_released() {
         static TEST_SLOTS: ProbeSlots = ProbeSlots {
             active: Mutex::new(0),
             available: Condvar::new(),
         };
-        let mut permits: Vec<ProbePermit> = Vec::new();
-        for _ in 0..MAX_CONCURRENT_PROBES {
-            permits.push(
-                acquire_probe_permit_from(
-                    &TEST_SLOTS,
-                    ProbeDeadline::from_timeout(Duration::from_secs(1)),
-                )
-                .expect("available slot"),
-            );
-        }
-        let refused: Result<ProbePermit, ProbeRefusal> = acquire_probe_permit_from(
-            &TEST_SLOTS,
-            ProbeDeadline::from_timeout(Duration::from_millis(10)),
-        );
-        assert!(matches!(refused, Err(ProbeRefusal::WallTimeout)));
-        drop(permits);
+        let permits: Vec<ProbePermit> = (0..MAX_CONCURRENT_PROBES)
+            .map(|_| acquire_probe_permit_from(&TEST_SLOTS))
+            .collect();
+        let (admitted, admissions): (
+            std::sync::mpsc::Sender<ProbePermit>,
+            std::sync::mpsc::Receiver<ProbePermit>,
+        ) = std::sync::mpsc::channel();
+        thread::scope(|scope: &thread::Scope<'_, '_>| {
+            scope.spawn(move || {
+                admitted
+                    .send(acquire_probe_permit_from(&TEST_SLOTS))
+                    .expect("admission receiver");
+            });
+            assert!(matches!(
+                admissions.recv_timeout(Duration::from_secs(1)),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            ));
+            drop(permits);
+            let queued: ProbePermit = admissions.recv().expect("queued admission");
+            assert_eq!(*TEST_SLOTS.active.lock().expect("slot count"), 1);
+            drop(queued);
+        });
+        assert_eq!(*TEST_SLOTS.active.lock().expect("slot count"), 0);
     }
 
     #[test]
