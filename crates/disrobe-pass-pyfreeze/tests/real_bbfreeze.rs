@@ -32,14 +32,7 @@ const fn python() -> &'static str {
     if cfg!(windows) { "python" } else { "python3" }
 }
 
-fn has_python() -> bool {
-    Command::new(python())
-        .arg("--version")
-        .output()
-        .is_ok_and(|o| o.status.success())
-}
-
-fn compile_pyc(source: &str) -> Option<Vec<u8>> {
+fn compile_pyc(source: &str) -> Vec<u8> {
     let script: &str = r"
 import sys, marshal, importlib.util
 src = sys.stdin.buffer.read().decode('utf-8')
@@ -58,17 +51,26 @@ out.flush()
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .ok()?;
-    child.stdin.take()?.write_all(source.as_bytes()).ok()?;
-    let out = child.wait_with_output().ok()?;
-    if !out.status.success() {
-        eprintln!(
-            "[real_bbfreeze] pyc compile failed: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        return None;
-    }
-    Some(out.stdout)
+        .unwrap_or_else(|error: std::io::Error| {
+            panic!(
+                "the bbfreeze layout is built from pyc that `{}` compiles, and every CI job that \
+                 runs this test provisions python: {error}",
+                python()
+            )
+        });
+    child
+        .stdin
+        .take()
+        .expect("piped stdin")
+        .write_all(source.as_bytes())
+        .expect("write module source to python");
+    let out = child.wait_with_output().expect("wait for python");
+    assert!(
+        out.status.success(),
+        "python failed to compile a module of the bbfreeze layout: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    out.stdout
 }
 
 fn build_zip(entries: &[(String, Vec<u8>)]) -> Vec<u8> {
@@ -101,7 +103,7 @@ fn python_minor() -> i32 {
     out.ok()
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .and_then(|s| s.trim().parse::<i32>().ok())
-        .unwrap_or(14)
+        .unwrap_or_else(|| panic!("`{}` did not report its minor version", python()))
 }
 
 fn stage_dir(tag: &str) -> disrobe_core::scratch::ScratchDir {
@@ -115,14 +117,10 @@ fn stage_dir(tag: &str) -> disrobe_core::scratch::ScratchDir {
     disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir")
 }
 
-fn assemble_real_bbfreeze_dist() -> Option<(disrobe_core::scratch::ScratchDir, PathBuf)> {
-    if !has_python() {
-        eprintln!("[real_bbfreeze] skipped: python interpreter unavailable on this box");
-        return None;
-    }
+fn assemble_real_bbfreeze_dist() -> (disrobe_core::scratch::ScratchDir, PathBuf) {
     let mut zip_entries: Vec<(String, Vec<u8>)> = Vec::new();
     for (name, src) in MODULES {
-        let pyc: Vec<u8> = compile_pyc(src)?;
+        let pyc: Vec<u8> = compile_pyc(src);
         zip_entries.push((format!("{name}.pyc"), pyc));
     }
     let scratch: disrobe_core::scratch::ScratchDir = stage_dir("dist");
@@ -137,7 +135,7 @@ fn assemble_real_bbfreeze_dist() -> Option<(disrobe_core::scratch::ScratchDir, P
     .expect("write runtime dll");
     let exe: PathBuf = dist.join("hello.exe");
     std::fs::write(&exe, b"MZ\x90\x00bbfreeze-stub-launcher").expect("write stub exe");
-    Some((scratch, exe))
+    (scratch, exe)
 }
 
 fn out_dir(tag: &str) -> disrobe_core::scratch::ScratchDir {
@@ -153,11 +151,8 @@ fn out_dir(tag: &str) -> disrobe_core::scratch::ScratchDir {
 
 #[test]
 fn bbfreeze_real_layout_detects_as_bbfreeze() {
-    let Some((_dist_scratch, exe)): Option<(disrobe_core::scratch::ScratchDir, PathBuf)> =
-        assemble_real_bbfreeze_dist()
-    else {
-        return;
-    };
+    let (_dist_scratch, exe): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        assemble_real_bbfreeze_dist();
     let bytes: Vec<u8> = std::fs::read(&exe).expect("read stub");
     let det: Detection = detect_bytes(&bytes, Some(&exe));
     assert_eq!(
@@ -169,11 +164,8 @@ fn bbfreeze_real_layout_detects_as_bbfreeze() {
 
 #[test]
 fn bbfreeze_extracts_and_recovers_real_module_set() {
-    let Some((_dist_scratch, exe)): Option<(disrobe_core::scratch::ScratchDir, PathBuf)> =
-        assemble_real_bbfreeze_dist()
-    else {
-        return;
-    };
+    let (_dist_scratch, exe): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        assemble_real_bbfreeze_dist();
     let out_scratch: disrobe_core::scratch::ScratchDir = out_dir("extract");
     let out: PathBuf = out_scratch.path().to_path_buf();
     let extraction: BbfreezeExtraction =
@@ -215,11 +207,8 @@ fn bbfreeze_extracts_and_recovers_real_module_set() {
 
 #[test]
 fn bbfreeze_full_pipeline_recovers_source() {
-    let Some((_dist_scratch, exe)): Option<(disrobe_core::scratch::ScratchDir, PathBuf)> =
-        assemble_real_bbfreeze_dist()
-    else {
-        return;
-    };
+    let (_dist_scratch, exe): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        assemble_real_bbfreeze_dist();
     let out_scratch: disrobe_core::scratch::ScratchDir = out_dir("pipeline");
     let out: PathBuf = out_scratch.path().to_path_buf();
     let output: PyfreezeOutput = extract(&exe, &out).expect("pyfreeze extract");

@@ -30,17 +30,7 @@ fn has_cx_freeze() -> bool {
         .is_ok_and(|o| o.status.success())
 }
 
-fn build_root() -> PathBuf {
-    let manifest_dir: String =
-        std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_owned());
-    let mut p: PathBuf = PathBuf::from(manifest_dir);
-    p.pop();
-    p.pop();
-    p.push("target");
-    p.push("test-fixtures");
-    p.push("cxfreeze-gate");
-    p
-}
+const REQUIRE_CX_FREEZE_VAR: &str = "DISROBE_REQUIRE_CX_FREEZE";
 
 fn write_sources(root: &Path) {
     std::fs::create_dir_all(root).expect("create build root");
@@ -83,30 +73,42 @@ fn locate_built_exe(build_dir: &Path) -> Option<PathBuf> {
     None
 }
 
-fn build_cx_freeze() -> Option<PathBuf> {
+fn build_cx_freeze() -> Option<(disrobe_core::scratch::ScratchDir, PathBuf)> {
     if !has_cx_freeze() {
-        eprintln!("[real_frozen_recovery] skipped: cx_Freeze not importable on this box");
+        assert!(
+            std::env::var_os(REQUIRE_CX_FREEZE_VAR).is_none(),
+            "{REQUIRE_CX_FREEZE_VAR} is set, so cx_Freeze must import in `{}`",
+            python()
+        );
+        eprintln!(
+            "UNGRADED: cx_Freeze does not import in `{}`, so the real cx_Freeze build is not \
+             measured; set {REQUIRE_CX_FREEZE_VAR}=1 to fail instead",
+            python()
+        );
         return None;
     }
-    let root: PathBuf = build_root();
+    let purpose: String = format!("disrobe-cxfreeze-build-{pid}", pid = std::process::id());
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create build scratch dir");
+    let root: PathBuf = scratch.path().to_path_buf();
     write_sources(&root);
     let status = Command::new(python())
         .current_dir(&root)
         .args(["setup.py", "build_exe"])
         .output()
         .expect("run cx_Freeze build");
-    if !status.status.success() {
-        eprintln!(
-            "[real_frozen_recovery] cx_Freeze build failed: {}",
-            String::from_utf8_lossy(&status.stderr)
-        );
-        return None;
-    }
-    let exe: Option<PathBuf> = locate_built_exe(&root.join("build"));
-    if exe.is_none() {
-        eprintln!("[real_frozen_recovery] cx_Freeze build produced no exe");
-    }
-    exe
+    assert!(
+        status.status.success(),
+        "the cx_Freeze build of the gate program failed: {}",
+        String::from_utf8_lossy(&status.stderr)
+    );
+    let exe: PathBuf = locate_built_exe(&root.join("build")).unwrap_or_else(|| {
+        panic!(
+            "the cx_Freeze build under {} produced no executable",
+            root.display()
+        )
+    });
+    Some((scratch, exe))
 }
 
 fn out_dir() -> disrobe_core::scratch::ScratchDir {
@@ -116,11 +118,9 @@ fn out_dir() -> disrobe_core::scratch::ScratchDir {
 
 #[test]
 fn cxfreeze_real_build_recovers_bytecode_and_surfaces_native() {
-    let Some(exe): Option<PathBuf> = build_cx_freeze() else {
-        eprintln!(
-            "[real_frozen_recovery] HONEST-PARTIAL: gate not exercised (cx_Freeze unavailable); \
-             recovery code is built and unit-tested but the end-to-end real-sample assertion is skipped"
-        );
+    let Some((_build_scratch, exe)): Option<(disrobe_core::scratch::ScratchDir, PathBuf)> =
+        build_cx_freeze()
+    else {
         return;
     };
 

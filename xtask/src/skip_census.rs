@@ -26,7 +26,6 @@ const SKIP_CEILING: &[(&str, usize)] = &[
     ("disrobe-pass-py-decompile", 7),
     ("disrobe-pass-py-disasm", 1),
     ("disrobe-pass-pyarmor", 38),
-    ("disrobe-pass-pyfreeze", 18),
     ("disrobe-pass-pyinstaller", 2),
     ("disrobe-pass-shell", 2),
     ("disrobe-pass-swift-objc", 1),

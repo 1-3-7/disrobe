@@ -330,7 +330,7 @@ mod tests {
         assert!(msg.contains("DR-PYFRZ-0902") || msg.contains("DR-PYFRZ-0903"));
     }
 
-    fn freezer_fixture(rel: &str) -> Option<Vec<u8>> {
+    fn freezer_fixture(rel: &str) -> Vec<u8> {
         let path: std::path::PathBuf = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("..")
@@ -338,18 +338,17 @@ mod tests {
             .join("python")
             .join("freezers")
             .join(rel);
-        let bytes: Option<Vec<u8>> = std::fs::read(&path).ok();
-        if bytes.is_none() {
-            eprintln!("SKIP: freezer fixture missing at {}", path.display());
-        }
-        bytes
+        std::fs::read(&path).unwrap_or_else(|error: std::io::Error| {
+            panic!(
+                "the committed freezer fixture {} is unreadable; restore it from git: {error}",
+                path.display()
+            )
+        })
     }
 
     #[test]
     fn pass_run_emits_manifest_not_input_unchanged() {
-        let Some(bytes): Option<Vec<u8>> = freezer_fixture("shiv/hello.pyz") else {
-            return;
-        };
+        let bytes: Vec<u8> = freezer_fixture("shiv/hello.pyz");
         let original: Vec<u8> = bytes.clone();
         let a: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
         let out: Artifact = PYFREEZE_PASS.run(&a).expect("shiv run must succeed");
@@ -372,9 +371,7 @@ mod tests {
 
     #[test]
     fn extract_children_carves_real_shiv_members() {
-        let Some(bytes): Option<Vec<u8>> = freezer_fixture("shiv/hello.pyz") else {
-            return;
-        };
+        let bytes: Vec<u8> = freezer_fixture("shiv/hello.pyz");
         let a: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
         let children: Vec<ChildArtifact> = PYFREEZE_PASS
             .extract_children(&a)

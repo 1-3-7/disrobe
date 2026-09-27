@@ -77,22 +77,19 @@ fn harness_entrypoint() {
     );
 }
 
-fn fixture_present() -> bool {
-    let present: bool = fixture_binary().is_file();
-    if !present {
-        eprintln!(
-            "[debug_framework] skipped: cxfreeze fixture missing at {}",
-            fixture_binary().display()
-        );
-    }
-    present
+fn require_fixture() {
+    let path: PathBuf = fixture_binary();
+    assert!(
+        path.is_file(),
+        "the committed cx_Freeze fixture {} is missing; restore it from git, because this test \
+         never rebuilds fixtures",
+        path.display()
+    );
 }
 
 #[test]
 fn unset_is_zero_overhead() {
-    if !fixture_present() {
-        return;
-    }
+    require_fixture();
     let out: Output = run_harness(None, false);
     assert!(out.status.success(), "child failed: {out:?}");
     let stderr: String = String::from_utf8_lossy(&out.stderr).into_owned();
@@ -115,9 +112,7 @@ fn unset_is_zero_overhead() {
 
 #[test]
 fn set_emits_decision_points() {
-    if !fixture_present() {
-        return;
-    }
+    require_fixture();
     let out: Output = run_harness(Some("pyfreeze"), false);
     assert!(out.status.success(), "child failed: {out:?}");
     let stderr: String = String::from_utf8_lossy(&out.stderr).into_owned();
@@ -153,9 +148,7 @@ fn set_emits_decision_points() {
 
 #[test]
 fn other_scope_does_not_enable_pyfreeze() {
-    if !fixture_present() {
-        return;
-    }
+    require_fixture();
     let out: Output = run_harness(Some("jvm,native"), false);
     assert!(out.status.success(), "child failed: {out:?}");
     let stderr: String = String::from_utf8_lossy(&out.stderr).into_owned();
@@ -167,9 +160,7 @@ fn other_scope_does_not_enable_pyfreeze() {
 
 #[test]
 fn json_mode_is_one_object_per_line() {
-    if !fixture_present() {
-        return;
-    }
+    require_fixture();
     let out: Output = run_harness(Some("pyfreeze"), true);
     assert!(out.status.success(), "child failed: {out:?}");
     let stderr: String = String::from_utf8_lossy(&out.stderr).into_owned();

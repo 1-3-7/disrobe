@@ -52,10 +52,11 @@ fn next_nonce() -> u64 {
 #[test]
 fn pex_real_fixture_detects_as_pex() {
     let path: PathBuf = fixture_path();
-    if !path.is_file() {
-        eprintln!("[real_pex] skipped: fixture missing at {}", path.display());
-        return;
-    }
+    assert!(
+        path.is_file(),
+        "the committed fixture {} is missing; restore it from git, because this test never rebuilds fixtures",
+        path.display()
+    );
     let bytes: Vec<u8> = std::fs::read(&path).expect("read fixture");
     let det: Detection = detect_bytes(&bytes, Some(&path));
     assert_eq!(
@@ -73,10 +74,11 @@ fn pex_real_fixture_detects_as_pex() {
 #[test]
 fn pex_real_fixture_extracts_all_edge_case_bands_inside_deps_wheel() {
     let path: PathBuf = fixture_path();
-    if !path.is_file() {
-        eprintln!("[real_pex] skipped: fixture missing");
-        return;
-    }
+    assert!(
+        path.is_file(),
+        "the committed fixture {} is missing; restore it from git, because this test never rebuilds fixtures",
+        path.display()
+    );
     let bytes: Vec<u8> = std::fs::read(&path).expect("read fixture");
     let scratch: disrobe_core::scratch::ScratchDir = out_dir("extract");
     let out: PathBuf = scratch.path().to_path_buf();

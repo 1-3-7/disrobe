@@ -48,10 +48,11 @@ fn zipapp_real_fixture_present() {
 #[test]
 fn zipapp_real_fixture_detects_as_zipapp() {
     let path: PathBuf = fixture_path();
-    if !path.is_file() {
-        eprintln!("[real_zipapp] skipped: fixture missing");
-        return;
-    }
+    assert!(
+        path.is_file(),
+        "the committed fixture {} is missing; restore it from git, because this test never rebuilds fixtures",
+        path.display()
+    );
     let bytes: Vec<u8> = std::fs::read(&path).expect("read fixture");
     let det: Detection = detect_bytes(&bytes, Some(&path));
     assert_eq!(det.kind, FreezerKind::Zipapp, "got: {det:?}");
@@ -60,10 +61,11 @@ fn zipapp_real_fixture_detects_as_zipapp() {
 #[test]
 fn zipapp_real_fixture_contains_all_edge_case_bands() {
     let path: PathBuf = fixture_path();
-    if !path.is_file() {
-        eprintln!("[real_zipapp] skipped: fixture missing");
-        return;
-    }
+    assert!(
+        path.is_file(),
+        "the committed fixture {} is missing; restore it from git, because this test never rebuilds fixtures",
+        path.display()
+    );
     let bytes: Vec<u8> = std::fs::read(&path).expect("read fixture");
     let mut archive: zip::ZipArchive<std::io::Cursor<&[u8]>> =
         zip::ZipArchive::new(std::io::Cursor::new(skip_shebang(&bytes))).expect("zip parse");
@@ -94,10 +96,11 @@ fn zipapp_real_fixture_contains_all_edge_case_bands() {
 #[test]
 fn zipapp_real_fixture_extracts_entries() {
     let path: PathBuf = fixture_path();
-    if !path.is_file() {
-        eprintln!("[real_zipapp] skipped: fixture missing");
-        return;
-    }
+    assert!(
+        path.is_file(),
+        "the committed fixture {} is missing; restore it from git, because this test never rebuilds fixtures",
+        path.display()
+    );
     let purpose: String = format!("disrobe-zipapp-real-{pid}", pid = std::process::id());
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
