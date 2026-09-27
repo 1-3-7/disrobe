@@ -559,6 +559,24 @@ jobs:
           if [ "$RUNNER_OS" = "Windows" ]; then
             demand makecab DISROBE_REQUIRE_MAKECAB
           fi
+      - name: require the decoders, PowerShell and npx the shell and webview graders run, so an absent one fails here by name
+        if: matrix.shard == 'two' || matrix.shard == 'three'
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ] && ! command -v xxd >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends xxd
+          fi
+          for tool in bash base64 tr xxd pwsh npx; do
+            if ! command -v "$tool" >/dev/null 2>&1; then
+              echo "$tool is not callable on $RUNNER_OS, so the shell and webview graders that decode or pack through it would fail"
+              exit 1
+            fi
+          done
+          if [ "$(printf %s eA== | base64 -d)" != "x" ]; then
+            echo "base64 on $RUNNER_OS does not decode with -d, which the bash indirection grader uses as its reference"
+            exit 1
+          fi
       - name: provision the dotnet sdk the il-equivalence floors are measured with
         uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
         env:
