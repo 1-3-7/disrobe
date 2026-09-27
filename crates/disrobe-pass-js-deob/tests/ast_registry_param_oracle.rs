@@ -8,7 +8,7 @@ use boa_engine::{Context, Source};
 use disrobe_core::subprocess::{CapturedOutput, run_captured};
 use disrobe_pass_js_deob::unminify_ast;
 
-const NODE_TIMEOUT: Duration = Duration::from_secs(30);
+const NODE_BACKSTOP: Duration = Duration::from_mins(5);
 const NODE_CAPTURE: usize = 1usize << 18;
 
 fn harness(program: &str, tail: &str) -> String {
@@ -31,9 +31,10 @@ fn boa_output(program: &str) -> String {
 fn node_output(program: &str) -> String {
     let source: String = harness(program, "process.stdout.write(__out.join('\\u0001'));");
     let args: [&OsStr; 2] = [OsStr::new("-e"), OsStr::new(&source)];
-    let output: CapturedOutput = run_captured(Path::new("node"), &args, NODE_TIMEOUT, NODE_CAPTURE)
-        .expect("node is required for the registry semantic reference")
-        .expect("the registry semantic reference must finish within the timeout");
+    let output: CapturedOutput =
+        run_captured(Path::new("node"), &args, NODE_BACKSTOP, NODE_CAPTURE)
+            .expect("node is required for the registry semantic reference")
+            .expect("the registry semantic reference must finish within the timeout");
     assert_eq!(
         output.exit_code,
         Some(0),

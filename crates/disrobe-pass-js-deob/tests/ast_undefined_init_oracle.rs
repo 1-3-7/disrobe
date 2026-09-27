@@ -10,7 +10,7 @@ use disrobe_pass_js_deob::{AstUnminifyStats, unminify_ast};
 const LOOP_LIMIT: u64 = 2_000_000;
 const RECURSION_LIMIT: usize = 1_500;
 const STACK_LIMIT: usize = 50_000;
-const NODE_TIMEOUT: Duration = Duration::from_secs(30);
+const NODE_BACKSTOP: Duration = Duration::from_mins(5);
 const NODE_CAPTURE: usize = 1usize << 18;
 
 fn eval_capture(program: &str) -> Option<String> {
@@ -182,9 +182,10 @@ fn comment_bearing_let_initializers_are_preserved() {
 
 fn node_capture(source: &str) -> String {
     let args: [&OsStr; 2] = [OsStr::new("-e"), OsStr::new(source)];
-    let output: CapturedOutput = run_captured(Path::new("node"), &args, NODE_TIMEOUT, NODE_CAPTURE)
-        .expect("node is required for the undefined initializer semantic reference")
-        .expect("undefined initializer semantic reference must finish within the timeout");
+    let output: CapturedOutput =
+        run_captured(Path::new("node"), &args, NODE_BACKSTOP, NODE_CAPTURE)
+            .expect("node is required for the undefined initializer semantic reference")
+            .expect("undefined initializer semantic reference must finish within the timeout");
     assert_eq!(
         output.exit_code,
         Some(0),

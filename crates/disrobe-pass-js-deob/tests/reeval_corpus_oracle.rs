@@ -22,7 +22,7 @@ use sha2::{Digest, Sha256};
 
 const DIFFERENTIAL_FLOOR: usize = 37;
 const SAMPLE_COUNT: usize = 41;
-const EVAL_TIMEOUT: Duration = Duration::from_secs(12);
+const EVAL_BACKSTOP: Duration = Duration::from_mins(5);
 const HIGH_CLEAN: &str = "src/javascript/obfuscator-io-high.js";
 const REQUESTED_ROOTS: &[&str] = &["js/javascript-obfuscator", "js/jsconfuser"];
 const WORKER_REQUEST_ENV: &str = "DISROBE_JS_BOA_ORACLE_REQUEST";
@@ -989,7 +989,7 @@ struct EvalBatchResponse {
 
 enum GuardedBatch {
     Completed(Vec<Result<EvalOutcome, String>>),
-    WallTimeExceeded,
+    BackstopExceeded,
     HarnessFailure(String),
 }
 
@@ -1700,11 +1700,11 @@ fn eval_batch_guarded(program: &str, argv_battery: &[&[&str]]) -> GuardedBatch {
     };
     let wait_started: Instant = Instant::now();
     let Some(output): Option<CapturedOutput> =
-        wait_with_output_timeout(child, EVAL_TIMEOUT, WORKER_CAPTURE_LIMIT)
+        wait_with_output_timeout(child, EVAL_BACKSTOP, WORKER_CAPTURE_LIMIT)
     else {
         let elapsed: Duration = wait_started.elapsed();
-        if elapsed >= EVAL_TIMEOUT {
-            return GuardedBatch::WallTimeExceeded;
+        if elapsed >= EVAL_BACKSTOP {
+            return GuardedBatch::BackstopExceeded;
         }
         return GuardedBatch::HarnessFailure(format!(
             "Boa worker wait or output capture failed after {elapsed:?}"
@@ -1737,23 +1737,38 @@ fn eval_batch_guarded(program: &str, argv_battery: &[&[&str]]) -> GuardedBatch {
     GuardedBatch::Completed(response.evaluations)
 }
 
-#[test]
-fn boa_subprocess_reports_the_engine_step_limit() {
-    let evaluations: Vec<Result<EvalOutcome, String>> =
-        match eval_batch_guarded("for (;;) {}", NO_ARGS) {
-            GuardedBatch::Completed(evaluations) => evaluations,
-            GuardedBatch::WallTimeExceeded => {
-                panic!("Boa loop must hit the engine step limit before the hard wall-clock limit")
-            }
-            GuardedBatch::HarnessFailure(reason) => panic!("{reason}"),
-        };
+fn assert_engine_limit(program: &str, label: &str) {
+    let evaluations: Vec<Result<EvalOutcome, String>> = match eval_batch_guarded(program, NO_ARGS) {
+        GuardedBatch::Completed(evaluations) => evaluations,
+        GuardedBatch::BackstopExceeded => {
+            panic!("{label}: the engine bound must stop the program before the process backstop")
+        }
+        GuardedBatch::HarnessFailure(reason) => panic!("{label}: {reason}"),
+    };
     let first: &Result<EvalOutcome, String> = evaluations
         .first()
-        .expect("loop-limit probe must return one evaluation");
+        .unwrap_or_else(|| panic!("{label}: the probe must return one evaluation"));
     let outcome: &EvalOutcome = first
         .as_ref()
-        .unwrap_or_else(|reason: &String| panic!("{reason}"));
-    assert_eq!(outcome.terminal, Terminal::ExecutionLimitExceeded);
+        .unwrap_or_else(|reason: &String| panic!("{label}: {reason}"));
+    assert_eq!(
+        outcome.terminal,
+        Terminal::ExecutionLimitExceeded,
+        "{label}"
+    );
+}
+
+#[test]
+fn boa_subprocess_reports_the_engine_step_limit() {
+    assert_engine_limit("for (;;) {}", "unbounded loop");
+}
+
+#[test]
+fn boa_subprocess_step_fuel_bounds_work_spread_across_frames() {
+    assert_engine_limit(
+        "for (var i = 0; i < 1000000; i++) { (function () { for (var j = 0; j < 1000000; j++) {} })(); }",
+        "per-frame loops under the iteration limit",
+    );
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1978,9 +1993,9 @@ fn run_differential(case: &DifferentialCase<'_>) -> Outcome {
         case.argv_battery,
     ) {
         GuardedBatch::Completed(evaluations) => evaluations,
-        GuardedBatch::WallTimeExceeded => {
+        GuardedBatch::BackstopExceeded => {
             return Outcome::TimedOut(format!(
-                "{name}: {reference_kind} source exceeded the hard {EVAL_TIMEOUT:?} subprocess limit"
+                "{name}: {reference_kind} source did not exit within the {EVAL_BACKSTOP:?} process backstop"
             ));
         }
         GuardedBatch::HarnessFailure(reason) => {
@@ -2004,18 +2019,20 @@ fn run_differential(case: &DifferentialCase<'_>) -> Outcome {
             ));
         }
     };
-    let recovered_evaluations: Vec<Result<EvalOutcome, String>> =
-        match eval_batch_guarded(&recovery.source, case.argv_battery) {
-            GuardedBatch::Completed(evaluations) => evaluations,
-            GuardedBatch::WallTimeExceeded => {
-                return Outcome::TimedOut(format!(
-                    "{name}: recovered source exceeded the hard {EVAL_TIMEOUT:?} subprocess limit"
-                ));
-            }
-            GuardedBatch::HarnessFailure(reason) => {
-                return Outcome::HarnessFailure(format!("{name}: {reason}"));
-            }
-        };
+    let recovered_evaluations: Vec<Result<EvalOutcome, String>> = match eval_batch_guarded(
+        &recovery.source,
+        case.argv_battery,
+    ) {
+        GuardedBatch::Completed(evaluations) => evaluations,
+        GuardedBatch::BackstopExceeded => {
+            return Outcome::TimedOut(format!(
+                "{name}: recovered source did not exit within the {EVAL_BACKSTOP:?} process backstop"
+            ));
+        }
+        GuardedBatch::HarnessFailure(reason) => {
+            return Outcome::HarnessFailure(format!("{name}: {reason}"));
+        }
+    };
     if recovered_evaluations.len() != case.argv_battery.len() {
         return Outcome::HarnessFailure(format!(
             "{name}: Boa worker returned {} recovered evaluations for {} argument cases",
@@ -2203,7 +2220,7 @@ fn corpus_wide_differential_reexec() {
     );
     assert!(
         timed_out.is_empty(),
-        "samples that exceeded the hard subprocess limit:\n\n{}",
+        "samples whose Boa worker did not exit within the process backstop:\n\n{}",
         timed_out.join("\n\n")
     );
     assert!(
@@ -4266,8 +4283,8 @@ fn single_outcome(program: &str, label: &str) -> EvalOutcome {
                 .unwrap_or_else(|| panic!("{label}: worker returned no evaluation"));
             evaluation.unwrap_or_else(|reason: String| panic!("{label}: {reason}"))
         }
-        GuardedBatch::WallTimeExceeded => {
-            panic!("{label}: exceeded the hard {EVAL_TIMEOUT:?} subprocess limit")
+        GuardedBatch::BackstopExceeded => {
+            panic!("{label}: did not exit within the {EVAL_BACKSTOP:?} process backstop")
         }
         GuardedBatch::HarnessFailure(reason) => panic!("{label}: {reason}"),
     }

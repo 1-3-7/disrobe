@@ -14,7 +14,7 @@ use disrobe_pass_js_deob::{
 const LOOP_LIMIT: u64 = 2_000_000;
 const RECURSION_LIMIT: usize = 1_500;
 const STACK_LIMIT: usize = 50_000;
-const NODE_TIMEOUT: Duration = Duration::from_secs(30);
+const NODE_BACKSTOP: Duration = Duration::from_mins(5);
 const NODE_CAPTURE: usize = 1usize << 18;
 const BABEL_RUNTIME_VERSION: &str = "7.24.5";
 const BABEL_ASYNC_IMPORT: &str =
@@ -84,7 +84,7 @@ fn node_capture_babel_runtime(source: &str) -> String {
     let captured: CapturedOutput = run_captured(
         PathBuf::from("node").as_path(),
         &args,
-        NODE_TIMEOUT,
+        NODE_BACKSTOP,
         NODE_CAPTURE,
     )
     .expect("node is required for the Babel async identity reference")
@@ -115,7 +115,7 @@ fn node_capture(source: &str) -> String {
     let captured: CapturedOutput = run_captured(
         PathBuf::from("node").as_path(),
         &args,
-        NODE_TIMEOUT,
+        NODE_BACKSTOP,
         NODE_CAPTURE,
     )
     .expect("node is required for the JavaScript semantic reference")

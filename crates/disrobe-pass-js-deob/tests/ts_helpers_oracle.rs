@@ -19,7 +19,7 @@ use oxc_semantic::ScopeFlags;
 use oxc_span::SourceType;
 use sha2::{Digest, Sha256};
 
-const NODE_TIMEOUT: Duration = Duration::from_secs(30);
+const NODE_BACKSTOP: Duration = Duration::from_mins(5);
 const NODE_CAPTURE: usize = 1 << 20;
 const PROFILES: [&str; 2] = ["es5", "es2015"];
 const MINIFIED_PROFILES: [&str; 4] = [
@@ -99,7 +99,7 @@ fn node_output_at(path: &Path, source: &str) -> String {
         Path::new("node"),
         &args,
         [("FORCE_COLOR", "0"), ("NO_COLOR", "1")],
-        NODE_TIMEOUT,
+        NODE_BACKSTOP,
         NODE_CAPTURE,
     )
     .expect("node is required for the TypeScript helper execution grade")

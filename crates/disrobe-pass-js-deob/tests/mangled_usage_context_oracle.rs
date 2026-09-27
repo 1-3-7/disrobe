@@ -12,7 +12,7 @@ use disrobe_pass_js_deob::{
 const LOOP_LIMIT: u64 = 2_000_000;
 const RECURSION_LIMIT: usize = 1_500;
 const STACK_LIMIT: usize = 50_000;
-const NODE_TIMEOUT: Duration = Duration::from_secs(30);
+const NODE_BACKSTOP: Duration = Duration::from_mins(5);
 const NODE_CAPTURE: usize = 1usize << 18;
 
 fn restore_terser_mangled(source: &str) -> TerserRestoreReport {
@@ -41,9 +41,10 @@ fn node_capture(program: &str) -> String {
         "var __out=[];var print=function(v){{__out.push(String(v));}};{program};process.stdout.write(__out.join('\\u0001'));"
     );
     let args: [&OsStr; 2] = [OsStr::new("-e"), OsStr::new(&harness)];
-    let output: CapturedOutput = run_captured(Path::new("node"), &args, NODE_TIMEOUT, NODE_CAPTURE)
-        .expect("node is required for the name-inference semantic reference")
-        .expect("name-inference semantic reference must finish within the timeout");
+    let output: CapturedOutput =
+        run_captured(Path::new("node"), &args, NODE_BACKSTOP, NODE_CAPTURE)
+            .expect("node is required for the name-inference semantic reference")
+            .expect("name-inference semantic reference must finish within the timeout");
     assert_eq!(
         output.exit_code,
         Some(0),

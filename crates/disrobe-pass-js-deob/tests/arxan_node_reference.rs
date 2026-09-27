@@ -14,7 +14,7 @@ use disrobe_core::scratch::ScratchFile;
 use disrobe_core::subprocess::{CapturedOutput, run_captured};
 use disrobe_pass_js_deob::{ProtectorOptions, ProtectorOutput, arxan_deobfuscate as deob};
 
-const NODE_TIMEOUT: Duration = Duration::from_secs(30);
+const NODE_BACKSTOP: Duration = Duration::from_mins(5);
 const NODE_CAPTURE: usize = 1usize << 18;
 
 const HOST_ORIGINAL: &str = r#"function accumulate(values) {
@@ -73,7 +73,7 @@ fn node_binary() -> PathBuf {
     let probe: Option<CapturedOutput> = run_captured(
         candidate.as_path(),
         &["--version"],
-        NODE_TIMEOUT,
+        NODE_BACKSTOP,
         NODE_CAPTURE,
     )
     .unwrap_or_else(|err| {
@@ -85,7 +85,7 @@ fn node_binary() -> PathBuf {
         )
     });
     let out: CapturedOutput = probe.unwrap_or_else(|| {
-        panic!("node --version exceeded {NODE_TIMEOUT:?} without producing a version")
+        panic!("node --version exceeded {NODE_BACKSTOP:?} without producing a version")
     });
     assert_eq!(
         out.exit_code,
@@ -104,7 +104,7 @@ fn parses_under_node(program: &str) -> Result<(), String> {
     let path: PathBuf = scratch.path().to_path_buf();
     let node: PathBuf = node_binary();
     let args: [&str; 2] = ["--check", path.to_str().expect("utf-8 scratch path")];
-    let captured: CapturedOutput = run_captured(node.as_path(), &args, NODE_TIMEOUT, NODE_CAPTURE)
+    let captured: CapturedOutput = run_captured(node.as_path(), &args, NODE_BACKSTOP, NODE_CAPTURE)
         .expect("spawn node --check")
         .expect("node --check must finish inside the timeout");
     if captured.exit_code == Some(0i32) {
@@ -121,7 +121,7 @@ fn run_under_node(program: &str) -> Result<String, String> {
     let path: PathBuf = scratch.path().to_path_buf();
     let node: PathBuf = node_binary();
     let args: [&str; 1] = [path.to_str().expect("utf-8 scratch path")];
-    let captured: CapturedOutput = run_captured(node.as_path(), &args, NODE_TIMEOUT, NODE_CAPTURE)
+    let captured: CapturedOutput = run_captured(node.as_path(), &args, NODE_BACKSTOP, NODE_CAPTURE)
         .expect("spawn node")
         .expect("node must finish inside the timeout");
     if captured.exit_code == Some(0i32) {

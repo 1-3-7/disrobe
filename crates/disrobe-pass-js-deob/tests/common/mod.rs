@@ -1,6 +1,9 @@
 #![allow(dead_code, clippy::redundant_pub_crate)]
 use std::cell::{Cell, RefCell};
+use std::future::Future;
+use std::pin::Pin;
 use std::rc::Rc;
+use std::task::{Context as TaskContext, Poll, Waker};
 
 use boa_engine::{
     Context, JsError, JsNativeError, JsResult, JsValue, Script, Source,
@@ -12,6 +15,8 @@ use boa_engine::{
 };
 
 const LOOP_LIMIT: u64 = 2_000_000;
+const STEP_SLICE_COST: u32 = 256;
+const STEP_SLICE_LIMIT: u64 = 400_000;
 const RECURSION_LIMIT: usize = 1_500;
 const STACK_LIMIT: usize = 50_000;
 const FIXED_EPOCH_MILLIS: i64 = 1_700_000_000_000;
@@ -583,6 +588,29 @@ fn eval_setup(context: &mut Context, source: &str, label: &str) -> Result<(), St
         .map_err(|error: JsError| format!("{label}: {error}"))
 }
 
+enum Fueled {
+    Finished(JsResult<JsValue>),
+    Exhausted,
+}
+
+fn evaluate_with_step_fuel(script: &Script, context: &mut Context) -> Fueled {
+    let mut evaluation: Pin<Box<dyn Future<Output = JsResult<JsValue>> + '_>> =
+        Box::pin(script.evaluate_async_with_budget(context, STEP_SLICE_COST));
+    let mut task_context: TaskContext<'_> = TaskContext::from_waker(Waker::noop());
+    let mut slices: u64 = 0;
+    loop {
+        match evaluation.as_mut().poll(&mut task_context) {
+            Poll::Ready(result) => return Fueled::Finished(result),
+            Poll::Pending => {
+                slices += 1;
+                if slices >= STEP_SLICE_LIMIT {
+                    return Fueled::Exhausted;
+                }
+            }
+        }
+    }
+}
+
 fn run_harness(program: &str, argv: &[&str], with_host: bool) -> Result<EvalOutcome, String> {
     reset_trace();
     let job_queue: Rc<OracleJobQueue> = Rc::new(OracleJobQueue::default());
@@ -607,15 +635,18 @@ fn run_harness(program: &str, argv: &[&str], with_host: bool) -> Result<EvalOutc
     eval_setup(&mut context, &process, "initialize process host")?;
     let evaluated_terminal: Terminal =
         match Script::parse(Source::from_bytes(program), None, &mut context) {
-            Ok(script) => match script.evaluate(&mut context) {
-                Ok(value) => Terminal::Completed(value_limit_reason(&value).map_or_else(
-                    || observe_value(&value),
-                    |reason: String| {
-                        set_observation_limit(reason);
-                        observed("unavailable", String::new())
-                    },
-                )),
-                Err(error) => terminal_from_error(&error, &mut context),
+            Ok(script) => match evaluate_with_step_fuel(&script, &mut context) {
+                Fueled::Finished(Ok(value)) => {
+                    Terminal::Completed(value_limit_reason(&value).map_or_else(
+                        || observe_value(&value),
+                        |reason: String| {
+                            set_observation_limit(reason);
+                            observed("unavailable", String::new())
+                        },
+                    ))
+                }
+                Fueled::Finished(Err(error)) => terminal_from_error(&error, &mut context),
+                Fueled::Exhausted => Terminal::ExecutionLimitExceeded,
             },
             Err(error) => parse_failure_from_error(&error, &mut context),
         };

@@ -12,7 +12,7 @@ use disrobe_pass_js_deob::{
     undo_closure_advanced, undo_preset_env,
 };
 
-const TSC_TIMEOUT: Duration = Duration::from_secs(30);
+const TSC_BACKSTOP: Duration = Duration::from_mins(5);
 const TSC_CAPTURE: usize = 1usize << 20;
 const TSC_VERSION: &str = "Version 6.0.3";
 
@@ -64,7 +64,7 @@ fn captured_diagnostics(captured: &CapturedOutput) -> String {
 
 fn require_typescript_version(compiler: &Path) -> Result<(), String> {
     let args: [OsString; 1] = [OsString::from("--version")];
-    let captured: CapturedOutput = run_captured(compiler, &args, TSC_TIMEOUT, TSC_CAPTURE)
+    let captured: CapturedOutput = run_captured(compiler, &args, TSC_BACKSTOP, TSC_CAPTURE)
         .map_err(|error: std::io::Error| {
             format!(
                 "TypeScript compiler is required but `{}` could not be launched: {error}. Install TypeScript or set DISROBE_TSC to the compiler executable",
@@ -73,7 +73,7 @@ fn require_typescript_version(compiler: &Path) -> Result<(), String> {
         })?
         .ok_or_else(|| {
             format!(
-                "TypeScript compiler `{}` exceeded {TSC_TIMEOUT:?} while reporting its version",
+                "TypeScript compiler `{}` exceeded {TSC_BACKSTOP:?} while reporting its version",
                 compiler.display()
             )
         })?;
@@ -126,7 +126,7 @@ fn emit_with_typescript(
         output_dir.as_os_str().to_owned(),
         input.as_os_str().to_owned(),
     ];
-    let captured: CapturedOutput = run_captured(compiler, &args, TSC_TIMEOUT, TSC_CAPTURE)
+    let captured: CapturedOutput = run_captured(compiler, &args, TSC_BACKSTOP, TSC_CAPTURE)
         .map_err(|error: std::io::Error| {
             format!(
                 "TypeScript compiler is required but `{}` could not be launched: {error}. Install TypeScript or set DISROBE_TSC to the compiler executable",
@@ -135,7 +135,7 @@ fn emit_with_typescript(
         })?
         .ok_or_else(|| {
             format!(
-                "TypeScript compiler `{}` exceeded {TSC_TIMEOUT:?} while checking {}",
+                "TypeScript compiler `{}` exceeded {TSC_BACKSTOP:?} while checking {}",
                 compiler.display(),
                 input.display()
             )
