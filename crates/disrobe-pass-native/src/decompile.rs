@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -161,6 +161,9 @@ pub struct DecompileOutput {
     reason = "from_mins is unstable (duration_constructors, rust#120301); from_secs is the stable form"
 )]
 pub fn run(backend: DecompilerBackend, input: &Path, out_dir: &Path) -> Result<DecompileOutput> {
+    if backend == DecompilerBackend::Angr {
+        return Err(Error::AuthorizationRequired("Angr dynamic backend"));
+    }
     if backend.license_required() && std::env::var(backend.override_env()).is_err() {
         return Err(Error::LicenseRequired(backend.label()));
     }
@@ -171,51 +174,71 @@ pub fn run(backend: DecompilerBackend, input: &Path, out_dir: &Path) -> Result<D
     let tool: PathBuf = probe_result
         .path
         .unwrap_or_else(|| PathBuf::from(backend.binary_name()));
-    let mut cmd: Command = Command::new(&tool);
+    let mut args: Vec<OsString> = Vec::new();
     match backend {
         DecompilerBackend::Ghidra => {
-            cmd.arg(out_dir)
-                .arg("disrobe_project")
-                .arg("-import")
-                .arg(input)
-                .arg("-deleteProject");
+            args.extend([
+                out_dir.as_os_str().to_os_string(),
+                OsString::from("disrobe_project"),
+                OsString::from("-import"),
+                input.as_os_str().to_os_string(),
+                OsString::from("-deleteProject"),
+            ]);
         }
         DecompilerBackend::Rizin => {
-            cmd.arg("-q").arg("-c").arg("aaa; pdc").arg(input);
+            args.extend([
+                OsString::from("-q"),
+                OsString::from("-c"),
+                OsString::from("aaa; pdc"),
+                input.as_os_str().to_os_string(),
+            ]);
         }
         DecompilerBackend::BinaryNinja => {
-            cmd.arg("--decompile").arg(input);
+            args.extend([
+                OsString::from("--decompile"),
+                input.as_os_str().to_os_string(),
+            ]);
         }
         DecompilerBackend::Ida => {
-            cmd.arg("-A").arg("-B").arg(input);
+            args.extend([
+                OsString::from("-A"),
+                OsString::from("-B"),
+                input.as_os_str().to_os_string(),
+            ]);
         }
         DecompilerBackend::Angr => {
-            cmd.arg("-c")
-                .arg("import angr; angr.Project(__import__('sys').argv[1]).analyses.CFG()")
-                .arg(input);
+            args.extend([
+                OsString::from("-c"),
+                OsString::from(
+                    "import angr; angr.Project(__import__('sys').argv[1]).analyses.CFG()",
+                ),
+                input.as_os_str().to_os_string(),
+            ]);
         }
         DecompilerBackend::Retdec => {
             let out_file: PathBuf = out_dir.join("retdec.c");
-            cmd.arg(input).arg("--output").arg(&out_file);
+            args.extend([
+                input.as_os_str().to_os_string(),
+                OsString::from("--output"),
+                out_file.into_os_string(),
+            ]);
         }
         DecompilerBackend::LlvmIr => {
-            cmd.arg(input);
+            args.push(input.as_os_str().to_os_string());
         }
     }
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let child: std::process::Child = cmd.spawn().map_err(|e: std::io::Error| match e.kind() {
-        std::io::ErrorKind::NotFound => Error::MissingTool(backend.binary_name().to_owned()),
-        _ => Error::Io(e),
-    })?;
     let timeout: Duration = Duration::from_secs(300);
-    let Some(captured): Option<disrobe_core::subprocess::CapturedOutput> =
-        disrobe_core::subprocess::wait_with_output_timeout(child, timeout, MAX_BACKEND_CAPTURE)
-    else {
-        return Err(Error::BackendTimeout(
-            backend.binary_name().to_owned(),
-            timeout.as_millis() as u64,
-        ));
-    };
+    let captured: disrobe_core::subprocess::CapturedOutput =
+        disrobe_core::subprocess::run_captured(&tool, &args, timeout, MAX_BACKEND_CAPTURE)
+            .map_err(|e: std::io::Error| match e.kind() {
+                std::io::ErrorKind::NotFound => {
+                    Error::MissingTool(backend.binary_name().to_owned())
+                }
+                _ => Error::Io(e),
+            })?
+            .ok_or_else(|| {
+                Error::BackendTimeout(backend.binary_name().to_owned(), timeout.as_millis() as u64)
+            })?;
     let stdout_text: String = String::from_utf8_lossy(&captured.stdout).into_owned();
     let stderr_text: String = String::from_utf8_lossy(&captured.stderr).into_owned();
     if captured.exit_code != Some(0) {
@@ -295,6 +318,19 @@ mod tests {
             Err(Error::LicenseRequired(label)) => assert_eq!(label, "ida"),
             other => panic!("expected LicenseRequired, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn angr_run_requires_authorization_before_tool_resolution() {
+        let result: Result<DecompileOutput> = run(
+            DecompilerBackend::Angr,
+            Path::new("does-not-need-to-exist"),
+            Path::new("does-not-need-to-exist"),
+        );
+        assert!(matches!(
+            result,
+            Err(Error::AuthorizationRequired("Angr dynamic backend"))
+        ));
     }
 
     #[test]
