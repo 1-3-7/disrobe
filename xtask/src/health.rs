@@ -112,6 +112,7 @@ pub(crate) fn run(root: &Path, as_json: bool) -> Result<()> {
     check_wasm_build_records(root, &mut report);
     check_private_references(root, &mut report);
     check_host_paths(root, &mut report);
+    check_pyarmor_serial_footprint(root, &mut report);
 
     report.fact("workspace_members", json!(members.len()));
     report.fact("crate_directories", json!(crate_dirs.len()));
@@ -224,6 +225,49 @@ const MAX_SCANNED_TEXT_BYTES: u64 = 8 * 1024 * 1024;
 const FINDING_ID_PREFIXES: [&str; 9] = [
     "SEC-", "HYG-", "BUG-", "FEAT-", "CPF-", "NAT-", "WIRE-", "TEST-", "BLN-",
 ];
+
+fn check_pyarmor_serial_footprint(root: &Path, report: &mut Report) {
+    const CHECK: &str = "pyarmor-serial-footprint";
+    use crate::licence_footprint::{
+        Footprint, PINNED_FILE_COUNT, PINNED_SET_SHA256, PYARMOR_SERIAL_SHA256, footprint,
+    };
+    let found: Footprint = match tracked_or_nonignored_files(root)
+        .and_then(|files: BTreeSet<String>| footprint(root, &files, PYARMOR_SERIAL_SHA256))
+    {
+        Ok(found) => found,
+        Err(error) => {
+            report.fail(
+                CHECK,
+                format!("could not scan tracked files for the PyArmor Pro serial: {error:#}"),
+            );
+            return;
+        }
+    };
+    report.fact("pyarmor_serial_files", json!(found.files.len()));
+    if found.files.len() == PINNED_FILE_COUNT && found.set_sha256 == PINNED_SET_SHA256 {
+        return;
+    }
+    let files: String = found.masked_files(PYARMOR_SERIAL_SHA256).join("; ");
+    if found.files.len() > PINNED_FILE_COUNT {
+        report.fail(
+            CHECK,
+            format!(
+                "{} files carry the PyArmor Pro serial, {PINNED_FILE_COUNT} are allowed; build no new fixture under that licence and keep the serial out of new files: {files}",
+                found.files.len()
+            ),
+        );
+    } else {
+        report.fail(
+            CHECK,
+            format!(
+                "the files carrying the PyArmor Pro serial changed ({} now, {PINNED_FILE_COUNT} pinned); if one was removed, pin the count {} and set digest {} in xtask/src/licence_footprint.rs: {files}",
+                found.files.len(),
+                found.files.len(),
+                found.set_sha256
+            ),
+        );
+    }
+}
 
 fn check_host_paths(root: &Path, report: &mut Report) {
     const CHECK: &str = "host-path";

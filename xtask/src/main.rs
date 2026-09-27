@@ -35,6 +35,7 @@ mod graph_disjointness;
 mod graphs;
 mod health;
 mod host_paths;
+mod licence_footprint;
 mod local_tags;
 mod metrics;
 mod packer_roster;

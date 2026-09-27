@@ -378,3 +378,8 @@ erl_crash.dump
 /corpus/wasm/wat/gc_extern_convert.wasm
 /corpus/wasm/wat/js_string_builtins.wasm
 /corpus/wasm/wat/stack_switching.wasm
+
+# PyArmor licence files, anywhere in the tree
+pyarmor-regcode-*
+pyarmor-regfile-*
+pyarmor-device-regfile-*
