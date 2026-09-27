@@ -420,7 +420,11 @@ fn test_targets(
 ) -> Result<BTreeMap<String, TestTargets>> {
     let mut plan: BTreeMap<String, TestTargets> = BTreeMap::new();
     for path in paths {
-        if path.extension() != Some("rs") {
+        if let Some(needles) = corpus_needles(path.as_str()) {
+            for member in members {
+                let binaries: BTreeSet<String> = binaries_mentioning(root, member, &needles)?;
+                add_binaries(&mut plan, &member.name, binaries);
+            }
             continue;
         }
         let Some(member) = owning_member(members, path.as_str()) else {
@@ -428,18 +432,62 @@ fn test_targets(
         };
         let relative: &str = path.as_str()[member.dir.len()..].trim_start_matches('/');
         if !relative.starts_with("tests/") {
-            plan.insert(member.name.clone(), TestTargets::Crate);
+            if path.extension() == Some("rs") || path.file_name() == Some("Cargo.toml") {
+                plan.insert(member.name.clone(), TestTargets::Crate);
+            }
             continue;
         }
         let binaries: BTreeSet<String> = binaries_including(root, member, path.as_str(), relative)?;
-        let entry: &mut TestTargets = plan
-            .entry(member.name.clone())
-            .or_insert_with(|| TestTargets::Binaries(BTreeSet::new()));
-        if let TestTargets::Binaries(existing) = entry {
-            existing.extend(binaries);
-        }
+        add_binaries(&mut plan, &member.name, binaries);
     }
     Ok(plan)
+}
+
+fn add_binaries(plan: &mut BTreeMap<String, TestTargets>, name: &str, binaries: BTreeSet<String>) {
+    if binaries.is_empty() {
+        return;
+    }
+    let entry: &mut TestTargets = plan
+        .entry(name.to_owned())
+        .or_insert_with(|| TestTargets::Binaries(BTreeSet::new()));
+    if let TestTargets::Binaries(existing) = entry {
+        existing.extend(binaries);
+    }
+}
+
+fn corpus_needles(path: &str) -> Option<Vec<String>> {
+    let rest: &str = path.strip_prefix("corpus/")?;
+    let mut parts: std::str::Split<'_, char> = rest.split('/');
+    let ecosystem: &str = parts.next()?;
+    let mut needles: Vec<String> = vec![
+        format!("corpus/{ecosystem}\""),
+        format!("corpus/{ecosystem}/\""),
+    ];
+    if let Some(directory) = parts.next().filter(|_| rest.matches('/').count() >= 2) {
+        needles.push(format!("corpus/{ecosystem}/{directory}"));
+    } else {
+        needles.push(format!("corpus/{rest}"));
+    }
+    Some(needles)
+}
+
+fn binaries_mentioning(
+    root: &Path,
+    member: &CrateDir,
+    needles: &[String],
+) -> Result<BTreeSet<String>> {
+    let mut found: BTreeSet<String> = BTreeSet::new();
+    for (name, src) in &member.test_targets {
+        let text: String = std::fs::read_to_string(root.join(src))
+            .wrap_err_with(|| format!("reading test target {src}"))?;
+        if needles
+            .iter()
+            .any(|needle: &String| text.contains(needle.as_str()))
+        {
+            found.insert(name.clone());
+        }
+    }
+    Ok(found)
 }
 
 fn binaries_including(
@@ -457,16 +505,14 @@ fn binaries_including(
     }
     let under_tests: &str = relative.trim_start_matches("tests/");
     let module: &str = under_tests.split('/').next().unwrap_or(under_tests);
-    let module_decl: String = format!("mod {}", module.trim_end_matches(".rs"));
-    let mut found: BTreeSet<String> = BTreeSet::new();
-    for (name, src) in &member.test_targets {
-        let text: String = std::fs::read_to_string(root.join(src))
-            .wrap_err_with(|| format!("reading test target {src}"))?;
-        if text.contains(under_tests) || text.contains(&module_decl) {
-            found.insert(name.clone());
-        }
+    let mut needles: Vec<String> = vec![
+        under_tests.to_owned(),
+        format!("mod {}", module.trim_end_matches(".rs")),
+    ];
+    if let Some((directory, _)) = under_tests.rsplit_once('/') {
+        needles.push(directory.to_owned());
     }
-    Ok(found)
+    binaries_mentioning(root, member, &needles)
 }
 
 fn owns(dir: &str, file: &str) -> bool {
@@ -704,6 +750,50 @@ mod tests {
             ],
         )?;
         assert_eq!(with_source.get("c"), Some(&TestTargets::Crate));
+        Ok(())
+    }
+
+    #[test]
+    fn a_corpus_change_selects_the_binaries_that_read_it() -> eyre::Result<()> {
+        let root: tempfile::TempDir = tempfile::tempdir()?;
+        let tests_dir: std::path::PathBuf = root.path().join("crates/c/tests");
+        std::fs::create_dir_all(&tests_dir)?;
+        std::fs::write(
+            tests_dir.join("sweep.rs"),
+            "const ROOT: &str = \"../../corpus/dotnet\";\n",
+        )?;
+        std::fs::write(
+            tests_dir.join("vm.rs"),
+            "include_bytes!(\"../../../corpus/dotnet/eazvm/x.dll\");\n",
+        )?;
+        std::fs::write(
+            tests_dir.join("other.rs"),
+            "include_bytes!(\"../../../corpus/jvm/a.class\");\n",
+        )?;
+        let members: Vec<CrateDir> = vec![CrateDir {
+            name: "c".to_owned(),
+            dir: "crates/c".to_owned(),
+            chain: false,
+            test_targets: vec![
+                ("sweep".to_owned(), "crates/c/tests/sweep.rs".to_owned()),
+                ("vm".to_owned(), "crates/c/tests/vm.rs".to_owned()),
+                ("other".to_owned(), "crates/c/tests/other.rs".to_owned()),
+            ],
+        }];
+        let plan: BTreeMap<String, TestTargets> = test_targets(
+            root.path(),
+            &members,
+            &[Utf8PathBuf::from(
+                "corpus/dotnet/eazvm/EazSample.devirt.dll",
+            )],
+        )?;
+        assert_eq!(
+            plan.get("c"),
+            Some(&TestTargets::Binaries(BTreeSet::from([
+                "sweep".to_owned(),
+                "vm".to_owned()
+            ])))
+        );
         Ok(())
     }
 
