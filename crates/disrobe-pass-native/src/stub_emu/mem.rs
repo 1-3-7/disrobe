@@ -453,19 +453,21 @@ mod tests {
     #[test]
     fn map_above_ceiling_errors_without_allocating() {
         let mut m: Memory = Memory::new();
-        let start: std::time::Instant = std::time::Instant::now();
         let hostile: Result<()> = m.map(0, 0xFFFF_F000, Perm::RWX);
         assert!(
-            hostile.is_err(),
-            "a near-4 GiB map must fault, never page-allocate gigabytes"
+            matches!(
+                &hostile,
+                Err(Error::GoblinParse(message))
+                    if *message == format!(
+                        "emu: refusing map of {} bytes (exceeds {MAX_MAP_BYTES}-byte ceiling)",
+                        0xFFFF_F000_u64
+                    )
+            ),
+            "a near-4 GiB map must be refused by its size before any page is visited: {hostile:?}"
         );
         assert!(
             m.page_keys().next().is_none(),
             "a rejected oversize map must commit zero pages"
-        );
-        assert!(
-            start.elapsed() < std::time::Duration::from_millis(200),
-            "rejection must be immediate"
         );
     }
 
@@ -513,16 +515,19 @@ mod tests {
     fn read_rejects_hostile_length_in_lazy_mode_without_oom() {
         let mut m: Memory = Memory::new();
         m.enable_lazy_commit(1024);
-        let start: std::time::Instant = std::time::Instant::now();
         let hostile: Result<Vec<u8>> = m.read(0, usize::MAX);
         assert!(
-            hostile.is_err(),
-            "a hostile read length must fault before pushing billions of lazy zero bytes"
+            matches!(
+                &hostile,
+                Err(Error::GoblinParse(message))
+                    if *message == format!(
+                        "emu: refusing read of {} bytes (exceeds {MAX_MAP_BYTES}-byte ceiling)",
+                        usize::MAX
+                    )
+            ),
+            "a hostile read length must be refused by its length before any byte is read: {hostile:?}"
         );
-        assert!(
-            start.elapsed() < std::time::Duration::from_millis(200),
-            "rejection must be immediate, never an unbounded push loop"
-        );
+        assert_eq!(m.lazy_used, 0, "a refused read must commit no lazy page");
         m.map(0x1000, 0x1000, Perm::R).expect("map within ceiling");
         m.write_unchecked(0x1000, &[1, 2, 3, 4]);
         assert_eq!(
