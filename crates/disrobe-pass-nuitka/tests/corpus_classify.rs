@@ -23,9 +23,23 @@ fn corpus_root() -> PathBuf {
         .join("nuitka")
 }
 
-fn variant_path(variant: &str, leaf: &str) -> Option<PathBuf> {
+const REQUIRE_LOCAL_CORPUS_VAR: &str = "DISROBE_REQUIRE_NUITKA_LOCAL_CORPUS";
+
+fn local_variant(variant: &str, leaf: &str) -> Option<PathBuf> {
     let candidate: PathBuf = corpus_root().join(variant).join(leaf);
-    candidate.exists().then_some(candidate)
+    if candidate.exists() {
+        return Some(candidate);
+    }
+    assert!(
+        std::env::var_os(REQUIRE_LOCAL_CORPUS_VAR).is_none(),
+        "{REQUIRE_LOCAL_CORPUS_VAR} is set, so the local-only Nuitka fixture {} must exist",
+        candidate.display()
+    );
+    eprintln!(
+        "UNGRADED: the local-only Nuitka fixture {} is absent; set {REQUIRE_LOCAL_CORPUS_VAR}=1 to fail instead",
+        candidate.display()
+    );
+    None
 }
 
 fn onefile_fixture() -> PathBuf {
@@ -130,8 +144,7 @@ fn corpus_onefile_extracts_real_embedded_files() {
 
 #[test]
 fn corpus_module_classifies_as_module_variant() {
-    let Some(path): Option<PathBuf> = variant_path("module", "hello.cp314-win_amd64.pyd") else {
-        eprintln!("[ignore] corpus module .pyd missing - run regen.ps1");
+    let Some(path): Option<PathBuf> = local_variant("module", "hello.cp314-win_amd64.pyd") else {
         return;
     };
     let classification: VariantClassification = classify_in_file(&path).expect("classify");
@@ -145,8 +158,7 @@ fn corpus_module_classifies_as_module_variant() {
 
 #[test]
 fn corpus_standalone_dist_exe_classifies_as_standalone() {
-    let Some(path): Option<PathBuf> = variant_path("standalone", "hello.dist/hello.exe") else {
-        eprintln!("[ignore] corpus standalone hello.exe missing - run regen.ps1");
+    let Some(path): Option<PathBuf> = local_variant("standalone", "hello.dist/hello.exe") else {
         return;
     };
     let classification: VariantClassification = classify_in_file(&path).expect("classify");
@@ -176,9 +188,8 @@ fn corpus_onefile_manifest_serialises() {
 
 #[test]
 fn corpus_plugin_anti_bloat_detected() {
-    let Some(path): Option<PathBuf> = variant_path("plugin-anti-bloat", "hello.dist/hello.exe")
+    let Some(path): Option<PathBuf> = local_variant("plugin-anti-bloat", "hello.dist/hello.exe")
     else {
-        eprintln!("[ignore] corpus plugin-anti-bloat missing - run regen.ps1");
         return;
     };
     let manifest: NuitkaVariantManifest = build_manifest_from_file(&path).expect("manifest");
