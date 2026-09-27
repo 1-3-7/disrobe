@@ -139,6 +139,11 @@ fn gate_regen(root: &Path, scope: &Scope) -> Result<GateOutcome> {
         Scope::Skip => false,
     };
     if !triggered {
+        let tests_changed: bool = matches!(scope, Scope::Changed(paths) if paths.iter().any(|path: &Utf8PathBuf| path.as_str().starts_with("crates/") && path.as_str().contains("/tests/")));
+        if tests_changed {
+            crate::skip_census::run(root).wrap_err("the skip-and-return census is stale")?;
+            return Ok(GateOutcome::Ran);
+        }
         return Ok(GateOutcome::Skipped("no relevant changes".to_owned()));
     }
     crate::regen::run(root, true).wrap_err("generated artifacts are stale")?;
