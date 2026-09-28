@@ -372,8 +372,8 @@ impl Expr {
             Self::Unary(op, inner) => {
                 let value: i128 = inner.eval_truth_row(bits);
                 match op {
-                    UnOp::Neg => -value,
-                    UnOp::Not => 1 - value,
+                    UnOp::Neg => value.wrapping_neg(),
+                    UnOp::Not => 1i128.wrapping_sub(value),
                 }
             }
             Self::Binary(op, left, right) => {
@@ -381,14 +381,14 @@ impl Expr {
                     && let Self::Const(amount) = &**right
                 {
                     let lhs: i128 = left.eval_truth_row(bits);
-                    return lhs << (*amount).min(126);
+                    return lhs.wrapping_shl(u32::try_from((*amount).min(126)).unwrap_or(126));
                 }
                 let lhs: i128 = left.eval_truth_row(bits);
                 let rhs: i128 = right.eval_truth_row(bits);
                 match op {
-                    BinOp::Add => lhs + rhs,
-                    BinOp::Sub => lhs - rhs,
-                    BinOp::Mul => lhs * rhs,
+                    BinOp::Add => lhs.wrapping_add(rhs),
+                    BinOp::Sub => lhs.wrapping_sub(rhs),
+                    BinOp::Mul => lhs.wrapping_mul(rhs),
                     BinOp::And => i128::from((lhs != 0) && (rhs != 0)),
                     BinOp::Or => i128::from((lhs != 0) || (rhs != 0)),
                     BinOp::Xor => i128::from((lhs != 0) ^ (rhs != 0)),
@@ -571,6 +571,24 @@ fn decode_assignment(mut index: u128, width: Width, env: &mut [u64]) {
 #[allow(clippy::unwrap_used, clippy::panic, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_constant_product_past_i128_wraps_instead_of_panicking() {
+        let max: Expr = Expr::Const(u64::MAX);
+        let product: Expr = Expr::Binary(
+            BinOp::Mul,
+            Box::new(Expr::Binary(
+                BinOp::Mul,
+                Box::new(max.clone()),
+                Box::new(max.clone()),
+            )),
+            Box::new(max),
+        );
+        let expected: i128 = i128::from(u64::MAX)
+            .wrapping_mul(i128::from(u64::MAX))
+            .wrapping_mul(i128::from(u64::MAX));
+        assert_eq!(product.eval_truth_row(&[]), expected);
+    }
 
     #[test]
     fn eval_wrapping_add_masks_to_width() {

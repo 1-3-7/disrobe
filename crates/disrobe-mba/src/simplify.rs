@@ -1066,7 +1066,7 @@ fn mobius_coefficients(column: &[i128], basis_len: usize) -> Vec<i128> {
         let mut mask: usize = 0;
         while mask < basis_len {
             if mask & step != 0 {
-                coeffs[mask] -= coeffs[mask ^ step];
+                coeffs[mask] = coeffs[mask].wrapping_sub(coeffs[mask ^ step]);
             }
             mask += 1;
         }

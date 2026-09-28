@@ -195,7 +195,7 @@ fn gaussian_integer_solve(
         let pivot_values: Vec<i128> = matrix[current_row].clone();
         for (row, values) in matrix.iter_mut().enumerate().take(rows) {
             if row != current_row && values[col] != 0 {
-                eliminate(values, &pivot_values, col, width);
+                eliminate(values, &pivot_values, col, width)?;
             }
         }
         pivot_rows.push(col);
@@ -227,28 +227,31 @@ fn gaussian_integer_solve(
     Some(solution)
 }
 
-fn eliminate(target: &mut [i128], pivot: &[i128], col: usize, width: usize) {
+fn eliminate(target: &mut [i128], pivot: &[i128], col: usize, width: usize) -> Option<()> {
     let pivot_lead: i128 = pivot[col];
     let target_lead: i128 = target[col];
-    let divisor: i128 = gcd(pivot_lead.abs(), target_lead.abs()).max(1);
+    let divisor: i128 = gcd(pivot_lead.checked_abs()?, target_lead.checked_abs()?).max(1);
     let scale_target: i128 = pivot_lead / divisor;
     let scale_pivot: i128 = target_lead / divisor;
     for (slot, pivot_value) in target.iter_mut().zip(pivot.iter()).take(width + 1) {
-        *slot = *slot * scale_target - pivot_value * scale_pivot;
+        *slot = slot
+            .checked_mul(scale_target)?
+            .checked_sub(pivot_value.checked_mul(scale_pivot)?)?;
     }
-    normalize_row(target, width);
+    normalize_row(target, width)
 }
 
-fn normalize_row(row: &mut [i128], width: usize) {
+fn normalize_row(row: &mut [i128], width: usize) -> Option<()> {
     let mut divisor: i128 = 0;
     for value in row.iter().take(width + 1) {
-        divisor = gcd(divisor, value.abs());
+        divisor = gcd(divisor, value.checked_abs()?);
     }
     if divisor > 1 {
         for value in row.iter_mut().take(width + 1) {
             *value /= divisor;
         }
     }
+    Some(())
 }
 
 const fn gcd(a: i128, b: i128) -> i128 {
