@@ -139,8 +139,9 @@ fn read_inode(bytes: &[u8], geo: &Ext4Geometry, ino: u32) -> Result<Ext4Inode> {
     let desc_offset: u64 = gdt_block * geo.block_size + u64::from(group) * u64::from(geo.desc_size);
     let desc_at: usize = usize::try_from(desc_offset)
         .map_err(|_e: std::num::TryFromIntError| Error::Ext4("desc offset overflow".to_owned()))?;
-    let desc: &[u8] = bytes
-        .get(desc_at..desc_at + geo.desc_size as usize)
+    let desc: &[u8] = desc_at
+        .checked_add(geo.desc_size as usize)
+        .and_then(|end: usize| bytes.get(desc_at..end))
         .ok_or_else(|| Error::Ext4("ext4 group descriptor out of bounds".to_owned()))?;
     let inode_table_lo: u64 = u64::from(le_u32(desc, 0x8));
     let inode_table_hi: u64 = if geo.desc_size >= 64 {
@@ -149,12 +150,17 @@ fn read_inode(bytes: &[u8], geo: &Ext4Geometry, ino: u32) -> Result<Ext4Inode> {
         0
     };
     let inode_table_block: u64 = inode_table_lo | (inode_table_hi << 32);
-    let inode_offset: u64 =
-        inode_table_block * geo.block_size + u64::from(inode_in_group) * u64::from(geo.inode_size);
+    let inode_offset: u64 = inode_table_block
+        .checked_mul(geo.block_size)
+        .and_then(|table: u64| {
+            table.checked_add(u64::from(inode_in_group) * u64::from(geo.inode_size))
+        })
+        .ok_or_else(|| Error::Ext4("inode table offset overflows".to_owned()))?;
     let at: usize = usize::try_from(inode_offset)
         .map_err(|_e: std::num::TryFromIntError| Error::Ext4("inode offset overflow".to_owned()))?;
-    let raw: &[u8] = bytes
-        .get(at..at + 128)
+    let raw: &[u8] = at
+        .checked_add(128)
+        .and_then(|end: usize| bytes.get(at..end))
         .ok_or_else(|| Error::Ext4("ext4 inode out of bounds".to_owned()))?;
     let mode: u16 = le_u16(raw, 0x0);
     let size_lo: u64 = u64::from(le_u32(raw, 0x4));

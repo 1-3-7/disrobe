@@ -274,6 +274,11 @@ fn walk_catalog_btree(catalog: &[u8]) -> Result<(Vec<HfsFile>, Vec<HfsFolder>)> 
             continue;
         }
         let num_records: u16 = be_u16(node, 10).map_or(0, |value: u16| value);
+        if usize::from(num_records) * 2 > node_size {
+            return Err(Error::Decompression(format!(
+                "hfs+ catalog node {node_index} declares {num_records} records, more offsets than its {node_size} bytes hold"
+            )));
+        }
         for record_index in 0..num_records {
             let offset_pos: usize = node_size - 2 * (usize::from(record_index) + 1);
             let Some(record_off): Option<u16> = be_u16(node, offset_pos) else {
@@ -457,6 +462,21 @@ pub(crate) fn build_hfsplus_image(file_name: &str, body: &[u8]) -> Vec<u8> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_leaf_declaring_more_records_than_it_holds_is_an_error_not_a_panic() {
+        let node_size: usize = 512;
+        let mut catalog: Vec<u8> = vec![0u8; node_size * 2];
+        catalog[32..34].copy_from_slice(&u16::try_from(node_size).expect("fits").to_be_bytes());
+        let leaf: &mut [u8] = &mut catalog[node_size..];
+        leaf[8] = 0xFF;
+        leaf[10..12].copy_from_slice(&u16::MAX.to_be_bytes());
+        let error: Error = walk_catalog_btree(&catalog).expect_err("hostile record count");
+        assert!(
+            error.to_string().contains("declares 65535 records"),
+            "{error}"
+        );
+    }
 
     #[test]
     fn detects_and_extracts_hfsplus_file() {

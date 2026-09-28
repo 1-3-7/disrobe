@@ -640,8 +640,9 @@ fn read_file_data(
             out.extend(std::iter::repeat_n(0u8, zeros));
             continue;
         }
-        let chunk: &[u8] = bytes
-            .get(start..start + on_disk as usize)
+        let chunk: &[u8] = start
+            .checked_add(on_disk as usize)
+            .and_then(|end: usize| bytes.get(start..end))
             .ok_or_else(|| Error::Squashfs("data block past end of input".to_owned()))?;
         let block: Vec<u8> = if uncompressed {
             chunk.to_vec()
@@ -659,9 +660,10 @@ fn read_file_data(
         let frag_block: Vec<u8> =
             read_fragment_block(bytes, base, frag, compression, raw.block_size as usize)?;
         let off: usize = meta.block_offset as usize;
-        let end: usize = off + tail as usize;
-        let slice: &[u8] = frag_block
-            .get(off..end)
+        let slice: &[u8] = usize::try_from(tail)
+            .ok()
+            .and_then(|tail: usize| off.checked_add(tail))
+            .and_then(|end: usize| frag_block.get(off..end))
             .ok_or_else(|| Error::Squashfs("fragment slice out of range".to_owned()))?;
         out.extend_from_slice(slice);
     }
