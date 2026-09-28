@@ -56,7 +56,6 @@ pub struct HeaderModeFlags {
     pub wrap_mode: bool,
     pub outer_runtime_key: bool,
     pub bcc_protection: bool,
-    pub raw_restrict_byte: u8,
     pub raw_mode_byte_0: u8,
     pub raw_mode_byte_1: u8,
     pub raw_mode_byte_2: u8,
@@ -71,7 +70,6 @@ pub struct RuntimeKeyClassification {
 }
 
 const HEADER_MIN_LEN: usize = 40;
-const RESTRICT_BYTE_OFFSET: usize = 16;
 const PROTECTION_TYPE_OFFSET: usize = 20;
 const MODE_BYTE_0_OFFSET: usize = 36;
 const MODE_BYTE_1_OFFSET: usize = 37;
@@ -135,7 +133,6 @@ pub fn decode_mode_flags(header: &[u8]) -> Option<HeaderModeFlags> {
     if header.len() < HEADER_MIN_LEN {
         return None;
     }
-    let restrict_byte: u8 = header[RESTRICT_BYTE_OFFSET];
     let protection: u8 = header[PROTECTION_TYPE_OFFSET];
     let mode0: u8 = header[MODE_BYTE_0_OFFSET];
     let mode1: u8 = header[MODE_BYTE_1_OFFSET];
@@ -149,7 +146,6 @@ pub fn decode_mode_flags(header: &[u8]) -> Option<HeaderModeFlags> {
         wrap_mode: mode2 & MODE2_WRAP != 0,
         outer_runtime_key: mode2 & MODE2_OUTER_KEY != 0,
         bcc_protection: protection == PROTECTION_BCC,
-        raw_restrict_byte: restrict_byte,
         raw_mode_byte_0: mode0,
         raw_mode_byte_1: mode1,
         raw_mode_byte_2: mode2,
@@ -273,10 +269,9 @@ mod tests {
         assert_eq!(c.format_version, None);
     }
 
-    fn header_with(restrict: u8, protection: u8, m0: u8, m1: u8, m2: u8) -> Vec<u8> {
+    fn header_with(protection: u8, m0: u8, m1: u8, m2: u8) -> Vec<u8> {
         let mut h: Vec<u8> = vec![0u8; 64];
         h[..8].copy_from_slice(b"PY015009");
-        h[RESTRICT_BYTE_OFFSET] = restrict;
         h[PROTECTION_TYPE_OFFSET] = protection;
         h[MODE_BYTE_0_OFFSET] = m0;
         h[MODE_BYTE_1_OFFSET] = m1;
@@ -286,7 +281,7 @@ mod tests {
 
     #[test]
     fn decode_default_flags() {
-        let h: Vec<u8> = header_with(0x80, 0x08, 0x12, 0x09, 0x06);
+        let h: Vec<u8> = header_with(0x08, 0x12, 0x09, 0x06);
         let f: HeaderModeFlags = decode_mode_flags(&h).expect("flags");
         assert!(!f.restrict_mode);
         assert!(!f.advanced_restrict);
@@ -300,14 +295,14 @@ mod tests {
     #[test]
     fn decode_restrict_flag() {
         let f: HeaderModeFlags =
-            decode_mode_flags(&header_with(0x80, 0x08, 0x1e, 0x09, 0x06)).expect("flags");
+            decode_mode_flags(&header_with(0x08, 0x1e, 0x09, 0x06)).expect("flags");
         assert!(f.restrict_mode);
     }
 
     #[test]
     fn decode_outer_key_flag() {
         let f: HeaderModeFlags =
-            decode_mode_flags(&header_with(0x80, 0x08, 0x12, 0x09, 0x0a)).expect("flags");
+            decode_mode_flags(&header_with(0x08, 0x12, 0x09, 0x0a)).expect("flags");
         assert!(f.outer_runtime_key);
         assert!(!f.wrap_mode);
     }
@@ -315,7 +310,7 @@ mod tests {
     #[test]
     fn decode_obf_module_disabled() {
         let f: HeaderModeFlags =
-            decode_mode_flags(&header_with(0x80, 0x08, 0x12, 0x08, 0x06)).expect("flags");
+            decode_mode_flags(&header_with(0x08, 0x12, 0x08, 0x06)).expect("flags");
         assert!(!f.obf_module);
         assert!(f.obf_code);
     }
@@ -323,7 +318,7 @@ mod tests {
     #[test]
     fn decode_bcc_protection() {
         let f: HeaderModeFlags =
-            decode_mode_flags(&header_with(0x80, 0x09, 0x12, 0x09, 0x06)).expect("flags");
+            decode_mode_flags(&header_with(0x09, 0x12, 0x09, 0x06)).expect("flags");
         assert!(f.bcc_protection);
     }
 
@@ -334,7 +329,7 @@ mod tests {
 
     #[test]
     fn classify_runtime_key_outer_emits_note() {
-        let h: Vec<u8> = header_with(0x80, 0x08, 0x12, 0x09, 0x0a);
+        let h: Vec<u8> = header_with(0x08, 0x12, 0x09, 0x0a);
         let c: RuntimeKeyClassification = classify_runtime_key("015009", &h);
         assert_eq!(c.runtime_key_class, RuntimeKeyClass::Outer);
         assert!(c.notes.iter().any(|n: &String| n.contains("outer")));
@@ -342,7 +337,7 @@ mod tests {
 
     #[test]
     fn classify_runtime_key_embedded_default() {
-        let h: Vec<u8> = header_with(0x80, 0x08, 0x12, 0x09, 0x06);
+        let h: Vec<u8> = header_with(0x08, 0x12, 0x09, 0x06);
         let c: RuntimeKeyClassification = classify_runtime_key("015009", &h);
         assert_eq!(c.runtime_key_class, RuntimeKeyClass::Embedded);
         assert_eq!(c.serial.kind, SerialKind::LicenseId);

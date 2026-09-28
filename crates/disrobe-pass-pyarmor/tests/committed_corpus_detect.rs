@@ -9,7 +9,8 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use disrobe_pass_pyarmor::{
-    Detection, ProtectionKind, PyarmorVersion, UnpackOptions, UnpackOutput, detect_from_wrapper,
+    Detection, HeaderModeFlags, NineProDetection, ProtectionKind, PyarmorVersion, UnpackOptions,
+    UnpackOutput, decode_mode_flags, detect_from_wrapper, detect_nine_pro,
     unpack_wrapper_text_with_options,
 };
 use disrobe_py_marshal::{CodeObject, Object, PyVersion};
@@ -335,4 +336,48 @@ fn unpack_real_committed_v8_runtime_prefix_matches_basic_layout() {
 #[test]
 fn unpack_real_committed_v9_runtime_prefix_matches_basic_layout() {
     assert_runtime_prefix_layout_matches_sibling_default_layout("v9", PyarmorVersion::V9);
+}
+
+#[test]
+fn no_committed_build_is_claimed_pro_and_only_restrict_builds_read_restrict() {
+    let mut checked: usize = 0;
+    for version_subdir in ["v8", "v9"] {
+        let mut wrappers: Vec<PathBuf> = Vec::new();
+        collect_wrappers(&corpus_dir(version_subdir), &mut wrappers);
+        wrappers.sort();
+        for path in wrappers {
+            let text: String = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e: std::io::Error| panic!("read {}: {e}", path.display()));
+            let Ok((_, payload)): Result<(Detection, Vec<u8>), disrobe_pass_pyarmor::Error> =
+                detect_from_wrapper(&text)
+            else {
+                continue;
+            };
+            let nine_pro: NineProDetection = detect_nine_pro(&payload);
+            assert!(
+                !nine_pro.is_nine_pro,
+                "{} is a trial build but was claimed pro: {nine_pro:?}",
+                path.display()
+            );
+            let mode: &str = path
+                .parent()
+                .and_then(Path::file_name)
+                .and_then(std::ffi::OsStr::to_str)
+                .unwrap_or_default();
+            let flags: HeaderModeFlags = decode_mode_flags(&payload)
+                .unwrap_or_else(|| panic!("{} has no mode header", path.display()));
+            assert_eq!(
+                flags.restrict_mode,
+                mode == "restrict",
+                "{} (mode {mode}) read restrict_mode {}",
+                path.display(),
+                flags.restrict_mode
+            );
+            checked += 1;
+        }
+    }
+    assert!(
+        checked >= 40,
+        "only {checked} committed v8/v9 wrappers were checked"
+    );
 }
