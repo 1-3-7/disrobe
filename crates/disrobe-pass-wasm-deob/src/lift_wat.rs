@@ -6,7 +6,7 @@ use crate::MAX_RENDER_INDENT;
 use crate::error::{Error, Result as CrateResult};
 use crate::lift::{LiftCoverage, LiftResult, LiftTarget, ModuleRenderBudget, ModuleSourceBuffer};
 use crate::op_names::operator_mnemonic;
-use crate::signature::{FunctionSig, MAX_FUNCTION_LOCALS};
+use crate::signature::{FunctionExport, FunctionSig, MAX_FUNCTION_LOCALS};
 use crate::ssa::{binop_kind, unop_kind};
 
 const LIFTED_STACK_POINTER_INIT: u32 = 65536;
@@ -78,8 +78,12 @@ pub(crate) fn lift_function_body_wat_with_budget(
     out.push_str(&additions);
     out.push_str(&func.text);
     let mut suffix: ModuleSourceBuffer<'_> = ModuleSourceBuffer::new(budget);
-    if sig.exported {
-        push_line!(suffix, "  (export \"{}\" (func $f0))", sig.name);
+    for export in &sig.exports {
+        push_line!(
+            suffix,
+            "  (export \"{}\" (func $f0))",
+            escape_wat_name(&export.name)
+        );
     }
     suffix.push_str(")\n");
     let suffix: String = suffix.finish()?;
@@ -426,7 +430,6 @@ pub(crate) fn lift_module_to_wat_with_budget(
     let mut globals: Vec<(u32, ValType)> = Vec::new();
     let mut bodies: String = String::new();
     let mut imports_buffer: ModuleSourceBuffer<'_> = ModuleSourceBuffer::new(budget);
-    let total: u32 = defined_offset.saturating_add(u32::try_from(funcs.len()).unwrap_or(u32::MAX));
 
     for i in 0..defined_offset {
         push_line!(
@@ -444,7 +447,7 @@ pub(crate) fn lift_module_to_wat_with_budget(
     }
     let mut reqs: FeatureReqs = FeatureReqs::default();
     let mut coverage: LiftCoverage = LiftCoverage::default();
-    let mut exported: Vec<(String, u32)> = Vec::new();
+    let mut exported: Vec<(&FunctionExport, u32)> = Vec::new();
     for (offset, (body, sig)) in funcs.iter().enumerate() {
         let global_index: u32 =
             defined_offset.saturating_add(u32::try_from(offset).unwrap_or(u32::MAX));
@@ -477,11 +480,11 @@ pub(crate) fn lift_module_to_wat_with_budget(
                 Error::Parse("module lift translation count exceeds host limits".to_owned())
             })?;
         coverage.untranslated.extend(f.coverage.untranslated);
-        if sig.exported {
-            exported.push((sig.name.clone(), global_index));
+        for export in &sig.exports {
+            exported.push((export, global_index));
         }
     }
-    let _ = total;
+    exported.sort_by_key(|(export, _): &(&FunctionExport, u32)| export.position);
     let mut out: String = module_prelude_with_budget(&globals, &reqs, budget)?;
     out.push_str(&imports);
     let mut suffix: ModuleSourceBuffer<'_> = ModuleSourceBuffer::new(budget);
@@ -490,8 +493,12 @@ pub(crate) fn lift_module_to_wat_with_budget(
     out.push_str(&elem_declaration);
     out.push_str(&bodies);
     let mut exports: ModuleSourceBuffer<'_> = ModuleSourceBuffer::new(budget);
-    for (name, global_index) in exported {
-        push_line!(exports, "  (export \"{name}\" (func $f{global_index}))");
+    for (export, global_index) in exported {
+        push_line!(
+            exports,
+            "  (export \"{}\" (func $f{global_index}))",
+            escape_wat_name(&export.name)
+        );
     }
     let exports: String = exports.finish()?;
     out.push_str(&exports);
@@ -499,6 +506,18 @@ pub(crate) fn lift_module_to_wat_with_budget(
     budget.ensure()?;
     out.push_str(")\n");
     Ok((out, coverage))
+}
+
+pub(crate) fn escape_wat_name(name: &str) -> String {
+    let mut s: String = String::with_capacity(name.len());
+    for &byte in name.as_bytes() {
+        if matches!(byte, 0x20..=0x21 | 0x23..=0x5b | 0x5d..=0x7e) {
+            s.push(byte as char);
+        } else {
+            push_text!(s, "\\{byte:02x}");
+        }
+    }
+    s
 }
 
 fn emit_elem_declare_for_real_funcs(mut out: &mut impl std::fmt::Write, reqs: &FeatureReqs) {
@@ -2752,6 +2771,10 @@ mod tests {
             exported: true,
             imported: false,
             local_names: Vec::new(),
+            exports: vec![FunctionExport {
+                position: 0,
+                name: name.to_owned(),
+            }],
         }
     }
 

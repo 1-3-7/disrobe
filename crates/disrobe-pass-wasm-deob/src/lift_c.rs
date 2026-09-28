@@ -223,6 +223,7 @@ const C_PRELUDE: &str = include_str!("prelude/c.c.txt");
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+    use crate::signature::FunctionExport;
     use wasmparser::{Parser, Payload};
 
     fn sig(name: &str, params: Vec<ValType>, results: Vec<ValType>) -> FunctionSig {
@@ -233,6 +234,10 @@ mod tests {
             exported: true,
             imported: false,
             local_names: Vec::new(),
+            exports: vec![FunctionExport {
+                position: 0,
+                name: name.to_owned(),
+            }],
         }
     }
 

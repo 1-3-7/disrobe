@@ -144,7 +144,7 @@ pub use provenance_header::{
 pub use recover::{CollatzWitness, RecoveredModule, RecoveryReport, recover_module};
 pub use signature::{
     BoundaryLinkCollectionStatus, BoundaryNameRecoveryFailure, BoundaryNameRecoveryStatus,
-    ExportAlias, FunctionSig, ModuleSignatures, count_defined_function_bodies,
+    ExportAlias, FunctionExport, FunctionSig, ModuleSignatures, count_defined_function_bodies,
     dedup_export_aliases, dwarf_local_names, extract_signatures, signatures_or_placeholders,
 };
 pub use simd::{SimdFlavor, SimdLane, SimdOpRecord, SimdReport, scan_simd};

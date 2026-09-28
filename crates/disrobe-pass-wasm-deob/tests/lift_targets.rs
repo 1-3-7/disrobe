@@ -1,6 +1,6 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 use disrobe_pass_wasm_deob::{
-    CalleeNames, FunctionSig, LiftResult, LiftTarget, lift_function_body,
+    CalleeNames, FunctionExport, FunctionSig, LiftResult, LiftTarget, lift_function_body,
 };
 use wasmparser::{FunctionBody, Parser, Payload, ValType};
 
@@ -12,6 +12,10 @@ fn sig(name: &str, params: Vec<ValType>, results: Vec<ValType>) -> FunctionSig {
         exported: true,
         imported: false,
         local_names: Vec::new(),
+        exports: vec![FunctionExport {
+            position: 0,
+            name: name.to_owned(),
+        }],
     }
 }
 

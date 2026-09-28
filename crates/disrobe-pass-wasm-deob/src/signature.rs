@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use serde::Serialize;
 use wasmparser::{KnownCustom, NameSectionReader, Parser, Payload, TypeRef, ValType};
@@ -29,6 +29,14 @@ pub struct FunctionSig {
 
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub local_names: Vec<Option<String>>,
+    #[serde(skip)]
+    pub exports: Vec<FunctionExport>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FunctionExport {
+    pub position: usize,
+    pub name: String,
 }
 
 impl FunctionSig {
@@ -42,6 +50,7 @@ impl FunctionSig {
             exported: false,
             imported: false,
             local_names: Vec::new(),
+            exports: Vec::new(),
         }
     }
 
@@ -458,7 +467,16 @@ pub fn extract_signatures(bytes: &[u8]) -> Result<ModuleSignatures> {
         }
         index
     };
-    let exported_indices: BTreeSet<u32> = export_names.iter().map(|(i, _)| *i).collect();
+    let mut exports_by_index: BTreeMap<u32, Vec<FunctionExport>> = BTreeMap::new();
+    for (position, (function_index, name)) in export_names.iter().enumerate() {
+        exports_by_index
+            .entry(*function_index)
+            .or_default()
+            .push(FunctionExport {
+                position,
+                name: name.clone(),
+            });
+    }
 
     let mut sigs: Vec<FunctionSig> =
         Vec::with_capacity(function_imports.len() + function_type_indices.len());
@@ -467,6 +485,8 @@ pub fn extract_signatures(bytes: &[u8]) -> Result<ModuleSignatures> {
         let (params, results): (Vec<ValType>, Vec<ValType>) =
             type_signature(&func_types, import.type_index);
         let function_index: u32 = u32::try_from(idx).unwrap_or(u32::MAX);
+        let exports: Vec<FunctionExport> =
+            exports_by_index.remove(&function_index).unwrap_or_default();
         sigs.push(FunctionSig {
             name: resolve_name(
                 function_index,
@@ -476,9 +496,10 @@ pub fn extract_signatures(bytes: &[u8]) -> Result<ModuleSignatures> {
             ),
             params,
             results,
-            exported: exported_indices.contains(&function_index),
+            exported: !exports.is_empty(),
             imported: true,
             local_names: Vec::new(),
+            exports,
         });
     }
 
@@ -487,6 +508,8 @@ pub fn extract_signatures(bytes: &[u8]) -> Result<ModuleSignatures> {
             type_signature(&func_types, *type_index);
         let function_index: u32 =
             imported_function_count.saturating_add(u32::try_from(defined_idx).unwrap_or(u32::MAX));
+        let exports: Vec<FunctionExport> =
+            exports_by_index.remove(&function_index).unwrap_or_default();
         sigs.push(FunctionSig {
             name: resolve_name(
                 function_index,
@@ -496,12 +519,13 @@ pub fn extract_signatures(bytes: &[u8]) -> Result<ModuleSignatures> {
             ),
             params,
             results,
-            exported: exported_indices.contains(&function_index),
+            exported: !exports.is_empty(),
             imported: false,
             local_names: name_section_locals
                 .get(&function_index)
                 .cloned()
                 .unwrap_or_default(),
+            exports,
         });
     }
 

@@ -8,13 +8,13 @@
 )]
 
 use disrobe_pass_wasm_deob::{
-    BlockId, BlockTarget, CalleeNames, ConstVal, DispatcherInfo, FunctionCfg, FunctionSig,
-    IntegrityStripStats, LiftResult, LiftTarget, LoadKind, NameStrategy, OpKind, OpaquePredStats,
-    SideEffect, SsaBlock, SsaFunction, SsaMemArg, SsaTerm, StoreKind, StubInfo, UnflattenStats,
-    ValueDef, ValueId, WasmDetection, WasmObfuscator, WobfuscatorTable, build_function_cfg,
-    classify_export_strategy, detect, detect_decrypt_stubs, detect_dispatcher, extract_optable,
-    kill_opaque_predicates, lift_function_body, lift_op_to_rust_fn, strip_integrity_imports,
-    unflatten,
+    BlockId, BlockTarget, CalleeNames, ConstVal, DispatcherInfo, FunctionCfg, FunctionExport,
+    FunctionSig, IntegrityStripStats, LiftResult, LiftTarget, LoadKind, NameStrategy, OpKind,
+    OpaquePredStats, SideEffect, SsaBlock, SsaFunction, SsaMemArg, SsaTerm, StoreKind, StubInfo,
+    UnflattenStats, ValueDef, ValueId, WasmDetection, WasmObfuscator, WobfuscatorTable,
+    build_function_cfg, classify_export_strategy, detect, detect_decrypt_stubs, detect_dispatcher,
+    extract_optable, kill_opaque_predicates, lift_function_body, lift_op_to_rust_fn,
+    strip_integrity_imports, unflatten,
 };
 use smallvec::{SmallVec, smallvec};
 use walrus::ir::{BinaryOp, LoadKind as WLoadKind, MemArg, StoreKind as WStoreKind};
@@ -479,6 +479,10 @@ fn full_pipeline_smoke_detect_through_lift() {
         exported: true,
         imported: false,
         local_names: Vec::new(),
+        exports: vec![FunctionExport {
+            position: 0,
+            name: "identity".to_owned(),
+        }],
     };
     let callees: CalleeNames = CalleeNames::new(Vec::new());
     let mut visited: bool = false;

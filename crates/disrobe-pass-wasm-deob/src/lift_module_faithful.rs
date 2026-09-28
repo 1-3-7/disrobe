@@ -7,7 +7,9 @@ use wasmparser::{
     TableType, TypeRef, ValType,
 };
 
-use crate::lift_wat::{FeatureReqs, RenderMode, WatFunc, render_func_in_module, val_type_str};
+use crate::lift_wat::{
+    FeatureReqs, RenderMode, WatFunc, escape_wat_name, render_func_in_module, val_type_str,
+};
 use crate::signature::FunctionSig;
 
 const DATA_ESCAPE_PREALLOC_CAP: usize = 1 << 20;
@@ -192,6 +194,7 @@ impl ModuleScaffold {
                     exported: false,
                     imported: false,
                     local_names: Vec::new(),
+                    exports: Vec::new(),
                 }
             })
             .collect()
@@ -597,18 +600,6 @@ fn render_export(exp: &wasmparser::Export<'_>) -> String {
         "(export \"{}\" ({kind} {target}))",
         escape_wat_name(exp.name)
     )
-}
-
-fn escape_wat_name(name: &str) -> String {
-    let mut s: String = String::with_capacity(name.len());
-    for &byte in name.as_bytes() {
-        if matches!(byte, 0x20..=0x21 | 0x23..=0x5b | 0x5d..=0x7e) {
-            s.push(byte as char);
-        } else {
-            push_text!(s, "\\{byte:02x}");
-        }
-    }
-    s
 }
 
 fn table_target_name(index: u32) -> String {

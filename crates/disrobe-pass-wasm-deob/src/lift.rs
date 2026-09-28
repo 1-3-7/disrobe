@@ -1809,6 +1809,7 @@ mod tests {
             exported: false,
             imported: false,
             local_names: Vec::new(),
+            exports: Vec::new(),
         };
         let surface: RecoveredTypeSurface = RecoveredTypeSurface {
             declarations: String::new(),
