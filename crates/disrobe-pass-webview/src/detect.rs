@@ -98,6 +98,7 @@ const MARKER_CONFIDENCE_BASE: f32 = 0.50;
 const MARKER_CONFIDENCE_SPAN: f32 = 0.40;
 const MARKER_SCORE_FULL: f32 = 100.0;
 const MAX_EVIDENCE_MARKERS: usize = 8;
+const FAMILY_MARKER_MIN_WEIGHT: u32 = 20;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct FamilyEvidence {
@@ -193,11 +194,16 @@ fn marker_confidence(score: u32) -> f32 {
 fn match_markers(hay: &[u8], markers: &[Marker]) -> (Vec<&'static str>, u32) {
     let mut labels: Vec<&'static str> = Vec::new();
     let mut score: u32 = 0;
+    let mut family_marker: bool = false;
     for marker in markers {
         if contains(hay, marker.needle) {
             labels.push(marker.label);
             score = score.saturating_add(marker.weight);
+            family_marker |= marker.weight >= FAMILY_MARKER_MIN_WEIGHT;
         }
+    }
+    if !family_marker {
+        return (Vec::new(), 0);
     }
     (labels, score)
 }
@@ -228,9 +234,29 @@ pub(crate) fn find_from(hay: &[u8], needle: &[u8], start: usize) -> Option<usize
 
 #[cfg(test)]
 mod tests {
+
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
+
+    #[test]
+    fn generic_words_alone_name_no_webview_family() {
+        for bytes in [
+            b"things went awry while window.runtime was undefined".as_slice(),
+            b"copy app.asar next to the installer".as_slice(),
+            b"if (isTauri) { wry(); }".as_slice(),
+        ] {
+            assert!(
+                classify_all(bytes).is_empty(),
+                "{:?}",
+                String::from_utf8_lossy(bytes)
+            );
+        }
+        assert_eq!(
+            detect_family(b"window.runtime.EventsOn and /wails/runtime"),
+            Some(WebviewFamily::Wails)
+        );
+    }
 
     #[test]
     fn no_evidence_yields_no_family() {
@@ -252,7 +278,7 @@ mod tests {
 
     #[test]
     fn more_specific_markers_raise_confidence() {
-        let weak: FamilyEvidence = classify(b"isTauri").expect("weak tauri");
+        let weak: FamilyEvidence = classify(b"tauri://").expect("weak tauri");
         let strong: FamilyEvidence =
             classify(b"__TAURI_INTERNALS__ tauri://localhost __TAURI__").expect("strong tauri");
         assert!(
@@ -265,7 +291,7 @@ mod tests {
     #[test]
     fn coexisting_families_are_ranked_not_collapsed() {
         let mixed: Vec<FamilyEvidence> =
-            classify_all(b"__TAURI_INTERNALS__ tauri://localhost and window.runtime");
+            classify_all(b"__TAURI_INTERNALS__ tauri://localhost and wails://");
         assert_eq!(mixed.len(), 2, "both families must survive as evidence");
         assert_eq!(
             mixed[0].family,
