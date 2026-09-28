@@ -187,6 +187,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_chain_just_under_the_expression_depth_bound_still_evaluates() {
+        let script: String = "\"a\"".to_owned()
+            + "+[]"
+                .repeat(crate::sandbox_guard::MAX_EXPRESSION_DEPTH - 10)
+                .as_str();
+        assert_eq!(eval_to_source(&script).as_deref(), Some("a"));
+    }
+
+    #[test]
     fn evaluates_simple_string_expression() {
         let Some(out): Option<String> = eval_to_string("'hel' + 'lo'") else {
             panic!("eval must succeed");

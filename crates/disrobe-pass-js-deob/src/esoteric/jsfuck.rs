@@ -121,6 +121,18 @@ mod tests {
     const ZERO_LITERAL: &str = "+[]";
 
     #[test]
+    fn the_seven_megabyte_jsfuck_file_is_refused_without_evaluation() {
+        let path: std::path::PathBuf = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../corpus/js/jsfuck/obfuscated.megafile.js");
+        let source: String = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let decoded: JsFuckDecode = decode_jsfuck(&source);
+        assert!(decoded.detection.matched);
+        assert_eq!(decoded.recovered, None);
+        assert!(decoded.symbolic_only);
+    }
+
+    #[test]
     fn detects_pure_jsfuck() {
         let src: &str = "[][(![]+[])[+[]]]+([][[]]+[])[+!+[]]+(![]+[])[!+[]+!+[]]";
         let det: JsFuckDetection = detect_jsfuck(src);
