@@ -1,5 +1,7 @@
 use oxc_allocator::Allocator;
-use oxc_ast::ast::{AssignmentTarget, ComputedMemberExpression, Expression, Program, Statement};
+use oxc_ast::ast::{
+    AssignmentTarget, Class, ClassElement, ComputedMemberExpression, Expression, Program, Statement,
+};
 use oxc_parser::Parser;
 use oxc_span::{GetSpan, SourceType};
 
@@ -111,6 +113,7 @@ fn walk_statement(
                 }
             }
         }
+        Statement::ClassDeclaration(c) => walk_class(c, source, edits, stats),
         Statement::ThrowStatement(s) => walk_expression(&s.argument, source, edits, stats),
         Statement::SwitchStatement(s) => {
             walk_expression(&s.discriminant, source, edits, stats);
@@ -212,12 +215,46 @@ fn walk_expression(
                 }
             }
         }
+        Expression::ClassExpression(c) => walk_class(c, source, edits, stats),
         Expression::ArrowFunctionExpression(a) => {
             for inner in &a.body.statements {
                 walk_statement(inner, source, edits, stats);
             }
         }
         _ => {}
+    }
+}
+
+fn walk_class(
+    class: &Class<'_>,
+    source: &str,
+    edits: &mut Vec<Edit>,
+    stats: &mut BracketToDotStats,
+) {
+    if let Some(superclass) = class.super_class.as_ref() {
+        walk_expression(superclass, source, edits, stats);
+    }
+    for element in &class.body.body {
+        match element {
+            ClassElement::MethodDefinition(method) => {
+                if let Some(body) = method.value.body.as_ref() {
+                    for inner in &body.statements {
+                        walk_statement(inner, source, edits, stats);
+                    }
+                }
+            }
+            ClassElement::PropertyDefinition(property) => {
+                if let Some(value) = property.value.as_ref() {
+                    walk_expression(value, source, edits, stats);
+                }
+            }
+            ClassElement::StaticBlock(block) => {
+                for inner in &block.body {
+                    walk_statement(inner, source, edits, stats);
+                }
+            }
+            ClassElement::AccessorProperty(_) | ClassElement::TSIndexSignature(_) => {}
+        }
     }
 }
 
@@ -392,6 +429,17 @@ mod tests {
         assert_eq!(
             splice(source, &outcome),
             "var c = w.console = w.console || {}; w.a.b = 1;"
+        );
+    }
+
+    #[test]
+    fn member_access_inside_a_class_body_is_dotted() {
+        let source: &str =
+            "class C { ['top'](n) { return this['items']['slice'](0, n); } static { x['y'](); } }";
+        let (outcome, _): (RuleOutcome, BracketToDotStats) = recover(source);
+        assert_eq!(
+            splice(source, &outcome),
+            "class C { ['top'](n) { return this.items.slice(0, n); } static { x.y(); } }"
         );
     }
 
