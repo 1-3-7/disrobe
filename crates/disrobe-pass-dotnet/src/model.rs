@@ -1552,7 +1552,8 @@ impl Resolver {
         }
         let rest: &[u8] = &self.strings_heap[start..];
         let len: usize = rest.iter().position(|&b: &u8| b == 0).unwrap_or(rest.len());
-        String::from_utf8_lossy(&rest[..len]).into_owned()
+        disrobe_core::source_text::escape_unsafe_chars(&String::from_utf8_lossy(&rest[..len]))
+            .into_owned()
     }
 
     #[must_use]
