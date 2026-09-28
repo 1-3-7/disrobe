@@ -29,6 +29,7 @@ pub use bodies::{
 };
 #[cfg(feature = "chain")]
 pub use chain_detector::{NATIVELANG_PASS, NativeLangDetector, NativeLangPassAdapter};
+pub use d_mangle::DDemangleError;
 pub use demangle::{DemangledSymbol, demangle_crystal, demangle_d, demangle_nim, demangle_zig};
 pub use detect::{LangFingerprint, NativeLang, fingerprint, marker_hits, runtime_markers};
 pub use disasm::{DisasmInstruction, DisasmListing, FunctionListing, disassemble_functions};

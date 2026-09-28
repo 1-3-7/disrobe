@@ -395,7 +395,7 @@ fn recover_d_lang(image: &NativeImage<'_>, types: &TypeReport) -> Recovery {
     let mut demangled: Vec<DemangledSymbol> = Vec::new();
     let mut seen: BTreeSet<String> = BTreeSet::new();
     for sym in &image.symbols {
-        if let Some(d) = demangle_d(sym)
+        if let Ok(d) = demangle_d(sym)
             && seen.insert(d.demangled.clone())
         {
             demangled.push(d);
@@ -432,7 +432,7 @@ fn recover_d_lang(image: &NativeImage<'_>, types: &TypeReport) -> Recovery {
                 for token in string.split(|character: char| {
                     !(character.is_ascii_alphanumeric() || character == '_')
                 }) {
-                    let symbol: Option<DemangledSymbol> = demangle_d(token);
+                    let symbol: Option<DemangledSymbol> = demangle_d(token).ok();
                     if token.starts_with("_D")
                         && let Some(symbol) = symbol
                         && seen.insert(symbol.demangled.clone())
@@ -947,7 +947,7 @@ fn demangle_d_struct_type(mangled: &str) -> Option<DemangledSymbol> {
         return None;
     }
     let probe: String = format!("_D7__probeF{mangled}Zv");
-    let parsed: DemangledSymbol = demangle_d(&probe)?;
+    let parsed: DemangledSymbol = demangle_d(&probe).ok()?;
     let qualified: &str = parsed.params.first()?;
     let mut symbol: DemangledSymbol = mine_d_rtti_name(qualified)?;
     mangled.clone_into(&mut symbol.mangled);

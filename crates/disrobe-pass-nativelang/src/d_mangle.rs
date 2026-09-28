@@ -28,6 +28,18 @@ const PRIMITIVES: [Option<&str>; 23] = [
     Some("dchar"),
 ];
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum DDemangleError {
+    #[error("the symbol does not start with the D mangling prefix `_D`")]
+    NotDSymbol,
+    #[error("the symbol does not parse as a complete D mangled name")]
+    Unparsed,
+    #[error("D demangling stopped after {MAX_STEPS} parse steps")]
+    StepBudget,
+    #[error("D demangling stopped at {MAX_OUTPUT} bytes of output")]
+    OutputBudget,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum IsDelegate {
     No,
@@ -41,6 +53,7 @@ struct Demangler<'a> {
     brp: usize,
     depth: usize,
     steps: usize,
+    output_exhausted: bool,
     top_qualified: Option<String>,
     top_params: Option<String>,
 }
@@ -54,6 +67,7 @@ impl<'a> Demangler<'a> {
             brp: usize::MAX,
             depth: 0,
             steps: 0,
+            output_exhausted: false,
             top_qualified: None,
             top_params: None,
         }
@@ -89,6 +103,7 @@ impl<'a> Demangler<'a> {
 
     fn put(&mut self, s: &str) -> Option<()> {
         if self.out.len().saturating_add(s.len()) > MAX_OUTPUT {
+            self.output_exhausted = true;
             return None;
         }
         self.out.push_str(s);
@@ -97,6 +112,7 @@ impl<'a> Demangler<'a> {
 
     fn put_char(&mut self, c: char) -> Option<()> {
         if self.out.len() >= MAX_OUTPUT {
+            self.output_exhausted = true;
             return None;
         }
         self.out.push(c);
@@ -1463,18 +1479,22 @@ fn split_name_and_params(name_with_args: &str) -> (String, Option<String>) {
     )
 }
 
-#[must_use]
-pub(crate) fn demangle_d_result(mangled: &str) -> Option<DResult> {
+pub(crate) fn demangle_d_result(mangled: &str) -> Result<DResult, DDemangleError> {
     if !mangled.starts_with("_D") {
-        return None;
+        return Err(DDemangleError::NotDSymbol);
     }
     let mut d: Demangler<'_> = Demangler::new(mangled.as_bytes());
-    d.parse_mangled_name(true, 0)?;
-    if d.pos < d.buf.len() {
-        return None;
+    if d.parse_mangled_name(true, 0).is_none() {
+        return Err(if d.steps > MAX_STEPS {
+            DDemangleError::StepBudget
+        } else if d.output_exhausted {
+            DDemangleError::OutputBudget
+        } else {
+            DDemangleError::Unparsed
+        });
     }
-    if d.out.is_empty() {
-        return None;
+    if d.pos < d.buf.len() || d.out.is_empty() {
+        return Err(DDemangleError::Unparsed);
     }
     let qualified: String = d.top_qualified.unwrap_or_else(|| d.out.clone());
     let params: Vec<String> = d
@@ -1482,7 +1502,7 @@ pub(crate) fn demangle_d_result(mangled: &str) -> Option<DResult> {
         .as_deref()
         .map(split_top_level_commas)
         .unwrap_or_default();
-    Some(DResult {
+    Ok(DResult {
         demangled: d.out,
         qualified,
         params,
@@ -1531,6 +1551,56 @@ mod tests {
         assert_eq!(demangler.pos, 5);
     }
 
+    fn backref_offset(mut n: usize) -> String {
+        let mut digits: Vec<u8> = vec![b'a' + u8::try_from(n % 26).expect("digit")];
+        n /= 26;
+        while n > 0 {
+            digits.push(b'A' + u8::try_from(n % 26).expect("digit"));
+            n /= 26;
+        }
+        digits.reverse();
+        String::from_utf8(digits).expect("ascii")
+    }
+
+    fn doubling_chain(levels: usize) -> String {
+        let mut level: String = "FiiZi".to_owned();
+        for _ in 1..levels {
+            let offset: String = backref_offset(level.len());
+            level = format!("F{level}Q{offset}Zi");
+        }
+        format!("_D1a{level}")
+    }
+
+    #[test]
+    fn each_back_referenced_level_doubles_the_demangled_parameters() {
+        for (levels, pairs) in [(1usize, 1usize), (2, 2), (3, 4)] {
+            let symbol: String = doubling_chain(levels);
+            let Ok(result): Result<DResult, DDemangleError> = demangle_d_result(&symbol) else {
+                panic!("the {levels}-level chain {symbol} must demangle");
+            };
+            assert_eq!(
+                result.demangled.matches("(int, int)").count(),
+                pairs,
+                "{symbol} -> {}",
+                result.demangled
+            );
+        }
+    }
+
+    #[test]
+    fn a_symbol_whose_back_references_double_each_level_is_refused_by_a_budget() {
+        let symbol: String = doubling_chain(40);
+        assert!(symbol.len() < 512, "{symbol}");
+        let refused: Result<DResult, DDemangleError> = demangle_d_result(&symbol);
+        assert!(
+            matches!(
+                refused,
+                Err(DDemangleError::StepBudget | DDemangleError::OutputBudget)
+            ),
+            "{symbol}"
+        );
+    }
+
     #[test]
     fn the_step_budget_stops_runaway_backtracking() {
         let mut demangler: Demangler<'_> = Demangler::new(b"");
@@ -1539,7 +1609,7 @@ mod tests {
     }
 
     fn dm(s: &str) -> String {
-        let Some(r): Option<DResult> = demangle_d_result(s) else {
+        let Ok(r): Result<DResult, DDemangleError> = demangle_d_result(s) else {
             panic!("failed to demangle {s}");
         };
         r.demangled
@@ -1587,8 +1657,14 @@ mod tests {
 
     #[test]
     fn rejects_non_d() {
-        assert!(demangle_d_result("main").is_none());
-        assert!(demangle_d_result("_ZN5hello3fibE3int").is_none());
+        assert!(matches!(
+            demangle_d_result("main"),
+            Err(DDemangleError::NotDSymbol)
+        ));
+        assert!(matches!(
+            demangle_d_result("_ZN5hello3fibE3int"),
+            Err(DDemangleError::NotDSymbol)
+        ));
     }
 
     #[test]

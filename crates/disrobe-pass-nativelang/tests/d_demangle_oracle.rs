@@ -104,8 +104,9 @@ const ORACLE: &[(&str, &str)] = &[
 #[test]
 fn d_demangler_matches_real_compiler_demangler() {
     for (mangled, expected) in ORACLE {
-        let d: DemangledSymbol = demangle_d(mangled)
-            .unwrap_or_else(|| panic!("failed to demangle real ldc2 symbol {mangled}"));
+        let d: DemangledSymbol = demangle_d(mangled).unwrap_or_else(|error| {
+            panic!("failed to demangle real ldc2 symbol {mangled}: {error}")
+        });
         assert_eq!(
             d.demangled, *expected,
             "demangling of {mangled} disagrees with the ldc2 ddemangle ground truth"
@@ -200,8 +201,9 @@ fn char_template_value_rendering_matches_the_d_runtime_demangler() {
     let vector_symbol: &str = "_D8demangle29__T2fnVa97Va9Va0Vu257Vw65537Z2fnFZv";
     let vector_expected: &str =
         "void demangle.fn!('a', '\\t', \\x00, '\\u0101', '\\U00010001').fn()";
-    let vector: DemangledSymbol = demangle_d(vector_symbol)
-        .unwrap_or_else(|| panic!("failed to demangle druntime test vector {vector_symbol}"));
+    let vector: DemangledSymbol = demangle_d(vector_symbol).unwrap_or_else(|error| {
+        panic!("failed to demangle druntime test vector {vector_symbol}: {error}")
+    });
     assert_eq!(
         vector.demangled, vector_expected,
         "the char/wchar/dchar template values must match the druntime demangler unittest vector byte for byte"
@@ -229,8 +231,8 @@ fn char_template_value_rendering_matches_the_d_runtime_demangler() {
     ];
     for (value, expected_arg) in table {
         let symbol: String = base64_char_symbol(value);
-        let recovered: DemangledSymbol =
-            demangle_d(&symbol).unwrap_or_else(|| panic!("disrobe failed to demangle {symbol}"));
+        let recovered: DemangledSymbol = demangle_d(&symbol)
+            .unwrap_or_else(|error| panic!("disrobe failed to demangle {symbol}: {error}"));
         let recovered_arg: String = base64_third_arg(&recovered.demangled).unwrap_or_else(|| {
             panic!("no template arg in disrobe output: {}", recovered.demangled)
         });
@@ -253,8 +255,8 @@ fn char_template_value_rendering_matches_the_d_runtime_demangler() {
         let symbol: String = base64_char_symbol(value);
         let reference: String = cppfilt_dlang(&symbol)
             .unwrap_or_else(|| panic!("reference demangle failed for {value}"));
-        let recovered: DemangledSymbol =
-            demangle_d(&symbol).unwrap_or_else(|| panic!("disrobe failed to demangle {symbol}"));
+        let recovered: DemangledSymbol = demangle_d(&symbol)
+            .unwrap_or_else(|error| panic!("disrobe failed to demangle {symbol}: {error}"));
         assert_eq!(
             base64_third_arg(&recovered.demangled),
             base64_third_arg(&reference),
@@ -270,8 +272,8 @@ fn char_template_value_rendering_matches_the_d_runtime_demangler() {
             .unwrap_or_else(|| panic!("reference demangle failed for {value}"));
         let reference_arg: String = base64_third_arg(&reference)
             .unwrap_or_else(|| panic!("no template arg in reference output: {reference}"));
-        let recovered: DemangledSymbol =
-            demangle_d(&symbol).unwrap_or_else(|| panic!("disrobe failed to demangle {symbol}"));
+        let recovered: DemangledSymbol = demangle_d(&symbol)
+            .unwrap_or_else(|error| panic!("disrobe failed to demangle {symbol}: {error}"));
         let recovered_arg: String = base64_third_arg(&recovered.demangled).unwrap_or_else(|| {
             panic!("no template arg in disrobe output: {}", recovered.demangled)
         });
@@ -302,8 +304,8 @@ fn bitsset_intermediate_join(demangled: &str) -> Option<String> {
 fn intermediate_member_this_modifier_not_leaked_matches_libiberty_dlang() {
     const SYMBOL: &str = "_D3std5range10primitives__T9moveFrontTSQBl9algorithm9iteration__T12FilterResultSQDa8bitmanip8BitArray7bitsSetMxFNbNdZ18__lambda_L2661_C26TSQFhQFg__T4iotaTmTxmZQlFmxmZ6ResultZQEfZQFvFNaNbNiQFuZm";
 
-    let recovered: DemangledSymbol =
-        demangle_d(SYMBOL).unwrap_or_else(|| panic!("disrobe failed to demangle {SYMBOL}"));
+    let recovered: DemangledSymbol = demangle_d(SYMBOL)
+        .unwrap_or_else(|error| panic!("disrobe failed to demangle {SYMBOL}: {error}"));
     let recovered_join: String =
         bitsset_intermediate_join(&recovered.demangled).unwrap_or_else(|| {
             panic!(
@@ -424,8 +426,9 @@ fn template_value_arg(demangled: &str) -> Option<String> {
 #[test]
 fn real_hex_float_value_carries_binary_point_matches_libiberty_dlang() {
     for (mangled, expected, correct_token, buggy_token) in REAL_HEX_FLOAT_ORACLE {
-        let d: DemangledSymbol = demangle_d(mangled)
-            .unwrap_or_else(|| panic!("disrobe failed to demangle real ldc2 symbol {mangled}"));
+        let d: DemangledSymbol = demangle_d(mangled).unwrap_or_else(|error| {
+            panic!("disrobe failed to demangle real ldc2 symbol {mangled}: {error}")
+        });
         assert_eq!(
             d.demangled, *expected,
             "hex-float template value must carry the implicit binary point for {mangled}"
@@ -460,8 +463,8 @@ fn real_hex_float_value_carries_binary_point_matches_libiberty_dlang() {
         );
         let reference_arg: String = template_value_arg(&reference)
             .unwrap_or_else(|| panic!("no template value in reference output: {reference}"));
-        let recovered: DemangledSymbol =
-            demangle_d(mangled).unwrap_or_else(|| panic!("disrobe failed to demangle {mangled}"));
+        let recovered: DemangledSymbol = demangle_d(mangled)
+            .unwrap_or_else(|error| panic!("disrobe failed to demangle {mangled}: {error}"));
         let recovered_arg: String = template_value_arg(&recovered.demangled).unwrap_or_else(|| {
             panic!(
                 "no template value in disrobe output: {}",

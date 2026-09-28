@@ -12,7 +12,7 @@ fn d_symbols_demangle_as_druntime_core_demangle_does() {
         .iter()
         .filter_map(|&(mangled, expected): &(&str, &str)| {
             let got: String = demangle_d(mangled).map_or_else(
-                || mangled.to_owned(),
+                |_| mangled.to_owned(),
                 |symbol: DemangledSymbol| symbol.demangled,
             );
             (got != expected)

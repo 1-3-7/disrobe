@@ -355,7 +355,7 @@ fn demangle_for(lang: NativeLang, name: &str) -> Option<DemangledSymbol> {
         NativeLang::Nim => demangle_nim(name),
         NativeLang::Zig => demangle_zig(name),
         NativeLang::Crystal => demangle_crystal(name),
-        NativeLang::D => demangle_d(name),
+        NativeLang::D => demangle_d(name).ok(),
     }
 }
 

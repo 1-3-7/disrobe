@@ -128,7 +128,7 @@ fn measured_probe(bytes: &[u8]) -> SeedReach {
     drop(demangle_zig(&text));
     reach.drove();
     reach.record("crystal-symbol", demangle_crystal(&text).is_some());
-    reach.record("d-symbol", demangle_d(&text).is_some());
+    reach.record("d-symbol", demangle_d(&text).is_ok());
     reach
 }
 

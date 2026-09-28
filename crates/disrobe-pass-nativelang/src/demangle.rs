@@ -1,3 +1,4 @@
+use crate::d_mangle::DDemangleError;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -261,10 +262,9 @@ pub fn demangle_crystal(symbol: &str) -> Option<DemangledSymbol> {
     })
 }
 
-#[must_use]
-pub fn demangle_d(mangled: &str) -> Option<DemangledSymbol> {
+pub fn demangle_d(mangled: &str) -> Result<DemangledSymbol, DDemangleError> {
     if mangled == "_Dmain" {
-        return Some(DemangledSymbol {
+        return Ok(DemangledSymbol {
             mangled: mangled.to_owned(),
             demangled: "D main".to_owned(),
             module: None,
@@ -276,7 +276,7 @@ pub fn demangle_d(mangled: &str) -> Option<DemangledSymbol> {
     let result: crate::d_mangle::DResult = crate::d_mangle::demangle_d_result(mangled)?;
     let (module, name): (Option<String>, String) = split_qualified(&result.qualified);
     let instantiation: Option<String> = extract_instantiation(&result.qualified);
-    Some(DemangledSymbol {
+    Ok(DemangledSymbol {
         mangled: mangled.to_owned(),
         demangled: result.demangled,
         module,
@@ -700,8 +700,11 @@ mod tests {
 
     #[test]
     fn d_rejects_non_d() {
-        assert!(demangle_d("main").is_none());
-        assert!(demangle_d("NimMainModule").is_none());
-        assert!(demangle_d("_ZN5hello3fibE3int").is_none());
+        assert_eq!(demangle_d("main"), Err(DDemangleError::NotDSymbol));
+        assert_eq!(demangle_d("NimMainModule"), Err(DDemangleError::NotDSymbol));
+        assert_eq!(
+            demangle_d("_ZN5hello3fibE3int"),
+            Err(DDemangleError::NotDSymbol)
+        );
     }
 }
