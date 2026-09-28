@@ -1,0 +1,38 @@
+#!/bin/sh
+zero=0000000000000000000000000000000000000000
+root=$(git rev-parse --show-toplevel)
+. "$root/.githooks/commit_rules.sh"
+
+refs=$(cat)
+message=$(mktemp) || exit 1
+trap 'rm -f "$message"' EXIT
+status=0
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ -z "$local_sha" ] && continue
+  [ "$local_sha" = "$zero" ] && continue
+  if [ "$remote_sha" = "$zero" ]; then
+    range="$local_sha --not --remotes"
+  elif git cat-file -e "$remote_sha^{commit}" 2>/dev/null; then
+    range="$remote_sha..$local_sha"
+  else
+    echo "pre-push: $remote_ref is at $remote_sha, which this clone does not have; fetch first" >&2
+    exit 1
+  fi
+  for commit in $(git rev-list $range); do
+    git log -1 --format=%B "$commit" > "$message"
+    case "$(sed -n '1p' "$message")" in
+      Merge*|Revert*) continue ;;
+    esac
+    check_message "pre-push $(git rev-parse --short "$commit")" "$message" || status=1
+  done
+done <<EOF
+$refs
+EOF
+
+if [ "$status" -ne 0 ]; then
+  echo "pre-push: refusing; reword the offending unpushed commits first" >&2
+  exit "$status"
+fi
+[ "$1" = messages ] && exit 0
+printf '%s\n' "$refs" | cargo run -q -p xtask -- prepush
