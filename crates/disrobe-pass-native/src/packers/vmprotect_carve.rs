@@ -151,7 +151,7 @@ fn rebuild_imports(image: &[u8], pe: &PeImage, dir: DataDirectory) -> Vec<Synthe
     let mut cursor_rva: u32 = dir.virtual_address;
     let end_rva: u32 = dir.virtual_address.saturating_add(dir.size);
     while cursor_rva + IMPORT_DESCRIPTOR_SIZE as u32 <= end_rva {
-        let Some(off): Option<usize> = rva_to_offset(pe, cursor_rva) else {
+        let Some(off): Option<usize> = pe.file_offset_for_rva(cursor_rva, image.len()).ok() else {
             break;
         };
         if off + IMPORT_DESCRIPTOR_SIZE > image.len() {
@@ -163,7 +163,9 @@ fn rebuild_imports(image: &[u8], pe: &PeImage, dir: DataDirectory) -> Vec<Synthe
         if original_first_thunk == 0 && name_rva == 0 && first_thunk == 0 {
             break;
         }
-        let dll: String = rva_to_offset(pe, name_rva)
+        let dll: String = pe
+            .file_offset_for_rva(name_rva, image.len())
+            .ok()
             .map_or_else(String::new, |name_off: usize| read_cstr(image, name_off));
         out.push(SyntheticImport {
             dll,
@@ -173,15 +175,6 @@ fn rebuild_imports(image: &[u8], pe: &PeImage, dir: DataDirectory) -> Vec<Synthe
         cursor_rva += IMPORT_DESCRIPTOR_SIZE as u32;
     }
     out
-}
-
-fn rva_to_offset(pe: &PeImage, rva: u32) -> Option<usize> {
-    let sec: &PeSection = pe.section_containing_rva(rva)?;
-    let delta: u32 = rva.checked_sub(sec.virtual_address)?;
-    if delta >= sec.raw_size.max(sec.virtual_size) {
-        return None;
-    }
-    (sec.raw_pointer as usize).checked_add(delta as usize)
 }
 
 fn read_u32(b: &[u8], off: usize) -> u32 {

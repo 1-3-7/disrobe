@@ -327,8 +327,9 @@ fn rewrite_bootstrap_iat(
     }
     let mut idx: usize = 0;
     loop {
-        let desc_rva: u32 = imp.virtual_address + (idx * 20) as u32;
-        let Some(desc_off): Option<usize> = rva_to_off(img, desc_rva) else {
+        let desc_rva: u32 = imp.virtual_address.saturating_add((idx * 20) as u32);
+        let Some(desc_off): Option<usize> = img.file_offset_for_rva(desc_rva, packed.len()).ok()
+        else {
             break;
         };
         if desc_off + 20 > packed.len() {
@@ -343,7 +344,10 @@ fn rewrite_bootstrap_iat(
         let thunk_table: u32 = if oft != 0 { oft } else { ft };
         let mut t: u32 = 0;
         loop {
-            let Some(thunk_off): Option<usize> = rva_to_off(img, thunk_table + t * 4) else {
+            let Some(thunk_off): Option<usize> = img
+                .file_offset_for_rva(thunk_table + t * 4, packed.len())
+                .ok()
+            else {
                 break;
             };
             if thunk_off + 4 > packed.len() {
@@ -354,7 +358,7 @@ fn rewrite_bootstrap_iat(
                 break;
             }
             if thunk & 0x8000_0000 == 0 {
-                let fn_off: Option<usize> = rva_to_off(img, thunk);
+                let fn_off: Option<usize> = img.file_offset_for_rva(thunk, packed.len()).ok();
                 if let Some(fn_off) = fn_off {
                     let func: String = read_cstr(packed, fn_off + 2, 64);
                     let classified: &'static str = classify(&func);
@@ -466,16 +470,6 @@ fn whole_image_recovery_pct(recovered: &[u8], baseline: &[u8]) -> f64 {
         .count();
     let denom: usize = recovered.len().max(baseline.len());
     100.0 * matching as f64 / denom as f64
-}
-
-fn rva_to_off(img: &PeImage, rva: u32) -> Option<usize> {
-    for sec in &img.sections {
-        let span: u32 = sec.virtual_size.max(sec.raw_size);
-        if rva >= sec.virtual_address && rva < sec.virtual_address.saturating_add(span) {
-            return Some((sec.raw_pointer + (rva - sec.virtual_address)) as usize);
-        }
-    }
-    None
 }
 
 fn read_u32(b: &[u8], off: usize) -> Result<u32> {
