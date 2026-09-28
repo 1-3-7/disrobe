@@ -108,6 +108,17 @@ pub(crate) fn run(root: &Path, as_json: bool) -> Result<()> {
     check_unused_workspace_deps(root, &root_doc, &member_manifests, &mut report);
     check_unwired_members(root, &member_manifests, &mut report);
     check_layering(&member_manifests, &mut report);
+    match crate::unused_deps::find(root) {
+        Ok(findings) => {
+            for finding in &findings {
+                report.fail("unused-dependency", finding.render());
+            }
+        }
+        Err(error) => report.fail(
+            "unused-dependency",
+            format!("the unused-dependency scan could not run: {error:#}"),
+        ),
+    }
     check_generator_disjointness(root, &mut report);
     check_feature_hidden_tests(root, &mut report);
     check_wasm_build_records(root, &mut report);

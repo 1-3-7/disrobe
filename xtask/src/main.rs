@@ -49,6 +49,7 @@ mod roster_breadth;
 mod skip_census;
 mod sync;
 mod typography;
+mod unused_deps;
 
 use std::fs;
 use std::path::{Path, PathBuf};
