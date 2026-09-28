@@ -1,5 +1,4 @@
 zip	extract	corpus/beam/ez/hello.ez
-tar	extract	corpus/binfmt/docker/synthetic/hello.docker.tar
 tar.gz	extract	corpus/binfmt/carve/nested.tar.gz
 rar	extract	corpus/binfmt/rar/filter-delta-rar5.rar
 iso	extract	corpus/binfmt/iso/joliet-rockridge.iso
@@ -14,6 +13,8 @@ appimage	extract	corpus/binfmt/appimage-type1/AppImageAssistant.AppImage
 innosetup	members-unverified	crates/disrobe-binfmt/tests/fixtures/innosetup/codec-matrix/codec-bzip.exe
 installshield	members-unverified	corpus/binfmt/installshield/wireplay-sys1.cab
 enigma-virtual-box	members-unverified	crates/disrobe-binfmt/tests/fixtures/enigma/x86_evb_10_70_20240522.exe
+oci	extract	corpus/binfmt/oci/synthetic/hello.oci.tar
+docker-image	extract	corpus/binfmt/docker/synthetic/hello.docker.tar
 squashfs	extract	corpus/binfmt/squashfs-lzo/hello-lzo.squashfs
 erofs	members-unverified	crates/disrobe-binfmt/tests/fixtures/erofs/lzma-compact-big-xattr.erofs
 cpio	extract	corpus/binfmt/elf-overlay/cpio.bin
