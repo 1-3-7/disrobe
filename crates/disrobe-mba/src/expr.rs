@@ -238,6 +238,65 @@ impl Expr {
         }
     }
 
+    #[must_use]
+    pub fn has_loads(&self) -> bool {
+        match self {
+            Self::Const(_) | Self::Var(_) => false,
+            Self::Mem(_, _) => true,
+            Self::Unary(_, inner) | Self::Slice(inner, _, _) => inner.has_loads(),
+            Self::Binary(_, left, right) | Self::Compose(left, right, _) => {
+                left.has_loads() || right.has_loads()
+            }
+            Self::Ite(cond, then, otherwise) => {
+                cond.has_loads() || then.has_loads() || otherwise.has_loads()
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn abstract_loads(&self, loads: &mut Vec<(Self, u32)>, next_var: &mut u32) -> Self {
+        match self {
+            Self::Const(_) | Self::Var(_) => self.clone(),
+            Self::Mem(_, width) => {
+                let index: u32 = match loads.iter().find(|(load, _): &&(Self, u32)| load == self) {
+                    Some((_, index)) => *index,
+                    None => {
+                        let index: u32 = *next_var;
+                        *next_var = next_var.saturating_add(1);
+                        loads.push((self.clone(), index));
+                        index
+                    }
+                };
+                Self::Binary(
+                    BinOp::And,
+                    Box::new(Self::Var(index)),
+                    Box::new(Self::Const(width.mask())),
+                )
+            }
+            Self::Unary(op, inner) => {
+                Self::Unary(*op, Box::new(inner.abstract_loads(loads, next_var)))
+            }
+            Self::Slice(inner, lo, hi) => {
+                Self::Slice(Box::new(inner.abstract_loads(loads, next_var)), *lo, *hi)
+            }
+            Self::Binary(op, left, right) => Self::Binary(
+                *op,
+                Box::new(left.abstract_loads(loads, next_var)),
+                Box::new(right.abstract_loads(loads, next_var)),
+            ),
+            Self::Compose(low, high, bits) => Self::Compose(
+                Box::new(low.abstract_loads(loads, next_var)),
+                Box::new(high.abstract_loads(loads, next_var)),
+                *bits,
+            ),
+            Self::Ite(cond, then, otherwise) => Self::Ite(
+                Box::new(cond.abstract_loads(loads, next_var)),
+                Box::new(then.abstract_loads(loads, next_var)),
+                Box::new(otherwise.abstract_loads(loads, next_var)),
+            ),
+        }
+    }
+
     pub fn collect_vars(&self, into: &mut BTreeSet<u32>) {
         match self {
             Self::Const(_) => {}

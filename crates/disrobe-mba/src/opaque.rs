@@ -121,6 +121,43 @@ impl Predicate {
         }
     }
 
+    fn has_loads(&self) -> bool {
+        match self {
+            Self::Nonzero(inner) => inner.has_loads(),
+            Self::Compare { left, right, .. } => left.has_loads() || right.has_loads(),
+            Self::Or(left, right) | Self::And(left, right) => left.has_loads() || right.has_loads(),
+        }
+    }
+
+    fn abstract_loads(&self, loads: &mut Vec<(Expr, u32)>, next_var: &mut u32) -> Self {
+        match self {
+            Self::Nonzero(inner) => Self::Nonzero(inner.abstract_loads(loads, next_var)),
+            Self::Compare { op, left, right } => Self::Compare {
+                op: *op,
+                left: left.abstract_loads(loads, next_var),
+                right: right.abstract_loads(loads, next_var),
+            },
+            Self::Or(left, right) => Self::or(
+                left.abstract_loads(loads, next_var),
+                right.abstract_loads(loads, next_var),
+            ),
+            Self::And(left, right) => Self::and(
+                left.abstract_loads(loads, next_var),
+                right.abstract_loads(loads, next_var),
+            ),
+        }
+    }
+
+    fn with_loads_as_free_variables(&self) -> Self {
+        let mut used: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+        self.collect_vars(&mut used);
+        let mut next_var: u32 = used
+            .last()
+            .map_or(0, |highest: &u32| highest.saturating_add(1));
+        let mut loads: Vec<(Expr, u32)> = Vec::new();
+        self.abstract_loads(&mut loads, &mut next_var)
+    }
+
     fn collect_vars(&self, into: &mut std::collections::BTreeSet<u32>) {
         match self {
             Self::Nonzero(inner) => inner.collect_vars(into),
@@ -245,6 +282,9 @@ fn budgeted_eval_width(requested: Width, var_count: u32) -> Option<(Width, bool)
 pub fn classify(predicate: &Predicate, width: Width) -> OpaqueVerdict {
     if predicate.depth() > crate::expr::MAX_MBA_DEPTH {
         return OpaqueVerdict::OutOfBudget;
+    }
+    if predicate.has_loads() {
+        return classify(&predicate.with_loads_as_free_variables(), width);
     }
     if let Some(verdict) = classify_compound(predicate, width) {
         let verdict: OpaqueVerdict = verdict;
@@ -525,6 +565,23 @@ mod tests {
 
     fn x_squared_plus_x() -> Expr {
         Expr::add(Expr::mul(Expr::var(0), Expr::var(0)), Expr::var(0))
+    }
+
+    #[test]
+    fn a_byte_load_compared_with_a_constant_depends_on_memory() {
+        let load: Expr = Expr::mem(Expr::var(0), Width::W8);
+        let predicate: Predicate = Predicate::eq(load, Expr::konst(0x41));
+        assert_eq!(
+            classify(&predicate, Width::W8),
+            OpaqueVerdict::DataDependent
+        );
+    }
+
+    #[test]
+    fn the_same_load_twice_is_one_free_variable() {
+        let load: Expr = Expr::mem(Expr::var(0), Width::W8);
+        let predicate: Predicate = Predicate::eq(Expr::xor(load.clone(), load), Expr::konst(0));
+        assert!(classify(&predicate, Width::W8).is_opaque());
     }
 
     #[test]
