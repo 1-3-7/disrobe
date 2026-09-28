@@ -15,6 +15,7 @@ use crate::resolve::SectionMap;
 pub(crate) const MIN_CONSECUTIVE: usize = 8;
 const MAX_PATH_LEN: usize = 4096;
 const MAX_RECORD_BLOB: usize = 256 * 1024 * 1024;
+const MAX_UNREADABLE_GAP: usize = 2;
 const HASH_LEN: usize = 16;
 const MAX_HASH_HAMMING: usize = 1;
 const COHERENT_NESTED_PERCENT: usize = 50;
@@ -40,6 +41,7 @@ struct Record<'a> {
     is_dir: bool,
     data: &'a [u8],
     hash: Option<[u8; HASH_LEN]>,
+    unreadable: Option<&'static str>,
 }
 
 #[derive(Debug)]
@@ -131,7 +133,9 @@ fn collect_runs<'a>(
             return;
         }
         *budget -= 1;
-        let Some(first) = validate(map, cursor, stride, order, ptr) else {
+        let Some(first) = validate(map, cursor, stride, order, ptr)
+            .filter(|record: &Record<'a>| record.unreadable.is_none())
+        else {
             let Some(next) = cursor.checked_add(ptr as u64) else {
                 return;
             };
@@ -139,6 +143,7 @@ fn collect_runs<'a>(
             continue;
         };
         let mut run: Vec<Record<'a>> = vec![first];
+        let mut unreadable_gap: usize = 0;
         let mut next: u64 = match cursor.checked_add(stride_u64) {
             Some(value) => value,
             None => break,
@@ -154,11 +159,25 @@ fn collect_runs<'a>(
             let Some(record) = validate(map, next, stride, order, ptr) else {
                 break;
             };
+            if record.unreadable.is_some() {
+                unreadable_gap += 1;
+                if unreadable_gap > MAX_UNREADABLE_GAP {
+                    break;
+                }
+            } else {
+                unreadable_gap = 0;
+            }
             run.push(record);
             let Some(step) = next.checked_add(stride_u64) else {
                 break;
             };
             next = step;
+        }
+        while run
+            .last()
+            .is_some_and(|record: &Record<'a>| record.unreadable.is_some())
+        {
+            run.pop();
         }
         if run.len() >= MIN_CONSECUTIVE
             && let Some(total) = retained.checked_add(run.len())
@@ -198,15 +217,20 @@ fn validate<'a>(
     }
     let name_bytes: &'a [u8] = map.slice(name_ptr, name_len_usize)?;
     let name: &'a str = valid_path(name_bytes)?;
-    let data_len_usize: usize = usize::try_from(data_len).ok()?;
-    if data_len_usize > MAX_RECORD_BLOB {
-        return None;
-    }
     let is_dir: bool = name.ends_with('/');
-    let data: &'a [u8] = if data_len_usize == 0 {
-        &[]
-    } else {
-        map.slice(data_ptr, data_len_usize)?
+    let (data, unreadable): (&'a [u8], Option<&'static str>) = match usize::try_from(data_len) {
+        Ok(0) => (&[], None),
+        Ok(len) if len <= MAX_RECORD_BLOB => map.slice(data_ptr, len).map_or(
+            (
+                &[],
+                Some("the entry's data lies outside the mapped sections"),
+            ),
+            |bytes: &'a [u8]| (bytes, None),
+        ),
+        Ok(_) | Err(_) => (
+            &[],
+            Some("the entry declares more data than one record may hold"),
+        ),
     };
     let hash: Option<[u8; HASH_LEN]> = read_hash(map, base, stride, ptr);
     Some(Record {
@@ -214,6 +238,7 @@ fn validate<'a>(
         is_dir,
         data,
         hash,
+        unreadable,
     })
 }
 
@@ -440,6 +465,13 @@ fn assemble(
             });
             continue;
         }
+        if let Some(reason) = record.unreadable {
+            refusals.push(EntryRefusal {
+                path: safe,
+                reason: reason.to_owned(),
+            });
+            continue;
+        }
         let (bytes, compression): (Vec<u8>, Compression) = match decode_blob_anchored(
             record.data,
             decode_cap(record.data.len(), &cfg.quota),
@@ -595,6 +627,7 @@ mod tests {
             is_dir: false,
             data,
             hash: None,
+            unreadable: None,
         }
     }
 
@@ -639,6 +672,7 @@ mod tests {
                 is_dir: false,
                 data: blob.as_slice(),
                 hash: Some(prefix),
+                unreadable: None,
             })
             .collect();
         let mut ample: u64 = 1 << 20;
@@ -666,6 +700,7 @@ mod tests {
                 is_dir: false,
                 data: blob.as_slice(),
                 hash: Some(prefix),
+                unreadable: None,
             })
             .collect();
 
@@ -691,6 +726,7 @@ mod tests {
                 is_dir: false,
                 data: PLAIN_BLOB.as_slice(),
                 hash: None,
+                unreadable: None,
             })
             .collect();
         let mut budget: u64 = 1 << 20;
@@ -708,6 +744,7 @@ mod tests {
                 is_dir: false,
                 data: PLAIN_BLOB.as_slice(),
                 hash: None,
+                unreadable: None,
             })
             .collect();
         assert!(
@@ -722,6 +759,7 @@ mod tests {
                 is_dir: false,
                 data: PLAIN_BLOB.as_slice(),
                 hash: None,
+                unreadable: None,
             })
             .collect();
         assert_eq!(
@@ -787,6 +825,73 @@ mod tests {
         );
         let total: usize = out.iter().map(|run: &Vec<Record<'_>>| run.len()).sum();
         (out.len(), total, retained)
+    }
+
+    #[test]
+    fn an_out_of_range_entry_inside_the_table_is_refused_and_the_rest_extracted() {
+        let mut strings: Vec<u8> = Vec::new();
+        let mut fields: Vec<(u64, u64, u64, u64)> = Vec::new();
+        for index in 0..12usize {
+            let name: String = format!("dist/assets/f{index}.js");
+            let name_off: usize = strings.len();
+            strings.extend_from_slice(name.as_bytes());
+            let data_off: usize = strings.len();
+            strings.push(b'a' + u8::try_from(index).expect("small index"));
+            let data_va: u64 = if index == 5 {
+                0x7fff_0000
+            } else {
+                TEST_VA + data_off as u64
+            };
+            fields.push((TEST_VA + name_off as u64, name.len() as u64, data_va, 1));
+        }
+        while !strings.len().is_multiple_of(8) {
+            strings.push(0);
+        }
+        let mut buf: Vec<u8> = strings;
+        for (name_va, name_len, data_va, data_len) in &fields {
+            let start: usize = buf.len();
+            buf.extend_from_slice(&name_va.to_le_bytes());
+            buf.extend_from_slice(&name_len.to_le_bytes());
+            buf.extend_from_slice(&data_va.to_le_bytes());
+            buf.extend_from_slice(&data_len.to_le_bytes());
+            buf.resize(start + TEST_STRIDE, 0);
+        }
+        let map: SectionMap<'_> =
+            SectionMap::from_single_span(&buf, TEST_VA, 8, object::Endianness::Little);
+        let mut budget: u64 = 1_000_000;
+        let mut retained: usize = 0;
+        let mut runs: Vec<Vec<Record<'_>>> = Vec::new();
+        collect_runs(
+            &map,
+            TEST_VA,
+            buf.len() as u64,
+            TEST_STRIDE,
+            FieldOrder::PtrLenPtrLen,
+            8,
+            &mut budget,
+            &mut retained,
+            1000,
+            &mut runs,
+        );
+        let table: &Vec<Record<'_>> = runs
+            .iter()
+            .max_by_key(|run: &&Vec<Record<'_>>| run.len())
+            .expect("a table run");
+        assert_eq!(table.len(), 12, "the bad entry must not split the table");
+
+        let cfg: CarveConfig = CarveConfig::default();
+        let assembled: Assembled = assemble(table, None, &cfg).expect("assemble");
+        assert_eq!(assembled.declared, 12);
+        assert_eq!(assembled.recovered, 11);
+        assert_eq!(assembled.refusals.len(), 1);
+        assert_eq!(assembled.refusals[0].path, "dist/assets/f5.js");
+        assert!(
+            assembled.refusals[0]
+                .reason
+                .contains("outside the mapped sections"),
+            "{:?}",
+            assembled.refusals
+        );
     }
 
     #[test]
