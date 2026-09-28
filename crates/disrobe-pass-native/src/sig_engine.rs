@@ -1354,7 +1354,7 @@ pub fn detect_format(bytes: &[u8]) -> &'static str {
 pub fn analyze(bytes: &[u8]) -> SigReport {
     let format: &'static str = detect_format(bytes);
     let window: &[u8] = &bytes[..bytes.len().min(SCAN_LIMIT)];
-    let section_names: Vec<[u8; 8]> = pe_section_names(bytes);
+    let section_names: Vec<SectionHeaderName> = pe_section_names(bytes);
     let mut matches: Vec<SigMatch> = Vec::new();
     for sig in SIGNATURES {
         if let Some(offset) = signature_offset(sig, window, &section_names) {
@@ -1387,40 +1387,64 @@ pub fn analyze(bytes: &[u8]) -> SigReport {
     }
 }
 
-fn pe_section_names(bytes: &[u8]) -> Vec<[u8; 8]> {
+#[derive(Debug, Clone, Copy)]
+struct SectionHeaderName {
+    name: [u8; 8],
+    header_offset: usize,
+}
+
+impl SectionHeaderName {
+    fn trimmed(&self) -> &[u8] {
+        let end: usize = self
+            .name
+            .iter()
+            .position(|b: &u8| *b == 0)
+            .unwrap_or(self.name.len());
+        &self.name[..end]
+    }
+}
+
+const PE_SIGNATURE_AND_COFF_BYTES: usize = 24;
+const PE_SECTION_HEADER_BYTES: usize = 40;
+
+fn pe_section_names(bytes: &[u8]) -> Vec<SectionHeaderName> {
     if !bytes.starts_with(PE_MAGIC) {
         return Vec::new();
     }
-    match parse_pe_image(bytes) {
-        Ok(img) => img.sections.iter().map(|s| s.name).collect(),
-        Err(_) => Vec::new(),
-    }
+    let Ok(image): Result<PeImage, crate::error::Error> = parse_pe_image(bytes) else {
+        return Vec::new();
+    };
+    let table: usize = (image.pe_header_offset as usize)
+        .saturating_add(PE_SIGNATURE_AND_COFF_BYTES)
+        .saturating_add(usize::from(image.size_of_optional_header));
+    image
+        .sections
+        .iter()
+        .enumerate()
+        .map(|(index, section): (usize, &PeSection)| SectionHeaderName {
+            name: section.name,
+            header_offset: table.saturating_add(index.saturating_mul(PE_SECTION_HEADER_BYTES)),
+        })
+        .collect()
 }
 
 fn signature_offset(
     sig: &EngineSignature,
     window: &[u8],
-    section_names: &[[u8; 8]],
+    section_names: &[SectionHeaderName],
 ) -> Option<usize> {
-    if sig.kind == SigKind::SectionName
-        && let Some(pos) = section_name_offset(section_names, sig.pattern)
-    {
-        return Some(pos);
+    if sig.kind == SigKind::SectionName {
+        return section_name_offset(section_names, sig.pattern);
     }
     byte_find(window, sig.pattern)
 }
 
-fn section_name_offset(section_names: &[[u8; 8]], pattern: &[u8]) -> Option<usize> {
-    let trimmed_target: &[u8] = pattern;
-    for (index, raw) in section_names.iter().enumerate() {
-        let end: usize = raw.iter().position(|b| *b == 0).unwrap_or(raw.len());
-        let name: &[u8] = &raw[..end];
-        if name == trimmed_target || (trimmed_target.len() <= 8 && raw.starts_with(trimmed_target))
-        {
-            return Some(index);
-        }
-    }
-    None
+fn section_name_offset(section_names: &[SectionHeaderName], pattern: &[u8]) -> Option<usize> {
+    let stored: &[u8] = &pattern[..pattern.len().min(8)];
+    section_names
+        .iter()
+        .find(|header: &&SectionHeaderName| header.trimmed() == stored)
+        .map(|header: &SectionHeaderName| header.header_offset)
 }
 
 fn dedup_and_rank(matches: &mut Vec<SigMatch>) {
@@ -1952,7 +1976,10 @@ struct EpFamily {
     class: StructClass,
     templates: &'static [EpTemplate],
     native_vm: bool,
+    section_evidence: &'static [&'static [u8]],
 }
+
+const VMPROTECT_SECTIONS: &[&[u8]] = &[b".vmp0", b".vmp1", b".vmp2"];
 
 const EP_FAMILIES: &[EpFamily] = &[
     EpFamily {
@@ -1960,54 +1987,63 @@ const EP_FAMILIES: &[EpFamily] = &[
         class: StructClass::Packer,
         templates: ASPACK_TEMPLATES,
         native_vm: false,
+        section_evidence: &[],
     },
     EpFamily {
         family: StructFamily::Petite,
         class: StructClass::Packer,
         templates: PETITE_TEMPLATES,
         native_vm: false,
+        section_evidence: &[],
     },
     EpFamily {
         family: StructFamily::Mpress,
         class: StructClass::Packer,
         templates: MPRESS_TEMPLATES,
         native_vm: false,
+        section_evidence: &[],
     },
     EpFamily {
         family: StructFamily::Fsg,
         class: StructClass::Packer,
         templates: FSG_TEMPLATES,
         native_vm: false,
+        section_evidence: &[],
     },
     EpFamily {
         family: StructFamily::Nspack,
         class: StructClass::Packer,
         templates: NSPACK_TEMPLATES,
         native_vm: false,
+        section_evidence: &[],
     },
     EpFamily {
         family: StructFamily::VmProtect,
         class: StructClass::Protector,
         templates: VMPROTECT_TEMPLATES,
         native_vm: true,
+        section_evidence: VMPROTECT_SECTIONS,
     },
     EpFamily {
         family: StructFamily::Themida,
         class: StructClass::Protector,
         templates: THEMIDA_TEMPLATES,
         native_vm: true,
+        section_evidence: &[],
     },
     EpFamily {
         family: StructFamily::Armadillo,
         class: StructClass::Protector,
         templates: ARMADILLO_TEMPLATES,
         native_vm: true,
+        section_evidence: &[],
     },
     EpFamily {
         family: StructFamily::Obsidium,
         class: StructClass::Protector,
         templates: OBSIDIUM_TEMPLATES,
         native_vm: true,
+        section_evidence: &[],
     },
 ];
 
@@ -2058,6 +2094,15 @@ fn ep_anchored_findings(image: &PeImage, bytes: &[u8], out: &mut Vec<StructFindi
         return;
     };
     for fam in EP_FAMILIES {
+        if !fam.section_evidence.is_empty()
+            && !image.sections.iter().any(|section: &PeSection| {
+                fam.section_evidence
+                    .iter()
+                    .any(|name: &&[u8]| *name == section.name_trimmed())
+            })
+        {
+            continue;
+        }
         for template in fam.templates {
             if match_ep_template(window, template) {
                 out.push(StructFinding {
