@@ -270,7 +270,7 @@ fn gate_test(root: &Path, scope: &Scope) -> Result<GateOutcome> {
     let empty: Vec<String> = empty_test_binaries(root, &commands.nextest)?;
     if !empty.is_empty() {
         bail!(
-            "{} selected test binar(ies) compile zero tests under --all-features, so this gate \
+            "selected test binaries compile zero tests ({}) under --all-features, so this gate \
              would count them as passing while they measure nothing: {}\n  fix: remove the binary \
              or the cfg that empties it; a binary built for one platform only says so with a \
              crate-level #![cfg(...)]",
@@ -314,7 +314,18 @@ struct NextestListing {
 
 #[derive(Deserialize)]
 struct NextestSuite {
+    #[serde(default)]
+    status: SuiteStatus,
     testcases: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+enum SuiteStatus {
+    #[default]
+    Listed,
+    Skipped,
+    SkippedDefaultFilter,
 }
 
 fn empty_test_binaries(root: &Path, run_args: &[String]) -> Result<Vec<String>> {
@@ -362,7 +373,9 @@ fn empty_suites<F: Fn(&str) -> bool>(
     listing
         .rust_suites
         .iter()
-        .filter(|(_, suite): &(&String, &NextestSuite)| suite.testcases.is_empty())
+        .filter(|(_, suite): &(&String, &NextestSuite)| {
+            suite.status == SuiteStatus::Listed && suite.testcases.is_empty()
+        })
         .filter(|(id, _): &(&String, &NextestSuite)| {
             sources
                 .get(id.as_str())
@@ -976,11 +989,13 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_binary_fails_unless_its_source_is_platform_gated() -> eyre::Result<()> {
+    fn an_empty_binary_fails_unless_platform_gated_or_skipped_by_the_profile() -> eyre::Result<()> {
         let listing: NextestListing = serde_json::from_str(
             r#"{"rust-suites":{
                 "a::empty":{"testcases":{}},
                 "a::gated":{"testcases":{}},
+                "a::filtered":{"status":"skipped-default-filter","testcases":{}},
+                "a::named":{"status":"listed","testcases":{}},
                 "a::full":{"testcases":{"t":{}}},
                 "a":{"testcases":{}}
             }}"#,
@@ -989,12 +1004,14 @@ mod tests {
             ("a::empty".to_owned(), "tests/empty.rs".to_owned()),
             ("a::gated".to_owned(), "tests/gated.rs".to_owned()),
             ("a::full".to_owned(), "tests/full.rs".to_owned()),
+            ("a::filtered".to_owned(), "tests/filtered.rs".to_owned()),
+            ("a::named".to_owned(), "tests/named.rs".to_owned()),
         ]
         .into_iter()
         .collect();
         let empty: Vec<String> =
             empty_suites(&listing, &sources, |src: &str| src == "tests/gated.rs");
-        assert_eq!(empty, vec!["a::empty".to_owned()]);
+        assert_eq!(empty, vec!["a::empty".to_owned(), "a::named".to_owned()]);
         assert!(platform_gated("#![allow(x)]\n#![cfg(unix)]\nfn f() {}"));
         assert!(!platform_gated("#![allow(x)]\nfn f() {}"));
         Ok(())
