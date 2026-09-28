@@ -248,7 +248,7 @@ fn build_nir(
             Arm64FlowKind::ConditionalBranch => {
                 let guard: Option<DartCheckKind> = classify_guard(insns, i);
                 if droppable_guard(guard)
-                    && safe_to_drop(insn.branch_target, i, insns, &counts, abi)
+                    && safe_to_drop(guard, insn.branch_target, i, insns, &counts, abi)
                 {
                     op = NirOp::Nop;
                     mnemonic = String::new();
@@ -375,6 +375,7 @@ const fn droppable_guard(guard: Option<DartCheckKind>) -> bool {
 }
 
 fn safe_to_drop(
+    guard: Option<DartCheckKind>,
     target: Option<u64>,
     at: usize,
     insns: &[Arm64Instruction],
@@ -390,7 +391,27 @@ fn safe_to_drop(
     if counts.get(&t).copied().unwrap_or(0) != 1 {
         return false;
     }
+    if guard == Some(DartCheckKind::NullCheck) && !target_never_returns(t, insns) {
+        return false;
+    }
     predecessor_is_terminator(t, at, insns)
+}
+
+fn target_never_returns(target: u64, insns: &[Arm64Instruction]) -> bool {
+    let Some(index): Option<usize> = insns
+        .iter()
+        .position(|insn: &Arm64Instruction| insn.address == target)
+    else {
+        return false;
+    };
+    let first: &Arm64Instruction = &insns[index];
+    if is_arm64_trap(first.bytes) {
+        return true;
+    }
+    first.flow == Arm64FlowKind::DirectCall
+        && insns
+            .get(index + 1)
+            .is_none_or(|next: &Arm64Instruction| is_arm64_trap(next.bytes))
 }
 
 fn predecessor_is_terminator(target: u64, at: usize, insns: &[Arm64Instruction]) -> bool {
@@ -1099,6 +1120,37 @@ mod tests {
 
     fn ret() -> u32 {
         0xD65F_03C0
+    }
+
+    fn insn(address: u64, bytes: u32, flow: Arm64FlowKind) -> Arm64Instruction {
+        Arm64Instruction {
+            address,
+            bytes,
+            text: String::new(),
+            flow,
+            branch_target: None,
+        }
+    }
+
+    #[test]
+    fn only_a_trap_or_a_throwing_call_counts_as_a_no_return_null_target() {
+        const BRK: u32 = 0xD420_0000;
+        const NOP: u32 = 0xD503_201F;
+        let throwing: Vec<Arm64Instruction> = vec![
+            insn(0x10, 0x9400_0010, Arm64FlowKind::DirectCall),
+            insn(0x14, BRK, Arm64FlowKind::DecodeError),
+        ];
+        assert!(target_never_returns(0x10, &throwing));
+        let trap: Vec<Arm64Instruction> = vec![insn(0x20, BRK, Arm64FlowKind::DecodeError)];
+        assert!(target_never_returns(0x20, &trap));
+        let else_block: Vec<Arm64Instruction> = vec![
+            insn(0x30, NOP, Arm64FlowKind::Sequential),
+            insn(0x34, ret(), Arm64FlowKind::Return),
+        ];
+        assert!(
+            !target_never_returns(0x30, &else_block),
+            "the else of `if (x == null)` is ordinary code, not a null-error stub"
+        );
     }
 
     fn cmp_imm(rn: u32, imm: u32) -> u32 {

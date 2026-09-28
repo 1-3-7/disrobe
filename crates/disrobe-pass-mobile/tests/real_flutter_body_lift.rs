@@ -20,9 +20,9 @@ const COMMITTED_SAMPLES: [&str; 4] = [
 
 const RECORDED_LIFTED_FLOOR_PERCENT: usize = 70;
 
-const RECORDED_LIFTED_BASELINE: usize = 344_111;
+const RECORDED_LIFTED_BASELINE: usize = 401_382;
 
-const RECORDED_STATEMENT_POPULATION: usize = 434_826;
+const RECORDED_STATEMENT_POPULATION: usize = 503_319;
 
 fn corpus() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))

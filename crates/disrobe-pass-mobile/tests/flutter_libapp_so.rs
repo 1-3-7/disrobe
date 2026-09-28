@@ -16,10 +16,10 @@
 use disrobe_pass_mobile::DART_SNAPSHOT_MAGIC;
 use disrobe_pass_mobile::{
     AotLiftReport, DART_ISOLATE_DATA_SYMBOL, DART_ISOLATE_INSTR_SYMBOL, DART_VM_DATA_SYMBOL,
-    DartAotDecompile, DartLiftedFunction, DartProgramSkeleton, DartRecoveryCounts,
-    DartSnapshotHeader, DartSnapshotKind, DartStaticRecovery, FlutterObfuscationMap, LibAppLayout,
-    build_dart_program_skeleton, dart_recovery_counts, decompile_dart_aot, lift_libapp_aot,
-    parse_dart_snapshot, parse_flutter_obfuscation_map, parse_libapp_so, recover_dart_static,
+    DartAotDecompile, DartLiftedFunction, DartProgramSkeleton, DartSnapshotHeader,
+    DartSnapshotKind, DartStaticRecovery, FlutterObfuscationMap, LibAppLayout,
+    build_dart_program_skeleton, decompile_dart_aot, lift_libapp_aot, parse_dart_snapshot,
+    parse_flutter_obfuscation_map, parse_libapp_so, recover_dart_static,
 };
 #[cfg(feature = "chain")]
 use disrobe_pass_mobile::{Error, decompile_libapp_so_structured};
@@ -487,8 +487,6 @@ fn arm64_boundary_scanner_counts_prologues() {
             "every body is the AOT machine-code marker, never reconstructed as source"
         );
     }
-    let counts: DartRecoveryCounts = dart_recovery_counts(&skeleton);
-    assert_eq!(counts.bodies_recovered, 0, "bodies are never recoverable");
 }
 
 #[test]

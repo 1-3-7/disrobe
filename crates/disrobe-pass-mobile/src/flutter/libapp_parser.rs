@@ -81,7 +81,6 @@ pub struct DartRecoveryCounts {
     pub named_functions: usize,
     pub class_names: usize,
     pub library_uris: usize,
-    pub bodies_recovered: usize,
 }
 
 #[must_use]
@@ -91,7 +90,6 @@ pub fn recovery_counts(skeleton: &DartProgramSkeleton) -> DartRecoveryCounts {
         named_functions: skeleton.named_function_count,
         class_names: skeleton.class_names.len(),
         library_uris: skeleton.library_uris.len(),
-        bodies_recovered: 0,
     }
 }
 
@@ -317,7 +315,6 @@ mod tests {
             "boundaries have no recoverable name from the stripped AOT instruction scan"
         );
         assert_eq!(counts.class_names, 1);
-        assert_eq!(counts.bodies_recovered, 0);
     }
 
     #[test]
@@ -327,7 +324,6 @@ mod tests {
         let counts: DartRecoveryCounts = recovery_counts(&skel);
         assert_eq!(counts.function_boundaries, 0);
         assert_eq!(counts.named_functions, 0);
-        assert_eq!(counts.bodies_recovered, 0);
     }
 
     #[test]

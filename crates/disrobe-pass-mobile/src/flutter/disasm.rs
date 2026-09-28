@@ -81,6 +81,14 @@ fn classify(insn: &Instruction, address: u64) -> (Arm64FlowKind, Option<u64>) {
     }
 }
 
+fn branch_pending(branch_targets: &[u64], base: u64, offset: usize, hard_end: usize) -> bool {
+    let next: u64 = base.saturating_add(offset as u64);
+    let end: u64 = base.saturating_add(hard_end as u64);
+    branch_targets
+        .iter()
+        .any(|target: &u64| *target >= next && *target < end)
+}
+
 #[must_use]
 pub fn disassemble_function(
     instructions: &[u8],
@@ -127,7 +135,7 @@ pub fn disassemble_function(
                     branch_target: target,
                 });
                 offset += ARM64_INSN_LEN;
-                if is_return {
+                if is_return && !branch_pending(&branch_targets, base, offset, hard_end) {
                     ends_in_return = true;
                     break;
                 }
@@ -141,7 +149,9 @@ pub fn disassemble_function(
                     branch_target: None,
                 });
                 offset += ARM64_INSN_LEN;
-                if raw == ARM64_RET_ENCODING {
+                if raw == ARM64_RET_ENCODING
+                    && !branch_pending(&branch_targets, base, offset, hard_end)
+                {
                     ends_in_return = true;
                     break;
                 }
@@ -149,6 +159,9 @@ pub fn disassemble_function(
         }
     }
 
+    ends_in_return |= decoded
+        .last()
+        .is_some_and(|last: &Arm64Instruction| last.flow == Arm64FlowKind::Return);
     call_targets.sort_unstable();
     call_targets.dedup();
     branch_targets.sort_unstable();
@@ -363,6 +376,19 @@ mod tests {
             func.instructions[0].text
         );
         assert_eq!(func.instructions[2].flow, Arm64FlowKind::Return);
+    }
+
+    #[test]
+    fn a_slow_path_after_the_first_ret_stays_in_the_function() {
+        let bytes: Vec<u8> = words(&[0x5400_0040, 0xd65f_03c0, 0xd503_201f, 0xd65f_03c0]);
+        let func: Arm64Function = disassemble_function(&bytes, 0, 0, bytes.len(), None);
+        assert_eq!(
+            func.instructions.len(),
+            4,
+            "b.eq +8 targets the code after the first ret: {:?}",
+            func.instructions
+        );
+        assert!(func.ends_in_return);
     }
 
     #[test]
