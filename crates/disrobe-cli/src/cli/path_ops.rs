@@ -17,35 +17,7 @@ impl LinkKind {
     }
 }
 
-#[cfg(windows)]
-pub(crate) fn link_final(stage_dir: &Path, final_dir: &Path) -> miette::Result<LinkKind> {
-    let stage_abs: std::path::PathBuf = std::fs::canonicalize(stage_dir).map_err(|e| {
-        miette::miette!(
-            "DR-CLI-0231: cannot resolve stage dir {}: {e}",
-            stage_dir.display()
-        )
-    })?;
-    if final_dir.exists() {
-        remove_dir_any(final_dir)?;
-    }
-    if let Some(parent) = final_dir.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        std::fs::create_dir_all(parent).map_err(|e| {
-            miette::miette!(
-                "DR-CLI-0230: cannot create parent dir {}: {e}",
-                parent.display()
-            )
-        })?;
-    }
-    if std::os::windows::fs::symlink_dir(&stage_abs, final_dir).is_ok() {
-        return Ok(LinkKind::Symlink);
-    }
-    recursive_copy(&stage_abs, final_dir)?;
-    Ok(LinkKind::Copy)
-}
-
-#[cfg(unix)]
+#[cfg(any(windows, unix))]
 pub(crate) fn link_final(stage_dir: &Path, final_dir: &Path) -> miette::Result<LinkKind> {
     let stage_abs: std::path::PathBuf = std::fs::canonicalize(stage_dir).map_err(|e| {
         miette::miette!(
@@ -66,12 +38,21 @@ pub(crate) fn link_final(stage_dir: &Path, final_dir: &Path) -> miette::Result<L
             )
         })?;
     }
-    if std::os::unix::fs::symlink(&stage_abs, final_dir).is_ok() {
-        Ok(LinkKind::Symlink)
-    } else {
-        recursive_copy(&stage_abs, final_dir)?;
-        Ok(LinkKind::Copy)
+    if symlink_dir(&stage_abs, final_dir).is_ok() {
+        return Ok(LinkKind::Symlink);
     }
+    recursive_copy(&stage_abs, final_dir)?;
+    Ok(LinkKind::Copy)
+}
+
+#[cfg(windows)]
+fn symlink_dir(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_dir(target, link)
+}
+
+#[cfg(unix)]
+fn symlink_dir(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
 }
 
 #[cfg(not(any(windows, unix)))]
@@ -83,15 +64,33 @@ pub(crate) fn link_final(stage_dir: &Path, final_dir: &Path) -> miette::Result<L
     Ok(LinkKind::Copy)
 }
 
+#[cfg(windows)]
+fn is_directory_link(file_type: std::fs::FileType) -> bool {
+    use std::os::windows::fs::FileTypeExt;
+    file_type.is_symlink_dir()
+}
+
+#[cfg(not(windows))]
+const fn is_directory_link(_file_type: std::fs::FileType) -> bool {
+    false
+}
+
 fn remove_dir_any(target: &Path) -> miette::Result<()> {
     let meta: std::io::Result<std::fs::Metadata> = std::fs::symlink_metadata(target);
     match meta {
-        Ok(m) if m.file_type().is_symlink() => std::fs::remove_file(target).map_err(|e| {
-            miette::miette!(
-                "DR-CLI-0231: cannot remove symlink {}: {e}",
-                target.display()
-            )
-        }),
+        Ok(m) if m.file_type().is_symlink() => {
+            let removed: std::io::Result<()> = if is_directory_link(m.file_type()) {
+                std::fs::remove_dir(target)
+            } else {
+                std::fs::remove_file(target)
+            };
+            removed.map_err(|e| {
+                miette::miette!(
+                    "DR-CLI-0231: cannot remove symlink {}: {e}",
+                    target.display()
+                )
+            })
+        }
         Ok(m) if m.file_type().is_dir() => std::fs::remove_dir_all(target).map_err(|e| {
             miette::miette!("DR-CLI-0232: cannot remove dir {}: {e}", target.display())
         }),
@@ -126,20 +125,13 @@ fn recursive_copy(src: &Path, dst: &Path) -> miette::Result<()> {
             let link_target: std::path::PathBuf = std::fs::read_link(&entry_path).map_err(|e| {
                 miette::miette!("DR-CLI-0238: read_link {}: {e}", entry_path.display())
             })?;
-            let _ = std::fs::remove_file(&target_path);
-            #[cfg(unix)]
-            std::os::unix::fs::symlink(&link_target, &target_path).map_err(|e| {
+            copy_link(&link_target, &target_path, file_type).map_err(|e| {
                 miette::miette!(
                     "DR-CLI-0239: symlink {} -> {}: {e}",
                     target_path.display(),
                     link_target.display()
                 )
             })?;
-            #[cfg(windows)]
-            {
-                let _: std::path::PathBuf = link_target.clone();
-                let _: std::io::Result<()> = std::fs::copy(&entry_path, &target_path).map(|_| ());
-            }
         } else {
             let _: u64 = std::fs::copy(&entry_path, &target_path).map_err(|e| {
                 miette::miette!(
@@ -151,6 +143,28 @@ fn recursive_copy(src: &Path, dst: &Path) -> miette::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(windows)]
+fn copy_link(target: &Path, link: &Path, file_type: std::fs::FileType) -> std::io::Result<()> {
+    if is_directory_link(file_type) {
+        std::os::windows::fs::symlink_dir(target, link)
+    } else {
+        std::os::windows::fs::symlink_file(target, link)
+    }
+}
+
+#[cfg(unix)]
+fn copy_link(target: &Path, link: &Path, _file_type: std::fs::FileType) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+
+#[cfg(not(any(windows, unix)))]
+fn copy_link(_target: &Path, _link: &Path, _file_type: std::fs::FileType) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "symbolic links are not supported on this platform",
+    ))
 }
 
 #[cfg(test)]
@@ -196,5 +210,38 @@ mod tests {
         std::fs::write(stage.join("new.txt"), b"new").expect("write new");
         let _ = link_final(&stage, &final_dir).expect("link");
         assert!(final_dir.join("new.txt").exists());
+    }
+
+    #[test]
+    fn a_second_run_replaces_a_link_whose_stage_is_gone() {
+        let root_scratch: ScratchDir = unique_tmp("rerun");
+        let root: std::path::PathBuf = root_scratch.path().to_path_buf();
+        let first: std::path::PathBuf = root.join("first");
+        let second: std::path::PathBuf = root.join("second");
+        let final_dir: std::path::PathBuf = root.join("final");
+        std::fs::create_dir_all(&first).expect("mk first");
+        std::fs::create_dir_all(&second).expect("mk second");
+        std::fs::write(second.join("new.txt"), b"new").expect("write new");
+        let _ = link_final(&first, &final_dir).expect("first link");
+        std::fs::remove_dir_all(&first).expect("remove first stage");
+        let _ = link_final(&second, &final_dir).expect("second link over a dangling one");
+        assert!(final_dir.join("new.txt").exists());
+    }
+
+    #[test]
+    fn a_second_run_replaces_a_live_directory_link() {
+        let root_scratch: ScratchDir = unique_tmp("relink");
+        let root: std::path::PathBuf = root_scratch.path().to_path_buf();
+        let stage: std::path::PathBuf = root.join("stage");
+        let final_dir: std::path::PathBuf = root.join("final");
+        std::fs::create_dir_all(&stage).expect("mk stage");
+        std::fs::write(stage.join("ok.txt"), b"ok").expect("write ok");
+        let _ = link_final(&stage, &final_dir).expect("first link");
+        let _ = link_final(&stage, &final_dir).expect("second link");
+        assert!(final_dir.join("ok.txt").exists());
+        assert!(
+            stage.join("ok.txt").exists(),
+            "replacing the link kept the stage"
+        );
     }
 }
