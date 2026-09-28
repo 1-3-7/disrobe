@@ -249,7 +249,7 @@ impl Protector {
             Self::Goliath => &[b"Goliath.NET"],
             Self::Skater => &[b"RustemSoft.Skater", b"SkaterObfuscator"],
             Self::DotnetReactor => &[b"Eziriz", b".NET Reactor", b"protect_resource"],
-            Self::EazfuscatorNet => &[b"Eazfuscator.NET", b"GetWebRequest", b"<Module>{"],
+            Self::EazfuscatorNet => &[b"Eazfuscator.NET", b"<Module>{"],
             Self::CryptoObfuscator => &[b"CryptoObfuscator", b"LogicNP"],
             Self::ArmDot => &[b"ArmDot", b"_ArmDotMutator"],
             Self::AgileNet => &[b"AgileDotNet", b"CliSecure"],
@@ -303,13 +303,21 @@ pub fn detect_all(image: &[u8]) -> DetectionReport {
         };
     }
     let mut matches: BTreeMap<Protector, Vec<u32>> = BTreeMap::new();
+    let anchors: Option<SignatureAnchors> = signature_anchors(image);
     for protector in Protector::ALL {
+        let Some(anchors): Option<&SignatureAnchors> = anchors.as_ref() else {
+            break;
+        };
         let mut offsets: Vec<u32> = Vec::new();
         for needle in protector.signatures() {
+            offsets.extend(anchors.section_offsets(needle));
             let mut cursor: usize = 0;
             while let Some(p) = window_find(&image[cursor..], needle) {
-                offsets.push(u32::try_from(cursor + p).unwrap_or(u32::MAX));
-                cursor += p + 1;
+                let at: usize = cursor + p;
+                if anchors.holds(image, at) {
+                    offsets.push(u32::try_from(at).unwrap_or(u32::MAX));
+                }
+                cursor = at + 1;
                 if offsets.len() > 32 {
                     break;
                 }
@@ -366,6 +374,54 @@ pub fn detect_all(image: &[u8]) -> DetectionReport {
         });
     }
     DetectionReport { matches, primary }
+}
+
+#[derive(Debug, Clone)]
+struct SignatureAnchors {
+    identifiers: std::ops::Range<usize>,
+    blobs: std::ops::Range<usize>,
+    sections: Vec<(String, u32)>,
+}
+
+impl SignatureAnchors {
+    fn holds(&self, image: &[u8], at: usize) -> bool {
+        let starts_identifier: bool = self.identifiers.contains(&at)
+            && (at == self.identifiers.start || image.get(at.wrapping_sub(1)) == Some(&0));
+        starts_identifier || self.blobs.contains(&at)
+    }
+
+    fn section_offsets<'a>(&'a self, needle: &'a [u8]) -> impl Iterator<Item = u32> + 'a {
+        self.sections
+            .iter()
+            .filter(move |(name, _): &&(String, u32)| name.as_bytes() == needle)
+            .map(|(_, raw_pointer): &(String, u32)| *raw_pointer)
+    }
+}
+
+fn signature_anchors(image: &[u8]) -> Option<SignatureAnchors> {
+    let pe: PeImage = crate::pe::parse(image).ok()?;
+    let clr: ClrHeader = crate::pe::parse_clr_header(image, &pe).ok()?;
+    let root: crate::metadata::MetadataRoot =
+        crate::metadata::parse_metadata_root(image, &pe, &clr).ok()?;
+    let metadata_offset: usize = pe.rva_to_offset(clr.metadata.rva)?;
+    let heap = |name: &str| -> std::ops::Range<usize> {
+        root.streams
+            .get(name)
+            .map_or(0..0, |header: &crate::metadata::StreamHeader| {
+                let start: usize = metadata_offset.saturating_add(header.offset as usize);
+                let end: usize = start.saturating_add(header.size as usize).min(image.len());
+                start.min(end)..end
+            })
+    };
+    Some(SignatureAnchors {
+        identifiers: heap("#Strings"),
+        blobs: heap("#Blob"),
+        sections: pe
+            .sections
+            .iter()
+            .map(|section: &crate::pe::SectionHeader| (section.name.clone(), section.raw_pointer))
+            .collect(),
+    })
 }
 
 fn nt_signature_antiildasm(image: &[u8]) -> Option<u32> {
@@ -579,6 +635,22 @@ pub const fn plan_execution(protector: Protector, options: ExecuteOptions) -> Ex
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_framework_method_name_is_not_eazfuscator_evidence() {
+        let mut image: Vec<u8> = std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/unsigned_overflow/UnsignedOverflow.dll"),
+        )
+        .expect("read our own fixture assembly");
+        image.extend_from_slice(b"\0GetWebRequest\0System.Net.WebClient\0");
+        let report: DetectionReport = detect_all(&image);
+        assert!(
+            !report.matches.contains_key(&Protector::EazfuscatorNet),
+            "a WebClient subclass that overrides GetWebRequest is not Eazfuscator: {report:?}"
+        );
+        assert_eq!(report.primary, None);
+    }
+
     fn published_bar(heading_needle: &str, label: &str) -> serde_json::Value {
         let path: std::path::PathBuf = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("..")
@@ -659,6 +731,16 @@ mod tests {
     }
 
     fn managed_pe_with_marker(marker: &[u8]) -> Vec<u8> {
+        managed_pe_with_marker_at(marker, MarkerPlace::Unanchored)
+    }
+
+    #[derive(Clone, Copy)]
+    enum MarkerPlace {
+        Unanchored,
+        StringsHeap,
+    }
+
+    fn managed_pe_with_marker_at(marker: &[u8], place: MarkerPlace) -> Vec<u8> {
         let mut img: Vec<u8> = vec![0u8; 0x600];
         img[0] = b'M';
         img[1] = b'Z';
@@ -693,20 +775,48 @@ mod tests {
         img[clr_off + 12..clr_off + 16].copy_from_slice(&0x80u32.to_le_bytes());
         let md_off: usize = (raw_ptr + (md_rva - 0x2000)) as usize;
         img[md_off..md_off + 4].copy_from_slice(&METADATA_ROOT_SIGNATURE);
-        let at: usize = 0x500;
+        img[md_off + 4..md_off + 6].copy_from_slice(&1u16.to_le_bytes());
+        img[md_off + 6..md_off + 8].copy_from_slice(&1u16.to_le_bytes());
+        img[md_off + 12..md_off + 16].copy_from_slice(&4u32.to_le_bytes());
+        img[md_off + 16..md_off + 18].copy_from_slice(b"v4");
+        img[md_off + 22..md_off + 24].copy_from_slice(&1u16.to_le_bytes());
+        let strings_at: u32 = 0x48;
+        img[md_off + 24..md_off + 28].copy_from_slice(&strings_at.to_le_bytes());
+        img[md_off + 28..md_off + 32].copy_from_slice(&0x38u32.to_le_bytes());
+        img[md_off + 32..md_off + 40].copy_from_slice(b"#Strings");
+        let at: usize = match place {
+            MarkerPlace::Unanchored => 0x500,
+            MarkerPlace::StringsHeap => md_off + strings_at as usize + 1,
+        };
         img[at..at + marker.len()].copy_from_slice(marker);
         img
     }
 
     #[test]
     fn detect_confuserex2_signature_present() {
-        let img: Vec<u8> = managed_pe_with_marker(b"ConfuserEx2");
+        let img: Vec<u8> = managed_pe_with_marker_at(b"ConfuserEx2", MarkerPlace::StringsHeap);
         assert!(
             is_dotnet_assembly(&img),
             "carrier must be a valid managed PE"
         );
         let r: DetectionReport = detect_all(&img);
         assert!(r.matches.contains_key(&Protector::ConfuserEx2));
+    }
+
+    #[test]
+    fn a_signature_outside_the_metadata_heaps_is_not_protector_evidence() {
+        let img: Vec<u8> = managed_pe_with_marker(b"ConfuserEx2");
+        assert!(is_dotnet_assembly(&img));
+        let r: DetectionReport = detect_all(&img);
+        assert!(r.matches.is_empty(), "{:?}", r.matches);
+        let mid_identifier: Vec<u8> =
+            managed_pe_with_marker_at(b"MyDeepSeaHelper", MarkerPlace::StringsHeap);
+        assert!(
+            !detect_all(&mid_identifier)
+                .matches
+                .contains_key(&Protector::DeepSea),
+            "a vendor name inside another identifier is not an identifier match"
+        );
     }
 
     #[test]

@@ -66,12 +66,19 @@ pub(crate) fn synth_minimal_dotnet_pe(runtime_version: &str) -> Vec<u8> {
         .copy_from_slice(version_bytes);
     let after_version: usize = metadata_file_offset + 16 + padded_len;
     img[after_version..after_version + 2].copy_from_slice(&0u16.to_le_bytes());
-    img[after_version + 2..after_version + 4].copy_from_slice(&0u16.to_le_bytes());
+    img[after_version + 2..after_version + 4].copy_from_slice(&1u16.to_le_bytes());
+    let strings_offset: u32 = u32::try_from(SIGNATURE_AT - metadata_file_offset).unwrap_or(0);
+    let strings_size: u32 = u32::try_from(PE_BASE_LEN - SIGNATURE_AT).unwrap_or(0);
+    img[after_version + 4..after_version + 8].copy_from_slice(&strings_offset.to_le_bytes());
+    img[after_version + 8..after_version + 12].copy_from_slice(&strings_size.to_le_bytes());
+    img[after_version + 12..after_version + 20].copy_from_slice(b"#Strings");
     img
 }
 
+const SIGNATURE_AT: usize = 0x500;
+
 pub(crate) fn embed_signature(image: &mut Vec<u8>, signature: &[u8]) {
-    let pad_start: usize = 0x500;
+    let pad_start: usize = SIGNATURE_AT;
     if pad_start + signature.len() <= image.len() {
         image[pad_start..pad_start + signature.len()].copy_from_slice(signature);
     } else {
