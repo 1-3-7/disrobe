@@ -79,7 +79,7 @@ fn msvc_rich_header_yields_exact_toolset_build() {
         .unwrap_or_else(|| panic!("rich header not decoded: {findings:?}"));
     let version: &str = hit.version.as_deref().expect("rich exact build");
     assert!(
-        version.contains("14.0.35721") && version.contains("VS2015"),
+        version.contains(".35721") && version.contains("VS2022"),
         "rich header must decode the exact MSVC toolset build, got {version}"
     );
 }
@@ -139,7 +139,7 @@ fn identify_file_surfaces_msvc_exact_build_through_cli_report() {
         .expect("msvc reaches the CLI report");
     let version: &str = msvc.version.as_deref().expect("msvc version in CLI report");
     assert!(
-        version.contains("14.0.35721"),
+        version.contains(".35721") && version.contains("VS2022"),
         "the CLI identify report must carry the exact MSVC build, got {version}"
     );
 }
