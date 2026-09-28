@@ -18,7 +18,16 @@ const STABLE_VERSIONS: &[&str] = &["3.8", "3.9", "3.10", "3.11", "3.12", "3.13",
 const PRERELEASE: &[&str] = &["3.15"];
 
 fn assert_recompiles(label: &str, program: &str) {
-    let band: Vec<BandInterpreter> = resolve_band(STABLE_VERSIONS, PRERELEASE);
+    assert_recompiles_on(label, program, STABLE_VERSIONS, PRERELEASE);
+}
+
+fn assert_recompiles_on(
+    label: &str,
+    program: &str,
+    versions: &[&'static str],
+    prerelease: &[&'static str],
+) {
+    let band: Vec<BandInterpreter> = resolve_band(versions, prerelease);
     assert!(
         !band.is_empty(),
         "{label}: no requested CPython interpreter installed; cannot prove recompile-equivalence"
@@ -92,5 +101,15 @@ fn short_circuit_break_test_keeps_both_operands() {
     assert_recompiles(
         "short_circuit_break_keeps_operands",
         "def f(xs, a, b, g):\n    for x in xs:\n        g(x)\n        if a(x) or b(x):\n            break\n    g(0)\n",
+    );
+}
+
+#[test]
+fn chained_comparison_guard_after_a_handled_call_keeps_its_test() {
+    assert_recompiles_on(
+        "chained_comparison_guard_in_loop",
+        "def getnode(getters):\n    node = None\n    for getter in getters:\n        try:\n            node = getter()\n        except:\n            continue\n        if node is not None and 0 <= node < 281474976710656:\n            return node\n    return None\n",
+        &["3.8", "3.9"],
+        &[],
     );
 }

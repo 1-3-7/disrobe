@@ -5072,6 +5072,8 @@ fn structure_backward_continue_guard(
                         op,
                         CanonicalOp::JumpIfTrueOrPop(_) | CanonicalOp::JumpIfFalseOrPop(_)
                     ))
+                    && !is_chain_cond_jump(&stream.ops, k)
+                    && !is_value_form_shortcircuit(&stream.ops, k)
                     && resolve_jump_target(stream, k, op).is_some_and(|t: usize| t > jump_idx)
             })
         })

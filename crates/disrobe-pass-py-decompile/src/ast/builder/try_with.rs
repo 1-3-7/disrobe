@@ -9285,6 +9285,15 @@ fn recover_with_setup(
         (_, Some((copy_idx, modern_end))) => (copy_idx, modern_end),
         (None, None) => return Ok(None),
     };
+    let (stmts, residual): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[ctx_start..ctx_end])?;
+    let carried_fused_store: usize = usize::from(matches!(
+        stream.ops.get(ctx_start),
+        Some(CanonicalOp::StoreFastLoadFast(_, _))
+    ));
+    if stmts.len() > carried_fused_store {
+        return Ok(None);
+    }
     if let Some(branch) = super::stmts::context_expression_ternary(stream, ctx_start, ctx_end) {
         return Err(crate::error::DecompileError::AstDesync {
             offset: stream
@@ -9295,15 +9304,6 @@ fn recover_with_setup(
                      one arm"
                 .to_owned(),
         });
-    }
-    let (stmts, residual): (Vec<Stmt>, Vec<Expr>) =
-        build_linear_stmts_sim(code, &stream.ops[ctx_start..ctx_end])?;
-    let carried_fused_store: usize = usize::from(matches!(
-        stream.ops.get(ctx_start),
-        Some(CanonicalOp::StoreFastLoadFast(_, _))
-    ));
-    if stmts.len() > carried_fused_store {
-        return Ok(None);
     }
     let Some(context_expr): Option<Expr> = residual.into_iter().next_back() else {
         return Ok(None);
