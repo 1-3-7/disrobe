@@ -396,5 +396,15 @@ fn parse_fmla_biff12(
 }
 
 fn format_cell(row: u32, col: u32) -> String {
-    format!("{}{}", column_letters(col), row + 1)
+    format!("{}{}", column_letters(col), u64::from(row) + 1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_cell;
+
+    #[test]
+    fn the_last_row_names_its_one_based_number_without_overflow() {
+        assert_eq!(format_cell(u32::MAX, 0), "A4294967296");
+    }
 }

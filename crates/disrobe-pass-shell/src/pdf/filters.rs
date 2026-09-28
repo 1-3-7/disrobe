@@ -194,7 +194,7 @@ fn lzw_decode(data: &[u8], early_change: bool) -> (Vec<u8>, bool) {
                 if let Some(first) = entry.first() {
                     new_entry.push(*first);
                 }
-                if table.len() < limits::MAX_OBJSTM_OBJECTS {
+                if table.len() < limits::MAX_LZW_CODES {
                     table.push(new_entry);
                 }
             }

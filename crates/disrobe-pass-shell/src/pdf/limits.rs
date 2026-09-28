@@ -13,6 +13,7 @@ pub const MAX_XREF_CHAIN: usize = 1024;
 pub const MAX_XREF_ENTRIES: usize = 1 << 21;
 pub const MAX_XREF_FIELD_WIDTH: usize = 8;
 pub const MAX_OBJSTM_OBJECTS: usize = 1 << 20;
+pub const MAX_LZW_CODES: usize = 4096;
 pub const MAX_FILTER_CHAIN: usize = 8;
 pub const MAX_STREAM_OUTPUT: usize = 64 * 1024 * 1024;
 pub const MAX_TOTAL_OUTPUT: usize = 512 * 1024 * 1024;
