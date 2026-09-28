@@ -78,3 +78,11 @@ fn conditional_break_in_a_while_loop_before_a_returning_exit() {
         "def f(it, b, c):\n    while it.more():\n        v = it.next()\n        if b(v):\n            break\n        c(v)\n    return it.total\n",
     );
 }
+
+#[test]
+fn guarded_break_inside_a_guard_before_an_inlined_return() {
+    assert_recompiles(
+        "guarded_break_inside_guard_inlined_return",
+        "def f(xs, a, b, g):\n    for x in xs:\n        if a(x):\n            g(x)\n            if b(x):\n                break\n    return 1\n",
+    );
+}

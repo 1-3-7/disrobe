@@ -3254,6 +3254,18 @@ fn rewrite_inlined_break_tail(
     Some(out)
 }
 
+fn arm_ends_in_break(stmt: &Stmt) -> bool {
+    match stmt {
+        Stmt::If { body, orelse, .. } => {
+            matches!(body.last(), Some(Stmt::Break))
+                || matches!(orelse.last(), Some(Stmt::Break))
+                || body.last().is_some_and(arm_ends_in_break)
+                || orelse.last().is_some_and(arm_ends_in_break)
+        }
+        _ => false,
+    }
+}
+
 #[deny(clippy::indexing_slicing)]
 fn rewrite_jump_to_break_continue(
     code: &CodeObject,
@@ -3275,7 +3287,8 @@ fn rewrite_jump_to_break_continue(
         if !matches!(
             body.last(),
             Some(Stmt::Break | Stmt::Continue | Stmt::Return(_) | Stmt::Raise { .. })
-        ) && let Some(brk) = trailing_loop_break_stmt(stream, lo, hi)
+        ) && !body.last().is_some_and(arm_ends_in_break)
+            && let Some(brk) = trailing_loop_break_stmt(stream, lo, hi)
         {
             let mut out: Vec<Stmt> = body;
             out.push(brk);
@@ -5477,6 +5490,8 @@ fn trim_body_back_edge(stream: &DecodedStream, lo: usize, hi: usize) -> usize {
     }
     if end > lo
         && is_back_edge(&stream.ops[end - 1])
+        && resolve_jump_target(stream, end - 1, &stream.ops[end - 1])
+            .is_none_or(|target: usize| target < end - 1)
         && !back_edge_breaks_to_enclosing_loop(stream, end - 1)
     {
         end -= 1;
