@@ -40,6 +40,27 @@ const WIN_SCRIPT_BANNER: &str = "# recovered windows script";
 const RCPP_NATIVE_IMAGE_MARKER: &str = "rcpp-native-image ";
 const RCPP_ANALYSIS_SIDECAR: &str = "rcpp-analysis.json";
 const RCPP_NATIVE_ROOT: &str = "rcpp-native";
+const RENDERED_NON_WINDOWS_SOURCE: [&str; 19] = [
+    "Python",
+    "JavaScript",
+    "TypeScript",
+    "C",
+    "C++",
+    "C#",
+    "VB.NET",
+    "F#",
+    "Java",
+    "Kotlin",
+    "Ruby",
+    "Lua",
+    "VBA",
+    "PHP",
+    "Perl",
+    "Go",
+    "Rust",
+    "Swift",
+    "Dart",
+];
 
 #[derive(Debug)]
 pub struct ScriptLangDetector;
@@ -53,6 +74,13 @@ impl Detector for ScriptLangDetector {
     fn detect(&self, ctx: &DetectContext<'_>) -> Option<DetectVerdict> {
         let bytes: &[u8] = ctx.bytes;
         let lang: ScriptLang = classify(bytes)?;
+        if lang == ScriptLang::WinScript
+            && ctx
+                .parent_hint
+                .is_some_and(|hint: &str| RENDERED_NON_WINDOWS_SOURCE.contains(&hint))
+        {
+            return None;
+        }
         Some(verdict_for(bytes, lang))
     }
 }
@@ -536,6 +564,28 @@ fn haxe_meta(bytes: &[u8]) -> (&'static str, &'static str, f32, u16, &'static st
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_another_pass_rendered_is_not_reclaimed_as_a_windows_script() {
+        let batch: &[u8] = b"@echo off\r\nset NAME=world\r\necho hello %NAME%\r\n";
+        let fresh: DetectContext<'_> = ctx(batch);
+        assert!(ScriptLangDetector.detect(&fresh).is_some());
+        for hint in ["Python", "C#", "Ruby", "VBA", "JavaScript"] {
+            let rendered: DetectContext<'_> = DetectContext {
+                parent_hint: Some(hint),
+                ..ctx(batch)
+            };
+            assert!(
+                ScriptLangDetector.detect(&rendered).is_none(),
+                "{hint} output must stay with its own language"
+            );
+        }
+        let layer: DetectContext<'_> = DetectContext {
+            parent_hint: Some("Batch"),
+            ..ctx(batch)
+        };
+        assert!(ScriptLangDetector.detect(&layer).is_some());
+    }
 
     fn ctx(bytes: &[u8]) -> DetectContext<'_> {
         DetectContext {

