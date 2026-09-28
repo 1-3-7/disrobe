@@ -217,6 +217,42 @@ fn curated_scalar_forms_are_modeled() {
 }
 
 #[test]
+fn byte_adc_copies_the_carry_instead_of_extending_it_to_its_own_width() {
+    let adc: PcodeInstr = single(&[0x14, 0x01], 0xc080);
+    assert!(!adc.ops.iter().any(|operation: &PcodeOp| {
+        matches!(operation, PcodeOp::IntZext { output, input } if output.size_bytes <= input.size_bytes)
+    }));
+    assert!(adc.ops.iter().any(|operation: &PcodeOp| {
+        matches!(operation, PcodeOp::Copy { output, input } if output.size_bytes == 1 && input.size_bytes == 1)
+    }));
+}
+
+#[test]
+fn bit_test_memory_extends_a_narrow_bit_offset_before_adding_it_to_the_pointer() {
+    let bt: PcodeInstr = single(&[0x0f, 0xa3, 0x08], 0xc0c0);
+    let adds: Vec<&PcodeOp> = bt
+        .ops
+        .iter()
+        .filter(|operation: &&PcodeOp| matches!(operation, PcodeOp::IntAdd { .. }))
+        .collect();
+    assert!(!adds.is_empty());
+    for operation in adds {
+        if let PcodeOp::IntAdd {
+            output,
+            left,
+            right,
+        } = operation
+        {
+            assert_eq!(left.size_bytes, right.size_bytes, "{operation:?}");
+            assert_eq!(output.size_bytes, left.size_bytes, "{operation:?}");
+        }
+    }
+    assert!(bt.ops.iter().any(|operation: &PcodeOp| {
+        matches!(operation, PcodeOp::IntSext { output, input } if output.size_bytes == 8 && input.size_bytes == 4)
+    }));
+}
+
+#[test]
 fn extension_moves_use_typed_extension_ops() {
     let zero: PcodeInstr = single(&[0x0f, 0xb6, 0x03], 0xc000);
     assert!(zero.ops.iter().any(|operation: &PcodeOp| {

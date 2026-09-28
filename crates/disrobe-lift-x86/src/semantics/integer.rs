@@ -145,11 +145,21 @@ fn bit_test_memory_indexed(
         input: bit_index,
         amount: constant(3, 4),
     });
-    let pointer: Varnode = allocator.allocate(8)?;
+    let wide_offset: Varnode = if index_width == base.size_bytes {
+        byte_offset
+    } else {
+        let extended: Varnode = allocator.allocate(base.size_bytes)?;
+        ops.push(PcodeOp::IntSext {
+            output: extended,
+            input: byte_offset,
+        });
+        extended
+    };
+    let pointer: Varnode = allocator.allocate(base.size_bytes)?;
     ops.push(PcodeOp::IntAdd {
         output: pointer,
         left: base,
-        right: byte_offset,
+        right: wide_offset,
     });
     let bit_position: Varnode = allocator.allocate(index_width)?;
     ops.push(PcodeOp::IntAnd {

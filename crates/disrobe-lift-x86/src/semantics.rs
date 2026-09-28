@@ -434,10 +434,17 @@ fn lift_with_carry(
         read_destination(instruction, 0, allocator, &mut ops)?;
     let right: Varnode = read_operand(instruction, 1, width, allocator, &mut ops)?;
     let carry: Varnode = allocator.allocate(width)?;
-    ops.push(PcodeOp::IntZext {
-        output: carry,
-        input: CF,
-    });
+    if width == CF.size_bytes {
+        ops.push(PcodeOp::Copy {
+            output: carry,
+            input: CF,
+        });
+    } else {
+        ops.push(PcodeOp::IntZext {
+            output: carry,
+            input: CF,
+        });
+    }
     let partial: Varnode = allocator.allocate(width)?;
     let result: Varnode = allocator.allocate(width)?;
     let first_carry: Varnode = allocator.allocate(1)?;
