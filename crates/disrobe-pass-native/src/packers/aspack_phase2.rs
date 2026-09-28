@@ -16,13 +16,18 @@
 
 use std::collections::BTreeMap;
 
+use disrobe_bytes::align_up_u64;
+use disrobe_bytes::quota::{ExtractionQuota, QuotaExceeded, QuotaGuard};
+
 use crate::error::{Error, Result};
 use crate::packers::pe_sections::{PeImage, PeSection, parse_pe_image, read_u32};
 use crate::packers::section_recovery::{
-    IatReconstructionReport, SectionRecoveryReport, build_loaded_image, emulated_image_capacity,
-    reconstruct_import_address_table, section_recovery_report,
+    EMULATED_IMAGE_EXPANSION_LIMIT, IatReconstructionReport, SectionRecoveryReport,
+    build_loaded_image, last_section_end_va, reconstruct_import_address_table,
+    section_recovery_report,
 };
-use crate::stub_emu::{Cpu, CpuMode, ExitReason, HostCall, Memory, Perm, Reg, Regs};
+use crate::stub_emu::mem::MAX_MAP_BYTES;
+use crate::stub_emu::{Cpu, CpuMode, ExitReason, HostCall, Memory, PAGE_SIZE, Perm, Reg, Regs};
 
 const EMU_HEAP_BASE: u64 = 0x2000_0000;
 const EMU_HEAP_SIZE: u64 = 0x0800_0000;
@@ -34,6 +39,14 @@ const SYNTH_MODULE_BASE: u32 = 0x7000_0100;
 const EMU_TEB_BASE: u64 = 0x7EFD_E000;
 const EMU_PEB_BASE: u64 = 0x7EFD_D000;
 const EMU_LAZY_PAGE_BUDGET: u32 = 16_384;
+const ASPACK_HEADER_BYTES: u64 = 0x1000;
+const ASPACK_IMAGE_QUOTA: ExtractionQuota = ExtractionQuota {
+    max_entries: 1,
+    max_total_uncompressed: MAX_MAP_BYTES,
+    max_per_entry_uncompressed: MAX_MAP_BYTES,
+    max_per_entry_ratio: EMULATED_IMAGE_EXPANSION_LIMIT,
+    max_aggregate_ratio: EMULATED_IMAGE_EXPANSION_LIMIT,
+};
 const STEP_CAP_ASPACK: u64 = 80_000_000;
 
 const ASPACK_SECTION: &[u8] = b".aspack";
@@ -326,10 +339,10 @@ pub fn unpack_aspack_phase2_emulated(
         .ok_or_else(|| Error::SignatureDb("ASPack: no .aspack stub section".to_owned()))?;
 
     let image_base: u64 = img.image_base;
-    let capacity: u64 = emulated_image_capacity(&img, packed.len());
+    let capacity: u64 = declared_section_extent(&img, packed.len())?;
 
     let mut cpu: Cpu = Cpu::new(CpuMode::Bits32);
-    cpu.mem.map(image_base, capacity, Perm::RWX)?;
+    map_declared_sections(&mut cpu, &img, image_base, capacity)?;
     map_image(&mut cpu, packed, &img, image_base)?;
     cpu.mem.map(EMU_STACK_BASE, EMU_STACK_SIZE, Perm::RW)?;
     cpu.mem.enable_lazy_commit(EMU_LAZY_PAGE_BUDGET);
@@ -401,6 +414,35 @@ pub fn unpack_aspack_phase2_emulated(
         whole_image_recovery_pct: whole_pct,
         section_report: report,
     })
+}
+
+fn declared_section_extent(img: &PeImage, file_len: usize) -> Result<u64> {
+    let section_end: u64 = last_section_end_va(img).max(ASPACK_HEADER_BYTES);
+    let alignment: u64 = u64::from(img.section_alignment).max(PAGE_SIZE as u64);
+    let extent: u64 = u64::from(img.size_of_image)
+        .max(section_end)
+        .min(align_up_u64(section_end, alignment));
+    let packed_len: u64 = u64::try_from(file_len).unwrap_or(u64::MAX);
+    QuotaGuard::new(ASPACK_IMAGE_QUOTA)
+        .admit_entry("ASPack section image", extent, packed_len)
+        .map_err(|exceeded: QuotaExceeded| Error::UnpackBudgetExceeded {
+            packer: "ASPack",
+            exceeded,
+        })?;
+    Ok(extent)
+}
+
+fn map_declared_sections(cpu: &mut Cpu, img: &PeImage, base: u64, extent: u64) -> Result<()> {
+    cpu.mem.map(base, ASPACK_HEADER_BYTES, Perm::RWX)?;
+    for sec in &img.sections {
+        let start: u64 = u64::from(sec.virtual_address);
+        if start >= extent {
+            continue;
+        }
+        let span: u64 = u64::from(sec.virtual_size.max(sec.raw_size)).min(extent - start);
+        cpu.mem.map(base + start, span, Perm::RWX)?;
+    }
+    Ok(())
 }
 
 fn map_image(cpu: &mut Cpu, packed: &[u8], img: &PeImage, base: u64) -> Result<()> {
@@ -963,6 +1005,74 @@ mod tests {
         buf[1] = b'Z';
         let r: Result<AspackPhaseTwoOutput> = unpack_aspack_phase2_emulated(&buf, None);
         assert!(r.is_err());
+    }
+
+    const STUB_FILE_BYTES: usize = 0x4000;
+
+    fn stub_pe(size_of_image: u32, bss_virtual_size: u32) -> Vec<u8> {
+        let mut buf: Vec<u8> = vec![0u8; 0x400];
+        buf[0..2].copy_from_slice(b"MZ");
+        buf[0x3C..0x40].copy_from_slice(&0x80u32.to_le_bytes());
+        buf[0x80..0x84].copy_from_slice(b"PE\0\0");
+        buf[0x84..0x86].copy_from_slice(&0x014Cu16.to_le_bytes());
+        buf[0x86..0x88].copy_from_slice(&3u16.to_le_bytes());
+        buf[0x94..0x96].copy_from_slice(&0xE0u16.to_le_bytes());
+        let opt: usize = 0x98;
+        buf[opt..opt + 2].copy_from_slice(&0x010Bu16.to_le_bytes());
+        buf[opt + 16..opt + 20].copy_from_slice(&0x2000u32.to_le_bytes());
+        buf[opt + 28..opt + 32].copy_from_slice(&0x0040_0000u32.to_le_bytes());
+        buf[opt + 32..opt + 36].copy_from_slice(&0x1000u32.to_le_bytes());
+        buf[opt + 36..opt + 40].copy_from_slice(&0x200u32.to_le_bytes());
+        buf[opt + 56..opt + 60].copy_from_slice(&size_of_image.to_le_bytes());
+        buf[opt + 60..opt + 64].copy_from_slice(&0x400u32.to_le_bytes());
+        let stub_raw: u32 = u32::try_from(STUB_FILE_BYTES - 0x600).unwrap();
+        let sections: [(&[u8], u32, u32, u32, u32); 3] = [
+            (b".text", 0x1000, 0x1000, 0x200, 0x400),
+            (b".aspack", 0x2000, stub_raw, stub_raw, 0x600),
+            (b".bss", 0x6000, bss_virtual_size, 0, 0),
+        ];
+        for (index, (name, va, virtual_size, raw_size, raw_pointer)) in sections.iter().enumerate()
+        {
+            let row: usize = opt + 0xE0 + index * 40;
+            buf[row..row + name.len()].copy_from_slice(name);
+            buf[row + 8..row + 12].copy_from_slice(&virtual_size.to_le_bytes());
+            buf[row + 12..row + 16].copy_from_slice(&va.to_le_bytes());
+            buf[row + 16..row + 20].copy_from_slice(&raw_size.to_le_bytes());
+            buf[row + 20..row + 24].copy_from_slice(&raw_pointer.to_le_bytes());
+        }
+        buf.resize(STUB_FILE_BYTES, 0);
+        let jump_back: i32 = 0x1000 - (0x2000 + 5);
+        buf[0x600] = 0xE9;
+        buf[0x601..0x605].copy_from_slice(&jump_back.to_le_bytes());
+        buf
+    }
+
+    #[test]
+    fn size_of_image_beyond_the_sections_is_neither_mapped_nor_read_back() {
+        let packed: Vec<u8> = stub_pe(0x0400_0000, 0x1000);
+        let out: AspackPhaseTwoOutput =
+            unpack_aspack_phase2_emulated(&packed, None).expect("the stub runs to its jump");
+        let declared_end: usize = 0x7000;
+        assert_eq!(out.size_of_image, 0x0400_0000);
+        assert_eq!(out.recovered_memory_image.len(), declared_end);
+        assert_eq!(out.oep_estimate, Some(0x0040_1000));
+    }
+
+    #[test]
+    fn a_section_beyond_the_expansion_budget_is_refused() {
+        let packed: Vec<u8> = stub_pe(0x0800_8000, 0x0800_0000);
+        match unpack_aspack_phase2_emulated(&packed, None) {
+            Err(Error::UnpackBudgetExceeded { packer, exceeded }) => {
+                assert_eq!(packer, "ASPack");
+                assert_eq!(exceeded.entry, "ASPack section image");
+            }
+            Err(other) => panic!("expected the ASPack image budget refusal, got {other}"),
+            Ok(out) => panic!(
+                "a {}-byte file mapped a {}-byte image",
+                packed.len(),
+                out.recovered_memory_image.len()
+            ),
+        }
     }
 
     #[test]

@@ -121,4 +121,11 @@ pub enum Error {
         "DR-NATIVE-0029: declared function boundary 0x{boundary:016X} starts with trap byte 0x{observed:02X}"
     )]
     DeclaredFunctionBoundaryTrap { boundary: u64, observed: u8 },
+
+    #[error("DR-NATIVE-0030: {packer} unpacking refused by its output budget: {exceeded}")]
+    UnpackBudgetExceeded {
+        packer: &'static str,
+        #[source]
+        exceeded: disrobe_bytes::quota::QuotaExceeded,
+    },
 }

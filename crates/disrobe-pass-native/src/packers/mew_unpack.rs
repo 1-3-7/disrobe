@@ -1,4 +1,5 @@
 use disrobe_bytes::align_up_u32;
+use disrobe_bytes::quota::{ExtractionQuota, QuotaExceeded, QuotaGuard};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
@@ -20,6 +21,13 @@ const OPTIONAL_HEADER_IMAGE_BASE_OFFSET: usize = 0x1C;
 const SECTION_HEADER_LEN: usize = 40;
 const APLIB_MAX_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
 const MAX_MEW_LEADING_CHUNKS: usize = 64;
+const MEW_OUTPUT_QUOTA: ExtractionQuota = ExtractionQuota {
+    max_entries: MAX_MEW_LEADING_CHUNKS + 1,
+    max_total_uncompressed: APLIB_MAX_OUTPUT_BYTES as u64,
+    max_per_entry_uncompressed: APLIB_MAX_OUTPUT_BYTES as u64,
+    max_per_entry_ratio: u64::MAX,
+    max_aggregate_ratio: u64::MAX,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MewImport {
@@ -294,20 +302,20 @@ fn decode_mew_lzma_image(
     let mut chunk_reader: MewAplibChunks<'_> = MewAplibChunks::new(stream);
     let mut leading_chunks: Vec<MewLeadingChunk> = Vec::with_capacity(2);
     let mut current_dest_va: u32 = first_dest_va;
-    let mut decoded_total: usize = 0;
+    let mut output_budget: QuotaGuard = QuotaGuard::new(MEW_OUTPUT_QUOTA);
     loop {
-        if leading_chunks.len() >= MAX_MEW_LEADING_CHUNKS {
-            return Err(Error::SignatureDb(format!(
-                "MEW stub chains more than {MAX_MEW_LEADING_CHUNKS} leading aPLib chunks"
-            )));
-        }
-        let chunk_decoded: u32 = chunk_reader.decode_chunk(current_dest_va, image_base)?;
-        decoded_total = decoded_total.saturating_add(chunk_decoded as usize);
-        if decoded_total > APLIB_MAX_OUTPUT_BYTES {
-            return Err(Error::SignatureDb(format!(
-                "MEW leading chunks decode more than {APLIB_MAX_OUTPUT_BYTES} bytes"
-            )));
-        }
+        let entry: String = format!("MEW leading aPLib chunk {}", leading_chunks.len());
+        let chunk_start: usize = chunk_reader.pos;
+        let chunk_decoded: u32 = chunk_reader.decode_chunk(
+            current_dest_va,
+            image_base,
+            remaining_output(&output_budget),
+            &entry,
+        )?;
+        let consumed: u64 = u64::try_from(chunk_reader.pos - chunk_start).unwrap_or(u64::MAX);
+        output_budget
+            .admit_entry(&entry, u64::from(chunk_decoded), consumed)
+            .map_err(mew_budget_exceeded)?;
         leading_chunks.push(MewLeadingChunk {
             dest_va: current_dest_va,
             decoded_bytes: chunk_decoded,
@@ -375,7 +383,10 @@ fn decode_mew_lzma_image(
     framed.push((lzma_props.pb << 4) | lzma_props.lp);
     framed.push(lzma_props.lc);
     framed.extend_from_slice(lzma_stream);
-    let target_size: usize = (count as usize).min(APLIB_MAX_OUTPUT_BYTES);
+    output_budget
+        .admit_entry("MEW LZMA image", u64::from(count), u64::from(clen))
+        .map_err(mew_budget_exceeded)?;
+    let target_size: usize = count as usize;
     let decompressed_image: Vec<u8> = decode_mpress_lzma(&framed, target_size)?;
     let decompressed_size: u32 = u32::try_from(decompressed_image.len()).unwrap_or(u32::MAX);
 
@@ -396,6 +407,19 @@ fn decode_mew_lzma_image(
         leading_chunks,
         memory_image,
     })
+}
+
+fn remaining_output(budget: &QuotaGuard) -> u64 {
+    MEW_OUTPUT_QUOTA
+        .max_total_uncompressed
+        .saturating_sub(budget.report().total_uncompressed_bytes)
+}
+
+const fn mew_budget_exceeded(exceeded: QuotaExceeded) -> Error {
+    Error::UnpackBudgetExceeded {
+        packer: "MEW",
+        exceeded,
+    }
 }
 
 fn assemble_mew_memory_image(
@@ -461,6 +485,13 @@ fn write_oep_into_header(image: &mut [u8], oep_rva: u32) {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct MewChunkWindow<'e> {
+    dest_off: usize,
+    budget_end: usize,
+    entry: &'e str,
+}
+
 struct MewAplibChunks<'a> {
     src: &'a [u8],
     pos: usize,
@@ -509,12 +540,36 @@ impl<'a> MewAplibChunks<'a> {
         Ok(v)
     }
 
+    fn ensure_writable(&self, dpos: usize, window: MewChunkWindow<'_>, what: &str) -> Result<()> {
+        if dpos >= self.image.len() {
+            return Err(Error::SignatureDb(format!(
+                "MEW chunk {what} overflows emulated image"
+            )));
+        }
+        if dpos >= window.budget_end {
+            return Err(mew_budget_exceeded(QuotaExceeded {
+                entry: window.entry.to_owned(),
+                reason: format!(
+                    "decoded bytes pass the {} bytes left in the output budget",
+                    window.budget_end - window.dest_off
+                ),
+            }));
+        }
+        Ok(())
+    }
+
     #[allow(
         clippy::too_many_lines,
         clippy::cast_sign_loss,
         clippy::branches_sharing_code
     )]
-    fn decode_chunk(&mut self, dest_va: u32, image_base: u32) -> Result<u32> {
+    fn decode_chunk(
+        &mut self,
+        dest_va: u32,
+        image_base: u32,
+        output_limit: u64,
+        entry: &str,
+    ) -> Result<u32> {
         if dest_va < image_base {
             return Err(Error::SignatureDb(format!(
                 "MEW chunk dest VA {dest_va:#x} below image base {image_base:#x}"
@@ -526,9 +581,16 @@ impl<'a> MewAplibChunks<'a> {
                 "MEW chunk dest VA {dest_va:#x} outside emulated image"
             )));
         }
+        let window: MewChunkWindow<'_> = MewChunkWindow {
+            dest_off,
+            budget_end: usize::try_from(output_limit)
+                .map_or(usize::MAX, |limit: usize| dest_off.saturating_add(limit)),
+            entry,
+        };
         let mut dpos: usize = dest_off;
         let mut dl: u8 = 0x80;
         let first: u8 = self.read_byte()?;
+        self.ensure_writable(dpos, window, "first literal")?;
         self.image[dpos] = first;
         dpos += 1;
         let mut last_off: usize = 0;
@@ -537,11 +599,7 @@ impl<'a> MewAplibChunks<'a> {
             let b: u32 = self.read_bit(&mut dl)?;
             if b == 0 {
                 let lit: u8 = self.read_byte()?;
-                if dpos >= self.image.len() {
-                    return Err(Error::SignatureDb(
-                        "MEW chunk literal overflows emulated image".to_owned(),
-                    ));
-                }
+                self.ensure_writable(dpos, window, "literal")?;
                 self.image[dpos] = lit;
                 dpos += 1;
                 lwm = false;
@@ -558,11 +616,7 @@ impl<'a> MewAplibChunks<'a> {
                         )));
                     }
                     for _ in 0..length {
-                        if dpos >= self.image.len() {
-                            return Err(Error::SignatureDb(
-                                "MEW chunk R0-reuse copy overflows emulated image".to_owned(),
-                            ));
-                        }
+                        self.ensure_writable(dpos, window, "R0-reuse copy")?;
                         let src_b: u8 = self.image[dpos - last_off];
                         self.image[dpos] = src_b;
                         dpos += 1;
@@ -592,11 +646,7 @@ impl<'a> MewAplibChunks<'a> {
                         )));
                     }
                     for _ in 0..length {
-                        if dpos >= self.image.len() {
-                            return Err(Error::SignatureDb(
-                                "MEW chunk long-match copy overflows emulated image".to_owned(),
-                            ));
-                        }
+                        self.ensure_writable(dpos, window, "long-match copy")?;
                         let src_b: u8 = self.image[dpos - offset_usize];
                         self.image[dpos] = src_b;
                         dpos += 1;
@@ -621,11 +671,7 @@ impl<'a> MewAplibChunks<'a> {
                     )));
                 }
                 for _ in 0..length {
-                    if dpos >= self.image.len() {
-                        return Err(Error::SignatureDb(
-                            "MEW chunk short-match copy overflows emulated image".to_owned(),
-                        ));
-                    }
+                    self.ensure_writable(dpos, window, "short-match copy")?;
                     let src_b: u8 = self.image[dpos - offset];
                     self.image[dpos] = src_b;
                     dpos += 1;
@@ -649,11 +695,7 @@ impl<'a> MewAplibChunks<'a> {
                 }
                 self.image[dpos - nib_off]
             };
-            if dpos >= self.image.len() {
-                return Err(Error::SignatureDb(
-                    "MEW chunk nibble copy overflows emulated image".to_owned(),
-                ));
-            }
+            self.ensure_writable(dpos, window, "nibble copy")?;
             self.image[dpos] = byte_to_write;
             dpos += 1;
             lwm = false;
@@ -1344,7 +1386,8 @@ mod tests {
                 pos: 0,
                 image: vec![0u8; TINY_IMAGE],
             };
-            let outcome: Result<u32> = chunk.decode_chunk(IMAGE_BASE, IMAGE_BASE);
+            let outcome: Result<u32> =
+                chunk.decode_chunk(IMAGE_BASE, IMAGE_BASE, u64::MAX, "hostile chunk");
             assert_eq!(
                 chunk.image.len(),
                 TINY_IMAGE,
@@ -1364,6 +1407,113 @@ mod tests {
             start.elapsed() < std::time::Duration::from_secs(5),
             "bounded hostile sweep must finish fast, never hang"
         );
+    }
+
+    struct AplibBits {
+        out: Vec<u8>,
+        tag: usize,
+        used: u8,
+    }
+
+    impl AplibBits {
+        const fn new() -> Self {
+            Self {
+                out: Vec::new(),
+                tag: 0,
+                used: 8,
+            }
+        }
+
+        fn bit(&mut self, set: bool) {
+            if self.used == 8 {
+                self.tag = self.out.len();
+                self.out.push(0);
+                self.used = 0;
+            }
+            if set {
+                self.out[self.tag] |= 0x80 >> self.used;
+            }
+            self.used += 1;
+        }
+
+        fn gamma(&mut self, value: u32) {
+            let width: u32 = u32::BITS - value.leading_zeros();
+            for shift in (0..width - 1).rev() {
+                self.bit((value >> shift) & 1 == 1);
+                self.bit(shift != 0);
+            }
+        }
+
+        fn byte(&mut self, value: u8) {
+            self.out.push(value);
+        }
+    }
+
+    fn run_length_chunk(bits: &mut AplibBits, copied: u32) {
+        bits.byte(0x41);
+        bits.bit(true);
+        bits.bit(false);
+        bits.gamma(3);
+        bits.byte(1);
+        bits.gamma(copied - 2);
+        bits.bit(true);
+        bits.bit(true);
+        bits.bit(false);
+        bits.byte(0);
+    }
+
+    #[test]
+    fn leading_chunks_stop_at_one_output_budget_across_chunks() {
+        const IMAGE_BASE: u32 = 0x0040_0000;
+        const DEST_VA: u32 = IMAGE_BASE + 0x1000;
+        const COPIED_PER_CHUNK: u32 = 15 * 1024 * 1024;
+        let mut stream: Vec<u8> = Vec::new();
+        for _ in 0..MAX_MEW_LEADING_CHUNKS {
+            let mut bits: AplibBits = AplibBits::new();
+            run_length_chunk(&mut bits, COPIED_PER_CHUNK);
+            stream.extend_from_slice(&bits.out);
+            stream.extend_from_slice(&DEST_VA.to_le_bytes());
+        }
+        let mut packed: Vec<u8> = vec![0u8; 40];
+        packed[36..40].copy_from_slice(&DEST_VA.to_le_bytes());
+        packed.extend_from_slice(&stream);
+        let structural: MewUnpackOutput = MewUnpackOutput {
+            raw_image: Vec::new(),
+            image_base: IMAGE_BASE,
+            packed_entry_point_rva: 0,
+            original_entry_point_rva: 0,
+            section_0_virtual_size: 0,
+            section_0_virtual_address: 0,
+            section_1_raw_off: 0,
+            section_1_raw_size: u32::try_from(packed.len()).unwrap(),
+            compressed_payload_off: 0,
+            iat_table_off: 0,
+            iat_table_size: 0,
+            ep_stub_trailer_off: 0,
+            imports: Vec::new(),
+            recovery: MewRecovery::StructuralOnly,
+            stream_decoded: false,
+            decoded_byte_count: 0,
+        };
+        let outcome: Result<MewEmulatedOutput> = decode_mew_lzma_image(&packed, &structural);
+        match outcome {
+            Err(Error::UnpackBudgetExceeded { packer, exceeded }) => {
+                assert_eq!(packer, "MEW");
+                assert_eq!(exceeded.entry, "MEW leading aPLib chunk 4");
+                let left: u64 =
+                    MEW_OUTPUT_QUOTA.max_total_uncompressed - 4 * u64::from(COPIED_PER_CHUNK + 1);
+                assert!(
+                    exceeded.reason.contains(&format!("the {left} bytes left")),
+                    "{}",
+                    exceeded.reason
+                );
+            }
+            Err(other) => panic!("expected the MEW output budget refusal, got {other}"),
+            Ok(output) => panic!(
+                "{} leading chunks decoded past the output budget",
+                output.leading_chunks.len()
+            ),
+        }
     }
 
     #[test]
