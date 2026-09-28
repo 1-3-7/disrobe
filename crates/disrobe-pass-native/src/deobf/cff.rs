@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 const MAX_INSNS: usize = 200_000;
 const MAX_BLOCKS: usize = 8192;
 const MIN_DISPATCH_PREDS: usize = 3;
+const MIN_TRANSITION_CASES: usize = 2;
 const MAX_DISPATCH_TREE_STEPS: usize = 4096;
 const MAX_REGION_STEPS: u32 = 4096;
 const MAX_REGION_DEPTH: u32 = 128;
@@ -211,16 +212,79 @@ pub fn unflatten(bitness: u32, base: u64, bytes: &[u8], entry: u64) -> CffOutcom
 }
 
 #[must_use]
-pub fn detect_flattening(bytes: &[u8]) -> bool {
-    const BASE: u64 = 0x1000;
-    for bitness in [64u32, 32u32] {
-        if let Some(program) = build_program(bitness, BASE, bytes, BASE)
-            && find_dispatcher(&program).is_some()
-        {
-            return true;
-        }
+pub fn detect_flattening(bytes: &[u8]) -> Option<u64> {
+    const RAW_BASE: u64 = 0x1000;
+    match code_origin(bytes) {
+        CodeOrigin::Image(code) => build_program(code.bitness, code.base, code.bytes, code.entry)
+            .filter(is_flattened)
+            .map(|_| code.file_offset),
+        CodeOrigin::Raw => [64u32, 32u32].into_iter().find_map(|bitness: u32| {
+            build_program(bitness, RAW_BASE, bytes, RAW_BASE)
+                .filter(is_flattened)
+                .map(|_| 0)
+        }),
+        CodeOrigin::Unresolved => None,
     }
-    false
+}
+
+struct EntryCode<'a> {
+    bitness: u32,
+    base: u64,
+    bytes: &'a [u8],
+    entry: u64,
+    file_offset: u64,
+}
+
+enum CodeOrigin<'a> {
+    Image(EntryCode<'a>),
+    Raw,
+    Unresolved,
+}
+
+fn code_origin(bytes: &[u8]) -> CodeOrigin<'_> {
+    use object::{Object as _, ObjectSection as _, ObjectSegment as _};
+    let Ok(file): Result<object::File<'_>, object::Error> = object::File::parse(bytes) else {
+        return if crate::sig_engine::detect_format(bytes) == "unknown" {
+            CodeOrigin::Raw
+        } else {
+            CodeOrigin::Unresolved
+        };
+    };
+    let bitness: u32 = match file.architecture() {
+        object::Architecture::I386 => 32,
+        object::Architecture::X86_64 => 64,
+        _ => return CodeOrigin::Unresolved,
+    };
+    let entry: u64 = file.entry();
+    let sections = file
+        .sections()
+        .filter_map(|section: object::Section<'_, '_>| {
+            let (offset, _): (u64, u64) = section.file_range()?;
+            Some((section.address(), section.data().ok()?, offset))
+        });
+    let segments = file
+        .segments()
+        .filter_map(|segment: object::Segment<'_, '_>| {
+            let (offset, _): (u64, u64) = segment.file_range();
+            Some((segment.address(), segment.data().ok()?, offset))
+        });
+    sections
+        .chain(segments)
+        .find(|(address, data, _): &(u64, &[u8], u64)| {
+            entry >= *address && entry - *address < data.len() as u64
+        })
+        .map_or(
+            CodeOrigin::Unresolved,
+            |(address, data, offset): (u64, &[u8], u64)| {
+                CodeOrigin::Image(EntryCode {
+                    bitness,
+                    base: address,
+                    bytes: data,
+                    entry,
+                    file_offset: offset.saturating_add(entry - address),
+                })
+            },
+        )
 }
 
 fn build_program(bitness: u32, base: u64, bytes: &[u8], entry: u64) -> Option<Program<'_>> {
@@ -488,26 +552,87 @@ struct DispatcherModel {
     case_targets: BTreeMap<u64, u64>,
 }
 
-fn find_dispatcher(program: &Program<'_>) -> Option<DispatcherModel> {
+fn dispatcher_candidates(program: &Program<'_>) -> Vec<DispatcherModel> {
     let predecessors: BTreeMap<usize, usize> = count_predecessors(program);
+    program
+        .blocks
+        .iter()
+        .enumerate()
+        .filter(|(block_index, _): &(usize, &Block)| {
+            predecessors.get(block_index).copied().unwrap_or(0) >= MIN_DISPATCH_PREDS
+        })
+        .filter_map(|(block_index, block): (usize, &Block)| {
+            model_compare_tree(program, block_index, block)
+                .or_else(|| model_jump_table(program, block_index, block))
+        })
+        .filter(|model: &DispatcherModel| model.case_targets.len() >= 2)
+        .collect()
+}
+
+fn find_dispatcher(program: &Program<'_>) -> Option<DispatcherModel> {
     let mut best: Option<DispatcherModel> = None;
-    let mut best_cases: usize = 0;
-    for (block_index, block) in program.blocks.iter().enumerate() {
-        let preds: usize = predecessors.get(&block_index).copied().unwrap_or(0);
-        if preds < MIN_DISPATCH_PREDS {
-            continue;
-        }
-        let model: Option<DispatcherModel> = model_compare_tree(program, block_index, block)
-            .or_else(|| model_jump_table(program, block_index, block));
-        let Some(model): Option<DispatcherModel> = model else {
-            continue;
-        };
-        if model.case_targets.len() > best_cases {
-            best_cases = model.case_targets.len();
+    for model in dispatcher_candidates(program) {
+        if best.as_ref().is_none_or(|known: &DispatcherModel| {
+            model.case_targets.len() > known.case_targets.len()
+        }) {
             best = Some(model);
         }
     }
-    best.filter(|m: &DispatcherModel| m.case_targets.len() >= 2)
+    best
+}
+
+fn case_entry_blocks(program: &Program<'_>, dispatcher: &DispatcherModel) -> BTreeMap<u64, usize> {
+    dispatcher
+        .case_targets
+        .iter()
+        .filter_map(|(state, address): (&u64, &u64)| {
+            program
+                .block_of_addr
+                .get(address)
+                .map(|block: &usize| (*state, *block))
+        })
+        .collect()
+}
+
+fn transitions_between_cases(
+    program: &Program<'_>,
+    dispatcher: &DispatcherModel,
+    consts: &BTreeMap<StateLoc, u64>,
+) -> bool {
+    let case_entry: BTreeMap<u64, usize> = case_entry_blocks(program, dispatcher);
+    let case_blocks: BTreeSet<usize> = case_entry.values().copied().collect();
+    let case_states: BTreeSet<u64> = case_entry.keys().copied().collect();
+    let dispatcher_blocks: BTreeSet<usize> = compare_chain_blocks(program, dispatcher);
+    let transitioning: usize = case_entry
+        .iter()
+        .filter(|(state, block_index): &(&u64, &usize)| {
+            let mut walk: RegionWalk<'_> = RegionWalk::new(
+                program,
+                dispatcher.state_loc,
+                &dispatcher_blocks,
+                &case_blocks,
+                consts,
+            );
+            walk.walk(
+                **block_index,
+                StateValue::Const(**state),
+                false,
+                &mut Vec::new(),
+                0,
+            );
+            let (successors, _, _): (Vec<u64>, bool, Option<DegradeReason>) =
+                summarize_exits(&walk.exits, &case_states);
+            successors.iter().any(|next: &u64| next != *state)
+        })
+        .count();
+    transitioning >= MIN_TRANSITION_CASES
+}
+
+fn is_flattened(program: &Program<'_>) -> bool {
+    let consts: BTreeMap<StateLoc, u64> = unique_constants(program);
+    dispatcher_candidates(program)
+        .iter()
+        .any(|dispatcher: &DispatcherModel| transitions_between_cases(program, dispatcher, &consts))
 }
 
 fn model_compare_tree(
@@ -1076,16 +1201,7 @@ fn block_spans(program: &Program<'_>, order: &[usize]) -> Vec<BlockSpan> {
 }
 
 fn recover(program: &Program<'_>, dispatcher: &DispatcherModel) -> CffOutcome {
-    let case_entry: BTreeMap<u64, usize> = dispatcher
-        .case_targets
-        .iter()
-        .filter_map(|(state, address): (&u64, &u64)| {
-            program
-                .block_of_addr
-                .get(address)
-                .map(|block: &usize| (*state, *block))
-        })
-        .collect();
+    let case_entry: BTreeMap<u64, usize> = case_entry_blocks(program, dispatcher);
     if case_entry.is_empty() {
         return CffOutcome::Abstained(CffAbstain::CaseMapTooSmall);
     }

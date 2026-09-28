@@ -77,11 +77,6 @@ const FAMILY_SIGNATURES: &[FamilySignature] = &[
     },
     FamilySignature {
         family: ObfuscatorFamily::OllvmFlattening,
-        pattern: b"switch_var",
-        indicator: "OLLVM CFF state-variable name",
-    },
-    FamilySignature {
-        family: ObfuscatorFamily::OllvmFlattening,
         pattern: b"ollvm.fla",
         indicator: "OLLVM flatten pass metadata",
     },
@@ -106,19 +101,9 @@ const FAMILY_SIGNATURES: &[FamilySignature] = &[
         indicator: "Emotet CFF marker",
     },
     FamilySignature {
-        family: ObfuscatorFamily::Mirai,
-        pattern: b"/dev/watchdog",
-        indicator: "Mirai watchdog string",
-    },
-    FamilySignature {
         family: ObfuscatorFamily::Dridex,
         pattern: b"DriDex",
         indicator: "Dridex tag",
-    },
-    FamilySignature {
-        family: ObfuscatorFamily::Trickbot,
-        pattern: b"ModuleConfig",
-        indicator: "Trickbot module config marker",
     },
     FamilySignature {
         family: ObfuscatorFamily::ObfusH,
@@ -168,6 +153,49 @@ const FAMILY_SIGNATURES: &[FamilySignature] = &[
     },
 ];
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StringIndicator {
+    pub matched_offset: u64,
+    pub indicator: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct IndicatorSignature {
+    pattern: &'static [u8],
+    indicator: &'static str,
+}
+
+const STRING_INDICATORS: &[IndicatorSignature] = &[
+    IndicatorSignature {
+        pattern: b"switch_var",
+        indicator: "switch_var: the state-variable name OLLVM flattening leaves in unstripped \
+                    builds; any program may use the same identifier",
+    },
+    IndicatorSignature {
+        pattern: b"/dev/watchdog",
+        indicator: "/dev/watchdog: the watchdog device Mirai disables, also opened by every \
+                    watchdog daemon and busybox applet",
+    },
+    IndicatorSignature {
+        pattern: b"ModuleConfig",
+        indicator: "ModuleConfig: a Trickbot module configuration tag and a common identifier \
+                    in ordinary programs",
+    },
+];
+
+#[must_use]
+pub fn detect_indicators(bytes: &[u8]) -> Vec<StringIndicator> {
+    STRING_INDICATORS
+        .iter()
+        .filter_map(|sig: &IndicatorSignature| {
+            memmem(bytes, sig.pattern).map(|offset: usize| StringIndicator {
+                matched_offset: offset as u64,
+                indicator: sig.indicator.to_owned(),
+            })
+        })
+        .collect()
+}
+
 #[must_use]
 pub fn detect(bytes: &[u8]) -> Vec<ObfuscatorHit> {
     let mut out: Vec<ObfuscatorHit> = Vec::new();
@@ -183,11 +211,11 @@ pub fn detect(bytes: &[u8]) -> Vec<ObfuscatorHit> {
     if !out
         .iter()
         .any(|h: &ObfuscatorHit| h.family == ObfuscatorFamily::OllvmFlattening)
-        && crate::deobf::cff::detect_flattening(bytes)
+        && let Some(entry_offset) = crate::deobf::cff::detect_flattening(bytes)
     {
         out.push(ObfuscatorHit {
             family: ObfuscatorFamily::OllvmFlattening,
-            matched_offset: 0,
+            matched_offset: entry_offset,
             indicator: "control-flow-flattening dispatcher (state-variable compare tree)"
                 .to_owned(),
         });
@@ -809,13 +837,23 @@ mod tests {
     }
 
     #[test]
-    fn ollvm_cff_detected() {
+    fn switch_var_is_an_indicator_not_an_ollvm_claim() {
         let mut buf: Vec<u8> = vec![0u8; 256];
         buf[10..20].copy_from_slice(b"switch_var");
         let hits: Vec<ObfuscatorHit> = detect(&buf);
         assert!(
-            hits.iter()
-                .any(|h: &ObfuscatorHit| h.family == ObfuscatorFamily::OllvmFlattening)
+            !hits
+                .iter()
+                .any(|h: &ObfuscatorHit| h.family == ObfuscatorFamily::OllvmFlattening),
+            "{hits:?}"
+        );
+        let indicators: Vec<StringIndicator> = detect_indicators(&buf);
+        assert_eq!(
+            indicators
+                .iter()
+                .map(|i: &StringIndicator| i.matched_offset)
+                .collect::<Vec<u64>>(),
+            vec![10]
         );
     }
 

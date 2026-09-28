@@ -9,7 +9,8 @@
 use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_native::{
     BogusBranch, CffUnflattenReport, DeobfBits, ObfuscatorFamily, OpaqueResult, SubstitutionResult,
-    detect_obfuscators, strip_ollvm_bcf, undo_ollvm_substitution, unflatten_ollvm,
+    detect_obfuscator_indicators, detect_obfuscators, strip_ollvm_bcf, undo_ollvm_substitution,
+    unflatten_ollvm,
 };
 use iced_x86::code_asm::{CodeAssembler, CodeLabel, cl, dword_ptr, eax, ecx, edx, esi, rbp};
 use object::{Object, ObjectSection, ObjectSymbol};
@@ -23,13 +24,21 @@ const ASSEMBLED_CARRY_ENCODING_SCOPE: &str = "the input here is assembled by thi
      real_ollvm_sub_lifts_through_stack_slots.";
 
 #[test]
-fn ollvm_cff_marker_detected_by_switch_var_symbol() {
+fn a_switch_var_symbol_alone_is_an_indicator_not_an_ollvm_claim() {
     let mut buf: Vec<u8> = vec![0u8; 64];
     buf[0..10].copy_from_slice(b"switch_var");
     let hits = detect_obfuscators(&buf);
     assert!(
-        hits.iter()
-            .any(|h| h.family == ObfuscatorFamily::OllvmFlattening)
+        !hits
+            .iter()
+            .any(|h| h.family == ObfuscatorFamily::OllvmFlattening),
+        "switch_var is an ordinary identifier; only a dispatcher proves flattening: {hits:?}"
+    );
+    assert!(
+        detect_obfuscator_indicators(&buf)
+            .iter()
+            .any(|i| i.matched_offset == 0),
+        "the symbol must still surface as an indicator"
     );
 }
 
