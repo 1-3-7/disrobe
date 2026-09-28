@@ -908,8 +908,16 @@ fn micropython_control_flow_recovers_range_for_and_branch() {
         "range for-loop not recovered: {src}"
     );
     assert!(
-        src.contains("if ") && src.contains("else"),
-        "if/else not recovered: {src}"
+        src.contains("if local2 % 2 == 0:")
+            && src.contains("local1 += local2")
+            && src.contains("local1 -= 1")
+            && (src.contains("else:") || src.contains("continue")),
+        "the loop body must keep both arms of its branch, as if/else or as a guarded continue: {src}"
+    );
+    assert!(
+        !src.contains("break"),
+        "the taken arm returns to the loop header; a break means a jump into the dropped range \
+         increment was resolved past the loop: {src}"
     );
     if let Some(ok) = recompiles_clean(src) {
         assert!(ok, "recovered mpy control_flow must recompile:\n{src}");
