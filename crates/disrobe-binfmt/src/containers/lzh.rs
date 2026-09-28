@@ -400,9 +400,11 @@ fn decode_codepage(raw: &[u8], codepage: Option<u32>) -> Result<String> {
         .ok_or_else(|| Error::Lzh(format!("lzh: malformed codepage {codepage} name")))
 }
 
-fn encoding_for_codepage(codepage: u32) -> Option<&'static encoding_rs::Encoding> {
+pub(crate) fn encoding_for_codepage(codepage: u32) -> Option<&'static encoding_rs::Encoding> {
     let label: String = match codepage {
         65001 => Some("utf-8".to_owned()),
+        874 => Some("windows-874".to_owned()),
+        28604 => Some("iso-8859-14".to_owned()),
         932 => Some("shift_jis".to_owned()),
         936 => Some("gbk".to_owned()),
         949 => Some("euc-kr".to_owned()),

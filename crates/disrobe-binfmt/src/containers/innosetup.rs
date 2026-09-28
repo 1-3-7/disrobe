@@ -1041,7 +1041,11 @@ fn skip_inno_condition_data(
         .ok_or_else(|| inno_err("setup condition data is truncated or exceeds its limit"))
 }
 
-fn skip_inno_language_entry(bytes: &[u8], cursor: &mut usize, info: &InnoSetupInfo) -> Result<()> {
+fn read_inno_language_codepage(
+    bytes: &[u8],
+    cursor: &mut usize,
+    info: &InnoSetupInfo,
+) -> Result<u32> {
     let string_count: usize = if info.version >= inno_version(6, 6, 0, 0) {
         8
     } else if info.version == inno_version(5, 5, 7, 1) {
@@ -1051,6 +1055,7 @@ fn skip_inno_language_entry(bytes: &[u8], cursor: &mut usize, info: &InnoSetupIn
     };
     skip_inno_strings(bytes, cursor, string_count)
         .ok_or_else(|| inno_err("setup language entry strings are truncated"))?;
+    let fixed_start: usize = *cursor;
     let mut fixed_size: usize = if info.version >= inno_version(6, 6, 0, 0) {
         18
     } else {
@@ -1070,7 +1075,94 @@ fn skip_inno_language_entry(bytes: &[u8], cursor: &mut usize, info: &InnoSetupIn
     if info.version >= inno_version(5, 2, 3, 0) {
         fixed_size += 1;
     }
-    advance_inno_cursor(bytes, cursor, fixed_size, "setup language entry")
+    advance_inno_cursor(bytes, cursor, fixed_size, "setup language entry")?;
+    let mut fixed_cursor: usize = fixed_start;
+    let language_id: u32 = read_inno_u32(bytes, &mut fixed_cursor)
+        .ok_or_else(|| inno_err("setup language identifier is truncated"))?;
+    if info.unicode {
+        return Ok(INNO_CODEPAGE_UTF16LE);
+    }
+    if info.version < inno_version(4, 2, 2, 0) {
+        return Ok(default_codepage_for_language(language_id));
+    }
+    let codepage: u32 = read_inno_u32(bytes, &mut fixed_cursor)
+        .ok_or_else(|| inno_err("setup language code page is truncated"))?;
+    Ok(if codepage == 0 {
+        INNO_CODEPAGE_WINDOWS_1252
+    } else {
+        codepage
+    })
+}
+
+const INNO_CODEPAGE_WINDOWS_1252: u32 = 1252;
+const INNO_CODEPAGE_UTF16LE: u32 = 1200;
+
+const LANGUAGE_DEFAULT_CODEPAGES: [(u32, u32); 57] = [
+    (0x0401, 1256),
+    (0x0402, 1251),
+    (0x0404, 950),
+    (0x0405, 1250),
+    (0x0408, 1253),
+    (0x040D, 1255),
+    (0x040E, 1250),
+    (0x0411, 932),
+    (0x0412, 949),
+    (0x0415, 1250),
+    (0x0418, 1250),
+    (0x0419, 1251),
+    (0x041A, 1250),
+    (0x041B, 1250),
+    (0x041C, 1250),
+    (0x041E, 874),
+    (0x041F, 1254),
+    (0x0420, 1256),
+    (0x0422, 1251),
+    (0x0423, 1251),
+    (0x0424, 1250),
+    (0x0425, 1257),
+    (0x0426, 1257),
+    (0x0427, 1257),
+    (0x0429, 1256),
+    (0x042A, 1258),
+    (0x042C, 1254),
+    (0x042F, 1251),
+    (0x043F, 1251),
+    (0x0440, 1251),
+    (0x0443, 1254),
+    (0x0444, 1251),
+    (0x0450, 1251),
+    (0x0492, 28604),
+    (0x0801, 1256),
+    (0x0804, 936),
+    (0x081A, 1250),
+    (0x082C, 1251),
+    (0x0843, 1251),
+    (0x0C01, 1256),
+    (0x0C04, 950),
+    (0x0C1A, 1251),
+    (0x1001, 1256),
+    (0x1004, 936),
+    (0x1401, 1256),
+    (0x1404, 950),
+    (0x1801, 1256),
+    (0x1C01, 1256),
+    (0x2001, 1256),
+    (0x2401, 1256),
+    (0x2801, 1256),
+    (0x2C01, 1256),
+    (0x3001, 1256),
+    (0x3401, 1256),
+    (0x3801, 1256),
+    (0x3C01, 1256),
+    (0x4001, 1256),
+];
+
+fn default_codepage_for_language(language_id: u32) -> u32 {
+    LANGUAGE_DEFAULT_CODEPAGES
+        .binary_search_by_key(&language_id, |&(id, _): &(u32, u32)| id)
+        .map_or(INNO_CODEPAGE_WINDOWS_1252, |index: usize| {
+            LANGUAGE_DEFAULT_CODEPAGES[index].1
+        })
 }
 
 fn skip_inno_pre_file_tables(
@@ -1078,10 +1170,19 @@ fn skip_inno_pre_file_tables(
     mut cursor: usize,
     info: &InnoSetupInfo,
     counts: InnoSetupCounts,
-) -> Result<usize> {
+) -> Result<(usize, u32)> {
+    let mut first_codepage: Option<u32> = None;
+    let mut any_windows_1252: bool = false;
     for _ in 0..counts.languages {
-        skip_inno_language_entry(bytes, &mut cursor, info)?;
+        let codepage: u32 = read_inno_language_codepage(bytes, &mut cursor, info)?;
+        first_codepage.get_or_insert(codepage);
+        any_windows_1252 |= codepage == INNO_CODEPAGE_WINDOWS_1252;
     }
+    let codepage: u32 = if any_windows_1252 {
+        INNO_CODEPAGE_WINDOWS_1252
+    } else {
+        first_codepage.unwrap_or(INNO_CODEPAGE_WINDOWS_1252)
+    };
     for _ in 0..counts.messages {
         skip_inno_strings(bytes, &mut cursor, 2)
             .ok_or_else(|| inno_err("setup message entry strings are truncated"))?;
@@ -1135,10 +1236,10 @@ fn skip_inno_pre_file_tables(
         skip_inno_strings(bytes, &mut cursor, 3)
             .ok_or_else(|| inno_err("setup ISSig key entry is truncated"))?;
     }
-    Ok(cursor)
+    Ok((cursor, codepage))
 }
 
-fn decode_inno_string(bytes: &[u8], unicode: bool) -> Result<String> {
+fn decode_inno_string(bytes: &[u8], unicode: bool, codepage: u32) -> Result<String> {
     if unicode {
         if !bytes.len().is_multiple_of(2) {
             return Err(inno_err("setup UTF-16 string has an odd byte length"));
@@ -1151,6 +1252,9 @@ fn decode_inno_string(bytes: &[u8], unicode: bool) -> Result<String> {
             inno_err("setup UTF-16 string is invalid")
         });
     }
+    if codepage != INNO_CODEPAGE_WINDOWS_1252 {
+        return decode_inno_codepage_string(bytes, codepage);
+    }
     let mut value: String = String::new();
     for byte in bytes {
         if *byte < 0x80 || *byte >= 0xA0 {
@@ -1159,6 +1263,28 @@ fn decode_inno_string(bytes: &[u8], unicode: bool) -> Result<String> {
             value.push(character);
         } else if let Some(character) = decode_windows_1252_byte(*byte) {
             value.push(character);
+        } else {
+            use std::fmt::Write as _;
+            write!(&mut value, "%{byte:02X}").map_err(|_error: std::fmt::Error| {
+                inno_err("setup ANSI string conversion failed")
+            })?;
+        }
+    }
+    Ok(value)
+}
+
+fn decode_inno_codepage_string(bytes: &[u8], codepage: u32) -> Result<String> {
+    if let Some(value) = super::lzh::encoding_for_codepage(codepage).and_then(
+        |encoding: &'static encoding_rs::Encoding| {
+            encoding.decode_without_bom_handling_and_without_replacement(bytes)
+        },
+    ) {
+        return Ok(value.into_owned());
+    }
+    let mut value: String = String::with_capacity(bytes.len());
+    for byte in bytes {
+        if byte.is_ascii() {
+            value.push(char::from(*byte));
         } else {
             use std::fmt::Write as _;
             write!(&mut value, "%{byte:02X}").map_err(|_error: std::fmt::Error| {
@@ -1223,7 +1349,8 @@ fn parse_inno_setup_files_with_end(
     info: &InnoSetupInfo,
     counts: InnoSetupCounts,
 ) -> Result<(Vec<InnoSetupFile>, usize)> {
-    let mut cursor: usize = skip_inno_pre_file_tables(bytes, cursor, info, counts)?;
+    let (mut cursor, codepage): (usize, u32) =
+        skip_inno_pre_file_tables(bytes, cursor, info, counts)?;
     let capacity: usize = usize::try_from(counts.files)
         .map_err(|_error: std::num::TryFromIntError| inno_err("setup file count overflow"))?;
     let mut files: Vec<InnoSetupFile> = Vec::with_capacity(capacity);
@@ -1309,8 +1436,8 @@ fn parse_inno_setup_files_with_end(
             return Err(inno_err("setup file type is invalid"));
         }
         files.push(InnoSetupFile {
-            source: decode_inno_string(source_bytes, info.unicode)?,
-            destination: decode_inno_string(destination_bytes, info.unicode)?,
+            source: decode_inno_string(source_bytes, info.unicode, codepage)?,
+            destination: decode_inno_string(destination_bytes, info.unicode, codepage)?,
             data_entry_index,
             external_size,
             options: options
@@ -4653,6 +4780,107 @@ pub(crate) mod tests {
         table[file_type_at] = 0;
         table[options_at + 2] = 1_u8 << 5;
         assert!(parse_inno_setup_files(&table, 0, &info, counts).is_err());
+        Ok(())
+    }
+
+    fn ansi_codepage_file_name(
+        version: InnoDataVersion,
+        languages: &[(u32, u32)],
+        name: &[u8],
+    ) -> Result<String> {
+        let info: InnoSetupInfo = InnoSetupInfo {
+            version_string: String::new(),
+            version,
+            unicode: false,
+            encrypted: false,
+            data_id_offset: 0,
+            block_stream_offset: 0,
+            compression: InnoCompression::Stored,
+            stored_size: 0,
+            loader: None,
+        };
+        let counts: InnoSetupCounts = InnoSetupCounts {
+            languages: u32::try_from(languages.len())
+                .map_err(|_error: std::num::TryFromIntError| inno_err("test language count"))?,
+            messages: 0,
+            permissions: 0,
+            types: 0,
+            components: 0,
+            tasks: 0,
+            directories: 0,
+            issig_keys: 0,
+            files: 1,
+            data_entries: 1,
+            icons: 0,
+            ini_entries: 0,
+            registry_entries: 0,
+            delete_entries: 0,
+            uninstall_delete_entries: 0,
+            run_entries: 0,
+            uninstall_run_entries: 0,
+        };
+        let mut table: Vec<u8> = Vec::new();
+        for &(language_id, codepage) in languages {
+            for _ in 0..10 {
+                append_test_inno_string(&mut table, &[])?;
+            }
+            table.extend_from_slice(&language_id.to_le_bytes());
+            table.extend_from_slice(&codepage.to_le_bytes());
+            table.extend_from_slice(&[0_u8; 16]);
+        }
+        append_test_inno_string(&mut table, name)?;
+        append_test_inno_string(&mut table, b"{app}")?;
+        append_test_inno_string(&mut table, &[])?;
+        let condition_strings: usize = if version >= inno_version(4, 1, 0, 0) {
+            6
+        } else {
+            4
+        };
+        for _ in 0..condition_strings {
+            append_test_inno_string(&mut table, &[])?;
+        }
+        table.extend_from_slice(&[0_u8; 20]);
+        table.extend_from_slice(&0_u32.to_le_bytes());
+        table.extend_from_slice(&0_u32.to_le_bytes());
+        table.extend_from_slice(&0_u64.to_le_bytes());
+        if version >= inno_version(4, 1, 0, 0) {
+            table.extend_from_slice(&0_u16.to_le_bytes());
+        }
+        table.extend_from_slice(&0_u32.to_le_bytes());
+        table.push(0);
+        let files: Vec<InnoSetupFile> = parse_inno_setup_files(&table, 0, &info, counts)?;
+        files
+            .into_iter()
+            .next()
+            .map(|file: InnoSetupFile| file.source)
+            .ok_or_else(|| inno_err("test table yielded no file"))
+    }
+
+    #[test]
+    fn ansi_file_names_decode_with_the_language_code_page() -> Result<()> {
+        let v5: InnoDataVersion = inno_version(5, 1, 0, 0);
+        let shift_jis_table_dot_txt: &[u8] = b"\x95\x5C.txt";
+        assert_eq!(
+            ansi_codepage_file_name(v5, &[(0x0411, 932)], shift_jis_table_dot_txt)?,
+            "\u{8868}.txt",
+            "the Shift-JIS trail byte 0x5C belongs to its character, not a path separator"
+        );
+        assert_eq!(
+            ansi_codepage_file_name(v5, &[(0x0411, 932), (0x0409, 0)], b"\xE9t\xE9.txt")?,
+            "\u{E9}t\u{E9}.txt",
+            "any Windows-1252 language selects Windows-1252, as innoextract does"
+        );
+        assert_eq!(
+            ansi_codepage_file_name(v5, &[(0x0411, 932)], b"\x95.txt")?,
+            "%95.txt",
+            "a truncated double-byte sequence is escaped, not guessed"
+        );
+        let v4: InnoDataVersion = inno_version(4, 0, 9, 0);
+        assert_eq!(
+            ansi_codepage_file_name(v4, &[(0x0419, 0)], b"\xF4\xE0\xE9\xEB.txt")?,
+            "\u{0444}\u{0430}\u{0439}\u{043B}.txt",
+            "before 4.2.2 the code page follows the language identifier"
+        );
         Ok(())
     }
 
