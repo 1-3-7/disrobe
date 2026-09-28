@@ -213,11 +213,17 @@ struct Processed {
     elapsed: Duration,
 }
 
-fn process_one(path: &Path, relative: &Path, stem: &str, opts: &BatchOptions) -> Processed {
+type EntryBuilder = fn(&Path, &Path, &str, &BatchOptions) -> ManifestEntry;
+
+fn process_one(
+    path: &Path,
+    relative: &Path,
+    stem: &str,
+    opts: &BatchOptions,
+    build: EntryBuilder,
+) -> Processed {
     let started: Instant = Instant::now();
-    let entry: ManifestEntry = isolated_entry(path, relative, || {
-        manifest_entry(path, relative, stem, opts)
-    });
+    let entry: ManifestEntry = isolated_entry(path, relative, || build(path, relative, stem, opts));
     Processed {
         entry,
         elapsed: started.elapsed(),
@@ -323,6 +329,14 @@ const fn classify(entry: &ManifestEntry, summary: &mut BatchSummary) {
 }
 
 pub(crate) fn compute_manifest(root: &Path, opts: &BatchOptions) -> miette::Result<BatchManifest> {
+    compute_manifest_with(root, opts, manifest_entry)
+}
+
+fn compute_manifest_with(
+    root: &Path,
+    opts: &BatchOptions,
+    build: EntryBuilder,
+) -> miette::Result<BatchManifest> {
     let started: WallClock = WallClock::now();
     let started_at: Instant = Instant::now();
     let files: Vec<(PathBuf, PathBuf)> = collect_files(root, opts)?;
@@ -336,13 +350,13 @@ pub(crate) fn compute_manifest(root: &Path, opts: &BatchOptions) -> miette::Resu
             .map(|((path, relative), stem): (&(PathBuf, PathBuf), &String)| {
                 let label: String = relative.to_string_lossy().replace('\\', "/");
                 bar.set_message(&label);
-                let done: Processed = process_one(path, relative, stem, opts);
+                let done: Processed = process_one(path, relative, stem, opts, build);
                 bar.tick();
                 done
             })
             .collect()
     } else {
-        run_parallel(&files, &stems, opts, &bar)?
+        run_parallel(&files, &stems, opts, &bar, build)?
     };
     bar.finish(&format!("{} file(s) processed", processed.len()));
     let durations: BTreeMap<String, u64> = processed
@@ -443,6 +457,7 @@ fn run_parallel(
     stems: &[String],
     opts: &BatchOptions,
     bar: &ActiveProgress,
+    build: EntryBuilder,
 ) -> miette::Result<Vec<Processed>> {
     let pool: rayon::ThreadPool = rayon::ThreadPoolBuilder::new()
         .num_threads(opts.jobs)
@@ -453,7 +468,7 @@ fn run_parallel(
         for (idx, ((path, relative), stem)) in files.iter().zip(stems).enumerate() {
             let slot: &Mutex<Option<Processed>> = &slots[idx];
             scope.spawn(move |_| {
-                let done: Processed = process_one(path, relative, stem, opts);
+                let done: Processed = process_one(path, relative, stem, opts, build);
                 bar.tick();
                 if let Ok(mut guard) = slot.lock() {
                     *guard = Some(done);
@@ -570,6 +585,57 @@ mod tests {
             !names.contains(&"sub/mid.txt".to_string()),
             "include=*.bin must drop the .txt; got {names:?}"
         );
+    }
+
+    fn panics_on_the_poisoned_file(
+        path: &Path,
+        relative: &Path,
+        stem: &str,
+        opts: &BatchOptions,
+    ) -> ManifestEntry {
+        assert!(
+            !relative.to_string_lossy().contains("poisoned"),
+            "the stub pass panics on the poisoned input"
+        );
+        manifest_entry(path, relative, stem, opts)
+    }
+
+    #[test]
+    fn a_panicking_pass_leaves_a_failed_entry_and_the_manifest_is_still_written() {
+        let root_scratch: ScratchDir = tmp_dir("panic");
+        let root: PathBuf = root_scratch.path().to_path_buf();
+        std::fs::write(root.join("fine.txt"), b"plain text one").expect("w");
+        std::fs::write(root.join("poisoned.txt"), b"plain text two").expect("w");
+        let out_scratch: ScratchDir = tmp_dir("panic-out");
+        let out: PathBuf = out_scratch.path().to_path_buf();
+        let opts: BatchOptions = opts_for(&root, &out);
+        let manifest: BatchManifest =
+            compute_manifest_with(&root, &opts, panics_on_the_poisoned_file).expect("batch run");
+        let written: BatchManifest = serde_json::from_slice(
+            &std::fs::read(out.join("manifest.json"))
+                .expect("a panic in one file must not stop manifest.json from being written"),
+        )
+        .expect("manifest.json parses");
+        assert_eq!(written.summary.errors, 1);
+        let poisoned: &ManifestEntry = manifest
+            .entries
+            .iter()
+            .find(|entry: &&ManifestEntry| entry.relative == "poisoned.txt")
+            .expect("the poisoned file keeps its entry");
+        assert!(
+            poisoned
+                .error
+                .as_deref()
+                .is_some_and(|e: &str| e.contains("poisoned")),
+            "the panic becomes the entry's error: {poisoned:?}"
+        );
+        let fine: &ManifestEntry = manifest
+            .entries
+            .iter()
+            .find(|entry: &&ManifestEntry| entry.relative == "fine.txt")
+            .expect("the other file is processed");
+        assert!(fine.error.is_none(), "{fine:?}");
+        assert_eq!(manifest.summary.errors, 1);
     }
 
     #[test]
