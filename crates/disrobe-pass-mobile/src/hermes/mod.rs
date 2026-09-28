@@ -958,17 +958,13 @@ fn decode_utf8_lossy_ascii(slice: &[u8]) -> String {
 }
 
 fn decode_utf16_le_lossy(slice: &[u8]) -> String {
-    let mut out: String = String::with_capacity(slice.len() / 2);
-    let mut i: usize = 0;
-    while i + 1 < slice.len() {
-        let unit: u16 = u16::from_le_bytes([slice[i], slice[i + 1]]);
-        i += 2;
-        match char::from_u32(unit as u32) {
-            Some(c) => out.push(c),
-            None => out.push('?'),
-        }
-    }
-    out
+    char::decode_utf16(
+        slice
+            .chunks_exact(2)
+            .map(|pair: &[u8]| u16::from_le_bytes([pair[0], pair[1]])),
+    )
+    .map(|unit: std::result::Result<char, std::char::DecodeUtf16Error>| unit.unwrap_or('?'))
+    .collect()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1096,6 +1092,20 @@ fn align_up(n: usize, align: usize) -> usize {
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn utf16_strings_keep_surrogate_pairs_and_mark_lone_halves() {
+        let paired: Vec<u8> = "a😀日"
+            .encode_utf16()
+            .flat_map(|unit: u16| unit.to_le_bytes())
+            .collect();
+        assert_eq!(decode_utf16_le_lossy(&paired), "a😀日");
+        let lone: Vec<u8> = [0x0062u16, 0xD83Du16, 0x0063u16]
+            .iter()
+            .flat_map(|unit: &u16| unit.to_le_bytes())
+            .collect();
+        assert_eq!(decode_utf16_le_lossy(&lone), "b?c");
+    }
 
     pub(crate) fn synth_minimal_hermes_v90() -> Vec<u8> {
         synth_minimal_hermes(90)
