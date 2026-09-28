@@ -121,3 +121,13 @@ fn a_with_inside_a_try_keeps_the_try_and_its_handler() {
         &[],
     );
 }
+
+#[test]
+fn a_statement_after_a_with_inside_a_try_is_kept_on_311() {
+    assert_recompiles_on(
+        "statement_after_with_inside_try_311",
+        "def f(name, g):\n    try:\n        with open(name) as fp:\n            data = fp.read()\n        g(data)\n    except OSError:\n        data = None\n    return data\n",
+        &["3.11"],
+        &[],
+    );
+}

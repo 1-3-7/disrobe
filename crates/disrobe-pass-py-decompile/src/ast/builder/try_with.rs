@@ -9395,8 +9395,28 @@ fn structure_with(
         && let Some(cont_start) = with_handler_backjump_continuation(stream, region, body_end)
     {
         tail = structure_stmts(code, stream, cont_start, region.handler_start)?;
+    } else if tail.is_empty()
+        && let Some((cont_start, cont_end)) = with_exit_jump_continuation(stream, region, body_end)
+    {
+        tail = structure_stmts(code, stream, cont_start, cont_end)?;
     }
     Ok((assemble_with_chain(chain, body), tail))
+}
+
+fn with_exit_jump_continuation(
+    stream: &DecodedStream,
+    region: &TryRegion,
+    body_end: usize,
+) -> Option<(usize, usize)> {
+    let exit_jump: usize = (body_end..region.handler_start)
+        .rev()
+        .find(|&k: &usize| matches!(stream.ops.get(k), Some(CanonicalOp::JumpForward(_))))?;
+    let start: usize = resolve_jump_target(stream, exit_jump, &stream.ops[exit_jump])
+        .filter(|&target: &usize| target > region.handler_start && target < region.region_end)?;
+    let end: usize = (start..region.region_end)
+        .find(|&k: &usize| matches!(stream.ops.get(k), Some(CanonicalOp::PushExcInfo)))
+        .unwrap_or(region.region_end);
+    slice_has_real_stmt(stream, start, end).then_some((start, end))
 }
 
 fn with_continuation_cold_end(stream: &DecodedStream, region: &TryRegion, hi: usize) -> usize {
