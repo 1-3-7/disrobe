@@ -34,6 +34,10 @@ const HIDDEN_TEST_SURFACE: &[(&str, &[&str])] = &[
     ("disrobe-core", &["chain"]),
     ("disrobe-irsummary", &["llm-metadata"]),
     ("disrobe-mba", &["smt-solver"]),
+    (
+        "disrobe-nir-lift",
+        &["as3", "beam", "dotnet", "jvm", "lua", "python", "ruby"],
+    ),
     ("disrobe-pass-as3", &["chain"]),
     ("disrobe-pass-beam", &["chain"]),
     ("disrobe-pass-dotnet", &["chain"]),
@@ -49,7 +53,10 @@ const HIDDEN_TEST_SURFACE: &[(&str, &[&str])] = &[
     ("disrobe-pass-pickle", &["chain"]),
     ("disrobe-pass-py-decompile", &["chain"]),
     ("disrobe-pass-py-deob", &["chain"]),
-    ("disrobe-pass-py-disasm", &["chain"]),
+    (
+        "disrobe-pass-py-disasm",
+        &["alt-brython", "alt-ironpython", "alt-jython", "chain"],
+    ),
     ("disrobe-pass-pyarmor", &["chain"]),
     ("disrobe-pass-pyfreeze", &["chain"]),
     ("disrobe-pass-pyinstaller", &["chain"]),

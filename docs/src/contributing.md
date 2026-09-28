@@ -46,6 +46,8 @@ cargo test -p disrobe-pass-lua --features chain
 cargo test -p disrobe-cli --no-default-features --features chain --test auto_dalvik_feature_gate
 cargo test -p disrobe-pass-mobile --features native-image --test flutter_engine_fallback_identity
 cargo test -p disrobe-pass-wasm-deob --features chain,sandbox --test linear_memory_local_offset
+cargo test -p disrobe-nir-lift --features as3,beam,dotnet,jvm,lua,python,ruby
+cargo test -p disrobe-pass-py-disasm --features chain,alt-runtimes-native
 ```
 
 The second form covers a refusal that exists only when `chain` is enabled and `jvm` is disabled.
