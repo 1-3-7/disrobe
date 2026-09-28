@@ -176,7 +176,10 @@ fn async_comp_for_dict_recovers_async_for_3_14() {
         "missing fixture {}",
         source_path.display()
     );
-    let scratch: PathBuf = PathBuf::from("../../target/py-construct-metric/async-comp-gapb");
+    let scratch: PathBuf = PathBuf::from(concat!(
+        env!("CARGO_TARGET_TMPDIR"),
+        "/py-construct-metric/async-comp-gapb"
+    ));
     std::fs::create_dir_all(&scratch).expect("create scratch dir");
     let pyc: PathBuf = scratch.join("async_comp_for_dict.3.14.pyc");
     compile_3_14(&interpreter, &source_path, &pyc);

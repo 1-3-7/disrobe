@@ -26,7 +26,7 @@ use disrobe_py_marshal::{CodeObject, Object, PyVersion as MarshalVersion, PycFil
 
 const COMPILED_DIR: &str = "../../corpus/python/decompile/legacy/compiled";
 const SOURCE_DIR: &str = "../../corpus/python/decompile/legacy/source";
-const SCRATCH_DIR: &str = "../../target/py-legacy-recompile";
+const SCRATCH_DIR: &str = concat!(env!("CARGO_TARGET_TMPDIR"), "/py-legacy-recompile");
 
 const PROVEN_CORRECT_FLOOR: usize = 150;
 const SOURCE_TOKEN_FLOOR: usize = 86;

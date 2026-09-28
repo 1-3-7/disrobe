@@ -29,7 +29,7 @@ use disrobe_py_marshal::{CodeObject, Object, PyVersion as MarshalVersion, PycFil
 
 const PYCACHE_DIR: &str = "../../corpus/python/decompile/playground/__pycache__";
 const STANDALONE_PYC_2_7: &str = "../../corpus/python/decompile/playground/edge_cases_2_7.pyc";
-const REPORT_DIR: &str = "../../target/v0.8-w6";
+const REPORT_DIR: &str = concat!(env!("CARGO_TARGET_TMPDIR"), "/v0.8-w6");
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Stage {

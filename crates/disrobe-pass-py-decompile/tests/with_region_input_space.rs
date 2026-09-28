@@ -273,7 +273,10 @@ fn public_decompile_keeps_the_module_and_names_the_nested_with_refusal() {
         .iter()
         .find(|case: &&WithCase| case.label == "mixed_nest")
         .expect("the mixed nested with fixture is the LOAD_SPECIAL refusal probe");
-    let scratch: PathBuf = PathBuf::from("../../target/py-with-public-refusal");
+    let scratch: PathBuf = PathBuf::from(concat!(
+        env!("CARGO_TARGET_TMPDIR"),
+        "/py-with-public-refusal"
+    ));
     fs::create_dir_all(&scratch).expect("scratch");
     let source_path: PathBuf = scratch.join("mixed-nest.py");
     let pyc_path: PathBuf = scratch.join("mixed-nest.pyc");
@@ -322,7 +325,8 @@ fn public_decompile_keeps_the_module_and_names_the_nested_with_refusal() {
 
 #[test]
 fn with_regions_never_emit_a_plausible_placeholder() {
-    let scratch: PathBuf = PathBuf::from("../../target/py-with-input-space");
+    let scratch: PathBuf =
+        PathBuf::from(concat!(env!("CARGO_TARGET_TMPDIR"), "/py-with-input-space"));
     fs::create_dir_all(&scratch).expect("scratch");
 
     let mut graded: usize = 0;

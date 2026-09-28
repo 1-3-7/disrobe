@@ -183,9 +183,7 @@ fn bounded_output(command: &mut Command, label: &str) -> Result<CapturedOutput, 
 }
 
 fn scratch_path(name: &str) -> PathBuf {
-    std::env::var_os("CARGO_TARGET_DIR")
-        .map_or_else(|| PathBuf::from("../../target"), PathBuf::from)
-        .join(name)
+    PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name)
 }
 
 fn find_interpreter(alias: &str) -> Option<PathBuf> {

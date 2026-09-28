@@ -398,7 +398,8 @@ fn recover(scratch: &Path, alias: &str, fixture: &str) -> (CodeObject, MarshalVe
 
 #[test]
 fn try_inside_loop_recompiles_equivalent() {
-    let scratch: PathBuf = PathBuf::from("../../target/py-try-inside-loop");
+    let scratch: PathBuf =
+        PathBuf::from(concat!(env!("CARGO_TARGET_TMPDIR"), "/py-try-inside-loop"));
     fs::create_dir_all(&scratch).expect("scratch");
 
     let mut checked: usize = 0;
@@ -441,7 +442,10 @@ fn try_inside_loop_recompiles_equivalent() {
 
 #[test]
 fn try_wrapping_loop_handler_not_orphaned() {
-    let scratch: PathBuf = PathBuf::from("../../target/py-try-wrapping-loop");
+    let scratch: PathBuf = PathBuf::from(concat!(
+        env!("CARGO_TARGET_TMPDIR"),
+        "/py-try-wrapping-loop"
+    ));
     fs::create_dir_all(&scratch).expect("scratch");
 
     let mut checked: usize = 0;
@@ -484,7 +488,7 @@ fn try_wrapping_loop_handler_not_orphaned() {
 }
 
 fn assert_recompiles_equivalent(scratch_name: &str, fixture: &str, label: &str, aliases: &[&str]) {
-    let scratch: PathBuf = PathBuf::from(format!("../../target/{scratch_name}"));
+    let scratch: PathBuf = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(scratch_name);
     fs::create_dir_all(&scratch).expect("scratch");
 
     let mut checked: usize = 0;

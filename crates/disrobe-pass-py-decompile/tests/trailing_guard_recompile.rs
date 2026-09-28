@@ -92,7 +92,8 @@ fn read_code(pyc_path: &Path) -> Result<(CodeObject, MarshalVersion), String> {
 
 #[test]
 fn trailing_guard_over_try_recompiles_equivalent() {
-    let scratch: PathBuf = PathBuf::from("../../target/py-trailing-guard");
+    let scratch: PathBuf =
+        PathBuf::from(concat!(env!("CARGO_TARGET_TMPDIR"), "/py-trailing-guard"));
     fs::create_dir_all(&scratch).expect("scratch");
     let source_path: PathBuf = scratch.join("fixture.py");
     fs::write(&source_path, FIXTURE).expect("write fixture");

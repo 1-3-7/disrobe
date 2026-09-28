@@ -28,7 +28,7 @@ use super::tokenize::{render, tokenize};
 pub(crate) const CONSTRUCT_CASES_DIR: &str = "../../corpus/python/decompile/construct/cases";
 pub(crate) const LEGACY_COMPILED_DIR: &str = "../../corpus/python/decompile/legacy/compiled";
 pub(crate) const LEGACY_SOURCE_DIR: &str = "../../corpus/python/decompile/legacy/source";
-pub(crate) const BAND_SCRATCH_ROOT: &str = "../../target/py-band-e2e";
+pub(crate) const BAND_SCRATCH_ROOT: &str = concat!(env!("CARGO_TARGET_TMPDIR"), "/py-band-e2e");
 
 #[derive(Debug, Clone)]
 pub(crate) struct BandInterpreter {

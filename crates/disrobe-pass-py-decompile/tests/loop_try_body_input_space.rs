@@ -337,7 +337,10 @@ const EXCEPT_GROUP_SOURCES: &[(&str, &str)] = &[
 
 #[test]
 fn an_exception_group_handler_is_never_recovered_as_a_plain_except() {
-    let scratch: PathBuf = PathBuf::from("../../target/py-except-group-kind");
+    let scratch: PathBuf = PathBuf::from(concat!(
+        env!("CARGO_TARGET_TMPDIR"),
+        "/py-except-group-kind"
+    ));
     fs::create_dir_all(&scratch).expect("scratch");
 
     let mut graded: usize = 0;
@@ -391,7 +394,10 @@ fn an_exception_group_handler_is_never_recovered_as_a_plain_except() {
 
 #[test]
 fn a_loop_header_is_never_consumed_as_a_guard_over_its_own_body_try() {
-    let scratch: PathBuf = PathBuf::from("../../target/py-loop-header-ownership");
+    let scratch: PathBuf = PathBuf::from(concat!(
+        env!("CARGO_TARGET_TMPDIR"),
+        "/py-loop-header-ownership"
+    ));
     fs::create_dir_all(&scratch).expect("scratch");
 
     let mut graded: usize = 0;
@@ -543,7 +549,10 @@ fn read_code(pyc_path: &Path) -> Result<(CodeObject, MarshalVersion), String> {
 
 #[test]
 fn loop_bodies_holding_a_try_keep_their_pinned_recovery() {
-    let scratch: PathBuf = PathBuf::from("../../target/py-loop-try-input-space");
+    let scratch: PathBuf = PathBuf::from(concat!(
+        env!("CARGO_TARGET_TMPDIR"),
+        "/py-loop-try-input-space"
+    ));
     fs::create_dir_all(&scratch).expect("scratch");
 
     let mut graded: usize = 0;
@@ -652,7 +661,10 @@ fn parser_parse_keeps_its_rotated_walrus_loop() {
 #[test]
 fn identical_outer_guard_remains_outside_a_while() {
     let interpreter: PathBuf = find_interpreter("3.12").expect("CPython 3.12");
-    let scratch: PathBuf = PathBuf::from("../../target/py-ci003-outer-guard");
+    let scratch: PathBuf = PathBuf::from(concat!(
+        env!("CARGO_TARGET_TMPDIR"),
+        "/py-ci003-outer-guard"
+    ));
     fs::create_dir_all(&scratch).expect("scratch");
     for (label, source, while_header, retains_outer_if) in [
         (
@@ -754,7 +766,10 @@ fn identical_outer_guard_remains_outside_a_while() {
 #[test]
 fn pre311_terminal_peel_keeps_a_source_outer_guard() {
     let interpreter: PathBuf = find_interpreter("3.10").expect("CPython 3.10");
-    let scratch: PathBuf = PathBuf::from("../../target/py-ci003-pre311-outer-guard");
+    let scratch: PathBuf = PathBuf::from(concat!(
+        env!("CARGO_TARGET_TMPDIR"),
+        "/py-ci003-pre311-outer-guard"
+    ));
     fs::create_dir_all(&scratch).expect("scratch");
     for (label, source, retains_outer_if) in [
         (
@@ -820,7 +835,10 @@ fn distinct_terminal_return_padding_is_never_peeled() {
     let source: &str = "def f(active, nxt, sink):\n    while active():\n        try:\n            sink(nxt())\n        except LookupError:\n            sink(None)\n";
     for alias in ["3.10", "3.12"] {
         let interpreter: PathBuf = find_interpreter(alias).expect("required CPython");
-        let scratch: PathBuf = PathBuf::from("../../target/py-ci003-distinct-return-padding");
+        let scratch: PathBuf = PathBuf::from(concat!(
+            env!("CARGO_TARGET_TMPDIR"),
+            "/py-ci003-distinct-return-padding"
+        ));
         fs::create_dir_all(&scratch).expect("scratch");
         let source_path: PathBuf = scratch.join(format!("{alias}.py"));
         let pyc_path: PathBuf = scratch.join(format!("{alias}.pyc"));

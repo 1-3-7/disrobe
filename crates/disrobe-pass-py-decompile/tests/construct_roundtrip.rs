@@ -23,7 +23,7 @@ use disrobe_py_marshal::{CodeObject, Object, PyVersion as MarshalVersion, PycFil
 
 const CASES_DIR: &str = "../../corpus/python/decompile/construct/cases";
 const MANIFEST: &str = "../../corpus/python/decompile/construct/manifest.tsv";
-const REPORT_DIR: &str = "../../target/py-construct-metric";
+const REPORT_DIR: &str = concat!(env!("CARGO_TARGET_TMPDIR"), "/py-construct-metric");
 
 const THRESHOLD_PCT: f64 = 100.0;
 

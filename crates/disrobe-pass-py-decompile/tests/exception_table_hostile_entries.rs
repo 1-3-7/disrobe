@@ -190,7 +190,10 @@ fn hostile_entry(
 
 #[test]
 fn a_hostile_exception_table_entry_is_rejected_rather_than_followed() {
-    let scratch: PathBuf = PathBuf::from("../../target/py-hostile-exception-table");
+    let scratch: PathBuf = PathBuf::from(concat!(
+        env!("CARGO_TARGET_TMPDIR"),
+        "/py-hostile-exception-table"
+    ));
     fs::create_dir_all(&scratch).expect("scratch");
 
     let mut graded: usize = 0;

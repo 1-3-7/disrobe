@@ -19,7 +19,7 @@ use disrobe_pass_py_decompile::roundtrip::{Verdict, semantic_equiv};
 use disrobe_py_marshal::{CodeObject, Object, PyVersion as MarshalVersion, PycFile, read_pyc};
 
 const FIXTURE: &str = "../../corpus/python/decompile/construct/cases/modern_request_handler.py";
-const REPORT_DIR: &str = "../../target/py-modern-request-handler";
+const REPORT_DIR: &str = concat!(env!("CARGO_TARGET_TMPDIR"), "/py-modern-request-handler");
 
 const VERSIONS: &[(u8, u8, &str)] = &[
     (3, 11, "3.11"),

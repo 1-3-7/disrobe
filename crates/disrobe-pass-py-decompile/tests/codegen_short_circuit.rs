@@ -18,7 +18,7 @@ use disrobe_pass_py_decompile::engine::{build_real_source, marshal_to_decompile}
 use disrobe_pass_py_decompile::roundtrip::{DiffDetail, Verdict, semantic_equiv};
 use disrobe_py_marshal::{CodeObject, Object, PyVersion as MarshalVersion, PycFile, read_pyc};
 
-const REPORT_DIR: &str = "../../target/py-short-circuit";
+const REPORT_DIR: &str = concat!(env!("CARGO_TARGET_TMPDIR"), "/py-short-circuit");
 
 fn find_interpreter(alias: &str) -> Option<PathBuf> {
     let output: std::process::Output = Command::new("uv")
