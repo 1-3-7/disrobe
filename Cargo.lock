@@ -2299,6 +2299,7 @@ dependencies = [
  "disrobe-cfg",
  "disrobe-core",
  "flate2",
+ "lazy-regex",
  "miette",
  "regex",
  "serde",
@@ -2451,6 +2452,7 @@ dependencies = [
  "disrobe-core",
  "disrobe-testkit",
  "flate2",
+ "lazy-regex",
  "memchr",
  "miette",
  "regex",
@@ -2486,6 +2488,7 @@ dependencies = [
  "miette",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
 ]
 
@@ -2654,6 +2657,7 @@ dependencies = [
  "disrobe-ir",
  "disrobe-testkit",
  "flate2",
+ "lazy-regex",
  "md-5",
  "regex",
  "serde",
@@ -5242,6 +5246,29 @@ checksum = "6e14eda50a3494b3bf7b9ce51c52434a761e383d7238ce1dd5dcec2fbc13e9fb"
 dependencies = [
  "dashmap",
  "hashbrown 0.14.5",
+]
+
+[[package]]
+name = "lazy-regex"
+version = "3.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6bae91019476d3ec7147de9aa291cadb6d870abf2f3015d2da73a90325ac1496"
+dependencies = [
+ "lazy-regex-proc_macros",
+ "once_cell",
+ "regex",
+]
+
+[[package]]
+name = "lazy-regex-proc_macros"
+version = "3.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4de9c1e1439d8b7b3061b2d209809f447ca33241733d9a3c01eabf2dc8d94358"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "regex",
+ "syn 2.0.117",
 ]
 
 [[package]]
