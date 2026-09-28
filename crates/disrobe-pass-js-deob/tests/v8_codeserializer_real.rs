@@ -555,6 +555,31 @@ fn node24_greet_constant_pool_links_user_identifiers_against_print_bytecode() {
 }
 
 #[test]
+fn every_version_greet_lifts_the_parameter_as_v8_names_it() {
+    for fx in &FIXTURES {
+        let (_body, graph): (BytenodeCacheBody, CodeSerializerGraph) = load_graph(fx);
+        let greet: &RecoveredBytecodeArray = find_array(&graph, fx.greet_hex);
+        let disasm: Disassembly = disassemble(&greet.bytecode, fx.node);
+        let linked: String =
+            lift_disassembly_with_pool(&disasm, &greet.constant_pool).render_js("greet");
+        let concat: Option<&str> = linked
+            .lines()
+            .find(|line: &&str| line.contains("\"hello \"") && line.contains('+'));
+        let Some(concat) = concat else {
+            panic!(
+                "{} greet must lift the string concatenation: {linked}",
+                fx.dir
+            );
+        };
+        assert!(
+            concat.contains("a0") && !concat.contains("r249") && !concat.contains("r3"),
+            "{} greet must read the parameter as V8's a0: {concat}",
+            fx.dir
+        );
+    }
+}
+
+#[test]
 fn node24_greet_lift_replaces_placeholders_with_real_names() {
     let fx: &VersionFixture = &FIXTURES[3];
     let (_body, graph): (BytenodeCacheBody, CodeSerializerGraph) = load_graph(fx);
