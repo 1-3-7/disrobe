@@ -89,6 +89,7 @@ const MAX_LINE_ROWS: u64 = 1 << 24;
 const MAX_UNCOMPRESSED: usize = 1 << 30;
 const MAX_INFLATE_READ: u64 = MAX_UNCOMPRESSED as u64 + 1;
 const INITIAL_INFLATE_CAP: usize = 64 * 1024;
+const MAX_TOTAL_DEBUG_BYTES: usize = 2 << 30;
 
 type DwarfAttrResult<T> = core::result::Result<Option<T>, ()>;
 
@@ -169,10 +170,14 @@ impl DwarfBudget {
 pub fn recover_dwarf(image: &NativeImage<'_>) -> DwarfReport {
     let mut sections: BTreeMap<String, Vec<u8>> = BTreeMap::new();
     let mut compressed_seen: bool = false;
+    let mut total_bytes: usize = 0;
     for sec in &image.sections {
         let Some(canonical): Option<&'static str> = canonical_debug_name(&sec.name) else {
             continue;
         };
+        if sections.contains_key(canonical) {
+            continue;
+        }
         let Some((data, was_compressed)): Option<(Vec<u8>, bool)> =
             (if sec.name.starts_with(".zdebug") || sec.name.starts_with("__zdebug") {
                 decompress_zdebug(sec.data).map(|d: Vec<u8>| (d, true))
@@ -185,7 +190,11 @@ pub fn recover_dwarf(image: &NativeImage<'_>) -> DwarfReport {
             continue;
         };
         compressed_seen |= was_compressed;
-        sections.entry(canonical.to_owned()).or_insert(data);
+        total_bytes = total_bytes.saturating_add(data.len());
+        if total_bytes > MAX_TOTAL_DEBUG_BYTES {
+            break;
+        }
+        sections.insert(canonical.to_owned(), data);
     }
 
     if !sections.contains_key(".debug_info") {
@@ -1133,8 +1142,10 @@ fn inflate_capped(
     expected_len: Option<usize>,
 ) -> Option<Vec<u8>> {
     let mut decoder: ZlibDecoder<&[u8]> = ZlibDecoder::new(data);
-    let mut limited: std::io::Take<&mut ZlibDecoder<&[u8]>> =
-        decoder.by_ref().take(MAX_INFLATE_READ);
+    let read_cap: u64 = expected_len.map_or(MAX_INFLATE_READ, |expected: usize| {
+        u64::try_from(expected).map_or(MAX_INFLATE_READ, |value: u64| value.saturating_add(1))
+    });
+    let mut limited: std::io::Take<&mut ZlibDecoder<&[u8]>> = decoder.by_ref().take(read_cap);
     let capacity: usize = capacity_hint.min(data.len()).min(INITIAL_INFLATE_CAP);
     let mut out: Vec<u8> = Vec::with_capacity(capacity);
     limited.read_to_end(&mut out).ok()?;
