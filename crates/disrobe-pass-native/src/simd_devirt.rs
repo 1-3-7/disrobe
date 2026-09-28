@@ -315,8 +315,12 @@ fn parse_gpr(token: &str) -> Option<(Reg, u8)> {
         "dil" => (Reg::Rdi, 1),
         "rbp" => (Reg::Rbp, 8),
         "ebp" => (Reg::Rbp, 4),
+        "bp" => (Reg::Rbp, 2),
+        "bpl" => (Reg::Rbp, 1),
         "rsp" => (Reg::Rsp, 8),
         "esp" => (Reg::Rsp, 4),
+        "sp" => (Reg::Rsp, 2),
+        "spl" => (Reg::Rsp, 1),
         "r8" => (Reg::R8, 8),
         "r8d" => (Reg::R8, 4),
         "r8w" => (Reg::R8, 2),
@@ -327,38 +331,31 @@ fn parse_gpr(token: &str) -> Option<(Reg, u8)> {
         "r9b" => (Reg::R9, 1),
         "r10" => (Reg::R10, 8),
         "r10d" => (Reg::R10, 4),
+        "r10w" => (Reg::R10, 2),
+        "r10b" => (Reg::R10, 1),
         "r11" => (Reg::R11, 8),
         "r11d" => (Reg::R11, 4),
+        "r11w" => (Reg::R11, 2),
+        "r11b" => (Reg::R11, 1),
         "r12" => (Reg::R12, 8),
         "r12d" => (Reg::R12, 4),
+        "r12w" => (Reg::R12, 2),
+        "r12b" => (Reg::R12, 1),
         "r13" => (Reg::R13, 8),
         "r13d" => (Reg::R13, 4),
+        "r13w" => (Reg::R13, 2),
+        "r13b" => (Reg::R13, 1),
         "r14" => (Reg::R14, 8),
         "r14d" => (Reg::R14, 4),
+        "r14w" => (Reg::R14, 2),
+        "r14b" => (Reg::R14, 1),
         "r15" => (Reg::R15, 8),
         "r15d" => (Reg::R15, 4),
+        "r15w" => (Reg::R15, 2),
+        "r15b" => (Reg::R15, 1),
         _ => return None,
     };
     Some((reg, bytes))
-}
-
-fn parse_imm(token: &str) -> Option<i64> {
-    let t: &str = token.trim();
-    let (neg, body): (bool, &str) = t
-        .strip_prefix('-')
-        .map_or((false, t), |rest: &str| (true, rest.trim()));
-    let hex_body: Option<&str> = body
-        .strip_prefix("0x")
-        .or_else(|| body.strip_prefix("0X"))
-        .or_else(|| body.strip_suffix('h').or_else(|| body.strip_suffix('H')));
-    let value: i64 = if let Some(hex) = hex_body {
-        i64::from_str_radix(hex, 16)
-            .ok()
-            .or_else(|| u64::from_str_radix(hex, 16).ok().map(|u: u64| u as i64))?
-    } else {
-        body.parse::<i64>().ok()?
-    };
-    Some(if neg { -value } else { value })
 }
 
 fn parse_mem(bracketed: &str) -> Option<Mem> {
@@ -404,7 +401,7 @@ fn parse_mem(bracketed: &str) -> Option<Mem> {
             }
             continue;
         }
-        disp = disp.checked_add(parse_imm(term)?)?;
+        disp = disp.checked_add(crate::pseudo_c::parse_imm(term)?)?;
     }
     Some(Mem { base, index, disp })
 }
@@ -447,7 +444,7 @@ fn parse_operand(token: &str) -> Option<Operand> {
     if let Some((reg, bytes)) = parse_gpr(raw) {
         return Some(Operand::Gpr { reg, bytes });
     }
-    parse_imm(raw).map(Operand::Imm)
+    crate::pseudo_c::parse_imm(raw).map(Operand::Imm)
 }
 
 fn split_operands(operands: &str) -> Vec<&str> {
