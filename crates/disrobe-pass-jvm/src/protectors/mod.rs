@@ -17,7 +17,7 @@
     clippy::redundant_closure_for_method_calls
 )]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -122,8 +122,9 @@ pub fn recover_via_embedded_stub(
 
     if let Some(stub) = find_char_array_decrypt(cf) {
         let mut via_stub: usize = 0;
+        let string_operands: BTreeSet<u16> = cf.string_constant_utf8_indices();
         for (idx, original) in cf.collect_strings() {
-            if report.strings_recovered.contains_key(&idx) {
+            if report.strings_recovered.contains_key(&idx) || !string_operands.contains(&idx) {
                 continue;
             }
             if let Some(plain) = decrypt_constant(&stub, &original)
@@ -297,10 +298,24 @@ pub fn substitute_recovered_strings(
 ) -> crate::classfile::ClassFile {
     let mut out: crate::classfile::ClassFile = cf.clone();
     for (utf8_idx, plain) in recovered {
-        if let Some(entry) = out.constant_pool.get_mut(usize::from(*utf8_idx))
-            && matches!(entry, crate::classfile::ConstantPoolEntry::Utf8(_))
-        {
-            *entry = crate::classfile::ConstantPoolEntry::Utf8(plain.clone());
+        let Ok(fresh): Result<u16, _> = u16::try_from(out.constant_pool.len()) else {
+            break;
+        };
+        if fresh == u16::MAX {
+            break;
+        }
+        let mut repointed: bool = false;
+        for entry in &mut out.constant_pool {
+            if let crate::classfile::ConstantPoolEntry::String { utf8_index } = entry
+                && *utf8_index == *utf8_idx
+            {
+                *utf8_index = fresh;
+                repointed = true;
+            }
+        }
+        if repointed {
+            out.constant_pool
+                .push(crate::classfile::ConstantPoolEntry::Utf8(plain.clone()));
         }
     }
     out
@@ -320,4 +335,46 @@ pub fn peel_and_decompile(cf: &crate::classfile::ClassFile) -> Option<PeeledClas
         fallback_methods: decompiled.fallback_methods,
         decode_error_count: decompiled.decode_error_count,
     })
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use crate::classfile::{ClassFile, ConstantPoolEntry};
+
+    #[test]
+    fn a_recovered_string_never_rewrites_a_shared_utf8() {
+        let cf: ClassFile = ClassFile {
+            minor_version: 0,
+            major_version: 52,
+            constant_pool: vec![
+                ConstantPoolEntry::Placeholder,
+                ConstantPoolEntry::Utf8("Code".to_owned()),
+                ConstantPoolEntry::String { utf8_index: 1 },
+            ],
+            access_flags: 0,
+            this_class: 0,
+            super_class: 0,
+            interfaces: Vec::new(),
+            fields: Vec::new(),
+            methods: Vec::new(),
+            attributes: Vec::new(),
+        };
+        let recovered: BTreeMap<u16, String> = BTreeMap::from([(1, "plain text".to_owned())]);
+        let out: ClassFile = substitute_recovered_strings(&cf, &recovered);
+        assert_eq!(
+            out.constant_pool[1],
+            ConstantPoolEntry::Utf8("Code".to_owned()),
+            "the Code attribute name must survive"
+        );
+        assert_eq!(
+            out.constant_pool[2],
+            ConstantPoolEntry::String { utf8_index: 3 }
+        );
+        assert_eq!(
+            out.constant_pool[3],
+            ConstantPoolEntry::Utf8("plain text".to_owned())
+        );
+    }
 }

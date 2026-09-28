@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use disrobe_bytes::ByteReader;
 use serde::{Deserialize, Serialize};
@@ -247,6 +247,16 @@ impl ClassFile {
     }
 
     #[must_use]
+    pub fn string_constant_utf8_indices(&self) -> BTreeSet<u16> {
+        self.constant_pool
+            .iter()
+            .filter_map(|entry: &ConstantPoolEntry| match entry {
+                ConstantPoolEntry::String { utf8_index } => Some(*utf8_index),
+                _ => None,
+            })
+            .collect()
+    }
+
     pub fn collect_strings(&self) -> BTreeMap<u16, String> {
         let mut out: BTreeMap<u16, String> = BTreeMap::new();
         for (i, entry) in self.constant_pool.iter().enumerate() {
