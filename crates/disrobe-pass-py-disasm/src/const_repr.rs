@@ -457,7 +457,7 @@ fn repr_slice(lower: &Object, upper: &Object, step: &Object, depth: usize) -> St
     )
 }
 
-fn repr_code(code: &CodeObject) -> String {
+pub(crate) fn repr_code(code: &CodeObject) -> String {
     let name: String = code_text(&code.name).unwrap_or_else(|| "<unknown>".to_owned());
     let filename: String = code_text(&code.filename).unwrap_or_default();
     format!(

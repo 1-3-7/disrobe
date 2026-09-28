@@ -260,14 +260,56 @@ fn extract_for(
         )
     });
     let ins: Vec<Instruction> = crate::disassemble(code, version);
-    let text: String = crate::render_listing(&ins, code, version);
+    let (text, instruction_count): (String, usize) = listing_with_nested_code(code, &ins, version)?;
     let extract: PyDisasmExtract = PyDisasmExtract {
         runtime: "cpython".to_owned(),
         py_version: Some(format!("{}.{}", version.major, version.minor)),
-        instruction_count: ins.len(),
+        instruction_count,
         disasm_text: text,
     };
     Ok((extract, ins, None))
+}
+
+const MAX_NESTED_CODE_OBJECTS: usize = 20_000;
+
+fn listing_with_nested_code(
+    root: &CodeObject,
+    root_instructions: &[Instruction],
+    version: PyVersion,
+) -> CoreResult<(String, usize)> {
+    let mut text: String = crate::render_listing(root_instructions, root, version);
+    let mut instruction_count: usize = root_instructions.len();
+    let mut pending: Vec<&CodeObject> = nested_code_objects(root).rev().collect();
+    let mut listed: usize = 0;
+    while let Some(code) = pending.pop() {
+        listed += 1;
+        if listed > MAX_NESTED_CODE_OBJECTS {
+            return Err(CoreError::PassFailure(format!(
+                "DR-PYDIS-0911: py.disasm: the module nests more than {MAX_NESTED_CODE_OBJECTS} code objects"
+            )));
+        }
+        let instructions: Vec<Instruction> = crate::disassemble(code, version);
+        instruction_count = instruction_count.saturating_add(instructions.len());
+        if !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push('\n');
+        text.push_str("Disassembly of ");
+        text.push_str(&crate::const_repr::repr_code(code));
+        text.push_str(":\n");
+        text.push_str(&crate::render_listing(&instructions, code, version));
+        pending.extend(nested_code_objects(code).rev());
+    }
+    Ok((text, instruction_count))
+}
+
+fn nested_code_objects(code: &CodeObject) -> impl DoubleEndedIterator<Item = &CodeObject> {
+    code.consts
+        .iter()
+        .filter_map(|constant: &Object| match constant {
+            Object::Code(nested) => Some(nested.as_ref()),
+            _ => None,
+        })
 }
 
 const fn object_tag(obj: &Object) -> &'static str {
