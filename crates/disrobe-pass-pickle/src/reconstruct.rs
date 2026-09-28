@@ -614,6 +614,30 @@ mod tests {
     }
 
     #[test]
+    fn a_stack_global_naming_injected_code_is_not_reexecutable() {
+        let module: &[u8] = b"os\nimport shutil;shutil.rmtree('x')#";
+        let mut stream: Vec<u8> = vec![0x80, 0x04, 0x8C];
+        stream.push(u8::try_from(module.len()).expect("short module"));
+        stream.extend_from_slice(module);
+        stream.extend_from_slice(b"\x8C\x06system\x93.");
+        let r: Reconstruction = build(&stream);
+        assert!(!r.reexecutable, "{}", r.program);
+        assert!(!r.unsupported.is_empty());
+        assert!(
+            !r.program.contains("\nimport shutil"),
+            "the module name must not start a statement: {}",
+            r.program
+        );
+        assert!(
+            r.unsupported
+                .iter()
+                .all(|reason: &String| !reason.contains('\n')),
+            "{:?}",
+            r.unsupported
+        );
+    }
+
+    #[test]
     fn reduce_deque_listitems_reexecutable() {
         let r: Reconstruction =
             build(b"\x80\x02ccollections\ndeque\nq\x00)Rq\x01(K\x01K\x02K\x03e.");
