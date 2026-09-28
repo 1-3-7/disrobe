@@ -135,6 +135,7 @@ fn replace_identifier(text: &str, needle: &str, repl: &str) -> String {
         return text.to_owned();
     }
     let mut out: String = String::with_capacity(text.len());
+    let mut run_start: usize = 0;
     let mut i: usize = 0;
     while i < bytes.len() {
         if i + n.len() <= bytes.len()
@@ -142,13 +143,15 @@ fn replace_identifier(text: &str, needle: &str, repl: &str) -> String {
             && boundary(bytes, i)
             && boundary(bytes, i + n.len())
         {
+            out.push_str(text.get(run_start..i).unwrap_or_default());
             out.push_str(repl);
             i += n.len();
+            run_start = i;
         } else {
-            out.push(bytes[i] as char);
             i += 1;
         }
     }
+    out.push_str(text.get(run_start..).unwrap_or_default());
     out
 }
 
@@ -216,6 +219,12 @@ fn collect_idents(source: &str) -> Vec<String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn non_ascii_text_around_a_renamed_identifier_survives_intact() {
+        let text: &str = "café = \"naïve 日本 😀\"\nprint(café, O0O)\n";
+        let rewritten: String = replace_identifier(text, "O0O", "total");
+        assert_eq!(rewritten, "café = \"naïve 日本 😀\"\nprint(café, total)\n");
+    }
     #[test]
     fn oxyry_roundtrip_with_hint_sidecar() {
         let original: &str =

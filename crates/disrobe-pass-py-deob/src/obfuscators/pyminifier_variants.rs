@@ -399,23 +399,18 @@ fn apply_mapping(text: &str, map: &BTreeMap<String, String>) -> String {
     keys.sort_by_key(|k: &&String| core::cmp::Reverse(k.len()));
     let bytes: &[u8] = text.as_bytes();
     let mut out: String = String::with_capacity(text.len());
+    let mut run_start: usize = 0;
     let mut i: usize = 0;
     while i < bytes.len() {
         let b: u8 = bytes[i];
         if b == b'#' {
             while i < bytes.len() && bytes[i] != b'\n' {
-                out.push(bytes[i] as char);
                 i += 1;
             }
             continue;
         }
         if b == b'"' || b == b'\'' {
-            let end: usize = skip_string_literal(bytes, i);
-            let slice_end: usize = end.min(bytes.len());
-            for chunk in &bytes[i..slice_end] {
-                out.push(*chunk as char);
-            }
-            i = end;
+            i = skip_string_literal(bytes, i).min(bytes.len());
             continue;
         }
         let mut matched: bool = false;
@@ -429,17 +424,19 @@ fn apply_mapping(text: &str, map: &BTreeMap<String, String>) -> String {
                 let Some(repl): Option<&String> = map.get(*k) else {
                     continue;
                 };
+                out.push_str(text.get(run_start..i).unwrap_or_default());
                 out.push_str(repl);
                 i += n.len();
+                run_start = i;
                 matched = true;
                 break;
             }
         }
         if !matched {
-            out.push(b as char);
             i += 1;
         }
     }
+    out.push_str(text.get(run_start..).unwrap_or_default());
     out
 }
 
@@ -506,6 +503,16 @@ fn right_boundary(bytes: &[u8], pos: usize) -> bool {
 mod tests {
     use super::*;
 
+    #[test]
+    fn non_ascii_text_comments_and_strings_survive_a_mapping() {
+        let mut map: BTreeMap<String, String> = BTreeMap::new();
+        map.insert("O0O".to_owned(), "total".to_owned());
+        let text: &str = "# résumé ✓\nx = 'naïve 日本' + O0O  # 😀\n";
+        assert_eq!(
+            apply_mapping(text, &map),
+            "# résumé ✓\nx = 'naïve 日本' + total  # 😀\n"
+        );
+    }
     #[test]
     fn detect_gzip_variant() {
         let src: &str = "import zlib, base64\nexec(zlib.decompress(base64.b64decode('eJw=')))\n# Created by pyminifier (https://github.com/liftoff/pyminifier)\n";

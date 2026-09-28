@@ -134,8 +134,12 @@ fn decode_python_string_escapes(s: &str) -> String {
     let mut i: usize = 0;
     while i < bytes.len() {
         if bytes[i] != b'\\' || i + 1 >= bytes.len() {
-            out.push(bytes[i] as char);
-            i += 1;
+            let run_end: usize = bytes[i..]
+                .iter()
+                .position(|b: &u8| *b == b'\\')
+                .map_or(bytes.len(), |offset: usize| (i + offset).max(i + 1));
+            out.push_str(s.get(i..run_end).unwrap_or_default());
+            i = run_end;
             continue;
         }
         match bytes[i + 1] {
@@ -231,6 +235,7 @@ fn replace_identifier(text: &str, needle: &str, replacement: &str) -> String {
         return text.to_owned();
     }
     let mut out: String = String::with_capacity(text.len());
+    let mut run_start: usize = 0;
     let mut i: usize = 0;
     while i < bytes.len() {
         if i + n_bytes.len() <= bytes.len()
@@ -238,13 +243,15 @@ fn replace_identifier(text: &str, needle: &str, replacement: &str) -> String {
             && is_ident_boundary(bytes, i)
             && is_ident_boundary(bytes, i + n_bytes.len())
         {
+            out.push_str(text.get(run_start..i).unwrap_or_default());
             out.push_str(replacement);
             i += n_bytes.len();
+            run_start = i;
         } else {
-            out.push(bytes[i] as char);
             i += 1;
         }
     }
+    out.push_str(text.get(run_start..).unwrap_or_default());
     out
 }
 
@@ -301,6 +308,17 @@ fn collect_def_identifiers(source: &str) -> Vec<String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn escape_decoding_keeps_non_ascii_characters() {
+        assert_eq!(decode_python_string_escapes("é\\n日本\\t😀"), "é\n日本\t😀");
+    }
+
+    #[test]
+    fn non_ascii_text_around_a_renamed_identifier_survives_intact() {
+        let text: &str = "café = \"naïve 日本 😀\"\nprint(café, O0O)\n";
+        let rewritten: String = replace_identifier(text, "O0O", "total");
+        assert_eq!(rewritten, "café = \"naïve 日本 😀\"\nprint(café, total)\n");
+    }
     #[test]
     fn python_obfuscator_pypi_roundtrip() {
         let original: &str =
