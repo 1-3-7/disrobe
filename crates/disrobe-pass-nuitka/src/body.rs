@@ -3170,8 +3170,8 @@ impl<'a> Lifter<'a> {
             if let Some(local) = inner.strip_prefix("var_") {
                 return PythonExpr::Name(local.to_owned());
             }
-            if inner.starts_with("self->m_closure[")
-                && let Some(name) = self.closure_var_name()
+            if let Some(slot) = closure_slot(inner)
+                && let Some(name) = self.closure_var_name(slot)
             {
                 return PythonExpr::Name(name);
             }
@@ -3545,20 +3545,22 @@ impl<'a> Lifter<'a> {
         self.eval_atom(t, env)
     }
 
-    fn closure_var_name(&self) -> Option<String> {
-        for l in &self.lines {
-            if let Some(pos) = l.find("FORMAT_UNBOUND_CLOSURE_ERROR(") {
-                let after: &str = &l[pos..];
-                if let Some(p) = after.find("const_str_plain_") {
-                    let rest: &str = &after[p + "const_str_plain_".len()..];
-                    let name: &str = rest.split([')', ',', ';', ' ']).next().unwrap_or("");
-                    if !name.is_empty() {
-                        return Some(name.to_owned());
-                    }
+    fn closure_var_name(&self, slot: usize) -> Option<String> {
+        const GUARD_WINDOW: usize = 6;
+        let needle: String = format!("self->m_closure[{slot}]");
+        self.lines
+            .iter()
+            .enumerate()
+            .find_map(|(index, line): (usize, &&str)| {
+                if !line.contains(needle.as_str()) || !line.contains("== NULL") {
+                    return None;
                 }
-            }
-        }
-        None
+                self.lines
+                    .iter()
+                    .skip(index + 1)
+                    .take(GUARD_WINDOW)
+                    .find_map(|candidate: &&str| unbound_closure_name(candidate))
+            })
     }
 
     fn find_label(&self, from: usize, to: usize, prefix: &str) -> Option<usize> {
@@ -3746,6 +3748,18 @@ fn split_two_args(after_open: &str) -> Option<(&str, &str)> {
         return None;
     }
     Some((args[0].trim(), args[args.len() - 1].trim()))
+}
+
+fn closure_slot(inner: &str) -> Option<usize> {
+    let digits: &str = inner.strip_prefix("self->m_closure[")?.split(']').next()?;
+    digits.parse::<usize>().ok()
+}
+
+fn unbound_closure_name(line: &str) -> Option<String> {
+    let after: &str = &line[line.find("FORMAT_UNBOUND_CLOSURE_ERROR(")?..];
+    let rest: &str = &after[after.find("const_str_plain_")? + "const_str_plain_".len()..];
+    let name: &str = rest.split([')', ',', ';', ' ']).next().unwrap_or("");
+    (!name.is_empty()).then(|| name.to_owned())
 }
 
 fn trim_matching_paren(after: &str) -> &str {
@@ -4258,6 +4272,30 @@ static int helper(void) {
         assert!(
             extract_c_function_body_by_symbol_with_mask(source, &code, "impl_m$$$function__1_f")
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn each_closure_slot_takes_the_name_its_unbound_check_reports() {
+        let c_body: &str = r"
+if (Nuitka_Cell_GET(self->m_closure[0]) == NULL) {
+FORMAT_UNBOUND_CLOSURE_ERROR(tstate, &exception_state, mod_consts.const_str_plain_a);
+}
+if (Nuitka_Cell_GET(self->m_closure[1]) == NULL) {
+FORMAT_UNBOUND_CLOSURE_ERROR(tstate, &exception_state, mod_consts.const_str_plain_b);
+}
+";
+        let pool: ConstantsPool = ConstantsPool::default();
+        let pack: EraPatternPack = pack_for_era(guess_era_from_csource(c_body));
+        let lifter: Lifter<'_> = Lifter::new(c_body, &pool, pack);
+        let env: BTreeMap<String, PythonExpr> = BTreeMap::new();
+        assert_eq!(
+            lifter.eval_atom("Nuitka_Cell_GET(self->m_closure[0])", &env),
+            PythonExpr::Name("a".to_owned())
+        );
+        assert_eq!(
+            lifter.eval_atom("Nuitka_Cell_GET(self->m_closure[1])", &env),
+            PythonExpr::Name("b".to_owned())
         );
     }
 
