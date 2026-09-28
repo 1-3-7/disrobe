@@ -139,6 +139,39 @@ impl Pass for PhpPass {
         }
     }
 
+    fn chain_refusals(&self, input: &Artifact) -> CoreResult<Vec<String>> {
+        let bytes: &[u8] = input.envelope.as_slice();
+        let detection: PhpDetection = detect_php(bytes);
+        if matches!(detection.kind, PhpKind::PharStub | PhpKind::PharArchive)
+            || bytes.starts_with(OPARRAY_MAGIC)
+        {
+            return Ok(Vec::new());
+        }
+        let mut refusals: Vec<String> = Vec::new();
+        if let Some((family, _, _)) = detect_protector(bytes) {
+            refusals.push(format!(
+                "php commercial encoder {}: {}",
+                family.name(),
+                family.wall_reason()
+            ));
+        }
+        if let Ok(report) = peel_php(bytes, PeelOptions::default()) {
+            if report.residual_eval {
+                refusals.push(
+                    "php residual eval: the peeled source still calls eval() or assert() on a value built at run time"
+                        .to_owned(),
+                );
+            }
+            if let Some(reason) = report.stopped {
+                refusals.push(format!(
+                    "php peel kept the last good layer ({} peeled): {reason}",
+                    report.layers.len()
+                ));
+            }
+        }
+        Ok(refusals)
+    }
+
     fn extract_children(&self, input: &Artifact) -> CoreResult<Vec<ChildArtifact>> {
         let bytes: &[u8] = input.envelope.as_slice();
         let detection: PhpDetection = detect_php(bytes);
@@ -685,6 +718,22 @@ mod tests {
             "recovery report must embed for a detected commercial encoder: {parsed}",
         );
         assert_eq!(recovery["encoder"], "IonCube");
+    }
+
+    #[test]
+    fn a_commercial_encoder_stub_reports_its_wall_to_the_chain() {
+        let mut blob: Vec<u8> = b"<?php //004F\n".to_vec();
+        blob.extend_from_slice(
+            b"encrypted Zend opcode payload that cannot be decrypted statically",
+        );
+        let a: Artifact = Artifact::new(Rung::Raw, blob, [0u8; 32]);
+        let refusals: Vec<String> = PHP_PASS.chain_refusals(&a).expect("refusals");
+        assert!(
+            refusals
+                .iter()
+                .any(|refusal: &String| refusal.starts_with("php commercial encoder")),
+            "{refusals:?}"
+        );
     }
 
     #[test]

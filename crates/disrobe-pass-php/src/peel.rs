@@ -57,6 +57,8 @@ pub struct PeelReport {
     pub layers: Vec<PeelTrace>,
     pub layer_counts: BTreeMap<PeelLayer, u32>,
     pub residual_eval: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stopped: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,15 +84,38 @@ pub fn peel(source: &[u8], options: PeelOptions) -> Result<PeelReport> {
     let mut counts: BTreeMap<PeelLayer, u32> = BTreeMap::new();
     let mut current: Vec<u8> = source.to_vec();
     let mut depth: u32 = 0;
+    let mut stopped: Option<String> = None;
 
     loop {
         if depth >= options.max_depth {
             dbg.line(|| format!("depth {depth} >= max_depth {}: aborting", options.max_depth));
-            return Err(Error::EvalChainDepthExceeded { depth });
+            if depth == 0 {
+                return Err(Error::EvalChainDepthExceeded { depth });
+            }
+            stopped = Some(Error::EvalChainDepthExceeded { depth }.to_string());
+            break;
         }
         let before_len: usize = current.len();
-        let Some((layer, next)): Option<(PeelLayer, Vec<u8>)> = try_one_layer(&current, depth)?
-        else {
+        let step: Option<(PeelLayer, Vec<u8>)> = match try_one_layer(&current, depth) {
+            Ok(step) => step,
+            Err(error) if depth > 0 => {
+                dbg.line(|| format!("layer {depth} failed, keeping the last good layer: {error}"));
+                stopped = Some(error.to_string());
+                break;
+            }
+            Err(error) => return Err(error),
+        };
+        if step
+            .as_ref()
+            .is_some_and(|(_, next): &(PeelLayer, Vec<u8>)| *next == current)
+        {
+            if depth == 0 {
+                return Err(Error::EvalChainStuck { depth });
+            }
+            stopped = Some(format!("layer {depth} decoded to identical bytes"));
+            break;
+        }
+        let Some((layer, next)): Option<(PeelLayer, Vec<u8>)> = step else {
             if options.stop_when_clean && depth > 0 {
                 dbg.line(|| format!("clean after {depth} layer(s)"));
                 break;
@@ -126,6 +151,7 @@ pub fn peel(source: &[u8], options: PeelOptions) -> Result<PeelReport> {
         layers,
         layer_counts: counts,
         residual_eval,
+        stopped,
     })
 }
 
@@ -1152,5 +1178,18 @@ mod tests {
         }
         let result: Option<(EvalKind, Vec<u8>)> = extract_embedded_eval_arg(&buf);
         assert!(result.is_none());
+    }
+    #[test]
+    fn a_failing_layer_keeps_the_last_good_layer() {
+        let blob: &[u8] =
+            b"<?php eval(base64_decode('PD9waHAgZXZhbChiYXNlNjRfZGVjb2RlKCdZV0onKSk7'));";
+        let report: PeelReport =
+            peel(blob, PeelOptions::default()).expect("the good layer survives");
+        assert_eq!(report.layers.len(), 1);
+        assert_eq!(
+            report.final_source,
+            b"<?php eval(base64_decode('YWJ'));".to_vec()
+        );
+        assert!(report.stopped.is_some());
     }
 }
