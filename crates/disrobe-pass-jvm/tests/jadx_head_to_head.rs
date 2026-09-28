@@ -12,13 +12,14 @@ use std::process::Command;
 use std::time::Instant;
 
 use disrobe_pass_jvm::android_backend::{
-    AndroidDecompileOutput, AndroidDecompiler, BackendPreference,
+    AndroidDecompileOutput, AndroidDecompiler, BackendPreference, JadxCapturedOutcome,
+    run_jadx_on_bytes_captured,
 };
 use std::collections::BTreeMap;
 
 use disrobe_pass_jvm::{
     ClassFile, DecompiledClass, android_decompile_dex, decompile_class,
-    decompile_class_with_inners, parse_classfile, run_jadx_on_bytes,
+    decompile_class_with_inners, parse_classfile,
 };
 
 const RECOMPILE_FLOOR: usize = 131;
@@ -267,11 +268,16 @@ fn disrobe_meets_or_beats_jadx_on_recompile_when_jadx_present() {
             "the committed input is required, restore it from git: EdgeCases.dex absent for the jadx leg"
         );
     };
-    let Ok(jadx_out): Result<AndroidDecompileOutput, _> =
-        run_jadx_on_bytes(&dex_bytes, "EdgeCases.dex")
-    else {
-        panic!("jadx failed on the committed EdgeCases.dex");
-    };
+    let jadx_out: AndroidDecompileOutput =
+        match run_jadx_on_bytes_captured(&dex_bytes, "EdgeCases.dex") {
+            Ok(JadxCapturedOutcome::Recovered(output))
+            | Ok(JadxCapturedOutcome::ProducerFailed { output, .. }) => output,
+            Ok(JadxCapturedOutcome::Refused(refusal)) => {
+                panic!("jadx output was refused on the committed EdgeCases.dex: {refusal}")
+            }
+            Err(error) => panic!("jadx could not run on the committed EdgeCases.dex: {error}"),
+            Ok(_) => panic!("jadx returned an outcome this head-to-head does not grade"),
+        };
     let jadx_src: String = jadx_out
         .sources
         .values()
