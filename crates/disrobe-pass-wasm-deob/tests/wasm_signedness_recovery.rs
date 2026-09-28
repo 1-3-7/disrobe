@@ -432,8 +432,12 @@ fn signed_and_unsigned_ops_stay_distinct() {
     assert_ne!(ptr_sign("load_u8"), Signedness::Signed);
 }
 
+fn wasm_clang() -> PathBuf {
+    std::env::var_os("DISROBE_WASM_CLANG").map_or_else(|| PathBuf::from("clang"), PathBuf::from)
+}
+
 fn clang_present() -> bool {
-    Command::new("clang")
+    Command::new(wasm_clang())
         .arg("--version")
         .output()
         .is_ok_and(|out| out.status.success())
@@ -443,7 +447,7 @@ fn compile_c(dir: &Path, name: &str, src: &str) -> Vec<u8> {
     let c_path: PathBuf = dir.join(format!("{name}.c"));
     let o_path: PathBuf = dir.join(format!("{name}.o"));
     std::fs::write(&c_path, src).expect("write the fixture C source");
-    let out: std::process::Output = Command::new("clang")
+    let out: std::process::Output = Command::new(wasm_clang())
         .args(["--target=wasm32", "-O1", "-c"])
         .arg(&c_path)
         .arg("-o")
@@ -453,7 +457,7 @@ fn compile_c(dir: &Path, name: &str, src: &str) -> Vec<u8> {
     assert!(
         out.status.success(),
         "{name}: clang --target=wasm32 failed; a clang with the WebAssembly target is required \
-         (CI provisions one on every leg):\n{}",
+         (`DISROBE_WASM_CLANG`, else `clang` on PATH):\n{}",
         String::from_utf8_lossy(&out.stderr)
     );
     std::fs::read(&o_path).expect("read the clang object")
@@ -463,7 +467,8 @@ fn compile_c(dir: &Path, name: &str, src: &str) -> Vec<u8> {
 fn signedness_matches_clang_wasm() {
     assert!(
         clang_present(),
-        "clang is required on PATH (probed `clang --version`) for the compiled-C signedness grading"
+        "a clang with the WebAssembly target is required (`DISROBE_WASM_CLANG`, else `clang` on \
+         PATH) for the compiled-C signedness grading"
     );
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("disrobe_wasm_sign")
