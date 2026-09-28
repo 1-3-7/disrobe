@@ -49,28 +49,11 @@ pub(crate) fn literal_and_comment_ranges(source: &str) -> Vec<Range<usize>> {
     ranges
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SpanScope {
-    Code,
-    CodeOrWholeLiteral,
-}
-
 #[must_use]
 pub(crate) fn span_is_code(ranges: &[Range<usize>], start: usize, end: usize) -> bool {
-    span_in_scope(ranges, start, end, SpanScope::Code)
-}
-
-#[must_use]
-pub(crate) fn span_in_scope(
-    ranges: &[Range<usize>],
-    start: usize,
-    end: usize,
-    scope: SpanScope,
-) -> bool {
-    let starts_inside: bool = ranges.iter().any(|range: &Range<usize>| match scope {
-        SpanScope::Code => range.start <= start && start < range.end,
-        SpanScope::CodeOrWholeLiteral => range.start < start && start < range.end,
-    });
+    let starts_inside: bool = ranges
+        .iter()
+        .any(|range: &Range<usize>| range.start <= start && start < range.end);
     let ends_inside: bool = ranges
         .iter()
         .any(|range: &Range<usize>| range.start < end && end < range.end);
@@ -80,15 +63,6 @@ pub(crate) fn span_in_scope(
 pub(crate) fn replace_in_code(
     source: &str,
     re: &Regex,
-    fold: impl FnMut(&Captures<'_>) -> Option<String>,
-) -> (String, usize) {
-    replace_in_scope(source, re, SpanScope::Code, fold)
-}
-
-pub(crate) fn replace_in_scope(
-    source: &str,
-    re: &Regex,
-    scope: SpanScope,
     mut fold: impl FnMut(&Captures<'_>) -> Option<String>,
 ) -> (String, usize) {
     let skips: Vec<Range<usize>> = literal_and_comment_ranges(source);
@@ -99,7 +73,7 @@ pub(crate) fn replace_in_scope(
         let Some(whole): Option<regex::Match<'_>> = caps.get(0) else {
             continue;
         };
-        if whole.start() < last || !span_in_scope(&skips, whole.start(), whole.end(), scope) {
+        if whole.start() < last || !span_is_code(&skips, whole.start(), whole.end()) {
             continue;
         }
         let Some(replacement): Option<String> = fold(&caps) else {

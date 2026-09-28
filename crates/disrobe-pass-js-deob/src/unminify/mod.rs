@@ -2,7 +2,6 @@ mod arithmetic;
 mod ast;
 mod control_flow;
 mod globals;
-mod peepholes;
 mod protection;
 mod self_defending;
 mod string_split;
@@ -19,15 +18,11 @@ const MAX_FIX_POINT_PASSES: usize = 8;
 
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct UnminifyStats {
-    pub bool_shorthand_reversed: usize,
-    pub void_undefined_reversed: usize,
-    pub double_not_reversed: usize,
-    pub member_access_dotted: usize,
-    pub merged_string_concat: usize,
+    pub literals_normalized: usize,
+    pub members_dotted: usize,
     pub string_split_literals_merged: usize,
     pub arithmetic_folded: usize,
     pub radix_literals_decimalized: usize,
-    pub function_call_reversed: usize,
     pub globals_call_sites: usize,
     pub globals_evaluated: usize,
     pub globals_failed: usize,
@@ -51,26 +46,21 @@ pub fn unminify(source: &str) -> (String, UnminifyStats) {
     let mut out: String = source.to_owned();
     let mut stats: UnminifyStats = UnminifyStats::default();
     let mut last_len: usize = out.len();
+    let normalize: AstPipeline = AstPipeline::only(&[
+        AstRuleId::BracketToDot,
+        AstRuleId::OptionalChaining,
+        AstRuleId::NullishCoalescing,
+        AstRuleId::LiteralNormalize,
+    ]);
     for _ in 0..MAX_FIX_POINT_PASSES {
-        let (next, n): (String, usize) = peepholes::reverse_bool_shorthand(&out);
+        let (next, normalized): (String, AstUnminifyStats) = normalize.run(&out);
         out = next;
-        stats.bool_shorthand_reversed += n;
-
-        let (next, n): (String, usize) = peepholes::reverse_void_undefined(&out);
-        out = next;
-        stats.void_undefined_reversed += n;
-
-        let (next, n): (String, usize) = peepholes::reverse_double_not(&out);
-        out = next;
-        stats.double_not_reversed += n;
-
-        let (next, n): (String, usize) = peepholes::dot_member_access(&out);
-        out = next;
-        stats.member_access_dotted += n;
-
-        let (next, n): (String, usize) = peepholes::merge_string_concat(&out);
-        out = next;
-        stats.merged_string_concat += n;
+        stats.literals_normalized += normalized.boolean_shorthands_normalized
+            + normalized.void_undefineds_normalized
+            + normalized.double_not_coercions_normalized
+            + normalized.string_concats_folded;
+        stats.members_dotted += normalized.bracket_accesses_dotted;
+        stats.arithmetic_folded += normalized.numeric_constants_folded;
 
         let (next, split_stats): (String, string_split::StringSplitStats) =
             string_split::fold_string_concat(&out);
@@ -84,10 +74,6 @@ pub fn unminify(source: &str) -> (String, UnminifyStats) {
         let (next, n): (String, usize) = arithmetic::decimalize_radix_literals(&out);
         out = next;
         stats.radix_literals_decimalized += n;
-
-        let (next, n): (String, usize) = arithmetic::reverse_function_call(&out);
-        out = next;
-        stats.function_call_reversed += n;
 
         let (next, globals_stats): (String, globals::GlobalsEvalStats) =
             globals::evaluate_globals(&out);

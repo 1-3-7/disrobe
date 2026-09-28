@@ -149,10 +149,7 @@ const fn activity_from_obfuscator_io(out: &ObfuscatorIoOutput) -> RewriteActivit
     let stats: &disrobe_pass_js_deob::UnminifyStats = &out.unminify_stats;
     RewriteActivity {
         string_array_call_sites_inlined: out.string_array_call_sites_inlined as u64,
-        unminify_literal_folds: (stats.bool_shorthand_reversed
-            + stats.void_undefined_reversed
-            + stats.double_not_reversed
-            + stats.merged_string_concat
+        unminify_literal_folds: (stats.literals_normalized
             + stats.string_split_literals_merged
             + stats.radix_literals_decimalized) as u64,
         arithmetic_folded: stats.arithmetic_folded as u64,
@@ -600,13 +597,6 @@ static REGEX_REWRITERS: &[RegexRewriter] = &[
         coverage: Coverage::Ungraded(
             "global-call evaluation is graded by tests/full_pipeline.rs against decoded output",
         ),
-    },
-    RegexRewriter {
-        module: "src/unminify/peepholes.rs",
-        coverage: Coverage::Corpus {
-            family: RewriterFamily::LiteralEncoding,
-            probe: |activity: &RewriteActivity| activity.unminify_literal_folds,
-        },
     },
     RegexRewriter {
         module: "src/unminify/protection.rs",

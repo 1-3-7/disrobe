@@ -39,21 +39,23 @@ fn walk_statement(
     stats: &mut DeMorganStats,
 ) {
     match stmt {
-        Statement::ExpressionStatement(s) => walk_expression(&s.expression, source, edits, stats),
+        Statement::ExpressionStatement(s) => {
+            walk_expression(&s.expression, source, edits, stats, true);
+        }
         Statement::ReturnStatement(s) => {
             if let Some(arg) = s.argument.as_ref() {
-                walk_expression(arg, source, edits, stats);
+                walk_expression(arg, source, edits, stats, true);
             }
         }
         Statement::VariableDeclaration(s) => {
             for d in &s.declarations {
                 if let Some(init) = d.init.as_ref() {
-                    walk_expression(init, source, edits, stats);
+                    walk_expression(init, source, edits, stats, true);
                 }
             }
         }
         Statement::IfStatement(s) => {
-            walk_expression(&s.test, source, edits, stats);
+            walk_expression(&s.test, source, edits, stats, true);
             walk_statement(&s.consequent, source, edits, stats);
             if let Some(alt) = s.alternate.as_ref() {
                 walk_statement(alt, source, edits, stats);
@@ -66,16 +68,16 @@ fn walk_statement(
         }
         Statement::ForStatement(s) => {
             if let Some(test) = s.test.as_ref() {
-                walk_expression(test, source, edits, stats);
+                walk_expression(test, source, edits, stats, true);
             }
             walk_statement(&s.body, source, edits, stats);
         }
         Statement::WhileStatement(s) => {
-            walk_expression(&s.test, source, edits, stats);
+            walk_expression(&s.test, source, edits, stats, true);
             walk_statement(&s.body, source, edits, stats);
         }
         Statement::DoWhileStatement(s) => {
-            walk_expression(&s.test, source, edits, stats);
+            walk_expression(&s.test, source, edits, stats, true);
             walk_statement(&s.body, source, edits, stats);
         }
         Statement::FunctionDeclaration(f) => {
@@ -85,9 +87,9 @@ fn walk_statement(
                 }
             }
         }
-        Statement::ThrowStatement(s) => walk_expression(&s.argument, source, edits, stats),
+        Statement::ThrowStatement(s) => walk_expression(&s.argument, source, edits, stats, true),
         Statement::SwitchStatement(s) => {
-            walk_expression(&s.discriminant, source, edits, stats);
+            walk_expression(&s.discriminant, source, edits, stats, true);
             for case in &s.cases {
                 for inner in &case.consequent {
                     walk_statement(inner, source, edits, stats);
@@ -103,47 +105,55 @@ fn walk_expression(
     source: &str,
     edits: &mut Vec<Edit>,
     stats: &mut DeMorganStats,
+    bare_ok: bool,
 ) {
-    if let Some(edit) = try_de_morgan(expr, source, stats) {
+    if let Some(edit) = try_de_morgan(expr, source, stats, bare_ok) {
         edits.push(edit);
         return;
     }
     match expr {
         Expression::LogicalExpression(b) => {
-            walk_expression(&b.left, source, edits, stats);
-            walk_expression(&b.right, source, edits, stats);
+            walk_expression(&b.left, source, edits, stats, false);
+            walk_expression(&b.right, source, edits, stats, false);
         }
         Expression::BinaryExpression(b) => {
-            walk_expression(&b.left, source, edits, stats);
-            walk_expression(&b.right, source, edits, stats);
+            walk_expression(&b.left, source, edits, stats, false);
+            walk_expression(&b.right, source, edits, stats, false);
         }
         Expression::ParenthesizedExpression(p) => {
-            walk_expression(&p.expression, source, edits, stats);
+            walk_expression(&p.expression, source, edits, stats, true);
         }
-        Expression::UnaryExpression(u) => walk_expression(&u.argument, source, edits, stats),
+        Expression::UnaryExpression(u) => walk_expression(&u.argument, source, edits, stats, false),
         Expression::ConditionalExpression(c) => {
-            walk_expression(&c.test, source, edits, stats);
-            walk_expression(&c.consequent, source, edits, stats);
-            walk_expression(&c.alternate, source, edits, stats);
+            walk_expression(&c.test, source, edits, stats, true);
+            walk_expression(&c.consequent, source, edits, stats, true);
+            walk_expression(&c.alternate, source, edits, stats, true);
         }
         Expression::CallExpression(c) => {
             for arg in &c.arguments {
                 if let Some(inner) = arg.as_expression() {
-                    walk_expression(inner, source, edits, stats);
+                    walk_expression(inner, source, edits, stats, true);
                 }
             }
         }
-        Expression::AssignmentExpression(a) => walk_expression(&a.right, source, edits, stats),
+        Expression::AssignmentExpression(a) => {
+            walk_expression(&a.right, source, edits, stats, true);
+        }
         Expression::SequenceExpression(s) => {
             for inner in &s.expressions {
-                walk_expression(inner, source, edits, stats);
+                walk_expression(inner, source, edits, stats, true);
             }
         }
         _ => {}
     }
 }
 
-fn try_de_morgan(expr: &Expression<'_>, source: &str, stats: &mut DeMorganStats) -> Option<Edit> {
+fn try_de_morgan(
+    expr: &Expression<'_>,
+    source: &str,
+    stats: &mut DeMorganStats,
+    bare_ok: bool,
+) -> Option<Edit> {
     let Expression::UnaryExpression(unary): &Expression<'_> = expr else {
         return None;
     };
@@ -172,7 +182,11 @@ fn try_de_morgan(expr: &Expression<'_>, source: &str, stats: &mut DeMorganStats)
     Some(Edit {
         start: unary.span.start as usize,
         end: unary.span.end as usize,
-        replacement: format!("{left_neg} {flipped} {right_neg}"),
+        replacement: if bare_ok {
+            format!("{left_neg} {flipped} {right_neg}")
+        } else {
+            format!("({left_neg} {flipped} {right_neg})")
+        },
     })
 }
 

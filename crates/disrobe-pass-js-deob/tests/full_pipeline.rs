@@ -16,11 +16,10 @@ fn full_pipeline_collapses_obfuscator_io_sample() {
 
     let (after_unminify, stats): (String, UnminifyStats) = unminify(&recovery.rewritten_source);
     assert!(
-        stats.bool_shorthand_reversed >= 2,
-        "!0/!1 reversals: {}",
-        stats.bool_shorthand_reversed
+        stats.literals_normalized >= 3,
+        "!0, !1 and void 0 normalized: {}",
+        stats.literals_normalized
     );
-    assert!(stats.void_undefined_reversed >= 1, "void 0 reversal");
     assert!(
         stats.arithmetic_folded >= 2,
         "arithmetic folding: {}",

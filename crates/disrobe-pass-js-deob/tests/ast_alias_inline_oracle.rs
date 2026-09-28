@@ -6,7 +6,6 @@ const LOOP_LIMIT: u64 = 2_000_000;
 
 fn run_alias(source: &str) -> (String, AstUnminifyStats) {
     AstPipeline::default()
-        .with_rule(AstRuleId::IifeUnwrap, false)
         .with_rule(AstRuleId::SplitVar, false)
         .with_rule(AstRuleId::DeadCode, false)
         .run(source)

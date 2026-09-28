@@ -1,5 +1,5 @@
 use oxc_allocator::Allocator;
-use oxc_ast::ast::{ComputedMemberExpression, Expression, Program, Statement};
+use oxc_ast::ast::{AssignmentTarget, ComputedMemberExpression, Expression, Program, Statement};
 use oxc_parser::Parser;
 use oxc_span::{GetSpan, SourceType};
 
@@ -182,7 +182,10 @@ fn walk_expression(
             walk_expression(&c.consequent, source, edits, stats);
             walk_expression(&c.alternate, source, edits, stats);
         }
-        Expression::AssignmentExpression(a) => walk_expression(&a.right, source, edits, stats),
+        Expression::AssignmentExpression(a) => {
+            walk_assignment_target(&a.left, source, edits, stats);
+            walk_expression(&a.right, source, edits, stats);
+        }
         Expression::SequenceExpression(s) => {
             for inner in &s.expressions {
                 walk_expression(inner, source, edits, stats);
@@ -213,6 +216,29 @@ fn walk_expression(
             for inner in &a.body.statements {
                 walk_statement(inner, source, edits, stats);
             }
+        }
+        _ => {}
+    }
+}
+
+fn walk_assignment_target(
+    target: &AssignmentTarget<'_>,
+    source: &str,
+    edits: &mut Vec<Edit>,
+    stats: &mut BracketToDotStats,
+) {
+    match target {
+        AssignmentTarget::ComputedMemberExpression(member) => {
+            if let Some(edit) = try_dot(member) {
+                edits.push(edit);
+                stats.accesses_rewritten += 1;
+            } else {
+                walk_expression(&member.expression, source, edits, stats);
+            }
+            walk_expression(&member.object, source, edits, stats);
+        }
+        AssignmentTarget::StaticMemberExpression(member) => {
+            walk_expression(&member.object, source, edits, stats);
         }
         _ => {}
     }
@@ -357,6 +383,16 @@ mod tests {
         let (outcome, stats): (RuleOutcome, BracketToDotStats) = recover(source);
         assert_eq!(stats.accesses_rewritten, 2);
         assert_eq!(splice(source, &outcome), "a.prop0[1].prop2;");
+    }
+
+    #[test]
+    fn an_assignment_target_is_dotted_like_a_read() {
+        let source: &str = "var c = w['console'] = w['console'] || {}; w['a']['b'] = 1;";
+        let (outcome, _): (RuleOutcome, BracketToDotStats) = recover(source);
+        assert_eq!(
+            splice(source, &outcome),
+            "var c = w.console = w.console || {}; w.a.b = 1;"
+        );
     }
 
     #[test]

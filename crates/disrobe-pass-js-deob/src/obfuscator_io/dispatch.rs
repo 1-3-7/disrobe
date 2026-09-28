@@ -333,15 +333,11 @@ fn run_unminify_block(mut current: String, opts: &Options, out: &mut Output) -> 
 }
 
 const fn merge_unminify_stats(base: &mut UnminifyStats, pass: &UnminifyStats) {
-    base.bool_shorthand_reversed += pass.bool_shorthand_reversed;
-    base.void_undefined_reversed += pass.void_undefined_reversed;
-    base.double_not_reversed += pass.double_not_reversed;
-    base.member_access_dotted += pass.member_access_dotted;
-    base.merged_string_concat += pass.merged_string_concat;
+    base.literals_normalized += pass.literals_normalized;
+    base.members_dotted += pass.members_dotted;
     base.string_split_literals_merged += pass.string_split_literals_merged;
     base.arithmetic_folded += pass.arithmetic_folded;
     base.radix_literals_decimalized += pass.radix_literals_decimalized;
-    base.function_call_reversed += pass.function_call_reversed;
     base.globals_call_sites += pass.globals_call_sites;
     base.globals_evaluated += pass.globals_evaluated;
     base.globals_failed += pass.globals_failed;
@@ -386,15 +382,11 @@ fn has_minification_like_work(controls: &BTreeSet<ObfControl>) -> bool {
 }
 
 const fn unminify_delta(s: &UnminifyStats) -> u64 {
-    let total: usize = s.bool_shorthand_reversed
-        + s.void_undefined_reversed
-        + s.double_not_reversed
-        + s.member_access_dotted
-        + s.merged_string_concat
+    let total: usize = s.literals_normalized
+        + s.members_dotted
         + s.string_split_literals_merged
         + s.arithmetic_folded
         + s.radix_literals_decimalized
-        + s.function_call_reversed
         + s.globals_call_sites
         + s.if_true_inlined
         + s.if_false_eliminated

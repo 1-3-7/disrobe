@@ -1210,21 +1210,9 @@ fn deob(
     }
     if let Some(stats) = &unminify_stats {
         println!("  unminify:");
-        println!(
-            "    !0/!1 reversed:        {}",
-            stats.bool_shorthand_reversed
-        );
-        println!(
-            "    void 0 reversed:       {}",
-            stats.void_undefined_reversed
-        );
-        println!("    !!x reduced:           {}", stats.double_not_reversed);
-        println!("    string concat merged:  {}", stats.merged_string_concat);
+        println!("    literals normalized:   {}", stats.literals_normalized);
+        println!("    member access dotted:  {}", stats.members_dotted);
         println!("    arithmetic folded:     {}", stats.arithmetic_folded);
-        println!(
-            "    f.call reversed:       {}",
-            stats.function_call_reversed
-        );
         println!("    globals call sites:    {}", stats.globals_call_sites);
         println!("    globals evaluated:     {}", stats.globals_evaluated);
         println!("    globals failed:        {}", stats.globals_failed);
@@ -1258,7 +1246,6 @@ fn deob(
             "    debug-protect ratchet: {}",
             stats.debug_protection_ratchets_removed
         );
-        println!("    member access dotted:  {}", stats.member_access_dotted);
         println!(
             "    cf-flatten blocks:     {}",
             stats.control_flow_blocks_unflattened

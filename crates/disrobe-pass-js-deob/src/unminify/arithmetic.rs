@@ -82,19 +82,6 @@ fn fold_add_sub(source: &str) -> (String, usize) {
     })
 }
 
-pub(super) fn reverse_function_call(source: &str) -> (String, usize) {
-    let Ok(re): Result<Regex, regex::Error> = Regex::new(
-        r"([a-zA-Z_$][\w$]*)\s*\.\s*call\s*\(\s*(null|undefined|this|0)\s*(,\s*([^)]*))?\)",
-    ) else {
-        return (source.to_owned(), 0);
-    };
-    replace_in_code(source, &re, |caps: &Captures<'_>| {
-        let fn_name: &str = &caps[1];
-        let rest: &str = caps.get(4).map_or("", |m: regex::Match<'_>| m.as_str());
-        Some(format!("{fn_name}({rest})"))
-    })
-}
-
 pub(super) fn decimalize_radix_literals(source: &str) -> (String, usize) {
     let bytes: &[u8] = source.as_bytes();
     let mut out: String = String::with_capacity(source.len());
@@ -295,6 +282,9 @@ fn fold_pair_is_safe(bytes: &[u8], start: usize, end: usize, lhs: &str, additive
     {
         return false;
     }
+    if follows_unary_operator(bytes, start) {
+        return false;
+    }
     let before_sig: Option<u8> = significant_left(bytes, start);
     let (after_sig, after_sig2): (Option<u8>, Option<u8>) = significant_right(bytes, end);
     let signed: bool = matches!(lhs.trim_start().as_bytes().first(), Some(b'-' | b'+'));
@@ -320,6 +310,24 @@ fn fold_pair_is_safe(bytes: &[u8], start: usize, end: usize, lhs: &str, additive
         }
     }
     true
+}
+
+fn follows_unary_operator(bytes: &[u8], start: usize) -> bool {
+    const UNARY_KEYWORDS: [&[u8]; 4] = [b"typeof", b"void", b"delete", b"await"];
+    let mut word_end: usize = start;
+    while word_end > 0 && matches!(bytes[word_end - 1], b' ' | b'\t' | b'\r' | b'\n') {
+        word_end -= 1;
+    }
+    if word_end > 0 && matches!(bytes[word_end - 1], b'!' | b'~') {
+        return true;
+    }
+    let mut word_start: usize = word_end;
+    while word_start > 0 && is_ident_byte(bytes[word_start - 1]) {
+        word_start -= 1;
+    }
+    let word: &[u8] = &bytes[word_start..word_end];
+    let standalone: bool = word_start == 0 || bytes[word_start - 1] != b'.';
+    standalone && UNARY_KEYWORDS.contains(&word)
 }
 
 fn significant_left(bytes: &[u8], start: usize) -> Option<u8> {
@@ -398,25 +406,35 @@ mod tests {
         assert_eq!(n, 0);
     }
 
-    #[test]
-    fn function_call_reversal_null_this() {
-        let (out, n): (String, usize) = reverse_function_call("var k = f.call(null, 1, 2);");
-        assert_eq!(out, "var k = f(1, 2);");
-        assert_eq!(n, 1);
+    fn evaluate(program: &str) -> String {
+        let mut context: boa_engine::Context = boa_engine::Context::default();
+        let value: boa_engine::JsValue = context
+            .eval(boa_engine::Source::from_bytes(program.as_bytes()))
+            .expect("authored program evaluates");
+        value
+            .to_string(&mut context)
+            .expect("value converts to a string")
+            .to_std_string_escaped()
     }
 
     #[test]
-    fn function_call_reversal_no_args() {
-        let (out, n): (String, usize) = reverse_function_call("var k = greet.call(undefined);");
-        assert_eq!(out, "var k = greet();");
-        assert_eq!(n, 1);
-    }
-
-    #[test]
-    fn function_call_no_match_on_non_literal_this() {
-        let (out, n): (String, usize) = reverse_function_call("var k = f.call(obj, 1, 2);");
-        assert_eq!(out, "var k = f.call(obj, 1, 2);");
-        assert_eq!(n, 0);
+    fn a_fold_after_a_unary_operator_keeps_the_operand_binding() {
+        for source in [
+            "!1 + 2",
+            "~1 + 2",
+            "!2 * 3",
+            "~6 / 3",
+            "typeof 1 + 2",
+            "void 1 + 2",
+            "typeof  2 * 3",
+        ] {
+            let (folded, _): (String, usize) = fold_binary(source);
+            assert_eq!(
+                evaluate(&folded),
+                evaluate(source),
+                "{source} folded to {folded}"
+            );
+        }
     }
 
     #[test]

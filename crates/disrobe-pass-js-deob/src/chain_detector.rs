@@ -1051,6 +1051,16 @@ mod tests {
         );
     }
 
+    #[test]
+    fn babel_optional_member_output_restores_under_the_unminify_path() {
+        let body: &[u8] = b"function read(t){var _t;return (_t=t)===null||_t===void 0?void 0:_t.x}function pick(o){return o===null||o===void 0?void 0:o.name}read(null),pick({name:1});";
+        let artifact: Artifact = Artifact::new(Rung::Surface, body.to_vec(), [0; 32]);
+        let recovered: Artifact = run_unminify(body, &artifact).expect("minified input recovers");
+        let text: String = String::from_utf8(recovered.envelope).expect("utf-8 output");
+        assert!(text.contains("o?.name"), "{text}");
+        assert!(!text.contains("void 0"), "{text}");
+    }
+
     fn detect_bytes(src: &[u8]) -> Option<DetectVerdict> {
         let ctx: DetectContext<'_> = DetectContext {
             bytes: src,

@@ -17,7 +17,6 @@ mod exponent;
 mod export_rename;
 mod for_of;
 mod for_to_while;
-mod iife_unwrap;
 mod import_rename;
 mod indirect_call;
 mod interop_unwrap;
@@ -78,7 +77,6 @@ use exponent::ExponentStats;
 use export_rename::ExportRenameStats;
 use for_of::ForOfStats;
 use for_to_while::ForToWhileStats;
-use iife_unwrap::IifeUnwrapStats;
 use import_rename::ImportRenameStats;
 use indirect_call::IndirectCallStats;
 use interop_unwrap::InteropUnwrapStats;
@@ -187,7 +185,6 @@ fn repeatable_binding_symbol(
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum RuleStage {
     TsAsync = -1,
-    IifeUnwrap = 0,
     IndirectCall = 1,
     ArgumentSpread = 2,
     ClassReconstruction = 4,
@@ -241,7 +238,6 @@ enum RuleStage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AstRuleId {
     TsAsync,
-    IifeUnwrap,
     IndirectCall,
     ArgumentSpread,
     AsyncRestore,
@@ -412,8 +408,6 @@ pub struct AstUnminifyStats {
     pub array_spreads_rebuilt: usize,
     pub object_spreads_rebuilt: usize,
     pub array_destructures_rebuilt: usize,
-    pub iifes_unwrapped: usize,
-    pub iife_statements_hoisted: usize,
     pub var_declarations_split: usize,
     pub var_declarators_emitted: usize,
     pub aliases_inlined: usize,
@@ -487,7 +481,6 @@ pub struct AstUnminifyStats {
 
 enum RuleStats {
     TsAsync(TsAsyncStats),
-    IifeUnwrap(IifeUnwrapStats),
     IndirectCall(IndirectCallStats),
     ArgumentSpread(ArgumentSpreadStats),
     Noop,
@@ -570,12 +563,6 @@ impl Default for AstPipeline {
                 Rule {
                     id: AstRuleId::TsAsync,
                     stage: RuleStage::TsAsync,
-                    requires: &[],
-                    enabled: true,
-                },
-                Rule {
-                    id: AstRuleId::IifeUnwrap,
-                    stage: RuleStage::IifeUnwrap,
                     requires: &[],
                     enabled: true,
                 },
@@ -874,6 +861,15 @@ impl Default for AstPipeline {
 
 impl AstPipeline {
     #[must_use]
+    pub(crate) fn only(ids: &[AstRuleId]) -> Self {
+        let mut pipeline: Self = Self::default();
+        for rule in &mut pipeline.rules {
+            rule.enabled = ids.contains(&rule.id);
+        }
+        pipeline
+    }
+
+    #[must_use]
     pub fn with_rule(mut self, id: AstRuleId, enabled: bool) -> Self {
         for rule in &mut self.rules {
             if rule.id == id {
@@ -993,11 +989,6 @@ fn apply_rule(id: AstRuleId, source: &str) -> (RuleOutcome, RuleStats) {
         AstRuleId::TsAsync => {
             let (outcome, ts_stats): (RuleOutcome, TsAsyncStats) = ts_async::recover(source);
             (outcome, RuleStats::TsAsync(ts_stats))
-        }
-        AstRuleId::IifeUnwrap => {
-            let (outcome, iife_stats): (RuleOutcome, IifeUnwrapStats) =
-                iife_unwrap::recover(source);
-            (outcome, RuleStats::IifeUnwrap(iife_stats))
         }
         AstRuleId::IndirectCall => {
             let (outcome, indirect_stats): (RuleOutcome, IndirectCallStats) =
@@ -1237,10 +1228,6 @@ const fn merge_stats(stats: &mut AstUnminifyStats, rule_stats: &RuleStats) {
             stats.ts_async_functions_restored += ts_stats.functions_restored;
             stats.ts_async_state_machines_restored += ts_stats.state_machines_restored;
             stats.ts_async_helpers_removed += ts_stats.helpers_removed;
-        }
-        RuleStats::IifeUnwrap(iife_stats) => {
-            stats.iifes_unwrapped += iife_stats.iifes_unwrapped;
-            stats.iife_statements_hoisted += iife_stats.statements_hoisted;
         }
         RuleStats::IndirectCall(indirect_stats) => {
             stats.indirect_calls_simplified += indirect_stats.calls_simplified;

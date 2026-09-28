@@ -211,3 +211,25 @@ fn negative_assignment_operands_unchanged() {
     let got: String = eval_capture(&recovered).expect("recovered evaluates");
     assert_eq!(want, got, "behavior preserved");
 }
+
+const INPUT_NESTED: &str = r"
+function gate(x, y, z) {
+  if (!(x && y) && z) { return 'open'; }
+  return 'shut';
+}
+var inputs = [false, true];
+for (var i = 0; i < 2; i++) {
+  for (var j = 0; j < 2; j++) {
+    for (var k = 0; k < 2; k++) {
+      print(gate(inputs[i], inputs[j], inputs[k]));
+    }
+  }
+}
+";
+
+#[test]
+fn a_distributed_negation_inside_a_tighter_operator_keeps_its_parentheses() {
+    let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(INPUT_NESTED);
+    assert!(stats.de_morgan_and_negations >= 1, "{recovered}");
+    assert_recovered_equivalent("nested", INPUT_NESTED, &recovered);
+}
