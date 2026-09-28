@@ -2207,6 +2207,30 @@ fn rich_bucket(product_id: u16) -> Option<&'static RichBucket> {
         .find(|b: &&RichBucket| product_id >= b.min_id && product_id <= b.max_id)
 }
 
+const MSVC14_RELEASES: [(u16, u16, &str, &str); 5] = [
+    (23026, 25016, "VS2015", "14.0"),
+    (25017, 27507, "VS2017", "14.1"),
+    (27508, 30704, "VS2019", "14.2"),
+    (30705, 35207, "VS2022", "14.3"),
+    (35208, u16::MAX, "VS2022 or later", "14.4 or later"),
+];
+
+fn rich_release(product_id: u16, build: u16) -> Option<(&'static str, &'static str)> {
+    let bucket: &RichBucket = rich_bucket(product_id)?;
+    if !bucket.toolset.starts_with("14.") {
+        return Some((bucket.vs, bucket.toolset));
+    }
+    Some(
+        MSVC14_RELEASES
+            .iter()
+            .find(|(low, high, _, _): &&(u16, u16, &str, &str)| (*low..=*high).contains(&build))
+            .map_or(
+                (bucket.vs, bucket.toolset),
+                |(_, _, vs, toolset): &(u16, u16, &str, &str)| (*vs, *toolset),
+            ),
+    )
+}
+
 fn rich_compiler_finding(bytes: &[u8], out: &mut Vec<StructFinding>) {
     let scan: &[u8] = &bytes[..bytes.len().min(RICH_SCAN)];
     let Some(rich_pos): Option<usize> = byte_find(scan, RICH_TAG) else {
@@ -2250,20 +2274,17 @@ fn rich_compiler_finding(bytes: &[u8], out: &mut Vec<StructFinding>) {
     let Some((product_id, build)): Option<(u16, u16)> = best else {
         return;
     };
-    let Some(bucket): Option<&RichBucket> = rich_bucket(product_id) else {
+    let Some((vs, toolset)): Option<(&str, &str)> = rich_release(product_id, build) else {
         return;
     };
-    let version: String = format!("{}.{build} ({})", bucket.toolset, bucket.vs);
+    let version: String = format!("{toolset}.{build} ({vs})");
     out.push(StructFinding {
         class: StructClass::Compiler,
         family: StructFamily::Msvc,
         version: Some(version),
         confidence: Confidence::Medium,
         locus: format!("rich comp.id product 0x{product_id:04X}"),
-        detail: format!(
-            "Rich header decodes MSVC toolset build {}.{build}",
-            bucket.toolset
-        ),
+        detail: format!("Rich header decodes MSVC toolset build {toolset}.{build}"),
         native_vm: false,
     });
 }
@@ -2990,6 +3011,20 @@ pub use chain_impl::{PASS_ID, SigEngineDetector};
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rich_header_names_the_visual_studio_release_from_the_build() {
+        assert_eq!(rich_release(0x0104, 24215), Some(("VS2015", "14.0")));
+        assert_eq!(rich_release(0x0104, 27030), Some(("VS2017", "14.1")));
+        assert_eq!(rich_release(0x0104, 30154), Some(("VS2019", "14.2")));
+        assert_eq!(rich_release(0x0104, 35207), Some(("VS2022", "14.3")));
+        assert_eq!(
+            rich_release(0x0104, 35721),
+            Some(("VS2022 or later", "14.4 or later"))
+        );
+        assert_eq!(rich_release(0x00CC, 40629), Some(("VS2013", "12.0")));
+        assert_eq!(rich_release(0x0001, 1), None);
+    }
 
     fn reference_uvarint(bytes: &[u8], at: usize) -> Option<(u64, usize)> {
         let tail: &[u8] = bytes.get(at..)?;
