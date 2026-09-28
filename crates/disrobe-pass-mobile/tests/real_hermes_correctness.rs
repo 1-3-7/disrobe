@@ -116,7 +116,7 @@ fn unalias_self_contained(recovered: &str) -> String {
 
 struct BehaviorSpec {
     name: &'static str,
-    original_unit: &'static str,
+    original_driver: Option<&'static str>,
     recovered_driver: fn(&DecompileReport) -> String,
     inputs_note: &'static str,
     original_anchor: &'static str,
@@ -190,56 +190,62 @@ fn drive_global(report: &DecompileReport) -> String {
 const SPECS: &[BehaviorSpec] = &[
     BehaviorSpec {
         name: "add",
-        original_unit: "function add(a, b) { return a + b; }\nprint(add(2, 3)); print(add(-7, 40)); print(add(0, 0));",
+        original_driver: Some("print(add(2, 3)); print(add(-7, 40)); print(add(0, 0));"),
         recovered_driver: drive_add,
         inputs_note: "pure arithmetic on three operand pairs",
         original_anchor: "return a + b;",
     },
     BehaviorSpec {
         name: "greet",
-        original_unit: "function greet(name) { var prefix = 'disrobe-hermes-'; return prefix + name + '!'; }\nprint(greet('alice')); print(greet(''));",
+        original_driver: Some("print(greet('alice')); print(greet(''));"),
         recovered_driver: drive_greet,
         inputs_note: "string concatenation chain on two inputs",
         original_anchor: "var prefix = \"disrobe-hermes-\";",
     },
     BehaviorSpec {
         name: "Counter",
-        original_unit: "function Counter(start) { this.value = start; }\nvar a = new Counter(99); var b = new Counter(-3);\nprint(a.value); print(b.value);",
+        original_driver: Some(
+            "var a = new Counter(99); var b = new Counter(-3); print(a.value); print(b.value);",
+        ),
         recovered_driver: drive_counter,
         inputs_note: "constructor field assignment via new on two inputs",
         original_anchor: "this.value = start;",
     },
     BehaviorSpec {
         name: "increment",
-        original_unit: "function Counter(start) { this.value = start; }\nvar o = new Counter(41);\no.increment = function() { this.value = this.value + 1; return this.value; };\nprint(o.increment()); print(o.increment()); print(o.value);",
+        original_driver: Some(
+            "var o = new Counter(41); print(o.increment()); print(o.increment()); print(o.value);",
+        ),
         recovered_driver: drive_increment,
         inputs_note: "prototype-method this-field update invoked twice",
         original_anchor: "this.value = this.value + 1;",
     },
     BehaviorSpec {
         name: "label",
-        original_unit: "function greet(name) { var prefix = 'disrobe-hermes-'; return prefix + name + '!'; }\nfunction Counter(start) { this.value = start; }\nvar o = new Counter(7);\no.label = function() { return greet('counter-' + this.value); };\nprint(o.label());",
+        original_driver: Some("var o = new Counter(7); print(o.label());"),
         recovered_driver: drive_label,
         inputs_note: "cross-function call composing greet over this.value",
         original_anchor: "return greet(\"counter-\" + this.value);",
     },
     BehaviorSpec {
         name: "sumRange",
-        original_unit: "function sumRange(n) { var total = 0; for (var i = 1; i <= n; i = i + 1) { total = total + i; } return total; }\nprint(sumRange(10)); print(sumRange(0)); print(sumRange(1)); print(sumRange(100));",
+        original_driver: Some(
+            "print(sumRange(10)); print(sumRange(0)); print(sumRange(1)); print(sumRange(100));",
+        ),
         recovered_driver: drive_sum_range,
         inputs_note: "counted accumulation loop with loop-carried induction and accumulator",
         original_anchor: "for (var i = 1; i <= n; i = i + 1) {",
     },
     BehaviorSpec {
         name: "main",
-        original_unit: "function add(a, b) { return a + b; }\nfunction Counter(start) { this.value = start; }\nfunction greet(name) { var prefix = 'disrobe-hermes-'; return prefix + name + '!'; }\nfunction sumRange(n) { var total = 0; for (var i = 1; i <= n; i = i + 1) { total = total + i; } return total; }\nCounter.prototype.increment = function() { this.value = this.value + 1; return this.value; };\nCounter.prototype.label = function() { return greet('counter-' + this.value); };\nfunction main() { var c = new Counter(add(2, 3)); c.increment(); print(c.label()); print(sumRange(10)); return c.value; }\nprint(main());",
+        original_driver: Some("print(main());"),
         recovered_driver: drive_main,
         inputs_note: "call-frame argument modeling, method dispatch, and cross-function composition",
         original_anchor: "var c = new Counter(add(2, 3));",
     },
     BehaviorSpec {
         name: "global",
-        original_unit: "function add(a, b) { return a + b; }\nfunction sumRange(n) { var total = 0; for (var i = 1; i <= n; i = i + 1) { total = total + i; } return total; }\nfunction greet(name) { var prefix = 'disrobe-hermes-'; return prefix + name + '!'; }\nfunction Counter(start) { this.value = start; }\nCounter.prototype.increment = function() { this.value = this.value + 1; return this.value; };\nCounter.prototype.label = function() { return greet('counter-' + this.value); };\nfunction main() { var c = new Counter(add(2, 3)); c.increment(); print(c.label()); print(sumRange(10)); return c.value; }\nmain();",
+        original_driver: None,
         recovered_driver: drive_global,
         inputs_note: "top-level module: recursively inlined closure bodies, prototype wiring, and the entrypoint call",
         original_anchor: "main();",
@@ -347,7 +353,7 @@ fn hbc_v96_sample_decompile_is_behaviorally_correct_against_real_js_engine() {
         );
 
         let driver: String = (spec.recovered_driver)(&report);
-        let want: String = eval_capture(spec.original_unit)
+        let want: String = eval_capture(&original_program(spec))
             .unwrap_or_else(|| panic!("{}: original source unit must evaluate", spec.name));
         let got: String = eval_capture(&driver).unwrap_or_else(|| {
             panic!(
@@ -466,7 +472,7 @@ fn neither_side_of_the_differential_reads_a_value_that_can_change_between_runs()
         let recovered: String = (spec.recovered_driver)(&report);
         for token in NON_DETERMINISTIC_SOURCES {
             assert!(
-                !spec.original_unit.contains(token),
+                !original_program(spec).contains(token),
                 "{}: the reference unit reads {token}, so a match between the two sides could \
                  come from both reading the same changing value rather than from equal behavior",
                 spec.name
@@ -518,6 +524,55 @@ fn committed_original() -> String {
     })
 }
 
+const SAMPLE_ENTRY_CALL: &str = "main();";
+
+fn original_library_from(source: &str) -> String {
+    source
+        .trim_end()
+        .strip_suffix(SAMPLE_ENTRY_CALL)
+        .unwrap_or_else(|| {
+            panic!(
+                "sample.js must end with its `{SAMPLE_ENTRY_CALL}` entry call, so the library \
+                 the per-function references call into is the file minus that call"
+            )
+        })
+        .to_owned()
+}
+
+fn original_program_from(source: &str, spec: &BehaviorSpec) -> String {
+    spec.original_driver.map_or_else(
+        || source.to_owned(),
+        |driver: &str| format!("{}\n{driver}", original_library_from(source)),
+    )
+}
+
+fn original_program(spec: &BehaviorSpec) -> String {
+    original_program_from(&committed_original(), spec)
+}
+
+#[test]
+fn a_mutated_original_source_turns_the_behavior_band_red() {
+    let report: DecompileReport = load_report();
+    let spec: &BehaviorSpec = SPECS
+        .iter()
+        .find(|spec: &&BehaviorSpec| spec.name == "add")
+        .expect("add spec");
+    let original: String = committed_original();
+    assert_eq!(original.matches("return a + b;").count(), 1);
+    let mutated: String = original.replace("return a + b;", "return a - b;");
+    let got: String = eval_capture(&(spec.recovered_driver)(&report)).expect("recovered add runs");
+    let want: String =
+        eval_capture(&original_program_from(&original, spec)).expect("original add runs");
+    let mutated_want: String =
+        eval_capture(&original_program_from(&mutated, spec)).expect("mutated add runs");
+    assert_eq!(got, want);
+    assert_ne!(
+        got, mutated_want,
+        "the band reads its expectation from sample.js, so an edited source must disagree with \
+         the recovered body"
+    );
+}
+
 #[test]
 fn every_reference_unit_is_anchored_in_the_committed_original_source() {
     let original: String = normalized_source(&committed_original());
@@ -546,9 +601,8 @@ fn every_reference_unit_is_anchored_in_the_committed_original_source() {
             spec.original_anchor
         );
         assert!(
-            normalized_source(spec.original_unit).contains(&anchor),
-            "{}: the reference unit this gate executes does not contain its own anchor `{}`, so \
-             the unit has drifted away from the committed original it claims to reproduce",
+            normalized_source(&original_program(spec)).contains(&anchor),
+            "{}: the reference program this gate executes does not contain its own anchor `{}`",
             spec.name,
             spec.original_anchor
         );
@@ -603,7 +657,7 @@ fn every_lifted_version_reproduces_the_original_behavior_from_its_own_opcode_tab
                 spec.name
             );
             let driver: String = (spec.recovered_driver)(&report);
-            let want: String = eval_capture(spec.original_unit).unwrap_or_else(|| {
+            let want: String = eval_capture(&original_program(spec)).unwrap_or_else(|| {
                 panic!(
                     "hbc v{version} {}: the reference unit must evaluate",
                     spec.name
