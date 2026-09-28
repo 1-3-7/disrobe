@@ -1361,6 +1361,12 @@ fn build_surface_with_c_source_mask(
         let keyword_defaults: BTreeMap<String, String> = keyword_defaults_result.values;
         let n_params: usize = param_names.len();
         let layout: Option<ParameterLayout> = parameter_layout(code_object, n_params);
+        if signature_recovered && n_params > 0 && layout.is_none() {
+            notes.push(format!(
+                "function '{function_name}' has no code-object parameter layout: its parameter kinds (`*args`, `**kwargs`, keyword-only) are unknown and its body is not lifted"
+            ));
+        }
+        let signature_recovered: bool = signature_recovered && (n_params == 0 || layout.is_some());
         let fallback_first_defaulted: usize = n_params.saturating_sub(defaults.len());
         let positional_default_start: Option<usize> = layout.and_then(|layout: ParameterLayout| {
             layout.positional_count.checked_sub(defaults.len())

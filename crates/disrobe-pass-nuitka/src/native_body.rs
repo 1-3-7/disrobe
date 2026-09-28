@@ -27,6 +27,8 @@ pub enum NativeOp {
     IterNext,
     Attribute,
     Subscript,
+    Branch,
+    UnclassifiedCall,
     Return,
 }
 
@@ -580,8 +582,9 @@ fn trace_ops(view: &PeView, insns: &[Instruction]) -> (Vec<NativeOp>, ReturnOrig
                 handle_move(view, insn, &mut origin, &mut pars_reg_dirty, &mut ops);
             }
             Mnemonic::Call => {
-                if let Some(name) = call_import_name(view, insn) {
-                    classify_call(&name, last_small_imm, &mut ops);
+                match call_import_name(view, insn) {
+                    Some(name) => classify_call(&name, last_small_imm, &mut ops),
+                    None => ops.push(NativeOp::UnclassifiedCall),
                 }
                 if insn.op0_kind() == OpKind::Register {
                     origin.insert(full(insn.op0_register()) as u32, ReturnOrigin::Other);
@@ -600,6 +603,14 @@ fn trace_ops(view: &PeView, insns: &[Instruction]) -> (Vec<NativeOp>, ReturnOrig
                     origin.insert(reg as u32, ReturnOrigin::Other);
                 }
             }
+        }
+        if matches!(
+            insn.flow_control(),
+            FlowControl::ConditionalBranch
+                | FlowControl::UnconditionalBranch
+                | FlowControl::IndirectBranch
+        ) {
+            ops.push(NativeOp::Branch);
         }
         if insn.flow_control() == FlowControl::Return {
             ops.push(NativeOp::Return);
@@ -712,7 +723,7 @@ fn classify_call(name: &str, last_small_imm: Option<u32>, ops: &mut Vec<NativeOp
         | "PyObject_VectorcallMethod" => ops.push(NativeOp::Call {
             callee: name.to_owned(),
         }),
-        _ => {}
+        _ => ops.push(NativeOp::UnclassifiedCall),
     }
 }
 
@@ -764,6 +775,8 @@ fn reconstruct(
                 | NativeOp::Attribute
                 | NativeOp::Subscript
                 | NativeOp::Call { .. }
+                | NativeOp::Branch
+                | NativeOp::UnclassifiedCall
         )
     });
     let return_count: usize = ops
@@ -818,7 +831,8 @@ fn marker(ops: &[NativeOp]) -> String {
             NativeOp::Iterate | NativeOp::IterNext => "iterate",
             NativeOp::Attribute => "attribute",
             NativeOp::Subscript => "subscript",
-            NativeOp::Call { .. } => "call",
+            NativeOp::Call { .. } | NativeOp::UnclassifiedCall => "call",
+            NativeOp::Branch => "branch",
             NativeOp::ParamLoad { .. }
             | NativeOp::NoneLoad
             | NativeOp::ConstSlotLoad { .. }
@@ -1031,8 +1045,8 @@ fn build_notes(
     notes.push(format!(
         "native body lift: located {} function impl(s) via the Nuitka function-constructor \
          cross-reference across {} constructing function(s) and {} constructor(s); bound {} to \
-         recovered code-object metadata; reconstructed {} executable body/bodies for \
-         provably-sound idioms (pass-through / `return None`)",
+         recovered code-object metadata; reconstructed {} executable body/bodies from \
+         single-block impls whose calls are all classified (pass-through / `return None`)",
         sites.impls.len(),
         sites.hosts,
         sites.constructors.len(),
@@ -1071,4 +1085,43 @@ fn build_notes(
         ));
     }
     notes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn params() -> Vec<String> {
+        vec!["a".to_owned(), "b".to_owned()]
+    }
+
+    #[test]
+    fn a_straight_line_pass_through_is_a_full_body() {
+        let ops: Vec<NativeOp> = vec![NativeOp::ParamLoad { index: 0 }, NativeOp::Return];
+        let (body, fidelity, _): (Vec<PythonStmt>, LiftFidelity, String) =
+            reconstruct(&ops, ReturnOrigin::Param(0), &params());
+        assert_eq!(fidelity, LiftFidelity::FullBody);
+        assert_eq!(
+            body,
+            vec![PythonStmt::Return(PythonExpr::Name("a".to_owned()))]
+        );
+    }
+
+    #[test]
+    fn a_branch_or_an_unclassified_call_is_never_a_full_body() {
+        let or_shape: Vec<NativeOp> = vec![
+            NativeOp::ParamLoad { index: 0 },
+            NativeOp::UnclassifiedCall,
+            NativeOp::Branch,
+            NativeOp::ParamLoad { index: 1 },
+            NativeOp::Return,
+        ];
+        let (body, fidelity, _): (Vec<PythonStmt>, LiftFidelity, String) =
+            reconstruct(&or_shape, ReturnOrigin::Param(1), &params());
+        assert_eq!(fidelity, LiftFidelity::PartialBody);
+        assert!(
+            body.is_empty(),
+            "`return a or b` must not become `return b`"
+        );
+    }
 }
