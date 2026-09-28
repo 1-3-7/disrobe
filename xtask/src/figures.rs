@@ -75,7 +75,7 @@ const DOCUMENT_FIGURE_BUDGET: [FigureBudget; 33] = [
     FigureBudget {
         path: "README.md",
         figures: 20,
-        digest: "b2c68d62b934c0cc",
+        digest: "a58f0f50bd54f4b1",
     },
     FigureBudget {
         path: "SECURITY.md",
@@ -85,7 +85,7 @@ const DOCUMENT_FIGURE_BUDGET: [FigureBudget; 33] = [
     FigureBudget {
         path: "benches/decompile-quality/results.md",
         figures: 178,
-        digest: "5d15a49ffddcf5bf",
+        digest: "5ac5bec491b9adc7",
     },
     FigureBudget {
         path: "benches/head-to-head/results.md",
@@ -205,7 +205,7 @@ const DOCUMENT_FIGURE_BUDGET: [FigureBudget; 33] = [
     FigureBudget {
         path: "docs/src/languages/python.md",
         figures: 4,
-        digest: "09aaf5f7746aed01",
+        digest: "4f786bc52059eb41",
     },
     FigureBudget {
         path: "docs/src/languages/ruby.md",
@@ -225,7 +225,7 @@ const DOCUMENT_FIGURE_BUDGET: [FigureBudget; 33] = [
     FigureBudget {
         path: "docs/src/python-bindings.md",
         figures: 7,
-        digest: "ad9ddda7c523e5d6",
+        digest: "5619a223035e2cfd",
     },
     FigureBudget {
         path: "evidence/README.md",
