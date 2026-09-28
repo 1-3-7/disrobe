@@ -283,6 +283,7 @@ fn parse_sources(bytes: &[u8], offset: usize) -> Vec<KernelSource> {
 #[must_use]
 fn source_slice(
     sources: &[KernelSource],
+    file_uri: u64,
     start_plus_one: u64,
     end_plus_one: u64,
 ) -> Option<String> {
@@ -291,14 +292,9 @@ fn source_slice(
     }
     let start: usize = usize::try_from(start_plus_one - 1).ok()?;
     let end: usize = usize::try_from(end_plus_one - 1).ok()?;
-    for source in sources {
-        let text_bytes: &[u8] = source.text.as_bytes();
-        if end <= text_bytes.len() && start < end {
-            let slice: &[u8] = &text_bytes[start..end];
-            return Some(String::from_utf8_lossy(slice).into_owned());
-        }
-    }
-    None
+    let source: &KernelSource = sources.get(usize::try_from(file_uri).ok()?)?;
+    let slice: &[u8] = source.text.as_bytes().get(start..end)?;
+    Some(String::from_utf8_lossy(slice).into_owned())
 }
 
 struct NodeReader<'a, 'data> {
@@ -338,7 +334,7 @@ fn parse_procedure(
         return None;
     }
     reader.cursor.read_uint()?;
-    reader.cursor.read_uint()?;
+    let file_uri: u64 = reader.cursor.read_uint()?;
     let start_fo: u64 = reader.cursor.read_uint()?;
     let _file_fo: u64 = reader.cursor.read_uint()?;
     let end_fo: u64 = reader.cursor.read_uint()?;
@@ -346,7 +342,7 @@ fn parse_procedure(
     let _stub_kind: u8 = reader.cursor.read_byte()?;
     let flags: u64 = reader.cursor.read_uint()?;
     let (name, is_private): (String, bool) = reader.read_name()?;
-    let recovered_source: Option<String> = source_slice(sources, start_fo, end_fo);
+    let recovered_source: Option<String> = source_slice(sources, file_uri, start_fo, end_fo);
     Some(KernelProcedure {
         name,
         kind: KernelProcedureKind::from_raw(kind_raw),
@@ -436,7 +432,7 @@ fn parse_class(
         return None;
     }
     reader.cursor.read_uint()?;
-    reader.cursor.read_uint()?;
+    let file_uri: u64 = reader.cursor.read_uint()?;
     let start_fo: u64 = reader.cursor.read_uint()?;
     let _file_fo: u64 = reader.cursor.read_uint()?;
     let end_fo: u64 = reader.cursor.read_uint()?;
@@ -452,7 +448,7 @@ fn parse_class(
         })
         .unwrap_or_default();
 
-    let recovered_source: Option<String> = source_slice(sources, start_fo, end_fo);
+    let recovered_source: Option<String> = source_slice(sources, file_uri, start_fo, end_fo);
     let fields: Vec<String> = recovered_source
         .as_deref()
         .map(extract_field_names)
@@ -702,10 +698,34 @@ mod tests {
             uri: "file:///a.dart".to_owned(),
             text: "int f() => 1;".to_owned(),
         }];
-        let slice: String = source_slice(&sources, 1, 7).expect("slice present");
+        let slice: String = source_slice(&sources, 0, 1, 7).expect("slice present");
         assert_eq!(slice, "int f(");
-        assert!(source_slice(&sources, 0, 7).is_none());
-        assert!(source_slice(&sources, 7, 7).is_none());
+        assert!(source_slice(&sources, 0, 0, 7).is_none());
+        assert!(source_slice(&sources, 0, 7, 7).is_none());
+    }
+
+    #[test]
+    fn source_slice_reads_the_file_the_node_names() {
+        let sources: Vec<KernelSource> = vec![
+            KernelSource {
+                uri: "file:///long.dart".to_owned(),
+                text: "class Long { int a = 1; int b = 2; }".to_owned(),
+            },
+            KernelSource {
+                uri: "file:///short.dart".to_owned(),
+                text: "int g() => 2;".to_owned(),
+            },
+        ];
+        assert_eq!(
+            source_slice(&sources, 1, 1, 14).as_deref(),
+            Some("int g() => 2;")
+        );
+        assert_eq!(
+            source_slice(&sources, 0, 1, 11).as_deref(),
+            Some("class Long")
+        );
+        assert!(source_slice(&sources, 1, 1, 30).is_none());
+        assert!(source_slice(&sources, 2, 1, 5).is_none());
     }
 
     #[test]
