@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use disrobe_core::scratch::ScratchDir;
-use disrobe_pass_jvm::{DecompiledClass, decompile_classfile_bytes};
+use disrobe_pass_jvm::classfile::{ClassFile, parse};
+use disrobe_pass_jvm::{DecompiledClass, decompile_class};
 use sha2::{Digest, Sha256};
 
 const AUTHORED: &str = include_str!("fixtures/ecj_jsr/FinallyProbe.java");
@@ -87,8 +88,8 @@ fn an_ecj_14_try_finally_with_jsr_recompiles_and_runs_like_the_original() {
         CLASS.contains(&OP_JSR),
         "the ecj 1.4 build must carry jsr subroutines"
     );
-    let decompiled: DecompiledClass =
-        decompile_classfile_bytes(CLASS).expect("the ecj class decompiles");
+    let class: ClassFile = parse(CLASS).expect("the ecj class parses");
+    let decompiled: DecompiledClass = decompile_class(&class);
     let source: &str = &decompiled.source;
     assert!(
         source.contains("static int guarded(")
