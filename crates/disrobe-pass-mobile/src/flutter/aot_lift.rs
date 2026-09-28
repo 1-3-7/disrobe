@@ -471,7 +471,8 @@ fn disassemble_symtab_functions(
         let next_offset: usize = ordered
             .get(idx + 1)
             .map_or(instructions.len(), |next: &&DartFunctionSymbol| next.offset);
-        let size_limit: usize = symbol.offset.saturating_add(symbol.size as usize);
+        let size_limit: usize = usize::try_from(symbol.size)
+            .map_or(usize::MAX, |size: usize| symbol.offset.saturating_add(size));
         let limit: usize = size_limit.min(next_offset);
         let declared: Option<String> = (!symbol.name.is_empty()).then(|| symbol.name.clone());
         functions.push(super::disasm::disassemble_range(
@@ -1169,8 +1170,10 @@ impl SymbolIndex {
                 continue;
             }
             exact.entry(start).or_insert_with(|| symbol.name.clone());
-            if symbol.size > 0 {
-                intervals.push((start, start + symbol.size, symbol.name.clone()));
+            if symbol.size > 0
+                && let Some(end) = start.checked_add(symbol.size)
+            {
+                intervals.push((start, end, symbol.name.clone()));
             }
         }
         intervals.sort_by_key(|entry: &(u64, u64, String)| entry.0);
@@ -1388,6 +1391,18 @@ mod tests {
             size,
             name: name.to_owned(),
         }
+    }
+
+    #[test]
+    fn a_symbol_whose_end_overflows_keeps_its_exact_name_and_no_interval() {
+        let index: SymbolIndex = SymbolIndex::build(&[
+            symbol(0x100, u64::MAX, "Overflowing.end"),
+            symbol(0x200, 0x10, "Bounded.body"),
+        ]);
+        assert_eq!(index.resolve(0x100), Some("Overflowing.end"));
+        assert_eq!(index.resolve(0x104), None);
+        assert_eq!(index.resolve(0x208), Some("Bounded.body"));
+        assert_eq!(index.intervals.len(), 1);
     }
 
     #[test]

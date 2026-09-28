@@ -389,6 +389,27 @@ pub(super) fn parse_dart_graph(
             total: total_objects,
         });
     }
+    let inherited: usize = match base_nodes {
+        Some(base) => {
+            let expected: usize = base.len().saturating_sub(1);
+            if base_objects != expected {
+                return Err(Error::DartGraphBaseObjectMismatch {
+                    actual: base_objects,
+                    expected,
+                });
+            }
+            base_objects
+        }
+        None => 0,
+    };
+    let declared_new: usize = total_objects - inherited;
+    let remaining: usize = declared.len().saturating_sub(cursor.position());
+    if declared_new > remaining {
+        return Err(Error::DartGraphObjectsExceedInput {
+            declared: declared_new,
+            remaining,
+        });
+    }
     let node_count: usize =
         total_objects
             .checked_add(1)
@@ -401,13 +422,6 @@ pub(super) fn parse_dart_graph(
     let mut nodes: Vec<DartGraphNode> = Vec::with_capacity(node_count);
     nodes.resize_with(node_count, DartGraphNode::default);
     if let Some(base) = base_nodes {
-        let expected: usize = base.len().saturating_sub(1);
-        if base_objects != expected {
-            return Err(Error::DartGraphBaseObjectMismatch {
-                actual: base_objects,
-                expected,
-            });
-        }
         let destination: &mut [DartGraphNode] =
             nodes
                 .get_mut(..=base_objects)
@@ -1569,7 +1583,52 @@ fn decode_two_byte_string(bytes: &[u8]) -> Option<String> {
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
-    use super::{decode_one_byte_string, decode_two_byte_string};
+    use super::{
+        DartGraphLimits, DartGraphSnapshotRole, DartParsedGraph, decode_one_byte_string,
+        decode_two_byte_string, parse_dart_graph,
+    };
+    use crate::error::{Error, Result};
+    use crate::flutter::dart_graph_layout::DART_3_12_2_ANDROID_ARM64_PRODUCT_LAYOUT;
+
+    fn dart_unsigned(mut value: u64) -> Vec<u8> {
+        let mut out: Vec<u8> = Vec::new();
+        while value > 0x7f {
+            out.push((value & 0x7f) as u8);
+            value >>= 7;
+        }
+        out.push((value as u8) | 0x80);
+        out
+    }
+
+    #[test]
+    fn an_object_count_beyond_the_remaining_bytes_is_refused_before_nodes_are_allocated() {
+        const DECLARED_OBJECTS: u64 = 1_000_000;
+        let mut header: Vec<u8> = dart_unsigned(0);
+        header.extend(dart_unsigned(DECLARED_OBJECTS));
+        header.extend(dart_unsigned(0));
+        header.extend(dart_unsigned(0));
+        header.extend(dart_unsigned(0));
+        let outcome: Result<DartParsedGraph> = parse_dart_graph(
+            &header,
+            header.len(),
+            0,
+            DartGraphSnapshotRole::Vm,
+            None,
+            DART_3_12_2_ANDROID_ARM64_PRODUCT_LAYOUT,
+            DartGraphLimits::default(),
+        );
+        match outcome {
+            Err(Error::DartGraphObjectsExceedInput {
+                declared,
+                remaining,
+            }) => {
+                assert_eq!(declared, 1_000_000);
+                assert_eq!(remaining, 0);
+            }
+            Err(other) => panic!("expected the object-count refusal, got {other}"),
+            Ok(_) => panic!("a header-only snapshot declaring a million objects parsed"),
+        }
+    }
 
     #[test]
     fn decodes_one_byte_latin1() {

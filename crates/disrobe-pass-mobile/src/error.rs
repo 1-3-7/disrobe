@@ -178,6 +178,11 @@ pub enum Error {
     DartGraphBaseObjectMismatch { actual: usize, expected: usize },
 
     #[error(
+        "DR-MOB-0064: Dart pinned snapshot graph declares {declared} new objects but only {remaining} clustered bytes follow the header"
+    )]
+    DartGraphObjectsExceedInput { declared: usize, remaining: usize },
+
+    #[error(
         "DR-MOB-0041: Dart pinned snapshot graph reference {reference} exceeds object count {objects} at offset {offset}"
     )]
     DartGraphReferenceOutOfBounds {
