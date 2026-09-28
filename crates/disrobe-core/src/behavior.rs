@@ -227,7 +227,7 @@ static API_RULES: &[ApiRule] = &[
     ApiRule {
         needle: "openprocess",
         category: Category::ProcessExec,
-        attack_id: Some("T1055"),
+        attack_id: None,
     },
     ApiRule {
         needle: "writeprocessmemory",
@@ -317,12 +317,12 @@ static API_RULES: &[ApiRule] = &[
     ApiRule {
         needle: "virtualalloc",
         category: Category::DynamicCode,
-        attack_id: Some("T1055"),
+        attack_id: None,
     },
     ApiRule {
         needle: "virtualprotect",
         category: Category::DynamicCode,
-        attack_id: Some("T1055"),
+        attack_id: None,
     },
     ApiRule {
         needle: "mmap",
@@ -399,12 +399,36 @@ impl Accumulator {
 fn match_api_tokens(tokens: &[String], source: &'static str, acc: &mut Accumulator) {
     for token in tokens {
         let lower: String = token.to_ascii_lowercase();
+        let name: Option<&str> = api_name(&lower);
         for rule in API_RULES {
-            if token_matches(&lower, rule.needle) {
+            if api_name_matches(name, &lower, rule.needle) {
                 acc.add(rule.category, token.clone(), source, rule.attack_id);
             }
         }
     }
+}
+
+fn api_name(token_lower: &str) -> Option<&str> {
+    let tail: &str = token_lower.rsplit('!').next().unwrap_or(token_lower);
+    let name: &str = tail.trim_start_matches('_');
+    let name: &str = name
+        .split_once('@')
+        .map_or(name, |(head, _): (&str, &str)| head);
+    (!name.is_empty() && name.bytes().all(is_ident_byte)).then_some(name)
+}
+
+fn api_name_matches(name: Option<&str>, token_lower: &str, needle: &str) -> bool {
+    if needle.contains('\\') {
+        return token_lower.contains(needle) && is_word_bounded(token_lower, needle);
+    }
+    let Some(rest): Option<&str> = name.and_then(|name: &str| name.strip_prefix(needle)) else {
+        return false;
+    };
+    needle.len() > 4
+        || matches!(
+            rest,
+            "" | "a" | "w" | "to" | "from" | "ex" | "exa" | "exw" | "msg"
+        )
 }
 
 const fn sig_class_attack_id(class: SigClass) -> &'static str {
@@ -443,14 +467,6 @@ fn shared_sig_matches(lower: &str, sig: &StringSig) -> bool {
         is_word_bounded(lower, sig.needle)
     } else {
         lower.contains(sig.needle)
-    }
-}
-
-fn token_matches(haystack_lower: &str, needle: &str) -> bool {
-    if needle.contains('\\') || needle.len() <= 4 {
-        haystack_lower.contains(needle) && is_word_bounded(haystack_lower, needle)
-    } else {
-        haystack_lower.contains(needle)
     }
 }
 
@@ -627,6 +643,32 @@ mod tests {
         let dynamic: &CategoryFinding =
             category(&report, Category::DynamicCode).expect("dynamic code present");
         assert!(dynamic.attack_ids.contains(&"T1129"), "{dynamic:?}");
+    }
+
+    #[test]
+    fn runtime_imports_and_free_text_are_not_process_injection() {
+        let imports: Vec<String> = vec![
+            "kernel32.dll!VirtualAlloc".to_owned(),
+            "kernel32.dll!VirtualProtect".to_owned(),
+            "kernel32.dll!OpenProcess".to_owned(),
+        ];
+        let report: BehaviorReport = analyze(
+            b"help: call WriteProcessMemory and CreateRemoteThread to inject code",
+            &imports,
+        );
+        assert!(
+            !report.attack_ids.contains(&"T1055"),
+            "allocation imports every runtime links and prose that names injection APIs are not \
+             T1055: {report:?}"
+        );
+        let injector: BehaviorReport = analyze(
+            b"",
+            &[
+                "kernel32.dll!WriteProcessMemory".to_owned(),
+                "kernel32.dll!CreateRemoteThread".to_owned(),
+            ],
+        );
+        assert!(injector.attack_ids.contains(&"T1055"), "{injector:?}");
     }
 
     #[test]
