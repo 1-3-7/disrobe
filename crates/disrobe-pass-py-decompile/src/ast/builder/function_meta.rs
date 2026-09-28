@@ -2194,6 +2194,8 @@ pub(super) fn try_build_lambda_expr(
     let ops: Vec<CanonicalOp> = decode_stream(nested, opmap.as_ref(), &nested_version);
     let body: Expr = if lambda_body_has_inlined_comprehension(&ops) {
         lambda_structured_body(nested, &nested_version)?
+    } else if lambda_body_branches(&ops) {
+        lambda_branching_body(nested, &nested_version)?
     } else {
         let (stmts, residual): (Vec<Stmt>, Vec<Expr>) =
             build_linear_stmts_sim(nested, &ops).ok()?;
@@ -2228,6 +2230,57 @@ fn lambda_body_has_inlined_comprehension(ops: &[CanonicalOp]) -> bool {
         )
     });
     has_for_iter && has_accumulator
+}
+
+fn lambda_body_branches(ops: &[CanonicalOp]) -> bool {
+    ops.iter().any(|o: &CanonicalOp| {
+        matches!(
+            o,
+            CanonicalOp::PopJumpIfFalse(_)
+                | CanonicalOp::PopJumpIfTrue(_)
+                | CanonicalOp::PopJumpIfFalseRel(_)
+                | CanonicalOp::PopJumpIfTrueRel(_)
+        )
+    })
+}
+
+fn lambda_branching_body(nested: &CodeObject, nested_version: &PyVersion) -> Option<Expr> {
+    let opmap: Box<dyn OpcodeMap> = map_for(nested_version.clone());
+    let stream: DecodedStream = decode_stream_with_offsets(nested, opmap.as_ref(), nested_version);
+    let _code_scope: NestedCodeScope = NestedCodeScope::enter();
+    let stmts: Vec<Stmt> = structure_stmts(nested, &stream, 0, stream.ops.len()).ok()?;
+    returned_expr(&stmts, 0)
+}
+
+const MAX_LAMBDA_BRANCH_DEPTH: usize = 64;
+
+fn returned_expr(stmts: &[Stmt], depth: usize) -> Option<Expr> {
+    if depth > MAX_LAMBDA_BRANCH_DEPTH {
+        return None;
+    }
+    match stmts {
+        [Stmt::Return(Some(value))] => Some(value.clone()),
+        [
+            Stmt::If {
+                test, body, orelse, ..
+            },
+        ] if !orelse.is_empty() => Some(Expr::IfExp {
+            test: Box::new(test.clone()),
+            body: Box::new(returned_expr(body, depth + 1)?),
+            orelse: Box::new(returned_expr(orelse, depth + 1)?),
+        }),
+        [
+            Stmt::If {
+                test, body, orelse, ..
+            },
+            rest @ ..,
+        ] if orelse.is_empty() && !rest.is_empty() => Some(Expr::IfExp {
+            test: Box::new(test.clone()),
+            body: Box::new(returned_expr(body, depth + 1)?),
+            orelse: Box::new(returned_expr(rest, depth + 1)?),
+        }),
+        _ => None,
+    }
 }
 
 fn lambda_structured_body(nested: &CodeObject, nested_version: &PyVersion) -> Option<Expr> {
