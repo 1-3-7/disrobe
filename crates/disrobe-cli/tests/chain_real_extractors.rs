@@ -612,7 +612,7 @@ fn real_extractor_python_emits_source_not_json() {
         ),
         (
             "python/decompile/legacy/compiled/binary_slice.3.12.pyc",
-            "[",
+            "print(l[1:3])",
         ),
     ] {
         let bytes: Vec<u8> = read_fixture(rel);
