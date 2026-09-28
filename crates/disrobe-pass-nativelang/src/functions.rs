@@ -11,7 +11,7 @@ use crate::debug;
 use crate::demangle::{DemangledSymbol, demangle_crystal, demangle_d, demangle_nim, demangle_zig};
 use crate::detect::NativeLang;
 use crate::dwarf::{DwarfFunction, DwarfReport};
-use crate::image::{CodeArch, NativeImage, Section};
+use crate::image::{CodeArch, FunctionStartSource, NativeImage, Section};
 
 type EhReader<'a> = EndianSlice<'a, RunTimeEndian>;
 type EhSection<'a> = EhFrame<EhReader<'a>>;
@@ -22,6 +22,9 @@ pub enum FunctionOrigin {
     SymbolTable,
     Dwarf,
     EhFrame,
+    FunctionStarts,
+    UnwindTable,
+    Export,
     RecursiveTraversal,
 }
 
@@ -187,6 +190,37 @@ pub fn recover_functions(
         from_eh_frame += 1;
     }
     debug::dbg_kv("from-eh-frame", || from_eh_frame.to_string());
+
+    let mut from_tables: usize = 0;
+    for table_start in &image.function_starts {
+        if by_start.len() >= MAX_RECOVERED_FUNCTIONS {
+            break;
+        }
+        if by_start.contains_key(&table_start.address) {
+            continue;
+        }
+        let origin: FunctionOrigin = match table_start.source {
+            FunctionStartSource::MachOFunctionStarts => FunctionOrigin::FunctionStarts,
+            FunctionStartSource::PeUnwindTable => FunctionOrigin::UnwindTable,
+            FunctionStartSource::Export => FunctionOrigin::Export,
+        };
+        by_start.insert(
+            table_start.address,
+            RecoveredFunction {
+                name: format!("sub_{:x}", table_start.address),
+                demangled: None,
+                signature: None,
+                start: table_start.address,
+                end: None,
+                source_lines: None,
+                params: Vec::new(),
+                origin,
+                address_assigned: true,
+            },
+        );
+        from_tables += 1;
+    }
+    debug::dbg_kv("from-function-tables", || from_tables.to_string());
 
     let arch_supported: bool = matches!(image.arch, CodeArch::X86 | CodeArch::X86_64);
     let stripped: bool = image.func_symbols.is_empty() && dwarf.functions.is_empty();
@@ -521,9 +555,11 @@ pub(crate) const fn boundary_confidence(
     match extent.basis {
         EndBasis::Declared => match func.origin {
             FunctionOrigin::SymbolTable | FunctionOrigin::Dwarf => BoundaryConfidence::High,
-            FunctionOrigin::EhFrame | FunctionOrigin::RecursiveTraversal => {
-                BoundaryConfidence::Medium
-            }
+            FunctionOrigin::EhFrame
+            | FunctionOrigin::FunctionStarts
+            | FunctionOrigin::UnwindTable
+            | FunctionOrigin::Export
+            | FunctionOrigin::RecursiveTraversal => BoundaryConfidence::Medium,
         },
         EndBasis::NextStart => BoundaryConfidence::Medium,
         EndBasis::SectionEnd => BoundaryConfidence::Low,
@@ -568,6 +604,7 @@ mod tests {
             sections: Vec::new(),
             symbols: Vec::new(),
             func_symbols: Vec::new(),
+            function_starts: Vec::new(),
         }
     }
 
@@ -601,6 +638,7 @@ mod tests {
             }],
             symbols: Vec::new(),
             func_symbols: Vec::new(),
+            function_starts: Vec::new(),
         }
     }
 

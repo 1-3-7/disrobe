@@ -39,6 +39,20 @@ pub struct FuncSymbol {
     pub relocatable: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FunctionStartSource {
+    MachOFunctionStarts,
+    PeUnwindTable,
+    Export,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FunctionStart {
+    pub address: u64,
+    pub source: FunctionStartSource,
+}
+
 #[derive(Debug, Clone)]
 pub struct NativeImage<'a> {
     pub kind: ImageKind,
@@ -50,6 +64,122 @@ pub struct NativeImage<'a> {
     pub sections: Vec<Section<'a>>,
     pub symbols: Vec<String>,
     pub func_symbols: Vec<FuncSymbol>,
+    pub function_starts: Vec<FunctionStart>,
+}
+
+const MAX_TABLE_FUNCTION_STARTS: usize = 1 << 20;
+const MACHO_LC_SEGMENT_64: u32 = 0x19;
+const MACHO_LC_FUNCTION_STARTS: u32 = 0x26;
+const MACHO_HEADER_64_LEN: usize = 32;
+const PE_RUNTIME_FUNCTION_X64_LEN: usize = 12;
+const PE_RUNTIME_FUNCTION_ARM64_LEN: usize = 8;
+
+fn read_u32_le(bytes: &[u8], at: usize) -> Option<u32> {
+    let end: usize = at.checked_add(4)?;
+    let chunk: [u8; 4] = bytes.get(at..end)?.try_into().ok()?;
+    Some(u32::from_le_bytes(chunk))
+}
+
+fn read_u64_le(bytes: &[u8], at: usize) -> Option<u64> {
+    let end: usize = at.checked_add(8)?;
+    let chunk: [u8; 8] = bytes.get(at..end)?.try_into().ok()?;
+    Some(u64::from_le_bytes(chunk))
+}
+
+fn macho_function_starts(raw: &[u8]) -> Vec<u64> {
+    if raw.get(..4) != Some(&[0xCF, 0xFA, 0xED, 0xFE][..]) {
+        return Vec::new();
+    }
+    let Some(command_count): Option<u32> = read_u32_le(raw, 16) else {
+        return Vec::new();
+    };
+    let mut cursor: usize = MACHO_HEADER_64_LEN;
+    let mut text_base: Option<u64> = None;
+    let mut starts_data: Option<(usize, usize)> = None;
+    for _ in 0..command_count {
+        let (Some(command), Some(size)): (Option<u32>, Option<u32>) =
+            (read_u32_le(raw, cursor), read_u32_le(raw, cursor + 4))
+        else {
+            break;
+        };
+        match command {
+            MACHO_LC_SEGMENT_64 => {
+                let name: &[u8] = raw.get(cursor + 8..cursor + 24).unwrap_or_default();
+                if name.split(|byte: &u8| *byte == 0).next() == Some(&b"__TEXT"[..]) {
+                    text_base = read_u64_le(raw, cursor + 24);
+                }
+            }
+            MACHO_LC_FUNCTION_STARTS => {
+                if let (Some(offset), Some(length)) =
+                    (read_u32_le(raw, cursor + 8), read_u32_le(raw, cursor + 12))
+                {
+                    starts_data = Some((offset as usize, length as usize));
+                }
+            }
+            _ => {}
+        }
+        let Some(next): Option<usize> = cursor.checked_add(size as usize) else {
+            break;
+        };
+        if size < 8 || next > raw.len() {
+            break;
+        }
+        cursor = next;
+    }
+    let (Some(mut address), Some((offset, length))): (Option<u64>, Option<(usize, usize)>) =
+        (text_base, starts_data)
+    else {
+        return Vec::new();
+    };
+    let Some(data): Option<&[u8]> = offset
+        .checked_add(length)
+        .and_then(|end: usize| raw.get(offset..end))
+    else {
+        return Vec::new();
+    };
+    let mut starts: Vec<u64> = Vec::new();
+    let mut delta: u64 = 0;
+    let mut shift: u32 = 0;
+    for byte in data {
+        if shift >= 64 {
+            break;
+        }
+        delta |= u64::from(byte & 0x7F) << shift;
+        if byte & 0x80 != 0 {
+            shift += 7;
+            continue;
+        }
+        if delta == 0 || starts.len() >= MAX_TABLE_FUNCTION_STARTS {
+            break;
+        }
+        address = address.saturating_add(delta);
+        starts.push(address);
+        delta = 0;
+        shift = 0;
+    }
+    starts
+}
+
+fn pe_unwind_table_starts(sections: &[Section<'_>], arch: CodeArch, image_base: u64) -> Vec<u64> {
+    let entry_len: usize = match arch {
+        CodeArch::X86_64 => PE_RUNTIME_FUNCTION_X64_LEN,
+        CodeArch::Aarch64 => PE_RUNTIME_FUNCTION_ARM64_LEN,
+        CodeArch::X86 | CodeArch::Other => return Vec::new(),
+    };
+    let Some(pdata): Option<&Section<'_>> = sections
+        .iter()
+        .find(|section: &&Section<'_>| section.name == ".pdata")
+    else {
+        return Vec::new();
+    };
+    pdata
+        .data
+        .chunks_exact(entry_len)
+        .take(MAX_TABLE_FUNCTION_STARTS)
+        .filter_map(|entry: &[u8]| read_u32_le(entry, 0))
+        .filter(|rva: &u32| *rva != 0)
+        .map(|rva: u32| image_base.saturating_add(u64::from(rva)))
+        .collect()
 }
 
 impl<'a> NativeImage<'a> {
@@ -162,6 +292,46 @@ impl<'a> NativeImage<'a> {
                 });
             }
         }
+        let table_starts: Vec<u64> = match kind {
+            ImageKind::MachO => macho_function_starts(bytes),
+            ImageKind::Pe => pe_unwind_table_starts(&sections, arch, file.relative_address_base()),
+            ImageKind::Elf => Vec::new(),
+        };
+        let table_source: FunctionStartSource = if kind == ImageKind::MachO {
+            FunctionStartSource::MachOFunctionStarts
+        } else {
+            FunctionStartSource::PeUnwindTable
+        };
+        let export_starts: Vec<u64> = file
+            .exports()
+            .map(|exports: Vec<object::Export<'a>>| {
+                exports
+                    .iter()
+                    .map(|export: &object::Export<'a>| export.address())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let in_text = |address: u64| -> bool {
+            sections.iter().any(|section: &Section<'a>| {
+                section.kind == SectionKind::Text
+                    && section.address <= address
+                    && address < section.address.saturating_add(section.data.len() as u64)
+            })
+        };
+        let mut seen: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
+        let function_starts: Vec<FunctionStart> = table_starts
+            .into_iter()
+            .map(|address: u64| FunctionStart {
+                address,
+                source: table_source,
+            })
+            .chain(export_starts.into_iter().map(|address: u64| FunctionStart {
+                address,
+                source: FunctionStartSource::Export,
+            }))
+            .filter(|start: &FunctionStart| in_text(start.address) && seen.insert(start.address))
+            .take(MAX_TABLE_FUNCTION_STARTS)
+            .collect();
         Ok(Self {
             kind,
             relocatable,
@@ -172,6 +342,7 @@ impl<'a> NativeImage<'a> {
             sections,
             symbols,
             func_symbols,
+            function_starts,
         })
     }
 

@@ -30,6 +30,7 @@ const fn stripped_image(raw: &[u8]) -> NativeImage<'_> {
         sections: Vec::new(),
         symbols: Vec::new(),
         func_symbols: Vec::new(),
+        function_starts: Vec::new(),
     }
 }
 

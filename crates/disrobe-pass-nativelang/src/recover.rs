@@ -1210,6 +1210,7 @@ mod tests {
             sections,
             symbols: Vec::new(),
             func_symbols: Vec::new(),
+            function_starts: Vec::new(),
         }
     }
 

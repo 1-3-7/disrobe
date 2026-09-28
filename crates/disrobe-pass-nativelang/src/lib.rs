@@ -44,7 +44,9 @@ pub use functions::{
     BoundaryConfidence, EndBasis, FunctionExtent, FunctionOrigin, FunctionRecovery, LineRange,
     RecoveredFunction, recover_functions,
 };
-pub use image::{CodeArch, FuncSymbol, ImageKind, NativeImage, Section};
+pub use image::{
+    CodeArch, FuncSymbol, FunctionStart, FunctionStartSource, ImageKind, NativeImage, Section,
+};
 pub use nir::lift_native_nir;
 pub use pass::{NativeLangPassReport, build_report};
 pub use recover::{GcMetadata, Recovery, module_histogram, recover};
