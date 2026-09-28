@@ -90,11 +90,9 @@ pub fn compiler(dialect: Dialect) -> Option<String> {
 pub fn toolchain(dialect: Dialect) -> Option<(String, String)> {
     let luac: Option<String> = first_reporting(dialect.compilers(), dialect.banner());
     let lua: Option<String> = first_reporting(dialect.interpreters(), dialect.banner());
-    match (luac, lua) {
-        (Some(luac), Some(lua)) => Some((luac, lua)),
-        _ => {
-            ungraded(&format!("a `{}` luac and interpreter", dialect.banner()));
-            None
-        }
+    if let (Some(luac), Some(lua)) = (luac, lua) {
+        return Some((luac, lua));
     }
+    ungraded(&format!("a `{}` luac and interpreter", dialect.banner()));
+    None
 }
