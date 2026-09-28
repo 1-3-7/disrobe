@@ -226,18 +226,22 @@ fn parse_string_pool(bytes: &[u8], chunk_off: usize) -> Result<ResStringPool> {
                     had: bytes.len(),
                 });
             }
-            let mut s: String = String::with_capacity(unit_count);
-            let mut u: usize = 0;
-            let mut cursor: usize = after_len;
-            while u < unit_count {
-                let unit: u16 = read_u16(bytes, cursor)?;
-                if let Some(ch) = char::from_u32(u32::from(unit)) {
-                    s.push(ch);
-                }
-                cursor += 2;
-                u += 1;
-            }
-            s
+            let raw_units: &[u8] = bytes.get(after_len..end).ok_or(Error::ArscTruncated {
+                offset: after_len,
+                needed: byte_span,
+                had: bytes.len(),
+            })?;
+            let units: Vec<u16> = raw_units
+                .chunks_exact(2)
+                .map(|pair: &[u8]| u16::from_le_bytes([pair[0], pair[1]]))
+                .collect();
+            char::decode_utf16(units)
+                .map(
+                    |unit: std::result::Result<char, std::char::DecodeUtf16Error>| {
+                        unit.unwrap_or(char::REPLACEMENT_CHARACTER)
+                    },
+                )
+                .collect()
         };
         strings.push(decoded);
     }
@@ -1190,5 +1194,25 @@ mod tests {
         let pool: ResStringPool = parse_string_pool(&buf, 0).expect("valid utf-16 pool");
         assert!(!pool.is_utf8);
         assert_eq!(pool.strings, vec!["hi".to_owned()]);
+    }
+
+    #[test]
+    fn utf16_string_pool_keeps_surrogate_pairs() {
+        let text: &str = "h😀日";
+        let encoded: Vec<u16> = text.encode_utf16().collect();
+        let mut units: Vec<u8> = Vec::with_capacity(4 + encoded.len() * 2);
+        units.extend_from_slice(&u16::try_from(encoded.len()).expect("short").to_le_bytes());
+        for unit in &encoded {
+            units.extend_from_slice(&unit.to_le_bytes());
+        }
+        units.extend_from_slice(&0u16.to_le_bytes());
+        let pool_size: u32 = u32::try_from(32 + units.len()).expect("small pool");
+        let buf: Vec<u8> = string_pool_chunk(pool_size, &units);
+        let pool: ResStringPool = parse_string_pool(&buf, 0).expect("valid utf-16 pool");
+        assert_eq!(
+            pool.strings,
+            vec![text.to_owned()],
+            "a supplementary character is a surrogate pair and must survive"
+        );
     }
 }
