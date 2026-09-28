@@ -177,6 +177,7 @@ struct LuauState {
     upvals: Vec<String>,
     stmts: Vec<LiftedStmt>,
     pc: usize,
+    inlined_closure_bytes: usize,
 }
 
 impl LuauState {
@@ -193,6 +194,7 @@ impl LuauState {
             upvals: upvals.to_vec(),
             stmts: Vec::new(),
             pc: 0,
+            inlined_closure_bytes: 0,
         }
     }
 
@@ -1621,6 +1623,19 @@ fn emit_closure(
     let child: Option<&LuaProto> = proto.protos.get(child_idx as usize);
     let dst: u32 = u32::from(inst.a);
     match child {
+        Some(_)
+            if state.inlined_closure_bytes > crate::decompile::lift::MAX_INLINED_CLOSURE_BYTES =>
+        {
+            state.declare_local(
+                dst,
+                "function() --[[ closure omitted: output budget exceeded ]] end",
+            );
+            warnings.push(format!(
+                "luau closure {child_idx}: body omitted after {} bytes of inlined closure bodies in one function",
+                crate::decompile::lift::MAX_INLINED_CLOSURE_BYTES
+            ));
+            *fully_structured = false;
+        }
         Some(child_p) => {
             let capture_count: usize = count_captures(&proto.code, pc + 1);
             let child_uv: Vec<String> = resolve_captures(&proto.code, pc + 1, capture_count, state);
@@ -1635,6 +1650,7 @@ fn emit_closure(
                 warnings,
                 fully_structured,
             );
+            state.inlined_closure_bytes = state.inlined_closure_bytes.saturating_add(body.len());
             let trimmed: &str = body.strip_suffix('\n').unwrap_or(&body);
             let prefix: &str = if state.declared(dst) { "" } else { "local " };
             let name: String = state.slot_name(dst);

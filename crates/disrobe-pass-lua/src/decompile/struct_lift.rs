@@ -24,6 +24,8 @@ struct StructState {
     suppress_local: Vec<(usize, u32)>,
     iter_call: Option<(u32, String)>,
     method_regs: std::collections::BTreeSet<u32>,
+    lifted_children: std::collections::BTreeMap<usize, Option<LiftedProto>>,
+    inlined_closure_bytes: usize,
 }
 
 impl StructState {
@@ -40,6 +42,8 @@ impl StructState {
             suppress_local: Vec::new(),
             iter_call: None,
             method_regs: std::collections::BTreeSet::new(),
+            lifted_children: std::collections::BTreeMap::new(),
+            inlined_closure_bytes: 0,
         }
     }
 
@@ -2074,13 +2078,24 @@ fn emit_closure(
     let child_idx: usize = d.bx as usize;
     match p.protos.get(child_idx) {
         Some(child) => {
-            let lifted: Option<LiftedProto> = lift_structured(child, dialect, depth + 1);
+            let lifted: Option<LiftedProto> = state
+                .lifted_children
+                .entry(child_idx)
+                .or_insert_with(|| lift_structured(child, dialect, depth + 1))
+                .clone();
             let inner: LiftedProto = match lifted {
                 Some(l) => l,
                 None => {
                     return None;
                 }
             };
+            let inlined: usize = state
+                .inlined_closure_bytes
+                .saturating_add(inner.source.len());
+            if inlined > crate::decompile::lift::MAX_INLINED_CLOSURE_BYTES {
+                return None;
+            }
+            state.inlined_closure_bytes = inlined;
             let params: String = (0..u32::from(child.num_params))
                 .map(|i: u32| child_param_name(child, i))
                 .collect::<Vec<String>>()

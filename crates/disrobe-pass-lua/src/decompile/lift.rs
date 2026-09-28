@@ -4,6 +4,7 @@ use crate::decompile::opcode::{Decoded, Op, decode, is_k, rk_index};
 use crate::reader::common::{LuaChunk, LuaConstant, LuaDialect, LuaLocal, LuaProto};
 
 const MAX_LIFT_DEPTH: usize = 200;
+pub(crate) const MAX_INLINED_CLOSURE_BYTES: usize = 8 << 20;
 const LFIELDS_PER_FLUSH: u32 = 50;
 
 #[derive(Debug, Clone, Default)]
@@ -72,6 +73,8 @@ struct LiftState {
     scopes: LocalScopes,
     register_alias_tracker: BTreeMap<u32, String>,
     pc: usize,
+    lifted_children: BTreeMap<usize, LiftedProto>,
+    inlined_closure_bytes: usize,
 }
 
 impl LiftState {
@@ -85,6 +88,8 @@ impl LiftState {
             scopes: LocalScopes::default(),
             register_alias_tracker: BTreeMap::new(),
             pc: 0,
+            lifted_children: BTreeMap::new(),
+            inlined_closure_bytes: 0,
         }
     }
 
@@ -356,7 +361,7 @@ fn arith(op: Op, lhs: &str, rhs: &str) -> Option<String> {
     arith_sym(op).map(|sym: &str| format!("({lhs} {sym} {rhs})"))
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LiftedProto {
     pub source: String,
     pub warnings: Vec<String>,
@@ -1098,7 +1103,29 @@ fn emit_closure(
     let child_idx: usize = d.bx as usize;
     match p.protos.get(child_idx) {
         Some(child) => {
-            let lifted: LiftedProto = lift_proto_dialect(child, dialect, depth + 1);
+            let lifted: LiftedProto = state
+                .lifted_children
+                .entry(child_idx)
+                .or_insert_with(|| lift_proto_dialect(child, dialect, depth + 1))
+                .clone();
+            let inlined: usize = state
+                .inlined_closure_bytes
+                .saturating_add(lifted.source.len());
+            if inlined > MAX_INLINED_CLOSURE_BYTES {
+                define(
+                    state,
+                    d.a,
+                    format!(
+                        "function() --[[ closure {child_idx} omitted: output budget exceeded ]] end"
+                    ),
+                );
+                state.warnings.push(format!(
+                    "closure {child_idx}: body omitted after {MAX_INLINED_CLOSURE_BYTES} bytes of inlined closure bodies in one function"
+                ));
+                *fully_structured = false;
+                return;
+            }
+            state.inlined_closure_bytes = inlined;
             let params: String = (0..u32::from(child.num_params))
                 .map(|i: u32| proto_param_name(child, i))
                 .collect::<Vec<String>>()
@@ -1401,6 +1428,46 @@ mod tests {
     }
 
     const SBX_BIAS_51: u32 = 0x1FFFF;
+
+    fn repeated_closure_tower(width: usize, depth: usize) -> LuaProto {
+        let mut current: LuaProto = proto(vec![enc_abc(OP51_RETURN, 0, 1, 0)], Vec::new(), 2);
+        for _ in 0..depth {
+            let mut code: Vec<u32> = vec![enc_abx(OP51_CLOSURE, 0, 0); width];
+            code.push(enc_abc(OP51_RETURN, 0, 1, 0));
+            let mut parent: LuaProto = proto(code, Vec::new(), 2);
+            parent.protos.push(current);
+            current = parent;
+        }
+        current
+    }
+
+    #[test]
+    fn many_closures_over_one_child_stay_within_the_output_budget() {
+        let tower: LuaProto = repeated_closure_tower(8, 8);
+        let started: std::time::Instant = std::time::Instant::now();
+        let lifted: LiftedProto = lift_proto(&tower, 0);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "8 closures over 8 levels must not cost 8^8 child lifts"
+        );
+        assert!(
+            lifted.source.len() <= MAX_INLINED_CLOSURE_BYTES * 2,
+            "the inlined output is bounded, got {} bytes",
+            lifted.source.len()
+        );
+        assert!(lifted.source.contains("omitted: output budget exceeded"));
+        assert!(!lifted.fully_structured);
+        assert!(
+            lifted
+                .warnings
+                .iter()
+                .any(|warning: &String| warning.contains("bytes of inlined closure bodies"))
+        );
+        assert!(
+            crate::decompile::struct_lift::lift_structured(&tower, LuaDialect::Lua51, 0).is_none(),
+            "the structured lifter refuses past the budget and leaves the named refusal to the linear lifter"
+        );
+    }
 
     fn closure_over_child(child_code: Vec<u32>) -> LuaProto {
         let mut p: LuaProto = proto(vec![enc_abx(36, 0, 0), enc_abc(30, 0, 2, 0)], Vec::new(), 2);
