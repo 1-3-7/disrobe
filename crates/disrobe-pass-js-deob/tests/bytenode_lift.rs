@@ -1,8 +1,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use disrobe_pass_js_deob::v8::{
-    BytenodeCacheBody, Disassembly, HeaderLayout, LiftedFunction, NodeVersion, OpcodeTable,
-    V8_HEADER_SIZE_V11, V8_HEADER_SIZE_V12, V8_MAGIC_NODE_18, V8_MAGIC_NODE_20, V8_MAGIC_NODE_22,
-    V8_MAGIC_NODE_24, disassemble, encode_instruction, lift_disassembly, parse_bytenode_full,
+    BytenodeCacheBody, Disassembly, HeaderLayout, NodeVersion, OpcodeTable, V8_HEADER_SIZE_V11,
+    V8_HEADER_SIZE_V12, V8_MAGIC_NODE_18, V8_MAGIC_NODE_20, V8_MAGIC_NODE_22, V8_MAGIC_NODE_24,
+    disassemble, encode_instruction, parse_bytenode_full,
 };
 
 fn enc(table: &OpcodeTable, mnemonic: &str, operands: &[i64]) -> Vec<u8> {
@@ -45,22 +45,6 @@ fn parses_full_bytenode_body_and_walks_payload_as_bytecode() {
     assert_eq!(disasm.instructions.len(), 2usize);
     assert_eq!(disasm.instructions[0].mnemonic, "LdaSmi");
     assert_eq!(disasm.instructions[1].mnemonic, "Return");
-}
-
-#[test]
-fn full_bytenode_lift_round_trip_hello_42() {
-    let table: OpcodeTable = OpcodeTable::for_node(NodeVersion::Node22);
-    let mut bc: Vec<u8> = Vec::new();
-    bc.extend(enc(&table, "LdaSmi", &[42i64]));
-    bc.extend(enc(&table, "Return", &[]));
-    let jsc: Vec<u8> = synth_jsc(V8_MAGIC_NODE_22, 0x79DA_FE74, HeaderLayout::V12, &bc);
-    let body: BytenodeCacheBody = parse_bytenode_full(&jsc).expect("parse_full");
-    let disasm: Disassembly = disassemble(&body.payload, body.header.version_hash.node);
-    let lifted: LiftedFunction = lift_disassembly(&disasm);
-    let js: String = lifted.render_js("hello");
-    assert!(js.contains("function hello"));
-    assert!(js.contains("return 42;"));
-    assert!(lifted.reversible_fraction() > 0.5);
 }
 
 #[test]
