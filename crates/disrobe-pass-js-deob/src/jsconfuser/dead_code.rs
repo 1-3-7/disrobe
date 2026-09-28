@@ -8,6 +8,7 @@ use oxc_span::SourceType;
 use serde::Serialize;
 
 use super::scanner::apply_splice_edits;
+use crate::scan_utils::reparses_script;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DeadCodeReversalResult {
@@ -89,7 +90,7 @@ pub fn reverse_dead_code(source: &str) -> DeadCodeReversalResult {
     }
 
     let (rewritten, _applied): (String, usize) = apply_splice_edits(source, &mut edits);
-    if !reparses(&rewritten) {
+    if !reparses_script(&rewritten) {
         return passthrough(source);
     }
 
@@ -106,13 +107,6 @@ fn passthrough(source: &str) -> DeadCodeReversalResult {
         dead_functions_removed: 0,
         rewritten_source: source.to_owned(),
     }
-}
-
-fn reparses(source: &str) -> bool {
-    let allocator: Allocator = Allocator::default();
-    let parsed: oxc_parser::ParserReturn<'_> =
-        Parser::new(&allocator, source, SourceType::cjs()).parse();
-    !parsed.panicked && parsed.errors.is_empty()
 }
 
 const fn span_within(inner: &Range<usize>, outer: &Range<usize>) -> bool {

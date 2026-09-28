@@ -8,6 +8,7 @@ use oxc_span::SourceType;
 use super::{
     Edit, RuleOutcome, edit_overlaps_comments, undefined_init::undefined_lookup_is_stable,
 };
+use crate::scan_utils::reparses;
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct LiteralNormalizeStats {
@@ -394,11 +395,4 @@ fn render_string_literal(value: &str) -> String {
 
 fn apply_local_edits(source: &str, edits: &[Edit]) -> Option<String> {
     super::splice_edits(source, edits)
-}
-
-fn reparses(source: &str) -> bool {
-    let allocator: Allocator = Allocator::default();
-    let source_type: SourceType = SourceType::from_path("input.js").unwrap_or_default();
-    let parsed: oxc_parser::ParserReturn<'_> = Parser::new(&allocator, source, source_type).parse();
-    parsed.errors.is_empty() && !parsed.panicked
 }

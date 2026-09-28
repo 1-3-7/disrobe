@@ -1,10 +1,8 @@
 use std::collections::BTreeMap;
 
-use oxc_allocator::Allocator;
-use oxc_parser::Parser;
-use oxc_span::SourceType;
 use serde::Serialize;
 
+use crate::scan_utils::reparses;
 use crate::unminify::{
     PresetEnvExpressionRestore, has_preset_env_async_protection,
     requires_preset_env_async_quarantine, restore_preset_env_expressions,
@@ -19,16 +17,6 @@ pub struct PresetEnvUndoResult {
     pub async_restored: usize,
     pub optional_chains_restored: usize,
     pub nullish_coalesce_restored: usize,
-}
-
-fn reparses_javascript(source: &str) -> bool {
-    let allocator: Allocator = Allocator::default();
-    let source_type: SourceType = match SourceType::from_path("input.js") {
-        Ok(value) => value,
-        Err(_) => return false,
-    };
-    let parsed: oxc_parser::ParserReturn<'_> = Parser::new(&allocator, source, source_type).parse();
-    parsed.errors.is_empty() && !parsed.panicked
 }
 
 #[must_use]
@@ -64,7 +52,7 @@ pub fn undo_preset_env(source: &str) -> PresetEnvUndoResult {
     let optional_chains_restored: usize = expression_result.optional_chains_restored;
     let nullish_coalesce_restored: usize = expression_result.nullish_coalesce_restored;
 
-    if out != async_base && !reparses_javascript(&out) {
+    if out != async_base && !reparses(&out) {
         return PresetEnvUndoResult {
             rewritten: async_base,
             helpers_removed: BTreeMap::new(),

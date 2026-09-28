@@ -1,5 +1,5 @@
+pub(super) use crate::scan_utils::apply_splice_edits;
 use crate::scan_utils::next_utf8_char;
-use core::ops::Range;
 
 pub(super) fn skip_ws(bytes: &[u8], start: usize) -> usize {
     let mut i: usize = start;
@@ -92,29 +92,6 @@ pub(super) fn find_brace_close(bytes: &[u8], start: usize) -> Option<usize> {
         i += 1;
     }
     None
-}
-
-pub(super) fn apply_splice_edits(
-    source: &str,
-    edits: &mut [(Range<usize>, Option<String>)],
-) -> (String, usize) {
-    edits.sort_by_key(|e: &(Range<usize>, Option<String>)| e.0.start);
-    let mut out: String = String::with_capacity(source.len());
-    let mut cursor: usize = 0;
-    let mut applied: usize = 0;
-    for (range, replacement) in edits.iter() {
-        if range.start < cursor {
-            continue;
-        }
-        out.push_str(&source[cursor..range.start]);
-        if let Some(s) = replacement {
-            out.push_str(s);
-            applied += 1;
-        }
-        cursor = range.end;
-    }
-    out.push_str(&source[cursor..]);
-    (out, applied)
 }
 
 pub(super) const fn is_ident_char(b: u8) -> bool {

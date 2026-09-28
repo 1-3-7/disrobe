@@ -7,6 +7,7 @@ use oxc_span::SourceType;
 use serde::Serialize;
 
 use super::scanner::apply_splice_edits;
+use crate::scan_utils::reparses_script;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct IntegritySelfCheckResult {
@@ -42,7 +43,7 @@ pub fn strip_integrity_self_check(source: &str) -> IntegritySelfCheckResult {
         .map(|u: &Unwrap| (u.body_span.clone(), Some(u.replacement.clone())))
         .collect();
     let (rewritten, applied): (String, usize) = apply_splice_edits(source, &mut edits);
-    if !reparses(&rewritten) {
+    if !reparses_script(&rewritten) {
         return passthrough(source);
     }
     IntegritySelfCheckResult {
@@ -58,13 +59,6 @@ fn passthrough(source: &str) -> IntegritySelfCheckResult {
         residual_reason: None,
         rewritten_source: source.to_owned(),
     }
-}
-
-fn reparses(source: &str) -> bool {
-    let allocator: Allocator = Allocator::default();
-    let parsed: oxc_parser::ParserReturn<'_> =
-        Parser::new(&allocator, source, SourceType::cjs()).parse();
-    !parsed.panicked && parsed.errors.is_empty()
 }
 
 fn collect_unwraps(stmts: &[oast::Statement<'_>], source: &str, out: &mut Vec<Unwrap>) {

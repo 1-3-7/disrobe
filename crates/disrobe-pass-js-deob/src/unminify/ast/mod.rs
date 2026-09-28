@@ -50,16 +50,14 @@ mod type_constructor;
 mod undefined_init;
 mod var_to_block;
 
-use oxc_allocator::Allocator;
 use oxc_ast::{
     AstKind,
     ast::{Expression, IdentifierReference},
 };
-use oxc_parser::Parser;
 use oxc_semantic::{ReferenceId, Semantic, SymbolFlags, SymbolId};
-use oxc_span::SourceType;
 use serde::Serialize;
 
+use crate::scan_utils::reparses;
 use alias_inline::AliasInlineStats;
 use amd_param::AmdParamStats;
 use arg_rest::ArgRestStats;
@@ -1463,16 +1461,6 @@ const fn glues(left: char, right: char) -> bool {
 
 const fn is_word_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_' || c == '$'
-}
-
-fn reparses(source: &str) -> bool {
-    let allocator: Allocator = Allocator::default();
-    let source_type: SourceType = match SourceType::from_path("input.js") {
-        Ok(value) => value,
-        Err(_) => return false,
-    };
-    let parsed: oxc_parser::ParserReturn<'_> = Parser::new(&allocator, source, source_type).parse();
-    parsed.errors.is_empty() && !parsed.panicked
 }
 
 #[must_use]

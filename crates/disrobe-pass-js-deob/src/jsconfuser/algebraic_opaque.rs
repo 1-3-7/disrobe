@@ -13,6 +13,7 @@ use oxc_span::SourceType;
 use serde::Serialize;
 
 use super::scanner::apply_splice_edits;
+use crate::scan_utils::reparses_script;
 
 const JS_WIDTH: Width = Width::W32;
 const MAX_EXACT_MAGNITUDE: u128 = 1u128 << 53;
@@ -60,17 +61,10 @@ fn fold_once(source: &str) -> Option<(String, usize)> {
         return None;
     }
     let (rewritten, applied): (String, usize) = apply_splice_edits(source, &mut collector.edits);
-    if applied == 0 || !reparses(&rewritten) {
+    if applied == 0 || !reparses_script(&rewritten) {
         return None;
     }
     Some((rewritten, applied))
-}
-
-fn reparses(source: &str) -> bool {
-    let allocator: Allocator = Allocator::default();
-    let parsed: oxc_parser::ParserReturn<'_> =
-        Parser::new(&allocator, source, SourceType::cjs()).parse();
-    !parsed.panicked && parsed.errors.is_empty()
 }
 
 struct Collector<'s> {

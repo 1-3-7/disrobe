@@ -190,11 +190,42 @@ fn skip_regex_span(bytes: &[u8], start: usize) -> usize {
     bytes.len()
 }
 
+pub(crate) fn apply_splice_edits(
+    source: &str,
+    edits: &mut [(core::ops::Range<usize>, Option<String>)],
+) -> (String, usize) {
+    edits.sort_by_key(|edit: &(core::ops::Range<usize>, Option<String>)| edit.0.start);
+    let mut out: String = String::with_capacity(source.len());
+    let mut cursor: usize = 0;
+    let mut applied: usize = 0;
+    for (range, replacement) in edits.iter() {
+        if range.start < cursor || range.end < range.start || !source.is_char_boundary(range.end) {
+            continue;
+        }
+        let Some(kept): Option<&str> = source.get(cursor..range.start) else {
+            continue;
+        };
+        out.push_str(kept);
+        if let Some(text) = replacement {
+            out.push_str(text);
+            applied += 1;
+        }
+        cursor = range.end;
+    }
+    out.push_str(source.get(cursor..).unwrap_or_default());
+    (out, applied)
+}
+
 #[must_use]
 pub(crate) fn reparses(source: &str) -> bool {
     let source_type: oxc_span::SourceType =
         oxc_span::SourceType::from_path("reparse.js").unwrap_or_default();
     parses_as(source, source_type)
+}
+
+#[must_use]
+pub(crate) fn reparses_script(source: &str) -> bool {
+    parses_as(source, oxc_span::SourceType::cjs())
 }
 
 fn parses_as(source: &str, source_type: oxc_span::SourceType) -> bool {
@@ -407,6 +438,22 @@ fn find_close(bytes: &[u8], start: usize, open: u8, close: u8) -> Option<usize> 
 #[allow(clippy::panic, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn splice_edits_skip_ranges_that_overlap_leave_the_source_or_split_a_character() {
+        let source: &str = "a\u{e9}bcd";
+        let mut edits: Vec<(core::ops::Range<usize>, Option<String>)> = vec![
+            (4..5, Some("C".to_owned())),
+            (2..3, Some("x".to_owned())),
+            (0..1, Some("A".to_owned())),
+            (0..2, None),
+            (5..9, Some("out".to_owned())),
+            (5..4, Some("backwards".to_owned())),
+        ];
+        let (out, applied): (String, usize) = apply_splice_edits(source, &mut edits);
+        assert_eq!(out, "A\u{e9}bCd");
+        assert_eq!(applied, 2);
+    }
 
     #[test]
     fn matches_nested_braces() {

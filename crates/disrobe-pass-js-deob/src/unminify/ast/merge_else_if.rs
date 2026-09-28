@@ -4,6 +4,7 @@ use oxc_parser::Parser;
 use oxc_span::{GetSpan, SourceType};
 
 use super::{Edit, RuleOutcome};
+use crate::scan_utils::reparses;
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct MergeElseIfStats {
@@ -63,13 +64,6 @@ fn single_merge(source: &str, stats: &mut MergeElseIfStats) -> Option<String> {
 
 fn apply_local_edits(source: &str, edits: &[Edit]) -> Option<String> {
     super::splice_edits(source, edits)
-}
-
-fn reparses(source: &str) -> bool {
-    let allocator: Allocator = Allocator::default();
-    let source_type: SourceType = SourceType::from_path("input.js").unwrap_or_default();
-    let parsed: oxc_parser::ParserReturn<'_> = Parser::new(&allocator, source, source_type).parse();
-    parsed.errors.is_empty() && !parsed.panicked
 }
 
 fn walk_statement(

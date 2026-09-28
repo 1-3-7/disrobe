@@ -7,6 +7,7 @@ use oxc_parser::Parser;
 use oxc_span::{GetSpan, SourceType, Span};
 
 use super::{Edit, RuleOutcome};
+use crate::scan_utils::reparses;
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct LiteralLogicStats {
@@ -595,11 +596,4 @@ fn expression_reads_identifier(expr: &Expression<'_>, name: &str) -> bool {
 
 fn apply_local_edits(source: &str, edits: &[Edit]) -> Option<String> {
     super::splice_edits(source, edits)
-}
-
-fn reparses(source: &str) -> bool {
-    let allocator: Allocator = Allocator::default();
-    let source_type: SourceType = SourceType::from_path("input.js").unwrap_or_default();
-    let parsed: oxc_parser::ParserReturn<'_> = Parser::new(&allocator, source, source_type).parse();
-    parsed.errors.is_empty() && !parsed.panicked
 }
