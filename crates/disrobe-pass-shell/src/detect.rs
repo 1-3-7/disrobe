@@ -90,7 +90,47 @@ static BATCH_SET_INDIRECT: LazyLock<&'static Regex> =
     LazyLock::new(|| regex!(r"(?i)set\s+[A-Za-z_][A-Za-z0-9_]*="));
 
 #[must_use]
+pub fn decode_script_bytes(bytes: &[u8]) -> Option<String> {
+    if let Some(rest) = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
+        return Some(String::from_utf8_lossy(rest).into_owned());
+    }
+    if let Some(rest) = bytes.strip_prefix(&[0xFF, 0xFE]) {
+        return Some(decode_utf16(rest, u16::from_le_bytes));
+    }
+    if let Some(rest) = bytes.strip_prefix(&[0xFE, 0xFF]) {
+        return Some(decode_utf16(rest, u16::from_be_bytes));
+    }
+    reads_as_utf16le_text(bytes).then(|| decode_utf16(bytes, u16::from_le_bytes))
+}
+
+fn decode_utf16(bytes: &[u8], unit: fn([u8; 2]) -> u16) -> String {
+    let units: Vec<u16> = bytes
+        .chunks_exact(2)
+        .map(|pair: &[u8]| unit([pair[0], pair[1]]))
+        .collect();
+    char::decode_utf16(units)
+        .map(|decoded: Result<char, std::char::DecodeUtf16Error>| {
+            decoded.unwrap_or(char::REPLACEMENT_CHARACTER)
+        })
+        .collect()
+}
+
+fn reads_as_utf16le_text(bytes: &[u8]) -> bool {
+    const SAMPLE_UNITS: usize = 64;
+    if bytes.len() < 8 || !bytes.len().is_multiple_of(2) {
+        return false;
+    }
+    bytes.chunks_exact(2).take(SAMPLE_UNITS).all(|pair: &[u8]| {
+        pair[1] == 0
+            && (pair[0].is_ascii_graphic() || matches!(pair[0], b' ' | b'\t' | b'\r' | b'\n'))
+    })
+}
+
+#[must_use]
 pub fn detect(source: &[u8]) -> Detection {
+    if let Some(decoded) = decode_script_bytes(source) {
+        return detect(decoded.as_bytes());
+    }
     if source.is_empty() {
         return Detection {
             dialect: Dialect::Unknown,

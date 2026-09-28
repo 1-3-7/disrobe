@@ -67,21 +67,26 @@ impl Pass for ShellPass {
         &ShellDetector
     }
 
-    #[inline]
-    fn output_kind(&self, _output: &Artifact) -> OutputKind {
-        OutputKind::Source {
-            language: Language::Bash,
-            formatted: true,
-        }
+    fn output_kind(&self, output: &Artifact) -> OutputKind {
+        output_kind_of(output.envelope.as_slice())
     }
 
     fn run(&self, artifact: &Artifact) -> CoreResult<Artifact> {
-        let bytes: &[u8] = artifact.envelope.as_slice();
+        let decoded: Option<String> = crate::detect::decode_script_bytes(&artifact.envelope);
+        let bytes: &[u8] = decoded
+            .as_deref()
+            .map_or(artifact.envelope.as_slice(), str::as_bytes);
         let detection: Detection = detect_shell(bytes);
         if verdict_for(&detection).is_none() {
             return Err(CoreError::PassFailure(
                 "DR-SHELL-0902: shell.deob: input dialect unknown or below confidence threshold"
                     .to_string(),
+            ));
+        }
+        if bytes.starts_with(b"' ===== module: ") {
+            return Err(CoreError::PassFailure(
+                "DR-SHELL-0927: shell.deob: the input is VBA module text this pass already rendered; recovering it again would re-claim its own output"
+                    .to_owned(),
             ));
         }
         let source_text: String = recovered_source(&detection, bytes)?;
@@ -95,6 +100,48 @@ impl Pass for ShellPass {
     fn extract_children(&self, input: &Artifact) -> CoreResult<Vec<ChildArtifact>> {
         let bytes: &[u8] = input.envelope.as_slice();
         Ok(recovery_manifest_child(bytes).into_iter().collect())
+    }
+}
+
+fn output_kind_of(output: &[u8]) -> OutputKind {
+    if output.starts_with(b"%PDF-") {
+        return OutputKind::Report {
+            format_tag: "pdf",
+            family: "pdf-triage",
+        };
+    }
+    let first_line: &[u8] = output
+        .split(|byte: &u8| *byte == b'\n')
+        .next()
+        .unwrap_or_default();
+    let sheet_header: bool = first_line.starts_with(b"' ===== ")
+        && first_line
+            .windows(8)
+            .any(|window: &[u8]| window == b" sheet: ");
+    if output.starts_with(b"' entry: ") || sheet_header {
+        return OutputKind::Report {
+            format_tag: "xlm",
+            family: "xlm-macro-sheet",
+        };
+    }
+    let language: Language = if output.starts_with(b"' ===== module: ") {
+        Language::Vba
+    } else {
+        match detect_shell(output).dialect {
+            Dialect::PowerShell => Language::PowerShell,
+            Dialect::Batch => Language::Batch,
+            Dialect::Vba | Dialect::Vbs | Dialect::Wsh | Dialect::Xlm => Language::Vba,
+            Dialect::Bash
+            | Dialect::Dash
+            | Dialect::Ksh
+            | Dialect::Zsh
+            | Dialect::Pdf
+            | Dialect::Unknown => Language::Bash,
+        }
+    };
+    OutputKind::Source {
+        language,
+        formatted: true,
     }
 }
 
@@ -133,10 +180,11 @@ fn recovered_source(detection: &Detection, bytes: &[u8]) -> CoreResult<String> {
     let text: &str = match std::str::from_utf8(bytes) {
         Ok(text) => text,
         Err(_) => {
-            return Ok(format!(
-                "/* non-utf8 shell payload of {} bytes */",
+            return Err(CoreError::PassFailure(format!(
+                "DR-SHELL-0926: shell.deob: the {:?} payload of {} bytes is not UTF-8 text and nothing was recovered from it",
+                detection.dialect,
                 bytes.len()
-            ));
+            )));
         }
     };
     match detection.dialect {
@@ -1070,6 +1118,68 @@ mod tests {
             ],
             "deobfuscated VBS must fold the Chr() chains to valid literals, Chr(34) as an escaped quote"
         );
+    }
+
+    #[test]
+    fn output_kinds_follow_the_recovered_dialect() {
+        assert!(matches!(
+            output_kind_of(b"%PDF-1.7 objects=3 xref=table recovered_by_scan=false"),
+            OutputKind::Report {
+                format_tag: "pdf",
+                ..
+            }
+        ));
+        assert!(matches!(
+            output_kind_of(b"' ===== macro sheet: Macro1 =====\nMacro1!A1\t=EXEC(\"calc\")"),
+            OutputKind::Report {
+                format_tag: "xlm",
+                ..
+            }
+        ));
+        assert!(matches!(
+            output_kind_of(b"' ===== module: Module1 =====\nSub Main()\nEnd Sub"),
+            OutputKind::Source {
+                language: Language::Vba,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn rendered_module_text_is_not_reclaimed() {
+        let rendered: &[u8] = b"' ===== module: Module1 =====\nAttribute VB_Name = \"Module1\"\nSub Document_Open()\n    MsgBox \"x\"\nEnd Sub";
+        let artifact: Artifact = Artifact::new(Rung::Raw, rendered.to_vec(), [0u8; 32]);
+        assert!(verdict_for(&detect_shell(rendered)).is_some());
+        let error: String = SHELL_PASS
+            .run(&artifact)
+            .expect_err("already rendered")
+            .to_string();
+        assert!(error.contains("DR-SHELL-0927"), "{error}");
+    }
+
+    #[test]
+    fn a_utf16le_powershell_script_with_a_bom_is_decoded_and_claimed() {
+        let script: &str = "powershell -NoP -W Hidden -EncodedCommand VwByAGkAdABlAC0ASABvAHMAdAAgAGgAZQBsAGwAbwA=\r\n";
+        let mut bytes: Vec<u8> = vec![0xFF, 0xFE];
+        for unit in script.encode_utf16() {
+            bytes.extend_from_slice(&unit.to_le_bytes());
+        }
+        let detection: Detection = detect_shell(&bytes);
+        assert_eq!(detection.dialect, Dialect::PowerShell, "{detection:?}");
+        assert!(verdict_for(&detection).is_some());
+        let artifact: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
+        let recovered: Artifact = SHELL_PASS.run(&artifact).expect("decoded script recovers");
+        let text: String =
+            String::from_utf8(recovered.envelope.as_slice().to_vec()).expect("utf-8");
+        assert!(text.contains("Write-Host"), "{text}");
+    }
+
+    #[test]
+    fn an_ole_header_is_not_mistaken_for_utf16() {
+        let ole: [u8; 16] = [
+            0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1, 0, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        assert_eq!(crate::detect::decode_script_bytes(&ole), None);
     }
 
     fn stomp_module1_source(raw: &[u8], payload: &[u8]) -> Vec<u8> {
