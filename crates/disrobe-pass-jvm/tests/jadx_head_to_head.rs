@@ -270,8 +270,10 @@ fn disrobe_meets_or_beats_jadx_on_recompile_when_jadx_present() {
     };
     let jadx_out: AndroidDecompileOutput =
         match run_jadx_on_bytes_captured(&dex_bytes, "EdgeCases.dex") {
-            Ok(JadxCapturedOutcome::Recovered(output))
-            | Ok(JadxCapturedOutcome::ProducerFailed { output, .. }) => output,
+            Ok(
+                JadxCapturedOutcome::Recovered(output)
+                | JadxCapturedOutcome::ProducerFailed { output, .. },
+            ) => output,
             Ok(JadxCapturedOutcome::Refused(refusal)) => {
                 panic!("jadx output was refused on the committed EdgeCases.dex: {refusal}")
             }
