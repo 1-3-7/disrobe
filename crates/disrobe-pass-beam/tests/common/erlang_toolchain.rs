@@ -1,5 +1,3 @@
-#![allow(clippy::panic)]
-
 use std::ffi::OsString;
 use std::io::Read;
 use std::path::{Path, PathBuf};

@@ -1,5 +1,3 @@
-#![allow(clippy::panic)]
-
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::{ErrorKind, Write};

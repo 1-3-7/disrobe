@@ -672,6 +672,8 @@ const fn subkind_default_kind(s: ExtensionSubkind) -> ContainerKind {
         ExtensionSubkind::Vsix => ContainerKind::Vsix,
         ExtensionSubkind::Pyz => ContainerKind::Pyz,
         ExtensionSubkind::Asar => ContainerKind::Asar,
+        ExtensionSubkind::Msix => ContainerKind::Msix,
+        ExtensionSubkind::Snap => ContainerKind::Snap,
     }
 }
 

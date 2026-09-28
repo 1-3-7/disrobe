@@ -1,5 +1,3 @@
-#![allow(clippy::panic)]
-
 use std::ffi::OsStr;
 use std::io::Write as _;
 use std::process::{Command, Output};

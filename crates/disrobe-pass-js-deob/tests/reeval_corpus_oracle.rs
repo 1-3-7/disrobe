@@ -1576,11 +1576,10 @@ fn legacy_capture_preserves_primitive_javascript_rendering() {
 #[test]
 #[ignore = "invoked only as bounded corpus subprocess worker"]
 fn boa_eval_subprocess_worker() {
-    let request_path: PathBuf = std::env::var_os(WORKER_REQUEST_ENV)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            panic!("the Boa evaluation worker needs {WORKER_REQUEST_ENV} naming its request file")
-        });
+    let request_path: PathBuf = std::env::var_os(WORKER_REQUEST_ENV).map_or_else(
+        || panic!("the Boa evaluation worker needs {WORKER_REQUEST_ENV} naming its request file"),
+        PathBuf::from,
+    );
     let response_path: PathBuf = std::env::var_os(WORKER_RESPONSE_ENV)
         .map(PathBuf::from)
         .expect("Boa evaluation worker response path must be set");
