@@ -34,6 +34,7 @@ const TAG_VBA: &str = "shell-vba";
 const TAG_VBS: &str = "shell-vbs";
 const TAG_WSH: &str = "shell-wsh";
 const TAG_PDF: &str = "shell-pdf";
+const RENDERED_MODULE_PREFIX: &str = "' ===== module: ";
 
 #[derive(Debug)]
 pub struct ShellDetector;
@@ -45,6 +46,9 @@ impl Detector for ShellDetector {
     }
 
     fn detect(&self, ctx: &DetectContext<'_>) -> Option<DetectVerdict> {
+        if is_rendered_vba_modules(ctx.bytes) {
+            return None;
+        }
         let detection: Detection = detect_shell(ctx.bytes);
         verdict_for(&detection)
     }
@@ -162,7 +166,7 @@ fn output_kind_of(artifact: &Artifact) -> OutputKind {
             family: "xlm-macro-sheet",
         };
     }
-    let language: Language = if output.starts_with(b"' ===== module: ") {
+    let language: Language = if is_rendered_vba_modules(output) {
         Language::Vba
     } else if let Some(recorded) = recorded_source_language(artifact) {
         recorded
@@ -175,8 +179,12 @@ fn output_kind_of(artifact: &Artifact) -> OutputKind {
     }
 }
 
+fn is_rendered_vba_modules(bytes: &[u8]) -> bool {
+    bytes.starts_with(RENDERED_MODULE_PREFIX.as_bytes())
+}
+
 pub fn recover_detected(detection: &Detection, bytes: &[u8]) -> CoreResult<String> {
-    if bytes.starts_with(b"' ===== module: ") {
+    if is_rendered_vba_modules(bytes) {
         return Err(CoreError::PassFailure(
             "DR-SHELL-0927: shell.deob: the input is VBA module text this pass already rendered; recovering it again would re-claim its own output"
                 .to_owned(),
@@ -472,9 +480,12 @@ fn render_vba_modules(modules: &[RecoveredVbaModule]) -> String {
     let mut out: String = String::new();
     for module in modules {
         match &module.stomp {
-            None => out.push_str(&format!("' ===== module: {} =====\n", module.name)),
+            None => out.push_str(&format!(
+                "{RENDERED_MODULE_PREFIX}{} =====\n",
+                module.name
+            )),
             Some(stomp) => out.push_str(&format!(
-                "' ===== module: {} ({:?}: source recovered from compiled p-code; {} p-code lines not lifted) =====\n",
+                "{RENDERED_MODULE_PREFIX}{} ({:?}: source recovered from compiled p-code; {} p-code lines not lifted) =====\n",
                 module.name, stomp.verdict, stomp.unlifted_lines
             )),
         }
@@ -1230,6 +1241,7 @@ mod tests {
         let rendered: &[u8] = b"' ===== module: Module1 =====\nAttribute VB_Name = \"Module1\"\nSub Document_Open()\n    MsgBox \"x\"\nEnd Sub";
         let artifact: Artifact = Artifact::new(Rung::Raw, rendered.to_vec(), [0u8; 32]);
         assert!(verdict_for(&detect_shell(rendered)).is_some());
+        assert!(Detector::detect(&ShellDetector, &ctx(rendered)).is_none());
         let error: String = SHELL_PASS
             .run(&artifact)
             .expect_err("already rendered")
