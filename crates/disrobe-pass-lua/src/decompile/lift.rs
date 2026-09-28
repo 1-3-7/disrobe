@@ -1591,7 +1591,11 @@ mod tests {
     fn repeated_closure_tower(width: usize, depth: usize) -> LuaProto {
         let mut current: LuaProto = proto(vec![enc_abc(OP51_RETURN, 0, 1, 0)], Vec::new(), 2);
         for _ in 0..depth {
-            let mut code: Vec<u32> = vec![enc_abx(OP51_CLOSURE, 0, 0); width];
+            let mut code: Vec<u32> = Vec::with_capacity(width * 2 + 1);
+            for _ in 0..width {
+                code.push(enc_abx(OP51_CLOSURE, 0, 0));
+                code.push(enc_abc(OP51_CALL, 0, 1, 1));
+            }
             code.push(enc_abc(OP51_RETURN, 0, 1, 0));
             let mut parent: LuaProto = proto(code, Vec::new(), 2);
             parent.protos.push(current);
@@ -1669,6 +1673,7 @@ mod tests {
     const OP51_JMP: u32 = 22;
     const OP51_LT: u32 = 24;
     const OP51_TESTSET: u32 = 27;
+    const OP51_CALL: u32 = 28;
     const OP51_RETURN: u32 = 30;
     const OP51_TFORLOOP: u32 = 33;
     const OP51_CLOSURE: u32 = 36;
