@@ -1105,6 +1105,29 @@ fn region_contains_setup_async_with(stream: &DecodedStream, lo: usize, hi: usize
     (lo..hi).any(|k: usize| matches!(stream.ops[k], CanonicalOp::SetupAsyncWith))
 }
 
+fn head_has_statement_control_flow(stream: &DecodedStream, lo: usize, setup_idx: usize) -> bool {
+    let Some(first_jump): Option<usize> =
+        (lo..setup_idx).find(|&k: &usize| resolve_jump_target(stream, k, &stream.ops[k]).is_some())
+    else {
+        return false;
+    };
+    (first_jump..setup_idx).any(|k: usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::Pop
+                | CanonicalOp::StoreFast(_)
+                | CanonicalOp::StoreName(_)
+                | CanonicalOp::StoreGlobal(_)
+                | CanonicalOp::StoreAttr(_)
+                | CanonicalOp::StoreSubscr
+                | CanonicalOp::StoreFastStoreFast(_, _)
+                | CanonicalOp::Return
+                | CanonicalOp::ReturnConst(_)
+                | CanonicalOp::Raise(_)
+        )
+    })
+}
+
 fn structure_legacy_async_with(
     code: &CodeObject,
     stream: &DecodedStream,
@@ -1122,6 +1145,9 @@ fn structure_legacy_async_with(
     else {
         return Ok(None);
     };
+    if head_has_statement_control_flow(stream, lo, before_idx) {
+        return Ok(None);
+    }
     let (head_stmts, head_residual): (Vec<Stmt>, Vec<Expr>) =
         build_linear_stmts_sim(code, &stream.ops[lo..before_idx])?;
     let context_expr: Expr = head_residual
@@ -1202,7 +1228,9 @@ fn structure_legacy_with(
     };
     let cleanup_idx: usize =
         legacy_with_cleanup_idx(stream, setup_idx, rel).map_or(hi, |idx: usize| idx.min(hi));
-    if legacy_with_is_enclosed_by_guard(stream, lo, hi, setup_idx, cleanup_idx) {
+    if legacy_with_is_enclosed_by_guard(stream, lo, hi, setup_idx, cleanup_idx)
+        || head_has_statement_control_flow(stream, lo, setup_idx)
+    {
         return Ok(None);
     }
     let (head_stmts, head_residual): (Vec<Stmt>, Vec<Expr>) =
@@ -1481,6 +1509,29 @@ fn else_jump_exits_to_shared_join(
     let is_loop_control: bool = loop_break_target().is_some_and(|exit: usize| join >= exit)
         || loop_continue_target().is_some_and(|header: usize| join <= header);
     !is_loop_control
+}
+
+fn jump_leaves_the_loop(stream: &DecodedStream, target: usize) -> bool {
+    let (Some(exit), Some(header)): (Option<usize>, Option<usize>) =
+        (loop_break_target(), loop_continue_target())
+    else {
+        return false;
+    };
+    if target != exit {
+        return false;
+    }
+    (0..target.min(stream.ops.len()))
+        .rev()
+        .find(|&k: &usize| {
+            !matches!(
+                stream.ops[k],
+                CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_)
+            )
+        })
+        .is_some_and(|k: usize| {
+            is_back_edge(&stream.ops[k])
+                && resolve_jump_target(stream, k, &stream.ops[k]) == Some(header)
+        })
 }
 
 fn elif_arm_continues_to_loop(
@@ -2363,6 +2414,7 @@ pub(super) fn structure_stmts(
         && let Some(j) = resolve_jump_target(stream, last, &stream.ops[last])
         && j > target
         && (j <= hi || else_jump_exits_to_shared_join(stream, last, target, hi))
+        && !jump_leaves_the_loop(stream, j)
     {
         join = j.min(hi);
         orelse_start = Some(last + 1);
@@ -3069,6 +3121,17 @@ fn rewrite_inlined_break_tail(
             && ops_equal_run(stream, &significant_run(stream, p + 1, hi), &tail_idxs)
     })?;
     if pop_at <= lo {
+        return None;
+    }
+    let prefix_jumps_to_tail: bool = (lo..pop_at).any(|k: usize| {
+        (is_forward_cond_jump(&stream.ops[k])
+            || matches!(
+                stream.ops[k],
+                CanonicalOp::JumpIfTrueOrPop(_) | CanonicalOp::JumpIfFalseOrPop(_)
+            ))
+            && resolve_jump_target(stream, k, &stream.ops[k]).is_some_and(|t: usize| t >= pop_at)
+    });
+    if prefix_jumps_to_tail {
         return None;
     }
     let prefix_excl: Vec<Stmt> = structure_stmts(code, stream, lo, pop_at).ok()?;
@@ -4898,6 +4961,8 @@ fn structure_backward_continue_guard(
     let test: Expr = fallthrough_cond_test(stream, jump_idx, test);
     let body_end: usize = trim_body_back_edge(stream, jump_idx + 1, hi);
     let body: Vec<Stmt> = structure_stmts(code, stream, jump_idx + 1, body_end)?;
+    let body: Vec<Stmt> =
+        rewrite_jump_to_break_continue(code, stream, body, jump_idx + 1, body_end);
     let mut out: Vec<Stmt> = head;
     out.push(Stmt::If {
         test,
