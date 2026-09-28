@@ -220,6 +220,10 @@ fn lift_a32_data(
     let mut ops: Vec<PcodeOp> = Vec::new();
     let right: Varnode = a32_operand2(spec, word, address, allocator, &mut ops)?;
     let compare: bool = opcode == 10;
+    let writes_pc: bool = rd_index == 15 && !compare;
+    if writes_pc && bits(word, 20, 1) != 0 {
+        return None;
+    }
     let mnemonic: &str = match opcode {
         0 => "and",
         1 => "eor",
@@ -231,7 +235,7 @@ fn lift_a32_data(
         13 => "mov",
         _ => return None,
     };
-    let output: Varnode = if compare {
+    let output: Varnode = if compare || writes_pc {
         allocator.allocate(4)?
     } else {
         arm_output(spec, rd_index)?
@@ -293,6 +297,17 @@ fn lift_a32_data(
         } else {
             return None;
         }
+    }
+    if writes_pc {
+        let target: Varnode = write_interworking_pc(spec, output, allocator, &mut ops)?;
+        let moves_lr: bool = opcode == 13 && bits(word, 25, 1) == 0 && bits(word, 0, 12) == 14;
+        ops.push(if moves_lr {
+            PcodeOp::Return {
+                target: Some(target),
+            }
+        } else {
+            PcodeOp::BranchIndirect { target }
+        });
     }
     Some(ArmLifted {
         mnemonic: mnemonic.to_owned(),
@@ -441,8 +456,18 @@ fn lift_a32_memory(
     let preindex: bool = bits(word, 24, 1) != 0;
     let increment: bool = bits(word, 23, 1) != 0;
     let writeback: bool = bits(word, 21, 1) != 0 || !preindex;
-    let base: Varnode = arm_output(spec, bits(word, 16, 4))?;
-    let data: Varnode = arm_output(spec, bits(word, 12, 4))?;
+    let base_index: u32 = bits(word, 16, 4);
+    let data_index: u32 = bits(word, 12, 4);
+    let loads_pc: bool = load && data_index == 15;
+    if data_index == 15 && !load {
+        return None;
+    }
+    let base: Varnode = arm_output(spec, base_index)?;
+    let data: Varnode = if loads_pc {
+        allocator.allocate(4)?
+    } else {
+        arm_output(spec, data_index)?
+    };
     let magnitude: i64 = i64::from(bits(word, 0, 12));
     let offset: i64 = if increment { magnitude } else { -magnitude };
     let mut ops: Vec<PcodeOp> = Vec::new();
@@ -465,6 +490,16 @@ fn lift_a32_memory(
         ops.push(PcodeOp::Copy {
             output: base,
             input: adjusted,
+        });
+    }
+    if loads_pc {
+        let target: Varnode = write_interworking_pc(spec, data, allocator, &mut ops)?;
+        ops.push(if base_index == 13 && !preindex && increment {
+            PcodeOp::Return {
+                target: Some(target),
+            }
+        } else {
+            PcodeOp::BranchIndirect { target }
         });
     }
     Some(ArmLifted {

@@ -174,6 +174,31 @@ fn thumb_pc_reads_and_writes_use_thumb_pipeline_semantics() {
 }
 
 #[test]
+fn a32_writes_to_pc_are_control_transfers() {
+    let cases: [(u32, bool); 3] = [
+        (0xe1a0_f00e, true),
+        (0xe49d_f004, true),
+        (0xe08f_f000, false),
+    ];
+    for (word, returns) in cases {
+        let block: DecodedBlock =
+            decode_block_for_language(Language::Arm32(ArmMode::A32), &word.to_le_bytes(), 0x8100);
+        let last: Option<&PcodeOp> = block.instructions[0].ops.last();
+        if returns {
+            assert!(
+                matches!(last, Some(PcodeOp::Return { .. })),
+                "{word:#010x}: {last:?}"
+            );
+        } else {
+            assert!(
+                matches!(last, Some(PcodeOp::BranchIndirect { .. })),
+                "{word:#010x}: {last:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn arm_pop_emits_writeback_before_return() {
     for (mode, bytes) in [
         (ArmMode::A32, vec![0xf0, 0x80, 0xbd, 0xe8]),
