@@ -223,118 +223,110 @@ build = "dotnet build -c Release (Deterministic=true, Optimize=true, DebugType=n
 description = "boolean-coerced brtrue/brfalse branch conditions the generic CIL->C# lifter must lower to valid comparisons: reference operand null checks (int[] != null / == null), integer operand zero checks (int != 0 / == 0), and array-length checks (data.Length != 0 / == 0); whole-type IL-equivalence oracle target for the generic branch-condition lowering in structurize::lift_block"
 
 [paid-protectors]
-status = "tier-1-attribute-strip-shipped; tier-2-algorithm-specs-shipped; tier-3-detect-only"
-reason = "v0.8 Wave 3A shipped in-house peel_* infrastructure for all 13+2 protectors. Tier-1 (Reactor/Eaz/SmartAssembly/Babel/Agile/Crypto) emits ReportOnlyEncryptedResource; Tier-2 (DeepSea/Spices/Skater/Dotfuscator/Goliath) emits AttributeStripAndReport; Tier-3 (ArmDot/Themida/ILProtector/MaxToCode) emits DetectOnlyNativeOrVm. Algorithm specs at the protector specs (not kept in the repository)"
+status = "no-real-sample"
+reason = "The repository holds no output of any protector listed here. Each entry's status says what the tests grade: detect-only-no-sample means detection rules and reports exercised on synthetic managed carriers; synthetic-fixture-only means a decoder or structure parser graded on fixtures built in this repository to the published format."
 
 [[paid-protectors.entry]]
 name = ".NET Reactor"
 peel = "peel_dotnet_reactor"
 strategy = "report-only-encrypted-resource"
-status = "REAL-PEELED-PARTIAL"
-note = "Watermark detection + name classification ships; full Rijndael resource decryption is PR-WELCOME pending licensed sample."
+status = "synthetic-fixture-only"
+note = "AES string-resource decryption graded on self-authored Roslyn compatibility fixtures in crates/disrobe-pass-dotnet/tests/fixtures/dotnet_reactor_strings that reproduce the .NET Reactor v4 string-resource format; no assembly produced by .NET Reactor is committed."
 
 [[paid-protectors.entry]]
 name = "Eazfuscator.NET"
 peel = "peel_eazfuscator"
 strategy = "report-only-encrypted-resource"
-status = "REAL-PEELED-PARTIAL"
-note = "Pre-VM tier peelable in principle; VM-tier (Eaz 5.x+) PROTECTOR-UNOBTAINABLE for static round-trip."
+status = "synthetic-fixture-only"
+note = "String recovery emulates a generic char-array XOR decryptor, graded on a PE assembled inside tests/eazfuscator_string_emu.rs. The VM devirtualizer is graded on corpus/dotnet/eazvm/EazSample.eazvm.dll, produced by an in-repository virtualizer that implements the documented Eazfuscator VM format, not by Eazfuscator.NET."
 
 [[paid-protectors.entry]]
 name = "SmartAssembly"
 peel = "peel_smartassembly"
 strategy = "report-only-encrypted-resource"
-status = "REAL-PEELED-PARTIAL"
-note = "Watermark + #=q/#=z name detection ships; full XOR decryption needs static-cctor constant evaluation."
+status = "synthetic-fixture-only"
+note = "Static-constructor-keyed string decryption graded on a modelled image built inside tests/smartassembly_strings.rs; mode-1 resource decompression graded on the self-authored Roslyn fixture in tests/fixtures/smartassembly_resources. No assembly produced by SmartAssembly is committed."
 
 [[paid-protectors.entry]]
 name = "Babel.NET"
 peel = "peel_babel_net"
 strategy = "report-only-encrypted-resource"
-status = "REAL-PEELED-PARTIAL"
-note = "Watermark + classification ships; BabelInflater + RC4 + Blowfish-CFB port is PR-WELCOME."
+status = "detect-only-no-sample"
+note = "Watermark detection and a report-only peel, tested on synthetic carriers; the peel recovers no strings or resources."
 
 [[paid-protectors.entry]]
 name = "DeepSea"
 peel = "peel_deepsea"
 strategy = "attribute-strip-and-report"
-status = "REAL-PEELED-PARTIAL"
-note = "Discontinued; fixtures unavailable on official channels."
+status = "detect-only-no-sample"
+note = "Signature detection tested on a synthetic managed carrier. The protector is discontinued and no sample is available."
 
 [[paid-protectors.entry]]
 name = "Spices.Net"
 peel = "peel_spices_net"
 strategy = "attribute-strip-and-report"
-status = "REAL-PEELED-PARTIAL"
-note = "Cyrillic homoglyph rename detection planned; full unscramble PR-WELCOME."
+status = "synthetic-fixture-only"
+note = "ROT-N string recovery and the Cyrillic homoglyph table graded on a modelled image built inside tests/spices_recovery.rs."
 
 [[paid-protectors.entry]]
 name = "Skater"
 peel = "peel_skater"
 strategy = "attribute-strip-and-report"
-status = "REAL-PEELED-PARTIAL"
-note = "Simple XOR string decrypter; full peel needs static-field magic byte extraction."
+status = "synthetic-fixture-only"
+note = "Base64 plus single-byte XOR string recovery graded on a modelled image built inside tests/skater_strings.rs."
 
 [[paid-protectors.entry]]
 name = "Dotfuscator"
 peel = "peel_dotfuscator"
 strategy = "attribute-strip-and-report"
-status = "REAL-PEELED-PARTIAL"
-note = "CE bundled with VS = fixture-obtainable; overload-induction reversal PR-WELCOME."
+status = "detect-only-no-sample"
+note = "Signature detection tested on a synthetic managed carrier; overload-induction renames are not reversed."
 
 [[paid-protectors.entry]]
 name = "Goliath.NET"
 peel = "peel_goliath"
 strategy = "attribute-strip-and-report"
-status = "PROTECTOR-UNOBTAINABLE"
-note = "Discontinued upstream; SHA1-XOR string decryption ported when sample lands."
+status = "detect-only-no-sample"
+note = "Signature detection tested on a synthetic managed carrier. The protector is discontinued and no sample is available."
 
 [[paid-protectors.entry]]
 name = "CryptoObfuscator"
 peel = "peel_crypto_obfuscator"
 strategy = "report-only-encrypted-resource"
-status = "REAL-PEELED-PARTIAL"
-note = "3DES string + DES resource ciphers; full port PR-WELCOME pending sample."
+status = "synthetic-fixture-only"
+note = "DES and deflate string-resource records graded on resources built inside tests/crypto_obfuscator.rs."
 
 [[paid-protectors.entry]]
 name = "ArmDot"
 peel = "peel_armdot"
 strategy = "detect-only-native-or-vm"
-status = "VM-TIER-WALL"
-note = "Managed CIL VM with a per-method, per-build random opcode map; operand buffer present statically but the mapping is absent from any single build, so devirt is the info-theoretic wall. Not a native section, nothing to disassemble."
+status = "detect-only-no-sample"
+note = "Signature detection tested on a synthetic managed carrier. ArmDot's managed VM uses a per-build random opcode map; no devirtualizer for it ships. The ArmDot route test lifts the in-repository EazVM-format sample, which is not ArmDot output."
 
 [[paid-protectors.entry]]
 name = "Agile.NET"
 peel = "peel_agile_net"
 strategy = "report-only-encrypted-resource"
-status = "DETECT-AND-STRUCTURE-ONLY"
-note = "Detects the AgileDotNet/CliSecure watermark, locates the code-header (signature + 16-byte key + method count) after the metadata stream, and recovers strings via the in-assembly managed XOR decryptor over #US. The body-decrypt primitives (single-XOR <=4.5, dual-XOR 5.0, additive big-endian XTEA 5.4 Pro) are transcribed faithfully from the documented method-decryption algorithm but are NOT wired to end-to-end body recovery: that needs the per-method codeOffs/codeSize from the method table the runtime loader walks (codeHeaderOffset+totalCodeSize+codeHeaderSize), absent without a real protected sample to ground the table layout. No real Agile.NET sample is in corpus."
+status = "synthetic-fixture-only"
+note = "Watermark detection and the code-header parse (signature, 16-byte key, method count, method table fields) graded on a synthetic carrier. The method-body decryption routines are not wired to body recovery."
 
 [[paid-protectors.entry]]
 name = "Themida (.NET wrapper)"
 peel = "peel_themida_dotnet"
 strategy = "detect-only-native-or-vm"
-status = "PROTECTOR-UNOBTAINABLE"
-note = "Oreans VM-protected native loader; managed PE only exists in RWX memory at runtime."
+status = "detect-only-no-sample"
+note = "Signature detection tested on a synthetic managed carrier. A native VM-protected loader restores the managed image at run time, so the image is not statically present."
 
 [[paid-protectors.entry]]
 name = "ILProtector"
 peel = "peel_ilprotector"
 strategy = "detect-only-native-or-vm"
-status = "PROTECTOR-UNOBTAINABLE"
-note = "Native Protect32/64.dll required at runtime; static-peel needs native-DLL emulation."
+status = "synthetic-fixture-only"
+note = "Invoke-stub enumeration and runtime-resource location graded on a structural fixture built inside tests/ilprotector_resource_emu.rs. Method bodies stay encrypted because the key lives in the native Protect32/64 runtime."
 
 [[paid-protectors.entry]]
 name = "MaxToCode"
 peel = "peel_maxtocode"
 strategy = "detect-only-native-or-vm"
-status = "DETECT-AND-STRUCTURE-ONLY-NATIVE-KEY-WALL"
-note = """
-Native loader restores each zero-RVA method body from an encrypted section. disrobe recovers the \
-static structure (zero-RVA method enumeration, encrypted-section name/rva/size/sha) and detects the \
-family by real markers; the encrypted section is recorded as opaque ciphertext with no claimed \
-record framing, since the per-body decryption key is computed by the unmanaged JIT-hooked loader at \
-runtime and is absent from the on-disk image. The bodies stay honestly walled as \
-MaxKeyOrigin::NativeStubWall with bodies_recovered == 0 and no fabricated recovery. This is an \
-information-theoretic native-key wall, not an unfinished feature. Graded by \
-tests/maxtocode_section_emu.rs."""
+status = "synthetic-fixture-only"
+note = "Zero-RVA method enumeration and encrypted-section location graded on a structural fixture built inside tests/maxtocode_section_emu.rs. The per-body key is computed by the native loader at run time and is absent from the image, so no body is recovered."
