@@ -203,12 +203,39 @@ fn score(image: &NativeImage<'_>, markers: &[&[u8]]) -> (u32, Vec<String>) {
     let mut hits: u32 = 0;
     let mut found: Vec<String> = Vec::new();
     for marker in markers {
-        if image.raw_contains(marker) {
+        if marker_occurs(image.raw, marker, markers) {
             hits += 1;
             found.push(String::from_utf8_lossy(marker).into_owned());
         }
     }
     (hits, found)
+}
+
+fn marker_occurs(hay: &[u8], marker: &[u8], all: &[&[u8]]) -> bool {
+    let longer: Vec<&[u8]> = all
+        .iter()
+        .copied()
+        .filter(|other: &&[u8]| other.len() > marker.len() && other.starts_with(marker))
+        .collect();
+    let mut from: usize = 0;
+    while let Some(offset) = hay
+        .get(from..)
+        .and_then(|rest: &[u8]| disrobe_core::byte_search::find(rest, marker))
+    {
+        let at: usize = from + offset;
+        let inside_word: bool = at
+            .checked_sub(1)
+            .and_then(|before: usize| hay.get(before))
+            .is_some_and(u8::is_ascii_alphabetic);
+        let inside_longer: bool = longer
+            .iter()
+            .any(|other: &&[u8]| hay[at..].starts_with(other));
+        if !inside_word && !inside_longer {
+            return true;
+        }
+        from = at + 1;
+    }
+    false
 }
 
 #[cfg(test)]
@@ -228,6 +255,19 @@ mod tests {
                 path.display()
             )
         })
+    }
+
+    #[test]
+    fn markers_count_once_and_not_inside_other_words() {
+        let nim: &[u8] = b"\0NimMainModule\0PreMainInner\0";
+        assert!(marker_occurs(nim, b"NimMainModule", NIM_RUNTIME_MARKERS));
+        assert!(!marker_occurs(nim, b"NimMain", NIM_RUNTIME_MARKERS));
+        assert!(!marker_occurs(nim, b"PreMain", NIM_RUNTIME_MARKERS));
+        let go_pe: &[u8] = b"\0GetModuleInformation\0.note.go.buildid\0";
+        assert!(!marker_occurs(go_pe, b"ModuleInfo", D_RUNTIME_MARKERS));
+        assert!(!marker_occurs(go_pe, b".buildid", ZIG_RUNTIME_MARKERS));
+        let d_symbol: &[u8] = b"\0_D6object10ModuleInfo6__initZ\0";
+        assert!(marker_occurs(d_symbol, b"ModuleInfo", D_RUNTIME_MARKERS));
     }
 
     #[test]
