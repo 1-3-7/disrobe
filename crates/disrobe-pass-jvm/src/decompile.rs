@@ -2222,7 +2222,7 @@ fn lift_structured(
         return StructuredLift::Unrecovered(reason);
     }
     let root: Region = structurer.structure();
-    if let Some(reason) = structurer.structured_finally_defect() {
+    if let Some(reason) = structurer.structured_region_defect() {
         return StructuredLift::Unrecovered(reason);
     }
     let string_switch_tables: BTreeMap<BlockId, crate::decompile_struct::StringSwitchTable> =
@@ -5072,6 +5072,12 @@ fn render_region(ctx: &mut RenderCtx<'_>, region: &Region, out: &mut String, lev
             }
             let cond: String = render_if_condition(ctx, *head, out, level);
             let pad: String = indent_string(level);
+            if matches!(then_body.as_ref(), Region::Sequence(items) if items.is_empty()) {
+                let _ = writeln!(out, "{pad}if ({cond}) {{");
+                render_region(ctx, else_body, out, level + 1);
+                let _ = writeln!(out, "{pad}}}");
+                return;
+            }
             let _ = writeln!(out, "{pad}if ({}) {{", invert(&cond));
             render_region(ctx, then_body, out, level + 1);
             let _ = writeln!(out, "{pad}}} else {{");
@@ -5079,16 +5085,27 @@ fn render_region(ctx: &mut RenderCtx<'_>, region: &Region, out: &mut String, lev
             let _ = writeln!(out, "{pad}}}");
         }
         Region::While { header, body, exit } => {
-            let cond: String = render_if_condition(ctx, *header, out, level);
+            let mut head: String = String::new();
+            let cond: String = render_if_condition(ctx, *header, &mut head, level + 1);
             let negated: bool =
                 matches!(exit, Some(e) if header_cond_true_target(ctx.cfg, *header) == Some(*e));
             let displayed_cond: String = if negated { invert(&cond) } else { cond };
             let pad: String = indent_string(level);
-            let update: Option<(BlockId, String)> = finally_continue_latch(ctx, body, *header)
-                .and_then(|latch: BlockId| {
+            let update: Option<(BlockId, String)> = if head.is_empty() {
+                finally_continue_latch(ctx, body, *header).and_then(|latch: BlockId| {
                     render_for_update(ctx, latch).map(|s: String| (latch, s))
-                });
-            if let Some((latch, update)) = update {
+                })
+            } else {
+                None
+            };
+            if !head.is_empty() {
+                let _ = writeln!(out, "{pad}while (true) {{");
+                out.push_str(&head);
+                let _ = writeln!(out, "{pad}    if ({}) {{", invert(&displayed_cond));
+                let _ = writeln!(out, "{pad}        break;");
+                let _ = writeln!(out, "{pad}    }}");
+                render_region(ctx, body, out, level + 1);
+            } else if let Some((latch, update)) = update {
                 let _ = writeln!(out, "{pad}for (; {displayed_cond}; {update}) {{");
                 ctx.rendered_blocks.insert(latch);
                 render_loop_body(ctx, body, latch, out, level + 1);
@@ -8806,7 +8823,9 @@ fn boolean_local_store(
     slot_types: &BTreeMap<u16, String>,
 ) -> Option<String> {
     let slot: u16 = int_store_slot(insn)?;
-    if slot_types.get(&slot).map(String::as_str) != Some("boolean") {
+    if slot_types.get(&slot).map(String::as_str) != Some("boolean")
+        && !local_is_boolean_typed(&local_name(slot, params))
+    {
         return None;
     }
     let rendered: String = stack.last()?.render();
@@ -10127,7 +10146,7 @@ fn lift_one_inner(
         }
         0x59 => {
             if let Some(top) = stack.last() {
-                let dup: Expr = dup_clone(top);
+                let dup: Expr = dup_single(top);
                 stack.push(dup);
             }
             LiftResult::Pushed
@@ -10149,7 +10168,7 @@ fn lift_one_inner(
         0x7E | 0x7F => binary_op_kind(stack, "&", shift_num_kind(op)),
         0x80 | 0x81 => binary_op_kind(stack, "|", shift_num_kind(op)),
         0x82 | 0x83 => binary_op_kind(stack, "^", shift_num_kind(op)),
-        0x84 => iinc(insn, params),
+        0x84 => iinc(insn, stack, params),
         0x85..=0x93 => cast_numeric(insn, stack),
         0x94..=0x98 => match CmpKind::of_jvm(insn.opcode) {
             Some(kind) => {
@@ -10355,6 +10374,14 @@ fn dup2_x2(stack: &mut Vec<Expr>) -> LiftResult {
 
 #[inline]
 fn dup_clone(e: &Expr) -> Expr {
+    if expr_has_post_step(e) {
+        unknown()
+    } else {
+        dup_single(e)
+    }
+}
+
+fn dup_single(e: &Expr) -> Expr {
     if expr_node_count_capped(e, MAX_DUP_EXPR_NODES) >= MAX_DUP_EXPR_NODES {
         unknown()
     } else {
@@ -10668,13 +10695,106 @@ fn store_indexed(stack: &mut Vec<Expr>, idx: u16, params: &[(u16, String)], pc: 
     if allocation_store_is_deferred(pc) {
         return LiftResult::Elided;
     }
-    LiftResult::Statement(format!("{} = {}", local_name(idx, params), value.render()))
+    let name: String = local_name(idx, params);
+    if !settle_local_write(stack, &name, &value) {
+        return LiftResult::Unhandled;
+    }
+    LiftResult::Statement(format!("{name} = {}", value.render()))
 }
 
-fn iinc(insn: &Instruction, params: &[(u16, String)]) -> LiftResult {
+fn settle_local_write(stack: &mut [Expr], name: &str, stored: &Expr) -> bool {
+    let copy_of_stored: bool = stack.last().is_some_and(|top: &Expr| top == stored);
+    let older: usize = stack.len() - usize::from(copy_of_stored);
+    if stack[..older]
+        .iter()
+        .any(|entry: &Expr| expr_reads_local(entry, name))
+    {
+        return false;
+    }
+    let computed: bool = !matches!(stored, Expr::Const(_) | Expr::Local(_) | Expr::This);
+    if let Some(top) = stack.last_mut().filter(|_| copy_of_stored && computed) {
+        *top = Expr::Local(name.to_owned());
+    }
+    true
+}
+
+fn expr_reads_local(expr: &Expr, name: &str) -> bool {
+    expr_any(
+        expr,
+        |node: &Expr| matches!(node, Expr::Local(local) if local == name),
+    )
+}
+
+fn expr_has_post_step(expr: &Expr) -> bool {
+    expr_any(
+        expr,
+        |node: &Expr| matches!(node, Expr::Opaque(text) if text.ends_with("++") || text.ends_with("--")),
+    )
+}
+
+fn expr_any(expr: &Expr, matches_node: impl Fn(&Expr) -> bool) -> bool {
+    let mut pending: Vec<&Expr> = vec![expr];
+    while let Some(node) = pending.pop() {
+        if matches_node(node) {
+            return true;
+        }
+        match node {
+            Expr::Const(_)
+            | Expr::Local(_)
+            | Expr::This
+            | Expr::StaticField { .. }
+            | Expr::New(_)
+            | Expr::Opaque(_) => {}
+            Expr::Field { receiver, .. } => pending.push(receiver),
+            Expr::Binary { lhs, rhs, .. }
+            | Expr::Cmp { lhs, rhs, .. }
+            | Expr::ArrayLoad {
+                array: lhs,
+                index: rhs,
+            } => {
+                pending.push(lhs);
+                pending.push(rhs);
+            }
+            Expr::Unary { value, .. }
+            | Expr::Cast { value, .. }
+            | Expr::InstanceOf { value, .. }
+            | Expr::ArrayLength(value)
+            | Expr::NewArray { size: value, .. } => pending.push(value),
+            Expr::ArrayInit { elements, .. } => pending.extend(elements),
+            Expr::Invoke { receiver, args, .. } => {
+                pending.extend(receiver.as_deref());
+                pending.extend(args);
+            }
+        }
+    }
+    false
+}
+
+fn iinc(insn: &Instruction, stack: &mut [Expr], params: &[(u16, String)]) -> LiftResult {
     match &insn.operands {
         Operands::Iinc { index, delta } => {
             let name: String = local_name(*index, params);
+            if let Some(top) = stack.last_mut()
+                && matches!(top, Expr::Local(local) if *local == name)
+                && matches!(*delta, 1 | -1)
+            {
+                let step: &str = if *delta == 1 { "++" } else { "--" };
+                *top = Expr::Opaque(format!("{name}{step}"));
+                return if stack
+                    .iter()
+                    .any(|entry: &Expr| expr_reads_local(entry, &name))
+                {
+                    LiftResult::Unhandled
+                } else {
+                    LiftResult::Pushed
+                };
+            }
+            if stack
+                .iter()
+                .any(|entry: &Expr| expr_reads_local(entry, &name))
+            {
+                return LiftResult::Unhandled;
+            }
             if *delta == 1 {
                 LiftResult::Statement(format!("{name}++"))
             } else if *delta == -1 {

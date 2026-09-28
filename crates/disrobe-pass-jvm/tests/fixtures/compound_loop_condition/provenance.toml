@@ -1,0 +1,35 @@
+schema = "disrobe.jvm.compound-loop-condition-fixture/v1"
+source = "CompoundLoops.java"
+source_sha256 = "9724d31478cad8f9308380e45e5a15c4fbe330ebc6eff790b5696e709c5cadf6"
+
+[javac]
+vendor = "Eclipse Temurin"
+version = "25.0.4+7-LTS"
+command = "javac -g -Xlint:-options --release 8 -d classes CompoundLoops.java"
+
+[d8]
+version = "9.1.31"
+url = "https://dl.google.com/dl/android/maven2/com/android/tools/r8/9.1.31/r8-9.1.31.jar"
+sha256 = "3b4de3053885da105e39c15212261d22653d6d1b5eb92323dd04ae913cc8286f"
+
+[shapes]
+andChainWithAssignment = "a while condition joined with && whose second operand assigns a local before the comparison"
+orChain = "a while condition joined with || whose first operand jumps straight into the body"
+mixedChain = "a while condition (a || b) && c, where both operands of the || reach the && operand"
+forWithCall = "a for condition that calls a static method after a bound check"
+doWhileCompound = "a do-while whose && condition shares its first block with the loop body"
+fieldCondition = "a while condition that reads an instance field and a static field"
+headerAssignsBeforeTest = "a while condition that loads an array element through a post-increment and stores it before the test"
+assignInCondition = "a compound assignment inside an if condition outside any loop"
+postIncrementIndex = "an array index that post-increments its local outside any loop"
+notes = "In orChain, D8 reaches the loop body from the second || operand through a goto-only block, so the release build puts a trampoline edge inside the condition."
+
+[[artifact]]
+path = "CompoundLoops-release-min21.dex"
+format = "DEX 035"
+min_api = 21
+mode = "release"
+tool = "D8"
+command = "java -cp r8-9.1.31.jar com.android.tools.r8.D8 --release --min-api 21 --output dex classes/CompoundLoops.class"
+sha256 = "cfe7c8207627b0bcedcc8c0649c58b59f85a10911e433208c13866f434f335ea"
+bytes = 2076

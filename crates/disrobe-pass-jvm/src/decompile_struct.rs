@@ -10,6 +10,7 @@ const MAX_BLOCKS: usize = 16_384;
 const MAX_STRUCTURE_DEPTH: usize = 256;
 const MAX_STRUCTURE_WORK: usize = 200_000;
 const MAX_JOIN_CHAIN: usize = 8;
+const MAX_CONDITION_CHAIN: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct BlockId(pub u32);
@@ -559,7 +560,7 @@ pub struct Structurer<'a> {
     work: usize,
     finally_body_depth: usize,
     pub had_irreducible: bool,
-    unmodelled_finally: Option<&'static str>,
+    unmodelled_region: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -632,7 +633,7 @@ impl<'a> Structurer<'a> {
             work: 0,
             finally_body_depth: 0,
             had_irreducible: false,
-            unmodelled_finally: None,
+            unmodelled_region: None,
         }
     }
 
@@ -890,39 +891,7 @@ impl<'a> Structurer<'a> {
             if let Some(loop_info) = self.loops.iter().find(|l| l.header == b) {
                 let loop_info: NaturalLoop = loop_info.clone();
                 let exit: Option<BlockId> = self.loop_exits.get(&b).copied();
-                let label: u32 = self.next_label;
-                self.next_label += 1;
-                let body_region: Region = self.structure_loop_body(
-                    &loop_info,
-                    exit,
-                    LoopFrame {
-                        header: b,
-                        exit,
-                        label,
-                    },
-                );
-                let header_kind: LoopKind = classify_loop_header(self.cfg, &loop_info);
-                let header_region: Region = match header_kind {
-                    LoopKind::While => Region::While {
-                        header: b,
-                        body: Box::new(body_region),
-                        exit,
-                    },
-                    LoopKind::DoWhile => Region::DoWhile {
-                        header: b,
-                        body: Box::new(body_region),
-                        exit,
-                    },
-                };
-                let header_region: Region = if self.labels_used.remove(&label) {
-                    Region::LabeledLoop {
-                        label,
-                        body: Box::new(header_region),
-                    }
-                } else {
-                    header_region
-                };
-                seq.push(header_region);
+                seq.push(self.structure_loop(&loop_info, exit));
                 cur = exit.filter(|e| self.cfg.blocks[e.0 as usize].start_pc < try_end);
                 continue;
             }
@@ -2137,8 +2106,8 @@ impl<'a> Structurer<'a> {
     }
 
     #[must_use]
-    pub const fn structured_finally_defect(&self) -> Option<&'static str> {
-        self.unmodelled_finally
+    pub const fn structured_region_defect(&self) -> Option<&'static str> {
+        self.unmodelled_region
     }
 
     #[must_use]
@@ -2293,7 +2262,7 @@ impl<'a> Structurer<'a> {
                     },
                 );
                 if unchained_finally {
-                    self.unmodelled_finally.get_or_insert(
+                    self.unmodelled_region.get_or_insert(
                         "a compiler-inserted finally handler forms no foldable chain, so its body \
                          cannot be recovered without changing what the method does with a pending \
                          exception",
@@ -2484,7 +2453,7 @@ impl<'a> Structurer<'a> {
                                         }
                                     }
                                     _ => {
-                                        self.unmodelled_finally.get_or_insert(
+                                        self.unmodelled_region.get_or_insert(
                                         "a finally body with internal control flow was not folded \
                                          out of every exit path",
                                     );
@@ -2567,14 +2536,14 @@ impl<'a> Structurer<'a> {
                                     && !self.visited.contains(site)
                             }));
                         if partial_copy {
-                            self.unmodelled_finally.get_or_insert(
+                            self.unmodelled_region.get_or_insert(
                                 "a finally body with internal control flow was only partly folded \
                                  out of its exit paths",
                             );
                         }
                     }
                     if chain.termination == FinallyTermination::Return && after_try.is_some() {
-                        self.unmodelled_finally.get_or_insert(
+                        self.unmodelled_region.get_or_insert(
                             "a finally that returns still leaves a reachable continuation, so the \
                              recovered try would run code the class cannot reach",
                         );
@@ -2660,39 +2629,7 @@ impl<'a> Structurer<'a> {
             if let Some(loop_info) = self.loops.iter().find(|l| l.header == b) {
                 let loop_info: NaturalLoop = loop_info.clone();
                 let exit: Option<BlockId> = self.loop_exits.get(&b).copied();
-                let label: u32 = self.next_label;
-                self.next_label += 1;
-                let body_region: Region = self.structure_loop_body(
-                    &loop_info,
-                    exit,
-                    LoopFrame {
-                        header: b,
-                        exit,
-                        label,
-                    },
-                );
-                let header_kind: LoopKind = classify_loop_header(self.cfg, &loop_info);
-                let header_region: Region = match header_kind {
-                    LoopKind::While => Region::While {
-                        header: b,
-                        body: Box::new(body_region),
-                        exit,
-                    },
-                    LoopKind::DoWhile => Region::DoWhile {
-                        header: b,
-                        body: Box::new(body_region),
-                        exit,
-                    },
-                };
-                let header_region: Region = if self.labels_used.remove(&label) {
-                    Region::LabeledLoop {
-                        label,
-                        body: Box::new(header_region),
-                    }
-                } else {
-                    header_region
-                };
-                seq.push(header_region);
+                seq.push(self.structure_loop(&loop_info, exit));
                 cur = exit;
                 continue;
             }
@@ -2735,11 +2672,49 @@ impl<'a> Structurer<'a> {
         }
     }
 
+    fn structure_loop(&mut self, loop_info: &NaturalLoop, exit: Option<BlockId>) -> Region {
+        let header: BlockId = loop_info.header;
+        let label: u32 = self.next_label;
+        self.next_label += 1;
+        let condition: Option<ConditionChain> = self.loop_condition_chain(loop_info, exit);
+        let body_region: Region = self.structure_loop_body(
+            loop_info,
+            exit,
+            LoopFrame {
+                header,
+                exit,
+                label,
+            },
+            condition.as_ref(),
+        );
+        let header_region: Region = match classify_loop_header(self.cfg, loop_info) {
+            LoopKind::While => Region::While {
+                header,
+                body: Box::new(body_region),
+                exit,
+            },
+            LoopKind::DoWhile => Region::DoWhile {
+                header,
+                body: Box::new(body_region),
+                exit,
+            },
+        };
+        if self.labels_used.remove(&label) {
+            Region::LabeledLoop {
+                label,
+                body: Box::new(header_region),
+            }
+        } else {
+            header_region
+        }
+    }
+
     fn structure_loop_body(
         &mut self,
         loop_info: &NaturalLoop,
         exit: Option<BlockId>,
         frame: LoopFrame,
+        condition: Option<&ConditionChain>,
     ) -> Region {
         let mut loop_stack: Vec<LoopFrame> = self.loop_stack.clone();
         loop_stack.push(frame);
@@ -2773,7 +2748,7 @@ impl<'a> Structurer<'a> {
             work: self.work,
             finally_body_depth: 0,
             had_irreducible: false,
-            unmodelled_finally: None,
+            unmodelled_region: None,
         };
         inner.visited.insert(loop_info.header);
         let header_block: &BasicBlock = &self.cfg.blocks[loop_info.header.0 as usize];
@@ -2787,7 +2762,17 @@ impl<'a> Structurer<'a> {
             .iter()
             .find(|e| Some(e.target) != exit && loop_info.body.contains(&e.target))
             .map(|e| e.target);
-        let region: Region = if header_stays_in_loop
+        let chained: Option<Region> = condition.and_then(|chain: &ConditionChain| {
+            let start: BlockId = if header_stays_in_loop {
+                loop_info.header
+            } else {
+                first_succ?
+            };
+            inner.structure_condition_loop(chain, loop_info.header, start)
+        });
+        let region: Region = if let Some(region) = chained {
+            region
+        } else if header_stays_in_loop
             && (is_if(header_block) || is_switch(header_block, &self.cfg.blocks))
         {
             inner.structure_header_branch(loop_info.header, exit)
@@ -2801,7 +2786,7 @@ impl<'a> Structurer<'a> {
         self.next_label = inner.next_label;
         self.had_irreducible |= inner.had_irreducible;
         self.absorbed.extend(inner.take_absorbed_blocks());
-        self.unmodelled_finally = self.unmodelled_finally.or(inner.unmodelled_finally);
+        self.unmodelled_region = self.unmodelled_region.or(inner.unmodelled_region);
         self.string_switch_tables
             .extend(inner.take_string_switch_tables());
         self.finally_inline_skips
@@ -2846,6 +2831,282 @@ impl<'a> Structurer<'a> {
             Ok([single]) => single,
             Err(items) => Region::Sequence(items),
         }
+    }
+
+    fn loop_condition_chain(
+        &self,
+        loop_info: &NaturalLoop,
+        exit: Option<BlockId>,
+    ) -> Option<ConditionChain> {
+        let exit: BlockId = exit?;
+        let header: BlockId = loop_info.header;
+        if !self.condition_link(loop_info, header, exit) {
+            return None;
+        }
+        let mut blocks: BTreeSet<BlockId> = BTreeSet::from([header]);
+        let mut accepted: Option<ConditionChain> = None;
+        while blocks.len() < MAX_CONDITION_CHAIN {
+            let next: Option<BlockId> = blocks
+                .iter()
+                .flat_map(|&block: &BlockId| self.chain_targets(block))
+                .filter(|target: &BlockId| {
+                    *target != exit
+                        && !blocks.contains(target)
+                        && self.entered_only_from(*target, &blocks)
+                        && self.condition_link(loop_info, *target, exit)
+                })
+                .min_by_key(|target: &BlockId| {
+                    (self.cfg.blocks[target.0 as usize].start_pc, target.0)
+                });
+            let Some(next) = next else {
+                break;
+            };
+            blocks.insert(next);
+            if let Some(chain) = self.condition_chain_of(&blocks, header, exit) {
+                accepted = Some(chain);
+            }
+        }
+        accepted
+    }
+
+    fn entered_only_from(&self, block: BlockId, blocks: &BTreeSet<BlockId>) -> bool {
+        self.cfg.blocks[block.0 as usize]
+            .predecessors
+            .iter()
+            .all(|pred: &BlockId| {
+                blocks.contains(pred)
+                    || (self.trampoline_target(*pred).is_some()
+                        && self.cfg.blocks[pred.0 as usize]
+                            .predecessors
+                            .iter()
+                            .all(|outer: &BlockId| blocks.contains(outer)))
+            })
+    }
+
+    fn condition_chain_of(
+        &self,
+        blocks: &BTreeSet<BlockId>,
+        header: BlockId,
+        exit: BlockId,
+    ) -> Option<ConditionChain> {
+        let mut entries: BTreeSet<BlockId> = BTreeSet::new();
+        let mut leaves: bool = false;
+        for &block in blocks {
+            for target in self.chain_targets(block) {
+                if target == exit {
+                    leaves = true;
+                } else if target == header || !blocks.contains(&target) {
+                    entries.insert(target);
+                }
+            }
+        }
+        let [body_entry]: [BlockId; 1] = entries
+            .into_iter()
+            .collect::<Vec<BlockId>>()
+            .try_into()
+            .ok()?;
+        leaves.then(|| ConditionChain {
+            blocks: blocks.clone(),
+            body_entry,
+            exit,
+        })
+    }
+
+    fn condition_link(&self, loop_info: &NaturalLoop, block: BlockId, exit: BlockId) -> bool {
+        let basic: &BasicBlock = &self.cfg.blocks[block.0 as usize];
+        if !is_if(basic)
+            || basic
+                .successors
+                .iter()
+                .any(|edge: &Edge| matches!(edge.kind, EdgeKind::Exception))
+            || (block != loop_info.header && self.try_group_at_block(block).is_some())
+        {
+            return false;
+        }
+        let (true_t, false_t): (BlockId, BlockId) = self.chain_if_targets(block);
+        true_t != false_t
+            && [true_t, false_t]
+                .iter()
+                .all(|target: &BlockId| *target == exit || loop_info.body.contains(target))
+    }
+
+    fn trampoline_target(&self, block: BlockId) -> Option<BlockId> {
+        let basic: &BasicBlock = &self.cfg.blocks[block.0 as usize];
+        let [edge]: &[Edge; 1] = basic.successors.as_slice().try_into().ok()?;
+        (matches!(edge.kind, EdgeKind::Jump)
+            && basic.insn_range.1.saturating_sub(basic.insn_range.0) == 1
+            && edge.target != block)
+            .then_some(edge.target)
+    }
+
+    fn trampoline_path(&self, target: BlockId) -> (BlockId, Vec<BlockId>) {
+        let mut passed: Vec<BlockId> = Vec::new();
+        let mut current: BlockId = target;
+        while passed.len() < MAX_JOIN_CHAIN {
+            let Some(next) = self.trampoline_target(current) else {
+                break;
+            };
+            passed.push(current);
+            current = next;
+        }
+        (current, passed)
+    }
+
+    fn chain_targets(&self, block: BlockId) -> Vec<BlockId> {
+        normal_targets(&self.cfg.blocks[block.0 as usize])
+            .map(|target: BlockId| self.trampoline_path(target).0)
+            .collect()
+    }
+
+    fn chain_if_targets(&self, block: BlockId) -> (BlockId, BlockId) {
+        let (true_t, false_t): (BlockId, BlockId) = if_targets(&self.cfg.blocks[block.0 as usize]);
+        (
+            self.trampoline_path(true_t).0,
+            self.trampoline_path(false_t).0,
+        )
+    }
+
+    fn absorb_trampolines(&mut self, block: BlockId) {
+        let passed: Vec<BlockId> = normal_targets(&self.cfg.blocks[block.0 as usize])
+            .flat_map(|target: BlockId| self.trampoline_path(target).1)
+            .collect();
+        for trampoline in passed {
+            self.absorb(trampoline);
+        }
+    }
+
+    fn structure_condition_loop(
+        &mut self,
+        chain: &ConditionChain,
+        header: BlockId,
+        start: BlockId,
+    ) -> Option<Region> {
+        let mut placed: BTreeSet<BlockId> = BTreeSet::new();
+        if start != header {
+            placed.insert(header);
+        }
+        let (start, _): (BlockId, Vec<BlockId>) = self.trampoline_path(start);
+        let condition: Option<Region> = self
+            .structure_condition_chain(chain, start, chain.body_entry, &mut placed, 0)
+            .filter(|_| placed == chain.blocks);
+        let Some(condition) = condition else {
+            self.unmodelled_region.get_or_insert(
+                "a loop condition's short-circuit blocks do not nest into one condition, so the \
+                 loop has no structured form that keeps every exit",
+            );
+            return None;
+        };
+        for &block in &chain.blocks {
+            self.visited.insert(block);
+            self.absorb_trampolines(block);
+        }
+        let mut items: Vec<Region> = match condition {
+            Region::Sequence(items) => items,
+            single => vec![single],
+        };
+        if chain.body_entry != header {
+            match self.structure_at(chain.body_entry, Some(chain.exit)) {
+                Region::Sequence(rest) => items.extend(rest),
+                rest => items.push(rest),
+            }
+        }
+        Some(match <[Region; 1]>::try_from(items) {
+            Ok([single]) => single,
+            Err(items) => Region::Sequence(items),
+        })
+    }
+
+    fn structure_condition_chain(
+        &mut self,
+        chain: &ConditionChain,
+        start: BlockId,
+        stop: BlockId,
+        placed: &mut BTreeSet<BlockId>,
+        depth: usize,
+    ) -> Option<Region> {
+        if depth > MAX_CONDITION_CHAIN {
+            return None;
+        }
+        let mut seq: Vec<Region> = Vec::new();
+        let mut cur: BlockId = start;
+        while cur != stop {
+            if cur == chain.exit {
+                seq.push(Region::Break { label: None });
+                break;
+            }
+            if !chain.blocks.contains(&cur) || !placed.insert(cur) {
+                return None;
+            }
+            let (true_t, false_t): (BlockId, BlockId) = self.chain_if_targets(cur);
+            let join: BlockId = if true_t == chain.exit {
+                false_t
+            } else if false_t == chain.exit {
+                true_t
+            } else {
+                self.condition_chain_join(chain, true_t, false_t, stop)?
+            };
+            let then_body: Region =
+                self.structure_condition_chain(chain, false_t, join, placed, depth + 1)?;
+            let region: Region = if true_t == join {
+                Region::IfThen {
+                    head: cur,
+                    cond_negated: false,
+                    then_body: Box::new(then_body),
+                    join: Some(join),
+                }
+            } else {
+                let else_body: Region =
+                    self.structure_condition_chain(chain, true_t, join, placed, depth + 1)?;
+                Region::IfThenElse {
+                    head: cur,
+                    cond_negated: false,
+                    then_body: Box::new(then_body),
+                    else_body: Box::new(else_body),
+                    join: Some(join),
+                }
+            };
+            seq.push(region);
+            cur = join;
+        }
+        Some(match <[Region; 1]>::try_from(seq) {
+            Ok([single]) => single,
+            Err(seq) => Region::Sequence(seq),
+        })
+    }
+
+    fn condition_chain_join(
+        &self,
+        chain: &ConditionChain,
+        true_t: BlockId,
+        false_t: BlockId,
+        stop: BlockId,
+    ) -> Option<BlockId> {
+        let true_reach: BTreeSet<BlockId> = self.condition_chain_reach(chain, true_t, stop);
+        let false_reach: BTreeSet<BlockId> = self.condition_chain_reach(chain, false_t, stop);
+        let common: BTreeSet<BlockId> = true_reach.intersection(&false_reach).copied().collect();
+        common.iter().copied().find(|candidate: &BlockId| {
+            self.condition_chain_reach(chain, *candidate, stop)
+                .is_superset(&common)
+        })
+    }
+
+    fn condition_chain_reach(
+        &self,
+        chain: &ConditionChain,
+        from: BlockId,
+        stop: BlockId,
+    ) -> BTreeSet<BlockId> {
+        let mut seen: BTreeSet<BlockId> = BTreeSet::new();
+        let mut stack: Vec<BlockId> = vec![from];
+        while let Some(block) = stack.pop() {
+            if block == chain.exit || !seen.insert(block) {
+                continue;
+            }
+            if block != stop && chain.blocks.contains(&block) {
+                stack.extend(self.chain_targets(block));
+            }
+        }
+        seen
     }
 
     fn structure_if(&mut self, head: BlockId, stop: Option<BlockId>) -> Region {
@@ -3023,6 +3284,13 @@ impl<'a> Structurer<'a> {
     }
 }
 
+#[derive(Debug, Clone)]
+struct ConditionChain {
+    blocks: BTreeSet<BlockId>,
+    body_entry: BlockId,
+    exit: BlockId,
+}
+
 #[derive(Debug, Clone, Copy)]
 enum LoopKind {
     While,
@@ -3191,6 +3459,14 @@ fn handler_continuation(cfg: &Cfg, handler_set: &BTreeSet<BlockId>) -> Option<Bl
     } else {
         None
     }
+}
+
+fn normal_targets(block: &BasicBlock) -> impl Iterator<Item = BlockId> + '_ {
+    block
+        .successors
+        .iter()
+        .filter(|edge: &&Edge| !matches!(edge.kind, EdgeKind::Exception))
+        .map(|edge: &Edge| edge.target)
 }
 
 fn follow_single_successor(block: &BasicBlock) -> Option<BlockId> {
