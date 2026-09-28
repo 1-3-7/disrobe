@@ -612,6 +612,10 @@ jobs:
         run: |
           dotnet tool restore --tool-manifest .config/dotnet-tools.json
           dotnet tool run ilspycmd --allow-roll-forward -- --version
+      - name: provision bun so the compiled-bundle grader builds real standalone binaries
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: "1.4.2"
       - name: provision the installer and elf toolchains so their round trips run instead of returning early
         shell: bash
         env:
@@ -648,6 +652,7 @@ jobs:
             sudo apt-get install -y nsis
             demand makensis DISROBE_REQUIRE_MAKENSIS
           fi
+          demand bun DISROBE_REQUIRE_BUN
       - name: provision Swift 6.3.2 with automatic differentiation on macOS
         if: matrix.os == 'macos-latest' && matrix.shard == 'two'
         shell: bash

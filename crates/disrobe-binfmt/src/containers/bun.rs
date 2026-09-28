@@ -104,10 +104,9 @@ fn data_start_from(trailer_offset: usize, offsets: &BunOffsets) -> Option<usize>
     let modules_length: usize = usize::try_from(offsets.modules_length).ok()?;
     let modules_offset: usize = usize::try_from(offsets.modules_offset).ok()?;
     let byte_count: usize = usize::try_from(offsets.byte_count).ok()?;
-    let module_table_end: usize = trailer_offset.checked_sub(OFFSETS_LEN)?;
-    let module_table_start: usize = module_table_end.checked_sub(modules_length)?;
-    let data_start: usize = module_table_start.checked_sub(byte_count)?;
-    if data_start.checked_add(modules_offset)? != module_table_start {
+    let offsets_start: usize = trailer_offset.checked_sub(OFFSETS_LEN)?;
+    let data_start: usize = offsets_start.checked_sub(byte_count)?;
+    if modules_offset.checked_add(modules_length)? > byte_count {
         return None;
     }
     Some(data_start)
@@ -229,6 +228,8 @@ pub fn module_contents<'a>(
 
 pub fn sanitize_bun_name(name: &str) -> String {
     let trimmed: &str = name
+        .trim_start_matches("B:/~BUN/root/")
+        .trim_start_matches("B:/~BUN/")
         .trim_start_matches("/$bunfs/root/")
         .trim_start_matches("$bunfs/root/")
         .trim_start_matches("/$bunfs/")
@@ -262,8 +263,7 @@ pub(crate) fn build_bun(modules: &[(&str, &[u8])]) -> Vec<u8> {
         data.extend_from_slice(body);
         content_ptrs.push((body_off, body.len() as u32));
     }
-    let byte_count: u64 = data.len() as u64;
-    let modules_offset: u32 = byte_count as u32;
+    let modules_offset: u32 = data.len() as u32;
     let mut table: Vec<u8> = Vec::new();
     for i in 0..modules.len() {
         let (n_off, n_len): (u32, u32) = name_ptrs[i];
@@ -283,12 +283,14 @@ pub(crate) fn build_bun(modules: &[(&str, &[u8])]) -> Vec<u8> {
         table.push(0);
     }
     let modules_length: u32 = table.len() as u32;
+    data.extend_from_slice(&table);
+    data.push(0);
+    let byte_count: u64 = data.len() as u64;
 
     let mut out: Vec<u8> = Vec::new();
     out.extend_from_slice(&[0x7f, b'E', b'L', b'F']);
     out.extend(std::iter::repeat_n(0u8, 60));
     out.extend_from_slice(&data);
-    out.extend_from_slice(&table);
     put_u64(&mut out, byte_count);
     put_u32(&mut out, modules_offset);
     put_u32(&mut out, modules_length);
@@ -321,6 +323,12 @@ mod tests {
         let body2: &[u8] =
             module_contents(&bytes, &archive, &archive.modules[1]).expect("contents");
         assert_eq!(body2, b"export const x = 42;");
+    }
+
+    #[test]
+    fn windows_module_names_drop_the_bun_drive_prefix() {
+        assert_eq!(sanitize_bun_name("B:/~BUN/root/hello.exe"), "hello.exe");
+        assert_eq!(sanitize_bun_name("B:/~BUN/root/src/app.js"), "src/app.js");
     }
 
     #[test]
