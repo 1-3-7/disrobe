@@ -28,7 +28,6 @@ serde_json = { workspace = true }
 miette = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-bytes = { workspace = true }
 disrobe-llm-metadata = { workspace = true, optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

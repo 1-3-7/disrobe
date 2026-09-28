@@ -26,7 +26,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 miette = { workspace = true }
 thiserror = { workspace = true }
-bytes = { workspace = true }
 
 [features]
 default = []

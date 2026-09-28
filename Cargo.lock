@@ -1768,7 +1768,6 @@ dependencies = [
  "disrobe-pass-pickle",
  "disrobe-tool-process",
  "eyre",
- "regex",
  "serde",
  "serde_json",
  "sha2",
@@ -2547,7 +2546,6 @@ dependencies = [
  "aes",
  "base64",
  "blake3",
- "bytes",
  "ctr",
  "disrobe-core",
  "disrobe-llm-metadata",
@@ -2573,7 +2571,6 @@ dependencies = [
 name = "disrobe-pass-pyfreeze"
 version = "0.10.6"
 dependencies = [
- "bytes",
  "disrobe-binfmt",
  "disrobe-core",
  "disrobe-pass-native",
@@ -10543,8 +10540,6 @@ dependencies = [
  "sha2",
  "tempfile",
  "toml 0.9.12+spec-1.1.0",
- "tracing",
- "tracing-subscriber",
  "walkdir",
 ]
 

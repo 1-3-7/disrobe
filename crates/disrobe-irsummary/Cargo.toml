@@ -16,7 +16,6 @@ workspace = true
 
 [dependencies]
 disrobe-cfg = { workspace = true }
-disrobe-core = { workspace = true }
 disrobe-nir = { workspace = true }
 disrobe-query = { workspace = true }
 disrobe-mba = { workspace = true, features = ["smt-verify"] }
@@ -28,6 +27,7 @@ serde_json = { workspace = true }
 llm-metadata = ["dep:disrobe-llm-metadata"]
 
 [dev-dependencies]
+disrobe-core = { workspace = true }
 disrobe-nir-lift = { workspace = true, features = ["wasm"] }
 disrobe-pass-native = { workspace = true }
 iced-x86 = { workspace = true, features = ["code_asm"] }
