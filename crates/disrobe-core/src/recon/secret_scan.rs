@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 use std::sync::LazyLock;
 
 use aho_corasick::{AhoCorasick, MatchKind};
+use lazy_regex::regex;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -295,7 +296,7 @@ struct RegexRule {
     kind: SecretKind,
     code: &'static str,
     severity: Severity,
-    pattern: Regex,
+    pattern: &'static Regex,
 }
 
 struct PrefixRule {
@@ -305,535 +306,529 @@ struct PrefixRule {
     needles: &'static [&'static [u8]],
 }
 
-fn keyword_context_pattern(keyword: &str, body: &str) -> String {
-    format!(
-        r#"(?i)[\w.-]{{0,50}}?(?:{keyword})(?:[ \t\w.-]{{0,20}})[\s'"]{{0,3}}(?:=|>|:{{1,3}}=|\|\||:|=>|\?=|,)[\x60'"\s=]{{0,5}}({body})(?:[\x60'"\s;]|\\[nr]|$)"#
-    )
-}
-
-struct ContextSpec {
-    kind: SecretKind,
-    code: &'static str,
-    severity: Severity,
-    keyword: &'static str,
-    body: &'static str,
-}
-
-const CONTEXT_SPECS: &[ContextSpec] = &[
-    ContextSpec {
-        kind: SecretKind::ConfluentToken,
-        code: "DR-SEC-CONFLUENT",
-        severity: Severity::Error,
-        keyword: "confluent",
-        body: "[a-z0-9]{16}",
-    },
-    ContextSpec {
-        kind: SecretKind::ContentfulToken,
-        code: "DR-SEC-CONTENTFUL",
-        severity: Severity::Error,
-        keyword: "contentful",
-        body: r"[a-z0-9=_\-]{43}",
-    },
-    ContextSpec {
-        kind: SecretKind::FastlyToken,
-        code: "DR-SEC-FASTLY",
-        severity: Severity::Error,
-        keyword: "fastly",
-        body: r"[a-z0-9=_\-]{32}",
-    },
-    ContextSpec {
-        kind: SecretKind::JfrogToken,
-        code: "DR-SEC-JFROG",
-        severity: Severity::Error,
-        keyword: "jfrog|artifactory|bintray|xray",
-        body: "(?:[a-z0-9]{73}|[a-z0-9]{64})",
-    },
-    ContextSpec {
-        kind: SecretKind::MessageBirdToken,
-        code: "DR-SEC-MESSAGEBIRD",
-        severity: Severity::Error,
-        keyword: "message[_-]?bird",
-        body: "[a-z0-9]{25}",
-    },
-    ContextSpec {
-        kind: SecretKind::OktaToken,
-        code: "DR-SEC-OKTA",
-        severity: Severity::Error,
-        keyword: "okta",
-        body: r"00[\w=\-]{40}",
-    },
-    ContextSpec {
-        kind: SecretKind::PlaidToken,
-        code: "DR-SEC-PLAID",
-        severity: Severity::Error,
-        keyword: "plaid",
-        body: "access-(?:sandbox|development|production)-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
-    },
-    ContextSpec {
-        kind: SecretKind::SumoLogicToken,
-        code: "DR-SEC-SUMOLOGIC",
-        severity: Severity::Error,
-        keyword: "sumo",
-        body: "[a-z0-9]{64}",
-    },
-    ContextSpec {
-        kind: SecretKind::TwitterApiKey,
-        code: "DR-SEC-TWITTER-APIKEY",
-        severity: Severity::Warning,
-        keyword: "twitter",
-        body: "[a-z0-9]{25}",
-    },
-    ContextSpec {
-        kind: SecretKind::ZendeskToken,
-        code: "DR-SEC-ZENDESK",
-        severity: Severity::Error,
-        keyword: "zendesk",
-        body: "[a-z0-9]{40}",
-    },
-];
-
-#[allow(clippy::expect_used)]
 static REGEX_RULES: LazyLock<Vec<RegexRule>> = LazyLock::new(|| {
-    let specs: [(SecretKind, &'static str, Severity, &'static str); 69] = [
+    let specs: [(SecretKind, &'static str, Severity, &'static Regex); 79] = [
         (
             SecretKind::AwsAccessKeyId,
             "DR-SEC-AWS-AKID",
             Severity::Error,
-            r"\b(?:AKIA|ASIA|ABIA|ACCA|AGPA|AIDA|AIPA|ANPA|ANVA|AROA|A3T[0-9A-Z])[0-9A-Z]{16}\b",
+            regex!(
+                r"\b(?:AKIA|ASIA|ABIA|ACCA|AGPA|AIDA|AIPA|ANPA|ANVA|AROA|A3T[0-9A-Z])[0-9A-Z]{16}\b"
+            ),
         ),
         (
             SecretKind::AwsSecretAccessKey,
             "DR-SEC-AWS-SECRET",
             Severity::Error,
-            r#"(?i)aws[_.-]?(?:secret|sak)[_.-]?(?:access[_.-]?)?key["' :=]{1,8}([0-9A-Za-z/+]{40})\b"#,
+            regex!(
+                r#"(?i)aws[_.-]?(?:secret|sak)[_.-]?(?:access[_.-]?)?key["' :=]{1,8}([0-9A-Za-z/+]{40})\b"#
+            ),
         ),
         (
             SecretKind::BasicAuthHeader,
             "DR-SEC-BASIC-AUTH",
             Severity::Warning,
-            r"(?i)\bbasic\s+[A-Za-z0-9+/]{16,}={0,2}",
+            regex!(r"(?i)\bbasic\s+[A-Za-z0-9+/]{16,}={0,2}"),
         ),
         (
             SecretKind::GcpApiKey,
             "DR-SEC-GCP-APIKEY",
             Severity::Error,
-            r"\bAIza[0-9A-Za-z_-]{35}\b",
+            regex!(r"\bAIza[0-9A-Za-z_-]{35}\b"),
         ),
         (
             SecretKind::AzureStorageKey,
             "DR-SEC-AZURE-STORAGE",
             Severity::Error,
-            r"AccountKey=[A-Za-z0-9+/]{86}==",
+            regex!(r"AccountKey=[A-Za-z0-9+/]{86}=="),
         ),
         (
             SecretKind::GithubFineGrainedPat,
             "DR-SEC-GH-FINEPAT",
             Severity::Error,
-            r"\bgithub_pat_[0-9A-Za-z_]{82}\b",
+            regex!(r"\bgithub_pat_[0-9A-Za-z_]{82}\b"),
         ),
         (
             SecretKind::GithubPat,
             "DR-SEC-GH-PAT",
             Severity::Error,
-            r"\bghp_[0-9A-Za-z]{36}\b",
+            regex!(r"\bghp_[0-9A-Za-z]{36}\b"),
         ),
         (
             SecretKind::GithubOauth,
             "DR-SEC-GH-OAUTH",
             Severity::Error,
-            r"\bgho_[0-9A-Za-z]{36}\b",
+            regex!(r"\bgho_[0-9A-Za-z]{36}\b"),
         ),
         (
             SecretKind::GithubAppToken,
             "DR-SEC-GH-APP",
             Severity::Error,
-            r"\b(?:ghu|ghs|ghr)_[0-9A-Za-z]{36}\b",
+            regex!(r"\b(?:ghu|ghs|ghr)_[0-9A-Za-z]{36}\b"),
         ),
         (
             SecretKind::StripeLiveSecret,
             "DR-SEC-STRIPE-SK",
             Severity::Error,
-            r"\bsk_live_[0-9A-Za-z]{24,}\b",
+            regex!(r"\bsk_live_[0-9A-Za-z]{24,}\b"),
         ),
         (
             SecretKind::StripeLivePublishable,
             "DR-SEC-STRIPE-PK",
             Severity::Warning,
-            r"\bpk_live_[0-9A-Za-z]{24,}\b",
+            regex!(r"\bpk_live_[0-9A-Za-z]{24,}\b"),
         ),
         (
             SecretKind::SlackToken,
             "DR-SEC-SLACK",
             Severity::Error,
-            r"\bxox[baprs]-[0-9A-Za-z-]{10,}\b",
+            regex!(r"\bxox[baprs]-[0-9A-Za-z-]{10,}\b"),
         ),
         (
             SecretKind::TwilioApiKey,
             "DR-SEC-TWILIO-SK",
             Severity::Error,
-            r"\bSK[0-9a-fA-F]{32}\b",
+            regex!(r"\bSK[0-9a-fA-F]{32}\b"),
         ),
         (
             SecretKind::TwilioAccountSid,
             "DR-SEC-TWILIO-SID",
             Severity::Warning,
-            r"\bAC[0-9a-fA-F]{32}\b",
+            regex!(r"\bAC[0-9a-fA-F]{32}\b"),
         ),
         (
             SecretKind::Jwt,
             "DR-SEC-JWT",
             Severity::Warning,
-            r"\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b",
+            regex!(r"\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b"),
         ),
         (
             SecretKind::GcpServiceAccountKey,
             "DR-SEC-GCP-SA",
             Severity::Error,
-            r#""type"\s*:\s*"service_account""#,
+            regex!(r#""type"\s*:\s*"service_account""#),
         ),
         (
             SecretKind::StripeRestricted,
             "DR-SEC-STRIPE-RK",
             Severity::Error,
-            r"\brk_live_[0-9A-Za-z]{24,}\b",
+            regex!(r"\brk_live_[0-9A-Za-z]{24,}\b"),
         ),
         (
             SecretKind::StripeTest,
             "DR-SEC-STRIPE-TEST",
             Severity::Note,
-            r"\b(?:sk|pk|rk)_test_[0-9A-Za-z]{24,}\b",
+            regex!(r"\b(?:sk|pk|rk)_test_[0-9A-Za-z]{24,}\b"),
         ),
         (
             SecretKind::AwsBedrock,
             "DR-SEC-AWS-BEDROCK",
             Severity::Error,
-            r"\bABSK[0-9A-Za-z+/]{40,}\b",
+            regex!(r"\bABSK[0-9A-Za-z+/]{40,}\b"),
         ),
         (
             SecretKind::AzureAdClientSecret,
             "DR-SEC-AZURE-AD",
             Severity::Error,
-            r"\b[A-Za-z0-9_~.]{3}(?:8Q~|7Q~|dQ~)[A-Za-z0-9_~.]{31,34}\b",
+            regex!(r"\b[A-Za-z0-9_~.]{3}(?:8Q~|7Q~|dQ~)[A-Za-z0-9_~.]{31,34}\b"),
         ),
         (
             SecretKind::AlibabaAccessKey,
             "DR-SEC-ALIBABA",
             Severity::Error,
-            r"\bLTAI[A-Za-z0-9]{20}\b",
+            regex!(r"\bLTAI[A-Za-z0-9]{20}\b"),
         ),
         (
             SecretKind::AtlassianToken,
             "DR-SEC-ATLASSIAN",
             Severity::Error,
-            r"\b(?:ATATT3|ATCTT3)[A-Za-z0-9_=.\-]{186}\b",
+            regex!(r"\b(?:ATATT3|ATCTT3)[A-Za-z0-9_=.\-]{186}\b"),
         ),
         (
             SecretKind::OnePasswordServiceAccount,
             "DR-SEC-1PASSWORD-SA",
             Severity::Error,
-            r"\bops_eyJ[A-Za-z0-9+/=]{250,}",
+            regex!(r"\bops_eyJ[A-Za-z0-9+/=]{250,}"),
         ),
         (
             SecretKind::AgeSecretKey,
             "DR-SEC-AGE",
             Severity::Error,
-            r"\bAGE-SECRET-KEY-1[0-9A-Z]{58}\b",
+            regex!(r"\bAGE-SECRET-KEY-1[0-9A-Z]{58}\b"),
         ),
         (
             SecretKind::AirtableToken,
             "DR-SEC-AIRTABLE",
             Severity::Error,
-            r"\bpat[A-Za-z0-9]{14}\.[a-f0-9]{64}\b",
+            regex!(r"\bpat[A-Za-z0-9]{14}\.[a-f0-9]{64}\b"),
         ),
         (
             SecretKind::CloudflareOriginCa,
             "DR-SEC-CLOUDFLARE-CA",
             Severity::Error,
-            r"\bv1\.0-[a-f0-9]{24}-[a-f0-9]{146}\b",
+            regex!(r"\bv1\.0-[a-f0-9]{24}-[a-f0-9]{146}\b"),
         ),
         (
             SecretKind::DatabricksToken,
             "DR-SEC-DATABRICKS",
             Severity::Error,
-            r"\bdapi[a-f0-9]{32}\b",
+            regex!(r"\bdapi[a-f0-9]{32}\b"),
         ),
         (
             SecretKind::DynatraceToken,
             "DR-SEC-DYNATRACE",
             Severity::Error,
-            r"\bdt0c01\.[A-Z0-9]{24}\.[A-Z0-9]{64}\b",
+            regex!(r"\bdt0c01\.[A-Z0-9]{24}\.[A-Z0-9]{64}\b"),
         ),
         (
             SecretKind::DopplerToken,
             "DR-SEC-DOPPLER",
             Severity::Error,
-            r"\bdp\.(?:pt|st|ct|sa)\.[A-Za-z0-9]{40,44}\b",
+            regex!(r"\bdp\.(?:pt|st|ct|sa)\.[A-Za-z0-9]{40,44}\b"),
         ),
         (
             SecretKind::DropboxToken,
             "DR-SEC-DROPBOX",
             Severity::Error,
-            r"\bsl\.[A-Za-z0-9_-]{130,}",
+            regex!(r"\bsl\.[A-Za-z0-9_-]{130,}"),
         ),
         (
             SecretKind::FlyIoToken,
             "DR-SEC-FLYIO",
             Severity::Error,
-            r"\b(?:fm1|fm2|fo1)[_.][A-Za-z0-9]{30,}",
+            regex!(r"\b(?:fm1|fm2|fo1)[_.][A-Za-z0-9]{30,}"),
         ),
         (
             SecretKind::PostmanKey,
             "DR-SEC-POSTMAN",
             Severity::Error,
-            r"\bPMAK-[a-f0-9]{24}-[a-f0-9]{34}\b",
+            regex!(r"\bPMAK-[a-f0-9]{24}-[a-f0-9]{34}\b"),
         ),
         (
             SecretKind::GrafanaToken,
             "DR-SEC-GRAFANA",
             Severity::Error,
-            r"\bgl(?:c|sa)_[A-Za-z0-9]{32,}\b",
+            regex!(r"\bgl(?:c|sa)_[A-Za-z0-9]{32,}\b"),
         ),
         (
             SecretKind::RubyGemsKey,
             "DR-SEC-RUBYGEMS",
             Severity::Error,
-            r"\brubygems_[a-f0-9]{48}\b",
+            regex!(r"\brubygems_[a-f0-9]{48}\b"),
         ),
         (
             SecretKind::PlanetScaleToken,
             "DR-SEC-PLANETSCALE",
             Severity::Error,
-            r"\bpscale_tkn_[A-Za-z0-9_]{32,}",
+            regex!(r"\bpscale_tkn_[A-Za-z0-9_]{32,}"),
         ),
         (
             SecretKind::TailscaleKey,
             "DR-SEC-TAILSCALE",
             Severity::Error,
-            r"\btskey-(?:auth|api)-[A-Za-z0-9]{40,}",
+            regex!(r"\btskey-(?:auth|api)-[A-Za-z0-9]{40,}"),
         ),
         (
             SecretKind::SentryDsn,
             "DR-SEC-SENTRY-DSN",
             Severity::Warning,
-            r"\bhttps://[a-f0-9]{32}@[a-z0-9.\-]+\.ingest\.sentry\.io/[0-9]+\b",
+            regex!(r"\bhttps://[a-f0-9]{32}@[a-z0-9.\-]+\.ingest\.sentry\.io/[0-9]+\b"),
         ),
         (
             SecretKind::SnykToken,
             "DR-SEC-SNYK",
             Severity::Error,
-            r"\bsnyk_[a-z0-9-]{36}\b",
+            regex!(r"\bsnyk_[a-z0-9-]{36}\b"),
         ),
         (
             SecretKind::TwitterBearer,
             "DR-SEC-TWITTER-BEARER",
             Severity::Warning,
-            r"\bAAAAAAAAAA[A-Za-z0-9%]{60,}",
+            regex!(r"\bAAAAAAAAAA[A-Za-z0-9%]{60,}"),
         ),
         (
             SecretKind::MongoDbUri,
             "DR-SEC-MONGODB-URI",
             Severity::Error,
-            r"\bmongodb(?:\+srv)?://[^\s:@/]{1,128}:[^\s:@/]{1,128}@[^\s/]{1,256}",
+            regex!(r"\bmongodb(?:\+srv)?://[^\s:@/]{1,128}:[^\s:@/]{1,128}@[^\s/]{1,256}"),
         ),
         (
             SecretKind::PostgresUri,
             "DR-SEC-POSTGRES-URI",
             Severity::Error,
-            r"\bpostgres(?:ql)?://[^\s:@/]{1,128}:[^\s:@/]{1,128}@[^\s/]{1,256}",
+            regex!(r"\bpostgres(?:ql)?://[^\s:@/]{1,128}:[^\s:@/]{1,128}@[^\s/]{1,256}"),
         ),
         (
             SecretKind::RedisUri,
             "DR-SEC-REDIS-URI",
             Severity::Error,
-            r"\bredis(?:s)?://[^\s:@/]{0,128}:[^\s:@/]{1,128}@[^\s/]{1,256}",
+            regex!(r"\bredis(?:s)?://[^\s:@/]{0,128}:[^\s:@/]{1,128}@[^\s/]{1,256}"),
         ),
         (
             SecretKind::AmqpUri,
             "DR-SEC-AMQP-URI",
             Severity::Error,
-            r"\bamqps?://[^\s:@/]{1,128}:[^\s:@/]{1,128}@[^\s/]{1,256}",
+            regex!(r"\bamqps?://[^\s:@/]{1,128}:[^\s:@/]{1,128}@[^\s/]{1,256}"),
         ),
         (
             SecretKind::AnthropicOauth,
             "DR-SEC-ANTHROPIC-OAUTH",
             Severity::Error,
-            r"\bsk-ant-o(?:at|rt)01-[A-Za-z0-9_-]{80,}\b",
+            regex!(r"\bsk-ant-o(?:at|rt)01-[A-Za-z0-9_-]{80,}\b"),
         ),
         (
             SecretKind::GroqApiKey,
             "DR-SEC-GROQ",
             Severity::Error,
-            r"\bgsk_[A-Za-z0-9]{52}\b",
+            regex!(r"\bgsk_[A-Za-z0-9]{52}\b"),
         ),
         (
             SecretKind::XaiApiKey,
             "DR-SEC-XAI",
             Severity::Error,
-            r"\bxai-[A-Za-z0-9]{80}\b",
+            regex!(r"\bxai-[A-Za-z0-9]{80}\b"),
         ),
         (
             SecretKind::PineconeKey,
             "DR-SEC-PINECONE",
             Severity::Error,
-            r"\bpcsk_[A-Za-z0-9]{7,}_[A-Za-z0-9]{30,}\b",
+            regex!(r"\bpcsk_[A-Za-z0-9]{7,}_[A-Za-z0-9]{30,}\b"),
         ),
         (
             SecretKind::LangSmithKey,
             "DR-SEC-LANGSMITH",
             Severity::Error,
-            r"\blsv2_(?:pt|sk)_[a-f0-9]{32}_[a-f0-9]{10}\b",
+            regex!(r"\blsv2_(?:pt|sk)_[a-f0-9]{32}_[a-f0-9]{10}\b"),
         ),
         (
             SecretKind::ZhipuApiKey,
             "DR-SEC-ZHIPU",
             Severity::Error,
-            r"\b[0-9a-f]{32}\.[A-Za-z0-9]{16}\b",
+            regex!(r"\b[0-9a-f]{32}\.[A-Za-z0-9]{16}\b"),
         ),
         (
             SecretKind::WandbApiKey,
             "DR-SEC-WANDB",
             Severity::Error,
-            r#"(?i)wandb[_.-]?(?:api[_.-]?)?key["' :=]{1,8}([0-9a-f]{40})\b"#,
+            regex!(r#"(?i)wandb[_.-]?(?:api[_.-]?)?key["' :=]{1,8}([0-9a-f]{40})\b"#),
         ),
         (
             SecretKind::TavilyKey,
             "DR-SEC-TAVILY",
             Severity::Error,
-            r"\btvly-(?:dev-|prod-)?[A-Za-z0-9]{32}\b",
+            regex!(r"\btvly-(?:dev-|prod-)?[A-Za-z0-9]{32}\b"),
         ),
         (
             SecretKind::CastAiKey,
             "DR-SEC-CASTAI",
             Severity::Error,
-            r#"(?i)cast[_.-]?ai[_.-]?(?:api[_.-]?)?key["' :=]{1,8}([0-9a-f]{64})\b"#,
+            regex!(r#"(?i)cast[_.-]?ai[_.-]?(?:api[_.-]?)?key["' :=]{1,8}([0-9a-f]{64})\b"#),
         ),
         (
             SecretKind::NewRelicLicenseKey,
             "DR-SEC-NEWRELIC-LIC",
             Severity::Error,
-            r"\b[a-f0-9]{36}(?:NRAL|FFFFNRAL)\b",
+            regex!(r"\b[a-f0-9]{36}(?:NRAL|FFFFNRAL)\b"),
         ),
         (
             SecretKind::NewRelicBrowserKey,
             "DR-SEC-NEWRELIC-BROWSER",
             Severity::Warning,
-            r"\bNRJS-[a-f0-9]{19}\b",
+            regex!(r"\bNRJS-[a-f0-9]{19}\b"),
         ),
         (
             SecretKind::TencentCloudSecretId,
             "DR-SEC-TENCENT-AKID",
             Severity::Error,
-            r"\bAKID[A-Za-z0-9]{32,40}\b",
+            regex!(r"\bAKID[A-Za-z0-9]{32,40}\b"),
         ),
         (
             SecretKind::DuoIntegrationKey,
             "DR-SEC-DUO-IKEY",
             Severity::Warning,
-            r"\bDI[A-Z0-9]{18}\b",
+            regex!(r"\bDI[A-Z0-9]{18}\b"),
         ),
         (
             SecretKind::PersonaKey,
             "DR-SEC-PERSONA",
             Severity::Error,
-            r"\bpersona_(?:production|sandbox)_[A-Za-z0-9]{32,}\b",
+            regex!(r"\bpersona_(?:production|sandbox)_[A-Za-z0-9]{32,}\b"),
         ),
         (
             SecretKind::DockerSwarmJoinToken,
             "DR-SEC-DOCKER-SWMTKN",
             Severity::Error,
-            r"\bSWMTKN-1-[a-z0-9]{40,}-[a-z0-9]{25}\b",
+            regex!(r"\bSWMTKN-1-[a-z0-9]{40,}-[a-z0-9]{25}\b"),
         ),
         (
             SecretKind::AzureSasToken,
             "DR-SEC-AZURE-SAS",
             Severity::Error,
-            r"\bsv=20[0-9]{2}-[0-9]{2}-[0-9]{2}&[^\s]*\bsig=[A-Za-z0-9%]{44,}",
+            regex!(r"\bsv=20[0-9]{2}-[0-9]{2}-[0-9]{2}&[^\s]*\bsig=[A-Za-z0-9%]{44,}"),
         ),
         (
             SecretKind::AzureAppConfigConnection,
             "DR-SEC-AZURE-APPCONFIG",
             Severity::Error,
-            r"Endpoint=https://[a-z0-9-]+\.azconfig\.io;Id=[A-Za-z0-9+/=:-]+;Secret=[A-Za-z0-9+/]{40,}={0,2}",
+            regex!(
+                r"Endpoint=https://[a-z0-9-]+\.azconfig\.io;Id=[A-Za-z0-9+/=:-]+;Secret=[A-Za-z0-9+/]{40,}={0,2}"
+            ),
         ),
         (
             SecretKind::GiteaPat,
             "DR-SEC-GITEA-PAT",
             Severity::Error,
-            r#"(?i)(?:gitea|codeberg|forgejo)[_.-]?(?:api[_.-]?)?(?:token|pat|key)["' :=]{1,8}([a-f0-9]{40})\b"#,
+            regex!(
+                r#"(?i)(?:gitea|codeberg|forgejo)[_.-]?(?:api[_.-]?)?(?:token|pat|key)["' :=]{1,8}([a-f0-9]{40})\b"#
+            ),
         ),
         (
             SecretKind::RailsMasterKey,
             "DR-SEC-RAILS-MASTER",
             Severity::Error,
-            r#"(?i)(?:RAILS_MASTER_KEY|master[_.-]?key)["' :=]{1,8}([a-f0-9]{32})\b"#,
+            regex!(r#"(?i)(?:RAILS_MASTER_KEY|master[_.-]?key)["' :=]{1,8}([a-f0-9]{32})\b"#),
         ),
         (
             SecretKind::VaultServiceToken,
             "DR-SEC-VAULT-SVC",
             Severity::Error,
-            r"\bhvs\.[A-Za-z0-9_-]{90,120}\b",
+            regex!(r"\bhvs\.[A-Za-z0-9_-]{90,120}\b"),
         ),
         (
             SecretKind::VaultBatchToken,
             "DR-SEC-VAULT-BATCH",
             Severity::Error,
-            r"\bhvb\.[A-Za-z0-9_-]{138,212}\b",
+            regex!(r"\bhvb\.[A-Za-z0-9_-]{138,212}\b"),
         ),
         (
             SecretKind::GitLabRunnerToken,
             "DR-SEC-GITLAB-RUNNER",
             Severity::Error,
-            r"\bGR1348941[0-9A-Za-z_-]{20}\b",
+            regex!(r"\bGR1348941[0-9A-Za-z_-]{20}\b"),
         ),
         (
             SecretKind::FrameIoToken,
             "DR-SEC-FRAMEIO",
             Severity::Error,
-            r"\bfio-u-[A-Za-z0-9_=-]{64}\b",
+            regex!(r"\bfio-u-[A-Za-z0-9_=-]{64}\b"),
         ),
         (
             SecretKind::ClojarsToken,
             "DR-SEC-CLOJARS",
             Severity::Error,
-            r"\bCLOJARS_[a-zA-Z0-9]{60}\b",
+            regex!(r"\bCLOJARS_[a-zA-Z0-9]{60}\b"),
         ),
         (
             SecretKind::PrefectToken,
             "DR-SEC-PREFECT",
             Severity::Error,
-            r"\bpnu_[a-zA-Z0-9]{36}\b",
+            regex!(r"\bpnu_[a-zA-Z0-9]{36}\b"),
         ),
         (
             SecretKind::ScalingoToken,
             "DR-SEC-SCALINGO",
             Severity::Error,
-            r"\btk-us-[a-zA-Z0-9_-]{48}\b",
+            regex!(r"\btk-us-[a-zA-Z0-9_-]{48}\b"),
+        ),
+        (
+            SecretKind::ConfluentToken,
+            "DR-SEC-CONFLUENT",
+            Severity::Error,
+            regex!(
+                r#"(?i)[\w.-]{0,50}?(?:confluent)(?:[ \t\w.-]{0,20})[\s'"]{0,3}(?:=|>|:{1,3}=|\|\||:|=>|\?=|,)[\x60'"\s=]{0,5}([a-z0-9]{16})(?:[\x60'"\s;]|\\[nr]|$)"#
+            ),
+        ),
+        (
+            SecretKind::ContentfulToken,
+            "DR-SEC-CONTENTFUL",
+            Severity::Error,
+            regex!(
+                r#"(?i)[\w.-]{0,50}?(?:contentful)(?:[ \t\w.-]{0,20})[\s'"]{0,3}(?:=|>|:{1,3}=|\|\||:|=>|\?=|,)[\x60'"\s=]{0,5}([a-z0-9=_\-]{43})(?:[\x60'"\s;]|\\[nr]|$)"#
+            ),
+        ),
+        (
+            SecretKind::FastlyToken,
+            "DR-SEC-FASTLY",
+            Severity::Error,
+            regex!(
+                r#"(?i)[\w.-]{0,50}?(?:fastly)(?:[ \t\w.-]{0,20})[\s'"]{0,3}(?:=|>|:{1,3}=|\|\||:|=>|\?=|,)[\x60'"\s=]{0,5}([a-z0-9=_\-]{32})(?:[\x60'"\s;]|\\[nr]|$)"#
+            ),
+        ),
+        (
+            SecretKind::JfrogToken,
+            "DR-SEC-JFROG",
+            Severity::Error,
+            regex!(
+                r#"(?i)[\w.-]{0,50}?(?:jfrog|artifactory|bintray|xray)(?:[ \t\w.-]{0,20})[\s'"]{0,3}(?:=|>|:{1,3}=|\|\||:|=>|\?=|,)[\x60'"\s=]{0,5}((?:[a-z0-9]{73}|[a-z0-9]{64}))(?:[\x60'"\s;]|\\[nr]|$)"#
+            ),
+        ),
+        (
+            SecretKind::MessageBirdToken,
+            "DR-SEC-MESSAGEBIRD",
+            Severity::Error,
+            regex!(
+                r#"(?i)[\w.-]{0,50}?(?:message[_-]?bird)(?:[ \t\w.-]{0,20})[\s'"]{0,3}(?:=|>|:{1,3}=|\|\||:|=>|\?=|,)[\x60'"\s=]{0,5}([a-z0-9]{25})(?:[\x60'"\s;]|\\[nr]|$)"#
+            ),
+        ),
+        (
+            SecretKind::OktaToken,
+            "DR-SEC-OKTA",
+            Severity::Error,
+            regex!(
+                r#"(?i)[\w.-]{0,50}?(?:okta)(?:[ \t\w.-]{0,20})[\s'"]{0,3}(?:=|>|:{1,3}=|\|\||:|=>|\?=|,)[\x60'"\s=]{0,5}(00[\w=\-]{40})(?:[\x60'"\s;]|\\[nr]|$)"#
+            ),
+        ),
+        (
+            SecretKind::PlaidToken,
+            "DR-SEC-PLAID",
+            Severity::Error,
+            regex!(
+                r#"(?i)[\w.-]{0,50}?(?:plaid)(?:[ \t\w.-]{0,20})[\s'"]{0,3}(?:=|>|:{1,3}=|\|\||:|=>|\?=|,)[\x60'"\s=]{0,5}(access-(?:sandbox|development|production)-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:[\x60'"\s;]|\\[nr]|$)"#
+            ),
+        ),
+        (
+            SecretKind::SumoLogicToken,
+            "DR-SEC-SUMOLOGIC",
+            Severity::Error,
+            regex!(
+                r#"(?i)[\w.-]{0,50}?(?:sumo)(?:[ \t\w.-]{0,20})[\s'"]{0,3}(?:=|>|:{1,3}=|\|\||:|=>|\?=|,)[\x60'"\s=]{0,5}([a-z0-9]{64})(?:[\x60'"\s;]|\\[nr]|$)"#
+            ),
+        ),
+        (
+            SecretKind::TwitterApiKey,
+            "DR-SEC-TWITTER-APIKEY",
+            Severity::Warning,
+            regex!(
+                r#"(?i)[\w.-]{0,50}?(?:twitter)(?:[ \t\w.-]{0,20})[\s'"]{0,3}(?:=|>|:{1,3}=|\|\||:|=>|\?=|,)[\x60'"\s=]{0,5}([a-z0-9]{25})(?:[\x60'"\s;]|\\[nr]|$)"#
+            ),
+        ),
+        (
+            SecretKind::ZendeskToken,
+            "DR-SEC-ZENDESK",
+            Severity::Error,
+            regex!(
+                r#"(?i)[\w.-]{0,50}?(?:zendesk)(?:[ \t\w.-]{0,20})[\s'"]{0,3}(?:=|>|:{1,3}=|\|\||:|=>|\?=|,)[\x60'"\s=]{0,5}([a-z0-9]{40})(?:[\x60'"\s;]|\\[nr]|$)"#
+            ),
         ),
     ];
-    let mut rules: Vec<RegexRule> = specs
+    specs
         .into_iter()
         .map(
-            |(kind, code, severity, pat): (SecretKind, &'static str, Severity, &'static str)| {
+            |(kind, code, severity, pattern): (
+                SecretKind,
+                &'static str,
+                Severity,
+                &'static Regex,
+            )| {
                 RegexRule {
                     kind,
                     code,
                     severity,
-                    pattern: Regex::new(pat)
-                        .expect("DR-SEC-0001: static secret pattern must compile"),
+                    pattern,
                 }
             },
         )
-        .collect();
-    for spec in CONTEXT_SPECS {
-        rules.push(RegexRule {
-            kind: spec.kind,
-            code: spec.code,
-            severity: spec.severity,
-            pattern: Regex::new(&keyword_context_pattern(spec.keyword, spec.body))
-                .expect("DR-SEC-0002: static keyword-context pattern must compile"),
-        });
-    }
-    rules
+        .collect()
 });
 
 static PREFIX_RULES: LazyLock<Vec<PrefixRule>> = LazyLock::new(|| {
@@ -1611,5 +1606,15 @@ mod tests {
         assert_eq!(byte_offset_of(haystack, b"alpha", &[]), Some(0));
         assert_eq!(byte_offset_of(haystack, b"delta", &[]), None);
         assert_eq!(byte_offset_of(haystack, b"alpha", &[(0, 5)]), None);
+    }
+
+    #[test]
+    fn secret_static_patterns_initialize() {
+        assert_eq!(super::REGEX_RULES.len(), 79);
+        assert!(
+            super::REGEX_RULES
+                .iter()
+                .all(|rule: &super::RegexRule| !rule.pattern.as_str().is_empty())
+        );
     }
 }

@@ -2,7 +2,8 @@ use std::sync::LazyLock;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64_STANDARD;
-use regex::{Regex, RegexBuilder};
+use lazy_regex::regex;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 pub const IOC_SCHEMA: &str = "disrobe.ioc/v0";
@@ -10,7 +11,6 @@ pub const IOC_SCHEMA: &str = "disrobe.ioc/v0";
 const MIN_BLOB_LEN: usize = 24;
 const MAX_BLOB_DECODE: usize = 1 << 20;
 const MAX_INDICATORS: usize = 100_000;
-const REGEX_SIZE_LIMIT: usize = 32 << 20;
 
 const MIN_CODEC_TOKEN: usize = 16;
 const MAX_CODEC_TOKEN: usize = 1 << 20;
@@ -124,139 +124,133 @@ pub struct IocReport {
 
 struct PatternRule {
     kind: IocKind,
-    pattern: Regex,
+    pattern: &'static Regex,
 }
 
-#[allow(clippy::expect_used)]
-fn compile(pat: &str) -> Regex {
-    RegexBuilder::new(pat)
-        .size_limit(REGEX_SIZE_LIMIT)
-        .dfa_size_limit(REGEX_SIZE_LIMIT)
-        .build()
-        .expect("DR-IOC-0001: static IOC pattern must compile")
-}
-
-static URL_RE: LazyLock<Regex> = LazyLock::new(|| {
-    compile(r#"(?i)\b(?:https?|ftp|ftps|smb|file)://[^\s'"<>()\[\]{}\x00-\x1f\x7f]{1,2048}"#)
+static URL_RE: LazyLock<&'static Regex> = LazyLock::new(|| {
+    regex!(r#"(?i)\b(?:https?|ftp|ftps|smb|file)://[^\s'"<>()\[\]{}\x00-\x1f\x7f]{1,2048}"#)
 });
 
-static REGISTRY_RE: LazyLock<Regex> = LazyLock::new(|| {
-    compile(
-        r"(?i)\b(?:HKLM|HKCU|HKCR|HKU|HKCC|HKEY_LOCAL_MACHINE|HKEY_CURRENT_USER|HKEY_CLASSES_ROOT|HKEY_USERS|HKEY_CURRENT_CONFIG)\\[\\A-Za-z0-9 ._\-]{1,512}",
+static REGISTRY_RE: LazyLock<&'static Regex> = LazyLock::new(|| {
+    regex!(
+        r"(?i)\b(?:HKLM|HKCU|HKCR|HKU|HKCC|HKEY_LOCAL_MACHINE|HKEY_CURRENT_USER|HKEY_CLASSES_ROOT|HKEY_USERS|HKEY_CURRENT_CONFIG)\\[\\A-Za-z0-9 ._\-]{1,512}"
     )
 });
 
-static WINPATH_RE: LazyLock<Regex> =
-    LazyLock::new(|| compile(r#"\b[A-Za-z]:\\(?:[^\\/:*?"<>|\x00-\x1f\x7f ]{1,128}\\?){1,32}"#));
+static WINPATH_RE: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r#"\b[A-Za-z]:\\(?:[^\\/:*?"<>|\x00-\x1f\x7f ]{1,128}\\?){1,32}"#));
 
-static UNIXPATH_RE: LazyLock<Regex> = LazyLock::new(|| {
-    compile(
-        r#"(?:^|[\s'"(=:])((?:/(?:bin|etc|usr|var|tmp|opt|home|root|lib|lib64|sbin|proc|sys|dev|mnt|srv)|/(?:Users|Library|System|Applications|private|Volumes))(?:/[^\s'"<>:()\[\]{}\x00-\x1f\x7f]{1,128}){1,16})"#,
+static UNIXPATH_RE: LazyLock<&'static Regex> = LazyLock::new(|| {
+    regex!(
+        r#"(?:^|[\s'"(=:])((?:/(?:bin|etc|usr|var|tmp|opt|home|root|lib|lib64|sbin|proc|sys|dev|mnt|srv)|/(?:Users|Library|System|Applications|private|Volumes))(?:/[^\s'"<>:()\[\]{}\x00-\x1f\x7f]{1,128}){1,16})"#
     )
 });
 
-static EMAIL_RE: LazyLock<Regex> = LazyLock::new(|| {
-    compile(
-        r"(?i)\b[A-Za-z0-9._%+\-]{1,64}@(?:[A-Za-z0-9](?:[A-Za-z0-9\-]{0,62}[A-Za-z0-9])?\.){1,8}[A-Za-z]{2,24}\b",
+static EMAIL_RE: LazyLock<&'static Regex> = LazyLock::new(|| {
+    regex!(
+        r"(?i)\b[A-Za-z0-9._%+\-]{1,64}@(?:[A-Za-z0-9](?:[A-Za-z0-9\-]{0,62}[A-Za-z0-9])?\.){1,8}[A-Za-z]{2,24}\b"
     )
 });
 
-static DOMAIN_RE: LazyLock<Regex> = LazyLock::new(|| {
-    compile(
-        r"(?i)\b(?:[A-Za-z0-9](?:[A-Za-z0-9\-]{0,62}[A-Za-z0-9])?\.){1,8}(?:com|net|org|info|biz|io|co|ru|cn|de|uk|gov|edu|mil|top|xyz|site|online|club|dev|app|sh|gg|tk|me|ly|to|cc|ws|su|onion|pw|link|live|tech)\b",
+static DOMAIN_RE: LazyLock<&'static Regex> = LazyLock::new(|| {
+    regex!(
+        r"(?i)\b(?:[A-Za-z0-9](?:[A-Za-z0-9\-]{0,62}[A-Za-z0-9])?\.){1,8}(?:com|net|org|info|biz|io|co|ru|cn|de|uk|gov|edu|mil|top|xyz|site|online|club|dev|app|sh|gg|tk|me|ly|to|cc|ws|su|onion|pw|link|live|tech)\b"
     )
 });
 
-static IPV4_RE: LazyLock<Regex> = LazyLock::new(|| {
-    compile(
-        r"\b(?:(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\b",
+static IPV4_RE: LazyLock<&'static Regex> = LazyLock::new(|| {
+    regex!(
+        r"\b(?:(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\b"
     )
 });
 
-static IPV6_RE: LazyLock<Regex> = LazyLock::new(|| {
-    compile(
-        r"(?i)\b(?:[0-9a-f]{1,4}:){2,7}[0-9a-f]{1,4}\b|(?:[0-9a-f]{1,4}:){1,7}:|::(?:[0-9a-f]{1,4}:){0,6}[0-9a-f]{1,4}",
+static IPV6_RE: LazyLock<&'static Regex> = LazyLock::new(|| {
+    regex!(
+        r"(?i)\b(?:[0-9a-f]{1,4}:){2,7}[0-9a-f]{1,4}\b|(?:[0-9a-f]{1,4}:){1,7}:|::(?:[0-9a-f]{1,4}:){0,6}[0-9a-f]{1,4}"
     )
 });
 
-static BTC_RE: LazyLock<Regex> = LazyLock::new(|| {
-    compile(r"\b(?:[13][a-km-zA-HJ-NP-Z1-9]{25,34}|bc1[ac-hj-np-z02-9]{11,71})\b")
+static BTC_RE: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r"\b(?:[13][a-km-zA-HJ-NP-Z1-9]{25,34}|bc1[ac-hj-np-z02-9]{11,71})\b"));
+
+static ETH_RE: LazyLock<&'static Regex> = LazyLock::new(|| regex!(r"\b0x[a-fA-F0-9]{40}\b"));
+
+static XMR_RE: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r"\b4[0-9AB][a-km-zA-HJ-NP-Z1-9]{93}\b"));
+
+static LTC_RE: LazyLock<&'static Regex> = LazyLock::new(|| {
+    regex!(r"\b(?:[LM][a-km-zA-HJ-NP-Z1-9]{26,33}|ltc1[ac-hj-np-z02-9]{11,71})\b")
 });
 
-static ETH_RE: LazyLock<Regex> = LazyLock::new(|| compile(r"\b0x[a-fA-F0-9]{40}\b"));
+static TRON_RE: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r"\bT[a-km-zA-HJ-NP-Z1-9]{33}\b"));
 
-static XMR_RE: LazyLock<Regex> = LazyLock::new(|| compile(r"\b4[0-9AB][a-km-zA-HJ-NP-Z1-9]{93}\b"));
+static MAC_RE: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r"(?i)\b(?:[0-9a-f]{2}:){5}[0-9a-f]{2}\b"));
 
-static LTC_RE: LazyLock<Regex> = LazyLock::new(|| {
-    compile(r"\b(?:[LM][a-km-zA-HJ-NP-Z1-9]{26,33}|ltc1[ac-hj-np-z02-9]{11,71})\b")
+static UUID_RE: LazyLock<&'static Regex> = LazyLock::new(|| {
+    regex!(r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b")
 });
 
-static TRON_RE: LazyLock<Regex> = LazyLock::new(|| compile(r"\bT[a-km-zA-HJ-NP-Z1-9]{33}\b"));
+static PDB_RE: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r"(?i)\b[A-Za-z]:\\[^\r\n]{0,200}?\.(?:pdb|natvis)\b"));
 
-static MAC_RE: LazyLock<Regex> =
-    LazyLock::new(|| compile(r"(?i)\b(?:[0-9a-f]{2}:){5}[0-9a-f]{2}\b"));
+static CARGO_PATH_RE: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r"/(?:home|Users)/[^/\s]{1,64}/\.cargo/registry/[^\s'\x22]{1,200}"));
 
-static UUID_RE: LazyLock<Regex> = LazyLock::new(|| {
-    compile(r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b")
-});
+static CC_RE: LazyLock<&'static Regex> = LazyLock::new(|| regex!(r"\b\d(?:[ -]?\d){12,18}\b"));
 
-static PDB_RE: LazyLock<Regex> =
-    LazyLock::new(|| compile(r"(?i)\b[A-Za-z]:\\[^\r\n]{0,200}?\.(?:pdb|natvis)\b"));
+static B64_BLOB_RE: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r"[A-Za-z0-9+/]{24,}={0,2}"));
 
-static CARGO_PATH_RE: LazyLock<Regex> =
-    LazyLock::new(|| compile(r"/(?:home|Users)/[^/\s]{1,64}/\.cargo/registry/[^\s'\x22]{1,200}"));
-
-static CC_RE: LazyLock<Regex> = LazyLock::new(|| compile(r"\b\d(?:[ -]?\d){12,18}\b"));
-
-static B64_BLOB_RE: LazyLock<Regex> = LazyLock::new(|| compile(r"[A-Za-z0-9+/]{24,}={0,2}"));
-
-static HEX_BLOB_RE: LazyLock<Regex> = LazyLock::new(|| compile(r"(?i)\b(?:[0-9a-f]{2}){16,}\b"));
+static HEX_BLOB_RE: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r"(?i)\b(?:[0-9a-f]{2}){16,}\b"));
 
 static SIMPLE_RULES: LazyLock<Vec<PatternRule>> = LazyLock::new(|| {
     vec![
         PatternRule {
             kind: IocKind::Url,
-            pattern: URL_RE.clone(),
+            pattern: *URL_RE,
         },
         PatternRule {
             kind: IocKind::RegistryKey,
-            pattern: REGISTRY_RE.clone(),
+            pattern: *REGISTRY_RE,
         },
         PatternRule {
             kind: IocKind::WindowsPath,
-            pattern: WINPATH_RE.clone(),
+            pattern: *WINPATH_RE,
         },
         PatternRule {
             kind: IocKind::Email,
-            pattern: EMAIL_RE.clone(),
+            pattern: *EMAIL_RE,
         },
         PatternRule {
             kind: IocKind::Ipv4,
-            pattern: IPV4_RE.clone(),
+            pattern: *IPV4_RE,
         },
         PatternRule {
             kind: IocKind::BitcoinAddress,
-            pattern: BTC_RE.clone(),
+            pattern: *BTC_RE,
         },
         PatternRule {
             kind: IocKind::MoneroAddress,
-            pattern: XMR_RE.clone(),
+            pattern: *XMR_RE,
         },
         PatternRule {
             kind: IocKind::LitecoinAddress,
-            pattern: LTC_RE.clone(),
+            pattern: *LTC_RE,
         },
         PatternRule {
             kind: IocKind::MacAddress,
-            pattern: MAC_RE.clone(),
+            pattern: *MAC_RE,
         },
         PatternRule {
             kind: IocKind::Uuid,
-            pattern: UUID_RE.clone(),
+            pattern: *UUID_RE,
         },
         PatternRule {
             kind: IocKind::PdbPath,
-            pattern: PDB_RE.clone(),
+            pattern: *PDB_RE,
         },
     ]
 });
@@ -1534,5 +1528,33 @@ mod tests {
                 .all(|i: &Indicator| i.kind != IocKind::Url && i.kind != IocKind::Email),
             "random bytes produced a spurious decoded url/email: {ind:?}"
         );
+    }
+
+    #[test]
+    fn ioc_static_patterns_initialize() {
+        assert_eq!(SIMPLE_RULES.len(), 11);
+        let statics: [&Regex; 20] = [
+            *URL_RE,
+            *REGISTRY_RE,
+            *WINPATH_RE,
+            *UNIXPATH_RE,
+            *EMAIL_RE,
+            *DOMAIN_RE,
+            *IPV4_RE,
+            *IPV6_RE,
+            *BTC_RE,
+            *ETH_RE,
+            *XMR_RE,
+            *LTC_RE,
+            *TRON_RE,
+            *MAC_RE,
+            *UUID_RE,
+            *PDB_RE,
+            *CARGO_PATH_RE,
+            *CC_RE,
+            *B64_BLOB_RE,
+            *HEX_BLOB_RE,
+        ];
+        assert!(statics.iter().all(|re: &&Regex| !re.as_str().is_empty()));
     }
 }

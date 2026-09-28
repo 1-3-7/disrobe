@@ -3,6 +3,7 @@ use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
+use lazy_regex::regex;
 use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 
@@ -174,19 +175,10 @@ struct EndpointRule {
     rule_id: &'static str,
     category: ReconCategory,
     severity: Severity,
-    pattern: Regex,
+    pattern: &'static Regex,
 }
 
-#[allow(clippy::expect_used)]
-fn compile(pattern: &str) -> Regex {
-    RegexBuilder::new(pattern)
-        .size_limit(REGEX_SIZE_LIMIT)
-        .dfa_size_limit(REGEX_SIZE_LIMIT)
-        .build()
-        .expect("DR-RECON-0003: static recon pattern must compile")
-}
-
-type RuleSpec = (&'static str, ReconCategory, Severity, &'static str);
+type RuleSpec = (&'static str, ReconCategory, Severity, &'static Regex);
 
 static ENDPOINT_RULES: LazyLock<Vec<EndpointRule>> = LazyLock::new(|| {
     let specs: [RuleSpec; 56] = [
@@ -194,357 +186,385 @@ static ENDPOINT_RULES: LazyLock<Vec<EndpointRule>> = LazyLock::new(|| {
             "DR-RECON-FIREBASE",
             ReconCategory::Endpoint,
             Severity::Warning,
-            r"(?i)\b[a-z0-9.-]+\.firebaseio\.com\b",
+            regex!(r"(?i)\b[a-z0-9.-]+\.firebaseio\.com\b"),
         ),
         (
             "DR-RECON-S3-BUCKET",
             ReconCategory::Endpoint,
             Severity::Warning,
-            r"(?i)\b(?:[a-z0-9.-]+\.s3(?:[.-][a-z0-9-]+)?\.amazonaws\.com|s3(?:[.-][a-z0-9-]+)?\.amazonaws\.com/[a-z0-9._-]{3,63})\b",
+            regex!(
+                r"(?i)\b(?:[a-z0-9.-]+\.s3(?:[.-][a-z0-9-]+)?\.amazonaws\.com|s3(?:[.-][a-z0-9-]+)?\.amazonaws\.com/[a-z0-9._-]{3,63})\b"
+            ),
         ),
         (
             "DR-RECON-GCS-BUCKET",
             ReconCategory::Endpoint,
             Severity::Warning,
-            r"(?i)\b(?:storage\.googleapis\.com/[a-z0-9._-]{3,63}|[a-z0-9._-]{3,63}\.storage\.googleapis\.com)\b",
+            regex!(
+                r"(?i)\b(?:storage\.googleapis\.com/[a-z0-9._-]{3,63}|[a-z0-9._-]{3,63}\.storage\.googleapis\.com)\b"
+            ),
         ),
         (
             "DR-RECON-AZURE-BLOB",
             ReconCategory::Endpoint,
             Severity::Warning,
-            r"(?i)\b[a-z0-9]{3,24}\.blob\.core\.windows\.net\b",
+            regex!(r"(?i)\b[a-z0-9]{3,24}\.blob\.core\.windows\.net\b"),
         ),
         (
             "DR-RECON-GCP-OAUTH",
             ReconCategory::Endpoint,
             Severity::Warning,
-            r"\b[0-9]+-[0-9A-Za-z_]{32}\.apps\.googleusercontent\.com\b",
+            regex!(r"\b[0-9]+-[0-9A-Za-z_]{32}\.apps\.googleusercontent\.com\b"),
         ),
         (
             "DR-RECON-GOOGLE-OAUTH-TOKEN",
             ReconCategory::Secret,
             Severity::Error,
-            r"\bya29\.[0-9A-Za-z_-]{20,}",
+            regex!(r"\bya29\.[0-9A-Za-z_-]{20,}"),
         ),
         (
             "DR-RECON-SLACK-WEBHOOK",
             ReconCategory::Secret,
             Severity::Error,
-            r"https://hooks\.slack\.com/services/T[0-9A-Za-z_]{8,}/B[0-9A-Za-z_]{8,}/[0-9A-Za-z_]{20,}",
+            regex!(
+                r"https://hooks\.slack\.com/services/T[0-9A-Za-z_]{8,}/B[0-9A-Za-z_]{8,}/[0-9A-Za-z_]{20,}"
+            ),
         ),
         (
             "DR-RECON-DISCORD-WEBHOOK",
             ReconCategory::Secret,
             Severity::Error,
-            r"https://(?:ptb\.|canary\.)?discord(?:app)?\.com/api/webhooks/[0-9]{17,20}/[0-9A-Za-z_-]{60,}",
+            regex!(
+                r"https://(?:ptb\.|canary\.)?discord(?:app)?\.com/api/webhooks/[0-9]{17,20}/[0-9A-Za-z_-]{60,}"
+            ),
         ),
         (
             "DR-RECON-TEAMS-WEBHOOK",
             ReconCategory::Secret,
             Severity::Warning,
-            r"https://[a-z0-9.-]+\.webhook\.office\.com/webhookb2/[0-9A-Fa-f-]{36}@[0-9A-Fa-f-]{36}/IncomingWebhook/[0-9A-Fa-f]{32}/[0-9A-Fa-f-]{36}",
+            regex!(
+                r"https://[a-z0-9.-]+\.webhook\.office\.com/webhookb2/[0-9A-Fa-f-]{36}@[0-9A-Fa-f-]{36}/IncomingWebhook/[0-9A-Fa-f]{32}/[0-9A-Fa-f-]{36}"
+            ),
         ),
         (
             "DR-RECON-DISCORD-BOT",
             ReconCategory::Secret,
             Severity::Error,
-            r"\b[MNO][A-Za-z0-9_-]{23,25}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,38}\b",
+            regex!(r"\b[MNO][A-Za-z0-9_-]{23,25}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,38}\b"),
         ),
         (
             "DR-RECON-TELEGRAM-BOT",
             ReconCategory::Secret,
             Severity::Error,
-            r"\b[0-9]{8,10}:AA[0-9A-Za-z_-]{32,33}\b",
+            regex!(r"\b[0-9]{8,10}:AA[0-9A-Za-z_-]{32,33}\b"),
         ),
         (
             "DR-RECON-SENDGRID",
             ReconCategory::Secret,
             Severity::Error,
-            r"\bSG\.[0-9A-Za-z_-]{22}\.[0-9A-Za-z_-]{43}\b",
+            regex!(r"\bSG\.[0-9A-Za-z_-]{22}\.[0-9A-Za-z_-]{43}\b"),
         ),
         (
             "DR-RECON-SHOPIFY-TOKEN",
             ReconCategory::Secret,
             Severity::Error,
-            r"\bshp(?:at|ca|pa|ss)_[0-9A-Fa-f]{32}\b",
+            regex!(r"\bshp(?:at|ca|pa|ss)_[0-9A-Fa-f]{32}\b"),
         ),
         (
             "DR-RECON-NPM-TOKEN",
             ReconCategory::Secret,
             Severity::Error,
-            r"\bnpm_[0-9A-Za-z]{36}\b",
+            regex!(r"\bnpm_[0-9A-Za-z]{36}\b"),
         ),
         (
             "DR-RECON-PYPI-TOKEN",
             ReconCategory::Secret,
             Severity::Error,
-            r"\bpypi-AgEIcHlwaS5vcmc[0-9A-Za-z_-]{50,}",
+            regex!(r"\bpypi-AgEIcHlwaS5vcmc[0-9A-Za-z_-]{50,}"),
         ),
         (
             "DR-RECON-OPENAI-KEY",
             ReconCategory::Secret,
             Severity::Error,
-            r"\bsk-(?:proj-)?[0-9A-Za-z_-]{20,}T3BlbkFJ[0-9A-Za-z_-]{20,}\b",
+            regex!(r"\bsk-(?:proj-)?[0-9A-Za-z_-]{20,}T3BlbkFJ[0-9A-Za-z_-]{20,}\b"),
         ),
         (
             "DR-RECON-ANTHROPIC-KEY",
             ReconCategory::Secret,
             Severity::Error,
-            r"\bsk-ant-(?:api|admin)[0-9]{2}-[0-9A-Za-z_-]{80,}\b",
+            regex!(r"\bsk-ant-(?:api|admin)[0-9]{2}-[0-9A-Za-z_-]{80,}\b"),
         ),
         (
             "DR-RECON-ALGOLIA-ADMIN",
             ReconCategory::Secret,
             Severity::Warning,
-            r#"(?i)algolia[a-z_ ]{0,20}(?:admin|api)[_-]?key["']?\s*[:=]\s*["'](?P<secret>[0-9a-f]{32})["']"#,
+            regex!(
+                r#"(?i)algolia[a-z_ ]{0,20}(?:admin|api)[_-]?key["']?\s*[:=]\s*["'](?P<secret>[0-9a-f]{32})["']"#
+            ),
         ),
         (
             "DR-RECON-CLOUDINARY-URL",
             ReconCategory::Secret,
             Severity::Error,
-            r"\bcloudinary://[0-9]{15}:[0-9A-Za-z_-]+@[0-9A-Za-z_-]+\b",
+            regex!(r"\bcloudinary://[0-9]{15}:[0-9A-Za-z_-]+@[0-9A-Za-z_-]+\b"),
         ),
         (
             "DR-RECON-FACEBOOK-TOKEN",
             ReconCategory::Secret,
             Severity::Warning,
-            r"\bEAACEdEose0cBA[0-9A-Za-z]+\b",
+            regex!(r"\bEAACEdEose0cBA[0-9A-Za-z]+\b"),
         ),
         (
             "DR-RECON-MAILGUN",
             ReconCategory::Secret,
             Severity::Error,
-            r"\bkey-[0-9a-zA-Z]{32}\b",
+            regex!(r"\bkey-[0-9a-zA-Z]{32}\b"),
         ),
         (
             "DR-RECON-MAILCHIMP",
             ReconCategory::Secret,
             Severity::Error,
-            r"\b[0-9a-f]{32}-us[0-9]{1,2}\b",
+            regex!(r"\b[0-9a-f]{32}-us[0-9]{1,2}\b"),
         ),
         (
             "DR-RECON-SQUARE-ACCESS",
             ReconCategory::Secret,
             Severity::Error,
-            r"\bsq0atp-[0-9A-Za-z_-]{22}\b",
+            regex!(r"\bsq0atp-[0-9A-Za-z_-]{22}\b"),
         ),
         (
             "DR-RECON-SQUARE-OAUTH",
             ReconCategory::Secret,
             Severity::Error,
-            r"\bsq0csp-[0-9A-Za-z_-]{43}\b",
+            regex!(r"\bsq0csp-[0-9A-Za-z_-]{43}\b"),
         ),
         (
             "DR-RECON-PAYPAL-BRAINTREE",
             ReconCategory::Secret,
             Severity::Error,
-            r"\baccess_token\$production\$[0-9a-z]{16}\$[0-9a-f]{32}\b",
+            regex!(r"\baccess_token\$production\$[0-9a-z]{16}\$[0-9a-f]{32}\b"),
         ),
         (
             "DR-RECON-HEROKU",
             ReconCategory::Secret,
             Severity::Warning,
-            r"(?i)heroku[a-z0-9_ .\-,]{0,25}(?P<secret>[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12})",
+            regex!(
+                r"(?i)heroku[a-z0-9_ .\-,]{0,25}(?P<secret>[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12})"
+            ),
         ),
         (
             "DR-RECON-AUTH-BEARER",
             ReconCategory::Secret,
             Severity::Warning,
-            r"(?i)\bbearer\s+(?P<secret>[a-zA-Z0-9_\-.=]{16,})",
+            regex!(r"(?i)\bbearer\s+(?P<secret>[a-zA-Z0-9_\-.=]{16,})"),
         ),
         (
             "DR-RECON-PASSWORD-IN-URL",
             ReconCategory::Secret,
             Severity::Error,
-            r"[a-zA-Z][a-zA-Z0-9+.\-]{2,9}://[^/\s:@]{2,64}:[^/\s:@]{2,64}@[^/\s:@]{1,128}",
+            regex!(r"[a-zA-Z][a-zA-Z0-9+.\-]{2,9}://[^/\s:@]{2,64}:[^/\s:@]{2,64}@[^/\s:@]{1,128}"),
         ),
         (
             "DR-RECON-API-ASSIGNMENT",
             ReconCategory::Secret,
             Severity::Warning,
-            r#"(?i)(?:api[_-]?key|api[_-]?secret|client[_-]?secret|access[_-]?token|auth[_-]?token)["']?\s*[:=]\s*["'](?P<secret>[0-9A-Za-z_\-./+]{16,64})["']"#,
+            regex!(
+                r#"(?i)(?:api[_-]?key|api[_-]?secret|client[_-]?secret|access[_-]?token|auth[_-]?token)["']?\s*[:=]\s*["'](?P<secret>[0-9A-Za-z_\-./+]{16,64})["']"#
+            ),
         ),
         (
             "DR-RECON-GITLAB-PAT",
             ReconCategory::Secret,
             Severity::Error,
-            r"\bglpat-[0-9A-Za-z_-]{20}\b",
+            regex!(r"\bglpat-[0-9A-Za-z_-]{20}\b"),
         ),
         (
             "DR-RECON-DIGITALOCEAN",
             ReconCategory::Secret,
             Severity::Error,
-            r"\b(?:dop|doo|dor)_v1_[0-9a-f]{64}\b",
+            regex!(r"\b(?:dop|doo|dor)_v1_[0-9a-f]{64}\b"),
         ),
         (
             "DR-RECON-NEWRELIC",
             ReconCategory::Secret,
             Severity::Error,
-            r"\bNRAK-[0-9A-Z]{27}\b",
+            regex!(r"\bNRAK-[0-9A-Z]{27}\b"),
         ),
         (
             "DR-RECON-HUGGINGFACE",
             ReconCategory::Secret,
             Severity::Error,
-            r"\bhf_[0-9A-Za-z]{34}\b",
+            regex!(r"\bhf_[0-9A-Za-z]{34}\b"),
         ),
         (
             "DR-RECON-SUPABASE",
             ReconCategory::Secret,
             Severity::Error,
-            r"\bsb_(?:publishable|secret)_[0-9A-Za-z_-]{20,}\b",
+            regex!(r"\bsb_(?:publishable|secret)_[0-9A-Za-z_-]{20,}\b"),
         ),
         (
             "DR-RECON-VERCEL",
             ReconCategory::Secret,
             Severity::Error,
-            r"\bvc[apo]_[0-9A-Za-z]{24,}\b",
+            regex!(r"\bvc[apo]_[0-9A-Za-z]{24,}\b"),
         ),
         (
             "DR-RECON-LINEAR",
             ReconCategory::Secret,
             Severity::Error,
-            r"\blin_api_[0-9A-Za-z]{40}\b",
+            regex!(r"\blin_api_[0-9A-Za-z]{40}\b"),
         ),
         (
             "DR-RECON-NOTION",
             ReconCategory::Secret,
             Severity::Error,
-            r"\b(?:secret_|ntn_)[0-9A-Za-z]{43,46}\b",
+            regex!(r"\b(?:secret_|ntn_)[0-9A-Za-z]{43,46}\b"),
         ),
         (
             "DR-RECON-POSTMARK",
             ReconCategory::Secret,
             Severity::Warning,
-            r#"(?i)x-postmark-(?:server|account)-token["':\s]{1,8}(?P<secret>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"#,
+            regex!(
+                r#"(?i)x-postmark-(?:server|account)-token["':\s]{1,8}(?P<secret>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"#
+            ),
         ),
         (
             "DR-RECON-DATADOG",
             ReconCategory::Secret,
             Severity::Warning,
-            r#"(?i)(?:dd[_-]?api[_-]?key|datadog[_-]?api[_-]?key)["':\s=]{1,8}(?P<secret>[0-9a-f]{32})\b"#,
+            regex!(
+                r#"(?i)(?:dd[_-]?api[_-]?key|datadog[_-]?api[_-]?key)["':\s=]{1,8}(?P<secret>[0-9a-f]{32})\b"#
+            ),
         ),
         (
             "DR-RECON-ASANA",
             ReconCategory::Secret,
             Severity::Error,
-            r"\b[0-9]/[0-9]{16}:[0-9A-Za-z]{32}\b",
+            regex!(r"\b[0-9]/[0-9]{16}:[0-9A-Za-z]{32}\b"),
         ),
         (
             "DR-RECON-CLERK-SECRET",
             ReconCategory::Secret,
             Severity::Error,
-            r"\bsk_(?:test|live)_[0-9A-Za-z]{40,}\b",
+            regex!(r"\bsk_(?:test|live)_[0-9A-Za-z]{40,}\b"),
         ),
         (
             "DR-RECON-WEBSOCKET",
             ReconCategory::Endpoint,
             Severity::Note,
-            r"(?i)\bwss?://[a-z0-9.\-]+(?::[0-9]{1,5})?(?:/[^\s'\x22<>()\[\]{}]{0,512})?",
+            regex!(r"(?i)\bwss?://[a-z0-9.\-]+(?::[0-9]{1,5})?(?:/[^\s'\x22<>()\[\]{}]{0,512})?"),
         ),
         (
             "DR-RECON-MANIFEST-DEEPLINK",
             ReconCategory::Manifest,
             Severity::Note,
-            r#"(?i)android:scheme\s*=\s*["'][a-z][a-z0-9+.\-]{1,40}["']"#,
+            regex!(r#"(?i)android:scheme\s*=\s*["'][a-z][a-z0-9+.\-]{1,40}["']"#),
         ),
         (
             "DR-RECON-MANIFEST-DEEPLINK-HOST",
             ReconCategory::Manifest,
             Severity::Note,
-            r#"(?i)android:host\s*=\s*["'][a-z0-9*][a-z0-9.\-]{1,253}["']"#,
+            regex!(r#"(?i)android:host\s*=\s*["'][a-z0-9*][a-z0-9.\-]{1,253}["']"#),
         ),
         (
             "DR-RECON-MANIFEST-EXPORTED",
             ReconCategory::Manifest,
             Severity::Warning,
-            r#"(?i)<(?:activity|service|receiver|provider)\b[^>]*android:exported\s*=\s*["']true["']"#,
+            regex!(
+                r#"(?i)<(?:activity|service|receiver|provider)\b[^>]*android:exported\s*=\s*["']true["']"#
+            ),
         ),
         (
             "DR-RECON-MANIFEST-PROVIDER-AUTHORITY",
             ReconCategory::Manifest,
             Severity::Warning,
-            r#"(?i)android:authorities\s*=\s*["'][a-z0-9][a-z0-9._\-;]{2,255}["']"#,
+            regex!(r#"(?i)android:authorities\s*=\s*["'][a-z0-9][a-z0-9._\-;]{2,255}["']"#),
         ),
         (
             "DR-RECON-MANIFEST-PERMISSION",
             ReconCategory::Manifest,
             Severity::Note,
-            r#"(?i)android:name\s*=\s*["']android\.permission\.[A-Z_]{3,48}["']"#,
+            regex!(r#"(?i)android:name\s*=\s*["']android\.permission\.[A-Z_]{3,48}["']"#),
         ),
         (
             "DR-RECON-C2-USER-AGENT",
             ReconCategory::C2,
             Severity::Note,
-            r#"(?i)\b(?:Mozilla/[45]\.0|curl/[0-9]|python-requests/[0-9]|Go-http-client/[0-9]|axios/[0-9]|okhttp/[0-9])[^\r\n"']{0,120}"#,
+            regex!(
+                r#"(?i)\b(?:Mozilla/[45]\.0|curl/[0-9]|python-requests/[0-9]|Go-http-client/[0-9]|axios/[0-9]|okhttp/[0-9])[^\r\n"']{0,120}"#
+            ),
         ),
         (
             "DR-RECON-C2-NAMED-PIPE",
             ReconCategory::C2,
             Severity::Warning,
-            r"(?i)\\\\\.\\pipe\\[A-Za-z0-9_.\-{}]{2,64}",
+            regex!(r"(?i)\\\\\.\\pipe\\[A-Za-z0-9_.\-{}]{2,64}"),
         ),
         (
             "DR-RECON-C2-MUTEX",
             ReconCategory::C2,
             Severity::Warning,
-            r"(?i)\b(?:Global|Local)\\[A-Za-z0-9_.\-{}]{2,64}",
+            regex!(r"(?i)\b(?:Global|Local)\\[A-Za-z0-9_.\-{}]{2,64}"),
         ),
         (
             "DR-RECON-C2-BEACON-PATH",
             ReconCategory::C2,
             Severity::Warning,
-            r"(?i)/(?:gate|panel|api|cmd|c2|task|bot|admin|login|submit|upload)\.php\b",
+            regex!(r"(?i)/(?:gate|panel|api|cmd|c2|task|bot|admin|login|submit|upload)\.php\b"),
         ),
         (
             "DR-RECON-C2-DEAD-DROP",
             ReconCategory::C2,
             Severity::Warning,
-            r"(?i)\b(?:pastebin\.com/raw|raw\.githubusercontent\.com|cdn\.discordapp\.com/attachments|telegra\.ph|ghostbin\.[a-z]+|transfer\.sh)/[^\s'\x22<>()]{1,256}",
+            regex!(
+                r"(?i)\b(?:pastebin\.com/raw|raw\.githubusercontent\.com|cdn\.discordapp\.com/attachments|telegra\.ph|ghostbin\.[a-z]+|transfer\.sh)/[^\s'\x22<>()]{1,256}"
+            ),
         ),
         (
             "DR-RECON-PERSIST-RUNKEY",
             ReconCategory::Persistence,
             Severity::Warning,
-            r"(?i)(?:Software\\)?Microsoft\\Windows\\CurrentVersion\\Run(?:Once)?\b",
+            regex!(r"(?i)(?:Software\\)?Microsoft\\Windows\\CurrentVersion\\Run(?:Once)?\b"),
         ),
         (
             "DR-RECON-PERSIST-WINLOGON",
             ReconCategory::Persistence,
             Severity::Warning,
-            r"(?i)Microsoft\\Windows NT\\CurrentVersion\\Winlogon\\(?:Shell|Userinit)\b",
+            regex!(r"(?i)Microsoft\\Windows NT\\CurrentVersion\\Winlogon\\(?:Shell|Userinit)\b"),
         ),
         (
             "DR-RECON-PERSIST-IFEO",
             ReconCategory::Persistence,
             Severity::Warning,
-            r"(?i)Image File Execution Options\\[A-Za-z0-9_.\-]{2,64}",
+            regex!(r"(?i)Image File Execution Options\\[A-Za-z0-9_.\-]{2,64}"),
         ),
         (
             "DR-RECON-PERSIST-LAUNCHAGENT",
             ReconCategory::Persistence,
             Severity::Warning,
-            r"(?i)(?:Library/Launch(?:Agents|Daemons)|/etc/(?:cron[a-z.]*|systemd/system|rc\.local))(?:/[^\s'\x22<>:]{1,128})?",
+            regex!(
+                r"(?i)(?:Library/Launch(?:Agents|Daemons)|/etc/(?:cron[a-z.]*|systemd/system|rc\.local))(?:/[^\s'\x22<>:]{1,128})?"
+            ),
         ),
     ];
     specs
         .into_iter()
         .map(
-            |(rule_id, category, severity, pat): RuleSpec| EndpointRule {
+            |(rule_id, category, severity, pattern): RuleSpec| EndpointRule {
                 rule_id,
                 category,
                 severity,
-                pattern: compile(pat),
+                pattern,
             },
         )
         .collect()
 });
 
-static ONION_RE: LazyLock<Regex> =
-    LazyLock::new(|| compile(r"(?i)\b[a-z2-7]{16}(?:[a-z2-7]{40})?\.onion\b"));
+static ONION_RE: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r"(?i)\b[a-z2-7]{16}(?:[a-z2-7]{40})?\.onion\b"));
 
-static ENDPOINT_PATH_RE: LazyLock<Regex> = LazyLock::new(|| {
-    compile(
+static ENDPOINT_PATH_RE: LazyLock<&'static Regex> = LazyLock::new(|| {
+    regex!(
         r#"(?x)
         ["'`](
             (?:\.{1,2}/|/)(?:[A-Za-z0-9_~%.\-]+/)*[A-Za-z0-9_~%.\-]+(?:\?[A-Za-z0-9_=&%.\-]*)?
@@ -552,20 +572,20 @@ static ENDPOINT_PATH_RE: LazyLock<Regex> = LazyLock::new(|| {
             [A-Za-z0-9_\-]{1,}/[A-Za-z0-9_./\-]{3,}(?:\?[A-Za-z0-9_=&%.\-]*)?
             |
             [A-Za-z0-9_\-]{1,}\.(?:php|aspx?|jsp|json|action|html?|js|xml|do)(?:\?[A-Za-z0-9_=&%.\-]*)?
-        )["'`]"#,
+        )["'`]"#
     )
 });
 
-static FETCH_CALL_RE: LazyLock<Regex> = LazyLock::new(|| {
-    compile(
+static FETCH_CALL_RE: LazyLock<&'static Regex> = LazyLock::new(|| {
+    regex!(
         r#"(?ix)
         (?:fetch|axios(?:\.(?:get|post|put|delete|patch))?|\.open|\$\.(?:get|post|ajax)|request)
-        \s*\(\s*["'`]([^"'`\s]{2,512})["'`]"#,
+        \s*\(\s*["'`]([^"'`\s]{2,512})["'`]"#
     )
 });
 
-static GRAPHQL_RE: LazyLock<Regex> = LazyLock::new(|| {
-    compile(r"(?i)\b(?:query|mutation|subscription)\s+([A-Za-z_][A-Za-z0-9_]{2,64})\s*[({]")
+static GRAPHQL_RE: LazyLock<&'static Regex> = LazyLock::new(|| {
+    regex!(r"(?i)\b(?:query|mutation|subscription)\s+([A-Za-z_][A-Za-z0-9_]{2,64})\s*[({]")
 });
 
 const LINE_BLOCK_BYTES: usize = 4096;
@@ -3076,5 +3096,12 @@ mod tests {
             }),
             "codec-decoded url must carry the codec encoding tag: {indicators:?}"
         );
+    }
+
+    #[test]
+    fn recon_static_patterns_initialize() {
+        assert_eq!(ENDPOINT_RULES.len(), 56);
+        let statics: [&Regex; 4] = [*ONION_RE, *ENDPOINT_PATH_RE, *FETCH_CALL_RE, *GRAPHQL_RE];
+        assert!(statics.iter().all(|re: &&Regex| !re.as_str().is_empty()));
     }
 }

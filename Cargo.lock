@@ -1992,6 +1992,7 @@ dependencies = [
  "goblin",
  "hmac",
  "iced-x86",
+ "lazy-regex",
  "liblzma",
  "md5",
  "memchr",
