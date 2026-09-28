@@ -81,11 +81,13 @@ impl ObjcInterface {
     #[must_use]
     pub fn render(&self) -> String {
         let mut out: String = String::new();
-        let superclass: &str = self.superclass.as_deref().unwrap_or("NSObject");
         out.push_str("@interface ");
         out.push_str(&self.name);
-        out.push_str(" : ");
-        out.push_str(superclass);
+        let heading: String = self.superclass.as_deref().map_or_else(
+            || " /* superclass unresolved: imported or unreadable */".to_owned(),
+            |superclass: &str| format!(" : {superclass}"),
+        );
+        out.push_str(&heading);
         out.push('\n');
         if !self.ivars.is_empty() {
             out.push_str("{\n");
@@ -420,6 +422,7 @@ fn parse_class_ro(
     view: &SliceView<'_>,
     parsed: &ParsedSlice,
     class_vmaddr: u64,
+    bound_symbols: &BTreeMap<u64, String>,
 ) -> Option<ParsedClassRo> {
     let class_off: usize = macho::vmaddr_to_offset(parsed, class_vmaddr)?;
     let bits: u64 = view.read_u64_at(class_off + CLASS_DATA_OFF)?;
@@ -443,17 +446,27 @@ fn parse_class_ro(
         .map(|p: u64| parse_properties(view, parsed, p))
         .unwrap_or_default();
 
-    let superclass: Option<String> = view
-        .read_pointer_at(parsed, class_off + CLASS_SUPERCLASS_OFF)
-        .and_then(|p: u64| macho::vmaddr_to_offset(parsed, p))
-        .and_then(|super_off: usize| {
-            let super_bits: u64 = view.read_u64_at(super_off + CLASS_DATA_OFF)?;
-            let super_data: u64 =
-                macho::decode_bound_pointer(super_bits & FAST_DATA_MASK, view.base());
-            let super_ro: usize = macho::vmaddr_to_offset(parsed, super_data)?;
-            let super_name_ptr: u64 = view.read_pointer_at(parsed, super_ro + RO_NAME_OFF)?;
-            view.cstr_at_vmaddr(parsed, super_name_ptr, MAX_CSTR)
+    let superclass_slot: usize = class_off + CLASS_SUPERCLASS_OFF;
+    let imported_superclass: Option<String> = class_vmaddr
+        .checked_add(CLASS_SUPERCLASS_OFF as u64)
+        .and_then(|slot: u64| bound_symbols.get(&slot))
+        .map(|name: &String| {
+            name.strip_prefix("_OBJC_CLASS_$_")
+                .unwrap_or(name)
+                .to_owned()
         });
+    let superclass: Option<String> = imported_superclass.or_else(|| {
+        view.read_pointer_at(parsed, superclass_slot)
+            .and_then(|p: u64| macho::vmaddr_to_offset(parsed, p))
+            .and_then(|super_off: usize| {
+                let super_bits: u64 = view.read_u64_at(super_off + CLASS_DATA_OFF)?;
+                let super_data: u64 =
+                    macho::decode_bound_pointer(super_bits & FAST_DATA_MASK, view.base());
+                let super_ro: usize = macho::vmaddr_to_offset(parsed, super_data)?;
+                let super_name_ptr: u64 = view.read_pointer_at(parsed, super_ro + RO_NAME_OFF)?;
+                view.cstr_at_vmaddr(parsed, super_name_ptr, MAX_CSTR)
+            })
+    });
 
     Some(ParsedClassRo {
         name,
@@ -474,13 +487,17 @@ pub fn recover_interfaces(
         return Vec::new();
     };
     let cap: usize = classlist_pointers.len().min(MAX_CLASSES);
+    let bound_symbols: BTreeMap<u64, String> =
+        crate::objc_dispatch::bound_symbols_by_slot(slice, parsed);
     let mut out: Vec<ObjcInterface> = Vec::with_capacity(cap);
     for raw in classlist_pointers.iter().take(MAX_CLASSES) {
         let class_vmaddr: u64 = macho::decode_bound_pointer(*raw, view.base());
         if class_vmaddr == 0 {
             continue;
         }
-        let Some(ro): Option<ParsedClassRo> = parse_class_ro(&view, parsed, class_vmaddr) else {
+        let Some(ro): Option<ParsedClassRo> =
+            parse_class_ro(&view, parsed, class_vmaddr, &bound_symbols)
+        else {
             continue;
         };
         let class_methods: Vec<ObjcMethod> =
@@ -770,7 +787,7 @@ fn class_methods_via_metaclass(
     let Some(meta_vmaddr): Option<u64> = view.read_pointer_at(parsed, class_off) else {
         return Vec::new();
     };
-    parse_class_ro(view, parsed, meta_vmaddr)
+    parse_class_ro(view, parsed, meta_vmaddr, &BTreeMap::new())
         .map(|ro: ParsedClassRo| ro.methods)
         .unwrap_or_default()
 }
@@ -889,5 +906,23 @@ mod tests {
         assert!(rendered.contains("doThing:"));
         assert!(rendered.contains("_count"));
         assert!(rendered.trim_end().ends_with("@end"));
+    }
+
+    #[test]
+    fn an_unresolved_superclass_is_marked_not_assumed() {
+        let iface: ObjcInterface = ObjcInterface {
+            name: "ViewController".to_owned(),
+            superclass: None,
+            instance_methods: Vec::new(),
+            class_methods: Vec::new(),
+            ivars: Vec::new(),
+            properties: Vec::new(),
+        };
+        let rendered: String = iface.render();
+        assert!(
+            rendered.starts_with("@interface ViewController /* superclass unresolved"),
+            "{rendered}"
+        );
+        assert!(!rendered.contains("NSObject"), "{rendered}");
     }
 }
