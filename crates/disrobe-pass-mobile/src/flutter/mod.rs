@@ -215,6 +215,12 @@ pub struct FlutterObfuscationMap {
 pub fn parse_libapp_so(bytes: &[u8]) -> Result<LibAppLayout> {
     let file: ObjFile<'_> =
         ObjFile::parse(bytes).map_err(|e: object::Error| Error::ElfParse(e.to_string()))?;
+    if file.architecture() != object::Architecture::Aarch64 {
+        return Err(Error::UnsupportedLibAppArchitecture(format!(
+            "{:?}",
+            file.architecture()
+        )));
+    }
     let mut section_names: Vec<String> = Vec::new();
     for section in file.sections() {
         let name: &str = section.name().unwrap_or("");
@@ -270,9 +276,12 @@ pub fn parse_flutter_apk(bytes: &[u8]) -> Result<FlutterApkLayout> {
     for i in 0..entry_count {
         let f: zip::read::ZipFile<'_> = archive.by_index(i).map_err(Error::from)?;
         let name: &str = f.name();
-        if name.starts_with("lib/") && name.ends_with("/libapp.so") {
+        if name == "lib/arm64-v8a/libapp.so" {
             libapp_index = Some(i);
             break;
+        }
+        if libapp_index.is_none() && name.starts_with("lib/") && name.ends_with("/libapp.so") {
+            libapp_index = Some(i);
         }
     }
     let Some(idx): Option<usize> = libapp_index else {

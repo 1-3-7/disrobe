@@ -570,10 +570,9 @@ impl<'a> LiftCtx<'a> {
         self.env_levels.remove(&r);
         self.owned_env_regs.remove(&r);
         if expr.len() > MAX_REG_EXPR_BYTES {
-            self.regs.insert(r, format!("r{r}"));
-        } else {
-            self.regs.insert(r, expr);
+            self.materialized.insert(r);
         }
+        self.regs.insert(r, expr);
     }
 
     fn set_reg_closure(&mut self, r: u32, expr: String) {
@@ -3256,6 +3255,26 @@ mod tests {
             LiftCtx::new(&empty, 0, BTreeSet::new(), BTreeSet::new(), &no_inline, 0);
         assert_eq!(empty_ctx.object_literal(bomb_count, 0, 0), "{}");
         assert_eq!(empty_ctx.array_literal(bomb_count, 0), "[]");
+    }
+
+    #[test]
+    fn an_over_long_expression_is_materialized_instead_of_dropped() {
+        let no_inline: BTreeMap<u32, String> = BTreeMap::new();
+        let empty: HermesModule = module_with_buffers(
+            &["a"],
+            &[],
+            Vec::new(),
+            1,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let mut ctx: LiftCtx<'_> =
+            LiftCtx::new(&empty, 0, BTreeSet::new(), BTreeSet::new(), &no_inline, 0);
+        let long: String = "x + ".repeat(MAX_REG_EXPR_BYTES) + "x";
+        ctx.set_reg(3, long.clone());
+        assert!(ctx.is_materialized(3));
+        assert_eq!(ctx.reg_expr(3), long);
     }
 
     #[test]

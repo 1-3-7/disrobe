@@ -126,7 +126,7 @@ fn synth_minimal_libapp_so() -> Vec<u8> {
     buf.push(0);
     buf.extend_from_slice(&[0u8; 8]);
     write_u16(&mut buf, 3);
-    write_u16(&mut buf, 0x3e);
+    write_u16(&mut buf, 0xb7);
     write_u32(&mut buf, 1);
     write_u64(&mut buf, 0);
     write_u64(&mut buf, 0);
@@ -293,6 +293,16 @@ fn synth_dart_snapshot() -> Vec<u8> {
     }
     buf.extend_from_slice(b"\x00LibraryPrivate@MyApp\x00MaterialApp\x00");
     buf
+}
+
+#[test]
+fn a_libapp_for_another_architecture_is_refused_by_name() {
+    let mut bytes: Vec<u8> = synth_minimal_libapp_so();
+    bytes[18..20].copy_from_slice(&0x28u16.to_le_bytes());
+    let error: String = parse_libapp_so(&bytes)
+        .expect_err("an ARM32 libapp.so is refused")
+        .to_string();
+    assert!(error.contains("DR-MOB-0063"), "{error}");
 }
 
 #[test]

@@ -47,6 +47,11 @@ pub enum Error {
     ElfParse(String),
 
     #[error(
+        "DR-MOB-0063: libapp.so targets {0}; the Dart AOT lifter decodes AArch64 (arm64-v8a) snapshots only"
+    )]
+    UnsupportedLibAppArchitecture(String),
+
+    #[error(
         "DR-MOB-0011: Dart AOT snapshot magic mismatch (expected kSnapshotMagic 0xf5f5dcdc, bytes f5 f5 dc dc)"
     )]
     DartBadMagic,
