@@ -144,6 +144,7 @@ extend-exclude = [
     "crates/disrobe-sleigh/vendor/**",
     "crates/disrobe-cli/tests/schemas/*.schema.json",
     "crates/disrobe-cli/tests/schemas/stix-2.1/**",
+    "crates/disrobe-pass-nativelang/tests/support/druntime_demangle_vectors.rs",
     "target/**",
     "**/*.dr",
     "**/*.pkl",
