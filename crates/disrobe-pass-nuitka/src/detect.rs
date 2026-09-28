@@ -99,7 +99,7 @@ pub fn detect_in_bytes(bytes: &[u8]) -> Result<Detection> {
         _ => NuitkaFlavor::Standalone,
     };
 
-    if hits.is_empty() && onefile_offset.is_none() && !wheel_marker.is_wheel() {
+    if hits.is_empty() && onefile_offset.is_none() {
         return Err(Error::NotNuitka);
     }
 
@@ -317,6 +317,15 @@ mod tests {
         let det: Detection = detect_in_bytes(&bytes).expect("wheel + nuitka markers");
         assert_eq!(det.flavor, NuitkaFlavor::Wheel);
         assert!(det.wheel_marker.is_wheel());
+    }
+
+    #[test]
+    fn an_ordinary_wheel_is_not_a_nuitka_wheel() {
+        let mut bytes: Vec<u8> = vec![0u8; 4096];
+        bytes[100..119].copy_from_slice(b".dist-info/METADATA");
+        bytes[400..417].copy_from_slice(b".dist-info/RECORD");
+        bytes[800..816].copy_from_slice(b".dist-info/WHEEL");
+        assert!(matches!(detect_in_bytes(&bytes), Err(Error::NotNuitka)));
     }
 
     #[test]

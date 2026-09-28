@@ -148,7 +148,7 @@ const fn decide_variant(
     if signed && core_marker_hits >= 2 {
         return NuitkaVariant::SignedPe;
     }
-    if is_wheel && matches!(binary_format, BinaryFormat::Other) {
+    if is_wheel && core_marker_hits >= 1 && matches!(binary_format, BinaryFormat::Other) {
         return NuitkaVariant::Wheel;
     }
     if core_marker_hits == 0 {
@@ -332,11 +332,13 @@ mod tests {
     }
 
     #[test]
-    fn zip_with_dist_info_markers_classifies_as_wheel() {
+    fn zip_with_dist_info_markers_classifies_as_wheel_only_with_a_nuitka_marker() {
         let mut bytes: Vec<u8> = vec![0x50u8, 0x4Bu8, 0x03u8, 0x04u8];
         bytes.extend_from_slice(b"pkg-1.0.dist-info/METADATA");
         bytes.extend_from_slice(b"pkg-1.0.dist-info/RECORD");
         bytes.extend_from_slice(b"pkg-1.0.dist-info/WHEEL");
+        assert!(matches!(classify(&bytes), Err(Error::NotNuitka)));
+        bytes.extend_from_slice(b"__nuitka_version__");
         let c: VariantClassification = classify(&bytes).expect("wheel classifies");
         assert_eq!(c.variant, NuitkaVariant::Wheel);
         assert_eq!(c.binary_format, BinaryFormat::Other);
