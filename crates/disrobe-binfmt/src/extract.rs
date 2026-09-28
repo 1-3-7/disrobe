@@ -2211,16 +2211,21 @@ fn extract_squirrel(
 
     let Some(offset): Option<u64> = layout.nupkg_offset else {
         return Err(Error::Squirrel(format!(
-            "squirrel marker present (marker={}) but no embedded nupkg zip is appended to this PE; the application payload ships as a sibling `packages/*.nupkg` (a standard zip) - extract that directly",
+            "squirrel marker present (marker={}) but no DATA/131 resource holds a package zip; the application payload ships as a sibling `packages/*.nupkg` (a standard zip) - extract that directly",
             layout.squirrel_marker_present
         )));
     };
     let start: usize = usize::try_from(offset).map_err(|_e: std::num::TryFromIntError| {
         Error::Squirrel("nupkg offset overflow".to_owned())
     })?;
-    let nupkg: &[u8] = bytes
-        .get(start..)
-        .ok_or_else(|| Error::Squirrel("nupkg offset past end of input".to_owned()))?;
+    let size: usize = layout
+        .nupkg_size
+        .and_then(|size: u64| usize::try_from(size).ok())
+        .ok_or_else(|| Error::Squirrel("embedded package zip size out of range".to_owned()))?;
+    let nupkg: &[u8] = start
+        .checked_add(size)
+        .and_then(|end: usize| bytes.get(start..end))
+        .ok_or_else(|| Error::Squirrel("embedded package zip past end of input".to_owned()))?;
     let installer_quota: ExtractionQuota = ExtractionQuota {
         max_aggregate_ratio: quota.max_aggregate_ratio.max(200),
         max_per_entry_ratio: quota.max_per_entry_ratio.max(1000),
