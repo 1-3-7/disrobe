@@ -1,0 +1,16 @@
+schema = "disrobe.jvm.ecj-jsr-fixture/v1"
+source = "FinallyProbe.java"
+source_sha256 = "7905d8cc6afe11016751a231e12140bf4d930013fc41aaf14f114fa43b33b0e4"
+
+[ecj]
+version = "3.26.0"
+url = "https://repo1.maven.org/maven2/org/eclipse/jdt/ecj/3.26.0/ecj-3.26.0.jar"
+sha1 = "4837be609a3368a0f7e7cf0dc1bdbc7fe94993de"
+sha256 = "ac0ba5876eaf7ebb47749a0d1be179c51f194b9dd0b875d1c09e1b530f5a2db5"
+java = "Eclipse Temurin 25.0.4+7-LTS"
+command = "java -jar ecj-3.26.0.jar -source 1.4 -target 1.4 -nowarn -d classes FinallyProbe.java"
+
+[[artifact]]
+path = "FinallyProbe.class"
+format = "class file version 48.0 (Java 1.4), try/finally compiled to jsr/ret subroutines"
+sha256 = "2dff71da4b8d549888ea8e3b717b74f7f3e6c3058d73fc3ee9e2102899f2e20a"

@@ -2349,6 +2349,20 @@ fn unrendered_reachable_blocks(
     missing
 }
 
+fn arm_leaves_the_switch(arm: &str) -> bool {
+    arm.lines()
+        .map(str::trim)
+        .rfind(|line: &&str| !line.is_empty())
+        .is_some_and(|last: &str| {
+            ["return", "throw", "break", "continue"]
+                .iter()
+                .any(|keyword: &&str| {
+                    last.strip_prefix(keyword)
+                        .is_some_and(|rest: &str| rest.starts_with([';', ' ', '(']))
+                })
+        })
+}
+
 fn hoist_loop_captured_locals(body: &str) -> String {
     let captured: BTreeSet<String> = lambda_captured_locals(body);
     if captured.is_empty() {
@@ -5134,15 +5148,21 @@ fn render_region(ctx: &mut RenderCtx<'_>, region: &Region, out: &mut String, lev
             for (i, (key, body)) in cases.iter().enumerate() {
                 let label: String = format_switch_key(key, i);
                 let _ = writeln!(out, "{pad}    case {label}:");
-                render_region(ctx, body, out, level + 2);
-                if !fallthrough.contains(&i) {
+                let mut arm: String = String::new();
+                render_region(ctx, body, &mut arm, level + 2);
+                out.push_str(&arm);
+                if !fallthrough.contains(&i) && !arm_leaves_the_switch(&arm) {
                     let _ = writeln!(out, "{pad}        break;");
                 }
             }
             if let Some(def) = default {
                 let _ = writeln!(out, "{pad}    default:");
-                render_region(ctx, def, out, level + 2);
-                let _ = writeln!(out, "{pad}        break;");
+                let mut arm: String = String::new();
+                render_region(ctx, def, &mut arm, level + 2);
+                out.push_str(&arm);
+                if !arm_leaves_the_switch(&arm) {
+                    let _ = writeln!(out, "{pad}        break;");
+                }
             }
             let _ = writeln!(out, "{pad}}}");
         }
