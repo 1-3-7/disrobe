@@ -9,8 +9,11 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use disrobe_pass_py_decompile::{
+    NativeDecompile, RoundtripOutcome, RoundtripStatus, decompile_pyc, roundtrip_native,
+};
 use disrobe_pass_pyfreeze::cxfreeze::{CxFreezeExtraction, CxFreezeRecovery, detect_and_extract};
-use disrobe_pass_pyfreeze::recover::{RoundtripGrade, recover_bytecode_file, surface_native_file};
+use disrobe_pass_pyfreeze::recover::{recover_bytecode_file, surface_native_file};
 use disrobe_pass_pyfreeze::{
     Detection, FreezerKind, RecoveredModule, SurfacedNative, detect_bytes,
 };
@@ -166,20 +169,30 @@ fn cxfreeze_real_build_recovers_bytecode_and_surfaces_native() {
         app_logic.source
     );
 
-    match &app_logic.roundtrip {
-        RoundtripGrade::Perfect | RoundtripGrade::Semantic => {}
-        RoundtripGrade::NoInterpreter(hint) => {
-            eprintln!(
-                "[real_frozen_recovery] HONEST-PARTIAL: source recovered but recompile oracle \
-                 unavailable ({hint}); decompile content asserted, bytecode equivalence not graded"
-            );
-        }
-        other => panic!(
-            "recovered app_logic.pyc must recompile to equivalent bytecode against the real \
-             interpreter; got {other:?}\nsource:\n{}",
-            app_logic.source
+    let app_logic_pyc: Vec<u8> = extraction
+        .extracted
+        .iter()
+        .find(|entry| entry.name.ends_with("app_logic.pyc"))
+        .map(|entry| std::fs::read(&entry.disk_path).expect("read extracted app_logic.pyc"))
+        .expect("app_logic.pyc must be among the extracted library members");
+    let reference: NativeDecompile =
+        decompile_pyc(&app_logic_pyc).expect("app_logic.pyc decompiles");
+    let outcome: RoundtripOutcome = roundtrip_native(
+        &reference.source,
+        &reference.code,
+        &reference.decompile_version,
+        reference.marshal_version,
+    );
+    assert!(
+        matches!(
+            outcome.status,
+            RoundtripStatus::Perfect | RoundtripStatus::Semantic
         ),
-    }
+        "recovered app_logic.pyc must recompile to equivalent bytecode under the matching \
+         CPython; got {:?}\nsource:\n{}",
+        outcome.status,
+        app_logic.source
+    );
 
     let native: Vec<SurfacedNative> = {
         let mut v: Vec<SurfacedNative> = recovery.native.clone();
@@ -213,10 +226,10 @@ fn cxfreeze_real_build_recovers_bytecode_and_surfaces_native() {
     );
 
     eprintln!(
-        "[real_frozen_recovery] OK: recovered {} modules (app_logic grade={}), surfaced {} native \
+        "[real_frozen_recovery] OK: recovered {} modules (app_logic grade={:?}), surfaced {} native \
          extensions (e.g. {} -> {} {} insns)",
         recovery.modules.len(),
-        app_logic.roundtrip.label(),
+        outcome.status,
         native.len(),
         surfaced.name,
         surfaced.arch.label(),
