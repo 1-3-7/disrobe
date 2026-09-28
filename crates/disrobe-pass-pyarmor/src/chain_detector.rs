@@ -480,7 +480,7 @@ fn verdict_for_raw_payload(magic: WrapperMagic, payload: &[u8]) -> DetectVerdict
 fn verdict_for_decoded(detection: &Detection, decoded: &[u8]) -> DetectVerdict {
     let (format_tag, version_label): (&'static str, &'static str) =
         tag_for_version(detection.version, detection.protection);
-    let confidence: f32 = decoded_confidence(&detection);
+    let confidence: f32 = decoded_confidence(detection);
     let marker: &'static str =
         if matches!(detection.version, PyarmorVersion::V8 | PyarmorVersion::V9) {
             "PY-magic"
