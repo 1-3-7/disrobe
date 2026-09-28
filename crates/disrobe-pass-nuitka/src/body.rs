@@ -2346,7 +2346,8 @@ impl<'a> Lifter<'a> {
             .get(iter_token)
             .cloned()
             .unwrap_or_else(|| self.eval_value(iter_token, env));
-        let loop_end: usize = self.find_label(i + 1, end, "loop_end_")?;
+        let loop_end: usize =
+            self.find_exact_label(i + 1, end, &format!("loop_end_{loop_tag}:;"))?;
 
         let mut body_env: BTreeMap<String, PythonExpr> = env.clone();
         let target: String = self.bind_comp_target(i + 1, loop_end, &mut body_env)?;
@@ -2563,7 +2564,8 @@ impl<'a> Lifter<'a> {
             .cloned()
             .unwrap_or_else(|| self.eval_value(iter_var, env));
 
-        let loop_end: usize = self.find_label(i + 1, end, "loop_end_")?;
+        let loop_end: usize =
+            self.find_exact_label(i + 1, end, &format!("loop_end_{loop_tag}:;"))?;
 
         let (target_var, target_bind_idx): (String, usize) =
             self.find_for_target(i + 1, loop_end)?;
@@ -2645,7 +2647,8 @@ impl<'a> Lifter<'a> {
         if self.find_before_token(i, 80, "__for_iterator = ").is_some() {
             return None;
         }
-        let loop_end: usize = self.find_label(i + 1, end, "loop_end_")?;
+        let loop_end: usize =
+            self.find_exact_label(i + 1, end, &format!("loop_end_{loop_tag}:;"))?;
 
         let (test, body_start): (PythonExpr, usize) =
             self.extract_while_condition(i + 1, loop_end, env)?;
@@ -2913,7 +2916,10 @@ impl<'a> Lifter<'a> {
             return Some(no_start.saturating_sub(i));
         }
 
-        let no_end: usize = self.find_branch_end(no_start, end);
+        let end_tag: String = yes_tag.replacen("yes", "end", 1);
+        let no_end: usize = self
+            .find_exact_label(no_start, end, &format!("{end_tag}:;"))
+            .unwrap_or_else(|| self.find_branch_end(no_start, end));
         let mut no_env: BTreeMap<String, PythonExpr> = env.clone();
         let no_body: Block = self.lift_block(no_start, no_end, &mut no_env);
         unrecognized.extend(no_body.unrecognized);
@@ -4671,6 +4677,48 @@ goto frame_return_exit_1;
                 },
                 PythonStmt::Return(PythonExpr::Name("n".to_owned())),
             ]
+        );
+    }
+
+    #[test]
+    fn an_else_suite_ends_at_its_own_branch_end_label() {
+        let body: &str = r"{
+PyObject *par_n = python_pars[0];
+tmp_cmp_expr_left_1 = par_n;
+tmp_cmp_expr_right_1 = const_int_0;
+tmp_condition_result_1 = RICH_COMPARE_LT_NBOOL_OBJECT_LONG(tmp_cmp_expr_left_1, tmp_cmp_expr_right_1);
+if (tmp_condition_result_1 == NUITKA_BOOL_TRUE) {
+goto branch_yes_1;
+} else {
+goto branch_no_1;
+}
+branch_yes_1:;
+var_z = const_int_0;
+goto branch_end_1;
+branch_no_1:;
+var_z = par_n;
+branch_end_1:;
+tmp_return_value = var_z;
+goto frame_return_exit_1;
+}";
+        let pool: ConstantsPool = ConstantsPool::default();
+        let lift: BodyLift = lift_body_detailed(body, &[], &pool);
+        assert_eq!(
+            lift.stmts.last(),
+            Some(&PythonStmt::Return(PythonExpr::Name("z".to_owned()))),
+            "the join after the if/else returns z on both paths: {:?}",
+            lift.stmts
+        );
+        let Some(PythonStmt::If { orelse, .. }) = lift.stmts.first() else {
+            panic!("expected an if statement first: {:?}", lift.stmts);
+        };
+        assert_eq!(
+            orelse,
+            &vec![PythonStmt::Assign {
+                targets: vec!["z".to_owned()],
+                value: PythonExpr::Name("n".to_owned()),
+            }],
+            "the else suite holds only its own assignment"
         );
     }
 
