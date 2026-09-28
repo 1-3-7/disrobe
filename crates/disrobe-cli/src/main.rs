@@ -2315,27 +2315,28 @@ fn print_chain_registry() {
 mod tests {
     use super::*;
 
-    #[test]
     #[cfg(feature = "full")]
-    fn every_recommended_command_parses_against_the_clap_tree() {
-        let paths: std::collections::BTreeSet<String> = subcommand_paths();
+    fn dead_recommendations(paths: &std::collections::BTreeSet<String>) -> (usize, Vec<String>) {
         let mut checked: usize = 0;
+        let mut dead: Vec<String> = Vec::new();
         for route in disrobe_pass_native::SupportRoute::ALL {
             let prose: &str = route.command();
-            assert_eq!(
-                prose.matches("disrobe ").count(),
-                route.invocations().len(),
-                "{route:?} recommends `{prose}`, which names a command its invocations do not list"
-            );
+            if prose.matches("disrobe ").count() != route.invocations().len() {
+                dead.push(format!(
+                    "{route:?} recommends `{prose}`, which names a command its invocations do not list"
+                ));
+            }
             for invocation in route.invocations() {
-                assert!(
-                    paths.contains(*invocation),
-                    "{route:?} recommends `disrobe {invocation}`, which the command tree does not have"
-                );
-                assert!(
-                    prose.contains(&format!("disrobe {invocation}")),
-                    "{route:?} lists `{invocation}` but its text `{prose}` does not name it"
-                );
+                if !paths.contains(*invocation) {
+                    dead.push(format!(
+                        "{route:?} recommends `disrobe {invocation}`, which the command tree does not have"
+                    ));
+                }
+                if !prose.contains(&format!("disrobe {invocation}")) {
+                    dead.push(format!(
+                        "{route:?} lists `{invocation}` but its text `{prose}` does not name it"
+                    ));
+                }
                 checked += 1;
             }
         }
@@ -2346,16 +2347,40 @@ mod tests {
                 .next()
                 .unwrap_or_default()
                 .trim();
-            assert!(
-                paths.contains(invocation),
-                "the playground recommends `disrobe {invocation}`, which the command tree does not have"
-            );
+            if !paths.contains(invocation) {
+                dead.push(format!(
+                    "the playground recommends `disrobe {invocation}`, which the command tree does not have"
+                ));
+            }
             checked += 1;
         }
+        (checked, dead)
+    }
+
+    #[test]
+    #[cfg(feature = "full")]
+    fn every_recommended_command_parses_against_the_clap_tree() {
+        let (checked, dead): (usize, Vec<String>) = dead_recommendations(&subcommand_paths());
+        assert_eq!(dead, Vec::<String>::new());
         assert_eq!(
             checked, 15,
             "every recommendation identify and the playground emit is checked"
         );
+    }
+
+    #[test]
+    #[cfg(feature = "full")]
+    fn a_renamed_subcommand_leaves_a_dead_recommendation() {
+        for renamed in ["go recover", "pickle decompile"] {
+            let mut paths: std::collections::BTreeSet<String> = subcommand_paths();
+            assert!(paths.remove(renamed), "{renamed} is in the command tree");
+            let (_, dead): (usize, Vec<String>) = dead_recommendations(&paths);
+            assert_eq!(dead.len(), 1, "{dead:?}");
+            assert!(
+                dead[0].contains(&format!("`disrobe {renamed}`")),
+                "{dead:?}"
+            );
+        }
     }
 
     #[test]
