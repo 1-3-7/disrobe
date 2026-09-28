@@ -65,6 +65,7 @@ pub enum ReconCategory {
     Pii,
     MalwareConfig,
     Custom,
+    ScanLimit,
 }
 
 impl ReconCategory {
@@ -88,6 +89,7 @@ impl ReconCategory {
             Self::Pii => "pii",
             Self::MalwareConfig => "malware_config",
             Self::Custom => "custom",
+            Self::ScanLimit => "scan_limit",
         }
     }
 }
@@ -1106,10 +1108,21 @@ fn push_malware_stop(
     out: &mut Vec<ReconFinding>,
 ) {
     let summary: String = format!(
-        "decode stopped at the {} work-unit bound with {recovered} field(s) recovered",
+        "{} config decode stopped at the {} work-unit bound with {recovered} field(s) recovered",
+        family.label(),
         malware_config::MALWARE_CONFIG_WORK_UNITS
     );
-    push_malware_field(family, "TRUNCATED", &summary, lines, 0, path, out);
+    let (line, column): (usize, usize) = lines.line_col(0);
+    out.push(ReconFinding {
+        category: ReconCategory::ScanLimit,
+        rule_id: "DR-RECON-SCAN-MALCFG-BUDGET".to_owned(),
+        value: summary,
+        path: path.map(str::to_owned),
+        line,
+        column,
+        offset: 0,
+        severity: Severity::Note.sarif_level().to_owned(),
+    });
 }
 
 fn asyncrat_lineage_findings(
@@ -1317,7 +1330,7 @@ const fn category_specificity(category: ReconCategory) -> u8 {
         ReconCategory::Ipv6 => 3,
         ReconCategory::Ipv4 => 2,
         ReconCategory::Custom => 1,
-        ReconCategory::Domain => 0,
+        ReconCategory::Domain | ReconCategory::ScanLimit => 0,
     }
 }
 
@@ -1549,9 +1562,20 @@ fn codec_cascade_findings(
 }
 
 const MAX_CONTAINER_DEPTH: usize = 8;
+const MAX_DECODED_TOTAL_BYTES: u64 = 1 << 30;
 
 thread_local! {
     static CONTAINER_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static DECODED_REMAINING: std::cell::Cell<u64> = const { std::cell::Cell::new(MAX_DECODED_TOTAL_BYTES) };
+}
+
+fn decoded_remaining() -> u64 {
+    DECODED_REMAINING.with(std::cell::Cell::get)
+}
+
+fn charge_decoded(len: usize) {
+    let len: u64 = u64::try_from(len).unwrap_or(u64::MAX);
+    DECODED_REMAINING.with(|cell: &std::cell::Cell<u64>| cell.set(cell.get().saturating_sub(len)));
 }
 
 struct ContainerDepth;
@@ -1576,6 +1600,9 @@ impl Drop for ContainerDepth {
 
 fn scan_blob(bytes: &[u8], uri: Option<&str>, config: &ReconConfig) -> (Vec<ReconFinding>, bool) {
     let (_guard, depth): (ContainerDepth, usize) = ContainerDepth::enter();
+    if depth == 1 {
+        DECODED_REMAINING.with(|cell: &std::cell::Cell<u64>| cell.set(MAX_DECODED_TOTAL_BYTES));
+    }
     let (mut findings, valid_utf8): (Vec<ReconFinding>, bool) = scan_bytes(bytes, uri, config);
     findings.extend(base64_decode_findings(bytes, uri, config, 0));
     let mut codec_total: usize = 0;
@@ -1660,10 +1687,16 @@ pub fn scan_zip_bytes(
         if total_read >= MAX_ZIP_TOTAL_BYTES {
             break;
         }
-        let cap: u64 = MAX_ZIP_ENTRY_BYTES.min(MAX_ZIP_TOTAL_BYTES - total_read);
+        let cap: u64 = MAX_ZIP_ENTRY_BYTES
+            .min(MAX_ZIP_TOTAL_BYTES - total_read)
+            .min(decoded_remaining());
+        if cap == 0 {
+            break;
+        }
         let Some(buf): Option<Vec<u8>> = read_archive_member(entry, declared, cap) else {
             break;
         };
+        charge_decoded(buf.len());
         let Ok(read_len): Result<u64, _> = u64::try_from(buf.len()) else {
             break;
         };
@@ -1730,7 +1763,13 @@ fn read_archive_member<R: std::io::Read>(reader: R, declared: u64, cap: u64) -> 
 }
 
 fn decompress_bounded<R: std::io::Read>(reader: R) -> Option<Vec<u8>> {
-    read_archive_member(reader, 0, MAX_ZIP_ENTRY_BYTES)
+    let cap: u64 = MAX_ZIP_ENTRY_BYTES.min(decoded_remaining());
+    if cap == 0 {
+        return None;
+    }
+    let plain: Vec<u8> = read_archive_member(reader, 0, cap)?;
+    charge_decoded(plain.len());
+    Some(plain)
 }
 
 fn scan_decompressed(
@@ -1971,6 +2010,28 @@ pub fn fingerprint(finding: &ReconFinding) -> String {
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_config_decode_budget_stop_is_a_scan_note_not_a_family_claim() {
+        let bytes: &[u8] = b"benign runtime library bytes";
+        let lines: LineIndex<'_> = LineIndex::new(bytes);
+        let decode: malware_config::ConfigDecode = malware_config::ConfigDecode {
+            fields: Vec::new(),
+            truncated: true,
+        };
+        let mut out: Vec<ReconFinding> = Vec::new();
+        push_malware_decode(
+            malware_config::MalwareFamily::QuasarRat,
+            &decode,
+            &lines,
+            Some("python312.dll"),
+            &mut out,
+        );
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(out[0].category, ReconCategory::ScanLimit);
+        assert_eq!(out[0].severity, Severity::Note.sarif_level());
+        assert!(!out[0].rule_id.contains("QUASAR"), "{:?}", out[0].rule_id);
+    }
 
     #[test]
     fn a_self_nesting_gzip_stops_at_the_container_depth() {
@@ -2746,6 +2807,26 @@ mod tests {
             flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         std::io::Write::write_all(&mut gz, &tar_bytes).expect("gz write");
         gz.finish().expect("gz finish")
+    }
+
+    #[test]
+    fn nested_decompression_draws_from_one_decoded_byte_budget() {
+        let plain: Vec<u8> = vec![b'a'; 4096];
+        let mut gz: flate2::write::GzEncoder<Vec<u8>> =
+            flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        std::io::Write::write_all(&mut gz, &plain).expect("gz write");
+        let compressed: Vec<u8> = gz.finish().expect("gz finish");
+        DECODED_REMAINING.with(|cell: &std::cell::Cell<u64>| cell.set(8192));
+        let first: Option<Vec<u8>> =
+            decompress_bounded(flate2::read::GzDecoder::new(compressed.as_slice()));
+        assert_eq!(first.as_deref(), Some(plain.as_slice()));
+        assert_eq!(decoded_remaining(), 4096);
+        DECODED_REMAINING.with(|cell: &std::cell::Cell<u64>| cell.set(1024));
+        assert!(
+            decompress_bounded(flate2::read::GzDecoder::new(compressed.as_slice())).is_none(),
+            "a member larger than the remaining budget must not be decoded"
+        );
+        DECODED_REMAINING.with(|cell: &std::cell::Cell<u64>| cell.set(MAX_DECODED_TOTAL_BYTES));
     }
 
     fn build_zip(inner_name: &str, inner: &[u8]) -> Vec<u8> {
