@@ -812,8 +812,8 @@ fn crc32_width_and_zero_register_vectors_execute_in_c_and_rust() {
         (
             "accumulator_zero",
             [0xe0, 0x4f, 0xc1, 0x9a, 0xc0, 0x03, 0x5f, 0xd6],
-            "recovered(0xfedcba9876543210ULL)",
-            "recovered(0xfedcba9876543210u64)",
+            "recovered(0xa5a55a5aULL, 0xfedcba9876543210ULL)",
+            "recovered(0xa5a55a5au64, 0xfedcba9876543210u64)",
             0x657f_3d5b,
         ),
         (
@@ -1565,7 +1565,7 @@ fn clang_o1_aapcs64_stack_arguments_lift() {
         0x8b, 0xc0, 0x03, 0x5f, 0xd6,
     ];
     let recovered: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("aarch64 stack args");
-    assert_eq!(recovered.signature.observed_integer_registers().len(), 4);
+    assert_eq!(recovered.signature.observed_integer_registers().len(), 10);
     assert!(
         recovered
             .signature
@@ -1578,8 +1578,8 @@ fn clang_o1_aapcs64_stack_arguments_lift() {
             .observed_integer_registers()
             .contains(&PseudoReg::A64Stack1)
     );
-    assert!(recovered.source.contains("r_a64_stack0 = a2"));
-    assert!(recovered.source.contains("r_a64_stack1 = a3"));
+    assert!(recovered.source.contains("r_a64_stack0 = a8"));
+    assert!(recovered.source.contains("r_a64_stack1 = a9"));
 }
 
 #[test]
@@ -1636,7 +1636,7 @@ fn clang_assembler_pre_and_post_index_writeback_lift() {
     ];
     let recovered: LeafRecovery =
         recover_aarch64_function(&bytes, 0).expect("aarch64 indexed memory");
-    assert_eq!(recovered.signature.observed_integer_registers().len(), 4);
+    assert_eq!(recovered.signature.observed_integer_registers().len(), 7);
     assert!(recovered.source.matches("r_rax = r_rax +").count() >= 4);
     assert!(
         recovered

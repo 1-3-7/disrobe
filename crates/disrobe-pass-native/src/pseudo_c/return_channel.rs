@@ -115,7 +115,7 @@ fn fp_operand_xmm(operand: &FpOperand, acc: &mut Vec<Xmm>) {
     }
 }
 
-fn stmt_xmm_data_reads(stmt: &Stmt, acc: &mut Vec<Xmm>) {
+pub(super) fn stmt_xmm_data_reads(stmt: &Stmt, acc: &mut Vec<Xmm>) {
     match stmt {
         Stmt::FpBin { lhs, rhs, .. } | Stmt::FpMinMax { lhs, rhs, .. } => {
             fp_operand_xmm(lhs, acc);

@@ -1043,14 +1043,15 @@ const USES_D8_ACROSS_CALL: &[u8] = &[
 ];
 
 #[test]
-fn callee_saved_d8_across_a_call_recovers() {
-    let recovery: LeafRecovery = recover_aarch64_function(USES_D8_ACROSS_CALL, 0).expect(
-        "a real clang -O1 lowering of `double f(double a, double b) { return helper(a) + b; }`, which spills b through d8 across the call to helper, must recover",
-    );
+fn a_floating_call_result_refuses_while_callee_saved_d8_stays_live_across_the_call() {
+    let error: String = recover_aarch64_function(USES_D8_ACROSS_CALL, 0)
+        .expect_err(
+            "a real clang -O1 lowering of `double f(double a, double b) { return helper(a) + b; }` reads helper's result from d0, which the lifted call does not define",
+        )
+        .to_string();
     assert!(
-        recovery.source.contains("x_xmm8"),
-        "the callee-saved half of the register file (d8) must thread through as an ordinary local:\n{}",
-        recovery.source
+        error.contains("caller-saved register `v0` is read at 0x14 after the call at 0xc"),
+        "the refusal must name the unmodelled floating result in v0, not the callee-saved d8 that carries b across the call: {error}"
     );
 }
 

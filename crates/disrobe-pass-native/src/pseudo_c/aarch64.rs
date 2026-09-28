@@ -3119,6 +3119,18 @@ fn finish(
     next_sel: &mut u32,
 ) -> Result<LeafRecovery> {
     super::idiom::fuse_constant_division_idioms(items);
+    super::call_clobber::refuse_reads_after_calls(
+        items,
+        Abi::Aapcs64,
+        context.calls,
+        &BTreeMap::new(),
+        &|address: u64| {
+            usize::try_from(address.saturating_sub(base) / ITEM_STRIDE)
+                .ok()
+                .and_then(|index: usize| insns.get(index))
+                .map_or(address, |insn: &DisasmInsn| insn.address)
+        },
+    )?;
     let has_scalar_fp: bool = items
         .iter()
         .any(|item: &Item| matches!(&item.kind, ItemKind::Stmt(stmt) if return_channel::stmt_is_scalar_fp(stmt)));

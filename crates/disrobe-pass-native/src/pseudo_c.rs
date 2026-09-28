@@ -35,6 +35,7 @@ use crate::structuring;
 #[allow(clippy::redundant_pub_crate)]
 pub(crate) mod aarch64;
 mod aarch64_callsite;
+mod call_clobber;
 pub use aarch64::SCALAR_FP_LOWERED_MNEMONICS as AARCH64_SCALAR_FP_LOWERED_MNEMONICS;
 pub mod fp_semantics;
 mod idiom;
@@ -2420,8 +2421,9 @@ fn recover_leaf_function_in_object_with_tail_proofs(
     }
     let transfers: ObjectTransferFacts = disassemble(Arch::X86_64, base, machine_code).map_or_else(
         |_: Error| ObjectTransferFacts::default(),
-        |insns: Vec<DisasmInsn>| {
-            object_transfer_facts(object, base, &insns, LocalCallAnalysis::LeafOnly(abi))
+        |insns: Vec<DisasmInsn>| ObjectTransferFacts {
+            callee_clobbers: call_clobber::object_callee_clobbers(object, &insns, abi),
+            ..object_transfer_facts(object, base, &insns, LocalCallAnalysis::LeafOnly(abi))
         },
     );
     let packed_consts: Vec<PackedConstant> = resolve_packed_constants(object, machine_code, base);
@@ -2783,6 +2785,7 @@ struct ObjectTransferFacts {
     stack_guard_sequence_sites: BTreeSet<u64>,
     msvc_cookie_load_sites: BTreeSet<u64>,
     msvc_cookie_check_sites: BTreeSet<u64>,
+    callee_clobbers: BTreeMap<u64, call_clobber::CalleeClobbers>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -5595,6 +5598,13 @@ fn recover_leaf_function_calls_with_tail_proofs(
         object_facts,
         rip_relative_lea_policy,
         coverage,
+    )?;
+    call_clobber::refuse_reads_after_calls(
+        &items,
+        abi,
+        calls,
+        &object_facts.transfers.callee_clobbers,
+        &|address: u64| address,
     )?;
     let frame_shape: FrameShape = classify_frame(&insns, abi);
     let rewrote_items: bool = rewrite_incoming_stack_items(&mut items, base, frame_shape)?;
@@ -15301,6 +15311,30 @@ fn infer_params(body: &Block, abi: Abi) -> Result<Vec<Reg>> {
             }
         }
     }
+    if abi != Abi::MsX64 {
+        let registers: Vec<Reg> = arg_order
+            .iter()
+            .copied()
+            .take_while(|reg: &Reg| {
+                !is_x86_stack_argument_reg(*reg) && a64_stack_slot(*reg).is_none()
+            })
+            .collect();
+        if let Some(highest_register) = ordered
+            .iter()
+            .filter_map(|reg: &Reg| {
+                registers
+                    .iter()
+                    .position(|candidate: &Reg| candidate == reg)
+            })
+            .max()
+        {
+            for reg in registers.iter().take(highest_register + 1).copied() {
+                if !ordered.contains(&reg) {
+                    ordered.push(reg);
+                }
+            }
+        }
+    }
     ordered.sort_by_key(|r: &Reg| {
         arg_order
             .iter()
@@ -18189,6 +18223,17 @@ fn c_rbit_expr(operand: &str, width: Width) -> String {
              _rb = ((_rb & 0x00ff00ffu) << 8) | ((_rb >> 8) & 0x00ff00ffu); \
              _rb = (_rb << 16) | (_rb >> 16); _rb; }})"
         )
+    }
+}
+
+fn select_kept_rhs(
+    dest_var: &str,
+    width: Width,
+    write_rhs: fn(&str, Width, &str) -> String,
+) -> String {
+    match width {
+        Width::W32 => write_rhs(dest_var, width, dest_var),
+        Width::W8 | Width::W16 | Width::W64 => dest_var.to_owned(),
     }
 }
 
@@ -23408,10 +23453,11 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> Op
             let chosen: String = source_expr(src, dest.width, aggregates);
             let var: &'static str = reg_var(dest.reg);
             let taken: String = reg_write_rhs(var, dest.width, &chosen);
+            let kept: String = select_kept_rhs(var, dest.width, reg_write_rhs);
             let body: String = c_render(|cx| CExpr::Ternary {
                 cond: Box::new(cx.var(&cond)),
                 then: Box::new(cx.var(&taken)),
-                els: Box::new(cx.var(var)),
+                els: Box::new(cx.var(&kept)),
             });
             assign_cstmt(cx, var, &body)
         }
@@ -27437,9 +27483,10 @@ fn rs_emit_stmt(
             let chosen: String = rs_source_expr(src, dest.width, aggregates)?;
             let var: &'static str = reg_var(dest.reg);
             let taken: String = rs_reg_write_rhs(var, dest.width, &chosen);
+            let kept: String = select_kept_rhs(var, dest.width, rs_reg_write_rhs);
             let _ = writeln!(
                 out,
-                "{indent}{var} = if {cond} {{ {taken} }} else {{ {var} }};"
+                "{indent}{var} = if {cond} {{ {taken} }} else {{ {kept} }};"
             );
         }
         Stmt::SetCc { dest, kind, flags } => {
@@ -33525,7 +33572,10 @@ mod tests {
         let code: [u8; 8] = [0x48, 0x85, 0xc9, 0x0f, 0x94, 0xc0, 0x90, 0xc3];
         let rec: LeafRecovery =
             recover_leaf_function_abi(&code, 0xc100, Abi::SysV).expect("sete leaf");
-        assert_eq!(rec.signature.observed_integer_registers(), vec![Reg::Rcx]);
+        assert_eq!(
+            rec.signature.observed_integer_registers(),
+            vec![Reg::Rdi, Reg::Rsi, Reg::Rdx, Reg::Rcx]
+        );
         assert!(
             rec.source.contains(
                 "r_rax = r_rax & 0xffffffffffffff00ULL | (uint64_t)(((int64_t)(int64_t)(r_rcx) == 0) ? 1 : 0);"
@@ -35766,7 +35816,7 @@ mod tests {
             "the predicate and the select consume two separate compare executions, so no cross-operand ordered equality may be synthesized: {source}"
         );
         assert!(
-            source.contains("? (r_rdx) & 0xffffffffULL : r_rax"),
+            source.contains("? (r_rdx) & 0xffffffffULL : (r_rax) & 0xffffffffULL"),
             "the conditional move must survive as a select when the compare is re-executed: {source}"
         );
     }

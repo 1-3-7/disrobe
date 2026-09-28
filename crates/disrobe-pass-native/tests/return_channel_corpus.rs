@@ -127,7 +127,7 @@ const CASES: &[Case] = &[
         name: "rc_sqrt_d",
         group: "floating-point result",
         channel: Channel::Double,
-        source: "double rc_sqrt_d(double a){ return __builtin_sqrt(a) * 2.0; }",
+        source: "double rc_sqrt_d(double a){ return __builtin_sqrt(a * a) * 2.0; }",
     },
     Case {
         name: "rc_i2d",

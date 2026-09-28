@@ -115,7 +115,13 @@ fn scalar_fp_increment_one_forms_recover() {
         recover_aarch64_function(&pair_store, 0).expect("stp s0, s1 pre-indexed");
     assert_eq!(
         pair_store_recovery.signature.parameter_types(),
-        vec![ScalarType::Float, ScalarType::Float, ScalarType::Int]
+        vec![
+            ScalarType::Float,
+            ScalarType::Float,
+            ScalarType::Int,
+            ScalarType::Int,
+            ScalarType::Int
+        ]
     );
     assert_eq!(pair_store_recovery.return_width_bits, 0);
 }
