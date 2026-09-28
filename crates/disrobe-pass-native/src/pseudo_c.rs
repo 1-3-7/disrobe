@@ -883,6 +883,21 @@ enum ConditionRefusal {
     SignedOrderAfterAdd,
     MaskedTestBeyondEquality,
     SignFlagsBeyondSignZero,
+    IntegerConditionOverFloatCompare,
+}
+
+impl ConditionRefusal {
+    const fn reason(self) -> &'static str {
+        match self {
+            Self::ParityOverIntegerFlags => "parity condition over integer flags",
+            Self::SignedOrderAfterAdd => "signed order over add flags",
+            Self::MaskedTestBeyondEquality => "masked test read beyond zero or nonzero",
+            Self::SignFlagsBeyondSignZero => "result-only flags read beyond sign or zero",
+            Self::IntegerConditionOverFloatCompare => {
+                "signed, sign or overflow condition over a float compare"
+            }
+        }
+    }
 }
 
 fn condition_is_sound(kind: CondKind, flags: &Flags) -> bool {
@@ -8310,19 +8325,15 @@ impl<'a> StraightLifter<'a> {
                     insn.address
                 ))
             })?;
-            let Some(kind): Option<CondKind> = canonicalize_x86_fp_condition(kind, &live_flags)
-            else {
-                return Err(Error::LlvmIr(format!(
-                    "condition `{}` not sound against tracked flags at {:#x}",
-                    insn.mnemonic, insn.address
-                )));
-            };
-            if sound_condition(kind, &live_flags).is_err() {
-                return Err(Error::LlvmIr(format!(
-                    "condition `{}` not sound against tracked flags at {:#x}",
-                    insn.mnemonic, insn.address
-                )));
-            }
+            let kind: CondKind =
+                admit_x86_condition(kind, &live_flags).map_err(|refusal: ConditionRefusal| {
+                    Error::LlvmIr(format!(
+                        "condition `{}` not sound against tracked flags at {:#x}: {}",
+                        insn.mnemonic,
+                        insn.address,
+                        refusal.reason()
+                    ))
+                })?;
             let (lhs, rhs): (&str, &str) = insn
                 .operands
                 .split_once(',')
@@ -8360,19 +8371,15 @@ impl<'a> StraightLifter<'a> {
                     insn.address
                 ))
             })?;
-            let Some(kind): Option<CondKind> = canonicalize_x86_fp_condition(kind, &live_flags)
-            else {
-                return Err(Error::LlvmIr(format!(
-                    "condition `{}` not sound against tracked flags at {:#x}",
-                    insn.mnemonic, insn.address
-                )));
-            };
-            if sound_condition(kind, &live_flags).is_err() {
-                return Err(Error::LlvmIr(format!(
-                    "condition `{}` not sound against tracked flags at {:#x}",
-                    insn.mnemonic, insn.address
-                )));
-            }
+            let kind: CondKind =
+                admit_x86_condition(kind, &live_flags).map_err(|refusal: ConditionRefusal| {
+                    Error::LlvmIr(format!(
+                        "condition `{}` not sound against tracked flags at {:#x}: {}",
+                        insn.mnemonic,
+                        insn.address,
+                        refusal.reason()
+                    ))
+                })?;
             let stmt: Stmt = Stmt::SetCc {
                 dest,
                 kind,
@@ -14678,13 +14685,15 @@ fn resolve_conditional_flags(
     next_sel: &mut u32,
     addr: u64,
 ) -> Result<(CondKind, Flags)> {
-    let Some(kind): Option<CondKind> = canonicalize_x86_fp_condition(kind, &live_flags) else {
-        return Err(Error::LlvmIr(format!(
-            "condition not sound against tracked flags at {addr:#x}"
-        )));
+    let refused = |refusal: ConditionRefusal| -> Error {
+        Error::LlvmIr(format!(
+            "condition not sound against tracked flags at {addr:#x}: {}",
+            refusal.reason()
+        ))
     };
-    let sound: bool = sound_condition(kind, &live_flags).is_ok();
-    if sound && comparison_operand_clobbered(items, flags_mark, &live_flags) {
+    let kind: CondKind = canonicalize_x86_fp_condition(kind, &live_flags).map_err(refused)?;
+    let refusal: Option<ConditionRefusal> = sound_condition(kind, &live_flags).err();
+    if refusal.is_none() && comparison_operand_clobbered(items, flags_mark, &live_flags) {
         let var: u32 = *next_sel;
         *next_sel += 1;
         let at: usize = flags_mark.min(items.len());
@@ -14702,15 +14711,13 @@ fn resolve_conditional_flags(
         );
         return Ok((CondKind::Ne, Flags::Snapshot { var }));
     }
-    if sound {
+    let Some(refusal): Option<ConditionRefusal> = refusal else {
         return Ok((kind, live_flags));
-    }
+    };
     if let Some(repaired) = snapshot_repair(items, kind, &live_flags, next_sel) {
         return Ok((CondKind::Ne, repaired));
     }
-    Err(Error::LlvmIr(format!(
-        "condition not sound against tracked flags at {addr:#x}"
-    )))
+    Err(refused(refusal))
 }
 
 fn item_branch_targets(items: &[Item]) -> BTreeSet<u64> {
@@ -15186,16 +15193,19 @@ fn fuse_parity_equality_idioms(items: &mut [Item], insns: &[DisasmInsn]) {
     }
 }
 
-fn canonicalize_x86_fp_condition(kind: CondKind, flags: &Flags) -> Option<CondKind> {
+fn canonicalize_x86_fp_condition(
+    kind: CondKind,
+    flags: &Flags,
+) -> std::result::Result<CondKind, ConditionRefusal> {
     if !matches!(flags, Flags::FpCmp { .. }) {
-        return Some(kind);
+        return Ok(kind);
     }
     match kind {
-        CondKind::A => Some(CondKind::G),
-        CondKind::Ae => Some(CondKind::Ge),
-        CondKind::B => Some(CondKind::L),
-        CondKind::Be => Some(CondKind::Le),
-        CondKind::E | CondKind::Ne | CondKind::P | CondKind::Np => Some(kind),
+        CondKind::A => Ok(CondKind::G),
+        CondKind::Ae => Ok(CondKind::Ge),
+        CondKind::B => Ok(CondKind::L),
+        CondKind::Be => Ok(CondKind::Le),
+        CondKind::E | CondKind::Ne | CondKind::P | CondKind::Np => Ok(kind),
         CondKind::G
         | CondKind::Ge
         | CondKind::L
@@ -15203,8 +15213,17 @@ fn canonicalize_x86_fp_condition(kind: CondKind, flags: &Flags) -> Option<CondKi
         | CondKind::S
         | CondKind::Ns
         | CondKind::Vs
-        | CondKind::Vc => None,
+        | CondKind::Vc => Err(ConditionRefusal::IntegerConditionOverFloatCompare),
     }
+}
+
+fn admit_x86_condition(
+    kind: CondKind,
+    flags: &Flags,
+) -> std::result::Result<CondKind, ConditionRefusal> {
+    let kind: CondKind = canonicalize_x86_fp_condition(kind, flags)?;
+    sound_condition(kind, flags)?;
+    Ok(kind)
 }
 
 fn nzcv_condition_holds(kind: CondKind, nzcv: u8) -> bool {
