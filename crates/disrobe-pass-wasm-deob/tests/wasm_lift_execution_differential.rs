@@ -63,6 +63,7 @@ fn verified_fixture<'a>(name: &str, embedded: &'a str) -> &'a str {
 fn atomics_config(config: &mut Config) {
     config
         .wasm_threads(true)
+        .shared_memory(true)
         .wasm_bulk_memory(true)
         .wasm_memory64(true);
 }

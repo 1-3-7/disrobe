@@ -286,7 +286,12 @@ pub fn unwrap_decryption(bytes: &[u8], stubs: &[StubInfo]) -> Result<UnwrapRepor
     }
 
     let mut config: Config = Config::new();
-    config.consume_fuel(true).epoch_interruption(true);
+    config
+        .consume_fuel(true)
+        .epoch_interruption(true)
+        .wasm_gc(false)
+        .wasm_function_references(false)
+        .wasm_exceptions(false);
     let engine: Engine =
         Engine::new(&config).map_err(|e| Error::Parse(format!("wasmtime engine: {e}")))?;
     let module: Module =

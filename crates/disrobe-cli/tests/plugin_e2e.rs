@@ -57,8 +57,8 @@ const REVERSE_COMPONENT: &str = r#"
   (func (export "run") (param "input" (list u8)) (result (list u8))
     (canon lift
       (core func $g "run")
-      (memory $g "memory")
-      (realloc (func $g "cabi_realloc")))))
+      (memory (core memory $g "memory"))
+      (realloc (core func $g "cabi_realloc")))))
 "#;
 
 const SPINNING_COMPONENT: &str = r#"
@@ -75,8 +75,8 @@ const SPINNING_COMPONENT: &str = r#"
   (func (export "run") (param "input" (list u8)) (result (list u8))
     (canon lift
       (core func $g "run")
-      (memory $g "memory")
-      (realloc (func $g "cabi_realloc")))))
+      (memory (core memory $g "memory"))
+      (realloc (core func $g "cabi_realloc")))))
 "#;
 
 const MEMGROW_COMPONENT: &str = r#"
@@ -96,8 +96,8 @@ const MEMGROW_COMPONENT: &str = r#"
   (func (export "run") (param "input" (list u8)) (result (list u8))
     (canon lift
       (core func $g "run")
-      (memory $g "memory")
-      (realloc (func $g "cabi_realloc")))))
+      (memory (core memory $g "memory"))
+      (realloc (core func $g "cabi_realloc")))))
 "#;
 
 const IMPORTING_COMPONENT: &str = r#"
@@ -114,8 +114,8 @@ const IMPORTING_COMPONENT: &str = r#"
   (func (export "run") (param "input" (list u8)) (result (list u8))
     (canon lift
       (core func $g "run")
-      (memory $g "memory")
-      (realloc (func $g "cabi_realloc")))))
+      (memory (core memory $g "memory"))
+      (realloc (core func $g "cabi_realloc")))))
 "#;
 
 const NO_RUN_EXPORT_COMPONENT: &str = r#"
@@ -131,8 +131,8 @@ const NO_RUN_EXPORT_COMPONENT: &str = r#"
   (func (export "other") (param "input" (list u8)) (result (list u8))
     (canon lift
       (core func $g "other")
-      (memory $g "memory")
-      (realloc (func $g "cabi_realloc")))))
+      (memory (core memory $g "memory"))
+      (realloc (core func $g "cabi_realloc")))))
 "#;
 
 const WRONG_TYPE_RUN_COMPONENT: &str = r#"
@@ -148,8 +148,8 @@ const WRONG_TYPE_RUN_COMPONENT: &str = r#"
   (func (export "run") (param "input" string) (result string)
     (canon lift
       (core func $g "run")
-      (memory $g "memory")
-      (realloc (func $g "cabi_realloc"))
+      (memory (core memory $g "memory"))
+      (realloc (core func $g "cabi_realloc"))
       string-encoding=utf8)))
 "#;
 
@@ -162,8 +162,8 @@ const RUN_WITHOUT_GUEST_MEMORY_COMPONENT: &str = r#"
   (func (export "run") (param "input" (list u8)) (result (list u8))
     (canon lift
       (core func $g "run")
-      (memory $g "memory")
-      (realloc (func $g "cabi_realloc")))))
+      (memory (core memory $g "memory"))
+      (realloc (core func $g "cabi_realloc")))))
 "#;
 
 fn flat(text: &str) -> String {

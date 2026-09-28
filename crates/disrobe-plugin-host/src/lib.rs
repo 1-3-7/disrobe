@@ -138,7 +138,11 @@ fn metered_engine() -> Result<Engine, SandboxError> {
         .consume_fuel(true)
         .epoch_interruption(true)
         .wasm_component_model(true)
-        .wasm_backtrace(false);
+        .wasm_component_model_async(false)
+        .wasm_gc(false)
+        .wasm_function_references(false)
+        .wasm_exceptions(false)
+        .wasm_backtrace_max_frames(None);
     Engine::new(&config).map_err(|e| SandboxError::Trap(format!("engine: {e}")))
 }
 
@@ -239,10 +243,6 @@ impl PluginHost {
             Ok(values) => values,
             Err(err) => return Err(classify(&store, err)),
         };
-        entry
-            .post_return(&mut store)
-            .map_err(|e| SandboxError::Trap(format!("post-return: {e}")))?;
-
         if store.data().denied {
             return Err(SandboxError::Memory);
         }
@@ -406,7 +406,7 @@ fn check_component_entry(component: &Component, engine: &Engine) -> Result<(), S
     let Some(item) = component_type.get_export(engine, GUEST_ENTRY) else {
         return Err(SandboxError::MissingEntry);
     };
-    let ComponentItem::ComponentFunc(func) = item else {
+    let ComponentItem::ComponentFunc(func) = item.ty else {
         return Err(SandboxError::EntrySignature(format!(
             "`{GUEST_ENTRY}` is exported but is not a function"
         )));
@@ -529,6 +529,31 @@ mod tests {
                 max: MAX_WASM_MODULE_BYTES
             }) if actual == MAX_WASM_MODULE_BYTES + 1
         ));
+    }
+
+    #[test]
+    fn proposals_newer_wasmtime_enables_by_default_stay_rejected() {
+        for (proposal, source) in [
+            (
+                "exceptions",
+                r#"(module (tag $t) (func (export "run") (param i32) (result i32)
+                     (block $h (try_table (catch_all $h) (throw $t))) i32.const 0))"#,
+            ),
+            (
+                "gc",
+                r#"(module (type $s (struct (field i32)))
+                     (func (export "run") (param i32) (result i32)
+                       (struct.get $s 0 (struct.new $s (local.get 0)))))"#,
+            ),
+        ] {
+            let wasm: Vec<u8> = wat::parse_str(source).expect("proposal test module must assemble");
+            let result: Result<Vec<u8>, SandboxError> =
+                PluginHost::run(&wasm, &[], Limits::default());
+            assert!(
+                matches!(&result, Err(SandboxError::Trap(message)) if message.starts_with("module: ")),
+                "the {proposal} proposal must stay disabled in the plugin sandbox: {result:?}"
+            );
+        }
     }
 
     #[test]
