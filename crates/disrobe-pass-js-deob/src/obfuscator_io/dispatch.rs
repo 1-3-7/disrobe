@@ -4,7 +4,7 @@ use std::collections::hash_map::DefaultHasher;
 
 use serde::Serialize;
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::jsconfuser::{
     DispatcherReversalResult, FlattenReversalResult, OpaqueReversalResult, PackingReversalResult,
     reverse_dispatcher, reverse_flatten, reverse_opaque_predicates, reverse_packing,
@@ -93,16 +93,32 @@ pub fn deobfuscate(source: &str, opts: &Options) -> Result<Output> {
     seen.insert(fingerprint(&current));
     let mut converged: bool = false;
 
+    let input_parses: bool = crate::scan_utils::reparses(source);
+    let still_parses = |transform: &'static str, text: &str| -> Result<()> {
+        if input_parses && !crate::scan_utils::reparses(text) {
+            return Err(Error::CorruptedByTransform { transform });
+        }
+        Ok(())
+    };
+
     for pass in 0..passes {
         out.passes_run = pass + 1;
         current = run_statements(current, opts, &mut out)?;
+        still_parses("statements", &current)?;
         current = run_strings(current, opts, &mut out);
+        still_parses("strings", &current)?;
         current = run_control_flow(current, opts, &mut out);
+        still_parses("control-flow", &current)?;
         current = run_statements(current, opts, &mut out)?;
+        still_parses("statements", &current)?;
         current = run_predicates(current, opts, &mut out);
+        still_parses("predicates", &current)?;
         current = run_objects(current, opts, &mut out);
+        still_parses("objects", &current)?;
         current = run_unminify_block(current, opts, &mut out);
+        still_parses("unminify", &current)?;
         current = run_identifiers(current, opts, &mut out);
+        still_parses("identifiers", &current)?;
 
         if current.len() == last_len {
             converged = true;

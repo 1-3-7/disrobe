@@ -44,6 +44,12 @@ pub enum Error {
     TransformNotYetImplemented { transform: &'static str },
 
     #[error(
+        "DR-JSDEOB-0012: transform `{transform}` turned source that parsed into source that does \
+        not, so its output is refused rather than reported as recovered"
+    )]
+    CorruptedByTransform { transform: &'static str },
+
+    #[error(
         "DR-JS-PACE-UnsupportedPattern: PACE markers matched, but no supported static guard \
         pattern was stripped; see {stance_doc} for the 1201(a) analysis"
     )]
