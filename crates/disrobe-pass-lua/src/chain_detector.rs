@@ -507,7 +507,7 @@ fn verdict_for_format(fmt: DetectedFormat) -> Option<DetectVerdict> {
         DetectedFormat::Lua53 => (TAG_LUA53, "lua-magic-5.3", 0.96),
         DetectedFormat::Lua54 => (TAG_LUA54, "lua-magic-5.4", 0.96),
         DetectedFormat::LuaJit => (TAG_LUAJIT, "luajit-signature", 0.95),
-        DetectedFormat::Luau => (TAG_LUAU, "luau-byte0-1..11", 0.78),
+        DetectedFormat::Luau => (TAG_LUAU, "luau-chunk-parsed", 0.78),
         DetectedFormat::GLua => (TAG_GLUA, "glua-marker", 0.80),
         DetectedFormat::Unknown => return None,
     };

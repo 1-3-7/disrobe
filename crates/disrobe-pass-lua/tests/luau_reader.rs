@@ -29,6 +29,17 @@ fn detect_luau_version() {
 }
 
 #[test]
+fn text_starting_with_a_control_byte_is_not_luau() {
+    for text in [
+        &b"\tlocal x = 1\n"[..],
+        b"\nprint('hi')\n",
+        b"\x05 not a chunk",
+    ] {
+        assert_eq!(detect(text), DetectedFormat::Unknown, "{text:?}");
+    }
+}
+
+#[test]
 fn read_luau_empty_chunk() {
     let chunk: LuaChunk = luau::read(LUAU_V5_EMPTY).expect("parse luau v5");
     assert_eq!(chunk.dialect, LuaDialect::Luau);

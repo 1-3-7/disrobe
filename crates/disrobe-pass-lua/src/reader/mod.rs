@@ -61,7 +61,7 @@ pub fn detect(bytes: &[u8]) -> DetectedFormat {
         return fmt;
     }
     match bytes.first() {
-        Some(&v) if (1u8..=11).contains(&v) => {
+        Some(&v) if (1u8..=11).contains(&v) && luau::read(bytes).is_ok() => {
             dbg_kv("classify", || "luau".to_owned());
             dbg_kv("luau_bytecode_version", || v.to_string());
             DetectedFormat::Luau

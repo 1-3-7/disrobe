@@ -6,7 +6,6 @@ use crate::obfuscator::vm_devirt::{devirt_to_peel, extract_embedded_payload};
 use crate::obfuscator::{DeobfOptions, LuaObfuscatorKind, ObfuscatorDetection, PeelResult};
 
 const MARKERS: &[&[u8]] = &[
-    b"Ironbrew",
     b"-- IronBrew2",
     b"Ironbrew_Build",
     b"IRONBREW_VM",
