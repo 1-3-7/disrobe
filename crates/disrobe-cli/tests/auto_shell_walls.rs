@@ -94,15 +94,15 @@ fn a_vba_input_is_claimed_once_and_its_rendered_output_is_not_reclaimed() {
         let chain: serde_json::Value = auto_chain(rel);
         let nodes: Vec<serde_json::Value> = shell_nodes(&chain);
         let expected: bool = match nodes.as_slice() {
-            [only] if only["parent_id"] == 0 => match wall {
-                Some(code) => {
+            [only] if only["parent_id"] == 0 => wall.map_or_else(
+                || only["verdict"] == "ok",
+                |code: &str| {
                     only["verdict"] == "error"
                         && only["error"]
                             .as_str()
                             .is_some_and(|error: &str| error.contains(code))
-                }
-                None => only["verdict"] == "ok",
-            },
+                },
+            ),
             _ => false,
         };
         if !expected {
