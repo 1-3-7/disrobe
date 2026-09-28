@@ -717,15 +717,24 @@ impl Cpu {
         let mut addr: u64 = base
             .wrapping_add(index_val.wrapping_mul(scale))
             .wrapping_add(disp);
-        if insn.memory_size().size() == 4 || self.mode == CpuMode::Bits32 {
-            addr &= 0xFFFF_FFFF;
-        }
+        addr &= Self::mask(self.address_size_bits(insn));
         addr = match insn.segment_prefix() {
             Register::FS => addr.wrapping_add(self.fs_base),
             Register::GS => addr.wrapping_add(self.gs_base),
             _ => addr,
         };
         Ok(addr)
+    }
+
+    fn address_size_bits(&self, insn: &Instruction) -> u8 {
+        let register_bits =
+            |r: Register| -> Option<u8> { (r.is_gpr() || r.is_ip()).then(|| (r.size() * 8) as u8) };
+        register_bits(insn.memory_base())
+            .or_else(|| register_bits(insn.memory_index()))
+            .unwrap_or(match self.mode {
+                CpuMode::Bits32 => 32,
+                CpuMode::Bits64 => 64,
+            })
     }
 
     fn mem_size_bits(insn: &Instruction) -> u8 {
@@ -866,6 +875,139 @@ impl Cpu {
             self.regs.flags.of = (av == bv) && (rv != av);
         }
         self.regs.flags.af = ((a_s ^ b_s ^ r) & 0x10) != 0;
+    }
+
+    fn masked_shift_count(raw: u64, bits: u8) -> u32 {
+        let count_mask: u64 = if bits == 64 { 0x3F } else { 0x1F };
+        (raw & count_mask) as u32
+    }
+
+    fn shift(&mut self, insn: &Instruction, mnem: iced_x86::Mnemonic) -> Result<bool> {
+        use iced_x86::Mnemonic as M;
+        let bits: u8 = Self::operand_size_bits(insn, 0);
+        let m: u64 = Self::mask(bits);
+        let sb: u64 = Self::sign_bit(bits);
+        let a: u64 = self.read_operand(insn, 0)? & m;
+        let count: u32 = Self::masked_shift_count(self.read_operand(insn, 1)?, bits);
+        if count == 0 {
+            self.write_operand(insn, 0, a)?;
+            return Ok(true);
+        }
+        let spare: u32 = 64 - u32::from(bits);
+        let signed_a: i64 = ((a << spare) as i64) >> spare;
+        let shifted = |n: u32| -> u64 {
+            (match mnem {
+                M::Shr => a >> n,
+                M::Sar => (signed_a >> n) as u64,
+                _ => a << n,
+            }) & m
+        };
+        let before_last: u64 = shifted(count - 1);
+        let r: u64 = shifted(count);
+        self.set_logical_flags(r, bits);
+        self.regs.flags.cf = if matches!(mnem, M::Shr | M::Sar) {
+            (before_last & 1) != 0
+        } else {
+            (before_last & sb) != 0
+        };
+        self.regs.flags.of = ((before_last ^ r) & sb) != 0;
+        self.regs.flags.af = false;
+        self.write_operand(insn, 0, r)?;
+        Ok(true)
+    }
+
+    fn rotate(&mut self, insn: &Instruction, left: bool) -> Result<bool> {
+        let bits: u8 = Self::operand_size_bits(insn, 0);
+        let m: u64 = Self::mask(bits);
+        let sb: u64 = Self::sign_bit(bits);
+        let a: u64 = self.read_operand(insn, 0)? & m;
+        let count: u32 = Self::masked_shift_count(self.read_operand(insn, 1)?, bits);
+        if count == 0 {
+            self.write_operand(insn, 0, a)?;
+            return Ok(true);
+        }
+        let width: u32 = u32::from(bits);
+        let turn: u32 = if left {
+            count % width
+        } else {
+            (width - count % width) % width
+        };
+        let r: u64 = if turn == 0 {
+            a
+        } else {
+            ((a << turn) | (a >> (width - turn))) & m
+        };
+        let msb: bool = (r & sb) != 0;
+        if left {
+            self.regs.flags.cf = (r & 1) != 0;
+            self.regs.flags.of = msb != self.regs.flags.cf;
+        } else {
+            self.regs.flags.cf = msb;
+            self.regs.flags.of = msb != ((r & (sb >> 1)) != 0);
+        }
+        self.write_operand(insn, 0, r)?;
+        Ok(true)
+    }
+
+    fn rotate_through_carry(&mut self, insn: &Instruction, left: bool) -> Result<bool> {
+        let bits: u8 = Self::operand_size_bits(insn, 0);
+        let m: u64 = Self::mask(bits);
+        let sb: u64 = Self::sign_bit(bits);
+        let a: u64 = self.read_operand(insn, 0)? & m;
+        let masked: u32 = Self::masked_shift_count(self.read_operand(insn, 1)?, bits);
+        let width: u32 = u32::from(bits) + 1;
+        let count: u32 = if bits < 32 { masked % width } else { masked };
+        if count == 0 {
+            self.write_operand(insn, 0, a)?;
+            return Ok(true);
+        }
+        let ring: u128 = u128::from(a) | (u128::from(self.regs.flags.cf) << bits);
+        let ring_mask: u128 = (1u128 << width) - 1;
+        let turn: u32 = if left { count } else { width - count };
+        let rotated: u128 = ((ring << turn) | (ring >> (width - turn))) & ring_mask;
+        let r: u64 = (rotated as u64) & m;
+        self.regs.flags.cf = ((rotated >> bits) & 1) != 0;
+        self.regs.flags.of = ((a ^ r) & sb) != 0;
+        self.write_operand(insn, 0, r)?;
+        Ok(true)
+    }
+
+    fn double_shift(&mut self, insn: &Instruction, left: bool) -> Result<bool> {
+        let bits: u8 = Self::operand_size_bits(insn, 0);
+        let m: u64 = Self::mask(bits);
+        let sb: u64 = Self::sign_bit(bits);
+        let dst: u64 = self.read_operand(insn, 0)? & m;
+        let src: u64 = self.read_operand(insn, 1)? & m;
+        let count: u32 = Self::masked_shift_count(self.read_operand(insn, 2)?, bits);
+        if count == 0 {
+            self.write_operand(insn, 0, dst)?;
+            return Ok(true);
+        }
+        let width: u32 = u32::from(bits);
+        let (wide, top): (u128, u32) = if bits == 16 {
+            (
+                (u128::from(dst) << 32) | (u128::from(src) << 16) | u128::from(dst),
+                32,
+            )
+        } else if left {
+            ((u128::from(dst) << width) | u128::from(src), width)
+        } else {
+            ((u128::from(src) << width) | u128::from(dst), width)
+        };
+        let shifted =
+            |n: u32| -> u64 { (if left { (wide << n) >> top } else { wide >> n }) as u64 & m };
+        let before_last: u64 = shifted(count - 1);
+        let r: u64 = shifted(count);
+        self.set_logical_flags(r, bits);
+        self.regs.flags.cf = if left {
+            (before_last & sb) != 0
+        } else {
+            (before_last & 1) != 0
+        };
+        self.regs.flags.of = ((before_last ^ r) & sb) != 0;
+        self.regs.flags.af = false;
+        self.write_operand(insn, 0, r)?;
+        Ok(true)
     }
 
     #[allow(clippy::too_many_lines)]
@@ -1136,96 +1278,8 @@ impl Cpu {
                 self.write_operand(insn, 0, r & Self::mask(bits))?;
                 Ok(true)
             }
-            M::Shl | M::Sal => {
-                let a: u64 = self.read_operand(insn, 0)?;
-                let b: u64 = self.read_operand(insn, 1)? & 0x3F;
-                let bits: u8 = Self::operand_size_bits(insn, 0);
-                let r: u64 = if b == 0 {
-                    a
-                } else {
-                    (a & Self::mask(bits)).wrapping_shl(b as u32)
-                };
-                self.set_logical_flags(r, bits);
-                if b > 0 {
-                    let cf_bit: u64 = 1u64 << (bits as u64 - b);
-                    self.regs.flags.cf = (a & cf_bit) != 0;
-                }
-                self.write_operand(insn, 0, r & Self::mask(bits))?;
-                Ok(true)
-            }
-            M::Shr => {
-                let a: u64 =
-                    self.read_operand(insn, 0)? & Self::mask(Self::operand_size_bits(insn, 0));
-                let b: u64 = self.read_operand(insn, 1)? & 0x3F;
-                let bits: u8 = Self::operand_size_bits(insn, 0);
-                let r: u64 = if b == 0 { a } else { a >> b };
-                self.set_logical_flags(r, bits);
-                if b > 0 {
-                    self.regs.flags.cf = ((a >> (b - 1)) & 1) != 0;
-                }
-                self.write_operand(insn, 0, r & Self::mask(bits))?;
-                Ok(true)
-            }
-            M::Sar => {
-                let a: u64 = self.read_operand(insn, 0)?;
-                let b: u64 = self.read_operand(insn, 1)? & 0x3F;
-                let bits: u8 = Self::operand_size_bits(insn, 0);
-                let m: u64 = Self::mask(bits);
-                let sb: u64 = Self::sign_bit(bits);
-                let a_s: u64 = a & m;
-                let signed_a: i64 = if (a_s & sb) != 0 {
-                    (a_s | !m) as i64
-                } else {
-                    a_s as i64
-                };
-                let r: u64 = if b == 0 {
-                    a_s
-                } else {
-                    (signed_a >> b) as u64 & m
-                };
-                self.set_logical_flags(r, bits);
-                if b > 0 {
-                    self.regs.flags.cf = ((a_s >> (b - 1)) & 1) != 0;
-                }
-                self.write_operand(insn, 0, r & m)?;
-                Ok(true)
-            }
-            M::Rol => {
-                let a: u64 = self.read_operand(insn, 0)?;
-                let b: u64 = self.read_operand(insn, 1)? & 0x3F;
-                let bits: u8 = Self::operand_size_bits(insn, 0);
-                let m: u64 = Self::mask(bits);
-                let count: u64 = b % u64::from(bits);
-                let a_m: u64 = a & m;
-                let r: u64 = if count == 0 {
-                    a_m
-                } else {
-                    ((a_m << count) | (a_m >> (u64::from(bits) - count))) & m
-                };
-                self.write_operand(insn, 0, r)?;
-                if count > 0 {
-                    self.regs.flags.cf = (r & 1) != 0;
-                }
-                Ok(true)
-            }
-            M::Ror => {
-                let a: u64 = self.read_operand(insn, 0)?;
-                let b: u64 = self.read_operand(insn, 1)? & 0x3F;
-                let bits: u8 = Self::operand_size_bits(insn, 0);
-                let m: u64 = Self::mask(bits);
-                let count: u64 = b % u64::from(bits);
-                let a_m: u64 = a & m;
-                let r: u64 = if count == 0 {
-                    a_m
-                } else {
-                    ((a_m >> count) | (a_m << (u64::from(bits) - count))) & m
-                };
-                self.write_operand(insn, 0, r)?;
-                if count > 0 {
-                    self.regs.flags.cf = (r & Self::sign_bit(bits)) != 0;
-                }
-                Ok(true)
-            }
+            M::Shl | M::Sal | M::Shr | M::Sar => self.shift(insn, mnem),
+            M::Rol | M::Ror => self.rotate(insn, mnem == M::Rol),
             M::Imul => {
                 let r: u64 = match insn.op_count() {
                     1 => {
@@ -1687,93 +1741,8 @@ impl Cpu {
                 self.regs.write_sized(Reg::Rsp, new_sp, bits);
                 Ok(true)
             }
-            M::Rcl => {
-                let a: u64 = self.read_operand(insn, 0)?;
-                let b: u64 = self.read_operand(insn, 1)? & 0x3F;
-                let bits: u8 = Self::operand_size_bits(insn, 0);
-                let m: u64 = Self::mask(bits);
-                let width: u64 = u64::from(bits) + 1;
-                let count: u64 = b % width;
-                let a_m: u64 = a & m;
-                let cin: u64 = u64::from(self.regs.flags.cf);
-                let mut val: u128 = u128::from(a_m) | (u128::from(cin) << bits);
-                if count > 0 {
-                    let shifted: u128 = (val << count) | (val >> (width - count));
-                    val = shifted & (((1u128 << width).wrapping_sub(1)) as u128);
-                }
-                let r: u64 = (val as u64) & m;
-                let cf_out: bool = ((val >> bits) & 1) != 0;
-                self.write_operand(insn, 0, r)?;
-                if count > 0 {
-                    self.regs.flags.cf = cf_out;
-                }
-                Ok(true)
-            }
-            M::Rcr => {
-                let a: u64 = self.read_operand(insn, 0)?;
-                let b: u64 = self.read_operand(insn, 1)? & 0x3F;
-                let bits: u8 = Self::operand_size_bits(insn, 0);
-                let m: u64 = Self::mask(bits);
-                let width: u64 = u64::from(bits) + 1;
-                let count: u64 = b % width;
-                let a_m: u64 = a & m;
-                let cin: u64 = u64::from(self.regs.flags.cf);
-                let mut val: u128 = u128::from(a_m) | (u128::from(cin) << bits);
-                if count > 0 {
-                    let shifted: u128 = (val >> count) | (val << (width - count));
-                    val = shifted & (((1u128 << width).wrapping_sub(1)) as u128);
-                }
-                let r: u64 = (val as u64) & m;
-                let cf_out: bool = ((val >> bits) & 1) != 0;
-                self.write_operand(insn, 0, r)?;
-                if count > 0 {
-                    self.regs.flags.cf = cf_out;
-                }
-                Ok(true)
-            }
-            M::Shld => {
-                let dst: u64 = self.read_operand(insn, 0)?;
-                let src: u64 = self.read_operand(insn, 1)?;
-                let shift_raw: u64 = self.read_operand(insn, 2)? & 0x3F;
-                let bits: u8 = Self::operand_size_bits(insn, 0);
-                let bits_mask: u64 = Self::mask(bits);
-                let count: u64 = shift_raw % u64::from(bits.max(1));
-                let dst_m: u64 = dst & bits_mask;
-                let src_m: u64 = src & bits_mask;
-                let result: u64 = if count == 0 {
-                    dst_m
-                } else {
-                    ((dst_m << count) | (src_m >> (u64::from(bits) - count))) & bits_mask
-                };
-                self.set_logical_flags(result, bits);
-                if count > 0 {
-                    let cf_bit: u64 = 1u64 << (u64::from(bits) - count);
-                    self.regs.flags.cf = (dst_m & cf_bit) != 0;
-                }
-                self.write_operand(insn, 0, result)?;
-                Ok(true)
-            }
-            M::Shrd => {
-                let dst: u64 = self.read_operand(insn, 0)?;
-                let src: u64 = self.read_operand(insn, 1)?;
-                let shift_raw: u64 = self.read_operand(insn, 2)? & 0x3F;
-                let bits: u8 = Self::operand_size_bits(insn, 0);
-                let bits_mask: u64 = Self::mask(bits);
-                let count: u64 = shift_raw % u64::from(bits.max(1));
-                let dst_m: u64 = dst & bits_mask;
-                let src_m: u64 = src & bits_mask;
-                let result: u64 = if count == 0 {
-                    dst_m
-                } else {
-                    ((dst_m >> count) | (src_m << (u64::from(bits) - count))) & bits_mask
-                };
-                self.set_logical_flags(result, bits);
-                if count > 0 {
-                    self.regs.flags.cf = ((dst_m >> (count - 1)) & 1) != 0;
-                }
-                self.write_operand(insn, 0, result)?;
-                Ok(true)
-            }
+            M::Rcl | M::Rcr => self.rotate_through_carry(insn, mnem == M::Rcl),
+            M::Shld | M::Shrd => self.double_shift(insn, mnem == M::Shld),
             M::Xadd => {
                 let a: u64 = self.read_operand(insn, 0)?;
                 let b: u64 = self.read_operand(insn, 1)?;
@@ -3212,5 +3181,346 @@ mod tests {
             0x99AA_BBCC_DDEE_FF00,
             "movq [esi+0x10], mm1 must store the 64-bit MMX value little-endian"
         );
+    }
+
+    struct Authored<'a> {
+        mode: CpuMode,
+        base: u64,
+        code: &'a [u8],
+        steps: u64,
+        regs: &'a [(Reg, u64)],
+        data: &'a [(u64, &'a [u8])],
+    }
+
+    fn run_authored(case: &Authored<'_>) -> Cpu {
+        let mut cpu: Cpu = Cpu::new(case.mode);
+        cpu.mem
+            .map(case.base, 0x1000, Perm::RWX)
+            .expect("test map within ceiling");
+        cpu.mem.write_unchecked(case.base, case.code);
+        for &(addr, bytes) in case.data {
+            if !cpu.mem.is_mapped(addr) {
+                cpu.mem
+                    .map(addr, 0x1000, Perm::RW)
+                    .expect("test map within ceiling");
+            }
+            cpu.mem.write_unchecked(addr, bytes);
+        }
+        for &(reg, value) in case.regs {
+            cpu.regs.set(reg, value);
+        }
+        cpu.regs.rip = case.base;
+        let exit: ExitReason = cpu
+            .run(&mut NoopHost, case.steps)
+            .expect("run must not error");
+        assert!(
+            matches!(exit, ExitReason::StepCap(_)),
+            "the authored bytes must execute without a fault, got {exit:?}"
+        );
+        assert_eq!(
+            cpu.regs.rip,
+            case.base + case.code.len() as u64,
+            "the step count must end exactly after the authored bytes"
+        );
+        cpu
+    }
+
+    fn flag_string(cpu: &Cpu) -> String {
+        let f: crate::stub_emu::regs::Flags = cpu.regs.flags;
+        format!(
+            "cf={} pf={} af={} zf={} sf={} of={}",
+            u8::from(f.cf),
+            u8::from(f.pf),
+            u8::from(f.af),
+            u8::from(f.zf),
+            u8::from(f.sf),
+            u8::from(f.of)
+        )
+    }
+
+    fn assert_unicorn_2_1_4(case: &Authored<'_>, rax: u64, flags: &str) -> Cpu {
+        let cpu: Cpu = run_authored(case);
+        assert_eq!(
+            cpu.regs.get(Reg::Rax),
+            rax,
+            "rax must equal what Unicorn 2.1.4 computes for {:02x?}",
+            case.code
+        );
+        assert_eq!(
+            flag_string(&cpu),
+            flags,
+            "flags must equal what Unicorn 2.1.4 computes for {:02x?}",
+            case.code
+        );
+        cpu
+    }
+
+    fn bits32(code: &[u8], steps: u64, regs: &[(Reg, u64)], rax: u64, flags: &str) {
+        let case: Authored<'_> = Authored {
+            mode: CpuMode::Bits32,
+            base: 0x1000,
+            code,
+            steps,
+            regs,
+            data: &[],
+        };
+        let _ = assert_unicorn_2_1_4(&case, rax, flags);
+    }
+
+    #[test]
+    fn unicorn_2_1_4_rip_relative_dword_load_in_pe32_plus_image_reads_real_memory() {
+        let code: [u8; 12] = [
+            0x8B, 0x05, 0xFA, 0x0F, 0x00, 0x00, 0x89, 0x05, 0xFC, 0x0F, 0x00, 0x00,
+        ];
+        let case: Authored<'_> = Authored {
+            mode: CpuMode::Bits64,
+            base: 0x1_4000_1000,
+            code: &code,
+            steps: 2,
+            regs: &[(Reg::Rax, 0x1122_3344_5566_7788)],
+            data: &[(0x1_4000_2000, &[0xEF, 0xBE, 0xAD, 0xDE])],
+        };
+        let cpu: Cpu = assert_unicorn_2_1_4(&case, 0xDEAD_BEEF, "cf=0 pf=0 af=0 zf=0 sf=0 of=0");
+        assert_eq!(
+            cpu.mem.read_u32(0x1_4000_2008).expect("mapped"),
+            0xDEAD_BEEF,
+            "mov [rip+X], eax must store to the 64-bit target as Unicorn 2.1.4 does"
+        );
+    }
+
+    #[test]
+    fn unicorn_2_1_4_address_size_prefix_truncates_a_qword_load_address() {
+        let case: Authored<'_> = Authored {
+            mode: CpuMode::Bits64,
+            base: 0x1_4000_1000,
+            code: &[0x67, 0x48, 0x8B, 0x00],
+            steps: 1,
+            regs: &[(Reg::Rax, 0x1_4000_2000)],
+            data: &[
+                (
+                    0x4000_2000,
+                    &[0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01],
+                ),
+                (0x1_4000_2000, &[0x11; 8]),
+            ],
+        };
+        let _ = assert_unicorn_2_1_4(
+            &case,
+            0x0102_0304_0506_0708,
+            "cf=0 pf=0 af=0 zf=0 sf=0 of=0",
+        );
+    }
+
+    #[test]
+    fn unicorn_2_1_4_shl_eax_cl_33_shifts_by_one() {
+        bits32(
+            &[0xD3, 0xE0],
+            1,
+            &[(Reg::Rax, 0x8000_0001), (Reg::Rcx, 33)],
+            0x2,
+            "cf=1 pf=0 af=0 zf=0 sf=0 of=1",
+        );
+    }
+
+    #[test]
+    fn unicorn_2_1_4_rcl_eax_33_rotates_by_one() {
+        bits32(
+            &[0xF9, 0xC1, 0xD0, 0x21],
+            2,
+            &[(Reg::Rax, 0x8000_0001)],
+            0x3,
+            "cf=1 pf=0 af=0 zf=0 sf=0 of=1",
+        );
+    }
+
+    #[test]
+    fn unicorn_2_1_4_shl_al_9_clears_the_byte() {
+        bits32(
+            &[0xC0, 0xE0, 0x09],
+            1,
+            &[(Reg::Rax, 0x1234_56FF)],
+            0x1234_5600,
+            "cf=0 pf=1 af=0 zf=1 sf=0 of=0",
+        );
+    }
+
+    #[test]
+    fn unicorn_2_1_4_shl_eax_32_is_a_zero_count_that_keeps_flags() {
+        bits32(
+            &[0xF9, 0xC1, 0xE0, 0x20],
+            2,
+            &[(Reg::Rax, 0x8000_0000)],
+            0x8000_0000,
+            "cf=1 pf=0 af=0 zf=0 sf=0 of=0",
+        );
+    }
+
+    #[test]
+    fn unicorn_2_1_4_shr_eax_1_sets_of_from_the_old_sign() {
+        bits32(
+            &[0xD1, 0xE8],
+            1,
+            &[(Reg::Rax, 0x8000_0000)],
+            0x4000_0000,
+            "cf=0 pf=1 af=0 zf=0 sf=0 of=1",
+        );
+    }
+
+    #[test]
+    fn unicorn_2_1_4_sar_al_1_clears_of() {
+        bits32(
+            &[0xD0, 0xF8],
+            1,
+            &[(Reg::Rax, 0x81)],
+            0xC0,
+            "cf=1 pf=1 af=0 zf=0 sf=1 of=0",
+        );
+    }
+
+    #[test]
+    fn unicorn_2_1_4_shift_clears_af() {
+        bits32(
+            &[0x04, 0x0F, 0xD1, 0xE0],
+            2,
+            &[(Reg::Rax, 0x01)],
+            0x20,
+            "cf=0 pf=0 af=0 zf=0 sf=0 of=0",
+        );
+    }
+
+    #[test]
+    fn unicorn_2_1_4_rol_al_8_sets_cf_although_the_byte_is_unchanged() {
+        bits32(
+            &[0xC0, 0xC0, 0x08],
+            1,
+            &[(Reg::Rax, 0x01)],
+            0x01,
+            "cf=1 pf=0 af=0 zf=0 sf=0 of=1",
+        );
+    }
+
+    #[test]
+    fn unicorn_2_1_4_ror_eax_1_sets_of() {
+        bits32(
+            &[0xD1, 0xC8],
+            1,
+            &[(Reg::Rax, 0x01)],
+            0x8000_0000,
+            "cf=1 pf=0 af=0 zf=0 sf=0 of=1",
+        );
+    }
+
+    #[test]
+    fn unicorn_2_1_4_rcr_ax_17_rotates_a_full_ring() {
+        bits32(
+            &[0xF9, 0x66, 0xC1, 0xD8, 0x11],
+            2,
+            &[(Reg::Rax, 0x1234_8001)],
+            0x1234_8001,
+            "cf=1 pf=0 af=0 zf=0 sf=0 of=0",
+        );
+    }
+
+    #[test]
+    fn unicorn_2_1_4_rcr_eax_1_sets_of() {
+        bits32(
+            &[0xF9, 0xD1, 0xD8],
+            2,
+            &[(Reg::Rax, 0x2)],
+            0x8000_0001,
+            "cf=0 pf=0 af=0 zf=0 sf=0 of=1",
+        );
+    }
+
+    #[test]
+    fn unicorn_2_1_4_shld_eax_ebx_32_is_a_zero_count_that_keeps_flags() {
+        bits32(
+            &[0xF9, 0x0F, 0xA4, 0xD8, 0x20],
+            2,
+            &[(Reg::Rax, 0x8000_0001), (Reg::Rbx, 0xFFFF_FFFF)],
+            0x8000_0001,
+            "cf=1 pf=0 af=0 zf=0 sf=0 of=0",
+        );
+    }
+
+    #[test]
+    fn unicorn_2_1_4_shld_eax_ebx_1_sets_of() {
+        bits32(
+            &[0x0F, 0xA4, 0xD8, 0x01],
+            1,
+            &[(Reg::Rax, 0x4000_0000), (Reg::Rbx, 0x8000_0000)],
+            0x8000_0001,
+            "cf=0 pf=0 af=0 zf=0 sf=1 of=1",
+        );
+    }
+
+    #[test]
+    fn unicorn_2_1_4_shld_clears_af() {
+        bits32(
+            &[0x04, 0x0F, 0x0F, 0xA4, 0xD8, 0x01],
+            2,
+            &[(Reg::Rax, 0x01)],
+            0x20,
+            "cf=0 pf=0 af=0 zf=0 sf=0 of=0",
+        );
+    }
+
+    #[test]
+    fn unicorn_2_1_4_shrd_eax_ebx_4() {
+        bits32(
+            &[0x0F, 0xAC, 0xD8, 0x04],
+            1,
+            &[(Reg::Rax, 0x18), (Reg::Rbx, 0x5)],
+            0x5000_0001,
+            "cf=1 pf=0 af=0 zf=0 sf=0 of=1",
+        );
+    }
+
+    #[test]
+    fn unicorn_2_1_4_shld_ax_bx_20_shifts_dst_src_dst() {
+        bits32(
+            &[0x66, 0x0F, 0xA4, 0xD8, 0x14],
+            1,
+            &[(Reg::Rax, 0x1234_ABCD), (Reg::Rbx, 0x5678)],
+            0x1234_678A,
+            "cf=1 pf=0 af=0 zf=0 sf=0 of=1",
+        );
+    }
+
+    #[test]
+    fn unicorn_2_1_4_shrd_ax_bx_20_shifts_dst_src_dst() {
+        bits32(
+            &[0x66, 0x0F, 0xAC, 0xD8, 0x14],
+            1,
+            &[(Reg::Rax, 0x1234_ABCD), (Reg::Rbx, 0x5678)],
+            0x1234_D567,
+            "cf=1 pf=0 af=0 zf=0 sf=1 of=0",
+        );
+    }
+
+    #[test]
+    fn unicorn_2_1_4_shl_rax_cl_65_shifts_by_one() {
+        let case: Authored<'_> = Authored {
+            mode: CpuMode::Bits64,
+            base: 0x1000,
+            code: &[0x48, 0xD3, 0xE0],
+            steps: 1,
+            regs: &[(Reg::Rax, 0x8000_0000_0000_0001), (Reg::Rcx, 65)],
+            data: &[],
+        };
+        let _ = assert_unicorn_2_1_4(&case, 0x2, "cf=1 pf=0 af=0 zf=0 sf=0 of=1");
+    }
+
+    #[test]
+    fn unicorn_2_1_4_shl_eax_0_still_zero_extends_in_long_mode() {
+        let case: Authored<'_> = Authored {
+            mode: CpuMode::Bits64,
+            base: 0x1000,
+            code: &[0xC1, 0xE0, 0x00],
+            steps: 1,
+            regs: &[(Reg::Rax, 0xFFFF_FFFF_8000_0000)],
+            data: &[],
+        };
+        let _ = assert_unicorn_2_1_4(&case, 0x8000_0000, "cf=0 pf=0 af=0 zf=0 sf=0 of=0");
     }
 }
