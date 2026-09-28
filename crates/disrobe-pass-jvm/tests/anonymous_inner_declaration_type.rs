@@ -90,8 +90,8 @@ const NEWLY_CLEAN: [&str; 15] = [
     "reducerFn()",
     "squares(int)",
 ];
-const BASELINE_CLEAN: usize = 129;
-const CANDIDATE_CLEAN: usize = 144;
+const BASELINE_CLEAN: usize = 132;
+const CANDIDATE_CLEAN: usize = 147;
 const ATTRIBUTION_PROBE_FILE: &str = "TypeCheckReached.java";
 const ATTRIBUTION_PROBE_SOURCE: &str = "final class TypeCheckReached {\n    static final Object VALUE = typeCheckReachedSymbolThatCannotResolve;\n}\n";
 const JAVAC_TIMEOUT: Duration = Duration::from_secs(30);
