@@ -3,6 +3,7 @@ use std::sync::LazyLock;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STD;
+use lazy_regex::regex;
 use regex::Regex;
 use serde::Serialize;
 
@@ -18,16 +19,15 @@ pub struct ChameleonReport {
     pub output: String,
 }
 
-static VAR_DECL: LazyLock<Regex> =
-    LazyLock::new(|| crate::regex_util::safe_regex(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?"));
+static VAR_DECL: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?"));
 
-static FUNC_DECL: LazyLock<Regex> = LazyLock::new(|| {
-    crate::regex_util::safe_regex(r"(?i)\bfunction\s+([A-Za-z_][A-Za-z0-9_\-]*)\b")
-});
+static FUNC_DECL: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r"(?i)\bfunction\s+([A-Za-z_][A-Za-z0-9_\-]*)\b"));
 
-static FROMBASE64_LITERAL: LazyLock<Regex> = LazyLock::new(|| {
-    crate::regex_util::safe_regex(
-        r#"(?i)\[\s*(?:system\.)?convert\s*\]::frombase64string\s*\(\s*['"]([A-Za-z0-9+/=]+)['"]\s*\)"#,
+static FROMBASE64_LITERAL: LazyLock<&'static Regex> = LazyLock::new(|| {
+    regex!(
+        r#"(?i)\[\s*(?:system\.)?convert\s*\]::frombase64string\s*\(\s*['"]([A-Za-z0-9+/=]+)['"]\s*\)"#
     )
 });
 
@@ -55,8 +55,10 @@ pub fn reverse_chameleon(input: &str) -> ChameleonReport {
     }
     let var_count: usize = var_map.len();
     for (orig, sub) in &var_map {
-        let pat: String = format!(r"\$\{{?{orig}\}}?");
-        let re: Regex = crate::regex_util::safe_regex(&pat);
+        let pat: String = format!(r"\$\{{?{}\}}?", regex::escape(orig));
+        let Ok(re): Result<Regex, regex::Error> = Regex::new(&pat) else {
+            continue;
+        };
         let replacement: String = format!("${sub}");
         current = re
             .replace_all(&current, regex::NoExpand(replacement.as_str()))
@@ -74,8 +76,10 @@ pub fn reverse_chameleon(input: &str) -> ChameleonReport {
     }
     let func_count: usize = func_map.len();
     for (orig, sub) in &func_map {
-        let pat: String = format!(r"\b{orig}\b");
-        let re: Regex = crate::regex_util::safe_regex(&pat);
+        let pat: String = format!(r"\b{}\b", regex::escape(orig));
+        let Ok(re): Result<Regex, regex::Error> = Regex::new(&pat) else {
+            continue;
+        };
         current = re.replace_all(&current, sub.as_str()).into_owned();
     }
     ChameleonReport {

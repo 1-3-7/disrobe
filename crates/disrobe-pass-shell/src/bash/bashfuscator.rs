@@ -4,6 +4,7 @@ use std::sync::LazyLock;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STD;
 use flate2::read::GzDecoder;
+use lazy_regex::regex;
 use regex::Regex;
 use serde::Serialize;
 
@@ -839,8 +840,8 @@ fn has_bashfuscator_swapcase_reference(s: &str, var_name: &str) -> bool {
     count == 1 && s.contains("printf") && s.contains(&format!("{var_name}="))
 }
 
-static OBFUSCATE_VAR_ASSIGN_PROBE: LazyLock<Regex> =
-    LazyLock::new(|| crate::regex_util::safe_regex(r"\b([A-Za-z_][A-Za-z0-9_]*)='"));
+static OBFUSCATE_VAR_ASSIGN_PROBE: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r"\b([A-Za-z_][A-Za-z0-9_]*)='"));
 
 fn extract_bash_single_quoted_with_escapes(rest: &str) -> Option<String> {
     let bytes: &[u8] = rest.as_bytes();
@@ -922,9 +923,9 @@ const fn gzip_output_prealloc(compressed_len: usize) -> usize {
     }
 }
 
-static COMPRESS_PRINTF_PIPE: LazyLock<Regex> = LazyLock::new(|| {
-    crate::regex_util::safe_regex(
-        r#"(?:printf|echo)\s+(?:'([A-Za-z0-9+/=]+)'|"([A-Za-z0-9+/=]+)"|([A-Za-z0-9+/=]+))\s*\|\s*base64\s+(?:-d|--decode)\s*\|\s*(?:gzip|gunzip|zcat)\s*-c?"#,
+static COMPRESS_PRINTF_PIPE: LazyLock<&'static Regex> = LazyLock::new(|| {
+    regex!(
+        r#"(?:printf|echo)\s+(?:'([A-Za-z0-9+/=]+)'|"([A-Za-z0-9+/=]+)"|([A-Za-z0-9+/=]+))\s*\|\s*base64\s+(?:-d|--decode)\s*\|\s*(?:gzip|gunzip|zcat)\s*-c?"#
     )
 });
 

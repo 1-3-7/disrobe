@@ -1,7 +1,7 @@
-use std::sync::LazyLock;
-
+use lazy_regex::regex;
 use regex::Regex;
 use serde::Serialize;
+use std::sync::LazyLock;
 
 use super::invoke_obfuscation::{reverse_string, reverse_token};
 
@@ -12,10 +12,8 @@ pub struct IseSteroidsReport {
     pub output: String,
 }
 
-static ISE_SIG: LazyLock<Regex> = LazyLock::new(|| {
-    crate::regex_util::safe_regex(
-        r"(?im)^#\s*SIG\s*#\s*Begin signature block[\s\S]*?#\s*SIG\s*#\s*End signature block",
-    )
+static ISE_SIG: LazyLock<&'static Regex> = LazyLock::new(|| {
+    regex!(r"(?im)^#\s*SIG\s*#\s*Begin signature block[\s\S]*?#\s*SIG\s*#\s*End signature block")
 });
 
 static HOMOGLYPH_RANGES: &[(char, char)] = &[

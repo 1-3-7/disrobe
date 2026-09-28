@@ -4,6 +4,7 @@ use std::sync::LazyLock;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STD;
 use flate2::read::GzDecoder;
+use lazy_regex::regex;
 use regex::Regex;
 use serde::Serialize;
 
@@ -22,29 +23,26 @@ pub struct IndirectionReport {
     pub walls: Vec<String>,
 }
 
-static IFS_INDIRECT: LazyLock<Regex> =
-    LazyLock::new(|| crate::regex_util::safe_regex(r"\$\{?IFS\}?"));
+static IFS_INDIRECT: LazyLock<&'static Regex> = LazyLock::new(|| regex!(r"\$\{?IFS\}?"));
 
-static PRINTF_HEX: LazyLock<Regex> = LazyLock::new(|| {
-    crate::regex_util::safe_regex(
-        r#"printf\s+(?:'((?:\\x[0-9A-Fa-f]{2})+)'|"((?:\\x[0-9A-Fa-f]{2})+)")"#,
+static PRINTF_HEX: LazyLock<&'static Regex> = LazyLock::new(|| {
+    regex!(r#"printf\s+(?:'((?:\\x[0-9A-Fa-f]{2})+)'|"((?:\\x[0-9A-Fa-f]{2})+)")"#)
+});
+
+static B64_PIPE: LazyLock<&'static Regex> = LazyLock::new(|| {
+    regex!(
+        r#"(?m)echo\s+(?:'([A-Za-z0-9+/=]+)'|"([A-Za-z0-9+/=]+)"|([A-Za-z0-9+/=]+))\s*\|\s*base64\s+(?:-d|--decode)"#
     )
 });
 
-static B64_PIPE: LazyLock<Regex> = LazyLock::new(|| {
-    crate::regex_util::safe_regex(
-        r#"(?m)echo\s+(?:'([A-Za-z0-9+/=]+)'|"([A-Za-z0-9+/=]+)"|([A-Za-z0-9+/=]+))\s*\|\s*base64\s+(?:-d|--decode)"#,
+static B64_GZIP: LazyLock<&'static Regex> = LazyLock::new(|| {
+    regex!(
+        r#"(?m)echo\s+(?:'([A-Za-z0-9+/=]+)'|"([A-Za-z0-9+/=]+)"|([A-Za-z0-9+/=]+))\s*\|\s*base64\s+(?:-d|--decode)\s*\|\s*(?:gzip|gunzip|zcat)\s*-d"#
     )
 });
 
-static B64_GZIP: LazyLock<Regex> = LazyLock::new(|| {
-    crate::regex_util::safe_regex(
-        r#"(?m)echo\s+(?:'([A-Za-z0-9+/=]+)'|"([A-Za-z0-9+/=]+)"|([A-Za-z0-9+/=]+))\s*\|\s*base64\s+(?:-d|--decode)\s*\|\s*(?:gzip|gunzip|zcat)\s*-d"#,
-    )
-});
-
-static EVAL_WRAP: LazyLock<Regex> =
-    LazyLock::new(|| crate::regex_util::safe_regex(r#"(?s)\beval\s+(?:'(.*?)'|"(.*?)")"#));
+static EVAL_WRAP: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r#"(?s)\beval\s+(?:'(.*?)'|"(.*?)")"#));
 
 pub fn peel_indirection(input: &str) -> Result<IndirectionReport> {
     peel_indirection_with_policy(input, DynamicPolicy::default())

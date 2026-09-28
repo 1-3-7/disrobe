@@ -1,6 +1,6 @@
-use std::sync::LazyLock;
-
+use lazy_regex::regex;
 use regex::Regex;
+use std::sync::LazyLock;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IfOutcome {
@@ -9,8 +9,7 @@ pub enum IfOutcome {
     Unknown,
 }
 
-static IF_HEAD: LazyLock<Regex> =
-    LazyLock::new(|| crate::regex_util::safe_regex(r"(?is)^\s*if\s+(?P<rest>.+)$"));
+static IF_HEAD: LazyLock<&'static Regex> = LazyLock::new(|| regex!(r"(?is)^\s*if\s+(?P<rest>.+)$"));
 
 const OPERATORS: &[(&str, Cmp)] = &[
     ("==", Cmp::Eq),

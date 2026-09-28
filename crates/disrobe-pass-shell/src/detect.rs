@@ -1,6 +1,7 @@
 use serde::Serialize;
 use std::sync::LazyLock;
 
+use lazy_regex::regex;
 use regex::Regex;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -60,38 +61,33 @@ const DASH_SHEBANG: &str = "#!/bin/dash";
 const KSH_SHEBANG: &str = "#!/bin/ksh";
 const ZSH_SHEBANG: &str = "#!/bin/zsh";
 
-static PS_TOKEN_OBF: LazyLock<Regex> = LazyLock::new(|| {
-    crate::regex_util::safe_regex(r"(?i)\$\{[A-Za-z0-9_]+\}\s*=\s*\(\s*\[(?:char|byte)\]")
-});
+static PS_TOKEN_OBF: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r"(?i)\$\{[A-Za-z0-9_]+\}\s*=\s*\(\s*\[(?:char|byte)\]"));
 
-static PS_ENCODING_FLAG: LazyLock<Regex> = LazyLock::new(|| {
-    crate::regex_util::safe_regex(
-        r"(?i)(?:powershell|pwsh)(?:\.exe)?\b[^\r\n]*?\s-e(?:nc(?:odedcommand)?)?\s+[A-Za-z0-9+/=]+",
+static PS_ENCODING_FLAG: LazyLock<&'static Regex> = LazyLock::new(|| {
+    regex!(
+        r"(?i)(?:powershell|pwsh)(?:\.exe)?\b[^\r\n]*?\s-e(?:nc(?:odedcommand)?)?\s+[A-Za-z0-9+/=]+"
     )
 });
 
-static PS_COMPRESS_HINT: LazyLock<Regex> =
-    LazyLock::new(|| crate::regex_util::safe_regex(r"(?i)IO\.Compression\.(?:GZip|Deflate)Stream"));
+static PS_COMPRESS_HINT: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r"(?i)IO\.Compression\.(?:GZip|Deflate)Stream"));
 
-static PS_STRING_FORMAT_OBF: LazyLock<Regex> = LazyLock::new(|| {
-    crate::regex_util::safe_regex(r#"(?i)\(\s*['"][^'"]*\{0\}[^'"]*['"]\s*-f\s*"#)
-});
+static PS_STRING_FORMAT_OBF: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r#"(?i)\(\s*['"][^'"]*\{0\}[^'"]*['"]\s*-f\s*"#));
 
-static PS_AST_REORDER: LazyLock<Regex> = LazyLock::new(|| {
-    crate::regex_util::safe_regex(r"(?i)&\s*\(\s*\$ExecutionContext\.InvokeCommand\.GetCommand")
-});
+static PS_AST_REORDER: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r"(?i)&\s*\(\s*\$ExecutionContext\.InvokeCommand\.GetCommand"));
 
-static BASHFUSCATOR_BANNER: LazyLock<Regex> =
-    LazyLock::new(|| crate::regex_util::safe_regex(r"(?i)bashfuscator"));
+static BASHFUSCATOR_BANNER: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r"(?i)bashfuscator"));
 
-static BASH_IFS_INDIRECT: LazyLock<Regex> =
-    LazyLock::new(|| crate::regex_util::safe_regex(r"\$\{?IFS\}?"));
+static BASH_IFS_INDIRECT: LazyLock<&'static Regex> = LazyLock::new(|| regex!(r"\$\{?IFS\}?"));
 
-static BATCH_RANDOM: LazyLock<Regex> =
-    LazyLock::new(|| crate::regex_util::safe_regex(r"(?i)%random[:!]"));
+static BATCH_RANDOM: LazyLock<&'static Regex> = LazyLock::new(|| regex!(r"(?i)%random[:!]"));
 
-static BATCH_SET_INDIRECT: LazyLock<Regex> =
-    LazyLock::new(|| crate::regex_util::safe_regex(r"(?i)set\s+[A-Za-z_][A-Za-z0-9_]*="));
+static BATCH_SET_INDIRECT: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r"(?i)set\s+[A-Za-z_][A-Za-z0-9_]*="));
 
 #[must_use]
 pub fn detect(source: &[u8]) -> Detection {

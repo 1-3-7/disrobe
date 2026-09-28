@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::LazyLock;
 
+use lazy_regex::regex;
 use regex::Regex;
 use serde::Serialize;
 
@@ -60,27 +61,24 @@ impl Counters {
     }
 }
 
-static SET_PLAIN: LazyLock<Regex> = LazyLock::new(|| {
-    crate::regex_util::safe_regex(
-        r#"(?i)^\s*set\s+(?:"(?P<qname>[^=]+)=(?P<qval>[^"]*)"|(?P<name>[^=\s/][^=]*)=(?P<val>.*))$"#,
+static SET_PLAIN: LazyLock<&'static Regex> = LazyLock::new(|| {
+    regex!(
+        r#"(?i)^\s*set\s+(?:"(?P<qname>[^=]+)=(?P<qval>[^"]*)"|(?P<name>[^=\s/][^=]*)=(?P<val>.*))$"#
     )
 });
 
-static SET_A: LazyLock<Regex> = LazyLock::new(|| {
-    crate::regex_util::safe_regex(
-        r#"(?i)^\s*set\s+/a\s+(?:"(?P<qname>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?P<qexpr>[^"]*)"|(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?P<expr>.*))$"#,
+static SET_A: LazyLock<&'static Regex> = LazyLock::new(|| {
+    regex!(
+        r#"(?i)^\s*set\s+/a\s+(?:"(?P<qname>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?P<qexpr>[^"]*)"|(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?P<expr>.*))$"#
     )
 });
 
-static DELAYED_ON: LazyLock<Regex> = LazyLock::new(|| {
-    crate::regex_util::safe_regex(r"(?i)^\s*setlocal\b.*\benabledelayedexpansion\b")
-});
+static DELAYED_ON: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r"(?i)^\s*setlocal\b.*\benabledelayedexpansion\b"));
 
-static FOR_LEADER: LazyLock<Regex> =
-    LazyLock::new(|| crate::regex_util::safe_regex(r"(?i)^\s*for\s+/"));
+static FOR_LEADER: LazyLock<&'static Regex> = LazyLock::new(|| regex!(r"(?i)^\s*for\s+/"));
 
-static IF_LEADER: LazyLock<Regex> =
-    LazyLock::new(|| crate::regex_util::safe_regex(r"(?i)^\s*if\b"));
+static IF_LEADER: LazyLock<&'static Regex> = LazyLock::new(|| regex!(r"(?i)^\s*if\b"));
 
 #[must_use]
 pub fn deobfuscate_batch(input: &str, args: &[String]) -> BatchDeobReport {

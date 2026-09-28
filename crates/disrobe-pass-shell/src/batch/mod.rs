@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::LazyLock;
 
+use lazy_regex::regex;
 use regex::Regex;
 use serde::Serialize;
 
@@ -34,19 +35,14 @@ pub struct BatchReport {
     pub output: String,
 }
 
-static SET_DECL: LazyLock<Regex> = LazyLock::new(|| {
-    crate::regex_util::safe_regex(
-        r#"(?im)^\s*set\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?P<val>[^\r\n]*)"#,
-    )
+static SET_DECL: LazyLock<&'static Regex> = LazyLock::new(|| {
+    regex!(r#"(?im)^\s*set\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?P<val>[^\r\n]*)"#)
 });
 
-static RAND_RANGE: LazyLock<Regex> =
-    LazyLock::new(|| crate::regex_util::safe_regex(r"%random:~(\d+),(\d+)%"));
+static RAND_RANGE: LazyLock<&'static Regex> = LazyLock::new(|| regex!(r"%random:~(\d+),(\d+)%"));
 
-static RAND_PLAIN: LazyLock<Regex> = LazyLock::new(|| crate::regex_util::safe_regex(r"%random%"));
-
-static VAR_REF: LazyLock<Regex> =
-    LazyLock::new(|| crate::regex_util::safe_regex(r"%(?P<name>[A-Za-z_][A-Za-z0-9_]*)%"));
+static VAR_REF: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r"%(?P<name>[A-Za-z_][A-Za-z0-9_]*)%"));
 
 const MAX_REVERSE_ADDED_BYTES: usize = expand::MAX_EXPANSION_OUTPUT;
 
@@ -96,12 +92,8 @@ pub fn reverse_batch(input: &str) -> BatchReport {
             "0".repeat(len)
         })
         .into_owned();
-    current = RAND_PLAIN
-        .replace_all(&current, |_: &regex::Captures<'_>| {
-            rand_subs += 1;
-            "0".to_owned()
-        })
-        .into_owned();
+    rand_subs += current.matches("%random%").count();
+    current = current.replace("%random%", "0");
     let mut set_subs: usize = 0;
     for _ in 0..16usize {
         let mut hit: bool = false;

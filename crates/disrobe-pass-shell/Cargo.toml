@@ -22,6 +22,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 base64 = "0.22"
 regex = "1"
+lazy-regex = { workspace = true }
 flate2 = { workspace = true }
 zip = { workspace = true }
 cfb = "0.10"

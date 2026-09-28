@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::LazyLock;
 
 use disrobe_ir::{DisasmSymbol, DisasmSymbolKind};
+use lazy_regex::regex;
 use regex::Regex;
 use serde::Serialize;
 
@@ -56,24 +57,25 @@ struct Transfer {
     target: Option<String>,
 }
 
-static LABEL_DEF: LazyLock<Regex> =
-    LazyLock::new(|| crate::regex_util::safe_regex(r"^\s*:([A-Za-z_][A-Za-z0-9_\.]*)\s*$"));
+static LABEL_DEF: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r"^\s*:([A-Za-z_][A-Za-z0-9_\.]*)\s*$"));
 
-static GOTO: LazyLock<Regex> = LazyLock::new(|| {
-    crate::regex_util::safe_regex(r"(?i)\bgoto\s+:?([A-Za-z_%][A-Za-z0-9_\.%]*|:eof)")
-});
+static GOTO: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r"(?i)\bgoto\s+:?([A-Za-z_%][A-Za-z0-9_\.%]*|:eof)"));
 
-static CALL_LABEL: LazyLock<Regex> =
-    LazyLock::new(|| crate::regex_util::safe_regex(r"(?i)\bcall\s+:([A-Za-z_%][A-Za-z0-9_\.%]*)"));
+static CALL_LABEL: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r"(?i)\bcall\s+:([A-Za-z_%][A-Za-z0-9_\.%]*)"));
 
-static EXIT_B: LazyLock<Regex> =
-    LazyLock::new(|| crate::regex_util::safe_regex(r"(?i)\bexit\s*/b\b"));
+static EXIT_B: LazyLock<&'static Regex> = LazyLock::new(|| regex!(r"(?i)\bexit\s*/b\b"));
 
-static EXIT_SCRIPT: LazyLock<Regex> =
-    LazyLock::new(|| crate::regex_util::safe_regex(r"(?i)\bexit\b(?!\s*/b)"));
+static EXIT: LazyLock<&'static Regex> = LazyLock::new(|| regex!(r"(?i)\bexit\b(\s*/b)?"));
 
-static IF_PREFIX: LazyLock<Regex> =
-    LazyLock::new(|| crate::regex_util::safe_regex(r"(?i)^\s*if\b"));
+fn exits_script(line: &str) -> bool {
+    EXIT.captures_iter(line)
+        .any(|caps: regex::Captures<'_>| caps.get(1).is_none())
+}
+
+static IF_PREFIX: LazyLock<&'static Regex> = LazyLock::new(|| regex!(r"(?i)^\s*if\b"));
 
 fn normalize_target(raw: &str) -> Option<String> {
     let trimmed: &str = raw.trim().trim_start_matches(':');
@@ -133,7 +135,7 @@ fn parse_statement(line: usize, text: &str) -> Statement {
             kind: EdgeKind::ExitProcedure,
             target: None,
         });
-    } else if EXIT_SCRIPT.is_match(trimmed) {
+    } else if exits_script(trimmed) {
         transfers.push(Transfer {
             kind: EdgeKind::ExitScript,
             target: None,
@@ -331,6 +333,15 @@ impl BatchCfg {
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_bare_exit_ends_the_script_and_exit_b_does_not() {
+        assert!(exits_script("exit"));
+        assert!(exits_script("if errorlevel 1 EXIT 3"));
+        assert!(!exits_script("exit /b 0"));
+        assert!(!exits_script("EXIT  /B"));
+        assert!(!exits_script("echo exiting"));
+    }
 
     #[test]
     fn resolves_goto_label_jump() {

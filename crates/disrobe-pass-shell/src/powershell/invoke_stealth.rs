@@ -1,9 +1,9 @@
-use std::sync::LazyLock;
-
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STD;
+use lazy_regex::regex;
 use regex::Regex;
 use serde::Serialize;
+use std::sync::LazyLock;
 
 use super::invoke_obfuscation::{
     InvokeObfuscationLevel, ReverseReport, reverse_string, reverse_token,
@@ -18,14 +18,13 @@ pub struct InvokeStealthReport {
     pub output: String,
 }
 
-static ROT13: LazyLock<Regex> = LazyLock::new(|| crate::regex_util::safe_regex(r"(?i)ROT13"));
+static ROT13: LazyLock<&'static Regex> = LazyLock::new(|| regex!(r"(?i)ROT13"));
 
-static REVERSE_TECH: LazyLock<Regex> = LazyLock::new(|| {
-    crate::regex_util::safe_regex(r#"\[\s*[Aa]rray\s*\]::Reverse\s*\(\s*\$([A-Za-z0-9_]+)\s*\)"#)
-});
+static REVERSE_TECH: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r#"\[\s*[Aa]rray\s*\]::Reverse\s*\(\s*\$([A-Za-z0-9_]+)\s*\)"#));
 
-static B64_STRING_LITERAL: LazyLock<Regex> =
-    LazyLock::new(|| crate::regex_util::safe_regex(r#"['"]([A-Za-z0-9+/=]{8,})['"]"#));
+static B64_STRING_LITERAL: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r#"['"]([A-Za-z0-9+/=]{8,})['"]"#));
 
 #[must_use]
 pub fn reverse_invoke_stealth(input: &str) -> InvokeStealthReport {

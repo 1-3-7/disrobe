@@ -4,6 +4,7 @@ use std::sync::LazyLock;
 
 use disrobe_core::codec::{Base64Alphabet, Base64Padding, base64_decode};
 use flate2::read::GzDecoder;
+use lazy_regex::regex;
 use regex::Regex;
 use serde::Serialize;
 
@@ -268,9 +269,9 @@ fn strip_backtick_escapes(s: &str) -> Option<String> {
     Some(out)
 }
 
-static IEX_ALIAS: LazyLock<Regex> = LazyLock::new(|| {
-    crate::regex_util::safe_regex(
-        r"(?i)\b(?:IEX|\.\s*Invoke|&\s*\(\s*'IEX'\s*\)|&\s*\(\s*\$ExecutionContext\.InvokeCommand\.GetCommand[^)]*\))\b",
+static IEX_ALIAS: LazyLock<&'static Regex> = LazyLock::new(|| {
+    regex!(
+        r"(?i)\b(?:IEX|\.\s*Invoke|&\s*\(\s*'IEX'\s*\)|&\s*\(\s*\$ExecutionContext\.InvokeCommand\.GetCommand[^)]*\))\b"
     )
 });
 
@@ -281,12 +282,10 @@ fn normalize_invoke_expression_aliases(s: &str) -> Option<String> {
     Some(IEX_ALIAS.replace_all(s, "Invoke-Expression").into_owned())
 }
 
-static CHAR_ARRAY: LazyLock<Regex> = LazyLock::new(|| {
-    crate::regex_util::safe_regex(r"\[(?i)char\]\s*(\d{1,3})(?:\s*\+\s*\[(?i)char\]\s*(\d{1,3}))*")
-});
+static CHAR_ARRAY: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r"\[(?i)char\]\s*(\d{1,3})(?:\s*\+\s*\[(?i)char\]\s*(\d{1,3}))*"));
 
-static CHAR_LIT: LazyLock<Regex> =
-    LazyLock::new(|| crate::regex_util::safe_regex(r"\[(?i)char\]\s*(\d{1,3})"));
+static CHAR_LIT: LazyLock<&'static Regex> = LazyLock::new(|| regex!(r"\[(?i)char\]\s*(\d{1,3})"));
 
 fn decode_char_array_concatenations(s: &str) -> Option<String> {
     if !CHAR_ARRAY.is_match(s) {
@@ -318,30 +317,27 @@ fn decode_char_array_concatenations(s: &str) -> Option<String> {
     Some(out)
 }
 
-static NUMERIC_PIPELINE: LazyLock<Regex> = LazyLock::new(|| {
-    crate::regex_util::safe_regex(
-        r"(?is)\(\s*((?:0x)?[0-9A-Fa-f]{1,4}(?:\s*,\s*(?:0x)?[0-9A-Fa-f]{1,4}){1,})\s*\)?\s*\|\s*(?:%|ForEach(?:-Object)?)\s*\{[^}]*?\[char\][^}]*?\}\s*\)?\s*-join\s*''",
+static NUMERIC_PIPELINE: LazyLock<&'static Regex> = LazyLock::new(|| {
+    regex!(
+        r"(?is)\(\s*((?:0x)?[0-9A-Fa-f]{1,4}(?:\s*,\s*(?:0x)?[0-9A-Fa-f]{1,4}){1,})\s*\)?\s*\|\s*(?:%|ForEach(?:-Object)?)\s*\{[^}]*?\[char\][^}]*?\}\s*\)?\s*-join\s*''"
     )
 });
 
-static PIPELINE_BXOR: LazyLock<Regex> =
-    LazyLock::new(|| crate::regex_util::safe_regex(r"(?i)-b\s*xor\s+(0x[0-9A-Fa-f]+|\d+)"));
+static PIPELINE_BXOR: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r"(?i)-b\s*xor\s+(0x[0-9A-Fa-f]+|\d+)"));
 
-static MULTIKEY_XOR_PIPELINE: LazyLock<Regex> = LazyLock::new(|| {
-    crate::regex_util::safe_regex(
-        r"(?is)\(\s*((?:0x)?[0-9A-Fa-f]{1,4}(?:\s*,\s*(?:0x)?[0-9A-Fa-f]{1,4}){1,})\s*\)?\s*\|\s*(?:%|ForEach(?:-Object)?)\s*\{[^}]*?\[char\][^}]*?-b\s*xor\s+(?:\$[A-Za-z_][A-Za-z0-9_]*|@?\(?\s*(?:0x)?[0-9A-Fa-f]+(?:\s*,\s*(?:0x)?[0-9A-Fa-f]+)+\s*\)?)[^}]*?\}\s*\)?\s*-join\s*''",
+static MULTIKEY_XOR_PIPELINE: LazyLock<&'static Regex> = LazyLock::new(|| {
+    regex!(
+        r"(?is)\(\s*((?:0x)?[0-9A-Fa-f]{1,4}(?:\s*,\s*(?:0x)?[0-9A-Fa-f]{1,4}){1,})\s*\)?\s*\|\s*(?:%|ForEach(?:-Object)?)\s*\{[^}]*?\[char\][^}]*?-b\s*xor\s+(?:\$[A-Za-z_][A-Za-z0-9_]*|@?\(?\s*(?:0x)?[0-9A-Fa-f]+(?:\s*,\s*(?:0x)?[0-9A-Fa-f]+)+\s*\)?)[^}]*?\}\s*\)?\s*-join\s*''"
     )
 });
 
-static KEY_ARRAY_DECL: LazyLock<Regex> = LazyLock::new(|| {
-    crate::regex_util::safe_regex(
-        r"(?i)@?\(\s*((?:0x)?[0-9A-Fa-f]{1,4}(?:\s*,\s*(?:0x)?[0-9A-Fa-f]{1,4})+)\s*\)",
-    )
+static KEY_ARRAY_DECL: LazyLock<&'static Regex> = LazyLock::new(|| {
+    regex!(r"(?i)@?\(\s*((?:0x)?[0-9A-Fa-f]{1,4}(?:\s*,\s*(?:0x)?[0-9A-Fa-f]{1,4})+)\s*\)")
 });
 
-static PIPELINE_BASE: LazyLock<Regex> = LazyLock::new(|| {
-    crate::regex_util::safe_regex(r"(?i)toint(?:16|32|64)\s*\(\s*\$_\s*,\s*(\d+)\s*\)")
-});
+static PIPELINE_BASE: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r"(?i)toint(?:16|32|64)\s*\(\s*\$_\s*,\s*(\d+)\s*\)"));
 
 fn decode_numeric_char_pipeline(s: &str) -> Option<String> {
     if !NUMERIC_PIPELINE.is_match(s) {
@@ -454,16 +450,19 @@ fn parse_int_list(list: &str) -> Vec<u32> {
         .collect()
 }
 
-static IEX_INDIRECT: LazyLock<Vec<Regex>> = LazyLock::new(|| {
-    [
-        r"(?i)&?\s*\(\s*\$env:ComSpec\s*\[\s*\d+\s*,\s*\d+\s*,\s*\d+\s*\]\s*-Join\s*''\s*\)",
-        r"(?i)&?\s*\(\s*\(\s*(?:Get-Variable|GV|Variable)\s+'?\*mdr\*'?\s*\)\.Name\s*\[[\d,\s]+\]\s*-Join\s*''\s*\)",
-        r"(?i)&?\s*\(\s*\$VerbosePreference\.ToString\s*\(\s*\)\s*\[[\d,\s]+\]\s*-Join\s*''\s*\)",
-        r"(?i)&?\s*\(\s*\$ShellId\s*\[\s*\d+\s*,\s*\d+\s*,\s*\d+\s*\]\s*-Join\s*''\s*\)",
+static IEX_INDIRECT: LazyLock<Vec<&'static Regex>> = LazyLock::new(|| {
+    vec![
+        regex!(
+            r"(?i)&?\s*\(\s*\$env:ComSpec\s*\[\s*\d+\s*,\s*\d+\s*,\s*\d+\s*\]\s*-Join\s*''\s*\)"
+        ),
+        regex!(
+            r"(?i)&?\s*\(\s*\(\s*(?:Get-Variable|GV|Variable)\s+'?\*mdr\*'?\s*\)\.Name\s*\[[\d,\s]+\]\s*-Join\s*''\s*\)"
+        ),
+        regex!(
+            r"(?i)&?\s*\(\s*\$VerbosePreference\.ToString\s*\(\s*\)\s*\[[\d,\s]+\]\s*-Join\s*''\s*\)"
+        ),
+        regex!(r"(?i)&?\s*\(\s*\$ShellId\s*\[\s*\d+\s*,\s*\d+\s*,\s*\d+\s*\]\s*-Join\s*''\s*\)"),
     ]
-    .into_iter()
-    .map(crate::regex_util::safe_regex)
-    .collect()
 });
 
 fn canonicalise_iex_indirection(s: &str) -> Option<String> {
@@ -478,8 +477,8 @@ fn canonicalise_iex_indirection(s: &str) -> Option<String> {
     if touched { Some(out) } else { None }
 }
 
-static SPLAT: LazyLock<Regex> =
-    LazyLock::new(|| crate::regex_util::safe_regex(r"@\(\s*([^()]*?)\s*\)\s*-join\s*''"));
+static SPLAT: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r"@\(\s*([^()]*?)\s*\)\s*-join\s*''"));
 
 fn collapse_splatting(s: &str) -> Option<String> {
     if !SPLAT.is_match(s) {
@@ -498,9 +497,9 @@ fn collapse_splatting(s: &str) -> Option<String> {
     Some(result.into_owned())
 }
 
-static GETCOMMAND: LazyLock<Regex> = LazyLock::new(|| {
-    crate::regex_util::safe_regex(
-        r"(?i)&\s*\(\s*\$ExecutionContext\.InvokeCommand\.GetCommand\s*\(\s*'([A-Za-z\-]+)'\s*,\s*'[A-Za-z]+'\s*\)\s*\)",
+static GETCOMMAND: LazyLock<&'static Regex> = LazyLock::new(|| {
+    regex!(
+        r"(?i)&\s*\(\s*\$ExecutionContext\.InvokeCommand\.GetCommand\s*\(\s*'([A-Za-z\-]+)'\s*,\s*'[A-Za-z]+'\s*\)\s*\)"
     )
 });
 
@@ -520,9 +519,8 @@ fn unwrap_getcommand_indirection(s: &str) -> Option<String> {
     )
 }
 
-static TYPERESOLVE: LazyLock<Regex> = LazyLock::new(|| {
-    crate::regex_util::safe_regex(r"(?i)\[type\]\s*\(\s*'([A-Za-z0-9\.\+]+)'\s*\)")
-});
+static TYPERESOLVE: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r"(?i)\[type\]\s*\(\s*'([A-Za-z0-9\.\+]+)'\s*\)"));
 
 fn inline_typeresolve(s: &str) -> Option<String> {
     if !TYPERESOLVE.is_match(s) {
@@ -538,8 +536,7 @@ fn inline_typeresolve(s: &str) -> Option<String> {
     )
 }
 
-static CONCAT: LazyLock<Regex> =
-    LazyLock::new(|| crate::regex_util::safe_regex(r#"'([^']*)'\s*\+\s*'([^']*)'"#));
+static CONCAT: LazyLock<&'static Regex> = LazyLock::new(|| regex!(r#"'([^']*)'\s*\+\s*'([^']*)'"#));
 
 fn fold_string_concatenations(s: &str) -> Option<String> {
     if !CONCAT.is_match(s) {
@@ -561,8 +558,8 @@ fn fold_string_concatenations(s: &str) -> Option<String> {
     Some(current)
 }
 
-static FORMAT_STR: LazyLock<Regex> =
-    LazyLock::new(|| crate::regex_util::safe_regex(r#"\(\s*['"]([^'"]*)['"]\s*-f\s*([^)]+)\)"#));
+static FORMAT_STR: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r#"\(\s*['"]([^'"]*)['"]\s*-f\s*([^)]+)\)"#));
 
 fn split_format_args(args_raw: &str) -> Vec<String> {
     let mut fields: Vec<String> = Vec::new();
@@ -665,9 +662,8 @@ fn fold_format_strings(s: &str) -> Option<String> {
     )
 }
 
-static ASCII_CHAIN: LazyLock<Regex> = LazyLock::new(|| {
-    crate::regex_util::safe_regex(r"\[(?i)char\]\s*\[(?i)byte\]\s*0x([0-9A-Fa-f]{2})")
-});
+static ASCII_CHAIN: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r"\[(?i)char\]\s*\[(?i)byte\]\s*0x([0-9A-Fa-f]{2})"));
 
 fn decode_ascii_chains(s: &str) -> Option<String> {
     if !ASCII_CHAIN.is_match(s) {
@@ -686,9 +682,8 @@ fn decode_ascii_chains(s: &str) -> Option<String> {
     )
 }
 
-static ENCODED_FLAG: LazyLock<Regex> = LazyLock::new(|| {
-    crate::regex_util::safe_regex(r"(?i)-e(?:nc(?:odedcommand)?)?\s+([A-Za-z0-9+/=]+)")
-});
+static ENCODED_FLAG: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r"(?i)-e(?:nc(?:odedcommand)?)?\s+([A-Za-z0-9+/=]+)"));
 
 fn extract_encoded_command(s: &str) -> Option<String> {
     ENCODED_FLAG.captures(s).and_then(|c: regex::Captures<'_>| {
@@ -696,9 +691,8 @@ fn extract_encoded_command(s: &str) -> Option<String> {
     })
 }
 
-static FROM_B64: LazyLock<Regex> = LazyLock::new(|| {
-    crate::regex_util::safe_regex(r#"FromBase64String\s*\(\s*['"]([A-Za-z0-9+/=]+)['"]\s*\)"#)
-});
+static FROM_B64: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r#"FromBase64String\s*\(\s*['"]([A-Za-z0-9+/=]+)['"]\s*\)"#));
 
 fn extract_compressed_payload(s: &str) -> Option<String> {
     FROM_B64.captures(s).and_then(|c: regex::Captures<'_>| {
@@ -721,19 +715,15 @@ fn decode_ascii_lossy(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
-static FLAG_NORM: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
-    let pairs: Vec<(&'static str, &'static str)> = vec![
-        (r"(?i)-w\s+hidden", "-WindowStyle Hidden"),
-        (r"(?i)-w(?:indowstyle)?\s+1", "-WindowStyle Hidden"),
-        (r"(?i)-nop\b", "-NoProfile"),
-        (r"(?i)-noni\b", "-NonInteractive"),
-        (r"(?i)-exec\s+bypass", "-ExecutionPolicy Bypass"),
-        (r"(?i)-ep\s+bypass", "-ExecutionPolicy Bypass"),
-    ];
-    pairs
-        .into_iter()
-        .map(|(p, r): (&'static str, &'static str)| (crate::regex_util::safe_regex(p), r))
-        .collect()
+static FLAG_NORM: LazyLock<Vec<(&'static Regex, &'static str)>> = LazyLock::new(|| {
+    vec![
+        (regex!(r"(?i)-w\s+hidden"), "-WindowStyle Hidden"),
+        (regex!(r"(?i)-w(?:indowstyle)?\s+1"), "-WindowStyle Hidden"),
+        (regex!(r"(?i)-nop\b"), "-NoProfile"),
+        (regex!(r"(?i)-noni\b"), "-NonInteractive"),
+        (regex!(r"(?i)-exec\s+bypass"), "-ExecutionPolicy Bypass"),
+        (regex!(r"(?i)-ep\s+bypass"), "-ExecutionPolicy Bypass"),
+    ]
 });
 
 fn canonicalise_powershell_flags(s: &str) -> Option<String> {
@@ -748,10 +738,8 @@ fn canonicalise_powershell_flags(s: &str) -> Option<String> {
     if touched { Some(out) } else { None }
 }
 
-static WMIC_PROXY: LazyLock<Regex> = LazyLock::new(|| {
-    crate::regex_util::safe_regex(
-        r#"(?i)wmic\s+process\s+call\s+create\s+['"]?(?P<cmd>powershell[^'"]*)['"]?"#,
-    )
+static WMIC_PROXY: LazyLock<&'static Regex> = LazyLock::new(|| {
+    regex!(r#"(?i)wmic\s+process\s+call\s+create\s+['"]?(?P<cmd>powershell[^'"]*)['"]?"#)
 });
 
 fn strip_wmic_proxy(s: &str) -> Option<String> {

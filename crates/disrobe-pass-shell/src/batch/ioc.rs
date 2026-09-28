@@ -1,8 +1,8 @@
-use std::sync::LazyLock;
-
 use disrobe_core::ioc::{Indicator, extract_with_extra};
+use lazy_regex::regex;
 use regex::Regex;
 use serde::Serialize;
+use std::sync::LazyLock;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -77,13 +77,11 @@ const ADMIN_COMMANDS: &[&str] = &[
     "fsutil",
 ];
 
-static UNC_RE: LazyLock<Regex> =
-    LazyLock::new(|| crate::regex_util::safe_regex(r#"\\\\[A-Za-z0-9._\-]+\\[^\s"'<>|]{1,256}"#));
+static UNC_RE: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r#"\\\\[A-Za-z0-9._\-]+\\[^\s"'<>|]{1,256}"#));
 
-static WEBDAV_RE: LazyLock<Regex> = LazyLock::new(|| {
-    crate::regex_util::safe_regex(
-        r#"(?i)\\\\[A-Za-z0-9._\-]+@(?:ssl|\d{1,5})(?:@(?:ssl|\d{1,5}))?\\[^\s"'<>|]{0,256}"#,
-    )
+static WEBDAV_RE: LazyLock<&'static Regex> = LazyLock::new(|| {
+    regex!(r#"(?i)\\\\[A-Za-z0-9._\-]+@(?:ssl|\d{1,5})(?:@(?:ssl|\d{1,5}))?\\[^\s"'<>|]{0,256}"#)
 });
 
 #[must_use]

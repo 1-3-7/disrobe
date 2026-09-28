@@ -1,21 +1,22 @@
 use std::collections::BTreeMap;
 use std::sync::LazyLock;
 
+use lazy_regex::regex;
 use regex::Regex;
 
 use crate::batch::expand::expand_repeated;
 
 pub const MAX_FOR_ITERATIONS: usize = 4096;
 
-static FOR_L: LazyLock<Regex> = LazyLock::new(|| {
-    crate::regex_util::safe_regex(
-        r#"(?i)^\s*for\s+/l\s+%%?(?P<var>[A-Za-z])\s+in\s*\(\s*(?P<start>-?\d+)\s*,\s*(?P<step>-?\d+)\s*,\s*(?P<end>-?\d+)\s*\)\s*do\s+(?P<body>.+)$"#,
+static FOR_L: LazyLock<&'static Regex> = LazyLock::new(|| {
+    regex!(
+        r#"(?i)^\s*for\s+/l\s+%%?(?P<var>[A-Za-z])\s+in\s*\(\s*(?P<start>-?\d+)\s*,\s*(?P<step>-?\d+)\s*,\s*(?P<end>-?\d+)\s*\)\s*do\s+(?P<body>.+)$"#
     )
 });
 
-static FOR_F_STRING: LazyLock<Regex> = LazyLock::new(|| {
-    crate::regex_util::safe_regex(
-        r#"(?i)^\s*for\s+/f\s+(?:"(?P<opts>[^"]*)"\s+)?%%?(?P<var>[A-Za-z])\s+in\s*\(\s*(?P<src>"[^"]*"|[^)]*?)\s*\)\s*do\s+(?P<body>.+)$"#,
+static FOR_F_STRING: LazyLock<&'static Regex> = LazyLock::new(|| {
+    regex!(
+        r#"(?i)^\s*for\s+/f\s+(?:"(?P<opts>[^"]*)"\s+)?%%?(?P<var>[A-Za-z])\s+in\s*\(\s*(?P<src>"[^"]*"|[^)]*?)\s*\)\s*do\s+(?P<body>.+)$"#
     )
 });
 

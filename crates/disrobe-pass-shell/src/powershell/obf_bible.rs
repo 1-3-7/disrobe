@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::LazyLock;
 
+use lazy_regex::regex;
 use regex::Regex;
 use serde::Serialize;
 
@@ -12,17 +13,14 @@ pub struct ObfTechnique {
     pub example: String,
 }
 
-static TECH_HEADER: LazyLock<Regex> = LazyLock::new(|| {
-    crate::regex_util::safe_regex(
-        r"(?m)^##\s+(?P<id>[A-Z0-9]+(?:\.[A-Z0-9]+)*)\s+-\s+(?P<title>.+)$",
-    )
-});
+static TECH_HEADER: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r"(?m)^##\s+(?P<id>[A-Z0-9]+(?:\.[A-Z0-9]+)*)\s+-\s+(?P<title>.+)$"));
 
-static CATEGORY_HEADER: LazyLock<Regex> =
-    LazyLock::new(|| crate::regex_util::safe_regex(r"(?m)^#\s+(?P<cat>.+)$"));
+static CATEGORY_HEADER: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r"(?m)^#\s+(?P<cat>.+)$"));
 
-static EXAMPLE_FENCE: LazyLock<Regex> =
-    LazyLock::new(|| crate::regex_util::safe_regex(r"(?s)```(?:powershell)?\s*(?P<body>.*?)```"));
+static EXAMPLE_FENCE: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r"(?s)```(?:powershell)?\s*(?P<body>.*?)```"));
 
 #[must_use]
 pub fn parse_bible(markdown: &str) -> Vec<ObfTechnique> {

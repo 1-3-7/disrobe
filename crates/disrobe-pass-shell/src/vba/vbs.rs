@@ -1,7 +1,7 @@
-use std::sync::LazyLock;
-
+use lazy_regex::regex;
 use regex::Regex;
 use serde::Serialize;
+use std::sync::LazyLock;
 
 use crate::policy::DynamicPolicy;
 
@@ -15,19 +15,17 @@ pub struct VbsReport {
     pub output: String,
 }
 
-static CHR_CALL: LazyLock<Regex> =
-    LazyLock::new(|| crate::regex_util::safe_regex(r"(?i)Chr(?:W|B)?\s*\(\s*(\d{1,5})\s*\)"));
+static CHR_CALL: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r"(?i)Chr(?:W|B)?\s*\(\s*(\d{1,5})\s*\)"));
 
-static STRREVERSE: LazyLock<Regex> = LazyLock::new(|| {
-    crate::regex_util::safe_regex(r#"(?i)StrReverse\s*\(\s*"((?:[^"]|"")*)"\s*\)"#)
-});
+static STRREVERSE: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r#"(?i)StrReverse\s*\(\s*"((?:[^"]|"")*)"\s*\)"#));
 
-static EXECUTE: LazyLock<Regex> = LazyLock::new(|| {
-    crate::regex_util::safe_regex(r#"(?is)Execute(?:Global)?\s*\(\s*"((?:[^"]|"")*)"\s*\)"#)
-});
+static EXECUTE: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r#"(?is)Execute(?:Global)?\s*\(\s*"((?:[^"]|"")*)"\s*\)"#));
 
-static CONCAT: LazyLock<Regex> =
-    LazyLock::new(|| crate::regex_util::safe_regex(r#""((?:[^"]|"")*)"\s*&\s*"((?:[^"]|"")*)""#));
+static CONCAT: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r#""((?:[^"]|"")*)"\s*&\s*"((?:[^"]|"")*)""#));
 
 #[must_use]
 pub fn deobfuscate_vbs(input: &str) -> VbsReport {

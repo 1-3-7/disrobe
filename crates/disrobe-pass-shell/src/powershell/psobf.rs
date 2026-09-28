@@ -3,6 +3,7 @@ use std::sync::LazyLock;
 
 use disrobe_core::codec::{Base64Alphabet, Base64Padding, base64_decode};
 use flate2::read::DeflateDecoder;
+use lazy_regex::regex;
 use regex::Regex;
 use serde::Serialize;
 
@@ -17,14 +18,12 @@ pub struct PsobfReport {
     pub output: String,
 }
 
-static PSOBF_HEADER: LazyLock<Regex> =
-    LazyLock::new(|| crate::regex_util::safe_regex(r"(?i)psobf|TaurusOmar"));
+static PSOBF_HEADER: LazyLock<&'static Regex> = LazyLock::new(|| regex!(r"(?i)psobf|TaurusOmar"));
 
-static DEFLATE_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| crate::regex_util::safe_regex(r#"DeflateStream[^']*'([A-Za-z0-9+/=]+)'"#));
+static DEFLATE_PATTERN: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r#"DeflateStream[^']*'([A-Za-z0-9+/=]+)'"#));
 
-static OBFUS_WRAP: LazyLock<Regex> =
-    LazyLock::new(|| crate::regex_util::safe_regex(r"(?s)<obfus(.*?)cate>"));
+static OBFUS_WRAP: LazyLock<&'static Regex> = LazyLock::new(|| regex!(r"(?s)<obfus(.*?)cate>"));
 
 pub fn reverse_psobf(input: &str) -> Result<PsobfReport> {
     let mut stages: Vec<String> = Vec::new();

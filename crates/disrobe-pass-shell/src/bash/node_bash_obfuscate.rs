@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::LazyLock;
 
+use lazy_regex::regex;
 use regex::Regex;
 use serde::Serialize;
 
@@ -18,15 +19,12 @@ const MAX_TABLE_ENTRIES: usize = 200_000;
 const MAX_RECOVERED_OUTPUT: usize = 32 * 1024 * 1024;
 const SEPARATOR_VAR: &str = "z";
 
-static HEADER: LazyLock<Regex> =
-    LazyLock::new(|| crate::regex_util::safe_regex("(?m)^\\s*z=\"\\n?\\s*\";"));
+static HEADER: LazyLock<&'static Regex> = LazyLock::new(|| regex!("(?m)^\\s*z=\"\\n?\\s*\";"));
 
-static EVAL_TRAILER: LazyLock<Regex> = LazyLock::new(|| {
-    crate::regex_util::safe_regex("(?s)\\beval\\s+\"((?:\\$[A-Za-z][A-Za-z0-9]*)+)\"\\s*$")
-});
+static EVAL_TRAILER: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!("(?s)\\beval\\s+\"((?:\\$[A-Za-z][A-Za-z0-9]*)+)\"\\s*$"));
 
-static CHUNK_ASSIGN: LazyLock<Regex> =
-    LazyLock::new(|| crate::regex_util::safe_regex("[A-Za-z][A-Za-z0-9]*z='"));
+static CHUNK_ASSIGN: LazyLock<&'static Regex> = LazyLock::new(|| regex!("[A-Za-z][A-Za-z0-9]*z='"));
 
 #[must_use]
 pub fn is_node_bash_obfuscate(input: &str) -> bool {

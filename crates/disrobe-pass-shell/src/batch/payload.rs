@@ -1,8 +1,8 @@
-use std::sync::LazyLock;
-
 use disrobe_core::codec::{Base64Alphabet, Base64Padding, base64_decode};
+use lazy_regex::regex;
 use regex::Regex;
 use serde::Serialize;
+use std::sync::LazyLock;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum PayloadKind {
@@ -28,27 +28,23 @@ pub struct EmbeddedPayload {
     pub content: String,
 }
 
-static POWERSHELL_INVOKE: LazyLock<Regex> = LazyLock::new(|| {
-    crate::regex_util::safe_regex(
-        r#"(?is)(?:powershell|pwsh)(?:\.exe)?\b(?P<flags>[^\r\n&|]*?)(?:-c(?:ommand)?|-e(?:nc(?:odedcommand)?)?)\s+(?P<body>.+?)(?:\r?\n|$)"#,
+static POWERSHELL_INVOKE: LazyLock<&'static Regex> = LazyLock::new(|| {
+    regex!(
+        r#"(?is)(?:powershell|pwsh)(?:\.exe)?\b(?P<flags>[^\r\n&|]*?)(?:-c(?:ommand)?|-e(?:nc(?:odedcommand)?)?)\s+(?P<body>.+?)(?:\r?\n|$)"#
     )
 });
 
-static PS_ENCODED_FLAG: LazyLock<Regex> =
-    LazyLock::new(|| crate::regex_util::safe_regex(r"(?i)-e(?:nc(?:odedcommand)?)?\b"));
+static PS_ENCODED_FLAG: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r"(?i)-e(?:nc(?:odedcommand)?)?\b"));
 
-static WSCRIPT_LANG: LazyLock<Regex> = LazyLock::new(|| {
-    crate::regex_util::safe_regex(
-        r#"(?i)<script\s+language\s*=\s*"(?P<lang>[a-z]+)"\s*>(?P<body>.*?)</script>"#,
-    )
+static WSCRIPT_LANG: LazyLock<&'static Regex> = LazyLock::new(|| {
+    regex!(r#"(?i)<script\s+language\s*=\s*"(?P<lang>[a-z]+)"\s*>(?P<body>.*?)</script>"#)
 });
 
-static B64_RUN: LazyLock<Regex> =
-    LazyLock::new(|| crate::regex_util::safe_regex(r"[A-Za-z0-9+/]{32,}={0,2}"));
+static B64_RUN: LazyLock<&'static Regex> = LazyLock::new(|| regex!(r"[A-Za-z0-9+/]{32,}={0,2}"));
 
-static PS_CONCAT_CHAIN: LazyLock<Regex> = LazyLock::new(|| {
-    crate::regex_util::safe_regex(r#"(?:'[^']*'|"[^"]*")(?:\s*\+\s*(?:'[^']*'|"[^"]*")){2,}"#)
-});
+static PS_CONCAT_CHAIN: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r#"(?:'[^']*'|"[^"]*")(?:\s*\+\s*(?:'[^']*'|"[^"]*")){2,}"#));
 
 const MIN_DECODE_LEN: usize = 16;
 const MAX_DECODE_LEN: usize = 1 << 20;

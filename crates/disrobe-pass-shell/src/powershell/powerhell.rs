@@ -1,9 +1,9 @@
-use std::sync::LazyLock;
-
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STD;
+use lazy_regex::regex;
 use regex::Regex;
 use serde::Serialize;
+use std::sync::LazyLock;
 
 use crate::error::{Error, Result};
 
@@ -15,11 +15,11 @@ pub struct PowerHellReport {
     pub output: String,
 }
 
-static B64_BLOB: LazyLock<Regex> =
-    LazyLock::new(|| crate::regex_util::safe_regex(r"(?ms)^[A-Za-z0-9+/=]{120,}$"));
+static B64_BLOB: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r"(?ms)^[A-Za-z0-9+/=]{120,}$"));
 
-static POWERHELL_HEADER: LazyLock<Regex> =
-    LazyLock::new(|| crate::regex_util::safe_regex(r"(?i)PowerHell|Power-Hell|powerhell-2026"));
+static POWERHELL_HEADER: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r"(?i)PowerHell|Power-Hell|powerhell-2026"));
 
 pub fn reverse_powerhell(input: &str) -> Result<PowerHellReport> {
     let mut stages: Vec<String> = Vec::new();
