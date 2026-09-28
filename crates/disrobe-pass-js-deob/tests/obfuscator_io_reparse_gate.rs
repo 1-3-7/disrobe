@@ -30,3 +30,29 @@ fn a_regex_brace_that_truncates_a_flattened_switch_is_refused() {
         ),
     }
 }
+
+const FLATTENED_WITH_NESTED_TEMPLATE: &str = "function g(s){var _0x5e6f='1|0'['split']('|');var _0x7a8b=0x0;while(!![]){switch(_0x5e6f[_0x7a8b++]){case'0':return `<${`}${s}{`}>`;case'1':s=s+'?';continue;}break;}}console['log'](g('b'));";
+
+#[test]
+fn a_nested_template_holding_braces_is_kept_whole_or_refused() {
+    assert!(
+        parses(FLATTENED_WITH_NESTED_TEMPLATE),
+        "the probe input itself must be valid JavaScript"
+    );
+    match obfuscator_io_deobfuscate(FLATTENED_WITH_NESTED_TEMPLATE, &ObfuscatorIoOptions::all()) {
+        Err(Error::CorruptedByTransform { transform }) => assert!(!transform.is_empty()),
+        Err(other) => panic!("unexpected refusal: {other}"),
+        Ok(output) => {
+            assert!(
+                parses(&output.source),
+                "obfuscator.io reported success on unparsable output:\n{}",
+                output.source
+            );
+            assert!(
+                output.source.contains("`<${`}${s}{`}>`"),
+                "the nested template changed:\n{}",
+                output.source
+            );
+        }
+    }
+}
