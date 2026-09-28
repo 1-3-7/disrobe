@@ -376,6 +376,54 @@ struct ParsedLuaStringLiterals {
     limit_exceeded_at: Option<usize>,
 }
 
+pub(crate) fn read_lua_quoted(bytes: &[u8], start: usize, quote: u8) -> (String, usize) {
+    let mut s: Vec<u8> = Vec::new();
+    let mut i: usize = start;
+    while i < bytes.len() && bytes[i] != quote {
+        if bytes[i] == b'\\' {
+            let digits: usize = bytes
+                .get(i + 1..)
+                .unwrap_or_default()
+                .iter()
+                .take(3)
+                .take_while(|byte: &&u8| byte.is_ascii_digit())
+                .count();
+            if digits == 0 {
+                if let Some(&c) = bytes.get(i + 1) {
+                    s.push(lua_escape(c));
+                }
+                i += 2;
+            } else {
+                if let Some(code) = std::str::from_utf8(&bytes[i + 1..i + 1 + digits])
+                    .ok()
+                    .and_then(|text: &str| text.parse::<u16>().ok())
+                    .and_then(|value: u16| u8::try_from(value).ok())
+                {
+                    s.push(code);
+                }
+                i += 1 + digits;
+            }
+        } else {
+            s.push(bytes[i]);
+            i += 1;
+        }
+    }
+    (String::from_utf8_lossy(&s).into_owned(), i)
+}
+
+const fn lua_escape(byte: u8) -> u8 {
+    match byte {
+        b'n' => b'\n',
+        b't' => b'\t',
+        b'r' => b'\r',
+        b'a' => 0x07,
+        b'b' => 0x08,
+        b'f' => 0x0c,
+        b'v' => 0x0b,
+        other => other,
+    }
+}
+
 fn parse_lua_string_literals_inner(
     body: &str,
     max_entries: Option<usize>,
@@ -391,34 +439,9 @@ fn parse_lua_string_literals_inner(
                     literals: out,
                 };
             }
-            let mut s: String = String::new();
-            i += 1;
-            while i < bytes.len() && bytes[i] != b'"' {
-                if bytes[i] == b'\\' {
-                    let digits: String = body[i + 1..]
-                        .chars()
-                        .take_while(char::is_ascii_digit)
-                        .take(3)
-                        .collect();
-                    if digits.is_empty() {
-                        if let Some(&c) = bytes.get(i + 1) {
-                            s.push(c as char);
-                        }
-                        i += 2;
-                    } else {
-                        if let Ok(code) = digits.parse::<u32>()
-                            && let Some(c) = char::from_u32(code)
-                        {
-                            s.push(c);
-                        }
-                        i += 1 + digits.len();
-                    }
-                } else {
-                    s.push(bytes[i] as char);
-                    i += 1;
-                }
-            }
-            out.push(s);
+            let (literal, close): (String, usize) = read_lua_quoted(bytes, i + 1, b'"');
+            out.push(literal);
+            i = close;
         }
         i += 1;
     }
@@ -1023,6 +1046,19 @@ pub fn looks_like_lua(plain: &[u8]) -> bool {
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quoted_literals_decode_as_lua_byte_strings() {
+        let source: &[u8] = "\"\\195\\169t\\195\\169\" \"a\\nb\\tc\\\\\" \"über\"".as_bytes();
+        let (first, close): (String, usize) = read_lua_quoted(source, 1, b'"');
+        assert_eq!(first, "été");
+        assert_eq!(source[close], b'"');
+        let second_start: usize = close + 3;
+        let (second, close): (String, usize) = read_lua_quoted(source, second_start, b'"');
+        assert_eq!(second, "a\nb\tc\\");
+        let (third, _): (String, usize) = read_lua_quoted(source, close + 3, b'"');
+        assert_eq!(third, "über");
+    }
 
     const STD_BASE64: &[u8; 64] =
         b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

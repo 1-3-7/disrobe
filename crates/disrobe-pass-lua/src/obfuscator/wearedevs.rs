@@ -803,34 +803,10 @@ fn parse_string_literals(body: &str) -> Vec<String> {
     while i < bytes.len() {
         if bytes[i] == b'\'' || bytes[i] == b'"' {
             let quote: u8 = bytes[i];
-            let mut s: String = String::new();
-            i += 1;
-            while i < bytes.len() && bytes[i] != quote {
-                if bytes[i] == b'\\' {
-                    let digits: String = body[i + 1..]
-                        .chars()
-                        .take_while(char::is_ascii_digit)
-                        .take(3)
-                        .collect();
-                    if digits.is_empty() {
-                        if i + 1 < bytes.len() {
-                            s.push(bytes[i + 1] as char);
-                        }
-                        i += 2;
-                    } else {
-                        if let Ok(code) = digits.parse::<u32>()
-                            && let Some(c) = char::from_u32(code)
-                        {
-                            s.push(c);
-                        }
-                        i += 1 + digits.len();
-                    }
-                } else {
-                    s.push(bytes[i] as char);
-                    i += 1;
-                }
-            }
-            out.push(s);
+            let (literal, close): (String, usize) =
+                super::string_decode::read_lua_quoted(bytes, i + 1, quote);
+            out.push(literal);
+            i = close;
         }
         i += 1;
     }
