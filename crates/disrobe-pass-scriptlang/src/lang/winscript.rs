@@ -1416,13 +1416,13 @@ fn expand_batch_var(bytes: &[u8], start: usize, vars: &BatchVars) -> Option<(Str
     let chars: Vec<char> = value.chars().collect();
     let total: isize = chars.len() as isize;
     let begin: isize = if offset < 0 {
-        (total + offset).max(0)
+        total.saturating_add(offset).max(0)
     } else {
         offset.min(total)
     };
     let end: isize = match length {
-        Some(len) if len < 0 => (total + len).max(begin),
-        Some(len) => (begin + len).min(total),
+        Some(len) if len < 0 => total.saturating_add(len).max(begin),
+        Some(len) => begin.saturating_add(len).min(total),
         None => total,
     };
     if begin >= end {
