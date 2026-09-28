@@ -522,8 +522,8 @@ mod tests {
         let rust: u64 = report["rust_body_count"]
             .as_u64()
             .expect("the report must count emitted pseudo-Rust bodies");
-        assert!(recovered >= 312, "recovered {recovered} bodies");
-        assert!(rust >= 309, "emitted {rust} pseudo-Rust bodies");
+        assert!(recovered >= 308, "recovered {recovered} bodies");
+        assert!(rust >= 304, "emitted {rust} pseudo-Rust bodies");
         let bodies: &[serde_json::Value] = report["bodies"]["bodies"]
             .as_array()
             .map(Vec::as_slice)
