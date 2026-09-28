@@ -53,15 +53,6 @@ pub fn unminify(source: &str) -> (String, UnminifyStats) {
         AstRuleId::LiteralNormalize,
     ]);
     for _ in 0..MAX_FIX_POINT_PASSES {
-        let (next, normalized): (String, AstUnminifyStats) = normalize.run(&out);
-        out = next;
-        stats.literals_normalized += normalized.boolean_shorthands_normalized
-            + normalized.void_undefineds_normalized
-            + normalized.double_not_coercions_normalized
-            + normalized.string_concats_folded;
-        stats.members_dotted += normalized.bracket_accesses_dotted;
-        stats.arithmetic_folded += normalized.numeric_constants_folded;
-
         let (next, split_stats): (String, string_split::StringSplitStats) =
             string_split::fold_string_concat(&out);
         out = next;
@@ -74,6 +65,15 @@ pub fn unminify(source: &str) -> (String, UnminifyStats) {
         let (next, n): (String, usize) = arithmetic::decimalize_radix_literals(&out);
         out = next;
         stats.radix_literals_decimalized += n;
+
+        let (next, normalized): (String, AstUnminifyStats) = normalize.run(&out);
+        out = next;
+        stats.literals_normalized += normalized.boolean_shorthands_normalized
+            + normalized.void_undefineds_normalized
+            + normalized.double_not_coercions_normalized
+            + normalized.string_concats_folded;
+        stats.members_dotted += normalized.bracket_accesses_dotted;
+        stats.arithmetic_folded += normalized.numeric_constants_folded;
 
         let (next, globals_stats): (String, globals::GlobalsEvalStats) =
             globals::evaluate_globals(&out);
