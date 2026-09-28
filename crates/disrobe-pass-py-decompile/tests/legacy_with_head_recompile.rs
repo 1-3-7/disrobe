@@ -16,7 +16,6 @@ use crate::common::band::{
 
 const STABLE_VERSIONS: &[&str] = &["3.8", "3.9", "3.10", "3.11", "3.12", "3.13", "3.14"];
 const PRERELEASE: &[&str] = &["3.15"];
-const LEGACY_WITH_VERSIONS: &[&str] = &["3.8", "3.9", "3.10"];
 
 fn assert_recompiles(label: &str, program: &str) {
     let band: Vec<BandInterpreter> = resolve_band(STABLE_VERSIONS, PRERELEASE);
@@ -68,7 +67,7 @@ fn if_else_before_a_with_keeps_one_arm() {
 fn a_conditional_context_expression_is_recovered_or_refused() {
     let program: &str = "def f(x, a, b, g):\n    with (a if x else b):\n        g()\n";
     let label: &str = "conditional_context_expression";
-    let band: Vec<BandInterpreter> = resolve_band(LEGACY_WITH_VERSIONS, &[]);
+    let band: Vec<BandInterpreter> = resolve_band(STABLE_VERSIONS, &[]);
     assert!(
         !band.is_empty(),
         "{label}: no CPython interpreter installed"

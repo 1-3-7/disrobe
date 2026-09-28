@@ -9285,6 +9285,20 @@ fn recover_with_setup(
         (_, Some((copy_idx, modern_end))) => (copy_idx, modern_end),
         (None, None) => return Ok(None),
     };
+    if let Some(branch) = (ctx_start..ctx_end).find(|&k: &usize| {
+        resolve_jump_target(stream, k, &stream.ops[k]).is_some()
+            && !is_value_form_shortcircuit(&stream.ops, k)
+    }) {
+        return Err(crate::error::DecompileError::AstDesync {
+            offset: stream
+                .offsets
+                .get(branch)
+                .map_or(0, |offset: &u32| *offset as usize),
+            reason: "a with statement's context expression branches; simulating it would keep \
+                     one arm"
+                .to_owned(),
+        });
+    }
     let (stmts, residual): (Vec<Stmt>, Vec<Expr>) =
         build_linear_stmts_sim(code, &stream.ops[ctx_start..ctx_end])?;
     let carried_fused_store: usize = usize::from(matches!(
