@@ -18,7 +18,16 @@ const STABLE_VERSIONS: &[&str] = &["3.8", "3.9", "3.10", "3.11", "3.12", "3.13",
 const PRERELEASE: &[&str] = &["3.15"];
 
 fn assert_recompiles(label: &str, program: &str) {
-    let band: Vec<BandInterpreter> = resolve_band(STABLE_VERSIONS, PRERELEASE);
+    assert_recompiles_on(label, program, STABLE_VERSIONS, PRERELEASE);
+}
+
+fn assert_recompiles_on(
+    label: &str,
+    program: &str,
+    versions: &[&'static str],
+    prerelease: &[&'static str],
+) {
+    let band: Vec<BandInterpreter> = resolve_band(versions, prerelease);
     assert!(
         !band.is_empty(),
         "{label}: no requested CPython interpreter installed; cannot prove recompile-equivalence"
@@ -92,5 +101,23 @@ fn statements_after_a_with_are_kept() {
     assert_recompiles(
         "statements_after_with",
         "def f(m, g):\n    with m as v:\n        g(v)\n    g(3)\n    return v\n",
+    );
+}
+
+#[test]
+fn a_with_inside_a_try_keeps_the_try_and_its_handler() {
+    assert_recompiles_on(
+        "with_inside_try",
+        "def f(name, g):
+    try:
+        with open(name) as fp:
+            data = fp.read()
+        g(data)
+    except OSError:
+        data = None
+    return data
+",
+        &["3.8", "3.9", "3.10"],
+        &[],
     );
 }

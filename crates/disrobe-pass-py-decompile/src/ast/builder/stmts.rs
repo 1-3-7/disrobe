@@ -962,14 +962,12 @@ fn legacy_with_continuation(
             .next()
             .map(|end_finally: &usize| end_finally + 1)
             .filter(|exit: &usize| *exit < hi)?;
-        let enclosing_block_ends_after: bool =
-            stream.pre311_pop_block_idx.range(exit..hi).next().is_some()
-                || stream
-                    .pre311_end_finally_idx
-                    .range(exit..hi)
-                    .next()
-                    .is_some();
-        (!enclosing_block_ends_after).then_some(exit)
+        let enclosing_handler_follows: bool = stream
+            .pre311_end_finally_idx
+            .range(exit..hi)
+            .next()
+            .is_some();
+        (!enclosing_handler_follows).then_some(exit)
     })
 }
 
@@ -1295,6 +1293,9 @@ fn structure_legacy_with(
         legacy_with_cleanup_idx(stream, setup_idx, rel).map_or(hi, |idx: usize| idx.min(hi));
     if legacy_with_is_enclosed_by_guard(stream, lo, hi, setup_idx, cleanup_idx)
         || head_has_statement_control_flow(stream, lo, setup_idx)
+        || find_try_region(stream, lo, hi).is_some_and(|region: TryRegion| {
+            region.try_start <= setup_idx && setup_idx < region.handler_start
+        })
     {
         return Ok(None);
     }
