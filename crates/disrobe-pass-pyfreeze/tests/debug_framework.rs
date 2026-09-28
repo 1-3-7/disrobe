@@ -137,10 +137,6 @@ fn set_emits_decision_points() {
         "expected the bytecode-to-source handoff decision point, got:\n{stderr}"
     );
     assert!(
-        stderr.contains("[debug:pyfreeze] roundtrip = "),
-        "expected the roundtrip grade decision point, got:\n{stderr}"
-    );
-    assert!(
         stderr.contains("[debug:pyfreeze] recovered-modules = "),
         "expected the recovered-modules summary decision point, got:\n{stderr}"
     );

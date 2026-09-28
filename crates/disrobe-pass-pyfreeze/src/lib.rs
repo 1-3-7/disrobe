@@ -95,8 +95,8 @@ pub use provenance_header::{
     python_extracted_header, python_unpacked_header, render_extracted_with_header,
 };
 pub use recover::{
-    RecoveredModule, RoundtripGrade, SurfacedNative, recover_bytecode, recover_bytecode_file,
-    recover_raw_marshal, surface_native, surface_native_file,
+    RecoveredModule, SurfacedNative, recover_bytecode, recover_bytecode_file, recover_raw_marshal,
+    surface_native, surface_native_file,
 };
 
 #[cfg(test)]

@@ -191,7 +191,7 @@ Disrobe is built to open hostile files, but it is not a sandbox. Run it on input
 | PHP taken from the input, in loader and decode loops | By default in PHP recovery | The in-house PHP subset interpreter: 4 million steps, 64 MiB of heap, 16 MiB of output, 2 seconds |
 | JS-Confuser control-flow VM bytecode | By default when JS-Confuser's VM is detected | The in-house VM interpreter: 200,000 steps |
 | garble literal thunks | By default on x86-64 garble binaries | The in-house x86-64 emulator: 200,000 steps per thunk, 8 seconds per scan |
-| A local CPython of the matching version, if one is on `PATH` | By default in `py decompile`, `pyfreeze extract`, and `nuitka decompile` | Compiles the recovered source; 60 seconds (120 for Nuitka); `py decompile --no-roundtrip` skips it. The interpreter starts in the current directory without `-I`, so a `py_compile.py` there would run: do not run Disrobe from inside an extracted sample tree |
+| A local CPython of the matching version, if one is on `PATH` | By default in `py decompile` and `nuitka decompile` | Compiles the recovered source; 60 seconds (120 for Nuitka); `py decompile --no-roundtrip` skips it. The interpreter starts in the current directory without `-I`, so a `py_compile.py` there would run: do not run Disrobe from inside an extracted sample tree |
 | Installed archive tools: unrar, 7z, bsdtar, pkgutil, and hdiutil, which mounts the DMG or ISO image | When the built-in reader cannot extract a RAR, PKG, DMG, or ISO file | 180 seconds per extraction |
 | Ghidra headless | `native decompile --backend ghidra` | 10 minutes |
 | Package managers | `install` and `doctor --auto-install` | 10 minutes per package |

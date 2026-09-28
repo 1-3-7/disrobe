@@ -3,9 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use disrobe_pass_native::{Arch, DisasmInsn, NativeFormat, disassemble};
-use disrobe_pass_py_decompile::{
-    NativeDecompile, RoundtripOutcome, RoundtripStatus, decompile_pyc, roundtrip_native,
-};
+use disrobe_pass_py_decompile::{NativeDecompile, decompile_pyc};
 use disrobe_py_marshal::{PyVersion, magic_for};
 use object::{Architecture, Object, ObjectSection, SectionKind};
 
@@ -22,36 +20,6 @@ pub struct RecoveredModule {
     pub python_minor: u8,
     pub recovered_directly: bool,
     pub fallback_reason: Option<String>,
-    pub roundtrip: RoundtripGrade,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RoundtripGrade {
-    Perfect,
-    Semantic,
-    CodeDiff(String),
-    NoInterpreter(String),
-    RecompileFailed(String),
-    NotAttempted,
-}
-
-impl RoundtripGrade {
-    #[must_use]
-    pub const fn label(&self) -> &'static str {
-        match self {
-            Self::Perfect => "perfect",
-            Self::Semantic => "semantic",
-            Self::CodeDiff(_) => "code-diff",
-            Self::NoInterpreter(_) => "no-interpreter",
-            Self::RecompileFailed(_) => "recompile-failed",
-            Self::NotAttempted => "not-attempted",
-        }
-    }
-
-    #[must_use]
-    pub const fn is_equivalent(&self) -> bool {
-        matches!(self, Self::Perfect | Self::Semantic)
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -106,14 +74,6 @@ pub fn recover_bytecode(name: &str, pyc_bytes: &[u8]) -> Result<RecoveredModule>
             decompiled.recovered_directly
         )
     });
-    let outcome: RoundtripOutcome = roundtrip_native(
-        &decompiled.source,
-        &decompiled.code,
-        &decompiled.decompile_version,
-        decompiled.marshal_version,
-    );
-    let roundtrip: RoundtripGrade = grade(outcome.status);
-    dbg_kv("roundtrip", || format!("{name} -> {}", roundtrip.label()));
     Ok(RecoveredModule {
         name: name.to_owned(),
         source: decompiled.source,
@@ -121,7 +81,6 @@ pub fn recover_bytecode(name: &str, pyc_bytes: &[u8]) -> Result<RecoveredModule>
         python_minor: decompiled.marshal_version.minor,
         recovered_directly: decompiled.recovered_directly,
         fallback_reason: decompiled.fallback_reason,
-        roundtrip,
     })
 }
 
@@ -145,17 +104,6 @@ pub fn synthesize_pyc(marshal_bytes: &[u8], major: u8, minor: u8) -> Result<Vec<
     out.extend(std::iter::repeat_n(0u8, header_len - 4));
     out.extend_from_slice(marshal_bytes);
     Ok(out)
-}
-
-fn grade(status: RoundtripStatus) -> RoundtripGrade {
-    match status {
-        RoundtripStatus::Perfect => RoundtripGrade::Perfect,
-        RoundtripStatus::Semantic => RoundtripGrade::Semantic,
-        RoundtripStatus::CodeDiff { detail } => RoundtripGrade::CodeDiff(detail),
-        RoundtripStatus::NoInterpreter { hint } => RoundtripGrade::NoInterpreter(hint),
-        RoundtripStatus::RecompileFailed { stderr } => RoundtripGrade::RecompileFailed(stderr),
-        RoundtripStatus::Skipped => RoundtripGrade::NotAttempted,
-    }
 }
 
 pub fn surface_native_file(name: &str, disk_path: &Path) -> Result<SurfacedNative> {
@@ -309,13 +257,5 @@ mod tests {
         assert!(looks_like_bytecode("app.pyc"));
         assert!(looks_like_bytecode("app.pyo"));
         assert!(!looks_like_bytecode("ext.pyd"));
-    }
-
-    #[test]
-    fn grade_round_trip_equivalence_predicate() {
-        assert!(RoundtripGrade::Perfect.is_equivalent());
-        assert!(RoundtripGrade::Semantic.is_equivalent());
-        assert!(!RoundtripGrade::NotAttempted.is_equivalent());
-        assert!(!RoundtripGrade::NoInterpreter("x".to_owned()).is_equivalent());
     }
 }

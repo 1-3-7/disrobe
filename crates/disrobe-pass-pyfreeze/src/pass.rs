@@ -29,14 +29,6 @@ impl PyfreezeRecovery {
     pub const fn is_empty(&self) -> bool {
         self.modules.is_empty() && self.native.is_empty()
     }
-
-    #[must_use]
-    pub fn equivalent_module_count(&self) -> usize {
-        self.modules
-            .iter()
-            .filter(|m: &&RecoveredModule| m.roundtrip.is_equivalent())
-            .count()
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -71,7 +63,7 @@ pub fn extract(input: &Path, out_dir: &Path) -> Result<PyfreezeOutput> {
                 && let Ok(module) = res.recover_main(major, minor)
             {
                 dbg_kv("py2exe-recover-main", || {
-                    format!("{} -> {}", module.name, module.roundtrip.label())
+                    format!("{} -> {} bytes of source", module.name, module.source.len())
                 });
                 recovery.modules.push(module);
             }
@@ -223,9 +215,6 @@ pub fn extract(input: &Path, out_dir: &Path) -> Result<PyfreezeOutput> {
     };
 
     dbg_kv("recovered-modules", || recovery.modules.len().to_string());
-    dbg_kv("equivalent-modules", || {
-        recovery.equivalent_module_count().to_string()
-    });
     dbg_kv("surfaced-native", || recovery.native.len().to_string());
 
     let extracted_count: usize = manifest.entry_count;
@@ -298,7 +287,7 @@ fn recover_disk_entries<'a>(
             match recover_bytecode_file(name, disk_path) {
                 Ok(module) => {
                     dbg_kv("recover-bytecode", || {
-                        format!("{name} -> {}", module.roundtrip.label())
+                        format!("{name} -> {} bytes of source", module.source.len())
                     });
                     recovery.modules.push(module);
                 }

@@ -2,15 +2,17 @@
     clippy::expect_used,
     clippy::unwrap_used,
     clippy::panic,
-    clippy::print_stderr,
     clippy::case_sensitive_file_extension_comparisons
 )]
 
 use std::io::{Cursor, Write};
 use std::path::PathBuf;
 
+use disrobe_pass_py_decompile::{
+    NativeDecompile, RoundtripOutcome, RoundtripStatus, decompile_pyc, roundtrip_native,
+};
 use disrobe_pass_pyfreeze::{
-    Detection, FreezerKind, PyfreezeOutput, RecoveredModule, RoundtripGrade, detect_bytes, extract,
+    Detection, FreezerKind, PyfreezeOutput, RecoveredModule, detect_bytes, extract,
 };
 use zip::write::SimpleFileOptions;
 
@@ -64,20 +66,29 @@ fn assert_known_module_recovered(module: &RecoveredModule) {
         "recovered source must carry both known functions from {KNOWN_SOURCE:?}; got:\n{}",
         module.source
     );
-    match &module.roundtrip {
-        RoundtripGrade::Perfect | RoundtripGrade::Semantic => {}
-        RoundtripGrade::NoInterpreter(hint) => {
-            eprintln!(
-                "[pex_shiv_pyc_recovery] HONEST-PARTIAL: source recovered for `{}` but recompile \
-                 oracle unavailable ({hint}); bytecode equivalence not graded",
-                module.name
-            );
-        }
-        other => panic!(
-            "recovered `{}` must recompile to equivalent bytecode; got {other:?}\nsource:\n{}",
-            module.name, module.source
+    let reference: NativeDecompile = decompile_pyc(KNOWN_PYC).expect("known_mod.pyc decompiles");
+    assert_eq!(
+        module.source, reference.source,
+        "extraction must hand back the same source as decompiling the member directly"
+    );
+    let outcome: RoundtripOutcome = roundtrip_native(
+        &reference.source,
+        &reference.code,
+        &reference.decompile_version,
+        reference.marshal_version,
+    );
+    assert!(
+        matches!(
+            outcome.status,
+            RoundtripStatus::Perfect | RoundtripStatus::Semantic
         ),
-    }
+        "recovered `{}` must recompile to equivalent bytecode under the matching CPython (a \
+         missing interpreter is an environment gap: install it with `uv python install`); got \
+         {:?}\nsource:\n{}",
+        module.name,
+        outcome.status,
+        module.source
+    );
 }
 
 #[test]
@@ -124,12 +135,6 @@ fn pex_container_with_pyc_populates_recovery_field() {
             )
         });
     assert_known_module_recovered(module);
-
-    eprintln!(
-        "[pex_shiv_pyc_recovery] OK pex: recovered {} module(s), known_mod grade={}",
-        out.recovery.modules.len(),
-        module.roundtrip.label()
-    );
 }
 
 #[test]
@@ -176,12 +181,6 @@ fn shiv_container_with_pyc_populates_recovery_field() {
             )
         });
     assert_known_module_recovered(module);
-
-    eprintln!(
-        "[pex_shiv_pyc_recovery] OK shiv: recovered {} module(s), known_mod grade={}",
-        out.recovery.modules.len(),
-        module.roundtrip.label()
-    );
 }
 
 #[test]
