@@ -175,7 +175,7 @@ fn read_field_record(
     })
 }
 
-fn read_mangled_type(
+pub(crate) fn read_mangled_type(
     view: &SliceView<'_>,
     field_off: usize,
     demangle: &dyn Fn(&str) -> Option<String>,

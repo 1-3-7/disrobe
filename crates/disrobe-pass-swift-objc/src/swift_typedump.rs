@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::macho::{self, ParsedSlice, Section, SliceView};
 use crate::swift_reflect::{self, FieldDescriptorKind, SwiftField};
 
+const UNRESOLVED_TYPE_REFERENCE: &str = "/* unresolved type reference */";
 const TYPE_CONTEXT_KIND_MASK: u32 = 0x1F;
 const CONTEXT_KIND_MODULE: u32 = 0x00;
 const CONTEXT_KIND_PROTOCOL: u32 = 0x03;
@@ -401,18 +402,13 @@ fn read_class_superclass(
         return None;
     }
     let superclass_field: usize = descriptor_off + TYPE_DESCRIPTOR_FIXED_FIELDS * RELATIVE_PTR_WORD;
-    let target: usize = view.resolve_relative(superclass_field)?;
-    let mangled: String = view.cstr_at_offset(target, MAX_NAME_LEN)?;
-    if mangled.is_empty() {
-        return None;
-    }
-    if let Some(d) = demangle(&mangled) {
-        return Some(d);
-    }
-    if mangled.bytes().any(|b: u8| b < 0x20) {
-        return None;
-    }
-    Some(mangled)
+    let (mangled, demangled): (Option<String>, Option<String>) =
+        swift_reflect::read_mangled_type(view, superclass_field, demangle);
+    Some(
+        demangled
+            .or(mangled)
+            .unwrap_or_else(|| UNRESOLVED_TYPE_REFERENCE.to_owned()),
+    )
 }
 
 fn read_fields_for_descriptor(
@@ -739,14 +735,13 @@ fn parse_associated_types(
         for w in 0..witness_count {
             let rec: usize = cursor + ASSOCTY_HEADER + w * elem_size;
             let name: Option<String> = rel_clean_string(view, rec);
-            let substituted: Option<String> = view
-                .resolve_relative(rec + RELATIVE_PTR_WORD)
-                .and_then(|t: usize| view.cstr_at_offset(t, MAX_NAME_LEN));
-            if let (Some(n), Some(sub)) = (name, substituted) {
-                let demangled: Option<String> = demangle(&sub).filter(|d: &String| d != &sub);
+            let (substituted, demangled): (Option<String>, Option<String>) =
+                swift_reflect::read_mangled_type(view, rec + RELATIVE_PTR_WORD, demangle);
+            if let Some(n) = name {
                 witnesses.push(SwiftAssociatedTypeWitness {
                     name: n,
-                    substituted_mangled_type: sub,
+                    substituted_mangled_type: substituted
+                        .unwrap_or_else(|| UNRESOLVED_TYPE_REFERENCE.to_owned()),
                     substituted_demangled_type: demangled,
                 });
             }
