@@ -52,7 +52,7 @@ impl Detector for PyarmorDetector {
 
     fn detect(&self, ctx: &DetectContext<'_>) -> Option<DetectVerdict> {
         let bytes: &[u8] = ctx.bytes;
-        if let Ok(magic) = sniff(bytes) {
+        if let Some(magic) = sniff_marked(bytes) {
             return Some(verdict_for_raw_payload(magic, bytes));
         }
         if let Ok(text) = core::str::from_utf8(bytes) {
@@ -355,6 +355,7 @@ fn compute_limitations(out: &StaticUnpackOutput) -> Vec<String> {
         );
     }
     if matches!(out.pyarmor_version, PyarmorVersion::V9)
+        && !matches!(out.protection_kind, ProtectionKind::Bcc)
         && out
             .header_metadata
             .next_segment_offset
@@ -479,11 +480,7 @@ fn verdict_for_raw_payload(magic: WrapperMagic, payload: &[u8]) -> DetectVerdict
 fn verdict_for_decoded(detection: &Detection, decoded: &[u8]) -> DetectVerdict {
     let (format_tag, version_label): (&'static str, &'static str) =
         tag_for_version(detection.version, detection.protection);
-    let confidence: f32 = if detection.serial.is_some() {
-        0.96
-    } else {
-        0.9
-    };
+    let confidence: f32 = decoded_confidence(&detection);
     let marker: &'static str =
         if matches!(detection.version, PyarmorVersion::V8 | PyarmorVersion::V9) {
             "PY-magic"
@@ -566,6 +563,21 @@ fn markers_for(magic: WrapperMagic) -> Vec<&'static str> {
 
 fn detect_super_mode(payload: &[u8]) -> bool {
     matches!(payload.get(20), Some(0x08)) && !payload.windows(7).any(|w: &[u8]| w == b"__pyarm")
+}
+
+fn sniff_marked(bytes: &[u8]) -> Option<WrapperMagic> {
+    sniff(bytes).ok().filter(|magic: &WrapperMagic| {
+        matches!(magic, WrapperMagic::Py8Or9 | WrapperMagic::PyArmor6Or7)
+    })
+}
+
+const fn decoded_confidence(detection: &Detection) -> f32 {
+    match detection.confidence {
+        DetectionConfidence::High if detection.serial.is_some() => 0.96,
+        DetectionConfidence::High => 0.9,
+        DetectionConfidence::Medium => 0.8,
+        DetectionConfidence::Low => 0.6,
+    }
 }
 
 fn find_wrapper_text_payload(bytes: &[u8]) -> Option<usize> {
@@ -746,11 +758,7 @@ impl ObfuscatorCatalog for PyarmorDetector {
             let decoded: core::result::Result<(Detection, Vec<u8>), crate::error::Error> =
                 detect_from_wrapper(text);
             if let Ok((detection, _payload)) = decoded {
-                let confidence: f32 = if detection.serial.is_some() {
-                    0.96
-                } else {
-                    0.9
-                };
+                let confidence: f32 = decoded_confidence(&detection);
                 let markers: Vec<String> = vec![
                     tag_for_version(detection.version, detection.protection)
                         .1
@@ -763,7 +771,7 @@ impl ObfuscatorCatalog for PyarmorDetector {
                 ));
             }
         }
-        let (magic, payload): (WrapperMagic, &[u8]) = if let Ok(m) = sniff(bytes) {
+        let (magic, payload): (WrapperMagic, &[u8]) = if let Some(m) = sniff_marked(bytes) {
             (m, bytes)
         } else if let Some(offset) = find_wrapper_text_payload(bytes) {
             let payload: &[u8] = &bytes[offset..];
@@ -852,6 +860,24 @@ mod tests {
         };
         let v: Option<DetectVerdict> = Detector::detect(&PyarmorDetector, &ctx);
         assert!(v.is_some(), "wrapper-embedded payload must be detected");
+    }
+
+    #[test]
+    fn a_raw_file_starting_with_a_legacy_lead_byte_is_not_pyarmor() {
+        for lead in [0x01_u8, 0x02, 0x05] {
+            let mut bytes: Vec<u8> = vec![lead];
+            bytes.extend_from_slice(b" ordinary binary data follows the first byte");
+            let ctx: DetectContext<'_> = DetectContext {
+                bytes: &bytes,
+                path_hint: None,
+                parent_hint: None,
+                depth: 0,
+            };
+            assert!(
+                Detector::detect(&PyarmorDetector, &ctx).is_none(),
+                "lead byte 0x{lead:02x} alone is not a PyArmor wrapper"
+            );
+        }
     }
 
     #[test]
