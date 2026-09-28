@@ -1831,10 +1831,42 @@ fn validate_archived_operation(
     Ok(())
 }
 
+impl ArchivedNirModule {
+    pub(crate) fn validate_resource_limits(&self) -> Result<(), NirProvenanceError> {
+        let mut budget: NirResourceBudget = NirResourceBudget::default();
+        budget.add_retained::<NirModule>(1)?;
+        self.charge_resource_limits(&mut budget)
+    }
+
+    fn charge_resource_limits(
+        &self,
+        budget: &mut NirResourceBudget,
+    ) -> Result<(), NirProvenanceError> {
+        let archived_functions: &[ArchivedNirFunction] = self.functions.as_slice();
+        let archived_symbols: &[ArchivedNirSymbol] = self.symbols.as_slice();
+        budget.add_functions(archived_functions.len())?;
+        budget.add_symbols(archived_symbols.len())?;
+        for function in archived_functions {
+            budget.add_string(function.name.len())?;
+            budget.add_string(function.source.label.len())?;
+            let archived_instructions: &[ArchivedNirInstr] = function.instructions.as_slice();
+            budget.add_instructions(archived_instructions.len())?;
+            for instruction in archived_instructions {
+                budget.add_string(instruction.mnemonic.len())?;
+                validate_archived_strings(&instruction.operands, budget)?;
+                budget.add_string(instruction.source.label.len())?;
+                validate_archived_operation(&instruction.op, budget)?;
+            }
+        }
+        for symbol in archived_symbols {
+            budget.add_string(symbol.name.len())?;
+        }
+        Ok(())
+    }
+}
+
 impl ArchivedNirArtifact {
     pub(crate) fn validate_resource_limits(&self) -> Result<(), NirProvenanceError> {
-        let archived_functions: &[ArchivedNirFunction] = self.module.functions.as_slice();
-        let archived_symbols: &[ArchivedNirSymbol] = self.module.symbols.as_slice();
         let archived_units: &[ArchivedSourceUnit] = self.source_units.as_slice();
         let unit_limit: u64 =
             u64::try_from(MAX_SOURCE_UNITS).map_err(|_error| NirProvenanceError::IndexOverflow)?;
@@ -1847,25 +1879,9 @@ impl ArchivedNirArtifact {
         }
         let mut budget: NirResourceBudget = NirResourceBudget::default();
         budget.add_retained::<NirArtifact>(1)?;
-        budget.add_functions(archived_functions.len())?;
-        budget.add_symbols(archived_symbols.len())?;
         budget.add_work(archived_units.len())?;
         budget.add_retained::<SourceUnit>(archived_units.len())?;
-        for function in archived_functions {
-            budget.add_string(function.name.len())?;
-            budget.add_string(function.source.label.len())?;
-            let archived_instructions: &[ArchivedNirInstr] = function.instructions.as_slice();
-            budget.add_instructions(archived_instructions.len())?;
-            for instruction in archived_instructions {
-                budget.add_string(instruction.mnemonic.len())?;
-                validate_archived_strings(&instruction.operands, &mut budget)?;
-                budget.add_string(instruction.source.label.len())?;
-                validate_archived_operation(&instruction.op, &mut budget)?;
-            }
-        }
-        for symbol in archived_symbols {
-            budget.add_string(symbol.name.len())?;
-        }
+        self.module.charge_resource_limits(&mut budget)?;
         let byte_limit: u64 =
             u64::try_from(MAX_SOURCE_BYTES).map_err(|_error| NirProvenanceError::IndexOverflow)?;
         let mut byte_total: u64 = 0;

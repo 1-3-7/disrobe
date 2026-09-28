@@ -21,6 +21,9 @@ pub fn encode_nir(module: &NirModule) -> Result<Vec<u8>, NirCodecError> {
 pub fn decode_nir(bytes: &[u8]) -> Result<NirModule, NirCodecError> {
     let archived: &ArchivedNirModule = rkyv::access::<ArchivedNirModule, RkyvError>(bytes)
         .map_err(|e| NirCodecError::Access(e.to_string()))?;
+    archived
+        .validate_resource_limits()
+        .map_err(|error| NirCodecError::Deserialize(error.to_string()))?;
     rkyv::deserialize::<NirModule, RkyvError>(archived)
         .map_err(|e| NirCodecError::Deserialize(e.to_string()))
 }
