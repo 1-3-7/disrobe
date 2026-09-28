@@ -11,6 +11,7 @@ const MAX_CANDIDATE_CONSTS: usize = 4096;
 const MAX_CANDIDATE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_DECOMPRESS_ATTEMPTS: usize = 1024;
 const MAX_CODE_WALK_DEPTH: usize = 64;
+const LZMA_MEMLIMIT: u64 = 256 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy)]
 struct ZipperLimits {
@@ -292,7 +293,12 @@ fn inflate_xz(blob: &[u8], budget: &mut DecodeBudget, recovered_limit: u64) -> O
     if !budget.take() {
         return None;
     }
-    read_capped(liblzma::read::XzDecoder::new(blob), recovered_limit)
+    let stream: liblzma::stream::Stream =
+        liblzma::stream::Stream::new_stream_decoder(LZMA_MEMLIMIT, 0).ok()?;
+    read_capped(
+        liblzma::read::XzDecoder::new_stream(blob, stream),
+        recovered_limit,
+    )
 }
 
 fn inflate_lzma_alone(
@@ -307,7 +313,7 @@ fn inflate_lzma_alone(
         return None;
     }
     let stream: liblzma::stream::Stream =
-        liblzma::stream::Stream::new_lzma_decoder(u64::MAX).ok()?;
+        liblzma::stream::Stream::new_lzma_decoder(LZMA_MEMLIMIT).ok()?;
     read_capped(
         liblzma::read::XzDecoder::new_stream(blob, stream),
         recovered_limit,
@@ -340,6 +346,20 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+
+    #[test]
+    fn an_lzma_header_declaring_a_4_gib_dictionary_is_not_decoded() {
+        let mut bomb: Vec<u8> = vec![0x5d];
+        bomb.extend_from_slice(&u32::MAX.to_le_bytes());
+        bomb.extend_from_slice(&u64::MAX.to_le_bytes());
+        bomb.extend_from_slice(&[0u8; 16]);
+        let mut budget: DecodeBudget = DecodeBudget { remaining: 1 };
+        assert!(
+            inflate_lzma_alone(&bomb, &mut budget, MAX_RECOVERED_BYTES).is_none(),
+            "a dictionary above LZMA_MEMLIMIT must be refused, not allocated"
+        );
+        assert!(u64::from(u32::MAX) > LZMA_MEMLIMIT);
+    }
 
     fn fixture_dir() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
