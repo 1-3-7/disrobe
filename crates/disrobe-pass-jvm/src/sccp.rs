@@ -256,12 +256,25 @@ fn reachable_from_entry(cfg: &Cfg) -> BTreeSet<BlockId> {
     seen
 }
 
+fn state_local_is_read_outside(cfg: &Cfg, insns: &[Instruction], dispatcher: &Dispatcher) -> bool {
+    let (start, end): (usize, usize) = cfg.blocks[dispatcher.block.0 as usize].insn_range;
+    insns
+        .iter()
+        .enumerate()
+        .any(|(index, insn): (usize, &Instruction)| {
+            (index < start || index >= end) && iload_local(insn) == Some(dispatcher.state_local)
+        })
+}
+
 fn unflatten_dispatcher(
     cfg: &mut Cfg,
     insns: &[Instruction],
     dispatcher: &Dispatcher,
     report: &mut SccpReport,
 ) -> bool {
+    if state_local_is_read_outside(cfg, insns, dispatcher) {
+        return false;
+    }
     let predecessors: Vec<BlockId> = cfg.blocks[dispatcher.block.0 as usize].predecessors.clone();
     let mut redirects: Vec<(BlockId, BlockId, usize)> = Vec::new();
     for pred in predecessors {
@@ -705,6 +718,44 @@ mod tests {
             "unflattened CFG must be fully reducible"
         );
         assert!(!s.had_irreducible, "structurer must not flag irreducible");
+    }
+
+    #[test]
+    fn a_dispatcher_whose_state_is_read_elsewhere_is_left_flattened() {
+        const DISPATCHER: usize = 3;
+        const CASE0: usize = 5;
+        const CASE1: usize = 10;
+        const DEFAULT: usize = 12;
+        let items: Vec<Item> = vec![
+            Item::Op(0x03),
+            Item::Op(0x3D),
+            Item::Goto(DISPATCHER),
+            Item::Op(0x1C),
+            Item::LookupSwitch {
+                default: DEFAULT,
+                pairs: vec![(0, CASE0), (1, CASE1)],
+            },
+            Item::Op(0x05),
+            Item::Op(0x3C),
+            Item::Op(0x04),
+            Item::Op(0x3D),
+            Item::Goto(DISPATCHER),
+            Item::Op(0x1C),
+            Item::Op(0xAC),
+            Item::Op(0x04),
+            Item::Op(0xAC),
+        ];
+        let body: Vec<u8> = assemble(&items);
+        let insns: Vec<Instruction> = disassemble(&body).expect("disassemble");
+        let code: CodeAttribute = code_attr(body);
+        let mut cfg: Cfg = build_cfg(&insns, &code, |_| None).expect("cfg");
+        let dispatcher: BlockId = dispatcher_block_id(&cfg, &insns);
+        let report: SccpReport = simplify_flattened_cfg(&mut cfg, &insns);
+        assert_eq!(report.dispatchers_unflattened, 0);
+        assert!(
+            reachable_from_entry(&cfg).contains(&dispatcher),
+            "the case that returns the state must still see the stored state"
+        );
     }
 
     #[test]
