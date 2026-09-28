@@ -200,9 +200,10 @@ fn tokenize(src: &str) -> Vec<Token> {
             if i < bytes.len() {
                 i += 1;
             }
+            i = src.ceil_char_boundary(i.min(src.len()));
             out.push(Token {
                 kind: Tk::Str,
-                text: src[start..i.min(src.len())].to_owned(),
+                text: src[start..i].to_owned(),
             });
             continue;
         }
@@ -228,11 +229,7 @@ fn tokenize(src: &str) -> Vec<Token> {
             });
             continue;
         }
-        let two: &str = if i + 2 <= src.len() {
-            &src[i..i + 2]
-        } else {
-            ""
-        };
+        let two: &str = src.get(i..i + 2).unwrap_or("");
         if matches!(two, "<=" | ">=" | "==" | "~=" | "..") {
             out.push(Token {
                 kind: Tk::Op,
@@ -241,11 +238,15 @@ fn tokenize(src: &str) -> Vec<Token> {
             i += 2;
             continue;
         }
+        let width: usize = src
+            .get(i..)
+            .and_then(|rest: &str| rest.chars().next())
+            .map_or(1, char::len_utf8);
         out.push(Token {
             kind: Tk::Op,
-            text: src[i..=i].to_owned(),
+            text: src.get(i..i + width).unwrap_or_default().to_owned(),
         });
-        i += 1;
+        i += width;
     }
     out
 }
@@ -1108,4 +1109,20 @@ fn assigns_self(b: &str, v: &str) -> bool {
         return tail.contains(&format!("[{v}]("));
     }
     false
+}
+
+#[cfg(test)]
+mod tokenize_tests {
+    use super::tokenize;
+
+    #[test]
+    fn multibyte_text_tokenizes_without_splitting_a_character() {
+        for src in [r#"x="a\é""#, "é<é", "a§", r#""\€"#] {
+            let text: String = tokenize(src)
+                .into_iter()
+                .map(|token: super::Token| token.text)
+                .collect();
+            assert!(!text.is_empty(), "{src}");
+        }
+    }
 }

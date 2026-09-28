@@ -269,9 +269,10 @@ fn decode_wearedevs(text: &str) -> Option<PeelResult> {
 fn lift_dispatch(text: &str) -> Option<DispatchLift> {
     let marker: &str = "while W do";
     let dispatch_start: usize = text.find(marker)?;
-    let scan_end: usize = text
-        .len()
-        .min(dispatch_start.saturating_add(DISPATCH_SCAN_LIMIT));
+    let scan_end: usize = text.floor_char_boundary(
+        text.len()
+            .min(dispatch_start.saturating_add(DISPATCH_SCAN_LIMIT)),
+    );
     let after_marker: usize = dispatch_start + marker.len();
     let body: &str = &text[after_marker..scan_end];
     let inner: &str = trim_trailing_loop_end(body);

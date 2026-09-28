@@ -507,6 +507,7 @@ fn extract_named_lua_byte_buffer(text: &str, names: &[&str], magic: &[u8]) -> Op
     for name in names {
         let mut search_start: usize = 0;
         while search_start < bytes.len().min(BOOTSTRAP_SCAN_LIMIT) {
+            search_start = text.ceil_char_boundary(search_start);
             let value_start: usize = match find_lua_assignment_value(&text[search_start..], name) {
                 Some(pos) => search_start + pos,
                 None => break,
