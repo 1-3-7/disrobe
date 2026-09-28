@@ -267,8 +267,14 @@ fn insert_interval(covered: &mut Vec<(u64, u64)>, a: u64, b: u64) {
     if a >= b {
         return;
     }
-    covered.push((a, b));
-    *covered = merged(std::mem::take(covered));
+    let first: usize = covered.partition_point(|&(_, end): &(u64, u64)| end < a);
+    let last: usize = covered.partition_point(|&(start, _): &(u64, u64)| start <= b);
+    let merged_span: (u64, u64) = if first < last {
+        (a.min(covered[first].0), b.max(covered[last - 1].1))
+    } else {
+        (a, b)
+    };
+    covered.splice(first..last, [merged_span]);
 }
 
 fn merged(mut intervals: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
@@ -304,4 +310,28 @@ fn count_covered_pages(covered: &[(u64, u64)], size: u64) -> u64 {
         }
     }
     covered_pages
+}
+
+#[cfg(test)]
+mod insert_tests {
+    use super::{insert_interval, merged};
+
+    #[test]
+    fn a_sorted_insert_matches_merging_the_whole_list() {
+        let mut covered: Vec<(u64, u64)> = Vec::new();
+        let mut all: Vec<(u64, u64)> = Vec::new();
+        let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
+        for _ in 0..2_000 {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let start: u64 = (seed >> 33) % 100_000;
+            let len: u64 = (seed >> 13) % 700;
+            insert_interval(&mut covered, start, start + len);
+            if len > 0 {
+                all.push((start, start + len));
+            }
+            assert_eq!(covered, merged(all.clone()));
+        }
+    }
 }

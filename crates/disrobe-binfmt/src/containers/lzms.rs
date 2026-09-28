@@ -1300,19 +1300,10 @@ fn get_offset_slot(offset: u32) -> usize {
 }
 
 fn get_slot(value: u32, slot_base_tab: &[u32], num_slots: usize) -> usize {
-    let mut l: usize = 0;
-    let mut r: usize = num_slots - 1;
-    loop {
-        let slot: usize = usize::midpoint(l, r);
-        if value >= slot_base_tab[slot] {
-            if value < slot_base_tab[slot + 1] {
-                return slot;
-            }
-            l = slot + 1;
-        } else {
-            r = slot - 1;
-        }
-    }
+    let bases: &[u32] = &slot_base_tab[..num_slots.min(slot_base_tab.len())];
+    bases
+        .partition_point(|base: &u32| *base <= value)
+        .saturating_sub(1)
 }
 
 fn get_num_offset_slots(uncompressed_size: usize) -> usize {
@@ -2010,6 +2001,17 @@ pub fn lzms_compress(input: &[u8]) -> Vec<u8> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_slot_lookup_outside_the_table_is_clamped_not_a_panic() {
+        let bases: [u32; 4] = [1, 2, 4, 8];
+        assert_eq!(get_slot(0, &bases, 3), 0);
+        assert_eq!(get_slot(1, &bases, 3), 0);
+        assert_eq!(get_slot(3, &bases, 3), 1);
+        assert_eq!(get_slot(4, &bases, 3), 2);
+        assert_eq!(get_slot(u32::MAX, &bases, 3), 2);
+        assert_eq!(get_slot(u32::MAX, &bases, 9), 3);
+    }
 
     #[derive(Clone, Copy)]
     enum BitClass {
