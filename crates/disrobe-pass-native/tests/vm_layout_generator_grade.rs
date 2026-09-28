@@ -146,9 +146,9 @@ fn overlapping_roles_refuse_instead_of_emitting_an_ambiguous_handler() {
     );
 }
 
-const LAYOUTS_REPORTED_AS_DOING_NOTHING: &[(i64, i64)] = &[(40, 48), (-24, 56), (32, 40)];
+const MISMATCHED_LAYOUTS: &[(i64, i64)] = &[(40, 48), (-24, 56), (32, 40), (24, 8), (16, 8)];
 
-const LAYOUTS_THAT_ABSTAIN: &[(i64, i64)] = &[(24, 8), (16, 8)];
+const ADVANCE_PC_ONLY: [u8; 8] = [0x48, 0x8b, 0x47, 0x18, 0x83, 0x00, 0x01, 0xc3];
 
 #[test]
 fn the_assumed_layout_is_the_only_one_that_recovers() {
@@ -160,10 +160,7 @@ fn the_assumed_layout_is_the_only_one_that_recovers() {
         MicroOp::Binary { op: BinKind::Sar },
         "the layout run_probe hardcodes must classify"
     );
-    for (value_stack, stack_pointer) in LAYOUTS_REPORTED_AS_DOING_NOTHING
-        .iter()
-        .chain(LAYOUTS_THAT_ABSTAIN)
-    {
+    for (value_stack, stack_pointer) in MISMATCHED_LAYOUTS {
         let shifted: GeneratedLayout = build_layout(*value_stack, *stack_pointer);
         let body: Vec<u8> = emit_arithmetic_shift_handler(&shifted).expect("shifted layout emits");
         assert_ne!(
@@ -176,29 +173,21 @@ fn the_assumed_layout_is_the_only_one_that_recovers() {
 }
 
 #[test]
-fn a_mismatched_layout_is_reported_as_a_no_op_rather_than_refused() {
-    let mut reported_as_nothing: Vec<(i64, i64)> = Vec::new();
-    let mut refused: Vec<(i64, i64)> = Vec::new();
-    for (value_stack, stack_pointer) in LAYOUTS_REPORTED_AS_DOING_NOTHING
-        .iter()
-        .chain(LAYOUTS_THAT_ABSTAIN)
-    {
+fn a_mismatched_layout_is_refused_rather_than_reported_as_a_no_op() {
+    for (value_stack, stack_pointer) in MISMATCHED_LAYOUTS {
         let shifted: GeneratedLayout = build_layout(*value_stack, *stack_pointer);
         let body: Vec<u8> = emit_arithmetic_shift_handler(&shifted).expect("shifted layout emits");
-        match summarize(&body).micro_op {
-            MicroOp::Nop => reported_as_nothing.push((*value_stack, *stack_pointer)),
-            MicroOp::Unknown => refused.push((*value_stack, *stack_pointer)),
-            other => panic!("stack={value_stack} sp={stack_pointer} produced {other:?}"),
-        }
+        assert_eq!(
+            summarize(&body).micro_op,
+            MicroOp::Unknown,
+            "stack={value_stack} sp={stack_pointer}: a handler that shifts a value through a              context layout the probe does not model must be refused, not summarized"
+        );
     }
-    assert_eq!(
-        reported_as_nothing, LAYOUTS_REPORTED_AS_DOING_NOTHING,
-        "this pins a known defect by name: a handler that shifts a value is reported as doing \
-         nothing when its context layout is not the one run_probe assumes. Inferring the layout \
-         is what removes these, and this list must shrink to empty rather than change membership"
-    );
-    assert_eq!(
-        refused, LAYOUTS_THAT_ABSTAIN,
-        "the layouts that refuse must keep refusing"
-    );
+}
+
+#[test]
+fn a_handler_that_only_advances_the_program_counter_is_a_no_op() {
+    let semantics: HandlerSemantics = summarize(&ADVANCE_PC_ONLY);
+    assert_eq!(semantics.micro_op, MicroOp::Nop);
+    assert_eq!(semantics.pc_advance, 1);
 }

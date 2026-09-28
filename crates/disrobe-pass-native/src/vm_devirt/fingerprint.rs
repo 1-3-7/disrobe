@@ -39,6 +39,15 @@ const HOST_RETURN_SENTINEL: u64 = 0x00AB_CDEF_0000_0000;
 
 const VM_HALT_PC: u64 = 0xFFFF_FFFF;
 
+const PROBE_REGIONS: [(u64, usize); 6] = [
+    (CTX_BASE, 0x1000),
+    (REGS_BASE, 0x1000),
+    (STACK_BASE, 0x2000),
+    (PC_CELL, 0x2000),
+    (SP_CELL, 0x1000),
+    (SCRATCH_BASE, 0x1000),
+];
+
 struct ProbeVector {
     regs: [i64; NUM_PROBE_REGS],
     stack: [i64; STACK_INIT_DEPTH],
@@ -54,6 +63,7 @@ struct ProbeOutcome {
     sp_after: i64,
     pc_after: u64,
     halted: bool,
+    only_pc_written: bool,
 }
 
 pub fn fingerprint_handlers(
@@ -272,8 +282,9 @@ fn run_probe(
 
     cpu.regs.rip = handler.va;
 
+    let memory_before: Vec<u8> = probe_memory(&cpu)?;
     let mut host: HaltHost = HaltHost;
-    let _ = run_until_return(&mut cpu, &mut host);
+    let faulted: bool = run_until_return(&mut cpu, &mut host);
 
     let mut regs_after: Vec<i64> = Vec::with_capacity(NUM_PROBE_REGS);
     for i in 0..NUM_PROBE_REGS {
@@ -285,6 +296,8 @@ fn run_probe(
     }
     let sp_after: i64 = i64::from(cpu.mem.read_u32(SP_CELL).ok()? as i32);
     let pc_after: u64 = u64::from(cpu.mem.read_u32(PC_CELL).ok()?);
+    cpu.mem.write_u32(PC_CELL, 0).ok()?;
+    let only_pc_written: bool = !faulted && probe_memory(&cpu)? == memory_before;
 
     Some(ProbeOutcome {
         regs_after,
@@ -292,7 +305,16 @@ fn run_probe(
         sp_after,
         pc_after,
         halted: true,
+        only_pc_written,
     })
+}
+
+fn probe_memory(cpu: &Cpu) -> Option<Vec<u8>> {
+    let mut bytes: Vec<u8> = Vec::new();
+    for (base, len) in PROBE_REGIONS {
+        bytes.extend(cpu.mem.read(base, len).ok()?);
+    }
+    Some(bytes)
 }
 
 fn write_ptr(cpu: &mut Cpu, bitness: Bitness, at: u64, value: u64) -> Option<()> {
@@ -329,12 +351,11 @@ fn set_arg0(cpu: &mut Cpu, bitness: Bitness, value: u64, stack_ptr: u64) {
 
 fn run_until_return(cpu: &mut Cpu, host: &mut HaltHost) -> bool {
     const STEP_CAP: u64 = 200_000;
-    matches!(
+    !matches!(
         cpu.run(host, STEP_CAP),
         Ok(crate::stub_emu::ExitReason::JumpedOutOfRange { .. })
             | Ok(crate::stub_emu::ExitReason::StepCap(_))
             | Ok(crate::stub_emu::ExitReason::HostHalt(_))
-            | Ok(crate::stub_emu::ExitReason::GuestFault(_))
     )
 }
 
@@ -714,7 +735,7 @@ fn detect_return(outcomes: &[ProbeOutcome]) -> bool {
 
 fn detect_nop(vectors: &[ProbeVector], outcomes: &[ProbeOutcome]) -> bool {
     for (v, o) in vectors.iter().zip(outcomes.iter()) {
-        if o.sp_after != STACK_INIT_DEPTH as i64 {
+        if !o.only_pc_written || o.sp_after != STACK_INIT_DEPTH as i64 {
             return false;
         }
         for (i, value) in v.stack.iter().enumerate() {
@@ -849,6 +870,7 @@ mod tests {
             sp_after: depth as i64,
             pc_after: 0,
             halted: true,
+            only_pc_written: true,
         }
     }
 
@@ -1055,6 +1077,7 @@ mod tests {
                     sp_after: STACK_INIT_DEPTH as i64 - 1,
                     pc_after: if index % 2 == 0 { 1 } else { 2 },
                     halted: true,
+                    only_pc_written: true,
                 }
             })
             .collect();
