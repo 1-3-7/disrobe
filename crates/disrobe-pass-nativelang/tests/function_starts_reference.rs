@@ -11,15 +11,42 @@ fn fixture() -> PathBuf {
         .join("../../corpus/mobile/macho-mac/SwiftHello.original")
 }
 
+const OBJDUMP_CANDIDATES: [&str; 6] = [
+    "llvm-objdump",
+    "llvm-objdump-20",
+    "llvm-objdump-19",
+    "llvm-objdump-18",
+    "llvm-objdump-17",
+    "objdump",
+];
+
+fn llvm_objdump() -> &'static str {
+    OBJDUMP_CANDIDATES
+        .into_iter()
+        .find(|candidate: &&str| {
+            Command::new(candidate)
+                .arg("--version")
+                .output()
+                .is_ok_and(|output: Output| {
+                    output.status.success()
+                        && String::from_utf8_lossy(&output.stdout).contains("LLVM")
+                })
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "an LLVM objdump is required as the function-starts reference; none of {OBJDUMP_CANDIDATES:?} reports LLVM"
+            )
+        })
+}
+
 fn llvm_objdump_function_starts(path: &PathBuf) -> BTreeSet<u64> {
-    let output: Output = Command::new("llvm-objdump")
+    let tool: &str = llvm_objdump();
+    let output: Output = Command::new(tool)
         .arg("--macho")
         .arg("--function-starts")
         .arg(path)
         .output()
-        .unwrap_or_else(|error| {
-            panic!("llvm-objdump (LLVM 19, on PATH per AGENTS.md) is required: {error}")
-        });
+        .unwrap_or_else(|error| panic!("running {tool}: {error}"));
     assert!(
         output.status.success(),
         "llvm-objdump failed: {}",

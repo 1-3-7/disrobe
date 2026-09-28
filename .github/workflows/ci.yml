@@ -875,9 +875,9 @@ jobs:
         run: >-
           cargo test -p disrobe-pass-nativelang --all-features --no-fail-fast --lib
           --test aarch64_body_routing --test body_resource_ceiling --test d_demangle_oracle
-          --test d_rtti_struct --test debug_framework --test dwarf_dewall --test eh_frame_recovery
-          --test fuzz_resilience --test nim_gc_mode --test oracle --test resource_safety
-          --test zig_detection
+          --test d_rtti_struct --test debug_framework --test druntime_demangle --test dwarf_dewall
+          --test eh_frame_recovery --test function_starts_reference --test fuzz_resilience
+          --test nim_gc_mode --test oracle --test resource_safety --test zig_detection
         timeout-minutes: 160
         env:
           DISROBE_TYPEREC_CC: ${{ matrix.os != 'ubuntu-latest' && 'optional' || 'require-gnu' }}
