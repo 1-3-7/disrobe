@@ -31,7 +31,10 @@ pub mod safety;
 pub mod vm;
 
 pub use decompile::{to_python, to_python_assignment};
-pub use disasm::{DecodedArg, Disassembly, Insn, disassemble, render as render_disasm};
+pub use disasm::{
+    DecodedArg, Disassembly, Insn, MAX_STACKED_STREAMS, PickleStream, StreamSet, StreamSetEnd,
+    disassemble, disassemble_streams, render as render_disasm,
+};
 pub use error::{Error, Result};
 #[cfg(feature = "ml")]
 pub use ml::{
@@ -42,7 +45,8 @@ pub use polyglot::{ContainerKind, PolyglotReport, analyze as analyze_polyglot, l
 pub use reconstruct::{Reconstruction, needs_memo_table, reconstruct};
 pub use safety::{
     AnalysisOptions, ConfidenceTier, Finding, Policy, SafetyReport, Severity,
-    analyze as analyze_safety, analyze_deep, analyze_with_options, analyze_with_policy,
+    analyze as analyze_safety, analyze_deep, analyze_streams, analyze_with_options,
+    analyze_with_policy,
 };
 pub use vm::{
     ArgSummary, CallKind, CallSite, CallableRef, GlobalRef, ObjCtor, PickleValue, Session, VmTrace,
@@ -57,7 +61,13 @@ pub fn version() -> &'static str {
 pub fn analyze_all(bytes: &[u8]) -> Result<(Disassembly, VmTrace, SafetyReport)> {
     let dis: Disassembly = disassemble(bytes)?;
     let trace: VmTrace = execute(&dis)?;
-    let report: SafetyReport = analyze_safety(&trace);
+    let report: SafetyReport = analyze_streams(
+        bytes,
+        &AnalysisOptions {
+            policy: Policy::default(),
+            deep: true,
+        },
+    )?;
     Ok((dis, trace, report))
 }
 

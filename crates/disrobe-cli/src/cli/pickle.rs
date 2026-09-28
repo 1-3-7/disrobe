@@ -7,9 +7,10 @@ use clap::Subcommand;
 use crate::cli::output::OutputFormat;
 use crate::cli::sarif::IntoSarif;
 use disrobe_pass_pickle::{
-    Disassembly, MlReport, PickleValue, PolyglotReport, Reconstruction, SafetyReport, VmTrace,
-    analyze_polyglot, analyze_safety, disassemble, execute, execute_full, extract_ml, reconstruct,
-    render_disasm, to_python_assignment,
+    AnalysisOptions, Disassembly, MlReport, PickleValue, Policy, PolyglotReport, Reconstruction,
+    SafetyReport, StreamSet, VmTrace, analyze_polyglot, analyze_streams, disassemble,
+    disassemble_streams, execute, execute_full, extract_ml, reconstruct, render_disasm,
+    to_python_assignment,
 };
 
 const PICKLE_INPUT_MAX_BYTES: u64 = 256 * 1024 * 1024;
@@ -145,39 +146,87 @@ fn disasm(input: PathBuf, json: bool) -> miette::Result<()> {
     }
 }
 
+struct DecompiledStream {
+    start: usize,
+    source: String,
+    recovered: Reconstruction,
+    graph: PickleValue,
+}
+
 fn decompile(input: PathBuf, json: bool, out: Option<PathBuf>) -> miette::Result<()> {
     let bytes: Vec<u8> = read_input(&input)?;
-    let dis: Disassembly =
-        disassemble(&bytes).map_err(|e| miette::miette!("DR-CLI-0664: pickle disasm: {e}"))?;
-    let (trace, memo): (VmTrace, std::collections::BTreeMap<u64, PickleValue>) =
-        execute_full(&dis).map_err(|e| miette::miette!("DR-CLI-0665: pickle vm: {e}"))?;
-    let source: String = to_python_assignment(&trace.result);
-    let recovered: Reconstruction = reconstruct(&trace.result, &memo, trace.root_memo_key);
+    let set: StreamSet = disassemble_streams(&bytes)
+        .map_err(|e| miette::miette!("DR-CLI-0664: pickle disasm: {e}"))?;
+    let mut decoded: Vec<DecompiledStream> = Vec::with_capacity(set.streams.len());
+    for stream in &set.streams {
+        let (trace, memo): (VmTrace, std::collections::BTreeMap<u64, PickleValue>) =
+            execute_full(&stream.disassembly)
+                .map_err(|e| miette::miette!("DR-CLI-0665: pickle vm: {e}"))?;
+        decoded.push(DecompiledStream {
+            start: stream.start,
+            source: to_python_assignment(&trace.result),
+            recovered: reconstruct(&trace.result, &memo, trace.root_memo_key),
+            graph: trace.result,
+        });
+    }
+    let end_note: Option<String> = set.end.note();
+    let single: bool = decoded.len() == 1 && end_note.is_none();
+    let mut body: String = String::new();
+    for (index, stream) in decoded.iter().enumerate() {
+        if !single {
+            body.push_str(&format!(
+                "# pickle stream {} of {} at offset {}\n",
+                index + 1,
+                decoded.len(),
+                stream.start
+            ));
+        }
+        body.push_str(&stream.recovered.program);
+        if !body.ends_with('\n') {
+            body.push('\n');
+        }
+    }
+    if let Some(note) = &end_note {
+        body.push_str(&format!("# {note}\n"));
+    }
+    let reexecutable: bool = single
+        && decoded
+            .iter()
+            .all(|stream: &DecompiledStream| stream.recovered.reexecutable);
     let stem: String = pickle_stem(&input);
     let out_path: PathBuf = out.unwrap_or_else(|| PathBuf::from(format!("./out/{stem}.py")));
-    let body: String = if recovered.program.ends_with('\n') {
-        recovered.program.clone()
-    } else {
-        format!("{}\n", recovered.program)
-    };
     write_text(&out_path, &body)?;
     if json {
+        let streams: Vec<serde_json::Value> = decoded
+            .iter()
+            .map(|stream: &DecompiledStream| {
+                serde_json::json!({
+                    "offset": stream.start,
+                    "source": stream.source,
+                    "reconstruction": stream.recovered.program,
+                    "reexecutable": stream.recovered.reexecutable,
+                    "unreconstructable": stream.recovered.unsupported,
+                    "graph": stream.graph,
+                })
+            })
+            .collect();
         let value: serde_json::Value = serde_json::json!({
             "schema": "disrobe.pickle.decompile/v0",
-            "source": source,
-            "reconstruction": recovered.program,
-            "reexecutable": recovered.reexecutable,
-            "unreconstructable": recovered.unsupported,
-            "graph": trace.result,
+            "source": decoded.first().map(|stream: &DecompiledStream| stream.source.as_str()),
+            "reconstruction": body,
+            "reexecutable": reexecutable,
+            "unreconstructable": decoded.first().map(|stream: &DecompiledStream| &stream.recovered.unsupported),
+            "graph": decoded.first().map(|stream: &DecompiledStream| &stream.graph),
+            "streams": streams,
+            "unanalyzed": end_note,
             "out": out_path.display().to_string(),
         });
         emit_json(&value)
     } else {
         print!("{body}");
         eprintln!(
-            "pickle decompile: wrote {} (re-executable: {})",
-            out_path.display(),
-            recovered.reexecutable
+            "pickle decompile: wrote {} (re-executable: {reexecutable})",
+            out_path.display()
         );
         Ok(())
     }
@@ -205,11 +254,14 @@ fn write_text(out_path: &std::path::Path, body: &str) -> miette::Result<()> {
 
 fn safety(input: PathBuf, json: bool, fmt: OutputFormat) -> miette::Result<()> {
     let bytes: Vec<u8> = read_input(&input)?;
-    let dis: Disassembly =
-        disassemble(&bytes).map_err(|e| miette::miette!("DR-CLI-0666: pickle disasm: {e}"))?;
-    let trace: VmTrace =
-        execute(&dis).map_err(|e| miette::miette!("DR-CLI-0667: pickle vm: {e}"))?;
-    let report: SafetyReport = analyze_safety(&trace);
+    let report: SafetyReport = analyze_streams(
+        &bytes,
+        &AnalysisOptions {
+            policy: Policy::default(),
+            deep: true,
+        },
+    )
+    .map_err(|e| miette::miette!("DR-CLI-0666: pickle safety: {e}"))?;
     if matches!(fmt, OutputFormat::Sarif) {
         let uri: String = input.to_string_lossy().into_owned();
         crate::cli::output::emit_sarif_log(&report.to_sarif(&uri))

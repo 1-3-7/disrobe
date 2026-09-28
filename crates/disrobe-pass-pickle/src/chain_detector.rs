@@ -11,7 +11,7 @@ use disrobe_core::error::{CoreError, Result as CoreResult};
 use disrobe_core::pass::PassId;
 use disrobe_core::provenance::Language;
 
-use crate::disasm::{Disassembly, disassemble};
+use crate::disasm::{StreamSet, disassemble, disassemble_streams};
 use crate::polyglot::looks_like_pickle;
 use crate::reconstruct::{Reconstruction, needs_memo_table, reconstruct};
 use crate::vm::{PickleValue, VmTrace, execute_full};
@@ -81,19 +81,40 @@ impl Pass for PicklePass {
                     .to_string(),
             ));
         }
-        let dis: Disassembly = disassemble(bytes).map_err(|e: crate::error::Error| {
+        let set: StreamSet = disassemble_streams(bytes).map_err(|e: crate::error::Error| {
             CoreError::PassFailure(format!("DR-PICKLE-0903: pickle disasm: {e}"))
         })?;
-        let (trace, memo): (VmTrace, BTreeMap<u64, PickleValue>) =
-            execute_full(&dis).map_err(|e: crate::error::Error| {
-                CoreError::PassFailure(format!("DR-PICKLE-0904: pickle vm: {e}"))
-            })?;
-        let source: String = if needs_memo_table(&trace.result) {
-            let recovered: Reconstruction = reconstruct(&trace.result, &memo, trace.root_memo_key);
-            recovered.program
-        } else {
-            crate::decompile::to_python_assignment(&trace.result)
-        };
+        let end_note: Option<String> = set.end.note();
+        let single: bool = set.streams.len() == 1 && end_note.is_none();
+        let mut source: String = String::new();
+        for (index, stream) in set.streams.iter().enumerate() {
+            let (trace, memo): (VmTrace, BTreeMap<u64, PickleValue>) =
+                execute_full(&stream.disassembly).map_err(|e: crate::error::Error| {
+                    CoreError::PassFailure(format!("DR-PICKLE-0904: pickle vm: {e}"))
+                })?;
+            if !single {
+                source.push_str(&format!(
+                    "# pickle stream {} of {} at offset {}\n",
+                    index + 1,
+                    set.streams.len(),
+                    stream.start
+                ));
+            }
+            let rendered: String = if needs_memo_table(&trace.result) {
+                let recovered: Reconstruction =
+                    reconstruct(&trace.result, &memo, trace.root_memo_key);
+                recovered.program
+            } else {
+                crate::decompile::to_python_assignment(&trace.result)
+            };
+            source.push_str(&rendered);
+            if !single && !source.ends_with('\n') {
+                source.push('\n');
+            }
+        }
+        if let Some(note) = end_note {
+            source.push_str(&format!("# {note}\n"));
+        }
         Ok(Artifact::new(
             Rung::Surface,
             source.into_bytes(),

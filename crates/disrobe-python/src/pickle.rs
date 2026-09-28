@@ -1,6 +1,7 @@
 use disrobe_pass_pickle::{
-    Disassembly, MlReport, PolyglotReport, SafetyReport, VmTrace, analyze_polyglot, analyze_safety,
-    disassemble, execute, extract_ml, render_disasm, to_python_assignment,
+    AnalysisOptions, Disassembly, MlReport, Policy, PolyglotReport, SafetyReport, VmTrace,
+    analyze_polyglot, analyze_streams, disassemble, execute, extract_ml, render_disasm,
+    to_python_assignment,
 };
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
@@ -41,9 +42,14 @@ fn pickle_decompile(pickle_bytes: &[u8]) -> PyResult<PickleDecompilation> {
 #[pyfunction]
 #[pyo3(text_signature = "(pickle_bytes)")]
 fn pickle_safety(pickle_bytes: &[u8]) -> PyResult<PickleSafety> {
-    let dis: Disassembly = disassemble(pickle_bytes).map_err(map("pickle disasm"))?;
-    let trace: VmTrace = execute(&dis).map_err(map("pickle vm"))?;
-    let report: SafetyReport = analyze_safety(&trace);
+    let report: SafetyReport = analyze_streams(
+        pickle_bytes,
+        &AnalysisOptions {
+            policy: Policy::default(),
+            deep: true,
+        },
+    )
+    .map_err(map("pickle safety"))?;
     Ok(PickleSafety::from_value(null_bundled_value(&report)?))
 }
 

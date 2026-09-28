@@ -81,7 +81,21 @@ const OVERTLY_MALICIOUS: &[(&str, &str)] = &[
     ("runpy", "_run_code"),
     ("runpy", "run_path"),
     ("runpy", "run_module"),
+    ("timeit", "timeit"),
+    ("timeit", "repeat"),
+    ("cProfile", "run"),
+    ("cProfile", "runctx"),
+    ("profile", "run"),
+    ("profile", "runctx"),
+    ("pdb", "run"),
+    ("pdb", "runeval"),
+    ("pdb", "runctx"),
+    ("pdb", "runcall"),
 ];
+
+const OVERTLY_MALICIOUS_MODULES: &[&str] = &["subprocess", "_posixsubprocess", "pty", "commands"];
+
+const PROCESS_MODULES: &[&str] = &["os", "posix", "nt"];
 
 const SUSPICIOUS_MODULES: &[&str] = &[
     "socket",
@@ -111,6 +125,10 @@ const SUSPICIOUS_MODULES: &[&str] = &[
     "bz2",
     "lzma",
     "codecs",
+    "http",
+    "xmlrpc",
+    "_pickle",
+    "cloudpickle",
 ];
 
 const SUSPICIOUS_PAIRS: &[(&str, &str)] = &[
@@ -196,6 +214,79 @@ pub fn analyze_deep(trace: &VmTrace) -> SafetyReport {
 #[must_use]
 pub fn analyze_with_options(trace: &VmTrace, opts: &AnalysisOptions) -> SafetyReport {
     analyze_with_options_at_depth(trace, opts, 0)
+}
+
+pub fn analyze_streams(bytes: &[u8], opts: &AnalysisOptions) -> crate::Result<SafetyReport> {
+    let set: crate::disasm::StreamSet = crate::disasm::disassemble_streams(bytes)?;
+    let mut merged: SafetyReport = SafetyReport {
+        severity: Severity::Benign,
+        findings: Vec::new(),
+        imports: Vec::new(),
+        reduce_count: 0,
+        unused_memo_count: 0,
+    };
+    for (index, stream) in set.streams.iter().enumerate() {
+        let trace: VmTrace = match execute(&stream.disassembly) {
+            Ok(trace) => trace,
+            Err(error) if index == 0 => return Err(error),
+            Err(_) => {
+                merged.findings.push(Finding {
+                    severity: Severity::Suspicious,
+                    confidence: ConfidenceTier::SignatureCertain,
+                    category: "stream.vm_error".to_string(),
+                    detail: format!(
+                        "stacked pickle stream {} does not execute in the VM",
+                        index + 1
+                    ),
+                    offset: Some(stream.start),
+                });
+                break;
+            }
+        };
+        let report: SafetyReport = analyze_with_options(&trace, opts);
+        let start: usize = stream.start;
+        merged
+            .findings
+            .extend(report.findings.into_iter().map(|mut finding: Finding| {
+                finding.offset = finding
+                    .offset
+                    .map(|offset: usize| offset.saturating_add(start));
+                finding
+            }));
+        merged.imports.extend(report.imports);
+        merged.reduce_count = merged.reduce_count.saturating_add(report.reduce_count);
+        merged.unused_memo_count = merged
+            .unused_memo_count
+            .saturating_add(report.unused_memo_count);
+    }
+    let end_finding: Option<(&str, usize)> = match set.end {
+        crate::disasm::StreamSetEnd::Complete => None,
+        crate::disasm::StreamSetEnd::TrailingBytes { start, .. } => {
+            Some(("stream.trailing_bytes", start))
+        }
+        crate::disasm::StreamSetEnd::UndecodableStream { start } => {
+            Some(("stream.decode_error", start))
+        }
+        crate::disasm::StreamSetEnd::StreamCap { start } => Some(("stream.count_cap", start)),
+    };
+    if let (Some((category, start)), Some(detail)) = (end_finding, set.end.note()) {
+        merged.findings.push(Finding {
+            severity: Severity::Suspicious,
+            confidence: ConfidenceTier::SignatureCertain,
+            category: category.to_string(),
+            detail,
+            offset: Some(start),
+        });
+    }
+    merged.imports.sort_unstable();
+    merged.imports.dedup();
+    merged.severity = merged
+        .findings
+        .iter()
+        .map(|f: &Finding| f.severity)
+        .max()
+        .unwrap_or(Severity::Benign);
+    Ok(merged)
 }
 
 fn analyze_with_options_at_depth(
@@ -345,11 +436,41 @@ fn scan_nested_pickles(
         PickleValue::Reduce { callable, args } => {
             let loader: Option<String> = nested_pickle_loader(callable);
             let inner: Option<&[u8]> = first_bytes_arg(args);
-            if let (Some(loader), Some(inner)) = (loader, inner) {
-                analyze_nested_pickle(&loader, inner, opts, nested_depth, findings, imports);
-            }
             scan_nested_pickles(callable, opts, nested_depth, child_depth, findings, imports);
-            scan_nested_pickles(args, opts, nested_depth, child_depth, findings, imports);
+            if let (Some(loader), Some(inner)) = (loader, inner) {
+                analyze_nested_pickle(
+                    &NestedSource::Loader(&loader),
+                    inner,
+                    opts,
+                    nested_depth,
+                    findings,
+                    imports,
+                );
+                if let PickleValue::Tuple(items) | PickleValue::List(items) = args.as_ref() {
+                    for item in items.iter().skip(1) {
+                        scan_nested_pickles(
+                            item,
+                            opts,
+                            nested_depth,
+                            child_depth,
+                            findings,
+                            imports,
+                        );
+                    }
+                }
+            } else {
+                scan_nested_pickles(args, opts, nested_depth, child_depth, findings, imports);
+            }
+        }
+        PickleValue::Bytes(bytes) => {
+            analyze_nested_pickle(
+                &NestedSource::Value,
+                bytes,
+                opts,
+                nested_depth,
+                findings,
+                imports,
+            );
         }
         PickleValue::Object {
             cls,
@@ -429,8 +550,26 @@ fn first_bytes_arg(args: &PickleValue) -> Option<&[u8]> {
     }
 }
 
+enum NestedSource<'a> {
+    Loader(&'a str),
+    Value,
+}
+
+impl NestedSource<'_> {
+    fn label(&self) -> &str {
+        match self {
+            Self::Loader(loader) => loader,
+            Self::Value => "a bytes value",
+        }
+    }
+
+    const fn reports_failures(&self) -> bool {
+        matches!(self, Self::Loader(_))
+    }
+}
+
 fn analyze_nested_pickle(
-    loader: &str,
+    source: &NestedSource<'_>,
     bytes: &[u8],
     opts: &AnalysisOptions,
     nested_depth: usize,
@@ -438,6 +577,11 @@ fn analyze_nested_pickle(
     imports: &mut Vec<String>,
 ) {
     if !looks_like_pickle(bytes) {
+        return;
+    }
+    let loader: &str = source.label();
+    let strict: bool = source.reports_failures();
+    if !strict && bytes.len() > MAX_NESTED_PICKLE_BYTES {
         return;
     }
     if nested_depth >= MAX_NESTED_PICKLE_DEPTH {
@@ -465,6 +609,9 @@ fn analyze_nested_pickle(
     }
     let inner_disassembly_result: crate::Result<crate::disasm::Disassembly> = disassemble(bytes);
     let Ok(inner_disassembly) = inner_disassembly_result else {
+        if !strict {
+            return;
+        }
         findings.push(Finding {
             severity: Severity::Suspicious,
             confidence: ConfidenceTier::SignatureCertain,
@@ -474,8 +621,14 @@ fn analyze_nested_pickle(
         });
         return;
     };
+    if !strict && inner_disassembly.stop_offset.is_none() {
+        return;
+    }
     let inner_trace_result: crate::Result<VmTrace> = execute(&inner_disassembly);
     let Ok(inner_trace) = inner_trace_result else {
+        if !strict {
+            return;
+        }
         findings.push(Finding {
             severity: Severity::Suspicious,
             confidence: ConfidenceTier::SignatureCertain,
@@ -519,7 +672,10 @@ fn classify_global(module: &str, name: &str, offset: usize, findings: &mut Vec<F
         });
         return;
     }
-    if SUSPICIOUS_MODULES.contains(&module) {
+    if SUSPICIOUS_MODULES
+        .iter()
+        .any(|family: &&str| module_in(module, family))
+    {
         findings.push(Finding {
             severity: Severity::Suspicious,
             confidence: ConfidenceTier::SignatureCertain,
@@ -531,8 +687,25 @@ fn classify_global(module: &str, name: &str, offset: usize, findings: &mut Vec<F
 }
 
 #[inline]
+fn module_in(module: &str, family: &str) -> bool {
+    module
+        .strip_prefix(family)
+        .is_some_and(|rest: &str| rest.is_empty() || rest.starts_with('.'))
+}
+
+fn launches_a_process(name: &str) -> bool {
+    name.starts_with("exec")
+        || name.starts_with("spawn")
+        || name.starts_with("posix_spawn")
+        || matches!(name, "system" | "popen" | "startfile")
+}
+
 fn is_overtly_malicious(module: &str, name: &str) -> bool {
     OVERTLY_MALICIOUS.contains(&(module, name))
+        || OVERTLY_MALICIOUS_MODULES
+            .iter()
+            .any(|family: &&str| module_in(module, family))
+        || (PROCESS_MODULES.contains(&module) && launches_a_process(name))
 }
 
 fn scan_value(value: &PickleValue, depth: usize, findings: &mut Vec<Finding>) {
@@ -1000,6 +1173,116 @@ mod tests {
         let mut v: Vec<u8> = vec![0x43, len];
         v.extend_from_slice(bytes);
         v
+    }
+
+    fn reduce_call(module: &str, name: &str) -> Vec<u8> {
+        let mut v: Vec<u8> = vec![0x80, 0x02];
+        v.extend(global(module, name));
+        v.extend(su("x"));
+        v.extend_from_slice(&[0x85, 0x52, 0x2e]);
+        v
+    }
+
+    fn deep_opts() -> AnalysisOptions {
+        AnalysisOptions {
+            policy: Policy::default(),
+            deep: true,
+        }
+    }
+
+    #[test]
+    fn a_pickle_hidden_in_any_bytes_value_is_analyzed() {
+        let inner: Vec<u8> = reduce_call("os", "system");
+        let mut bytes: Vec<u8> = vec![0x80, 0x03];
+        bytes.extend(short_bytes(&inner));
+        bytes.push(0x2e);
+        let r: SafetyReport = report(&bytes);
+        assert_eq!(r.severity, Severity::OvertlyMalicious);
+        assert!(
+            r.findings
+                .iter()
+                .any(|f: &Finding| f.category.starts_with("nested_pickle."))
+        );
+    }
+
+    #[test]
+    fn opaque_bytes_values_add_no_findings() {
+        let mut bytes: Vec<u8> = vec![0x80, 0x03];
+        bytes.extend(short_bytes(b"K\xff\x00 random weights."));
+        bytes.push(0x2e);
+        let r: SafetyReport = report(&bytes);
+        assert_eq!(r.severity, Severity::Benign, "{:?}", r.findings);
+    }
+
+    #[test]
+    fn a_payload_in_a_later_stacked_stream_is_found() {
+        let mut bytes: Vec<u8> = b"\x80\x02\x8a\x0al\xfc\x9cF\xf9 j\xa8P\x19.".to_vec();
+        bytes.extend(reduce_call("os", "system"));
+        let first_only: SafetyReport = report(&bytes);
+        assert_eq!(first_only.severity, Severity::Benign);
+        let all: SafetyReport = analyze_streams(&bytes, &deep_opts()).expect("streams");
+        assert_eq!(all.severity, Severity::OvertlyMalicious);
+    }
+
+    #[test]
+    fn unanalyzed_trailing_bytes_fail_the_verdict() {
+        let mut bytes: Vec<u8> = b"\x80\x02K\x01.".to_vec();
+        bytes.extend_from_slice(b"\x00\x01storage payload");
+        let all: SafetyReport = analyze_streams(&bytes, &deep_opts()).expect("streams");
+        assert_eq!(all.severity, Severity::Suspicious);
+        assert!(
+            all.findings
+                .iter()
+                .any(|f: &Finding| f.category == "stream.trailing_bytes")
+        );
+        let clean: SafetyReport =
+            analyze_streams(b"\x80\x02K\x01.", &deep_opts()).expect("single stream");
+        assert_eq!(clean.severity, Severity::Benign);
+    }
+
+    #[test]
+    fn process_launchers_and_code_runners_are_malicious() {
+        for (module, name) in [
+            ("os", "execl"),
+            ("os", "execlp"),
+            ("os", "execvpe"),
+            ("os", "spawnlp"),
+            ("os", "spawnve"),
+            ("os", "posix_spawn"),
+            ("os", "posix_spawnp"),
+            ("os", "startfile"),
+            ("posix", "execv"),
+            ("nt", "spawnv"),
+            ("subprocess", "list2cmdline"),
+            ("_posixsubprocess", "fork_exec"),
+            ("timeit", "timeit"),
+            ("cProfile", "run"),
+            ("profile", "runctx"),
+            ("pdb", "run"),
+        ] {
+            let r: SafetyReport = report(&reduce_call(module, name));
+            assert_eq!(r.severity, Severity::OvertlyMalicious, "{module}.{name}");
+        }
+    }
+
+    #[test]
+    fn submodules_of_suspicious_families_are_suspicious() {
+        for (module, name) in [
+            ("urllib.request", "urlopen"),
+            ("http.client", "HTTPSConnection"),
+            ("xmlrpc.client", "ServerProxy"),
+        ] {
+            let r: SafetyReport = report(&reduce_call(module, name));
+            assert_eq!(r.severity, Severity::Suspicious, "{module}.{name}");
+        }
+        assert_eq!(
+            report(&reduce_call("urllibx", "thing")).severity,
+            Severity::Benign
+        );
+        assert_eq!(
+            report(&reduce_call("osmium", "system")).severity,
+            Severity::Benign
+        );
     }
 
     #[test]

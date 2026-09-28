@@ -39,6 +39,79 @@ pub struct Disassembly {
     pub stop_offset: Option<usize>,
 }
 
+pub const MAX_STACKED_STREAMS: usize = 4_096;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PickleStream {
+    pub start: usize,
+    pub disassembly: Disassembly,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum StreamSetEnd {
+    Complete,
+    TrailingBytes { start: usize, len: usize },
+    UndecodableStream { start: usize },
+    StreamCap { start: usize },
+}
+
+impl StreamSetEnd {
+    #[must_use]
+    pub fn note(&self) -> Option<String> {
+        match self {
+            Self::Complete => None,
+            Self::TrailingBytes { start, len } => Some(format!(
+                "{len} bytes at offset {start} are not a pickle stream and were not analyzed"
+            )),
+            Self::UndecodableStream { start } => Some(format!(
+                "the stacked pickle stream at offset {start} does not decode; it and any later bytes were not analyzed"
+            )),
+            Self::StreamCap { start } => Some(format!(
+                "more than {MAX_STACKED_STREAMS} stacked pickle streams; bytes from offset {start} were not analyzed"
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StreamSet {
+    pub streams: Vec<PickleStream>,
+    pub end: StreamSetEnd,
+}
+
+pub fn disassemble_streams(bytes: &[u8]) -> Result<StreamSet> {
+    let first: Disassembly = disassemble(bytes)?;
+    let mut next: Option<usize> = first.stop_offset.map(|stop: usize| stop.saturating_add(1));
+    let mut streams: Vec<PickleStream> = vec![PickleStream {
+        start: 0,
+        disassembly: first,
+    }];
+    let end: StreamSetEnd = loop {
+        let Some(start) = next.filter(|start: &usize| *start < bytes.len()) else {
+            break StreamSetEnd::Complete;
+        };
+        let rest: &[u8] = bytes.get(start..).unwrap_or_default();
+        if !crate::polyglot::looks_like_pickle(rest) {
+            break StreamSetEnd::TrailingBytes {
+                start,
+                len: rest.len(),
+            };
+        }
+        if streams.len() >= MAX_STACKED_STREAMS {
+            break StreamSetEnd::StreamCap { start };
+        }
+        let Ok(disassembly) = disassemble(rest) else {
+            break StreamSetEnd::UndecodableStream { start };
+        };
+        next = disassembly
+            .stop_offset
+            .map(|stop: usize| start.saturating_add(stop).saturating_add(1));
+        streams.push(PickleStream { start, disassembly });
+    };
+    Ok(StreamSet { streams, end })
+}
+
 #[derive(Debug)]
 struct Cursor<'a> {
     reader: ByteReader<'a>,
@@ -825,6 +898,24 @@ pub fn render(dis: &Disassembly) -> String {
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stacked_streams_are_split_at_each_stop() {
+        let bytes: &[u8] = b"\x80\x02K\x01.\x80\x02K\x02.";
+        let set: StreamSet = disassemble_streams(bytes).expect("streams");
+        assert_eq!(set.streams.len(), 2);
+        assert_eq!(set.streams[1].start, 5);
+        assert_eq!(set.end, StreamSetEnd::Complete);
+    }
+
+    #[test]
+    fn bytes_after_the_last_stream_are_reported() {
+        let bytes: &[u8] = b"\x80\x02K\x01.\x00\x01\x02";
+        let set: StreamSet = disassemble_streams(bytes).expect("streams");
+        assert_eq!(set.streams.len(), 1);
+        assert_eq!(set.end, StreamSetEnd::TrailingBytes { start: 5, len: 3 });
+        assert!(set.end.note().is_some());
+    }
 
     #[test]
     fn empty_is_error() {

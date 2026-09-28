@@ -44,21 +44,44 @@ fn has_trailing_stop(bytes: &[u8]) -> bool {
 pub fn analyze(bytes: &[u8]) -> PolyglotReport {
     let mut kinds: Vec<ContainerKind> = Vec::new();
     let mut notes: Vec<String> = Vec::new();
-    let is_pickle: bool = looks_like_pickle(bytes);
+    let eocd: Option<ZipEnd> = find_zip_end(bytes);
+    let pickle_after_zip: bool = eocd
+        .as_ref()
+        .and_then(|end: &ZipEnd| bytes.get(end.archive_end..))
+        .is_some_and(decodes_as_pickle);
+    let pickle_in_comment: bool = eocd
+        .as_ref()
+        .and_then(|end: &ZipEnd| bytes.get(end.comment.clone()))
+        .is_some_and(decodes_as_pickle);
+    let is_pickle: bool = looks_like_pickle(bytes) || pickle_after_zip || pickle_in_comment;
     if is_pickle {
         kinds.push(ContainerKind::Pickle);
     }
 
-    if bytes.starts_with(b"PK\x03\x04") || bytes.starts_with(b"PK\x05\x06") {
+    let zip_at_start: bool = bytes.starts_with(b"PK\x03\x04") || bytes.starts_with(b"PK\x05\x06");
+    if zip_at_start || eocd.is_some() {
         kinds.push(ContainerKind::Zip);
         if has_zip64_eocd(bytes) {
             kinds.push(ContainerKind::Zip64);
             notes.push("ZIP64 end-of-central-directory locator present".to_string());
         }
-        notes.push(
-            "ZIP local-file header at offset 0 - weaponized model archives stack pickle + zip"
-                .to_string(),
-        );
+        if zip_at_start {
+            notes.push(
+                "ZIP local-file header at offset 0 - weaponized model archives stack pickle + zip"
+                    .to_string(),
+            );
+        } else if let Some(end) = &eocd {
+            notes.push(format!(
+                "ZIP end-of-central-directory at offset {} after leading non-zip bytes - a zip reader opens this file",
+                end.record
+            ));
+        }
+        if pickle_after_zip {
+            notes.push("a pickle stream follows the end of the zip archive".to_string());
+        }
+        if pickle_in_comment {
+            notes.push("the zip archive comment holds a pickle stream".to_string());
+        }
     }
     if is_tar(bytes) {
         kinds.push(ContainerKind::Tar);
@@ -100,6 +123,43 @@ pub fn analyze(bytes: &[u8]) -> PolyglotReport {
     }
 }
 
+fn decodes_as_pickle(bytes: &[u8]) -> bool {
+    looks_like_pickle(bytes)
+        && crate::disasm::disassemble(bytes)
+            .is_ok_and(|dis: crate::disasm::Disassembly| dis.stop_offset.is_some())
+}
+
+const EOCD_LEN: usize = 22;
+const MAX_ZIP_COMMENT: usize = 0xFFFF;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ZipEnd {
+    record: usize,
+    comment: std::ops::Range<usize>,
+    archive_end: usize,
+}
+
+fn find_zip_end(bytes: &[u8]) -> Option<ZipEnd> {
+    let search_from: usize = bytes
+        .len()
+        .saturating_sub(EOCD_LEN + MAX_ZIP_COMMENT + 4096);
+    let window: &[u8] = bytes.get(search_from..)?;
+    let relative: usize = window.windows(4).rposition(|w: &[u8]| w == b"PK\x05\x06")?;
+    let record: usize = search_from + relative;
+    let length_bytes: [u8; 2] = bytes.get(record + 20..record + EOCD_LEN)?.try_into().ok()?;
+    let comment_start: usize = record + EOCD_LEN;
+    let archive_end: usize =
+        comment_start.checked_add(usize::from(u16::from_le_bytes(length_bytes)))?;
+    if archive_end > bytes.len() {
+        return None;
+    }
+    Some(ZipEnd {
+        record,
+        comment: comment_start..archive_end,
+        archive_end,
+    })
+}
+
 fn has_zip64_eocd(bytes: &[u8]) -> bool {
     bytes
         .windows(4)
@@ -128,12 +188,55 @@ mod tests {
         assert!(r.kinds.contains(&ContainerKind::Zip));
     }
 
+    fn empty_zip(comment: &[u8]) -> Vec<u8> {
+        let mut v: Vec<u8> = b"PK\x05\x06".to_vec();
+        v.extend_from_slice(&[0u8; 16]);
+        let len: u16 = u16::try_from(comment.len()).expect("short comment");
+        v.extend_from_slice(&len.to_le_bytes());
+        v.extend_from_slice(comment);
+        v
+    }
+
     #[test]
-    fn pickle_zip_polyglot() {
+    fn a_zip_appended_to_a_pickle_is_a_polyglot() {
         let mut bytes: Vec<u8> = b"\x80\x02N.".to_vec();
-        bytes.extend_from_slice(b"PK\x03\x04");
-        let r: PolyglotReport = analyze(b"PK\x03\x04\x80\x02N.");
-        let _ = bytes;
+        bytes.extend(empty_zip(b""));
+        let r: PolyglotReport = analyze(&bytes);
+        assert!(r.is_pickle);
         assert!(r.kinds.contains(&ContainerKind::Zip));
+        assert!(r.is_polyglot);
+    }
+
+    #[test]
+    fn a_pickle_appended_to_a_zip_is_a_polyglot() {
+        let mut bytes: Vec<u8> = empty_zip(b"");
+        bytes.extend_from_slice(b"\x80\x02N.");
+        let r: PolyglotReport = analyze(&bytes);
+        assert!(r.is_pickle);
+        assert!(r.kinds.contains(&ContainerKind::Zip));
+        assert!(r.is_polyglot);
+    }
+
+    #[test]
+    fn a_pickle_in_the_zip_comment_is_a_polyglot() {
+        let r: PolyglotReport = analyze(&empty_zip(b"\x80\x02N."));
+        assert!(r.is_polyglot);
+    }
+
+    #[test]
+    fn text_after_a_zip_is_not_a_pickle() {
+        let mut bytes: Vec<u8> = empty_zip(b"");
+        bytes.extend_from_slice(b"Notes: see the README.");
+        let r: PolyglotReport = analyze(&bytes);
+        assert!(!r.is_pickle);
+        assert!(!r.is_polyglot);
+    }
+
+    #[test]
+    fn a_plain_zip_is_not_a_polyglot() {
+        let r: PolyglotReport = analyze(&empty_zip(b"release notes"));
+        assert!(r.kinds.contains(&ContainerKind::Zip));
+        assert!(!r.is_pickle);
+        assert!(!r.is_polyglot);
     }
 }
