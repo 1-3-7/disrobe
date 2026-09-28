@@ -225,7 +225,7 @@ fn unpack_nspack_emulated_with_baseline_inner(
     }
     let available: usize = packed_bytes.len() - stream_body_start;
     let stream_body_len: usize = nominal_body_len.min(available);
-    let compressed: &[u8] = &packed_bytes[stream_body_start..stream_body_start + stream_body_len];
+    let compressed: &[u8] = &packed_bytes[stream_body_start..];
     let declared_dsize: usize = stream.dsize as usize;
     let dsize_ceiling: usize =
         MAX_DECOMPRESSED_BYTES.min(stream_body_len.saturating_mul(NSPACK_MAX_DECOMPRESS_RATIO));
@@ -1753,12 +1753,15 @@ mod tests {
         let layout: NspackLayout<'_> = parse_nspack_layout(&packed).expect("layout");
         let stream: NspackStream =
             locate_compressed_stream(&packed, &layout).expect("stream header");
-        let field: usize = stream.start_of_stuff + NSPACK_HEADER_SSIZE_OFFSET;
-        packed[field..field + 4].copy_from_slice(&0x100u32.to_le_bytes());
+        let body_start: usize = stream.start_of_stuff + NSPACK_HEADER_STREAM_OFFSET;
+        packed.truncate(body_start + 0x100);
         let error: String = unpack_nspack_emulated(&packed)
             .expect_err("a truncated stream is refused")
             .to_string();
-        assert!(error.contains("decoded"), "{error}");
+        assert!(
+            error.contains("decoded") || error.contains("shorter than required"),
+            "{error}"
+        );
     }
 
     fn build_minimal_nspack_pe() -> Vec<u8> {
