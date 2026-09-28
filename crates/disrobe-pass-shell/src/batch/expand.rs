@@ -164,7 +164,10 @@ fn try_positional(chars: &[char], args: &[String]) -> Option<(String, usize)> {
         return None;
     }
     let idx: usize = digit as usize - '0' as usize;
-    let value: String = args.get(idx).cloned().unwrap_or_default();
+    let value: String = args
+        .get(idx)
+        .cloned()
+        .unwrap_or_else(|| chars[..2].iter().collect());
     Some((value, 2))
 }
 
@@ -188,7 +191,9 @@ fn try_tilde_param(
     }
     i += 1;
     let idx: usize = digit as usize - '0' as usize;
-    let value: String = args.get(idx).cloned().unwrap_or_default();
+    let Some(value): Option<String> = args.get(idx).cloned() else {
+        return Some((chars[..i].iter().collect(), i));
+    };
     let unquoted: String = value.trim_matches('"').to_owned();
     let rendered: String = apply_param_modifiers(&unquoted, &modifiers);
     stats.tilde_params += 1;
@@ -471,6 +476,13 @@ mod tests {
         let args: Vec<String> = vec!["script.bat".to_owned(), "first".to_owned()];
         let (out, _): (String, ExpandStats) = expand_line("%1", &env_of(&[]), &args, false);
         assert_eq!(out, "first");
+    }
+
+    #[test]
+    fn unknown_positional_parameters_stay_symbolic() {
+        let (out, _): (String, ExpandStats) =
+            expand_line("copy \"%~f0\" %1 %~dp2", &env_of(&[]), &[], false);
+        assert_eq!(out, "copy \"%~f0\" %1 %~dp2");
     }
 
     #[test]
