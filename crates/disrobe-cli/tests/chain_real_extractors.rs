@@ -604,25 +604,29 @@ fn real_extractor_swift_emits_swift_source_not_report() {
 }
 
 #[test]
-fn real_extractor_py_disasm_emits_listing_not_json() {
-    for rel in [
-        "python/decompile/legacy/compiled/binary_ops.3.11.pyc",
-        "python/decompile/legacy/compiled/binary_slice.3.12.pyc",
+fn real_extractor_python_emits_source_not_json() {
+    for (rel, statement) in [
+        (
+            "python/decompile/legacy/compiled/binary_ops.3.11.pyc",
+            "print(\"Addition:\", a + b)",
+        ),
+        (
+            "python/decompile/legacy/compiled/binary_slice.3.12.pyc",
+            "[",
+        ),
     ] {
         let bytes: Vec<u8> = read_fixture(rel);
         let envelope: Vec<u8> = capture_pass(bytes, &format!("corpus://{rel}"), "py.decompile")
-            .unwrap_or_else(|| {
-                panic!("py.decompile must dispatch for {rel} and emit its disassembly tier")
-            });
+            .unwrap_or_else(|| panic!("py.decompile must dispatch for {rel}"));
         let text: String = utf8(&envelope, "py.decompile");
         assert!(
             !text.trim_start().starts_with('{') && !text.contains("\"instruction_count\""),
-            "py.disasm chain output still leaks the PyDisasmExtract json for {rel}; first 200: {:?}",
+            "python chain output leaks the PyDisasmExtract json for {rel}; first 200: {:?}",
             text.chars().take(200).collect::<String>(),
         );
         assert!(
-            text.contains("RESUME") || text.contains("LOAD") || text.contains("RETURN"),
-            "py.disasm chain output has no recognizable cpython opcode for {rel}; first 200: {:?}",
+            text.contains(statement),
+            "python chain output for {rel} does not carry the source statement {statement:?}; first 200: {:?}",
             text.chars().take(200).collect::<String>(),
         );
     }
