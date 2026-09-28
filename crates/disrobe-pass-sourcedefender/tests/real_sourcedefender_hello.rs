@@ -17,6 +17,16 @@ fn kdf_known_answer_for_hello_basename() {
 }
 
 #[test]
+fn a_renamed_pye_is_refused_not_reported_decrypted() {
+    let Err(error) = decrypt_pye(REAL_PYE, "renamed.pye") else {
+        unreachable!("the key derived from another name cannot decrypt the envelope")
+    };
+    let text: String = error.to_string();
+    assert!(text.starts_with("DR-SDEF-0014"), "{text}");
+    assert!(text.contains("renamed.pye"), "{text}");
+}
+
+#[test]
 fn recovers_real_hello_pye_source() {
     let Ok(decrypted): Result<DecryptedPye> = decrypt_pye(REAL_PYE, "hello.pye") else {
         unreachable!("decrypt_pye failed on the real sample")

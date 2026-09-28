@@ -62,12 +62,12 @@ pub(super) fn sourcedefender(
     out: Option<PathBuf>,
     key: Option<String>,
     password: Option<String>,
+    original_name: Option<&str>,
 ) -> miette::Result<()> {
     let bytes: Vec<u8> = std::fs::read(&input)
         .map_err(|e| miette::miette!("DR-CLI-0034: cannot read input: {e}"))?;
-    let filename: &str = input
-        .file_name()
-        .and_then(|s| s.to_str())
+    let filename: &str = original_name
+        .or_else(|| input.file_name().and_then(|s| s.to_str()))
         .unwrap_or("module.pye");
     let variant: Option<disrobe_pass_sourcedefender::ContainerVariant> =
         disrobe_pass_sourcedefender::classify_container(&bytes);
@@ -317,7 +317,7 @@ mod tests {
         std::fs::create_dir_all(&scratch).expect("mk scratch");
         let out_bin: PathBuf = scratch.join("hello.decrypted.bin");
 
-        sourcedefender(input, Some(out_bin.clone()), None, None).expect("sourcedefender ok");
+        sourcedefender(input, Some(out_bin.clone()), None, None, None).expect("sourcedefender ok");
 
         assert!(out_bin.is_file(), "decrypted msgpack envelope must land");
         let py_path: PathBuf = scratch.join("hello.py");

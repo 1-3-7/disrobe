@@ -65,6 +65,12 @@ pub(crate) enum PyCmd {
             help = "custom-mode password (or set SOURCEDEFENDER_PASSWORD); the upstream password->key derivation lives in the closed-source Cython engine, so disrobe reports how to supply the derived key via --key rather than guessing the kdf"
         )]
         password: Option<String>,
+        #[arg(
+            long,
+            value_name = "NAME",
+            help = "the .pye's original file name, whose basename derives the legacy key, when the file was renamed"
+        )]
+        original_name: Option<String>,
     },
     #[command(
         about = "disassemble a .pyc into a per-instruction trace (CPython 1.0 .. 3.15 + PyPy + MicroPython + Jython + IronPython + Brython)"
@@ -153,7 +159,8 @@ pub(crate) fn run(action: PyCmd, llm_flags: &LlmFlags) -> miette::Result<()> {
             out,
             key,
             password,
-        } => extract::sourcedefender(input, out, key, password),
+            original_name,
+        } => extract::sourcedefender(input, out, key, password, original_name.as_deref()),
         PyCmd::Disasm { input, out, emit } => disasm::disasm(input, out, emit, llm_flags),
         PyCmd::Decompile {
             input,

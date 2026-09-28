@@ -51,6 +51,11 @@ pub enum Error {
         computed: String,
         stored: String,
     },
+
+    #[error(
+        "DR-SDEF-0014: the key derived from `{filename}` does not decrypt this body to a msgpack envelope; a renamed .pye needs its original file name"
+    )]
+    UndecryptedEnvelope { filename: String },
 }
 
 pub type Result<T> = core::result::Result<T, Error>;

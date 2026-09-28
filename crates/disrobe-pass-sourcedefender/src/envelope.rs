@@ -58,7 +58,7 @@ pub fn decrypt_pye(input: &[u8], filename: &str) -> Result<DecryptedPye> {
     let key: DerivedKey = derive_aes_key(basename)?;
     let text: &str = core::str::from_utf8(input).map_err(|_| Error::NotUtf8)?;
     let frame: PyeFrame = parse_pye_frame(text)?;
-    Ok(decrypt_frame(&frame, &key, filename))
+    require_envelope(decrypt_frame(&frame, &key, filename))
 }
 
 #[inline]
@@ -73,7 +73,16 @@ pub fn decrypt_pye_with_key(
     validate_filename(filename)?;
     let text: &str = core::str::from_utf8(input).map_err(|_| Error::NotUtf8)?;
     let frame: PyeFrame = parse_pye_frame(text)?;
-    Ok(decrypt_frame(&frame, key, filename))
+    require_envelope(decrypt_frame(&frame, key, filename))
+}
+
+fn require_envelope(decrypted: DecryptedPye) -> Result<DecryptedPye> {
+    if decrypted.envelope.is_none() {
+        return Err(Error::UndecryptedEnvelope {
+            filename: decrypted.filename,
+        });
+    }
+    Ok(decrypted)
 }
 
 #[inline]
