@@ -1087,6 +1087,8 @@ enum ExtensionSubkind {
     Vsix,
     Pyz,
     Asar,
+    Msix,
+    Snap,
 }
 
 fn extension_subkind(path: &Path) -> Option<ExtensionSubkind> {
@@ -1106,6 +1108,8 @@ fn extension_subkind(path: &Path) -> Option<ExtensionSubkind> {
         "vsix" => Some(ExtensionSubkind::Vsix),
         "pyz" => Some(ExtensionSubkind::Pyz),
         "asar" => Some(ExtensionSubkind::Asar),
+        "msix" | "appx" | "msixbundle" | "appxbundle" => Some(ExtensionSubkind::Msix),
+        "snap" => Some(ExtensionSubkind::Snap),
         _ => None,
     }
 }
@@ -1125,6 +1129,8 @@ const fn refine_with_extension(
         (ContainerKind::Zip, ExtensionSubkind::Nupkg) => Some(ContainerKind::Nupkg),
         (ContainerKind::Zip, ExtensionSubkind::Vsix) => Some(ContainerKind::Vsix),
         (ContainerKind::Zip, ExtensionSubkind::Pyz) => Some(ContainerKind::Pyz),
+        (ContainerKind::Zip, ExtensionSubkind::Msix) => Some(ContainerKind::Msix),
+        (ContainerKind::Squashfs, ExtensionSubkind::Snap) => Some(ContainerKind::Snap),
         (_, _) => None,
     }
 }
@@ -1133,6 +1139,26 @@ const fn refine_with_extension(
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn msix_and_snap_refine_their_carrier_by_extension() {
+        assert_eq!(
+            refine_with_extension(ContainerKind::Zip, ExtensionSubkind::Msix),
+            Some(ContainerKind::Msix)
+        );
+        assert_eq!(
+            refine_with_extension(ContainerKind::Squashfs, ExtensionSubkind::Snap),
+            Some(ContainerKind::Snap)
+        );
+        assert_eq!(
+            refine_with_extension(ContainerKind::Zip, ExtensionSubkind::Snap),
+            None
+        );
+        assert!(matches!(
+            extension_subkind(Path::new("App.AppxBundle")),
+            Some(ExtensionSubkind::Msix)
+        ));
+    }
 
     #[test]
     fn empty_bytes_yields_none() {
