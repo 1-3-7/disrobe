@@ -144,6 +144,7 @@ extend-exclude = [
     "crates/disrobe-cli/tests/schemas/stix-2.1/**",
     "target/**",
     "**/*.dr",
+    "**/*.pkl",
     "**/*.lock",
     "**/*.nm.txt",
     "**/*.nm_eq.txt",

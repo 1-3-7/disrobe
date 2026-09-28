@@ -1,0 +1,104 @@
+schema = "disrobe.fixture.provenance/v1"
+source = "self-authored"
+generator = "python generate.py"
+reference = "python find_class_harness.py <this directory>"
+python = "3.14.7"
+
+[[fixtures]]
+file = "stacked_streams.pkl"
+sha256 = "0251e0f443d46d263fff1b22de856f40dffcffb21a878f6a22c994bedab66c79"
+size = 46
+shape = "a benign magic-number stream, then a stream that calls os.system"
+requested = ["os.system"]
+
+[[fixtures]]
+file = "stacked_protocol0_stream.pkl"
+sha256 = "b717b39d9064a9074255add7c184324b90cad3c189a8a68698236723cc6bdd86"
+size = 53
+shape = "a benign magic-number stream, then a protocol-0 stream that starts with a UNICODE opcode and calls os.system"
+requested = ["os.system"]
+
+[[fixtures]]
+file = "nested_global_first.pkl"
+sha256 = "6d0b6cf34048ff008932a4bbb4451cca4a8933f6ec0659b71d54eac8496f18bf"
+size = 44
+shape = "a protocol-4 dict whose bytes value is a protocol-0 pickle without PROTO that starts with GLOBAL os.system"
+requested = ["os.system"]
+
+[[fixtures]]
+file = "nested_unicode_first.pkl"
+sha256 = "f113d8aa599657bd9c7dbfffacdceae0be288089b54b95decffd293f27e9082f"
+size = 54
+shape = "a protocol-4 dict whose bytes value is a pickle without PROTO that starts with a UNICODE opcode and calls os.system"
+requested = ["os.system"]
+
+[[fixtures]]
+file = "call_os_execl.pkl"
+sha256 = "ed2e8a8ad3a527f9278be9a83a4f9b38a527c41399d2dcd93f74e4d69cf20687"
+size = 33
+shape = "os.execl('/bin/true', 'true')"
+requested = ["os.execl"]
+
+[[fixtures]]
+file = "call_os_spawnlp.pkl"
+sha256 = "445c58ccd4838f4c7f3af0724e2e208aca2450f2aa6826517ab2b432032949db"
+size = 34
+shape = "os.spawnlp(0, 'true', 'true')"
+requested = ["os.spawnlp"]
+
+[[fixtures]]
+file = "call_os_posix_spawn.pkl"
+sha256 = "dbf5dd196c97df93e01e11576c2a524bbce986e4c14a6c21269811bd0d694773"
+size = 44
+shape = "os.posix_spawn('/bin/true', ['true'], {})"
+requested = ["os.posix_spawn"]
+
+[[fixtures]]
+file = "call_os_startfile.pkl"
+sha256 = "d602ba4aea65bb0006aae966d6682515b1a653094271dfdb931b26bde5297f95"
+size = 31
+shape = "os.startfile('notes.txt')"
+requested = ["os.startfile"]
+
+[[fixtures]]
+file = "call_urllib_request_urlopen.pkl"
+sha256 = "2b2382cd6d6d488e436bb708e7dc31b67e03331c7e675ffab96119a810c6646f"
+size = 53
+shape = "urllib.request.urlopen('http://127.0.0.1:9/')"
+requested = ["urllib.request.urlopen"]
+
+[[fixtures]]
+file = "call_timeit_timeit.pkl"
+sha256 = "c11e992605001779b1f1ebf1442572aba0b9baf2059d6e72e2a94a8ad17606e0"
+size = 27
+shape = "timeit.timeit('pass')"
+requested = ["timeit.timeit"]
+
+[[fixtures]]
+file = "call_cprofile_run.pkl"
+sha256 = "7e0d5338669d5b349e20aa96e86cd6a601848362e4a66ce42bd5783a5e42ddb3"
+size = 28
+shape = "cProfile.run('pass')"
+requested = ["cProfile.run"]
+
+[[fixtures]]
+file = "call_pdb_run.pkl"
+sha256 = "515855a3a8aa19f7c946d44eb1fde6d7e11c60f00a1f8bc6dbfeccd87b1882df"
+size = 21
+shape = "pdb.run('pass')"
+requested = ["pdb.run"]
+
+[[fixtures]]
+file = "pickle_then_zip.pkl"
+sha256 = "3cfda69abf60327eed9c32f22ab5ebf1f7b96b20ff31167fb2b141eb61f43618"
+size = 168
+shape = "a memo-free protocol-4 dict pickle followed by a stored zip holding data/weights.txt"
+requested = []
+
+[[fixtures]]
+file = "zip_then_pickle.zip"
+sha256 = "e877d298b1882dc15555d83a5226e396451a59b287dabdbc1b9905826941ca36"
+size = 166
+shape = "a stored zip holding config.json followed by a protocol-2 pickle that calls os.system"
+pickle_offsets = [134]
+requested = ["os.system"]
