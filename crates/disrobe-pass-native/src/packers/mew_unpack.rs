@@ -19,6 +19,7 @@ const OPTIONAL_HEADER_AEP_OFFSET: usize = 0x10;
 const OPTIONAL_HEADER_IMAGE_BASE_OFFSET: usize = 0x1C;
 const SECTION_HEADER_LEN: usize = 40;
 const APLIB_MAX_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
+const MAX_MEW_LEADING_CHUNKS: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MewImport {
@@ -293,8 +294,20 @@ fn decode_mew_lzma_image(
     let mut chunk_reader: MewAplibChunks<'_> = MewAplibChunks::new(stream);
     let mut leading_chunks: Vec<MewLeadingChunk> = Vec::with_capacity(2);
     let mut current_dest_va: u32 = first_dest_va;
+    let mut decoded_total: usize = 0;
     loop {
+        if leading_chunks.len() >= MAX_MEW_LEADING_CHUNKS {
+            return Err(Error::SignatureDb(format!(
+                "MEW stub chains more than {MAX_MEW_LEADING_CHUNKS} leading aPLib chunks"
+            )));
+        }
         let chunk_decoded: u32 = chunk_reader.decode_chunk(current_dest_va, image_base)?;
+        decoded_total = decoded_total.saturating_add(chunk_decoded as usize);
+        if decoded_total > APLIB_MAX_OUTPUT_BYTES {
+            return Err(Error::SignatureDb(format!(
+                "MEW leading chunks decode more than {APLIB_MAX_OUTPUT_BYTES} bytes"
+            )));
+        }
         leading_chunks.push(MewLeadingChunk {
             dest_va: current_dest_va,
             decoded_bytes: chunk_decoded,
