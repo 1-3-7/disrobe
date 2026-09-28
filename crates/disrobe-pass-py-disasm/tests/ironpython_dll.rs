@@ -1,3 +1,4 @@
+#![cfg(feature = "alt-ironpython")]
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 use disrobe_pass_py_disasm::alt_runtimes::ironpython::{
     DotnetAnalysis, IronPythonModule, analyze, detect, parse,

@@ -123,7 +123,7 @@ fn recover_micropython(
     disasm_only(runtime, label, render_mpy(module), count)
 }
 
-#[cfg(feature = "alt-runtimes-native")]
+#[cfg(feature = "alt-jython")]
 fn recover_jython(runtime: AltRuntime, label: &'static str, bytes: &[u8]) -> AltRecovery {
     let disasm_text: String = match super::jython::analyze(bytes) {
         Ok(analysis) => render_jython_analysis(&analysis),
@@ -145,7 +145,7 @@ fn recover_jython(runtime: AltRuntime, label: &'static str, bytes: &[u8]) -> Alt
     }
 }
 
-#[cfg(not(feature = "alt-runtimes-native"))]
+#[cfg(not(feature = "alt-jython"))]
 fn recover_jython(runtime: AltRuntime, label: &'static str, _bytes: &[u8]) -> AltRecovery {
     walled(
         runtime,
@@ -154,7 +154,7 @@ fn recover_jython(runtime: AltRuntime, label: &'static str, _bytes: &[u8]) -> Al
     )
 }
 
-#[cfg(feature = "alt-runtimes-native")]
+#[cfg(feature = "alt-ironpython")]
 fn recover_ironpython(runtime: AltRuntime, label: &'static str, bytes: &[u8]) -> AltRecovery {
     let disasm_text: String = match super::ironpython::analyze(bytes) {
         Ok(analysis) => render_ironpython_analysis(&analysis),
@@ -176,7 +176,7 @@ fn recover_ironpython(runtime: AltRuntime, label: &'static str, bytes: &[u8]) ->
     }
 }
 
-#[cfg(not(feature = "alt-runtimes-native"))]
+#[cfg(not(feature = "alt-ironpython"))]
 fn recover_ironpython(runtime: AltRuntime, label: &'static str, _bytes: &[u8]) -> AltRecovery {
     walled(
         runtime,
@@ -185,7 +185,7 @@ fn recover_ironpython(runtime: AltRuntime, label: &'static str, _bytes: &[u8]) -
     )
 }
 
-#[cfg(feature = "alt-runtimes-native")]
+#[cfg(feature = "alt-brython")]
 fn recover_brython(runtime: AltRuntime, label: &'static str, bytes: &[u8]) -> AltRecovery {
     match super::brython::handoff(bytes) {
         Ok(handoff) => {
@@ -214,7 +214,7 @@ fn recover_brython(runtime: AltRuntime, label: &'static str, bytes: &[u8]) -> Al
     }
 }
 
-#[cfg(not(feature = "alt-runtimes-native"))]
+#[cfg(not(feature = "alt-brython"))]
 fn recover_brython(runtime: AltRuntime, label: &'static str, _bytes: &[u8]) -> AltRecovery {
     walled(
         runtime,
@@ -223,7 +223,7 @@ fn recover_brython(runtime: AltRuntime, label: &'static str, _bytes: &[u8]) -> A
     )
 }
 
-#[cfg(feature = "alt-runtimes-native")]
+#[cfg(feature = "alt-jython")]
 fn render_jython_analysis(analysis: &super::jython::JvmAnalysis) -> String {
     let mut out: String = String::new();
     let version: String = analysis.java_version.map_or_else(
@@ -256,7 +256,7 @@ fn render_jython_analysis(analysis: &super::jython::JvmAnalysis) -> String {
     out
 }
 
-#[cfg(feature = "alt-runtimes-native")]
+#[cfg(feature = "alt-ironpython")]
 fn render_ironpython_analysis(analysis: &super::ironpython::DotnetAnalysis) -> String {
     let mut out: String = String::new();
     crate::push_string_line(
@@ -283,7 +283,7 @@ fn render_ironpython_analysis(analysis: &super::ironpython::DotnetAnalysis) -> S
     out
 }
 
-#[cfg(feature = "alt-runtimes-native")]
+#[cfg(feature = "alt-ironpython")]
 fn render_dotnet_assembly(assembly: &disrobe_pass_dotnet::DecompiledAssembly) -> String {
     let mut out: String = String::new();
     crate::push_string_line(
@@ -406,17 +406,17 @@ mod tests {
         assert!(recovery.source.is_none());
     }
 
-    #[cfg(feature = "alt-runtimes-native")]
+    #[cfg(feature = "alt-jython")]
     const JYTHON_CLASS: &[u8] =
         include_bytes!("../../../../corpus/python/alt_runtimes/jython/greet_mod$py.class");
-    #[cfg(feature = "alt-runtimes-native")]
+    #[cfg(feature = "alt-ironpython")]
     const IRONPYTHON_DLL: &[u8] =
         include_bytes!("../../../../corpus/python/alt_runtimes/ironpython/greet_ip.dll");
-    #[cfg(feature = "alt-runtimes-native")]
+    #[cfg(feature = "alt-brython")]
     const BRYTHON_JS: &[u8] =
         include_bytes!("../../../../corpus/python/alt_runtimes/brython/hello.brython.js");
 
-    #[cfg(feature = "alt-runtimes-native")]
+    #[cfg(feature = "alt-jython")]
     #[test]
     fn recover_jython_emits_java_source() {
         let recovery: AltRecovery = recover_detected(JYTHON_CLASS).expect("detected jython");
@@ -428,7 +428,7 @@ mod tests {
         assert!(source.text.contains("class"));
     }
 
-    #[cfg(feature = "alt-runtimes-native")]
+    #[cfg(feature = "alt-ironpython")]
     #[test]
     fn recover_ironpython_emits_csharp_source() {
         let recovery: AltRecovery = recover_detected(IRONPYTHON_DLL).expect("detected ironpython");
@@ -439,7 +439,7 @@ mod tests {
         assert!(source.text.contains("Greet") || source.text.contains("module"));
     }
 
-    #[cfg(feature = "alt-runtimes-native")]
+    #[cfg(feature = "alt-brython")]
     #[test]
     fn recover_brython_routes_to_js_deob() {
         let recovery: AltRecovery = recover_detected(BRYTHON_JS).expect("detected brython");

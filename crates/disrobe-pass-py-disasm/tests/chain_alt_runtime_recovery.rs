@@ -88,14 +88,14 @@ fn chain_cpython_pyc_emits_dis_json_sidecar_child() {
     );
 }
 
-#[cfg(feature = "alt-runtimes-native")]
+#[cfg(feature = "alt-jython")]
 const JYTHON_CLASS: &[u8] =
     include_bytes!("../../../corpus/python/alt_runtimes/jython/greet_mod$py.class");
-#[cfg(feature = "alt-runtimes-native")]
+#[cfg(feature = "alt-ironpython")]
 const IRONPYTHON_DLL: &[u8] =
     include_bytes!("../../../corpus/python/alt_runtimes/ironpython/greet_ip.dll");
 
-#[cfg(feature = "alt-runtimes-native")]
+#[cfg(feature = "alt-jython")]
 #[test]
 fn chain_jython_classfile_emits_recovered_java_source_child() {
     let artifact: Artifact = Artifact::new(Rung::Raw, JYTHON_CLASS.to_vec(), [9u8; 32]);
@@ -119,7 +119,7 @@ fn chain_jython_classfile_emits_recovered_java_source_child() {
     );
 }
 
-#[cfg(feature = "alt-runtimes-native")]
+#[cfg(feature = "alt-ironpython")]
 #[test]
 fn chain_ironpython_dll_emits_recovered_csharp_source_child() {
     let artifact: Artifact = Artifact::new(Rung::Raw, IRONPYTHON_DLL.to_vec(), [9u8; 32]);

@@ -1,8 +1,8 @@
-#[cfg(feature = "alt-runtimes-native")]
+#[cfg(feature = "alt-brython")]
 pub mod brython;
-#[cfg(feature = "alt-runtimes-native")]
+#[cfg(feature = "alt-ironpython")]
 pub mod ironpython;
-#[cfg(feature = "alt-runtimes-native")]
+#[cfg(feature = "alt-jython")]
 pub mod jython;
 pub mod micropython;
 pub mod micropython_native;
@@ -76,11 +76,11 @@ pub enum AltRuntime {
 
 #[must_use]
 pub fn detect_runtime(bytes: &[u8]) -> Option<AltRuntime> {
-    #[cfg(feature = "alt-runtimes-native")]
+    #[cfg(feature = "alt-jython")]
     if jython::detect(bytes) {
         return Some(AltRuntime::Jython);
     }
-    #[cfg(feature = "alt-runtimes-native")]
+    #[cfg(feature = "alt-ironpython")]
     if ironpython::detect(bytes) {
         return Some(AltRuntime::IronPython);
     }
@@ -93,7 +93,7 @@ pub fn detect_runtime(bytes: &[u8]) -> Option<AltRuntime> {
     if pypy::detect(bytes) {
         return Some(AltRuntime::PyPy);
     }
-    #[cfg(feature = "alt-runtimes-native")]
+    #[cfg(feature = "alt-brython")]
     if brython::detect(bytes) {
         return Some(AltRuntime::Brython);
     }

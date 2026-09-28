@@ -1,3 +1,4 @@
+#![cfg(feature = "alt-brython")]
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 use disrobe_pass_py_disasm::alt_runtimes::brython::{
     BrythonModule, JsDeobHandoff, detect, handoff, parse,
