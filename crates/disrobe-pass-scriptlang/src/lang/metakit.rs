@@ -15,6 +15,8 @@ const MAX_VIEW_DEPTH: usize = 8usize;
 const MAX_COLUMNS: usize = 64usize;
 const MAX_VIEW_ROWS: i64 = 1i64 << 20;
 const MAX_MEMBERS: usize = 65_536usize;
+const MAX_PATH_BYTES: usize = 4096usize;
+const MAX_TOTAL_PATH_BYTES: usize = 64usize << 20;
 const ROOT_DIRECTORY_NAME: &str = "<root>";
 
 const SMALL_VECTOR_WIDTH: [[u8; 6]; 7] = [
@@ -588,40 +590,71 @@ fn decode_name(raw: &[u8], what: &str) -> Result<String> {
     Ok(text.to_owned())
 }
 
-fn directory_path(names: &[&[u8]], parents: &[i64], index: usize) -> Result<String> {
+fn directory_paths(names: &[&[u8]], parents: &[i64]) -> Result<Vec<String>> {
     if names.len() != parents.len() {
         return Err(malformed(
             "the directory name and parent columns disagree on their row count",
         ));
     }
-    let mut components: Vec<String> = Vec::new();
-    let mut cursor: usize = index;
-    for _ in 0usize..=names.len() {
-        let raw: &[u8] = names
-            .get(cursor)
-            .ok_or_else(|| malformed(format!("directory row {cursor} is out of range")))?;
-        let name: String = decode_name(raw, "directory name")?;
-        if name != ROOT_DIRECTORY_NAME {
-            components.push(name);
+    let mut resolved: Vec<Option<String>> = vec![None; names.len()];
+    let mut total_bytes: usize = 0;
+    for start in 0usize..names.len() {
+        let mut chain: Vec<usize> = Vec::new();
+        let mut cursor: usize = start;
+        let base: String = loop {
+            if let Some(known) = &resolved[cursor] {
+                break known.clone();
+            }
+            if chain.len() > names.len() {
+                return Err(malformed(format!(
+                    "directory row {start} sits on a cyclic parent chain"
+                )));
+            }
+            chain.push(cursor);
+            let parent: i64 = parents[cursor];
+            if parent < 0i64 {
+                break String::new();
+            }
+            let next: usize = usize::try_from(parent)
+                .map_err(|_| malformed(format!("directory parent {parent} is out of range")))?;
+            if next >= names.len() {
+                return Err(malformed(format!(
+                    "directory row {cursor} names parent {next} of {} directories",
+                    names.len()
+                )));
+            }
+            cursor = next;
+        };
+        let mut path: String = base;
+        for &row in chain.iter().rev() {
+            let name: String = decode_name(names[row], "directory name")?;
+            if name != ROOT_DIRECTORY_NAME {
+                if !path.is_empty() {
+                    path.push('/');
+                }
+                path.push_str(&name);
+            }
+            if path.len() > MAX_PATH_BYTES {
+                return Err(malformed(format!(
+                    "directory row {row} has a path longer than {MAX_PATH_BYTES} bytes"
+                )));
+            }
+            total_bytes = total_bytes.saturating_add(path.len());
+            if total_bytes > MAX_TOTAL_PATH_BYTES {
+                return Err(malformed(format!(
+                    "directory paths exceed {MAX_TOTAL_PATH_BYTES} bytes in total"
+                )));
+            }
+            resolved[row] = Some(path.clone());
         }
-        let parent: i64 = parents[cursor];
-        if parent < 0i64 {
-            components.reverse();
-            return Ok(components.join("/"));
-        }
-        let next: usize = usize::try_from(parent)
-            .map_err(|_| malformed(format!("directory parent {parent} is out of range")))?;
-        if next >= names.len() {
-            return Err(malformed(format!(
-                "directory row {cursor} names parent {next} of {} directories",
-                names.len()
-            )));
-        }
-        cursor = next;
     }
-    Err(malformed(format!(
-        "directory row {index} sits on a cyclic parent chain"
-    )))
+    resolved
+        .into_iter()
+        .enumerate()
+        .map(|(row, path): (usize, Option<String>)| {
+            path.ok_or_else(|| malformed(format!("directory row {row} did not resolve")))
+        })
+        .collect()
 }
 
 #[derive(Debug)]
@@ -783,6 +816,7 @@ pub(crate) fn read_starkit_members(bytes: &[u8]) -> Result<Vec<MetakitMember<'_>
     let file_views: Vec<SubviewInstance> =
         read_subview(database, files_location, dirs.view.rows, files_schema)?;
 
+    let prefixes: Vec<String> = directory_paths(&directory_names, &parents)?;
     let mut members: Vec<MetakitMember<'_>> = Vec::new();
     for (directory, files) in file_views.iter().enumerate() {
         if files.view.rows == 0usize {
@@ -810,7 +844,10 @@ pub(crate) fn read_starkit_members(bytes: &[u8]) -> Result<Vec<MetakitMember<'_>
             files.view.rows,
             "files.contents",
         )?;
-        let prefix: String = directory_path(&directory_names, &parents, directory)?;
+        let prefix: &str = prefixes
+            .get(directory)
+            .map(String::as_str)
+            .ok_or_else(|| malformed(format!("file view {directory} has no directory row")))?;
         for row in 0usize..files.view.rows {
             if members.len() >= MAX_MEMBERS {
                 return Err(malformed(format!(
@@ -826,6 +863,11 @@ pub(crate) fn read_starkit_members(bytes: &[u8]) -> Result<Vec<MetakitMember<'_>
             } else {
                 format!("{prefix}/{name}")
             };
+            if path.len() > MAX_PATH_BYTES {
+                return Err(malformed(format!(
+                    "member path longer than {MAX_PATH_BYTES} bytes"
+                )));
+            }
             members.push(MetakitMember {
                 path,
                 declared_size,
@@ -840,6 +882,43 @@ pub(crate) fn read_starkit_members(bytes: &[u8]) -> Result<Vec<MetakitMember<'_>
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn directory_paths_resolve_each_row_once_from_its_parent() {
+        let names: Vec<&[u8]> = vec![b"<root>", b"lib", b"tcl", b"app"];
+        let parents: Vec<i64> = vec![-1, 0, 1, 0];
+        assert_eq!(
+            directory_paths(&names, &parents).unwrap(),
+            vec![
+                String::new(),
+                "lib".to_owned(),
+                "lib/tcl".to_owned(),
+                "app".to_owned()
+            ]
+        );
+    }
+
+    #[test]
+    fn a_deep_directory_chain_is_refused_at_the_path_cap_not_materialised() {
+        let depth: usize = 20_000;
+        let names: Vec<&[u8]> = std::iter::once(b"<root>".as_slice())
+            .chain(std::iter::repeat_n(b"segment".as_slice(), depth))
+            .collect();
+        let parents: Vec<i64> = std::iter::once(-1i64).chain((0i64..).take(depth)).collect();
+        let error: Error = directory_paths(&names, &parents).expect_err("the chain is too deep");
+        assert!(
+            error.to_string().contains("longer than"),
+            "a {depth}-deep chain must stop at {MAX_PATH_BYTES} bytes: {error}"
+        );
+    }
+
+    #[test]
+    fn a_cyclic_parent_chain_is_refused() {
+        let names: Vec<&[u8]> = vec![b"a", b"b"];
+        let parents: Vec<i64> = vec![1, 0];
+        let error: Error = directory_paths(&names, &parents).expect_err("the chain cycles");
+        assert!(error.to_string().contains("cyclic"), "{error}");
+    }
 
     #[test]
     fn adaptive_values_follow_the_seven_bit_terminator_rule() {
