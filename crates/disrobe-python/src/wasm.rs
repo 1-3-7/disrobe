@@ -57,6 +57,7 @@ fn wasm_lift_error(error: &WasmError) -> PyErr {
         WasmError::AtomicMemoryModel(_) => "DR-WASMDEOB-0003",
         WasmError::ModuleSourceLimit { .. } => "DR-WASMDEOB-0004",
         WasmError::ModuleInputLimit { .. } => "DR-WASMDEOB-0005",
+        WasmError::InvalidRecovery(_) => "DR-WASMDEOB-0006",
     };
     json_error(
         code,
