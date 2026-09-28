@@ -1,6 +1,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 #[path = "support/druntime_demangle_vectors.rs"]
+#[allow(clippy::redundant_pub_crate)]
 mod vectors;
 
 use disrobe_pass_nativelang::{DemangledSymbol, demangle_d};
