@@ -240,13 +240,10 @@ const fn classify(
     literals_recovered: bool,
 ) -> (GarbleQuality, GarbleResidual) {
     let _ = (surviving, total_stdlib);
-    if score == 0 {
-        return (GarbleQuality::None, GarbleResidual::None);
-    }
     let confidently_garble: bool = score >= GARBLE_CONFIDENCE_THRESHOLD
         || (literals_recovered && name_recovery.user_hashed_erased > 0);
     if !confidently_garble {
-        return (GarbleQuality::Detected, GarbleResidual::Incomplete);
+        return (GarbleQuality::None, GarbleResidual::None);
     }
     let structure_recovered: bool = name_recovery.total_funcs > 0
         && name_recovery.stdlib_recovered * STRUCTURE_RECOVERY_DEN
@@ -325,13 +322,6 @@ fn score_garble_signals(image: &GoImage<'_>, syms: &GoSymbols) -> u32 {
             || s.data.windows(10).any(|w: &[u8]| w == b"mvdan.cc/g")
     });
     if garble_marker {
-        score += 1;
-    }
-    let trimpath: bool = image
-        .sections
-        .iter()
-        .any(|s: &crate::binary::Section<'_>| s.data.windows(9).any(|w: &[u8]| w == b"-trimpath"));
-    if trimpath {
         score += 1;
     }
     score
@@ -1255,6 +1245,14 @@ mod tests {
     fn none_when_score_zero() {
         let s: NameRecoveryStats = stats(1000, 900, 0);
         let (q, r): (GarbleQuality, GarbleResidual) = classify(0, 0, 15, false, &s, false, false);
+        assert_eq!(q, GarbleQuality::None);
+        assert_eq!(r, GarbleResidual::None);
+    }
+
+    #[test]
+    fn a_single_weak_signal_is_not_garble() {
+        let s: NameRecoveryStats = stats(1000, 900, 0);
+        let (q, r): (GarbleQuality, GarbleResidual) = classify(1, 0, 15, false, &s, false, false);
         assert_eq!(q, GarbleQuality::None);
         assert_eq!(r, GarbleResidual::None);
     }

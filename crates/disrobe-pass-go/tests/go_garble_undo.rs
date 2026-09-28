@@ -72,8 +72,5 @@ fn garble_name_recovery_measured_against_fixture() {
 fn garble_none_on_normal_binary() {
     let bytes: Vec<u8> = common::fixture(common::HELLO_NORMAL);
     let analysis: GoAnalysis = analyze(&bytes).expect("analyze normal");
-    assert!(matches!(
-        analysis.garble.quality,
-        GarbleQuality::None | GarbleQuality::Detected
-    ));
+    assert_eq!(analysis.garble.quality, GarbleQuality::None);
 }
