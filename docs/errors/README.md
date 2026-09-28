@@ -79,6 +79,7 @@ Each `DR-<DOMAIN>-<NNNN>` code in the in-tree registry (`crates/disrobe-cli/src/
 | [DR-CLI-0150](./DR-CLI-0150.md) | status: cannot read out/ tree |
 | [DR-CLI-0320](./DR-CLI-0320.md) | guard denied write to ground-truth stage path |
 | [DR-CLI-0321](./DR-CLI-0321.md) | guard: cannot resolve --root |
+| [DR-CLI-0877](./DR-CLI-0877.md) | a pass panicked; its input is recorded as failed |
 | [DR-JSDEOB-0001](./DR-JSDEOB-0001.md) | no JS obfuscator family matched |
 | [DR-JSDEOB-0002](./DR-JSDEOB-0002.md) | js-deob I/O error |
 | [DR-JSDEOB-0003](./DR-JSDEOB-0003.md) | js-deob oxc parse error |
