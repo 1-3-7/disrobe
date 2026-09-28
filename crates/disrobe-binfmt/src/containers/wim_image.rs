@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 
+use sha1::{Digest, Sha1};
+
 use crate::error::{Error, Result};
 use crate::quota::ExtractionQuota;
 
@@ -72,9 +74,9 @@ fn lookup_table_bytes(bytes: &[u8], header: &WimHeader) -> Result<Vec<u8>> {
     )
 }
 
-fn parse_lookup_table(table: &[u8]) -> (BlobMap, Option<WimResource>) {
+fn parse_lookup_table(table: &[u8]) -> (BlobMap, Vec<WimResource>) {
     let mut blobs: BlobMap = BlobMap::new();
-    let mut metadata: Option<WimResource> = None;
+    let mut metadata: Vec<WimResource> = Vec::new();
     let entry_count: usize = table.len() / LOOKUP_ENTRY_LEN;
     for index in 0..entry_count {
         let base: usize = index * LOOKUP_ENTRY_LEN;
@@ -85,9 +87,7 @@ fn parse_lookup_table(table: &[u8]) -> (BlobMap, Option<WimResource>) {
             sha1.copy_from_slice(slice);
         }
         if resource.flags & RESHDR_FLAG_METADATA != 0 {
-            if metadata.is_none() {
-                metadata = Some(resource);
-            }
+            metadata.push(resource);
             continue;
         }
         if sha1 != [0u8; SHA1_LEN] {
@@ -193,7 +193,6 @@ fn join_path(parent: &str, child: &str) -> String {
 }
 
 struct WalkState<'a> {
-    metadata: &'a [u8],
     blobs: &'a BlobMap,
     files: Vec<WimExtractedFile>,
     notes: Vec<String>,
@@ -201,6 +200,8 @@ struct WalkState<'a> {
     source: &'a [u8],
     header: &'a WimHeader,
     quota: &'a ExtractionQuota,
+    first_file_by_hash: BTreeMap<[u8; SHA1_LEN], usize>,
+    held_bytes: u64,
 }
 
 impl WalkState<'_> {
@@ -240,7 +241,61 @@ impl WalkState<'_> {
         )
     }
 
-    fn walk(&mut self, child_offset: u64, parent_path: &str, depth: u32) -> Result<()> {
+    fn admit_blob(
+        &mut self,
+        blob: WimResource,
+        hash: &[u8; SHA1_LEN],
+        entry_path: String,
+    ) -> Result<()> {
+        let data: Vec<u8> = if let Some(&first) = self.first_file_by_hash.get(hash) {
+            self.files[first].data.clone()
+        } else {
+            let data: Vec<u8> = match self.materialize(blob) {
+                Ok(data) => data,
+                Err(e) => {
+                    self.notes.push(format!("wim-stream `{entry_path}`: {e}"));
+                    return Ok(());
+                }
+            };
+            let digest: [u8; SHA1_LEN] = Sha1::digest(&data).into();
+            if &digest != hash {
+                self.notes.push(format!(
+                    "wim-stream `{entry_path}`: data hashes to {} but the image names blob {}",
+                    hex_sha1(&digest),
+                    hex_sha1(hash)
+                ));
+                return Ok(());
+            }
+            self.first_file_by_hash.insert(*hash, self.files.len());
+            data
+        };
+        self.held_bytes = self.held_bytes.saturating_add(data.len() as u64);
+        if self.held_bytes > self.quota.max_total_uncompressed {
+            return Err(Error::QuotaExceeded {
+                entry: entry_path,
+                reason: format!(
+                    "the wim walk holds {} bytes, above the {} byte extraction quota",
+                    self.held_bytes, self.quota.max_total_uncompressed
+                ),
+            });
+        }
+        self.files.push(WimExtractedFile {
+            path: entry_path,
+            compressed: blob.flags & RESHDR_FLAG_COMPRESSED != 0,
+            original_size: blob.original_size,
+            compressed_size: blob.size,
+            data,
+        });
+        Ok(())
+    }
+
+    fn walk(
+        &mut self,
+        metadata: &[u8],
+        child_offset: u64,
+        parent_path: &str,
+        depth: u32,
+    ) -> Result<()> {
         if depth > MAX_TREE_DEPTH {
             return Err(Error::Decompression(
                 "wim dentry tree exceeds maximum depth".to_owned(),
@@ -256,7 +311,7 @@ impl WalkState<'_> {
                     "wim dentry count exceeds sanity bound".to_owned(),
                 ));
             }
-            let dentry: Dentry = match parse_dentry(self.metadata, cursor)? {
+            let dentry: Dentry = match parse_dentry(metadata, cursor)? {
                 Some(d) => d,
                 None => break,
             };
@@ -270,9 +325,9 @@ impl WalkState<'_> {
             let is_reparse: bool = dentry.attributes & ATTR_REPARSE_POINT != 0;
             if is_dir {
                 if dentry.subdir_offset != 0 && !dentry.name.is_empty() {
-                    self.walk(dentry.subdir_offset, &entry_path, depth + 1)?;
+                    self.walk(metadata, dentry.subdir_offset, &entry_path, depth + 1)?;
                 } else if dentry.subdir_offset != 0 && dentry.name.is_empty() {
-                    self.walk(dentry.subdir_offset, parent_path, depth + 1)?;
+                    self.walk(metadata, dentry.subdir_offset, parent_path, depth + 1)?;
                 }
             } else if is_reparse {
                 self.notes.push(format!(
@@ -287,16 +342,7 @@ impl WalkState<'_> {
                     compressed_size: 0,
                 });
             } else if let Some(&blob) = self.blobs.get(&dentry.hash) {
-                match self.materialize(blob) {
-                    Ok(data) => self.files.push(WimExtractedFile {
-                        path: entry_path,
-                        compressed: blob.flags & RESHDR_FLAG_COMPRESSED != 0,
-                        original_size: blob.original_size,
-                        compressed_size: blob.size,
-                        data,
-                    }),
-                    Err(e) => self.notes.push(format!("wim-stream `{entry_path}`: {e}")),
-                }
+                self.admit_blob(blob, &dentry.hash, entry_path)?;
             } else {
                 self.notes.push(format!(
                     "wim-stream `{entry_path}`: data blob {} not present in the lookup table",
@@ -328,59 +374,14 @@ pub fn extract_wim_files(
     quota: &ExtractionQuota,
 ) -> Result<WimImageExtraction> {
     let table: Vec<u8> = lookup_table_bytes(bytes, header)?;
-    let (blobs, metadata_resource): (BlobMap, Option<WimResource>) = parse_lookup_table(&table);
-    let metadata_resource: WimResource = metadata_resource.ok_or_else(|| {
-        Error::Decompression("wim lookup table has no metadata resource".to_owned())
-    })?;
-    let metadata_offset: usize =
-        usize::try_from(metadata_resource.offset).map_err(|_e: std::num::TryFromIntError| {
-            Error::Decompression("wim metadata offset overflow".to_owned())
-        })?;
-    let metadata_size: usize =
-        usize::try_from(metadata_resource.size).map_err(|_e: std::num::TryFromIntError| {
-            Error::Decompression("wim metadata size overflow".to_owned())
-        })?;
-    let metadata_end: usize = metadata_offset
-        .checked_add(metadata_size)
-        .ok_or_else(|| Error::Decompression("wim metadata range overflow".to_owned()))?;
-    let metadata_slice: &[u8] = bytes
-        .get(metadata_offset..metadata_end)
-        .ok_or_else(|| Error::Decompression("wim metadata resource out of bounds".to_owned()))?;
-    let chunk_size: u32 = if header.chunk_size == 0 {
-        DEFAULT_CHUNK_SIZE
-    } else {
-        header.chunk_size
-    };
-    let metadata_compression: super::wim::WimCompression =
-        if metadata_resource.flags & RESHDR_FLAG_COMPRESSED != 0 {
-            header.compression
-        } else {
-            super::wim::WimCompression::None
-        };
-    let metadata: Vec<u8> = decompress_wim_resource(
-        metadata_slice,
-        metadata_compression,
-        metadata_resource.original_size,
-        chunk_size,
-        quota,
-    )?;
-    let security_size: usize = security_data_size(&metadata)?;
-    if security_size > metadata.len() {
+    let (blobs, metadata_resources): (BlobMap, Vec<WimResource>) = parse_lookup_table(&table);
+    if metadata_resources.is_empty() {
         return Err(Error::Decompression(
-            "wim security data overruns metadata resource".to_owned(),
+            "wim lookup table has no metadata resource".to_owned(),
         ));
     }
-    let root: Dentry = match parse_dentry(&metadata, security_size)? {
-        Some(d) => d,
-        None => {
-            return Ok(WimImageExtraction {
-                files: Vec::new(),
-                notes: vec!["wim-image: metadata root dentry is empty".to_owned()],
-            });
-        }
-    };
+    let image_count: usize = metadata_resources.len();
     let mut state: WalkState<'_> = WalkState {
-        metadata: &metadata,
         blobs: &blobs,
         files: Vec::new(),
         notes: Vec::new(),
@@ -388,14 +389,75 @@ pub fn extract_wim_files(
         source: bytes,
         header,
         quota,
+        first_file_by_hash: BTreeMap::new(),
+        held_bytes: 0,
     };
-    if root.subdir_offset != 0 {
-        state.walk(root.subdir_offset, "", 0)?;
+    for (index, resource) in metadata_resources.into_iter().enumerate() {
+        let prefix: String = if image_count > 1 {
+            format!("image-{}", index + 1)
+        } else {
+            String::new()
+        };
+        let metadata: Vec<u8> = image_metadata(bytes, header, resource, quota)?;
+        let security_size: usize = security_data_size(&metadata)?;
+        if security_size > metadata.len() {
+            return Err(Error::Decompression(
+                "wim security data overruns metadata resource".to_owned(),
+            ));
+        }
+        let Some(root): Option<Dentry> = parse_dentry(&metadata, security_size)? else {
+            state.notes.push(format!(
+                "wim-image {}: metadata root dentry is empty",
+                index + 1
+            ));
+            continue;
+        };
+        if root.subdir_offset != 0 {
+            state.walk(&metadata, root.subdir_offset, &prefix, 0)?;
+        }
     }
     Ok(WimImageExtraction {
         files: state.files,
         notes: state.notes,
     })
+}
+
+fn image_metadata(
+    bytes: &[u8],
+    header: &WimHeader,
+    resource: WimResource,
+    quota: &ExtractionQuota,
+) -> Result<Vec<u8>> {
+    let offset: usize =
+        usize::try_from(resource.offset).map_err(|_e: std::num::TryFromIntError| {
+            Error::Decompression("wim metadata offset overflow".to_owned())
+        })?;
+    let size: usize = usize::try_from(resource.size).map_err(|_e: std::num::TryFromIntError| {
+        Error::Decompression("wim metadata size overflow".to_owned())
+    })?;
+    let end: usize = offset
+        .checked_add(size)
+        .ok_or_else(|| Error::Decompression("wim metadata range overflow".to_owned()))?;
+    let slice: &[u8] = bytes
+        .get(offset..end)
+        .ok_or_else(|| Error::Decompression("wim metadata resource out of bounds".to_owned()))?;
+    let chunk_size: u32 = if header.chunk_size == 0 {
+        DEFAULT_CHUNK_SIZE
+    } else {
+        header.chunk_size
+    };
+    let compression: super::wim::WimCompression = if resource.flags & RESHDR_FLAG_COMPRESSED != 0 {
+        header.compression
+    } else {
+        super::wim::WimCompression::None
+    };
+    decompress_wim_resource(
+        slice,
+        compression,
+        resource.original_size,
+        chunk_size,
+        quota,
+    )
 }
 
 #[cfg(test)]
@@ -409,6 +471,48 @@ pub(crate) fn hostile_named_image(name: &str, body: &[u8]) -> Option<Vec<u8>> {
 mod tests {
     use super::*;
 
+    fn wim_header_of(image: &[u8]) -> WimHeader {
+        super::super::wim::parse_wim_header(image).expect("wim header")
+    }
+
+    #[test]
+    fn a_blob_whose_bytes_do_not_match_its_hash_is_refused() {
+        let mut image: Vec<u8> = build_single_file_wim("a.txt", b"payload");
+        let at: usize = image
+            .windows(7)
+            .rposition(|window: &[u8]| window == b"payload")
+            .expect("blob bytes");
+        image[at] = b'P';
+        let header: WimHeader = wim_header_of(&image);
+        let extraction: WimImageExtraction =
+            extract_wim_files(&image, &header, &ExtractionQuota::default_safe()).expect("walks");
+        assert!(extraction.files.is_empty(), "{:?}", extraction.files);
+        assert!(
+            extraction
+                .notes
+                .iter()
+                .any(|note: &String| note.starts_with("wim-stream `a.txt`: data hashes to")),
+            "{:?}",
+            extraction.notes
+        );
+    }
+
+    #[test]
+    fn a_walk_over_the_quota_is_refused_before_it_holds_the_bytes() {
+        let body: Vec<u8> = vec![0x5Au8; 800];
+        let image: Vec<u8> = build_linked_wim(&["a.bin", "b.bin"], &body);
+        let header: WimHeader = wim_header_of(&image);
+        let quota: ExtractionQuota = ExtractionQuota {
+            max_total_uncompressed: 1024,
+            ..ExtractionQuota::default_safe()
+        };
+        let error: Error = extract_wim_files(&image, &header, &quota).expect_err("over quota");
+        assert!(
+            matches!(&error, Error::QuotaExceeded { entry, .. } if entry == "b.bin"),
+            "{error:?}"
+        );
+    }
+
     fn reshdr_bytes(size: u64, flags: u8, offset: u64, original_size: u64) -> [u8; 24] {
         let packed: u64 = (size & 0x00ff_ffff_ffff_ffff) | (u64::from(flags) << 56);
         let mut out: [u8; 24] = [0u8; 24];
@@ -419,18 +523,30 @@ mod tests {
     }
 
     pub(super) fn build_single_file_wim(name: &str, body: &[u8]) -> Vec<u8> {
-        use super::super::wim::{WIM_HEADER_LEN, WIM_MAGIC};
+        build_linked_wim(&[name], body)
+    }
 
-        let name_bytes: Vec<u8> = name
-            .encode_utf16()
-            .flat_map(|unit: u16| unit.to_le_bytes())
-            .collect();
+    fn build_linked_wim(names: &[&str], body: &[u8]) -> Vec<u8> {
+        use super::super::wim::{WIM_HEADER_LEN, WIM_MAGIC};
 
         let security_size: usize = 8;
         let root_dentry_offset: usize = security_size;
-        let child_dentry_offset: usize = root_dentry_offset + align8(DENTRY_FIXED_LEN);
-        let child_dentry_len: usize = DENTRY_FIXED_LEN + name_bytes.len();
-        let terminator_offset: usize = child_dentry_offset + align8(child_dentry_len);
+        let first_child_offset: usize = root_dentry_offset + align8(DENTRY_FIXED_LEN);
+        let encoded: Vec<Vec<u8>> = names
+            .iter()
+            .map(|name: &&str| {
+                name.encode_utf16()
+                    .flat_map(|unit: u16| unit.to_le_bytes())
+                    .collect()
+            })
+            .collect();
+        let mut child_offsets: Vec<usize> = Vec::with_capacity(names.len());
+        let mut cursor: usize = first_child_offset;
+        for name_bytes in &encoded {
+            child_offsets.push(cursor);
+            cursor += align8(DENTRY_FIXED_LEN + name_bytes.len());
+        }
+        let terminator_offset: usize = cursor;
         let metadata_len: usize = terminator_offset + 8;
 
         let mut metadata: Vec<u8> = vec![0u8; metadata_len];
@@ -440,18 +556,21 @@ mod tests {
         metadata[root_dentry_offset + 8..root_dentry_offset + 12]
             .copy_from_slice(&ATTR_DIRECTORY.to_le_bytes());
         metadata[root_dentry_offset + 16..root_dentry_offset + 24]
-            .copy_from_slice(&(child_dentry_offset as u64).to_le_bytes());
+            .copy_from_slice(&(first_child_offset as u64).to_le_bytes());
 
-        let hash: [u8; SHA1_LEN] = [0x11u8; SHA1_LEN];
-        metadata[child_dentry_offset..child_dentry_offset + 8]
-            .copy_from_slice(&(child_dentry_len as u64).to_le_bytes());
-        metadata[child_dentry_offset + 64..child_dentry_offset + 64 + SHA1_LEN]
-            .copy_from_slice(&hash);
-        metadata[child_dentry_offset + 100..child_dentry_offset + 102]
-            .copy_from_slice(&(name_bytes.len() as u16).to_le_bytes());
-        metadata[child_dentry_offset + DENTRY_FIXED_LEN
-            ..child_dentry_offset + DENTRY_FIXED_LEN + name_bytes.len()]
-            .copy_from_slice(&name_bytes);
+        let hash: [u8; SHA1_LEN] = Sha1::digest(body).into();
+        for (child_dentry_offset, name_bytes) in child_offsets.iter().copied().zip(&encoded) {
+            let child_dentry_len: usize = DENTRY_FIXED_LEN + name_bytes.len();
+            metadata[child_dentry_offset..child_dentry_offset + 8]
+                .copy_from_slice(&(child_dentry_len as u64).to_le_bytes());
+            metadata[child_dentry_offset + 64..child_dentry_offset + 64 + SHA1_LEN]
+                .copy_from_slice(&hash);
+            metadata[child_dentry_offset + 100..child_dentry_offset + 102]
+                .copy_from_slice(&(name_bytes.len() as u16).to_le_bytes());
+            metadata[child_dentry_offset + DENTRY_FIXED_LEN
+                ..child_dentry_offset + DENTRY_FIXED_LEN + name_bytes.len()]
+                .copy_from_slice(name_bytes);
+        }
 
         let lookup_table_offset: u64 = WIM_HEADER_LEN as u64;
         let lookup_table_len: u64 = 100;
