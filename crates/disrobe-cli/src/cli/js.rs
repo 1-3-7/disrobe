@@ -1495,7 +1495,8 @@ fn deob_full_jsconfuser(
 ) -> miette::Result<()> {
     let opts: disrobe_pass_js_deob::DeobOptions = disrobe_pass_js_deob::DeobOptions::all();
     let output: disrobe_pass_js_deob::DeobOutput =
-        disrobe_pass_js_deob::deobfuscate_all(source_text, &opts);
+        disrobe_pass_js_deob::deobfuscate_all(source_text, &opts)
+            .map_err(|e| miette::miette!("{e}"))?;
     let (current, rename_stats, scope_rename_stats): (
         String,
         Option<disrobe_pass_js_deob::RenameStats>,

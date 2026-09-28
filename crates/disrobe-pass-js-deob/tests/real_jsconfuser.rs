@@ -37,7 +37,8 @@ fn reparses(source: &str) -> bool {
 fn real_jsconfuser_low_runs_without_panic() {
     let src: String = load("jsconfuser/obfuscated.megafile.low.js");
     let opts: DeobOptions = DeobOptions::all();
-    let out: DeobOutput = deobfuscate_all(&src, &opts);
+    let out: DeobOutput =
+        deobfuscate_all(&src, &opts).expect("jsconfuser deobfuscation must not refuse");
     assert!(
         out.source != src && reparses(&out.source),
         "low preset recovery must rewrite the input into source that parses"
@@ -48,7 +49,8 @@ fn real_jsconfuser_low_runs_without_panic() {
 fn real_jsconfuser_medium_runs_without_panic() {
     let src: String = load("jsconfuser/obfuscated.megafile.medium.js");
     let opts: DeobOptions = DeobOptions::all();
-    let out: DeobOutput = deobfuscate_all(&src, &opts);
+    let out: DeobOutput =
+        deobfuscate_all(&src, &opts).expect("jsconfuser deobfuscation must not refuse");
     assert!(
         out.source != src && reparses(&out.source),
         "medium preset recovery must rewrite the input into source that parses"
@@ -59,7 +61,8 @@ fn real_jsconfuser_medium_runs_without_panic() {
 fn real_jsconfuser_high_runs_without_panic() {
     let src: String = load("jsconfuser/obfuscated.megafile.high.js");
     let opts: DeobOptions = DeobOptions::all();
-    let out: DeobOutput = deobfuscate_all(&src, &opts);
+    let out: DeobOutput =
+        deobfuscate_all(&src, &opts).expect("jsconfuser deobfuscation must not refuse");
     assert!(
         out.source != src && reparses(&out.source),
         "high preset recovery must rewrite the input into source that parses"

@@ -63,7 +63,8 @@ fn harness_entrypoint() {
     let detection: Detection = detect(source.as_bytes());
     assert_eq!(detection.family, JsObfuscator::JsConfuser);
     let opts: DeobOptions = DeobOptions::all();
-    let out: DeobOutput = deobfuscate_all(&source, &opts);
+    let out: DeobOutput =
+        deobfuscate_all(&source, &opts).expect("jsconfuser deobfuscation must not refuse");
     assert!(!out.source.is_empty());
 }
 

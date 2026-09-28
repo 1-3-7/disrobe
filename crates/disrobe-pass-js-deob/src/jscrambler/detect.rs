@@ -50,6 +50,50 @@ pub enum JscramblerTransform {
     OsLock,
 }
 
+impl JscramblerTransform {
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::BooleanToAnything => "BooleanToAnything",
+            Self::CharToTernaryOperator => "CharToTernaryOperator",
+            Self::CommaOperatorUnfolding => "CommaOperatorUnfolding",
+            Self::ControlFlowFlattening => "ControlFlowFlattening",
+            Self::DeadCodeInjection => "DeadCodeInjection",
+            Self::DotToBracketNotation => "DotToBracketNotation",
+            Self::DuplicateLiteralsRemoval => "DuplicateLiteralsRemoval",
+            Self::ExtendPredicates => "ExtendPredicates",
+            Self::FunctionOutlining => "FunctionOutlining",
+            Self::FunctionReordering => "FunctionReordering",
+            Self::GlobalVariableIndirection => "GlobalVariableIndirection",
+            Self::IdentifiersRenaming => "IdentifiersRenaming",
+            Self::NumberToString => "NumberToString",
+            Self::ObjectPropertiesSparsing => "ObjectPropertiesSparsing",
+            Self::PropertyKeysObfuscation => "PropertyKeysObfuscation",
+            Self::PropertyKeysReordering => "PropertyKeysReordering",
+            Self::RegexObfuscation => "RegexObfuscation",
+            Self::StringConcealing => "StringConcealing",
+            Self::StringEncoding => "StringEncoding",
+            Self::VariableGrouping => "VariableGrouping",
+            Self::VariableMasking => "VariableMasking",
+            Self::AssertionsRemoval => "AssertionsRemoval",
+            Self::ConstantFolding => "ConstantFolding",
+            Self::DeadCodeElimination => "DeadCodeElimination",
+            Self::DebugCodeElimination => "DebugCodeElimination",
+            Self::WhitespaceRemoval => "WhitespaceRemoval",
+            Self::AntiDebugging => "AntiDebugging",
+            Self::AntiMonkeyPatching => "AntiMonkeyPatching",
+            Self::AntiTampering => "AntiTampering",
+            Self::DeadObjects => "DeadObjects",
+            Self::SelfDefending => "SelfDefending",
+            Self::SelfHealing => "SelfHealing",
+            Self::BrowserLock => "BrowserLock",
+            Self::DateLock => "DateLock",
+            Self::DomainLock => "DomainLock",
+            Self::OsLock => "OsLock",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub enum CodeLockKind {
     Browser,

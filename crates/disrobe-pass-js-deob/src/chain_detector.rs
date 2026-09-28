@@ -672,7 +672,8 @@ fn run_jsconfuser(bytes: &[u8], artifact: &Artifact) -> CoreResult<Artifact> {
     let text: &str = std::str::from_utf8(bytes)
         .map_err(|e| CoreError::PassFailure(format!("DR-JS-0904: input not utf-8: {e}")))?;
     let opts: DeobOptions = DeobOptions::all();
-    let out: DeobOutput = deobfuscate_all(text, &opts);
+    let out: DeobOutput = deobfuscate_all(text, &opts)
+        .map_err(|e| CoreError::PassFailure(format!("DR-JS-0922: jsconfuser deob: {e}")))?;
     Ok(Artifact::new(
         Rung::Surface,
         out.source.into_bytes(),
@@ -951,12 +952,11 @@ fn emit_dedicated_sidecars(bytes: &[u8]) -> Vec<ChildArtifact> {
     {
         children.push(terminal_child("js-deob.pipeline.json".to_string(), json));
     }
-    if matches!(detection.family, JsObfuscator::JsConfuser) {
-        let opts: DeobOptions = DeobOptions::all();
-        let out: DeobOutput = deobfuscate_all(text, &opts);
-        if let Ok(json) = serde_json::to_vec_pretty(&out) {
-            children.push(terminal_child("js-deob.jsconfuser.json".to_string(), json));
-        }
+    if matches!(detection.family, JsObfuscator::JsConfuser)
+        && let Ok(out) = deobfuscate_all(text, &DeobOptions::all())
+        && let Ok(json) = serde_json::to_vec_pretty(&out)
+    {
+        children.push(terminal_child("js-deob.jsconfuser.json".to_string(), json));
     }
     children
 }

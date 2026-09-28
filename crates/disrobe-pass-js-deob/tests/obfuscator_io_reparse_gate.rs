@@ -12,21 +12,21 @@ fn parses(source: &str) -> bool {
     !parsed.panicked && parsed.errors.is_empty()
 }
 
-const FLATTENED_WITH_REGEX_BRACE: &str = "function f(s){var _0x1a2b='1|0'['split']('|'),_0x3c4d=0x0;while(!![]){switch(_0x1a2b[_0x3c4d++]){case'0':return s['replace'](/\\}/g,'');case'1':s=s+`${`${s}`}`;continue;}break;}}console['log'](f('a}'));";
+const FLATTENED_WITH_REGEX_BRACE: &str = "function f(s){var _0x1a2b='0|1'['split']('|');var _0x3c4d=0x0;while(!![]){switch(_0x1a2b[_0x3c4d++]){case'0':s=s+'!';continue;case'1':return s['replace'](/\\}/g,'');}break;}}console['log'](f('a}'));";
 
 #[test]
-fn a_stage_never_reports_success_on_output_that_no_longer_parses() {
+fn a_regex_brace_that_truncates_a_flattened_switch_is_refused() {
     assert!(
         parses(FLATTENED_WITH_REGEX_BRACE),
         "the probe input itself must be valid JavaScript"
     );
     match obfuscator_io_deobfuscate(FLATTENED_WITH_REGEX_BRACE, &ObfuscatorIoOptions::all()) {
-        Ok(output) => assert!(
+        Err(Error::CorruptedByTransform { transform }) => assert_eq!(transform, "control-flow"),
+        Err(other) => panic!("unexpected refusal: {other}"),
+        Ok(output) => panic!(
+            "obfuscator.io reported success (parses: {}) on:\n{}",
             parses(&output.source),
-            "obfuscator.io reported success on output that does not parse:\n{}",
             output.source
         ),
-        Err(Error::CorruptedByTransform { transform }) => assert!(!transform.is_empty()),
-        Err(other) => panic!("unexpected refusal: {other}"),
     }
 }

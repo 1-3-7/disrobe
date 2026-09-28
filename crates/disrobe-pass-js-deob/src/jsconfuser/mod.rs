@@ -24,6 +24,9 @@ mod variable_masking;
 
 use serde::Serialize;
 
+use crate::error::Result;
+use crate::scan_utils::ReparseGate;
+
 pub use ast_scrambler::{AstScramblerResult, reverse_ast_scrambler};
 pub use ast_shape::{
     CalculatorShape, DispatcherShape, RgfShape, detect_calculator_shapes, detect_dispatcher_shapes,
@@ -129,9 +132,9 @@ pub struct DeobOutput {
     pub integrity_self_checks_unwrapped: usize,
 }
 
-#[must_use]
-pub fn deobfuscate_all(source: &str, opts: &DeobOptions) -> DeobOutput {
+pub fn deobfuscate_all(source: &str, opts: &DeobOptions) -> Result<DeobOutput> {
     let mut current: String = source.to_owned();
+    let gate: ReparseGate = ReparseGate::for_input(source);
     crate::debug::dbg_section("jsconfuser deobfuscate_all");
     crate::debug::dbg_kv("input-bytes", || source.len().to_string());
     let mut out: DeobOutput = DeobOutput {
@@ -174,6 +177,7 @@ pub fn deobfuscate_all(source: &str, opts: &DeobOptions) -> DeobOutput {
                 )
             });
         }
+        gate.still_parses("dead-code", &r.rewritten_source)?;
         current = r.rewritten_source;
     }
     if opts.run_packing {
@@ -182,6 +186,7 @@ pub fn deobfuscate_all(source: &str, opts: &DeobOptions) -> DeobOutput {
         if r.blocks_expanded > 0 {
             crate::debug::dbg_kv("packing-blocks-expanded", || r.blocks_expanded.to_string());
         }
+        gate.still_parses("packing", &r.rewritten_source)?;
         current = r.rewritten_source;
     }
     if opts.run_string_conceal {
@@ -196,6 +201,7 @@ pub fn deobfuscate_all(source: &str, opts: &DeobOptions) -> DeobOutput {
                 )
             });
         }
+        gate.still_parses("string-conceal", &r.rewritten_source)?;
         current = r.rewritten_source;
     }
     if opts.run_string_compression {
@@ -206,6 +212,7 @@ pub fn deobfuscate_all(source: &str, opts: &DeobOptions) -> DeobOutput {
                 r.blocks_reversed.to_string()
             });
         }
+        gate.still_parses("string-compression", &r.rewritten_source)?;
         current = r.rewritten_source;
     }
     if opts.run_string_encoding {
@@ -214,6 +221,7 @@ pub fn deobfuscate_all(source: &str, opts: &DeobOptions) -> DeobOutput {
         if r.literals_decoded > 0 {
             crate::debug::dbg_kv("string-literals-decoded", || r.literals_decoded.to_string());
         }
+        gate.still_parses("string-encoding", &r.rewritten_source)?;
         current = r.rewritten_source;
     }
     if opts.run_dispatcher {
@@ -224,16 +232,19 @@ pub fn deobfuscate_all(source: &str, opts: &DeobOptions) -> DeobOutput {
                 r.call_sites_inlined.to_string()
             });
         }
+        gate.still_parses("dispatcher", &r.rewritten_source)?;
         current = r.rewritten_source;
     }
     if opts.run_calculator {
         let r: CalculatorReversalResult = reverse_calculator(&current);
         out.calculator_calls_inlined += r.call_sites_inlined;
+        gate.still_parses("calculator", &r.rewritten_source)?;
         current = r.rewritten_source;
     }
     if opts.run_rgf {
         let r: RgfReversalResult = reverse_rgf(&current);
         out.rgf_calls_inlined += r.call_sites_inlined;
+        gate.still_parses("rgf", &r.rewritten_source)?;
         current = r.rewritten_source;
     }
     if opts.run_rgf_eval {
@@ -248,6 +259,7 @@ pub fn deobfuscate_all(source: &str, opts: &DeobOptions) -> DeobOutput {
                 )
             });
         }
+        gate.still_parses("rgf-eval", &r.rewritten_source)?;
         current = r.rewritten_source;
     }
     if opts.run_state_sum {
@@ -257,6 +269,7 @@ pub fn deobfuscate_all(source: &str, opts: &DeobOptions) -> DeobOutput {
             crate::debug::dbg_kv("cff-generators-devirtualized", || {
                 vm.generators_devirtualized.to_string()
             });
+            gate.still_parses("cff-vm", &vm.rewritten_source)?;
             current = vm.rewritten_source;
         } else {
             let r: StateSumReversalResult = reverse_state_sum(&current);
@@ -270,6 +283,7 @@ pub fn deobfuscate_all(source: &str, opts: &DeobOptions) -> DeobOutput {
                     )
                 });
             }
+            gate.still_parses("state-sum", &r.rewritten_source)?;
             current = r.rewritten_source;
         }
     }
@@ -281,50 +295,59 @@ pub fn deobfuscate_all(source: &str, opts: &DeobOptions) -> DeobOutput {
                 r.dispatches_collapsed.to_string()
             });
         }
+        gate.still_parses("flatten", &r.rewritten_source)?;
         current = r.rewritten_source;
     }
     if opts.run_variable_masking {
         let r: VariableMaskingResult = reverse_variable_masking(&current);
         out.variable_masking_proxies_eliminated += r.proxies_eliminated;
+        gate.still_parses("variable-masking", &r.rewritten_source)?;
         current = r.rewritten_source;
     }
     if opts.run_shuffle {
         let r: ShuffleReversalResult = reverse_shuffle(&current);
         out.shuffle_blocks_reordered += r.blocks_reordered;
+        gate.still_parses("shuffle", &r.rewritten_source)?;
         current = r.rewritten_source;
     }
     if opts.run_ast_scrambler {
         let r: AstScramblerResult = reverse_ast_scrambler(&current);
         out.ast_rotations_folded += r.rotations_folded;
+        gate.still_parses("ast-scrambler", &r.rewritten_source)?;
         current = r.rewritten_source;
     }
     if opts.run_moved_declarations {
         let r: MovedDeclReversalResult = reverse_moved_declarations(&current);
         out.moved_decls_normalized += r.decls_normalized;
+        gate.still_parses("moved-declarations", &r.rewritten_source)?;
         current = r.rewritten_source;
     }
     if opts.run_opaque {
         let r: OpaqueReversalResult = reverse_opaque_predicates(&current);
         out.opaque_predicates_folded += r.predicates_folded;
+        gate.still_parses("opaque-predicates", &r.rewritten_source)?;
         current = r.rewritten_source;
     }
     if opts.run_lock {
         let r: LockReversalResult = strip_locks(&current);
         out.lock_guards_stripped += r.guards_stripped;
+        gate.still_parses("lock", &r.rewritten_source)?;
         current = r.rewritten_source;
     }
     if opts.run_integrity {
         let r: IntegrityReversalResult = strip_integrity(&current);
         out.integrity_loops_stripped += r.loops_stripped;
+        gate.still_parses("integrity", &r.rewritten_source)?;
         current = r.rewritten_source;
     }
     if opts.run_integrity_self_check {
         let r: IntegritySelfCheckResult = strip_integrity_self_check(&current);
         out.integrity_self_checks_unwrapped += r.wrappers_unwrapped;
+        gate.still_parses("integrity-self-check", &r.rewritten_source)?;
         current = r.rewritten_source;
     }
 
     out.source = current;
     crate::debug::dbg_kv("output-bytes", || out.source.len().to_string());
-    out
+    Ok(out)
 }

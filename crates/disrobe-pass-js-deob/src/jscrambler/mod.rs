@@ -19,6 +19,7 @@ use std::collections::BTreeSet;
 use serde::Serialize;
 
 use crate::error::Result;
+use crate::scan_utils::ReparseGate;
 
 pub use detect::{
     CodeLockKind, JscramblerDetection, JscramblerTier, JscramblerTransform, detect_free_tier,
@@ -82,8 +83,10 @@ pub struct JscramblerOutput {
 
 pub fn deobfuscate(source: &str, opts: &JscramblerOptions) -> Result<JscramblerOutput> {
     let detection: JscramblerDetection = detect_full(source);
+    let gate: ReparseGate = ReparseGate::for_input(source);
     let (after_integrity, integrity_strip): (String, IntegrityStripStats) =
         strip_integrity_loops(source);
+    gate.still_parses("IntegrityLoops", &after_integrity)?;
     let mut current: String = after_integrity;
     let mut per_transform: Vec<(JscramblerTransform, TransformStats)> = Vec::new();
     let bytes_in: usize = source.len();
@@ -92,6 +95,7 @@ pub fn deobfuscate(source: &str, opts: &JscramblerOptions) -> Result<JscramblerO
     };
     for transform in opts.transforms.iter().copied() {
         let out: TransformOutput = dispatch_reverse(transform, &current, &opts_t);
+        gate.still_parses(transform.name(), &out.source)?;
         current = out.source;
         per_transform.push((transform, out.stats));
     }

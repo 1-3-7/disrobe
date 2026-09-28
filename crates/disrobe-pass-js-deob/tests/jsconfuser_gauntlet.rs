@@ -30,7 +30,8 @@ fn obfuscated() -> String {
 fn recover() -> (DeobOutput, String) {
     let src: String = obfuscated();
     let opts: DeobOptions = DeobOptions::all();
-    let out: DeobOutput = deobfuscate_all(&src, &opts);
+    let out: DeobOutput =
+        deobfuscate_all(&src, &opts).expect("jsconfuser deobfuscation must not refuse");
     let (recovered, _stats): (String, RenameStats) = rename_hex_idents(&out.source);
     (out, recovered)
 }
@@ -154,8 +155,10 @@ fn gauntlet_recovered_is_smaller_than_obfuscated() {
 fn gauntlet_recovery_is_idempotent_and_panic_free() {
     let src: String = obfuscated();
     let opts: DeobOptions = DeobOptions::all();
-    let first: DeobOutput = deobfuscate_all(&src, &opts);
-    let second: DeobOutput = deobfuscate_all(&first.source, &opts);
+    let first: DeobOutput =
+        deobfuscate_all(&src, &opts).expect("jsconfuser deobfuscation must not refuse");
+    let second: DeobOutput =
+        deobfuscate_all(&first.source, &opts).expect("jsconfuser deobfuscation must not refuse");
     assert!(
         !second.source.is_empty(),
         "re-running recovery on already-recovered output must not collapse to empty"

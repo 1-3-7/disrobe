@@ -1,5 +1,6 @@
 use std::ops::Range;
 
+use crate::error::{Error, Result};
 pub(crate) use crate::source_text::head;
 use regex::{Captures, Regex};
 
@@ -201,12 +202,46 @@ fn skip_regex_span(bytes: &[u8], start: usize) -> usize {
 
 #[must_use]
 pub(crate) fn reparses(source: &str) -> bool {
-    let allocator: oxc_allocator::Allocator = oxc_allocator::Allocator::default();
     let source_type: oxc_span::SourceType =
         oxc_span::SourceType::from_path("reparse.js").unwrap_or_default();
+    parses_as(source, source_type)
+}
+
+fn parses_as(source: &str, source_type: oxc_span::SourceType) -> bool {
+    let allocator: oxc_allocator::Allocator = oxc_allocator::Allocator::default();
     let parsed: oxc_parser::ParserReturn<'_> =
         oxc_parser::Parser::new(&allocator, source, source_type).parse();
     !parsed.panicked && parsed.errors.is_empty()
+}
+
+const PARSE_GOALS: [oxc_span::SourceType; 2] = [
+    oxc_span::SourceType::cjs(),
+    oxc_span::SourceType::mjs().with_jsx(true),
+];
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ReparseGate {
+    input_goals: [bool; PARSE_GOALS.len()],
+}
+
+impl ReparseGate {
+    #[must_use]
+    pub(crate) fn for_input(source: &str) -> Self {
+        Self {
+            input_goals: PARSE_GOALS.map(|goal: oxc_span::SourceType| parses_as(source, goal)),
+        }
+    }
+
+    pub(crate) fn still_parses(self, transform: &'static str, text: &str) -> Result<()> {
+        let input_parses: bool = self.input_goals.contains(&true);
+        let output_parses: bool = PARSE_GOALS.iter().zip(self.input_goals).any(
+            |(goal, input_ok): (&oxc_span::SourceType, bool)| input_ok && parses_as(text, *goal),
+        );
+        if input_parses && !output_parses {
+            return Err(Error::CorruptedByTransform { transform });
+        }
+        Ok(())
+    }
 }
 
 #[must_use]

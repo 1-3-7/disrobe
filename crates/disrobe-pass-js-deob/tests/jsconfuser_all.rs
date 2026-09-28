@@ -12,7 +12,8 @@ const MULTI_TRANSFORM: &str =
 #[test]
 fn deobfuscate_all_applies_string_encoding_and_compression_and_lock() {
     let opts: DeobOptions = DeobOptions::all();
-    let out: DeobOutput = deobfuscate_all(MULTI_TRANSFORM, &opts);
+    let out: DeobOutput =
+        deobfuscate_all(MULTI_TRANSFORM, &opts).expect("jsconfuser deobfuscation must not refuse");
     assert!(out.string_literals_decoded >= 1, "encoding stats: {out:?}");
     assert!(out.string_compression_blocks_reversed >= 1);
     assert!(out.lock_guards_stripped >= 1, "lock stats: {out:?}");
@@ -49,7 +50,8 @@ fn string_compression_expands_split_and_fromcharcode() {
 fn full_pipeline_decodes_lzstring_string_compression() {
     let src: &str = "var LZString={decompressFromBase64:function(){},_decompress:function(){},_compress:function(){}};\nvar msg = LZString.decompressFromBase64(\"IYGwpgTgLgFAjASgNxA=\");";
     let opts: DeobOptions = DeobOptions::all();
-    let out: DeobOutput = deobfuscate_all(src, &opts);
+    let out: DeobOutput =
+        deobfuscate_all(src, &opts).expect("jsconfuser deobfuscation must not refuse");
     assert_eq!(out.string_compression_blocks_reversed, 1);
     assert!(out.source.contains("var msg = \"alert(1);\";"));
 }

@@ -1804,7 +1804,8 @@ fn recover_with(pipeline: Pipeline, obf_src: &str) -> Result<Recovery, String> {
     match pipeline {
         Pipeline::JsConfuser => {
             let opts: DeobOptions = DeobOptions::all();
-            let out: DeobOutput = deobfuscate_all(obf_src, &opts);
+            let out: DeobOutput = deobfuscate_all(obf_src, &opts)
+                .map_err(|error: disrobe_pass_js_deob::Error| error.to_string())?;
             let activity: RewriteActivity = activity_from_jsconfuser(&out);
             Ok(Recovery {
                 source: out.source,

@@ -303,7 +303,8 @@ fn jsconfuser_algebraic_opaque_false_and_shift_reeval_equivalent() {
 #[test]
 fn jsconfuser_algebraic_opaque_pipeline_preserves_behavior() {
     let opts: DeobOptions = DeobOptions::all();
-    let out = jsconfuser_deobfuscate_all(OBF_ALGEBRAIC, &opts);
+    let out = jsconfuser_deobfuscate_all(OBF_ALGEBRAIC, &opts)
+        .expect("jsconfuser deobfuscation must not refuse");
     assert_equivalent(
         "jsconfuser/algebraic-opaque/pipeline",
         ORIGINAL_ALGEBRAIC,
@@ -364,7 +365,8 @@ fn jsconfuser_string_encoding_reeval_equivalent() {
 #[test]
 fn jsconfuser_deobfuscate_all_preserves_behavior() {
     let opts: DeobOptions = DeobOptions::all();
-    let out = jsconfuser_deobfuscate_all(OBF_OPAQUE, &opts);
+    let out = jsconfuser_deobfuscate_all(OBF_OPAQUE, &opts)
+        .expect("jsconfuser deobfuscation must not refuse");
     assert_equivalent("jsconfuser/all", ORIGINAL_OPAQUE, &out.source);
 }
 
