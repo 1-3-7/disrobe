@@ -1456,6 +1456,10 @@ fn frame_inference_note(
     );
     match report.outcome {
         crate::frame_infer::FrameInferOutcome::Converged => None,
+        crate::frame_infer::FrameInferOutcome::BudgetExceeded => Some(format!(
+            "        // abstract frame inference stopped: blocks times locals exceed {} stored frame slots\n",
+            crate::frame_infer::MAX_STORED_FRAME_SLOTS
+        )),
         crate::frame_infer::FrameInferOutcome::Diverged => Some(
             "        // abstract frame inference did not reach a fixed point; method control flow is irreducible or adversarial\n"
                 .to_owned(),
@@ -2791,15 +2795,30 @@ fn bool_sink_literal(value_tail: &[Instruction]) -> Option<&'static str> {
     }
 }
 
+const MAX_BOOL_EXPR_BYTES: usize = 64 * 1024;
+
 fn eval_bool_node(
     nodes: &[BoolNode],
     bid: BlockId,
     visiting: &mut BTreeSet<BlockId>,
 ) -> Option<String> {
-    match nodes.get(bid.0 as usize)? {
-        BoolNode::True => Some("true".to_string()),
-        BoolNode::False => Some("false".to_string()),
-        BoolNode::Join => None,
+    let mut memo: BTreeMap<BlockId, String> = BTreeMap::new();
+    eval_bool_node_memo(nodes, bid, visiting, &mut memo)
+}
+
+fn eval_bool_node_memo(
+    nodes: &[BoolNode],
+    bid: BlockId,
+    visiting: &mut BTreeSet<BlockId>,
+    memo: &mut BTreeMap<BlockId, String>,
+) -> Option<String> {
+    if let Some(done) = memo.get(&bid) {
+        return Some(done.clone());
+    }
+    let expr: String = match nodes.get(bid.0 as usize)? {
+        BoolNode::True => "true".to_string(),
+        BoolNode::False => "false".to_string(),
+        BoolNode::Join => return None,
         BoolNode::Cond {
             cond,
             taken,
@@ -2809,12 +2828,17 @@ fn eval_bool_node(
             if !visiting.insert(bid) {
                 return None;
             }
-            let taken_expr: String = eval_bool_node(nodes, *taken, visiting)?;
-            let fall_expr: String = eval_bool_node(nodes, *fallthrough, visiting)?;
+            let taken_expr: String = eval_bool_node_memo(nodes, *taken, visiting, memo)?;
+            let fall_expr: String = eval_bool_node_memo(nodes, *fallthrough, visiting, memo)?;
             visiting.remove(&bid);
-            Some(combine_bool(cond, &taken_expr, &fall_expr))
+            combine_bool(cond, &taken_expr, &fall_expr)
         }
+    };
+    if expr.len() > MAX_BOOL_EXPR_BYTES {
+        return None;
     }
+    memo.insert(bid, expr.clone());
+    Some(expr)
 }
 
 fn combine_bool(cond: &str, taken: &str, fallthrough: &str) -> String {

@@ -56,7 +56,10 @@ pub enum FrameInferOutcome {
     UnmodeledOpcode,
     StackUnderflow,
     Diverged,
+    BudgetExceeded,
 }
+
+pub const MAX_STORED_FRAME_SLOTS: usize = 4 << 20;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FrameInferReport {
@@ -533,7 +536,6 @@ fn apply_transfer(
             }
             state.push(VerificationType::Object("[".to_owned()));
         }
-        0xC4 => {}
         _ => return Err(FrameInferOutcome::UnmodeledOpcode),
     }
     Ok(())
@@ -713,6 +715,15 @@ fn solve_block_entries(
     let mut outcome: FrameInferOutcome = FrameInferOutcome::Converged;
     let mut iterations: usize = 0;
     let max_iterations: usize = cfg.blocks.len().saturating_mul(8).max(64);
+    let blocks: BTreeMap<BlockId, &crate::decompile_struct::BasicBlock> = cfg
+        .blocks
+        .iter()
+        .map(|block: &crate::decompile_struct::BasicBlock| (block.id, block))
+        .collect();
+    let mut stored_slots: usize = block_entry
+        .values()
+        .map(|frame: &FrameState| frame.locals.len() + frame.stack.len())
+        .sum();
 
     while let Some(bid) = worklist.pop_front() {
         queued.remove(&bid);
@@ -721,7 +732,7 @@ fn solve_block_entries(
             outcome = FrameInferOutcome::Diverged;
             break;
         }
-        let Some(block) = cfg.blocks.iter().find(|b| b.id == bid) else {
+        let Some(block) = blocks.get(&bid).copied() else {
             continue;
         };
         let Some(entry_state) = block_entry.get(&bid).cloned() else {
@@ -759,6 +770,13 @@ fn solve_block_entries(
                     }
                 }
                 None => {
+                    stored_slots = stored_slots
+                        .saturating_add(succ_state.locals.len() + succ_state.stack.len());
+                    if stored_slots > MAX_STORED_FRAME_SLOTS {
+                        outcome = FrameInferOutcome::BudgetExceeded;
+                        worklist.clear();
+                        break;
+                    }
                     block_entry.insert(succ, succ_state);
                     queued.insert(succ);
                     worklist.push_back(succ);
@@ -800,14 +818,16 @@ pub fn infer_frames(
         crate::stackmap::entry_frame_locals(descriptor, is_static, is_init_ctor, this_class);
     let solved: SolvedFrames = solve_block_entries(cfg, insns, &resolver, entry_locals);
 
+    let start_pcs: BTreeMap<BlockId, u32> = cfg
+        .blocks
+        .iter()
+        .map(|block: &crate::decompile_struct::BasicBlock| (block.id, block.start_pc))
+        .collect();
     let block_entry_frames: BTreeMap<u32, FrameState> = solved
         .block_entry
         .into_iter()
         .filter_map(|(bid, state): (BlockId, FrameState)| {
-            cfg.blocks
-                .iter()
-                .find(|b| b.id == bid)
-                .map(|b| (b.start_pc, state))
+            start_pcs.get(&bid).map(|start_pc: &u32| (*start_pc, state))
         })
         .collect();
 
@@ -1009,12 +1029,47 @@ mod tests {
     fn code_attr(code: Vec<u8>) -> CodeAttribute {
         CodeAttribute {
             max_stack: 16,
-            max_locals: 16,
+            max_locals: u16::MAX,
             code,
             exception_table: Vec::new(),
             dropped_exception_entries: 0,
             nested_attribute_name_indices: Vec::new(),
         }
+    }
+
+    #[test]
+    fn wide_locals_across_many_blocks_stop_at_the_slot_budget() {
+        let mut code: Vec<u8> = Vec::new();
+        for _ in 0..96 {
+            code.extend_from_slice(&[0x03, 0xC4, 0x36, 0xFF, 0xFE, 0xA7, 0x00, 0x03]);
+        }
+        code.push(0xB1);
+        let insns: Vec<Instruction> = disassemble(&code).unwrap();
+        let attr: CodeAttribute = code_attr(code);
+        let cfg: Cfg = build_cfg(&insns, &attr, |_| None).unwrap();
+        let desc: MethodDescriptor = MethodDescriptor {
+            params: Vec::new(),
+            returns: JavaType::Void,
+        };
+        let report: FrameInferReport = infer_frames(
+            &cfg,
+            &insns,
+            &desc,
+            true,
+            false,
+            "Sample",
+            &|_| None,
+            &|_| None,
+            &|_| None,
+            &|_| None,
+        );
+        assert_eq!(report.outcome, FrameInferOutcome::BudgetExceeded);
+        let stored: usize = report
+            .block_entry_frames
+            .values()
+            .map(|frame: &FrameState| frame.locals.len() + frame.stack.len())
+            .sum();
+        assert!(stored <= MAX_STORED_FRAME_SLOTS, "{stored}");
     }
 
     #[test]
