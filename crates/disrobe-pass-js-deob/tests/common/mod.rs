@@ -1,4 +1,4 @@
-#![allow(dead_code, clippy::redundant_pub_crate)]
+#![allow(dead_code, clippy::redundant_pub_crate, clippy::panic)]
 use std::cell::{Cell, RefCell};
 use std::future::Future;
 use std::pin::Pin;

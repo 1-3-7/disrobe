@@ -1,3 +1,5 @@
+#![allow(clippy::panic)]
+
 use std::path::{Path, PathBuf};
 
 pub(crate) const REQUIRE_LOCAL_CORPUS_VAR: &str = "DISROBE_REQUIRE_NATIVE_LOCAL_CORPUS";

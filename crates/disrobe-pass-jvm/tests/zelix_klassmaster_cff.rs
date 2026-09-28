@@ -2,7 +2,8 @@
     clippy::expect_used,
     clippy::unwrap_used,
     clippy::print_stderr,
-    clippy::case_sensitive_file_extension_comparisons
+    clippy::case_sensitive_file_extension_comparisons,
+    clippy::panic
 )]
 use std::fs;
 use std::io::Read as _;
