@@ -99,8 +99,8 @@ The grades: `strong` means an independent reference could have rejected the outp
 | CPython 3.8.20 | 154 | 4,508 of 5,088 | 88.60% | `recompile-only` | weekly |
 | CPython 3.9.25 | 157 | 4,935 of 5,233 | 94.30% | `recompile-only` | weekly |
 | CPython <!-- m:py_band_310_interpreter -->3.10.20<!-- /m --> | <!-- m:py_band_310_modules -->161<!-- /m --> | <!-- m:py_band_310_frac -->5229 / 5458<!-- /m --> | <!-- m:py_band_310_rate -->95.80%<!-- /m --> | `recompile-only` | push |
-| CPython <!-- m:py_band_311_interpreter -->3.11.15<!-- /m --> | <!-- m:py_band_311_modules -->172<!-- /m --> | <!-- m:py_band_311_frac -->5442 / 5638<!-- /m --> | <!-- m:py_band_311_rate -->96.52%<!-- /m --> | `recompile-only` | weekly |
-| CPython <!-- m:py_band_312_interpreter -->3.12.13<!-- /m --> | <!-- m:py_band_312_modules -->177<!-- /m --> | <!-- m:py_band_312_frac -->5420 / 5659<!-- /m --> | <!-- m:py_band_312_rate -->95.77%<!-- /m --> | `recompile-only` | push |
+| CPython <!-- m:py_band_311_interpreter -->3.11.15<!-- /m --> | <!-- m:py_band_311_modules -->172<!-- /m --> | <!-- m:py_band_311_frac -->5449 / 5638<!-- /m --> | <!-- m:py_band_311_rate -->96.64%<!-- /m --> | `recompile-only` | weekly |
+| CPython <!-- m:py_band_312_interpreter -->3.12.13<!-- /m --> | <!-- m:py_band_312_modules -->177<!-- /m --> | <!-- m:py_band_312_frac -->5421 / 5659<!-- /m --> | <!-- m:py_band_312_rate -->95.79%<!-- /m --> | `recompile-only` | push |
 | CPython <!-- m:py_band_313_interpreter -->3.13.14<!-- /m --> | <!-- m:py_band_313_modules -->190<!-- /m --> | <!-- m:py_band_313_frac -->5732 / 5966<!-- /m --> | <!-- m:py_band_313_rate -->96.07%<!-- /m --> | `recompile-only` | push |
 | CPython <!-- m:py_band_314_interpreter -->3.14.5<!-- /m --> | <!-- m:py_stdlib_pinned_modules -->200<!-- /m --> | <!-- m:py_stdlib_pinned_count -->6077 of 6286<!-- /m --> | <!-- m:py_stdlib_pinned_pct -->96.67%<!-- /m --> | `recompile-only` | weekly |
 | CPython <!-- m:py_band_315_interpreter -->3.15.0b4<!-- /m --> | <!-- m:py_band_315_modules -->199<!-- /m --> | <!-- m:py_band_315_frac -->6227 / 6480<!-- /m --> | <!-- m:py_band_315_rate -->96.09%<!-- /m --> | `recompile-only` | weekly |
