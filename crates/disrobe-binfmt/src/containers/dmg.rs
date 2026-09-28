@@ -591,6 +591,33 @@ mod tests {
         buf.extend_from_slice(&len.to_be_bytes());
     }
 
+    #[test]
+    fn an_image_over_the_entry_quota_is_a_violation_not_a_failed_extraction() {
+        let dmg: Vec<u8> = build_dmg(&[0x41u8; 512], &[0x42u8; 512], &[0x43u8; 512]);
+        let scratch: tempfile::TempDir = tempfile::tempdir().expect("scratch");
+        let quota: crate::quota::ExtractionQuota = crate::quota::ExtractionQuota {
+            max_per_entry_uncompressed: 1024,
+            ..crate::quota::ExtractionQuota::default_safe()
+        };
+        let result: crate::extract::ExtractionResult = crate::extract::extract_to_with_quota(
+            crate::container::ContainerKind::Dmg,
+            &dmg,
+            scratch.path(),
+            quota,
+        )
+        .expect("an oversized image must not fail the extraction");
+        assert!(
+            result
+                .integrity_violations
+                .iter()
+                .any(|violation: &String| violation
+                    .starts_with("dmg-image: the reconstructed 1536-byte image is not written")),
+            "{:?}",
+            result.integrity_violations
+        );
+        assert!(!scratch.path().join("disk-image.img").exists());
+    }
+
     fn build_dmg(sector0: &[u8], sector1: &[u8], sector2: &[u8]) -> Vec<u8> {
         let raw: Vec<u8> = sector0.to_vec();
         let zl: Vec<u8> = zlib(sector1);

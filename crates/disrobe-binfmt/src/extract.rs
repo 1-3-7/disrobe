@@ -1819,23 +1819,29 @@ fn extract_dmg(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<E
     }
 
     let safe_name: String = "disk-image.img".to_owned();
-    guard.admit_entry(&safe_name, image_size, bytes.len() as u64)?;
-    let disk_path: PathBuf = prepare_entry_path(out_dir, &safe_name)?;
-    std::fs::write(&disk_path, &image)?;
-    encoding.insert(safe_name.clone(), EntryCompression::Other);
     encoding.insert(
         ".disrobe-dmg-layout.json".to_owned(),
         EntryCompression::Stored,
     );
-    entries.push(ExtractedEntry {
-        origin: ExtractedEntryOrigin::ArchiveMember,
-        name: safe_name,
-        disk_path: Some(disk_path),
-        uncompressed_size: image_size,
-        compressed_size: bytes.len() as u64,
-        compression: EntryCompression::Other,
-        is_executable: false,
-    });
+    match guard.admit_entry(&safe_name, image_size, bytes.len() as u64) {
+        Ok(()) => {
+            let disk_path: PathBuf = prepare_entry_path(out_dir, &safe_name)?;
+            std::fs::write(&disk_path, &image)?;
+            encoding.insert(safe_name.clone(), EntryCompression::Other);
+            entries.push(ExtractedEntry {
+                origin: ExtractedEntryOrigin::ArchiveMember,
+                name: safe_name,
+                disk_path: Some(disk_path),
+                uncompressed_size: image_size,
+                compressed_size: bytes.len() as u64,
+                compression: EntryCompression::Other,
+                is_executable: false,
+            });
+        }
+        Err(e) => violations.push(format!(
+            "dmg-image: the reconstructed {image_size}-byte image is not written: {e}"
+        )),
+    }
     Ok(ExtractionResult {
         kind: ContainerKind::Dmg,
         entries,
