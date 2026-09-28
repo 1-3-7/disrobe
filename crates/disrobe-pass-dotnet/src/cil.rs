@@ -1411,10 +1411,16 @@ fn read_operand(kind: OperandKind, code: &[u8], pos: usize) -> Result<(OperandVa
             let n: usize =
                 u32::from_le_bytes([code[pos], code[pos + 1], code[pos + 2], code[pos + 3]])
                     as usize;
-            let total: usize = 4 + n * 4;
-            if pos + total > code.len() {
+            let Some(total): Option<usize> = n
+                .checked_mul(4)
+                .and_then(|table: usize| table.checked_add(4))
+                .filter(|total: &usize| {
+                    pos.checked_add(*total)
+                        .is_some_and(|end: usize| end <= code.len())
+                })
+            else {
                 return Err(Error::CilTruncated(pos));
-            }
+            };
             let mut targets: Vec<i32> = Vec::with_capacity(n);
             for i in 0..n {
                 let base: usize = pos + 4 + i * 4;
@@ -2096,6 +2102,14 @@ mod tests {
         let bytes: [u8; 2] = [(1u8 << 2) | 0x02, 0x2A];
         let body: MethodBody = parse_method_body(&bytes).expect("tiny");
         assert!(body.exception_clauses.is_empty());
+    }
+
+    #[test]
+    fn a_switch_count_whose_table_overflows_is_truncated_not_a_panic() {
+        let code: [u8; 5] = [0x45, 0x00, 0x00, 0x00, 0x40];
+        assert!(matches!(disassemble(&code), Err(Error::CilTruncated(_))));
+        let code: [u8; 5] = [0x45, 0xFF, 0xFF, 0xFF, 0xFF];
+        assert!(matches!(disassemble(&code), Err(Error::CilTruncated(_))));
     }
 
     #[test]
