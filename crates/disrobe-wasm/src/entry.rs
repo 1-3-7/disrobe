@@ -58,10 +58,10 @@ use disrobe_pass_wasm_deob::{
     FunctionSig, GcHirModule, GcTypeGraph, LiftResult, LiftTarget, MemoryReport, ModuleSignatures,
     ModuleSummary, RecoveredModule, RecoveryReport, SourceMap, TypeScriptModuleLift, WasmDetection,
     analyze_module, build_function_cfg, c_runtime_prelude, extract_signatures,
-    lift_component_manifest, lift_gc_module, lift_module_faithful_wat, lift_module_to_wat,
-    parse_component_manifest, parse_source_map, recover_gc_types, recover_module,
-    rust_runtime_prelude, scan_memories, scan_module_eh, scan_threads,
-    try_lift_functions_from_module, try_lift_typescript_module, typescript_runtime_prelude,
+    lift_component_manifest, lift_gc_module, lift_module_faithful_wat, parse_component_manifest,
+    parse_source_map, recover_gc_types, recover_module, rust_runtime_prelude, scan_memories,
+    scan_module_eh, scan_threads, try_lift_functions_from_module, try_lift_typescript_module,
+    typescript_runtime_prelude,
 };
 use disrobe_py_marshal::{CodeObject, Object, PyVersion, PycFile, pyversion_from_magic, read_pyc};
 use serde::Serialize;
@@ -488,28 +488,7 @@ pub(crate) fn wasm_index(index: usize, label: &str) -> Result<u32, String> {
 }
 
 pub fn wasm_decompile_wat(bytes: &[u8]) -> Result<WasmWatResult, String> {
-    let sigs: ModuleSignatures =
-        extract_signatures(bytes).map_err(|e| format!("wasm signatures: {e}"))?;
-    let defined: &[FunctionSig] = sigs.defined();
-    let bodies: Vec<FunctionBody<'_>> = collect_code_bodies(bytes)?;
-    let mut pairs: Vec<(FunctionBody<'_>, FunctionSig)> = Vec::with_capacity(bodies.len());
-    for (idx, body) in bodies.into_iter().enumerate() {
-        let sig: FunctionSig = if let Some(sig) = defined.get(idx) {
-            sig.clone()
-        } else {
-            FunctionSig::placeholder(wasm_index(idx, "wasm function")?)
-        };
-        pairs.push((body, sig));
-    }
-    let offset: u32 = wasm_index(sigs.imported_function_count(), "imported function")?;
-    let wat: String = lift_module_to_wat(&pairs, offset);
-    Ok(WasmWatResult {
-        ok: true,
-        format: "wasm",
-        variant: "structured",
-        function_count: pairs.len(),
-        wat,
-    })
+    wasm_faithful_wat(bytes)
 }
 
 pub fn wasm_faithful_wat(bytes: &[u8]) -> Result<WasmWatResult, String> {

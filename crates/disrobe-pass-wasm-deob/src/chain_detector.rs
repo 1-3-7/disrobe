@@ -13,14 +13,13 @@ use disrobe_core::error::{CoreError, Result as CoreResult};
 use disrobe_core::pass::PassId;
 use disrobe_core::provenance::Language;
 
-use wasmparser::{FunctionBody, Parser, Payload};
+use wasmparser::{Parser, Payload};
 
 use crate::analyze::{ModuleSummary, analyze_module};
 use crate::cfg::{FunctionCfg, build_function_cfg};
 use crate::detect::{WasmDetection, WasmObfuscator, detect as detect_wasm};
-use crate::lift_wat::lift_module_to_wat;
+use crate::lift_module_faithful::lift_module_faithful_wat;
 use crate::recover::{RecoveredModule, RecoveryReport, recover_module};
-use crate::signature::{FunctionSig, ModuleSignatures, extract_signatures};
 
 pub const PASS_ID: PassId = "wasm.deob";
 
@@ -249,43 +248,11 @@ const fn is_named_obfuscator(obf: WasmObfuscator) -> bool {
 }
 
 fn lift_to_wat(bytes: &[u8]) -> CoreResult<String> {
-    let sigs: ModuleSignatures = extract_signatures(bytes).map_err(|e: crate::error::Error| {
-        CoreError::PassFailure(format!("DR-WASM-0906: wasm signatures: {e}"))
-    })?;
-    let defined: &[FunctionSig] = sigs.defined();
-    let mut pairs: Vec<(FunctionBody<'_>, FunctionSig)> = Vec::new();
-    let mut idx: usize = 0;
-    for payload in Parser::new(0).parse_all(bytes) {
-        let payload: Payload<'_> = payload.map_err(|e: wasmparser::BinaryReaderError| {
-            CoreError::PassFailure(format!("DR-WASM-0907: wasm parse: {e}"))
-        })?;
-        if let Payload::CodeSectionEntry(body) = payload {
-            let sig: FunctionSig = defined_signature(defined, idx)?;
-            pairs.push((body, sig));
-            idx = idx.checked_add(1).ok_or_else(|| {
-                CoreError::PassFailure(
-                    "DR-WASM-0912: wasm function body count overflowed usize".to_owned(),
-                )
-            })?;
-        }
-    }
-    if idx != defined.len() {
-        return Err(CoreError::PassFailure(format!(
-            "DR-WASM-0913: wasm function section declared {} bodies but code section carried {idx}",
-            defined.len(),
-        )));
-    }
-    let offset: u32 = u32::try_from(sigs.imported_function_count()).map_err(|_| {
-        CoreError::PassFailure("DR-WASM-0914: wasm imported function count exceeds u32".to_owned())
-    })?;
-    Ok(lift_module_to_wat(&pairs, offset))
-}
-
-fn defined_signature(defined: &[FunctionSig], idx: usize) -> CoreResult<FunctionSig> {
-    defined.get(idx).cloned().ok_or_else(|| {
-        CoreError::PassFailure(format!(
-            "DR-WASM-0911: wasm body {idx} has no function signature"
-        ))
+    lift_module_faithful_wat(bytes).ok_or_else(|| {
+        CoreError::PassFailure(
+            "DR-WASM-0906: the module could not be printed as WAT: a section does not parse or the code section disagrees with the function section"
+                .to_owned(),
+        )
     })
 }
 
@@ -673,12 +640,6 @@ mod tests {
         let a: Artifact = Artifact::new(Rung::Raw, vec![0u8; 16], [0u8; 32]);
         let err: CoreError = WASM_DEOB_PASS.run(&a).expect_err("must reject");
         assert!(format!("{err}").contains("DR-WASM-0902"));
-    }
-
-    #[test]
-    fn defined_signature_rejects_missing_body_signature() {
-        let err: CoreError = defined_signature(&[], 0).expect_err("missing signature must fail");
-        assert!(format!("{err}").contains("DR-WASM-0911"));
     }
 
     #[test]

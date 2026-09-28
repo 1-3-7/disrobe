@@ -4,10 +4,10 @@ use std::path::{Path, PathBuf};
 use wasmparser::{Parser, Payload};
 
 use disrobe_pass_wasm_deob::{
-    BoundaryLinkCollectionStatus, ComponentManifest, FunctionCfg, FunctionSig, GcHirModule,
-    GcTypeGraph, LiftTarget, ModuleSignatures, ModuleSourceLift, ModuleSummary, RecoveredModule,
-    RecoveryReport, analyze_module, build_function_cfg, extract_signatures, lift_gc_module,
-    lift_module_source, lift_module_to_wat, parse_component_manifest, recover_gc_types,
+    BoundaryLinkCollectionStatus, ComponentManifest, FunctionCfg, GcHirModule, GcTypeGraph,
+    LiftTarget, ModuleSignatures, ModuleSourceLift, ModuleSummary, RecoveredModule, RecoveryReport,
+    analyze_module, build_function_cfg, extract_signatures, lift_gc_module,
+    lift_module_faithful_wat, lift_module_source, parse_component_manifest, recover_gc_types,
     recover_module,
 };
 
@@ -162,7 +162,7 @@ fn deob(
         .boundary_links()
         .to_json()
         .map_err(|e| miette::miette!("DR-WASMDEOB-0001: boundary links: {e}"))?;
-    let wat: String = assemble_wat(&clean_bytes, &sigs)?;
+    let wat: String = assemble_wat(&clean_bytes)?;
     let func_count: usize = sigs.defined().len();
 
     let stem: String = input_stem(&input);
@@ -255,25 +255,14 @@ fn lift_module(
     Ok(())
 }
 
-fn assemble_wat(bytes: &[u8], sigs: &ModuleSignatures) -> miette::Result<String> {
-    let defined: &[FunctionSig] = sigs.defined();
-    let mut pairs: Vec<(wasmparser::FunctionBody<'_>, FunctionSig)> = Vec::new();
-    let mut idx: usize = 0;
-    for payload in Parser::new(0).parse_all(bytes) {
-        let payload: Payload<'_> =
-            payload.map_err(|e| miette::miette!("DR-WASMDEOB-0001: parse: {e}"))?;
-        if let Payload::CodeSectionEntry(body) = payload {
-            let sig: FunctionSig = defined
-                .get(idx)
-                .cloned()
-                .unwrap_or_else(|| FunctionSig::placeholder(u32::try_from(idx).unwrap_or(0)));
-            pairs.push((body, sig));
-            idx += 1;
-        }
-    }
-    let offset: u32 = u32::try_from(sigs.imported_function_count()).unwrap_or(0);
+fn assemble_wat(bytes: &[u8]) -> miette::Result<String> {
+    let module: String = lift_module_faithful_wat(bytes).ok_or_else(|| {
+        miette::miette!(
+            "DR-WASMDEOB-0001: the module could not be printed as WAT: a section does not parse or the code section disagrees with the function section"
+        )
+    })?;
     let mut out: String = String::from(";; disrobe wasm lift target=wat\n");
-    out.push_str(&lift_module_to_wat(&pairs, offset));
+    out.push_str(&module);
     Ok(out)
 }
 
