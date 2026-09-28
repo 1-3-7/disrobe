@@ -224,8 +224,25 @@ fn recovered_source(detection: &Detection, bytes: &[u8]) -> CoreResult<String> {
         }
     }
     if detection.dialect == Dialect::Vba {
-        let modules: Vec<RecoveredVbaModule> = recover_vba_modules(bytes);
+        let mut modules: Vec<RecoveredVbaModule> = recover_vba_modules(bytes);
         if !modules.is_empty() {
+            for module in &mut modules {
+                module.source = crate::vba::deobfuscate_vbs(&module.source).output;
+            }
+            if let Ok(text) = std::str::from_utf8(bytes)
+                && modules
+                    .iter()
+                    .all(|module: &RecoveredVbaModule| module.stomp.is_none())
+            {
+                let sources: String = modules
+                    .iter()
+                    .map(|module: &RecoveredVbaModule| module.source.as_str())
+                    .collect::<Vec<&str>>()
+                    .join("\n");
+                if same_script(&sources, &text.replace("\r\n", "\n")) {
+                    return Err(recover_nothing_wall(Family::Plain));
+                }
+            }
             return Ok(render_vba_modules(&modules));
         }
     }
@@ -1288,6 +1305,50 @@ mod tests {
             assert!(
                 error.contains("passed through unchanged"),
                 "{label}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn unchanged_vba_module_text_is_walled_and_obfuscated_text_is_folded() {
+        let plain: &[u8] = b"Attribute VB_Name = \"Module1\"\r\nSub Document_Open()\r\n    Set m = re.Execute(\"x\")\r\n    MsgBox \"hello\"\r\nEnd Sub\r\n";
+        assert_eq!(detect_shell(plain).dialect, Dialect::Vba);
+        let error: String = SHELL_PASS
+            .run(&Artifact::new(Rung::Raw, plain.to_vec(), [0u8; 32]))
+            .expect_err("nothing was deobfuscated")
+            .to_string();
+        assert!(error.contains("DR-SHELL-0928"), "{error}");
+
+        let obfuscated: &[u8] = b"Attribute VB_Name = \"Module1\"\nSub Document_Open()\n    MsgBox Chr(72) & Chr(105)\nEnd Sub\n";
+        let recovered: Artifact = SHELL_PASS
+            .run(&Artifact::new(Rung::Raw, obfuscated.to_vec(), [0u8; 32]))
+            .expect("the chr chain folds");
+        let text: String =
+            String::from_utf8(recovered.envelope.as_slice().to_vec()).expect("utf-8");
+        assert_eq!(
+            text,
+            "' ===== module: raw =====\nAttribute VB_Name = \"Module1\"\nSub Document_Open()\n    MsgBox \"Hi\"\nEnd Sub"
+        );
+    }
+
+    #[test]
+    fn deobfuscation_leaves_committed_vba_projects_unchanged() {
+        for relative in [
+            "vba/hello.docm",
+            "vba/megafile.docm",
+            "vba/sourceprobe.docm",
+            "vba/sourceprobe.xlsm",
+            "vba/vbaProject.bin",
+        ] {
+            let bytes: Vec<u8> = corpus_bytes(relative);
+            let rendered: String = recover_vba_source(&bytes).expect("modules");
+            let recovered: Artifact = SHELL_PASS
+                .run(&Artifact::new(Rung::Raw, bytes, [0u8; 32]))
+                .unwrap_or_else(|error: CoreError| panic!("{relative}: {error}"));
+            assert_eq!(
+                String::from_utf8(recovered.envelope.as_slice().to_vec()).expect("utf-8"),
+                rendered,
+                "{relative}: real VBA must not be rewritten"
             );
         }
     }
