@@ -625,13 +625,104 @@ enum StreamKind {
 }
 
 fn stream_extent(bytes: &[u8], kind: StreamKind) -> Option<usize> {
-    match kind {
-        StreamKind::Gzip => gzip_exact_extent(bytes),
-        StreamKind::Xz | StreamKind::Zstd | StreamKind::Bzip2 => {
+    let measured: Measured = match kind {
+        StreamKind::Gzip => return gzip_exact_extent(bytes),
+        StreamKind::Xz => xz_exact_extent(bytes)?,
+        StreamKind::Zstd => zstd_exact_extent(bytes)?,
+        StreamKind::Bzip2 => bzip2_exact_extent(bytes)?,
+    };
+    match measured {
+        Measured::Ends(end) => {
+            decode_validate(bytes.get(..end)?, kind)?;
+            Some(end)
+        }
+        Measured::PastCap => {
             decode_validate(bytes, kind)?;
             Some(trim_trailing_zero_padding(bytes))
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Measured {
+    Ends(usize),
+    PastCap,
+}
+
+const XZ_MEMLIMIT: u64 = 256 * 1024 * 1024;
+const ZSTD_FRAME_MAGIC: u32 = 0xFD2F_B528;
+const ZSTD_SKIPPABLE_LOW: u32 = 0x184D_2A50;
+const ZSTD_SKIPPABLE_HIGH: u32 = 0x184D_2A5F;
+
+fn xz_exact_extent(bytes: &[u8]) -> Option<Measured> {
+    let mut stream: liblzma::stream::Stream =
+        liblzma::stream::Stream::new_stream_decoder(XZ_MEMLIMIT, 0).ok()?;
+    let mut scratch: [u8; 16 * 1024] = [0u8; 16 * 1024];
+    loop {
+        let consumed: usize = usize::try_from(stream.total_in()).ok()?;
+        let produced: u64 = stream.total_out();
+        let input: &[u8] = bytes.get(consumed..)?;
+        let status: liblzma::stream::Status = stream
+            .process(input, &mut scratch, liblzma::stream::Action::Finish)
+            .ok()?;
+        if status == liblzma::stream::Status::StreamEnd {
+            return usize::try_from(stream.total_in()).ok().map(Measured::Ends);
+        }
+        if stream.total_out() > STREAM_DECODE_CAP {
+            return Some(Measured::PastCap);
+        }
+        if stream.total_out() == produced && usize::try_from(stream.total_in()).ok()? == consumed {
+            return None;
+        }
+    }
+}
+
+fn zstd_exact_extent(bytes: &[u8]) -> Option<Measured> {
+    let mut end: usize = 0;
+    while let Some(magic) = u32_le(bytes, end) {
+        let is_frame: bool = magic == ZSTD_FRAME_MAGIC;
+        if !is_frame && !(ZSTD_SKIPPABLE_LOW..=ZSTD_SKIPPABLE_HIGH).contains(&magic) {
+            break;
+        }
+        let frame_len: usize =
+            zstd::zstd_safe::find_frame_compressed_size(bytes.get(end..)?).ok()?;
+        if frame_len == 0 {
+            break;
+        }
+        end = end.checked_add(frame_len)?;
+    }
+    (end > 0).then_some(Measured::Ends(end))
+}
+
+fn bzip2_exact_extent(bytes: &[u8]) -> Option<Measured> {
+    let mut end: usize = 0;
+    let mut scratch: [u8; 16 * 1024] = [0u8; 16 * 1024];
+    let mut produced: u64 = 0;
+    while bytes.get(end..end.checked_add(3)?) == Some(b"BZh".as_slice()) {
+        let mut decompress: bzip2::Decompress = bzip2::Decompress::new(false);
+        let stream: &[u8] = bytes.get(end..)?;
+        loop {
+            let consumed: usize = usize::try_from(decompress.total_in()).ok()?;
+            let before: u64 = decompress.total_out();
+            let status: bzip2::Status = decompress
+                .decompress(stream.get(consumed..)?, &mut scratch)
+                .ok()?;
+            if status == bzip2::Status::StreamEnd {
+                break;
+            }
+            if produced.saturating_add(decompress.total_out()) > STREAM_DECODE_CAP {
+                return Some(Measured::PastCap);
+            }
+            if decompress.total_out() == before
+                && usize::try_from(decompress.total_in()).ok()? == consumed
+            {
+                return None;
+            }
+        }
+        produced = produced.saturating_add(decompress.total_out());
+        end = end.checked_add(usize::try_from(decompress.total_in()).ok()?)?;
+    }
+    (end > 0).then_some(Measured::Ends(end))
 }
 
 fn trim_trailing_zero_padding(bytes: &[u8]) -> usize {
@@ -972,6 +1063,55 @@ mod tests {
                 .any(|h: &MagicHit| h.kind == ContainerKind::Gzip && h.offset == 100),
             "gzip must be found at offset 100, got {hits:?}"
         );
+    }
+
+    #[test]
+    fn an_xz_stream_ends_where_its_decoder_stops_so_a_following_rootfs_is_carved() {
+        let payload: Vec<u8> = (0..4096usize).map(|i: usize| (i % 251) as u8).collect();
+        let mut xz: Vec<u8> = Vec::new();
+        {
+            let mut encoder: liblzma::write::XzEncoder<&mut Vec<u8>> =
+                liblzma::write::XzEncoder::new(&mut xz, 6);
+            std::io::Write::write_all(&mut encoder, &payload).expect("xz encode");
+            encoder.finish().expect("xz finish");
+        }
+        let rootfs: Vec<u8> =
+            crate::containers::squashfs::build_real_squashfs("init", b"rootfs body");
+        let mut image: Vec<u8> = xz.clone();
+        image.extend_from_slice(&rootfs);
+        let hit: MagicHit = MagicHit {
+            offset: 0,
+            kind: ContainerKind::Xz,
+        };
+        assert_eq!(validated_extent(&image, &hit), Some(xz.len()));
+        let hits: Vec<MagicHit> = scan_magics(&image);
+        let chunks: Vec<CarvedChunk> = build_chunks(&image, &hits);
+        assert!(
+            chunks.iter().any(
+                |chunk: &CarvedChunk| chunk.kind == Some(ContainerKind::Squashfs)
+                    && chunk.start == xz.len() as u64
+            ),
+            "the squashfs rootfs after the xz kernel must be its own chunk: {chunks:?}"
+        );
+    }
+
+    #[test]
+    fn zstd_and_bzip2_streams_end_where_their_decoders_stop() {
+        let payload: &[u8] = b"a stream followed by unrelated bytes";
+        let zst: Vec<u8> = zstd::encode_all(payload, 3).expect("zstd encode");
+        let mut bz: Vec<u8> = Vec::new();
+        {
+            let mut encoder: bzip2::write::BzEncoder<&mut Vec<u8>> =
+                bzip2::write::BzEncoder::new(&mut bz, bzip2::Compression::best());
+            std::io::Write::write_all(&mut encoder, payload).expect("bzip2 encode");
+            encoder.finish().expect("bzip2 finish");
+        }
+        for (kind, stream) in [(ContainerKind::Zstd, zst), (ContainerKind::Bzip2, bz)] {
+            let mut buf: Vec<u8> = stream.clone();
+            buf.extend_from_slice(&[0x11u8; 64]);
+            let hit: MagicHit = MagicHit { offset: 0, kind };
+            assert_eq!(validated_extent(&buf, &hit), Some(stream.len()), "{kind:?}");
+        }
     }
 
     #[test]
