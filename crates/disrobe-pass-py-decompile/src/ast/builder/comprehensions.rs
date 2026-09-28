@@ -48,7 +48,8 @@ pub(super) fn try_build_comprehension_expr(
     });
     let nested_version: PyVersion = pick_nested_version(nested);
     let opmap: Box<dyn OpcodeMap> = map_for(nested_version.clone());
-    let stream: DecodedStream = decode_stream_with_offsets(nested, opmap.as_ref(), &nested_version);
+    let stream: DecodedStream =
+        decode_stream_with_offsets(nested, opmap.as_ref(), &nested_version).ok()?;
     let parts: ComprehensionParts = extract_comprehension_parts(nested, &stream, comp_kind);
     let is_async: bool = (nested.flags & (PY_CO_FLAG_COROUTINE | PY_CO_FLAG_ASYNC_GENERATOR)) != 0;
     let mut generators: Vec<Comprehension> =
@@ -656,8 +657,8 @@ fn extract_comprehension_parts(
             }
             CanonicalOp::LoadAttr(i) => {
                 let value: Expr = sim.pop_or_synth(nested, idx);
-                let attr: String =
-                    name_at_either(nested, *i).unwrap_or_else(|_| format!("attr_{i}"));
+                let attr: String = name_at_either(nested, *i)
+                    .unwrap_or_else(|_| super::exprs::DR_UNRESOLVED_ATTR.to_owned());
                 sim.push(Expr::Attribute {
                     value: Box::new(value),
                     attr,

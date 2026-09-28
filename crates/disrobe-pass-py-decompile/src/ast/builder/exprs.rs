@@ -707,7 +707,8 @@ pub(super) fn build_linear_stmts_sim_seed(
                     sim.push(value);
                     continue;
                 }
-                let attr: String = name_at_either(code, *i).unwrap_or_else(|_| format!("attr_{i}"));
+                let attr: String =
+                    name_at_either(code, *i).unwrap_or_else(|_| DR_UNRESOLVED_ATTR.to_owned());
                 sim.push(Expr::Attribute {
                     value: Box::new(value),
                     attr,
@@ -736,7 +737,7 @@ pub(super) fn build_linear_stmts_sim_seed(
                 let class_expr: Expr = sim.pop_or_synth(code, idx);
                 let super_callable: Expr = sim.pop_or_synth(code, idx);
                 let attr: String =
-                    name_at_either(code, *name).unwrap_or_else(|_| format!("attr_{name}"));
+                    name_at_either(code, *name).unwrap_or_else(|_| DR_UNRESOLVED_ATTR.to_owned());
                 let args: Vec<Expr> = if *two_arg {
                     vec![class_expr, self_obj]
                 } else {
@@ -925,7 +926,8 @@ pub(super) fn build_linear_stmts_sim_seed(
             CanonicalOp::StoreAttr(i) => {
                 let target_value: Expr = sim.pop_or_synth(code, idx);
                 let rhs: Expr = sim.pop_or_synth(code, idx);
-                let attr: String = name_at_either(code, *i).unwrap_or_else(|_| format!("attr_{i}"));
+                let attr: String =
+                    name_at_either(code, *i).unwrap_or_else(|_| DR_UNRESOLVED_ATTR.to_owned());
                 out.push(Stmt::Assign {
                     targets: vec![Expr::Attribute {
                         value: Box::new(target_value),
@@ -2336,7 +2338,8 @@ pub(super) fn build_linear_stmts_sim_seed(
             }
             CanonicalOp::DeleteAttr(i) => {
                 let value: Expr = sim.pop_or_synth(code, idx);
-                let attr: String = name_at_either(code, *i).unwrap_or_else(|_| format!("attr_{i}"));
+                let attr: String =
+                    name_at_either(code, *i).unwrap_or_else(|_| DR_UNRESOLVED_ATTR.to_owned());
                 merge_or_push_delete(
                     &mut out,
                     Expr::Attribute {
@@ -2837,6 +2840,7 @@ pub(super) const DR_BUILD_CLASS_MARKER: &str = "__DR_BUILD_CLASS__";
 const DR_ASSERTION_ERROR_MARKER: &str = "__DR_ASSERTION_ERROR__";
 pub(super) const DR_NULL_MARKER: &str = "__DR_NULL__";
 pub(super) const DR_UNRECOVERED_TARGET: &str = "__DR_UNRECOVERED_TARGET__";
+pub(super) const DR_UNRESOLVED_ATTR: &str = "__DR_UNRESOLVED_ATTR__";
 const DR_KW_NAMES_PREFIX: &str = "__DR_KW_NAMES__\u{0}";
 pub(super) const DR_TYPE_ALIAS_MARKER: &str = "__DR_TYPE_ALIAS__";
 pub(super) const DR_TYPEVAR_MARKER: &str = "__DR_TYPEVAR__";

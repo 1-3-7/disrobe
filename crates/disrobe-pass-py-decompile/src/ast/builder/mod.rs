@@ -62,7 +62,7 @@ impl AstBuilder for DefaultAstBuilder {
         set_future_annotations(code.flags);
         clear_stubbed_scopes();
         let opmap: Box<dyn OpcodeMap> = map_for(version.clone());
-        let stream: DecodedStream = decode_stream_with_offsets(code, opmap.as_ref(), version);
+        let stream: DecodedStream = decode_stream_with_offsets(code, opmap.as_ref(), version)?;
         let module_docstring: Option<String> = class_docstring(code, &stream.ops);
         let route_via_sim: bool = matches!(frame_tree.root.kind, FrameKind::Module)
             && (frame_tree.root.children.is_empty()
@@ -378,7 +378,7 @@ fn decode_stream_with_offsets(
     code: &CodeObject,
     opmap: &dyn OpcodeMap,
     version: &PyVersion,
-) -> DecodedStream {
+) -> Result<DecodedStream> {
     let mut ops: Vec<CanonicalOp> = Vec::new();
     let mut offsets: Vec<u32> = Vec::new();
     let mut next_offsets: Vec<u32> = Vec::new();
@@ -401,29 +401,18 @@ fn decode_stream_with_offsets(
         version.major() > 3 || (version.major() == 3 && version.minor() >= 10);
     let relative_cond_jumps: bool = !version.is_pre_311();
     let code_len: u32 = u32::try_from(code.code.len()).unwrap_or(u32::MAX);
-    let exception_table: Vec<crate::bytecode::flow::ExceptionTableEntry> = if version
-        .supports_pep_657_exception_table()
-        && !code.exceptiontable.is_empty()
-    {
-        let parsed: Vec<crate::bytecode::flow::ExceptionTableEntry> =
-            crate::bytecode::flow::parse_exception_table(&code.exceptiontable).unwrap_or_default();
-        let boundary_offsets: Vec<u32> = if extended_arg_lead_ins.is_empty() {
-            offsets.clone()
+    let exception_table: Vec<ExceptionTableEntry> =
+        if version.supports_pep_657_exception_table() && !code.exceptiontable.is_empty() {
+            let mut boundary_offsets: Vec<u32> = offsets.clone();
+            boundary_offsets.extend_from_slice(&extended_arg_lead_ins);
+            boundary_offsets.sort_unstable();
+            boundary_offsets.dedup();
+            placeable_exception_table(code, &boundary_offsets, code_len)?
+        } else if version.is_pre_311() {
+            synthesize_pre_311_exception_table(code, opmap, version)
         } else {
-            let mut merged: Vec<u32> =
-                Vec::with_capacity(offsets.len() + extended_arg_lead_ins.len());
-            merged.extend_from_slice(&offsets);
-            merged.extend_from_slice(&extended_arg_lead_ins);
-            merged.sort_unstable();
-            merged.dedup();
-            merged
+            Vec::new()
         };
-        crate::bytecode::flow::followable_exception_entries(&parsed, &boundary_offsets, code_len)
-    } else if version.is_pre_311() {
-        synthesize_pre_311_exception_table(code, opmap, version)
-    } else {
-        Vec::new()
-    };
     let pre311_end_finally_idx: std::collections::BTreeSet<usize> = if version.is_pre_311() {
         collect_pre_311_opcode_indices(
             code,
@@ -474,7 +463,36 @@ fn decode_stream_with_offsets(
         version: version.clone(),
     };
     normalize_open_coded_idioms(code, &mut stream);
-    stream
+    Ok(stream)
+}
+
+fn placeable_exception_table(
+    code: &CodeObject,
+    boundary_offsets: &[u32],
+    code_len: u32,
+) -> Result<Vec<ExceptionTableEntry>> {
+    let parsed: Vec<ExceptionTableEntry> =
+        crate::bytecode::flow::parse_exception_table(&code.exceptiontable)?;
+    let followable: Vec<ExceptionTableEntry> =
+        crate::bytecode::flow::followable_exception_entries(&parsed, boundary_offsets, code_len);
+    let rejected: Option<&ExceptionTableEntry> = parsed
+        .iter()
+        .enumerate()
+        .find(|(index, entry): &(usize, &ExceptionTableEntry)| {
+            followable.get(*index) != Some(entry)
+        })
+        .map(|(_, entry): (usize, &ExceptionTableEntry)| entry);
+    rejected.map_or(Ok(followable), |entry: &ExceptionTableEntry| {
+        Err(DecompileError::MalformedExceptionTable {
+            reason: format!(
+                "entry {}..{} -> {} is empty, leaves the code, splits an instruction or partially \
+                 overlaps an earlier entry, so the handler CPython runs for it cannot be placed",
+                entry.start,
+                entry.end(),
+                entry.target
+            ),
+        })
+    })
 }
 
 fn normalize_open_coded_idioms(code: &CodeObject, stream: &mut DecodedStream) {

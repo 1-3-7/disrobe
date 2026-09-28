@@ -303,16 +303,24 @@ pub(super) fn try_build_class_def(
     let nested: &CodeObject = nested_code_object_at(parent, const_idx)?;
     let nested_version: PyVersion = pick_nested_version(nested);
     let opmap: Box<dyn OpcodeMap> = map_for(nested_version.clone());
-    let stream: DecodedStream = decode_stream_with_offsets(nested, opmap.as_ref(), &nested_version);
-    let body_raw: Vec<Stmt> = {
-        let _code_scope: NestedCodeScope = NestedCodeScope::enter();
-        structure_stmts(nested, &stream, 0, stream.ops.len()).unwrap_or_else(
-            |_refused: DecompileError| {
+    let (body_raw, docstring): (Vec<Stmt>, Option<String>) =
+        match decode_stream_with_offsets(nested, opmap.as_ref(), &nested_version) {
+            Ok(stream) => {
+                let structured: Result<Vec<Stmt>> = {
+                    let _code_scope: NestedCodeScope = NestedCodeScope::enter();
+                    structure_stmts(nested, &stream, 0, stream.ops.len())
+                };
+                let body: Vec<Stmt> = structured.unwrap_or_else(|_refused: DecompileError| {
+                    record_stubbed_scope(nested);
+                    Vec::new()
+                });
+                (body, class_docstring(nested, &stream.ops))
+            }
+            Err(err) => {
                 record_stubbed_scope(nested);
-                Vec::new()
-            },
-        )
-    };
+                (Vec::new(), Some(format!("decompile-error: {err}")))
+            }
+        };
     let stripped: Vec<Stmt> = strip_class_implicit(strip_module_implicit_return(
         strip_module_docstring_stmt(body_raw, nested),
     ));
@@ -330,7 +338,7 @@ pub(super) fn try_build_class_def(
         keywords: keywords.clone(),
         body: final_body,
         decorators: Vec::new(),
-        docstring: class_docstring(nested, &stream.ops),
+        docstring,
         line: None,
     })
 }
@@ -2099,10 +2107,27 @@ pub(super) fn build_nested_function_def(
     let nested: &CodeObject = nested_code_object_at(parent, const_idx)?;
     let nested_version: PyVersion = pick_nested_version(nested);
     let opmap: Box<dyn OpcodeMap> = map_for(nested_version.clone());
-    let stream: DecodedStream = decode_stream_with_offsets(nested, opmap.as_ref(), &nested_version);
     let is_async: bool = is_async_default
         || (nested.flags & (PY_CO_FLAG_COROUTINE | PY_CO_FLAG_ASYNC_GENERATOR)) != 0;
     let args: Arguments = function_args_from_code(nested);
+    let stream: DecodedStream =
+        match decode_stream_with_offsets(nested, opmap.as_ref(), &nested_version) {
+            Ok(stream) => stream,
+            Err(err) => {
+                record_stubbed_scope(nested);
+                return Some(Stmt::FunctionDef {
+                    name: target_name,
+                    type_params: Vec::new(),
+                    args,
+                    body: vec![Stmt::Pass],
+                    decorators: Vec::new(),
+                    returns: None,
+                    is_async,
+                    docstring: Some(format!("decompile-error: {err}")),
+                    line: None,
+                });
+            }
+        };
     let Ok(_codeobj_guard): Result<CodeObjDepthGuard> = enter_codeobj_depth() else {
         record_stubbed_scope(nested);
         return Some(Stmt::FunctionDef {
@@ -2246,7 +2271,8 @@ fn lambda_body_branches(ops: &[CanonicalOp]) -> bool {
 
 fn lambda_branching_body(nested: &CodeObject, nested_version: &PyVersion) -> Option<Expr> {
     let opmap: Box<dyn OpcodeMap> = map_for(nested_version.clone());
-    let stream: DecodedStream = decode_stream_with_offsets(nested, opmap.as_ref(), nested_version);
+    let stream: DecodedStream =
+        decode_stream_with_offsets(nested, opmap.as_ref(), nested_version).ok()?;
     let _code_scope: NestedCodeScope = NestedCodeScope::enter();
     let stmts: Vec<Stmt> = structure_stmts(nested, &stream, 0, stream.ops.len()).ok()?;
     returned_expr(&stmts, 0)
@@ -2285,7 +2311,8 @@ fn returned_expr(stmts: &[Stmt], depth: usize) -> Option<Expr> {
 
 fn lambda_structured_body(nested: &CodeObject, nested_version: &PyVersion) -> Option<Expr> {
     let opmap: Box<dyn OpcodeMap> = map_for(nested_version.clone());
-    let stream: DecodedStream = decode_stream_with_offsets(nested, opmap.as_ref(), nested_version);
+    let stream: DecodedStream =
+        decode_stream_with_offsets(nested, opmap.as_ref(), nested_version).ok()?;
     let _code_scope: NestedCodeScope = NestedCodeScope::enter();
     let stmts: Vec<Stmt> = structure_stmts(nested, &stream, 0, stream.ops.len()).ok()?;
     stmts.into_iter().rev().find_map(|s: Stmt| match s {

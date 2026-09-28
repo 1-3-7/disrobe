@@ -24,6 +24,8 @@ use disrobe_py_marshal::{CodeObject, Object, PyVersion as MarshalVersion, PycFil
 
 const TABLE_ERA: &[&str] = &["3.11", "3.12", "3.13", "3.14", "3.15"];
 
+const REFUSAL: &str = "decompile-error: malformed exception table";
+
 const SOURCE: &str = "def f(mgr, nxt, sink):\n    try:\n        sink(nxt())\n    except \
                       LookupError:\n        sink(None)\n    with mgr() as handle:\n        \
                       sink(handle)\n    return handle\n";
@@ -296,14 +298,16 @@ fn a_hostile_exception_table_entry_is_rejected_rather_than_followed() {
             );
 
             match build_real_source(&hostile_module, &version, marshal_version) {
-                Ok(recovered) if recovered == clean_module => {}
+                Ok(recovered) if recovered.contains(REFUSAL) && recovered != clean_module => {}
                 Ok(recovered) => failures.push(format!(
-                    "py{alias}/{}: the decompiler followed the injected entry and recovered \
-                     different source\n{recovered}",
+                    "py{alias}/{}: the decompiler recovered the function without refusing the \
+                     entry it cannot place, so the handler CPython runs for it is silently \
+                     dropped\n{recovered}",
                     kind.label()
                 )),
                 Err(e) => failures.push(format!(
-                    "py{alias}/{}: the decompiler failed on the injected entry: {e}",
+                    "py{alias}/{}: the whole module failed instead of the one function that \
+                     carries the entry: {e}",
                     kind.label()
                 )),
             }
