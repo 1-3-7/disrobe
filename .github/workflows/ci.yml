@@ -304,6 +304,14 @@ jobs:
           java -version
           javac -version
           echo "DISROBE_REQUIRE_JVM=1" >> "$GITHUB_ENV"
+      - name: provision ecj 3.26.0 for the second-compiler shape tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          jar="$RUNNER_TEMP/ecj-3.26.0.jar"
+          curl -fsSL -o "$jar" https://repo1.maven.org/maven2/org/eclipse/jdt/ecj/3.26.0/ecj-3.26.0.jar
+          echo "ac0ba5876eaf7ebb47749a0d1be179c51f194b9dd0b875d1c09e1b530f5a2db5  $jar" | sha256sum -c -
+          echo "DISROBE_ECJ_JAR=$jar" >> "$GITHUB_ENV"
       - name: provision APK reference tools
         if: matrix.shard == 'two'
         shell: pwsh
