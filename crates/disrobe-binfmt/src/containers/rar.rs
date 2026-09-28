@@ -11,6 +11,9 @@ const HEAD_ENDARC: u64 = 5;
 const FILE_FLAG_DIRECTORY: u64 = 0x0001;
 const HEADER_FLAG_EXTRA: u64 = 0x0001;
 const HEADER_FLAG_DATA: u64 = 0x0002;
+const HEADER_FLAG_SPLIT_BEFORE: u64 = 0x0008;
+const HEADER_FLAG_SPLIT_AFTER: u64 = 0x0010;
+const RAR5_EXTRA_FILE_ENCRYPTION: u64 = 0x01;
 const RAR5_METHOD_MASK: u64 = 0x0380;
 const RAR5_METHOD_SHIFT: u32 = 7;
 const RAR5_VERSION_MASK: u64 = 0x003f;
@@ -24,6 +27,9 @@ const RAR4_LHD_SOLID: u16 = 0x0010;
 const RAR5_SOLID_FLAG: u64 = 0x0040;
 const RAR4_LHD_LARGE: u16 = 0x0100;
 const RAR4_LHD_UNICODE: u16 = 0x0200;
+const RAR4_LHD_SPLIT_BEFORE: u16 = 0x0001;
+const RAR4_LHD_SPLIT_AFTER: u16 = 0x0002;
+const RAR4_LHD_PASSWORD: u16 = 0x0004;
 
 pub const RAR3_CANONICAL_FILTERS: [&str; 6] =
     ["delta", "x86 e8", "x86 e8/e9", "itanium", "rgb", "audio"];
@@ -50,6 +56,9 @@ pub struct RarEntry {
     pub compression_version: u8,
     pub is_dir: bool,
     pub is_solid: bool,
+    pub is_encrypted: bool,
+    pub continues_from_previous_volume: bool,
+    pub continues_in_next_volume: bool,
     pub crc32: Option<u32>,
 }
 
@@ -64,6 +73,17 @@ impl RarEntry {
             0x34 => "good",
             0x35 => "best",
             _ => "unknown",
+        }
+    }
+
+    #[must_use]
+    pub const fn refusal(&self) -> Option<&'static str> {
+        if self.is_encrypted {
+            Some("is encrypted, and disrobe does not decrypt rar members")
+        } else if self.continues_from_previous_volume || self.continues_in_next_volume {
+            Some("is split across volumes, and this volume holds only part of its data")
+        } else {
+            None
         }
     }
 }
@@ -135,11 +155,14 @@ pub fn parse_rar5(bytes: &[u8]) -> Result<RarArchive> {
             break;
         };
 
-        if header_flags & HEADER_FLAG_EXTRA != 0 {
-            let Some(_extra): Option<u64> = read_rar5_vint(&mut cur) else {
-                break;
-            };
-        }
+        let extra_size: u64 = if header_flags & HEADER_FLAG_EXTRA != 0 {
+            match read_rar5_vint(&mut cur) {
+                Some(v) => v,
+                None => break,
+            }
+        } else {
+            0
+        };
         let data_size: u64 = if header_flags & HEADER_FLAG_DATA != 0 {
             match read_rar5_vint(&mut cur) {
                 Some(v) => v,
@@ -154,7 +177,14 @@ pub fn parse_rar5(bytes: &[u8]) -> Result<RarArchive> {
         }
 
         if header_type == HEAD_FILE
-            && let Some(entry) = parse_rar5_file_block(&mut cur, header_end, data_size)
+            && let Some(entry) = parse_rar5_file_block(
+                bytes,
+                &mut cur,
+                header_end,
+                header_flags,
+                extra_size,
+                data_size,
+            )
         {
             entries.push(entry);
         }
@@ -173,8 +203,11 @@ pub fn parse_rar5(bytes: &[u8]) -> Result<RarArchive> {
 }
 
 fn parse_rar5_file_block(
+    bytes: &[u8],
     cur: &mut ByteReader<'_>,
     header_end: usize,
+    header_flags: u64,
+    extra_size: u64,
     data_size: u64,
 ) -> Option<RarEntry> {
     let file_flags: u64 = read_rar5_vint(cur)?;
@@ -193,6 +226,15 @@ fn parse_rar5_file_block(
     let name_length: u64 = read_rar5_vint(cur)?;
     let name_bytes: &[u8] = cur.read_bytes(name_length as usize).ok()?;
     let name: String = String::from_utf8_lossy(name_bytes).replace('\\', "/");
+
+    let extra_start: usize = header_end.checked_sub(usize::try_from(extra_size).ok()?)?;
+    if extra_start < cur.position() {
+        return None;
+    }
+    let is_encrypted: bool = rar5_extra_has_record(
+        bytes.get(extra_start..header_end)?,
+        RAR5_EXTRA_FILE_ENCRYPTION,
+    )?;
 
     let is_dir: bool = file_flags & FILE_FLAG_DIRECTORY != 0;
     let is_solid: bool = compression_info & RAR5_SOLID_FLAG != 0;
@@ -216,8 +258,28 @@ fn parse_rar5_file_block(
         compression_version,
         is_dir,
         is_solid,
+        is_encrypted,
+        continues_from_previous_volume: header_flags & HEADER_FLAG_SPLIT_BEFORE != 0,
+        continues_in_next_volume: header_flags & HEADER_FLAG_SPLIT_AFTER != 0,
         crc32: data_crc,
     })
+}
+
+fn rar5_extra_has_record(extra: &[u8], wanted: u64) -> Option<bool> {
+    let mut reader: ByteReader<'_> = ByteReader::new(extra);
+    while reader.position() < extra.len() {
+        let record_size: usize = usize::try_from(read_rar5_vint(&mut reader)?).ok()?;
+        let record_start: usize = reader.position();
+        let record_end: usize = record_start.checked_add(record_size)?;
+        if record_size == 0 || record_end > extra.len() {
+            return None;
+        }
+        if read_rar5_vint(&mut reader)? == wanted {
+            return Some(true);
+        }
+        reader.seek(record_end).ok()?;
+    }
+    Some(false)
 }
 
 pub fn parse_rar4(bytes: &[u8]) -> Result<RarArchive> {
@@ -363,6 +425,9 @@ fn parse_rar4_file_block(
         compression_version: unp_version,
         is_dir,
         is_solid,
+        is_encrypted: head_flags & RAR4_LHD_PASSWORD != 0,
+        continues_from_previous_volume: head_flags & RAR4_LHD_SPLIT_BEFORE != 0,
+        continues_in_next_volume: head_flags & RAR4_LHD_SPLIT_AFTER != 0,
         crc32: Some(file_crc),
     })
 }
@@ -472,7 +537,19 @@ fn packed_slice<'a>(bytes: &'a [u8], entry: &RarEntry) -> Result<&'a [u8]> {
 }
 
 pub fn entry_bytes(bytes: &[u8], entry: &RarEntry, cap: u64) -> Result<Vec<u8>> {
+    if let Some(reason) = entry.refusal() {
+        return Err(Error::Decompression(format!(
+            "rar entry `{}` {reason}",
+            entry.name
+        )));
+    }
     let packed: &[u8] = packed_slice(bytes, entry)?;
+    if entry.method == RarMethod::Store && entry.packed_size != entry.unpacked_size {
+        return Err(Error::Decompression(format!(
+            "rar entry `{}` is stored, but its header declares {} packed bytes and {} unpacked bytes",
+            entry.name, entry.packed_size, entry.unpacked_size
+        )));
+    }
     if entry.is_solid && entry.method != RarMethod::Store {
         return Err(Error::Decompression(format!(
             "rar entry `{}` is a solid member that continues the dictionary state of the entry before it; disrobe decodes each member on its own, so solid continuation is not recovered",
@@ -498,12 +575,20 @@ pub fn entry_bytes(bytes: &[u8], entry: &RarEntry, cap: u64) -> Result<Vec<u8>> 
 }
 
 fn verify_entry_crc(entry: &RarEntry, recovered: &[u8]) -> Result<()> {
+    if entry.is_dir {
+        return Ok(());
+    }
+    if recovered.len() as u64 != entry.unpacked_size {
+        return Err(Error::Decompression(format!(
+            "rar entry `{}` recovered {} bytes, but the archive header declares {}",
+            entry.name,
+            recovered.len(),
+            entry.unpacked_size
+        )));
+    }
     let Some(declared) = entry.crc32 else {
         return Ok(());
     };
-    if entry.is_dir || recovered.len() as u64 != entry.unpacked_size {
-        return Ok(());
-    }
     let computed: u32 = crc32fast::hash(recovered);
     if computed == declared {
         return Ok(());
@@ -643,6 +728,234 @@ mod tests {
         assert_eq!(data, body);
     }
 
+    struct Rar4Member<'a> {
+        name: &'a str,
+        flags: u16,
+        packed: &'a [u8],
+        unpacked_size: u32,
+        crc: u32,
+    }
+
+    fn build_rar4(members: &[Rar4Member<'_>]) -> Vec<u8> {
+        let mut out: Vec<u8> = Vec::new();
+        out.extend_from_slice(RAR4_SIGNATURE);
+        out.extend_from_slice(&[0x00, 0x00, 0x73, 0x00, 0x00, 0x0d, 0x00]);
+        out.extend_from_slice(&[0u8; 6]);
+        for member in members {
+            let name_bytes: &[u8] = member.name.as_bytes();
+            out.extend_from_slice(&[0x00, 0x00, RAR4_FILE_HEAD]);
+            out.extend_from_slice(&(RAR4_FLAG_ADD_SIZE | member.flags).to_le_bytes());
+            out.extend_from_slice(&((32 + name_bytes.len()) as u16).to_le_bytes());
+            out.extend_from_slice(&(member.packed.len() as u32).to_le_bytes());
+            out.extend_from_slice(&member.unpacked_size.to_le_bytes());
+            out.push(0x02);
+            out.extend_from_slice(&member.crc.to_le_bytes());
+            out.extend_from_slice(&0u32.to_le_bytes());
+            out.extend_from_slice(&[20, 0x30]);
+            out.extend_from_slice(&(name_bytes.len() as u16).to_le_bytes());
+            out.extend_from_slice(&0x20u32.to_le_bytes());
+            out.extend_from_slice(name_bytes);
+            out.extend_from_slice(member.packed);
+        }
+        out
+    }
+
+    fn plain_rar4_member<'a>(name: &'a str, body: &'a [u8]) -> Rar4Member<'a> {
+        Rar4Member {
+            name,
+            flags: 0,
+            packed: body,
+            unpacked_size: body.len() as u32,
+            crc: crc32fast::hash(body),
+        }
+    }
+
+    fn build_rar5_member(
+        name: &str,
+        header_flags: u64,
+        extra: &[u8],
+        packed: &[u8],
+        unpacked: u64,
+    ) -> Vec<u8> {
+        let mut header_body: Vec<u8> = Vec::new();
+        write_vint(&mut header_body, HEAD_FILE);
+        let extra_flag: u64 = if extra.is_empty() {
+            0
+        } else {
+            HEADER_FLAG_EXTRA
+        };
+        write_vint(
+            &mut header_body,
+            HEADER_FLAG_DATA | extra_flag | header_flags,
+        );
+        if !extra.is_empty() {
+            write_vint(&mut header_body, extra.len() as u64);
+        }
+        write_vint(&mut header_body, packed.len() as u64);
+        for field in [0, unpacked, 0, 0, 0, name.len() as u64] {
+            write_vint(&mut header_body, field);
+        }
+        header_body.extend_from_slice(name.as_bytes());
+        header_body.extend_from_slice(extra);
+
+        let mut out: Vec<u8> = Vec::new();
+        out.extend_from_slice(RAR5_SIGNATURE);
+        out.extend_from_slice(&0u32.to_le_bytes());
+        write_vint(&mut out, 3);
+        out.extend_from_slice(&[1, 0, 0]);
+        out.extend_from_slice(&0u32.to_le_bytes());
+        write_vint(&mut out, header_body.len() as u64);
+        out.extend_from_slice(&header_body);
+        out.extend_from_slice(packed);
+        out
+    }
+
+    fn rar5_encryption_record() -> Vec<u8> {
+        let mut record: Vec<u8> = vec![RAR5_EXTRA_FILE_ENCRYPTION as u8, 0, 0, 15];
+        record.extend_from_slice(&[0x5a; 32]);
+        let mut extra: Vec<u8> = Vec::new();
+        write_vint(&mut extra, record.len() as u64);
+        extra.extend_from_slice(&record);
+        extra
+    }
+
+    fn extract_rar_image(
+        image: &[u8],
+        label: &str,
+    ) -> (
+        crate::extract::ExtractionResult,
+        disrobe_core::scratch::ScratchDir,
+    ) {
+        let scratch: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create(&format!("binfmt-rar-{label}"))
+                .expect("scratch");
+        let result: crate::extract::ExtractionResult =
+            crate::extract::extract_to(crate::container::ContainerKind::Rar, image, scratch.path())
+                .expect("extract rar");
+        (result, scratch)
+    }
+
+    fn assert_refused(image: &[u8], label: &str, member: &str, reason: &str) {
+        let (result, scratch): (
+            crate::extract::ExtractionResult,
+            disrobe_core::scratch::ScratchDir,
+        ) = extract_rar_image(image, label);
+        assert!(
+            result
+                .entries
+                .iter()
+                .all(|e: &crate::extract::ExtractedEntry| e.name != member),
+            "{label}: {member} must not be extracted: {:?}",
+            result.entries
+        );
+        assert!(
+            !scratch.path().join(member).exists(),
+            "{label}: {member} was written"
+        );
+        assert!(
+            result
+                .integrity_violations
+                .iter()
+                .any(|v: &String| v.contains(member) && v.contains(reason)),
+            "{label}: {:?}",
+            result.integrity_violations
+        );
+    }
+
+    #[test]
+    fn rar4_encrypted_member_is_refused_and_the_next_member_extracts() {
+        let body: &[u8] = b"twenty plain bytes!!";
+        let ciphertext: [u8; 32] = [0xa7; 32];
+        let after: &[u8] = b"the member after the encrypted one";
+        let image: Vec<u8> = build_rar4(&[
+            Rar4Member {
+                name: "secret.txt",
+                flags: RAR4_LHD_PASSWORD,
+                packed: &ciphertext,
+                unpacked_size: body.len() as u32,
+                crc: crc32fast::hash(body),
+            },
+            plain_rar4_member("after.txt", after),
+        ]);
+        assert_refused(&image, "rar4-encrypted", "secret.txt", "encrypted");
+        let (result, scratch): (
+            crate::extract::ExtractionResult,
+            disrobe_core::scratch::ScratchDir,
+        ) = extract_rar_image(&image, "rar4-encrypted-next");
+        assert_eq!(result.entries.len(), 1);
+        assert_eq!(
+            std::fs::read(scratch.path().join("after.txt")).expect("after"),
+            after
+        );
+    }
+
+    #[test]
+    fn rar4_member_split_into_the_next_volume_is_refused() {
+        let body: &[u8] = b"a member whose tail lives in the next volume";
+        let image: Vec<u8> = build_rar4(&[Rar4Member {
+            name: "part.bin",
+            flags: RAR4_LHD_SPLIT_AFTER,
+            packed: &body[..12],
+            unpacked_size: body.len() as u32,
+            crc: crc32fast::hash(&body[..12]),
+        }]);
+        assert_refused(&image, "rar4-split", "part.bin", "split across volumes");
+    }
+
+    #[test]
+    fn rar4_stored_member_with_a_short_packed_size_is_refused() {
+        let body: &[u8] = b"stored bytes shorter than the declared size";
+        let image: Vec<u8> = build_rar4(&[Rar4Member {
+            name: "short.bin",
+            flags: 0,
+            packed: &body[..10],
+            unpacked_size: body.len() as u32,
+            crc: crc32fast::hash(body),
+        }]);
+        assert_refused(&image, "rar4-short", "short.bin", "packed bytes");
+    }
+
+    #[test]
+    fn rar5_member_with_an_encryption_record_is_refused() {
+        let image: Vec<u8> =
+            build_rar5_member("locked.bin", 0, &rar5_encryption_record(), &[0x3c; 32], 20);
+        let archive: RarArchive = parse_rar(&image).expect("parse rar5");
+        assert!(archive.entries[0].is_encrypted);
+        assert_refused(&image, "rar5-encrypted", "locked.bin", "encrypted");
+    }
+
+    #[test]
+    fn rar5_member_continued_from_a_previous_volume_is_refused() {
+        let body: &[u8] = b"second half of a split member";
+        let image: Vec<u8> = build_rar5_member(
+            "tail.bin",
+            HEADER_FLAG_SPLIT_BEFORE,
+            &[],
+            body,
+            body.len() as u64,
+        );
+        assert_refused(&image, "rar5-split", "tail.bin", "split across volumes");
+    }
+
+    #[test]
+    fn rar5_stored_member_without_flags_still_extracts() {
+        let body: &[u8] = b"an ordinary stored rar5 member";
+        let image: Vec<u8> = build_rar5_member("plain.bin", 0, &[], body, body.len() as u64);
+        let (result, scratch): (
+            crate::extract::ExtractionResult,
+            disrobe_core::scratch::ScratchDir,
+        ) = extract_rar_image(&image, "rar5-plain");
+        assert!(
+            result.integrity_violations.is_empty(),
+            "{:?}",
+            result.integrity_violations
+        );
+        assert_eq!(
+            std::fs::read(scratch.path().join("plain.bin")).expect("plain"),
+            body
+        );
+    }
+
     #[test]
     fn rejects_non_rar() {
         assert!(!detect_rar(&[0u8; 16]));
@@ -668,6 +981,9 @@ mod tests {
             compression_version: 29,
             is_dir: false,
             is_solid: true,
+            is_encrypted: false,
+            continues_from_previous_volume: false,
+            continues_in_next_volume: false,
             crc32: None,
         };
         let error: Error = entry_bytes(&[0u8; 8], &entry, 1 << 20)
@@ -689,6 +1005,9 @@ mod tests {
             compression_version: 29,
             is_dir: false,
             is_solid: false,
+            is_encrypted: false,
+            continues_from_previous_volume: false,
+            continues_in_next_volume: false,
             crc32: None,
         };
         let err: Error = file_data(&[0u8; 8], &entry).unwrap_err();

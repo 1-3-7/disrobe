@@ -29,8 +29,8 @@ ar = { workspace = true }
 base64 = { workspace = true }
 blake3 = { workspace = true }
 brotli = { workspace = true }
+bzip2 = "0.6.1"
 bzip2-rs = { workspace = true }
-cab = { workspace = true }
 cbc = { workspace = true }
 cipher = { version = "0.4", features = ["block-padding"] }
 crc32fast = { workspace = true }
@@ -40,6 +40,7 @@ flate2 = { workspace = true }
 liblzma = { workspace = true }
 lz4_flex = { workspace = true }
 lzfse_rust = "0.2.1"
+lzxd = "0.2.6"
 lzma-rs = { version = "0.3.0", features = ["raw_decoder"] }
 lzokay = { version = "2.0.1", default-features = false, features = ["decompress"] }
 memchr = { workspace = true }
@@ -72,6 +73,7 @@ name = "gen_container_fixture"
 path = "tests/fixtures/gen_container.rs"
 
 [dev-dependencies]
+cab = { workspace = true }
 tempfile = "3"
 disrobe-testkit = { workspace = true }
 rpm = { workspace = true }

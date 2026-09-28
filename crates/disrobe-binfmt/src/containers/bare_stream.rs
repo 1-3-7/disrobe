@@ -108,7 +108,7 @@ pub fn decompress_lzip(bytes: &[u8], cap: u64) -> Result<Vec<u8>> {
 }
 
 fn lzip_stream() -> Result<liblzma::stream::Stream> {
-    liblzma::stream::Stream::new_lzip_decoder(u64::MAX, 0)
+    liblzma::stream::Stream::new_lzip_decoder(u64::MAX, liblzma::stream::CONCATENATED)
         .map_err(|e: liblzma::stream::Error| Error::Decompression(format!("lzip: {e}")))
 }
 
@@ -558,7 +558,7 @@ pub fn decompress_bzip2(bytes: &[u8], cap: u64) -> Result<Vec<u8>> {
     }
     let limit: u64 = cap.saturating_add(1);
     let mut out: Vec<u8> = Vec::new();
-    let decoder: bzip2_rs::DecoderReader<&[u8]> = bzip2_rs::DecoderReader::new(bytes);
+    let decoder: bzip2::read::MultiBzDecoder<&[u8]> = bzip2::read::MultiBzDecoder::new(bytes);
     let read: u64 = std::io::copy(&mut decoder.take(limit), &mut out)
         .map_err(|e: std::io::Error| Error::Decompression(format!("bzip2: decode failed: {e}")))?;
     if read > cap {

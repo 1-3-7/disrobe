@@ -8,6 +8,7 @@ pub mod bare_stream;
 pub mod blazor_webcil;
 pub mod btrfs_send;
 pub mod bun;
+pub mod cab;
 pub mod cab_lzms;
 pub mod cpio;
 pub mod cramfs;
@@ -138,7 +139,11 @@ pub use btrfs_send::{
 pub use bun::{
     BunModule, BunOffsets, BunStandalone, detect_bun, module_contents, parse_bun, sanitize_bun_name,
 };
-pub use cab_lzms::{CabLzmsFile, build_lzms_cab, cab_uses_lzms, extract_cab_lzms};
+pub use cab::{
+    CabArchive, CabCodec, CabFolder, CabMember, CabReadStats, CabRefusal, parse_cab,
+    read_cab_members,
+};
+pub use cab_lzms::build_lzms_cab;
 pub use cpio::{CpioArchive, CpioEntry, CpioVariant, detect_cpio_variant, parse_cpio};
 pub use cramfs::{CramfsFile, CramfsWalk, detect_cramfs, walk_cramfs};
 pub use cython::{

@@ -1457,48 +1457,55 @@ fn extract_msi_cab(
     encoding: &mut BTreeMap<String, EntryCompression>,
     violations: &mut Vec<String>,
 ) -> Result<()> {
-    let cursor: Cursor<&[u8]> = Cursor::new(cab.bytes.as_slice());
-    let mut cabinet: cab::Cabinet<Cursor<&[u8]>> = cab::Cabinet::new(cursor)
-        .map_err(|e| Error::Msi(format!("embedded cab `{}`: {e}", cab.stream_name)))?;
-    let names: Vec<String> = cab_backed_file_names(&cabinet, violations);
-    for raw_name in names {
-        let mapped: &str = long_names
-            .get(&raw_name)
-            .map_or(raw_name.as_str(), String::as_str);
-        let safe_name: String = match sanitize_entry_path(mapped) {
-            Ok(s) => s,
-            Err(e) => {
-                violations.push(format!("msi-slip: {e}"));
-                continue;
+    let archive: crate::containers::CabArchive = crate::containers::parse_cab(&cab.bytes)
+        .map_err(|e: Error| Error::Msi(format!("embedded cab `{}`: {e}", cab.stream_name)))?;
+    let cap: u64 = guard.max_per_entry_uncompressed();
+    crate::containers::read_cab_members(
+        &cab.bytes,
+        &archive,
+        cap,
+        |member: &crate::containers::CabMember,
+         outcome: std::result::Result<&[u8], crate::containers::CabRefusal>|
+         -> Result<()> {
+            let raw_name: &str = member.name.as_str();
+            let buf: &[u8] = match outcome {
+                Ok(buf) => buf,
+                Err(refusal) => {
+                    violations.push(format!(
+                        "msi-member `{raw_name}` in `{}`: {refusal}",
+                        cab.stream_name
+                    ));
+                    return Ok(());
+                }
+            };
+            let mapped: &str = long_names.get(raw_name).map_or(raw_name, String::as_str);
+            let safe_name: String = match sanitize_entry_path(mapped) {
+                Ok(s) => s,
+                Err(e) => {
+                    violations.push(format!("msi-slip: {e}"));
+                    return Ok(());
+                }
+            };
+            let uncompressed_size: u64 = buf.len() as u64;
+            if let Err(e) = guard.admit_entry(&safe_name, uncompressed_size, uncompressed_size) {
+                violations.push(format!("msi-quota `{safe_name}`: {e}"));
+                return Ok(());
             }
-        };
-        let mut reader: cab::FileReader<Cursor<&[u8]>> = cabinet
-            .read_file(&raw_name)
-            .map_err(|e| Error::Msi(format!("read cab file {raw_name}: {e}")))?;
-        let buf: Vec<u8> =
-            read_entry_to_limit(&mut reader, &safe_name, guard.max_per_entry_uncompressed())
-                .map_err(|e: Error| match e {
-                    Error::Io(e) => Error::Msi(format!("drain cab file {raw_name}: {e}")),
-                    other => other,
-                })?;
-        let uncompressed_size: u64 = buf.len() as u64;
-        if let Err(e) = guard.admit_entry(&safe_name, uncompressed_size, uncompressed_size) {
-            violations.push(format!("msi-quota `{safe_name}`: {e}"));
-            continue;
-        }
-        let disk_path: PathBuf = prepare_entry_path(out_dir, &safe_name)?;
-        std::fs::write(&disk_path, &buf)?;
-        encoding.insert(safe_name.clone(), EntryCompression::Other);
-        entries_out.push(ExtractedEntry {
-            origin: ExtractedEntryOrigin::ArchiveMember,
-            name: safe_name,
-            disk_path: Some(disk_path),
-            uncompressed_size,
-            compressed_size: uncompressed_size,
-            compression: EntryCompression::Other,
-            is_executable: false,
-        });
-    }
+            let disk_path: PathBuf = prepare_entry_path(out_dir, &safe_name)?;
+            std::fs::write(&disk_path, buf)?;
+            encoding.insert(safe_name.clone(), EntryCompression::Other);
+            entries_out.push(ExtractedEntry {
+                origin: ExtractedEntryOrigin::ArchiveMember,
+                name: safe_name,
+                disk_path: Some(disk_path),
+                uncompressed_size,
+                compressed_size: uncompressed_size,
+                compression: EntryCompression::Other,
+                is_executable: false,
+            });
+            Ok(())
+        },
+    )?;
     Ok(())
 }
 
@@ -1560,6 +1567,10 @@ fn extract_rar(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<E
                 continue;
             }
         };
+        if let Some(reason) = entry.refusal() {
+            violations.push(format!("rar-refused `{safe_name}`: the member {reason}"));
+            continue;
+        }
         let is_store: bool = entry.method == crate::containers::RarMethod::Store;
         let data: Vec<u8> = match crate::containers::rar_entry_bytes(
             bytes,
@@ -3019,92 +3030,49 @@ fn extract_rpm(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<E
 }
 
 fn extract_cab(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<ExtractionResult> {
-    if crate::containers::cab_uses_lzms(bytes) {
-        return extract_cab_lzms_folders(bytes, out_dir, quota);
-    }
-    let cursor: Cursor<&[u8]> = Cursor::new(bytes);
-    let mut cabinet: cab::Cabinet<Cursor<&[u8]>> =
-        cab::Cabinet::new(cursor).map_err(|e| Error::Cab(e.to_string()))?;
+    let archive: crate::containers::CabArchive = crate::containers::parse_cab(bytes)?;
     let mut guard: QuotaGuard = QuotaGuard::new(quota);
     let mut entries_out: Vec<ExtractedEntry> = Vec::new();
     let mut encoding: BTreeMap<String, EntryCompression> = BTreeMap::new();
     let mut violations: Vec<String> = Vec::new();
-    let names: Vec<String> = cab_backed_file_names(&cabinet, &mut violations);
-    for raw_name in names {
-        let safe_name: String = match sanitize_entry_path(&raw_name) {
-            Ok(s) => s,
-            Err(e) => {
-                violations.push(format!("cab-slip: {e}"));
-                continue;
-            }
-        };
-        let mut reader: cab::FileReader<Cursor<&[u8]>> = cabinet
-            .read_file(&raw_name)
-            .map_err(|e| Error::Cab(e.to_string()))?;
-        let buf: Vec<u8> =
-            read_entry_to_limit(&mut reader, &safe_name, quota.max_per_entry_uncompressed)
-                .map_err(|e: Error| match e {
-                    Error::Io(e) => Error::Cab(format!("reading {raw_name}: {e}")),
-                    other => other,
-                })?;
-        let uncompressed_size: u64 = buf.len() as u64;
-        guard.admit_entry(&safe_name, uncompressed_size, uncompressed_size)?;
-        let disk_path: PathBuf = prepare_entry_path(out_dir, &safe_name)?;
-        std::fs::write(&disk_path, &buf)?;
-        encoding.insert(safe_name.clone(), EntryCompression::Other);
-        entries_out.push(ExtractedEntry {
-            origin: ExtractedEntryOrigin::ArchiveMember,
-            name: safe_name,
-            disk_path: Some(disk_path),
-            uncompressed_size,
-            compressed_size: uncompressed_size,
-            compression: EntryCompression::Other,
-            is_executable: false,
-        });
-    }
-    Ok(ExtractionResult {
-        kind: ContainerKind::Cab,
-        entries: entries_out,
-        encoding,
-        integrity_violations: violations,
-        quota: QuotaSummary::from(guard.report()),
-    })
-}
-
-fn extract_cab_lzms_folders(
-    bytes: &[u8],
-    out_dir: &Path,
-    quota: ExtractionQuota,
-) -> Result<ExtractionResult> {
-    let mut guard: QuotaGuard = QuotaGuard::new(quota);
-    let mut entries_out: Vec<ExtractedEntry> = Vec::new();
-    let mut encoding: BTreeMap<String, EntryCompression> = BTreeMap::new();
-    let mut violations: Vec<String> = Vec::new();
-    let files: Vec<crate::containers::CabLzmsFile> =
-        crate::containers::extract_cab_lzms(bytes, quota.max_per_entry_uncompressed)?;
-    for file in files {
-        let safe_name: String = match sanitize_entry_path(&file.name) {
-            Ok(s) => s,
-            Err(e) => {
-                violations.push(format!("cab-slip: {e}"));
-                continue;
-            }
-        };
-        let uncompressed_size: u64 = file.data.len() as u64;
-        guard.admit_entry(&safe_name, uncompressed_size, uncompressed_size)?;
-        let disk_path: PathBuf = prepare_entry_path(out_dir, &safe_name)?;
-        std::fs::write(&disk_path, &file.data)?;
-        encoding.insert(safe_name.clone(), EntryCompression::Other);
-        entries_out.push(ExtractedEntry {
-            origin: ExtractedEntryOrigin::ArchiveMember,
-            name: safe_name,
-            disk_path: Some(disk_path),
-            uncompressed_size,
-            compressed_size: uncompressed_size,
-            compression: EntryCompression::Other,
-            is_executable: false,
-        });
-    }
+    crate::containers::read_cab_members(
+        bytes,
+        &archive,
+        quota.max_per_entry_uncompressed,
+        |member: &crate::containers::CabMember,
+         outcome: std::result::Result<&[u8], crate::containers::CabRefusal>|
+         -> Result<()> {
+            let buf: &[u8] = match outcome {
+                Ok(buf) => buf,
+                Err(refusal) => {
+                    violations.push(format!("cab-member `{}`: {refusal}", member.name));
+                    return Ok(());
+                }
+            };
+            let safe_name: String = match sanitize_entry_path(&member.name) {
+                Ok(s) => s,
+                Err(e) => {
+                    violations.push(format!("cab-slip: {e}"));
+                    return Ok(());
+                }
+            };
+            let uncompressed_size: u64 = buf.len() as u64;
+            guard.admit_entry(&safe_name, uncompressed_size, uncompressed_size)?;
+            let disk_path: PathBuf = prepare_entry_path(out_dir, &safe_name)?;
+            std::fs::write(&disk_path, buf)?;
+            encoding.insert(safe_name.clone(), EntryCompression::Other);
+            entries_out.push(ExtractedEntry {
+                origin: ExtractedEntryOrigin::ArchiveMember,
+                name: safe_name,
+                disk_path: Some(disk_path),
+                uncompressed_size,
+                compressed_size: uncompressed_size,
+                compression: EntryCompression::Other,
+                is_executable: false,
+            });
+            Ok(())
+        },
+    )?;
     Ok(ExtractionResult {
         kind: ContainerKind::Cab,
         entries: entries_out,
@@ -3933,15 +3901,16 @@ fn decompress_wrap_capped(
     let mut out: Vec<u8> = Vec::new();
     let read: u64 = match wrap {
         CompressionWrap::Gz => {
-            let d: flate2::read::GzDecoder<&[u8]> = flate2::read::GzDecoder::new(bytes);
+            let d: flate2::read::MultiGzDecoder<&[u8]> = flate2::read::MultiGzDecoder::new(bytes);
             std::io::copy(&mut d.take(limit), &mut out)
         }
         CompressionWrap::Bz2 => {
-            let d: bzip2_rs::DecoderReader<&[u8]> = bzip2_rs::DecoderReader::new(bytes);
+            let d: bzip2::read::MultiBzDecoder<&[u8]> = bzip2::read::MultiBzDecoder::new(bytes);
             std::io::copy(&mut d.take(limit), &mut out)
         }
         CompressionWrap::Xz => {
-            let d: liblzma::read::XzDecoder<&[u8]> = liblzma::read::XzDecoder::new(bytes);
+            let d: liblzma::read::XzDecoder<&[u8]> =
+                liblzma::read::XzDecoder::new_multi_decoder(bytes);
             std::io::copy(&mut d.take(limit), &mut out)
         }
         CompressionWrap::Zst => {
@@ -4082,18 +4051,28 @@ fn extract_sevenz(
                     return Ok(true);
                 }
                 let raw_name: String = entry.name().to_owned();
-                let safe_name: String = match sanitize_entry_path(&raw_name) {
-                    Ok(s) => s,
+                let uncompressed_size: u64 = entry.size();
+                let compressed_size: u64 = entry.compressed_size;
+                let sanitized: Result<String> = sanitize_entry_path(&raw_name);
+                let budget_label: &str = sanitized.as_deref().unwrap_or(raw_name.as_str());
+                if let Err(e) = guard.admit_entry(budget_label, uncompressed_size, compressed_size)
+                {
+                    return Err(sevenz_rust2::Error::other(e.to_string()));
+                }
+                let safe_name: String = match sanitized {
+                    Ok(safe) => safe,
                     Err(e) => {
+                        std::io::copy(data, &mut std::io::sink()).map_err(
+                            |io: std::io::Error| {
+                                sevenz_rust2::Error::other(format!(
+                                    "skipping the bytes of refused member `{raw_name}`: {io}"
+                                ))
+                            },
+                        )?;
                         violations.push(format!("sevenz-slip: {e}"));
                         return Ok(true);
                     }
                 };
-                let uncompressed_size: u64 = entry.size();
-                let compressed_size: u64 = entry.compressed_size;
-                if let Err(e) = guard.admit_entry(&safe_name, uncompressed_size, compressed_size) {
-                    return Err(sevenz_rust2::Error::other(e.to_string()));
-                }
                 let buf: Vec<u8> = read_entry_to_limit(data, &safe_name, uncompressed_size)
                     .map_err(|e: Error| sevenz_rust2::Error::other(e.to_string()))?;
                 let disk_path: PathBuf = prepare_entry_path(out_dir, &safe_name)
@@ -6093,27 +6072,6 @@ fn extract_vhdx_disk(
     )
 }
 
-fn cab_backed_file_names<R: std::io::Read + std::io::Seek>(
-    cabinet: &cab::Cabinet<R>,
-    violations: &mut Vec<String>,
-) -> Vec<String> {
-    let mut names: Vec<String> = Vec::new();
-    for folder in cabinet.folder_entries() {
-        let blocks: u16 = folder.num_data_blocks();
-        for file in folder.file_entries() {
-            if blocks == 0 {
-                violations.push(format!(
-                    "cab-folder `{}`: the folder declares no data blocks, so the file has no backing data",
-                    file.name()
-                ));
-                continue;
-            }
-            names.push(file.name().to_owned());
-        }
-    }
-    names
-}
-
 fn extract_wim(
     bytes: &[u8],
     out_dir: &Path,
@@ -7144,6 +7102,71 @@ mod tests {
         writer.finish().expect("finish 7z").into_inner()
     }
 
+    fn synth_solid_sevenz(files: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut writer: sevenz_rust2::SevenZWriter<Cursor<Vec<u8>>> =
+            sevenz_rust2::SevenZWriter::new(Cursor::new(Vec::new())).expect("7z writer");
+        let entries: Vec<sevenz_rust2::SevenZArchiveEntry> = files
+            .iter()
+            .map(|(name, _): &(&str, &[u8])| sevenz_rust2::SevenZArchiveEntry::new_file(name))
+            .collect();
+        let readers: Vec<sevenz_rust2::SourceReader<&[u8]>> = files
+            .iter()
+            .map(|(_, body): &(&str, &[u8])| sevenz_rust2::SourceReader::from(*body))
+            .collect();
+        writer
+            .push_archive_entries(entries, sevenz_rust2::SeqReader::new(readers))
+            .expect("push solid entries");
+        writer.finish().expect("finish 7z").into_inner()
+    }
+
+    #[test]
+    fn extract_sevenz_skips_a_refused_solid_member_before_the_next() {
+        let mut state: u32 = 0x2545_f491;
+        let mut noise = |len: usize| -> Vec<u8> {
+            (0..len)
+                .map(|_| {
+                    state ^= state << 13;
+                    state ^= state >> 17;
+                    state ^= state << 5;
+                    state as u8
+                })
+                .collect()
+        };
+        let refused: Vec<u8> = noise(1_500);
+        let after: Vec<u8> = noise(1_200);
+        let bytes: Vec<u8> = synth_solid_sevenz(&[
+            ("first.txt", b"leading member"),
+            ("aux.c", &refused),
+            ("after.txt", &after),
+        ]);
+        let scratch: disrobe_core::scratch::ScratchDir = temp_dir("7z-solid-refused");
+        let out: PathBuf = scratch.path().to_path_buf();
+        let result: ExtractionResult =
+            extract_to(ContainerKind::SevenZ, &bytes, &out).expect("extract solid 7z");
+        let names: Vec<&str> = result
+            .entries
+            .iter()
+            .map(|e: &ExtractedEntry| e.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["first.txt", "after.txt"]);
+        assert_eq!(
+            std::fs::read(out.join("first.txt")).expect("read first"),
+            b"leading member"
+        );
+        assert_eq!(
+            std::fs::read(out.join("after.txt")).expect("read after"),
+            after
+        );
+        assert!(
+            result
+                .integrity_violations
+                .iter()
+                .any(|v: &String| v.starts_with("sevenz-slip") && v.contains("aux.c")),
+            "{:?}",
+            result.integrity_violations
+        );
+    }
+
     #[test]
     fn extract_sevenz_records_slip_violation_for_unsafe_entry() {
         let bytes: Vec<u8> = synth_sevenz(&[("ok/data.bin", b"good"), ("../evil.txt", b"bad")]);
@@ -7333,11 +7356,6 @@ mod tests {
         row("extract_cab", NameOrigin::ArchiveSupplied, DRIVEN),
         row(
             "extract_dotnet_single_file",
-            NameOrigin::ArchiveSupplied,
-            DRIVEN,
-        ),
-        row(
-            "extract_cab_lzms_folders",
             NameOrigin::ArchiveSupplied,
             DRIVEN,
         ),
@@ -7644,14 +7662,6 @@ mod tests {
             minimum_exercised: 40,
             minimum_refused_as_a_slip: 33,
             build: build_hostile_cab,
-        },
-        DrivenWritePath {
-            function: "extract_cab_lzms_folders",
-            kind: ContainerKind::Cab,
-            slip_tag: "cab-slip",
-            minimum_exercised: 40,
-            minimum_refused_as_a_slip: 33,
-            build: build_hostile_lzms_cab,
         },
         DrivenWritePath {
             function: "extract_msi_cab",
@@ -7976,13 +7986,6 @@ mod tests {
         Some(synth_cab(&[(name, body)]))
     }
 
-    fn build_hostile_lzms_cab(name: &str, body: &[u8]) -> Option<Vec<u8>> {
-        if !representable_without_control_bytes(name) || name.len() > 200 {
-            return None;
-        }
-        Some(crate::containers::cab_lzms::build_lzms_cab(&[(name, body)]))
-    }
-
     fn build_hostile_msi(name: &str, body: &[u8]) -> Option<Vec<u8>> {
         if !representable_without_control_bytes(name) || name.len() > 200 || name.contains('|') {
             return None;
@@ -8278,11 +8281,6 @@ mod tests {
     #[test]
     fn hostile_names_reach_the_cab_write_path_guard() {
         drive_write_path("extract_cab");
-    }
-
-    #[test]
-    fn hostile_names_reach_the_lzms_cab_write_path_guard() {
-        drive_write_path("extract_cab_lzms_folders");
     }
 
     #[test]
@@ -8980,6 +8978,36 @@ mod tests {
         }
         package.flush().expect("flush");
         package.into_inner().expect("inner").into_inner()
+    }
+
+    #[test]
+    fn extract_cab_refuses_members_that_share_a_name() {
+        let scratch: disrobe_core::scratch::ScratchDir = temp_dir("cab-duplicate");
+        let out: PathBuf = scratch.path().to_path_buf();
+        let bytes: Vec<u8> = synth_cab(&[
+            ("dup.txt", b"first body"),
+            ("solo.txt", b"unique body"),
+            ("dup.txt", b"second, different body"),
+        ]);
+        let result: ExtractionResult =
+            extract_to(ContainerKind::Cab, &bytes, &out).expect("extract cab");
+        let names: Vec<&str> = result
+            .entries
+            .iter()
+            .map(|e: &ExtractedEntry| e.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["solo.txt"], "{:?}", result.integrity_violations);
+        assert_eq!(
+            std::fs::read(out.join("solo.txt")).expect("read solo"),
+            b"unique body"
+        );
+        assert!(!out.join("dup.txt").exists());
+        let refused: usize = result
+            .integrity_violations
+            .iter()
+            .filter(|v: &&String| v.starts_with("cab-member `dup.txt`") && v.contains("same name"))
+            .count();
+        assert_eq!(refused, 2, "{:?}", result.integrity_violations);
     }
 
     #[test]

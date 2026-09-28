@@ -773,7 +773,8 @@ fn decode_gzip(bytes: &[u8]) -> CoreResult<Vec<u8>> {
 }
 
 fn decode_xz(bytes: &[u8]) -> CoreResult<Vec<u8>> {
-    let mut decoder: liblzma::read::XzDecoder<&[u8]> = liblzma::read::XzDecoder::new(bytes);
+    let mut decoder: liblzma::read::XzDecoder<&[u8]> =
+        liblzma::read::XzDecoder::new_multi_decoder(bytes);
     read_capped(
         &mut decoder,
         MAX_STREAM_BYTES,
@@ -795,7 +796,7 @@ fn decode_zstd(bytes: &[u8]) -> CoreResult<Vec<u8>> {
 }
 
 fn decode_bzip2(bytes: &[u8]) -> CoreResult<Vec<u8>> {
-    let mut decoder: bzip2_rs::DecoderReader<&[u8]> = bzip2_rs::DecoderReader::new(bytes);
+    let mut decoder: bzip2::read::MultiBzDecoder<&[u8]> = bzip2::read::MultiBzDecoder::new(bytes);
     read_capped(
         &mut decoder,
         MAX_STREAM_BYTES,
@@ -918,6 +919,50 @@ mod tests {
     const REAL_INNOSETUP: &[u8] = include_bytes!("../tests/fixtures/innosetup/innosetup-6.3.3.exe");
     const REAL_EROFS: &[u8] = include_bytes!("../tests/fixtures/erofs/lzma-compact-mixed.erofs");
     const REAL_LUKS1: &[u8] = include_bytes!("../tests/fixtures/luks1/aes128-cbc-plain.luks1");
+
+    type StreamDecoder = fn(&[u8]) -> CoreResult<Vec<u8>>;
+
+    fn encoded<W: std::io::Write>(mut encoder: W, plain: &[u8]) -> W {
+        encoder.write_all(plain).expect("encode");
+        encoder
+    }
+
+    #[test]
+    fn concatenated_streams_decode_to_every_stream() {
+        let first: Vec<u8> = b"first stream of the concatenation ".repeat(50);
+        let second: Vec<u8> = b"second stream, encoded separately ".repeat(70);
+        let mut expected: Vec<u8> = first.clone();
+        expected.extend_from_slice(&second);
+        let xz = |plain: &[u8]| -> Vec<u8> {
+            encoded(liblzma::write::XzEncoder::new(Vec::new(), 6), plain)
+                .finish()
+                .expect("xz finish")
+        };
+        let bz2 = |plain: &[u8]| -> Vec<u8> {
+            encoded(
+                bzip2::write::BzEncoder::new(Vec::new(), bzip2::Compression::best()),
+                plain,
+            )
+            .finish()
+            .expect("bzip2 finish")
+        };
+        let gz = |plain: &[u8]| -> Vec<u8> {
+            encoded(
+                flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best()),
+                plain,
+            )
+            .finish()
+            .expect("gzip finish")
+        };
+        let cases: [(&str, Vec<u8>, StreamDecoder); 3] = [
+            ("xz", [xz(&first), xz(&second)].concat(), decode_xz),
+            ("bzip2", [bz2(&first), bz2(&second)].concat(), decode_bzip2),
+            ("gzip", [gz(&first), gz(&second)].concat(), decode_gzip),
+        ];
+        for (label, joined, decode) in cases {
+            assert_eq!(decode(&joined).expect(label), expected, "{label}");
+        }
+    }
 
     fn ctx(bytes: &[u8]) -> DetectContext<'_> {
         DetectContext {

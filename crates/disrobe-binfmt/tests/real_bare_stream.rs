@@ -218,3 +218,137 @@ fn bomb_caps_reject_oversized_decode_per_format() {
         );
     }
 }
+
+const fn text_ratio_quota() -> ExtractionQuota {
+    ExtractionQuota {
+        max_aggregate_ratio: 1000,
+        max_per_entry_ratio: 1000,
+        ..ExtractionQuota::default_safe()
+    }
+}
+
+fn xz_stream(plain: &[u8]) -> Vec<u8> {
+    let mut encoder: liblzma::write::XzEncoder<Vec<u8>> =
+        liblzma::write::XzEncoder::new(Vec::new(), 6);
+    std::io::Write::write_all(&mut encoder, plain).expect("xz encode");
+    encoder.finish().expect("xz finish")
+}
+
+fn bzip2_stream(plain: &[u8]) -> Vec<u8> {
+    let mut encoder: bzip2::write::BzEncoder<Vec<u8>> =
+        bzip2::write::BzEncoder::new(Vec::new(), bzip2::Compression::best());
+    std::io::Write::write_all(&mut encoder, plain).expect("bzip2 encode");
+    encoder.finish().expect("bzip2 finish")
+}
+
+fn gzip_member(plain: &[u8]) -> Vec<u8> {
+    let mut encoder: flate2::write::GzEncoder<Vec<u8>> =
+        flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+    std::io::Write::write_all(&mut encoder, plain).expect("gzip encode");
+    encoder.finish().expect("gzip finish")
+}
+
+fn concatenated(first: &[u8], second: &[u8]) -> Vec<u8> {
+    let mut joined: Vec<u8> = first.to_vec();
+    joined.extend_from_slice(second);
+    joined
+}
+
+#[test]
+fn concatenated_lzip_members_all_decode() {
+    let single: Vec<u8> = load("payload.lz");
+    let bytes: Vec<u8> = concatenated(&single, &single);
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir("lzip-multi");
+    let out: PathBuf = scratch.path().to_path_buf();
+    let result: ExtractionResult =
+        extract_to(ContainerKind::Lzip, &bytes, &out).expect("extract concatenated lzip");
+    let payload: Vec<u8> = expected_payload();
+    assert_eq!(
+        single_output(&result, &out),
+        concatenated(&payload, &payload)
+    );
+}
+
+#[test]
+fn concatenated_bzip2_streams_all_decode() {
+    let payload: Vec<u8> = expected_payload();
+    let tail: &[u8] = b"a second bzip2 stream written by another encoder run\n";
+    let bytes: Vec<u8> = concatenated(&load("payload.bz2"), &bzip2_stream(tail));
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir("bz2-multi");
+    let out: PathBuf = scratch.path().to_path_buf();
+    let result: ExtractionResult =
+        extract_to(ContainerKind::Bzip2, &bytes, &out).expect("extract concatenated bz2");
+    assert_eq!(single_output(&result, &out), concatenated(&payload, tail));
+}
+
+#[test]
+fn concatenated_xz_streams_all_decode() {
+    let payload: Vec<u8> = expected_payload();
+    let (head, tail): (&[u8], &[u8]) = payload.split_at(payload.len() / 3);
+    let bytes: Vec<u8> = concatenated(&xz_stream(head), &xz_stream(tail));
+    assert_eq!(detect_container(&bytes), Some(ContainerKind::Xz));
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir("xz-multi");
+    let out: PathBuf = scratch.path().to_path_buf();
+    let result: ExtractionResult =
+        extract_to_with_quota(ContainerKind::Xz, &bytes, &out, text_ratio_quota())
+            .expect("extract concatenated xz");
+    assert_eq!(single_output(&result, &out), payload);
+}
+
+fn two_member_tar() -> (Vec<u8>, Vec<(String, Vec<u8>)>) {
+    let payload: Vec<u8> = expected_payload();
+    let members: Vec<(String, Vec<u8>)> = vec![
+        ("head.bin".to_owned(), payload),
+        (
+            "tail.txt".to_owned(),
+            b"the member stored after the split point\n".repeat(40),
+        ),
+    ];
+    let mut builder: tar::Builder<Vec<u8>> = tar::Builder::new(Vec::new());
+    for (name, body) in &members {
+        let mut header: tar::Header = tar::Header::new_gnu();
+        header.set_size(body.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, name, body.as_slice())
+            .expect("append tar member");
+    }
+    (builder.into_inner().expect("finish tar"), members)
+}
+
+#[test]
+fn compressed_tar_split_across_concatenated_streams_extracts_every_member() {
+    let (tar_bytes, members): (Vec<u8>, Vec<(String, Vec<u8>)>) = two_member_tar();
+    let (head, tail): (&[u8], &[u8]) = tar_bytes.split_at(tar_bytes.len() / 2);
+    let cases: [(ContainerKind, Vec<u8>); 3] = [
+        (
+            ContainerKind::TarGz,
+            concatenated(&gzip_member(head), &gzip_member(tail)),
+        ),
+        (
+            ContainerKind::TarBz2,
+            concatenated(&bzip2_stream(head), &bzip2_stream(tail)),
+        ),
+        (
+            ContainerKind::TarXz,
+            concatenated(&xz_stream(head), &xz_stream(tail)),
+        ),
+    ];
+    for (kind, bytes) in cases {
+        let scratch: disrobe_core::scratch::ScratchDir =
+            temp_dir(&format!("split-{}", kind.label()));
+        let out: PathBuf = scratch.path().to_path_buf();
+        let result: ExtractionResult = extract_to(kind, &bytes, &out)
+            .unwrap_or_else(|e: disrobe_binfmt::Error| panic!("{kind:?}: {e}"));
+        for (name, body) in &members {
+            let got: Vec<u8> = std::fs::read(out.join(name))
+                .unwrap_or_else(|e: std::io::Error| panic!("{kind:?}: read {name}: {e}"));
+            assert_eq!(
+                &got, body,
+                "{kind:?}: {name} differs from the archived bytes"
+            );
+        }
+        assert_eq!(result.entries.len(), members.len(), "{kind:?}");
+    }
+}

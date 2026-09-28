@@ -4,28 +4,29 @@ use std::sync::OnceLock;
 
 use disrobe_binfmt::containers::{
     ApfsContainer, AppImageLayout, ArArchive, BlazorBoot, BtrfsSendHeader, BtrfsSendReplay,
-    BunOffsets, BunStandalone, CramfsWalk, CythonIdentity, CythonModule, DmgSummary, DotnetBundle,
-    ElfOverlay, ElfOverlayCarve, ErofsSuperblock, EszipArchive, Ext4Walk, FatBpb, FatVolume,
-    FirmwareKind, FlatpakExtraction, FvExtraction, FvHeader, GptTable, HfsVolume, InnoSetupInfo,
-    InstallShieldHeader, Jffs2Endian, Jffs2Walk, KolyTrailer, MbrTable, MinidumpFile,
-    MinixSuperblock, MinixWalk, MsiExtractable, MsiSummary, MsixManifest, NsisHeader, NtfsVolume,
-    NtfsWalk, OciManifest, PartcloneImage, QnxKind, QnxStartup, RomfsHeader, RomfsWalk,
-    SparseHeader, SquashfsSuperblock, SquashfsWalk, SquirrelLayout, StuffItKind, UbifsWalk,
-    VhdFooter, VhdImage, VhdxImage, WebcilHeader, WimArchive, XarArchive, Yaffs2Endian, Yaffs2Walk,
-    cab_uses_lzms, carve_elf_overlay, carve_wim_resources, detect_apfs, detect_ar,
-    detect_blazor_boot, detect_btrfs_send, detect_bun, detect_cramfs, detect_cython, detect_dmg,
-    detect_dotnet_bundle, detect_elf_overlay, detect_erofs, detect_eszip, detect_ext4, detect_fat,
-    detect_firmware, detect_flatpak_bundle, detect_gzip, detect_hfsplus, detect_innosetup,
-    detect_installshield, detect_iso, detect_jffs2, detect_minidump, detect_minixfs, detect_nsis,
-    detect_ntfs, detect_par2, detect_partclone, detect_qnx, detect_romfs, detect_snap,
-    detect_sparse, detect_squirrel, detect_stuffit, detect_ubi, detect_ubifs, detect_uefi_fv,
-    detect_unityfs, detect_xar, detect_yaffs2, elf_image_end, extract_cab_lzms,
-    extract_flatpak_bundle, extract_uefi_fv, locate_embedded_nupkg, locate_hfsplus_volumes,
-    minidump_extent, parse_apfs, parse_appimage, parse_appx_manifest, parse_ar, parse_blazor_boot,
-    parse_bpb, parse_bun, parse_docker_manifest, parse_dotnet_bundle, parse_eszip, parse_fv_header,
-    parse_gpt, parse_hfsplus, parse_koly, parse_lzop, parse_mbr, parse_minidump, parse_msi_minimal,
-    parse_oci_index, parse_oci_manifest, parse_reshdr_at, parse_squashfs_superblock, parse_vhd,
-    parse_vhd_footer, parse_vhdx, parse_webcil_header, parse_wim, parse_xar, qnx_parse_startup,
+    BunOffsets, BunStandalone, CabArchive, CabMember, CabRefusal, CramfsWalk, CythonIdentity,
+    CythonModule, DmgSummary, DotnetBundle, ElfOverlay, ElfOverlayCarve, ErofsSuperblock,
+    EszipArchive, Ext4Walk, FatBpb, FatVolume, FirmwareKind, FlatpakExtraction, FvExtraction,
+    FvHeader, GptTable, HfsVolume, InnoSetupInfo, InstallShieldHeader, Jffs2Endian, Jffs2Walk,
+    KolyTrailer, MbrTable, MinidumpFile, MinixSuperblock, MinixWalk, MsiExtractable, MsiSummary,
+    MsixManifest, NsisHeader, NtfsVolume, NtfsWalk, OciManifest, PartcloneImage, QnxKind,
+    QnxStartup, RomfsHeader, RomfsWalk, SparseHeader, SquashfsSuperblock, SquashfsWalk,
+    SquirrelLayout, StuffItKind, UbifsWalk, VhdFooter, VhdImage, VhdxImage, WebcilHeader,
+    WimArchive, XarArchive, Yaffs2Endian, Yaffs2Walk, carve_elf_overlay, carve_wim_resources,
+    detect_apfs, detect_ar, detect_blazor_boot, detect_btrfs_send, detect_bun, detect_cramfs,
+    detect_cython, detect_dmg, detect_dotnet_bundle, detect_elf_overlay, detect_erofs,
+    detect_eszip, detect_ext4, detect_fat, detect_firmware, detect_flatpak_bundle, detect_gzip,
+    detect_hfsplus, detect_innosetup, detect_installshield, detect_iso, detect_jffs2,
+    detect_minidump, detect_minixfs, detect_nsis, detect_ntfs, detect_par2, detect_partclone,
+    detect_qnx, detect_romfs, detect_snap, detect_sparse, detect_squirrel, detect_stuffit,
+    detect_ubi, detect_ubifs, detect_uefi_fv, detect_unityfs, detect_xar, detect_yaffs2,
+    elf_image_end, extract_flatpak_bundle, extract_uefi_fv, locate_embedded_nupkg,
+    locate_hfsplus_volumes, minidump_extent, parse_apfs, parse_appimage, parse_appx_manifest,
+    parse_ar, parse_blazor_boot, parse_bpb, parse_bun, parse_cab, parse_docker_manifest,
+    parse_dotnet_bundle, parse_eszip, parse_fv_header, parse_gpt, parse_hfsplus, parse_koly,
+    parse_lzop, parse_mbr, parse_minidump, parse_msi_minimal, parse_oci_index, parse_oci_manifest,
+    parse_reshdr_at, parse_squashfs_superblock, parse_vhd, parse_vhd_footer, parse_vhdx,
+    parse_webcil_header, parse_wim, parse_xar, qnx_parse_startup, read_cab_members,
     read_msi_extractable, reconstruct_image, reconstruct_partclone, recover_cython,
     replay_btrfs_send, unsparse, unwrap_webcil, vhd_materialize_logical_disk,
     vhdx_materialize_logical_disk, walk_cramfs, walk_ext4, walk_fat, walk_installshield,
@@ -991,6 +992,23 @@ impl Hits {
     }
 }
 
+fn read_every_cab_member(bytes: &[u8]) -> Result<Vec<usize>> {
+    let archive: CabArchive = parse_cab(bytes)?;
+    let mut sizes: Vec<usize> = Vec::new();
+    read_cab_members(
+        bytes,
+        &archive,
+        WALK_CAP,
+        |_: &CabMember, outcome: std::result::Result<&[u8], CabRefusal>| {
+            if let Ok(buf) = outcome {
+                sizes.push(buf.len());
+            }
+            Ok(())
+        },
+    )?;
+    Ok(sizes)
+}
+
 fn probe_detectors(bytes: &[u8]) -> Hits {
     let mut hits: Hits = Hits::default();
     hits.record(detect_apfs(bytes));
@@ -1101,8 +1119,7 @@ fn probe_container_parsers(bytes: &[u8]) -> Hits {
     hits.record(unwrap_webcil(bytes));
     hits.record(replay_btrfs_send(bytes, WALK_CAP));
     hits.record(parse_bun(bytes));
-    hits.record(cab_uses_lzms(bytes));
-    hits.record(extract_cab_lzms(bytes, WALK_CAP));
+    hits.record(read_every_cab_member(bytes));
     hits.record(walk_cramfs(bytes, WALK_CAP));
     hits.record(recover_cython(bytes));
     hits.record(parse_koly(bytes));
