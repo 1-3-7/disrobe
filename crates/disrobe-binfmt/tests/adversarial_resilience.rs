@@ -6,7 +6,7 @@ use disrobe_binfmt::containers::fat::{detect_fat, walk_fat};
 use disrobe_binfmt::containers::vhd::parse_vhd;
 use disrobe_binfmt::containers::vhdx::parse_vhdx;
 use disrobe_binfmt::containers::wim::parse_wim_header;
-use disrobe_binfmt::{ContainerKind, Error, detect_container, extract_to};
+use disrobe_binfmt::{ContainerKind, detect_container, extract_to};
 
 const BS: usize = 1024;
 const INODE_SIZE: usize = 128;
@@ -98,17 +98,21 @@ fn build_ext4_with_file_extent(logical_block: u32) -> Vec<u8> {
 }
 
 #[test]
-fn ext4_extent_logical_offset_bomb_is_rejected_not_oom() {
+fn ext4_extent_logical_offset_bomb_is_refused_not_oom() {
     let cap: u64 = 64 * 1024 * 1024;
     let image: Vec<u8> = build_ext4_with_file_extent(0x1000_0000);
-    let err: Error = walk_ext4(&image, cap)
-        .expect_err("256 GiB logical offset over a 64 MiB cap must be rejected, not resized");
-    let Error::Ext4(reason) = err else {
-        panic!("logical-offset bomb must fail as Error::Ext4, got {err:?}");
-    };
-    assert_eq!(
-        reason, "ext4 extent logical offset exceeds total cap",
-        "the rejection must name the logical-offset-over-cap guard, not some unrelated parse failure"
+    let walk = walk_ext4(&image, cap).expect("one refused inode must not fail the whole image");
+    assert!(
+        walk.files.iter().all(|f| f.path != "bomb.bin"),
+        "a 256 GiB logical offset over a 64 MiB cap must be refused, not resized"
+    );
+    assert!(
+        walk.refusals.iter().any(
+            |refusal: &String| refusal.starts_with("ext4-inode `bomb.bin`")
+                && refusal.ends_with("ext4 extent logical offset exceeds total cap")
+        ),
+        "the refusal must name the file and the logical-offset-over-cap guard: {:?}",
+        walk.refusals
     );
 }
 

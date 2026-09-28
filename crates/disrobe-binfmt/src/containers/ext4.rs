@@ -46,6 +46,7 @@ pub struct Ext4File {
 pub struct Ext4Walk {
     pub summary: Ext4SuperblockSummary,
     pub files: Vec<Ext4File>,
+    pub refusals: Vec<String>,
 }
 
 pub fn walk_ext4(bytes: &[u8], max_total: u64) -> Result<Ext4Walk> {
@@ -57,20 +58,47 @@ pub fn walk_ext4(bytes: &[u8], max_total: u64) -> Result<Ext4Walk> {
     let mut total: u64 = 0;
     let mut stack: Vec<(u32, String, usize)> = vec![(EXT4_ROOT_INODE, String::new(), 0)];
     let mut visited: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+    let mut refusals: Vec<String> = Vec::new();
     while let Some((ino, prefix, depth)) = stack.pop() {
-        if depth > MAX_EXT4_DEPTH || files.len() > MAX_EXT4_FILES {
-            break;
-        }
-        if !visited.insert(ino) {
+        if depth > MAX_EXT4_DEPTH {
+            refusals.push(format!(
+                "ext4-depth-cap: `{prefix}` lies deeper than {MAX_EXT4_DEPTH} directories and was not walked"
+            ));
             continue;
         }
-        let inode: Ext4Inode = read_inode(bytes, &geometry, ino)?;
+        if files.len() >= MAX_EXT4_FILES {
+            refusals.push(format!(
+                "ext4-file-cap: the walk stopped at {MAX_EXT4_FILES} files; {} queued paths were not read",
+                stack.len().saturating_add(1)
+            ));
+            break;
+        }
+        let inode: Ext4Inode = match read_inode(bytes, &geometry, ino) {
+            Ok(inode) => inode,
+            Err(error) => {
+                refusals.push(format!("ext4-inode `{prefix}` (inode {ino}): {error}"));
+                continue;
+            }
+        };
         match inode.mode & S_IFMT {
             S_IFDIR => {
-                read_directory(bytes, &geometry, &inode, &prefix, depth, &mut stack)?;
+                if !visited.insert(ino) {
+                    continue;
+                }
+                if let Err(error) =
+                    read_directory(bytes, &geometry, &inode, &prefix, depth, &mut stack)
+                {
+                    refusals.push(format!("ext4-directory `{prefix}` (inode {ino}): {error}"));
+                }
             }
             S_IFREG => {
-                let data: Vec<u8> = read_inode_data(bytes, &geometry, &inode, max_total)?;
+                let data: Vec<u8> = match read_inode_data(bytes, &geometry, &inode, max_total) {
+                    Ok(data) => data,
+                    Err(error) => {
+                        refusals.push(format!("ext4-inode `{prefix}` (inode {ino}): {error}"));
+                        continue;
+                    }
+                };
                 total = total.saturating_add(data.len() as u64);
                 if total > max_total {
                     return Err(Error::Ext4(format!(
@@ -85,7 +113,14 @@ pub fn walk_ext4(bytes: &[u8], max_total: u64) -> Result<Ext4Walk> {
                 });
             }
             S_IFLNK => {
-                let target: Vec<u8> = read_symlink_target(bytes, &geometry, &inode, max_total)?;
+                let target: Vec<u8> = match read_symlink_target(bytes, &geometry, &inode, max_total)
+                {
+                    Ok(target) => target,
+                    Err(error) => {
+                        refusals.push(format!("ext4-inode `{prefix}` (inode {ino}): {error}"));
+                        continue;
+                    }
+                };
                 files.push(Ext4File {
                     path: prefix,
                     data: target,
@@ -96,7 +131,11 @@ pub fn walk_ext4(bytes: &[u8], max_total: u64) -> Result<Ext4Walk> {
             _ => {}
         }
     }
-    Ok(Ext4Walk { summary, files })
+    Ok(Ext4Walk {
+        summary,
+        files,
+        refusals,
+    })
 }
 
 fn read_geometry(bytes: &[u8]) -> Result<Ext4Geometry> {
@@ -493,6 +532,11 @@ fn dir_entry(out: &mut Vec<u8>, ino: u32, name: &str, file_type: u8, rec_len: u1
 
 #[cfg(test)]
 pub(crate) fn build_real_ext4(file_name: &str, file_body: &[u8]) -> Vec<u8> {
+    build_ext4_with_links(&[file_name], file_body)
+}
+
+#[cfg(test)]
+pub(crate) fn build_ext4_with_links(file_names: &[&str], file_body: &[u8]) -> Vec<u8> {
     let total_blocks: usize = 16;
     let mut image: Vec<u8> = vec![0u8; total_blocks * BS];
 
@@ -526,9 +570,15 @@ pub(crate) fn build_real_ext4(file_name: &str, file_body: &[u8]) -> Vec<u8> {
     let mut dir: Vec<u8> = Vec::new();
     dir_entry(&mut dir, EXT4_ROOT_INODE, ".", 2, 12);
     dir_entry(&mut dir, EXT4_ROOT_INODE, "..", 2, 12);
-    let used: u16 = (12 + 12 + 8 + file_name.len()).next_multiple_of(4) as u16 - 24;
-    let remaining: u16 = BS as u16 - 24;
-    dir_entry(&mut dir, file_ino, file_name, 1, remaining.max(used));
+    let Some((last, leading)): Option<(&&str, &[&str])> = file_names.split_last() else {
+        return Vec::new();
+    };
+    for file_name in leading {
+        let rec_len: u16 = (8 + file_name.len()).next_multiple_of(4) as u16;
+        dir_entry(&mut dir, file_ino, file_name, 1, rec_len);
+    }
+    let remaining: u16 = BS as u16 - dir.len() as u16;
+    dir_entry(&mut dir, file_ino, last, 1, remaining);
     let root_data_off: usize = root_data_block as usize * BS;
     image[root_data_off..root_data_off + dir.len().min(BS)]
         .copy_from_slice(&dir[..dir.len().min(BS)]);
@@ -565,6 +615,26 @@ mod tests {
             desc_size: 32,
             first_data_block: 1,
         }
+    }
+
+    #[test]
+    fn every_name_of_a_hard_linked_file_is_walked() {
+        let image: Vec<u8> = build_ext4_with_links(&["first.txt", "second.txt"], b"shared");
+        let walk: Ext4Walk = walk_ext4(&image, u64::MAX).expect("image walks");
+        let mut named: Vec<(&str, &[u8])> = walk
+            .files
+            .iter()
+            .map(|file: &Ext4File| (file.path.as_str(), file.data.as_slice()))
+            .collect();
+        named.sort_unstable();
+        assert_eq!(
+            named,
+            vec![
+                ("first.txt", b"shared".as_slice()),
+                ("second.txt", b"shared".as_slice())
+            ]
+        );
+        assert!(walk.refusals.is_empty(), "{:?}", walk.refusals);
     }
 
     #[test]

@@ -631,7 +631,7 @@ fn extract_ext4(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<
     let mut guard: QuotaGuard = QuotaGuard::new(quota);
     let mut entries_out: Vec<ExtractedEntry> = Vec::with_capacity(walk.files.len());
     let mut encoding: BTreeMap<String, EntryCompression> = BTreeMap::new();
-    let mut violations: Vec<String> = Vec::new();
+    let mut violations: Vec<String> = walk.refusals.clone();
     for file in &walk.files {
         if file.is_symlink {
             continue;
