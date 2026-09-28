@@ -72,7 +72,9 @@ pub(crate) fn lzma_compress(input: &[u8]) -> Vec<u8> {
 
 #[inline]
 pub(crate) fn lzma_decompress(input: &[u8]) -> Result<Vec<u8>> {
-    let decoder: XzDecoder<&[u8]> = XzDecoder::new(input);
+    let stream: Stream = Stream::new_stream_decoder(LZMA_MEMLIMIT, 0)
+        .map_err(|e: liblzma::stream::Error| Error::Lzma(format!("{e}")))?;
+    let decoder: XzDecoder<&[u8]> = XzDecoder::new_stream(input, stream);
     bounded_read_to_end(decoder)
         .map_err(|e: std::io::Error| Error::Lzma(format!("{e}")))?
         .ok_or(Error::DecompressionTooLarge {
@@ -80,9 +82,11 @@ pub(crate) fn lzma_decompress(input: &[u8]) -> Result<Vec<u8>> {
         })
 }
 
+const LZMA_MEMLIMIT: u64 = 256 * 1024 * 1024;
+
 #[inline]
 pub(crate) fn lzma_alone_decompress(input: &[u8]) -> Result<Vec<u8>> {
-    let stream: Stream = Stream::new_lzma_decoder(u64::MAX)
+    let stream: Stream = Stream::new_lzma_decoder(LZMA_MEMLIMIT)
         .map_err(|e: liblzma::stream::Error| Error::Lzma(format!("{e}")))?;
     let decoder: XzDecoder<&[u8]> = XzDecoder::new_stream(input, stream);
     bounded_read_to_end(decoder)
@@ -367,6 +371,24 @@ pub(crate) fn b32_decode(input: &[u8]) -> Result<Vec<u8>> {
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    fn lzma_alone_header_with_dictionary(dictionary: u32) -> Vec<u8> {
+        let mut header: Vec<u8> = vec![0x5d];
+        header.extend_from_slice(&dictionary.to_le_bytes());
+        header.extend_from_slice(&u64::MAX.to_le_bytes());
+        header.extend_from_slice(&[0u8; 16]);
+        header
+    }
+
+    #[test]
+    fn an_lzma_header_declaring_a_4_gib_dictionary_is_refused_under_the_memory_limit() {
+        let bomb: Vec<u8> = lzma_alone_header_with_dictionary(u32::MAX);
+        assert!(
+            lzma_alone_decompress(&bomb).is_err(),
+            "the decoder must refuse a dictionary above LZMA_MEMLIMIT instead of allocating it"
+        );
+        assert!(u64::from(u32::MAX) > LZMA_MEMLIMIT);
+    }
 
     #[test]
     fn bounded_read_accepts_output_within_ceiling() {
