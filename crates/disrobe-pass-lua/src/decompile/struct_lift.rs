@@ -1,6 +1,9 @@
 mod structurer;
 
-use crate::decompile::lift::{LiftedProto, fmt_number, kconst, kstr};
+use crate::decompile::lift::{
+    LiftedProto, SetListBase, closure_capture_ops, fmt_number, kconst, kstr, loadnil_last,
+    resolve_upvalue_names, setlist_base, upvalue_name,
+};
 use crate::decompile::luau_lift::{
     LStmt, LiftedStmt, MAX_RENDERED_STRUCTURE_BYTES, RenderedBlocks, render_blocks,
 };
@@ -24,12 +27,14 @@ struct StructState {
     suppress_local: Vec<(usize, u32)>,
     iter_call: Option<(u32, String)>,
     method_regs: std::collections::BTreeSet<u32>,
-    lifted_children: std::collections::BTreeMap<usize, Option<LiftedProto>>,
+    lifted_children: std::collections::BTreeMap<(usize, Vec<String>), Option<LiftedProto>>,
     inlined_closure_bytes: usize,
+    upvalues: Vec<String>,
+    pinned: std::collections::BTreeSet<u32>,
 }
 
 impl StructState {
-    fn new(stack: u8) -> Self {
+    fn new(stack: u8, upvalues: Vec<String>) -> Self {
         let size: usize = usize::from(stack).max(2);
         Self {
             regs: vec![String::new(); size],
@@ -44,7 +49,22 @@ impl StructState {
             method_regs: std::collections::BTreeSet::new(),
             lifted_children: std::collections::BTreeMap::new(),
             inlined_closure_bytes: 0,
+            upvalues,
+            pinned: std::collections::BTreeSet::new(),
         }
+    }
+
+    #[inline]
+    fn upval(&self, idx: u32) -> String {
+        upvalue_name(&self.upvalues, idx)
+    }
+
+    fn temp(&self, slot: u32) -> String {
+        let mut name: String = format!("v{slot}");
+        while self.upvalues.contains(&name) {
+            name.push('_');
+        }
+        name
     }
 
     #[inline]
@@ -158,6 +178,16 @@ impl LocalNames {
 
 #[must_use]
 pub fn lift_structured(p: &LuaProto, dialect: LuaDialect, depth: usize) -> Option<LiftedProto> {
+    lift_structured_captured(p, dialect, depth, &[])
+}
+
+#[must_use]
+fn lift_structured_captured(
+    p: &LuaProto,
+    dialect: LuaDialect,
+    depth: usize,
+    captured: &[String],
+) -> Option<LiftedProto> {
     if depth > MAX_STRUCT_DEPTH {
         return None;
     }
@@ -168,7 +198,8 @@ pub fn lift_structured(p: &LuaProto, dialect: LuaDialect, depth: usize) -> Optio
         return None;
     }
     let names: LocalNames = LocalNames::build(&p.locals, p.code.len(), u32::from(p.num_params));
-    let mut state: StructState = StructState::new(p.max_stack_size);
+    let mut state: StructState =
+        StructState::new(p.max_stack_size, resolve_upvalue_names(p, captured));
     for i in 0..u32::from(p.num_params) {
         let name: String = names
             .name_at(0, i)
@@ -519,18 +550,16 @@ fn lower(
                 pc += 1;
             }
             Op::LoadNil => {
-                let span: u32 = if matches!(dialect, LuaDialect::Lua54) {
-                    d.a + d.b
-                } else {
-                    d.b
-                };
-                for r in d.a..=span {
+                for r in d.a..=loadnil_last(&d, dialect) {
                     define(state, names, live, p, r, "nil".to_owned());
                 }
             }
-            Op::GetUpval => define(state, names, live, p, d.a, upval_name(p, d.b)),
+            Op::GetUpval => {
+                let name: String = state.upval(d.b);
+                define(state, names, live, p, d.a, name);
+            }
             Op::SetUpval => {
-                let name: String = upval_name(p, d.b);
+                let name: String = state.upval(d.b);
                 let val: String = state.reg(d.a);
                 state.push_raw(format!("{name} = {val}"));
             }
@@ -541,13 +570,13 @@ fn lower(
                 state.push_raw(format!("{name} = {val}"));
             }
             Op::GetTabUp => {
-                let up: String = upval_name(p, d.b);
+                let up: String = state.upval(d.b);
                 let (field, raw_key): (Option<String>, String) = tabup_key(state, p, &d, dialect);
                 let expr: String = env_index(&up, field.as_deref(), &raw_key);
                 define(state, names, live, p, d.a, expr);
             }
             Op::SetTabUp => {
-                let up: String = upval_name(p, d.a);
+                let up: String = state.upval(d.a);
                 let (field, raw_key, val): (Option<String>, String, String) =
                     settabup_operands(state, p, &d, dialect);
                 let lhs: String = env_index(&up, field.as_deref(), &raw_key);
@@ -823,7 +852,17 @@ fn lower(
                 }
             }
             Op::Call => emit_call(state, names, live, p, &d, false, dialect),
-            Op::TailCall => emit_call(state, names, live, p, &d, true, dialect),
+            Op::TailCall => {
+                emit_call(state, names, live, p, &d, true, dialect);
+                let companion: Option<Decoded> =
+                    p.code.get(pc + 1).map(|r: &u32| decode(*r, dialect));
+                if companion
+                    .is_some_and(|ret: Decoded| ret.op == Op::Return && ret.a == d.a && ret.b == 0)
+                    && !live.is_jump_target(pc + 1)
+                {
+                    pc += 1;
+                }
+            }
             Op::Return => {
                 let is_last: bool = pc + 1 == n;
                 if !(is_last && d.b == 1) {
@@ -862,9 +901,20 @@ fn lower(
                 }
             }
             Op::SetList => emit_setlist(state, p, &d, &mut pc, dialect),
-            Op::Close => {}
+            Op::Close => {
+                state.pinned.retain(|slot: &u32| *slot < d.a);
+            }
             Op::Tbc => {}
-            Op::Closure => emit_closure(state, p, &d, dialect, depth)?,
+            Op::Closure => {
+                let captures: Vec<Decoded> = closure_capture_ops(p, &d, pc, dialect);
+                let resume_pc: usize = pc + 1 + captures.len();
+                let captured: Vec<String> = captures
+                    .iter()
+                    .map(|op: &Decoded| capture_name(state, names, op, &d, pc, resume_pc))
+                    .collect();
+                emit_closure(state, p, &d, dialect, depth, &captured)?;
+                pc += captures.len();
+            }
             Op::Vararg => define(state, names, live, p, d.a, "...".to_owned()),
             Op::VarargPrep | Op::ExtraArg => {}
             Op::Unknown => {
@@ -914,10 +964,14 @@ fn define(
         state.set_reg(slot, name);
         return;
     }
+    if state.pinned.contains(&slot) {
+        assign_pinned(state, slot, &value);
+        return;
+    }
     let materialize: bool =
-        live.should_materialize(state.pc, slot) || value_uses_self(&value, slot);
+        live.should_materialize(state.pc, slot) || contains_ident(&value, &state.temp(slot));
     if materialize && !value.is_empty() {
-        let tmp: String = format!("v{slot}");
+        let tmp: String = state.temp(slot);
         if state.is_defined(slot) {
             state.push_raw(format!("{tmp} = {value}"));
         } else {
@@ -928,6 +982,46 @@ fn define(
     } else {
         state.set_reg(slot, value);
     }
+}
+
+fn assign_pinned(state: &mut StructState, slot: u32, value: &str) {
+    let var: String = state.reg(slot);
+    if value != var {
+        state.push_raw(format!("{var} = {value}"));
+    }
+}
+
+fn capture_name(
+    state: &mut StructState,
+    names: &LocalNames,
+    op: &Decoded,
+    closure: &Decoded,
+    pc: usize,
+    resume_pc: usize,
+) -> String {
+    if op.op == Op::GetUpval {
+        return state.upval(op.b);
+    }
+    let slot: u32 = op.b;
+    let debug_name: Option<&str> = names
+        .name_at(pc, slot)
+        .or_else(|| names.name_at(resume_pc, slot).filter(|_| slot == closure.a));
+    if let Some(name) = debug_name {
+        return name.to_owned();
+    }
+    let current: String = state.regs.get(slot as usize).cloned().unwrap_or_default();
+    if !(state.is_defined(slot) && is_ident(&current)) {
+        let var: String = state.temp(slot);
+        if current.is_empty() || slot == closure.a {
+            state.push_raw(format!("local {var}"));
+        } else {
+            state.push_raw(format!("local {var} = {current}"));
+        }
+        state.mark_defined(slot);
+        state.set_reg(slot, var);
+    }
+    state.pinned.insert(slot);
+    state.reg(slot)
 }
 
 fn define_table(
@@ -965,12 +1059,6 @@ fn define_table(
 #[inline]
 fn set_temp(state: &mut StructState, slot: u32, value: String) {
     state.set_reg(slot, value);
-}
-
-#[inline]
-fn value_uses_self(value: &str, slot: u32) -> bool {
-    let name: String = format!("v{slot}");
-    contains_ident(value, &name)
 }
 
 #[must_use]
@@ -1260,7 +1348,7 @@ fn define_at_merge(
         state.suppress_local.push((merge_pc, slot));
         return;
     }
-    let tmp: String = format!("v{slot}");
+    let tmp: String = state.temp(slot);
     state.push_raw(format!("local {tmp} = {value}"));
     state.mark_defined(slot);
     state.set_reg(slot, tmp);
@@ -1446,7 +1534,7 @@ fn single_value_text(
         Op::LoadNil => "nil".to_owned(),
         Op::LoadI => d.sbx.to_string(),
         Op::GetGlobal => kstr(p, d.bx, dialect),
-        Op::GetUpval => upval_name(p, d.b),
+        Op::GetUpval => state.upval(d.b),
         _ => state.reg(d.a),
     }
 }
@@ -1461,7 +1549,12 @@ fn emit_call(
     tail: bool,
     dialect: LuaDialect,
 ) {
-    let func: String = state.reg(d.a);
+    let callee: String = state.reg(d.a);
+    let func: String = if callee.starts_with("function(") {
+        format!("({callee})")
+    } else {
+        callee
+    };
     let is_method: bool = state.method_regs.remove(&d.a);
     let first_arg: u32 = if is_method { 2 } else { 1 };
     let args: Vec<String> = if d.b == 0 {
@@ -1494,8 +1587,10 @@ fn emit_call(
             state.push_raw(format!("local {name} = {call}"));
             state.mark_defined(dest);
             state.set_reg(dest, name);
+        } else if state.pinned.contains(&dest) {
+            assign_pinned(state, dest, &call);
         } else if live.should_materialize(state.pc, dest) {
-            let tmp: String = format!("v{dest}");
+            let tmp: String = state.temp(dest);
             state.push_raw(format!("local {tmp} = {call}"));
             state.mark_defined(dest);
             state.set_reg(dest, tmp);
@@ -1510,7 +1605,7 @@ fn emit_call(
                 names
                     .name_at(state.pc + 1, slot)
                     .or_else(|| names.name_at(state.pc, slot))
-                    .map_or_else(|| format!("v{slot}"), str::to_owned)
+                    .map_or_else(|| state.temp(slot), str::to_owned)
             })
             .collect();
         state.push_raw(format!("local {} = {call}", targets.join(", ")));
@@ -1985,8 +2080,6 @@ fn stmt_references(stmt: &LStmt, name: &str) -> bool {
     }
 }
 
-const LFIELDS_PER_FLUSH: u32 = 50;
-
 fn emit_setlist(
     state: &mut StructState,
     p: &LuaProto,
@@ -1997,9 +2090,14 @@ fn emit_setlist(
     let table: String = state.reg(d.a);
     let count: u32 = d.b;
     let setlist_pc: usize = *pc;
-    if matches!(dialect, LuaDialect::Lua54) && d.k {
-        *pc += 1;
-    }
+    let Some(base): Option<SetListBase> = setlist_base(p, d, setlist_pc, dialect) else {
+        state.fully_structured = false;
+        state.warnings.push(format!(
+            "SETLIST at pc={setlist_pc} has no readable block operand"
+        ));
+        return;
+    };
+    *pc += base.extra_words;
     if count == 0 {
         if is_fresh_vararg_table(p, d, setlist_pc, dialect) {
             state.push_raw(format!("{table} = {{...}}"));
@@ -2011,11 +2109,9 @@ fn emit_setlist(
             .push("vararg/multi-value table elements not fully recovered".to_owned());
         return;
     }
-    let block: u32 = d.c.max(1);
-    let base_index: u32 = (block - 1).saturating_mul(LFIELDS_PER_FLUSH);
     for i in 1..=count {
         let elem: String = state.reg(d.a + i);
-        let index: u32 = base_index + i;
+        let index: u64 = base.items_before + u64::from(i);
         state.push_raw(format!("{table}[{index}]{SETLIST_TAG} = {elem}"));
     }
 }
@@ -2074,14 +2170,15 @@ fn emit_closure(
     d: &Decoded,
     dialect: LuaDialect,
     depth: usize,
+    captured: &[String],
 ) -> Option<()> {
     let child_idx: usize = d.bx as usize;
     match p.protos.get(child_idx) {
         Some(child) => {
             let lifted: Option<LiftedProto> = state
                 .lifted_children
-                .entry(child_idx)
-                .or_insert_with(|| lift_structured(child, dialect, depth + 1))
+                .entry((child_idx, captured.to_vec()))
+                .or_insert_with(|| lift_structured_captured(child, dialect, depth + 1, captured))
                 .clone();
             let inner: LiftedProto = match lifted {
                 Some(l) => l,
@@ -2116,7 +2213,12 @@ fn emit_closure(
                 block.push('\n');
             }
             block.push_str("end");
-            state.set_reg(d.a, block);
+            if state.pinned.contains(&d.a) {
+                let var: String = state.reg(d.a);
+                state.push_raw(format!("{var} = {block}"));
+            } else {
+                state.set_reg(d.a, block);
+            }
             state.mark_defined(d.a);
             state.warnings.extend(inner.warnings);
             if !inner.fully_structured {
@@ -2173,15 +2275,6 @@ fn next_is_jmp(p: &LuaProto, pc: usize, dialect: LuaDialect) -> bool {
         .get(pc + 1)
         .map(|raw2: &u32| decode(*raw2, dialect).op == Op::Jmp)
         .unwrap_or(false)
-}
-
-#[inline]
-fn upval_name(p: &LuaProto, idx: u32) -> String {
-    p.upvalues
-        .get(idx as usize)
-        .map(|u| u.name.clone())
-        .filter(|s: &String| !s.is_empty())
-        .unwrap_or_else(|| format!("upval_{idx}"))
 }
 
 #[inline]

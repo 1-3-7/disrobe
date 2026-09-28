@@ -158,7 +158,14 @@ fn read_proto(
         let name: String = read_string(c, size_size_t)?.unwrap_or_default();
         upvalues.push(LuaUpvalueName { name });
     }
-    let _: u8 = nups;
+    if upvalues.len() < usize::from(nups) {
+        upvalues.resize(
+            usize::from(nups),
+            LuaUpvalueName {
+                name: String::new(),
+            },
+        );
+    }
 
     Ok(LuaProto {
         source,

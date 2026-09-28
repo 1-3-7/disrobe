@@ -20,16 +20,16 @@ impl Dialect {
 
     const fn interpreters(self) -> &'static [&'static str] {
         match self {
-            Self::Lua51 => &["lua5.1", "lua51", "lua"],
-            Self::Lua54 => &["lua5.4", "lua54", "lua"],
+            Self::Lua51 => &["lua5.1", "lua5.1.exe", "lua51", "lua"],
+            Self::Lua54 => &["lua5.4", "lua5.4.exe", "lua54", "lua"],
             Self::LuaJit => &["luajit"],
         }
     }
 
     const fn compilers(self) -> &'static [&'static str] {
         match self {
-            Self::Lua51 => &["luac5.1", "luac51", "luac"],
-            Self::Lua54 => &["luac5.4", "luac54", "luac"],
+            Self::Lua51 => &["luac5.1", "luac5.1.exe", "luac51", "luac"],
+            Self::Lua54 => &["luac5.4", "luac5.4.exe", "luac54", "luac"],
             Self::LuaJit => &[],
         }
     }

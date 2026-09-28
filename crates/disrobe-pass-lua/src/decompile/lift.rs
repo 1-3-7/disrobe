@@ -1,11 +1,14 @@
 use std::collections::BTreeMap;
 
 use crate::decompile::opcode::{Decoded, Op, decode, is_k, rk_index};
-use crate::reader::common::{LuaChunk, LuaConstant, LuaDialect, LuaLocal, LuaProto};
+use crate::reader::common::{
+    LuaChunk, LuaConstant, LuaDialect, LuaLocal, LuaProto, LuaUpvalueName,
+};
 
 const MAX_LIFT_DEPTH: usize = 200;
 pub(crate) const MAX_INLINED_CLOSURE_BYTES: usize = 8 << 20;
-const LFIELDS_PER_FLUSH: u32 = 50;
+const LFIELDS_PER_FLUSH: u64 = 50;
+const LUA54_SETLIST_EXTRA_SCALE: u64 = 256;
 
 #[derive(Debug, Clone, Default)]
 struct LocalScopes {
@@ -73,12 +76,13 @@ struct LiftState {
     scopes: LocalScopes,
     register_alias_tracker: BTreeMap<u32, String>,
     pc: usize,
-    lifted_children: BTreeMap<usize, LiftedProto>,
+    lifted_children: BTreeMap<(usize, Vec<String>), LiftedProto>,
     inlined_closure_bytes: usize,
+    upvalues: Vec<String>,
 }
 
 impl LiftState {
-    fn new(stack: u8, dialect: LuaDialect) -> Self {
+    fn new(stack: u8, dialect: LuaDialect, upvalues: Vec<String>) -> Self {
         Self {
             regs: vec![String::new(); usize::from(stack).max(2)],
             lines: Vec::new(),
@@ -90,7 +94,13 @@ impl LiftState {
             pc: 0,
             lifted_children: BTreeMap::new(),
             inlined_closure_bytes: 0,
+            upvalues,
         }
+    }
+
+    #[inline]
+    fn upval(&self, idx: u32) -> String {
+        upvalue_name(&self.upvalues, idx)
     }
 
     #[inline]
@@ -374,7 +384,141 @@ pub fn lift_proto(p: &LuaProto, depth: usize) -> LiftedProto {
 }
 
 #[must_use]
+pub(crate) fn resolve_upvalue_names(p: &LuaProto, captured: &[String]) -> Vec<String> {
+    let count: usize = p.upvalues.len().max(captured.len());
+    (0..count)
+        .map(|i: usize| {
+            captured
+                .get(i)
+                .filter(|name: &&String| is_ident(name))
+                .cloned()
+                .or_else(|| {
+                    p.upvalues
+                        .get(i)
+                        .map(|u: &LuaUpvalueName| u.name.clone())
+                        .filter(|name: &String| is_ident(name))
+                })
+                .unwrap_or_else(|| format!("upval_{i}"))
+        })
+        .collect()
+}
+
+#[must_use]
+pub(crate) fn upvalue_name(names: &[String], idx: u32) -> String {
+    names
+        .get(idx as usize)
+        .cloned()
+        .unwrap_or_else(|| format!("upval_{idx}"))
+}
+
+#[must_use]
+pub(crate) fn closure_capture_ops(
+    p: &LuaProto,
+    closure: &Decoded,
+    pc: usize,
+    dialect: LuaDialect,
+) -> Vec<Decoded> {
+    if !matches!(dialect, LuaDialect::Lua51 | LuaDialect::GLua) {
+        return Vec::new();
+    }
+    let Some(child): Option<&LuaProto> = p.protos.get(closure.bx as usize) else {
+        return Vec::new();
+    };
+    let start: usize = pc.saturating_add(1);
+    let Some(words): Option<&[u32]> = start
+        .checked_add(child.upvalues.len())
+        .and_then(|end: usize| p.code.get(start..end))
+    else {
+        return Vec::new();
+    };
+    let ops: Vec<Decoded> = words
+        .iter()
+        .map(|raw: &u32| decode(*raw, dialect))
+        .collect();
+    if ops
+        .iter()
+        .all(|op: &Decoded| matches!(op.op, Op::Move | Op::GetUpval))
+    {
+        ops
+    } else {
+        Vec::new()
+    }
+}
+
+#[must_use]
+pub(crate) fn loadnil_last(d: &Decoded, dialect: LuaDialect) -> u32 {
+    if matches!(dialect, LuaDialect::Lua51 | LuaDialect::GLua) {
+        d.b
+    } else {
+        d.a.saturating_add(d.b)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SetListBase {
+    pub(crate) items_before: u64,
+    pub(crate) extra_words: usize,
+}
+
+#[must_use]
+pub(crate) fn setlist_base(
+    p: &LuaProto,
+    d: &Decoded,
+    pc: usize,
+    dialect: LuaDialect,
+) -> Option<SetListBase> {
+    let next: Option<u32> = pc
+        .checked_add(1)
+        .and_then(|i: usize| p.code.get(i))
+        .copied();
+    let extra_arg = |word: u32| -> Option<u64> {
+        let extra: Decoded = decode(word, dialect);
+        (extra.op == Op::ExtraArg).then_some(u64::from(extra.ax))
+    };
+    match dialect {
+        LuaDialect::Lua54 => {
+            if d.k {
+                let scaled: u64 = extra_arg(next?)?.checked_mul(LUA54_SETLIST_EXTRA_SCALE)?;
+                Some(SetListBase {
+                    items_before: scaled.checked_add(u64::from(d.c))?,
+                    extra_words: 1,
+                })
+            } else {
+                Some(SetListBase {
+                    items_before: u64::from(d.c),
+                    extra_words: 0,
+                })
+            }
+        }
+        LuaDialect::Lua51 | LuaDialect::GLua | LuaDialect::Lua52 | LuaDialect::Lua53 => {
+            let (block, extra_words): (u64, usize) = if d.c != 0 {
+                (u64::from(d.c), 0)
+            } else if matches!(dialect, LuaDialect::Lua51 | LuaDialect::GLua) {
+                (u64::from(next?), 1)
+            } else {
+                (extra_arg(next?)?, 1)
+            };
+            Some(SetListBase {
+                items_before: block.checked_sub(1)?.checked_mul(LFIELDS_PER_FLUSH)?,
+                extra_words,
+            })
+        }
+        LuaDialect::LuaJit20 | LuaDialect::LuaJit21 | LuaDialect::Luau => None,
+    }
+}
+
+#[must_use]
 pub fn lift_proto_dialect(p: &LuaProto, dialect: LuaDialect, depth: usize) -> LiftedProto {
+    lift_proto_captured(p, dialect, depth, &[])
+}
+
+#[must_use]
+fn lift_proto_captured(
+    p: &LuaProto,
+    dialect: LuaDialect,
+    depth: usize,
+    captured: &[String],
+) -> LiftedProto {
     if depth > MAX_LIFT_DEPTH {
         return LiftedProto {
             source: "  -- (proto nesting limit reached)\n".to_owned(),
@@ -382,7 +526,11 @@ pub fn lift_proto_dialect(p: &LuaProto, dialect: LuaDialect, depth: usize) -> Li
             fully_structured: false,
         };
     }
-    let mut state: LiftState = LiftState::new(p.max_stack_size, dialect);
+    let mut state: LiftState = LiftState::new(
+        p.max_stack_size,
+        dialect,
+        resolve_upvalue_names(p, captured),
+    );
     state.scopes = LocalScopes::build(&p.locals, p.code.len());
     for i in 0..u32::from(p.num_params) {
         let name: String = state
@@ -461,20 +609,16 @@ pub fn lift_proto_dialect(p: &LuaProto, dialect: LuaDialect, depth: usize) -> Li
                 skip_and_preserve_label(&mut state, &mut pc, &jump_targets);
             }
             Op::LoadNil => {
-                let span: u32 = if matches!(dialect, LuaDialect::Lua54) {
-                    d.a + d.b
-                } else {
-                    d.b
-                };
-                for r in d.a..=span {
+                for r in d.a..=loadnil_last(&d, dialect) {
                     define(&mut state, r, "nil".to_owned());
                 }
             }
             Op::GetUpval => {
-                define(&mut state, d.a, upval_name(p, d.b));
+                let name: String = state.upval(d.b);
+                define(&mut state, d.a, name);
             }
             Op::SetUpval => {
-                let name: String = upval_name(p, d.b);
+                let name: String = state.upval(d.b);
                 let val: String = state.reg(d.a);
                 state.push(&format!("{name} = {val}"));
             }
@@ -487,7 +631,7 @@ pub fn lift_proto_dialect(p: &LuaProto, dialect: LuaDialect, depth: usize) -> Li
                 state.push(&format!("{name} = {val}"));
             }
             Op::GetTabUp => {
-                let up: String = upval_name(p, d.b);
+                let up: String = state.upval(d.b);
                 let (field, raw_key): (Option<String>, String) = tabup_key(&state, p, &d);
                 let expr: String = if up == "_ENV" {
                     field.clone().unwrap_or_else(|| format!("_ENV[{raw_key}]"))
@@ -497,7 +641,7 @@ pub fn lift_proto_dialect(p: &LuaProto, dialect: LuaDialect, depth: usize) -> Li
                 define(&mut state, d.a, expr);
             }
             Op::SetTabUp => {
-                let up: String = upval_name(p, d.a);
+                let up: String = state.upval(d.a);
                 let (field, raw_key, val): (Option<String>, String, String) =
                     settabup_operands(&state, p, &d);
                 let lhs: String = if up == "_ENV" {
@@ -823,21 +967,27 @@ pub fn lift_proto_dialect(p: &LuaProto, dialect: LuaDialect, depth: usize) -> Li
             Op::SetList => {
                 let table: String = state.reg(d.a);
                 let count: u32 = d.b;
-                if matches!(dialect, LuaDialect::Lua54) && d.k {
-                    pc += 1;
-                }
-                if count == 0 {
-                    fully_structured = false;
-                    state
-                        .warnings
-                        .push("vararg/multi-value table elements not fully recovered".to_owned());
-                } else {
-                    let block: u32 = d.c.max(1);
-                    let base_index: u32 = (block - 1).saturating_mul(LFIELDS_PER_FLUSH);
-                    for i in 1..=count {
-                        let elem: String = state.reg(d.a + i);
-                        let index: u32 = base_index + i;
-                        state.push(&format!("{table}[{index}] = {elem}"));
+                let base: Option<SetListBase> = setlist_base(p, &d, pc, dialect);
+                pc += base.map_or(0, |b: SetListBase| b.extra_words);
+                match base {
+                    None => {
+                        fully_structured = false;
+                        state
+                            .warnings
+                            .push(format!("SETLIST at pc={pc} has no readable block operand"));
+                    }
+                    Some(_) if count == 0 => {
+                        fully_structured = false;
+                        state.warnings.push(
+                            "vararg/multi-value table elements not fully recovered".to_owned(),
+                        );
+                    }
+                    Some(base) => {
+                        for i in 1..=count {
+                            let elem: String = state.reg(d.a + i);
+                            let index: u64 = base.items_before + u64::from(i);
+                            state.push(&format!("{table}[{index}] = {elem}"));
+                        }
                     }
                 }
             }
@@ -848,7 +998,24 @@ pub fn lift_proto_dialect(p: &LuaProto, dialect: LuaDialect, depth: usize) -> Li
                 state.push(&format!("-- to-be-closed variable R{}", d.a));
             }
             Op::Closure => {
-                emit_closure(&mut state, p, &d, dialect, depth, &mut fully_structured);
+                let captures: Vec<Decoded> = closure_capture_ops(p, &d, pc, dialect);
+                let captured: Vec<String> = captures
+                    .iter()
+                    .map(|op: &Decoded| match op.op {
+                        Op::GetUpval => state.upval(op.b),
+                        _ => state.reg(op.b),
+                    })
+                    .collect();
+                emit_closure(
+                    &mut state,
+                    p,
+                    &d,
+                    dialect,
+                    depth,
+                    &captured,
+                    &mut fully_structured,
+                );
+                pc += captures.len();
             }
             Op::Vararg => {
                 define(&mut state, d.a, "...".to_owned());
@@ -876,15 +1043,6 @@ pub fn lift_proto_dialect(p: &LuaProto, dialect: LuaDialect, depth: usize) -> Li
         warnings: state.warnings,
         fully_structured,
     }
-}
-
-#[inline]
-fn upval_name(p: &LuaProto, idx: u32) -> String {
-    p.upvalues
-        .get(idx as usize)
-        .map(|u| u.name.clone())
-        .filter(|s: &String| !s.is_empty())
-        .unwrap_or_else(|| format!("upval_{idx}"))
 }
 
 #[inline]
@@ -1098,6 +1256,7 @@ fn emit_closure(
     d: &Decoded,
     dialect: LuaDialect,
     depth: usize,
+    captured: &[String],
     fully_structured: &mut bool,
 ) {
     let child_idx: usize = d.bx as usize;
@@ -1105,8 +1264,8 @@ fn emit_closure(
         Some(child) => {
             let lifted: LiftedProto = state
                 .lifted_children
-                .entry(child_idx)
-                .or_insert_with(|| lift_proto_dialect(child, dialect, depth + 1))
+                .entry((child_idx, captured.to_vec()))
+                .or_insert_with(|| lift_proto_captured(child, dialect, depth + 1, captured))
                 .clone();
             let inlined: usize = state
                 .inlined_closure_bytes

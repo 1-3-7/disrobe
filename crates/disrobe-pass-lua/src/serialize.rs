@@ -1,6 +1,6 @@
 use crate::error::{Error, Result};
 use crate::reader::common::{
-    LUA_SIGNATURE, LUAC_DATA_TAIL, LuaChunk, LuaConstant, LuaDialect, LuaProto,
+    LUA_SIGNATURE, LUAC_DATA_TAIL, LuaChunk, LuaConstant, LuaDialect, LuaProto, LuaUpvalueName,
 };
 
 const LUAC_INT_5_3: i64 = 0x5678;
@@ -213,8 +213,13 @@ fn write_proto_51(w: &mut ByteWriter, proto: &LuaProto, chunk: &LuaChunk) -> Res
     write_lineinfo(w, proto, chunk)?;
     write_locals_5152(w, proto, chunk)?;
 
-    w.write_size(proto.upvalues.len() as u64, chunk.size_of_int)?;
-    for upvalue in &proto.upvalues {
+    let stripped: bool = proto
+        .upvalues
+        .iter()
+        .all(|upvalue: &LuaUpvalueName| upvalue.name.is_empty());
+    let named: &[LuaUpvalueName] = if stripped { &[] } else { &proto.upvalues };
+    w.write_size(named.len() as u64, chunk.size_of_int)?;
+    for upvalue in named {
         write_string_5152(w, Some(&upvalue.name), chunk.size_of_size_t)?;
     }
     Ok(())
@@ -521,6 +526,29 @@ mod tests {
             reparsed.main.protos[0].constants,
             chunk.main.protos[0].constants
         );
+    }
+
+    #[test]
+    fn stripped_51_upvalue_count_survives_a_round_trip() {
+        let main: LuaProto = sample_proto_5152();
+        let source_len: usize = main.source.as_ref().map_or(0, String::len);
+        let nups_at: usize = 12 + 8 + source_len + 1 + 4 + 4;
+        let mut stripped: Vec<u8> =
+            serialize_chunk(&chunk_5152(LuaDialect::Lua51, main)).expect("serialize 5.1");
+        assert_eq!(stripped.get(nups_at), Some(&0));
+        stripped[nups_at] = 2;
+        let reparsed: LuaChunk = lua51::read(&stripped).expect("read stripped 5.1");
+        assert_eq!(
+            reparsed.main.upvalues,
+            vec![
+                LuaUpvalueName {
+                    name: String::new(),
+                };
+                2
+            ]
+        );
+        let reserialized: Vec<u8> = serialize_chunk(&reparsed).expect("serialize again");
+        assert_eq!(reserialized, stripped);
     }
 
     #[test]

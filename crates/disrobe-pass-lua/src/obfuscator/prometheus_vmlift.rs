@@ -57,8 +57,17 @@ impl<'a> Lexer<'a> {
     }
 
     fn next_token(&mut self) -> Option<Span> {
-        while self.pos < self.bytes.len() && self.bytes[self.pos].is_ascii_whitespace() {
-            self.pos += 1;
+        loop {
+            while self.pos < self.bytes.len() && self.bytes[self.pos].is_ascii_whitespace() {
+                self.pos += 1;
+            }
+            if self.bytes.get(self.pos) == Some(&b'-')
+                && self.bytes.get(self.pos + 1) == Some(&b'-')
+            {
+                self.pos = skip_comment(self.bytes, self.pos);
+            } else {
+                break;
+            }
         }
         let start: usize = self.pos;
         let byte: u8 = *self.bytes.get(self.pos)?;
@@ -163,10 +172,12 @@ impl Parser {
 
     fn eval(&mut self) -> Option<Num> {
         let value: Num = self.add_sub()?;
-        if self.idx == self.spans.len() {
-            Some(value)
-        } else {
-            None
+        if self.idx != self.spans.len() {
+            return None;
+        }
+        match value {
+            Num::Float(f) if !f.is_finite() => None,
+            _ => Some(value),
         }
     }
 
@@ -1157,6 +1168,28 @@ mod tests {
             !out.contains("--"),
             "must not coalesce into a comment: {out}"
         );
+    }
+
+    #[test]
+    fn double_minus_starts_a_comment_not_two_subtractions() {
+        assert_eq!(fold_one_expression("1--2").as_deref(), Some("1"));
+        assert_eq!(fold_one_expression("1 --[[ 5 ]] + 2").as_deref(), Some("3"));
+        assert_eq!(fold_numeric_expressions("x = 1--2"), "x = 1--2");
+        assert_eq!(
+            fold_numeric_expressions("x = 4-1--2\ny = 1"),
+            "x = 3--2\ny = 1"
+        );
+    }
+
+    #[test]
+    fn folds_with_infinite_or_nan_results_are_refused() {
+        assert_eq!(fold_one_expression("1/0"), None);
+        assert_eq!(fold_one_expression("-1/0"), None);
+        assert_eq!(fold_one_expression("0/0"), None);
+        assert_eq!(fold_one_expression("10^400"), None);
+        assert_eq!(fold_numeric_expressions("x = 1/0"), "x = 1/0");
+        assert_eq!(fold_numeric_expressions("y = (0/0)"), "y = (0/0)");
+        assert_eq!(fold_one_expression("1/(1/0)").as_deref(), Some("0.0"));
     }
 
     #[test]

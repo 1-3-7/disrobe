@@ -4,6 +4,9 @@ decompile_samples/src/closures_recursion.lua
 decompile_samples/src/control_flow.lua
 decompile_samples/src/luau_continue_else.lua
 decompile_samples/src/oop_functional.lua
+dialect_operands/constructor_75.lua
+dialect_operands/loadnil_above_r0.lua
+dialect_operands/upvalue_capture.lua
 hercules/gauntlet/gauntlet_clean.lua
 hercules/gauntlet/gauntlet_obfuscated.lua
 ironbrew2/obfuscated/arith.max.lua
