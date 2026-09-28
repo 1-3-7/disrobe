@@ -1691,7 +1691,6 @@ fn install_crash_reporter() {
 
 fn main() -> miette::Result<()> {
     install_crash_reporter();
-    color_eyre::install().map_err(|e| miette::miette!("color-eyre install failed: {e}"))?;
 
     let matches: clap::ArgMatches = Cli::command().get_matches();
     let cli: Cli = Cli::from_arg_matches(&matches)
