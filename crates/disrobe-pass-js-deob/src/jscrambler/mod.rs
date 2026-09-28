@@ -93,7 +93,11 @@ pub fn deobfuscate(source: &str, opts: &JscramblerOptions) -> Result<JscramblerO
     let opts_t: TransformOpts = TransformOpts {
         i_have_authorization: opts.i_have_authorization,
     };
-    for transform in opts.transforms.iter().copied() {
+    for transform in opts
+        .transforms
+        .intersection(&detection.detected_transforms)
+        .copied()
+    {
         let out: TransformOutput = dispatch_reverse(transform, &current, &opts_t);
         gate.still_parses(transform.name(), &out.source)?;
         current = out.source;
