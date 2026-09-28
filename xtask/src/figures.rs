@@ -84,8 +84,8 @@ const DOCUMENT_FIGURE_BUDGET: [FigureBudget; 33] = [
     },
     FigureBudget {
         path: "benches/decompile-quality/results.md",
-        figures: 170,
-        digest: "fb65d61ad3049ece",
+        figures: 178,
+        digest: "9fe7775a2e0f61d3",
     },
     FigureBudget {
         path: "benches/head-to-head/results.md",
