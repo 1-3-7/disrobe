@@ -1,5 +1,4 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
-mod common;
 
 #[path = "support/prometheus_residue.rs"]
 #[allow(clippy::redundant_pub_crate)]
@@ -21,59 +20,47 @@ struct Toolchain {
     lua: String,
 }
 
-fn first_existing(candidates: &[String]) -> Option<String> {
-    for c in candidates {
-        if c.contains('/') || c.contains('\\') {
-            if Path::new(c).exists() {
-                return Some(c.clone());
-            }
-        } else if Command::new(c).arg("-v").output().is_ok() {
-            return Some(c.clone());
+fn banner(program: &str) -> Option<String> {
+    let output: std::process::Output = Command::new(program).arg("-v").output().ok()?;
+    let stdout: String = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    let stderr: String = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    Some(if stdout.is_empty() { stderr } else { stdout })
+}
+
+fn find_program(candidates: &[&str], version: &str) -> Result<String, String> {
+    let mut seen: Vec<String> = Vec::new();
+    for &program in candidates {
+        match banner(program) {
+            Some(text) if text.contains(&format!("Lua {version}")) => return Ok(program.to_owned()),
+            Some(text) => seen.push(format!("`{program}` reports `{text}`")),
+            None => seen.push(format!("`{program}` is not on PATH")),
         }
     }
-    None
+    Err(seen.join("; "))
 }
 
-fn toolchain_51() -> Option<Toolchain> {
-    let mut luac_cands: Vec<String> = vec![
-        "C:/Program Files (x86)/Lua/5.1/luac.exe".to_owned(),
-        "C:/Program Files/Lua/5.1/luac.exe".to_owned(),
-        "luac5.1.exe".to_owned(),
-        "luac5.1".to_owned(),
-    ];
-    let mut lua_cands: Vec<String> = vec![
-        "C:/Program Files (x86)/Lua/5.1/lua.exe".to_owned(),
-        "C:/Program Files/Lua/5.1/lua.exe".to_owned(),
-        "lua5.1.exe".to_owned(),
-        "lua5.1".to_owned(),
-    ];
-    if let Ok(home) = std::env::var("LOCALAPPDATA") {
-        luac_cands.insert(0, format!("{home}/Programs/Lua51/luac5.1.exe"));
-        lua_cands.insert(0, format!("{home}/Programs/Lua51/lua5.1.exe"));
+fn toolchain(version: &str) -> Toolchain {
+    let (luac_names, lua_names): (&[&str], &[&str]) = match version {
+        "5.1" => (
+            &["luac5.1", "luac5.1.exe", "luac51"],
+            &["lua5.1", "lua5.1.exe", "lua51"],
+        ),
+        "5.4" => (
+            &["luac5.4", "luac5.4.exe", "luac54", "luac"],
+            &["lua5.4", "lua5.4.exe", "lua54", "lua"],
+        ),
+        other => panic!("no Lua {other} lane is defined for the re-execution oracle"),
+    };
+    let found: Result<(String, String), String> = find_program(luac_names, version)
+        .and_then(|luac: String| find_program(lua_names, version).map(|lua: String| (luac, lua)));
+    match found {
+        Ok((luac, lua)) => Toolchain { luac, lua },
+        Err(defect) => panic!(
+            "the Lua {version} re-execution oracle needs luac and lua {version} on PATH and cannot \
+             grade without them: {defect}. Install lua{version} (apt-get install lua{version}) or \
+             put its bin directory on PATH"
+        ),
     }
-    let luac: String = first_existing(&luac_cands)?;
-    let lua: String = first_existing(&lua_cands)?;
-    Some(Toolchain { luac, lua })
-}
-
-fn toolchain_54() -> Option<Toolchain> {
-    let mut luac_cands: Vec<String> = vec![
-        "C:/Program Files/Lua/5.4/luac.exe".to_owned(),
-        "luac5.4.exe".to_owned(),
-        "luac5.4".to_owned(),
-    ];
-    let mut lua_cands: Vec<String> = vec![
-        "C:/Program Files/Lua/5.4/lua.exe".to_owned(),
-        "lua5.4.exe".to_owned(),
-        "lua5.4".to_owned(),
-    ];
-    if let Ok(home) = std::env::var("LOCALAPPDATA") {
-        luac_cands.insert(0, format!("{home}/Programs/Lua/bin/luac.exe"));
-        lua_cands.insert(0, format!("{home}/Programs/Lua/bin/lua.exe"));
-    }
-    let luac: String = first_existing(&luac_cands)?;
-    let lua: String = first_existing(&lua_cands)?;
-    Some(Toolchain { luac, lua })
 }
 
 fn scratch_dir() -> disrobe_core::scratch::ScratchDir {
@@ -222,17 +209,7 @@ fn short(s: &str) -> String {
 }
 
 fn assert_lane(tag: &str) {
-    let tc: Option<Toolchain> = match tag {
-        "5.1" => toolchain_51(),
-        "5.4" => toolchain_54(),
-        _ => None,
-    };
-    let Some(tc): Option<Toolchain> = tc else {
-        common::lua_toolchain::missing_tool(&format!(
-            "lua {tag} toolchain (luac+lua) not found on box"
-        ));
-        return;
-    };
+    let tc: Toolchain = toolchain(tag);
     let res: LaneResult = run_lane(&tc);
     let pct: f64 = if res.total == 0 {
         0.0
@@ -282,19 +259,13 @@ fn reexec_equivalence_lua_5_4() {
 
 #[test]
 fn vararg_table_constructor_reexecutes_lua_5_1() {
-    let Some(tc): Option<Toolchain> = toolchain_51() else {
-        common::lua_toolchain::missing_tool("lua 5.1 toolchain not found");
-        return;
-    };
+    let tc: Toolchain = toolchain("5.1");
     assert_vararg_table_constructor_reexecutes(&tc);
 }
 
 #[test]
 fn vararg_table_constructor_reexecutes_lua_5_4() {
-    let Some(tc): Option<Toolchain> = toolchain_54() else {
-        common::lua_toolchain::missing_tool("lua 5.4 toolchain not found");
-        return;
-    };
+    let tc: Toolchain = toolchain("5.4");
     assert_vararg_table_constructor_reexecutes(&tc);
 }
 
@@ -322,10 +293,7 @@ const GOTO_PROGRAM: &str = "local acc = 0\nlocal i = 1\n::top::\nif i > 5 then g
 
 #[test]
 fn goto_edges_preserved_not_dropped_lua_5_4() {
-    let Some(tc): Option<Toolchain> = toolchain_54() else {
-        common::lua_toolchain::missing_tool("lua 5.4 toolchain not found");
-        return;
-    };
+    let tc: Toolchain = toolchain("5.4");
     let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
     let src: PathBuf = dir.join("goto_prog.lua");
@@ -391,22 +359,6 @@ const LOOP_HEAD_PROGRAMS_51: &[(&str, &str)] = &[
     ),
 ];
 
-fn require_toolchain(tag: &str) -> Toolchain {
-    let found: Option<Toolchain> = match tag {
-        "5.1" => toolchain_51(),
-        "5.4" => toolchain_54(),
-        _ => None,
-    };
-    let Some(tc): Option<Toolchain> = found else {
-        panic!(
-            "no lua {tag} toolchain (luac + lua) is usable here, so the structuring claim would be \
-             compared against nothing and this run would go green having graded nothing. Install \
-             lua{tag} and luac{tag} and put them on PATH."
-        )
-    };
-    tc
-}
-
 struct LaneClaims {
     graded: usize,
     claimed_structure: usize,
@@ -417,8 +369,8 @@ fn assert_structure_claim_matches_reexecution(
     compile_tag: &str,
     programs: &[(&str, &str)],
 ) -> LaneClaims {
-    let tc: Toolchain = require_toolchain(compile_tag);
-    let runtime: Toolchain = require_toolchain("5.4");
+    let tc: Toolchain = toolchain(compile_tag);
+    let runtime: Toolchain = toolchain("5.4");
     let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
     let mut lies: Vec<String> = Vec::new();
@@ -659,7 +611,7 @@ const PROMETHEUS_NUMBERS_BEFORE_VMIFY_OBFUSCATED: &str =
 fn prometheus_weak_preset_recovers_and_reexecutes_identically() {
     use disrobe_pass_lua::obfuscator::{DeobfOptions, PeelResult, prometheus};
 
-    let tc: Toolchain = require_toolchain("5.1");
+    let tc: Toolchain = toolchain("5.1");
     let peeled: PeelResult = prometheus::peel(
         PROMETHEUS_WEAK_OBFUSCATED.as_bytes(),
         &DeobfOptions::default(),
@@ -699,7 +651,7 @@ fn prometheus_weak_preset_recovers_and_reexecutes_identically() {
 fn prometheus_medium_preset_recovers_and_reexecutes_identically() {
     use disrobe_pass_lua::obfuscator::{DeobfOptions, PeelResult, prometheus};
 
-    let tc: Toolchain = require_toolchain("5.1");
+    let tc: Toolchain = toolchain("5.1");
     let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
     let expected: String = run_source(
@@ -751,7 +703,7 @@ fn prometheus_medium_preset_recovers_and_reexecutes_identically() {
 fn prometheus_numbers_before_vmify_recovers_and_reexecutes_identically() {
     use disrobe_pass_lua::obfuscator::{DeobfOptions, PeelResult, prometheus};
 
-    let tc: Toolchain = require_toolchain("5.1");
+    let tc: Toolchain = toolchain("5.1");
     let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
     let numbers_step: usize = PROMETHEUS_NUMBERS_BEFORE_VMIFY_CONFIG
@@ -818,7 +770,7 @@ fn prometheus_numbers_before_vmify_recovers_and_reexecutes_identically() {
 fn prometheus_vmify_recovers_and_reexecutes_identically_to_the_original() {
     use disrobe_pass_lua::obfuscator::{DeobfOptions, PeelResult, prometheus};
 
-    let tc: Toolchain = require_toolchain("5.1");
+    let tc: Toolchain = toolchain("5.1");
     let opts: DeobfOptions = DeobfOptions::default();
     let peeled: PeelResult = prometheus::peel(PROMETHEUS_VMIFY_OBFUSCATED.as_bytes(), &opts)
         .expect("prometheus peel must run");
@@ -910,7 +862,7 @@ fn prometheus_vmify_computed_dispatch_threshold_recovers_and_reexecutes_identica
         String::from_utf8(peeled.deobfuscated).expect("recovered source must be UTF-8");
     assert_no_prometheus_layer("computed dispatch threshold", &recovered);
 
-    let tc: Toolchain = require_toolchain("5.1");
+    let tc: Toolchain = toolchain("5.1");
     let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
     let expected: String = run_source(
@@ -937,7 +889,7 @@ fn prometheus_vmify_computed_dispatch_threshold_recovers_and_reexecutes_identica
 fn prometheus_vmify_loop_free_sample_recovers_fully_structured() {
     use disrobe_pass_lua::obfuscator::{DeobfOptions, PeelResult, prometheus};
 
-    let tc: Toolchain = require_toolchain("5.1");
+    let tc: Toolchain = toolchain("5.1");
     let opts: DeobfOptions = DeobfOptions::default();
     let peeled: PeelResult = prometheus::peel(PROMETHEUS_VMIFY_SIMPLE_OBFUSCATED.as_bytes(), &opts)
         .expect("prometheus peel must run");
@@ -1009,7 +961,7 @@ fn the_residue_gate_names_the_layer_it_refuses() {
 fn prometheus_vmify_nested_double_layer_sample_recovers_and_reexecutes_identically() {
     use disrobe_pass_lua::obfuscator::{DeobfOptions, PeelResult, prometheus};
 
-    let tc: Toolchain = require_toolchain("5.1");
+    let tc: Toolchain = toolchain("5.1");
     let opts: DeobfOptions = DeobfOptions::default();
     let peeled: PeelResult = prometheus::peel(PROMETHEUS_VMIFY_NESTED_OBFUSCATED.as_bytes(), &opts)
         .expect("prometheus peel must run on a real Vmify-applied-twice sample");
@@ -1047,7 +999,7 @@ fn prometheus_vmify_nested_double_layer_sample_recovers_and_reexecutes_identical
 fn prometheus_vmify_dispatch_leaf_with_nested_local_function_recovers_and_reexecutes() {
     use disrobe_pass_lua::obfuscator::{DeobfOptions, PeelResult, prometheus};
 
-    let tc: Toolchain = require_toolchain("5.1");
+    let tc: Toolchain = toolchain("5.1");
     let obfuscated: String = PROMETHEUS_VMIFY_NESTED_OBFUSCATED.replace(
         "N=\"F\"y=N g={y}",
         "N=(function() local q=\"F\" local get=function() return q end return get() end)() y=N g={y}",
@@ -1101,7 +1053,7 @@ const PROMETHEUS_VMIFY_UPVALUE_OBFUSCATED: &str =
 fn prometheus_vmify_upvalue_closure_recovers_and_reexecutes_identically() {
     use disrobe_pass_lua::obfuscator::{DeobfOptions, PeelResult, prometheus};
 
-    let tc: Toolchain = require_toolchain("5.1");
+    let tc: Toolchain = toolchain("5.1");
     let peeled: PeelResult = prometheus::peel(
         PROMETHEUS_VMIFY_UPVALUE_OBFUSCATED.as_bytes(),
         &DeobfOptions::default(),
@@ -1206,7 +1158,7 @@ const PROMETHEUS_VMIFY_LOOP_CAPTURE_OBFUSCATED: &str =
 fn prometheus_vmify_per_iteration_capture_recovers_and_reexecutes_identically() {
     use disrobe_pass_lua::obfuscator::{DeobfOptions, PeelResult, prometheus};
 
-    let tc: Toolchain = require_toolchain("5.1");
+    let tc: Toolchain = toolchain("5.1");
     let peeled: PeelResult = prometheus::peel(
         PROMETHEUS_VMIFY_LOOP_CAPTURE_OBFUSCATED.as_bytes(),
         &DeobfOptions::default(),
@@ -1257,7 +1209,7 @@ fn prometheus_vmify_per_iteration_capture_recovers_and_reexecutes_identically() 
 fn prometheus_vmify_loop_recovers_real_lua_control_flow_not_a_dispatch_state_machine() {
     use disrobe_pass_lua::obfuscator::{DeobfOptions, PeelResult, prometheus};
 
-    let tc: Toolchain = require_toolchain("5.1");
+    let tc: Toolchain = toolchain("5.1");
     for (name, obfuscated, clean) in [
         ("vmify", PROMETHEUS_VMIFY_OBFUSCATED, PROMETHEUS_VMIFY_CLEAN),
         (
