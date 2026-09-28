@@ -476,8 +476,11 @@ fn path_is_within(root: &Path, candidate: &Path) -> bool {
 
 #[must_use]
 pub fn looks_like_pyoxidizer(bytes: &[u8]) -> bool {
-    let m: Vec<String> = signatures::scan(bytes);
-    signatures::is_present(&m)
+    signatures::extract_resources_blob(bytes)
+        .and_then(signatures::parse_packed_resources)
+        .is_some_and(|parse: signatures::PackedResourcesParse| {
+            !parse.best_effort && !parse.entries.is_empty()
+        })
 }
 
 #[cfg(test)]

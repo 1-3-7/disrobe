@@ -63,7 +63,7 @@ fn detect_unknown_when_no_signature_present() {
 }
 
 #[test]
-fn detect_synthetic_pyoxidizer_via_runtime_markers() {
+fn runtime_marker_strings_without_a_resources_index_are_not_pyoxidizer() {
     let mut buf: Vec<u8> = vec![0u8; 256];
     buf.extend_from_slice(b"pyembed");
     buf.extend_from_slice(&[0u8; 32]);
@@ -71,8 +71,7 @@ fn detect_synthetic_pyoxidizer_via_runtime_markers() {
     buf.extend_from_slice(&[0u8; 32]);
     buf.extend_from_slice(b"python312.dll");
     let det: Detection = detect_bytes(&buf, Some(&PathBuf::from("pyox-app.exe")));
-    assert_eq!(det.kind, FreezerKind::PyOxidizer, "got: {det:?}");
-    assert!(det.confidence > 0.5);
+    assert_ne!(det.kind, FreezerKind::PyOxidizer, "got: {det:?}");
 }
 
 #[test]

@@ -93,12 +93,12 @@ pub fn detect_bytes(bytes: &[u8], source_path: Option<&Path>) -> Detection {
             "PyOxidizer (experimental, unvalidated pyembed runtime markers)".to_owned()
         });
         reasons.push(
-            "experimental, unvalidated PyOxidizer classification from pyembed runtime markers"
+            "experimental, unvalidated PyOxidizer classification from a parsed pyembed resources index"
                 .to_owned(),
         );
         return Detection {
             kind: FreezerKind::PyOxidizer,
-            confidence: 0.88,
+            confidence: 0.6,
             reasons,
         };
     }
