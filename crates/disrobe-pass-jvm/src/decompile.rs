@@ -1939,13 +1939,14 @@ fn lift_method_body(
     bool_return: bool,
 ) -> Result<MethodBody> {
     let raw_insns: Vec<Instruction> = validate_code_attribute(cf, code)?;
-    let mut insns: Vec<Instruction> = if crate::jsr_inline::contains_jsr(&raw_insns) {
-        let (inlined, report): (Vec<Instruction>, crate::jsr_inline::JsrInlineReport) =
-            crate::jsr_inline::inline_jsr_subroutines(&raw_insns);
-        if report.bailed { raw_insns } else { inlined }
-    } else {
-        raw_insns
-    };
+    let mut insns: Vec<Instruction> =
+        if crate::jsr_inline::contains_jsr(&raw_insns) && code.exception_table.is_empty() {
+            let (inlined, report): (Vec<Instruction>, crate::jsr_inline::JsrInlineReport) =
+                crate::jsr_inline::inline_jsr_subroutines(&raw_insns);
+            if report.bailed { raw_insns } else { inlined }
+        } else {
+            raw_insns
+        };
     let boolean_param_slots: BTreeSet<u16> = params
         .iter()
         .filter(|(_, name): &&(u16, String)| boolean_params.contains(name))

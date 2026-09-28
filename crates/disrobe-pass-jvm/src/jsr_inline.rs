@@ -59,6 +59,24 @@ pub fn inline_jsr_subroutines(insns: &[Instruction]) -> (Vec<Instruction>, JsrIn
         );
     }
 
+    if insns.iter().any(|ins: &Instruction| {
+        matches!(
+            ins.operands,
+            Operands::TableSwitch { .. } | Operands::LookupSwitch { .. }
+        )
+    }) {
+        return (
+            insns.to_vec(),
+            JsrInlineReport {
+                jsr_sites,
+                subroutines: 0,
+                inlined_instructions: insns.len(),
+                bailed: true,
+                note: "the method holds a switch whose offsets inlining would not remap; left unmodified rather than mis-linearised".to_owned(),
+            },
+        );
+    }
+
     let pc_index: BTreeMap<u32, usize> = insns
         .iter()
         .enumerate()
@@ -193,6 +211,9 @@ fn inline_one(
         }
         match ins.opcode {
             OP_RET => {
+                if body_branches_past(&insns[start..=j], ins.pc) {
+                    return false;
+                }
                 emitted.push(Emitted {
                     opcode: OP_GOTO,
                     mnemonic: "goto",
@@ -230,6 +251,12 @@ fn inline_one(
         }
     }
     false
+}
+
+fn body_branches_past(body: &[Instruction], ret_pc: u32) -> bool {
+    body.iter().any(|ins: &Instruction| {
+        branch_target_old_pc(ins).is_some_and(|target: u32| target > ret_pc)
+    })
 }
 
 const fn is_return_address_consumer(opcode: u8) -> bool {
@@ -326,6 +353,48 @@ mod tests {
         assert_eq!(out.len(), 2);
         assert_eq!(report.jsr_sites, 0);
         assert!(!report.bailed);
+    }
+
+    #[test]
+    fn a_subroutine_with_a_second_ret_is_not_cut_at_the_first() {
+        let insns: Vec<Instruction> = vec![
+            ins(0, OP_JSR, "jsr", Operands::Branch(5)),
+            ins(3, 0xB1, "return", Operands::None),
+            ins(4, 0x00, "nop", Operands::None),
+            ins(5, OP_ASTORE, "astore", Operands::Local(1)),
+            ins(7, 0x1A, "iload_0", Operands::None),
+            ins(8, 0x99, "ifeq", Operands::Branch(6)),
+            ins(11, OP_RET, "ret", Operands::Local(1)),
+            ins(13, 0x04, "iconst_1", Operands::None),
+            ins(14, 0x3B, "istore_0", Operands::None),
+            ins(15, OP_RET, "ret", Operands::Local(1)),
+        ];
+        let (out, report): (Vec<Instruction>, JsrInlineReport) = inline_jsr_subroutines(&insns);
+        assert!(report.bailed, "{report:?}");
+        assert_eq!(out, insns);
+    }
+
+    #[test]
+    fn a_method_with_a_switch_is_left_unmodified() {
+        let insns: Vec<Instruction> = vec![
+            ins(0, OP_JSR, "jsr", Operands::Branch(28)),
+            ins(3, 0x1A, "iload_0", Operands::None),
+            ins(
+                4,
+                0xAB,
+                "lookupswitch",
+                Operands::LookupSwitch {
+                    default: 23,
+                    pairs: vec![(1, 23)],
+                },
+            ),
+            ins(27, 0xB1, "return", Operands::None),
+            ins(28, OP_ASTORE, "astore", Operands::Local(1)),
+            ins(30, OP_RET, "ret", Operands::Local(1)),
+        ];
+        let (out, report): (Vec<Instruction>, JsrInlineReport) = inline_jsr_subroutines(&insns);
+        assert!(report.bailed, "{report:?}");
+        assert_eq!(out, insns);
     }
 
     #[test]
