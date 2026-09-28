@@ -4,7 +4,7 @@ rar	extract	corpus/binfmt/rar/filter-delta-rar5.rar
 iso	extract	corpus/binfmt/iso/joliet-rockridge.iso
 asar	members-unverified	crates/disrobe-binfmt/tests/fixtures/asar/real_electron.asar
 pkg	extract	corpus/binfmt/pkg/bzip2.pkg
-dmg	detect-only	corpus/binfmt/dmg/bzip2-udif.dmg
+dmg	members-unverified	corpus/binfmt/dmg/bzip2-udif.dmg
 rpm	extract	crates/disrobe-binfmt/tests/fixtures/rpm/hello-v4-gzip.rpm
 jar	extract	corpus/jvm/megafile/EdgeCases-baseline.jar
 apk	extract	corpus/apk/fixture-res.apk
