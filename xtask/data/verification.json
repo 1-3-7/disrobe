@@ -5,9 +5,9 @@
     {
       "ecosystem": "Python",
       "oracle": "normalized opcode-structure agreement",
-      "result": "96.67% of 6286 objects",
+      "result": "96.69% of 6286 objects",
       "ci": true,
-      "source": "arbitrary_recompile_gate.rs, code-object floor 96.67%; normalized comparison omits jump targets and most operands"
+      "source": "arbitrary_recompile_gate.rs, code-object floor 96.69%; normalized comparison omits jump targets and most operands"
     },
     {
       "ecosystem": "JVM classfile",
