@@ -361,15 +361,13 @@ fn flattened_straight_line_unflattens_to_clean_cfg() {
     assert_eq!(result.dispatchers_resolved, 1);
     assert!(result.edges_redirected >= 3);
 
-    let built: DalvikMethodCfg = build_dalvik_cfg_from_code_item(&item).expect("rebuild");
     let DalvikMethodCfg {
-        mut cfg,
+        cfg,
         insns,
         switch_payloads,
         ..
-    } = built;
+    } = rewired_method_cfg(&item).expect("a sound rewiring yields the rewired graph");
     let state_regs: BTreeSet<u16> = collect_state_regs(&insns, &switch_payloads);
-    run_unflatten_in_place(&mut cfg, &insns, &switch_payloads);
 
     let recovered: Vec<u8> = normalized_opcode_stream(&cfg, &insns, &state_regs);
     let clean: Vec<u8> = clean_opcode_stream(&clean_straight_line());
@@ -393,15 +391,13 @@ fn flattened_with_opaque_predicate_folds_and_unflattens() {
         "after folding the opaque branch the dispatcher must fully resolve: {result:?}"
     );
 
-    let built: DalvikMethodCfg = build_dalvik_cfg_from_code_item(&item).expect("rebuild");
     let DalvikMethodCfg {
-        mut cfg,
+        cfg,
         insns,
         switch_payloads,
         ..
-    } = built;
+    } = rewired_method_cfg(&item).expect("a sound rewiring yields the rewired graph");
     let state_regs: BTreeSet<u16> = collect_state_regs(&insns, &switch_payloads);
-    run_unflatten_in_place(&mut cfg, &insns, &switch_payloads);
     let recovered: Vec<u8> = normalized_opcode_stream(&cfg, &insns, &state_regs);
     let clean: Vec<u8> = clean_opcode_stream(&clean_with_branch_folded());
     assert_eq!(
@@ -464,15 +460,13 @@ fn const16_state_writes_resolve() {
     );
     assert_eq!(result.residual_dispatcher_edges, 0);
 
-    let built: DalvikMethodCfg = build_dalvik_cfg_from_code_item(&item).expect("rebuild");
     let DalvikMethodCfg {
-        mut cfg,
+        cfg,
         insns,
         switch_payloads,
         ..
-    } = built;
+    } = rewired_method_cfg(&item).expect("a sound rewiring yields the rewired graph");
     let state_regs: BTreeSet<u16> = collect_state_regs(&insns, &switch_payloads);
-    run_unflatten_in_place(&mut cfg, &insns, &switch_payloads);
     let recovered: Vec<u8> = normalized_opcode_stream(&cfg, &insns, &state_regs);
     let clean: Vec<u8> = clean_opcode_stream(&clean_straight_line());
     assert_eq!(
@@ -499,33 +493,94 @@ fn aggregate_counts_one_unflattened_method() {
     assert_eq!(per_method.len(), 1);
 }
 
-fn run_unflatten_in_place(cfg: &mut Cfg, insns: &[DalvikInsn], switches: &[(u32, SwitchPayload)]) {
-    let folded: u32 = fold_opaque_conditionals(cfg, insns);
-    if folded > 0 {
-        rebuild_predecessors(cfg);
-    }
-    let mut rounds: usize = 0;
-    loop {
-        rounds += 1;
-        if rounds > 1024 {
-            break;
-        }
-        let dispatchers: Vec<Dispatcher> = find_dispatchers(cfg, insns, switches);
-        if dispatchers.is_empty() {
-            break;
-        }
-        let mut progressed: bool = false;
-        let mut stats: ResolveStats = ResolveStats::default();
-        for d in &dispatchers {
-            if resolve_dispatcher(cfg, insns, d, &mut stats) {
-                progressed = true;
-            }
-        }
-        if !progressed {
-            break;
-        }
-        rebuild_predecessors(cfg);
-    }
-    let _pruned: u32 = prune_unreachable(cfg);
-    rebuild_predecessors(cfg);
+fn flattened_with_dispatcher_prefix(returned: u8) -> Vec<u16> {
+    const DISPATCH: u32 = 100;
+    const PAYLOAD: u32 = 200;
+    const B0: u32 = 0;
+    const B1: u32 = 1;
+    const B2: u32 = 2;
+    let items: Vec<Asm> = vec![
+        Asm::Const4 { reg: 1, value: 0 },
+        Asm::Goto16 { target: DISPATCH },
+        Asm::Label(B0),
+        Asm::AddIntLit8 {
+            dst: 0,
+            src: 0,
+            lit: 5,
+        },
+        Asm::Const4 { reg: 1, value: 1 },
+        Asm::Goto16 { target: DISPATCH },
+        Asm::Label(B1),
+        Asm::AddIntLit8 {
+            dst: 0,
+            src: 0,
+            lit: 7,
+        },
+        Asm::Const4 { reg: 1, value: 2 },
+        Asm::Goto16 { target: DISPATCH },
+        Asm::Label(B2),
+        Asm::Return { reg: returned },
+        Asm::Label(DISPATCH),
+        Asm::Const4 { reg: 4, value: 5 },
+        Asm::PackedSwitch {
+            reg: 1,
+            payload: PAYLOAD,
+        },
+        Asm::ReturnVoid,
+        Asm::Label(PAYLOAD),
+        Asm::PackedSwitchPayload {
+            id: PAYLOAD,
+            first_key: 0,
+            cases: vec![B0, B1, B2],
+        },
+    ];
+    assemble(&items)
+}
+
+#[test]
+fn a_dead_const_in_the_dispatcher_block_still_rewires() {
+    let item: CodeItem = code_item(flattened_with_dispatcher_prefix(0));
+    let result: DalvikMethodCff = unflatten_code_item(&item).expect("decoded");
+    assert!(result.fully_unflattened, "{result:?}");
+    assert_eq!(result.rewire_refusal, None);
+    assert!(rewired_method_cfg(&item).is_some());
+}
+
+#[test]
+fn a_dispatcher_const_read_after_dispatch_refuses_the_rewiring() {
+    let item: CodeItem = code_item(flattened_with_dispatcher_prefix(4));
+    let result: DalvikMethodCff = unflatten_code_item(&item).expect("decoded");
+    assert!(result.flattened);
+    assert_eq!(result.residual_dispatcher_edges, 0);
+    assert!(!result.fully_unflattened, "{result:?}");
+    assert!(
+        matches!(
+            result.rewire_refusal,
+            Some(CffRewireRefusal::DispatcherPrefixLive { register: 4, .. })
+        ),
+        "{result:?}"
+    );
+    assert!(rewired_method_cfg(&item).is_none());
+}
+
+#[test]
+fn a_state_register_read_outside_the_dispatcher_refuses_the_rewiring() {
+    let item: CodeItem = code_item(flattened_with_dispatcher_prefix(1));
+    let result: DalvikMethodCff = unflatten_code_item(&item).expect("decoded");
+    assert!(result.flattened);
+    assert!(
+        matches!(
+            result.rewire_refusal,
+            Some(CffRewireRefusal::StateRegisterEscapes { register: 1, .. })
+        ),
+        "{result:?}"
+    );
+    assert!(rewired_method_cfg(&item).is_none());
+    let (report, _): (DalvikCffReport, Vec<DalvikMethodCff>) = unflatten_dex_methods(&[item]);
+    assert_eq!(report.methods_unflattened, 0);
+    assert_eq!(report.unhandled_shapes.len(), 1, "{report:?}");
+    assert!(
+        report.unhandled_shapes[0].contains("state register v1"),
+        "{report:?}"
+    );
 }

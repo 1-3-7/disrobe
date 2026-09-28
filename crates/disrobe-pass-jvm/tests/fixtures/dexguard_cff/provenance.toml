@@ -1,0 +1,28 @@
+schema = "disrobe.jvm.dexguard-cff-fixture/v1"
+source = "FlatteningProbe.java"
+source_sha256 = "e6c168b22906d1fd64103e15f7e626db6be1472fe735f93475a851b46ceb4a3d"
+
+[javac]
+vendor = "Eclipse Temurin"
+version = "25.0.4+7-LTS"
+command = "javac -Xlint:-options --release 8 -d classes FlatteningProbe.java"
+
+[d8]
+version = "9.1.31"
+url = "https://dl.google.com/dl/android/maven2/com/android/tools/r8/9.1.31/r8-9.1.31.jar"
+sha256 = "3b4de3053885da105e39c15212261d22653d6d1b5eb92323dd04ae913cc8286f"
+
+[shapes]
+flattened = "flattened(int)"
+original = "original(int)"
+notes = "flattened is original rewritten by hand in the DexGuard dispatcher style: a while(true) switch over an int state local whose every write is a constant, with one case per basic block of original. The case bodies need no temporary register, so D8 keeps the state local in a register that only const instructions write and only the dispatcher reads. D8 hoists two dead constants into the dispatcher block and writes the entry state before other initialisers, the shapes the DEX unflattener must accept."
+
+[[artifact]]
+path = "FlatteningProbe-min21.dex"
+format = "DEX 035"
+min_api = 21
+mode = "release"
+tool = "D8"
+command = "java -cp r8-9.1.31.jar com.android.tools.r8.D8 --release --min-api 21 --output dex classes/FlatteningProbe.class"
+sha256 = "710906957eb0f3e806b22a5af50a2bf8da6a109b04d45215e5d6132028205bb5"
+bytes = 904

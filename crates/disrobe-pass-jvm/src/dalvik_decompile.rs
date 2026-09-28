@@ -1333,12 +1333,20 @@ fn render_method(
         );
     }
 
+    let rewired: Option<DalvikMethodCfg> = cff
+        .filter(|method: &&crate::dalvik_dexguard::DalvikMethodCff| method.fully_unflattened)
+        .and_then(|_| crate::dalvik_dexguard::rewired_method_cfg(item));
+    let lifted_from_rewired: bool = rewired.is_some();
     let body: MethodBody = lift_method(
         dex,
         item,
-        is_static,
-        is_constructor,
-        method_descriptor,
+        rewired,
+        MethodIdentity {
+            declaring_class: &item.class,
+            descriptor: method_descriptor,
+            is_static,
+            is_constructor,
+        },
         recovered_default.is_some_and(
             |recovered: &crate::dalvik_desugar::DefaultInterfaceMethod| {
                 recovered.kind == crate::dalvik_desugar::InterfaceMethodKind::Default
@@ -1347,7 +1355,9 @@ fn render_method(
         desugar,
         inlined_helpers,
     );
-    let cff_note: String = cff.map_or_else(String::new, cff_annotation);
+    let cff_note: String = cff.map_or_else(String::new, |method| {
+        cff_annotation(method, lifted_from_rewired)
+    });
     let generic_note: String = generic_sites
         .map(
             |sites: &Vec<&crate::dalvik_strdec_generic::CallSiteRecovery>| {
@@ -1367,23 +1377,40 @@ fn render_method(
     }
 }
 
-fn cff_annotation(cff: &crate::dalvik_dexguard::DalvikMethodCff) -> String {
+fn cff_annotation(
+    cff: &crate::dalvik_dexguard::DalvikMethodCff,
+    lifted_from_rewired: bool,
+) -> String {
     if !cff.flattened {
         return String::new();
     }
+    let block_order: String = cff
+        .recovered_block_order
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<String>>()
+        .join(", ");
     let mut out: String = String::new();
+    if lifted_from_rewired {
+        let _ = writeln!(
+            out,
+            "        // control-flow flattening removed: {} dispatcher(s) rewired, {} state \
+             transition(s) redirected to their case block, block order [{block_order}]; the body \
+             below is lifted from the rewired graph",
+            cff.dispatchers_resolved, cff.edges_redirected
+        );
+        return out;
+    }
+    let reason: String = cff.rewire_refusal.as_ref().map_or_else(
+        || "the rewired graph could not be rebuilt".to_owned(),
+        ToString::to_string,
+    );
     let _ = writeln!(
         out,
-        "        // control-flow flattening detected: {} dispatcher(s) resolved to linear block \
-         order [{}], {} residual dispatcher edge(s); the body below is still rendered from the \
-         flattened graph",
-        cff.dispatchers_resolved,
-        cff.recovered_block_order
-            .iter()
-            .map(u32::to_string)
-            .collect::<Vec<String>>()
-            .join(", "),
-        cff.residual_dispatcher_edges
+        "        // control-flow flattening detected: {} dispatcher(s) partly resolved, block order \
+         [{block_order}], {} residual dispatcher edge(s); not rewired because {reason}; the body \
+         below is still rendered from the flattened graph",
+        cff.dispatchers_resolved, cff.residual_dispatcher_edges
     );
     out
 }
@@ -1485,9 +1512,8 @@ fn instruction_writes_register(insn: &DalvikInsn, register: u16) -> bool {
 fn lift_method(
     dex: &DexFile,
     item: &CodeItem,
-    is_static: bool,
-    is_constructor: bool,
-    method_descriptor: &str,
+    rewired: Option<DalvikMethodCfg>,
+    identity: MethodIdentity<'_>,
     inline_temporaries: bool,
     desugar: crate::dalvik_desugar::DesugarView<'_>,
     inlined_helpers: &crate::dalvik_desugar::InlinedHelpers,
@@ -1498,7 +1524,9 @@ fn lift_method(
             fully_lifted: true,
         };
     }
-    let Some(built): Option<DalvikMethodCfg> = build_dalvik_cfg_from_code_item(item) else {
+    let Some(built): Option<DalvikMethodCfg> =
+        rewired.or_else(|| build_dalvik_cfg_from_code_item(item))
+    else {
         return MethodBody {
             text: "        // <decompile: malformed bytecode>\n".to_string(),
             fully_lifted: false,
@@ -1514,12 +1542,7 @@ fn lift_method(
 
     let ctx: MethodContext<'_> = MethodContext::new(
         dex,
-        MethodIdentity {
-            declaring_class: &item.class,
-            descriptor: method_descriptor,
-            is_static,
-            is_constructor,
-        },
+        identity,
         item.registers_size,
         item.ins_size,
         inline_temporaries,
@@ -2107,7 +2130,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_fully_rewired_cff_method_is_not_claimed_as_removed() {
+    fn the_cff_note_claims_removal_only_when_lifted_from_the_rewired_graph() {
         let cff: crate::dalvik_dexguard::DalvikMethodCff =
             crate::dalvik_dexguard::DalvikMethodCff {
                 class: "Lcom/example/A;".to_owned(),
@@ -2121,13 +2144,17 @@ mod tests {
                 dispatcher_blocks_pruned: 1,
                 residual_dispatcher_edges: 0,
                 recovered_block_order: vec![0, 2, 1],
+                rewire_refusal: None,
             };
-        let note: String = cff_annotation(&cff);
-        assert!(!note.contains("removed"), "{note}");
+        let rendered_flat: String = cff_annotation(&cff, false);
+        assert!(!rendered_flat.contains("removed"), "{rendered_flat}");
         assert!(
-            note.contains("still rendered from the flattened graph"),
-            "{note}"
+            rendered_flat.contains("still rendered from the flattened graph"),
+            "{rendered_flat}"
         );
+        let lifted: String = cff_annotation(&cff, true);
+        assert!(lifted.contains("flattening removed"), "{lifted}");
+        assert!(lifted.contains("lifted from the rewired graph"), "{lifted}");
     }
 
     const EDGECASES_DEX: &[u8] = include_bytes!("../../../corpus/jvm/dex/EdgeCases.dex");

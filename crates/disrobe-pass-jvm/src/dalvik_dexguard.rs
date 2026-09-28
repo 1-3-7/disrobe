@@ -37,6 +37,25 @@ pub struct DalvikMethodCff {
     pub dispatcher_blocks_pruned: u32,
     pub residual_dispatcher_edges: u32,
     pub recovered_block_order: Vec<u32>,
+    pub rewire_refusal: Option<CffRewireRefusal>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum CffRewireRefusal {
+    #[error(
+        "{0} edge(s) still enter a dispatcher: a predecessor's state write was not a single \
+         static const into the switch register"
+    )]
+    ResidualDispatcherEdges(u32),
+    #[error("the dispatcher at pc {pc} stays reachable after rewiring")]
+    DispatcherReachable { pc: u32 },
+    #[error(
+        "state register v{register} is used at pc {pc} outside a const write or its dispatcher \
+         switch"
+    )]
+    StateRegisterEscapes { register: u16, pc: u32 },
+    #[error("the dispatcher block writes v{register} at pc {pc}, which the method reads elsewhere")]
+    DispatcherPrefixLive { register: u16, pc: u32 },
 }
 
 #[must_use]
@@ -72,18 +91,15 @@ pub fn unflatten_dex_methods(items: &[CodeItem]) -> (DalvikCffReport, Vec<Dalvik
                 method.fully_unflattened
             )
         });
-        if method.fully_unflattened {
-            report.methods_unflattened += 1;
-        } else {
-            report.unhandled_shapes.push(format!(
-                "{}->{}{}: {} residual dispatcher edge(s) after {} round(s); a predecessor's state \
-                 write was not a single static const into the switch register",
+        match &method.rewire_refusal {
+            None => report.methods_unflattened += 1,
+            Some(refusal) => report.unhandled_shapes.push(format!(
+                "{}->{}{}: not rewired after {} dispatcher round(s): {refusal}",
                 method.class,
                 method.method_name,
                 method.method_descriptor,
-                method.residual_dispatcher_edges,
                 method.dispatchers_resolved,
-            ));
+            )),
         }
         per_method.push(method);
     }
@@ -92,17 +108,22 @@ pub fn unflatten_dex_methods(items: &[CodeItem]) -> (DalvikCffReport, Vec<Dalvik
 
 #[must_use]
 pub fn unflatten_code_item(item: &CodeItem) -> Option<DalvikMethodCff> {
-    let built: DalvikMethodCfg = build_dalvik_cfg_from_code_item(item)?;
-    let DalvikMethodCfg {
-        mut cfg,
-        insns,
-        switch_payloads,
-        switch_map: _,
-    } = built;
-    let dispatchers: Vec<Dispatcher> = find_dispatchers(&cfg, &insns, &switch_payloads);
-    let flattened: bool = !dispatchers.is_empty();
-    if !flattened {
-        return Some(DalvikMethodCff {
+    unflatten_with_graph(item).map(|(method, _): (DalvikMethodCff, DalvikMethodCfg)| method)
+}
+
+#[must_use]
+pub(crate) fn rewired_method_cfg(item: &CodeItem) -> Option<DalvikMethodCfg> {
+    let (method, rewired): (DalvikMethodCff, DalvikMethodCfg) = unflatten_with_graph(item)?;
+    method.fully_unflattened.then_some(rewired)
+}
+
+#[must_use]
+fn unflatten_with_graph(item: &CodeItem) -> Option<(DalvikMethodCff, DalvikMethodCfg)> {
+    let mut built: DalvikMethodCfg = build_dalvik_cfg_from_code_item(item)?;
+    let dispatchers: Vec<Dispatcher> =
+        find_dispatchers(&built.cfg, &built.insns, &built.switch_payloads);
+    if dispatchers.is_empty() {
+        let method: DalvikMethodCff = DalvikMethodCff {
             class: item.class.clone(),
             method_name: item.method_name.clone(),
             method_descriptor: item.method_descriptor.clone(),
@@ -114,13 +135,22 @@ pub fn unflatten_code_item(item: &CodeItem) -> Option<DalvikMethodCff> {
             dispatcher_blocks_pruned: 0,
             residual_dispatcher_edges: 0,
             recovered_block_order: Vec::new(),
-        });
+            rewire_refusal: None,
+        };
+        return Some((method, built));
     }
+    let mut seen_dispatchers: BTreeMap<BlockId, u16> = dispatchers
+        .iter()
+        .map(|d: &Dispatcher| (d.block, d.state_reg))
+        .collect();
 
+    let cfg: &mut Cfg = &mut built.cfg;
+    let insns: &[DalvikInsn] = &built.insns;
+    let switch_payloads: &[(u32, SwitchPayload)] = &built.switch_payloads;
     let mut stats: ResolveStats = ResolveStats::default();
-    stats.dead_branches_folded += fold_opaque_conditionals(&mut cfg, &insns);
+    stats.dead_branches_folded += fold_opaque_conditionals(cfg, insns);
     if stats.dead_branches_folded > 0 {
-        rebuild_predecessors(&mut cfg);
+        rebuild_predecessors(cfg);
     }
 
     let mut rounds: usize = 0;
@@ -129,44 +159,179 @@ pub fn unflatten_code_item(item: &CodeItem) -> Option<DalvikMethodCff> {
         if rounds > MAX_RESOLVE_ROUNDS {
             break;
         }
-        let live_dispatchers: Vec<Dispatcher> = find_dispatchers(&cfg, &insns, &switch_payloads);
+        let live_dispatchers: Vec<Dispatcher> = find_dispatchers(cfg, insns, switch_payloads);
         if live_dispatchers.is_empty() {
             break;
         }
         let mut progressed: bool = false;
         for dispatcher in &live_dispatchers {
-            if resolve_dispatcher(&mut cfg, &insns, dispatcher, &mut stats) {
+            seen_dispatchers.insert(dispatcher.block, dispatcher.state_reg);
+            if resolve_dispatcher(cfg, insns, dispatcher, &mut stats) {
                 progressed = true;
             }
         }
         if !progressed {
             break;
         }
-        rebuild_predecessors(&mut cfg);
+        rebuild_predecessors(cfg);
     }
 
-    let pruned: u32 = prune_unreachable(&mut cfg);
+    let pruned: u32 = prune_unreachable(cfg);
     stats.dispatcher_blocks_pruned += pruned;
-    rebuild_predecessors(&mut cfg);
+    rebuild_predecessors(cfg);
 
     let residual_dispatcher_edges: u32 =
-        residual_dispatcher_edge_count(&cfg, &insns, &switch_payloads);
-    let recovered_block_order: Vec<u32> = reachable_order(&cfg);
-    let fully_unflattened: bool = residual_dispatcher_edges == 0;
+        residual_dispatcher_edge_count(cfg, insns, switch_payloads);
+    let recovered_block_order: Vec<u32> = reachable_order(cfg);
+    let rewire_refusal: Option<CffRewireRefusal> = if residual_dispatcher_edges > 0 {
+        Some(CffRewireRefusal::ResidualDispatcherEdges(
+            residual_dispatcher_edges,
+        ))
+    } else {
+        rewire_refusal(cfg, insns, &seen_dispatchers)
+    };
+    if rewire_refusal.is_none() {
+        let state_registers: BTreeSet<u16> = seen_dispatchers.values().copied().collect();
+        for insn in &mut built.insns {
+            if const_int_to(insn).is_some_and(|(dst, _): (u16, i32)| state_registers.contains(&dst))
+            {
+                *insn = DalvikInsn {
+                    pc: insn.pc,
+                    op: 0x00,
+                    mnemonic: "nop",
+                    width: insn.width,
+                    format: crate::dalvik::InsnFormat::Fmt10x,
+                    regs: Vec::new(),
+                    literal: None,
+                    index: None,
+                    branch: None,
+                    payload_off: None,
+                };
+            }
+        }
+    }
 
-    Some(DalvikMethodCff {
+    let method: DalvikMethodCff = DalvikMethodCff {
         class: item.class.clone(),
         method_name: item.method_name.clone(),
         method_descriptor: item.method_descriptor.clone(),
         flattened: true,
-        fully_unflattened,
+        fully_unflattened: rewire_refusal.is_none(),
         dispatchers_resolved: stats.dispatchers_resolved,
         edges_redirected: stats.edges_redirected,
         dead_branches_folded: stats.dead_branches_folded,
         dispatcher_blocks_pruned: stats.dispatcher_blocks_pruned,
         residual_dispatcher_edges,
         recovered_block_order,
-    })
+        rewire_refusal,
+    };
+    Some((method, built))
+}
+
+#[must_use]
+fn rewire_refusal(
+    cfg: &Cfg,
+    insns: &[DalvikInsn],
+    dispatchers: &BTreeMap<BlockId, u16>,
+) -> Option<CffRewireRefusal> {
+    let reachable: BTreeSet<BlockId> = reachable_set(cfg);
+    let mut switch_registers: BTreeMap<usize, u16> = BTreeMap::new();
+    let mut prefix_indices: BTreeSet<usize> = BTreeSet::new();
+    for (&block_id, &state_reg) in dispatchers {
+        let block: &BasicBlock = &cfg.blocks[block_id.0 as usize];
+        if reachable.contains(&block_id) {
+            return Some(CffRewireRefusal::DispatcherReachable { pc: block.start_pc });
+        }
+        let (start_idx, end_idx): (usize, usize) = block.insn_range;
+        let Some(switch_idx): Option<usize> = end_idx.checked_sub(1) else {
+            return Some(CffRewireRefusal::DispatcherReachable { pc: block.start_pc });
+        };
+        switch_registers.insert(switch_idx, state_reg);
+        prefix_indices.extend(start_idx..switch_idx);
+    }
+    for &state_reg in dispatchers.values() {
+        for (idx, insn) in insns.iter().enumerate() {
+            if !touches_register(insn, state_reg) {
+                continue;
+            }
+            let state_const: bool =
+                const_int_to(insn).is_some_and(|(dst, _): (u16, i32)| dst == state_reg);
+            let dispatch_read: bool = switch_registers.get(&idx) == Some(&state_reg);
+            if !state_const && !dispatch_read {
+                return Some(CffRewireRefusal::StateRegisterEscapes {
+                    register: state_reg,
+                    pc: insn.pc,
+                });
+            }
+        }
+    }
+    for &prefix_idx in &prefix_indices {
+        let insn: &DalvikInsn = &insns[prefix_idx];
+        let Some(written): Option<Vec<u16>> = const_destinations(insn) else {
+            return Some(CffRewireRefusal::DispatcherPrefixLive {
+                register: insn.regs.first().copied().unwrap_or_default(),
+                pc: insn.pc,
+            });
+        };
+        for register in written {
+            let read_elsewhere: bool =
+                insns
+                    .iter()
+                    .enumerate()
+                    .any(|(idx, other): (usize, &DalvikInsn)| {
+                        !prefix_indices.contains(&idx) && touches_register(other, register)
+                    });
+            if read_elsewhere {
+                return Some(CffRewireRefusal::DispatcherPrefixLive {
+                    register,
+                    pc: insn.pc,
+                });
+            }
+        }
+    }
+    None
+}
+
+#[must_use]
+fn const_destinations(insn: &DalvikInsn) -> Option<Vec<u16>> {
+    let dst: u16 = insn.regs.first().copied()?;
+    match insn.op {
+        0x12..=0x15 => Some(vec![dst]),
+        0x16..=0x19 => Some(vec![dst, dst.checked_add(1)?]),
+        _ => None,
+    }
+}
+
+#[must_use]
+fn touches_register(insn: &DalvikInsn, reg: u16) -> bool {
+    insn.regs.contains(&reg)
+        || has_wide_register_operand(insn.op)
+            && reg
+                .checked_sub(1)
+                .is_some_and(|low: u16| insn.regs.contains(&low))
+}
+
+#[inline]
+const fn has_wide_register_operand(op: u8) -> bool {
+    matches!(
+        op,
+        0x04..=0x06
+            | 0x0B
+            | 0x10
+            | 0x16..=0x19
+            | 0x2F..=0x31
+            | 0x45
+            | 0x4C
+            | 0x53
+            | 0x5A
+            | 0x61
+            | 0x68
+            | 0x7D..=0x8C
+            | 0x9B..=0xA5
+            | 0xAB..=0xAF
+            | 0xBB..=0xC5
+            | 0xCB..=0xCF
+    )
 }
 
 #[derive(Debug, Clone, Default)]
@@ -307,25 +472,28 @@ fn block_tail_state(block: &BasicBlock, insns: &[DalvikInsn], state_reg: u16) ->
         return None;
     }
     let last: &DalvikInsn = insns.get(end_idx - 1)?;
-    let const_idx: usize = if last.is_unconditional_goto() {
-        end_idx.checked_sub(2)?
-    } else {
+    let body_end: usize = if last.is_unconditional_goto() {
         end_idx - 1
+    } else {
+        end_idx
     };
-    if const_idx < start_idx {
-        return None;
-    }
-    let const_insn: &DalvikInsn = insns.get(const_idx)?;
-    let (dst, value): (u16, i32) = const_int_to(const_insn)?;
+    let write_idx: usize = (start_idx..body_end).rev().find(|&idx: &usize| {
+        insns
+            .get(idx)
+            .is_some_and(|insn: &DalvikInsn| writes_register(insn, state_reg))
+    })?;
+    let (dst, value): (u16, i32) = const_int_to(insns.get(write_idx)?)?;
     if dst != state_reg {
         return None;
     }
-    if writes_register_in(insns, state_reg, start_idx, const_idx) {
-        return None;
-    }
+    let truncate_to: usize = if write_idx + 1 == body_end {
+        write_idx
+    } else {
+        body_end
+    };
     Some(StateTail {
         const_value: value,
-        truncate_to: const_idx,
+        truncate_to,
     })
 }
 
@@ -344,15 +512,6 @@ fn const_int_to(insn: &DalvikInsn) -> Option<(u16, i32)> {
         }
         _ => None,
     }
-}
-
-#[must_use]
-fn writes_register_in(insns: &[DalvikInsn], reg: u16, start_idx: usize, before_idx: usize) -> bool {
-    insns
-        .get(start_idx..before_idx)
-        .into_iter()
-        .flatten()
-        .any(|insn: &DalvikInsn| writes_register(insn, reg))
 }
 
 #[must_use]
