@@ -57,9 +57,9 @@ fn parse_on_plain_js_returns_not_detected() {
 }
 
 #[test]
-fn detects_brython_init_function_call() {
+fn a_page_that_only_calls_brython_is_not_a_brython_module() {
     let snippet: &str = "<script>window.onload = function() { brython({debug: 1}); };</script>";
-    assert!(detect(snippet.as_bytes()));
+    assert!(!detect(snippet.as_bytes()));
 }
 
 const REAL_CORPUS: &[u8] =

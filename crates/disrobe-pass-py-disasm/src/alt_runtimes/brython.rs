@@ -62,7 +62,6 @@ pub fn detect(bytes: &[u8]) -> bool {
     has_marker(head, BRYTHON_RUNTIME_MARKER.as_bytes())
         || has_marker(head, BRYTHON_MODULE_MARKER.as_bytes())
         || has_marker(head, BRYTHON_AST_MARKER.as_bytes())
-        || has_marker(head, BRYTHON_INIT_FN.as_bytes())
 }
 
 fn scan_markers(bytes: &[u8]) -> Vec<String> {

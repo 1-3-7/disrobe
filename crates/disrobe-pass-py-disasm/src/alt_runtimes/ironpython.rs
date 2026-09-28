@@ -71,9 +71,9 @@ pub fn detect(bytes: &[u8]) -> bool {
     if dos != PE_DOS_MAGIC {
         return false;
     }
-    has_marker(bytes, IRONPYTHON_ASSEMBLY.as_bytes())
-        || has_marker(bytes, IRONPYTHON_RUNTIME.as_bytes())
-        || has_marker(bytes, IRONPYTHON_TYPE_PROVIDER.as_bytes())
+    disrobe_pass_dotnet::protectors::is_dotnet_assembly(bytes)
+        && (has_marker(bytes, IRONPYTHON_RUNTIME.as_bytes())
+            || has_marker(bytes, IRONPYTHON_TYPE_PROVIDER.as_bytes()))
 }
 
 fn scan_assembly_markers(bytes: &[u8]) -> Vec<String> {
@@ -116,12 +116,19 @@ mod tests {
     }
 
     #[test]
-    fn marker_scan_finds_ironpython_token() {
+    fn a_managed_assembly_referencing_the_runtime_is_ironpython() {
+        let bytes: &[u8] =
+            include_bytes!("../../../../corpus/python/alt_runtimes/ironpython/greet_ip.dll");
+        assert!(detect(bytes));
+        let found: Vec<String> = scan_assembly_markers(bytes);
+        assert!(found.contains(&IRONPYTHON_RUNTIME.to_owned()));
+    }
+
+    #[test]
+    fn a_native_image_mentioning_ironpython_is_not_ironpython() {
         let mut bytes: Vec<u8> = vec![b'M', b'Z'];
         bytes.extend_from_slice(&[0u8; 32]);
         bytes.extend_from_slice(IRONPYTHON_RUNTIME.as_bytes());
-        assert!(detect(&bytes));
-        let found: Vec<String> = scan_assembly_markers(&bytes);
-        assert!(found.contains(&IRONPYTHON_RUNTIME.to_owned()));
+        assert!(!detect(&bytes));
     }
 }
