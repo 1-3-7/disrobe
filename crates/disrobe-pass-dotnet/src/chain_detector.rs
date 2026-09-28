@@ -1023,9 +1023,7 @@ impl CatalogEntry for DotnetObfuscatorEntry {
 
 const fn quality_for(protector: Protector) -> SupportQuality {
     match protector {
-        Protector::ConfuserEx2 | Protector::EazfuscatorNet | Protector::KoiVm => {
-            SupportQuality::Full
-        }
+        Protector::ConfuserEx2 => SupportQuality::Full,
         Protector::Ilprotector | Protector::MaxToCode | Protector::ThemidaDotnet => {
             SupportQuality::DetectOnly
         }
@@ -1045,7 +1043,9 @@ const fn quality_for(protector: Protector) -> SupportQuality {
         | Protector::DotNetPatcher
         | Protector::NetCryptor
         | Protector::Obfuscar
-        | Protector::BitMono => SupportQuality::Partial,
+        | Protector::BitMono
+        | Protector::EazfuscatorNet
+        | Protector::KoiVm => SupportQuality::Partial,
     }
 }
 
@@ -1409,9 +1409,12 @@ mod tests {
 
     #[test]
     fn quality_map_is_honest() {
-        assert_eq!(quality_for(Protector::EazfuscatorNet), SupportQuality::Full);
+        assert_eq!(
+            quality_for(Protector::EazfuscatorNet),
+            SupportQuality::Partial
+        );
         assert_eq!(quality_for(Protector::ConfuserEx2), SupportQuality::Full);
-        assert_eq!(quality_for(Protector::KoiVm), SupportQuality::Full);
+        assert_eq!(quality_for(Protector::KoiVm), SupportQuality::Partial);
         assert_eq!(
             quality_for(Protector::Ilprotector),
             SupportQuality::DetectOnly
