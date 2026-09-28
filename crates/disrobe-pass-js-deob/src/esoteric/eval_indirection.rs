@@ -63,6 +63,13 @@ fn walk_statement(stmt: &Statement<'_>, stats: &mut EvalIndirectionStats) {
                 walk_expression(expr, stats);
             }
         }
+        Statement::IfStatement(branch) => {
+            walk_expression(&branch.test, stats);
+            walk_statement(&branch.consequent, stats);
+            if let Some(alternate) = &branch.alternate {
+                walk_statement(alternate, stats);
+            }
+        }
         _ => {}
     }
 }
@@ -100,6 +107,17 @@ fn walk_expression(expr: &Expression<'_>, stats: &mut EvalIndirectionStats) {
             walk_expression(&bin.left, stats);
             walk_expression(&bin.right, stats);
         }
+        Expression::LogicalExpression(logical) => {
+            walk_expression(&logical.left, stats);
+            walk_expression(&logical.right, stats);
+        }
+        Expression::ConditionalExpression(conditional) => {
+            walk_expression(&conditional.test, stats);
+            walk_expression(&conditional.consequent, stats);
+            walk_expression(&conditional.alternate, stats);
+        }
+        Expression::AssignmentExpression(assignment) => walk_expression(&assignment.right, stats),
+        Expression::UnaryExpression(unary) => walk_expression(&unary.argument, stats),
         _ => {}
     }
 }
