@@ -53,11 +53,40 @@ pub(super) fn dot_member_access(source: &str) -> (String, usize) {
         return (source.to_owned(), 0);
     };
     replace_in_code(source, &re, |caps: &Captures<'_>| {
-        let lead: &str = caps.get(1)?.as_str();
+        let lead: regex::Match<'_> = caps.get(1)?;
+        let word: &str = source
+            .get(..lead.end())?
+            .rsplit(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$'))
+            .next()
+            .unwrap_or_default();
+        if WORDS_BEFORE_A_NON_MEMBER_BRACKET.contains(&word) {
+            return None;
+        }
         let prop: &str = caps.get(2).or_else(|| caps.get(3))?.as_str();
-        Some(format!("{lead}.{prop}"))
+        Some(format!("{}.{prop}", lead.as_str()))
     })
 }
+
+const WORDS_BEFORE_A_NON_MEMBER_BRACKET: [&str; 18] = [
+    "async",
+    "await",
+    "case",
+    "delete",
+    "do",
+    "else",
+    "get",
+    "in",
+    "instanceof",
+    "new",
+    "of",
+    "return",
+    "set",
+    "static",
+    "throw",
+    "typeof",
+    "void",
+    "yield",
+];
 
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::panic)]
@@ -112,6 +141,14 @@ mod tests {
         let (out, n): (String, usize) = dot_member_access("foo()['bar'] + arr[0]['baz']");
         assert_eq!(out, "foo().bar + arr[0].baz");
         assert_eq!(n, 2);
+    }
+
+    #[test]
+    fn dot_member_leaves_computed_class_keys_and_keyword_operands_alone() {
+        let src: &str = "class A{get['name'](){return 1;}set['name'](v){}static get['count'](){return 2;}static['make'](){return new A();}}function f(){return['x'];}";
+        let (out, n): (String, usize) = dot_member_access(src);
+        assert_eq!(out, src);
+        assert_eq!(n, 0);
     }
 
     #[test]
