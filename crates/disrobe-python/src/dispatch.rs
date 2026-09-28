@@ -39,6 +39,8 @@ struct CanonicalSourceView {
     language: String,
     produced_by: String,
     confidence: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recovered_directly: Option<bool>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -67,6 +69,7 @@ fn canonical_source(
         language: language.to_owned(),
         produced_by: produced_by.to_owned(),
         confidence,
+        recovered_directly: None,
     };
     CanonicalSource::from_serialize(&view)
 }
@@ -323,7 +326,14 @@ fn decompile(py: Python<'_>, language: &str, source: Py<PyAny>) -> PyResult<Cano
             let bytes: Vec<u8> = extract_bytes(py, &source, language)?;
             let result: NativeDecompile =
                 decompile_pyc(&bytes).map_err(crate::err::map("decompile pyc"))?;
-            canonical_source(result.source, "python", "disrobe-pass-py-decompile", 1.0)
+            let view: CanonicalSourceView = CanonicalSourceView {
+                confidence: result.source_confidence(),
+                recovered_directly: Some(result.recovered_directly),
+                source: result.source,
+                language: "python".to_owned(),
+                produced_by: "disrobe-pass-py-decompile".to_owned(),
+            };
+            CanonicalSource::from_serialize(&view)
         }
         "jvm-class" | "class" | "java" => {
             let bytes: Vec<u8> = extract_bytes(py, &source, language)?;

@@ -284,13 +284,17 @@ fn public_decompile_keeps_the_module_and_names_the_nested_with_refusal() {
     let recovered = decompile_pyc(&bytes).expect("the public caller reads the compiled fixture");
 
     assert!(
-        recovered.recovered_directly,
+        recovered.fallback_reason.is_none(),
         "the nested failure must remain a function-level refusal, not a module fallback: {:?}",
         recovered.fallback_reason
     );
     assert!(
-        recovered.fallback_reason.is_none(),
-        "the public caller reported a module refusal instead of retaining the surrounding source"
+        !recovered.recovered_directly,
+        "a module with a stubbed nested body must not report direct recovery"
+    );
+    assert!(
+        recovered.stubbed_scopes > 0,
+        "the stubbed nested body must be counted"
     );
     assert!(
         recovered.source.contains("async def f(a, b):"),

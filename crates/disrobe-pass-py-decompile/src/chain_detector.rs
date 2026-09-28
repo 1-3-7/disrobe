@@ -19,6 +19,7 @@ pub const PASS_ID: PassId = "py.decompile";
 const TAG_PYC_PREFIX: &str = "pyc";
 const TAG_PYPY: &str = "pyc-pypy";
 const TAG_MICROPYTHON: &str = "pyc-micropython";
+const DISASSEMBLY_FORMAT_TAG: &str = "python-disassembly";
 
 #[derive(Debug)]
 pub struct PyDecompileDetector;
@@ -66,7 +67,13 @@ impl Pass for PyDecompilePass {
     }
 
     #[inline]
-    fn output_kind(&self, _output: &Artifact) -> OutputKind {
+    fn output_kind(&self, output: &Artifact) -> OutputKind {
+        if output.rung == Rung::Disasm {
+            return OutputKind::Report {
+                format_tag: DISASSEMBLY_FORMAT_TAG,
+                family: FAMILY_INTERPRETER_BYTECODE,
+            };
+        }
         OutputKind::Source {
             language: Language::Python,
             formatted: true,
@@ -92,11 +99,7 @@ impl Pass for PyDecompilePass {
                 let result: NativeDecompile = decompile_pypy(bytes).map_err(|e| {
                     CoreError::PassFailure(format!("DR-PYDEC-0911: py.decompile pypy engine: {e}"))
                 })?;
-                return Ok(Artifact::new(
-                    Rung::Surface,
-                    result.source.into_bytes(),
-                    artifact.root_hash,
-                ));
+                return Ok(decompiled_artifact(result, artifact));
             }
             Some(AltRuntime::MicroPython) => {
                 let result: NativeDecompile = decompile_micropython(bytes).map_err(|e| {
@@ -104,23 +107,24 @@ impl Pass for PyDecompilePass {
                         "DR-PYDEC-0912: py.decompile micropython engine: {e}"
                     ))
                 })?;
-                return Ok(Artifact::new(
-                    Rung::Surface,
-                    result.source.into_bytes(),
-                    artifact.root_hash,
-                ));
+                return Ok(decompiled_artifact(result, artifact));
             }
             _ => {}
         }
         let result: NativeDecompile = decompile_pyc(bytes).map_err(|e| {
             CoreError::PassFailure(format!("DR-PYDEC-0908: py.decompile engine: {e}"))
         })?;
-        Ok(Artifact::new(
-            Rung::Surface,
-            result.source.into_bytes(),
-            artifact.root_hash,
-        ))
+        Ok(decompiled_artifact(result, artifact))
     }
+}
+
+fn decompiled_artifact(result: NativeDecompile, input: &Artifact) -> Artifact {
+    let rung: Rung = if result.is_disasm_fallback() {
+        Rung::Disasm
+    } else {
+        Rung::Surface
+    };
+    Artifact::new(rung, result.source.into_bytes(), input.root_hash)
 }
 
 pub const META: disrobe_core::chain::PassMeta = disrobe_core::chain::PassMeta::new(
@@ -243,6 +247,18 @@ mod tests {
                 assert!(formatted);
             }
             _ => panic!("expected Source"),
+        }
+    }
+
+    #[test]
+    fn pass_output_kind_is_a_disassembly_report_for_a_disasm_rung() {
+        let a: Artifact = Artifact::new(Rung::Disasm, vec![], [0u8; 32]);
+        match PY_DECOMPILE_PASS.output_kind(&a) {
+            OutputKind::Report { format_tag, family } => {
+                assert_eq!(format_tag, DISASSEMBLY_FORMAT_TAG);
+                assert_eq!(family, FAMILY_INTERPRETER_BYTECODE);
+            }
+            other => panic!("expected Report, got {other:?}"),
         }
     }
 

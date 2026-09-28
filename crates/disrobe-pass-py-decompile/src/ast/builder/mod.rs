@@ -60,6 +60,7 @@ impl AstBuilder for DefaultAstBuilder {
     ) -> Result<AstModule> {
         set_active_version(version);
         set_future_annotations(code.flags);
+        clear_stubbed_scopes();
         let opmap: Box<dyn OpcodeMap> = map_for(version.clone());
         let stream: DecodedStream = decode_stream_with_offsets(code, opmap.as_ref(), version);
         let module_docstring: Option<String> = class_docstring(code, &stream.ops);
@@ -1127,6 +1128,32 @@ thread_local! {
     static STRUCTURE_HI_CAP: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static THEN_ARM_END_CAP: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static CODEOBJ_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static STUBBED_SCOPES: std::cell::RefCell<std::collections::BTreeSet<usize>> =
+        const { std::cell::RefCell::new(std::collections::BTreeSet::new()) };
+}
+
+fn clear_stubbed_scopes() {
+    STUBBED_SCOPES.with(
+        |slot: &std::cell::RefCell<std::collections::BTreeSet<usize>>| {
+            slot.borrow_mut().clear();
+        },
+    );
+}
+
+pub(super) fn record_stubbed_scope(nested: &CodeObject) {
+    STUBBED_SCOPES.with(
+        |slot: &std::cell::RefCell<std::collections::BTreeSet<usize>>| {
+            slot.borrow_mut().insert(std::ptr::from_ref(nested).addr());
+        },
+    );
+}
+
+pub(crate) fn take_stubbed_scopes() -> usize {
+    STUBBED_SCOPES.with(
+        |slot: &std::cell::RefCell<std::collections::BTreeSet<usize>>| {
+            std::mem::take(&mut *slot.borrow_mut()).len()
+        },
+    )
 }
 
 fn structure_hi_cap() -> usize {

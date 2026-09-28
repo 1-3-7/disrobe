@@ -16,7 +16,7 @@ use super::try_with::is_forward_cond_jump;
 use super::{
     CodeObjDepthGuard, DecodedStream, NestedCodeScope, class_docstring, decode_stream,
     decode_stream_with_offsets, enter_codeobj_depth, extract_docstring, future_annotations_active,
-    pick_nested_version,
+    pick_nested_version, record_stubbed_scope,
 };
 use crate::ast::node::{Arguments, ConstValue, Expr, ExprCtx, Stmt};
 use crate::bytecode::opcode::{CanonicalOp, CmpOp, OpcodeMap, is_deref_local, map_for};
@@ -306,7 +306,12 @@ pub(super) fn try_build_class_def(
     let stream: DecodedStream = decode_stream_with_offsets(nested, opmap.as_ref(), &nested_version);
     let body_raw: Vec<Stmt> = {
         let _code_scope: NestedCodeScope = NestedCodeScope::enter();
-        structure_stmts(nested, &stream, 0, stream.ops.len()).unwrap_or_default()
+        structure_stmts(nested, &stream, 0, stream.ops.len()).unwrap_or_else(
+            |_refused: DecompileError| {
+                record_stubbed_scope(nested);
+                Vec::new()
+            },
+        )
     };
     let stripped: Vec<Stmt> = strip_class_implicit(strip_module_implicit_return(
         strip_module_docstring_stmt(body_raw, nested),
@@ -2098,21 +2103,19 @@ pub(super) fn build_nested_function_def(
     let is_async: bool = is_async_default
         || (nested.flags & (PY_CO_FLAG_COROUTINE | PY_CO_FLAG_ASYNC_GENERATOR)) != 0;
     let args: Arguments = function_args_from_code(nested);
-    let _codeobj_guard: CodeObjDepthGuard = match enter_codeobj_depth() {
-        Ok(guard) => guard,
-        Err(_) => {
-            return Some(Stmt::FunctionDef {
-                name: target_name,
-                type_params: Vec::new(),
-                args,
-                body: vec![Stmt::Pass],
-                decorators: Vec::new(),
-                returns: None,
-                is_async,
-                docstring: Some("decompile-error: code-object nesting too deep".to_owned()),
-                line: None,
-            });
-        }
+    let Ok(_codeobj_guard): Result<CodeObjDepthGuard> = enter_codeobj_depth() else {
+        record_stubbed_scope(nested);
+        return Some(Stmt::FunctionDef {
+            name: target_name,
+            type_params: Vec::new(),
+            args,
+            body: vec![Stmt::Pass],
+            decorators: Vec::new(),
+            returns: None,
+            is_async,
+            docstring: Some("decompile-error: code-object nesting too deep".to_owned()),
+            line: None,
+        });
     };
     let structured: Result<Vec<Stmt>> = {
         let _code_scope: NestedCodeScope = NestedCodeScope::enter();
@@ -2121,6 +2124,7 @@ pub(super) fn build_nested_function_def(
     let body_raw: Vec<Stmt> = match structured {
         Ok(body) => body,
         Err(err) => {
+            record_stubbed_scope(nested);
             return Some(Stmt::FunctionDef {
                 name: target_name,
                 type_params: Vec::new(),
