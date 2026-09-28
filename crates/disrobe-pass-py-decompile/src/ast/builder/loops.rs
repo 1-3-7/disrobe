@@ -4,10 +4,11 @@ use super::branches::{
 };
 use super::exprs::{build_linear_stmts_sim, is_chain_cond_jump, local_target, name_at};
 use super::stmts::{
-    InlineComp, collect_unpack_targets, detect_inline_comprehension, first_significant,
+    InlineComp, append_trailing_loop_exit_break, collect_unpack_targets,
+    detect_inline_comprehension, exit_tail_is_inlined_at_break, first_significant,
     last_significant_back, placeholder_target, recover_tuple_target, region_all_paths_terminate,
-    resolve_jump_target, rewrite_legacy_async_for_body, single_store_target, structure_stmts,
-    then_terminating_jump,
+    region_all_paths_terminate_or_reach, resolve_jump_target, rewrite_legacy_async_for_body,
+    rewrite_trailing_iterator_break, single_store_target, structure_stmts, then_terminating_jump,
 };
 use super::try_with::{
     LoopKind, LoopRegion, TryRegion, find_try_region, handler_chain_end, handler_join,
@@ -1443,6 +1444,16 @@ fn find_for_loop(
             .or_else(|| {
                 region_all_paths_terminate(stream, body_start, bounded_exit)
                     .then_some(bounded_exit - 1)
+            })
+            .or_else(|| {
+                (bounded_exit == raw_exit
+                    && region_all_paths_terminate_or_reach(
+                        stream,
+                        body_start,
+                        bounded_exit,
+                        Some(raw_exit),
+                    ))
+                .then_some(bounded_exit - 1)
             })?;
         let exit_via_foriter: usize = raw_exit.min(hi).max((back_edge + 1).min(hi));
         let absorbed_end: usize =
@@ -1696,7 +1707,9 @@ fn structure_for_body(
     } else {
         region.body_end
     };
-    let mut body: Vec<Stmt> = structure_stmts(code, stream, body_start, body_end)?;
+    let body: Vec<Stmt> = structure_stmts(code, stream, body_start, body_end)?;
+    let mut body: Vec<Stmt> =
+        rewrite_trailing_iterator_break(code, stream, body, body_start, body_end)?;
     let epilogue: Vec<Stmt> = lift_cold_handler_exit_epilogue(
         code,
         stream,
@@ -2720,7 +2733,9 @@ fn structure_while_body_absorbing_break_handler(
         }
         return Ok(body);
     }
-    let mut body: Vec<Stmt> = structure_stmts(code, stream, region.body_start, region.body_end)?;
+    let body: Vec<Stmt> = structure_stmts(code, stream, region.body_start, region.body_end)?;
+    let mut body: Vec<Stmt> =
+        append_trailing_loop_exit_break(stream, body, region.body_start, region.body_end);
     if let Some(region_try) = find_try_region(stream, region.body_start, region.body_end)
         && region_try.try_start >= region.body_start
         && region_try.protected_end() <= region.body_end
@@ -3258,7 +3273,11 @@ fn structure_infinite_while_body(
     let body_end: usize = infinite_body_end(stream, region);
     let body_entry: usize = infinite_body_entry(stream, region, body_end);
     let Some((_, body_label)): Option<(usize, usize)> = infinite_exit_block(stream, region) else {
-        return Ok((structure_stmts(code, stream, body_entry, body_end)?, None));
+        let body: Vec<Stmt> = structure_stmts(code, stream, body_entry, body_end)?;
+        return Ok((
+            append_trailing_loop_exit_break(stream, body, body_entry, body_end),
+            None,
+        ));
     };
     let first_cond: usize = infinite_first_cond(stream, region);
     if inline_exit_splits_try(stream, region, first_cond, body_end) {
@@ -3680,7 +3699,141 @@ fn find_break_target(stream: &DecodedStream, region: &LoopRegion, hi: usize) -> 
             target = Some(target.map_or(hi, |prev: usize| prev.max(hi)));
         }
     }
+    target.or_else(|| inlined_break_target(stream, region, hi))
+}
+
+fn is_insignificant(op: &CanonicalOp) -> bool {
+    matches!(
+        op,
+        CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_)
+    )
+}
+
+fn is_block_terminator(op: &CanonicalOp) -> bool {
+    matches!(
+        op,
+        CanonicalOp::Return | CanonicalOp::ReturnConst(_) | CanonicalOp::Raise(_)
+    )
+}
+
+#[deny(clippy::indexing_slicing)]
+fn straightline_terminator_run(
+    stream: &DecodedStream,
+    from: usize,
+    hi: usize,
+) -> Option<Vec<usize>> {
+    let mut run: Vec<usize> = Vec::new();
+    for k in from..hi {
+        let op: &CanonicalOp = stream.ops.get(k)?;
+        if is_insignificant(op) {
+            continue;
+        }
+        if resolve_jump_target(stream, k, op).is_some() {
+            return None;
+        }
+        run.push(k);
+        if is_block_terminator(op) {
+            return Some(run);
+        }
+    }
+    None
+}
+
+#[deny(clippy::indexing_slicing)]
+fn inlined_break_target(stream: &DecodedStream, region: &LoopRegion, hi: usize) -> Option<usize> {
+    if !exit_tail_is_inlined_at_break(stream) || !matches!(region.kind, LoopKind::For) {
+        return None;
+    }
+    let hi: usize = hi.min(stream.ops.len());
+    let tail_start: usize = skip_loop_epilogue(stream, region.exit.min(hi), hi);
+    let tail: Vec<usize> = (tail_start..hi)
+        .filter(|&k: &usize| stream.ops.get(k).is_some_and(|op| !is_insignificant(op)))
+        .collect();
+    let mut target: Option<usize> = None;
+    for pop_at in region.body_start..region.body_end.min(hi) {
+        if !matches!(stream.ops.get(pop_at), Some(CanonicalOp::Pop))
+            || is_shortcircuit_cleanup_pop(stream, pop_at)
+        {
+            continue;
+        }
+        let unwinds_return_value: bool = last_significant_back(stream, region.body_start, pop_at)
+            .is_some_and(|prev: usize| {
+                matches!(
+                    stream.ops.get(prev),
+                    Some(CanonicalOp::RotN(2) | CanonicalOp::Swap(2))
+                )
+            });
+        if unwinds_return_value {
+            continue;
+        }
+        let Some(run): Option<Vec<usize>> =
+            straightline_terminator_run(stream, pop_at + 1, region.body_end.min(hi))
+        else {
+            continue;
+        };
+        if run.first().is_some_and(|&k: &usize| {
+            matches!(
+                stream.ops.get(k),
+                Some(CanonicalOp::Return | CanonicalOp::Pop)
+            )
+        }) {
+            continue;
+        }
+        let run_ops: Vec<&CanonicalOp> = run
+            .iter()
+            .filter_map(|&k: &usize| stream.ops.get(k))
+            .collect();
+        let found: Option<usize> = (1..tail.len()).find_map(|pos: usize| {
+            let before_window: usize = *tail.get(pos - 1)?;
+            if !completes_body_stmt(stream, before_window) {
+                return None;
+            }
+            let window: &[usize] = tail.get(pos..pos + run_ops.len())?;
+            let window_ops: Vec<&CanonicalOp> = window
+                .iter()
+                .filter_map(|&k: &usize| stream.ops.get(k))
+                .collect();
+            (window_ops == run_ops)
+                .then_some(window.first().copied())
+                .flatten()
+        });
+        if let Some(t) = found.filter(|&t: &usize| else_block_is_closed(stream, tail_start, t)) {
+            target = Some(target.map_or(t, |prev: usize| prev.max(t)));
+        }
+    }
     target
+}
+
+fn else_block_is_closed(stream: &DecodedStream, start: usize, end: usize) -> bool {
+    let (Some(&lo_off), Some(&hi_off)): (Option<&u32>, Option<&u32>) =
+        (stream.offsets.get(start), stream.offsets.get(end))
+    else {
+        return false;
+    };
+    let touches_handler: bool =
+        stream
+            .exception_table
+            .iter()
+            .any(|entry: &crate::bytecode::flow::ExceptionTableEntry| {
+                let entry_end: u32 = entry.start.saturating_add(entry.length);
+                (entry.start <= hi_off && entry_end > lo_off)
+                    || (lo_off..=hi_off).contains(&entry.target)
+            });
+    !touches_handler
+        && stream
+            .ops
+            .iter()
+            .enumerate()
+            .all(|(k, op): (usize, &CanonicalOp)| {
+                let Some(t): Option<usize> = resolve_jump_target(stream, k, op) else {
+                    return true;
+                };
+                if (start..end).contains(&k) {
+                    (start..=end).contains(&t)
+                } else {
+                    t <= start || t > end
+                }
+            })
 }
 
 fn is_iter_setup_boundary(stream: &DecodedStream, k: usize) -> bool {

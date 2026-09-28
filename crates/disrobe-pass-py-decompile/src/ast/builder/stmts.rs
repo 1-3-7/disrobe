@@ -1808,7 +1808,8 @@ fn structure_elif_chain_arm(
             && !is_chain_cond_jump(&stream.ops, i)
             && !is_value_form_shortcircuit(&stream.ops, i)
     }) else {
-        return structure_stmts(code, stream, lo, hi);
+        let arm: Vec<Stmt> = structure_stmts(code, stream, lo, hi)?;
+        return rewrite_trailing_iterator_break(code, stream, arm, lo, hi);
     };
     let compound: Option<CompoundIf> = try_recover_compound_if(code, stream, lo, hi)?;
     let cond_at: usize = compound
@@ -2988,7 +2989,9 @@ pub(super) fn append_handler_loop_jump(
     lo: usize,
     hi: usize,
 ) -> Vec<Stmt> {
-    let Some(jump): Option<Stmt> = trailing_loop_jump_stmt(stream, lo, hi) else {
+    let Some(jump): Option<Stmt> = trailing_loop_jump_stmt(stream, lo, hi)
+        .or_else(|| handler_teardown_breaks_loop(stream, lo, hi).then_some(Stmt::Break))
+    else {
         return body;
     };
     if matches!(
@@ -3075,6 +3078,32 @@ fn handler_break_pops_for_iterator(stream: &DecodedStream, lo: usize, jump_idx: 
     }
     significant_before(pop_idx)
         .is_some_and(|prev: usize| matches!(stream.ops.get(prev), Some(CanonicalOp::PopExcept)))
+}
+
+#[deny(clippy::indexing_slicing)]
+fn handler_teardown_breaks_loop(stream: &DecodedStream, lo: usize, hi: usize) -> bool {
+    let Some(pop_at): Option<usize> = last_significant_back(stream, lo, hi) else {
+        return false;
+    };
+    let pops_after_except: bool = matches!(stream.ops.get(pop_at), Some(CanonicalOp::Pop))
+        && last_significant_back(stream, lo, pop_at).is_some_and(|prev: usize| {
+            matches!(stream.ops.get(prev), Some(CanonicalOp::PopExcept))
+        });
+    if !pops_after_except {
+        return false;
+    }
+    let window_end: usize = match first_significant(stream, pop_at + 1, stream.ops.len()) {
+        Some(next)
+            if stream
+                .ops
+                .get(next)
+                .is_some_and(|op: &CanonicalOp| is_unconditional_jump(op)) =>
+        {
+            next + 1
+        }
+        _ => pop_at + 1,
+    };
+    trailing_iterator_break_pop(stream, pop_at, window_end) == Some(pop_at)
 }
 
 #[deny(clippy::indexing_slicing)]
@@ -3192,6 +3221,336 @@ fn ops_equal_run(stream: &DecodedStream, a: &[usize], b: &[usize]) -> bool {
         })
 }
 
+fn is_unconditional_jump(op: &CanonicalOp) -> bool {
+    matches!(
+        op,
+        CanonicalOp::JumpForward(_)
+            | CanonicalOp::JumpAbsolute(_)
+            | CanonicalOp::JumpBackward(_)
+            | CanonicalOp::JumpBackwardNoInterrupt(_)
+    )
+}
+
+fn no_jump_lands_in(stream: &DecodedStream, from: usize, to: usize) -> bool {
+    !stream
+        .ops
+        .iter()
+        .enumerate()
+        .any(|(k, op): (usize, &CanonicalOp)| {
+            resolve_jump_target(stream, k, op).is_some_and(|t: usize| t >= from && t < to)
+        })
+        && !stream.exception_table.iter().any(
+            |entry: &crate::bytecode::flow::ExceptionTableEntry| {
+                stream
+                    .index_for_offset(entry.target)
+                    .is_some_and(|t: usize| t >= from && t < to)
+            },
+        )
+}
+
+#[deny(clippy::indexing_slicing)]
+fn last_live_significant(stream: &DecodedStream, lo: usize, hi: usize) -> Option<usize> {
+    let idxs: Vec<usize> = significant_run(stream, lo, hi);
+    for (pos, &k) in idxs.iter().enumerate() {
+        let op: &CanonicalOp = stream.ops.get(k)?;
+        if !is_unconditional_jump(op) {
+            continue;
+        }
+        let rest: &[usize] = idxs.get(pos + 1..).unwrap_or_default();
+        if !rest.is_empty()
+            && rest.iter().all(|&d: &usize| {
+                stream
+                    .ops
+                    .get(d)
+                    .is_some_and(|dead: &CanonicalOp| is_unconditional_jump(dead))
+            })
+            && no_jump_lands_in(stream, k + 1, hi)
+        {
+            return Some(k);
+        }
+    }
+    idxs.last().copied()
+}
+
+#[deny(clippy::indexing_slicing)]
+fn trailing_iterator_break_pop(stream: &DecodedStream, lo: usize, hi: usize) -> Option<usize> {
+    let header: usize = loop_continue_target()?;
+    let header_op: &CanonicalOp = stream.ops.get(header)?;
+    if !matches!(header_op, CanonicalOp::ForIter(_)) {
+        return None;
+    }
+    let exit: usize = loop_break_target()?;
+    let raw_exit: usize = resolve_jump_target(stream, header, header_op)?;
+    let last: usize = last_live_significant(stream, lo, hi)?;
+    let last_op: &CanonicalOp = stream.ops.get(last)?;
+    let pop_at: usize = if is_unconditional_jump(last_op) {
+        let target: usize = resolve_jump_target(stream, last, last_op)?;
+        let leaves_loop: bool = (target >= exit && target > last)
+            || (target < last && target != header && loop_frame_has_header(target));
+        if !leaves_loop {
+            return None;
+        }
+        last_significant_back(stream, lo, last)?
+    } else {
+        if last >= raw_exit || first_significant(stream, last + 1, raw_exit).is_some() {
+            return None;
+        }
+        last
+    };
+    (matches!(stream.ops.get(pop_at), Some(CanonicalOp::Pop))
+        && !is_shortcircuit_cleanup_pop(stream, pop_at))
+    .then_some(pop_at)
+}
+
+fn stmts_equal_ignoring_pass(a: &[Stmt], b: &[Stmt]) -> bool {
+    let a: Vec<&Stmt> = a
+        .iter()
+        .filter(|s: &&Stmt| !matches!(s, Stmt::Pass))
+        .collect();
+    let b: Vec<&Stmt> = b
+        .iter()
+        .filter(|s: &&Stmt| !matches!(s, Stmt::Pass))
+        .collect();
+    a == b
+}
+
+fn loop_continue_stmt_count(stmts: &[Stmt]) -> usize {
+    stmts
+        .iter()
+        .map(|stmt: &Stmt| match stmt {
+            Stmt::Continue => 1,
+            Stmt::If { body, orelse, .. } => {
+                loop_continue_stmt_count(body) + loop_continue_stmt_count(orelse)
+            }
+            Stmt::For { orelse, .. } | Stmt::While { orelse, .. } => {
+                loop_continue_stmt_count(orelse)
+            }
+            Stmt::With { body, .. } => loop_continue_stmt_count(body),
+            Stmt::Try {
+                body,
+                handlers,
+                orelse,
+                finalbody,
+                ..
+            }
+            | Stmt::TryStar {
+                body,
+                handlers,
+                orelse,
+                finalbody,
+                ..
+            } => {
+                loop_continue_stmt_count(body)
+                    + handlers
+                        .iter()
+                        .map(|h: &ExceptHandler| loop_continue_stmt_count(&h.body))
+                        .sum::<usize>()
+                    + loop_continue_stmt_count(orelse)
+                    + loop_continue_stmt_count(finalbody)
+            }
+            Stmt::Match { cases, .. } => cases
+                .iter()
+                .map(|c: &MatchCase| loop_continue_stmt_count(&c.body))
+                .sum(),
+            _ => 0,
+        })
+        .sum()
+}
+
+fn stmt_has_trailing_break(stmt: &Stmt) -> bool {
+    let ends_in_break = |arm: &[Stmt]| -> bool {
+        arm.last()
+            .is_some_and(|last: &Stmt| matches!(last, Stmt::Break) || stmt_has_trailing_break(last))
+    };
+    match stmt {
+        Stmt::If { body, orelse, .. } => ends_in_break(body) || ends_in_break(orelse),
+        Stmt::With { body, .. } => ends_in_break(body),
+        Stmt::Try {
+            body,
+            handlers,
+            orelse,
+            finalbody,
+            ..
+        }
+        | Stmt::TryStar {
+            body,
+            handlers,
+            orelse,
+            finalbody,
+            ..
+        } => {
+            ends_in_break(body)
+                || ends_in_break(orelse)
+                || ends_in_break(finalbody)
+                || handlers
+                    .iter()
+                    .any(|h: &ExceptHandler| ends_in_break(&h.body))
+        }
+        Stmt::Match { cases, .. } => cases.iter().any(|c: &MatchCase| ends_in_break(&c.body)),
+        _ => false,
+    }
+}
+
+enum IteratorBreak {
+    Recovered(Vec<Stmt>),
+    Absent,
+    Unrecoverable { pop_at: usize },
+}
+
+#[deny(clippy::indexing_slicing)]
+fn classify_iterator_break(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    body: &[Stmt],
+    lo: usize,
+    hi: usize,
+) -> IteratorBreak {
+    if matches!(
+        body.last(),
+        Some(Stmt::Break | Stmt::Continue | Stmt::Return(_) | Stmt::Raise { .. })
+    ) || body.last().is_some_and(stmt_has_trailing_break)
+    {
+        return IteratorBreak::Absent;
+    }
+    let (Some(pop_at), Some(header)): (Option<usize>, Option<usize>) = (
+        trailing_iterator_break_pop(stream, lo, hi),
+        loop_continue_target(),
+    ) else {
+        return IteratorBreak::Absent;
+    };
+    let Ok(before_pop): Result<Vec<Stmt>> = structure_stmts(code, stream, lo, pop_at) else {
+        return IteratorBreak::Absent;
+    };
+    if !stmts_equal_ignoring_pass(&before_pop, body) {
+        return IteratorBreak::Absent;
+    }
+    let continue_jumps: usize = (lo..pop_at)
+        .filter(|&k: &usize| {
+            stream.ops.get(k).is_some_and(|op: &CanonicalOp| {
+                is_unconditional_jump(op) && resolve_jump_target(stream, k, op) == Some(header)
+            })
+        })
+        .count();
+    let mut out: Vec<Stmt> = before_pop
+        .into_iter()
+        .filter(|s: &Stmt| !matches!(s, Stmt::Pass))
+        .collect();
+    let explicit_continues: usize = loop_continue_stmt_count(&out);
+    if continue_jumps == explicit_continues {
+        out.push(Stmt::Break);
+        return IteratorBreak::Recovered(out);
+    }
+    if let Some(Stmt::Try {
+        handlers,
+        orelse,
+        finalbody,
+        ..
+    }) = out.last_mut()
+        && orelse.is_empty()
+        && finalbody.is_empty()
+        && explicit_continues
+            + handlers
+                .iter()
+                .filter(|h: &&ExceptHandler| {
+                    !matches!(
+                        h.body.last(),
+                        Some(Stmt::Break | Stmt::Continue | Stmt::Return(_) | Stmt::Raise { .. })
+                    )
+                })
+                .count()
+            == continue_jumps
+    {
+        orelse.push(Stmt::Break);
+        return IteratorBreak::Recovered(out);
+    }
+    IteratorBreak::Unrecoverable { pop_at }
+}
+
+fn append_iterator_break(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    body: &[Stmt],
+    lo: usize,
+    hi: usize,
+) -> Option<Vec<Stmt>> {
+    match classify_iterator_break(code, stream, body, lo, hi) {
+        IteratorBreak::Recovered(out) => Some(out),
+        IteratorBreak::Absent | IteratorBreak::Unrecoverable { .. } => None,
+    }
+}
+
+pub(super) fn rewrite_trailing_iterator_break(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    body: Vec<Stmt>,
+    lo: usize,
+    hi: usize,
+) -> Result<Vec<Stmt>> {
+    match classify_iterator_break(code, stream, &body, lo, hi) {
+        IteratorBreak::Recovered(out) => return Ok(out),
+        IteratorBreak::Unrecoverable { pop_at } => {
+            return Err(crate::error::DecompileError::AstDesync {
+                offset: stream
+                    .offsets
+                    .get(pop_at)
+                    .map_or(0, |offset: &u32| *offset as usize),
+                reason: "loop break follows an arm whose continue was not recovered".to_owned(),
+            });
+        }
+        IteratorBreak::Absent => {}
+    }
+    if let Some(rewritten) = rewrite_inlined_break_tail(code, stream, &body, lo, hi) {
+        return Ok(rewritten);
+    }
+    if exit_tail_is_inlined_at_break(stream) && is_peephole_break_return(stream, &body, lo, hi) {
+        return Ok(vec![Stmt::Break]);
+    }
+    Ok(body)
+}
+
+pub(super) fn append_trailing_loop_exit_break(
+    stream: &DecodedStream,
+    body: Vec<Stmt>,
+    lo: usize,
+    hi: usize,
+) -> Vec<Stmt> {
+    if matches!(
+        body.last(),
+        Some(Stmt::Break | Stmt::Continue | Stmt::Return(_) | Stmt::Raise { .. })
+    ) || body.last().is_some_and(stmt_has_trailing_break)
+    {
+        return body;
+    }
+    let Some(exit): Option<usize> = loop_break_target() else {
+        return body;
+    };
+    let Some(last): Option<usize> = last_live_significant(stream, lo, hi) else {
+        return body;
+    };
+    let Some(last_op): Option<&CanonicalOp> = stream.ops.get(last) else {
+        return body;
+    };
+    let breaks: bool = matches!(
+        last_op,
+        CanonicalOp::JumpForward(_) | CanonicalOp::JumpAbsolute(_)
+    ) && resolve_jump_target(stream, last, last_op)
+        .is_some_and(|target: usize| target >= exit && target > last)
+        && !trailing_jump_is_guarded_fallthrough(stream, lo, last + 1, last);
+    if !breaks {
+        return body;
+    }
+    let mut out: Vec<Stmt> = body
+        .into_iter()
+        .filter(|s: &Stmt| !matches!(s, Stmt::Pass))
+        .collect();
+    out.push(Stmt::Break);
+    out
+}
+
+pub(super) fn exit_tail_is_inlined_at_break(stream: &DecodedStream) -> bool {
+    stream.version.major() > 3 || (stream.version.major() == 3 && stream.version.minor() >= 10)
+}
+
 #[deny(clippy::indexing_slicing)]
 fn rewrite_inlined_break_tail(
     code: &CodeObject,
@@ -3200,6 +3559,9 @@ fn rewrite_inlined_break_tail(
     lo: usize,
     hi: usize,
 ) -> Option<Vec<Stmt>> {
+    if !exit_tail_is_inlined_at_break(stream) {
+        return None;
+    }
     loop_break_target()?;
     let (t0, t1): (usize, usize) = loop_exit_tail_range()?;
     if hi > t0 {
@@ -3276,6 +3638,9 @@ fn rewrite_jump_to_break_continue(
     hi: usize,
 ) -> Vec<Stmt> {
     if let Some(appended) = append_pre311_break_loop(stream, &body, lo, hi) {
+        return appended;
+    }
+    if let Some(appended) = append_iterator_break(code, stream, &body, lo, hi) {
         return appended;
     }
     if is_peephole_break_return(stream, &body, lo, hi) {
@@ -4932,12 +5297,24 @@ fn shares_duplicated_tail(
 }
 
 pub(super) fn region_all_paths_terminate(stream: &DecodedStream, lo: usize, hi: usize) -> bool {
+    region_all_paths_terminate_or_reach(stream, lo, hi, None)
+}
+
+pub(super) fn region_all_paths_terminate_or_reach(
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+    exit: Option<usize>,
+) -> bool {
     if lo >= hi || hi > stream.ops.len() {
         return false;
     }
     let mut states: Vec<u8> = vec![0; hi - lo];
     let mut work: Vec<(usize, bool)> = vec![(lo, false)];
     while let Some((idx, exiting)) = work.pop() {
+        if exit.is_some_and(|leave_at: usize| idx >= leave_at) {
+            continue;
+        }
         if idx < lo || idx >= hi {
             return false;
         }

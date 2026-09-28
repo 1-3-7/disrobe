@@ -34,6 +34,7 @@ fn assert_recompiles_on(
     );
     let scratch: PathBuf = band_scratch(label);
     let mut checked_stable: usize = 0;
+    let mut failures: Vec<String> = Vec::new();
     for interp in &band {
         let (outcome, source): (BandOutcome, String) =
             recompile_equiv_inline(interp, program, label, &scratch);
@@ -47,10 +48,10 @@ fn assert_recompiles_on(
             BandOutcome::Failed(reason) if interp.is_prerelease => {
                 eprintln!("SKIP prerelease {label} py{}: {reason}", interp.alias);
             }
-            other => panic!(
-                "{label} py{}: expected recompile-equivalence, got {other:?}\n--- recovered:\n{source}",
+            other => failures.push(format!(
+                "py{}: expected recompile-equivalence, got {other:?}\n--- recovered:\n{source}",
                 interp.alias
-            ),
+            )),
         }
         assert!(
             !source.contains("__DR_"),
@@ -58,6 +59,7 @@ fn assert_recompiles_on(
             interp.alias
         );
     }
+    assert!(failures.is_empty(), "{label}:\n{}", failures.join("\n\n"));
     assert!(
         checked_stable > 0,
         "{label}: no stable interpreter validated the recovery (vacuous)"
@@ -111,5 +113,97 @@ fn chained_comparison_guard_after_a_handled_call_keeps_its_test() {
         "def getnode(getters):\n    node = None\n    for getter in getters:\n        try:\n            node = getter()\n        except:\n            continue\n        if node is not None and 0 <= node < 281474976710656:\n            return node\n    return None\n",
         &["3.8", "3.9"],
         &[],
+    );
+}
+
+#[test]
+fn a_break_after_a_statement_before_a_returning_exit_stays_a_break() {
+    assert_recompiles(
+        "break_after_statement_returning_exit",
+        "def f(xs, a, g):\n    for x in xs:\n        if a(x):\n            g(x)\n            break\n    return 0\n",
+    );
+}
+
+#[test]
+fn an_unconditional_break_before_a_returning_exit_stays_a_break() {
+    assert_recompiles(
+        "unconditional_break_returning_exit",
+        "def f(xs, g):\n    for x in xs:\n        g(x)\n        break\n    return g\n",
+    );
+}
+
+#[test]
+fn a_break_in_an_else_arm_before_a_returning_exit_stays_a_break() {
+    assert_recompiles(
+        "else_arm_break_returning_exit",
+        "def f(xs, a, g):\n    for x in xs:\n        if a(x):\n            g(x)\n        else:\n            break\n    return 1\n",
+    );
+}
+
+#[test]
+fn a_break_in_the_last_arm_of_an_elif_chain_stays_a_break() {
+    assert_recompiles(
+        "elif_chain_else_break_returning_exit",
+        "def f(xs, a, g, h):\n    for x in xs:\n        if a(x):\n            g(x)\n        elif h(x):\n            h(g)\n        else:\n            break\n    return g\n",
+    );
+}
+
+#[test]
+fn an_unconditional_break_ending_a_for_else_body_keeps_the_else() {
+    assert_recompiles(
+        "unconditional_break_for_else",
+        "def f(xs, g, h):\n    for x in xs:\n        g(x)\n        break\n    else:\n        h()\n    return g\n",
+    );
+}
+
+#[test]
+fn an_inner_loop_ending_in_a_break_stays_a_loop() {
+    assert_recompiles(
+        "inner_loop_unconditional_break",
+        "def f(ys, xs, g, h):\n    for y in ys:\n        for x in xs:\n            g(x)\n            break\n        h(y)\n    return 0\n",
+    );
+}
+
+#[test]
+fn an_unconditional_break_before_a_statement_tail_stays_a_break() {
+    assert_recompiles(
+        "unconditional_break_statement_tail",
+        "def f(xs, g):\n    for x in xs:\n        g(x)\n        break\n    g(0)\n",
+    );
+}
+
+#[test]
+fn a_return_in_a_loop_before_an_equal_exit_stays_a_return() {
+    assert_recompiles_on(
+        "return_before_equal_exit",
+        "def f(xs, a, g):\n    for x in xs:\n        if a(x):\n            g(x)\n            return 1\n    return 1\n",
+        &["3.8", "3.9"],
+        &[],
+    );
+}
+
+#[test]
+fn an_unconditional_break_ending_a_while_body_stays_a_break() {
+    assert_recompiles_on(
+        "while_unconditional_break",
+        "def f(it, g):\n    while it.more():\n        g(it)\n        break\n    return g\n",
+        &["3.8", "3.9"],
+        &[],
+    );
+}
+
+#[test]
+fn an_unconditional_break_ending_an_infinite_while_body_stays_a_break() {
+    assert_recompiles(
+        "infinite_while_unconditional_break",
+        "def f(g):\n    while True:\n        g(1)\n        break\n    return g\n",
+    );
+}
+
+#[test]
+fn a_break_in_an_else_arm_before_an_implicit_return_stays_a_break() {
+    assert_recompiles(
+        "else_arm_break_implicit_return",
+        "def f(xs, a, g):\n    for x in xs:\n        if a(x):\n            g(x)\n        else:\n            break\n",
     );
 }
