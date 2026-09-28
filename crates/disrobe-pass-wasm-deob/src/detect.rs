@@ -411,10 +411,13 @@ mod tests {
 
     #[test]
     fn a_large_stripped_module_without_fragments_is_not_wasmixer() {
-        let functions: String = (0..60)
+        let functions: Vec<String> = (0..60)
             .map(|index: i32| format!("  (func $f{index} (result i32) i32.const {index})\n"))
             .collect();
-        let text: String = format!("(module\n{functions}  (export \"_start\" (func $f0)))\n");
+        let text: String = format!(
+            "(module\n{}  (export \"_start\" (func $f0)))\n",
+            functions.concat()
+        );
         let bytes: Vec<u8> = wat::parse_str(&text).expect("assemble");
         let detection: WasmDetection = detect(&bytes).expect("detect");
         assert_ne!(
