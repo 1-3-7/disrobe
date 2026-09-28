@@ -57,7 +57,7 @@ const CHART_RENDERER_OWNED_ELSEWHERE: [&str; 3] =
 
 const CHART_RENDERER_SCANNED_DIRS: [&str; 3] = [".", "charts", "lib"];
 
-const CHART_RENDERER_DIGEST: &str = "dbb13a3b2963858aac6f99a5c9890eb4";
+const CHART_RENDERER_DIGEST: &str = "dd4c77086e72f4886b5b1ebde5b5e611";
 
 const RECOVERY_CHART: &str = "recovery.svg";
 const RECOVERY_DATA: &str = "recovery.json";
