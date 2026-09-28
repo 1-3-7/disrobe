@@ -1,6 +1,6 @@
 # Containers and archives
 
-Before `disrobe` can decompile anything, it often has to get inside a container. The `disrobe-binfmt` layer detects every format below. Most use the generic member-byte extractor; LUKS1 uses a dedicated raw-volume-key route and reports a typed key wall when no key is supplied. Auto-detection, recursive chaining through nested layers, and shared zip-slip and decompression-bomb guards remain in effect. A committed input drives 42 generic extractors to member bytes on disk, and the tracked LUKS1 fixture separately proves byte-exact decryption into the VHD extractor.
+Before `disrobe` can decompile anything, it often has to get inside a container. The `disrobe-binfmt` layer detects every format below. Most use the generic member-byte extractor; LUKS1 uses a dedicated raw-volume-key route and reports a typed key wall when no key is supplied. Auto-detection, recursive chaining through nested layers, and shared zip-slip and decompression-bomb guards remain in effect. A committed input drives <!-- roster-breadth:containers-exercised -->28<!-- /roster-breadth --> generic extractors to member bytes that match an independent extractor (bsdtar, 7-Zip or the format's own decompressor), and the tracked LUKS1 fixture separately proves byte-exact decryption into the VHD extractor.
 
 ## At a glance
 
