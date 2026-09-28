@@ -28,8 +28,180 @@ pub fn fold_constants(
     let mut report: ConstFoldReport = ConstFoldReport::default();
     let mut block_starts: std::collections::BTreeSet<u32> = branch_target_pcs(insns);
     block_starts.extend(handler_pcs.iter().copied());
-    fold_with_locals(cf, &mut out, &block_starts, &mut report);
+    let entry_states: BTreeMap<usize, LocalConstants> =
+        local_constants_at_block_entries(cf, insns, &block_starts, handler_pcs);
+    fold_with_locals(cf, &mut out, &block_starts, &entry_states, &mut report);
     (out, report)
+}
+
+type LocalConstants = BTreeMap<u16, i32>;
+
+const MAX_DATAFLOW_VISITS_PER_INSTRUCTION: usize = 16;
+
+fn local_constants_at_block_entries(
+    cf: &ClassFile,
+    insns: &[Instruction],
+    block_starts: &std::collections::BTreeSet<u32>,
+    handler_pcs: &[u32],
+) -> BTreeMap<usize, LocalConstants> {
+    let mut entries: BTreeMap<usize, LocalConstants> = BTreeMap::new();
+    if insns.is_empty()
+        || insns
+            .iter()
+            .any(|insn: &Instruction| matches!(insn.opcode, 0xA8 | 0xA9 | 0xC9))
+    {
+        return entries;
+    }
+    let index_of: BTreeMap<u32, usize> = insns
+        .iter()
+        .enumerate()
+        .map(|(index, insn): (usize, &Instruction)| (insn.pc, index))
+        .collect();
+    let handlers: std::collections::BTreeSet<usize> = handler_pcs
+        .iter()
+        .filter_map(|pc: &u32| index_of.get(pc).copied())
+        .collect();
+    let mut worklist: Vec<usize> = vec![0];
+    entries.insert(0, LocalConstants::new());
+    for handler in &handlers {
+        entries.insert(*handler, LocalConstants::new());
+        worklist.push(*handler);
+    }
+    let budget: usize = insns
+        .len()
+        .saturating_mul(MAX_DATAFLOW_VISITS_PER_INSTRUCTION);
+    let mut visits: usize = 0;
+    while let Some(start) = worklist.pop() {
+        visits += 1;
+        if visits > budget {
+            return BTreeMap::new();
+        }
+        let Some(mut locals): Option<LocalConstants> = entries.get(&start).cloned() else {
+            continue;
+        };
+        let mut stack: Vec<Lattice> = Vec::new();
+        let mut index: usize = start;
+        loop {
+            let insn: &Instruction = &insns[index];
+            step_constants(cf, insn, &mut stack, &mut locals);
+            let mut successors: Vec<usize> = branch_targets_of(insn)
+                .into_iter()
+                .filter_map(|pc: u32| index_of.get(&pc).copied())
+                .collect();
+            let falls_through: bool = !ends_straight_line(insn.opcode);
+            let next: usize = index + 1;
+            let next_starts_block: bool = insns
+                .get(next)
+                .is_some_and(|following: &Instruction| block_starts.contains(&following.pc));
+            if falls_through && next < insns.len() && !next_starts_block {
+                if successors.is_empty() {
+                    index = next;
+                    continue;
+                }
+                successors.push(next);
+            } else if falls_through && next < insns.len() {
+                successors.push(next);
+            }
+            for successor in successors {
+                if handlers.contains(&successor) {
+                    continue;
+                }
+                let changed: bool = match entries.get_mut(&successor) {
+                    Some(existing) => {
+                        let before: usize = existing.len();
+                        existing
+                            .retain(|slot: &u16, value: &mut i32| locals.get(slot) == Some(value));
+                        existing.len() != before
+                    }
+                    None => {
+                        entries.insert(successor, locals.clone());
+                        true
+                    }
+                };
+                if changed {
+                    worklist.push(successor);
+                }
+            }
+            break;
+        }
+    }
+    entries
+}
+
+fn branch_targets_of(insn: &Instruction) -> Vec<u32> {
+    let target = |off: i32| -> u32 { (i64::from(insn.pc) + i64::from(off)) as u32 };
+    match &insn.operands {
+        Operands::Branch(off) => vec![target(*off)],
+        Operands::TableSwitch {
+            default, offsets, ..
+        } => std::iter::once(*default)
+            .chain(offsets.iter().copied())
+            .map(target)
+            .collect(),
+        Operands::LookupSwitch { default, pairs } => std::iter::once(*default)
+            .chain(pairs.iter().map(|(_, off): &(i32, i32)| *off))
+            .map(target)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn step_constants(
+    cf: &ClassFile,
+    insn: &Instruction,
+    stack: &mut Vec<Lattice>,
+    locals: &mut LocalConstants,
+) {
+    if let Some(local) = istore_local(insn) {
+        match stack.pop() {
+            Some(Lattice::Const(value)) => {
+                locals.insert(local, value);
+            }
+            _ => {
+                locals.remove(&local);
+            }
+        }
+        return;
+    }
+    for local in written_locals(insn) {
+        locals.remove(&local);
+    }
+    if let Some(value) = const_push_value(cf, insn) {
+        stack.push(Lattice::Const(value));
+        return;
+    }
+    if let Some(local) = iload_local(insn) {
+        stack.push(
+            locals
+                .get(&local)
+                .copied()
+                .map_or(Lattice::Unknown, Lattice::Const),
+        );
+        return;
+    }
+    if let Some(op) = binary_kind(insn.opcode) {
+        let rhs: Option<Lattice> = stack.pop();
+        let lhs: Option<Lattice> = stack.pop();
+        stack.push(match (lhs, rhs) {
+            (Some(Lattice::Const(a)), Some(Lattice::Const(b))) => {
+                Lattice::Const(eval_binary(op, a, b))
+            }
+            _ => Lattice::Unknown,
+        });
+        return;
+    }
+    if let Some(op) = unary_kind(insn.opcode) {
+        let operand: Option<Lattice> = stack.pop();
+        stack.push(match operand {
+            Some(Lattice::Const(a)) => Lattice::Const(eval_unary(op, a)),
+            _ => Lattice::Unknown,
+        });
+        return;
+    }
+    apply_generic_effect(insn, stack);
+    for slot in stack.iter_mut() {
+        *slot = Lattice::Unknown;
+    }
 }
 
 fn branch_target_pcs(insns: &[Instruction]) -> std::collections::BTreeSet<u32> {
@@ -63,22 +235,30 @@ fn fold_with_locals(
     cf: &ClassFile,
     insns: &mut [Instruction],
     branch_targets: &std::collections::BTreeSet<u32>,
+    entry_states: &BTreeMap<usize, LocalConstants>,
     report: &mut ConstFoldReport,
 ) {
-    let mut stack: Vec<(Lattice, Option<usize>)> = Vec::new();
+    let mut stack: Vec<(Lattice, Option<Vec<usize>>)> = Vec::new();
     let mut local_lattice: BTreeMap<u16, Lattice> = BTreeMap::new();
     let mut after_transfer: bool = false;
     for index in 0..insns.len() {
         let insn: &Instruction = &insns[index];
         if after_transfer || branch_targets.contains(&insn.pc) {
             stack.clear();
-            local_lattice.clear();
+            local_lattice = entry_states
+                .get(&index)
+                .map_or_else(BTreeMap::new, |known| {
+                    known
+                        .iter()
+                        .map(|(slot, value): (&u16, &i32)| (*slot, Lattice::Const(*value)))
+                        .collect()
+                });
         }
         after_transfer = ends_straight_line(insn.opcode);
         if let Some(local) = istore_local(insn) {
             let value: Lattice = stack
                 .pop()
-                .map_or(Lattice::Unknown, |(l, _): (Lattice, Option<usize>)| l);
+                .map_or(Lattice::Unknown, |(l, _): (Lattice, Option<Vec<usize>>)| l);
             local_lattice.insert(local, value);
             continue;
         }
@@ -86,7 +266,7 @@ fn fold_with_locals(
             local_lattice.remove(&local);
         }
         if let Some(value) = const_push_value(cf, insn) {
-            stack.push((Lattice::Const(value), Some(index)));
+            stack.push((Lattice::Const(value), Some(vec![index])));
             continue;
         }
         if let Some(local) = iload_local(insn) {
@@ -94,43 +274,43 @@ fn fold_with_locals(
                 .get(&local)
                 .copied()
                 .unwrap_or(Lattice::Unknown);
-            stack.push((value, Some(index)));
+            stack.push((value, Some(vec![index])));
             continue;
         }
         if let Some(op) = binary_kind(insn.opcode) {
-            let rhs: Option<(Lattice, Option<usize>)> = stack.pop();
-            let lhs: Option<(Lattice, Option<usize>)> = stack.pop();
-            let folded: Option<i32> = match (lhs, rhs) {
-                (Some((Lattice::Const(a), Some(lp))), Some((Lattice::Const(b), Some(rp)))) => {
+            let rhs: Option<(Lattice, Option<Vec<usize>>)> = stack.pop();
+            let lhs: Option<(Lattice, Option<Vec<usize>>)> = stack.pop();
+            let folded: (Lattice, Option<Vec<usize>>) = match (lhs, rhs) {
+                (Some((Lattice::Const(a), lp)), Some((Lattice::Const(b), rp))) => {
                     let value: i32 = eval_binary(op, a, b);
-                    rewrite_range(insns, &[lp, rp], index, value).then_some(value)
+                    let chain: Option<Vec<usize>> =
+                        lp.zip(rp)
+                            .map(|(mut left, right): (Vec<usize>, Vec<usize>)| {
+                                left.extend(right);
+                                left
+                            });
+                    fold_chain(insns, chain, index, value, report)
                 }
-                _ => None,
+                _ => (Lattice::Unknown, None),
             };
-            if folded.is_some() {
-                report.values_folded += 1;
-            }
-            stack.push((folded.map_or(Lattice::Unknown, Lattice::Const), Some(index)));
+            stack.push(folded);
             continue;
         }
         if let Some(op) = unary_kind(insn.opcode) {
-            let operand: Option<(Lattice, Option<usize>)> = stack.pop();
-            let folded: Option<i32> = match operand {
-                Some((Lattice::Const(a), Some(p))) => {
+            let operand: Option<(Lattice, Option<Vec<usize>>)> = stack.pop();
+            let folded: (Lattice, Option<Vec<usize>>) = match operand {
+                Some((Lattice::Const(a), chain)) => {
                     let value: i32 = eval_unary(op, a);
-                    rewrite_range(insns, &[p], index, value).then_some(value)
+                    fold_chain(insns, chain, index, value, report)
                 }
-                _ => None,
+                _ => (Lattice::Unknown, None),
             };
-            if folded.is_some() {
-                report.values_folded += 1;
-            }
-            stack.push((folded.map_or(Lattice::Unknown, Lattice::Const), Some(index)));
+            stack.push(folded);
             continue;
         }
         let mut effect_stack: Vec<Lattice> = stack
             .iter()
-            .map(|(l, _): &(Lattice, Option<usize>)| *l)
+            .map(|(l, _): &(Lattice, Option<Vec<usize>>)| *l)
             .collect();
         apply_generic_effect(insn, &mut effect_stack);
         stack = effect_stack
@@ -166,6 +346,24 @@ fn written_locals(insn: &Instruction) -> Vec<u16> {
         Some(slot) => vec![slot],
         None => Vec::new(),
     }
+}
+
+fn fold_chain(
+    insns: &mut [Instruction],
+    chain: Option<Vec<usize>>,
+    index: usize,
+    value: i32,
+    report: &mut ConstFoldReport,
+) -> (Lattice, Option<Vec<usize>>) {
+    let Some(mut chain): Option<Vec<usize>> = chain else {
+        return (Lattice::Const(value), None);
+    };
+    if rewrite_range(insns, &chain, index, value) {
+        report.values_folded += 1;
+        return (Lattice::Const(value), Some(vec![index]));
+    }
+    chain.push(index);
+    (Lattice::Const(value), Some(chain))
 }
 
 fn rewrite_range(
@@ -406,6 +604,34 @@ mod tests {
     fn folding_a_local_times_a_constant_removes_both_operands() {
         let opcodes: Vec<u8> = folded_opcodes(&[0x04, 0x10, 0x0A, 0x3C, 0x1B, 0x05, 0x68, 0xAC]);
         assert_eq!(opcodes, vec![0x04, 0x10, 0x3C, NOP, NOP, 0x10, 0xAC]);
+    }
+
+    #[test]
+    fn a_local_equal_on_every_path_into_a_join_still_folds() {
+        let opcodes: Vec<u8> = folded_opcodes(&[
+            0x1A, 0x99, 0x00, 0x09, 0x10, 0x05, 0x3C, 0xA7, 0x00, 0x06, 0x10, 0x05, 0x3C, 0x1B,
+            0x05, 0x68, 0xAC,
+        ]);
+        assert_eq!(
+            opcodes,
+            vec![
+                0x1A, 0x99, 0x10, 0x3C, 0xA7, 0x10, 0x3C, NOP, NOP, 0x10, 0xAC
+            ]
+        );
+    }
+
+    #[test]
+    fn a_local_that_differs_between_paths_is_not_folded_at_the_join() {
+        let opcodes: Vec<u8> = folded_opcodes(&[
+            0x1A, 0x99, 0x00, 0x09, 0x10, 0x05, 0x3C, 0xA7, 0x00, 0x06, 0x10, 0x06, 0x3C, 0x1B,
+            0x05, 0x68, 0xAC,
+        ]);
+        assert_eq!(
+            opcodes,
+            vec![
+                0x1A, 0x99, 0x10, 0x3C, 0xA7, 0x10, 0x3C, 0x1B, 0x05, 0x68, 0xAC
+            ]
+        );
     }
 
     #[test]
