@@ -155,15 +155,78 @@ fn the_recovered_units_compute_the_authored_values() {
     );
 }
 
+fn local_probe_values(label: &str, unit: &str) -> String {
+    let javac: PathBuf =
+        common::find_on_path("javac").expect("the local-naming gate requires javac on PATH");
+    let java: PathBuf =
+        common::find_on_path("java").expect("the local-naming gate requires java on PATH");
+    let scratch: ScratchDir = ScratchDir::create(label).expect("create Java scratch directory");
+    let unit_path: PathBuf = scratch.path().join(STRUCTURAL_UNIT);
+    let driver_path: PathBuf = scratch.path().join("LocalDriver.java");
+    std::fs::write(&unit_path, unit).expect("write LocalProbe");
+    std::fs::write(
+        &driver_path,
+        "public final class LocalDriver {\n    public static void main(String[] args) {\n        \
+         for (int a = -3; a <= 3; a++) {\n            \
+         System.out.println(LocalProbe.branchConst(a, true) + \" \" + LocalProbe.branchConst(a, false));\n        \
+         }\n    }\n}\n",
+    )
+    .expect("write the LocalProbe driver");
+    let compiled: Output = Command::new(javac)
+        .arg("-d")
+        .arg(scratch.path())
+        .arg(&unit_path)
+        .arg(&driver_path)
+        .output()
+        .expect("run javac");
+    assert!(
+        compiled.status.success(),
+        "javac rejected {label}:\n{}\n----\n{unit}",
+        String::from_utf8_lossy(&compiled.stderr)
+    );
+    let executed: Output = Command::new(java)
+        .arg("-cp")
+        .arg(scratch.path())
+        .arg("LocalDriver")
+        .env_remove("FORCE_COLOR")
+        .output()
+        .expect("run the LocalProbe driver");
+    assert!(
+        executed.status.success(),
+        "java rejected {label}:\n{}",
+        String::from_utf8_lossy(&executed.stderr)
+    );
+    String::from_utf8_lossy(&executed.stdout).replace("\r\n", "\n")
+}
+
 #[test]
-fn the_residual_class_still_carries_the_shape_no_declaration_can_repair() {
+fn dalvik_route_renames_an_int_lifetime_that_reuses_a_boolean_parameter_slot() {
     let sources: DecompiledDex = recovered();
     let unit: String = recovered_unit(&sources, STRUCTURAL_UNIT);
+    assert!(unit.contains("boolean arg1"), "{unit}");
     assert!(
-        unit.contains("boolean arg1") && unit.contains("arg1 = 7;"),
-        "LocalProbe must keep the case where D8 reused a register the signature declares boolean \
-         for an int temporary; a declaration cannot repair it because the name is already taken \
-         by the parameter:\n{unit}"
+        !unit.contains("arg1 = 7;"),
+        "the int lifetime D8 keeps in the boolean parameter register must not be written through \
+         the parameter name:\n{unit}"
+    );
+    let fresh: &str = unit
+        .lines()
+        .map(str::trim)
+        .find_map(|line: &str| line.strip_prefix("int ")?.strip_suffix(';'))
+        .expect("the replacement integer lifetime must have a declaration");
+    assert_ne!(fresh, "arg1", "{unit}");
+    assert!(unit.contains(&format!("{fresh} = 7;")), "{unit}");
+
+    let (_, authored_tail): (&str, &str) = AUTHORED
+        .split_once("\nfinal class LocalProbe {")
+        .expect("the authored file carries LocalProbe");
+    let authored: String = format!("final class LocalProbe {{{authored_tail}");
+    let reference: String = local_probe_values("locals-probe-authored", &authored);
+    assert_eq!(reference.lines().count(), 7, "{reference}");
+    assert_eq!(
+        local_probe_values("locals-probe-recovered", &unit),
+        reference,
+        "the recovered LocalProbe must compute what the authored LocalProbe computes"
     );
 }
 

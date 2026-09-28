@@ -4191,118 +4191,173 @@ com/android/tools/r8/RecordTag.java\0protected RecordTag() {@4:5";
         Ok(())
     }
 
-    const DIRECT_DALVIK_CLEAN_METHODS: &str = r"EdgeCases.java\0public AbstractWorker(String arg0) {@1946:9
-EdgeCases.java\0public Circle(double arg0) {@1549:9
-EdgeCases.java\0public Comparable unwrap() {@1915:9
-EdgeCases.java\0public EdgeCases() {@27:5
-EdgeCases.java\0public EdgeCases(int arg0) {@31:5
-EdgeCases.java\0public EdgeCases.Direction opposite() {@1900:9
-EdgeCases.java\0public EdgeCases.Outer.Inner makeInner() {@1725:9
-EdgeCases.java\0public EdgeCases.Pair mapFirst(java.util.function.Function arg0) {@1789:9
-EdgeCases.java\0public EdgeCases.Pair mapSecond(java.util.function.Function arg0) {@1792:9
-EdgeCases.java\0public EdgeCases.Vector2D add(EdgeCases.Vector2D arg0) {@1811:9
-EdgeCases.java\0public Inner(EdgeCases.Outer arg0) {@1730:13
-EdgeCases.java\0public Object first() {@1783:9
-EdgeCases.java\0public Object get(Object arg0) {@2046:9
-EdgeCases.java\0public Object second() {@1795:9
-EdgeCases.java\0public Outer() {@1720:9
-EdgeCases.java\0public Pair(Object arg0, Object arg1) {@1774:9
-EdgeCases.java\0public Repository$_1() {@2041:9
-EdgeCases.java\0public Square(double arg0) {@1592:9
-EdgeCases.java\0public StaticNested(int arg0) {@1742:13
-EdgeCases.java\0public String toString() {@1855:9
-EdgeCases.java\0public TaggedBox(Comparable arg0) {@1907:9
-EdgeCases.java\0public Triangle(double arg0, double arg1) {@1641:9
-EdgeCases.java\0public Vector2D(double arg0, double arg1) {@1805:9
-EdgeCases.java\0public abstract EdgeCases.Direction turn();@1903:9
-EdgeCases.java\0public abstract EdgeCases.FluentBuilder set(String arg0, Object arg1);@1942:9
-EdgeCases.java\0public abstract EdgeCases.Tagged[] value();@1961:9
-EdgeCases.java\0public abstract Object build();@1941:9
-EdgeCases.java\0public abstract Object get(Object arg0);@1931:9
-EdgeCases.java\0public abstract Object reduce(Object arg0, Object arg1);@1684:9
-EdgeCases.java\0public abstract String describe();@1951:9
-EdgeCases.java\0public abstract String value();@1965:9
-EdgeCases.java\0public abstract double area();@1526:9
-EdgeCases.java\0public abstract int add(int arg0, int arg1);@1681:9
-EdgeCases.java\0public abstract int priority();@1964:9
-EdgeCases.java\0public abstract void put(Object arg0, Object arg1);@1932:9
-EdgeCases.java\0public boolean equals(Object arg0) {@1561:9
-EdgeCases.java\0public boolean equals(Object arg0) {@1600:9
-EdgeCases.java\0public boolean equals(Object arg0) {@1653:9
-EdgeCases.java\0public boolean equals(Object arg0) {@1780:9
-EdgeCases.java\0public default String label() {@1527:9
-EdgeCases.java\0public default java.util.Optional find(Object arg0) {@1928:9
-EdgeCases.java\0public double area() {@1558:9
-EdgeCases.java\0public double area() {@1597:9
-EdgeCases.java\0public double area() {@1647:9
-EdgeCases.java\0public double base() {@1650:9
-EdgeCases.java\0public double dot(EdgeCases.Vector2D arg0) {@1814:9
-EdgeCases.java\0public double height() {@1659:9
-EdgeCases.java\0public double magnitude() {@1852:9
-EdgeCases.java\0public double radius() {@1567:9
-EdgeCases.java\0public double side() {@1606:9
-EdgeCases.java\0public int sum(int arg0) {@1736:13
-EdgeCases.java\0public static Comparable clamp(Comparable arg0, Comparable arg1, Comparable arg2) {@168:5
-EdgeCases.java\0public static EdgeCases.Direction[] values() {@1897:9
-EdgeCases.java\0public static EdgeCases.Repository inMemory() {@1936:9
-EdgeCases.java\0public static Integer lambda$chain$0(int arg0) {@683:5
-EdgeCases.java\0public static Integer lambda$chain$1(Integer arg0) {@686:5
-EdgeCases.java\0public static Integer lambda$chain$3(Integer arg0) {@692:5
-EdgeCases.java\0public static Integer lambda$chain$4(Throwable arg0) {@695:5
-EdgeCases.java\0public static Integer lambda$main$0(Integer arg0) {@723:5
-EdgeCases.java\0public static Integer lambda$main$5() {@755:5
-EdgeCases.java\0public static Integer lambda$reducerFn$0(Integer arg0, Integer arg1) {@777:5
-EdgeCases.java\0public static Integer lambda$virtualThreadFanout$0(int arg0) {@786:5
-EdgeCases.java\0public static Object executeWith(java.util.concurrent.Executor arg0, java.util.function.Supplier arg1) {@515:5
-EdgeCases.java\0public static Object identity(Object arg0) {@616:5
-EdgeCases.java\0public static Object lambda$repeat$0(Object arg0) {@780:5
-EdgeCases.java\0public static Object tap(Object arg0, java.util.function.Consumer arg1) {@1360:5
-EdgeCases.java\0public static String bitTwiddling(int arg0) {@114:5
-EdgeCases.java\0public static String joinSquares(int arg0) {@680:5
-EdgeCases.java\0public static String lambda$formatter$0(Integer arg0) {@720:5
-EdgeCases.java\0public static String lambda$main$1() {@726:5
-EdgeCases.java\0public static String pickWord(int arg0) {@1125:5
-EdgeCases.java\0public static String rawEscapes() {@1180:5
-EdgeCases.java\0public static String stringInterpolation(String arg0, int arg1) {@1282:5
-EdgeCases.java\0public static boolean isPalindrome(String arg0) {@632:5
-EdgeCases.java\0public static boolean lambda$main$2(Integer arg0) {@729:5
-EdgeCases.java\0public static boolean lambda$main$3(Integer arg0) {@739:5
-EdgeCases.java\0public static boolean lambda$main$4(Integer arg0) {@747:5
-EdgeCases.java\0public static boolean lambda$main$6(Integer arg0) {@758:5
-EdgeCases.java\0public static boolean lambda$main$7(Integer arg0) {@766:5
-EdgeCases.java\0public static boolean lambda$wordCount$0(String arg0) {@790:5
-EdgeCases.java\0public static int _u002D_$$Nest$fgetouterVal(EdgeCases.Outer arg0) {@1717:9
-EdgeCases.java\0public static int boxedMath(Integer arg0, Integer arg1) {@120:5
-EdgeCases.java\0public static int bumpStatic() {@123:5
-EdgeCases.java\0public static int callInner() {@126:5
-EdgeCases.java\0public static int divSafe(int arg0, int arg1) {@472:5
-EdgeCases.java\0public static int dotInt(int[] arg0, int[] arg1) {@485:5
-EdgeCases.java\0public static int hailstone(int arg0) {@584:5
-EdgeCases.java\0public static int lambda$constantInt$0(int arg0, Object arg1) {@704:5
-EdgeCases.java\0public static int lambda$multiplier$0(int arg0, int arg1) {@774:5
-EdgeCases.java\0public static int lambda$squares$0(int arg0) {@783:5
-EdgeCases.java\0public static int recursiveFactorial(int arg0) {@1183:5
-EdgeCases.java\0public static int sumWith(java.util.function.IntBinaryOperator arg0, int[] arg1) {@1334:5
-EdgeCases.java\0public static java.util.List reverseList(java.util.List arg0) {@1222:5
-EdgeCases.java\0public static java.util.List safeVarargs(Object[] arg0) {@1237:5
-EdgeCases.java\0public static java.util.List sortedCopy(java.util.Collection arg0) {@1272:5
-EdgeCases.java\0public static java.util.Map groupByLength(java.util.List arg0) {@581:5
-EdgeCases.java\0public static java.util.Map partition(java.util.List arg0, java.util.function.Predicate arg1) {@1122:5
-EdgeCases.java\0public static java.util.Set enumSet(Class arg0) {@511:5
-EdgeCases.java\0public static java.util.SortedMap intoSorted(java.util.Map arg0) {@629:5
-EdgeCases.java\0public static java.util.concurrent.CompletableFuture chain(int arg0) {@145:5
-EdgeCases.java\0public static java.util.concurrent.CompletionStage lambda$chain$2(Integer arg0) {@689:5
+    const DIRECT_DALVIK_CLEAN_METHODS: &str = r"EdgeCases.java\0public AbstractWorker(String arg0) {@2041:9
+EdgeCases.java\0public Circle(double arg0) {@1623:9
+EdgeCases.java\0public Comparable unwrap() {@2011:9
+EdgeCases.java\0public EdgeCases() {@31:5
+EdgeCases.java\0public EdgeCases(int arg0) {@35:5
+EdgeCases.java\0public EdgeCases.Direction opposite() {@1996:9
+EdgeCases.java\0public EdgeCases.Outer.Inner makeInner() {@1811:9
+EdgeCases.java\0public EdgeCases.Pair mapFirst(java.util.function.Function arg0) {@1878:9
+EdgeCases.java\0public EdgeCases.Pair mapSecond(java.util.function.Function arg0) {@1881:9
+EdgeCases.java\0public EdgeCases.Vector2D add(EdgeCases.Vector2D arg0) {@1900:9
+EdgeCases.java\0public EmptyShape() {@1747:9
+EdgeCases.java\0public Inner(EdgeCases.Outer arg0) {@1816:13
+EdgeCases.java\0public Integer call() {@1770:9
+EdgeCases.java\0public Object first() {@1872:9
+EdgeCases.java\0public Object get(Object arg0) {@2154:9
+EdgeCases.java\0public Object second() {@1884:9
+EdgeCases.java\0public Object[] $record$getFieldsAsObjects() {@1615:9
+EdgeCases.java\0public Object[] $record$getFieldsAsObjects() {@1659:9
+EdgeCases.java\0public Object[] $record$getFieldsAsObjects() {@1705:9
+EdgeCases.java\0public Object[] $record$getFieldsAsObjects() {@1852:9
+EdgeCases.java\0public Outer() {@1806:9
+EdgeCases.java\0public Pair(Object arg0, Object arg1) {@1863:9
+EdgeCases.java\0public Repository$_1() {@2149:9
+EdgeCases.java\0public Square(double arg0) {@1667:9
+EdgeCases.java\0public StaticNested(int arg0) {@1828:13
+EdgeCases.java\0public String toString() {@1942:9
+EdgeCases.java\0public TaggedBox(Comparable arg0) {@2003:9
+EdgeCases.java\0public Triangle(double arg0, double arg1) {@1716:9
+EdgeCases.java\0public Vector2D(double arg0, double arg1) {@1894:9
+EdgeCases.java\0public abstract EdgeCases.Direction turn();@1999:9
+EdgeCases.java\0public abstract EdgeCases.FluentBuilder set(String arg0, Object arg1);@2037:9
+EdgeCases.java\0public abstract EdgeCases.Tagged[] value();@2057:9
+EdgeCases.java\0public abstract Object build();@2036:9
+EdgeCases.java\0public abstract Object get(Object arg0);@2026:9
+EdgeCases.java\0public abstract Object reduce(Object arg0, Object arg1);@1759:9
+EdgeCases.java\0public abstract String describe();@2046:9
+EdgeCases.java\0public abstract String value();@2061:9
+EdgeCases.java\0public abstract double area();@1599:9
+EdgeCases.java\0public abstract int add(int arg0, int arg1);@1756:9
+EdgeCases.java\0public abstract int priority();@2060:9
+EdgeCases.java\0public abstract void put(Object arg0, Object arg1);@2027:9
+EdgeCases.java\0public boolean $record$equals(Object arg0) {@1606:9
+EdgeCases.java\0public boolean $record$equals(Object arg0) {@1650:9
+EdgeCases.java\0public boolean $record$equals(Object arg0) {@1691:9
+EdgeCases.java\0public boolean equals(Object arg0) {@1635:9
+EdgeCases.java\0public boolean equals(Object arg0) {@1675:9
+EdgeCases.java\0public boolean equals(Object arg0) {@1728:9
+EdgeCases.java\0public boolean equals(Object arg0) {@1869:9
+EdgeCases.java\0public boolean equals(Object arg0) {@1906:9
+EdgeCases.java\0public default String label() {@1600:9
+EdgeCases.java\0public default boolean containsKey(Object arg0) {@2016:9
+EdgeCases.java\0public default java.util.Optional find(Object arg0) {@2023:9
+EdgeCases.java\0public double area() {@1632:9
+EdgeCases.java\0public double area() {@1672:9
+EdgeCases.java\0public double area() {@1722:9
+EdgeCases.java\0public double area() {@1751:9
+EdgeCases.java\0public double base() {@1725:9
+EdgeCases.java\0public double dot(EdgeCases.Vector2D arg0) {@1903:9
+EdgeCases.java\0public double height() {@1734:9
+EdgeCases.java\0public double magnitude() {@1939:9
+EdgeCases.java\0public double radius() {@1641:9
+EdgeCases.java\0public double side() {@1681:9
+EdgeCases.java\0public int hashCode() {@1928:9
+EdgeCases.java\0public int sum(int arg0) {@1822:13
+EdgeCases.java\0public static Comparable clamp(Comparable arg0, Comparable arg1, Comparable arg2) {@178:5
+EdgeCases.java\0public static EdgeCases.Direction[] $values() {@1963:9
+EdgeCases.java\0public static EdgeCases.Direction[] values() {@1993:9
+EdgeCases.java\0public static EdgeCases.Repository inMemory() {@2031:9
+EdgeCases.java\0public static EdgeCases.Vector2D centerOfMass(java.util.List arg0) {@138:5
+EdgeCases.java\0public static Integer lambda$chain$0(int arg0) {@701:5
+EdgeCases.java\0public static Integer lambda$chain$1(Integer arg0) {@704:5
+EdgeCases.java\0public static Integer lambda$chain$3(Integer arg0) {@710:5
+EdgeCases.java\0public static Integer lambda$chain$4(Throwable arg0) {@713:5
+EdgeCases.java\0public static Integer lambda$main$0(Integer arg0) {@741:5
+EdgeCases.java\0public static Integer lambda$main$5() {@770:5
+EdgeCases.java\0public static Integer lambda$reducerFn$0(Integer arg0, Integer arg1) {@790:5
+EdgeCases.java\0public static Integer lambda$virtualThreadFanout$0(int arg0) {@799:5
+EdgeCases.java\0public static Object checkedCast(Object arg0, Class arg1) {@160:5
+EdgeCases.java\0public static Object classify(Object arg0) {@189:5
+EdgeCases.java\0public static Object executeWith(java.util.concurrent.Executor arg0, java.util.function.Supplier arg1) {@519:5
+EdgeCases.java\0public static Object foldLeft(java.util.List arg0, Object arg1, java.util.function.BiFunction arg2) {@573:5
+EdgeCases.java\0public static Object identity(Object arg0) {@632:5
+EdgeCases.java\0public static Object lambda$repeat$0(Object arg0) {@793:5
+EdgeCases.java\0public static Object reduce(java.util.List arg0, Object arg1, java.util.function.BiFunction arg2) {@1248:5
+EdgeCases.java\0public static Object tap(Object arg0, java.util.function.Consumer arg1) {@1427:5
+EdgeCases.java\0public static String binFormat(int arg0, int arg1) {@95:5
+EdgeCases.java\0public static String bitTwiddling(int arg0) {@112:5
+EdgeCases.java\0public static String collatzPath(int arg0) {@243:5
+EdgeCases.java\0public static String hexDump(byte[] arg0) {@612:5
+EdgeCases.java\0public static String join(Iterable arg0, String arg1) {@680:5
+EdgeCases.java\0public static String joinSquares(int arg0) {@698:5
+EdgeCases.java\0public static String lambda$formatter$0(Integer arg0) {@738:5
+EdgeCases.java\0public static String lambda$main$1() {@744:5
+EdgeCases.java\0public static String multiCatch(String arg0) {@1159:5
+EdgeCases.java\0public static String pickWord(int arg0) {@1185:5
+EdgeCases.java\0public static String rawEscapes() {@1236:5
+EdgeCases.java\0public static String shapeFacts(Object arg0) {@1302:5
+EdgeCases.java\0public static String stringInterpolation(String arg0, int arg1) {@1344:5
+EdgeCases.java\0public static String textBlockDemo() {@1431:5
+EdgeCases.java\0public static String throwsCheckedAndReports() {@1439:5
+EdgeCases.java\0public static String unpackPair(EdgeCases.Pair arg0) {@1499:5
+EdgeCases.java\0public static Throwable mustNotNull(Throwable arg0) {@1170:5
+EdgeCases.java\0public static boolean isPalindrome(String arg0) {@650:5
+EdgeCases.java\0public static boolean lambda$main$2(Integer arg0) {@747:5
+EdgeCases.java\0public static boolean lambda$main$3(Integer arg0) {@756:5
+EdgeCases.java\0public static boolean lambda$main$4(Integer arg0) {@763:5
+EdgeCases.java\0public static boolean lambda$main$6(Integer arg0) {@773:5
+EdgeCases.java\0public static boolean lambda$main$7(Integer arg0) {@780:5
+EdgeCases.java\0public static boolean lambda$wordCount$0(String arg0) {@803:5
+EdgeCases.java\0public static double accumulate(double[] arg0) {@44:5
+EdgeCases.java\0public static double mean(double[] arg0) {@1138:5
+EdgeCases.java\0public static double sumAsDouble(java.util.List arg0) {@1352:5
+EdgeCases.java\0public static double variance(double[] arg0) {@1526:5
+EdgeCases.java\0public static int _u002D_$$Nest$fgetouterVal(EdgeCases.Outer arg0) {@1803:9
+EdgeCases.java\0public static int boxedMath(Integer arg0, Integer arg1) {@129:5
+EdgeCases.java\0public static int bumpStatic() {@132:5
+EdgeCases.java\0public static int callInner() {@135:5
+EdgeCases.java\0public static int countDigits(long arg0) {@263:5
+EdgeCases.java\0public static int countMatches(java.util.List arg0, java.util.function.Predicate arg1) {@279:5
+EdgeCases.java\0public static int countVowels(String arg0) {@301:5
+EdgeCases.java\0public static int divSafe(int arg0, int arg1) {@476:5
+EdgeCases.java\0public static int dotInt(int[] arg0, int[] arg1) {@489:5
+EdgeCases.java\0public static int fib(int arg0) {@525:5
+EdgeCases.java\0public static int gcd(int arg0, int arg1) {@584:5
+EdgeCases.java\0public static int hailstone(int arg0) {@597:5
+EdgeCases.java\0public static int lambda$constantInt$0(int arg0, Object arg1) {@722:5
+EdgeCases.java\0public static int lambda$multiplier$0(int arg0, int arg1) {@787:5
+EdgeCases.java\0public static int lambda$squares$0(int arg0) {@796:5
+EdgeCases.java\0public static int maxOrMin(int[] arg0, boolean arg1) {@1112:5
+EdgeCases.java\0public static int recursiveFactorial(int arg0) {@1239:5
+EdgeCases.java\0public static int runWorker(EdgeCases.CounterWorker arg0) {@1284:5
+EdgeCases.java\0public static int sumGrid(int[][] arg0) {@1374:5
+EdgeCases.java\0public static int sumWith(java.util.function.IntBinaryOperator arg0, int[] arg1) {@1399:5
+EdgeCases.java\0public static java.util.List chunked(java.util.List arg0, int arg1) {@167:5
+EdgeCases.java\0public static java.util.List dropWhile(java.util.List arg0, java.util.function.Predicate arg1) {@502:5
+EdgeCases.java\0public static java.util.List mapAll(java.util.List arg0, java.util.function.Function arg1) {@1062:5
+EdgeCases.java\0public static java.util.List reverseList(java.util.List arg0) {@1278:5
+EdgeCases.java\0public static java.util.List safeVarargs(Object[] arg0) {@1296:5
+EdgeCases.java\0public static java.util.List sortedCopy(java.util.Collection arg0) {@1332:5
+EdgeCases.java\0public static java.util.List takeWhile(java.util.List arg0, java.util.function.Predicate arg1) {@1412:5
+EdgeCases.java\0public static java.util.List windowed(java.util.List arg0) {@1582:5
+EdgeCases.java\0public static java.util.Map groupByLength(java.util.List arg0) {@594:5
+EdgeCases.java\0public static java.util.Map indexBy(java.util.List arg0, java.util.function.Function arg1) {@635:5
+EdgeCases.java\0public static java.util.Map partition(java.util.List arg0, java.util.function.Predicate arg1) {@1182:5
+EdgeCases.java\0public static java.util.Optional coalesce(java.util.Optional arg0, java.util.Optional arg1) {@236:5
+EdgeCases.java\0public static java.util.Optional firstMatch(java.util.Collection arg0, java.util.function.Predicate arg1) {@551:5
+EdgeCases.java\0public static java.util.Optional firstOf(Iterable arg0) {@564:5
+EdgeCases.java\0public static java.util.Set enumSet(Class arg0) {@513:5
+EdgeCases.java\0public static java.util.Set uniqueOrdered(Iterable arg0) {@1489:5
+EdgeCases.java\0public static java.util.SortedMap intoSorted(java.util.Map arg0) {@647:5
+EdgeCases.java\0public static java.util.concurrent.CompletableFuture chain(int arg0) {@157:5
+EdgeCases.java\0public static java.util.concurrent.CompletionStage lambda$chain$2(Integer arg0) {@707:5
 EdgeCases.java\0public static java.util.concurrent.atomic.AtomicInteger _u002D_$$Nest$sfgetCTR() {@16:5
-EdgeCases.java\0public static java.util.function.Consumer debugSink() {@334:5
-EdgeCases.java\0public static java.util.function.Function formatter() {@569:5
-EdgeCases.java\0public static java.util.function.IntUnaryOperator multiplier(int arg0) {@1108:5
-EdgeCases.java\0public static java.util.function.Supplier listSupplier() {@797:5
-EdgeCases.java\0public static java.util.function.ToIntFunction constantInt(int arg0) {@254:5
-EdgeCases.java\0public static long iterativeFactorial(int arg0) {@651:5
-EdgeCases.java\0public static void lambda$debugSink$0(Object arg0) {@707:5
-EdgeCases.java\0public static void rethrow(Throwable arg0) {@1207:5
-EdgeCases.java\0public void put(Object arg0, Object arg1) {@2049:9
-EdgeCases.java\0public void run() {@1952:9";
+EdgeCases.java\0public static java.util.function.Consumer debugSink() {@328:5
+EdgeCases.java\0public static java.util.function.Function formatter() {@581:5
+EdgeCases.java\0public static java.util.function.IntUnaryOperator multiplier(int arg0) {@1167:5
+EdgeCases.java\0public static java.util.function.Supplier listSupplier() {@813:5
+EdgeCases.java\0public static java.util.function.ToIntFunction constantInt(int arg0) {@260:5
+EdgeCases.java\0public static long bigCompute(long arg0) {@82:5
+EdgeCases.java\0public static long countSetBitsRange(long arg0, long arg1) {@292:5
+EdgeCases.java\0public static long iterativeFactorial(int arg0) {@669:5
+EdgeCases.java\0public static long sumDigits(long arg0) {@1362:5
+EdgeCases.java\0public static void lambda$debugSink$0(Object arg0) {@725:5
+EdgeCases.java\0public static void lambda$executeWith$0(java.util.concurrent.CompletableFuture arg0, java.util.function.Supplier arg1) {@729:5
+EdgeCases.java\0public static void rethrow(Throwable arg0) {@1262:5
+EdgeCases.java\0public static void shuffleInPlace(java.util.List arg0, long arg1) {@1318:5
+EdgeCases.java\0public void put(Object arg0, Object arg1) {@2157:9";
 
     #[test]
     fn direct_dalvik_route_scores_exact_clean_inventory() -> core::result::Result<(), String> {
@@ -4323,9 +4378,9 @@ EdgeCases.java\0public void run() {@1952:9";
             matches!(
                 score,
                 ToolScore::Certified {
-                    clean: 112,
+                    clean: 167,
                     emitted: 229,
-                    class_level_defects: 6,
+                    class_level_defects: 7,
                     ..
                 }
             ),

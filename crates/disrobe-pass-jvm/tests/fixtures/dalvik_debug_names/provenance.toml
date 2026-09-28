@@ -1,0 +1,39 @@
+schema = "disrobe.jvm.dalvik-debug-names-fixture/v1"
+source = "DebugNames.java"
+source_sha256 = "ee2364ac2b72b0f6f0ffb0f1fad7bc86032f3587d39b7d4e7ea6a142780001ac"
+
+[javac]
+vendor = "Eclipse Temurin"
+version = "25.0.4+7-LTS"
+command = "javac -g -Xlint:-options --release 8 -d classes DebugNames.java"
+
+[d8]
+version = "9.1.31"
+url = "https://dl.google.com/dl/android/maven2/com/android/tools/r8/9.1.31/r8-9.1.31.jar"
+sha256 = "3b4de3053885da105e39c15212261d22653d6d1b5eb92323dd04ae913cc8286f"
+
+[shapes]
+scale = "scale(int, int)"
+describe = "describe(int, boolean)"
+main = "main(String[])"
+notes = "Both builds come from the same class file compiled with -g. In the release build D8 keeps the loop counter of scale and the running total in registers updated by one block whose later instruction reads a value an earlier one overwrites, materialises 2.0 as const-wide/high16, reuses one register for an int and then a String in describe, reuses the String[] parameter register of main for the int loop counter, and passes a boolean built from two constant branches. The debug build keeps the javac parameter names in the debug info, so the recovered signatures carry them."
+
+[[artifact]]
+path = "DebugNames-release-min21.dex"
+format = "DEX 035"
+min_api = 21
+mode = "release"
+tool = "D8"
+command = "java -cp r8-9.1.31.jar com.android.tools.r8.D8 --release --min-api 21 --output dex classes/DebugNames.class"
+sha256 = "2c7cbc5eeca08a09d4948aec4e08afebd8697ddf66dee7b1780da01e90b4e6fc"
+bytes = 1552
+
+[[artifact]]
+path = "DebugNames-debug-min21.dex"
+format = "DEX 035"
+min_api = 21
+mode = "debug"
+tool = "D8"
+command = "java -cp r8-9.1.31.jar com.android.tools.r8.D8 --debug --min-api 21 --output dex classes/DebugNames.class"
+sha256 = "6315ab550a3e6ef6db7ccc4314d1f52b6e625d04216050ac422ce18eba73eaf1"
+bytes = 1724

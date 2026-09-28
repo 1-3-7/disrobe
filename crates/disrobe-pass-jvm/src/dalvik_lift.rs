@@ -28,6 +28,83 @@ pub(crate) struct MethodContext<'a> {
     pub(crate) inline_depth: u16,
     pub(crate) inlined_helpers: &'a crate::dalvik_desugar::InlinedHelpers,
     pub(crate) register_kinds: BTreeMap<u16, ValueKind>,
+    pub(crate) naming: Option<&'a RegisterNaming>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum LocalType {
+    Boolean,
+    Byte,
+    Char,
+    Short,
+    Int,
+    Long,
+    Float,
+    Double,
+    Reference(String),
+}
+
+impl LocalType {
+    pub(crate) fn render(&self) -> String {
+        match self {
+            Self::Boolean => "boolean".to_owned(),
+            Self::Byte => "byte".to_owned(),
+            Self::Char => "char".to_owned(),
+            Self::Short => "short".to_owned(),
+            Self::Int => "int".to_owned(),
+            Self::Long => "long".to_owned(),
+            Self::Float => "float".to_owned(),
+            Self::Double => "double".to_owned(),
+            Self::Reference(source) => source.clone(),
+        }
+    }
+
+    const fn kind(&self) -> Option<ValueKind> {
+        match self {
+            Self::Boolean => Some(ValueKind::Boolean),
+            Self::Byte | Self::Char | Self::Short | Self::Int => Some(ValueKind::IntLike),
+            Self::Reference(_) => Some(ValueKind::Reference),
+            Self::Long | Self::Float | Self::Double => None,
+        }
+    }
+
+    const fn narrow_cast(&self) -> Option<&'static str> {
+        match self {
+            Self::Byte => Some("byte"),
+            Self::Char => Some("char"),
+            Self::Short => Some("short"),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NamedLocal {
+    pub(crate) name: String,
+    pub(crate) ty: Option<LocalType>,
+    pub(crate) declared: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct RegisterNaming {
+    pub(crate) locals: Vec<NamedLocal>,
+    pub(crate) def_locals: BTreeMap<(u32, u16), usize>,
+    pub(crate) by_name: BTreeMap<String, usize>,
+    pub(crate) threaded_receivers: BTreeSet<u32>,
+}
+
+impl RegisterNaming {
+    pub(crate) fn def_local(&self, pc: u32, register: u16) -> Option<&NamedLocal> {
+        self.def_locals
+            .get(&(pc, register))
+            .and_then(|&index: &usize| self.locals.get(index))
+    }
+
+    pub(crate) fn named(&self, name: &str) -> Option<&NamedLocal> {
+        self.by_name
+            .get(name)
+            .and_then(|&index: &usize| self.locals.get(index))
+    }
 }
 
 impl<'a> MethodContext<'a> {
@@ -78,24 +155,40 @@ impl<'a> MethodContext<'a> {
             inline_depth: 0,
             inlined_helpers,
             register_kinds,
+            naming: None,
         }
     }
 
-    pub(crate) fn with_temporary_types(mut self, types: &BTreeMap<u16, Option<String>>) -> Self {
-        for (register, ty) in types {
-            if self.param_regs.contains_key(register) || Some(*register) == self.this_reg {
-                continue;
-            }
-            let kind: Option<ValueKind> = match ty.as_deref() {
-                Some("boolean") => Some(ValueKind::Boolean),
-                Some("int" | "byte" | "short" | "char") => Some(ValueKind::IntLike),
-                _ => None,
-            };
-            if let Some(kind) = kind {
-                self.register_kinds.insert(*register, kind);
-            }
+    pub(crate) fn with_parameter_names(mut self, names: &[String]) -> Self {
+        for (slot, name) in self.param_regs.values_mut().zip(names) {
+            slot.clone_from(name);
         }
         self
+    }
+
+    pub(crate) const fn with_naming(mut self, naming: &'a RegisterNaming) -> Self {
+        self.naming = Some(naming);
+        self
+    }
+
+    pub(crate) fn def_lvalue(&self, pc: u32, reg: u16) -> String {
+        self.naming
+            .and_then(|naming: &RegisterNaming| naming.def_local(pc, reg))
+            .map_or_else(
+                || self.register_lvalue(reg),
+                |local: &NamedLocal| local.name.clone(),
+            )
+    }
+
+    fn def_type(&self, pc: u32, reg: u16) -> Option<&LocalType> {
+        self.naming
+            .and_then(|naming: &RegisterNaming| naming.def_local(pc, reg))
+            .and_then(|local: &NamedLocal| local.ty.as_ref())
+    }
+
+    fn threads_receiver(&self, pc: u32) -> bool {
+        self.naming
+            .is_none_or(|naming: &RegisterNaming| naming.threaded_receivers.contains(&pc))
     }
 
     pub(crate) fn register_name(&self, reg: u16) -> Expr {
@@ -136,6 +229,7 @@ impl<'a> MethodContext<'a> {
 pub(crate) enum ValueKind {
     Boolean,
     IntLike,
+    Reference,
 }
 
 const fn java_type_value_kind(ty: &crate::descriptor::JavaType) -> Option<ValueKind> {
@@ -145,11 +239,12 @@ const fn java_type_value_kind(ty: &crate::descriptor::JavaType) -> Option<ValueK
         | crate::descriptor::JavaType::Char
         | crate::descriptor::JavaType::Short
         | crate::descriptor::JavaType::Int => Some(ValueKind::IntLike),
+        crate::descriptor::JavaType::Object(_) | crate::descriptor::JavaType::Array(_) => {
+            Some(ValueKind::Reference)
+        }
         crate::descriptor::JavaType::Long
         | crate::descriptor::JavaType::Float
         | crate::descriptor::JavaType::Double
-        | crate::descriptor::JavaType::Object(_)
-        | crate::descriptor::JavaType::Array(_)
         | crate::descriptor::JavaType::Void => None,
     }
 }
@@ -211,6 +306,32 @@ impl RegisterFile {
     pub(crate) fn pending_registers(&self) -> impl Iterator<Item = u16> + '_ {
         self.pending.iter().copied()
     }
+
+    pub(crate) fn seed(&mut self, reg: u16, expr: Expr) {
+        self.slots.insert(reg, expr);
+        self.pending.remove(&reg);
+        self.kinds.remove(&reg);
+    }
+
+    pub(crate) fn slot(&self, reg: u16) -> Option<&Expr> {
+        self.slots.get(&reg)
+    }
+
+    pub(crate) fn is_pending(&self, reg: u16) -> bool {
+        self.pending.contains(&reg)
+    }
+
+    pub(crate) fn set_variable(&mut self, reg: u16, name: String) {
+        self.seed(reg, Expr::Local(name));
+    }
+
+    pub(crate) fn defer(&mut self, reg: u16) {
+        self.pending.insert(reg);
+    }
+
+    pub(crate) fn replace(&mut self, reg: u16, expr: Expr) {
+        self.slots.insert(reg, expr);
+    }
 }
 
 pub(crate) enum LiftOutcome {
@@ -224,6 +345,27 @@ pub(crate) struct PendingResult {
     expr: Expr,
     materialized_in: Option<u16>,
     kind: Option<ValueKind>,
+}
+
+impl PendingResult {
+    pub(crate) fn materializes(&self, reg: u16) -> bool {
+        self.materialized_in == Some(reg)
+    }
+
+    pub(crate) fn discards_statement(&self) -> bool {
+        self.expr.discarded_side_effect().is_some()
+    }
+
+    pub(crate) fn is_null_check(&self) -> bool {
+        is_null_check_call(&self.expr)
+    }
+
+    pub(crate) fn into_statement(self) -> Option<String> {
+        if self.materialized_in.is_some() {
+            return None;
+        }
+        self.expr.discarded_side_effect()
+    }
 }
 
 fn descriptor_value_kind(type_descriptor: &str) -> Option<ValueKind> {
@@ -266,7 +408,7 @@ pub(crate) fn lift_insn(
     };
     let outcome: LiftOutcome = match op {
         0x00 | 0x1D | 0x1E => LiftOutcome::None,
-        0x01..=0x09 => move_register(ctx, file, regs),
+        0x01..=0x09 => move_register(ctx, file, insn),
         0x0A..=0x0C => {
             if let (Some(&dest), Some(result)) = (regs.first(), pending_result.take()) {
                 file.write_with_kind(dest, result.expr, result.kind);
@@ -305,7 +447,7 @@ pub(crate) fn lift_insn(
             };
             LiftOutcome::Statement(format!("return {rendered}"))
         }
-        0x12..=0x19 => const_value(file, regs, insn),
+        0x12..=0x19 => const_value(ctx, file, regs, insn),
         0x1A | 0x1B => const_string(ctx, file, regs, insn),
         0x1C => const_class(ctx, file, regs, insn),
         0x1F => check_cast(ctx, file, regs, insn),
@@ -360,22 +502,284 @@ pub(crate) fn lift_insn(
     }
 }
 
-fn move_register(ctx: &MethodContext<'_>, file: &mut RegisterFile, regs: &[u16]) -> LiftOutcome {
-    let (Some(&dest), Some(&src)): (Option<&u16>, Option<&u16>) = (regs.first(), regs.get(1))
+fn move_register(
+    ctx: &MethodContext<'_>,
+    file: &mut RegisterFile,
+    insn: &DalvikInsn,
+) -> LiftOutcome {
+    let (Some(&dest), Some(&src)): (Option<&u16>, Option<&u16>) =
+        (insn.regs.first(), insn.regs.get(1))
     else {
         return LiftOutcome::None;
     };
     let value: Expr = file.read(ctx, src);
-    let rendered: String = value.render();
-    let kind: Option<ValueKind> = file.kinds.get(&src).copied();
-    file.write_materialized(dest, value);
+    let kind: Option<ValueKind> = operand_value_kind(ctx, file, src, &value);
+    if ctx.inline_temporaries {
+        file.write_with_kind(dest, value, kind);
+        return LiftOutcome::None;
+    }
+    let lvalue: String = ctx.def_lvalue(insn.pc, dest);
+    let rendered: String = assignment_value(ctx, file, src, &value, ctx.def_type(insn.pc, dest));
+    let stored: Expr = if expr_has_effect(&value) || expr_mentions_local(&value, &lvalue) {
+        Expr::Local(lvalue.clone())
+    } else {
+        value
+    };
+    file.write_materialized(dest, stored);
     if let Some(kind) = kind {
         file.kinds.insert(dest, kind);
     }
-    if ctx.inline_temporaries {
-        LiftOutcome::None
-    } else {
-        LiftOutcome::Statement(format!("{} = {rendered}", ctx.register_lvalue(dest)))
+    LiftOutcome::Statement(format!("{lvalue} = {rendered}"))
+}
+
+pub(crate) fn assignment_value(
+    ctx: &MethodContext<'_>,
+    file: &RegisterFile,
+    register: u16,
+    value: &Expr,
+    target: Option<&LocalType>,
+) -> String {
+    match target {
+        Some(LocalType::Boolean) => {
+            render_boolean_value(ctx, file, register, value).unwrap_or_else(|| value.render())
+        }
+        Some(ty @ (LocalType::Byte | LocalType::Char | LocalType::Short | LocalType::Int)) => {
+            let numeric: Expr = numeric_int_operand(ctx, file, register, value.clone());
+            match ty.narrow_cast() {
+                Some(cast) if !is_narrow_value(ctx, &numeric, ty, cast) => {
+                    format!("({cast}) ({})", numeric.render())
+                }
+                _ => numeric.render(),
+            }
+        }
+        Some(LocalType::Long | LocalType::Float | LocalType::Double | LocalType::Reference(_))
+        | None => value.render(),
+    }
+}
+
+fn is_narrow_value(ctx: &MethodContext<'_>, value: &Expr, ty: &LocalType, cast: &str) -> bool {
+    match value {
+        Expr::Cast { ty: target, .. } => target == cast,
+        Expr::Local(name) => ctx
+            .naming
+            .and_then(|naming: &RegisterNaming| naming.named(name))
+            .is_some_and(|local: &NamedLocal| local.ty.as_ref() == Some(ty)),
+        _ => false,
+    }
+}
+
+pub(crate) fn expr_mentions_local(expr: &Expr, name: &str) -> bool {
+    match expr {
+        Expr::Local(local) => local == name,
+        Expr::Opaque(text) => text_mentions_identifier(text, name),
+        Expr::Const(_) | Expr::This | Expr::StaticField { .. } | Expr::New(_) => false,
+        Expr::Field { receiver, .. } => expr_mentions_local(receiver, name),
+        Expr::Binary { lhs, rhs, .. }
+        | Expr::Cmp { lhs, rhs, .. }
+        | Expr::ArrayLoad {
+            array: lhs,
+            index: rhs,
+        } => expr_mentions_local(lhs, name) || expr_mentions_local(rhs, name),
+        Expr::Unary { value, .. }
+        | Expr::Cast { value, .. }
+        | Expr::InstanceOf { value, .. }
+        | Expr::ArrayLength(value)
+        | Expr::NewArray { size: value, .. } => expr_mentions_local(value, name),
+        Expr::ArrayInit { elements, .. } => elements
+            .iter()
+            .any(|element: &Expr| expr_mentions_local(element, name)),
+        Expr::Invoke { receiver, args, .. } => {
+            receiver
+                .as_deref()
+                .is_some_and(|value: &Expr| expr_mentions_local(value, name))
+                || args.iter().any(|arg: &Expr| expr_mentions_local(arg, name))
+        }
+    }
+}
+
+const fn is_identifier_byte(byte: u8) -> bool {
+    byte == b'_' || byte == b'$' || byte.is_ascii_alphanumeric()
+}
+
+fn identifier_at(text: &str, start: usize, length: usize) -> bool {
+    let bytes: &[u8] = text.as_bytes();
+    let before: Option<u8> = start
+        .checked_sub(1)
+        .and_then(|at: usize| bytes.get(at).copied());
+    let after: Option<u8> = bytes.get(start + length).copied();
+    !before.is_some_and(|byte: u8| is_identifier_byte(byte) || byte == b'.')
+        && !after.is_some_and(is_identifier_byte)
+}
+
+fn text_mentions_identifier(text: &str, name: &str) -> bool {
+    text.match_indices(name)
+        .any(|(start, _): (usize, &str)| identifier_at(text, start, name.len()))
+}
+
+pub(crate) fn rename_local(expr: &Expr, from: &str, to: &str) -> Expr {
+    let rename = |value: &Expr| Box::new(rename_local(value, from, to));
+    match expr {
+        Expr::Local(local) if local == from => Expr::Local(to.to_owned()),
+        Expr::Opaque(text) => Expr::Opaque(rename_identifier(text, from, to)),
+        Expr::Const(_) | Expr::Local(_) | Expr::This | Expr::StaticField { .. } | Expr::New(_) => {
+            expr.clone()
+        }
+        Expr::Field {
+            receiver,
+            owner,
+            name,
+            boolean,
+        } => Expr::Field {
+            receiver: rename(receiver),
+            owner: owner.clone(),
+            name: name.clone(),
+            boolean: *boolean,
+        },
+        Expr::Binary { op, lhs, rhs } => Expr::Binary {
+            op,
+            lhs: rename(lhs),
+            rhs: rename(rhs),
+        },
+        Expr::Cmp { kind, lhs, rhs } => Expr::Cmp {
+            kind: *kind,
+            lhs: rename(lhs),
+            rhs: rename(rhs),
+        },
+        Expr::ArrayLoad { array, index } => Expr::ArrayLoad {
+            array: rename(array),
+            index: rename(index),
+        },
+        Expr::Unary { op, value } => Expr::Unary {
+            op,
+            value: rename(value),
+        },
+        Expr::Cast { ty, value } => Expr::Cast {
+            ty: ty.clone(),
+            value: rename(value),
+        },
+        Expr::InstanceOf { value, ty } => Expr::InstanceOf {
+            value: rename(value),
+            ty: ty.clone(),
+        },
+        Expr::ArrayLength(value) => Expr::ArrayLength(rename(value)),
+        Expr::NewArray { ty, size } => Expr::NewArray {
+            ty: ty.clone(),
+            size: rename(size),
+        },
+        Expr::ArrayInit { ty, elements } => Expr::ArrayInit {
+            ty: ty.clone(),
+            elements: elements
+                .iter()
+                .map(|element: &Expr| rename_local(element, from, to))
+                .collect(),
+        },
+        Expr::Invoke {
+            receiver,
+            owner,
+            method,
+            args,
+            returns_bool,
+        } => Expr::Invoke {
+            receiver: receiver.as_deref().map(rename),
+            owner: owner.clone(),
+            method: method.clone(),
+            args: args
+                .iter()
+                .map(|arg: &Expr| rename_local(arg, from, to))
+                .collect(),
+            returns_bool: *returns_bool,
+        },
+    }
+}
+
+fn rename_identifier(text: &str, from: &str, to: &str) -> String {
+    let mut out: String = String::with_capacity(text.len());
+    let mut copied: usize = 0;
+    for (start, _) in text.match_indices(from) {
+        if start < copied || !identifier_at(text, start, from.len()) {
+            continue;
+        }
+        out.push_str(text.get(copied..start).unwrap_or_default());
+        out.push_str(to);
+        copied = start + from.len();
+    }
+    out.push_str(text.get(copied..).unwrap_or_default());
+    out
+}
+
+pub(crate) fn expr_has_effect(expr: &Expr) -> bool {
+    match expr {
+        Expr::Invoke { .. } | Expr::NewArray { .. } | Expr::ArrayInit { .. } => true,
+        Expr::Opaque(text) => text != "?",
+        Expr::Const(_) | Expr::Local(_) | Expr::This | Expr::StaticField { .. } | Expr::New(_) => {
+            false
+        }
+        Expr::Field { receiver, .. } => expr_has_effect(receiver),
+        Expr::Binary { lhs, rhs, .. }
+        | Expr::Cmp { lhs, rhs, .. }
+        | Expr::ArrayLoad {
+            array: lhs,
+            index: rhs,
+        } => expr_has_effect(lhs) || expr_has_effect(rhs),
+        Expr::Unary { value, .. }
+        | Expr::Cast { value, .. }
+        | Expr::InstanceOf { value, .. }
+        | Expr::ArrayLength(value) => expr_has_effect(value),
+    }
+}
+
+const CONFINED_BUILDERS: [&str; 2] = ["StringBuilder", "StringBuffer"];
+
+fn is_null_check_call(expr: &Expr) -> bool {
+    match expr {
+        Expr::Invoke {
+            receiver: Some(_),
+            owner,
+            method,
+            args,
+            ..
+        } => owner == "Object" && method == "getClass" && args.is_empty(),
+        Expr::Invoke {
+            receiver: None,
+            owner,
+            method,
+            args,
+            ..
+        } => owner == "java.util.Objects" && method == "requireNonNull" && args.len() == 1,
+        _ => false,
+    }
+}
+
+pub(crate) fn expr_reads_state(expr: &Expr) -> bool {
+    match expr {
+        Expr::Field { .. } | Expr::StaticField { .. } | Expr::ArrayLoad { .. } => true,
+        Expr::Invoke {
+            receiver,
+            owner,
+            method,
+            args,
+            ..
+        } => {
+            let confined: bool = CONFINED_BUILDERS.contains(&owner.as_str())
+                && matches!(method.as_str(), "append" | "toString" | "length")
+                && receiver.is_some();
+            !confined
+                || receiver.as_deref().is_some_and(expr_reads_state)
+                || args.iter().any(expr_reads_state)
+        }
+        Expr::Opaque(text) => !CONFINED_BUILDERS
+            .iter()
+            .any(|builder: &&str| *text == format!("new {builder}()")),
+        Expr::Const(_) | Expr::Local(_) | Expr::This | Expr::New(_) => false,
+        Expr::Binary { lhs, rhs, .. } | Expr::Cmp { lhs, rhs, .. } => {
+            expr_reads_state(lhs) || expr_reads_state(rhs)
+        }
+        Expr::Unary { value, .. }
+        | Expr::Cast { value, .. }
+        | Expr::InstanceOf { value, .. }
+        | Expr::ArrayLength(value)
+        | Expr::NewArray { size: value, .. } => expr_reads_state(value),
+        Expr::ArrayInit { elements, .. } => elements.iter().any(expr_reads_state),
     }
 }
 
@@ -440,13 +844,19 @@ fn render_boolean_value(
             _ => None,
         })
         .or_else(|| expression_int_kind(value))?;
-    Some(match kind {
-        ValueKind::Boolean => value.render(),
-        ValueKind::IntLike => format!("{} != 0", value.render()),
-    })
+    match kind {
+        ValueKind::Boolean => Some(value.render()),
+        ValueKind::IntLike => Some(format!("{} != 0", value.render())),
+        ValueKind::Reference => None,
+    }
 }
 
 fn local_value_kind(ctx: &MethodContext<'_>, name: &str) -> Option<ValueKind> {
+    if let Some(naming) = ctx.naming
+        && let Some(local) = naming.named(name)
+    {
+        return local.ty.as_ref().and_then(LocalType::kind);
+    }
     let register: u16 = ctx
         .param_regs
         .iter()
@@ -497,7 +907,12 @@ fn expression_is_boolean(value: &Expr) -> bool {
     }
 }
 
-fn const_value(file: &mut RegisterFile, regs: &[u16], insn: &DalvikInsn) -> LiftOutcome {
+fn const_value(
+    ctx: &MethodContext<'_>,
+    file: &mut RegisterFile,
+    regs: &[u16],
+    insn: &DalvikInsn,
+) -> LiftOutcome {
     let Some(&dest): Option<&u16> = regs.first() else {
         return LiftOutcome::None;
     };
@@ -508,13 +923,33 @@ fn const_value(file: &mut RegisterFile, regs: &[u16], insn: &DalvikInsn) -> Lift
         _ => raw,
     };
     let wide: bool = matches!(insn.op, 0x16..=0x19);
-    let literal: String = if wide {
-        format!("{value}L")
-    } else {
-        value.to_string()
+    let literal: String = match ctx.def_type(insn.pc, dest) {
+        Some(LocalType::Double) if wide => double_literal(value as u64),
+        Some(LocalType::Float) if !wide => float_literal(value as u32),
+        Some(LocalType::Reference(_)) if value == 0 => "null".to_owned(),
+        _ if wide => format!("{value}L"),
+        _ => value.to_string(),
     };
     file.write(dest, Expr::Const(literal));
     LiftOutcome::None
+}
+
+fn double_literal(bits: u64) -> String {
+    let value: f64 = f64::from_bits(bits);
+    if value.is_finite() {
+        format!("{value:?}")
+    } else {
+        format!("Double.longBitsToDouble({}L)", bits as i64)
+    }
+}
+
+fn float_literal(bits: u32) -> String {
+    let value: f32 = f32::from_bits(bits);
+    if value.is_finite() {
+        format!("{value:?}f")
+    } else {
+        format!("Float.intBitsToFloat({})", bits as i32)
+    }
 }
 
 fn const_string(
@@ -909,7 +1344,7 @@ fn invoke(
         let Some(&r): Option<&u16> = reg_iter.next() else {
             break;
         };
-        args.push(file.read(ctx, r));
+        args.push(argument_value(ctx, file, r, param));
         if is_category_two(param) {
             let _: Option<&u16> = reg_iter.next();
         }
@@ -968,7 +1403,8 @@ fn invoke(
     if returns_void {
         return LiftOutcome::Statement(call.render());
     }
-    let materialized_in: Option<u16> = receiver_register.filter(|_| returns_receiver(method));
+    let materialized_in: Option<u16> =
+        receiver_register.filter(|_| returns_receiver(method) && ctx.threads_receiver(insn.pc));
     if let Some(register) = materialized_in {
         file.write(register, call.clone());
     }
@@ -978,6 +1414,31 @@ fn invoke(
         kind: result_kind,
     });
     LiftOutcome::None
+}
+
+fn argument_value(
+    ctx: &MethodContext<'_>,
+    file: &RegisterFile,
+    register: u16,
+    param: &str,
+) -> Expr {
+    let value: Expr = file.read(ctx, register);
+    match param {
+        "Z" => match &value {
+            Expr::Const(constant) if constant == "0" => Expr::Const("false".to_owned()),
+            Expr::Const(constant) if constant == "1" => Expr::Const("true".to_owned()),
+            _ if operand_value_kind(ctx, file, register, &value) == Some(ValueKind::IntLike) => {
+                Expr::Binary {
+                    op: "!=",
+                    lhs: Box::new(value),
+                    rhs: Box::new(Expr::Const("0".to_owned())),
+                }
+            }
+            _ => value,
+        },
+        "I" | "B" | "C" | "S" => numeric_int_operand(ctx, file, register, value),
+        _ => value,
+    }
 }
 
 fn direct_init_target(
@@ -1303,7 +1764,7 @@ fn is_expression_name(text: &str) -> bool {
             .all(crate::name_disambig::is_java_source_identifier)
 }
 
-fn returns_receiver(method: &MethodId) -> bool {
+pub(crate) fn returns_receiver(method: &MethodId) -> bool {
     matches!(
         method.class.as_str(),
         "Ljava/lang/StringBuilder;" | "Ljava/lang/StringBuffer;"
@@ -1604,17 +2065,21 @@ pub(crate) fn render_branch_condition(
                 return "true".to_string();
             };
             let value: Expr = file.read(ctx, a);
+            let kind: Option<ValueKind> = operand_value_kind(ctx, file, a, &value);
             match &value {
                 Expr::Cmp { kind, lhs, rhs } => {
                     kind.render_relation(&lhs.render(), comparez_op(op), &rhs.render())
                 }
-                Expr::InstanceOf { .. } if matches!(op, 0x38 | 0x39) => {
+                _ if matches!(op, 0x38 | 0x39) && kind == Some(ValueKind::Boolean) => {
                     let inner: String = value.render();
                     if op == 0x38 {
                         format!("!{inner}")
                     } else {
                         inner
                     }
+                }
+                _ if matches!(op, 0x38 | 0x39) && kind == Some(ValueKind::Reference) => {
+                    format!("{} {} null", value.render(), comparez_op(op))
                 }
                 _ => format!("{} {} 0", value.render(), comparez_op(op)),
             }
@@ -1826,12 +2291,16 @@ mod tests {
             },
         );
         let mut pending = None;
-        let _: LiftOutcome = lift_insn(
+        let moved: LiftOutcome = lift_insn(
             context,
             &mut file,
             &insn(0x01, vec![0, 1], None),
             &mut pending,
         );
+        assert!(matches!(
+            moved,
+            LiftOutcome::Statement(statement) if statement == "var0 = value.isEmpty()"
+        ));
         file
     }
 
@@ -2008,7 +2477,7 @@ mod tests {
     }
 
     #[test]
-    fn move_into_boolean_array_store_preserves_the_boolean_expression() -> Result<(), String> {
+    fn move_into_boolean_array_store_reads_the_moved_boolean_once() -> Result<(), String> {
         with_context("()V", |context: &MethodContext<'_>| {
             let mut file: RegisterFile = moved_boolean_expression(context);
             file.write(2, Expr::Local("flags".to_owned()));
@@ -2022,14 +2491,14 @@ mod tests {
             );
             assert!(matches!(
                 outcome,
-                LiftOutcome::Statement(statement) if statement == "flags[0] = value.isEmpty()"
+                LiftOutcome::Statement(statement) if statement == "flags[0] = var0"
             ));
         })?;
         Ok(())
     }
 
     #[test]
-    fn move_into_boolean_instance_field_preserves_the_boolean_expression() -> Result<(), String> {
+    fn move_into_boolean_instance_field_reads_the_moved_boolean_once() -> Result<(), String> {
         with_context("()V", |context: &MethodContext<'_>| -> Result<(), String> {
             let index: u32 = field_index(context, "Z")?;
             let field_name: String = context
@@ -2049,7 +2518,7 @@ mod tests {
             assert!(matches!(
                 outcome,
                 LiftOutcome::Statement(statement)
-                    if statement == format!("this.{field_name} = value.isEmpty()")
+                    if statement == format!("this.{field_name} = var0")
             ));
             Ok(())
         })??;
@@ -2057,7 +2526,7 @@ mod tests {
     }
 
     #[test]
-    fn move_into_boolean_static_field_preserves_the_boolean_expression() -> Result<(), String> {
+    fn move_into_boolean_static_field_reads_the_moved_boolean_once() -> Result<(), String> {
         with_context("()V", |context: &MethodContext<'_>| -> Result<(), String> {
             let index: u32 = field_index(context, "Z")?;
             let field = context
@@ -2076,7 +2545,7 @@ mod tests {
             assert!(matches!(
                 outcome,
                 LiftOutcome::Statement(statement)
-                    if statement == format!("{owner}.{field_name} = value.isEmpty()")
+                    if statement == format!("{owner}.{field_name} = var0")
             ));
             Ok(())
         })??;

@@ -4,11 +4,17 @@ use std::fmt::Write as _;
 use serde::{Deserialize, Serialize};
 
 use crate::dalvik::DalvikInsn;
-use crate::dalvik_cfg::{DalvikMethodCfg, build_dalvik_cfg_from_code_item};
-use crate::dalvik_lift::{
-    LiftOutcome, MethodContext, MethodIdentity, PendingResult, RegisterFile, lift_insn,
-    render_branch_condition, seed_block_registers,
+use crate::dalvik_cfg::{
+    DalvikMethodCfg, DefUses, RegisterAccess, RegisterFlow, RegisterSet, ValueNode,
+    build_dalvik_cfg_from_code_item,
 };
+use crate::dalvik_lift::{
+    LiftOutcome, LocalType, MethodContext, MethodIdentity, NamedLocal, PendingResult, RegisterFile,
+    RegisterNaming, assignment_value, expr_has_effect, expr_mentions_local, expr_reads_state,
+    lift_insn, rename_local, render_branch_condition,
+};
+use crate::dalvik_typestate::{RegType, TypeStates};
+use crate::decompile::Expr;
 use crate::decompile_struct::{
     BasicBlock, BlockId, Cfg, Dominators, EdgeKind, NaturalLoop, Region, Structurer, SwitchKey,
     compute_dominators, find_natural_loops,
@@ -1291,28 +1297,34 @@ fn render_method(
         "public "
     };
 
+    let debug_name_offset: usize = usize::from(recovered_default.is_some_and(
+        |recovered: &crate::dalvik_desugar::DefaultInterfaceMethod| {
+            recovered.kind == crate::dalvik_desugar::InterfaceMethodKind::Default
+        },
+    ));
+    let parameter_names: Vec<String> = source_parameter_names(
+        item,
+        parsed
+            .as_ref()
+            .map_or(0, |md: &MethodDescriptor| md.params.len()),
+        debug_name_offset,
+    );
     let params: String = match &parsed {
         Some(md) => md
             .params
             .iter()
+            .zip(&parameter_names)
             .enumerate()
-            .filter(|(i, _): &(usize, &crate::descriptor::JavaType)| {
-                !hide_final_continuation || *i + 1 != md.params.len()
-            })
-            .map(|(i, p)| {
-                let parameter_index: usize = i + usize::from(recovered_default.is_some_and(
-                    |recovered: &crate::dalvik_desugar::DefaultInterfaceMethod| {
-                        recovered.kind == crate::dalvik_desugar::InterfaceMethodKind::Default
-                    },
-                ));
-                let name: String = item
-                    .param_names
-                    .get(parameter_index)
-                    .and_then(|n: &Option<String>| n.clone())
-                    .filter(|n: &String| crate::name_disambig::is_java_source_identifier(n))
-                    .unwrap_or_else(|| format!("arg{i}"));
-                format!("{} {name}", p.render())
-            })
+            .filter(
+                |(i, _): &(usize, (&crate::descriptor::JavaType, &String))| {
+                    !hide_final_continuation || *i + 1 != md.params.len()
+                },
+            )
+            .map(
+                |(_, (p, name)): (usize, (&crate::descriptor::JavaType, &String))| {
+                    format!("{} {name}", p.render())
+                },
+            )
             .collect::<Vec<String>>()
             .join(", "),
         None => String::new(),
@@ -1354,6 +1366,7 @@ fn render_method(
         ),
         desugar,
         inlined_helpers,
+        &parameter_names,
     );
     let cff_note: String = cff.map_or_else(String::new, |method| {
         cff_annotation(method, lifted_from_rewired)
@@ -1375,6 +1388,38 @@ fn render_method(
         has_body: true,
         refused: false,
     }
+}
+
+fn source_parameter_names(item: &CodeItem, count: usize, offset: usize) -> Vec<String> {
+    let mut chosen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    (0..count)
+        .map(|index: usize| {
+            let name: String = item
+                .param_names
+                .get(index + offset)
+                .and_then(Option::as_deref)
+                .filter(|name: &&str| {
+                    crate::name_disambig::is_java_source_identifier(name)
+                        && !is_generated_local_name(name)
+                        && !chosen.contains(*name)
+                })
+                .map_or_else(|| format!("arg{index}"), str::to_owned);
+            chosen.insert(name.clone());
+            name
+        })
+        .collect()
+}
+
+fn is_generated_local_name(name: &str) -> bool {
+    name == "ex"
+        || ["arg", "var", "tmp", "p", "q", "r", "s"]
+            .iter()
+            .filter_map(|prefix: &&str| name.strip_prefix(prefix))
+            .any(|rest: &str| {
+                rest.bytes()
+                    .next()
+                    .is_some_and(|byte: u8| byte.is_ascii_digit())
+            })
 }
 
 fn cff_annotation(
@@ -1418,25 +1463,6 @@ fn cff_annotation(
 struct MethodBody {
     text: String,
     fully_lifted: bool,
-}
-
-fn register_mention_blocks(
-    cfg: &Cfg,
-    insns: &[DalvikInsn],
-) -> BTreeMap<u16, std::collections::BTreeSet<BlockId>> {
-    let mut out: BTreeMap<u16, std::collections::BTreeSet<BlockId>> = BTreeMap::new();
-    for block in &cfg.blocks {
-        let (start, end): (usize, usize) = block.insn_range;
-        let Some(slice): Option<&[DalvikInsn]> = insns.get(start..end) else {
-            continue;
-        };
-        for insn in slice {
-            for &reg in &insn.regs {
-                out.entry(reg).or_default().insert(block.id);
-            }
-        }
-    }
-    out
 }
 
 fn incoming_register_is_used(item: &CodeItem, register: u16) -> bool {
@@ -1517,6 +1543,7 @@ fn lift_method(
     inline_temporaries: bool,
     desugar: crate::dalvik_desugar::DesugarView<'_>,
     inlined_helpers: &crate::dalvik_desugar::InlinedHelpers,
+    parameter_names: &[String],
 ) -> MethodBody {
     if item.insns.is_empty() {
         return MethodBody {
@@ -1534,13 +1561,22 @@ fn lift_method(
     };
     let blackobf_note: String =
         blackobfuscator_annotation(&built.insns, &built.switch_payloads, dex);
+    let accesses: MethodAccesses = register_accesses(dex, &built.cfg, &built.insns);
+    let Some(flow): Option<RegisterFlow> =
+        RegisterFlow::analyze(&built.cfg, &accesses.accesses, item.registers_size)
+    else {
+        return MethodBody {
+            text: format!("{blackobf_note}        // <decompile: register flow unavailable>\n"),
+            fully_lifted: false,
+        };
+    };
     let dom: Dominators = compute_dominators(&built.cfg);
     let loops: Vec<NaturalLoop> = find_natural_loops(&built.cfg, &dom);
     let mut structurer: Structurer<'_> =
         Structurer::with_switch_map(&built.cfg, &dom, &loops, &[], built.switch_map.clone());
     let root: Region = structurer.structure();
 
-    let ctx: MethodContext<'_> = MethodContext::new(
+    let base: MethodContext<'_> = MethodContext::new(
         dex,
         identity,
         item.registers_size,
@@ -1549,94 +1585,608 @@ fn lift_method(
         desugar,
         inlined_helpers,
     )
-    .with_temporary_types(&temporary_types(dex, &built.insns));
-    let register_blocks: BTreeMap<u16, std::collections::BTreeSet<BlockId>> =
-        register_mention_blocks(&built.cfg, &built.insns);
+    .with_parameter_names(parameter_names);
+    let states: Option<TypeStates> = method_type_states(dex, &built, identity, item);
+    let locals: MethodLocals = method_locals(
+        &base,
+        identity,
+        &built,
+        &flow,
+        states.as_ref(),
+        accesses.threaded,
+    );
+    let ctx: MethodContext<'_> = base.with_naming(&locals.naming);
     let mut render: RenderState<'_> = RenderState {
         ctx: &ctx,
         cfg: &built.cfg,
         insns: &built.insns,
+        accesses: &accesses.accesses,
+        flow: &flow,
+        locals: &locals,
         rendered_blocks: std::collections::BTreeSet::new(),
         fully_lifted: !structurer.had_irreducible,
-        register_blocks,
+        assigned: std::collections::BTreeSet::new(),
+        temporaries: 0,
     };
     let mut out: String = String::new();
     render_region(&mut render, &root, &mut out, 2);
-    let declarations: String = temporary_declarations(dex, &built.insns, &out);
+    let mut declarations: String = String::new();
+    for &index in &render.assigned {
+        let Some(local): Option<&NamedLocal> = locals.naming.locals.get(index) else {
+            continue;
+        };
+        if !local.declared {
+            continue;
+        }
+        match &local.ty {
+            Some(ty) => {
+                let _: std::fmt::Result =
+                    writeln!(declarations, "        {} {};", ty.render(), local.name);
+            }
+            None => render.fully_lifted = false,
+        }
+    }
     MethodBody {
         text: format!("{blackobf_note}{declarations}{out}"),
         fully_lifted: render.fully_lifted,
     }
 }
 
-fn assigned_temporaries(body: &str) -> std::collections::BTreeSet<u16> {
-    let mut assigned: std::collections::BTreeSet<u16> = std::collections::BTreeSet::new();
-    for line in body.lines() {
-        let trimmed: &str = line.trim_start();
-        let Some(rest): Option<&str> = trimmed.strip_prefix("var") else {
-            continue;
-        };
-        let Some((digits, _)): Option<(&str, &str)> = rest.split_once(" = ") else {
-            continue;
-        };
-        if let Ok(register) = digits.parse::<u16>() {
-            assigned.insert(register);
-        }
-    }
-    assigned
+struct MethodAccesses {
+    accesses: Vec<RegisterAccess>,
+    threaded: std::collections::BTreeSet<u32>,
 }
 
-fn temporary_declarations(dex: &DexFile, insns: &[DalvikInsn], body: &str) -> String {
-    let assigned: std::collections::BTreeSet<u16> = assigned_temporaries(body);
-    if assigned.is_empty() {
-        return String::new();
+fn register_accesses(dex: &DexFile, cfg: &Cfg, insns: &[DalvikInsn]) -> MethodAccesses {
+    let mut accesses: Vec<RegisterAccess> = vec![RegisterAccess::default(); insns.len()];
+    let mut threaded: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+    for block in &cfg.blocks {
+        let (start, end): (usize, usize) = block.insn_range;
+        let mut allocated: std::collections::BTreeSet<u16> = std::collections::BTreeSet::new();
+        for index in start..end.min(insns.len()) {
+            let insn: &DalvikInsn = &insns[index];
+            let next: Option<&DalvikInsn> = if index + 1 < end {
+                insns.get(index + 1)
+            } else {
+                None
+            };
+            let access: RegisterAccess = match insn.op {
+                0x6E..=0x72 | 0x74..=0x78 => {
+                    invoke_access(dex, insn, next, &allocated, &mut threaded)
+                }
+                _ => instruction_access(insn),
+            };
+            for &register in &access.defs {
+                if insn.op == 0x22 {
+                    allocated.insert(register);
+                } else {
+                    allocated.remove(&register);
+                }
+            }
+            if let Some(slot) = accesses.get_mut(index) {
+                *slot = access;
+            }
+        }
     }
-    let inferred: BTreeMap<u16, Option<String>> = temporary_types(dex, insns);
-    let mut out: String = String::new();
-    for register in assigned {
-        let Some(Some(rendered)) = inferred.get(&register) else {
-            continue;
-        };
-        let _ = writeln!(out, "        {rendered} var{register};");
-    }
-    out
+    MethodAccesses { accesses, threaded }
 }
 
-fn temporary_types(dex: &DexFile, insns: &[DalvikInsn]) -> BTreeMap<u16, Option<String>> {
-    let mut types: BTreeMap<u16, Option<String>> = BTreeMap::new();
-    let mut pending_return: Option<String> = None;
-    for insn in insns {
-        if matches!(insn.op, 0x6E..=0x72 | 0x74..=0x78) {
-            pending_return = insn
-                .index
-                .and_then(|index: u32| dex.method_ids.get(index as usize))
-                .map(|method: &crate::dex::MethodId| method.proto.return_type.clone());
+fn instruction_access(insn: &DalvikInsn) -> RegisterAccess {
+    let register = |position: usize| insn.regs.get(position).copied();
+    let (uses, defs): (Vec<Option<u16>>, Vec<Option<u16>>) = match insn.op {
+        0x01..=0x09 => (vec![register(1)], vec![register(0)]),
+        0x0A..=0x0D | 0x12..=0x1C | 0x22 | 0x60..=0x66 => (Vec::new(), vec![register(0)]),
+        0x0F..=0x11 | 0x1D | 0x1E | 0x26 | 0x27 | 0x2B | 0x2C | 0x38..=0x3D | 0x67..=0x6D => {
+            (vec![register(0)], Vec::new())
+        }
+        0x1F => (vec![register(0)], vec![register(0)]),
+        0x20 | 0x21 | 0x23 | 0x52..=0x58 | 0x7B..=0x8F | 0xD0..=0xE2 => {
+            (vec![register(1)], vec![register(0)])
+        }
+        0x24 | 0x25 => (insn.regs.iter().copied().map(Some).collect(), Vec::new()),
+        0x2D..=0x31 | 0x44..=0x4A | 0x90..=0xAF => {
+            (vec![register(1), register(2)], vec![register(0)])
+        }
+        0x32..=0x37 | 0x59..=0x5F => (vec![register(0), register(1)], Vec::new()),
+        0x4B..=0x51 => (vec![register(0), register(1), register(2)], Vec::new()),
+        0xB0..=0xCF => (vec![register(0), register(1)], vec![register(0)]),
+        _ => (Vec::new(), Vec::new()),
+    };
+    RegisterAccess {
+        uses: uses.into_iter().flatten().collect(),
+        defs: defs.into_iter().flatten().collect(),
+    }
+}
+
+fn invoke_access(
+    dex: &DexFile,
+    insn: &DalvikInsn,
+    next: Option<&DalvikInsn>,
+    allocated: &std::collections::BTreeSet<u16>,
+    threaded: &mut std::collections::BTreeSet<u32>,
+) -> RegisterAccess {
+    let is_static: bool = matches!(insn.op, 0x71 | 0x77);
+    let method: Option<&crate::dex::MethodId> = insn
+        .index
+        .and_then(|index: u32| dex.method_ids.get(index as usize));
+    let mut registers = insn.regs.iter().copied();
+    let mut uses: Vec<u16> = Vec::with_capacity(insn.regs.len());
+    let Some(method): Option<&crate::dex::MethodId> = method else {
+        uses.extend(registers);
+        return RegisterAccess {
+            uses,
+            defs: Vec::new(),
+        };
+    };
+    if !is_static {
+        uses.extend(registers.next());
+    }
+    for parameter in &method.proto.parameters {
+        let Some(register): Option<u16> = registers.next() else {
+            break;
+        };
+        uses.push(register);
+        if matches!(parameter.as_bytes().first(), Some(b'J' | b'D')) {
+            let _: Option<u16> = registers.next();
+        }
+    }
+    let mut defs: Vec<u16> = Vec::new();
+    if let Some(&receiver) = insn.regs.first().filter(|_| !is_static) {
+        let initializes: bool = matches!(insn.op, 0x70 | 0x76)
+            && method.name == "<init>"
+            && allocated.contains(&receiver);
+        let threads: bool = crate::dalvik_lift::returns_receiver(method)
+            && next.is_some_and(|following: &DalvikInsn| {
+                matches!(following.op, 0x6E..=0x72 | 0x74..=0x78)
+                    && following.regs.first() == Some(&receiver)
+            });
+        if threads {
+            threaded.insert(insn.pc);
+        }
+        if initializes || threads {
+            defs.push(receiver);
+        }
+    }
+    RegisterAccess { uses, defs }
+}
+
+fn method_type_states(
+    dex: &DexFile,
+    built: &DalvikMethodCfg,
+    identity: MethodIdentity<'_>,
+    item: &CodeItem,
+) -> Option<TypeStates> {
+    let parsed: MethodDescriptor = descriptor::parse_method(identity.descriptor)?;
+    let switch_targets: BTreeMap<u32, Vec<u32>> = built
+        .switch_payloads
+        .iter()
+        .map(|(pc, payload): &(u32, crate::dalvik::SwitchPayload)| (*pc, payload.targets.clone()))
+        .collect();
+    let mut handler_edges: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
+    let mut catch_types: BTreeMap<u32, std::collections::BTreeSet<Option<String>>> =
+        BTreeMap::new();
+    for region in &built.cfg.exception_regions {
+        for insn in &built.insns {
+            if insn.pc >= region.try_start_pc && insn.pc < region.try_end_pc {
+                let handlers: &mut Vec<u32> = handler_edges.entry(insn.pc).or_default();
+                if !handlers.contains(&region.handler_pc) {
+                    handlers.push(region.handler_pc);
+                }
+            }
+        }
+        catch_types
+            .entry(region.handler_pc)
+            .or_default()
+            .insert(region.catch_type.clone());
+    }
+    let move_exception_type: BTreeMap<u32, String> = catch_types
+        .into_iter()
+        .map(
+            |(pc, types): (u32, std::collections::BTreeSet<Option<String>>)| {
+                let single: Option<String> = if types.len() == 1 {
+                    types.into_iter().next().flatten()
+                } else {
+                    None
+                };
+                let internal: String = single.map_or_else(
+                    || "java/lang/Throwable".to_owned(),
+                    |ty: String| descriptor::descriptor_to_binary_name(&ty).to_owned(),
+                );
+                (pc, internal)
+            },
+        )
+        .collect();
+    let edges: crate::dalvik_typestate::CfgEdges<'_> = crate::dalvik_typestate::CfgEdges {
+        switch_targets: &switch_targets,
+        handler_edges: &handler_edges,
+        move_exception_type: &move_exception_type,
+    };
+    let no_eager_allocations: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+    let shape: crate::dalvik_typestate::MethodShape<'_> = crate::dalvik_typestate::MethodShape {
+        registers_size: item.registers_size,
+        ins_size: item.ins_size,
+        is_static: identity.is_static,
+        is_init_ctor: identity.is_constructor && !identity.is_static,
+        class_internal: identity.declaring_class,
+        materialize_new_pcs: &no_eager_allocations,
+    };
+    crate::dalvik_typestate::analyze(dex, &built.insns, &parsed, &shape, &edges)
+}
+
+struct MethodLocals {
+    naming: RegisterNaming,
+    web_local: BTreeMap<usize, usize>,
+}
+
+#[derive(Default)]
+struct WebEvidence {
+    types: Vec<RegType>,
+    declared: Option<LocalType>,
+    boolean: bool,
+    integral_def: bool,
+    integral_use: bool,
+    narrow: std::collections::BTreeSet<u8>,
+}
+
+impl WebEvidence {
+    fn record_descriptor_def(&mut self, descriptor_text: &str) {
+        match descriptor_text.as_bytes().first() {
+            Some(b'Z') => self.boolean = true,
+            Some(&kind @ (b'B' | b'C' | b'S')) => {
+                self.narrow.insert(kind);
+            }
+            _ => self.integral_def = true,
+        }
+    }
+
+    fn record_def(&mut self, dex: &DexFile, insns: &[DalvikInsn], index: usize) {
+        let Some(insn): Option<&DalvikInsn> = insns.get(index) else {
+            return;
+        };
+        let literal: i64 = insn.literal.unwrap_or(0);
+        match insn.op {
+            0x12..=0x14 if matches!(literal, 0 | 1) => {}
+            0x15 if literal == 0 => {}
+            0x01..=0x03 | 0x95..=0x97 | 0xB5..=0xB7 => {}
+            0xD5..=0xD7 | 0xDD..=0xDF if matches!(literal, 0 | 1) => {}
+            0x0A => {
+                let returned: Option<&str> = index
+                    .checked_sub(1)
+                    .and_then(|previous: usize| insns.get(previous))
+                    .filter(
+                        |previous: &&DalvikInsn| matches!(previous.op, 0x6E..=0x72 | 0x74..=0x78),
+                    )
+                    .and_then(|previous: &DalvikInsn| previous.index)
+                    .and_then(|method: u32| dex.method_ids.get(method as usize))
+                    .map(|method: &crate::dex::MethodId| method.proto.return_type.as_str());
+                match returned {
+                    Some(descriptor_text) => self.record_descriptor_def(descriptor_text),
+                    None => self.integral_def = true,
+                }
+            }
+            0x20 | 0x47 | 0x55 | 0x63 => self.boolean = true,
+            0x48 | 0x56 | 0x64 | 0x8D => {
+                self.narrow.insert(b'B');
+            }
+            0x49 | 0x57 | 0x65 | 0x8E => {
+                self.narrow.insert(b'C');
+            }
+            0x4A | 0x58 | 0x66 | 0x8F => {
+                self.narrow.insert(b'S');
+            }
+            _ => self.integral_def = true,
+        }
+    }
+
+    fn record_use(
+        &mut self,
+        dex: &DexFile,
+        insn: &DalvikInsn,
+        register: u16,
+        returns: Option<&crate::descriptor::JavaType>,
+    ) {
+        let invoked: Vec<Option<u8>> = invoke_operand_kinds(dex, insn);
+        for (position, &operand) in insn.regs.iter().enumerate() {
+            if operand != register {
+                continue;
+            }
+            match insn.op {
+                0x01..=0x03
+                | 0x32
+                | 0x33
+                | 0x38
+                | 0x39
+                | 0x95..=0x97
+                | 0xB5..=0xB7
+                | 0xD5..=0xD7
+                | 0xDD..=0xDF => {}
+                0x0F => match returns {
+                    Some(crate::descriptor::JavaType::Boolean) => self.boolean = true,
+                    Some(
+                        crate::descriptor::JavaType::Byte
+                        | crate::descriptor::JavaType::Char
+                        | crate::descriptor::JavaType::Short,
+                    ) => {}
+                    _ => self.integral_use = true,
+                },
+                0x4E | 0x5C | 0x6A if position == 0 => self.boolean = true,
+                0x4F..=0x51 | 0x5D..=0x5F | 0x6B..=0x6D if position == 0 => {}
+                0x6E..=0x72 | 0x74..=0x78 => match invoked.get(position).copied().flatten() {
+                    Some(b'Z') => self.boolean = true,
+                    Some(b'B' | b'C' | b'S') => {}
+                    _ => self.integral_use = true,
+                },
+                _ => self.integral_use = true,
+            }
+        }
+    }
+
+    fn local_type(
+        &self,
+        lattice: &crate::dalvik_typestate::TypeLattice<'_>,
+        desugar: crate::dalvik_desugar::DesugarView<'_>,
+    ) -> Option<LocalType> {
+        if let Some(declared) = &self.declared {
+            return Some(declared.clone());
+        }
+        let (first, rest): (&RegType, &[RegType]) = self.types.split_first()?;
+        let joined: RegType = rest
+            .iter()
+            .fold(first.clone(), |acc: RegType, ty: &RegType| {
+                lattice.join(&acc, ty)
+            });
+        match joined {
+            RegType::Int => Some(self.refined_int()),
+            RegType::Long => Some(LocalType::Long),
+            RegType::Float => Some(LocalType::Float),
+            RegType::Double => Some(LocalType::Double),
+            RegType::Ref(name) => {
+                let descriptor_text: String = if name.starts_with('[') {
+                    name
+                } else {
+                    format!("L{name};")
+                };
+                let projected: String = desugar.core_library.project_type(&descriptor_text);
+                descriptor::parse_field(&projected)
+                    .map(|ty: descriptor::JavaType| LocalType::Reference(ty.render()))
+            }
+            RegType::NullRef | RegType::ZeroOrNull => {
+                Some(LocalType::Reference("Object".to_owned()))
+            }
+            RegType::Top | RegType::UninitializedThis | RegType::Uninitialized(_) => None,
+        }
+    }
+
+    fn refined_int(&self) -> LocalType {
+        if self.boolean && !self.integral_def && !self.integral_use && self.narrow.is_empty() {
+            return LocalType::Boolean;
+        }
+        if self.integral_def || self.boolean || self.narrow.len() != 1 {
+            return LocalType::Int;
+        }
+        match self.narrow.first() {
+            Some(b'B') => LocalType::Byte,
+            Some(b'C') => LocalType::Char,
+            Some(b'S') => LocalType::Short,
+            _ => LocalType::Int,
+        }
+    }
+}
+
+fn invoke_operand_kinds(dex: &DexFile, insn: &DalvikInsn) -> Vec<Option<u8>> {
+    if !matches!(insn.op, 0x6E..=0x72 | 0x74..=0x78) {
+        return Vec::new();
+    }
+    let Some(method): Option<&crate::dex::MethodId> = insn
+        .index
+        .and_then(|index: u32| dex.method_ids.get(index as usize))
+    else {
+        return Vec::new();
+    };
+    let mut kinds: Vec<Option<u8>> = Vec::with_capacity(insn.regs.len());
+    if !matches!(insn.op, 0x71 | 0x77) {
+        kinds.push(Some(b'L'));
+    }
+    for parameter in &method.proto.parameters {
+        let kind: Option<u8> = parameter.as_bytes().first().copied();
+        kinds.push(kind);
+        if matches!(kind, Some(b'J' | b'D')) {
+            kinds.push(None);
+        }
+    }
+    kinds
+}
+
+fn java_local_type(ty: &descriptor::JavaType) -> Option<LocalType> {
+    Some(match ty {
+        descriptor::JavaType::Boolean => LocalType::Boolean,
+        descriptor::JavaType::Byte => LocalType::Byte,
+        descriptor::JavaType::Char => LocalType::Char,
+        descriptor::JavaType::Short => LocalType::Short,
+        descriptor::JavaType::Int => LocalType::Int,
+        descriptor::JavaType::Long => LocalType::Long,
+        descriptor::JavaType::Float => LocalType::Float,
+        descriptor::JavaType::Double => LocalType::Double,
+        descriptor::JavaType::Object(_) | descriptor::JavaType::Array(_) => {
+            LocalType::Reference(ty.render())
+        }
+        descriptor::JavaType::Void => return None,
+    })
+}
+
+fn parameter_types(
+    ctx: &MethodContext<'_>,
+    identity: MethodIdentity<'_>,
+) -> BTreeMap<u16, LocalType> {
+    let Some(parsed): Option<MethodDescriptor> =
+        descriptor::parse_method(&ctx.desugar.core_library.project_type(identity.descriptor))
+    else {
+        return BTreeMap::new();
+    };
+    ctx.param_regs
+        .keys()
+        .copied()
+        .zip(&parsed.params)
+        .filter_map(|(register, ty): (u16, &descriptor::JavaType)| {
+            java_local_type(ty).map(|local: LocalType| (register, local))
+        })
+        .collect()
+}
+
+fn method_locals(
+    ctx: &MethodContext<'_>,
+    identity: MethodIdentity<'_>,
+    built: &DalvikMethodCfg,
+    flow: &RegisterFlow,
+    states: Option<&TypeStates>,
+    threaded: std::collections::BTreeSet<u32>,
+) -> MethodLocals {
+    let dex: &DexFile = ctx.dex;
+    let parameters: BTreeMap<u16, LocalType> = parameter_types(ctx, identity);
+    let mut web_register: BTreeMap<usize, u16> = BTreeMap::new();
+    let mut evidence: BTreeMap<usize, WebEvidence> = BTreeMap::new();
+    for (node_index, node) in flow.nodes().iter().enumerate() {
+        let Some(web): Option<usize> = flow.web_of(node_index) else {
             continue;
+        };
+        let register: u16 = match node {
+            ValueNode::Entry { register, .. } | ValueNode::Def { register, .. } => *register,
+        };
+        web_register.entry(web).or_insert(register);
+        let facts: &mut WebEvidence = evidence.entry(web).or_default();
+        match node {
+            ValueNode::Entry { block, register } if BlockId(*block) == built.cfg.entry => {
+                if let Some(declared) = parameters.get(register) {
+                    facts.declared = Some(declared.clone());
+                }
+            }
+            ValueNode::Entry { .. } => {}
+            ValueNode::Def { insn, .. } => facts.record_def(dex, &built.insns, *insn),
         }
-        let produced: Option<(u16, String)> =
-            destination_type(dex, insn, pending_return.as_deref());
-        if !matches!(insn.op, 0x0A..=0x0C) {
-            pending_return = None;
+    }
+    for (insn, register, web) in flow.uses() {
+        let facts: &mut WebEvidence = evidence.entry(web).or_default();
+        if let Some(instruction) = built.insns.get(insn) {
+            facts.record_use(dex, instruction, register, ctx.return_type.as_ref());
         }
-        let Some((register, rendered)) = produced else {
-            if let Some(&register) = insn.regs.first()
-                && writes_first_register(insn.op)
+        if let Some(states) = states
+            && states.reached.get(insn).copied().unwrap_or(false)
+            && let Some(ty) = states
+                .entry_state
+                .get(insn)
+                .and_then(|state: &crate::dalvik_typestate::RegState| state.get(&register))
+        {
+            facts.types.push(ty.clone());
+        }
+    }
+
+    let lattice: crate::dalvik_typestate::TypeLattice<'_> =
+        crate::dalvik_typestate::TypeLattice::new(dex);
+    let this_type: LocalType = LocalType::Reference(descriptor::binary_to_source(
+        &ctx.desugar
+            .core_library
+            .project_type(identity.declaring_class),
+    ));
+    let mut naming: RegisterNaming = RegisterNaming {
+        threaded_receivers: threaded,
+        ..RegisterNaming::default()
+    };
+    let mut web_local: BTreeMap<usize, usize> = BTreeMap::new();
+    let mut by_register: BTreeMap<u16, Vec<usize>> = BTreeMap::new();
+    for (&web, &register) in &web_register {
+        by_register.entry(register).or_default().push(web);
+    }
+    for (register, webs) in by_register {
+        let parameter: Option<(&String, &LocalType)> =
+            ctx.param_regs.get(&register).zip(parameters.get(&register));
+        let is_this: bool = ctx.this_reg == Some(register);
+        let entry_web: Option<usize> = flow.entry_web(built.cfg.entry, register);
+        let mut typed_names: Vec<(LocalType, String)> = Vec::new();
+        let mut suffix: usize = 0;
+        for web in webs {
+            let ty: Option<LocalType> = evidence
+                .get(&web)
+                .and_then(|facts: &WebEvidence| facts.local_type(&lattice, ctx.desugar));
+            let holds_entry: bool = entry_web == Some(web);
+            let local: NamedLocal = if is_this && holds_entry {
+                NamedLocal {
+                    name: "this".to_owned(),
+                    ty: Some(this_type.clone()),
+                    declared: false,
+                }
+            } else if let Some((name, declared)) = parameter
+                && (holds_entry || ty.as_ref() == Some(declared))
             {
-                types.insert(register, None);
-            }
-            continue;
-        };
-        match types.get(&register) {
-            Some(Some(seen)) if *seen != rendered => {
-                types.insert(register, None);
-            }
-            Some(None) => {}
-            _ => {
-                types.insert(register, Some(rendered));
-            }
+                NamedLocal {
+                    name: name.clone(),
+                    ty: Some(declared.clone()),
+                    declared: false,
+                }
+            } else {
+                let shared: Option<&String> = ty.as_ref().and_then(|wanted: &LocalType| {
+                    typed_names
+                        .iter()
+                        .find(|(seen, _): &&(LocalType, String)| seen == wanted)
+                        .map(|(_, name): &(LocalType, String)| name)
+                });
+                let name: String = shared.cloned().unwrap_or_else(|| {
+                    let fresh: String = if suffix == 0 {
+                        format!("var{register}")
+                    } else {
+                        format!("var{register}_{suffix}")
+                    };
+                    suffix += 1;
+                    if let Some(ty) = &ty {
+                        typed_names.push((ty.clone(), fresh.clone()));
+                    }
+                    fresh
+                });
+                NamedLocal {
+                    name,
+                    ty,
+                    declared: true,
+                }
+            };
+            let index: usize = intern_local(&mut naming, local);
+            web_local.insert(web, index);
         }
     }
-    types
+    for (register, name) in &ctx.param_regs {
+        if !naming.by_name.contains_key(name) {
+            let _: usize = intern_local(
+                &mut naming,
+                NamedLocal {
+                    name: name.clone(),
+                    ty: parameters.get(register).cloned(),
+                    declared: false,
+                },
+            );
+        }
+    }
+    for (node_index, node) in flow.nodes().iter().enumerate() {
+        let ValueNode::Def { insn, register } = node else {
+            continue;
+        };
+        let (Some(instruction), Some(&index)): (Option<&DalvikInsn>, Option<&usize>) = (
+            built.insns.get(*insn),
+            flow.web_of(node_index)
+                .and_then(|web: usize| web_local.get(&web)),
+        ) else {
+            continue;
+        };
+        naming.def_locals.insert((instruction.pc, *register), index);
+    }
+    MethodLocals { naming, web_local }
+}
+
+fn intern_local(naming: &mut RegisterNaming, local: NamedLocal) -> usize {
+    if let Some(&index) = naming.by_name.get(&local.name) {
+        return index;
+    }
+    let index: usize = naming.locals.len();
+    naming.by_name.insert(local.name.clone(), index);
+    naming.locals.push(local);
+    index
 }
 
 const fn writes_first_register(op: u8) -> bool {
@@ -1651,61 +2201,6 @@ const fn writes_first_register(op: u8) -> bool {
             | 0x60..=0x66
             | 0x7B..=0xE2
     )
-}
-
-fn field_type(dex: &DexFile, insn: &DalvikInsn) -> Option<String> {
-    let field: &crate::dex::FieldId = dex.field_ids.get(insn.index? as usize)?;
-    Some(descriptor::parse_field(&field.type_name)?.render())
-}
-
-fn declared_type(descriptor_text: &str) -> Option<String> {
-    Some(descriptor::parse_field(descriptor_text)?.render())
-}
-
-fn destination_type(
-    dex: &DexFile,
-    insn: &DalvikInsn,
-    pending_return: Option<&str>,
-) -> Option<(u16, String)> {
-    let &register: &u16 = insn.regs.first()?;
-    let rendered: String = match insn.op {
-        0x0A..=0x0C => declared_type(pending_return?)?,
-        0x0D => "Throwable".to_owned(),
-        0x12..=0x15 => "int".to_owned(),
-        0x16..=0x19 => "long".to_owned(),
-        0x1A | 0x1B => "String".to_owned(),
-        0x1C => "Class".to_owned(),
-        0x1F | 0x22 => declared_type(dex.type_names.get(insn.index? as usize)?)?,
-        0x20 => "boolean".to_owned(),
-        0x21 | 0x44 | 0x2D..=0x31 => "int".to_owned(),
-        0x45 => "long".to_owned(),
-        0x47 => "boolean".to_owned(),
-        0x48 => "byte".to_owned(),
-        0x49 => "char".to_owned(),
-        0x4A => "short".to_owned(),
-        0x52..=0x58 | 0x60..=0x66 => field_type(dex, insn)?,
-        0x7B | 0x7C | 0x84 | 0x87 | 0x8A | 0x8D..=0x8F => scalar_cast_type(insn.op).to_owned(),
-        0x7D | 0x7E | 0x81 | 0x85 | 0x88 => "long".to_owned(),
-        0x7F | 0x82 | 0x86 | 0x8B => "float".to_owned(),
-        0x80 | 0x83 | 0x89 | 0x8C => "double".to_owned(),
-        0x90..=0x97 | 0xB0..=0xB7 | 0xD0..=0xE2 => "int".to_owned(),
-        0x9B..=0xA2 | 0xBB..=0xC2 => "long".to_owned(),
-        0xA6..=0xAA | 0xC6..=0xCA => "float".to_owned(),
-        0xAB..=0xAF | 0xCB..=0xCF => "double".to_owned(),
-        0x98..=0x9A | 0xB8..=0xBA => "int".to_owned(),
-        0xA3..=0xA5 | 0xC3..=0xC5 => "long".to_owned(),
-        _ => return None,
-    };
-    Some((register, rendered))
-}
-
-const fn scalar_cast_type(op: u8) -> &'static str {
-    match op {
-        0x8D => "byte",
-        0x8E => "char",
-        0x8F => "short",
-        _ => "int",
-    }
 }
 
 fn blackobfuscator_annotation(
@@ -1743,9 +2238,31 @@ struct RenderState<'a> {
     ctx: &'a MethodContext<'a>,
     cfg: &'a Cfg,
     insns: &'a [DalvikInsn],
+    accesses: &'a [RegisterAccess],
+    flow: &'a RegisterFlow,
+    locals: &'a MethodLocals,
     rendered_blocks: std::collections::BTreeSet<BlockId>,
     fully_lifted: bool,
-    register_blocks: BTreeMap<u16, std::collections::BTreeSet<BlockId>>,
+    assigned: std::collections::BTreeSet<usize>,
+    temporaries: usize,
+}
+
+struct BlockWalk {
+    file: RegisterFile,
+    pending: Option<PendingResult>,
+    origins: BTreeMap<u16, u32>,
+    points: Vec<RegisterSet>,
+    handlers: RegisterSet,
+    start: usize,
+    replay: bool,
+}
+
+struct FlushRequest<'r> {
+    assign: Vec<u16>,
+    external: Option<String>,
+    effect: bool,
+    live: &'r RegisterSet,
+    exclude: &'r [u16],
 }
 
 fn indent_string(level: usize) -> String {
@@ -1922,52 +2439,573 @@ fn block_insn_range(state: &RenderState<'_>, bid: BlockId) -> (usize, usize) {
     block.insn_range
 }
 
-fn materialize_pending(
-    state: &RenderState<'_>,
-    file: &RegisterFile,
-    here: BlockId,
+fn entry_value(state: &RenderState<'_>, bid: BlockId, register: u16) -> Expr {
+    let local: Option<&NamedLocal> = state
+        .flow
+        .entry_web(bid, register)
+        .and_then(|web: usize| state.locals.web_local.get(&web))
+        .and_then(|&index: &usize| state.locals.naming.locals.get(index));
+    match local {
+        Some(local) if local.name == "this" => Expr::This,
+        Some(local) => Expr::Local(local.name.clone()),
+        None => state.ctx.register_name(register),
+    }
+}
+
+fn open_block(state: &RenderState<'_>, bid: BlockId, replay: bool) -> Option<BlockWalk> {
+    let block: &BasicBlock = state.cfg.blocks.get(bid.0 as usize)?;
+    let points: Vec<RegisterSet> = state.flow.live_points(block, state.accesses)?;
+    let handlers: RegisterSet = state.flow.handler_live(bid)?.clone();
+    let mut file: RegisterFile = RegisterFile::new();
+    for register in 0..state.ctx.registers_size {
+        file.seed(register, entry_value(state, bid, register));
+    }
+    Some(BlockWalk {
+        file,
+        pending: None,
+        origins: BTreeMap::new(),
+        points,
+        handlers,
+        start: block.insn_range.0,
+        replay,
+    })
+}
+
+fn live_at(walk: &BlockWalk, point: usize) -> RegisterSet {
+    walk.points
+        .get(point)
+        .or_else(|| walk.points.last())
+        .cloned()
+        .unwrap_or_else(|| RegisterSet::empty(0))
+}
+
+fn target_name(state: &mut RenderState<'_>, walk: &BlockWalk, register: u16) -> String {
+    match walk.origins.get(&register) {
+        Some(&pc) => {
+            if state.locals.naming.def_local(pc, register).is_none() {
+                state.fully_lifted = false;
+            }
+            state.ctx.def_lvalue(pc, register)
+        }
+        None => match walk.file.slot(register) {
+            Some(Expr::Local(name)) => name.clone(),
+            _ => {
+                state.fully_lifted = false;
+                state.ctx.register_lvalue(register)
+            }
+        },
+    }
+}
+
+fn record_assignment(state: &mut RenderState<'_>, walk: &BlockWalk, register: u16) {
+    let index: Option<usize> = walk
+        .origins
+        .get(&register)
+        .and_then(|&pc: &u32| state.locals.naming.def_locals.get(&(pc, register)).copied());
+    match index {
+        Some(index) => {
+            state.assigned.insert(index);
+        }
+        None => state.fully_lifted = false,
+    }
+}
+
+fn is_effect_ordered(value: &Expr) -> bool {
+    expr_has_effect(value) || expr_reads_state(value)
+}
+
+fn flush(
+    state: &mut RenderState<'_>,
+    walk: &mut BlockWalk,
+    request: &FlushRequest<'_>,
     out: &mut String,
     level: usize,
 ) {
-    let falls_through: bool = !state.cfg.blocks[here.0 as usize].successors.is_empty();
-    if !falls_through {
-        return;
+    let mut members: Vec<u16> = Vec::new();
+    let mut names: BTreeMap<u16, String> = BTreeMap::new();
+    let mut assigned_names: Vec<String> = request.external.iter().cloned().collect();
+    let mut effect: bool = request.effect;
+    for &register in &request.assign {
+        if members.contains(&register) {
+            continue;
+        }
+        let name: String = target_name(state, walk, register);
+        effect |= walk.file.slot(register).is_some_and(expr_has_effect);
+        assigned_names.push(name.clone());
+        names.insert(register, name);
+        members.push(register);
+    }
+    loop {
+        let mut grew: bool = false;
+        for register in request.live.iter() {
+            if members.contains(&register) || request.exclude.contains(&register) {
+                continue;
+            }
+            let Some(value): Option<Expr> = walk.file.slot(register).cloned() else {
+                continue;
+            };
+            if matches!(value, Expr::This) {
+                continue;
+            }
+            let own: String = target_name(state, walk, register);
+            if matches!(&value, Expr::Local(name) if *name == own) {
+                continue;
+            }
+            let hazard: bool = assigned_names
+                .iter()
+                .any(|name: &String| expr_mentions_local(&value, name));
+            let ordered: bool = effect && is_effect_ordered(&value);
+            if !hazard && !ordered {
+                continue;
+            }
+            if walk.file.is_pending(register) {
+                effect |= expr_has_effect(&value);
+                assigned_names.push(own.clone());
+                names.insert(register, own);
+                members.push(register);
+                grew = true;
+            } else {
+                walk.file.set_variable(register, own);
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    members.sort_by_key(|register: &u16| (walk.origins.get(register).copied(), *register));
+    let pad: String = indent_string(level);
+    while !members.is_empty() {
+        let precedes = |walk: &BlockWalk, before: u16, after: u16| -> bool {
+            let (Some(first), Some(second)): (Option<&Expr>, Option<&Expr>) =
+                (walk.file.slot(before), walk.file.slot(after))
+            else {
+                return false;
+            };
+            let reads_old: bool = names
+                .get(&after)
+                .is_some_and(|name: &String| expr_mentions_local(first, name));
+            let effect_order: bool = (expr_has_effect(first) || expr_has_effect(second))
+                && is_effect_ordered(first)
+                && is_effect_ordered(second)
+                && walk.origins.get(&before) < walk.origins.get(&after);
+            reads_old || effect_order
+        };
+        let ready: Option<usize> = members.iter().position(|&candidate: &u16| {
+            !members
+                .iter()
+                .any(|&other: &u16| other != candidate && precedes(walk, other, candidate))
+        });
+        let Some(position): Option<usize> = ready else {
+            let blocked: Option<String> = members.iter().find_map(|&candidate: &u16| {
+                let name: &String = names.get(&candidate)?;
+                members
+                    .iter()
+                    .any(|&other: &u16| {
+                        other != candidate
+                            && walk
+                                .file
+                                .slot(other)
+                                .is_some_and(|value: &Expr| expr_mentions_local(value, name))
+                    })
+                    .then(|| name.clone())
+            });
+            let Some(name): Option<String> = blocked else {
+                state.fully_lifted = false;
+                break;
+            };
+            let temporary: String = format!("tmp{}", state.temporaries);
+            state.temporaries += 1;
+            if walk.replay {
+                state.fully_lifted = false;
+            }
+            let ty: String = match state
+                .locals
+                .naming
+                .named(&name)
+                .and_then(|local: &NamedLocal| local.ty.as_ref())
+            {
+                Some(ty) => ty.render(),
+                None => {
+                    state.fully_lifted = false;
+                    "Object".to_owned()
+                }
+            };
+            let _: std::fmt::Result = writeln!(out, "{pad}{ty} {temporary} = {name};");
+            for &register in &members {
+                if let Some(value) = walk.file.slot(register).cloned() {
+                    walk.file
+                        .replace(register, rename_local(&value, &name, &temporary));
+                }
+            }
+            continue;
+        };
+        let register: u16 = members.remove(position);
+        let Some(value): Option<Expr> = walk.file.slot(register).cloned() else {
+            continue;
+        };
+        let Some(name): Option<String> = names.get(&register).cloned() else {
+            continue;
+        };
+        if matches!(value, Expr::New(_)) {
+            state.fully_lifted = false;
+            continue;
+        }
+        let target: Option<LocalType> = walk
+            .origins
+            .get(&register)
+            .and_then(|&pc: &u32| state.locals.naming.def_local(pc, register))
+            .and_then(|local: &NamedLocal| local.ty.clone());
+        let rendered: String =
+            assignment_value(state.ctx, &walk.file, register, &value, target.as_ref());
+        let _: std::fmt::Result = writeln!(out, "{pad}{name} = {rendered};");
+        record_assignment(state, walk, register);
+        walk.file.set_variable(register, name);
+    }
+}
+
+fn effect_statement(value: &Expr) -> Option<String> {
+    match value {
+        Expr::Invoke { .. } => Some(value.render()),
+        Expr::Opaque(text) if text.starts_with("new ") => Some(text.clone()),
+        Expr::Cast { value, .. } => effect_statement(value),
+        _ => None,
+    }
+}
+
+fn walk_insn(
+    state: &mut RenderState<'_>,
+    walk: &mut BlockWalk,
+    index: usize,
+    out: &mut String,
+    level: usize,
+) {
+    let insns: &[DalvikInsn] = state.insns;
+    let insn: &DalvikInsn = &insns[index];
+    let point: usize = index.saturating_sub(walk.start);
+    let after: RegisterSet = live_at(walk, point + 1);
+    let defs: Vec<u16> = state
+        .accesses
+        .get(index)
+        .map(|access: &RegisterAccess| access.defs.clone())
+        .unwrap_or_default();
+    let moved: Option<u16> = if matches!(insn.op, 0x01..=0x09) && !state.ctx.inline_temporaries {
+        insn.regs.first().copied()
+    } else {
+        None
+    };
+    let moved_value: Option<&Expr> = moved
+        .and_then(|_| insn.regs.get(1))
+        .and_then(|&source: &u16| walk.file.slot(source));
+    let copies_this: bool = matches!(moved_value, Some(Expr::This));
+    let dead_move: bool = copies_this
+        || moved.is_some_and(|dest: u16| {
+            !after.contains(dest) && !moved_value.is_some_and(expr_has_effect)
+        });
+    if let Some(dest) = moved.filter(|_| !dead_move) {
+        let request: FlushRequest<'_> = FlushRequest {
+            assign: Vec::new(),
+            external: Some(state.ctx.def_lvalue(insn.pc, dest)),
+            effect: false,
+            live: &after,
+            exclude: &[dest],
+        };
+        flush(state, walk, &request, out, level);
+    }
+    if may_throw(insn.op) {
+        let assign: Vec<u16> = walk
+            .file
+            .pending_registers()
+            .filter(|&register: &u16| walk.handlers.contains(register))
+            .collect();
+        if !assign.is_empty() {
+            let request: FlushRequest<'_> = FlushRequest {
+                assign,
+                external: None,
+                effect: false,
+                live: &live_at(walk, point),
+                exclude: &[],
+            };
+            flush(state, walk, &request, out, level);
+        }
+    }
+    let null_check: bool = walk
+        .pending
+        .as_ref()
+        .is_some_and(PendingResult::is_null_check)
+        && !matches!(insn.op, 0x0A..=0x0C);
+    let predicted: bool = predicts_statement(state, walk, insn);
+    if predicted {
+        let request: FlushRequest<'_> = FlushRequest {
+            assign: Vec::new(),
+            external: None,
+            effect: true,
+            live: &after,
+            exclude: &defs,
+        };
+        flush(state, walk, &request, out, level);
+    }
+    let outcome: LiftOutcome = lift_insn_tracked(state, &mut walk.file, insn, &mut walk.pending);
+    for &register in &defs {
+        walk.origins.insert(register, insn.pc);
+    }
+    let mut statements: Vec<String> = match outcome {
+        LiftOutcome::Statement(statement) => vec![statement],
+        LiftOutcome::Statements(statements) => statements,
+        LiftOutcome::None | LiftOutcome::Unlifted => Vec::new(),
+    };
+    if dead_move {
+        statements.pop();
+        if let Some(dest) = moved.filter(|&dest: &u16| copies_this && after.contains(dest)) {
+            walk.file.defer(dest);
+        }
+    } else if let Some(dest) = moved {
+        record_assignment(state, walk, dest);
+    }
+    if !predicted && !null_check && statements.len() > usize::from(moved.is_some() && !dead_move) {
+        let request: FlushRequest<'_> = FlushRequest {
+            assign: Vec::new(),
+            external: None,
+            effect: true,
+            live: &after,
+            exclude: &defs,
+        };
+        flush(state, walk, &request, out, level);
     }
     let pad: String = indent_string(level);
-    for reg in file.pending_registers() {
-        let live_elsewhere: bool = state.register_blocks.get(&reg).is_some_and(
-            |blocks: &std::collections::BTreeSet<BlockId>| {
-                blocks.iter().any(|&b: &BlockId| b != here)
-            },
-        );
-        if !live_elsewhere {
-            continue;
-        }
-        let expr: crate::decompile::Expr = file.current(state.ctx, reg);
-        let rendered: String = expr.render();
-        let lvalue: String = state.ctx.register_lvalue(reg);
-        if rendered == lvalue {
-            continue;
-        }
-        let _ = writeln!(out, "{pad}{lvalue} = {rendered};");
+    for statement in statements {
+        let _: std::fmt::Result = writeln!(out, "{pad}{statement};");
     }
+    anchor_effects(state, walk, index, &defs, &after, out, level);
+}
+
+const fn may_throw(op: u8) -> bool {
+    matches!(
+        op,
+        0x1C..=0x27
+            | 0x44..=0x72
+            | 0x74..=0x78
+            | 0x93
+            | 0x94
+            | 0x9E
+            | 0x9F
+            | 0xB3
+            | 0xB4
+            | 0xBE
+            | 0xBF
+            | 0xD3
+            | 0xD4
+            | 0xDB
+            | 0xDC
+    )
+}
+
+fn predicts_statement(state: &RenderState<'_>, walk: &BlockWalk, insn: &DalvikInsn) -> bool {
+    let invoke: bool = matches!(insn.op, 0x6E..=0x72 | 0x74..=0x78);
+    let discards: Option<bool> = walk
+        .pending
+        .as_ref()
+        .filter(|result: &&PendingResult| {
+            result.discards_statement()
+                && !matches!(insn.op, 0x0A..=0x0C)
+                && !(invoke
+                    && insn
+                        .regs
+                        .first()
+                        .is_some_and(|&receiver: &u16| result.materializes(receiver)))
+        })
+        .map(|result: &PendingResult| !result.is_null_check());
+    if discards == Some(true) {
+        return true;
+    }
+    match insn.op {
+        0x27 | 0x4B..=0x51 | 0x59..=0x5F | 0x67..=0x6D => true,
+        0x6E..=0x72 | 0x74..=0x78 => insn
+            .index
+            .and_then(|index: u32| state.ctx.dex.method_ids.get(index as usize))
+            .is_some_and(|method: &crate::dex::MethodId| {
+                let allocates: bool = method.name == "<init>"
+                    && insn
+                        .regs
+                        .first()
+                        .and_then(|&receiver: &u16| walk.file.slot(receiver))
+                        .is_some_and(|value: &Expr| matches!(value, Expr::New(_)));
+                method.proto.return_type == "V" && !allocates
+            }),
+        _ => false,
+    }
+}
+
+fn anchor_effects(
+    state: &mut RenderState<'_>,
+    walk: &mut BlockWalk,
+    index: usize,
+    defs: &[u16],
+    after: &RegisterSet,
+    out: &mut String,
+    level: usize,
+) {
+    for &register in defs {
+        let Some(value): Option<Expr> = walk.file.slot(register).cloned() else {
+            continue;
+        };
+        if !walk.file.is_pending(register)
+            || matches!(value, Expr::New(_))
+            || !expr_has_effect(&value)
+        {
+            continue;
+        }
+        let facts: DefUses = state.flow.def_uses(index, register).unwrap_or(DefUses {
+            local_uses: 0,
+            escapes: true,
+        });
+        if facts.local_uses == 1 && !facts.escapes {
+            continue;
+        }
+        if walk
+            .pending
+            .as_ref()
+            .is_some_and(|result: &PendingResult| result.materializes(register))
+        {
+            walk.pending = None;
+        }
+        let dead: bool = facts.local_uses == 0 && !facts.escapes && !after.contains(register);
+        if dead && let Some(statement) = effect_statement(&value) {
+            let request: FlushRequest<'_> = FlushRequest {
+                assign: Vec::new(),
+                external: None,
+                effect: true,
+                live: after,
+                exclude: defs,
+            };
+            flush(state, walk, &request, out, level);
+            let _: std::fmt::Result = writeln!(out, "{}{statement};", indent_string(level));
+            let name: String = target_name(state, walk, register);
+            walk.file.set_variable(register, name);
+            continue;
+        }
+        let request: FlushRequest<'_> = FlushRequest {
+            assign: vec![register],
+            external: None,
+            effect: false,
+            live: after,
+            exclude: &[],
+        };
+        flush(state, walk, &request, out, level);
+    }
+}
+
+fn close_block(
+    state: &mut RenderState<'_>,
+    walk: &mut BlockWalk,
+    bid: BlockId,
+    out: &mut String,
+    level: usize,
+) {
+    let (start, end): (usize, usize) = block_insn_range(state, bid);
+    let exit: RegisterSet = live_at(walk, end.saturating_sub(start));
+    if let Some(result) = walk.pending.take() {
+        let continues_in_successor: bool = state
+            .insns
+            .get(end)
+            .is_some_and(|following: &DalvikInsn| matches!(following.op, 0x0A..=0x0C));
+        if continues_in_successor {
+            state.fully_lifted = false;
+        } else if let Some(statement) = result.into_statement() {
+            let request: FlushRequest<'_> = FlushRequest {
+                assign: Vec::new(),
+                external: None,
+                effect: true,
+                live: &exit,
+                exclude: &[],
+            };
+            flush(state, walk, &request, out, level);
+            let _: std::fmt::Result = writeln!(out, "{}{statement};", indent_string(level));
+        }
+    }
+    let Some(block): Option<&BasicBlock> = state.cfg.blocks.get(bid.0 as usize) else {
+        return;
+    };
+    if block.successors.is_empty() {
+        return;
+    }
+    let terminates: bool = end
+        .checked_sub(1)
+        .and_then(|last: usize| state.insns.get(last))
+        .is_some_and(|last: &DalvikInsn| {
+            last.is_conditional_branch() || last.is_unconditional_goto() || last.is_switch()
+        });
+    let live: RegisterSet = if terminates {
+        live_at(walk, end.saturating_sub(start).saturating_sub(1))
+    } else {
+        exit
+    };
+    let Some(live_out): Option<RegisterSet> = state.flow.live_out(bid).cloned() else {
+        return;
+    };
+    let assign: Vec<u16> = walk
+        .file
+        .pending_registers()
+        .filter(|&register: &u16| live_out.contains(register))
+        .collect();
+    let request: FlushRequest<'_> = FlushRequest {
+        assign,
+        external: None,
+        effect: false,
+        live: &live,
+        exclude: &[],
+    };
+    flush(state, walk, &request, out, level);
+}
+
+fn walk_block_body(
+    state: &mut RenderState<'_>,
+    bid: BlockId,
+    body_end: usize,
+    replay: bool,
+    out: &mut String,
+    level: usize,
+) -> Option<BlockWalk> {
+    let (start, end): (usize, usize) = block_insn_range(state, bid);
+    let Some(mut walk): Option<BlockWalk> = open_block(state, bid, replay) else {
+        state.fully_lifted = false;
+        return None;
+    };
+    let insns: &[DalvikInsn] = state.insns;
+    let body: &[DalvikInsn] = insns.get(start..body_end.min(end)).unwrap_or_default();
+    for (offset, insn) in body.iter().enumerate() {
+        if insn.is_conditional_branch() || insn.is_unconditional_goto() || insn.is_switch() {
+            continue;
+        }
+        walk_insn(state, &mut walk, start + offset, out, level);
+    }
+    close_block(state, &mut walk, bid, out, level);
+    Some(walk)
 }
 
 fn render_block(state: &mut RenderState<'_>, bid: BlockId, out: &mut String, level: usize) {
     if !state.rendered_blocks.insert(bid) {
         return;
     }
-    let (start, end): (usize, usize) = block_insn_range(state, bid);
-    let mut file: RegisterFile = RegisterFile::new();
-    seed_block_registers(state.ctx, &mut file);
-    let mut pending: Option<PendingResult> = None;
-    for insn in &state.insns[start..end] {
-        if insn.is_conditional_branch() || insn.is_unconditional_goto() || insn.is_switch() {
-            continue;
-        }
-        emit_insn(state, &mut file, insn, &mut pending, out, level);
+    let (_, end): (usize, usize) = block_insn_range(state, bid);
+    let _: Option<BlockWalk> = walk_block_body(state, bid, end, false, out, level);
+}
+
+fn walk_head(
+    state: &mut RenderState<'_>,
+    head: BlockId,
+    out: &mut String,
+    level: usize,
+) -> Option<(BlockWalk, usize)> {
+    let (start, end): (usize, usize) = block_insn_range(state, head);
+    if start == end {
+        return None;
     }
-    materialize_pending(state, &file, bid, out, level);
+    let body_end: usize = end - 1;
+    let already: bool = !state.rendered_blocks.insert(head);
+    let mut scratch: String = String::new();
+    let sink: &mut String = if already { &mut scratch } else { out };
+    walk_block_body(state, head, body_end, already, sink, level)
+        .map(|walk: BlockWalk| (walk, body_end))
 }
 
 fn render_head_condition(
@@ -1976,27 +3014,12 @@ fn render_head_condition(
     out: &mut String,
     level: usize,
 ) -> String {
-    let (start, end): (usize, usize) = block_insn_range(state, head);
-    if start == end {
-        return "true".to_string();
-    }
-    let body_end: usize = end - 1;
-    let already: bool = !state.rendered_blocks.insert(head);
-    let mut file: RegisterFile = RegisterFile::new();
-    seed_block_registers(state.ctx, &mut file);
-    let mut pending: Option<PendingResult> = None;
-    for insn in &state.insns[start..body_end] {
-        if already {
-            let _ = lift_insn_tracked(state, &mut file, insn, &mut pending);
-        } else {
-            emit_insn(state, &mut file, insn, &mut pending, out, level);
+    match walk_head(state, head, out, level) {
+        Some((walk, body_end)) => {
+            render_branch_condition(state.ctx, &walk.file, &state.insns[body_end])
         }
+        None => "true".to_string(),
     }
-    if !already {
-        materialize_pending(state, &file, head, out, level);
-    }
-    let term: &DalvikInsn = &state.insns[body_end];
-    render_branch_condition(state.ctx, &file, term)
 }
 
 fn render_switch_subject(
@@ -2005,29 +3028,14 @@ fn render_switch_subject(
     out: &mut String,
     level: usize,
 ) -> String {
-    let (start, end): (usize, usize) = block_insn_range(state, head);
-    if start == end {
+    let Some((walk, body_end)): Option<(BlockWalk, usize)> = walk_head(state, head, out, level)
+    else {
         return "var0".to_string();
-    }
-    let body_end: usize = end - 1;
-    let already: bool = !state.rendered_blocks.insert(head);
-    let mut file: RegisterFile = RegisterFile::new();
-    seed_block_registers(state.ctx, &mut file);
-    let mut pending: Option<PendingResult> = None;
-    for insn in &state.insns[start..body_end] {
-        if already {
-            let _ = lift_insn_tracked(state, &mut file, insn, &mut pending);
-        } else {
-            emit_insn(state, &mut file, insn, &mut pending, out, level);
-        }
-    }
-    if !already {
-        materialize_pending(state, &file, head, out, level);
-    }
-    let term: &DalvikInsn = &state.insns[body_end];
-    term.regs
+    };
+    state.insns[body_end]
+        .regs
         .first()
-        .map(|&r| state.ctx.register_name(r).render())
+        .map(|&register: &u16| walk.file.current(state.ctx, register).render())
         .unwrap_or_else(|| "var0".to_string())
 }
 
@@ -2045,28 +3053,6 @@ fn lift_insn_tracked(
 const fn record_lift_outcome(fully_lifted: &mut bool, outcome: &LiftOutcome) {
     if matches!(outcome, LiftOutcome::Unlifted) {
         *fully_lifted = false;
-    }
-}
-
-fn emit_insn(
-    state: &mut RenderState<'_>,
-    file: &mut RegisterFile,
-    insn: &DalvikInsn,
-    pending: &mut Option<PendingResult>,
-    out: &mut String,
-    level: usize,
-) {
-    let pad: String = indent_string(level);
-    match lift_insn_tracked(state, file, insn, pending) {
-        LiftOutcome::Statement(s) => {
-            let _ = writeln!(out, "{pad}{s};");
-        }
-        LiftOutcome::Statements(statements) => {
-            for statement in statements {
-                let _ = writeln!(out, "{pad}{statement};");
-            }
-        }
-        LiftOutcome::None | LiftOutcome::Unlifted => {}
     }
 }
 
@@ -2500,14 +3486,18 @@ mod tests {
         let out: DecompiledDex = decompiled();
         let src: &str = &out.source;
         assert!(
-            src.contains("4636737291354636288L"),
-            "100.0 (const-wide/high16 0x4059) must render its full double bit pattern, \
-             not the raw 16-bit operand"
+            src.contains("radius() <= 100.0)"),
+            "100.0 (const-wide/high16 0x4059) compared with a double must render as the double \
+             it encodes"
         );
         assert!(
-            src.contains("4602678819172646912L"),
-            "0.5 (const-wide/high16 0x3FE0) must render its full double bit pattern, \
-             not the raw 16-bit operand"
+            src.contains("(this.base * 0.5)"),
+            "0.5 (const-wide/high16 0x3FE0) multiplied with a double must render as the double \
+             it encodes"
+        );
+        assert!(
+            !src.contains("4636737291354636288L") && !src.contains("4602678819172646912L"),
+            "a double constant must not leak as the long holding its bit pattern"
         );
         assert!(
             src.contains("-2147483648"),
@@ -2516,6 +3506,87 @@ mod tests {
         assert!(
             !src.contains("16473L") && !src.contains("16352L"),
             "raw const-wide/high16 operands must not leak as long literals"
+        );
+    }
+
+    fn render_static_probe(
+        descriptor: &str,
+        registers: u16,
+        ins: u16,
+        insns: Vec<u16>,
+    ) -> MethodBody {
+        let dex: DexFile = crate::dex::parse(EDGECASES_DEX).expect("parse edgecases.dex");
+        let item: CodeItem = CodeItem {
+            method_name: "probe".to_owned(),
+            method_descriptor: descriptor.to_owned(),
+            class: "LProbe;".to_owned(),
+            is_direct: true,
+            registers_size: registers,
+            ins_size: ins,
+            outs_size: 0,
+            insns,
+            tries: Vec::new(),
+            param_names: Vec::new(),
+        };
+        let interfaces: crate::dalvik_desugar::DefaultInterfaceRecovery =
+            crate::dalvik_desugar::DefaultInterfaceRecovery::default();
+        let functionals: crate::dalvik_desugar::FunctionalRecovery =
+            crate::dalvik_desugar::FunctionalRecovery::default();
+        let core_library: crate::dalvik_core_library::CoreLibraryRecovery =
+            crate::dalvik_core_library::CoreLibraryRecovery::default();
+        let helpers: crate::dalvik_desugar::InlinedHelpers =
+            crate::dalvik_desugar::InlinedHelpers::default();
+        let names: Vec<String> = (0..ins).map(|index: u16| format!("arg{index}")).collect();
+        lift_method(
+            &dex,
+            &item,
+            None,
+            MethodIdentity {
+                declaring_class: "LProbe;",
+                descriptor,
+                is_static: true,
+                is_constructor: false,
+            },
+            false,
+            crate::dalvik_desugar::DesugarView {
+                interfaces: &interfaces,
+                functionals: &functionals,
+                core_library: &core_library,
+            },
+            &helpers,
+            &names,
+        )
+    }
+
+    #[test]
+    fn crossed_block_end_assignments_save_the_overwritten_value_first() {
+        let body: MethodBody = render_static_probe(
+            "(II)I",
+            7,
+            2,
+            vec![
+                0x5001, 0x6101, 0x0128, 0x04D8, 0x0101, 0x01D8, 0x0100, 0x00D8, 0x0004, 0x0128,
+                0x00DA, 0x6400, 0x10B0, 0x000F,
+            ],
+        );
+        assert!(body.fully_lifted, "{}", body.text);
+        let lines: Vec<&str> = body.text.lines().map(str::trim).collect();
+        let swap: [&str; 3] = [
+            "int tmp0 = var1;",
+            "var1 = (var0 + 1);",
+            "var0 = ((tmp0 + 1) + 0);",
+        ];
+        assert!(
+            lines
+                .windows(swap.len())
+                .any(|window: &[&str]| window == swap.as_slice()),
+            "{}",
+            body.text
+        );
+        assert!(
+            lines.contains(&"return ((var0 * 100) + var1);"),
+            "{}",
+            body.text
         );
     }
 

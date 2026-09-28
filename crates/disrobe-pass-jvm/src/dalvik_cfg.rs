@@ -11,6 +11,337 @@ use crate::dex::{CodeItem, TryItem};
 
 const MAX_DALVIK_BLOCKS: usize = 16_384;
 
+const MAX_FLOW_WORDS: usize = 1 << 22;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct RegisterAccess {
+    pub(crate) uses: Vec<u16>,
+    pub(crate) defs: Vec<u16>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RegisterSet {
+    words: Vec<u64>,
+}
+
+impl RegisterSet {
+    pub(crate) fn empty(registers: u16) -> Self {
+        Self {
+            words: vec![0; usize::from(registers).div_ceil(64)],
+        }
+    }
+
+    pub(crate) fn contains(&self, register: u16) -> bool {
+        self.words
+            .get(usize::from(register) / 64)
+            .is_some_and(|word: &u64| (word >> (register % 64)) & 1 == 1)
+    }
+
+    fn insert(&mut self, register: u16) {
+        if let Some(word) = self.words.get_mut(usize::from(register) / 64) {
+            *word |= 1u64 << (register % 64);
+        }
+    }
+
+    fn remove(&mut self, register: u16) {
+        if let Some(word) = self.words.get_mut(usize::from(register) / 64) {
+            *word &= !(1u64 << (register % 64));
+        }
+    }
+
+    fn union_with(&mut self, other: &Self) {
+        for (word, extra) in self.words.iter_mut().zip(&other.words) {
+            *word |= *extra;
+        }
+    }
+
+    fn subtract(&mut self, other: &Self) {
+        for (word, removed) in self.words.iter_mut().zip(&other.words) {
+            *word &= !*removed;
+        }
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = u16> + '_ {
+        self.words
+            .iter()
+            .enumerate()
+            .flat_map(|(index, word): (usize, &u64)| {
+                (0..64u16).filter_map(move |bit: u16| {
+                    let register: usize = index * 64 + usize::from(bit);
+                    ((word >> bit) & 1 == 1)
+                        .then(|| u16::try_from(register).ok())
+                        .flatten()
+                })
+            })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ValueNode {
+    Entry { block: u32, register: u16 },
+    Def { insn: usize, register: u16 },
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct DefUses {
+    pub(crate) local_uses: u32,
+    pub(crate) escapes: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RegisterFlow {
+    live_out: Vec<RegisterSet>,
+    handler_live: Vec<RegisterSet>,
+    nodes: Vec<ValueNode>,
+    web: Vec<usize>,
+    entry_nodes: BTreeMap<(u32, u16), usize>,
+    def_nodes: BTreeMap<(usize, u16), usize>,
+    use_nodes: BTreeMap<(usize, u16), usize>,
+    def_uses: BTreeMap<usize, DefUses>,
+}
+
+fn find_root(parent: &mut [usize], node: usize) -> usize {
+    let mut root: usize = node;
+    while let Some(&up) = parent.get(root) {
+        if up == root {
+            break;
+        }
+        root = up;
+    }
+    let mut cursor: usize = node;
+    while let Some(&up) = parent.get(cursor) {
+        if up == root {
+            break;
+        }
+        if let Some(slot) = parent.get_mut(cursor) {
+            *slot = root;
+        }
+        cursor = up;
+    }
+    root
+}
+
+fn unite(parent: &mut [usize], left: usize, right: usize) {
+    let (keep, folded): (usize, usize) = {
+        let a: usize = find_root(parent, left);
+        let b: usize = find_root(parent, right);
+        (a.min(b), a.max(b))
+    };
+    if let Some(slot) = parent.get_mut(folded) {
+        *slot = keep;
+    }
+}
+
+impl RegisterFlow {
+    pub(crate) fn analyze(cfg: &Cfg, accesses: &[RegisterAccess], registers: u16) -> Option<Self> {
+        let blocks: usize = cfg.blocks.len();
+        let words: usize = usize::from(registers).div_ceil(64);
+        if blocks.saturating_mul(words).saturating_mul(3) > MAX_FLOW_WORDS {
+            return None;
+        }
+        let mut generated: Vec<RegisterSet> = Vec::with_capacity(blocks);
+        let mut killed: Vec<RegisterSet> = Vec::with_capacity(blocks);
+        for block in &cfg.blocks {
+            let mut uses: RegisterSet = RegisterSet::empty(registers);
+            let mut defs: RegisterSet = RegisterSet::empty(registers);
+            for access in accesses.get(block.insn_range.0..block.insn_range.1)? {
+                for &register in &access.uses {
+                    if !defs.contains(register) {
+                        uses.insert(register);
+                    }
+                }
+                for &register in &access.defs {
+                    defs.insert(register);
+                }
+            }
+            generated.push(uses);
+            killed.push(defs);
+        }
+        let mut live_in: Vec<RegisterSet> = vec![RegisterSet::empty(registers); blocks];
+        let mut live_out: Vec<RegisterSet> = vec![RegisterSet::empty(registers); blocks];
+        let mut handler_live: Vec<RegisterSet> = vec![RegisterSet::empty(registers); blocks];
+        let max_rounds: usize = blocks.saturating_mul(2).saturating_add(8);
+        let mut settled: bool = false;
+        for _ in 0..max_rounds {
+            let mut changed: bool = false;
+            for index in (0..blocks).rev() {
+                let block: &BasicBlock = cfg.blocks.get(index)?;
+                let mut out: RegisterSet = RegisterSet::empty(registers);
+                let mut handlers: RegisterSet = RegisterSet::empty(registers);
+                for edge in &block.successors {
+                    let successor: &RegisterSet = live_in.get(edge.target.0 as usize)?;
+                    out.union_with(successor);
+                    if matches!(edge.kind, EdgeKind::Exception) {
+                        handlers.union_with(successor);
+                    }
+                }
+                let mut entry: RegisterSet = out.clone();
+                entry.subtract(killed.get(index)?);
+                entry.union_with(generated.get(index)?);
+                entry.union_with(&handlers);
+                if live_in.get(index) != Some(&entry) {
+                    changed = true;
+                    *live_in.get_mut(index)? = entry;
+                }
+                *live_out.get_mut(index)? = out;
+                *handler_live.get_mut(index)? = handlers;
+            }
+            if !changed {
+                settled = true;
+                break;
+            }
+        }
+        if !settled {
+            return None;
+        }
+
+        let mut nodes: Vec<ValueNode> = Vec::new();
+        let mut entry_nodes: BTreeMap<(u32, u16), usize> = BTreeMap::new();
+        for (index, live) in live_in.iter().enumerate() {
+            let block: u32 = u32::try_from(index).ok()?;
+            for register in live.iter() {
+                entry_nodes.insert((block, register), nodes.len());
+                nodes.push(ValueNode::Entry { block, register });
+            }
+        }
+        let mut parent: Vec<usize> = (0..nodes.len()).collect();
+        let mut def_nodes: BTreeMap<(usize, u16), usize> = BTreeMap::new();
+        let mut use_nodes: BTreeMap<(usize, u16), usize> = BTreeMap::new();
+        let mut def_uses: BTreeMap<usize, DefUses> = BTreeMap::new();
+        for (index, block) in cfg.blocks.iter().enumerate() {
+            let block_id: u32 = u32::try_from(index).ok()?;
+            let mut current: BTreeMap<u16, usize> = live_in
+                .get(index)?
+                .iter()
+                .filter_map(|register: u16| {
+                    entry_nodes
+                        .get(&(block_id, register))
+                        .map(|&node: &usize| (register, node))
+                })
+                .collect();
+            let mut history: BTreeMap<u16, Vec<usize>> = current
+                .iter()
+                .map(|(&register, &node): (&u16, &usize)| (register, vec![node]))
+                .collect();
+            for insn in block.insn_range.0..block.insn_range.1 {
+                let access: &RegisterAccess = accesses.get(insn)?;
+                for &register in &access.uses {
+                    let Some(&node): Option<&usize> = current.get(&register) else {
+                        continue;
+                    };
+                    use_nodes.insert((insn, register), node);
+                    if let Some(facts) = def_uses.get_mut(&node) {
+                        facts.local_uses = facts.local_uses.saturating_add(1);
+                    }
+                }
+                for &register in &access.defs {
+                    let node: usize = nodes.len();
+                    nodes.push(ValueNode::Def { insn, register });
+                    parent.push(node);
+                    def_nodes.insert((insn, register), node);
+                    def_uses.insert(node, DefUses::default());
+                    current.insert(register, node);
+                    history.entry(register).or_default().push(node);
+                }
+            }
+            for edge in &block.successors {
+                let target: u32 = edge.target.0;
+                for register in live_in.get(target as usize)?.iter() {
+                    let Some(&joined): Option<&usize> = entry_nodes.get(&(target, register)) else {
+                        continue;
+                    };
+                    let flowing: Vec<usize> = if matches!(edge.kind, EdgeKind::Exception) {
+                        history.get(&register).cloned().unwrap_or_default()
+                    } else {
+                        current.get(&register).copied().into_iter().collect()
+                    };
+                    for node in flowing {
+                        unite(&mut parent, node, joined);
+                        if let Some(facts) = def_uses.get_mut(&node) {
+                            facts.escapes = true;
+                        }
+                    }
+                }
+            }
+        }
+        let web: Vec<usize> = (0..nodes.len())
+            .map(|node: usize| find_root(&mut parent, node))
+            .collect();
+        Some(Self {
+            live_out,
+            handler_live,
+            nodes,
+            web,
+            entry_nodes,
+            def_nodes,
+            use_nodes,
+            def_uses,
+        })
+    }
+
+    pub(crate) fn live_out(&self, block: BlockId) -> Option<&RegisterSet> {
+        self.live_out.get(block.0 as usize)
+    }
+
+    pub(crate) fn handler_live(&self, block: BlockId) -> Option<&RegisterSet> {
+        self.handler_live.get(block.0 as usize)
+    }
+
+    pub(crate) fn live_points(
+        &self,
+        block: &BasicBlock,
+        accesses: &[RegisterAccess],
+    ) -> Option<Vec<RegisterSet>> {
+        let index: usize = block.id.0 as usize;
+        let handlers: &RegisterSet = self.handler_live.get(index)?;
+        let mut live: RegisterSet = self.live_out.get(index)?.clone();
+        live.union_with(handlers);
+        let (start, end): (usize, usize) = block.insn_range;
+        let mut points: Vec<RegisterSet> = vec![live.clone(); end.saturating_sub(start) + 1];
+        for insn in (start..end).rev() {
+            let access: &RegisterAccess = accesses.get(insn)?;
+            for &register in &access.defs {
+                live.remove(register);
+            }
+            for &register in &access.uses {
+                live.insert(register);
+            }
+            live.union_with(handlers);
+            *points.get_mut(insn - start)? = live.clone();
+        }
+        Some(points)
+    }
+
+    pub(crate) fn nodes(&self) -> &[ValueNode] {
+        &self.nodes
+    }
+
+    pub(crate) fn web_of(&self, node: usize) -> Option<usize> {
+        self.web.get(node).copied()
+    }
+
+    pub(crate) fn entry_web(&self, block: BlockId, register: u16) -> Option<usize> {
+        self.entry_nodes
+            .get(&(block.0, register))
+            .and_then(|&node: &usize| self.web_of(node))
+    }
+
+    pub(crate) fn uses(&self) -> impl Iterator<Item = (usize, u16, usize)> + '_ {
+        self.use_nodes
+            .iter()
+            .filter_map(|(&(insn, register), &node): (&(usize, u16), &usize)| {
+                self.web_of(node).map(|web: usize| (insn, register, web))
+            })
+    }
+
+    pub(crate) fn def_uses(&self, insn: usize, register: u16) -> Option<DefUses> {
+        self.def_nodes
+            .get(&(insn, register))
+            .and_then(|node: &usize| self.def_uses.get(node))
+            .copied()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct DalvikMethodCfg {
     pub cfg: Cfg,
