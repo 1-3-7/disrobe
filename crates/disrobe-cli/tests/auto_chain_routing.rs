@@ -324,30 +324,31 @@ fn selection_prefers_a_named_obfuscator_over_the_broad_windows_script_family() {
         "a named lua obfuscator must outrank the broad windows-script heuristic"
     );
 }
-
 #[test]
-fn selection_still_claims_a_genuine_windows_script_for_scriptlang() {
-    assert_eq!(
-        winner_id("shell/batch/seta/hello.bat"),
-        "scriptlang.classify",
-        "a genuine obfuscated batch script must still be claimed by scriptlang.classify"
-    );
-    assert_eq!(
-        winner_id("shell/powershell/invoke-obfuscation/token/hello.ps1"),
-        "scriptlang.classify",
-        "a genuine obfuscated powershell script must still be claimed by scriptlang.classify"
-    );
+fn selection_gives_obfuscated_windows_scripts_to_shell_deob_and_plain_ones_to_scriptlang() {
     for rel in [
-        "shell/powershell/megafile/edge_cases.ps1",
-        "shell/bash/megafile/edge_cases.sh",
+        "shell/batch/seta/hello.bat",
+        "shell/batch/forsubstr/hello.bat",
+        "shell/powershell/invoke-obfuscation/token/hello.ps1",
         "shell/invoke-obfuscation/gauntlet/token_obfuscated.ps1",
         "shell/powershell/invoke-stealth/hello.ps1",
-        "shell/batch/forsubstr/hello.bat",
+    ] {
+        assert_eq!(
+            winner_id(rel),
+            "shell.deob",
+            "an obfuscated windows script must reach the pass that reverses it: {rel}"
+        );
+    }
+    for rel in [
+        "shell/powershell/megafile/edge_cases.ps1",
+        "shell/powershell/chameleon/rename_original.ps1",
+        "shell/batch/baseline/hello.bat",
+        "shell/bash/megafile/edge_cases.sh",
     ] {
         assert_eq!(
             winner_id(rel),
             "scriptlang.classify",
-            "the win-script recalibration must not hand {rel} to another pass"
+            "an unobfuscated script must keep the scriptlang.classify report: {rel}"
         );
     }
 }
