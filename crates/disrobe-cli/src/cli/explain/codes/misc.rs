@@ -72,6 +72,16 @@ pub(super) const MISC: &[CodeEntry] = &[
         crate_path: "crates/disrobe-pass-wasm-deob/src/error.rs",
     },
     CodeEntry {
+        code: "DR-WASMDEOB-0006",
+        title: "WebAssembly recovery produced an invalid module",
+        description: "a recovery rewrite emitted a module that fails validation, so the result is withheld.",
+        common_causes: &["a rewrite pattern that does not hold for this module"],
+        common_fixes: &[
+            "report the input; `disrobe wasm decompile` still reads the original module",
+        ],
+        crate_path: "crates/disrobe-pass-wasm-deob/src/error.rs",
+    },
+    CodeEntry {
         code: "DR-MARSHAL-0001",
         title: "marshal EOF",
         description: "input ran out before parsing completed.",

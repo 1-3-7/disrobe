@@ -34,6 +34,7 @@ pub struct RecoveryReport {
     pub wasmixer_functions_dropped: usize,
     pub wasmixer_elements_pruned: usize,
     pub intra_function_folding_skipped: bool,
+    pub guard_folding_budget_exhausted: bool,
     pub collatz_witnesses: Vec<CollatzWitness>,
 }
 
@@ -125,10 +126,11 @@ pub fn recover_module(wasm: &[u8]) -> Result<RecoveredModule> {
         format!("data_bytes_recovered={decrypted}")
     });
 
-    Ok(RecoveredModule {
-        bytes: module.emit_wasm(),
-        report,
-    })
+    let bytes: Vec<u8> = module.emit_wasm();
+    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::WASM2)
+        .validate_all(&bytes)
+        .map_err(|e| Error::InvalidRecovery(e.to_string()))?;
+    Ok(RecoveredModule { bytes, report })
 }
 
 fn recover_obfuscator_families(wasm: &[u8], report: &mut RecoveryReport) -> Result<Vec<u8>> {

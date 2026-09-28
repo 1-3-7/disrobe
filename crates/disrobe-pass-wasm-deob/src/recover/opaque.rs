@@ -41,6 +41,9 @@ fn fold_seq(func: &mut LocalFunction, seq_id: InstrSeqId, report: &mut RecoveryR
         } else {
             ifelse.alternative
         };
+        if body_branches_to(func, taken) {
+            continue;
+        }
         decisions.push(Decision {
             if_index: idx,
             cond_start: verdict.cond_start,
@@ -54,6 +57,49 @@ fn fold_seq(func: &mut LocalFunction, seq_id: InstrSeqId, report: &mut RecoveryR
     decisions.sort_by_key(|decision: &Decision| std::cmp::Reverse(decision.if_index));
     for decision in decisions {
         apply_decision(func, seq_id, &decision, report);
+    }
+}
+
+fn body_branches_to(func: &LocalFunction, label: InstrSeqId) -> bool {
+    let mut finder: LabelUse = LabelUse {
+        label,
+        found: false,
+    };
+    walrus::ir::dfs_in_order(&mut finder, func, label);
+    finder.found
+}
+
+struct LabelUse {
+    label: InstrSeqId,
+    found: bool,
+}
+
+impl LabelUse {
+    fn note(&mut self, target: InstrSeqId) {
+        if target == self.label {
+            self.found = true;
+        }
+    }
+}
+
+impl walrus::ir::Visitor<'_> for LabelUse {
+    fn visit_instr_seq_id(&mut self, id: &InstrSeqId) {
+        self.note(*id);
+    }
+
+    fn visit_br(&mut self, instr: &walrus::ir::Br) {
+        self.note(instr.block);
+    }
+
+    fn visit_br_if(&mut self, instr: &walrus::ir::BrIf) {
+        self.note(instr.block);
+    }
+
+    fn visit_br_table(&mut self, instr: &walrus::ir::BrTable) {
+        self.note(instr.default);
+        for target in &instr.blocks {
+            self.note(*target);
+        }
     }
 }
 
@@ -299,6 +345,7 @@ pub(super) fn fold_interprocedural(module: &mut Module, report: &mut RecoveryRep
         };
         fold_function_interprocedural(func, &snapshot, report);
     }
+    report.guard_folding_budget_exhausted |= snapshot.budget_exhausted();
 }
 
 fn fold_function_interprocedural(
@@ -473,6 +520,30 @@ fn branches_escape(instrs: &[Instr], inner_id: InstrSeqId, outer_id: InstrSeqId)
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    fn opaque_removed(body: &str) -> usize {
+        let wat: String = format!(
+            "(module (func (export \"f\") (param i32) (result i32) (local i32) {body} local.get 1))"
+        );
+        let wasm: Vec<u8> = wat::parse_str(&wat).expect("assemble");
+        let recovered: crate::recover::RecoveredModule =
+            crate::recover::recover_module(&wasm).expect("recover");
+        wasmparser::validate(&recovered.bytes).expect("recovered module validates");
+        recovered.report.opaque_predicates_removed
+    }
+
+    #[test]
+    fn a_constant_arm_without_a_self_branch_is_spliced() {
+        let removed: usize = opaque_removed("i32.const 1 if i32.const 7 local.set 1 end");
+        assert_eq!(removed, 1);
+    }
+
+    #[test]
+    fn an_arm_that_branches_to_its_own_label_is_not_spliced() {
+        let removed: usize =
+            opaque_removed("i32.const 1 if local.get 0 br_if 0 i32.const 7 local.set 1 end");
+        assert_eq!(removed, 0);
+    }
 
     #[test]
     fn collatz_from_27_reaches_one() {

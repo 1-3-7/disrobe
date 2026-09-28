@@ -114,4 +114,7 @@ pub enum Error {
         "DR-WASMDEOB-0005: WebAssembly module input uses {actual} bytes, exceeding the {limit}-byte lifting limit"
     )]
     ModuleInputLimit { actual: usize, limit: usize },
+
+    #[error("DR-WASMDEOB-0006: recovery emitted an invalid WebAssembly module: {0}")]
+    InvalidRecovery(String),
 }

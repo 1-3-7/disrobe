@@ -6,6 +6,7 @@ use walrus::{
 };
 
 const MAX_STEPS: u64 = 2_000_000;
+const MAX_MODULE_STEPS: u64 = 50_000_000;
 const MAX_CALL_DEPTH: u32 = 8;
 const MAX_MEMORY_BYTES: usize = 1 << 20;
 const MAX_VALUE_STACK: usize = 4_096;
@@ -45,6 +46,7 @@ struct FnSnapshot {
 pub(super) struct PureModule {
     functions: BTreeMap<FunctionId, FnSnapshot>,
     globals: BTreeMap<GlobalId, Scalar>,
+    spent: std::cell::Cell<u64>,
 }
 
 impl PureModule {
@@ -61,7 +63,21 @@ impl PureModule {
                 }
             }
         }
-        Self { functions, globals }
+        Self {
+            functions,
+            globals,
+            spent: std::cell::Cell::new(0),
+        }
+    }
+
+    fn charge_step(&self) -> bool {
+        let spent: u64 = self.spent.get().saturating_add(1);
+        self.spent.set(spent);
+        spent <= MAX_MODULE_STEPS
+    }
+
+    pub(super) fn budget_exhausted(&self) -> bool {
+        self.spent.get() > MAX_MODULE_STEPS
     }
 
     pub(super) fn eval_guard(&self, guard: &[Instr]) -> Option<Scalar> {
@@ -74,7 +90,7 @@ impl PureModule {
         let mut stack: Vec<Scalar> = Vec::new();
         for instr in guard {
             machine.steps += 1;
-            if machine.steps > MAX_STEPS {
+            if machine.steps > MAX_STEPS || !self.charge_step() {
                 return None;
             }
             match instr {
@@ -244,7 +260,8 @@ impl Machine<'_> {
         let instrs: &[Instr] = snapshot.seqs.get(&seq_id)?;
         for instr in instrs {
             self.steps += 1;
-            if self.steps > MAX_STEPS || stack.len() > MAX_VALUE_STACK {
+            if self.steps > MAX_STEPS || stack.len() > MAX_VALUE_STACK || !self.module.charge_step()
+            {
                 return None;
             }
             match instr {

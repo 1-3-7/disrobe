@@ -36,7 +36,7 @@ pub fn reinline_imported_ops(wasm: &[u8]) -> Result<(Vec<u8>, ReinlineStats)> {
 
     let mut imports_dropped: usize = 0;
     for fid in op_map.keys() {
-        if function_is_uncalled(&module, *fid)
+        if function_is_unreferenced(&module, *fid)
             && let Some(import_id) = import_id_for_func(&module, *fid)
         {
             module.imports.delete(import_id);
@@ -118,22 +118,60 @@ impl VisitorMut for CallRewriter<'_> {
     }
 }
 
-fn function_is_uncalled(module: &Module, target: FunctionId) -> bool {
-    let mut counter: CallCounter = CallCounter { target, count: 0 };
+fn function_is_unreferenced(module: &Module, target: FunctionId) -> bool {
+    if module.start == Some(target) {
+        return false;
+    }
+    let exported: bool = module
+        .exports
+        .iter()
+        .any(|export| matches!(export.item, walrus::ExportItem::Function(f) if f == target));
+    if exported {
+        return false;
+    }
+    let in_element: bool = module.elements.iter().any(|element| match &element.items {
+        walrus::ElementItems::Functions(funcs) => funcs.contains(&target),
+        walrus::ElementItems::Expressions(_, exprs) => {
+            exprs.iter().any(|expr| const_expr_refers_to(expr, target))
+        }
+    });
+    if in_element {
+        return false;
+    }
+    let in_global: bool = module.globals.iter().any(|global| match &global.kind {
+        walrus::GlobalKind::Local(expr) => const_expr_refers_to(expr, target),
+        walrus::GlobalKind::Import(_) => false,
+    });
+    if in_global {
+        return false;
+    }
+    let mut counter: ReferenceCounter = ReferenceCounter { target, count: 0 };
     for (_id, func) in module.funcs.iter_local() {
         walrus::ir::dfs_in_order(&mut counter, func, func.entry_block());
     }
     counter.count == 0
 }
 
-struct CallCounter {
+fn const_expr_refers_to(expr: &walrus::ConstExpr, target: FunctionId) -> bool {
+    match expr {
+        walrus::ConstExpr::RefFunc(f) => *f == target,
+        walrus::ConstExpr::Extended(ops) => ops
+            .iter()
+            .any(|op| matches!(op, walrus::ConstOp::RefFunc(f) if *f == target)),
+        walrus::ConstExpr::Value(_)
+        | walrus::ConstExpr::Global(_)
+        | walrus::ConstExpr::RefNull(_) => false,
+    }
+}
+
+struct ReferenceCounter {
     target: FunctionId,
     count: usize,
 }
 
-impl walrus::ir::Visitor<'_> for CallCounter {
-    fn visit_call(&mut self, instr: &walrus::ir::Call) {
-        if instr.func == self.target {
+impl walrus::ir::Visitor<'_> for ReferenceCounter {
+    fn visit_function_id(&mut self, function: &FunctionId) {
+        if *function == self.target {
             self.count += 1;
         }
     }
@@ -208,5 +246,56 @@ mod tests {
         assert_eq!(stats.imports_dropped, 0);
         let module: Module = Module::from_buffer(&recovered).expect("round-trips");
         assert_eq!(module.imports.iter().count(), 1, "log import preserved");
+    }
+
+    #[test]
+    fn an_exported_op_import_with_no_calls_survives_recovery() {
+        let bytes: Vec<u8> = assemble(
+            r#"(module (import "env" "op_add" (func $a (param i32 i32) (result i32))) (export "a" (func $a)))"#,
+        );
+        let recovered: crate::recover::RecoveredModule =
+            crate::recover::recover_module(&bytes).expect("recover");
+        assert_eq!(recovered.report.wobfuscator_imports_dropped, 0);
+        assert!(wasmparser::validate(&recovered.bytes).is_ok());
+    }
+
+    #[test]
+    fn keeps_op_imports_that_are_still_exported_tabled_or_referenced() {
+        let wat: &str = r#"
+            (module
+              (type $bin (func (param i32 i32) (result i32)))
+              (import "env" "op_xor" (func $op_xor (type $bin)))
+              (import "env" "op_and" (func $op_and (type $bin)))
+              (import "env" "op_or" (func $op_or (type $bin)))
+              (table 1 funcref)
+              (elem (i32.const 0) func $op_and)
+              (export "xor" (func $op_xor))
+              (elem declare func $op_or)
+              (func $mix (export "mix") (param i32 i32) (result i32)
+                local.get 0
+                local.get 1
+                call $op_xor
+                local.get 0
+                local.get 1
+                call $op_and
+                local.get 0
+                local.get 1
+                call $op_or
+                i32.add
+                i32.add)
+              (func $take (export "take") (result funcref)
+                ref.func $op_or))
+        "#;
+        let bytes: Vec<u8> = assemble(wat);
+        let (recovered, stats): (Vec<u8>, ReinlineStats) =
+            reinline_imported_ops(&bytes).expect("reinline");
+        assert_eq!(stats.ops_reinlined, 3, "every op call reinlined");
+        assert_eq!(stats.imports_dropped, 0, "referenced imports stay");
+        let module: Module = Module::from_buffer(&recovered).expect("round-trips");
+        assert_eq!(module.imports.iter().count(), 3, "all three imports kept");
+        assert!(
+            wasmparser::validate(&recovered).is_ok(),
+            "recovered module must validate"
+        );
     }
 }
