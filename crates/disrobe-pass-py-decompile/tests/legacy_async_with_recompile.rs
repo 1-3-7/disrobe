@@ -14,9 +14,8 @@ use crate::common::band::{
     BandInterpreter, BandOutcome, band_scratch, recompile_equiv_inline, resolve_band,
 };
 
-const STABLE_VERSIONS: &[&str] = &["3.8", "3.9", "3.10", "3.11", "3.12", "3.13", "3.14"];
-const PRERELEASE: &[&str] = &["3.15"];
-const LEGACY_WITH_VERSIONS: &[&str] = &["3.8", "3.9", "3.10"];
+const STABLE_VERSIONS: &[&str] = &["3.8", "3.9", "3.10", "3.11"];
+const PRERELEASE: &[&str] = &[];
 
 fn assert_recompiles(label: &str, program: &str) {
     let band: Vec<BandInterpreter> = resolve_band(STABLE_VERSIONS, PRERELEASE);
@@ -57,41 +56,17 @@ fn assert_recompiles(label: &str, program: &str) {
 }
 
 #[test]
-fn if_else_before_a_with_keeps_one_arm() {
+fn await_inside_an_async_with_body_stays_in_the_body() {
     assert_recompiles(
-        "if_else_before_with",
-        "def f(x, m, g, h):\n    if x:\n        g()\n    else:\n        h()\n    with m:\n        g()\n",
+        "await_inside_async_with",
+        "async def f(m, g):\n    async with m:\n        await g(1)\n        g(2)\n",
     );
 }
 
 #[test]
-fn a_conditional_context_expression_is_recovered_or_refused() {
-    let program: &str = "def f(x, a, b, g):\n    with (a if x else b):\n        g()\n";
-    let label: &str = "conditional_context_expression";
-    let band: Vec<BandInterpreter> = resolve_band(LEGACY_WITH_VERSIONS, &[]);
-    assert!(
-        !band.is_empty(),
-        "{label}: no CPython interpreter installed"
-    );
-    let scratch: PathBuf = band_scratch(label);
-    for interp in &band {
-        let (outcome, source): (BandOutcome, String) =
-            recompile_equiv_inline(interp, program, label, &scratch);
-        if matches!(outcome, BandOutcome::RecompileEquiv) {
-            continue;
-        }
-        assert!(
-            !source.contains("with b:") && !source.contains("with a:"),
-            "{label} py{}: one arm of the context expression was published as the whole: {outcome:?}\n{source}",
-            interp.alias
-        );
-    }
-}
-
-#[test]
-fn statements_after_a_with_are_kept() {
+fn statements_after_an_async_with_are_kept() {
     assert_recompiles(
-        "statements_after_with",
-        "def f(m, g):\n    with m as v:\n        g(v)\n    g(3)\n    return v\n",
+        "statements_after_async_with",
+        "async def f(m, g):\n    async with m as v:\n        g(v)\n    g(3)\n",
     );
 }

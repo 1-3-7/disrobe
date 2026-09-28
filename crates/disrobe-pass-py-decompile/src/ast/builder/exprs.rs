@@ -1530,7 +1530,7 @@ pub(super) fn build_linear_stmts_sim_seed(
             | CanonicalOp::MakeCell(_)
             | CanonicalOp::ReturnGenerator
             | CanonicalOp::BeforeAsyncWith
-            | CanonicalOp::SetupAsyncWith
+            | CanonicalOp::SetupAsyncWith(_)
             | CanonicalOp::AsyncForLoop
             | CanonicalOp::AsyncWithExitStart
             | CanonicalOp::AsyncWithExitFinish

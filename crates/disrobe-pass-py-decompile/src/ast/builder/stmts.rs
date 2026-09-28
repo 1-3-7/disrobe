@@ -949,6 +949,22 @@ fn is_legacy_with_exit_triple(stream: &DecodedStream, start: usize, hi: usize) -
     matches!(stream.ops[call], CanonicalOp::CallFunction(3))
 }
 
+fn legacy_with_continuation(
+    stream: &DecodedStream,
+    body_end: usize,
+    cleanup_idx: usize,
+    hi: usize,
+) -> Option<usize> {
+    legacy_with_region_exit(stream, body_end, cleanup_idx, hi).or_else(|| {
+        stream
+            .pre311_end_finally_idx
+            .range(cleanup_idx..hi)
+            .next()
+            .map(|end_finally: &usize| end_finally + 1)
+            .filter(|exit: &usize| *exit < hi)
+    })
+}
+
 fn legacy_with_region_exit(
     stream: &DecodedStream,
     body_end: usize,
@@ -1102,7 +1118,7 @@ fn region_contains_setup_with(stream: &DecodedStream, lo: usize, hi: usize) -> b
 }
 
 fn region_contains_setup_async_with(stream: &DecodedStream, lo: usize, hi: usize) -> bool {
-    (lo..hi).any(|k: usize| matches!(stream.ops[k], CanonicalOp::SetupAsyncWith))
+    (lo..hi).any(|k: usize| matches!(stream.ops[k], CanonicalOp::SetupAsyncWith(_)))
 }
 
 fn head_has_statement_control_flow(stream: &DecodedStream, lo: usize, setup_idx: usize) -> bool {
@@ -1135,10 +1151,15 @@ fn structure_legacy_async_with(
     hi: usize,
 ) -> Result<Option<(Vec<Stmt>, usize)>> {
     let Some(setup_idx): Option<usize> =
-        (lo..hi).find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::SetupAsyncWith))
+        (lo..hi).find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::SetupAsyncWith(_)))
     else {
         return Ok(None);
     };
+    let CanonicalOp::SetupAsyncWith(rel): CanonicalOp = stream.ops[setup_idx] else {
+        return Ok(None);
+    };
+    let cleanup_idx: Option<usize> =
+        legacy_with_cleanup_idx(stream, setup_idx, rel).filter(|idx: &usize| *idx <= hi);
     let Some(before_idx): Option<usize> = (lo..setup_idx)
         .rev()
         .find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::BeforeAsyncWith))
@@ -1178,13 +1199,47 @@ fn structure_legacy_async_with(
         Some(CanonicalOp::Pop) => body_start += 1,
         _ => {}
     }
-    let exit_await: usize = (body_start..hi)
+    let body_end: usize = cleanup_idx
+        .and_then(|cleanup: usize| {
+            (body_start..cleanup)
+                .rev()
+                .find(|k: &usize| stream.pre311_pop_block_idx.contains(k))
+        })
+        .ok_or_else(|| crate::error::DecompileError::AstDesync {
+            offset: stream
+                .offsets
+                .get(setup_idx)
+                .map_or(0, |offset: &u32| *offset as usize),
+            reason: "async with body has no POP_BLOCK before its cleanup handler".to_owned(),
+        })?;
+    let exit_await: usize = (body_end..hi)
         .find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::GetAwaitable))
         .unwrap_or(hi);
-    let mut body: Vec<Stmt> = structure_stmts(code, stream, body_start, exit_await)?;
-    if let Some(ret) = legacy_async_with_trailing_return(code, stream, exit_await, hi)? {
-        body.push(ret);
-    }
+    let mut body: Vec<Stmt> = structure_stmts(code, stream, body_start, body_end)?;
+    let continuation: Vec<Stmt> = match cleanup_idx
+        .and_then(|cleanup: usize| legacy_with_continuation(stream, body_end, cleanup, hi))
+    {
+        Some(exit) => structure_stmts(code, stream, exit, hi)?,
+        None => Vec::new(),
+    };
+    let continues: bool = continuation.iter().any(|stmt: &Stmt| {
+        !matches!(
+            stmt,
+            Stmt::Return(None)
+                | Stmt::Return(Some(Expr::Constant {
+                    value: ConstValue::None,
+                    ..
+                }))
+        )
+    });
+    let continuation: Vec<Stmt> = if continues {
+        continuation
+    } else {
+        if let Some(ret) = legacy_async_with_trailing_return(code, stream, exit_await, hi)? {
+            body.push(ret);
+        }
+        Vec::new()
+    };
     let with_stmt: Stmt = Stmt::With {
         items: vec![WithItem {
             context_expr,
@@ -1196,6 +1251,7 @@ fn structure_legacy_async_with(
     };
     let mut out: Vec<Stmt> = head_stmts;
     out.push(with_stmt);
+    out.extend(continuation);
     Ok(Some((out, hi)))
 }
 
@@ -1294,7 +1350,7 @@ fn structure_legacy_with(
         } else {
             body.push(ret);
         }
-    } else if let Some(exit) = legacy_with_region_exit(stream, body_end, cleanup_idx, hi) {
+    } else if let Some(exit) = legacy_with_continuation(stream, body_end, cleanup_idx, hi) {
         continuation = structure_stmts(code, stream, exit, hi)?;
     }
     let with_stmt: Stmt = Stmt::With {
@@ -1425,6 +1481,20 @@ fn structure_legacy_with_head(
             line: None,
         });
         start = guarded.resume;
+    }
+    if let Some(branch) = (start..setup_idx).find(|&k: &usize| {
+        resolve_jump_target(stream, k, &stream.ops[k]).is_some()
+            && !is_value_form_shortcircuit(&stream.ops, k)
+    }) {
+        return Err(crate::error::DecompileError::AstDesync {
+            offset: stream
+                .offsets
+                .get(branch)
+                .map_or(0, |offset: &u32| *offset as usize),
+            reason: "a with statement's context expression branches; simulating it would keep \
+                     one arm"
+                .to_owned(),
+        });
     }
     let (tail_stmts, head_residual): (Vec<Stmt>, Vec<Expr>) =
         build_linear_stmts_sim(code, &stream.ops[start..setup_idx])?;
