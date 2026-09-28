@@ -561,13 +561,32 @@ jobs:
           if [ "$RUNNER_OS" = "Windows" ]; then
             demand makecab DISROBE_REQUIRE_MAKECAB
           fi
-      - name: require the decoders, PowerShell and npx the shell and webview graders run, so an absent one fails here by name
+      - name: require the decoders, PowerShell, npx and qpdf the shell and webview graders run, so an absent one fails here by name
         if: matrix.shard == 'two' || matrix.shard == 'three'
         shell: bash
         run: |
-          if [ "$RUNNER_OS" = "Linux" ] && ! command -v xxd >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install -y --no-install-recommends xxd
+          case "$RUNNER_OS" in
+            Linux)
+              sudo apt-get update
+              sudo apt-get install -y --no-install-recommends xxd qpdf
+              ;;
+            macOS)
+              brew install qpdf
+              ;;
+            Windows)
+              qpdf_root="$(cygpath -u "$RUNNER_TEMP")/qpdf-12.4.2"
+              mkdir -p "$qpdf_root"
+              curl --fail --location --max-time 600 --output "$qpdf_root/qpdf.zip" \
+                https://github.com/qpdf/qpdf/releases/download/v12.4.2/qpdf-12.4.2-msvc64.zip
+              echo "db87077e683630c1217e0e8f9a20a9749d952ab676e881c3689187763a5de25d  $qpdf_root/qpdf.zip" | sha256sum --check
+              unzip -q "$qpdf_root/qpdf.zip" -d "$qpdf_root"
+              qpdf_exe="$qpdf_root/qpdf-12.4.2-msvc64/bin/qpdf.exe"
+              "$qpdf_exe" --version
+              echo "DISROBE_QPDF=$(cygpath -w "$qpdf_exe")" >> "$GITHUB_ENV"
+              ;;
+          esac
+          if [ "$RUNNER_OS" != "Windows" ]; then
+            qpdf --version
           fi
           for tool in bash base64 tr xxd pwsh npx; do
             if ! command -v "$tool" >/dev/null 2>&1; then
