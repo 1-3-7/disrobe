@@ -677,12 +677,8 @@ impl<'a> Reader<'a> {
             return Err(Error::LengthOverflow(len));
         }
         let bytes: &'a [u8] = self.read_bytes(len as usize)?;
-        let value: String = core::str::from_utf8(bytes).map_or_else(
-            |_| bytes.iter().map(|&b| b as char).collect(),
-            ToOwned::to_owned,
-        );
         Ok(Object::String {
-            value,
+            value: latin1_text(bytes),
             interned: false,
         })
     }
@@ -693,7 +689,11 @@ impl<'a> Reader<'a> {
             return Err(Error::LengthOverflow(len));
         }
         let bytes: &'a [u8] = self.read_bytes(len as usize)?;
-        let value: String = String::from_utf8_lossy(bytes).into_owned();
+        let value: String = if tag == b't' && self.version.major < 3 {
+            latin1_text(bytes)
+        } else {
+            String::from_utf8_lossy(bytes).into_owned()
+        };
         let interned: bool = matches!(tag, b't' | b'A');
         if interned {
             self.push_interned_string(&value)?;
@@ -1045,6 +1045,10 @@ const fn object_kind_name(obj: &Object) -> &'static str {
         Object::Ref(_) => "ref",
         Object::Null => "null",
     }
+}
+
+fn latin1_text(bytes: &[u8]) -> String {
+    bytes.iter().copied().map(char::from).collect()
 }
 
 fn text_to_raw_bytes(value: &str) -> Vec<u8> {
@@ -1654,6 +1658,22 @@ mod tests {
         };
         let recovered: Vec<u8> = text_to_raw_bytes(&value);
         assert_eq!(recovered, vec![0x80, 0x81, b'A'], "high bytes round-trip");
+    }
+
+    #[test]
+    fn legacy_bytes_that_happen_to_be_utf8_keep_every_byte() {
+        let raw: [u8; 4] = [0xC3, 0xA9, 0x64, 0x00];
+        for version in [PyVersion::PY22, PyVersion::PY27] {
+            let obj: Object = load(&string_tag_payload(&raw), version).unwrap();
+            let Object::String { value, .. } = obj else {
+                panic!("expected legacy string");
+            };
+            assert_eq!(
+                text_to_raw_bytes(&value),
+                raw.to_vec(),
+                "a Python 2 str is bytes; decoding C3 A9 as UTF-8 lost a byte of co_code"
+            );
+        }
     }
 
     #[test]

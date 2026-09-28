@@ -360,7 +360,12 @@ fn emit_const(em: &DefaultEmitter, v: &ConstValue, version: &PyVersion) -> Strin
             }
         }
         ConstValue::Str(s) => {
-            let literal: String = format_string_literal(s, em.use_double_quotes);
+            let literal: String = match latin1_bytes(s) {
+                Some(bytes) if version.major() < 3 && !s.is_ascii() => {
+                    format_bytes_literal(&bytes).split_off(1)
+                }
+                _ => format_string_literal(s, em.use_double_quotes),
+            };
             format!("{}{literal}", str_const_prefix(em, version))
         }
         ConstValue::Unicode(s) => {
@@ -400,6 +405,12 @@ fn emit_const(em: &DefaultEmitter, v: &ConstValue, version: &PyVersion) -> Strin
         }
         ConstValue::Code(code_ref) => format!("<code object {}>", code_ref.qualname),
     }
+}
+
+fn latin1_bytes(s: &str) -> Option<Vec<u8>> {
+    s.chars()
+        .map(|c: char| u8::try_from(u32::from(c)).ok())
+        .collect()
 }
 
 #[must_use]
@@ -1378,6 +1389,28 @@ mod tests {
         let expr: Expr = bigint_expr();
         let out: String = emit_expr(&emitter, &expr, &PyVersion::V2_7, Precedence::Lowest);
         assert_eq!(out, "42L");
+    }
+
+    #[test]
+    fn a_py2_str_with_high_bytes_renders_those_bytes_escaped() {
+        let emitter: DefaultEmitter = DefaultEmitter::new();
+        let expr: Expr = Expr::Constant {
+            value: ConstValue::Str("caf\u{c3}\u{a9}".to_owned()),
+            line: None,
+        };
+        let py2: String = emit_expr(&emitter, &expr, &PyVersion::V2_7, Precedence::Lowest);
+        assert_eq!(
+            py2, "\"caf\\xc3\\xa9\"",
+            "a utf-8 source file would re-encode raw chars"
+        );
+        let ascii: Expr = Expr::Constant {
+            value: ConstValue::Str("plain".to_owned()),
+            line: None,
+        };
+        assert_eq!(
+            emit_expr(&emitter, &ascii, &PyVersion::V2_7, Precedence::Lowest),
+            "\"plain\""
+        );
     }
 
     #[test]
