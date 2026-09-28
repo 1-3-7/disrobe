@@ -126,6 +126,7 @@ pub(crate) fn run(root: &Path, as_json: bool) -> Result<()> {
     check_host_paths(root, &mut report);
     check_pyarmor_serial_footprint(root, &mut report);
     check_prose_tells(root, &mut report);
+    check_readme_family_evidence(root, &mut report);
 
     report.fact("workspace_members", json!(members.len()));
     report.fact("crate_directories", json!(crate_dirs.len()));
@@ -333,6 +334,154 @@ fn check_prose_tells(root: &Path, report: &mut Report) {
             ),
         );
     }
+}
+
+const README_FAMILY_SECTION: &str = "## What it recovers";
+const README_EVIDENCE_COLUMN: &str = "Evidence";
+const REAL_LABEL: &str = "`real`";
+const SYNTHETIC_LABEL: &str = "`synthetic`";
+const MAX_README_BYTES: u64 = 1024 * 1024;
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct FamilyEvidenceAudit {
+    rows: usize,
+    problems: Vec<String>,
+}
+
+fn check_readme_family_evidence(root: &Path, report: &mut Report) {
+    const CHECK: &str = "readme-family-evidence";
+    let readme: String = match read_text_bounded(&root.join("README.md"), MAX_README_BYTES) {
+        Ok(text) => text,
+        Err(error) => {
+            report.fail(CHECK, format!("could not read README.md: {error:#}"));
+            return;
+        }
+    };
+    match audit_family_evidence(&readme, |target: &str| root.join(target).is_file()) {
+        Ok(audit) => {
+            report.fact("readme_family_rows", json!(audit.rows));
+            for problem in audit.problems {
+                report.fail(CHECK, problem);
+            }
+        }
+        Err(problem) => report.fail(CHECK, problem),
+    }
+}
+
+fn audit_family_evidence(
+    readme: &str,
+    exists: impl Fn(&str) -> bool,
+) -> std::result::Result<FamilyEvidenceAudit, String> {
+    let mut section = readme
+        .lines()
+        .skip_while(|line: &&str| line.trim_end() != README_FAMILY_SECTION);
+    if section.next().is_none() {
+        return Err(format!(
+            "README.md has no `{README_FAMILY_SECTION}` section, so no family row can be checked for evidence"
+        ));
+    }
+    let table: Vec<&str> = section
+        .take_while(|line: &&str| !line.starts_with("## "))
+        .skip_while(|line: &&str| !line.starts_with('|'))
+        .take_while(|line: &&str| line.starts_with('|'))
+        .collect();
+    let [header, _separator, rows @ ..] = table.as_slice() else {
+        return Err(format!(
+            "README.md has no family table under `{README_FAMILY_SECTION}`"
+        ));
+    };
+    let columns: Vec<&str> = table_cells(header);
+    let Some(evidence_at): Option<usize> = columns
+        .iter()
+        .position(|column: &&str| *column == README_EVIDENCE_COLUMN)
+    else {
+        return Err(format!(
+            "the family table under `{README_FAMILY_SECTION}` has no `{README_EVIDENCE_COLUMN}` column, so no row states whether a real fixture grades it"
+        ));
+    };
+    let mut problems: Vec<String> = Vec::new();
+    for row in rows {
+        let cells: Vec<&str> = table_cells(row);
+        let family: &str = cells.first().copied().unwrap_or_default();
+        let Some(evidence): Option<&str> = cells
+            .get(evidence_at)
+            .copied()
+            .filter(|_: &&str| cells.len() == columns.len())
+        else {
+            problems.push(format!(
+                "README.md family row `{family}` has {} cells and the header has {}",
+                cells.len(),
+                columns.len()
+            ));
+            continue;
+        };
+        problems.extend(row_evidence_problems(family, evidence, &exists));
+    }
+    Ok(FamilyEvidenceAudit {
+        rows: rows.len(),
+        problems,
+    })
+}
+
+fn table_cells(line: &str) -> Vec<&str> {
+    let trimmed: &str = line.trim();
+    let inner: &str = trimmed.strip_prefix('|').unwrap_or(trimmed);
+    let inner: &str = inner.strip_suffix('|').unwrap_or(inner);
+    inner.split('|').map(str::trim).collect()
+}
+
+fn link_targets(cell: &str) -> Vec<&str> {
+    let mut targets: Vec<&str> = Vec::new();
+    let mut rest: &str = cell;
+    while let Some(open) = rest.find("](") {
+        let after: &str = &rest[open + 2..];
+        let Some(close) = after.find(')') else {
+            break;
+        };
+        targets.push(&after[..close]);
+        rest = &after[close + 1..];
+    }
+    targets
+}
+
+fn is_graded_evidence(path: &str) -> bool {
+    let extension: Option<&std::ffi::OsStr> = Path::new(path).extension();
+    let has = |wanted: &str| extension.is_some_and(|found: &std::ffi::OsStr| found == wanted);
+    (path.starts_with("evidence/results/") && has("md"))
+        || (path.starts_with("crates/") && path.contains("/tests/") && has("rs"))
+}
+
+fn row_evidence_problems(
+    family: &str,
+    evidence: &str,
+    exists: &impl Fn(&str) -> bool,
+) -> Vec<String> {
+    let mut problems: Vec<String> = Vec::new();
+    let mut graded: usize = 0;
+    for target in link_targets(evidence) {
+        if target.contains("://") {
+            continue;
+        }
+        let path: &str = target.split('#').next().unwrap_or_default();
+        if !exists(path) {
+            problems.push(format!(
+                "README.md family row `{family}` links `{path}` as evidence, which does not exist"
+            ));
+        } else if is_graded_evidence(path) {
+            graded += 1;
+        }
+    }
+    let real: bool = evidence.contains(REAL_LABEL);
+    if real && graded == 0 {
+        problems.push(format!(
+            "README.md family row `{family}` is labelled {REAL_LABEL} but links no existing evidence/results/*.md descriptor or crates/*/tests/*.rs test that grades a real fixture"
+        ));
+    } else if !real && !evidence.contains(SYNTHETIC_LABEL) {
+        problems.push(format!(
+            "README.md family row `{family}` has neither a {REAL_LABEL} label with a linked graded fixture nor a {SYNTHETIC_LABEL} label"
+        ));
+    }
+    problems
 }
 
 fn check_host_paths(root: &Path, report: &mut Report) {
@@ -1879,6 +2028,71 @@ origin.built.rebuilt_sha256 = "{rebuilt_sha256}"
                     .to_owned()
             ]
         );
+        Ok(())
+    }
+
+    const FAMILY_TABLE_HEAD: &str = "# Disrobe\n\n## What it recovers\n\nEach row names a family.\n\n| Ecosystem | Formats | Evidence |\n|---|---|---|\n";
+
+    fn family_audit(rows: &str) -> FamilyEvidenceAudit {
+        audit_family_evidence(
+            &format!("{FAMILY_TABLE_HEAD}{rows}\n## Measured results\n\n| A | b |\n"),
+            |path: &str| path == "evidence/results/a.md" || path == "crates/c/tests/t.rs",
+        )
+        .expect("the probe README carries a family table with an Evidence column")
+    }
+
+    #[test]
+    fn a_family_row_without_a_graded_real_fixture_or_a_synthetic_label_fails_health() {
+        let audit: FamilyEvidenceAudit = family_audit(
+            "| A | x | `real`: [a](evidence/results/a.md) |\n\
+             | B | x | `synthetic` |\n\
+             | C | x | `real`: [t](crates/c/tests/t.rs); `synthetic` for the rest |\n\
+             | D | x | `claimed` |\n\
+             | E | x | `real`: [gone](evidence/results/gone.md) |\n\
+             | F | x | `real` |\n\
+             | G | x | [a](evidence/results/a.md) |\n\
+             | H | x |\n",
+        );
+        assert_eq!(audit.rows, 8);
+        assert_eq!(
+            audit.problems,
+            vec![
+                "README.md family row `D` has neither a `real` label with a linked graded fixture nor a `synthetic` label".to_owned(),
+                "README.md family row `E` links `evidence/results/gone.md` as evidence, which does not exist".to_owned(),
+                "README.md family row `E` is labelled `real` but links no existing evidence/results/*.md descriptor or crates/*/tests/*.rs test that grades a real fixture".to_owned(),
+                "README.md family row `F` is labelled `real` but links no existing evidence/results/*.md descriptor or crates/*/tests/*.rs test that grades a real fixture".to_owned(),
+                "README.md family row `G` has neither a `real` label with a linked graded fixture nor a `synthetic` label".to_owned(),
+                "README.md family row `H` has 2 cells and the header has 3".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_family_table_without_an_evidence_column_fails_health() {
+        let missing: std::result::Result<FamilyEvidenceAudit, String> = audit_family_evidence(
+            "## What it recovers\n\n| Ecosystem | Formats |\n|---|---|\n| A | x |\n",
+            |_: &str| true,
+        );
+        assert!(
+            missing
+                .as_ref()
+                .is_err_and(|problem: &String| problem.contains("no `Evidence` column")),
+            "{missing:?}"
+        );
+        let absent: std::result::Result<FamilyEvidenceAudit, String> =
+            audit_family_evidence("# Disrobe\n\n| A | b |\n|---|---|\n", |_: &str| true);
+        assert!(absent.is_err(), "{absent:?}");
+    }
+
+    #[test]
+    fn the_committed_readme_labels_every_family_row() -> Result<()> {
+        let root: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let readme: String = read_text_bounded(&root.join("README.md"), MAX_README_BYTES)?;
+        let audit: FamilyEvidenceAudit =
+            audit_family_evidence(&readme, |target: &str| root.join(target).is_file())
+                .map_err(|problem: String| eyre::eyre!(problem))?;
+        assert_eq!(audit.problems, Vec::<String>::new());
+        assert!(audit.rows > 0, "the family table has no rows");
         Ok(())
     }
 
