@@ -507,37 +507,26 @@ fn validated_extent(bytes: &[u8], hit: &MagicHit) -> Option<usize> {
     Some(extent)
 }
 
+const ZIP_EOCD_MAGIC: &[u8; 4] = b"PK\x05\x06";
+const ZIP_CENTRAL_HEADER_SIGNATURE: u32 = 0x0201_4B50;
+const ZIP_EOCD_FIXED_LEN: usize = 22;
+
 fn zip_extent(bytes: &[u8]) -> Option<usize> {
-    let cd_start: usize = crate::structural::locate_zip_central_directory(bytes)?;
-    let eocd: usize = find_eocd(bytes)?;
-    let comment_len: usize = u16_le(bytes, eocd + 20)? as usize;
-    let end: usize = eocd + 22 + comment_len;
-    if end <= cd_start || end > bytes.len() {
-        return None;
-    }
-    Some(end)
-}
-
-const ZIP_EOCD_SIGNATURE: u32 = 0x0605_4B50;
-
-fn find_eocd(bytes: &[u8]) -> Option<usize> {
-    let len: usize = bytes.len();
-    if len < 22 {
-        return None;
-    }
-    let budget: usize = 0xFFFF + 22 + 4;
-    let start: usize = len.saturating_sub(budget);
-    let mut off: usize = len - 22;
-    while off >= start {
-        if u32_le(bytes, off) == Some(ZIP_EOCD_SIGNATURE) {
-            return Some(off);
+    memchr::memmem::find_iter(bytes, ZIP_EOCD_MAGIC).find_map(|eocd: usize| {
+        let cd_size: usize = usize::try_from(u32_le(bytes, eocd + 12)?).ok()?;
+        let cd_start: usize = usize::try_from(u32_le(bytes, eocd + 16)?).ok()?;
+        if cd_start.checked_add(cd_size)? != eocd {
+            return None;
         }
-        if off == 0 {
-            break;
+        if cd_size > 0 && u32_le(bytes, cd_start)? != ZIP_CENTRAL_HEADER_SIGNATURE {
+            return None;
         }
-        off -= 1;
-    }
-    None
+        let comment_len: usize = usize::from(u16_le(bytes, eocd + 20)?);
+        let end: usize = eocd
+            .checked_add(ZIP_EOCD_FIXED_LEN)?
+            .checked_add(comment_len)?;
+        (end <= bytes.len()).then_some(end)
+    })
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1265,6 +1254,25 @@ mod tests {
             kind: ContainerKind::Zip,
         };
         assert_eq!(validated_extent(&z, &hit), Some(z.len()));
+    }
+
+    #[test]
+    fn a_zip_followed_by_more_than_64_kib_ends_at_its_own_directory() {
+        let first: Vec<u8> = synth_zip(&[("a.txt", b"alpha")]);
+        let second: Vec<u8> = synth_zip(&[("b.txt", b"bravo"), ("c.txt", b"charlie")]);
+        let mut buf: Vec<u8> = first.clone();
+        buf.extend(std::iter::repeat_n(0x5Au8, 100 * 1024));
+        buf.extend_from_slice(&second);
+        let hit: MagicHit = MagicHit {
+            offset: 0,
+            kind: ContainerKind::Zip,
+        };
+        assert_eq!(validated_extent(&buf, &hit), Some(first.len()));
+        let later: MagicHit = MagicHit {
+            offset: buf.len() - second.len(),
+            kind: ContainerKind::Zip,
+        };
+        assert_eq!(validated_extent(&buf, &later), Some(second.len()));
     }
 
     #[test]
