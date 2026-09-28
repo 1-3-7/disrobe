@@ -83,7 +83,7 @@ fn function_signature_is_i32_binary(module: &Module, fid: FunctionId) -> bool {
         && ty.results() == [walrus::ValType::I32]
 }
 
-fn op_for_import_name(name: &str) -> Option<BinaryOp> {
+pub(crate) fn op_for_import_name(name: &str) -> Option<BinaryOp> {
     Some(match name {
         "op_add" => BinaryOp::I32Add,
         "op_sub" => BinaryOp::I32Sub,

@@ -308,10 +308,10 @@ fn published_wasm_pipeline_family_count_matches_this_crate_roster() {
 fn the_excluded_family_is_still_detected_and_classified() {
     const SHORT_EXPORT_MODULE: &str = r#"
         (module
-          (func (export "aa") (result i32) i32.const 1)
-          (func (export "bb") (result i32) i32.const 2)
-          (func (export "cc") (result i32) i32.const 3)
-          (func (export "dd") (result i32) i32.const 4))
+          (func (export "36c4abdf") (result i32) i32.const 1)
+          (func (export "9f8e2bcd") (result i32) i32.const 2)
+          (func (export "a1b2c3d4") (result i32) i32.const 3)
+          (func (export "deadbeef") (result i32) i32.const 4))
     "#;
 
     let bytes: Vec<u8> = wat::parse_str(SHORT_EXPORT_MODULE).expect("assemble wat");
@@ -319,7 +319,7 @@ fn the_excluded_family_is_still_detected_and_classified() {
     assert_eq!(
         detection.obfuscator,
         WasmObfuscator::WasmNameObfuscator,
-        "a stripped short-export module must still fingerprint as the name obfuscator, or the \
+        "a hashed-export module must still fingerprint as the name obfuscator, or the \
          family excluded from the `{PUBLISHED_BAR}` count is not covered at all"
     );
     assert_eq!(

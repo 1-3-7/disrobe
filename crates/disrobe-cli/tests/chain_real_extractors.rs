@@ -331,7 +331,7 @@ fn threaded_wasm_module_completes_through_auto() {
 }
 
 #[test]
-fn wasm_auto_json_names_a_static_recovery_refusal() {
+fn an_ordinary_minified_wasm_module_keeps_its_wat_through_auto() {
     let bytes: Vec<u8> = wat::parse_str(
         r#"(module
             (func (export "a") (param i32) (result i32) local.get 0)
@@ -339,9 +339,9 @@ fn wasm_auto_json_names_a_static_recovery_refusal() {
             (func (export "c") (param i32) (result i32) local.get 0)
             (func (export "d") (param i32) (result i32) local.get 0))"#,
     )
-    .expect("assemble tracked name-obfuscated wasm module");
+    .expect("assemble tracked minified wasm module");
     let output: disrobe_core::scratch::ScratchDir =
-        run_wasm_auto_cli(&bytes, "named-refusal", false);
+        run_wasm_auto_cli(&bytes, "minified-module", true);
     let chain: serde_json::Value = read_chain_json(output.path());
     let node: &serde_json::Value = chain["nodes"]
         .as_array()
@@ -349,19 +349,14 @@ fn wasm_auto_json_names_a_static_recovery_refusal() {
         .iter()
         .find(|node: &&serde_json::Value| node["pass"] == "wasm.deob")
         .expect("auto must dispatch wasm.deob");
-    assert_eq!(node["verdict"], "error");
-    let error: &str = node["error"]
-        .as_str()
-        .expect("refusal must reach chain.json");
-    assert!(
-        error.contains("DR-WASM-0905"),
-        "unexpected refusal: {error}"
-    );
+    assert_eq!(node["verdict"], "complete", "{node}");
     let json: String = serde_json::to_string(&chain).expect("serialize chain document");
-    assert!(
-        json.contains("DR-WASM-0905"),
-        "missing JSON refusal: {json}"
-    );
+    assert!(!json.contains("DR-WASM-0905"), "{json}");
+    let wat: Vec<u8> = std::fs::read(output.path().join("01-wasm-deob").join("output.bin"))
+        .expect("read captured wasm.deob source");
+    let text: &str = std::str::from_utf8(&wat).expect("wasm.deob emits UTF-8 WAT");
+    assert!(text.contains("(module"), "{text}");
+    assert!(text.contains("local.get 0"), "{text}");
 }
 
 #[test]

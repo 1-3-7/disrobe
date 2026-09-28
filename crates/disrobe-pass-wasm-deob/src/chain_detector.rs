@@ -122,12 +122,6 @@ impl Pass for WasmDeobPass {
                 artifact.root_hash,
             ));
         }
-        if is_named_obfuscator(detection.obfuscator) {
-            return Err(CoreError::PassFailure(format!(
-                "DR-WASM-0905: wasm.deob: {obf:?} fingerprinted but no obfuscation transform was statically recoverable (runtime-keyed decrypt, branching control-flow flattening, or interprocedural opaque predicate); the residual wall is the artifact itself",
-                obf = detection.obfuscator,
-            )));
-        }
         let wat: String = lift_to_wat(bytes)?;
         Ok(Artifact::new(
             Rung::Disasm,
@@ -598,9 +592,9 @@ mod tests {
     }
 
     #[test]
-    fn pass_run_walls_honestly_when_flagged_family_recovers_nothing() {
+    fn pass_run_keeps_the_disassembly_when_a_flagged_family_recovers_nothing() {
         let mut module: walrus::Module = walrus::Module::default();
-        for name in ["a", "b", "c", "d"] {
+        for name in ["36c4abdf", "9f8e2bcd", "a1b2c3d4", "deadbeef"] {
             let mut b: walrus::FunctionBuilder = walrus::FunctionBuilder::new(
                 &mut module.types,
                 &[walrus::ValType::I32],
@@ -626,12 +620,29 @@ mod tests {
         );
 
         let a: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
-        let err: CoreError = WASM_DEOB_PASS
+        let listing: Artifact = WASM_DEOB_PASS
             .run(&a)
-            .expect_err("a flagged family that recovers nothing must wall, not pass through");
+            .expect("a parseable module keeps its disassembly when nothing is recovered");
+        assert_eq!(listing.rung, Rung::Disasm);
+        let wat: &str = std::str::from_utf8(&listing.envelope).expect("wat is utf8");
+        assert!(wat.contains("deadbeef"), "{wat}");
+    }
+
+    #[test]
+    fn minified_and_emscripten_exports_name_no_obfuscator_family() {
+        let minified: Vec<u8> = wat::parse_str(
+            r#"(module
+                (memory (export "memory") 1)
+                (func (export "a") (result i32) i32.const 1)
+                (func (export "b") (result i32) i32.const 2)
+                (func (export "c") (result i32) i32.const 3)
+                (func (export "_Z3foov") (result i32) i32.const 4))"#,
+        )
+        .expect("assemble");
+        let detection: WasmDetection = detect_wasm(&minified).expect("detect");
         assert!(
-            format!("{err}").contains("DR-WASM-0905"),
-            "wall must carry the residual reason code, got {err}",
+            !is_named_obfuscator(detection.obfuscator),
+            "short, mangled or memory exports are compiler output, not an obfuscator: {detection:?}"
         );
     }
 
@@ -774,7 +785,8 @@ mod tests {
             serde_json::from_slice(&detection.bytes).expect("detection json deserializes");
         assert_eq!(
             parsed.get("obfuscator").and_then(serde_json::Value::as_str),
-            Some("WasmNameObfuscator"),
+            Some("Unknown"),
+            "short exports are a minifier's output, recorded as a marker and not as a family",
         );
         assert_eq!(
             parsed

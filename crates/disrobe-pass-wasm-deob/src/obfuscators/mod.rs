@@ -29,6 +29,7 @@ pub use wasmixer::{
     DefragStats, HeapRegion, ProbeSource, StubInfo, UnresolvedReason, UnresolvedStub, UnwrapReport,
     UnwrappedSegment, defragment, detect_decrypt_stubs, recover_heap_regions, unwrap_decryption,
 };
+pub(crate) use wobfuscator::op_for_import_name;
 pub use wobfuscator::{
     ReinlineStats, WobfuscatorTable, extract_optable, lift_op_to_rust_fn, reinline_imported_ops,
 };

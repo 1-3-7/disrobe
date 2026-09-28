@@ -156,7 +156,7 @@ pub fn detect(bytes: &[u8]) -> Result<WasmDetection> {
         }
     }
 
-    let (obfuscator, confidence): (WasmObfuscator, f32) = classify(
+    let (mut obfuscator, mut confidence): (WasmObfuscator, f32) = classify(
         &export_names,
         &import_modules,
         &import_names,
@@ -165,6 +165,15 @@ pub fn detect(bytes: &[u8]) -> Result<WasmDetection> {
         function_count,
         &mut markers,
     );
+    if obfuscator == WasmObfuscator::WasmMixer
+        && !crate::obfuscators::defragment(bytes).is_ok_and(
+            |(_, stats): (Vec<u8>, crate::obfuscators::DefragStats)| stats.fragments_inlined > 0,
+        )
+    {
+        markers.push("function-inflation-without-fragments".to_owned());
+        obfuscator = WasmObfuscator::Unknown;
+        confidence = 0.1;
+    }
 
     crate::debug::dbg_kv("detect", || {
         format!(
@@ -243,7 +252,7 @@ const WASM_MIXER_INFLATION_RATIO: u32 = 20;
 const WASM_MIXER_MIN_FUNCTIONS: u32 = 50;
 
 const WOBFUSCATOR_IMPORT_MODULES: &[&str] = &["env", "wasi_snapshot_preview1", "wasi"];
-const WOBFUSCATOR_MIN_ENV_IMPORTS: usize = 10;
+const WOBFUSCATOR_MIN_OP_IMPORTS: usize = 2;
 
 const JSCRAMBLER_IMPORT_MODULE: &str = "jsc";
 
@@ -256,10 +265,12 @@ fn classify(
     function_count: u32,
     markers: &mut Vec<String>,
 ) -> (WasmObfuscator, f32) {
-    let _ = import_names;
-
     let has_only_short_exports: bool =
         !export_names.is_empty() && export_names.iter().all(|n: &String| n.len() <= 3);
+    let has_hashed_exports: bool = export_names.len() >= 4
+        && export_names
+            .iter()
+            .all(|n: &String| n.len() >= 8 && n.bytes().all(|byte: u8| byte.is_ascii_hexdigit()));
     let has_underscore_exports: bool = export_names.iter().any(|n: &String| n.starts_with("__"));
     let has_emscripten_exports: bool = export_names
         .iter()
@@ -269,12 +280,15 @@ fn classify(
         .iter()
         .any(|m: &String| m == JSCRAMBLER_IMPORT_MODULE);
 
-    let env_import_count: usize = import_modules
+    let op_import_count: usize = import_modules
         .iter()
-        .filter(|m: &&String| WOBFUSCATOR_IMPORT_MODULES.contains(&m.as_str()))
+        .zip(import_names)
+        .filter(|(module, name): &(&String, &String)| {
+            WOBFUSCATOR_IMPORT_MODULES.contains(&module.as_str())
+                && crate::obfuscators::op_for_import_name(name).is_some()
+        })
         .count();
-    let has_wobfuscator_env_imports: bool =
-        env_import_count >= WOBFUSCATOR_MIN_ENV_IMPORTS && !has_emscripten_exports;
+    let has_wobfuscator_env_imports: bool = op_import_count >= WOBFUSCATOR_MIN_OP_IMPORTS;
 
     let export_count: u32 = export_names.len() as u32;
     let effective_exports: u32 = export_count.max(1);
@@ -288,7 +302,7 @@ fn classify(
         return (WasmObfuscator::JscramblerWasm, 0.90);
     }
     if has_wobfuscator_env_imports {
-        markers.push(format!("env-imports:{env_import_count}"));
+        markers.push(format!("op-imports:{op_import_count}"));
         return (WasmObfuscator::Wobfuscator, 0.75);
     }
     if has_mixer_inflation {
@@ -297,13 +311,15 @@ fn classify(
         ));
         return (WasmObfuscator::WasmMixer, 0.75);
     }
+    if has_hashed_exports {
+        markers.push("hashed-exports".to_owned());
+        return (WasmObfuscator::WasmNameObfuscator, 0.85);
+    }
     if !has_name_section && !has_dwarf && has_only_short_exports && export_names.len() >= 4 {
         markers.push("stripped+short-exports".to_owned());
-        return (WasmObfuscator::WasmNameObfuscator, 0.85);
     }
     if has_emscripten_exports {
         markers.push("emscripten-mangled-exports".to_owned());
-        return (WasmObfuscator::TigressEmscripten, 0.55);
     }
     if has_underscore_exports && !has_name_section {
         markers.push("underscore-prefixed-exports".to_owned());
@@ -361,12 +377,54 @@ mod tests {
     }
 
     #[test]
-    fn classifies_wobfuscator_by_env_imports() {
-        let import_modules: Vec<String> = (0..12).map(|_| "env".to_owned()).collect();
-        let (kind, conf): (WasmObfuscator, f32) =
-            classify(&[], &import_modules, &[], false, false, 20, &mut Vec::new());
+    fn classifies_wobfuscator_by_op_imports_not_by_import_count() {
+        let op_modules: Vec<String> = vec!["env".to_owned(), "env".to_owned()];
+        let op_names: Vec<String> = vec!["op_add".to_owned(), "op_xor".to_owned()];
+        let (kind, conf): (WasmObfuscator, f32) = classify(
+            &[],
+            &op_modules,
+            &op_names,
+            false,
+            false,
+            20,
+            &mut Vec::new(),
+        );
         assert_eq!(kind, WasmObfuscator::Wobfuscator);
         assert!(conf > 0.7);
+        let wasi_modules: Vec<String> = (0..12)
+            .map(|_| "wasi_snapshot_preview1".to_owned())
+            .collect();
+        let wasi_names: Vec<String> = (0..12)
+            .map(|index: usize| format!("fd_call{index}"))
+            .collect();
+        let (ordinary, _): (WasmObfuscator, f32) = classify(
+            &[],
+            &wasi_modules,
+            &wasi_names,
+            false,
+            false,
+            20,
+            &mut Vec::new(),
+        );
+        assert_ne!(ordinary, WasmObfuscator::Wobfuscator);
+    }
+
+    #[test]
+    fn a_large_stripped_module_without_fragments_is_not_wasmixer() {
+        let mut text: String = String::from("(module\n");
+        for index in 0..60 {
+            text.push_str(&format!(
+                "  (func $f{index} (result i32) i32.const {index})\n"
+            ));
+        }
+        text.push_str("  (export \"_start\" (func $f0)))\n");
+        let bytes: Vec<u8> = wat::parse_str(&text).expect("assemble");
+        let detection: WasmDetection = detect(&bytes).expect("detect");
+        assert_ne!(
+            detection.obfuscator,
+            WasmObfuscator::WasmMixer,
+            "{detection:?}"
+        );
     }
 
     #[test]

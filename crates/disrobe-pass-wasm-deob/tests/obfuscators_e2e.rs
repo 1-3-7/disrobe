@@ -39,7 +39,7 @@ mod helpers {
 
     pub fn module_with_short_exports() -> Vec<u8> {
         let mut module: Module = Module::default();
-        for name in ["a", "b", "c", "d"] {
+        for name in ["36c4abdf", "9f8e2bcd", "a1b2c3d4", "deadbeef"] {
             let mut b: FunctionBuilder =
                 FunctionBuilder::new(&mut module.types, &[ValType::I32], &[ValType::I32]);
             let p: walrus::LocalId = module.locals.add(ValType::I32);
@@ -306,7 +306,7 @@ fn name_obfuscator_detect_and_classify_strategy() {
     assert_eq!(
         det.obfuscator,
         WasmObfuscator::WasmNameObfuscator,
-        "short-only-exports + no name-section must fingerprint WasmNameObfuscator"
+        "hashed export names must fingerprint WasmNameObfuscator"
     );
     assert!(det.confidence >= 0.5, "confidence must clear reporting bar");
 
@@ -403,14 +403,14 @@ fn wobfuscator_extract_optable_and_lift_each_eval() {
 fn tigress_detect_emscripten_then_unflatten_dispatcher() {
     let bytes: Vec<u8> = helpers::module_with_emscripten_mangled_export();
     let det: WasmDetection = detect(&bytes).expect("detect must parse emscripten synth module");
-    assert_eq!(
+    assert_ne!(
         det.obfuscator,
         WasmObfuscator::TigressEmscripten,
-        "_Z-prefixed export must fingerprint as TigressEmscripten"
+        "a C++-mangled export is compiler output, not Tigress evidence"
     );
     assert!(
         det.markers.iter().any(|m| m.contains("emscripten")),
-        "TigressEmscripten markers must mention emscripten"
+        "the mangled export stays visible as a marker"
     );
 
     let mut ssa: SsaFunction = helpers::three_state_dispatcher_ssa();
