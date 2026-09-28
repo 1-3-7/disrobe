@@ -8,6 +8,8 @@ const SIGNATURE_HFSX: u16 = 0x4858;
 const RECORD_FOLDER: u16 = 0x0001;
 const RECORD_FILE: u16 = 0x0002;
 const BTREE_NODE_LEAF: i8 = -1;
+const BTREE_HEADER_RECORD: usize = 14;
+const UF_COMPRESSED: u8 = 0x20;
 const MAX_FILES: usize = 2_000_000;
 const MAX_NODES: usize = 5_000_000;
 
@@ -18,6 +20,7 @@ pub struct HfsFile {
     pub parent_cnid: u32,
     pub data_logical_size: u64,
     pub extents: Vec<(u32, u32)>,
+    pub compressed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -260,19 +263,38 @@ fn walk_catalog_btree(catalog: &[u8]) -> Result<(Vec<HfsFile>, Vec<HfsFolder>)> 
 
     let mut files: Vec<HfsFile> = Vec::new();
     let mut folders: Vec<HfsFolder> = Vec::new();
-    for node_index in 0..node_count {
+    let mut next_leaf: u32 = be_u32(catalog, BTREE_HEADER_RECORD + 10).unwrap_or(0);
+    let mut leaves_walked: usize = 0;
+    while next_leaf != 0 {
         if files.len() > MAX_FILES || folders.len() > MAX_FILES {
             break;
         }
-        let node_start: usize = node_index * node_size;
-        let node: &[u8] = match catalog.get(node_start..node_start + node_size) {
-            Some(n) => n,
-            None => break,
-        };
+        if leaves_walked >= node_count {
+            return Err(Error::Decompression(
+                "hfs+ catalog leaf chain revisits a node".to_owned(),
+            ));
+        }
+        leaves_walked += 1;
+        let node_index: usize = usize::try_from(next_leaf).map_err(|_| {
+            Error::Decompression("hfs+ catalog leaf link exceeds host range".to_owned())
+        })?;
+        let node_start: usize = node_index
+            .checked_mul(node_size)
+            .ok_or_else(|| Error::Decompression("hfs+ catalog leaf offset overflow".to_owned()))?;
+        let node: &[u8] = catalog
+            .get(node_start..node_start + node_size)
+            .ok_or_else(|| {
+                Error::Decompression(format!(
+                    "hfs+ catalog leaf link {node_index} points past the {node_count}-node catalog"
+                ))
+            })?;
         let kind: i8 = node[8] as i8;
         if kind != BTREE_NODE_LEAF {
-            continue;
+            return Err(Error::Decompression(format!(
+                "hfs+ catalog leaf chain reaches node {node_index}, which is not a leaf"
+            )));
         }
+        next_leaf = be_u32(node, 0).unwrap_or(0);
         let num_records: u16 = be_u16(node, 10).map_or(0, |value: u16| value);
         if usize::from(num_records) * 2 > node_size {
             return Err(Error::Decompression(format!(
@@ -327,6 +349,7 @@ fn parse_catalog_record(node: &[u8], record_off: usize) -> Option<CatalogRecord>
         return None;
     }
     let cnid: u32 = be_u32(node, data_start + 8)?;
+    let owner_flags: u8 = *node.get(data_start + 41)?;
     let data_fork_off: usize = data_start + 88;
     let data_logical_size: u64 = be_u64(node, data_fork_off)?;
     let mut extents: Vec<(u32, u32)> = Vec::with_capacity(8);
@@ -346,10 +369,25 @@ fn parse_catalog_record(node: &[u8], record_off: usize) -> Option<CatalogRecord>
         parent_cnid,
         data_logical_size,
         extents,
+        compressed: owner_flags & UF_COMPRESSED != 0,
     }))
 }
 
-pub fn file_data(image: &[u8], volume: &HfsVolume, file: &HfsFile, cap: u64) -> Vec<u8> {
+pub fn file_data(image: &[u8], volume: &HfsVolume, file: &HfsFile, cap: u64) -> Result<Vec<u8>> {
+    if file.compressed {
+        return Err(Error::Decompression(
+            "decmpfs-compressed file: its data lives in the resource fork or an extended attribute, which is not decoded".to_owned(),
+        ));
+    }
+    if file.data_logical_size > cap {
+        return Err(Error::QuotaExceeded {
+            entry: file.name.clone(),
+            reason: format!(
+                "data fork of {} bytes exceeds the {cap} byte per-entry cap",
+                file.data_logical_size
+            ),
+        });
+    }
     let extents: Vec<ForkExtent> = file
         .extents
         .iter()
@@ -360,12 +398,16 @@ pub fn file_data(image: &[u8], volume: &HfsVolume, file: &HfsFile, cap: u64) -> 
         .collect();
     let mut out: Vec<u8> =
         read_fork_bytes(image, volume.volume_base, volume.block_size, &extents, cap);
-    let logical: usize =
-        usize::try_from(file.data_logical_size).map_or(out.len(), |value: usize| value);
-    if out.len() > logical {
-        out.truncate(logical);
+    let logical: usize = usize::try_from(file.data_logical_size)
+        .map_err(|_| Error::Decompression("hfs+ data fork size exceeds host range".to_owned()))?;
+    if out.len() < logical {
+        return Err(Error::Decompression(format!(
+            "data fork holds {} of its {logical} bytes in the eight catalog extents; the extents overflow file is not followed",
+            out.len()
+        )));
     }
-    out
+    out.truncate(logical);
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -446,6 +488,9 @@ pub(crate) fn build_hfsplus_image(file_name: &str, body: &[u8]) -> Vec<u8> {
     node[off_slot..off_slot + 2].copy_from_slice(&first_record_offset.to_be_bytes());
 
     let mut btree_header_node: Vec<u8> = vec![0u8; node_size as usize];
+    btree_header_node[8] = 1;
+    btree_header_node[BTREE_HEADER_RECORD + 10..BTREE_HEADER_RECORD + 14]
+        .copy_from_slice(&1u32.to_be_bytes());
     btree_header_node[32..34].copy_from_slice(&node_size.to_be_bytes());
 
     let catalog_off: usize = catalog_start_block as usize * block_size as usize;
@@ -468,6 +513,8 @@ mod tests {
         let node_size: usize = 512;
         let mut catalog: Vec<u8> = vec![0u8; node_size * 2];
         catalog[32..34].copy_from_slice(&u16::try_from(node_size).expect("fits").to_be_bytes());
+        catalog[BTREE_HEADER_RECORD + 10..BTREE_HEADER_RECORD + 14]
+            .copy_from_slice(&1u32.to_be_bytes());
         let leaf: &mut [u8] = &mut catalog[node_size..];
         leaf[8] = 0xFF;
         leaf[10..12].copy_from_slice(&u16::MAX.to_be_bytes());
@@ -491,8 +538,41 @@ mod tests {
             .find(|f: &&HfsFile| f.name == "readme.txt")
             .expect("file");
         assert_eq!(file.data_logical_size, body.len() as u64);
-        let data: Vec<u8> = file_data(&image, &vol, file, u64::MAX);
+        let data: Vec<u8> = file_data(&image, &vol, file, u64::MAX).expect("file data");
         assert_eq!(data, body);
+    }
+
+    #[test]
+    fn a_fork_longer_than_its_catalog_extents_is_refused_not_truncated() {
+        let image: Vec<u8> = build_hfsplus_image("big.bin", b"short body");
+        let vol: HfsVolume = parse_hfsplus(&image).expect("parse hfs+");
+        let mut file: HfsFile = vol.files[0].clone();
+        file.data_logical_size = 3 * u64::from(vol.block_size);
+        let error: Error = file_data(&image, &vol, &file, u64::MAX).expect_err("short fork");
+        assert!(
+            error.to_string().contains("extents overflow file"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_compressed_file_is_refused_not_emitted_empty() {
+        let image: Vec<u8> = build_hfsplus_image("packed.txt", b"");
+        let vol: HfsVolume = parse_hfsplus(&image).expect("parse hfs+");
+        let mut file: HfsFile = vol.files[0].clone();
+        file.compressed = true;
+        let error: Error = file_data(&image, &vol, &file, u64::MAX).expect_err("decmpfs");
+        assert!(error.to_string().contains("decmpfs"), "{error}");
+    }
+
+    #[test]
+    fn a_stale_leaf_off_the_chain_is_not_read() {
+        let mut image: Vec<u8> = build_hfsplus_image("live.txt", b"live");
+        let catalog_off: usize = 2 * 4096;
+        let header_link: usize = catalog_off + BTREE_HEADER_RECORD + 10;
+        image[header_link..header_link + 4].copy_from_slice(&0u32.to_be_bytes());
+        let vol: HfsVolume = parse_hfsplus(&image).expect("parse hfs+");
+        assert!(vol.files.is_empty(), "{:?}", vol.files);
     }
 
     #[test]

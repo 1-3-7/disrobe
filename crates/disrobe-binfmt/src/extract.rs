@@ -1786,12 +1786,18 @@ fn extract_dmg(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<E
                     continue;
                 }
             };
-            let data: Vec<u8> = crate::containers::hfsplus::file_data(
+            let data: Vec<u8> = match crate::containers::hfsplus::file_data(
                 &image,
                 &volume,
                 file,
                 quota.max_per_entry_uncompressed,
-            );
+            ) {
+                Ok(data) => data,
+                Err(e) => {
+                    violations.push(format!("dmg-hfs-refused `{safe_name}`: {e}"));
+                    continue;
+                }
+            };
             let size: u64 = data.len() as u64;
             if let Err(e) = guard.admit_entry(&safe_name, size, size) {
                 violations.push(format!("dmg-hfs-quota `{safe_name}`: {e}"));
