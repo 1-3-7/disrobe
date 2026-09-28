@@ -1211,7 +1211,6 @@ const CORPUS_REMAINDER: &[RemainderGroup] = &[
             "ASmallCar::com.greensock.plugins.BezierPlugin::set changeFactor",
             "ASmallCar::com.greensock.plugins.FrameLabelPlugin::onInitTween",
             "ASmallCar::com.greensock.plugins.TweenPlugin::onTweenEvent",
-            "ASmallCar::com.junkbyte.console.core.Remoting::remoteSync",
             "ATV_Cross_Canada::_-98._-3A::simplify",
             "ATV_Cross_Canada::_-E3.TweenMax::_-BQ",
             "ATV_Cross_Canada::_-E3.TweenMax::_-FP",
@@ -1262,7 +1261,6 @@ const CORPUS_REMAINDER: &[RemainderGroup] = &[
             "10_More_Bullets::zpp_nape.space.ZPP_Space::clear",
             "10_More_Bullets::zpp_nape.space.ZPP_Space::removed_shape",
             "10_More_Bullets::zpp_nape.util.FastHash2_Hashable2_Boolfalse::remove",
-            "1942_Battles_In_The_Sky::mx.utils.NameUtil::displayObjectToString",
             "1942_Battles_In_The_Sky::org.flixel.FlxG::addBitmap",
             "1942_Battles_In_The_Sky::org.flixel.FlxG::addBitmap_data",
             "1942_Battles_In_The_Sky::org.flixel.FlxG::createBitmap",
@@ -1278,7 +1276,6 @@ const CORPUS_REMAINDER: &[RemainderGroup] = &[
             "ASmallCar::com.greensock.plugins.TintPlugin::init",
             "ASmallCar::com.greensock.plugins.TweenPlugin::activate",
             "ASmallCar::com.greensock.plugins.TweenPlugin::killProps",
-            "ASmallCar::mx.utils.NameUtil::displayObjectToString",
             "ATV_Cross_Canada::Playtomic._-Dw::_-7f",
             "ATV_Cross_Canada::_-E3.TweenMax::_-9U",
             "ATV_Cross_Canada::_-E3.TweenMax::_-KW",
@@ -1943,7 +1940,7 @@ fn the_corpus_remainder_holds_its_pinned_membership() {
     );
     assert_eq!(files, 19, "the pinned membership names bodies in 19 files");
     assert_eq!(census.bodies, 17917);
-    assert_eq!(census.recovered, 16995);
+    assert_eq!(census.recovered, 16998);
     compare(&census, CORPUS_REMAINDER, "corpus");
 }
 
@@ -1961,7 +1958,7 @@ fn the_refusals_the_item_requires_are_separated_from_the_gaps() {
             running + group.members.len() + group.anonymous
         });
     eprintln!("AS3 corpus remainder: {required}/{total} are refusals the item requires");
-    assert_eq!(total, 922);
+    assert_eq!(total, 919);
     assert_eq!(
         required, 442,
         "a body counted here is one the merge rules name as a required refusal: a merge whose incoming \

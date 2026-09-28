@@ -6160,6 +6160,20 @@ fn structure_loops_within(stmts: Vec<Stmt>, depth: usize, tail_break: usize) -> 
             i += 1;
             continue;
         }
+        if let Stmt::Try { body, catches } = &stmts[i] {
+            out.push(Stmt::Try {
+                body: structure_loops(body.clone(), depth - 1),
+                catches: catches
+                    .iter()
+                    .map(|catch: &CatchClause| CatchClause {
+                        body: structure_loops(catch.body.clone(), depth - 1),
+                        ..catch.clone()
+                    })
+                    .collect(),
+            });
+            i += 1;
+            continue;
+        }
         if let Some((consumed, stmt)) = try_match_iterator_loop(&stmts, i, depth, tail_break) {
             out.push(stmt);
             i += consumed;
