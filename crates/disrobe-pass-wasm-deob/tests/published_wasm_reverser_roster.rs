@@ -12,7 +12,7 @@ use disrobe_pass_wasm_deob::{
 use published::{published_bar, published_count};
 
 const PUBLISHED_HEADING: &str = "Obfuscator and bundler family coverage";
-const PUBLISHED_BAR: &str = "WASM direct transformation helper families";
+const PUBLISHED_BAR: &str = "WASM families reversed on the wasm deob path";
 
 const NAMED_FAMILY_POPULATION: usize = 5;
 
@@ -218,7 +218,7 @@ fn bar_source() -> String {
 }
 
 #[test]
-fn published_wasm_direct_helper_count_matches_this_crate_roster() {
+fn published_wasm_pipeline_family_count_matches_this_crate_roster() {
     let published: u64 = published_count(PUBLISHED_HEADING, PUBLISHED_BAR);
     let roster: Vec<RosterEntry> = crate_roster();
 
@@ -269,16 +269,16 @@ fn published_wasm_direct_helper_count_matches_this_crate_roster() {
     );
     assert_eq!(
         published,
-        direct_helpers.len() as u64,
+        pipeline_delivered.len() as u64,
         "xtask/data/recovery.json publishes {published} `{PUBLISHED_BAR}` and metrics.rs renders \
-         that value into README.md and docs/src/passes.md, but this crate catalogs direct helpers for {} of the {} \
-         named families",
-        direct_helpers.len(),
+         that value into docs/src/passes.md, but the wasm deob pipeline delivers {} of the {} named \
+         families",
+        pipeline_delivered.len(),
         NAMED_FAMILY_POPULATION
     );
 
     let source: String = bar_source();
-    for family in direct_helpers {
+    for family in pipeline_delivered {
         let token: &str = published_token(family);
         assert!(
             source.contains(token),
@@ -335,6 +335,26 @@ fn the_excluded_family_is_still_detected_and_classified() {
         "{:?} is excluded from the published direct helper count and must never appear in the \
          direct helper roster",
         detection.obfuscator
+    );
+}
+
+#[test]
+fn delivering_the_standalone_tigress_helper_breaks_the_pin() {
+    let published: u64 = published_count(PUBLISHED_HEADING, PUBLISHED_BAR);
+    let mutated: Vec<RosterEntry> = crate_roster()
+        .into_iter()
+        .map(|(family, mut support): RosterEntry| {
+            if family == WasmObfuscator::TigressEmscripten {
+                support.pipeline = WasmPipelineSupport::Delivered;
+            }
+            (family, support)
+        })
+        .collect();
+    let delivered: Vec<WasmObfuscator> = pipeline_delivered_families(&mutated);
+    assert_ne!(
+        published,
+        delivered.len() as u64,
+        "counting a helper no recovery path calls must disagree with the published `{PUBLISHED_BAR}`"
     );
 }
 

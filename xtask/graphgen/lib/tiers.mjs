@@ -109,7 +109,7 @@ const UNBOUND_BAR_TIERS = [
   },
   {
     group: "Obfuscator and bundler family coverage (counts)",
-    bar: "WASM direct transformation helper families",
+    bar: "WASM families reversed on the wasm deob path",
     strength: SELF_REPORTED,
     ci: true,
     quoted: "This is a source catalog count, not a measured claim",

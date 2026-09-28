@@ -519,13 +519,13 @@
           "source": "This in-house, not real, no real sample leg covers aztup_brew, boronide, darksec, hercules, luraph, moonsec_v1, moonsec_v2, moonsec_v3, and psu reference containers. It records shape recovery only and is not evidence that any named obfuscator's own output was reversed."
         },
         {
-          "label": "WASM direct transformation helper families",
-          "value": 4,
+          "label": "WASM families reversed on the wasm deob path",
+          "value": 3,
           "verified_by": {
             "path": "crates/disrobe-pass-wasm-deob/tests/published_wasm_reverser_roster.rs",
-            "function": "published_wasm_direct_helper_count_matches_this_crate_roster"
+            "function": "published_wasm_pipeline_family_count_matches_this_crate_roster"
           },
-          "source": "This is a source catalog count, not a measured claim about output from the named upstream tools. crates/disrobe-pass-wasm-deob/src/detect.rs declares exhaustive per-family support with separate direct-transformation-helper and wasm-deob-pipeline-delivery axes. crates/disrobe-pass-wasm-deob/tests/published_wasm_reverser_roster.rs derives four helper families from that catalog and pins their named membership against this bar: Jscrambler-WASM strip+fold, Wobfuscator optable lift, Tigress-via-Emscripten standalone unflatten and name helpers, and Wasmixer stub-unwrap. crates/disrobe-pass-wasm-deob/tests/obfuscators_e2e.rs exercises each direct helper on hand-authored modules. crates/disrobe-pass-wasm-deob/tests/recover_differential.rs runs the three pipeline-delivered transformations, Jscrambler-WASM, Wobfuscator, and Wasmixer, against fixture-backed recovery and wasmtime behavior differentials. Tigress-via-Emscripten helpers are standalone and not on that path. wasm-name-obfuscator is excluded from the helper count because it has neither a direct helper nor pipeline delivery and hex renames destroy the original names"
+          "source": "This is a source catalog count, not a measured claim about output from the named upstream tools. crates/disrobe-pass-wasm-deob/src/detect.rs declares exhaustive per-family support with separate direct-transformation-helper and wasm-deob-pipeline-delivery axes, and crates/disrobe-pass-wasm-deob/src/recover.rs calls three of them: Jscrambler-WASM integrity strip (strip_integrity_imports), Wobfuscator op re-inlining (reinline_imported_ops) and Wasmixer defragmentation (defragment). crates/disrobe-pass-wasm-deob/tests/published_wasm_reverser_roster.rs derives the three pipeline-delivered families from that catalog and pins their named membership against this bar, and crates/disrobe-pass-wasm-deob/tests/obfuscators_e2e.rs exercises each family's helper on hand-authored modules. Tigress-via-Emscripten unflattening and the Wasmixer decryption-stub unwrap are library helpers no recovery path calls, so they are excluded from this count; wasm-name-obfuscator is detect+classify only because it has neither a direct helper nor pipeline delivery and hex renames destroy the original names"
         }
       ]
     },

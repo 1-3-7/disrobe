@@ -871,13 +871,13 @@ const KEYS: &[KeySpec] = &[
         },
     },
     KeySpec {
-        name: "wasm_direct_helpers",
+        name: "wasm_pipeline_families",
         formatter: Formatter::Int,
         nouns: &[],
         extract: |r: &Recovery| {
             r.bar(
                 "Obfuscator and bundler family coverage",
-                "WASM direct transformation helper families",
+                "WASM families reversed on the wasm deob path",
             )?
             .count()
         },

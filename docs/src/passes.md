@@ -22,7 +22,7 @@ The standard CLI enables automatic webview recovery: Electron and Tauri use `web
 
 `native.image-classify` handles structurally valid PE, ELF, and Mach-O images when no more specific ecosystem detector wins. Its partial tier includes identity, signatures, recovered symbols, and bounded pseudo-source reports on supported architectures. The [native decompiler](languages/native-decompile.md) provides the direct source-recovery options and architecture limits.
 
-The direct JavaScript catalog currently carries <!-- m:js_bundlers -->11<!-- /m --> bundler families. The WebAssembly catalog carries <!-- m:wasm_direct_helpers -->4<!-- /m --> direct-helper families; three transformations run through `wasm deob`, while Tigress-via-Emscripten and wasm-name-obfuscator are classification-only. These catalog counts describe direct command capability and do not add chain pass IDs.
+The direct JavaScript catalog currently carries <!-- m:js_bundlers -->11<!-- /m --> bundler families. The WebAssembly catalog carries <!-- m:wasm_pipeline_families -->3<!-- /m --> families whose transformation runs through `wasm deob` (Jscrambler-WASM, Wobfuscator and Wasmixer); Tigress-via-Emscripten and wasm-name-obfuscator are classification-only there, and the Tigress unflattener is a library helper no recovery path calls. These catalog counts describe direct command capability and do not add chain pass IDs.
 
 ## Pass selection
 
