@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::collections::VecDeque;
 use std::io::Read as _;
 
+use disrobe_bytes::quota::{DEFAULT_MAX_ENTRIES, ExtractionQuota, QuotaExceeded, QuotaGuard};
 use flate2::read::ZlibDecoder;
 use gimli::{Dwarf, EndianSlice, RunTimeEndian};
 use serde::{Deserialize, Serialize};
@@ -48,6 +49,14 @@ pub struct DwarfAggregate {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DwarfSectionRefusal {
+    pub section: String,
+    pub requested_bytes: u64,
+    pub compressed_bytes: u64,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DwarfReport {
     pub present: bool,
     pub compressed: bool,
@@ -56,6 +65,8 @@ pub struct DwarfReport {
     pub functions: Vec<DwarfFunction>,
     #[serde(default)]
     pub aggregates: Vec<DwarfAggregate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refused: Option<DwarfSectionRefusal>,
 }
 
 impl DwarfReport {
@@ -68,6 +79,14 @@ impl DwarfReport {
             compile_units: 0,
             functions: Vec::new(),
             aggregates: Vec::new(),
+            refused: None,
+        }
+    }
+
+    fn refused(refusal: DwarfSectionRefusal) -> Self {
+        Self {
+            refused: Some(refusal),
+            ..Self::absent()
         }
     }
 }
@@ -86,10 +105,17 @@ const MAX_DWARF_REFERENCE_VISITS: usize = 16;
 const MAX_DWARF_TYPE_DEPTH: u8 = 8;
 const MAX_ARRAY_DIMENSIONS: usize = 1 << 8;
 const MAX_LINE_ROWS: u64 = 1 << 24;
-const MAX_UNCOMPRESSED: usize = 1 << 30;
-const MAX_INFLATE_READ: u64 = MAX_UNCOMPRESSED as u64 + 1;
+const MAX_UNCOMPRESSED: u64 = 1 << 30;
 const INITIAL_INFLATE_CAP: usize = 64 * 1024;
-const MAX_TOTAL_DEBUG_BYTES: usize = 2 << 30;
+const MAX_TOTAL_DEBUG_BYTES: u64 = 2 << 30;
+const DEFLATE_MAX_EXPANSION: u64 = 1032;
+const DEBUG_SECTION_QUOTA: ExtractionQuota = ExtractionQuota {
+    max_entries: DEFAULT_MAX_ENTRIES,
+    max_total_uncompressed: MAX_TOTAL_DEBUG_BYTES,
+    max_per_entry_uncompressed: MAX_UNCOMPRESSED,
+    max_per_entry_ratio: DEFLATE_MAX_EXPANSION,
+    max_aggregate_ratio: DEFLATE_MAX_EXPANSION,
+};
 
 type DwarfAttrResult<T> = core::result::Result<Option<T>, ()>;
 
@@ -170,7 +196,7 @@ impl DwarfBudget {
 pub fn recover_dwarf(image: &NativeImage<'_>) -> DwarfReport {
     let mut sections: BTreeMap<String, Vec<u8>> = BTreeMap::new();
     let mut compressed_seen: bool = false;
-    let mut total_bytes: usize = 0;
+    let mut budget: QuotaGuard = QuotaGuard::new(DEBUG_SECTION_QUOTA);
     for sec in &image.sections {
         let Some(canonical): Option<&'static str> = canonical_debug_name(&sec.name) else {
             continue;
@@ -178,22 +204,15 @@ pub fn recover_dwarf(image: &NativeImage<'_>) -> DwarfReport {
         if sections.contains_key(canonical) {
             continue;
         }
-        let Some((data, was_compressed)): Option<(Vec<u8>, bool)> =
-            (if sec.name.starts_with(".zdebug") || sec.name.starts_with("__zdebug") {
-                decompress_zdebug(sec.data).map(|d: Vec<u8>| (d, true))
-            } else if starts_with_zlib_magic(sec.data) {
-                decompress_zdebug(sec.data).map(|d: Vec<u8>| (d, true))
-            } else {
-                strip_elf_chdr(image.kind, sec.data)
-            })
-        else {
+        let loaded: Option<(Vec<u8>, bool)> =
+            match load_debug_section(image.kind, &sec.name, sec.data, &mut budget) {
+                Ok(loaded) => loaded,
+                Err(refusal) => return DwarfReport::refused(refusal),
+            };
+        let Some((data, was_compressed)): Option<(Vec<u8>, bool)> = loaded else {
             continue;
         };
         compressed_seen |= was_compressed;
-        total_bytes = total_bytes.saturating_add(data.len());
-        if total_bytes > MAX_TOTAL_DEBUG_BYTES {
-            break;
-        }
         sections.insert(canonical.to_owned(), data);
     }
 
@@ -353,6 +372,7 @@ fn walk_dwarf(dwarf: &Dwarf<EndianSlice<'_, RunTimeEndian>>, compressed: bool) -
         compile_units,
         functions,
         aggregates,
+        refused: None,
     }
 }
 
@@ -1099,65 +1119,120 @@ fn starts_with_zlib_magic(data: &[u8]) -> bool {
     data.len() >= 4 && &data[..4] == ZLIB_MAGIC
 }
 
-fn strip_elf_chdr(kind: ImageKind, data: &[u8]) -> Option<(Vec<u8>, bool)> {
-    if kind != ImageKind::Elf || data.len() < 24 {
-        return Some((data.to_vec(), false));
-    }
-    let ch_type: u32 = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-    if ch_type != 1 {
-        return Some((data.to_vec(), false));
-    }
-    let size_bytes: [u8; 8] = match data[8..16].try_into() {
-        Ok(bytes) => bytes,
-        Err(_) => return None,
-    };
-    let uncompressed: usize = match usize::try_from(u64::from_le_bytes(size_bytes)) {
-        Ok(value) if value <= MAX_UNCOMPRESSED => value,
-        _ => return None,
-    };
-    inflate_capped(&data[24..], uncompressed, false, Some(uncompressed))
-        .map(|decoded: Vec<u8>| (decoded, true))
+type SectionLoad<T> = core::result::Result<Option<T>, DwarfSectionRefusal>;
+
+fn admit_section(
+    budget: &mut QuotaGuard,
+    section: &str,
+    requested: u64,
+    compressed: usize,
+) -> core::result::Result<(), DwarfSectionRefusal> {
+    let compressed_bytes: u64 = u64::try_from(compressed).unwrap_or(u64::MAX);
+    budget
+        .admit_entry(section, requested, compressed_bytes)
+        .map_err(|exceeded: QuotaExceeded| DwarfSectionRefusal {
+            section: exceeded.entry,
+            requested_bytes: requested,
+            compressed_bytes,
+            reason: exceeded.reason,
+        })
 }
 
-fn decompress_zdebug(data: &[u8]) -> Option<Vec<u8>> {
-    if !starts_with_zlib_magic(data) {
-        return inflate_raw(data);
-    }
-    let len_bytes: [u8; 8] = data.get(4..12)?.try_into().ok()?;
-    let uncompressed_len: usize = usize::try_from(u64::from_be_bytes(len_bytes)).ok()?;
-    if uncompressed_len > MAX_UNCOMPRESSED {
-        return None;
-    }
-    inflate_capped(&data[12..], uncompressed_len, true, Some(uncompressed_len))
-}
-
-fn inflate_raw(data: &[u8]) -> Option<Vec<u8>> {
-    inflate_capped(data, data.len(), false, None)
-}
-
-fn inflate_capped(
+fn load_debug_section(
+    kind: ImageKind,
+    name: &str,
     data: &[u8],
-    capacity_hint: usize,
-    allow_empty: bool,
-    expected_len: Option<usize>,
-) -> Option<Vec<u8>> {
-    let mut decoder: ZlibDecoder<&[u8]> = ZlibDecoder::new(data);
-    let read_cap: u64 = expected_len.map_or(MAX_INFLATE_READ, |expected: usize| {
-        u64::try_from(expected).map_or(MAX_INFLATE_READ, |value: u64| value.saturating_add(1))
-    });
-    let mut limited: std::io::Take<&mut ZlibDecoder<&[u8]>> = decoder.by_ref().take(read_cap);
-    let capacity: usize = capacity_hint.min(data.len()).min(INITIAL_INFLATE_CAP);
-    let mut out: Vec<u8> = Vec::with_capacity(capacity);
-    limited.read_to_end(&mut out).ok()?;
-    if out.len() > MAX_UNCOMPRESSED || (!allow_empty && out.is_empty()) {
+    budget: &mut QuotaGuard,
+) -> SectionLoad<(Vec<u8>, bool)> {
+    if name.starts_with(".zdebug") || name.starts_with("__zdebug") || starts_with_zlib_magic(data) {
+        return Ok(decompress_zdebug(name, data, budget)?.map(|d: Vec<u8>| (d, true)));
+    }
+    strip_elf_chdr(kind, name, data, budget)
+}
+
+fn strip_elf_chdr(
+    kind: ImageKind,
+    name: &str,
+    data: &[u8],
+    budget: &mut QuotaGuard,
+) -> SectionLoad<(Vec<u8>, bool)> {
+    let chdr_type: Option<u32> = (kind == ImageKind::Elf && data.len() >= 24)
+        .then(|| u32::from_le_bytes([data[0], data[1], data[2], data[3]]));
+    if chdr_type != Some(1) {
+        admit_section(
+            budget,
+            name,
+            u64::try_from(data.len()).unwrap_or(u64::MAX),
+            data.len(),
+        )?;
+        return Ok(Some((data.to_vec(), false)));
+    }
+    let Ok(size_bytes): core::result::Result<[u8; 8], _> = data[8..16].try_into() else {
+        return Ok(None);
+    };
+    let declared: u64 = u64::from_le_bytes(size_bytes);
+    let stream: &[u8] = &data[24..];
+    admit_section(budget, name, declared, stream.len())?;
+    Ok(inflate_declared(stream, declared, false).map(|decoded: Vec<u8>| (decoded, true)))
+}
+
+fn decompress_zdebug(name: &str, data: &[u8], budget: &mut QuotaGuard) -> SectionLoad<Vec<u8>> {
+    if !starts_with_zlib_magic(data) {
+        return inflate_raw(name, data, budget);
+    }
+    let Some(len_bytes): Option<[u8; 8]> = data
+        .get(4..12)
+        .and_then(|bytes: &[u8]| bytes.try_into().ok())
+    else {
+        return Ok(None);
+    };
+    let declared: u64 = u64::from_be_bytes(len_bytes);
+    let stream: &[u8] = &data[12..];
+    admit_section(budget, name, declared, stream.len())?;
+    Ok(inflate_declared(stream, declared, true))
+}
+
+fn inflate_raw(name: &str, data: &[u8], budget: &mut QuotaGuard) -> SectionLoad<Vec<u8>> {
+    let remaining: u64 = DEBUG_SECTION_QUOTA
+        .max_total_uncompressed
+        .saturating_sub(budget.report().total_uncompressed_bytes);
+    let expansion_ceiling: u64 = u64::try_from(data.len())
+        .unwrap_or(u64::MAX)
+        .saturating_mul(DEFLATE_MAX_EXPANSION);
+    let ceiling: u64 = remaining.min(MAX_UNCOMPRESSED).min(expansion_ceiling);
+    let Some(decoded): Option<Vec<u8>> = inflate_up_to(data, ceiling.saturating_add(1)) else {
+        return Ok(None);
+    };
+    if decoded.is_empty() {
+        return Ok(None);
+    }
+    let produced: u64 = u64::try_from(decoded.len()).unwrap_or(u64::MAX);
+    if produced > ceiling {
+        return Err(DwarfSectionRefusal {
+            section: name.to_owned(),
+            requested_bytes: produced,
+            compressed_bytes: u64::try_from(data.len()).unwrap_or(u64::MAX),
+            reason: format!("an undeclared-size stream inflates past its {ceiling}-byte ceiling"),
+        });
+    }
+    admit_section(budget, name, produced, data.len())?;
+    Ok(Some(decoded))
+}
+
+fn inflate_declared(stream: &[u8], declared: u64, allow_empty: bool) -> Option<Vec<u8>> {
+    let decoded: Vec<u8> = inflate_up_to(stream, declared.saturating_add(1))?;
+    let produced: u64 = u64::try_from(decoded.len()).unwrap_or(u64::MAX);
+    if produced != declared || (!allow_empty && decoded.is_empty()) {
         return None;
     }
-    if let Some(expected) = expected_len {
-        let expected: usize = expected;
-        if out.len() != expected {
-            return None;
-        }
-    }
+    Some(decoded)
+}
+
+fn inflate_up_to(data: &[u8], read_cap: u64) -> Option<Vec<u8>> {
+    let mut decoder: ZlibDecoder<&[u8]> = ZlibDecoder::new(data);
+    let mut limited: std::io::Take<&mut ZlibDecoder<&[u8]>> = decoder.by_ref().take(read_cap);
+    let mut out: Vec<u8> = Vec::with_capacity(data.len().min(INITIAL_INFLATE_CAP));
+    limited.read_to_end(&mut out).ok()?;
     Some(out)
 }
 
@@ -1823,12 +1898,12 @@ mod tests {
     fn strip_chdr_passthrough_on_uncompressed() {
         let raw: &[u8] = b"\x00\x01\x02\x03not a chdr header at all really";
         assert_eq!(
-            strip_elf_chdr(ImageKind::Elf, raw),
-            Some((raw.to_vec(), false))
+            strip_elf_chdr(ImageKind::Elf, ".debug_info", raw, &mut fresh_budget()),
+            Ok(Some((raw.to_vec(), false)))
         );
         assert_eq!(
-            strip_elf_chdr(ImageKind::Pe, raw),
-            Some((raw.to_vec(), false))
+            strip_elf_chdr(ImageKind::Pe, ".debug_info", raw, &mut fresh_budget()),
+            Ok(Some((raw.to_vec(), false)))
         );
     }
 
@@ -1837,7 +1912,9 @@ mod tests {
         let mut raw: Vec<u8> = Vec::from(ZLIB_MAGIC.as_slice());
         raw.extend_from_slice(&3u64.to_be_bytes());
         raw.extend_from_slice(&zlib(b"abc"));
-        let out: Vec<u8> = decompress_zdebug(&raw).expect("valid zdebug stream must inflate");
+        let out: Vec<u8> = decompress_zdebug(".zdebug_info", &raw, &mut fresh_budget())
+            .expect("a three-byte declaration is within budget")
+            .expect("valid zdebug stream must inflate");
         assert_eq!(out, b"abc");
         assert!(
             out.capacity() < 1024 * 1024,
@@ -1851,7 +1928,10 @@ mod tests {
         let mut raw: Vec<u8> = Vec::from(ZLIB_MAGIC.as_slice());
         raw.extend_from_slice(&4u64.to_be_bytes());
         raw.extend_from_slice(&zlib(b"abc"));
-        assert!(decompress_zdebug(&raw).is_none());
+        assert_eq!(
+            decompress_zdebug(".zdebug_info", &raw, &mut fresh_budget()),
+            Ok(None)
+        );
     }
 
     #[test]
@@ -1861,7 +1941,9 @@ mod tests {
         raw[8..16].copy_from_slice(&3u64.to_le_bytes());
         raw.extend_from_slice(&zlib(b"abc"));
         let (out, compressed): (Vec<u8>, bool) =
-            strip_elf_chdr(ImageKind::Elf, &raw).expect("valid chdr stream must inflate");
+            strip_elf_chdr(ImageKind::Elf, ".debug_info", &raw, &mut fresh_budget())
+                .expect("a three-byte declaration is within budget")
+                .expect("valid chdr stream must inflate");
         assert_eq!(out, b"abc");
         assert!(compressed);
         assert!(
@@ -1877,6 +1959,86 @@ mod tests {
         raw[0..4].copy_from_slice(&1u32.to_le_bytes());
         raw[8..16].copy_from_slice(&4u64.to_le_bytes());
         raw.extend_from_slice(&zlib(b"abc"));
-        assert!(strip_elf_chdr(ImageKind::Elf, &raw).is_none());
+        assert_eq!(
+            strip_elf_chdr(ImageKind::Elf, ".debug_info", &raw, &mut fresh_budget()),
+            Ok(None)
+        );
+    }
+
+    fn fresh_budget() -> QuotaGuard {
+        QuotaGuard::new(DEBUG_SECTION_QUOTA)
+    }
+
+    fn image_with_sections<'a>(sections: &[(&str, &'a [u8])]) -> NativeImage<'a> {
+        NativeImage {
+            kind: ImageKind::Elf,
+            relocatable: false,
+            arch: crate::image::CodeArch::X86_64,
+            ptr_size: 8,
+            entry: 0,
+            raw: &[],
+            sections: sections
+                .iter()
+                .map(|(name, data): &(&str, &'a [u8])| crate::image::Section {
+                    name: (*name).to_owned(),
+                    address: 0,
+                    kind: object::SectionKind::Debug,
+                    data,
+                })
+                .collect(),
+            symbols: Vec::new(),
+            func_symbols: Vec::new(),
+        }
+    }
+
+    fn zeros_zlib(len: usize) -> Vec<u8> {
+        let mut encoder: flate2::write::ZlibEncoder<Vec<u8>> =
+            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+        let block: [u8; 4096] = [0u8; 4096];
+        let mut left: usize = len;
+        while left > 0 {
+            let step: usize = left.min(block.len());
+            encoder.write_all(&block[..step]).expect("zeros encode");
+            left -= step;
+        }
+        encoder.finish().expect("zlib stream must finish")
+    }
+
+    #[test]
+    fn a_declared_size_beyond_the_deflate_ratio_is_refused_before_inflating() {
+        const DECLARED: u64 = 1 << 30;
+        let mut raw: Vec<u8> = Vec::from(ZLIB_MAGIC.as_slice());
+        raw.extend_from_slice(&DECLARED.to_be_bytes());
+        raw.extend_from_slice(&zeros_zlib(8 * 1024 * 1024));
+        let stream_len: u64 = u64::try_from(raw.len() - 12).unwrap();
+        let image: NativeImage<'_> = image_with_sections(&[(".zdebug_info", &raw)]);
+        let report: DwarfReport = recover_dwarf(&image);
+        assert!(!report.present);
+        let refusal: DwarfSectionRefusal = report
+            .refused
+            .expect("a gigabyte declared from a few kilobytes must be refused");
+        assert_eq!(refusal.section, ".zdebug_info");
+        assert_eq!(refusal.requested_bytes, DECLARED);
+        assert_eq!(refusal.compressed_bytes, stream_len);
+        assert!(refusal.reason.contains("ratio"), "{}", refusal.reason);
+    }
+
+    #[test]
+    fn debug_sections_share_one_budget_checked_before_each_inflation() {
+        let mut budget: QuotaGuard = fresh_budget();
+        let per_section: u64 = MAX_UNCOMPRESSED;
+        let compressed: usize = usize::try_from(per_section / DEFLATE_MAX_EXPANSION).unwrap();
+        admit_section(&mut budget, ".debug_info", per_section, compressed)
+            .expect("the first gigabyte fits the total");
+        admit_section(&mut budget, ".debug_str", per_section, compressed)
+            .expect("the second gigabyte reaches the total exactly");
+        let refusal: DwarfSectionRefusal =
+            admit_section(&mut budget, ".debug_line", 1, 1).expect_err("the total is spent");
+        assert_eq!(refusal.section, ".debug_line");
+        assert_eq!(refusal.requested_bytes, 1);
+        assert_eq!(
+            budget.report().total_uncompressed_bytes,
+            MAX_TOTAL_DEBUG_BYTES
+        );
     }
 }

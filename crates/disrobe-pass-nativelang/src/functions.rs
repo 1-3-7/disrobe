@@ -651,6 +651,7 @@ mod tests {
                 params: vec!["n".to_owned()],
             }],
             aggregates: Vec::new(),
+            refused: None,
         };
         let rec: FunctionRecovery = recover_functions(&image, NativeLang::Zig, &dwarf);
         assert_eq!(rec.from_symbol_table, 1);
@@ -687,6 +688,7 @@ mod tests {
                 params: Vec::new(),
             }],
             aggregates: Vec::new(),
+            refused: None,
         };
         let rec: FunctionRecovery = recover_functions(&image, NativeLang::Zig, &dwarf);
         assert_eq!(rec.from_dwarf, 1);
@@ -715,6 +717,7 @@ mod tests {
                 params: Vec::new(),
             }],
             aggregates: Vec::new(),
+            refused: None,
         };
         let rec: FunctionRecovery = recover_functions(&image, NativeLang::Zig, &dwarf);
         assert_eq!(rec.from_dwarf, 1);
@@ -773,6 +776,7 @@ mod tests {
                 },
             ],
             aggregates: Vec::new(),
+            refused: None,
         };
         let rec: FunctionRecovery = recover_functions(&image, NativeLang::Zig, &dwarf);
         assert_eq!(rec.from_symbol_table, 2);

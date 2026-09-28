@@ -33,7 +33,8 @@ pub use demangle::{DemangledSymbol, demangle_crystal, demangle_d, demangle_nim, 
 pub use detect::{LangFingerprint, NativeLang, fingerprint, marker_hits, runtime_markers};
 pub use disasm::{DisasmInstruction, DisasmListing, FunctionListing, disassemble_functions};
 pub use dwarf::{
-    AggregateKind, DwarfAggregate, DwarfFunction, DwarfMember, DwarfReport, recover_dwarf,
+    AggregateKind, DwarfAggregate, DwarfFunction, DwarfMember, DwarfReport, DwarfSectionRefusal,
+    recover_dwarf,
 };
 pub use dwarf_types::{
     ReconstructedMember, ReconstructedTypeReport, SourceGrade, TypeReport, recover_types,
