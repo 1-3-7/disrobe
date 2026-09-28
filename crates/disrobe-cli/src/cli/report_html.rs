@@ -1043,6 +1043,8 @@ mod tests {
                 schema: disrobe_capabilities::CAPABILITIES_SCHEMA,
                 uri: Some("app.pyc".to_owned()),
                 byte_len: 128,
+                available: true,
+                functions_analyzed: 1,
                 matched_rules: 1,
                 attack: vec!["T1059".to_owned()],
                 mbc: vec!["B0001".to_owned()],

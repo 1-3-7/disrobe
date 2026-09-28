@@ -38,6 +38,7 @@ const PE_HEADER_SCAN_CAP: usize = 1 << 20;
 const MAX_FILE_STRING_SCAN_BYTES: usize = 16 * 1024 * 1024;
 const MAX_FILE_STRING_FEATURES: usize = 4096;
 const MAX_FILE_STRING_FEATURE_BYTES: usize = 4096;
+const SECURITY_COOKIE_BYTES_DELTA: u64 = 0x40;
 
 #[derive(Debug, Clone, Default)]
 struct GlobalFeatures {
@@ -49,6 +50,15 @@ struct GlobalFeatures {
 #[derive(Debug, Clone, Default)]
 struct LayoutInfo {
     sections: Vec<SectionInfo>,
+    x86_mnemonics: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct XorSite {
+    function_entry: u64,
+    block_start: u64,
+    block_end: u64,
+    block_returns: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -91,6 +101,9 @@ pub fn extract(module: &Module, bytes: &[u8], imports: &ImportMap) -> ScopedFeat
         sections: native
             .as_ref()
             .map_or_else(Vec::new, |value: &NativeFile| value.sections.clone()),
+        x86_mnemonics: native
+            .as_ref()
+            .is_none_or(|value: &NativeFile| matches!(value.arch, Arch::X86 | Arch::X86_64)),
     };
 
     let mut file: FeatureSet = FeatureSet::new();
@@ -207,7 +220,16 @@ fn extract_function(
         .basic_blocks()
         .iter()
         .map(|b: &BasicBlock| {
-            extract_block(module, b, imports, global, layout, &mut features, file)
+            extract_block(
+                module,
+                function.address,
+                b,
+                imports,
+                global,
+                layout,
+                &mut features,
+                file,
+            )
         })
         .collect();
 
@@ -239,6 +261,7 @@ fn extract_function(
 #[allow(clippy::too_many_arguments)]
 fn extract_block(
     module: &Module,
+    function_entry: u64,
     block: &BasicBlock,
     imports: &ImportMap,
     global: &GlobalFeatures,
@@ -249,11 +272,20 @@ fn extract_block(
     let mut features: FeatureSet = FeatureSet::new();
     push_globals(&mut features, global, block.start);
     let mut instructions: Vec<InstructionFeatures> = Vec::with_capacity(block.instructions.len());
+    let xor_site: XorSite = XorSite {
+        function_entry,
+        block_start: block.start,
+        block_end: block.end,
+        block_returns: block
+            .instructions
+            .last()
+            .is_some_and(|last: &InsnView| last.class == InsnClass::Return),
+    };
 
     for insn in &block.instructions {
         let mut insn_set: FeatureSet = FeatureSet::new();
         push_globals(&mut insn_set, global, insn.offset);
-        for hit in instruction_features(module, insn, imports, layout) {
+        for hit in instruction_features(module, insn, imports, layout, xor_site) {
             insn_set.push(hit.clone());
             features.push(hit.clone());
             function.push(hit.clone());
@@ -268,11 +300,11 @@ fn extract_block(
     if let Some((address, value)) = stack_string_value(block) {
         push_block_string(&mut features, function, file, &value, address);
     }
-    if let Some(back_edge) = loop_back_edge(block) {
+    if is_tight_loop(block) {
         let value: FeatureValue = FeatureValue::Characteristic(Characteristic::TightLoop);
-        features.push(FeatureHit::new(value.clone(), back_edge));
-        function.push(FeatureHit::new(value.clone(), back_edge));
-        file.push(FeatureHit::new(value, back_edge));
+        features.push(FeatureHit::new(value.clone(), block.start));
+        function.push(FeatureHit::new(value.clone(), block.start));
+        file.push(FeatureHit::new(value, block.start));
     }
 
     BlockFeatures {
@@ -310,21 +342,10 @@ fn push_block_string(
     file.push(FeatureHit::new(string_value, address));
 }
 
-fn loop_back_edge(block: &BasicBlock) -> Option<u64> {
-    block
-        .instructions
-        .iter()
-        .filter(|i: &&InsnView| {
-            matches!(
-                i.class,
-                InsnClass::ConditionalJump | InsnClass::UnconditionalJump
-            )
-        })
-        .find_map(|i: &InsnView| {
-            i.branch_target
-                .filter(|t: &u64| *t <= i.offset)
-                .map(|_| i.offset)
-        })
+fn is_tight_loop(block: &BasicBlock) -> bool {
+    block.instructions.last().is_some_and(|last: &InsnView| {
+        last.class == InsnClass::ConditionalJump && last.branch_target == Some(block.start)
+    })
 }
 
 fn function_has_back_edge(function: &Function) -> bool {
@@ -362,12 +383,15 @@ fn instruction_features(
     insn: &InsnView,
     imports: &ImportMap,
     layout: &LayoutInfo,
+    xor_site: XorSite,
 ) -> Vec<FeatureHit> {
     let mut hits: Vec<FeatureHit> = Vec::new();
-    hits.push(FeatureHit::new(
-        FeatureValue::Mnemonic(insn.mnemonic.clone()),
-        insn.offset,
-    ));
+    if layout.x86_mnemonics {
+        hits.push(FeatureHit::new(
+            FeatureValue::Mnemonic(insn.mnemonic.clone()),
+            insn.offset,
+        ));
+    }
     hits.push(FeatureHit::new(
         FeatureValue::Offset(insn.offset),
         insn.offset,
@@ -382,7 +406,7 @@ fn instruction_features(
             insn.offset,
         ));
     }
-    if is_non_zeroing_xor(insn) {
+    if layout.x86_mnemonics && is_non_zeroing_xor(insn) && !is_security_cookie(insn, xor_site) {
         hits.push(FeatureHit::new(
             FeatureValue::Characteristic(Characteristic::NonZeroingXor),
             insn.offset,
@@ -518,7 +542,7 @@ fn resolve_call_target(module: &Module, insn: &InsnView, imports: &ImportMap) ->
 
 fn is_non_zeroing_xor(insn: &InsnView) -> bool {
     let m: &str = insn.mnemonic.as_str();
-    if !matches!(m, "xor" | "pxor" | "xorps" | "xorpd" | "vpxor") {
+    if !matches!(m, "xor" | "pxor" | "xorps" | "xorpd") {
         return false;
     }
     if insn.operands.len() < 2 {
@@ -527,6 +551,27 @@ fn is_non_zeroing_xor(insn: &InsnView) -> bool {
     let lhs: String = insn.operands[0].trim().to_ascii_lowercase();
     let rhs: String = insn.operands[1].trim().to_ascii_lowercase();
     lhs != rhs
+}
+
+fn is_security_cookie(insn: &InsnView, site: XorSite) -> bool {
+    let Some(source): Option<&String> = insn.operands.get(1) else {
+        return false;
+    };
+    let source: String = source.trim().to_ascii_lowercase();
+    let is_register: bool = source
+        .bytes()
+        .next()
+        .is_some_and(|first: u8| first.is_ascii_alphabetic())
+        && source.bytes().all(|byte: u8| byte.is_ascii_alphanumeric());
+    if is_register && !matches!(source.as_str(), "esp" | "ebp" | "rsp" | "rbp") {
+        return false;
+    }
+    if site.block_start == site.function_entry
+        && insn.offset < site.block_start.saturating_add(SECURITY_COOKIE_BYTES_DELTA)
+    {
+        return true;
+    }
+    site.block_returns && insn.offset > site.block_end.saturating_sub(SECURITY_COOKIE_BYTES_DELTA)
 }
 
 fn stack_string_value(block: &BasicBlock) -> Option<(u64, String)> {
@@ -742,6 +787,154 @@ mod tests {
             branch_target,
             ..DisasmInstruction::default()
         }
+    }
+
+    fn function_features(instructions: Vec<DisasmInstruction>, bytes: &[u8]) -> FunctionFeatures {
+        let payload: DisasmPayload = DisasmPayload {
+            source_hash: [0u8; 32],
+            instructions,
+            symbol_table: vec![DisasmSymbol {
+                address: 0x0,
+                name: "f".to_owned(),
+                kind: DisasmSymbolKind::Function,
+            }],
+        };
+        let module: Module = Module::from_disasm(&payload);
+        extract(&module, bytes, &ImportMap::default())
+            .functions
+            .into_iter()
+            .next()
+            .expect("one function")
+    }
+
+    #[test]
+    fn a_tight_loop_is_a_block_that_branches_to_its_own_start() {
+        let tight: FunctionFeatures = function_features(
+            vec![
+                insn(0x0, "mov", &["ecx", "0x10"], InsnFlow::Sequential, None),
+                insn(0x5, "dec", &["ecx"], InsnFlow::Sequential, None),
+                insn(0x6, "jnz", &["0x5"], InsnFlow::ConditionalBranch, Some(0x5)),
+                insn(0x8, "ret", &[], InsnFlow::Return, None),
+            ],
+            b"",
+        );
+        assert_eq!(
+            tight
+                .features
+                .matches(&Feature::Characteristic(Characteristic::TightLoop)),
+            vec![0x5]
+        );
+        let two_block_loop: FunctionFeatures = function_features(
+            vec![
+                insn(0x0, "dec", &["ecx"], InsnFlow::Sequential, None),
+                insn(0x1, "jz", &["0x8"], InsnFlow::ConditionalBranch, Some(0x8)),
+                insn(0x3, "call", &["0x40"], InsnFlow::Call, Some(0x40)),
+                insn(
+                    0x6,
+                    "jmp",
+                    &["0x0"],
+                    InsnFlow::UnconditionalBranch,
+                    Some(0x0),
+                ),
+                insn(0x8, "ret", &[], InsnFlow::Return, None),
+            ],
+            b"",
+        );
+        assert!(
+            two_block_loop
+                .features
+                .matches(&Feature::Characteristic(Characteristic::TightLoop))
+                .is_empty(),
+            "a backward jump from another block is a loop, not a tight loop"
+        );
+    }
+
+    #[test]
+    fn security_cookie_xors_are_not_non_zeroing_xor() {
+        let mut body: Vec<DisasmInstruction> = vec![
+            insn(
+                0x0,
+                "mov",
+                &["eax", "dword ptr [0x403000]"],
+                InsnFlow::Sequential,
+                None,
+            ),
+            insn(0x5, "xor", &["eax", "ebp"], InsnFlow::Sequential, None),
+            insn(
+                0x7,
+                "mov",
+                &["dword ptr [ebp - 4]", "eax"],
+                InsnFlow::Sequential,
+                None,
+            ),
+        ];
+        let mut offset: u64 = 0xA;
+        while offset < 0x80 {
+            body.push(insn(offset, "nop", &[], InsnFlow::Sequential, None));
+            offset += 1;
+        }
+        body.push(insn(
+            0x80,
+            "xor",
+            &["ecx", "ebx"],
+            InsnFlow::Sequential,
+            None,
+        ));
+        body.push(insn(
+            0x82,
+            "mov",
+            &["ecx", "dword ptr [ebp - 4]"],
+            InsnFlow::Sequential,
+            None,
+        ));
+        body.push(insn(
+            0x85,
+            "xor",
+            &["ecx", "ebp"],
+            InsnFlow::Sequential,
+            None,
+        ));
+        body.push(insn(0x87, "ret", &[], InsnFlow::Return, None));
+        let features: FunctionFeatures = function_features(body, b"");
+        assert_eq!(
+            features
+                .features
+                .matches(&Feature::Characteristic(Characteristic::NonZeroingXor)),
+            vec![0x80],
+            "only the xor with a general register outside the prologue and epilogue counts"
+        );
+    }
+
+    #[test]
+    fn non_x86_images_emit_no_x86_mnemonic_features() {
+        let mut elf: Vec<u8> = vec![0_u8; 64];
+        elf[..4].copy_from_slice(b"\x7FELF");
+        elf[4] = 2;
+        elf[5] = 1;
+        elf[6] = 1;
+        elf[0x10..0x12].copy_from_slice(&2_u16.to_le_bytes());
+        elf[0x12..0x14].copy_from_slice(&183_u16.to_le_bytes());
+        elf[0x14..0x18].copy_from_slice(&1_u32.to_le_bytes());
+        elf[0x34..0x36].copy_from_slice(&64_u16.to_le_bytes());
+        assert_eq!(
+            parse_native(&elf)
+                .map(|native: NativeFile| native.arch)
+                .ok(),
+            Some(Arch::Aarch64)
+        );
+        let arm: FunctionFeatures = function_features(
+            vec![
+                insn(0x0, "str", &["x0", "[sp, #8]"], InsnFlow::Sequential, None),
+                insn(0x4, "ret", &[], InsnFlow::Return, None),
+            ],
+            &elf,
+        );
+        assert!(
+            arm.features
+                .matches(&Feature::Mnemonic("str".to_owned()))
+                .is_empty(),
+            "an AArch64 store is not the x86 red-pill str"
+        );
     }
 
     #[test]
@@ -1032,6 +1225,7 @@ mod tests {
                 address: u64::MAX - 8,
                 size: 16,
             }],
+            x86_mnemonics: true,
         };
         assert_eq!(layout.section_index_at(u64::MAX - 1), None);
     }

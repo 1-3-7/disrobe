@@ -42,6 +42,8 @@ pub struct CapabilitiesReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub uri: Option<String>,
     pub byte_len: usize,
+    pub available: bool,
+    pub functions_analyzed: usize,
     pub matched_rules: usize,
     pub attack: Vec<String>,
     pub mbc: Vec<String>,
@@ -68,11 +70,12 @@ pub fn analyze_module(module: &Module, bytes: &[u8], uri: Option<&str>) -> Capab
     let scoped: ScopedFeatures = extract(module, bytes, &imports);
     let rules: Vec<Rule> = builtin_rules();
     let capabilities: Vec<CapabilityMatch> = evaluate(&scoped, &rules);
-    finalize(capabilities, bytes.len(), uri)
+    finalize(capabilities, scoped.functions.len(), bytes.len(), uri)
 }
 
 fn finalize(
     capabilities: Vec<CapabilityMatch>,
+    functions_analyzed: usize,
     byte_len: usize,
     uri: Option<&str>,
 ) -> CapabilitiesReport {
@@ -94,6 +97,8 @@ fn finalize(
         schema: CAPABILITIES_SCHEMA,
         uri: uri.map(str::to_owned),
         byte_len,
+        available: functions_analyzed > 0,
+        functions_analyzed,
         matched_rules: matched.len(),
         attack,
         mbc,
@@ -185,6 +190,21 @@ mod tests {
         let report: CapabilitiesReport = analyze_module(&module, b"the quick brown fox", None);
         assert!(report.capabilities.is_empty(), "{report:?}");
         assert_eq!(report.matched_rules, 0);
+        assert!(report.available);
+        assert_eq!(report.functions_analyzed, 1);
+    }
+
+    #[test]
+    fn a_module_without_functions_reports_capabilities_unavailable() {
+        let payload: DisasmPayload = DisasmPayload {
+            source_hash: [0u8; 32],
+            instructions: Vec::new(),
+            symbol_table: Vec::new(),
+        };
+        let module: Module = Module::from_disasm(&payload);
+        let report: CapabilitiesReport = analyze_module(&module, b"", None);
+        assert!(!report.available, "{report:?}");
+        assert_eq!(report.functions_analyzed, 0);
     }
 
     #[test]

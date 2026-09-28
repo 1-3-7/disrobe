@@ -1,5 +1,5 @@
 use crate::feature::{Characteristic, Feature, Scope};
-use crate::rule::{CountBound, Rule, RuleExpr};
+use crate::rule::{Rule, RuleExpr};
 
 fn api(name: &str) -> RuleExpr {
     RuleExpr::feature(Feature::Api(name.to_owned()))
@@ -475,21 +475,6 @@ pub fn builtin_rules() -> Vec<Rule> {
                 section(".aspack"),
                 section(".petite"),
                 section(".MPRESS1"),
-            ]),
-        },
-        Rule {
-            name: "decode data in a loop using xor",
-            namespace: "data-manipulation/encoding/xor/loop",
-            scope: Scope::Function,
-            attack: &["T1027"],
-            mbc: &["C0026.002"],
-            description: "a function-level decode loop carrying repeated non-zeroing xor, the bulk string / payload decoder",
-            expr: RuleExpr::and(vec![
-                characteristic(Characteristic::Loop),
-                RuleExpr::count(
-                    Feature::Characteristic(Characteristic::NonZeroingXor),
-                    CountBound::AtLeast(1),
-                ),
             ]),
         },
         Rule {
