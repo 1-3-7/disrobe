@@ -15,6 +15,7 @@ const S_IFLNK: u16 = 0o120_000;
 const MAX_EXT4_FILES: usize = 500_000;
 const MAX_EXT4_DEPTH: usize = 256;
 const MAX_EXTENT_DEPTH: usize = 8;
+const EXT_INIT_MAX_LEN: u16 = 32_768;
 
 #[derive(Debug, Clone, Copy)]
 struct Ext4Geometry {
@@ -242,7 +243,7 @@ fn read_inode_data(
     }
     let mut out: Vec<u8> = Vec::with_capacity(inode.size.min(64 * 1024 * 1024) as usize);
     walk_extent_node(bytes, geo, &inode.i_block, &mut out, 0, max_total)?;
-    out.truncate(inode.size as usize);
+    out.resize(inode.size as usize, 0);
     Ok(out)
 }
 
@@ -275,11 +276,21 @@ fn walk_extent_node(
         if tree_depth == 0 {
             let logical_block: u32 = le_u32(node, base);
             let len_raw: u16 = le_u16(node, base + 4);
-            let len: u64 = u64::from(len_raw & 0x7FFF);
+            let (len, unwritten): (u64, bool) = if len_raw > EXT_INIT_MAX_LEN {
+                (u64::from(len_raw - EXT_INIT_MAX_LEN), true)
+            } else {
+                (u64::from(len_raw), false)
+            };
             let start_hi: u64 = u64::from(le_u16(node, base + 6));
             let start_lo: u64 = u64::from(le_u32(node, base + 8));
             let phys: u64 = (start_hi << 32) | start_lo;
-            write_extent_blocks(bytes, geo, logical_block, phys, len, out, max_total)?;
+            let extent: Extent = Extent {
+                logical_block,
+                phys_block: phys,
+                len,
+                unwritten,
+            };
+            write_extent_blocks(bytes, geo, extent, out, max_total)?;
         } else {
             let leaf_lo: u64 = u64::from(le_u32(node, base + 4));
             let leaf_hi: u64 = u64::from(le_u16(node, base + 8));
@@ -303,15 +314,27 @@ fn walk_extent_node(
     Ok(())
 }
 
-fn write_extent_blocks(
-    bytes: &[u8],
-    geo: &Ext4Geometry,
+#[derive(Debug, Clone, Copy)]
+struct Extent {
     logical_block: u32,
     phys_block: u64,
     len: u64,
+    unwritten: bool,
+}
+
+fn write_extent_blocks(
+    bytes: &[u8],
+    geo: &Ext4Geometry,
+    extent: Extent,
     out: &mut Vec<u8>,
     max_total: u64,
 ) -> Result<()> {
+    let Extent {
+        logical_block,
+        phys_block,
+        len,
+        unwritten,
+    } = extent;
     let want_offset: u64 = u64::from(logical_block)
         .checked_mul(geo.block_size)
         .ok_or_else(|| Error::Ext4("extent logical offset overflow".to_owned()))?;
@@ -336,6 +359,10 @@ fn write_extent_blocks(
     .map_err(|_e: std::num::TryFromIntError| Error::Ext4("extent len overflow".to_owned()))?;
     if out.len().saturating_add(byte_len) as u64 > max_total {
         return Err(Error::Ext4("ext4 extent data exceeds total cap".to_owned()));
+    }
+    if unwritten {
+        out.resize(out.len() + byte_len, 0);
+        return Ok(());
     }
     let end: usize = start
         .checked_add(byte_len)
@@ -516,6 +543,56 @@ pub(crate) fn build_real_ext4(file_name: &str, file_body: &[u8]) -> Vec<u8> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    fn extent_leaf(entries: &[(u32, u16, u32)]) -> Vec<u8> {
+        let mut node: Vec<u8> = vec![0u8; 12 + entries.len() * 12];
+        node[0..2].copy_from_slice(&EXTENT_MAGIC.to_le_bytes());
+        node[2..4].copy_from_slice(&u16::try_from(entries.len()).expect("few").to_le_bytes());
+        for (i, (logical, len_raw, phys)) in entries.iter().enumerate() {
+            let base: usize = 12 + i * 12;
+            node[base..base + 4].copy_from_slice(&logical.to_le_bytes());
+            node[base + 4..base + 6].copy_from_slice(&len_raw.to_le_bytes());
+            node[base + 8..base + 12].copy_from_slice(&phys.to_le_bytes());
+        }
+        node
+    }
+
+    fn tiny_geometry() -> Ext4Geometry {
+        Ext4Geometry {
+            block_size: 1024,
+            inodes_per_group: 1,
+            inode_size: 256,
+            desc_size: 32,
+            first_data_block: 1,
+        }
+    }
+
+    #[test]
+    fn a_full_length_initialized_extent_is_read_whole() {
+        let blocks: usize = usize::from(EXT_INIT_MAX_LEN);
+        let mut image: Vec<u8> = vec![0u8; (1 + blocks) * 1024];
+        for (i, byte) in image[1024..].iter_mut().enumerate() {
+            *byte = u8::try_from(i % 251).expect("below 251");
+        }
+        let node: Vec<u8> = extent_leaf(&[(0, EXT_INIT_MAX_LEN, 1)]);
+        let mut out: Vec<u8> = Vec::new();
+        walk_extent_node(&image, &tiny_geometry(), &node, &mut out, 0, u64::MAX)
+            .expect("extent walks");
+        assert_eq!(out.len(), blocks * 1024);
+        assert_eq!(out.as_slice(), &image[1024..]);
+    }
+
+    #[test]
+    fn an_unwritten_extent_reads_as_zeros_whatever_its_blocks_hold() {
+        let image: Vec<u8> = vec![0xAB; 4 * 1024];
+        let node: Vec<u8> = extent_leaf(&[(0, 1, 1), (1, EXT_INIT_MAX_LEN + 2, 2)]);
+        let mut out: Vec<u8> = Vec::new();
+        walk_extent_node(&image, &tiny_geometry(), &node, &mut out, 0, u64::MAX)
+            .expect("extent walks");
+        assert_eq!(out.len(), 3 * 1024);
+        assert!(out[..1024].iter().all(|byte: &u8| *byte == 0xAB));
+        assert!(out[1024..].iter().all(|byte: &u8| *byte == 0));
+    }
 
     #[test]
     fn container_detection_returns_ext4() {
