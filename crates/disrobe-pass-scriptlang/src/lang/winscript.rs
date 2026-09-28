@@ -2030,6 +2030,11 @@ mod tests {
         const NODE_SHEBANG: &str = "#!/usr/bin/env node
 console.log(\"echo hello ^& echo world\");
 ";
+        const POWERSHELL_WITH_IMPORT: &str = "Import-Module BitsTransfer
+             $url = 'http://example.invalid/a'
+             $client = New-Object Net.WebClient
+             $client.DownloadFile($url, \"$env:TEMP\\a.exe\")
+";
         for (name, source) in [
             ("C#", CSHARP),
             ("Python", PYTHON_REGEX),
@@ -2043,11 +2048,6 @@ console.log(\"echo hello ^& echo world\");
                 "{name} source must be left to its own detector"
             );
         }
-        const POWERSHELL_WITH_IMPORT: &str = "Import-Module BitsTransfer
-             $url = 'http://example.invalid/a'
-             $client = New-Object Net.WebClient
-             $client.DownloadFile($url, \"$env:TEMP\\a.exe\")
-";
         assert_eq!(
             classify(POWERSHELL_WITH_IMPORT),
             Some(WinScriptLang::PowerShell)
