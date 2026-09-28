@@ -77,7 +77,9 @@ pub fn disassemble_pcode_real(ole_bytes: &[u8]) -> Result<RealPCodeReport> {
     let dir_compressed: Vec<u8> = read_stream(&mut comp, &format!("{storage}/dir"))?;
     let dir_data: Vec<u8> = decompress_ovba(&dir_compressed)?;
     let dir_parse: DirParse = parse_dir(&dir_data, endian);
-    let identifiers: Vec<String> = extract_identifiers(&vba_project, header.version, endian)?;
+    let codepage: Option<u16> = super::extract::project_codepage(&dir_data);
+    let identifiers: Vec<String> =
+        extract_identifiers(&vba_project, header.version, endian, codepage)?;
     let vba_ver: u8 = if header.version >= 0x6B {
         if header.version >= 0x97 { 7 } else { 6 }
     } else {
@@ -91,15 +93,13 @@ pub fn disassemble_pcode_real(ole_bytes: &[u8]) -> Result<RealPCodeReport> {
             Ok(b) => b,
             Err(_) => continue,
         };
-        let module_offset: usize =
-            find_module_text_offset(&dir_data, module_name, endian).unwrap_or(0);
         match disassemble_module(
             &module_bytes,
             &identifiers,
             vba_ver,
             is_64bit,
             module_name,
-            module_offset,
+            codepage,
         ) {
             Ok(m) => modules_out.push(m),
             Err(e) => walls.push(PCodeWallDetail {
@@ -390,36 +390,6 @@ fn parse_dir(dir: &[u8], endian: Endian) -> DirParse {
     DirParse { modules, is_64bit }
 }
 
-fn find_module_text_offset(dir: &[u8], module_name: &str, endian: Endian) -> Option<usize> {
-    let mut current_name: Option<String> = None;
-    let mut offset: usize = 0;
-    while offset + 6 <= dir.len() {
-        let tag: u16 = read_u16(dir, offset, endian);
-        let mut w_length: u32 = read_u16(dir, offset + 2, endian) as u32;
-        if tag == 9 {
-            w_length = 6;
-        } else if tag == 3 {
-            w_length = 2;
-        }
-        offset += 6;
-        let payload_end: usize = offset.saturating_add(w_length as usize);
-        if payload_end > dir.len() {
-            break;
-        }
-        match tag {
-            50 => {
-                current_name = Some(decode_utf16le(&dir[offset..payload_end]));
-            }
-            49 if w_length >= 4 && current_name.as_deref() == Some(module_name) => {
-                return Some(read_u32(dir, offset, endian) as usize);
-            }
-            _ => {}
-        }
-        offset = payload_end;
-    }
-    None
-}
-
 #[derive(Debug, Clone, Copy)]
 enum CodepageCodec {
     Latin1,
@@ -459,7 +429,12 @@ fn read_u32(buf: &[u8], at: usize, endian: Endian) -> u32 {
     }
 }
 
-fn extract_identifiers(vba_project: &[u8], version: u16, endian: Endian) -> Result<Vec<String>> {
+fn extract_identifiers(
+    vba_project: &[u8],
+    version: u16,
+    endian: Endian,
+    codepage: Option<u16>,
+) -> Result<Vec<String>> {
     let mut idents: Vec<String> = Vec::new();
     let unicode_ref: bool =
         (version >= 0x5B && !matches!(version, 0x60 | 0x62 | 0x63)) || version == 0x4E;
@@ -588,7 +563,7 @@ fn extract_identifiers(vba_project: &[u8], version: u16, endian: Endian) -> Resu
                 break;
             }
             let raw: &[u8] = &vba_project[offset..end];
-            idents.push(decode_codepage_latin1(raw));
+            idents.push(super::extract::decode_mbcs(raw, codepage));
             offset = end;
         }
         if !is_kwd {
@@ -599,10 +574,6 @@ fn extract_identifiers(vba_project: &[u8], version: u16, endian: Endian) -> Resu
         }
     }
     Ok(idents)
-}
-
-fn decode_codepage_latin1(bytes: &[u8]) -> String {
-    bytes.iter().map(|b: &u8| *b as char).collect()
 }
 
 fn read_var_word(buf: &[u8], at: usize, endian: Endian) -> (usize, u16) {
@@ -792,9 +763,8 @@ fn disassemble_module(
     vba_ver: u8,
     is_64bit: bool,
     name: &str,
-    text_offset_hint: usize,
+    codepage: Option<u16>,
 ) -> Result<RealModuleDisasm> {
-    let _ = text_offset_hint;
     if module.len() < 0x100 {
         return Err(Error::VbaPcode {
             reason: format!("module {name} too short ({} bytes)", module.len()),
@@ -890,6 +860,7 @@ fn disassemble_module(
             vba_ver,
             is_64bit,
             endian,
+            codepage,
         };
         let (instructions, text): (Vec<PCodeInstruction>, String) =
             walk_pcode_line(&module[line_start..line_end], line_start, &ctx);
@@ -933,6 +904,7 @@ struct LineContext<'a> {
     vba_ver: u8,
     is_64bit: bool,
     endian: Endian,
+    codepage: Option<u16>,
 }
 
 fn walk_pcode_line(
@@ -1606,7 +1578,10 @@ fn disasm_func(dword: u32, op_type: u16, ctx: &LineContext) -> String {
 fn disasm_varg(mnem: &str, w_length: u16, payload: &[u8], ctx: &LineContext) -> String {
     match mnem {
         "LitStr" | "QuoteRem" | "Rem" | "Reparse" => {
-            format!("0x{w_length:04X} \"{}\"", decode_codepage_latin1(payload))
+            format!(
+                "0x{w_length:04X} \"{}\"",
+                super::extract::decode_mbcs(payload, ctx.codepage)
+            )
         }
         "OnGosub" | "OnGoto" => {
             let mut vars: Vec<String> = Vec::new();
@@ -2450,6 +2425,7 @@ mod tests {
             vba_ver,
             is_64bit,
             endian: Endian::Little,
+            codepage: None,
         };
         let (_, text): (Vec<PCodeInstruction>, String) = walk_pcode_line(asm.finish(), 0, &ctx);
         text
@@ -2575,6 +2551,7 @@ mod tests {
             vba_ver: 6,
             is_64bit: false,
             endian: Endian::Little,
+            codepage: None,
         };
         let mut asm: PCodeAsm = PCodeAsm::new();
         asm.opcode(OP_FUNCDEFN).dword(0);
@@ -2618,6 +2595,7 @@ mod tests {
             vba_ver: 7,
             is_64bit: true,
             endian: Endian::Little,
+            codepage: None,
         };
         let mut asm: PCodeAsm = PCodeAsm::new();
         asm.opcode(OP_FUNCDEFN).dword(0);
@@ -2727,6 +2705,7 @@ mod tests {
             vba_ver,
             is_64bit,
             endian: Endian::Little,
+            codepage: None,
         }
     }
 
@@ -2826,6 +2805,7 @@ mod tests {
             vba_ver: 6,
             is_64bit: false,
             endian: Endian::Little,
+            codepage: None,
         };
         let word: u16 = 0x100 << 1;
         assert_eq!(disasm_name(word, "Ld", 3, &ctx).trim_end(), "counter&");

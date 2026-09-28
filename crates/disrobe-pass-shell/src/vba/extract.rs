@@ -270,7 +270,7 @@ fn read_module_refs(
     (parse_module_table(&dir, codepage), codepage)
 }
 
-fn project_codepage(dir: &[u8]) -> Option<u16> {
+pub(super) fn project_codepage(dir: &[u8]) -> Option<u16> {
     let mut cursor: usize = 0;
     for _ in 0..PROJECT_INFORMATION_RECORD_LIMIT {
         let header: &[u8] = dir.get(cursor..cursor.checked_add(6)?)?;
@@ -404,7 +404,7 @@ fn decompress_source_at(
     Ok(decode_mbcs(&bytes, codepage))
 }
 
-fn decode_mbcs(bytes: &[u8], codepage: Option<u16>) -> String {
+pub(super) fn decode_mbcs(bytes: &[u8], codepage: Option<u16>) -> String {
     if let Some(encoding) = codepage.and_then(codepage_encoding) {
         return encoding.decode_without_bom_handling(bytes).0.into_owned();
     }
