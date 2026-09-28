@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use disrobe_ir::payload::DisasmInstruction;
 use iced_x86::{
-    Code, Decoder, DecoderOptions, FlowControl, Formatter as _, Instruction, Mnemonic,
-    NasmFormatter, OpKind, Register,
+    Code, Decoder, DecoderError, DecoderOptions, FlowControl, Formatter as _, Instruction,
+    Mnemonic, NasmFormatter, OpKind, Register,
 };
 use serde::{Deserialize, Serialize};
 
@@ -129,15 +129,30 @@ pub struct DesyncReport {
     pub recovered: Vec<RecoveredInsn>,
     pub unresolved: Vec<UnresolvedTarget>,
     pub junk_ranges: Vec<ByteRange>,
+    pub unreached_ranges: Vec<ByteRange>,
     pub overlap_addresses: Vec<u64>,
     pub linear_sweep_count: usize,
     pub recursive_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DesyncEvidence {
+    pub junk_ranges: Vec<ByteRange>,
+    pub overlap_addresses: Vec<u64>,
 }
 
 impl DesyncReport {
     #[must_use]
     pub fn desync_detected(&self) -> bool {
         !self.junk_ranges.is_empty() || !self.overlap_addresses.is_empty()
+    }
+
+    #[must_use]
+    pub fn evidence(&self) -> Option<DesyncEvidence> {
+        self.desync_detected().then(|| DesyncEvidence {
+            junk_ranges: self.junk_ranges.clone(),
+            overlap_addresses: self.overlap_addresses.clone(),
+        })
     }
 
     #[must_use]
@@ -173,6 +188,13 @@ impl DesyncReport {
             let _ = writeln!(
                 out,
                 "; junk bytes elided: 0x{:x}..0x{:x}",
+                range.start, range.end
+            );
+        }
+        for range in &self.unreached_ranges {
+            let _ = writeln!(
+                out,
+                "; not reached from the entry: 0x{:x}..0x{:x}",
                 range.start, range.end
             );
         }
@@ -257,7 +279,8 @@ pub fn resolve_with_noreturn_status(
         .collect::<Vec<RecoveredInsn>>();
     recovered.sort_by_key(|insn: &RecoveredInsn| insn.address);
 
-    let junk_ranges: Vec<ByteRange> = uncovered_ranges(base, bytes.len(), &recursive.covered);
+    let (junk_ranges, unreached_ranges): (Vec<ByteRange>, Vec<ByteRange>) =
+        split_uncovered(bitness, base, bytes, &recursive.covered);
     let mut overlap_addresses: Vec<u64> = recursive.overlaps.into_iter().collect();
     overlap_addresses.sort_unstable();
     let mut unresolved: Vec<UnresolvedTarget> = recursive.unresolved;
@@ -269,6 +292,7 @@ pub fn resolve_with_noreturn_status(
             recovered,
             unresolved,
             junk_ranges,
+            unreached_ranges,
             overlap_addresses,
             linear_sweep_count: linear,
         },
@@ -487,6 +511,70 @@ fn linear_sweep_count(bitness: Bitness, base: u64, bytes: &[u8]) -> usize {
         count += 1;
     }
     count
+}
+
+fn split_uncovered(
+    bitness: Bitness,
+    base: u64,
+    bytes: &[u8],
+    covered: &BTreeSet<u64>,
+) -> (Vec<ByteRange>, Vec<ByteRange>) {
+    let mut junk: Vec<ByteRange> = Vec::new();
+    let mut unreached: Vec<ByteRange> = Vec::new();
+    for run in uncovered_ranges(base, bytes.len(), covered) {
+        match linear_decode_crossing(bitness, base, bytes, run) {
+            Some(crossing) => {
+                if crossing > run.start {
+                    unreached.push(ByteRange {
+                        start: run.start,
+                        end: crossing,
+                    });
+                }
+                junk.push(ByteRange {
+                    start: crossing,
+                    end: run.end,
+                });
+            }
+            None => unreached.push(run),
+        }
+    }
+    (junk, unreached)
+}
+
+fn linear_decode_crossing(
+    bitness: Bitness,
+    base: u64,
+    bytes: &[u8],
+    run: ByteRange,
+) -> Option<u64> {
+    let end_addr: u64 = base.saturating_add(bytes.len() as u64);
+    if run.end >= end_addr {
+        return None;
+    }
+    let start_offset: usize = usize::try_from(run.start.checked_sub(base)?).ok()?;
+    let window: &[u8] = bytes.get(start_offset..)?;
+    let mut decoder: Decoder<'_> =
+        Decoder::with_ip(bitness.value(), window, run.start, DecoderOptions::NONE);
+    let mut insn: Instruction = Instruction::default();
+    while decoder.ip() < run.end {
+        let address: u64 = decoder.ip();
+        decoder.decode_out(&mut insn);
+        if insn.is_invalid() {
+            if decoder.last_error() == DecoderError::NoMoreBytes {
+                return Some(address);
+            }
+            let resume: u64 = address.saturating_add(1);
+            decoder.set_ip(resume);
+            decoder
+                .set_position(usize::try_from(resume - run.start).ok()?)
+                .ok()?;
+            continue;
+        }
+        if decoder.ip() > run.end {
+            return Some(address);
+        }
+    }
+    None
 }
 
 fn uncovered_ranges(base: u64, len: usize, covered: &BTreeSet<u64>) -> Vec<ByteRange> {
@@ -2691,10 +2779,16 @@ mod tests {
         }
         assert!(
             report
-                .junk_ranges
+                .unreached_ranges
                 .iter()
                 .any(|r: &ByteRange| r.start == 0x1005 && r.end == 0x1009),
-            "the dead fallthrough region must be flagged junk: {:?}",
+            "the dead fallthrough region must be reported unreached: {:?}",
+            report.unreached_ranges
+        );
+        assert!(
+            report.junk_ranges.is_empty(),
+            "the dead nops decode to the callee's first byte in a linear sweep too, so no two \
+             decodes disagree on them: {:?}",
             report.junk_ranges
         );
     }

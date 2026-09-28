@@ -11,7 +11,9 @@ use crate::deobf::{
     defeat_bogus_control_flow, defeat_cff, fold_constant_branch, infer_function_abi,
     prove_dead_paths, resolve_jump_table, summarize_function, undo_substitution,
 };
-use crate::desync::{Bitness as DesyncBitness, cleaned_listing as desync_cleaned_listing};
+use crate::desync::{
+    Bitness as DesyncBitness, DesyncEvidence, DesyncReport, resolve as resolve_desync,
+};
 use crate::format::{DetectedFormat, NativeFormat, detect as detect_format};
 use crate::obfuscators::{ObfuscatorHit, detect as detect_obfuscators};
 use crate::stack_string::{ReassembledStackString, reassemble_stack_strings};
@@ -153,22 +155,27 @@ fn analyze_deobf(
     let abi_inferences: Vec<AbiInference> = scan_abi_inferences(bits, &sections, entry);
     let api_hashes: Vec<ApiHashHit> = scan_api_hashes(bits, &sections);
     let stack_strings: Vec<ReassembledStackString> = scan_stack_strings(bits, &sections);
+    let desync: Option<DesyncReport> = section_desync(bits, &sections, entry);
+    let anti_disassembly: Option<DesyncEvidence> = desync.as_ref().and_then(DesyncReport::evidence);
     let cleaned_listing: Option<String> =
-        section_cleaned_listing(bits, &sections, entry).map(|listing: String| {
-            append_recovery_annotations(
-                listing,
-                &RecoveryAnnotations {
-                    api_hashes: &api_hashes,
-                    stack_strings: &stack_strings,
-                    copyprop_report: &copyprop_report,
-                    dead_flag_report: &dead_flag_report,
-                    pathsense_report: pathsense_report.as_ref(),
-                    mba_simplifications: &mba_simplifications,
-                    branch_folds: &branch_folds,
-                    jump_tables: &jump_tables,
-                },
-            )
-        });
+        desync
+            .as_ref()
+            .map(DesyncReport::cleaned_listing)
+            .map(|listing: String| {
+                append_recovery_annotations(
+                    listing,
+                    &RecoveryAnnotations {
+                        api_hashes: &api_hashes,
+                        stack_strings: &stack_strings,
+                        copyprop_report: &copyprop_report,
+                        dead_flag_report: &dead_flag_report,
+                        pathsense_report: pathsense_report.as_ref(),
+                        mba_simplifications: &mba_simplifications,
+                        branch_folds: &branch_folds,
+                        jump_tables: &jump_tables,
+                    },
+                )
+            });
 
     let nothing_found: bool = cff.is_none()
         && bogus_branches.is_empty()
@@ -239,6 +246,7 @@ fn analyze_deobf(
         abi_inferences,
         api_hashes,
         stack_strings,
+        anti_disassembly,
         cleaned_listing,
         notes,
     })
@@ -859,27 +867,23 @@ fn block_branch_address(bits: DeobfBits, block: &CodeBlock<'_>) -> Option<u64> {
     last_branch
 }
 
-fn section_cleaned_listing(
+fn section_desync(
     bits: DeobfBits,
     sections: &[CodeSection],
     entry: Option<u64>,
-) -> Option<String> {
+) -> Option<DesyncReport> {
     let bitness: DesyncBitness = match bits {
         DeobfBits::Bits32 => DesyncBitness::Bits32,
         DeobfBits::Bits64 => DesyncBitness::Bits64,
     };
-    for section in sections {
+    sections.iter().find_map(|section: &CodeSection| {
         let section_end: u64 = section.va.saturating_add(section.bytes.len() as u64);
         let start: u64 = match entry {
             Some(e) if e >= section.va && e < section_end => e,
             _ => section.va,
         };
-        if let Some(listing) = desync_cleaned_listing(bitness, section.va, &section.bytes, &[start])
-        {
-            return Some(listing);
-        }
-    }
-    None
+        resolve_desync(bitness, section.va, &section.bytes, &[start]).ok()
+    })
 }
 
 struct CodeBlock<'a> {

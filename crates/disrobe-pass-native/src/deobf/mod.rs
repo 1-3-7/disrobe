@@ -113,6 +113,7 @@ pub struct DeobfReport {
     pub abi_inferences: Vec<AbiInference>,
     pub api_hashes: Vec<crate::api_hash::ApiHashHit>,
     pub stack_strings: Vec<crate::stack_string::ReassembledStackString>,
+    pub anti_disassembly: Option<crate::desync::DesyncEvidence>,
     pub cleaned_listing: Option<String>,
     pub notes: Vec<String>,
 }

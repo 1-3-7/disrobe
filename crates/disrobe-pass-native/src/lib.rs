@@ -139,9 +139,9 @@ pub use deobf::{
     undo_substitution,
 };
 pub use desync::{
-    Bitness, ByteRange, CodeWindow, DesyncReport, DiscoveredFunctions, DiscoveryInput,
-    JumpTableHit, NoreturnInferenceOutcome, NoreturnInferenceTermination, ReadOnlyWindow,
-    RecoveredInsn, UnresolvedKind, UnresolvedTarget, VmwareBackdoorHit,
+    Bitness, ByteRange, CodeWindow, DesyncEvidence, DesyncReport, DiscoveredFunctions,
+    DiscoveryInput, JumpTableHit, NoreturnInferenceOutcome, NoreturnInferenceTermination,
+    ReadOnlyWindow, RecoveredInsn, UnresolvedKind, UnresolvedTarget, VmwareBackdoorHit,
     cleaned_listing as desync_cleaned_listing, discover_functions, discover_functions_with_status,
     is_noreturn_import_name, noreturn_import_seeds, resolve as resolve_desync,
     resolve_with_noreturn as resolve_desync_with_noreturn,
@@ -196,9 +196,10 @@ pub use native_match::{
 };
 pub use obfuscators::{
     AMICE_XOR_KEY, CffUnflattenReport, ObfuscatorFamily, ObfuscatorHit, StringDecryptHit,
-    XorStringHit, decrypt_strings_for_family, detect as detect_obfuscators,
-    recover_amice_xor_strings, recover_obfuscxx_strings, recover_single_byte_xor_strings,
-    strip_ollvm_bcf, undo_ollvm_substitution, unflatten_ollvm, unflatten_tigress,
+    StringIndicator, XorStringHit, decrypt_strings_for_family, detect as detect_obfuscators,
+    detect_indicators as detect_obfuscator_indicators, recover_amice_xor_strings,
+    recover_obfuscxx_strings, recover_single_byte_xor_strings, strip_ollvm_bcf,
+    undo_ollvm_substitution, unflatten_ollvm, unflatten_tigress,
 };
 pub use packers::aspack_unpack::{
     AspackRecovery, AspackReport, CarvedBlock as AspackCarvedBlock,
