@@ -2925,3 +2925,115 @@ fn keeps_the_raw_switch_when_the_join_is_a_case_value_target() {
         "the refused dispatch must stay in its raw form: {rendered}"
     );
 }
+
+fn one_method_class(method_code: Vec<u8>, constructor_code: Option<Vec<u8>>) -> AbcFile {
+    let mut pool: PoolBuilder = PoolBuilder::new();
+    let pkg_ns: u32 = pool.intern_ns(0x16, "");
+    let class_mn: u32 = pool.intern_qname(pkg_ns, "Bounded");
+    let obj_mn: u32 = pool.intern_qname(pkg_ns, "Object");
+    let method_mn: u32 = pool.intern_qname(pkg_ns, "compute");
+    let mut bodies: Vec<BodySpec> = Vec::new();
+    if let Some(code) = constructor_code {
+        bodies.push(BodySpec {
+            method: 0,
+            max_stack: 2,
+            local_count: 1,
+            code,
+        });
+    }
+    bodies.push(BodySpec {
+        method: 1,
+        max_stack: 2,
+        local_count: 1,
+        code: method_code,
+    });
+    let spec: AbcSpec = AbcSpec {
+        pool,
+        methods: vec![
+            MethodSpec {
+                return_type: 0,
+                param_types: vec![],
+                name: 0,
+                param_names: vec![],
+            },
+            MethodSpec {
+                return_type: 0,
+                param_types: vec![],
+                name: method_mn,
+                param_names: vec![],
+            },
+        ],
+        bodies,
+        class_name_mn: class_mn,
+        super_mn: obj_mn,
+        iinit: 0,
+        method_traits: vec![(method_mn, 1, 0x01)],
+    };
+    parse_fixture(&assemble(&spec))
+}
+
+#[test]
+fn deep_operator_chain_is_refused_instead_of_overflowing_the_stack() {
+    const CHAIN: usize = 200_000;
+    let mut code: Vec<u8> = Vec::with_capacity(CHAIN * 2 + 2);
+    code.push(0xD0);
+    for _ in 0..CHAIN {
+        code.extend_from_slice(&[0xD0, 0xA0]);
+    }
+    code.push(0x48);
+    let abc: AbcFile = one_method_class(code, None);
+    let body: &MethodBody = &abc.method_bodies[0];
+    let error: disrobe_pass_as3::Error = lift_body(&abc, body, abc.methods.get(1))
+        .expect_err("a 200000-deep operator chain must be refused");
+    assert!(
+        matches!(error, disrobe_pass_as3::Error::ExprDepthExceeded { .. }),
+        "the refusal must name the expression depth cap, got {error}"
+    );
+    let skel: String = render_class_skeleton(&abc, &abc.instances[0]).expect("skeleton");
+    assert!(
+        skel.contains("/// DR-AS3-PARTIAL: method body not lifted: DR-AS3-0021"),
+        "the refused method must carry the depth refusal marker: {skel}"
+    );
+}
+
+#[test]
+fn unliftable_method_and_constructor_render_refusal_markers() {
+    let truncated: Vec<u8> = vec![0xD0, 0x24];
+    let abc: AbcFile = one_method_class(truncated.clone(), Some(truncated));
+    let skel: String = render_class_skeleton(&abc, &abc.instances[0]).expect("skeleton");
+    assert!(
+        !skel.contains("{ }"),
+        "a body that fails to lift must not print as an empty body: {skel}"
+    );
+    let markers: usize = skel
+        .matches("/// DR-AS3-PARTIAL: method body not lifted: DR-AS3-0011")
+        .count();
+    assert_eq!(
+        markers, 2,
+        "the constructor and the method each carry the lift error: {skel}"
+    );
+    assert!(
+        skel.contains("public function Bounded() {\n        /// DR-AS3-PARTIAL")
+            && skel.contains("public function compute(): * {\n        /// DR-AS3-PARTIAL"),
+        "the marker sits inside each body: {skel}"
+    );
+}
+
+#[test]
+fn junk_byte_after_jump_does_not_desynchronize_the_method() {
+    let code: Vec<u8> = vec![0xD0, 0x10, 0x01, 0x00, 0x00, 0x24, 0x48];
+    let abc: AbcFile = one_method_class(code, None);
+    let body: &MethodBody = &abc.method_bodies[0];
+    let lifted: LiftedBody = lift_body(&abc, body, abc.methods.get(1)).expect("lift");
+    let names: LocalNames = local_names_for(&abc, abc.methods.get(1));
+    let rendered: String = render_body(&lifted, &names, "");
+    assert!(
+        rendered.contains("return this;"),
+        "the returnvalue after the skipped junk byte must be lifted: {rendered}"
+    );
+    assert!(
+        lifted.structurally_recovered,
+        "the reachable code lifts without residue: {:?}\n{rendered}",
+        lifted.fidelity_warning()
+    );
+}

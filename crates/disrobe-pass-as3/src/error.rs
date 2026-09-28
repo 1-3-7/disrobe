@@ -70,6 +70,14 @@ pub enum Error {
         remaining: usize,
     },
 
+    #[error(
+        "DR-AS3-0019: ABC instruction at code offset {offset} overlaps the instruction at {previous}"
+    )]
+    AbcOverlappingInstructions { offset: usize, previous: usize },
+
     #[error("DR-AS3-0020: heuristic recovery aborted: {0}")]
     HeuristicAbort(&'static str),
+
+    #[error("DR-AS3-0021: expression nesting exceeds the lifter depth cap of {cap}")]
+    ExprDepthExceeded { cap: usize },
 }

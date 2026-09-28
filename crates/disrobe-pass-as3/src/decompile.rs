@@ -66,9 +66,18 @@ fn lifted_method_body(
     let body_pos: usize = *bodies.get(&method_idx)?;
     let body: &MethodBody = abc.method_bodies.get(body_pos)?;
     let info: Option<&MethodInfo> = abc.methods.get(method_idx as usize);
-    let lifted: LiftedBody = lift_body(abc, body, info).ok()?;
-    let names: LocalNames = local_names_for(abc, info);
     let mut rendered: String = String::new();
+    let lifted: LiftedBody = match lift_body(abc, body, info) {
+        Ok(lifted) => lifted,
+        Err(error) => {
+            push_format(
+                &mut rendered,
+                format_args!("        /// DR-AS3-PARTIAL: method body not lifted: {error}\n"),
+            );
+            return Some(rendered);
+        }
+    };
+    let names: LocalNames = local_names_for(abc, info);
     if let Some(warning) = lifted.fidelity_warning() {
         push_format(
             &mut rendered,

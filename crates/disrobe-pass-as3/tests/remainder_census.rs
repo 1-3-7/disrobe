@@ -476,7 +476,134 @@ fn classify_residue(stmts: &[Stmt]) -> String {
     if multi_join > 0 {
         return "acyclic join carrying more than two incoming edges".to_owned();
     }
+    if has_dangling_goto(stmts) {
+        return DANGLING_GOTO_GROUP.to_owned();
+    }
+    if forward_branch_over_break_loop(stmts) {
+        return BREAK_LOOP_GROUP.to_owned();
+    }
     "acyclic goto region with no named reason".to_owned()
+}
+
+const DANGLING_GOTO_GROUP: &str = "goto whose target label the residue no longer contains";
+const BREAK_LOOP_GROUP: &str = "forward branch over a loop that exits through break";
+
+fn each_statement(stmts: &[Stmt], visit: &mut dyn FnMut(&Stmt)) {
+    for statement in stmts {
+        visit(statement);
+        match statement {
+            Stmt::IfBlock { body, .. }
+            | Stmt::While { body, .. }
+            | Stmt::DoWhile { body, .. }
+            | Stmt::ForEach { body, .. }
+            | Stmt::ForIn { body, .. }
+            | Stmt::With { body, .. }
+            | Stmt::For { body, .. } => each_statement(body, visit),
+            Stmt::IfElse {
+                then_body,
+                else_body,
+                ..
+            } => {
+                each_statement(then_body, visit);
+                each_statement(else_body, visit);
+            }
+            Stmt::Try { body, catches } => {
+                each_statement(body, visit);
+                for clause in catches {
+                    each_statement(&clause.body, visit);
+                }
+            }
+            Stmt::StructuredSwitch { cases, .. } => {
+                for case in cases {
+                    each_statement(&case.body, visit);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn has_dangling_goto(stmts: &[Stmt]) -> bool {
+    let mut labels: BTreeSet<usize> = BTreeSet::new();
+    let mut targets: BTreeSet<usize> = BTreeSet::new();
+    each_statement(stmts, &mut |statement: &Stmt| match statement {
+        Stmt::Label(label) => {
+            labels.insert(*label);
+        }
+        Stmt::Jump { target_label } | Stmt::If { target_label, .. } => {
+            targets.insert(*target_label);
+        }
+        Stmt::Switch {
+            case_labels,
+            default_label,
+            ..
+        } => {
+            targets.extend(case_labels.iter().copied());
+            targets.insert(*default_label);
+        }
+        _ => {}
+    });
+    !targets.is_subset(&labels)
+}
+
+fn breaks_out_of_this_loop(body: &[Stmt]) -> bool {
+    body.iter().any(|statement: &Stmt| match statement {
+        Stmt::Break => true,
+        Stmt::IfBlock { body, .. } | Stmt::With { body, .. } => breaks_out_of_this_loop(body),
+        Stmt::IfElse {
+            then_body,
+            else_body,
+            ..
+        } => breaks_out_of_this_loop(then_body) || breaks_out_of_this_loop(else_body),
+        Stmt::Try { body, catches } => {
+            breaks_out_of_this_loop(body)
+                || catches
+                    .iter()
+                    .any(|clause| breaks_out_of_this_loop(&clause.body))
+        }
+        _ => false,
+    })
+}
+
+fn is_loop_exiting_through_break(statement: &Stmt) -> bool {
+    match statement {
+        Stmt::While { body, .. }
+        | Stmt::DoWhile { body, .. }
+        | Stmt::For { body, .. }
+        | Stmt::ForEach { body, .. }
+        | Stmt::ForIn { body, .. } => breaks_out_of_this_loop(body),
+        _ => false,
+    }
+}
+
+fn contains_loop_exiting_through_break(stmts: &[Stmt]) -> bool {
+    let mut found: bool = false;
+    each_statement(stmts, &mut |statement: &Stmt| {
+        found = found || is_loop_exiting_through_break(statement);
+    });
+    found
+}
+
+fn forward_branch_over_break_loop(stmts: &[Stmt]) -> bool {
+    let mut label_pos: BTreeMap<usize, usize> = BTreeMap::new();
+    for (index, statement) in stmts.iter().enumerate() {
+        if let Stmt::Label(label) = statement {
+            label_pos.insert(*label, index);
+        }
+    }
+    stmts
+        .iter()
+        .enumerate()
+        .any(|(index, statement): (usize, &Stmt)| {
+            let target: usize = match statement {
+                Stmt::Jump { target_label } | Stmt::If { target_label, .. } => *target_label,
+                _ => return false,
+            };
+            label_pos.get(&target).is_some_and(|position: &usize| {
+                *position > index
+                    && contains_loop_exiting_through_break(&stmts[index + 1..*position])
+            })
+        })
 }
 
 fn precondition(lifted: &LiftedBody) -> String {
@@ -690,43 +817,7 @@ const CORPUS_REMAINDER: &[RemainderGroup] = &[
         precondition: "acyclic goto region with no named reason",
         must_stay_refused: false,
         anonymous: 0,
-        members: &[
-            "10_More_Bullets::nape.phys.Body::contains",
-            "10_More_Bullets::zpp_nape.geom.ZPP_Collide::containTest",
-            "10_More_Bullets::zpp_nape.geom.ZPP_Collide::testCollide",
-            "10_More_Bullets::zpp_nape.space.ZPP_AABBTree::insertLeaf",
-            "1942_Battles_In_The_Sky::ProgBar::create",
-            "1942_Battles_In_The_Sky::ProgBar::updatePercent",
-            "1942_Battles_In_The_Sky::ProgBar::updateValue",
-            "1942_Battles_In_The_Sky::gs.plugins.FilterPlugin::onCompleteTween",
-            "1942_Battles_In_The_Sky::mx.utils.NameUtil::displayObjectToString",
-            "ASmallCar::com.junkbyte.console.Console::listenUncaughtErrors",
-            "ASmallCar::com.junkbyte.console.core.CommandLine::run",
-            "ASmallCar::com.junkbyte.console.core.MemoryMonitor::Gc",
-            "ASmallCar::com.junkbyte.console.core.Remoting::remoteSync",
-            "ASmallCar::com.junkbyte.console.core.Remoting::set remoting",
-            "ASmallCar::com.junkbyte.console.view.AbstractPanel::onTextFieldMouseMove",
-            "ASmallCar::flare.core.Canvas3D::_140",
-            "ASmallCar::flare.core.Canvas3D::setup",
-            "ASmallCar::flare.loaders.Flare3DLoader::_137",
-            "ASmallCar::mochi.as3.MochiServices::bringToTop",
-            "ASmallCar::mx.utils.NameUtil::displayObjectToString",
-            "ASmallCar::spill.localisation.TextFieldFit::updateProperties",
-            "ATV_Cross_Canada::_-J1._-3e::init",
-            "ATV_Cross_Canada::_-Qp._-6X::_-RL",
-            "ATV_Cross_Canada::_-Qp._-Lm::_-RL",
-            "ATV_Cross_Canada::_-Qp._-OG::poly2poly_test",
-            "ATV_Cross_Canada::_-Qp._-Qc::_-RL",
-            "BO_Awesome_Ranger::com.gameallianz.api.as3.GameAllianzApi::cache",
-            "BO_Awesome_Ranger::com.gameallianz.api.as3.gui.Background::_-5",
-            "BO_Awesome_Ranger::com.gameallianz.api.as3.gui.Background::_-6b",
-            "BO_Awesome_Ranger::com.gameallianz.api.as3.utils.FireBugConsole::_-67",
-            "BO_Awesome_Ranger::com.gameallianz.api.as3.utils.GlobalTrace::iniFromFlashVars",
-            "BO_Neo_Rider::mochi.as3.MochiServices::bringToTop",
-            "BO_Twin_Drivers_Level_9000::Game::updateWagons",
-            "BO_Twin_Drivers_Level_9000::lib.GCookie::erase",
-            "BO_Twin_Drivers_Level_9000::lib.GCookie::set",
-        ],
+        members: &["10_More_Bullets::nape.phys.Body::contains"],
     },
     RemainderGroup {
         precondition: "acyclic join carrying more than two incoming edges",
@@ -748,6 +839,7 @@ const CORPUS_REMAINDER: &[RemainderGroup] = &[
             "10_More_Bullets::zpp_nape.shape.ZPP_Polygon::lverts_post_adder",
             "10_More_Bullets::zpp_nape.space.ZPP_DynAABBPhase::__remove",
             "1942_Battles_In_The_Sky::gs.TweenLite::set enabled",
+            "BO_Awesome_Ranger::alternativa.engine3d.core.Camera3D::sortByDynamicBSP",
             "BO_Awesome_Ranger::alternativa.engine3d.objects.Sprite3D::intersectRay",
         ],
     },
@@ -761,6 +853,7 @@ const CORPUS_REMAINDER: &[RemainderGroup] = &[
             "10_More_Bullets::zpp_nape.callbacks.ZPP_InteractionListener::cbtype_change",
             "10_More_Bullets::zpp_nape.callbacks.ZPP_OptionType::append_type",
             "10_More_Bullets::zpp_nape.geom.ZPP_Ray::aabbsect",
+            "BO_Neo_Rider::mochi.as3.MochiAd::load",
         ],
     },
     RemainderGroup {
@@ -874,6 +967,28 @@ const CORPUS_REMAINDER: &[RemainderGroup] = &[
         ],
     },
     RemainderGroup {
+        precondition: "forward branch over a loop that exits through break",
+        must_stay_refused: false,
+        anonymous: 0,
+        members: &[
+            "10_More_Bullets::zpp_nape.geom.ZPP_Collide::containTest",
+            "10_More_Bullets::zpp_nape.geom.ZPP_Collide::testCollide",
+            "10_More_Bullets::zpp_nape.space.ZPP_AABBTree::insertLeaf",
+            "1942_Battles_In_The_Sky::gs.plugins.FilterPlugin::onCompleteTween",
+            "ASmallCar::spill.localisation.TextFieldFit::updateProperties",
+            "ATV_Cross_Canada::_-J1._-3e::init",
+            "ATV_Cross_Canada::_-JM._-I-::_-3Z",
+            "ATV_Cross_Canada::_-Qp._-36::_-RL",
+            "ATV_Cross_Canada::_-Qp._-6X::_-RL",
+            "ATV_Cross_Canada::_-Qp._-Lm::_-RL",
+            "ATV_Cross_Canada::_-Qp._-OG::poly2poly_test",
+            "ATV_Cross_Canada::_-Qp._-Qc::_-RL",
+            "BO_Awesome_Ranger::alternativa.engine3d.core.Light3D::setParent",
+            "BO_Awesome_Ranger::alternativa.engine3d.core.Vertex::createList",
+            "BO_Twin_Drivers_Level_9000::Game::updateWagons",
+        ],
+    },
+    RemainderGroup {
         precondition: "forward dispatch selector or case has effects",
         must_stay_refused: false,
         anonymous: 0,
@@ -950,6 +1065,43 @@ const CORPUS_REMAINDER: &[RemainderGroup] = &[
         ],
     },
     RemainderGroup {
+        precondition: "goto whose target label the residue no longer contains",
+        must_stay_refused: false,
+        anonymous: 0,
+        members: &[
+            "1942_Battles_In_The_Sky::ProgBar::create",
+            "1942_Battles_In_The_Sky::ProgBar::updatePercent",
+            "1942_Battles_In_The_Sky::ProgBar::updateValue",
+            "1942_Battles_In_The_Sky::mx.utils.NameUtil::displayObjectToString",
+            "ASmallCar::com.junkbyte.console.Console::listenUncaughtErrors",
+            "ASmallCar::com.junkbyte.console.core.CommandLine::run",
+            "ASmallCar::com.junkbyte.console.core.Executer::exec",
+            "ASmallCar::com.junkbyte.console.core.MemoryMonitor::Gc",
+            "ASmallCar::com.junkbyte.console.core.Remoting::remoteSync",
+            "ASmallCar::com.junkbyte.console.core.Remoting::set remoting",
+            "ASmallCar::com.junkbyte.console.view.AbstractPanel::onTextFieldMouseMove",
+            "ASmallCar::flare.core.Canvas3D::_140",
+            "ASmallCar::flare.core.Canvas3D::setup",
+            "ASmallCar::flare.loaders.Flare3DLoader::_137",
+            "ASmallCar::mochi.as3.MochiAd::load",
+            "ASmallCar::mochi.as3.MochiServices::bringToTop",
+            "ASmallCar::mochi.as3.MochiUserData::completeHandler",
+            "ASmallCar::mx.utils.NameUtil::displayObjectToString",
+            "ATV_Cross_Canada::_-O4.use ::_-1l",
+            "ATV_Cross_Canada::_-RG._-2o::_-0t",
+            "BO_Awesome_Ranger::com.gameallianz.api.as3.GameAllianzApi::cache",
+            "BO_Awesome_Ranger::com.gameallianz.api.as3.gui.Background::_-5",
+            "BO_Awesome_Ranger::com.gameallianz.api.as3.gui.Background::_-6b",
+            "BO_Awesome_Ranger::com.gameallianz.api.as3.utils.FireBugConsole::_-67",
+            "BO_Awesome_Ranger::com.gameallianz.api.as3.utils.GlobalTrace::iniFromFlashVars",
+            "BO_Neo_Rider::mochi.as3.MochiServices::bringToTop",
+            "BO_Neo_Rider::mochi.as3.MochiServices::createEmptyMovieClip",
+            "BO_Neo_Rider::mochi.as3.MochiUserData::completeHandler",
+            "BO_Twin_Drivers_Level_9000::lib.GCookie::erase",
+            "BO_Twin_Drivers_Level_9000::lib.GCookie::set",
+        ],
+    },
+    RemainderGroup {
         precondition: "loop reachable only through an unthreaded jump chain",
         must_stay_refused: false,
         anonymous: 0,
@@ -1001,6 +1153,8 @@ const CORPUS_REMAINDER: &[RemainderGroup] = &[
             "ATV_Cross_Canada::_-Fw._-Fn::_-H7",
             "ATV_Cross_Canada::_-Fw._-L0::_-Ih",
             "BO_Awesome_Ranger::TweenEngine::update",
+            "BO_Awesome_Ranger::alternativa.engine3d.core.Camera3D::clip",
+            "BO_Awesome_Ranger::alternativa.engine3d.core.Camera3D::sortByAverageZ",
             "BO_Twin_Drivers_Level_9000::Preloader::cleanRow",
             "BO_Twin_Drivers_Level_9000::Preloader::newsCallback",
             "BO_Twin_Drivers_Level_9000::com.adobe.serialization.json.JSONDecoder::parseArray",
@@ -1057,6 +1211,7 @@ const CORPUS_REMAINDER: &[RemainderGroup] = &[
             "ATV_Cross_Canada::_-Fw._-PE::set changeFactor",
             "ATV_Cross_Canada::_-Fw._-Qo::onInitTween",
             "ATV_Cross_Canada::_-I1._-48::removeObject",
+            "ATV_Cross_Canada::_-I1._-4z::removeShape",
             "ATV_Cross_Canada::_-J1.Level::_-Qq",
             "ATV_Cross_Canada::_-JM._-I-::_-0a",
             "ATV_Cross_Canada::_-RG.Base64::_-8r",
@@ -1111,15 +1266,22 @@ const CORPUS_REMAINDER: &[RemainderGroup] = &[
             "ASmallCar::com.greensock.plugins.TintPlugin::init",
             "ASmallCar::com.greensock.plugins.TweenPlugin::activate",
             "ASmallCar::com.greensock.plugins.TweenPlugin::killProps",
+            "ATV_Cross_Canada::Playtomic._-Dw::_-7f",
             "ATV_Cross_Canada::_-E3.TweenMax::_-9U",
+            "ATV_Cross_Canada::_-E3.TweenMax::_-KW",
             "ATV_Cross_Canada::_-E3.TweenMax::_-Oq",
+            "ATV_Cross_Canada::_-E3.TweenMax::_-Qh",
             "ATV_Cross_Canada::_-E3.TweenMax::_-b",
             "ATV_Cross_Canada::_-E3._-Jr::init",
             "ATV_Cross_Canada::_-Fw.EndArrayPlugin::init",
+            "ATV_Cross_Canada::_-Fw._-Fn::_-KA",
+            "ATV_Cross_Canada::_-Fw._-Fn::killProps",
             "ATV_Cross_Canada::_-Fw._-L0::_-AS",
             "ATV_Cross_Canada::_-Fw._-L0::set changeFactor",
+            "ATV_Cross_Canada::_-Fw._-Le::init",
             "ATV_Cross_Canada::_-JM._-I-::clear",
             "BO_Awesome_Ranger::TweenEngine::addTween",
+            "BO_Awesome_Ranger::alternativa.engine3d.core.Camera3D::cull",
             "BO_Awesome_Ranger::alternativa.engine3d.core.Object3D::cullingInCamera",
             "BO_Awesome_Ranger::alternativa.engine3d.core.Object3DContainer::_-4b",
             "BO_Awesome_Ranger::alternativa.engine3d.core.View::_-3G",
@@ -1128,6 +1290,7 @@ const CORPUS_REMAINDER: &[RemainderGroup] = &[
             "BO_Awesome_Ranger::alternativa.engine3d.objects.Mesh::intersectRay",
             "BO_Awesome_Ranger::alternativa.engine3d.objects.Mesh::optimizeForDynamicBSP",
             "BO_Awesome_Ranger::bodies.BossScene::_-0r",
+            "BO_Awesome_Ranger::containers.GameContainer::reloadLevel",
             "BO_Neo_Rider::sandy.core.data.BSPNode::lazyBSPFaces2Planes",
         ],
     },
@@ -1148,12 +1311,14 @@ const CORPUS_REMAINDER: &[RemainderGroup] = &[
             "10_More_Bullets::zpp_nape.geom.ZPP_Triangular::delaunay",
             "ATV_Cross_Canada::Playtomic._-P8::_-7z",
             "ATV_Cross_Canada::Playtomic._-P8::_-Ft",
+            "ATV_Cross_Canada::_-13._-O7::renderTime",
             "ATV_Cross_Canada::_-98._-3A::contains",
             "ATV_Cross_Canada::_-E3.TweenMax::TweenMax",
             "ATV_Cross_Canada::_-Fw._-4::onInitTween",
             "ATV_Cross_Canada::_-Nh._-7W::update",
             "BO_Awesome_Ranger::Input::_-35",
             "BO_Awesome_Ranger::alternativa.engine3d.containers.ConflictContainer::draw",
+            "BO_Awesome_Ranger::alternativa.engine3d.core.Object3DContainer::checkIntersection",
             "BO_Awesome_Ranger::alternativa.engine3d.core.Object3DContainer::draw",
             "BO_Awesome_Ranger::alternativa.engine3d.loaders.Parser3DS::_-08",
             "BO_Awesome_Ranger::alternativa.engine3d.objects.Sprite3D::draw",
@@ -1266,7 +1431,6 @@ const CORPUS_REMAINDER: &[RemainderGroup] = &[
             "BO_Awesome_Ranger::ImageEngine::createImage",
             "BO_Awesome_Ranger::ImageEngine::drawTutorial",
             "BO_Awesome_Ranger::LevelEngine::getLevel",
-            "BO_Awesome_Ranger::alternativa.engine3d.core.Object3DContainer::collectVG",
             "BO_Awesome_Ranger::alternativa.engine3d.core.VG::draw",
             "BO_Awesome_Ranger::alternativa.engine3d.loaders.Parser3DS::_-1o",
             "BO_Awesome_Ranger::alternativa.engine3d.loaders.Parser3DS::_-2I",
@@ -1369,138 +1533,16 @@ const CORPUS_REMAINDER: &[RemainderGroup] = &[
             "10_More_Bullets::nape.phys.InteractorList::filter",
             "10_More_Bullets::nape.shape.EdgeList::filter",
             "10_More_Bullets::nape.shape.ShapeList::filter",
-            "1942_Battles_In_The_Sky::org.flixel.FlxSave::bind",
-            "1942_Battles_In_The_Sky::org.flixel.FlxSave::forceSave",
-            "ASmallCar::com.junkbyte.console.core.Executer::exec",
-            "ASmallCar::com.junkbyte.console.core.Graphing::add",
             "ASmallCar::com.junkbyte.console.core.Graphing::update",
             "ASmallCar::com.junkbyte.console.core.ObjectsMonitor::update",
-            "ASmallCar::flare.primitives.MirrorPlane::_41",
-            "ASmallCar::mochi.as3.MochiAd::load",
-            "ASmallCar::mochi.as3.MochiUserData::completeHandler",
             "ATV_Cross_Canada::Playtomic._-4i::_-Pb",
-            "ATV_Cross_Canada::Playtomic._-66::_-Iz",
-            "ATV_Cross_Canada::Playtomic._-6v::_-0H",
-            "ATV_Cross_Canada::Playtomic._-6v::_-0O",
-            "ATV_Cross_Canada::Playtomic._-BE::_-LC",
-            "ATV_Cross_Canada::Playtomic._-Dw::_-7f",
             "ATV_Cross_Canada::Playtomic._-JF::_-Gt",
-            "ATV_Cross_Canada::Playtomic._-P8::_-2I",
-            "ATV_Cross_Canada::_-4D.Array2_nape_space_UniformCell::_-6c",
             "ATV_Cross_Canada::_-7J._-Io::init",
-            "ATV_Cross_Canada::_-7i._-AD::in",
-            "ATV_Cross_Canada::_-98._-HS::remove",
-            "ATV_Cross_Canada::_-CC._-5i::clear",
-            "ATV_Cross_Canada::_-CC._-5i::splice",
-            "ATV_Cross_Canada::_-CC._-6C::remove",
-            "ATV_Cross_Canada::_-CC._-7A::clear",
-            "ATV_Cross_Canada::_-CC._-AO::clear",
-            "ATV_Cross_Canada::_-CC._-Aa::clear",
-            "ATV_Cross_Canada::_-CC._-GM::splice",
-            "ATV_Cross_Canada::_-CC._-Mr::remove",
-            "ATV_Cross_Canada::_-CC._-Qv::remove",
-            "ATV_Cross_Canada::_-CC._-y::clear",
-            "ATV_Cross_Canada::_-E3.TweenMax::_-KW",
-            "ATV_Cross_Canada::_-E3.TweenMax::_-Qh",
-            "ATV_Cross_Canada::_-Fw._-Fn::_-KA",
-            "ATV_Cross_Canada::_-Fw._-Fn::killProps",
-            "ATV_Cross_Canada::_-Fw._-Le::init",
-            "ATV_Cross_Canada::_-Hj::toString",
-            "ATV_Cross_Canada::_-I1._-4z::removeShape",
-            "ATV_Cross_Canada::_-J1.Level::_-Ch",
-            "ATV_Cross_Canada::_-J1._-1m::destroy",
-            "ATV_Cross_Canada::_-JM._-I-::_-3Z",
-            "ATV_Cross_Canada::_-JM._-I-::_-7a",
-            "ATV_Cross_Canada::_-JM._-I-::_-Eq",
-            "ATV_Cross_Canada::_-JM._-I-::removeConstraint",
-            "ATV_Cross_Canada::_-JM._-Ld::clear_special",
-            "ATV_Cross_Canada::_-JM._-N0::clear",
-            "ATV_Cross_Canada::_-O4._-1D::_-PA",
-            "ATV_Cross_Canada::_-O4.use ::_-1l",
-            "ATV_Cross_Canada::_-Qp._-36::_-0N",
-            "ATV_Cross_Canada::_-Qp._-36::_-RL",
-            "ATV_Cross_Canada::_-Qp._-6X::_-0N",
-            "ATV_Cross_Canada::_-Qp._-HM::_-Ca",
-            "ATV_Cross_Canada::_-Qp._-Lm::_-Pp",
-            "ATV_Cross_Canada::_-Qp._-Qc::_-0N",
-            "ATV_Cross_Canada::_-Qp._-Qc::_-OE",
-            "ATV_Cross_Canada::_-RG._-2o::_-0t",
-            "ATV_Cross_Canada::_-RG._-3K::_-A2",
-            "ATV_Cross_Canada::_-g._-FZ::removeFromBodies",
-            "ATV_Cross_Canada::engine.logic.LogicZombie2::restart",
             "ATV_Cross_Canada::flash._-Hw::_-9R",
             "ATV_Cross_Canada::flash._-Qa::_-Qa",
-            "BO_Awesome_Ranger::ParticleEngine::addRadialParticle",
-            "BO_Awesome_Ranger::ParticleEngine::dispose",
-            "BO_Awesome_Ranger::ParticleEngine::update",
-            "BO_Awesome_Ranger::alternativa.engine3d.containers.ConflictContainer::_-19",
-            "BO_Awesome_Ranger::alternativa.engine3d.core.Camera3D::calculateRay",
-            "BO_Awesome_Ranger::alternativa.engine3d.core.Camera3D::checkInDebug",
-            "BO_Awesome_Ranger::alternativa.engine3d.core.Camera3D::clip",
-            "BO_Awesome_Ranger::alternativa.engine3d.core.Camera3D::cull",
-            "BO_Awesome_Ranger::alternativa.engine3d.core.Camera3D::sortByAverageZ",
-            "BO_Awesome_Ranger::alternativa.engine3d.core.Camera3D::sortByDynamicBSP",
-            "BO_Awesome_Ranger::alternativa.engine3d.core.Canvas::removeChildren",
-            "BO_Awesome_Ranger::alternativa.engine3d.core.Light3D::setParent",
-            "BO_Awesome_Ranger::alternativa.engine3d.core.Object3D::dispatchEvent",
-            "BO_Awesome_Ranger::alternativa.engine3d.core.Object3DContainer::checkIntersection",
-            "BO_Awesome_Ranger::alternativa.engine3d.core.Object3DContainer::clonePropertiesFrom",
-            "BO_Awesome_Ranger::alternativa.engine3d.core.Object3DContainer::collectPlanes",
-            "BO_Awesome_Ranger::alternativa.engine3d.core.Object3DContainer::colorizeVG",
-            "BO_Awesome_Ranger::alternativa.engine3d.core.Object3DContainer::contains",
-            "BO_Awesome_Ranger::alternativa.engine3d.core.Object3DContainer::getChildIndex",
-            "BO_Awesome_Ranger::alternativa.engine3d.core.Object3DContainer::removeChildAt",
-            "BO_Awesome_Ranger::alternativa.engine3d.core.Object3DContainer::split",
-            "BO_Awesome_Ranger::alternativa.engine3d.core.Object3DContainer::updateBounds",
-            "BO_Awesome_Ranger::alternativa.engine3d.core.VG::class",
-            "BO_Awesome_Ranger::alternativa.engine3d.core.Vertex::createList",
-            "BO_Awesome_Ranger::alternativa.engine3d.core.View::_-63",
-            "BO_Awesome_Ranger::alternativa.engine3d.core.View::removeChildren",
-            "BO_Awesome_Ranger::alternativa.engine3d.loaders.Parser3DS::_-44",
-            "BO_Awesome_Ranger::alternativa.engine3d.loaders.Parser3DS::static",
-            "BO_Awesome_Ranger::alternativa.engine3d.materials.FillMaterial::draw",
-            "BO_Awesome_Ranger::alternativa.engine3d.objects.Mesh::calculateFacesNormals",
-            "BO_Awesome_Ranger::alternativa.engine3d.objects.Mesh::collectPlanes",
-            "BO_Awesome_Ranger::alternativa.engine3d.objects.Mesh::containsFace",
-            "BO_Awesome_Ranger::alternativa.engine3d.objects.Mesh::containsVertexWithId",
-            "BO_Awesome_Ranger::alternativa.engine3d.objects.Mesh::do ",
-            "BO_Awesome_Ranger::alternativa.engine3d.objects.Mesh::drawFaces",
-            "BO_Awesome_Ranger::alternativa.engine3d.objects.Mesh::get faces",
-            "BO_Awesome_Ranger::alternativa.engine3d.objects.Mesh::get vertices",
-            "BO_Awesome_Ranger::alternativa.engine3d.objects.Mesh::prepareFaces",
-            "BO_Awesome_Ranger::alternativa.engine3d.objects.Mesh::removeFace",
-            "BO_Awesome_Ranger::alternativa.engine3d.objects.Mesh::removeFaceById",
-            "BO_Awesome_Ranger::alternativa.engine3d.primitives.Box::Box",
             "BO_Awesome_Ranger::com.gameallianz.api.as3.GameAllianzApiLocalization::getTranslationById",
             "BO_Awesome_Ranger::com.gameallianz.api.as3.GameAllianzApiLocalization::getTranslationByWordId",
             "BO_Awesome_Ranger::com.gameallianz.api.as3.GameAllianzApiLocalization::getTranslationByWordIdAndLanguage",
-            "BO_Awesome_Ranger::containers.GameContainer::reloadLevel",
-            "BO_Awesome_Ranger::containers.IntroContainer::_-0a",
-            "BO_Awesome_Ranger::levels.Level10::_-5v",
-            "BO_Awesome_Ranger::levels.Level12:: in",
-            "BO_Awesome_Ranger::levels.Level12::_-3S",
-            "BO_Awesome_Ranger::levels.Level12::_-5v",
-            "BO_Awesome_Ranger::levels.Level13::_-03",
-            "BO_Awesome_Ranger::levels.Level13::_-5v",
-            "BO_Awesome_Ranger::levels.Level13::_-7I",
-            "BO_Awesome_Ranger::levels.Level14::_-6w",
-            "BO_Awesome_Ranger::levels.Level16::in",
-            "BO_Awesome_Ranger::levels.Level17::in",
-            "BO_Awesome_Ranger::levels.Level18::_-4m",
-            "BO_Awesome_Ranger::levels.Level18::_-7A",
-            "BO_Awesome_Ranger::levels.Level19::_-1d",
-            "BO_Awesome_Ranger::levels.Level20:: in",
-            "BO_Awesome_Ranger::levels.Level20::_-5v",
-            "BO_Awesome_Ranger::levels.Level21::_-6p",
-            "BO_Awesome_Ranger::levels.Level2::_-3J",
-            "BO_Awesome_Ranger::levels.Level3::_-03",
-            "BO_Awesome_Ranger::levels.Level5::_-6w",
-            "BO_Awesome_Ranger::levels.Level7::_-3S",
-            "BO_Awesome_Ranger::levels.Level7::_-6w",
-            "BO_Awesome_Ranger::levels.Level9::_-4x",
-            "BO_Neo_Rider::mochi.as3.MochiAd::load",
-            "BO_Neo_Rider::mochi.as3.MochiServices::createEmptyMovieClip",
-            "BO_Neo_Rider::mochi.as3.MochiUserData::completeHandler",
             "BO_Twin_Drivers_Level_9000::com.adobe.serialization.json.JSONEncoder::objectToString",
         ],
     },
@@ -1590,7 +1632,6 @@ const CORPUS_REMAINDER: &[RemainderGroup] = &[
             "ASmallCar::flare.core.Mesh3D::replaceMaterial",
             "ASmallCar::flare.core.Surface3D::removePoly",
             "ASmallCar::mochi.as3.MochiAd::_cleanup",
-            "ATV_Cross_Canada::Playtomic._-4i::_-I2",
             "ATV_Cross_Canada::Playtomic._-BE::_-MM",
             "ATV_Cross_Canada::Playtomic._-Dg::_-Z",
             "ATV_Cross_Canada::Playtomic._-FA::CustomMetric",
@@ -1599,13 +1640,11 @@ const CORPUS_REMAINDER: &[RemainderGroup] = &[
             "ATV_Cross_Canada::Playtomic._-P8::_-Z",
             "ATV_Cross_Canada::_-13._-2B::_-2B",
             "ATV_Cross_Canada::_-13._-2B::each",
-            "ATV_Cross_Canada::_-13._-O7::renderTime",
             "ATV_Cross_Canada::_-3F.for::_-82",
             "ATV_Cross_Canada::_-4D._-0g::_-Kx",
             "ATV_Cross_Canada::_-7i._-1E::show",
             "ATV_Cross_Canada::_-7i._-AD::show",
             "ATV_Cross_Canada::_-7i._-Pj::enable",
-            "ATV_Cross_Canada::_-98._-3A::_-6l",
             "ATV_Cross_Canada::_-98._-3A::_-8k",
             "ATV_Cross_Canada::_-98._-3A::_-Ab",
             "ATV_Cross_Canada::_-98._-3A::_-IP",
@@ -1715,7 +1754,6 @@ const CORPUS_REMAINDER: &[RemainderGroup] = &[
             "ATV_Cross_Canada::_-Qp._-0D::_-JX",
             "ATV_Cross_Canada::_-Qp._-0D::_-L-",
             "ATV_Cross_Canada::_-Qp._-36::_-L-",
-            "ATV_Cross_Canada::_-Qp._-36::preStep",
             "ATV_Cross_Canada::_-Qp._-36::static",
             "ATV_Cross_Canada::_-Qp._-5D::_-JX",
             "ATV_Cross_Canada::_-Qp._-6X::_-L-",
@@ -1741,7 +1779,6 @@ const CORPUS_REMAINDER: &[RemainderGroup] = &[
             "ATV_Cross_Canada::_-Qp._-OG::circle2particle_false_false_true",
             "ATV_Cross_Canada::_-Qp._-OG::circle2particle_true_true_true",
             "ATV_Cross_Canada::_-Qp._-OG::circle2poly_false_false_true_true",
-            "ATV_Cross_Canada::_-Qp._-OG::circle2poly_test",
             "ATV_Cross_Canada::_-Qp._-OG::circle2poly_true_true_true_true",
             "ATV_Cross_Canada::_-Qp._-OG::poly2particle_false_false_true",
             "ATV_Cross_Canada::_-Qp._-OG::poly2particle_true_true_true",
@@ -1762,7 +1799,6 @@ const CORPUS_REMAINDER: &[RemainderGroup] = &[
             "ATV_Cross_Canada::engine.logic.LogicParticles::draw",
             "ATV_Cross_Canada::engine.logic.LogicParticles::drawFront",
             "ATV_Cross_Canada::engine.logic.LogicSessionHud::goUp",
-            "ATV_Cross_Canada::engine.logic.LogicSessionHud::restart",
             "ATV_Cross_Canada::engine.logic.LogicSessionMap::update",
             "ATV_Cross_Canada::engine.logic.LogicVehicle::global",
             "ATV_Cross_Canada::engine.logic.LogicVehicle::move",
@@ -1773,10 +1809,7 @@ const CORPUS_REMAINDER: &[RemainderGroup] = &[
             "BO_Awesome_Ranger::alternativa.engine3d.core.Debug::drawBounds",
             "BO_Awesome_Ranger::alternativa.engine3d.core.Light3D::checkBoundsIntersection",
             "BO_Awesome_Ranger::alternativa.engine3d.core.Object3D::removeEventListener",
-            "BO_Awesome_Ranger::alternativa.engine3d.core.VG::_-1C",
-            "BO_Awesome_Ranger::alternativa.engine3d.core.View::_-5d",
             "BO_Awesome_Ranger::alternativa.engine3d.core.View::getChildCanvas",
-            "BO_Awesome_Ranger::alternativa.engine3d.loaders.Parser3DS::_-2v",
             "BO_Awesome_Ranger::alternativa.engine3d.objects.Mesh::addVerticesAndFaces",
             "BO_Awesome_Ranger::alternativa.engine3d.objects.Mesh::calculateResolution",
             "BO_Awesome_Ranger::alternativa.engine3d.objects.Mesh::getVG",
@@ -1815,7 +1848,6 @@ const CORPUS_REMAINDER: &[RemainderGroup] = &[
             "ASmallCar::mochi.as3.MochiServices::onReceive",
             "ASmallCar::spill.localisation.SpilGame::get embedDomain",
             "ATV_Cross_Canada::_-O4._-HY::_-1t",
-            "ATV_Cross_Canada::_-O4._-HY::_-2b",
             "ATV_Cross_Canada::_-O4._-HY::onReceive",
             "BO_Awesome_Ranger::com.gameallianz.api.as3.assets.AssetButton::_-6N",
             "BO_Awesome_Ranger::com.gameallianz.api.as3.gui.Background::set active",
@@ -1897,7 +1929,7 @@ fn the_corpus_remainder_holds_its_pinned_membership() {
     );
     assert_eq!(files, 19, "the pinned membership names bodies in 19 files");
     assert_eq!(census.bodies, 17917);
-    assert_eq!(census.recovered, 16861);
+    assert_eq!(census.recovered, 16968);
     compare(&census, CORPUS_REMAINDER, "corpus");
 }
 
@@ -1915,9 +1947,9 @@ fn the_refusals_the_item_requires_are_separated_from_the_gaps() {
             running + group.members.len() + group.anonymous
         });
     eprintln!("AS3 corpus remainder: {required}/{total} are refusals the item requires");
-    assert_eq!(total, 1056);
+    assert_eq!(total, 949);
     assert_eq!(
-        required, 453,
+        required, 442,
         "a body counted here is one the merge rules name as a required refusal: a merge whose incoming \
          stacks disagree in depth, a dispatch entered backward or mid-region, an irreducible \
          dispatch region, an overlapping or backward handler merge, and a scope merge that would \
@@ -1939,9 +1971,9 @@ fn the_refusals_the_item_requires_are_separated_from_the_gaps() {
             running + group.members.len() + group.anonymous
         });
     assert!(
-        unexplained <= 35,
+        unexplained <= 1,
         "the bodies whose stop carries no named shape are a declared wall with a ceiling that may \
-         only ratchet down; got {unexplained} against 35. A body arriving here is one this \
+         only ratchet down; got {unexplained} against 1. A body arriving here is one this \
          classifier could not describe, which is the state the rest of the census exists to \
          eliminate"
     );

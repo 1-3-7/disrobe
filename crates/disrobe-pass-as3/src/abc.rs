@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use disrobe_bytes::{ByteReadError, ByteReader, LebError, read_uleb128_at};
 use serde::{Deserialize, Serialize};
@@ -1111,62 +1111,153 @@ fn opcode_u30_operand_count(op: u8) -> u8 {
     }
 }
 
+fn decode_instruction(r: &mut Reader<'_>) -> Result<DisasmLine> {
+    let offset: usize = r.position();
+    let op: u8 = r.u8()?;
+    let mnemonic: &'static str = opcode_mnemonic(op);
+    let mut operands: Vec<i64> = Vec::new();
+    match op {
+        0x0C..=0x1A => {
+            let target: i32 = r.s24()?;
+            operands.push(i64::from(target));
+        }
+        0x24 => {
+            let byte: u8 = r.u8()?;
+            operands.push(i64::from(byte.cast_signed()));
+        }
+        0x65 => {
+            let scope_index: u8 = r.u8()?;
+            operands.push(i64::from(scope_index));
+        }
+        0x25 => {
+            let short: i32 = r.s32_var()?;
+            operands.push(i64::from(short));
+        }
+        0x1B => {
+            let default_offset: i32 = r.s24()?;
+            operands.push(i64::from(default_offset));
+            let case_count: u32 = r.u30()?;
+            operands.push(i64::from(case_count));
+            for _ in 0..=case_count {
+                let case_target: i32 = r.s24()?;
+                operands.push(i64::from(case_target));
+            }
+        }
+        0xEF => {
+            operands.push(i64::from(r.u8()?));
+            operands.push(i64::from(r.u30()?));
+            operands.push(i64::from(r.u8()?));
+            operands.push(i64::from(r.u30()?));
+        }
+        _ => {
+            let n: u8 = opcode_u30_operand_count(op);
+            for _ in 0..n {
+                operands.push(i64::from(r.u30()?));
+            }
+        }
+    }
+    Ok(DisasmLine {
+        offset,
+        opcode: op,
+        mnemonic,
+        operands,
+    })
+}
+
 pub fn disasm(code: &[u8]) -> Result<Vec<DisasmLine>> {
     let mut r: Reader<'_> = Reader::new(code);
     let mut out: Vec<DisasmLine> = Vec::new();
     while !r.is_empty() {
-        let offset: usize = r.position();
-        let op: u8 = r.u8()?;
-        let mnemonic: &'static str = opcode_mnemonic(op);
-        let mut operands: Vec<i64> = Vec::new();
-        match op {
-            0x0C..=0x1A => {
-                let target: i32 = r.s24()?;
-                operands.push(i64::from(target));
-            }
-            0x24 => {
-                let byte: u8 = r.u8()?;
-                operands.push(i64::from(byte.cast_signed()));
-            }
-            0x65 => {
-                let scope_index: u8 = r.u8()?;
-                operands.push(i64::from(scope_index));
-            }
-            0x25 => {
-                let short: i32 = r.s32_var()?;
-                operands.push(i64::from(short));
-            }
-            0x1B => {
-                let default_offset: i32 = r.s24()?;
-                operands.push(i64::from(default_offset));
-                let case_count: u32 = r.u30()?;
-                operands.push(i64::from(case_count));
-                for _ in 0..=case_count {
-                    let case_target: i32 = r.s24()?;
-                    operands.push(i64::from(case_target));
-                }
-            }
-            0xEF => {
-                operands.push(i64::from(r.u8()?));
-                operands.push(i64::from(r.u30()?));
-                operands.push(i64::from(r.u8()?));
-                operands.push(i64::from(r.u30()?));
-            }
-            _ => {
-                let n: u8 = opcode_u30_operand_count(op);
-                for _ in 0..n {
-                    operands.push(i64::from(r.u30()?));
-                }
-            }
-        }
-        out.push(DisasmLine {
-            offset,
-            opcode: op,
-            mnemonic,
-            operands,
-        });
+        out.push(decode_instruction(&mut r)?);
     }
     Ok(out)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReachableCode {
+    pub lines: Vec<DisasmLine>,
+    pub ends: BTreeMap<usize, usize>,
+}
+
+impl ReachableCode {
+    #[must_use]
+    pub fn end_offset(&self) -> usize {
+        self.lines
+            .last()
+            .and_then(|line: &DisasmLine| self.ends.get(&line.offset))
+            .copied()
+            .unwrap_or(0)
+    }
+}
+
+fn displaced(base: usize, relative: i64) -> Option<usize> {
+    let delta: isize = isize::try_from(relative).ok()?;
+    base.checked_add_signed(delta)
+}
+
+fn flow_successors(line: &DisasmLine, end: usize, out: &mut Vec<usize>) {
+    let first: i64 = line.operands.first().copied().unwrap_or(0);
+    match line.opcode {
+        0x03 | 0x47 | 0x48 => {}
+        0x10 => out.extend(displaced(end, first)),
+        0x0C..=0x1A => {
+            out.extend(displaced(end, first));
+            out.push(end);
+        }
+        0x1B => {
+            out.extend(displaced(line.offset, first));
+            for relative in line.operands.get(2..).unwrap_or(&[]) {
+                out.extend(displaced(line.offset, *relative));
+            }
+        }
+        _ => out.push(end),
+    }
+}
+
+pub fn disasm_reachable(code: &[u8], exceptions: &[ExceptionInfo]) -> Result<ReachableCode> {
+    let mut decoded: BTreeMap<usize, (DisasmLine, usize)> = BTreeMap::new();
+    let mut pending: BTreeSet<usize> = BTreeSet::new();
+    if !code.is_empty() {
+        pending.insert(0);
+    }
+    for exception in exceptions {
+        let target: usize = exception.target as usize;
+        if target < code.len() {
+            pending.insert(target);
+        }
+    }
+    let mut successors: Vec<usize> = Vec::new();
+    while let Some(offset) = pending.pop_first() {
+        let mut r: Reader<'_> = Reader::new(code);
+        r.take(offset)?;
+        let line: DisasmLine = decode_instruction(&mut r)?;
+        let end: usize = r.position();
+        successors.clear();
+        flow_successors(&line, end, &mut successors);
+        decoded.insert(offset, (line, end));
+        for target in &successors {
+            if *target < code.len() && !decoded.contains_key(target) {
+                pending.insert(*target);
+            }
+        }
+    }
+    let mut lines: Vec<DisasmLine> = Vec::with_capacity(decoded.len());
+    let mut ends: BTreeMap<usize, usize> = BTreeMap::new();
+    let mut previous: Option<(usize, usize)> = None;
+    for (offset, (line, end)) in decoded {
+        if let Some((previous_offset, previous_end)) = previous
+            && offset < previous_end
+        {
+            return Err(Error::AbcOverlappingInstructions {
+                offset,
+                previous: previous_offset,
+            });
+        }
+        previous = Some((offset, end));
+        ends.insert(offset, end);
+        lines.push(line);
+    }
+    Ok(ReachableCode { lines, ends })
 }
 
 #[cfg(test)]
@@ -1406,6 +1497,78 @@ mod tests {
         assert_eq!(lines.len(), 2);
         assert_eq!(lines[0].mnemonic, "getlocal_0");
         assert_eq!(lines[1].mnemonic, "returnvoid");
+    }
+
+    #[test]
+    fn reachable_disasm_skips_junk_after_an_unconditional_jump() {
+        let code: [u8; 7] = [0xD0, 0x10, 0x01, 0x00, 0x00, 0x24, 0x48];
+        let linear: Vec<DisasmLine> = disasm(&code).expect("linear disasm");
+        assert_eq!(
+            linear.last().map(|line: &DisasmLine| line.mnemonic),
+            Some("pushbyte")
+        );
+        let reachable: ReachableCode = disasm_reachable(&code, &[]).expect("reachable disasm");
+        let offsets: Vec<(usize, &str)> = reachable
+            .lines
+            .iter()
+            .map(|line: &DisasmLine| (line.offset, line.mnemonic))
+            .collect();
+        assert_eq!(
+            offsets,
+            vec![(0, "getlocal_0"), (1, "jump"), (6, "returnvalue")]
+        );
+        assert_eq!(reachable.ends.get(&1), Some(&5));
+        assert_eq!(reachable.end_offset(), 7);
+    }
+
+    #[test]
+    fn reachable_disasm_seeds_exception_handlers_and_ignores_wild_targets() {
+        let code: [u8; 9] = [0x10, 0x10, 0x00, 0x00, 0x47, 0xFF, 0x2A, 0x29, 0x47];
+        let handler: ExceptionInfo = ExceptionInfo {
+            from: 0,
+            to: 4,
+            target: 6,
+            exc_type: 0,
+            var_name: 0,
+        };
+        let wild: ExceptionInfo = ExceptionInfo {
+            target: 900,
+            ..handler
+        };
+        let reachable: ReachableCode =
+            disasm_reachable(&code, &[handler, wild]).expect("reachable disasm");
+        let offsets: Vec<usize> = reachable
+            .lines
+            .iter()
+            .map(|line: &DisasmLine| line.offset)
+            .collect();
+        assert_eq!(offsets, vec![0, 6, 7, 8]);
+    }
+
+    #[test]
+    fn reachable_disasm_rejects_overlapping_instructions() {
+        let code: [u8; 7] = [0x10, 0xFC, 0xFF, 0xFF, 0x47, 0x47, 0x47];
+        let reachable: ReachableCode =
+            disasm_reachable(&code, &[]).expect("a jump to itself is decodable");
+        assert_eq!(reachable.lines.len(), 1);
+        let overlapping: [u8; 6] = [0x12, 0xFD, 0xFF, 0xFF, 0x47, 0x47];
+        let error: Error =
+            disasm_reachable(&overlapping, &[]).expect_err("overlapping streams are refused");
+        assert!(matches!(
+            error,
+            Error::AbcOverlappingInstructions {
+                offset: 1,
+                previous: 0
+            }
+        ));
+    }
+
+    #[test]
+    fn reachable_disasm_reports_truncated_reachable_code() {
+        let code: [u8; 2] = [0xD0, 0x24];
+        let error: Error = disasm_reachable(&code, &[]).expect_err("truncated operand");
+        assert!(matches!(error, Error::AbcTruncated { .. }));
+        assert!(disasm_reachable(&[], &[]).expect("empty").lines.is_empty());
     }
 
     #[test]

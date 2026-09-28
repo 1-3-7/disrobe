@@ -1,8 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use crate::abc::{AbcFile, DisasmLine, ExceptionInfo, MethodBody, MethodInfo, Multiname, disasm};
+use crate::abc::{
+    AbcFile, DisasmLine, ExceptionInfo, MethodBody, MethodInfo, Multiname, ReachableCode,
+    disasm_reachable,
+};
 use crate::debug::{dbg_enabled, dbg_kv, dbg_line};
-use crate::error::Result;
+use crate::error::{Error, Result};
 
 fn push_format(out: &mut String, args: std::fmt::Arguments<'_>) {
     let result: std::result::Result<(), std::fmt::Error> = std::fmt::write(out, args);
@@ -336,6 +339,94 @@ fn dup_clone(e: &Expr) -> Expr {
     } else {
         e.clone()
     }
+}
+
+const MAX_EXPR_DEPTH: usize = 2048;
+
+fn visit_children<'a>(e: &'a Expr, mut visit: impl FnMut(&'a Expr)) {
+    match e {
+        Expr::Binary { lhs, rhs, .. }
+        | Expr::Index {
+            object: lhs,
+            index: rhs,
+        }
+        | Expr::IsType {
+            operand: lhs,
+            ty: rhs,
+        }
+        | Expr::AsType {
+            operand: lhs,
+            ty: rhs,
+        } => {
+            visit(lhs);
+            visit(rhs);
+        }
+        Expr::Unary { operand: value, .. }
+        | Expr::Update { operand: value, .. }
+        | Expr::Coerce { operand: value, .. }
+        | Expr::Typeof(value)
+        | Expr::Get { object: value, .. }
+        | Expr::Delete { object: value, .. }
+        | Expr::Descendants { object: value, .. } => visit(value),
+        Expr::Ternary {
+            cond,
+            then_value,
+            else_value,
+        } => {
+            visit(cond);
+            visit(then_value);
+            visit(else_value);
+        }
+        Expr::Call {
+            callee: head, args, ..
+        }
+        | Expr::Construct {
+            callee: head, args, ..
+        }
+        | Expr::New { ty: head, args }
+        | Expr::Applied { base: head, args } => {
+            visit(head);
+            args.iter().for_each(&mut visit);
+        }
+        Expr::Array(items) => items.iter().for_each(&mut visit),
+        Expr::Object(pairs) => {
+            for (key, value) in pairs {
+                visit(key);
+                visit(value);
+            }
+        }
+        Expr::This
+        | Expr::Local(_)
+        | Expr::Param(_)
+        | Expr::IntLit(_)
+        | Expr::UintLit(_)
+        | Expr::DoubleLit(_)
+        | Expr::StringLit(_)
+        | Expr::BoolLit(_)
+        | Expr::Null
+        | Expr::Undefined
+        | Expr::NaN
+        | Expr::Name(_)
+        | Expr::Lex(_)
+        | Expr::Closure(_)
+        | Expr::ScopeObject
+        | Expr::Activation
+        | Expr::CatchScope
+        | Expr::CaughtException
+        | Expr::Phi { .. }
+        | Expr::Opaque(_) => {}
+    }
+}
+
+fn expr_depth_exceeds(root: &Expr, cap: usize) -> bool {
+    let mut pending: Vec<(&Expr, usize)> = vec![(root, 1)];
+    while let Some((expr, depth)) = pending.pop() {
+        if depth > cap {
+            return true;
+        }
+        visit_children(expr, |child: &Expr| pending.push((child, depth + 1)));
+    }
+    false
 }
 
 fn render_args(args: &[Expr], names: &LocalNames) -> String {
@@ -919,6 +1010,7 @@ struct Lifter<'a> {
     scope_tracking_exhausted: bool,
     switch_direction_refusals: BTreeSet<usize>,
     switch_budget_refusals: BTreeSet<usize>,
+    expr_depth_exceeded: bool,
 }
 
 impl Lifter<'_> {
@@ -1199,6 +1291,11 @@ impl Lifter<'_> {
     }
 
     fn push(&mut self, e: Expr) {
+        if expr_depth_exceeds(&e, MAX_EXPR_DEPTH) {
+            self.expr_depth_exceeded = true;
+            self.stack.push(Expr::Opaque("?"));
+            return;
+        }
         self.stack.push(e);
     }
 
@@ -1841,18 +1938,12 @@ fn relative_target(base: usize, rel: i64) -> usize {
     }
 }
 
-fn collect_labels(lines: &[DisasmLine], exceptions: &[ExceptionInfo]) -> BTreeSet<usize> {
-    let next_offset: BTreeMap<usize, usize> = lines
-        .windows(2)
-        .map(|w: &[DisasmLine]| (w[0].offset, w[1].offset))
-        .collect();
-    let end_offset: usize = lines.last().map_or(0, |l: &DisasmLine| {
-        next_offset.get(&l.offset).copied().unwrap_or(l.offset)
-    });
+fn collect_labels(code: &ReachableCode, exceptions: &[ExceptionInfo]) -> BTreeSet<usize> {
+    let end_offset: usize = code.end_offset();
     let mut labels: BTreeSet<usize> = BTreeSet::new();
-    for line in lines {
+    for line in &code.lines {
         if matches!(line.opcode, 0x0C..=0x1A) {
-            let after: usize = next_offset.get(&line.offset).copied().unwrap_or(end_offset);
+            let after: usize = code.ends.get(&line.offset).copied().unwrap_or(end_offset);
             if let Some(rel) = line.operands.first() {
                 labels.insert(relative_target(after, *rel));
             }
@@ -1879,6 +1970,7 @@ const MAX_MERGE_DEFINITIONS: usize = 4096;
 const MAX_TERNARY_FOLDS: usize = 64;
 const MAX_NEGATION_DEPTH: usize = 32;
 const MAX_OR_GUARD_TESTS: usize = 64;
+const MAX_LOOSE_DISPATCH_CONDITIONS: usize = 256;
 const STACK_CONFLICT_MARKER: &str = "unreconciled stack merge";
 const STACK_HEIGHT_CONFLICT_MARKER: &str = "unreconciled stack height";
 const SCOPE_HEIGHT_CONFLICT_MARKER: &str = "unreconciled scope height";
@@ -2138,7 +2230,7 @@ fn reaches_forward_join(
 
 fn block_entry_heights(
     abc: &AbcFile,
-    lines: &[DisasmLine],
+    code: &ReachableCode,
     labels: &BTreeSet<usize>,
     names: &LocalNames,
     slot_names: &BTreeMap<u32, String>,
@@ -2162,13 +2254,9 @@ fn block_entry_heights(
             switch_budget_refusals: BTreeSet::new(),
         };
     }
-    let next_offset: BTreeMap<usize, usize> = lines
-        .windows(2)
-        .map(|w: &[DisasmLine]| (w[0].offset, w[1].offset))
-        .collect();
-    let end_off: usize = lines.last().map_or(0, |l: &DisasmLine| {
-        next_offset.get(&l.offset).copied().unwrap_or(l.offset + 1)
-    });
+    let lines: &[DisasmLine] = &code.lines;
+    let next_offset: &BTreeMap<usize, usize> = &code.ends;
+    let end_off: usize = code.end_offset();
     let mut scratch: Lifter<'_> = Lifter {
         abc,
         stack: Vec::with_capacity(STACK_SENTINEL_DEPTH + 8),
@@ -2195,6 +2283,7 @@ fn block_entry_heights(
         scope_tracking_exhausted: false,
         switch_direction_refusals: BTreeSet::new(),
         switch_budget_refusals: BTreeSet::new(),
+        expr_depth_exceeded: false,
     };
     let mut line_by_offset: BTreeMap<usize, &DisasmLine> = BTreeMap::new();
     let mut succs: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
@@ -4410,6 +4499,9 @@ fn collect_dispatch_tests(
 fn combine_loose_dispatch_conditions(
     conditions: Vec<Expr>,
 ) -> core::result::Result<Expr, &'static str> {
+    if conditions.len() > MAX_LOOSE_DISPATCH_CONDITIONS {
+        return Err(SWITCH_ANALYSIS_BUDGET_MARKER);
+    }
     let mut conditions: std::vec::IntoIter<Expr> = conditions.into_iter();
     let mut combined: Expr = conditions.next().ok_or(SWITCH_IRREDUCIBLE_REFUSAL_MARKER)?;
     for condition in conditions {
@@ -4428,6 +4520,9 @@ fn build_loose_forward_dispatch(
 ) -> core::result::Result<Stmt, &'static str> {
     if arms.is_empty() || arms.iter().any(|arm: &ForwardDispatchArm| !arm.breaks) {
         return Err(SWITCH_IRREDUCIBLE_REFUSAL_MARKER);
+    }
+    if arms.len() > MAX_STRUCTURE_DEPTH {
+        return Err(SWITCH_ANALYSIS_BUDGET_MARKER);
     }
     let mut else_body: Vec<Stmt> = default_body;
     for arm in arms.into_iter().rev() {
@@ -7011,19 +7106,15 @@ fn lift_raw(
     body: &MethodBody,
     info: Option<&MethodInfo>,
 ) -> Result<(Vec<Stmt>, Vec<u8>, usize)> {
-    let lines: Vec<DisasmLine> = disasm(&body.code)?;
-    let labels: BTreeSet<usize> = collect_labels(&lines, &body.exceptions);
+    let code: ReachableCode = disasm_reachable(&body.code, &body.exceptions)?;
+    let lines: &[DisasmLine] = &code.lines;
+    let labels: BTreeSet<usize> = collect_labels(&code, &body.exceptions);
     let names: LocalNames = local_names_for(abc, info);
     let slot_names: BTreeMap<u32, String> = build_slot_names(abc, body);
-    let next_offset: BTreeMap<usize, usize> = lines
-        .windows(2)
-        .map(|w: &[DisasmLine]| (w[0].offset, w[1].offset))
-        .collect();
-    let end_off: usize = lines.last().map_or(0, |l: &DisasmLine| {
-        next_offset.get(&l.offset).copied().unwrap_or(l.offset + 1)
-    });
+    let next_offset: &BTreeMap<usize, usize> = &code.ends;
+    let end_off: usize = code.end_offset();
     let stack_analysis: StackAnalysis =
-        block_entry_heights(abc, &lines, &labels, &names, &slot_names, &body.exceptions);
+        block_entry_heights(abc, &code, &labels, &names, &slot_names, &body.exceptions);
     let exc_targets: BTreeSet<usize> = body
         .exceptions
         .iter()
@@ -7039,7 +7130,7 @@ fn lift_raw(
         opaque_operands: 0,
         scope_stack: Vec::new(),
         with_regions: Vec::new(),
-        idioms: detect_idioms(&lines),
+        idioms: detect_idioms(lines),
         short_circuits: Vec::new(),
         branch_marks: Vec::new(),
         hoisted_temporaries: 0,
@@ -7055,10 +7146,11 @@ fn lift_raw(
         scope_tracking_exhausted: false,
         switch_direction_refusals: stack_analysis.switch_direction_refusals.clone(),
         switch_budget_refusals: stack_analysis.switch_budget_refusals.clone(),
+        expr_depth_exceeded: false,
     };
     let reachable: BTreeSet<usize> =
-        reachable_offsets(&lines, &next_offset, end_off, &body.exceptions);
-    for line in &lines {
+        reachable_offsets(lines, next_offset, end_off, &body.exceptions);
+    for line in lines {
         if !reachable.contains(&line.offset) {
             continue;
         }
@@ -7071,6 +7163,11 @@ fn lift_raw(
         }
         let next_off: usize = next_offset.get(&line.offset).copied().unwrap_or(end_off);
         step(&mut lifter, line, next_off, end_off);
+        if lifter.expr_depth_exceeded {
+            return Err(Error::ExprDepthExceeded {
+                cap: MAX_EXPR_DEPTH,
+            });
+        }
     }
     lifter.apply_pending_merge_definitions();
     let dropped_opcodes: Vec<u8> = lifter.dropped_opcodes.clone();
@@ -7092,8 +7189,9 @@ pub fn lift_body(
     body: &MethodBody,
     info: Option<&MethodInfo>,
 ) -> Result<LiftedBody> {
-    let lines: Vec<DisasmLine> = disasm(&body.code)?;
-    let labels: BTreeSet<usize> = collect_labels(&lines, &body.exceptions);
+    let code: ReachableCode = disasm_reachable(&body.code, &body.exceptions)?;
+    let lines: &[DisasmLine] = &code.lines;
+    let labels: BTreeSet<usize> = collect_labels(&code, &body.exceptions);
     let names: LocalNames = local_names_for(abc, info);
     if dbg_enabled() {
         let named_params: usize = names
@@ -7117,15 +7215,10 @@ pub fn lift_body(
         }
     }
     let slot_names: BTreeMap<u32, String> = build_slot_names(abc, body);
-    let next_offset: BTreeMap<usize, usize> = lines
-        .windows(2)
-        .map(|w: &[DisasmLine]| (w[0].offset, w[1].offset))
-        .collect();
-    let end_off: usize = lines.last().map_or(0, |l: &DisasmLine| {
-        next_offset.get(&l.offset).copied().unwrap_or(l.offset + 1)
-    });
+    let next_offset: &BTreeMap<usize, usize> = &code.ends;
+    let end_off: usize = code.end_offset();
     let stack_analysis: StackAnalysis =
-        block_entry_heights(abc, &lines, &labels, &names, &slot_names, &body.exceptions);
+        block_entry_heights(abc, &code, &labels, &names, &slot_names, &body.exceptions);
     let exc_targets: BTreeSet<usize> = body
         .exceptions
         .iter()
@@ -7141,7 +7234,7 @@ pub fn lift_body(
         opaque_operands: 0,
         scope_stack: Vec::new(),
         with_regions: Vec::new(),
-        idioms: detect_idioms(&lines),
+        idioms: detect_idioms(lines),
         short_circuits: Vec::new(),
         branch_marks: Vec::new(),
         hoisted_temporaries: 0,
@@ -7157,10 +7250,11 @@ pub fn lift_body(
         scope_tracking_exhausted: false,
         switch_direction_refusals: stack_analysis.switch_direction_refusals.clone(),
         switch_budget_refusals: stack_analysis.switch_budget_refusals.clone(),
+        expr_depth_exceeded: false,
     };
     let reachable: BTreeSet<usize> =
-        reachable_offsets(&lines, &next_offset, end_off, &body.exceptions);
-    for line in &lines {
+        reachable_offsets(lines, next_offset, end_off, &body.exceptions);
+    for line in lines {
         if !reachable.contains(&line.offset) {
             continue;
         }
@@ -7173,6 +7267,11 @@ pub fn lift_body(
         }
         let next_off: usize = next_offset.get(&line.offset).copied().unwrap_or(end_off);
         step(&mut lifter, line, next_off, end_off);
+        if lifter.expr_depth_exceeded {
+            return Err(Error::ExprDepthExceeded {
+                cap: MAX_EXPR_DEPTH,
+            });
+        }
     }
     lifter.apply_pending_merge_definitions();
     let regions: Vec<RegionInfo> = resolve_regions(&lifter, &body.exceptions);
@@ -9265,6 +9364,7 @@ mod tests {
             scope_tracking_exhausted: false,
             switch_direction_refusals: BTreeSet::new(),
             switch_budget_refusals: BTreeSet::new(),
+            expr_depth_exceeded: false,
         };
         let line: DisasmLine = DisasmLine {
             offset: 0,
@@ -9275,6 +9375,69 @@ mod tests {
         step(&mut lifter, &line, 1, 1);
         assert_eq!(lifter.opaque_operands, 1);
         assert!(matches!(lifter.stack.as_slice(), [Expr::Call { .. }]));
+    }
+
+    fn add_chain(adds: usize) -> MethodBody {
+        let mut code: Vec<u8> = Vec::with_capacity(adds * 2 + 2);
+        code.push(0xD0);
+        for _ in 0..adds {
+            code.extend_from_slice(&[0xD0, 0xA0]);
+        }
+        code.push(0x48);
+        body_with_code(code)
+    }
+
+    #[test]
+    fn operator_chain_at_the_depth_cap_lifts_and_renders() {
+        let abc: AbcFile = bare_abc();
+        let body: MethodBody = add_chain(MAX_EXPR_DEPTH - 1);
+        let lifted: LiftedBody = lift_body(&abc, &body, None).expect("a chain at the cap lifts");
+        let copy: LiftedBody = lifted.clone();
+        assert_eq!(copy.statements, lifted.statements);
+        let rendered: String = render_body(&lifted, &names(), "");
+        assert_eq!(rendered.matches(" + ").count(), MAX_EXPR_DEPTH - 1);
+        assert!(lifted.structurally_recovered, "{rendered}");
+    }
+
+    #[test]
+    fn operator_chain_one_past_the_depth_cap_is_refused() {
+        let abc: AbcFile = bare_abc();
+        let body: MethodBody = add_chain(MAX_EXPR_DEPTH);
+        let error: Error = lift_body(&abc, &body, None).expect_err("one past the cap is refused");
+        assert!(matches!(
+            error,
+            Error::ExprDepthExceeded { cap } if cap == MAX_EXPR_DEPTH
+        ));
+        let raw_error: Error =
+            lift_body_raw(&abc, &body, None).expect_err("the raw lift refuses the same chain");
+        assert!(matches!(raw_error, Error::ExprDepthExceeded { .. }));
+    }
+
+    #[test]
+    fn loose_dispatch_beyond_its_bounds_is_refused() {
+        let condition: Expr = Expr::Binary {
+            op: "==",
+            lhs: Box::new(Expr::Local(1)),
+            rhs: Box::new(Expr::IntLit(0)),
+        };
+        let too_many_conditions: Vec<Expr> =
+            vec![condition.clone(); MAX_LOOSE_DISPATCH_CONDITIONS + 1];
+        assert_eq!(
+            combine_loose_dispatch_conditions(too_many_conditions).err(),
+            Some(SWITCH_ANALYSIS_BUDGET_MARKER)
+        );
+        let arms: Vec<ForwardDispatchArm> = (0..=MAX_STRUCTURE_DEPTH)
+            .map(|_: usize| ForwardDispatchArm {
+                case_consts: vec![Expr::IntLit(0)],
+                loose_conditions: vec![condition.clone()],
+                body: vec![Stmt::Return(None)],
+                breaks: true,
+            })
+            .collect();
+        assert_eq!(
+            build_loose_forward_dispatch(arms, Vec::new()).err(),
+            Some(SWITCH_ANALYSIS_BUDGET_MARKER)
+        );
     }
 
     #[test]
