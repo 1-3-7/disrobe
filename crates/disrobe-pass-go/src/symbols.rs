@@ -551,13 +551,18 @@ pub(crate) fn read_word(buf: &[u8], off: usize, header: &PclntabHeader) -> Resul
     }
 }
 
+const MAX_GO_NAME_BYTES: usize = 4096;
+
 fn read_cstring(buf: &[u8], off: usize) -> String {
-    if off >= buf.len() {
+    let Some(tail): Option<&[u8]> = buf.get(off..) else {
         return String::new();
+    };
+    let window: &[u8] = &tail[..tail.len().min(MAX_GO_NAME_BYTES + 1)];
+    match window.iter().position(|b: &u8| *b == 0) {
+        Some(end) => String::from_utf8_lossy(&window[..end]).into_owned(),
+        None if tail.len() <= MAX_GO_NAME_BYTES => String::from_utf8_lossy(tail).into_owned(),
+        None => String::new(),
     }
-    let tail: &[u8] = &buf[off..];
-    let end: usize = tail.iter().position(|b: &u8| *b == 0).unwrap_or(tail.len());
-    String::from_utf8_lossy(&tail[..end]).into_owned()
 }
 
 #[must_use]
@@ -722,6 +727,16 @@ pub fn package_histogram(syms: &GoSymbols) -> BTreeMap<String, usize> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_name_without_a_terminator_inside_the_cap_is_absent() {
+        let mut buf: Vec<u8> = b"main.main\0".to_vec();
+        assert_eq!(read_cstring(&buf, 0), "main.main");
+        buf = vec![b'a'; super::MAX_GO_NAME_BYTES * 4];
+        assert_eq!(read_cstring(&buf, 0), "");
+        buf = vec![b'b'; 16];
+        assert_eq!(read_cstring(&buf, 0), "b".repeat(16));
+    }
 
     #[test]
     fn package_path_recovers_dotted_import_paths() {
