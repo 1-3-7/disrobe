@@ -886,7 +886,11 @@ pub fn render(dis: &Disassembly) -> String {
         };
         out.push_str(&format!(
             "{:>6}: {} {}{} {}\n",
-            insn.offset, insn.opcode as char, pad, insn.name, arg_str
+            insn.offset,
+            opcode_repr(insn.opcode),
+            pad,
+            insn.name,
+            arg_str
         ));
         if insn.effect == Effect::PushMark {
             indent += 1;
@@ -895,10 +899,28 @@ pub fn render(dis: &Disassembly) -> String {
     out
 }
 
+fn opcode_repr(opcode: u8) -> String {
+    if opcode.is_ascii_graphic() {
+        char::from(opcode).to_string()
+    } else {
+        format!("\\x{opcode:02x}")
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn protocol_two_opcodes_render_as_pickletools_escapes() {
+        let dis: Disassembly = disassemble(b"\x80\x02K\x01.").expect("disassemble");
+        let text: String = render(&dis);
+        let first: &str = text.lines().next().expect("first line");
+        assert!(first.contains(r"\x80 PROTO"), "{text}");
+        assert!(!text.contains('\u{80}'), "{text}");
+        assert!(text.contains(": K "), "{text}");
+    }
 
     #[test]
     fn stacked_streams_are_split_at_each_stop() {
