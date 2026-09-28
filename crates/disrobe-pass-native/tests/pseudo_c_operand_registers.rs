@@ -226,17 +226,48 @@ const STUBS: &[Stub] = &[
         expect: Expect::Equivalent,
         abi: StubAbi::Host,
     },
+    Stub {
+        name: "abi_setcc_then_full_read_keeps_parameter",
+        body: "cmp $a0, $a1\nsetle $a0b\nmov rax, $a0\nret",
+        expect: Expect::Equivalent,
+        abi: StubAbi::Host,
+    },
+    Stub {
+        name: "abi_setcc_then_word_read_keeps_parameter",
+        body: "cmp $a0, $a1\nsetle $a0b\nmovzx eax, $a0w\nret",
+        expect: Expect::Equivalent,
+        abi: StubAbi::Host,
+    },
+    Stub {
+        name: "abi_byte_move_then_full_read_keeps_parameter",
+        body: "mov $a0b, $a1b\nmov rax, $a0\nret",
+        expect: Expect::Equivalent,
+        abi: StubAbi::Host,
+    },
+    Stub {
+        name: "abi_sysv_setcc_zero_extended_is_no_parameter",
+        body: "cmp rdi, rsi\nsetle cl\nmovzx ecx, cl\nlea rax, [rcx+rdi]\nret",
+        expect: Expect::Equivalent,
+        abi: StubAbi::SysV,
+    },
+    Stub {
+        name: "abi_sysv_setcc_byte_reads_are_no_parameter",
+        body: "xor eax, eax\ncmp rdi, rsi\nsetle cl\nadd cl, cl\nmov al, cl\nret",
+        expect: Expect::Equivalent,
+        abi: StubAbi::SysV,
+    },
 ];
 
 fn active_stubs() -> impl Iterator<Item = &'static Stub> {
     STUBS.iter().filter(|stub: &&Stub| stub.abi.active())
 }
 
-fn argument_registers(abi: PseudoAbi) -> [(&'static str, &'static str); 7] {
+fn argument_registers(abi: PseudoAbi) -> [(&'static str, &'static str); 8] {
     if abi == PseudoAbi::MsX64 {
         [
             ("$a0d", "ecx"),
             ("$a0w", "cx"),
+            ("$a0b", "cl"),
             ("$a1d", "edx"),
             ("$a1w", "dx"),
             ("$a1b", "dl"),
@@ -247,6 +278,7 @@ fn argument_registers(abi: PseudoAbi) -> [(&'static str, &'static str); 7] {
         [
             ("$a0d", "edi"),
             ("$a0w", "di"),
+            ("$a0b", "dil"),
             ("$a1d", "esi"),
             ("$a1w", "si"),
             ("$a1b", "sil"),
@@ -316,36 +348,41 @@ fn driver(recovered_decls: &str, flag_decls: &str, driver_body: &str) -> String 
     )
 }
 
-fn recovered_decl(name: &str, recovery: &LeafRecovery) -> String {
+fn recovered_decl(name: &str, recovery: &LeafRecovery, earlier: &str) -> String {
     recovery
         .source
         .replacen("uint64_t recovered(", &format!("uint64_t rec_{name}("), 1)
         .lines()
-        .filter(|line: &&str| !line.starts_with("#include"))
+        .filter(|line: &&str| {
+            let repeated_helper: bool = line.starts_with("static inline ")
+                && earlier.lines().any(|seen: &str| seen == *line);
+            !line.starts_with("#include") && !repeated_helper
+        })
         .collect::<Vec<&str>>()
         .join("\n")
 }
 
-fn comparison(name: &str, recovery: &LeafRecovery) -> String {
+fn comparison(name: &str, recovery: &LeafRecovery) -> Result<String, String> {
     let arity: usize = recovery.signature.callable_arity();
-    assert!(
-        arity <= 2,
-        "{name} recovered with arity {arity}, above the two authored arguments: {}",
-        recovery.source
-    );
+    if arity > 2 {
+        return Err(format!(
+            "{name} recovered with arity {arity}, above the two authored arguments:\n{}",
+            recovery.source
+        ));
+    }
     let args: String = ["(uint64_t)x", "(uint64_t)y"][..arity].join(", ");
     let mask: String = if recovery.return_width_bits >= 64 {
         "0xffffffffffffffffULL".to_owned()
     } else {
         format!("0x{:x}ULL", (1_u128 << recovery.return_width_bits) - 1)
     };
-    format!(
+    Ok(format!(
         "\x20       {{\n\
          \x20           unsigned long long want = {name}(x, y) & {mask};\n\
          \x20           unsigned long long got = rec_{name}({args}) & {mask};\n\
          \x20           if (want != got && !bad_{name}) {{ bad_{name} = 1; mismatched = 1; printf(\"MISMATCH {name} x=%llx y=%llx want=%llx got=%llx\\n\", x, y, want, got); }}\n\
          \x20       }}\n",
-    )
+    ))
 }
 
 #[derive(Default)]
@@ -366,14 +403,20 @@ impl Differential {
         original_decl: &str,
     ) {
         match (expect, outcome) {
-            (Expect::Equivalent, Ok(recovery)) => {
-                self.recovered_decls
-                    .push_str(&recovered_decl(name, &recovery));
-                let _ = writeln!(self.recovered_decls, "\n{original_decl}");
-                let _ = writeln!(self.flag_decls, "    int bad_{name} = 0;");
-                self.driver_body.push_str(&comparison(name, &recovery));
-                self.graded += 1;
-            }
+            (Expect::Equivalent, Ok(recovery)) => match comparison(name, &recovery) {
+                Ok(check) => {
+                    self.recovered_decls.push_str(&recovered_decl(
+                        name,
+                        &recovery,
+                        &self.recovered_decls,
+                    ));
+                    let _ = writeln!(self.recovered_decls, "\n{original_decl}");
+                    let _ = writeln!(self.flag_decls, "    int bad_{name} = 0;");
+                    self.driver_body.push_str(&check);
+                    self.graded += 1;
+                }
+                Err(failure) => self.failures.push(failure),
+            },
             (Expect::Equivalent, Err(error)) => {
                 self.failures
                     .push(format!("{name} must lift but was refused: {error}"));
@@ -504,15 +547,18 @@ struct TAG_pair { unsigned long long lo, hi; };\n\
 KEEP struct TAG_pair TAG_make_pair(unsigned long long x) { struct TAG_pair p = { x * 3u, x ^ 0x5555u }; return p; }\n\
 KEEP unsigned long long TAG_pair_xor(unsigned long long x) { struct TAG_pair p = TAG_make_pair(x + 1u); return p.lo ^ p.hi; }\n\
 KEEP unsigned long long TAG_second_only(unsigned long long unused, unsigned long long b) { (void)unused; return b * 3u + 1u; }\n\
-KEEP unsigned long long TAG_min32_plus_high(unsigned long long a, unsigned long long b) { unsigned x = (unsigned)a, y = (unsigned)b; unsigned m = x < y ? x : y; return (unsigned long long)m + (a >> 32); }\n";
+KEEP unsigned long long TAG_min32_plus_high(unsigned long long a, unsigned long long b) { unsigned x = (unsigned)a, y = (unsigned)b; unsigned m = x < y ? x : y; return (unsigned long long)m + (a >> 32); }\n\
+KEEP unsigned long long TAG_second_fp_only(double unused, double b) { union { double d; unsigned long long u; } v = { b }; (void)unused; return v.u * 3u + 1u; }\n";
 
-const SYSV_C_ROWS: [(&str, Expect); 3] = [
+const SYSV_C_ROWS: [(&str, &str, Expect); 4] = [
     (
         "pair_xor",
+        "unsigned long long",
         Expect::Refused("caller-saved register `rdx` is read"),
     ),
-    ("second_only", Expect::Equivalent),
-    ("min32_plus_high", Expect::Equivalent),
+    ("second_only", "unsigned long long", Expect::Equivalent),
+    ("min32_plus_high", "unsigned long long", Expect::Equivalent),
+    ("second_fp_only", "double", Expect::Equivalent),
 ];
 
 #[test]
@@ -551,14 +597,14 @@ fn sysv_callbacks_selects_and_pair_returns_from_gcc_and_clang_recompile_equal_or
             );
             let object_bytes: Vec<u8> =
                 std::fs::read(&object_path).expect("read authored SysV object");
-            for (row, expect) in SYSV_C_ROWS {
+            for (row, parameter, expect) in SYSV_C_ROWS {
                 let name: String = format!("{tag}_{row}");
                 let (code, base): (Vec<u8>, u64) = function_code(&object_bytes, &name)
                     .unwrap_or_else(|| panic!("{name} is not in the {compiler} {opt} object"));
                 let outcome: disrobe_pass_native::Result<LeafRecovery> =
                     recover_leaf_function_abi(&code, base, PseudoAbi::SysV);
                 let original_decl: String = format!(
-                    "extern __attribute__((sysv_abi)) unsigned long long {name}(unsigned long long, unsigned long long);"
+                    "extern __attribute__((sysv_abi)) unsigned long long {name}({parameter}, {parameter});"
                 );
                 differential.record(&name, expect, outcome, &original_decl);
             }

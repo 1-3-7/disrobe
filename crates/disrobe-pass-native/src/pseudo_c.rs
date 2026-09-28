@@ -12214,9 +12214,9 @@ impl OuterResumeTree {
 
     fn scan_gpr_params(
         &self,
-        entry_written: &BTreeMap<Reg, bool>,
+        entry_written: &BTreeMap<Reg, Width>,
         acc: &mut Vec<Reg>,
-        note: &mut impl FnMut(Reg, &BTreeMap<Reg, bool>, &mut Vec<Reg>),
+        note: &mut impl FnMut(Reg, &mut Vec<Reg>),
     ) -> Result<()> {
         let block_count: usize = self.blocks.len();
         if block_count == 0 {
@@ -12250,10 +12250,7 @@ impl OuterResumeTree {
             ));
         }
         let mut predecessors: Vec<Vec<usize>> = vec![Vec::new(); block_count];
-        let mut top: BTreeSet<Reg> = entry_written
-            .iter()
-            .filter_map(|(reg, written): (&Reg, &bool)| written.then_some(*reg))
-            .collect();
+        let mut top: BTreeSet<Reg> = entry_written.keys().copied().collect();
         for (index, block) in self.blocks.iter().enumerate() {
             for successor in block.term.successors() {
                 let Some(incoming): Option<&mut Vec<usize>> =
@@ -12265,27 +12262,21 @@ impl OuterResumeTree {
                 };
                 incoming.push(index);
             }
-            let mut generated: BTreeMap<Reg, bool> = BTreeMap::new();
+            let mut generated: BTreeMap<Reg, Width> = BTreeMap::new();
             let mut ignored_reads: Vec<Reg> = Vec::new();
             scan_gpr_statements(
                 &block.stmts,
                 &mut generated,
                 &mut ignored_reads,
-                &mut |_: Reg, _: &BTreeMap<Reg, bool>, _: &mut Vec<Reg>| {},
+                &mut |_: Reg, _: &mut Vec<Reg>| {},
             );
-            top.extend(
-                generated
-                    .into_iter()
-                    .filter_map(|(reg, written): (Reg, bool)| written.then_some(reg)),
-            );
+            top.extend(generated.into_keys());
         }
-        let entry: BTreeSet<Reg> = entry_written
-            .iter()
-            .filter_map(|(reg, written): (&Reg, &bool)| written.then_some(*reg))
-            .collect();
-        let mut inputs: Vec<BTreeSet<Reg>> = vec![top.clone(); block_count];
-        inputs[0] = entry;
-        let mut outputs: Vec<BTreeSet<Reg>> = self
+        let top_input: BTreeMap<Reg, Width> =
+            top.iter().map(|reg: &Reg| (*reg, Width::W64)).collect();
+        let mut inputs: Vec<BTreeMap<Reg, Width>> = vec![top_input; block_count];
+        inputs[0] = entry_written.clone();
+        let mut outputs: Vec<BTreeMap<Reg, Width>> = self
             .blocks
             .iter()
             .enumerate()
@@ -12307,16 +12298,20 @@ impl OuterResumeTree {
                             .to_owned(),
                     ));
                 }
-                let next_input: BTreeSet<Reg> = top
+                let next_input: BTreeMap<Reg, Width> = top
                     .iter()
-                    .copied()
-                    .filter(|reg: &Reg| {
+                    .filter_map(|reg: &Reg| {
                         incoming
                             .iter()
-                            .all(|predecessor: &usize| outputs[*predecessor].contains(reg))
+                            .try_fold(Width::W64, |defined: Width, predecessor: &usize| {
+                                outputs[*predecessor]
+                                    .get(reg)
+                                    .map(|other: &Width| defined.min(*other))
+                            })
+                            .map(|defined: Width| (*reg, defined))
                     })
                     .collect();
-                let next_output: BTreeSet<Reg> =
+                let next_output: BTreeMap<Reg, Width> =
                     gpr_written_after(&self.blocks[index].stmts, &next_input);
                 if inputs[index] != next_input || outputs[index] != next_output {
                     inputs[index] = next_input;
@@ -12329,11 +12324,7 @@ impl OuterResumeTree {
             }
         }
         for (index, block) in self.blocks.iter().enumerate() {
-            let mut written: BTreeMap<Reg, bool> = inputs[index]
-                .iter()
-                .copied()
-                .map(|reg: Reg| (reg, true))
-                .collect();
+            let mut written: BTreeMap<Reg, Width> = inputs[index].clone();
             scan_gpr_statements(&block.stmts, &mut written, acc, note);
             if let OuterResumeTreeTerm::Branch { flags, .. } = &block.term {
                 read_flags(flags, &written, acc, note);
@@ -12402,29 +12393,25 @@ fn outer_resume_stmt_supported(statement: &Stmt) -> bool {
 
 fn scan_gpr_statements(
     statements: &[Stmt],
-    written: &mut BTreeMap<Reg, bool>,
+    written: &mut BTreeMap<Reg, Width>,
     acc: &mut Vec<Reg>,
-    note: &mut impl FnMut(Reg, &BTreeMap<Reg, bool>, &mut Vec<Reg>),
+    note: &mut impl FnMut(Reg, &mut Vec<Reg>),
 ) {
     for statement in statements {
         scan_stmt_params(statement, written, acc, note);
     }
 }
 
-fn gpr_written_after(statements: &[Stmt], input: &BTreeSet<Reg>) -> BTreeSet<Reg> {
-    let mut written: BTreeMap<Reg, bool> =
-        input.iter().copied().map(|reg: Reg| (reg, true)).collect();
+fn gpr_written_after(statements: &[Stmt], input: &BTreeMap<Reg, Width>) -> BTreeMap<Reg, Width> {
+    let mut written: BTreeMap<Reg, Width> = input.clone();
     let mut ignored_reads: Vec<Reg> = Vec::new();
     scan_gpr_statements(
         statements,
         &mut written,
         &mut ignored_reads,
-        &mut |_: Reg, _: &BTreeMap<Reg, bool>, _: &mut Vec<Reg>| {},
+        &mut |_: Reg, _: &mut Vec<Reg>| {},
     );
     written
-        .into_iter()
-        .filter_map(|(reg, is_written): (Reg, bool)| is_written.then_some(reg))
-        .collect()
 }
 
 fn loop_parent_header(
@@ -15265,13 +15252,10 @@ fn infer_params(body: &Block, abi: Abi) -> Result<Vec<Reg>> {
     let mut packed_initialized: BTreeSet<Xmm> = BTreeSet::new();
     validate_packed_block(body, &mut packed_initialized)?;
     let arg_order: &[Reg] = abi.integer_parameter_order();
-    let mut written: BTreeMap<Reg, bool> = BTreeMap::new();
+    let mut written: BTreeMap<Reg, Width> = BTreeMap::new();
     let mut read_before_write: Vec<Reg> = Vec::new();
-    let mut note_read = |reg: Reg, written: &BTreeMap<Reg, bool>, acc: &mut Vec<Reg>| {
-        if arg_order.contains(&reg)
-            && !written.get(&reg).copied().unwrap_or(false)
-            && !acc.contains(&reg)
-        {
+    let mut note_read = |reg: Reg, acc: &mut Vec<Reg>| {
+        if arg_order.contains(&reg) && !acc.contains(&reg) {
             acc.push(reg);
         }
     };
@@ -15512,6 +15496,22 @@ fn infer_fp_params(body: &Block, abi: Abi) -> Result<Vec<(Xmm, FpWidth)>> {
     let mut written: BTreeMap<Xmm, bool> = BTreeMap::new();
     let mut read_before_write: Vec<(Xmm, FpWidth)> = Vec::new();
     scan_fp_params(body, &mut written, &mut read_before_write, abi)?;
+    if abi != Abi::MsX64
+        && let Some(highest) = read_before_write
+            .iter()
+            .map(|(xmm, _): &(Xmm, FpWidth)| xmm.index())
+            .max()
+    {
+        for xmm in FP_ARG_ORDER {
+            if xmm.index() < highest
+                && !read_before_write
+                    .iter()
+                    .any(|(read, _): &(Xmm, FpWidth)| *read == xmm)
+            {
+                read_before_write.push((xmm, FpWidth::F64));
+            }
+        }
+    }
     read_before_write.sort_by_key(|(x, _): &(Xmm, FpWidth)| x.index());
     Ok(read_before_write)
 }
@@ -16070,26 +16070,24 @@ fn block_terminates(body: &Block) -> bool {
     body.last().is_some_and(node_terminates)
 }
 
-fn merge_gpr_writes(written: &mut BTreeMap<Reg, bool>, branches: &[BTreeMap<Reg, bool>]) {
-    let mut registers: BTreeSet<Reg> = BTreeSet::new();
-    for branch in branches {
-        registers.extend(branch.keys().copied());
+fn merge_gpr_writes(written: &mut BTreeMap<Reg, Width>, branches: &[BTreeMap<Reg, Width>]) {
+    let mut merged: BTreeMap<Reg, Width> = branches.first().cloned().unwrap_or_default();
+    for branch in branches.iter().skip(1) {
+        merged.retain(|reg: &Reg, defined: &mut Width| {
+            branch.get(reg).is_some_and(|other: &Width| {
+                *defined = (*defined).min(*other);
+                true
+            })
+        });
     }
-    written.clear();
-    for register in registers {
-        if branches.iter().all(|branch: &BTreeMap<Reg, bool>| {
-            branch.get(&register).is_some_and(|value: &bool| *value)
-        }) {
-            written.insert(register, true);
-        }
-    }
+    *written = merged;
 }
 
 fn scan_block_params(
     body: &Block,
-    written: &mut BTreeMap<Reg, bool>,
+    written: &mut BTreeMap<Reg, Width>,
     acc: &mut Vec<Reg>,
-    note: &mut impl FnMut(Reg, &BTreeMap<Reg, bool>, &mut Vec<Reg>),
+    note: &mut impl FnMut(Reg, &mut Vec<Reg>),
 ) -> Result<()> {
     for node in body {
         match node {
@@ -16103,11 +16101,11 @@ fn scan_block_params(
                     read_flags(flags, written, acc, note);
                 });
                 let then_terminal: bool = block_terminates(then_body);
-                let mut then_written: BTreeMap<Reg, bool> = written.clone();
+                let mut then_written: BTreeMap<Reg, Width> = written.clone();
                 scan_block_params(then_body, &mut then_written, acc, note)?;
                 if let Some(else_b) = else_body {
                     let else_terminal: bool = block_terminates(else_b);
-                    let mut else_written: BTreeMap<Reg, bool> = written.clone();
+                    let mut else_written: BTreeMap<Reg, Width> = written.clone();
                     scan_block_params(else_b, &mut else_written, acc, note)?;
                     match (then_terminal, else_terminal) {
                         (true, false) => *written = else_written,
@@ -16120,7 +16118,7 @@ fn scan_block_params(
                 }
             }
             Node::DoWhile { body, cond } => {
-                let mut loop_written: BTreeMap<Reg, bool> = written.clone();
+                let mut loop_written: BTreeMap<Reg, Width> = written.clone();
                 scan_block_params(body, &mut loop_written, acc, note)?;
                 if let LoopCond::Direct { flags, .. } = cond {
                     read_flags(flags, &loop_written, acc, note);
@@ -16130,7 +16128,7 @@ fn scan_block_params(
                 if let Some(LoopCond::Direct { flags, .. }) = cond {
                     read_flags(flags, written, acc, note);
                 }
-                let mut loop_written: BTreeMap<Reg, bool> = written.clone();
+                let mut loop_written: BTreeMap<Reg, Width> = written.clone();
                 scan_block_params(body, &mut loop_written, acc, note)?;
             }
             Node::Switch {
@@ -16138,16 +16136,16 @@ fn scan_block_params(
                 cases,
                 default,
             } => {
-                note(disc.reg, written, acc);
-                let mut branches: Vec<BTreeMap<Reg, bool>> = Vec::with_capacity(cases.len() + 1);
+                note_gpr_reads(&[*disc], written, acc, note);
+                let mut branches: Vec<BTreeMap<Reg, Width>> = Vec::with_capacity(cases.len() + 1);
                 for case in cases {
-                    let mut case_written: BTreeMap<Reg, bool> = written.clone();
+                    let mut case_written: BTreeMap<Reg, Width> = written.clone();
                     scan_block_params(&case.body, &mut case_written, acc, note)?;
                     if !block_terminates(&case.body) {
                         branches.push(case_written);
                     }
                 }
-                let mut default_written: BTreeMap<Reg, bool> = written.clone();
+                let mut default_written: BTreeMap<Reg, Width> = written.clone();
                 scan_block_params(default, &mut default_written, acc, note)?;
                 if !block_terminates(default) {
                     branches.push(default_written);
@@ -16173,267 +16171,65 @@ fn scan_block_params(
 
 fn scan_stmt_params(
     stmt: &Stmt,
-    written: &mut BTreeMap<Reg, bool>,
+    written: &mut BTreeMap<Reg, Width>,
     acc: &mut Vec<Reg>,
-    note: &mut impl FnMut(Reg, &BTreeMap<Reg, bool>, &mut Vec<Reg>),
+    note: &mut impl FnMut(Reg, &mut Vec<Reg>),
 ) {
-    match stmt {
-        Stmt::Assign { dest, src } => {
-            read_sources(src, written, acc, note);
-            written.insert(dest.reg, true);
-        }
-        Stmt::BinAssign { dest, src, .. } => {
-            note(dest.reg, written, acc);
-            read_sources(src, written, acc, note);
-            written.insert(dest.reg, true);
-        }
-        Stmt::UnAssign { dest, .. } => {
-            note(dest.reg, written, acc);
-            written.insert(dest.reg, true);
-        }
-        Stmt::Cond {
-            dest, src, flags, ..
-        } => {
-            read_flags(flags, written, acc, note);
-            read_sources(src, written, acc, note);
-            note(dest.reg, written, acc);
-            written.insert(dest.reg, true);
-        }
-        Stmt::SetCc { dest, flags, .. } => {
-            read_flags(flags, written, acc, note);
-            note(dest.reg, written, acc);
-            written.insert(dest.reg, true);
-        }
-        Stmt::FpCsel {
-            if_true,
-            if_false,
-            flags,
-            ..
-        } => {
-            read_flags(flags, written, acc, note);
-            for operand in [if_true, if_false] {
-                if let FpOperand::Mem(mem) = operand {
-                    read_addr(mem, written, acc, note);
-                }
-            }
-        }
-        Stmt::Store { addr, src } => {
-            read_addr(addr, written, acc, note);
-            read_sources(src, written, acc, note);
-        }
-        Stmt::MemRmw { addr, op } => {
-            read_addr(addr, written, acc, note);
-            if let Some(src) = op.source() {
-                read_sources(src, written, acc, note);
-            }
-        }
-        Stmt::Extend { dest, src, .. } => {
-            match src {
-                ExtSource::Reg(r) => note(r.reg, written, acc),
-                ExtSource::Mem(mem) => read_addr(mem, written, acc, note),
-            }
-            written.insert(dest.reg, true);
-        }
-        Stmt::MulImm { dest, src, .. } => {
-            match src {
-                ExtSource::Reg(r) => note(r.reg, written, acc),
-                ExtSource::Mem(mem) => read_addr(mem, written, acc, note),
-            }
-            written.insert(dest.reg, true);
-        }
-        Stmt::WideMul { src, .. } => {
-            note(Reg::Rax, written, acc);
-            note(src.reg, written, acc);
-            written.insert(Reg::Rax, true);
-            written.insert(Reg::Rdx, true);
-        }
-        Stmt::Divide { divisor, .. } => {
-            note(Reg::Rax, written, acc);
-            note(divisor.reg, written, acc);
-            written.insert(Reg::Rax, true);
-            written.insert(Reg::Rdx, true);
-        }
-        Stmt::DoubleShift { dest, src, .. } => {
-            note(dest.reg, written, acc);
-            note(src.reg, written, acc);
-            written.insert(dest.reg, true);
-        }
-        Stmt::BlockMove { .. } => {
-            note(Reg::Rdi, written, acc);
-            note(Reg::Rsi, written, acc);
-            note(Reg::Rcx, written, acc);
-            written.insert(Reg::Rdi, true);
-            written.insert(Reg::Rsi, true);
-            written.insert(Reg::Rcx, true);
-        }
-        Stmt::BlockFill { .. } => {
-            note(Reg::Rdi, written, acc);
-            note(Reg::Rax, written, acc);
-            note(Reg::Rcx, written, acc);
-            written.insert(Reg::Rdi, true);
-            written.insert(Reg::Rcx, true);
-        }
-        Stmt::Call { args, .. } => {
-            for reg in args {
-                note(*reg, written, acc);
-            }
-            written.insert(Reg::Rax, true);
-        }
-        Stmt::IntToFp { src, .. } => {
-            note(src.reg, written, acc);
-        }
-        Stmt::FpToInt { dest, .. } => {
-            written.insert(dest.reg, true);
-        }
-        Stmt::FpBin { lhs, rhs, .. } => {
-            if let FpOperand::Mem(mem) = lhs {
-                read_addr(mem, written, acc, note);
-            }
-            if let FpOperand::Mem(mem) = rhs {
-                read_addr(mem, written, acc, note);
-            }
-        }
-        Stmt::FpMov { src, .. } => {
-            if let FpOperand::Mem(mem) = src {
-                read_addr(mem, written, acc, note);
-            }
-        }
-        Stmt::FpStore { addr, .. } => {
-            read_addr(addr, written, acc, note);
-        }
-        Stmt::FpMinMax { lhs, rhs, .. } => {
-            if let FpOperand::Mem(mem) = lhs {
-                read_addr(mem, written, acc, note);
-            }
-            if let FpOperand::Mem(mem) = rhs {
-                read_addr(mem, written, acc, note);
-            }
-        }
-        Stmt::FpFma {
-            mul_lhs,
-            mul_rhs,
-            addend,
-            ..
-        } => {
-            for operand in [mul_lhs, mul_rhs, addend] {
-                if let FpOperand::Mem(mem) = operand {
-                    read_addr(mem, written, acc, note);
-                }
-            }
-        }
-        Stmt::FpSqrt { src, .. } | Stmt::FpUnary { src, .. } => {
-            if let FpOperand::Mem(mem) = src {
-                read_addr(mem, written, acc, note);
-            }
-        }
-        Stmt::FpRound { src, .. } => {
-            if let FpOperand::Mem(mem) = src {
-                read_addr(mem, written, acc, note);
-            }
-        }
-        Stmt::GprToXmm { src, .. } => {
-            note(src.reg, written, acc);
-        }
-        Stmt::XmmToGpr { dest, .. } => {
-            written.insert(dest.reg, true);
-        }
-        Stmt::FpConvert { .. } => {}
-        Stmt::Packed { op, .. } => {
-            if let PackedOp::FromGpr { src } = op {
-                note(src.reg, written, acc);
-            }
-        }
-        Stmt::PackedToGpr { dest, .. } => {
-            written.insert(dest.reg, true);
-        }
-        Stmt::Vector(vec) => match vec {
-            VecStmt::Load { addr, .. } | VecStmt::Store { addr, .. } => {
-                read_addr(addr, written, acc, note);
-            }
-            VecStmt::Dup { src, .. } | VecStmt::LaneInsert { src, .. } => {
-                note(src.reg, written, acc);
-            }
-            VecStmt::ExtractToGpr { dest, .. } => {
-                written.insert(dest.reg, true);
-            }
-            VecStmt::Bin { .. }
-            | VecStmt::Compare { .. }
-            | VecStmt::MoveImm { .. }
-            | VecStmt::Reduce { .. }
-            | VecStmt::WidenExtend { .. }
-            | VecStmt::WidenAdd { .. } => {}
-        },
-        Stmt::FlagSnapshot { flags, .. } => {
-            read_flags(flags, written, acc, note);
+    let mut reads: Vec<RegRef> = Vec::new();
+    let mut writes: Vec<RegRef> = Vec::new();
+    if let Stmt::Call { args, .. } = stmt {
+        reads.extend(args.iter().map(|reg: &Reg| RegRef {
+            reg: *reg,
+            width: Width::W64,
+        }));
+        writes.push(RegRef {
+            reg: Reg::Rax,
+            width: Width::W64,
+        });
+    } else {
+        call_clobber::gpr_reads(stmt, &mut reads);
+        call_clobber::gpr_writes(stmt, &mut writes);
+    }
+    note_gpr_reads(&reads, written, acc, note);
+    for write in writes {
+        define_gpr(written, write);
+    }
+}
+
+fn note_gpr_reads(
+    reads: &[RegRef],
+    written: &BTreeMap<Reg, Width>,
+    acc: &mut Vec<Reg>,
+    note: &mut impl FnMut(Reg, &mut Vec<Reg>),
+) {
+    for read in reads {
+        if written
+            .get(&read.reg)
+            .is_none_or(|defined: &Width| *defined < read.width)
+        {
+            note(read.reg, acc);
         }
     }
+}
+
+fn define_gpr(written: &mut BTreeMap<Reg, Width>, write: RegRef) {
+    let defined: Width = match write.width {
+        Width::W32 | Width::W64 => Width::W64,
+        Width::W8 | Width::W16 => write.width,
+    };
+    let entry: &mut Width = written.entry(write.reg).or_insert(defined);
+    *entry = (*entry).max(defined);
 }
 
 fn read_flags(
     flags: &Flags,
-    written: &BTreeMap<Reg, bool>,
+    written: &BTreeMap<Reg, Width>,
     acc: &mut Vec<Reg>,
-    note: &mut impl FnMut(Reg, &BTreeMap<Reg, bool>, &mut Vec<Reg>),
+    note: &mut impl FnMut(Reg, &mut Vec<Reg>),
 ) {
-    match flags {
-        Flags::Cmp { lhs, rhs } | Flags::Add { lhs, rhs } => {
-            note(lhs.reg, written, acc);
-            read_sources(rhs, written, acc, note);
-        }
-        Flags::CmpMem { lhs, rhs } => {
-            read_addr(lhs, written, acc, note);
-            read_sources(rhs, written, acc, note);
-        }
-        Flags::Test { operand } | Flags::TestImm { operand, .. } => {
-            note(operand.reg, written, acc);
-        }
-        Flags::Sign { result } => note(result.reg, written, acc),
-        Flags::FpCmp { rhs, .. } => {
-            if let FpOperand::Mem(mem) = rhs {
-                read_addr(mem, written, acc, note);
-            }
-        }
-        Flags::Snapshot { .. } => {}
-        Flags::CondCmp { prior, taken, .. } => {
-            read_flags(prior, written, acc, &mut *note);
-            read_flags(taken, written, acc, note);
-        }
-    }
-}
-
-fn read_addr(
-    addr: &MemRef,
-    written: &BTreeMap<Reg, bool>,
-    acc: &mut Vec<Reg>,
-    note: &mut impl FnMut(Reg, &BTreeMap<Reg, bool>, &mut Vec<Reg>),
-) {
-    if let Some(b) = addr.base {
-        note(b, written, acc);
-    }
-    if let Some(idx) = addr.index {
-        note(idx.reg, written, acc);
-    }
-}
-
-fn read_sources(
-    src: &Source,
-    written: &BTreeMap<Reg, bool>,
-    acc: &mut Vec<Reg>,
-    note: &mut impl FnMut(Reg, &BTreeMap<Reg, bool>, &mut Vec<Reg>),
-) {
-    match src {
-        Source::Reg(r) => note(r.reg, written, acc),
-        Source::Imm(_) => {}
-        Source::Lea { base, index, .. } => {
-            if let Some(b) = base {
-                note(*b, written, acc);
-            }
-            if let Some(idx) = index {
-                note(idx.reg, written, acc);
-            }
-        }
-        Source::Mem(mem) => read_addr(mem, written, acc, note),
-    }
+    let mut reads: Vec<RegRef> = Vec::new();
+    call_clobber::push_flags(flags, &mut reads);
+    note_gpr_reads(&reads, written, acc, note);
 }
 
 fn lift_width_extension(mnemonic: &str, operands: &str) -> Option<Stmt> {
@@ -32322,7 +32118,7 @@ mod tests {
             .expect("xmm4 is the fifth System V floating-point argument register");
         assert_eq!(
             sysv.signature.parameter_types(),
-            vec![ScalarType::Double, ScalarType::Double],
+            vec![ScalarType::Double; 5],
             "System V passes floating-point arguments in xmm0..xmm7: {}",
             sysv.source
         );

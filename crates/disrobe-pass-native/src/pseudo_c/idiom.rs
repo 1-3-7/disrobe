@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::{
     BinOp, ExtSource, Flags, IndexExtend, IndexOperand, Item, ItemKind, MemRef, Reg, RegRef,
-    Source, Stmt, Width,
+    Source, Stmt, Width, call_clobber,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -959,23 +959,22 @@ fn written_registers(stmt: &Stmt) -> Option<Vec<Reg>> {
     }
 }
 
-fn note_every_read(reg: Reg, _: &BTreeMap<Reg, bool>, acc: &mut Vec<Reg>) {
-    acc.push(reg);
-}
-
 fn collect_flag_reads(flags: &Flags, acc: &mut Vec<Reg>) {
-    let written: BTreeMap<Reg, bool> = BTreeMap::new();
-    super::read_flags(flags, &written, acc, &mut note_every_read);
+    let mut reads: Vec<RegRef> = Vec::new();
+    call_clobber::push_flags(flags, &mut reads);
+    acc.extend(reads.into_iter().map(|read: RegRef| read.reg));
 }
 
 fn collect_source_reads(src: &Source, acc: &mut Vec<Reg>) {
-    let written: BTreeMap<Reg, bool> = BTreeMap::new();
-    super::read_sources(src, &written, acc, &mut note_every_read);
+    let mut reads: Vec<RegRef> = Vec::new();
+    call_clobber::push_source(src, &mut reads);
+    acc.extend(reads.into_iter().map(|read: RegRef| read.reg));
 }
 
 fn collect_address_reads(addr: &MemRef, acc: &mut Vec<Reg>) {
-    let written: BTreeMap<Reg, bool> = BTreeMap::new();
-    super::read_addr(addr, &written, acc, &mut note_every_read);
+    let mut reads: Vec<RegRef> = Vec::new();
+    call_clobber::push_mem(addr, &mut reads);
+    acc.extend(reads.into_iter().map(|read: RegRef| read.reg));
 }
 
 const fn partial_write(width: Width) -> bool {

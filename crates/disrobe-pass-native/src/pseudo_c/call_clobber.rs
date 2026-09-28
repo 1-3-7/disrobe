@@ -325,7 +325,7 @@ fn refusal(abi: Abi, register: &str, at: u64, call: u64) -> Error {
     ))
 }
 
-fn push_mem(mem: &MemRef, acc: &mut Vec<RegRef>) {
+pub(super) fn push_mem(mem: &MemRef, acc: &mut Vec<RegRef>) {
     if let Some(base) = mem.base {
         acc.push(RegRef {
             reg: base,
@@ -340,7 +340,7 @@ fn push_mem(mem: &MemRef, acc: &mut Vec<RegRef>) {
     }
 }
 
-fn push_source(src: &Source, acc: &mut Vec<RegRef>) {
+pub(super) fn push_source(src: &Source, acc: &mut Vec<RegRef>) {
     match src {
         Source::Reg(reg) => acc.push(*reg),
         Source::Imm(_) => {}
@@ -368,7 +368,7 @@ fn push_fp_operand(operand: &FpOperand, acc: &mut Vec<RegRef>) {
     }
 }
 
-fn push_flags(flags: &Flags, acc: &mut Vec<RegRef>) {
+pub(super) fn push_flags(flags: &Flags, acc: &mut Vec<RegRef>) {
     match flags {
         Flags::Cmp { lhs, rhs } | Flags::Add { lhs, rhs } => {
             acc.push(*lhs);
@@ -396,7 +396,7 @@ const fn wide_result_width(width: Width) -> Width {
     }
 }
 
-fn gpr_reads(stmt: &Stmt, acc: &mut Vec<RegRef>) {
+pub(super) fn gpr_reads(stmt: &Stmt, acc: &mut Vec<RegRef>) {
     match stmt {
         Stmt::Assign { src, .. } => push_source(src, acc),
         Stmt::BinAssign { dest, src, .. } => {
@@ -518,7 +518,7 @@ fn gpr_reads(stmt: &Stmt, acc: &mut Vec<RegRef>) {
     }
 }
 
-fn gpr_writes(stmt: &Stmt, acc: &mut Vec<RegRef>) {
+pub(super) fn gpr_writes(stmt: &Stmt, acc: &mut Vec<RegRef>) {
     match stmt {
         Stmt::Assign { dest, .. }
         | Stmt::BinAssign { dest, .. }
