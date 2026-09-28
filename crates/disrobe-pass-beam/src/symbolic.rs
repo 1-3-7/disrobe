@@ -1196,7 +1196,9 @@ fn big_to_decimal(magnitude_be: &[u8]) -> String {
 pub fn render_symbolic(module: &SymbolicModule) -> String {
     let mut out: String = String::new();
     out.push_str("%% module ");
-    out.push_str(&module.module);
+    out.push_str(&disrobe_core::source_text::escape_unsafe_chars(
+        &module.module,
+    ));
     out.push('\n');
     for func in &module.functions {
         out.push_str("\n{function, ");

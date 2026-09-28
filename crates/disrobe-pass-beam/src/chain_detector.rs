@@ -184,7 +184,10 @@ fn recover_ez_source(bytes: &[u8]) -> CoreResult<String> {
         if !out.is_empty() {
             out.push('\n');
         }
-        out.push_str(&format!("%% {}\n", entry.path));
+        out.push_str(&format!(
+            "%% {}\n",
+            disrobe_core::source_text::escape_unsafe_chars(&entry.path)
+        ));
         out.push_str(&recovered.source);
     }
     if out.is_empty() {
