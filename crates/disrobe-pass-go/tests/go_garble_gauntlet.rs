@@ -90,11 +90,15 @@ fn build_gauntlet() -> Option<GauntletBuilds> {
     let scratch: common::GoBuildScratch = common::new_scratch("garble_gauntlet");
     common::write_module(&scratch, "disrobe.example/gauntlet", GAUNTLET_SOURCE);
 
-    let clean: PathBuf = common::go_build(&scratch, "clean.exe", &[])?;
-    let plain: PathBuf = common::garble_build(&scratch, "gplain.exe", &[])?;
-    let lit: PathBuf = common::garble_build(&scratch, "glit.exe", &["-literals"])?;
+    let clean: PathBuf = common::go_build(&scratch, "clean.exe", &[])
+        .expect("go is present, so the clean gauntlet build must succeed (stderr above)");
+    let plain: PathBuf = common::garble_build(&scratch, "gplain.exe", &[])
+        .expect("garble is present, so the plain garble build must succeed (stderr above)");
+    let lit: PathBuf = common::garble_build(&scratch, "glit.exe", &["-literals"])
+        .expect("garble is present, so the -literals build must succeed (stderr above)");
 
-    let clean_nm_all: BTreeSet<String> = common::nm_text_symbols(&clean)?;
+    let clean_nm_all: BTreeSet<String> =
+        common::nm_text_symbols(&clean).expect("go tool nm must list the clean build's symbols");
 
     let plain_bytes: Vec<u8> = std::fs::read(&plain).expect("read gplain");
     let lit_bytes: Vec<u8> = std::fs::read(&lit).expect("read glit");

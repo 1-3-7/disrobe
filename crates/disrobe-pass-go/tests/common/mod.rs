@@ -186,16 +186,6 @@ pub fn garble_on_path() -> bool {
         .is_ok_and(|o: Output| o.status.success())
 }
 
-fn skip_note(reason: &str) {
-    eprintln!(
-        "\n========================================================================\n\
-         SKIPPED (real-toolchain oracle): {reason}.\n\
-         This assertion did NOT run and is NOT a measured pass. Install the toolchain\n\
-         (Go 1.26 + `go install mvdan.cc/garble@latest`) and re-run to enforce it.\n\
-         ========================================================================\n"
-    );
-}
-
 pub struct GoBuildScratch {
     scratch: ScratchDir,
 }
@@ -594,11 +584,11 @@ pub fn go_version_m(binary: &Path) -> Option<GoVersionM> {
 }
 
 pub fn require_go() -> bool {
-    if go_on_path() {
-        return true;
-    }
-    skip_note("Go toolchain absent from PATH");
-    false
+    assert!(
+        go_on_path(),
+        "the Go toolchain is required (CI provisions go1.26.3; set GOTOOLCHAIN=go1.26.3) and is absent from PATH"
+    );
+    true
 }
 
 const GO_GRADING_VERSION: &str = "go1.26.3";
@@ -633,6 +623,12 @@ pub fn require_garble() -> bool {
     if garble_on_path() {
         return true;
     }
-    skip_note("garble absent from PATH (go install mvdan.cc/garble@latest)");
+    assert!(
+        std::env::var_os("DISROBE_REQUIRE_GARBLE").is_none(),
+        "DISROBE_REQUIRE_GARBLE is set but garble is absent from PATH (go install mvdan.cc/garble@latest)"
+    );
+    eprintln!(
+        "UNGRADED: garble is absent from PATH (go install mvdan.cc/garble@latest); set DISROBE_REQUIRE_GARBLE=1 to make its absence fatal"
+    );
     false
 }
