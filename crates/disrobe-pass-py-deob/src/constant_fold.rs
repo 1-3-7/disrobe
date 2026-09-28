@@ -99,6 +99,8 @@ fn is_pure_literal(expr: &Expr) -> bool {
     }
 }
 
+const MAX_FOLDED_LEN: usize = 1 << 20;
+
 fn fold_binop(b: &ExprBinOp) -> Option<Expr> {
     let lhs: Literal = literal_value(&b.left)?;
     let rhs: Literal = literal_value(&b.right)?;
@@ -121,11 +123,21 @@ fn fold_binop(b: &ExprBinOp) -> Option<Expr> {
         (Literal::Int(a), Literal::Int(c), Operator::RShift) if (0..128).contains(&c) => {
             Literal::Int(a.checked_shr(u32::try_from(c).ok()?)?)
         }
-        (Literal::Str(s), Literal::Str(t), Operator::Add) => Literal::Str(format!("{s}{t}")),
-        (Literal::Str(s), Literal::Int(n), Operator::Mult) if (0..=4096).contains(&n) => {
-            Literal::Str(s.repeat(usize::try_from(n).ok()?))
+        (Literal::Str(s), Literal::Str(t), Operator::Add)
+            if s.len().saturating_add(t.len()) <= MAX_FOLDED_LEN =>
+        {
+            Literal::Str(format!("{s}{t}"))
         }
-        (Literal::Bytes(mut a), Literal::Bytes(c), Operator::Add) => {
+        (Literal::Str(s), Literal::Int(n), Operator::Mult) if (0..=4096).contains(&n) => {
+            let count: usize = usize::try_from(n).ok()?;
+            if s.len().checked_mul(count)? > MAX_FOLDED_LEN {
+                return None;
+            }
+            Literal::Str(s.repeat(count))
+        }
+        (Literal::Bytes(mut a), Literal::Bytes(c), Operator::Add)
+            if a.len().saturating_add(c.len()) <= MAX_FOLDED_LEN =>
+        {
             a.extend_from_slice(&c);
             Literal::Bytes(a)
         }
@@ -389,5 +401,32 @@ fn literal_value(expr: &Expr) -> Option<Literal> {
             _ => None,
         },
         _ => None,
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::{MAX_FOLDED_LEN, fold};
+    use ruff_python_ast::{Expr, ExprStringLiteral};
+
+    fn folded(source: &str) -> Expr {
+        let parsed: ruff_python_parser::Parsed<ruff_python_ast::ModExpression> =
+            ruff_python_parser::parse_expression(source).expect("valid expression");
+        let mut expr: Expr = *parsed.into_syntax().body;
+        let _ = fold(&mut expr);
+        expr
+    }
+
+    #[test]
+    fn a_repeated_string_product_stops_folding_at_the_length_cap() {
+        let expr: Expr = folded("'a' * 4096 * 4096 * 4096");
+        if let Expr::StringLiteral(ExprStringLiteral { value, .. }) = &expr {
+            assert!(value.to_str().len() <= MAX_FOLDED_LEN);
+        }
+        let small: Expr = folded("'ab' * 3");
+        assert!(
+            matches!(&small, Expr::StringLiteral(ExprStringLiteral { value, .. }) if value.to_str() == "ababab")
+        );
     }
 }
