@@ -65,12 +65,12 @@ pub struct R2rSection {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct R2rAmd64RuntimeFunction {
-    #[serde(rename = "unwind_info_start_rva")]
-    pub unwind_info_start: R2rRva,
-    #[serde(rename = "unwind_info_end_rva")]
-    pub unwind_info_end: R2rRva,
-    #[serde(rename = "gc_info_start_rva")]
-    pub gc_info_start: R2rRva,
+    #[serde(rename = "begin_rva")]
+    pub begin: R2rRva,
+    #[serde(rename = "end_rva")]
+    pub end: R2rRva,
+    #[serde(rename = "unwind_data_rva")]
+    pub unwind_data: R2rRva,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub method_def: Option<R2rMethodDefIdentity>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -81,8 +81,8 @@ pub struct R2rAmd64RuntimeFunction {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct R2rUnwindGcRuntimeFunction {
-    pub unwind_info_start_rva: R2rRva,
-    pub gc_info_start_rva: R2rRva,
+    pub begin_rva: R2rRva,
+    pub unwind_data_rva: R2rRva,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub method_def: Option<R2rMethodDefIdentity>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -457,29 +457,29 @@ fn parse_runtime_functions(
     if let Some(machine) = unwind_gc_machine {
         let mut entries: Vec<R2rUnwindGcRuntimeFunction> = Vec::with_capacity(entry_count);
         for index in 0..entry_count {
-            let unwind_info_start_rva: u32 = reader.read_u32_le()?;
-            let gc_info_start_rva: u32 = reader.read_u32_le()?;
+            let begin_rva: u32 = reader.read_u32_le()?;
+            let unwind_data_rva: u32 = reader.read_u32_le()?;
             if pe
-                .slice_exact_file_backed_rva(image, unwind_info_start_rva, 1)
+                .slice_exact_file_backed_rva(image, begin_rva, 1)
                 .is_none()
             {
                 return Err(Error::InvalidR2rRuntimeFunctions {
                     index,
-                    reason: "runtime-function unwind-info RVA is not file backed",
+                    reason: "runtime-function begin RVA is not file backed",
                 });
             }
             if pe
-                .slice_exact_file_backed_rva(image, gc_info_start_rva, 1)
+                .slice_exact_file_backed_rva(image, unwind_data_rva, 1)
                 .is_none()
             {
                 return Err(Error::InvalidR2rRuntimeFunctions {
                     index,
-                    reason: "runtime-function GC-info RVA is not file backed",
+                    reason: "runtime-function unwind-data RVA is not file backed",
                 });
             }
             entries.push(R2rUnwindGcRuntimeFunction {
-                unwind_info_start_rva: R2rRva(unwind_info_start_rva),
-                gc_info_start_rva: R2rRva(gc_info_start_rva),
+                begin_rva: R2rRva(begin_rva),
+                unwind_data_rva: R2rRva(unwind_data_rva),
                 method_def: None,
                 method_def_abstention: None,
             });
@@ -492,11 +492,11 @@ fn parse_runtime_functions(
     }
     let mut entries: Vec<R2rAmd64RuntimeFunction> = Vec::with_capacity(entry_count);
     for index in 0..entry_count {
-        let unwind_info_start_rva: u32 = reader.read_u32_le()?;
-        let unwind_info_end_rva: u32 = reader.read_u32_le()?;
-        let gc_info_start_rva: u32 = reader.read_u32_le()?;
+        let begin_rva: u32 = reader.read_u32_le()?;
+        let end_rva: u32 = reader.read_u32_le()?;
+        let unwind_data_rva: u32 = reader.read_u32_le()?;
         if pe
-            .slice_exact_file_backed_rva(image, gc_info_start_rva, 1)
+            .slice_exact_file_backed_rva(image, unwind_data_rva, 1)
             .is_none()
         {
             return Err(Error::InvalidR2rRuntimeFunctions {
@@ -505,9 +505,9 @@ fn parse_runtime_functions(
             });
         }
         entries.push(R2rAmd64RuntimeFunction {
-            unwind_info_start: R2rRva(unwind_info_start_rva),
-            unwind_info_end: R2rRva(unwind_info_end_rva),
-            gc_info_start: R2rRva(gc_info_start_rva),
+            begin: R2rRva(begin_rva),
+            end: R2rRva(end_rva),
+            unwind_data: R2rRva(unwind_data_rva),
             method_def: None,
             method_def_abstention: None,
             method_body: None,
@@ -1496,8 +1496,8 @@ fn validate_unclaimed_runtime_ranges(
     };
     for (index, entry) in entries.iter().enumerate() {
         let range: R2rMethodCodeRange = R2rMethodCodeRange {
-            start_rva: entry.unwind_info_start,
-            end_rva: entry.unwind_info_end,
+            start_rva: entry.begin,
+            end_rva: entry.end,
         };
         if entry.method_def.is_none() && !range_is_file_backed(image, pe, range) {
             return Err(Error::InvalidR2rRuntimeFunctions {
@@ -1648,8 +1648,8 @@ fn attach_method_bodies(image: &[u8], pe: &PeImage, runtime_functions: &mut R2rR
             (
                 index,
                 R2rMethodCodeRange {
-                    start_rva: entry.unwind_info_start,
-                    end_rva: entry.unwind_info_end,
+                    start_rva: entry.begin,
+                    end_rva: entry.end,
                 },
             )
         })
@@ -1675,8 +1675,8 @@ fn attach_method_bodies(image: &[u8], pe: &PeImage, runtime_functions: &mut R2rR
     let by_index: Vec<R2rMethodCodeRange> = entries
         .iter()
         .map(|entry| R2rMethodCodeRange {
-            start_rva: entry.unwind_info_start,
-            end_rva: entry.unwind_info_end,
+            start_rva: entry.begin,
+            end_rva: entry.end,
         })
         .collect();
     let mut budget: R2rMethodBodyBudget = R2rMethodBodyBudget::default();
@@ -1798,7 +1798,7 @@ mod tests {
             serde_json::json!({
                 "layout": "unwind_gc_info",
                 "machine": "arm64",
-                "entries": [{"unwind_info_start_rva": 4160, "gc_info_start_rva": 4176}]
+                "entries": [{"begin_rva": 4160, "unwind_data_rva": 4176}]
             })
         );
     }

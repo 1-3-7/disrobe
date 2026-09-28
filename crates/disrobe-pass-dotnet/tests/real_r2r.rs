@@ -770,9 +770,9 @@ fn legacy_runtime_function_json_defaults_method_identity_fields() {
     let json: &str = r#"{
         "layout":"amd64",
         "entries":[{
-            "unwind_info_start_rva":6300,
-            "unwind_info_end_rva":6370,
-            "gc_info_start_rva":20832
+            "begin_rva":6300,
+            "end_rva":6370,
+            "unwind_data_rva":20832
         }]
     }"#;
     let runtime_functions: R2rRuntimeFunctions =
@@ -949,9 +949,9 @@ fn auto_emits_real_r2r_unwind_and_gc_bounds() {
             "layout": "amd64",
             "entries": [
                 {
-                    "unwind_info_start_rva": 6080,
-                    "unwind_info_end_rva": 6106,
-                    "gc_info_start_rva": 5968,
+                    "begin_rva": 6080,
+                    "end_rva": 6106,
+                    "unwind_data_rva": 5968,
                     "method_def": {
                         "token": 100_663_297,
                         "name": "<Main>$"
@@ -966,9 +966,9 @@ fn auto_emits_real_r2r_unwind_and_gc_bounds() {
                     }
                 },
                 {
-                    "unwind_info_start_rva": 6112,
-                    "unwind_info_end_rva": 6113,
-                    "gc_info_start_rva": 5984,
+                    "begin_rva": 6112,
+                    "end_rva": 6113,
+                    "unwind_data_rva": 5984,
                     "method_def": {
                         "token": 100_663_298,
                         "name": ".ctor"
