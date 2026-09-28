@@ -237,6 +237,7 @@ pub use partition::{
 };
 pub use qnx::{
     QnxCompress, QnxStartup, decompress_ucl_segments as qnx_decompress_ucl_segments,
+    first_ucl_segment_decodes as qnx_first_ucl_segment_decodes,
     inflate_startup_zlib as qnx_inflate_startup_zlib, parse_startup_header as qnx_parse_startup,
 };
 pub use rar::{

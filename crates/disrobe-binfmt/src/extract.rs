@@ -5260,6 +5260,9 @@ fn qnx_try_ucl(
     let scan_end: usize = bytes.len().min(8192);
     for offset in (4..scan_end).step_by(2) {
         for variant in [NrvVariant::Nrv2b, NrvVariant::Nrv2d, NrvVariant::Nrv2e] {
+            if !crate::containers::qnx_first_ucl_segment_decodes(variant, &bytes[offset..]) {
+                continue;
+            }
             if let Ok(image) =
                 crate::containers::qnx_decompress_ucl_segments(variant, &bytes[offset..], cap)
                 && image.len() >= 512

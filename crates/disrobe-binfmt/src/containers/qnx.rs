@@ -115,6 +115,17 @@ fn locate_gzip(bytes: &[u8], floor: usize, cap: usize) -> Option<usize> {
         .map(|rel: usize| start + rel)
 }
 
+pub fn first_ucl_segment_decodes(variant: NrvVariant, data: &[u8]) -> bool {
+    let Some(header): Option<&[u8]> = data.get(..2) else {
+        return false;
+    };
+    let seg_len: usize = usize::from(u16::from_be_bytes([header[0], header[1]]));
+    seg_len != 0
+        && data
+            .get(2..2 + seg_len)
+            .is_some_and(|seg: &[u8]| ucl::decompress_to_eos(variant, seg, SEGMENT_MAX_OUT).is_ok())
+}
+
 pub fn decompress_ucl_segments(
     variant: NrvVariant,
     data: &[u8],

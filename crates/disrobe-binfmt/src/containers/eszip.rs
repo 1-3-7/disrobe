@@ -295,6 +295,8 @@ pub fn parse_eszip_at(bytes: &[u8], base: usize) -> Result<EszipArchive> {
     let mut redirects: Vec<EszipRedirect> = Vec::new();
     let mut npm_specifiers: Vec<EszipNpmSpecifier> = Vec::new();
 
+    let mut verified: std::collections::BTreeMap<(usize, usize), bool> =
+        std::collections::BTreeMap::new();
     for entry in entries {
         match entry {
             RawEntry::Module { specifier, raw } => {
@@ -306,6 +308,7 @@ pub fn parse_eszip_at(bytes: &[u8], base: usize) -> Result<EszipArchive> {
                     raw.source_len,
                     checksum,
                     checksum_size,
+                    &mut verified,
                 );
                 let source_map: Option<ResolvedRange> = resolve_range(
                     bytes,
@@ -315,6 +318,7 @@ pub fn parse_eszip_at(bytes: &[u8], base: usize) -> Result<EszipArchive> {
                     raw.source_map_len,
                     checksum,
                     checksum_size,
+                    &mut verified,
                 );
                 if raw.source_len != 0 {
                     let Some(resolved) = source else {
@@ -395,6 +399,7 @@ fn resolve_range(
     rel_len: u32,
     checksum: EszipChecksum,
     checksum_size: usize,
+    verified: &mut std::collections::BTreeMap<(usize, usize), bool>,
 ) -> Option<ResolvedRange> {
     if rel_offset == 0 && rel_len == 0 {
         return None;
@@ -420,10 +425,13 @@ fn resolve_range(
             let hash_start: usize = abs_end;
             let hash_end: usize = hash_start.checked_add(SHA256_DIGEST_LEN)?;
             let stored: &[u8] = bytes.get(hash_start..hash_end)?;
-            let mut hasher: Sha256 = Sha256::new();
-            hasher.update(data);
-            let computed: [u8; SHA256_DIGEST_LEN] = hasher.finalize().into();
-            if computed.as_slice() != stored {
+            let matches: bool = *verified.entry((abs_offset, abs_end)).or_insert_with(|| {
+                let mut hasher: Sha256 = Sha256::new();
+                hasher.update(data);
+                let computed: [u8; SHA256_DIGEST_LEN] = hasher.finalize().into();
+                computed.as_slice() == stored
+            });
+            if !matches {
                 return Some(ResolvedRange {
                     offset: 0,
                     len: 0,
