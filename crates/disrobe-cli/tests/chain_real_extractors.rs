@@ -556,16 +556,16 @@ fn real_extractor_jvm_dex_emits_java_source_not_summary() {
 
 #[test]
 fn real_extractor_ruby_yarv_emits_ruby_source_not_analysis() {
-    for rel in [
-        "ruby/mri/yarv/greeter.rb.yarvc",
-        "ruby/mri/yarv/hello.rb.yarvc",
+    for (rel, statement) in [
+        ("ruby/mri/yarv/greeter.rb.yarvc", "def greet"),
+        ("ruby/mri/yarv/hello.rb.yarvc", "puts(\"hello world\")"),
     ] {
         let bytes: Vec<u8> = read_fixture(rel);
         let envelope: Vec<u8> = capture_pass(bytes, &format!("corpus://{rel}"), "ruby.classify")
             .expect("ruby.classify must dispatch for a yarv binary");
         let source: String = utf8(&envelope, "ruby.classify");
         assert!(
-            source.contains("yarv decompile") && source.contains("def "),
+            source.contains("yarv decompile") && source.contains(statement),
             "ruby yarv chain output is not recovered ruby; first 400: {:?}",
             source.chars().take(400).collect::<String>(),
         );
@@ -610,9 +610,11 @@ fn real_extractor_py_disasm_emits_listing_not_json() {
         "python/decompile/legacy/compiled/binary_slice.3.12.pyc",
     ] {
         let bytes: Vec<u8> = read_fixture(rel);
-        let envelope: Vec<u8> = capture_pass(bytes, &format!("corpus://{rel}"), "py.disasm")
-            .unwrap_or_else(|| panic!("py.disasm must dispatch for {rel}"));
-        let text: String = utf8(&envelope, "py.disasm");
+        let envelope: Vec<u8> = capture_pass(bytes, &format!("corpus://{rel}"), "py.decompile")
+            .unwrap_or_else(|| {
+                panic!("py.decompile must dispatch for {rel} and emit its disassembly tier")
+            });
+        let text: String = utf8(&envelope, "py.decompile");
         assert!(
             !text.trim_start().starts_with('{') && !text.contains("\"instruction_count\""),
             "py.disasm chain output still leaks the PyDisasmExtract json for {rel}; first 200: {:?}",
