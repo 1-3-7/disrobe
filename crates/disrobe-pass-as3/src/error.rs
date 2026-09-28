@@ -80,4 +80,9 @@ pub enum Error {
 
     #[error("DR-AS3-0021: expression nesting exceeds the lifter depth cap of {cap}")]
     ExprDepthExceeded { cap: usize },
+
+    #[error(
+        "DR-AS3-0022: structuring dropped label L{label}, which a jump in the body still targets"
+    )]
+    DroppedJumpTarget { label: usize },
 }

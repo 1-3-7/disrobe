@@ -4015,12 +4015,6 @@ fn structure_try(stmts: Vec<Stmt>, regions: &[RegionInfo], depth: usize) -> Vec<
     }
     let try_inner: &[Stmt] = &stmts[from_idx + 1..to_idx];
     let gap: &[Stmt] = &stmts[to_idx + 1..target_idx];
-    let merge_label: Option<usize> = match (try_inner.last(), gap.first()) {
-        (Some(Stmt::Jump { target_label }), _) | (_, Some(Stmt::Jump { target_label })) => {
-            Some(*target_label)
-        }
-        _ => None,
-    };
     if !gap.iter().all(|statement: &Stmt| {
         matches!(
             statement,
@@ -4029,14 +4023,31 @@ fn structure_try(stmts: Vec<Stmt>, regions: &[RegionInfo], depth: usize) -> Vec<
     }) {
         return stmts;
     }
-    let try_body_slice: &[Stmt] = match try_inner.last() {
-        Some(Stmt::Jump { .. }) => &try_inner[..try_inner.len() - 1],
-        _ => try_inner,
+    let Some(gap_landings): Option<BTreeMap<usize, usize>> =
+        gap_label_landings(&stmts, to_idx, target_idx)
+    else {
+        return stmts;
     };
-    let catch_end: usize = merge_label
+    let (try_body_slice, try_exit): (&[Stmt], Option<usize>) = match try_inner.split_last() {
+        Some((Stmt::Jump { target_label }, rest)) => (
+            rest,
+            Some(
+                gap_landings
+                    .get(target_label)
+                    .copied()
+                    .unwrap_or(*target_label),
+            ),
+        ),
+        _ => (try_inner, gap_landings.get(&region.to).copied()),
+    };
+    let catch_end: usize = try_exit
         .and_then(|m: usize| label_at(&stmts, m))
         .filter(|m: &usize| *m > target_idx)
         .unwrap_or(stmts.len());
+    let merge_at_end: Option<usize> = match stmts.get(catch_end) {
+        Some(Stmt::Label(label)) => Some(*label),
+        _ => None,
+    };
     let group: Vec<&RegionInfo> = regions
         .iter()
         .filter(|r: &&RegionInfo| r.from == region.from && r.to == region.to)
@@ -4055,31 +4066,196 @@ fn structure_try(stmts: Vec<Stmt>, regions: &[RegionInfo], depth: usize) -> Vec<
         }
         _ => vec![target_idx],
     };
+    let handler_entered_normally: bool = handler_starts.iter().any(|start: &usize| {
+        matches!(&stmts[*start], Stmt::Label(label) if label_ref_count_deep(&stmts, *label) > 0)
+    });
+    if handler_entered_normally {
+        return stmts;
+    }
     let remaining_regions: Vec<RegionInfo> = regions
         .iter()
         .filter(|r: &&RegionInfo| r.from != region.from || r.to != region.to)
         .cloned()
         .collect();
-    let try_body: Vec<Stmt> = structure_try(try_body_slice.to_vec(), &remaining_regions, depth - 1);
-    let mut catches: Vec<CatchClause> = Vec::with_capacity(handler_starts.len());
-    for (index, start) in handler_starts.iter().enumerate() {
-        let end: usize = handler_starts.get(index + 1).copied().unwrap_or(catch_end);
-        let inner: &[Stmt] = strip_catch_prologue(&stmts[*start..end]);
-        let owner: &RegionInfo = group.get(index).copied().unwrap_or(region);
-        catches.push(CatchClause {
-            var_name: owner.var_name.clone(),
-            type_name: owner.type_name.clone(),
-            body: structure_try(inner.to_vec(), &remaining_regions, depth - 1),
-        });
+    let mut try_raw: Vec<Stmt> = Vec::with_capacity(try_body_slice.len() + gap_landings.len() + 2);
+    try_raw.extend_from_slice(try_body_slice);
+    try_raw.extend(
+        gap_landings
+            .iter()
+            .filter(|(_, landing): &(&usize, &usize)| Some(**landing) == try_exit)
+            .map(|(label, _): (&usize, &usize)| Stmt::Label(*label)),
+    );
+    if try_exit != merge_at_end && can_fall_through(&try_raw) {
+        let Some(exit): Option<usize> = try_exit else {
+            return stmts;
+        };
+        try_raw.push(Stmt::Jump { target_label: exit });
     }
-    let mut out: Vec<Stmt> = Vec::with_capacity(stmts.len());
-    out.extend_from_slice(&stmts[..from_idx]);
+    let inner_retargets: BTreeMap<usize, usize> = gap_landings
+        .iter()
+        .filter(|(_, landing): &(&usize, &usize)| Some(**landing) != try_exit)
+        .map(|(label, landing): (&usize, &usize)| (*label, *landing))
+        .collect();
+    retarget_labels(&mut try_raw, &inner_retargets);
+    let mut handler_bodies: Vec<Vec<Stmt>> = Vec::with_capacity(handler_starts.len());
+    for (index, start) in handler_starts.iter().enumerate() {
+        let next: Option<usize> = handler_starts.get(index + 1).copied();
+        let end: usize = next.unwrap_or(catch_end);
+        let mut inner: Vec<Stmt> = strip_catch_prologue(&stmts[*start..end]).to_vec();
+        if next.is_some() {
+            if matches!(inner.last(), Some(Stmt::Jump { target_label }) if Some(*target_label) == merge_at_end)
+            {
+                inner.pop();
+            } else if can_fall_through(&inner) {
+                return stmts;
+            }
+        }
+        retarget_labels(&mut inner, &gap_landings);
+        handler_bodies.push(inner);
+    }
+    let mut prefix: Vec<Stmt> = stmts[..from_idx].to_vec();
+    retarget_labels(&mut prefix, &gap_landings);
+    let mut suffix: Vec<Stmt> = stmts[catch_end..].to_vec();
+    retarget_labels(&mut suffix, &gap_landings);
+    let from_entered_outside: bool = label_ref_count_deep(&prefix, region.from) > 0
+        || label_ref_count_deep(&suffix, region.from) > 0
+        || handler_bodies
+            .iter()
+            .any(|inner: &Vec<Stmt>| label_ref_count_deep(inner, region.from) > 0);
+    if !from_entered_outside {
+        try_raw.insert(0, Stmt::Label(region.from));
+    }
+    let catches: Vec<CatchClause> = handler_bodies
+        .into_iter()
+        .enumerate()
+        .map(|(index, inner): (usize, Vec<Stmt>)| {
+            let owner: &RegionInfo = group.get(index).copied().unwrap_or(region);
+            CatchClause {
+                var_name: owner.var_name.clone(),
+                type_name: owner.type_name.clone(),
+                body: structure_try(inner, &remaining_regions, depth - 1),
+            }
+        })
+        .collect();
+    let mut out: Vec<Stmt> = prefix;
+    out.reserve(suffix.len() + 2);
+    if from_entered_outside {
+        out.push(Stmt::Label(region.from));
+    }
     out.push(Stmt::Try {
-        body: try_body,
+        body: structure_try(try_raw, &remaining_regions, depth - 1),
         catches,
     });
-    out.extend_from_slice(&stmts[catch_end..]);
+    out.extend(suffix);
     out
+}
+
+fn gap_label_landings(
+    stmts: &[Stmt],
+    to_idx: usize,
+    target_idx: usize,
+) -> Option<BTreeMap<usize, usize>> {
+    let mut direct: BTreeMap<usize, usize> = BTreeMap::new();
+    for (offset, statement) in stmts[to_idx..target_idx].iter().enumerate() {
+        let Stmt::Label(label) = statement else {
+            continue;
+        };
+        let landing: Option<usize> =
+            stmts[to_idx + offset + 1..target_idx]
+                .iter()
+                .find_map(|next: &Stmt| match next {
+                    Stmt::Jump { target_label } => Some(*target_label),
+                    _ => None,
+                });
+        match landing {
+            Some(landing) => {
+                direct.insert(*label, landing);
+            }
+            None if label_ref_count_deep(stmts, *label) > 0 => return None,
+            None => {}
+        }
+    }
+    let mut resolved: BTreeMap<usize, usize> = BTreeMap::new();
+    for (label, first) in &direct {
+        let mut landing: usize = *first;
+        let mut hops: usize = 0;
+        while let Some(next) = direct.get(&landing) {
+            hops += 1;
+            if hops > direct.len() {
+                return None;
+            }
+            landing = *next;
+        }
+        resolved.insert(*label, landing);
+    }
+    Some(resolved)
+}
+
+fn can_fall_through(stmts: &[Stmt]) -> bool {
+    !matches!(
+        stmts.last(),
+        Some(Stmt::Return(_) | Stmt::Throw(_) | Stmt::Jump { .. })
+    )
+}
+
+fn retarget_labels(stmts: &mut [Stmt], map: &BTreeMap<usize, usize>) {
+    if map.is_empty() {
+        return;
+    }
+    let lookup = |label: &mut usize| {
+        if let Some(landing) = map.get(label) {
+            *label = *landing;
+        }
+    };
+    for statement in stmts {
+        match statement {
+            Stmt::If { target_label, .. } | Stmt::Jump { target_label } => lookup(target_label),
+            Stmt::Switch {
+                case_labels,
+                default_label,
+                ..
+            } => {
+                case_labels.iter_mut().for_each(lookup);
+                lookup(default_label);
+            }
+            Stmt::IfBlock { body, .. }
+            | Stmt::While { body, .. }
+            | Stmt::DoWhile { body, .. }
+            | Stmt::For { body, .. }
+            | Stmt::ForEach { body, .. }
+            | Stmt::ForIn { body, .. }
+            | Stmt::With { body, .. } => retarget_labels(body, map),
+            Stmt::IfElse {
+                then_body,
+                else_body,
+                ..
+            } => {
+                retarget_labels(then_body, map);
+                retarget_labels(else_body, map);
+            }
+            Stmt::StructuredSwitch { cases, .. } => {
+                for case in cases {
+                    retarget_labels(&mut case.body, map);
+                }
+            }
+            Stmt::Try { body, catches } => {
+                retarget_labels(body, map);
+                for clause in catches {
+                    retarget_labels(&mut clause.body, map);
+                }
+            }
+            Stmt::Assign { .. }
+            | Stmt::AssignProperty { .. }
+            | Stmt::AssignIndex { .. }
+            | Stmt::Expression(_)
+            | Stmt::Return(_)
+            | Stmt::Label(_)
+            | Stmt::Throw(_)
+            | Stmt::Break
+            | Stmt::Continue
+            | Stmt::Comment(_) => {}
+        }
+    }
 }
 
 fn collect_referenced_labels(stmts: &[Stmt], acc: &mut BTreeSet<usize>) {
@@ -4211,6 +4387,51 @@ fn prune_dead_labels(stmts: Vec<Stmt>, referenced: &BTreeSet<usize>) -> Vec<Stmt
             other => Some(other),
         })
         .collect()
+}
+
+fn collect_defined_labels(stmts: &[Stmt], acc: &mut BTreeSet<usize>) {
+    for stmt in stmts {
+        match stmt {
+            Stmt::Label(label) => {
+                acc.insert(*label);
+            }
+            Stmt::IfBlock { body, .. }
+            | Stmt::While { body, .. }
+            | Stmt::DoWhile { body, .. }
+            | Stmt::For { body, .. }
+            | Stmt::ForEach { body, .. }
+            | Stmt::ForIn { body, .. }
+            | Stmt::With { body, .. } => collect_defined_labels(body, acc),
+            Stmt::IfElse {
+                then_body,
+                else_body,
+                ..
+            } => {
+                collect_defined_labels(then_body, acc);
+                collect_defined_labels(else_body, acc);
+            }
+            Stmt::StructuredSwitch { cases, .. } => {
+                for case in cases {
+                    collect_defined_labels(&case.body, acc);
+                }
+            }
+            Stmt::Try { body, catches } => {
+                collect_defined_labels(body, acc);
+                for catch in catches {
+                    collect_defined_labels(&catch.body, acc);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn undefined_jump_targets(stmts: &[Stmt]) -> BTreeSet<usize> {
+    let mut referenced: BTreeSet<usize> = BTreeSet::new();
+    collect_referenced_labels(stmts, &mut referenced);
+    let mut defined: BTreeSet<usize> = BTreeSet::new();
+    collect_defined_labels(stmts, &mut defined);
+    referenced.difference(&defined).copied().collect()
 }
 
 fn drop_dead_labels(stmts: Vec<Stmt>) -> Vec<Stmt> {
@@ -7294,6 +7515,12 @@ pub fn lift_body(
         )
     });
     let statements: Vec<Stmt> = drop_dead_labels(structured);
+    if let Some(label) = undefined_jump_targets(&statements)
+        .into_iter()
+        .find(|label: &usize| reachable.contains(label))
+    {
+        return Err(Error::DroppedJumpTarget { label });
+    }
     let opaque_operands: usize = lift_opaque.saturating_add(stmts_phi_count(&statements));
     let reached_terminator: bool = statements.iter().any(stmt_reaches_terminator);
     let fully_structured: bool = statements_fully_structured(&statements);

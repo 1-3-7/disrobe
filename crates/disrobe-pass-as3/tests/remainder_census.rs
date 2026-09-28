@@ -5,10 +5,10 @@ mod common;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
 
-use disrobe_pass_as3::AbcFile;
 use disrobe_pass_as3::abc::{self, ClassInfo, MethodInfo, TraitInfo};
 use disrobe_pass_as3::lifter::{CaseLabel, Expr, LiftedBody, Stmt, lift_body};
 use disrobe_pass_as3::swf::{self, Swf};
+use disrobe_pass_as3::{AbcFile, Error};
 
 const TRAIT_KIND_METHOD: u8 = 1;
 const TRAIT_KIND_GETTER: u8 = 2;
@@ -98,6 +98,47 @@ fn residual_control_flow(stmts: &[Stmt]) -> bool {
         }
         _ => false,
     })
+}
+
+fn child_bodies(statement: &Stmt) -> Vec<&[Stmt]> {
+    match statement {
+        Stmt::IfBlock { body, .. }
+        | Stmt::While { body, .. }
+        | Stmt::DoWhile { body, .. }
+        | Stmt::ForEach { body, .. }
+        | Stmt::ForIn { body, .. }
+        | Stmt::With { body, .. }
+        | Stmt::For { body, .. } => vec![body.as_slice()],
+        Stmt::IfElse {
+            then_body,
+            else_body,
+            ..
+        } => vec![then_body.as_slice(), else_body.as_slice()],
+        Stmt::Try { body, catches } => std::iter::once(body.as_slice())
+            .chain(catches.iter().map(|clause| clause.body.as_slice()))
+            .collect(),
+        Stmt::StructuredSwitch { cases, .. } => {
+            cases.iter().map(|case| case.body.as_slice()).collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn residue_scope(stmts: &[Stmt]) -> &[Stmt] {
+    let holds_goto: bool = stmts.iter().any(|statement: &Stmt| {
+        matches!(
+            statement,
+            Stmt::Jump { .. } | Stmt::If { .. } | Stmt::Label(_) | Stmt::Switch { .. }
+        )
+    });
+    if holds_goto {
+        return stmts;
+    }
+    stmts
+        .iter()
+        .flat_map(child_bodies)
+        .find(|body: &&[Stmt]| residual_control_flow(body))
+        .map_or(stmts, residue_scope)
 }
 
 #[derive(Default)]
@@ -476,16 +517,12 @@ fn classify_residue(stmts: &[Stmt]) -> String {
     if multi_join > 0 {
         return "acyclic join carrying more than two incoming edges".to_owned();
     }
-    if has_dangling_goto(stmts) {
-        return DANGLING_GOTO_GROUP.to_owned();
-    }
     if forward_branch_over_break_loop(stmts) {
         return BREAK_LOOP_GROUP.to_owned();
     }
     "acyclic goto region with no named reason".to_owned()
 }
 
-const DANGLING_GOTO_GROUP: &str = "goto whose target label the residue no longer contains";
 const BREAK_LOOP_GROUP: &str = "forward branch over a loop that exits through break";
 
 fn each_statement(stmts: &[Stmt], visit: &mut dyn FnMut(&Stmt)) {
@@ -624,7 +661,7 @@ fn precondition(lifted: &LiftedBody) -> String {
         return format!("other marker: {first}");
     }
     if residual_control_flow(&lifted.statements) {
-        return classify_residue(&lifted.statements);
+        return classify_residue(residue_scope(&lifted.statements));
     }
     if lifted.opaque_operands > 0 {
         let mut seen: OperandKinds = OperandKinds::default();
@@ -680,16 +717,33 @@ struct Census {
     recovered: usize,
     named: BTreeMap<String, Vec<String>>,
     anonymous: BTreeMap<String, usize>,
+    undefined_jump_targets: Vec<String>,
 }
 
 fn take(census: &mut Census, abc_file: &AbcFile, label: &str) {
     let names: BTreeMap<u32, String> = body_names(abc_file);
     for body in &abc_file.method_bodies {
         let info: Option<&MethodInfo> = abc_file.methods.get(body.method as usize);
-        let Ok(lifted): Result<LiftedBody, _> = lift_body(abc_file, body, info) else {
-            continue;
+        let display: String = names.get(&body.method).map_or_else(
+            || format!("{label}::method {}", body.method),
+            |name: &String| format!("{label}::{name}"),
+        );
+        let lifted: LiftedBody = match lift_body(abc_file, body, info) {
+            Ok(lifted) => lifted,
+            Err(Error::DroppedJumpTarget { label }) => {
+                census
+                    .undefined_jump_targets
+                    .push(format!("{display} refused at L{label}"));
+                continue;
+            }
+            Err(_) => continue,
         };
         census.bodies += 1;
+        if has_dangling_goto(&lifted.statements) {
+            census
+                .undefined_jump_targets
+                .push(format!("{display} printed"));
+        }
         if lifted.structurally_recovered {
             census.recovered += 1;
             continue;
@@ -719,6 +773,13 @@ fn take_swf(census: &mut Census, bytes: &[u8], label: &str) {
 }
 
 fn compare(census: &Census, pinned: &[RemainderGroup], population: &str) {
+    assert_eq!(
+        census.undefined_jump_targets,
+        Vec::<String>::new(),
+        "{population}: a body either printed a goto to a label it never defines or was refused \
+         with DR-AS3-0022 for one. Both mean a structuring pass dropped a label that a jump \
+         still names"
+    );
     let measured_groups: BTreeSet<&str> = census
         .named
         .keys()
@@ -779,19 +840,6 @@ fn compare(census: &Census, pinned: &[RemainderGroup], population: &str) {
 
 const TRACKED_REMAINDER: &[RemainderGroup] = &[
     RemainderGroup {
-        precondition: "acyclic join carrying more than two incoming edges",
-        must_stay_refused: false,
-        anonymous: 0,
-        members: &[
-            "control_shapes::flash.Boot::start",
-            "dispatch_shapes::flash.Boot::start",
-            "json_tokenizer::flash.Boot::start",
-            "opcode_breadth::flash.Boot::start",
-            "switch_merge::flash.Boot::start",
-            "whitespace_short_circuit::flash.Boot::start",
-        ],
-    },
-    RemainderGroup {
         precondition: "loop the restructurer left in goto form",
         must_stay_refused: false,
         anonymous: 0,
@@ -825,7 +873,6 @@ const CORPUS_REMAINDER: &[RemainderGroup] = &[
         anonymous: 0,
         members: &[
             "10_More_Bullets::com.google.analytics.data.X10::_clearInternal",
-            "10_More_Bullets::flash.Boot::start",
             "10_More_Bullets::nape.phys.Body::crushFactor",
             "10_More_Bullets::zpp_nape.callbacks.ZPP_CbSet::empty_intersection",
             "10_More_Bullets::zpp_nape.callbacks.ZPP_CbSet::find_all",
@@ -853,7 +900,6 @@ const CORPUS_REMAINDER: &[RemainderGroup] = &[
             "10_More_Bullets::zpp_nape.callbacks.ZPP_InteractionListener::cbtype_change",
             "10_More_Bullets::zpp_nape.callbacks.ZPP_OptionType::append_type",
             "10_More_Bullets::zpp_nape.geom.ZPP_Ray::aabbsect",
-            "BO_Neo_Rider::mochi.as3.MochiAd::load",
         ],
     },
     RemainderGroup {
@@ -876,6 +922,7 @@ const CORPUS_REMAINDER: &[RemainderGroup] = &[
             "BO_Neo_Rider::mochi.as3.MochiInventory::setProperty",
             "BO_Neo_Rider::mochi.as3.MochiInventory::sync",
             "BO_Neo_Rider::mochi.as3.MochiServices::clickMovie",
+            "BO_Neo_Rider::mochi.as3.MochiServices::createEmptyMovieClip",
             "BO_Neo_Rider::mochi.as3.MochiServices::init",
             "BO_Neo_Rider::mochi.as3.MochiServices::send",
             "BO_Neo_Rider::mochi.as3.MochiServices::setContainer",
@@ -1065,43 +1112,6 @@ const CORPUS_REMAINDER: &[RemainderGroup] = &[
         ],
     },
     RemainderGroup {
-        precondition: "goto whose target label the residue no longer contains",
-        must_stay_refused: false,
-        anonymous: 0,
-        members: &[
-            "1942_Battles_In_The_Sky::ProgBar::create",
-            "1942_Battles_In_The_Sky::ProgBar::updatePercent",
-            "1942_Battles_In_The_Sky::ProgBar::updateValue",
-            "1942_Battles_In_The_Sky::mx.utils.NameUtil::displayObjectToString",
-            "ASmallCar::com.junkbyte.console.Console::listenUncaughtErrors",
-            "ASmallCar::com.junkbyte.console.core.CommandLine::run",
-            "ASmallCar::com.junkbyte.console.core.Executer::exec",
-            "ASmallCar::com.junkbyte.console.core.MemoryMonitor::Gc",
-            "ASmallCar::com.junkbyte.console.core.Remoting::remoteSync",
-            "ASmallCar::com.junkbyte.console.core.Remoting::set remoting",
-            "ASmallCar::com.junkbyte.console.view.AbstractPanel::onTextFieldMouseMove",
-            "ASmallCar::flare.core.Canvas3D::_140",
-            "ASmallCar::flare.core.Canvas3D::setup",
-            "ASmallCar::flare.loaders.Flare3DLoader::_137",
-            "ASmallCar::mochi.as3.MochiAd::load",
-            "ASmallCar::mochi.as3.MochiServices::bringToTop",
-            "ASmallCar::mochi.as3.MochiUserData::completeHandler",
-            "ASmallCar::mx.utils.NameUtil::displayObjectToString",
-            "ATV_Cross_Canada::_-O4.use ::_-1l",
-            "ATV_Cross_Canada::_-RG._-2o::_-0t",
-            "BO_Awesome_Ranger::com.gameallianz.api.as3.GameAllianzApi::cache",
-            "BO_Awesome_Ranger::com.gameallianz.api.as3.gui.Background::_-5",
-            "BO_Awesome_Ranger::com.gameallianz.api.as3.gui.Background::_-6b",
-            "BO_Awesome_Ranger::com.gameallianz.api.as3.utils.FireBugConsole::_-67",
-            "BO_Awesome_Ranger::com.gameallianz.api.as3.utils.GlobalTrace::iniFromFlashVars",
-            "BO_Neo_Rider::mochi.as3.MochiServices::bringToTop",
-            "BO_Neo_Rider::mochi.as3.MochiServices::createEmptyMovieClip",
-            "BO_Neo_Rider::mochi.as3.MochiUserData::completeHandler",
-            "BO_Twin_Drivers_Level_9000::lib.GCookie::erase",
-            "BO_Twin_Drivers_Level_9000::lib.GCookie::set",
-        ],
-    },
-    RemainderGroup {
         precondition: "loop reachable only through an unthreaded jump chain",
         must_stay_refused: false,
         anonymous: 0,
@@ -1201,6 +1211,7 @@ const CORPUS_REMAINDER: &[RemainderGroup] = &[
             "ASmallCar::com.greensock.plugins.BezierPlugin::set changeFactor",
             "ASmallCar::com.greensock.plugins.FrameLabelPlugin::onInitTween",
             "ASmallCar::com.greensock.plugins.TweenPlugin::onTweenEvent",
+            "ASmallCar::com.junkbyte.console.core.Remoting::remoteSync",
             "ATV_Cross_Canada::_-98._-3A::simplify",
             "ATV_Cross_Canada::_-E3.TweenMax::_-BQ",
             "ATV_Cross_Canada::_-E3.TweenMax::_-FP",
@@ -1251,6 +1262,7 @@ const CORPUS_REMAINDER: &[RemainderGroup] = &[
             "10_More_Bullets::zpp_nape.space.ZPP_Space::clear",
             "10_More_Bullets::zpp_nape.space.ZPP_Space::removed_shape",
             "10_More_Bullets::zpp_nape.util.FastHash2_Hashable2_Boolfalse::remove",
+            "1942_Battles_In_The_Sky::mx.utils.NameUtil::displayObjectToString",
             "1942_Battles_In_The_Sky::org.flixel.FlxG::addBitmap",
             "1942_Battles_In_The_Sky::org.flixel.FlxG::addBitmap_data",
             "1942_Battles_In_The_Sky::org.flixel.FlxG::createBitmap",
@@ -1266,6 +1278,7 @@ const CORPUS_REMAINDER: &[RemainderGroup] = &[
             "ASmallCar::com.greensock.plugins.TintPlugin::init",
             "ASmallCar::com.greensock.plugins.TweenPlugin::activate",
             "ASmallCar::com.greensock.plugins.TweenPlugin::killProps",
+            "ASmallCar::mx.utils.NameUtil::displayObjectToString",
             "ATV_Cross_Canada::Playtomic._-Dw::_-7f",
             "ATV_Cross_Canada::_-E3.TweenMax::_-9U",
             "ATV_Cross_Canada::_-E3.TweenMax::_-KW",
@@ -1341,6 +1354,7 @@ const CORPUS_REMAINDER: &[RemainderGroup] = &[
             "BO_Neo_Rider::build_fla.MainTimeline::frame1",
             "BO_Neo_Rider::build_fla.MainTimeline::frame10",
             "BO_Neo_Rider::build_fla.MainTimeline::objPieces",
+            "BO_Neo_Rider::mochi.as3.MochiAd::load",
             "BO_Neo_Rider::mochi.as3.MochiAd::showClickAwayAd",
             "BO_Neo_Rider::mochi.as3.MochiAd::showInterLevelAd",
             "BO_Neo_Rider::mochi.as3.MochiAd::showPreGameAd",
@@ -1929,7 +1943,7 @@ fn the_corpus_remainder_holds_its_pinned_membership() {
     );
     assert_eq!(files, 19, "the pinned membership names bodies in 19 files");
     assert_eq!(census.bodies, 17917);
-    assert_eq!(census.recovered, 16968);
+    assert_eq!(census.recovered, 16995);
     compare(&census, CORPUS_REMAINDER, "corpus");
 }
 
@@ -1947,7 +1961,7 @@ fn the_refusals_the_item_requires_are_separated_from_the_gaps() {
             running + group.members.len() + group.anonymous
         });
     eprintln!("AS3 corpus remainder: {required}/{total} are refusals the item requires");
-    assert_eq!(total, 949);
+    assert_eq!(total, 922);
     assert_eq!(
         required, 442,
         "a body counted here is one the merge rules name as a required refusal: a merge whose incoming \

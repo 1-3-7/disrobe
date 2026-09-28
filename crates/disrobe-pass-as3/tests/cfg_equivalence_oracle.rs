@@ -2407,3 +2407,198 @@ fn a_with_scope_held_across_a_loop_is_never_reconciled_away() {
         "refusing the merge must leave the graph unchanged as well: {rendered}"
     );
 }
+
+fn collect_jump_labels(stmts: &[Stmt], defined: &mut BTreeSet<usize>, used: &mut BTreeSet<usize>) {
+    for statement in stmts {
+        match statement {
+            Stmt::Label(label) => {
+                defined.insert(*label);
+            }
+            Stmt::Jump { target_label } | Stmt::If { target_label, .. } => {
+                used.insert(*target_label);
+            }
+            Stmt::Switch {
+                case_labels,
+                default_label,
+                ..
+            } => {
+                used.extend(case_labels.iter().copied());
+                used.insert(*default_label);
+            }
+            Stmt::IfBlock { body, .. }
+            | Stmt::While { body, .. }
+            | Stmt::DoWhile { body, .. }
+            | Stmt::For { body, .. }
+            | Stmt::ForEach { body, .. }
+            | Stmt::ForIn { body, .. }
+            | Stmt::With { body, .. } => collect_jump_labels(body, defined, used),
+            Stmt::IfElse {
+                then_body,
+                else_body,
+                ..
+            } => {
+                collect_jump_labels(then_body, defined, used);
+                collect_jump_labels(else_body, defined, used);
+            }
+            Stmt::Try { body, catches } => {
+                collect_jump_labels(body, defined, used);
+                for clause in catches {
+                    collect_jump_labels(&clause.body, defined, used);
+                }
+            }
+            Stmt::StructuredSwitch { cases, .. } => {
+                for case in cases {
+                    collect_jump_labels(&case.body, defined, used);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn undefined_jump_targets(stmts: &[Stmt]) -> BTreeSet<usize> {
+    let mut defined: BTreeSet<usize> = BTreeSet::new();
+    let mut used: BTreeSet<usize> = BTreeSet::new();
+    collect_jump_labels(stmts, &mut defined, &mut used);
+    used.difference(&defined).copied().collect()
+}
+
+fn branches_across_try_edges_body() -> (MethodBody, usize, usize) {
+    let mut code: Vec<u8> = vec![0xD1, 0x11];
+    let into_try_operand: usize = code.len();
+    push_s24(&mut code, 0);
+    code.extend_from_slice(&[0x24, 0x01, 0xD6]);
+    let try_start: usize = code.len();
+    code.extend_from_slice(&[0x24, 0x02, 0xD6, 0xD1, 0x12]);
+    let to_end_operand: usize = code.len();
+    push_s24(&mut code, 0);
+    code.extend_from_slice(&[0x24, 0x03, 0xD6]);
+    let try_end: usize = code.len();
+    code.push(0x10);
+    let merge_operand: usize = code.len();
+    push_s24(&mut code, 0);
+    let handler: usize = code.len();
+    code.extend_from_slice(&[0xD5, 0x24, 0x04, 0xD6]);
+    let merge: usize = code.len();
+    code.extend_from_slice(&[0xD2, 0x48]);
+    patch_branch_target(&mut code, into_try_operand, try_start);
+    patch_branch_target(&mut code, to_end_operand, try_end);
+    patch_branch_target(&mut code, merge_operand, merge);
+    let mut body: MethodBody = switch_body(code, 3);
+    body.exceptions.push(ExceptionInfo {
+        from: try_start as u32,
+        to: try_end as u32,
+        target: handler as u32,
+        exc_type: 0,
+        var_name: 0,
+    });
+    (body, try_start, try_end)
+}
+
+#[test]
+fn branches_to_a_try_start_and_end_keep_their_labels() {
+    let abc: AbcFile = bare_abc();
+    let (body, try_start, try_end): (MethodBody, usize, usize) = branches_across_try_edges_body();
+    let raw: Vec<Stmt> = lift_body_raw(&abc, &body, None).expect("raw try-edge lift");
+    for label in [try_start, try_end] {
+        assert!(
+            raw.iter()
+                .any(|statement: &Stmt| matches!(statement, Stmt::If { target_label, .. } if *target_label == label)),
+            "the fixture must branch to L{label} before structuring: {raw:#?}"
+        );
+    }
+    let lifted: LiftedBody = lift_body(&abc, &body, None).expect("try-edge lift");
+    let names: LocalNames = local_names_for(&abc, None);
+    let rendered: String = render_body(&lifted, &names, "");
+    assert_eq!(
+        undefined_jump_targets(&lifted.statements),
+        BTreeSet::new(),
+        "a branch into the start of a try or to its end must land on a label the output \
+         defines, not on one the try builder dropped: {rendered}"
+    );
+    assert!(
+        lifted.statements.iter().any(
+            |statement: &Stmt| matches!(statement, Stmt::Try { catches, .. } if catches.len() == 1)
+        ),
+        "the guarded range must still be recovered as a try with its handler: {rendered}"
+    );
+    assert!(
+        lifted.fully_structured,
+        "with both edge labels kept the branches fold into ordinary blocks: {rendered}"
+    );
+    assert_eq!(
+        classify(&raw, &lifted.statements),
+        Equivalence::Equivalent,
+        "the structured body must keep the branch graph of the goto form: {rendered}"
+    );
+}
+
+#[test]
+fn every_gradable_corpus_body_with_a_try_keeps_its_cfg() {
+    let dir: PathBuf = corpus_root();
+    if !common::require_corpus("as3 try-region cfg equivalence", &dir) {
+        return;
+    }
+    let mut try_bodies: usize = 0;
+    let mut graded: usize = 0;
+    let mut broken: Vec<String> = Vec::new();
+    for entry in std::fs::read_dir(&dir).expect("read corpus") {
+        let path: PathBuf = entry.expect("dir entry").path();
+        if path.extension().and_then(|e: &std::ffi::OsStr| e.to_str()) != Some("swf") {
+            continue;
+        }
+        let stem: String = path.file_stem().map_or_else(
+            || "?".to_owned(),
+            |name: &std::ffi::OsStr| name.to_string_lossy().into_owned(),
+        );
+        let bytes: Vec<u8> = std::fs::read(&path).expect("read swf");
+        let Ok(parsed): Result<Swf, _> = swf::parse(&bytes) else {
+            continue;
+        };
+        for blob in parsed.collect_do_abc() {
+            let Ok(abc): Result<AbcFile, _> = abc::parse(&blob.abc_bytes) else {
+                continue;
+            };
+            for (index, body) in abc.method_bodies.iter().enumerate() {
+                if body.exceptions.is_empty() {
+                    continue;
+                }
+                try_bodies += 1;
+                let info: Option<&MethodInfo> = abc.methods.get(body.method as usize);
+                let Ok(raw): Result<Vec<Stmt>, _> = lift_body_raw(&abc, body, info) else {
+                    continue;
+                };
+                let lifted: LiftedBody = match lift_body(&abc, body, info) {
+                    Ok(lifted) => lifted,
+                    Err(error) => {
+                        broken.push(format!("{stem} body {index}: {error}"));
+                        continue;
+                    }
+                };
+                if !lifted.dropped_opcodes.is_empty() || lifted.opaque_operands > 0 {
+                    continue;
+                }
+                graded += 1;
+                let verdict: Equivalence = classify(&raw, &lifted.statements);
+                if verdict != Equivalence::Equivalent {
+                    broken.push(format!(
+                        "{stem} body {index}: {verdict:?}, fully structured {}",
+                        lifted.fully_structured
+                    ));
+                }
+            }
+        }
+    }
+    eprintln!("AS3 try-region cfg oracle: {graded}/{try_bodies} bodies with a try graded");
+    assert_eq!(
+        (try_bodies, graded),
+        (163, 84),
+        "the grade covers every corpus body with an exception table whose operands all resolve"
+    );
+    assert_eq!(
+        broken,
+        Vec::<String>::new(),
+        "a body with a try must keep the branch graph of its goto form whether or not the rest of \
+         it structures, because a label the try builder drops turns every jump to it into an exit"
+    );
+}
