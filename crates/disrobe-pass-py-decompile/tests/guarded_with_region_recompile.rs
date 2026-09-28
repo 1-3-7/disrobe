@@ -32,12 +32,6 @@ struct GuardCase {
     open_reason: &'static str,
 }
 
-const CPYTHON_38_WITH_TAIL: &str = concat!(
-    "CPython 3.8 lowers the with epilogue through BEGIN_FINALLY and END_FINALLY, which decode to ",
-    "no operation, so the statement after the region has no jump to anchor it and is still ",
-    "dropped. This predates the guard work and an unguarded with loses its tail the same way."
-);
-
 const CASES: &[GuardCase] = &[
     GuardCase {
         label: "guard_with_after_sibling_if",
@@ -170,8 +164,8 @@ const CASES: &[GuardCase] = &[
             "with open(p) as h:",
         ],
         forbidden: &[],
-        open_on: &["3.8"],
-        open_reason: CPYTHON_38_WITH_TAIL,
+        open_on: &[],
+        open_reason: "",
     },
     GuardCase {
         label: "terminating_guard_without_sibling",
@@ -185,8 +179,8 @@ const CASES: &[GuardCase] = &[
         ),
         required: &["if a:", "with open(p) as h:", "return m"],
         forbidden: &[],
-        open_on: &["3.8"],
-        open_reason: CPYTHON_38_WITH_TAIL,
+        open_on: &[],
+        open_reason: "",
     },
     GuardCase {
         label: "guard_with_else_arm",
@@ -215,8 +209,8 @@ const CASES: &[GuardCase] = &[
         ),
         required: &["with open(p) as h:", "m = m.strip()", "return m"],
         forbidden: &["if "],
-        open_on: &["3.8"],
-        open_reason: CPYTHON_38_WITH_TAIL,
+        open_on: &[],
+        open_reason: "",
     },
     GuardCase {
         label: "unguarded_with_invents_no_guard",
@@ -229,8 +223,8 @@ const CASES: &[GuardCase] = &[
         ),
         required: &["with open(p) as h:", "return m"],
         forbidden: &["if ", "else:", "elif "],
-        open_on: &["3.8"],
-        open_reason: CPYTHON_38_WITH_TAIL,
+        open_on: &[],
+        open_reason: "",
     },
     GuardCase {
         label: "guard_finally_after_sibling_if",
