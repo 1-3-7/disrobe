@@ -60,8 +60,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
     feature = "jvm",
     feature = "lua",
     feature = "python",
-    feature = "ruby",
-    feature = "wasm"
+    feature = "ruby"
 ))]
 pub(crate) fn usize_to_u32_saturating(value: usize) -> u32 {
     u32::try_from(value).map_or(u32::MAX, |converted: u32| converted)

@@ -48,6 +48,11 @@ disrobe-query = { workspace = true }
 wat = "1"
 
 [[test]]
+name = "switch_successors"
+path = "tests/switch_successors.rs"
+required-features = ["as3", "dotnet", "jvm", "ruby"]
+
+[[test]]
 name = "wasm_query_facts"
 path = "tests/wasm_query_facts.rs"
 required-features = ["wasm"]
