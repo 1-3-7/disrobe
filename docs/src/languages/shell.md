@@ -6,7 +6,7 @@
 
 | Dialect | Families |
 |---|---|
-| PowerShell | Invoke-Obfuscation (Token, AST, String, Encoding, Compress, Launcher), Invoke-Stealth, PowerHell, Chameleon, psobf, ISESteroids |
+| PowerShell | Invoke-Obfuscation (Token, AST, String, Encoding, Compress, Launcher; graded on from-spec generator output because Defender blocks the module), Invoke-Stealth, Chameleon, psobf; PowerHell and ISESteroids are detected by signature with no committed sample |
 | Bash | Bashfuscator (Token, String, Obfuscate, Compress modes), indirection peeler |
 | Batch | `.bat` / `.cmd` random-char and set-indirection patterns |
 | VBA / VBScript | VBA module source recovery, VBScript WSH patterns |

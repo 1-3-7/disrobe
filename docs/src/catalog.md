@@ -89,7 +89,7 @@ IronBrew2 2.7.0 is reversed on real committed output in standard and MAX mode, v
 
 | Surface | Count | Families |
 |---|---|---|
-| **Shell obfuscators** | <!-- m:shell_families -->19<!-- /m --> | PowerShell Invoke-Obfuscation (Token, AST, String, Encoding, Compress, Launcher), Invoke-Stealth, PowerHell, Chameleon, psobf, ISESteroids; Bashfuscator (Token, String, Obfuscate, Compress), bash IFS/eval indirection, and node-bash-obfuscate; Batch `%random%` and set-indirection |
+| **Shell obfuscators** | <!-- m:shell_families -->19<!-- /m --> | Graded on the tool's own output: Invoke-Stealth, Chameleon, psobf (Invoke-PSObfuscation), Bashfuscator (Token, String, Obfuscate, Compress) and node-bash-obfuscate. Graded on output of a from-spec generator because the upstream tool cannot run here: PowerShell Invoke-Obfuscation (Token, AST, String, Encoding, Compress, Launcher; Defender blocks the module) and Batch `%random%` and set-indirection. Graded on hand-written snippets: bash IFS/eval indirection. Detected by signature with no committed sample: PowerHell (upstream removed) and ISESteroids (commercial) |
 
 Full VBA p-code decompile (264-opcode table, VBA5/6/7) with VBA-stomping detection rounds out the shell pass, alongside Excel 4.0 (XLM) macro-formula recovery (BIFF8 and BIFF12 Ptg decode, shared-formula resolution, and `Auto_Open` resolution in BIFF8 workbooks) and PDF maldoc analysis (embedded JavaScript, launch and embedded-file actions, both xref forms, RC4/AESV2 empty-password decrypt). See the [shell guide](./languages/shell.md).
 
