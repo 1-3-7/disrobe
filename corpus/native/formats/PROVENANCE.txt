@@ -63,3 +63,26 @@ Universal/fat Mach-O      needs lipo / a macOS runner.
 Linux .ko with .modinfo   needs kernel build headers (CI / Linux host).
 Signed PE32+ directory     needs a code-signing certificate.
 These remain ignored or out of scope and are honestly not claimed by the tests here.
+
+Path rewrite
+------------
+The build directory these artifacts recorded was replaced in place after the build;
+apart from the checksum repairs named below, no other byte changed, and every recorded
+sha256 is that of the rewritten file.
+
+dwarf_v2.o: same-length in-place rewrite at offsets 739: the prefixes
+<build-dir>/ (1) were overwritten by /_ followed by / padding, so each
+relative tail keeps its offset and every length field is unchanged.
+
+dwarf_v3.o: same-length in-place rewrite at offsets 699: the prefixes
+<build-dir>/ (1) were overwritten by /_ followed by / padding, so each
+relative tail keeps its offset and every length field is unchanged.
+
+dwarf_v4.o: same-length in-place rewrite at offsets 699: the prefixes
+<build-dir>/ (1) were overwritten by /_ followed by / padding, so each
+relative tail keeps its offset and every length field is unchanged.
+
+dwarf_v5.o: same-length in-place rewrite at offsets 1453, 1492: the prefixes
+<build-dir>/ (1); <build-dir>/ (1) were overwritten
+by /_ followed by / padding, so each relative tail keeps its offset and every length
+field is unchanged.

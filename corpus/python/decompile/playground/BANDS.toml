@@ -5,6 +5,7 @@ inherit_via = "from edge_cases_<prev> import *  (transitive through the 3.6 -> 3
 kitchen_sink_file = "edge_cases.py"
 kitchen_sink_floor = "3.13"
 frontier_file = "known_open.py"
+pyc_path_rewrite = 'the compiled __pycache__ files carry a same-length rewrite of co_filename: the absolute build-directory prefix was overwritten by /_ followed by / padding; no other byte changed'
 
 [[bands]]
 file = "edge_cases_2_7.py"

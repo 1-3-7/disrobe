@@ -14,6 +14,7 @@ verified = "virtualized exe executes under .NET 4.8 and prints output byte-ident
 [[fixture]]
 name = "KoiSample.clean.exe"
 path = "KoiSample.clean.exe"
+path_rewrite = 'same-length in-place rewrite: the absolute build-directory prefix of the CodeView PDB path was overwritten by /_ followed by / padding, so every length field is unchanged; no other byte changed'
 kind = "managed-pe-exe"
 provenance = "real"
 source = "KoiSample.cs"

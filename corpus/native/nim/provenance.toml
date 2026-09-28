@@ -12,6 +12,6 @@ build_mode = "release with runtime checks"
 
 [[artifacts]]
 path = "hello.nim.elf"
-sha256 = "62ee44dc5adede2d9fb0905f9551d774bde7d8c3a340941bfb17601ae1b2214a"
-path_rewrite = "the seven DWARF paths of the Zig glibc stubs had the build host home directory; each was replaced in place with a same-length neutral prefix (C:\\workdir_\\.local\\tools\\), matching the C:\\workdir prefix of the other build paths"
+sha256 = "d2e33f3d9a9e55211361133d91eda380dce1abdb149896e25d1b8a13e1bb8c4a"
+path_rewrite = 'the seven DWARF paths of the Zig glibc stubs first had the build host home directory replaced in place by the same-length <build-dir>/ (spelled with doubled backslashes in the file); every build path was then neutralised by a same-length in-place rewrite at offsets 3894, 3951, 4004, 4123, 4189, 4250, 4305, 4357, 4414, 4467, 4524, 4592, 4647, 4715, 4834, 4923, 4984, 5076, 5136, 5191, 5257, 5316, 5416, 5563, 5619, 5678, 148839, 149179, 181953, 185018, 185046, 185132, 185170, 185232, 188190, 188228, 188256, 188342, 188404, 188454, 190581, 190667, 190705, 190750, 190800, 191169, 191255, 191293, 191321, 191366, 191458, 191520, 191601, 191643, 227382, 227474, 227560, 227598, 227626, 227688, 229082, 229151, 229724, 230278, 232187, 232937, 234947, 236111, 237361, 148736, 149082, 181856, 184552, 184722, 184844, 229344: the prefixes <build-dir>/ (4); <build-dir>/ (7); <build-dir>/ (10); <build-dir>/ (53); <build-dir>/ (2) were overwritten by /_ followed by / padding, so each relative tail keeps its offset and every length field is unchanged'
 build_command = "nim c -d:release --mm:orc --cpu:amd64 --os:linux --cc:clang --clang.exe:zig --clang.linkerexe:zig --out:hello.nim.elf hello.nim"

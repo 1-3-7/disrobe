@@ -39,3 +39,18 @@ The one genuine limit: exact Dart source for a function body is not byte-recover
 from the optimized ARM64 machine code (register allocation and inlining are lossy).
 The kernel (.dill) does carry full bodies and the ARM64 .so disassembles to real
 AArch64 instructions with recovered control flow; both are recovered here.
+
+Path rewrite
+------------
+The build directory these artifacts recorded was replaced in place after the build;
+apart from the checksum repairs named below, no other byte changed, and every recorded
+sha256 is that of the rewritten file.
+
+disrobe_aot_sample.app.dill: same-length in-place rewrite at offsets 2538, 5211, 6297:
+the prefixes <build-dir>/ (3) were overwritten by /_ followed
+by / padding, so each relative tail keeps its offset and every length field is
+unchanged.
+
+libapp_arm64.so: same-length in-place rewrite at offsets 77444, 1471412, 1698628: the
+prefixes <build-dir>/ (3) were overwritten by /_ followed by
+/ padding, so each relative tail keeps its offset and every length field is unchanged.

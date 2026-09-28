@@ -7,9 +7,10 @@ host_platform = "win_amd64"
 
 [shiv]
 file = "shiv/hello.pyz"
-sha256 = "39660da5eb165a37fbf864a323be61490ef1b9cb1bd0e16f63856c86e0432e34"
-size = 84864
+sha256 = "436533de67bc347b289cc9d1c1b836f2473544239ca7c5f04530138759df5490"
+size = 84842
 tool = "shiv"
+path_rewrite = 'direct_url.json (archive and extracted copy) carries a same-length rewrite of the wheel URL: the absolute build-directory prefix was overwritten by /_ followed by / padding; the direct_url.json line of each RECORD was updated to the rewritten digest, and the archive was rewritten member by member with Python zipfile behind the original shebang'
 tool_version = "1.0.8"
 generation_command = "shiv -c hello -o hello.pyz hello-0.1.0-py3-none-any.whl --no-deps"
 regen_env_var = "DISROBE_SHIV_REGEN"
@@ -81,7 +82,8 @@ NB (2026-06-13): the index parse is now the exact python-packed-resources v3 for
 
 [zipapp]
 file = "zipapp/hello.pyz"
-sha256 = "e90196bb95f77afb3f4f492bd5336a19709a07146c14a7140f78d9e106d6738d"
+sha256 = "b964a3ffea5ae6d8372baaefae104bbc3f7a2a481656b8be5066ff07ae76f831"
+path_rewrite = 'same-length in-place rewrite at offsets 55620, 57943, 76078, 90096, 105051, 129487, 141418: the prefixes <build-dir>/ (7) were overwritten by /_ followed by / padding, so each relative tail keeps its offset and every length field is unchanged; recomputed CRC-32 of 7 stored zip member(s)'
 size = 150068
 tool = "stdlib.zipapp"
 tool_version = "cpython-3.12.10"

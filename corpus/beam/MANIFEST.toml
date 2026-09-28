@@ -25,34 +25,38 @@ description = "OTP 28 long AtU8 boundary source: one atom with 255 two-byte UTF-
 
 [[sample]]
 name = "erlang/hello.beam"
+path_rewrite = 'same-length in-place rewrite: the absolute build-directory prefix of the recorded source path was overwritten by /_ followed by / padding, so every length field is unchanged; no other byte changed'
 source_tool = "Erlang/OTP 29 erlc +debug_info"
 source_file = "erlang/hello.erl"
 size_bytes = 876
-sha256 = "bae5979343c36ef4cb4d3698bd1e4127deccf9107252fe59eb28553622b5262f"
+sha256 = "ed4cf9ae572368f81a923e917b40061933b24f76530cc7322aa8fc7748b96586"
 notes = "Smoke fixture: one export main/0 printing hello world."
 
 [[sample]]
 name = "elixir/Elixir.Hello.beam"
+path_rewrite = 'same-length in-place rewrite: the absolute build-directory prefix of the recorded source path was overwritten by /_ followed by / padding, so every length field is unchanged; no other byte changed'
 source_tool = "Elixir 1.18.4 elixirc"
 source_file = "elixir/hello.ex"
 size_bytes = 1568
-sha256 = "25347bf23d754eed992fc882504b48d267fcd741188bfe01ed3410306aa1e8c8"
+sha256 = "4e7a710a93162fee5d433f65d380f929d0485de27c8b250268d4577ea73954fe"
 notes = "Smoke fixture: single Elixir module Hello with one def main."
 
 [[sample]]
 name = "ez/hello.ez"
+path_rewrite = 'members carry the same-length source-path rewrite of their loose copies; the archive was rewritten member by member with Python zipfile, keeping names, order, timestamps and compression method'
 source_tool = "PowerShell Compress-Archive (zip-of-beams)"
 source_files = ["erlang/hello.beam", "ebin/hello.app"]
-size_bytes = 1113
-sha256 = "05395b032311c93f3a21f871f8812f516b01739e1155b957091d762dddcc8414"
+size_bytes = 1096
+sha256 = "c1a1b714baf29f22dcccfc8881ba6ebd60dd54ebe9186b34a86279550eaba9a5"
 notes = "Smoke .ez archive containing hello-1.0/ebin/{hello.beam, hello.app}."
 
 [[sample]]
 name = "megafile/edge_cases.beam"
+path_rewrite = 'same-length in-place rewrite: the absolute build-directory prefix of the recorded source path was overwritten by /_ followed by / padding, so every length field is unchanged; no other byte changed'
 source_tool = "Erlang/OTP 29 erlc +debug_info"
 source_file = "megafile/edge_cases.erl"
 size_bytes = 23744
-sha256 = "be12281848d95f0405a98d07d5df90f27b4c30de54d3125d4b47944c0956cfd9"
+sha256 = "9fa18df19f3578166843b0cdbd8b983222eec6524d1619863880c43d6c25b4df"
 notes = "Erlang megafile: gen_server behaviour, records, maps, bit-syntax, list/binary comprehensions, processes, ets/dets, try/catch/of/after, fun closures, BIFs, big ints."
 
 [[sample]]
@@ -81,6 +85,7 @@ notes = "Symbolic-disasm oracle fixture: try/catch/of, receive, bit-syntax build
 
 [[sample]]
 name = "megafile/edge_cases.ez"
+path_rewrite = 'members carry the same-length source-path rewrite of their loose copies; the archive was rewritten member by member with Python zipfile, keeping names, order, timestamps and compression method'
 source_tool = "PowerShell Compress-Archive (zip-of-beams)"
 source_files = [
     "megafile/edge_cases.beam",
@@ -95,6 +100,6 @@ source_files = [
     "megafile/Elixir.EdgeCases.Renderable.Integer.beam",
     "megafile/Elixir.EdgeCases.Renderable.List.beam",
 ]
-size_bytes = 69211
-sha256 = "96dc117edc543cba958c246b0738e1db06cef42f7e4d24a84aaa51a206f9924b"
+size_bytes = 68978
+sha256 = "757eb729cf0cd51ac8e3d2814317109f78866f47c4fdbd9c9e8132c426932ff7"
 notes = ".ez archive bundling Erlang + 11 Elixir modules into hello-1.0/ebin/."

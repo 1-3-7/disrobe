@@ -22,7 +22,8 @@ sha256 = "58bd4988b58a8acf13285925c637ba326e85dc167999508baaf17f8d8d00de45"
 name = "ConfuserResources.clean.dll"
 kind = "managed-pe-dll"
 size = 3584
-sha256 = "51d019bd0a20059119bbdcdc90935cd3055753bc91d214d8a22c9002d98cc562"
+sha256 = "133b99e9283c2e6b8a7586dec85e53f7207d1216483542852928c52cb52c2487"
+path_rewrite = 'CodeView RSDS PDB path at offset 2160: prefix <build-dir>/ replaced by /_/ (now /_/_build\fixturesrc\srcbuild2\crates\disrobe-pass-dotnet\tests\fixtures\confuser_resources\obj\Release\net48\ConfuserResources.pdb), NUL-padded to the original field length'
 
 [[fixture]]
 name = "ConfuserResources.confuserex2.dll"

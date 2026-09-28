@@ -6,13 +6,14 @@ toolchains = [
   "crystal 1.20.2 for Windows MSVC: https://github.com/crystal-lang/crystal/releases/download/1.20.2/crystal-1.20.2-windows-x86_64-msvc-unsupported.zip, sha256 15a41963373cc481f68dcc9a968bb11d36ee9254f1515eccee86d02223f8f82e",
   "MSVC 14.44.35207 link.exe from Visual Studio 2022 Build Tools with Windows SDK 10.0.26100.0, set up by vcvars64.bat",
 ]
-build_directory = 'C:\workdir\Documents\Projects\disrobe\_build\fixturesrc\src-fixture-gen01\corpus\native\crystal'
-environment = ['CRYSTAL_CACHE_DIR=C:\workdir\AppData\Local\crystal']
+build_directory = '/_/_build/fixturesrc/src-fixture-gen01/corpus/native/crystal'
+environment = ['CRYSTAL_CACHE_DIR=/_/AppData/Local/crystal']
 reproducible = "two consecutive builds wrote identical bytes"
 
 [[artifacts]]
 path = "hello.cr.exe"
-sha256 = "daf8f56c234e024619f362340aa5b0276ec5402ce8f0e6b795089c502c099845"
+sha256 = "ff7518434d33eb698018c1842b9f5b88b16b7e5200064b0cfdbbc5607a04f2b6"
+path_rewrite = 'same-length in-place rewrite at offsets 250140, 251068, 251836, 251932, 252044, 253596: the prefixes <build-dir>/ (6) were overwritten by /_ followed by / padding, so each relative tail keeps its offset and every length field is unchanged'
 build_command = "crystal build hello.cr -o hello.cr.exe --release --no-debug --link-flags /Brepro"
 corpus_counterpart = "../../../../../corpus/native/crystal/hello.cr.exe"
 corpus_difference = "the corpus PE records no crystal version and carries six separate `mov al,1; ret` functions at 16-byte spacing; this build carries one and packs its leaf functions without that padding, so the carver does not split out the `mov eax,1` leaf the corpus grade used, and the crystal cases grade the recursive fib body instead. The 400-byte pairing-heap combine function keeps its address and differs only in the rip-relative displacement of the constant its raise path loads"

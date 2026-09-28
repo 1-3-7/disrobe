@@ -6,6 +6,7 @@ sdk = "dotnet-sdk-9.0.314"
 [[fixture]]
 name = "HelloApp"
 path = "HelloApp.dll"
+path_rewrite = 'CodeView RSDS PDB path at offset 2092: prefix <build-dir>/ replaced by /_/ (now /_/dotnet-samples\HelloApp\obj\Release\net9.0\HelloApp.pdb), NUL-padded to the original field length'
 kind = "managed-pe"
 target_framework = "net9.0"
 provenance = "real"
@@ -26,6 +27,7 @@ description = "self-contained ReadyToRun executable with embedded coreclr; basel
 [[fixture]]
 name = "HelloApp.r2r.dll"
 path = "HelloApp.r2r.dll"
+path_rewrite = 'CodeView RSDS PDB path at offset 5720: prefix <build-dir>/ replaced by /_/ (now /_/dotnet-samples\HelloApp\obj\Release\net9.0\win-x64\HelloApp.pdb), NUL-padded to the original field length'
 kind = "r2r-pe-dll"
 target_framework = "net9.0"
 runtime_id = "win-x64"
@@ -36,6 +38,7 @@ description = "ReadyToRun assembly DLL from self-contained publish; baseline smo
 [[fixture]]
 name = "HelloAppAot.exe"
 path = "HelloAppAot.exe"
+path_rewrite = 'CodeView RSDS PDB path at offset 984140: prefix <build-dir>/ replaced by /_/ (now /_/dotnet-samples\HelloApp-aot\HelloAppAot\bin\Release\net9.0\win-x64\native\HelloAppAot.pdb), NUL-padded to the original field length'
 kind = "nativeaot-pe-exe"
 target_framework = "net9.0"
 runtime_id = "win-x64"
@@ -46,6 +49,7 @@ description = "fully linked native AOT executable; no managed PE inside; baselin
 [[fixture]]
 name = "HelloAppAot.dll"
 path = "HelloAppAot.dll"
+path_rewrite = 'CodeView RSDS PDB path at offset 2092: prefix <build-dir>/ replaced by /_/ (now /_/dotnet-samples\HelloApp-aot\HelloAppAot\obj\Release\net9.0\win-x64\HelloAppAot.pdb), NUL-padded to the original field length'
 kind = "managed-pe-prelink"
 target_framework = "net9.0"
 runtime_id = "win-x64"
@@ -55,6 +59,7 @@ description = "managed DLL produced by the AOT compiler prior to the native link
 [[fixture]]
 name = "HelloAppLegacy"
 path = "HelloAppLegacy.dll"
+path_rewrite = 'CodeView RSDS PDB path at offset 2008: prefix <build-dir>/ replaced by /_/ (now /_/dotnet-samples\HelloAppLegacy\obj\Release\netstandard2.0\HelloAppLegacy.pdb), NUL-padded to the original field length'
 kind = "managed-pe"
 target_framework = "netstandard2.0"
 provenance = "real"
@@ -99,6 +104,7 @@ description = "HelloAppLegacy.dll processed by Obfuscar v2.2.50 with HidePrivate
 [[fixture]]
 name = "EdgeCases.baseline"
 path = "megafile/EdgeCases.baseline.dll"
+path_rewrite = 'CodeView RSDS PDB path at offset 99552: prefix <build-dir>/ replaced by /_/ (now /_/dotnet-samples\EdgeCases\obj\Release\netstandard2.0\EdgeCases.pdb), NUL-padded to the original field length'
 kind = "managed-pe"
 target_framework = "netstandard2.0"
 provenance = "real"
@@ -130,6 +136,7 @@ description = "EdgeCases.baseline.dll renamed by Obfuscar v2.2.50"
 [[fixture]]
 name = "EdgeCases.r2r"
 path = "megafile/EdgeCases.r2r.dll"
+path_rewrite = 'CodeView RSDS PDB path at offset 7608: prefix <build-dir>/ replaced by /_/ (now /_/dotnet-samples\EdgeCases\obj\Release\net9.0\win-x64\EdgeCases.pdb), NUL-padded to the original field length'
 kind = "r2r-pe-dll"
 target_framework = "net9.0"
 runtime_id = "win-x64"
@@ -140,6 +147,7 @@ description = "ReadyToRun-compiled EdgeCases (net9.0); contains R2R header + nat
 [[fixture]]
 name = "EdgeCases.nativeaot"
 path = "megafile/EdgeCases.nativeaot.exe"
+path_rewrite = 'CodeView RSDS PDB path at offset 992460: prefix <build-dir>/ replaced by /_/ (now /_/dotnet-samples\EdgeCasesAot\bin\Release\net9.0\win-x64\native\EdgeCasesAot.pdb), NUL-padded to the original field length'
 kind = "nativeaot-pe-exe"
 target_framework = "net9.0"
 runtime_id = "win-x64"

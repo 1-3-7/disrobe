@@ -39,7 +39,7 @@
       "originalSource": "corpus/ruby/greeter.rb",
       "reference": "corpus/ruby/mri/yarv/expected_iseq_mnemonics.json",
       "bytes": 984,
-      "sha256": "d37a142fe4f0c01f7d404fd1b73f5063c4137a70e2fea98beff4a73b299257eb"
+      "sha256": "b0c9fe656837f84e994b94a071939a04025ca661fcb8bb9c929ce787549d3ecd"
     },
     {
       "name": "hermes-shapes.hbc",

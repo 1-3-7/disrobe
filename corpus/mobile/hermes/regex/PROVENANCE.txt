@@ -22,7 +22,7 @@ Artifacts (Hermes magic c6 1f bc 03 c1 03 19 1f, little-endian):
                     sha256 463732627fecc031d2748dedf14f0ca5fbbb70d82d75702c2c9ec630370ddcb7
 
   regexes.hbc.v96   HBC version 96, 3032 bytes, RegExp count 23.
-                    sha256 3d09ed4059904e914584d6c7948cb5e759a5c6835264871d69025b4ce914b70d
+                    sha256 274b378ea0eefe89f825c7957024a2056aa58cb991643d6f8904948d356348e6
 
   edge.js           ground-truth source: 8 regex literals for the harder constructs:
                     lookbehind (positive and negative), \B, a simple-loop with an
@@ -32,7 +32,7 @@ Artifacts (Hermes magic c6 1f bc 03 c1 03 19 1f, little-endian):
                     sha256 (see file)
 
   edge.hbc.v96      HBC version 96, 1315 bytes, RegExp count 8.
-                    sha256 a5fd9ab6f0a8d9ff02eaa32b4364dff8c98c1208cace2349604ff92f0c8ce35a
+                    sha256 08be8042db788072da01e1beb64b1aa70ac7efe4a6c63c8c6c43d2bfebd132f7
 
   nest.js           ground-truth source: 7 regex literals for nested structure:
                     a captured group under a quantifier, alternation inside a group,
@@ -42,7 +42,7 @@ Artifacts (Hermes magic c6 1f bc 03 c1 03 19 1f, little-endian):
                     sha256 606a2b1135d55abfea8a6ed8092e3bc2cebe493221dc50f37110ba23d7e423b2
 
   nest.hbc.v96      HBC version 96, 1400 bytes, RegExp count 7.
-                    sha256 0577cb83f4cafe4cd49c6d865db0a05cd264dce33d231cd83218c6f0e97f3884
+                    sha256 0796482bbeabb7d1004120273d0c340a2421bac91b71d59b316afcff7f7f76f6
 
 Scope of recovery, stated plainly:
 
@@ -60,3 +60,24 @@ Scope of recovery, stated plainly:
   stored reversed (recovered by reversing simple literal runs). Any regex opcode the
   decoder cannot model is marked rather than guessed: the recovered struct exposes a
   fully_modeled flag that goes false and the pattern is left as decoded so far.
+
+Path rewrite
+------------
+The build directory these artifacts recorded was replaced in place after the build;
+apart from the checksum repairs named below, no other byte changed, and every recorded
+sha256 is that of the rewritten file.
+
+edge.hbc.v96: same-length in-place rewrite at offsets 1016: the prefixes
+<build-dir>/ (1) were overwritten by /_ followed by / padding, so each
+relative tail keeps its offset and every length field is unchanged; recomputed the SHA-1
+footer.
+
+nest.hbc.v96: same-length in-place rewrite at offsets 1124: the prefixes
+<build-dir>/ (1) were overwritten by /_ followed by / padding, so each
+relative tail keeps its offset and every length field is unchanged; recomputed the SHA-1
+footer.
+
+regexes.hbc.v96: same-length in-place rewrite at offsets 2384: the prefixes
+<build-dir>/ (1) were overwritten by /_ followed by / padding, so each
+relative tail keeps its offset and every length field is unchanged; recomputed the SHA-1
+footer.

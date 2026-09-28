@@ -13,7 +13,8 @@ source_url = "self-authored regexes.js compiled with hermesc (FOSS, facebook/her
 upstream_repo = "https://github.com/facebook/hermes"
 license = "self-authored (disrobe regression fixture, freely redistributable)"
 size_bytes = 3032
-sha256 = "3d09ed4059904e914584d6c7948cb5e759a5c6835264871d69025b4ce914b70d"
+sha256 = "274b378ea0eefe89f825c7957024a2056aa58cb991643d6f8904948d356348e6"
+path_rewrite = 'same-length in-place rewrite at offsets 2384: the prefixes <build-dir>/ (1) were overwritten by /_ followed by / padding, so each relative tail keeps its offset and every length field is unchanged; recomputed the SHA-1 footer'
 hermes_version_detected = 96
 notes = """
 Real Hermes bytecode (HBC v96) holding 23 compiled regex literals. The regex
@@ -28,7 +29,8 @@ source_url = "self-authored edge.js compiled with hermesc (FOSS, facebook/hermes
 upstream_repo = "https://github.com/facebook/hermes"
 license = "self-authored (disrobe regression fixture, freely redistributable)"
 size_bytes = 1315
-sha256 = "a5fd9ab6f0a8d9ff02eaa32b4364dff8c98c1208cace2349604ff92f0c8ce35a"
+sha256 = "08be8042db788072da01e1beb64b1aa70ac7efe4a6c63c8c6c43d2bfebd132f7"
+path_rewrite = 'same-length in-place rewrite at offsets 1016: the prefixes <build-dir>/ (1) were overwritten by /_ followed by / padding, so each relative tail keeps its offset and every length field is unchanged; recomputed the SHA-1 footer'
 hermes_version_detected = 96
 notes = """
 Real Hermes bytecode (HBC v96) holding 8 harder regex constructs: lookbehind,
@@ -42,7 +44,8 @@ source_url = "self-authored nest.js compiled with hermesc (FOSS, facebook/hermes
 upstream_repo = "https://github.com/facebook/hermes"
 license = "self-authored (disrobe regression fixture, freely redistributable)"
 size_bytes = 1400
-sha256 = "0577cb83f4cafe4cd49c6d865db0a05cd264dce33d231cd83218c6f0e97f3884"
+sha256 = "0796482bbeabb7d1004120273d0c340a2421bac91b71d59b316afcff7f7f76f6"
+path_rewrite = 'same-length in-place rewrite at offsets 1124: the prefixes <build-dir>/ (1) were overwritten by /_ followed by / padding, so each relative tail keeps its offset and every length field is unchanged; recomputed the SHA-1 footer'
 hermes_version_detected = 96
 notes = """
 Real Hermes bytecode (HBC v96) holding 7 nested regex constructs: quantified groups,
@@ -56,7 +59,8 @@ source_url = "self-authored sample.js compiled with hermesc (FOSS, facebook/herm
 upstream_repo = "https://github.com/facebook/hermes"
 license = "self-authored (disrobe regression fixture, freely redistributable)"
 size_bytes = 1467
-sha256 = "48ca9d83ed9fe683458b92f26dcb2e1fdfe6bddd0f7ad112aabf94aa38acb0e7"
+sha256 = "39ee9eccbd99c8597df7847fa17804a3213982629d093c0ffb01abdd485daa4a"
+path_rewrite = 'same-length in-place rewrite at offsets 992: the prefixes <build-dir>/ (1) were overwritten by /_ followed by / padding, so each relative tail keeps its offset and every length field is unchanged; recomputed the SHA-1 footer'
 hermes_version_detected = 96
 notes = """
 Real Hermes bytecode (HBC v96) from hermesc release 0.12.0. CI-gated: the lifter
@@ -69,7 +73,8 @@ name = "sample/sample.hbc.v84"
 source_url = "self-authored sample.js compiled with hermesc 0.11.0 (FOSS)"
 license = "self-authored (disrobe regression fixture, freely redistributable)"
 size_bytes = 1203
-sha256 = "0e1a0a3019afaefdf8fa8a8e50c1a249fcdfa476b894c7a405c427607bd40913"
+sha256 = "50bf2da19b8b6dba13ed159c657d7a0800ae7f73ead133e0d4cbdce72ea40e04"
+path_rewrite = 'same-length in-place rewrite at offsets 948: the prefixes <build-dir>/ (1) were overwritten by /_ followed by / padding, so each relative tail keeps its offset and every length field is unchanged; recomputed the SHA-1 footer'
 hermes_version_detected = 84
 notes = "HBC v84. The release-specific v84 table grades all eight function bodies against the original source."
 
@@ -78,7 +83,8 @@ name = "sample/sample.hbc.v76"
 source_url = "self-authored sample.js compiled with hermesc 0.7.2 (FOSS)"
 license = "self-authored (disrobe regression fixture, freely redistributable)"
 size_bytes = 1203
-sha256 = "3eb217fcceb2c0bcc789227059577a2b07050059a258bd2d2c079ff855a7eeff"
+sha256 = "13dd7a456178bda7df4a8b0f225e3675fd7181c2166bb49ef2f7ae77de7885e3"
+path_rewrite = 'same-length in-place rewrite at offsets 948: the prefixes <build-dir>/ (1) were overwritten by /_ followed by / padding, so each relative tail keeps its offset and every length field is unchanged; recomputed the SHA-1 footer'
 hermes_version_detected = 76
 notes = "HBC v76. The release-specific v76 table grades all eight function bodies against the original source."
 

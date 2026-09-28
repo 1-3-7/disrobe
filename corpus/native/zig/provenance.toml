@@ -8,5 +8,6 @@ build_mode = "ReleaseSafe"
 
 [[artifacts]]
 path = "hello.zig.elf"
-sha256 = "b85fa149b49bdcf1ec9011d92b55dde9d9cf308d8bc28e83d28323add8852994"
+sha256 = "24c173e3ec778b434c778977f2294f066ce9ac4ea05071edbdc4cc2b7581664b"
+path_rewrite = 'same-length in-place rewrite at offsets 1698115, 1776797, 1894624, 1894682, 1894746, 1894811, 1894872, 1894939, 1895000, 1895061, 1895126, 1895189, 1895256, 1895320, 1895393, 1895456, 1895519, 1895581, 2072628, 2072686, 2072750, 2072815, 2072881: the prefixes <build-dir>/ (20); <build-dir>/ (2); <build-dir>/ (1) were overwritten by /_ followed by / padding, so each relative tail keeps its offset and every length field is unchanged'
 build_command = "zig build-exe hello.zig -OReleaseSafe -target x86_64-linux-gnu -femit-bin=hello.zig.elf"

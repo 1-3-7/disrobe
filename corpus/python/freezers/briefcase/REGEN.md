@@ -5,7 +5,7 @@ Briefcase 0.4 prompts interactively by default. Drive it headlessly via per-ques
 ## one-shot regen (Windows)
 
 ```powershell
-$venv = ".developer\pyfreeze-build\venv-base"
+$venv = ".fixture-build\pyfreeze-build\venv-base"
 $brc = "$venv\Scripts\briefcase.exe"
 $stage = Join-Path $env:TEMP "disrobe-briefcase-regen"
 Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
@@ -29,7 +29,7 @@ Pop-Location
 ## inject edge_cases chain
 
 ```powershell
-$pkg = ".developer\pyfreeze-build\hello-pkg"
+$pkg = ".fixture-build\pyfreeze-build\hello-pkg"
 $app = "$stage\hello\src\hello"
 Get-ChildItem "$pkg\*.py" | Copy-Item -Destination $app
 

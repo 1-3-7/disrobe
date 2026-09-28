@@ -59,3 +59,14 @@ the fixture so that limitation is asserted rather than hidden.
 
 Scope: this recovers declared symbol / type / member NAMES, not Swift
 function-body source.
+
+Path rewrite
+------------
+The build directory these artifacts recorded was replaced in place after the build;
+apart from the checksum repairs named below, no other byte changed, and every recorded
+sha256 is that of the rewritten file.
+
+GreetingKit.swiftmodule: same-length in-place rewrite at offsets 15272, 15400, 15568,
+15644: the prefixes <build-dir>/ (3); <build-dir>/ (1)
+were overwritten by /_ followed by / padding, so each relative tail keeps its offset and
+every length field is unchanged.

@@ -21,3 +21,13 @@ The classfile routes through disrobe-pass-jvm: detection matches on org/python/ 
 and decompile_classfile_bytes lifts the real Java. The recovered greet$1 method returns
 PyString.fromInterned("hi from jython"), so the original Python string literal is present
 in the lifted Java verbatim, graded against the known greet_mod.py source.
+
+Path rewrite
+------------
+The build directory these artifacts recorded was replaced in place after the build;
+apart from the checksum repairs named below, no other byte changed, and every recorded
+sha256 is that of the rewritten file.
+
+greet_mod$py.class: same-length in-place rewrite at offsets 2237: the prefixes
+<build-dir>/ (1) were overwritten by /_ followed by / padding, so each
+relative tail keeps its offset and every length field is unchanged.

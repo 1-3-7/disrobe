@@ -32,6 +32,7 @@ ruby = "3.4.9 (2026-03-11 revision 76cca827ab) +PRISM [x64-mingw-ucrt]"
 
 [[fixtures]]
 path = "mri/yarv/hello.rb.yarvc"
+path_rewrite = 'same-length in-place rewrite at offsets 203: the prefixes <build-dir>/ (1) were overwritten by /_ followed by / padding, so each relative tail keeps its offset and every length field is unchanged'
 bucket = "yarv"
 runtime = "MRI"
 runtime_version = "3.4.9"
@@ -43,6 +44,7 @@ notes = "real Ruby 3.4 IBF iseq dump"
 
 [[fixtures]]
 path = "mri/yarv/greeter.rb.yarvc"
+path_rewrite = 'same-length in-place rewrite at offsets 819: the prefixes <build-dir>/ (1) were overwritten by /_ followed by / padding, so each relative tail keeps its offset and every length field is unchanged'
 bucket = "yarv"
 runtime = "MRI"
 runtime_version = "3.4.9"
@@ -62,7 +64,8 @@ generator_script = "mri/yarv/dump_iseq.rb"
 status = "REAL"
 magic = "YARB"
 size_bytes = 135860
-sha256 = "08b7c034d360c22119e8ab05dd27c6646b423360bdc05fa6ce225eb8b1c2b173"
+sha256 = "e508c60a3658e2aeecd86fa0a1e1baf2fffe1dc19a40c6b51278ae878c90e70d"
+path_rewrite = 'same-length in-place rewrite at offsets 125643: the prefixes <build-dir>/ (1) were overwritten by /_ followed by / padding, so each relative tail keeps its offset and every length field is unchanged'
 source_loc = 2060
 source_size_bytes = 39260
 source_sha256 = "00260956188b1046e0c123ab5b77894c3530172091e6892cf66b23909652a5f7"
@@ -70,6 +73,7 @@ notes = "real Ruby 3.4.9 IBF dump of the 2060-line feature megafile"
 
 [[fixtures]]
 path = "mri/yarv/literals.rb.yarvc"
+path_rewrite = 'same-length in-place rewrite at offsets 1347: the prefixes <build-dir>/ (1) were overwritten by /_ followed by / padding, so each relative tail keeps its offset and every length field is unchanged'
 bucket = "yarv"
 runtime = "MRI"
 runtime_version = "3.4.9"

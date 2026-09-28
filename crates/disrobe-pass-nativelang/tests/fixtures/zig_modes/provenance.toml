@@ -69,7 +69,7 @@ present_markers = ["mem.Allocator.", "start.main"]
 
 [[companion_artifacts]]
 path = "../../../../../corpus/native/zig/hello.zig.elf"
-sha256 = "b85fa149b49bdcf1ec9011d92b55dde9d9cf308d8bc28e83d28323add8852994"
+sha256 = "24c173e3ec778b434c778977f2294f066ce9ac4ea05071edbdc4cc2b7581664b"
 producer = "zig 0.13.0"
 build_mode = "safety-checked"
 target = "x86_64-linux"
