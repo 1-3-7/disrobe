@@ -306,11 +306,29 @@ pub fn analyze_rcpp(bytes: &[u8]) -> Result<rcpp::RcppFingerprint> {
     Ok(rcpp::fingerprint(&obj, rds_bytes.as_ref()))
 }
 
+const RDS_SNIFF_BYTES: u64 = 64;
+
 fn rds_detectable(bytes: &[u8]) -> bool {
-    maybe_gunzip_rds(bytes)
-        .ok()
-        .flatten()
-        .is_some_and(|b: Cow<'_, [u8]>| r_rds::is_rds(b.as_ref()))
+    if r_rds::is_rds(bytes) {
+        return true;
+    }
+    let decoder: Option<Box<dyn Read + '_>> = if bytes.starts_with(&GZIP_MAGIC) {
+        Some(Box::new(flate2::read::GzDecoder::new(bytes)))
+    } else if bytes.starts_with(&BZIP2_MAGIC) {
+        Some(Box::new(bzip2_rs::DecoderReader::new(bytes)))
+    } else if bytes.starts_with(&XZ_MAGIC) {
+        Some(Box::new(liblzma::read::XzDecoder::new(bytes)))
+    } else {
+        None
+    };
+    decoder.is_some_and(|reader: Box<dyn Read + '_>| {
+        let mut prefix: Vec<u8> = Vec::new();
+        reader
+            .take(RDS_SNIFF_BYTES)
+            .read_to_end(&mut prefix)
+            .is_ok()
+            && r_rds::is_rds(&prefix)
+    })
 }
 
 const MAX_RDS_BYTES: usize = 1usize << 29;

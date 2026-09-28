@@ -1473,23 +1473,23 @@ pub fn detect_embedded_pe(text: &str) -> Option<String> {
 #[must_use]
 pub fn rebuild_char_codes(text: &str) -> Option<String> {
     let mut result: String = String::with_capacity(text.len());
-    let bytes: &[u8] = text.as_bytes();
+    let lower: String = text.to_ascii_lowercase();
     let mut i: usize = 0usize;
     let mut changed: bool = false;
-    while i < bytes.len() {
-        if let Some((decoded, end)) = match_char_code_run(text, i) {
+    while let Some(ch) = text[i..].chars().next() {
+        if let Some((decoded, end)) = match_char_code_run(text, lower.as_bytes(), i) {
             result.push_str(&emit_single_quoted(&decoded));
             i = end;
             changed = true;
         } else {
-            result.push(bytes[i] as char);
-            i += 1;
+            result.push(ch);
+            i += ch.len_utf8();
         }
     }
     changed.then_some(result)
 }
 
-fn match_char_code_run(text: &str, start: usize) -> Option<(String, usize)> {
+fn match_char_code_run(text: &str, lower_text: &[u8], start: usize) -> Option<(String, usize)> {
     const PREFIXES: &[&str] = &[
         "[char[]](",
         "[char[]] (",
@@ -1500,7 +1500,7 @@ fn match_char_code_run(text: &str, start: usize) -> Option<(String, usize)> {
         "[char]",
     ];
     let bytes: &[u8] = text.as_bytes();
-    let lower: &[u8] = &text.to_ascii_lowercase().into_bytes()[start..];
+    let lower: &[u8] = lower_text.get(start..)?;
     let mut header: usize = 0usize;
     for p in PREFIXES {
         if lower.len() >= p.len() && &lower[..p.len()] == p.as_bytes() {
@@ -1720,6 +1720,14 @@ fn is_printable_script(s: &str) -> bool {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn char_code_rebuild_keeps_non_ascii_text_intact() {
+        let rebuilt: String =
+            rebuild_char_codes("x = \"héllo\" + Chr(72) + Chr(105)").expect("a run was rebuilt");
+        assert!(rebuilt.contains("héllo"), "{rebuilt}");
+        assert!(rebuilt.contains("'H'"), "{rebuilt}");
+    }
     use std::io::Write;
 
     #[test]
