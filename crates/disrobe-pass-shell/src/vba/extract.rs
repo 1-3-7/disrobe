@@ -43,6 +43,8 @@ const REC_MODULENAME: u16 = 0x0019;
 const REC_MODULESTREAMNAME: u16 = 0x001A;
 const REC_MODULEOFFSET: u16 = 0x0031;
 const REC_PROJECTMODULES: u16 = 0x000F;
+const REC_PROJECTCODEPAGE: u16 = 0x0003;
+const PROJECT_INFORMATION_RECORD_LIMIT: usize = 32;
 
 pub fn extract_from_bytes(data: &[u8]) -> Result<ExtractedProject> {
     if data.starts_with(OOXML_MAGIC) {
@@ -135,7 +137,8 @@ fn extract_from_ole(data: &[u8]) -> Result<ExtractedProject> {
         .filter(|e: &cfb::Entry| e.is_stream())
         .map(|e: cfb::Entry| normalize_cfb_path(&e.path().display().to_string()))
         .collect();
-    let module_refs: Vec<ModuleRef> = read_module_refs(&mut comp, &stream_paths);
+    let (module_refs, codepage): (Vec<ModuleRef>, Option<u16>) =
+        read_module_refs(&mut comp, &stream_paths);
     if module_refs.len() > MAX_MODULE_REFS {
         return Err(Error::VbaPcode {
             reason: format!(
@@ -164,7 +167,7 @@ fn extract_from_ole(data: &[u8]) -> Result<ExtractedProject> {
             stream_budget = remaining;
             let (recovered, source_error): (String, Option<String>) = match read_error {
                 Some(reason) => (String::new(), Some(reason)),
-                None => match decompress_source_at(&buf, module_ref.text_offset) {
+                None => match decompress_source_at(&buf, module_ref.text_offset, codepage) {
                     Ok(text) => (text, None),
                     Err(e) => (String::new(), Some(e.to_string())),
                 },
@@ -217,7 +220,7 @@ fn extract_from_ole(data: &[u8]) -> Result<ExtractedProject> {
         };
         stream_budget = remaining;
         let (recovered, source_error): (String, Option<String>) = match decompress_ovba(&buf) {
-            Ok(bytes) => (decode_mbcs(&bytes), None),
+            Ok(bytes) => (decode_mbcs(&bytes, codepage), None),
             Err(e) => (String::new(), Some(e.to_string())),
         };
         modules.push(ExtractedModule {
@@ -255,15 +258,52 @@ fn read_stream(comp: &mut cfb::CompoundFile<Cursor<&[u8]>>, path: &str) -> Resul
 fn read_module_refs(
     comp: &mut cfb::CompoundFile<Cursor<&[u8]>>,
     stream_paths: &[String],
-) -> Vec<ModuleRef> {
+) -> (Vec<ModuleRef>, Option<u16>) {
     let dir_path: String = locate_dir_stream(stream_paths);
     let Ok(dir_compressed): Result<Vec<u8>> = read_stream(comp, &dir_path) else {
-        return Vec::new();
+        return (Vec::new(), None);
     };
     let Ok(dir): Result<Vec<u8>> = decompress_ovba(&dir_compressed) else {
-        return Vec::new();
+        return (Vec::new(), None);
     };
-    parse_module_table(&dir)
+    let codepage: Option<u16> = project_codepage(&dir);
+    (parse_module_table(&dir, codepage), codepage)
+}
+
+fn project_codepage(dir: &[u8]) -> Option<u16> {
+    let mut cursor: usize = 0;
+    for _ in 0..PROJECT_INFORMATION_RECORD_LIMIT {
+        let header: &[u8] = dir.get(cursor..cursor.checked_add(6)?)?;
+        let tag: u16 = u16::from_le_bytes([header[0], header[1]]);
+        let size: usize = usize::try_from(u32::from_le_bytes([
+            header[2], header[3], header[4], header[5],
+        ]))
+        .ok()?;
+        let body: usize = cursor + 6;
+        if tag == REC_PROJECTCODEPAGE {
+            let value: &[u8] = dir.get(body..body.checked_add(2)?)?;
+            return Some(u16::from_le_bytes([value[0], value[1]]));
+        }
+        cursor = body.checked_add(size)?;
+    }
+    None
+}
+
+fn codepage_encoding(codepage: u16) -> Option<&'static encoding_rs::Encoding> {
+    let label: String = match codepage {
+        65001 => "utf-8".to_owned(),
+        932 => "shift_jis".to_owned(),
+        936 => "gbk".to_owned(),
+        949 => "euc-kr".to_owned(),
+        950 => "big5".to_owned(),
+        874 | 1250..=1258 => format!("windows-{codepage}"),
+        10000 => "macintosh".to_owned(),
+        20866 => "koi8-r".to_owned(),
+        21866 => "koi8-u".to_owned(),
+        28591..=28606 => format!("iso-8859-{}", codepage - 28590),
+        _ => return None,
+    };
+    encoding_rs::Encoding::for_label(label.as_bytes())
 }
 
 fn locate_module_section(dir: &[u8]) -> Option<usize> {
@@ -289,7 +329,7 @@ fn locate_module_section(dir: &[u8]) -> Option<usize> {
     None
 }
 
-fn parse_module_table(dir: &[u8]) -> Vec<ModuleRef> {
+fn parse_module_table(dir: &[u8], codepage: Option<u16>) -> Vec<ModuleRef> {
     let Some(start): Option<usize> = locate_module_section(dir) else {
         return Vec::new();
     };
@@ -316,10 +356,10 @@ fn parse_module_table(dir: &[u8]) -> Vec<ModuleRef> {
         }
         match tag {
             REC_MODULENAME => {
-                name = Some(decode_mbcs(&dir[body..body_end]));
+                name = Some(decode_mbcs(&dir[body..body_end], codepage));
             }
             REC_MODULESTREAMNAME => {
-                stream = Some(decode_mbcs(&dir[body..body_end]));
+                stream = Some(decode_mbcs(&dir[body..body_end], codepage));
             }
             REC_MODULEOFFSET if size >= 4 => {
                 let text_offset: usize =
@@ -346,7 +386,11 @@ fn parse_module_table(dir: &[u8]) -> Vec<ModuleRef> {
     modules
 }
 
-fn decompress_source_at(stream: &[u8], text_offset: usize) -> Result<String> {
+fn decompress_source_at(
+    stream: &[u8],
+    text_offset: usize,
+    codepage: Option<u16>,
+) -> Result<String> {
     if text_offset >= stream.len() {
         return Err(Error::VbaPcode {
             reason: format!(
@@ -357,13 +401,19 @@ fn decompress_source_at(stream: &[u8], text_offset: usize) -> Result<String> {
     }
     let compressed: &[u8] = &stream[text_offset..];
     let bytes: Vec<u8> = decompress_ovba(compressed)?;
-    Ok(decode_mbcs(&bytes))
+    Ok(decode_mbcs(&bytes, codepage))
 }
 
-fn decode_mbcs(bytes: &[u8]) -> String {
+fn decode_mbcs(bytes: &[u8], codepage: Option<u16>) -> String {
+    if let Some(encoding) = codepage.and_then(codepage_encoding) {
+        return encoding.decode_without_bom_handling(bytes).0.into_owned();
+    }
     match std::str::from_utf8(bytes) {
         Ok(text) => text.to_owned(),
-        Err(_) => bytes.iter().map(|b: &u8| *b as char).collect(),
+        Err(_) => encoding_rs::WINDOWS_1252
+            .decode_without_bom_handling(bytes)
+            .0
+            .into_owned(),
     }
 }
 
@@ -420,6 +470,32 @@ fn looks_like_vba_module(path: &str) -> bool {
 mod tests {
     use super::*;
 
+    fn dir_record(tag: u16, body: &[u8]) -> Vec<u8> {
+        let mut out: Vec<u8> = tag.to_le_bytes().to_vec();
+        out.extend_from_slice(&u32::try_from(body.len()).unwrap_or(0).to_le_bytes());
+        out.extend_from_slice(body);
+        out
+    }
+
+    #[test]
+    fn the_project_codepage_is_read_from_the_information_records() {
+        let mut dir: Vec<u8> = dir_record(0x0001, &3u32.to_le_bytes());
+        dir.extend(dir_record(0x0002, &0x0411u32.to_le_bytes()));
+        dir.extend(dir_record(0x0014, &0x0411u32.to_le_bytes()));
+        dir.extend(dir_record(REC_PROJECTCODEPAGE, &932u16.to_le_bytes()));
+        assert_eq!(project_codepage(&dir), Some(932));
+        assert_eq!(project_codepage(&dir[..10]), None);
+    }
+
+    #[test]
+    fn module_text_decodes_through_the_declared_codepage() {
+        let shift_jis: &[u8] = b"MsgBox \"\x93\xfa\x96\x7b\"";
+        assert_eq!(decode_mbcs(shift_jis, Some(932)), "MsgBox \"日本\"");
+        let cp1251: &[u8] = b"s = \"\xcf\xf0\xe8\xe2\xe5\xf2\"";
+        assert_eq!(decode_mbcs(cp1251, Some(1251)), "s = \"Привет\"");
+        assert_eq!(decode_mbcs(b"caf\xe9", None), "café");
+    }
+
     #[test]
     fn raw_passthrough() -> Result<()> {
         let r: ExtractedProject = extract_from_bytes(b"Attribute VB_Name = \"M\"\n")?;
@@ -435,7 +511,7 @@ mod tests {
         push_record(&mut dir, REC_MODULENAME, b"Module1");
         push_record(&mut dir, REC_MODULESTREAMNAME, b"Module1");
         push_record(&mut dir, REC_MODULEOFFSET, &1234u32.to_le_bytes());
-        let refs: Vec<ModuleRef> = parse_module_table(&dir);
+        let refs: Vec<ModuleRef> = parse_module_table(&dir, None);
         assert_eq!(refs.len(), 1);
         assert_eq!(refs[0].name, "Module1");
         assert_eq!(refs[0].stream, "Module1");
@@ -446,7 +522,7 @@ mod tests {
     fn module_table_without_projectmodules_is_empty() {
         let mut dir: Vec<u8> = Vec::new();
         push_record(&mut dir, REC_MODULENAME, b"Module1");
-        assert!(parse_module_table(&dir).is_empty());
+        assert!(parse_module_table(&dir, None).is_empty());
     }
 
     #[test]
@@ -455,13 +531,13 @@ mod tests {
         push_record(&mut dir, REC_PROJECTMODULES, &1u16.to_le_bytes());
         dir.extend_from_slice(&REC_MODULENAME.to_le_bytes());
         dir.extend_from_slice(&u32::MAX.to_le_bytes());
-        assert!(parse_module_table(&dir).is_empty());
+        assert!(parse_module_table(&dir, None).is_empty());
     }
 
     #[test]
     fn invalid_text_offset_is_explicit_error() {
         assert!(matches!(
-            decompress_source_at(b"short", 99),
+            decompress_source_at(b"short", 99, None),
             Err(Error::VbaPcode { reason }) if reason.contains("TextOffset")
         ));
     }
@@ -469,7 +545,7 @@ mod tests {
     #[test]
     fn malformed_compressed_source_is_explicit_error() {
         assert!(matches!(
-            decompress_source_at(b"not an ovba compressed stream", 0),
+            decompress_source_at(b"not an ovba compressed stream", 0, None),
             Err(Error::VbaPcode { .. })
         ));
     }

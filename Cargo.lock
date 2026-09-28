@@ -2667,6 +2667,7 @@ dependencies = [
  "disrobe-core",
  "disrobe-ir",
  "disrobe-testkit",
+ "encoding_rs",
  "flate2",
  "lazy-regex",
  "md-5",
