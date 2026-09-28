@@ -41,7 +41,10 @@ pub use parcel::detect as detect_parcel;
 pub use require_rewrite::{build_id_to_path_map, rewrite_modules, rewrite_requires};
 pub use rolldown::detect as detect_rolldown;
 pub use rollup::detect as detect_rollup;
-pub use sourcemap::{SourceMapInfo, find as find_source_map};
+pub use sourcemap::{
+    SiblingMapRefusal, SourceMapInfo, contained_sibling_map, find as find_source_map,
+    sibling_map_path,
+};
 #[cfg(not(target_arch = "wasm32"))]
 pub use sourcemap_recover::recover_deployed_source;
 pub use sourcemap_recover::{
