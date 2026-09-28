@@ -2,6 +2,10 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+mod anchor;
+
+use anchor::AnchorRegions;
+
 pub mod pe_sections;
 
 pub use pe_sections::{DataDirectory, PeImage, PeSection, parse_pe_image};
@@ -406,7 +410,7 @@ pub enum Confidence {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MatchScope {
-    Anywhere,
+    Anchored,
     SectionName,
 }
 
@@ -425,7 +429,7 @@ const SIGNATURES: &[Signature] = &[
         pattern: b"UPX!",
         note: "UPX section/magic marker",
         confidence: Confidence::High,
-        scope: MatchScope::Anywhere,
+        scope: MatchScope::Anchored,
     },
     Signature {
         packer: Packer::Upx,
@@ -462,14 +466,14 @@ const SIGNATURES: &[Signature] = &[
         ],
         note: "ASPack 2.x EP stub (pushad; call $+8; jmp; pop ebp; inc ebp; push ebp; ret)",
         confidence: Confidence::High,
-        scope: MatchScope::Anywhere,
+        scope: MatchScope::Anchored,
     },
     Signature {
         packer: Packer::AsProtect,
         pattern: b".asprotect",
         note: "ASProtect embedded literal (exceeds 8-byte PE section-name field)",
         confidence: Confidence::High,
-        scope: MatchScope::Anywhere,
+        scope: MatchScope::Anchored,
     },
     Signature {
         packer: Packer::Petite,
@@ -504,7 +508,7 @@ const SIGNATURES: &[Signature] = &[
         pattern: b"FSG!",
         note: "FSG entry-point magic (1.x)",
         confidence: Confidence::High,
-        scope: MatchScope::Anywhere,
+        scope: MatchScope::Anchored,
     },
     Signature {
         packer: Packer::Fsg,
@@ -514,28 +518,28 @@ const SIGNATURES: &[Signature] = &[
         ],
         note: "FSG 2.0 getbit-helper stub prologue (CALL +0x0A; add dl,dl; jnz; mov dl,[esi]; inc esi; adc dl,dl; ret)",
         confidence: Confidence::High,
-        scope: MatchScope::Anywhere,
+        scope: MatchScope::Anchored,
     },
     Signature {
         packer: Packer::Morphine,
         pattern: b"morphine",
         note: "Morphine signature",
         confidence: Confidence::Medium,
-        scope: MatchScope::Anywhere,
+        scope: MatchScope::Anchored,
     },
     Signature {
         packer: Packer::PeCompact,
         pattern: b"PEC2",
         note: "PECompact v2 stub",
         confidence: Confidence::High,
-        scope: MatchScope::Anywhere,
+        scope: MatchScope::Anchored,
     },
     Signature {
         packer: Packer::PeCompact,
         pattern: b"PECompact2",
         note: "PECompact 2 marker",
         confidence: Confidence::High,
-        scope: MatchScope::Anywhere,
+        scope: MatchScope::Anchored,
     },
     Signature {
         packer: Packer::PeCompact,
@@ -545,14 +549,14 @@ const SIGNATURES: &[Signature] = &[
         ],
         note: "PECompact2 SEH-install prologue (mov eax,imm; push eax; push fs:[0]; mov fs:[0],esp)",
         confidence: Confidence::Medium,
-        scope: MatchScope::Anywhere,
+        scope: MatchScope::Anchored,
     },
     Signature {
         packer: Packer::YodasCrypter,
         pattern: b"yC2.0",
         note: "Yoda's Crypter 2.0 marker",
         confidence: Confidence::High,
-        scope: MatchScope::Anywhere,
+        scope: MatchScope::Anchored,
     },
     Signature {
         packer: Packer::YodasCrypter,
@@ -562,14 +566,14 @@ const SIGNATURES: &[Signature] = &[
         ],
         note: "Yoda's Crypter 1.2 EP delta prologue + LEA ESI decrypt-loop setup (corroboration only)",
         confidence: Confidence::Low,
-        scope: MatchScope::Anywhere,
+        scope: MatchScope::Anchored,
     },
     Signature {
         packer: Packer::YodasProtector,
         pattern: b"yP1.0",
         note: "Yoda's Protector 1.0 marker",
         confidence: Confidence::High,
-        scope: MatchScope::Anywhere,
+        scope: MatchScope::Anchored,
     },
     Signature {
         packer: Packer::NPack,
@@ -604,7 +608,7 @@ const SIGNATURES: &[Signature] = &[
         pattern: b"neolite",
         note: "NeoLite signature",
         confidence: Confidence::Medium,
-        scope: MatchScope::Anywhere,
+        scope: MatchScope::Anchored,
     },
     Signature {
         packer: Packer::Mew,
@@ -618,7 +622,7 @@ const SIGNATURES: &[Signature] = &[
         pattern: b"PolyCryptor",
         note: "PolyCryptor identifier",
         confidence: Confidence::Medium,
-        scope: MatchScope::Anywhere,
+        scope: MatchScope::Anchored,
     },
     Signature {
         packer: Packer::PeProtector,
@@ -632,7 +636,7 @@ const SIGNATURES: &[Signature] = &[
         pattern: b"PELock",
         note: "PELock identifier",
         confidence: Confidence::Medium,
-        scope: MatchScope::Anywhere,
+        scope: MatchScope::Anchored,
     },
     Signature {
         packer: Packer::VmProtect,
@@ -674,28 +678,28 @@ const SIGNATURES: &[Signature] = &[
         pattern: b"Enigma protector",
         note: "Enigma Protector overlay version-blob literal",
         confidence: Confidence::Medium,
-        scope: MatchScope::Anywhere,
+        scope: MatchScope::Anchored,
     },
     Signature {
         packer: Packer::Armadillo,
         pattern: b"ARMADILLO",
         note: "Armadillo marker",
         confidence: Confidence::Medium,
-        scope: MatchScope::Anywhere,
+        scope: MatchScope::Anchored,
     },
     Signature {
         packer: Packer::Obsidium,
         pattern: b"Obsidium",
         note: "Obsidium identifier",
         confidence: Confidence::Medium,
-        scope: MatchScope::Anywhere,
+        scope: MatchScope::Anchored,
     },
     Signature {
         packer: Packer::Obsidium,
         pattern: &[0xEB, 0x02, 0x00, 0x00, 0xE8, 0x24, 0x00, 0x00, 0x00],
         note: "Obsidium 1.3/1.4 EP stub (jmp $+4 over junk; call $+0x29)",
         confidence: Confidence::Low,
-        scope: MatchScope::Anywhere,
+        scope: MatchScope::Anchored,
     },
     Signature {
         packer: Packer::WinLicense,
@@ -709,35 +713,35 @@ const SIGNATURES: &[Signature] = &[
         pattern: b"WinLicense",
         note: "WinLicense embedded product literal",
         confidence: Confidence::Medium,
-        scope: MatchScope::Anywhere,
+        scope: MatchScope::Anchored,
     },
     Signature {
         packer: Packer::WarzoneCrypter,
         pattern: b"WarzoneRAT",
         note: "Warzone family marker",
         confidence: Confidence::Medium,
-        scope: MatchScope::Anywhere,
+        scope: MatchScope::Anchored,
     },
     Signature {
         packer: Packer::DotNetPatcher,
         pattern: b"DNPatcher",
         note: "DotNetPatcher marker",
         confidence: Confidence::Medium,
-        scope: MatchScope::Anywhere,
+        scope: MatchScope::Anchored,
     },
     Signature {
         packer: Packer::NetCryptor,
         pattern: b"NETCryptor",
         note: "NetCryptor marker",
         confidence: Confidence::Medium,
-        scope: MatchScope::Anywhere,
+        scope: MatchScope::Anchored,
     },
     Signature {
         packer: Packer::Kkrunchy,
         pattern: b"MZfarbrausch",
         note: "kkrunchy MZ-header farbrausch tag (k7 + classic 0.23a/a2)",
         confidence: Confidence::High,
-        scope: MatchScope::Anywhere,
+        scope: MatchScope::Anchored,
     },
     Signature {
         packer: Packer::Kkrunchy,
@@ -799,8 +803,9 @@ pub fn detect(bytes: &[u8]) -> Vec<Detection> {
         return found.into_values().collect();
     }
     let pe: Option<PeImage> = parse_pe_image(bytes).ok();
+    let anchors: AnchorRegions = AnchorRegions::of(bytes, pe.as_ref());
     for sig in SIGNATURES {
-        let Some(offset): Option<u64> = match_offset(bytes, pe.as_ref(), sig) else {
+        let Some(offset): Option<u64> = match_offset(bytes, pe.as_ref(), &anchors, sig) else {
             continue;
         };
         let existing: Option<&Detection> = found.get(&sig.packer);
@@ -819,15 +824,18 @@ pub fn detect(bytes: &[u8]) -> Vec<Detection> {
         }
     }
     if found.is_empty()
-        && let Some(detection) = detect_upx_structural(bytes)
+        && let Some(detection) = detect_upx_structural(bytes, &anchors)
     {
         found.insert(Packer::Upx, detection);
     }
     found.into_values().collect()
 }
 
-fn detect_upx_structural(bytes: &[u8]) -> Option<Detection> {
+fn detect_upx_structural(bytes: &[u8], anchors: &AnchorRegions) -> Option<Detection> {
     let header: UpxPackHeader = UpxPackHeader::locate_and_parse(bytes).ok()?;
+    if !anchors.contains(header.header_offset) {
+        return None;
+    }
     Some(Detection {
         packer: Packer::Upx,
         confidence: Confidence::Medium,
@@ -849,18 +857,16 @@ const fn confidence_rank(c: Confidence) -> u8 {
     }
 }
 
-fn memmem_find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.is_empty() || haystack.len() < needle.len() {
-        return None;
-    }
-    haystack
-        .windows(needle.len())
-        .position(|w: &[u8]| w == needle)
-}
-
-fn match_offset(bytes: &[u8], pe: Option<&PeImage>, sig: &Signature) -> Option<u64> {
+fn match_offset(
+    bytes: &[u8],
+    pe: Option<&PeImage>,
+    anchors: &AnchorRegions,
+    sig: &Signature,
+) -> Option<u64> {
     match sig.scope {
-        MatchScope::Anywhere => memmem_find(bytes, sig.pattern).map(|o: usize| o as u64),
+        MatchScope::Anchored => anchors
+            .find(bytes, sig.pattern)
+            .map(|offset: usize| offset as u64),
         MatchScope::SectionName => section_name_match(pe?, sig.pattern),
     }
 }
@@ -1131,6 +1137,13 @@ mod tests {
         buf
     }
 
+    const OPTIONAL_HEADER: usize = 0x80 + 4 + 20;
+    const SECTION_TABLE: usize = OPTIONAL_HEADER + 0xE0;
+    const HEADERS_SIZE: u32 = 0x200;
+    const ENTRY_SECTION_RAW: usize = 0x400;
+    const ENTRY_SECTION_RVA: u32 = 0x1000;
+    const ENTRY_SECTION_SIZE: usize = 0x400;
+
     fn pe_with_sections(names: &[&[u8]]) -> Vec<u8> {
         let opt_size: usize = 0xE0;
         let sec_table: usize = 0x80 + 4 + 20 + opt_size;
@@ -1148,6 +1161,7 @@ mod tests {
         buf[coff + 16..coff + 18].copy_from_slice(&(opt_size as u16).to_le_bytes());
         let opt: usize = coff + 20;
         buf[opt..opt + 2].copy_from_slice(&0x010Bu16.to_le_bytes());
+        buf[opt + 60..opt + 64].copy_from_slice(&HEADERS_SIZE.to_le_bytes());
         for (i, name) in names.iter().enumerate() {
             let entry: usize = sec_table + i * 40;
             let len: usize = name.len().min(8);
@@ -1156,12 +1170,58 @@ mod tests {
         buf
     }
 
+    fn pe_with_header_marker(marker: &[u8]) -> Vec<u8> {
+        let mut buf: Vec<u8> = pe_with_sections(&[b".text"]);
+        let at: usize = SECTION_TABLE + 40 + 0x10;
+        buf[at..at + marker.len()].copy_from_slice(marker);
+        buf
+    }
+
+    fn pe_with_entry_code(entry_delta: usize, code: &[u8]) -> Vec<u8> {
+        let mut buf: Vec<u8> = pe_with_sections(&[b".text"]);
+        buf.resize(ENTRY_SECTION_RAW + ENTRY_SECTION_SIZE, 0);
+        let section: usize = SECTION_TABLE;
+        let size: u32 = ENTRY_SECTION_SIZE as u32;
+        buf[section + 8..section + 12].copy_from_slice(&size.to_le_bytes());
+        buf[section + 12..section + 16].copy_from_slice(&ENTRY_SECTION_RVA.to_le_bytes());
+        buf[section + 16..section + 20].copy_from_slice(&size.to_le_bytes());
+        buf[section + 20..section + 24].copy_from_slice(&(ENTRY_SECTION_RAW as u32).to_le_bytes());
+        buf[OPTIONAL_HEADER + 16..OPTIONAL_HEADER + 20]
+            .copy_from_slice(&ENTRY_SECTION_RVA.to_le_bytes());
+        let at: usize = ENTRY_SECTION_RAW + entry_delta;
+        buf[at..at + code.len()].copy_from_slice(code);
+        buf
+    }
+
+    fn packers(bytes: &[u8]) -> Vec<Packer> {
+        detect(bytes).iter().map(|h: &Detection| h.packer).collect()
+    }
+
     #[test]
     fn upx_signature_detected() {
-        let mut buf: Vec<u8> = mz_buf(256);
-        buf[100..104].copy_from_slice(b"UPX!");
+        let buf: Vec<u8> = pe_with_header_marker(b"UPX!");
         let hits: Vec<Detection> = detect(&buf);
         assert!(hits.iter().any(|h: &Detection| h.packer == Packer::Upx));
+    }
+
+    #[test]
+    fn a_marker_in_section_data_is_not_a_detection() {
+        let mut buf: Vec<u8> = pe_with_entry_code(0, &[0xC3]);
+        let at: usize = ENTRY_SECTION_RAW + 0x300;
+        buf[at..at + 4].copy_from_slice(b"UPX!");
+        assert_eq!(
+            packers(&buf),
+            Vec::<Packer>::new(),
+            "UPX! 0x300 bytes past the entry point is section data, not a pack header"
+        );
+    }
+
+    #[test]
+    fn a_marker_past_the_overlay_start_is_not_a_detection() {
+        let mut buf: Vec<u8> = pe_with_entry_code(0, &[0xC3]);
+        buf.resize(buf.len() + 0x100, 0);
+        buf.extend_from_slice(b"Enigma protector");
+        assert_eq!(packers(&buf), Vec::<Packer>::new());
     }
 
     #[test]
@@ -1190,12 +1250,12 @@ mod tests {
             0xE8, 0x0A, 0x00, 0x00, 0x00, 0x02, 0xD2, 0x75, 0x05, 0x8A, 0x16, 0x46, 0x12, 0xD2,
             0xC3,
         ];
-        let mut buf: Vec<u8> = mz_buf(1024);
-        buf[528..528 + helper.len()].copy_from_slice(&helper);
+        let buf: Vec<u8> = pe_with_entry_code(0x10, &helper);
         let hits: Vec<Detection> = detect(&buf);
         assert!(
             hits.iter().any(|h: &Detection| h.packer == Packer::Fsg),
-            "FSG 2.0 fixtures carry no FSG! literal; the getbit-helper stub prologue must trigger detection",
+            "FSG 2.0 fixtures carry no FSG! literal; the getbit-helper stub prologue 0x10 bytes \
+             past the entry point must trigger detection",
         );
     }
 
@@ -1251,9 +1311,8 @@ mod tests {
     #[test]
     fn fingerprint_chain_returns_all_matches() {
         let mut buf: Vec<u8> = pe_with_sections(&[b".aspack"]);
-        let tail: usize = buf.len();
-        buf.resize(tail + 4, 0);
-        buf[tail..tail + 4].copy_from_slice(b"UPX!");
+        let at: usize = SECTION_TABLE + 40 + 0x10;
+        buf[at..at + 4].copy_from_slice(b"UPX!");
         let hits: Vec<Detection> = fingerprint_chain(&buf);
         assert_eq!(hits.len(), 2);
     }
@@ -1263,8 +1322,7 @@ mod tests {
         let stub: [u8; 13] = [
             0x60, 0xE8, 0x03, 0x00, 0x00, 0x00, 0xE9, 0xEB, 0x04, 0x5D, 0x45, 0x55, 0xC3,
         ];
-        let mut buf: Vec<u8> = mz_buf(512);
-        buf[64..64 + stub.len()].copy_from_slice(&stub);
+        let buf: Vec<u8> = pe_with_entry_code(0, &stub);
         let hits: Vec<Detection> = detect(&buf);
         assert!(hits.iter().any(|h: &Detection| h.packer == Packer::AsPack));
     }
@@ -1275,8 +1333,7 @@ mod tests {
             0xB8, 0x00, 0x00, 0x00, 0x00, 0x50, 0x64, 0xFF, 0x35, 0x00, 0x00, 0x00, 0x00, 0x64,
             0x89, 0x25, 0x00, 0x00, 0x00, 0x00,
         ];
-        let mut buf: Vec<u8> = mz_buf(512);
-        buf[64..64 + stub.len()].copy_from_slice(&stub);
+        let buf: Vec<u8> = pe_with_entry_code(0, &stub);
         let hits: Vec<Detection> = detect(&buf);
         assert!(
             hits.iter()
@@ -1287,8 +1344,7 @@ mod tests {
     #[test]
     fn obsidium_ep_stub_detected() {
         let stub: [u8; 9] = [0xEB, 0x02, 0x00, 0x00, 0xE8, 0x24, 0x00, 0x00, 0x00];
-        let mut buf: Vec<u8> = mz_buf(512);
-        buf[64..64 + stub.len()].copy_from_slice(&stub);
+        let buf: Vec<u8> = pe_with_entry_code(0, &stub);
         let hits: Vec<Detection> = detect(&buf);
         assert!(
             hits.iter()
@@ -1298,8 +1354,8 @@ mod tests {
 
     #[test]
     fn enigma_overlay_literal_detected() {
-        let mut buf: Vec<u8> = mz_buf(512);
-        buf[64..64 + b"Enigma protector".len()].copy_from_slice(b"Enigma protector");
+        let mut buf: Vec<u8> = pe_with_entry_code(0, &[0xC3]);
+        buf.extend_from_slice(b"Enigma protector");
         let hits: Vec<Detection> = detect(&buf);
         assert!(
             hits.iter()
@@ -1309,8 +1365,7 @@ mod tests {
 
     #[test]
     fn winlicense_literal_detected() {
-        let mut buf: Vec<u8> = mz_buf(512);
-        buf[64..64 + b"WinLicense".len()].copy_from_slice(b"WinLicense");
+        let buf: Vec<u8> = pe_with_header_marker(b"WinLicense");
         let hits: Vec<Detection> = detect(&buf);
         assert!(
             hits.iter()
@@ -1324,8 +1379,7 @@ mod tests {
             0x60, 0xE8, 0x00, 0x00, 0x00, 0x00, 0x5D, 0x81, 0xED, 0x00, 0x00, 0x00, 0x00, 0x8D,
             0xB5,
         ];
-        let mut buf: Vec<u8> = mz_buf(512);
-        buf[64..64 + stub.len()].copy_from_slice(&stub);
+        let buf: Vec<u8> = pe_with_entry_code(0, &stub);
         let hits: Vec<Detection> = detect(&buf);
         assert!(
             hits.iter()

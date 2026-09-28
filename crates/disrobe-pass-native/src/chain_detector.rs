@@ -1865,8 +1865,8 @@ mod tests {
 
     fn pe_with_marker(marker: &[u8]) -> Vec<u8> {
         let mut buf: Vec<u8> = pe_with_section(b".text");
-        let body: usize = buf.len().saturating_sub(0x100);
-        buf[body..body + marker.len()].copy_from_slice(marker);
+        let after_section_table: usize = 0x80 + 4 + 20 + 0xE0 + 40 + 0x10;
+        buf[after_section_table..after_section_table + marker.len()].copy_from_slice(marker);
         buf
     }
 

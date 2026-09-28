@@ -89,9 +89,22 @@ pub fn tiny_coff_x64() -> Vec<u8> {
 
 #[must_use]
 pub fn packed_upx_elf64_marker() -> Vec<u8> {
+    const PROGRAM_HEADERS: usize = 64;
+    const PROGRAM_HEADER_SIZE: usize = 56;
     let mut buf: Vec<u8> = minimal_elf64();
     buf.resize(0x400, 0);
-    buf[0x200..0x204].copy_from_slice(b"UPX!");
+    buf[32..40].copy_from_slice(&(PROGRAM_HEADERS as u64).to_le_bytes());
+    buf[52..54].copy_from_slice(&64u16.to_le_bytes());
+    buf[54..56].copy_from_slice(&(PROGRAM_HEADER_SIZE as u16).to_le_bytes());
+    buf[56..58].copy_from_slice(&1u16.to_le_bytes());
+    let load: usize = PROGRAM_HEADERS;
+    buf[load..load + 4].copy_from_slice(&1u32.to_le_bytes());
+    buf[load + 4..load + 8].copy_from_slice(&5u32.to_le_bytes());
+    buf[load + 16..load + 24].copy_from_slice(&0x40_0000u64.to_le_bytes());
+    buf[load + 32..load + 40].copy_from_slice(&0x400u64.to_le_bytes());
+    buf[load + 40..load + 48].copy_from_slice(&0x400u64.to_le_bytes());
+    let loader_info: usize = PROGRAM_HEADERS + PROGRAM_HEADER_SIZE;
+    buf[loader_info + 4..loader_info + 8].copy_from_slice(b"UPX!");
     buf[0x210..0x214].copy_from_slice(b"UPX0");
     buf[0x220..0x224].copy_from_slice(b"UPX1");
     buf

@@ -28,10 +28,10 @@ fn pe_with_sections(names: &[&[u8]]) -> Vec<u8> {
         let entry: usize = sec_table + i * 40;
         buf[entry..entry + name.len()].copy_from_slice(name);
     }
+    let mut cursor: usize = header_end + 0x10;
     for pattern in names {
-        let cursor: usize = buf.len();
-        buf.extend_from_slice(pattern);
-        buf.resize(cursor + pattern.len() + 16, 0);
+        buf[cursor..cursor + pattern.len()].copy_from_slice(pattern);
+        cursor += pattern.len() + 16;
     }
     buf
 }

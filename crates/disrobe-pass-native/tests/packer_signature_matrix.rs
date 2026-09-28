@@ -26,9 +26,8 @@ fn pe_with_marker(pattern: &[u8]) -> Vec<u8> {
     if n_sections == 1 {
         buf[sec_table..sec_table + pattern.len()].copy_from_slice(pattern);
     }
-    let cursor: usize = buf.len();
-    buf.extend_from_slice(pattern);
-    buf.resize(cursor + pattern.len() + 16, 0);
+    let after_section_table: usize = sec_table + n_sections.max(1) * 40 + 0x10;
+    buf[after_section_table..after_section_table + pattern.len()].copy_from_slice(pattern);
     buf
 }
 
