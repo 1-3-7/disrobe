@@ -1,8 +1,7 @@
 use serde::{Deserialize, Serialize};
-use std::io::Write;
 
 use crate::error::{Error, Result};
-use crate::quota::bounded_prealloc;
+use crate::quota::{BoundedVecWriter, bounded_prealloc};
 use disrobe_bytes::ByteReader;
 
 pub const UNITYFS_MAGIC: &[u8; 8] = b"UnityFS\x00";
@@ -222,51 +221,14 @@ fn decompress_lzma_stream(src: &[u8], uncompressed_size: usize) -> Result<Vec<u8
     let mut writer: BoundedVecWriter = BoundedVecWriter::new(uncompressed_size);
     lzma_rs::lzma_decompress(&mut cursor, &mut writer)
         .map_err(|e| Error::Decompression(format!("unityfs: lzma decode failed: {e}")))?;
-    writer.finish_exact("lzma")
-}
-
-struct BoundedVecWriter {
-    out: Vec<u8>,
-    cap: usize,
-}
-
-impl BoundedVecWriter {
-    fn new(cap: usize) -> Self {
-        let declared: u64 = u64::try_from(cap).map_or(u64::MAX, |value: u64| value);
-        Self {
-            out: Vec::with_capacity(bounded_prealloc(declared)),
-            cap,
-        }
-    }
-
-    fn finish_exact(self, label: &'static str) -> Result<Vec<u8>> {
-        if self.out.len() != self.cap {
-            return Err(Error::Decompression(format!(
-                "unityfs: {label} block decoded to {} bytes, expected {}",
-                self.out.len(),
-                self.cap
-            )));
-        }
-        Ok(self.out)
-    }
-}
-
-impl Write for BoundedVecWriter {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let remaining: usize = self.cap.saturating_sub(self.out.len());
-        if buf.len() > remaining {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "unityfs block exceeds declared size",
-            ));
-        }
-        self.out.extend_from_slice(buf);
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
+    writer
+        .finish_exact()
+        .map_err(|mismatch: disrobe_bytes::quota::DecodedSizeMismatch| {
+            Error::Decompression(format!(
+                "unityfs: lzma block decoded to {} bytes, expected {}",
+                mismatch.decoded, mismatch.expected
+            ))
+        })
 }
 
 pub fn parse(bytes: &[u8]) -> Result<UnityFsArchive> {

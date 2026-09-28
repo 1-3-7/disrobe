@@ -7,6 +7,7 @@ mod at;
 mod capacity;
 mod cstr;
 mod leb128;
+pub mod quota;
 mod reader;
 mod section_map;
 

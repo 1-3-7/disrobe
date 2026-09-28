@@ -1,6 +1,7 @@
-use std::io::{Read, Write};
+use std::io::Read;
 
 use crate::error::{Error, Result};
+use crate::quota::BoundedVecWriter;
 
 const MAGIC_LEN: usize = 128;
 const OFS_COMPR: usize = 0x0b;
@@ -149,7 +150,14 @@ fn decode_block(compressor: UzipCompressor, block: &[u8], want: usize) -> Result
             let mut writer: BoundedVecWriter = BoundedVecWriter::new(want);
             lzma_rs::lzma_decompress(&mut cursor, &mut writer)
                 .map_err(|e| Error::Uzip(format!("uzip: lzma block decode failed: {e}")))?;
-            writer.finish_exact("lzma")
+            writer
+                .finish_exact()
+                .map_err(|mismatch: disrobe_bytes::quota::DecodedSizeMismatch| {
+                    Error::Uzip(format!(
+                        "uzip: lzma block decoded to {} bytes, expected {}",
+                        mismatch.decoded, mismatch.expected
+                    ))
+                })
         }
         UzipCompressor::Zstd => {
             let decoder: zstd::stream::read::Decoder<'_, std::io::BufReader<&[u8]>> =
@@ -180,49 +188,6 @@ fn read_block_to_exact<R: Read>(reader: R, want: usize, label: &'static str) -> 
     Ok(out)
 }
 
-struct BoundedVecWriter {
-    out: Vec<u8>,
-    cap: usize,
-}
-
-impl BoundedVecWriter {
-    fn new(cap: usize) -> Self {
-        Self {
-            out: Vec::with_capacity(cap.min(MAX_UZIP_PREALLOC)),
-            cap,
-        }
-    }
-
-    fn finish_exact(self, label: &'static str) -> Result<Vec<u8>> {
-        if self.out.len() != self.cap {
-            return Err(Error::Uzip(format!(
-                "uzip: {label} block decoded to {} bytes, expected {}",
-                self.out.len(),
-                self.cap
-            )));
-        }
-        Ok(self.out)
-    }
-}
-
-impl Write for BoundedVecWriter {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let remaining: usize = self.cap.saturating_sub(self.out.len());
-        if buf.len() > remaining {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "uzip block exceeds declared size",
-            ));
-        }
-        self.out.extend_from_slice(buf);
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
 fn read_be_u32(bytes: &[u8], at: usize) -> Result<u32> {
     disrobe_bytes::read_u32_be_at(bytes, at)
         .map_err(|_| Error::Uzip("uzip: truncated u32".to_owned()))
@@ -241,6 +206,7 @@ fn toc_overflow() -> Error {
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+    use std::io::Write;
 
     fn zlib_block(payload: &[u8]) -> Vec<u8> {
         let mut enc: flate2::write::ZlibEncoder<Vec<u8>> =

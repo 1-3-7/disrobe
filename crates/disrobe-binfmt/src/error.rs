@@ -254,3 +254,12 @@ pub enum Error {
         construct: String,
     },
 }
+
+impl From<disrobe_bytes::quota::QuotaExceeded> for Error {
+    fn from(exceeded: disrobe_bytes::quota::QuotaExceeded) -> Self {
+        Self::QuotaExceeded {
+            entry: exceeded.entry,
+            reason: exceeded.reason,
+        }
+    }
+}
