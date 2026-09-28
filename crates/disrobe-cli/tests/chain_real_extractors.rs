@@ -94,14 +94,23 @@ fn run_wasm_auto_cli(
     purpose: &str,
     capture_stages: bool,
 ) -> disrobe_core::scratch::ScratchDir {
+    run_auto_cli(bytes, "module.wasm", purpose, capture_stages)
+}
+
+fn run_auto_cli(
+    bytes: &[u8],
+    file_name: &str,
+    purpose: &str,
+    capture_stages: bool,
+) -> disrobe_core::scratch::ScratchDir {
     let input: disrobe_core::scratch::ScratchDir =
-        disrobe_core::scratch::ScratchDir::create(&format!("wasm-auto-{purpose}-input"))
-            .expect("create wasm auto input directory");
+        disrobe_core::scratch::ScratchDir::create(&format!("auto-{purpose}-input"))
+            .expect("create auto input directory");
     let output: disrobe_core::scratch::ScratchDir =
-        disrobe_core::scratch::ScratchDir::create(&format!("wasm-auto-{purpose}-output"))
-            .expect("create wasm auto output directory");
-    let input_path: PathBuf = input.path().join("module.wasm");
-    std::fs::write(&input_path, bytes).expect("write wasm auto input");
+        disrobe_core::scratch::ScratchDir::create(&format!("auto-{purpose}-output"))
+            .expect("create auto output directory");
+    let input_path: PathBuf = input.path().join(file_name);
+    std::fs::write(&input_path, bytes).expect("write auto input");
     let mut command: Command = Command::new(env!("CARGO_BIN_EXE_disrobe"));
     command
         .arg("auto")
@@ -111,7 +120,7 @@ fn run_wasm_auto_cli(
     if capture_stages {
         command.arg("--capture-stages");
     }
-    let process: Output = command.output().expect("run disrobe auto for wasm");
+    let process: Output = command.output().expect("run disrobe auto");
     assert!(
         process.status.success(),
         "disrobe auto failed: {}",
@@ -361,6 +370,68 @@ fn real_extractor_php_source() {
     let doc: ChainDocument = run_chain_auto(bytes, "corpus://php/hello.php");
     assert_pass_id(&doc, "php.peel");
     assert_pass_completes(&doc, "php.peel");
+}
+
+#[test]
+fn php_commercial_encoder_wall_reaches_the_chain_document() {
+    let mut bytes: Vec<u8> = b"<?php //004F\n".to_vec();
+    bytes.extend_from_slice(b"encrypted Zend opcode payload that cannot be decrypted statically");
+    let output: disrobe_core::scratch::ScratchDir =
+        run_auto_cli(&bytes, "encoded.php", "php-commercial-wall", false);
+    let chain: serde_json::Value = read_chain_json(output.path());
+    let node: &serde_json::Value = chain["nodes"]
+        .as_array()
+        .expect("chain nodes")
+        .iter()
+        .find(|node: &&serde_json::Value| node["pass"] == "php.peel")
+        .expect("auto must dispatch php.peel for an ionCube stub");
+    let refusals: &str = node["metadata"]["container.refusals"]
+        .as_str()
+        .unwrap_or("");
+    assert!(
+        refusals.contains("php commercial encoder"),
+        "the commercial-encoder wall must reach chain.json, got node {node}"
+    );
+}
+
+#[test]
+fn shell_dialects_record_their_own_output_kind_in_chain_json() {
+    let cases: [(&str, &str, Option<&str>); 3] = [
+        (
+            "shell/powershell/invoke-obfuscation/launcher/hello.ps1",
+            "hello.ps1",
+            Some("PowerShell"),
+        ),
+        ("shell/vba/vbaProject.bin", "vbaProject.bin", Some("VBA")),
+        (
+            "shell/pdf/hexname_javascript.pdf",
+            "hexname_javascript.pdf",
+            None,
+        ),
+    ];
+    for (rel, file_name, language) in cases {
+        let bytes: Vec<u8> = read_fixture(rel);
+        let output: disrobe_core::scratch::ScratchDir =
+            run_auto_cli(&bytes, file_name, "shell-kind", false);
+        let chain: serde_json::Value = read_chain_json(output.path());
+        let node: &serde_json::Value = chain["nodes"]
+            .as_array()
+            .expect("chain nodes")
+            .iter()
+            .find(|node: &&serde_json::Value| node["pass"] == "shell.deob")
+            .unwrap_or_else(|| panic!("auto must dispatch shell.deob for {rel}: {chain}"));
+        let kind: &serde_json::Value = &node["output_kind"];
+        match language {
+            Some(expected) => assert!(
+                kind["kind"] == "source" && kind["language"] == expected,
+                "{rel}: expected {expected} source, got {kind}"
+            ),
+            None => assert_eq!(
+                kind["kind"], "report",
+                "{rel}: expected a report, got {kind}"
+            ),
+        }
+    }
 }
 
 #[test]
