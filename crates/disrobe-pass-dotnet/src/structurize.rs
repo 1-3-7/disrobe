@@ -65,8 +65,19 @@ impl CallInfo {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UserStringLookup {
+    Units(Vec<u16>),
+    Unresolved,
+    NotModelled,
+}
+
 pub trait TokenNamer {
     fn name(&self, token: u32) -> String;
+
+    fn user_string_units(&self, _token: u32) -> UserStringLookup {
+        UserStringLookup::NotModelled
+    }
 
     fn token_kind(&self, _token: u32) -> MetadataTokenKind {
         MetadataTokenKind::Unknown
@@ -145,6 +156,14 @@ impl TokenNamer for Resolver {
     #[inline]
     fn name(&self, token: u32) -> String {
         self.resolve_token(token)
+    }
+
+    fn user_string_units(&self, token: u32) -> UserStringLookup {
+        if token >> 24 != 0x70 {
+            return UserStringLookup::NotModelled;
+        }
+        Self::user_string_units(self, token & 0x00FF_FFFF)
+            .map_or(UserStringLookup::Unresolved, UserStringLookup::Units)
     }
 
     #[inline]
@@ -255,6 +274,11 @@ impl TokenNamer for MethodNamer<'_> {
     #[inline]
     fn name(&self, token: u32) -> String {
         self.resolver.resolve_token(token)
+    }
+
+    #[inline]
+    fn user_string_units(&self, token: u32) -> UserStringLookup {
+        TokenNamer::user_string_units(self.resolver, token)
     }
 
     #[inline]
@@ -1384,6 +1408,23 @@ pub(crate) fn csharp_string_literal(s: &str) -> String {
     format!("\"{}\"", escape(s))
 }
 
+const UNRESOLVED_USER_STRING: &str = "__unresolved_user_string";
+
+fn csharp_utf16_literal(units: &[u16]) -> String {
+    let mut out: String = String::with_capacity(units.len() + 2);
+    out.push('"');
+    for unit in char::decode_utf16(units.iter().copied()) {
+        match unit {
+            Ok(ch) => out.push_str(&escape(ch.encode_utf8(&mut [0u8; 4]))),
+            Err(lone) => {
+                let _ = write!(out, "\\u{:04X}", lone.unpaired_surrogate());
+            }
+        }
+    }
+    out.push('"');
+    out
+}
+
 #[must_use]
 pub fn csharp_escape_identifier(name: &str) -> String {
     if name.is_empty() || name.starts_with('@') || !is_csharp_keyword(name) {
@@ -2348,11 +2389,24 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
             "nop" | "break" => {}
             "ldnull" => self.push(Expr::Null),
             "ldstr" => {
-                let s: String = match ins.operand {
-                    OperandValue::Token(t) => self.namer.name(t),
-                    _ => String::new(),
+                let OperandValue::Token(token) = ins.operand else {
+                    self.push(Expr::Raw(UNRESOLVED_USER_STRING.to_owned()));
+                    return;
                 };
-                self.push(Expr::StringLit(s));
+                let lit: Expr = match self.namer.user_string_units(token) {
+                    UserStringLookup::Units(units) => match String::from_utf16(&units) {
+                        Ok(text) => Expr::StringLit(text),
+                        Err(_) if self.lang == TargetLang::CSharp => {
+                            Expr::Raw(csharp_utf16_literal(&units))
+                        }
+                        Err(_) => Expr::Raw(format!("{UNRESOLVED_USER_STRING}_0x{token:08X}")),
+                    },
+                    UserStringLookup::Unresolved => {
+                        Expr::Raw(format!("{UNRESOLVED_USER_STRING}_0x{token:08X}"))
+                    }
+                    UserStringLookup::NotModelled => Expr::StringLit(self.namer.name(token)),
+                };
+                self.push(lit);
             }
             "ldc.i4.m1" => self.push(Expr::Const("-1".to_owned())),
             "__coalesce" => {
@@ -4457,6 +4511,67 @@ mod tests {
         let body: MethodBody = body_from(&code);
         let out: StructuredMethod = decompile_method("void M()", &body, &HexNamer);
         assert!(out.body.contains('"'), "got:\n{}", out.body);
+    }
+
+    struct UserStringNamer(UserStringLookup);
+
+    impl TokenNamer for UserStringNamer {
+        fn name(&self, _token: u32) -> String {
+            "lossy".to_owned()
+        }
+
+        fn user_string_units(&self, _token: u32) -> UserStringLookup {
+            self.0.clone()
+        }
+    }
+
+    fn ldstr_body() -> MethodBody {
+        let mut code: Vec<u8> = vec![0x72];
+        code.extend_from_slice(&0x7000_0001u32.to_le_bytes());
+        code.push(0x2A);
+        body_from(&code)
+    }
+
+    #[test]
+    fn ldstr_keeps_a_lone_surrogate_as_a_csharp_escape() {
+        let units: Vec<u16> = vec![0x0061, 0xD83D, 0x0062];
+        let out: StructuredMethod = decompile_method(
+            "void M()",
+            &ldstr_body(),
+            &UserStringNamer(UserStringLookup::Units(units)),
+        );
+        assert!(
+            out.body.contains("\"a\\uD83Db\""),
+            "the lone high surrogate must survive as \\uD83D, not U+FFFD:\n{}",
+            out.body
+        );
+        assert!(!out.body.contains('\u{FFFD}'), "{}", out.body);
+    }
+
+    #[test]
+    fn ldstr_keeps_surrogate_pairs_as_characters() {
+        let units: Vec<u16> = "x😀".encode_utf16().collect();
+        let out: StructuredMethod = decompile_method(
+            "void M()",
+            &ldstr_body(),
+            &UserStringNamer(UserStringLookup::Units(units)),
+        );
+        assert!(out.body.contains("\"x😀\""), "{}", out.body);
+    }
+
+    #[test]
+    fn an_unresolved_user_string_is_a_refusal_marker_not_a_fake_literal() {
+        let out: StructuredMethod = decompile_method(
+            "void M()",
+            &ldstr_body(),
+            &UserStringNamer(UserStringLookup::Unresolved),
+        );
+        assert!(
+            out.body.contains("__unresolved_user_string_0x70000001"),
+            "{}",
+            out.body
+        );
+        assert!(!out.body.contains("\"lossy\""), "{}", out.body);
     }
 
     struct LineSeparatorNamer;

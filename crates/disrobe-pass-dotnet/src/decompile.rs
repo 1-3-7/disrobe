@@ -27,6 +27,10 @@ impl TokenNamer for AssemblyNamer<'_> {
         self.method.name(token)
     }
 
+    fn user_string_units(&self, token: u32) -> crate::structurize::UserStringLookup {
+        self.method.user_string_units(token)
+    }
+
     fn token_kind(&self, token: u32) -> MetadataTokenKind {
         self.method.token_kind(token)
     }

@@ -1588,27 +1588,25 @@ impl Resolver {
 
     #[must_use]
     pub fn user_string(&self, offset: u32) -> Option<String> {
-        let i: usize = offset as usize;
-        if i >= self.us.len() {
-            return None;
-        }
-        let (len, consumed): (u32, usize) = decompress_uint(&self.us[i..])?;
-        let start: usize = i + consumed;
-        let blob_len: usize = len as usize;
-        let end: usize = start.checked_add(blob_len)?;
-        if end > self.us.len() || blob_len == 0 {
-            return None;
-        }
-        let char_bytes: usize = blob_len - 1;
-        let units: usize = char_bytes / 2;
-        let mut buf: Vec<u16> = Vec::with_capacity(units);
-        for u in 0..units {
-            buf.push(u16::from_le_bytes([
-                self.us[start + u * 2],
-                self.us[start + u * 2 + 1],
-            ]));
-        }
-        Some(String::from_utf16_lossy(&buf))
+        self.user_string_units(offset)
+            .map(|units: Vec<u16>| String::from_utf16_lossy(&units))
+    }
+
+    #[must_use]
+    pub fn user_string_units(&self, offset: u32) -> Option<Vec<u16>> {
+        let index: usize = usize::try_from(offset).ok()?;
+        let tail: &[u8] = self.us.get(index..)?;
+        let (length, consumed): (u32, usize) = decompress_uint(tail)?;
+        let start: usize = index.checked_add(consumed)?;
+        let end: usize = start.checked_add(usize::try_from(length).ok()?)?;
+        let blob: &[u8] = self.us.get(start..end)?;
+        let (_terminal, characters): (&u8, &[u8]) = blob.split_last()?;
+        Some(
+            characters
+                .chunks_exact(2)
+                .map(|pair: &[u8]| u16::from_le_bytes([pair[0], pair[1]]))
+                .collect(),
+        )
     }
 
     #[must_use]
