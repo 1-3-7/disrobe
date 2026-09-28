@@ -7,8 +7,9 @@ use crate::fileio::read_bytes_bounded;
 
 pub(crate) const MAX_SCANNED_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_ACCOUNT_NAME: usize = 64;
+const WORKDIR: &[u8] = b"workdir";
 
-pub(crate) const ALLOWED_HOMES: [(&str, &str); 26] = [
+pub(crate) const ALLOWED_HOMES: [(&str, &str); 27] = [
     (
         "corpus/beam/megafile/Elixir.EdgeCases.MyServer.beam",
         "home/runner",
@@ -62,6 +63,7 @@ pub(crate) const ALLOWED_HOMES: [(&str, &str); 26] = [
     ("xtask/src/host_paths.rs", "home/runner"),
     ("xtask/src/host_paths.rs", "Users/runner"),
     ("xtask/src/host_paths.rs", "Users/a_"),
+    ("xtask/src/host_paths.rs", "workdir"),
 ];
 
 #[derive(Debug, Default)]
@@ -115,6 +117,14 @@ pub(crate) fn home_directories(bytes: &[u8]) -> BTreeSet<String> {
             continue;
         }
         let rest: &[u8] = &bytes[index + run..];
+        if follows_a_drive(bytes, index)
+            && rest.len() > WORKDIR.len()
+            && rest[..WORKDIR.len()].eq_ignore_ascii_case(WORKDIR)
+            && is_separator(rest[WORKDIR.len()])
+        {
+            found.insert("workdir".to_owned());
+            continue;
+        }
         let (kind, after): (&str, usize) =
             if rest.len() >= 5 && rest[..5].eq_ignore_ascii_case(b"users") {
                 ("Users", 5)
@@ -143,6 +153,16 @@ pub(crate) fn home_directories(bytes: &[u8]) -> BTreeSet<String> {
         found.insert(format!("{kind}/{account}"));
     }
     found
+}
+
+fn follows_a_drive(bytes: &[u8], separator: usize) -> bool {
+    separator.checked_sub(2).is_some_and(|drive: usize| {
+        bytes[drive].is_ascii_alphabetic()
+            && bytes[drive + 1] == b':'
+            && drive
+                .checked_sub(1)
+                .is_none_or(|before: usize| !bytes[before].is_ascii_alphanumeric())
+    })
 }
 
 fn starts_a_path(bytes: &[u8], separator: usize) -> bool {
@@ -182,11 +202,16 @@ mod tests {
         assert_eq!(homes("c:/users/runner/work"), vec!["Users/runner"]);
         assert_eq!(homes("file:///home/alice/.ssh"), vec!["home/alice"]);
         assert_eq!(homes("at /Users/a_/src"), vec!["Users/a_"]);
+        assert_eq!(homes(r"@c:\workdir\Documents\x.lua"), vec!["workdir"]);
+        assert_eq!(
+            homes("file:///C:/workdir/AppData/Local/Temp/x"),
+            vec!["workdir"]
+        );
     }
 
     #[test]
     fn nested_or_neutral_paths_are_not_homes() {
-        assert!(homes("/var/home/user/x /srv/Users/x/ C:\\workdir\\Documents\\x").is_empty());
+        assert!(homes("/var/home/user/x /srv/Users/x/ /srv/workdir/x AC:/workdir/x").is_empty());
         assert!(homes("/home/ and /home/user without a separator /home/user").is_empty());
         assert!(homes("/usr/lib /homework/x/ C:\\Users\\").is_empty());
     }
