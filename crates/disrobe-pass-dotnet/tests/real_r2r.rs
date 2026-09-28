@@ -883,8 +883,10 @@ fn current_ready_to_run_major_version_is_accepted() {
     }
 }
 
-#[test]
-fn composite_method_def_identity_join_is_an_explicit_refusal() {
+const READYTORUN_FLAG_PLATFORM_NEUTRAL_SOURCE: u32 = 0x1;
+const READYTORUN_FLAG_COMPONENT: u32 = 0x20;
+
+fn method_def_identity_with_flag(extra: u32) -> serde_json::Value {
     let mut bytes: Vec<u8> = load(HELLOAPP_R2R_DLL_REL);
     let flags_offset: usize = HELLOAPP_R2R_HEADER_FILE_OFFSET + 8;
     let flags: u32 = u32::from_le_bytes(
@@ -892,15 +894,27 @@ fn composite_method_def_identity_join_is_an_explicit_refusal() {
             .try_into()
             .expect("tracked R2R flags"),
     );
-    bytes[flags_offset..flags_offset + 4].copy_from_slice(&(flags | 1).to_le_bytes());
+    bytes[flags_offset..flags_offset + 4].copy_from_slice(&(flags | extra).to_le_bytes());
     let summary: PassSummary =
-        disrobe_pass_dotnet::analyze(&bytes).expect("composite R2R report remains inspectable");
+        disrobe_pass_dotnet::analyze(&bytes).expect("the R2R report remains inspectable");
     let runtime_functions: serde_json::Value =
         serde_json::to_value(summary.ready_to_run_runtime_functions)
             .expect("serialize ReadyToRun runtime functions");
+    runtime_functions["method_def_identity"].clone()
+}
 
+#[test]
+fn composite_method_def_identity_join_is_an_explicit_refusal() {
     assert_eq!(
-        runtime_functions["method_def_identity"],
+        method_def_identity_with_flag(READYTORUN_FLAG_COMPONENT),
+        serde_json::json!({"status": "unsupported_layout"})
+    );
+}
+
+#[test]
+fn the_platform_neutral_source_flag_does_not_block_the_method_join() {
+    assert_ne!(
+        method_def_identity_with_flag(READYTORUN_FLAG_PLATFORM_NEUTRAL_SOURCE),
         serde_json::json!({"status": "unsupported_layout"})
     );
 }
