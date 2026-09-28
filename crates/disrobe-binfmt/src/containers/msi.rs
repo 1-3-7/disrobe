@@ -13,6 +13,45 @@ pub struct MsiSummary {
     pub subject: Option<String>,
 }
 
+const CFB_MAGIC: [u8; 8] = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
+const MSI_INSTALLER_CLSID: [u8; 16] = [
+    0x84, 0x10, 0x0C, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46,
+];
+const CFB_ROOT_CLSID_OFFSET: usize = 0x50;
+
+pub fn detect_msi(bytes: &[u8]) -> bool {
+    if !bytes.starts_with(&CFB_MAGIC) {
+        return false;
+    }
+    let Some(sector_shift): Option<u16> = bytes
+        .get(0x1E..0x20)
+        .and_then(|s: &[u8]| s.first_chunk::<2>())
+        .map(|b: &[u8; 2]| u16::from_le_bytes(*b))
+    else {
+        return false;
+    };
+    if sector_shift != 9 && sector_shift != 12 {
+        return false;
+    }
+    let Some(first_dir): Option<u32> = bytes
+        .get(0x30..0x34)
+        .and_then(|s: &[u8]| s.first_chunk::<4>())
+        .map(|b: &[u8; 4]| u32::from_le_bytes(*b))
+    else {
+        return false;
+    };
+    let sector_size: usize = 1usize << sector_shift;
+    let Some(root): Option<usize> = usize::try_from(first_dir)
+        .ok()
+        .and_then(|sid: usize| sid.checked_add(1))
+        .and_then(|n: usize| n.checked_mul(sector_size))
+        .and_then(|offset: usize| offset.checked_add(CFB_ROOT_CLSID_OFFSET))
+    else {
+        return false;
+    };
+    bytes.get(root..root + MSI_INSTALLER_CLSID.len()) == Some(MSI_INSTALLER_CLSID.as_slice())
+}
+
 pub fn parse_msi_minimal(bytes: &[u8]) -> Result<MsiSummary> {
     let cursor: Cursor<&[u8]> = Cursor::new(bytes);
     let package: msi::Package<Cursor<&[u8]>> = msi::Package::open(cursor)
@@ -216,6 +255,25 @@ mod tests {
             extractable.violations,
             ["msi-missing-column: the File table lacks FileName, so its rows are not read"]
         );
+    }
+
+    #[test]
+    fn an_installer_package_is_detected_and_other_compound_files_are_not() {
+        let installer: Vec<u8> =
+            package_with_file_table(vec![msi::Column::build("File").primary_key().id_string(72)]);
+        assert!(detect_msi(&installer));
+        assert_eq!(
+            crate::container::detect_container(&installer),
+            Some(crate::container::ContainerKind::Msi)
+        );
+        let mut patch: msi::Package<Cursor<Vec<u8>>> =
+            msi::Package::create(msi::PackageType::Patch, Cursor::new(Vec::new()))
+                .expect("create patch");
+        patch.flush().expect("flush patch");
+        let patch_bytes: Vec<u8> = patch.into_inner().expect("finish patch").into_inner();
+        assert!(!detect_msi(&patch_bytes));
+        assert!(!detect_msi(&installer[..0x200]));
+        assert!(!detect_msi(&[0u8; 64]));
     }
 
     #[test]

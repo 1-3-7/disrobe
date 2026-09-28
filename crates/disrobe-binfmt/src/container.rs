@@ -682,6 +682,9 @@ fn detect_by_magic(bytes: &[u8]) -> Option<ContainerKind> {
     if let Some(fw) = crate::containers::detect_firmware(bytes) {
         return Some(ContainerKind::from_firmware_kind(fw));
     }
+    if crate::containers::msi::detect_msi(bytes) {
+        return Some(ContainerKind::Msi);
+    }
     if bytes.starts_with(ZIP_LOCAL_HEADER)
         || bytes.starts_with(ZIP_EMPTY_EOCD)
         || bytes.starts_with(ZIP_SPANNED)
