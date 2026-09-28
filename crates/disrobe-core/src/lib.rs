@@ -27,6 +27,7 @@ pub mod recovery;
 pub mod rng;
 pub mod rung;
 pub mod scratch;
+pub mod source_text;
 pub mod strings;
 pub mod structural;
 pub mod subprocess;
