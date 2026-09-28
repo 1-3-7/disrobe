@@ -98,7 +98,7 @@
         "ops": [{ "op": "truncate_to", "len": 40 }],
         "reason": "cut inside the sixty nine byte source name string of the main prototype"
       },
-      "input_fnv1a64": "c4d64fd86833c2f2",
+      "input_fnv1a64": "882447368f017a0a",
       "expect": [{ "outcome": "refuse", "error": "truncated", "detail_contains": null }],
       "guard": { "file": "src/reader/lua51.rs", "symbol": "fn read_string" },
       "reason": "The name length field promises sixty nine bytes that the file does not contain, so the read must fail rather than return a short name."
@@ -114,7 +114,7 @@
         "ops": [{ "op": "truncate_to", "len": 105 }],
         "reason": "cut inside the four instruction code array that starts at offset 101"
       },
-      "input_fnv1a64": "47c9d4812b73975a",
+      "input_fnv1a64": "f0414ec7ddc64b0b",
       "expect": [{ "outcome": "refuse", "error": "limit_exceeded", "detail_contains": "lua51 code count 4 exceeds parser limit 2" }],
       "guard": { "file": "src/cursor.rs", "symbol": "pub fn checked_count" },
       "reason": "A code array with fewer bytes than its declared instruction count cannot be completed, and emitting the instructions that survived would present a partial program as whole. The refusal names four declared instructions against the two the remaining bytes allow, which ties it to this cut rather than to some later quota."
@@ -130,7 +130,7 @@
         "ops": [{ "op": "drop_last_bytes", "count": 1 }],
         "reason": "one byte removed from the end, cutting the four byte upvalue count of the main prototype"
       },
-      "input_fnv1a64": "269ad01c324d9c93",
+      "input_fnv1a64": "c4609356372e7588",
       "expect": [{ "outcome": "refuse", "error": "truncated", "detail_contains": "needed 4 bytes, had 3" }],
       "guard": { "file": "src/cursor.rs", "symbol": "pub fn read_size" },
       "reason": "The last field of a 5.1 chunk is the upvalue count, so a file one byte short is incomplete and a reader that returns a chunk anyway has invented the missing field."
@@ -146,7 +146,7 @@
         "ops": [{ "op": "set_u32_le", "offset": 97, "value": 4294967295 }],
         "reason": "the code length field at offset 97 raised from four to 4294967295"
       },
-      "input_fnv1a64": "b86056978770b4d1",
+      "input_fnv1a64": "aa3f326912650b20",
       "expect": [{ "outcome": "refuse", "error": "limit_exceeded", "detail_contains": "lua51 code" }],
       "guard": { "file": "src/cursor.rs", "symbol": "pub fn checked_count" },
       "reason": "Four billion instructions cannot fit in a 181 byte file, so the count must be rejected against the remaining bytes before any reservation is made."
@@ -162,7 +162,7 @@
         "ops": [{ "op": "set_u32_le", "offset": 97, "value": 2147483648 }],
         "reason": "the code length field set to 0x80000000, which is negative one as a signed int and two billion once widened"
       },
-      "input_fnv1a64": "825054f0dda5f345",
+      "input_fnv1a64": "fba45fdbeb131a14",
       "expect": [{ "outcome": "refuse", "error": "limit_exceeded", "detail_contains": "lua51 code" }],
       "guard": { "file": "src/cursor.rs", "symbol": "pub fn bounded_capacity" },
       "reason": "Lua writes this count as a C int, so a negative value widened to unsigned is a structural lie and the widened count must still be bounded by the bytes that remain."
@@ -178,7 +178,7 @@
         "ops": [{ "op": "set_u32_le", "offset": 117, "value": 4294967295 }],
         "reason": "the constant count field at offset 117 raised from two to 4294967295"
       },
-      "input_fnv1a64": "163a573d9b098e93",
+      "input_fnv1a64": "d9fc5acc1fa6ea3a",
       "expect": [{ "outcome": "refuse", "error": "limit_exceeded", "detail_contains": "lua51 constant" }],
       "guard": { "file": "src/cursor.rs", "symbol": "pub fn checked_count" },
       "reason": "The constant count multiplied by the in-memory constant size overflows any real allocation, and the refusal must name the constant section so a quota hit elsewhere cannot be mistaken for this rejection."
@@ -194,7 +194,7 @@
         "ops": [{ "op": "set_u32_le", "offset": 149, "value": 268435455 }],
         "reason": "the child prototype count at offset 149 raised from zero to 268435455"
       },
-      "input_fnv1a64": "e4a7a37ebb5d443d",
+      "input_fnv1a64": "faa3a0c129a1e98c",
       "expect": [{ "outcome": "refuse", "error": "limit_exceeded", "detail_contains": "lua51 proto" }],
       "guard": { "file": "src/cursor.rs", "symbol": "pub fn checked_count" },
       "reason": "268 million child prototypes cannot follow in 28 remaining bytes, so the count is rejected against the file rather than driving a reservation."
@@ -210,7 +210,7 @@
         "ops": [{ "op": "set_u32_le", "offset": 12, "value": 4294967280 }],
         "reason": "the source name length at offset 12 raised from sixty nine to 4294967280"
       },
-      "input_fnv1a64": "3948c2f317d81afb",
+      "input_fnv1a64": "58a2c18ce1d46dea",
       "expect": [{ "outcome": "refuse", "error": "truncated", "detail_contains": "needed 4294967280" }],
       "guard": { "file": "src/reader/lua51.rs", "symbol": "fn read_string" },
       "reason": "A four gigabyte name in a 181 byte file is unsatisfiable, and the refusal must name the length that was demanded so a different short read cannot pass for it."
@@ -226,7 +226,7 @@
         "ops": [{ "op": "set_bytes", "offset": 121, "bytes_hex": "09" }],
         "reason": "the first constant tag changed from 4, a string, to 9, which no Lua 5.1 constant uses"
       },
-      "input_fnv1a64": "8d7467155cc35ec8",
+      "input_fnv1a64": "2ec5b82369359359",
       "expect": [{ "outcome": "refuse", "error": "bad_constant_tag", "detail_contains": "0x09" }],
       "guard": { "file": "src/reader/lua51.rs", "symbol": "BadConstantTag" },
       "reason": "Lua 5.1 defines constant tags 0, 1, 3 and 4 only, so tag 9 has no decoding and guessing one would invent a constant the compiler never wrote."
@@ -242,7 +242,7 @@
         "ops": [{ "op": "set_bytes", "offset": 7, "bytes_hex": "03" }],
         "reason": "the sizeof(int) header field changed from four to three"
       },
-      "input_fnv1a64": "58b5b6fc1a626902",
+      "input_fnv1a64": "bc26daddf31c39a7",
       "expect": [{ "outcome": "refuse", "error": "bad_int_size", "detail_contains": "integer size 3" }],
       "guard": { "file": "src/reader/lua51.rs", "symbol": "BadIntSize" },
       "reason": "No Lua build writes a three byte int, so the width is a lie and every later field would be decoded at the wrong stride."
@@ -258,7 +258,7 @@
         "ops": [{ "op": "set_bytes", "offset": 5, "bytes_hex": "01" }],
         "reason": "the format byte changed from 0, the official format, to 1"
       },
-      "input_fnv1a64": "7976c31909f28248",
+      "input_fnv1a64": "974f0a076c68f0ad",
       "expect": [{ "outcome": "refuse", "error": "unsupported_format", "detail_contains": "0x01" }],
       "guard": { "file": "src/reader/lua51.rs", "symbol": "UnsupportedFormat" },
       "reason": "A non-zero format byte declares a layout the official reader does not define, so decoding it as the official layout would be a guess."
@@ -274,7 +274,7 @@
         "ops": [{ "op": "set_bytes", "offset": 4, "bytes_hex": "50" }],
         "reason": "the version byte changed from 0x51 to 0x50, naming Lua 5.0"
       },
-      "input_fnv1a64": "15d9545b91c7d64e",
+      "input_fnv1a64": "92124dfca4fd516b",
       "expect": [{ "outcome": "unsupported_version", "error": "unsupported_lua_version", "version": 80 }],
       "guard": { "file": "src/reader/lua51.rs", "symbol": "UnsupportedLuaVersion" },
       "reason": "Lua 5.0 has a different prototype layout, so a 5.1 reader must report the unsupported version it was handed instead of parsing the body."
@@ -290,7 +290,7 @@
         "ops": [{ "op": "set_bytes", "offset": 4, "bytes_hex": "50" }],
         "reason": "the same 5.0 version byte, routed through the auto dispatcher instead of a named reader"
       },
-      "input_fnv1a64": "15d9545b91c7d64e",
+      "input_fnv1a64": "92124dfca4fd516b",
       "expect": [
         { "outcome": "refuse", "error": "bad_signature", "detail_contains": null },
         { "outcome": "unsupported_version", "error": "unsupported_lua_version", "version": 80 }
@@ -353,7 +353,7 @@
         "ops": [{ "op": "truncate_to", "len": 105 }],
         "reason": "the same mid code array cut, routed through the decompiler entry point instead of the reader"
       },
-      "input_fnv1a64": "47c9d4812b73975a",
+      "input_fnv1a64": "f0414ec7ddc64b0b",
       "expect": [{ "outcome": "refuse", "error": "limit_exceeded", "detail_contains": "lua51 code count 4 exceeds parser limit 2" }],
       "guard": { "file": "src/decompile/mod.rs", "symbol": "pub fn decompile_auto" },
       "reason": "The decompiler is the surface an analyst actually calls, so it must fail closed on the same input the reader rejects, with the same identity, rather than emit source for a program it could not read."
@@ -385,7 +385,7 @@
         "ops": [{ "op": "set_bytes", "offset": 12, "bytes_hex": "ff" }],
         "reason": "the first byte of the LUAC_DATA conversion check changed from 0x19 to 0xff"
       },
-      "input_fnv1a64": "b3f94d81c47977a1",
+      "input_fnv1a64": "a0c7acd6055de652",
       "expect": [{ "outcome": "refuse", "error": "bad_luac_data", "detail_contains": "offset 12" }],
       "guard": { "file": "src/reader/lua52.rs", "symbol": "LUAC_TAIL_5_2" },
       "reason": "LUAC_DATA exists so a reader can detect a file damaged in transit, so a reader that ignores it defeats the check the format designers put there."
@@ -401,7 +401,7 @@
         "ops": [{ "op": "set_bytes", "offset": 10, "bytes_hex": "05" }],
         "reason": "the sizeof(lua_Number) header field changed from eight to five"
       },
-      "input_fnv1a64": "fea42b6b2ade38e0",
+      "input_fnv1a64": "f304e94c531cd10b",
       "expect": [{ "outcome": "refuse", "error": "bad_number_size", "detail_contains": "number size 5" }],
       "guard": { "file": "src/reader/lua52.rs", "symbol": "BadNumberSize" },
       "reason": "Lua numbers are four or eight bytes wide, so a five byte width has no decoding and every number constant after it would be read at the wrong stride."
@@ -417,7 +417,7 @@
         "ops": [{ "op": "drop_last_bytes", "count": 1 }],
         "reason": "one byte removed from the end of real luac 5.2 output"
       },
-      "input_fnv1a64": "e3a9a4b56fc3b845",
+      "input_fnv1a64": "fa835e9575c4c8c8",
       "expect": [{ "outcome": "refuse", "error": "truncated", "detail_contains": null }],
       "guard": { "file": "src/reader/lua52.rs", "symbol": "fn read_proto" },
       "reason": "The debug tables close a 5.2 chunk, so a file one byte short cannot complete the last record and must refuse instead of returning a chunk with a fabricated tail."
@@ -449,7 +449,7 @@
         "ops": [{ "op": "set_bytes", "offset": 13, "bytes_hex": "06" }],
         "reason": "the sizeof(size_t) header field changed from eight to six"
       },
-      "input_fnv1a64": "07d36962bfecb969",
+      "input_fnv1a64": "81662c69c191851e",
       "expect": [{ "outcome": "refuse", "error": "bad_int_size", "detail_contains": "integer size 6" }],
       "guard": { "file": "src/reader/lua53.rs", "symbol": "BadIntSize" },
       "reason": "size_t in a luac header is four or eight bytes, so a six byte width is a lie that would misalign every string length in the file."
@@ -465,7 +465,7 @@
         "ops": [{ "op": "set_bytes", "offset": 17, "bytes_hex": "79" }],
         "reason": "the low byte of the 0x5678 integer conversion check changed from 0x78 to 0x79"
       },
-      "input_fnv1a64": "a1d1c16b269e338a",
+      "input_fnv1a64": "c4b7ca42f7e65311",
       "expect": [{ "outcome": "refuse", "error": "endian_mismatch", "detail_contains": "5679" }],
       "guard": { "file": "src/reader/lua53.rs", "symbol": "LUAC_INT_5_3" },
       "reason": "Lua writes 0x5678 so a reader can prove it agrees with the writer on integer layout; a value that matches in neither byte order means the agreement failed and no integer in the file can be trusted."
@@ -481,7 +481,7 @@
         "ops": [{ "op": "set_bytes", "offset": 32, "bytes_hex": "41" }],
         "reason": "the high byte of the 370.5 float conversion check changed from 0x40 to 0x41"
       },
-      "input_fnv1a64": "85b42dd86412ad48",
+      "input_fnv1a64": "4b5ecd38ac229b87",
       "expect": [{ "outcome": "refuse", "error": "float_mismatch", "detail_contains": null }],
       "guard": { "file": "src/reader/lua53.rs", "symbol": "LUAC_NUM_5_3" },
       "reason": "The 370.5 probe proves the reader and writer agree on float format, so a mismatch means every number constant would decode to a different value than the compiler wrote."
@@ -497,7 +497,7 @@
         "ops": [{ "op": "set_bytes", "offset": 4, "bytes_hex": "55" }],
         "reason": "the version byte changed from 0x54 to 0x55, naming a Lua release this reader does not implement"
       },
-      "input_fnv1a64": "5165253e1687ce6a",
+      "input_fnv1a64": "00faf51353bc67a9",
       "expect": [{ "outcome": "unsupported_version", "error": "unsupported_lua_version", "version": 85 }],
       "guard": { "file": "src/reader/lua54.rs", "symbol": "UnsupportedLuaVersion" },
       "reason": "A reader must not decode a version whose layout it does not know, and the refusal must carry the version byte so the caller can tell which release was demanded."
@@ -513,7 +513,7 @@
         "ops": [{ "op": "set_bytes", "offset": 8, "bytes_hex": "00" }],
         "reason": "the carriage return inside LUAC_DATA changed to a NUL, the exact damage the check was designed to catch"
       },
-      "input_fnv1a64": "6ac828bb13b201b6",
+      "input_fnv1a64": "186e43dc26cfe24d",
       "expect": [{ "outcome": "refuse", "error": "bad_luac_data", "detail_contains": "offset 6" }],
       "guard": { "file": "src/reader/lua54.rs", "symbol": "LUAC_DATA_TAIL" },
       "reason": "LUAC_DATA contains newline and carriage return bytes precisely so text mode transfer damage is detected, so a reader that continues past a broken check throws away the format's own integrity signal."
@@ -529,7 +529,7 @@
         "ops": [{ "op": "set_bytes", "offset": 12, "bytes_hex": "08" }],
         "reason": "the sizeof(Instruction) header field changed from four to eight"
       },
-      "input_fnv1a64": "59465013ba895921",
+      "input_fnv1a64": "dfa4acd78387a0ce",
       "expect": [{ "outcome": "refuse", "error": "bad_int_size", "detail_contains": "integer size 8" }],
       "guard": { "file": "src/reader/lua54.rs", "symbol": "size_instr != 4" },
       "reason": "Lua 5.4 instructions are always four bytes, so an eight byte claim is a lie that would halve the instruction count and read operands from the wrong halves of each word."
@@ -545,7 +545,7 @@
         "ops": [{ "op": "set_bytes", "offset": 15, "bytes_hex": "79" }],
         "reason": "the low byte of the 0x5678 integer conversion check changed from 0x78 to 0x79"
       },
-      "input_fnv1a64": "5698006de479b6c8",
+      "input_fnv1a64": "085b1c67ba85489f",
       "expect": [{ "outcome": "refuse", "error": "endian_mismatch", "detail_contains": "5679" }],
       "guard": { "file": "src/reader/lua54.rs", "symbol": "LUAC_INT_5_4" },
       "reason": "The integer probe is how a 5.4 reader proves it agrees with the writer on integer width and order, so a failed probe invalidates every integer constant in the chunk."
@@ -561,7 +561,7 @@
         "ops": [{ "op": "set_bytes", "offset": 30, "bytes_hex": "41" }],
         "reason": "the high byte of the 370.5 float conversion check changed from 0x40 to 0x41"
       },
-      "input_fnv1a64": "c67b53917ae27eca",
+      "input_fnv1a64": "8ddfbb4176e9c389",
       "expect": [{ "outcome": "refuse", "error": "float_mismatch", "detail_contains": null }],
       "guard": { "file": "src/reader/lua54.rs", "symbol": "LUAC_NUM_5_4" },
       "reason": "A float probe that does not reproduce 370.5 means the file was written by a build with a different float representation, so decoding its numbers would silently produce different values."
@@ -577,7 +577,7 @@
         "ops": [{ "op": "drop_last_bytes", "count": 1 }],
         "reason": "one byte removed from the end of real luac 5.4 output"
       },
-      "input_fnv1a64": "956329978f620f31",
+      "input_fnv1a64": "5df39d5e1813b6a8",
       "expect": [{ "outcome": "refuse", "error": "truncated", "detail_contains": null }],
       "guard": { "file": "src/reader/lua54.rs", "symbol": "fn read_proto" },
       "reason": "The upvalue debug table closes a 5.4 chunk, so a file one byte short is provably incomplete and returning a chunk would present invented data as recovered."
