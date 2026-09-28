@@ -29,7 +29,7 @@ const ACQUIRED_TEMPLATE_COUNT: usize = 7;
 const TEMPLATE_COUNT: usize = 12;
 const WITNESS_LITERAL_FLOOR: usize = 30;
 const MIN_WITNESS_LITERAL_LEN: usize = 3;
-const FIRST_BREAKING_STEP: Option<JscramblerTransform> = Some(JscramblerTransform::VariableMasking);
+const FIRST_BREAKING_STEP: Option<JscramblerTransform> = None;
 #[cfg(feature = "chain")]
 const CATALOG_ENTRY_FOR_REAL_OUTPUT: Option<&str> = Some("js-jscrambler");
 

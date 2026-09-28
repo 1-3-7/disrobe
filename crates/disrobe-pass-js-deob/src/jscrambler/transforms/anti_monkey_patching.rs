@@ -4,7 +4,7 @@ use regex::Regex;
 
 use super::{TransformOpts, TransformOutput, TransformStats};
 use crate::error::{Error, Result};
-use crate::jscrambler::scanner::apply_splice_edits;
+use crate::jscrambler::scanner::{apply_splice_edits, find_paren_close, skip_ws};
 
 pub(in crate::jscrambler) fn detect(source: &str) -> usize {
     let mut count: usize = 0;
@@ -40,7 +40,10 @@ pub(in crate::jscrambler) fn reverse(source: &str, opts: &TransformOpts) -> Tran
         let mut edits: Vec<(Range<usize>, Option<String>)> = Vec::new();
         for m in re.find_iter(&current) {
             stats.matched += 1;
-            edits.push((m.range(), Some(String::new())));
+            match call_statement(&current, m.range()) {
+                Some(statement) => edits.push((statement, Some(String::new()))),
+                None => stats.skipped += 1,
+            }
         }
         if !edits.is_empty() {
             let (out, applied): (String, usize) = apply_splice_edits(&current, &mut edits);
@@ -66,10 +69,27 @@ pub(in crate::jscrambler) fn reverse_strict(
     Ok(reverse(source, opts))
 }
 
+fn call_statement(source: &str, head: Range<usize>) -> Option<Range<usize>> {
+    let bytes: &[u8] = source.as_bytes();
+    let open: usize = head.start + source.get(head.clone())?.find('(')?;
+    let close: usize = find_paren_close(bytes, open + 1)?;
+    let semicolon: usize = skip_ws(bytes, close + 1);
+    if bytes.get(semicolon) != Some(&b';') {
+        return None;
+    }
+    let before: &str = source.get(..head.start)?.trim_end();
+    let statement_start: bool = before.is_empty()
+        || before.ends_with([';', '{', '}'])
+        || Regex::new(r"(?:\bcase\s[^;:?]*|\bdefault\s*):$")
+            .ok()?
+            .is_match(before);
+    statement_start.then_some(head.start..semicolon + 1)
+}
+
 const fn patterns() -> [&'static str; 2] {
     [
-        r"Object\s*\.\s*freeze\s*\(\s*[A-Za-z_$][\w$]*\s*\.\s*prototype\s*\)\s*;?",
-        r"Object\s*\.\s*defineProperty\s*\(\s*Object\s*\.\s*prototype[^)]+\)\s*;?",
+        r"Object\s*\.\s*freeze\s*\(\s*[A-Za-z_$][\w$]*\s*\.\s*prototype\s*\)",
+        r"Object\s*\.\s*defineProperty\s*\(\s*Object\s*\.\s*prototype\b",
     ]
 }
 
@@ -100,5 +120,26 @@ mod tests {
         let out: TransformOutput = reverse(src, &opts);
         assert!(!out.source.contains("Object.freeze"));
         assert!(out.source.contains("var x = 1"));
+    }
+
+    #[test]
+    fn strips_a_whole_define_property_statement_with_nested_parens() {
+        let src: &str = "switch(J){case 2:Object.defineProperty(Object.prototype,k,{get:function(){return this;},configurable:true});j=k;break;}";
+        let opts: TransformOpts = TransformOpts {
+            i_have_authorization: true,
+        };
+        let out: TransformOutput = reverse(src, &opts);
+        assert_eq!(out.source, "switch(J){case 2:j=k;break;}");
+    }
+
+    #[test]
+    fn leaves_a_patching_call_used_as_a_value_in_place() {
+        let src: &str = "var frozen = Object.freeze(Array.prototype);";
+        let opts: TransformOpts = TransformOpts {
+            i_have_authorization: true,
+        };
+        let out: TransformOutput = reverse(src, &opts);
+        assert_eq!(out.source, src);
+        assert_eq!(out.stats.skipped, 1);
     }
 }

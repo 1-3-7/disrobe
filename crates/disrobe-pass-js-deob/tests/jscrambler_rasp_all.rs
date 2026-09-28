@@ -108,20 +108,21 @@ fn anti_monkey_patching_detect_only_without_authorization() {
 }
 
 #[test]
-fn anti_tampering_strips_tostring_integrity_check() {
+fn anti_tampering_pins_the_tostring_probe_to_the_length_it_is_checked_against() {
     let src: &str = "var n = fn.toString().replace(/ /g,'').length; if (n !== 100) tamper();";
     let opts: JscramblerOptions = opts_with(JscramblerTransform::AntiTampering, true);
     let out: JscramblerOutput = deobfuscate_jscrambler(src, &opts).expect("ok");
-    assert!(!out.source.contains(".replace(/ /g,''"));
-    assert!(!out.source.contains(".length"));
+    assert_eq!(out.source, "var n = 100; if (n !== 100) tamper();");
 }
 
 #[test]
-fn anti_tampering_strips_function_prototype_tostring_probe() {
+fn anti_tampering_leaves_a_probe_with_no_checked_value_in_place() {
     let src: &str = "var p = Function.prototype.toString(); check(p);";
     let opts: JscramblerOptions = opts_with(JscramblerTransform::AntiTampering, true);
     let out: JscramblerOutput = deobfuscate_jscrambler(src, &opts).expect("ok");
-    assert!(!out.source.contains("Function.prototype.toString()"));
+    assert_eq!(out.source, src);
+    let s: &JscramblerTransformStats = stats_for(&out, JscramblerTransform::AntiTampering);
+    assert_eq!((s.matched, s.skipped, s.reversed), (1, 1, 0));
 }
 
 #[test]

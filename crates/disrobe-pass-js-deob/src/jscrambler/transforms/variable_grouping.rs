@@ -67,6 +67,10 @@ fn scan(source: &str) -> (usize, Vec<(Range<usize>, Option<String>)>) {
             continue;
         };
         let kw_len: usize = kw_bytes.len();
+        if !starts_a_statement_list_item(bytes, i) {
+            i += kw_len;
+            continue;
+        }
         let after_kw: usize = skip_ws(bytes, i + kw_len);
         let Some(stmt_end): Option<usize> = find_statement_terminator(bytes, after_kw) else {
             i += 1;
@@ -126,6 +130,7 @@ fn find_statement_terminator(bytes: &[u8], start: usize) -> Option<usize> {
                 continue;
             }
             b'(' => paren += 1,
+            b')' if paren == 0 => return None,
             b')' => paren -= 1,
             b'[' => bracket += 1,
             b']' => bracket -= 1,
@@ -144,6 +149,27 @@ fn find_statement_terminator(bytes: &[u8], start: usize) -> Option<usize> {
         i += 1;
     }
     Some(i)
+}
+
+fn starts_a_statement_list_item(bytes: &[u8], keyword: usize) -> bool {
+    let mut end: usize = keyword;
+    while end > 0 && bytes[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+    let Some(previous): Option<u8> = end.checked_sub(1).map(|at: usize| bytes[at]) else {
+        return true;
+    };
+    if matches!(previous, b'(' | b')') {
+        return false;
+    }
+    let mut word_start: usize = end;
+    while word_start > 0
+        && (bytes[word_start - 1].is_ascii_alphanumeric()
+            || matches!(bytes[word_start - 1], b'_' | b'$'))
+    {
+        word_start -= 1;
+    }
+    !matches!(&bytes[word_start..end], b"else" | b"do")
 }
 
 fn split_top_level_commas(text: &str) -> Vec<&str> {
@@ -209,6 +235,14 @@ mod tests {
         let out: TransformOutput = reverse(src, &TransformOpts::default());
         assert!(out.source.contains("let a = 1;"));
         assert!(out.source.contains("let b = 2;"));
+    }
+
+    #[test]
+    fn leaves_loop_heads_and_single_statement_bodies_grouped() {
+        let src: &str = "for(var k in o)f(k,1);for(let i=0,n=2;i<n;i++)g(i,n);if(c)var a=1,b=2;else var d=3,e=4;";
+        let out: TransformOutput = reverse(src, &TransformOpts::default());
+        assert_eq!(out.source, src);
+        assert_eq!(out.stats.reversed, 0);
     }
 
     #[test]

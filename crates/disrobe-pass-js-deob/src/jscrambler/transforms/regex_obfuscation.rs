@@ -1,7 +1,7 @@
 use core::ops::Range;
 
 use super::{TransformOpts, TransformOutput, TransformStats};
-use crate::jscrambler::scanner::{apply_splice_edits, decode_x_or_u_escapes, skip_string_literal};
+use crate::jscrambler::scanner::{apply_splice_edits, skip_string_literal};
 
 pub(in crate::jscrambler) fn detect(source: &str) -> usize {
     let bytes: &[u8] = source.as_bytes();
@@ -136,7 +136,65 @@ fn end_of_pattern(bytes: &[u8], start: usize) -> usize {
 }
 
 fn decode_x_in_regex_body(body: &str) -> String {
-    decode_x_or_u_escapes(body).unwrap_or_else(|| body.to_owned())
+    let bytes: &[u8] = body.as_bytes();
+    let mut out: String = String::with_capacity(body.len());
+    let mut i: usize = 0;
+    let mut guard: u8 = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'\\' {
+            let Some(ch): Option<char> = body.get(i..).and_then(|rest: &str| rest.chars().next())
+            else {
+                break;
+            };
+            out.push(ch);
+            i += ch.len_utf8();
+            guard = guard.saturating_sub(1);
+            continue;
+        }
+        if guard == 0
+            && let Some((decoded, consumed)) = literal_hex_escape(bytes, i)
+        {
+            out.push(decoded);
+            i += consumed;
+            continue;
+        }
+        out.push('\\');
+        i += 1;
+        let Some(escaped): Option<char> = body.get(i..).and_then(|rest: &str| rest.chars().next())
+        else {
+            break;
+        };
+        out.push(escaped);
+        i += escaped.len_utf8();
+        guard = match escaped {
+            'u' => 4,
+            'x' => 2,
+            'c' | 'k' | 'p' | 'P' => 1,
+            _ => 0,
+        };
+    }
+    out
+}
+
+fn literal_hex_escape(bytes: &[u8], backslash: usize) -> Option<(char, usize)> {
+    let digits: usize = match bytes.get(backslash + 1)? {
+        b'x' => 2,
+        b'u' => 4,
+        _ => return None,
+    };
+    let hex: &[u8] = bytes.get(backslash + 2..backslash + 2 + digits)?;
+    if !hex.iter().all(u8::is_ascii_hexdigit) {
+        return None;
+    }
+    let text: &str = core::str::from_utf8(hex).ok()?;
+    let value: u32 = u32::from_str_radix(text, 16).ok()?;
+    let decoded: char = char::from_u32(value)?;
+    let literal_safe: bool = decoded.is_ascii_alphabetic()
+        || matches!(
+            decoded,
+            ' ' | '_' | '!' | '#' | '%' | '&' | ':' | ';' | '<' | '=' | '>' | '@' | '~'
+        );
+    literal_safe.then_some((decoded, 2 + digits))
 }
 
 #[cfg(test)]
@@ -163,6 +221,13 @@ mod tests {
         let src: &str = r"var re = /\x61\x62/gi;";
         let out: TransformOutput = reverse(src, &TransformOpts::default());
         assert!(out.source.contains("/ab/gi"));
+    }
+
+    #[test]
+    fn decoding_keeps_every_other_regex_escape_intact() {
+        let src: &str = r"var re = /\x61\/\d\n\x2e\x2f\u0062\c\x41/g;";
+        let out: TransformOutput = reverse(src, &TransformOpts::default());
+        assert_eq!(out.source, r"var re = /a\/\d\n\x2e\x2fb\c\x41/g;");
     }
 
     #[test]
