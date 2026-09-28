@@ -60,6 +60,57 @@ pub struct DecodedOperand {
     pub raw_bytes: Vec<u8>,
     pub signed_value: i64,
     pub unsigned_value: u64,
+    pub register: Option<V8Register>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum V8Register {
+    Local(i64),
+    This,
+    Parameter(i64),
+    Context,
+    Closure,
+    Frame(i64),
+}
+
+impl V8Register {
+    #[must_use]
+    pub const fn from_index(index: i64, register_file_start: i64) -> Self {
+        let slot: i64 = register_file_start.saturating_sub(index);
+        if index >= 0 {
+            Self::Local(index)
+        } else if slot == -1 {
+            Self::Context
+        } else if slot == -2 {
+            Self::Closure
+        } else if slot == 2 {
+            Self::This
+        } else if slot > 2 {
+            Self::Parameter(slot - 3)
+        } else {
+            Self::Frame(index)
+        }
+    }
+}
+
+impl std::fmt::Display for V8Register {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Local(index) | Self::Frame(index) => write!(f, "r{index}"),
+            Self::This => f.write_str("<this>"),
+            Self::Parameter(index) => write!(f, "a{index}"),
+            Self::Context => f.write_str("<context>"),
+            Self::Closure => f.write_str("<closure>"),
+        }
+    }
+}
+
+#[must_use]
+pub const fn register_file_start(node: NodeVersion) -> i64 {
+    match node {
+        NodeVersion::Node18 | NodeVersion::Node20 => -6,
+        NodeVersion::Node22 | NodeVersion::Node24 | NodeVersion::Unknown => -7,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -103,8 +154,12 @@ impl DecodedInstruction {
                 | OperandKind::RegPair
                 | OperandKind::RegList
                 | OperandKind::RegInOut => {
-                    out.push('r');
-                    out.push_str(&operand.signed_value.to_string());
+                    if let Some(register) = operand.register {
+                        out.push_str(&register.to_string());
+                    } else {
+                        out.push('r');
+                        out.push_str(&operand.signed_value.to_string());
+                    }
                 }
                 OperandKind::Idx => {
                     out.push('[');
@@ -184,6 +239,7 @@ pub fn disassemble_with_table(bytes: &[u8], table: &OpcodeTable) -> Disassembly 
     let mut unknown: BTreeMap<u8, usize> = BTreeMap::new();
     let mut cursor: usize = 0usize;
     let len: usize = bytes.len();
+    let register_start: i64 = register_file_start(table.node_version);
     while cursor < len {
         let start: usize = cursor;
         let scale: OperandScale = match bytes[cursor] {
@@ -218,6 +274,7 @@ pub fn disassemble_with_table(bytes: &[u8], table: &OpcodeTable) -> Disassembly 
                     raw_bytes: Vec::new(),
                     signed_value: 0i64,
                     unsigned_value: 0u64,
+                    register: None,
                 });
                 continue;
             }
@@ -227,12 +284,19 @@ pub fn disassemble_with_table(bytes: &[u8], table: &OpcodeTable) -> Disassembly 
             }
             let raw: Vec<u8> = bytes[cursor..cursor.saturating_add(scaled)].to_vec();
             cursor = cursor.saturating_add(scaled);
-            let (signed_value, unsigned_value): (i64, u64) = decode_operand_value(&raw, kind);
+            let (operand_value, unsigned_value): (i64, u64) = decode_operand_value(&raw, kind);
+            let (signed_value, register): (i64, Option<V8Register>) = if kind.is_register() {
+                let index: i64 = register_start.saturating_sub(operand_value);
+                (index, Some(V8Register::from_index(index, register_start)))
+            } else {
+                (operand_value, None)
+            };
             operands.push(DecodedOperand {
                 kind,
                 raw_bytes: raw,
                 signed_value,
                 unsigned_value,
+                register,
             });
         }
         if !ok {
@@ -267,15 +331,15 @@ fn mnemonic_matches(table: &OpcodeTable, byte: u8, mnemonic: &str) -> bool {
 
 fn decode_operand_value(bytes: &[u8], kind: OperandKind) -> (i64, u64) {
     match (kind, bytes.len()) {
-        (OperandKind::Imm, 1) => {
+        (kind, 1) if kind == OperandKind::Imm || kind.is_register() => {
             let signed: i8 = bytes[0].cast_signed();
             (i64::from(signed), u64::from(bytes[0]))
         }
-        (OperandKind::Imm, 2) => {
+        (kind, 2) if kind == OperandKind::Imm || kind.is_register() => {
             let v: i16 = i16::from_le_bytes([bytes[0], bytes[1]]);
             (i64::from(v), u64::from(v.cast_unsigned()))
         }
-        (OperandKind::Imm, 4) => {
+        (kind, 4) if kind == OperandKind::Imm || kind.is_register() => {
             let v: i32 = i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
             (i64::from(v), u64::from(v.cast_unsigned()))
         }
@@ -315,8 +379,15 @@ pub fn encode_instruction(
             got = operands.len()
         )));
     }
-    for (i, value) in operands.iter().enumerate() {
+    let register_start: i64 = register_file_start(table.node_version);
+    for (i, operand) in operands.iter().enumerate() {
         let kind: OperandKind = spec.operands[i];
+        let encoded: i64 = if kind.is_register() {
+            register_start.saturating_sub(*operand)
+        } else {
+            *operand
+        };
+        let value: &i64 = &encoded;
         match kind.unscaled_byte_size() {
             0 => {}
             1 => {

@@ -29,6 +29,21 @@ pub enum OperandKind {
 
 impl OperandKind {
     #[must_use]
+    pub const fn is_register(self) -> bool {
+        matches!(
+            self,
+            Self::Reg
+                | Self::RegOut
+                | Self::RegOutPair
+                | Self::RegOutTriple
+                | Self::RegOutList
+                | Self::RegPair
+                | Self::RegList
+                | Self::RegInOut
+        )
+    }
+
+    #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
             Self::None => "none",

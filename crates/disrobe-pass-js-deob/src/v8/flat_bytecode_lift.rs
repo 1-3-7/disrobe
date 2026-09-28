@@ -3,7 +3,9 @@ use std::collections::BTreeMap;
 
 use super::bytenode::NodeVersion;
 use super::code_serializer::ConstantPoolEntry;
-use super::flat_bytecode_disasm::{DecodedInstruction, Disassembly, intrinsic_name};
+use super::flat_bytecode_disasm::{
+    DecodedInstruction, Disassembly, V8Register, intrinsic_name, register_file_start,
+};
 
 fn push_format(out: &mut String, args: std::fmt::Arguments<'_>) {
     let result: std::result::Result<(), std::fmt::Error> = std::fmt::write(out, args);
@@ -88,7 +90,10 @@ pub fn lift_disassembly_with_pool(
 ) -> LiftedFunction {
     let mut lines: Vec<LiftedLine> = Vec::with_capacity(disasm.instructions.len());
     let mut acc_state: String = "undefined".to_owned();
-    let mut reg_state: BTreeMap<i64, String> = BTreeMap::new();
+    let mut reg_state: Registers = Registers {
+        values: BTreeMap::new(),
+        register_file_start: register_file_start(disasm.node_version),
+    };
     let mut reversible: usize = 0usize;
     let mut lossy: usize = 0usize;
     let mut opaque: usize = 0usize;
@@ -111,11 +116,22 @@ pub fn lift_disassembly_with_pool(
     }
 }
 
-fn reg_name(idx: i64) -> String {
-    if idx <= -1 {
-        format!("p{}", (-idx).saturating_sub(1))
-    } else {
-        format!("r{idx}")
+struct Registers {
+    values: BTreeMap<i64, String>,
+    register_file_start: i64,
+}
+
+impl Registers {
+    fn get(&self, index: i64) -> Option<&String> {
+        self.values.get(&index)
+    }
+
+    fn insert(&mut self, index: i64, value: String) {
+        self.values.insert(index, value);
+    }
+
+    fn name(&self, index: i64) -> String {
+        V8Register::from_index(index, self.register_file_start).to_string()
     }
 }
 
@@ -201,8 +217,8 @@ fn module_var_name(cell_index: i64) -> String {
     }
 }
 
-fn reg_expr(regs: &BTreeMap<i64, String>, idx: i64) -> String {
-    regs.get(&idx).cloned().unwrap_or_else(|| reg_name(idx))
+fn reg_expr(regs: &Registers, idx: i64) -> String {
+    regs.get(idx).cloned().unwrap_or_else(|| regs.name(idx))
 }
 
 const fn type_of_literal(flag: u64) -> &'static str {
@@ -247,12 +263,7 @@ fn decode_regexp_flags(bits: u64) -> String {
     s
 }
 
-fn call_arg_list(
-    regs: &BTreeMap<i64, String>,
-    first: i64,
-    count: i64,
-    skip_receiver: bool,
-) -> String {
+fn call_arg_list(regs: &Registers, first: i64, count: i64, skip_receiver: bool) -> String {
     let start: i64 = if skip_receiver {
         first.saturating_add(1)
     } else {
@@ -278,7 +289,7 @@ fn lift_instruction(
     ins: &DecodedInstruction,
     pool: &[ConstantPoolEntry],
     acc: &mut String,
-    regs: &mut BTreeMap<i64, String>,
+    regs: &mut Registers,
 ) -> LiftedLine {
     let mn: &'static str = ins.mnemonic;
     let mut fidelity: LiftFidelity = LiftFidelity::Reversible;
@@ -317,8 +328,8 @@ fn lift_instruction(
         }
         "Ldar" => {
             if let Some(v) = ins.operands.first() {
-                let name: String = reg_name(v.signed_value);
-                *acc = regs.get(&v.signed_value).cloned().unwrap_or(name);
+                let name: String = regs.name(v.signed_value);
+                *acc = regs.get(v.signed_value).cloned().unwrap_or(name);
             }
         }
         "Star" | "Star0" | "Star1" | "Star2" | "Star3" | "Star4" | "Star5" | "Star6" | "Star7"
@@ -332,18 +343,18 @@ fn lift_instruction(
                 |v| v.signed_value,
             );
             regs.insert(target, acc.clone());
-            surface = format!("let {} = {};", reg_name(target), acc);
+            surface = format!("let {} = {};", regs.name(target), acc);
         }
         "Mov" => {
             if ins.operands.len() >= 2 {
                 let src_idx: i64 = ins.operands[0].signed_value;
                 let dst_idx: i64 = ins.operands[1].signed_value;
                 let src_expr: String = regs
-                    .get(&src_idx)
+                    .get(src_idx)
                     .cloned()
-                    .unwrap_or_else(|| reg_name(src_idx));
+                    .unwrap_or_else(|| regs.name(src_idx));
                 regs.insert(dst_idx, src_expr.clone());
-                surface = format!("let {} = {};", reg_name(dst_idx), src_expr);
+                surface = format!("let {} = {};", regs.name(dst_idx), src_expr);
             }
         }
         "Add" => binary(acc, regs, ins, "+", &mut surface),
@@ -408,7 +419,7 @@ fn lift_instruction(
         }
         "ToObject" => {
             if let Some(v) = ins.operands.first() {
-                surface = format!("let {} = Object({});", reg_name(v.signed_value), acc);
+                surface = format!("let {} = Object({});", regs.name(v.signed_value), acc);
                 regs.insert(v.signed_value, format!("Object({acc})"));
             }
         }
@@ -429,9 +440,9 @@ fn lift_instruction(
         "TestReferenceEqual" => {
             if let Some(r) = ins.operands.first() {
                 let other: String = regs
-                    .get(&r.signed_value)
+                    .get(r.signed_value)
                     .cloned()
-                    .unwrap_or_else(|| reg_name(r.signed_value));
+                    .unwrap_or_else(|| regs.name(r.signed_value));
                 *acc = format!("({acc}) === ({other})");
             }
         }
@@ -440,18 +451,18 @@ fn lift_instruction(
                 let recv_idx: i64 = ins.operands[0].signed_value;
                 let name_idx: u64 = ins.operands[1].unsigned_value;
                 let recv: String = regs
-                    .get(&recv_idx)
+                    .get(recv_idx)
                     .cloned()
-                    .unwrap_or_else(|| reg_name(recv_idx));
+                    .unwrap_or_else(|| regs.name(recv_idx));
                 *acc = property_access(pool, &recv, name_idx);
             }
         }
         "GetKeyedProperty" => {
             if let Some(r) = ins.operands.first() {
                 let recv: String = regs
-                    .get(&r.signed_value)
+                    .get(r.signed_value)
                     .cloned()
-                    .unwrap_or_else(|| reg_name(r.signed_value));
+                    .unwrap_or_else(|| regs.name(r.signed_value));
                 *acc = format!("{recv}[{acc}]");
             }
         }
@@ -460,9 +471,9 @@ fn lift_instruction(
                 let recv_idx: i64 = ins.operands[0].signed_value;
                 let name_idx: u64 = ins.operands[1].unsigned_value;
                 let recv: String = regs
-                    .get(&recv_idx)
+                    .get(recv_idx)
                     .cloned()
-                    .unwrap_or_else(|| reg_name(recv_idx));
+                    .unwrap_or_else(|| regs.name(recv_idx));
                 surface = format!("{recv}{} = {acc};", property_name_target(pool, name_idx));
             }
         }
@@ -471,13 +482,13 @@ fn lift_instruction(
                 let recv_idx: i64 = ins.operands[0].signed_value;
                 let key_idx: i64 = ins.operands[1].signed_value;
                 let recv: String = regs
-                    .get(&recv_idx)
+                    .get(recv_idx)
                     .cloned()
-                    .unwrap_or_else(|| reg_name(recv_idx));
+                    .unwrap_or_else(|| regs.name(recv_idx));
                 let key: String = regs
-                    .get(&key_idx)
+                    .get(key_idx)
                     .cloned()
-                    .unwrap_or_else(|| reg_name(key_idx));
+                    .unwrap_or_else(|| regs.name(key_idx));
                 surface = format!("{recv}[{key}] = {acc};");
             }
         }
@@ -486,13 +497,13 @@ fn lift_instruction(
                 let fn_idx: i64 = ins.operands[0].signed_value;
                 let recv_idx: i64 = ins.operands[1].signed_value;
                 let f: String = regs
-                    .get(&fn_idx)
+                    .get(fn_idx)
                     .cloned()
-                    .unwrap_or_else(|| reg_name(fn_idx));
+                    .unwrap_or_else(|| regs.name(fn_idx));
                 let r: String = regs
-                    .get(&recv_idx)
+                    .get(recv_idx)
                     .cloned()
-                    .unwrap_or_else(|| reg_name(recv_idx));
+                    .unwrap_or_else(|| regs.name(recv_idx));
                 *acc = format!("{f}.call({r})");
             }
         }
@@ -502,14 +513,14 @@ fn lift_instruction(
                 let recv_idx: i64 = ins.operands[1].signed_value;
                 let a0: i64 = ins.operands[2].signed_value;
                 let f: String = regs
-                    .get(&fn_idx)
+                    .get(fn_idx)
                     .cloned()
-                    .unwrap_or_else(|| reg_name(fn_idx));
+                    .unwrap_or_else(|| regs.name(fn_idx));
                 let r: String = regs
-                    .get(&recv_idx)
+                    .get(recv_idx)
                     .cloned()
-                    .unwrap_or_else(|| reg_name(recv_idx));
-                let arg: String = regs.get(&a0).cloned().unwrap_or_else(|| reg_name(a0));
+                    .unwrap_or_else(|| regs.name(recv_idx));
+                let arg: String = regs.get(a0).cloned().unwrap_or_else(|| regs.name(a0));
                 *acc = format!("{f}.call({r}, {arg})");
             }
         }
@@ -520,24 +531,24 @@ fn lift_instruction(
                 let a0: i64 = ins.operands[2].signed_value;
                 let a1: i64 = ins.operands[3].signed_value;
                 let f: String = regs
-                    .get(&fn_idx)
+                    .get(fn_idx)
                     .cloned()
-                    .unwrap_or_else(|| reg_name(fn_idx));
+                    .unwrap_or_else(|| regs.name(fn_idx));
                 let r: String = regs
-                    .get(&recv_idx)
+                    .get(recv_idx)
                     .cloned()
-                    .unwrap_or_else(|| reg_name(recv_idx));
-                let arg0: String = regs.get(&a0).cloned().unwrap_or_else(|| reg_name(a0));
-                let arg1: String = regs.get(&a1).cloned().unwrap_or_else(|| reg_name(a1));
+                    .unwrap_or_else(|| regs.name(recv_idx));
+                let arg0: String = regs.get(a0).cloned().unwrap_or_else(|| regs.name(a0));
+                let arg1: String = regs.get(a1).cloned().unwrap_or_else(|| regs.name(a1));
                 *acc = format!("{f}.call({r}, {arg0}, {arg1})");
             }
         }
         "CallUndefinedReceiver0" => {
             if let Some(r) = ins.operands.first() {
                 let f: String = regs
-                    .get(&r.signed_value)
+                    .get(r.signed_value)
                     .cloned()
-                    .unwrap_or_else(|| reg_name(r.signed_value));
+                    .unwrap_or_else(|| regs.name(r.signed_value));
                 *acc = format!("{f}()");
             }
         }
@@ -546,10 +557,10 @@ fn lift_instruction(
                 let fn_idx: i64 = ins.operands[0].signed_value;
                 let a0: i64 = ins.operands[1].signed_value;
                 let f: String = regs
-                    .get(&fn_idx)
+                    .get(fn_idx)
                     .cloned()
-                    .unwrap_or_else(|| reg_name(fn_idx));
-                let arg0: String = regs.get(&a0).cloned().unwrap_or_else(|| reg_name(a0));
+                    .unwrap_or_else(|| regs.name(fn_idx));
+                let arg0: String = regs.get(a0).cloned().unwrap_or_else(|| regs.name(a0));
                 *acc = format!("{f}({arg0})");
             }
         }
@@ -559,11 +570,11 @@ fn lift_instruction(
                 let a0: i64 = ins.operands[1].signed_value;
                 let a1: i64 = ins.operands[2].signed_value;
                 let f: String = regs
-                    .get(&fn_idx)
+                    .get(fn_idx)
                     .cloned()
-                    .unwrap_or_else(|| reg_name(fn_idx));
-                let arg0: String = regs.get(&a0).cloned().unwrap_or_else(|| reg_name(a0));
-                let arg1: String = regs.get(&a1).cloned().unwrap_or_else(|| reg_name(a1));
+                    .unwrap_or_else(|| regs.name(fn_idx));
+                let arg0: String = regs.get(a0).cloned().unwrap_or_else(|| regs.name(a0));
+                let arg1: String = regs.get(a1).cloned().unwrap_or_else(|| regs.name(a1));
                 *acc = format!("{f}({arg0}, {arg1})");
             }
         }
@@ -789,7 +800,7 @@ fn lift_instruction(
         "PushContext" => {
             if let Some(v) = ins.operands.first() {
                 regs.insert(v.signed_value, acc.clone());
-                surface = format!("let {} = {acc};", reg_name(v.signed_value));
+                surface = format!("let {} = {acc};", regs.name(v.signed_value));
                 ir_comment = Some("PushContext saves the outgoing context register".to_owned());
             }
         }
@@ -797,7 +808,7 @@ fn lift_instruction(
             if let Some(v) = ins.operands.first() {
                 ir_comment = Some(format!(
                     "PopContext restores context from {}",
-                    reg_name(v.signed_value)
+                    regs.name(v.signed_value)
                 ));
             }
         }
@@ -839,7 +850,7 @@ fn lift_instruction(
                 );
                 surface = format!(
                     "let {} = Object.getPrototypeOf(this.constructor);",
-                    reg_name(r.signed_value)
+                    regs.name(r.signed_value)
                 );
                 fidelity = LiftFidelity::Lossy;
             }
@@ -956,7 +967,7 @@ fn lift_instruction(
             if let Some(r) = ins.operands.first() {
                 ir_comment = Some(format!(
                     "CreateCatchContext binds the caught exception in {}",
-                    reg_name(r.signed_value)
+                    regs.name(r.signed_value)
                 ));
             }
         }
@@ -964,7 +975,7 @@ fn lift_instruction(
             if let Some(r) = ins.operands.first() {
                 ir_comment = Some(format!(
                     "CreateWithContext extends scope with {}",
-                    reg_name(r.signed_value)
+                    regs.name(r.signed_value)
                 ));
             }
         }
@@ -1119,16 +1130,16 @@ fn lift_instruction(
 
 fn binary(
     acc: &mut String,
-    regs: &BTreeMap<i64, String>,
+    regs: &Registers,
     ins: &DecodedInstruction,
     op_symbol: &str,
     _surface: &mut String,
 ) {
     if let Some(r) = ins.operands.first() {
         let lhs: String = regs
-            .get(&r.signed_value)
+            .get(r.signed_value)
             .cloned()
-            .unwrap_or_else(|| reg_name(r.signed_value));
+            .unwrap_or_else(|| regs.name(r.signed_value));
         *acc = format!("({lhs}) {op_symbol} ({acc})");
     }
 }
@@ -1141,16 +1152,16 @@ fn binary_smi(acc: &mut String, ins: &DecodedInstruction, op_symbol: &str) {
 
 fn test_binary(
     acc: &mut String,
-    regs: &BTreeMap<i64, String>,
+    regs: &Registers,
     ins: &DecodedInstruction,
     op_symbol: &str,
     _surface: &mut String,
 ) {
     if let Some(r) = ins.operands.first() {
         let lhs: String = regs
-            .get(&r.signed_value)
+            .get(r.signed_value)
             .cloned()
-            .unwrap_or_else(|| reg_name(r.signed_value));
+            .unwrap_or_else(|| regs.name(r.signed_value));
         *acc = format!("({lhs}) {op_symbol} ({acc})");
     }
 }

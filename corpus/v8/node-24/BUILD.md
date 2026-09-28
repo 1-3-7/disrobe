@@ -55,3 +55,7 @@ Two user BytecodeArrays appear: the top-level script (81 bytes, frame size 40, p
 count 1) and `greet` (33 bytes, frame size 24, parameter count 2). Both match disrobe's
 recovery and disassembly byte-for-byte and mnemonic-for-mnemonic (see
 `crates/disrobe-pass-js-deob/tests/v8_codeserializer_real.rs`).
+
+## V8 disassembly reference
+
+The register names that `every_version_greet_names_registers_as_v8_print_bytecode_does` expects come from the official Node v24.16.0 build: `node --no-lazy --print-bytecode --print-bytecode-filter=greet hello-24.js`. V8 prints the same text for greet on Node 18, 20, 22 and 24; the operand bytes differ because the register file starts one slot lower from Node 22 on.

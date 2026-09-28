@@ -354,6 +354,42 @@ fn every_version_top_level_bytecode_is_byte_exact_against_v8_print_bytecode() {
     );
 }
 
+const GREET_V8_PRINT_BYTECODE: [&str; 14] = [
+    "LdaConstant [0]",
+    "Star1",
+    "Ldar a0",
+    "Add r1, [0]",
+    "Star0",
+    "LdaGlobal [1], [1]",
+    "Star2",
+    "GetNamedProperty r2, [2], [3]",
+    "Star2",
+    "GetNamedProperty r2, [3], [5]",
+    "Star1",
+    "CallProperty1 r1, r2, r0, [7]",
+    "GetNamedProperty r0, [4], [9]",
+    "Return",
+];
+
+#[test]
+fn every_version_greet_names_registers_as_v8_print_bytecode_does() {
+    for fx in &FIXTURES {
+        let (_body, graph): (BytenodeCacheBody, CodeSerializerGraph) = load_graph(fx);
+        let greet: &RecoveredBytecodeArray = find_array(&graph, fx.greet_hex);
+        let disasm: Disassembly = disassemble(&greet.bytecode, fx.node);
+        let rendered: Vec<String> = disasm
+            .instructions
+            .iter()
+            .map(disrobe_pass_js_deob::v8::DecodedInstruction::render)
+            .collect();
+        assert_eq!(
+            rendered, GREET_V8_PRINT_BYTECODE,
+            "{} greet must read as `node --print-bytecode` prints it",
+            fx.dir
+        );
+    }
+}
+
 #[test]
 fn every_version_greet_disassembles_to_v8_mnemonic_sequence() {
     let mut exercised: usize = 0usize;

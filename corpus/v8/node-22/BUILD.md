@@ -59,3 +59,7 @@ recovery and disassembly byte-for-byte and mnemonic-for-mnemonic (see
 script-context-slot opcodes (StaCurrentScriptContextSlot) and renumbers both the Ignition
 table (Return = 0xAE, Star0 = 0xC9) and the CodeSerializer opcodes relative to 11.3 and 13.6,
 which the per-version tables encode.
+
+## V8 disassembly reference
+
+The register names that `every_version_greet_names_registers_as_v8_print_bytecode_does` expects come from the official Node v22.22.3 build: `node --no-lazy --print-bytecode --print-bytecode-filter=greet hello-22.js`. V8 prints the same text for greet on Node 18, 20, 22 and 24; the operand bytes differ because the register file starts one slot lower from Node 22 on.

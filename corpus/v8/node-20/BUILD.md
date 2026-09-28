@@ -59,3 +59,7 @@ recovery and disassembly byte-for-byte and mnemonic-for-mnemonic (see
 Return = 0xA9 / Star0 = 0xC4 numbering with v8 10.2 but removes one arithmetic opcode, so the
 two tables still differ by a one-slot shift; the CodeSerializer opcode bytes also differ from
 both 10.2 and 12.4, which the per-version tables encode.
+
+## V8 disassembly reference
+
+The register names that `every_version_greet_names_registers_as_v8_print_bytecode_does` expects come from the official Node v20.20.2 build: `node --no-lazy --print-bytecode --print-bytecode-filter=greet hello-20.js`. V8 prints the same text for greet on Node 18, 20, 22 and 24; the operand bytes differ because the register file starts one slot lower from Node 22 on.

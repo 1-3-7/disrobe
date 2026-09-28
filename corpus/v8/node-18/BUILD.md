@@ -59,3 +59,7 @@ recovery and disassembly byte-for-byte and mnemonic-for-mnemonic (see
 opcode bytes and the CodeSerializer opcode bytes differ from later releases (Return = 0xA9,
 Star0 = 0xC4), which the per-version tables in `bytecode_opcodes.rs` and `code_serializer.rs`
 encode.
+
+## V8 disassembly reference
+
+The register names that `every_version_greet_names_registers_as_v8_print_bytecode_does` expects come from the official Node v18.20.8 build: `node --no-lazy --print-bytecode --print-bytecode-filter=greet hello-18.js`. V8 prints the same text for greet on Node 18, 20, 22 and 24; the operand bytes differ because the register file starts one slot lower from Node 22 on.

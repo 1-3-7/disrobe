@@ -29,8 +29,8 @@ pub use code_serializer::{
     recover_bytecode_array_with_layout, return_opcode_for,
 };
 pub use flat_bytecode_disasm::{
-    DecodedInstruction, DecodedOperand, Disassembly, OperandScale, disassemble,
-    disassemble_with_table, encode_instruction,
+    DecodedInstruction, DecodedOperand, Disassembly, OperandScale, V8Register, disassemble,
+    disassemble_with_table, encode_instruction, register_file_start,
 };
 pub use flat_bytecode_lift::{
     LiftFidelity, LiftedFunction, LiftedLine, lift_disassembly, lift_disassembly_with_pool,
