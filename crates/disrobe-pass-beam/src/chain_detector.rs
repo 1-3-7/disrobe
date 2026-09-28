@@ -398,6 +398,40 @@ mod tests {
     }
 
     #[test]
+    fn an_ez_member_path_cannot_inject_lines_or_format_controls_into_the_source() {
+        let hostile: &str = "app-1.0/ebin/hello\ninjected() -> evil().\n\u{202e}x.beam";
+        let mut bytes: Vec<u8> = Vec::new();
+        {
+            let cursor: std::io::Cursor<&mut Vec<u8>> = std::io::Cursor::new(&mut bytes);
+            let mut writer: ZipWriter<std::io::Cursor<&mut Vec<u8>>> = ZipWriter::new(cursor);
+            let options: SimpleFileOptions =
+                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+            writer.start_file(hostile, options).expect("start member");
+            writer.write_all(HELLO_BEAM).expect("write member");
+            writer.finish().expect("finish ez");
+        }
+        let source: String = recover_ez_source(&bytes).expect("the member recovers");
+        assert!(
+            !source
+                .lines()
+                .any(|line: &str| line.trim() == "injected() -> evil()."),
+            "a newline in the member path became a source line:\n{source}"
+        );
+        assert!(
+            !source.contains('\u{202e}'),
+            "a bidi override from the member path reached the source:\n{source}"
+        );
+        let comment: &str = source
+            .lines()
+            .find(|line: &&str| line.starts_with("%% "))
+            .expect("the member path comment");
+        assert!(
+            comment.contains("hello") && comment.contains("injected() -> evil()."),
+            "the whole path stays on its comment line, escaped: {comment}"
+        );
+    }
+
+    #[test]
     fn ez_chain_rejects_mixed_invalid_beam_member() {
         let mut bytes: Vec<u8> = Vec::new();
         {
