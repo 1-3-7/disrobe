@@ -200,7 +200,10 @@ fn read_original(name: &str) -> String {
 
 fn expected_stdout(python: &Path, original: &str) -> String {
     run_python_source(python, &read_original(original)).unwrap_or_else(|| {
-        panic!("the repository-authored original {original} must run cleanly under {python:?}")
+        panic!(
+            "the repository-authored original {original} must run cleanly under {}",
+            python.display()
+        )
     })
 }
 

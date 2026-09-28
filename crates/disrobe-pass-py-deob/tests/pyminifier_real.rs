@@ -89,10 +89,10 @@ fn pyminifier_variant_fixtures_detect_and_peel() {
 }
 
 fn diagnostic<'a>(peel: &'a PeelOutcome, key: &str) -> &'a str {
-    peel.diagnostics
-        .get(key)
-        .map(String::as_str)
-        .unwrap_or_else(|| panic!("no {key} in diagnostics: {:?}", peel.diagnostics))
+    peel.diagnostics.get(key).map_or_else(
+        || panic!("no {key} in diagnostics: {:?}", peel.diagnostics),
+        String::as_str,
+    )
 }
 
 #[test]
