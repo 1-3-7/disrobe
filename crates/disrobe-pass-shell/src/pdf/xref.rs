@@ -8,6 +8,10 @@ pub fn load(buf: &[u8]) -> PdfDocument {
     let mut doc: PdfDocument = PdfDocument::default();
     brute_force(buf, &mut doc);
     parse_xref_chain(buf, &mut doc);
+    let compressed: Vec<u32> = doc.xref_compressed.keys().copied().collect();
+    for number in compressed {
+        doc.objects.remove(&number);
+    }
     if let Some(dict) = scan_trailer_keyword(buf) {
         merge_trailer(&mut doc, &dict);
     }
@@ -112,11 +116,17 @@ fn expand_object_streams(doc: &mut PdfDocument) {
             .and_then(|value: i64| usize::try_from(value).ok())
             .unwrap_or(0);
         let decoded: Decoded = decode_stream(doc, &stream);
-        parse_object_stream(doc, &decoded.data, count, first);
+        parse_object_stream(doc, &decoded.data, count, first, number);
     }
 }
 
-fn parse_object_stream(doc: &mut PdfDocument, data: &[u8], count: usize, first: usize) {
+fn parse_object_stream(
+    doc: &mut PdfDocument,
+    data: &[u8],
+    count: usize,
+    first: usize,
+    stream_number: u32,
+) {
     let mut header: Lexer<'_> = Lexer::new(data);
     let mut entries: Vec<(u32, usize)> = Vec::with_capacity(count);
     for _ in 0..count {
@@ -131,7 +141,9 @@ fn parse_object_stream(doc: &mut PdfDocument, data: &[u8], count: usize, first: 
         entries.push((number, offset as usize));
     }
     for (number, offset) in entries {
-        if doc.objects.contains_key(&number) {
+        let owner: Option<u32> = doc.xref_compressed.get(&number).copied();
+        let belongs_here: bool = owner == Some(stream_number);
+        if !belongs_here && (owner.is_some() || doc.objects.contains_key(&number)) {
             continue;
         }
         let Some(position): Option<usize> = first.checked_add(offset) else {
@@ -274,6 +286,7 @@ fn parse_xref_table(buf: &[u8], start: usize, doc: &mut PdfDocument) -> Option<P
             if in_use
                 && let Some(offset) = offset
                 && let Some(number) = first_number.checked_add(row)
+                && doc.xref_claimed.insert(number)
             {
                 located.push((number, offset as usize));
             }
@@ -338,11 +351,25 @@ fn parse_xref_stream(buf: &[u8], doc: &mut PdfDocument, stream: &super::object::
                 read_field(row, 0, widths[0])
             };
             let field2: u64 = read_field(row, widths[0], widths[1]);
-            if kind == 1
-                && let Ok(target) = u32::try_from(number)
-                && let Ok(offset) = usize::try_from(field2)
-            {
-                located.push((target, offset));
+            let Ok(target) = u32::try_from(number) else {
+                continue;
+            };
+            match kind {
+                1 => {
+                    if let Ok(offset) = usize::try_from(field2)
+                        && doc.xref_claimed.insert(target)
+                    {
+                        located.push((target, offset));
+                    }
+                }
+                2 => {
+                    if let Ok(stream) = u32::try_from(field2)
+                        && doc.xref_claimed.insert(target)
+                    {
+                        doc.xref_compressed.insert(target, stream);
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -359,7 +386,7 @@ fn read_field(row: &[u8], offset: usize, width: usize) -> u64 {
 
 fn recover_located(buf: &[u8], doc: &mut PdfDocument, located: &[(u32, usize)]) {
     for &(number, offset) in located {
-        if doc.objects.contains_key(&number) || offset >= buf.len() {
+        if offset >= buf.len() {
             continue;
         }
         let mut lexer: Lexer<'_> = Lexer::at(buf, offset);
@@ -430,6 +457,7 @@ fn scan_trailer_keyword(buf: &[u8]) -> Option<PdfDict> {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::super::object::PdfStream;
     use super::*;
@@ -447,6 +475,98 @@ mod tests {
             dict,
             raw: vec![0u8; 64],
         }
+    }
+
+    fn js_of(doc: &PdfDocument, number: u32) -> Vec<u8> {
+        doc.get(number)
+            .and_then(PdfObject::as_dict)
+            .and_then(|dict: &PdfDict| dict.get(b"JS"))
+            .and_then(PdfObject::as_string)
+            .map(<[u8]>::to_vec)
+            .unwrap_or_default()
+    }
+
+    fn xref_table(offsets: &[(u32, usize)], size: u32) -> String {
+        let mut table: String = format!("xref\n0 {size}\n0000000000 65535 f \n");
+        for number in 1..size {
+            match offsets.iter().find(|(n, _): &&(u32, usize)| *n == number) {
+                Some((_, offset)) => table.push_str(&format!("{offset:010} 00000 n \n")),
+                None => table.push_str("0000000000 00000 f \n"),
+            }
+        }
+        table
+    }
+
+    #[test]
+    fn an_appended_decoy_does_not_replace_the_object_the_xref_names() {
+        let mut pdf: Vec<u8> = b"%PDF-1.4\n".to_vec();
+        let catalog: usize = pdf.len();
+        pdf.extend_from_slice(b"1 0 obj <</Type/Catalog>> endobj\n");
+        let live: usize = pdf.len();
+        pdf.extend_from_slice(b"5 0 obj <</S/JavaScript/JS (live)>> endobj\n");
+        let xref: usize = pdf.len();
+        pdf.extend_from_slice(xref_table(&[(1, catalog), (5, live)], 6).as_bytes());
+        pdf.extend_from_slice(
+            format!("trailer <</Size 6/Root 1 0 R>>\nstartxref\n{xref}\n%%EOF\n").as_bytes(),
+        );
+        pdf.extend_from_slice(b"5 0 obj <</S/JavaScript/JS (decoy)>> endobj\n");
+        let doc: PdfDocument = load(&pdf);
+        assert_eq!(js_of(&doc, 5), b"live");
+    }
+
+    #[test]
+    fn an_update_that_moves_an_object_into_an_object_stream_is_followed() {
+        let mut pdf: Vec<u8> = b"%PDF-1.5\n".to_vec();
+        let catalog: usize = pdf.len();
+        pdf.extend_from_slice(b"1 0 obj <</Type/Catalog>> endobj\n");
+        let stale: usize = pdf.len();
+        pdf.extend_from_slice(b"5 0 obj <</S/JavaScript/JS (stale)>> endobj\n");
+        let first_xref: usize = pdf.len();
+        pdf.extend_from_slice(xref_table(&[(1, catalog), (5, stale)], 6).as_bytes());
+        pdf.extend_from_slice(
+            format!("trailer <</Size 6/Root 1 0 R>>\nstartxref\n{first_xref}\n%%EOF\n").as_bytes(),
+        );
+        let members: &[u8] = b"5 0 <</S/JavaScript/JS (live)>>";
+        let objstm: usize = pdf.len();
+        pdf.extend_from_slice(
+            format!(
+                "7 0 obj <</Type/ObjStm/N 1/First 4/Length {}>> stream\n",
+                members.len()
+            )
+            .as_bytes(),
+        );
+        pdf.extend_from_slice(members);
+        pdf.extend_from_slice(b"\nendstream endobj\n");
+        let xref_stream: usize = pdf.len();
+        let objstm_bytes: [u8; 2] = u16::try_from(objstm).expect("small").to_be_bytes();
+        let xref_bytes: [u8; 2] = u16::try_from(xref_stream).expect("small").to_be_bytes();
+        let rows: [u8; 12] = [
+            2,
+            0,
+            7,
+            0,
+            1,
+            objstm_bytes[0],
+            objstm_bytes[1],
+            0,
+            1,
+            xref_bytes[0],
+            xref_bytes[1],
+            0,
+        ];
+        pdf.extend_from_slice(
+            format!(
+                "8 0 obj <</Type/XRef/W [1 2 1]/Index [5 1 7 2]/Size 9/Prev {first_xref}/Root 1 0 R/Length {}>> stream\n",
+                rows.len()
+            )
+            .as_bytes(),
+        );
+        pdf.extend_from_slice(&rows);
+        pdf.extend_from_slice(
+            format!("\nendstream endobj\nstartxref\n{xref_stream}\n%%EOF\n").as_bytes(),
+        );
+        let doc: PdfDocument = load(&pdf);
+        assert_eq!(js_of(&doc, 5), b"live");
     }
 
     #[test]
