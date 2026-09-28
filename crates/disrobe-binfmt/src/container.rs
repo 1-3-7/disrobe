@@ -838,7 +838,7 @@ fn detect_by_magic(bytes: &[u8]) -> Option<ContainerKind> {
         return Some(ContainerKind::Asar);
     }
     if smells_like_tar(bytes) {
-        return Some(ContainerKind::Tar);
+        return Some(image_tar_kind(bytes).unwrap_or(ContainerKind::Tar));
     }
     if smells_like_iso(bytes) {
         return Some(ContainerKind::Iso);
@@ -937,6 +937,68 @@ fn smells_like_tar(bytes: &[u8]) -> bool {
 }
 
 const XZ_TAR_PEEK_BYTES: usize = TAR_USTAR_OFFSET + TAR_USTAR.len();
+
+const TAR_BLOCK: usize = 512;
+const IMAGE_TAR_SCAN_HEADERS: usize = 256;
+
+fn tar_octal(field: &[u8]) -> Option<u64> {
+    let digits: &[u8] = field
+        .iter()
+        .position(|byte: &u8| *byte == 0 || *byte == b' ')
+        .map_or(field, |end: usize| &field[..end]);
+    let digits: &[u8] = digits
+        .iter()
+        .position(|byte: &u8| *byte != b' ')
+        .map_or(&[][..], |start: usize| &digits[start..]);
+    digits.iter().try_fold(0u64, |value: u64, digit: &u8| {
+        if !(b'0'..=b'7').contains(digit) {
+            return None;
+        }
+        value.checked_mul(8)?.checked_add(u64::from(digit - b'0'))
+    })
+}
+
+fn image_tar_kind(bytes: &[u8]) -> Option<ContainerKind> {
+    let mut offset: usize = 0;
+    let mut oci_layout: bool = false;
+    let mut oci_index: bool = false;
+    let mut docker_manifest: bool = false;
+    for _ in 0..IMAGE_TAR_SCAN_HEADERS {
+        let Some(header): Option<&[u8; TAR_BLOCK]> = bytes
+            .get(offset..)
+            .and_then(|rest: &[u8]| rest.first_chunk::<TAR_BLOCK>())
+        else {
+            break;
+        };
+        if header.iter().all(|byte: &u8| *byte == 0) {
+            break;
+        }
+        let name_field: &[u8] = &header[..100];
+        let name: &[u8] = name_field
+            .iter()
+            .position(|byte: &u8| *byte == 0)
+            .map_or(name_field, |end: usize| &name_field[..end]);
+        let name: &[u8] = name.strip_prefix(b"./").unwrap_or(name);
+        match name {
+            b"oci-layout" => oci_layout = true,
+            b"index.json" => oci_index = true,
+            b"manifest.json" => docker_manifest = true,
+            _ => {}
+        }
+        let size: u64 = tar_octal(&header[124..136])?;
+        let data: usize = usize::try_from(size.div_ceil(TAR_BLOCK as u64))
+            .ok()?
+            .checked_mul(TAR_BLOCK)?;
+        offset = offset.checked_add(TAR_BLOCK)?.checked_add(data)?;
+    }
+    if oci_layout && oci_index {
+        Some(ContainerKind::Oci)
+    } else if docker_manifest {
+        Some(ContainerKind::DockerImage)
+    } else {
+        None
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DecompressWrap {
@@ -1158,6 +1220,40 @@ mod tests {
             extension_subkind(Path::new("App.AppxBundle")),
             Some(ExtensionSubkind::Msix)
         ));
+    }
+
+    fn tar_of(members: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut builder: tar::Builder<Vec<u8>> = tar::Builder::new(Vec::new());
+        for (name, body) in members {
+            let mut header: tar::Header = tar::Header::new_ustar();
+            header.set_size(body.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, name, *body)
+                .expect("append member");
+        }
+        builder.into_inner().expect("finish tar")
+    }
+
+    #[test]
+    fn image_tarballs_are_told_apart_by_their_members() {
+        let oci: Vec<u8> = tar_of(&[
+            ("oci-layout", br#"{"imageLayoutVersion":"1.0.0"}"#),
+            ("index.json", b"{}"),
+            ("blobs/sha256/aa", b"layer"),
+        ]);
+        assert_eq!(detect_container(&oci), Some(ContainerKind::Oci));
+        let docker: Vec<u8> = tar_of(&[
+            ("abc/layer.tar", b"layer"),
+            ("manifest.json", b"[]"),
+            ("repositories", b"{}"),
+        ]);
+        assert_eq!(detect_container(&docker), Some(ContainerKind::DockerImage));
+        let plain: Vec<u8> = tar_of(&[("readme.txt", b"hello")]);
+        assert_eq!(detect_container(&plain), Some(ContainerKind::Tar));
+        assert_eq!(tar_octal(b"0000644\0"), Some(0o644));
+        assert_eq!(tar_octal(b"99"), None);
     }
 
     #[test]
