@@ -56,8 +56,20 @@ fn integer_constant_pool(cf: &ClassFile) -> BTreeMap<u16, i32> {
     out
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocatedDecryptStub {
+    pub name: String,
+    pub descriptor: String,
+    pub stub: DecryptStub,
+}
+
 #[must_use]
 pub fn find_char_array_decrypt(cf: &ClassFile) -> Option<DecryptStub> {
+    locate_char_array_decrypt(cf).map(|located: LocatedDecryptStub| located.stub)
+}
+
+#[must_use]
+pub fn locate_char_array_decrypt(cf: &ClassFile) -> Option<LocatedDecryptStub> {
     for method in &cf.methods {
         let desc: &str = cf.utf8_at(method.descriptor_index).ok()?;
         if desc != "([C)[C" && desc != "([C)Ljava/lang/String;" {
@@ -67,10 +79,14 @@ pub fn find_char_array_decrypt(cf: &ClassFile) -> Option<DecryptStub> {
             if cf.utf8_at(attr.name_index).ok()? == "Code"
                 && let Ok(code) = bytecode::parse_code_attribute(&attr.info)
             {
-                return Some(DecryptStub {
-                    code: code.code,
-                    max_locals: code.max_locals,
-                    int_constants: integer_constant_pool(cf),
+                return Some(LocatedDecryptStub {
+                    name: cf.utf8_at(method.name_index).ok()?.to_owned(),
+                    descriptor: desc.to_owned(),
+                    stub: DecryptStub {
+                        code: code.code,
+                        max_locals: code.max_locals,
+                        int_constants: integer_constant_pool(cf),
+                    },
                 });
             }
         }

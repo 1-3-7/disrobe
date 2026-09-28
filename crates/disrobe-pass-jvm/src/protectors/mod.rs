@@ -94,7 +94,7 @@ pub fn recover_via_embedded_stub(
     cf: &crate::classfile::ClassFile,
     report: &mut ProtectorPeelReport,
 ) -> usize {
-    use crate::stub_emulator::{decrypt_constant, find_char_array_decrypt};
+    use crate::stub_emulator::{decrypt_constant, locate_char_array_decrypt};
     let mut recovered: usize = 0;
 
     let caller_report: crate::bytecode_eval::CallerKeyedReport =
@@ -120,14 +120,14 @@ pub fn recover_via_embedded_stub(
         report.notes.push(reason);
     }
 
-    if let Some(stub) = find_char_array_decrypt(cf) {
+    if let Some(located) = locate_char_array_decrypt(cf) {
         let mut via_stub: usize = 0;
-        let string_operands: BTreeSet<u16> = cf.string_constant_utf8_indices();
+        let call_site_operands: BTreeSet<u16> = stub_call_site_operands(cf, &located);
         for (idx, original) in cf.collect_strings() {
-            if report.strings_recovered.contains_key(&idx) || !string_operands.contains(&idx) {
+            if report.strings_recovered.contains_key(&idx) || !call_site_operands.contains(&idx) {
                 continue;
             }
-            if let Some(plain) = decrypt_constant(&stub, &original)
+            if let Some(plain) = decrypt_constant(&located.stub, &original)
                 && plain != original
                 && is_readable(&plain)
             {
@@ -169,6 +169,75 @@ pub fn recover_via_embedded_stub(
         report.status = PeelStatus::StubRecovered;
     }
     recovered
+}
+
+fn stub_call_site_operands(
+    cf: &crate::classfile::ClassFile,
+    located: &crate::stub_emulator::LocatedDecryptStub,
+) -> BTreeSet<u16> {
+    let mut operands: BTreeSet<u16> = BTreeSet::new();
+    let Ok(owner): Result<&str, crate::error::Error> = cf.this_class_name() else {
+        return operands;
+    };
+    let stub_ref: String = format!("{owner}.{}:{}", located.name, located.descriptor);
+    let string_utf8: BTreeMap<u16, u16> = cf
+        .constant_pool
+        .iter()
+        .enumerate()
+        .filter_map(
+            |(index, entry): (usize, &crate::classfile::ConstantPoolEntry)| match entry {
+                crate::classfile::ConstantPoolEntry::String { utf8_index } => {
+                    Some((u16::try_from(index).ok()?, *utf8_index))
+                }
+                _ => None,
+            },
+        )
+        .collect();
+    for method in &cf.methods {
+        for attr in &method.attributes {
+            if cf.utf8_at(attr.name_index).ok() != Some("Code") {
+                continue;
+            }
+            let Ok(code): Result<crate::bytecode::CodeAttribute, crate::error::Error> =
+                crate::bytecode::parse_code_attribute(&attr.info)
+            else {
+                continue;
+            };
+            let Ok(insns): Result<Vec<crate::bytecode::Instruction>, crate::error::Error> =
+                crate::bytecode::disassemble(&code.code)
+            else {
+                continue;
+            };
+            let mut pending: Option<(u16, bool)> = None;
+            for insn in &insns {
+                let pool_index: Option<u16> = match insn.operands {
+                    crate::bytecode::Operands::ConstPool(cp) => Some(cp),
+                    _ => None,
+                };
+                let calls = |expected: &str| -> bool {
+                    pool_index
+                        .and_then(|cp: u16| crate::bytecode::resolve_ref(cf, cp))
+                        .is_some_and(|target: String| target == expected)
+                };
+                pending = match (insn.opcode, pending) {
+                    (0x12 | 0x13, _) => pool_index
+                        .and_then(|cp: u16| string_utf8.get(&cp).copied())
+                        .map(|utf8_index: u16| (utf8_index, false)),
+                    (0xB6, Some((utf8_index, false)))
+                        if calls("java/lang/String.toCharArray:()[C") =>
+                    {
+                        Some((utf8_index, true))
+                    }
+                    (0xB8, Some((utf8_index, true))) if calls(&stub_ref) => {
+                        operands.insert(utf8_index);
+                        None
+                    }
+                    _ => None,
+                };
+            }
+        }
+    }
+    operands
 }
 
 pub fn recover_via_name_keyed_fallback(
