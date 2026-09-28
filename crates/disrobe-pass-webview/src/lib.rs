@@ -16,7 +16,8 @@ pub use detect::{FamilyEvidence, classify, classify_all, detect_family};
 pub use disrobe_binfmt::ExtractionQuota;
 pub use error::{Error, Result};
 pub use model::{
-    CarveReport, Compression, IntegrityStatus, RecoveredAsset, SymlinkEntry, WebviewFamily,
+    CarveReport, Compression, EntryRefusal, IntegrityStatus, RecoveredAsset, SymlinkEntry,
+    WebviewFamily,
 };
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -74,6 +75,7 @@ pub fn carve_with_config(bytes: &[u8], cfg: &CarveConfig) -> Result<CarveReport>
             directories: assembled.directories,
             declared: assembled.declared,
             recovered: assembled.recovered,
+            refusals: assembled.refusals,
         }),
         Err(reason @ (Error::NativeParse(_) | Error::NoEmbeddedTable(_))) => {
             if let Some(container) = packaged_container(bytes) {

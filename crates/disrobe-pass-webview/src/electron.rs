@@ -9,7 +9,8 @@ use crate::CarveConfig;
 use crate::detect::find_from;
 use crate::error::{Error, Result};
 use crate::model::{
-    CarveReport, Compression, IntegrityStatus, RecoveredAsset, SymlinkEntry, WebviewFamily,
+    CarveReport, Compression, EntryRefusal, IntegrityStatus, RecoveredAsset, SymlinkEntry,
+    WebviewFamily,
 };
 
 const ANCHOR: &[u8] = b"{\"files\":";
@@ -121,18 +122,21 @@ pub(crate) fn extract(bytes: &[u8], cfg: &CarveConfig) -> Result<CarveReport> {
         assets: Vec::new(),
         external: Vec::new(),
         symlinks: Vec::new(),
+        refusals: Vec::new(),
+        declared: 0,
     };
     let mut path_stack: Vec<String> = Vec::new();
     walk.descend(&root, &mut path_stack, 0)?;
-    let recovered: usize = walk.assets.len();
+    let recovered: usize = walk.assets.len() + walk.external.len() + walk.symlinks.len();
     Ok(CarveReport {
         family: WebviewFamily::Electron,
         assets: walk.assets,
         external_unpacked: walk.external,
         symlinks: walk.symlinks,
         directories: Vec::new(),
-        declared: recovered,
+        declared: walk.declared,
         recovered,
+        refusals: walk.refusals,
     })
 }
 
@@ -144,9 +148,18 @@ struct Walk<'a> {
     assets: Vec<RecoveredAsset>,
     external: Vec<String>,
     symlinks: Vec<SymlinkEntry>,
+    refusals: Vec<EntryRefusal>,
+    declared: usize,
 }
 
 impl Walk<'_> {
+    fn refuse(&mut self, path: &str, reason: &str) {
+        self.refusals.push(EntryRefusal {
+            path: path.to_owned(),
+            reason: reason.to_owned(),
+        });
+    }
+
     fn descend(
         &mut self,
         node: &RawNode,
@@ -165,29 +178,38 @@ impl Walk<'_> {
             return Ok(());
         }
         let joined: String = path_stack.join("/");
+        self.declared += 1;
+        let Ok(safe) = sanitize_entry_path(&joined) else {
+            self.refuse(&joined, "the entry name is not a safe relative path");
+            return Ok(());
+        };
         if let Some(target) = node.link.as_deref() {
-            if let Ok(safe) = sanitize_entry_path(&joined)
-                && resolve_symlink_target(&safe, target).is_some()
-            {
+            if resolve_symlink_target(&safe, target).is_some() {
                 self.symlinks.push(SymlinkEntry {
                     path: safe,
                     target: target.to_owned(),
                 });
+            } else {
+                self.refuse(&safe, "the link target escapes the archive");
             }
             return Ok(());
         }
-        let Some(offset_str) = node.offset.as_deref() else {
-            return Ok(());
-        };
-        let Ok(safe) = sanitize_entry_path(&joined) else {
-            return Ok(());
-        };
         if node.unpacked.unwrap_or(false) {
             self.external.push(safe);
             return Ok(());
         }
+        let Some(offset_str) = node.offset.as_deref() else {
+            self.refuse(&safe, "the entry has no data offset");
+            return Ok(());
+        };
         let size: u64 = node.size.unwrap_or(0);
-        let slice: &[u8] = read_entry(self.bytes, self.data_base, &safe, offset_str, size)?;
+        let slice: &[u8] = match read_entry(self.bytes, self.data_base, &safe, offset_str, size) {
+            Ok(slice) => slice,
+            Err(error) => {
+                self.refuse(&safe, &error.to_string());
+                return Ok(());
+            }
+        };
         self.guard
             .admit_entry(&safe, slice.len() as u64, slice.len() as u64)?;
         let integrity: IntegrityStatus = verify_integrity(slice, node.integrity.as_ref());
@@ -380,11 +402,28 @@ mod tests {
     }
 
     #[test]
-    fn out_of_bounds_offset_errors_without_panic() {
-        let json: &[u8] = br#"{"files":{"a.txt":{"size":9999,"offset":"0"}}}"#;
+    fn each_bad_entry_is_refused_and_the_rest_are_extracted() {
+        let json: &[u8] = br#"{"files":{"a.txt":{"size":3,"offset":"0"},"big.txt":{"size":9999,"offset":"0"},"..":{"files":{"x.txt":{"size":3,"offset":"0"}}},"nooffset.txt":{"size":3},"link.js":{"link":"../../etc/passwd"},"z.txt":{"size":3,"offset":"0"}}}"#;
         let bytes: Vec<u8> = pickle(json, b"abc");
         let cfg: CarveConfig = CarveConfig::default();
-        let err: Error = extract(&bytes, &cfg).expect_err("must reject oob");
-        assert!(matches!(err, Error::AsarBounds { .. }));
+        let report: CarveReport = extract(&bytes, &cfg).expect("bad entries do not abort");
+        let extracted: Vec<&str> = report
+            .assets
+            .iter()
+            .map(|asset: &RecoveredAsset| asset.path.as_str())
+            .collect();
+        assert_eq!(extracted, vec!["a.txt", "z.txt"]);
+        let refused: Vec<&str> = report
+            .refusals
+            .iter()
+            .map(|refusal: &EntryRefusal| refusal.path.as_str())
+            .collect();
+        assert_eq!(
+            refused,
+            vec!["../x.txt", "big.txt", "link.js", "nooffset.txt"]
+        );
+        assert_eq!(report.declared, 6);
+        assert_eq!(report.recovered, 2);
+        assert!(report.coverage() < 1.0);
     }
 }

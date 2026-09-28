@@ -7,8 +7,8 @@ use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use disrobe_pass_webview::{
-    CarveConfig, CarveReport, Compression, Error, ExtractionQuota, RecoveredAsset, WebviewFamily,
-    carve_report, carve_with_config,
+    CarveConfig, CarveReport, Compression, EntryRefusal, Error, ExtractionQuota, RecoveredAsset,
+    WebviewFamily, carve_report, carve_with_config,
 };
 
 static DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -972,6 +972,28 @@ fn tauri_style_brotli_map_recovers_the_original_tree_without_a_frame_to_detect()
     );
 }
 
+fn assert_refused(report: &CarveReport, path: &str, reason_needle: &str) {
+    let refusal: Option<&EntryRefusal> = report
+        .refusals
+        .iter()
+        .find(|refusal: &&EntryRefusal| refusal.path == path);
+    let Some(refusal) = refusal else {
+        panic!("{path} must carry a refusal, got {:?}", report.refusals);
+    };
+    assert!(
+        refusal.reason.contains(reason_needle),
+        "the refusal must name the limit that fired, got {}",
+        refusal.reason
+    );
+    assert!(
+        report
+            .assets
+            .iter()
+            .all(|asset: &RecoveredAsset| asset.path != path),
+        "a refused asset must not be extracted"
+    );
+}
+
 #[test]
 fn a_brotli_decompression_bomb_is_refused_by_the_quota() {
     let mut entries: Vec<(&str, Vec<u8>)> = encode_tree(&tauri_asset_tree(), brotli_encode);
@@ -984,17 +1006,13 @@ fn a_brotli_decompression_bomb_is_refused_by_the_quota() {
     entries.push(("/assets/bomb.bin", bomb));
     let image: Vec<u8> = image_from_entries(&entries, TAURI_TRAILER);
 
-    let err: Error = carve_report(&image).expect_err("the bomb must not be admitted");
-    match err {
-        Error::Quota { entry, reason } => {
-            assert_eq!(entry, "assets/bomb.bin");
-            assert!(
-                reason.contains("ratio"),
-                "the refusal must name the expansion ratio, got {reason}"
-            );
-        }
-        other => panic!("expected a quota refusal, got {other:?}"),
-    }
+    let report: CarveReport = carve_report(&image).expect("the bomb is refused alone");
+    assert_refused(&report, "assets/bomb.bin", "ratio");
+    assert_eq!(
+        assets_map(&report),
+        expected_tauri_map(&tauri_asset_tree()),
+        "every other asset is still extracted"
+    );
 }
 
 #[test]
@@ -1164,24 +1182,9 @@ fn an_asset_one_byte_past_the_per_entry_cap_is_refused_by_the_quota() {
     assert_only_the_target_can_reach_the_cap(&tree, cap);
     let image: Vec<u8> = cap_image(&tree);
 
-    match carve_with_config(&image, &cap_config(cap)) {
-        Err(Error::Quota { entry, reason }) => {
-            assert_eq!(
-                entry,
-                CAP_TARGET_KEY.trim_start_matches('/'),
-                "the refusal must name the asset that exceeded the cap, or an analyst cannot tell \
-                 which file was withheld"
-            );
-            assert!(
-                !reason.is_empty(),
-                "a refusal with no reason tells the caller nothing about which limit fired"
-            );
-        }
-        other => panic!(
-            "an asset one byte past the {cap} byte cap must be a quota outcome rather than \
-             truncated bytes under a codec label, got {other:?}"
-        ),
-    }
+    let report: CarveReport = carve_with_config(&image, &cap_config(cap))
+        .expect("an asset past the cap is refused alone");
+    assert_refused(&report, CAP_TARGET_KEY.trim_start_matches('/'), "ratio");
 }
 
 #[test]
@@ -1237,16 +1240,20 @@ fn ascii_case_collisions_are_rejected_before_a_report_escapes() {
     ));
     let image: Vec<u8> = image_from_entries(&entries, TAURI_TRAILER);
 
-    let error: Error = carve_report(&image).expect_err(
-        "two output paths that differ only by ASCII case must not escape in one report",
-    );
-    match error {
-        Error::PathCollision { first, second } => {
-            assert_eq!(first, "index.html");
-            assert_eq!(second, "Index.HTML");
-        }
-        other => panic!("expected a typed path collision, got {other:?}"),
-    }
+    let report: CarveReport = carve_report(&image).expect("a collision refuses its pair only");
+    let refused: Vec<&str> = report
+        .refusals
+        .iter()
+        .map(|refusal: &EntryRefusal| refusal.path.as_str())
+        .collect();
+    assert_eq!(refused, vec!["index.html", "Index.HTML"]);
+    let recovered: BTreeMap<String, Vec<u8>> = assets_map(&report);
+    assert!(!recovered.contains_key("index.html"));
+    assert!(!recovered.contains_key("Index.HTML"));
+    let mut expected: BTreeMap<String, Vec<u8>> = expected_tauri_map(&tauri_asset_tree());
+    expected.remove("index.html");
+    assert_eq!(recovered, expected, "every other entry is still extracted");
+    assert_eq!(report.declared, report.recovered + 2);
 }
 
 #[test]
@@ -1262,15 +1269,18 @@ fn unicode_case_expansion_collisions_are_rejected_before_a_report_escapes() {
     ));
     let image: Vec<u8> = image_from_entries(&entries, TAURI_TRAILER);
 
-    let error: Error = carve_report(&image)
-        .expect_err("Unicode case expansion equivalents must not become colliding output paths");
-    match error {
-        Error::PathCollision { first, second } => {
-            assert_eq!(first, "assets/Stra\u{00df}e.js");
-            assert_eq!(second, "assets/STRASSE.js");
-        }
-        other => panic!("expected a typed path collision, got {other:?}"),
-    }
+    let report: CarveReport =
+        carve_report(&image).expect("a Unicode case collision refuses its pair only");
+    let refused: Vec<&str> = report
+        .refusals
+        .iter()
+        .map(|refusal: &EntryRefusal| refusal.path.as_str())
+        .collect();
+    assert_eq!(
+        refused,
+        vec!["assets/Stra\u{00df}e.js", "assets/STRASSE.js"]
+    );
+    assert_eq!(assets_map(&report), expected_tauri_map(&tauri_asset_tree()));
 }
 
 #[test]
@@ -1305,17 +1315,13 @@ fn a_decompression_bomb_is_refused_by_the_quota() {
     entries.push(("/assets/bomb.bin", bomb));
     let image: Vec<u8> = image_from_entries(&entries, TAURI_TRAILER);
 
-    let err: Error = carve_report(&image).expect_err("the bomb must not be admitted");
-    match err {
-        Error::Quota { entry, reason } => {
-            assert_eq!(entry, "assets/bomb.bin");
-            assert!(
-                reason.contains("ratio"),
-                "the refusal must name the expansion ratio, got {reason}"
-            );
-        }
-        other => panic!("expected a quota refusal, got {other:?}"),
-    }
+    let report: CarveReport = carve_report(&image).expect("the bomb is refused alone");
+    assert_refused(&report, "assets/bomb.bin", "ratio");
+    assert_eq!(
+        assets_map(&report),
+        expected_tauri_map(&tauri_asset_tree()),
+        "every other asset is still extracted"
+    );
 }
 
 #[test]

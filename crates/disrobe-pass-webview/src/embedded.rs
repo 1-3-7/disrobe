@@ -9,7 +9,7 @@ use disrobe_binfmt::ExtractionQuota;
 use crate::CarveConfig;
 use crate::decompress::{CODEC_TRIAL_ORDER, Decoded, claims_blob, decode_blob_anchored};
 use crate::error::{Error, Result};
-use crate::model::{Compression, IntegrityStatus, RecoveredAsset};
+use crate::model::{Compression, EntryRefusal, IntegrityStatus, RecoveredAsset};
 use crate::resolve::SectionMap;
 
 pub(crate) const MIN_CONSECUTIVE: usize = 8;
@@ -48,6 +48,7 @@ pub(crate) struct Assembled {
     pub(crate) directories: Vec<String>,
     pub(crate) declared: usize,
     pub(crate) recovered: usize,
+    pub(crate) refusals: Vec<EntryRefusal>,
 }
 
 pub(crate) fn scan(bytes: &[u8], cfg: &CarveConfig) -> Result<Assembled> {
@@ -405,11 +406,12 @@ fn assemble(
     anchor: Option<Compression>,
     cfg: &CarveConfig,
 ) -> Result<Assembled> {
-    reject_case_collisions(run, cfg.quota)?;
+    let colliding: BTreeSet<String> = case_collisions(run, cfg.quota)?;
     let mut guard: QuotaGuard = QuotaGuard::new(cfg.quota);
     let mut assets: Vec<RecoveredAsset> = Vec::new();
     let mut directories: BTreeSet<String> = BTreeSet::new();
     let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut refusals: Vec<EntryRefusal> = Vec::new();
     let mut declared: usize = 0;
     let mut recovered: usize = 0;
     for record in run {
@@ -421,12 +423,23 @@ fn assemble(
         }
         let Some(safe) = normalize_key(record.name) else {
             declared += 1;
+            refusals.push(EntryRefusal {
+                path: record.name.to_owned(),
+                reason: "the entry name is not a safe relative path".to_owned(),
+            });
             continue;
         };
         if !seen.insert(safe.clone()) {
             continue;
         }
         declared += 1;
+        if colliding.contains(&safe) {
+            refusals.push(EntryRefusal {
+                path: safe,
+                reason: "another entry differs from this name only by case".to_owned(),
+            });
+            continue;
+        }
         let (bytes, compression): (Vec<u8>, Compression) = match decode_blob_anchored(
             record.data,
             decode_cap(record.data.len(), &cfg.quota),
@@ -434,15 +447,22 @@ fn assemble(
         ) {
             Decoded::Bytes { data, compression } => (data, compression),
             Decoded::QuotaRefused { reason, .. } => {
-                return Err(Error::Quota {
-                    entry: safe,
+                refusals.push(EntryRefusal {
+                    path: safe,
                     reason: format!(
                         "{reason}, capped by the per-entry expansion ratio {}",
                         cfg.quota.max_per_entry_ratio
                     ),
                 });
+                continue;
             }
-            Decoded::Corrupt { .. } => continue,
+            Decoded::Corrupt { .. } => {
+                refusals.push(EntryRefusal {
+                    path: safe,
+                    reason: "the entry does not decode".to_owned(),
+                });
+                continue;
+            }
         };
         guard.admit_entry(&safe, bytes.len() as u64, record.data.len() as u64)?;
         recovered += 1;
@@ -459,12 +479,14 @@ fn assemble(
         directories: directories.into_iter().collect(),
         declared,
         recovered,
+        refusals,
     })
 }
 
-fn reject_case_collisions(run: &[Record<'_>], quota: ExtractionQuota) -> Result<()> {
+fn case_collisions(run: &[Record<'_>], quota: ExtractionQuota) -> Result<BTreeSet<String>> {
     let mut guard: QuotaGuard = QuotaGuard::new(quota);
     let mut first_by_key: BTreeMap<String, String> = BTreeMap::new();
+    let mut colliding: BTreeSet<String> = BTreeSet::new();
     for record in run {
         let raw: &str = if record.is_dir {
             record.name.trim_end_matches('/')
@@ -481,15 +503,13 @@ fn reject_case_collisions(run: &[Record<'_>], quota: ExtractionQuota) -> Result<
                 slot.insert(safe);
             }
             Entry::Occupied(slot) if slot.get() != &safe => {
-                return Err(Error::PathCollision {
-                    first: slot.get().clone(),
-                    second: safe,
-                });
+                colliding.insert(slot.get().clone());
+                colliding.insert(safe);
             }
             Entry::Occupied(_) => {}
         }
     }
-    Ok(())
+    Ok(colliding)
 }
 
 fn case_collision_key(path: &str) -> String {

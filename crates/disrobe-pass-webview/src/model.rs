@@ -85,6 +85,12 @@ pub struct SymlinkEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EntryRefusal {
+    pub path: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CarveReport {
     pub family: WebviewFamily,
     pub assets: Vec<RecoveredAsset>,
@@ -93,6 +99,8 @@ pub struct CarveReport {
     pub directories: Vec<String>,
     pub declared: usize,
     pub recovered: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refusals: Vec<EntryRefusal>,
 }
 
 impl CarveReport {

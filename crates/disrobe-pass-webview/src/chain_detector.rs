@@ -11,7 +11,7 @@ use serde::Serialize;
 
 use crate::detect::{FamilyEvidence, classify};
 use crate::error::Error;
-use crate::model::{CarveReport, RecoveredAsset, SymlinkEntry, WebviewFamily};
+use crate::model::{CarveReport, EntryRefusal, RecoveredAsset, SymlinkEntry, WebviewFamily};
 use crate::{CarveConfig, carve_with_config};
 
 pub const PASS_ID: PassId = "webview.carve";
@@ -167,6 +167,8 @@ struct Summary {
     symlinks: Vec<SymlinkEntry>,
     external_unpacked: Vec<String>,
     assets: Vec<SummaryAsset>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    refusals: Vec<EntryRefusal>,
 }
 
 fn summarize(evidence: &FamilyEvidence, bytes: &[u8]) -> Summary {
@@ -185,6 +187,7 @@ fn summarize(evidence: &FamilyEvidence, bytes: &[u8]) -> Summary {
         symlinks: Vec::new(),
         external_unpacked: Vec::new(),
         assets: Vec::new(),
+        refusals: Vec::new(),
     };
     match carve_with_config(bytes, &CarveConfig::default()) {
         Ok(report) => merge_report(base, &report),
@@ -205,6 +208,7 @@ fn merge_report(base: Summary, report: &CarveReport) -> Summary {
         directories: report.directories.clone(),
         symlinks: report.symlinks.clone(),
         external_unpacked: report.external_unpacked.clone(),
+        refusals: report.refusals.clone(),
         assets: report
             .assets
             .iter()
