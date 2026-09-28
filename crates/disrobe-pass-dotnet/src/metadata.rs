@@ -45,6 +45,7 @@ pub enum RuntimeLabel {
     Net8,
     Net9,
     Net10OrLater,
+    ModernNetUnversioned,
     Unknown,
 }
 
@@ -78,6 +79,27 @@ impl RuntimeLabel {
     }
 
     #[must_use]
+    pub fn from_target_framework(moniker: &str) -> Option<Self> {
+        let (family, version): (&str, &str) = moniker.split_once(",Version=")?;
+        let version: &str = version.trim_start_matches('v');
+        let major: u32 = version.split('.').next()?.parse::<u32>().ok()?;
+        match family {
+            ".NETFramework" => Some(Self::classify(version)),
+            ".NETCoreApp" => Some(match major {
+                3 => Self::NetCore3,
+                5 => Self::Net5,
+                6 => Self::Net6,
+                7 => Self::Net7,
+                8 => Self::Net8,
+                9 => Self::Net9,
+                10.. => Self::Net10OrLater,
+                _ => Self::Unknown,
+            }),
+            _ => None,
+        }
+    }
+
+    #[must_use]
     pub const fn marketing_name(self) -> &'static str {
         match self {
             Self::NetFramework1 => ".NET Framework 1.x",
@@ -90,6 +112,9 @@ impl RuntimeLabel {
             Self::Net8 => ".NET 8",
             Self::Net9 => ".NET 9",
             Self::Net10OrLater => ".NET 10+",
+            Self::ModernNetUnversioned => {
+                ".NET (version not declared; inferred from the core library)"
+            }
             Self::Unknown => "unknown",
         }
     }
@@ -418,6 +443,27 @@ mod tests {
     fn signature_matches_ecma_335_bsjb() {
         assert_eq!(METADATA_SIGNATURE, 0x424A_5342);
         assert_eq!(&METADATA_SIGNATURE.to_le_bytes(), b"BSJB");
+    }
+
+    #[test]
+    fn target_framework_monikers_map_to_runtime_labels() {
+        assert_eq!(
+            RuntimeLabel::from_target_framework(".NETCoreApp,Version=v9.0"),
+            Some(RuntimeLabel::Net9)
+        );
+        assert_eq!(
+            RuntimeLabel::from_target_framework(".NETCoreApp,Version=v3.1"),
+            Some(RuntimeLabel::NetCore3)
+        );
+        assert_eq!(
+            RuntimeLabel::from_target_framework(".NETFramework,Version=v4.7.2"),
+            Some(RuntimeLabel::NetFramework4)
+        );
+        assert_eq!(
+            RuntimeLabel::from_target_framework(".NETStandard,Version=v2.0"),
+            None
+        );
+        assert_eq!(RuntimeLabel::from_target_framework("garbage"), None);
     }
 
     #[test]

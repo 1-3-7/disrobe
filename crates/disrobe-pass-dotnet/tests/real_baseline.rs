@@ -34,20 +34,13 @@ fn helloapp_net9_parses_as_managed_pe() {
     let clr: ClrHeader = parse_clr_header(&bytes, &pe).expect("clr header");
     assert!(clr.metadata.rva > 0, "metadata rva populated");
     let root: MetadataRoot = parse_metadata_root(&bytes, &pe, &clr).expect("metadata root");
-    let label: RuntimeLabel = root.runtime_label();
-    assert!(
-        matches!(
-            label,
-            RuntimeLabel::NetFramework4
-                | RuntimeLabel::Net5
-                | RuntimeLabel::Net6
-                | RuntimeLabel::Net7
-                | RuntimeLabel::Net8
-                | RuntimeLabel::Net9
-                | RuntimeLabel::Net10OrLater
-                | RuntimeLabel::Unknown
-        ),
-        "got {label:?} for version {:?}",
+    let resolver: disrobe_pass_dotnet::Resolver =
+        disrobe_pass_dotnet::Resolver::build(&bytes, &pe, &clr, &root).expect("metadata model");
+    let label: Option<RuntimeLabel> = resolver.declared_runtime();
+    assert_eq!(
+        label,
+        Some(RuntimeLabel::Net9),
+        "the net9 build declares TargetFramework .NETCoreApp,Version=v9.0 (metadata version {:?})",
         root.version
     );
     assert!(!root.streams.is_empty());

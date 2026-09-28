@@ -90,7 +90,10 @@ pub fn analyze(image: &[u8]) -> crate::error::Result<PassSummary> {
         }
     };
     let root: MetadataRoot = parse_metadata_root(image, &pe, &clr)?;
-    let runtime: RuntimeLabel = root.runtime_label();
+    let runtime: RuntimeLabel = crate::model::Resolver::build(image, &pe, &clr, &root)
+        .ok()
+        .and_then(|resolver: crate::model::Resolver| resolver.declared_runtime())
+        .unwrap_or_else(|| root.runtime_label());
     dbg_kv("runtime", || {
         format!("{runtime:?} version={} streams={:?}", root.version, {
             let names: Vec<&String> = root.streams.keys().collect();

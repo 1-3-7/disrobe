@@ -1721,6 +1721,28 @@ impl Resolver {
         }
     }
 
+    fn decode_single_string_attribute(blob: &[u8]) -> Option<String> {
+        let rest: &[u8] = blob.strip_prefix(&[0x01, 0x00])?;
+        let first: u8 = *rest.first()?;
+        let (length, header): (usize, usize) = if first & 0x80 == 0 {
+            (usize::from(first), 1)
+        } else if first & 0xC0 == 0x80 {
+            let second: u8 = *rest.get(1)?;
+            ((usize::from(first & 0x3F) << 8) | usize::from(second), 2)
+        } else if first & 0xE0 == 0xC0 {
+            let bytes: &[u8] = rest.get(..4)?;
+            let value: usize = (usize::from(bytes[0] & 0x1F) << 24)
+                | (usize::from(bytes[1]) << 16)
+                | (usize::from(bytes[2]) << 8)
+                | usize::from(bytes[3]);
+            (value, 4)
+        } else {
+            return None;
+        };
+        let text: &[u8] = rest.get(header..header.checked_add(length)?)?;
+        String::from_utf8(text.to_vec()).ok()
+    }
+
     #[cfg(test)]
     fn isinst_target_kind_from_signature(&self, signature: &TypeSig) -> IsInstTargetKind {
         self.csharp_type_target_from_signature(signature)
@@ -2884,6 +2906,58 @@ impl Resolver {
             "UInt64" => Some(FieldRvaPrimitive::U8),
             _ => None,
         }
+    }
+
+    #[must_use]
+    pub fn declared_runtime(&self) -> Option<crate::metadata::RuntimeLabel> {
+        let declared: Option<crate::metadata::RuntimeLabel> = self
+            .tables
+            .custom_attributes
+            .iter()
+            .find_map(|attribute: &crate::tables::CustomAttributeRow| {
+                let parent: RowRef = attribute.parent?;
+                if parent.table != TableId::Assembly {
+                    return None;
+                }
+                let constructor: RowRef = attribute.attr_type?;
+                let (namespace, name): (String, String) = self.member_ref_owner(constructor)?;
+                if namespace != "System.Runtime.Versioning" || name != "TargetFrameworkAttribute" {
+                    return None;
+                }
+                let moniker: String =
+                    Self::decode_single_string_attribute(self.blob(attribute.value)?)?;
+                crate::metadata::RuntimeLabel::from_target_framework(&moniker)
+            });
+        declared.or_else(|| {
+            self.tables
+                .assembly_refs
+                .iter()
+                .any(|assembly: &crate::tables::AssemblyRefRow| {
+                    matches!(
+                        self.string(assembly.name).as_str(),
+                        "System.Runtime" | "System.Private.CoreLib"
+                    )
+                })
+                .then_some(crate::metadata::RuntimeLabel::ModernNetUnversioned)
+        })
+    }
+
+    fn member_ref_owner(&self, constructor: RowRef) -> Option<(String, String)> {
+        if constructor.table != TableId::MemberRef {
+            return None;
+        }
+        let member_index: usize = usize::try_from(constructor.row.checked_sub(1)?).ok()?;
+        let member: &MemberRefRow = self.tables.member_refs.get(member_index)?;
+        if self.string(member.name) != ".ctor" {
+            return None;
+        }
+        let owner: RowRef = member.parent?;
+        if owner.table != TableId::TypeRef {
+            return None;
+        }
+        let owner_index: usize = usize::try_from(owner.row.checked_sub(1)?).ok()?;
+        let row: &TypeRefRow = self.tables.type_refs.get(owner_index)?;
+        Some((self.string(row.namespace), self.string(row.name)))
     }
 
     fn is_corelib_assembly_ref(&self, scope: RowRef) -> bool {

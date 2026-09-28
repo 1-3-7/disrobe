@@ -1399,11 +1399,14 @@ fn wrap_operand(c: &str) -> String {
 }
 
 fn negate(cond: &str, lang: TargetLang) -> String {
-    if let Some(inner) = cond
-        .strip_prefix("!(")
-        .and_then(|s: &str| s.strip_suffix(')'))
-    {
-        return inner.to_owned();
+    for prefix in ["!(", "not (", "Not ("] {
+        if let Some(inner) = cond
+            .strip_prefix(prefix)
+            .and_then(|s: &str| s.strip_suffix(')'))
+            && is_one_group(inner)
+        {
+            return inner.to_owned();
+        }
     }
     if let Some(flipped) = flip_relational(cond, lang) {
         return flipped;
@@ -1415,12 +1418,53 @@ fn negate(cond: &str, lang: TargetLang) -> String {
     }
 }
 
+fn is_one_group(inner: &str) -> bool {
+    mask_nested(inner).is_some()
+}
+
+fn mask_nested(text: &str) -> Option<Vec<u8>> {
+    let mut out: Vec<u8> = Vec::with_capacity(text.len());
+    let mut depth: usize = 0;
+    let mut quote: Option<u8> = None;
+    let mut escaped: bool = false;
+    for &byte in text.as_bytes() {
+        if let Some(open) = quote {
+            out.push(b'#');
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == open {
+                quote = None;
+            }
+            continue;
+        }
+        match byte {
+            b'"' | b'\'' => {
+                quote = Some(byte);
+                out.push(b'#');
+            }
+            b'(' | b'[' | b'{' => {
+                depth += 1;
+                out.push(b'#');
+            }
+            b')' | b']' | b'}' => {
+                depth = depth.checked_sub(1)?;
+                out.push(b'#');
+            }
+            _ => out.push(if depth == 0 { byte } else { b'#' }),
+        }
+    }
+    (depth == 0 && quote.is_none()).then_some(out)
+}
+
 fn flip_relational(cond: &str, lang: TargetLang) -> Option<String> {
-    if cond.contains("&&")
-        || cond.contains("||")
-        || cond.contains("AndAlso")
-        || cond.contains("OrElse")
-    {
+    let mask: Vec<u8> = mask_nested(cond)?;
+    let top: &str = std::str::from_utf8(&mask).ok()?;
+    let lower_precedence: [&str; 10] = [
+        "&&", "||", "AndAlso", "OrElse", " And ", " Or ", "?", " & ", " | ", " ^ ",
+    ];
+    if lower_precedence.iter().any(|op: &&str| top.contains(op)) {
         return None;
     }
     let pairs: &[(&str, &str)] = match lang {
@@ -1440,16 +1484,20 @@ fn flip_relational(cond: &str, lang: TargetLang) -> Option<String> {
             (" > ", " <= "),
         ],
     };
-    let present: Vec<&(&str, &str)> = pairs
-        .iter()
-        .filter(|(from, _): &&(&str, &str)| cond.contains(*from))
-        .collect();
-    let (from, to): &(&str, &str) = present.first()?;
-    let comparator_count: usize = pairs
-        .iter()
-        .map(|(f, _): &(&str, &str)| cond.matches(f).count())
-        .sum();
-    (comparator_count == 1).then(|| cond.replacen(from, to, 1))
+    let mut found: Option<(usize, &str, &str)> = None;
+    let mut count: usize = 0;
+    for (from, to) in pairs {
+        for (offset, _) in top.match_indices(from) {
+            count += 1;
+            found = Some((offset, from, to));
+        }
+    }
+    let (offset, from, to): (usize, &str, &str) = found.filter(|_| count == 1)?;
+    let mut flipped: String = String::with_capacity(cond.len() + 1);
+    flipped.push_str(cond.get(..offset)?);
+    flipped.push_str(to);
+    flipped.push_str(cond.get(offset + from.len()..)?);
+    Some(flipped)
 }
 
 fn catch_type_name<N: TokenNamer>(
@@ -1884,6 +1932,21 @@ mod tests {
     use super::*;
     use crate::cil::disassemble;
     use crate::structurize::HexNamer;
+
+    #[test]
+    fn negation_flips_only_a_single_top_level_comparison() {
+        let cases: [(&str, &str); 6] = [
+            ("a < b", "a >= b"),
+            (r#"s.Contains(" == ")"#, r#"!(s.Contains(" == "))"#),
+            ("f(a < b)", "!(f(a < b))"),
+            ("!(a && b)", "a && b"),
+            ("!(a) && (b)", "!(!(a) && (b))"),
+            ("(uint)i >= (uint)len", "(uint)i < (uint)len"),
+        ];
+        for (cond, expected) in cases {
+            assert_eq!(negate(cond, TargetLang::CSharp), expected, "{cond}");
+        }
+    }
 
     fn structure(code: &[u8], lang: TargetLang) -> StructuredOutput {
         let body: MethodBody = MethodBody {
