@@ -648,8 +648,14 @@ fn tokenize_c(source: &str) -> CTokens {
             } else if byte.is_ascii_whitespace() {
                 index = index.saturating_add(1);
             } else {
-                tokens.push(CToken::Punct(byte as char));
-                index = index.saturating_add(1);
+                let (symbol, width): (char, usize) = line
+                    .get(index..)
+                    .and_then(|rest: &str| rest.chars().next())
+                    .map_or((char::REPLACEMENT_CHARACTER, 1), |symbol: char| {
+                        (symbol, symbol.len_utf8())
+                    });
+                tokens.push(CToken::Punct(symbol));
+                index = index.saturating_add(width);
             }
         }
         if tokens.len() >= MAX_GATE_TOKENS {
@@ -1076,6 +1082,20 @@ mod tests {
     use crate::functions::LineRange;
     use crate::image::Section;
     use object::SectionKind;
+
+    #[test]
+    fn a_non_ascii_character_is_one_punctuation_token() {
+        let scan: CTokens = tokenize_c("x = a \u{b5} b;");
+        let puncts: Vec<char> = scan
+            .tokens
+            .iter()
+            .filter_map(|token: &CToken| match token {
+                CToken::Punct(symbol) => Some(*symbol),
+                CToken::Ident(_) | CToken::Literal => None,
+            })
+            .collect();
+        assert_eq!(puncts, vec!['=', '\u{b5}', ';']);
+    }
 
     fn func(name: &str, start: u64, end: Option<u64>) -> RecoveredFunction {
         RecoveredFunction {
