@@ -1,4 +1,5 @@
 const MAX_DEPTH: usize = 256;
+const MAX_STEPS: usize = 200_000;
 const MAX_OUTPUT: usize = 1 << 16;
 
 const PRIMITIVES: [Option<&str>; 23] = [
@@ -39,6 +40,7 @@ struct Demangler<'a> {
     out: String,
     brp: usize,
     depth: usize,
+    steps: usize,
     top_qualified: Option<String>,
     top_params: Option<String>,
 }
@@ -51,6 +53,7 @@ impl<'a> Demangler<'a> {
             out: String::new(),
             brp: usize::MAX,
             depth: 0,
+            steps: 0,
             top_qualified: None,
             top_params: None,
         }
@@ -122,7 +125,8 @@ impl<'a> Demangler<'a> {
 
     const fn enter(&mut self) -> Option<()> {
         self.depth += 1;
-        if self.depth > MAX_DEPTH {
+        self.steps = self.steps.saturating_add(1);
+        if self.depth > MAX_DEPTH || self.steps > MAX_STEPS {
             None
         } else {
             Some(())
@@ -444,10 +448,7 @@ impl Demangler<'_> {
             let save_pos: usize = self.pos;
             let save_brp: usize = self.brp;
             let mut qlen: usize = self.decode_number()? / 10;
-            self.pos = save_pos;
-            if self.pos > 0 {
-                self.pos -= 1;
-            }
+            self.pos = self.pos.checked_sub(1)?;
             let mut p: usize = self.pos;
             while qlen > 0 {
                 if self.parse_qualified_name().is_some() && self.pos == p + qlen {
@@ -1521,6 +1522,21 @@ fn split_top_level_commas(inner: &str) -> Vec<String> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_symbol_argument_length_is_split_before_its_qualified_name() {
+        let mut demangler: Demangler<'_> = Demangler::new(b"43bar");
+        assert_eq!(demangler.parse_template_symbol_arg(), Some(()));
+        assert_eq!(demangler.out, "bar");
+        assert_eq!(demangler.pos, 5);
+    }
+
+    #[test]
+    fn the_step_budget_stops_runaway_backtracking() {
+        let mut demangler: Demangler<'_> = Demangler::new(b"");
+        demangler.steps = MAX_STEPS;
+        assert_eq!(demangler.enter(), None);
+    }
 
     fn dm(s: &str) -> String {
         let Some(r): Option<DResult> = demangle_d_result(s) else {

@@ -89,41 +89,77 @@ impl<'a> NativeImage<'a> {
         }
         let mut symbols: Vec<String> = Vec::new();
         let mut func_symbols: Vec<FuncSymbol> = Vec::new();
+        let mut unsized_symbols: Vec<(String, u64)> = Vec::new();
         for sym in file.symbols() {
             let raw_name: &str = sym.name().unwrap_or("");
             if raw_name.is_empty() {
                 continue;
             }
             symbols.push(raw_name.to_owned());
-            if sym.kind() == SymbolKind::Text {
-                let size: u64 = sym.size();
-                if size == 0 {
-                    continue;
-                }
-                let address: u64 = sym.address();
-                if relocatable {
-                    if let Some(section_addr) =
-                        sym.section_index().and_then(|idx: object::SectionIndex| {
-                            file.section_by_index(idx)
-                                .ok()
-                                .map(|s: object::read::Section<'a, '_, &'a [u8]>| s.address())
-                        })
-                    {
-                        func_symbols.push(FuncSymbol {
-                            name: raw_name.to_owned(),
-                            address: section_addr.saturating_add(address),
-                            size,
-                            relocatable: true,
-                        });
-                    }
-                } else if address != 0 {
-                    func_symbols.push(FuncSymbol {
-                        name: raw_name.to_owned(),
-                        address,
-                        size,
-                        relocatable: false,
-                    });
-                }
+            if sym.kind() != SymbolKind::Text {
+                continue;
+            }
+            let address: u64 = sym.address();
+            let resolved: Option<u64> = if relocatable {
+                sym.section_index()
+                    .and_then(|idx: object::SectionIndex| {
+                        file.section_by_index(idx)
+                            .ok()
+                            .map(|s: object::read::Section<'a, '_, &'a [u8]>| s.address())
+                    })
+                    .map(|section_addr: u64| section_addr.saturating_add(address))
+            } else {
+                (address != 0).then_some(address)
+            };
+            let Some(resolved) = resolved else {
+                continue;
+            };
+            let size: u64 = sym.size();
+            if size == 0 {
+                unsized_symbols.push((raw_name.to_owned(), resolved));
+                continue;
+            }
+            func_symbols.push(FuncSymbol {
+                name: raw_name.to_owned(),
+                address: resolved,
+                size,
+                relocatable,
+            });
+        }
+        let starts: std::collections::BTreeSet<u64> = func_symbols
+            .iter()
+            .map(|symbol: &FuncSymbol| symbol.address)
+            .chain(
+                unsized_symbols
+                    .iter()
+                    .map(|(_, address): &(String, u64)| *address),
+            )
+            .collect();
+        for (name, address) in unsized_symbols {
+            let section_end: Option<u64> = sections
+                .iter()
+                .filter(|section: &&Section<'a>| section.kind == SectionKind::Text)
+                .find_map(|section: &Section<'a>| {
+                    let end: u64 = section.address.saturating_add(section.data.len() as u64);
+                    (section.address <= address && address < end).then_some(end)
+                });
+            let Some(section_end) = section_end else {
+                continue;
+            };
+            let next_start: u64 = starts
+                .range(address.saturating_add(1)..)
+                .next()
+                .copied()
+                .unwrap_or(section_end)
+                .min(section_end);
+            let size: u64 = next_start.saturating_sub(address);
+            if size > 0 {
+                func_symbols.push(FuncSymbol {
+                    name,
+                    address,
+                    size,
+                    relocatable,
+                });
             }
         }
         Ok(Self {
@@ -239,4 +275,31 @@ pub fn ascii_strings_capped(buf: &[u8], min_len: usize) -> (Vec<String>, bool) {
         truncated = true;
     }
     (out, truncated)
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod size_tests {
+    use super::*;
+
+    #[test]
+    fn mach_o_text_symbols_without_a_size_are_sized_by_the_next_symbol() {
+        let path: std::path::PathBuf = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../corpus/native/formats/hello.macho64.o");
+        let bytes: Vec<u8> = std::fs::read(&path).expect("read the Mach-O fixture");
+        let image: NativeImage<'_> = NativeImage::parse(&bytes).expect("parse the Mach-O fixture");
+        let names: Vec<&str> = image
+            .func_symbols
+            .iter()
+            .map(|symbol: &FuncSymbol| symbol.name.as_str())
+            .collect();
+        assert!(names.contains(&"_disrobe_add"), "{names:?}");
+        assert!(names.contains(&"_disrobe_mul"), "{names:?}");
+        assert!(
+            image
+                .func_symbols
+                .iter()
+                .all(|symbol: &FuncSymbol| symbol.size > 0)
+        );
+    }
 }
