@@ -1528,7 +1528,34 @@ fn codec_cascade_findings(
     out
 }
 
+const MAX_CONTAINER_DEPTH: usize = 8;
+
+thread_local! {
+    static CONTAINER_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+struct ContainerDepth;
+
+impl ContainerDepth {
+    fn enter() -> (Self, usize) {
+        let depth: usize = CONTAINER_DEPTH.with(|cell: &std::cell::Cell<usize>| {
+            let next: usize = cell.get() + 1;
+            cell.set(next);
+            next
+        });
+        (Self, depth)
+    }
+}
+
+impl Drop for ContainerDepth {
+    fn drop(&mut self) {
+        CONTAINER_DEPTH
+            .with(|cell: &std::cell::Cell<usize>| cell.set(cell.get().saturating_sub(1)));
+    }
+}
+
 fn scan_blob(bytes: &[u8], uri: Option<&str>, config: &ReconConfig) -> (Vec<ReconFinding>, bool) {
+    let (_guard, depth): (ContainerDepth, usize) = ContainerDepth::enter();
     let (mut findings, valid_utf8): (Vec<ReconFinding>, bool) = scan_bytes(bytes, uri, config);
     findings.extend(base64_decode_findings(bytes, uri, config, 0));
     let mut codec_total: usize = 0;
@@ -1539,7 +1566,9 @@ fn scan_blob(bytes: &[u8], uri: Option<&str>, config: &ReconConfig) -> (Vec<Reco
         0,
         &mut codec_total,
     ));
-    findings.extend(scan_container(bytes, uri, config));
+    if depth <= MAX_CONTAINER_DEPTH {
+        findings.extend(scan_container(bytes, uri, config));
+    }
     (findings, valid_utf8)
 }
 
@@ -1922,6 +1951,21 @@ pub fn fingerprint(finding: &ReconFinding) -> String {
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_self_nesting_gzip_stops_at_the_container_depth() {
+        use std::io::Write;
+        let mut layer: Vec<u8> = b"AKIAIOSFODNN7EXAMPLE".to_vec();
+        for _ in 0..64 {
+            let mut encoder: flate2::write::GzEncoder<Vec<u8>> =
+                flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+            encoder.write_all(&layer).expect("gzip");
+            layer = encoder.finish().expect("gzip");
+        }
+        let report: ReconReport = report_bytes(&layer, Some("nested.gz"), &ReconConfig::default());
+        assert_eq!(report.files_scanned, 1);
+        assert_eq!(CONTAINER_DEPTH.with(std::cell::Cell::get), 0);
+    }
     use crate::codec;
 
     fn aws_akid() -> String {
