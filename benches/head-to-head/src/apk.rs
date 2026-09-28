@@ -4096,7 +4096,10 @@ EdgeCases.java\0public static java.util.function.Function<Integer, String> forma
 EdgeCases.java\0public static java.util.function.IntUnaryOperator multiplier(int arg0) {@1688:5
 EdgeCases.java\0public static java.util.function.Supplier<java.util.List<String>> listSupplier() {@1409:5
 EdgeCases.java\0public static java.util.stream.IntStream squares(int arg0) {@2005:5
+EdgeCases.java\0public static long bigCompute(long arg0) {@139:5
+EdgeCases.java\0public static long countSetBitsRange(long arg0, long arg1) {@556:5
 EdgeCases.java\0public static long iterativeFactorial(int arg0) {@1065:5
+EdgeCases.java\0public static long sumDigits(long arg0) {@2057:5
 EdgeCases.java\0public static void main(String[] arg0) {@1421:5
 EdgeCases.java\0public static void rethrow(Throwable arg0) {@1884:5
 EdgeCases.java\0static Integer synthLambda$chain$0(int arg0) {@1116:5
@@ -4169,7 +4172,7 @@ com/android/tools/r8/RecordTag.java\0protected RecordTag() {@4:5";
             matches!(
                 candidate,
                 ToolScore::Certified {
-                    clean: 157,
+                    clean: 160,
                     emitted: 228,
                     class_level_defects: 0,
                     ..
@@ -4402,7 +4405,7 @@ EdgeCases.java\0public void run() {@1935:9";
             matches!(
                 candidate,
                 ToolScore::Certified {
-                    clean: 157,
+                    clean: 160,
                     emitted: 228,
                     class_level_defects: 0,
                     ..
@@ -4426,7 +4429,7 @@ EdgeCases.java\0public void run() {@1935:9";
             matches!(
                 base,
                 ToolScore::Certified {
-                    clean: 157,
+                    clean: 160,
                     emitted: 228,
                     class_level_defects: 5,
                     ..
@@ -5546,8 +5549,8 @@ EdgeCases.java\0public void run() {@1935:9";
             candidate.type_checked,
             "candidate javac attribution was not reached"
         );
-        assert_eq!((baseline.clean.len(), baseline.failed.len()), (148, 80));
-        assert_eq!((candidate.clean.len(), candidate.failed.len()), (157, 71));
+        assert_eq!((baseline.clean.len(), baseline.failed.len()), (151, 77));
+        assert_eq!((candidate.clean.len(), candidate.failed.len()), (160, 68));
         assert!(candidate.failed.is_subset(&baseline.failed));
         assert!(baseline.clean.is_subset(&candidate.clean));
         let newly_clean: BTreeSet<String> = candidate
