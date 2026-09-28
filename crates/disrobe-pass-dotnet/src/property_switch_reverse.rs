@@ -744,10 +744,10 @@ fn classify_test<N: TokenNamer>(
 
 fn branch_relation(name: &str) -> Option<Relation> {
     Some(match name {
-        "blt" | "blt.s" | "blt.un" | "blt.un.s" => Relation::Lt,
-        "ble" | "ble.s" | "ble.un" | "ble.un.s" => Relation::Le,
-        "bgt" | "bgt.s" | "bgt.un" | "bgt.un.s" => Relation::Gt,
-        "bge" | "bge.s" | "bge.un" | "bge.un.s" => Relation::Ge,
+        "blt" | "blt.s" => Relation::Lt,
+        "ble" | "ble.s" => Relation::Le,
+        "bgt" | "bgt.s" => Relation::Gt,
+        "bge" | "bge.s" => Relation::Ge,
         _ => return None,
     })
 }

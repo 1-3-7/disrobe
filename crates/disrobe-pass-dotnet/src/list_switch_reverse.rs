@@ -486,6 +486,9 @@ fn length_test<N: TokenNamer>(
     let (konst, length_head): (&&Instruction, &[&Instruction]) = head.split_last()?;
     is_length_expr(ctx, length_head)?;
     let literal: i64 = int_constant(konst)?;
+    if literal < 0 && branch.name.contains(".un") && !branch.name.starts_with("bne.un") {
+        return None;
+    }
     match branch.name.as_str() {
         "beq" | "beq.s" => Some(BlockTest::LengthEqual {
             value: literal,

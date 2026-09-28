@@ -1,0 +1,34 @@
+schema = "disrobe.corpus.v1"
+crate = "disrobe-pass-dotnet"
+generated = "2026-09-28"
+toolchain = "dotnet SDK 9.0.318, Roslyn csc 4.14.0-3.26064.1 (450493a9)"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+note = "self-authored C# fixture for the IL shapes whose C# meaning depends on operand signedness or NaN ordering: clt.un, blt.un, div.un, rem.un, add.ovf, mul.ovf, sub.ovf.un, conv.u8 on int32, conv.i8 on uint, clt.un on doubles, blt.un and bge.un in a uint range switch, and clt.un on a uint-backed enum; no vendor or third-party binary bytes"
+
+[build]
+command = "dotnet build -c Release, run in a copy of this directory holding only UnsignedOverflow.cs and UnsignedOverflow.csproj; UnsignedOverflow.dll is bin/Release/net9.0/UnsignedOverflow.dll"
+reproducible = true
+reproducibility_note = "Deterministic=true, Optimize=true and DebugType=none; two clean builds produced the same sha256"
+line_endings = "every hash-pinned file carries -text in this directory's .gitattributes, so no checkout rewrites the bytes the hashes cover"
+
+[[fixture]]
+name = "UnsignedOverflow.cs"
+kind = "csharp-source"
+size = 1953
+sha256 = "8e9c1760ebae78c47db44940ac87d2643810c87d52d3cfb597b5dc79eb79f07a"
+source = "self-authored"
+
+[[fixture]]
+name = "UnsignedOverflow.csproj"
+kind = "msbuild-project"
+size = 450
+sha256 = "83111e24fdab85b05d7fedfd5b8f4452eb2b983305f6c1adc6ce8111cfe174ac"
+source = "self-authored"
+
+[[fixture]]
+name = "UnsignedOverflow.dll"
+kind = "managed-pe"
+target_framework = "net9.0"
+size = 4096
+sha256 = "6c987b73de6db137e6ab9ca1d978e9753c6b6504cf881cc85eb122f50e6c3279"
+source = "UnsignedOverflow.cs"

@@ -83,6 +83,10 @@ impl TokenNamer for AssemblyNamer<'_> {
         self.method.field_type_name(token)
     }
 
+    fn call_return_type_name(&self, token: u32) -> Option<String> {
+        self.method.call_return_type_name(token)
+    }
+
     fn callee_is_virtual_definition(&self, token: u32) -> bool {
         self.method.callee_is_virtual_definition(token)
     }

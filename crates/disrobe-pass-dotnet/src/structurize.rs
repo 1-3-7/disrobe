@@ -12,6 +12,10 @@ use crate::model::{IsInstTargetKind, Resolver};
 use crate::names::NameTable;
 use crate::signature::ConditionKind;
 
+mod operand_kind;
+
+use operand_kind::{ArithmeticForm, Comparison, Signedness, StackKind, infer_stack_kind};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum TargetLang {
     #[default]
@@ -120,6 +124,10 @@ pub trait TokenNamer {
         None
     }
 
+    fn call_return_type_name(&self, _token: u32) -> Option<String> {
+        None
+    }
+
     fn callee_is_virtual_definition(&self, _token: u32) -> bool {
         false
     }
@@ -221,6 +229,16 @@ impl TokenNamer for Resolver {
         self.field_token_type_name(token)
     }
 
+    fn call_return_type_name(&self, token: u32) -> Option<String> {
+        match self.callee_signature(token)?.return_type {
+            crate::signature::TypeSigOrVoid::Type(ty) => {
+                let rendered: String = self.render_type(&ty, TargetLang::CSharp);
+                (!rendered.is_empty()).then_some(rendered)
+            }
+            crate::signature::TypeSigOrVoid::Void => None,
+        }
+    }
+
     fn callee_is_virtual_definition(&self, token: u32) -> bool {
         Self::callee_is_virtual_definition(self, token)
     }
@@ -294,6 +312,11 @@ impl TokenNamer for MethodNamer<'_> {
     #[inline]
     fn field_type_name(&self, token: u32) -> Option<String> {
         self.resolver.field_token_type_name(token)
+    }
+
+    #[inline]
+    fn call_return_type_name(&self, token: u32) -> Option<String> {
+        TokenNamer::call_return_type_name(self.resolver, token)
     }
 
     #[inline]
@@ -394,6 +417,7 @@ pub(crate) enum Expr {
 pub(crate) enum AbstentionKind {
     StackUnderflow,
     UndecodableSlot,
+    UnresolvedOperandKind,
 }
 
 impl AbstentionKind {
@@ -401,6 +425,7 @@ impl AbstentionKind {
         match self {
             Self::StackUnderflow => STACK_UNDERFLOW,
             Self::UndecodableSlot => UNDECODABLE_SLOT,
+            Self::UnresolvedOperandKind => UNRESOLVED_OPERAND_KIND,
         }
     }
 
@@ -412,6 +437,9 @@ impl AbstentionKind {
             Self::UndecodableSlot => format!(
                 "block IL_{block_offset:04x} reached {opcode} with an operand no slot index can be read from"
             ),
+            Self::UnresolvedOperandKind => format!(
+                "block IL_{block_offset:04x} reached {opcode}, whose signedness or NaN ordering depends on an operand stack type that is not known"
+            ),
         }
     }
 }
@@ -421,6 +449,8 @@ const ATOM_EXPRESSION_DEPTH: usize = 1;
 const UNRECOVERED_EXPRESSION: &str = "__unrecovered_expression";
 const STACK_UNDERFLOW: &str = "__stack_underflow";
 const UNDECODABLE_SLOT: &str = "__undecodable_slot";
+const UNRESOLVED_OPERAND_KIND: &str = "__unresolved_operand_kind";
+const UNRESOLVED_OPERAND_KIND_REFUSAL: &str = "__unresolved_operand_kind: an unsigned, unordered or overflow-checked opcode reads an operand whose stack type is not known, so its C# signedness cannot be chosen";
 const UNRECONSTRUCTED_RUNTIME_HANDLE: &str = "__unreconstructed_runtime_handle";
 const UNRESOLVED_ISINST_TARGET: &str = "__unresolved_isinst_target";
 const UNRESOLVED_UNBOX_ANY_TARGET: &str = "__unresolved_unbox_any_target";
@@ -1523,6 +1553,7 @@ struct Lifter<'a, N: TokenNamer> {
     lang: TargetLang,
     stack: Vec<Expr>,
     stack_depths: Vec<usize>,
+    stack_kinds: Vec<StackKind>,
     stmts: Vec<Stmt>,
     locals_used: BTreeSet<u32>,
     locals_assigned: BTreeSet<u32>,
@@ -1541,6 +1572,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
             lang,
             stack: Vec::new(),
             stack_depths: Vec::new(),
+            stack_kinds: Vec::new(),
             stmts: Vec::new(),
             locals_used: BTreeSet::new(),
             locals_assigned: BTreeSet::new(),
@@ -1559,22 +1591,49 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
     }
 
     #[inline]
+    fn push_typed(&mut self, e: Expr, kind: StackKind) {
+        let depth: usize = expression_depth(&e);
+        self.push_entry(e, depth, kind);
+    }
+
+    #[inline]
     fn push_with_depth(&mut self, expression: Expr, depth: usize) {
+        let kind: StackKind = infer_stack_kind(&expression, self.names);
+        self.push_entry(expression, depth, kind);
+    }
+
+    #[inline]
+    fn push_entry(&mut self, expression: Expr, depth: usize, kind: StackKind) {
         let (expression, depth): (Expr, usize) = bounded_expression(expression, depth);
         self.stack.push(expression);
         self.stack_depths.push(depth);
+        self.stack_kinds.push(kind);
     }
 
     #[inline]
     fn pop(&mut self) -> Expr {
-        self.pop_with_depth().0
+        self.pop_typed().0
     }
 
     #[inline]
     fn pop_with_depth(&mut self) -> (Expr, usize) {
-        match (self.stack.pop(), self.stack_depths.pop()) {
-            (Some(expression), Some(depth)) => (expression, depth),
-            _ => (self.abstain_on_underflow(), ATOM_EXPRESSION_DEPTH),
+        let (expression, depth, _): (Expr, usize, StackKind) = self.pop_typed();
+        (expression, depth)
+    }
+
+    #[inline]
+    fn pop_typed(&mut self) -> (Expr, usize, StackKind) {
+        match (
+            self.stack.pop(),
+            self.stack_depths.pop(),
+            self.stack_kinds.pop(),
+        ) {
+            (Some(expression), Some(depth), Some(kind)) => (expression, depth, kind),
+            _ => (
+                self.abstain_on_underflow(),
+                ATOM_EXPRESSION_DEPTH,
+                StackKind::Unknown,
+            ),
         }
     }
 
@@ -1592,6 +1651,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
     fn clear_stack(&mut self) {
         self.stack.clear();
         self.stack_depths.clear();
+        self.stack_kinds.clear();
     }
 
     fn pop_n(&mut self, n: usize) -> Vec<Expr> {
@@ -1742,11 +1802,11 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
         true
     }
 
-    fn binary(&mut self, op: &'static str) {
+    fn shift_left(&mut self) {
         let (b, b_depth): (Expr, usize) = self.pop_with_depth();
-        let (a, a_depth): (Expr, usize) = self.pop_with_depth();
+        let (a, a_depth, kind): (Expr, usize, StackKind) = self.pop_typed();
         let depth: usize = a_depth.max(b_depth).saturating_add(1);
-        self.push_with_depth(Expr::Binary(op, Box::new(a), Box::new(b)), depth);
+        self.push_entry(Expr::Binary("<<", Box::new(a), Box::new(b)), depth, kind);
     }
 
     fn equality(&mut self) {
@@ -1766,9 +1826,9 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
     }
 
     fn unary(&mut self, op: &'static str) {
-        let (a, a_depth): (Expr, usize) = self.pop_with_depth();
+        let (a, a_depth, kind): (Expr, usize, StackKind) = self.pop_typed();
         let depth: usize = a_depth.saturating_add(1);
-        self.push_with_depth(Expr::Unary(op, Box::new(a)), depth);
+        self.push_entry(Expr::Unary(op, Box::new(a)), depth, kind);
     }
 
     fn emit_conv(&mut self, name: &str) {
@@ -1778,17 +1838,24 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
         let Some((ty, is_checked)): Option<(&'static str, bool)> = conv_csharp_target(name) else {
             return;
         };
-        let e: Expr = self.pop();
+        let e: Expr = self.conversion_operand(name, ty, is_checked);
+        let kind: StackKind = StackKind::of_type_name(ty);
+        if matches!(e, Expr::Abstain(_)) {
+            self.push_typed(e, kind);
+            return;
+        }
         let operand_is_const: bool = matches!(e, Expr::Const(_));
-        let cast: Expr = Expr::Cast(ty.to_owned(), Box::new(e));
         if is_checked {
+            let guarded: Expr = self.checked_operand(e);
+            let cast: Expr = Expr::Cast(ty.to_owned(), Box::new(guarded));
             let rendered: String = render_bounded_expression(cast, self.lang, self.names);
-            self.push(Expr::Raw(format!("checked({rendered})")));
+            self.push_typed(Expr::Raw(format!("checked({rendered})")), kind);
         } else if operand_is_const {
+            let cast: Expr = Expr::Cast(ty.to_owned(), Box::new(e));
             let rendered: String = render_bounded_expression(cast, self.lang, self.names);
-            self.push(Expr::Raw(format!("unchecked({rendered})")));
+            self.push_typed(Expr::Raw(format!("unchecked({rendered})")), kind);
         } else {
-            self.push(cast);
+            self.push_typed(Expr::Cast(ty.to_owned(), Box::new(e)), kind);
         }
     }
 
@@ -1825,6 +1892,19 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
             OperandValue::Token(t) => self.namer.field_type_name(t),
             _ => None,
         }
+    }
+
+    fn loaded_field_kind(&self, ins: &Instruction) -> StackKind {
+        self.stored_field_type(ins)
+            .as_deref()
+            .map_or(StackKind::Unknown, StackKind::of_type_name)
+    }
+
+    fn call_result_kind(&self, token: u32) -> StackKind {
+        self.namer
+            .call_return_type_name(token)
+            .as_deref()
+            .map_or(StackKind::Unknown, StackKind::of_type_name)
     }
 
     fn stored_field_kind(&self, ins: &Instruction) -> ConditionKind {
@@ -1945,6 +2025,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
         let returns_value: bool = info.map_or(!is_ctor, |c: CallInfo| c.returns_value);
         let returns_boolean: bool = self.namer.call_returns_boolean(token);
         let return_kind: ConditionKind = self.namer.call_return_condition_kind(token);
+        let result_kind: StackKind = self.call_result_kind(token);
         let has_this: bool = info.map_or_else(|| raw.contains("::"), |c: CallInfo| c.has_this);
         let base_call: bool = self.lang == TargetLang::CSharp
             && ins.name == "call"
@@ -1994,7 +2075,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
             let a: Expr = args.pop().unwrap_or(Expr::Null);
             let folded: Expr = Expr::Binary(op, Box::new(a), Box::new(b));
             if returns_value {
-                self.push(folded);
+                self.push_typed(folded, result_kind);
             } else {
                 self.stmts.push(Stmt::Expr(render_bounded_expression(
                     folded, self.lang, self.names,
@@ -2009,7 +2090,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
             let a: Expr = args.pop().unwrap_or(Expr::Null);
             let folded: Expr = Expr::Unary(op, Box::new(a));
             if returns_value {
-                self.push(folded);
+                self.push_typed(folded, result_kind);
             } else {
                 self.stmts.push(Stmt::Expr(render_bounded_expression(
                     folded, self.lang, self.names,
@@ -2025,7 +2106,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                     "throw new System.NotSupportedException(\"{UNRECONSTRUCTED_RUNTIME_HANDLE}\")"
                 )),
             };
-            self.push(type_expression);
+            self.push_typed(type_expression, StackKind::Reference);
             return;
         }
         if !has_this
@@ -2041,19 +2122,25 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
         {
             if has_this && args.len() == 1 {
                 let recv: Expr = args.pop().unwrap_or(Expr::Null);
-                self.push(Expr::Field {
-                    text: format!("{}.{prop}", self.receiver_text(&recv, base_call)),
-                    is_boolean: returns_boolean,
-                    kind: return_kind,
-                });
+                self.push_typed(
+                    Expr::Field {
+                        text: format!("{}.{prop}", self.receiver_text(&recv, base_call)),
+                        is_boolean: returns_boolean,
+                        kind: return_kind,
+                    },
+                    result_kind,
+                );
                 return;
             }
             if !has_this && args.is_empty() {
-                self.push(Expr::Field {
-                    text: prop.to_owned(),
-                    is_boolean: returns_boolean,
-                    kind: return_kind,
-                });
+                self.push_typed(
+                    Expr::Field {
+                        text: prop.to_owned(),
+                        is_boolean: returns_boolean,
+                        kind: return_kind,
+                    },
+                    result_kind,
+                );
                 return;
             }
             if has_this
@@ -2064,11 +2151,14 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 let indices: Vec<Expr> = args.split_off(1);
                 let recv: Expr = args.pop().unwrap_or(Expr::Null);
                 let subscript: String = self.render_subscript(indices);
-                self.push(Expr::Field {
-                    text: format!("{}[{subscript}]", self.receiver_text(&recv, base_call)),
-                    is_boolean: returns_boolean,
-                    kind: return_kind,
-                });
+                self.push_typed(
+                    Expr::Field {
+                        text: format!("{}[{subscript}]", self.receiver_text(&recv, base_call)),
+                        is_boolean: returns_boolean,
+                        kind: return_kind,
+                    },
+                    result_kind,
+                );
                 return;
             }
         }
@@ -2140,14 +2230,13 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 call, self.lang, self.names,
             )));
         } else {
-            self.push(call);
+            self.push_typed(call, result_kind);
         }
     }
 
-    fn cmp_cond(&mut self, op: &'static str, lang: TargetLang) -> String {
-        let b: Expr = self.pop();
-        let a: Expr = self.pop();
-        render_bounded_expression(Expr::Binary(op, Box::new(a), Box::new(b)), lang, self.names)
+    fn cmp_cond(&mut self, op: &'static str, semantics: Comparison, lang: TargetLang) -> String {
+        let (expression, _): (Expr, usize) = self.comparison(op, semantics);
+        render_bounded_expression(expression, lang, self.names)
     }
 
     fn arg_slot(&self, idx: u32) -> u32 {
@@ -2286,14 +2375,14 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 )));
             }
             "dup" => {
-                let e: Expr = self.pop();
+                let (e, _, kind): (Expr, usize, StackKind) = self.pop_typed();
                 if e.is_atom() {
                     let r: String = e.render(self.lang, self.names);
-                    self.push(e);
-                    self.push(Expr::Raw(r));
+                    self.push_typed(e, kind);
+                    self.push_typed(Expr::Raw(r), kind);
                 } else {
-                    self.push(e.clone());
-                    self.push(e);
+                    self.push_typed(e.clone(), kind);
+                    self.push_typed(e, kind);
                 }
             }
             "pop" => {
@@ -2310,22 +2399,42 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 };
                 self.stmts.push(Stmt::Return(val));
             }
-            "add" | "add.ovf" | "add.ovf.un" => self.binary("+"),
-            "sub" | "sub.ovf" | "sub.ovf.un" => self.binary("-"),
-            "mul" | "mul.ovf" | "mul.ovf.un" => self.binary("*"),
-            "div" | "div.un" => self.binary("/"),
-            "rem" | "rem.un" => self.binary("%"),
-            "and" => self.binary("&"),
-            "or" => self.binary("|"),
-            "xor" => self.binary("^"),
-            "shl" => self.binary("<<"),
-            "shr" => self.binary(">>"),
-            "shr.un" => self.binary(">>>"),
+            "add" => self.arithmetic("+", ArithmeticForm::Agnostic),
+            "sub" => self.arithmetic("-", ArithmeticForm::Agnostic),
+            "mul" => self.arithmetic("*", ArithmeticForm::Agnostic),
+            "add.ovf" => self.arithmetic("+", ArithmeticForm::Checked(Signedness::Signed)),
+            "sub.ovf" => self.arithmetic("-", ArithmeticForm::Checked(Signedness::Signed)),
+            "mul.ovf" => self.arithmetic("*", ArithmeticForm::Checked(Signedness::Signed)),
+            "add.ovf.un" => self.arithmetic("+", ArithmeticForm::Checked(Signedness::Unsigned)),
+            "sub.ovf.un" => self.arithmetic("-", ArithmeticForm::Checked(Signedness::Unsigned)),
+            "mul.ovf.un" => self.arithmetic("*", ArithmeticForm::Checked(Signedness::Unsigned)),
+            "div" => self.arithmetic("/", ArithmeticForm::Sensitive(Signedness::Signed)),
+            "rem" => self.arithmetic("%", ArithmeticForm::Sensitive(Signedness::Signed)),
+            "div.un" => self.arithmetic("/", ArithmeticForm::Sensitive(Signedness::Unsigned)),
+            "rem.un" => self.arithmetic("%", ArithmeticForm::Sensitive(Signedness::Unsigned)),
+            "and" => self.arithmetic("&", ArithmeticForm::Agnostic),
+            "or" => self.arithmetic("|", ArithmeticForm::Agnostic),
+            "xor" => self.arithmetic("^", ArithmeticForm::Agnostic),
+            "shl" => self.shift_left(),
+            "shr" => self.shift_right(false),
+            "shr.un" => self.shift_right(true),
             "neg" => self.unary("-"),
             "not" => self.unary("~"),
             "ceq" => self.equality(),
-            "cgt" | "cgt.un" => self.binary(">"),
-            "clt" | "clt.un" => self.binary("<"),
+            "cgt" => self.push_comparison(">", Comparison::Signed),
+            "clt" => self.push_comparison("<", Comparison::Signed),
+            "cgt.un" => self.push_comparison(
+                ">",
+                Comparison::Unsigned {
+                    true_when_unordered: true,
+                },
+            ),
+            "clt.un" => self.push_comparison(
+                "<",
+                Comparison::Unsigned {
+                    true_when_unordered: true,
+                },
+            ),
             "ldlen" => {
                 let arr: Expr = self.pop();
                 self.push(Expr::LoadLen(Box::new(arr)));
@@ -2391,7 +2500,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
             "castclass" => {
                 let e: Expr = self.pop();
                 let ty: String = short(&self.token_name(ins));
-                self.push(Expr::Cast(ty, Box::new(e)));
+                self.push_typed(Expr::Cast(ty, Box::new(e)), StackKind::Reference);
             }
             "isinst" => {
                 let e: Expr = self.pop();
@@ -2492,17 +2601,20 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 });
             }
             "sizeof" => {
-                self.push(Expr::Raw(format!(
-                    "sizeof({})",
-                    short(&self.token_name(ins))
-                )));
+                self.push_typed(
+                    Expr::Raw(format!("sizeof({})", short(&self.token_name(ins)))),
+                    StackKind::SIGNED_INT32,
+                );
             }
             "localloc" => {
                 let size: Expr = self.pop();
-                self.push(Expr::Raw(format!(
-                    "stackalloc byte[{}]",
-                    size.render(self.lang, self.names)
-                )));
+                self.push_typed(
+                    Expr::Raw(format!(
+                        "stackalloc byte[{}]",
+                        size.render(self.lang, self.names)
+                    )),
+                    StackKind::Pointer,
+                );
             }
             "ldfld" => {
                 let obj: Expr = self.pop();
@@ -2512,11 +2624,15 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                     .as_deref()
                     .is_some_and(is_bool_type_name);
                 let kind: ConditionKind = self.stored_field_kind(ins);
-                self.push(Expr::Field {
-                    text: format!("{}.{}", paren(&obj, self.lang, self.names), fld),
-                    is_boolean,
-                    kind,
-                });
+                let stack_kind: StackKind = self.loaded_field_kind(ins);
+                self.push_typed(
+                    Expr::Field {
+                        text: format!("{}.{}", paren(&obj, self.lang, self.names), fld),
+                        is_boolean,
+                        kind,
+                    },
+                    stack_kind,
+                );
             }
             "ldflda" => {
                 let obj: Expr = self.pop();
@@ -2539,11 +2655,15 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                     .as_deref()
                     .is_some_and(is_bool_type_name);
                 let kind: ConditionKind = self.stored_field_kind(ins);
-                self.push(Expr::Field {
-                    text: fld,
-                    is_boolean,
-                    kind,
-                });
+                let stack_kind: StackKind = self.loaded_field_kind(ins);
+                self.push_typed(
+                    Expr::Field {
+                        text: fld,
+                        is_boolean,
+                        kind,
+                    },
+                    stack_kind,
+                );
             }
             "ldsflda" => {
                 let fld: String = field_name(&self.token_name(ins));
@@ -2590,7 +2710,15 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
             n if n.starts_with("ldelem") => {
                 let idx: Expr = self.pop();
                 let arr: Expr = self.pop();
-                self.push(Expr::LoadElem(Box::new(arr), Box::new(idx)));
+                let declared: Option<String> = array_element_type(&arr, self.names);
+                let kind: StackKind = match declared.as_deref().map(StackKind::of_type_name) {
+                    Some(StackKind::Unknown) | None if n == "ldelem" => {
+                        StackKind::of_type_name(&self.token_name(ins))
+                    }
+                    Some(StackKind::Unknown) | None => StackKind::of_element_opcode(n),
+                    Some(kind) => kind,
+                };
+                self.push_typed(Expr::LoadElem(Box::new(arr), Box::new(idx)), kind);
             }
             n if n.starts_with("stelem") => {
                 let val: Expr = self.pop();
@@ -2610,18 +2738,23 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 }
             }
             n if n.starts_with("ldc.i4") => {
-                self.push(Expr::Const(Self::int_const(ins, n).to_string()));
+                self.push_typed(
+                    Expr::Const(Self::int_const(ins, n).to_string()),
+                    StackKind::SIGNED_INT32,
+                );
             }
             "ldc.i8" => {
                 if let OperandValue::I64(v) = ins.operand {
-                    self.push(Expr::Const(format!("{v}L")));
+                    self.push_typed(Expr::Const(format!("{v}L")), StackKind::SIGNED_INT64);
                 }
             }
-            "ldc.r4" | "ldc.r8" => self.push(Expr::Const(self.float_const(ins))),
+            "ldc.r4" | "ldc.r8" => {
+                self.push_typed(Expr::Const(self.float_const(ins)), StackKind::Float);
+            }
             n if n.starts_with("conv.") => self.emit_conv(n),
             n if n.starts_with("ldind.") => {
                 let addr: Expr = self.pop();
-                self.push(Expr::Deref(Box::new(addr)));
+                self.push_typed(Expr::Deref(Box::new(addr)), StackKind::of_element_opcode(n));
             }
             n if n.starts_with("stind.") => {
                 let val: Expr = self.pop();
@@ -2747,16 +2880,42 @@ fn branch_target(ins: &Instruction) -> Option<u32> {
     }
 }
 
-fn continue_op_for_and(branch: &str) -> Option<&'static str> {
-    match branch {
-        "bne.un" | "bne.un.s" => Some("=="),
-        "beq" | "beq.s" => Some("!="),
-        "bge" | "bge.s" | "bge.un" | "bge.un.s" => Some("<"),
-        "bgt" | "bgt.s" | "bgt.un" | "bgt.un.s" => Some("<="),
-        "ble" | "ble.s" | "ble.un" | "ble.un.s" => Some(">"),
-        "blt" | "blt.s" | "blt.un" | "blt.un.s" => Some(">="),
-        _ => None,
-    }
+fn relational_branch(branch: &str) -> Option<(&'static str, Comparison)> {
+    let unordered: Comparison = Comparison::Unsigned {
+        true_when_unordered: true,
+    };
+    Some(match branch {
+        "beq" | "beq.s" => ("==", Comparison::Signed),
+        "bne.un" | "bne.un.s" => ("!=", Comparison::Signed),
+        "bgt" | "bgt.s" => (">", Comparison::Signed),
+        "bge" | "bge.s" => (">=", Comparison::Signed),
+        "blt" | "blt.s" => ("<", Comparison::Signed),
+        "ble" | "ble.s" => ("<=", Comparison::Signed),
+        "bgt.un" | "bgt.un.s" => (">", unordered),
+        "bge.un" | "bge.un.s" => (">=", unordered),
+        "blt.un" | "blt.un.s" => ("<", unordered),
+        "ble.un" | "ble.un.s" => ("<=", unordered),
+        _ => return None,
+    })
+}
+
+fn continue_op_for_and(branch: &str) -> Option<(&'static str, Comparison)> {
+    let ordered: Comparison = Comparison::Unsigned {
+        true_when_unordered: false,
+    };
+    Some(match branch {
+        "bne.un" | "bne.un.s" => ("==", Comparison::Signed),
+        "beq" | "beq.s" => ("!=", Comparison::Signed),
+        "bge" | "bge.s" => ("<", Comparison::Signed),
+        "bgt" | "bgt.s" => ("<=", Comparison::Signed),
+        "ble" | "ble.s" => (">", Comparison::Signed),
+        "blt" | "blt.s" => (">=", Comparison::Signed),
+        "bge.un" | "bge.un.s" => ("<", ordered),
+        "bgt.un" | "bgt.un.s" => ("<=", ordered),
+        "ble.un" | "ble.un.s" => (">", ordered),
+        "blt.un" | "blt.un.s" => (">=", ordered),
+        _ => return None,
+    })
 }
 
 pub(crate) fn lift_filter_condition<N: TokenNamer>(
@@ -2826,15 +2985,10 @@ fn reconstruct_conjuncts<N: TokenNamer>(
     let mut conjuncts: Vec<String> = Vec::new();
     for ins in cond_body {
         let name: &str = ins.name.as_str();
-        if let Some(op) = continue_op_for_and(name) {
+        if let Some((op, semantics)) = continue_op_for_and(name) {
             if branch_target(ins) == false_sink {
-                let b: Expr = lifter.pop();
-                let a: Expr = lifter.pop();
-                conjuncts.push(render_bounded_expression(
-                    Expr::Binary(op, Box::new(a), Box::new(b)),
-                    lang,
-                    names,
-                ));
+                let (expression, _): (Expr, usize) = lifter.comparison(op, semantics);
+                conjuncts.push(render_bounded_expression(expression, lang, names));
             } else {
                 let _: Expr = lifter.pop();
                 let _: Expr = lifter.pop();
@@ -3172,22 +3326,13 @@ pub(crate) fn lift_block_with_entry<N: TokenNamer>(
                 "brfalse" | "brfalse.s" => {
                     condition = Some(branch_condition(lifter.pop(), false, lang, names));
                 }
-                "beq" | "beq.s" => condition = Some(lifter.cmp_cond("==", lang)),
-                "bne.un" | "bne.un.s" => condition = Some(lifter.cmp_cond("!=", lang)),
-                "bgt" | "bgt.s" | "bgt.un" | "bgt.un.s" => {
-                    condition = Some(lifter.cmp_cond(">", lang));
-                }
-                "bge" | "bge.s" | "bge.un" | "bge.un.s" => {
-                    condition = Some(lifter.cmp_cond(">=", lang));
-                }
-                "blt" | "blt.s" | "blt.un" | "blt.un.s" => {
-                    condition = Some(lifter.cmp_cond("<", lang));
-                }
-                "ble" | "ble.s" | "ble.un" | "ble.un.s" => {
-                    condition = Some(lifter.cmp_cond("<=", lang));
-                }
                 "switch" => switch_selector = Some(lifter.pop().render(lang, names)),
-                _ => lifter.lift_one(ins),
+                name => match relational_branch(name) {
+                    Some((op, semantics)) => {
+                        condition = Some(lifter.cmp_cond(op, semantics, lang));
+                    }
+                    None => lifter.lift_one(ins),
+                },
             },
             FlowControl::Branch
                 if matches!(ins.name.as_str(), "br" | "br.s" | "leave" | "leave.s") => {}
@@ -3337,13 +3482,24 @@ fn finish_structured(
     names: &NameTable,
     lang: TargetLang,
 ) -> StructuredMethod {
-    let recovered_body: String = if lang == TargetLang::CSharp {
+    let refused: bool =
+        lang == TargetLang::CSharp && recovered.body.contains(UNRESOLVED_OPERAND_KIND);
+    let recovered_body: String = if refused {
+        format!(
+            "    throw new System.NotSupportedException(\"{UNRESOLVED_OPERAND_KIND_REFUSAL}\");\n"
+        )
+    } else if lang == TargetLang::CSharp {
         canonicalize_bool_returns(&recovered.body, signature)
     } else {
         recovered.body.clone()
     };
+    let declared_locals: BTreeSet<u32> = if refused {
+        BTreeSet::new()
+    } else {
+        recovered.locals_used.clone()
+    };
     let mut text: String = String::with_capacity(recovered_body.len() + 128);
-    write_prologue(&mut text, signature, &recovered.locals_used, names, lang);
+    write_prologue(&mut text, signature, &declared_locals, names, lang);
     if lang == TargetLang::FSharp && recovered.residual_gotos > 0 {
         let _ = writeln!(text, "{FSHARP_GOTO_BANNER}");
     }
@@ -3351,13 +3507,13 @@ fn finish_structured(
     write_epilogue(&mut text, signature, lang);
 
     let statement_count: u32 = u32::try_from(recovered_body.lines().count()).unwrap_or(u32::MAX);
-    let used_locals: Vec<u32> = recovered.locals_used.iter().copied().collect();
+    let used_locals: Vec<u32> = declared_locals.iter().copied().collect();
     StructuredMethod {
         token: 0,
         signature: signature.to_owned(),
         body: text,
         statement_count,
-        recovered_locals: u32::try_from(recovered.locals_used.len()).unwrap_or(u32::MAX),
+        recovered_locals: u32::try_from(declared_locals.len()).unwrap_or(u32::MAX),
         recovered_branches: recovered.residual_gotos,
         typed_locals: names.typed_locals_count(&used_locals),
         named_params: names.named_params_count(),

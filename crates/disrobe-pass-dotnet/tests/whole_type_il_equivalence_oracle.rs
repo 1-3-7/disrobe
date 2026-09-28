@@ -87,6 +87,12 @@ const TARGETS: &[Target] = &[
         is_static: false,
     },
     Target {
+        dll: "tests/fixtures/unsigned_overflow/UnsignedOverflow.dll",
+        origin_namespace: NAMESPACE,
+        type_name: "UnsignedOverflow",
+        is_static: true,
+    },
+    Target {
         dll: "../../corpus/dotnet/megafile/EdgeCases.baseline.dll",
         origin_namespace: "EdgeCases",
         type_name: "Cat",
@@ -2614,8 +2620,8 @@ fn collection_field_rva_recovery_recompiles_and_preserves_runtime_values() {
 const IL_EQUIVALENCE_FLOOR: usize = 66;
 const IL_BRANCHING_FLOOR: usize = 45;
 
-const GRADED_TYPE_COUNT: usize = 27;
-const GRADED_MEMBER_TOTAL: usize = 107;
+const GRADED_TYPE_COUNT: usize = 28;
+const GRADED_MEMBER_TOTAL: usize = 120;
 
 const IL_RESIDUAL: &[&str] = &[
     "AsyncDisposableScope.DisposeAsync",
@@ -2892,9 +2898,33 @@ const INPUT_SPACE: &[(&str, Coverage)] = &[
              graded by real_native_aot.rs and native_aot_names_coverage.rs",
         ),
     ),
+    (
+        "operand semantics: unsigned comparison of signed operands",
+        Coverage::Graded("UnsignedOverflow.InRange"),
+    ),
+    (
+        "operand semantics: unsigned division and remainder",
+        Coverage::Graded("UnsignedOverflow.RemainderUnsigned"),
+    ),
+    (
+        "operand semantics: overflow-checked arithmetic",
+        Coverage::Graded("UnsignedOverflow.AddChecked"),
+    ),
+    (
+        "operand semantics: zero-extending and sign-extending widening",
+        Coverage::Graded("UnsignedOverflow.ZeroExtend"),
+    ),
+    (
+        "operand semantics: comparison that is true when unordered",
+        Coverage::Graded("UnsignedOverflow.LessOrUnordered"),
+    ),
+    (
+        "reverser: range switch over an unsigned discriminant",
+        Coverage::Graded("UnsignedOverflow.Bucket"),
+    ),
 ];
 
-const INPUT_SPACE_ROWS: usize = 55;
+const INPUT_SPACE_ROWS: usize = 61;
 
 fn sorted(names: &[String]) -> Vec<String> {
     let mut out: Vec<String> = names.to_vec();

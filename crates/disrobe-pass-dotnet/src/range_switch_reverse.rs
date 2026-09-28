@@ -11,10 +11,55 @@ enum Discriminant {
     Local(u32),
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DiscriminantDomain {
+    PromotedInt32,
+    UnsignedInt32,
+    Undeclared,
+}
+
+impl DiscriminantDomain {
+    fn of(discriminant: Discriminant, names: &NameTable) -> Option<Self> {
+        let declared: Option<&str> = match discriminant {
+            Discriminant::Arg(slot) => names.arg_type(parameter_slot(slot, names)),
+            Discriminant::Local(slot) => names.local_type(slot),
+        };
+        match declared.map(str::trim) {
+            None => Some(Self::Undeclared),
+            Some("int" | "short" | "sbyte" | "byte" | "ushort") => Some(Self::PromotedInt32),
+            Some("uint") => Some(Self::UnsignedInt32),
+            Some(_) => None,
+        }
+    }
+
+    const fn initial_bounds(self) -> Bounds {
+        match self {
+            Self::UnsignedInt32 => Bounds {
+                lower: Some(0),
+                upper: None,
+                interval: true,
+            },
+            Self::PromotedInt32 | Self::Undeclared => Bounds::unbounded(),
+        }
+    }
+
+    fn literal(self, signedness: Signedness, literal: i64) -> Option<i64> {
+        match (self, signedness) {
+            (Self::UnsignedInt32, Signedness::Unsigned) => {
+                Some(i64::from(i32::try_from(literal).ok()?.cast_unsigned()))
+            }
+            (Self::UnsignedInt32, Signedness::Signed)
+            | (Self::Undeclared, Signedness::Unsigned) => None,
+            (Self::PromotedInt32, _) | (Self::Undeclared, Signedness::Signed) => Some(literal),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Bounds {
     lower: Option<i64>,
     upper: Option<i64>,
+    interval: bool,
 }
 
 impl Bounds {
@@ -22,12 +67,26 @@ impl Bounds {
         Self {
             lower: None,
             upper: None,
+            interval: true,
         }
     }
 
     const fn is_finite_range(&self) -> bool {
-        self.lower.is_some() && self.upper.is_some()
+        self.interval && self.lower.is_some() && self.upper.is_some()
     }
+
+    const fn beyond_interval(self) -> Self {
+        Self {
+            interval: false,
+            ..self
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Signedness {
+    Signed,
+    Unsigned,
 }
 
 #[derive(Debug, Clone)]
@@ -53,12 +112,14 @@ pub(crate) fn reconstruct_range_switch<N: TokenNamer>(
     }
     let (result_local, epilogue): (u32, BlockId) = find_epilogue(&cfg, body)?;
     let discriminant: Discriminant = entry_discriminant(&cfg, body)?;
+    let domain: DiscriminantDomain = DiscriminantDomain::of(discriminant, names)?;
 
     let ctx: WalkCtx<'_, N> = WalkCtx {
         cfg: &cfg,
         body,
         namer,
         discriminant,
+        domain,
         result_local,
         epilogue,
     };
@@ -68,7 +129,7 @@ pub(crate) fn reconstruct_range_switch<N: TokenNamer>(
     walk(
         &ctx,
         cfg.entry,
-        Bounds::unbounded(),
+        domain.initial_bounds(),
         &mut arms,
         &mut default_value,
         &mut visited_guard,
@@ -87,6 +148,7 @@ pub(crate) fn reconstruct_range_switch<N: TokenNamer>(
     let discriminant_name: String = render_discriminant(discriminant, names);
     Some(render_range_switch(
         &discriminant_name,
+        domain,
         &arms,
         &default_value?,
     ))
@@ -111,6 +173,7 @@ struct WalkCtx<'a, N: TokenNamer> {
     body: &'a MethodBody,
     namer: &'a N,
     discriminant: Discriminant,
+    domain: DiscriminantDomain,
     result_local: u32,
     epilogue: BlockId,
 }
@@ -165,9 +228,11 @@ fn walk<N: TokenNamer>(
 
     match ctx.cfg.terminators[bid] {
         Terminator::Cond { taken, fallthrough } => {
-            let (relation, literal): (Relation, i64) = comparison(ctx, bid)?;
+            let (relation, signedness, literal): (Relation, Signedness, i64) =
+                comparison(ctx, bid)?;
+            let literal: i64 = ctx.domain.literal(signedness, literal)?;
             let (taken_bounds, ft_bounds): (Bounds, Bounds) =
-                split_bounds(bounds, relation, literal)?;
+                split_bounds(bounds, relation, signedness, literal)?;
             walk(ctx, taken, taken_bounds, arms, default_value, visited_guard)?;
             walk(
                 ctx,
@@ -263,10 +328,13 @@ enum Relation {
     Ne,
 }
 
-fn comparison<N: TokenNamer>(ctx: &WalkCtx<'_, N>, bid: BlockId) -> Option<(Relation, i64)> {
+fn comparison<N: TokenNamer>(
+    ctx: &WalkCtx<'_, N>,
+    bid: BlockId,
+) -> Option<(Relation, Signedness, i64)> {
     let full: &[Instruction] = block_real_instrs(ctx.cfg, ctx.body, bid);
     let branch: &Instruction = full.last()?;
-    let relation: Relation = branch_relation(&branch.name)?;
+    let (relation, signedness): (Relation, Signedness) = branch_relation(&branch.name)?;
     let head: &[Instruction] = block_body_ops(ctx.cfg, ctx.body, bid);
     let [load, push]: &[Instruction] = head else {
         return None;
@@ -279,25 +347,55 @@ fn comparison<N: TokenNamer>(ctx: &WalkCtx<'_, N>, bid: BlockId) -> Option<(Rela
         name if name.starts_with("ldc.i4") => int_const(push, name),
         _ => return None,
     };
-    Some((relation, literal))
+    Some((relation, signedness, literal))
 }
 
-fn branch_relation(name: &str) -> Option<Relation> {
+fn branch_relation(name: &str) -> Option<(Relation, Signedness)> {
     Some(match name {
-        "blt" | "blt.s" | "blt.un" | "blt.un.s" => Relation::Lt,
-        "ble" | "ble.s" | "ble.un" | "ble.un.s" => Relation::Le,
-        "bgt" | "bgt.s" | "bgt.un" | "bgt.un.s" => Relation::Gt,
-        "bge" | "bge.s" | "bge.un" | "bge.un.s" => Relation::Ge,
-        "beq" | "beq.s" => Relation::Eq,
-        "bne.un" | "bne.un.s" => Relation::Ne,
+        "blt" | "blt.s" => (Relation::Lt, Signedness::Signed),
+        "ble" | "ble.s" => (Relation::Le, Signedness::Signed),
+        "bgt" | "bgt.s" => (Relation::Gt, Signedness::Signed),
+        "bge" | "bge.s" => (Relation::Ge, Signedness::Signed),
+        "blt.un" | "blt.un.s" => (Relation::Lt, Signedness::Unsigned),
+        "ble.un" | "ble.un.s" => (Relation::Le, Signedness::Unsigned),
+        "bgt.un" | "bgt.un.s" => (Relation::Gt, Signedness::Unsigned),
+        "bge.un" | "bge.un.s" => (Relation::Ge, Signedness::Unsigned),
+        "beq" | "beq.s" => (Relation::Eq, Signedness::Signed),
+        "bne.un" | "bne.un.s" => (Relation::Ne, Signedness::Signed),
         _ => return None,
     })
 }
 
-fn split_bounds(bounds: Bounds, relation: Relation, literal: i64) -> Option<(Bounds, Bounds)> {
-    let taken: Bounds = apply_relation(bounds, relation, literal)?;
-    let ft: Bounds = apply_relation(bounds, invert(relation), literal)?;
-    Some((taken, ft))
+fn split_bounds(
+    bounds: Bounds,
+    relation: Relation,
+    signedness: Signedness,
+    literal: i64,
+) -> Option<(Bounds, Bounds)> {
+    if !bounds.interval {
+        return None;
+    }
+    if signedness == Signedness::Unsigned && literal < 0 {
+        return None;
+    }
+    let non_negative: bool = bounds.lower.is_some_and(|lower: i64| lower >= 0);
+    if signedness == Signedness::Signed || non_negative {
+        let taken: Bounds = apply_relation(bounds, relation, literal)?;
+        let ft: Bounds = apply_relation(bounds, invert(relation), literal)?;
+        return Some((taken, ft));
+    }
+    let from_zero: Bounds = apply_relation(bounds, Relation::Ge, 0)?;
+    match relation {
+        Relation::Lt | Relation::Le => Some((
+            apply_relation(from_zero, relation, literal)?,
+            bounds.beyond_interval(),
+        )),
+        Relation::Gt | Relation::Ge => Some((
+            bounds.beyond_interval(),
+            apply_relation(from_zero, invert(relation), literal)?,
+        )),
+        Relation::Eq | Relation::Ne => None,
+    }
 }
 
 const fn invert(relation: Relation) -> Relation {
@@ -333,21 +431,42 @@ fn min_opt(current: Option<i64>, incoming: i64) -> i64 {
 
 fn render_discriminant(discriminant: Discriminant, names: &NameTable) -> String {
     match discriminant {
-        Discriminant::Arg(slot) => names.arg_name(slot),
+        Discriminant::Arg(slot) => names.arg_name(parameter_slot(slot, names)),
         Discriminant::Local(slot) => NameTable::local_name(slot),
     }
 }
 
-fn render_range_switch(discriminant: &str, arms: &[RangeArm], default_value: &str) -> String {
+const fn parameter_slot(il_slot: u32, names: &NameTable) -> u32 {
+    if names.has_this() {
+        il_slot
+    } else {
+        il_slot.saturating_add(1)
+    }
+}
+
+fn render_range_switch(
+    discriminant: &str,
+    domain: DiscriminantDomain,
+    arms: &[RangeArm],
+    default_value: &str,
+) -> String {
     let mut text: String = String::new();
     let _ = writeln!(text, "    return {discriminant} switch");
     let _ = writeln!(text, "    {{");
+    let mut covered_from_zero: Option<i64> =
+        (domain == DiscriminantDomain::UnsignedInt32).then_some(0);
     for arm in arms {
-        let _ = writeln!(
-            text,
-            "        >= {} and < {} => {},",
-            arm.lower, arm.upper, arm.value
-        );
+        if covered_from_zero == Some(arm.lower) {
+            covered_from_zero = Some(arm.upper);
+            let _ = writeln!(text, "        < {} => {},", arm.upper, arm.value);
+        } else {
+            covered_from_zero = None;
+            let _ = writeln!(
+                text,
+                "        >= {} and < {} => {},",
+                arm.lower, arm.upper, arm.value
+            );
+        }
     }
     let _ = writeln!(text, "        _ => {default_value},");
     let _ = writeln!(text, "    }};");
@@ -448,6 +567,7 @@ mod tests {
         let bounds: Bounds = Bounds {
             lower: Some(10),
             upper: Some(100),
+            interval: true,
         };
         let pushed: Option<()> =
             record_leaf(bounds, "\"mid\"".to_owned(), &mut arms, &mut default_value);
@@ -461,7 +581,8 @@ mod tests {
     #[test]
     fn split_bounds_refines_both_directions() {
         let (taken, ft): (Bounds, Bounds) =
-            split_bounds(Bounds::unbounded(), Relation::Ge, 100).expect("split");
+            split_bounds(Bounds::unbounded(), Relation::Ge, Signedness::Signed, 100)
+                .expect("split");
         assert_eq!(taken.lower, Some(100));
         assert_eq!(taken.upper, None);
         assert_eq!(ft.lower, None);
@@ -473,8 +594,10 @@ mod tests {
         let bounds: Bounds = Bounds {
             lower: Some(0),
             upper: None,
+            interval: true,
         };
-        let (taken, ft): (Bounds, Bounds) = split_bounds(bounds, Relation::Lt, 10).expect("split");
+        let (taken, ft): (Bounds, Bounds) =
+            split_bounds(bounds, Relation::Lt, Signedness::Signed, 10).expect("split");
         assert_eq!(taken.lower, Some(0));
         assert_eq!(taken.upper, Some(10));
         assert_eq!(ft.lower, Some(10));
@@ -501,7 +624,8 @@ mod tests {
                 value: "\"mid\"".to_owned(),
             },
         ];
-        let out: String = render_range_switch("n", &arms, "\"extreme\"");
+        let out: String =
+            render_range_switch("n", DiscriminantDomain::PromotedInt32, &arms, "\"extreme\"");
         assert!(out.contains("return n switch"), "{out}");
         assert!(out.contains(">= 0 and < 10 => \"low\","), "{out}");
         assert!(out.contains(">= 10 and < 100 => \"mid\","), "{out}");
