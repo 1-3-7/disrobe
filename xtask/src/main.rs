@@ -6,6 +6,7 @@
 )]
 
 mod artifact_map;
+mod as_char;
 mod attack_surface;
 mod capability_reachability;
 mod card;

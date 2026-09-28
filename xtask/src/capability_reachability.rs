@@ -1112,12 +1112,17 @@ fn cfg_test_blocks(text: &str) -> Result<Vec<&str>> {
         .collect())
 }
 
-pub(crate) fn strip_cfg_test(text: &str) -> Result<String> {
+pub(crate) fn cfg_test_ranges(text: &str) -> Result<Vec<(usize, usize)>> {
     let mut cuts: Vec<(usize, usize)> = cfg_test_modules(text)?
         .into_iter()
         .map(|(start, end, _): (usize, usize, CfgTestModule<'_>)| (start, end))
         .collect();
     cuts.sort_unstable();
+    Ok(cuts)
+}
+
+pub(crate) fn strip_cfg_test(text: &str) -> Result<String> {
+    let cuts: Vec<(usize, usize)> = cfg_test_ranges(text)?;
     let mut production: String = String::with_capacity(text.len());
     let mut cursor: usize = 0;
     for (start, end) in cuts {
@@ -1143,7 +1148,7 @@ fn cfg_test_external_module_names(text: &str) -> Result<Vec<String>> {
         .collect())
 }
 
-fn production_rs_files(dir: &Path) -> Result<Vec<PathBuf>> {
+pub(crate) fn production_rs_files(dir: &Path) -> Result<Vec<PathBuf>> {
     let all_files: Vec<PathBuf> = list_rs_files(dir)?;
     let mut excluded: BTreeSet<PathBuf> = BTreeSet::new();
     for path in &all_files {

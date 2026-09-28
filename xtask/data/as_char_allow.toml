@@ -1,0 +1,563 @@
+[[site]]
+file = "crates/disrobe-pass-beam/src/chunks.rs"
+fn = "parse_inner"
+line = "bytes.iter().map(|&b| b as char).collect()"
+reason = "LATIN1-BY-SPEC: the pre-UTF-8 BEAM Atom chunk stores ISO-8859-1 atoms"
+
+[[site]]
+file = "crates/disrobe-pass-beam/src/etf.rs"
+fn = "decode_term_after_first"
+line = "let s: String = bytes.iter().map(|&b| b as char).collect();"
+reason = "LATIN1-BY-SPEC: deprecated ETF ATOM_EXT and SMALL_ATOM_EXT atoms are ISO-8859-1"
+
+[[site]]
+file = "crates/disrobe-pass-beam/src/file.rs"
+fn = "ascii_tag"
+line = ".map(|&b: &u8| if b.is_ascii_graphic() { b as char } else { '.' })"
+reason = "ASCII-only: byte is checked is_ascii_graphic in the same expression"
+
+[[site]]
+file = "crates/disrobe-pass-beam/src/surface.rs"
+fn = "safe_helper_name"
+line = "out.push(byte as char);"
+reason = "ASCII-only: byte is checked is_ascii_alphanumeric above"
+
+[[site]]
+file = "crates/disrobe-pass-beam/src/symbolic.rs"
+fn = "big_to_decimal"
+line = ".map(|d: &u8| (b'0' + d) as char)"
+reason = "ASCII-only: decimal digit from a 0..=9 value"
+
+[[site]]
+file = "crates/disrobe-pass-dotnet/src/peel/mod.rs"
+fn = "hex_lower"
+line = "(b'0' + upper) as char"
+reason = "ASCII-only: hex digit from a 0..=15 nibble"
+
+[[site]]
+file = "crates/disrobe-pass-dotnet/src/peel/mod.rs"
+fn = "hex_lower"
+line = "(b'a' + upper - 10) as char"
+reason = "ASCII-only: hex digit from a 0..=15 nibble"
+
+[[site]]
+file = "crates/disrobe-pass-dotnet/src/peel/mod.rs"
+fn = "hex_lower"
+line = "(b'0' + lower) as char"
+reason = "ASCII-only: hex digit from a 0..=15 nibble"
+
+[[site]]
+file = "crates/disrobe-pass-dotnet/src/peel/mod.rs"
+fn = "hex_lower"
+line = "(b'a' + lower - 10) as char"
+reason = "ASCII-only: hex digit from a 0..=15 nibble"
+
+[[site]]
+file = "crates/disrobe-pass-go/src/garble_literals.rs"
+fn = "collapse_shifted_substrings"
+line = "let core: &str = rec.plaintext.trim_matches(PLACEHOLDER as char);"
+reason = "ASCII-only: PLACEHOLDER is the constant b'?'"
+
+[[site]]
+file = "crates/disrobe-pass-js-deob/src/bundle/sourcemap_synth.rs"
+fn = "base64_char"
+line = "TABLE[(b & 0b11_1111) as usize] as char"
+reason = "ASCII-only: index into an ASCII base64 alphabet"
+
+[[site]]
+file = "crates/disrobe-pass-js-deob/src/esoteric/atob_indirection.rs"
+fn = "decode_base64"
+line = "out.push(b as char);"
+reason = "LATIN1-BY-SPEC: JavaScript atob returns one UTF-16 code unit per decoded byte"
+
+[[site]]
+file = "crates/disrobe-pass-js-deob/src/jsconfuser/scanner.rs"
+fn = "decode_string_literal_at"
+line = "let hi: char = bytes[j + 2] as char;"
+reason = "ASCII-only in effect: the char only feeds a radix-16 parse that rejects anything outside [0-9a-fA-F]"
+
+[[site]]
+file = "crates/disrobe-pass-js-deob/src/jsconfuser/scanner.rs"
+fn = "decode_string_literal_at"
+line = "let lo: char = bytes[j + 3] as char;"
+reason = "ASCII-only in effect: the char only feeds a radix-16 parse that rejects anything outside [0-9a-fA-F]"
+
+[[site]]
+file = "crates/disrobe-pass-js-deob/src/jsconfuser/scanner.rs"
+fn = "decode_string_literal_at"
+line = "literal.push(v as char);"
+reason = "LATIN1-BY-SPEC: a JavaScript \\xHH escape denotes UTF-16 code unit 0x00HH"
+
+[[site]]
+file = "crates/disrobe-pass-js-deob/src/jsconfuser/string_encoding.rs"
+fn = "reverse_string_encoding"
+line = "let quote: char = b as char;"
+reason = "ASCII-only: byte is matched as an ASCII quote character above"
+
+[[site]]
+file = "crates/disrobe-pass-js-deob/src/jsconfuser/string_encoding.rs"
+fn = "decode_escapes"
+line = "let hi: char = bytes[i + 2] as char;"
+reason = "ASCII-only in effect: the char only feeds a radix-16 parse that rejects anything outside [0-9a-fA-F]"
+
+[[site]]
+file = "crates/disrobe-pass-js-deob/src/jsconfuser/string_encoding.rs"
+fn = "decode_escapes"
+line = "let lo: char = bytes[i + 3] as char;"
+reason = "ASCII-only in effect: the char only feeds a radix-16 parse that rejects anything outside [0-9a-fA-F]"
+
+[[site]]
+file = "crates/disrobe-pass-js-deob/src/jscrambler/scanner.rs"
+fn = "decode_x_or_u_escapes"
+line = "let hi: char = bytes[i + 2] as char;"
+reason = "ASCII-only in effect: the char only feeds a radix-16 parse that rejects anything outside [0-9a-fA-F]"
+
+[[site]]
+file = "crates/disrobe-pass-js-deob/src/jscrambler/scanner.rs"
+fn = "decode_x_or_u_escapes"
+line = "let lo: char = bytes[i + 3] as char;"
+reason = "ASCII-only in effect: the char only feeds a radix-16 parse that rejects anything outside [0-9a-fA-F]"
+
+[[site]]
+file = "crates/disrobe-pass-js-deob/src/jscrambler/transforms/control_flow_flattening.rs"
+fn = "find_top_level"
+line = "c if c as char == target"
+reason = "ASCII-only in effect: comparison with an ASCII target char; produces no text"
+
+[[site]]
+file = "crates/disrobe-pass-js-deob/src/jscrambler/transforms/property_keys_obfuscation.rs"
+fn = "scan"
+line = "let quoted: String = js_quote(&decoded, b as char);"
+reason = "ASCII-only: byte is matched as an ASCII quote character above"
+
+[[site]]
+file = "crates/disrobe-pass-js-deob/src/jscrambler/transforms/string_encoding.rs"
+fn = "(module)"
+line = "let quoted: String = js_quote(&decoded, b as char);"
+reason = "ASCII-only: byte is matched as an ASCII quote character above"
+
+[[site]]
+file = "crates/disrobe-pass-js-deob/src/jscrambler/transforms/whitespace_removal.rs"
+fn = "beautify"
+line = "out.push(bytes[i] as char);"
+reason = "ASCII-only: byte is checked ',' or ';' above"
+
+[[site]]
+file = "crates/disrobe-pass-js-deob/src/obfuscator_io/normalize_strings.rs"
+fn = "normalize_escaped_strings"
+line = "out.push(b as char);"
+reason = "ASCII-only: byte is matched as an ASCII quote character above"
+
+[[site]]
+file = "crates/disrobe-pass-js-deob/src/obfuscator_io/normalize_strings.rs"
+fn = "normalize_literal"
+line = "lit.push(quote as char);"
+reason = "ASCII-only: quote is the ASCII quote byte that opened the literal"
+
+[[site]]
+file = "crates/disrobe-pass-js-deob/src/obfuscator_io/normalize_strings.rs"
+fn = "is_safe_inline"
+line = "if c == quote as char || c == '\\\\' {"
+reason = "ASCII-only: comparison against the ASCII quote byte; produces no text"
+
+[[site]]
+file = "crates/disrobe-pass-js-deob/src/obfuscator_io/normalize_strings.rs"
+fn = "decode_hex2"
+line = "Some(v as char)"
+reason = "LATIN1-BY-SPEC: a JavaScript \\xHH escape denotes UTF-16 code unit 0x00HH"
+
+[[site]]
+file = "crates/disrobe-pass-js-deob/src/string_array/detect.rs"
+fn = "parse_string_literals"
+line = "buf.push(v as char);"
+reason = "LATIN1-BY-SPEC: a JavaScript \\xHH escape denotes UTF-16 code unit 0x00HH"
+
+[[site]]
+file = "crates/disrobe-pass-js-deob/src/unminify/arithmetic.rs"
+fn = "decimalize_radix_literals"
+line = "out.push(b as char);"
+reason = "ASCII-only: byte is checked is_ascii above"
+
+[[site]]
+file = "crates/disrobe-pass-js-deob/src/unminify/globals.rs"
+fn = "atob"
+line = "out.push(b as char);"
+reason = "LATIN1-BY-SPEC: JavaScript atob returns one UTF-16 code unit per decoded byte"
+
+[[site]]
+file = "crates/disrobe-pass-js-deob/src/unminify/globals.rs"
+fn = "js_unescape_global"
+line = "out.push(((hi << 4) | lo) as char);"
+reason = "LATIN1-BY-SPEC: JavaScript unescape maps %XX to UTF-16 code unit 0x00XX"
+
+[[site]]
+file = "crates/disrobe-pass-js-deob/src/unminify/string_split.rs"
+fn = "merge_literals"
+line = "out.push(target_quote as char);"
+reason = "ASCII-only: pick_quote returns b'\\'' or b'\"'"
+
+[[site]]
+file = "crates/disrobe-pass-js-deob/src/unminify/string_split.rs"
+fn = "decode_hex2"
+line = "return push_and_advance(out, esc as char, at, 2);"
+reason = "ASCII-only: esc is the escape letter x that dispatched here"
+
+[[site]]
+file = "crates/disrobe-pass-js-deob/src/unminify/string_split.rs"
+fn = "decode_hex4"
+line = "return push_and_advance(out, esc as char, at, 2);"
+reason = "ASCII-only: esc is the escape letter u that dispatched here"
+
+[[site]]
+file = "crates/disrobe-pass-js-deob/src/v8/code_serializer.rs"
+fn = "decode_string_from_run"
+line = "Some(chars.iter().map(|&b: &u8| b as char).collect())"
+reason = "ASCII-only: every byte is checked 0x09..=0x0d or 0x20..=0x7e above"
+
+[[site]]
+file = "crates/disrobe-pass-js-deob/src/v8/serialized_code.rs"
+fn = "decode_one_byte_string"
+line = "Some(raw.iter().map(|&b: &u8| b as char).collect())"
+reason = "ASCII-only: every byte is checked 0x09..=0x0d or 0x20..=0x7e above"
+
+[[site]]
+file = "crates/disrobe-pass-jvm/src/arsc.rs"
+fn = "decode_modified_utf8"
+line = "out.push(b1 as char);"
+reason = "ASCII-only: byte is checked below 0x80 above (modified UTF-8 single-byte form)"
+
+[[site]]
+file = "crates/disrobe-pass-jvm/src/arsc.rs"
+fn = "unpack_locale"
+line = "s.push(b0 as char);"
+reason = "ASCII-only: b0 is checked b0 & 0x80 == 0 above"
+
+[[site]]
+file = "crates/disrobe-pass-jvm/src/arsc.rs"
+fn = "unpack_locale"
+line = "s.push(b1 as char);"
+reason = "LATIN1-REINTERPRET: the second packed locale byte is not checked, so a high byte from a malformed table becomes a Latin-1 char"
+
+[[site]]
+file = "crates/disrobe-pass-jvm/src/arsc.rs"
+fn = "unpack_locale"
+line = ".map(|c: &u8| *c as char)"
+reason = "ASCII-only: b'a' - 1 plus a 5-bit value stays within 0x60..=0x7f"
+
+[[site]]
+file = "crates/disrobe-pass-jvm/src/classfile.rs"
+fn = "decode_modified_utf8"
+line = "out.push(b1 as char);"
+reason = "ASCII-only: byte is checked below 0x80 above (modified UTF-8 single-byte form)"
+
+[[site]]
+file = "crates/disrobe-pass-jvm/src/dex.rs"
+fn = "decode_mutf8"
+line = "out.push(b1 as char);"
+reason = "ASCII-only: byte is checked 1..=0x7f above (MUTF-8 single-byte form)"
+
+[[site]]
+file = "crates/disrobe-pass-jvm/src/dex_builder.rs"
+fn = "base64_encode_standard"
+line = "out.push(ALPHABET[((n >> 18) & 0x3F) as usize] as char);"
+reason = "ASCII-only: index into an ASCII base64 alphabet"
+
+[[site]]
+file = "crates/disrobe-pass-jvm/src/dex_builder.rs"
+fn = "base64_encode_standard"
+line = "out.push(ALPHABET[((n >> 12) & 0x3F) as usize] as char);"
+reason = "ASCII-only: index into an ASCII base64 alphabet"
+
+[[site]]
+file = "crates/disrobe-pass-jvm/src/dex_builder.rs"
+fn = "base64_encode_standard"
+line = "ALPHABET[((n >> 6) & 0x3F) as usize] as char"
+reason = "ASCII-only: index into an ASCII base64 alphabet"
+
+[[site]]
+file = "crates/disrobe-pass-jvm/src/dex_builder.rs"
+fn = "base64_encode_standard"
+line = "ALPHABET[(n & 0x3F) as usize] as char"
+reason = "ASCII-only: index into an ASCII base64 alphabet"
+
+[[site]]
+file = "crates/disrobe-pass-jvm/src/name_disambig.rs"
+fn = "rewrite_descriptor"
+line = "out.push(bytes[i] as char);"
+reason = "LATIN1-REINTERPRET: descriptor bytes outside L...; are copied one at a time; a non-ASCII class name after an unterminated L becomes Latin-1 chars"
+
+[[site]]
+file = "crates/disrobe-pass-jvm/src/proguard.rs"
+fn = "remap_descriptor"
+line = "out.push(bytes[i] as char);"
+reason = "LATIN1-REINTERPRET: descriptor bytes outside L...; are copied one at a time; a non-ASCII class name after an unterminated L becomes Latin-1 chars"
+
+[[site]]
+file = "crates/disrobe-pass-jvm/src/proguard_fingerprint.rs"
+fn = "stable_descriptor"
+line = "out.push(other as char);"
+reason = "LATIN1-REINTERPRET: descriptor bytes outside L...; are copied one at a time; a non-ASCII class name after an unterminated L becomes Latin-1 chars"
+
+[[site]]
+file = "crates/disrobe-pass-lua/src/decompile/luajit_lift.rs"
+fn = "quote_lua"
+line = "0x20..=0x7E => out.push(b as char),"
+reason = "ASCII-only: byte is matched 0x20..=0x7e (printable ASCII) in this arm"
+
+[[site]]
+file = "crates/disrobe-pass-lua/src/decompile/luau_lift.rs"
+fn = "quote_lua"
+line = "0x20..=0x7E => out.push(b as char),"
+reason = "ASCII-only: byte is matched 0x20..=0x7e (printable ASCII) in this arm"
+
+[[site]]
+file = "crates/disrobe-pass-lua/src/obfuscator/prometheus_vmlift.rs"
+fn = "find_state_loop"
+line = "return Some((var as char, j + 2));"
+reason = "ASCII-only: var is checked is_ascii_alphabetic above"
+
+[[site]]
+file = "crates/disrobe-pass-lua/src/obfuscator/string_decode.rs"
+fn = "discover_base64_alphabets"
+line = "let name: char = name_b as char;"
+reason = "ASCII-only: name_b is checked is_ascii_alphabetic above"
+
+[[site]]
+file = "crates/disrobe-pass-lua/src/obfuscator/string_decode.rs"
+fn = "discover_base85_alphabets"
+line = "let name: char = name_b as char;"
+reason = "ASCII-only: name_b is checked is_ascii_alphabetic above"
+
+[[site]]
+file = "crates/disrobe-pass-mobile/src/apk_signing.rs"
+fn = "push_lower_hex_byte"
+line = "out.push(LOWER_HEX[(byte >> 4) as usize] as char);"
+reason = "ASCII-only: index into an ASCII hex digit table"
+
+[[site]]
+file = "crates/disrobe-pass-mobile/src/apk_signing.rs"
+fn = "push_lower_hex_byte"
+line = "out.push(LOWER_HEX[(byte & 0x0f) as usize] as char);"
+reason = "ASCII-only: index into an ASCII hex digit table"
+
+[[site]]
+file = "crates/disrobe-pass-mobile/src/hermes/mod.rs"
+fn = "decode_utf8_lossy_ascii"
+line = "out.push(*byte as char);"
+reason = "ASCII-only: byte is checked below 0x80 above; other bytes become '?'"
+
+[[site]]
+file = "crates/disrobe-pass-native/src/fingerprint.rs"
+fn = "emit_run"
+line = ".map(|&b: &u8| b as char)"
+reason = "ASCII-only: extract_ascii_xrefs only forms runs of bytes checked 0x20..=0x7e"
+
+[[site]]
+file = "crates/disrobe-pass-nativelang/src/d_mangle.rs"
+fn = "parse_string_value"
+line = "self.put_char(byte as char)?;"
+reason = "ASCII-only: byte is checked b' '..=b'~' above"
+
+[[site]]
+file = "crates/disrobe-pass-nativelang/src/d_mangle.rs"
+fn = "parse_string_value"
+line = "self.put_char(width as char)?;"
+reason = "ASCII-only: width is the mangling letter a, w or d that dispatched to this parser"
+
+[[site]]
+file = "crates/disrobe-pass-nativelang/src/d_mangle.rs"
+fn = "parse_integer_value"
+line = "self.put_char(num as u8 as char)?;"
+reason = "ASCII-only: num is checked 0x20..0x7f above"
+
+[[site]]
+file = "crates/disrobe-pass-nativelang/src/disasm.rs"
+fn = "nibble"
+line = "0..=9 => (b'0' + v) as char,"
+reason = "ASCII-only: hex digit from a 0..=15 nibble"
+
+[[site]]
+file = "crates/disrobe-pass-nativelang/src/disasm.rs"
+fn = "nibble"
+line = "_ => (b'a' + (v - 10)) as char,"
+reason = "ASCII-only: hex digit from a 0..=15 nibble"
+
+[[site]]
+file = "crates/disrobe-pass-nuitka/src/onefile_locator.rs"
+fn = "locate_onefile_payload"
+line = "indicator as char"
+reason = "ASCII-only: indicator is matched b'X' | b'Y' above"
+
+[[site]]
+file = "crates/disrobe-pass-pickle/src/decompile.rs"
+fn = "py_repr_bytes"
+line = "0x20..=0x7e => out.push(byte as char),"
+reason = "ASCII-only: byte is matched 0x20..=0x7e (printable ASCII) in this arm"
+
+[[site]]
+file = "crates/disrobe-pass-pickle/src/disasm.rs"
+fn = "big_int_decimal"
+line = "out.push((b'0' + d) as char);"
+reason = "ASCII-only: decimal digit from a 0..=9 value"
+
+[[site]]
+file = "crates/disrobe-pass-py-decompile/src/codegen/mod.rs"
+fn = "format_bytes_literal"
+line = "0x20..=0x7E => out.push(byte as char),"
+reason = "ASCII-only: byte is matched 0x20..=0x7e (printable ASCII) in this arm"
+
+[[site]]
+file = "crates/disrobe-pass-py-decompile/src/codegen/modern_expr_render.rs"
+fn = "render_bytes_literal"
+line = "0x20..=0x7e => out.push(byte as char),"
+reason = "ASCII-only: byte is matched 0x20..=0x7e (printable ASCII) in this arm"
+
+[[site]]
+file = "crates/disrobe-pass-py-deob/src/codec.rs"
+fn = "python_bytes_literal"
+line = "0x20..=0x7e => s.push(b as char),"
+reason = "ASCII-only: byte is matched 0x20..=0x7e (printable ASCII) in this arm"
+
+[[site]]
+file = "crates/disrobe-pass-py-deob/src/marshal.rs"
+fn = "largest_quoted_string"
+line = "while let Some(rel) = text.get(from..).and_then(|w: &str| w.find(opener as char)) {"
+reason = "ASCII-only: opener iterates over b'\\'' and b'\"'"
+
+[[site]]
+file = "crates/disrobe-pass-py-deob/src/obfuscators/oxyry.rs"
+fn = "single_letter"
+line = "let c: char = (b'a' + u8::try_from(v % 26).unwrap_or(0)) as char;"
+reason = "ASCII-only: b'a' plus a value below 26"
+
+[[site]]
+file = "crates/disrobe-pass-py-deob/src/obfuscators/patchwork/abyss/emit.rs"
+fn = "render_bytes_literal"
+line = "0x20..=0x7e => out.push(byte as char),"
+reason = "ASCII-only: byte is matched 0x20..=0x7e (printable ASCII) in this arm"
+
+[[site]]
+file = "crates/disrobe-pass-py-deob/src/shuffled_base64.rs"
+fn = "alphabet_string"
+line = ".map(|slot: &Option<u8>| slot.map_or('?', |b: u8| b as char))"
+reason = "ASCII-only: alphabet symbols come from a token checked is_ascii_graphic in recover"
+
+[[site]]
+file = "crates/disrobe-pass-py-disasm/src/const_repr.rs"
+fn = "repr_bytes"
+line = "out.push(quote as char);"
+reason = "ASCII-only: quote is b'\\'' or b'\"'"
+
+[[site]]
+file = "crates/disrobe-pass-py-disasm/src/const_repr.rs"
+fn = "repr_bytes"
+line = "0x20..=0x7e => out.push(byte as char),"
+reason = "ASCII-only: byte is matched 0x20..=0x7e (printable ASCII) in this arm"
+
+[[site]]
+file = "crates/disrobe-pass-pyarmor/src/static_unpack/decrypt_v9.rs"
+fn = "nibble_to_char"
+line = "0..=9 => (b'0' + n) as char,"
+reason = "ASCII-only: hex digit from a 0..=15 nibble"
+
+[[site]]
+file = "crates/disrobe-pass-pyarmor/src/static_unpack/decrypt_v9.rs"
+fn = "nibble_to_char"
+line = "10..=15 => (b'a' + (n - 10)) as char,"
+reason = "ASCII-only: hex digit from a 0..=15 nibble"
+
+[[site]]
+file = "crates/disrobe-pass-pyinstaller/src/manifest/protection.rs"
+fn = "hex_nibble"
+line = "0..=9 => (b'0' + n) as char,"
+reason = "ASCII-only: hex digit from a 0..=15 nibble"
+
+[[site]]
+file = "crates/disrobe-pass-pyinstaller/src/manifest/protection.rs"
+fn = "hex_nibble"
+line = "10..=15 => (b'a' + n - 10) as char,"
+reason = "ASCII-only: hex digit from a 0..=15 nibble"
+
+[[site]]
+file = "crates/disrobe-pass-ruby/src/yarv/ibf.rs"
+fn = "ruby_dq_body"
+line = "out.push(HEX[(byte >> 4) & 0xf] as char);"
+reason = "ASCII-only: index into an ASCII hex digit table"
+
+[[site]]
+file = "crates/disrobe-pass-ruby/src/yarv/ibf.rs"
+fn = "ruby_dq_body"
+line = "out.push(HEX[byte & 0xf] as char);"
+reason = "ASCII-only: index into an ASCII hex digit table"
+
+[[site]]
+file = "crates/disrobe-pass-shell/src/bash/decode.rs"
+fn = "classify_param_op"
+line = "op: c2 as char,"
+reason = "ASCII-only: c2 is matched - = + ? above"
+
+[[site]]
+file = "crates/disrobe-pass-shell/src/bash/decode.rs"
+fn = "classify_param_op"
+line = "op: bytes[0] as char,"
+reason = "ASCII-only: bytes[0] is matched - = + ? by this arm"
+
+[[site]]
+file = "crates/disrobe-pass-shell/src/powershell/invoke_obfuscation.rs"
+fn = "decode_ascii_chains"
+line = "|b: u8| ps_double_quoted(&(b as char).to_string()),"
+reason = "LATIN1-BY-SPEC: PowerShell [char][byte]0xHH is U+00HH"
+
+[[site]]
+file = "crates/disrobe-pass-swift-objc/src/native_bodies.rs"
+fn = "nibble"
+line = "0..=9 => (b'0' + v) as char,"
+reason = "ASCII-only: hex digit from a 0..=15 nibble"
+
+[[site]]
+file = "crates/disrobe-pass-swift-objc/src/native_bodies.rs"
+fn = "nibble"
+line = "_ => (b'a' + (v - 10)) as char,"
+reason = "ASCII-only: hex digit from a 0..=15 nibble"
+
+[[site]]
+file = "crates/disrobe-pass-wasm-deob/src/fingerprint.rs"
+fn = "nibble"
+line = "0..=9 => (b'0' + value) as char,"
+reason = "ASCII-only: hex digit from a 0..=15 nibble"
+
+[[site]]
+file = "crates/disrobe-pass-wasm-deob/src/fingerprint.rs"
+fn = "nibble"
+line = "_ => (b'a' + (value - 10)) as char,"
+reason = "ASCII-only: hex digit from a 0..=15 nibble"
+
+[[site]]
+file = "crates/disrobe-pass-wasm-deob/src/lift_wat.rs"
+fn = "escape_wat_name"
+line = "s.push(byte as char);"
+reason = "ASCII-only: byte is matched against printable ASCII ranges above"
+
+[[site]]
+file = "crates/disrobe-pass-wasm-deob/src/obfuscators/wasmixer/sandbox_unwrap.rs"
+fn = "hex_escape"
+line = "out.push(LOWER_HEX[(encrypted >> 4) as usize] as char);"
+reason = "ASCII-only: index into an ASCII hex digit table"
+
+[[site]]
+file = "crates/disrobe-pass-wasm-deob/src/obfuscators/wasmixer/sandbox_unwrap.rs"
+fn = "hex_escape"
+line = "out.push(LOWER_HEX[(encrypted & 0x0f) as usize] as char);"
+reason = "ASCII-only: index into an ASCII hex digit table"
+
+[[site]]
+file = "crates/disrobe-pass-webview/src/electron.rs"
+fn = "sha256_hex"
+line = "out.push(HEX_DIGITS[(byte >> 4) as usize] as char);"
+reason = "ASCII-only: index into an ASCII hex digit table"
+
+[[site]]
+file = "crates/disrobe-pass-webview/src/electron.rs"
+fn = "sha256_hex"
+line = "out.push(HEX_DIGITS[(byte & 0x0f) as usize] as char);"
+reason = "ASCII-only: index into an ASCII hex digit table"

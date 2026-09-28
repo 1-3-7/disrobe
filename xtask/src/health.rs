@@ -124,6 +124,7 @@ pub(crate) fn run(root: &Path, as_json: bool) -> Result<()> {
     check_wasm_build_records(root, &mut report);
     check_private_references(root, &mut report);
     check_host_paths(root, &mut report);
+    check_as_char_casts(root, &mut report);
     check_tracked_paths(root, &mut report);
     check_pyarmor_serial_footprint(root, &mut report);
     check_prose_tells(root, &mut report);
@@ -550,6 +551,55 @@ fn check_host_paths(root: &Path, report: &mut Report) {
                 "{} allowed home path(s) no longer occur; remove them from the allow-list: {}",
                 scan.stale_allowances.len(),
                 scan.stale_allowances.join("; ")
+            ),
+        );
+    }
+}
+
+fn check_as_char_casts(root: &Path, report: &mut Report) {
+    const CHECK: &str = "as-char-cast";
+    let scan: crate::as_char::AsCharScan = match crate::as_char::scan(root) {
+        Ok(scan) => scan,
+        Err(error) => {
+            report.fail(
+                CHECK,
+                format!("could not scan pass sources for `as char` casts: {error:#}"),
+            );
+            return;
+        }
+    };
+    report.fact("as_char_sites", json!(scan.sites));
+    report.fact("as_char_latin1_allowances", json!(scan.latin1_allowances));
+    if !scan.unlisted.is_empty() {
+        report.fail(
+            CHECK,
+            format!(
+                "{} `as char` cast(s) on byte data are not in {}; decode the bytes with an explicit encoding, or list the site there with a one-line reason: {}",
+                scan.unlisted.len(),
+                crate::as_char::ALLOW_LIST,
+                scan.unlisted.join("; ")
+            ),
+        );
+    }
+    if !scan.stale.is_empty() {
+        report.fail(
+            CHECK,
+            format!(
+                "{} allowed `as char` site(s) no longer occur; remove or re-anchor them in {}: {}",
+                scan.stale.len(),
+                crate::as_char::ALLOW_LIST,
+                scan.stale.join("; ")
+            ),
+        );
+    }
+    if !scan.invalid.is_empty() {
+        report.fail(
+            CHECK,
+            format!(
+                "{} malformed `as char` allowance(s) in {}: {}",
+                scan.invalid.len(),
+                crate::as_char::ALLOW_LIST,
+                scan.invalid.join("; ")
             ),
         );
     }
