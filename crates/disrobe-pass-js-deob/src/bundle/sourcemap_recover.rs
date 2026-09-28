@@ -173,16 +173,6 @@ fn validate_map(
         segments,
         limits.mapping_segments,
     )?;
-    if raw
-        .ignore_list
-        .iter()
-        .chain(&raw.legacy_ignore_list)
-        .any(|index: &usize| *index >= raw.sources.len())
-    {
-        return Err(Error::OxcParse(
-            "source-map ignore index is outside its source list".to_owned(),
-        ));
-    }
     let decoded: DecodedMappings = decode_mappings(&raw.mappings)
         .ok_or_else(|| Error::OxcParse("invalid or out-of-range source-map mappings".to_owned()))?;
     for segment in decoded.lines.first().into_iter().flatten() {
@@ -315,7 +305,9 @@ fn flatten(raw: RawV3) -> RawV3 {
         if debug_id.is_none() {
             debug_id = inner.debug_id.or(inner.debug_id_snake);
         }
-        if sources.len().saturating_add(inner.sources.len()) <= MAX_SOURCES {
+        let section_sources: usize = inner.sources.len();
+        let sources_kept: bool = sources.len().saturating_add(section_sources) <= MAX_SOURCES;
+        if sources_kept {
             sources.extend(inner.sources.into_iter().map(|source: Option<String>| {
                 source.map(|source: String| join_root(inner.source_root.as_deref(), &source))
             }));
@@ -328,9 +320,11 @@ fn flatten(raw: RawV3) -> RawV3 {
             }
         }
         names.extend(inner.names);
-        for ignored in merge_ignore_lists(inner.ignore_list, inner.legacy_ignore_list) {
-            if let Some(rebased) = source_base.checked_add(ignored) {
-                ignore_list.push(rebased);
+        if sources_kept {
+            for ignored in merge_ignore_lists(inner.ignore_list, inner.legacy_ignore_list) {
+                if ignored < section_sources {
+                    ignore_list.push(source_base + ignored);
+                }
             }
         }
         if let Some(decoded) = decode_mappings(&inner.mappings) {

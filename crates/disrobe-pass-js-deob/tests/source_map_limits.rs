@@ -157,7 +157,12 @@ fn indexed_ignore_lists_keep_their_own_source_scope() {
     let report: RecoveryReport = recover_source_map(&map, RecoverOptions { emit_stubs: false });
     assert!(report.files[0].ignored);
     assert!(!report.files[1].ignored);
-    assert!(parse_source_map_with_limits(&raw.replace("[0]", "[1]"), LIMITS).is_err());
+    let shifted: SourceMap =
+        parse_source_map_with_limits(&raw.replace("[0]", "[1]"), LIMITS).unwrap();
+    let shifted_report: RecoveryReport =
+        recover_source_map(&shifted, RecoverOptions { emit_stubs: false });
+    assert!(!shifted_report.files[0].ignored);
+    assert!(!shifted_report.files[1].ignored);
 }
 
 #[test]
