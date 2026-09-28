@@ -1200,6 +1200,12 @@ mod tests {
                 methods_decompiled: 1,
                 methods_bodyless: 0,
                 methods_failed: 1,
+                failed_methods: vec![disrobe_pass_dotnet::decompile::FailedMethod {
+                    type_name: "Probe".to_owned(),
+                    method_name: "Run".to_owned(),
+                    token: 0x0600_0001,
+                    reason: "method body does not parse".to_owned(),
+                }],
             });
         let error: Option<String> = ensure_native_decompile_complete(&native, "members/probe.dll")
             .err()

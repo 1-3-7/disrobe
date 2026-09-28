@@ -112,12 +112,21 @@ pub struct CSharpPseudo {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FailedMethod {
+    pub type_name: String,
+    pub method_name: String,
+    pub token: u32,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DecompiledAssembly {
     pub module_name: String,
     pub methods: Vec<StructuredMethod>,
     pub methods_decompiled: u32,
     pub methods_bodyless: u32,
     pub methods_failed: u32,
+    pub failed_methods: Vec<FailedMethod>,
 }
 
 pub fn decompile_assembly(image: &[u8]) -> Result<DecompiledAssembly> {
@@ -148,7 +157,7 @@ pub fn decompile_assembly_in(image: &[u8], lang: TargetLang) -> Result<Decompile
 
     let mut methods: Vec<StructuredMethod> = Vec::new();
     let mut bodyless: u32 = 0;
-    let mut failed: u32 = 0;
+    let mut failed: Vec<FailedMethod> = Vec::new();
     let mut move_next_tokens: BTreeSet<u32> = BTreeSet::new();
     for ty in &model.types {
         let state_machine: Option<crate::state_machine::StateMachine> =
@@ -221,7 +230,8 @@ pub fn decompile_assembly_in(image: &[u8], lang: TargetLang) -> Result<Decompile
         methods,
         methods_decompiled: decompiled,
         methods_bodyless: bodyless,
-        methods_failed: failed,
+        methods_failed: u32::try_from(failed.len()).unwrap_or(u32::MAX),
+        failed_methods: failed,
     })
 }
 
@@ -239,18 +249,29 @@ fn decompile_one(
     lang: TargetLang,
     methods: &mut Vec<StructuredMethod>,
     bodyless: &mut u32,
-    failed: &mut u32,
+    failed: &mut Vec<FailedMethod>,
 ) {
     if m.rva == 0 {
         *bodyless = bodyless.saturating_add(1);
         return;
     }
+    let refuse = |failed: &mut Vec<FailedMethod>, reason: String| {
+        failed.push(FailedMethod {
+            type_name: ty.full_name.clone(),
+            method_name: m.name.clone(),
+            token: m.token,
+            reason,
+        });
+    };
     let Some(off): Option<usize> = pe.rva_to_offset(m.rva) else {
-        *failed = failed.saturating_add(1);
+        refuse(failed, format!("body RVA {:#x} maps to no section", m.rva));
         return;
     };
     if off >= image.len() {
-        *failed = failed.saturating_add(1);
+        refuse(
+            failed,
+            format!("body offset {off:#x} lies past the end of the image"),
+        );
         return;
     }
     match parse_method_body(&image[off..]) {
@@ -442,7 +463,7 @@ fn decompile_one(
             }
             methods.push(structured);
         }
-        Err(_) => *failed = failed.saturating_add(1),
+        Err(error) => refuse(failed, format!("method body does not parse: {error}")),
     }
 }
 

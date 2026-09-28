@@ -404,11 +404,27 @@ fn render_csharp_source(assembly: &DecompiledAssembly, recovered_constants: &[St
         &mut out,
         format_args!("// module: {}\n", assembly.module_name),
     );
+    push_format(
+        &mut out,
+        format_args!(
+            "// methods: {} decompiled, {} without a body, {} refused\n",
+            assembly.methods_decompiled, assembly.methods_bodyless, assembly.methods_failed
+        ),
+    );
     out.push('\n');
     for m in &assembly.methods {
         let StructuredMethod { body, .. } = m;
         out.push_str(body);
         out.push('\n');
+    }
+    for refused in &assembly.failed_methods {
+        push_format(
+            &mut out,
+            format_args!(
+                "// DR-DOTNET-0930: {}::{} (token {:#010x}) was not decompiled: {}\n",
+                refused.type_name, refused.method_name, refused.token, refused.reason
+            ),
+        );
     }
     if !recovered_constants.is_empty() {
         out.push_str("\n// recovered ConfuserEx constant-protected string literals:\n");
@@ -1247,6 +1263,49 @@ impl ObfuscatorCatalog for DotnetDetector {
 mod tests {
     use super::*;
     use disrobe_core::Rung;
+
+    #[test]
+    fn a_method_whose_body_does_not_parse_is_printed_as_a_refusal() {
+        let path: std::path::PathBuf = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../corpus/dotnet/HelloAppLegacy.dll");
+        let mut bytes: Vec<u8> = std::fs::read(&path).expect("committed HelloAppLegacy.dll");
+        let pe: PeImage = parse_pe(&bytes).expect("pe");
+        let clr: ClrHeader = parse_clr_header(&bytes, &pe).expect("clr header");
+        let root: crate::metadata::MetadataRoot =
+            crate::metadata::parse_metadata_root(&bytes, &pe, &clr).expect("metadata root");
+        let resolver: crate::model::Resolver =
+            crate::model::Resolver::build(&bytes, &pe, &clr, &root).expect("resolver");
+        let model: crate::model::AssemblyModel = resolver.model();
+        let (type_name, method_name, rva): (String, String, u32) = model
+            .types
+            .iter()
+            .flat_map(|ty: &crate::model::TypeModel| {
+                ty.methods
+                    .iter()
+                    .filter(|m: &&crate::model::MethodModel| m.rva != 0)
+                    .map(|m: &crate::model::MethodModel| {
+                        (ty.full_name.clone(), m.name.clone(), m.rva)
+                    })
+            })
+            .next()
+            .expect("a method with a body");
+        let offset: usize = pe.rva_to_offset(rva).expect("body offset");
+        bytes[offset] = 0x00;
+
+        let assembly: DecompiledAssembly = decompile_assembly(&bytes).expect("assembly decompiles");
+        assert_eq!(
+            assembly.failed_methods.len(),
+            1,
+            "{:?}",
+            assembly.failed_methods
+        );
+        let rendered: String = render_csharp_source(&assembly, &[]);
+        assert!(
+            rendered.contains(&format!("DR-DOTNET-0930: {type_name}::{method_name} ")),
+            "{rendered}"
+        );
+        assert!(rendered.contains(", 1 refused"), "{rendered}");
+    }
 
     fn ctx(bytes: &[u8]) -> DetectContext<'_> {
         DetectContext {
