@@ -76,7 +76,7 @@ pub fn locate_pclntab<'a>(image: &GoImage<'a>) -> Result<LocatedPclntab<'a>> {
         (MAGIC_GO118, magic_needle(MAGIC_GO118, image.endian)),
         (MAGIC_GO120, magic_needle(MAGIC_GO120, image.endian)),
     ];
-    for sec in &image.sections {
+    for sec in ranked_sections(image) {
         if sec.data.len() < 16 {
             continue;
         }
@@ -87,6 +87,35 @@ pub fn locate_pclntab<'a>(image: &GoImage<'a>) -> Result<LocatedPclntab<'a>> {
         }
     }
     signature_scan_pclntab(image)
+}
+
+fn ranked_sections<'i, 'a>(image: &'i GoImage<'a>) -> Vec<&'i Section<'a>> {
+    let pclntab_symbol: Option<u64> = image
+        .symbol_addrs
+        .iter()
+        .find(|(name, _, _): &&(String, u64, u64)| name == "runtime.pclntab")
+        .map(|(_, address, _): &(String, u64, u64)| *address)
+        .filter(|address: &u64| *address != 0);
+    let rank = |sec: &Section<'a>| -> u8 {
+        let holds_symbol: bool = pclntab_symbol.is_some_and(|address: u64| {
+            sec.address <= address && address < sec.address.saturating_add(sec.data.len() as u64)
+        });
+        if matches!(sec.name.as_str(), ".gopclntab" | "__gopclntab") {
+            0
+        } else if holds_symbol {
+            1
+        } else if matches!(
+            sec.name.as_str(),
+            ".rdata" | ".rodata" | "__rodata" | ".data.rel.ro"
+        ) {
+            2
+        } else {
+            3
+        }
+    };
+    let mut ranked: Vec<&'i Section<'a>> = image.sections.iter().collect();
+    ranked.sort_by_key(|sec: &&Section<'a>| rank(sec));
+    ranked
 }
 
 fn locate_needle_in_section<'a>(
@@ -209,6 +238,9 @@ fn try_structural_header<'a>(
         return None;
     }
     if !matches!(body[6], 1 | 2 | 4) || !matches!(body[7], 4 | 8) {
+        return None;
+    }
+    if !image.flat && body[7] != image.ptr_size {
         return None;
     }
     let version: PclntabVersion = PclntabVersion::from_magic(magic).ok()?;
@@ -524,6 +556,36 @@ pub(crate) fn read_u64(buf: &[u8], off: usize, endian: Endian) -> Result<u64> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_host_pclntab_section_is_searched_before_any_payload() {
+        let bytes: [u8; 64] = [0u8; 64];
+        let section = |name: &str, address: u64| Section {
+            name: name.to_owned(),
+            address,
+            data: &bytes,
+            mapped_len: 64,
+        };
+        let image: GoImage<'_> = GoImage {
+            kind: crate::binary::ImageKind::Pe,
+            endian: Endian::Little,
+            ptr_size: 8,
+            sections: vec![
+                section(".data", 0x3000),
+                section(".rsrc", 0x4000),
+                section(".rdata", 0x2000),
+                section(".text", 0x1000),
+            ],
+            raw: &bytes,
+            symbol_addrs: vec![("runtime.pclntab".to_owned(), 0x1010, 0)],
+            flat: false,
+        };
+        let order: Vec<&str> = ranked_sections(&image)
+            .iter()
+            .map(|sec: &&Section<'_>| sec.name.as_str())
+            .collect();
+        assert_eq!(order, vec![".text", ".rdata", ".data", ".rsrc"]);
+    }
 
     #[test]
     fn magic_needle_encodes_image_byte_order() {
