@@ -90,8 +90,12 @@ fn source_hash() -> String {
 
 fn ensure_artifact() -> Option<PyOxidizerArtifact> {
     let Some(pyox) = locate_pyoxidizer() else {
+        assert!(
+            std::env::var_os("DISROBE_REQUIRE_PYOXIDIZER").is_none(),
+            "DISROBE_REQUIRE_PYOXIDIZER is set but pyoxidizer is not on PATH (`cargo install pyoxidizer`)"
+        );
         eprintln!(
-            "[disrobe-pyfreeze] pyoxidizer not on PATH; install via `cargo install pyoxidizer` to enable real-binary E2E tests"
+            "UNGRADED: the real PyOxidizer binary tests need pyoxidizer on PATH (`cargo install pyoxidizer`); set DISROBE_REQUIRE_PYOXIDIZER=1 to make its absence fatal"
         );
         return None;
     };
@@ -100,42 +104,35 @@ fn ensure_artifact() -> Option<PyOxidizerArtifact> {
     let candidate: PathBuf = pick_built_binary(&target_dir);
     let force: bool = std::env::var(ENV_FORCE_REGEN).is_ok();
     if !force && candidate.is_file() {
-        let bytes: Vec<u8> = std::fs::read(&candidate).ok()?;
+        let bytes: Vec<u8> = std::fs::read(&candidate).expect("read the cached pyoxidizer build");
         return Some(PyOxidizerArtifact {
             binary_path: candidate,
             bytes,
         });
     }
-    std::fs::create_dir_all(&target_dir).ok()?;
+    std::fs::create_dir_all(&target_dir).expect("create the pyoxidizer fixture directory");
     let src_dir: PathBuf = source_root().join(&hash);
-    std::fs::create_dir_all(&src_dir).ok()?;
-    std::fs::write(src_dir.join(HELLO_SOURCE_FILENAME), HELLO_SOURCE_BODY).ok()?;
-    std::fs::write(src_dir.join("pyoxidizer.bzl"), HELLO_PYOXIDIZER_CONFIG).ok()?;
-    let build_status: std::process::ExitStatus = {
-        let started: std::io::Result<std::process::ExitStatus> = Command::new(&pyox)
-            .arg("build")
-            .arg("--release")
-            .current_dir(&src_dir)
-            .status();
-        let Ok(status) = started else {
-            eprintln!(
-                "[disrobe-pyfreeze] pyoxidizer build failed to start: {err}; aborting real-binary test",
-                err = started.err().map(|e| format!("{e}")).unwrap_or_default()
-            );
-            return None;
-        };
-        status
-    };
-    if !build_status.success() {
-        eprintln!(
-            "[disrobe-pyfreeze] pyoxidizer build exited non-zero (status={build_status:?}); aborting real-binary test"
-        );
-        return None;
-    }
-    let produced: Option<PathBuf> = find_built_executable(&src_dir.join("build"));
-    let produced_path: PathBuf = produced?;
-    std::fs::copy(&produced_path, &candidate).ok()?;
-    let bytes: Vec<u8> = std::fs::read(&candidate).ok()?;
+    std::fs::create_dir_all(&src_dir).expect("create the pyoxidizer source directory");
+    std::fs::write(src_dir.join(HELLO_SOURCE_FILENAME), HELLO_SOURCE_BODY)
+        .expect("write the authored hello source");
+    std::fs::write(src_dir.join("pyoxidizer.bzl"), HELLO_PYOXIDIZER_CONFIG)
+        .expect("write the pyoxidizer config");
+    let build_status: std::process::ExitStatus = Command::new(&pyox)
+        .arg("build")
+        .arg("--release")
+        .current_dir(&src_dir)
+        .status()
+        .unwrap_or_else(|error: std::io::Error| {
+            panic!("pyoxidizer build failed to start: {error}")
+        });
+    assert!(
+        build_status.success(),
+        "pyoxidizer build exited with {build_status:?}"
+    );
+    let produced_path: PathBuf = find_built_executable(&src_dir.join("build"))
+        .expect("pyoxidizer build produced no executable");
+    std::fs::copy(&produced_path, &candidate).expect("cache the pyoxidizer build");
+    let bytes: Vec<u8> = std::fs::read(&candidate).expect("read the pyoxidizer build");
     Some(PyOxidizerArtifact {
         binary_path: candidate,
         bytes,
