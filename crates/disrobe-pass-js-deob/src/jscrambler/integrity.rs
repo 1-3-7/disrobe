@@ -12,6 +12,9 @@ pub fn strip_integrity_loops(source: &str) -> (String, IntegrityStripStats) {
     let mut stats: IntegrityStripStats = IntegrityStripStats::default();
     let after_iife: String = strip_integrity_iifes(source, &mut stats);
     let after_bare: String = strip_bare_integrity_loops(&after_iife, &mut stats);
+    if after_bare != source && !crate::scan_utils::reparses(&after_bare) {
+        return (source.to_owned(), IntegrityStripStats::default());
+    }
     stats.bytes_removed = source.len().saturating_sub(after_bare.len());
     (after_bare, stats)
 }
@@ -75,8 +78,8 @@ fn match_integrity_iife(source: &str, start: usize) -> Option<usize> {
         return None;
     }
     let body_close: usize = find_brace_close(bytes, body_open + 1)?;
-    let body_text: &str = source.get(body_open + 1..body_close)?;
-    if !is_integrity_loop_body(body_text) {
+    let loop_end: usize = match_integrity_loop(source, skip_ws(bytes, body_open + 1))?;
+    if skip_ws(bytes, loop_end) != body_close {
         return None;
     }
     let mut tail: usize = body_close + 1;
@@ -132,7 +135,12 @@ fn match_integrity_loop(source: &str, start: usize) -> Option<usize> {
     }
     let paren_close: usize = find_paren_close(bytes, i + 1)?;
     let cond_text: &str = source.get(i + 1..paren_close)?.trim();
-    if !matches!(cond_text, "!![]" | "true" | "1") {
+    let infinite: bool = if header_len == 5 {
+        matches!(cond_text, "!![]" | "true" | "1")
+    } else {
+        cond_text.replace(char::is_whitespace, "") == ";;"
+    };
+    if !infinite {
         return None;
     }
     let body_open: usize = skip_ws(bytes, paren_close + 1);
@@ -149,13 +157,6 @@ fn match_integrity_loop(source: &str, start: usize) -> Option<usize> {
         tail += 1;
     }
     Some(tail)
-}
-
-fn is_integrity_loop_body(text: &str) -> bool {
-    let has_while: bool = text.contains("while") || text.contains("for");
-    let has_self_call: bool =
-        text.contains("[]") && (text.contains("constructor") || text.contains("toString"));
-    has_while && has_self_call
 }
 
 fn skip_ws(bytes: &[u8], mut i: usize) -> usize {
@@ -256,6 +257,22 @@ mod tests {
         let (out, stats): (String, IntegrityStripStats) = strip_integrity_loops(src);
         assert_eq!(stats.bare_loops_stripped, 1);
         assert!(!out.contains("while (!![])"));
+    }
+
+    #[test]
+    fn a_library_iife_with_a_loop_over_arrays_is_kept() {
+        let src: &str = "(function () { for (var i = 0; i < a.length; i++) { out.push([].concat(a[i]).toString()); } })();\nvar ok = 1;";
+        let (out, stats): (String, IntegrityStripStats) = strip_integrity_loops(src);
+        assert_eq!(out, src);
+        assert_eq!(stats.iifes_stripped, 0);
+    }
+
+    #[test]
+    fn an_iife_with_statements_beside_the_check_loop_is_kept() {
+        let src: &str = "(function () { init(); while (!![]) { var y = []['constructor']; } })();";
+        let (out, stats): (String, IntegrityStripStats) = strip_integrity_loops(src);
+        assert_eq!(stats.iifes_stripped, 0, "{out}");
+        assert!(out.contains("init();"));
     }
 
     #[test]
