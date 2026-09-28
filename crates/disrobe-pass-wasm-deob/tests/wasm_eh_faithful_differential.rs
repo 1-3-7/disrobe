@@ -136,3 +136,123 @@ fn faithful_lift_preserves_modern_eh_syntax() {
         "a multi-catch try_table must keep every catch clause:\n{wat}"
     );
 }
+
+#[cfg(feature = "sandbox")]
+#[path = "common/eh_exec.rs"]
+mod eh_exec;
+
+#[cfg(feature = "sandbox")]
+mod execution {
+    use super::eh_exec::{
+        Differential, Outcome, differential, drop_first_catch_clause, eh_engine, modern_projection,
+        run,
+    };
+    use super::lift;
+    use wasmtime::Engine;
+
+    #[test]
+    fn execution_store_rejects_modules_above_the_memory_limit() {
+        let engine: Engine = eh_engine();
+        let oversized: Vec<u8> = wat::parse_str(
+            "(module (memory 257) (func (export \"value\") (result i32) i32.const 7))",
+        )
+        .expect("oversized test module");
+        let module: wasmtime::Module =
+            wasmtime::Module::new(&engine, &oversized).expect("oversized module compiles");
+        assert!(
+            super::eh_exec::run_module(&engine, &module, "value", &[], 1).is_err(),
+            "the Wasmtime store memory limit must reject oversized modules"
+        );
+    }
+
+    #[test]
+    fn execution_store_reports_fuel_exhaustion_for_an_infinite_loop() {
+        let engine: Engine = eh_engine();
+        let loop_forever: Vec<u8> = wat::parse_str(
+            "(module (func (export \"spin\") (result i32) (loop $spin br $spin) unreachable))",
+        )
+        .expect("infinite-loop mutation-control module");
+        assert_eq!(
+            run(&engine, &loop_forever, "spin", &[], 1),
+            Outcome::Trapped("OutOfFuel".to_owned()),
+            "the fuel budget must stop an infinite Wasmtime execution"
+        );
+    }
+
+    fn check(name: &str) -> Differential {
+        let (original, lifted, lifted_wat): (Vec<u8>, Vec<u8>, String) = lift(name);
+        let result: Differential = differential(&original, &lifted).unwrap_or_else(|e| {
+            panic!(
+                "{name}: {e}
+{lifted_wat}"
+            )
+        });
+        eprintln!(
+            "[{name}] EH execution checks: {} ({} returned, {} thrown, {} trapped); legacy-EH exports Wasmtime cannot compile: {:?}",
+            result.tally.checked(),
+            result.tally.returned,
+            result.tally.thrown,
+            result.tally.trapped,
+            result.stubbed_exports
+        );
+        result
+    }
+
+    #[test]
+    fn modern_eh_module_executes_equivalently_including_uncaught_throws() {
+        let result: Differential = check("eh_try_table_modern.wat");
+        assert!(
+            result.stubbed_exports.is_empty(),
+            "the modern corpus has no legacy-EH functions: {:?}",
+            result.stubbed_exports
+        );
+        assert!(
+            result.tally.returned > 0 && result.tally.thrown > 0,
+            "the modern corpus must compare returning and uncaught-throw paths: {:?}",
+            result.tally
+        );
+    }
+
+    #[test]
+    fn mixed_eh_module_executes_equivalently_on_its_modern_exports() {
+        let result: Differential = check("eh_numeric_roundtrip.wat");
+        assert!(
+            result.tally.returned > 0,
+            "the mixed corpus must compare modern-EH exports: {:?}",
+            result.tally
+        );
+    }
+
+    #[test]
+    fn wasmtime_still_rejects_the_legacy_eh_functions_the_probe_stubs() {
+        let (original, _, _): (Vec<u8>, Vec<u8>, String) = lift("eh_numeric_roundtrip.wat");
+        let engine: Engine = eh_engine();
+        assert!(
+            wasmtime::Module::new(&engine, &original).is_err(),
+            "Wasmtime now compiles legacy EH: grade the stubbed legacy exports instead"
+        );
+        assert!(
+            wasmtime::Module::new(&engine, modern_projection(&original).bytes).is_ok(),
+            "the modern-EH projection must compile under the EH engine"
+        );
+    }
+
+    #[test]
+    fn dropping_a_catch_clause_from_the_lifted_module_fails_the_probe() {
+        for name in ["eh_try_table_modern.wat", "eh_numeric_roundtrip.wat"] {
+            let (original, _, lifted_wat): (Vec<u8>, Vec<u8>, String) = lift(name);
+            let mutated_wat: String = drop_first_catch_clause(&lifted_wat);
+            let mutated: Vec<u8> = wat::parse_str(&mutated_wat)
+                .unwrap_or_else(|e| panic!("{name}: mutated wat must assemble: {e}"));
+            let verdict: Result<Differential, String> = differential(&original, &mutated);
+            assert!(
+                verdict.is_err(),
+                "{name}: a lifted module missing a catch clause must diverge"
+            );
+            eprintln!(
+                "[{name}] catch-clause mutation: {}",
+                verdict.err().unwrap_or_default()
+            );
+        }
+    }
+}

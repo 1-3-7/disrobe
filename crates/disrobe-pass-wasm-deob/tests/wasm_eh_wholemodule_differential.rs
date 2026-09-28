@@ -110,3 +110,54 @@ fn recovered_eh_constructs_match_the_original_structure() {
         "per-function legacy-try and try_table block counts must be preserved"
     );
 }
+
+#[cfg(feature = "sandbox")]
+#[path = "common/eh_exec.rs"]
+mod eh_exec;
+
+#[cfg(feature = "sandbox")]
+mod execution {
+    use super::eh_exec::{Differential, differential, drop_first_catch_clause};
+    use super::lift;
+    use std::path::{Path, PathBuf};
+
+    fn corpus() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/wasm/wat/eh_numeric_roundtrip.wat")
+    }
+
+    #[test]
+    fn modern_eh_exports_execute_equivalently_on_returning_and_throwing_paths() {
+        let (original, lifted, lifted_wat): (Vec<u8>, Vec<u8>, String) = lift(&corpus());
+        let result: Differential = differential(&original, &lifted).unwrap_or_else(|e| {
+            panic!(
+                "{e}
+{lifted_wat}"
+            )
+        });
+        eprintln!(
+            "whole-module EH execution checks: {} ({} returned, {} thrown, {} trapped); legacy-EH exports Wasmtime cannot compile: {:?}",
+            result.tally.checked(),
+            result.tally.returned,
+            result.tally.thrown,
+            result.tally.trapped,
+            result.stubbed_exports
+        );
+        assert!(
+            result.tally.returned > 0,
+            "the whole-module lift must compare modern-EH exports: {:?}",
+            result.tally
+        );
+    }
+
+    #[test]
+    fn dropping_a_catch_clause_from_the_whole_module_lift_fails_the_probe() {
+        let (original, _, lifted_wat): (Vec<u8>, Vec<u8>, String) = lift(&corpus());
+        let mutated: Vec<u8> = wat::parse_str(drop_first_catch_clause(&lifted_wat))
+            .expect("mutated whole-module wat must assemble");
+        let verdict: Result<Differential, String> = differential(&original, &mutated);
+        assert!(
+            verdict.is_err(),
+            "a whole-module lift missing a catch clause must diverge"
+        );
+    }
+}
