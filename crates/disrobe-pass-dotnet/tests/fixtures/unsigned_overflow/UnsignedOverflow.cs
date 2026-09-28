@@ -91,3 +91,29 @@ public static class UnsignedOverflowRefusal
         return left < right;
     }
 }
+
+public static class NegatedConditions
+{
+    public static bool Holds(bool value)
+    {
+        return value;
+    }
+
+    public static int MarkerAbsent(string text)
+    {
+        if (!text.Contains(" == "))
+        {
+            return -1;
+        }
+        return text.Length;
+    }
+
+    public static int ComparisonArgumentFails(int left, int right)
+    {
+        if (!Holds(left < right))
+        {
+            return -1;
+        }
+        return left;
+    }
+}

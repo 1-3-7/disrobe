@@ -93,6 +93,12 @@ const TARGETS: &[Target] = &[
         is_static: true,
     },
     Target {
+        dll: "tests/fixtures/unsigned_overflow/UnsignedOverflow.dll",
+        origin_namespace: NAMESPACE,
+        type_name: "NegatedConditions",
+        is_static: true,
+    },
+    Target {
         dll: "../../corpus/dotnet/megafile/EdgeCases.baseline.dll",
         origin_namespace: "EdgeCases",
         type_name: "Cat",
@@ -2620,8 +2626,8 @@ fn collection_field_rva_recovery_recompiles_and_preserves_runtime_values() {
 const IL_EQUIVALENCE_FLOOR: usize = 66;
 const IL_BRANCHING_FLOOR: usize = 45;
 
-const GRADED_TYPE_COUNT: usize = 28;
-const GRADED_MEMBER_TOTAL: usize = 120;
+const GRADED_TYPE_COUNT: usize = 29;
+const GRADED_MEMBER_TOTAL: usize = 123;
 
 const IL_RESIDUAL: &[&str] = &[
     "AsyncDisposableScope.DisposeAsync",
@@ -2922,9 +2928,17 @@ const INPUT_SPACE: &[(&str, Coverage)] = &[
         "reverser: range switch over an unsigned discriminant",
         Coverage::Graded("UnsignedOverflow.Bucket"),
     ),
+    (
+        "condition negation: a comparison inside a call argument",
+        Coverage::Graded("NegatedConditions.ComparisonArgumentFails"),
+    ),
+    (
+        "condition negation: an operator inside a string literal",
+        Coverage::Graded("NegatedConditions.MarkerAbsent"),
+    ),
 ];
 
-const INPUT_SPACE_ROWS: usize = 61;
+const INPUT_SPACE_ROWS: usize = 63;
 
 fn sorted(names: &[String]) -> Vec<String> {
     let mut out: Vec<String> = names.to_vec();

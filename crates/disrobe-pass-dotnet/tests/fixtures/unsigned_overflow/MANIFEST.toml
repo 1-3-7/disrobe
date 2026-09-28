@@ -3,7 +3,7 @@ crate = "disrobe-pass-dotnet"
 generated = "2026-09-28"
 toolchain = "dotnet SDK 9.0.318, Roslyn csc 4.14.0-3.26064.1 (450493a9)"
 license = "self-authored (disrobe regression fixture, freely redistributable)"
-note = "self-authored C# fixture for the IL shapes whose C# meaning depends on operand signedness or NaN ordering: clt.un, blt.un, div.un, rem.un, add.ovf, mul.ovf, sub.ovf.un, conv.u8 on int32, conv.i8 on uint, clt.un on doubles, blt.un and bge.un in a uint range switch, and clt.un on a uint-backed enum; no vendor or third-party binary bytes"
+note = "self-authored C# fixture for the IL shapes whose C# meaning depends on operand signedness or NaN ordering: clt.un, blt.un, div.un, rem.un, add.ovf, mul.ovf, sub.ovf.un, conv.u8 on int32, conv.i8 on uint, clt.un on doubles, blt.un and bge.un in a uint range switch, clt.un on a uint-backed enum, and conditions negated around a call whose argument is a comparison or whose string literal holds an operator; no vendor or third-party binary bytes"
 
 [build]
 command = "dotnet build -c Release, run in a copy of this directory holding only UnsignedOverflow.cs and UnsignedOverflow.csproj; UnsignedOverflow.dll is bin/Release/net9.0/UnsignedOverflow.dll"
@@ -14,8 +14,8 @@ line_endings = "every hash-pinned file carries -text in this directory's .gitatt
 [[fixture]]
 name = "UnsignedOverflow.cs"
 kind = "csharp-source"
-size = 1953
-sha256 = "8e9c1760ebae78c47db44940ac87d2643810c87d52d3cfb597b5dc79eb79f07a"
+size = 2417
+sha256 = "9802b0f3fa7cb84bc27c3ba5184bfe486d69f3477ee1840ce76dada803db9de1"
 source = "self-authored"
 
 [[fixture]]
@@ -29,6 +29,6 @@ source = "self-authored"
 name = "UnsignedOverflow.dll"
 kind = "managed-pe"
 target_framework = "net9.0"
-size = 4096
-sha256 = "6c987b73de6db137e6ab9ca1d978e9753c6b6504cf881cc85eb122f50e6c3279"
+size = 4608
+sha256 = "ddc713ecb1145d15a1053e74db8ec2b4e04e4a73ed60eb1ba1d4bd28b142c80f"
 source = "UnsignedOverflow.cs"
