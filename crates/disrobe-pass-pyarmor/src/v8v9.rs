@@ -91,58 +91,71 @@ pub(crate) fn decrypt(
         );
     }
 
-    let (bcc_blobs, working_payload_start): (Vec<BccBlob>, usize) =
-        peel_bcc_if_present(payload, &aes_key)?;
-    let working_payload: &[u8] =
-        payload
-            .get(working_payload_start..)
-            .ok_or(Error::HeaderTruncated {
-                need: working_payload_start,
-                got: payload.len(),
-            })?;
-
-    let cipher_offset: usize = u32_le(working_payload, 28)? as usize;
-    let cipher_len: usize = u32_le(working_payload, 32)? as usize;
-
-    if cipher_offset
-        .checked_add(cipher_len)
-        .is_none_or(|end: usize| end > working_payload.len())
-    {
-        return Err(Error::HeaderTruncated {
-            need: cipher_offset.saturating_add(cipher_len),
-            got: working_payload.len(),
-        });
-    }
-    let cipher_end: usize = cipher_offset + cipher_len;
-
-    let nonce: [u8; 12] = build_nonce(working_payload)?;
-    let mut ciphertext: Vec<u8> = working_payload
-        .get(cipher_offset..cipher_end)
-        .ok_or(Error::HeaderTruncated {
-            need: cipher_end,
-            got: working_payload.len(),
-        })?
-        .to_vec();
-    aes_ctr_init2(&aes_key, &nonce, &mut ciphertext);
-
+    let body: DecryptedBody = decrypt_body(payload, &aes_key)?;
     Ok(V8V9DecryptedPayload {
         key: aes_key,
-        nonce,
+        nonce: body.nonce,
         serial_from_runtime: serial,
         mix_str_nonce,
-        plaintext: ciphertext,
-        bcc_blobs,
+        plaintext: body.plaintext,
+        bcc_blobs: body.bcc_blobs,
     })
 }
 
-fn peel_bcc_if_present(payload: &[u8], aes_key: &[u8; 16]) -> Result<(Vec<BccBlob>, usize)> {
-    if payload.len() < 24 {
-        return Ok((Vec::new(), 0));
+const MODULE_FLAGS_OFFSET: usize = 37;
+const MODULE_FLAG_BODY_ENCRYPTED: u8 = 0x01;
+const BCC_PROTECTION_TYPE: u32 = 9;
+
+#[derive(Debug)]
+pub(crate) struct DecryptedBody {
+    pub(crate) plaintext: Vec<u8>,
+    pub(crate) nonce: [u8; 12],
+    pub(crate) bcc_blobs: Vec<BccBlob>,
+    pub(crate) bcc_mode: bool,
+    pub(crate) body_encrypted: bool,
+}
+
+pub(crate) fn decrypt_body(payload: &[u8], aes_key: &[u8; 16]) -> Result<DecryptedBody> {
+    let bcc_mode: bool = payload.len() >= 24 && u32_le(payload, 20)? == BCC_PROTECTION_TYPE;
+    let (bcc_blobs, working_start): (Vec<BccBlob>, usize) = if bcc_mode {
+        peel_bcc(payload, aes_key)?
+    } else {
+        (Vec::new(), 0)
+    };
+    let working: &[u8] = payload
+        .get(working_start..)
+        .filter(|rest: &&[u8]| !rest.is_empty())
+        .ok_or(Error::HeaderTruncated {
+            need: working_start.saturating_add(1),
+            got: payload.len(),
+        })?;
+    let cipher_offset: usize = u32_le(working, 28)? as usize;
+    let cipher_len: usize = u32_le(working, 32)? as usize;
+    let cipher_end: usize = cipher_offset
+        .checked_add(cipher_len)
+        .filter(|end: &usize| *end <= working.len())
+        .ok_or(Error::HeaderTruncated {
+            need: cipher_offset.saturating_add(cipher_len),
+            got: working.len(),
+        })?;
+    let nonce: [u8; 12] = build_nonce(working)?;
+    let body_encrypted: bool = working
+        .get(MODULE_FLAGS_OFFSET)
+        .is_none_or(|flags: &u8| flags & MODULE_FLAG_BODY_ENCRYPTED != 0);
+    let mut plaintext: Vec<u8> = working[cipher_offset..cipher_end].to_vec();
+    if body_encrypted {
+        aes_ctr_init2(aes_key, &nonce, &mut plaintext);
     }
-    let protection_type: u32 = u32_le(payload, 20)?;
-    if protection_type != 9 {
-        return Ok((Vec::new(), 0));
-    }
+    Ok(DecryptedBody {
+        plaintext,
+        nonce,
+        bcc_blobs,
+        bcc_mode,
+        body_encrypted,
+    })
+}
+
+fn peel_bcc(payload: &[u8], aes_key: &[u8; 16]) -> Result<(Vec<BccBlob>, usize)> {
     let cipher_off: usize = u32_le(payload, 28)? as usize;
     let cipher_len: usize = u32_le(payload, 32)? as usize;
     let main_start: usize = u32_le(payload, 56)? as usize;
@@ -209,7 +222,7 @@ fn peel_bcc_if_present(payload: &[u8], aes_key: &[u8; 16]) -> Result<(Vec<BccBlo
     Ok((blobs, main_start))
 }
 
-fn build_nonce(payload: &[u8]) -> Result<[u8; 12]> {
+pub(crate) fn build_nonce(payload: &[u8]) -> Result<[u8; 12]> {
     if payload.len() < 52 {
         return Err(Error::HeaderTruncated {
             need: 52,
@@ -222,7 +235,7 @@ fn build_nonce(payload: &[u8]) -> Result<[u8; 12]> {
     Ok(nonce)
 }
 
-fn aes_ctr_init2(key: &[u8; 16], nonce: &[u8; 12], data: &mut [u8]) {
+pub(crate) fn aes_ctr_init2(key: &[u8; 16], nonce: &[u8; 12], data: &mut [u8]) {
     let mut iv: [u8; 16] = [0u8; 16];
     iv[..12].copy_from_slice(nonce);
     iv[15] = 2;
@@ -284,6 +297,35 @@ pub fn marshal_stream_start(plaintext: &[u8]) -> Result<usize> {
 mod tests {
     use super::*;
 
+    fn module_payload(body: &[u8], flags: u8) -> Vec<u8> {
+        let mut payload: Vec<u8> = vec![0u8; 64];
+        payload[..8].copy_from_slice(b"PY008106");
+        payload[20] = 0x08;
+        payload[28..32].copy_from_slice(&64u32.to_le_bytes());
+        payload[32..36]
+            .copy_from_slice(&u32::try_from(body.len()).expect("small body").to_le_bytes());
+        payload[36] = 0x12;
+        payload[MODULE_FLAGS_OFFSET] = flags;
+        payload.extend_from_slice(body);
+        payload
+    }
+
+    #[test]
+    fn a_module_body_with_the_encrypt_flag_clear_is_not_decrypted() {
+        let key: [u8; 16] = [0x99u8; 16];
+        let body: &[u8] = b"\xe3 obf_mod 0 marshal body";
+        let clear: DecryptedBody = decrypt_body(&module_payload(body, 0x08), &key).expect("clear");
+        assert!(!clear.body_encrypted);
+        assert_eq!(clear.plaintext, body);
+
+        let set: DecryptedBody = decrypt_body(&module_payload(body, 0x09), &key).expect("set");
+        assert!(set.body_encrypted);
+        assert_ne!(
+            set.plaintext, body,
+            "with the flag set the body is run through AES-CTR"
+        );
+    }
+
     #[test]
     fn nonce_assembly_uses_bytes_36_40_then_44_52() {
         let mut payload: Vec<u8> = vec![0u8; 64];
@@ -326,7 +368,7 @@ mod tests {
         payload[20..24].copy_from_slice(&9u32.to_le_bytes());
         payload[28..32].copy_from_slice(&0xffff_fff0u32.to_le_bytes());
         payload[32..36].copy_from_slice(&0x10u32.to_le_bytes());
-        let err: Error = peel_bcc_if_present(&payload, &[0u8; 16]).unwrap_err();
+        let err: Error = peel_bcc(&payload, &[0u8; 16]).unwrap_err();
         assert!(matches!(err, Error::HeaderTruncated { .. }));
     }
 
@@ -336,7 +378,7 @@ mod tests {
         payload[20..24].copy_from_slice(&9u32.to_le_bytes());
         payload[28..32].copy_from_slice(&u32::MAX.to_le_bytes());
         payload[32..36].copy_from_slice(&u32::MAX.to_le_bytes());
-        let err: Error = peel_bcc_if_present(&payload, &[0u8; 16]).unwrap_err();
+        let err: Error = peel_bcc(&payload, &[0u8; 16]).unwrap_err();
         assert!(matches!(err, Error::HeaderTruncated { .. }));
     }
 
@@ -356,7 +398,7 @@ mod tests {
         let nonce: [u8; 12] = build_nonce(&payload).expect("nonce");
         aes_ctr_init2(&key, &nonce, &mut encrypted);
         payload[64..].copy_from_slice(&encrypted);
-        let err: Error = peel_bcc_if_present(&payload, &key).unwrap_err();
+        let err: Error = peel_bcc(&payload, &key).unwrap_err();
         assert!(matches!(err, Error::HeaderTruncated { .. }));
     }
 
@@ -395,7 +437,7 @@ mod tests {
         put_record(&mut plain, 16, 16, 200, 0x2001, 16);
         put_record(&mut plain, 32, 16, 200, 0x2001, 16);
         let payload: Vec<u8> = bcc_payload_from_plain(&plain, &key);
-        let err: Error = peel_bcc_if_present(&payload, &key).unwrap_err();
+        let err: Error = peel_bcc(&payload, &key).unwrap_err();
         assert!(
             matches!(err, Error::HeaderTruncated { .. }),
             "overlapping segments whose copied bytes exceed twice the region must stop, not amplify"
@@ -414,7 +456,7 @@ mod tests {
         }
         let payload: Vec<u8> = bcc_payload_from_plain(&plain, &key);
         let (blobs, _main): (Vec<BccBlob>, usize) =
-            peel_bcc_if_present(&payload, &key).expect("empty-segment table peels bounded");
+            peel_bcc(&payload, &key).expect("empty-segment table peels bounded");
         assert!(
             blobs.len() <= MAX_BCC_SEGMENTS,
             "segment count is capped at {MAX_BCC_SEGMENTS}, got {}",
@@ -432,7 +474,7 @@ mod tests {
         plain[40..48].fill(0xBBu8);
         let payload: Vec<u8> = bcc_payload_from_plain(&plain, &key);
         let (blobs, main_start): (Vec<BccBlob>, usize) =
-            peel_bcc_if_present(&payload, &key).expect("valid table peels");
+            peel_bcc(&payload, &key).expect("valid table peels");
         assert_eq!(blobs.len(), 2, "both non-overlapping segments are peeled");
         assert_eq!(blobs[0].architecture, BccArch::WinX64);
         assert_eq!(blobs[0].bytes, vec![0xAAu8; 8]);
