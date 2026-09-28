@@ -1,4 +1,5 @@
 #![allow(clippy::needless_pass_by_value)]
+use std::fmt::Write as _;
 use std::io::Read;
 use std::path::PathBuf;
 
@@ -174,12 +175,14 @@ fn decompile(input: PathBuf, json: bool, out: Option<PathBuf>) -> miette::Result
     let mut body: String = String::new();
     for (index, stream) in decoded.iter().enumerate() {
         if !single {
-            body.push_str(&format!(
-                "# pickle stream {} of {} at offset {}\n",
+            writeln!(
+                body,
+                "# pickle stream {} of {} at offset {}",
                 index + 1,
                 decoded.len(),
                 stream.start
-            ));
+            )
+            .map_err(|e| miette::miette!("DR-CLI-0911: format pickle header: {e}"))?;
         }
         body.push_str(&stream.recovered.program);
         if !body.ends_with('\n') {
@@ -187,7 +190,8 @@ fn decompile(input: PathBuf, json: bool, out: Option<PathBuf>) -> miette::Result
         }
     }
     if let Some(note) = &end_note {
-        body.push_str(&format!("# {note}\n"));
+        writeln!(body, "# {note}")
+            .map_err(|e| miette::miette!("DR-CLI-0911: format pickle header: {e}"))?;
     }
     let reexecutable: bool = single
         && decoded
