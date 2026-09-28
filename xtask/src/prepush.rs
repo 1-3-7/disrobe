@@ -160,7 +160,7 @@ fn gate_regen(root: &Path, scope: &Scope) -> Result<GateOutcome> {
 }
 
 fn gate_clippy(root: &Path, scope: &Scope) -> Result<GateOutcome> {
-    let mut args: Vec<String> = vec!["clippy".to_owned()];
+    let mut args: Vec<String> = vec!["clippy".to_owned(), "--keep-going".to_owned()];
     match scope {
         Scope::Skip => return Ok(GateOutcome::Skipped("no push content".to_owned())),
         Scope::Changed(paths)
