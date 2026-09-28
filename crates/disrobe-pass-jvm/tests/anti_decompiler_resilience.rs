@@ -11,8 +11,8 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use disrobe_pass_jvm::{
-    ClassFile, DecompiledClass, contains_jsr, decompile_class, disassemble, inline_jsr_subroutines,
-    parse_classfile,
+    ClassFile, DecompiledClass, JsrInlined, contains_jsr, decompile_class, disassemble,
+    inline_jsr_subroutines, parse_classfile,
 };
 
 const JSR_FINALLY: &[u8] = include_bytes!("../../../corpus/jvm/antidecompiler/JsrFinally.class");
@@ -104,7 +104,11 @@ fn jsr_subroutine_linearises_to_a_monotonic_jsr_free_stream() {
         contains_jsr(&raw),
         "the planted twice() body must carry a jsr/ret subroutine"
     );
-    let (inlined, report): (Vec<disrobe_pass_jvm::Instruction>, _) = inline_jsr_subroutines(&raw);
+    let JsrInlined {
+        insns: inlined,
+        report,
+        ..
+    } = inline_jsr_subroutines(&raw, &[]);
     assert!(
         !report.bailed,
         "inliner must not bail on a single subroutine: {report:?}"

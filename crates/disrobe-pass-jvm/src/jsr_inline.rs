@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::bytecode::{Instruction, Operands};
+use crate::bytecode::{ExceptionEntry, Instruction, Operands};
 
 const OP_JSR: u8 = 0xA8;
 const OP_JSR_W: u8 = 0xC9;
@@ -38,41 +38,47 @@ struct Emitted {
     operands: Operands,
     old_pc: u32,
     target_old_pc: Option<u32>,
+    switch_targets_old_pc: Vec<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JsrInlined {
+    pub insns: Vec<Instruction>,
+    pub exception_table: Vec<ExceptionEntry>,
+    pub report: JsrInlineReport,
+}
+
+fn unmodified(
+    insns: &[Instruction],
+    exception_table: &[ExceptionEntry],
+    report: JsrInlineReport,
+) -> JsrInlined {
+    JsrInlined {
+        insns: insns.to_vec(),
+        exception_table: exception_table.to_vec(),
+        report,
+    }
 }
 
 #[must_use]
-pub fn inline_jsr_subroutines(insns: &[Instruction]) -> (Vec<Instruction>, JsrInlineReport) {
+pub fn inline_jsr_subroutines(
+    insns: &[Instruction],
+    exception_table: &[ExceptionEntry],
+) -> JsrInlined {
     let jsr_sites: usize = insns
         .iter()
         .filter(|i: &&Instruction| i.opcode == OP_JSR || i.opcode == OP_JSR_W)
         .count();
     if jsr_sites == 0 {
-        return (
-            insns.to_vec(),
+        return unmodified(
+            insns,
+            exception_table,
             JsrInlineReport {
                 jsr_sites: 0,
                 subroutines: 0,
                 inlined_instructions: insns.len(),
                 bailed: false,
                 note: "no jsr subroutines present".to_owned(),
-            },
-        );
-    }
-
-    if insns.iter().any(|ins: &Instruction| {
-        matches!(
-            ins.operands,
-            Operands::TableSwitch { .. } | Operands::LookupSwitch { .. }
-        )
-    }) {
-        return (
-            insns.to_vec(),
-            JsrInlineReport {
-                jsr_sites,
-                subroutines: 0,
-                inlined_instructions: insns.len(),
-                bailed: true,
-                note: "the method holds a switch whose offsets inlining would not remap; left unmodified rather than mis-linearised".to_owned(),
             },
         );
     }
@@ -126,8 +132,9 @@ pub fn inline_jsr_subroutines(insns: &[Instruction]) -> (Vec<Instruction>, JsrIn
     }
 
     if bailed {
-        return (
-            insns.to_vec(),
+        return unmodified(
+            insns,
+            exception_table,
             JsrInlineReport {
                 jsr_sites,
                 subroutines: subroutine_targets.len(),
@@ -139,8 +146,9 @@ pub fn inline_jsr_subroutines(insns: &[Instruction]) -> (Vec<Instruction>, JsrIn
     }
 
     let Some(out): Option<Vec<Instruction>> = renumber(&emitted, &label_map) else {
-        return (
-            insns.to_vec(),
+        return unmodified(
+            insns,
+            exception_table,
             JsrInlineReport {
                 jsr_sites,
                 subroutines: subroutine_targets.len(),
@@ -150,11 +158,27 @@ pub fn inline_jsr_subroutines(insns: &[Instruction]) -> (Vec<Instruction>, JsrIn
             },
         );
     };
+    let Some(remapped): Option<Vec<ExceptionEntry>> =
+        remap_exception_table(&emitted, &label_map, exception_table)
+    else {
+        return unmodified(
+            insns,
+            exception_table,
+            JsrInlineReport {
+                jsr_sites,
+                subroutines: subroutine_targets.len(),
+                inlined_instructions: insns.len(),
+                bailed: true,
+                note: "an exception handler could not be placed in the linearised stream; left unmodified rather than bound to unrelated instructions".to_owned(),
+            },
+        );
+    };
 
     let inlined_count: usize = out.len();
-    (
-        out,
-        JsrInlineReport {
+    JsrInlined {
+        insns: out,
+        exception_table: remapped,
+        report: JsrInlineReport {
             jsr_sites,
             subroutines: subroutine_targets.len(),
             inlined_instructions: inlined_count,
@@ -164,11 +188,62 @@ pub fn inline_jsr_subroutines(insns: &[Instruction]) -> (Vec<Instruction>, JsrIn
                 subroutine_targets.len()
             ),
         },
-    )
+    }
+}
+
+fn remap_exception_table(
+    emitted: &[Emitted],
+    label_map: &BTreeMap<u32, usize>,
+    exception_table: &[ExceptionEntry],
+) -> Option<Vec<ExceptionEntry>> {
+    let mut out: Vec<ExceptionEntry> = Vec::with_capacity(exception_table.len());
+    for entry in exception_table {
+        let protected = u32::from(entry.start_pc)..u32::from(entry.end_pc);
+        let handler_pc: u16 = u16::try_from(*label_map.get(&u32::from(entry.handler_pc))?).ok()?;
+        let mut run_start: Option<usize> = None;
+        for (idx, e) in emitted.iter().enumerate() {
+            match (protected.contains(&e.old_pc), run_start) {
+                (true, None) => run_start = Some(idx),
+                (false, Some(start)) => {
+                    out.push(ExceptionEntry {
+                        start_pc: u16::try_from(start).ok()?,
+                        end_pc: u16::try_from(idx).ok()?,
+                        handler_pc,
+                        catch_type: entry.catch_type,
+                    });
+                    run_start = None;
+                }
+                _ => {}
+            }
+        }
+        if let Some(start) = run_start {
+            out.push(ExceptionEntry {
+                start_pc: u16::try_from(start).ok()?,
+                end_pc: u16::try_from(emitted.len()).ok()?,
+                handler_pc,
+                catch_type: entry.catch_type,
+            });
+        }
+    }
+    Some(out)
 }
 
 fn copy_insn(ins: &Instruction) -> Emitted {
     let target_old_pc: Option<u32> = branch_target_old_pc(ins);
+    let at = |off: i32| -> u32 { (i64::from(ins.pc) + i64::from(off)) as u32 };
+    let switch_targets_old_pc: Vec<u32> = match &ins.operands {
+        Operands::TableSwitch {
+            default, offsets, ..
+        } => std::iter::once(*default)
+            .chain(offsets.iter().copied())
+            .map(at)
+            .collect(),
+        Operands::LookupSwitch { default, pairs } => std::iter::once(*default)
+            .chain(pairs.iter().map(|(_, off): &(i32, i32)| *off))
+            .map(at)
+            .collect(),
+        _ => Vec::new(),
+    };
     Emitted {
         opcode: ins.opcode,
         mnemonic: ins.mnemonic,
@@ -176,6 +251,7 @@ fn copy_insn(ins: &Instruction) -> Emitted {
         operands: ins.operands.clone(),
         old_pc: ins.pc,
         target_old_pc,
+        switch_targets_old_pc,
     }
 }
 
@@ -221,6 +297,7 @@ fn inline_one(
                     operands: Operands::Branch(0),
                     old_pc: ins.pc,
                     target_old_pc: Some(return_pc),
+                    switch_targets_old_pc: Vec::new(),
                 });
                 return true;
             }
@@ -278,14 +355,41 @@ fn renumber(emitted: &[Emitted], label_map: &BTreeMap<u32, usize>) -> Option<Vec
     let mut out: Vec<Instruction> = Vec::with_capacity(emitted.len());
     for (idx, e) in emitted.iter().enumerate() {
         let new_pc: u32 = u32::try_from(idx).ok()?;
-        let operands: Operands = match e.target_old_pc {
-            Some(old_target) => {
-                let target_idx: usize = resolve_target_index(emitted, idx, old_target, label_map)?;
-                let target_pc: i64 = i64::try_from(target_idx).ok()?;
-                let off: i32 = i32::try_from(target_pc - i64::from(new_pc)).ok()?;
-                Operands::Branch(off)
+        let relative = |old_target: u32| -> Option<i32> {
+            let target_idx: usize = resolve_target_index(emitted, idx, old_target, label_map)?;
+            let target_pc: i64 = i64::try_from(target_idx).ok()?;
+            i32::try_from(target_pc - i64::from(new_pc)).ok()
+        };
+        let operands: Operands = match (&e.operands, e.target_old_pc) {
+            (_, Some(old_target)) => Operands::Branch(relative(old_target)?),
+            (Operands::TableSwitch { low, high, .. }, None) => {
+                let mut targets = e.switch_targets_old_pc.iter().copied();
+                let default: i32 = relative(targets.next()?)?;
+                let offsets: Vec<i32> = targets.map(relative).collect::<Option<Vec<i32>>>()?;
+                Operands::TableSwitch {
+                    default,
+                    low: *low,
+                    high: *high,
+                    offsets,
+                }
             }
-            None => e.operands.clone(),
+            (Operands::LookupSwitch { pairs, .. }, None) => {
+                let mut targets = e.switch_targets_old_pc.iter().copied();
+                let default: i32 = relative(targets.next()?)?;
+                let offsets: Vec<i32> = targets.map(relative).collect::<Option<Vec<i32>>>()?;
+                if offsets.len() != pairs.len() {
+                    return None;
+                }
+                Operands::LookupSwitch {
+                    default,
+                    pairs: pairs
+                        .iter()
+                        .zip(offsets)
+                        .map(|((key, _), off): (&(i32, i32), i32)| (*key, off))
+                        .collect(),
+                }
+            }
+            (operands, None) => operands.clone(),
         };
         out.push(Instruction {
             pc: new_pc,
@@ -349,7 +453,9 @@ mod tests {
             ins(0, 0x04, "iconst_1", Operands::None),
             ins(1, 0xAC, "ireturn", Operands::None),
         ];
-        let (out, report): (Vec<Instruction>, JsrInlineReport) = inline_jsr_subroutines(&insns);
+        let JsrInlined {
+            insns: out, report, ..
+        } = inline_jsr_subroutines(&insns, &[]);
         assert_eq!(out.len(), 2);
         assert_eq!(report.jsr_sites, 0);
         assert!(!report.bailed);
@@ -369,13 +475,15 @@ mod tests {
             ins(14, 0x3B, "istore_0", Operands::None),
             ins(15, OP_RET, "ret", Operands::Local(1)),
         ];
-        let (out, report): (Vec<Instruction>, JsrInlineReport) = inline_jsr_subroutines(&insns);
+        let JsrInlined {
+            insns: out, report, ..
+        } = inline_jsr_subroutines(&insns, &[]);
         assert!(report.bailed, "{report:?}");
         assert_eq!(out, insns);
     }
 
     #[test]
-    fn a_method_with_a_switch_is_left_unmodified() {
+    fn a_switch_keeps_its_targets_after_inlining() {
         let insns: Vec<Instruction> = vec![
             ins(0, OP_JSR, "jsr", Operands::Branch(28)),
             ins(3, 0x1A, "iload_0", Operands::None),
@@ -392,9 +500,82 @@ mod tests {
             ins(28, OP_ASTORE, "astore", Operands::Local(1)),
             ins(30, OP_RET, "ret", Operands::Local(1)),
         ];
-        let (out, report): (Vec<Instruction>, JsrInlineReport) = inline_jsr_subroutines(&insns);
-        assert!(report.bailed, "{report:?}");
-        assert_eq!(out, insns);
+        let JsrInlined {
+            insns: out, report, ..
+        } = inline_jsr_subroutines(&insns, &[]);
+        assert!(!report.bailed, "{report:?}");
+        assert_eq!(
+            out.iter()
+                .map(|i: &Instruction| i.opcode)
+                .collect::<Vec<u8>>(),
+            vec![OP_GOTO, 0x1A, 0xAB, 0xB1],
+            "{out:?}"
+        );
+        assert_eq!(
+            out[2].operands,
+            Operands::LookupSwitch {
+                default: 1,
+                pairs: vec![(1, 1)],
+            },
+            "the switch must still land on the return it targeted: {out:?}"
+        );
+    }
+
+    #[test]
+    fn a_try_range_protects_only_the_code_it_covered() {
+        let insns: Vec<Instruction> = vec![
+            ins(0, 0x04, "iconst_1", Operands::None),
+            ins(1, 0x3B, "istore_0", Operands::None),
+            ins(2, OP_JSR, "jsr", Operands::Branch(10)),
+            ins(5, 0xB1, "return", Operands::None),
+            ins(6, 0x4C, "astore_1", Operands::None),
+            ins(7, OP_JSR, "jsr", Operands::Branch(5)),
+            ins(10, 0x2B, "aload_1", Operands::None),
+            ins(11, 0xBF, "athrow", Operands::None),
+            ins(12, 0x4D, "astore_2", Operands::None),
+            ins(13, 0x05, "iconst_2", Operands::None),
+            ins(14, 0x3B, "istore_0", Operands::None),
+            ins(15, OP_RET, "ret", Operands::Local(2)),
+        ];
+        let table: [ExceptionEntry; 1] = [ExceptionEntry {
+            start_pc: 0,
+            end_pc: 6,
+            handler_pc: 6,
+            catch_type: 0,
+        }];
+        let JsrInlined {
+            insns: out,
+            exception_table,
+            report,
+        } = inline_jsr_subroutines(&insns, &table);
+        assert!(!report.bailed, "{report:?}");
+        assert_eq!(
+            out.iter()
+                .map(|i: &Instruction| i.opcode)
+                .collect::<Vec<u8>>(),
+            vec![
+                0x04, 0x3B, 0x05, 0x3B, OP_GOTO, 0xB1, 0x4C, 0x05, 0x3B, OP_GOTO, 0x2B, 0xBF
+            ],
+            "{out:?}"
+        );
+        assert_eq!(
+            exception_table,
+            vec![
+                ExceptionEntry {
+                    start_pc: 0,
+                    end_pc: 2,
+                    handler_pc: 6,
+                    catch_type: 0,
+                },
+                ExceptionEntry {
+                    start_pc: 5,
+                    end_pc: 6,
+                    handler_pc: 6,
+                    catch_type: 0,
+                },
+            ],
+            "the inlined finally copy stays outside the try range and the handler follows its code"
+        );
     }
 
     #[test]
@@ -407,7 +588,9 @@ mod tests {
             ins(7, 0x04, "iconst_1", Operands::None),
             ins(8, OP_RET, "ret", Operands::Local(1)),
         ];
-        let (out, report): (Vec<Instruction>, JsrInlineReport) = inline_jsr_subroutines(&insns);
+        let JsrInlined {
+            insns: out, report, ..
+        } = inline_jsr_subroutines(&insns, &[]);
         assert!(!report.bailed, "{report:?}");
         assert_eq!(report.jsr_sites, 1);
         assert_eq!(report.subroutines, 1);
@@ -443,7 +626,9 @@ mod tests {
             ins(13, 0x3c, "istore_1", Operands::None),
             ins(14, OP_RET, "ret", Operands::Local(2)),
         ];
-        let (out, report): (Vec<Instruction>, JsrInlineReport) = inline_jsr_subroutines(&insns);
+        let JsrInlined {
+            insns: out, report, ..
+        } = inline_jsr_subroutines(&insns, &[]);
         assert!(!report.bailed, "{report:?}");
         for w in out.windows(2) {
             assert!(w[0].pc < w[1].pc, "pcs must be strictly monotonic: {out:?}");
@@ -509,7 +694,9 @@ mod tests {
             ins(12, 0x57, "pop", Operands::None),
             ins(13, OP_RET, "ret", Operands::Local(0)),
         ];
-        let (out, report): (Vec<Instruction>, JsrInlineReport) = inline_jsr_subroutines(&insns);
+        let JsrInlined {
+            insns: out, report, ..
+        } = inline_jsr_subroutines(&insns, &[]);
         assert!(!report.bailed, "{report:?}");
         let copies: usize = out
             .iter()

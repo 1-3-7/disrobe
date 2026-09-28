@@ -273,7 +273,7 @@ pub use jni::{
     analyze as analyze_jni_surface, analyze_native_methods as analyze_jni_native_methods,
     emit_prototypes as emit_jni_prototypes, native_methods_from_class, recover_register_natives,
 };
-pub use jsr_inline::{JsrInlineReport, contains_jsr, inline_jsr_subroutines};
+pub use jsr_inline::{JsrInlineReport, JsrInlined, contains_jsr, inline_jsr_subroutines};
 pub use kotlin::{KotlinKind, KotlinMetadata, recover_metadata as recover_kotlin_metadata};
 #[cfg(feature = "llm-metadata")]
 #[cfg(not(target_arch = "wasm32"))]

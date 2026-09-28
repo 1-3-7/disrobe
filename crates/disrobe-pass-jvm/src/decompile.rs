@@ -1939,13 +1939,13 @@ fn lift_method_body(
     bool_return: bool,
 ) -> Result<MethodBody> {
     let raw_insns: Vec<Instruction> = validate_code_attribute(cf, code)?;
-    let mut insns: Vec<Instruction> =
-        if crate::jsr_inline::contains_jsr(&raw_insns) && code.exception_table.is_empty() {
-            let (inlined, report): (Vec<Instruction>, crate::jsr_inline::JsrInlineReport) =
-                crate::jsr_inline::inline_jsr_subroutines(&raw_insns);
-            if report.bailed { raw_insns } else { inlined }
+    let (mut insns, exception_table): (Vec<Instruction>, Vec<crate::bytecode::ExceptionEntry>) =
+        if crate::jsr_inline::contains_jsr(&raw_insns) {
+            let inlined: crate::jsr_inline::JsrInlined =
+                crate::jsr_inline::inline_jsr_subroutines(&raw_insns, &code.exception_table);
+            (inlined.insns, inlined.exception_table)
         } else {
-            raw_insns
+            (raw_insns, code.exception_table.clone())
         };
     let boolean_param_slots: BTreeSet<u16> = params
         .iter()
@@ -1956,13 +1956,13 @@ fn lift_method_body(
         cf,
         &mut insns,
         code.max_locals,
-        &code.exception_table,
+        &exception_table,
         &boolean_param_slots,
     );
     split_reused_primitive_ranges_with_parameters(
         &mut insns,
         next_fresh,
-        &code.exception_table,
+        &exception_table,
         parameter_value_categories,
     );
     if insns.is_empty() {
@@ -1973,8 +1973,7 @@ fn lift_method_body(
     }
     let bootstraps: Vec<crate::attributes::BootstrapMethod> =
         crate::attributes::analyze(cf).bootstrap_methods;
-    let exc_regions: Vec<ExceptionRegion> = code
-        .exception_table
+    let exc_regions: Vec<ExceptionRegion> = exception_table
         .iter()
         .map(|e: &crate::bytecode::ExceptionEntry| ExceptionRegion {
             try_start_pc: u32::from(e.start_pc),
