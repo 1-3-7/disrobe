@@ -6,6 +6,7 @@ use crate::error::{Result, RubyError};
 pub(crate) const YARV_MAGIC: &[u8; 4] = b"YARB";
 pub(crate) const RITE_MAGIC: &[u8; 4] = b"RITE";
 pub(crate) const JVM_CLASS_MAGIC: &[u8; 4] = b"\xCA\xFE\xBA\xBE";
+pub(crate) const JRUBY_CLASS_REFERENCE: &[u8] = b"org/jruby/";
 pub(crate) const TRUFFLE_AOT_MARKER: &[u8] = b"TruffleRuby-NativeImage";
 pub(crate) const OCRA_SIGNATURE: &[u8; 4] = &[0x41, 0xb6, 0xba, 0x4e];
 pub(crate) const RUBYSCRIPT2EXE_MARKER: &[u8] = b"rubyscript2exe";
@@ -49,7 +50,7 @@ pub(crate) fn sniff(bytes: &[u8], source_path: &str) -> Result<Flavor> {
         if head == RITE_MAGIC {
             return Ok(Flavor::MrubyBinary);
         }
-        if head == JVM_CLASS_MAGIC {
+        if head == JVM_CLASS_MAGIC && contains(bytes, JRUBY_CLASS_REFERENCE) {
             return Ok(Flavor::JrubyClass);
         }
     }
@@ -116,8 +117,13 @@ mod tests {
 
     #[test]
     fn sniff_jruby_class() {
-        let bytes: Vec<u8> = b"\xCA\xFE\xBA\xBE\x00\x00\x00\x34".to_vec();
+        let bytes: Vec<u8> = b"\xCA\xFE\xBA\xBE\x00\x00\x00\x34org/jruby/Ruby".to_vec();
         assert_eq!(sniff(&bytes, "x.class").expect("sniff"), Flavor::JrubyClass);
+        let plain_java: &[u8] = b"\xCA\xFE\xBA\xBE\x00\x00\x00\x34java/lang/Object";
+        assert!(
+            !matches!(sniff(plain_java, "x.class"), Ok(Flavor::JrubyClass)),
+            "a class without a JRuby runtime reference is plain Java"
+        );
     }
 
     #[test]

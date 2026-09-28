@@ -50,7 +50,9 @@ impl Detector for RubyDetector {
                 return Some(verdict_for(Flavor::MrubyBinary));
             }
             if head == JVM_CLASS_MAGIC.as_slice() {
-                if looks_like_macho_fat_header(bytes) {
+                if looks_like_macho_fat_header(bytes)
+                    || !contains(bytes, crate::detect::JRUBY_CLASS_REFERENCE)
+                {
                     return None;
                 }
                 return Some(verdict_for(Flavor::JrubyClass));

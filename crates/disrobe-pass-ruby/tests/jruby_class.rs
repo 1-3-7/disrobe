@@ -8,6 +8,7 @@ fn delegates_jruby_class_to_jvm_pass() {
     let mut bytes: Vec<u8> = b"\xCA\xFE\xBA\xBE".to_vec();
     bytes.extend_from_slice(&[0u8, 0u8, 0u8, 0x34u8]);
     bytes.extend_from_slice(&[0u8; 24]);
+    bytes.extend_from_slice(b"org/jruby/Ruby");
     let analysis: RubyAnalysis = analyze_bytes(&bytes, "Greeter.class").expect("analyze");
     assert_eq!(analysis.flavor, Flavor::JrubyClass);
     let d = analysis.jruby.expect("jruby");
