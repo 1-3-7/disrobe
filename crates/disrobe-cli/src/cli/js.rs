@@ -225,11 +225,17 @@ fn load_source_map_json(input: &std::path::Path, bytes: &[u8]) -> miette::Result
             return disrobe_pass_js_deob::decode_data_url_json(&info.url)
                 .map_err(|e| miette::miette!("DR-CLI-0091: decode inline source map: {e}"));
         }
-        let referenced: PathBuf = input
-            .parent()
-            .unwrap_or_else(|| std::path::Path::new("."))
-            .join(&info.url);
+        let input_dir: &std::path::Path =
+            input.parent().unwrap_or_else(|| std::path::Path::new("."));
+        let referenced: PathBuf = disrobe_pass_js_deob::sibling_map_path(input_dir, &info.url)
+            .map_err(|refusal: disrobe_pass_js_deob::SiblingMapRefusal| {
+                miette::miette!("DR-CLI-0108: refused the referenced source map: {refusal}")
+            })?;
         if referenced.exists() {
+            disrobe_pass_js_deob::contained_sibling_map(input_dir, &referenced, &info.url)
+                .map_err(|refusal: disrobe_pass_js_deob::SiblingMapRefusal| {
+                    miette::miette!("DR-CLI-0108: refused the referenced source map: {refusal}")
+                })?;
             return std::fs::read_to_string(&referenced).map_err(|e| {
                 miette::miette!(
                     "DR-CLI-0092: cannot read referenced map {}: {e}",
@@ -336,7 +342,18 @@ fn recover_deployed(input: PathBuf, out_dir: PathBuf, no_stubs: bool) -> miette:
         .map_or_else(|| PathBuf::from("."), std::path::Path::to_path_buf);
     let recovery: disrobe_pass_js_deob::DeployedRecovery =
         disrobe_pass_js_deob::recover_deployed_source(source_text, options, |url: &str| {
-            std::fs::read_to_string(input_dir.join(url)).ok()
+            let resolved: PathBuf = match disrobe_pass_js_deob::sibling_map_path(&input_dir, url)
+                .and_then(|path: PathBuf| {
+                    disrobe_pass_js_deob::contained_sibling_map(&input_dir, &path, url)
+                        .map(|()| path)
+                }) {
+                Ok(path) => path,
+                Err(refusal) => {
+                    eprintln!("DR-CLI-0109: refused the referenced source map: {refusal}");
+                    return None;
+                }
+            };
+            std::fs::read_to_string(resolved).ok()
         })
         .map_err(|e| miette::miette!("DR-CLI-0103: deployed-source recovery failed: {e}"))?;
 
