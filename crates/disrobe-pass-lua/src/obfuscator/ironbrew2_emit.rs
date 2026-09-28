@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::OnceLock;
 
+use lazy_regex::regex;
 use regex::Regex;
 
 use crate::obfuscator::ironbrew2_dispatch::{
@@ -151,10 +151,8 @@ struct EmitBlock {
     lines: Vec<String>,
 }
 
-#[allow(clippy::expect_used)]
 fn goto_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"goto L(\d+)").expect("static goto regex"))
+    regex!(r"goto L(\d+)")
 }
 
 fn rewrite_gotos(line: &str) -> String {

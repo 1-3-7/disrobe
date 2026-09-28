@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
+use lazy_regex::regex;
 use regex::Regex;
 
 use crate::error::{Error, Result};
@@ -256,9 +257,8 @@ struct LoopInfo {
     enum_var: String,
 }
 
-#[allow(clippy::expect_used)]
 fn find_wrap_vars(body: &str) -> (Option<String>, Option<String>) {
-    let re_call: Regex = Regex::new(r"(\w+)\(\w+\(\),\{\s*\},\w+\(\)\)").expect("wrap call regex");
+    let re_call: &Regex = regex!(r"(\w+)\(\w+\(\),\{\s*\},\w+\(\)\)");
     let Some(call): Option<regex::Captures<'_>> = re_call.captures(body) else {
         return (None, None);
     };
@@ -700,71 +700,69 @@ fn canon(body: &[Token], inst_var: &str) -> String {
 }
 
 struct Fingerprints {
-    arith_rr: Regex,
-    arith_kr: Regex,
-    arith_rk: Regex,
-    arith_kk: Regex,
-    move_re: Regex,
-    getglobal: Regex,
-    loadk: Regex,
-    loadbool: Regex,
-    loadbool_c: Regex,
-    loadnil: Regex,
-    unm: Regex,
-    not_re: Regex,
-    len_re: Regex,
-    jmp: Regex,
-    cmp_reg: Regex,
-    cmp_full: Regex,
-    test: Regex,
-    test_c: Regex,
-    gettable_rr: Regex,
-    gettable_rk: Regex,
-    settable: Regex,
-    setglobal: Regex,
-    newtable: Regex,
-    self_re: Regex,
-    for_bind: Regex,
-    closure_nu: Regex,
-    call_a: Regex,
-    call_unpack: Regex,
+    arith_rr: &'static Regex,
+    arith_kr: &'static Regex,
+    arith_rk: &'static Regex,
+    arith_kk: &'static Regex,
+    move_re: &'static Regex,
+    getglobal: &'static Regex,
+    loadk: &'static Regex,
+    loadbool: &'static Regex,
+    loadbool_c: &'static Regex,
+    loadnil: &'static Regex,
+    unm: &'static Regex,
+    not_re: &'static Regex,
+    len_re: &'static Regex,
+    jmp: &'static Regex,
+    cmp_reg: &'static Regex,
+    cmp_full: &'static Regex,
+    test: &'static Regex,
+    test_c: &'static Regex,
+    gettable_rr: &'static Regex,
+    gettable_rk: &'static Regex,
+    settable: &'static Regex,
+    setglobal: &'static Regex,
+    newtable: &'static Regex,
+    self_re: &'static Regex,
+    for_bind: &'static Regex,
+    closure_nu: &'static Regex,
+    call_a: &'static Regex,
+    call_unpack: &'static Regex,
 }
 
 impl Fingerprints {
-    #[allow(clippy::expect_used)]
     fn new() -> Self {
-        let r = |p: &str| Regex::new(p).expect("static fingerprint regex");
         Self {
-            arith_rr: r(r"^(\w+)\[A\]=(\w+)\[B\]([-+*/%^])(\w+)\[C\];$"),
-            arith_kr: r(r"^(\w+)\[A\]=B([-+*/%^])(\w+)\[C\];$"),
-            arith_rk: r(r"^(\w+)\[A\]=(\w+)\[B\]([-+*/%^])C;$"),
-            arith_kk: r(r"^(\w+)\[A\]=B([-+*/%^])C;$"),
-            move_re: r(r"^(\w+)\[A\]=(\w+)\[B\];$"),
-            getglobal: r(r"^(\w+)\[A\]=(\w+)\[B\];$"),
-            loadk: r(r"^\w+\[A\]=B;$"),
-            loadbool: r(r"^\w+\[A\]=\(B~=0\);$"),
-            loadbool_c: r(r"^\w+\[A\]=\(B~=0\);\w+=\w+\+1;$"),
-            loadnil: r(r"for\w+=A,Bdo\w+\[\w+\]=nil;?end"),
-            unm: r(r"^\w+\[A\]=-\w+\[B\];$"),
-            not_re: r(r"^\w+\[A\]=\(not\w+\[B\]\);$"),
-            len_re: r(r"^\w+\[A\]=#\w+\[B\];$"),
-            jmp: r(r"^\w+=B;$"),
-            cmp_reg: r(r"if\(?\w+\[A\](<=|<|==|~=)\w*\[?[BC]?\]?\)?then\w+=\w+\+1"),
-            cmp_full: r(
-                r"^if\(?\w+\[A\](==|~=|<=|>=|<|>)(?:\w+\[[BC]\]|[BC])\)?then(.*?)else(.*?)end;?$",
+            arith_rr: regex!(r"^(\w+)\[A\]=(\w+)\[B\]([-+*/%^])(\w+)\[C\];$"),
+            arith_kr: regex!(r"^(\w+)\[A\]=B([-+*/%^])(\w+)\[C\];$"),
+            arith_rk: regex!(r"^(\w+)\[A\]=(\w+)\[B\]([-+*/%^])C;$"),
+            arith_kk: regex!(r"^(\w+)\[A\]=B([-+*/%^])C;$"),
+            move_re: regex!(r"^(\w+)\[A\]=(\w+)\[B\];$"),
+            getglobal: regex!(r"^(\w+)\[A\]=(\w+)\[B\];$"),
+            loadk: regex!(r"^\w+\[A\]=B;$"),
+            loadbool: regex!(r"^\w+\[A\]=\(B~=0\);$"),
+            loadbool_c: regex!(r"^\w+\[A\]=\(B~=0\);\w+=\w+\+1;$"),
+            loadnil: regex!(r"for\w+=A,Bdo\w+\[\w+\]=nil;?end"),
+            unm: regex!(r"^\w+\[A\]=-\w+\[B\];$"),
+            not_re: regex!(r"^\w+\[A\]=\(not\w+\[B\]\);$"),
+            len_re: regex!(r"^\w+\[A\]=#\w+\[B\];$"),
+            jmp: regex!(r"^\w+=B;$"),
+            cmp_reg: regex!(r"if\(?\w+\[A\](<=|<|==|~=)\w*\[?[BC]?\]?\)?then\w+=\w+\+1"),
+            cmp_full: regex!(
+                r"^if\(?\w+\[A\](==|~=|<=|>=|<|>)(?:\w+\[[BC]\]|[BC])\)?then(.*?)else(.*?)end;?$"
             ),
-            test: r(r"if\w+\[A\]then\w+=\w+\+1;else\w+=B;end"),
-            test_c: r(r"ifnot\w+\[A\]then\w+=\w+\+1;else\w+=B;end"),
-            gettable_rr: r(r"^(\w+)\[A\]=(\w+)\[B\]\[(\w+)\[C\]\];$"),
-            gettable_rk: r(r"^(\w+)\[A\]=(\w+)\[B\]\[C\];$"),
-            settable: r(r"^\w+\[A\]\[(\w+\[B\]|B)\]=(\w+\[C\]|C);$"),
-            setglobal: r(r"^(\w+)\[B\]=(\w+)\[A\];$"),
-            newtable: r(r"^\w+\[A\]=\{\};$"),
-            self_re: r(r"\w+\[A\+1\]=\w+;"),
-            for_bind: r(r"^local(\w+)=A;"),
-            closure_nu: r(r"=\w+\(\w*\[?B\]?[^)]*,nil,\w+\)"),
-            call_a: r(r"\w+\[A\]\(|\w+\[\w+\]\("),
-            call_unpack: r(r"\w+\(\w+\(\w+,"),
+            test: regex!(r"if\w+\[A\]then\w+=\w+\+1;else\w+=B;end"),
+            test_c: regex!(r"ifnot\w+\[A\]then\w+=\w+\+1;else\w+=B;end"),
+            gettable_rr: regex!(r"^(\w+)\[A\]=(\w+)\[B\]\[(\w+)\[C\]\];$"),
+            gettable_rk: regex!(r"^(\w+)\[A\]=(\w+)\[B\]\[C\];$"),
+            settable: regex!(r"^\w+\[A\]\[(\w+\[B\]|B)\]=(\w+\[C\]|C);$"),
+            setglobal: regex!(r"^(\w+)\[B\]=(\w+)\[A\];$"),
+            newtable: regex!(r"^\w+\[A\]=\{\};$"),
+            self_re: regex!(r"\w+\[A\+1\]=\w+;"),
+            for_bind: regex!(r"^local(\w+)=A;"),
+            closure_nu: regex!(r"=\w+\(\w*\[?B\]?[^)]*,nil,\w+\)"),
+            call_a: regex!(r"\w+\[A\]\(|\w+\[\w+\]\("),
+            call_unpack: regex!(r"\w+\(\w+\(\w+,"),
         }
     }
 }
