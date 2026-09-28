@@ -7,7 +7,7 @@ use flate2::read::ZlibDecoder;
 
 use crate::base_library::{ZipMember, read_base_library_pyc_members};
 use crate::cookie::{Cookie, find_cookie};
-use crate::crypto::{AesMode, decrypt, recover_key_from_module};
+use crate::crypto::recover_key_from_module;
 use crate::debug::{dbg_enabled, dbg_hex, dbg_kv_guarded, dbg_line, dbg_section};
 use crate::error::{Error, Result};
 use crate::pyc_zipper::{UnzippedPyc, ZipperCompression, unzip_pyc};
@@ -37,6 +37,7 @@ pub struct ExtractOutput {
     pub base_library_module_count: usize,
     pub runtime_options: Vec<String>,
     pub dependencies: Vec<DependencyReference>,
+    pub undecodable_pyz_members: Vec<String>,
 }
 
 pub fn extract_from_path(path: &Path) -> Result<ExtractOutput> {
@@ -87,6 +88,7 @@ pub(crate) fn extract_archive_with_budget(
     let mut bare_pyc_paths: Vec<String> = Vec::new();
 
     let mut pyz_module_count: usize = 0usize;
+    let mut undecodable_pyz_members: Vec<String> = Vec::new();
     let mut pyc_unzipped_count: usize = 0usize;
     let mut base_library_module_count: usize = 0usize;
     let mut inflate_budget: u64 = aggregate_inflate_budget;
@@ -110,15 +112,15 @@ pub(crate) fn extract_archive_with_budget(
         }
         let range: Range<usize> = entry_range(image.len(), overlay_pos, &entry)?;
         let raw: &[u8] = &image[range];
-        let (decrypted_view, decrypted): (DecryptedBuf<'_>, bool) = decrypt_view(raw, key.as_ref());
+        let decrypted: bool = false;
 
         let inflated: Vec<u8> = if entry.compressed_flag == 1 {
-            inflate(decrypted_view.as_slice(), &mut inflate_budget).map_err(|e| Error::Inflate {
+            inflate(raw, &mut inflate_budget).map_err(|e| Error::Inflate {
                 name: entry.name.clone(),
                 source: e,
             })?
         } else {
-            decrypted_view.into_owned()
+            raw.to_vec()
         };
 
         let is_pyz: bool = entry.entry_type.is_pyz();
@@ -174,8 +176,9 @@ pub(crate) fn extract_archive_with_budget(
         }
 
         if is_pyz {
-            let mut unpacked: Vec<ExtractedEntry> =
+            let (mut unpacked, mut undecodable): (Vec<ExtractedEntry>, Vec<String>) =
                 unpack_pyz_entry(&entry.name, &inflated, &mut inflate_budget, key.as_ref());
+            undecodable_pyz_members.append(&mut undecodable);
             pyz_module_count += unpacked.len();
             for module in &unpacked {
                 bare_pyc_paths.push(module.toc.name.clone());
@@ -219,6 +222,7 @@ pub(crate) fn extract_archive_with_budget(
         base_library_module_count,
         runtime_options,
         dependencies,
+        undecodable_pyz_members,
     })
 }
 
@@ -227,15 +231,20 @@ fn unpack_pyz_entry(
     pyz_blob: &[u8],
     inflate_budget: &mut u64,
     key: Option<&[u8; 16]>,
-) -> Vec<ExtractedEntry> {
+) -> (Vec<ExtractedEntry>, Vec<String>) {
     let Ok((pyz_version, pyz_entries)): Result<(PyVersion, Vec<PyzEntry>)> =
         crate::pyz::extract_pyz_bounded(pyz_blob, inflate_budget, key)
     else {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     };
+    let mut undecodable: Vec<String> = Vec::new();
     let root: String = format!("{pyz_name}_extracted");
     let mut out: Vec<ExtractedEntry> = Vec::with_capacity(pyz_entries.len());
     for module in pyz_entries {
+        if module.undecodable {
+            undecodable.push(module.name);
+            continue;
+        }
         let is_package: bool = matches!(module.kind, PyzTocKind::Package);
         let entry_type: EntryType = if is_package {
             EntryType::PyzPackage
@@ -278,7 +287,7 @@ fn unpack_pyz_entry(
             pyc_compression,
         });
     }
-    out
+    (out, undecodable)
 }
 
 fn pyz_module_relpath(root: &str, dotted: &str, is_package: bool) -> Option<String> {
@@ -411,45 +420,6 @@ const fn nonnegative_i32_to_u32(value: i32) -> u32 {
 
 const fn pyz_relpath_capacity(root_len: usize, dotted_len: usize) -> usize {
     root_len.saturating_add(dotted_len).saturating_add(12usize)
-}
-
-enum DecryptedBuf<'a> {
-    Borrowed(&'a [u8]),
-    Owned(Vec<u8>),
-}
-
-impl DecryptedBuf<'_> {
-    const fn as_slice(&self) -> &[u8] {
-        match self {
-            Self::Borrowed(b) => b,
-            Self::Owned(v) => v.as_slice(),
-        }
-    }
-
-    fn into_owned(self) -> Vec<u8> {
-        match self {
-            Self::Borrowed(b) => b.to_vec(),
-            Self::Owned(v) => v,
-        }
-    }
-}
-
-fn decrypt_view<'a>(raw: &'a [u8], key: Option<&[u8; 16]>) -> (DecryptedBuf<'a>, bool) {
-    let Some(k) = key else {
-        return (DecryptedBuf::Borrowed(raw), false);
-    };
-    for mode in [AesMode::Ctr, AesMode::Cfb8] {
-        if let Some(plain) = decrypt(raw, k, mode)
-            && looks_like_zlib(&plain)
-        {
-            return (DecryptedBuf::Owned(plain), true);
-        }
-    }
-    (DecryptedBuf::Borrowed(raw), false)
-}
-
-fn looks_like_zlib(buf: &[u8]) -> bool {
-    buf.len() >= 2 && buf[0] == 0x78 && matches!(buf[1], 0x01 | 0x5e | 0x9c | 0xda)
 }
 
 fn locate_encryption_key(

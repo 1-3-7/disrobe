@@ -264,6 +264,7 @@ mod tests {
             base_library_module_count: 0,
             runtime_options: Vec::new(),
             dependencies: Vec::new(),
+            undecodable_pyz_members: Vec::new(),
         }
     }
 

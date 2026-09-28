@@ -48,6 +48,7 @@ pub struct PyzEntry {
     pub position: i32,
     pub length: i32,
     pub bytes: Vec<u8>,
+    pub undecodable: bool,
 }
 
 pub fn extract_pyz(pyz_bytes: &[u8]) -> Result<(PyVersion, Vec<PyzEntry>)> {
@@ -113,7 +114,7 @@ fn walk_pyz_toc(
                 if let Some(name) = string_value(k)
                     && let Object::Tuple(t) = v
                 {
-                    push_pyz_entry(&mut out, name, t, pyz_bytes, inflate_budget, key)?;
+                    push_pyz_entry(&mut out, name, t, pyz_bytes, inflate_budget, key);
                 }
             }
         }
@@ -127,7 +128,7 @@ fn walk_pyz_toc(
                     continue;
                 };
                 if let Object::Tuple(t) = &pair[1] {
-                    push_pyz_entry(&mut out, name, t, pyz_bytes, inflate_budget, key)?;
+                    push_pyz_entry(&mut out, name, t, pyz_bytes, inflate_budget, key);
                 }
             }
         }
@@ -143,45 +144,36 @@ fn push_pyz_entry(
     pyz_bytes: &[u8],
     inflate_budget: &mut u64,
     key: Option<&[u8; 16]>,
-) -> Result<()> {
+) {
     let Some((kind, position, length)): Option<(PyzTocKind, i32, i32)> =
         tuple_to_kind_pos_len(tuple)
     else {
-        return Ok(());
+        return;
     };
     let (Ok(pos_usize), Ok(len_usize)): (
         core::result::Result<usize, _>,
         core::result::Result<usize, _>,
     ) = (usize::try_from(position), usize::try_from(length)) else {
-        return Ok(());
+        return;
     };
     let Some(end): Option<usize> = pos_usize.checked_add(len_usize) else {
-        return Ok(());
+        return;
     };
     if len_usize == 0 || end > pyz_bytes.len() {
-        return Ok(());
+        return;
     }
     let raw: &[u8] = &pyz_bytes[pos_usize..end];
-    let decompressed: Vec<u8> = match decode_pyz_payload(raw, key, inflate_budget) {
-        Some(body) => body,
-        None => {
-            return Err(Error::Inflate {
-                name,
-                source: std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "pyz entry is neither plain zlib nor decryptable with the recovered key",
-                ),
-            });
-        }
-    };
+    let decoded: Option<Vec<u8>> = decode_pyz_payload(raw, key, inflate_budget);
+    let undecodable: bool = decoded.is_none();
+    let decompressed: Vec<u8> = decoded.unwrap_or_default();
     out.push(PyzEntry {
         name,
         kind,
         position,
         length,
         bytes: decompressed,
+        undecodable,
     });
-    Ok(())
 }
 
 fn decode_pyz_payload(
@@ -404,6 +396,46 @@ mod tests {
         enc.write_all(payload)
             .expect("zlib compress pyz module body");
         enc.finish().expect("zlib finish")
+    }
+
+    #[test]
+    fn an_undecodable_member_is_recorded_and_the_others_are_kept() {
+        use indexmap::IndexMap;
+        let good_body: &[u8] = b"value = 1\n";
+        let good: Vec<u8> = zlib_compress(good_body);
+        let bad: Vec<u8> = vec![0xAB; 24];
+        let mut body: Vec<u8> = good.clone();
+        body.extend_from_slice(&bad);
+        let good_len: i32 = i32::try_from(good.len()).expect("fits");
+        let bad_len: i32 = i32::try_from(bad.len()).expect("fits");
+        let mut toc_map: IndexMap<Object, Object> = IndexMap::new();
+        for (name, position, length) in [("good", 12, good_len), ("bad", 12 + good_len, bad_len)] {
+            toc_map.insert(
+                Object::Unicode {
+                    value: name.to_owned(),
+                    interned: false,
+                },
+                Object::Tuple(vec![
+                    Object::Int(0),
+                    Object::Int(position),
+                    Object::Int(length),
+                ]),
+            );
+        }
+        let pyz: Vec<u8> = build_pyz(&Object::Dict(toc_map), &body, PyVersion::PY312);
+        let (_, entries): (PyVersion, Vec<PyzEntry>) =
+            extract_pyz(&pyz).expect("one bad member must not fail the archive");
+        let good_entry: &PyzEntry = entries
+            .iter()
+            .find(|entry: &&PyzEntry| entry.name == "good")
+            .expect("good member kept");
+        assert_eq!(good_entry.bytes, good_body);
+        assert!(!good_entry.undecodable);
+        assert!(
+            entries
+                .iter()
+                .any(|entry: &PyzEntry| entry.name == "bad" && entry.undecodable)
+        );
     }
 
     #[test]

@@ -102,6 +102,7 @@ fn extract(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
         "variant": format!("{:?}", result.cookie.variant),
         "encryption_key_hex": result.encryption_key.map(hex_bytes),
         "pyc_unzipped_count": result.pyc_unzipped_count,
+        "undecodable_pyz_members": result.undecodable_pyz_members,
         "entries": result.entries.iter().map(|e| serde_json::json!({
             "name": e.toc.name,
             "type": format!("{:?}", e.toc.entry_type),
@@ -156,6 +157,13 @@ fn extract(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
     println!("  pyz modules:  {}", result.pyz_module_count);
     println!("  pyc-unzipped: {}", result.pyc_unzipped_count);
     println!("  encrypted:    {}", result.encryption_key.is_some());
+    if !result.undecodable_pyz_members.is_empty() {
+        println!(
+            "  undecodable:  {} pyz members neither inflate nor decrypt: {}",
+            result.undecodable_pyz_members.len(),
+            result.undecodable_pyz_members.join(", ")
+        );
+    }
     println!("  out dir:      {}", out_dir.display());
     Ok(())
 }
