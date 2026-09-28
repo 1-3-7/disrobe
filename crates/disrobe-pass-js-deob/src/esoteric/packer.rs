@@ -163,20 +163,16 @@ fn consume_string_literal(input: &str, quote: char) -> Option<(String, &str)> {
     if bytes.first().copied() != Some(quote_byte) {
         return None;
     }
-    let mut out: String = String::new();
     let mut i: usize = 1;
     while i < bytes.len() {
         let b: u8 = bytes[i];
         if b == b'\\' && i + 1 < bytes.len() {
-            out.push(char::from(b));
-            out.push(char::from(bytes[i + 1]));
             i += 2;
             continue;
         }
         if b == quote_byte {
-            return Some((out, &input[i + 1..]));
+            return Some((input.get(1..i)?.to_owned(), input.get(i + 1..)?));
         }
-        out.push(char::from(b));
         i += 1;
     }
     None
@@ -200,7 +196,7 @@ fn take_number(input: &str) -> Option<(&str, &str)> {
 }
 
 fn unpack_with(payload: &str, base: u32, words: &[String]) -> Option<String> {
-    let re: Regex = Regex::new(r"\b\w+\b").ok()?;
+    let re: Regex = Regex::new(r"(?-u:\b\w+\b)").ok()?;
     let out: std::borrow::Cow<'_, str> = re.replace_all(payload, |caps: &regex::Captures<'_>| {
         let token: &str = &caps[0];
         let Some(idx): Option<usize> = decode_base(token, base) else {
@@ -262,6 +258,21 @@ mod tests {
         };
         assert_eq!(out, "console log hello");
         assert_eq!(res.detection.layers, 1);
+    }
+
+    #[test]
+    fn non_ascii_payload_and_words_follow_javascript_word_rules() {
+        let packed: String = SAMPLE
+            .replace("'0 1 2'", "'é0 1 2'")
+            .replace("'console|log|hello'", "'console|lög|日本'");
+        let res: PackerDecode = unpack(&packed);
+        let Some(out): Option<String> = res.recovered else {
+            panic!("must unpack: {packed}");
+        };
+        assert_eq!(
+            out, "éconsole lög 日本",
+            "JavaScript's \\w is ASCII, so `é0` splits before `0`, and the words keep their characters"
+        );
     }
 
     #[test]
