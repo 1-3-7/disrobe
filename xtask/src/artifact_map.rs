@@ -319,6 +319,16 @@ const ARTIFACT_FAMILIES: [ArtifactFamily; 10] = [
     },
 ];
 
+pub(crate) fn is_generated(path: &str) -> bool {
+    GENERATED_ARTIFACTS
+        .iter()
+        .any(|artifact: &GeneratedArtifact| artifact.path == path)
+        || ARTIFACT_FAMILIES.iter().any(|family: &ArtifactFamily| {
+            path.strip_prefix(family.dir)
+                .is_some_and(|rest: &str| rest.starts_with('/'))
+        })
+}
+
 pub(crate) fn run(root: &Path) -> Result<()> {
     let mut faults: Vec<String> = Vec::new();
     for artifact in &GENERATED_ARTIFACTS {

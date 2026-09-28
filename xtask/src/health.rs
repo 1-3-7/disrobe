@@ -124,6 +124,7 @@ pub(crate) fn run(root: &Path, as_json: bool) -> Result<()> {
     check_wasm_build_records(root, &mut report);
     check_private_references(root, &mut report);
     check_host_paths(root, &mut report);
+    check_tracked_paths(root, &mut report);
     check_pyarmor_serial_footprint(root, &mut report);
     check_prose_tells(root, &mut report);
     check_readme_family_evidence(root, &mut report);
@@ -482,6 +483,39 @@ fn row_evidence_problems(
         ));
     }
     problems
+}
+
+fn check_tracked_paths(root: &Path, report: &mut Report) {
+    const CHECK: &str = "tracked-paths";
+    match crate::tracked_paths::inventory(root) {
+        Ok(inventory) => {
+            report.fact("tracked_paths", json!(inventory.kinds.len()));
+            if !inventory.unclassified.is_empty() {
+                report.fail(
+                    CHECK,
+                    format!(
+                        "{} tracked path(s) match no rule in xtask/src/tracked_paths.rs; add a rule or move the file: {}",
+                        inventory.unclassified.len(),
+                        inventory.unclassified.join(", ")
+                    ),
+                );
+            }
+            if !inventory.ignored_but_tracked.is_empty() {
+                report.fail(
+                    CHECK,
+                    format!(
+                        "{} tracked path(s) are also matched by an ignore rule; narrow the rule or add a negation in .gitignore: {}",
+                        inventory.ignored_but_tracked.len(),
+                        inventory.ignored_but_tracked.join(", ")
+                    ),
+                );
+            }
+        }
+        Err(error) => report.fail(
+            CHECK,
+            format!("could not classify tracked paths: {error:#}"),
+        ),
+    }
 }
 
 fn check_host_paths(root: &Path, report: &mut Report) {

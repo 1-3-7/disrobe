@@ -48,6 +48,7 @@ mod regen;
 mod roster_breadth;
 mod skip_census;
 mod sync;
+mod tracked_paths;
 mod typography;
 mod unused_deps;
 
@@ -84,6 +85,7 @@ enum Cmd {
         edge_cases: bool,
     },
     ReleasePackage,
+    TrackedPaths,
     Schemas {
         #[arg(long, action = clap::ArgAction::SetTrue)]
         check: bool,
@@ -187,6 +189,7 @@ fn main() -> ExitCode {
         Cmd::Prepush { full } => run_prepush(full),
         Cmd::PushGraders { mode } => run_push_graders(mode),
         Cmd::Health { json } => run_health(json),
+        Cmd::TrackedPaths => workspace_root().and_then(|root: PathBuf| tracked_paths::run(&root)),
         Cmd::Comments { rev } => run_comments(&rev),
         Cmd::Golden { mode } => run_golden(mode),
         Cmd::SetupHooks => run_setup_hooks(),
