@@ -1,0 +1,62 @@
+schema = "disrobe.fixture.provenance/v1"
+family = "office-without-macros"
+description = "Office files with no VBA project, authored here, that shell.deob must refuse with a typed wall"
+
+[[artifact]]
+path = "memo.doc"
+producer = "generate.py compound file writer"
+source = "generate.py"
+reproducible = true
+sha256 = "46ecbc2b81d4798375462e48ed0a1df032b6adaaea7ea1915bf886fd65c15a3a"
+bytes = 3584
+streams = ["WordDocument", "1Table"]
+steps = ["python generate.py"]
+note = """
+A Word 97 binary document holding a three-paragraph memo: a FIB (nFib 0x00C1, fWhichTblStm set),
+the text as 8-bit characters at offset 0x400 of WordDocument, and a one-piece Clx in 1Table.
+It carries no formatting tables, no Macros storage and no VBA project.
+"""
+
+[[artifact]]
+path = "memo_encrypted.docx"
+producer = "msoffcrypto-tool 6.0.0 (ECMA-376 agile encryption) under Python 3.14.7"
+source = "generate.py"
+reproducible = true
+sha256 = "73c91a8c269f48a0faf47a7033123681e7a30746739d40cd7e09f042569b3dbe"
+bytes = 12288
+password = "disrobe-fixture"
+plaintext_sha256 = "59629ffbb256a3547f4df42189958e399aca8d16de4b6c7a8d68373a7481e28c"
+plaintext_bytes = 6875
+steps = ["python generate.py"]
+note = """
+The plaintext is a WordprocessingML package written by generate.py (stored zip entries dated
+1980-01-01, the memo plus 52 schedule lines, no vbaProject.bin). msoffcrypto-tool encrypts it
+into an OLE container with EncryptionInfo and EncryptedPackage. generate.py replaces the tool's
+random source with a SHA-256 counter stream seeded by a fixed string and its directory timestamps
+with zero, so a rerun writes the same bytes. The package stays above 4096 bytes because
+msoffcrypto-tool 6.0.0 always writes EncryptedPackage as a regular-sector stream.
+"""
+
+[[artifact]]
+path = "memo.msg"
+producer = "generate.py compound file writer"
+source = "generate.py"
+reproducible = true
+sha256 = "21c5619eb50800f0389f1f0099e3aef00a62d524d3d9fc0fdd812927c74d9fde"
+bytes = 4096
+steps = ["python generate.py"]
+note = """
+An Outlook message (IPM.Note) with subject, sender name, normalized subject and plain-text body
+as Unicode property streams, a top-level __properties_version1.0 stream, an empty
+__nameid_version1.0 storage, and no recipients or attachments.
+"""
+
+[verification]
+independent_reader = "olefile 0.47 and msoffcrypto-tool 6.0.0"
+command = "python generate.py"
+note = """
+After writing, generate.py lists and reads every stream of memo.doc and memo.msg through olefile
+and compares each with the bytes it wrote, refuses any storage named like a VBA or Macros
+storage, and decrypts memo_encrypted.docx with msoffcrypto-tool to compare the result with the
+authored package. No fixture has been opened in Office or any other application.
+"""
