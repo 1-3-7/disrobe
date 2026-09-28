@@ -4,7 +4,7 @@ pub(crate) const MAX_SYNTACTIC_NESTING_DEPTH: usize = 600;
 
 pub(crate) const MAX_OPERATOR_CHAIN: usize = 600;
 
-pub(crate) const MAX_EXPRESSION_DEPTH: usize = 4_000;
+pub(crate) const MAX_EXPRESSION_DEPTH: usize = 28_000;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mode {
