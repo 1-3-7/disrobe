@@ -68,7 +68,7 @@ pub fn detect(source: &[u8]) -> Detection {
         crate::debug::dbg_hex("head-prefix", head.as_bytes(), 32);
     }
 
-    if head.contains(OBF_IO_MARKER) {
+    if leading_comment_mentions(head, OBF_IO_MARKER) {
         markers.push("obfuscator-io-banner".to_owned());
         return classified(
             JsObfuscator::ObfuscatorIo,
@@ -77,7 +77,7 @@ pub fn detect(source: &[u8]) -> Detection {
             "obfuscator-io-banner",
         );
     }
-    if head.contains(JSCRAMBLER_MARKER) {
+    if leading_comment_mentions(head, JSCRAMBLER_MARKER) {
         markers.push("jscrambler-banner".to_owned());
         return classified(JsObfuscator::Jscrambler, 0.95, markers, "jscrambler-banner");
     }
@@ -127,7 +127,10 @@ pub fn detect(source: &[u8]) -> Detection {
         markers.push("webpack-runtime".to_owned());
         return classified(JsObfuscator::Webpack, 0.95, markers, "webpack-runtime");
     }
-    if head.contains("import.meta.glob") || head.contains("Vite") {
+    if head.contains("import.meta.glob")
+        || head.contains("__vitePreload")
+        || head.contains("/@vite/client")
+    {
         markers.push("vite-runtime".to_owned());
         return classified(JsObfuscator::Vite, 0.85, markers, "vite-runtime");
     }
@@ -149,6 +152,35 @@ pub fn detect(source: &[u8]) -> Detection {
         family: JsObfuscator::Unknown,
         confidence: 0.0,
         markers,
+    }
+}
+
+pub(crate) fn leading_comment_mentions(head: &str, marker: &str) -> bool {
+    let mut rest: &str = head.trim_start_matches('\u{feff}').trim_start();
+    if let Some(after_shebang) = rest.strip_prefix("#!") {
+        rest = after_shebang
+            .split_once('\n')
+            .map_or("", |(_, tail): (&str, &str)| tail)
+            .trim_start();
+    }
+    loop {
+        if let Some(body) = rest.strip_prefix("//") {
+            let (line, tail): (&str, &str) = body.split_once('\n').unwrap_or((body, ""));
+            if line.to_ascii_lowercase().contains(marker) {
+                return true;
+            }
+            rest = tail.trim_start();
+        } else if let Some(body) = rest.strip_prefix("/*") {
+            let Some((block, tail)): Option<(&str, &str)> = body.split_once("*/") else {
+                return false;
+            };
+            if block.to_ascii_lowercase().contains(marker) {
+                return true;
+            }
+            rest = tail.trim_start();
+        } else {
+            return false;
+        }
     }
 }
 
@@ -278,6 +310,33 @@ fn is_modern_obfuscator_io(head: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_banner_word_outside_the_leading_comment_claims_no_family() {
+        let benign: &str = "const docs = \"see obfuscator.io and jscrambler.com for why we do not obfuscate\";\nconsole.log(docs);\n";
+        let detection: Detection = detect(benign.as_bytes());
+        assert!(
+            !matches!(
+                detection.family,
+                JsObfuscator::ObfuscatorIo | JsObfuscator::Jscrambler
+            ),
+            "{detection:?}"
+        );
+        let banner: &str = "/* Protected with jscrambler */\nvar a = 1;\n";
+        assert!(matches!(
+            detect(banner.as_bytes()).family,
+            JsObfuscator::Jscrambler
+        ));
+    }
+
+    #[test]
+    fn the_word_vite_is_not_a_vite_bundle() {
+        let benign: &str = "// Invite the user\nconst Vitest = 1;\nsendInvite();\n";
+        assert!(!matches!(
+            detect(benign.as_bytes()).family,
+            JsObfuscator::Vite
+        ));
+    }
 
     #[test]
     fn detects_obfuscator_io_by_banner() {
