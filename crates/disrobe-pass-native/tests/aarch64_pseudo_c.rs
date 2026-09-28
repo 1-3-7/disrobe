@@ -1598,9 +1598,19 @@ fn clang_frame_pointer_and_split_stack_arguments_lift() {
             recover_aarch64_function(bytes, 0).expect("aarch64 framed stack argument");
         assert_eq!(
             recovered.signature.observed_integer_registers(),
-            vec![PseudoReg::A64Stack0]
+            vec![
+                PseudoReg::Rax,
+                PseudoReg::A64X1,
+                PseudoReg::A64X2,
+                PseudoReg::A64X3,
+                PseudoReg::A64X4,
+                PseudoReg::A64X5,
+                PseudoReg::A64X6,
+                PseudoReg::A64X7,
+                PseudoReg::A64Stack0,
+            ]
         );
-        assert!(recovered.source.contains("r_a64_stack0 = a0"));
+        assert!(recovered.source.contains("r_a64_stack0 = a8"));
     }
 }
 

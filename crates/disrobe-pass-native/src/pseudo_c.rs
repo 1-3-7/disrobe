@@ -36,6 +36,7 @@ use crate::structuring;
 pub(crate) mod aarch64;
 mod aarch64_callsite;
 mod call_clobber;
+mod dividend_high;
 pub use aarch64::SCALAR_FP_LOWERED_MNEMONICS as AARCH64_SCALAR_FP_LOWERED_MNEMONICS;
 pub mod fp_semantics;
 mod idiom;
@@ -4787,6 +4788,7 @@ fn disassemble_x86_64_lift_input(base: u64, machine_code: &[u8]) -> Result<Vec<D
         return Err(Error::LlvmIr("no decodable instructions".to_owned()));
     }
     refuse_high_byte_registers(&insns)?;
+    dividend_high::refuse_unset_dividend_high_halves(&insns)?;
     Ok(insns)
 }
 
@@ -5332,12 +5334,6 @@ fn build_leaf_items(
             continue;
         }
         if let Some(stmt) = lift_width_extension(&insn.mnemonic, &insn.operands) {
-            if sign_extended_high_read_is_unsound(dividend_high, &stmt) {
-                return Err(Error::LlvmIr(format!(
-                    "sign-extended high half in rdx from a cqo/cdq is read at {:#x} without a modeled division; not soundly recoverable",
-                    insn.address
-                )));
-            }
             if let Stmt::Extend { dest, .. } = &stmt
                 && dest.reg == Reg::Rax
             {
@@ -5381,12 +5377,6 @@ fn build_leaf_items(
                 ))
             })?,
         };
-        if sign_extended_high_read_is_unsound(dividend_high, &stmt) {
-            return Err(Error::LlvmIr(format!(
-                "sign-extended high half in rdx from a cqo/cdq is read at {:#x} without a modeled division; not soundly recoverable",
-                insn.address
-            )));
-        }
         if let Stmt::Assign { dest, .. }
         | Stmt::BinAssign { dest, .. }
         | Stmt::UnAssign { dest, .. }
@@ -8400,12 +8390,6 @@ impl<'a> StraightLifter<'a> {
                 ))
             })?,
         };
-        if sign_extended_high_read_is_unsound(self.dividend_high, &stmt) {
-            return Err(Error::LlvmIr(format!(
-                "sign-extended high half in rdx from a cqo/cdq is read at {:#x} without a modeled division; not soundly recoverable",
-                insn.address
-            )));
-        }
         self.dividend_high = track_dividend_high(self.dividend_high, &stmt);
         match &stmt {
             Stmt::BinAssign { dest, op, .. } => {
@@ -16304,15 +16288,6 @@ const fn dividend_high_matches(high: DividendHigh, signed: bool, width: Width) -
         DividendHigh::SignExtended { width: w } => signed && w as u8 == width as u8,
         DividendHigh::Zeroed => !signed,
     }
-}
-
-fn sign_extended_high_read_is_unsound(dividend_high: Option<DividendHigh>, stmt: &Stmt) -> bool {
-    if !matches!(dividend_high, Some(DividendHigh::SignExtended { .. })) {
-        return false;
-    }
-    let mut reads: Vec<Reg> = Vec::new();
-    stmt_value_reads(stmt, &mut reads);
-    reads.contains(&Reg::Rdx)
 }
 
 fn track_dividend_high(prev: Option<DividendHigh>, stmt: &Stmt) -> Option<DividendHigh> {

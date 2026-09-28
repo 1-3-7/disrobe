@@ -3109,6 +3109,33 @@ fn aarch64_fp_params(body: &Block) -> Result<Vec<(Xmm, FpWidth)>> {
     Ok(params)
 }
 
+fn pad_below_stack_integer_parameters(params: &mut Vec<Reg>, stack_fp: &[(u8, Reg, FpWidth)]) {
+    let order: &[Reg] = Abi::Aapcs64.integer_parameter_order();
+    let position = |reg: &Reg| -> usize {
+        order
+            .iter()
+            .position(|candidate: &Reg| candidate == reg)
+            .unwrap_or(usize::MAX)
+    };
+    let Some(highest): Option<usize> = params
+        .iter()
+        .filter(|reg: &&Reg| super::a64_stack_slot(**reg).is_some())
+        .map(position)
+        .max()
+    else {
+        return;
+    };
+    for reg in order.iter().take(highest.saturating_add(1)).copied() {
+        let floating_slot: bool = stack_fp
+            .iter()
+            .any(|(_, stack_reg, _): &(u8, Reg, FpWidth)| *stack_reg == reg);
+        if !floating_slot && !params.contains(&reg) {
+            params.push(reg);
+        }
+    }
+    params.sort_by_key(position);
+}
+
 fn finish(
     insns: &[DisasmInsn],
     items: &mut Vec<Item>,
@@ -3184,6 +3211,7 @@ fn finish(
             .iter()
             .any(|(_, stack_reg, _): &(u8, Reg, FpWidth)| stack_reg == reg)
     });
+    pad_below_stack_integer_parameters(&mut params, &stack_fp_args);
     super::validate_aapcs64_stack_fp_prefix(&fp_args, &params, &stack_fp_args)?;
     if let Some(plan) = &sret_plan {
         params.retain(|reg: &Reg| *reg != plan.ptr);

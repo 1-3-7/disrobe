@@ -256,6 +256,66 @@ const STUBS: &[Stub] = &[
         expect: Expect::Equivalent,
         abi: StubAbi::SysV,
     },
+    Stub {
+        name: "div_cqo_idiv64",
+        body: "mov rax, rdi\nmov rcx, rsi\nor rcx, 1\ncqo\nidiv rcx\nret",
+        expect: Expect::Equivalent,
+        abi: StubAbi::SysV,
+    },
+    Stub {
+        name: "div_cdq_idiv32",
+        body: "mov eax, edi\nmov ecx, esi\nor ecx, 1\ncdq\nidiv ecx\nret",
+        expect: Expect::Equivalent,
+        abi: StubAbi::SysV,
+    },
+    Stub {
+        name: "div_zeroed_edx_remainder",
+        body: "mov rax, rdi\nmov rcx, rsi\nor rcx, 1\nxor edx, edx\ndiv rcx\nmov rax, rdx\nret",
+        expect: Expect::Equivalent,
+        abi: StubAbi::SysV,
+    },
+    Stub {
+        name: "div_rdx_incoming_argument",
+        body: "mov rax, rdi\nmov rcx, rsi\nor rcx, 1\ndiv rcx\nret",
+        expect: Expect::Refused("no cqo, cdq or full-width zeroing of rdx"),
+        abi: StubAbi::SysV,
+    },
+    Stub {
+        name: "div_rdx_incoming_on_one_path",
+        body: "mov rax, rdi\nmov rcx, rsi\nor rcx, 1\ntest rdi, 1\njne .Ldiv_incoming_join\nxor edx, edx\n.Ldiv_incoming_join:\ndiv rcx\nret",
+        expect: Expect::Refused("a branch joins"),
+        abi: StubAbi::SysV,
+    },
+    Stub {
+        name: "div_rdx_byte_zeroed",
+        body: "mov rax, rdi\nmov rcx, rsi\nor rcx, 1\nmov rdx, rdi\nxor dl, dl\ndiv rcx\nret",
+        expect: Expect::Refused("leaves rdx neither zero nor the sign of rax"),
+        abi: StubAbi::SysV,
+    },
+    Stub {
+        name: "div_zeroed_edx_then_call",
+        body: "push rbx\nmov rbx, rsi\nor rbx, 1\nmov rax, rdi\nxor edx, edx\ncall abi_pair_helper\ndiv rbx\npop rbx\nret",
+        expect: Expect::Refused("may read or change rdx"),
+        abi: StubAbi::SysV,
+    },
+    Stub {
+        name: "div_cqo_then_call",
+        body: "push rbx\nmov rbx, rsi\nor rbx, 1\nmov rax, rdi\ncqo\ncall abi_pair_helper\nidiv rbx\npop rbx\nret",
+        expect: Expect::Refused("may read or change rdx"),
+        abi: StubAbi::SysV,
+    },
+    Stub {
+        name: "div_cqo_then_rax_changes",
+        body: "mov rax, rdi\nmov rcx, rsi\nor rcx, 1\ncqo\nmov rax, rsi\nidiv rcx\nret",
+        expect: Expect::Refused("changes rax"),
+        abi: StubAbi::SysV,
+    },
+    Stub {
+        name: "div_cqo_sign_read_on_exit_path",
+        body: "mov rax, rdi\nmov rcx, rsi\nor rcx, 1\ncqo\ntest rsi, rsi\nje .Ldiv_cqo_exit\nidiv rcx\nret\n.Ldiv_cqo_exit:\nmov rax, rdx\nret",
+        expect: Expect::Refused("leaves the block"),
+        abi: StubAbi::SysV,
+    },
 ];
 
 fn active_stubs() -> impl Iterator<Item = &'static Stub> {
@@ -362,15 +422,32 @@ fn recovered_decl(name: &str, recovery: &LeafRecovery, earlier: &str) -> String 
         .join("\n")
 }
 
-fn comparison(name: &str, recovery: &LeafRecovery) -> Result<String, String> {
+const ARGUMENT_EXPRESSIONS: [&str; 9] = [
+    "(uint64_t)x",
+    "(uint64_t)y",
+    "(uint64_t)(x ^ y)",
+    "(uint64_t)(x + y)",
+    "(uint64_t)~x",
+    "(uint64_t)~y",
+    "(uint64_t)(x * 3u)",
+    "(uint64_t)(y * 5u)",
+    "(uint64_t)(x - y)",
+];
+
+fn comparison(
+    name: &str,
+    recovery: &LeafRecovery,
+    authored_arity: usize,
+) -> Result<String, String> {
     let arity: usize = recovery.signature.callable_arity();
-    if arity > 2 {
+    if arity > authored_arity {
         return Err(format!(
-            "{name} recovered with arity {arity}, above the two authored arguments:\n{}",
+            "{name} recovered with arity {arity}, above the {authored_arity} authored arguments:\n{}",
             recovery.source
         ));
     }
-    let args: String = ["(uint64_t)x", "(uint64_t)y"][..arity].join(", ");
+    let args: String = ARGUMENT_EXPRESSIONS[..arity].join(", ");
+    let authored_args: String = ARGUMENT_EXPRESSIONS[..authored_arity].join(", ");
     let mask: String = if recovery.return_width_bits >= 64 {
         "0xffffffffffffffffULL".to_owned()
     } else {
@@ -378,7 +455,7 @@ fn comparison(name: &str, recovery: &LeafRecovery) -> Result<String, String> {
     };
     Ok(format!(
         "\x20       {{\n\
-         \x20           unsigned long long want = {name}(x, y) & {mask};\n\
+         \x20           unsigned long long want = {name}({authored_args}) & {mask};\n\
          \x20           unsigned long long got = rec_{name}({args}) & {mask};\n\
          \x20           if (want != got && !bad_{name}) {{ bad_{name} = 1; mismatched = 1; printf(\"MISMATCH {name} x=%llx y=%llx want=%llx got=%llx\\n\", x, y, want, got); }}\n\
          \x20       }}\n",
@@ -401,9 +478,11 @@ impl Differential {
         expect: Expect,
         outcome: disrobe_pass_native::Result<LeafRecovery>,
         original_decl: &str,
+        authored_arity: usize,
     ) {
         match (expect, outcome) {
-            (Expect::Equivalent, Ok(recovery)) => match comparison(name, &recovery) {
+            (Expect::Equivalent, Ok(recovery)) => match comparison(name, &recovery, authored_arity)
+            {
                 Ok(check) => {
                     self.recovered_decls.push_str(&recovered_decl(
                         name,
@@ -533,7 +612,7 @@ fn low_registers_and_stack_transfers_recompile_equal_and_high_bytes_refuse() {
             stub.abi.c_attribute(),
             stub.name
         );
-        differential.record(stub.name, stub.expect, outcome, &original_decl);
+        differential.record(stub.name, stub.expect, outcome, &original_decl, 2);
     }
     differential.run(&compiler, &dir, &[object_path], "operand");
 }
@@ -606,7 +685,7 @@ fn sysv_callbacks_selects_and_pair_returns_from_gcc_and_clang_recompile_equal_or
                 let original_decl: String = format!(
                     "extern __attribute__((sysv_abi)) unsigned long long {name}({parameter}, {parameter});"
                 );
-                differential.record(&name, expect, outcome, &original_decl);
+                differential.record(&name, expect, outcome, &original_decl, 2);
             }
             objects.push(object_path);
         }
@@ -661,7 +740,48 @@ fn aarch64_word_selects_prototypes_and_post_call_reads_match_the_architecture() 
             .unwrap_or_else(|| panic!("{name} is not in the aarch64 object"));
         let outcome: disrobe_pass_native::Result<LeafRecovery> =
             recover_aarch64_function(&code, base);
-        differential.record(name, expect, outcome, "");
+        differential.record(name, expect, outcome, "", 2);
     }
     differential.run(&linker, &dir, &[], "aarch64_call_abi");
+}
+
+const NINTH_ONLY_PARAMETERS: &str = "unsigned long long a0, unsigned long long a1, unsigned long long a2, unsigned long long a3, unsigned long long a4, unsigned long long a5, unsigned long long a6, unsigned long long a7, unsigned long long a8";
+
+const NINTH_ONLY_BODY: &str = "{ (void)a0; (void)a1; (void)a2; (void)a3; (void)a4; (void)a5; (void)a6; (void)a7; return a8 * 3u + 1u; }";
+
+#[test]
+fn aarch64_stack_arguments_follow_every_integer_register_position() {
+    let linker: String = compiler_toolchain::require_any(&["gcc", "clang", "cc"]);
+    let compiler: String = compiler_toolchain::require_one("clang");
+    let scratch: ScratchDir =
+        ScratchDir::create("disrobe-aarch64-stack-args").expect("create scratch directory");
+    let dir: PathBuf = scratch.path().to_path_buf();
+    let mut differential: Differential = Differential::default();
+    for opt in ["-O0", "-O1", "-O2"] {
+        let name: String = format!("a64c_{}_ninth_only", opt.trim_start_matches('-'));
+        let source_path: PathBuf = dir.join(format!("{name}.c"));
+        let source: String =
+            format!("unsigned long long {name}({NINTH_ONLY_PARAMETERS}) {NINTH_ONLY_BODY}\n");
+        std::fs::write(&source_path, source).expect("write authored aarch64 source");
+        let object_path: PathBuf = dir.join(format!("{name}.o"));
+        run_compiler(
+            &compiler,
+            &["--target=aarch64-linux-gnu", "-c", opt],
+            &source_path,
+            &object_path,
+            "the authored aarch64 stack-argument row",
+        );
+        let object_bytes: Vec<u8> =
+            std::fs::read(&object_path).expect("read authored aarch64 object");
+        let (code, base): (Vec<u8>, u64) = function_code(&object_bytes, &name)
+            .unwrap_or_else(|| panic!("{name} is not in the clang {opt} aarch64 object"));
+        let outcome: disrobe_pass_native::Result<LeafRecovery> =
+            recover_aarch64_function(&code, base);
+        let _ = writeln!(
+            differential.recovered_decls,
+            "static unsigned long long {name}({NINTH_ONLY_PARAMETERS}) {NINTH_ONLY_BODY}"
+        );
+        differential.record(&name, Expect::Equivalent, outcome, "", 9);
+    }
+    differential.run(&linker, &dir, &[], "aarch64_stack_args");
 }
