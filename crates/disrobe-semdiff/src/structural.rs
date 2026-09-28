@@ -115,6 +115,7 @@ fn shape_token(op: &NirOp, reads_memory: bool, writes_memory: bool, byte_width: 
         NirOp::ExternCall { symbol } => format!("call.extern:{symbol}"),
         NirOp::Branch { .. } => "jmp".to_owned(),
         NirOp::CondBranch { .. } => "jcc".to_owned(),
+        NirOp::Switch { .. } => "switch".to_owned(),
         NirOp::Phi => "phi".to_owned(),
         NirOp::Return => "ret".to_owned(),
         NirOp::Interrupt => "int".to_owned(),

@@ -390,9 +390,27 @@ pub enum NirOp {
     TailCall {
         target: Option<u64>,
     },
+    Switch {
+        targets: Vec<u64>,
+    },
 }
 
 impl NirOp {
+    #[must_use]
+    pub fn switch(mut targets: Vec<u64>) -> Self {
+        targets.sort_unstable();
+        targets.dedup();
+        Self::Switch { targets }
+    }
+
+    #[must_use]
+    pub const fn switch_targets(&self) -> Option<&[u64]> {
+        match self {
+            Self::Switch { targets } => Some(targets.as_slice()),
+            _ => None,
+        }
+    }
+
     #[must_use]
     pub const fn class(&self) -> NirClass {
         match self {
@@ -403,6 +421,7 @@ impl NirOp {
             | Self::ExternCall { .. } => NirClass::Call,
             Self::Branch { .. } => NirClass::UnconditionalJump,
             Self::CondBranch { .. } => NirClass::ConditionalJump,
+            Self::Switch { .. } => NirClass::MultiwayJump,
             Self::Return => NirClass::Return,
             Self::Nop
             | Self::Const
@@ -473,6 +492,7 @@ pub enum NirClass {
     Call,
     UnconditionalJump,
     ConditionalJump,
+    MultiwayJump,
     Return,
     Other,
 }
@@ -1687,6 +1707,7 @@ fn validate_owned_operation(
             budget.add_string(high.len())?;
             budget.add_string(low.len())?;
         }
+        NirOp::Switch { targets } => budget.add_nested::<u64>(targets.len())?,
         NirOp::Nop
         | NirOp::Const
         | NirOp::BinOp { .. }
@@ -1790,6 +1811,7 @@ fn validate_archived_operation(
             budget.add_string(high.len())?;
             budget.add_string(low.len())?;
         }
+        ArchivedNirOp::Switch { targets } => budget.add_nested::<u64>(targets.len())?,
         ArchivedNirOp::Nop
         | ArchivedNirOp::Const
         | ArchivedNirOp::BinOp { .. }
@@ -1954,6 +1976,11 @@ mod tests {
             NirOp::CondBranch { target: Some(2) }.class(),
             NirClass::ConditionalJump
         );
+        assert_eq!(NirOp::switch(vec![9, 3, 9]).class(), NirClass::MultiwayJump);
+        assert_eq!(
+            NirOp::switch(vec![9, 3, 9]).switch_targets(),
+            Some([3_u64, 9].as_slice())
+        );
         assert_eq!(NirOp::Return.class(), NirClass::Return);
         assert_eq!(NirOp::Nop.class(), NirClass::Other);
     }
@@ -2045,6 +2072,7 @@ mod tests {
                 is_export: true,
                 instructions: vec![
                     instr(0x10, NirOp::Call { target: Some(0x40) }, "call"),
+                    instr(0x13, NirOp::switch(vec![0x15, 0x10]), "switch"),
                     instr(0x15, NirOp::Return, "ret"),
                 ],
                 source: SourceRef::new(SourceLang::NativeX86, 0x10),

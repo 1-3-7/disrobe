@@ -473,6 +473,7 @@ const fn instruction_has_effect(instruction: &NirInstr) -> bool {
         | NirOp::ExternCall { .. }
         | NirOp::Branch { .. }
         | NirOp::CondBranch { .. }
+        | NirOp::Switch { .. }
         | NirOp::Phi
         | NirOp::Return
         | NirOp::Interrupt
@@ -817,6 +818,7 @@ fn defined_names(instruction: &NirInstr) -> Vec<String> {
         | NirOp::ExternCall { .. }
         | NirOp::Branch { .. }
         | NirOp::CondBranch { .. }
+        | NirOp::Switch { .. }
         | NirOp::Phi
         | NirOp::Return
         | NirOp::Interrupt
@@ -1000,6 +1002,7 @@ fn embedded_names(instruction: &NirInstr) -> Vec<String> {
         | NirOp::ExternCall { .. }
         | NirOp::Branch { .. }
         | NirOp::CondBranch { .. }
+        | NirOp::Switch { .. }
         | NirOp::Phi
         | NirOp::Return
         | NirOp::Interrupt

@@ -4,7 +4,8 @@ use disrobe_nir::{
     BinaryOp, NirFunction, NirInstr, NirModule, NirOp, NirSymbol, SourceLang, SourceRef, SymbolKind,
 };
 use disrobe_pass_ruby::{
-    IbfImage, RubyAnalysis, YarvIbfInstruction, YarvIseqBody, YarvOperand, analyze_bytes,
+    IbfImage, IbfObject, IbfObjectKind, RubyAnalysis, YarvIbfInstruction, YarvIseqBody,
+    YarvOperand, analyze_bytes,
 };
 
 use crate::error::{LiftError, Result};
@@ -42,7 +43,7 @@ fn build_module(source: &[u8], image: &IbfImage) -> Result<NirModule> {
 
     for body in &image.iseqs {
         register_iseq_symbol(body, &mut module);
-        let function: NirFunction = lift_body(body, &mut imports);
+        let function: NirFunction = lift_body(body, &image.objects, &mut imports)?;
         module.functions.push(function);
     }
 
@@ -178,9 +179,88 @@ fn branch_offset(instr: &YarvIbfInstruction) -> Option<i64> {
     })
 }
 
-fn lift_body(body: &YarvIseqBody, imports: &mut ImportTable) -> NirFunction {
+fn case_dispatch_targets(
+    body: &YarvIseqBody,
+    rt: &[u32],
+    idx: usize,
+    objects: &[IbfObject],
+    base: u64,
+) -> Result<Vec<u64>> {
+    let refuse = |reason: &str| -> LiftError {
+        LiftError::Source(format!(
+            "ruby yarv {} opt_case_dispatch at instruction {idx}: {reason}",
+            iseq_label(body.index)
+        ))
+    };
+    let instr: &YarvIbfInstruction = body
+        .instructions
+        .get(idx)
+        .ok_or_else(|| refuse("instruction is missing"))?;
+    let here: u32 = rt
+        .get(idx)
+        .copied()
+        .ok_or_else(|| refuse("runtime position is missing"))?;
+    let next_pc: i64 = i64::from(here)
+        .saturating_add(1)
+        .saturating_add(i64::from(operand_slots_u32(instr.operands.len())));
+    let (Some(hash_operand), Some(YarvOperand::Offset(else_offset))) =
+        (instr.operands.first(), instr.operands.get(1))
+    else {
+        return Err(refuse("operands are not a case hash and an else offset"));
+    };
+    let case_offsets: Vec<i64> =
+        cdhash_offsets(hash_operand, objects).ok_or_else(|| refuse("case hash is unreadable"))?;
+    std::iter::once(0)
+        .chain(std::iter::once(i64::from(signed_i32(*else_offset))))
+        .chain(case_offsets)
+        .map(|offset: i64| {
+            let target_pc: u32 = u32::try_from(next_pc.saturating_add(offset))
+                .map_err(|_| refuse("target is out of range"))?;
+            let target_idx: usize = rt
+                .binary_search(&target_pc)
+                .map_err(|_| refuse("target is not an instruction boundary"))?;
+            body.instructions
+                .get(target_idx)
+                .map(|target: &YarvIbfInstruction| base.saturating_add(u64::from(target.pc)))
+                .ok_or_else(|| refuse("target instruction is missing"))
+        })
+        .collect()
+}
+
+fn cdhash_offsets(operand: &YarvOperand, objects: &[IbfObject]) -> Option<Vec<i64>> {
+    let hash: &IbfObject = match operand {
+        YarvOperand::ObjectRef(index) => objects.get(usize::try_from(*index).ok()?)?,
+        YarvOperand::NumLiteral(text) => objects.iter().find(|object: &&IbfObject| {
+            object.kind == IbfObjectKind::Hash && object.literal.as_deref() == Some(text.as_str())
+        })?,
+        _ => return None,
+    };
+    let complete: bool = hash.kind == IbfObjectKind::Hash
+        && hash.elements.len().is_multiple_of(2)
+        && hash.element_count == u32::try_from(hash.elements.len()).ok();
+    if !complete {
+        return None;
+    }
+    hash.elements
+        .chunks_exact(2)
+        .map(|pair: &[u32]| {
+            let value: &IbfObject = objects.get(usize::try_from(*pair.get(1)?).ok()?)?;
+            if value.kind != IbfObjectKind::Fixnum {
+                return None;
+            }
+            value.literal.as_deref()?.parse::<i64>().ok()
+        })
+        .collect()
+}
+
+fn lift_body(
+    body: &YarvIseqBody,
+    objects: &[IbfObject],
+    imports: &mut ImportTable,
+) -> Result<NirFunction> {
     let base: u64 = function_address(body.index);
     let targets: Vec<Option<u64>> = branch_targets(body, base);
+    let rt: Vec<u32> = runtime_pcs(body);
 
     let mut instructions: Vec<NirInstr> = Vec::with_capacity(body.instructions.len());
     let mut max_pc: u32 = 0;
@@ -188,7 +268,14 @@ fn lift_body(body: &YarvIseqBody, imports: &mut ImportTable) -> NirFunction {
         let address: u64 = base.saturating_add(u64::from(instr.pc));
         max_pc = max_pc.max(instr.pc);
         let branch_target: Option<u64> = targets.get(idx).copied().flatten();
-        let (op, operand_list): (NirOp, Vec<String>) = classify(instr, branch_target, imports);
+        let (op, operand_list): (NirOp, Vec<String>) = if instr.mnemonic == "opt_case_dispatch" {
+            (
+                NirOp::switch(case_dispatch_targets(body, &rt, idx, objects, base)?),
+                Vec::new(),
+            )
+        } else {
+            classify(instr, branch_target, imports)
+        };
         let (reads_memory, writes_memory): (bool, bool) = memory_facets(instr.mnemonic.as_str());
         instructions.push(NirInstr {
             address,
@@ -203,7 +290,7 @@ fn lift_body(body: &YarvIseqBody, imports: &mut ImportTable) -> NirFunction {
     }
 
     let end: u64 = base.saturating_add(u64::from(max_pc).saturating_add(1));
-    NirFunction {
+    Ok(NirFunction {
         name: iseq_label(body.index),
         address: base,
         end,
@@ -214,7 +301,7 @@ fn lift_body(body: &YarvIseqBody, imports: &mut ImportTable) -> NirFunction {
             base,
             format!("locals={}", body.local_table.len()),
         ),
-    }
+    })
 }
 
 fn classify(
@@ -241,7 +328,6 @@ fn classify(
             },
             Vec::new(),
         ),
-        "opt_case_dispatch" => (NirOp::CondBranch { target: None }, Vec::new()),
         "nop" => (NirOp::Nop, Vec::new()),
         _ if is_const(name) => (NirOp::Const, const_operand(instr)),
         _ if is_load(name) => (NirOp::Load, access_operand(instr)),

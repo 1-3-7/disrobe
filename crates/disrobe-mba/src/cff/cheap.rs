@@ -438,6 +438,7 @@ impl<'a> Cheap<'a> {
             NirOp::Nop
             | NirOp::Branch { .. }
             | NirOp::CondBranch { .. }
+            | NirOp::Switch { .. }
             | NirOp::Return
             | NirOp::Store
             | NirOp::RawStore { .. } => {}

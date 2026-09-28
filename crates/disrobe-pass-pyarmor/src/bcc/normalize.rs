@@ -167,7 +167,10 @@ fn is_incref_fast_block(fast: &NirBlock, join: u64) -> bool {
     for (index, instruction) in fast.instructions.iter().enumerate() {
         let is_last: bool = index + 1 == count;
         match instruction.class() {
-            NirClass::Call | NirClass::Return | NirClass::ConditionalJump => return false,
+            NirClass::Call
+            | NirClass::Return
+            | NirClass::ConditionalJump
+            | NirClass::MultiwayJump => return false,
             NirClass::UnconditionalJump => {
                 if !is_last || instruction.direct_target() != Some(join) {
                     return false;

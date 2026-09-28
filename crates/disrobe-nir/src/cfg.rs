@@ -8,6 +8,7 @@ use crate::types::{NirClass, NirFunction, NirInstr};
 pub enum BlockKind {
     FallThrough,
     Conditional,
+    Switch,
     Jump,
     Return,
     Indirect,
@@ -121,6 +122,12 @@ fn block_leaders(base: u64, end: u64, instructions: &[NirInstr]) -> Vec<u64> {
                     starts.push(next.address);
                 }
             }
+            NirClass::MultiwayJump => {
+                starts.extend(insn.op.switch_targets().unwrap_or_default());
+                if let Some(next) = instructions.get(idx + 1) {
+                    starts.push(next.address);
+                }
+            }
             NirClass::Return => {
                 if let Some(next) = instructions.get(idx + 1) {
                     starts.push(next.address);
@@ -172,6 +179,19 @@ fn terminator_edges(
             succ.sort_unstable();
             succ.dedup();
             (BlockKind::Conditional, succ)
+        }
+        NirClass::MultiwayJump => {
+            let mut succ: Vec<u64> = last
+                .op
+                .switch_targets()
+                .unwrap_or_default()
+                .iter()
+                .copied()
+                .filter(|target: &u64| in_function(*target))
+                .collect();
+            succ.sort_unstable();
+            succ.dedup();
+            (BlockKind::Switch, succ)
         }
         NirClass::UnconditionalJump => match last.direct_target() {
             Some(target) if in_function(target) => (BlockKind::Jump, vec![target]),
@@ -243,6 +263,29 @@ mod tests {
             ],
             source: SourceRef::new(SourceLang::NativeX86, 0x0),
         }
+    }
+
+    #[test]
+    fn switch_block_reaches_every_case_and_the_default() {
+        let f: NirFunction = NirFunction {
+            name: "switchy".to_owned(),
+            address: 0x0,
+            end: 0x9,
+            is_export: false,
+            instructions: vec![
+                instr(0x0, NirOp::switch(vec![0x6, 0x2, 0x4, 0x8, 0x4])),
+                instr(0x2, NirOp::Branch { target: Some(0x8) }),
+                instr(0x4, NirOp::Branch { target: Some(0x8) }),
+                instr(0x6, NirOp::Branch { target: Some(0x8) }),
+                instr(0x8, NirOp::Return),
+            ],
+            source: SourceRef::new(SourceLang::Jvm, 0x0),
+        };
+        let blocks: Vec<NirBlock> = basic_blocks(&f);
+        assert_eq!(blocks.len(), 5, "{blocks:?}");
+        assert_eq!(blocks[0].kind, BlockKind::Switch);
+        assert_eq!(blocks[0].successors, vec![0x2, 0x4, 0x6, 0x8]);
+        assert_eq!(complexity(&f), 4);
     }
 
     #[test]

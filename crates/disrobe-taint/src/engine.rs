@@ -625,11 +625,15 @@ fn terminator_target_outside_blocks(block: &NirBlock, index_of: &BTreeMap<u64, u
     let Some(last): Option<&NirInstr> = block.instructions.last() else {
         return false;
     };
-    if !matches!(last.op, NirOp::Branch { .. } | NirOp::CondBranch { .. }) {
-        return false;
+    match &last.op {
+        NirOp::Branch { .. } | NirOp::CondBranch { .. } => last
+            .direct_target()
+            .is_some_and(|target: u64| !index_of.contains_key(&target)),
+        NirOp::Switch { targets } => targets
+            .iter()
+            .any(|target: &u64| !index_of.contains_key(target)),
+        _ => false,
     }
-    last.direct_target()
-        .is_some_and(|target: u64| !index_of.contains_key(&target))
 }
 
 fn seed_formals(ctx: &Ctx<'_>, arena: &mut Arena, state: &mut BlockState) {

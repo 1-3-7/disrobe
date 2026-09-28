@@ -26,6 +26,7 @@ enum EdgeKind {
     Fallthrough,
     BranchTrue,
     BranchFalse,
+    SwitchCase,
     Jump,
 }
 
@@ -208,6 +209,7 @@ const fn edge_kind(block: &CfgBlock, successor: u64) -> EdgeKind {
     match block.kind {
         BlockKind::Conditional if successor == block.end => EdgeKind::BranchFalse,
         BlockKind::Conditional => EdgeKind::BranchTrue,
+        BlockKind::Switch => EdgeKind::SwitchCase,
         BlockKind::FallThrough => EdgeKind::Fallthrough,
         BlockKind::Jump | BlockKind::Return | BlockKind::Indirect => EdgeKind::Jump,
     }

@@ -1,0 +1,6 @@
+        25: tableswitch   { // 0 to 2
+                       0: 52
+                       1: 59
+                       2: 66
+                 default: 73
+            }

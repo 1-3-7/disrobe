@@ -21,6 +21,7 @@ pub enum StructureFailure {
     BlockReachedTwice,
     LoopHasManyExits,
     IndirectTransfer,
+    MultiwayTransfer,
     MissingTerminator,
     JumpWithoutTarget,
     IncompleteCover,
@@ -35,6 +36,7 @@ impl StructureFailure {
             Self::BlockReachedTwice => "block-reached-twice",
             Self::LoopHasManyExits => "loop-has-many-exits",
             Self::IndirectTransfer => "indirect-transfer",
+            Self::MultiwayTransfer => "multiway-transfer",
             Self::MissingTerminator => "missing-terminator",
             Self::JumpWithoutTarget => "jump-without-target",
             Self::IncompleteCover => "incomplete-cover",
@@ -185,6 +187,7 @@ fn terminator_for(
     match block.kind {
         BlockKind::Return => Some(Terminator::Return),
         BlockKind::Indirect => Some(Terminator::Unreachable),
+        BlockKind::Switch => None,
         BlockKind::Jump | BlockKind::FallThrough => block
             .successors
             .first()

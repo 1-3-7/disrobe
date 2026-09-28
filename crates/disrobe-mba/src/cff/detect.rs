@@ -361,6 +361,7 @@ pub(crate) fn dest_name(instr: &NirInstr) -> Option<&str> {
         | NirOp::CallOther { .. }
         | NirOp::Branch { .. }
         | NirOp::CondBranch { .. }
+        | NirOp::Switch { .. }
         | NirOp::Return
         | NirOp::Interrupt
         | NirOp::Unmodeled { .. } => None,

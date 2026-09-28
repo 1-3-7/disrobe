@@ -315,6 +315,17 @@ fn emit_goto_terminator(
             }
             output.push_str(";\n");
         }
+        Some(NirClass::MultiwayJump) => {
+            write_indent(indent, output);
+            output.push_str("goto_any(");
+            for (position, target) in case.successors.iter().enumerate() {
+                if position > 0 {
+                    output.push_str(", ");
+                }
+                write!(output, "label_{target:x}")?;
+            }
+            output.push_str(");\n");
+        }
         Some(NirClass::UnconditionalJump) => {
             write_indent(indent, output);
             if let Some(target) = case.successors.first() {

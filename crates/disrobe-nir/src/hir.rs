@@ -787,6 +787,10 @@ impl<'a> Structurer<'a> {
                 self.fail(StructureFailure::IndirectTransfer);
                 HirStmt::Empty
             }
+            BlockKind::Switch => {
+                self.fail(StructureFailure::MultiwayTransfer);
+                HirStmt::Empty
+            }
         };
         sequence(vec![leaf, tail])
     }
@@ -1139,6 +1143,7 @@ fn condition_block_clone_bytes(block: &NirBlock) -> Option<usize> {
                         sum.checked_add(value.len())
                     })?,
                 NirOp::Piece { high, low, .. } => high.len().checked_add(low.len())?,
+                NirOp::Switch { targets } => targets.len().checked_mul(size_of::<u64>())?,
                 NirOp::Nop
                 | NirOp::Const
                 | NirOp::BinOp { .. }
@@ -1750,6 +1755,7 @@ fn lower_instr(instr: &NirInstr, lang: SourceLang) -> HirInstrStmt {
         | NirOp::Interrupt
         | NirOp::Branch { .. }
         | NirOp::CondBranch { .. }
+        | NirOp::Switch { .. }
         | NirOp::Return
         | NirOp::Unmodeled { .. } => HirInstrStmt::Effect {
             expr: HirExpr::Unknown {

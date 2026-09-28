@@ -646,7 +646,10 @@ fn classify(
             let target: Option<u64> = Some(base.saturating_add(target_offset as u64));
             (NirOp::CondBranch { target }, Vec::new())
         }
-        0x1B => (NirOp::CondBranch { target: None }, Vec::new()),
+        0x1B => (
+            NirOp::switch(lookupswitch_targets(entry, line, base)?),
+            Vec::new(),
+        ),
         0x2C => (NirOp::Const, vec![string_operand(entry, line, abc)?]),
         0x24 | 0x25 | 0x2D | 0x2E | 0x2F | 0x20 | 0x21 | 0x26 | 0x27 | 0x28 => {
             (NirOp::Const, const_operand(entry, line, abc)?)
@@ -719,6 +722,30 @@ fn branch_target(entry: &MethodEntry, line: &DisasmLine, end_offset: usize) -> R
     };
     checked_relative_target(end_offset, relative)
         .ok_or_else(|| body_semantic_error(entry, line, "branch target is out of range"))
+}
+
+fn lookupswitch_targets(entry: &MethodEntry, line: &DisasmLine, base: u64) -> Result<Vec<u64>> {
+    let case_count: u32 = required_operand(entry, line, 1, "switch case count")?;
+    let expected_operands: Option<usize> = usize::try_from(case_count)
+        .ok()
+        .and_then(|count: usize| count.checked_add(3));
+    if expected_operands != Some(line.operands.len()) {
+        return Err(body_semantic_error(
+            entry,
+            line,
+            "switch case count does not match its offsets",
+        ));
+    }
+    line.operands
+        .iter()
+        .enumerate()
+        .filter(|(position, _): &(usize, &i64)| *position != 1)
+        .map(|(_, relative): (usize, &i64)| {
+            checked_relative_target(line.offset, *relative)
+                .map(|target: usize| base.saturating_add(target as u64))
+                .ok_or_else(|| body_semantic_error(entry, line, "switch target is out of range"))
+        })
+        .collect()
 }
 
 fn string_operand(entry: &MethodEntry, line: &DisasmLine, abc: &AbcFile) -> Result<String> {

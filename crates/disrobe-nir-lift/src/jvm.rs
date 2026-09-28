@@ -310,11 +310,8 @@ fn classify(
             (NirOp::Branch { target }, Vec::new())
         };
     }
-    if matches!(
-        insn.operands,
-        Operands::TableSwitch { .. } | Operands::LookupSwitch { .. }
-    ) {
-        return (NirOp::CondBranch { target: None }, Vec::new());
+    if let Some(targets) = switch_targets(insn, base) {
+        return (NirOp::switch(targets), Vec::new());
     }
     if let Some(binary_op) = binary_op(insn.opcode) {
         return (NirOp::BinOp { op: binary_op }, Vec::new());
@@ -337,6 +334,28 @@ fn classify(
             offset: insn.pc,
         },
         Vec::new(),
+    )
+}
+
+fn switch_targets(insn: &Instruction, base: u64) -> Option<Vec<u64>> {
+    let relatives: Vec<i32> = match &insn.operands {
+        Operands::TableSwitch {
+            default, offsets, ..
+        } => std::iter::once(*default)
+            .chain(offsets.iter().copied())
+            .collect(),
+        Operands::LookupSwitch { default, pairs } => std::iter::once(*default)
+            .chain(pairs.iter().map(|(_, offset): &(i32, i32)| *offset))
+            .collect(),
+        _ => return None,
+    };
+    Some(
+        relatives
+            .into_iter()
+            .map(|relative: i32| {
+                base.saturating_add_signed(i64::from(insn.pc).saturating_add(i64::from(relative)))
+            })
+            .collect(),
     )
 }
 

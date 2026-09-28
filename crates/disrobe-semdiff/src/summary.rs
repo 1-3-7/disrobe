@@ -646,7 +646,9 @@ impl Evaluator {
 
     fn apply(&mut self, environment: &mut Environment, instruction: &NirInstr) -> Option<()> {
         match &instruction.op {
-            NirOp::Nop | NirOp::Branch { .. } | NirOp::CondBranch { .. } => Some(()),
+            NirOp::Nop | NirOp::Branch { .. } | NirOp::CondBranch { .. } | NirOp::Switch { .. } => {
+                Some(())
+            }
             NirOp::Return => self.capture_return(environment, instruction),
             NirOp::Copy { src, size } => {
                 let value: NodeId = self.read_operand(environment, src)?;

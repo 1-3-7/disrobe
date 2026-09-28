@@ -60,7 +60,7 @@ pub fn def_use(instr: &NirInstr) -> DefUse {
                 .chain(std::iter::once(ValueId::register(RETURN_REGISTER)))
                 .collect(),
         },
-        NirOp::Branch { .. } | NirOp::CondBranch { .. } => DefUse {
+        NirOp::Branch { .. } | NirOp::CondBranch { .. } | NirOp::Switch { .. } => DefUse {
             defs: Vec::new(),
             uses: instr
                 .operands

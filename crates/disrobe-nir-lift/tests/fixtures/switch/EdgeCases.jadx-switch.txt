@@ -1,0 +1,44 @@
+switch(r2) {
+case 0: goto Ld;
+case 1: goto L13;
+case 2: goto L19;
+case 3: goto L1f;
+case 4: goto L25;
+case 5: goto L2b;
+case 6: goto L31;
+default: goto Lc;
+}
+switch(r0) {
+case 0: goto L8d;
+case 1: goto L7c;
+case 2: goto L6b;
+case 3: goto L5a;
+case 4: goto L49;
+case 5: goto L38;
+case 6: goto L27;
+default: goto L10;
+}
+switch(r1) {
+case 0: goto L19;
+case 1: goto L16;
+case 2: goto L16;
+case 3: goto L16;
+case 4: goto L13;
+case 5: goto L13;
+case 6: goto L13;
+case 7: goto L13;
+case 8: goto L13;
+case 9: goto L13;
+case 10: goto L1c;
+default: goto Lb;
+}
+switch(r0) {
+case -1: goto L94;
+case 0: goto L83;
+case 1: goto L72;
+case 2: goto L57;
+case 3: goto L46;
+case 4: goto L34;
+case 5: goto L1f;
+default: goto L8;
+}

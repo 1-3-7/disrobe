@@ -1,0 +1,8 @@
+003c6a: 2b02 3100 0000                         |0009: packed-switch v2, 0000003a // +00000031
+003ccc: 0001 0700 0000 0000 0400 0000 0a00 ... |003a: packed-switch-data (18 units)
+006e92: 2b00 9100 0000                         |000d: packed-switch v0, 0000009e // +00000091
+006fb4: 0001 0700 0000 0000 8000 0000 6f00 ... |009e: packed-switch-data (18 units)
+0071a4: 2b01 1800 0000                         |0008: packed-switch v1, 00000020 // +00000018
+0071d4: 0001 0b00 0000 0000 1100 0000 0e00 ... |0020: packed-switch-data (26 units)
+00725a: 2b00 9300 0000                         |0005: packed-switch v0, 00000098 // +00000093
+007380: 0001 0700 ffff ffff 8f00 0000 7e00 ... |0098: packed-switch-data (18 units)

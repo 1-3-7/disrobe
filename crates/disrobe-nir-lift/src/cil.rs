@@ -274,8 +274,11 @@ fn classify(
             return (NirOp::Branch { target }, Vec::new());
         }
         FlowControl::CondBranch => {
-            if let OperandValue::Switch(_) = insn.operand {
-                return (NirOp::CondBranch { target: None }, Vec::new());
+            if let OperandValue::Switch(relatives) = &insn.operand {
+                return (
+                    NirOp::switch(switch_targets(insn, relatives, base)),
+                    Vec::new(),
+                );
             }
             let target: Option<u64> =
                 branch_target(insn).map(|t| base.saturating_add(u64::from(t)));
@@ -358,6 +361,14 @@ fn branch_target(insn: &Instruction) -> Option<u32> {
     let next: i64 = i64::from(insn.offset).checked_add(i64::from(instruction_size(insn)))?;
     let absolute: i64 = next.checked_add(i64::from(rel))?;
     u32::try_from(absolute).ok()
+}
+
+fn switch_targets(insn: &Instruction, relatives: &[i32], base: u64) -> Vec<u64> {
+    let next: i64 = i64::from(insn.offset).saturating_add(i64::from(instruction_size(insn)));
+    std::iter::once(0_i32)
+        .chain(relatives.iter().copied())
+        .map(|relative: i32| base.saturating_add_signed(next.saturating_add(i64::from(relative))))
+        .collect()
 }
 
 fn count_u32(count: usize) -> u32 {

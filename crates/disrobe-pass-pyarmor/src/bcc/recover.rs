@@ -532,7 +532,7 @@ pub fn recover_from_nir(
                 call_exprs.push(expr);
                 evaluator.clobber(options.abi, result);
             }
-            NirClass::ConditionalJump | NirClass::UnconditionalJump => {
+            NirClass::ConditionalJump | NirClass::UnconditionalJump | NirClass::MultiwayJump => {
                 has_branch = true;
             }
             NirClass::Return => {

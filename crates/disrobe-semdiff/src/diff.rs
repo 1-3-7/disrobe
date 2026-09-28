@@ -61,6 +61,7 @@ fn op_token(insn: &NirInstr, labels: &BTreeMap<u64, String>) -> String {
         NirOp::ExternCall { symbol } => format!("call->{symbol}"),
         NirOp::Branch { .. } => "branch".to_owned(),
         NirOp::CondBranch { .. } => "condbranch".to_owned(),
+        NirOp::Switch { .. } => "switch".to_owned(),
         NirOp::Phi => "phi".to_owned(),
         NirOp::Return => "return".to_owned(),
         NirOp::Interrupt => "interrupt".to_owned(),
@@ -107,19 +108,24 @@ fn relative_edges(function: &NirFunction) -> EdgeFingerprint {
             };
             edges.push((idx, *succ_idx));
         }
-        let direct_cfg_target: Option<u64> =
+        let direct_cfg_targets: Vec<u64> =
             block
                 .instructions
                 .last()
-                .and_then(|last: &NirInstr| match last.class() {
-                    NirClass::ConditionalJump | NirClass::UnconditionalJump => last.direct_target(),
-                    NirClass::Call | NirClass::Return | NirClass::Other => None,
+                .map_or_else(Vec::new, |last: &NirInstr| match last.class() {
+                    NirClass::ConditionalJump | NirClass::UnconditionalJump => {
+                        last.direct_target().into_iter().collect()
+                    }
+                    NirClass::MultiwayJump => last
+                        .op
+                        .switch_targets()
+                        .map_or_else(Vec::new, <[u64]>::to_vec),
+                    NirClass::Call | NirClass::Return | NirClass::Other => Vec::new(),
                 });
-        let Some(target): Option<u64> = direct_cfg_target else {
-            continue;
-        };
-        if !index_of.contains_key(&target) {
-            dangling_edges.push((idx, relative_addr_delta(target, function.address)));
+        for target in direct_cfg_targets {
+            if !index_of.contains_key(&target) {
+                dangling_edges.push((idx, relative_addr_delta(target, function.address)));
+            }
         }
     }
     edges.sort_unstable();

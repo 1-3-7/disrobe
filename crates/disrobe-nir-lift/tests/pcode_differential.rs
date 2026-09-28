@@ -439,6 +439,7 @@ fn execute_nir_instruction(instruction: &NirInstr, state: &mut NirState) {
         | NirOp::ExternCall { .. }
         | NirOp::Branch { .. }
         | NirOp::CondBranch { .. }
+        | NirOp::Switch { .. }
         | NirOp::Phi
         | NirOp::Return
         | NirOp::Interrupt

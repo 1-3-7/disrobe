@@ -107,6 +107,7 @@ pub enum InsnClass {
     Call,
     UnconditionalJump,
     ConditionalJump,
+    MultiwayJump,
     Return,
     Other,
 }
@@ -127,6 +128,7 @@ impl InsnClass {
             NirClass::Call => Self::Call,
             NirClass::UnconditionalJump => Self::UnconditionalJump,
             NirClass::ConditionalJump => Self::ConditionalJump,
+            NirClass::MultiwayJump => Self::MultiwayJump,
             NirClass::Return => Self::Return,
             NirClass::Other => Self::Other,
         }
@@ -140,6 +142,8 @@ pub struct InsnView {
     pub operands: Vec<String>,
     pub class: InsnClass,
     pub branch_target: Option<u64>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub switch_targets: Vec<u64>,
     pub effects: EffectRow,
     #[serde(skip_serializing_if = "IsaView::is_empty")]
     pub isa: IsaView,
@@ -243,6 +247,7 @@ impl InsnView {
             operands: insn.operands.clone(),
             class: InsnClass::from_flow(insn.flow),
             branch_target: insn.branch_target,
+            switch_targets: Vec::new(),
             effects: derive_effect_row(&nir, context),
             isa: IsaView::from_disasm(insn),
             stack_effect: StackEffectView::from_disasm(insn),
@@ -257,6 +262,10 @@ impl InsnView {
             operands: insn.operands.clone(),
             class: InsnClass::from_nir(insn.class()),
             branch_target: insn.direct_target(),
+            switch_targets: insn
+                .op
+                .switch_targets()
+                .map_or_else(Vec::new, <[u64]>::to_vec),
             effects: derive_effect_row(insn, context),
             isa: IsaView::default(),
             stack_effect: StackEffectView::default(),
@@ -340,10 +349,21 @@ fn update_instruction_identity_hash(hasher: &mut blake3::Hasher, instruction: &I
         InsnClass::ConditionalJump => 2,
         InsnClass::Return => 3,
         InsnClass::Other => 4,
+        InsnClass::MultiwayJump => 5,
     };
     hasher.update(&[class]);
     hasher.update(&[u8::from(instruction.branch_target.is_some())]);
     hasher.update(&instruction.branch_target.unwrap_or_default().to_le_bytes());
+    if !instruction.switch_targets.is_empty() {
+        hasher.update(
+            &u64::try_from(instruction.switch_targets.len())
+                .unwrap_or(u64::MAX)
+                .to_le_bytes(),
+        );
+        for target in &instruction.switch_targets {
+            hasher.update(&target.to_le_bytes());
+        }
+    }
     update_identity_hash_bytes(hasher, instruction.isa.encoding.as_bytes());
     hasher.update(
         &u64::try_from(instruction.isa.cpuid_features.len())
@@ -540,6 +560,17 @@ impl Function {
                         starts.push(target);
                     }
                 }
+                InsnClass::MultiwayJump => {
+                    starts.extend(
+                        insn.switch_targets
+                            .iter()
+                            .copied()
+                            .filter(|target: &u64| in_function(*target)),
+                    );
+                    if let Some(next) = self.instructions.get(idx + 1) {
+                        starts.push(next.offset);
+                    }
+                }
                 InsnClass::Return | InsnClass::Call | InsnClass::Other => {}
             }
         }
@@ -555,6 +586,7 @@ impl Function {
 pub enum BlockKind {
     FallThrough,
     Conditional,
+    Switch,
     Jump,
     Return,
     Indirect,
@@ -587,6 +619,17 @@ fn terminator_edges(
             succ.sort_unstable();
             succ.dedup();
             (BlockKind::Conditional, succ)
+        }
+        InsnClass::MultiwayJump => {
+            let mut succ: Vec<u64> = last
+                .switch_targets
+                .iter()
+                .copied()
+                .filter(|target: &u64| in_function(*target))
+                .collect();
+            succ.sort_unstable();
+            succ.dedup();
+            (BlockKind::Switch, succ)
         }
         InsnClass::UnconditionalJump => match last.branch_target {
             Some(target) if in_function(target) => (BlockKind::Jump, vec![target]),

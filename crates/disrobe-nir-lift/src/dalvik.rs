@@ -1,10 +1,11 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use disrobe_nir::{
     BinaryOp, NirFunction, NirInstr, NirModule, NirOp, NirSymbol, SourceLang, SourceRef, SymbolKind,
 };
 use disrobe_pass_jvm::{
-    CodeItem, CodeItemsReport, DalvikInsn, DexFile, decode_method, parse_code_items, parse_dex,
+    CodeItem, CodeItemsReport, DalvikInsn, DexFile, SwitchPayload, decode_method, parse_code_items,
+    parse_dex, parse_packed_switch, parse_sparse_switch,
 };
 
 use crate::error::{LiftError, Result};
@@ -51,7 +52,7 @@ pub fn lift_dex(bytes: &[u8]) -> Result<NirModule> {
         let method_index: u32 = usize_to_u32_saturating(index);
         register_method_symbol(ci, method_index, &mut module);
         let function: NirFunction =
-            lift_method(ci, method_index, &dex, &internal_by_key, &mut imports);
+            lift_method(ci, method_index, &dex, &internal_by_key, &mut imports)?;
         module.functions.push(function);
     }
 
@@ -128,16 +129,23 @@ fn lift_method(
     dex: &DexFile,
     internal_by_key: &BTreeMap<(String, String, String), u64>,
     imports: &mut ImportTable,
-) -> NirFunction {
+) -> Result<NirFunction> {
     let base: u64 = function_address(method_index);
     let insns: Vec<DalvikInsn> = decode_method(&ci.insns);
     let byte_arith: Vec<bool> = byte_arith_flags(&insns);
+    let boundaries: BTreeSet<u32> = insns.iter().map(|insn: &DalvikInsn| insn.pc).collect();
 
     let mut instructions: Vec<NirInstr> = Vec::with_capacity(insns.len());
     for (ordinal, insn) in insns.iter().enumerate() {
         let address: u64 = base.saturating_add(u64::from(insn.pc));
-        let (op, mut operand_list): (NirOp, Vec<String>) =
-            classify(insn, base, dex, internal_by_key, imports);
+        let (op, mut operand_list): (NirOp, Vec<String>) = if insn.is_switch() {
+            (
+                NirOp::switch(switch_targets(ci, insn, &boundaries, base)?),
+                Vec::new(),
+            )
+        } else {
+            classify(insn, base, dex, internal_by_key, imports)
+        };
         let (reads_memory, writes_memory, mem_byte): (bool, bool, bool) = memory_facets(insn.op);
         let is_byte_arith: bool = byte_arith.get(ordinal).is_some_and(|value: &bool| *value);
         if is_byte_arith {
@@ -160,14 +168,56 @@ fn lift_method(
     }
 
     let end: u64 = base.saturating_add(ci.insns.len() as u64);
-    NirFunction {
+    Ok(NirFunction {
         name: qualified_name(&ci.class, &ci.method_name),
         address: base,
         end,
         is_export: !ci.is_direct,
         instructions,
         source: SourceRef::labelled(SourceLang::Dalvik, base, ci.method_descriptor.clone()),
+    })
+}
+
+fn switch_targets(
+    ci: &CodeItem,
+    insn: &DalvikInsn,
+    boundaries: &BTreeSet<u32>,
+    base: u64,
+) -> Result<Vec<u64>> {
+    let refuse = |reason: &str| -> LiftError {
+        LiftError::Source(format!(
+            "dex method {} {} at {:#06x}: {reason}",
+            qualified_name(&ci.class, &ci.method_name),
+            insn.mnemonic,
+            insn.pc
+        ))
+    };
+    let payload_off: u32 = insn
+        .payload_off
+        .ok_or_else(|| refuse("switch payload offset is missing"))?;
+    let payload: SwitchPayload = if insn.op == OP_PACKED_SWITCH {
+        parse_packed_switch(&ci.insns, insn.pc, payload_off)
+    } else {
+        parse_sparse_switch(&ci.insns, insn.pc, payload_off)
     }
+    .ok_or_else(|| refuse("switch payload is unreadable"))?;
+    let fallthrough: u32 = insn
+        .pc
+        .checked_add(u32::from(insn.width))
+        .ok_or_else(|| refuse("switch fall-through overflows"))?;
+    payload
+        .targets
+        .iter()
+        .copied()
+        .chain(std::iter::once(fallthrough))
+        .map(|target: u32| {
+            if boundaries.contains(&target) {
+                Ok(base.saturating_add(u64::from(target)))
+            } else {
+                Err(refuse("switch target is not an instruction boundary"))
+            }
+        })
+        .collect()
 }
 
 fn classify(
@@ -197,9 +247,6 @@ fn classify(
             .branch_target_pc()
             .map(|t: u32| base.saturating_add(u64::from(t)));
         return (NirOp::CondBranch { target }, Vec::new());
-    }
-    if insn.is_switch() {
-        return (NirOp::CondBranch { target: None }, Vec::new());
     }
     if let Some(binary_op) = binary_op(insn.op) {
         return (NirOp::BinOp { op: binary_op }, Vec::new());
@@ -297,6 +344,7 @@ fn byte_arith_flags(insns: &[DalvikInsn]) -> Vec<bool> {
 }
 
 const OP_NOP: u8 = 0x00;
+const OP_PACKED_SWITCH: u8 = 0x2B;
 
 const fn is_invoke(op: u8) -> bool {
     matches!(op, 0x6E..=0x72 | 0x74..=0x78 | 0xF8 | 0xF9 | 0xFA..=0xFD)

@@ -1507,7 +1507,11 @@ fn native_row(instr: &NirInstr, context: &EffectContext) -> EffectRow {
         NirOp::CondBranch { target: None } => builder
             .conditional_effect(HardEffect::IndirectJump, EffectProvenance::Encoding)
             .dialect(DialectEffect::Native(NativeEffect::IndirectJump)),
-        NirOp::Branch { .. } | NirOp::CondBranch { .. } | NirOp::Nop | NirOp::Phi => builder,
+        NirOp::Branch { .. }
+        | NirOp::CondBranch { .. }
+        | NirOp::Switch { .. }
+        | NirOp::Nop
+        | NirOp::Phi => builder,
         NirOp::Interrupt => native_syscall(builder, instr.address, context),
         NirOp::Unmodeled { .. } => builder
             .effect(HardEffect::Unmodelled, EffectProvenance::Unknown)
@@ -2266,6 +2270,7 @@ fn managed_structural(
         | NirOp::Interrupt
         | NirOp::Branch { .. }
         | NirOp::CondBranch { .. }
+        | NirOp::Switch { .. }
         | NirOp::Subpiece { .. }
         | NirOp::Deposit { .. }
         | NirOp::Copy { .. }

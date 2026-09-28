@@ -20,6 +20,7 @@ impl<'a> Interp<'a> {
             NirOp::Nop
             | NirOp::Branch { .. }
             | NirOp::CondBranch { .. }
+            | NirOp::Switch { .. }
             | NirOp::Return
             | NirOp::Interrupt
             | NirOp::Unmodeled { .. } => effect_only(state, instr),

@@ -175,6 +175,21 @@ impl<'a> BccMachine<'a> {
                         }
                         pc += 1;
                     }
+                    NirClass::MultiwayJump => {
+                        self.saw_branch = true;
+                        for dest in instruction.op.switch_targets().unwrap_or_default() {
+                            if visited.insert(*dest)
+                                && let Some(next) = addr_to_index.get(dest)
+                            {
+                                worklist.push(PathState {
+                                    index: *next,
+                                    registers: self.registers.clone(),
+                                    frame: self.frame.clone(),
+                                });
+                            }
+                        }
+                        break;
+                    }
                     NirClass::Call => {
                         self.step_call(instruction);
                         pc += 1;

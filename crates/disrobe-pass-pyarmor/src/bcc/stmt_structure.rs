@@ -460,7 +460,9 @@ fn walk_block(
                 let target: u64 = instruction.direct_target()?;
                 return Some(Flow::Goto(target));
             }
-            NirClass::ConditionalJump | NirClass::UnconditionalJump => return None,
+            NirClass::ConditionalJump | NirClass::UnconditionalJump | NirClass::MultiwayJump => {
+                return None;
+            }
         }
     }
     let fallthrough: u64 = block.successors.first().copied()?;
@@ -603,7 +605,8 @@ fn assign_arm(
             NirClass::Call
             | NirClass::Return
             | NirClass::ConditionalJump
-            | NirClass::UnconditionalJump => return None,
+            | NirClass::UnconditionalJump
+            | NirClass::MultiwayJump => return None,
         }
     }
     let fallthrough: u64 = block.successors.first().copied()?;
@@ -1065,7 +1068,8 @@ mod real {
                 }
             }
             NirClass::UnconditionalJump => last.direct_target().map_or(Term::Dead, Term::Goto),
-            _ => block
+            NirClass::MultiwayJump => Term::Dead,
+            NirClass::Call | NirClass::Other => block
                 .successors
                 .first()
                 .copied()
@@ -1276,7 +1280,10 @@ mod real {
                 if is_last
                     && matches!(
                         instruction.class(),
-                        NirClass::ConditionalJump | NirClass::Return | NirClass::UnconditionalJump
+                        NirClass::ConditionalJump
+                            | NirClass::Return
+                            | NirClass::UnconditionalJump
+                            | NirClass::MultiwayJump
                     )
                 {
                     break;

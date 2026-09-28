@@ -287,7 +287,7 @@ fn collect_leaders(insns: &[NirInstr], index: &BTreeMap<u64, usize>) -> Option<B
             let insn: &NirInstr = &insns[cursor];
             match &insn.op {
                 NirOp::Return => break,
-                NirOp::Interrupt => return None,
+                NirOp::Interrupt | NirOp::Switch { .. } => return None,
                 NirOp::CondBranch { target } => {
                     let taken: usize = *index.get(&target.as_ref().copied()?)?;
                     let fallthrough: usize = cursor + 1;
@@ -339,7 +339,7 @@ fn build_block(
                     terminator: Terminator::Return,
                 });
             }
-            NirOp::Interrupt => return None,
+            NirOp::Interrupt | NirOp::Switch { .. } => return None,
             NirOp::CondBranch { target } => {
                 let taken_insn: usize = *index.get(&target.as_ref().copied()?)?;
                 let fallthrough_insn: usize = cursor + 1;
@@ -672,6 +672,7 @@ fn apply_instr(
         NirOp::Phi => Some(()),
         NirOp::Branch { .. }
         | NirOp::CondBranch { .. }
+        | NirOp::Switch { .. }
         | NirOp::Return
         | NirOp::Interrupt
         | NirOp::Unmodeled { .. }
