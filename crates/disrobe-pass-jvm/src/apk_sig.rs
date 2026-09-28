@@ -243,7 +243,7 @@ fn locate_signing_block(bytes: &[u8], layout: ZipLayout) -> Option<SigningBlockL
     if block_size < 24 || block_size > cd_offset {
         return None;
     }
-    let block_start: usize = cd_offset - 8 - block_size;
+    let block_start: usize = cd_offset.checked_sub(8)?.checked_sub(block_size)?;
     let header_size: u64 = u64::from_le_bytes(bytes[block_start..block_start + 8].try_into().ok()?);
     if usize::try_from(header_size).ok()? != block_size {
         return None;
@@ -970,6 +970,21 @@ fn scan_v1_signing(bytes: &[u8]) -> Result<V1Inventory> {
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_signing_block_size_just_below_the_directory_offset_is_absent_not_a_panic() {
+        let cd_offset: usize = 40;
+        let mut bytes: Vec<u8> = vec![0u8; cd_offset];
+        let footer: usize = cd_offset - 24;
+        bytes[footer..footer + 8].copy_from_slice(&36u64.to_le_bytes());
+        bytes[footer + 8..cd_offset].copy_from_slice(APK_SIG_BLOCK_MAGIC);
+        let layout: ZipLayout = ZipLayout {
+            central_dir_offset: cd_offset,
+            central_dir_size: 0,
+            eocd_offset: cd_offset,
+        };
+        assert_eq!(locate_signing_block(&bytes, layout), None);
+    }
 
     #[test]
     fn algorithm_id_mapping() {
