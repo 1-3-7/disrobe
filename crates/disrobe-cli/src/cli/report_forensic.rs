@@ -486,7 +486,7 @@ fn indicator_results(
         .iter()
         .map(|indicator: &IocIndicator| {
             let offset: u64 = indicator.offset as u64;
-            let length: u64 = indicator.value.len() as u64;
+            let length: u64 = indicator.length as u64;
             let region: Option<Region> = checked_span(offset, length, target_length);
             let outside: bool = region.is_none();
             let text: String = if outside {

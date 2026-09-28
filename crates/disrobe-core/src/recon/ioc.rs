@@ -107,9 +107,59 @@ pub struct Indicator {
     pub kind: IocKind,
     pub value: String,
     pub offset: usize,
+    pub length: usize,
     pub encoding: Encoding,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum LayerMap {
+    Identity,
+    TwoBytesPerUnit,
+    Base64,
+    Whole { length: usize },
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Layer<'p> {
+    map: LayerMap,
+    base: usize,
+    parent: Option<&'p Self>,
+}
+
+impl<'p> Layer<'p> {
+    const INPUT: Layer<'static> = Layer {
+        map: LayerMap::Identity,
+        base: 0,
+        parent: None,
+    };
+
+    const fn within(map: LayerMap, base: usize, parent: &'p Self) -> Self {
+        Self {
+            map,
+            base,
+            parent: Some(parent),
+        }
+    }
+
+    fn span(&self, start: usize, end: usize) -> (usize, usize) {
+        let (local_start, local_end): (usize, usize) = match self.map {
+            LayerMap::Identity => (start, end),
+            LayerMap::TwoBytesPerUnit => (start.saturating_mul(2), end.saturating_mul(2)),
+            LayerMap::Base64 => (
+                start.saturating_mul(4) / 3,
+                end.saturating_mul(4).div_ceil(3),
+            ),
+            LayerMap::Whole { length } => (0, length),
+        };
+        let outer_start: usize = self.base.saturating_add(local_start);
+        let outer_end: usize = self.base.saturating_add(local_end);
+        self.parent.map_or_else(
+            || (outer_start, outer_end.saturating_sub(outer_start)),
+            |parent: &Self| parent.span(outer_start, outer_end),
+        )
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -616,7 +666,7 @@ fn collect_validated(
     valid: fn(&str) -> bool,
     text: &str,
     encoding: Encoding,
-    base_offset: usize,
+    layer: &Layer<'_>,
     out: &mut Vec<Indicator>,
 ) {
     for m in re.find_iter(text) {
@@ -627,10 +677,12 @@ fn collect_validated(
         if !valid(value) {
             continue;
         }
+        let (offset, length): (usize, usize) = layer.span(m.start(), m.end());
         out.push(Indicator {
             kind,
             value: value.to_owned(),
-            offset: base_offset + m.start(),
+            offset,
+            length,
             encoding,
             context: if matches!(encoding, Encoding::Plain) {
                 context_window(text, m.start(), value.len())
@@ -641,17 +693,19 @@ fn collect_validated(
     }
 }
 
-fn collect_simple(text: &str, encoding: Encoding, base_offset: usize, out: &mut Vec<Indicator>) {
+fn collect_simple(text: &str, encoding: Encoding, layer: &Layer<'_>, out: &mut Vec<Indicator>) {
     for rule in SIMPLE_RULES.iter() {
         for m in rule.pattern.find_iter(text) {
             if out.len() >= MAX_INDICATORS {
                 return;
             }
             let value: &str = m.as_str();
+            let (offset, length): (usize, usize) = layer.span(m.start(), m.end());
             out.push(Indicator {
                 kind: rule.kind,
                 value: value.to_owned(),
-                offset: base_offset + m.start(),
+                offset,
+                length,
                 encoding,
                 context: if matches!(encoding, Encoding::Plain) {
                     context_window(text, m.start(), value.len())
@@ -663,7 +717,7 @@ fn collect_simple(text: &str, encoding: Encoding, base_offset: usize, out: &mut 
     }
 }
 
-fn collect_ipv6(text: &str, encoding: Encoding, base_offset: usize, out: &mut Vec<Indicator>) {
+fn collect_ipv6(text: &str, encoding: Encoding, layer: &Layer<'_>, out: &mut Vec<Indicator>) {
     for m in IPV6_RE.find_iter(text) {
         if out.len() >= MAX_INDICATORS {
             return;
@@ -672,22 +726,19 @@ fn collect_ipv6(text: &str, encoding: Encoding, base_offset: usize, out: &mut Ve
         if value.matches(':').count() < 2 {
             continue;
         }
+        let (offset, length): (usize, usize) = layer.span(m.start(), m.end());
         out.push(Indicator {
             kind: IocKind::Ipv6,
             value: value.to_owned(),
-            offset: base_offset + m.start(),
+            offset,
+            length,
             encoding,
             context: None,
         });
     }
 }
 
-fn collect_unix_paths(
-    text: &str,
-    encoding: Encoding,
-    base_offset: usize,
-    out: &mut Vec<Indicator>,
-) {
+fn collect_unix_paths(text: &str, encoding: Encoding, layer: &Layer<'_>, out: &mut Vec<Indicator>) {
     for caps in UNIXPATH_RE.captures_iter(text) {
         if out.len() >= MAX_INDICATORS {
             return;
@@ -695,10 +746,12 @@ fn collect_unix_paths(
         let Some(g): Option<regex::Match<'_>> = caps.get(1) else {
             continue;
         };
+        let (offset, length): (usize, usize) = layer.span(g.start(), g.end());
         out.push(Indicator {
             kind: IocKind::UnixPath,
             value: g.as_str().to_owned(),
-            offset: base_offset + g.start(),
+            offset,
+            length,
             encoding,
             context: None,
         });
@@ -720,7 +773,7 @@ fn span_encloses(spans: &[(usize, usize)], start: usize, end: usize) -> bool {
             .is_some_and(|&(_s, e): &(usize, usize)| e >= end)
 }
 
-fn collect_domains(text: &str, encoding: Encoding, base_offset: usize, out: &mut Vec<Indicator>) {
+fn collect_domains(text: &str, encoding: Encoding, layer: &Layer<'_>, out: &mut Vec<Indicator>) {
     let urls: Vec<(usize, usize)> = match_spans(&URL_RE, text);
     let emails: Vec<(usize, usize)> = match_spans(&EMAIL_RE, text);
     for m in DOMAIN_RE.find_iter(text) {
@@ -731,10 +784,12 @@ fn collect_domains(text: &str, encoding: Encoding, base_offset: usize, out: &mut
         if span_encloses(&urls, m.start(), m.end()) || span_encloses(&emails, m.start(), m.end()) {
             continue;
         }
+        let (offset, length): (usize, usize) = layer.span(m.start(), m.end());
         out.push(Indicator {
             kind: IocKind::Domain,
             value: value.to_owned(),
-            offset: base_offset + m.start(),
+            offset,
+            length,
             encoding,
             context: None,
         });
@@ -748,6 +803,7 @@ fn collect_crypto_constants(bytes: &[u8], out: &mut Vec<Indicator>) {
                 kind: IocKind::CryptoConstant,
                 value: c.name.to_owned(),
                 offset: at,
+                length: c.bytes.len(),
                 encoding: Encoding::Plain,
                 context: None,
             });
@@ -755,18 +811,18 @@ fn collect_crypto_constants(bytes: &[u8], out: &mut Vec<Indicator>) {
     }
 }
 
-fn scan_text_layer(text: &str, encoding: Encoding, base_offset: usize, out: &mut Vec<Indicator>) {
-    collect_simple(text, encoding, base_offset, out);
-    collect_ipv6(text, encoding, base_offset, out);
-    collect_unix_paths(text, encoding, base_offset, out);
-    collect_domains(text, encoding, base_offset, out);
+fn scan_text_layer(text: &str, encoding: Encoding, layer: &Layer<'_>, out: &mut Vec<Indicator>) {
+    collect_simple(text, encoding, layer, out);
+    collect_ipv6(text, encoding, layer, out);
+    collect_unix_paths(text, encoding, layer, out);
+    collect_domains(text, encoding, layer, out);
     collect_validated(
         &ETH_RE,
         IocKind::EthereumAddress,
         eth_address_valid,
         text,
         encoding,
-        base_offset,
+        layer,
         out,
     );
     collect_validated(
@@ -775,7 +831,7 @@ fn scan_text_layer(text: &str, encoding: Encoding, base_offset: usize, out: &mut
         base58check_valid,
         text,
         encoding,
-        base_offset,
+        layer,
         out,
     );
     collect_validated(
@@ -784,24 +840,26 @@ fn scan_text_layer(text: &str, encoding: Encoding, base_offset: usize, out: &mut
         luhn_valid,
         text,
         encoding,
-        base_offset,
+        layer,
         out,
     );
     for m in CARGO_PATH_RE.find_iter(text) {
         if out.len() >= MAX_INDICATORS {
             break;
         }
+        let (offset, length): (usize, usize) = layer.span(m.start(), m.end());
         out.push(Indicator {
             kind: IocKind::PdbPath,
             value: m.as_str().to_owned(),
-            offset: base_offset + m.start(),
+            offset,
+            length,
             encoding,
             context: None,
         });
     }
 }
 
-fn decode_and_recurse(text: &str, base_offset: usize, out: &mut Vec<Indicator>) {
+fn decode_and_recurse(text: &str, layer: &Layer<'_>, out: &mut Vec<Indicator>) {
     for m in B64_BLOB_RE.find_iter(text) {
         if out.len() >= MAX_INDICATORS {
             return;
@@ -818,7 +876,7 @@ fn decode_and_recurse(text: &str, base_offset: usize, out: &mut Vec<Indicator>) 
             scan_text_layer(
                 &inner,
                 Encoding::Base64,
-                base_offset.saturating_add(m.start()),
+                &Layer::within(LayerMap::Base64, m.start(), layer),
                 out,
             );
         }
@@ -838,12 +896,12 @@ fn decode_and_recurse(text: &str, base_offset: usize, out: &mut Vec<Indicator>) 
             scan_text_layer(
                 &inner,
                 Encoding::Hex,
-                base_offset.saturating_add(m.start()),
+                &Layer::within(LayerMap::TwoBytesPerUnit, m.start(), layer),
                 out,
             );
         }
     }
-    decode_codecs_and_recurse(text, base_offset, out);
+    decode_codecs_and_recurse(text, layer, out);
 }
 
 #[inline]
@@ -851,7 +909,7 @@ const fn is_codec_token_byte(b: u8) -> bool {
     matches!(b, 0x21..=0x7e)
 }
 
-fn decode_codecs_and_recurse(text: &str, base_offset: usize, out: &mut Vec<Indicator>) {
+fn decode_codecs_and_recurse(text: &str, layer: &Layer<'_>, out: &mut Vec<Indicator>) {
     let bytes: &[u8] = text.as_bytes();
     let n: usize = bytes.len();
     let mut i: usize = 0;
@@ -888,7 +946,13 @@ fn decode_codecs_and_recurse(text: &str, base_offset: usize, out: &mut Vec<Indic
             scan_text_layer(
                 &inner,
                 Encoding::Codec,
-                base_offset.saturating_add(start),
+                &Layer::within(
+                    LayerMap::Whole {
+                        length: token.len(),
+                    },
+                    start,
+                    layer,
+                ),
                 out,
             );
         }
@@ -1048,8 +1112,9 @@ fn scan_wide(bytes: &[u8], out: &mut Vec<Indicator>) {
             if run.trim().is_empty() {
                 continue;
             }
-            scan_text_layer(&run, endian.encoding(), start, out);
-            decode_and_recurse(&run, start, out);
+            let wide: Layer<'_> = Layer::within(LayerMap::TwoBytesPerUnit, start, &Layer::INPUT);
+            scan_text_layer(&run, endian.encoding(), &wide, out);
+            decode_and_recurse(&run, &wide, out);
         }
     }
 }
@@ -1068,17 +1133,21 @@ pub fn extract_with_extra(bytes: &[u8], extra_text: &[&str]) -> Vec<Indicator> {
         },
         std::borrow::Cow::Borrowed,
     );
-    scan_text_layer(&text, Encoding::Plain, 0, &mut out);
+    scan_text_layer(&text, Encoding::Plain, &Layer::INPUT, &mut out);
     collect_crypto_constants(bytes, &mut out);
-    decode_and_recurse(&text, 0usize, &mut out);
+    decode_and_recurse(&text, &Layer::INPUT, &mut out);
     scan_wide(bytes, &mut out);
     for (idx, extra) in extra_text.iter().enumerate() {
         if out.len() >= MAX_INDICATORS {
             break;
         }
-        let synthetic_base: usize = bytes.len().saturating_add(idx);
-        scan_text_layer(extra, Encoding::Plain, synthetic_base, &mut out);
-        decode_and_recurse(extra, 0usize, &mut out);
+        let synthetic: Layer<'_> = Layer {
+            map: LayerMap::Whole { length: 0 },
+            base: bytes.len().saturating_add(idx),
+            parent: None,
+        };
+        scan_text_layer(extra, Encoding::Plain, &synthetic, &mut out);
+        decode_and_recurse(extra, &synthetic, &mut out);
     }
     dedup_and_sort(out)
 }
@@ -1476,6 +1545,60 @@ mod tests {
             &buffer[wide.offset..wide.offset + 2],
             b"h\x00",
             "the reported offset must actually hold the start of the wide run"
+        );
+    }
+
+    #[test]
+    fn decoded_layer_indicators_report_their_encoded_byte_span() {
+        let url: &str = "http://span.example.net/gate";
+        let mut buffer: Vec<u8> = b"header bytes ".to_vec();
+        let wide_run: String = format!("connect to {url} now");
+        for b in wide_run.bytes() {
+            buffer.push(b);
+            buffer.push(0x00);
+        }
+        buffer.extend_from_slice(b"\x00\x00 blob=");
+        let blob_start: usize = buffer.len();
+        let hidden: String = format!("prefix-bytes {url}/b64 tail");
+        buffer.extend_from_slice(B64_STANDARD.encode(&hidden).as_bytes());
+        buffer.extend_from_slice(b" end");
+        let indicators: Vec<Indicator> = extract(&buffer);
+
+        let wide: &Indicator = indicators
+            .iter()
+            .find(|i: &&Indicator| i.encoding == Encoding::Utf16Le && i.value == url)
+            .unwrap_or_else(|| panic!("utf-16le url not recovered: {indicators:?}"));
+        let wide_bytes: &[u8] = &buffer[wide.offset..wide.offset + wide.length];
+        let units: Vec<u16> = wide_bytes
+            .chunks_exact(2)
+            .map(|pair: &[u8]| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect();
+        assert_eq!(
+            String::from_utf16(&units).ok().as_deref(),
+            Some(url),
+            "{wide:?}"
+        );
+
+        let encoded: &Indicator = indicators
+            .iter()
+            .find(|i: &&Indicator| {
+                i.encoding == Encoding::Base64 && i.value == format!("{url}/b64")
+            })
+            .unwrap_or_else(|| panic!("base64 url not recovered: {indicators:?}"));
+        assert!(encoded.offset > blob_start, "{encoded:?}");
+        let quantum_start: usize = blob_start + (encoded.offset - blob_start) / 4 * 4;
+        let quantum_end: usize =
+            blob_start + (encoded.offset + encoded.length - blob_start).div_ceil(4) * 4;
+        assert!(
+            encoded.length < encoded.value.len() * 4 / 3 + 4,
+            "the span covers the value's characters, not the whole blob: {encoded:?}"
+        );
+        let decoded: Vec<u8> = B64_STANDARD
+            .decode(&buffer[quantum_start..quantum_end])
+            .expect("the reported span lies on base64 text");
+        assert!(
+            String::from_utf8_lossy(&decoded).contains(&encoded.value),
+            "{encoded:?}"
         );
     }
 
