@@ -83,13 +83,7 @@ impl Pass for ShellPass {
                     .to_string(),
             ));
         }
-        if bytes.starts_with(b"' ===== module: ") {
-            return Err(CoreError::PassFailure(
-                "DR-SHELL-0927: shell.deob: the input is VBA module text this pass already rendered; recovering it again would re-claim its own output"
-                    .to_owned(),
-            ));
-        }
-        let source_text: String = recovered_source(&detection, bytes)?;
+        let source_text: String = recover_detected(&detection, bytes)?;
         Ok(Artifact::new(
             Rung::Surface,
             source_text.into_bytes(),
@@ -145,6 +139,16 @@ fn output_kind_of(output: &[u8]) -> OutputKind {
     }
 }
 
+pub fn recover_detected(detection: &Detection, bytes: &[u8]) -> CoreResult<String> {
+    if bytes.starts_with(b"' ===== module: ") {
+        return Err(CoreError::PassFailure(
+            "DR-SHELL-0927: shell.deob: the input is VBA module text this pass already rendered; recovering it again would re-claim its own output"
+                .to_owned(),
+        ));
+    }
+    recovered_source(detection, bytes)
+}
+
 fn recovered_source(detection: &Detection, bytes: &[u8]) -> CoreResult<String> {
     if detection.dialect == Dialect::Pdf {
         let report: PdfReport = crate::pdf::analyze_pdf(bytes).ok_or_else(|| {
@@ -168,7 +172,11 @@ fn recovered_source(detection: &Detection, bytes: &[u8]) -> CoreResult<String> {
     if detection.dialect == Dialect::Batch {
         let decoded: core::result::Result<&str, core::str::Utf8Error> = std::str::from_utf8(bytes);
         if let Ok(text) = decoded {
-            return Ok(crate::batch::deobfuscate_batch(text, &[]).output);
+            return guard_recovered(
+                detection.family,
+                text,
+                crate::batch::deobfuscate_batch(text, &[]).output,
+            );
         }
     }
     if detection.dialect == Dialect::Vba {
@@ -188,7 +196,11 @@ fn recovered_source(detection: &Detection, bytes: &[u8]) -> CoreResult<String> {
         }
     };
     match detection.dialect {
-        Dialect::Vbs | Dialect::Wsh => Ok(crate::vba::deobfuscate_vbs(text).output),
+        Dialect::Vbs | Dialect::Wsh => guard_recovered(
+            detection.family,
+            text,
+            crate::vba::deobfuscate_vbs(text).output,
+        ),
         _ => reverse_for_family(detection.family, text),
     }
 }
@@ -237,10 +249,29 @@ fn recover_nothing_wall(family: Family) -> CoreError {
 }
 
 fn guard_recovered(family: Family, text: &str, recovered: String) -> CoreResult<String> {
-    if recovered == text {
+    if same_script(&recovered, text) {
         return Err(recover_nothing_wall(family));
     }
     Ok(recovered)
+}
+
+fn same_script(left: &str, right: &str) -> bool {
+    let lines = |text: &str| -> Vec<String> {
+        text.lines()
+            .filter(|line: &&str| !line.starts_with(crate::batch::engine::EMULATED_OUTPUT_MARKER))
+            .map(|line: &str| line.trim_end().to_owned())
+            .skip_while(String::is_empty)
+            .collect::<Vec<String>>()
+    };
+    let mut left_lines: Vec<String> = lines(left);
+    let mut right_lines: Vec<String> = lines(right);
+    while left_lines.last().is_some_and(String::is_empty) {
+        left_lines.pop();
+    }
+    while right_lines.last().is_some_and(String::is_empty) {
+        right_lines.pop();
+    }
+    left_lines == right_lines
 }
 
 fn reverse_for_family(family: Family, text: &str) -> CoreResult<String> {
@@ -1172,6 +1203,32 @@ mod tests {
         let text: String =
             String::from_utf8(recovered.envelope.as_slice().to_vec()).expect("utf-8");
         assert!(text.contains("Write-Host"), "{text}");
+    }
+
+    #[test]
+    fn a_plain_batch_or_vbs_script_is_refused_as_unchanged() {
+        for (label, script) in [
+            ("batch", "@echo off\r\necho hello\r\nexit /b 0\r\n"),
+            (
+                "vbs",
+                "Set sh = CreateObject(\"WScript.Shell\")\nsh.Run \"notepad\"\n",
+            ),
+        ] {
+            let bytes: Vec<u8> = script.as_bytes().to_vec();
+            assert!(
+                verdict_for(&detect_shell(&bytes)).is_some(),
+                "{label} must be claimed"
+            );
+            let artifact: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
+            let error: String = SHELL_PASS
+                .run(&artifact)
+                .expect_err("nothing was recovered")
+                .to_string();
+            assert!(
+                error.contains("passed through unchanged"),
+                "{label}: {error}"
+            );
+        }
     }
 
     #[test]

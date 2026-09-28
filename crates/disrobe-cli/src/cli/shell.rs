@@ -4,14 +4,7 @@ use std::path::PathBuf;
 
 use clap::Subcommand;
 
-use disrobe_pass_shell::{
-    Detection, Dialect, Family, XlmRecovery, analyze_pdf, deobfuscate_batch, deobfuscate_vbs,
-    detect as detect_shell, format_identity, peel_indirection, recover_xlm,
-    render_report as render_pdf_report, render_xlm_source, reverse_bashfuscator_auto,
-    reverse_chameleon, reverse_compress, reverse_encoding, reverse_invoke_stealth,
-    reverse_isesteroids, reverse_launcher, reverse_node_bash_obfuscate, reverse_powerhell,
-    reverse_psobf, reverse_string, reverse_token,
-};
+use disrobe_pass_shell::{Detection, Dialect, decode_script_bytes, detect as detect_shell};
 
 use super::globals;
 
@@ -62,9 +55,11 @@ fn deob(input: Option<PathBuf>, out: Option<PathBuf>, list: bool) -> miette::Res
             "DR-CLI-0590: shell deob needs an input file (or `--list` to show supported obfuscators)"
         ));
     };
-    let bytes: Vec<u8> = std::fs::read(&input)
+    let raw: Vec<u8> = std::fs::read(&input)
         .map_err(|e| miette::miette!("DR-CLI-0591: cannot read input: {e}"))?;
-    let detection: Detection = detect_shell(&bytes);
+    let decoded: Option<String> = decode_script_bytes(&raw);
+    let bytes: &[u8] = decoded.as_deref().map_or(raw.as_slice(), str::as_bytes);
+    let detection: Detection = detect_shell(bytes);
     let g: globals::Globals = globals::current();
     if g.dry_run {
         println!("shell deob: DRY-RUN");
@@ -74,7 +69,8 @@ fn deob(input: Option<PathBuf>, out: Option<PathBuf>, list: bool) -> miette::Res
         return Ok(());
     }
 
-    let recovered: String = recover_source(&detection, &bytes)?;
+    let recovered: String = disrobe_pass_shell::chain_detector::recover_detected(&detection, bytes)
+        .map_err(|e| miette::miette!("{e}"))?;
     let stem: String = input
         .file_stem()
         .and_then(OsStr::to_str)
@@ -125,85 +121,6 @@ fn detect(input: PathBuf) -> miette::Result<()> {
     println!("  confidence:   {:.2}", detection.confidence);
     println!("  markers:      {:?}", detection.markers);
     Ok(())
-}
-
-fn recover_source(detection: &Detection, bytes: &[u8]) -> miette::Result<String> {
-    if detection.dialect == Dialect::Batch
-        && let Ok(text) = std::str::from_utf8(bytes)
-    {
-        return Ok(deobfuscate_batch(text, &[]).output);
-    }
-    if detection.dialect == Dialect::Vba
-        && let Some(rendered) = disrobe_pass_shell::chain_detector::recover_vba_source(bytes)
-    {
-        return Ok(rendered);
-    }
-    if detection.dialect == Dialect::Xlm
-        && let Some(rendered) = recover_xlm_text(bytes)
-    {
-        return Ok(rendered);
-    }
-    if detection.dialect == Dialect::Pdf
-        && let Some(report) = analyze_pdf(bytes)
-    {
-        return Ok(render_pdf_report(&report));
-    }
-    let text: &str = match std::str::from_utf8(bytes) {
-        Ok(text) => text,
-        Err(_) => {
-            return Ok(format!(
-                "/* non-utf8 shell payload of {} bytes */",
-                bytes.len()
-            ));
-        }
-    };
-    if matches!(detection.dialect, Dialect::Vbs | Dialect::Wsh) {
-        return Ok(deobfuscate_vbs(text).output);
-    }
-    Ok(reverse_for_family(detection.family, text))
-}
-
-fn reverse_for_family(family: Family, text: &str) -> String {
-    match family {
-        Family::InvokeObfuscationToken => reverse_token(text).output,
-        Family::InvokeObfuscationAst => disrobe_pass_shell::reverse_ast(text).output,
-        Family::InvokeObfuscationString => reverse_string(text).output,
-        Family::InvokeObfuscationEncoding => {
-            reverse_encoding(text).map_or_else(|_| text.to_owned(), |r| r.output)
-        }
-        Family::InvokeObfuscationCompress => {
-            reverse_compress(text).map_or_else(|_| text.to_owned(), |r| r.output)
-        }
-        Family::InvokeObfuscationLauncher => reverse_launcher(text).output,
-        Family::InvokeStealth => reverse_invoke_stealth(text).output,
-        Family::PowerHell => reverse_powerhell(text).map_or_else(|_| text.to_owned(), |r| r.output),
-        Family::Chameleon => reverse_chameleon(text).output,
-        Family::Psobf => reverse_psobf(text).map_or_else(|_| text.to_owned(), |r| r.output),
-        Family::IseSteroids => reverse_isesteroids(text).output,
-        Family::BashfuscatorToken
-        | Family::BashfuscatorString
-        | Family::BashfuscatorObfuscate
-        | Family::BashfuscatorCompress => {
-            reverse_bashfuscator_auto(text).map_or_else(|_| text.to_owned(), |r| r.output)
-        }
-        Family::BashIndirection => {
-            peel_indirection(text).map_or_else(|_| text.to_owned(), |r| r.output)
-        }
-        Family::NodeBashObfuscate => {
-            reverse_node_bash_obfuscate(text).map_or_else(|| text.to_owned(), |r| r.output)
-        }
-        Family::Plain
-        | Family::Unknown
-        | Family::BatchRandom
-        | Family::BatchSetIndirection
-        | Family::VbaMacro
-        | Family::VbsWshObfuscated => format_identity(text),
-    }
-}
-
-fn recover_xlm_text(bytes: &[u8]) -> Option<String> {
-    let report: XlmRecovery = recover_xlm(bytes)?;
-    render_xlm_source(&report)
 }
 
 const fn dialect_ext(dialect: Dialect) -> &'static str {

@@ -56,7 +56,7 @@ pub use batch::{
     extract_embedded, normalize as normalize_batch, parse_for_f_string, parse_for_l,
     recover_stages, resolve_cfg, reverse_batch, surface_iocs, unroll,
 };
-pub use detect::{Detection, Dialect, Family, detect};
+pub use detect::{Detection, Dialect, Family, decode_script_bytes, detect};
 pub use error::{Error, Result};
 pub use format_wire::format_identity;
 pub use pdf::{

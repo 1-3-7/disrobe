@@ -15,6 +15,7 @@ use crate::batch::ioc::{BatchIocReport, surface};
 use crate::batch::normalize::{NormalizeReport, normalize};
 use crate::batch::payload::{EmbeddedPayload, extract_embedded};
 
+pub(crate) const EMULATED_OUTPUT_MARKER: &str = "rem [emulated output] ";
 const MAX_EXPANSION_ROUNDS: usize = 16;
 const MAX_LINES: usize = 50_000;
 const MAX_TOTAL_OUTPUT: usize = 64 * 1024 * 1024;
@@ -368,7 +369,7 @@ fn apply_emulation(
                 line.to_owned()
             } else {
                 format!(
-                    "{line}\nrem [emulated output] {}",
+                    "{line}\n{EMULATED_OUTPUT_MARKER}{}",
                     text.replace('\n', " | ")
                 )
             }
