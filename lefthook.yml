@@ -5,7 +5,7 @@ pre-commit:
       glob: '*.rs'
       run: rustfmt --edition 2024 --check {staged_files}
     typos:
-      run: typos {staged_files}
+      run: typos --force-exclude {staged_files}
     staged-files:
       run: sh .githooks/staged_files.sh
 
