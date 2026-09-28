@@ -215,11 +215,35 @@ struct Processed {
 
 fn process_one(path: &Path, relative: &Path, stem: &str, opts: &BatchOptions) -> Processed {
     let started: Instant = Instant::now();
-    let entry: ManifestEntry = manifest_entry(path, relative, stem, opts);
+    let entry: ManifestEntry = isolated_entry(path, relative, || {
+        manifest_entry(path, relative, stem, opts)
+    });
     Processed {
         entry,
         elapsed: started.elapsed(),
     }
+}
+
+fn isolated_entry(
+    path: &Path,
+    relative: &Path,
+    build: impl FnOnce() -> ManifestEntry,
+) -> ManifestEntry {
+    let rel_display: String = relative.to_string_lossy().replace('\\', "/");
+    let what: String = format!("processing `{rel_display}`");
+    crate::cli::isolate::isolate(&what, build).unwrap_or_else(|message: String| ManifestEntry {
+        input: path.display().to_string(),
+        relative: rel_display,
+        size: std::fs::metadata(path).map_or(0, |m: std::fs::Metadata| m.len()),
+        detected_format: None,
+        chain: Vec::new(),
+        verdict: None,
+        recovery_score: None,
+        anti_analysis: Vec::new(),
+        supplemental_outputs: Vec::new(),
+        output_dir: None,
+        error: Some(message),
+    })
 }
 
 fn manifest_entry(path: &Path, relative: &Path, stem: &str, opts: &BatchOptions) -> ManifestEntry {
@@ -449,10 +473,34 @@ fn run_parallel(
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::unwrap_used, clippy::float_cmp)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::float_cmp,
+    clippy::panic
+)]
 mod tests {
     use super::*;
     use disrobe_core::scratch::ScratchDir;
+
+    #[test]
+    fn a_panicking_input_becomes_a_failed_entry_instead_of_ending_the_run() {
+        let entry: ManifestEntry = isolated_entry(
+            Path::new("inputs/crafted.bin"),
+            Path::new("crafted.bin"),
+            || panic!("a pass hit a malformed table"),
+        );
+        let error: String = entry
+            .error
+            .expect("the panic is recorded as the entry's error");
+        assert!(
+            error.starts_with(crate::cli::isolate::PANIC_CODE),
+            "{error}"
+        );
+        assert!(error.contains("a pass hit a malformed table"), "{error}");
+        assert_eq!(entry.relative, "crafted.bin");
+        assert!(entry.chain.is_empty());
+    }
 
     fn tmp_dir(stem: &str) -> ScratchDir {
         let purpose: String = format!("disrobe-batch-{stem}");

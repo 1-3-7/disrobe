@@ -96,6 +96,20 @@ impl PassRunner for ChainPassRunner<'_> {
         config: &ChainConfig,
         path_hint: Option<&str>,
     ) -> Result<PassRunOutcome, String> {
+        let what: String = format!("pass `{}`", pick.verdict.pass_id);
+        crate::cli::isolate::isolate(&what, || self.run_pass(pick, bytes, config, path_hint))
+            .and_then(|outcome: Result<PassRunOutcome, String>| outcome)
+    }
+}
+
+impl ChainPassRunner<'_> {
+    fn run_pass(
+        &self,
+        pick: &DetectorPick,
+        bytes: Vec<u8>,
+        config: &ChainConfig,
+        path_hint: Option<&str>,
+    ) -> Result<PassRunOutcome, String> {
         self.progress.step(pick.verdict.pass_id);
         let hash: [u8; 32] = blake3_hash(&bytes);
         let artifact: Artifact = Artifact::new(Rung::Raw, bytes, hash);

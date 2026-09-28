@@ -345,4 +345,15 @@ pub(super) const CLI_B: &[CodeEntry] = &[
         common_fixes: &["pass an existing directory to --root"],
         crate_path: "crates/disrobe-cli/src/cli/guard.rs",
     },
+    CodeEntry {
+        code: "DR-CLI-0877",
+        title: "a pass panicked; its input is recorded as failed",
+        description: "a pass or a batch entry panicked while processing one input. The run continues: the chain records an Error verdict for that pass and a directory run records the entry as failed, so `chain.json` and `manifest.json` are still written.",
+        common_causes: &["a malformed input reached an unchecked path in a pass"],
+        common_fixes: &[
+            "report the input with `disrobe bug-report --out <PATH>`",
+            "rerun the other inputs; they are unaffected",
+        ],
+        crate_path: "crates/disrobe-cli/src/cli/isolate.rs",
+    },
 ];

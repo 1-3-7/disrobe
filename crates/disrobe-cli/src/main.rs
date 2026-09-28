@@ -1668,13 +1668,18 @@ pub(crate) fn subcommand_paths() -> std::collections::BTreeSet<String> {
 }
 
 fn install_crash_reporter() {
-    if cfg!(debug_assertions) || std::env::var_os("RUST_BACKTRACE").is_some() {
-        return;
-    }
+    let banner: bool = !(cfg!(debug_assertions) || std::env::var_os("RUST_BACKTRACE").is_some());
     let previous: Box<dyn Fn(&std::panic::PanicHookInfo<'_>) + Sync + Send> =
         std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info: &std::panic::PanicHookInfo<'_>| {
+        if cli::isolate::inside_isolation() {
+            cli::isolate::record_location(info);
+            return;
+        }
         previous(info);
+        if !banner {
+            return;
+        }
         eprintln!();
         eprintln!(
             "{} {} crashed. Nothing was written outside the directory you chose.",

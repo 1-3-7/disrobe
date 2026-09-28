@@ -59,6 +59,7 @@ pub(crate) mod install;
 pub(crate) mod install_deps;
 pub(crate) mod ioc;
 pub(crate) mod ir_metadata;
+pub(crate) mod isolate;
 #[cfg(feature = "js")]
 pub(crate) mod js;
 #[cfg(feature = "jvm")]
