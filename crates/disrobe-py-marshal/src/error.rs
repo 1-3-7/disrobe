@@ -5,6 +5,17 @@ pub type Result<T> = core::result::Result<T, Error>;
 
 #[derive(Debug, Error, Diagnostic)]
 pub enum Error {
+    #[error(
+        "DR-MARSHAL-0022: code object declares {arguments} arguments ({positional} positional, {positional_only} positional-only, {keyword_only} keyword-only) but names {locals} locals"
+    )]
+    ArgumentCounts {
+        positional: i32,
+        positional_only: i32,
+        keyword_only: i32,
+        arguments: i64,
+        locals: usize,
+    },
+
     #[error("DR-MARSHAL-0021: marshal input has {actual} bytes, exceeding the limit of {limit}")]
     InputLimit { actual: usize, limit: usize },
 

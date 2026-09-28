@@ -341,6 +341,34 @@ struct Reader<'a> {
     limits: Option<Limits>,
 }
 
+fn check_argument_counts(co: &CodeObject) -> Result<()> {
+    if matches!(co.era, CodeEra::Py10to12) {
+        return Ok(());
+    }
+    let locals: usize = if co.localsplusnames.is_empty() {
+        co.varnames.len()
+    } else {
+        co.localsplusnames.len()
+    };
+    let arguments: i64 = i64::from(co.argcount) + i64::from(co.kwonlyargcount);
+    let consistent: bool = co.argcount >= 0
+        && co.posonlyargcount >= 0
+        && co.kwonlyargcount >= 0
+        && co.posonlyargcount <= co.argcount
+        && usize::try_from(arguments).is_ok_and(|count: usize| count <= locals);
+    if consistent {
+        Ok(())
+    } else {
+        Err(Error::ArgumentCounts {
+            positional: co.argcount,
+            positional_only: co.posonlyargcount,
+            keyword_only: co.kwonlyargcount,
+            arguments,
+            locals,
+        })
+    }
+}
+
 impl<'a> Reader<'a> {
     const fn new(buf: &'a [u8], version: PyVersion, trace: bool) -> Self {
         Self {
@@ -942,6 +970,7 @@ impl<'a> Reader<'a> {
                 co.pyarmor_trailer = self.consume_pyarmor_trailer_if_present(co.flags)?;
             }
         }
+        check_argument_counts(&co)?;
         Ok(co)
     }
 
@@ -1094,6 +1123,35 @@ const fn object_prealloc_capacity(n: usize, remaining_bytes: usize) -> usize {
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_code_object_with_more_arguments_than_locals_is_refused() {
+        let mut co: crate::object::CodeObject =
+            crate::object::CodeObject::new(crate::object::CodeEra::Py30to37);
+        co.argcount = i32::MAX;
+        let bytes: Vec<u8> = crate::writer::dump(
+            &Object::Code(Box::new(co.clone())),
+            PyVersion { major: 3, minor: 7 },
+        )
+        .expect("dump");
+        let err: Error = load(&bytes, PyVersion { major: 3, minor: 7 }).expect_err("refused");
+        assert!(
+            matches!(err, Error::ArgumentCounts { locals: 0, .. }),
+            "{err:?}"
+        );
+
+        co.argcount = 0;
+        co.kwonlyargcount = -1;
+        let bytes: Vec<u8> = crate::writer::dump(
+            &Object::Code(Box::new(co)),
+            PyVersion { major: 3, minor: 7 },
+        )
+        .expect("dump");
+        assert!(matches!(
+            load(&bytes, PyVersion { major: 3, minor: 7 }),
+            Err(Error::ArgumentCounts { .. })
+        ));
+    }
 
     const fn bounded_limits() -> Limits {
         Limits {
