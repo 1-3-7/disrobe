@@ -114,6 +114,8 @@ pub struct DeobfReport {
     pub api_hashes: Vec<crate::api_hash::ApiHashHit>,
     pub stack_strings: Vec<crate::stack_string::ReassembledStackString>,
     pub anti_disassembly: Option<crate::desync::DesyncEvidence>,
+    #[serde(default)]
+    pub string_indicators: Vec<crate::obfuscators::StringIndicator>,
     pub cleaned_listing: Option<String>,
     pub notes: Vec<String>,
 }

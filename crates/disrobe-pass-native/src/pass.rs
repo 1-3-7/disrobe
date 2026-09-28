@@ -15,7 +15,9 @@ use crate::desync::{
     Bitness as DesyncBitness, DesyncEvidence, DesyncReport, resolve as resolve_desync,
 };
 use crate::format::{DetectedFormat, NativeFormat, detect as detect_format};
-use crate::obfuscators::{ObfuscatorHit, detect as detect_obfuscators};
+use crate::obfuscators::{
+    ObfuscatorHit, detect as detect_obfuscators, detect_indicators as detect_obfuscator_indicators,
+};
 use crate::stack_string::{ReassembledStackString, reassemble_stack_strings};
 
 const DEOBF_SECTION_CAP: usize = 4 * 1024 * 1024;
@@ -247,6 +249,7 @@ fn analyze_deobf(
         api_hashes,
         stack_strings,
         anti_disassembly,
+        string_indicators: detect_obfuscator_indicators(bytes),
         cleaned_listing,
         notes,
     })
