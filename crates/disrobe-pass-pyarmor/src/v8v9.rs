@@ -125,7 +125,7 @@ pub(crate) fn decrypt_body(payload: &[u8], aes_key: &[u8; 16]) -> Result<Decrypt
     let working: &[u8] = payload
         .get(working_start..)
         .filter(|rest: &&[u8]| !rest.is_empty())
-        .ok_or(Error::HeaderTruncated {
+        .ok_or_else(|| Error::HeaderTruncated {
             need: working_start.saturating_add(1),
             got: payload.len(),
         })?;
@@ -134,7 +134,7 @@ pub(crate) fn decrypt_body(payload: &[u8], aes_key: &[u8; 16]) -> Result<Decrypt
     let cipher_end: usize = cipher_offset
         .checked_add(cipher_len)
         .filter(|end: &usize| *end <= working.len())
-        .ok_or(Error::HeaderTruncated {
+        .ok_or_else(|| Error::HeaderTruncated {
             need: cipher_offset.saturating_add(cipher_len),
             got: working.len(),
         })?;
