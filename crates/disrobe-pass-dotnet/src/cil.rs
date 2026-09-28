@@ -957,6 +957,7 @@ struct MethodHeader {
     more_sects: bool,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct MethodBodyExtent {
     pub code_size: u32,
@@ -1023,6 +1024,7 @@ fn method_code_end(header: &MethodHeader, bytes: &[u8]) -> Result<usize> {
     Ok(code_end)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn method_body_extent(bytes: &[u8]) -> Result<MethodBodyExtent> {
     let header: MethodHeader = parse_method_header(bytes)?;
     let code_end: usize = method_code_end(&header, bytes)?;
