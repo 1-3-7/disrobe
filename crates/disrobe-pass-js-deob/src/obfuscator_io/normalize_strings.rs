@@ -1,3 +1,4 @@
+use crate::scan_utils::next_utf8_char;
 use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
@@ -137,10 +138,11 @@ fn normalize_literal(
                     decoded.push('u');
                     j += 2;
                 }
-                other => {
+                _ => {
                     decoded.push('\\');
-                    decoded.push(other as char);
-                    j += 2;
+                    let character: char = next_utf8_char(bytes, j + 1)?;
+                    decoded.push(character);
+                    j += 1 + character.len_utf8();
                 }
             }
             continue;

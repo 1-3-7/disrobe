@@ -3,6 +3,7 @@ use regex::{Captures, Regex};
 use serde::Serialize;
 
 use crate::js_string::unescape_string_literal;
+use crate::scan_utils::copy_char_at;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize)]
 pub(super) struct GlobalsEvalStats {
@@ -107,8 +108,7 @@ fn js_unescape_global(s: &str) -> String {
                 continue;
             }
         }
-        out.push(bytes[i] as char);
-        i += 1;
+        i += copy_char_at(&mut out, s, i);
     }
     out
 }

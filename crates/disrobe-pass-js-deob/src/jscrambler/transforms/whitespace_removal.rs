@@ -1,5 +1,6 @@
 use super::{TransformOpts, TransformOutput, TransformStats};
 use crate::jscrambler::scanner::skip_string_literal;
+use crate::scan_utils::copy_char_at;
 
 pub(in crate::jscrambler) fn detect(source: &str) -> usize {
     usize::from(is_dense_single_line(source))
@@ -127,9 +128,8 @@ fn beautify(source: &str) -> String {
                     push_indent(&mut out, indent);
                     at_line_start = false;
                 }
-                out.push(b as char);
                 prev_non_ws = b;
-                i += 1;
+                i += copy_char_at(&mut out, source, i);
             }
         }
     }

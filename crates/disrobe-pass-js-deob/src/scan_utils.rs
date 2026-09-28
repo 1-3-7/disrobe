@@ -4,6 +4,22 @@ use crate::error::{Error, Result};
 pub(crate) use crate::source_text::head;
 use regex::{Captures, Regex};
 
+pub(crate) fn next_utf8_char(bytes: &[u8], at: usize) -> Option<char> {
+    let end: usize = (at + 4).min(bytes.len());
+    for take in (at + 1)..=end {
+        if let Ok(chunk) = std::str::from_utf8(bytes.get(at..take)?) {
+            return chunk.chars().next();
+        }
+    }
+    None
+}
+
+pub(crate) fn copy_char_at(out: &mut String, source: &str, at: usize) -> usize {
+    let character: Option<char> = source.get(at..).and_then(|rest: &str| rest.chars().next());
+    out.push(character.unwrap_or(char::REPLACEMENT_CHARACTER));
+    character.map_or(1, char::len_utf8)
+}
+
 #[must_use]
 pub(crate) fn literal_and_comment_ranges(source: &str) -> Vec<Range<usize>> {
     let bytes: &[u8] = source.as_bytes();

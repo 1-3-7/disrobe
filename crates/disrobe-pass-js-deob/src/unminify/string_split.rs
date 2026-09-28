@@ -230,8 +230,9 @@ fn decode_segment(bytes: &[u8], start: usize, end: usize, out: &mut Vec<char>) {
     while i < end {
         let b: u8 = bytes[i];
         if b != b'\\' {
-            out.push(b as char);
-            i += 1;
+            let (character, width): (char, usize) = char_at(bytes, i, end);
+            out.push(character);
+            i += width;
             continue;
         }
         if i + 1 >= end {
@@ -259,8 +260,28 @@ fn decode_escape(bytes: &[u8], at: usize, end: usize, out: &mut Vec<char>) -> us
         b'v' => push_and_advance(out, '\u{000B}', at, 2),
         b'x' if at + 3 < end => decode_hex2(bytes, at, esc, out),
         b'u' if at + 5 < end && bytes[at + 2] != b'{' => decode_hex4(bytes, at, esc, out),
-        other => push_and_advance(out, other as char, at, 2),
+        _ => {
+            let (character, width): (char, usize) = char_at(bytes, at + 1, end);
+            out.push(character);
+            at + 1 + width
+        }
     }
+}
+
+fn char_at(bytes: &[u8], at: usize, end: usize) -> (char, usize) {
+    let width: usize = match bytes.get(at) {
+        Some(0xC0..=0xDF) => 2,
+        Some(0xE0..=0xEF) => 3,
+        Some(0xF0..=0xF7) => 4,
+        _ => 1,
+    };
+    bytes
+        .get(at..(at + width).min(end))
+        .and_then(|encoded: &[u8]| std::str::from_utf8(encoded).ok())
+        .and_then(|text: &str| text.chars().next())
+        .map_or((char::REPLACEMENT_CHARACTER, 1), |character: char| {
+            (character, width)
+        })
 }
 
 fn push_and_advance(out: &mut Vec<char>, ch: char, at: usize, step: usize) -> usize {
@@ -337,6 +358,14 @@ fn emit_char(ch: char, quote: u8, out: &mut String) {
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_merged_chain_keeps_non_ascii_characters_and_identity_escapes() {
+        let (out, stats): (String, StringSplitStats) =
+            fold_string_concat(r#"var s = "ca" + "fé" + "\ü";"#);
+        assert_eq!(stats.literals_merged, 2);
+        assert!(out.contains("'caféü'"), "expected fold, got: {out}");
+    }
 
     #[test]
     fn folds_simple_double_quote_chain() {

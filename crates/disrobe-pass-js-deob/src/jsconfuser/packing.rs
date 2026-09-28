@@ -143,24 +143,19 @@ fn strip_string_literal(raw: &str) -> Option<String> {
     }
     let inner: &str = t.get(1..t.len() - 1)?;
     let mut out: String = String::with_capacity(inner.len());
-    let mut i: usize = 0;
-    let raw_bytes: &[u8] = inner.as_bytes();
-    while i < raw_bytes.len() {
-        let b: u8 = raw_bytes[i];
-        if b == b'\\' && i + 1 < raw_bytes.len() {
-            let esc: u8 = raw_bytes[i + 1];
-            let decoded: char = match esc {
-                b'n' => '\n',
-                b't' => '\t',
-                b'r' => '\r',
-                other => other as char,
-            };
-            out.push(decoded);
-            i += 2;
+    let mut characters: std::str::Chars<'_> = inner.chars();
+    while let Some(character) = characters.next() {
+        if character != '\\' {
+            out.push(character);
             continue;
         }
-        out.push(b as char);
-        i += 1;
+        match characters.next() {
+            Some('n') => out.push('\n'),
+            Some('t') => out.push('\t'),
+            Some('r') => out.push('\r'),
+            Some(other) => out.push(other),
+            None => out.push('\\'),
+        }
     }
     Some(out)
 }

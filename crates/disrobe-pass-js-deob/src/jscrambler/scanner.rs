@@ -1,3 +1,4 @@
+use crate::scan_utils::next_utf8_char;
 use core::ops::Range;
 
 pub(super) fn skip_ws(bytes: &[u8], start: usize) -> usize {
@@ -199,7 +200,12 @@ pub(super) fn decode_x_or_u_escapes(s: &str) -> Option<String> {
                 b'b' => out.push('\u{0008}'),
                 b'f' => out.push('\u{000C}'),
                 b'v' => out.push('\u{000B}'),
-                other => out.push(other as char),
+                _ => {
+                    let character: char = next_utf8_char(bytes, i + 1)?;
+                    out.push(character);
+                    i += 1 + character.len_utf8();
+                    continue;
+                }
             }
             i += 2;
             continue;

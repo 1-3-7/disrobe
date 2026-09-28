@@ -1,6 +1,7 @@
 use serde::Serialize;
 
 use crate::esoteric::eval_to_string;
+use crate::scan_utils::copy_char_at;
 
 const FROM_CHAR_CODE: &str = "String.fromCharCode";
 const FROM_CHAR_CODE_LEN: usize = FROM_CHAR_CODE.len();
@@ -66,8 +67,7 @@ fn fold_string_iifes(source: &str) -> (String, usize) {
                     folded += 1;
                     i = iife_end;
                 } else {
-                    out.push(b as char);
-                    i += 1;
+                    i += copy_char_at(&mut out, source, i);
                 }
             }
         }
@@ -161,8 +161,7 @@ fn normalize_string_member(source: &str) -> String {
                     out.push_str(&prop);
                     i = member_end;
                 } else {
-                    out.push(b as char);
-                    i += 1;
+                    i += copy_char_at(&mut out, source, i);
                 }
             }
         }
@@ -256,8 +255,7 @@ fn fold_one_pass(source: &str) -> (String, usize) {
                     folded += 1;
                     i = call_end;
                 } else {
-                    out.push(b as char);
-                    i += 1;
+                    i += copy_char_at(&mut out, source, i);
                 }
             }
         }
@@ -372,6 +370,16 @@ const fn is_ident_byte(b: u8) -> bool {
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_around_a_fold_keeps_its_non_ascii_characters() {
+        let src: &str = "var s='café'; var n=String.fromCharCode(72,105); // naïve";
+        let (out, stats): (String, CharFoldStats) = fold_char_constructors(src);
+        assert_eq!(stats.from_char_code_calls_folded, 1);
+        assert!(out.contains("'café'"), "got {out}");
+        assert!(out.contains("// naïve"), "got {out}");
+        assert!(out.contains("'Hi'"), "got {out}");
+    }
 
     #[test]
     fn folds_octal_hex_decimal_chain() {

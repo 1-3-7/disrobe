@@ -120,15 +120,15 @@ const fn pick(cond: bool) -> PredicateValue {
 
 fn normalize(text: &str) -> String {
     let bytes: &[u8] = text.as_bytes();
-    let mut out: String = String::with_capacity(text.len());
+    let mut out: Vec<u8> = Vec::with_capacity(text.len());
     let mut i: usize = 0;
     let mut quote: Option<u8> = None;
     while i < bytes.len() {
         let b: u8 = bytes[i];
         if let Some(q) = quote {
-            out.push(b as char);
+            out.push(b);
             if b == b'\\' && i + 1 < bytes.len() {
-                out.push(bytes[i + 1] as char);
+                out.push(bytes[i + 1]);
                 i += 2;
                 continue;
             }
@@ -137,13 +137,13 @@ fn normalize(text: &str) -> String {
             }
         } else if matches!(b, b'\'' | b'"' | b'`') {
             quote = Some(b);
-            out.push(b as char);
+            out.push(b);
         } else if !matches!(b, b' ' | b'\t' | b'\r' | b'\n') {
-            out.push(b as char);
+            out.push(b);
         }
         i += 1;
     }
-    out
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn strip_outer_parens(s: &str) -> String {

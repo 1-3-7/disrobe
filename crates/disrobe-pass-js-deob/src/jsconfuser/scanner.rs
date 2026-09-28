@@ -1,3 +1,5 @@
+use crate::scan_utils::next_utf8_char;
+
 pub(super) fn scan_balanced_brace(source: &str, start: usize) -> Option<usize> {
     let bytes: &[u8] = source.as_bytes();
     let mut depth: i32 = 1;
@@ -279,7 +281,14 @@ pub(super) fn decode_string_literal_at(bytes: &[u8], start: usize) -> Option<(St
                     j += 4;
                     continue;
                 }
-                other => literal.push(other as char),
+                _ => match next_utf8_char(bytes, j + 1) {
+                    Some(character) => {
+                        literal.push(character);
+                        j += 1 + character.len_utf8();
+                        continue;
+                    }
+                    None => literal.push(char::REPLACEMENT_CHARACTER),
+                },
             }
             j += 2;
             continue;
@@ -291,18 +300,8 @@ pub(super) fn decode_string_literal_at(bytes: &[u8], start: usize) -> Option<(St
             literal.push(ch);
             j += ch.len_utf8();
         } else {
-            literal.push(b as char);
+            literal.push(char::REPLACEMENT_CHARACTER);
             j += 1;
-        }
-    }
-    None
-}
-
-fn next_utf8_char(bytes: &[u8], at: usize) -> Option<char> {
-    let end: usize = (at + 4).min(bytes.len());
-    for take in (at + 1)..=end {
-        if let Ok(chunk) = std::str::from_utf8(bytes.get(at..take)?) {
-            return chunk.chars().next();
         }
     }
     None
