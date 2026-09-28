@@ -25,9 +25,6 @@ const BOOLEAN_SITES: [&str; 13] = [
     "        fixture.bool.BooleanBoundary.shared = (arg0 | arg1);",
     "        this.flags[arg0] = (arg1 ^ arg2);",
 ];
-const EXPECTED_DIAGNOSTICS: [&str; 1] = [
-    "BooleanBoundary.java:9:26: compiler.err.cant.resolve.location: kindname.class, Z, , , (compiler.misc.location: kindname.class, fixture.bool.BooleanBoundary, null)",
-];
 
 fn recovered_boolean_boundary() -> String {
     let recovered: DecompiledDex = decompile_dex_from_bytes(BOOLEAN_BOUNDARY_DEX)
@@ -72,14 +69,12 @@ fn direct_dalvik_boolean_boundaries_recompile_under_javac() {
         .output()
         .expect("run javac");
     let stderr: String = String::from_utf8_lossy(&output.stderr).into_owned();
-    let diagnostics: Vec<&str> = stderr
-        .lines()
-        .filter(|line: &&str| line.contains(": compiler."))
-        .collect();
-    assert!(!output.status.success(), "{stderr}");
-    assert_eq!(
-        diagnostics,
-        EXPECTED_DIAGNOSTICS.to_vec(),
+    assert!(output.status.success(), "{stderr}\n{source}");
+    assert!(
+        !stderr
+            .lines()
+            .any(|line: &str| line.contains(": compiler.")),
         "{stderr}\n{source}"
     );
+    assert!(source.contains("this.flags = new boolean[4];"), "{source}");
 }

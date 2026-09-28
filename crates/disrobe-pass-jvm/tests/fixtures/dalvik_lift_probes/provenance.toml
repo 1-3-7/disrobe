@@ -1,0 +1,33 @@
+schema = "disrobe.jvm.dalvik-lift-probes-fixture/v1"
+source = "LiftProbes.java"
+source_sha256 = "0ddcabc1b4efb17e23c6cbf7adafd850e54fa10ef497944b06527830de5f6452"
+
+[javac]
+vendor = "Eclipse Temurin"
+version = "25.0.4+7-LTS"
+command = "javac -g -Xlint:-options --release 8 -d classes LiftProbes.java"
+
+[d8]
+version = "9.1.31"
+url = "https://dl.google.com/dl/android/maven2/com/android/tools/r8/9.1.31/r8-9.1.31.jar"
+sha256 = "3b4de3053885da105e39c15212261d22653d6d1b5eb92323dd04ae913cc8286f"
+
+[shapes]
+arrays = "arrays(int): filled-new-array, filled-new-array/range and fill-array-data for int, long, char, byte, short, boolean, float and double arrays"
+halvings = "halvings(int): a while header that assigns the loop variable before the exit test"
+reads = "reads(int): a while header that stores a call result read by the exit test and the body"
+polls = "polls(): a while header whose call folds into the exit test"
+strings = "strings(): a string constant with non-ASCII, control, quote, backslash, surrogate-pair and line-separator characters"
+order = "order(): call results bound to locals and combined in the reverse of their call order"
+workers = "Worker implements Callable and Runnable; Counting extends Worker and gains a javac bridge call() that clashes with its own call() in source"
+notes = "The release build keeps every probe method; D8 turns the constant arrays into fill-array-data payloads and the computed int arrays into filled-new-array, and reuses registers across the call results of order()."
+
+[[artifact]]
+path = "LiftProbes-release-min21.dex"
+format = "DEX 035"
+min_api = 21
+mode = "release"
+tool = "D8"
+command = "java -cp r8-9.1.31.jar com.android.tools.r8.D8 --release --min-api 21 --output dex classes/LiftProbes.class classes/LiftProbes$Counting.class classes/LiftProbes$Worker.class"
+sha256 = "02400f99d0a3441a474e33110f484d07a2412676d8260b12bd4908b2ff715563"
+bytes = 4976

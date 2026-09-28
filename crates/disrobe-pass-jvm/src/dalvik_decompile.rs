@@ -143,6 +143,8 @@ fn decompile_dex_scoped(dex: &DexFile, bytes: &[u8]) -> DecompiledDex {
             })
             .collect();
 
+    let declarations: BTreeMap<String, crate::dalvik_desugar::ClassDeclaration> =
+        crate::dalvik_desugar::class_declarations(dex, bytes).unwrap_or_default();
     let mut rendered_classes: BTreeMap<String, RenderedClass> = BTreeMap::new();
     let renders = |class: &str| {
         by_class.contains_key(class)
@@ -185,6 +187,7 @@ fn decompile_dex_scoped(dex: &DexFile, bytes: &[u8]) -> DecompiledDex {
             methods,
             fields: code_report.fields(),
             decoded: &items,
+            declaration: declarations.get(class_descriptor),
         };
         let kotlin_evidence: KotlinClassEvidence<'_> = KotlinClassEvidence {
             source_file: source_file_for_class(dex, bytes, class_descriptor),
@@ -301,6 +304,7 @@ pub(crate) fn translated_default_methods(
                         source_file: None,
                         metadata_is_absent: true,
                         continuation_impl_bridge: false,
+                        is_interface: true,
                     },
                     bridge,
                     None,
@@ -766,6 +770,7 @@ struct ClassMembers<'a> {
     methods: &'a [&'a DexMethodCode],
     fields: &'a [crate::dex::DexFieldDecl],
     decoded: &'a [CodeItem],
+    declaration: Option<&'a crate::dalvik_desugar::ClassDeclaration>,
 }
 
 #[derive(Clone, Copy)]
@@ -774,6 +779,7 @@ struct ClassRenderInfo<'a> {
     source_file: Option<&'a str>,
     metadata_is_absent: bool,
     continuation_impl_bridge: bool,
+    is_interface: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -825,30 +831,29 @@ fn render_class(
         let _ = writeln!(text, "package {pkg};");
         let _ = writeln!(text);
     }
-    let class_is_abstract: bool = members
-        .methods
-        .iter()
-        .any(|method: &&DexMethodCode| method.access_flags & ACC_ABSTRACT != 0);
+    let declared_flags: u32 = members.declaration.map_or(
+        0,
+        |declaration: &crate::dalvik_desugar::ClassDeclaration| declaration.access_flags,
+    );
+    let is_interface: bool = desugar.interfaces.recovers_interface(class_descriptor)
+        || declared_flags & ACC_INTERFACE != 0
+        || inner_class.is_some_and(|metadata: &DexInnerClass| {
+            u32::from(metadata.access_flags) & ACC_INTERFACE != 0
+        });
+    let class_is_abstract: bool = declared_flags & ACC_ABSTRACT != 0
+        || members
+            .methods
+            .iter()
+            .any(|method: &&DexMethodCode| method.access_flags & ACC_ABSTRACT != 0);
     let class_declaration: String = class_declaration(
-        desugar.interfaces.recovers_interface(class_descriptor),
+        is_interface,
         class_is_abstract,
         inner_class,
         kotlin_evidence.source_member_name.is_some(),
     );
-    let implemented: String = match desugar.interfaces.implemented_interfaces(class_descriptor) {
-        Some(interfaces) if !interfaces.is_empty() => {
-            let names: Vec<String> = interfaces
-                .iter()
-                .map(|interface: &String| {
-                    let projected: String = desugar.core_library.project_type(interface);
-                    descriptor::binary_to_source(&projected)
-                })
-                .collect();
-            format!(" implements {}", names.join(", "))
-        }
-        _ => String::new(),
-    };
-    let _: std::fmt::Result = writeln!(text, "{class_declaration} {simple}{implemented} {{");
+    let supertypes: String =
+        supertype_clause(class_descriptor, members.declaration, is_interface, desugar);
+    let _: std::fmt::Result = writeln!(text, "{class_declaration} {simple}{supertypes} {{");
 
     if let Some(rec) = recovery {
         text.push_str(&recovered_strings_annotation(rec));
@@ -866,8 +871,12 @@ fn render_class(
         source_file: kotlin_evidence.source_file,
         metadata_is_absent: kotlin_evidence.metadata_is_absent,
         continuation_impl_bridge: kotlin_evidence.continuation_impl_bridge,
+        is_interface,
     };
     for method in members.methods {
+        if is_clashing_bridge(method, members.methods) {
+            continue;
+        }
         if desugar.interfaces.suppresses_method(
             &method.class,
             &method.method_name,
@@ -1024,8 +1033,79 @@ fn render_class(
     }
 }
 
+fn supertype_clause(
+    class_descriptor: &str,
+    declaration: Option<&crate::dalvik_desugar::ClassDeclaration>,
+    is_interface: bool,
+    desugar: crate::dalvik_desugar::DesugarView<'_>,
+) -> String {
+    let source = |descriptor_text: &str| -> String {
+        descriptor::binary_to_source(&desugar.core_library.project_type(descriptor_text))
+    };
+    let mut interfaces: Vec<String> = Vec::new();
+    let declared: &[String] = declaration.map_or(
+        &[],
+        |declaration: &crate::dalvik_desugar::ClassDeclaration| declaration.interfaces.as_slice(),
+    );
+    let recovered: Option<&std::collections::BTreeSet<String>> =
+        desugar.interfaces.implemented_interfaces(class_descriptor);
+    for interface in declared.iter().chain(recovered.into_iter().flatten()) {
+        let rendered: String = source(interface);
+        if !interfaces.contains(&rendered) {
+            interfaces.push(rendered);
+        }
+    }
+    let superclass: Option<String> = declaration
+        .and_then(|declaration: &crate::dalvik_desugar::ClassDeclaration| {
+            declaration.superclass.as_deref()
+        })
+        .filter(|superclass: &&str| !is_interface && !IMPLICIT_SUPERCLASSES.contains(superclass))
+        .map(source);
+    let mut clause: String = String::new();
+    if let Some(superclass) = superclass {
+        let _: std::fmt::Result = write!(clause, " extends {superclass}");
+    }
+    if !interfaces.is_empty() {
+        let keyword: &str = if is_interface {
+            "extends"
+        } else {
+            "implements"
+        };
+        let _: std::fmt::Result = write!(clause, " {keyword} {}", interfaces.join(", "));
+    }
+    clause
+}
+
+const IMPLICIT_SUPERCLASSES: [&str; 4] = [
+    "Ljava/lang/Object;",
+    "Ljava/lang/Enum;",
+    "Ljava/lang/Record;",
+    "Lcom/android/tools/r8/RecordTag;",
+];
+
+const ACC_INTERFACE: u32 = 0x0200;
+const ACC_BRIDGE: u32 = 0x0040;
+
+fn parameter_list(method_descriptor: &str) -> Option<&str> {
+    method_descriptor
+        .split_once(')')
+        .map(|(parameters, _): (&str, &str)| parameters)
+}
+
+fn is_clashing_bridge(method: &DexMethodCode, methods: &[&DexMethodCode]) -> bool {
+    let Some(parameters): Option<&str> = parameter_list(&method.method_descriptor) else {
+        return false;
+    };
+    method.access_flags & ACC_BRIDGE != 0
+        && methods.iter().any(|other: &&DexMethodCode| {
+            other.access_flags & ACC_BRIDGE == 0
+                && other.method_name == method.method_name
+                && parameter_list(&other.method_descriptor) == Some(parameters)
+        })
+}
+
 fn class_declaration(
-    recovered_interface: bool,
+    is_interface: bool,
     inferred_abstract: bool,
     inner_class: Option<&DexInnerClass>,
     source_member: bool,
@@ -1039,7 +1119,6 @@ fn class_declaration(
     } else if flags & 0x0004 != 0 {
         declaration.push_str("protected ");
     }
-    let is_interface: bool = recovered_interface || flags & 0x0200 != 0;
     if !is_interface && (flags & 0x0008 != 0 || source_member) {
         declaration.push_str("static ");
     }
@@ -1293,6 +1372,8 @@ fn render_method(
         "public default "
     } else if is_static {
         "public static "
+    } else if class.is_interface && !is_constructor && !is_clinit {
+        "public default "
     } else {
         "public "
     };
@@ -1585,7 +1666,8 @@ fn lift_method(
         desugar,
         inlined_helpers,
     )
-    .with_parameter_names(parameter_names);
+    .with_parameter_names(parameter_names)
+    .with_code(&item.insns);
     let states: Option<TypeStates> = method_type_states(dex, &built, identity, item);
     let locals: MethodLocals = method_locals(
         &base,
@@ -2254,6 +2336,7 @@ struct BlockWalk {
     points: Vec<RegisterSet>,
     handlers: RegisterSet,
     start: usize,
+    end: usize,
     replay: bool,
 }
 
@@ -2304,12 +2387,21 @@ fn render_region(state: &mut RenderState<'_>, region: &Region, out: &mut String,
             let _ = writeln!(out, "{pad}}}");
         }
         Region::While { header, body, exit } => {
-            let cond: String = render_head_condition(state, *header, out, level);
+            let mut head: String = String::new();
+            let cond: String = render_head_condition(state, *header, &mut head, level + 1);
             let negated: bool =
                 matches!(exit, Some(e) if header_cond_true_target(state.cfg, *header) == Some(*e));
             let displayed: String = if negated { invert(&cond) } else { cond };
             let pad: String = indent_string(level);
-            let _ = writeln!(out, "{pad}while ({displayed}) {{");
+            if head.is_empty() {
+                let _ = writeln!(out, "{pad}while ({displayed}) {{");
+            } else {
+                let _ = writeln!(out, "{pad}while (true) {{");
+                out.push_str(&head);
+                let _ = writeln!(out, "{pad}    if ({}) {{", invert(&displayed));
+                let _ = writeln!(out, "{pad}        break;");
+                let _ = writeln!(out, "{pad}    }}");
+            }
             render_region(state, body, out, level + 1);
             let _ = writeln!(out, "{pad}}}");
         }
@@ -2467,6 +2559,7 @@ fn open_block(state: &RenderState<'_>, bid: BlockId, replay: bool) -> Option<Blo
         points,
         handlers,
         start: block.insn_range.0,
+        end: block.insn_range.1,
         replay,
     })
 }
@@ -2776,6 +2869,158 @@ fn walk_insn(
         let _: std::fmt::Result = writeln!(out, "{pad}{statement};");
     }
     anchor_effects(state, walk, index, &defs, &after, out, level);
+    order_pending_effects(state, walk, index, &defs, &after, out, level);
+    if insn.op == 0x26 {
+        anchor_filled_array(state, walk, index, &after, out, level);
+    }
+}
+
+fn order_pending_effects(
+    state: &mut RenderState<'_>,
+    walk: &mut BlockWalk,
+    index: usize,
+    defs: &[u16],
+    after: &RegisterSet,
+    out: &mut String,
+    level: usize,
+) {
+    for &register in defs {
+        let Some(value): Option<Expr> = walk.file.slot(register).cloned() else {
+            continue;
+        };
+        let Some(&origin): Option<&u32> = walk.origins.get(&register) else {
+            continue;
+        };
+        if !walk.file.is_pending(register) || !orders_effects(&value) {
+            continue;
+        }
+        let assign: Vec<u16> = walk
+            .file
+            .pending_registers()
+            .filter(|&other: &u16| {
+                other != register
+                    && after.contains(other)
+                    && walk
+                        .origins
+                        .get(&other)
+                        .is_some_and(|&defined: &u32| defined < origin)
+                    && walk.file.slot(other).is_some_and(|earlier: &Expr| {
+                        orders_effects(earlier)
+                            && (expr_has_effect(earlier) || expr_has_effect(&value))
+                    })
+                    && !consumed_in_order(state, walk, index, other, register)
+            })
+            .collect();
+        if assign.is_empty() {
+            continue;
+        }
+        if walk.pending.as_ref().is_some_and(|result: &PendingResult| {
+            assign
+                .iter()
+                .any(|&earlier: &u16| result.materializes(earlier))
+        }) {
+            walk.pending = None;
+        }
+        let request: FlushRequest<'_> = FlushRequest {
+            assign,
+            external: None,
+            effect: false,
+            live: after,
+            exclude: &[],
+        };
+        flush(state, walk, &request, out, level);
+    }
+}
+
+fn orders_effects(value: &Expr) -> bool {
+    let functional: bool =
+        matches!(value, Expr::Opaque(text) if text != "?" && !text.starts_with("new "));
+    !functional && is_effect_ordered(value)
+}
+
+fn consumed_in_order(
+    state: &RenderState<'_>,
+    walk: &BlockWalk,
+    index: usize,
+    earlier: u16,
+    later: u16,
+) -> bool {
+    for next in index + 1..walk.end {
+        let (Some(insn), Some(access)): (Option<&DalvikInsn>, Option<&RegisterAccess>) =
+            (state.insns.get(next), state.accesses.get(next))
+        else {
+            return false;
+        };
+        if access.uses.contains(&earlier) || access.uses.contains(&later) {
+            let Some(order): Option<Vec<u16>> = evaluation_order(insn) else {
+                return false;
+            };
+            let first: Option<usize> = order.iter().position(|&r: &u16| r == earlier);
+            let second: Option<usize> = order.iter().position(|&r: &u16| r == later);
+            return matches!((first, second), (Some(first), Some(second)) if first < second);
+        }
+        if access.defs.contains(&earlier) || access.defs.contains(&later) {
+            return false;
+        }
+    }
+    false
+}
+
+fn evaluation_order(insn: &DalvikInsn) -> Option<Vec<u16>> {
+    let register = |position: usize| insn.regs.get(position).copied();
+    let order: Vec<Option<u16>> = match insn.op {
+        0x24 | 0x25 | 0x6E..=0x72 | 0x74..=0x78 => return Some(insn.regs.clone()),
+        0x2D..=0x31 | 0x44..=0x4A | 0x90..=0xAF => vec![register(1), register(2)],
+        0x32..=0x37 | 0xB0..=0xCF => vec![register(0), register(1)],
+        0x4B..=0x51 => vec![register(1), register(2), register(0)],
+        0x59..=0x5F => vec![register(1), register(0)],
+        _ => return None,
+    };
+    order.into_iter().collect()
+}
+
+fn fills_next(state: &RenderState<'_>, walk: &BlockWalk, index: usize, register: u16) -> bool {
+    index + 1 < walk.end
+        && state.insns.get(index + 1).is_some_and(|next: &DalvikInsn| {
+            next.op == 0x26 && next.regs.first() == Some(&register)
+        })
+}
+
+fn anchor_filled_array(
+    state: &mut RenderState<'_>,
+    walk: &mut BlockWalk,
+    index: usize,
+    after: &RegisterSet,
+    out: &mut String,
+    level: usize,
+) {
+    let Some(&register): Option<&u16> = state
+        .insns
+        .get(index)
+        .and_then(|insn: &DalvikInsn| insn.regs.first())
+    else {
+        return;
+    };
+    if !walk.file.is_pending(register)
+        || !matches!(walk.file.slot(register), Some(Expr::ArrayInit { .. }))
+    {
+        return;
+    }
+    let single_use: bool = index
+        .checked_sub(1)
+        .and_then(|allocation: usize| state.flow.def_uses(allocation, register))
+        .is_some_and(|facts: DefUses| facts.local_uses == 2 && !facts.escapes);
+    if single_use {
+        return;
+    }
+    let request: FlushRequest<'_> = FlushRequest {
+        assign: vec![register],
+        external: None,
+        effect: false,
+        live: after,
+        exclude: &[],
+    };
+    flush(state, walk, &request, out, level);
 }
 
 const fn may_throw(op: u8) -> bool {
@@ -2851,6 +3096,7 @@ fn anchor_effects(
         if !walk.file.is_pending(register)
             || matches!(value, Expr::New(_))
             || !expr_has_effect(&value)
+            || matches!(value, Expr::NewArray { .. }) && fills_next(state, walk, index, register)
         {
             continue;
         }

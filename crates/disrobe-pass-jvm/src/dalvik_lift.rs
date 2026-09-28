@@ -29,6 +29,7 @@ pub(crate) struct MethodContext<'a> {
     pub(crate) inlined_helpers: &'a crate::dalvik_desugar::InlinedHelpers,
     pub(crate) register_kinds: BTreeMap<u16, ValueKind>,
     pub(crate) naming: Option<&'a RegisterNaming>,
+    pub(crate) code: &'a [u16],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -156,6 +157,7 @@ impl<'a> MethodContext<'a> {
             inlined_helpers,
             register_kinds,
             naming: None,
+            code: &[],
         }
     }
 
@@ -168,6 +170,11 @@ impl<'a> MethodContext<'a> {
 
     pub(crate) const fn with_naming(mut self, naming: &'a RegisterNaming) -> Self {
         self.naming = Some(naming);
+        self
+    }
+
+    pub(crate) const fn with_code(mut self, code: &'a [u16]) -> Self {
+        self.code = code;
         self
     }
 
@@ -455,6 +462,8 @@ pub(crate) fn lift_insn(
         0x21 => array_length(ctx, file, regs),
         0x22 => new_instance(ctx, file, regs, insn),
         0x23 => new_array(ctx, file, regs, insn),
+        0x24 | 0x25 => filled_new_array(ctx, file, insn, pending_result),
+        0x26 => fill_array_data(ctx, file, insn),
         0x27 => {
             let value: Expr = regs
                 .first()
@@ -486,7 +495,8 @@ pub(crate) fn lift_insn(
         0x2D..=0x31 => cmp_three(ctx, file, regs, op),
         0xD0..=0xD7 => binary_lit(ctx, file, regs, insn, arith_lit_op(op)),
         0xD8..=0xE2 => binary_lit(ctx, file, regs, insn, arith_lit_op(op)),
-        _ => LiftOutcome::None,
+        0x28..=0x2C | 0x32..=0x3D => LiftOutcome::None,
+        _ => LiftOutcome::Unlifted,
     };
     match (discarded, outcome) {
         (Some(side_effect), LiftOutcome::Statement(statement)) => {
@@ -961,11 +971,10 @@ fn const_string(
     let Some(&dest): Option<&u16> = regs.first() else {
         return LiftOutcome::None;
     };
-    let text: String = insn
-        .index
-        .and_then(|i| ctx.string_at(i))
-        .map_or_else(|| "\"\"".to_string(), |s| format!("{s:?}"));
-    file.write(dest, Expr::Const(text));
+    let Some(text): Option<&str> = insn.index.and_then(|i| ctx.string_at(i)) else {
+        return LiftOutcome::Unlifted;
+    };
+    file.write(dest, Expr::Const(crate::bytecode::escape_java_string(text)));
     LiftOutcome::None
 }
 
@@ -1073,14 +1082,13 @@ fn new_array(
     else {
         return LiftOutcome::None;
     };
-    let element: String = insn
+    let Some((element, _)): Option<(String, crate::descriptor::JavaType)> = insn
         .index
         .and_then(|i| ctx.type_at(i))
-        .map(|descr| descr.trim_start_matches('[').to_string())
-        .map_or_else(
-            || "Object".to_string(),
-            |inner: String| source_type(ctx, &inner),
-        );
+        .and_then(|array: &str| array_element_type(ctx, array))
+    else {
+        return LiftOutcome::Unlifted;
+    };
     let size: Expr = file.read(ctx, size_reg);
     file.write(
         dest,
@@ -1090,6 +1098,182 @@ fn new_array(
         },
     );
     LiftOutcome::None
+}
+
+fn array_element_type(
+    ctx: &MethodContext<'_>,
+    array: &str,
+) -> Option<(String, crate::descriptor::JavaType)> {
+    let element: &str = array.strip_prefix('[')?;
+    let parsed: crate::descriptor::JavaType = descriptor::parse_field(element)?;
+    let rendered: String = match &parsed {
+        crate::descriptor::JavaType::Object(_) | crate::descriptor::JavaType::Array(_) => {
+            source_type(ctx, element)
+        }
+        crate::descriptor::JavaType::Void => return None,
+        primitive => primitive.render(),
+    };
+    Some((rendered, parsed))
+}
+
+fn filled_new_array(
+    ctx: &MethodContext<'_>,
+    file: &RegisterFile,
+    insn: &DalvikInsn,
+    pending_result: &mut Option<PendingResult>,
+) -> LiftOutcome {
+    let Some(array): Option<&str> = insn.index.and_then(|index: u32| ctx.type_at(index)) else {
+        return LiftOutcome::Unlifted;
+    };
+    let Some((element, parsed)): Option<(String, crate::descriptor::JavaType)> =
+        array_element_type(ctx, array)
+    else {
+        return LiftOutcome::Unlifted;
+    };
+    if parsed.category_two() {
+        return LiftOutcome::Unlifted;
+    }
+    let reference: bool = matches!(
+        parsed,
+        crate::descriptor::JavaType::Object(_) | crate::descriptor::JavaType::Array(_)
+    );
+    let element_descriptor: &str = array.get(1..).unwrap_or_default();
+    let elements: Vec<Expr> = insn
+        .regs
+        .iter()
+        .map(
+            |&register: &u16| match argument_value(ctx, file, register, element_descriptor) {
+                Expr::Const(constant) if reference && constant == "0" => {
+                    Expr::Const("null".to_owned())
+                }
+                value => value,
+            },
+        )
+        .collect();
+    *pending_result = Some(PendingResult {
+        expr: Expr::ArrayInit {
+            ty: element,
+            elements,
+        },
+        materialized_in: None,
+        kind: Some(ValueKind::Reference),
+    });
+    LiftOutcome::None
+}
+
+const MAX_ARRAY_DATA_ELEMENTS: usize = 16_384;
+
+fn array_data_elements(
+    element: &str,
+    payload: &crate::dalvik::ArrayDataPayload,
+) -> Option<Vec<Expr>> {
+    let width: u16 = match element {
+        "boolean" | "byte" => 1,
+        "short" | "char" => 2,
+        "int" | "float" => 4,
+        "long" | "double" => 8,
+        _ => return None,
+    };
+    if payload.element_width != width {
+        return None;
+    }
+    let chunks: std::slice::ChunksExact<'_, u8> = payload.data.chunks_exact(usize::from(width));
+    if !chunks.remainder().is_empty() || chunks.len() > MAX_ARRAY_DATA_ELEMENTS {
+        return None;
+    }
+    chunks
+        .map(|chunk: &[u8]| {
+            let mut bytes: [u8; 8] = [0; 8];
+            bytes.get_mut(..chunk.len())?.copy_from_slice(chunk);
+            let bits: u64 = u64::from_le_bytes(bytes);
+            let [b0, b1, b2, b3, ..]: [u8; 8] = bytes;
+            let text: String = match element {
+                "boolean" => match bits {
+                    0 => "false".to_owned(),
+                    1 => "true".to_owned(),
+                    _ => return None,
+                },
+                "byte" => i8::from_le_bytes([b0]).to_string(),
+                "short" => i16::from_le_bytes([b0, b1]).to_string(),
+                "char" => char_element(u16::from_le_bytes([b0, b1])),
+                "int" => i32::from_le_bytes([b0, b1, b2, b3]).to_string(),
+                "float" => float_literal(u32::from_le_bytes([b0, b1, b2, b3])),
+                "long" => format!("{}L", i64::from_le_bytes(bytes)),
+                _ => double_literal(bits),
+            };
+            Some(Expr::Const(text))
+        })
+        .collect()
+}
+
+fn char_element(unit: u16) -> String {
+    match u8::try_from(unit) {
+        Ok(byte) if (b' '..=b'~').contains(&byte) && !matches!(byte, b'\'' | b'\\') => {
+            format!("'{}'", char::from(byte))
+        }
+        _ => unit.to_string(),
+    }
+}
+
+fn array_variable_element(ctx: &MethodContext<'_>, array: &Expr) -> Option<String> {
+    let Expr::Local(name) = array else {
+        return None;
+    };
+    let local: &NamedLocal = ctx.naming?.named(name)?;
+    let Some(LocalType::Reference(ty)) = &local.ty else {
+        return None;
+    };
+    ty.strip_suffix("[]").map(str::to_owned)
+}
+
+fn fill_array_data(
+    ctx: &MethodContext<'_>,
+    file: &mut RegisterFile,
+    insn: &DalvikInsn,
+) -> LiftOutcome {
+    let Some(&register): Option<&u16> = insn.regs.first() else {
+        return LiftOutcome::Unlifted;
+    };
+    let Some(payload): Option<crate::dalvik::ArrayDataPayload> = insn
+        .payload_off
+        .and_then(|offset: u32| crate::dalvik::parse_fill_array_data(ctx.code, offset))
+    else {
+        return LiftOutcome::Unlifted;
+    };
+    if file.is_pending(register)
+        && let Some(Expr::NewArray { ty, size }) = file.slot(register)
+        && let Expr::Const(length) = size.as_ref()
+    {
+        let Some(elements): Option<Vec<Expr>> = array_data_elements(ty, &payload) else {
+            return LiftOutcome::Unlifted;
+        };
+        if length.parse::<usize>().ok() != Some(elements.len()) {
+            return LiftOutcome::Unlifted;
+        }
+        let filled: Expr = Expr::ArrayInit {
+            ty: ty.clone(),
+            elements,
+        };
+        file.replace(register, filled);
+        return LiftOutcome::None;
+    }
+    let array: Expr = file.read(ctx, register);
+    let Some(element): Option<String> = array_variable_element(ctx, &array) else {
+        return LiftOutcome::Unlifted;
+    };
+    let Some(elements): Option<Vec<Expr>> = array_data_elements(&element, &payload) else {
+        return LiftOutcome::Unlifted;
+    };
+    let count: usize = elements.len();
+    let source: Expr = Expr::ArrayInit {
+        ty: element,
+        elements,
+    };
+    LiftOutcome::Statement(format!(
+        "System.arraycopy({}, 0, {}, 0, {count})",
+        source.render(),
+        array.render()
+    ))
 }
 
 fn array_get(
@@ -1130,14 +1314,17 @@ fn array_put(ctx: &MethodContext<'_>, file: &RegisterFile, regs: &[u16], op: u8)
     let value_expr: Expr = file.read(ctx, value);
     let array_expr: Expr = file.read(ctx, array);
     let index_expr: Expr = file.read(ctx, index);
-    let rendered_value: String = if op == 0x4E {
-        let Some(rendered): Option<String> = render_boolean_value(ctx, file, value, &value_expr)
-        else {
-            return LiftOutcome::Unlifted;
-        };
-        rendered
-    } else {
-        value_expr.render()
+    let rendered_value: String = match (op, &value_expr) {
+        (0x4E, _) => {
+            let Some(rendered): Option<String> =
+                render_boolean_value(ctx, file, value, &value_expr)
+            else {
+                return LiftOutcome::Unlifted;
+            };
+            rendered
+        }
+        (0x4D, Expr::Const(constant)) if constant == "0" => "null".to_owned(),
+        _ => value_expr.render(),
     };
     LiftOutcome::Statement(format!(
         "{}[{}] = {}",
@@ -1436,6 +1623,18 @@ fn argument_value(
             }
             _ => value,
         },
+        "B" | "C" | "S" if matches!(&value, Expr::Const(constant) if constant.parse::<i32>().is_ok()) =>
+        {
+            let ty: &str = match param {
+                "B" => "byte",
+                "C" => "char",
+                _ => "short",
+            };
+            Expr::Cast {
+                ty: ty.to_owned(),
+                value: Box::new(value),
+            }
+        }
         "I" | "B" | "C" | "S" => numeric_int_operand(ctx, file, register, value),
         _ => value,
     }
@@ -1598,7 +1797,8 @@ fn inline_helper_body(
         true,
         ctx.desugar,
         reached,
-    );
+    )
+    .with_code(&body.insns);
     nested.inline_depth = ctx.inline_depth.checked_add(1)?;
 
     let parsed: MethodDescriptor = descriptor::parse_method(&body.descriptor)?;

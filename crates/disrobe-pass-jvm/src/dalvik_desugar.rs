@@ -50,10 +50,10 @@ struct ForwarderSite<'a> {
     method: &'a DexMethodCode,
 }
 
-struct ClassDeclaration {
-    access_flags: u32,
-    superclass: Option<String>,
-    interfaces: Vec<String>,
+pub(crate) struct ClassDeclaration {
+    pub(crate) access_flags: u32,
+    pub(crate) superclass: Option<String>,
+    pub(crate) interfaces: Vec<String>,
 }
 
 impl DefaultInterfaceRecovery {
@@ -494,7 +494,10 @@ fn class_declares_interface(
         })
 }
 
-fn class_declarations(dex: &DexFile, bytes: &[u8]) -> Option<BTreeMap<String, ClassDeclaration>> {
+pub(crate) fn class_declarations(
+    dex: &DexFile,
+    bytes: &[u8],
+) -> Option<BTreeMap<String, ClassDeclaration>> {
     let base: usize = usize::try_from(dex.header.class_defs_off).ok()?;
     let count: usize = usize::try_from(dex.header.class_defs_size).ok()?;
     let table_bytes: usize = count.checked_mul(32)?;
