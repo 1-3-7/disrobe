@@ -8,10 +8,10 @@
 |---|---|
 | Lift targets | Rust, TypeScript, WAT, or C pseudo-source, or a JSON summary |
 | Instruction set | MVP plus the SIMD, atomics, bulk-memory, table/element, reference, and tail-call proposals |
-| Name recovery | DWARF and source-map names where debug info is present |
+| Name recovery | Not applied: DWARF and source-map helpers exist, but no command calls them yet |
 | Op-coverage grade | Every operator in the function lowered, and the re-emitted WAT re-parsed by an independent parser |
 | Execution grade | Return values, trap parity, and linear memory compared against the original under wasmtime |
-| Obfuscators | Jscrambler-WASM, Wobfuscator, and Wasmixer reversed; Tigress-via-Emscripten and wasm-name-obfuscator detected and classified only |
+| Obfuscators | Jscrambler-WASM integrity imports stripped, Wobfuscator imported operators re-inlined, Wasmixer fragments inlined; Tigress-via-Emscripten and wasm-name-obfuscator detected and classified only |
 | Control-flow unflattening | Dispatcher loops whose state lives in a local, a private mutable global, or a non-atomic `i32` memory slot are rebuilt as structured control flow; a dispatcher outside that set is left in place |
 | Envelopes | Component Model, memory64, and the GC type graph parsed by dedicated scanners; threads instructions also lift to C, Rust, and TypeScript |
 
@@ -28,7 +28,7 @@ disrobe wasm component module.wasm        # parse the Component Model envelope -
 disrobe wasm types module.wasm            # recover the GC type graph (struct / array / ref types)
 ```
 
-`decompile` lifts to Rust, TypeScript, WAT, or C pseudo-source, or a JSON summary, with DWARF / source-map name recovery where debug info is present.
+`decompile` lifts to Rust, TypeScript, WAT, or C pseudo-source, or a JSON summary.
 
 `deob` writes the recovered module as WAT to `--out`. Add `--emit-wasm` to write the recovered binary as well. Two JSON files land beside the WAT with its extension replaced, so `--out clean.wat` produces `clean.summary.json` and `clean.recovery.json`. The recovery report holds the per-transformation counts, including the unflattening counts described below.
 
@@ -50,7 +50,9 @@ All **57** of the 57 execution-eligible functions match the original under Wasmt
 
 Both sides run with the same limits: 2 MiB per linear memory or GC heap, at most eight linear memories and eight tables, and 1,024 elements per table. Each call receives two million fuel units; an epoch watchdog bounds the comparison. Imported functions trap instead of calling the host.
 
-`wasm deob` reverses three Wasm obfuscator families with byte- or IR-transforming passes: Jscrambler-WASM (strip integrity imports, fold opaque predicates), Wobfuscator (recover the eval op-table and lift each handler), and Wasmixer (unwrap the XOR decrypt stub, defragment). Tigress-via-Emscripten is detected from its Emscripten-marked exports, but `wasm deob` does not run its separate dispatcher-unflattening or `_Z` name helper.
+`wasm deob` runs three family passes before the generic folds. It strips Jscrambler-WASM integrity imports, rewrites Wobfuscator's imported arithmetic operators (`op_add`, `op_xor` and the like) back into instructions and drops an import only when nothing else references it, and inlines Wasmixer's fragmented functions. It does not recover Wobfuscator's eval op-table and does not unwrap the Wasmixer XOR decrypt stub: rewriting encrypted data would make the stub decrypt it a second time at run time. Tigress-via-Emscripten is detected from its Emscripten-marked exports, but `wasm deob` does not run its separate dispatcher-unflattening or `_Z` name helper.
+
+The generic folds keep the module's behaviour. A branch folds only when its condition is a constant expression, or a call into functions that read no mutable global and no memory and do not trap. A `call_indirect` becomes a direct call only when the table slot is an immediate constant, the table is neither exported, imported nor written at run time, and the target's type matches the call's type. The recovered module is validated before it is written; a module that fails validation is reported as `DR-WASMDEOB-0006` instead.
 
 ### Control-flow unflattening
 
