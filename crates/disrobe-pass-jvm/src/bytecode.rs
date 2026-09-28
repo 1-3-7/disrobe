@@ -993,10 +993,19 @@ fn disassemble_inner(code: &[u8]) -> Result<Vec<Instruction>> {
             return Err(Error::UnknownOpcode(opcode, i));
         };
         let (operands, len, wide): (Operands, usize, bool) = decode_operands(code, i, info.shape)?;
+        let (opcode, mnemonic): (u8, &'static str) = if wide {
+            let sub: u8 = code[i + 1];
+            let Some(sub_info): Option<OpcodeInfo> = opcode_info(sub) else {
+                return Err(Error::UnknownOpcode(sub, i + 1));
+            };
+            (sub, sub_info.mnemonic)
+        } else {
+            (opcode, info.mnemonic)
+        };
         out.push(Instruction {
             pc,
             opcode,
-            mnemonic: info.mnemonic,
+            mnemonic,
             wide,
             operands,
         });
@@ -1522,7 +1531,24 @@ mod tests {
         let code: &[u8] = &[0xC4, 0x15, 0x01, 0x00];
         let insns: Vec<Instruction> = disassemble(code).expect("disasm");
         assert!(insns[0].wide);
+        assert_eq!(insns[0].opcode, 0x15);
+        assert_eq!(insns[0].mnemonic, "iload");
         assert_eq!(insns[0].operands, Operands::Local(256));
+    }
+
+    #[test]
+    fn decodes_wide_iinc_as_iinc() {
+        let code: &[u8] = &[0xC4, 0x84, 0x01, 0x00, 0xFF, 0xFE];
+        let insns: Vec<Instruction> = disassemble(code).expect("disasm");
+        assert!(insns[0].wide);
+        assert_eq!(insns[0].opcode, 0x84);
+        assert_eq!(
+            insns[0].operands,
+            Operands::Iinc {
+                index: 256,
+                delta: -2
+            }
+        );
     }
 
     #[test]
