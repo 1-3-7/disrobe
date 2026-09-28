@@ -11,7 +11,7 @@ use crate::bytecode::{
 };
 use crate::classfile::{ClassFile, ConstantPoolEntry, FieldInfo, MethodInfo};
 use crate::decompile_struct::{
-    BasicBlock, BlockId, Cfg, Dominators, EdgeKind, ExceptionRegion, NaturalLoop, Region,
+    BasicBlock, BlockId, Cfg, Dominators, Edge, EdgeKind, ExceptionRegion, NaturalLoop, Region,
     Structurer, SwitchKey, build_cfg, compute_dominators, find_natural_loops,
 };
 use crate::descriptor::{self, JavaType, MethodDescriptor};
@@ -2235,6 +2235,7 @@ fn lift_structured(
     let finally_catch_parameter_slots: BTreeSet<u16> =
         structurer.take_finally_catch_parameter_slots();
     let finally_scoped_local_slots: BTreeSet<u16> = structurer.take_finally_scoped_local_slots();
+    let absorbed_blocks: BTreeSet<BlockId> = structurer.take_absorbed_blocks();
     let block_entry_stacks: BTreeMap<BlockId, Vec<Expr>> =
         compute_block_entry_stacks(cf, &cfg, insns, params, bootstraps, has_this, bool_return);
     let reused_exc_slots: BTreeSet<u16> = reused_exception_slots(insns, &cfg.exception_regions);
@@ -2250,6 +2251,8 @@ fn lift_structured(
         bootstraps,
         rendered_blocks: BTreeSet::new(),
         fully_lifted: !structurer.had_irreducible,
+        held_locks: Vec::new(),
+        unconsumed_monitor: false,
         block_entry_stacks,
         has_this,
         bool_return,
@@ -2282,11 +2285,69 @@ fn lift_structured(
     hidden_slots.extend(ctx.finally_scoped_local_slots.iter().copied());
     hidden_slots.extend(ctx.finally_return_stores.values().copied());
     let decls: String = render_slot_declarations(&ctx.slot_types, &hidden_slots);
-    let body: String = hoist_loop_captured_locals(&format!("{decls}{out}"));
+    let coverage_gap: Option<&'static str> = coverage_gap(
+        ctx.cfg,
+        &ctx.rendered_blocks,
+        &absorbed_blocks,
+        ctx.unconsumed_monitor,
+    );
+    let marker: String = coverage_gap.map_or_else(String::new, |reason: &'static str| {
+        crate::debug::dbg_kv("method-coverage-gap", || {
+            let missing: Vec<String> =
+                unrendered_reachable_blocks(ctx.cfg, &ctx.rendered_blocks, &absorbed_blocks)
+                    .iter()
+                    .map(|bid: &BlockId| format!("{:#x}", ctx.cfg.blocks[bid.0 as usize].start_pc))
+                    .collect();
+            format!("{reason}; unrendered block pcs [{}]", missing.join(", "))
+        });
+        format!("        // <decompile: incomplete: {reason}>\n")
+    });
+    let body: String = hoist_loop_captured_locals(&format!("{marker}{decls}{out}"));
     StructuredLift::Body(MethodBody {
         text: body,
-        fully_lifted: ctx.fully_lifted,
+        fully_lifted: ctx.fully_lifted && coverage_gap.is_none(),
     })
+}
+
+const UNRENDERED_BLOCK_GAP: &str = "a reachable block has no rendered statement";
+const UNCONSUMED_MONITOR_GAP: &str =
+    "a monitorenter or monitorexit is not matched to a synchronized block";
+
+fn coverage_gap(
+    cfg: &Cfg,
+    rendered: &BTreeSet<BlockId>,
+    absorbed: &BTreeSet<BlockId>,
+    unconsumed_monitor: bool,
+) -> Option<&'static str> {
+    if unconsumed_monitor {
+        return Some(UNCONSUMED_MONITOR_GAP);
+    }
+    (!unrendered_reachable_blocks(cfg, rendered, absorbed).is_empty())
+        .then_some(UNRENDERED_BLOCK_GAP)
+}
+
+fn unrendered_reachable_blocks(
+    cfg: &Cfg,
+    rendered: &BTreeSet<BlockId>,
+    absorbed: &BTreeSet<BlockId>,
+) -> Vec<BlockId> {
+    let mut seen: BTreeSet<BlockId> = BTreeSet::new();
+    let mut work: Vec<BlockId> = vec![cfg.entry];
+    let mut missing: Vec<BlockId> = Vec::new();
+    while let Some(bid) = work.pop() {
+        let Some(block): Option<&BasicBlock> = cfg.blocks.get(bid.0 as usize) else {
+            continue;
+        };
+        if !seen.insert(bid) {
+            continue;
+        }
+        if !rendered.contains(&bid) && !absorbed.contains(&bid) {
+            missing.push(bid);
+        }
+        work.extend(block.successors.iter().map(|edge: &Edge| edge.target));
+    }
+    missing.sort_unstable();
+    missing
 }
 
 fn hoist_loop_captured_locals(body: &str) -> String {
@@ -4792,6 +4853,8 @@ struct RenderCtx<'a> {
     bootstraps: &'a [crate::attributes::BootstrapMethod],
     rendered_blocks: BTreeSet<BlockId>,
     fully_lifted: bool,
+    held_locks: Vec<u16>,
+    unconsumed_monitor: bool,
     block_entry_stacks: BTreeMap<BlockId, Vec<Expr>>,
     has_this: bool,
     bool_return: bool,
@@ -5031,7 +5094,9 @@ fn render_region(ctx: &mut RenderCtx<'_>, region: &Region, out: &mut String, lev
         Region::DoWhile { header, body, .. } => {
             let pad: String = indent_string(level);
             let _ = writeln!(out, "{pad}do {{");
-            render_block(ctx, *header, out, level + 1);
+            if leftmost_block(body) != Some(*header) {
+                render_block(ctx, *header, out, level + 1);
+            }
             render_region(ctx, body, out, level + 1);
             let _ = writeln!(out, "{pad}}} while (true);");
         }
@@ -5154,12 +5219,18 @@ fn render_region(ctx: &mut RenderCtx<'_>, region: &Region, out: &mut String, lev
             lock_slot,
             body,
         } => {
-            ctx.rendered_blocks.insert(*lock_block);
-            let lock_expr: String = lift_lock_expr(ctx, *lock_block)
-                .map_or_else(|| local_name(*lock_slot, ctx.params), |e: Expr| e.render());
+            let lock_expr: String = render_lock_block(ctx, *lock_block, out, level).map_or_else(
+                || {
+                    ctx.fully_lifted = false;
+                    local_name(*lock_slot, ctx.params)
+                },
+                |e: Expr| e.render(),
+            );
             let pad: String = indent_string(level);
             let _ = writeln!(out, "{pad}synchronized ({lock_expr}) {{");
+            ctx.held_locks.push(*lock_slot);
             render_region(ctx, body, out, level + 1);
+            ctx.held_locks.pop();
             let _ = writeln!(out, "{pad}}}");
         }
         Region::LabeledLoop { label, body } => {
@@ -5689,8 +5760,12 @@ fn render_latch_inline(ctx: &RenderCtx<'_>, bid: BlockId, out: &mut String, leve
         let op: u8 = ins.opcode;
         if matches!(
             op,
-            0x99..=0xA6 | 0xC6 | 0xC7 | 0xA7 | 0xC8 | 0xAA | 0xAB | 0xA9 | 0xC2 | 0xC3
+            0x99..=0xA6 | 0xC6 | 0xC7 | 0xA7 | 0xC8 | 0xAA | 0xAB | 0xA9
         ) {
+            continue;
+        }
+        if matches!(op, 0xC2 | 0xC3) {
+            lifted = false;
             continue;
         }
         match lift_one(
@@ -5729,8 +5804,41 @@ fn render_block_seeded(
     level: usize,
     seed: Vec<Expr>,
 ) {
+    let _: Option<Vec<Expr>> = render_block_statements(ctx, bid, out, level, seed, 0);
+}
+
+fn render_lock_block(
+    ctx: &mut RenderCtx<'_>,
+    bid: BlockId,
+    out: &mut String,
+    level: usize,
+) -> Option<Expr> {
+    let mut stack: Vec<Expr> =
+        render_block_statements(ctx, bid, out, level, Vec::new(), LOCK_BLOCK_TAIL_LEN)?;
+    if stack.len() == 1 { stack.pop() } else { None }
+}
+
+const LOCK_BLOCK_TAIL_LEN: usize = 3;
+
+fn monitorexit_releases_held_lock(ctx: &RenderCtx<'_>, block_start: usize, index: usize) -> bool {
+    index > block_start
+        && ctx
+            .insns
+            .get(index - 1)
+            .and_then(aload_slot_of)
+            .is_some_and(|slot: u16| ctx.held_locks.contains(&slot))
+}
+
+fn render_block_statements(
+    ctx: &mut RenderCtx<'_>,
+    bid: BlockId,
+    out: &mut String,
+    level: usize,
+    seed: Vec<Expr>,
+    trailing_skip: usize,
+) -> Option<Vec<Expr>> {
     if !ctx.rendered_blocks.insert(bid) {
-        return;
+        return None;
     }
     let mut seed: Vec<Expr> = seed;
     if seed.is_empty()
@@ -5742,12 +5850,13 @@ fn render_block_seeded(
             ctx.pending_handler_seed = Some((target, pending));
         }
     }
-    let (start, end): (usize, usize) = block_insn_range(ctx, bid);
+    let (block_start, end): (usize, usize) = block_insn_range(ctx, bid);
     let end: usize = end
         .saturating_sub(ctx.finally_tail_trims.get(&bid).copied().unwrap_or(0))
-        .max(start);
+        .saturating_sub(trailing_skip)
+        .max(block_start);
     let handler_entry_skip: usize = usize::from(ctx.handler_entry_skips.remove(&bid));
-    let start: usize = start
+    let start: usize = block_start
         .saturating_add(ctx.finally_inline_skips.get(&bid).copied().unwrap_or(0))
         .saturating_add(handler_entry_skip)
         .min(end);
@@ -5757,7 +5866,7 @@ fn render_block_seeded(
     } else {
         seed
     };
-    for ins in &ctx.insns[start..end] {
+    for (index, ins) in ctx.insns.iter().enumerate().take(end).skip(start) {
         let op: u8 = ins.opcode;
         if matches!(
             op,
@@ -5766,10 +5875,14 @@ fn render_block_seeded(
             continue;
         }
         if op == 0xC3 {
+            if !monitorexit_releases_held_lock(ctx, block_start, index) {
+                ctx.unconsumed_monitor = true;
+            }
             stack.pop();
             continue;
         }
         if op == 0xC2 {
+            ctx.unconsumed_monitor = true;
             stack.pop();
             continue;
         }
@@ -5848,43 +5961,7 @@ fn render_block_seeded(
             }
         }
     }
-}
-
-fn lift_lock_expr(ctx: &RenderCtx<'_>, bid: BlockId) -> Option<Expr> {
-    let (start, end): (usize, usize) = block_insn_range(ctx, bid);
-    let slice: &[Instruction] = &ctx.insns[start..end];
-    let enter_idx: usize = slice.iter().position(|i: &Instruction| i.opcode == 0xC2)?;
-    let dup_idx: usize = enter_idx.checked_sub(2)?;
-    if slice.get(dup_idx)?.opcode != 0x59 {
-        return None;
-    }
-    let mut stack: Vec<Expr> = Vec::new();
-    for ins in &slice[..dup_idx] {
-        let op: u8 = ins.opcode;
-        if matches!(op, 0xA7 | 0xC8) {
-            continue;
-        }
-        match lift_one(
-            ctx.cf,
-            ins,
-            &mut stack,
-            ctx.params,
-            ctx.bootstraps,
-            ctx.has_this,
-            ctx.bool_return,
-        ) {
-            LiftResult::Pushed => {}
-            LiftResult::PushedWithPrelude(_)
-            | LiftResult::Elided
-            | LiftResult::Statement(_)
-            | LiftResult::Statements(_)
-            | LiftResult::ControlFlow(_)
-            | LiftResult::Unhandled => {
-                return None;
-            }
-        }
-    }
-    if stack.len() == 1 { stack.pop() } else { None }
+    Some(stack)
 }
 
 fn lift_block_to_value(ctx: &RenderCtx<'_>, bid: BlockId, seed_count: usize) -> Option<Expr> {
@@ -6012,6 +6089,8 @@ fn compute_block_entry_stacks(
         bootstraps,
         rendered_blocks: BTreeSet::new(),
         fully_lifted: true,
+        held_locks: Vec::new(),
+        unconsumed_monitor: false,
         block_entry_stacks: BTreeMap::new(),
         has_this,
         bool_return,
@@ -8069,6 +8148,8 @@ const fn pattern_render_ctx<'a>(
         bootstraps,
         rendered_blocks: BTreeSet::new(),
         fully_lifted: true,
+        held_locks: Vec::new(),
+        unconsumed_monitor: false,
         block_entry_stacks: BTreeMap::new(),
         has_this,
         bool_return,
@@ -12481,6 +12562,81 @@ fn record_method_is_implicit(
 mod tests {
     use super::*;
     use crate::classfile::{Attribute, ConstantPoolEntry};
+
+    fn coverage_block(id: u32, successors: &[(EdgeKind, u32)]) -> BasicBlock {
+        BasicBlock {
+            id: BlockId(id),
+            start_pc: id * 4,
+            end_pc: id * 4 + 3,
+            insn_range: (id as usize, id as usize + 1),
+            successors: successors
+                .iter()
+                .map(|&(kind, target): &(EdgeKind, u32)| Edge {
+                    kind,
+                    target: BlockId(target),
+                })
+                .collect(),
+            predecessors: Vec::new(),
+        }
+    }
+
+    fn coverage_cfg() -> Cfg {
+        let blocks: Vec<BasicBlock> = vec![
+            coverage_block(0, &[(EdgeKind::CondTrue, 2), (EdgeKind::CondFalse, 1)]),
+            coverage_block(1, &[(EdgeKind::Jump, 3), (EdgeKind::Exception, 4)]),
+            coverage_block(2, &[(EdgeKind::Fallthrough, 3)]),
+            coverage_block(3, &[]),
+            coverage_block(4, &[(EdgeKind::Jump, 3)]),
+            coverage_block(5, &[(EdgeKind::Jump, 3)]),
+        ];
+        Cfg {
+            pc_to_block: blocks
+                .iter()
+                .map(|block: &BasicBlock| (block.start_pc, block.id))
+                .collect(),
+            blocks,
+            entry: BlockId(0),
+            exception_regions: Vec::new(),
+        }
+    }
+
+    fn block_set(ids: &[u32]) -> BTreeSet<BlockId> {
+        ids.iter().copied().map(BlockId).collect()
+    }
+
+    #[test]
+    fn a_reachable_block_that_never_rendered_is_a_coverage_gap() {
+        let cfg: Cfg = coverage_cfg();
+        let everything_but_the_else_arm: BTreeSet<BlockId> = block_set(&[0, 1, 3, 4]);
+        assert_eq!(
+            unrendered_reachable_blocks(&cfg, &everything_but_the_else_arm, &BTreeSet::new()),
+            vec![BlockId(2)]
+        );
+        assert_eq!(
+            coverage_gap(&cfg, &everything_but_the_else_arm, &BTreeSet::new(), false),
+            Some(UNRENDERED_BLOCK_GAP)
+        );
+        let without_handler: BTreeSet<BlockId> = block_set(&[0, 1, 2, 3]);
+        assert_eq!(
+            coverage_gap(&cfg, &without_handler, &BTreeSet::new(), false),
+            Some(UNRENDERED_BLOCK_GAP),
+            "a handler reached only through an exception edge still has to render"
+        );
+        assert_eq!(
+            coverage_gap(&cfg, &without_handler, &block_set(&[4]), false),
+            None,
+            "a block the structurer absorbed on purpose is covered"
+        );
+        assert_eq!(
+            coverage_gap(&cfg, &block_set(&[0, 1, 2, 3, 4]), &BTreeSet::new(), false),
+            None,
+            "an unreachable block is not part of the method's behaviour"
+        );
+        assert_eq!(
+            coverage_gap(&cfg, &block_set(&[0, 1, 2, 3, 4]), &BTreeSet::new(), true),
+            Some(UNCONSUMED_MONITOR_GAP)
+        );
+    }
 
     #[test]
     fn floating_compares_keep_their_nan_bias() {

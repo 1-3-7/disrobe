@@ -69,14 +69,19 @@ fn obf_class_parses_through_jbco_control_flow_obfuscation() {
         dc.method_count
     );
     assert_eq!(
-        dc.fallback_methods, 0,
-        "disrobe must fully lift every method through JBCO's goto-augmentation and indirect-if traps with zero fallbacks, got {} fallbacks",
+        dc.fallback_methods, 1,
+        "only l1lll(I)I stays incomplete: its structured body loses the return and two trap handlers, got {} fallbacks",
         dc.fallback_methods
     );
-    assert!(
-        dc.fully_lifted_methods >= 8,
-        "every method body must lift past the JBCO control-flow obfuscation, got {} lifted",
-        dc.fully_lifted_methods
+    assert_eq!(
+        dc.source.matches("// <decompile: incomplete:").count(),
+        1,
+        "the one incomplete body carries the coverage marker"
+    );
+    assert_eq!(
+        dc.fully_lifted_methods,
+        dc.method_count - 1,
+        "every other method body must lift past the JBCO control-flow obfuscation"
     );
     assert!(
         !dc.source.is_empty(),

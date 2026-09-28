@@ -545,6 +545,7 @@ pub struct Structurer<'a> {
     finally_scoped_local_slots: BTreeSet<u16>,
     slot_use_counts: BTreeMap<u16, usize>,
     visited: BTreeSet<BlockId>,
+    absorbed: BTreeSet<BlockId>,
     loop_header_of: BTreeMap<BlockId, BlockId>,
     loop_exits: BTreeMap<BlockId, BlockId>,
     try_groups: Vec<GroupedTry>,
@@ -617,6 +618,7 @@ impl<'a> Structurer<'a> {
             finally_scoped_local_slots: BTreeSet::new(),
             slot_use_counts,
             visited: BTreeSet::new(),
+            absorbed: BTreeSet::new(),
             loop_header_of,
             loop_exits,
             try_groups,
@@ -673,6 +675,16 @@ impl<'a> Structurer<'a> {
     #[must_use]
     pub fn take_finally_scoped_local_slots(&mut self) -> BTreeSet<u16> {
         std::mem::take(&mut self.finally_scoped_local_slots)
+    }
+
+    #[must_use]
+    pub fn take_absorbed_blocks(&mut self) -> BTreeSet<BlockId> {
+        std::mem::take(&mut self.absorbed)
+    }
+
+    fn absorb(&mut self, block: BlockId) {
+        self.visited.insert(block);
+        self.absorbed.insert(block);
     }
 
     pub fn structure(&mut self) -> Region {
@@ -777,7 +789,7 @@ impl<'a> Structurer<'a> {
         let body: Region = self.structure_try_body(try_start, try_end);
 
         for &cb in &close_blocks {
-            self.visited.insert(cb);
+            self.absorb(cb);
         }
         let mut handler_walk: Vec<BlockId> = vec![handler_bid];
         let mut handler_seen: BTreeSet<BlockId> = BTreeSet::new();
@@ -785,7 +797,7 @@ impl<'a> Structurer<'a> {
             if !handler_seen.insert(cur) || handler_seen.len() > MAX_BLOCKS {
                 continue;
             }
-            self.visited.insert(cur);
+            self.absorb(cur);
             for edge in &self.cfg.blocks[cur.0 as usize].successors {
                 if !matches!(edge.kind, EdgeKind::Exception) {
                     handler_walk.push(edge.target);
@@ -794,6 +806,14 @@ impl<'a> Structurer<'a> {
             for hpc in group.handlers.iter().map(|(_, pc)| *pc) {
                 if let Some(&bid) = self.cfg.pc_to_block.get(&hpc) {
                     handler_walk.push(bid);
+                }
+            }
+            let cur_pc: u32 = self.cfg.blocks[cur.0 as usize].start_pc;
+            for region in &self.cfg.exception_regions {
+                if region.try_start_pc == cur_pc
+                    && let Some(&suppressor) = self.cfg.pc_to_block.get(&region.handler_pc)
+                {
+                    handler_walk.push(suppressor);
                 }
             }
         }
@@ -2003,17 +2023,21 @@ impl<'a> Structurer<'a> {
     }
 
     fn synchronized_lock_block(&self, try_start: BlockId) -> Option<(BlockId, u16)> {
-        let pred: BlockId = self
-            .cfg
-            .blocks
-            .iter()
-            .filter(|blk| {
-                blk.successors
+        let body_start_pc: u32 = self.cfg.blocks[try_start.0 as usize].start_pc;
+        let body_end_pc: u32 = self
+            .try_group_at_block(try_start)
+            .map_or(body_start_pc, |group: GroupedTry| group.try_end_pc);
+        let mut normal_preds = self.cfg.blocks.iter().filter(|blk| {
+            !(body_start_pc..body_end_pc).contains(&blk.start_pc)
+                && blk
+                    .successors
                     .iter()
                     .any(|e| e.target == try_start && !matches!(e.kind, EdgeKind::Exception))
-            })
-            .map(|blk| blk.id)
-            .min_by_key(|id| id.0)?;
+        });
+        let pred: BlockId = match (normal_preds.next(), normal_preds.next()) {
+            (Some(only), None) => only.id,
+            _ => return None,
+        };
         let pred_insns: &[Instruction] = self.block_instructions(pred);
         let n: usize = pred_insns.len();
         if n < 3 {
@@ -2027,6 +2051,25 @@ impl<'a> Structurer<'a> {
         }
         let slot: u16 = astore_slot(astore)?;
         Some((pred, slot))
+    }
+
+    fn lock_block_position(
+        &self,
+        seq: &[Region],
+        start: BlockId,
+        try_start: BlockId,
+        lock_block: BlockId,
+    ) -> Option<bool> {
+        if matches!(seq.last(), Some(Region::Block(prev)) if *prev == lock_block) {
+            return Some(true);
+        }
+        let opens_loop_body: bool = seq.is_empty()
+            && start == try_start
+            && self
+                .loop_stack
+                .last()
+                .is_some_and(|frame: &LoopFrame| frame.header == lock_block);
+        opens_loop_body.then_some(false)
     }
 
     fn is_synchronized_finally(&self, chain: &[BlockId], lock_slot: u16) -> bool {
@@ -2340,9 +2383,15 @@ impl<'a> Structurer<'a> {
                     if handlers_out.is_empty()
                         && let Some((lock_block, lock_slot)) = self.synchronized_lock_block(b)
                         && self.is_synchronized_finally(&chain.blocks, lock_slot)
-                        && matches!(seq.last(), Some(Region::Block(prev)) if *prev == lock_block)
+                        && let Some(lock_in_sequence) =
+                            self.lock_block_position(&seq, start, b, lock_block)
                     {
-                        seq.pop();
+                        if lock_in_sequence {
+                            seq.pop();
+                        }
+                        for block in &chain.blocks {
+                            self.absorb(*block);
+                        }
                         seq.push(Region::Synchronized {
                             lock_block,
                             lock_slot,
@@ -2368,7 +2417,7 @@ impl<'a> Structurer<'a> {
                             self.finally_return_stores.insert(pred, slot);
                             self.finally_inline_skips
                                 .insert(exit, self.block_instructions(exit).len());
-                            self.visited.insert(exit);
+                            self.absorb(exit);
                         }
                         after_try = None;
                     } else {
@@ -2384,7 +2433,7 @@ impl<'a> Structurer<'a> {
                                 for block in blocks {
                                     self.finally_inline_skips
                                         .insert(block, self.block_instructions(block).len());
-                                    self.visited.insert(block);
+                                    self.absorb(block);
                                 }
                                 after_try = None;
                             } else if let Some((blocks, predecessor, slot)) =
@@ -2393,7 +2442,7 @@ impl<'a> Structurer<'a> {
                                 for block in blocks {
                                     self.finally_inline_skips
                                         .insert(block, self.block_instructions(block).len());
-                                    self.visited.insert(block);
+                                    self.absorb(block);
                                 }
                                 self.finally_return_stores.insert(predecessor, slot);
                                 after_try = None;
@@ -2415,7 +2464,7 @@ impl<'a> Structurer<'a> {
                                         for (block, skip) in skips {
                                             self.finally_inline_skips.insert(block, skip);
                                             if skip == self.block_instructions(block).len() {
-                                                self.visited.insert(block);
+                                                self.absorb(block);
                                             }
                                         }
                                         if let Some(continuation) = continuation
@@ -2428,7 +2477,7 @@ impl<'a> Structurer<'a> {
                                                 )
                                         {
                                             self.finally_return_stores.insert(predecessor, slot);
-                                            self.visited.insert(continuation);
+                                            self.absorb(continuation);
                                             after_try = None;
                                         } else {
                                             after_try = continuation;
@@ -2461,7 +2510,7 @@ impl<'a> Structurer<'a> {
                         && self.finally_return_copy(&chain, cont)
                         && !self.visited.contains(&cont)
                     {
-                        self.visited.insert(cont);
+                        self.absorb(cont);
                         after_try = None;
                     } else if let Some(cont) = after_try
                         && let Some(skip) = self.finally_inline_skip(&chain, cont)
@@ -2473,7 +2522,7 @@ impl<'a> Structurer<'a> {
                             self.finally_value_return_temp(&try_group, cont, skip)
                         {
                             self.finally_return_stores.insert(pred, slot);
-                            self.visited.insert(cont);
+                            self.absorb(cont);
                             after_try = None;
                         } else if self.finally_return_exit(&try_group, cont, skip) {
                             self.visited.insert(cont);
@@ -2572,7 +2621,11 @@ impl<'a> Structurer<'a> {
                                 for span in &reentrant {
                                     self.suppressed_spans.remove(span);
                                 }
-                                self.visited.insert(tail);
+                                if stop == Some(tail) {
+                                    self.absorb(tail);
+                                } else {
+                                    self.visited.insert(tail);
+                                }
                                 body
                             }
                             (Some(_), Some(_)) => {
@@ -2651,7 +2704,7 @@ impl<'a> Structurer<'a> {
                 {
                     let idx_head: BlockId = table.idx_switch_head;
                     for &bucket in &table.bucket_blocks {
-                        self.visited.insert(bucket);
+                        self.absorb(bucket);
                     }
                     self.string_switch_tables.insert(idx_head, table);
                     cur = Some(idx_head);
@@ -2706,6 +2759,7 @@ impl<'a> Structurer<'a> {
             finally_scoped_local_slots: BTreeSet::new(),
             slot_use_counts: self.slot_use_counts.clone(),
             visited: BTreeSet::new(),
+            absorbed: BTreeSet::new(),
             loop_header_of: self.loop_header_of.clone(),
             loop_exits: self.loop_exits.clone(),
             try_groups: self.try_groups.clone(),
@@ -2723,18 +2777,30 @@ impl<'a> Structurer<'a> {
         };
         inner.visited.insert(loop_info.header);
         let header_block: &BasicBlock = &self.cfg.blocks[loop_info.header.0 as usize];
+        let header_stays_in_loop: bool = header_block
+            .successors
+            .iter()
+            .filter(|e: &&Edge| !matches!(e.kind, EdgeKind::Exception))
+            .all(|e: &Edge| loop_info.body.contains(&e.target));
         let first_succ: Option<BlockId> = header_block
             .successors
             .iter()
             .find(|e| Some(e.target) != exit && loop_info.body.contains(&e.target))
             .map(|e| e.target);
-        let region: Region = match first_succ {
-            Some(start) => inner.structure_at(start, exit),
-            None => Region::Block(loop_info.header),
+        let region: Region = if header_stays_in_loop
+            && (is_if(header_block) || is_switch(header_block, &self.cfg.blocks))
+        {
+            inner.structure_header_branch(loop_info.header, exit)
+        } else {
+            match first_succ {
+                Some(start) => inner.structure_at(start, exit),
+                None => Region::Block(loop_info.header),
+            }
         };
         self.work = inner.work;
         self.next_label = inner.next_label;
         self.had_irreducible |= inner.had_irreducible;
+        self.absorbed.extend(inner.take_absorbed_blocks());
         self.unmodelled_finally = self.unmodelled_finally.or(inner.unmodelled_finally);
         self.string_switch_tables
             .extend(inner.take_string_switch_tables());
@@ -2752,6 +2818,34 @@ impl<'a> Structurer<'a> {
             .extend(inner.take_finally_scoped_local_slots());
         self.labels_used.extend(inner.labels_used);
         region
+    }
+
+    fn structure_header_branch(&mut self, header: BlockId, exit: Option<BlockId>) -> Region {
+        let block: &BasicBlock = &self.cfg.blocks[header.0 as usize];
+        let (branch, join): (Region, Option<BlockId>) = if is_switch(block, &self.cfg.blocks) {
+            (
+                self.structure_switch(header, exit),
+                self.find_switch_join(header),
+            )
+        } else {
+            let branch: Region = self.structure_if(header, exit);
+            let join: Option<BlockId> = match &branch {
+                Region::IfThen { join, .. } | Region::IfThenElse { join, .. } => *join,
+                _ => None,
+            };
+            (branch, join)
+        };
+        let mut items: Vec<Region> = vec![branch];
+        if let Some(join) = join {
+            match self.structure_at(join, exit) {
+                Region::Sequence(rest) => items.extend(rest),
+                rest => items.push(rest),
+            }
+        }
+        match <[Region; 1]>::try_from(items) {
+            Ok([single]) => single,
+            Err(items) => Region::Sequence(items),
+        }
     }
 
     fn structure_if(&mut self, head: BlockId, stop: Option<BlockId>) -> Region {
