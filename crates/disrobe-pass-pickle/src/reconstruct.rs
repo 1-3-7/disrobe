@@ -239,8 +239,15 @@ fn render(value: &PickleValue, out: &mut String) {
             out.push('}');
         }
         PickleValue::Global { module, name } => {
-            let (module, name): (String, String) = map_global(module, name);
-            out.push_str(&format!("{module}.{name}"));
+            if is_dotted_identifier(module) && is_dotted_identifier(name) {
+                let (module, name): (String, String) = map_global(module, name);
+                out.push_str(&format!("{module}.{name}"));
+            } else {
+                out.push_str(&format!(
+                    "_unsupported({})",
+                    crate::decompile::py_repr_str(&format!("global {module}.{name}"))
+                ));
+            }
         }
         PickleValue::Reduce { callable, args } => render_call(callable, args, out),
         PickleValue::Object {
@@ -454,6 +461,12 @@ fn scan(
             if module.is_empty() {
                 *ok = false;
                 reasons.push(format!("global {name} has no importable module"));
+            } else if !is_dotted_identifier(module) || !is_dotted_identifier(name) {
+                *ok = false;
+                reasons.push(format!(
+                    "global {} names no importable dotted identifier",
+                    disrobe_core::source_text::escape_unsafe_chars(&format!("{module}.{name}"))
+                ));
             } else {
                 let (mapped, _): (String, String) = map_global(module, name);
                 modules.insert(mapped);
@@ -533,10 +546,40 @@ fn is_constructible(cls: &PickleValue) -> bool {
     )
 }
 
+fn is_dotted_identifier(text: &str) -> bool {
+    !text.is_empty()
+        && text.split('.').all(|part: &str| {
+            let mut chars: std::str::Chars<'_> = part.chars();
+            chars
+                .next()
+                .is_some_and(|first: char| first == '_' || first.is_ascii_alphabetic())
+                && chars.all(|c: char| c == '_' || c.is_ascii_alphanumeric())
+        })
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_global_that_is_not_a_dotted_identifier_is_refused_not_emitted() {
+        assert!(is_dotted_identifier("collections.OrderedDict"));
+        assert!(!is_dotted_identifier("os\nimport shutil"));
+        assert!(!is_dotted_identifier("a..b"));
+        assert!(!is_dotted_identifier("1abc"));
+        let value: PickleValue = PickleValue::Global {
+            module: "os;__import__('shutil')".to_owned(),
+            name: "system".to_owned(),
+        };
+        let mut rendered: String = String::new();
+        render(&value, &mut rendered);
+        assert!(rendered.starts_with("_unsupported("), "{rendered}");
+        assert!(
+            !rendered.contains("os;__import__('shutil').system"),
+            "{rendered}"
+        );
+    }
     use crate::disasm::{Disassembly, disassemble};
     use crate::vm::Session;
 
