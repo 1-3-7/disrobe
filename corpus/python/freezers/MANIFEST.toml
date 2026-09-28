@@ -28,15 +28,21 @@ extracted_dir = "pex/extracted/"
 
 [py2exe]
 file = "py2exe/hello.exe"
-sha256 = "9459248e8c44a66dc37142e239c0cb31fc71822e05b985b1dddbf85d533829bd"
-size = 40960
+sha256 = "171ed483f8caafbcef22f662010d00abfd9af726cc28c586481102aa8315c345"
+size = 40448
+secondary_file = "py2exe/library.zip"
+secondary_sha256 = "9257ae46e6a52d245e250c6b3fe7e4746e2e7bdf27fae6697bdaf1d333718db2"
+secondary_size = 2353370
 tool = "py2exe"
-tool_version = "0.14.0.0"
-generation_command = "python setup.py py2exe  (bundle_files=3, optimize=0, compressed=true; companion library.zip in extracted/)"
-regen_env_var = "DISROBE_PY2EXE_REGEN"
+tool_version = "0.14.2.0"
+python_runtime = "CPython 3.12.13"
 host_platform = "win_amd64"
-extracted_dir = "py2exe/extracted/"
-notes = "py2exe is Windows-only. Python 3.12+ rejects bundle_files<3, so library.zip ships as a sibling and the .exe loads it."
+source = "py2exe/build.py"
+generation_command = "uv venv --python 3.12.13 <venv>; uv pip install --python <venv> py2exe==0.14.2.0 pefile==2024.8.26; <venv>/Scripts/python.exe corpus/python/freezers/py2exe/build.py"
+status = "real-committed"
+reference_file = "py2exe/hello.expected.json"
+notes = """Genuine py2exe 0.14.2.0 build (bundle_files=3, compressed=1, optimize=0, zipfile=library.zip, excludes tkinter/unittest/pydoc/doctest/pdb/email/http/xml). build.py stages the hello package (zipapp/extracted/hello/__init__.py), the six edge_cases bands from corpus/python/decompile/playground and a two-line entry script, calls py2exe.freeze, and copies hello.exe and library.zip here. The other outputs (python312.dll, the .pyd modules, OpenSSL and libffi DLLs) are CPython's own binaries and are not committed; hello.expected.json lists every output's size and sha256. The executable was never run. py2exe is Windows-only, so regeneration needs a Windows host and yields new hashes (library.zip carries build timestamps)."""
+non_circularity = "hello.expected.json is written in the same run by pefile, which walks the resource directory to type PYTHONSCRIPT, id 1, language 0 and records the entry's size and sha256, the script header fields and the sha256 of the script data; CPython 3.12 marshal.loads of that script data yields a list of three code objects, recorded by name. real_py2exe.rs grades disrobe's recovered resource and script data against that record and runs CPython 3.12 marshal.loads over the bytes disrobe extracted."
 
 [cxfreeze]
 file = "cxfreeze/hello.exe"
@@ -121,17 +127,6 @@ files = [
 generator = "crates/disrobe-pass-pyfreeze/tests/fixtures/gen_freezer_fixtures.py"
 spec = "PEX zip format: shebang line + trailing PKZIP with PEX-INFO JSON entry (entry_point=hello:main) and six .py source members under .deps/ path"
 non_circularity = "generator emits bytes per the documented PEX format; src/pex/mod.rs detect_and_extract and src/pex/pex_info.rs parse are independent of the generator; assertions grade against format-expected outcomes (PEX-INFO entry_point starts with hello, six edge_cases bands extracted)"
-
-[py2exe_synthetic]
-provenance = "synthetic"
-files = [
-    "py2exe/hello.exe",
-    "py2exe/extracted/library.zip",
-]
-generator = "crates/disrobe-pass-pyfreeze/tests/fixtures/gen_freezer_fixtures.py"
-spec = "py2exe PE format: MZ+PE header, PYTHONSCRIPT literal for detection, then PY2EXE_MAGIC_TAG (0x78563412) blob with optimize/unbuffered/blob_count u32s + NUL-terminated zip_archive_name cstring + raw marshal.dumps(compile(...)) of edge_cases_3_6 as marshalled_code; sibling library.zip contains six per-band .pyc files compiled via CPython 3.14"
-non_circularity = "generator emits bytes per src/py2exe/scriptinfo.rs spec and the unit test in src/py2exe/pe.rs; src/py2exe/pe.rs::extract_pythonscript_resource and src/py2exe/scriptinfo.rs::parse are independent of the generator; assertions grade against format-expected outcomes (marshalled_code non-empty real bytecode, embedded_pyc_path written, six bands in library.zip)"
-notes = "py2exe 0.14 (bundle_files=3) ships its full module set in the sibling library.zip, not inside the PYTHONSCRIPT resource. real_py2exe_library_zip.rs proves py2exe/extracted/hello.exe (stub sitting next to a bare library.zip) classifies as py2exe via PYTHONSCRIPT (not cx_Freeze, which requires lib/library.zip or frozen_application_license.txt), extracts all six bands plus __pythonscript__, and that every bundled band pyc marshal-loads into a code object through disrobe-py-marshal."
 
 [bbfreeze_runtime_assembled]
 provenance = "real-interpreter-assembled-at-test-time"

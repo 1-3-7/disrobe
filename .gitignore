@@ -138,7 +138,6 @@ credentials.json
 *.tar.gz
 *.zip
 !corpus/python/freezers/cxfreeze/extracted/library.zip
-!corpus/python/freezers/py2exe/extracted/library.zip
 *.tar.zst.asc
 *.zip.asc
 *.minisig

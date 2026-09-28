@@ -7,7 +7,7 @@ pub struct ScriptInfo {
     pub magic_tag: u32,
     pub optimize_level: u32,
     pub unbuffered_flag: u32,
-    pub blob_count: u32,
+    pub script_data_len: u32,
     pub zip_archive_name: String,
     pub marshalled_code: Vec<u8>,
 }
@@ -25,25 +25,26 @@ pub fn parse(bytes: &[u8]) -> Result<ScriptInfo> {
     }
     let optimize_level: u32 = read_u32_le(&bytes[4..8]);
     let unbuffered: u32 = read_u32_le(&bytes[8..12]);
-    let blob_count: u32 = read_u32_le(&bytes[12..16]);
+    let script_data_len: u32 = read_u32_le(&bytes[12..16]);
 
     let mut cursor: usize = 16usize;
     let zip_name: String = read_cstring(bytes, &mut cursor)?;
-    if cursor >= bytes.len() {
-        return Err(Error::Py2exeScriptInfoTruncated {
-            need: cursor + 1,
+    let script_len: usize = usize::try_from(script_data_len).unwrap_or(usize::MAX);
+    let end: usize = cursor.saturating_add(script_len.max(1));
+    let script: &[u8] = bytes
+        .get(cursor..end)
+        .ok_or(Error::Py2exeScriptInfoTruncated {
+            need: end,
             got: bytes.len(),
-        });
-    }
-    let remaining: &[u8] = &bytes[cursor..];
+        })?;
 
     Ok(ScriptInfo {
         magic_tag: magic,
         optimize_level,
         unbuffered_flag: unbuffered,
-        blob_count,
+        script_data_len,
         zip_archive_name: zip_name,
-        marshalled_code: remaining.to_vec(),
+        marshalled_code: script.to_vec(),
     })
 }
 
@@ -78,12 +79,29 @@ mod tests {
         buf.extend_from_slice(&PY2EXE_MAGIC_TAG.to_le_bytes());
         buf.extend_from_slice(&2u32.to_le_bytes());
         buf.extend_from_slice(&0u32.to_le_bytes());
-        buf.extend_from_slice(&1u32.to_le_bytes());
+        buf.extend_from_slice(&4u32.to_le_bytes());
         buf.extend_from_slice(b"app.zip\0");
-        buf.extend_from_slice(&[0xE3, 0x00, 0x00, 0x00]);
+        buf.extend_from_slice(&[0xE3, 0x00, 0x00, 0x00, 0x00]);
         let info: ScriptInfo = parse(&buf).expect("parse");
         assert_eq!(info.zip_archive_name, "app.zip");
+        assert_eq!(info.script_data_len, 4);
         assert_eq!(info.marshalled_code, vec![0xE3, 0x00, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn rejects_script_data_longer_than_the_resource() {
+        let mut buf: Vec<u8> = vec![];
+        buf.extend_from_slice(&PY2EXE_MAGIC_TAG.to_le_bytes());
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        buf.extend_from_slice(&9u32.to_le_bytes());
+        buf.extend_from_slice(b"library.zip\0");
+        buf.extend_from_slice(&[0xDB, 0x03, 0x00, 0x00, 0x00]);
+        let err: Error = parse(&buf).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::Py2exeScriptInfoTruncated { need: 37, got: 33 }
+        ));
     }
 
     #[test]

@@ -1,5 +1,15 @@
+use object::LittleEndian as LE;
+use object::pe::{ImageNtHeaders32, ImageNtHeaders64, ImageResourceDataEntry};
+use object::read::pe::{
+    ImageNtHeaders, PeFile, ResourceDirectory, ResourceDirectoryEntryData, ResourceDirectoryTable,
+    ResourceNameOrId,
+};
+
 use crate::error::{Error, Result};
-use crate::py2exe::scriptinfo::PY2EXE_MAGIC_TAG;
+
+const PYTHONSCRIPT_TYPE: &str = "PYTHONSCRIPT";
+const PYTHONSCRIPT_ID: u16 = 1;
+const MAX_PYTHONSCRIPT_BYTES: usize = 64 * 1024 * 1024;
 
 pub fn extract_pythonscript_resource(bytes: &[u8]) -> Result<Vec<u8>> {
     if !looks_like_pe(bytes) {
@@ -7,23 +17,70 @@ pub fn extract_pythonscript_resource(bytes: &[u8]) -> Result<Vec<u8>> {
             "input is not a PE (missing MZ magic)".to_owned(),
         ));
     }
-    let magic_bytes: [u8; 4] = PY2EXE_MAGIC_TAG.to_le_bytes();
-    let Some(start): Option<usize> = locate_magic(bytes, &magic_bytes) else {
-        return Err(Error::Py2exeScriptResourceMissing);
-    };
-    let slice: &[u8] = &bytes[start..];
-    let end: usize = bounded_payload_end(slice);
-    Ok(slice[..end].to_vec())
+    match object::FileKind::parse(bytes).map_err(pe_error)? {
+        object::FileKind::Pe32 => pythonscript_resource::<ImageNtHeaders32>(bytes),
+        object::FileKind::Pe64 => pythonscript_resource::<ImageNtHeaders64>(bytes),
+        other => Err(Error::PeParse(format!(
+            "input is {other:?}, not a PE image"
+        ))),
+    }
 }
 
-fn locate_magic(bytes: &[u8], magic: &[u8]) -> Option<usize> {
-    bytes.windows(magic.len()).position(|w| w == magic)
+fn pe_error(error: object::Error) -> Error {
+    Error::PeParse(error.to_string())
 }
 
-fn bounded_payload_end(slice: &[u8]) -> usize {
-    let total: usize = slice.len();
-    let cap: usize = total.min(8 * 1024 * 1024);
-    if cap == total { total } else { cap }
+fn pythonscript_resource<Pe: ImageNtHeaders>(bytes: &[u8]) -> Result<Vec<u8>> {
+    let file: PeFile<'_, Pe> = PeFile::parse(bytes).map_err(pe_error)?;
+    let sections = file.section_table();
+    let directory: ResourceDirectory<'_> = file
+        .data_directories()
+        .resource_directory(bytes, &sections)
+        .map_err(pe_error)?
+        .ok_or(Error::Py2exeScriptResourceMissing)?;
+    let root: ResourceDirectoryTable<'_> = directory.root().map_err(pe_error)?;
+    let mut script_type: Option<ResourceDirectoryTable<'_>> = None;
+    for entry in root.entries {
+        if let ResourceNameOrId::Name(name) = entry.name_or_id()
+            && name.to_string_lossy(directory).map_err(pe_error)? == PYTHONSCRIPT_TYPE
+        {
+            script_type = entry.data(directory).map_err(pe_error)?.table();
+            break;
+        }
+    }
+    let script_type: ResourceDirectoryTable<'_> =
+        script_type.ok_or(Error::Py2exeScriptResourceMissing)?;
+    let script_entry = script_type
+        .entries
+        .iter()
+        .find(|entry| matches!(entry.name_or_id(), ResourceNameOrId::Id(PYTHONSCRIPT_ID)))
+        .ok_or(Error::Py2exeScriptResourceMissing)?;
+    let data_entry: &ImageResourceDataEntry =
+        match script_entry.data(directory).map_err(pe_error)? {
+            ResourceDirectoryEntryData::Data(data) => data,
+            ResourceDirectoryEntryData::Table(languages) => languages
+                .entries
+                .first()
+                .map(|language| language.data(directory))
+                .transpose()
+                .map_err(pe_error)?
+                .and_then(ResourceDirectoryEntryData::data)
+                .ok_or(Error::Py2exeScriptResourceMissing)?,
+        };
+    let size: usize = usize::try_from(data_entry.size.get(LE))
+        .map_err(|_| Error::PeParse("PYTHONSCRIPT size exceeds host range".to_owned()))?;
+    if size > MAX_PYTHONSCRIPT_BYTES {
+        return Err(Error::PeParse(format!(
+            "PYTHONSCRIPT declares {size} bytes, above the {MAX_PYTHONSCRIPT_BYTES} byte cap"
+        )));
+    }
+    let at_rva: &[u8] = sections
+        .pe_data_at(bytes, data_entry.offset_to_data.get(LE))
+        .ok_or_else(|| Error::PeParse("PYTHONSCRIPT data lies outside every section".to_owned()))?;
+    let script: &[u8] = at_rva
+        .get(..size)
+        .ok_or_else(|| Error::PeParse("PYTHONSCRIPT data runs past its section".to_owned()))?;
+    Ok(script.to_vec())
 }
 
 #[must_use]
@@ -133,18 +190,13 @@ mod tests {
     }
 
     #[test]
-    fn finds_magic_in_synthetic_pe() {
+    fn a_magic_tag_outside_the_resource_directory_is_not_a_script() {
         let mut buf: Vec<u8> = vec![0u8; 0x80];
         buf[0..2].copy_from_slice(b"MZ");
         buf[0x3C..0x40].copy_from_slice(&0x40u32.to_le_bytes());
         buf[0x40..0x44].copy_from_slice(b"PE\0\0");
-        buf.extend_from_slice(&PY2EXE_MAGIC_TAG.to_le_bytes());
-        buf.extend_from_slice(&2u32.to_le_bytes());
-        buf.extend_from_slice(&0u32.to_le_bytes());
-        buf.extend_from_slice(&1u32.to_le_bytes());
+        buf.extend_from_slice(&crate::py2exe::scriptinfo::PY2EXE_MAGIC_TAG.to_le_bytes());
         buf.extend_from_slice(b"app.zip\0");
-        buf.extend_from_slice(&[0xE3, 0x00, 0x00, 0x00]);
-        let resource: Vec<u8> = extract_pythonscript_resource(&buf).expect("must extract");
-        assert!(resource.starts_with(&PY2EXE_MAGIC_TAG.to_le_bytes()));
+        assert!(extract_pythonscript_resource(&buf).is_err());
     }
 }

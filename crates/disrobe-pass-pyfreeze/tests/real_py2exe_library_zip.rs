@@ -12,8 +12,6 @@ use std::path::PathBuf;
 use disrobe_pass_pyfreeze::py2exe::{Py2exeExtraction, detect_and_extract};
 use disrobe_pass_pyfreeze::{Detection, FreezerKind, PyfreezeOutput, detect_bytes, extract};
 
-const REQUIRE_LOCAL_CORPUS_VAR: &str = "DISROBE_REQUIRE_PYFREEZE_LOCAL_CORPUS";
-
 const BANDS: &[&str] = &[
     "edge_cases_3_6",
     "edge_cases_3_8",
@@ -36,10 +34,7 @@ fn freezers_dir() -> PathBuf {
 }
 
 fn sibling_layout_exe() -> PathBuf {
-    freezers_dir()
-        .join("py2exe")
-        .join("extracted")
-        .join("hello.exe")
+    freezers_dir().join("py2exe").join("hello.exe")
 }
 
 fn out_dir(tag: &str) -> disrobe_core::scratch::ScratchDir {
@@ -56,18 +51,11 @@ fn out_dir(tag: &str) -> disrobe_core::scratch::ScratchDir {
 #[test]
 fn py2exe_sibling_layout_is_not_misdetected_as_cxfreeze() {
     let exe: PathBuf = sibling_layout_exe();
-    if !exe.is_file() {
-        assert!(
-            std::env::var_os(REQUIRE_LOCAL_CORPUS_VAR).is_none(),
-            "{REQUIRE_LOCAL_CORPUS_VAR} is set, so the local-only py2exe fixture {} must exist",
-            exe.display()
-        );
-        eprintln!(
-            "UNGRADED: the local-only py2exe fixture {} is absent; set {REQUIRE_LOCAL_CORPUS_VAR}=1 to fail instead",
-            exe.display()
-        );
-        return;
-    }
+    assert!(
+        exe.is_file(),
+        "the committed py2exe fixture {} is missing; restore it from git",
+        exe.display()
+    );
     let bytes: Vec<u8> = std::fs::read(&exe).expect("read exe");
     let det: Detection = detect_bytes(&bytes, Some(&exe));
     assert_eq!(
@@ -81,18 +69,11 @@ fn py2exe_sibling_layout_is_not_misdetected_as_cxfreeze() {
 #[test]
 fn py2exe_recovers_full_module_set_from_sibling_library_zip() {
     let exe: PathBuf = sibling_layout_exe();
-    if !exe.is_file() {
-        assert!(
-            std::env::var_os(REQUIRE_LOCAL_CORPUS_VAR).is_none(),
-            "{REQUIRE_LOCAL_CORPUS_VAR} is set, so the local-only py2exe fixture {} must exist",
-            exe.display()
-        );
-        eprintln!(
-            "UNGRADED: the local-only py2exe fixture {} is absent; set {REQUIRE_LOCAL_CORPUS_VAR}=1 to fail instead",
-            exe.display()
-        );
-        return;
-    }
+    assert!(
+        exe.is_file(),
+        "the committed py2exe fixture {} is missing; restore it from git",
+        exe.display()
+    );
     let bytes: Vec<u8> = std::fs::read(&exe).expect("read exe");
     let scratch: disrobe_core::scratch::ScratchDir = out_dir("extract");
     let out: PathBuf = scratch.path().to_path_buf();
@@ -143,18 +124,11 @@ fn py2exe_recovers_full_module_set_from_sibling_library_zip() {
 #[test]
 fn py2exe_bundled_pyc_are_real_loadable_bytecode() {
     let exe: PathBuf = sibling_layout_exe();
-    if !exe.is_file() {
-        assert!(
-            std::env::var_os(REQUIRE_LOCAL_CORPUS_VAR).is_none(),
-            "{REQUIRE_LOCAL_CORPUS_VAR} is set, so the local-only py2exe fixture {} must exist",
-            exe.display()
-        );
-        eprintln!(
-            "UNGRADED: the local-only py2exe fixture {} is absent; set {REQUIRE_LOCAL_CORPUS_VAR}=1 to fail instead",
-            exe.display()
-        );
-        return;
-    }
+    assert!(
+        exe.is_file(),
+        "the committed py2exe fixture {} is missing; restore it from git",
+        exe.display()
+    );
     let bytes: Vec<u8> = std::fs::read(&exe).expect("read exe");
     let scratch: disrobe_core::scratch::ScratchDir = out_dir("loadable");
     let out: PathBuf = scratch.path().to_path_buf();
@@ -184,8 +158,8 @@ fn py2exe_bundled_pyc_are_real_loadable_bytecode() {
     }
     assert!(
         loaded >= BANDS.len(),
-        "every bundled band pyc must marshal-load into a code object via a real (non-disrobe-self) \
-         marshal reader; loaded {loaded}, expected at least {}",
+        "every bundled band pyc that py2exe compiled must marshal-load into a code object through \
+         disrobe-py-marshal; loaded {loaded}, expected at least {}",
         BANDS.len()
     );
 }
@@ -193,18 +167,11 @@ fn py2exe_bundled_pyc_are_real_loadable_bytecode() {
 #[test]
 fn py2exe_full_pipeline_extract_recovers_more_than_just_the_script() {
     let exe: PathBuf = sibling_layout_exe();
-    if !exe.is_file() {
-        assert!(
-            std::env::var_os(REQUIRE_LOCAL_CORPUS_VAR).is_none(),
-            "{REQUIRE_LOCAL_CORPUS_VAR} is set, so the local-only py2exe fixture {} must exist",
-            exe.display()
-        );
-        eprintln!(
-            "UNGRADED: the local-only py2exe fixture {} is absent; set {REQUIRE_LOCAL_CORPUS_VAR}=1 to fail instead",
-            exe.display()
-        );
-        return;
-    }
+    assert!(
+        exe.is_file(),
+        "the committed py2exe fixture {} is missing; restore it from git",
+        exe.display()
+    );
     let scratch: disrobe_core::scratch::ScratchDir = out_dir("pipeline");
     let out: PathBuf = scratch.path().to_path_buf();
     let output: PyfreezeOutput = extract(&exe, &out).expect("pyfreeze extract");

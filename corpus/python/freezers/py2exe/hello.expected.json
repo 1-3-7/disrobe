@@ -1,0 +1,119 @@
+{
+  "committed": [
+    "hello.exe",
+    "library.zip"
+  ],
+  "outputs": {
+    "_asyncio.pyd": {
+      "sha256": "1e98ce3eb985896fcfbd4acd82ed81232ef140c4daab0981b54396eeb2106af6",
+      "size": 59392
+    },
+    "_bz2.pyd": {
+      "sha256": "c5c4d33bf27350fae72b0975aef671c9adfda32a33d1d863c5a1c702938ecc0a",
+      "size": 73216
+    },
+    "_ctypes.pyd": {
+      "sha256": "ed64957676ae1996e947e17f4d70817dbf5ed4509115f75e545e8a09c9e75056",
+      "size": 116224
+    },
+    "_decimal.pyd": {
+      "sha256": "53ad603246795dc429c15c08392c603ef87ed56761b93941b277b3b4658035dd",
+      "size": 247296
+    },
+    "_hashlib.pyd": {
+      "sha256": "5b3e2958548fdb6d28f4639dd354662ca5fc52f3c14c7f995d02e303d1b92d55",
+      "size": 54784
+    },
+    "_lzma.pyd": {
+      "sha256": "13f02ae9b0ec6d1c10306394fcabe9b4e13191ca6dc3b1a0a3c3f936200a64f1",
+      "size": 152576
+    },
+    "_multiprocessing.pyd": {
+      "sha256": "21fc0af31a2f5f425fb9f3a6f0994c56b32f95dbba8ab96aae3918a87a03357f",
+      "size": 24064
+    },
+    "_overlapped.pyd": {
+      "sha256": "89286299d53aa809ff0c71d58bc1615eb1bd6a5c47cbba4f3e0e672d55e4da25",
+      "size": 44032
+    },
+    "_queue.pyd": {
+      "sha256": "a59e7e0484be28a59e09586938e0958a8caf8cdfa01e150fa6483e35d911578f",
+      "size": 20480
+    },
+    "_socket.pyd": {
+      "sha256": "7db72ca76da51ed95be03d98d92002d87d9f75a68ded426b644e69ee58f66986",
+      "size": 71680
+    },
+    "_ssl.pyd": {
+      "sha256": "5a67d5147e725f14ba02514691fd5f937db41a5207f944eb10c4125b2f5a858a",
+      "size": 164864
+    },
+    "hello.exe": {
+      "sha256": "171ed483f8caafbcef22f662010d00abfd9af726cc28c586481102aa8315c345",
+      "size": 40448
+    },
+    "libcrypto-3-x64.dll": {
+      "sha256": "cb14261873bf7ab37f8c4d9f97807a498976f7b1b40d7d38190976d231e48e85",
+      "size": 7981568
+    },
+    "libffi-8.dll": {
+      "sha256": "0761840e64a4fe284f123eaa53039b4b3d318cadb05e56848a8224a2a46881e2",
+      "size": 28160
+    },
+    "library.zip": {
+      "sha256": "9257ae46e6a52d245e250c6b3fe7e4746e2e7bdf27fae6697bdaf1d333718db2",
+      "size": 2353370
+    },
+    "libssl-3-x64.dll": {
+      "sha256": "c39010383546a725dfcb1b9c1066a3dd5811367069a97f777ce7507dec4d67d0",
+      "size": 1581568
+    },
+    "python312.dll": {
+      "sha256": "3f11a93d40d186afe4cafca3e6c6c2a283703c504381e7fad7192e157c9da79c",
+      "size": 6969856
+    },
+    "select.pyd": {
+      "sha256": "723ffebda4767ad8672f235cc62d50089429b2fbff880b3d432da962145b6819",
+      "size": 18944
+    },
+    "unicodedata.pyd": {
+      "sha256": "f25ec8812a04f4554a9746441d8e6b574eed19842394eabdd610cd5178778579",
+      "size": 1126400
+    }
+  },
+  "pefile": "2024.8.26",
+  "py2exe": "0.14.2.0",
+  "python": "3.12.13",
+  "pythonscript": {
+    "id": 1,
+    "language": 0,
+    "magic_tag": 2018915346,
+    "marshal_loads": {
+      "code_objects": [
+        {
+          "co_filename": "<bootstrap2>",
+          "co_name": "<module>"
+        },
+        {
+          "co_filename": "boot_common.py",
+          "co_name": "<module>"
+        },
+        {
+          "co_filename": "hello_entry.py",
+          "co_name": "<module>"
+        }
+      ],
+      "python": "3.12",
+      "type": "list"
+    },
+    "optimize": 0,
+    "rva": 53364,
+    "script_data_len": 3480,
+    "script_data_sha256": "9c7b62b5c5164b99bdde299618aa8dc6483207d403cc739d7720fa9aced24717",
+    "sha256": "14e7a11ad0442c210dfd083502f21d93543e0d5eb5e867a13d6e7ef3e272dee6",
+    "size": 3509,
+    "type": "PYTHONSCRIPT",
+    "unbuffered": 0,
+    "zip_archive_name": "library.zip"
+  }
+}

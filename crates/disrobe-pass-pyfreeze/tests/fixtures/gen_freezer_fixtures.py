@@ -33,13 +33,6 @@ def compile_band(name: str) -> bytes:
     return header + body
 
 
-def marshal_body(name: str) -> bytes:
-    src_path: Path = SOURCES / f"{name}.py"
-    src: str = src_path.read_text(encoding="utf-8")
-    code = compile(src, f"{name}.py", "exec")
-    return marshal.dumps(code)
-
-
 def make_zip(entries: list[tuple[str, bytes]], /) -> bytes:
     buf: io.BytesIO = io.BytesIO()
     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED) as zf:
@@ -57,23 +50,6 @@ def make_minimal_pe() -> bytes:
     struct.pack_into("<I", buf, 0x3C, 0x40)
     buf[0x40:0x44] = b"PE\x00\x00"
     return bytes(buf)
-
-
-def make_py2exe_pe(marshalled_code: bytes) -> bytes:
-    PY2EXE_MAGIC_TAG: int = 0x78563412
-    header: bytearray = bytearray(0x80)
-    header[0:2] = b"MZ"
-    struct.pack_into("<I", header, 0x3C, 0x40)
-    header[0x40:0x44] = b"PE\x00\x00"
-    payload: bytes = b"PYTHONSCRIPT"
-    blob: bytearray = bytearray()
-    blob += struct.pack("<I", PY2EXE_MAGIC_TAG)
-    blob += struct.pack("<I", 2)
-    blob += struct.pack("<I", 0)
-    blob += struct.pack("<I", 1)
-    blob += b"app.zip\x00"
-    blob += marshalled_code
-    return bytes(header) + payload + bytes(blob)
 
 
 def make_pex(bands_py: list[tuple[str, str]], pex_info_json: str, /) -> bytes:
@@ -116,26 +92,7 @@ def gen_pex() -> None:
     pex_path.write_bytes(pex_bytes)
 
 
-def gen_py2exe() -> None:
-    out_dir: Path = FREEZERS / "py2exe"
-    extracted_dir: Path = out_dir / "extracted"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    extracted_dir.mkdir(parents=True, exist_ok=True)
-
-    first_band_marshal: bytes = marshal_body(BANDS[0])
-    exe_bytes: bytes = make_py2exe_pe(first_band_marshal)
-    exe_path: Path = out_dir / "hello.exe"
-    exe_path.write_bytes(exe_bytes)
-
-    pyc_entries: list[tuple[str, bytes]] = []
-    for band in BANDS:
-        pyc_entries.append((f"{band}.pyc", compile_band(band)))
-    zip_path: Path = extracted_dir / "library.zip"
-    zip_path.write_bytes(make_zip(pyc_entries))
-
-
 if __name__ == "__main__":
     gen_cxfreeze()
     gen_pex()
-    gen_py2exe()
     print("fixtures generated")
