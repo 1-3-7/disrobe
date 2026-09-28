@@ -1,9 +1,11 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use std::path::{Path, PathBuf};
 
+use boa_engine::vm::RuntimeLimits;
+use boa_engine::{Context, JsError, JsString, JsValue, Source};
 use disrobe_pass_js_deob::v8::{
-    BytenodeCacheBody, CodeSerializerGraph, ConstantPoolEntry, Disassembly, LiftedFunction,
-    NodeVersion, RecoveredBytecodeArray, disassemble, lift_disassembly, lift_disassembly_with_pool,
+    BytenodeCacheBody, CodeSerializerGraph, ConstantPoolEntry, Disassembly, NodeVersion,
+    RecoveredBytecodeArray, disassemble, lift_disassembly, lift_disassembly_with_pool,
     parse_bytenode_full, parse_code_serializer_graph,
 };
 
@@ -457,21 +459,6 @@ fn every_version_top_level_disassembles_to_v8_mnemonic_sequence() {
 }
 
 #[test]
-fn node24_recovered_greet_lifts_to_readable_surface() {
-    let fx: &VersionFixture = &FIXTURES[3];
-    let (_body, graph): (BytenodeCacheBody, CodeSerializerGraph) = load_graph(fx);
-    let greet: &RecoveredBytecodeArray = find_array(&graph, fx.greet_hex);
-    let disasm: Disassembly = disassemble(&greet.bytecode, fx.node);
-    let lifted: LiftedFunction = lift_disassembly(&disasm);
-    let js: String = lifted.render_js("greet");
-    assert!(js.contains("function greet"), "{js}");
-    assert!(
-        js.contains("return") || js.contains("__c"),
-        "lifted greet should expose its body shape: {js}"
-    );
-}
-
-#[test]
 fn opcode_table_byte_assignments_match_v8_print_bytecode_per_version() {
     use disrobe_pass_js_deob::v8::OpcodeTable;
     let node18_22_anchors: [(&str, u8); 6] = [
@@ -554,27 +541,222 @@ fn node24_greet_constant_pool_links_user_identifiers_against_print_bytecode() {
     );
 }
 
+const GREET_V8_CONSTANT_POOL: [&str; 5] = ["hello ", "process", "stdout", "write", "length"];
+
+const GREET_V8_PARAMETER_COUNT: usize = 2;
+
+const GREET_V8_REGISTER_COUNT: usize = 3;
+
+const GREET_LIFT_FROM_V8_PRINT_BYTECODE: [(&[&str], &str); 7] = [
+    (&["LdaConstant [0]", "Star1"], "r1 = \"hello \";"),
+    (
+        &["Ldar a0", "Add r1, [0]", "Star0"],
+        "r0 = \"hello \" + a0;",
+    ),
+    (&["LdaGlobal [1], [1]", "Star2"], "r2 = process;"),
+    (
+        &["GetNamedProperty r2, [2], [3]", "Star2"],
+        "r2 = r2.stdout;",
+    ),
+    (
+        &["GetNamedProperty r2, [3], [5]", "Star1"],
+        "r1 = r2.write;",
+    ),
+    (&["CallProperty1 r1, r2, r0, [7]"], "r1.call(r2, r0);"),
+    (
+        &["GetNamedProperty r0, [4], [9]", "Return"],
+        "return r0.length;",
+    ),
+];
+
+const GREET_LIFT_MUTATIONS: [(&str, &str, &str); 4] = [
+    ("concatenation order", "\"hello \" + a0", "a0 + \"hello \""),
+    ("dropped call", "  r1.call(r2, r0);\n", ""),
+    (
+        "re-evaluated concatenation",
+        "return r0.length;",
+        "return (\"hello \" + a0).length;",
+    ),
+    (
+        "returned register",
+        "return r0.length;",
+        "return r2.length;",
+    ),
+];
+
+const BOA_LOOP_LIMIT: u64 = 100_000;
+const BOA_RECURSION_LIMIT: usize = 256;
+const BOA_STACK_LIMIT: usize = 10_000;
+
+fn lifted_greet(fx: &VersionFixture) -> String {
+    let (_body, graph): (BytenodeCacheBody, CodeSerializerGraph) = load_graph(fx);
+    let greet: &RecoveredBytecodeArray = find_array(&graph, fx.greet_hex);
+    let disasm: Disassembly = disassemble(&greet.bytecode, fx.node);
+    lift_disassembly_with_pool(&disasm, &greet.constant_pool).render_js("greet")
+}
+
+fn authored_greet(fx: &VersionFixture) -> String {
+    let source_name: String = fx.file.replace(".jsc", ".js");
+    let path: PathBuf = jsc_path(fx.dir, &source_name);
+    let source: String = std::fs::read_to_string(&path).unwrap_or_else(|error: std::io::Error| {
+        panic!(
+            "tracked authored source {} is required: {error}",
+            path.display()
+        )
+    });
+    let start: usize = source
+        .find("function greet(")
+        .unwrap_or_else(|| panic!("{} declares greet", path.display()));
+    let length: usize = source[start..]
+        .find("\n}")
+        .unwrap_or_else(|| panic!("{} closes greet at column 0", path.display()));
+    format!("{}\n", &source[start..start + length + 2usize])
+}
+
+fn v8_transliteration_mismatch(lifted: &str) -> Option<String> {
+    let parameters: Vec<String> = (1..GREET_V8_PARAMETER_COUNT)
+        .map(|index: usize| format!("a{}", index - 1usize))
+        .collect();
+    let registers: Vec<String> = (0..GREET_V8_REGISTER_COUNT)
+        .map(|index: usize| format!("r{index}"))
+        .collect();
+    let mut expected: String = format!(
+        "function greet({}) {{\n  let {};\n",
+        parameters.join(", "),
+        registers.join(", ")
+    );
+    for (_v8_lines, statement) in GREET_LIFT_FROM_V8_PRINT_BYTECODE {
+        expected.push_str("  ");
+        expected.push_str(statement);
+        expected.push('\n');
+    }
+    expected.push_str("}\n");
+    (lifted != expected).then(|| format!("--want--\n{expected}--got--\n{lifted}"))
+}
+
+fn greet_behaviour(function_source: &str) -> Result<String, String> {
+    let mut context: Context = Context::default();
+    {
+        let runtime: &mut RuntimeLimits = context.runtime_limits_mut();
+        runtime.set_loop_iteration_limit(BOA_LOOP_LIMIT);
+        runtime.set_recursion_limit(BOA_RECURSION_LIMIT);
+        runtime.set_stack_size_limit(BOA_STACK_LIMIT);
+    }
+    let program: String = format!(
+        "var __writes = [];\n\
+         var process = {{ stdout: {{ write: function (text) {{ __writes.push(String(text)); return true; }} }} }};\n\
+         var __conversions = 0;\n\
+         var __probe = {{ toString: function () {{ __conversions += 1; return \"probe\" + __conversions; }} }};\n\
+         {function_source}\
+         var __returns = [greet(\"world\"), greet(42), greet(__probe), greet()];\n\
+         JSON.stringify({{ returns: __returns, writes: __writes, conversions: __conversions }});"
+    );
+    let value: JsValue = context
+        .eval(Source::from_bytes(program.as_bytes()))
+        .map_err(|error: JsError| format!("{error}"))?;
+    value
+        .as_string()
+        .map(JsString::to_std_string_escaped)
+        .ok_or_else(|| format!("harness returned a non-string: {value:?}"))
+}
+
+fn behaviour_mismatch(lifted: &str, authored: &str) -> Option<String> {
+    let want: String = greet_behaviour(authored)
+        .unwrap_or_else(|error: String| panic!("authored greet must run: {error}\n{authored}"));
+    match greet_behaviour(lifted) {
+        Ok(got) if got == want => None,
+        Ok(got) => Some(format!(
+            "--want--\n{want}\n--got--\n{got}\n--lift--\n{lifted}"
+        )),
+        Err(error) => Some(format!(
+            "lifted greet does not run: {error}\n--lift--\n{lifted}"
+        )),
+    }
+}
+
 #[test]
-fn every_version_greet_lifts_the_parameter_as_v8_names_it() {
+fn greet_lift_reference_is_the_recorded_v8_print_bytecode() {
+    let v8_lines: Vec<&str> = GREET_LIFT_FROM_V8_PRINT_BYTECODE
+        .iter()
+        .flat_map(|(lines, _statement): &(&[&str], &str)| lines.iter().copied())
+        .collect();
+    assert_eq!(
+        v8_lines, GREET_V8_PRINT_BYTECODE,
+        "each expected statement must transliterate consecutive `node --print-bytecode` lines"
+    );
     for fx in &FIXTURES {
         let (_body, graph): (BytenodeCacheBody, CodeSerializerGraph) = load_graph(fx);
         let greet: &RecoveredBytecodeArray = find_array(&graph, fx.greet_hex);
-        let disasm: Disassembly = disassemble(&greet.bytecode, fx.node);
-        let linked: String =
-            lift_disassembly_with_pool(&disasm, &greet.constant_pool).render_js("greet");
-        let concat: Option<&str> = linked
-            .lines()
-            .find(|line: &&str| line.contains("\"hello \"") && line.contains('+'));
-        let Some(concat) = concat else {
+        let pool: Vec<&str> = greet
+            .constant_pool
+            .iter()
+            .filter_map(ConstantPoolEntry::resolved_name)
+            .collect();
+        assert_eq!(
+            pool, GREET_V8_CONSTANT_POOL,
+            "{} greet constant pool must read as `node --print-bytecode` prints it",
+            fx.dir
+        );
+        assert_eq!(
+            usize::from(greet.parameter_count),
+            GREET_V8_PARAMETER_COUNT,
+            "{} greet parameter count, receiver included",
+            fx.dir
+        );
+        assert_eq!(
+            usize::try_from(greet.frame_size).ok(),
+            Some(GREET_V8_REGISTER_COUNT * 8usize),
+            "{} greet frame holds V8's three registers",
+            fx.dir
+        );
+    }
+}
+
+#[test]
+fn every_version_greet_lift_transliterates_v8_print_bytecode() {
+    for fx in &FIXTURES {
+        let lifted: String = lifted_greet(fx);
+        if let Some(mismatch) = v8_transliteration_mismatch(&lifted) {
             panic!(
-                "{} greet must lift the string concatenation: {linked}",
+                "{} greet lift must follow `node --print-bytecode`:\n{mismatch}",
                 fx.dir
             );
-        };
+        }
+    }
+}
+
+#[test]
+fn every_version_greet_lift_behaves_as_the_authored_greet() {
+    for fx in &FIXTURES {
+        let lifted: String = lifted_greet(fx);
+        let authored: String = authored_greet(fx);
+        if let Some(mismatch) = behaviour_mismatch(&lifted, &authored) {
+            panic!(
+                "{} greet lift must write and return what {} does:\n{mismatch}",
+                fx.dir,
+                fx.file.replace(".jsc", ".js")
+            );
+        }
+    }
+}
+
+#[test]
+fn greet_lift_graders_reject_mutated_lifts() {
+    let fx: &VersionFixture = &FIXTURES[0];
+    let lifted: String = lifted_greet(fx);
+    let authored: String = authored_greet(fx);
+    assert_eq!(v8_transliteration_mismatch(&lifted), None);
+    assert_eq!(behaviour_mismatch(&lifted, &authored), None);
+    for (label, from, to) in GREET_LIFT_MUTATIONS {
+        let mutated: String = lifted.replacen(from, to, 1usize);
+        assert_ne!(mutated, lifted, "mutation `{label}` must change the lift");
         assert!(
-            concat.contains("a0") && !concat.contains("r249") && !concat.contains("r3"),
-            "{} greet must read the parameter as V8's a0: {concat}",
-            fx.dir
+            v8_transliteration_mismatch(&mutated).is_some(),
+            "the transliteration grader must reject the {label} mutation:\n{mutated}"
+        );
+        assert!(
+            behaviour_mismatch(&mutated, &authored).is_some(),
+            "the behaviour grader must reject the {label} mutation:\n{mutated}"
         );
     }
 }

@@ -1,11 +1,17 @@
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
+use super::bytecode_opcodes::{AccumulatorUse, OperandKind};
 use super::bytenode::NodeVersion;
 use super::code_serializer::ConstantPoolEntry;
 use super::flat_bytecode_disasm::{
-    DecodedInstruction, Disassembly, V8Register, intrinsic_name, register_file_start,
+    DecodedInstruction, DecodedOperand, Disassembly, V8Register, intrinsic_name,
+    register_file_start,
 };
+
+const ACCUMULATOR_TEMP: &str = "__acc";
+const REGISTER_RANGE_SCAN_LIMIT: i64 = 256;
+const MAX_RENDERED_ARGUMENTS: i64 = 65_534;
 
 fn push_format(out: &mut String, args: std::fmt::Arguments<'_>) {
     let result: std::result::Result<(), std::fmt::Error> = std::fmt::write(out, args);
@@ -34,6 +40,8 @@ pub struct LiftedLine {
 pub struct LiftedFunction {
     pub node_version: NodeVersion,
     pub v8_version_label: &'static str,
+    pub parameter_count: usize,
+    pub locals: Vec<String>,
     pub lines: Vec<LiftedLine>,
     pub reversible_count: usize,
     pub lossy_count: usize,
@@ -56,7 +64,23 @@ impl LiftedFunction {
     #[must_use]
     pub fn render_js(&self, function_name: &str) -> String {
         let mut out: String = String::with_capacity(self.lines.len() * 32usize);
-        push_format(&mut out, format_args!("function {function_name}() {{\n"));
+        let parameters: Vec<String> = (0..self.parameter_count)
+            .map(|index: usize| format!("a{index}"))
+            .collect();
+        push_format(
+            &mut out,
+            format_args!("function {function_name}({}) {{\n", parameters.join(", ")),
+        );
+        if !self.locals.is_empty() {
+            push_format(
+                &mut out,
+                format_args!(
+                    "  let {};
+",
+                    self.locals.join(", ")
+                ),
+            );
+        }
         let mut emitted: usize = 0usize;
         for line in &self.lines {
             if line.js_surface.is_empty() {
@@ -89,16 +113,37 @@ pub fn lift_disassembly_with_pool(
     constant_pool: &[ConstantPoolEntry],
 ) -> LiftedFunction {
     let mut lines: Vec<LiftedLine> = Vec::with_capacity(disasm.instructions.len());
-    let mut acc_state: String = "undefined".to_owned();
-    let mut reg_state: Registers = Registers {
-        values: BTreeMap::new(),
+    let mut acc: Accumulator = Accumulator {
+        expr: "undefined".to_owned(),
+        shape: ValueShape::Literal,
+        written: false,
+        materialized: false,
+    };
+    let mut regs: Registers = Registers {
+        literals: BTreeMap::new(),
+        locals: BTreeSet::new(),
         register_file_start: register_file_start(disasm.node_version),
     };
     let mut reversible: usize = 0usize;
     let mut lossy: usize = 0usize;
     let mut opaque: usize = 0usize;
-    for ins in &disasm.instructions {
-        let line: LiftedLine = lift_instruction(ins, constant_pool, &mut acc_state, &mut reg_state);
+    for (position, ins) in disasm.instructions.iter().enumerate() {
+        let next: Option<&DecodedInstruction> = disasm.instructions.get(position.saturating_add(1));
+        let (mut prelude, spent): (Vec<String>, bool) =
+            prepare_accumulator(ins, next, &mut acc, &mut regs);
+        let prior_pending: Option<String> = (acc.shape == ValueShape::Pending
+            && reads_accumulator(ins.accumulator_use)
+            && replaces_accumulator(ins.accumulator_use))
+        .then(|| acc.expr.clone());
+        acc.written = false;
+        let mut line: LiftedLine = lift_instruction(ins, constant_pool, &mut acc, &mut regs);
+        settle_accumulator(ins, &mut acc, prior_pending, spent, &mut prelude);
+        if !prelude.is_empty() {
+            if !line.js_surface.is_empty() {
+                prelude.push(std::mem::take(&mut line.js_surface));
+            }
+            line.js_surface = prelude.join("\n");
+        }
         match line.fidelity {
             LiftFidelity::Reversible => reversible = reversible.saturating_add(1),
             LiftFidelity::Lossy => lossy = lossy.saturating_add(1),
@@ -106,9 +151,19 @@ pub fn lift_disassembly_with_pool(
         }
         lines.push(line);
     }
+    let mut locals: Vec<String> = regs
+        .locals
+        .iter()
+        .map(|index: &i64| format!("r{index}"))
+        .collect();
+    if acc.materialized {
+        locals.push(ACCUMULATOR_TEMP.to_owned());
+    }
     LiftedFunction {
         node_version: disasm.node_version,
         v8_version_label: disasm.v8_version_label,
+        parameter_count: referenced_parameter_count(disasm),
+        locals,
         lines,
         reversible_count: reversible,
         lossy_count: lossy,
@@ -116,22 +171,315 @@ pub fn lift_disassembly_with_pool(
     }
 }
 
+fn referenced_parameter_count(disasm: &Disassembly) -> usize {
+    disasm
+        .instructions
+        .iter()
+        .flat_map(|ins: &DecodedInstruction| ins.operands.iter())
+        .filter_map(|operand: &DecodedOperand| match operand.register {
+            Some(V8Register::Parameter(index)) => Some(index.saturating_add(1)),
+            _ => None,
+        })
+        .max()
+        .map_or(0usize, |count: i64| {
+            usize::try_from(count.min(MAX_RENDERED_ARGUMENTS)).unwrap_or(0usize)
+        })
+}
+
+const fn reads_accumulator(usage: AccumulatorUse) -> bool {
+    matches!(
+        usage,
+        AccumulatorUse::Read
+            | AccumulatorUse::ReadWrite
+            | AccumulatorUse::ReadAndClobber
+            | AccumulatorUse::ReadWriteShortStar
+    )
+}
+
+const fn replaces_accumulator(usage: AccumulatorUse) -> bool {
+    matches!(
+        usage,
+        AccumulatorUse::Write
+            | AccumulatorUse::ReadWrite
+            | AccumulatorUse::Clobber
+            | AccumulatorUse::ReadAndClobber
+    )
+}
+
+const fn overwrites_unread(usage: AccumulatorUse) -> bool {
+    !reads_accumulator(usage) && replaces_accumulator(usage)
+}
+
+fn is_star(mnemonic: &str) -> bool {
+    mnemonic
+        .strip_prefix("Star")
+        .is_some_and(|suffix: &str| suffix.bytes().all(|byte: u8| byte.is_ascii_digit()))
+}
+
+fn is_terminal(mnemonic: &str) -> bool {
+    matches!(mnemonic, "Return" | "Throw" | "ReThrow")
+}
+
+fn embeds_accumulator_in_statement(mnemonic: &str) -> bool {
+    matches!(
+        mnemonic,
+        "StaGlobal"
+            | "StaContextSlot"
+            | "StaScriptContextSlot"
+            | "StaCurrentContextSlot"
+            | "StaCurrentScriptContextSlot"
+            | "StaModuleVariable"
+            | "StaLookupSlot"
+            | "SetNamedProperty"
+            | "DefineNamedOwnProperty"
+            | "SetKeyedProperty"
+            | "DefineKeyedOwnProperty"
+            | "DefineKeyedOwnPropertyInLiteral"
+            | "StaInArrayLiteral"
+            | "ToObject"
+            | "PushContext"
+            | "ThrowReferenceErrorIfHole"
+            | "SuspendGenerator"
+    )
+}
+
+fn written_register_ranges(ins: &DecodedInstruction) -> Vec<(i64, i64)> {
+    let mut ranges: Vec<(i64, i64)> = Vec::new();
+    for (position, operand) in ins.operands.iter().enumerate() {
+        let count: i64 = match operand.kind {
+            OperandKind::RegOut | OperandKind::RegInOut => 1i64,
+            OperandKind::RegOutPair => 2i64,
+            OperandKind::RegOutTriple => 3i64,
+            OperandKind::RegOutList => ins
+                .operands
+                .get(position.saturating_add(1))
+                .filter(|next: &&DecodedOperand| next.kind == OperandKind::RegCount)
+                .map_or(0i64, |next: &DecodedOperand| {
+                    i64::try_from(next.unsigned_value).unwrap_or(i64::MAX)
+                }),
+            _ => 0i64,
+        };
+        if count > 0 {
+            ranges.push((operand.signed_value, count));
+        }
+    }
+    ranges
+}
+
+fn prepare_accumulator(
+    ins: &DecodedInstruction,
+    next: Option<&DecodedInstruction>,
+    acc: &mut Accumulator,
+    regs: &mut Registers,
+) -> (Vec<String>, bool) {
+    let mut prelude: Vec<String> = Vec::new();
+    let usage: AccumulatorUse = ins.accumulator_use;
+    let star: bool = is_star(ins.mnemonic);
+    if !star {
+        let ranges: Vec<(i64, i64)> = written_register_ranges(ins);
+        let tracks_registers: bool = matches!(acc.shape, ValueShape::Name | ValueShape::Pending);
+        let stale: bool = tracks_registers
+            && ranges.iter().any(|&(first, count): &(i64, i64)| {
+                count > REGISTER_RANGE_SCAN_LIMIT
+                    || (0..count).any(|step: i64| {
+                        mentions(&acc.expr, &regs.label(first.saturating_add(step)))
+                    })
+            });
+        if stale {
+            prelude.push(acc.materialize());
+        }
+        for (first, count) in ranges {
+            regs.clobber(first, count);
+        }
+    }
+    let mut spent: bool = false;
+    if acc.shape == ValueShape::Pending {
+        if overwrites_unread(usage) {
+            prelude.push(expression_statement(&acc.expr));
+            acc.shape = ValueShape::Opaque;
+        } else if reads_accumulator(usage)
+            && !replaces_accumulator(usage)
+            && !star
+            && !is_terminal(ins.mnemonic)
+        {
+            let dies: bool = next.is_some_and(|following: &DecodedInstruction| {
+                overwrites_unread(following.accumulator_use)
+            });
+            if !dies {
+                prelude.push(acc.materialize());
+            } else if embeds_accumulator_in_statement(ins.mnemonic) {
+                spent = true;
+            } else {
+                prelude.push(expression_statement(&acc.expr));
+                acc.shape = ValueShape::Opaque;
+            }
+        }
+    }
+    (prelude, spent)
+}
+
+fn settle_accumulator(
+    ins: &DecodedInstruction,
+    acc: &mut Accumulator,
+    prior_pending: Option<String>,
+    spent: bool,
+    prelude: &mut Vec<String>,
+) {
+    if spent || is_terminal(ins.mnemonic) {
+        acc.shape = ValueShape::Opaque;
+        return;
+    }
+    if !replaces_accumulator(ins.accumulator_use) {
+        return;
+    }
+    if let Some(prior) = prior_pending
+        && !(acc.written && acc.expr.contains(prior.as_str()))
+    {
+        prelude.push(expression_statement(&prior));
+    }
+    if !acc.written {
+        acc.assign(format!("__unlifted_{}", ins.mnemonic), ValueShape::Name);
+    }
+}
+
+fn expression_statement(expr: &str) -> String {
+    if expr.starts_with('{') {
+        format!("({expr});")
+    } else {
+        format!("{expr};")
+    }
+}
+
+fn mentions(expr: &str, name: &str) -> bool {
+    expr.match_indices(name).any(|(at, _): (usize, &str)| {
+        let before: Option<char> = expr[..at].chars().next_back();
+        let after: Option<char> = expr[at.saturating_add(name.len())..].chars().next();
+        !before.is_some_and(is_identifier_char) && !after.is_some_and(is_identifier_char)
+    })
+}
+
+const fn is_identifier_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_' || c == '$'
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ValueShape {
+    Literal,
+    Name,
+    Pending,
+    Opaque,
+}
+
+struct Accumulator {
+    expr: String,
+    shape: ValueShape,
+    written: bool,
+    materialized: bool,
+}
+
+impl Accumulator {
+    fn assign(&mut self, expr: String, shape: ValueShape) {
+        self.expr = expr;
+        self.shape = shape;
+        self.written = true;
+    }
+
+    fn set(&mut self, expr: String) {
+        self.assign(expr, ValueShape::Pending);
+    }
+
+    fn set_literal(&mut self, expr: String) {
+        self.assign(expr, ValueShape::Literal);
+    }
+
+    fn set_name(&mut self, expr: String) {
+        self.assign(expr, ValueShape::Name);
+    }
+
+    fn operand(&self) -> String {
+        operand_text(&self.expr, self.shape)
+    }
+
+    fn materialize(&mut self) -> String {
+        let statement: String = format!("{ACCUMULATOR_TEMP} = {};", self.expr);
+        self.materialized = true;
+        ACCUMULATOR_TEMP.clone_into(&mut self.expr);
+        self.shape = ValueShape::Name;
+        statement
+    }
+}
+
+impl std::fmt::Display for Accumulator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.expr)
+    }
+}
+
+fn operand_text(expr: &str, shape: ValueShape) -> String {
+    match shape {
+        ValueShape::Name => expr.to_owned(),
+        ValueShape::Literal if !expr.starts_with('-') => expr.to_owned(),
+        ValueShape::Pending if is_identifier(expr) => expr.to_owned(),
+        ValueShape::Literal | ValueShape::Pending | ValueShape::Opaque => format!("({expr})"),
+    }
+}
+
 struct Registers {
-    values: BTreeMap<i64, String>,
+    literals: BTreeMap<i64, String>,
+    locals: BTreeSet<i64>,
     register_file_start: i64,
 }
 
 impl Registers {
-    fn get(&self, index: i64) -> Option<&String> {
-        self.values.get(&index)
-    }
-
-    fn insert(&mut self, index: i64, value: String) {
-        self.values.insert(index, value);
-    }
-
-    fn name(&self, index: i64) -> String {
+    fn label(&self, index: i64) -> String {
         V8Register::from_index(index, self.register_file_start).to_string()
+    }
+
+    fn name(&mut self, index: i64) -> String {
+        let register: V8Register = V8Register::from_index(index, self.register_file_start);
+        if let V8Register::Local(local) = register {
+            self.locals.insert(local);
+        }
+        register.to_string()
+    }
+
+    fn read(&mut self, index: i64) -> String {
+        if let Some(literal) = self.literals.get(&index) {
+            return literal.clone();
+        }
+        self.name(index)
+    }
+
+    fn operand(&mut self, index: i64) -> String {
+        if let Some(literal) = self.literals.get(&index) {
+            return operand_text(literal, ValueShape::Literal);
+        }
+        self.name(index)
+    }
+
+    fn receiver(&mut self, index: i64) -> String {
+        let text: String = self.operand(index);
+        if text.starts_with(|c: char| c.is_ascii_digit()) {
+            format!("({text})")
+        } else {
+            text
+        }
+    }
+
+    fn store(&mut self, index: i64, value: &str, literal: bool) -> String {
+        if literal {
+            self.literals.insert(index, value.to_owned());
+        } else {
+            self.literals.remove(&index);
+        }
+        let name: String = self.name(index);
+        format!("{name} = {value};")
+    }
+
+    fn clobber(&mut self, first: i64, count: i64) {
+        let end: i64 = first.saturating_add(count);
+        self.literals
+            .retain(|index: &i64, _value: &mut String| *index < first || *index >= end);
     }
 }
 
@@ -198,7 +546,7 @@ fn is_identifier(name: &str) -> bool {
     if !(first.is_ascii_alphabetic() || first == '_' || first == '$') {
         return false;
     }
-    chars.all(|c: char| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+    chars.all(is_identifier_char)
 }
 
 fn ctx_slot_name(depth: u64, slot: u64) -> String {
@@ -215,10 +563,6 @@ fn module_var_name(cell_index: i64) -> String {
     } else {
         format!("__export{cell_index}")
     }
-}
-
-fn reg_expr(regs: &Registers, idx: i64) -> String {
-    regs.get(idx).cloned().unwrap_or_else(|| regs.name(idx))
 }
 
 const fn type_of_literal(flag: u64) -> &'static str {
@@ -263,7 +607,7 @@ fn decode_regexp_flags(bits: u64) -> String {
     s
 }
 
-fn call_arg_list(regs: &Registers, first: i64, count: i64, skip_receiver: bool) -> String {
+fn call_arg_list(regs: &mut Registers, first: i64, count: i64, skip_receiver: bool) -> String {
     let start: i64 = if skip_receiver {
         first.saturating_add(1)
     } else {
@@ -274,11 +618,14 @@ fn call_arg_list(regs: &Registers, first: i64, count: i64, skip_receiver: bool) 
     } else {
         count
     };
+    if effective > MAX_RENDERED_ARGUMENTS {
+        return format!("/* {effective} registers from {} */", regs.label(start));
+    }
     let mut parts: Vec<String> = Vec::new();
     let mut taken: i64 = 0i64;
     while taken < effective {
         let reg: i64 = start.saturating_add(taken);
-        parts.push(reg_expr(regs, reg));
+        parts.push(regs.read(reg));
         taken = taken.saturating_add(1);
     }
     parts.join(", ")
@@ -288,48 +635,41 @@ fn call_arg_list(regs: &Registers, first: i64, count: i64, skip_receiver: bool) 
 fn lift_instruction(
     ins: &DecodedInstruction,
     pool: &[ConstantPoolEntry],
-    acc: &mut String,
+    acc: &mut Accumulator,
     regs: &mut Registers,
 ) -> LiftedLine {
     let mn: &'static str = ins.mnemonic;
     let mut fidelity: LiftFidelity = LiftFidelity::Reversible;
     let mut surface: String = String::new();
     let mut ir_comment: Option<String> = None;
+    let acc_operand: String = acc.operand();
     match mn {
-        "LdaZero" => {
-            "0".clone_into(acc);
-        }
-        "LdaUndefined" => {
-            "undefined".clone_into(acc);
-        }
-        "LdaNull" => {
-            "null".clone_into(acc);
-        }
-        "LdaTrue" => {
-            "true".clone_into(acc);
-        }
-        "LdaFalse" => {
-            "false".clone_into(acc);
-        }
+        "LdaZero" => acc.set_literal("0".to_owned()),
+        "LdaUndefined" => acc.set_literal("undefined".to_owned()),
+        "LdaNull" => acc.set_literal("null".to_owned()),
+        "LdaTrue" => acc.set_literal("true".to_owned()),
+        "LdaFalse" => acc.set_literal("false".to_owned()),
         "LdaTheHole" => {
-            "/* hole */ undefined".clone_into(acc);
+            acc.set_literal("/* hole */ undefined".to_owned());
             fidelity = LiftFidelity::Lossy;
             ir_comment = Some("V8 hole sentinel collapses to undefined at JS surface".to_owned());
         }
         "LdaSmi" => {
             if let Some(v) = ins.operands.first() {
-                *acc = format!("{}", v.signed_value);
+                acc.set_literal(v.signed_value.to_string());
             }
         }
         "LdaConstant" => {
             if let Some(v) = ins.operands.first() {
-                *acc = const_literal(pool, v.unsigned_value);
+                acc.set_literal(const_literal(pool, v.unsigned_value));
             }
         }
         "Ldar" => {
             if let Some(v) = ins.operands.first() {
-                let name: String = regs.name(v.signed_value);
-                *acc = regs.get(v.signed_value).cloned().unwrap_or(name);
+                match regs.literals.get(&v.signed_value) {
+                    Some(literal) => acc.set_literal(literal.clone()),
+                    None => acc.set_name(regs.name(v.signed_value)),
+                }
             }
         }
         "Star" | "Star0" | "Star1" | "Star2" | "Star3" | "Star4" | "Star5" | "Star6" | "Star7"
@@ -342,33 +682,33 @@ fn lift_instruction(
                 },
                 |v| v.signed_value,
             );
-            regs.insert(target, acc.clone());
-            surface = format!("let {} = {};", regs.name(target), acc);
+            let literal: bool = acc.shape == ValueShape::Literal;
+            surface = regs.store(target, &acc.expr, literal);
+            if !literal {
+                acc.set_name(regs.name(target));
+            }
         }
         "Mov" => {
             if ins.operands.len() >= 2 {
                 let src_idx: i64 = ins.operands[0].signed_value;
                 let dst_idx: i64 = ins.operands[1].signed_value;
-                let src_expr: String = regs
-                    .get(src_idx)
-                    .cloned()
-                    .unwrap_or_else(|| regs.name(src_idx));
-                regs.insert(dst_idx, src_expr.clone());
-                surface = format!("let {} = {};", regs.name(dst_idx), src_expr);
+                let literal: bool = regs.literals.contains_key(&src_idx);
+                let source: String = regs.read(src_idx);
+                surface = regs.store(dst_idx, &source, literal);
             }
         }
-        "Add" => binary(acc, regs, ins, "+", &mut surface),
-        "Sub" => binary(acc, regs, ins, "-", &mut surface),
-        "Mul" => binary(acc, regs, ins, "*", &mut surface),
-        "Div" => binary(acc, regs, ins, "/", &mut surface),
-        "Mod" => binary(acc, regs, ins, "%", &mut surface),
-        "Exp" => binary(acc, regs, ins, "**", &mut surface),
-        "BitwiseOr" => binary(acc, regs, ins, "|", &mut surface),
-        "BitwiseXor" => binary(acc, regs, ins, "^", &mut surface),
-        "BitwiseAnd" => binary(acc, regs, ins, "&", &mut surface),
-        "ShiftLeft" => binary(acc, regs, ins, "<<", &mut surface),
-        "ShiftRight" => binary(acc, regs, ins, ">>", &mut surface),
-        "ShiftRightLogical" => binary(acc, regs, ins, ">>>", &mut surface),
+        "Add" => binary(acc, regs, ins, "+"),
+        "Sub" => binary(acc, regs, ins, "-"),
+        "Mul" => binary(acc, regs, ins, "*"),
+        "Div" => binary(acc, regs, ins, "/"),
+        "Mod" => binary(acc, regs, ins, "%"),
+        "Exp" => binary(acc, regs, ins, "**"),
+        "BitwiseOr" => binary(acc, regs, ins, "|"),
+        "BitwiseXor" => binary(acc, regs, ins, "^"),
+        "BitwiseAnd" => binary(acc, regs, ins, "&"),
+        "ShiftLeft" => binary(acc, regs, ins, "<<"),
+        "ShiftRight" => binary(acc, regs, ins, ">>"),
+        "ShiftRightLogical" => binary(acc, regs, ins, ">>>"),
         "AddSmi" => binary_smi(acc, ins, "+"),
         "SubSmi" => binary_smi(acc, ins, "-"),
         "MulSmi" => binary_smi(acc, ins, "*"),
@@ -381,216 +721,133 @@ fn lift_instruction(
         "ShiftLeftSmi" => binary_smi(acc, ins, "<<"),
         "ShiftRightSmi" => binary_smi(acc, ins, ">>"),
         "ShiftRightLogicalSmi" => binary_smi(acc, ins, ">>>"),
-        "Inc" => {
-            *acc = format!("({acc}) + 1");
-        }
-        "Dec" => {
-            *acc = format!("({acc}) - 1");
-        }
-        "Negate" => {
-            *acc = format!("-({acc})");
-        }
-        "BitwiseNot" => {
-            *acc = format!("~({acc})");
-        }
-        "LogicalNot" | "ToBooleanLogicalNot" => {
-            *acc = format!("!({acc})");
-        }
-        "TypeOf" => {
-            *acc = format!("typeof ({acc})");
-        }
-        "ToBoolean" => {
-            *acc = format!("Boolean({acc})");
-        }
-        "ToString" => {
-            *acc = format!("String({acc})");
-        }
-        "ToNumber" => {
-            *acc = format!("Number({acc})");
-        }
+        "Inc" => acc.set(format!("{acc_operand} + 1")),
+        "Dec" => acc.set(format!("{acc_operand} - 1")),
+        "Negate" => acc.set(format!("-{acc_operand}")),
+        "BitwiseNot" => acc.set(format!("~{acc_operand}")),
+        "LogicalNot" | "ToBooleanLogicalNot" => acc.set(format!("!{acc_operand}")),
+        "TypeOf" => acc.set(format!("typeof {acc_operand}")),
+        "ToBoolean" => acc.set(format!("Boolean({acc})")),
+        "ToString" => acc.set(format!("String({acc})")),
+        "ToNumber" => acc.set(format!("Number({acc})")),
         "ToNumeric" => {
-            *acc = format!("Number({acc})");
+            acc.set(format!("Number({acc})"));
             fidelity = LiftFidelity::Lossy;
             ir_comment = Some("ToNumeric covers BigInt+Number; surface uses Number".to_owned());
         }
         "ToName" => {
-            *acc = format!("String({acc})");
+            acc.set(format!("String({acc})"));
             fidelity = LiftFidelity::Lossy;
         }
         "ToObject" => {
             if let Some(v) = ins.operands.first() {
-                surface = format!("let {} = Object({});", regs.name(v.signed_value), acc);
-                regs.insert(v.signed_value, format!("Object({acc})"));
+                surface = regs.store(v.signed_value, &format!("Object({acc})"), false);
             }
         }
-        "TestEqual" => test_binary(acc, regs, ins, "==", &mut surface),
-        "TestEqualStrict" => test_binary(acc, regs, ins, "===", &mut surface),
-        "TestLessThan" => test_binary(acc, regs, ins, "<", &mut surface),
-        "TestGreaterThan" => test_binary(acc, regs, ins, ">", &mut surface),
-        "TestLessThanOrEqual" => test_binary(acc, regs, ins, "<=", &mut surface),
-        "TestGreaterThanOrEqual" => test_binary(acc, regs, ins, ">=", &mut surface),
-        "TestInstanceOf" => test_binary(acc, regs, ins, "instanceof", &mut surface),
-        "TestIn" => test_binary(acc, regs, ins, "in", &mut surface),
-        "TestNull" => {
-            *acc = format!("({acc}) === null");
-        }
-        "TestUndefined" => {
-            *acc = format!("({acc}) === undefined");
-        }
+        "TestEqual" => binary(acc, regs, ins, "=="),
+        "TestEqualStrict" => binary(acc, regs, ins, "==="),
+        "TestLessThan" => binary(acc, regs, ins, "<"),
+        "TestGreaterThan" => binary(acc, regs, ins, ">"),
+        "TestLessThanOrEqual" => binary(acc, regs, ins, "<="),
+        "TestGreaterThanOrEqual" => binary(acc, regs, ins, ">="),
+        "TestInstanceOf" => binary(acc, regs, ins, "instanceof"),
+        "TestIn" => binary(acc, regs, ins, "in"),
+        "TestNull" => acc.set(format!("{acc_operand} === null")),
+        "TestUndefined" => acc.set(format!("{acc_operand} === undefined")),
         "TestReferenceEqual" => {
             if let Some(r) = ins.operands.first() {
-                let other: String = regs
-                    .get(r.signed_value)
-                    .cloned()
-                    .unwrap_or_else(|| regs.name(r.signed_value));
-                *acc = format!("({acc}) === ({other})");
+                let other: String = regs.operand(r.signed_value);
+                acc.set(format!("{acc_operand} === {other}"));
             }
         }
         "GetNamedProperty" => {
             if ins.operands.len() >= 2 {
-                let recv_idx: i64 = ins.operands[0].signed_value;
+                let recv: String = regs.receiver(ins.operands[0].signed_value);
                 let name_idx: u64 = ins.operands[1].unsigned_value;
-                let recv: String = regs
-                    .get(recv_idx)
-                    .cloned()
-                    .unwrap_or_else(|| regs.name(recv_idx));
-                *acc = property_access(pool, &recv, name_idx);
+                acc.set(property_access(pool, &recv, name_idx));
             }
         }
-        "GetKeyedProperty" => {
+        "GetKeyedProperty" | "GetEnumeratedKeyedProperty" => {
             if let Some(r) = ins.operands.first() {
-                let recv: String = regs
-                    .get(r.signed_value)
-                    .cloned()
-                    .unwrap_or_else(|| regs.name(r.signed_value));
-                *acc = format!("{recv}[{acc}]");
+                let recv: String = regs.receiver(r.signed_value);
+                acc.set(format!("{recv}[{acc}]"));
             }
         }
         "SetNamedProperty" | "DefineNamedOwnProperty" => {
             if ins.operands.len() >= 2 {
-                let recv_idx: i64 = ins.operands[0].signed_value;
+                let recv: String = regs.receiver(ins.operands[0].signed_value);
                 let name_idx: u64 = ins.operands[1].unsigned_value;
-                let recv: String = regs
-                    .get(recv_idx)
-                    .cloned()
-                    .unwrap_or_else(|| regs.name(recv_idx));
                 surface = format!("{recv}{} = {acc};", property_name_target(pool, name_idx));
             }
         }
-        "SetKeyedProperty" => {
+        "SetKeyedProperty"
+        | "DefineKeyedOwnProperty"
+        | "DefineKeyedOwnPropertyInLiteral"
+        | "StaInArrayLiteral" => {
             if ins.operands.len() >= 2 {
-                let recv_idx: i64 = ins.operands[0].signed_value;
-                let key_idx: i64 = ins.operands[1].signed_value;
-                let recv: String = regs
-                    .get(recv_idx)
-                    .cloned()
-                    .unwrap_or_else(|| regs.name(recv_idx));
-                let key: String = regs
-                    .get(key_idx)
-                    .cloned()
-                    .unwrap_or_else(|| regs.name(key_idx));
+                let recv: String = regs.receiver(ins.operands[0].signed_value);
+                let key: String = regs.read(ins.operands[1].signed_value);
                 surface = format!("{recv}[{key}] = {acc};");
             }
         }
         "CallProperty0" => {
             if ins.operands.len() >= 2 {
-                let fn_idx: i64 = ins.operands[0].signed_value;
-                let recv_idx: i64 = ins.operands[1].signed_value;
-                let f: String = regs
-                    .get(fn_idx)
-                    .cloned()
-                    .unwrap_or_else(|| regs.name(fn_idx));
-                let r: String = regs
-                    .get(recv_idx)
-                    .cloned()
-                    .unwrap_or_else(|| regs.name(recv_idx));
-                *acc = format!("{f}.call({r})");
+                let f: String = regs.receiver(ins.operands[0].signed_value);
+                let r: String = regs.read(ins.operands[1].signed_value);
+                acc.set(format!("{f}.call({r})"));
             }
         }
         "CallProperty1" => {
             if ins.operands.len() >= 3 {
-                let fn_idx: i64 = ins.operands[0].signed_value;
-                let recv_idx: i64 = ins.operands[1].signed_value;
-                let a0: i64 = ins.operands[2].signed_value;
-                let f: String = regs
-                    .get(fn_idx)
-                    .cloned()
-                    .unwrap_or_else(|| regs.name(fn_idx));
-                let r: String = regs
-                    .get(recv_idx)
-                    .cloned()
-                    .unwrap_or_else(|| regs.name(recv_idx));
-                let arg: String = regs.get(a0).cloned().unwrap_or_else(|| regs.name(a0));
-                *acc = format!("{f}.call({r}, {arg})");
+                let f: String = regs.receiver(ins.operands[0].signed_value);
+                let r: String = regs.read(ins.operands[1].signed_value);
+                let arg: String = regs.read(ins.operands[2].signed_value);
+                acc.set(format!("{f}.call({r}, {arg})"));
             }
         }
         "CallProperty2" => {
             if ins.operands.len() >= 4 {
-                let fn_idx: i64 = ins.operands[0].signed_value;
-                let recv_idx: i64 = ins.operands[1].signed_value;
-                let a0: i64 = ins.operands[2].signed_value;
-                let a1: i64 = ins.operands[3].signed_value;
-                let f: String = regs
-                    .get(fn_idx)
-                    .cloned()
-                    .unwrap_or_else(|| regs.name(fn_idx));
-                let r: String = regs
-                    .get(recv_idx)
-                    .cloned()
-                    .unwrap_or_else(|| regs.name(recv_idx));
-                let arg0: String = regs.get(a0).cloned().unwrap_or_else(|| regs.name(a0));
-                let arg1: String = regs.get(a1).cloned().unwrap_or_else(|| regs.name(a1));
-                *acc = format!("{f}.call({r}, {arg0}, {arg1})");
+                let f: String = regs.receiver(ins.operands[0].signed_value);
+                let r: String = regs.read(ins.operands[1].signed_value);
+                let arg0: String = regs.read(ins.operands[2].signed_value);
+                let arg1: String = regs.read(ins.operands[3].signed_value);
+                acc.set(format!("{f}.call({r}, {arg0}, {arg1})"));
             }
         }
         "CallUndefinedReceiver0" => {
             if let Some(r) = ins.operands.first() {
-                let f: String = regs
-                    .get(r.signed_value)
-                    .cloned()
-                    .unwrap_or_else(|| regs.name(r.signed_value));
-                *acc = format!("{f}()");
+                let f: String = regs.receiver(r.signed_value);
+                acc.set(format!("{f}()"));
             }
         }
         "CallUndefinedReceiver1" => {
             if ins.operands.len() >= 2 {
-                let fn_idx: i64 = ins.operands[0].signed_value;
-                let a0: i64 = ins.operands[1].signed_value;
-                let f: String = regs
-                    .get(fn_idx)
-                    .cloned()
-                    .unwrap_or_else(|| regs.name(fn_idx));
-                let arg0: String = regs.get(a0).cloned().unwrap_or_else(|| regs.name(a0));
-                *acc = format!("{f}({arg0})");
+                let f: String = regs.receiver(ins.operands[0].signed_value);
+                let arg0: String = regs.read(ins.operands[1].signed_value);
+                acc.set(format!("{f}({arg0})"));
             }
         }
         "CallUndefinedReceiver2" => {
             if ins.operands.len() >= 3 {
-                let fn_idx: i64 = ins.operands[0].signed_value;
-                let a0: i64 = ins.operands[1].signed_value;
-                let a1: i64 = ins.operands[2].signed_value;
-                let f: String = regs
-                    .get(fn_idx)
-                    .cloned()
-                    .unwrap_or_else(|| regs.name(fn_idx));
-                let arg0: String = regs.get(a0).cloned().unwrap_or_else(|| regs.name(a0));
-                let arg1: String = regs.get(a1).cloned().unwrap_or_else(|| regs.name(a1));
-                *acc = format!("{f}({arg0}, {arg1})");
+                let f: String = regs.receiver(ins.operands[0].signed_value);
+                let arg0: String = regs.read(ins.operands[1].signed_value);
+                let arg1: String = regs.read(ins.operands[2].signed_value);
+                acc.set(format!("{f}({arg0}, {arg1})"));
             }
         }
         "Construct" => {
             if ins.operands.len() >= 3 {
-                let f: String = reg_expr(regs, ins.operands[0].signed_value);
+                let f: String = regs.receiver(ins.operands[0].signed_value);
                 let first: i64 = ins.operands[1].signed_value;
                 let count: i64 = ins.operands[2].signed_value;
                 let args: String = call_arg_list(regs, first, count, false);
-                *acc = format!("new {f}({args})");
+                acc.set(format!("new {f}({args})"));
                 fidelity = LiftFidelity::Lossy;
                 ir_comment =
                     Some("Construct: new.target in acc; arg-list from register window".to_owned());
             } else if let Some(r) = ins.operands.first() {
-                let f: String = reg_expr(regs, r.signed_value);
-                *acc = format!("new {f}()");
+                let f: String = regs.receiver(r.signed_value);
+                acc.set(format!("new {f}()"));
                 fidelity = LiftFidelity::Lossy;
             }
         }
@@ -640,7 +897,7 @@ fn lift_instruction(
                     }
                     _ => const_name(v.unsigned_value),
                 };
-                *acc = format!("/* closure */ ({target})");
+                acc.set(format!("/* closure */ ({target})"));
                 fidelity = LiftFidelity::Lossy;
                 ir_comment = Some(
                     "CreateClosure references SharedFunctionInfo; body lifted separately"
@@ -648,21 +905,17 @@ fn lift_instruction(
                 );
             }
         }
-        "CreateEmptyObjectLiteral" => {
-            "{}".clone_into(acc);
-        }
-        "CreateEmptyArrayLiteral" => {
-            "[]".clone_into(acc);
-        }
+        "CreateEmptyObjectLiteral" => acc.set("{}".to_owned()),
+        "CreateEmptyArrayLiteral" => acc.set("[]".to_owned()),
         "CreateMappedArguments" | "CreateUnmappedArguments" => {
-            "arguments".clone_into(acc);
+            acc.set_name("arguments".to_owned());
         }
         "Debugger" => {
             "debugger;".clone_into(&mut surface);
         }
         "LdaGlobal" | "LdaGlobalInsideTypeof" => {
             if let Some(v) = ins.operands.first() {
-                *acc = global_name(pool, v.unsigned_value);
+                acc.set(global_name(pool, v.unsigned_value));
             }
         }
         "StaGlobal" => {
@@ -676,24 +929,24 @@ fn lift_instruction(
                 let first: i64 = ins.operands[1].signed_value;
                 let count: i64 = ins.operands[2].signed_value;
                 let a0: String = if count >= 1 {
-                    reg_expr(regs, first)
+                    regs.read(first)
                 } else {
                     "undefined".to_owned()
                 };
                 let a1: String = if count >= 2 {
-                    reg_expr(regs, first.saturating_add(1))
+                    regs.read(first.saturating_add(1))
                 } else {
                     "undefined".to_owned()
                 };
                 let name: &str = intrinsic_name(id).unwrap_or("UnknownIntrinsic");
                 match id {
                     11 => {
-                        "import.meta".clone_into(acc);
+                        acc.set_name("import.meta".to_owned());
                         fidelity = LiftFidelity::Lossy;
                         ir_comment = Some("GetImportMetaObject".to_owned());
                     }
                     12 => {
-                        *acc = format!("{{...({a0})}}");
+                        acc.set(format!("{{...({a0})}}"));
                         fidelity = LiftFidelity::Lossy;
                         ir_comment = Some(
                             "CopyDataProperties: object/spread copy of own enumerable props"
@@ -702,7 +955,7 @@ fn lift_instruction(
                     }
                     13 => {
                         let excluded: String = call_arg_list(regs, first, count, true);
-                        *acc = format!("(({{...{a0}}}) /* excluding [{excluded}] */)");
+                        acc.set(format!("(({{...{a0}}}) /* excluding [{excluded}] */)"));
                         fidelity = LiftFidelity::Lossy;
                         ir_comment = Some(
                             "CopyDataPropertiesWithExcludedPropertiesOnStack: rest spread minus listed keys"
@@ -710,13 +963,13 @@ fn lift_instruction(
                         );
                     }
                     14 => {
-                        *acc = format!("{{value: {a0}, done: {a1}}}");
+                        acc.set(format!("{{value: {a0}, done: {a1}}}"));
                         fidelity = LiftFidelity::Lossy;
                         ir_comment = Some("CreateIterResultObject".to_owned());
                     }
                     _ => {
                         let args_str: String = call_arg_list(regs, first, count, false);
-                        *acc = format!("%{name}({args_str})");
+                        acc.assign(format!("%{name}({args_str})"), ValueShape::Opaque);
                         fidelity = LiftFidelity::OpaqueRuntime;
                         ir_comment = Some(format!(
                             "InvokeIntrinsic %{name} (id={id}) is a V8-internal async/generator helper with no plain-JS surface"
@@ -726,14 +979,17 @@ fn lift_instruction(
             } else if let Some(v) = ins.operands.first() {
                 let id: u64 = v.unsigned_value;
                 let name: &str = intrinsic_name(id).unwrap_or("UnknownIntrinsic");
-                *acc = format!("%{name}()");
+                acc.assign(format!("%{name}()"), ValueShape::Opaque);
                 fidelity = LiftFidelity::OpaqueRuntime;
                 ir_comment = Some(format!("InvokeIntrinsic %{name} (id={id})"));
             }
         }
         "CallRuntime" | "CallRuntimeForPair" | "CallJSRuntime" => {
             if let Some(v) = ins.operands.first() {
-                *acc = format!("/* runtime#{} */ undefined", v.unsigned_value);
+                acc.assign(
+                    format!("__unlifted_runtime_{}()", v.unsigned_value),
+                    ValueShape::Opaque,
+                );
                 fidelity = LiftFidelity::OpaqueRuntime;
                 ir_comment = Some(format!(
                     "{mn} dispatches to V8 internal runtime; no JS surface equivalent"
@@ -744,14 +1000,14 @@ fn lift_instruction(
             if ins.operands.len() >= 3 {
                 let slot: u64 = ins.operands[1].unsigned_value;
                 let depth: u64 = ins.operands[2].unsigned_value;
-                *acc = ctx_slot_name(depth, slot);
+                acc.set(ctx_slot_name(depth, slot));
             }
         }
         "LdaCurrentContextSlot"
         | "LdaImmutableCurrentContextSlot"
         | "LdaCurrentScriptContextSlot" => {
             if let Some(v) = ins.operands.first() {
-                *acc = ctx_slot_name(0, v.unsigned_value);
+                acc.set(ctx_slot_name(0, v.unsigned_value));
             }
         }
         "StaContextSlot" | "StaScriptContextSlot" => {
@@ -768,7 +1024,7 @@ fn lift_instruction(
         }
         "LdaModuleVariable" => {
             if let Some(v) = ins.operands.first() {
-                *acc = module_var_name(v.signed_value);
+                acc.set(module_var_name(v.signed_value));
             }
         }
         "StaModuleVariable" => {
@@ -785,7 +1041,7 @@ fn lift_instruction(
         | "LdaLookupGlobalSlot"
         | "LdaLookupGlobalSlotInsideTypeof" => {
             if let Some(v) = ins.operands.first() {
-                *acc = format!("/* lookup */ {}", const_name(v.unsigned_value));
+                acc.set(format!("/* lookup */ {}", const_name(v.unsigned_value)));
                 fidelity = LiftFidelity::Lossy;
                 ir_comment = Some(format!("{mn} resolves a name via the dynamic scope chain"));
             }
@@ -799,8 +1055,8 @@ fn lift_instruction(
         }
         "PushContext" => {
             if let Some(v) = ins.operands.first() {
-                regs.insert(v.signed_value, acc.clone());
-                surface = format!("let {} = {acc};", regs.name(v.signed_value));
+                let literal: bool = acc.shape == ValueShape::Literal;
+                surface = regs.store(v.signed_value, &acc.expr, literal);
                 ir_comment = Some("PushContext saves the outgoing context register".to_owned());
             }
         }
@@ -808,88 +1064,72 @@ fn lift_instruction(
             if let Some(v) = ins.operands.first() {
                 ir_comment = Some(format!(
                     "PopContext restores context from {}",
-                    regs.name(v.signed_value)
+                    regs.label(v.signed_value)
                 ));
             }
         }
         "GetNamedPropertyFromSuper" => {
             if ins.operands.len() >= 2 {
-                let recv: String = reg_expr(regs, ins.operands[0].signed_value);
+                let recv: String = regs.receiver(ins.operands[0].signed_value);
                 let name_idx: u64 = ins.operands[1].unsigned_value;
-                *acc = property_access(pool, &recv, name_idx);
+                acc.set(property_access(pool, &recv, name_idx));
                 fidelity = LiftFidelity::Lossy;
                 ir_comment = Some(
                     "GetNamedPropertyFromSuper reads via the home-object prototype".to_owned(),
                 );
             }
         }
-        "GetEnumeratedKeyedProperty" => {
-            if let Some(r) = ins.operands.first() {
-                let recv: String = reg_expr(regs, r.signed_value);
-                *acc = format!("{recv}[{acc}]");
-            }
-        }
-        "DefineKeyedOwnProperty" | "DefineKeyedOwnPropertyInLiteral" | "StaInArrayLiteral" => {
-            if ins.operands.len() >= 2 {
-                let recv: String = reg_expr(regs, ins.operands[0].signed_value);
-                let key: String = reg_expr(regs, ins.operands[1].signed_value);
-                surface = format!("{recv}[{key}] = {acc};");
-            }
-        }
         "DeletePropertyStrict" | "DeletePropertySloppy" => {
             if let Some(r) = ins.operands.first() {
-                let recv: String = reg_expr(regs, r.signed_value);
-                *acc = format!("delete {recv}[{acc}]");
+                let recv: String = regs.receiver(r.signed_value);
+                acc.set(format!("delete {recv}[{acc}]"));
             }
         }
         "GetSuperConstructor" => {
             if let Some(r) = ins.operands.first() {
-                regs.insert(
+                surface = regs.store(
                     r.signed_value,
-                    "Object.getPrototypeOf(this.constructor)".to_owned(),
-                );
-                surface = format!(
-                    "let {} = Object.getPrototypeOf(this.constructor);",
-                    regs.name(r.signed_value)
+                    "Object.getPrototypeOf(this.constructor)",
+                    false,
                 );
                 fidelity = LiftFidelity::Lossy;
             }
         }
         "CallProperty" | "CallAnyReceiver" => {
             if ins.operands.len() >= 3 {
-                let f: String = reg_expr(regs, ins.operands[0].signed_value);
+                let f: String = regs.receiver(ins.operands[0].signed_value);
                 let first: i64 = ins.operands[1].signed_value;
                 let count: i64 = ins.operands[2].signed_value;
-                let recv: String = reg_expr(regs, first);
+                let recv: String = regs.read(first);
                 let args: String = call_arg_list(regs, first, count, true);
-                *acc = if args.is_empty() {
+                acc.set(if args.is_empty() {
                     format!("{f}.call({recv})")
                 } else {
                     format!("{f}.call({recv}, {args})")
-                };
+                });
             }
         }
         "CallUndefinedReceiver" => {
             if ins.operands.len() >= 3 {
-                let f: String = reg_expr(regs, ins.operands[0].signed_value);
+                let f: String = regs.receiver(ins.operands[0].signed_value);
                 let first: i64 = ins.operands[1].signed_value;
                 let count: i64 = ins.operands[2].signed_value;
                 let args: String = call_arg_list(regs, first, count, false);
-                *acc = format!("{f}({args})");
+                acc.set(format!("{f}({args})"));
             }
         }
         "CallWithSpread" => {
             if ins.operands.len() >= 3 {
-                let f: String = reg_expr(regs, ins.operands[0].signed_value);
+                let f: String = regs.receiver(ins.operands[0].signed_value);
                 let first: i64 = ins.operands[1].signed_value;
                 let count: i64 = ins.operands[2].signed_value;
-                let recv: String = reg_expr(regs, first);
+                let recv: String = regs.read(first);
                 let args: String = call_arg_list(regs, first, count, true);
-                *acc = if args.is_empty() {
+                acc.set(if args.is_empty() {
                     format!("{f}.apply({recv})")
                 } else {
                     format!("{f}.call({recv}, {args})")
-                };
+                });
                 fidelity = LiftFidelity::Lossy;
                 ir_comment =
                     Some("CallWithSpread final arg is spread; surface omits `...`".to_owned());
@@ -897,11 +1137,11 @@ fn lift_instruction(
         }
         "ConstructWithSpread" => {
             if ins.operands.len() >= 3 {
-                let f: String = reg_expr(regs, ins.operands[0].signed_value);
+                let f: String = regs.receiver(ins.operands[0].signed_value);
                 let first: i64 = ins.operands[1].signed_value;
                 let count: i64 = ins.operands[2].signed_value;
                 let args: String = call_arg_list(regs, first, count, false);
-                *acc = format!("new {f}({args})");
+                acc.set(format!("new {f}({args})"));
                 fidelity = LiftFidelity::Lossy;
                 ir_comment =
                     Some("ConstructWithSpread final arg is spread; surface omits `...`".to_owned());
@@ -909,14 +1149,17 @@ fn lift_instruction(
         }
         "ConstructForwardAllArgs" => {
             if let Some(r) = ins.operands.first() {
-                let f: String = reg_expr(regs, r.signed_value);
-                *acc = format!("new {f}(...arguments)");
+                let f: String = regs.receiver(r.signed_value);
+                acc.set(format!("new {f}(...arguments)"));
                 fidelity = LiftFidelity::Lossy;
             }
         }
         "CreateArrayLiteral" => {
             if let Some(v) = ins.operands.first() {
-                *acc = format!("/* array literal */ ({})", const_name(v.unsigned_value));
+                acc.set(format!(
+                    "/* array literal */ ({})",
+                    const_name(v.unsigned_value)
+                ));
                 fidelity = LiftFidelity::Lossy;
                 ir_comment = Some(
                     "CreateArrayLiteral materializes a boilerplate array from the constant pool"
@@ -924,12 +1167,13 @@ fn lift_instruction(
                 );
             }
         }
-        "CreateArrayFromIterable" => {
-            *acc = format!("[...{acc}]");
-        }
+        "CreateArrayFromIterable" => acc.set(format!("[...{acc}]")),
         "CreateObjectLiteral" => {
             if let Some(v) = ins.operands.first() {
-                *acc = format!("/* object literal */ ({})", const_name(v.unsigned_value));
+                acc.set(format!(
+                    "/* object literal */ ({})",
+                    const_name(v.unsigned_value)
+                ));
                 fidelity = LiftFidelity::Lossy;
                 ir_comment =
                     Some("CreateObjectLiteral materializes a boilerplate object".to_owned());
@@ -939,27 +1183,25 @@ fn lift_instruction(
             if ins.operands.len() >= 3 {
                 let pattern: String = const_name(ins.operands[0].unsigned_value);
                 let flags_str: String = decode_regexp_flags(ins.operands[2].unsigned_value);
-                *acc = format!("/{pattern}/{flags_str}");
+                acc.set(format!("/{pattern}/{flags_str}"));
             } else if let Some(v) = ins.operands.first() {
-                *acc = format!("new RegExp({})", const_name(v.unsigned_value));
+                acc.set(format!("new RegExp({})", const_name(v.unsigned_value)));
             }
             fidelity = LiftFidelity::Lossy;
         }
         "CloneObject" => {
             if let Some(r) = ins.operands.first() {
-                let src: String = reg_expr(regs, r.signed_value);
-                *acc = format!("{{ ...{src} }}");
+                let src: String = regs.read(r.signed_value);
+                acc.set(format!("{{ ...{src} }}"));
             }
         }
         "GetTemplateObject" => {
             if let Some(v) = ins.operands.first() {
-                *acc = format!("/* template */ ({})", const_name(v.unsigned_value));
+                acc.set(format!("/* template */ ({})", const_name(v.unsigned_value)));
                 fidelity = LiftFidelity::Lossy;
             }
         }
-        "CreateRestParameter" => {
-            "[...arguments]".clone_into(acc);
-        }
+        "CreateRestParameter" => acc.set("[...arguments]".to_owned()),
         "CreateBlockContext" | "CreateFunctionContext" | "CreateEvalContext" => {
             ir_comment = Some(format!("{mn} allocates a new context scope"));
         }
@@ -967,7 +1209,7 @@ fn lift_instruction(
             if let Some(r) = ins.operands.first() {
                 ir_comment = Some(format!(
                     "CreateCatchContext binds the caught exception in {}",
-                    regs.name(r.signed_value)
+                    regs.label(r.signed_value)
                 ));
             }
         }
@@ -975,27 +1217,28 @@ fn lift_instruction(
             if let Some(r) = ins.operands.first() {
                 ir_comment = Some(format!(
                     "CreateWithContext extends scope with {}",
-                    regs.name(r.signed_value)
+                    regs.label(r.signed_value)
                 ));
             }
         }
         "TestTypeOf" => {
             let flag: u64 = ins.operands.first().map_or(0u64, |v| v.unsigned_value);
-            *acc = format!("typeof ({acc}) === {}", type_of_literal(flag));
+            acc.set(format!(
+                "typeof {acc_operand} === {}",
+                type_of_literal(flag)
+            ));
         }
-        "TestUndetectable" => {
-            *acc = format!("({acc}) == null");
-        }
+        "TestUndetectable" => acc.set(format!("{acc_operand} == null")),
         "GetIterator" => {
             if let Some(r) = ins.operands.first() {
-                let recv: String = reg_expr(regs, r.signed_value);
-                *acc = format!("{recv}[Symbol.iterator]()");
+                let recv: String = regs.receiver(r.signed_value);
+                acc.set(format!("{recv}[Symbol.iterator]()"));
             }
         }
         "ForInEnumerate" => {
             if let Some(r) = ins.operands.first() {
-                let recv: String = reg_expr(regs, r.signed_value);
-                *acc = format!("/* for-in keys of */ {recv}");
+                let recv: String = regs.read(r.signed_value);
+                acc.set(format!("/* for-in keys of */ {recv}"));
                 fidelity = LiftFidelity::Lossy;
                 ir_comment = Some("ForInEnumerate yields the receiver enum cache".to_owned());
             }
@@ -1006,16 +1249,16 @@ fn lift_instruction(
         }
         "ForInNext" => {
             if let Some(r) = ins.operands.first() {
-                let recv: String = reg_expr(regs, r.signed_value);
-                *acc = format!("/* for-in key */ Object.keys({recv})[0]");
+                let recv: String = regs.receiver(r.signed_value);
+                acc.set(format!("/* for-in key */ Object.keys({recv})[0]"));
                 fidelity = LiftFidelity::Lossy;
                 ir_comment = Some("ForInNext yields the next enumerable key".to_owned());
             }
         }
         "ForInStep" => {
             if let Some(r) = ins.operands.first() {
-                let index: String = reg_expr(regs, r.signed_value);
-                *acc = format!("({index}) + 1");
+                let index: String = regs.operand(r.signed_value);
+                acc.set(format!("{index} + 1"));
             }
         }
         "ThrowReferenceErrorIfHole" => {
@@ -1041,7 +1284,7 @@ fn lift_instruction(
             if let Some(r) = ins.operands.first() {
                 surface = format!(
                     "if (typeof {0} !== \"function\") throw new TypeError(\"not a constructor\");",
-                    reg_expr(regs, r.signed_value)
+                    regs.operand(r.signed_value)
                 );
                 fidelity = LiftFidelity::Lossy;
             }
@@ -1068,7 +1311,7 @@ fn lift_instruction(
         }
         "ResumeGenerator" => {
             if let Some(r) = ins.operands.first() {
-                *acc = format!("/* resume */ {}", reg_expr(regs, r.signed_value));
+                acc.set(format!("/* resume */ {}", regs.read(r.signed_value)));
                 fidelity = LiftFidelity::Lossy;
                 ir_comment =
                     Some("ResumeGenerator restores register state after a yield".to_owned());
@@ -1076,8 +1319,8 @@ fn lift_instruction(
         }
         "FindNonDefaultConstructorOrConstruct" => {
             if ins.operands.len() >= 2 {
-                let f: String = reg_expr(regs, ins.operands[0].signed_value);
-                *acc = format!("new {f}(...arguments)");
+                let f: String = regs.receiver(ins.operands[0].signed_value);
+                acc.set(format!("new {f}(...arguments)"));
                 fidelity = LiftFidelity::Lossy;
                 ir_comment = Some(
                     "FindNonDefaultConstructorOrConstruct walks the derived-class constructor chain"
@@ -1128,44 +1371,20 @@ fn lift_instruction(
     }
 }
 
-fn binary(
-    acc: &mut String,
-    regs: &Registers,
-    ins: &DecodedInstruction,
-    op_symbol: &str,
-    _surface: &mut String,
-) {
+fn binary(acc: &mut Accumulator, regs: &mut Registers, ins: &DecodedInstruction, op_symbol: &str) {
     if let Some(r) = ins.operands.first() {
-        let lhs: String = regs
-            .get(r.signed_value)
-            .cloned()
-            .unwrap_or_else(|| regs.name(r.signed_value));
-        *acc = format!("({lhs}) {op_symbol} ({acc})");
+        let lhs: String = regs.operand(r.signed_value);
+        let rhs: String = acc.operand();
+        acc.set(format!("{lhs} {op_symbol} {rhs}"));
     }
 }
 
-fn binary_smi(acc: &mut String, ins: &DecodedInstruction, op_symbol: &str) {
+fn binary_smi(acc: &mut Accumulator, ins: &DecodedInstruction, op_symbol: &str) {
     if let Some(v) = ins.operands.first() {
-        *acc = format!("({acc}) {op_symbol} {imm}", imm = v.signed_value);
+        let lhs: String = acc.operand();
+        acc.set(format!("{lhs} {op_symbol} {imm}", imm = v.signed_value));
     }
 }
-
-fn test_binary(
-    acc: &mut String,
-    regs: &Registers,
-    ins: &DecodedInstruction,
-    op_symbol: &str,
-    _surface: &mut String,
-) {
-    if let Some(r) = ins.operands.first() {
-        let lhs: String = regs
-            .get(r.signed_value)
-            .cloned()
-            .unwrap_or_else(|| regs.name(r.signed_value));
-        *acc = format!("({lhs}) {op_symbol} ({acc})");
-    }
-}
-
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
@@ -1200,7 +1419,7 @@ mod tests {
         let disasm: Disassembly = disassemble(&stream, NodeVersion::Node22);
         let lifted: LiftedFunction = lift_disassembly(&disasm);
         let js: String = lifted.render_js("add");
-        assert!(js.contains("return (1) + 2;"));
+        assert!(js.contains("return 1 + 2;"), "{js}");
     }
 
     #[test]
@@ -1214,7 +1433,14 @@ mod tests {
         let disasm: Disassembly = disassemble(&stream, NodeVersion::Node22);
         let lifted: LiftedFunction = lift_disassembly(&disasm);
         let js: String = lifted.render_js("call_global");
-        assert!(js.contains("return globalThis[__c7]();"));
+        assert!(
+            js.contains(
+                "  let r0;
+  r0 = globalThis[__c7];
+  return r0();"
+            ),
+            "{js}"
+        );
     }
 
     #[test]
@@ -1250,7 +1476,14 @@ mod tests {
         stream.extend(enc(&table, "StaContextSlot", &[1i64, 4i64, 2i64]));
         stream.extend(enc(&table, "Return", &[]));
         let js: String = lift_node24(&stream).render_js("ctx");
-        assert!(js.contains("__ctx2_4 = __ctx3;"), "{js}");
+        assert!(
+            js.contains(
+                "__acc = __ctx3;
+  __ctx2_4 = __acc;
+  return __acc;"
+            ),
+            "{js}"
+        );
     }
 
     #[test]
@@ -1261,7 +1494,14 @@ mod tests {
         stream.extend(enc(&table, "StaModuleVariable", &[2i64, 0i64]));
         stream.extend(enc(&table, "Return", &[]));
         let js: String = lift_node24(&stream).render_js("mod");
-        assert!(js.contains("__export2 = __import1;"), "{js}");
+        assert!(
+            js.contains(
+                "__acc = __import1;
+  __export2 = __acc;
+  return __acc;"
+            ),
+            "{js}"
+        );
     }
 
     #[test]
@@ -1312,7 +1552,7 @@ mod tests {
         stream.extend(enc(&table, "TestTypeOf", &[1i64]));
         stream.extend(enc(&table, "Return", &[]));
         let js: String = lift_node24(&stream).render_js("tt");
-        assert!(js.contains("return typeof (r1) === \"string\";"), "{js}");
+        assert!(js.contains("return typeof r1 === \"string\";"), "{js}");
     }
 
     #[test]
@@ -1387,7 +1627,7 @@ mod tests {
         step.extend(enc(&table, "ForInStep", &[1i64]));
         step.extend(enc(&table, "Return", &[]));
         let js_step: String = lift_node24(&step).render_js("step");
-        assert!(js_step.contains("return (r1) + 1;"), "{js_step}");
+        assert!(js_step.contains("return r1 + 1;"), "{js_step}");
     }
 
     #[test]
@@ -1421,7 +1661,10 @@ mod tests {
         stream.extend(enc(&table, "Return", &[]));
         let js: String = lift_node24(&stream).render_js("tdz");
         assert!(
-            js.contains("if (__ctx4 === undefined) throw new ReferenceError(__c6);"),
+            js.contains(
+                "__acc = __ctx4;
+  if (__acc === undefined) throw new ReferenceError(__c6);"
+            ),
             "{js}"
         );
     }
@@ -1509,6 +1752,83 @@ mod tests {
         assert!(
             unspecialized.is_empty(),
             "unspecialized opcodes remain: {unspecialized:?}"
+        );
+    }
+
+    #[test]
+    fn a_call_whose_result_is_discarded_stays_a_statement() {
+        let table: OpcodeTable = OpcodeTable::for_node(NodeVersion::Node24);
+        let mut stream: Vec<u8> = Vec::new();
+        stream.extend(enc(&table, "CallUndefinedReceiver0", &[0i64, 0i64]));
+        stream.extend(enc(&table, "LdaSmi", &[1i64]));
+        stream.extend(enc(&table, "Return", &[]));
+        let js: String = lift_node24(&stream).render_js("effect");
+        assert!(
+            js.contains(
+                "  r0();
+  return 1;"
+            ),
+            "{js}"
+        );
+    }
+
+    #[test]
+    fn a_stored_register_is_read_by_name_not_recomputed() {
+        let table: OpcodeTable = OpcodeTable::for_node(NodeVersion::Node24);
+        let mut stream: Vec<u8> = Vec::new();
+        stream.extend(enc(&table, "CallUndefinedReceiver0", &[1i64, 0i64]));
+        stream.extend(enc(&table, "Star0", &[]));
+        stream.extend(enc(&table, "Add", &[0i64, 0i64]));
+        stream.extend(enc(&table, "Star0", &[]));
+        stream.extend(enc(&table, "Return", &[]));
+        let js: String = lift_node24(&stream).render_js("twice");
+        assert_eq!(
+            js,
+            "function twice() {
+  let r0, r1;
+  r0 = r1();
+  r0 = r0 + r0;
+  return r0;
+}
+"
+        );
+    }
+
+    #[test]
+    fn a_register_overwritten_under_a_pending_read_is_read_first() {
+        let table: OpcodeTable = OpcodeTable::for_node(NodeVersion::Node24);
+        let mut stream: Vec<u8> = Vec::new();
+        stream.extend(enc(&table, "Ldar", &[1i64]));
+        stream.extend(enc(&table, "AddSmi", &[1i64, 0i64]));
+        stream.extend(enc(&table, "Mov", &[2i64, 1i64]));
+        stream.extend(enc(&table, "Return", &[]));
+        let js: String = lift_node24(&stream).render_js("mov");
+        assert_eq!(
+            js,
+            "function mov() {
+  let r1, r2, __acc;
+  __acc = r1 + 1;
+  r1 = r2;
+  return __acc;
+}
+"
+        );
+    }
+
+    #[test]
+    fn parameters_are_declared_as_v8_numbers_them() {
+        let table: OpcodeTable = OpcodeTable::for_node(NodeVersion::Node24);
+        let a1: i64 = register_file_start(NodeVersion::Node24) - 4i64;
+        let mut stream: Vec<u8> = Vec::new();
+        stream.extend(enc(&table, "Ldar", &[a1]));
+        stream.extend(enc(&table, "Return", &[]));
+        let js: String = lift_node24(&stream).render_js("second");
+        assert_eq!(
+            js,
+            "function second(a0, a1) {
+  return a1;
+}
+"
         );
     }
 }

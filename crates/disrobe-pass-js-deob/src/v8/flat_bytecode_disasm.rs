@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 
 use crate::error::{Error, Result};
 
-use super::bytecode_opcodes::{OpcodeTable, OperandKind, V8OpcodeSpec};
+use super::bytecode_opcodes::{AccumulatorUse, OpcodeTable, OperandKind, V8OpcodeSpec};
 use super::bytenode::NodeVersion;
 
 fn push_format(out: &mut String, args: std::fmt::Arguments<'_>) {
@@ -119,6 +119,7 @@ pub struct DecodedInstruction {
     pub scale: OperandScale,
     pub opcode_byte: u8,
     pub mnemonic: &'static str,
+    pub accumulator_use: AccumulatorUse,
     pub operands: Vec<DecodedOperand>,
     pub byte_size: usize,
 }
@@ -308,6 +309,7 @@ pub fn disassemble_with_table(bytes: &[u8], table: &OpcodeTable) -> Disassembly 
             scale,
             opcode_byte,
             mnemonic: spec.mnemonic,
+            accumulator_use: spec.accumulator_use,
             operands,
             byte_size: cursor.saturating_sub(start),
         });
