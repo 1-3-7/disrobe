@@ -269,6 +269,7 @@ fn unaccounted<'a>(group: &str, names: impl Iterator<Item = &'a str>) -> String 
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 
