@@ -84,7 +84,7 @@
         },
         {
           "label": "CPython 3.11 (172 of the pinned modules)",
-          "value": 96.65,
+          "value": 96.64,
           "num": 5449,
           "den": 5638,
           "detail": "5449 / 5638 code objects over 172 modules on CPython 3.11.15. 28 of the 200 pinned modules do not exist in this interpreter's Lib, so the denominators differ between bands and the percentages are not a like-for-like ranking.",
