@@ -150,6 +150,7 @@ const INODE_TYPE_FILE: u16 = 2;
 const INODE_TYPE_SYMLINK: u16 = 3;
 const INODE_TYPE_EXT_DIR: u16 = 8;
 const INODE_TYPE_EXT_FILE: u16 = 9;
+const INODE_TYPE_EXT_SYMLINK: u16 = 10;
 const METADATA_UNCOMPRESSED_FLAG: u16 = 0x8000;
 const METADATA_SIZE_MASK: u16 = 0x7FFF;
 const FRAGMENT_UNCOMPRESSED_FLAG: u32 = 0x0100_0000;
@@ -273,10 +274,10 @@ pub fn walk_squashfs(bytes: &[u8], base: usize, max_total: u64) -> Result<Squash
         if depth > MAX_PATH_DEPTH || files.len() > MAX_WALK_FILES {
             break;
         }
-        if !visited.insert((blk, off)) {
+        let inode: ParsedInode = read_inode(bytes, base, &raw, compression, endian, blk, off)?;
+        if matches!(inode, ParsedInode::Directory { .. }) && !visited.insert((blk, off)) {
             continue;
         }
-        let inode: ParsedInode = read_inode(bytes, base, &raw, compression, endian, blk, off)?;
         match inode {
             ParsedInode::Directory {
                 dir_block_start,
@@ -454,7 +455,7 @@ fn read_inode(
         }
         INODE_TYPE_FILE => parse_basic_file(cur, raw, endian, permissions),
         INODE_TYPE_EXT_FILE => parse_ext_file(cur, raw, endian, permissions),
-        INODE_TYPE_SYMLINK => parse_symlink(cur, endian),
+        INODE_TYPE_SYMLINK | INODE_TYPE_EXT_SYMLINK => parse_symlink(cur, endian),
         _ => Ok(ParsedInode::Other),
     }
 }
@@ -513,9 +514,13 @@ fn parse_symlink(cur: &[u8], endian: Endian) -> Result<ParsedInode> {
     if cur.len() < 24 {
         return Err(Error::Squashfs("symlink inode truncated".to_owned()));
     }
-    let target_size: usize = endian.u32(cur, 20) as usize;
+    let target_size: usize = usize::try_from(endian.u32(cur, 20))
+        .map_err(|_| Error::Squashfs("symlink target size exceeds host range".to_owned()))?;
+    let target_end: usize = target_size
+        .checked_add(24)
+        .ok_or_else(|| Error::Squashfs("symlink target size overflows".to_owned()))?;
     let target_bytes: &[u8] = cur
-        .get(24..24 + target_size)
+        .get(24..target_end)
         .ok_or_else(|| Error::Squashfs("symlink target truncated".to_owned()))?;
     Ok(ParsedInode::Symlink {
         target: String::from_utf8_lossy(target_bytes).into_owned(),
@@ -887,6 +892,11 @@ fn uncompressed_metadata(payload: &[u8]) -> Vec<u8> {
 
 #[cfg(test)]
 pub(crate) fn build_real_squashfs(file_name: &str, file_body: &[u8]) -> Vec<u8> {
+    build_squashfs_with_links(&[file_name], file_body)
+}
+
+#[cfg(test)]
+pub(crate) fn build_squashfs_with_links(file_names: &[&str], file_body: &[u8]) -> Vec<u8> {
     let block_size: u32 = 131_072;
     let mut image: Vec<u8> = vec![0u8; SUPERBLOCK_MIN_BYTES];
 
@@ -931,14 +941,16 @@ pub(crate) fn build_real_squashfs(file_name: &str, file_body: &[u8]) -> Vec<u8> 
 
     let directory_table_start: u64 = image.len() as u64;
     let mut dir_payload: Vec<u8> = Vec::new();
-    put_u32(&mut dir_payload, 0);
+    put_u32(&mut dir_payload, file_names.len() as u32 - 1);
     put_u32(&mut dir_payload, 0);
     put_u32(&mut dir_payload, 1);
-    put_u16(&mut dir_payload, file_inode_offset);
-    put_u16(&mut dir_payload, 1);
-    put_u16(&mut dir_payload, INODE_TYPE_FILE);
-    put_u16(&mut dir_payload, file_name.len() as u16 - 1);
-    dir_payload.extend_from_slice(file_name.as_bytes());
+    for file_name in file_names {
+        put_u16(&mut dir_payload, file_inode_offset);
+        put_u16(&mut dir_payload, 1);
+        put_u16(&mut dir_payload, INODE_TYPE_FILE);
+        put_u16(&mut dir_payload, file_name.len() as u16 - 1);
+        dir_payload.extend_from_slice(file_name.as_bytes());
+    }
     image.extend_from_slice(&uncompressed_metadata(&dir_payload));
     let dir_file_size: u32 = dir_payload.len() as u32 + 3;
 
@@ -994,6 +1006,26 @@ mod tests {
 
     const APPIMAGE_TYPE2_HOST: &[u8] =
         include_bytes!("../../tests/fixtures/appimage/host-type2.elf");
+
+    #[test]
+    fn every_name_of_a_hard_linked_file_is_extracted() {
+        let image: Vec<u8> = build_squashfs_with_links(&["first.txt", "second.txt"], b"shared");
+        let files: Vec<SquashfsFile> = walk_squashfs(&image, 0, u64::MAX)
+            .expect("image walks")
+            .files;
+        let mut named: Vec<(&str, &[u8])> = files
+            .iter()
+            .map(|file: &SquashfsFile| (file.path.as_str(), file.data.as_slice()))
+            .collect();
+        named.sort_unstable();
+        assert_eq!(
+            named,
+            vec![
+                ("first.txt", b"shared".as_slice()),
+                ("second.txt", b"shared".as_slice())
+            ]
+        );
+    }
 
     fn synth_superblock_le() -> Vec<u8> {
         let mut out: Vec<u8> = vec![0u8; SUPERBLOCK_MIN_BYTES];
