@@ -3998,6 +3998,8 @@ pub enum SiblingExternPolicy {
     Retain,
 }
 
+pub const MAX_PROGRAM_FUNCTION_BYTES: usize = 64 * 1024;
+
 pub fn recover_program(object: &[u8], functions: &[ProgramFunction], abi: Abi) -> RecoveredProgram {
     recover_program_with_naming(object, functions, abi).program
 }
@@ -4084,6 +4086,21 @@ fn recover_program_with_naming_and_sibling_extern_policy(
             }
         };
     for f in functions {
+        if f.code.len() > MAX_PROGRAM_FUNCTION_BYTES {
+            unrecovered.push(UnrecoveredFunction {
+                name: names_by_address
+                    .get(&f.address)
+                    .copied()
+                    .unwrap_or(f.name.as_str())
+                    .to_owned(),
+                address: f.address,
+                reason: format!(
+                    "function body is {} bytes, over the {MAX_PROGRAM_FUNCTION_BYTES}-byte decompile limit",
+                    f.code.len()
+                ),
+            });
+            continue;
+        }
         let exception: Option<&crate::cxx_recovery::ItaniumEhFunction> = exception_regions
             .iter()
             .find(|exception: &&crate::cxx_recovery::ItaniumEhFunction| {
@@ -30515,6 +30532,25 @@ mod tests {
             });
         }
         recover_program(&[], &functions, Abi::SysV)
+    }
+
+    #[test]
+    fn a_function_over_the_program_byte_cap_is_reported_unrecovered() {
+        let mut code: Vec<u8> = vec![0x90; MAX_PROGRAM_FUNCTION_BYTES];
+        code.push(0xc3);
+        let functions: Vec<ProgramFunction> = vec![ProgramFunction {
+            name: "oversized".to_owned(),
+            address: 0x1000,
+            code,
+        }];
+        let program: RecoveredProgram = recover_program(&[], &functions, Abi::SysV);
+        assert!(program.recovered.is_empty());
+        assert_eq!(program.unrecovered.len(), 1);
+        assert!(
+            program.unrecovered[0].reason.contains("decompile limit"),
+            "{}",
+            program.unrecovered[0].reason
+        );
     }
 
     #[test]
