@@ -252,7 +252,7 @@ fn run_native_backend(bytes: &[u8], no_roundtrip: bool) -> miette::Result<Decomp
         .map_err(|e| miette::miette!("DR-CLI-0065: native decompile engine failed: {e}"))?;
     let rt: RoundtripOutcome = if no_roundtrip {
         roundtrip_skipped()
-    } else if native.recovered_directly {
+    } else if !native.is_disasm_fallback() {
         roundtrip_native(
             &native.source,
             &native.code,
