@@ -372,11 +372,11 @@ fn analyze_with_options_at_depth(
 
     if !trace.unused_memos.is_empty() {
         findings.push(Finding {
-            severity: Severity::Suspicious,
+            severity: Severity::Benign,
             confidence: ConfidenceTier::SignatureCertain,
             category: "memo.unused".to_string(),
             detail: format!(
-                "{} memoized object(s) are never referenced - possible dead-stack injection or evasion",
+                "{} memoized object(s) are never referenced; CPython's pickler memoizes most objects it writes, so this is recorded and does not raise the verdict",
                 trace.unused_memos.len()
             ),
             offset: None,

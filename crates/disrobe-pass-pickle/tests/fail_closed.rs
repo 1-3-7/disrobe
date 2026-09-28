@@ -64,19 +64,7 @@ const EXPECTATIONS: [Expectation; 14] = [
 
 const BENIGN_CORPUS_DIRS: [&str; 2] = ["benign", "structural"];
 const BENIGN_CORPUS_FIXTURES: usize = 96;
-const BENIGN_CORPUS_FALSE_POSITIVES: usize = 52;
-const MEMO_UNUSED_STEMS: [&str; 8] = [
-    "bytes",
-    "frozenset",
-    "instance",
-    "list",
-    "nested_dict",
-    "set",
-    "str",
-    "tuple",
-];
-const STRUCTURAL_MEMO_UNUSED_STEMS: [&str; 4] =
-    ["cyclic_dict", "deep_nested", "oob_buffer", "shared_ref"];
+const BENIGN_CORPUS_FALSE_POSITIVES: usize = 2;
 const COPYREG_RECONSTRUCTOR_PROTOCOLS: [u8; 2] = [0, 1];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -446,23 +434,12 @@ fn the_benign_corpus_keeps_its_verdicts() {
 }
 
 fn expected_false_positives() -> Vec<String> {
-    let mut expected: Vec<String> = Vec::new();
-    for protocol in 0u8..=5 {
-        for stem in MEMO_UNUSED_STEMS {
-            let categories: &str =
-                if stem == "instance" && COPYREG_RECONSTRUCTOR_PROTOCOLS.contains(&protocol) {
-                    "global.suspicious_callable+memo.unused"
-                } else {
-                    "memo.unused"
-                };
-            expected.push(format!(
-                "benign/p{protocol}/{stem}.pkl: Suspicious {categories}"
-            ));
-        }
-    }
-    for stem in STRUCTURAL_MEMO_UNUSED_STEMS {
-        expected.push(format!("structural/{stem}.pkl: Suspicious memo.unused"));
-    }
+    let mut expected: Vec<String> = COPYREG_RECONSTRUCTOR_PROTOCOLS
+        .iter()
+        .map(|protocol: &u8| {
+            format!("benign/p{protocol}/instance.pkl: Suspicious global.suspicious_callable")
+        })
+        .collect();
     expected.sort();
     expected
 }
