@@ -125,6 +125,7 @@ pub(crate) fn run(root: &Path, as_json: bool) -> Result<()> {
     check_private_references(root, &mut report);
     check_host_paths(root, &mut report);
     check_as_char_casts(root, &mut report);
+    check_shell_catalog(root, &mut report);
     check_tracked_paths(root, &mut report);
     check_pyarmor_serial_footprint(root, &mut report);
     check_prose_tells(root, &mut report);
@@ -600,6 +601,35 @@ fn check_as_char_casts(root: &Path, report: &mut Report) {
                 scan.invalid.len(),
                 crate::as_char::ALLOW_LIST,
                 scan.invalid.join("; ")
+            ),
+        );
+    }
+}
+
+fn check_shell_catalog(root: &Path, report: &mut Report) {
+    const CHECK: &str = "shell-catalog-evidence";
+    let scan: crate::shell_catalog::ShellCatalogScan = match crate::shell_catalog::scan(root) {
+        Ok(scan) => scan,
+        Err(error) => {
+            report.fail(
+                CHECK,
+                format!(
+                    "could not compare {} with {}: {error:#}",
+                    crate::shell_catalog::MANIFEST,
+                    crate::shell_catalog::CATALOG_DOC
+                ),
+            );
+            return;
+        }
+    };
+    report.fact("shell_catalog_families", json!(scan.families));
+    if !scan.problems.is_empty() {
+        report.fail(
+            CHECK,
+            format!(
+                "{} shell family grading claim(s) disagree with their evidence; list each family under the grading its manifest status records: {}",
+                scan.problems.len(),
+                scan.problems.join("; ")
             ),
         );
     }

@@ -47,6 +47,7 @@ mod prose_tells;
 mod push_graders;
 mod regen;
 mod roster_breadth;
+mod shell_catalog;
 mod skip_census;
 mod sync;
 mod tracked_paths;
