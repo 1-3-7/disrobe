@@ -122,6 +122,19 @@ Form decoding is compared byte for byte against form streams and renderings both
 
 These four compilers erase the source, so recovery works from each binary's own tables rather than from anything resembling the original file. `disrobe` detects the toolchain, demangles its name scheme, and recovers the symbol and metadata surface the compiler left behind. Where DWARF survives, aggregate members come back with full types, including multi-dimensional array dimensions and const/volatile qualifiers, so a field reads as `const u8[4]` or `u8[2][3]` rather than an opaque blob. A stripped D PE, which carries neither DWARF nor a name table, is a wall: the format is identified and nothing further is claimed.
 
+Function bodies are carved and lifted to pseudo-C and pseudo-Rust. The figures below come from committed binaries built by the real compilers, and each count is pinned exactly in `body_equivalence.rs`, so a change in either direction fails the test.
+
+| Binary | Toolchain | Carved functions | Pseudo-C bodies | Pseudo-Rust bodies |
+|---|---|---:|---:|---:|
+| Nim, C backend, safety-checked, x86-64 ELF | nim 2.0.8 | 183 | 83 | 83 |
+| Nim `--mm:boehm`, x86-64 PE | nim, mingw-w64 gcc 13.2.0 backend | 93 | 12 | 12 |
+| Nim `--mm:arc`, `orc`, `refc`, `markAndSweep`, `go`, `none`, x86-64 PE | nim, mingw-w64 gcc 13.2.0 backend | 2 each | 1 each | 1 each |
+| Zig, safety-checked, x86-64 ELF | zig 0.13.0 | 1356 | 340 | 336 |
+| Zig ReleaseFast, x86-64 Linux ELF | zig 0.16.0 | 23 | 9 | 9 |
+| Crystal, LLVM backend, stripped x86-64 PE | not recorded in the binary | 314 | 25 | 25 |
+
+These counts measure how many bodies the pass emits, not whether they are correct. Two tests grade the output against independent references. `body_recovery_oracle.rs` compiles every pseudo-C body recovered from the Nim and Zig ELF files, the Crystal PE, and a D PE with a real C compiler (`-fsyntax-only -std=c11`), and every pseudo-Rust body with `rustc --emit=metadata`; it requires at least 492 C and 487 Rust bodies to pass. This grade is compile-only: it shows that each body stands alone as valid source, not that it computes what the original did. `body_equivalence.rs` compiles 14 recovered pseudo-C bodies from Zig 0.16.0, Nim 2.0.8, and Crystal 1.20.2 builds, runs them on at least 115 input rows, and compares each result with a model of the function transcribed from the original source; each binary must also match its build record (source hash, toolchain, and build command). Both tests run in the weekly scheduled CI run on Linux, macOS, and Windows, not on every push.
+
 ### Entropy map and byte histogram
 
 `disrobe native entropy` slides a 4 KB window across the file computing Shannon entropy (bits/byte) to locate packed, compressed, or encrypted regions, and renders the profile three ways via `--format text|json|svg`:

@@ -97,6 +97,8 @@ Each band uses the same normalized opcode-structure comparison and pinned module
 
 | Band | Interpreter | Recovered | Rate | Modules | Enforced on |
 |---|---|---|---|---|---|
+| 3.8 | CPython <!-- m:py_band_38_interpreter -->3.8.20<!-- /m --> | <!-- m:py_band_38_frac -->4508 / 5088<!-- /m --> code objects | <!-- m:py_band_38_rate -->88.60%<!-- /m --> | <!-- m:py_band_38_modules -->154<!-- /m --> | tag, schedule |
+| 3.9 | CPython <!-- m:py_band_39_interpreter -->3.9.25<!-- /m --> | <!-- m:py_band_39_frac -->4935 / 5233<!-- /m --> code objects | <!-- m:py_band_39_rate -->94.30%<!-- /m --> | <!-- m:py_band_39_modules -->157<!-- /m --> | tag, schedule |
 | 3.10 | CPython <!-- m:py_band_310_interpreter -->3.10.20<!-- /m --> | <!-- m:py_band_310_frac -->5229 / 5458<!-- /m --> code objects | <!-- m:py_band_310_rate -->95.80%<!-- /m --> | <!-- m:py_band_310_modules -->161<!-- /m --> | push, tag, schedule |
 | 3.11 | CPython <!-- m:py_band_311_interpreter -->3.11.15<!-- /m --> | <!-- m:py_band_311_frac -->5442 / 5638<!-- /m --> code objects | <!-- m:py_band_311_rate -->96.52%<!-- /m --> | <!-- m:py_band_311_modules -->172<!-- /m --> | tag, schedule |
 | 3.12 | CPython <!-- m:py_band_312_interpreter -->3.12.13<!-- /m --> | <!-- m:py_band_312_frac -->5420 / 5659<!-- /m --> code objects | <!-- m:py_band_312_rate -->95.77%<!-- /m --> | <!-- m:py_band_312_modules -->177<!-- /m --> | push, tag, schedule |
@@ -107,7 +109,7 @@ Each band uses the same normalized opcode-structure comparison and pinned module
 
 The recorded results and interpreter versions are in `xtask/data/recovery.json`.
 
-The 3.10, 3.12, and 3.13 bands run on each push to `main`. Tag builds and weekly scheduled builds also run the remaining band gates. The dedicated 3.10, 3.12, 3.13, 3.14, and 3.15 checks require their pinned interpreters.
+The 3.10, 3.12, and 3.13 bands run on each push to `main`. Tag builds and weekly scheduled builds also run the remaining band gates. The dedicated 3.10, 3.12, 3.13, 3.14, and 3.15 checks require their pinned interpreters. The 3.8 and 3.9 counts were measured on Windows x86-64; their gates run in the weekly test job, which installs both interpreters, and skip when the interpreter is absent.
 
 Two rows read differently from the rest. The 3.14 row reports the pinned 200-module subset of the accepted 574-module measurement; both use the same source hashes and comparison rules. The legacy row counts fixtures rather than code objects, and its fraction is the floor `legacy_recompile.rs` asserts rather than a measured rate, so it carries no rate.
 

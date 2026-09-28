@@ -44,6 +44,32 @@
       "kind": "percent",
       "bars": [
         {
+          "label": "CPython 3.8 (154 of the pinned modules)",
+          "value": 88.6,
+          "num": 4508,
+          "den": 5088,
+          "detail": "4508 / 5088 code objects over 154 modules on CPython 3.8.20. It was measured on Windows x86-64. 46 of the 200 pinned modules do not exist in this interpreter's Lib, so the denominators differ between bands and the percentages are not a like-for-like ranking.",
+          "source": "harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py run under CPython 3.8.20 over crates/disrobe-pass-py-decompile/tests/harness/pinned_modules_314.txt",
+          "verified_by": {
+            "path": "crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate_38.rs",
+            "function": "published_38_band_bar_agrees_with_the_counts_this_gate_enforces",
+            "measured_by": "arbitrary_recompile_equivalence_gate_38"
+          }
+        },
+        {
+          "label": "CPython 3.9 (157 of the pinned modules)",
+          "value": 94.3,
+          "num": 4935,
+          "den": 5233,
+          "detail": "4935 / 5233 code objects over 157 modules on CPython 3.9.25. It was measured on Windows x86-64. 43 of the 200 pinned modules do not exist in this interpreter's Lib, so the denominators differ between bands and the percentages are not a like-for-like ranking.",
+          "source": "harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py run under CPython 3.9.25 over crates/disrobe-pass-py-decompile/tests/harness/pinned_modules_314.txt",
+          "verified_by": {
+            "path": "crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate_39.rs",
+            "function": "published_39_band_bar_agrees_with_the_counts_this_gate_enforces",
+            "measured_by": "arbitrary_recompile_equivalence_gate_39"
+          }
+        },
+        {
           "label": "CPython 3.10 (161 of the pinned modules)",
           "value": 95.8,
           "num": 5229,

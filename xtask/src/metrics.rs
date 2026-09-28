@@ -390,6 +390,14 @@ impl BandFacet {
 
 const PY_BANDS: &[BandKeySpec] = &[
     BandKeySpec {
+        stem: "py_band_38",
+        label_prefix: "CPython 3.8",
+    },
+    BandKeySpec {
+        stem: "py_band_39",
+        label_prefix: "CPython 3.9",
+    },
+    BandKeySpec {
         stem: "py_band_310",
         label_prefix: "CPython 3.10",
     },
