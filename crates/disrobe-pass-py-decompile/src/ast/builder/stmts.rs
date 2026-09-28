@@ -956,12 +956,20 @@ fn legacy_with_continuation(
     hi: usize,
 ) -> Option<usize> {
     legacy_with_region_exit(stream, body_end, cleanup_idx, hi).or_else(|| {
-        stream
+        let exit: usize = stream
             .pre311_end_finally_idx
             .range(cleanup_idx..hi)
             .next()
             .map(|end_finally: &usize| end_finally + 1)
-            .filter(|exit: &usize| *exit < hi)
+            .filter(|exit: &usize| *exit < hi)?;
+        let enclosing_block_ends_after: bool =
+            stream.pre311_pop_block_idx.range(exit..hi).next().is_some()
+                || stream
+                    .pre311_end_finally_idx
+                    .range(exit..hi)
+                    .next()
+                    .is_some();
+        (!enclosing_block_ends_after).then_some(exit)
     })
 }
 
@@ -1225,11 +1233,12 @@ fn structure_legacy_async_with(
     let continues: bool = continuation.iter().any(|stmt: &Stmt| {
         !matches!(
             stmt,
-            Stmt::Return(None)
-                | Stmt::Return(Some(Expr::Constant {
+            Stmt::Return(
+                None | Some(Expr::Constant {
                     value: ConstValue::None,
                     ..
-                }))
+                })
+            )
         )
     });
     let continuation: Vec<Stmt> = if continues {
@@ -1482,10 +1491,7 @@ fn structure_legacy_with_head(
         });
         start = guarded.resume;
     }
-    if let Some(branch) = (start..setup_idx).find(|&k: &usize| {
-        resolve_jump_target(stream, k, &stream.ops[k]).is_some()
-            && !is_value_form_shortcircuit(&stream.ops, k)
-    }) {
+    if let Some(branch) = context_expression_ternary(stream, start, setup_idx) {
         return Err(crate::error::DecompileError::AstDesync {
             offset: stream
                 .offsets
@@ -1500,6 +1506,26 @@ fn structure_legacy_with_head(
         build_linear_stmts_sim(code, &stream.ops[start..setup_idx])?;
     head_stmts.extend(tail_stmts);
     Ok((head_stmts, head_residual))
+}
+
+pub(super) fn context_expression_ternary(
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+) -> Option<usize> {
+    let jumps_over_an_arm: bool = (lo..hi).any(|k: usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::JumpForward(_) | CanonicalOp::JumpAbsolute(_)
+        ) && resolve_jump_target(stream, k, &stream.ops[k]).is_some_and(|t: usize| t > k)
+    });
+    if !jumps_over_an_arm {
+        return None;
+    }
+    (lo..hi).find(|&k: &usize| {
+        resolve_jump_target(stream, k, &stream.ops[k]).is_some()
+            && !is_value_form_shortcircuit(&stream.ops, k)
+    })
 }
 
 fn legacy_with_return_body(
@@ -3194,12 +3220,14 @@ fn rewrite_inlined_break_tail(
         return None;
     }
     let prefix_jumps_to_tail: bool = (lo..pop_at).any(|k: usize| {
-        (is_forward_cond_jump(&stream.ops[k])
-            || matches!(
-                stream.ops[k],
-                CanonicalOp::JumpIfTrueOrPop(_) | CanonicalOp::JumpIfFalseOrPop(_)
-            ))
-            && resolve_jump_target(stream, k, &stream.ops[k]).is_some_and(|t: usize| t >= pop_at)
+        stream.ops.get(k).is_some_and(|op: &CanonicalOp| {
+            (is_forward_cond_jump(op)
+                || matches!(
+                    op,
+                    CanonicalOp::JumpIfTrueOrPop(_) | CanonicalOp::JumpIfFalseOrPop(_)
+                ))
+                && resolve_jump_target(stream, k, op).is_some_and(|t: usize| t >= pop_at)
+        })
     });
     if prefix_jumps_to_tail {
         return None;

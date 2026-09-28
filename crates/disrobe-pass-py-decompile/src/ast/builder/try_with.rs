@@ -9285,10 +9285,7 @@ fn recover_with_setup(
         (_, Some((copy_idx, modern_end))) => (copy_idx, modern_end),
         (None, None) => return Ok(None),
     };
-    if let Some(branch) = (ctx_start..ctx_end).find(|&k: &usize| {
-        resolve_jump_target(stream, k, &stream.ops[k]).is_some()
-            && !is_value_form_shortcircuit(&stream.ops, k)
-    }) {
+    if let Some(branch) = super::stmts::context_expression_ternary(stream, ctx_start, ctx_end) {
         return Err(crate::error::DecompileError::AstDesync {
             offset: stream
                 .offsets

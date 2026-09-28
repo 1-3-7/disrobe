@@ -670,9 +670,9 @@ fn lift_instructions(
             let for_iter_mp: usize = instrs[range_loop.jump_idx].offset;
             let exit_mp: usize = range_loop.exit_mp;
             loop_tails.push(LoopTail {
-                start_mp: instrs[range_loop.body_end_idx].offset,
-                exit_mp,
-                for_iter_mp,
+                start: instrs[range_loop.body_end_idx].offset,
+                exit: exit_mp,
+                for_iter: for_iter_mp,
             });
 
             out.push((
@@ -789,9 +789,9 @@ fn lift_instructions(
         if let Emitted::JumpAbs { mp_target, .. } | Emitted::JumpRel { mp_target, .. } = emitted
             && let Some(tail) = loop_tails
                 .iter()
-                .find(|tail: &&LoopTail| (tail.start_mp..tail.exit_mp).contains(mp_target))
+                .find(|tail: &&LoopTail| (tail.start..tail.exit).contains(mp_target))
         {
-            *mp_target = tail.for_iter_mp;
+            *mp_target = tail.for_iter;
         }
     }
     Ok(out)
@@ -799,9 +799,9 @@ fn lift_instructions(
 
 #[derive(Debug, Clone, Copy)]
 struct LoopTail {
-    start_mp: usize,
-    exit_mp: usize,
-    for_iter_mp: usize,
+    start: usize,
+    exit: usize,
+    for_iter: usize,
 }
 
 fn is_class_cell_tail(instrs: &[MpyDecodedInsn], at: usize, cell_slot: usize) -> bool {
