@@ -85,7 +85,7 @@ impl Pass for PyfreezePass {
                 "DR-PYFRZ-0903: pyfreeze.extract: freezer kind unknown".to_string(),
             ));
         }
-        let members: Vec<ZipMember> = carve_zip_members(bytes);
+        let members: Vec<ZipMember> = carve_zip_members(bytes)?;
         let manifest: String = render_manifest(detection.kind, &members);
         Ok(Artifact::new(
             Rung::Disasm,
@@ -111,7 +111,7 @@ impl Pass for PyfreezePass {
                 bytes: bytes.to_vec(),
             }]);
         }
-        let members: Vec<ZipMember> = carve_zip_members(bytes);
+        let members: Vec<ZipMember> = carve_zip_members(bytes)?;
         let children: Vec<ChildArtifact> = members
             .into_iter()
             .enumerate()
@@ -145,22 +145,24 @@ struct ZipMember {
     data: Vec<u8>,
 }
 
-fn carve_zip_members(bytes: &[u8]) -> Vec<ZipMember> {
+fn carve_zip_members(bytes: &[u8]) -> CoreResult<Vec<ZipMember>> {
     let info: ZipTailInfo = match locate(bytes) {
         Ok(i) => i,
-        Err(_) => return Vec::new(),
+        Err(_) => return Ok(Vec::new()),
     };
     let zip_slice: &[u8] = match bytes.get(info.archive_start_offset..) {
         Some(s) => s,
-        None => return Vec::new(),
+        None => return Ok(Vec::new()),
     };
     let mut archive: zip::ZipArchive<Cursor<&[u8]>> =
         match zip::ZipArchive::new(Cursor::new(zip_slice)) {
             Ok(a) => a,
-            Err(_) => return Vec::new(),
+            Err(_) => return Ok(Vec::new()),
         };
     let count: usize = archive.len().min(MAX_ZIP_ENTRIES);
-    let mut out: Vec<ZipMember> = Vec::with_capacity(count);
+    let mut quota: disrobe_binfmt::QuotaGuard =
+        disrobe_binfmt::QuotaGuard::new(disrobe_binfmt::ExtractionQuota::default_safe());
+    let mut out: Vec<ZipMember> = Vec::with_capacity(count.min(1024));
     for i in 0..count {
         let mut file: zip::read::ZipFile<'_> = match archive.by_index(i) {
             Ok(f) => f,
@@ -173,6 +175,13 @@ fn carve_zip_members(bytes: &[u8]) -> Vec<ZipMember> {
             continue;
         };
         let declared_size: u64 = file.size();
+        quota
+            .admit_entry(&name, declared_size, file.compressed_size())
+            .map_err(|error: disrobe_binfmt::Error| {
+                CoreError::PassFailure(format!(
+                    "DR-PYFRZ-0904: pyfreeze.extract: the zip exceeds the extraction quota at {name}: {error}"
+                ))
+            })?;
         let Ok(data): std::io::Result<Vec<u8>> = crate::common::read_bounded::read_to_vec_limited(
             &mut file,
             declared_size,
@@ -185,7 +194,7 @@ fn carve_zip_members(bytes: &[u8]) -> Vec<ZipMember> {
         }
         out.push(ZipMember { name, data });
     }
-    out
+    Ok(out)
 }
 
 fn sanitize_member(name: &str) -> Option<String> {
