@@ -20,7 +20,7 @@ pub fn normalize(input: &str) -> NormalizeReport {
 
 fn join_continuations(input: &str) -> (String, usize) {
     let normalized: String = input.replace("\r\n", "\n").replace('\r', "\n");
-    let mut out: String = String::with_capacity(normalized.len());
+    let mut out: Vec<u8> = Vec::with_capacity(normalized.len());
     let mut joins: usize = 0;
     let bytes: &[u8] = normalized.as_bytes();
     let mut i: usize = 0;
@@ -31,10 +31,10 @@ fn join_continuations(input: &str) -> (String, usize) {
             i += 2;
             continue;
         }
-        out.push(b as char);
+        out.push(b);
         i += 1;
     }
-    (out, joins)
+    (String::from_utf8_lossy(&out).into_owned(), joins)
 }
 
 fn strip_carets(input: &str) -> (String, usize) {
@@ -86,6 +86,13 @@ fn is_escaped(bytes: &[u8], idx: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn joined_lines_keep_non_ascii_characters() {
+        let (joined, count): (String, usize) = join_continuations("echo café ^\r\nüber");
+        assert_eq!(count, 1);
+        assert_eq!(joined, "echo café über");
+    }
 
     #[test]
     fn strips_inline_carets() {

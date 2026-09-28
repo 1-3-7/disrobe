@@ -100,7 +100,7 @@ fn bash_shift_count(count: i64) -> Option<u32> {
 }
 
 fn strip_arith_noise(expr: &str) -> String {
-    let mut out: String = String::with_capacity(expr.len());
+    let mut out: Vec<u8> = Vec::with_capacity(expr.len());
     let bytes: &[u8] = expr.as_bytes();
     let mut i: usize = 0;
     while i < bytes.len() {
@@ -147,10 +147,10 @@ fn strip_arith_noise(expr: &str) -> String {
             i += 1;
             continue;
         }
-        out.push(b as char);
+        out.push(b);
         i += 1;
     }
-    out
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 const MAX_ARITH_DEPTH: usize = 256;

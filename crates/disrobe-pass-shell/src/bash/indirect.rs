@@ -166,28 +166,38 @@ fn peel_non_eval_layers(current: &mut String, steps: &mut Vec<String>) -> Result
 use crate::regex_util::first_capture;
 
 fn decode_printf_hex(s: &str) -> String {
-    let mut out: String = String::with_capacity(s.len() / 4);
     let bytes: &[u8] = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
     let mut i: usize = 0;
-    while i + 3 < bytes.len() {
-        if bytes[i] == b'\\' && bytes[i + 1] == b'x' {
-            let hex: &str = std::str::from_utf8(&bytes[i + 2..i + 4]).unwrap_or("00");
-            if let Ok(v) = u8::from_str_radix(hex, 16) {
-                out.push(v as char);
-                i += 4;
-                continue;
-            }
+    while i < bytes.len() {
+        let escaped: Option<u8> = (bytes[i] == b'\\' && bytes.get(i + 1) == Some(&b'x'))
+            .then(|| bytes.get(i + 2..i + 4))
+            .flatten()
+            .and_then(|hex: &[u8]| std::str::from_utf8(hex).ok())
+            .and_then(|hex: &str| u8::from_str_radix(hex, 16).ok());
+        if let Some(value) = escaped {
+            out.push(value);
+            i += 4;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
         }
-        out.push(bytes[i] as char);
-        i += 1;
     }
-    out
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::policy::STATIC_EVAL_DEPTH_CAP;
+
+    #[test]
+    fn printf_hex_keeps_the_tail_and_decodes_utf8_sequences() {
+        assert_eq!(decode_printf_hex("\\x63\\x61\\x74 abc"), "cat abc");
+        assert_eq!(decode_printf_hex("\\xc3\\xa9t\\xc3\\xa9"), "été");
+        assert_eq!(decode_printf_hex("ü\\x21"), "ü!");
+        assert_eq!(decode_printf_hex("ab"), "ab");
+    }
 
     #[test]
     fn substitutes_ifs_tokens() -> Result<()> {

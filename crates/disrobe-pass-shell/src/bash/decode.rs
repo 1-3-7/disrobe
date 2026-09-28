@@ -446,12 +446,10 @@ fn expand_word_inner(word: &str, env: &mut EvalEnv, decode_backslash: bool) -> R
                 if !decode_backslash {
                     out.push('\\');
                 }
-                out.push(bytes[i + 1] as char);
-                i += 2;
+                i += 1 + push_char_at(&mut out, bytes, i + 1);
             }
             _ => {
-                out.push(b as char);
-                i += 1;
+                i += push_char_at(&mut out, bytes, i);
             }
         }
     }
@@ -469,8 +467,7 @@ fn read_single_quote(bytes: &[u8], start: usize) -> (String, usize) {
         if bytes[i] == b'\'' {
             return (out, i + 1);
         }
-        out.push(bytes[i] as char);
-        i += 1;
+        i += push_char_at(&mut out, bytes, i);
     }
     (out, i)
 }
@@ -488,8 +485,7 @@ fn read_double_quote(bytes: &[u8], start: usize, env: &mut EvalEnv) -> (String, 
                 if !matches!(n, b'"' | b'\\' | b'$' | b'`') {
                     out.push('\\');
                 }
-                out.push(n as char);
-                i += 2;
+                i += 1 + push_char_at(&mut out, bytes, i + 1);
             }
             b'$' if bytes.get(i + 1) == Some(&b'(') => {
                 let (seg, end, rt): (String, usize, bool) = read_command_subst(bytes, i + 2, env);
@@ -504,8 +500,7 @@ fn read_double_quote(bytes: &[u8], start: usize, env: &mut EvalEnv) -> (String, 
                 i = end;
             }
             _ => {
-                out.push(b as char);
-                i += 1;
+                i += push_char_at(&mut out, bytes, i);
             }
         }
     }
@@ -900,67 +895,38 @@ fn resolve_default_family(
 
 fn read_ansi_c(bytes: &[u8], start: usize) -> (String, usize) {
     let mut i: usize = start;
-    let mut out: String = String::new();
+    let mut out: Vec<u8> = Vec::new();
     while i < bytes.len() {
         let b: u8 = bytes[i];
         if b == b'\'' {
-            return (out, i + 1);
+            return (String::from_utf8_lossy(&out).into_owned(), i + 1);
         }
         if b == b'\\' && i + 1 < bytes.len() {
-            let (ch, consumed): (Option<char>, usize) = decode_escape(&bytes[i + 1..]);
-            if let Some(c) = ch {
-                out.push(c);
+            let (byte, consumed): (Option<u8>, usize) = decode_escape_byte(&bytes[i + 1..]);
+            if let Some(decoded) = byte {
+                out.push(decoded);
             }
             i += 1 + consumed;
             continue;
         }
-        out.push(b as char);
+        out.push(b);
         i += 1;
     }
-    (out, i)
+    (String::from_utf8_lossy(&out).into_owned(), i)
 }
 
-fn decode_escape(rest: &[u8]) -> (Option<char>, usize) {
-    if rest.is_empty() {
-        return (None, 0);
-    }
-    match rest[0] {
-        b'x' => {
-            let mut j: usize = 1;
-            while j < rest.len() && j <= 2 && rest[j].is_ascii_hexdigit() {
-                j += 1;
-            }
-            if j == 1 {
-                return (Some('x'), 1);
-            }
-            let Some(v): Option<u8> = parse_escape_u8(&rest[1..j], 16) else {
-                return (Some('\\'), 0);
-            };
-            (Some(v as char), j)
-        }
-        b'0'..=b'7' => {
-            let mut j: usize = 0;
-            while j < rest.len() && j < 3 && (b'0'..=b'7').contains(&rest[j]) {
-                j += 1;
-            }
-            let Some(v): Option<u32> = parse_escape_u32(&rest[..j], 8) else {
-                return (Some('\\'), 0);
-            };
-            (Some((v as u8) as char), j)
-        }
-        b'n' => (Some('\n'), 1),
-        b't' => (Some('\t'), 1),
-        b'r' => (Some('\r'), 1),
-        b'\\' => (Some('\\'), 1),
-        b'\'' => (Some('\''), 1),
-        b'"' => (Some('"'), 1),
-        b'a' => (Some('\x07'), 1),
-        b'b' => (Some('\x08'), 1),
-        b'f' => (Some('\x0c'), 1),
-        b'v' => (Some('\x0b'), 1),
-        b'e' => (Some('\x1b'), 1),
-        other => (Some(other as char), 1),
-    }
+fn push_char_at(out: &mut String, bytes: &[u8], at: usize) -> usize {
+    let width: usize = match bytes.get(at) {
+        Some(0xC0..=0xDF) => 2,
+        Some(0xE0..=0xEF) => 3,
+        Some(0xF0..=0xF7) => 4,
+        _ => 1,
+    };
+    let decoded: Option<&str> = bytes
+        .get(at..at + width)
+        .and_then(|encoded: &[u8]| std::str::from_utf8(encoded).ok());
+    out.push_str(decoded.unwrap_or("\u{fffd}"));
+    decoded.map_or(1, |_| width)
 }
 
 fn decode_escape_byte(rest: &[u8]) -> (Option<u8>, usize) {
@@ -1340,9 +1306,9 @@ fn expand_tr_set(set: &str) -> Vec<u8> {
     let mut i: usize = 0;
     while i < bytes.len() {
         if bytes[i] == b'\\' && i + 1 < bytes.len() {
-            let (ch, consumed): (Option<char>, usize) = decode_escape(&bytes[i + 1..]);
-            if let Some(c) = ch {
-                out.push(c as u8);
+            let (byte, consumed): (Option<u8>, usize) = decode_escape_byte(&bytes[i + 1..]);
+            if let Some(decoded) = byte {
+                out.push(decoded);
             }
             i += 1 + consumed;
             continue;
@@ -1416,8 +1382,7 @@ pub(crate) fn substitute_ifs(input: &str) -> (String, bool) {
                 continue;
             }
         }
-        out.push(bytes[i] as char);
-        i += 1;
+        i += push_char_at(&mut out, bytes, i);
     }
     (out, hit)
 }
@@ -1431,6 +1396,20 @@ mod tests {
         let mut env: EvalEnv = EvalEnv::default();
         let r: DecodeResult = evaluate(input, &mut env);
         (r.output, env)
+    }
+
+    #[test]
+    fn non_ascii_text_keeps_its_characters_through_every_quote_form() {
+        let (out, _): (String, EvalEnv) =
+            run("a='café'; b=\"naïve \\ü\"; c=$'\\xc3\\xa9t'; eval \"echo $a $b $c ümlaut\"");
+        assert!(out.contains("café"), "out={out}");
+        assert!(out.contains("naïve"), "out={out}");
+        assert!(out.contains("ét"), "out={out}");
+        assert!(out.contains("ümlaut"), "out={out}");
+        assert!(
+            !out.contains('Ã'),
+            "no byte was reinterpreted as Latin-1: {out}"
+        );
     }
 
     #[test]
