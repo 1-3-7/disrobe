@@ -403,8 +403,22 @@ fn merge_ignore_lists(primary: Vec<usize>, legacy: Vec<usize>) -> Vec<usize> {
     merged
 }
 
+impl SourceMapLimits {
+    pub const DEFAULT: Self = Self {
+        input_bytes: MAX_MAP_BYTES,
+        sources: MAX_SOURCES,
+        names: 1 << 22,
+        sections: MAX_SECTIONS,
+        depth: 16,
+        generated_lines: 1 << 24,
+        mapping_segments: 1 << 26,
+        content_bytes: MAX_MAP_BYTES,
+        path_bytes: 1 << 16,
+    };
+}
+
 pub fn parse(raw_json: &str) -> Result<SourceMap> {
-    parse_raw(raw_json, MAX_MAP_BYTES).map(into_source_map)
+    parse_with_limits(raw_json, SourceMapLimits::DEFAULT)
 }
 
 pub fn parse_with_limits(raw_json: &str, limits: SourceMapLimits) -> Result<SourceMap> {
@@ -635,7 +649,13 @@ fn build_stub(raw_source: &str, coverage: &SourceCoverage) -> String {
     let mut out: String = String::new();
     out.push_str(STUB_BANNER);
     out.push('\n');
-    push_format(&mut out, format_args!("// source: {raw_source}\n"));
+    push_format(
+        &mut out,
+        format_args!(
+            "// source: {}\n",
+            disrobe_core::source_text::escape_unsafe_chars(raw_source)
+        ),
+    );
     if let (Some(first), Some(last)) = (coverage.first_original_line, coverage.last_original_line) {
         push_format(
             &mut out,
@@ -656,7 +676,13 @@ fn build_stub(raw_source: &str, coverage: &SourceCoverage) -> String {
             ),
         );
         for name in &coverage.names {
-            push_format(&mut out, format_args!("//   {name}\n"));
+            push_format(
+                &mut out,
+                format_args!(
+                    "//   {}\n",
+                    disrobe_core::source_text::escape_unsafe_chars(name)
+                ),
+            );
         }
     }
     out
