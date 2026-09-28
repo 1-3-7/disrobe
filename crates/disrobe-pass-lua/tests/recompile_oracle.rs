@@ -123,6 +123,25 @@ fn recompile_equivalence_lua_5_4() {
     }
 }
 
+const SERIALIZE_HARNESS: &str = r#"
+local function ser(v, depth)
+  depth = depth or 0
+  local t = type(v)
+  if t == "table" and depth < 12 then
+    local keys = {}
+    for k in pairs(v) do keys[#keys + 1] = k end
+    table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
+    local parts = {}
+    for _, k in ipairs(keys) do
+      parts[#parts + 1] = tostring(k) .. "=" .. ser(v[k], depth + 1)
+    end
+    return "{" .. table.concat(parts, ",") .. "}"
+  end
+  if t == "function" then return "fn" end
+  return tostring(v)
+end
+"#;
+
 fn run_lua_capture(interp: &str, source: &str) -> Option<String> {
     let seq: u64 = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
     let purpose: String = format!("disrobe_lua_runtime-{}-{seq}", std::process::id());

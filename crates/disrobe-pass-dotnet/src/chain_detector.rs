@@ -1586,7 +1586,7 @@ mod tests {
         assert!(parsed["eazvm"].is_null());
     }
 
-    fn analyze_sidecar_for(rel: &str) -> Option<serde_json::Value> {
+    fn analyze_sidecar_for(rel: &str) -> serde_json::Value {
         let path: std::path::PathBuf = corpus(rel);
         let bytes: Vec<u8> = std::fs::read(&path).unwrap_or_else(|error: std::io::Error| {
             panic!(
@@ -1602,16 +1602,12 @@ mod tests {
             .iter()
             .find(|c: &&ChildArtifact| c.handle.relative_path.ends_with(".analyze.json"))
             .expect("analyze sidecar present");
-        Some(serde_json::from_slice(&analyze_child.bytes).expect("analyze sidecar is valid JSON"))
+        serde_json::from_slice(&analyze_child.bytes).expect("analyze sidecar is valid JSON")
     }
 
     #[test]
     fn extract_children_analyze_sidecar_surfaces_control_flow_flattening() {
-        let Some(parsed): Option<serde_json::Value> =
-            analyze_sidecar_for("dotnet/cff/CffSample.ctrlflow.exe")
-        else {
-            return;
-        };
+        let parsed: serde_json::Value = analyze_sidecar_for("dotnet/cff/CffSample.ctrlflow.exe");
         let cff: &serde_json::Value = &parsed["control_flow_flattening"];
         assert!(
             !cff.is_null(),
@@ -1626,11 +1622,7 @@ mod tests {
 
     #[test]
     fn extract_children_analyze_sidecar_surfaces_inlined_decryptor_literals() {
-        let Some(parsed): Option<serde_json::Value> =
-            analyze_sidecar_for("dotnet/cff/DecryptSample.exe")
-        else {
-            return;
-        };
+        let parsed: serde_json::Value = analyze_sidecar_for("dotnet/cff/DecryptSample.exe");
         let inlined: Vec<String> = parsed["inlined_literals"]
             .as_array()
             .expect("inlined_literals is a json array")
