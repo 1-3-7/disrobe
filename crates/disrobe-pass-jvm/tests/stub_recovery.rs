@@ -59,6 +59,10 @@ fn peel_recovers_strings_by_emulating_embedded_stub() {
         .expect("utf16");
         cp.push(ConstantPoolEntry::Utf8(enc));
     }
+    let pool_end: u16 = u16::try_from(cp.len()).expect("small constant pool");
+    for utf8_index in 4..pool_end {
+        cp.push(ConstantPoolEntry::String { utf8_index });
+    }
 
     let cf: ClassFile = ClassFile {
         minor_version: 0,
