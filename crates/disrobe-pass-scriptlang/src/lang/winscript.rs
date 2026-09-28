@@ -1204,6 +1204,12 @@ fn apply_format(template: &str, args: &[String]) -> Option<String> {
 }
 
 #[must_use]
+fn copy_char_at(out: &mut String, text: &str, at: usize) -> usize {
+    let character: Option<char> = text.get(at..).and_then(|rest: &str| rest.chars().next());
+    out.push(character.unwrap_or(char::REPLACEMENT_CHARACTER));
+    character.map_or(1, char::len_utf8)
+}
+
 pub fn rebuild_replace(text: &str) -> Option<String> {
     let bytes: &[u8] = text.as_bytes();
     let lower: Vec<u8> = text.to_ascii_lowercase().into_bytes();
@@ -1243,8 +1249,7 @@ pub fn rebuild_replace(text: &str) -> Option<String> {
                 continue;
             }
         }
-        result.push(bytes[i] as char);
-        i += 1;
+        i += copy_char_at(&mut result, text, i);
     }
     changed.then_some(result)
 }
@@ -1337,8 +1342,7 @@ pub fn rebuild_string_reverse(text: &str) -> Option<String> {
             i = end;
             continue;
         }
-        result.push(bytes[i] as char);
-        i += 1;
+        i += copy_char_at(&mut result, text, i);
     }
     changed.then_some(result)
 }
@@ -1412,8 +1416,7 @@ pub fn rebuild_char_builder(text: &str) -> Option<String> {
             i = end;
             changed = true;
         } else {
-            result.push(bytes[i] as char);
-            i += 1;
+            i += copy_char_at(&mut result, text, i);
         }
     }
     changed.then_some(result)
@@ -1514,8 +1517,7 @@ pub fn resolve_batch_substrings(text: &str) -> Option<String> {
             changed = true;
             continue;
         }
-        out.push(bytes[i] as char);
-        i += 1;
+        i += copy_char_at(&mut out, text, i);
     }
     changed.then_some(out)
 }
@@ -1920,6 +1922,16 @@ mod tests {
         assert!(rebuilt.contains("'H'"), "{rebuilt}");
     }
     use std::io::Write;
+
+    #[test]
+    fn rebuilders_copy_non_ascii_text_around_their_matches() {
+        let replaced: String = rebuild_replace("$m = 'Wxrld'.replace('x','o'); \"héllo ü\"")
+            .expect("a replace was rebuilt");
+        assert!(replaced.contains("héllo ü"), "{replaced}");
+        let built: String =
+            rebuild_char_builder("naïve = Chr(39) & Chr(97)").expect("a builder was rebuilt");
+        assert!(built.starts_with("naïve = "), "{built}");
+    }
 
     #[test]
     fn rebuild_replace_bounds_amplifying_replace() {
