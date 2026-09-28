@@ -302,22 +302,6 @@ pub fn analyze_stack_map(
     }
 }
 
-#[must_use]
-pub fn analyze_stack_map_with_entry_frame(
-    info: &[u8],
-    code_length: usize,
-    insns: &[Instruction],
-    descriptor: &MethodDescriptor,
-    is_static: bool,
-    is_init_ctor: bool,
-    this_class: &str,
-    utf8_lookup: &dyn Fn(u16) -> Option<String>,
-) -> StackMapReport {
-    let mut report: StackMapReport = analyze_stack_map(info, code_length, insns, utf8_lookup);
-    report.entry_frame = entry_frame_locals(descriptor, is_static, is_init_ctor, this_class);
-    report
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
@@ -418,38 +402,6 @@ mod tests {
             "Sample",
         );
         assert_eq!(ctor_locals, vec![VerificationType::UninitializedThis]);
-    }
-
-    #[test]
-    fn analyze_with_entry_frame_populates_locals() {
-        let code: &[u8] = &[0x04, 0xAC];
-        let insns: Vec<Instruction> = disassemble(code).expect("disasm");
-        let info: Vec<u8> = build_code_info(code, &[]);
-        let desc: MethodDescriptor = MethodDescriptor {
-            params: vec![
-                JavaType::Int,
-                JavaType::Object("Ljava/lang/String;".to_owned()),
-            ],
-            returns: JavaType::Int,
-        };
-        let report: StackMapReport = analyze_stack_map_with_entry_frame(
-            &info,
-            code.len(),
-            &insns,
-            &desc,
-            false,
-            false,
-            "Sample",
-            &|_| None,
-        );
-        assert_eq!(
-            report.entry_frame,
-            vec![
-                VerificationType::Object("Sample".to_owned()),
-                VerificationType::Integer,
-                VerificationType::Object("Ljava/lang/String;".to_owned()),
-            ]
-        );
     }
 
     #[test]

@@ -339,8 +339,7 @@ pub use sccp::{SccpReport, simplify_flattened_cfg};
 #[cfg(not(target_arch = "wasm32"))]
 pub use smali::{SmaliEmission, emit as emit_smali, emit_method_body, emit_method_body_from_insns};
 pub use stackmap::{
-    StackMapReport, VerificationType, analyze_stack_map, analyze_stack_map_with_entry_frame,
-    entry_frame_locals, required_frame_offsets,
+    StackMapReport, VerificationType, analyze_stack_map, entry_frame_locals, required_frame_offsets,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use string_recovery::{
