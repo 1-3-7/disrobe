@@ -5064,10 +5064,61 @@ fn structure_backward_continue_guard(
     }) else {
         return Ok(None);
     };
-    let Some((head, test)): Option<(Vec<Stmt>, Expr)> =
-        guard_head_and_test(code, stream, lo, jump_idx)?
-    else {
-        return Ok(None);
+    let into_body: Vec<usize> = (lo..jump_idx)
+        .filter(|&k: &usize| {
+            stream.ops.get(k).is_some_and(|op: &CanonicalOp| {
+                (is_forward_cond_jump(op)
+                    || matches!(
+                        op,
+                        CanonicalOp::JumpIfTrueOrPop(_) | CanonicalOp::JumpIfFalseOrPop(_)
+                    ))
+                    && resolve_jump_target(stream, k, op).is_some_and(|t: usize| t > jump_idx)
+            })
+        })
+        .collect();
+    let (head, test): (Vec<Stmt>, Expr) = match into_body.as_slice() {
+        [] => {
+            let Some(found): Option<(Vec<Stmt>, Expr)> =
+                guard_head_and_test(code, stream, lo, jump_idx)?
+            else {
+                return Ok(None);
+            };
+            found
+        }
+        [either] => {
+            let body_start: Option<usize> = first_significant(stream, jump_idx + 1, hi);
+            let or_shape: bool = matches!(
+                stream.ops.get(*either),
+                Some(CanonicalOp::PopJumpIfTrue(_) | CanonicalOp::PopJumpIfTrueRel(_))
+            ) && matches!(
+                stream.ops.get(jump_idx),
+                Some(CanonicalOp::PopJumpIfFalse(_) | CanonicalOp::PopJumpIfFalseRel(_))
+            ) && resolve_jump_target(stream, *either, &stream.ops[*either])
+                == body_start;
+            if !or_shape {
+                return Ok(None);
+            }
+            let Some((head, first)): Option<(Vec<Stmt>, Expr)> =
+                guard_head_and_test(code, stream, lo, *either)?
+            else {
+                return Ok(None);
+            };
+            let (extra, residual): (Vec<Stmt>, Vec<Expr>) =
+                build_linear_stmts_sim(code, &stream.ops[*either + 1..jump_idx])?;
+            let (true, Some(second)): (bool, Option<Expr>) =
+                (extra.is_empty(), residual.into_iter().next_back())
+            else {
+                return Ok(None);
+            };
+            (
+                head,
+                Expr::BoolOp {
+                    op: crate::ast::node::BoolOpKind::Or,
+                    values: vec![first, second],
+                },
+            )
+        }
+        _ => return Ok(None),
     };
     let test: Expr = fallthrough_cond_test(stream, jump_idx, test);
     let body_end: usize = trim_body_back_edge(stream, jump_idx + 1, hi);
@@ -5183,6 +5234,8 @@ fn structure_or_chain_body_guard(
         return Ok(None);
     }
     let body: Vec<Stmt> = structure_stmts(code, stream, guard.body_start, body_end)?;
+    let body: Vec<Stmt> =
+        rewrite_jump_to_break_continue(code, stream, body, guard.body_start, body_end);
     let mut out: Vec<Stmt> = guard.head;
     out.push(Stmt::If {
         test: guard.test,

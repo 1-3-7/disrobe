@@ -86,3 +86,11 @@ fn guarded_break_inside_a_guard_before_an_inlined_return() {
         "def f(xs, a, b, g):\n    for x in xs:\n        if a(x):\n            g(x)\n            if b(x):\n                break\n    return 1\n",
     );
 }
+
+#[test]
+fn short_circuit_break_test_keeps_both_operands() {
+    assert_recompiles(
+        "short_circuit_break_keeps_operands",
+        "def f(xs, a, b, g):\n    for x in xs:\n        g(x)\n        if a(x) or b(x):\n            break\n    g(0)\n",
+    );
+}
