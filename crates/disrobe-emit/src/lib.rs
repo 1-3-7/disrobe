@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 #![deny(unreachable_pub)]
 pub mod c;
 pub mod intern;

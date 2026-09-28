@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 pub mod abi;
 pub mod callsite;
 pub mod cells;

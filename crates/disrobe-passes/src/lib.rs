@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 use disrobe_core::chain::{Ecosystem, PassRegistry, ecosystem_for};
 use disrobe_core::pass::PassId;
 

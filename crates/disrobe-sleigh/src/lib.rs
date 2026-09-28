@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 pub mod compiler;
 pub mod coverage;
 pub mod error;

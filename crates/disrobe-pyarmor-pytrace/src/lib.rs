@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 #![deny(unreachable_pub)]
 use std::collections::BTreeSet;
 use std::sync::Mutex;
