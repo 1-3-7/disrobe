@@ -68,28 +68,54 @@ fn decompile_node(pyc: &[u8]) -> Node {
         .expect("the chain must route the pyc to py.decompile")
 }
 
+fn is_named(code: &CodeObject, name: &str) -> bool {
+    matches!(
+        &code.name,
+        Object::String { value, .. } | Object::Unicode { value, .. } | Object::ShortAscii { value, .. }
+            if value == name
+    )
+}
+
 fn named_scope<'a>(code: &'a CodeObject, name: &str) -> Option<&'a CodeObject> {
     code.consts
         .iter()
         .find_map(|constant: &Object| match constant {
-            Object::Code(nested) => match &nested.name {
-                Object::String { value, .. }
-                | Object::Unicode { value, .. }
-                | Object::ShortAscii { value, .. }
-                    if value == name =>
-                {
-                    Some(nested.as_ref())
-                }
-                _ => named_scope(nested, name),
-            },
+            Object::Code(nested) if is_named(nested, name) => Some(nested.as_ref()),
+            Object::Code(nested) => named_scope(nested, name),
             _ => None,
         })
 }
 
-fn unrecoverable_module_pyc() -> Vec<u8> {
-    let pyc: PycFile = read_pyc(STUBBED_MODULE).expect("the tracked 3.14 fixture must parse");
-    let Object::Code(module) = &pyc.code else {
+fn strip_named_scope_handlers(code: &mut CodeObject, name: &str) -> bool {
+    code.consts
+        .iter_mut()
+        .any(|constant: &mut Object| match constant {
+            Object::Code(nested) if is_named(nested, name) => {
+                nested.exceptiontable.clear();
+                true
+            }
+            Object::Code(nested) => strip_named_scope_handlers(nested, name),
+            _ => false,
+        })
+}
+
+fn stubbed_module_pyc() -> Vec<u8> {
+    let mut pyc: PycFile = read_pyc(STUBBED_MODULE).expect("the tracked 3.14 fixture must parse");
+    let Object::Code(module) = &mut pyc.code else {
         panic!("the tracked 3.14 fixture must hold a module code object");
+    };
+    assert!(
+        strip_named_scope_handlers(module, UNRECOVERABLE_SCOPE),
+        "the fixture must define {UNRECOVERABLE_SCOPE}"
+    );
+    write_pyc(&pyc).expect("the stripped module must marshal")
+}
+
+fn unrecoverable_module_pyc() -> Vec<u8> {
+    let stubbed: Vec<u8> = stubbed_module_pyc();
+    let pyc: PycFile = read_pyc(&stubbed).expect("the stripped module must parse");
+    let Object::Code(module) = &pyc.code else {
+        panic!("the stripped module must hold a module code object");
     };
     let scope: CodeObject = named_scope(module, UNRECOVERABLE_SCOPE)
         .unwrap_or_else(|| panic!("the fixture must define {UNRECOVERABLE_SCOPE}"))
@@ -149,7 +175,7 @@ fn a_directly_recovered_module_stays_python_source_and_tiers_semantic() {
 #[test]
 fn a_module_with_a_stubbed_nested_scope_is_not_reported_as_direct_recovery() {
     let result: NativeDecompile =
-        decompile_pyc(STUBBED_MODULE).expect("the tracked 3.14 fixture must decompile");
+        decompile_pyc(&stubbed_module_pyc()).expect("the stripped module must decompile");
     assert!(
         result.fallback_reason.is_none(),
         "the module itself recovers; only a nested scope is refused: {:?}",

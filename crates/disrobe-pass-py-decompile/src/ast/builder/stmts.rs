@@ -37,11 +37,11 @@ use super::try_with::{
     try_structure_loop_then_nested_try, try_structure_multibranch_guarded_try,
 };
 use super::{
-    ActiveRegionGuard, DecodedStream, FrameDispatch, ScDesc, StructureDepthGuard, WIDE_STEP,
-    active_version, class_docstring, enter_active_region, enter_structure_depth, extract_docstring,
-    fallthrough_cond_test, loop_break_target, loop_continue_target, loop_exit_return,
-    loop_exit_tail_range, loop_frame_has_header, negate_cond_expr, none_jump_test,
-    none_jump_test_taken, with_boolop_context,
+    ActiveRegionGuard, DecodedStream, FrameDispatch, ScDesc, StructureDepthGuard,
+    ThenArmEndCapGuard, WIDE_STEP, active_version, class_docstring, enter_active_region,
+    enter_structure_depth, extract_docstring, fallthrough_cond_test, loop_break_target,
+    loop_continue_target, loop_exit_return, loop_exit_tail_range, loop_frame_has_header,
+    negate_cond_expr, none_jump_test, none_jump_test_taken, with_boolop_context,
 };
 use crate::ast::node::{
     Arguments, Comprehension, ConstValue, ExceptHandler, Expr, ExprCtx, FormatConversion,
@@ -1563,22 +1563,22 @@ fn try_structure_elif_arm_over_try(
         is_forward_cond_jump(&stream.ops[k])
             && !is_chain_cond_jump(&stream.ops, k)
             && !is_value_form_shortcircuit(&stream.ops, k)
+            && resolve_jump_target(stream, k, &stream.ops[k]) == Some(cur_test_start)
     }) else {
         return Ok(None);
     };
-    if resolve_jump_target(stream, guard_prev, &stream.ops[guard_prev]) != Some(cur_test_start) {
-        return Ok(None);
-    }
     let Some(then_jump): Option<usize> =
         then_terminating_jump(stream, guard_prev + 1, cur_test_start)
     else {
         return Ok(None);
     };
-    let Some(_join): Option<usize> = resolve_jump_target(stream, then_jump, &stream.ops[then_jump])
+    let Some(join): Option<usize> = resolve_jump_target(stream, then_jump, &stream.ops[then_jump])
         .filter(|&t: &usize| t > region.try_start && t <= hi)
     else {
         return Ok(None);
     };
+    let cold_handler_after_join: bool =
+        region.handler_start >= join && region.region_end() >= hi && join < hi;
     let Some(prev_test_start): Option<usize> = guard_test_expr_start(code, stream, lo, guard_prev)
     else {
         return Ok(None);
@@ -1591,17 +1591,27 @@ fn try_structure_elif_arm_over_try(
     }) {
         return Ok(None);
     }
-    let Some(guarded): Option<Vec<Stmt>> =
+    let guarded_opt: Option<Vec<Stmt>> = {
+        let _else_arm_cap: Option<ThenArmEndCapGuard> =
+            cold_handler_after_join.then(|| ThenArmEndCapGuard::enter(join));
         try_structure_guarded_try(code, stream, cur_test_start, hi)?
-    else {
+    };
+    let Some(guarded): Option<Vec<Stmt>> = guarded_opt else {
         return Ok(None);
     };
-    let Some((elif_stmt, tail)): Option<(&Stmt, &[Stmt])> = guarded.split_first() else {
-        return Ok(None);
-    };
-    if !matches!(elif_stmt, Stmt::If { .. }) {
+    if !matches!(guarded.first(), Some(Stmt::If { .. })) {
         return Ok(None);
     }
+    let (else_arm, tail): (Vec<Stmt>, Vec<Stmt>) = if cold_handler_after_join {
+        (
+            guarded,
+            structure_stmts(code, stream, join, region.handler_start)?,
+        )
+    } else {
+        let mut arm: Vec<Stmt> = guarded;
+        let rest: Vec<Stmt> = arm.split_off(1);
+        (arm, rest)
+    };
     let (test_head, residual): (Vec<Stmt>, Vec<Expr>) =
         build_linear_stmts_sim(code, &stream.ops[prev_test_start..guard_prev])?;
     if !test_head.is_empty() {
@@ -1632,10 +1642,10 @@ fn try_structure_elif_arm_over_try(
     out.push(Stmt::If {
         test,
         body: non_empty(then_body),
-        orelse: vec![elif_stmt.clone()],
+        orelse: else_arm,
         line: None,
     });
-    out.extend(tail.iter().cloned());
+    out.extend(tail);
     Ok(Some(out))
 }
 

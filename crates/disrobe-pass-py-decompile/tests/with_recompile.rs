@@ -46,14 +46,105 @@ const WITH_BODY_RETURNS: &str = concat!(
     "        return fp.read()\n",
 );
 
+const SEQUENTIAL_WITHOUT_TAIL: &str = concat!(
+    "def copy(src, dst):\n",
+    "    with open(src) as a:\n",
+    "        data = a.read()\n",
+    "    with open(dst, \"w\") as b:\n",
+    "        b.write(data)\n",
+);
+
+const SEQUENTIAL_THEN_RETURN: &str = concat!(
+    "def multi_with_sequential(a, b):
+",
+    "    with a:
+",
+    "        x = 1
+",
+    "    with b:
+",
+    "        y = 2
+",
+    "    return x + y
+",
+);
+
+const SEQUENTIAL_IN_LOOP: &str = concat!(
+    "def copy(paths, dst):
+",
+    "    for p in paths:
+",
+    "        with open(p) as a:
+",
+    "            data = a.read()
+",
+    "        with open(dst, \"w\") as b:
+",
+    "            b.write(data)
+",
+);
+
+const SEQUENTIAL_IN_TRY: &str = concat!(
+    "def copy(src, dst):
+",
+    "    try:
+",
+    "        with open(src) as a:
+",
+    "            data = a.read()
+",
+    "        with open(dst, \"w\") as b:
+",
+    "            b.write(data)
+",
+    "    except OSError:
+",
+    "        pass
+",
+);
+
+const WITH_THEN_TRY: &str = concat!(
+    "def copy(src):
+",
+    "    with open(src) as a:
+",
+    "        data = a.read()
+",
+    "    try:
+",
+    "        g(data)
+",
+    "    except ValueError:
+",
+    "        h()
+",
+);
+
+const SEQUENTIAL_AT_MODULE_LEVEL: &str = concat!(
+    "with open(\"a\") as a:
+",
+    "    data = a.read()
+",
+    "with open(\"b\", \"w\") as b:
+",
+    "    b.write(data)
+",
+);
+
 const FIXTURES: &[(&str, &str)] = &[
     ("plain_after_unpack", PLAIN_AFTER_UNPACK),
+    ("sequential_without_tail", SEQUENTIAL_WITHOUT_TAIL),
+    ("sequential_then_return", SEQUENTIAL_THEN_RETURN),
+    ("sequential_in_loop", SEQUENTIAL_IN_LOOP),
+    ("sequential_in_try", SEQUENTIAL_IN_TRY),
+    ("with_then_try", WITH_THEN_TRY),
+    ("sequential_at_module_level", SEQUENTIAL_AT_MODULE_LEVEL),
     ("multi_item", MULTI_ITEM),
     ("with_in_loop", WITH_IN_LOOP),
     ("with_body_returns", WITH_BODY_RETURNS),
 ];
 
-const ALIASES: &[&str] = &["3.11", "3.12", "3.13", "3.14"];
+const ALIASES: &[&str] = &["3.11", "3.12", "3.13", "3.14", "3.15"];
 
 fn find_interpreter(alias: &str) -> Option<PathBuf> {
     let output: std::process::Output = Command::new("uv")
@@ -105,8 +196,8 @@ fn read_code(pyc_path: &Path) -> Result<(CodeObject, MarshalVersion), String> {
 
 #[test]
 fn with_regions_recompile_equivalent() {
-    let scratch: PathBuf = PathBuf::from("../../target/py-with-recompile");
-    fs::create_dir_all(&scratch).expect("scratch");
+    let scratch_dir: tempfile::TempDir = tempfile::tempdir().expect("scratch");
+    let scratch: &Path = scratch_dir.path();
 
     let mut checked: usize = 0;
     let mut failures: Vec<String> = Vec::new();
@@ -164,7 +255,7 @@ fn with_regions_recompile_equivalent() {
 
     assert!(
         checked > 0,
-        "no CPython 3.11-3.14 interpreter resolvable via uv; the with-recompile proof is vacuous"
+        "no CPython 3.11-3.15 interpreter resolvable via uv; the with-recompile proof is vacuous"
     );
     assert!(
         failures.is_empty(),
