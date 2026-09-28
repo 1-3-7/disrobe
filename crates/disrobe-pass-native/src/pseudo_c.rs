@@ -5348,15 +5348,14 @@ fn build_leaf_items(
                         rhs: src.clone(),
                     })
                 } else if *op == BinOp::Sub
-                    && matches!(src, Source::Imm(amount) if *amount > 0 && *amount <= signed_max(dest.width))
+                    && let Source::Imm(amount) = src
+                    && *amount > 0
+                    && *amount <= signed_max(dest.width)
                     && insns
                         .get(instruction_index + 1)
                         .is_some_and(|next: &DisasmInsn| next.mnemonic == "seto")
                 {
-                    let amount: i64 = match src {
-                        Source::Imm(amount) => *amount,
-                        Source::Reg(_) | Source::Lea { .. } | Source::Mem(_) => unreachable!(),
-                    };
+                    let amount: i64 = *amount;
                     let threshold: i64 = signed_min(dest.width) + amount;
                     let var: u32 = next_sel;
                     next_sel += 1;
