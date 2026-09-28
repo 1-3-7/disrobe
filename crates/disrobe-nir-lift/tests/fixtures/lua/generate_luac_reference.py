@@ -70,6 +70,7 @@ INSTRUCTION_LINE: re.Pattern[str] = re.compile(
     r"^\s*(?P<index>\d+)\s+\[[-\d]+\]\s+(?P<mnemonic>[A-Z][A-Z0-9]*)"
 )
 FUNCTION_LINE: re.Pattern[str] = re.compile(r"^(main|function) <")
+TARGET_COMMENT: re.Pattern[str] = re.compile(r";\s*(?:exit )?to (?P<target>\d+)\s*$")
 QUOTED_NAME: re.Pattern[str] = re.compile(r"\"([A-Z][A-Z0-9]*)\"")
 
 
@@ -124,7 +125,11 @@ def listing_to_mnemonics(listing: str, /) -> list[str]:
         matched: re.Match[str] | None = INSTRUCTION_LINE.match(raw)
         if matched is None:
             continue
-        lines.append(matched.group("mnemonic"))
+        target: re.Match[str] | None = TARGET_COMMENT.search(raw)
+        if target is None:
+            lines.append(matched.group("mnemonic"))
+        else:
+            lines.append(f"{matched.group('mnemonic')} {target.group('target')}")
     if not lines:
         raise SystemExit("the reference listing decoded no instructions")
     return lines

@@ -9,11 +9,11 @@ use wasmparser::{FunctionBody, Operator, Parser, Payload};
 
 const OPERATOR_SPACE: usize = 627;
 const REACHED_OPERATORS: usize = 98;
-const MODELLED_OPERATORS: usize = 27;
-const STRUCTURAL_OPERATORS: usize = 4;
+const MODELLED_OPERATORS: usize = 28;
+const STRUCTURAL_OPERATORS: usize = 3;
 const DECLINED_OPERATORS: usize = 67;
 
-const STRUCTURAL: [&str; 5] = ["Block", "Else", "End", "Loop", "Nop"];
+const STRUCTURAL: [&str; 4] = ["Block", "End", "Loop", "Nop"];
 
 const CODELESS_FIXTURES: [&str; 2] = ["wat/custom_page_size.wat", "wat/js_string_builtins.wat"];
 
@@ -204,7 +204,7 @@ const PINNED_VERDICTS: [(&str, &str); REACHED_OPERATORS] = [
     ("DataDrop", "Nop"),
     ("Delegate", "Nop"),
     ("Drop", "Nop"),
-    ("Else", "Nop"),
+    ("Else", "Branch"),
     ("End", "Nop"),
     ("ExternConvertAny", "Nop"),
     ("F32Load", "Load"),

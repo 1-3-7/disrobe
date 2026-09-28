@@ -46,15 +46,15 @@ const INVENTORY: [(&str, &str); 17] = [
     ),
     (
         "fixture:forms.5_1.mnemonics",
-        "bcaaeebe46a42f2e9aee103c82769cefaec2c9b9a766c023bc0453c3c667323b",
+        "808a0f7d52af2aa7e62d513b570ed4f50ab109e050b1eb39926bf39419c8117f",
     ),
     (
         "fixture:forms.5_3.mnemonics",
-        "2544a50b4c6dcbf902fc135ad3152455e1f0ff1fd0b59683ae805d73b4de6382",
+        "ac837bc0b4d5660a0240a2607f5723ecb5f49a5be08871570b1c3a43fd38a77a",
     ),
     (
         "fixture:forms.5_4.mnemonics",
-        "7caa46a5b616fb162492073b56c129a133a27a8f4a73654497c3929c4c346c6e",
+        "ada094c6dfdccfc0b7ba4de3ac73196b8e6d0bb54cb1e76c9c2c19ec8b9e0c5b",
     ),
     (
         "fixture:opcode_space.5_1.txt",
@@ -82,7 +82,7 @@ const INVENTORY: [(&str, &str); 17] = [
     ),
     (
         "fixture:edge_cases.5_1.mnemonics",
-        "6f86eec7568b08ffd82399f0732aecd8c8fe3503742be17010e1ddf470f8bbff",
+        "88eb790850458b62a550044b71b71990e4a884c9f78ecddd1a1c6c122dba2509",
     ),
     (
         "fixture:hello.5_3.mnemonics",
@@ -90,7 +90,7 @@ const INVENTORY: [(&str, &str); 17] = [
     ),
     (
         "fixture:edge_cases.5_3.mnemonics",
-        "cf8e771215063096ef70e4117e1d3ec4b83c0cded0c094dab295174a60e37240",
+        "29aae1919dcd23724ef25d9b87028cfa29b8514cdbfa961c87d154910bacb20f",
     ),
     (
         "fixture:hello.5_4.mnemonics",
@@ -98,26 +98,26 @@ const INVENTORY: [(&str, &str); 17] = [
     ),
     (
         "fixture:edge_cases.5_4.mnemonics",
-        "54c83d0906358c45e9849accfb704c2d8018e63da6fc50516c5f8d4ac6b9e6dd",
+        "7c830d06c4239353e6a0ae589a20d1abe1a3bf56299b8f6b9eb86acfa8279710",
     ),
 ];
 
 const CORPUS_INVENTORY: [(&str, &str); 4] = [
     (
         "corpus:hello.5_3.luac",
-        "3263e3df916c8b5ebdad89b2bca295cde0a0bdbbba756928f0431dd940754ef1",
+        "0cb2b1910664e1cc44c7fb6678af2776b886254eb88f552b89486c4040220d49",
     ),
     (
         "corpus:edge_cases.5_3.luac",
-        "d8b660055902d19a9713936630091ce1624c5e7a09f736e4d6d72f14238d1528",
+        "f2f9fa94059809a5a2a2853008c29ffc55d2805bc2aaee093b0731999a50eb0d",
     ),
     (
         "corpus:hello.5_4.luac",
-        "287f4251f579dfe52facca496397bc60b4a042e30e56e5fa6340c488ca6e2269",
+        "b93680519e81ad36574ed13386fcf87d1ccb0e5e5affae99ea53d024983ee3a0",
     ),
     (
         "corpus:edge_cases.5_4.luac",
-        "0999812ffe2e88f9c66fdf62e41f4456986482ba3f5dafceb92e5afa64069933",
+        "1386279a711b8b934ba9b420e67c4ef180d43fcde594a5612d540130808fdd6d",
     ),
 ];
 
@@ -165,6 +165,7 @@ const BANDS: [Band; 3] = [
             "graded instructions 3493\n",
             "modelled instructions 3044\n",
             "declined instructions 449\n",
+            "graded branch targets 319\n",
             "declined CLOSE MOVE VARARG\n",
             "corpus absent \n",
         ),
@@ -207,6 +208,7 @@ const BANDS: [Band; 3] = [
             "graded instructions 3415\n",
             "modelled instructions 3030\n",
             "declined instructions 385\n",
+            "graded branch targets 318\n",
             "declined MOVE VARARG\n",
             "corpus absent EXTRAARG LOADKX\n",
         ),
@@ -237,13 +239,14 @@ const BANDS: [Band; 3] = [
             "band Lua 5.4.8\n",
             "reference opcode space 83\n",
             "corpus reach 82\n",
-            "modelled opcodes 72\n",
-            "declined opcodes 10\n",
+            "modelled opcodes 73\n",
+            "declined opcodes 9\n",
             "graded functions 187\n",
             "graded instructions 3829\n",
-            "modelled instructions 3076\n",
-            "declined instructions 753\n",
-            "declined CLOSE EXTRAARG MMBIN MMBINI MMBINK MOVE TBC TFORPREP VARARG VARARGPREP\n",
+            "modelled instructions 3092\n",
+            "declined instructions 737\n",
+            "graded branch targets 319\n",
+            "declined CLOSE EXTRAARG MMBIN MMBINI MMBINK MOVE TBC VARARG VARARGPREP\n",
             "corpus absent LOADKX\n",
         ),
         present_vocabulary: &[
@@ -468,9 +471,15 @@ fn move_opcode_surfaces_as_unmodeled_not_nop() {
     assert!(saw_move, "edge_cases exercises MOVE");
 }
 
-fn reference_streams(key: &str) -> Vec<Vec<String>> {
+#[derive(Debug)]
+struct ListedInstruction {
+    mnemonic: String,
+    target: Option<u64>,
+}
+
+fn reference_streams(key: &str) -> Vec<Vec<ListedInstruction>> {
     let text: String = reference_text(key);
-    let mut streams: Vec<Vec<String>> = Vec::new();
+    let mut streams: Vec<Vec<ListedInstruction>> = Vec::new();
     for line in text.lines() {
         let trimmed: &str = line.trim();
         if trimmed.is_empty() {
@@ -488,16 +497,44 @@ fn reference_streams(key: &str) -> Vec<Vec<String>> {
             streams.push(Vec::new());
             continue;
         }
-        let stream: &mut Vec<String> = streams
+        let stream: &mut Vec<ListedInstruction> = streams
             .last_mut()
             .unwrap_or_else(|| panic!("{key} lists an instruction before any function marker"));
-        stream.push(trimmed.to_owned());
+        let listed: ListedInstruction = match trimmed.split_once(' ') {
+            Some((mnemonic, target)) => ListedInstruction {
+                mnemonic: mnemonic.to_owned(),
+                target: Some(
+                    target
+                        .parse::<u64>()
+                        .ok()
+                        .filter(|target: &u64| *target > 0)
+                        .unwrap_or_else(|| panic!("{key} lists a malformed target in {trimmed}")),
+                ),
+            },
+            None => ListedInstruction {
+                mnemonic: trimmed.to_owned(),
+                target: None,
+            },
+        };
+        stream.push(listed);
     }
     assert!(
         !streams.is_empty(),
         "{key} must describe at least one function"
     );
     streams
+}
+
+fn listed_mnemonics(streams: &[Vec<ListedInstruction>]) -> Vec<Vec<String>> {
+    streams
+        .iter()
+        .map(|stream: &Vec<ListedInstruction>| {
+            stream
+                .iter()
+                .map(|listed: &ListedInstruction| listed.mnemonic.clone())
+                .collect()
+        })
+        .collect()
 }
 
 fn lifted_streams(module: &NirModule) -> Vec<Vec<String>> {
@@ -520,6 +557,7 @@ struct Coverage {
     functions: usize,
     modelled_instructions: usize,
     declined_instructions: usize,
+    graded_targets: usize,
     modelled: BTreeSet<String>,
     declined: BTreeSet<String>,
     reach: BTreeSet<String>,
@@ -537,7 +575,8 @@ fn grade_fixture(band: &Band, fixture: &GradedFixture, coverage: &mut Coverage) 
 
     let module: NirModule = lift_lua_chunk(&bytes)
         .unwrap_or_else(|error| panic!("lift {} to NIR: {error}", fixture.chunk));
-    let expected: Vec<Vec<String>> = reference_streams(fixture.listing);
+    let listed: Vec<Vec<ListedInstruction>> = reference_streams(fixture.listing);
+    let expected: Vec<Vec<String>> = listed_mnemonics(&listed);
     let observed: Vec<Vec<String>> = lifted_streams(&module);
     assert_eq!(
         observed.len(),
@@ -552,10 +591,24 @@ fn grade_fixture(band: &Band, fixture: &GradedFixture, coverage: &mut Coverage) 
     );
 
     coverage.functions = coverage.functions.saturating_add(expected.len());
-    for (function, reference) in module.functions.iter().zip(&expected) {
+    for (function, reference) in module.functions.iter().zip(&listed) {
         let function: &NirFunction = function;
-        for (instruction, mnemonic) in function.instructions.iter().zip(reference) {
+        for (pc, (instruction, listed)) in function.instructions.iter().zip(reference).enumerate() {
             let instruction: &NirInstr = instruction;
+            let mnemonic: &String = &listed.mnemonic;
+            if let Some(target) = listed.target {
+                let expected_address: u64 = function.address.saturating_add(target - 1);
+                assert_eq!(
+                    instruction.direct_target(),
+                    Some(expected_address),
+                    "{mnemonic} at pc {} of {} in {} must branch to instruction {target} as the {} reference listing annotates",
+                    pc + 1,
+                    function.name,
+                    fixture.chunk,
+                    band.label
+                );
+                coverage.graded_targets = coverage.graded_targets.saturating_add(1);
+            }
             coverage.instructions = coverage.instructions.saturating_add(1);
             coverage.reach.insert(mnemonic.clone());
             match &instruction.op {
@@ -601,6 +654,7 @@ fn band_report(band: &Band, coverage: &Coverage, space: &[String]) -> String {
         coverage.declined_instructions
     )
     .expect("write report");
+    writeln!(report, "graded branch targets {}", coverage.graded_targets).expect("write report");
     writeln!(
         report,
         "declined {}",
@@ -758,7 +812,8 @@ fn the_thirty_two_bit_five_one_chunk_agrees_with_the_reference_stream() {
     );
     let module: NirModule = lift_lua_chunk(&committed).expect("lift the committed 32-bit chunk");
     let observed: Vec<Vec<String>> = lifted_streams(&module);
-    let expected: Vec<Vec<String>> = reference_streams("fixture:hello.5_1.mnemonics");
+    let expected: Vec<Vec<String>> =
+        listed_mnemonics(&reference_streams("fixture:hello.5_1.mnemonics"));
     assert_eq!(
         observed, expected,
         "the 32-bit and 64-bit 5.1 chunks of the same source must lift to the same reference stream"

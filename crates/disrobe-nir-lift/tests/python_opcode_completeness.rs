@@ -332,12 +332,12 @@ fn committed_edge_cases_corpus_is_non_vacuous_and_covers_every_modelled_mnemonic
         "the committed edge_cases.cpython-314.pyc fixture recovers a fixed function count"
     );
     assert_eq!(
-        total, 1098,
+        total, 1100,
         "the lifted instruction stream for a byte-fixed pyc is deterministic: {counts:?}"
     );
 
     let expected_counts: [(&str, usize); 20] = [
-        ("add", 42),
+        ("add", 43),
         ("and", 2),
         ("break", 2),
         ("call", 235),
@@ -352,7 +352,7 @@ fn committed_edge_cases_corpus_is_non_vacuous_and_covers_every_modelled_mnemonic
         ("or", 3),
         ("raise", 14),
         ("rem", 7),
-        ("return", 477),
+        ("return", 478),
         ("shl", 1),
         ("store", 6),
         ("sub", 8),

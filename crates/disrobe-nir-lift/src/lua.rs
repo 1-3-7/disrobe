@@ -336,7 +336,7 @@ fn lift_proto(
             offset: here,
         };
 
-        let branch_target: Option<u64> = resolve_target(dialect, here, &decoded, count, base);
+        let transfer: Transfer = resolve_transfer(dialect, here, &decoded, count, base);
         let cond_target: Option<u64> = if is_compare_skip(op) {
             decoded_all
                 .get(pc + 1)
@@ -352,7 +352,7 @@ fn lift_proto(
             proto,
             op,
             &decoded,
-            branch_target,
+            transfer,
             cond_target,
             unmodeled,
             &mut names,
@@ -392,21 +392,45 @@ fn lift_proto(
     }
 }
 
-fn resolve_target(
+#[derive(Debug, Clone, Copy)]
+enum Transfer {
+    Unconditional(Option<u64>),
+    Conditional(Option<u64>),
+    Absent,
+}
+
+fn resolve_transfer(
     dialect: LuaDialect,
     here: u32,
     decoded: &Decoded,
     count: usize,
     base: u64,
-) -> Option<u64> {
-    let target: Option<u32> = match decoded.op {
-        Op::Jmp | Op::ForPrep => jump_target(dialect, here, decoded),
-        Op::ForLoop | Op::TForLoop => forloop_target(dialect, here, decoded),
-        _ => return None,
+) -> Transfer {
+    let located = |target: Option<u32>| -> Option<u64> {
+        target
+            .filter(|&t| (t as usize) < count)
+            .map(|t| base.saturating_add(u64::from(t)))
     };
-    target
-        .filter(|&t| (t as usize) < count)
-        .map(|t| base.saturating_add(u64::from(t)))
+    match (decoded.op, dialect) {
+        (Op::ForPrep, LuaDialect::Lua54) => Transfer::Conditional(located(
+            here.checked_add(decoded.bx)
+                .and_then(|past: u32| past.checked_add(2)),
+        )),
+        (Op::Jmp | Op::ForPrep, _) => {
+            Transfer::Unconditional(located(jump_target(dialect, here, decoded)))
+        }
+        (Op::TForPrep, _) => Transfer::Unconditional(located(
+            here.checked_add(1)
+                .and_then(|next: u32| next.checked_add(decoded.bx)),
+        )),
+        (Op::TForLoop, LuaDialect::Lua51 | LuaDialect::GLua) => {
+            Transfer::Conditional(located(here.checked_add(2)))
+        }
+        (Op::ForLoop | Op::TForLoop, _) => {
+            Transfer::Conditional(located(forloop_target(dialect, here, decoded)))
+        }
+        _ => Transfer::Absent,
+    }
 }
 
 const fn opcode_byte(raw: u32, dialect: LuaDialect) -> u8 {
@@ -421,7 +445,7 @@ fn classify(
     proto: &LuaProto,
     op: Op,
     decoded: &Decoded,
-    branch_target: Option<u64>,
+    transfer: Transfer,
     cond_target: Option<u64>,
     unmodeled: NirOp,
     names: &mut RegisterNames,
@@ -432,18 +456,12 @@ fn classify(
             names.set(decoded.a, None);
             (NirOp::Return, Vec::new())
         }
-        Op::Jmp | Op::ForPrep => (
-            NirOp::Branch {
-                target: branch_target,
-            },
-            Vec::new(),
-        ),
-        Op::ForLoop | Op::TForLoop | Op::TForCall => (
-            NirOp::CondBranch {
-                target: branch_target,
-            },
-            Vec::new(),
-        ),
+        Op::Jmp | Op::ForPrep | Op::TForPrep | Op::ForLoop | Op::TForLoop => match transfer {
+            Transfer::Unconditional(target) => (NirOp::Branch { target }, Vec::new()),
+            Transfer::Conditional(target) => (NirOp::CondBranch { target }, Vec::new()),
+            Transfer::Absent => (unmodeled, Vec::new()),
+        },
+        Op::TForCall => (NirOp::IndirectCall, Vec::new()),
         Op::Call | Op::TailCall => classify_call(decoded, names, imports),
         Op::Move => {
             let src: Option<String> = names.get(decoded.b);

@@ -8,7 +8,6 @@ use wasmparser::{FunctionBody, Operator, Parser, Payload};
 
 use crate::error::{LiftError, Result};
 use crate::operand::{f32_operand, f64_operand};
-use crate::usize_to_u32_saturating;
 
 const FUNCTION_STRIDE: u64 = 1 << 20;
 const MAX_WASM_OPERATORS_PER_FUNCTION: usize = 1 << 18;
@@ -108,13 +107,13 @@ fn lift_body(
     let is_export: bool = sig.is_some_and(|s: &FunctionSig| s.exported);
 
     let operators: Vec<(Operator<'_>, usize)> = collect_operators(body)?;
-    let depth_targets: BTreeMap<u32, u64> = control_depth_targets(&operators, base);
+    let control_targets: BTreeMap<usize, u64> = control_targets(&operators, base);
     let byte_arith: Vec<bool> = byte_arith_flags(&operators);
 
     let mut instructions: Vec<NirInstr> = Vec::with_capacity(operators.len());
     for (ordinal, (op, _byte_offset)) in operators.iter().enumerate() {
         let address: u64 = base.saturating_add(ordinal as u64);
-        let nir_op: NirOp = classify_op(op, &depth_targets);
+        let nir_op: NirOp = classify_op(op, control_targets.get(&ordinal).copied());
         let (reads_memory, writes_memory, mem_byte): (bool, bool, bool) = memory_facets(op);
         let is_byte_arith: bool = byte_arith.get(ordinal).is_some_and(|value: &bool| *value);
         let mut operand_list: Vec<String> = operands(op, signatures);
@@ -194,21 +193,90 @@ fn byte_arith_flags(operators: &[(Operator<'_>, usize)]) -> Vec<bool> {
     flags
 }
 
-fn control_depth_targets(operators: &[(Operator<'_>, usize)], base: u64) -> BTreeMap<u32, u64> {
-    let mut stack: Vec<(bool, u64)> = Vec::new();
-    let mut targets: BTreeMap<u32, u64> = BTreeMap::new();
+struct ControlFrame {
+    is_loop: bool,
+    start: usize,
+}
+
+fn control_targets(operators: &[(Operator<'_>, usize)], base: u64) -> BTreeMap<usize, u64> {
+    let mut open: Vec<usize> = Vec::new();
+    let mut end_of: BTreeMap<usize, usize> = BTreeMap::new();
+    let mut else_of: BTreeMap<usize, usize> = BTreeMap::new();
     for (ordinal, (op, _)) in operators.iter().enumerate() {
-        let address: u64 = base.saturating_add(ordinal as u64);
         match op {
-            Operator::Loop { .. } => stack.push((true, address)),
-            Operator::Block { .. } | Operator::If { .. } | Operator::TryTable { .. } => {
-                stack.push((false, address));
+            Operator::Block { .. }
+            | Operator::Loop { .. }
+            | Operator::If { .. }
+            | Operator::TryTable { .. } => open.push(ordinal),
+            Operator::Else => {
+                if let Some(start) = open.last() {
+                    else_of.insert(*start, ordinal);
+                }
             }
             Operator::End => {
-                if let Some((is_loop, header)) = stack.pop() {
-                    let target: u64 = if is_loop { header } else { address };
-                    let depth: u32 = usize_to_u32_saturating(stack.len());
-                    targets.insert(depth, target);
+                if let Some(start) = open.pop() {
+                    end_of.insert(start, ordinal);
+                }
+            }
+            _ => {}
+        }
+    }
+    let address = |ordinal: usize| -> u64 { base.saturating_add(ordinal as u64) };
+    let mut frames: Vec<ControlFrame> = Vec::new();
+    let mut targets: BTreeMap<usize, u64> = BTreeMap::new();
+    for (ordinal, (op, _)) in operators.iter().enumerate() {
+        let label = |relative_depth: u32, frames: &[ControlFrame]| -> Option<u64> {
+            let index: usize = frames
+                .len()
+                .checked_sub(1)?
+                .checked_sub(usize::try_from(relative_depth).ok()?)?;
+            let frame: &ControlFrame = frames.get(index)?;
+            if frame.is_loop {
+                Some(address(frame.start))
+            } else {
+                end_of.get(&frame.start).map(|end: &usize| address(*end))
+            }
+        };
+        match op {
+            Operator::Loop { .. } => frames.push(ControlFrame {
+                is_loop: true,
+                start: ordinal,
+            }),
+            Operator::Block { .. } | Operator::TryTable { .. } => frames.push(ControlFrame {
+                is_loop: false,
+                start: ordinal,
+            }),
+            Operator::If { .. } => {
+                let false_edge: Option<usize> = else_of
+                    .get(&ordinal)
+                    .map(|else_at: &usize| else_at.saturating_add(1))
+                    .or_else(|| end_of.get(&ordinal).copied());
+                if let Some(target) = false_edge {
+                    targets.insert(ordinal, address(target));
+                }
+                frames.push(ControlFrame {
+                    is_loop: false,
+                    start: ordinal,
+                });
+            }
+            Operator::Else => {
+                if let Some(frame) = frames.last()
+                    && let Some(end) = end_of.get(&frame.start)
+                {
+                    targets.insert(ordinal, address(*end));
+                }
+            }
+            Operator::End => {
+                frames.pop();
+            }
+            Operator::Br { relative_depth } | Operator::BrIf { relative_depth } => {
+                if let Some(target) = label(*relative_depth, &frames) {
+                    targets.insert(ordinal, target);
+                }
+            }
+            Operator::BrTable { targets: table } => {
+                if let Some(target) = label(table.default(), &frames) {
+                    targets.insert(ordinal, target);
                 }
             }
             _ => {}
@@ -217,11 +285,7 @@ fn control_depth_targets(operators: &[(Operator<'_>, usize)], base: u64) -> BTre
     targets
 }
 
-fn branch_target(relative_depth: u32, depth_targets: &BTreeMap<u32, u64>) -> Option<u64> {
-    depth_targets.get(&relative_depth).copied()
-}
-
-fn classify_op(op: &Operator<'_>, depth_targets: &BTreeMap<u32, u64>) -> NirOp {
+fn classify_op(op: &Operator<'_>, control_target: Option<u64>) -> NirOp {
     match op {
         Operator::Call { function_index } | Operator::ReturnCall { function_index } => {
             NirOp::Call {
@@ -232,16 +296,14 @@ fn classify_op(op: &Operator<'_>, depth_targets: &BTreeMap<u32, u64>) -> NirOp {
         | Operator::ReturnCallIndirect { .. }
         | Operator::CallRef { .. }
         | Operator::ReturnCallRef { .. } => NirOp::IndirectCall,
-        Operator::Br { relative_depth } => NirOp::Branch {
-            target: branch_target(*relative_depth, depth_targets),
+        Operator::Br { .. } | Operator::Else => NirOp::Branch {
+            target: control_target,
         },
-        Operator::BrIf { relative_depth } => NirOp::CondBranch {
-            target: branch_target(*relative_depth, depth_targets),
-        },
-        Operator::BrTable { targets } => NirOp::CondBranch {
-            target: branch_target(targets.default(), depth_targets),
-        },
-        Operator::If { .. } => NirOp::CondBranch { target: None },
+        Operator::BrIf { .. } | Operator::BrTable { .. } | Operator::If { .. } => {
+            NirOp::CondBranch {
+                target: control_target,
+            }
+        }
         Operator::Return => NirOp::Return,
         Operator::Unreachable => NirOp::Interrupt,
         Operator::I32Const { .. }
@@ -435,6 +497,86 @@ mod tests {
         LiftError, MAX_WASM_OPERATORS_PER_FUNCTION, NirFunction, NirInstr, NirModule, NirOp,
         count_u32, function_address, lift_wasm_module,
     };
+
+    fn ops_of(wat: &str) -> Vec<(String, NirOp, u64)> {
+        let bytes: Vec<u8> = wat::parse_str(wat).expect("assemble");
+        let module: NirModule = lift_wasm_module(&bytes).expect("lift");
+        module.functions[0]
+            .instructions
+            .iter()
+            .map(|instr: &NirInstr| (instr.mnemonic.clone(), instr.op.clone(), instr.address))
+            .collect()
+    }
+
+    #[test]
+    fn a_branch_out_of_a_loop_targets_the_enclosing_block_end() {
+        let ops: Vec<(String, NirOp, u64)> =
+            ops_of("(module (func (param i32) block loop local.get 0 br_if 1 br 0 end end))");
+        let end_of_block: u64 = ops.last().expect("final end").2 - 1;
+        let loop_head: u64 = ops
+            .iter()
+            .find(|(mnemonic, _, _): &&(String, NirOp, u64)| mnemonic == "loop")
+            .expect("loop")
+            .2;
+        let br_if: &NirOp = &ops
+            .iter()
+            .find(|(mnemonic, _, _): &&(String, NirOp, u64)| mnemonic == "br_if")
+            .expect("br_if")
+            .1;
+        let br: &NirOp = &ops
+            .iter()
+            .find(|(mnemonic, _, _): &&(String, NirOp, u64)| mnemonic == "br")
+            .expect("br")
+            .1;
+        assert_eq!(
+            br_if,
+            &NirOp::CondBranch {
+                target: Some(end_of_block)
+            }
+        );
+        assert_eq!(
+            br,
+            &NirOp::Branch {
+                target: Some(loop_head)
+            }
+        );
+    }
+
+    #[test]
+    fn if_and_else_carry_their_false_and_join_edges() {
+        let ops: Vec<(String, NirOp, u64)> = ops_of(
+            "(module (func (param i32) (result i32) local.get 0 if (result i32) i32.const 1 else i32.const 2 end))",
+        );
+        let address_of = |name: &str| -> u64 {
+            ops.iter()
+                .find(|(mnemonic, _, _): &&(String, NirOp, u64)| mnemonic == name)
+                .expect(name)
+                .2
+        };
+        let if_op: &NirOp = &ops
+            .iter()
+            .find(|(mnemonic, _, _): &&(String, NirOp, u64)| mnemonic == "if")
+            .expect("if")
+            .1;
+        let else_op: &NirOp = &ops
+            .iter()
+            .find(|(mnemonic, _, _): &&(String, NirOp, u64)| mnemonic == "else")
+            .expect("else")
+            .1;
+        let end_of_if: u64 = ops[ops.len() - 2].2;
+        assert_eq!(
+            if_op,
+            &NirOp::CondBranch {
+                target: Some(address_of("else") + 1)
+            }
+        );
+        assert_eq!(
+            else_op,
+            &NirOp::Branch {
+                target: Some(end_of_if)
+            }
+        );
+    }
 
     fn leb_u32(mut value: u32) -> Vec<u8> {
         let mut out: Vec<u8> = Vec::new();

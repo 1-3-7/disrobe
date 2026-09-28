@@ -53,7 +53,8 @@ luac5.<minor> -p -l <chunk>
 ```
 
 Each listing is reduced to one mnemonic per line in decode order, with a `function <index>` marker
-before each function. The marker order is the order the reference decoder prints functions, which is
+before each function. When `luac` annotates a jump with `; to <n>` or `; exit to <n>`, the line
+carries that 1-based target instruction after the mnemonic. The marker order is the order the reference decoder prints functions, which is
 the same pre-order walk the lifter uses.
 
 ## Opcode space
@@ -80,20 +81,20 @@ SHA-256 records:
 - `hello.5_1.luac`: `046b759eb62b3dfdfcc5e52d8c585a385fcf28e7a43b8d5f274801d8aec71e9a`
 - `edge_cases.5_1.luac`: `59626c4ddda5f41a27998efe916877bc9d3f61d7b9c480ec9b9ebb1eceb24404`
 - `hello.5_1.mnemonics`: `5866a062b4ec22e83881cbb13464b9f4a8e0b4808f0f297d80c226db28e1d0ca`
-- `edge_cases.5_1.mnemonics`: `fd7f9738722e7df2036a14fb4d510194d1b45eb72bf3bf80ff46b861a2bd1b4d`
+- `edge_cases.5_1.mnemonics`: `146916121ec219de0430ea87e4111fbdb35f8a052db13e4710a89c9592ce7233`
 - `hello.5_3.mnemonics`: `0eb1861715b64c7b8937f75209ec989e8325a45d01c02ef83fefec289d42b012`
-- `edge_cases.5_3.mnemonics`: `013d257a227f942915550b0880eebf6a00aa43b056033239df93d7d0ecfcfd72`
+- `edge_cases.5_3.mnemonics`: `c094fc4c6234d20e7d0b3246ce0ef27c46251ac7c077bc25ace2cb2dea2b5a2d`
 - `hello.5_4.mnemonics`: `be1ef6a5911f86d05499eb5ba5bfd14989c7285fba716070fbdfe5b6881dae2f`
-- `edge_cases.5_4.mnemonics`: `b5eba7bd02533b22f4f21a7e037987d6ee59544d607fff1daa0968588a67e6aa`
+- `edge_cases.5_4.mnemonics`: `60111129243aac0251e2222bd0bf98e819d5ef1b86aa28eda07703f337275c53`
 - `forms.5_1.lua`: `b9d9985cb67eb90531daff843131e07285bfc5b17452689efae8bdb534dbd04b`
 - `forms.5_1.luac`: `33e0b2ad98ebc71e364ad6ff6406702f40c78141164af2dcb030019dcf2b46a5`
-- `forms.5_1.mnemonics`: `330766e7ee08e5cdba9e8442d797ba2e4b45df1e832d864090e1132c1f085efc`
+- `forms.5_1.mnemonics`: `37b7afd39b82ebba27007e569f455a0d0bd9442c8506e6524079c4c51b5c370b`
 - `forms.5_3.lua`: `7fa629520a8f0f74386047f3e4454b5ba256d1a1c082f77a231067a529dea2ae`
 - `forms.5_3.luac`: `8a82e6a50344fc9b84ba3b6bf917d27a4493180ccfcddb217430fc66a2e846c6`
-- `forms.5_3.mnemonics`: `a4dc8d8b39f54504868051232e14673767973b2fa2e5945c7acf28d56da78a22`
+- `forms.5_3.mnemonics`: `97c73cd3769fc75ea13ef5db6e38167c7ae05e415f1551c8a5577e1705cbd309`
 - `forms.5_4.lua`: `11a7a3c00156ece2082bbcd6f0bd64e45ade07c3d37eb38061d724ed3ad301d3`
 - `forms.5_4.luac`: `18931eb69e0fc3a9fa1de270d212323133dca2395303a7abe478af38329dc341`
-- `forms.5_4.mnemonics`: `c5855540efb8ac13682bb0d22bc4137cd3b5d921e7fc49d2f3ad3fe820fc742e`
+- `forms.5_4.mnemonics`: `171cbe201a7e8afa423b8669fef3f69a6017f4d02ef9443369f2ef8f53c03cd7`
 
 The test pins the BLAKE3 hash of every graded chunk and every reference file, including the four
 graded chunks under `corpus/lua/luac`. A changed input fails the inventory check instead of being
