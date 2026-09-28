@@ -163,6 +163,53 @@ fn tricky_tree() -> Vec<(&'static str, Vec<u8>)> {
     ]
 }
 
+fn run_asar_extract(archive: &Path, destination: &Path) {
+    let mut command: Command = if cfg!(windows) {
+        let mut c: Command = Command::new("cmd");
+        c.args(["/C", "npx"]);
+        c
+    } else {
+        Command::new("npx")
+    };
+    command
+        .args(["--yes", ASAR_PACKAGE, "extract"])
+        .arg(archive)
+        .arg(destination);
+    let output: std::process::Output = command.output().unwrap_or_else(|error: std::io::Error| {
+        panic!("required tool missing: npx cannot be spawned to run {ASAR_PACKAGE}: {error}")
+    });
+    assert!(
+        output.status.success() && destination.is_dir(),
+        "`npx --yes {ASAR_PACKAGE} extract` exited with {} and wrote nothing at {}\nstdout: \
+         {}\nstderr: {}",
+        output.status,
+        destination.display(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+fn tree_digests(root: &Path) -> BTreeMap<String, String> {
+    let mut out: BTreeMap<String, String> = BTreeMap::new();
+    let mut pending: Vec<PathBuf> = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        for entry in fs::read_dir(&directory).unwrap() {
+            let path: PathBuf = entry.unwrap().path();
+            if path.is_dir() {
+                pending.push(path);
+                continue;
+            }
+            let relative: String = path
+                .strip_prefix(root)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            out.insert(relative, sha256_hex(&fs::read(&path).unwrap()));
+        }
+    }
+    out
+}
+
 fn assert_round_trip(bytes: &[u8], expected: &[(&str, Vec<u8>)]) {
     let assets: Vec<RecoveredAsset> = carve(bytes).unwrap();
     let recovered: BTreeMap<String, Vec<u8>> = recovered_map(&assets);
@@ -230,6 +277,17 @@ fn carves_real_electron_asar_from_cli() {
         unverified.is_empty(),
         "{ASAR_PACKAGE} writes a sha256 integrity block for every file, so every recovered asset \
          must verify against it: {unverified:?}"
+    );
+    let reference_root: PathBuf = workdir.join("reference");
+    run_asar_extract(&asar_path, &reference_root);
+    let reference: BTreeMap<String, String> = tree_digests(&reference_root);
+    let recovered: BTreeMap<String, String> = assets
+        .iter()
+        .map(|asset: &RecoveredAsset| (asset.path.clone(), sha256_hex(&asset.bytes)))
+        .collect();
+    assert_eq!(
+        recovered, reference,
+        "every recovered member must equal `{ASAR_PACKAGE} extract` output by sha256"
     );
     let _ = fs::remove_dir_all(&workdir);
 }
