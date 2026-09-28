@@ -1638,17 +1638,35 @@ fn append_class_bytes(out: &mut Vec<u8>, bytes: &[u8], limit: usize) -> Result<(
     Ok(())
 }
 
-fn stub_code(cp: &mut ConstantPool) -> (Vec<u8>, u16) {
-    let uoe_ctor: u16 = cp.methodref("java/lang/UnsupportedOperationException", "<init>", "()V");
+fn stub_code(cp: &mut ConstantPool, method: &TranslatedMethod, refusal: &str) -> (Vec<u8>, u16) {
     let uoe_class: u16 = cp.class("java/lang/UnsupportedOperationException");
+    let message: u16 = cp.string(&format!(
+        "disrobe did not translate {}{}: {refusal}",
+        method.name, method.descriptor
+    ));
     let mut code: Vec<u8> = Vec::new();
     code.push(0xBB);
     code.extend_from_slice(&uoe_class.to_be_bytes());
     code.push(0x59);
+    if message == 0 {
+        let uoe_ctor: u16 =
+            cp.methodref("java/lang/UnsupportedOperationException", "<init>", "()V");
+        code.push(0xB7);
+        code.extend_from_slice(&uoe_ctor.to_be_bytes());
+        code.push(0xBF);
+        return (code, 2);
+    }
+    let uoe_ctor: u16 = cp.methodref(
+        "java/lang/UnsupportedOperationException",
+        "<init>",
+        "(Ljava/lang/String;)V",
+    );
+    code.push(0x13);
+    code.extend_from_slice(&message.to_be_bytes());
     code.push(0xB7);
     code.extend_from_slice(&uoe_ctor.to_be_bytes());
     code.push(0xBF);
-    (code, 2)
+    (code, 3)
 }
 
 struct BuiltBody {
@@ -1719,7 +1737,6 @@ fn build_real_or_stub_body(
                 refusal: None,
             });
         }
-        let (code, max_stack): (Vec<u8>, u16) = stub_code(cp);
         let refusal: String = recorded_emitter_refusal("control-flow")
             .or(linear_refusal)
             .or_else(|| {
@@ -1727,6 +1744,7 @@ fn build_real_or_stub_body(
                     .then(|| "DR-JVM-0093: JVM emitter refusal: width-conflict".to_owned())
             })
             .ok_or_else(|| malformed(&method.name, "JVM emitter refusal cause was not recorded"))?;
+        let (code, max_stack): (Vec<u8>, u16) = stub_code(cp, method, &refusal);
         return Ok(BuiltBody {
             code,
             max_stack,
@@ -1739,7 +1757,9 @@ fn build_real_or_stub_body(
             refusal: Some(refusal),
         });
     }
-    let (code, max_stack): (Vec<u8>, u16) = stub_code(cp);
+    let refusal: String =
+        "DR-JVM-0093: DEX code parser produced no body for a method requiring code".to_owned();
+    let (code, max_stack): (Vec<u8>, u16) = stub_code(cp, method, &refusal);
     Ok(BuiltBody {
         code,
         max_stack,
@@ -1749,9 +1769,7 @@ fn build_real_or_stub_body(
         exception_table: Vec::new(),
         exception_count: 0,
         recovered: false,
-        refusal: Some(
-            "DR-JVM-0093: DEX code parser produced no body for a method requiring code".to_owned(),
-        ),
+        refusal: Some(refusal),
     })
 }
 
@@ -3253,6 +3271,14 @@ mod tests {
 
             assert!(!body.recovered);
             assert_eq!(body.refusal.as_deref(), Some(refusal));
+            assert!(
+                cp.string.keys().any(|message: &String| message
+                    .starts_with("disrobe did not translate body")
+                    && message.ends_with(refusal)),
+                "the stub must throw with the method and its refusal: {:?}",
+                cp.string.keys().collect::<Vec<&String>>()
+            );
+            assert_eq!(body.max_stack, 3);
         }
     }
 
