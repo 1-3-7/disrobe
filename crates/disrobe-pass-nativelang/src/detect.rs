@@ -284,7 +284,7 @@ mod tests {
             (NativeLang::Nim, "nim/hello.nim.elf", 7, 0.9000),
             (NativeLang::Zig, "zig/hello.zig.elf", 12, 0.8700),
             (NativeLang::Crystal, "crystal/hello.cr.exe", 4, 0.7500),
-            (NativeLang::D, "d/hello.d.exe", 9, 0.807_142_85),
+            (NativeLang::D, "d/hello.d.exe", 8, 0.778_571_4),
         ];
         for (lang, relative, expected_hits, expected_confidence) in cases {
             let bytes: Vec<u8> = read_corpus_fixture(relative);

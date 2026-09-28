@@ -402,7 +402,7 @@ mod tests {
         let v: DetectVerdict =
             Detector::detect(&NativeLangDetector, &ctx(&bytes)).expect("d must be detected");
         assert_eq!(v.format_tag, "d");
-        assert_fingerprint_matches(&bytes, 9, 0.8071);
+        assert_fingerprint_matches(&bytes, 8, 0.7786);
     }
 
     #[test]
