@@ -1,6 +1,6 @@
 schema = "disrobe.jvm.dalvik-lift-probes-fixture/v1"
 source = "LiftProbes.java"
-source_sha256 = "0ddcabc1b4efb17e23c6cbf7adafd850e54fa10ef497944b06527830de5f6452"
+source_sha256 = "01b52ab5e0ef1aee17902b63878c1083bced84faf1abf7b2f43f78259f09f086"
 
 [javac]
 vendor = "Eclipse Temurin"
@@ -19,6 +19,7 @@ reads = "reads(int): a while header that stores a call result read by the exit t
 polls = "polls(): a while header whose call folds into the exit test"
 strings = "strings(): a string constant with non-ASCII, control, quote, backslash, surrogate-pair and line-separator characters"
 order = "order(): call results bound to locals and combined in the reverse of their call order"
+temporaries = "temporaries(int): D8 reuses one register for an int, a StringBuilder, a String and a double, and the parameter register for the boxed Object result; the debug build keeps the parameter and local names"
 workers = "Worker implements Callable and Runnable; Counting extends Worker and gains a javac bridge call() that clashes with its own call() in source"
 notes = "The release build keeps every probe method; D8 turns the constant arrays into fill-array-data payloads and the computed int arrays into filled-new-array, and reuses registers across the call results of order()."
 
@@ -29,5 +30,15 @@ min_api = 21
 mode = "release"
 tool = "D8"
 command = "java -cp r8-9.1.31.jar com.android.tools.r8.D8 --release --min-api 21 --output dex classes/LiftProbes.class classes/LiftProbes$Counting.class classes/LiftProbes$Worker.class"
-sha256 = "02400f99d0a3441a474e33110f484d07a2412676d8260b12bd4908b2ff715563"
-bytes = 4976
+sha256 = "0b237301c3282b244de3123a99fdc4dd98a1fb0fa9eb11c41ef7e6aa5a2d9b5b"
+bytes = 5340
+
+[[artifact]]
+path = "LiftProbes-debug-min21.dex"
+format = "DEX 035"
+min_api = 21
+mode = "debug"
+tool = "D8"
+command = "java -cp r8-9.1.31.jar com.android.tools.r8.D8 --debug --min-api 21 --output dex classes/LiftProbes.class classes/LiftProbes$Counting.class classes/LiftProbes$Worker.class"
+sha256 = "b8aa044cb368989a25794cd872b319906d3c56c7dc8011224c5c131aa3a44bd8"
+bytes = 6108

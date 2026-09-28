@@ -94,6 +94,20 @@ public class LiftProbes {
         return mixed + ":" + paired + ":" + trace;
     }
 
+    static String temporaries(int count) {
+        int total = 0;
+        for (int i = 0; i < count; i++) {
+            total += i * count;
+        }
+        String label = "n" + total;
+        long wide = (long) count << 33;
+        StringBuilder out = new StringBuilder(label);
+        double ratio = total / 3.0;
+        out.append(':').append(wide).append(':').append(ratio);
+        Object boxed = count > 2 ? (Object) Integer.valueOf(count) : (Object) "small";
+        return out.append(':').append(boxed).toString();
+    }
+
     public abstract static class Worker implements Callable<Integer>, Runnable {
         public final void run() {
             try {
@@ -136,5 +150,8 @@ public class LiftProbes {
         System.out.println(strings());
         System.out.println(order());
         System.out.println(workers());
+        for (int count = 0; count < 5; count += 2) {
+            System.out.println(temporaries(count));
+        }
     }
 }

@@ -2168,6 +2168,8 @@ struct WebEvidence {
     integral_def: bool,
     integral_use: bool,
     narrow: std::collections::BTreeSet<u8>,
+    narrow_use: std::collections::BTreeSet<u8>,
+    constants: Option<(i64, i64)>,
 }
 
 impl WebEvidence {
@@ -2188,6 +2190,11 @@ impl WebEvidence {
         let literal: i64 = insn.literal.unwrap_or(0);
         match insn.op {
             0x12..=0x14 if matches!(literal, 0 | 1) => {}
+            0x12..=0x14 => {
+                self.constants = Some(self.constants.map_or((literal, literal), |(low, high)| {
+                    (low.min(literal), high.max(literal))
+                }));
+            }
             0x15 if literal == 0 => {}
             0x01..=0x03 | 0x95..=0x97 | 0xB5..=0xB7 => {}
             0xD5..=0xD7 | 0xDD..=0xDF if matches!(literal, 0 | 1) => {}
@@ -2244,18 +2251,32 @@ impl WebEvidence {
                 | 0xDD..=0xDF => {}
                 0x0F => match returns {
                     Some(crate::descriptor::JavaType::Boolean) => self.boolean = true,
-                    Some(
-                        crate::descriptor::JavaType::Byte
-                        | crate::descriptor::JavaType::Char
-                        | crate::descriptor::JavaType::Short,
-                    ) => {}
+                    Some(crate::descriptor::JavaType::Byte) => {
+                        self.narrow_use.insert(b'B');
+                    }
+                    Some(crate::descriptor::JavaType::Char) => {
+                        self.narrow_use.insert(b'C');
+                    }
+                    Some(crate::descriptor::JavaType::Short) => {
+                        self.narrow_use.insert(b'S');
+                    }
                     _ => self.integral_use = true,
                 },
                 0x4E | 0x5C | 0x6A if position == 0 => self.boolean = true,
-                0x4F..=0x51 | 0x5D..=0x5F | 0x6B..=0x6D if position == 0 => {}
+                0x4F | 0x5D | 0x6B if position == 0 => {
+                    self.narrow_use.insert(b'B');
+                }
+                0x50 | 0x5E | 0x6C if position == 0 => {
+                    self.narrow_use.insert(b'C');
+                }
+                0x51 | 0x5F | 0x6D if position == 0 => {
+                    self.narrow_use.insert(b'S');
+                }
                 0x6E..=0x72 | 0x74..=0x78 => match invoked.get(position).copied().flatten() {
                     Some(b'Z') => self.boolean = true,
-                    Some(b'B' | b'C' | b'S') => {}
+                    Some(kind @ (b'B' | b'C' | b'S')) => {
+                        self.narrow_use.insert(kind);
+                    }
                     _ => self.integral_use = true,
                 },
                 _ => self.integral_use = true,
@@ -2300,17 +2321,32 @@ impl WebEvidence {
     }
 
     fn refined_int(&self) -> LocalType {
-        if self.boolean && !self.integral_def && !self.integral_use && self.narrow.is_empty() {
+        if self.boolean
+            && !self.integral_def
+            && !self.integral_use
+            && self.narrow.is_empty()
+            && self.constants.is_none()
+        {
             return LocalType::Boolean;
         }
-        if self.integral_def || self.boolean || self.narrow.len() != 1 {
+        let kinds: std::collections::BTreeSet<u8> =
+            self.narrow.union(&self.narrow_use).copied().collect();
+        if self.integral_def || self.boolean || kinds.len() != 1 {
             return LocalType::Int;
         }
-        match self.narrow.first() {
-            Some(b'B') => LocalType::Byte,
-            Some(b'C') => LocalType::Char,
-            Some(b'S') => LocalType::Short,
-            _ => LocalType::Int,
+        let (narrowed, range): (LocalType, std::ops::RangeInclusive<i64>) = match kinds.first() {
+            Some(b'B') => (LocalType::Byte, i64::from(i8::MIN)..=i64::from(i8::MAX)),
+            Some(b'C') => (LocalType::Char, 0..=i64::from(u16::MAX)),
+            Some(b'S') => (LocalType::Short, i64::from(i16::MIN)..=i64::from(i16::MAX)),
+            _ => return LocalType::Int,
+        };
+        let constants_fit: bool = self
+            .constants
+            .is_none_or(|(low, high): (i64, i64)| range.contains(&low) && range.contains(&high));
+        if constants_fit {
+            narrowed
+        } else {
+            LocalType::Int
         }
     }
 }

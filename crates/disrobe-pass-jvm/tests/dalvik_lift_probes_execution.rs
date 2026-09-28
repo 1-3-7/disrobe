@@ -12,9 +12,11 @@ pub mod common;
 const AUTHORED: &str = include_str!("fixtures/dalvik_lift_probes/LiftProbes.java");
 const RELEASE_DEX: &[u8] =
     include_bytes!("fixtures/dalvik_lift_probes/LiftProbes-release-min21.dex");
+const DEBUG_DEX: &[u8] = include_bytes!("fixtures/dalvik_lift_probes/LiftProbes-debug-min21.dex");
 const PROVENANCE: &str = include_str!("fixtures/dalvik_lift_probes/provenance.toml");
-const AUTHORED_SHA256: &str = "0ddcabc1b4efb17e23c6cbf7adafd850e54fa10ef497944b06527830de5f6452";
-const RELEASE_SHA256: &str = "02400f99d0a3441a474e33110f484d07a2412676d8260b12bd4908b2ff715563";
+const AUTHORED_SHA256: &str = "01b52ab5e0ef1aee17902b63878c1083bced84faf1abf7b2f43f78259f09f086";
+const RELEASE_SHA256: &str = "0b237301c3282b244de3123a99fdc4dd98a1fb0fa9eb11c41ef7e6aa5a2d9b5b";
+const DEBUG_SHA256: &str = "b8aa044cb368989a25794cd872b319906d3c56c7dc8011224c5c131aa3a44bd8";
 const UNIT: &str = "LiftProbes.java";
 const CLASS: &str = "LiftProbes";
 
@@ -23,11 +25,14 @@ fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 fn recovered_unit() -> String {
+    recovered_unit_from(RELEASE_DEX, RELEASE_SHA256)
+}
+
+fn recovered_unit_from(dex: &[u8], sha256: &str) -> String {
     assert_eq!(sha256_hex(AUTHORED.as_bytes()), AUTHORED_SHA256);
-    assert_eq!(sha256_hex(RELEASE_DEX), RELEASE_SHA256);
-    assert!(PROVENANCE.contains(AUTHORED_SHA256) && PROVENANCE.contains(RELEASE_SHA256));
-    let decompiled: DecompiledDex =
-        decompile_dex_from_bytes(RELEASE_DEX).expect("decompile LiftProbes");
+    assert_eq!(sha256_hex(dex), sha256);
+    assert!(PROVENANCE.contains(AUTHORED_SHA256) && PROVENANCE.contains(sha256));
+    let decompiled: DecompiledDex = decompile_dex_from_bytes(dex).expect("decompile LiftProbes");
     decompiled.sources.get(UNIT).cloned().unwrap_or_else(|| {
         panic!(
             "recovered unit {UNIT} in {:?}",
@@ -145,13 +150,29 @@ fn assert_method_matches(name: &str, calls: &[&str]) -> String {
 fn the_recovered_class_recompiles_and_prints_the_authored_output() {
     let scratch: ScratchDir = ScratchDir::create("dalvik_lift_probes_unit").expect("scratch");
     let reference: String = execute(scratch.path(), "authored", AUTHORED);
-    assert_eq!(reference.lines().count(), 17, "{reference}");
+    assert_eq!(reference.lines().count(), 20, "{reference}");
     let recovered: String = recovered_unit();
     let printed: String = execute(scratch.path(), "recovered", &recovered);
     assert_eq!(
         printed, reference,
         "the recovered class must print what the authored class prints:\n{recovered}"
     );
+}
+
+#[test]
+fn the_debug_build_with_local_names_recompiles_and_prints_the_authored_output() {
+    let scratch: ScratchDir = ScratchDir::create("dalvik_lift_probes_debug").expect("scratch");
+    let reference: String = execute(scratch.path(), "authored", AUTHORED);
+    let recovered: String = recovered_unit_from(DEBUG_DEX, DEBUG_SHA256);
+    let printed: String = execute(scratch.path(), "recovered", &recovered);
+    assert_eq!(
+        printed, reference,
+        "the recovered debug class must print what the authored class prints:
+{recovered}"
+    );
+    let temporaries: String = method_text(&recovered, "temporaries");
+    assert!(temporaries.contains("(int count)"), "{temporaries}");
+    assert!(!temporaries.contains("arg0"), "{temporaries}");
 }
 
 #[test]
@@ -213,6 +234,14 @@ fn calls_keep_their_source_order() {
     let second: usize = recovered.find("tick(\"b\")").expect("tick b");
     let third: usize = recovered.find("tick(\"c\")").expect("tick c");
     assert!(first < second && second < third, "{recovered}");
+}
+
+#[test]
+fn registers_reused_across_types_recompile_and_run_as_authored() {
+    assert_method_matches(
+        "temporaries",
+        &["temporaries(0)", "temporaries(2)", "temporaries(5)"],
+    );
 }
 
 #[test]
