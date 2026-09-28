@@ -265,6 +265,22 @@ fn reverse_for_family(family: Family, text: &str) -> CoreResult<String> {
 pub struct RecoveredVbaModule {
     pub name: String,
     pub source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stomp: Option<VbaStompEvidence>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct VbaStompEvidence {
+    pub verdict: crate::vba::StompVerdict,
+    pub decoy_source: Option<String>,
+    pub unlifted_lines: usize,
+    pub walls: Vec<String>,
+}
+
+#[must_use]
+pub fn recover_vba_source(bytes: &[u8]) -> Option<String> {
+    let modules: Vec<RecoveredVbaModule> = recover_vba_modules(bytes);
+    (!modules.is_empty()).then(|| render_vba_modules(&modules))
 }
 
 fn recover_vba_modules(bytes: &[u8]) -> Vec<RecoveredVbaModule> {
@@ -277,6 +293,7 @@ fn recover_vba_modules(bytes: &[u8]) -> Vec<RecoveredVbaModule> {
                 .map(|m: crate::vba::ExtractedModule| RecoveredVbaModule {
                     name: m.name,
                     source: m.recovered_source.replace("\r\n", "\n"),
+                    stomp: None,
                 })
                 .collect::<Vec<RecoveredVbaModule>>()
         })
@@ -286,7 +303,13 @@ fn recover_vba_modules(bytes: &[u8]) -> Vec<RecoveredVbaModule> {
             .iter_mut()
             .find(|m: &&mut RecoveredVbaModule| m.name.eq_ignore_ascii_case(&recovered.name))
         {
-            Some(existing) => existing.source = recovered.source,
+            Some(existing) => {
+                let decoy: String = std::mem::replace(&mut existing.source, recovered.source);
+                existing.stomp = recovered.stomp.map(|mut stomp: VbaStompEvidence| {
+                    stomp.decoy_source = Some(decoy);
+                    stomp
+                });
+            }
             None => modules.push(recovered),
         }
     }
@@ -311,6 +334,12 @@ fn recover_vba_from_pcode(bytes: &[u8]) -> Vec<RecoveredVbaModule> {
         .map(|m: crate::vba::ModuleStompReport| RecoveredVbaModule {
             name: m.module,
             source: m.recovered_source.replace("\r\n", "\n"),
+            stomp: Some(VbaStompEvidence {
+                verdict: m.verdict,
+                decoy_source: None,
+                unlifted_lines: m.unlifted_lines,
+                walls: m.walls,
+            }),
         })
         .collect()
 }
@@ -318,9 +347,31 @@ fn recover_vba_from_pcode(bytes: &[u8]) -> Vec<RecoveredVbaModule> {
 fn render_vba_modules(modules: &[RecoveredVbaModule]) -> String {
     let mut out: String = String::new();
     for module in modules {
-        out.push_str(&format!("' ===== module: {} =====\n", module.name));
+        match &module.stomp {
+            None => out.push_str(&format!("' ===== module: {} =====\n", module.name)),
+            Some(stomp) => out.push_str(&format!(
+                "' ===== module: {} ({:?}: source recovered from compiled p-code; {} p-code lines not lifted) =====\n",
+                module.name, stomp.verdict, stomp.unlifted_lines
+            )),
+        }
         out.push_str(module.source.trim_end());
-        out.push_str("\n\n");
+        out.push('\n');
+        if let Some(stomp) = &module.stomp {
+            for wall in &stomp.walls {
+                out.push_str(&format!("' wall: {wall}\n"));
+            }
+            if let Some(decoy) = &stomp.decoy_source {
+                out.push_str(
+                    "' ----- source stream, which the compiled p-code does not match -----\n",
+                );
+                for line in decoy.trim_end().lines() {
+                    out.push_str("' ");
+                    out.push_str(line);
+                    out.push('\n');
+                }
+            }
+        }
+        out.push('\n');
     }
     out.truncate(out.trim_end().len());
     out
@@ -1053,6 +1104,47 @@ mod tests {
         stream.flush().expect("flush the module stream");
         drop(stream);
         comp.into_inner().into_inner()
+    }
+
+    fn ovba_literal_container(text: &[u8]) -> Vec<u8> {
+        let mut chunk: Vec<u8> = Vec::new();
+        for group in text.chunks(8) {
+            chunk.push(0);
+            chunk.extend_from_slice(group);
+        }
+        let header: u16 = u16::try_from(chunk.len() - 1).expect("one chunk") | 0xB000;
+        let mut out: Vec<u8> = vec![0x01];
+        out.extend_from_slice(&header.to_le_bytes());
+        out.extend(chunk);
+        out
+    }
+
+    #[test]
+    fn a_stomped_module_keeps_the_decoy_source_and_its_verdict() {
+        let raw: Vec<u8> = corpus_bytes("vba/vbaProject.bin");
+        let decoy: &[u8] = b"Attribute VB_Name = \"Module1\"\r\nSub Decoy()\r\nEnd Sub\r\n";
+        let stomped: Vec<u8> = stomp_module1_source(&raw, &ovba_literal_container(decoy));
+        let modules: Vec<RecoveredVbaModule> = recover_vba_modules(&stomped);
+        let module1: &RecoveredVbaModule = modules
+            .iter()
+            .find(|m: &&RecoveredVbaModule| m.name.eq_ignore_ascii_case("Module1"))
+            .expect("Module1 is recovered");
+        assert!(module1.source.contains("MsgBox"), "{}", module1.source);
+        let stomp: &VbaStompEvidence = module1.stomp.as_ref().expect("stomp evidence kept");
+        assert_eq!(stomp.verdict, crate::vba::StompVerdict::Stomped);
+        assert!(
+            stomp
+                .decoy_source
+                .as_deref()
+                .is_some_and(|decoy: &str| decoy.contains("Sub Decoy()")),
+            "{stomp:?}"
+        );
+        let rendered: String = render_vba_modules(&modules);
+        assert!(
+            rendered.contains("Stomped: source recovered from compiled p-code"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("' Sub Decoy()"), "{rendered}");
     }
 
     #[test]

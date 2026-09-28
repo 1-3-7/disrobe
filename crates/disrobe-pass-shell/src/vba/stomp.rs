@@ -31,6 +31,8 @@ pub struct ModuleStompReport {
     pub pcode_only_calls: Vec<String>,
     pub pcode_only_strings: Vec<String>,
     pub recovered_source: String,
+    pub unlifted_lines: usize,
+    pub walls: Vec<String>,
     pub evidence: Vec<String>,
 }
 
@@ -85,6 +87,8 @@ pub fn analyze_stomp_parts(project: &ExtractedProject, pcode: &RealPCodeReport) 
             pcode_only_calls: Vec::new(),
             pcode_only_strings: Vec::new(),
             recovered_source: trim_to_attribute(&src.recovered_source),
+            unlifted_lines: 0,
+            walls: Vec::new(),
             evidence: vec!["module has compressed source but no compiled p-code".to_owned()],
         });
     }
@@ -308,6 +312,8 @@ fn analyze_module(
             pcode_only_calls: pcode_facts.calls.into_iter().collect(),
             pcode_only_strings: pcode_facts.strings.into_iter().collect(),
             recovered_source: lift.pseudocode,
+            unlifted_lines: lift.unlifted_lines,
+            walls: lift.walls,
             evidence: vec!["compiled p-code present with no recoverable source stream".to_owned()],
         };
     };
@@ -377,6 +383,8 @@ fn analyze_module(
         pcode_only_calls,
         pcode_only_strings,
         recovered_source: lift.pseudocode,
+        unlifted_lines: lift.unlifted_lines,
+        walls: lift.walls,
         evidence,
     }
 }

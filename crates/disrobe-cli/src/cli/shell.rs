@@ -5,9 +5,8 @@ use std::path::PathBuf;
 use clap::Subcommand;
 
 use disrobe_pass_shell::{
-    Detection, Dialect, Family, ModuleStompReport, StompReport, StompVerdict, XlmRecovery,
-    analyze_pdf, analyze_stomp, deobfuscate_batch, deobfuscate_vbs, detect as detect_shell,
-    extract_from_bytes, format_identity, peel_indirection, recover_xlm,
+    Detection, Dialect, Family, XlmRecovery, analyze_pdf, deobfuscate_batch, deobfuscate_vbs,
+    detect as detect_shell, format_identity, peel_indirection, recover_xlm,
     render_report as render_pdf_report, render_xlm_source, reverse_bashfuscator_auto,
     reverse_chameleon, reverse_compress, reverse_encoding, reverse_invoke_stealth,
     reverse_isesteroids, reverse_launcher, reverse_node_bash_obfuscate, reverse_powerhell,
@@ -135,7 +134,7 @@ fn recover_source(detection: &Detection, bytes: &[u8]) -> miette::Result<String>
         return Ok(deobfuscate_batch(text, &[]).output);
     }
     if detection.dialect == Dialect::Vba
-        && let Some(rendered) = recover_vba(bytes)
+        && let Some(rendered) = disrobe_pass_shell::chain_detector::recover_vba_source(bytes)
     {
         return Ok(rendered);
     }
@@ -200,60 +199,6 @@ fn reverse_for_family(family: Family, text: &str) -> String {
         | Family::VbaMacro
         | Family::VbsWshObfuscated => format_identity(text),
     }
-}
-
-fn recover_vba(bytes: &[u8]) -> Option<String> {
-    let mut modules: Vec<(String, String)> = extract_from_bytes(bytes)
-        .map(|project: disrobe_pass_shell::ExtractedProject| {
-            project
-                .modules
-                .into_iter()
-                .filter(|m: &disrobe_pass_shell::ExtractedModule| {
-                    !m.recovered_source.trim().is_empty()
-                })
-                .map(|m: disrobe_pass_shell::ExtractedModule| {
-                    (m.name, m.recovered_source.replace("\r\n", "\n"))
-                })
-                .collect::<Vec<(String, String)>>()
-        })
-        .unwrap_or_default();
-    for (name, source) in recover_vba_from_pcode(bytes) {
-        match modules
-            .iter_mut()
-            .find(|(existing, _): &&mut (String, String)| existing.eq_ignore_ascii_case(&name))
-        {
-            Some(slot) => slot.1 = source,
-            None => modules.push((name, source)),
-        }
-    }
-    if modules.is_empty() {
-        return None;
-    }
-    let mut out: String = String::new();
-    for (name, source) in &modules {
-        out.push_str("' ===== module: ");
-        out.push_str(name);
-        out.push_str(" =====\n");
-        out.push_str(source.trim_end());
-        out.push_str("\n\n");
-    }
-    out.truncate(out.trim_end().len());
-    Some(out)
-}
-
-fn recover_vba_from_pcode(bytes: &[u8]) -> Vec<(String, String)> {
-    let Ok(report): disrobe_pass_shell::Result<StompReport> = analyze_stomp(bytes) else {
-        return Vec::new();
-    };
-    report
-        .modules
-        .into_iter()
-        .filter(|m: &ModuleStompReport| {
-            matches!(m.verdict, StompVerdict::Stomped | StompVerdict::PCodeOnly)
-                && !m.recovered_source.trim().is_empty()
-        })
-        .map(|m: ModuleStompReport| (m.module, m.recovered_source.replace("\r\n", "\n")))
-        .collect()
 }
 
 fn recover_xlm_text(bytes: &[u8]) -> Option<String> {
