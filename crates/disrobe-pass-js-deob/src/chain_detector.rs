@@ -247,6 +247,7 @@ impl JsObfPass {
                 route: RecoveryRoute::Other,
             });
         }
+        let mut weak_esoteric: Option<EsotericClassification> = None;
         if let Ok(text) = std::str::from_utf8(bytes) {
             if let Some(out) = run_protector(text, artifact, context.i_have_authorization)? {
                 return Ok(SelectedRecovery {
@@ -255,7 +256,14 @@ impl JsObfPass {
                 });
             }
             let eso: EsotericClassification = classify_esoteric(text);
-            if let Some(source) = run_esoteric(&eso, bytes) {
+            if eso.family == EsotericFamily::JsFuck
+                && let Some(refusal) = crate::esoteric::operator_chain_refusal(text)
+            {
+                return Err(CoreError::PassFailure(refusal));
+            }
+            if verdict_from_strong_esoteric(&eso).is_none() {
+                weak_esoteric = Some(eso);
+            } else if let Some(source) = run_esoteric(&eso, bytes) {
                 return Ok(SelectedRecovery {
                     artifact: Artifact::new(Rung::Surface, source.into_bytes(), artifact.root_hash),
                     route: RecoveryRoute::Other,
@@ -263,6 +271,18 @@ impl JsObfPass {
             }
         }
         let det: Detection = detect_obfuscator(bytes);
+        if matches!(
+            det.family,
+            JsObfuscator::JsObfu | JsObfuscator::Minified | JsObfuscator::Unknown
+        ) && let Some(source) = weak_esoteric
+            .as_ref()
+            .and_then(|eso: &EsotericClassification| run_esoteric(eso, bytes))
+        {
+            return Ok(SelectedRecovery {
+                artifact: Artifact::new(Rung::Surface, source.into_bytes(), artifact.root_hash),
+                route: RecoveryRoute::Other,
+            });
+        }
         let route: RecoveryRoute = if matches!(det.family, JsObfuscator::ObfuscatorIo) {
             RecoveryRoute::ObfuscatorIo
         } else {
@@ -629,6 +649,12 @@ fn run_protector(
 
 fn run_esoteric(eso: &EsotericClassification, bytes: &[u8]) -> Option<String> {
     let text: &str = std::str::from_utf8(bytes).ok()?;
+    decode_esoteric(eso, text).filter(|recovered: &String| {
+        recovered.as_str() != text && crate::scan_utils::reparses(recovered)
+    })
+}
+
+fn decode_esoteric(eso: &EsotericClassification, text: &str) -> Option<String> {
     match eso.family {
         EsotericFamily::JsFuck => decode_jsfuck(text).recovered,
         EsotericFamily::AaEncode => decode_aaencode(text).recovered,

@@ -1,13 +1,10 @@
-use std::borrow::Cow;
-
 use oxc_allocator::Allocator;
-use oxc_ast::ast::{Expression, Statement};
+use oxc_ast::ast::{Argument, Expression, Statement};
 use oxc_parser::{Parser, ParserReturn};
 use oxc_span::SourceType;
-use regex::{Captures, Regex};
 use serde::Serialize;
 
-use crate::js_string::unescape_string_literal;
+use crate::scan_utils::reparses;
 
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct EvalIndirectionStats {
@@ -137,83 +134,107 @@ fn classify_call_callee(callee: &Expression<'_>, stats: &mut EvalIndirectionStat
 }
 
 fn fold_constant_arguments(source: &str, stats: &mut EvalIndirectionStats) -> String {
-    let after_eval: String = fold_eval_string_literal(source, stats);
-    let after_new_fn: String = fold_new_function_invocation(&after_eval, stats);
-    let after_call_fn: String = fold_function_invocation(&after_new_fn, stats);
-    add_detect_only_markers(&after_call_fn, stats)
-}
-
-fn fold_eval_string_literal(source: &str, stats: &mut EvalIndirectionStats) -> String {
-    let Ok(re): Result<Regex, regex::Error> =
-        Regex::new(r#"(?s)\beval\s*\(\s*(?:'((?:\\.|[^'\\])*)'|"((?:\\.|[^"\\])*)")\s*\)"#)
-    else {
-        return source.to_owned();
-    };
-    let replaced: Cow<'_, str> = re.replace_all(source, |caps: &Captures<'_>| {
-        let raw: Option<&str> = caps.get(1).or_else(|| caps.get(2)).map(|m| m.as_str());
-        match raw {
-            Some(payload) => {
-                stats.constant_folded += 1;
-                format!("/* dr-eval-folded */ {}", unescape_string_literal(payload))
-            }
-            None => caps[0].to_owned(),
+    let allocator: Allocator = Allocator::default();
+    let source_type: SourceType = SourceType::from_path("eval-peel.js").unwrap_or_default();
+    let parsed: ParserReturn<'_> = Parser::new(&allocator, source, source_type).parse();
+    let mut folds: Vec<StatementFold> = Vec::new();
+    if parsed.errors.is_empty() && !parsed.panicked {
+        collect_statement_folds(&parsed.program.body, &mut folds);
+    }
+    folds.sort_by_key(|fold: &StatementFold| fold.start);
+    let mut out: String = String::with_capacity(source.len());
+    let mut cursor: usize = 0;
+    for fold in folds {
+        if fold.start < cursor {
+            continue;
         }
-    });
-    replaced.into_owned()
+        out.push_str(&source[cursor..fold.start]);
+        out.push_str(&fold.replacement);
+        cursor = fold.end;
+        stats.constant_folded += 1;
+    }
+    out.push_str(&source[cursor..]);
+    stats.detect_only_markers =
+        (stats.eval_calls_seen + stats.function_calls_seen).saturating_sub(stats.constant_folded);
+    out
 }
 
-fn fold_new_function_invocation(source: &str, stats: &mut EvalIndirectionStats) -> String {
-    let Ok(re): Result<Regex, regex::Error> = Regex::new(
-        r#"(?s)\(\s*new\s+Function\s*\(\s*(?:'((?:\\.|[^'\\])*)'|"((?:\\.|[^"\\])*)")\s*\)\s*\)\s*\(\s*\)"#,
-    ) else {
-        return source.to_owned();
-    };
-    let replaced: Cow<'_, str> = re.replace_all(source, |caps: &Captures<'_>| {
-        let raw: Option<&str> = caps.get(1).or_else(|| caps.get(2)).map(|m| m.as_str());
-        match raw {
-            Some(payload) => {
-                stats.constant_folded += 1;
-                format!("/* dr-newfn-folded */ {}", unescape_string_literal(payload))
+#[derive(Debug)]
+struct StatementFold {
+    start: usize,
+    end: usize,
+    replacement: String,
+}
+
+fn collect_statement_folds(statements: &[Statement<'_>], folds: &mut Vec<StatementFold>) {
+    for statement in statements {
+        match statement {
+            Statement::ExpressionStatement(es) => {
+                if let Some(replacement) = statement_fold(&es.expression) {
+                    folds.push(StatementFold {
+                        start: es.span.start as usize,
+                        end: es.span.end as usize,
+                        replacement,
+                    });
+                }
             }
-            None => caps[0].to_owned(),
-        }
-    });
-    replaced.into_owned()
-}
-
-fn fold_function_invocation(source: &str, stats: &mut EvalIndirectionStats) -> String {
-    let Ok(re): Result<Regex, regex::Error> = Regex::new(
-        r#"(?s)\bFunction\s*\(\s*(?:'((?:\\.|[^'\\])*)'|"((?:\\.|[^"\\])*)")\s*\)\s*\(\s*\)"#,
-    ) else {
-        return source.to_owned();
-    };
-    let replaced: Cow<'_, str> = re.replace_all(source, |caps: &Captures<'_>| {
-        let raw: Option<&str> = caps.get(1).or_else(|| caps.get(2)).map(|m| m.as_str());
-        match raw {
-            Some(payload) => {
-                stats.constant_folded += 1;
-                format!("/* dr-fn-folded */ {}", unescape_string_literal(payload))
+            Statement::BlockStatement(block) => collect_statement_folds(&block.body, folds),
+            Statement::FunctionDeclaration(function) => {
+                if let Some(body) = &function.body {
+                    collect_statement_folds(&body.statements, folds);
+                }
             }
-            None => caps[0].to_owned(),
+            _ => {}
         }
-    });
-    replaced.into_owned()
+    }
 }
 
-fn add_detect_only_markers(source: &str, stats: &mut EvalIndirectionStats) -> String {
-    let pending_eval: usize = source
-        .matches("eval(")
-        .filter(|_| true)
-        .count()
-        .saturating_sub(source.matches("/* dr-eval-folded */").count());
-    let pending_fn: usize = source
-        .matches("Function(")
-        .filter(|_| true)
-        .count()
-        .saturating_sub(source.matches("/* dr-fn-folded */").count())
-        .saturating_sub(source.matches("/* dr-newfn-folded */").count());
-    stats.detect_only_markers = pending_eval + pending_fn;
-    source.to_owned()
+fn statement_fold(expression: &Expression<'_>) -> Option<String> {
+    let Expression::CallExpression(call) = expression.without_parentheses() else {
+        return None;
+    };
+    if let Expression::Identifier(callee) = call.callee.without_parentheses()
+        && callee.name == "eval"
+    {
+        let payload: &str = single_string_argument(&call.arguments)?;
+        return reparses(payload).then(|| format!("/* dr-eval-folded */\n{payload}\n"));
+    }
+    if !call.arguments.is_empty() {
+        return None;
+    }
+    let body: &str = match call.callee.without_parentheses() {
+        Expression::CallExpression(constructor) => {
+            let Expression::Identifier(callee) = constructor.callee.without_parentheses() else {
+                return None;
+            };
+            if callee.name != "Function" {
+                return None;
+            }
+            single_string_argument(&constructor.arguments)?
+        }
+        Expression::NewExpression(constructor) => {
+            let Expression::Identifier(callee) = constructor.callee.without_parentheses() else {
+                return None;
+            };
+            if callee.name != "Function" {
+                return None;
+            }
+            single_string_argument(&constructor.arguments)?
+        }
+        _ => return None,
+    };
+    let wrapped: String = format!("(function () {{\n{body}\n}})();");
+    reparses(&wrapped).then(|| format!("/* dr-fn-folded */\n{wrapped}\n"))
+}
+
+fn single_string_argument<'a>(arguments: &'a [Argument<'a>]) -> Option<&'a str> {
+    let [argument] = arguments else {
+        return None;
+    };
+    match argument.as_expression()?.without_parentheses() {
+        Expression::StringLiteral(literal) => Some(literal.value.as_str()),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -235,6 +256,41 @@ mod tests {
         let res: EvalIndirectionResult = peel_eval_indirection(src);
         assert!(res.stats.constant_folded >= 1);
         assert!(res.rewritten.contains("return 42"));
+    }
+
+    #[test]
+    fn calls_inside_expressions_are_left_alone_and_the_output_reparses() {
+        for src in [
+            "var y = 2*eval(\"1+2\");",
+            "var root = freeGlobal || freeSelf || Function('return this')();",
+            "if (eval(\"flag\")) { go(); }",
+        ] {
+            let res: EvalIndirectionResult = peel_eval_indirection(src);
+            assert_eq!(res.stats.constant_folded, 0, "{src}");
+            assert_eq!(res.rewritten, src);
+            assert!(res.stats.detect_only_markers >= 1, "{src}");
+        }
+    }
+
+    #[test]
+    fn a_function_body_keeps_its_function_scope_when_folded() {
+        let src: &str = "Function('return this')();\nnext();";
+        let res: EvalIndirectionResult = peel_eval_indirection(src);
+        assert_eq!(res.stats.constant_folded, 1);
+        assert!(
+            res.rewritten.contains("(function () {\nreturn this\n})();"),
+            "{}",
+            res.rewritten
+        );
+        assert!(reparses(&res.rewritten), "{}", res.rewritten);
+    }
+
+    #[test]
+    fn a_payload_that_does_not_parse_is_not_folded() {
+        let src: &str = "eval(\"var = ;\");";
+        let res: EvalIndirectionResult = peel_eval_indirection(src);
+        assert_eq!(res.stats.constant_folded, 0);
+        assert_eq!(res.rewritten, src);
     }
 
     #[test]

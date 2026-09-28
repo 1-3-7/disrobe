@@ -16,6 +16,7 @@ pub use jjencode::{JjEncodeDecode, JjEncodeDetection, decode_jjencode, detect_jj
 pub use jsfiretruck::{
     JsFireTruckDecode, JsFireTruckDetection, decode_jsfiretruck, detect_jsfiretruck,
 };
+pub(crate) use jsfuck::operator_chain_refusal;
 pub use jsfuck::{JsFuckDecode, JsFuckDetection, decode_jsfuck, detect_jsfuck};
 pub use packer::{PackerDecode, PackerDetection, detect_packer, unpack as unpack_packer};
 
