@@ -461,7 +461,7 @@ fn dalvik_lift_agrees_with_dexdump() {
     corpus.push("dex");
 
     for (name, bytes) in FIXTURES {
-        let path: PathBuf = corpus.join(name.rsplit('/').next().unwrap_or(name));
+        let path: PathBuf = corpus.join(name);
         let output: Output = run_dexdump(&path);
         assert!(
             output.status.success(),
