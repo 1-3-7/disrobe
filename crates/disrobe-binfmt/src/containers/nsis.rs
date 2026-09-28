@@ -194,8 +194,11 @@ fn decode_first_block(
         }
     }
 
+    let with_length_word: usize = header_size
+        .checked_add(4)
+        .ok_or_else(|| nsis_err("nsis header size overflows"))?;
     let (method, out, consumed): (NsisCompression, Vec<u8>, usize) =
-        try_methods_streaming(region, header_size)?;
+        try_methods_streaming(region, with_length_word)?;
     let header_bytes: Vec<u8> = extract_streamed_header(&out, header_size)?;
     Ok((method, true, consumed, header_bytes))
 }
@@ -768,6 +771,7 @@ pub(crate) fn build_test_nsis_solid(file_name: &str, file_body: &[u8]) -> Vec<u8
     let header_size: u32 = hdr.len() as u32;
 
     let mut plain: Vec<u8> = Vec::new();
+    put_u32(&mut plain, header_size);
     plain.extend_from_slice(&hdr);
     put_u32(&mut plain, file_body.len() as u32);
     plain.extend_from_slice(file_body);
