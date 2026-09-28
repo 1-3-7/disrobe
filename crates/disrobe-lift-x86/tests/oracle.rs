@@ -149,7 +149,7 @@ fn live_gcc_text_matches_live_gnu_objdump() {
         assert!(
             cfg!(target_os = "macos") && env::var_os("DISROBE_REQUIRE_X86_GNU_TOOLCHAIN").is_none(),
             "GNU gcc, objcopy and objdump are required for the live x86-64 validation; looked in \
-             DISROBE_X86_GNU_BIN, C:/Strawberry/c/bin on Windows, and every PATH directory"
+             DISROBE_X86_GNU_BIN and every PATH directory"
         );
         eprintln!(
             "UNGRADED: live x86-64 GNU validation needs GNU gcc, objcopy and objdump, which macOS \
@@ -688,9 +688,6 @@ fn find_tool(name: &str) -> Option<PathBuf> {
     let mut directories: Vec<PathBuf> = Vec::new();
     if let Some(configured) = env::var_os("DISROBE_X86_GNU_BIN") {
         directories.push(PathBuf::from(configured));
-    }
-    if cfg!(windows) {
-        directories.push(PathBuf::from("C:/Strawberry/c/bin"));
     }
     if let Some(path) = env::var_os("PATH") {
         directories.extend(env::split_paths(&path));

@@ -225,7 +225,14 @@ impl Interpreter {
 
     fn step(&mut self, operation: &PcodeOp) -> Step {
         match operation {
-            PcodeOp::Copy { output, input } | PcodeOp::IntZext { output, input } => {
+            PcodeOp::Copy { output, input } => self.assign(*output, self.read(*input)),
+            PcodeOp::IntZext { output, input } => {
+                if output.size_bytes <= input.size_bytes {
+                    return Step::Unmodeled(format!(
+                        "INT_ZEXT from {} to {} bytes does not widen",
+                        input.size_bytes, output.size_bytes
+                    ));
+                }
                 self.assign(*output, self.read(*input))
             }
             PcodeOp::IntAdd {
