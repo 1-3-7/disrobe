@@ -258,15 +258,16 @@ impl Expr {
         match self {
             Self::Const(_) | Self::Var(_) => self.clone(),
             Self::Mem(_, width) => {
-                let index: u32 = match loads.iter().find(|(load, _): &&(Self, u32)| load == self) {
-                    Some((_, index)) => *index,
-                    None => {
-                        let index: u32 = *next_var;
-                        *next_var = next_var.saturating_add(1);
-                        loads.push((self.clone(), index));
-                        index
-                    }
-                };
+                let existing: Option<u32> = loads
+                    .iter()
+                    .find(|(load, _): &&(Self, u32)| load == self)
+                    .map(|(_, index): &(Self, u32)| *index);
+                let index: u32 = existing.unwrap_or_else(|| {
+                    let index: u32 = *next_var;
+                    *next_var = next_var.saturating_add(1);
+                    loads.push((self.clone(), index));
+                    index
+                });
                 Self::Binary(
                     BinOp::And,
                     Box::new(Self::Var(index)),
