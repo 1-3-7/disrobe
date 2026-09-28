@@ -2264,6 +2264,30 @@ fn match_subject_split(stream: &DecodedStream, lo: usize, hi: usize) -> Option<u
     })
 }
 
+fn class_pattern_operands_start(
+    stream: &DecodedStream,
+    lo: usize,
+    match_class: usize,
+) -> Option<usize> {
+    let names: usize = last_significant_back(stream, lo, match_class)?;
+    if !matches!(stream.ops[names], CanonicalOp::LoadConst(_)) {
+        return None;
+    }
+    let mut k: usize = last_significant_back(stream, lo, names)?;
+    while matches!(stream.ops[k], CanonicalOp::LoadAttr(_)) {
+        k = last_significant_back(stream, lo, k)?;
+    }
+    (k > lo
+        && matches!(
+            stream.ops[k],
+            CanonicalOp::LoadGlobal(_)
+                | CanonicalOp::LoadName(_)
+                | CanonicalOp::LoadFromDictOrGlobals(_)
+                | CanonicalOp::LoadFast(_)
+        ))
+    .then_some(k)
+}
+
 fn subject_region_is_straight_line(stream: &DecodedStream, lo: usize, split: usize) -> bool {
     !(lo..split).any(|k: usize| is_match_fail_jump(&stream.ops[k]))
 }
@@ -2840,6 +2864,63 @@ fn strip_trailing_outer_as(inner: Pattern, outer: &str) -> Pattern {
 }
 
 const MAX_PATTERN_NEST_DEPTH: usize = 256;
+const PATTERN_DEPTH_CAP_MARKER: &str = "__DR_PATTERN_DEPTH_CAP__";
+
+const UNRECOVERED_SUBPATTERN_MARKER: &str = "__DR_UNRECOVERED_SUBPATTERN__";
+const UNRECOVERED_CLASS_MARKER: &str = "__DR_UNRECOVERED_CLASS__";
+
+fn pattern_depth_cap_marker() -> Pattern {
+    Pattern::MatchAs {
+        pattern: None,
+        name: Some(PATTERN_DEPTH_CAP_MARKER.to_owned()),
+    }
+}
+
+fn unrecovered_subpattern() -> Pattern {
+    Pattern::MatchAs {
+        pattern: None,
+        name: Some(UNRECOVERED_SUBPATTERN_MARKER.to_owned()),
+    }
+}
+
+fn is_unrecovered_pattern_marker(id: &str) -> bool {
+    [
+        PATTERN_DEPTH_CAP_MARKER,
+        UNRECOVERED_SUBPATTERN_MARKER,
+        UNRECOVERED_CLASS_MARKER,
+    ]
+    .contains(&id)
+}
+
+fn pattern_is_unrecovered(pattern: &Pattern) -> bool {
+    match pattern {
+        Pattern::MatchAs { pattern, name } => {
+            name.as_deref().is_some_and(is_unrecovered_pattern_marker)
+                || pattern.as_deref().is_some_and(pattern_is_unrecovered)
+        }
+        Pattern::MatchClass {
+            cls,
+            patterns,
+            kwd_patterns,
+            ..
+        } => {
+            matches!(cls, Expr::Name { id, .. } if is_unrecovered_pattern_marker(id))
+                || patterns.iter().any(pattern_is_unrecovered)
+                || kwd_patterns.iter().any(pattern_is_unrecovered)
+        }
+        Pattern::MatchSequence(patterns)
+        | Pattern::MatchOr(patterns)
+        | Pattern::MatchMapping { patterns, .. } => patterns.iter().any(pattern_is_unrecovered),
+        Pattern::MatchValue(_) | Pattern::MatchSingleton(_) | Pattern::MatchStar(_) => false,
+    }
+}
+
+const fn wildcard_pattern() -> Pattern {
+    Pattern::MatchAs {
+        pattern: None,
+        name: None,
+    }
+}
 
 fn classify_pattern(
     code: &CodeObject,
@@ -2986,6 +3067,11 @@ fn classify_simple_pattern(
         }
         CanonicalOp::MatchMapping => {
             classify_mapping_pattern(code, stream, first, fail_target, region_end, depth)
+        }
+        CanonicalOp::LoadFast(_)
+            if class_pattern_class_expr(code, stream, first, scan_end).is_some() =>
+        {
+            classify_class_pattern(code, stream, first, fail_target, region_end)
         }
         CanonicalOp::LoadGlobal(_)
         | CanonicalOp::LoadName(_)
@@ -3338,7 +3424,7 @@ fn recover_indexed_star_sequence_elements(
     let mut by_index: std::collections::BTreeMap<u32, Pattern> = std::collections::BTreeMap::new();
     let mut k: usize = ge_cmp + 1;
     while k < scan_end {
-        if !matches!(stream.ops[k], CanonicalOp::Copy(1)) {
+        if !is_subject_dup(&stream.ops[k]) {
             k += 1;
             continue;
         }
@@ -3361,7 +3447,9 @@ fn recover_indexed_star_sequence_elements(
         let elem_start: usize = first_significant(stream, subscr + 1, scan_end)?;
         let (pat, next): (Pattern, usize) =
             recover_one_sequence_element(code, stream, elem_start, scan_end)?;
-        by_index.insert(idx, pat);
+        if by_index.insert(idx, pat).is_some() {
+            return Some(vec![unrecovered_subpattern(), Pattern::MatchStar(None)]);
+        }
         k = next;
     }
     if by_index.is_empty() {
@@ -3385,10 +3473,7 @@ fn classify_sequence_pattern(
     depth: usize,
 ) -> Pattern {
     if depth >= MAX_PATTERN_NEST_DEPTH {
-        return Pattern::MatchAs {
-            pattern: None,
-            name: None,
-        };
+        return pattern_depth_cap_marker();
     }
     let scan_end: usize = body_scan_limit(stream, fail_target, region_end);
     let indexed_star: bool = (head..scan_end)
@@ -3587,10 +3672,7 @@ fn classify_mapping_pattern(
     depth: usize,
 ) -> Pattern {
     if depth >= MAX_PATTERN_NEST_DEPTH {
-        return Pattern::MatchAs {
-            pattern: None,
-            name: None,
-        };
+        return pattern_depth_cap_marker();
     }
     let scan_end: usize = body_scan_limit(stream, fail_target, region_end);
     let mut keys: Vec<Expr> = Vec::new();
@@ -3845,27 +3927,12 @@ fn classify_class_pattern(
     region_end: usize,
 ) -> Pattern {
     let scan_end: usize = body_scan_limit(stream, fail_target, region_end);
-    let cls_name: Result<String> = match &stream.ops[head] {
-        CanonicalOp::LoadGlobal(slot) => name_at_either(code, *slot),
-        CanonicalOp::LoadName(slot) | CanonicalOp::LoadFromDictOrGlobals(slot) => {
-            name_at(&code.names, *slot, head, "name")
-        }
-        _ => Err(DecompileError::AstDesync {
-            offset: head,
-            reason: "match-class head is not a class load".to_owned(),
-        }),
-    };
-    let cls: Expr = cls_name.map_or(
-        Expr::Constant {
-            value: ConstValue::None,
-            line: None,
-        },
-        |id: String| Expr::Name {
-            id,
+    let cls: Expr =
+        class_pattern_class_expr(code, stream, head, scan_end).unwrap_or_else(|| Expr::Name {
+            id: UNRECOVERED_CLASS_MARKER.to_owned(),
             ctx: ExprCtx::Load,
             line: None,
-        },
-    );
+        });
     let mut kwd_attrs: Vec<String> = Vec::new();
     let mut positional: u8 = 0;
     let mut match_class_idx: Option<usize> = None;
@@ -3894,20 +3961,10 @@ fn classify_class_pattern(
     });
     let mut slot_iter: std::vec::IntoIter<Pattern> = slot_patterns.into_iter();
     let patterns: Vec<Pattern> = (0..positional_count)
-        .map(|_| {
-            slot_iter.next().unwrap_or(Pattern::MatchAs {
-                pattern: None,
-                name: None,
-            })
-        })
+        .map(|_| slot_iter.next().unwrap_or_else(unrecovered_subpattern))
         .collect();
     let kwd_patterns: Vec<Pattern> = (0..kwd_count)
-        .map(|_| {
-            slot_iter.next().unwrap_or(Pattern::MatchAs {
-                pattern: None,
-                name: None,
-            })
-        })
+        .map(|_| slot_iter.next().unwrap_or_else(unrecovered_subpattern))
         .collect();
     Pattern::MatchClass {
         cls,
@@ -3915,6 +3972,40 @@ fn classify_class_pattern(
         kwd_attrs,
         kwd_patterns,
     }
+}
+
+fn class_pattern_class_expr(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    head: usize,
+    scan_end: usize,
+) -> Option<Expr> {
+    let root: String = match &stream.ops[head] {
+        CanonicalOp::LoadGlobal(slot) => name_at_either(code, *slot).ok()?,
+        CanonicalOp::LoadName(slot) | CanonicalOp::LoadFromDictOrGlobals(slot) => {
+            name_at(&code.names, *slot, head, "name").ok()?
+        }
+        CanonicalOp::LoadFast(slot) => local_name_at(code, *slot, head).ok()?,
+        _ => return None,
+    };
+    let mut cls: Expr = Expr::Name {
+        id: root,
+        ctx: ExprCtx::Load,
+        line: None,
+    };
+    let mut k: usize = first_significant(stream, head + 1, scan_end)?;
+    while let CanonicalOp::LoadAttr(slot) = stream.ops[k] {
+        cls = Expr::Attribute {
+            value: Box::new(cls),
+            attr: name_at(&code.names, slot, k, "attr").ok()?,
+            ctx: ExprCtx::Load,
+        };
+        k = first_significant(stream, k + 1, scan_end)?;
+    }
+    let names_then_match: bool = matches!(stream.ops[k], CanonicalOp::LoadConst(_))
+        && first_significant(stream, k + 1, scan_end)
+            .is_some_and(|m: usize| matches!(stream.ops[m], CanonicalOp::MatchClass(_)));
+    names_then_match.then_some(cls)
 }
 
 fn recover_class_subpatterns(
@@ -3939,13 +4030,7 @@ fn recover_class_subpatterns(
             total_slots,
         );
     };
-    let mut slots: Vec<Pattern> = vec![
-        Pattern::MatchAs {
-            pattern: None,
-            name: None
-        };
-        total_slots
-    ];
+    let mut slots: Vec<Pattern> = vec![unrecovered_subpattern(); total_slots];
     let mut value_stack: Vec<usize> = (0..total_slots).rev().collect();
     let mut k: usize = unpack_idx + 1;
     while !value_stack.is_empty() && k < scan_end {
@@ -3959,7 +4044,9 @@ fn recover_class_subpatterns(
                 k += 1;
             }
             CanonicalOp::Pop => {
-                value_stack.pop();
+                if let Some(si) = value_stack.pop() {
+                    slots[si] = wildcard_pattern();
+                }
                 k += 1;
             }
             CanonicalOp::StoreFast(slot) => {
@@ -4014,13 +4101,16 @@ fn recover_class_subpatterns(
                 }
                 k += 1;
             }
+            CanonicalOp::LoadConst(_) | CanonicalOp::LoadSmallInt(_)
+                if !first_significant(stream, k + 1, stream.ops.len())
+                    .is_some_and(|n: usize| matches!(stream.ops[n], CanonicalOp::Compare(_))) =>
+            {
+                break;
+            }
             CanonicalOp::LoadConst(slot) => {
                 if let Some(si) = value_stack.pop() {
-                    let expr: Expr = load_const(code, *slot, k).unwrap_or(Expr::Constant {
-                        value: ConstValue::None,
-                        line: None,
-                    });
-                    slots[si] = Pattern::MatchValue(expr);
+                    slots[si] = load_const(code, *slot, k)
+                        .map_or_else(|_| unrecovered_subpattern(), Pattern::MatchValue);
                 }
                 k = skip_value_test(stream, k + 1, scan_end);
             }
@@ -4033,9 +4123,10 @@ fn recover_class_subpatterns(
                 }
                 k = skip_value_test(stream, k + 1, scan_end);
             }
-            _ => {
+            CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_) => {
                 k += 1;
             }
+            _ => break,
         }
     }
     slots
@@ -4087,9 +4178,9 @@ fn recover_class_subpatterns_subscript(
             CanonicalOp::LoadConst(lit) => {
                 if let Some(si) = slot_idx
                     && si < slots.len()
-                    && let Ok(expr) = load_const(code, *lit, body)
                 {
-                    slots[si] = Pattern::MatchValue(expr);
+                    slots[si] = load_const(code, *lit, body)
+                        .map_or_else(|_| unrecovered_subpattern(), Pattern::MatchValue);
                 }
                 k = skip_value_test(stream, body + 1, scan_end);
             }
@@ -4111,6 +4202,11 @@ fn recover_class_subpatterns_subscript(
                 k = body + 1;
             }
             _ => {
+                if let Some(si) = slot_idx
+                    && si < slots.len()
+                {
+                    slots[si] = unrecovered_subpattern();
+                }
                 break;
             }
         }
@@ -4382,8 +4478,17 @@ pub(super) fn structure_match(
     lo: usize,
     hi: usize,
 ) -> Result<Option<(Vec<Stmt>, usize)>> {
-    let Some(subject_split): Option<usize> = match_subject_split(stream, lo, hi) else {
+    let Some(split): Option<usize> = match_subject_split(stream, lo, hi) else {
         return Ok(None);
+    };
+    let subject_split: usize = if matches!(stream.ops[split], CanonicalOp::MatchClass(_)) {
+        let Some(class_start): Option<usize> = class_pattern_operands_start(stream, lo, split)
+        else {
+            return Ok(None);
+        };
+        class_start
+    } else {
+        split
     };
     if subject_split <= lo {
         return Ok(None);
@@ -4425,6 +4530,15 @@ pub(super) fn structure_match(
 
     if parsed.len() < 2 {
         return Ok(None);
+    }
+    if let Some(unread) = parsed
+        .iter()
+        .find(|arm: &&PendingArm| pattern_is_unrecovered(&arm.pattern))
+    {
+        return Err(DecompileError::AstDesync {
+            offset: unread.arm_start,
+            reason: "a match case holds a sub-pattern the recovery cannot read".to_owned(),
+        });
     }
 
     let wildcard_start: usize = parsed.last().map_or(hi, |a: &PendingArm| a.arm_start);
@@ -4636,7 +4750,8 @@ fn merge_patterns(left: Pattern, right: Pattern) -> Vec<Pattern> {
 mod pattern_recovery_bounds {
     use super::super::DecodedStream;
     use super::{
-        MAX_PATTERN_NEST_DEPTH, classify_mapping_pattern, recover_fixed_sequence_elements,
+        MAX_PATTERN_NEST_DEPTH, PATTERN_DEPTH_CAP_MARKER, classify_mapping_pattern,
+        recover_fixed_sequence_elements,
     };
     use crate::ast::node::Pattern;
     use crate::bytecode::opcode::CanonicalOp;
@@ -4713,7 +4828,7 @@ mod pattern_recovery_bounds {
     }
 
     #[test]
-    fn mapping_pattern_guard_degrades_at_cap() {
+    fn mapping_pattern_at_the_depth_cap_is_a_refused_marker_not_a_wildcard() {
         let stream: DecodedStream = stream_from(vec![
             CanonicalOp::MatchMapping,
             CanonicalOp::LoadConst(0),
@@ -4721,14 +4836,18 @@ mod pattern_recovery_bounds {
         ]);
         let code: CodeObject = code_with_string_tuple_const();
         let end: usize = stream.ops.len();
-        let degraded: Pattern =
+        let capped: Pattern =
             classify_mapping_pattern(&code, &stream, 0, end, end, MAX_PATTERN_NEST_DEPTH);
-        assert!(matches!(
-            degraded,
-            Pattern::MatchAs {
-                pattern: None,
-                name: None
-            }
-        ));
+        assert!(
+            matches!(
+                &capped,
+                Pattern::MatchAs {
+                    pattern: None,
+                    name: Some(name),
+                } if name == PATTERN_DEPTH_CAP_MARKER
+            ),
+            "a pattern past the depth cap must carry the marker the engine guard refuses; a bare \
+             `_` matches every subject and widens the case: {capped:?}"
+        );
     }
 }
