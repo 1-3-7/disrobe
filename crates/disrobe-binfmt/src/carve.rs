@@ -7,7 +7,10 @@ use serde::{Deserialize, Serialize};
 use disrobe_core::byte_search;
 use disrobe_core::shannon_entropy;
 
-use crate::container::ContainerKind;
+use crate::container::{
+    ContainerKind, MAGIC_SIGNATURES, MagicSignature, TAR_USTAR, TAR_USTAR_OFFSET,
+};
+use crate::containers::cpio::CpioVariant;
 use crate::extract::{ExtractionResult, extract_to_with_quota};
 use crate::quota::ExtractionQuota;
 use disrobe_core::scratch::ScratchDir;
@@ -422,17 +425,21 @@ fn push_unknown(bytes: &[u8], start: usize, end: usize, chunks: &mut Vec<CarvedC
 
 fn scan_magics(bytes: &[u8]) -> Vec<MagicHit> {
     let mut hits: Vec<MagicHit> = Vec::new();
-    for sig in MAGIC_SIGNATURES {
+    for signature in MAGIC_SIGNATURES
+        .iter()
+        .filter(|signature: &&MagicSignature| extent_bounder(signature.kind).is_some())
+    {
         let mut from: usize = 0;
         while from < bytes.len() && hits.len() < SCAN_HIT_CAP {
-            let Some(rel): Option<usize> = byte_search::find(&bytes[from..], sig.magic) else {
+            let Some(rel): Option<usize> = byte_search::find(&bytes[from..], signature.magic)
+            else {
                 break;
             };
             let at: usize = from + rel;
-            if at >= sig.expected_offset_lo && at <= sig.expected_offset_hi {
+            if at >= signature.offset {
                 hits.push(MagicHit {
-                    offset: at - sig.magic_offset_in_format,
-                    kind: sig.kind,
+                    offset: at - signature.offset,
+                    kind: signature.kind,
                 });
             }
             from = at + 1;
@@ -453,130 +460,47 @@ const fn format_priority(kind: ContainerKind) -> u8 {
         | ContainerKind::SevenZ
         | ContainerKind::Rar
         | ContainerKind::Cab
-        | ContainerKind::Squashfs => 0,
-        ContainerKind::TarGz
-        | ContainerKind::TarXz
-        | ContainerKind::TarBz2
-        | ContainerKind::TarZst
-        | ContainerKind::Tar => 1,
+        | ContainerKind::Squashfs
+        | ContainerKind::Iso
+        | ContainerKind::Wim
+        | ContainerKind::UnityFs
+        | ContainerKind::Cpio
+        | ContainerKind::Ar => 0,
+        ContainerKind::Tar => 1,
         _ => 2,
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-struct MagicSig {
-    magic: &'static [u8],
-    kind: ContainerKind,
-    magic_offset_in_format: usize,
-    expected_offset_lo: usize,
-    expected_offset_hi: usize,
+type ExtentBounder = fn(&[u8]) -> Option<usize>;
+
+fn extent_bounder(kind: ContainerKind) -> Option<ExtentBounder> {
+    match kind {
+        ContainerKind::Zip => Some(zip_extent),
+        ContainerKind::SevenZ => Some(sevenz_extent),
+        ContainerKind::Rar => Some(rar_extent),
+        ContainerKind::Cab => Some(cab_extent),
+        ContainerKind::Gzip => Some(|tail: &[u8]| stream_extent(tail, StreamKind::Gzip)),
+        ContainerKind::Xz => Some(|tail: &[u8]| stream_extent(tail, StreamKind::Xz)),
+        ContainerKind::Zstd => Some(|tail: &[u8]| stream_extent(tail, StreamKind::Zstd)),
+        ContainerKind::Bzip2 => Some(|tail: &[u8]| stream_extent(tail, StreamKind::Bzip2)),
+        ContainerKind::Tar => Some(tar_extent),
+        ContainerKind::Squashfs => Some(squashfs_extent),
+        ContainerKind::Minidump => Some(crate::containers::minidump::minidump_extent),
+        ContainerKind::Iso => Some(iso_extent),
+        ContainerKind::Wim => Some(wim_extent),
+        ContainerKind::UnityFs => Some(unityfs_extent),
+        ContainerKind::Cpio => Some(cpio_extent),
+        ContainerKind::Ar => Some(ar_extent),
+        _ => None,
+    }
 }
-
-const TAR_USTAR_OFFSET: usize = 257;
-
-const MAGIC_SIGNATURES: &[MagicSig] = &[
-    MagicSig {
-        magic: b"PK\x03\x04",
-        kind: ContainerKind::Zip,
-        magic_offset_in_format: 0,
-        expected_offset_lo: 0,
-        expected_offset_hi: usize::MAX,
-    },
-    MagicSig {
-        magic: &[0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c],
-        kind: ContainerKind::SevenZ,
-        magic_offset_in_format: 0,
-        expected_offset_lo: 0,
-        expected_offset_hi: usize::MAX,
-    },
-    MagicSig {
-        magic: b"Rar!\x1a\x07\x01\x00",
-        kind: ContainerKind::Rar,
-        magic_offset_in_format: 0,
-        expected_offset_lo: 0,
-        expected_offset_hi: usize::MAX,
-    },
-    MagicSig {
-        magic: b"Rar!\x1a\x07\x00",
-        kind: ContainerKind::Rar,
-        magic_offset_in_format: 0,
-        expected_offset_lo: 0,
-        expected_offset_hi: usize::MAX,
-    },
-    MagicSig {
-        magic: b"MSCF",
-        kind: ContainerKind::Cab,
-        magic_offset_in_format: 0,
-        expected_offset_lo: 0,
-        expected_offset_hi: usize::MAX,
-    },
-    MagicSig {
-        magic: &[0xfd, b'7', b'z', b'X', b'Z', 0x00],
-        kind: ContainerKind::Xz,
-        magic_offset_in_format: 0,
-        expected_offset_lo: 0,
-        expected_offset_hi: usize::MAX,
-    },
-    MagicSig {
-        magic: &[0x1f, 0x8b],
-        kind: ContainerKind::Gzip,
-        magic_offset_in_format: 0,
-        expected_offset_lo: 0,
-        expected_offset_hi: usize::MAX,
-    },
-    MagicSig {
-        magic: &[0x28, 0xb5, 0x2f, 0xfd],
-        kind: ContainerKind::Zstd,
-        magic_offset_in_format: 0,
-        expected_offset_lo: 0,
-        expected_offset_hi: usize::MAX,
-    },
-    MagicSig {
-        magic: &[0x42, 0x5a, 0x68],
-        kind: ContainerKind::Bzip2,
-        magic_offset_in_format: 0,
-        expected_offset_lo: 0,
-        expected_offset_hi: usize::MAX,
-    },
-    MagicSig {
-        magic: b"ustar",
-        kind: ContainerKind::Tar,
-        magic_offset_in_format: TAR_USTAR_OFFSET,
-        expected_offset_lo: TAR_USTAR_OFFSET,
-        expected_offset_hi: usize::MAX,
-    },
-    MagicSig {
-        magic: b"hsqs",
-        kind: ContainerKind::Squashfs,
-        magic_offset_in_format: 0,
-        expected_offset_lo: 0,
-        expected_offset_hi: usize::MAX,
-    },
-    MagicSig {
-        magic: b"MDMP",
-        kind: ContainerKind::Minidump,
-        magic_offset_in_format: 0,
-        expected_offset_lo: 0,
-        expected_offset_hi: usize::MAX,
-    },
-];
 
 fn validated_extent(bytes: &[u8], hit: &MagicHit) -> Option<usize> {
     let tail: &[u8] = bytes.get(hit.offset..)?;
     if tail.len() < MIN_VALID_EXTENT {
         return None;
     }
-    let extent: usize = match hit.kind {
-        ContainerKind::Zip => zip_extent(tail)?,
-        ContainerKind::Gzip => stream_extent(tail, StreamKind::Gzip)?,
-        ContainerKind::Xz => stream_extent(tail, StreamKind::Xz)?,
-        ContainerKind::Zstd => stream_extent(tail, StreamKind::Zstd)?,
-        ContainerKind::Bzip2 => stream_extent(tail, StreamKind::Bzip2)?,
-        ContainerKind::Tar => tar_extent(tail)?,
-        ContainerKind::Squashfs => squashfs_extent(tail)?,
-        ContainerKind::Minidump => crate::containers::minidump::minidump_extent(tail)?,
-        _ => trial_parse_extent(tail, hit.kind)?,
-    };
+    let extent: usize = extent_bounder(hit.kind)?(tail)?;
     if extent < MIN_VALID_EXTENT || extent > tail.len() {
         return None;
     }
@@ -836,7 +760,8 @@ fn skip_zero_terminated(bytes: &[u8], from: usize) -> Option<usize> {
 const TAR_BLOCK: usize = 512;
 
 fn tar_extent(bytes: &[u8]) -> Option<usize> {
-    if bytes.len() < TAR_USTAR_OFFSET + 5 {
+    let magic_end: usize = TAR_USTAR_OFFSET + TAR_USTAR.len();
+    if bytes.len() < magic_end {
         return None;
     }
     let mut cursor: usize = 0;
@@ -851,9 +776,9 @@ fn tar_extent(bytes: &[u8]) -> Option<usize> {
             }
             return Some(end.min(bytes.len()));
         }
-        if &header[TAR_USTAR_OFFSET..TAR_USTAR_OFFSET + 5] != b"ustar"
+        if &header[TAR_USTAR_OFFSET..magic_end] != TAR_USTAR
             && cursor == 0
-            && !header[TAR_USTAR_OFFSET..TAR_USTAR_OFFSET + 5]
+            && !header[TAR_USTAR_OFFSET..magic_end]
                 .iter()
                 .all(|&b: &u8| b == 0)
         {
@@ -898,12 +823,297 @@ fn squashfs_extent(bytes: &[u8]) -> Option<usize> {
     Some(total)
 }
 
-fn trial_parse_extent(bytes: &[u8], kind: ContainerKind) -> Option<usize> {
-    if crate::container::detect_container(bytes) == Some(kind) {
-        Some(bytes.len())
-    } else {
-        None
+const SEVENZ_START_HEADER_LEN: usize = 32;
+
+fn sevenz_extent(bytes: &[u8]) -> Option<usize> {
+    let start_header: &[u8] = bytes.get(12..SEVENZ_START_HEADER_LEN)?;
+    if u32_le(bytes, 8)? != crc32fast::hash(start_header) {
+        return None;
     }
+    let next_header_offset: usize = usize::try_from(u64_le(bytes, 12)?).ok()?;
+    let next_header_size: usize = usize::try_from(u64_le(bytes, 20)?).ok()?;
+    SEVENZ_START_HEADER_LEN
+        .checked_add(next_header_offset)?
+        .checked_add(next_header_size)
+}
+
+const CAB_VERSION: [u8; 2] = [3, 1];
+
+fn cab_extent(bytes: &[u8]) -> Option<usize> {
+    if u32_le(bytes, 4)? != 0 || bytes.get(24..26)? != CAB_VERSION {
+        return None;
+    }
+    usize::try_from(u32_le(bytes, 8)?).ok()
+}
+
+const RAR_MAX_BLOCKS: usize = 1 << 20;
+const RAR5_SIGNATURE_LEN: usize = 8;
+const RAR5_FLAG_EXTRA_AREA: u64 = 0x01;
+const RAR5_FLAG_DATA_AREA: u64 = 0x02;
+const RAR5_END_OF_ARCHIVE: u64 = 5;
+const RAR4_SIGNATURE_LEN: usize = 7;
+const RAR4_MIN_HEADER_LEN: usize = 7;
+const RAR4_FLAG_LONG_BLOCK: u16 = 0x8000;
+const RAR4_FLAG_LARGE_FILE: u16 = 0x0100;
+const RAR4_FILE_HEADER: u8 = 0x74;
+const RAR4_SERVICE_HEADER: u8 = 0x7A;
+const RAR4_END_OF_ARCHIVE: u8 = 0x7B;
+
+fn rar_extent(bytes: &[u8]) -> Option<usize> {
+    if bytes.get(6) == Some(&1) {
+        rar5_extent(bytes)
+    } else {
+        rar4_extent(bytes)
+    }
+}
+
+fn rar5_vint(bytes: &[u8], at: usize) -> Option<(u64, usize)> {
+    disrobe_bytes::read_uleb128_at(bytes, at).ok()
+}
+
+fn rar5_extent(bytes: &[u8]) -> Option<usize> {
+    let mut pos: usize = RAR5_SIGNATURE_LEN;
+    for _ in 0..RAR_MAX_BLOCKS {
+        let header_crc: u32 = u32_le(bytes, pos)?;
+        let size_at: usize = pos.checked_add(4)?;
+        let (header_size, size_len): (u64, usize) = rar5_vint(bytes, size_at)?;
+        let header_start: usize = size_at.checked_add(size_len)?;
+        let header_end: usize = header_start.checked_add(usize::try_from(header_size).ok()?)?;
+        if crc32fast::hash(bytes.get(size_at..header_end)?) != header_crc {
+            return None;
+        }
+        let (block_type, type_len): (u64, usize) = rar5_vint(bytes, header_start)?;
+        let flags_at: usize = header_start.checked_add(type_len)?;
+        let (flags, flags_len): (u64, usize) = rar5_vint(bytes, flags_at)?;
+        let mut cursor: usize = flags_at.checked_add(flags_len)?;
+        if flags & RAR5_FLAG_EXTRA_AREA != 0 {
+            let (_, extra_len): (u64, usize) = rar5_vint(bytes, cursor)?;
+            cursor = cursor.checked_add(extra_len)?;
+        }
+        let data_size: u64 = if flags & RAR5_FLAG_DATA_AREA != 0 {
+            rar5_vint(bytes, cursor)?.0
+        } else {
+            0
+        };
+        let block_end: usize = header_end.checked_add(usize::try_from(data_size).ok()?)?;
+        if block_end > bytes.len() {
+            return None;
+        }
+        if block_type == RAR5_END_OF_ARCHIVE {
+            return Some(block_end);
+        }
+        pos = block_end;
+    }
+    None
+}
+
+fn rar4_block(bytes: &[u8], pos: usize) -> Option<(u8, usize)> {
+    let header_crc: u16 = u16_le(bytes, pos)?;
+    let block_type: u8 = *bytes.get(pos.checked_add(2)?)?;
+    let flags: u16 = u16_le(bytes, pos.checked_add(3)?)?;
+    let header_size: usize = usize::from(u16_le(bytes, pos.checked_add(5)?)?);
+    if header_size < RAR4_MIN_HEADER_LEN {
+        return None;
+    }
+    let header_end: usize = pos.checked_add(header_size)?;
+    let crc: u32 = crc32fast::hash(bytes.get(pos + 2..header_end)?);
+    if crc & 0xFFFF != u32::from(header_crc) {
+        return None;
+    }
+    let low_size: u64 = if flags & RAR4_FLAG_LONG_BLOCK != 0 {
+        u64::from(u32_le(bytes, pos.checked_add(7)?)?)
+    } else {
+        0
+    };
+    let high_size: u64 = if matches!(block_type, RAR4_FILE_HEADER | RAR4_SERVICE_HEADER)
+        && flags & RAR4_FLAG_LARGE_FILE != 0
+    {
+        u64::from(u32_le(bytes, pos.checked_add(32)?)?)
+    } else {
+        0
+    };
+    let data_size: u64 = (high_size << 32) | low_size;
+    let block_end: usize = header_end.checked_add(usize::try_from(data_size).ok()?)?;
+    (block_end <= bytes.len()).then_some((block_type, block_end))
+}
+
+fn rar4_extent(bytes: &[u8]) -> Option<usize> {
+    let mut pos: usize = RAR4_SIGNATURE_LEN;
+    let mut file_blocks: usize = 0;
+    for _ in 0..RAR_MAX_BLOCKS {
+        let Some((block_type, block_end)): Option<(u8, usize)> = rar4_block(bytes, pos) else {
+            break;
+        };
+        pos = block_end;
+        match block_type {
+            RAR4_END_OF_ARCHIVE => return Some(pos),
+            RAR4_FILE_HEADER => file_blocks += 1,
+            _ => {}
+        }
+    }
+    (file_blocks > 0).then_some(pos)
+}
+
+const ISO_DESCRIPTOR_OFFSET: usize = 32_768;
+const ISO_DESCRIPTOR_LEN: usize = 2048;
+const ISO_PRIMARY_DESCRIPTOR: u8 = 1;
+
+fn iso_extent(bytes: &[u8]) -> Option<usize> {
+    let descriptor: &[u8] =
+        bytes.get(ISO_DESCRIPTOR_OFFSET..ISO_DESCRIPTOR_OFFSET + ISO_DESCRIPTOR_LEN)?;
+    if descriptor[0] != ISO_PRIMARY_DESCRIPTOR || &descriptor[1..6] != b"CD001" {
+        return None;
+    }
+    let block_count: u32 = u32_le(descriptor, 80)?;
+    let block_size: u16 = u16_le(descriptor, 128)?;
+    if block_size < 512 || !block_size.is_power_of_two() {
+        return None;
+    }
+    let end: usize = usize::try_from(u64::from(block_count) * u64::from(block_size)).ok()?;
+    (end >= ISO_DESCRIPTOR_OFFSET + ISO_DESCRIPTOR_LEN).then_some(end)
+}
+
+fn wim_extent(bytes: &[u8]) -> Option<usize> {
+    let header: crate::containers::wim::WimHeader =
+        crate::containers::wim::parse_wim_header(bytes).ok()?;
+    let mut end: u64 = u64::from(header.header_size);
+    for resource in [
+        header.offset_table,
+        header.xml_data,
+        header.boot_metadata,
+        header.integrity,
+    ] {
+        if resource.size != 0 {
+            end = end.max(resource.offset.checked_add(resource.size)?);
+        }
+    }
+    usize::try_from(end).ok()
+}
+
+fn unityfs_extent(bytes: &[u8]) -> Option<usize> {
+    let header: crate::containers::unityfs::UnityFsHeader =
+        crate::containers::unityfs::parse_header(bytes).ok()?;
+    usize::try_from(header.size).ok()
+}
+
+const CPIO_MAX_MEMBERS: usize = 1 << 20;
+const CPIO_BIN_MAGIC: u16 = 0o070_707;
+const CPIO_TRAILER: &[u8] = b"TRAILER!!!\0";
+
+#[derive(Debug, Clone, Copy)]
+struct CpioMember {
+    header_len: usize,
+    name_size: usize,
+    file_size: usize,
+    align: usize,
+}
+
+fn ascii_number(field: &[u8], radix: u32) -> Option<usize> {
+    usize::from_str_radix(std::str::from_utf8(field).ok()?, radix).ok()
+}
+
+fn cpio_member(header: &[u8], variant: CpioVariant) -> Option<CpioMember> {
+    match variant {
+        CpioVariant::Newc | CpioVariant::Crc => {
+            let magic: &[u8] = if variant == CpioVariant::Newc {
+                crate::containers::cpio::NEWC_MAGIC
+            } else {
+                crate::containers::cpio::CRC_MAGIC
+            };
+            if header.get(..6)? != magic {
+                return None;
+            }
+            Some(CpioMember {
+                header_len: 110,
+                name_size: ascii_number(header.get(94..102)?, 16)?,
+                file_size: ascii_number(header.get(54..62)?, 16)?,
+                align: 4,
+            })
+        }
+        CpioVariant::Odc => {
+            if header.get(..6)? != crate::containers::cpio::ODC_MAGIC {
+                return None;
+            }
+            Some(CpioMember {
+                header_len: 76,
+                name_size: ascii_number(header.get(59..65)?, 8)?,
+                file_size: ascii_number(header.get(65..76)?, 8)?,
+                align: 1,
+            })
+        }
+        CpioVariant::BinLittleEndian | CpioVariant::BinBigEndian => {
+            let word = |at: usize| -> Option<u16> {
+                if variant == CpioVariant::BinLittleEndian {
+                    u16_le(header, at)
+                } else {
+                    disrobe_bytes::read_u16_be_at(header, at).ok()
+                }
+            };
+            if word(0)? != CPIO_BIN_MAGIC {
+                return None;
+            }
+            let file_size: u32 = (u32::from(word(22)?) << 16) | u32::from(word(24)?);
+            Some(CpioMember {
+                header_len: 26,
+                name_size: usize::from(word(20)?),
+                file_size: usize::try_from(file_size).ok()?,
+                align: 2,
+            })
+        }
+    }
+}
+
+fn cpio_extent(bytes: &[u8]) -> Option<usize> {
+    let variant: CpioVariant = crate::containers::cpio::detect_cpio_variant(bytes)?;
+    let mut pos: usize = 0;
+    for _ in 0..CPIO_MAX_MEMBERS {
+        let member: CpioMember = cpio_member(bytes.get(pos..)?, variant)?;
+        let name_start: usize = pos.checked_add(member.header_len)?;
+        let name_end: usize = name_start.checked_add(member.name_size)?;
+        let name: &[u8] = bytes.get(name_start..name_end)?;
+        let data_start: usize = name_end.checked_next_multiple_of(member.align)?;
+        let data_end: usize = data_start.checked_add(member.file_size)?;
+        let next: usize = data_end.checked_next_multiple_of(member.align)?;
+        if next > bytes.len() {
+            return None;
+        }
+        if name == CPIO_TRAILER {
+            return Some(next);
+        }
+        pos = next;
+    }
+    None
+}
+
+const AR_GLOBAL_HEADER_LEN: usize = 8;
+const AR_MEMBER_HEADER_LEN: usize = 60;
+const AR_MEMBER_TERMINATOR: &[u8] = b"`\n";
+
+fn ar_member_end(bytes: &[u8], at: usize) -> Option<usize> {
+    let header: &[u8] = bytes.get(at..at.checked_add(AR_MEMBER_HEADER_LEN)?)?;
+    if &header[58..60] != AR_MEMBER_TERMINATOR {
+        return None;
+    }
+    let size_field: &[u8] = header[48..58].split(|&b: &u8| b == b' ').next()?;
+    let size: usize = ascii_number(size_field, 10)?;
+    let data_end: usize = at.checked_add(AR_MEMBER_HEADER_LEN)?.checked_add(size)?;
+    if data_end > bytes.len() {
+        return None;
+    }
+    if data_end % 2 == 1 && bytes.get(data_end) == Some(&b'\n') {
+        return Some(data_end + 1);
+    }
+    Some(data_end)
+}
+
+fn ar_extent(bytes: &[u8]) -> Option<usize> {
+    let mut end: usize = AR_GLOBAL_HEADER_LEN;
+    let mut members: usize = 0;
+    while let Some(member_end) = ar_member_end(bytes, end) {
+        end = member_end;
+        members += 1;
+    }
+    (members > 0).then_some(end)
 }
 
 #[must_use]
@@ -976,6 +1186,11 @@ fn u16_le(bytes: &[u8], off: usize) -> Option<u16> {
 #[inline]
 fn u32_le(bytes: &[u8], off: usize) -> Option<u32> {
     disrobe_bytes::read_u32_le_at(bytes, off).ok()
+}
+
+#[inline]
+fn u64_le(bytes: &[u8], off: usize) -> Option<u64> {
+    disrobe_bytes::read_u64_le_at(bytes, off).ok()
 }
 
 #[cfg(test)]
@@ -1111,6 +1326,145 @@ mod tests {
             buf.extend_from_slice(&[0x11u8; 64]);
             let hit: MagicHit = MagicHit { offset: 0, kind };
             assert_eq!(validated_extent(&buf, &hit), Some(stream.len()), "{kind:?}");
+        }
+    }
+
+    fn junk(len: usize, seed: u8) -> Vec<u8> {
+        (0..len)
+            .map(|i: usize| (i as u8).wrapping_mul(31).wrapping_add(seed) | 0x80)
+            .collect()
+    }
+
+    fn corpus(relative: &str) -> Vec<u8> {
+        let path: PathBuf = PathBuf::from(format!(
+            "{}/../../corpus/{relative}",
+            env!("CARGO_MANIFEST_DIR")
+        ));
+        std::fs::read(&path).unwrap_or_else(|error: std::io::Error| {
+            panic!("fixture {} is missing: {error}", path.display())
+        })
+    }
+
+    fn newc_member(name: &str, mode: u32, body: &[u8]) -> Vec<u8> {
+        let mut member: Vec<u8> = b"070701".to_vec();
+        let name_size: u32 = u32::try_from(name.len() + 1).expect("name fits");
+        let body_size: u32 = u32::try_from(body.len()).expect("body fits");
+        for field in [1, mode, 0, 0, 1, 0, body_size, 0, 0, 0, 0, name_size, 0] {
+            member.extend_from_slice(format!("{field:08X}").as_bytes());
+        }
+        member.extend_from_slice(name.as_bytes());
+        member.push(0);
+        member.resize(member.len().next_multiple_of(4), 0);
+        member.extend_from_slice(body);
+        member.resize(member.len().next_multiple_of(4), 0);
+        member
+    }
+
+    fn newc_archive(files: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut archive: Vec<u8> = Vec::new();
+        for (name, body) in files {
+            archive.extend(newc_member(name, 0o100_644, body));
+        }
+        archive.extend(newc_member("TRAILER!!!", 0, b""));
+        archive
+    }
+
+    #[test]
+    fn formats_outside_the_old_twelve_signatures_are_carved_with_their_exact_extent() {
+        let cpio: Vec<u8> = newc_archive(&[
+            ("init", b"#!/bin/sh\n"),
+            ("motd", b"carved out of a larger blob"),
+        ]);
+        let cases: [(ContainerKind, Vec<u8>); 3] = [
+            (ContainerKind::Cpio, cpio),
+            (
+                ContainerKind::Iso,
+                corpus("binfmt/iso/joliet-rockridge.iso"),
+            ),
+            (ContainerKind::Ar, corpus("binfmt/deb/lzma.deb")),
+        ];
+        for (kind, payload) in cases {
+            let prefix: Vec<u8> = junk(1000, 3);
+            let mut blob: Vec<u8> = prefix.clone();
+            blob.extend_from_slice(&payload);
+            blob.extend(junk(777, 9));
+            let report: CarveReport = carve_recursive(&blob, "blob", CarveConfig::new(1), None);
+            let start: u64 = prefix.len() as u64;
+            let end: u64 = start + payload.len() as u64;
+            let carved: Vec<(ChunkClass, Option<ContainerKind>, u64, u64)> = report
+                .root
+                .chunks
+                .iter()
+                .map(|chunk: &CarvedChunk| (chunk.class, chunk.kind, chunk.start, chunk.end))
+                .collect();
+            assert!(
+                carved.contains(&(ChunkClass::Valid, Some(kind), start, end)),
+                "{kind:?} at {start}..{end} must be a valid carved chunk: {carved:?} {:?}",
+                report.root.notes
+            );
+        }
+    }
+
+    #[test]
+    fn real_rar_archives_end_at_their_last_block_not_at_the_end_of_the_blob() {
+        for name in [
+            "normal-rar4.rar",
+            "store-rar4.rar",
+            "ppmd-rar4.rar",
+            "normal-rar5.rar",
+            "store-rar5.rar",
+            "multiblock-rar5.rar",
+            "filter-e8e9-rar5.rar",
+            "multiblock-lz-rar3.rar",
+            "filter-e8-rar3.rar",
+        ] {
+            let archive: Vec<u8> = corpus(&format!("binfmt/rar/{name}"));
+            let mut blob: Vec<u8> = archive.clone();
+            blob.extend(junk(300, 5));
+            let hit: MagicHit = MagicHit {
+                offset: 0,
+                kind: ContainerKind::Rar,
+            };
+            assert_eq!(validated_extent(&blob, &hit), Some(archive.len()), "{name}");
+        }
+    }
+
+    #[test]
+    fn seven_zip_and_cab_extents_come_from_their_headers() {
+        let mut writer: sevenz_rust2::SevenZWriter<std::io::Cursor<Vec<u8>>> =
+            sevenz_rust2::SevenZWriter::new(std::io::Cursor::new(Vec::new())).expect("7z writer");
+        writer
+            .push_archive_entry(
+                sevenz_rust2::SevenZArchiveEntry::new_file("member.txt"),
+                Some(b"seven zip member body".as_slice()),
+            )
+            .expect("7z entry");
+        let sevenz: Vec<u8> = writer.finish().expect("7z finish").into_inner();
+
+        let mut builder: cab::CabinetBuilder = cab::CabinetBuilder::new();
+        builder
+            .add_folder(cab::CompressionType::MsZip)
+            .add_file("member.txt");
+        let mut cab_writer: cab::CabinetWriter<std::io::Cursor<Vec<u8>>> = builder
+            .build(std::io::Cursor::new(Vec::new()))
+            .expect("cab build");
+        while let Some(mut file) = cab_writer.next_file().expect("next cab file") {
+            file.write_all(b"cabinet member body").expect("cab write");
+        }
+        let cabinet: Vec<u8> = cab_writer.finish().expect("cab finish").into_inner();
+
+        for (kind, archive) in [
+            (ContainerKind::SevenZ, sevenz),
+            (ContainerKind::Cab, cabinet),
+        ] {
+            let mut blob: Vec<u8> = archive.clone();
+            blob.extend(junk(300, 7));
+            let hit: MagicHit = MagicHit { offset: 0, kind };
+            assert_eq!(
+                validated_extent(&blob, &hit),
+                Some(archive.len()),
+                "{kind:?}"
+            );
         }
     }
 

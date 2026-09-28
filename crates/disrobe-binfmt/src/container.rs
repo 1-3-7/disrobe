@@ -551,8 +551,8 @@ const DEB_MEMBER: &[u8; 14] = b"debian-binary ";
 const XZ_MAGIC: &[u8; 6] = &[0xfd, b'7', b'z', b'X', b'Z', 0x00];
 const ASAR_HEADER_PREFIX: &[u8; 4] = &[0x04, 0x00, 0x00, 0x00];
 const PKG_XAR_MAGIC: &[u8; 4] = b"xar!";
-const TAR_USTAR_OFFSET: usize = 257;
-const TAR_USTAR: &[u8; 5] = b"ustar";
+pub(crate) const TAR_USTAR_OFFSET: usize = 257;
+pub(crate) const TAR_USTAR: &[u8; 5] = b"ustar";
 const ISO_PRIMARY_OFFSET: usize = 32_768 + 1;
 const ISO_PRIMARY_TAG: &[u8; 5] = b"CD001";
 const CPIO_NEWC_MAGIC: &[u8; 6] = b"070701";
@@ -568,6 +568,100 @@ const VHD_FOOTER_LEN: usize = 512;
 const MBR_SIGNATURE_OFFSET: usize = 510;
 const MBR_PARTITION_TABLE_OFFSET: usize = 446;
 const MBR_SIGNATURE: &[u8; 2] = &[0x55, 0xaa];
+const MINIDUMP_MAGIC: [u8; 4] = crate::containers::minidump::MINIDUMP_SIGNATURE.to_le_bytes();
+const SQUASHFS_MAGIC: [u8; 4] = crate::containers::squashfs::SQUASHFS_MAGIC_LE.to_le_bytes();
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct MagicSignature {
+    pub(crate) magic: &'static [u8],
+    pub(crate) offset: usize,
+    pub(crate) kind: ContainerKind,
+}
+
+impl MagicSignature {
+    const fn new(magic: &'static [u8], offset: usize, kind: ContainerKind) -> Self {
+        Self {
+            magic,
+            offset,
+            kind,
+        }
+    }
+
+    fn matches(&self, bytes: &[u8]) -> bool {
+        bytes
+            .get(self.offset..)
+            .is_some_and(|tail: &[u8]| tail.starts_with(self.magic))
+    }
+}
+
+pub(crate) const MAGIC_SIGNATURES: &[MagicSignature] = &[
+    MagicSignature::new(ZIP_LOCAL_HEADER, 0, ContainerKind::Zip),
+    MagicSignature::new(ZIP_EMPTY_EOCD, 0, ContainerKind::Zip),
+    MagicSignature::new(ZIP_SPANNED, 0, ContainerKind::Zip),
+    MagicSignature::new(DEB_MAGIC, 0, ContainerKind::Ar),
+    MagicSignature::new(SEVENZ_MAGIC, 0, ContainerKind::SevenZ),
+    MagicSignature::new(RAR5_MAGIC, 0, ContainerKind::Rar),
+    MagicSignature::new(RAR4_MAGIC, 0, ContainerKind::Rar),
+    MagicSignature::new(CAB_MAGIC, 0, ContainerKind::Cab),
+    MagicSignature::new(ISC_MAGIC, 0, ContainerKind::InstallShield),
+    MagicSignature::new(RPM_MAGIC, 0, ContainerKind::Rpm),
+    MagicSignature::new(
+        crate::containers::bare_stream::LZIP_MAGIC,
+        0,
+        ContainerKind::Lzip,
+    ),
+    MagicSignature::new(
+        crate::containers::bare_stream::LZ4_FRAME_MAGIC,
+        0,
+        ContainerKind::Lz4,
+    ),
+    MagicSignature::new(
+        crate::containers::bare_stream::LZ4_LEGACY_MAGIC,
+        0,
+        ContainerKind::Lz4,
+    ),
+    MagicSignature::new(
+        crate::containers::bare_stream::COMPRESS_MAGIC,
+        0,
+        ContainerKind::UnixCompress,
+    ),
+    MagicSignature::new(XZ_MAGIC, 0, ContainerKind::Xz),
+    MagicSignature::new(
+        crate::containers::bare_stream::ZSTD_MAGIC,
+        0,
+        ContainerKind::Zstd,
+    ),
+    MagicSignature::new(
+        crate::containers::bare_stream::GZIP_MAGIC,
+        0,
+        ContainerKind::Gzip,
+    ),
+    MagicSignature::new(
+        crate::containers::bare_stream::BZIP2_MAGIC,
+        0,
+        ContainerKind::Bzip2,
+    ),
+    MagicSignature::new(PKG_XAR_MAGIC, 0, ContainerKind::Pkg),
+    MagicSignature::new(WIM_MAGIC, 0, ContainerKind::Wim),
+    MagicSignature::new(UNITYFS_MAGIC, 0, ContainerKind::UnityFs),
+    MagicSignature::new(VHDX_MAGIC, 0, ContainerKind::Vhdx),
+    MagicSignature::new(&MINIDUMP_MAGIC, 0, ContainerKind::Minidump),
+    MagicSignature::new(&SQUASHFS_MAGIC, 0, ContainerKind::Squashfs),
+    MagicSignature::new(CPIO_NEWC_MAGIC, 0, ContainerKind::Cpio),
+    MagicSignature::new(CPIO_CRC_MAGIC, 0, ContainerKind::Cpio),
+    MagicSignature::new(CPIO_ODC_MAGIC, 0, ContainerKind::Cpio),
+    MagicSignature::new(CPIO_BIN_MAGIC_LE, 0, ContainerKind::Cpio),
+    MagicSignature::new(CPIO_BIN_MAGIC_BE, 0, ContainerKind::Cpio),
+    MagicSignature::new(TAR_USTAR, TAR_USTAR_OFFSET, ContainerKind::Tar),
+    MagicSignature::new(ISO_PRIMARY_TAG, ISO_PRIMARY_OFFSET, ContainerKind::Iso),
+    MagicSignature::new(VHD_COOKIE, 0, ContainerKind::Vhd),
+];
+
+fn has_signature(bytes: &[u8], kind: ContainerKind) -> bool {
+    MAGIC_SIGNATURES
+        .iter()
+        .any(|signature: &MagicSignature| signature.kind == kind && signature.matches(bytes))
+}
 
 #[must_use]
 pub fn detect_container(bytes: &[u8]) -> Option<ContainerKind> {
@@ -687,13 +781,10 @@ fn detect_by_magic(bytes: &[u8]) -> Option<ContainerKind> {
     if crate::containers::msi::detect_msi(bytes) {
         return Some(ContainerKind::Msi);
     }
-    if bytes.starts_with(ZIP_LOCAL_HEADER)
-        || bytes.starts_with(ZIP_EMPTY_EOCD)
-        || bytes.starts_with(ZIP_SPANNED)
-    {
+    if has_signature(bytes, ContainerKind::Zip) {
         return Some(ContainerKind::Zip);
     }
-    if bytes.len() >= 8 && bytes.starts_with(DEB_MAGIC) {
+    if has_signature(bytes, ContainerKind::Ar) {
         let after_header: &[u8] = &bytes[8..];
         if after_header.len() >= DEB_MEMBER.len() && after_header.starts_with(DEB_MEMBER) {
             return Some(ContainerKind::Deb);
@@ -730,19 +821,19 @@ fn detect_by_magic(bytes: &[u8]) -> Option<ContainerKind> {
     if crate::containers::detect_uzip(bytes) {
         return Some(ContainerKind::Uzip);
     }
-    if bytes.starts_with(SEVENZ_MAGIC) {
+    if has_signature(bytes, ContainerKind::SevenZ) {
         return Some(ContainerKind::SevenZ);
     }
-    if bytes.starts_with(RAR5_MAGIC) || bytes.starts_with(RAR4_MAGIC) {
+    if has_signature(bytes, ContainerKind::Rar) {
         return Some(ContainerKind::Rar);
     }
-    if bytes.starts_with(CAB_MAGIC) {
+    if has_signature(bytes, ContainerKind::Cab) {
         return Some(ContainerKind::Cab);
     }
-    if bytes.starts_with(ISC_MAGIC) {
+    if has_signature(bytes, ContainerKind::InstallShield) {
         return Some(ContainerKind::InstallShield);
     }
-    if bytes.starts_with(RPM_MAGIC) {
+    if has_signature(bytes, ContainerKind::Rpm) {
         return Some(ContainerKind::Rpm);
     }
     if crate::containers::detect_dmg(bytes) {
@@ -757,7 +848,7 @@ fn detect_by_magic(bytes: &[u8]) -> Option<ContainerKind> {
     if crate::containers::bare_stream::detect_compress(bytes) {
         return Some(ContainerKind::UnixCompress);
     }
-    if bytes.starts_with(XZ_MAGIC) {
+    if has_signature(bytes, ContainerKind::Xz) {
         return Some(if smells_like_tar_decompressed(bytes, DecompressWrap::Xz) {
             ContainerKind::TarXz
         } else {
@@ -791,16 +882,16 @@ fn detect_by_magic(bytes: &[u8]) -> Option<ContainerKind> {
             },
         );
     }
-    if bytes.starts_with(PKG_XAR_MAGIC) {
+    if has_signature(bytes, ContainerKind::Pkg) {
         return Some(ContainerKind::Pkg);
     }
-    if bytes.starts_with(WIM_MAGIC) {
+    if has_signature(bytes, ContainerKind::Wim) {
         return Some(ContainerKind::Wim);
     }
-    if bytes.starts_with(UNITYFS_MAGIC) {
+    if has_signature(bytes, ContainerKind::UnityFs) {
         return Some(ContainerKind::UnityFs);
     }
-    if bytes.starts_with(VHDX_MAGIC) {
+    if has_signature(bytes, ContainerKind::Vhdx) {
         return Some(ContainerKind::Vhdx);
     }
     if crate::containers::minidump::detect_minidump(bytes) {
@@ -931,11 +1022,7 @@ const EOCD_SIGNATURE: u32 = 0x0605_4b50;
 const EOCD_FIXED_LEN: usize = 22;
 
 fn smells_like_tar(bytes: &[u8]) -> bool {
-    let need: usize = TAR_USTAR_OFFSET + TAR_USTAR.len();
-    if bytes.len() < need {
-        return false;
-    }
-    &bytes[TAR_USTAR_OFFSET..TAR_USTAR_OFFSET + TAR_USTAR.len()] == TAR_USTAR
+    has_signature(bytes, ContainerKind::Tar)
 }
 
 const XZ_TAR_PEEK_BYTES: usize = TAR_USTAR_OFFSET + TAR_USTAR.len();
@@ -1041,11 +1128,7 @@ fn smells_like_tar_decompressed(bytes: &[u8], wrap: DecompressWrap) -> bool {
 }
 
 fn smells_like_iso(bytes: &[u8]) -> bool {
-    let need: usize = ISO_PRIMARY_OFFSET + ISO_PRIMARY_TAG.len();
-    if bytes.len() < need {
-        return false;
-    }
-    &bytes[ISO_PRIMARY_OFFSET..ISO_PRIMARY_OFFSET + ISO_PRIMARY_TAG.len()] == ISO_PRIMARY_TAG
+    has_signature(bytes, ContainerKind::Iso)
 }
 
 fn smells_like_asar(bytes: &[u8]) -> bool {
@@ -1081,14 +1164,7 @@ fn smells_like_asar(bytes: &[u8]) -> bool {
 }
 
 fn smells_like_cpio(bytes: &[u8]) -> bool {
-    if bytes.len() >= 6
-        && (bytes[..6] == *CPIO_NEWC_MAGIC
-            || bytes[..6] == *CPIO_CRC_MAGIC
-            || bytes[..6] == *CPIO_ODC_MAGIC)
-    {
-        return true;
-    }
-    bytes.len() >= 2 && (bytes[..2] == *CPIO_BIN_MAGIC_LE || bytes[..2] == *CPIO_BIN_MAGIC_BE)
+    has_signature(bytes, ContainerKind::Cpio)
 }
 
 fn smells_like_squashfs(bytes: &[u8]) -> bool {
@@ -1097,7 +1173,7 @@ fn smells_like_squashfs(bytes: &[u8]) -> bool {
 }
 
 fn smells_like_vhd(bytes: &[u8]) -> bool {
-    if bytes.len() >= 8 && &bytes[..8] == VHD_COOKIE {
+    if has_signature(bytes, ContainerKind::Vhd) {
         return true;
     }
     if bytes.len() < VHD_FOOTER_LEN {
