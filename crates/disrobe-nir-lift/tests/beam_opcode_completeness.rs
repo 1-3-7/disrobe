@@ -1,3 +1,4 @@
+#![cfg(feature = "beam")]
 #![allow(clippy::expect_used, clippy::panic)]
 
 use std::collections::{BTreeMap, BTreeSet};
