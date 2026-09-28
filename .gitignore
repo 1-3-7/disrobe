@@ -385,3 +385,11 @@ erl_crash.dump
 pyarmor-regcode-*
 pyarmor-regfile-*
 pyarmor-device-regfile-*
+
+# Tracked files that the generic binary and log rules above would otherwise match
+!/benches/*/snapshots/*/raw-evidence/logs/*.log
+!/crates/*/tests/fixtures/**/*.so
+!/crates/disrobe-pass-native/tests/fixtures/pdb_cxx_recovery.pdb
+!/crates/disrobe-wasm/tests/fixtures/sample.pyc
+!/crates/disrobe-pass-go/tests/fixtures/hello_386.exe
+!/crates/disrobe-pass-go/tests/fixtures/hello_deps.exe
