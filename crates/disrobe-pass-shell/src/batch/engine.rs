@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::LazyLock;
 
 use lazy_regex::regex;
@@ -90,12 +90,12 @@ pub fn deobfuscate_batch(input: &str, args: &[String]) -> BatchDeobReport {
     let mut output_lines: Vec<String> = Vec::new();
 
     let lines: Vec<String> = coalesce_blocks(&norm.output);
-    let mut worklist: Vec<String> = lines;
+    let mut worklist: VecDeque<String> = VecDeque::from(lines);
     let mut processed: usize = 0;
     let mut output_bytes: usize = 0;
     let mut output_counted: usize = 0;
 
-    while let Some(line) = pop_front(&mut worklist) {
+    while let Some(line) = worklist.pop_front() {
         processed += 1;
         while output_counted < output_lines.len() {
             output_bytes = output_bytes.saturating_add(output_lines[output_counted].len());
@@ -146,6 +146,13 @@ pub fn deobfuscate_batch(input: &str, args: &[String]) -> BatchDeobReport {
         output_lines.push(emulated);
     }
 
+    if !worklist.is_empty() {
+        output_lines.push(format!(
+            "rem disrobe: emulation stopped after {processed} lines or {output_bytes} output bytes (limits {MAX_LINES} and {MAX_TOTAL_OUTPUT}); the {} lines below are unprocessed",
+            worklist.len()
+        ));
+        output_lines.extend(worklist);
+    }
     let output: String = output_lines.join("\n");
     let embedded_payloads: Vec<EmbeddedPayload> = extract_embedded(&output);
     let decrypted_stages: Vec<DecryptedStage> = recover_stages(&env);
@@ -180,14 +187,6 @@ pub fn deobfuscate_batch(input: &str, args: &[String]) -> BatchDeobReport {
         decrypted_stages,
         iocs,
         output,
-    }
-}
-
-fn pop_front(list: &mut Vec<String>) -> Option<String> {
-    if list.is_empty() {
-        None
-    } else {
-        Some(list.remove(0))
     }
 }
 
@@ -291,7 +290,7 @@ fn handle_for(
     args: &[String],
     delayed: bool,
     counters: &mut Counters,
-    worklist: &mut Vec<String>,
+    worklist: &mut VecDeque<String>,
 ) -> bool {
     let loop_def: Option<ForLoop> =
         parse_for_l(line).or_else(|| parse_for_f_string(line, env, args, delayed));
@@ -313,7 +312,7 @@ fn handle_if(
     args: &[String],
     delayed: bool,
     counters: &mut Counters,
-    worklist: &mut Vec<String>,
+    worklist: &mut VecDeque<String>,
 ) -> bool {
     let (expanded, stats): (String, ExpandStats) =
         expand_repeated(line, env, args, delayed, MAX_EXPANSION_ROUNDS);
@@ -335,7 +334,7 @@ fn handle_if(
     }
 }
 
-fn prepend_block(worklist: &mut Vec<String>, body: &str) {
+fn prepend_block(worklist: &mut VecDeque<String>, body: &str) {
     if body.trim().is_empty() {
         return;
     }
@@ -350,9 +349,10 @@ fn prepend_block(worklist: &mut Vec<String>, body: &str) {
     }
 }
 
-fn prepend_all(worklist: &mut Vec<String>, mut items: Vec<String>) {
-    items.append(worklist);
-    *worklist = items;
+fn prepend_all(worklist: &mut VecDeque<String>, items: Vec<String>) {
+    for item in items.into_iter().rev() {
+        worklist.push_front(item);
+    }
 }
 
 fn apply_emulation(
