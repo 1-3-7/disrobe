@@ -34,11 +34,14 @@ pub const FAMILY: ProtectorFamily = ProtectorFamily::Arxan;
 pub const LEGAL: LegalStance = LegalStance::AmberDetectOnly;
 
 const MARKERS: &[(&str, &str)] = &[
-    (r"(?i)digital\.ai", "digital-ai-banner"),
-    (r"(?i)arxan", "arxan-banner"),
     (r"_ARXAN_", "arxan-runtime-token"),
     (r"__guard_[0-9a-f]{6,}", "arxan-guard-symbol"),
 ];
+const BANNERS: &[(&str, &str)] = &[
+    ("digital.ai", "digital-ai-banner"),
+    ("arxan", "arxan-banner"),
+];
+const BANNER_COMMENT_LABEL: &str = "digital-ai-banner-comment";
 
 #[derive(Debug)]
 struct SpanPattern {
@@ -224,11 +227,24 @@ pub fn detect(source: &str) -> Option<ProtectorDetection> {
             confidence += 0.35;
         }
     }
+    let mut code_evidence: bool = !markers.is_empty();
+    let mut banner: bool = false;
+    for (needle, label) in BANNERS {
+        if crate::detect::leading_comment_mentions(source, needle) {
+            markers.insert((*label).to_owned());
+            confidence += 0.35;
+            banner = true;
+        }
+    }
     for label in documented_labels(source) {
+        if label == BANNER_COMMENT_LABEL && !banner {
+            continue;
+        }
+        code_evidence |= label != BANNER_COMMENT_LABEL;
         markers.insert(label);
         confidence += 0.30;
     }
-    if confidence <= 0.0 {
+    if !code_evidence && !banner {
         return None;
     }
     let confidence_clamped: f32 = confidence.min(0.99_f32);
@@ -307,6 +323,12 @@ mod tests {
         let src: &str = "/* (c) Digital.ai Application Protection */ var x = 1;";
         let det: ProtectorDetection = detect(src).expect("detected");
         assert_eq!(det.family, FAMILY);
+    }
+
+    #[test]
+    fn the_vendor_name_outside_a_leading_banner_is_not_arxan() {
+        let src: &str = "var vendors = ['Arxan', 'Digital.ai']; /* see digital.ai docs */ f();";
+        assert!(detect(src).is_none());
     }
 
     #[test]

@@ -17,10 +17,12 @@ pub const FAMILY: ProtectorFamily = ProtectorFamily::JsDefender;
 pub const LEGAL: LegalStance = LegalStance::AmberLeaningGreen;
 
 const MARKERS: &[(&str, &str)] = &[
-    (r"(?i)preemptive\s+solutions", "preemptive-copyright"),
-    (r"(?i)jsdefender", "jsdefender-banner"),
     (r"_PreEmptive", "preemptive-prefix"),
     (r"__JSD__", "jsd-runtime-token"),
+];
+const BANNERS: &[(&str, &str)] = &[
+    ("preemptive solutions", "preemptive-copyright"),
+    ("jsdefender", "jsdefender-banner"),
 ];
 
 #[must_use]
@@ -35,6 +37,15 @@ pub fn detect(source: &str) -> Option<ProtectorDetection> {
             markers.insert((*label).to_owned());
             confidence += 0.35;
         }
+    }
+    for (banner, label) in BANNERS {
+        if crate::detect::leading_comment_mentions(source, banner) {
+            markers.insert((*label).to_owned());
+            confidence += 0.35;
+        }
+    }
+    if markers.is_empty() {
+        return None;
     }
     if has_cff_with_string_array(source) {
         markers.insert("cff+string-array".to_owned());
@@ -159,9 +170,15 @@ mod tests {
     }
 
     #[test]
-    fn detects_cff_string_array_signature() {
+    fn control_flow_and_a_string_array_without_a_vendor_token_are_not_jsdefender() {
         let src: &str = "var s = ['hello','world']; var i = 0; switch(i) { case 0: return s[0]; }";
-        assert!(detect(src).is_some());
+        assert!(detect(src).is_none());
+        let mentioned: &str =
+            "var note = 'compare with JSDefender'; var s = ['a']; switch(i) { case 0: break; }";
+        assert!(detect(mentioned).is_none());
+        let tokened: String = format!("var __JSD__ = 1; {src}");
+        let det: ProtectorDetection = detect(&tokened).expect("vendor token with structure");
+        assert!(det.markers.iter().any(|m: &String| m == "cff+string-array"));
     }
 
     #[test]
