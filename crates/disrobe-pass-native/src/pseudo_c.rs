@@ -41,6 +41,7 @@ mod idiom;
 mod invariant_branches;
 mod return_channel;
 mod spill;
+mod stack_transfer;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Reg {
@@ -450,8 +451,12 @@ fn parse_reg(token: &str) -> Option<RegRef> {
         "dil" => (Reg::Rdi, Width::W8),
         "rbp" => (Reg::Rbp, Width::W64),
         "ebp" => (Reg::Rbp, Width::W32),
+        "bp" => (Reg::Rbp, Width::W16),
+        "bpl" => (Reg::Rbp, Width::W8),
         "rsp" => (Reg::Rsp, Width::W64),
         "esp" => (Reg::Rsp, Width::W32),
+        "sp" => (Reg::Rsp, Width::W16),
+        "spl" => (Reg::Rsp, Width::W8),
         "r8" => (Reg::R8, Width::W64),
         "r8d" => (Reg::R8, Width::W32),
         "r8w" => (Reg::R8, Width::W16),
@@ -462,21 +467,27 @@ fn parse_reg(token: &str) -> Option<RegRef> {
         "r9b" => (Reg::R9, Width::W8),
         "r10" => (Reg::R10, Width::W64),
         "r10d" => (Reg::R10, Width::W32),
+        "r10w" => (Reg::R10, Width::W16),
         "r10b" => (Reg::R10, Width::W8),
         "r11" => (Reg::R11, Width::W64),
         "r11d" => (Reg::R11, Width::W32),
+        "r11w" => (Reg::R11, Width::W16),
         "r11b" => (Reg::R11, Width::W8),
         "r12" => (Reg::R12, Width::W64),
         "r12d" => (Reg::R12, Width::W32),
+        "r12w" => (Reg::R12, Width::W16),
         "r12b" => (Reg::R12, Width::W8),
         "r13" => (Reg::R13, Width::W64),
         "r13d" => (Reg::R13, Width::W32),
+        "r13w" => (Reg::R13, Width::W16),
         "r13b" => (Reg::R13, Width::W8),
         "r14" => (Reg::R14, Width::W64),
         "r14d" => (Reg::R14, Width::W32),
+        "r14w" => (Reg::R14, Width::W16),
         "r14b" => (Reg::R14, Width::W8),
         "r15" => (Reg::R15, Width::W64),
         "r15d" => (Reg::R15, Width::W32),
+        "r15w" => (Reg::R15, Width::W16),
         "r15b" => (Reg::R15, Width::W8),
         _ => return None,
     };
@@ -3667,27 +3678,24 @@ fn instruction_writes_register(insn: &DisasmInsn, register: Reg) -> bool {
     })
 }
 
-fn instruction_writes_xmm(insn: &DisasmInsn, xmm: Xmm) -> bool {
-    let Some(decoded) = decode_one_x86(64, insn.address, &insn.bytes) else {
-        return true;
-    };
-    let target: Register = match xmm {
-        Xmm::Xmm0 => Register::XMM0,
-        Xmm::Xmm1 => Register::XMM1,
-        Xmm::Xmm2 => Register::XMM2,
-        Xmm::Xmm3 => Register::XMM3,
-        Xmm::Xmm4 => Register::XMM4,
-        Xmm::Xmm5 => Register::XMM5,
-        Xmm::Xmm6 => Register::XMM6,
-        Xmm::Xmm7 => Register::XMM7,
-        Xmm::Xmm8 => Register::XMM8,
-        Xmm::Xmm9 => Register::XMM9,
-        Xmm::Xmm10 => Register::XMM10,
-        Xmm::Xmm11 => Register::XMM11,
-        Xmm::Xmm12 => Register::XMM12,
-        Xmm::Xmm13 => Register::XMM13,
-        Xmm::Xmm14 => Register::XMM14,
-        Xmm::Xmm15 => Register::XMM15,
+const fn iced_xmm_register(xmm: Xmm) -> Option<Register> {
+    match xmm {
+        Xmm::Xmm0 => Some(Register::XMM0),
+        Xmm::Xmm1 => Some(Register::XMM1),
+        Xmm::Xmm2 => Some(Register::XMM2),
+        Xmm::Xmm3 => Some(Register::XMM3),
+        Xmm::Xmm4 => Some(Register::XMM4),
+        Xmm::Xmm5 => Some(Register::XMM5),
+        Xmm::Xmm6 => Some(Register::XMM6),
+        Xmm::Xmm7 => Some(Register::XMM7),
+        Xmm::Xmm8 => Some(Register::XMM8),
+        Xmm::Xmm9 => Some(Register::XMM9),
+        Xmm::Xmm10 => Some(Register::XMM10),
+        Xmm::Xmm11 => Some(Register::XMM11),
+        Xmm::Xmm12 => Some(Register::XMM12),
+        Xmm::Xmm13 => Some(Register::XMM13),
+        Xmm::Xmm14 => Some(Register::XMM14),
+        Xmm::Xmm15 => Some(Register::XMM15),
         Xmm::Xmm16
         | Xmm::Xmm17
         | Xmm::Xmm18
@@ -3703,7 +3711,16 @@ fn instruction_writes_xmm(insn: &DisasmInsn, xmm: Xmm) -> bool {
         | Xmm::Xmm28
         | Xmm::Xmm29
         | Xmm::Xmm30
-        | Xmm::Xmm31 => return true,
+        | Xmm::Xmm31 => None,
+    }
+}
+
+fn instruction_writes_xmm(insn: &DisasmInsn, xmm: Xmm) -> bool {
+    let Some(decoded) = decode_one_x86(64, insn.address, &insn.bytes) else {
+        return true;
+    };
+    let Some(target): Option<Register> = iced_xmm_register(xmm) else {
+        return true;
     };
     let mut factory: InstructionInfoFactory = InstructionInfoFactory::new();
     factory.info(&decoded).used_registers().iter().any(|used| {
@@ -4759,6 +4776,33 @@ fn classify_direct_jump_exit(
     })
 }
 
+const HIGH_BYTE_REGISTERS: [&str; 4] = ["ah", "bh", "ch", "dh"];
+
+fn disassemble_x86_64_lift_input(base: u64, machine_code: &[u8]) -> Result<Vec<DisasmInsn>> {
+    let insns: Vec<DisasmInsn> = disassemble(Arch::X86_64, base, machine_code)?;
+    if insns.is_empty() {
+        return Err(Error::LlvmIr("no decodable instructions".to_owned()));
+    }
+    refuse_high_byte_registers(&insns)?;
+    Ok(insns)
+}
+
+fn refuse_high_byte_registers(insns: &[DisasmInsn]) -> Result<()> {
+    for insn in insns {
+        if let Some(register) = insn
+            .operands
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .find(|token: &&str| HIGH_BYTE_REGISTERS.contains(token))
+        {
+            return Err(Error::LlvmIr(format!(
+                "high-byte register `{register}` in `{} {}` at {:#x}: bits 8 to 15 of a general register are not modelled",
+                insn.mnemonic, insn.operands, insn.address
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn build_leaf_items(
     machine_code: &[u8],
     base: u64,
@@ -4773,10 +4817,8 @@ fn build_leaf_items(
     if machine_code.is_empty() {
         return Err(Error::LlvmIr("empty machine code".to_owned()));
     }
-    let insns: Vec<DisasmInsn> = disassemble(Arch::X86_64, base, machine_code)?;
-    if insns.is_empty() {
-        return Err(Error::LlvmIr("no decodable instructions".to_owned()));
-    }
+    let insns: Vec<DisasmInsn> = disassemble_x86_64_lift_input(base, machine_code)?;
+    let pop_moves: BTreeMap<u64, Stmt> = stack_transfer::plan_stack_transfers(&insns, abi, &[])?;
     let entry_flags: CfgEntryFlags = cfg_entry_flags(&insns, consts)?;
     if let Some(trace) = coverage.as_deref_mut() {
         trace.begin_attempt(&insns);
@@ -4856,7 +4898,8 @@ fn build_leaf_items(
                 insn.mnemonic, insn.address
             )));
         }
-        if is_frame_management(&insn.mnemonic, &insn.operands)
+        if (is_frame_management(&insn.mnemonic, &insn.operands)
+            && !pop_moves.contains_key(&insn.address))
             || is_ms_x64_callee_saved_xmm_spill(&insn.mnemonic, &insn.operands, abi)
         {
             mark_instruction_modelled(&mut coverage, instruction_index);
@@ -5326,12 +5369,15 @@ fn build_leaf_items(
             mark_instruction_modelled(&mut coverage, instruction_index);
             continue;
         }
-        let stmt: Stmt = lift_one(&insn.mnemonic, &insn.operands).ok_or_else(|| {
-            Error::LlvmIr(format!(
-                "unsupported leaf instruction `{} {}` at {:#x}",
-                insn.mnemonic, insn.operands, insn.address
-            ))
-        })?;
+        let stmt: Stmt = match pop_moves.get(&insn.address) {
+            Some(pop_move) => pop_move.clone(),
+            None => lift_one(&insn.mnemonic, &insn.operands).ok_or_else(|| {
+                Error::LlvmIr(format!(
+                    "unsupported leaf instruction `{} {}` at {:#x}",
+                    insn.mnemonic, insn.operands, insn.address
+                ))
+            })?,
+        };
         if sign_extended_high_read_is_unsound(dividend_high, &stmt) {
             return Err(Error::LlvmIr(format!(
                 "sign-extended high half in rdx from a cqo/cdq is read at {:#x} without a modeled division; not soundly recoverable",
@@ -6152,10 +6198,7 @@ pub fn recover_leaf_function_switch_const_abi(
     if machine_code.is_empty() {
         return Err(Error::LlvmIr("empty machine code".to_owned()));
     }
-    let insns: Vec<DisasmInsn> = disassemble(Arch::X86_64, base, machine_code)?;
-    if insns.is_empty() {
-        return Err(Error::LlvmIr("no decodable instructions".to_owned()));
-    }
+    let insns: Vec<DisasmInsn> = disassemble_x86_64_lift_input(base, machine_code)?;
     let by_addr: BTreeMap<u64, usize> = insns
         .iter()
         .enumerate()
@@ -6226,12 +6269,15 @@ fn build_switch_recovery(
     leaders.push(dispatch.default_addr);
     leaders.sort_unstable();
     leaders.dedup();
+    let pop_moves: BTreeMap<u64, Stmt> =
+        stack_transfer::plan_stack_transfers(insns, abi, &leaders)?;
 
     let inter: Vec<Stmt> = lift_stmt_range_with_coverage(
         insns,
         dispatch.inter_start,
         dispatch.inter_end,
         consts,
+        &pop_moves,
         coverage.as_deref_mut(),
     )?;
 
@@ -6249,6 +6295,7 @@ fn build_switch_recovery(
             &leaders,
             &mut return_width,
             consts,
+            &pop_moves,
             coverage.as_deref_mut(),
         )?;
         if let BodyTerm::Tail(tail) = term {
@@ -6279,7 +6326,7 @@ fn build_switch_recovery(
     };
 
     let preamble: Vec<Stmt> =
-        lift_stmt_range_with_coverage(insns, 0, first_index, consts, coverage)?;
+        lift_stmt_range_with_coverage(insns, 0, first_index, consts, &pop_moves, coverage)?;
     for stmt in preamble.iter().chain(inter.iter()) {
         update_return_width(stmt, &mut return_width);
     }
@@ -6462,10 +6509,7 @@ fn recover_switch_in_object(
     if machine_code.is_empty() {
         return Err(Error::LlvmIr("empty machine code".to_owned()));
     }
-    let insns: Vec<DisasmInsn> = disassemble(Arch::X86_64, base, machine_code)?;
-    if insns.is_empty() {
-        return Err(Error::LlvmIr("no decodable instructions".to_owned()));
-    }
+    let insns: Vec<DisasmInsn> = disassemble_x86_64_lift_input(base, machine_code)?;
     let by_addr: BTreeMap<u64, usize> = insns
         .iter()
         .enumerate()
@@ -6509,10 +6553,7 @@ fn recover_o0_switch_in_object(
     if machine_code.is_empty() {
         return Err(Error::LlvmIr("empty machine code".to_owned()));
     }
-    let insns: Vec<DisasmInsn> = disassemble(Arch::X86_64, base, machine_code)?;
-    if insns.is_empty() {
-        return Err(Error::LlvmIr("no decodable instructions".to_owned()));
-    }
+    let insns: Vec<DisasmInsn> = disassemble_x86_64_lift_input(base, machine_code)?;
     let by_addr: BTreeMap<u64, usize> = insns
         .iter()
         .enumerate()
@@ -6559,10 +6600,7 @@ fn recover_clang_o0_switch_in_object(
     if machine_code.is_empty() {
         return Err(Error::LlvmIr("empty machine code".to_owned()));
     }
-    let insns: Vec<DisasmInsn> = disassemble(Arch::X86_64, base, machine_code)?;
-    if insns.is_empty() {
-        return Err(Error::LlvmIr("no decodable instructions".to_owned()));
-    }
+    let insns: Vec<DisasmInsn> = disassemble_x86_64_lift_input(base, machine_code)?;
     let by_addr: BTreeMap<u64, usize> = insns
         .iter()
         .enumerate()
@@ -6646,10 +6684,7 @@ fn recover_value_switch_in_object(
     if machine_code.is_empty() {
         return Err(Error::LlvmIr("empty machine code".to_owned()));
     }
-    let insns: Vec<DisasmInsn> = disassemble(Arch::X86_64, base, machine_code)?;
-    if insns.is_empty() {
-        return Err(Error::LlvmIr("no decodable instructions".to_owned()));
-    }
+    let insns: Vec<DisasmInsn> = disassemble_x86_64_lift_input(base, machine_code)?;
     let Some(switch): Option<ValueTableSwitch> = detect_value_table_switch(&insns) else {
         return Err(Error::LlvmIr(
             "no value-table dispatch prologue in leaf".to_owned(),
@@ -8164,7 +8199,7 @@ fn lift_stmt_range(
     hi: usize,
     consts: &[FpConstant],
 ) -> Result<Vec<Stmt>> {
-    lift_stmt_range_with_coverage(insns, lo, hi, consts, None)
+    lift_stmt_range_with_coverage(insns, lo, hi, consts, &BTreeMap::new(), None)
 }
 
 fn lift_stmt_range_with_coverage(
@@ -8172,10 +8207,11 @@ fn lift_stmt_range_with_coverage(
     lo: usize,
     hi: usize,
     consts: &[FpConstant],
+    pop_moves: &BTreeMap<u64, Stmt>,
     mut coverage: Option<&mut LifterCoverageTrace>,
 ) -> Result<Vec<Stmt>> {
     let mut out: Vec<Stmt> = Vec::new();
-    let mut lifter: StraightLifter<'_> = StraightLifter::new(consts);
+    let mut lifter: StraightLifter<'_> = StraightLifter::new(consts, pop_moves);
     for (instruction_index, insn) in insns.iter().enumerate().take(hi).skip(lo) {
         match lifter.feed(insn)? {
             StraightOutcome::Ignorable | StraightOutcome::StateOnly => {}
@@ -8205,19 +8241,21 @@ struct StraightLifter<'a> {
     flags: Option<Flags>,
     dividend_high: Option<DividendHigh>,
     consts: &'a [FpConstant],
+    pop_moves: &'a BTreeMap<u64, Stmt>,
 }
 
 impl<'a> StraightLifter<'a> {
-    const fn new(consts: &'a [FpConstant]) -> Self {
+    const fn new(consts: &'a [FpConstant], pop_moves: &'a BTreeMap<u64, Stmt>) -> Self {
         Self {
             flags: None,
             dividend_high: None,
             consts,
+            pop_moves,
         }
     }
 
     fn feed(&mut self, insn: &DisasmInsn) -> Result<StraightOutcome> {
-        if is_ignorable(insn) {
+        if is_ignorable(insn) && !self.pop_moves.contains_key(&insn.address) {
             if x86_mnemonic_writes_flags(&insn.mnemonic) {
                 self.flags = None;
             }
@@ -8343,12 +8381,15 @@ impl<'a> StraightLifter<'a> {
             self.flags = flags_after_clobber(self.flags.take(), &stmt);
             return Ok(StraightOutcome::Emit(stmt));
         }
-        let stmt: Stmt = lift_straight_stmt(insn).ok_or_else(|| {
-            Error::LlvmIr(format!(
-                "unsupported structured-body instruction `{} {}` at {:#x}",
-                insn.mnemonic, insn.operands, insn.address
-            ))
-        })?;
+        let stmt: Stmt = match self.pop_moves.get(&insn.address) {
+            Some(pop_move) => pop_move.clone(),
+            None => lift_straight_stmt(insn).ok_or_else(|| {
+                Error::LlvmIr(format!(
+                    "unsupported structured-body instruction `{} {}` at {:#x}",
+                    insn.mnemonic, insn.operands, insn.address
+                ))
+            })?,
+        };
         if sign_extended_high_read_is_unsound(self.dividend_high, &stmt) {
             return Err(Error::LlvmIr(format!(
                 "sign-extended high half in rdx from a cqo/cdq is read at {:#x} without a modeled division; not soundly recoverable",
@@ -8416,13 +8457,14 @@ fn lift_switch_body(
     leaders: &[u64],
     return_width: &mut Width,
     consts: &[FpConstant],
+    pop_moves: &BTreeMap<u64, Stmt>,
     mut coverage: Option<&mut LifterCoverageTrace>,
 ) -> Result<(Vec<Stmt>, BodyTerm, Option<FpWidth>)> {
     let start: usize = *by_addr
         .get(&start_addr)
         .ok_or_else(|| Error::LlvmIr(format!("case target {start_addr:#x} not an instruction")))?;
     let mut stmts: Vec<Stmt> = Vec::new();
-    let mut lifter: StraightLifter<'_> = StraightLifter::new(consts);
+    let mut lifter: StraightLifter<'_> = StraightLifter::new(consts, pop_moves);
     let mut fp_return: Option<FpWidth> = None;
     let mut idx: usize = start;
     while idx < insns.len() {
@@ -17576,7 +17618,7 @@ fn parse_source(token: &str) -> Option<Source> {
     parse_imm(token).map(Source::Imm)
 }
 
-fn parse_imm(token: &str) -> Option<i64> {
+pub(crate) fn parse_imm(token: &str) -> Option<i64> {
     let t: &str = token.trim();
     let (neg, body): (bool, &str) = t
         .strip_prefix('-')
@@ -17584,15 +17626,28 @@ fn parse_imm(token: &str) -> Option<i64> {
     let hex_body: Option<&str> = body
         .strip_prefix("0x")
         .or_else(|| body.strip_prefix("0X"))
-        .or_else(|| body.strip_suffix('h').or_else(|| body.strip_suffix('H')));
-    let value: i64 = if let Some(hex) = hex_body {
-        i64::from_str_radix(hex, 16)
-            .ok()
-            .or_else(|| u64::from_str_radix(hex, 16).ok().map(|u: u64| u as i64))?
-    } else {
-        body.parse::<i64>().ok()?
+        .or_else(|| {
+            body.strip_suffix(['h', 'H'])
+                .filter(|hex: &&str| hex.starts_with(|c: char| c.is_ascii_digit()))
+        });
+    let (magnitude, wraps): (u64, bool) = match hex_body {
+        Some(hex) if !hex.is_empty() && hex.bytes().all(|b: u8| b.is_ascii_hexdigit()) => {
+            (u64::from_str_radix(hex, 16).ok()?, true)
+        }
+        Some(_) => return None,
+        None if !body.is_empty() && body.bytes().all(|b: u8| b.is_ascii_digit()) => {
+            (body.parse::<u64>().ok()?, false)
+        }
+        None => return None,
     };
-    Some(if neg { -value } else { value })
+    if neg {
+        return 0_i64.checked_sub_unsigned(magnitude);
+    }
+    if wraps {
+        Some(magnitude.cast_signed())
+    } else {
+        i64::try_from(magnitude).ok()
+    }
 }
 
 fn parse_addr_terms(bracketed: &str) -> Option<AddrTerms> {
@@ -30927,6 +30982,50 @@ mod tests {
         assert!(!is_frame_management("sub", "rax,8"));
         assert!(!is_frame_management("push", "1"));
         assert!(!is_frame_management("mov", "rbx,r8"));
+    }
+
+    #[test]
+    fn hex_suffix_immediates_need_a_leading_digit() {
+        for high_byte in ["ah", "bh", "ch", "dh", "AH"] {
+            assert_eq!(parse_imm(high_byte), None, "{high_byte}");
+            assert_eq!(parse_source(high_byte), None, "{high_byte}");
+        }
+        assert_eq!(parse_imm("0Ah"), Some(0xa));
+        assert_eq!(parse_imm("10h"), Some(0x10));
+        assert_eq!(parse_imm("-10h"), Some(-0x10));
+        assert_eq!(parse_imm("0FFFFFFFFFFFFFFFFh"), Some(-1));
+        assert_eq!(parse_imm("-8000000000000000h"), Some(i64::MIN));
+        assert_eq!(parse_imm("-8000000000000001h"), None);
+        assert_eq!(parse_imm("-9223372036854775808"), Some(i64::MIN));
+        assert_eq!(parse_imm("9223372036854775808"), None);
+        assert_eq!(parse_imm("+5"), None);
+        assert_eq!(parse_imm("0x+5"), None);
+    }
+
+    #[test]
+    fn low_register_forms_parse_and_high_byte_registers_do_not() {
+        for (name, reg, width) in [
+            ("r10w", Reg::R10, Width::W16),
+            ("r15w", Reg::R15, Width::W16),
+            ("bp", Reg::Rbp, Width::W16),
+            ("bpl", Reg::Rbp, Width::W8),
+            ("sp", Reg::Rsp, Width::W16),
+            ("spl", Reg::Rsp, Width::W8),
+        ] {
+            assert_eq!(parse_reg(name), Some(RegRef { reg, width }), "{name}");
+        }
+        for high_byte in HIGH_BYTE_REGISTERS {
+            assert_eq!(parse_reg(high_byte), None, "{high_byte}");
+        }
+    }
+
+    #[test]
+    fn a_high_byte_operand_refuses_the_function_by_name() {
+        let mov_rax_rcx_add_al_ah: [u8; 6] = [0x48, 0x89, 0xc8, 0x00, 0xe0, 0xc3];
+        let refusal: String = recover_leaf_function_abi(&mov_rax_rcx_add_al_ah, 0, Abi::MsX64)
+            .expect_err("a high-byte source must not lift")
+            .to_string();
+        assert!(refusal.contains("high-byte register `ah`"), "{refusal}");
     }
 
     #[test]
