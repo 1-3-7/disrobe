@@ -381,8 +381,15 @@ pub(crate) fn require_committed(fixture: PackerFixture<'_>) -> Vec<u8> {
         fixture.family,
         fixture.name
     );
-    load_fixture_with_requirement(fixture, FixtureRequirement::Committed)
-        .expect("an absent committed fixture fails the committed requirement before returning")
+    let Some(bytes): Option<Vec<u8>> =
+        load_fixture_with_requirement(fixture, FixtureRequirement::Committed)
+    else {
+        panic!(
+            "the committed fixture corpus/native/packers/{}/{} is absent; restore it from git",
+            fixture.family, fixture.name
+        );
+    };
+    bytes
 }
 
 pub(crate) fn enforce_something_was_graded(decoder: &str, graded: usize, family: &str) {

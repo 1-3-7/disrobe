@@ -3747,8 +3747,8 @@ fn loop_oracle_has_teeth_a_wrong_bound_diverges() {
     );
 
     let corrupted: String = renamed.replacen(
-        "!= ((int64_t)(int64_t)(r_rcx))",
-        "!= ((int64_t)(int64_t)(r_rax))",
+        "!= (int64_t)(int64_t)(r_rcx)",
+        "!= (int64_t)(int64_t)(r_rax)",
         1,
     );
     assert!(
@@ -6055,11 +6055,11 @@ fn closed_form_oracle_has_teeth_flipping_the_shift_amount_diverges() {
         );
     };
     assert!(
-        lifted.decls.contains("<< 5)"),
+        lifted.decls.contains("<< 5 |"),
         "closed-form teeth check: this compiler build did not reconstruct the double-precision left shift this check corrupts"
     );
 
-    let corrupted: String = lifted.decls.replacen("<< 5)", "<< 7)", 1);
+    let corrupted: String = lifted.decls.replacen("<< 5 |", "<< 7 |", 1);
     assert_ne!(
         corrupted, lifted.decls,
         "teeth corruption must change the double-shift amount: {}",
@@ -6203,18 +6203,18 @@ const IMUL_MEM_BATTERY: &[MemCase] = &[
     },
 ];
 
-fn recovered_has_imul_mem(object_bytes: &[u8], name: &str, abi: PseudoAbi) -> bool {
+fn compiled_imul_mem_immediate(object_bytes: &[u8], name: &str) -> bool {
     let Some((code, base)): Option<(Vec<u8>, u64)> = function_code(object_bytes, name) else {
         return false;
     };
-    let recovery: LeafRecovery = match recover_leaf_function_abi(&code, base, abi) {
-        Ok(r) => r,
-        Err(_) => return false,
+    let Ok(insns): Result<Vec<disrobe_pass_native::DisasmInsn>, _> =
+        disassemble(Arch::X86_64, base, &code)
+    else {
+        return false;
     };
-    recovery.source.lines().any(|l: &str| {
-        let t: &str = l.trim();
-        t.find("* (uint64_t)(int64_t)")
-            .is_some_and(|mul: usize| t[..mul].contains("*(uint"))
+    insns.iter().any(|insn: &disrobe_pass_native::DisasmInsn| {
+        let operands: Vec<&str> = insn.operands.split(',').map(str::trim).collect();
+        insn.mnemonic == "imul" && operands.len() == 3 && operand_is_memory(operands[1])
     })
 }
 
@@ -6271,7 +6271,7 @@ fn imul_mem_source_leaf_functions_recompile_to_behavioral_equivalence() {
             eprintln!("not lifted {}: arg mapping unsupported", case.name);
             continue;
         };
-        if recovered_has_imul_mem(&object_bytes, case.name, HOST_ABI) {
+        if compiled_imul_mem_immediate(&object_bytes, case.name) {
             saw_imul_mem = true;
         }
         let recovered_name: String = format!("rec_{}", case.name);
@@ -6364,7 +6364,7 @@ fn sysv_imul_mem_source_leaf_functions_recompile_to_behavioral_equivalence() {
             eprintln!("not lifted {}: arg mapping unsupported", case.name);
             continue;
         };
-        if recovered_has_imul_mem(&objs.sysv_object, case.name, PseudoAbi::SysV) {
+        if compiled_imul_mem_immediate(&objs.sysv_object, case.name) {
             saw_imul_mem = true;
         }
         let recovered_name: String = format!("rec_{}", case.name);
@@ -6427,7 +6427,7 @@ fn imul_mem_oracle_has_teeth_perturbing_the_immediate_diverges() {
     };
     let recovery: LeafRecovery = recover_leaf_function_abi(&code, base, HOST_ABI)
         .unwrap_or_else(|e| panic!("imul-mem teeth check: probe not in leaf class ({e})"));
-    if !recovered_has_imul_mem(&object_bytes, probe.name, HOST_ABI) {
+    if !compiled_imul_mem_immediate(&object_bytes, probe.name) {
         compiler_toolchain::unmeasured(
             "imul-mem teeth check: this compiler build did not fuse the probe into `imul reg, [mem], imm`",
         );

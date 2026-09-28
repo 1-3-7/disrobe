@@ -1531,6 +1531,10 @@ fn resolve_switch_tables(object_bytes: &[u8], code: &[u8], base: u64) -> Option<
 }
 
 #[cfg(windows)]
+const HOST_SWITCH_REFUSALS: [(&str, &str); 1] =
+    [("sw_ft", "multi-level switch tail chains unsupported")];
+
+#[cfg(windows)]
 fn prepare_switch(case: &Case, object_bytes: &[u8]) -> Option<Prepared> {
     let (code, base): (Vec<u8>, u64) = function_code(object_bytes, case.name)?;
     let tables: Vec<JumpTable> = resolve_switch_tables(object_bytes, &code, base)?;
@@ -1541,13 +1545,22 @@ fn prepare_switch(case: &Case, object_bytes: &[u8]) -> Option<Prepared> {
         ));
         return None;
     }
-    let rec: LeafRecovery = recover_leaf_function_switch_abi(&code, base, HOST_ABI, &tables)
-        .unwrap_or_else(|e| {
-            panic!(
-                "{} did not recover in the dense-switch class: {e}",
+    let rec: LeafRecovery = match recover_leaf_function_switch_abi(&code, base, HOST_ABI, &tables) {
+        Ok(rec) => rec,
+        Err(e) => {
+            let message: String = e.to_string();
+            assert!(
+                HOST_SWITCH_REFUSALS
+                    .iter()
+                    .any(|(name, reason): &(&str, &str)| *name == case.name
+                        && message.contains(reason)),
+                "{} did not recover in the dense-switch class and is not a declared refusal: {message}",
                 case.name
-            )
-        });
+            );
+            eprintln!("refused {}: {message}", case.name);
+            return None;
+        }
+    };
     if !rec.lifted_switch {
         return None;
     }
