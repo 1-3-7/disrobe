@@ -1372,27 +1372,19 @@ fn cff_annotation(cff: &crate::dalvik_dexguard::DalvikMethodCff) -> String {
         return String::new();
     }
     let mut out: String = String::new();
-    if cff.fully_unflattened {
-        let _ = writeln!(
-            out,
-            "        // control-flow flattening removed: {} dispatcher(s) resolved, {} edge(s) \
-             rewired to linear block order [{}]",
-            cff.dispatchers_resolved,
-            cff.edges_redirected,
-            cff.recovered_block_order
-                .iter()
-                .map(u32::to_string)
-                .collect::<Vec<String>>()
-                .join(", ")
-        );
-    } else {
-        let _ = writeln!(
-            out,
-            "        // control-flow flattening detected: {} dispatcher(s) resolved, {} residual \
-             dispatcher edge(s) remain",
-            cff.dispatchers_resolved, cff.residual_dispatcher_edges
-        );
-    }
+    let _ = writeln!(
+        out,
+        "        // control-flow flattening detected: {} dispatcher(s) resolved to linear block \
+         order [{}], {} residual dispatcher edge(s); the body below is still rendered from the \
+         flattened graph",
+        cff.dispatchers_resolved,
+        cff.recovered_block_order
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<String>>()
+            .join(", "),
+        cff.residual_dispatcher_edges
+    );
     out
 }
 
@@ -2113,6 +2105,30 @@ pub fn decompile_dex_bytes(bytes: &[u8]) -> crate::error::Result<DecompiledDex> 
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_fully_rewired_cff_method_is_not_claimed_as_removed() {
+        let cff: crate::dalvik_dexguard::DalvikMethodCff =
+            crate::dalvik_dexguard::DalvikMethodCff {
+                class: "Lcom/example/A;".to_owned(),
+                method_name: "run".to_owned(),
+                method_descriptor: "()V".to_owned(),
+                flattened: true,
+                fully_unflattened: true,
+                dispatchers_resolved: 1,
+                edges_redirected: 3,
+                dead_branches_folded: 0,
+                dispatcher_blocks_pruned: 1,
+                residual_dispatcher_edges: 0,
+                recovered_block_order: vec![0, 2, 1],
+            };
+        let note: String = cff_annotation(&cff);
+        assert!(!note.contains("removed"), "{note}");
+        assert!(
+            note.contains("still rendered from the flattened graph"),
+            "{note}"
+        );
+    }
 
     const EDGECASES_DEX: &[u8] = include_bytes!("../../../corpus/jvm/dex/EdgeCases.dex");
     const EDGECASES_KT_DEX: &[u8] = include_bytes!("../../../corpus/jvm/dex/EdgeCasesKt.dex");
