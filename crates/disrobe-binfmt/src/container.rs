@@ -858,6 +858,12 @@ fn detect_by_magic(bytes: &[u8]) -> Option<ContainerKind> {
     if smells_like_fat(bytes) {
         return Some(ContainerKind::Fat);
     }
+    if crate::containers::detect_cramfs(bytes).is_some() {
+        return Some(ContainerKind::Cramfs);
+    }
+    if crate::containers::detect_ext4(bytes).is_some() {
+        return Some(ContainerKind::Ext4);
+    }
     if smells_like_mbr(bytes) {
         return Some(ContainerKind::Mbr);
     }

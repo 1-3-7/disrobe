@@ -511,6 +511,14 @@ pub(crate) fn build_real_ext4(file_name: &str, file_body: &[u8]) -> Vec<u8> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn container_detection_returns_ext4() {
+        assert_eq!(
+            crate::container::detect_container(&build_real_ext4("hello.txt", b"hello")),
+            Some(crate::container::ContainerKind::Ext4)
+        );
+    }
+
     fn synth_ext4_image() -> Vec<u8> {
         let mut bytes: Vec<u8> = vec![0u8; EXT4_SUPERBLOCK_OFFSET + 0x400];
         bytes[EXT4_SUPERBLOCK_OFFSET..EXT4_SUPERBLOCK_OFFSET + 4]

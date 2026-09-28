@@ -301,6 +301,17 @@ mod tests {
     }
 
     #[test]
+    fn container_detection_returns_cramfs() {
+        let mut bytes: Vec<u8> = vec![0u8; CRAMFS_HEADER_SIZE];
+        bytes[0..4].copy_from_slice(&CRAMFS_MAGIC.to_le_bytes());
+        bytes[4..8].copy_from_slice(&4096u32.to_le_bytes());
+        assert_eq!(
+            crate::container::detect_container(&bytes),
+            Some(crate::container::ContainerKind::Cramfs)
+        );
+    }
+
+    #[test]
     fn rejects_short() {
         assert!(detect_cramfs(&[0u8; 4]).is_none());
     }
