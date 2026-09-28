@@ -268,13 +268,8 @@ fn extend_from_wasm_recovery(bytes: &[u8], techniques: &mut Vec<AntiTechnique>) 
     if json_usize(&value, "flattened_functions_restructured") > 0 {
         push_unique_technique(techniques, AntiTechnique::ControlFlowFlattening);
     }
-    if json_usize(&value, "opaque_predicates_removed") > 0
-        || json_usize(&value, "collatz_predicates_removed") > 0
-    {
+    if json_usize(&value, "opaque_predicates_removed") > 0 {
         push_unique_technique(techniques, AntiTechnique::OpaquePredicate);
-    }
-    if json_usize(&value, "decrypt_stub_bytes_recovered") > 0 {
-        push_unique_technique(techniques, AntiTechnique::StringEncryption);
     }
 }
 
@@ -2381,9 +2376,7 @@ mod tests {
     fn wasm_recovery_sidecar_records_anti_analysis_techniques() {
         let report: serde_json::Value = serde_json::json!({
             "flattened_functions_restructured": 1,
-            "opaque_predicates_removed": 2,
-            "collatz_predicates_removed": 0,
-            "decrypt_stub_bytes_recovered": 16
+            "opaque_predicates_removed": 2
         });
         let child: ChildArtifact =
             anti_child("wasm.recovery.json", serde_json::to_vec(&report).unwrap());
@@ -2393,7 +2386,6 @@ mod tests {
             recovered_techniques_for("wasm.deob", &metadata).expect("techniques");
         assert!(techniques.contains(&AntiTechnique::ControlFlowFlattening));
         assert!(techniques.contains(&AntiTechnique::OpaquePredicate));
-        assert!(techniques.contains(&AntiTechnique::StringEncryption));
     }
 
     #[test]

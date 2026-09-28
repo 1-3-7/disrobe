@@ -79,6 +79,7 @@ struct Case {
     obf: &'static str,
     exports: &'static [(&'static str, usize)],
     expect: fn(&RecoveryReport) -> bool,
+    rewrites: bool,
 }
 
 #[cfg(feature = "sandbox")]
@@ -89,24 +90,28 @@ fn cases() -> Vec<Case> {
             obf: "mba_checksum.obf.wat",
             exports: &[("mix", 2), ("checksum", 2)],
             expect: |r: &RecoveryReport| r.mba_expressions_folded >= 2,
+            rewrites: true,
         },
         Case {
             clean: "callind_dispatch.clean.wat",
             obf: "callind_dispatch.obf.wat",
             exports: &[("run", 2)],
-            expect: |r: &RecoveryReport| r.call_indirect_resolved >= 3,
+            expect: |r: &RecoveryReport| r.call_indirect_resolved == 0,
+            rewrites: false,
         },
         Case {
             clean: "cff_pipeline.clean.wat",
             obf: "cff_pipeline.obf.wat",
             exports: &[("pipeline", 1)],
             expect: |r: &RecoveryReport| r.flattened_functions_restructured >= 1,
+            rewrites: true,
         },
         Case {
             clean: "cff_loop.clean.wat",
             obf: "cff_loop.obf.wat",
             exports: &[("loop_sum", 1)],
             expect: |r: &RecoveryReport| r.flattened_functions_restructured >= 1,
+            rewrites: true,
         },
     ]
 }
@@ -163,11 +168,19 @@ fn recovery_is_byte_stable_and_valid() {
             "recovered {} must validate",
             case.obf
         );
-        assert_ne!(
-            recovered.bytes, obf_bytes,
-            "recovery must change {}, otherwise the stability check below compares nothing",
-            case.obf
-        );
+        if case.rewrites {
+            assert_ne!(
+                recovered.bytes, obf_bytes,
+                "recovery must change {}, otherwise the stability check below compares nothing",
+                case.obf
+            );
+        } else {
+            assert_eq!(
+                recovered.bytes, obf_bytes,
+                "recovery must leave {} unchanged",
+                case.obf
+            );
+        }
         let again: RecoveredModule = recover_module(&recovered.bytes).expect("re-recover");
         assert_eq!(
             again.bytes,
@@ -183,37 +196,14 @@ fn recovery_is_byte_stable_and_valid() {
 
 #[cfg(feature = "sandbox")]
 #[test]
-fn decrypt_stub_static_extraction_reveals_plaintext() {
-    let obf_bytes: Vec<u8> = assemble("decrypt_stub.obf.wat");
-    let recovered: RecoveredModule = recover_module(&obf_bytes).expect("recover");
-    assert!(
-        recovered.report.decrypt_stub_bytes_recovered >= 10,
-        "report={:?}",
-        recovered.report
-    );
-    let module: walrus::Module = walrus::Module::from_buffer(&recovered.bytes).expect("round-trip");
-    let plaintext: Vec<u8> = module
-        .data
-        .iter()
-        .find(|d| !d.value.is_empty())
-        .map(|d| d.value.clone())
-        .expect("a data segment");
-    assert_eq!(
-        plaintext, b"helloworld",
-        "static decrypt of the real constant-key stub must reveal the embedded plaintext"
-    );
-}
-
-#[cfg(feature = "sandbox")]
-#[test]
-fn opaque_predicate_o0_folds_interprocedurally_and_stays_intact() {
+fn opaque_predicate_o0_is_kept_when_its_helper_uses_the_stack() {
     let eng: Engine = fuel_engine();
     let obf_bytes: Vec<u8> = assemble("opaque_select.obf.wat");
     let recovered: RecoveredModule = recover_module(&obf_bytes).expect("recover");
     assert_eq!(
-        recovered.report.opaque_predicates_removed, 2,
-        "real clang -O0 emits two block-based br_if predicates each guarded by a call to the pure \
-         collatz_steps helper over a constant; the interprocedural interpreter folds both: {:?}",
+        recovered.report.opaque_predicates_removed, 0,
+        "clang -O0 keeps collatz_steps' locals in linear memory behind the mutable stack pointer, \
+         which the guard evaluator treats as unknown, so neither predicate may fold: {:?}",
         recovered.report
     );
     assert!(

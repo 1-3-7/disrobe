@@ -208,13 +208,11 @@ fn deob(
     println!("  code bytes:   {}", summary.code_size_bytes);
     println!("  mba folded:   {}", report.mba_expressions_folded);
     println!("  opaque preds: {}", report.opaque_predicates_removed);
-    println!("  collatz preds:{}", report.collatz_predicates_removed);
     println!("  call_indirect:{}", report.call_indirect_resolved);
     println!(
         "  cff funcs:    {}",
         report.flattened_functions_restructured
     );
-    println!("  decrypt bytes:{}", report.decrypt_stub_bytes_recovered);
     println!("  wat source:   {}", out_path.display());
     println!("  summary:      {}", summary_path.display());
     println!("  recovery:     {}", report_path.display());

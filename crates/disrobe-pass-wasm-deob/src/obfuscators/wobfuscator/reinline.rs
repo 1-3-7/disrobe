@@ -118,7 +118,7 @@ impl VisitorMut for CallRewriter<'_> {
     }
 }
 
-fn function_is_unreferenced(module: &Module, target: FunctionId) -> bool {
+pub(crate) fn function_is_unreferenced(module: &Module, target: FunctionId) -> bool {
     if module.start == Some(target) {
         return false;
     }

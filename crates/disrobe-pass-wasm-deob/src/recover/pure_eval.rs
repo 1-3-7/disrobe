@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use walrus::ir::{BinaryOp, ExtendedLoad, Instr, InstrSeqId, LoadKind, StoreKind, UnaryOp, Value};
+use walrus::ir::{BinaryOp, Instr, InstrSeqId, UnaryOp, Value};
 use walrus::{
     ConstExpr, FunctionId, GlobalId, GlobalKind, LocalFunction, LocalId, Module, ValType,
 };
@@ -8,7 +8,6 @@ use walrus::{
 const MAX_STEPS: u64 = 2_000_000;
 const MAX_MODULE_STEPS: u64 = 50_000_000;
 const MAX_CALL_DEPTH: u32 = 8;
-const MAX_MEMORY_BYTES: usize = 1 << 20;
 const MAX_VALUE_STACK: usize = 4_096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,13 +17,6 @@ pub(super) enum Scalar {
 }
 
 impl Scalar {
-    const fn as_i32(self) -> Option<i32> {
-        match self {
-            Self::I32(v) => Some(v),
-            Self::I64(_) => None,
-        }
-    }
-
     const fn truthy(self) -> bool {
         match self {
             Self::I32(v) => v != 0,
@@ -57,7 +49,9 @@ impl PureModule {
         }
         let mut globals: BTreeMap<GlobalId, Scalar> = BTreeMap::new();
         for global in module.globals.iter() {
-            if let GlobalKind::Local(ConstExpr::Value(value)) = &global.kind {
+            if !global.mutable
+                && let GlobalKind::Local(ConstExpr::Value(value)) = &global.kind
+            {
                 if let Some(scalar) = scalar_of_value(*value) {
                     globals.insert(global.id(), scalar);
                 }
@@ -76,15 +70,13 @@ impl PureModule {
         spent <= MAX_MODULE_STEPS
     }
 
-    pub(super) fn budget_exhausted(&self) -> bool {
+    pub(super) const fn budget_exhausted(&self) -> bool {
         self.spent.get() > MAX_MODULE_STEPS
     }
 
     pub(super) fn eval_guard(&self, guard: &[Instr]) -> Option<Scalar> {
         let mut machine: Machine<'_> = Machine {
             module: self,
-            memory: BTreeMap::new(),
-            globals: self.globals.clone(),
             steps: 0,
         };
         let mut stack: Vec<Scalar> = Vec::new();
@@ -120,8 +112,9 @@ impl PureModule {
                     }
                     let split: usize = stack.len() - arity;
                     let call_args: Vec<Scalar> = stack.split_off(split);
-                    let result: Scalar = machine.invoke(call.func, &call_args, 1)?;
-                    stack.push(result);
+                    if let Returned::Value(result) = machine.invoke(call.func, &call_args, 1)? {
+                        stack.push(result);
+                    }
                 }
                 _ => return None,
             }
@@ -212,15 +205,19 @@ enum Flow {
     Return(Option<Scalar>),
 }
 
+#[derive(Debug, Clone, Copy)]
+enum Returned {
+    Value(Scalar),
+    Void,
+}
+
 struct Machine<'a> {
     module: &'a PureModule,
-    memory: BTreeMap<u32, u8>,
-    globals: BTreeMap<GlobalId, Scalar>,
     steps: u64,
 }
 
 impl Machine<'_> {
-    fn invoke(&mut self, callee: FunctionId, args: &[Scalar], depth: u32) -> Option<Scalar> {
+    fn invoke(&mut self, callee: FunctionId, args: &[Scalar], depth: u32) -> Option<Returned> {
         if depth > MAX_CALL_DEPTH {
             return None;
         }
@@ -241,10 +238,9 @@ impl Machine<'_> {
         let mut stack: Vec<Scalar> = Vec::new();
         let flow: Flow = self.run_seq(snapshot, snapshot.entry, &mut locals, &mut stack, depth)?;
         match (flow, snapshot.result) {
-            (Flow::Return(Some(value)), Some(_)) => Some(value),
-            (Flow::Return(None), None) => Some(Scalar::I32(0)),
-            (Flow::Normal, Some(_)) => stack.pop(),
-            (Flow::Normal, None) => Some(Scalar::I32(0)),
+            (Flow::Return(Some(value)), Some(_)) => Some(Returned::Value(value)),
+            (Flow::Return(None) | Flow::Normal, None) => Some(Returned::Void),
+            (Flow::Normal, Some(_)) => stack.pop().map(Returned::Value),
             _ => None,
         }
     }
@@ -275,11 +271,7 @@ impl Machine<'_> {
                     let value: Scalar = *stack.last()?;
                     locals.insert(t.local, value);
                 }
-                Instr::GlobalGet(g) => stack.push(*self.globals.get(&g.global)?),
-                Instr::GlobalSet(g) => {
-                    let value: Scalar = stack.pop()?;
-                    self.globals.insert(g.global, value);
-                }
+                Instr::GlobalGet(g) => stack.push(*self.module.globals.get(&g.global)?),
                 Instr::Drop(_) => {
                     stack.pop()?;
                 }
@@ -298,15 +290,6 @@ impl Machine<'_> {
                     let lhs: Scalar = stack.pop()?;
                     stack.push(if cond.truthy() { lhs } else { rhs });
                 }
-                Instr::Load(load) => {
-                    let addr: Scalar = stack.pop()?;
-                    stack.push(self.load(load.kind, addr, load.arg.offset)?);
-                }
-                Instr::Store(store) => {
-                    let value: Scalar = stack.pop()?;
-                    let addr: Scalar = stack.pop()?;
-                    self.store(store.kind, addr, store.arg.offset, value)?;
-                }
                 Instr::Call(call) => {
                     let arity: usize = self.module.functions.get(&call.func)?.args.len();
                     if stack.len() < arity {
@@ -314,8 +297,7 @@ impl Machine<'_> {
                     }
                     let split: usize = stack.len() - arity;
                     let call_args: Vec<Scalar> = stack.split_off(split);
-                    let result: Option<Scalar> = self.invoke(call.func, &call_args, depth + 1);
-                    if let Some(value) = result {
+                    if let Returned::Value(value) = self.invoke(call.func, &call_args, depth + 1)? {
                         stack.push(value);
                     }
                 }
@@ -365,128 +347,6 @@ impl Machine<'_> {
             }
         }
         Some(Flow::Normal)
-    }
-
-    fn load(&self, kind: LoadKind, addr: Scalar, offset: u32) -> Option<Scalar> {
-        let base: u32 = addr.as_i32()?.cast_unsigned();
-        let effective: u32 = base.checked_add(offset)?;
-        match kind {
-            LoadKind::I32 { atomic: false } => Some(Scalar::I32(i32::from_le_bytes(
-                self.read_bytes::<4>(effective)?,
-            ))),
-            LoadKind::I64 { atomic: false } => Some(Scalar::I64(i64::from_le_bytes(
-                self.read_bytes::<8>(effective)?,
-            ))),
-            LoadKind::I32_8 { kind: ext } => {
-                let bytes: [u8; 1] = self.read_bytes::<1>(effective)?;
-                Some(Scalar::I32(extend8_i32(bytes[0], ext)))
-            }
-            LoadKind::I32_16 { kind: ext } => {
-                let bytes: [u8; 2] = self.read_bytes::<2>(effective)?;
-                Some(Scalar::I32(extend16_i32(u16::from_le_bytes(bytes), ext)))
-            }
-            LoadKind::I64_8 { kind: ext } => {
-                let bytes: [u8; 1] = self.read_bytes::<1>(effective)?;
-                Some(Scalar::I64(i64::from(extend8_i32(bytes[0], ext))))
-            }
-            LoadKind::I64_16 { kind: ext } => {
-                let bytes: [u8; 2] = self.read_bytes::<2>(effective)?;
-                Some(Scalar::I64(i64::from(extend16_i32(
-                    u16::from_le_bytes(bytes),
-                    ext,
-                ))))
-            }
-            LoadKind::I64_32 { kind: ext } => {
-                let raw: i32 = i32::from_le_bytes(self.read_bytes::<4>(effective)?);
-                Some(Scalar::I64(match ext {
-                    ExtendedLoad::SignExtend => i64::from(raw),
-                    ExtendedLoad::ZeroExtend | ExtendedLoad::ZeroExtendAtomic => {
-                        i64::from(raw.cast_unsigned())
-                    }
-                }))
-            }
-            _ => None,
-        }
-    }
-
-    fn store(&mut self, kind: StoreKind, addr: Scalar, offset: u32, value: Scalar) -> Option<()> {
-        let base: u32 = addr.as_i32()?.cast_unsigned();
-        let effective: u32 = base.checked_add(offset)?;
-        match kind {
-            StoreKind::I32 { atomic: false } => {
-                self.write_bytes(effective, &value_i32(value)?.to_le_bytes())
-            }
-            StoreKind::I64 { atomic: false } => {
-                self.write_bytes(effective, &value_i64(value)?.to_le_bytes())
-            }
-            StoreKind::I32_8 { atomic: false } => {
-                self.write_bytes(effective, &[value_i32(value)?.cast_unsigned() as u8])
-            }
-            StoreKind::I32_16 { atomic: false } => {
-                let half: u16 = value_i32(value)?.cast_unsigned() as u16;
-                self.write_bytes(effective, &half.to_le_bytes())
-            }
-            StoreKind::I64_8 { atomic: false } => {
-                self.write_bytes(effective, &[value_i64(value)?.cast_unsigned() as u8])
-            }
-            StoreKind::I64_16 { atomic: false } => {
-                let half: u16 = value_i64(value)?.cast_unsigned() as u16;
-                self.write_bytes(effective, &half.to_le_bytes())
-            }
-            StoreKind::I64_32 { atomic: false } => {
-                let word: u32 = value_i64(value)?.cast_unsigned() as u32;
-                self.write_bytes(effective, &word.to_le_bytes())
-            }
-            _ => None,
-        }
-    }
-
-    fn read_bytes<const N: usize>(&self, address: u32) -> Option<[u8; N]> {
-        let mut out: [u8; N] = [0; N];
-        for (i, slot) in out.iter_mut().enumerate() {
-            let at: u32 = address.checked_add(i as u32)?;
-            *slot = self.memory.get(&at).copied().unwrap_or(0);
-        }
-        Some(out)
-    }
-
-    fn write_bytes(&mut self, address: u32, bytes: &[u8]) -> Option<()> {
-        if self.memory.len().saturating_add(bytes.len()) > MAX_MEMORY_BYTES {
-            return None;
-        }
-        for (i, byte) in bytes.iter().enumerate() {
-            let at: u32 = address.checked_add(i as u32)?;
-            self.memory.insert(at, *byte);
-        }
-        Some(())
-    }
-}
-
-const fn value_i32(value: Scalar) -> Option<i32> {
-    match value {
-        Scalar::I32(v) => Some(v),
-        Scalar::I64(_) => None,
-    }
-}
-
-const fn value_i64(value: Scalar) -> Option<i64> {
-    match value {
-        Scalar::I64(v) => Some(v),
-        Scalar::I32(_) => None,
-    }
-}
-
-const fn extend8_i32(byte: u8, ext: ExtendedLoad) -> i32 {
-    match ext {
-        ExtendedLoad::SignExtend => byte.cast_signed() as i32,
-        ExtendedLoad::ZeroExtend | ExtendedLoad::ZeroExtendAtomic => byte as i32,
-    }
-}
-
-const fn extend16_i32(half: u16, ext: ExtendedLoad) -> i32 {
-    match ext {
-        ExtendedLoad::SignExtend => half.cast_signed() as i32,
-        ExtendedLoad::ZeroExtend | ExtendedLoad::ZeroExtendAtomic => half as i32,
     }
 }
 

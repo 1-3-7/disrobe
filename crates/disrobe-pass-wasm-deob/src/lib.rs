@@ -141,7 +141,7 @@ pub use provenance_header::{
     render_ts_lifted_with_header, render_wat_decompiled_with_header, rust_lifted_header,
     ts_lifted_header, wat_decompiled_header,
 };
-pub use recover::{CollatzWitness, RecoveredModule, RecoveryReport, recover_module};
+pub use recover::{RecoveredModule, RecoveryReport, recover_module};
 pub use signature::{
     BoundaryLinkCollectionStatus, BoundaryNameRecoveryFailure, BoundaryNameRecoveryStatus,
     ExportAlias, FunctionExport, FunctionSig, ModuleSignatures, count_defined_function_bodies,

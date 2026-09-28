@@ -1,18 +1,8 @@
-use serde::Serialize;
 use walrus::ir::{BinaryOp, Instr, InstrSeqId, InstrSeqType, UnaryOp, Value};
 use walrus::{FunctionId, FunctionKind, LocalFunction, Module};
 
 use super::RecoveryReport;
 use super::pure_eval::{PureModule, Scalar};
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct CollatzWitness {
-    pub seed: i64,
-    pub steps: u32,
-    pub reached_one: bool,
-}
-
-const COLLATZ_MAX_STEPS: u32 = 1_000;
 
 pub(super) fn fold_constant_branches(func: &mut LocalFunction, report: &mut RecoveryReport) {
     let seq_ids: Vec<InstrSeqId> = super::collect_seq_ids(func);
@@ -48,7 +38,6 @@ fn fold_seq(func: &mut LocalFunction, seq_id: InstrSeqId, report: &mut RecoveryR
             if_index: idx,
             cond_start: verdict.cond_start,
             taken,
-            collatz: verdict.collatz,
         });
     }
     if decisions.is_empty() {
@@ -108,7 +97,6 @@ struct Decision {
     if_index: usize,
     cond_start: usize,
     taken: InstrSeqId,
-    collatz: Option<CollatzWitness>,
 }
 
 fn apply_decision(
@@ -130,33 +118,20 @@ fn apply_decision(
         seq.instrs.push((instr, loc));
     }
     seq.instrs.extend(tail);
-    if decision.collatz.is_some() {
-        report.collatz_predicates_removed += 1;
-        if let Some(witness) = &decision.collatz {
-            report.collatz_witnesses.push(witness.clone());
-        }
-    } else {
-        report.opaque_predicates_removed += 1;
-    }
+    report.opaque_predicates_removed += 1;
 }
 
 #[derive(Debug, Clone)]
 struct ConstVerdict {
     value: i32,
     cond_start: usize,
-    collatz: Option<CollatzWitness>,
 }
 
 fn const_condition(instrs: &[Instr], if_index: usize) -> Option<ConstVerdict> {
-    let collatz: Option<ConstVerdict> = collatz_condition(instrs, if_index);
-    if let Some(collatz) = collatz {
-        return Some(collatz);
-    }
     let (value, cursor): (i32, usize) = eval_i32_expression_suffix(instrs, if_index, 64)?;
     Some(ConstVerdict {
         value,
         cond_start: cursor,
-        collatz: None,
     })
 }
 
@@ -240,97 +215,6 @@ fn eval_binop(op: BinaryOp, a: i32, b: i32) -> Option<i32> {
         BinaryOp::I32GeU => i32::from(ua >= ub),
         _ => return None,
     })
-}
-
-fn collatz_condition(instrs: &[Instr], if_index: usize) -> Option<ConstVerdict> {
-    let cmp: &Instr = instrs.get(if_index.checked_sub(1)?)?;
-    let BinaryOp::I32Eq = binop_of(cmp)? else {
-        return None;
-    };
-    let one: &Instr = instrs.get(if_index.checked_sub(2)?)?;
-    if !is_i32_const(one, 1) {
-        return None;
-    }
-    let cursor: usize = if_index - 2;
-    let mut budget: usize = 96;
-    let (seed, start): (i64, usize) = collatz_chain(instrs, cursor, &mut budget)?;
-    let (steps, reached): (u32, bool) = run_collatz(seed);
-    if !reached {
-        return None;
-    }
-    Some(ConstVerdict {
-        value: 1,
-        cond_start: start,
-        collatz: Some(CollatzWitness {
-            seed,
-            steps,
-            reached_one: true,
-        }),
-    })
-}
-
-fn collatz_chain(instrs: &[Instr], cursor: usize, budget: &mut usize) -> Option<(i64, usize)> {
-    let mut value: Option<i64> = None;
-    let start: usize = scan_collatz_seed(instrs, cursor, budget, &mut value)?;
-    Some((value?, start))
-}
-
-fn scan_collatz_seed(
-    instrs: &[Instr],
-    cursor: usize,
-    budget: &mut usize,
-    value: &mut Option<i64>,
-) -> Option<usize> {
-    let mut local_cursor: usize = cursor;
-    while local_cursor > 0 && *budget > 0 {
-        *budget -= 1;
-        let idx: usize = local_cursor - 1;
-        match instrs.get(idx)? {
-            Instr::Const(c) => {
-                if let Value::I32(v) = c.value {
-                    *value = Some(i64::from(v));
-                    return Some(idx);
-                }
-                return None;
-            }
-            Instr::Binop(_) | Instr::Unop(_) | Instr::Call(_) => {
-                local_cursor -= 1;
-            }
-            _ => return None,
-        }
-    }
-    None
-}
-
-fn run_collatz(seed: i64) -> (u32, bool) {
-    if seed <= 0 {
-        return (0, false);
-    }
-    let mut value: u64 = seed.cast_unsigned();
-    let mut steps: u32 = 0;
-    while value != 1 && steps < COLLATZ_MAX_STEPS {
-        value = if value.is_multiple_of(2) {
-            value / 2
-        } else {
-            match value.checked_mul(3).and_then(|v| v.checked_add(1)) {
-                Some(v) => v,
-                None => return (steps, false),
-            }
-        };
-        steps += 1;
-    }
-    (steps, value == 1)
-}
-
-const fn binop_of(instr: &Instr) -> Option<BinaryOp> {
-    match instr {
-        Instr::Binop(b) => Some(b.op),
-        _ => None,
-    }
-}
-
-const fn is_i32_const(instr: &Instr, expected: i32) -> bool {
-    matches!(instr, Instr::Const(c) if matches!(c.value, Value::I32(v) if v == expected))
 }
 
 const MAX_GUARD_LEN: usize = 64;
@@ -532,6 +416,36 @@ mod tests {
         recovered.report.opaque_predicates_removed
     }
 
+    #[derive(Default)]
+    struct ConstCollector {
+        values: Vec<i32>,
+    }
+
+    impl walrus::ir::Visitor<'_> for ConstCollector {
+        fn visit_const(&mut self, instr: &walrus::ir::Const) {
+            if let Value::I32(value) = instr.value {
+                self.values.push(value);
+            }
+        }
+    }
+
+    #[test]
+    fn a_false_equality_with_one_keeps_the_else_arm() {
+        let wasm: Vec<u8> = wat::parse_str(
+            "(module (func (export \"f\") (result i32) i32.const 5 i32.const 1 i32.eq if (result i32) i32.const 10 else i32.const 20 end))",
+        )
+        .expect("assemble");
+        let recovered: crate::recover::RecoveredModule =
+            crate::recover::recover_module(&wasm).expect("recover");
+        let module: Module = Module::from_buffer(&recovered.bytes).expect("reparse");
+        let mut consts: ConstCollector = ConstCollector::default();
+        for (_, func) in module.funcs.iter_local() {
+            walrus::ir::dfs_in_order(&mut consts, func, func.entry_block());
+        }
+        assert!(consts.values.contains(&20), "{:?}", consts.values);
+        assert!(!consts.values.contains(&10), "{:?}", consts.values);
+    }
+
     #[test]
     fn a_constant_arm_without_a_self_branch_is_spliced() {
         let removed: usize = opaque_removed("i32.const 1 if i32.const 7 local.set 1 end");
@@ -543,20 +457,6 @@ mod tests {
         let removed: usize =
             opaque_removed("i32.const 1 if local.get 0 br_if 0 i32.const 7 local.set 1 end");
         assert_eq!(removed, 0);
-    }
-
-    #[test]
-    fn collatz_from_27_reaches_one() {
-        let (steps, reached): (u32, bool) = run_collatz(27);
-        assert!(reached);
-        assert_eq!(steps, 111);
-    }
-
-    #[test]
-    fn collatz_from_one_is_already_one() {
-        let (steps, reached): (u32, bool) = run_collatz(1);
-        assert!(reached);
-        assert_eq!(steps, 0);
     }
 
     #[test]
@@ -628,6 +528,68 @@ mod tests {
             recovered.report
         );
         assert!(wasmparser::validate(&recovered.bytes).is_ok());
+    }
+
+    fn diamond_over(helpers: &str, guard: &str) -> String {
+        format!(
+            r#"
+            (module
+              {helpers}
+              (func (export "guarded") (param i32) (result i32)
+                (local i32)
+                block
+                  block
+                    {guard}
+                    br_if 0
+                    local.get 0
+                    i32.const 100
+                    i32.add
+                    local.set 1
+                    br 1
+                  end
+                  local.get 0
+                  i32.const 999
+                  i32.add
+                  local.set 1
+                end
+                local.get 1))
+        "#
+        )
+    }
+
+    #[test]
+    fn a_guard_that_reads_a_mutable_global_is_not_folded() {
+        let wat: String = diamond_over(
+            r#"(global $g (mut i32) (i32.const 1))
+              (func (export "set") (param i32) local.get 0 global.set $g)
+              (func $read (result i32) global.get $g)"#,
+            "call $read",
+        );
+        let recovered: crate::recover::RecoveredModule = recover(&wat);
+        assert_eq!(recovered.report.opaque_predicates_removed, 0);
+    }
+
+    #[test]
+    fn a_guard_whose_callee_traps_is_not_folded() {
+        let wat: String = diamond_over(
+            r"(func $trap unreachable)
+              (func $outer (result i32) call $trap i32.const 5)",
+            "call $outer",
+        );
+        let recovered: crate::recover::RecoveredModule = recover(&wat);
+        assert_eq!(recovered.report.opaque_predicates_removed, 0);
+    }
+
+    #[test]
+    fn a_guard_reading_memory_is_not_folded() {
+        let wat: String = diamond_over(
+            r#"(memory 1)
+              (data (i32.const 0) "\01")
+              (func $peek (result i32) i32.const 0 i32.load8_u)"#,
+            "call $peek",
+        );
+        let recovered: crate::recover::RecoveredModule = recover(&wat);
+        assert_eq!(recovered.report.opaque_predicates_removed, 0);
     }
 
     #[test]

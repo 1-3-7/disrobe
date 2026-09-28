@@ -14,19 +14,16 @@ mod pure_eval;
 mod reloop;
 
 pub use cff::CffRecovery;
-pub use opaque::CollatzWitness;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
 pub struct RecoveryReport {
     pub mba_expressions_folded: usize,
     pub mba_nodes_removed: usize,
     pub opaque_predicates_removed: usize,
-    pub collatz_predicates_removed: usize,
     pub call_indirect_resolved: usize,
     pub flattened_functions_restructured: usize,
     pub flattened_conditional_restructured: usize,
     pub flattened_dispatchers_walled: usize,
-    pub decrypt_stub_bytes_recovered: usize,
     pub wobfuscator_ops_reinlined: usize,
     pub wobfuscator_imports_dropped: usize,
     pub jscrambler_imports_stripped: usize,
@@ -35,7 +32,6 @@ pub struct RecoveryReport {
     pub wasmixer_elements_pruned: usize,
     pub intra_function_folding_skipped: bool,
     pub guard_folding_budget_exhausted: bool,
-    pub collatz_witnesses: Vec<CollatzWitness>,
 }
 
 impl RecoveryReport {
@@ -43,10 +39,8 @@ impl RecoveryReport {
     pub const fn any_change(&self) -> bool {
         self.mba_expressions_folded > 0
             || self.opaque_predicates_removed > 0
-            || self.collatz_predicates_removed > 0
             || self.call_indirect_resolved > 0
             || self.flattened_functions_restructured > 0
-            || self.decrypt_stub_bytes_recovered > 0
             || self.wobfuscator_ops_reinlined > 0
             || self.jscrambler_imports_stripped > 0
             || self.wasmixer_fragments_inlined > 0
@@ -98,11 +92,10 @@ pub fn recover_module(wasm: &[u8]) -> Result<RecoveredModule> {
         opaque::fold_interprocedural(&mut module, &mut report);
         crate::debug::dbg_kv("mba-fold", || {
             format!(
-                "expressions_folded={} nodes_removed={} opaque_removed={} collatz_removed={}",
+                "expressions_folded={} nodes_removed={} opaque_removed={}",
                 report.mba_expressions_folded,
                 report.mba_nodes_removed,
-                report.opaque_predicates_removed,
-                report.collatz_predicates_removed
+                report.opaque_predicates_removed
             )
         });
 
@@ -119,12 +112,6 @@ pub fn recover_module(wasm: &[u8]) -> Result<RecoveredModule> {
             )
         });
     }
-
-    let decrypted: usize = decrypt::recover_pure_decrypt_data(&mut module);
-    report.decrypt_stub_bytes_recovered = decrypted;
-    crate::debug::dbg_kv("decrypt-stub", || {
-        format!("data_bytes_recovered={decrypted}")
-    });
 
     let bytes: Vec<u8> = module.emit_wasm();
     wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::WASM2)
@@ -556,15 +543,25 @@ const fn binop_instr(op: MbaBinOp, width: ExprWidth) -> Option<Instr> {
     Some(Instr::Binop(walrus::ir::Binop { op: bop }))
 }
 
-mod call_indirect {
-    use std::collections::BTreeMap;
+pub(crate) mod call_indirect {
+    use std::collections::{BTreeMap, BTreeSet};
 
-    use walrus::ir::{Instr, InstrSeqId, LoadKind, LocalId, Value};
-    use walrus::{DataKind, ElementId, ElementItems, FunctionId, FunctionKind, Module, TableId};
+    use walrus::ir::{Instr, InstrSeqId, Value};
+    use walrus::{
+        ElementId, ElementItems, ExportItem, FunctionId, FunctionKind, Module, TableId, TypeId,
+    };
 
     pub(super) fn resolve_aliases(module: &mut Module) -> usize {
-        let table_map: BTreeMap<TableId, Vec<Option<FunctionId>>> = build_table_index(module);
-        let memory: BTreeMap<u64, u8> = build_data_index(module);
+        let frozen: BTreeSet<TableId> = frozen_tables(module);
+        let table_map: BTreeMap<TableId, Vec<Option<FunctionId>>> = build_table_index(module)
+            .into_iter()
+            .filter(|(table, _): &(TableId, Vec<Option<FunctionId>>)| frozen.contains(table))
+            .collect();
+        let types: BTreeMap<FunctionId, TypeId> = module
+            .funcs
+            .iter()
+            .map(|func: &walrus::Function| (func.id(), func.ty()))
+            .collect();
         let local_ids: Vec<FunctionId> = module.funcs.iter_local().map(|(id, _)| id).collect();
         let mut resolved: usize = 0;
         for fid in local_ids {
@@ -574,18 +571,70 @@ mod call_indirect {
             };
             let seq_ids: Vec<InstrSeqId> = super::collect_seq_ids(func);
             for seq_id in seq_ids {
-                resolved += resolve_seq(func.block_mut(seq_id), &table_map, &memory);
+                resolved += resolve_seq(func.block_mut(seq_id), &table_map, &types);
             }
         }
         resolved
     }
 
+    pub(crate) fn frozen_tables(module: &Module) -> BTreeSet<TableId> {
+        let mut excluded: BTreeSet<TableId> = module
+            .exports
+            .iter()
+            .filter_map(|export: &walrus::Export| match export.item {
+                ExportItem::Table(table) => Some(table),
+                _ => None,
+            })
+            .collect();
+        for table in module.tables.iter() {
+            if table.import.is_some() {
+                excluded.insert(table.id());
+            }
+        }
+        for element in module.elements.iter() {
+            if let walrus::ElementKind::Active { table, offset } = &element.kind
+                && !matches!(offset, walrus::ConstExpr::Value(Value::I32(_)))
+            {
+                excluded.insert(*table);
+            }
+        }
+        for (_, func) in module.funcs.iter_local() {
+            for seq_id in super::collect_seq_ids(func) {
+                for (instr, _) in &func.block(seq_id).instrs {
+                    match instr {
+                        Instr::TableSet(i) => {
+                            excluded.insert(i.table);
+                        }
+                        Instr::TableGrow(i) => {
+                            excluded.insert(i.table);
+                        }
+                        Instr::TableFill(i) => {
+                            excluded.insert(i.table);
+                        }
+                        Instr::TableCopy(i) => {
+                            excluded.insert(i.dst);
+                        }
+                        Instr::TableInit(i) => {
+                            excluded.insert(i.table);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        module
+            .tables
+            .iter()
+            .map(walrus::Table::id)
+            .filter(|table: &TableId| !excluded.contains(table))
+            .collect()
+    }
+
     fn resolve_seq(
         seq: &mut walrus::ir::InstrSeq,
         table_map: &BTreeMap<TableId, Vec<Option<FunctionId>>>,
-        memory: &BTreeMap<u64, u8>,
+        types: &BTreeMap<FunctionId, TypeId>,
     ) -> usize {
-        let constant_slots: BTreeMap<LocalId, i32> = track_constant_slots(&seq.instrs, memory);
         let mut resolved: usize = 0;
         let mut idx: usize = 0;
         while idx + 1 < seq.instrs.len() {
@@ -594,14 +643,14 @@ mod call_indirect {
                     Value::I32(v) => Some(v),
                     _ => None,
                 },
-                Instr::LocalGet(lg) => constant_slots.get(&lg.local).copied(),
                 _ => None,
             };
             let target: Option<FunctionId> = match &seq.instrs[idx + 1].0 {
                 Instr::CallIndirect(ci) => slot.and_then(|table_index: i32| {
                     let entries: &Vec<Option<FunctionId>> = table_map.get(&ci.table)?;
                     let slot: usize = usize::try_from(table_index).ok()?;
-                    *entries.get(slot)?
+                    let target: FunctionId = (*entries.get(slot)?)?;
+                    (types.get(&target) == Some(&ci.ty)).then_some(target)
                 }),
                 _ => None,
             };
@@ -614,84 +663,6 @@ mod call_indirect {
             idx += 1;
         }
         resolved
-    }
-
-    fn track_constant_slots(
-        instrs: &[(Instr, walrus::ir::InstrLocId)],
-        memory: &BTreeMap<u64, u8>,
-    ) -> BTreeMap<LocalId, i32> {
-        let mut slots: BTreeMap<LocalId, i32> = BTreeMap::new();
-        for window in instrs.windows(3) {
-            let base: i32 = match &window[0].0 {
-                Instr::Const(c) => match c.value {
-                    Value::I32(v) => v,
-                    _ => continue,
-                },
-                _ => continue,
-            };
-            let load_offset: u64 = match &window[1].0 {
-                Instr::Load(load) => match load.kind {
-                    LoadKind::I32 { .. } => u64::from(load.arg.offset),
-                    _ => continue,
-                },
-                _ => continue,
-            };
-            let Instr::LocalSet(set) = &window[2].0 else {
-                continue;
-            };
-            let address: u64 = match u64::try_from(base) {
-                Ok(b) => b.wrapping_add(load_offset),
-                Err(_) => continue,
-            };
-            if let Some(value) = read_i32(memory, address) {
-                slots.insert(set.local, value);
-            }
-        }
-        for window in instrs.windows(2) {
-            let value: i32 = match &window[0].0 {
-                Instr::Const(c) => match c.value {
-                    Value::I32(v) => v,
-                    _ => continue,
-                },
-                _ => continue,
-            };
-            if let Instr::LocalSet(set) = &window[1].0 {
-                slots.insert(set.local, value);
-            }
-        }
-        slots
-    }
-
-    fn read_i32(memory: &BTreeMap<u64, u8>, address: u64) -> Option<i32> {
-        let mut bytes: [u8; 4] = [0; 4];
-        for (i, byte) in bytes.iter_mut().enumerate() {
-            *byte = *memory.get(&address.wrapping_add(i as u64))?;
-        }
-        Some(i32::from_le_bytes(bytes))
-    }
-
-    fn build_data_index(module: &Module) -> BTreeMap<u64, u8> {
-        let mut out: BTreeMap<u64, u8> = BTreeMap::new();
-        for data in module.data.iter() {
-            let DataKind::Active { offset, .. } = &data.kind else {
-                continue;
-            };
-            let base: u64 = match offset {
-                walrus::ConstExpr::Value(Value::I32(v)) => match u64::try_from(*v) {
-                    Ok(b) => b,
-                    Err(_) => continue,
-                },
-                walrus::ConstExpr::Value(Value::I64(v)) => match u64::try_from(*v) {
-                    Ok(b) => b,
-                    Err(_) => continue,
-                },
-                _ => continue,
-            };
-            for (i, byte) in data.value.iter().enumerate() {
-                out.insert(base.wrapping_add(i as u64), *byte);
-            }
-        }
-        out
     }
 
     const MAX_TABLE_SLOTS: usize = 10_000_000;
@@ -759,145 +730,6 @@ mod call_indirect {
             }
         }
         out
-    }
-}
-
-mod decrypt {
-    use walrus::ir::{BinaryOp, Instr, Value};
-    use walrus::{DataId, DataKind, FunctionId, LocalFunction, Module};
-
-    #[derive(Debug, Clone, Copy)]
-    enum ByteOp {
-        Xor(u8),
-        Add(u8),
-        Sub(u8),
-    }
-
-    pub(super) fn recover_pure_decrypt_data(module: &mut Module) -> usize {
-        let Some((data_id, op)): Option<(DataId, ByteOp)> = find_decrypt_target(module) else {
-            return 0;
-        };
-        let data: &mut walrus::Data = module.data.get_mut(data_id);
-        if !matches!(data.kind, DataKind::Active { .. }) || data.value.is_empty() {
-            return 0;
-        }
-        let mut count: usize = 0;
-        for byte in &mut data.value {
-            *byte = apply(op, *byte);
-            count += 1;
-        }
-        count
-    }
-
-    const fn apply(op: ByteOp, byte: u8) -> u8 {
-        match op {
-            ByteOp::Xor(k) => byte ^ k,
-            ByteOp::Add(k) => byte.wrapping_add(k),
-            ByteOp::Sub(k) => byte.wrapping_sub(k),
-        }
-    }
-
-    fn find_decrypt_target(module: &Module) -> Option<(DataId, ByteOp)> {
-        let op: ByteOp = module
-            .funcs
-            .iter_local()
-            .find_map(|(_, func): (FunctionId, &LocalFunction)| byte_walk_transform(func))?;
-        let active: DataId = module
-            .data
-            .iter()
-            .find(|d| matches!(d.kind, DataKind::Active { .. }) && !d.value.is_empty())
-            .map(walrus::Data::id)?;
-        Some((active, op))
-    }
-
-    #[derive(Debug, Default)]
-    struct Walk {
-        loads8: u32,
-        stores8: u32,
-        keyed_op: Option<ByteOp>,
-        keyed_count: u32,
-        calls: u32,
-    }
-
-    fn byte_walk_transform(func: &LocalFunction) -> Option<ByteOp> {
-        let mut walk: Walk = Walk::default();
-        let mut stack: Vec<walrus::ir::InstrSeqId> = vec![func.entry_block()];
-        let mut has_loop: bool = false;
-        while let Some(id) = stack.pop() {
-            let instrs: &[(Instr, walrus::ir::InstrLocId)] = &func.block(id).instrs;
-            scan_block(instrs, &mut walk);
-            for (instr, _) in instrs {
-                match instr {
-                    Instr::Loop(l) => {
-                        has_loop = true;
-                        stack.push(l.seq);
-                    }
-                    Instr::Block(b) => stack.push(b.seq),
-                    Instr::IfElse(ie) => {
-                        stack.push(ie.consequent);
-                        stack.push(ie.alternative);
-                    }
-                    _ => {}
-                }
-            }
-        }
-        let single_keyed: bool = walk.keyed_count == 1 && walk.keyed_op.is_some();
-        if has_loop && walk.loads8 >= 1 && walk.stores8 >= 1 && walk.calls == 0 && single_keyed {
-            return walk.keyed_op;
-        }
-        None
-    }
-
-    fn scan_block(instrs: &[(Instr, walrus::ir::InstrLocId)], walk: &mut Walk) {
-        let mut last_const: Option<i32> = None;
-        let mut in_byte_transform: bool = false;
-        for (instr, _) in instrs {
-            match instr {
-                Instr::Const(c) => {
-                    if let Value::I32(v) = c.value {
-                        last_const = Some(v);
-                    }
-                }
-                Instr::Load(l) => {
-                    if matches!(l.kind, walrus::ir::LoadKind::I32_8 { .. }) {
-                        walk.loads8 += 1;
-                        in_byte_transform = true;
-                    }
-                    last_const = None;
-                }
-                Instr::Store(s) => {
-                    if matches!(s.kind, walrus::ir::StoreKind::I32_8 { .. }) {
-                        walk.stores8 += 1;
-                    }
-                    in_byte_transform = false;
-                    last_const = None;
-                }
-                Instr::Binop(b) => {
-                    let key: Option<u8> = last_const.and_then(|v| u8::try_from(v & 0xff).ok());
-                    if let Some(op) = keyed_byte_op(b.op, key) {
-                        if in_byte_transform {
-                            walk.keyed_op = Some(op);
-                            walk.keyed_count += 1;
-                        }
-                    }
-                    last_const = None;
-                }
-                Instr::Call(_) | Instr::CallIndirect(_) => {
-                    walk.calls += 1;
-                    last_const = None;
-                }
-                _ => last_const = None,
-            }
-        }
-    }
-
-    const fn keyed_byte_op(op: BinaryOp, key: Option<u8>) -> Option<ByteOp> {
-        match (op, key) {
-            (BinaryOp::I32Xor, Some(k)) => Some(ByteOp::Xor(k)),
-            (BinaryOp::I32Add, Some(k)) => Some(ByteOp::Add(k)),
-            (BinaryOp::I32Sub, Some(k)) => Some(ByteOp::Sub(k)),
-            _ => None,
-        }
     }
 }
 
@@ -972,7 +804,7 @@ mod tests {
     }
 
     #[test]
-    fn folds_constant_and_collatz_opaque_predicates_when_present() {
+    fn folds_constant_opaque_predicates_when_present() {
         let wat: &str = r#"
             (module
               (func (export "constant") (param i32) (result i32)
@@ -981,13 +813,7 @@ mod tests {
                 i32.rem_s
                 i32.eqz
                 if (result i32) local.get 0 i32.const 7 i32.mul
-                else local.get 0 i32.const 13 i32.mul end)
-              (func (export "collatz") (param i32) (result i32)
-                i32.const 27
-                i32.const 1
-                i32.eq
-                if (result i32) local.get 0 i32.const 3 i32.mul
-                else local.get 0 i32.const 5 i32.mul end))
+                else local.get 0 i32.const 13 i32.mul end))
         "#;
         let bytes: Vec<u8> = assemble(wat);
         let recovered: RecoveredModule = recover_module(&bytes).expect("recover");
@@ -1000,9 +826,97 @@ mod tests {
     }
 
     #[test]
-    fn real_callind_dispatch_resolves_memory_loaded_table_index() {
+    fn real_callind_dispatch_leaves_memory_loaded_indices_indirect() {
         let report: RecoveryReport = recover_real("callind_dispatch.obf.wat");
-        assert!(report.call_indirect_resolved >= 3, "report={report:?}");
+        assert_eq!(report.call_indirect_resolved, 0, "report={report:?}");
+    }
+
+    fn resolved_calls(wat: &str) -> usize {
+        recover_module(&assemble(wat))
+            .expect("recover")
+            .report
+            .call_indirect_resolved
+    }
+
+    #[test]
+    fn a_constant_slot_on_a_frozen_table_becomes_a_direct_call() {
+        let wat: &str = r#"
+            (module
+              (type $t (func (result i32)))
+              (table 2 funcref)
+              (elem (i32.const 0) $a $b)
+              (func $a (type $t) i32.const 1)
+              (func $b (type $t) i32.const 2)
+              (func (export "f") (result i32) i32.const 1 call_indirect (type $t))
+              (func (export "g") (result i32) i32.const 1 call_indirect (type $t)))
+        "#;
+        assert_eq!(resolved_calls(wat), 2);
+    }
+
+    #[test]
+    fn an_exported_table_keeps_the_indirect_call() {
+        let wat: &str = r#"
+            (module
+              (type $t (func (result i32)))
+              (table (export "tbl") 2 funcref)
+              (elem (i32.const 0) $a $a)
+              (func $a (type $t) i32.const 1)
+              (func (export "f") (result i32) i32.const 1 call_indirect (type $t)))
+        "#;
+        assert_eq!(indirect_calls_left(wat), 1);
+    }
+
+    #[test]
+    fn a_table_grown_at_run_time_keeps_the_indirect_call() {
+        let wat: &str = r#"
+            (module
+              (type $t (func (result i32)))
+              (table 2 funcref)
+              (elem (i32.const 0) $a $a)
+              (func $a (type $t) i32.const 1)
+              (func (export "grow") (result i32) ref.null func i32.const 1 table.grow 0)
+              (func (export "f") (result i32) i32.const 1 call_indirect (type $t)))
+        "#;
+        assert_eq!(indirect_calls_left(wat), 1);
+    }
+
+    #[test]
+    fn a_slot_whose_function_has_another_type_keeps_the_indirect_call() {
+        let wat: &str = r#"
+            (module
+              (type $t (func (result i32)))
+              (type $u (func (param i32) (result i32)))
+              (table 2 funcref)
+              (elem (i32.const 0) $a $c)
+              (func $a (type $t) i32.const 1)
+              (func $c (type $u) local.get 0)
+              (func (export "f") (result i32) i32.const 1 call_indirect (type $t)))
+        "#;
+        assert_eq!(indirect_calls_left(wat), 1);
+    }
+
+    fn indirect_calls_left(wat: &str) -> usize {
+        let recovered: RecoveredModule = recover_module(&assemble(wat)).expect("recover");
+        let module: walrus::Module =
+            walrus::Module::from_buffer(&recovered.bytes).expect("reparse");
+        module
+            .funcs
+            .iter_local()
+            .map(|(_, func): (FunctionId, &LocalFunction)| {
+                collect_seq_ids(func)
+                    .into_iter()
+                    .map(|seq: walrus::ir::InstrSeqId| {
+                        func.block(seq)
+                            .instrs
+                            .iter()
+                            .filter(|(instr, _): &&(Instr, walrus::ir::InstrLocId)| {
+                                matches!(instr, Instr::CallIndirect(_))
+                            })
+                            .count()
+                    })
+                    .sum::<usize>()
+            })
+            .sum()
     }
 
     #[test]
@@ -1024,12 +938,21 @@ mod tests {
     }
 
     #[test]
-    fn real_decrypt_stub_recovers_plaintext() {
-        let report: RecoveryReport = recover_real("decrypt_stub.obf.wat");
-        assert!(
-            report.decrypt_stub_bytes_recovered >= 10,
-            "report={report:?}"
-        );
+    fn real_decrypt_stub_keeps_its_ciphertext_for_the_stub_to_decrypt() {
+        fn segments(wasm: &[u8]) -> Vec<Vec<u8>> {
+            walrus::Module::from_buffer(wasm)
+                .expect("parse")
+                .data
+                .iter()
+                .map(|data: &walrus::Data| data.value.clone())
+                .collect()
+        }
+        let path: std::path::PathBuf = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../corpus/wasm/obf/real/decrypt_stub.obf.wat");
+        let text: String = std::fs::read_to_string(&path).expect("read decrypt_stub.obf.wat");
+        let bytes: Vec<u8> = assemble(&text);
+        let recovered: RecoveredModule = recover_module(&bytes).expect("recover");
+        assert_eq!(segments(&recovered.bytes), segments(&bytes));
     }
 
     #[test]
