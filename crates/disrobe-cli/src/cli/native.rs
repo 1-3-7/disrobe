@@ -4505,6 +4505,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_arch = "x86_64")]
     fn find_c_compiler() -> Option<String> {
         for c in ["clang", "gcc", "cc"] {
             if std::process::Command::new(c)
