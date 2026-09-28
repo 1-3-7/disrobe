@@ -105,10 +105,10 @@ fn round_trip(compressor: &str, method: NsisCompression, solid: bool) {
             .iter()
             .find(|f| f.name.ends_with(name))
             .unwrap_or_else(|| panic!("missing entry {name} in {:?}", archive.files));
-        let recovered: Vec<u8> = match &solid_stream {
-            Some(stream) => slice_solid_file(stream, entry, u64::MAX).expect("slice solid"),
-            None => decompress_file(&exe, &archive, entry, u64::MAX).expect("decompress file"),
-        };
+        let recovered: Vec<u8> = solid_stream.as_ref().map_or_else(
+            || decompress_file(&exe, &archive, entry, u64::MAX).expect("decompress file"),
+            |stream: &Vec<u8>| slice_solid_file(stream, entry, u64::MAX).expect("slice solid"),
+        );
         assert_eq!(&recovered, body, "byte-exact mismatch for {name}");
     }
 }
