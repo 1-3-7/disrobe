@@ -1423,12 +1423,12 @@ jobs:
               exit 1
             fi
           done
-      - name: the wasm decompiler tree is absent from the slim binary
+      - name: the optional language, javascript and wasm trees are absent from the slim binary
         shell: bash
         run: |
           set -euo pipefail
           tree="$(cargo tree -p disrobe-cli --no-default-features -e normal --prefix none | sort -u)"
-          for crate in walrus wasm-tools wasmtime tokio axum tonic tower-http tokio-util tokio-stream reqwest hyper rustls rmcp keyring; do
+          for crate in walrus wasm-tools wasmtime tokio axum tonic tower-http tokio-util tokio-stream reqwest hyper rustls rmcp keyring boa_engine oxc_parser disrobe-pass-js-deob disrobe-pass-jvm disrobe-pass-dotnet disrobe-pass-ruby disrobe-pass-lua disrobe-pass-beam disrobe-pass-as3 disrobe-pass-wasm-deob; do
             if printf '%s\n' "$tree" | grep -qE "(^| )${crate} v[0-9]"; then
               echo "structural gate failed: ${crate} is in the slim disrobe-cli dependency tree" >&2
               exit 1
