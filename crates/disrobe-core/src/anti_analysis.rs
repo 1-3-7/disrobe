@@ -1261,6 +1261,12 @@ struct CodeLayout {
 }
 
 const MAX_PARSED_SECTIONS: usize = 96;
+const PE_MACHINE_I386: u16 = 0x014C;
+const PE_MACHINE_AMD64: u16 = 0x8664;
+const ELF_MACHINE_386: u16 = 3;
+const ELF_MACHINE_X86_64: u16 = 62;
+const MACHO_CPU_X86: u32 = 7;
+const MACHO_CPU_X86_64: u32 = 0x0100_0007;
 const MAX_MACHO_LOAD_CMDS: usize = 4096;
 const CODE_SCAN_BUDGET: usize = 16 * 1024 * 1024;
 const CODE_REGION_MAX_ENTROPY_BITS: f64 = 7.2;
@@ -1345,6 +1351,12 @@ fn pe_code_layout(bytes: &[u8]) -> CodeLayout {
     let Some(coff): Option<FileOffset> = field_at(lfanew, 4) else {
         return layout;
     };
+    if !matches!(
+        read_u16(bytes, coff, true),
+        Some(PE_MACHINE_I386 | PE_MACHINE_AMD64)
+    ) {
+        return layout;
+    }
     let Some(num_sections): Option<u16> =
         field_at(coff, 2).and_then(|at: FileOffset| read_u16(bytes, at, true))
     else {
@@ -1413,6 +1425,12 @@ fn elf_code_layout(bytes: &[u8]) -> CodeLayout {
         _ => return layout,
     };
     let le: bool = !matches!(bytes.get(5), Some(2));
+    if !matches!(
+        read_u16(bytes, FileOffset::new(0x12), le),
+        Some(ELF_MACHINE_386 | ELF_MACHINE_X86_64)
+    ) {
+        return layout;
+    }
     layout.bitness = Some(if is64 {
         CodeBitness::Bits64
     } else {
@@ -1522,6 +1540,12 @@ fn macho_code_layout(bytes: &[u8]) -> CodeLayout {
         0xCFFA_EDFE => (false, true),
         _ => return layout,
     };
+    if !matches!(
+        read_u32(bytes, FileOffset::new(4), le),
+        Some(MACHO_CPU_X86 | MACHO_CPU_X86_64)
+    ) {
+        return layout;
+    }
     layout.bitness = Some(if is64 {
         CodeBitness::Bits64
     } else {
@@ -2611,6 +2635,7 @@ mod tests {
         out[..4].copy_from_slice(b"\x7fELF");
         out[4] = 2;
         out[5] = 1;
+        out[0x12..0x14].copy_from_slice(&ELF_MACHINE_X86_64.to_le_bytes());
         out[0x28..0x30].copy_from_slice(&shoff.to_le_bytes());
         out[0x3A..0x3C].copy_from_slice(&shentsize.to_le_bytes());
         out[0x3C..0x3E].copy_from_slice(&shnum.to_le_bytes());
@@ -2624,6 +2649,9 @@ mod tests {
         let at: usize = lfanew as usize;
         if let Some(slot) = out.get_mut(at..at + 4) {
             slot.copy_from_slice(b"PE\0\0");
+        }
+        if let Some(slot) = out.get_mut(at + 4..at + 6) {
+            slot.copy_from_slice(&PE_MACHINE_AMD64.to_le_bytes());
         }
         if let Some(slot) = out.get_mut(at + 6..at + 8) {
             slot.copy_from_slice(&num_sections.to_le_bytes());
@@ -2640,11 +2668,26 @@ mod tests {
     fn macho64_header(ncmds: u32, cmdsize: u32, nsects: u32) -> Vec<u8> {
         let mut out: Vec<u8> = vec![0u8; 4096];
         out[..4].copy_from_slice(&0xFEED_FACFu32.to_le_bytes());
+        out[4..8].copy_from_slice(&MACHO_CPU_X86_64.to_le_bytes());
         out[16..20].copy_from_slice(&ncmds.to_le_bytes());
         out[32..36].copy_from_slice(&0x19u32.to_le_bytes());
         out[36..40].copy_from_slice(&cmdsize.to_le_bytes());
         out[96..100].copy_from_slice(&nsects.to_le_bytes());
         out
+    }
+
+    #[test]
+    fn non_x86_images_are_not_decoded_as_x86_code() {
+        let mut arm64_elf: Vec<u8> = elf64_header(0, 0, 0);
+        arm64_elf[0x12..0x14].copy_from_slice(&183u16.to_le_bytes());
+        assert!(elf_code_layout(&arm64_elf).regions.is_empty());
+        assert_eq!(elf_code_layout(&arm64_elf).bitness, None);
+        let mut arm64_pe: Vec<u8> = pe_header(0x80, 0xF0, 1);
+        arm64_pe[0x84..0x86].copy_from_slice(&0xAA64u16.to_le_bytes());
+        assert!(pe_code_layout(&arm64_pe).regions.is_empty());
+        let mut arm64_macho: Vec<u8> = macho64_header(1, 72, 1);
+        arm64_macho[4..8].copy_from_slice(&0x0100_000Cu32.to_le_bytes());
+        assert!(macho_code_layout(&arm64_macho).regions.is_empty());
     }
 
     #[test]
