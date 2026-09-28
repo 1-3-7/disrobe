@@ -178,6 +178,36 @@ fn global_pool_const_supplies_runtime_identifiers_and_consumes_fully() {
 }
 
 #[test]
+fn an_unusable_c_source_keeps_the_decoded_constants_as_a_note() {
+    use disrobe_pass_nuitka::decompile_build_dir;
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("nuitka-bad-c-source").expect("scratch dir");
+    for name in ["__constants.const", "module.hello.const"] {
+        std::fs::copy(
+            fixture("module/hello.build").join(name),
+            scratch.path().join(name),
+        )
+        .expect("copy build-dir constants");
+    }
+    std::fs::write(
+        scratch.path().join("module.hello.c"),
+        b"PyObject *module_\xff\xfe;\n",
+    )
+    .expect("write an invalid c source");
+    let d: disrobe_pass_nuitka::NuitkaDecompilation =
+        decompile_build_dir(scratch.path()).expect("a bad c source must not abort the decompile");
+    assert!(d.constants.pools.contains_key("module.hello.const"));
+    assert!(d.surface.is_none());
+    assert!(
+        d.notes
+            .iter()
+            .any(|note: &String| note.starts_with("module.hello.c not used")),
+        "{:?}",
+        d.notes
+    );
+}
+
+#[test]
 fn decompile_build_dir_end_to_end() {
     use disrobe_pass_nuitka::{VersionConfidence, decompile_build_dir};
     let d: disrobe_pass_nuitka::NuitkaDecompilation =

@@ -120,7 +120,11 @@ fn parse_module_name(source: &str) -> Option<String> {
         let Some(name): Option<&str> = body.strip_suffix(';') else {
             continue;
         };
-        if !name.is_empty() && name.chars().all(|c: char| c.is_alphanumeric() || c == '_') {
+        if !name.is_empty()
+            && name
+                .chars()
+                .all(|c: char| c.is_alphanumeric() || c == '_' || c == '$')
+        {
             return Some(name.to_owned());
         }
     }
@@ -2303,6 +2307,15 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::*;
+
+    #[test]
+    fn a_package_module_name_keeps_its_dollar_separator() {
+        assert_eq!(
+            parse_module_name("static int x;\nPyObject *module_pkg$sub;\n"),
+            Some("pkg$sub".to_owned())
+        );
+        assert_eq!(parse_module_name("PyObject *module_bad-name;\n"), None);
+    }
 
     const C_SRC: &str =
         include_str!("../../../corpus/python/nuitka/module/hello.build/module.hello.c");

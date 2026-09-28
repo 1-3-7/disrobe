@@ -219,7 +219,7 @@ fn decompile_build_dir_with_binary(
     }
 
     let surface: Option<SurfaceModule> =
-        build_dir_surface(build_dir, &constants, python_abi, &mut notes)?;
+        build_dir_surface(build_dir, &constants, python_abi, &mut notes);
 
     Ok(NuitkaDecompilation {
         schema: SCHEMA.to_owned(),
@@ -285,30 +285,50 @@ fn build_dir_surface(
     constants: &ConstantsTable,
     python_abi: Option<(u8, u8)>,
     notes: &mut Vec<String>,
-) -> Result<Option<SurfaceModule>> {
+) -> Option<SurfaceModule> {
     let Some((const_file, primary_blob)): Option<(&String, String)> =
         primary_module_blob(constants)
     else {
         notes.push("no primary module .const pool: surface unavailable".to_owned());
-        return Ok(None);
+        return None;
     };
     let c_path: std::path::PathBuf = build_dir.join(format!("module.{primary_blob}.c"));
-    let Some(bytes): Option<Vec<u8>> = read_c_source(&c_path)? else {
-        notes.push(format!(
-            "module.{primary_blob}.c absent: surface limited to names-only"
-        ));
+    let Some(pool): Option<&ConstantsPool> = constants.pools.get(const_file) else {
+        notes.push("primary module pool vanished before surface build".to_owned());
+        return None;
+    };
+    let built: Result<Option<SurfaceModule>> = surface_from_c_source(&c_path, pool, python_abi);
+    match built {
+        Ok(Some(surface)) => {
+            notes.extend(surface.notes.iter().cloned());
+            Some(surface)
+        }
+        Ok(None) => {
+            notes.push(format!(
+                "module.{primary_blob}.c absent: surface limited to names-only"
+            ));
+            None
+        }
+        Err(error) => {
+            notes.push(format!(
+                "module.{primary_blob}.c not used: {error}; the decoded constants are kept"
+            ));
+            None
+        }
+    }
+}
+
+fn surface_from_c_source(
+    c_path: &Path,
+    pool: &ConstantsPool,
+    python_abi: Option<(u8, u8)>,
+) -> Result<Option<SurfaceModule>> {
+    let Some(bytes): Option<Vec<u8>> = read_c_source(c_path)? else {
         return Ok(None);
     };
     let text: &str = std::str::from_utf8(&bytes).map_err(Error::CSourceInvalidUtf8)?;
     let cmod: CModuleStructure = parse_c_module_with_optional_python_abi(text, python_abi)?;
-    let Some(pool): Option<&ConstantsPool> = constants.pools.get(const_file) else {
-        notes.push("primary module pool vanished before surface build".to_owned());
-        return Ok(None);
-    };
-    let surface: SurfaceModule =
-        build_surface_with_optional_python_abi(&cmod, pool, Some(text), python_abi)?;
-    notes.extend(surface.notes.iter().cloned());
-    Ok(Some(surface))
+    build_surface_with_optional_python_abi(&cmod, pool, Some(text), python_abi).map(Some)
 }
 
 fn primary_module_blob(constants: &ConstantsTable) -> Option<(&String, String)> {
