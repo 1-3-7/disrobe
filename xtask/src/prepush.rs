@@ -46,7 +46,7 @@ struct ScopedTestCommands {
     selected_crates: usize,
 }
 
-pub(crate) fn run(root: &Path, full: bool) -> Result<()> {
+pub(crate) fn run(root: &Path, full: bool, crate_tests: bool) -> Result<()> {
     let scope: Scope = compute_scope(root, full)?;
     match &scope {
         Scope::Skip => {
@@ -73,7 +73,7 @@ pub(crate) fn run(root: &Path, full: bool) -> Result<()> {
         Ok(GateOutcome::Ran)
     })?;
     total += gate("clippy", || gate_clippy(root, &scope))?;
-    total += gate("test", || gate_test(root, &scope))?;
+    total += gate("test", || gate_test(root, &scope, crate_tests))?;
     println!(
         "xtask prepush: all gates passed in {:.1}s",
         total.as_secs_f64()
@@ -207,9 +207,9 @@ fn is_shared_build_input(path: &Utf8PathBuf) -> bool {
     ) || path.starts_with(".cargo")
 }
 
-fn gate_test(root: &Path, scope: &Scope) -> Result<GateOutcome> {
+fn gate_test(root: &Path, scope: &Scope, crate_tests: bool) -> Result<GateOutcome> {
     let members: Vec<CrateDir> = crate_dirs(root)?;
-    let plan: BTreeMap<String, TestTargets> = match scope {
+    let mut plan: BTreeMap<String, TestTargets> = match scope {
         Scope::All => members
             .iter()
             .map(|member: &CrateDir| (member.name.clone(), TestTargets::Crate))
@@ -217,6 +217,27 @@ fn gate_test(root: &Path, scope: &Scope) -> Result<GateOutcome> {
         Scope::Changed(paths) => test_targets(root, &members, paths)?,
         Scope::Skip => return Ok(GateOutcome::Skipped("no push content".to_owned())),
     };
+    if !crate_tests {
+        let swept: Vec<String> = plan
+            .iter()
+            .filter(|(_, targets): &(&String, &TestTargets)| **targets == TestTargets::Crate)
+            .map(|(name, _): (&String, &TestTargets)| name.clone())
+            .collect();
+        if !swept.is_empty() {
+            println!(
+                "    whole-crate test sweeps for {} crate(s) are left to the push CI run; pass \
+                 --crate-tests to run them here: {}",
+                swept.len(),
+                swept.join(", ")
+            );
+        }
+        plan.retain(|_, targets: &mut TestTargets| *targets != TestTargets::Crate);
+        if plan.is_empty() {
+            return Ok(GateOutcome::Skipped(
+                "only whole-crate sweeps were selected, and the push CI run covers them".to_owned(),
+            ));
+        }
+    }
     let caller_env: Vec<(&str, OsString)> = if plan.keys().any(|name: &String| name != SELF_CRATE) {
         caller_binary_env(root)?
     } else {
