@@ -835,7 +835,13 @@ fn r2r_edgecases_dll_report_inspectable() {
     assert_eq!(header.minor_version, 1);
     assert_eq!(header.number_of_sections, 15);
     assert!(report.present);
-    assert!(!report.composite_image);
+    assert!(!report.component_of_composite);
+    assert!(
+        !report
+            .flag_names
+            .iter()
+            .any(|name: &String| name == "component")
+    );
 }
 
 #[test]

@@ -50,8 +50,8 @@ pub struct R2rReport {
     pub header: Option<R2rHeader>,
     pub sections: Vec<R2rSection>,
     pub runtime_functions: R2rRuntimeFunctions,
-    pub crossgen2_native_aot: bool,
-    pub composite_image: bool,
+    pub flag_names: Vec<String>,
+    pub component_of_composite: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -209,15 +209,13 @@ pub fn detect(image: &[u8], pe: &PeImage, clr: &ClrHeader) -> Result<R2rReport> 
     }
     let (header, sections, runtime_functions): (R2rHeader, Vec<R2rSection>, R2rRuntimeFunctions) =
         parse(image, pe, clr)?;
-    let composite_image: bool = (header.flags & 0x0000_0001) != 0;
-    let crossgen2_native_aot: bool = (header.flags & 0x0000_0080) != 0;
     Ok(R2rReport {
         present: true,
         header: Some(header),
         sections,
         runtime_functions,
-        crossgen2_native_aot,
-        composite_image,
+        flag_names: flag_names(header.flags),
+        component_of_composite: header.flags & R2R_FLAG_COMPONENT != 0,
     })
 }
 
@@ -227,9 +225,42 @@ const fn absent_report() -> R2rReport {
         header: None,
         sections: Vec::new(),
         runtime_functions: R2rRuntimeFunctions::Absent,
-        crossgen2_native_aot: false,
-        composite_image: false,
+        flag_names: Vec::new(),
+        component_of_composite: false,
     }
+}
+
+const R2R_FLAG_COMPONENT: u32 = 0x0000_0020;
+
+const R2R_FLAGS: [(u32, &str); 13] = [
+    (0x0000_0001, "platform_neutral_source"),
+    (0x0000_0002, "skip_type_validation"),
+    (0x0000_0004, "partial"),
+    (0x0000_0008, "nonshared_pinvoke_stubs"),
+    (0x0000_0010, "embedded_msil"),
+    (R2R_FLAG_COMPONENT, "component"),
+    (0x0000_0040, "multimodule_version_bubble"),
+    (0x0000_0080, "unrelated_r2r_code"),
+    (0x0000_0100, "platform_native_image"),
+    (0x0000_0200, "stripped_il_bodies"),
+    (0x0000_0400, "stripped_inlining_info"),
+    (0x0000_0800, "stripped_debug_info"),
+    (0x0000_1000, "verify_gc_mode_transitions"),
+];
+
+fn flag_names(flags: u32) -> Vec<String> {
+    let known: u32 = R2R_FLAGS
+        .iter()
+        .fold(0, |mask: u32, (bit, _): &(u32, &str)| mask | bit);
+    let mut names: Vec<String> = R2R_FLAGS
+        .iter()
+        .filter(|(bit, _): &&(u32, &str)| flags & bit != 0)
+        .map(|(_, name): &(u32, &str)| (*name).to_owned())
+        .collect();
+    if flags & !known != 0 {
+        names.push(format!("unknown_0x{:08x}", flags & !known));
+    }
+    names
 }
 
 pub fn parse_header(image: &[u8], pe: &PeImage, clr: &ClrHeader) -> Result<R2rHeader> {
@@ -348,7 +379,7 @@ fn parse(
         .iter()
         .find(|section: &&R2rSection| section.section_type == 103);
     if let Some(section) = method_def_section {
-        if major_version == 10 && minor_version == 1 && flags & 0x0000_0001 == 0 {
+        if major_version == 10 && minor_version == 1 && flags & R2R_FLAG_COMPONENT == 0 {
             let parsed: ParsedMethodDefJoin = parse_method_def_entry_points(
                 image,
                 pe,
@@ -1702,6 +1733,27 @@ fn section_name(section_type: u32) -> String {
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
+    #[test]
+    fn header_flags_are_named_as_the_runtime_defines_them() {
+        assert_eq!(super::flag_names(0), Vec::<String>::new());
+        assert_eq!(
+            super::flag_names(0x1),
+            vec!["platform_neutral_source".to_owned()]
+        );
+        assert_eq!(
+            super::flag_names(0x80),
+            vec!["unrelated_r2r_code".to_owned()]
+        );
+        assert_eq!(
+            super::flag_names(0x21),
+            vec!["platform_neutral_source".to_owned(), "component".to_owned()]
+        );
+        assert_eq!(
+            super::flag_names(0x0001_0000),
+            vec!["unknown_0x00010000".to_owned()]
+        );
+    }
+
     use crate::pe::{PeBitness, SectionHeader};
 
     #[test]
