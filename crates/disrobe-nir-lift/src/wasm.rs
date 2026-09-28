@@ -107,13 +107,16 @@ fn lift_body(
     let is_export: bool = sig.is_some_and(|s: &FunctionSig| s.exported);
 
     let operators: Vec<(Operator<'_>, usize)> = collect_operators(body)?;
-    let control_targets: BTreeMap<usize, u64> = control_targets(&operators, base);
+    let control_targets: BTreeMap<usize, Vec<u64>> = control_targets(&operators, base);
     let byte_arith: Vec<bool> = byte_arith_flags(&operators);
 
     let mut instructions: Vec<NirInstr> = Vec::with_capacity(operators.len());
     for (ordinal, (op, _byte_offset)) in operators.iter().enumerate() {
         let address: u64 = base.saturating_add(ordinal as u64);
-        let nir_op: NirOp = classify_op(op, control_targets.get(&ordinal).copied());
+        let nir_op: NirOp = classify_op(
+            op,
+            control_targets.get(&ordinal).map_or(&[][..], Vec::as_slice),
+        );
         let (reads_memory, writes_memory, mem_byte): (bool, bool, bool) = memory_facets(op);
         let is_byte_arith: bool = byte_arith.get(ordinal).is_some_and(|value: &bool| *value);
         let mut operand_list: Vec<String> = operands(op, signatures);
@@ -198,7 +201,7 @@ struct ControlFrame {
     start: usize,
 }
 
-fn control_targets(operators: &[(Operator<'_>, usize)], base: u64) -> BTreeMap<usize, u64> {
+fn control_targets(operators: &[(Operator<'_>, usize)], base: u64) -> BTreeMap<usize, Vec<u64>> {
     let mut open: Vec<usize> = Vec::new();
     let mut end_of: BTreeMap<usize, usize> = BTreeMap::new();
     let mut else_of: BTreeMap<usize, usize> = BTreeMap::new();
@@ -223,7 +226,7 @@ fn control_targets(operators: &[(Operator<'_>, usize)], base: u64) -> BTreeMap<u
     }
     let address = |ordinal: usize| -> u64 { base.saturating_add(ordinal as u64) };
     let mut frames: Vec<ControlFrame> = Vec::new();
-    let mut targets: BTreeMap<usize, u64> = BTreeMap::new();
+    let mut targets: BTreeMap<usize, Vec<u64>> = BTreeMap::new();
     for (ordinal, (op, _)) in operators.iter().enumerate() {
         let label = |relative_depth: u32, frames: &[ControlFrame]| -> Option<u64> {
             let index: usize = frames
@@ -252,7 +255,7 @@ fn control_targets(operators: &[(Operator<'_>, usize)], base: u64) -> BTreeMap<u
                     .map(|else_at: &usize| else_at.saturating_add(1))
                     .or_else(|| end_of.get(&ordinal).copied());
                 if let Some(target) = false_edge {
-                    targets.insert(ordinal, address(target));
+                    targets.insert(ordinal, vec![address(target)]);
                 }
                 frames.push(ControlFrame {
                     is_loop: false,
@@ -263,7 +266,7 @@ fn control_targets(operators: &[(Operator<'_>, usize)], base: u64) -> BTreeMap<u
                 if let Some(frame) = frames.last()
                     && let Some(end) = end_of.get(&frame.start)
                 {
-                    targets.insert(ordinal, address(*end));
+                    targets.insert(ordinal, vec![address(*end)]);
                 }
             }
             Operator::End => {
@@ -271,12 +274,19 @@ fn control_targets(operators: &[(Operator<'_>, usize)], base: u64) -> BTreeMap<u
             }
             Operator::Br { relative_depth } | Operator::BrIf { relative_depth } => {
                 if let Some(target) = label(*relative_depth, &frames) {
-                    targets.insert(ordinal, target);
+                    targets.insert(ordinal, vec![target]);
                 }
             }
             Operator::BrTable { targets: table } => {
-                if let Some(target) = label(table.default(), &frames) {
-                    targets.insert(ordinal, target);
+                let resolved: Option<Vec<u64>> = table
+                    .targets()
+                    .map(|depth: wasmparser::Result<u32>| {
+                        depth.ok().and_then(|depth: u32| label(depth, &frames))
+                    })
+                    .chain(std::iter::once(label(table.default(), &frames)))
+                    .collect();
+                if let Some(every) = resolved {
+                    targets.insert(ordinal, every);
                 }
             }
             _ => {}
@@ -285,7 +295,8 @@ fn control_targets(operators: &[(Operator<'_>, usize)], base: u64) -> BTreeMap<u
     targets
 }
 
-fn classify_op(op: &Operator<'_>, control_target: Option<u64>) -> NirOp {
+fn classify_op(op: &Operator<'_>, control_targets: &[u64]) -> NirOp {
+    let control_target: Option<u64> = control_targets.first().copied();
     match op {
         Operator::Call { function_index } | Operator::ReturnCall { function_index } => {
             NirOp::Call {
@@ -299,6 +310,9 @@ fn classify_op(op: &Operator<'_>, control_target: Option<u64>) -> NirOp {
         Operator::Br { .. } | Operator::Else => NirOp::Branch {
             target: control_target,
         },
+        Operator::BrTable { .. } if !control_targets.is_empty() => {
+            NirOp::switch(control_targets.to_vec())
+        }
         Operator::BrIf { .. } | Operator::BrTable { .. } | Operator::If { .. } => {
             NirOp::CondBranch {
                 target: control_target,
@@ -576,6 +590,24 @@ mod tests {
                 target: Some(end_of_if)
             }
         );
+    }
+
+    #[test]
+    fn br_table_reaches_every_label_it_names() {
+        let ops: Vec<(String, NirOp, u64)> = ops_of(
+            "(module (func (param i32) block block block local.get 0 br_table 0 1 2 end nop end nop end))",
+        );
+        let ends: Vec<u64> = ops
+            .iter()
+            .filter(|(mnemonic, _, _): &&(String, NirOp, u64)| mnemonic == "end")
+            .map(|(_, _, address): &(String, NirOp, u64)| *address)
+            .collect();
+        let br_table: &NirOp = &ops
+            .iter()
+            .find(|(mnemonic, _, _): &&(String, NirOp, u64)| mnemonic == "br_table")
+            .expect("br_table")
+            .1;
+        assert_eq!(br_table, &NirOp::switch(vec![ends[0], ends[1], ends[2]]));
     }
 
     fn leb_u32(mut value: u32) -> Vec<u8> {
