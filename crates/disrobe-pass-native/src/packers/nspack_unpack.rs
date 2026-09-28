@@ -239,7 +239,12 @@ fn unpack_nspack_emulated_with_baseline_inner(
     let mut probs: Vec<u16> = vec![RANGE_CODER_INIT_PROB; table_words];
     let decode_result: Result<usize> =
         nspack_decode_lossy(compressed, &mut output, &mut probs, tre, allocsz, firstbyte);
-    let _decoded_bytes: usize = decode_result.unwrap_or(0);
+    let decoded_bytes: usize = decode_result.unwrap_or(0);
+    if decoded_bytes < declared_dsize {
+        return Err(Error::SignatureDb(format!(
+            "NSPack: the stream decoded {decoded_bytes} of {declared_dsize} bytes; a truncated or corrupt stream is refused instead of publishing a zero-filled image"
+        )));
+    }
     if apply_fixup {
         apply_e8e9_call_jmp_fixup(&mut output);
     }
@@ -1735,6 +1740,26 @@ fn recover_resource_table(nsp1_raw: &[u8]) -> Vec<RecoveredResource> {
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stream_that_ends_before_dsize_is_refused() {
+        let path: std::path::PathBuf = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../corpus/native/packers/nspack/hash.packed.nspack.exe");
+        let mut packed: Vec<u8> = std::fs::read(&path).expect("read the NSPack fixture");
+        assert!(
+            unpack_nspack_emulated(&packed).is_ok(),
+            "the intact stream decodes"
+        );
+        let layout: NspackLayout<'_> = parse_nspack_layout(&packed).expect("layout");
+        let stream: NspackStream =
+            locate_compressed_stream(&packed, &layout).expect("stream header");
+        let field: usize = stream.start_of_stuff + NSPACK_HEADER_SSIZE_OFFSET;
+        packed[field..field + 4].copy_from_slice(&0x100u32.to_le_bytes());
+        let error: String = unpack_nspack_emulated(&packed)
+            .expect_err("a truncated stream is refused")
+            .to_string();
+        assert!(error.contains("decoded"), "{error}");
+    }
 
     fn build_minimal_nspack_pe() -> Vec<u8> {
         let mut buf: Vec<u8> = vec![0u8; 0x400];
