@@ -944,7 +944,7 @@ fn const_value(
     LiftOutcome::None
 }
 
-fn double_literal(bits: u64) -> String {
+pub(crate) fn double_literal(bits: u64) -> String {
     let value: f64 = f64::from_bits(bits);
     if value.is_finite() {
         format!("{value:?}")
@@ -953,7 +953,7 @@ fn double_literal(bits: u64) -> String {
     }
 }
 
-fn float_literal(bits: u32) -> String {
+pub(crate) fn float_literal(bits: u32) -> String {
     let value: f32 = f32::from_bits(bits);
     if value.is_finite() {
         format!("{value:?}f")
@@ -1206,7 +1206,7 @@ fn array_data_elements(
         .collect()
 }
 
-fn char_element(unit: u16) -> String {
+pub(crate) fn char_element(unit: u16) -> String {
     match u8::try_from(unit) {
         Ok(byte) if (b' '..=b'~').contains(&byte) && !matches!(byte, b'\'' | b'\\') => {
             format!("'{}'", char::from(byte))

@@ -175,6 +175,12 @@ fn decompile_dex_scoped(dex: &DexFile, bytes: &[u8]) -> DecompiledDex {
         member_owner.insert(child.clone(), parent.clone());
     }
 
+    let mut static_field_counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for field in code_report.fields() {
+        if field.is_static {
+            *static_field_counts.entry(field.class.as_str()).or_default() += 1;
+        }
+    }
     for (class_descriptor, methods) in &by_class {
         if desugar.interfaces.suppresses_class(class_descriptor)
             || desugar.functionals.suppresses_class(class_descriptor)
@@ -186,6 +192,15 @@ fn decompile_dex_scoped(dex: &DexFile, bytes: &[u8]) -> DecompiledDex {
         let members: ClassMembers<'_> = ClassMembers {
             methods,
             fields: code_report.fields(),
+            static_values: class_static_values(
+                dex,
+                bytes,
+                class_descriptor,
+                static_field_counts
+                    .get(class_descriptor.as_str())
+                    .copied()
+                    .unwrap_or(0),
+            ),
             decoded: &items,
             declaration: declarations.get(class_descriptor),
         };
@@ -744,12 +759,210 @@ fn continuation_impl_ancestor(dex: &DexFile, class_descriptor: &str) -> bool {
     false
 }
 
-fn field_declarations(fields: &[crate::dex::DexFieldDecl], class_descriptor: &str) -> String {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StaticValue {
+    Integral { value_type: u8, value: i64 },
+    Float(u32),
+    Double(u64),
+    String(u32),
+    Null,
+    Boolean(bool),
+    Unrendered(&'static str),
+}
+
+type StaticValues = Result<Vec<StaticValue>, &'static str>;
+
+const VALUE_BYTE: u8 = 0x00;
+const VALUE_SHORT: u8 = 0x02;
+const VALUE_CHAR: u8 = 0x03;
+const VALUE_INT: u8 = 0x04;
+const VALUE_LONG: u8 = 0x06;
+
+fn encoded_bits(bytes: &[u8], cursor: &mut usize, size: usize) -> Result<u64, &'static str> {
+    let end: usize = cursor
+        .checked_add(size)
+        .ok_or("static value offset overflows")?;
+    let value_bytes: &[u8] = bytes.get(*cursor..end).ok_or("static value is truncated")?;
+    let mut raw: [u8; 8] = [0; 8];
+    raw.get_mut(..size)
+        .ok_or("static value is wider than eight bytes")?
+        .copy_from_slice(value_bytes);
+    *cursor = end;
+    Ok(u64::from_le_bytes(raw))
+}
+
+fn encoded_static_value(bytes: &[u8], cursor: &mut usize) -> Result<StaticValue, &'static str> {
+    let header: u8 = *bytes.get(*cursor).ok_or("static value is truncated")?;
+    *cursor = cursor
+        .checked_add(1)
+        .ok_or("static value offset overflows")?;
+    let value_type: u8 = header & 0x1f;
+    let value_arg: u8 = header >> 5;
+    let size: usize = usize::from(value_arg) + 1;
+    let widest: u8 = match value_type {
+        VALUE_BYTE => 0,
+        VALUE_SHORT | VALUE_CHAR => 1,
+        VALUE_INT | 0x10 | 0x15..=0x1b => 3,
+        VALUE_LONG | 0x11 => 7,
+        0x1e => {
+            return if value_arg == 0 {
+                Ok(StaticValue::Null)
+            } else {
+                Err("static null value has a payload")
+            };
+        }
+        0x1f => {
+            return match value_arg {
+                0 => Ok(StaticValue::Boolean(false)),
+                1 => Ok(StaticValue::Boolean(true)),
+                _ => Err("static boolean value is neither 0 nor 1"),
+            };
+        }
+        0x1c | 0x1d => return Err("static value is an array or annotation"),
+        _ => return Err("static value type is invalid"),
+    };
+    if value_arg > widest {
+        return Err("static value is wider than its type");
+    }
+    let raw: u64 = encoded_bits(bytes, cursor, size)?;
+    let shift: u32 = u32::try_from(64 - size * 8).map_err(|_| "static value width overflows")?;
+    let value: StaticValue = match value_type {
+        VALUE_BYTE | VALUE_SHORT | VALUE_INT | VALUE_LONG => StaticValue::Integral {
+            value_type,
+            value: ((raw << shift) as i64) >> shift,
+        },
+        VALUE_CHAR => StaticValue::Integral {
+            value_type,
+            value: i64::from(u16::try_from(raw).map_err(|_| "static char value is too wide")?),
+        },
+        0x10 => StaticValue::Float(
+            u32::try_from(raw << ((3 - u32::from(value_arg)) * 8))
+                .map_err(|_| "static float value is too wide")?,
+        ),
+        0x11 => StaticValue::Double(raw << ((7 - u32::from(value_arg)) * 8)),
+        0x17 => {
+            StaticValue::String(u32::try_from(raw).map_err(|_| "static string index is too wide")?)
+        }
+        0x18 => StaticValue::Unrendered("class constant"),
+        0x1b => StaticValue::Unrendered("enum constant"),
+        _ => StaticValue::Unrendered("method, field or handle constant"),
+    };
+    Ok(value)
+}
+
+fn class_static_values(
+    dex: &DexFile,
+    bytes: &[u8],
+    class_descriptor: &str,
+    static_fields: usize,
+) -> StaticValues {
+    let Some(class_index): Option<usize> = dex
+        .class_descriptors
+        .iter()
+        .position(|descriptor: &String| descriptor == class_descriptor)
+    else {
+        return Ok(Vec::new());
+    };
+    let offset: usize = class_index
+        .checked_mul(32)
+        .and_then(|relative: usize| (dex.header.class_defs_off as usize).checked_add(relative))
+        .and_then(|class_offset: usize| class_offset.checked_add(28))
+        .and_then(|field: usize| dex_u32(bytes, field))
+        .ok_or("class definition is truncated")?;
+    if offset == 0 {
+        return Ok(Vec::new());
+    }
+    let (count, mut cursor): (u32, usize) =
+        crate::dex::read_uleb128(bytes, offset).map_err(|_| "static value count is malformed")?;
+    let count: usize = usize::try_from(count).map_err(|_| "static value count overflows")?;
+    if count > static_fields {
+        return Err("more static values than static fields");
+    }
+    let mut values: Vec<StaticValue> = Vec::with_capacity(count);
+    for _ in 0..count {
+        values.push(encoded_static_value(bytes, &mut cursor)?);
+    }
+    Ok(values)
+}
+
+fn static_initializer(
+    dex: &DexFile,
+    type_name: &str,
+    value: StaticValue,
+) -> Result<Option<String>, &'static str> {
+    let expected: Option<u8> = match type_name {
+        "B" => Some(VALUE_BYTE),
+        "S" => Some(VALUE_SHORT),
+        "C" => Some(VALUE_CHAR),
+        "I" => Some(VALUE_INT),
+        "J" => Some(VALUE_LONG),
+        _ => None,
+    };
+    let reference: bool = type_name.starts_with('L') || type_name.starts_with('[');
+    match value {
+        StaticValue::Integral { value: 0, .. }
+        | StaticValue::Float(0)
+        | StaticValue::Double(0)
+        | StaticValue::Boolean(false)
+            if !reference =>
+        {
+            Ok(None)
+        }
+        StaticValue::Integral { value_type, value } if expected == Some(value_type) => {
+            Ok(Some(match value_type {
+                VALUE_LONG => format!("{value}L"),
+                VALUE_CHAR => crate::dalvik_lift::char_element(
+                    u16::try_from(value).map_err(|_| "char value is out of range")?,
+                ),
+                _ => value.to_string(),
+            }))
+        }
+        StaticValue::Float(bits) if type_name == "F" => {
+            Ok(Some(crate::dalvik_lift::float_literal(bits)))
+        }
+        StaticValue::Double(bits) if type_name == "D" => {
+            Ok(Some(crate::dalvik_lift::double_literal(bits)))
+        }
+        StaticValue::Boolean(true) if type_name == "Z" => Ok(Some("true".to_owned())),
+        StaticValue::Null if reference => Ok(None),
+        StaticValue::String(index) if reference => dex
+            .strings
+            .get(index as usize)
+            .map(|text: &String| Some(crate::bytecode::escape_java_string(text)))
+            .ok_or("string index is out of range"),
+        StaticValue::Unrendered(kind) => Err(kind),
+        _ => Err("value does not match the field type"),
+    }
+}
+
+fn field_declarations(
+    dex: &DexFile,
+    fields: &[crate::dex::DexFieldDecl],
+    class_descriptor: &str,
+    static_values: &StaticValues,
+) -> String {
     let mut out: String = String::new();
+    if let Err(reason) = static_values {
+        let _: std::fmt::Result = writeln!(
+            out,
+            "    // <decompile: static field values are not rendered: {reason}>"
+        );
+    }
+    let mut static_ordinal: usize = 0;
     for field in fields {
         if field.class != class_descriptor {
             continue;
         }
+        let value: Option<StaticValue> = if field.is_static {
+            static_ordinal += 1;
+            static_values
+                .as_ref()
+                .ok()
+                .and_then(|values: &Vec<StaticValue>| values.get(static_ordinal - 1))
+                .copied()
+        } else {
+            None
+        };
         let Some(rendered): Option<String> =
             descriptor::parse_field(&field.type_name).map(|ty: descriptor::JavaType| ty.render())
         else {
@@ -761,14 +974,54 @@ fn field_declarations(fields: &[crate::dex::DexFieldDecl], class_descriptor: &st
         } else {
             "public "
         };
-        let _: std::fmt::Result = writeln!(out, "    {modifier}{rendered} {name};");
+        let initializer: String = match value
+            .map(|value: StaticValue| static_initializer(dex, &field.type_name, value))
+        {
+            None | Some(Ok(None)) => String::new(),
+            Some(Ok(Some(literal))) => format!(" = {literal}"),
+            Some(Err(reason)) => {
+                let _: std::fmt::Result = writeln!(
+                    out,
+                    "    // <decompile: static value of {name} is not rendered: {reason}>"
+                );
+                String::new()
+            }
+        };
+        let _: std::fmt::Result = writeln!(out, "    {modifier}{rendered} {name}{initializer};");
     }
     out
+}
+
+fn java_static_block(text: &str) -> Option<std::borrow::Cow<'_, str>> {
+    let Some(body): Option<&str> = text
+        .strip_prefix(
+            "    static {
+",
+        )
+        .and_then(|rest: &str| rest.strip_suffix("    }"))
+    else {
+        return Some(std::borrow::Cow::Borrowed(text));
+    };
+    let body: &str = body
+        .strip_suffix(
+            "        return;
+",
+        )
+        .unwrap_or(body);
+    if body.trim().is_empty() {
+        None
+    } else {
+        Some(std::borrow::Cow::Owned(format!(
+            "    static {{
+{body}    }}"
+        )))
+    }
 }
 
 struct ClassMembers<'a> {
     methods: &'a [&'a DexMethodCode],
     fields: &'a [crate::dex::DexFieldDecl],
+    static_values: StaticValues,
     decoded: &'a [CodeItem],
     declaration: Option<&'a crate::dalvik_desugar::ClassDeclaration>,
 }
@@ -858,7 +1111,12 @@ fn render_class(
     if let Some(rec) = recovery {
         text.push_str(&recovered_strings_annotation(rec));
     }
-    text.push_str(&field_declarations(members.fields, class_descriptor));
+    text.push_str(&field_declarations(
+        dex,
+        members.fields,
+        class_descriptor,
+        &members.static_values,
+    ));
 
     let mut method_count: usize = 0;
     let mut fully_lifted: usize = 0;
@@ -967,7 +1225,9 @@ fn render_class(
         if inlined_helpers.contains(method_index) {
             continue;
         }
-        let _ = writeln!(text, "{}", rendered.text);
+        if let Some(member) = java_static_block(&rendered.text) {
+            let _ = writeln!(text, "{member}");
+        }
         method_count += 1;
         if rendered.fully_lifted {
             fully_lifted += 1;

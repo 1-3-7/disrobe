@@ -1,0 +1,30 @@
+schema = "disrobe.jvm.dalvik-static-values-fixture/v1"
+source = "StaticValues.java"
+source_sha256 = "938cfcf4b44cad8e639ce7315b0acb5d0f596e3b2115a65293347667faf90e8a"
+
+[javac]
+vendor = "Eclipse Temurin"
+version = "25.0.4+7-LTS"
+command = "javac -g -Xlint:-options --release 8 -d classes StaticValues.java"
+
+[d8]
+version = "9.1.31"
+url = "https://dl.google.com/dl/android/maven2/com/android/tools/r8/9.1.31/r8-9.1.31.jar"
+sha256 = "3b4de3053885da105e39c15212261d22653d6d1b5eb92323dd04ae913cc8286f"
+
+[shapes]
+values = "StaticValues: String (empty, and with non-ASCII, quote, backslash, tab and newline), int, long, char, boolean, float (including -0.0f), double, byte and short fields that D8 moves into the class definition's static values array"
+defaults = "untouched, computed and last are encoded as explicit zeros; none, nothing and log as nulls; a field left at its default keeps no initialiser"
+clinit = "StaticValues.<clinit> still runs code that reads the static values, writes other fields, and rewrites n and trace"
+constants = "StaticValues$Constants has only constant initialisers, so D8 leaves its <clinit> as a lone return-void and its trailing default boolean outside the static values array"
+notes = "The release build keeps every field; javac inlines the constant K into main and <clinit>, so only the field read in recompiled source observes its static value."
+
+[[artifact]]
+path = "StaticValues-release-min21.dex"
+format = "DEX 035"
+min_api = 21
+mode = "release"
+tool = "D8"
+command = "java -cp r8-9.1.31.jar com.android.tools.r8.D8 --release --min-api 21 --output dex classes/StaticValues.class classes/StaticValues$Constants.class"
+sha256 = "07ef16e8cd0c3a7e3771fa4988ca12d86e28c5d29e8556a681b9f766453e8a4b"
+bytes = 3176
