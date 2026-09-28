@@ -1,6 +1,7 @@
 #![cfg(feature = "chain")]
 #![allow(clippy::module_name_repetitions)]
 use disrobe_core::Artifact;
+use disrobe_core::Capability;
 use disrobe_core::Rung;
 use disrobe_core::chain::detection::{ChildArtifact, ChildHandle, TERMINAL_HINT};
 use disrobe_core::chain::{
@@ -68,7 +69,7 @@ impl Pass for ShellPass {
     }
 
     fn output_kind(&self, output: &Artifact) -> OutputKind {
-        output_kind_of(output.envelope.as_slice())
+        output_kind_of(output)
     }
 
     fn run(&self, artifact: &Artifact) -> CoreResult<Artifact> {
@@ -84,11 +85,13 @@ impl Pass for ShellPass {
             ));
         }
         let source_text: String = recover_detected(&detection, bytes)?;
-        Ok(Artifact::new(
-            Rung::Surface,
-            source_text.into_bytes(),
-            artifact.root_hash,
-        ))
+        let mut recovered: Artifact =
+            Artifact::new(Rung::Surface, source_text.into_bytes(), artifact.root_hash);
+        recovered.capabilities.insert(Capability::produces(
+            source_language_of(detection.dialect).1,
+            SOURCE_LANGUAGE_CAPABILITY_MAJOR,
+        ));
+        Ok(recovered)
     }
 
     fn extract_children(&self, input: &Artifact) -> CoreResult<Vec<ChildArtifact>> {
@@ -97,7 +100,48 @@ impl Pass for ShellPass {
     }
 }
 
-fn output_kind_of(output: &[u8]) -> OutputKind {
+const SOURCE_LANGUAGE_CAPABILITY_MAJOR: u32 = 1;
+const CAPABILITY_POWERSHELL: &str = "shell.source.powershell";
+const CAPABILITY_BATCH: &str = "shell.source.batch";
+const CAPABILITY_VBA: &str = "shell.source.vba";
+const CAPABILITY_BASH: &str = "shell.source.bash";
+const SOURCE_LANGUAGES: [(Language, &str); 4] = [
+    (Language::PowerShell, CAPABILITY_POWERSHELL),
+    (Language::Batch, CAPABILITY_BATCH),
+    (Language::Vba, CAPABILITY_VBA),
+    (Language::Bash, CAPABILITY_BASH),
+];
+
+const fn source_language_of(dialect: Dialect) -> (Language, &'static str) {
+    match dialect {
+        Dialect::PowerShell => (Language::PowerShell, CAPABILITY_POWERSHELL),
+        Dialect::Batch => (Language::Batch, CAPABILITY_BATCH),
+        Dialect::Vba | Dialect::Vbs | Dialect::Wsh | Dialect::Xlm => {
+            (Language::Vba, CAPABILITY_VBA)
+        }
+        Dialect::Bash
+        | Dialect::Dash
+        | Dialect::Ksh
+        | Dialect::Zsh
+        | Dialect::Pdf
+        | Dialect::Unknown => (Language::Bash, CAPABILITY_BASH),
+    }
+}
+
+fn recorded_source_language(output: &Artifact) -> Option<Language> {
+    SOURCE_LANGUAGES
+        .into_iter()
+        .find(|(_, capability): &(Language, &str)| {
+            output.capabilities.contains(&Capability::produces(
+                *capability,
+                SOURCE_LANGUAGE_CAPABILITY_MAJOR,
+            ))
+        })
+        .map(|(language, _): (Language, &str)| language)
+}
+
+fn output_kind_of(artifact: &Artifact) -> OutputKind {
+    let output: &[u8] = artifact.envelope.as_slice();
     if output.starts_with(b"%PDF-") {
         return OutputKind::Report {
             format_tag: "pdf",
@@ -120,18 +164,10 @@ fn output_kind_of(output: &[u8]) -> OutputKind {
     }
     let language: Language = if output.starts_with(b"' ===== module: ") {
         Language::Vba
+    } else if let Some(recorded) = recorded_source_language(artifact) {
+        recorded
     } else {
-        match detect_shell(output).dialect {
-            Dialect::PowerShell => Language::PowerShell,
-            Dialect::Batch => Language::Batch,
-            Dialect::Vba | Dialect::Vbs | Dialect::Wsh | Dialect::Xlm => Language::Vba,
-            Dialect::Bash
-            | Dialect::Dash
-            | Dialect::Ksh
-            | Dialect::Zsh
-            | Dialect::Pdf
-            | Dialect::Unknown => Language::Bash,
-        }
+        source_language_of(detect_shell(output).dialect).0
     };
     OutputKind::Source {
         language,
@@ -241,6 +277,12 @@ fn reverse_failed(family: Family, err: &crate::error::Error) -> CoreError {
 }
 
 fn recover_nothing_wall(family: Family) -> CoreError {
+    if family == Family::Plain {
+        return CoreError::PassFailure(
+            "DR-SHELL-0928: shell.deob: no obfuscation this pass reverses was found in the script (input passed through unchanged); nothing is republished as recovered source"
+                .to_owned(),
+        );
+    }
     let (code, label): (&'static str, &'static str) =
         residual_code_for_family(family).unwrap_or(("DR-SHELL-0909", "shell"));
     CoreError::PassFailure(format!(
@@ -283,7 +325,11 @@ fn reverse_for_family(family: Family, text: &str) -> CoreResult<String> {
     };
     match family {
         Family::InvokeObfuscationToken => guard_recovered(family, text, reverse_token(text).output),
-        Family::InvokeObfuscationAst => guard_recovered(family, text, reverse_ast(text).output),
+        Family::InvokeObfuscationAst => guard_recovered(
+            family,
+            text,
+            reverse_ast(&reverse_string(text).output).output,
+        ),
         Family::InvokeObfuscationString => {
             guard_recovered(family, text, reverse_string(text).output)
         }
@@ -331,9 +377,8 @@ fn reverse_for_family(family: Family, text: &str) -> CoreResult<String> {
                 reverse_node_bash_obfuscate(text).ok_or_else(|| recover_nothing_wall(family))?;
             guard_recovered(family, text, report.output)
         }
-        Family::Plain
-        | Family::Unknown
-        | Family::BatchRandom
+        Family::Plain | Family::Unknown => guard_recovered(family, text, format_identity(text)),
+        Family::BatchRandom
         | Family::BatchSetIndirection
         | Family::VbaMacro
         | Family::VbsWshObfuscated => Ok(format_identity(text)),
@@ -1151,24 +1196,28 @@ mod tests {
         );
     }
 
+    fn kind_of_bytes(bytes: &[u8]) -> OutputKind {
+        output_kind_of(&Artifact::new(Rung::Surface, bytes.to_vec(), [0u8; 32]))
+    }
+
     #[test]
     fn output_kinds_follow_the_recovered_dialect() {
         assert!(matches!(
-            output_kind_of(b"%PDF-1.7 objects=3 xref=table recovered_by_scan=false"),
+            kind_of_bytes(b"%PDF-1.7 objects=3 xref=table recovered_by_scan=false"),
             OutputKind::Report {
                 format_tag: "pdf",
                 ..
             }
         ));
         assert!(matches!(
-            output_kind_of(b"' ===== macro sheet: Macro1 =====\nMacro1!A1\t=EXEC(\"calc\")"),
+            kind_of_bytes(b"' ===== macro sheet: Macro1 =====\nMacro1!A1\t=EXEC(\"calc\")"),
             OutputKind::Report {
                 format_tag: "xlm",
                 ..
             }
         ));
         assert!(matches!(
-            output_kind_of(b"' ===== module: Module1 =====\nSub Main()\nEnd Sub"),
+            kind_of_bytes(b"' ===== module: Module1 =====\nSub Main()\nEnd Sub"),
             OutputKind::Source {
                 language: Language::Vba,
                 ..

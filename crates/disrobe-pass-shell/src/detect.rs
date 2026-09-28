@@ -53,6 +53,7 @@ pub struct Detection {
     pub family: Family,
     pub confidence: f32,
     pub markers: Vec<String>,
+    pub obfuscation_constructs: bool,
 }
 
 const POWERSHELL_SHEBANGS: &[&str] = &["#!/usr/bin/env pwsh", "#!/usr/bin/pwsh"];
@@ -89,6 +90,55 @@ static BATCH_RANDOM: LazyLock<&'static Regex> = LazyLock::new(|| regex!(r"(?i)%r
 static BATCH_SET_INDIRECT: LazyLock<&'static Regex> =
     LazyLock::new(|| regex!(r"(?i)set\s+[A-Za-z_][A-Za-z0-9_]*="));
 
+static BATCH_ECHO_OFF_LINE: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r"(?im)^[ \t]*@echo[ \t]+o(?:ff|n)\b"));
+
+static BATCH_OBFUSCATION_CONSTRUCTS: LazyLock<[&'static Regex; 4]> = LazyLock::new(|| {
+    [
+        regex!(r"\^[a-z0-9]"),
+        regex!(r"[%!][a-z_][a-z0-9_]*:~-?\d+(?:,-?\d+)?[%!]"),
+        regex!(
+            r#"\bset\s+/a\s+"?[a-z_][a-z0-9_]*\s*=\s*"?\s*(?:0x[0-9a-f]+|\d+)\s*(?:[-+*/]|<<|>>)"#
+        ),
+        regex!(r#"\bfor\s+/f\b[^\r\n]*\bin\s*\(\s*"[!%][a-z_][a-z0-9_]*[!%]"\s*\)"#),
+    ]
+});
+
+static PS_CONCAT_INVOCATION: LazyLock<&'static Regex> = LazyLock::new(|| {
+    regex!(r#"(?i)(?:\biex|invoke-expression|[&.])\s*\(\s*\(?\s*['"][^'"\r\n]{2,}['"]\s*\+\s*['"]"#)
+});
+
+static PS_CHAR_CODE_RUN: LazyLock<&'static Regex> = LazyLock::new(|| {
+    regex!(
+        r"(?i)\[char\]\s*\d{1,3}\s*\+\s*\[char\]\s*\d{1,3}|\[char\[\]\]\s*\(\s*\d{1,3}(?:\s*,\s*\d{1,3}){3,}"
+    )
+});
+
+static PS_GET_COMMAND_CALL: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r"(?i)&\s*\(\s*(?:Get-Command|gcm)\s"));
+
+static PS_CONSTRUCTS: LazyLock<[&'static Regex; 6]> = LazyLock::new(|| {
+    [
+        regex!(r"\[[A-Za-z_][A-Za-z0-9_.]*(?:\[\])?\]::[A-Za-z_]"),
+        regex!(
+            r"(?im)(?:^|[\s(|;{=])(?:get|set|new|invoke|write|out|add|remove|start|stop|select|where|foreach|import|export|convertto|convertfrom|test)-[a-z]{2,}\b"
+        ),
+        regex!(r"(?i)\b(?:iex|invoke-expression)\b"),
+        regex!(r"(?i)\bparam\s*\(|\[cmdletbinding\s*\("),
+        regex!(r"(?im)(?:^|[\s(])-(?:join|split|replace|creplace|bxor|band|bor)\b"),
+        regex!(
+            r"(?i)\$(?:env:[a-z_]|psversiontable\b|executioncontext\b|null\b|true\b|false\b|_\.)"
+        ),
+    ]
+});
+
+const MIN_PS_CONSTRUCT_KINDS: usize = 2;
+const TEXT_PROBE_BYTES: usize = 8 * 1024;
+const BINARY_SCAN_BYTES: usize = 4 * 1024;
+const MAX_SCRIPT_SCAN_BYTES: usize = 16 * 1024 * 1024;
+const OBFUSCATED_BATCH_CONFIDENCE: f32 = 0.88;
+const UTF16LE_BOM_REENCODED_AS_UTF8: [u8; 4] = [0xC3, 0xBF, 0xC3, 0xBE];
+
 #[must_use]
 pub fn decode_script_bytes(bytes: &[u8]) -> Option<String> {
     if let Some(rest) = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
@@ -99,6 +149,11 @@ pub fn decode_script_bytes(bytes: &[u8]) -> Option<String> {
     }
     if let Some(rest) = bytes.strip_prefix(&[0xFE, 0xFF]) {
         return Some(decode_utf16(rest, u16::from_be_bytes));
+    }
+    if let Some(rest) = bytes.strip_prefix(&UTF16LE_BOM_REENCODED_AS_UTF8)
+        && reads_as_utf16le_text(rest)
+    {
+        return Some(decode_utf16(rest, u16::from_le_bytes));
     }
     reads_as_utf16le_text(bytes).then(|| decode_utf16(bytes, u16::from_le_bytes))
 }
@@ -137,48 +192,96 @@ pub fn detect(source: &[u8]) -> Detection {
             family: Family::Unknown,
             confidence: 0.0_f32,
             markers: Vec::new(),
+            obfuscation_constructs: false,
         };
     }
-    let text: std::borrow::Cow<'_, str> = String::from_utf8_lossy(source);
-    let head: &str = disrobe_core::strings::head(text.as_ref(), 4096);
+    let text_like: bool = !source[..source.len().min(TEXT_PROBE_BYTES)].contains(&0);
+    let scan_limit: usize = if text_like {
+        MAX_SCRIPT_SCAN_BYTES
+    } else {
+        BINARY_SCAN_BYTES
+    };
+    let text: std::borrow::Cow<'_, str> =
+        String::from_utf8_lossy(&source[..source.len().min(scan_limit)]);
+    let scan: &str = text.as_ref();
+    let lower: String = scan.to_ascii_lowercase();
     let mut markers: Vec<String> = Vec::new();
-    let dialect: Dialect = detect_dialect(source, head, &mut markers);
-    let family: Family = detect_family(dialect, head, &mut markers);
-    let confidence: f32 = score(dialect, family, &markers);
+    let dialect: Dialect = detect_dialect(source, scan, &lower, &mut markers);
+    let family: Family = detect_family(dialect, scan, &lower, &mut markers);
+    let obfuscation_constructs: bool = text_like && has_obfuscation_constructs(dialect, &lower);
+    let confidence: f32 = score(dialect, family, &markers, obfuscation_constructs);
     Detection {
         dialect,
         family,
         confidence,
         markers,
+        obfuscation_constructs,
     }
 }
 
-fn detect_dialect(raw: &[u8], head: &str, markers: &mut Vec<String>) -> Dialect {
+fn has_obfuscation_constructs(dialect: Dialect, lower: &str) -> bool {
+    match dialect {
+        Dialect::Batch => BATCH_OBFUSCATION_CONSTRUCTS
+            .iter()
+            .any(|construct: &&'static Regex| construct.is_match(lower)),
+        Dialect::PowerShell
+        | Dialect::Bash
+        | Dialect::Dash
+        | Dialect::Ksh
+        | Dialect::Zsh
+        | Dialect::Vba
+        | Dialect::Xlm
+        | Dialect::Vbs
+        | Dialect::Wsh
+        | Dialect::Pdf
+        | Dialect::Unknown => false,
+    }
+}
+
+fn powershell_construct_kinds(scan: &str) -> usize {
+    PS_CONSTRUCTS
+        .iter()
+        .filter(|construct: &&&'static Regex| construct.is_match(scan))
+        .count()
+}
+
+fn has_powershell_obfuscation_shape(scan: &str) -> bool {
+    PS_STRING_FORMAT_OBF.is_match(scan)
+        || PS_TOKEN_OBF.is_match(scan)
+        || PS_AST_REORDER.is_match(scan)
+        || PS_GET_COMMAND_CALL.is_match(scan)
+        || PS_CONCAT_INVOCATION.is_match(scan)
+        || PS_CHAR_CODE_RUN.is_match(scan)
+        || crate::powershell::psobf::has_obfus_wrappers(scan)
+        || crate::powershell::invoke_stealth::has_reversed_base64_shape(scan)
+}
+
+fn detect_dialect(raw: &[u8], scan: &str, lower: &str, markers: &mut Vec<String>) -> Dialect {
     for shebang in POWERSHELL_SHEBANGS {
-        if head.starts_with(shebang) {
+        if scan.starts_with(shebang) {
             markers.push("shebang-pwsh".to_owned());
             return Dialect::PowerShell;
         }
     }
     for shebang in BASH_SHEBANGS {
-        if head.starts_with(shebang) {
+        if scan.starts_with(shebang) {
             markers.push("shebang-bash".to_owned());
             return Dialect::Bash;
         }
     }
-    if crate::bash::is_node_bash_obfuscate(head) {
+    if crate::bash::is_node_bash_obfuscate(scan) {
         markers.push("node-bash-obfuscate-eval-table".to_owned());
         return Dialect::Bash;
     }
-    if head.starts_with(DASH_SHEBANG) {
+    if scan.starts_with(DASH_SHEBANG) {
         markers.push("shebang-dash".to_owned());
         return Dialect::Dash;
     }
-    if head.starts_with(KSH_SHEBANG) {
+    if scan.starts_with(KSH_SHEBANG) {
         markers.push("shebang-ksh".to_owned());
         return Dialect::Ksh;
     }
-    if head.starts_with(ZSH_SHEBANG) {
+    if scan.starts_with(ZSH_SHEBANG) {
         markers.push("shebang-zsh".to_owned());
         return Dialect::Zsh;
     }
@@ -205,7 +308,6 @@ fn detect_dialect(raw: &[u8], head: &str, markers: &mut Vec<String>) -> Dialect 
             return Dialect::Vba;
         }
     }
-    let lower: String = head.to_ascii_lowercase();
     if lower.contains("attribute vb_name")
         || lower.contains("sub workbook_open")
         || lower.contains("sub auto_open")
@@ -233,44 +335,55 @@ fn detect_dialect(raw: &[u8], head: &str, markers: &mut Vec<String>) -> Dialect 
         markers.push("vbs-wsh-runtime".to_owned());
         return Dialect::Vbs;
     }
-    if lower.contains("@echo off") || head.starts_with("@echo off") {
+    if lower.contains("@echo off") {
         markers.push("batch-echo-off".to_owned());
         return Dialect::Batch;
     }
-    let lower_head: String = head.to_ascii_lowercase();
-    if lower_head.starts_with("powershell")
-        || lower_head.starts_with("pwsh")
-        || lower_head.contains("powershell.exe ")
-        || lower_head.contains("pwsh.exe ")
-        || lower_head.contains(" powershell ")
-        || lower_head.contains(" pwsh ")
+    if BATCH_ECHO_OFF_LINE.is_match(&lower.replace('^', "")) {
+        markers.push("batch-caret-echo-off".to_owned());
+        return Dialect::Batch;
+    }
+    if lower.starts_with("powershell")
+        || lower.starts_with("pwsh")
+        || lower.contains("powershell.exe ")
+        || lower.contains("pwsh.exe ")
+        || lower.contains(" powershell ")
+        || lower.contains(" pwsh ")
     {
         markers.push("ps-launcher-prefix".to_owned());
         return Dialect::PowerShell;
     }
-    if head.contains("[char[]]")
-        || head.contains("Invoke-Expression")
-        || head.contains("IEX")
-        || head.contains("$PSVersionTable")
+    if scan.contains("[char[]]")
+        || scan.contains("Invoke-Expression")
+        || scan.contains("IEX")
+        || scan.contains("$PSVersionTable")
     {
         markers.push("ps-token".to_owned());
         return Dialect::PowerShell;
     }
-    if head.contains("function ") && (head.contains("{ ") || head.contains(" {\n")) {
+    if scan.contains("function ") && (scan.contains("{ ") || scan.contains(" {\n")) {
         markers.push("ps-function".to_owned());
         return Dialect::PowerShell;
     }
-    if head.contains("$(")
-        || head.contains("$IFS")
-        || head.contains("eval ")
-        || head.contains("printf ")
-        || head.contains("base64 -d")
-        || head.contains("base64 --decode")
+    if has_powershell_obfuscation_shape(scan) {
+        markers.push("ps-obfuscation-shape".to_owned());
+        return Dialect::PowerShell;
+    }
+    if powershell_construct_kinds(scan) >= MIN_PS_CONSTRUCT_KINDS {
+        markers.push("ps-constructs".to_owned());
+        return Dialect::PowerShell;
+    }
+    if scan.contains("$(")
+        || scan.contains("$IFS")
+        || scan.contains("eval ")
+        || scan.contains("printf ")
+        || scan.contains("base64 -d")
+        || scan.contains("base64 --decode")
     {
         markers.push("bash-tokens".to_owned());
         return Dialect::Bash;
     }
-    if head.starts_with("echo ") {
+    if scan.starts_with("echo ") {
         markers.push("echo-leader".to_owned());
         return Dialect::Bash;
     }
@@ -293,65 +406,85 @@ fn ooxml_has_vba_project(raw: &[u8]) -> bool {
     false
 }
 
-fn detect_family(dialect: Dialect, head: &str, markers: &mut Vec<String>) -> Family {
+fn detect_family(dialect: Dialect, scan: &str, lower: &str, markers: &mut Vec<String>) -> Family {
     match dialect {
-        Dialect::PowerShell => detect_ps_family(head, markers),
+        Dialect::PowerShell => detect_ps_family(scan, lower, markers),
         Dialect::Bash | Dialect::Dash | Dialect::Ksh | Dialect::Zsh => {
-            detect_bash_family(head, markers)
+            detect_bash_family(scan, markers)
         }
-        Dialect::Batch => detect_batch_family(head, markers),
-        Dialect::Vba | Dialect::Vbs | Dialect::Wsh => detect_vba_family(head, markers),
+        Dialect::Batch => detect_batch_family(scan, markers),
+        Dialect::Vba | Dialect::Vbs | Dialect::Wsh => detect_vba_family(scan, markers),
         Dialect::Xlm | Dialect::Pdf => Family::Plain,
         Dialect::Unknown => Family::Unknown,
     }
 }
 
-fn detect_ps_family(head: &str, markers: &mut Vec<String>) -> Family {
-    if head.contains("Invoke-Stealth") {
+fn detect_ps_family(scan: &str, lower: &str, markers: &mut Vec<String>) -> Family {
+    if scan.contains("Invoke-Stealth") {
         markers.push("invoke-stealth-banner".to_owned());
         return Family::InvokeStealth;
     }
-    if head.contains("PowerHell") || head.contains("Power-Hell") {
+    if scan.contains("PowerHell") || scan.contains("Power-Hell") {
         markers.push("powerhell-banner".to_owned());
         return Family::PowerHell;
     }
-    if head.contains("Chameleon") {
+    if scan.contains("Chameleon") {
         markers.push("chameleon-banner".to_owned());
         return Family::Chameleon;
     }
-    if head.contains("psobf") || head.contains("TaurusOmar") {
+    if scan.contains("psobf") || scan.contains("TaurusOmar") {
         markers.push("psobf-banner".to_owned());
         return Family::Psobf;
     }
-    if head.contains("ISESteroids") {
+    if scan.contains("ISESteroids") {
         markers.push("isesteroids-banner".to_owned());
         return Family::IseSteroids;
     }
-    if PS_ENCODING_FLAG.is_match(head) {
+    if PS_ENCODING_FLAG.is_match(scan) {
         markers.push("ps-encodedcommand".to_owned());
         return Family::InvokeObfuscationEncoding;
     }
-    if PS_COMPRESS_HINT.is_match(head) {
+    if PS_COMPRESS_HINT.is_match(scan) {
         markers.push("ps-gzip-stream".to_owned());
         return Family::InvokeObfuscationCompress;
     }
-    if PS_AST_REORDER.is_match(head) {
+    if crate::powershell::invoke_stealth::has_reversed_base64_shape(scan) {
+        markers.push("invoke-stealth-reversed-base64".to_owned());
+        return Family::InvokeStealth;
+    }
+    if crate::powershell::psobf::has_obfus_wrappers(scan) {
+        markers.push("psobf-obfus-wrapper".to_owned());
+        return Family::Psobf;
+    }
+    if PS_AST_REORDER.is_match(scan) || PS_GET_COMMAND_CALL.is_match(scan) {
         markers.push("ps-ast-getcommand".to_owned());
         return Family::InvokeObfuscationAst;
     }
-    if PS_STRING_FORMAT_OBF.is_match(head) {
+    if PS_STRING_FORMAT_OBF.is_match(scan) {
         markers.push("ps-string-format".to_owned());
         return Family::InvokeObfuscationString;
     }
-    if PS_TOKEN_OBF.is_match(head) {
+    if PS_TOKEN_OBF.is_match(scan) {
         markers.push("ps-token-charbyte".to_owned());
         return Family::InvokeObfuscationToken;
     }
-    if head.to_ascii_lowercase().contains("powershell")
-        && (head.contains("-w hidden")
-            || head.contains("-WindowStyle Hidden")
-            || head.contains("-nop")
-            || head.contains("-NoProfile"))
+    if PS_CHAR_CODE_RUN.is_match(scan) {
+        markers.push("ps-char-code-run".to_owned());
+        return Family::InvokeObfuscationToken;
+    }
+    if PS_CONCAT_INVOCATION.is_match(scan) {
+        markers.push("ps-concatenated-invocation".to_owned());
+        return Family::InvokeObfuscationString;
+    }
+    if crate::powershell::chameleon::has_chameleon_shape(scan) {
+        markers.push("chameleon-case-or-rename".to_owned());
+        return Family::Chameleon;
+    }
+    if lower.contains("powershell")
+        && (scan.contains("-w hidden")
+            || scan.contains("-WindowStyle Hidden")
+            || scan.contains("-nop")
+            || scan.contains("-NoProfile"))
     {
         markers.push("ps-launcher-flags".to_owned());
         return Family::InvokeObfuscationLauncher;
@@ -359,45 +492,45 @@ fn detect_ps_family(head: &str, markers: &mut Vec<String>) -> Family {
     Family::Plain
 }
 
-fn detect_bash_family(head: &str, markers: &mut Vec<String>) -> Family {
-    if crate::bash::is_node_bash_obfuscate(head) {
+fn detect_bash_family(scan: &str, markers: &mut Vec<String>) -> Family {
+    if crate::bash::is_node_bash_obfuscate(scan) {
         markers.push("node-bash-obfuscate-chunk-table".to_owned());
         return Family::NodeBashObfuscate;
     }
-    if BASHFUSCATOR_BANNER.is_match(head) {
+    if BASHFUSCATOR_BANNER.is_match(scan) {
         markers.push("bashfuscator-banner".to_owned());
         return Family::BashfuscatorToken;
     }
-    if head.contains("base64 -d") || head.contains("base64 --decode") {
+    if scan.contains("base64 -d") || scan.contains("base64 --decode") {
         markers.push("bash-base64-pipe".to_owned());
         return Family::BashfuscatorCompress;
     }
-    if BASH_IFS_INDIRECT.is_match(head) && head.contains("eval") {
+    if BASH_IFS_INDIRECT.is_match(scan) && scan.contains("eval") {
         markers.push("bash-ifs-eval".to_owned());
         return Family::BashIndirection;
     }
-    if head.contains("printf '%s'") || head.contains("printf '\\x") {
+    if scan.contains("printf '%s'") || scan.contains("printf '\\x") {
         markers.push("bash-printf".to_owned());
         return Family::BashfuscatorString;
     }
-    if let Some(family) = detect_bashfuscator_soup(head, markers) {
+    if let Some(family) = detect_bashfuscator_soup(scan, markers) {
         return family;
     }
     Family::Plain
 }
 
-fn detect_bashfuscator_soup(head: &str, markers: &mut Vec<String>) -> Option<Family> {
-    let soup_expansions: usize = head.matches("${@").count() + head.matches("${*").count();
+fn detect_bashfuscator_soup(scan: &str, markers: &mut Vec<String>) -> Option<Family> {
+    let soup_expansions: usize = scan.matches("${@").count() + scan.matches("${*").count();
     if soup_expansions < 6 {
         return None;
     }
-    let has_ansi_c_quote: bool = head.contains("$'\\x") || head.contains("$'\\u");
-    let has_base_arith: bool = head.contains("#1)") || head.contains("#2)") || head.contains("$[");
+    let has_ansi_c_quote: bool = scan.contains("$'\\x") || scan.contains("$'\\u");
+    let has_base_arith: bool = scan.contains("#1)") || scan.contains("#2)") || scan.contains("$[");
     if !has_ansi_c_quote && !has_base_arith {
         return None;
     }
     markers.push("bashfuscator-parameter-soup".to_owned());
-    if head.contains("gz") && (head.contains("H4sI") || head.contains("-d ") || head.contains("-d"))
+    if scan.contains("gz") && (scan.contains("H4sI") || scan.contains("-d ") || scan.contains("-d"))
     {
         markers.push("bashfuscator-compress-shape".to_owned());
         return Some(Family::BashfuscatorCompress);
@@ -405,23 +538,23 @@ fn detect_bashfuscator_soup(head: &str, markers: &mut Vec<String>) -> Option<Fam
     Some(Family::BashfuscatorObfuscate)
 }
 
-fn detect_batch_family(head: &str, markers: &mut Vec<String>) -> Family {
-    if BATCH_RANDOM.is_match(head) {
+fn detect_batch_family(scan: &str, markers: &mut Vec<String>) -> Family {
+    if BATCH_RANDOM.is_match(scan) {
         markers.push("batch-random".to_owned());
         return Family::BatchRandom;
     }
-    if BATCH_SET_INDIRECT.is_match(head) {
+    if BATCH_SET_INDIRECT.is_match(scan) {
         markers.push("batch-set".to_owned());
         return Family::BatchSetIndirection;
     }
     Family::Plain
 }
 
-fn detect_vba_family(head: &str, markers: &mut Vec<String>) -> Family {
-    if head.contains("Chr(")
-        || head.contains("StrReverse")
-        || head.contains("Execute(")
-        || head.contains("ExecuteGlobal")
+fn detect_vba_family(scan: &str, markers: &mut Vec<String>) -> Family {
+    if scan.contains("Chr(")
+        || scan.contains("StrReverse")
+        || scan.contains("Execute(")
+        || scan.contains("ExecuteGlobal")
     {
         markers.push("vbs-eval".to_owned());
         return Family::VbsWshObfuscated;
@@ -429,7 +562,12 @@ fn detect_vba_family(head: &str, markers: &mut Vec<String>) -> Family {
     Family::VbaMacro
 }
 
-fn score(dialect: Dialect, family: Family, markers: &[String]) -> f32 {
+fn score(
+    dialect: Dialect,
+    family: Family,
+    markers: &[String],
+    obfuscation_constructs: bool,
+) -> f32 {
     let base: f32 = if dialect == Dialect::Unknown {
         0.0
     } else {
@@ -441,7 +579,12 @@ fn score(dialect: Dialect, family: Family, markers: &[String]) -> f32 {
         0.25
     };
     let depth: f32 = (markers.len() as f32).min(4.0) * 0.05;
-    (base + bump + depth).min(0.99)
+    let scored: f32 = (base + bump + depth).min(0.99);
+    if obfuscation_constructs {
+        scored.max(OBFUSCATED_BATCH_CONFIDENCE)
+    } else {
+        scored
+    }
 }
 
 #[cfg(test)]

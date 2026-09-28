@@ -25,6 +25,11 @@ static DEFLATE_PATTERN: LazyLock<&'static Regex> =
 
 static OBFUS_WRAP: LazyLock<&'static Regex> = LazyLock::new(|| regex!(r"(?s)<obfus(.*?)cate>"));
 
+#[must_use]
+pub(crate) fn has_obfus_wrappers(text: &str) -> bool {
+    OBFUS_WRAP.is_match(text)
+}
+
 pub fn reverse_psobf(input: &str) -> Result<PsobfReport> {
     let mut stages: Vec<String> = Vec::new();
     if PSOBF_HEADER.is_match(input) {

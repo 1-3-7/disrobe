@@ -503,18 +503,24 @@ static GETCOMMAND: LazyLock<&'static Regex> = LazyLock::new(|| {
     )
 });
 
+static GETCOMMAND_CMDLET: LazyLock<&'static Regex> = LazyLock::new(|| {
+    regex!(r"(?i)&\s*\(\s*(?:Get-Command|gcm)\s+(?:\(\s*)?'([A-Za-z\-]+)'(?:\s*\))?\s*\)")
+});
+
 fn unwrap_getcommand_indirection(s: &str) -> Option<String> {
-    if !GETCOMMAND.is_match(s) {
+    if !GETCOMMAND.is_match(s) && !GETCOMMAND_CMDLET.is_match(s) {
         return None;
     }
+    let command_name = |c: &regex::Captures<'_>| -> String {
+        c.get(1)
+            .map(|m: regex::Match<'_>| m.as_str())
+            .unwrap_or("")
+            .to_owned()
+    };
+    let direct: String = GETCOMMAND.replace_all(s, command_name).into_owned();
     Some(
-        GETCOMMAND
-            .replace_all(s, |c: &regex::Captures<'_>| {
-                c.get(1)
-                    .map(|m: regex::Match<'_>| m.as_str())
-                    .unwrap_or("")
-                    .to_owned()
-            })
+        GETCOMMAND_CMDLET
+            .replace_all(&direct, command_name)
             .into_owned(),
     )
 }
@@ -1058,6 +1064,13 @@ mod tests {
         let r: ReverseReport =
             reverse_ast("& ($ExecutionContext.InvokeCommand.GetCommand('Get-Process','Cmdlet'))");
         assert_eq!(r.output, "Get-Process");
+    }
+
+    #[test]
+    fn ast_unwraps_get_command_cmdlet_indirection() {
+        let r: ReverseReport =
+            reverse_ast("& (Get-Command ('Write-Host')) -Object 'hi'; & (gcm 'Get-Date')");
+        assert_eq!(r.output, "Write-Host -Object 'hi'; Get-Date");
     }
 
     #[test]

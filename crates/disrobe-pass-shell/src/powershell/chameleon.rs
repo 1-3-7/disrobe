@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::LazyLock;
 
 use base64::Engine;
@@ -30,6 +30,80 @@ static FROMBASE64_LITERAL: LazyLock<&'static Regex> = LazyLock::new(|| {
         r#"(?i)\[\s*(?:system\.)?convert\s*\]::frombase64string\s*\(\s*['"]([A-Za-z0-9+/=]+)['"]\s*\)"#
     )
 });
+
+static WORD: LazyLock<&'static Regex> = LazyLock::new(|| regex!(r"[A-Za-z][A-Za-z0-9]*"));
+
+const CASE_RANDOMIZED_NAMES: [&str; 20] = [
+    "System",
+    "Text",
+    "Encoding",
+    "Convert",
+    "FromBase64String",
+    "GetString",
+    "UTF8",
+    "Unicode",
+    "ASCII",
+    "MemoryStream",
+    "Compression",
+    "StreamReader",
+    "ReadToEnd",
+    "WebClient",
+    "DownloadString",
+    "Invoke",
+    "Expression",
+    "Object",
+    "Write",
+    "Host",
+];
+
+const MIN_CASE_RANDOMIZED_NAMES: usize = 3;
+const MIN_RENAMED_IDENTIFIER_LEN: usize = 32;
+const MIN_RENAMED_IDENTIFIER_DIGITS: usize = 3;
+const MIN_RENAMED_IDENTIFIERS: usize = 2;
+
+#[must_use]
+pub(crate) fn has_chameleon_shape(text: &str) -> bool {
+    case_randomized_names(text) >= MIN_CASE_RANDOMIZED_NAMES
+        || renamed_identifiers(text) >= MIN_RENAMED_IDENTIFIERS
+}
+
+fn case_randomized_names(text: &str) -> usize {
+    let mut seen: BTreeSet<&'static str> = BTreeSet::new();
+    for word in WORD.find_iter(text) {
+        let word: &str = word.as_str();
+        let mixed: bool = word.bytes().any(|b: u8| b.is_ascii_lowercase())
+            && word.bytes().any(|b: u8| b.is_ascii_uppercase());
+        if !mixed {
+            continue;
+        }
+        if let Some(name) = CASE_RANDOMIZED_NAMES
+            .iter()
+            .find(|name: &&&str| word.eq_ignore_ascii_case(name) && word != **name)
+        {
+            seen.insert(name);
+        }
+    }
+    seen.len()
+}
+
+fn renamed_identifiers(text: &str) -> usize {
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    for cap in VAR_DECL.captures_iter(text) {
+        if let Some(name) = cap.get(1)
+            && name.as_str().len() >= MIN_RENAMED_IDENTIFIER_LEN
+            && name
+                .as_str()
+                .bytes()
+                .filter(|b: &u8| b.is_ascii_digit())
+                .count()
+                >= MIN_RENAMED_IDENTIFIER_DIGITS
+            && is_long_random_identifier(name.as_str())
+        {
+            seen.insert(name.as_str());
+        }
+    }
+    seen.len()
+}
 
 #[must_use]
 pub fn reverse_chameleon(input: &str) -> ChameleonReport {

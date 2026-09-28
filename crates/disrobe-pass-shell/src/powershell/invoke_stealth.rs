@@ -26,6 +26,14 @@ static REVERSE_TECH: LazyLock<&'static Regex> =
 static B64_STRING_LITERAL: LazyLock<&'static Regex> =
     LazyLock::new(|| regex!(r#"['"]([A-Za-z0-9+/=]{8,})['"]"#));
 
+static FROM_BASE64_CALL: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r"(?i)::FromBase64String\s*\("));
+
+#[must_use]
+pub(crate) fn has_reversed_base64_shape(text: &str) -> bool {
+    REVERSE_TECH.is_match(text) && FROM_BASE64_CALL.is_match(text)
+}
+
 #[must_use]
 pub fn reverse_invoke_stealth(input: &str) -> InvokeStealthReport {
     let mut steps: Vec<ReverseReport> = Vec::new();
