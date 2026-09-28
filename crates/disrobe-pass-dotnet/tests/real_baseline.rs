@@ -57,23 +57,13 @@ fn helloapp_legacy_parses_as_netstandard_pe() {
         "BSJB metadata version must be a dotted CLR version string like v4.0.30319; got {:?}",
         root.version
     );
-    let label: RuntimeLabel = root.runtime_label();
-    assert!(
-        matches!(
-            label,
-            RuntimeLabel::NetFramework1
-                | RuntimeLabel::NetFramework2
-                | RuntimeLabel::NetFramework4
-                | RuntimeLabel::NetCore3
-                | RuntimeLabel::Net5
-                | RuntimeLabel::Net6
-                | RuntimeLabel::Net7
-                | RuntimeLabel::Net8
-                | RuntimeLabel::Net9
-                | RuntimeLabel::Net10OrLater
-        ),
-        "a netstandard build must classify to a known managed runtime, not Unknown; got {label:?} \
-         for version {:?}",
+    let resolver: disrobe_pass_dotnet::Resolver =
+        disrobe_pass_dotnet::Resolver::build(&bytes, &pe, &clr, &root).expect("metadata model");
+    assert_eq!(
+        resolver.declared_runtime(),
+        Some(RuntimeLabel::NetStandard2),
+        "the legacy build declares TargetFramework .NETStandard,Version=v2.0; its metadata version \
+         {:?} alone would misreport it as a .NET Framework runtime",
         root.version
     );
 }

@@ -45,6 +45,8 @@ pub enum RuntimeLabel {
     Net8,
     Net9,
     Net10OrLater,
+    NetStandard1,
+    NetStandard2,
     ModernNetUnversioned,
     Unknown,
 }
@@ -95,6 +97,11 @@ impl RuntimeLabel {
                 10.. => Self::Net10OrLater,
                 _ => Self::Unknown,
             }),
+            ".NETStandard" => Some(match major {
+                1 => Self::NetStandard1,
+                2 => Self::NetStandard2,
+                _ => Self::Unknown,
+            }),
             _ => None,
         }
     }
@@ -112,6 +119,12 @@ impl RuntimeLabel {
             Self::Net8 => ".NET 8",
             Self::Net9 => ".NET 9",
             Self::Net10OrLater => ".NET 10+",
+            Self::NetStandard1 => {
+                ".NET Standard 1.x (a library contract; the host picks the runtime)"
+            }
+            Self::NetStandard2 => {
+                ".NET Standard 2.x (a library contract; the host picks the runtime)"
+            }
             Self::ModernNetUnversioned => {
                 ".NET (version not declared; inferred from the core library)"
             }
@@ -461,7 +474,7 @@ mod tests {
         );
         assert_eq!(
             RuntimeLabel::from_target_framework(".NETStandard,Version=v2.0"),
-            None
+            Some(RuntimeLabel::NetStandard2)
         );
         assert_eq!(RuntimeLabel::from_target_framework("garbage"), None);
     }
