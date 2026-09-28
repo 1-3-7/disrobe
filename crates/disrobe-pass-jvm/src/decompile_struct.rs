@@ -469,6 +469,7 @@ pub enum Region {
         cases: Vec<(SwitchKey, Self)>,
         default: Option<Box<Self>>,
         join: Option<BlockId>,
+        fallthrough: BTreeSet<usize>,
     },
     Try {
         try_body: Box<Self>,
@@ -2788,23 +2789,12 @@ impl<'a> Structurer<'a> {
     fn structure_switch(&mut self, head: BlockId, _stop: Option<BlockId>) -> Region {
         if let Some(precomputed) = self.switch_map.get(&head).cloned() {
             let join: Option<BlockId> = find_switch_join(self.cfg, self.dom, head);
-            let mut cases: Vec<(SwitchKey, Region)> = Vec::with_capacity(precomputed.cases.len());
-            for (key, target) in precomputed.cases {
-                if Some(target) == precomputed.default {
-                    continue;
-                }
-                let r: Region = self.structure_at(target, join);
-                cases.push((key, r));
-            }
-            let default_region: Option<Box<Region>> = precomputed
-                .default
-                .map(|d| Box::new(self.structure_at(d, join)));
-            return Region::Switch {
-                head,
-                cases,
-                default: default_region,
-                join,
-            };
+            let arms: Vec<(SwitchKey, BlockId)> = precomputed
+                .cases
+                .into_iter()
+                .filter(|(_, target): &(SwitchKey, BlockId)| Some(*target) != precomputed.default)
+                .collect();
+            return self.structure_switch_arms(head, arms, precomputed.default, join);
         }
         let block: &BasicBlock = &self.cfg.blocks[head.0 as usize];
         let last_idx: usize = block.insn_range.1.saturating_sub(1);
@@ -2863,15 +2853,53 @@ impl<'a> Structurer<'a> {
         }
 
         let join: Option<BlockId> = find_switch_join(self.cfg, self.dom, head);
-        let mut cases: Vec<(SwitchKey, Region)> = Vec::new();
+        let mut arms: Vec<(SwitchKey, BlockId)> = Vec::new();
         for target in ordered_targets {
             if Some(target) == default {
                 continue;
             }
             let values: Vec<i32> = key_pairs.remove(&target).unwrap_or_default();
-            let key: SwitchKey = compact_key(&values);
-            let r: Region = self.structure_at(target, join);
-            cases.push((key, r));
+            arms.push((compact_key(&values), target));
+        }
+        self.structure_switch_arms(head, arms, default, join)
+    }
+
+    fn structure_switch_arms(
+        &mut self,
+        head: BlockId,
+        mut arms: Vec<(SwitchKey, BlockId)>,
+        default: Option<BlockId>,
+        join: Option<BlockId>,
+    ) -> Region {
+        let start_pc = |block: BlockId| -> u32 { self.cfg.blocks[block.0 as usize].start_pc };
+        arms.sort_by_key(|(_, target): &(SwitchKey, BlockId)| start_pc(*target));
+        let default_is_last: bool = default.is_none_or(|d: BlockId| {
+            arms.iter()
+                .all(|(_, target): &(SwitchKey, BlockId)| start_pc(*target) < start_pc(d))
+        });
+        let mut entries: Vec<BlockId> = arms
+            .iter()
+            .map(|(_, target): &(SwitchKey, BlockId)| *target)
+            .collect();
+        if let Some(d) = default.filter(|_| default_is_last) {
+            entries.push(d);
+        }
+        let mut cases: Vec<(SwitchKey, Region)> = Vec::with_capacity(arms.len());
+        let mut fallthrough: BTreeSet<usize> = BTreeSet::new();
+        for (index, (key, target)) in arms.into_iter().enumerate() {
+            let next: Option<BlockId> = entries.get(index + 1).copied();
+            let saved: BTreeSet<BlockId> = self.handler_stops.clone();
+            if let Some(next) = next {
+                self.handler_stops.insert(next);
+            }
+            let region: Region = self.structure_at(target, join);
+            self.handler_stops = saved;
+            if let Some(next) = next
+                && self.falls_into(head, target, next)
+            {
+                fallthrough.insert(index);
+            }
+            cases.push((key, region));
         }
         let default_region: Option<Box<Region>> =
             default.map(|d| Box::new(self.structure_at(d, join)));
@@ -2880,7 +2908,20 @@ impl<'a> Structurer<'a> {
             cases,
             default: default_region,
             join,
+            fallthrough,
         }
+    }
+
+    fn falls_into(&self, head: BlockId, arm: BlockId, next: BlockId) -> bool {
+        let arm_pc: u32 = self.cfg.blocks[arm.0 as usize].start_pc;
+        let next_pc: u32 = self.cfg.blocks[next.0 as usize].start_pc;
+        self.cfg.blocks[next.0 as usize]
+            .predecessors
+            .iter()
+            .any(|pred: &BlockId| {
+                let pc: u32 = self.cfg.blocks[pred.0 as usize].start_pc;
+                *pred != head && pc >= arm_pc && pc < next_pc
+            })
     }
 
     fn find_switch_join(&self, head: BlockId) -> Option<BlockId> {

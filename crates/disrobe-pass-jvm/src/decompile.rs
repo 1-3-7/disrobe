@@ -1672,6 +1672,7 @@ pub(crate) enum Expr {
         ty: String,
     },
     Cmp {
+        kind: CmpKind,
         lhs: Box<Self>,
         rhs: Box<Self>,
     },
@@ -1788,9 +1789,7 @@ impl Expr {
             Self::InstanceOf { value, ty } => {
                 format!("({} instanceof {ty})", value.render())
             }
-            Self::Cmp { lhs, rhs } => {
-                format!("Integer.compare({}, {})", lhs.render(), rhs.render())
-            }
+            Self::Cmp { kind, lhs, rhs } => kind.render_value(&lhs.render(), &rhs.render()),
             Self::ArrayLength(arr) => format!("{}.length", arr.render()),
             Self::ArrayLoad { array, index } => {
                 format!("{}[{}]", array.render(), index.render())
@@ -2161,8 +2160,13 @@ fn lift_structured(
     has_this: bool,
     bool_return: bool,
 ) -> StructuredLift {
+    let handler_pcs: Vec<u32> = code
+        .exception_table
+        .iter()
+        .map(|entry: &crate::bytecode::ExceptionEntry| u32::from(entry.handler_pc))
+        .collect();
     let (folded, _): (Vec<Instruction>, crate::const_fold::ConstFoldReport) =
-        crate::const_fold::fold_constants(cf, insns);
+        crate::const_fold::fold_constants(cf, insns, &handler_pcs);
     let insns: &[Instruction] = &folded;
     let Ok(mut cfg): std::result::Result<Cfg, crate::decompile_struct::StructureError> =
         build_cfg(insns, code, |idx: u16| {
@@ -5035,8 +5039,11 @@ fn render_region(ctx: &mut RenderCtx<'_>, region: &Region, out: &mut String, lev
             cases,
             default,
             join,
+            fallthrough,
         } => {
-            if try_render_type_switch(ctx, *head, cases, default.as_deref(), *join, out, level) {
+            if fallthrough.is_empty()
+                && try_render_type_switch(ctx, *head, cases, default.as_deref(), *join, out, level)
+            {
                 return;
             }
             if let Some(table) = ctx.string_switch_tables.get(head).cloned() {
@@ -5046,10 +5053,14 @@ fn render_region(ctx: &mut RenderCtx<'_>, region: &Region, out: &mut String, lev
             if try_render_enum_switch(ctx, *head, cases, default.as_deref(), out, level) {
                 return;
             }
-            if try_render_value_switch(ctx, *head, cases, default.as_deref(), *join, out, level) {
+            if fallthrough.is_empty()
+                && try_render_value_switch(ctx, *head, cases, default.as_deref(), *join, out, level)
+            {
                 return;
             }
-            if try_render_yield_switch(ctx, *head, cases, default.as_deref(), *join, out, level) {
+            if fallthrough.is_empty()
+                && try_render_yield_switch(ctx, *head, cases, default.as_deref(), *join, out, level)
+            {
                 return;
             }
             let expr: String = render_switch_subject(ctx, *head, out, level);
@@ -5059,7 +5070,9 @@ fn render_region(ctx: &mut RenderCtx<'_>, region: &Region, out: &mut String, lev
                 let label: String = format_switch_key(key, i);
                 let _ = writeln!(out, "{pad}    case {label}:");
                 render_region(ctx, body, out, level + 2);
-                let _ = writeln!(out, "{pad}        break;");
+                if !fallthrough.contains(&i) {
+                    let _ = writeln!(out, "{pad}        break;");
+                }
             }
             if let Some(def) = default {
                 let _ = writeln!(out, "{pad}    default:");
@@ -5956,7 +5969,7 @@ fn expr_has_hole(e: &Expr) -> bool {
         Expr::Const(_) | Expr::Local(_) | Expr::This | Expr::New(_) => false,
         Expr::StaticField { .. } => false,
         Expr::Field { receiver, .. } => expr_has_hole(receiver),
-        Expr::Binary { lhs, rhs, .. } | Expr::Cmp { lhs, rhs } => {
+        Expr::Binary { lhs, rhs, .. } | Expr::Cmp { lhs, rhs, .. } => {
             expr_has_hole(lhs) || expr_has_hole(rhs)
         }
         Expr::Unary { value, .. }
@@ -6716,7 +6729,7 @@ fn unary_or_cmp_cond(
         }
     }
     match v {
-        Expr::Cmp { lhs, rhs } => format!("{} {rel_op} {}", lhs.render(), rhs.render()),
+        Expr::Cmp { kind, lhs, rhs } => kind.render_relation(&lhs.render(), rel_op, &rhs.render()),
         other => format!("{} {zero_suffix}", other.render()),
     }
 }
@@ -8630,10 +8643,9 @@ fn render_record_pattern(ty: &str, components: &[RecordComponent]) -> String {
 fn lift_guard_condition(ctx: &RenderCtx<'_>, slice: &[Instruction], var: &str) -> Option<String> {
     let branch: &Instruction = slice.last()?;
     let mut body: &[Instruction] = &slice[..slice.len() - 1];
-    let fused_cmp: Option<u8> = body
+    let fused_cmp: Option<CmpKind> = body
         .last()
-        .map(|ins: &Instruction| ins.opcode)
-        .filter(|op: &u8| matches!(op, 0x94..=0x98));
+        .and_then(|ins: &Instruction| CmpKind::of_jvm(ins.opcode));
     if fused_cmp.is_some() {
         body = &body[..body.len() - 1];
     }
@@ -8655,7 +8667,7 @@ fn lift_guard_condition(ctx: &RenderCtx<'_>, slice: &[Instruction], var: &str) -
     let cond: String = build_guard_expr(
         branch.opcode,
         &mut stack,
-        fused_cmp.is_some(),
+        fused_cmp,
         var,
         &ctx.bool_array_names,
     )?;
@@ -8736,15 +8748,15 @@ fn boolean_array_load_render(
 fn build_guard_expr(
     branch_op: u8,
     stack: &mut Vec<Expr>,
-    fused_cmp: bool,
+    fused_cmp: Option<CmpKind>,
     _var: &str,
     bool_arrays: &BTreeMap<String, u8>,
 ) -> Option<String> {
-    if fused_cmp {
+    if let Some(kind) = fused_cmp {
         let rhs: Expr = stack.pop()?;
         let lhs: Expr = stack.pop()?;
         let op: &str = guard_compare_op(branch_op)?;
-        return Some(format!("{} {op} {}", lhs.render(), rhs.render()));
+        return Some(kind.render_relation(&lhs.render(), op, &rhs.render()));
     }
     let satisfied: String = match branch_op {
         0x99 | 0x9A => {
@@ -8980,7 +8992,7 @@ pub(crate) fn expr_node_count_capped(e: &Expr, cap: usize) -> usize {
         *acc += 1;
         match e {
             Expr::Binary { lhs, rhs, .. }
-            | Expr::Cmp { lhs, rhs }
+            | Expr::Cmp { lhs, rhs, .. }
             | Expr::ArrayLoad {
                 array: lhs,
                 index: rhs,
@@ -10038,7 +10050,19 @@ fn lift_one_inner(
         0x82 | 0x83 => binary_op_kind(stack, "^", shift_num_kind(op)),
         0x84 => iinc(insn, params),
         0x85..=0x93 => cast_numeric(insn, stack),
-        0x94..=0x98 => binary_op(stack, "cmp"),
+        0x94..=0x98 => match CmpKind::of_jvm(insn.opcode) {
+            Some(kind) => {
+                let rhs: Expr = pop_expr(stack);
+                let lhs: Expr = pop_expr(stack);
+                stack.push(Expr::Cmp {
+                    kind,
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                });
+                LiftResult::Pushed
+            }
+            None => LiftResult::Unhandled,
+        },
         0x99..=0xA6 => conditional_branch(insn, stack),
         0xA7 | 0xC8 => {
             LiftResult::ControlFlow(format!("// goto L{}", branch_target(insn).unwrap_or(0)))
@@ -10371,19 +10395,55 @@ fn folded_unary(kind: NumKind, value: &Expr) -> Option<Expr> {
     }
 }
 
-fn binary_op(stack: &mut Vec<Expr>, op: &'static str) -> LiftResult {
-    binary_op_kind(stack, op, NumKind::Other)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CmpKind {
+    Long,
+    NanLow,
+    NanHigh,
+}
+
+impl CmpKind {
+    pub(crate) const fn of_jvm(opcode: u8) -> Option<Self> {
+        match opcode {
+            0x94 => Some(Self::Long),
+            0x95 | 0x97 => Some(Self::NanLow),
+            0x96 | 0x98 => Some(Self::NanHigh),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn render_value(self, lhs: &str, rhs: &str) -> String {
+        match self {
+            Self::Long => format!("Long.compare({lhs}, {rhs})"),
+            Self::NanLow => format!("({lhs} > {rhs} ? 1 : {lhs} == {rhs} ? 0 : -1)"),
+            Self::NanHigh => format!("({lhs} < {rhs} ? -1 : {lhs} == {rhs} ? 0 : 1)"),
+        }
+    }
+
+    pub(crate) fn render_relation(self, lhs: &str, rel_op: &str, rhs: &str) -> String {
+        let true_on_nan: bool = match self {
+            Self::Long => false,
+            Self::NanLow => matches!(rel_op, "<" | "<=" | "!="),
+            Self::NanHigh => matches!(rel_op, ">" | ">=" | "!="),
+        };
+        if !true_on_nan {
+            return format!("{lhs} {rel_op} {rhs}");
+        }
+        let complement: &str = match rel_op {
+            "<" => ">=",
+            "<=" => ">",
+            ">" => "<=",
+            ">=" => "<",
+            _ => "==",
+        };
+        format!("!({lhs} {complement} {rhs})")
+    }
 }
 
 fn binary_op_kind(stack: &mut Vec<Expr>, op: &'static str, kind: NumKind) -> LiftResult {
     let rhs: Expr = pop_expr(stack);
     let lhs: Expr = pop_expr(stack);
-    if op == "cmp" {
-        stack.push(Expr::Cmp {
-            lhs: Box::new(lhs),
-            rhs: Box::new(rhs),
-        });
-    } else if let Some(folded) = folded_binary(op, kind, &lhs, &rhs) {
+    if let Some(folded) = folded_binary(op, kind, &lhs, &rhs) {
         stack.push(folded);
     } else {
         stack.push(Expr::Binary {
@@ -10858,7 +10918,9 @@ fn invoke_dynamic(
         return push(stack, folded);
     }
 
-    if matches!(parsed.returns, JavaType::Object(_)) {
+    let lambda_bootstrap: bool =
+        matches!(bsm_name.as_deref(), Some("metafactory" | "altMetafactory"));
+    if lambda_bootstrap && matches!(parsed.returns, JavaType::Object(_)) {
         let impl_handle: Option<MethodHandleRef> = bsm
             .and_then(|b| b.arguments.get(1).copied())
             .and_then(|a| method_handle_full(cf, a));
@@ -10876,7 +10938,18 @@ fn invoke_dynamic(
         }
         return push(stack, Expr::Opaque(format!("{indy_name}$lambda")));
     }
-    push(stack, Expr::Opaque(format!("{indy_name}()")))
+    let rendered_args: String = args
+        .iter()
+        .map(Expr::render)
+        .collect::<Vec<String>>()
+        .join(", ");
+    push(
+        stack,
+        Expr::Opaque(format!(
+            "/* unresolved invokedynamic via {} */ {indy_name}({rendered_args})",
+            bsm_name.as_deref().unwrap_or("an unknown bootstrap")
+        )),
+    )
 }
 
 struct MethodHandleRef {
@@ -12408,6 +12481,20 @@ mod tests {
     use super::*;
     use crate::classfile::{Attribute, ConstantPoolEntry};
 
+    #[test]
+    fn floating_compares_keep_their_nan_bias() {
+        assert_eq!(CmpKind::NanLow.render_relation("a", ">=", "b"), "a >= b");
+        assert_eq!(CmpKind::NanLow.render_relation("a", "<=", "b"), "!(a > b)");
+        assert_eq!(CmpKind::NanHigh.render_relation("a", "<", "b"), "a < b");
+        assert_eq!(CmpKind::NanHigh.render_relation("a", ">", "b"), "!(a <= b)");
+        assert_eq!(CmpKind::Long.render_relation("a", "!=", "b"), "a != b");
+        assert_eq!(CmpKind::Long.render_value("a", "b"), "Long.compare(a, b)");
+        assert_eq!(
+            CmpKind::NanLow.render_value("x", "y"),
+            "(x > y ? 1 : x == y ? 0 : -1)"
+        );
+    }
+
     fn translated_edgecases_class(entry: &str) -> ClassFile {
         let translated = crate::dex2jar::translate_dex_bytes(include_bytes!(
             "../../../corpus/jvm/dex/EdgeCases.dex"
@@ -13240,6 +13327,27 @@ mod tests {
             }],
             attributes: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_case_that_falls_into_the_next_renders_without_break() {
+        let mut code: Vec<u8> = vec![0x1A, 0xAA, 0x00, 0x00];
+        for word in [32i32, 1, 2, 23, 26] {
+            code.extend_from_slice(&word.to_be_bytes());
+        }
+        code.extend_from_slice(&[
+            0x84, 0x00, 0x0A, 0x84, 0x00, 0x01, 0xA7, 0x00, 0x06, 0x84, 0x00, 0x64, 0xB1,
+        ]);
+        let mut class: ClassFile =
+            class_with_method_code(Some(code_info(&code, &[], &[])), ACC_PUBLIC | ACC_STATIC);
+        class.constant_pool[6] = cp_utf8("(I)V");
+        let decompiled: DecompiledClass = decompile_class(&class);
+        let source: &str = &decompiled.source;
+        let case1: usize = source.find("case 1:").expect("case 1 rendered");
+        let case2: usize = source.find("case 2:").expect("case 2 rendered");
+        assert!(case1 < case2, "{source}");
+        assert!(!source[case1..case2].contains("break"), "{source}");
+        assert!(source[case2..].contains("break"), "{source}");
     }
 
     #[test]

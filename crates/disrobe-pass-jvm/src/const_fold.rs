@@ -16,23 +16,19 @@ enum Lattice {
     Unknown,
 }
 
-#[derive(Debug, Clone, Copy)]
-enum Producer {
-    Push,
-    Consume(usize),
-}
-
 const NOP: u8 = 0x00;
 
 #[must_use]
 pub fn fold_constants(
     cf: &ClassFile,
     insns: &[Instruction],
+    handler_pcs: &[u32],
 ) -> (Vec<Instruction>, ConstFoldReport) {
     let mut out: Vec<Instruction> = insns.to_vec();
     let mut report: ConstFoldReport = ConstFoldReport::default();
-    let branch_targets: std::collections::BTreeSet<u32> = branch_target_pcs(insns);
-    fold_with_locals(cf, &mut out, &branch_targets, &mut report);
+    let mut block_starts: std::collections::BTreeSet<u32> = branch_target_pcs(insns);
+    block_starts.extend(handler_pcs.iter().copied());
+    fold_with_locals(cf, &mut out, &block_starts, &mut report);
     (out, report)
 }
 
@@ -69,23 +65,28 @@ fn fold_with_locals(
     branch_targets: &std::collections::BTreeSet<u32>,
     report: &mut ConstFoldReport,
 ) {
-    let mut stack: Vec<(Lattice, Producer)> = Vec::new();
+    let mut stack: Vec<(Lattice, Option<usize>)> = Vec::new();
     let mut local_lattice: BTreeMap<u16, Lattice> = BTreeMap::new();
+    let mut after_transfer: bool = false;
     for index in 0..insns.len() {
         let insn: &Instruction = &insns[index];
-        if branch_targets.contains(&insn.pc) {
+        if after_transfer || branch_targets.contains(&insn.pc) {
             stack.clear();
             local_lattice.clear();
         }
+        after_transfer = ends_straight_line(insn.opcode);
         if let Some(local) = istore_local(insn) {
             let value: Lattice = stack
                 .pop()
-                .map_or(Lattice::Unknown, |(l, _): (Lattice, Producer)| l);
+                .map_or(Lattice::Unknown, |(l, _): (Lattice, Option<usize>)| l);
             local_lattice.insert(local, value);
             continue;
         }
+        for local in written_locals(insn) {
+            local_lattice.remove(&local);
+        }
         if let Some(value) = const_push_value(cf, insn) {
-            stack.push((Lattice::Const(value), Producer::Push));
+            stack.push((Lattice::Const(value), Some(index)));
             continue;
         }
         if let Some(local) = iload_local(insn) {
@@ -93,83 +94,95 @@ fn fold_with_locals(
                 .get(&local)
                 .copied()
                 .unwrap_or(Lattice::Unknown);
-            stack.push((value, Producer::Push));
+            stack.push((value, Some(index)));
             continue;
         }
         if let Some(op) = binary_kind(insn.opcode) {
-            let rhs: Option<(Lattice, Producer)> = stack.pop();
-            let lhs: Option<(Lattice, Producer)> = stack.pop();
+            let rhs: Option<(Lattice, Option<usize>)> = stack.pop();
+            let lhs: Option<(Lattice, Option<usize>)> = stack.pop();
             let folded: Option<i32> = match (lhs, rhs) {
-                (Some((Lattice::Const(a), lp)), Some((Lattice::Const(b), rp))) => {
+                (Some((Lattice::Const(a), Some(lp))), Some((Lattice::Const(b), Some(rp)))) => {
                     let value: i32 = eval_binary(op, a, b);
-                    if rewrite_range(
-                        insns,
-                        &[producer_index(lp), producer_index(rp), Some(index)],
-                        value,
-                    ) {
-                        report.values_folded += 1;
-                    }
-                    Some(value)
+                    rewrite_range(insns, &[lp, rp], index, value).then_some(value)
                 }
                 _ => None,
             };
-            stack.push((
-                folded.map_or(Lattice::Unknown, Lattice::Const),
-                Producer::Consume(index),
-            ));
+            if folded.is_some() {
+                report.values_folded += 1;
+            }
+            stack.push((folded.map_or(Lattice::Unknown, Lattice::Const), Some(index)));
             continue;
         }
         if let Some(op) = unary_kind(insn.opcode) {
-            let operand: Option<(Lattice, Producer)> = stack.pop();
+            let operand: Option<(Lattice, Option<usize>)> = stack.pop();
             let folded: Option<i32> = match operand {
-                Some((Lattice::Const(a), p)) => {
+                Some((Lattice::Const(a), Some(p))) => {
                     let value: i32 = eval_unary(op, a);
-                    if rewrite_range(insns, &[producer_index(p), Some(index)], value) {
-                        report.values_folded += 1;
-                    }
-                    Some(value)
+                    rewrite_range(insns, &[p], index, value).then_some(value)
                 }
                 _ => None,
             };
-            stack.push((
-                folded.map_or(Lattice::Unknown, Lattice::Const),
-                Producer::Consume(index),
-            ));
+            if folded.is_some() {
+                report.values_folded += 1;
+            }
+            stack.push((folded.map_or(Lattice::Unknown, Lattice::Const), Some(index)));
             continue;
         }
         let mut effect_stack: Vec<Lattice> = stack
             .iter()
-            .map(|(l, _): &(Lattice, Producer)| *l)
+            .map(|(l, _): &(Lattice, Option<usize>)| *l)
             .collect();
         apply_generic_effect(insn, &mut effect_stack);
         stack = effect_stack
             .into_iter()
-            .map(|l: Lattice| (l, Producer::Push))
+            .map(|_: Lattice| (Lattice::Unknown, None))
             .collect();
     }
 }
 
-const fn producer_index(producer: Producer) -> Option<usize> {
-    match producer {
-        Producer::Consume(i) => Some(i),
-        Producer::Push => None,
+const fn ends_straight_line(opcode: u8) -> bool {
+    matches!(
+        opcode,
+        0xA7 | 0xA8 | 0xA9 | 0xAA | 0xAB | 0xAC..=0xB1 | 0xBF | 0xC8 | 0xC9
+    )
+}
+
+fn written_locals(insn: &Instruction) -> Vec<u16> {
+    let slot: Option<u16> = match insn.opcode {
+        0x36..=0x3A => match insn.operands {
+            Operands::Local(i) => Some(i),
+            _ => None,
+        },
+        0x3B..=0x4E => Some(u16::from((insn.opcode - 0x3B) % 4)),
+        0x84 => match insn.operands {
+            Operands::Iinc { index, .. } => Some(index),
+            _ => None,
+        },
+        _ => None,
+    };
+    let wide: bool = matches!(insn.opcode, 0x37 | 0x39 | 0x3F..=0x42 | 0x47..=0x4A);
+    match slot {
+        Some(slot) if wide => vec![slot, slot.saturating_add(1)],
+        Some(slot) => vec![slot],
+        None => Vec::new(),
     }
 }
 
-fn rewrite_range(insns: &mut [Instruction], producers: &[Option<usize>], value: i32) -> bool {
+fn rewrite_range(
+    insns: &mut [Instruction],
+    producers: &[usize],
+    result: usize,
+    value: i32,
+) -> bool {
     if !representable_without_pool(value) {
         return false;
     }
-    let mut last: Option<usize> = None;
-    for slot in producers.iter().flatten() {
+    for slot in producers {
         if let Some(insn) = insns.get_mut(*slot) {
             blank(insn);
         }
-        last = Some((*slot).max(last.unwrap_or(*slot)));
     }
-    if let Some(target) = last
-        && let Some(insn) = insns.get_mut(target)
-    {
+    if let Some(insn) = insns.get_mut(result) {
         set_push_const(insn, value);
     }
     true
@@ -355,5 +368,50 @@ const fn stack_effect(insn: &Instruction) -> (usize, usize) {
         0xAC | 0xB0 => (1, 0),
         0xB1 => (0, 0),
         _ => (0, 1),
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::*;
+    use crate::bytecode::disassemble;
+
+    fn empty_class() -> ClassFile {
+        ClassFile {
+            minor_version: 0,
+            major_version: 52,
+            constant_pool: vec![ConstantPoolEntry::Placeholder],
+            access_flags: 0,
+            this_class: 0,
+            super_class: 0,
+            interfaces: Vec::new(),
+            fields: Vec::new(),
+            methods: Vec::new(),
+            attributes: Vec::new(),
+        }
+    }
+
+    fn folded_opcodes(code: &[u8]) -> Vec<u8> {
+        let insns: Vec<Instruction> = disassemble(code).expect("disassemble");
+        let (folded, _): (Vec<Instruction>, ConstFoldReport) =
+            fold_constants(&empty_class(), &insns, &[]);
+        folded
+            .iter()
+            .map(|insn: &Instruction| insn.opcode)
+            .collect()
+    }
+
+    #[test]
+    fn folding_a_local_times_a_constant_removes_both_operands() {
+        let opcodes: Vec<u8> = folded_opcodes(&[0x04, 0x10, 0x0A, 0x3C, 0x1B, 0x05, 0x68, 0xAC]);
+        assert_eq!(opcodes, vec![0x04, 0x10, 0x3C, NOP, NOP, 0x10, 0xAC]);
+    }
+
+    #[test]
+    fn iinc_invalidates_the_folded_local() {
+        let opcodes: Vec<u8> =
+            folded_opcodes(&[0x10, 0x0A, 0x3C, 0x84, 0x01, 0x01, 0x1B, 0x05, 0x68, 0xAC]);
+        assert_eq!(opcodes, vec![0x10, 0x3C, 0x84, 0x1B, 0x05, 0x68, 0xAC]);
     }
 }

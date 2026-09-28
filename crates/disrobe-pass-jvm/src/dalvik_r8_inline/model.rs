@@ -283,6 +283,11 @@ fn eval_insn(dex: &DexFile, regs: &mut Regs, insn: &DalvikInsn) -> Step {
             regs.write(
                 dst,
                 Expr::Cmp {
+                    kind: match op {
+                        0x2D | 0x2F => crate::decompile::CmpKind::NanLow,
+                        0x2E | 0x30 => crate::decompile::CmpKind::NanHigh,
+                        _ => crate::decompile::CmpKind::Long,
+                    },
                     lhs: Box::new(regs.read(lhs)),
                     rhs: Box::new(regs.read(rhs)),
                 },
@@ -435,7 +440,8 @@ pub(crate) fn substitute(expr: &Expr, args: &[Expr]) -> Expr {
             value: Box::new(substitute(value, args)),
             ty: ty.clone(),
         },
-        Expr::Cmp { lhs, rhs } => Expr::Cmp {
+        Expr::Cmp { kind, lhs, rhs } => Expr::Cmp {
+            kind: *kind,
             lhs: Box::new(substitute(lhs, args)),
             rhs: Box::new(substitute(rhs, args)),
         },
@@ -507,7 +513,7 @@ fn effect_atoms(expr: &Expr, out: &mut Vec<String>) {
             out.push(format!("cast {ty}"));
         }
         Expr::InstanceOf { value, .. } => effect_atoms(value, out),
-        Expr::Cmp { lhs, rhs } => {
+        Expr::Cmp { lhs, rhs, .. } => {
             effect_atoms(lhs, out);
             effect_atoms(rhs, out);
         }

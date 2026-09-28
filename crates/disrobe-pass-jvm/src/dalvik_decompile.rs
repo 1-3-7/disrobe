@@ -1792,6 +1792,7 @@ fn render_region(state: &mut RenderState<'_>, region: &Region, out: &mut String,
             head,
             cases,
             default,
+            fallthrough,
             ..
         } => {
             let subject: String = render_switch_subject(state, *head, out, level);
@@ -1800,7 +1801,9 @@ fn render_region(state: &mut RenderState<'_>, region: &Region, out: &mut String,
             for (i, (key, body)) in cases.iter().enumerate() {
                 let _ = writeln!(out, "{pad}    case {}:", format_switch_key(key, i));
                 render_region(state, body, out, level + 2);
-                let _ = writeln!(out, "{pad}        break;");
+                if !fallthrough.contains(&i) {
+                    let _ = writeln!(out, "{pad}        break;");
+                }
             }
             if let Some(def) = default {
                 let _ = writeln!(out, "{pad}    default:");

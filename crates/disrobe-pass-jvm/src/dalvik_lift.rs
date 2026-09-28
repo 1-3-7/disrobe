@@ -341,7 +341,7 @@ pub(crate) fn lift_insn(
         0xB8..=0xBA | 0xC3..=0xC5 => {
             binary_2addr(ctx, file, regs, arith_op(op), matches!(op, 0xB8..=0xBA))
         }
-        0x2D..=0x31 => cmp_three(ctx, file, regs),
+        0x2D..=0x31 => cmp_three(ctx, file, regs, op),
         0xD0..=0xD7 => binary_lit(ctx, file, regs, insn, arith_lit_op(op)),
         0xD8..=0xE2 => binary_lit(ctx, file, regs, insn, arith_lit_op(op)),
         _ => LiftOutcome::None,
@@ -1075,7 +1075,7 @@ fn operation_node_counts(expr: &Expr) -> (usize, usize, usize) {
     fn walk(expr: &Expr, invokes: &mut usize, opaques: &mut usize, news: &mut usize) {
         match expr {
             Expr::Binary { lhs, rhs, .. }
-            | Expr::Cmp { lhs, rhs }
+            | Expr::Cmp { lhs, rhs, .. }
             | Expr::ArrayLoad {
                 array: lhs,
                 index: rhs,
@@ -1553,7 +1553,12 @@ fn binary_lit(
     LiftOutcome::None
 }
 
-fn cmp_three(ctx: &MethodContext<'_>, file: &mut RegisterFile, regs: &[u16]) -> LiftOutcome {
+fn cmp_three(
+    ctx: &MethodContext<'_>,
+    file: &mut RegisterFile,
+    regs: &[u16],
+    opcode: u8,
+) -> LiftOutcome {
     let (Some(&dest), Some(&lhs), Some(&rhs)): (Option<&u16>, Option<&u16>, Option<&u16>) =
         (regs.first(), regs.get(1), regs.get(2))
     else {
@@ -1561,10 +1566,15 @@ fn cmp_three(ctx: &MethodContext<'_>, file: &mut RegisterFile, regs: &[u16]) -> 
     };
     let lhs_expr: Expr = file.read(ctx, lhs);
     let rhs_expr: Expr = file.read(ctx, rhs);
+    let kind: crate::decompile::CmpKind = match opcode {
+        0x2D | 0x2F => crate::decompile::CmpKind::NanLow,
+        0x2E | 0x30 => crate::decompile::CmpKind::NanHigh,
+        _ => crate::decompile::CmpKind::Long,
+    };
     file.write(
         dest,
-        Expr::Binary {
-            op: "/*cmp*/-",
+        Expr::Cmp {
+            kind,
             lhs: Box::new(lhs_expr),
             rhs: Box::new(rhs_expr),
         },
@@ -1595,8 +1605,8 @@ pub(crate) fn render_branch_condition(
             };
             let value: Expr = file.read(ctx, a);
             match &value {
-                Expr::Binary { op: cmp, lhs, rhs } if *cmp == "/*cmp*/-" => {
-                    format!("{} {} {}", lhs.render(), comparez_op(op), rhs.render())
+                Expr::Cmp { kind, lhs, rhs } => {
+                    kind.render_relation(&lhs.render(), comparez_op(op), &rhs.render())
                 }
                 Expr::InstanceOf { .. } if matches!(op, 0x38 | 0x39) => {
                     let inner: String = value.render();
