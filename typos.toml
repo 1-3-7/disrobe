@@ -6,6 +6,8 @@ extend-ignore-re = [
 ]
 
 [default.extend-words]
+trys = "trys"
+ccontains = "ccontains"
 Stichting = "Stichting"
 Mathematisch = "Mathematisch"
 disrobe = "disrobe"
@@ -133,7 +135,7 @@ dGhpc2lzYXZlcnlsb25nc2VjcmV0a2V5d2l0aGhpZ2hlbnRyb3B5MTIzNDU2Nzg5 = "dGhpc2lzYXZl
 
 [files]
 extend-exclude = [
-    "benches/*/snapshots/*/raw-evidence/logs/git-diff-head.patch",
+    "benches/*/snapshots/*/raw-evidence/logs/**",
     "corpus/**",
     "crates/*/corpus/**",
     "crates/*/tests/corpus/**",

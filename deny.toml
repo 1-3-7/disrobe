@@ -34,6 +34,7 @@ allow = [
 ]
 confidence-threshold = 0.93
 exceptions = [
+    { crate = "libbz2-rs-sys", allow = ["bzip2-1.0.6"] },
 ]
 
 
