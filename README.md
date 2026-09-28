@@ -96,8 +96,8 @@ The grades: `strong` means an independent reference could have rejected the outp
 
 | Interpreter | Modules | Matching code objects | Rate | Grade | Runs |
 |---|---|---|---|---|---|
-| CPython 3.8.20 | 154 | 4,508 of 5,088 | 88.60% | `recompile-only` | weekly |
-| CPython 3.9.25 | 157 | 4,935 of 5,233 | 94.30% | `recompile-only` | weekly |
+| CPython 3.8.20 | 154 | 4,563 of 5,088 | 89.68% | `recompile-only` | weekly |
+| CPython 3.9.25 | 157 | 4,988 of 5,233 | 95.31% | `recompile-only` | weekly |
 | CPython <!-- m:py_band_310_interpreter -->3.10.20<!-- /m --> | <!-- m:py_band_310_modules -->161<!-- /m --> | <!-- m:py_band_310_frac -->5229 / 5458<!-- /m --> | <!-- m:py_band_310_rate -->95.80%<!-- /m --> | `recompile-only` | push |
 | CPython <!-- m:py_band_311_interpreter -->3.11.15<!-- /m --> | <!-- m:py_band_311_modules -->172<!-- /m --> | <!-- m:py_band_311_frac -->5449 / 5638<!-- /m --> | <!-- m:py_band_311_rate -->96.64%<!-- /m --> | `recompile-only` | weekly |
 | CPython <!-- m:py_band_312_interpreter -->3.12.13<!-- /m --> | <!-- m:py_band_312_modules -->177<!-- /m --> | <!-- m:py_band_312_frac -->5421 / 5659<!-- /m --> | <!-- m:py_band_312_rate -->95.79%<!-- /m --> | `recompile-only` | push |
