@@ -92,17 +92,18 @@ pub fn disassemble_streams(bytes: &[u8]) -> Result<StreamSet> {
             break StreamSetEnd::Complete;
         };
         let rest: &[u8] = bytes.get(start..).unwrap_or_default();
-        if !crate::polyglot::looks_like_pickle(rest) {
-            break StreamSetEnd::TrailingBytes {
-                start,
-                len: rest.len(),
-            };
-        }
         if streams.len() >= MAX_STACKED_STREAMS {
             break StreamSetEnd::StreamCap { start };
         }
         let Ok(disassembly) = disassemble(rest) else {
-            break StreamSetEnd::UndecodableStream { start };
+            break if crate::polyglot::looks_like_pickle(rest) {
+                StreamSetEnd::UndecodableStream { start }
+            } else {
+                StreamSetEnd::TrailingBytes {
+                    start,
+                    len: rest.len(),
+                }
+            };
         };
         next = disassembly
             .stop_offset
@@ -902,6 +903,15 @@ mod tests {
     #[test]
     fn stacked_streams_are_split_at_each_stop() {
         let bytes: &[u8] = b"\x80\x02K\x01.\x80\x02K\x02.";
+        let set: StreamSet = disassemble_streams(bytes).expect("streams");
+        assert_eq!(set.streams.len(), 2);
+        assert_eq!(set.streams[1].start, 5);
+        assert_eq!(set.end, StreamSetEnd::Complete);
+    }
+
+    #[test]
+    fn a_later_stream_without_proto_is_decoded_whatever_its_first_opcode() {
+        let bytes: &[u8] = b"\x80\x02K\x01.Vheader\n0cos\nsystem\n(Vx\ntR.";
         let set: StreamSet = disassemble_streams(bytes).expect("streams");
         assert_eq!(set.streams.len(), 2);
         assert_eq!(set.streams[1].start, 5);

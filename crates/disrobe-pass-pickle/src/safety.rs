@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 
 use crate::disasm::disassemble;
-use crate::polyglot::looks_like_pickle;
 use crate::vm::{GlobalRef, PickleValue, VmTrace, execute};
 
 const MAX_SCAN_DEPTH: usize = 2_048;
@@ -576,12 +575,9 @@ fn analyze_nested_pickle(
     findings: &mut Vec<Finding>,
     imports: &mut Vec<String>,
 ) {
-    if !looks_like_pickle(bytes) {
-        return;
-    }
     let loader: &str = source.label();
     let strict: bool = source.reports_failures();
-    if !strict && bytes.len() > MAX_NESTED_PICKLE_BYTES {
+    if !strict && (bytes.is_empty() || bytes.len() > MAX_NESTED_PICKLE_BYTES) {
         return;
     }
     if nested_depth >= MAX_NESTED_PICKLE_DEPTH {
@@ -616,7 +612,7 @@ fn analyze_nested_pickle(
             severity: Severity::Suspicious,
             confidence: ConfidenceTier::SignatureCertain,
             category: "nested_pickle.decode_error".to_string(),
-            detail: format!("{loader} argument looks like pickle but disassembly failed"),
+            detail: format!("{loader} argument does not disassemble as a pickle"),
             offset: None,
         });
         return;
@@ -633,7 +629,7 @@ fn analyze_nested_pickle(
             severity: Severity::Suspicious,
             confidence: ConfidenceTier::SignatureCertain,
             category: "nested_pickle.vm_error".to_string(),
-            detail: format!("{loader} argument looks like pickle but VM trace failed"),
+            detail: format!("{loader} argument disassembles as a pickle but the VM trace failed"),
             offset: None,
         });
         return;
