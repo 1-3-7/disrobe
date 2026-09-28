@@ -3,11 +3,11 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64_STD;
 use disrobe_core::debug::DebugLog;
 use flate2::read::DeflateDecoder;
+use lazy_regex::bytes_regex;
 use regex::bytes::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::Read as _;
-use std::sync::OnceLock;
 
 pub const DEFAULT_MAX_DEPTH: u32 = 32;
 
@@ -245,129 +245,68 @@ enum EvalKind {
     Plain,
 }
 
-#[allow(clippy::expect_used)]
 fn eval_outer_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"(?is)(?:<\?(?:php)?\s*)?(?:eval|assert)\s*\(\s*(.+?)\s*\)\s*;?\s*(?:\?>)?\s*$")
-            .expect("static eval regex compiles")
-    })
+    bytes_regex!(r"(?is)(?:<\?(?:php)?\s*)?(?:eval|assert)\s*\(\s*(.+?)\s*\)\s*;?\s*(?:\?>)?\s*$")
 }
 
-#[allow(clippy::expect_used)]
 fn b64_call_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r#"(?is)^\s*base64_decode\s*\(\s*['"]([A-Za-z0-9+/=\s]+)['"]\s*\)\s*$"#)
-            .expect("static b64 regex compiles")
-    })
+    bytes_regex!(r#"(?is)^\s*base64_decode\s*\(\s*['"]([A-Za-z0-9+/=\s]+)['"]\s*\)\s*$"#)
 }
 
-#[allow(clippy::expect_used)]
 fn gzinflate_call_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"(?is)^\s*gzinflate\s*\((.*)\)\s*$").expect("static gzinflate regex compiles")
-    })
+    bytes_regex!(r"(?is)^\s*gzinflate\s*\((.*)\)\s*$")
 }
 
-#[allow(clippy::expect_used)]
 fn gzuncompress_call_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"(?is)^\s*gzuncompress\s*\((.*)\)\s*$")
-            .expect("static gzuncompress regex compiles")
-    })
+    bytes_regex!(r"(?is)^\s*gzuncompress\s*\((.*)\)\s*$")
 }
 
-#[allow(clippy::expect_used)]
 fn rot13_call_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"(?is)^\s*str_rot13\s*\((.*)\)\s*$").expect("static rot13 regex compiles")
-    })
+    bytes_regex!(r"(?is)^\s*str_rot13\s*\((.*)\)\s*$")
 }
 
-#[allow(clippy::expect_used)]
 fn str_replace_call_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(
-            r#"(?is)^\s*str_replace\s*\(\s*['"]([^'"]*)['"]\s*,\s*['"]([^'"]*)['"]\s*,\s*['"]([^'"]*)['"]\s*\)\s*$"#,
-        )
-        .expect("static str_replace regex compiles")
-    })
+    bytes_regex!(
+        r#"(?is)^\s*str_replace\s*\(\s*['"]([^'"]*)['"]\s*,\s*['"]([^'"]*)['"]\s*,\s*['"]([^'"]*)['"]\s*\)\s*$"#
+    )
 }
 
-#[allow(clippy::expect_used)]
 fn strtr_call_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(
-            r#"(?is)^\s*strtr\s*\(\s*(.+?)\s*,\s*['"]([^'"]*)['"]\s*,\s*['"]([^'"]*)['"]\s*\)\s*$"#,
-        )
-        .expect("static strtr regex compiles")
-    })
+    bytes_regex!(
+        r#"(?is)^\s*strtr\s*\(\s*(.+?)\s*,\s*['"]([^'"]*)['"]\s*,\s*['"]([^'"]*)['"]\s*\)\s*$"#
+    )
 }
 
-#[allow(clippy::expect_used)]
-fn single_arg_call_re(func: &str) -> Regex {
-    Regex::new(&format!(r"(?is)^\s*{func}\s*\((.*)\)\s*$"))
-        .expect("static single-arg regex compiles")
-}
-
-#[allow(clippy::expect_used)]
 fn gzdecode_call_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| single_arg_call_re("gzdecode"))
+    bytes_regex!(r"(?is)^\s*gzdecode\s*\((.*)\)\s*$")
 }
 
-#[allow(clippy::expect_used)]
 fn strrev_call_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| single_arg_call_re("strrev"))
+    bytes_regex!(r"(?is)^\s*strrev\s*\((.*)\)\s*$")
 }
 
-#[allow(clippy::expect_used)]
 fn urldecode_call_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| single_arg_call_re("urldecode"))
+    bytes_regex!(r"(?is)^\s*urldecode\s*\((.*)\)\s*$")
 }
 
-#[allow(clippy::expect_used)]
 fn rawurldecode_call_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| single_arg_call_re("rawurldecode"))
+    bytes_regex!(r"(?is)^\s*rawurldecode\s*\((.*)\)\s*$")
 }
 
-#[allow(clippy::expect_used)]
 fn uudecode_call_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| single_arg_call_re("convert_uudecode"))
+    bytes_regex!(r"(?is)^\s*convert_uudecode\s*\((.*)\)\s*$")
 }
 
-#[allow(clippy::expect_used)]
 fn pack_hex_call_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r#"(?is)^\s*pack\s*\(\s*['"]H\*['"]\s*,\s*['"]([0-9A-Fa-f\s]+)['"]\s*\)\s*$"#)
-            .expect("static pack-hex regex compiles")
-    })
+    bytes_regex!(r#"(?is)^\s*pack\s*\(\s*['"]H\*['"]\s*,\s*['"]([0-9A-Fa-f\s]+)['"]\s*\)\s*$"#)
 }
 
-#[allow(clippy::expect_used)]
 fn hex2bin_call_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| single_arg_call_re("hex2bin"))
+    bytes_regex!(r"(?is)^\s*hex2bin\s*\((.*)\)\s*$")
 }
 
-#[allow(clippy::expect_used)]
 fn createfunction_call_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r#"(?is)^\s*create_function\s*\(\s*['"][^'"]*['"]\s*,\s*(.*)\)\s*$"#)
-            .expect("static create_function regex compiles")
-    })
+    bytes_regex!(r#"(?is)^\s*create_function\s*\(\s*['"][^'"]*['"]\s*,\s*(.*)\)\s*$"#)
 }
 
 fn extract_eval_arg(buf: &[u8]) -> Option<(EvalKind, Vec<u8>)> {
@@ -525,13 +464,8 @@ fn resolve_arg(arg: &[u8], depth: u32) -> Option<Vec<u8>> {
     apply_transform(kind, body, depth)
 }
 
-#[allow(clippy::expect_used)]
 fn b64_wrap_call_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"(?is)^\s*base64_decode\s*\((.*)\)\s*$")
-            .expect("static b64-wrap regex compiles")
-    })
+    bytes_regex!(r"(?is)^\s*base64_decode\s*\((.*)\)\s*$")
 }
 
 fn apply_transform(kind: EvalKind, body: Vec<u8>, depth: u32) -> Option<Vec<u8>> {
@@ -920,27 +854,18 @@ const fn hex_nibble(c: u8) -> Option<u8> {
     }
 }
 
-#[allow(clippy::expect_used)]
 fn classify_single_key_xor(arg: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    let re: &Regex = RE.get_or_init(|| {
-        Regex::new(
-            r#"(?is)^\s*(?:\$?\w+)\s*\(\s*(base64_decode\s*\(\s*['"][^'"]*['"]\s*\)|['"][^'"]*['"])\s*,\s*['"]([^'"]+)['"]\s*\)\s*$"#,
-        )
-        .expect("static single-key-xor regex compiles")
-    });
+    let re: &Regex = bytes_regex!(
+        r#"(?is)^\s*(?:\$?\w+)\s*\(\s*(base64_decode\s*\(\s*['"][^'"]*['"]\s*\)|['"][^'"]*['"])\s*,\s*['"]([^'"]+)['"]\s*\)\s*$"#
+    );
     let caps: regex::bytes::Captures<'_> = re.captures(arg)?;
     let payload: Vec<u8> = resolve_inner(caps.get(1)?.as_bytes());
     let key: Vec<u8> = caps.get(2)?.as_bytes().to_vec();
     Some((key, payload))
 }
 
-#[allow(clippy::expect_used)]
 fn classify_chr_concat(arg: &[u8]) -> Option<Vec<u8>> {
-    static TERM_RE: OnceLock<Regex> = OnceLock::new();
-    let term_re: &Regex = TERM_RE.get_or_init(|| {
-        Regex::new(r"(?is)chr\s*\(\s*([0-9A-Za-z_]+)\s*\)").expect("static chr regex compiles")
-    });
+    let term_re: &Regex = bytes_regex!(r"(?is)chr\s*\(\s*([0-9A-Za-z_]+)\s*\)");
     let trimmed: &[u8] = arg.trim_ascii();
     if !trimmed.starts_with(b"chr") {
         return None;
@@ -1043,15 +968,10 @@ fn contains_eval_call(buf: &[u8]) -> bool {
     memchr::memmem::find(buf, b"eval(").is_some() || memchr::memmem::find(buf, b"assert(").is_some()
 }
 
-#[allow(clippy::expect_used)]
 fn peel_fopo(buf: &[u8], depth: u32) -> Result<Option<Vec<u8>>> {
-    static MARKER_RE: OnceLock<Regex> = OnceLock::new();
-    let re: &Regex = MARKER_RE.get_or_init(|| {
-        Regex::new(
-            r#"(?is)<\?php\s*/\*[^*]*FOPO[^*]*\*/.*?\$\w+\s*=\s*['"]([A-Za-z0-9+/=\s]+)['"]\s*;.*?eval\s*\("#,
-        )
-        .expect("fopo regex compiles")
-    });
+    let re: &Regex = bytes_regex!(
+        r#"(?is)<\?php\s*/\*[^*]*FOPO[^*]*\*/.*?\$\w+\s*=\s*['"]([A-Za-z0-9+/=\s]+)['"]\s*;.*?eval\s*\("#
+    );
     let Some(caps) = re.captures(buf) else {
         return Ok(None);
     };
@@ -1075,15 +995,10 @@ fn peel_fopo(buf: &[u8], depth: u32) -> Result<Option<Vec<u8>>> {
     Ok(Some(decoded))
 }
 
-#[allow(clippy::expect_used)]
 fn peel_better_php(buf: &[u8], depth: u32) -> Result<Option<Vec<u8>>> {
-    static MARKER_RE: OnceLock<Regex> = OnceLock::new();
-    let re: &Regex = MARKER_RE.get_or_init(|| {
-        Regex::new(
-            r#"(?is)<\?php\s*/\*[^*]*Better\s+PHP\s+Obfuscator[^*]*\*/\s*\$\w+\s*=\s*base64_decode\(\s*['"]([A-Za-z0-9+/=]+)['"]\s*\)\s*;\s*\$\w+\s*=\s*gzinflate\(\s*\$\w+\s*\)\s*;\s*eval\s*\(\s*\$\w+\s*\)"#,
-        )
-        .expect("better-php regex compiles")
-    });
+    let re: &Regex = bytes_regex!(
+        r#"(?is)<\?php\s*/\*[^*]*Better\s+PHP\s+Obfuscator[^*]*\*/\s*\$\w+\s*=\s*base64_decode\(\s*['"]([A-Za-z0-9+/=]+)['"]\s*\)\s*;\s*\$\w+\s*=\s*gzinflate\(\s*\$\w+\s*\)\s*;\s*eval\s*\(\s*\$\w+\s*\)"#
+    );
     let Some(caps) = re.captures(buf) else {
         return Ok(None);
     };

@@ -2,11 +2,11 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64_STD;
 use disrobe_core::codec::hex::nibble as hex_nibble;
 use flate2::read::DeflateDecoder;
+use lazy_regex::bytes_regex;
 use regex::bytes::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::Read as _;
-use std::sync::OnceLock;
 
 pub const DEFAULT_LOADER_DEPTH: u32 = 64;
 
@@ -1781,29 +1781,18 @@ fn strip_dollar(name: &[u8]) -> Option<Vec<u8>> {
     name.strip_prefix(b"$").map(<[u8]>::to_vec)
 }
 
-#[allow(clippy::expect_used)]
 fn capture_accumulator_target(body: &[u8]) -> Option<Vec<u8>> {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    let re: &Regex =
-        RE.get_or_init(|| Regex::new(r"(?is)(\$\w+)\s*\.=").expect("accumulator target regex"));
+    let re: &Regex = bytes_regex!(r"(?is)(\$\w+)\s*\.=");
     strip_dollar(re.captures(body)?.get(1)?.as_bytes())
 }
 
-#[allow(clippy::expect_used)]
 fn capture_modulo_indexed_var(body: &[u8]) -> Option<Vec<u8>> {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    let re: &Regex = RE.get_or_init(|| {
-        Regex::new(r"(?is)(\$\w+)\s*\[\s*\$\w+\s*%[^\]]*\]").expect("modulo-indexed var regex")
-    });
+    let re: &Regex = bytes_regex!(r"(?is)(\$\w+)\s*\[\s*\$\w+\s*%[^\]]*\]");
     strip_dollar(re.captures(body)?.get(1)?.as_bytes())
 }
 
-#[allow(clippy::expect_used)]
 fn capture_plain_indexed_var(body: &[u8]) -> Option<Vec<u8>> {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    let re: &Regex = RE.get_or_init(|| {
-        Regex::new(r"(?is)(\$\w+)\s*\[\s*\$\w+\s*\]").expect("plain-indexed var regex")
-    });
+    let re: &Regex = bytes_regex!(r"(?is)(\$\w+)\s*\[\s*\$\w+\s*\]");
     strip_dollar(re.captures(body)?.get(1)?.as_bytes())
 }
 
