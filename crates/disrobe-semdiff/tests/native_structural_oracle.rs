@@ -1,10 +1,4 @@
-#![allow(
-    clippy::expect_used,
-    clippy::unwrap_used,
-    clippy::panic,
-    clippy::print_stdout,
-    clippy::print_stderr
-)]
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -220,7 +214,7 @@ fn grade_pair(
     let stripped_bytes: Vec<u8> = std::fs::read(&stripped_path).expect("read stripped");
     assert!(
         named_addresses(&stripped_bytes).is_empty(),
-        "strip must genuinely remove the tracked function symbols for {tag}"
+        "strip must remove the tracked function symbols for {tag}"
     );
 
     let ref_module: NirModule = lift(ref_bytes);

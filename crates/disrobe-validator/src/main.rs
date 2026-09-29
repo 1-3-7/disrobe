@@ -1,6 +1,5 @@
 #![forbid(unsafe_code)]
 #![deny(unreachable_pub)]
-#![allow(clippy::print_stdout, clippy::print_stderr)]
 use std::path::PathBuf;
 
 use disrobe_validator::{build_report, run_sample, walk_corpus};

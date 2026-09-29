@@ -739,7 +739,7 @@ mod tests {
         assert!(ok_outcome.is_none());
         assert!(
             errors.is_empty(),
-            "a genuinely successful pass must not be reported as errored: {errors:?}"
+            "a successful pass must not be reported as errored: {errors:?}"
         );
 
         let failing: disrobe_pass_js_deob::Result<(String, disrobe_pass_js_deob::ScopeAwareStats)> =

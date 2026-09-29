@@ -452,15 +452,15 @@ fn a_seeded_wrong_recovery_is_rejected_by_the_corpus() {
         confusion.graded
     );
 
-    let honest: Report = grade("recovery", unchanged);
+    let unchanged_report: Report = grade("recovery", unchanged);
     assert!(
-        honest.failures.is_empty(),
+        unchanged_report.failures.is_empty(),
         "the same grader must pass the real recovery it rejects the wrong one for"
     );
     assert!(
-        honest.graded >= GRADED_FLOOR,
+        unchanged_report.graded >= GRADED_FLOOR,
         "the seeded-wrong comparison is only meaningful over a real population, {} entries were graded",
-        honest.graded
+        unchanged_report.graded
     );
 }
 

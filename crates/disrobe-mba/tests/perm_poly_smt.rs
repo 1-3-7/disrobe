@@ -182,7 +182,7 @@ fn permutation_inverses_are_proven_by_an_external_bitvector_solver() {
         if width.is_exhaustible() {
             assert!(
                 !full_image(&coeffs, width),
-                "{name}: a rejected polynomial must genuinely fail to be a bijection"
+                "{name}: a rejected polynomial must fail to be a bijection"
             );
         }
     }
