@@ -963,6 +963,68 @@ mod tests {
     }
 
     #[test]
+    fn a_cab_the_chain_detects_yields_each_member_byte_for_byte() {
+        let members: [(&str, &[u8]); 2] = [
+            ("docs/readme.txt", b"cabinet member one\n"),
+            (
+                "bin/payload.bin",
+                &[0x4d, 0x5a, 0x90, 0x00, 0x03, 0x00, 0x00, 0x00],
+            ),
+        ];
+        let mut builder: cab::CabinetBuilder = cab::CabinetBuilder::new();
+        let folder: &mut cab::FolderBuilder = builder.add_folder(cab::CompressionType::MsZip);
+        for (name, _) in &members {
+            folder.add_file(*name);
+        }
+        let mut writer: cab::CabinetWriter<std::io::Cursor<Vec<u8>>> = builder
+            .build(std::io::Cursor::new(Vec::new()))
+            .expect("the reference writer builds the cabinet");
+        let mut index: usize = 0;
+        while let Some(mut file) = writer.next_file().expect("next cabinet file") {
+            std::io::Write::write_all(&mut file, members[index].1).expect("cabinet write");
+            index += 1;
+        }
+        let cabinet: Vec<u8> = writer.finish().expect("cabinet finish").into_inner();
+        let extraction: MemberExtraction = extract_members(TAG_CAB, &cabinet)
+            .unwrap_or_else(|error: CoreError| panic!("cab: {error}"));
+        let recovered: std::collections::BTreeMap<String, Vec<u8>> = extraction
+            .members
+            .into_iter()
+            .map(|member: ChildArtifact| (member.handle.relative_path, member.bytes))
+            .collect();
+        let expected: std::collections::BTreeMap<String, Vec<u8>> = members
+            .iter()
+            .map(|(name, bytes): &(&str, &[u8])| ((*name).to_owned(), bytes.to_vec()))
+            .collect();
+        assert_eq!(recovered, expected);
+    }
+
+    #[test]
+    fn a_7z_the_chain_detects_yields_each_member_byte_for_byte() {
+        let archive: &[u8] = include_bytes!("../../../corpus/binfmt/sevenzip/hello.7z");
+        let extraction: MemberExtraction = extract_members(TAG_SEVENZIP, archive)
+            .unwrap_or_else(|error: CoreError| panic!("7z: {error}"));
+        let recovered: std::collections::BTreeMap<String, Vec<u8>> = extraction
+            .members
+            .into_iter()
+            .map(|member: ChildArtifact| (member.handle.relative_path, member.bytes))
+            .collect();
+        let expected: std::collections::BTreeMap<String, Vec<u8>> = [
+            (
+                "docs/notes.txt".to_owned(),
+                include_bytes!("../../../corpus/binfmt/sevenzip/expected/docs/notes.txt").to_vec(),
+            ),
+            (
+                "hello.txt".to_owned(),
+                include_bytes!("../../../corpus/binfmt/sevenzip/expected/hello.txt").to_vec(),
+            ),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(recovered, expected);
+    }
+
+    #[test]
     fn a_detected_kind_without_an_extractor_is_refused_by_name() {
         let refused: CoreResult<MemberExtraction> = extract_members("future-kind", b"bytes");
         assert!(
