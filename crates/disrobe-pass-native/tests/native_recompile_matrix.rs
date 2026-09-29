@@ -612,16 +612,8 @@ impl Default for TruthLedger {
     }
 }
 
-fn ledger_path() -> Result<PathBuf, String> {
-    let mut root: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    while !root.join("Cargo.lock").is_file() {
-        if !root.pop() {
-            return Err(
-                "could not resolve the workspace root for the native truth witness".to_owned(),
-            );
-        }
-    }
-    Ok(root.join(".disrobe").join(LEDGER_FILE))
+fn ledger_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(LEDGER_FILE)
 }
 
 fn load_ledger(path: &Path) -> Result<(TruthLedger, bool), String> {
@@ -796,8 +788,7 @@ fn reconcile_ledger_at(path: &Path, rows: &[(MatrixRow, [u8; 32])]) -> Result<()
 }
 
 fn reconcile_ledger(rows: &[(MatrixRow, [u8; 32])]) -> Result<(), String> {
-    let path: PathBuf = ledger_path()?;
-    reconcile_ledger_at(&path, rows)
+    reconcile_ledger_at(&ledger_path(), rows)
 }
 
 fn ledger_test_row(verdict: Verdict) -> MatrixRow {
