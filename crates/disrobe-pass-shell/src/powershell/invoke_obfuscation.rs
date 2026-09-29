@@ -279,18 +279,42 @@ fn strip_backtick_escapes(s: &str) -> Option<String> {
     if !s.contains('`') {
         return None;
     }
+    let literals: Vec<std::ops::Range<usize>> = non_code_spans(s);
     let mut out: String = String::with_capacity(s.len());
-    let mut chars: std::str::Chars<'_> = s.chars();
-    while let Some(c) = chars.next() {
-        if c == '`' {
-            if let Some(next) = chars.next() {
-                out.push(next);
-            }
-        } else {
+    let mut chars: std::iter::Peekable<std::str::CharIndices<'_>> = s.char_indices().peekable();
+    let mut span_index: usize = 0;
+    while let Some((at, c)) = chars.next() {
+        while literals
+            .get(span_index)
+            .is_some_and(|span: &std::ops::Range<usize>| span.end <= at)
+        {
+            span_index += 1;
+        }
+        let in_literal: bool = literals
+            .get(span_index)
+            .is_some_and(|span: &std::ops::Range<usize>| span.contains(&at));
+        if c != '`' || in_literal {
             out.push(c);
+            continue;
+        }
+        match chars.peek().copied() {
+            Some((_, next)) if is_escape_letter(next, s.get(at + 2..)) => out.push(c),
+            Some((_, next)) => {
+                out.push(next);
+                chars.next();
+            }
+            None => out.push(c),
         }
     }
-    Some(out)
+    (out != s).then_some(out)
+}
+
+fn is_escape_letter(next: char, after: Option<&str>) -> bool {
+    match next {
+        '0' | 'a' | 'b' | 'e' | 'f' | 'n' | 'r' | 't' | 'v' | '\n' | '\r' => true,
+        'u' => after.is_some_and(|rest: &str| rest.starts_with('{')),
+        _ => false,
+    }
 }
 
 static IEX_ALIAS: LazyLock<&'static Regex> = LazyLock::new(|| {
@@ -1311,6 +1335,29 @@ fn strip_wmic_proxy(s: &str) -> Option<String> {
             })
             .into_owned(),
     )
+}
+
+#[cfg(test)]
+mod backtick_tests {
+    use super::strip_backtick_escapes;
+
+    #[test]
+    fn only_non_escape_ticks_in_code_are_removed() {
+        assert_eq!(
+            strip_backtick_escapes("wR`I`TE-oU`TpUt 'a`b'"),
+            Some("wRITE-oUTpUt 'a`b'".to_owned())
+        );
+        assert_eq!(strip_backtick_escapes("W`rite-Output \"t`tab\""), None);
+        assert_eq!(
+            strip_backtick_escapes("Get-Item `\n  -Path x"),
+            None,
+            "a line continuation stays"
+        );
+        assert_eq!(
+            strip_backtick_escapes("Wr`ite-Out`put `u{41}"),
+            Some("Write-Output `u{41}".to_owned())
+        );
+    }
 }
 
 #[cfg(test)]
