@@ -275,58 +275,64 @@ pub(crate) fn decode_python_bytes_literal(s: &str) -> Result<Vec<u8>> {
     let bytes: &[u8] = s.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
     let mut i: usize = 0;
-    while i < bytes.len() {
-        let b: u8 = bytes[i];
+    while let Some(&b) = bytes.get(i) {
         if b != b'\\' {
             out.push(b);
             i += 1;
             continue;
         }
-        if i + 1 >= bytes.len() {
-            break;
+        let esc: u8 = *bytes.get(i + 1).ok_or(Error::LiteralNotFound)?;
+        i += 2;
+        let named: Option<u8> = match esc {
+            b'\\' | b'\'' | b'"' => Some(esc),
+            b'a' => Some(0x07),
+            b'b' => Some(0x08),
+            b'f' => Some(0x0c),
+            b'n' => Some(b'\n'),
+            b'r' => Some(b'\r'),
+            b't' => Some(b'\t'),
+            b'v' => Some(0x0b),
+            _ => None,
+        };
+        if let Some(value) = named {
+            out.push(value);
+            continue;
         }
-        let esc: u8 = bytes[i + 1];
         match esc {
-            b'x' => {
-                if i + 3 >= bytes.len() {
-                    return Err(Error::LiteralNotFound);
+            b'\n' => {}
+            b'\r' => {
+                if bytes.get(i) == Some(&b'\n') {
+                    i += 1;
                 }
-                let hi: u8 = hex_nibble(bytes[i + 2]).ok_or(Error::LiteralNotFound)?;
-                let lo: u8 = hex_nibble(bytes[i + 3]).ok_or(Error::LiteralNotFound)?;
+            }
+            b'x' => {
+                let hi: u8 = bytes
+                    .get(i)
+                    .and_then(|c: &u8| hex_nibble(*c))
+                    .ok_or(Error::LiteralNotFound)?;
+                let lo: u8 = bytes
+                    .get(i + 1)
+                    .and_then(|c: &u8| hex_nibble(*c))
+                    .ok_or(Error::LiteralNotFound)?;
                 out.push((hi << 4) | lo);
-                i += 4;
-            }
-            b'n' => {
-                out.push(b'\n');
                 i += 2;
             }
-            b'r' => {
-                out.push(b'\r');
-                i += 2;
+            b'0'..=b'7' => {
+                let mut value: u32 = u32::from(esc - b'0');
+                let mut digits: usize = 1;
+                while digits < 3
+                    && let Some(&d) = bytes.get(i)
+                    && (b'0'..=b'7').contains(&d)
+                {
+                    value = value * 8 + u32::from(d - b'0');
+                    digits += 1;
+                    i += 1;
+                }
+                out.push((value & 0xff) as u8);
             }
-            b't' => {
-                out.push(b'\t');
-                i += 2;
-            }
-            b'\\' => {
+            other => {
                 out.push(b'\\');
-                i += 2;
-            }
-            b'\'' => {
-                out.push(b'\'');
-                i += 2;
-            }
-            b'"' => {
-                out.push(b'"');
-                i += 2;
-            }
-            b'0' => {
-                out.push(0);
-                i += 2;
-            }
-            _ => {
-                out.push(b);
-                i += 1;
+                out.push(other);
             }
         }
     }
@@ -417,6 +423,27 @@ mod tests {
         );
         assert!(decode_python_bytes_literal(r"\xzz").is_err());
         assert!(decode_python_bytes_literal(r"\x4").is_err());
+    }
+
+    #[test]
+    fn decode_python_bytes_literal_follows_the_python_escape_grammar() {
+        assert_eq!(
+            decode_python_bytes_literal(r"\101\a").expect("octal and bell"),
+            b"A\x07"
+        );
+        assert_eq!(
+            decode_python_bytes_literal(r"\b\f\v\0\12\400").expect("named and octal"),
+            [0x08, 0x0c, 0x0b, 0x00, 0x0a, 0x00]
+        );
+        assert_eq!(
+            decode_python_bytes_literal(r"\q\8").expect("unknown escapes"),
+            b"\\q\\8"
+        );
+        assert_eq!(
+            decode_python_bytes_literal("a\\\nb\\\r\nc").expect("line continuation"),
+            b"abc"
+        );
+        assert!(decode_python_bytes_literal("\\").is_err());
     }
 
     #[test]

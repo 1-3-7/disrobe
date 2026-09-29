@@ -1,6 +1,5 @@
 use serde::Serialize;
 
-use disrobe_core::codec::hex::nibble as hex_nibble;
 use disrobe_pass_py_decompile::bytecode::version::PyVersion as DecompileVersion;
 use disrobe_pass_py_decompile::engine::{build_real_source, marshal_to_decompile};
 use disrobe_pass_py_disasm::{Instruction, JumpFitness, disassemble, jump_target_fitness};
@@ -359,7 +358,10 @@ fn next_bytes_literal(text: &str, cursor: usize) -> Option<(Vec<u8>, usize)> {
     let rest: &str = text.get(body_start..)?;
     let end_off: usize = scan_unescaped(rest.as_bytes(), opener)?;
     let lit: &str = rest.get(..end_off)?;
-    Some((decode_python_byte_escapes(lit), body_start + end_off + 1))
+    Some((
+        crate::codec::decode_python_bytes_literal(lit).ok()?,
+        body_start + end_off + 1,
+    ))
 }
 
 fn largest_quoted_string(text: &str) -> Option<String> {
@@ -396,64 +398,6 @@ fn scan_unescaped(bytes: &[u8], opener: u8) -> Option<usize> {
         i += 1;
     }
     None
-}
-
-fn decode_python_byte_escapes(s: &str) -> Vec<u8> {
-    let bytes: &[u8] = s.as_bytes();
-    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
-    let mut i: usize = 0;
-    while i < bytes.len() {
-        let b: u8 = bytes[i];
-        if b != b'\\' || i + 1 >= bytes.len() {
-            out.push(b);
-            i += 1;
-            continue;
-        }
-        match bytes[i + 1] {
-            b'x' if i + 3 < bytes.len() => {
-                if let (Some(hi), Some(lo)) = (hex_nibble(bytes[i + 2]), hex_nibble(bytes[i + 3])) {
-                    out.push((hi << 4) | lo);
-                    i += 4;
-                } else {
-                    out.push(b);
-                    i += 1;
-                }
-            }
-            b'n' => {
-                out.push(b'\n');
-                i += 2;
-            }
-            b'r' => {
-                out.push(b'\r');
-                i += 2;
-            }
-            b't' => {
-                out.push(b'\t');
-                i += 2;
-            }
-            b'\\' => {
-                out.push(b'\\');
-                i += 2;
-            }
-            b'\'' => {
-                out.push(b'\'');
-                i += 2;
-            }
-            b'"' => {
-                out.push(b'"');
-                i += 2;
-            }
-            b'0' => {
-                out.push(0);
-                i += 2;
-            }
-            _ => {
-                out.push(b);
-                i += 1;
-            }
-        }
-    }
-    out
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -636,19 +580,5 @@ mod tests {
     fn detect_clean_python_is_zero() {
         let src: &[u8] = b"import os\nprint(os.getcwd())\n";
         assert!(detect_marshal(src).abs() < f32::EPSILON);
-    }
-
-    #[test]
-    fn hex_nibble_round_trip() {
-        assert_eq!(hex_nibble(b'a'), Some(10));
-        assert_eq!(hex_nibble(b'F'), Some(15));
-        assert_eq!(hex_nibble(b'9'), Some(9));
-        assert_eq!(hex_nibble(b'g'), None);
-    }
-
-    #[test]
-    fn decode_byte_escapes_handles_hex_and_named() {
-        let decoded: Vec<u8> = decode_python_byte_escapes("\\x00A\\n\\t\\\\");
-        assert_eq!(decoded, vec![0x00, b'A', b'\n', b'\t', b'\\']);
     }
 }

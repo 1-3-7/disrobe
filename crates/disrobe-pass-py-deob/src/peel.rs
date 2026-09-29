@@ -374,7 +374,7 @@ fn dbg_recovery(result: &PeelResult) {
 fn try_peel_dropper(source: &[u8]) -> Option<(String, Vec<u8>)> {
     let text: &str = std::str::from_utf8(source).ok()?;
     let literal: &str = extract_first_bytes_literal(text)?;
-    let raw: Vec<u8> = decode_python_bytes(literal).ok()?;
+    let raw: Vec<u8> = crate::codec::decode_python_bytes_literal(literal).ok()?;
 
     if let Ok(de) = base64::engine::general_purpose::STANDARD.decode(&raw) {
         if let Ok(infl) = inflate(&de) {
@@ -404,7 +404,7 @@ fn try_peel_dropper(source: &[u8]) -> Option<(String, Vec<u8>)> {
 fn try_peel_hyperion(source: &[u8]) -> Option<Vec<u8>> {
     let text: &str = std::str::from_utf8(source).ok()?;
     let literal: &str = find_largest_bytes_literal(text)?;
-    let raw: Vec<u8> = decode_python_bytes(literal).ok()?;
+    let raw: Vec<u8> = crate::codec::decode_python_bytes_literal(literal).ok()?;
     inflate(&raw).ok()
 }
 
@@ -455,78 +455,6 @@ fn find_unescaped(bytes: &[u8], opener: u8) -> Option<usize> {
         i += 1;
     }
     None
-}
-
-fn decode_python_bytes(s: &str) -> Result<Vec<u8>> {
-    let bytes: &[u8] = s.as_bytes();
-    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
-    let mut i: usize = 0;
-    while i < bytes.len() {
-        let b: u8 = bytes[i];
-        if b != b'\\' {
-            out.push(b);
-            i += 1;
-            continue;
-        }
-        if i + 1 >= bytes.len() {
-            break;
-        }
-        let escape: u8 = bytes[i + 1];
-        match escape {
-            b'x' => {
-                if i + 3 >= bytes.len() {
-                    break;
-                }
-                let high: u8 = hex_nibble(bytes[i + 2]).ok_or(Error::LiteralNotFound)?;
-                let low: u8 = hex_nibble(bytes[i + 3]).ok_or(Error::LiteralNotFound)?;
-                out.push((high << 4) | low);
-                i += 4;
-            }
-            b'n' => {
-                out.push(b'\n');
-                i += 2;
-            }
-            b'r' => {
-                out.push(b'\r');
-                i += 2;
-            }
-            b't' => {
-                out.push(b'\t');
-                i += 2;
-            }
-            b'\\' => {
-                out.push(b'\\');
-                i += 2;
-            }
-            b'\'' => {
-                out.push(b'\'');
-                i += 2;
-            }
-            b'"' => {
-                out.push(b'"');
-                i += 2;
-            }
-            b'0' => {
-                out.push(0);
-                i += 2;
-            }
-            _ => {
-                out.push(b);
-                i += 1;
-            }
-        }
-    }
-    Ok(out)
-}
-
-#[inline]
-const fn hex_nibble(c: u8) -> Option<u8> {
-    match c {
-        b'0'..=b'9' => Some(c - b'0'),
-        b'a'..=b'f' => Some(c - b'a' + 10),
-        b'A'..=b'F' => Some(c - b'A' + 10),
-        _ => None,
-    }
 }
 
 const EXEC_EVAL_KEYWORDS: [&str; 3] = ["exec", "eval", "compile"];
@@ -591,7 +519,7 @@ fn try_peel_exec_eval(source: &[u8]) -> Option<(String, Vec<u8>)> {
 
 fn peel_decode_chain_in(argument: &str) -> Option<(String, Vec<u8>)> {
     let literal: &str = extract_first_bytes_literal(argument)?;
-    let raw: Vec<u8> = decode_python_bytes(literal).ok()?;
+    let raw: Vec<u8> = crate::codec::decode_python_bytes_literal(literal).ok()?;
     if let Ok(de) = base64::engine::general_purpose::STANDARD.decode(&raw) {
         if let Ok(infl) = inflate(&de) {
             return Some(("base64+zlib".to_owned(), infl));
@@ -651,7 +579,7 @@ fn extract_first_string_literal(text: &str) -> Option<&str> {
 }
 
 fn decode_python_text_literal(s: &str) -> Option<Vec<u8>> {
-    let decoded: Vec<u8> = decode_python_bytes(s).ok()?;
+    let decoded: Vec<u8> = crate::codec::decode_python_bytes_literal(s).ok()?;
     if decoded.is_empty() {
         return None;
     }

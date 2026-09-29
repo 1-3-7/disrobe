@@ -1,6 +1,5 @@
 use disrobe_core::codec::DecodeError;
 use disrobe_core::codec::hex::encode as bytes_to_hex;
-use disrobe_core::codec::hex::nibble as hex_nibble;
 use disrobe_pass_py_disasm::{Instruction, disassemble, render_dis};
 use disrobe_py_marshal::{CodeObject, Object, PyVersion, load as marshal_load};
 use liblzma::read::XzDecoder;
@@ -443,7 +442,7 @@ fn extract_xor_key(text: &str) -> Result<Vec<u8>> {
         return hex_decode(&cleaned);
     }
     if let Some(literal) = find_xor_key_bytes_literal(text) {
-        let decoded: Vec<u8> = decode_python_bytes(literal)?;
+        let decoded: Vec<u8> = crate::codec::decode_python_bytes_literal(literal)?;
         if decoded.is_empty() || decoded.len() > MAX_XOR_KEY_LEN {
             return Err(Error::XorKey(format!(
                 "xor key literal has out-of-range length {len}",
@@ -561,7 +560,7 @@ fn extract_largest_bytes_literal(text: &str) -> Result<Vec<u8>> {
     let Some(literal): Option<&str> = best else {
         return Err(Error::LiteralNotFound);
     };
-    decode_python_bytes(literal)
+    crate::codec::decode_python_bytes_literal(literal)
 }
 
 fn next_bytes_literal(text: &str, cursor: usize) -> Option<(&str, usize)> {
@@ -589,68 +588,6 @@ fn find_unescaped(bytes: &[u8], opener: u8) -> Option<usize> {
         i += 1;
     }
     None
-}
-
-fn decode_python_bytes(s: &str) -> Result<Vec<u8>> {
-    let bytes: &[u8] = s.as_bytes();
-    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
-    let mut i: usize = 0;
-    while i < bytes.len() {
-        let b: u8 = bytes[i];
-        if b != b'\\' {
-            out.push(b);
-            i += 1;
-            continue;
-        }
-        if i + 1 >= bytes.len() {
-            break;
-        }
-        let escape: u8 = bytes[i + 1];
-        match escape {
-            b'x' => {
-                if i + 3 >= bytes.len() {
-                    return Err(Error::LiteralNotFound);
-                }
-                let hi: u8 = hex_nibble(bytes[i + 2]).ok_or(Error::LiteralNotFound)?;
-                let lo: u8 = hex_nibble(bytes[i + 3]).ok_or(Error::LiteralNotFound)?;
-                out.push((hi << 4) | lo);
-                i += 4;
-            }
-            b'n' => {
-                out.push(b'\n');
-                i += 2;
-            }
-            b'r' => {
-                out.push(b'\r');
-                i += 2;
-            }
-            b't' => {
-                out.push(b'\t');
-                i += 2;
-            }
-            b'\\' => {
-                out.push(b'\\');
-                i += 2;
-            }
-            b'\'' => {
-                out.push(b'\'');
-                i += 2;
-            }
-            b'"' => {
-                out.push(b'"');
-                i += 2;
-            }
-            b'0' => {
-                out.push(0);
-                i += 2;
-            }
-            _ => {
-                out.push(b);
-                i += 1;
-            }
-        }
-    }
-    Ok(out)
 }
 
 fn decompress_xz(input: &[u8]) -> std::io::Result<Vec<u8>> {
