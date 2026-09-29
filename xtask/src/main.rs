@@ -43,6 +43,7 @@ mod packer_roster;
 mod playground;
 mod plugins;
 mod prepush;
+mod probe;
 mod prose_tells;
 mod push_graders;
 mod pycdc_blobs;
@@ -164,6 +165,14 @@ enum Cmd {
         mode: GoldenMode,
     },
     SetupHooks,
+    Probe {
+        language: String,
+        source: PathBuf,
+        #[arg(long)]
+        bin: Option<PathBuf>,
+        #[arg(long)]
+        keep: Option<PathBuf>,
+    },
     #[cfg(feature = "playground")]
     Playground {
         #[arg(long)]
@@ -205,6 +214,12 @@ fn main() -> ExitCode {
         Cmd::Comments { rev } => run_comments(&rev),
         Cmd::Golden { mode } => run_golden(mode),
         Cmd::SetupHooks => run_setup_hooks(),
+        Cmd::Probe {
+            language,
+            source,
+            bin,
+            keep,
+        } => probe::run(&language, &source, bin, keep),
         #[cfg(feature = "playground")]
         Cmd::Playground {
             sample_per_kind,
