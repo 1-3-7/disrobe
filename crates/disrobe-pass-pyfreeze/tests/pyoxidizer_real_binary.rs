@@ -2,7 +2,6 @@
     clippy::expect_used,
     clippy::unwrap_used,
     clippy::panic,
-    clippy::print_stderr,
     clippy::unreadable_literal,
     clippy::case_sensitive_file_extension_comparisons,
     clippy::if_same_then_else
@@ -772,7 +771,7 @@ fn filesystem_relative_siblings_surface_and_marshal_load() {
 
     assert_eq!(
         extraction.fs_relative_modules_surfaced, 1,
-        "exactly the present sibling (lib/sib.pyc) surfaces; the absent lib/ghost.pyc is an honest skip, not a failure (was 0 before filesystem-relative resolution)"
+        "exactly the present sibling (lib/sib.pyc) surfaces; the absent lib/ghost.pyc is a skip, not a failure (was 0 before filesystem-relative resolution)"
     );
 
     let surfaced: PathBuf = out.join("modules").join("sib.pyc");

@@ -1,9 +1,4 @@
-#![allow(
-    clippy::expect_used,
-    clippy::unwrap_used,
-    clippy::panic,
-    clippy::print_stderr
-)]
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use std::collections::BTreeSet;
 use std::io::Write;
@@ -240,7 +235,7 @@ fn bbfreeze_full_pipeline_recovers_source() {
         );
     } else {
         eprintln!(
-            "[real_bbfreeze] HONEST-PARTIAL: app_logic extracted+loadable but decompiler did not \
+            "[real_bbfreeze] PARTIAL: app_logic extracted+loadable but decompiler did not \
              recover direct source on this build; extraction and marshal-load asserted"
         );
     }

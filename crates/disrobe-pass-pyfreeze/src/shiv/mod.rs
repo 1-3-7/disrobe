@@ -1,7 +1,4 @@
-#![allow(
-    clippy::case_sensitive_file_extension_comparisons,
-    clippy::cast_possible_truncation
-)]
+#![allow(clippy::case_sensitive_file_extension_comparisons)]
 
 pub mod environment;
 

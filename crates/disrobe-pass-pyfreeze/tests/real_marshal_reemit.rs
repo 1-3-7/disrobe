@@ -1,9 +1,4 @@
-#![allow(
-    clippy::expect_used,
-    clippy::unwrap_used,
-    clippy::panic,
-    clippy::print_stderr
-)]
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -191,13 +186,13 @@ fn synthesize_pyc_reemits_cpython_marshal_constants_byte_exact() {
         run_generator(&dir)
     else {
         eprintln!(
-            "[real_marshal_reemit] HONEST-PARTIAL: no usable CPython on PATH; synthesize_pyc re-emit not graded end-to-end this run"
+            "[real_marshal_reemit] PARTIAL: no usable CPython on PATH; synthesize_pyc re-emit not graded end-to-end this run"
         );
         return;
     };
     if magic_for(PyVersion::new(major, minor)).is_none() {
         eprintln!(
-            "[real_marshal_reemit] HONEST-PARTIAL: CPython {major}.{minor} predates the supported pyc magic table; skipping"
+            "[real_marshal_reemit] PARTIAL: CPython {major}.{minor} predates the supported pyc magic table; skipping"
         );
         return;
     }
@@ -277,7 +272,7 @@ fn synthesize_pyc_reemits_cpython_marshal_constants_byte_exact() {
         );
     } else {
         eprintln!(
-            "[real_marshal_reemit] HONEST-PARTIAL: CPython cross-check inspect failed; disrobe-side decode still asserted"
+            "[real_marshal_reemit] PARTIAL: CPython cross-check inspect failed; disrobe-side decode still asserted"
         );
     }
 }
