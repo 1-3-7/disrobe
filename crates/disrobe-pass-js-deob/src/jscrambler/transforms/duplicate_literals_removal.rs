@@ -72,7 +72,7 @@ pub(in crate::jscrambler) fn reverse(source: &str, _opts: &TransformOpts) -> Tra
         edits.push((table, None));
     }
     let (out, applied): (String, usize) = apply_splice_edits(source, &mut edits);
-    stats.reversed = applied.saturating_sub(usize::from(removes_table));
+    stats.reversed = applied;
     TransformOutput { source: out, stats }
 }
 
