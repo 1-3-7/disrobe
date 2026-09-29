@@ -3,8 +3,8 @@
 use std::collections::BTreeMap;
 
 use disrobe_pass_webview::{
-    CarveReport, Compression, IntegrityStatus, RecoveredAsset, WebviewFamily, carve, carve_report,
-    detect_family,
+    CarveReport, Compression, FamilyEvidence, IntegrityStatus, RecoveredAsset, WebviewFamily,
+    carve_report, classify,
 };
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -181,7 +181,10 @@ fn recovers_symlink_executable_and_verifies_integrity() {
 #[test]
 fn carves_genuine_hand_built_asar() {
     let bytes: Vec<u8> = build_genuine_asar(&sample_tree());
-    assert_eq!(detect_family(&bytes), Some(WebviewFamily::Electron));
+    assert_eq!(
+        classify(&bytes).map(|evidence: FamilyEvidence| evidence.family),
+        Some(WebviewFamily::Electron)
+    );
     let report: CarveReport = carve_report(&bytes).unwrap();
     assert_eq!(report.family, WebviewFamily::Electron);
     assert!(report.external_unpacked.is_empty());
@@ -195,17 +198,27 @@ fn locates_asar_embedded_inside_a_larger_binary() {
     host.extend(std::iter::repeat_n(0xCCu8, 4096));
     host.extend_from_slice(&asar);
     host.extend(std::iter::repeat_n(0x00u8, 512));
-    let assets: Vec<RecoveredAsset> = carve(&host).unwrap();
+    let assets: Vec<RecoveredAsset> = carve_report(&host)
+        .map(|report: CarveReport| report.assets)
+        .unwrap();
     assert_matches_sample(&assets);
 }
 
 #[test]
 fn single_byte_regression_is_detected() {
     let mut bytes: Vec<u8> = build_genuine_asar(&sample_tree());
-    let pristine: BTreeMap<String, Vec<u8>> = recovered_map(&carve(&bytes).unwrap());
+    let pristine: BTreeMap<String, Vec<u8>> = recovered_map(
+        &carve_report(&bytes)
+            .map(|report: CarveReport| report.assets)
+            .unwrap(),
+    );
     let last: usize = bytes.len() - 1;
     bytes[last] ^= 0xFF;
-    let tampered: BTreeMap<String, Vec<u8>> = recovered_map(&carve(&bytes).unwrap());
+    let tampered: BTreeMap<String, Vec<u8>> = recovered_map(
+        &carve_report(&bytes)
+            .map(|report: CarveReport| report.assets)
+            .unwrap(),
+    );
     assert_ne!(
         pristine, tampered,
         "a one-byte perturbation of the blob must surface in the carved tree"
@@ -217,7 +230,9 @@ fn hostile_path_never_escapes_output_root() {
     let files: Vec<(&str, Vec<u8>)> =
         vec![("ok.js", b"safe".to_vec()), ("../evil.js", b"pwn".to_vec())];
     let bytes: Vec<u8> = build_genuine_asar(&files);
-    let assets: Vec<RecoveredAsset> = carve(&bytes).unwrap();
+    let assets: Vec<RecoveredAsset> = carve_report(&bytes)
+        .map(|report: CarveReport| report.assets)
+        .unwrap();
     for asset in &assets {
         assert!(!asset.path.contains(".."), "path {} escaped", asset.path);
         assert!(!asset.path.starts_with('/'), "path {} absolute", asset.path);
@@ -237,6 +252,14 @@ fn hostile_path_never_escapes_output_root() {
 #[test]
 fn no_frontend_is_reported() {
     let bytes: Vec<u8> = vec![0u8; 2048];
-    assert!(detect_family(&bytes).is_none());
-    assert!(carve(&bytes).is_err());
+    assert!(
+        classify(&bytes)
+            .map(|evidence: FamilyEvidence| evidence.family)
+            .is_none()
+    );
+    assert!(
+        carve_report(&bytes)
+            .map(|report: CarveReport| report.assets)
+            .is_err()
+    );
 }

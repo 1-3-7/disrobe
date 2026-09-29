@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use disrobe_binfmt::{ContainerKind, ExtractedEntry, ExtractionResult, extract_to};
 use disrobe_pass_webview::{
     CarveReport, Compression, Error, FamilyEvidence, IntegrityStatus, RecoveredAsset,
-    WebviewFamily, carve_report, classify, classify_all, detect_family,
+    WebviewFamily, carve_report, classify, classify_all,
 };
 use sha2::{Digest, Sha256};
 
@@ -431,7 +431,7 @@ fn assert_named_family(path: &str, markers: &[&'static str]) {
          must name {want}"
     );
     assert_eq!(
-        detect_family(&image),
+        classify(&image).map(|evidence: FamilyEvidence| evidence.family),
         Some(want),
         "{path}: the family helper must agree with the ranked evidence it reads"
     );

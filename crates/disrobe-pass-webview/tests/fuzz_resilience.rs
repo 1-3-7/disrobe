@@ -1,8 +1,8 @@
 #![allow(clippy::expect_used)]
 
 use disrobe_pass_webview::{
-    CarveConfig, CarveReport, RecoveredAsset, Result, WebviewFamily, carve, carve_report,
-    carve_with_config, detect_family,
+    CarveConfig, CarveReport, FamilyEvidence, RecoveredAsset, Result, WebviewFamily, carve_report,
+    carve_with_config, classify,
 };
 use disrobe_testkit::{CorpusEntry, StressCase, StressConfig, XorShift64};
 
@@ -95,8 +95,9 @@ fn probe(bytes: &[u8], rng: &mut XorShift64) {
         ..CarveConfig::default()
     };
 
-    let _: Option<WebviewFamily> = detect_family(bytes);
-    let _: Result<Vec<RecoveredAsset>> = carve(bytes);
+    let _: Option<WebviewFamily> = classify(bytes).map(|evidence: FamilyEvidence| evidence.family);
+    let _: Result<Vec<RecoveredAsset>> =
+        carve_report(bytes).map(|report: CarveReport| report.assets);
     let _: Result<CarveReport> = carve_report(bytes);
     let _: Result<CarveReport> = carve_with_config(bytes, &config);
 }
@@ -160,8 +161,9 @@ fn every_unmutated_seed_finishes() {
 
 #[test]
 fn the_constructed_asar_seed_carves_its_one_stored_asset() {
-    let assets: Vec<RecoveredAsset> =
-        carve(&asar_seed()).expect("the constructed asar header parses");
+    let assets: Vec<RecoveredAsset> = carve_report(&asar_seed())
+        .map(|report: CarveReport| report.assets)
+        .expect("the constructed asar header parses");
     assert_eq!(assets.len(), 1);
     let asset: &RecoveredAsset = assets
         .first()

@@ -8,8 +8,8 @@ use std::process::{Command, Output};
 
 use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_webview::{
-    CarveConfig, CarveReport, Compression, EntryRefusal, IntegrityStatus, RecoveredAsset,
-    WebviewFamily, carve_with_config, detect_family,
+    CarveConfig, CarveReport, Compression, EntryRefusal, FamilyEvidence, IntegrityStatus,
+    RecoveredAsset, WebviewFamily, carve_with_config, classify,
 };
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
@@ -271,7 +271,10 @@ fn the_pinned_package_carries_the_recorded_integrity() {
 #[test]
 fn every_packed_member_matches_asar_extract_by_sha256() {
     let archive: Archive = pack_app();
-    assert_eq!(detect_family(&archive.bytes), Some(WebviewFamily::Electron));
+    assert_eq!(
+        classify(&archive.bytes).map(|evidence: FamilyEvidence| evidence.family),
+        Some(WebviewFamily::Electron)
+    );
     let report: CarveReport =
         carve_with_config(&archive.bytes, &CarveConfig::default()).expect("pristine archive");
     assert_eq!(report.family, WebviewFamily::Electron);

@@ -12,7 +12,7 @@ mod resolve;
 
 use disrobe_binfmt::{ContainerKind, detect_container};
 
-pub use detect::{FamilyEvidence, classify, classify_all, detect_family};
+pub use detect::{FamilyEvidence, classify, classify_all};
 pub use disrobe_binfmt::ExtractionQuota;
 pub use error::{Error, Result};
 pub use model::{
@@ -52,10 +52,6 @@ impl Default for CarveConfig {
             max_table_probes: DEFAULT_MAX_TABLE_PROBES,
         }
     }
-}
-
-pub fn carve(bytes: &[u8]) -> Result<Vec<RecoveredAsset>> {
-    carve_with_config(bytes, &CarveConfig::default()).map(|report: CarveReport| report.assets)
 }
 
 pub fn carve_report(bytes: &[u8]) -> Result<CarveReport> {

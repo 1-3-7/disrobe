@@ -109,11 +109,6 @@ pub struct FamilyEvidence {
 }
 
 #[must_use]
-pub fn detect_family(bytes: &[u8]) -> Option<WebviewFamily> {
-    classify(bytes).map(|evidence: FamilyEvidence| evidence.family)
-}
-
-#[must_use]
 pub fn classify(bytes: &[u8]) -> Option<FamilyEvidence> {
     classify_all(bytes).into_iter().next()
 }
@@ -253,7 +248,8 @@ mod tests {
             );
         }
         assert_eq!(
-            detect_family(b"window.runtime.EventsOn and /wails/runtime"),
+            classify(b"window.runtime.EventsOn and /wails/runtime")
+                .map(|evidence: FamilyEvidence| evidence.family),
             Some(WebviewFamily::Wails)
         );
     }
@@ -262,7 +258,11 @@ mod tests {
     fn no_evidence_yields_no_family() {
         assert!(classify(&[0u8; 512]).is_none());
         assert!(classify(b"").is_none());
-        assert!(detect_family(b"a plain text file with no webview markers at all").is_none());
+        assert!(
+            classify(b"a plain text file with no webview markers at all")
+                .map(|evidence: FamilyEvidence| evidence.family)
+                .is_none()
+        );
     }
 
     #[test]
