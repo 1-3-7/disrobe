@@ -31,6 +31,7 @@ default = []
 chain = ["disrobe-core/chain"]
 
 [dev-dependencies]
+disrobe-testkit = { workspace = true }
 
 [package.metadata.disrobe]
 level = 8

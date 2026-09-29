@@ -1031,10 +1031,7 @@ mod tests {
     #[cfg(not(miri))]
     #[test]
     fn unquote_inverts_go_strconv_quote() {
-        let go: std::path::PathBuf = match std::env::var_os("PATH").and_then(|_| which_go()) {
-            Some(p) => p,
-            None => return,
-        };
+        let go: std::path::PathBuf = std::path::PathBuf::from("go");
         let values: [&str; 8] = [
             "col1\tcol2\u{0b}col3",
             "a b\u{00}c",
@@ -1056,15 +1053,6 @@ mod tests {
     }
 
     #[cfg(not(miri))]
-    fn which_go() -> Option<std::path::PathBuf> {
-        let out: std::process::Output = std::process::Command::new("go")
-            .arg("version")
-            .output()
-            .ok()?;
-        out.status.success().then(|| std::path::PathBuf::from("go"))
-    }
-
-    #[cfg(not(miri))]
     fn go_strconv_quote(go: &std::path::Path, value: &str) -> String {
         let scratch: disrobe_core::scratch::ScratchDir =
             disrobe_core::scratch::ScratchDir::create("disrobe_go_quote")
@@ -1075,19 +1063,19 @@ mod tests {
         let in_path: std::path::PathBuf = dir.join("in.bin");
         std::fs::write(&src_path, src).unwrap();
         std::fs::write(&in_path, value.as_bytes()).unwrap();
-        let out: std::process::Output = std::process::Command::new(go)
-            .arg("run")
-            .arg(&src_path)
-            .arg(&in_path)
-            .output()
-            .unwrap();
+        let out: disrobe_testkit::ToolOutput = disrobe_testkit::tool_output(
+            disrobe_testkit::CommandSpec::new(go, std::time::Duration::from_mins(5))
+                .arg("run")
+                .arg(&src_path)
+                .arg(&in_path),
+        )
+        .expect("the Go toolchain is required on PATH to grade unquote against strconv.Quote");
         assert!(
-            out.status.success(),
+            out.success,
             "go run failed: {}",
             String::from_utf8_lossy(&out.stderr)
         );
-        let quoted: String = String::from_utf8(out.stdout).unwrap();
-        quoted
+        String::from_utf8(out.stdout).unwrap()
     }
 
     #[test]

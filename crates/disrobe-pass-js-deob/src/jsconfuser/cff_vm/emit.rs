@@ -572,14 +572,6 @@ mod tests {
     use super::*;
     use std::fs;
     use std::io::Write as _;
-    use std::process::{Command, Output};
-
-    fn node_available() -> bool {
-        Command::new("node")
-            .arg("--version")
-            .output()
-            .is_ok_and(|o: Output| o.status.success())
-    }
 
     fn relex_codepoints(assignment: &str) -> Option<String> {
         let program: String = format!(
@@ -589,12 +581,13 @@ mod tests {
             disrobe_core::scratch::ScratchFile::create("disrobe_cff_emit", "js").ok()?;
         file.write_all(program.as_bytes()).ok()?;
         drop(file);
-        let output: Output = Command::new("node")
-            .arg("--")
-            .arg(scratch.path())
-            .output()
-            .ok()?;
-        if !output.status.success() {
+        let output: disrobe_testkit::ToolOutput = disrobe_testkit::tool_output(
+            disrobe_testkit::CommandSpec::new("node", std::time::Duration::from_mins(1))
+                .arg("--")
+                .arg(scratch.path()),
+        )
+        .expect("node is required on PATH to re-lex the emitted literals");
+        if !output.success {
             return None;
         }
         String::from_utf8(output.stdout).ok()
@@ -622,9 +615,6 @@ mod tests {
 
     #[test]
     fn double_quote_emit_reparses_and_roundtrips_under_node() {
-        if !node_available() {
-            return;
-        }
         for value in battery() {
             let literal: String = format_string(&value);
             let assignment: String = format!("var x = {literal};");
@@ -641,9 +631,6 @@ mod tests {
 
     #[test]
     fn template_chunk_emit_reparses_and_roundtrips_under_node() {
-        if !node_available() {
-            return;
-        }
         for value in battery() {
             let expr: Expr = Expr::Template {
                 quasis: vec![value.clone()],

@@ -2415,11 +2415,11 @@ mod tests {
         drop(file);
         let path: std::path::PathBuf = scratch.path().to_path_buf();
         std::fs::write(&path, code.as_bytes()).ok()?;
-        let output: std::process::Output = std::process::Command::new("ruby")
-            .arg(&path)
-            .output()
-            .ok()?;
-        output.status.success().then_some(output.stdout)
+        let output: disrobe_testkit::ToolOutput = disrobe_testkit::tool_output(
+            disrobe_testkit::CommandSpec::new("ruby", std::time::Duration::from_mins(1)).arg(&path),
+        )
+        .expect("ruby is required on PATH to re-evaluate the recovered literals");
+        output.success.then_some(output.stdout)
     }
 
     #[test]
@@ -2434,10 +2434,6 @@ mod tests {
             "caf\u{e9} \u{65e5}\u{672c}\u{8a9e}",
             "trailing #",
         ];
-        let ruby_present: bool = std::process::Command::new("ruby")
-            .arg("--version")
-            .output()
-            .is_ok_and(|o| o.status.success());
         for (tag, lit) in literals.iter().enumerate() {
             let iseq: Vec<u8> = asm(&[("STRING", &[1, 0]), ("RETURN", &[1])]);
             let pool: Vec<PoolEntry> = vec![PoolEntry {
@@ -2450,15 +2446,13 @@ mod tests {
                 src.contains(&emitted),
                 "recovered source must carry the escaped literal {emitted:?}: {src}"
             );
-            if ruby_present {
-                let bytes: Vec<u8> = ruby_reproduces_bytes(&emitted, tag)
-                    .expect("ruby must accept and evaluate the recovered literal");
-                assert_eq!(
-                    bytes,
-                    lit.as_bytes(),
-                    "ruby re-evaluated {emitted:?} to different bytes than the original"
-                );
-            }
+            let bytes: Vec<u8> = ruby_reproduces_bytes(&emitted, tag)
+                .expect("ruby must accept and evaluate the recovered literal");
+            assert_eq!(
+                bytes,
+                lit.as_bytes(),
+                "ruby re-evaluated {emitted:?} to different bytes than the original"
+            );
         }
         let interp_src: String = lift_single(
             asm(&[("STRING", &[1, 0]), ("RETURN", &[1])]),

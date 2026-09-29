@@ -2244,6 +2244,7 @@ version = "0.10.6"
 dependencies = [
  "disrobe-bytes",
  "disrobe-core",
+ "disrobe-testkit",
  "flate2",
  "gimli 0.32.3",
  "iced-x86",
@@ -2262,6 +2263,7 @@ dependencies = [
  "boa_engine",
  "disrobe-core",
  "disrobe-mba",
+ "disrobe-testkit",
  "divan",
  "indexmap 2.14.0",
  "miette",
@@ -2632,6 +2634,7 @@ dependencies = [
  "blake3",
  "disrobe-bytes",
  "disrobe-core",
+ "disrobe-testkit",
  "lzma-rs",
  "miette",
  "serde",
