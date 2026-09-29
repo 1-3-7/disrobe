@@ -118,27 +118,26 @@ const fn one_byte_opcode_info(op: u8, operand_size: u8) -> Option<OpInfo> {
     }
 }
 
-const fn modrm_extra_len(modrm: u8, address_size: u8) -> (u8, bool) {
+fn modrm_extra_len(modrm: u8, sib: Option<u8>) -> (u8, bool) {
     let md: u8 = modrm_mod(modrm);
     let rm: u8 = modrm_rm(modrm);
     if md == 0b11 {
         return (0, false);
     }
-    let (mut extra, rip_rel): (u8, bool) = if md == 0b00 && rm == 0b101 {
-        (4, true)
-    } else {
-        let base: u8 = match md {
-            0b01 => 1,
-            0b10 => 4,
-            _ => 0,
-        };
-        (base, false)
-    };
-    if md != 0b11 && rm == 0b100 {
-        extra += 1;
+    if md == 0b00 && rm == 0b101 {
+        return (4, true);
     }
-    let _ = address_size;
-    (extra, rip_rel)
+    let displacement: u8 = match md {
+        0b01 => 1,
+        0b10 => 4,
+        _ => 0,
+    };
+    if rm != 0b100 {
+        return (displacement, false);
+    }
+    let sib_base_is_disp32: bool =
+        md == 0b00 && sib.is_some_and(|value: u8| value & 0b111 == 0b101);
+    (1 + if sib_base_is_disp32 { 4 } else { displacement }, false)
 }
 
 pub(crate) fn instruction_length(bytes: &[u8]) -> Result<InstructionLen> {
@@ -150,7 +149,6 @@ pub(crate) fn instruction_length(bytes: &[u8]) -> Result<InstructionLen> {
     }
     let mut idx: usize = 0;
     let mut operand_size: u8 = 4;
-    let address_size: u8 = 4;
     while idx < bytes.len() && is_legacy_prefix(bytes[idx]) {
         if bytes[idx] == 0x66 {
             operand_size = 2;
@@ -185,10 +183,10 @@ pub(crate) fn instruction_length(bytes: &[u8]) -> Result<InstructionLen> {
             });
         };
         idx += 1;
-        let (extra, has_modrm, imm, rip_branch): (u8, bool, u8, bool) = match op2 {
-            0x80..=0x8F => (0, false, 4, true),
-            0xB6 | 0xB7 | 0xBE | 0xBF | 0xAF | 0x40..=0x4F => (0, true, 0, false),
-            0x05 => (0, false, 0, false),
+        let (has_modrm, imm, rip_branch): (bool, u8, bool) = match op2 {
+            0x80..=0x8F => (false, 4, true),
+            0xB6 | 0xB7 | 0xBE | 0xBF | 0xAF | 0x40..=0x4F => (true, 0, false),
+            0x05 => (false, 0, false),
             _ => {
                 return Err(CextractError::HotpatchFailed {
                     stage: "lde",
@@ -196,7 +194,6 @@ pub(crate) fn instruction_length(bytes: &[u8]) -> Result<InstructionLen> {
                 });
             }
         };
-        let _ = extra;
         if has_modrm {
             let Some(&modrm): Option<&u8> = bytes.get(idx) else {
                 return Err(CextractError::HotpatchFailed {
@@ -205,7 +202,7 @@ pub(crate) fn instruction_length(bytes: &[u8]) -> Result<InstructionLen> {
                 });
             };
             idx += 1;
-            let (mextra, rip_rel): (u8, bool) = modrm_extra_len(modrm, address_size);
+            let (mextra, rip_rel): (u8, bool) = modrm_extra_len(modrm, bytes.get(idx).copied());
             idx += mextra as usize;
             let instruction_len: u8 = u8::try_from(idx).map_or(0, |value: u8| value);
             return Ok(InstructionLen {
@@ -233,7 +230,7 @@ pub(crate) fn instruction_length(bytes: &[u8]) -> Result<InstructionLen> {
             });
         };
         idx += 1;
-        let (mextra, modrm_rip): (u8, bool) = modrm_extra_len(modrm, address_size);
+        let (mextra, modrm_rip): (u8, bool) = modrm_extra_len(modrm, bytes.get(idx).copied());
         idx += mextra as usize;
         rip_rel = rip_rel || modrm_rip;
         if op == 0xFF {
@@ -295,6 +292,16 @@ mod tests {
         let ins: InstructionLen = instruction_length(&bytes).unwrap();
         assert_eq!(ins.length, 1);
         assert!(!ins.uses_rip_relative);
+    }
+
+    #[test]
+    fn a_sib_without_base_carries_a_disp32() {
+        let scaled: [u8; 7] = [0x8B, 0x04, 0x9D, 0x10, 0x00, 0x00, 0x00];
+        assert_eq!(instruction_length(&scaled).unwrap().length, 7);
+        let based: [u8; 3] = [0x8B, 0x04, 0x24];
+        assert_eq!(instruction_length(&based).unwrap().length, 3);
+        let extended: [u8; 8] = [0x0F, 0xB6, 0x04, 0x25, 0x00, 0x10, 0x00, 0x00];
+        assert_eq!(instruction_length(&extended).unwrap().length, 8);
     }
 
     #[test]
