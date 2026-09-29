@@ -148,7 +148,7 @@ mod tests {
         ] {
             assert!(
                 !pack_for_era(era).verified_against_corpus,
-                "{era:?} pack must be honestly flagged unverified (no older corpus)"
+                "{era:?} pack must be flagged unverified (no older corpus)"
             );
         }
     }

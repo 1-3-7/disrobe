@@ -203,7 +203,6 @@ fn guess_era(markers: &BTreeMap<CSourceMarker, u32>) -> NuitkaEraGuess {
     NuitkaEraGuess::Unknown
 }
 
-#[allow(clippy::cast_precision_loss)]
 fn compute_confidence(markers: &BTreeMap<CSourceMarker, u32>, total_hits: u32) -> f32 {
     let unique_kinds: f32 = markers.len() as f32;
     let total_kinds: f32 = MARKER_TABLE.len() as f32;

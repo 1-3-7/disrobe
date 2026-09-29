@@ -193,12 +193,7 @@ fn scan_for_pkcs7_oid(body: &[u8]) -> bool {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::expect_used,
-    clippy::unwrap_used,
-    clippy::panic,
-    clippy::cast_possible_truncation
-)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
 
