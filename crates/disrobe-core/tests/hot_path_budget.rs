@@ -2,6 +2,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, sync_channel};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use disrobe_core::codec::DecodeError;
 use disrobe_core::codec::alphabets::base62_decode;
 use disrobe_core::codec::web_escape::html_entity_decode;
 use disrobe_core::recon::ioc;
@@ -124,12 +125,11 @@ fn unterminated_entity_scan_stays_linear() {
 }
 
 #[test]
-fn radix_decode_rejects_oversized_input_fast() {
+fn radix_decode_rejects_oversized_input_before_the_quadratic_loop() {
     let input: Vec<u8> = hex_text(MEGABYTE / 4);
-    let elapsed: Duration = timed("base62_decode 256KiB hex", || base62_decode(&input));
     assert!(
-        elapsed < Duration::from_secs(5),
-        "radix decode must reject past its cap instead of running the quadratic loop, took {elapsed:?}"
+        matches!(base62_decode(&input), Err(DecodeError::TooLarge { len }) if len == input.len()),
+        "radix decode must reject past its cap instead of running the quadratic loop"
     );
 }
 
@@ -170,12 +170,17 @@ fn darkcomet_candidate_collection_is_capped() {
 #[test]
 fn quasar_decode_skips_input_without_its_salt() {
     let input: Vec<u8> = quasar_password_soup(MEGABYTE);
-    let elapsed: Duration = timed("quasar_config_decode 1MiB no salt", || {
-        quasar_config_decode(&input, 0, &mut WorkBudget::default())
-    });
+    let mut budget: WorkBudget = WorkBudget::default();
+    let before: u64 = budget.remaining();
+    let decode: ConfigDecode = quasar_config_decode(&input, 0, &mut budget);
     assert!(
-        elapsed < Duration::from_secs(2),
-        "quasar decode must gate on its salt before deriving keys, took {elapsed:?}"
+        decode.fields.is_empty(),
+        "no salt, no configuration: {decode:?}"
+    );
+    assert_eq!(
+        budget.remaining(),
+        before,
+        "quasar decode must gate on its salt before scanning or deriving keys"
     );
 }
 
