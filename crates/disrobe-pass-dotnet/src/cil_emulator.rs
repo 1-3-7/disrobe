@@ -1,3 +1,5 @@
+use core::cmp::Ordering;
+
 use crate::cil::{Instruction, MethodBody, OperandValue, SlotDecodeError, decode_slot};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,6 +32,36 @@ pub enum Value {
     Array(Option<usize>),
 
     String(Option<usize>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Width {
+    W32,
+    W64,
+}
+
+impl Width {
+    const fn of(a: Value, b: Value) -> Self {
+        if matches!(a, Value::I64(_)) || matches!(b, Value::I64(_)) {
+            Self::W64
+        } else {
+            Self::W32
+        }
+    }
+
+    const fn value(self, v: i64) -> Value {
+        match self {
+            Self::W32 => Value::I32(v as i32),
+            Self::W64 => Value::I64(v),
+        }
+    }
+
+    const fn unsigned(self, v: i64) -> u64 {
+        match self {
+            Self::W32 => (v as u32) as u64,
+            Self::W64 => v as u64,
+        }
+    }
 }
 
 impl Value {
@@ -294,6 +326,15 @@ impl<'a> Vm<'a> {
                 .get(ip)
                 .ok_or(EmulationError::NoResult)?;
             let mut next: usize = ip + 1;
+            if let Some((unsigned, holds)) = comparison(ins.name.as_str()) {
+                if ins.name.starts_with('b') {
+                    next = self.branch_if(ins, unsigned, holds, next)?;
+                } else {
+                    self.cmp(unsigned, holds)?;
+                }
+                ip = next;
+                continue;
+            }
             match ins.name.as_str() {
                 "nop" | "break" => {}
                 "pop" => {
@@ -339,38 +380,18 @@ impl<'a> Vm<'a> {
                 "and" => self.bin_i(|a: i64, b: i64| a & b)?,
                 "or" => self.bin_i(|a: i64, b: i64| a | b)?,
                 "xor" => self.bin_i(|a: i64, b: i64| a ^ b)?,
-                "shl" => self.bin_i(|a: i64, b: i64| a.wrapping_shl(b as u32))?,
-                "shr" => self.bin_i(|a: i64, b: i64| a.wrapping_shr(b as u32))?,
-                "shr.un" => {
-                    self.bin_i(|a: i64, b: i64| i64::from((a as u32).wrapping_shr(b as u32)))?;
-                }
-                "div" => self.bin_checked(i64::checked_div)?,
-                "rem" => self.bin_checked(i64::checked_rem)?,
-                "div.un" => {
-                    self.bin_checked(|a, b| {
-                        if b == 0 {
-                            None
-                        } else {
-                            Some(i64::from((a as u32).wrapping_div(b as u32)))
-                        }
-                    })?;
-                }
-                "rem.un" => {
-                    self.bin_checked(|a, b| {
-                        if b == 0 {
-                            None
-                        } else {
-                            Some(i64::from((a as u32).wrapping_rem(b as u32)))
-                        }
-                    })?;
-                }
-                "neg" => {
-                    let v: i64 = self.pop()?.as_i64()?;
-                    self.stack.push(Value::I32(v.wrapping_neg() as i32));
-                }
-                "not" => {
-                    let v: i64 = self.pop()?.as_i64()?;
-                    self.stack.push(Value::I32(!(v as i32)));
+                "shl" | "shr" | "shr.un" => self.shift(shift_kind(ins.name.as_str()))?,
+                "div" | "rem" | "div.un" | "rem.un" => self.divide(ins.name.as_str())?,
+                "neg" | "not" => {
+                    let v: Value = self.pop()?;
+                    let width: Width = Width::of(v, v);
+                    let x: i64 = v.as_i64()?;
+                    let r: i64 = if ins.name == "neg" {
+                        x.wrapping_neg()
+                    } else {
+                        !x
+                    };
+                    self.stack.push(width.value(r));
                 }
                 n if n.starts_with("conv.") => {
                     let v: Value = self.pop()?;
@@ -405,7 +426,7 @@ impl<'a> Vm<'a> {
                         usize::try_from(idx).map_err(|_| EmulationError::OutOfBounds)?,
                         real_elem.max(1),
                     )?;
-                    self.stack.push(Value::I32(v as i32));
+                    self.stack.push(loaded_element(n, real_elem, v));
                 }
                 n if n.starts_with("stelem") => {
                     let elem: usize = stelem_size(n);
@@ -453,23 +474,6 @@ impl<'a> Vm<'a> {
                         next = self.branch(ins)?;
                     }
                 }
-                "beq" | "beq.s" => next = self.branch_if(ins, |a, b| a == b, next)?,
-                "bne.un" | "bne.un.s" => next = self.branch_if(ins, |a, b| a != b, next)?,
-                "bgt" | "bgt.s" | "bgt.un" | "bgt.un.s" => {
-                    next = self.branch_if(ins, |a, b| a > b, next)?;
-                }
-                "bge" | "bge.s" | "bge.un" | "bge.un.s" => {
-                    next = self.branch_if(ins, |a, b| a >= b, next)?;
-                }
-                "blt" | "blt.s" | "blt.un" | "blt.un.s" => {
-                    next = self.branch_if(ins, |a, b| a < b, next)?;
-                }
-                "ble" | "ble.s" | "ble.un" | "ble.un.s" => {
-                    next = self.branch_if(ins, |a, b| a <= b, next)?;
-                }
-                "ceq" => self.cmp(|a, b| a == b)?,
-                "cgt" | "cgt.un" => self.cmp(|a, b| a > b)?,
-                "clt" | "clt.un" => self.cmp(|a, b| a < b)?,
                 "ret" => return self.finish(),
                 "ldtoken" => {
                     let tok: u32 = match ins.operand {
@@ -543,38 +547,127 @@ impl<'a> Vm<'a> {
     fn branch_if(
         &mut self,
         ins: &Instruction,
-        pred: fn(i64, i64) -> bool,
+        unsigned: bool,
+        holds: fn(Ordering) -> bool,
         fallthrough: usize,
     ) -> Result<usize, EmulationError> {
-        let b: i64 = self.pop()?.as_i64()?;
-        let a: i64 = self.pop()?.as_i64()?;
-        if pred(a, b) {
+        if holds(self.compare(unsigned)?) {
             self.branch(ins)
         } else {
             Ok(fallthrough)
         }
     }
 
+    fn compare(&mut self, unsigned: bool) -> Result<Ordering, EmulationError> {
+        let right: Value = self.pop()?;
+        let left: Value = self.pop()?;
+        let width: Width = Width::of(left, right);
+        let (a, b): (i64, i64) = (left.as_i64()?, right.as_i64()?);
+        Ok(if unsigned {
+            width.unsigned(a).cmp(&width.unsigned(b))
+        } else {
+            a.cmp(&b)
+        })
+    }
+
     fn bin_i(&mut self, op: fn(i64, i64) -> i64) -> Result<(), EmulationError> {
-        let b: i64 = self.pop()?.as_i64()?;
-        let a: i64 = self.pop()?.as_i64()?;
-        self.stack.push(Value::I32(op(a, b) as i32));
+        let right: Value = self.pop()?;
+        let left: Value = self.pop()?;
+        let width: Width = Width::of(left, right);
+        self.stack
+            .push(width.value(op(left.as_i64()?, right.as_i64()?)));
         Ok(())
     }
 
-    fn bin_checked(&mut self, op: fn(i64, i64) -> Option<i64>) -> Result<(), EmulationError> {
-        let b: i64 = self.pop()?.as_i64()?;
-        let a: i64 = self.pop()?.as_i64()?;
-        let r: i64 = op(a, b).ok_or(EmulationError::DivideByZero)?;
-        self.stack.push(Value::I32(r as i32));
+    fn shift(&mut self, kind: Shift) -> Result<(), EmulationError> {
+        let amount: u32 = self.pop()?.as_i64()? as u32;
+        let value: Value = self.pop()?;
+        let x: i64 = value.as_i64()?;
+        let shifted: Value = match (value, kind) {
+            (Value::I64(_), Shift::Left) => Value::I64(x.wrapping_shl(amount)),
+            (Value::I64(_), Shift::Right) => Value::I64(x.wrapping_shr(amount)),
+            (Value::I64(_), Shift::RightUnsigned) => {
+                Value::I64((x as u64).wrapping_shr(amount) as i64)
+            }
+            (_, Shift::Left) => Value::I32((x as i32).wrapping_shl(amount)),
+            (_, Shift::Right) => Value::I32((x as i32).wrapping_shr(amount)),
+            (_, Shift::RightUnsigned) => Value::I32((x as u32).wrapping_shr(amount) as i32),
+        };
+        self.stack.push(shifted);
         Ok(())
     }
 
-    fn cmp(&mut self, pred: fn(i64, i64) -> bool) -> Result<(), EmulationError> {
-        let b: i64 = self.pop()?.as_i64()?;
-        let a: i64 = self.pop()?.as_i64()?;
-        self.stack.push(Value::I32(i32::from(pred(a, b))));
+    fn divide(&mut self, name: &str) -> Result<(), EmulationError> {
+        let right: Value = self.pop()?;
+        let left: Value = self.pop()?;
+        let width: Width = Width::of(left, right);
+        let (a, b): (i64, i64) = (left.as_i64()?, right.as_i64()?);
+        let quotient: Option<i64> = match (width, name) {
+            (Width::W32, "div") => (a as i32).checked_div(b as i32).map(i64::from),
+            (Width::W32, "rem") => (a as i32).checked_rem(b as i32).map(i64::from),
+            (Width::W64, "div") => a.checked_div(b),
+            (Width::W64, "rem") => a.checked_rem(b),
+            (_, "div.un") => width
+                .unsigned(a)
+                .checked_div(width.unsigned(b))
+                .map(|q: u64| q as i64),
+            _ => width
+                .unsigned(a)
+                .checked_rem(width.unsigned(b))
+                .map(|r: u64| r as i64),
+        };
+        self.stack
+            .push(width.value(quotient.ok_or(EmulationError::DivideByZero)?));
         Ok(())
+    }
+
+    fn cmp(&mut self, unsigned: bool, holds: fn(Ordering) -> bool) -> Result<(), EmulationError> {
+        let result: bool = holds(self.compare(unsigned)?);
+        self.stack.push(Value::I32(i32::from(result)));
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Shift {
+    Left,
+    Right,
+    RightUnsigned,
+}
+
+fn shift_kind(name: &str) -> Shift {
+    match name {
+        "shl" => Shift::Left,
+        "shr" => Shift::Right,
+        _ => Shift::RightUnsigned,
+    }
+}
+
+type Comparison = (bool, fn(Ordering) -> bool);
+
+fn comparison(name: &str) -> Option<Comparison> {
+    let base: &str = name.strip_suffix(".s").unwrap_or(name);
+    let (op, unsigned): (&str, bool) = base
+        .strip_suffix(".un")
+        .map_or((base, false), |op: &str| (op, true));
+    let holds: fn(Ordering) -> bool = match op {
+        "beq" | "ceq" if !unsigned => Ordering::is_eq,
+        "bne" if unsigned => Ordering::is_ne,
+        "bgt" | "cgt" => Ordering::is_gt,
+        "bge" => Ordering::is_ge,
+        "blt" | "clt" => Ordering::is_lt,
+        "ble" => Ordering::is_le,
+        _ => return None,
+    };
+    Some((unsigned, holds))
+}
+
+fn loaded_element(name: &str, size: usize, raw: i64) -> Value {
+    match name {
+        "ldelem.i1" => Value::I32(i32::from(raw as i8)),
+        "ldelem.i2" => Value::I32(i32::from(raw as i16)),
+        _ if size == 8 => Value::I64(raw),
+        _ => Value::I32(raw as i32),
     }
 }
 
@@ -751,7 +844,7 @@ pub(crate) fn emulate_stub_with_init_prevalidated(
     let mut args: Vec<Value> = Vec::new();
     let mut heap_bytes: usize = 0;
     for &i in &input.int_args {
-        args.push(Value::I64(i));
+        args.push(Value::I32(i as i32));
     }
     for bytes in &input.byte_array_args {
         heap_bytes = heap_bytes
@@ -804,7 +897,7 @@ pub(crate) fn emulate_capture(body: &MethodBody, input: &StubInput) -> ExecCaptu
     let mut args: Vec<Value> = Vec::new();
     let mut heap_bytes: usize = 0;
     for &integer in &input.int_args {
-        args.push(Value::I64(integer));
+        args.push(Value::I32(integer as i32));
     }
     for bytes in &input.byte_array_args {
         heap_bytes = match heap_bytes.checked_add(bytes.len()) {
@@ -1021,6 +1114,88 @@ mod tests {
         };
         let out: StubOutput = emulate_stub(&body, &input).expect("run");
         assert_eq!(out, StubOutput::Int(i64::from(0x0F ^ 0x5A)));
+    }
+
+    fn ldc_i8(value: i64) -> Vec<u8> {
+        let mut code: Vec<u8> = vec![0x21];
+        code.extend_from_slice(&value.to_le_bytes());
+        code
+    }
+
+    #[test]
+    fn unsigned_comparisons_read_the_sign_bit_as_magnitude() {
+        let cgt_un: MethodBody = body_from(&[0x15, 0x17, 0xFE, 0x03, 0x2A]);
+        let clt_un: MethodBody = body_from(&[0x15, 0x17, 0xFE, 0x05, 0x2A]);
+        let bgt_un: MethodBody = body_from(&[0x15, 0x17, 0x35, 0x02, 0x16, 0x2A, 0x17, 0x2A]);
+        let blt_signed: MethodBody = body_from(&[0x15, 0x17, 0x32, 0x02, 0x16, 0x2A, 0x17, 0x2A]);
+        for (body, expected) in [(cgt_un, 1), (clt_un, 0), (bgt_un, 1), (blt_signed, 1)] {
+            assert_eq!(
+                emulate_stub(&body, &StubInput::default()),
+                Ok(StubOutput::Int(expected)),
+                "0xFFFFFFFF compared with 1 in {:?}",
+                body.instructions
+                    .iter()
+                    .map(|i: &Instruction| i.name.as_str())
+                    .collect::<Vec<&str>>()
+            );
+        }
+    }
+
+    #[test]
+    fn int64_arithmetic_keeps_all_64_bits() {
+        let mut product: Vec<u8> = ldc_i8(0x1_0000_0000);
+        product.extend(ldc_i8(3));
+        product.extend_from_slice(&[0x5A, 0x2A]);
+        assert_eq!(
+            emulate_stub(&body_from(&product), &StubInput::default()),
+            Ok(StubOutput::Int(0x3_0000_0000))
+        );
+        let mut negated: Vec<u8> = ldc_i8(0x1_0000_0000);
+        negated.extend_from_slice(&[0x65, 0x2A]);
+        assert_eq!(
+            emulate_stub(&body_from(&negated), &StubInput::default()),
+            Ok(StubOutput::Int(-0x1_0000_0000))
+        );
+        let mut unsigned_quotient: Vec<u8> = ldc_i8(-2);
+        unsigned_quotient.extend(ldc_i8(2));
+        unsigned_quotient.extend_from_slice(&[0x5C, 0x2A]);
+        assert_eq!(
+            emulate_stub(&body_from(&unsigned_quotient), &StubInput::default()),
+            Ok(StubOutput::Int(i64::MAX))
+        );
+    }
+
+    #[test]
+    fn shift_amounts_are_masked_by_the_operand_width() {
+        let shl: MethodBody = body_from(&[0x17, 0x1F, 33, 0x62, 0x2A]);
+        assert_eq!(
+            emulate_stub(&shl, &StubInput::default()),
+            Ok(StubOutput::Int(2))
+        );
+        let shr_un: MethodBody = body_from(&[0x15, 0x1F, 28, 0x64, 0x2A]);
+        assert_eq!(
+            emulate_stub(&shr_un, &StubInput::default()),
+            Ok(StubOutput::Int(0xF))
+        );
+    }
+
+    #[test]
+    fn ldelem_i1_sign_extends_and_ldelem_u1_does_not() {
+        let mut code: Vec<u8> = vec![0x17, 0x8D];
+        code.extend_from_slice(&0x0100_0001u32.to_le_bytes());
+        code.extend_from_slice(&[0x25, 0x16, 0x20]);
+        code.extend_from_slice(&0x80i32.to_le_bytes());
+        code.extend_from_slice(&[0x9C, 0x16, 0x90, 0x2A]);
+        assert_eq!(
+            emulate_stub(&body_from(&code), &StubInput::default()),
+            Ok(StubOutput::Int(-128))
+        );
+        let last: usize = code.len() - 2;
+        code[last] = 0x91;
+        assert_eq!(
+            emulate_stub(&body_from(&code), &StubInput::default()),
+            Ok(StubOutput::Int(128))
+        );
     }
 
     #[test]
