@@ -11,7 +11,9 @@ use std::path::PathBuf;
 use disrobe_core::chain::{DetectContext, DetectVerdict, Detector, OutputKind, Pass};
 use disrobe_core::provenance::Language;
 use disrobe_core::{Artifact, Rung};
-use disrobe_pass_shell::chain_detector::{SHELL_PASS, ShellDetector};
+use disrobe_pass_shell::chain_detector::{
+    SHELL_PASS, ShellDetector, ShellRefusal, recover_detected,
+};
 use disrobe_pass_shell::detect::{Detection, Dialect, Family, decode_script_bytes, detect};
 
 fn corpus_bytes(relative: &str) -> Vec<u8> {
@@ -196,15 +198,19 @@ fn plain_scripts_stay_below_the_windows_script_report() {
 }
 
 #[test]
-fn a_claimed_script_that_recovers_nothing_is_refused_rather_than_republished() {
+fn a_claimed_script_that_recovers_nothing_passes_through_and_the_command_refuses() {
     let bytes: Vec<u8> = corpus_bytes("batch/baseline/hello.bat");
     assert!(claim(&bytes).is_some());
-    let input: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
-    let error: String = SHELL_PASS
+    let input: Artifact = Artifact::new(Rung::Raw, bytes.clone(), [0u8; 32]);
+    let unchanged: Artifact = SHELL_PASS
         .run(&input)
-        .expect_err("an unobfuscated script has nothing to recover")
+        .expect("an unobfuscated script passes through for the chain to mark not applicable");
+    assert_eq!(unchanged.envelope.as_slice(), bytes.as_slice());
+    let refusal: String = recover_detected(&detect(&bytes), &bytes)
+        .map_err(ShellRefusal::into_error)
+        .expect_err("the standalone command publishes nothing for a script it did not change")
         .to_string();
-    assert!(error.contains("DR-SHELL-0928"), "{error}");
+    assert!(refusal.contains("DR-SHELL-0928"), "{refusal}");
 }
 
 #[test]
