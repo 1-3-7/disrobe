@@ -152,10 +152,50 @@ fn finalize_gotos(
     blocks: &mut Vec<StructuredBlock>,
     placed: &std::collections::BTreeSet<usize>,
 ) -> usize {
+    drop_gotos_to_the_next_label(blocks);
     let mut surviving: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
     let carried: usize = convert_dangling_gotos(blocks, placed, &mut surviving);
     prune_unreferenced_labels(blocks, &surviving);
     carried
+}
+
+fn drop_gotos_to_the_next_label(blocks: &mut Vec<StructuredBlock>) {
+    let mut pending: Vec<&mut Vec<StructuredBlock>> = vec![blocks];
+    while let Some(current) = pending.pop() {
+        let mut keep: Vec<bool> = vec![true; current.len()];
+        for (index, block) in current.iter().enumerate() {
+            let StructuredBlock::Goto { pc } = block else {
+                continue;
+            };
+            let next: Option<&StructuredBlock> = current[index + 1..]
+                .iter()
+                .find(|later: &&StructuredBlock| !matches!(later, StructuredBlock::Goto { pc: other } if other == pc));
+            if matches!(next, Some(StructuredBlock::Label { pc: label }) if label == pc) {
+                keep[index] = false;
+            }
+        }
+        let mut flags: std::vec::IntoIter<bool> = keep.into_iter();
+        current.retain(|_| flags.next().unwrap_or(true));
+        for block in current.iter_mut() {
+            match block {
+                StructuredBlock::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => {
+                    pending.push(then_body);
+                    pending.push(else_body);
+                }
+                StructuredBlock::While { body, .. }
+                | StructuredBlock::Repeat { body, .. }
+                | StructuredBlock::NumericFor { body, .. }
+                | StructuredBlock::GenericFor { body, .. } => {
+                    pending.push(body);
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
 fn convert_dangling_gotos(
@@ -1632,6 +1672,29 @@ mod tests {
             | StructuredBlock::GenericFor { body, .. } => carries_while(body),
             _ => false,
         })
+    }
+
+    #[test]
+    fn a_jump_to_the_next_statement_leaves_no_goto_and_reports_clean() {
+        let stmts: Vec<LiftedStmt> = vec![
+            lifted(0, LStmt::Raw("a()".to_owned())),
+            lifted(1, LStmt::Jump { target: 2 }),
+            lifted(1, LStmt::Jump { target: 2 }),
+            lifted(2, LStmt::Raw("b()".to_owned())),
+        ];
+
+        let result: StructureResult = structure_standard(&stmts, 3);
+
+        assert!(
+            matches!(
+                result.blocks.as_slice(),
+                [StructuredBlock::Raw(first), StructuredBlock::Raw(second)]
+                    if first == "a()" && second == "b()"
+            ),
+            "a jump that lands on the next statement is a fall-through; blocks: {:?}",
+            result.blocks
+        );
+        assert_eq!(result.unresolved_jumps, 0);
     }
 
     #[test]

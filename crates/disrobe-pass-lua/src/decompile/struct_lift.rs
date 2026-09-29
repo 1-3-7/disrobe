@@ -16,6 +16,10 @@ use crate::reader::common::{LuaConstant, LuaDialect, LuaLocal, LuaProto};
 use structurer::structure_standard;
 
 const MAX_STRUCT_DEPTH: usize = 200;
+const MAX_RESERVED_NAME_SCAN: usize = 1 << 20;
+const NUMERIC_LOOP_NAMES: [&str; 6] = ["i", "j", "k", "l", "m", "n"];
+const KEY_NAMES: [&str; 4] = ["k", "key", "idx", "index"];
+const VALUE_NAMES: [&str; 4] = ["v", "value", "item", "elem"];
 const MAX_STRUCT_NODES: usize = 1 << 20;
 
 #[derive(Debug, Default)]
@@ -34,6 +38,7 @@ struct StructState {
     inlined_closure_bytes: usize,
     upvalues: Vec<String>,
     pinned: std::collections::BTreeSet<u32>,
+    reserved: Option<std::collections::BTreeSet<String>>,
 }
 
 impl StructState {
@@ -54,6 +59,7 @@ impl StructState {
             inlined_closure_bytes: 0,
             upvalues,
             pinned: std::collections::BTreeSet::new(),
+            reserved: None,
         }
     }
 
@@ -94,6 +100,21 @@ impl StructState {
         self.set_reg(i, name);
         self.mark_defined(i);
         self.bound[i as usize] = true;
+    }
+
+    fn readable_name(&self, candidates: &[&str]) -> Option<String> {
+        let reserved: &std::collections::BTreeSet<String> = self.reserved.as_ref()?;
+        candidates
+            .iter()
+            .find(|name: &&&str| {
+                !reserved.contains(**name)
+                    && !self
+                        .regs
+                        .iter()
+                        .zip(self.bound.iter())
+                        .any(|(text, bound): (&String, &bool)| *bound && text == **name)
+            })
+            .map(|name: &&str| (*name).to_owned())
     }
 
     fn release_scope(&mut self, base: u32) {
@@ -273,6 +294,13 @@ fn lift_structured_captured(
         outer_names.insert(name.clone());
         state.bind_reg(i, name);
     }
+    if !names.has_names {
+        state.reserved =
+            names_referenced_by(p).map(|mut found: std::collections::BTreeSet<String>| {
+                found.extend(state.upvalues.iter().cloned());
+                found
+            });
+    }
     let live: LiveAcrossBranch = LiveAcrossBranch::compute(p, dialect);
     for slot in slots_read_through_an_elided_nil(p, dialect, &live) {
         if names.name_at(0, slot).is_some() {
@@ -322,6 +350,34 @@ fn lift_structured_captured(
 }
 
 const READ_SEARCH_STATE_BUDGET: usize = 1 << 16;
+
+fn names_referenced_by(p: &LuaProto) -> Option<std::collections::BTreeSet<String>> {
+    let mut found: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut pending: Vec<&LuaProto> = vec![p];
+    let mut scanned: usize = 0;
+    while let Some(proto) = pending.pop() {
+        scanned = scanned.saturating_add(proto.constants.len() + proto.upvalues.len() + 1);
+        if scanned > MAX_RESERVED_NAME_SCAN {
+            return None;
+        }
+        for constant in &proto.constants {
+            match constant {
+                LuaConstant::Str(text) => {
+                    found.insert(text.clone());
+                }
+                LuaConstant::Import(path) => found.extend(path.iter().cloned()),
+                LuaConstant::Nil
+                | LuaConstant::Bool(_)
+                | LuaConstant::Integer(_)
+                | LuaConstant::Number(_)
+                | LuaConstant::ClosureRef(_)
+                | LuaConstant::Vector(_) => {}
+            }
+        }
+        pending.extend(proto.protos.iter());
+    }
+    Some(found)
+}
 
 struct LiveAcrossBranch {
     boundaries: Vec<bool>,
@@ -2299,7 +2355,9 @@ fn emit_fornum(
     let step: String = state.reg(d.a + 2);
     let var: String = names
         .name_at(pc + 1, d.a + 3)
-        .map_or_else(|| format!("fv_{}", d.a), str::to_owned);
+        .map(str::to_owned)
+        .or_else(|| state.readable_name(&NUMERIC_LOOP_NAMES))
+        .unwrap_or_else(|| format!("fv_{}", d.a));
     state.bind_reg(d.a + 3, var.clone());
     state.suppress_local.push((pc + 1, d.a + 3));
     let end: usize = loop_end_from_prep(pc, d, dialect);
@@ -2420,18 +2478,22 @@ fn emit_forin_head(
         ctrl.base + 3
     };
     let body_pc: usize = head_pc + 1;
-    let vars: Vec<String> = (0..ctrl.nvars)
-        .map(|i: u32| {
-            let slot: u32 = var_base + i;
-            names
-                .name_at(body_pc, slot)
-                .map_or_else(|| format!("k{slot}"), str::to_owned)
-        })
-        .collect();
-    for (i, v) in vars.iter().enumerate() {
-        let slot: u32 = var_base + i as u32;
-        state.bind_reg(slot, v.clone());
+    let mut vars: Vec<String> = Vec::with_capacity(ctrl.nvars as usize);
+    for i in 0..ctrl.nvars {
+        let slot: u32 = var_base + i;
+        let role: &[&str] = match (ctrl.nvars, i) {
+            (1, _) | (_, 1) => &VALUE_NAMES,
+            (_, 0) => &KEY_NAMES,
+            _ => &[],
+        };
+        let var: String = names
+            .name_at(body_pc, slot)
+            .map(str::to_owned)
+            .or_else(|| state.readable_name(role))
+            .unwrap_or_else(|| format!("k{slot}"));
+        state.bind_reg(slot, var.clone());
         state.suppress_local.push((body_pc, slot));
+        vars.push(var);
     }
     state.push_stmt(LStmt::ForGen {
         iter,
