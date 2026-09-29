@@ -332,6 +332,49 @@ fn try_render_exception_region(
     Some(lines)
 }
 
+fn is_unconditional_loop_head(body: &YarvIseqBody, head: usize, targets: &[Option<usize>]) -> bool {
+    head >= 3
+        && body.instructions[head - 3].mnemonic == "jump"
+        && targets.get(head - 3).copied().flatten() == Some(head)
+        && body.instructions[head - 2].mnemonic == "putnil"
+        && body.instructions[head - 1].mnemonic == "pop"
+        && targets
+            .iter()
+            .rposition(|target| *target == Some(head))
+            .is_some_and(|k| k >= head && body.instructions[k].mnemonic == "jump")
+}
+
+fn jump_leaves_a_loop(body: &YarvIseqBody, jump: usize, targets: &[Option<usize>]) -> bool {
+    let Some(exit): Option<usize> = targets.get(jump).copied().flatten() else {
+        return false;
+    };
+    if exit < jump + 3
+        || body
+            .instructions
+            .get(exit - 1)
+            .is_none_or(|x| x.mnemonic != "putnil")
+    {
+        return false;
+    }
+    let back_edge: usize = exit - 2;
+    matches!(
+        body.instructions[back_edge].mnemonic.as_str(),
+        "branchif" | "branchunless" | "jump"
+    ) && targets
+        .get(back_edge)
+        .copied()
+        .flatten()
+        .is_some_and(|back| back <= jump)
+}
+
+fn leave_is_inside_a_loop(leave: usize, targets: &[Option<usize>]) -> bool {
+    targets
+        .iter()
+        .enumerate()
+        .skip(leave + 1)
+        .any(|(k, target)| target.is_some_and(|t| t <= leave && t < k))
+}
+
 fn region_is_inside_a_loop(body: &YarvIseqBody, start: usize, end: usize) -> bool {
     let targets: Vec<Option<usize>> = resolve_branch_targets(body);
     targets
@@ -583,6 +626,12 @@ fn render_region(
             i = next;
             continue;
         }
+        if m == "leave" && ctx.is_method_body(body.index) && leave_is_inside_a_loop(i, targets) {
+            let value: String = stack.pop().unwrap_or_default();
+            emit_value_flow(stmts, depth, "return", value);
+            i += 1;
+            continue;
+        }
         if let Some(next) = try_aref_compound_assign(body, ctx, depth, i, hi, targets, stack, stmts)
         {
             i = next;
@@ -683,6 +732,27 @@ fn render_region(
             } else if !call.is_empty() {
                 emit_stmt(stmts, depth, format!("{call}()"));
             }
+            i += 1;
+            continue;
+        }
+        if matches!(m, "branchif" | "branchunless" | "jump")
+            && let Some(head) = targets[i]
+            && head <= i
+            && is_unconditional_loop_head(body, head, targets)
+        {
+            if m == "jump" {
+                emit_stmt(stmts, depth, "next".to_owned());
+            } else {
+                let cond: String = pop(stack);
+                let keyword: &str = if m == "branchif" { "if" } else { "unless" };
+                emit_stmt(stmts, depth, format!("next {keyword} {cond}"));
+            }
+            i += 1;
+            continue;
+        }
+        if m == "jump" && jump_leaves_a_loop(body, i, targets) {
+            let value: String = stack.pop().unwrap_or_default();
+            emit_value_flow(stmts, depth, "break", value);
             i += 1;
             continue;
         }
@@ -2880,6 +2950,30 @@ fn try_loop(
     if init_target <= i || init_target >= hi {
         return None;
     }
+    if is_unconditional_loop_head(body, init_target, targets) {
+        let back_edge: usize = (init_target..hi)
+            .rev()
+            .find(|&k| targets[k] == Some(init_target))?;
+        if body.instructions[back_edge].mnemonic != "jump" {
+            return None;
+        }
+        let pad: String = indent(depth);
+        stmts.push(format!("{pad}while true"));
+        let mut body_stack: Vec<String> = Vec::new();
+        render_region(
+            body,
+            ctx,
+            depth + 1,
+            init_target,
+            back_edge,
+            targets,
+            &mut body_stack,
+            stmts,
+        );
+        flush_trailing(&mut body_stack, depth + 1, stmts);
+        stmts.push(format!("{pad}end"));
+        return Some(back_edge + 1);
+    }
     let branch_idx: usize = (init_target..hi).find(|&k| {
         matches!(
             body.instructions[k].mnemonic.as_str(),
@@ -2887,6 +2981,7 @@ fn try_loop(
         ) && targets[k].is_some_and(|t| t > i && t <= init_target)
     })?;
     let back_target: usize = targets[branch_idx]?;
+    let branch_idx: usize = last_loop_branch(body, branch_idx, back_target, hi, targets);
     let keyword: &str = if body.instructions[branch_idx].mnemonic == "branchif" {
         "while"
     } else {
@@ -2907,20 +3002,16 @@ fn try_loop(
         );
     }
     let cond_start: usize = init_target;
-
-    let mut cond_stack: Vec<String> = Vec::with_capacity(8);
-    let mut cond_sink: Vec<String> = Vec::new();
-    render_region(
+    let cond: String = render_loop_condition(
         body,
         ctx,
         depth,
         cond_start,
         branch_idx,
+        back_target,
+        keyword,
         targets,
-        &mut cond_stack,
-        &mut cond_sink,
     );
-    let cond: String = cond_stack.pop().unwrap_or_else(|| "true".to_owned());
 
     let pad: String = indent(depth);
     stmts.push(format!("{pad}{keyword} {cond}"));
@@ -2938,6 +3029,120 @@ fn try_loop(
     flush_trailing(&mut body_stack, depth + 1, stmts);
     stmts.push(format!("{pad}end"));
     Some(branch_idx + 1)
+}
+
+fn last_loop_branch(
+    body: &YarvIseqBody,
+    first: usize,
+    back_target: usize,
+    hi: usize,
+    targets: &[Option<usize>],
+) -> usize {
+    let mut last: usize = first;
+    for (k, instr) in body
+        .instructions
+        .iter()
+        .enumerate()
+        .take(hi)
+        .skip(first + 1)
+    {
+        let m: &str = instr.mnemonic.as_str();
+        let is_control: bool = matches!(
+            m,
+            "branchif" | "branchunless" | "branchnil" | "jump" | "leave" | "throw"
+        ) || m == "opt_case_dispatch";
+        if !is_control {
+            continue;
+        }
+        if matches!(m, "branchif" | "branchunless")
+            && targets.get(k).copied().flatten() == Some(back_target)
+        {
+            last = k;
+            continue;
+        }
+        break;
+    }
+    last
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_loop_condition(
+    body: &YarvIseqBody,
+    ctx: &DecompileContext<'_>,
+    depth: u32,
+    cond_start: usize,
+    branch_idx: usize,
+    back_target: usize,
+    keyword: &str,
+    targets: &[Option<usize>],
+) -> String {
+    let exit: usize = branch_idx + 1;
+    let mut segments: Vec<(usize, usize, bool, bool)> = Vec::new();
+    let mut seg_lo: usize = cond_start;
+    for j in cond_start..branch_idx {
+        let jumps_if_true: bool = match body.instructions[j].mnemonic.as_str() {
+            "branchif" => true,
+            "branchunless" => false,
+            _ => continue,
+        };
+        let Some(target): Option<usize> = targets.get(j).copied().flatten() else {
+            continue;
+        };
+        if target != exit && target != back_target {
+            continue;
+        }
+        segments.push((seg_lo, j, jumps_if_true, target == back_target));
+        seg_lo = j + 1;
+    }
+    let render_value = |lo: usize, hi: usize| -> String {
+        let mut stack: Vec<String> = Vec::with_capacity(8);
+        let mut sink: Vec<String> = Vec::new();
+        render_region(body, ctx, depth, lo, hi, targets, &mut stack, &mut sink);
+        stack.pop().unwrap_or_else(|| "true".to_owned())
+    };
+    let is_until: bool = keyword == "until";
+    let mut cond: String = render_value(seg_lo, branch_idx);
+    let mut cond_op: Option<&str> = None;
+    for &(lo, hi, jumps_if_true, to_body) in segments.iter().rev() {
+        let value: String = render_value(lo, hi);
+        let enters_body_when_true: bool = jumps_if_true == to_body;
+        let negate: bool = enters_body_when_true == is_until;
+        let op: &str = if to_body == is_until { "&&" } else { "||" };
+        let lhs: String = if negate {
+            format!("!{}", wrap_operand(&value))
+        } else {
+            logical_operand(value)
+        };
+        let rhs: String = match cond_op {
+            Some(inner) if inner != op => format!("({cond})"),
+            _ => logical_operand(cond),
+        };
+        cond = format!("{lhs} {op} {rhs}");
+        cond_op = Some(op);
+    }
+    cond
+}
+
+fn logical_operand(value: String) -> String {
+    if [" || ", " && ", " and ", " or ", " ? ", " = ", "not "]
+        .iter()
+        .any(|marker| value.contains(marker))
+    {
+        format!("({value})")
+    } else {
+        value
+    }
+}
+
+fn wrap_operand(value: &str) -> String {
+    if value
+        .chars()
+        .all(|c| c.is_alphanumeric() || matches!(c, '_' | '.' | '?' | '!' | '@'))
+    {
+        value.to_owned()
+    } else {
+        format!("({value})")
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2972,19 +3177,16 @@ fn render_post_tested_loop(
     );
     flush_trailing(&mut body_stack, depth + 1, stmts);
 
-    let mut cond_stack: Vec<String> = Vec::with_capacity(8);
-    let mut cond_sink: Vec<String> = Vec::new();
-    render_region(
+    let cond: String = render_loop_condition(
         body,
         ctx,
         depth,
         cond_start,
         branch_idx,
+        back_target,
+        keyword,
         targets,
-        &mut cond_stack,
-        &mut cond_sink,
     );
-    let cond: String = cond_stack.pop().unwrap_or_else(|| "true".to_owned());
     stmts.push(format!("{pad}end {keyword} {cond}"));
     Some(branch_idx + 1)
 }
@@ -3129,6 +3331,7 @@ fn compound_value(body: &YarvIseqBody, lo: usize, set_idx: usize) -> Option<Stri
         objects: &[],
         enclosing_scopes: Vec::new(),
         pattern_present: Rc::from(Vec::<bool>::new()),
+        method_bodies: Rc::from(Vec::<bool>::new()),
     };
     for j in lo..set_idx {
         let m: &str = body.instructions[j].mnemonic.as_str();
@@ -3307,6 +3510,7 @@ struct DecompileContext<'a> {
     objects: &'a [crate::yarv::ibf::IbfObject],
     enclosing_scopes: Vec<Vec<Option<String>>>,
     pattern_present: Rc<[bool]>,
+    method_bodies: Rc<[bool]>,
 }
 
 impl<'a> DecompileContext<'a> {
@@ -3319,7 +3523,16 @@ impl<'a> DecompileContext<'a> {
             .map_or(0, |m| m + 1);
         let mut bodies_by_index: Vec<Option<&'a YarvIseqBody>> = vec![None; max_index];
         let mut pattern_present: Vec<bool> = vec![false; max_index];
+        let mut method_bodies: Vec<bool> = vec![false; max_index];
         for body in &image.iseqs {
+            for instr in &body.instructions {
+                if matches!(instr.mnemonic.as_str(), "definemethod" | "definesmethod")
+                    && let Some(YarvOperand::IseqRef(index)) = instr.operands.get(1)
+                    && let Some(flag) = method_bodies.get_mut(*index as usize)
+                {
+                    *flag = true;
+                }
+            }
             let slot_index: usize = body.index as usize;
             if let Some(slot) = bodies_by_index.get_mut(slot_index) {
                 *slot = Some(body);
@@ -3333,6 +3546,7 @@ impl<'a> DecompileContext<'a> {
             objects: &image.objects,
             enclosing_scopes: Vec::new(),
             pattern_present: Rc::from(pattern_present),
+            method_bodies: Rc::from(method_bodies),
         }
     }
 
@@ -3346,7 +3560,15 @@ impl<'a> DecompileContext<'a> {
             objects: self.objects,
             enclosing_scopes,
             pattern_present: Rc::clone(&self.pattern_present),
+            method_bodies: Rc::clone(&self.method_bodies),
         }
+    }
+
+    fn is_method_body(&self, iseq_index: u32) -> bool {
+        self.method_bodies
+            .get(iseq_index as usize)
+            .copied()
+            .unwrap_or(false)
     }
 
     fn body_has_pattern(&self, iseq_index: u32) -> bool {
