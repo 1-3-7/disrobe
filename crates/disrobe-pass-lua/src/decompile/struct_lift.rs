@@ -1298,6 +1298,11 @@ fn lower(
             Op::TestSet => {
                 if let Some(consumed) = emit_and_or(state, names, p, &d, pc, dialect) {
                     pc = consumed;
+                } else if let Some(target) = cond_jump_target(p, pc, dialect)
+                    .and_then(|target: i64| usize::try_from(target).ok())
+                {
+                    emit_testset(state, &d, pc, target, dialect);
+                    pc += 1;
                 } else {
                     let v: String = state.reg(d.b);
                     set_temp(state, d.a, v);
@@ -1385,8 +1390,22 @@ fn lower(
                 };
                 if count == 0 {
                     state.set_reg(d.a, "...".to_owned());
-                } else {
+                } else if count <= 2 {
                     define(state, names, live, p, d.a, "...".to_owned());
+                } else {
+                    let targets: Vec<String> = (0..count - 1)
+                        .map(|i: u32| {
+                            let slot: u32 = d.a + i;
+                            names
+                                .name_at(state.pc + 1, slot)
+                                .or_else(|| names.name_at(state.pc, slot))
+                                .map_or_else(|| state.temp(slot), str::to_owned)
+                        })
+                        .collect();
+                    state.push_raw(format!("local {} = ...", targets.join(", ")));
+                    for (i, target) in targets.into_iter().enumerate() {
+                        state.bind_reg(d.a + i as u32, target);
+                    }
                 }
             }
             Op::VarargPrep | Op::ExtraArg => {}
@@ -1569,12 +1588,20 @@ fn capture_name(
 fn define_table(
     state: &mut StructState,
     names: &LocalNames,
-    _live: &LiveAcrossBranch,
+    live: &LiveAcrossBranch,
     _p: &LuaProto,
     d: &Decoded,
     _pc: usize,
     dialect: LuaDialect,
 ) {
+    let carried: String = state.temp(d.a);
+    if state.bound.get(d.a as usize).copied().unwrap_or(false)
+        && state.reg(d.a) == carried
+        && live.read_after_control_flow(state.pc, d.a)
+    {
+        state.push_raw(format!("{carried} = {{}}"));
+        return;
+    }
     let act_pc: usize = if matches!(dialect, LuaDialect::Lua54) {
         state.pc + 2
     } else {
@@ -1682,6 +1709,46 @@ fn emit_cond(
     rhs: &str,
 ) {
     emit_cond_lit(state, p, pc, dialect, format!("{lhs} {sym} {rhs}"));
+}
+
+fn emit_testset(
+    state: &mut StructState,
+    d: &Decoded,
+    pc: usize,
+    target: usize,
+    dialect: LuaDialect,
+) {
+    let value: String = state.reg(d.b);
+    let assign_on_truthy: bool = if matches!(dialect, LuaDialect::Lua54) {
+        d.k
+    } else {
+        d.c != 0
+    };
+    let operand: String = operand_text(&value);
+    let assign_when: String = if assign_on_truthy {
+        operand
+    } else {
+        format!("not {operand}")
+    };
+    if !state.bound.get(d.a as usize).copied().unwrap_or(false) {
+        let tmp: String = state.temp(d.a);
+        state.push_raw(format!("local {tmp}"));
+        state.bind_reg(d.a, tmp);
+    }
+    state.pinned.insert(d.a);
+    let var: String = state.reg(d.a);
+    state.push_stmt(LStmt::Cond {
+        cond: assign_when,
+        target: pc + 2,
+    });
+    if var != value {
+        state.push_raw(format!("{var} = {value}"));
+    }
+    if target != pc + 2 {
+        state.pc = pc + 1;
+        state.push_stmt(LStmt::Jump { target });
+        state.pc = pc;
+    }
 }
 
 fn emit_cond_lit(
@@ -1868,20 +1935,30 @@ fn emit_ternary(
     if l1 != pc as i64 + 4 || merge != pc as i64 + 5 {
         return None;
     }
-    let test_truthy: bool = if matches!(dialect, LuaDialect::Lua54) {
-        !test.k
+    let (jumps_on_truthy, assigns_on_truthy): (bool, bool) = if matches!(dialect, LuaDialect::Lua54)
+    {
+        (test.k, ts.k)
     } else {
-        test.c == 0
+        (test.c != 0, ts.c != 0)
     };
-    let cond: String = state.reg(test.a);
-    let cond_expr: String = if test_truthy {
-        cond
+    let cond: String = operand_text(&state.reg(test.a));
+    let mid: String = operand_text(&state.reg(ts.b));
+    let other_val: String = operand_text(&single_value_text(state, p, &other, dialect));
+    let expr: String = if assigns_on_truthy {
+        let guard: String = if jumps_on_truthy {
+            format!("not {cond}")
+        } else {
+            cond
+        };
+        format!("({guard} and {mid} or {other_val})")
     } else {
-        format!("not {cond}")
+        let guard: String = if jumps_on_truthy {
+            cond
+        } else {
+            format!("not {cond}")
+        };
+        format!("(({guard} or {mid}) and {other_val})")
     };
-    let mid: String = state.reg(ts.b);
-    let other_val: String = single_value_text(state, p, &other, dialect);
-    let expr: String = format!("({cond_expr} and {mid} or {other_val})");
     define_at_merge(state, names, ts.a, expr, merge as usize);
     Some(pc + 4)
 }
@@ -1900,8 +1977,16 @@ fn define_at_merge(
         state.suppress_local.push((merge_pc, slot));
         return;
     }
+    if state.pinned.contains(&slot) {
+        assign_pinned(state, slot, &value);
+        return;
+    }
     let tmp: String = state.temp(slot);
-    state.push_raw(format!("local {tmp} = {value}"));
+    if state.bound.get(slot as usize).copied().unwrap_or(false) && state.reg(slot) == tmp {
+        state.push_raw(format!("{tmp} = {value}"));
+    } else {
+        state.push_raw(format!("local {tmp} = {value}"));
+    }
     state.bind_reg(slot, tmp);
 }
 
@@ -2215,6 +2300,7 @@ fn emit_call(
         } else if live.should_materialize(state.pc, dest)
             || live.reads_before_redefinition(state.pc, dest) > 1
             || live.side_effect_before_first_read(state.pc, dest)
+            || live.read_after_control_flow(state.pc, dest)
         {
             let tmp: String = state.temp(dest);
             if state.is_defined(dest) && state.reg(dest) == tmp {

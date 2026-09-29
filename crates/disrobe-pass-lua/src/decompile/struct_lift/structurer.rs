@@ -107,8 +107,12 @@ fn label_sites(nodes: &[PcNode]) -> LabelSites {
     let node_pcs: std::collections::BTreeSet<usize> = nodes.iter().map(|n: &PcNode| n.pc).collect();
     let mut sites: LabelSites = LabelSites::new();
     for n in nodes {
-        if let Node::Jump { target } = n.node
-            && target != usize::MAX
+        let target: usize = match n.node {
+            Node::Jump { target } => target,
+            Node::Cond { target, .. } if target > n.pc => target,
+            _ => continue,
+        };
+        if target != usize::MAX
             && let Some(&site) = node_pcs.range(target..).next()
         {
             sites.entry(site).or_default().insert(target);
@@ -814,6 +818,15 @@ fn structure_seq(
                     continue;
                 }
                 *pos += 1;
+                if target > frame.stop_pc && target < ctx.end_pc {
+                    ctx.edges.carry(cur_index);
+                    frame.out.push(StructuredBlock::If {
+                        cond: crate::decompile::luau_structure::negate_cond(&cond),
+                        then_body: vec![StructuredBlock::Goto { pc: target }],
+                        else_body: Vec::new(),
+                    });
+                    continue;
+                }
                 if target <= frame.stop_pc {
                     ctx.edges.carry(cur_index);
                 }

@@ -398,6 +398,10 @@ const BEHAVIOUR_PROGRAMS_54: &[(&str, &str)] = &[
         "loops",
         include_str!("../../../corpus/lua/behaviour/loops.lua"),
     ),
+    (
+        "values",
+        include_str!("../../../corpus/lua/behaviour/values.lua"),
+    ),
 ];
 
 const BEHAVIOUR_PROGRAMS_PORTABLE: &[(&str, &str)] = &[(
