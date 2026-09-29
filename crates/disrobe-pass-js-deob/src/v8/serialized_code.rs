@@ -3,6 +3,7 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 
 use super::bytenode::NodeVersion;
+use super::u32_le_at;
 
 pub const STRING_RECORD_TAG: u8 = 0x52u8;
 
@@ -134,8 +135,16 @@ pub fn extract_framed_strings(payload: &[u8]) -> Vec<FramedString> {
             i += 1usize;
             continue;
         };
-        let raw_hash: u32 = read_u32_le(payload, i + 2usize);
-        let byte_length: u32 = read_u32_le(payload, i + 6usize);
+        let (Ok(raw_hash), Ok(byte_length)): (
+            crate::error::Result<u32>,
+            crate::error::Result<u32>,
+        ) = (
+            u32_le_at(payload, i + 2usize),
+            u32_le_at(payload, i + 6usize),
+        ) else {
+            i += 1usize;
+            continue;
+        };
         if byte_length == 0u32 || byte_length >= MAX_STRING_LEN {
             i += 1usize;
             continue;
@@ -196,18 +205,6 @@ fn decode_one_byte_string(raw: &[u8]) -> Option<String> {
         return None;
     }
     Some(raw.iter().map(|&b: &u8| b as char).collect())
-}
-
-fn read_u32_le(bytes: &[u8], offset: usize) -> u32 {
-    if offset + 4usize > bytes.len() {
-        return 0u32;
-    }
-    u32::from_le_bytes([
-        bytes[offset],
-        bytes[offset + 1usize],
-        bytes[offset + 2usize],
-        bytes[offset + 3usize],
-    ])
 }
 
 #[cfg(test)]

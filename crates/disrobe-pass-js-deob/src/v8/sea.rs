@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use super::u32_le_at;
 use crate::error::{Error, Result};
 
 pub const SEA_MAGIC: u32 = 0x0143_DA20;
@@ -117,14 +118,14 @@ pub fn parse_sea_blob_at(bytes: &[u8], start: u64) -> Result<SeaBlob> {
         )));
     }
     let mut cursor: usize = start_usize;
-    let magic: u32 = read_u32_le(bytes, cursor)?;
+    let magic: u32 = u32_le_at(bytes, cursor)?;
     if magic != SEA_MAGIC {
         return Err(Error::OxcParse(format!(
             "sea magic mismatch at offset {start}: got 0x{magic:08X}, expected 0x{SEA_MAGIC:08X}"
         )));
     }
     cursor = cursor.saturating_add(4usize);
-    let flags_raw: u32 = read_u32_le(bytes, cursor)?;
+    let flags_raw: u32 = u32_le_at(bytes, cursor)?;
     if (flags_raw & !valid_flag_mask()) != 0u32 {
         return Err(Error::OxcParse(format!(
             "sea flags 0x{flags_raw:08X} have bits outside the SeaFlags mask (0x{:08X})",
@@ -206,24 +207,6 @@ fn read_u8(bytes: &[u8], offset: usize) -> Result<u8> {
         )));
     }
     Ok(bytes[offset])
-}
-
-fn read_u32_le(bytes: &[u8], offset: usize) -> Result<u32> {
-    let end: usize = offset
-        .checked_add(4usize)
-        .ok_or_else(|| Error::OxcParse("u32 read offset overflows usize".to_owned()))?;
-    if end > bytes.len() {
-        return Err(Error::OxcParse(format!(
-            "u32 read out of bounds: offset={offset}, end={end}, len={}",
-            bytes.len()
-        )));
-    }
-    Ok(u32::from_le_bytes([
-        bytes[offset],
-        bytes[offset + 1usize],
-        bytes[offset + 2usize],
-        bytes[offset + 3usize],
-    ]))
 }
 
 fn read_u64_le(bytes: &[u8], offset: usize) -> Result<u64> {

@@ -49,3 +49,21 @@ pub use serialized_code::{
     StringClass, StructuralRecovery, count_sfi_markers, extract_framed_strings, recover_structure,
 };
 pub use tauri::{TauriBinaryClass, classify_tauri_binary};
+
+pub(crate) fn u32_le_at(bytes: &[u8], offset: usize) -> crate::error::Result<u32> {
+    let end: usize = offset.checked_add(4usize).ok_or_else(|| {
+        crate::error::Error::OxcParse("u32 read offset overflows usize".to_owned())
+    })?;
+    if end > bytes.len() {
+        return Err(crate::error::Error::OxcParse(format!(
+            "u32 read out of bounds: offset={offset}, end={end}, len={}",
+            bytes.len()
+        )));
+    }
+    Ok(u32::from_le_bytes([
+        bytes[offset],
+        bytes[offset + 1usize],
+        bytes[offset + 2usize],
+        bytes[offset + 3usize],
+    ]))
+}

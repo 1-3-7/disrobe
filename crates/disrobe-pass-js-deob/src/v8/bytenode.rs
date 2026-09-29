@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
+use super::u32_le_at;
 use crate::error::{Error, Result};
 
 pub const V8_MAGIC_HIGH_BITS: u32 = 0xC0DE_0000;
@@ -166,7 +167,7 @@ pub fn parse_bytenode_header(bytes: &[u8]) -> Result<BytenodeCacheHeader> {
             bytes.len()
         )));
     }
-    let magic_number: u32 = read_u32_le(bytes, 0)?;
+    let magic_number: u32 = u32_le_at(bytes, 0)?;
     if magic_number & !V8_MAGIC_MARKER_MASK != V8_MAGIC_HIGH_BITS {
         return Err(Error::OxcParse(format!(
             "bytenode magic mismatch: got 0x{magic_number:08X}, expected high16 == 0xC0DE \
@@ -189,15 +190,15 @@ pub fn parse_bytenode_header(bytes: &[u8]) -> Result<BytenodeCacheHeader> {
             bytes.len()
         )));
     }
-    let version_raw: u32 = read_u32_le(bytes, 4)?;
-    let source_hash: u32 = read_u32_le(bytes, 8)?;
-    let flag_hash: u32 = read_u32_le(bytes, 12)?;
+    let version_raw: u32 = u32_le_at(bytes, 4)?;
+    let source_hash: u32 = u32_le_at(bytes, 8)?;
+    let flag_hash: u32 = u32_le_at(bytes, 12)?;
     let read_only_snapshot_checksum: Option<u32> = match layout {
         HeaderLayout::V11 => None,
-        HeaderLayout::V12 => Some(read_u32_le(bytes, 16)?),
+        HeaderLayout::V12 => Some(u32_le_at(bytes, 16)?),
     };
-    let payload_length: u32 = read_u32_le(bytes, layout.payload_length_offset())?;
-    let checksum: u32 = read_u32_le(bytes, layout.checksum_offset())?;
+    let payload_length: u32 = u32_le_at(bytes, layout.payload_length_offset())?;
+    let checksum: u32 = u32_le_at(bytes, layout.checksum_offset())?;
     let payload_len_usize: usize = payload_length as usize;
     if payload_len_usize > V8_MAX_PAYLOAD_BYTES {
         return Err(Error::OxcParse(format!(
@@ -334,24 +335,6 @@ fn push_run(run: &[u8], min: usize, out: &mut Vec<String>, seen: &mut BTreeSet<S
     }
 }
 
-fn read_u32_le(bytes: &[u8], offset: usize) -> Result<u32> {
-    let end: usize = offset
-        .checked_add(4usize)
-        .ok_or_else(|| Error::OxcParse("u32 read offset overflows usize".to_owned()))?;
-    if end > bytes.len() {
-        return Err(Error::OxcParse(format!(
-            "u32 read out of bounds: offset={offset}, end={end}, len={}",
-            bytes.len()
-        )));
-    }
-    Ok(u32::from_le_bytes([
-        bytes[offset],
-        bytes[offset + 1usize],
-        bytes[offset + 2usize],
-        bytes[offset + 3usize],
-    ]))
-}
-
 fn pick_header_layout(bytes: &[u8], node: NodeVersion) -> HeaderLayout {
     let direct: HeaderLayout = node.header_layout();
     if node != NodeVersion::Unknown && self_describes(bytes, direct) {
@@ -372,7 +355,7 @@ fn self_describes(bytes: &[u8], layout: HeaderLayout) -> bool {
     if bytes.len() < hs || plo + 4usize > bytes.len() {
         return false;
     }
-    let Ok(pl): Result<u32> = read_u32_le(bytes, plo) else {
+    let Ok(pl): Result<u32> = u32_le_at(bytes, plo) else {
         return false;
     };
     let pl_usize: usize = pl as usize;
@@ -426,7 +409,7 @@ mod tests {
                 std::fs::read(root.join(rel)).unwrap_or_else(|error: std::io::Error| {
                     panic!("the committed {rel} is unreadable: {error}")
                 });
-            let magic: u32 = read_u32_le(&bytes, 0).expect("pyc magic");
+            let magic: u32 = u32_le_at(&bytes, 0).expect("pyc magic");
             assert_eq!(
                 magic & !V8_MAGIC_MARKER_MASK,
                 V8_MAGIC_HIGH_BITS,
