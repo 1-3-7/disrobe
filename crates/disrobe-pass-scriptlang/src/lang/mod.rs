@@ -457,6 +457,28 @@ mod tests {
     }
 
     #[test]
+    fn classify_leaves_real_minified_javascript_without_a_wsh_host_to_the_js_passes() {
+        for name in [
+            "obfuscated.megafile.low.js",
+            "obfuscated.megafile.medium.js",
+        ] {
+            let path: std::path::PathBuf = workspace_root()
+                .join("corpus")
+                .join("js")
+                .join("jsconfuser")
+                .join(name);
+            let bytes: Vec<u8> = required_fixture(&path);
+            assert_eq!(
+                classify(&bytes),
+                None,
+                "{name} is plain javascript with no windows script host evidence, so string \
+                 literals holding carets or dollar-prefixed assignments must not make it a \
+                 windows script",
+            );
+        }
+    }
+
+    #[test]
     fn is_native_binary_format_rejects_plain_text() {
         assert!(!is_native_binary_format(b"not a native binary at all"));
     }

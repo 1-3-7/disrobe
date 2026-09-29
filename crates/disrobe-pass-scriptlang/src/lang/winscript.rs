@@ -129,7 +129,7 @@ impl WinScriptRecovery {
 pub fn classify(text: &str) -> Option<WinScriptLang> {
     let lower: String = text.to_ascii_lowercase();
     let language: WinScriptLang = classify_markers(&lower)?;
-    if has_foreign_shebang(&lower) {
+    if has_foreign_shebang(&lower) || is_javascript_without_wsh_host(&lower) {
         return None;
     }
     let foreign: usize = lower
@@ -151,6 +151,30 @@ fn has_foreign_shebang(lower: &str) -> bool {
         let interpreter: &str = line.lines().next().unwrap_or_default();
         !interpreter.contains("pwsh") && !interpreter.contains("powershell")
     })
+}
+
+fn is_javascript_without_wsh_host(lower: &str) -> bool {
+    const JAVASCRIPT_TOKENS: &[&[&str]] = &[
+        &["===", "!=="],
+        &["=>"],
+        &["\"use strict\"", "'use strict'"],
+        &[".prototype"],
+        &["typeof "],
+        &["void 0"],
+    ];
+    const WSH_HOST: &[&str] = &[
+        "wscript.",
+        "activexobject",
+        "cscript",
+        "getobject(",
+        "@cc_on",
+        "jscript",
+    ];
+    let javascript_tokens: usize = JAVASCRIPT_TOKENS
+        .iter()
+        .filter(|group: &&&[&str]| group.iter().any(|token: &&str| lower.contains(token)))
+        .count();
+    javascript_tokens >= 2 && !WSH_HOST.iter().any(|marker: &&str| lower.contains(marker))
 }
 
 fn is_foreign_statement(line: &str) -> bool {
@@ -2122,6 +2146,12 @@ console.log(\"echo hello ^& echo world\");
             classify(POWERSHELL_WITH_IMPORT),
             Some(WinScriptLang::PowerShell)
         );
+    }
+
+    #[test]
+    fn classify_still_claims_minified_jscript_driving_the_windows_script_host() {
+        const JSCRIPT: &str = "var s=new ActiveXObject(\"WScript.Shell\");if(typeof s!==\"undefined\"){s.Run(\"calc\")}(function(){return 1===1})();";
+        assert!(classify(JSCRIPT).is_some());
     }
 
     #[test]
