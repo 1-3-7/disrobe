@@ -4,9 +4,6 @@ fn compile_protos() -> std::io::Result<()> {
 
     let protoc: PathBuf = protoc_bin_vendored::protoc_bin_path()
         .map_err(|e| std::io::Error::other(format!("protoc-bin-vendored: {e}")))?;
-    unsafe {
-        std::env::set_var("PROTOC", &protoc);
-    }
     let proto_root: PathBuf = PathBuf::from("proto");
     let proto_file: PathBuf = proto_root.join("disrobe.proto");
     println!("cargo:rerun-if-changed={}", proto_file.display());
@@ -18,11 +15,13 @@ fn compile_protos() -> std::io::Result<()> {
     let descriptor_path: PathBuf = out_dir.join("disrobe_descriptor.bin");
     let proto_files: [PathBuf; 1] = [proto_file];
     let proto_includes: [PathBuf; 1] = [proto_root];
+    let mut prost_config: tonic_build::Config = tonic_build::Config::new();
+    prost_config.protoc_executable(protoc);
     tonic_build::configure()
         .build_server(true)
         .build_client(true)
         .file_descriptor_set_path(&descriptor_path)
-        .compile_protos(&proto_files, &proto_includes)?;
+        .compile_protos_with_config(prost_config, &proto_files, &proto_includes)?;
     println!(
         "cargo:rustc-env=DISROBE_DESCRIPTOR_PATH={}",
         descriptor_path.display()
