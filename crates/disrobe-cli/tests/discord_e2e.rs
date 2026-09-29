@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use disrobe_binfmt::asar::{AsarEntry, AsarLayout};
 use disrobe_binfmt::container::{ContainerKind, detect_container_with_hint};
 use disrobe_binfmt::containers::nsis::detect_nsis;
+use disrobe_binfmt::containers::{SquirrelLayout, detect_squirrel};
 use disrobe_pass_mobile::hermes::{
     DisassemblyReport, HERMES_MAGIC_LE_BYTES, HERMES_MAX_VERSION, HERMES_MIN_VERSION, HermesModule,
     JsLiftReport, disassemble, lift_to_js_surface, parse, parse_header,
@@ -119,10 +120,18 @@ fn electron_installer_is_pe_and_squirrel_packaged() {
     );
     let container_kind: Option<ContainerKind> =
         detect_container_with_hint(&bytes, Some(std::path::Path::new("DiscordSetup.exe")));
-    match container_kind {
-        Some(ContainerKind::Zip) | None => {}
-        other => panic!("unexpected container classification for PE+ZIP: {other:?}"),
-    }
+    assert_eq!(
+        container_kind,
+        Some(ContainerKind::Squirrel),
+        "the DATA/131 resource holds the Squirrel package zip"
+    );
+    let layout: SquirrelLayout = detect_squirrel(&bytes).expect("squirrel layout");
+    assert_eq!(
+        layout.package_names,
+        vec!["Discord-1.0.9059-full.nupkg".to_owned()],
+        "{layout:?}"
+    );
+    assert_eq!(layout.nupkg_entry_count, Some(3));
     println!(
         "electron-installer: PE+Squirrel verified ({} bytes, ZIP at {zip_off}, EOCD at {eocd_off}, nupkg ref at {nupkg_off})",
         bytes.len()
