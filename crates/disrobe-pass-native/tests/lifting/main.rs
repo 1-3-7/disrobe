@@ -1,0 +1,51 @@
+#[path = "../aarch64_grade/battery.rs"]
+#[allow(clippy::expect_used)]
+mod battery;
+#[path = "../common/mod.rs"]
+mod common;
+#[path = "../support/compiler_toolchain.rs"]
+#[allow(clippy::panic, clippy::redundant_pub_crate)]
+mod compiler_toolchain;
+#[path = "../support/object_symbol.rs"]
+#[allow(clippy::redundant_pub_crate)]
+mod object_symbol;
+#[path = "../support/oracle_demand.rs"]
+mod oracle_demand;
+
+mod aarch64_cfg_pseudo_c;
+mod aarch64_entry_fold_back_edge;
+mod aarch64_exit_structuring_census;
+mod aarch64_flow_facts;
+mod aarch64_fp_encoding_sweep;
+mod aarch64_fp_semantics;
+mod aarch64_function_starts_grade;
+mod aarch64_pseudo_c;
+mod aarch64_recovery_grade;
+mod aarch64_recovery_probe;
+mod aarch64_render_cross_check;
+mod aarch64_rust_recovery_grade;
+mod aarch64_switch;
+mod alcatraz_deobf;
+mod amice_gauntlet;
+mod assert_function_names;
+mod cff_dispatcher_cover;
+mod deobf_orphan_wiring;
+mod desync_conflicting_decodes;
+mod desync_noreturn_status_api;
+mod emotet_cff;
+mod guardian_rs_gauntlet;
+mod msvc_cookie_guard;
+mod native_early_return_structuring;
+mod native_noreturn_exit_recovery;
+mod native_trap_boundary;
+mod nested_loop_follow;
+mod obfuscator_indicators;
+mod obfuscxx_gauntlet;
+mod obfush_gauntlet;
+mod obfusheader_gauntlet;
+mod ollvm_passes;
+mod opaque_predicate_ground_truth;
+mod rust_obfuscator_gauntlet;
+mod rust_panic_guard;
+mod tigress_cff_unflatten;
+mod x86_condition_refusal;

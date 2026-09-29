@@ -50,7 +50,8 @@ struct FigureClaim {
 const DALVIK_VERIFIER_GATE: &str = "crates/disrobe-pass-jvm/tests/dalvik_verifier_gate.rs";
 const JVM_RECOMPILE_GATE: &str = "crates/disrobe-pass-jvm/tests/decompile_recompile_rate.rs";
 const PYTHON_BINDINGS_DOC: &str = "docs/src/python-bindings.md";
-const PACKER_BYTE_GATE: &str = "crates/disrobe-pass-native/tests/committed_packer_byte_recovery.rs";
+const PACKER_BYTE_GATE: &str =
+    "crates/disrobe-pass-native/tests/packers/committed_packer_byte_recovery.rs";
 const EAZVM_GATE: &str = "crates/disrobe-pass-dotnet/tests/real_eazvm.rs";
 const PY_ARBITRARY_GATE: &str =
     "crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs";

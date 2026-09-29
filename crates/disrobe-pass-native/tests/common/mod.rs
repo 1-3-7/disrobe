@@ -19,9 +19,7 @@ use disrobe_core::scratch::ScratchDir;
 use disrobe_core::subprocess::{CapturedOutput, ExecutionError, run_captured};
 use disrobe_pass_native::{Arch, DisasmInsn, ProgramFunction, PseudoAbi, disassemble};
 
-#[path = "../support/compiler_toolchain.rs"]
-#[allow(clippy::redundant_pub_crate)]
-mod compiler_toolchain;
+use crate::compiler_toolchain;
 
 #[path = "../support/x86_compiler.rs"]
 mod x86_compiler;

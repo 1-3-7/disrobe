@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::truth::{Address, Correspondence, SizeBand, TruthTable};
+use super::truth::{Address, Correspondence, SizeBand, TruthTable};
 
 const PER_MILLE: u64 = 1000;
 

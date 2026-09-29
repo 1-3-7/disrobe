@@ -80,7 +80,7 @@ def render(
     if not toolchain:
         raise SystemExit("the assembler reported no version string")
     return (
-        "pub(crate) const SWEEP_CASES: &[(&str, &[u8], &str)] = &[\n"
+        "const SWEEP_CASES: &[(&str, &[u8], &str)] = &[\n"
         + "\n".join(rows)
         + "\n];\n"
     )

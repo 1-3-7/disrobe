@@ -1,0 +1,63 @@
+#[path = "../support/object_symbol.rs"]
+#[allow(clippy::redundant_pub_crate)]
+mod object_symbol;
+#[path = "../support/prerequisite.rs"]
+#[allow(clippy::panic, clippy::redundant_pub_crate, dead_code)]
+mod prerequisite;
+
+mod authenticode_oracle;
+mod coff_parse;
+mod crypto_const_sigs;
+mod cxx_eh_parse;
+mod cxx_itanium_demangle;
+mod cxx_msvc_demangle;
+mod cxx_rtti_vtable;
+mod delphi_dfm_reference;
+mod die_sig_engine;
+mod disasm_arm;
+mod disasm_arm64;
+mod disasm_avr;
+mod disasm_ebpf;
+mod disasm_mips;
+mod disasm_ppc;
+mod disasm_riscv;
+mod disasm_sparc;
+mod disasm_x64;
+mod disasm_x86;
+mod dwarf_sourcemap;
+mod dwarf_versions;
+mod efi_pe;
+mod elf_parse;
+mod exported_function_names;
+mod fileid_corpus;
+mod flirt_loader;
+mod import_thunk_names;
+mod kmod_parse;
+mod macho_parse;
+mod malware_string_sigs;
+mod mz_ne_le_lx;
+mod native_angr;
+mod native_binja;
+mod native_ghidra_headless;
+mod native_ida;
+mod native_llvm_ir_lift;
+mod native_match_api;
+mod native_retdec;
+mod native_rizin;
+mod pdb_cxx_recovery;
+mod pdb_reader;
+mod pe_parse;
+mod pe_unbind_oracle;
+mod plt_resolve_oracle;
+mod query_e2e;
+mod rust_auditable_sbom;
+mod rust_demangle;
+mod rust_enum_disc;
+mod rust_mono_group;
+mod rust_panic_sigs;
+mod rust_vtable_recover;
+mod sig_engine_section_evidence;
+mod similarity_extract;
+mod similarity_grade;
+mod stabs_reader;
+mod structural_elf_class;
