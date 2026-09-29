@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::time::Instant;
 
 use disrobe_py_marshal::{
@@ -9,9 +10,10 @@ use disrobe_pass_py_disasm::alt_runtimes::pypy::{PyPyModule, PyPyVariant, parse 
 
 use crate::alt_lift::mpy::lift_module as lift_mpy_module;
 use crate::ast::builder::take_stubbed_scopes;
-use crate::ast::{AstBuilder, AstModule, DefaultAstBuilder};
+use crate::ast::visitor::walk_stmt_mut;
+use crate::ast::{AstBuilder, AstModule, DefaultAstBuilder, Expr, Stmt, VisitorMut};
 use crate::bytecode::version::PyVersion as DecompileVersion;
-use crate::codegen::{DefaultEmitter, module_has_unicode_literals};
+use crate::codegen::{CodeEmitter, DefaultEmitter, module_has_unicode_literals};
 use crate::emit::{
     EmitOutput, EmitPipeline, LeakedMarker, authentic_literal_markers, carries_a_marker,
     find_leaked_marker,
@@ -245,12 +247,13 @@ pub fn build_recovered_source(
 ) -> Result<RecoveredSource> {
     let started: Option<Instant> = wall_clock_start();
     let frame_tree: FrameTree = builder_for(marshal_version).build(code, marshal_version)?;
-    let (mut module, stubbed_scopes): (AstModule, usize) =
+    let (mut module, mut stubbed_scopes): (AstModule, usize) =
         structure_module(code, &frame_tree, decompile_version)?;
     crate::selfcheck::verify_and_repair(&mut module, code, decompile_version);
+    let unicode_literals: bool = module_has_unicode_literals(&module);
     let pipeline: EmitPipeline = EmitPipeline {
         emitter: Box::new(DefaultEmitter {
-            unicode_literals: module_has_unicode_literals(&module),
+            unicode_literals,
             ..DefaultEmitter::new()
         }),
         formatter_enabled: false,
@@ -259,27 +262,92 @@ pub fn build_recovered_source(
         preserve_blank_lines: true,
     };
     let module_is_empty: bool = module.docstring.is_none() && module.body.is_empty();
-    let out: EmitOutput = pipeline.run(&module, decompile_version, started)?;
+    let mut out: EmitOutput = pipeline.run(&module, decompile_version, started)?;
     if !module_is_empty && out.source.trim().is_empty() {
         return Err(DecompileError::Emit {
             reason: "emit pipeline produced empty source".to_owned(),
         });
     }
-    let leaked: Option<LeakedMarker> = if carries_a_marker(&out.source) {
-        find_leaked_marker(&out.source, &authentic_literal_markers(code))
-    } else {
-        None
-    };
-    if let Some(marker) = leaked {
-        return Err(DecompileError::UnresolvedMarker {
-            stem: marker.stem,
-            line: marker.line,
-        });
+    if carries_a_marker(&out.source) {
+        let authentic: BTreeSet<String> = authentic_literal_markers(code);
+        if find_leaked_marker(&out.source, &authentic).is_some() {
+            let fragment_emitter: DefaultEmitter = DefaultEmitter {
+                unicode_literals,
+                ..DefaultEmitter::new()
+            };
+            let mut refuser: LeakingScopeRefuser<'_> = LeakingScopeRefuser {
+                emitter: &fragment_emitter,
+                version: decompile_version,
+                authentic: &authentic,
+                refused: 0,
+            };
+            for stmt in &mut module.body {
+                refuser.visit_stmt_mut(stmt);
+            }
+            if refuser.refused > 0 {
+                stubbed_scopes = stubbed_scopes.saturating_add(refuser.refused);
+                out = pipeline.run(&module, decompile_version, started)?;
+            }
+            if let Some(marker) = find_leaked_marker(&out.source, &authentic) {
+                return Err(DecompileError::UnresolvedMarker {
+                    stem: marker.stem,
+                    line: marker.line,
+                });
+            }
+        }
     }
     Ok(RecoveredSource {
         source: out.source,
         stubbed_scopes,
     })
+}
+
+struct LeakingScopeRefuser<'a> {
+    emitter: &'a DefaultEmitter,
+    version: &'a DecompileVersion,
+    authentic: &'a BTreeSet<String>,
+    refused: usize,
+}
+
+impl LeakingScopeRefuser<'_> {
+    fn leak_in(&self, stmts: &[Stmt]) -> Option<LeakedMarker> {
+        let text: String = stmts
+            .iter()
+            .map(|stmt: &Stmt| self.emitter.emit_stmt(stmt, 0, self.version))
+            .collect::<Vec<String>>()
+            .join("\n");
+        find_leaked_marker(&text, self.authentic)
+    }
+}
+
+impl VisitorMut for LeakingScopeRefuser<'_> {
+    fn visit_stmt_mut(&mut self, stmt: &mut Stmt) {
+        if self.leak_in(std::slice::from_ref(stmt)).is_none() {
+            return;
+        }
+        walk_stmt_mut(self, stmt);
+        let (Stmt::FunctionDef {
+            body, docstring, ..
+        }
+        | Stmt::ClassDef {
+            body, docstring, ..
+        }) = stmt
+        else {
+            return;
+        };
+        let Some(marker) = self.leak_in(body) else {
+            return;
+        };
+        let refusal: DecompileError = DecompileError::UnresolvedMarker {
+            stem: marker.stem,
+            line: marker.line,
+        };
+        *body = vec![Stmt::Pass];
+        *docstring = Some(format!("decompile-error: {refusal}"));
+        self.refused = self.refused.saturating_add(1);
+    }
+
+    fn visit_expr_mut(&mut self, _expr: &mut Expr) {}
 }
 
 #[must_use]
