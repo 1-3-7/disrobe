@@ -448,7 +448,10 @@ mod tests {
             (0..1, Some("A".to_owned())),
             (0..2, None),
             (5..9, Some("out".to_owned())),
-            (5..4, Some("backwards".to_owned())),
+            (
+                core::ops::Range { start: 5, end: 4 },
+                Some("backwards".to_owned()),
+            ),
         ];
         let (out, applied): (String, usize) = apply_splice_edits(source, &mut edits);
         assert_eq!(out, "A\u{e9}bCd");
