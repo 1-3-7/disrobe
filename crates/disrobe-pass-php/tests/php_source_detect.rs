@@ -32,6 +32,40 @@ fn detects_short_open_tag_with_echo_marker() {
 }
 
 #[test]
+fn java_generic_wildcards_are_not_short_open_tags() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../corpus/src/java/edge_cases/GenericBound.java");
+    let java = std::fs::read(&path).expect("the tracked java edge case must be readable");
+    assert!(java.windows(3).any(|w| w == b"<? "));
+    let detection = detect_php(&java);
+    assert_eq!(detection.kind, PhpKind::Unknown);
+}
+
+#[test]
+fn open_tag_after_prose_is_not_definite_source() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../corpus/php/fopo/CAPTURE-MANUAL.md");
+    let manual = std::fs::read(&path).expect("the tracked capture manual must be readable");
+    let detection = detect_php(&manual);
+    assert_ne!(detection.confidence, PhpConfidence::Definite);
+    assert_ne!(detection.confidence, PhpConfidence::High);
+}
+
+#[test]
+fn open_tag_after_a_shebang_line_is_definite_source() {
+    let detection = detect_php(b"\xEF\xBB\xBF#!/usr/bin/env php\n  <?php echo 1;");
+    assert_eq!(detection.kind, PhpKind::Source);
+    assert_eq!(detection.confidence, PhpConfidence::Definite);
+}
+
+#[test]
+fn short_open_tag_at_file_start_is_source() {
+    let detection = detect_php(b"<? echo 1; ?>");
+    assert_eq!(detection.kind, PhpKind::Source);
+    assert_eq!(detection.confidence, PhpConfidence::Medium);
+}
+
+#[test]
 fn rejects_unrelated_bytes_as_unknown() {
     let detection = detect_php(b"random binary \x00\x01");
     assert_eq!(detection.kind, PhpKind::Unknown);

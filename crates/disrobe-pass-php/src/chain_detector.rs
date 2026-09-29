@@ -1,16 +1,21 @@
 #![cfg(feature = "chain")]
 #![allow(clippy::module_name_repetitions)]
+use std::collections::BTreeSet;
+
 use disrobe_core::Artifact;
 use disrobe_core::Rung;
 use disrobe_core::chain::detection::{ChildArtifact, ChildHandle, TERMINAL_HINT};
 use disrobe_core::chain::{
     CatalogEntry, DetectContext, DetectVerdict, Detector, DetectorOutput,
-    FAMILY_OBFUSCATOR_WRAPPER, ObfuscatorCatalog, OutputKind, Pass, SupportQuality,
+    FAMILY_OBFUSCATOR_WRAPPER, FAMILY_SOURCE, ObfuscatorCatalog, OutputKind, Pass, SupportQuality,
 };
 use disrobe_core::debug::DebugLog;
 use disrobe_core::error::{CoreError, Result as CoreResult};
 use disrobe_core::pass::PassId;
 use disrobe_core::provenance::Language;
+use lazy_regex::bytes_regex;
+use memchr::memmem;
+use regex::bytes::Regex;
 
 use crate::decompile::OPARRAY_MAGIC;
 use crate::detect::{PhpConfidence, PhpDetection, PhpKind, detect as detect_php};
@@ -18,6 +23,7 @@ use crate::peel::{PeelOptions, PeelReport, PeelTrace, peel as peel_php};
 use crate::phar::{PharArchive, PharEntry, extract_entry, parse as parse_phar};
 use crate::pipeline::{RecoveryReport, recover as recover_php};
 use crate::protectors::{ProtectorFamily, ioncube, sourceguardian, zend_guard};
+use crate::sigs::{ScanReport, SignatureFamily, scan as signature_scan};
 
 pub const PASS_ID: PassId = "php.peel";
 
@@ -31,6 +37,10 @@ const TAG_OPARRAY: &str = "php-oparray";
 const TAG_BCG: &str = "php-bcg";
 
 const PHAR_MANIFEST_BANNER: &str = "php.phar archive";
+
+const YAKPRO_BANNER: &[u8] = b"YAK Pro - Php Obfuscator";
+const YAKPRO_MIN_HOPS: usize = 3;
+const SCRAMBLED_MIN_NAMES: usize = 3;
 
 #[derive(Debug)]
 pub struct PhpDetectorImpl;
@@ -452,27 +462,77 @@ fn push_line(out: &mut String, line: &str) {
     out.push('\n');
 }
 
-fn verdict_for(d: &PhpDetection) -> Option<DetectVerdict> {
+fn verdict_for(bytes: &[u8], d: &PhpDetection) -> Option<DetectVerdict> {
     let confidence: f32 = confidence_to_float(d.confidence);
     if confidence < 0.5 {
         return None;
     }
-    let (tag, marker): (&'static str, &'static str) = match d.kind {
-        PhpKind::Source => (TAG_PHP_SOURCE, "<?php-tag"),
-        PhpKind::PharStub => (TAG_PHAR_STUB, "__HALT_COMPILER"),
-        PhpKind::PharArchive => (TAG_PHAR_ARCHIVE, "phar-GBMB"),
-        PhpKind::Bcg => (TAG_BCG, "bcg-magic"),
+    let (tag, marker, family): (&'static str, &'static str, &'static str) = match d.kind {
+        PhpKind::Source => obfuscation_marker(bytes).map_or(
+            (TAG_PHP_SOURCE, "<?php-tag", FAMILY_SOURCE),
+            |marker: &'static str| (TAG_PHP_SOURCE, marker, FAMILY_OBFUSCATOR_WRAPPER),
+        ),
+        PhpKind::PharStub => (TAG_PHAR_STUB, "__HALT_COMPILER", FAMILY_OBFUSCATOR_WRAPPER),
+        PhpKind::PharArchive => (TAG_PHAR_ARCHIVE, "phar-GBMB", FAMILY_OBFUSCATOR_WRAPPER),
+        PhpKind::Bcg => (TAG_BCG, "bcg-magic", FAMILY_OBFUSCATOR_WRAPPER),
         PhpKind::Unknown => return None,
     };
     Some(DetectVerdict::new(
         PASS_ID,
         tag,
-        FAMILY_OBFUSCATOR_WRAPPER,
+        family,
         confidence,
         30,
         vec![marker],
-        format!("php kind={tag} halt={halt}", halt = d.has_halt_compiler),
+        format!(
+            "php kind={tag} family={family} marker={marker} halt={halt}",
+            halt = d.has_halt_compiler
+        ),
     ))
+}
+
+fn obfuscation_marker(bytes: &[u8]) -> Option<&'static str> {
+    if detect_protector(bytes).is_some() {
+        return Some("commercial-encoder");
+    }
+    if !matches!(
+        peel_php(bytes, PeelOptions::default()),
+        Err(crate::error::Error::EvalChainStuck { .. })
+    ) {
+        return Some("decode-layer");
+    }
+    let signatures: ScanReport = signature_scan(bytes);
+    if signatures
+        .families
+        .keys()
+        .any(|family: &SignatureFamily| *family != SignatureFamily::WebShell)
+    {
+        return Some("obfuscator-signature");
+    }
+    if memmem::find(bytes, YAKPRO_BANNER).is_some() || yakpro_goto_scramble(bytes) {
+        return Some("yakpro-goto-scramble");
+    }
+    if scrambled_sp_identifiers(bytes) {
+        return Some("scrambled-sp-identifiers");
+    }
+    None
+}
+
+fn yakpro_goto_scramble(bytes: &[u8]) -> bool {
+    let hop: &Regex = bytes_regex!(r"(?i)goto\s+[a-z_]\w*\s*;\s*[a-z_]\w*\s*:[^:]");
+    hop.find_iter(bytes).nth(YAKPRO_MIN_HOPS - 1).is_some()
+}
+
+fn scrambled_sp_identifiers(bytes: &[u8]) -> bool {
+    let name: &Regex = bytes_regex!(r"\$sp[0-9a-f]{6}\b");
+    let mut seen: BTreeSet<&[u8]> = BTreeSet::new();
+    for found in name.find_iter(bytes) {
+        seen.insert(found.as_bytes());
+        if seen.len() >= SCRAMBLED_MIN_NAMES {
+            return true;
+        }
+    }
+    false
 }
 
 fn verdict_for_bytes(bytes: &[u8]) -> Option<DetectVerdict> {
@@ -487,7 +547,7 @@ fn verdict_for_bytes(bytes: &[u8]) -> Option<DetectVerdict> {
             "php kind=php-oparray halt=false".to_owned(),
         ));
     }
-    verdict_for(&detect_php(bytes))
+    verdict_for(bytes, &detect_php(bytes))
 }
 
 #[inline]
@@ -505,6 +565,7 @@ const fn confidence_to_float(c: PhpConfidence) -> f32 {
 mod tests {
     use super::*;
     use disrobe_core::Rung;
+    use disrobe_core::chain::ConfidenceBand;
 
     fn ctx(bytes: &[u8]) -> DetectContext<'_> {
         DetectContext {
@@ -527,6 +588,72 @@ mod tests {
             Detector::detect(&PhpDetectorImpl, &ctx(bytes)).expect("must detect");
         assert_eq!(v.format_tag, TAG_PHP_SOURCE);
         assert!(v.confidence > 0.9);
+    }
+
+    fn corpus(relative: &str) -> Vec<u8> {
+        let path: std::path::PathBuf = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("corpus")
+            .join(relative);
+        std::fs::read(&path).unwrap_or_else(|error: std::io::Error| {
+            panic!(
+                "the tracked fixture {} must be readable: {error}",
+                path.display()
+            )
+        })
+    }
+
+    fn family_of(bytes: &[u8]) -> &'static str {
+        Detector::detect(&PhpDetectorImpl, &ctx(bytes))
+            .expect("php must detect")
+            .family
+    }
+
+    #[test]
+    fn plain_php_source_is_source_family() {
+        for relative in [
+            "php/baseline/hello.php",
+            "php/megafile/edge_cases.php",
+            "php/yakpro/calc_original.php",
+            "php/oparray/src/goto_shapes.php",
+            "php/oparray/src/goto_forward.php",
+        ] {
+            let bytes: Vec<u8> = corpus(relative);
+            assert_eq!(family_of(&bytes), FAMILY_SOURCE, "{relative}");
+        }
+    }
+
+    #[test]
+    fn obfuscated_php_source_stays_obfuscator_wrapper() {
+        for relative in [
+            "php/yakpro/calc_yakpro_3.0.0.php",
+            "php/yakpro/controlflow_yakpro_3.0.0.php",
+            "php/better-php-obfuscator/edge_cases.obf.php",
+        ] {
+            let bytes: Vec<u8> = corpus(relative);
+            assert_eq!(family_of(&bytes), FAMILY_OBFUSCATOR_WRAPPER, "{relative}");
+        }
+        let wrapper: &[u8] = b"<?php eval(base64_decode('ZWNobyAxOw=='));";
+        assert_eq!(family_of(wrapper), FAMILY_OBFUSCATOR_WRAPPER);
+        let mut ioncube: Vec<u8> = b"<?php //004F\n".to_vec();
+        ioncube.extend_from_slice(b"encrypted Zend opcode payload");
+        assert_eq!(family_of(&ioncube), FAMILY_OBFUSCATOR_WRAPPER);
+    }
+
+    #[test]
+    fn java_with_generic_wildcards_is_not_php() {
+        let bytes: Vec<u8> = corpus("src/java/edge_cases/WildcardVariance.java");
+        assert!(Detector::detect(&PhpDetectorImpl, &ctx(&bytes)).is_none());
+    }
+
+    #[test]
+    fn markdown_quoting_php_is_not_a_high_band_claim() {
+        let bytes: Vec<u8> = corpus("php/fopo/CAPTURE-MANUAL.md");
+        if let Some(verdict) = Detector::detect(&PhpDetectorImpl, &ctx(&bytes)) {
+            assert_ne!(verdict.band, ConfidenceBand::High);
+            assert_eq!(verdict.family, FAMILY_SOURCE);
+        }
     }
 
     #[test]
