@@ -17,7 +17,6 @@ pub mod objc_dispatch;
 pub mod objc_records;
 pub mod pass;
 pub mod plist_decode;
-pub mod provenance_header;
 pub mod swift;
 pub mod swift_reflect;
 pub mod swift_symbolic;
@@ -91,10 +90,6 @@ pub use pass::{
 pub use plist_decode::{
     EntitlementValue, EntitlementsDecode, InfoPlistSummary,
     decode_entitlements_from_code_signature, decode_entitlements_xml, parse_info_plist,
-};
-pub use provenance_header::{
-    objc_class_dump_header, render_objc_with_header, render_swift_with_header,
-    swift_class_dump_header,
 };
 pub use swift::{
     SwiftClassDump, SwiftReflectionStrings, SwiftSectionPointers, SwiftShieldUndoMap,

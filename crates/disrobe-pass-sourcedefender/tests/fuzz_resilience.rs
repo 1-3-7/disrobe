@@ -1,7 +1,5 @@
 #![allow(clippy::expect_used)]
-use std::time::Duration;
 
-use disrobe_core::provenance::ProvenanceHeader;
 use disrobe_pass_sourcedefender::{
     ContainerVariant, DecoratorStripReport, DecryptedPye, DerivedKey, InlinedBlock,
     InlinedExtractOptions, InlinedExtraction, LayeredRecovery, ModernGcmFraming,
@@ -10,9 +8,9 @@ use disrobe_pass_sourcedefender::{
     decode_armored_line, decrypt_frame, decrypt_modern_gcm_with_key, decrypt_pye,
     decrypt_pye_to_source, decrypt_pye_with_key, derive_aes_key, extract_inlined,
     frame_modern_gcm_body, hex_decode, hex_encode, locate_inlined_blocks, parse_array_envelope,
-    parse_msgpack_envelope, parse_pye_frame, python_decoded_header, recover_from_marshal_bytes,
-    recover_from_plaintext, recover_layered, recover_layered_with_modern_key,
-    render_decoded_with_header, strip_extension, strip_sourcedefender_decorators,
+    parse_msgpack_envelope, parse_pye_frame, recover_from_marshal_bytes, recover_from_plaintext,
+    recover_layered, recover_layered_with_modern_key, strip_extension,
+    strip_sourcedefender_decorators,
 };
 use disrobe_testkit::{CorpusEntry, StressCase, StressConfig, XorShift64};
 
@@ -28,8 +26,6 @@ const MAX_SCATTERED_OVERWRITES: usize = 32;
 const KEY_BYTES: usize = 32;
 const SOURCE_NAME: &str = "fuzz.pye";
 const INLINED_NAME: &str = "fuzz.py";
-const PYTHON_VERSION: &str = "3.14";
-const HEADER_ELAPSED: Duration = Duration::from_millis(1);
 const CONSTRUCTED_IV: [u8; 16] = [0xA5; 16];
 
 fn legacy_frame_seed() -> Vec<u8> {
@@ -184,8 +180,6 @@ fn exercise_byte_entrypoints(bytes: &[u8], rng: &mut XorShift64) {
         let _: &str = basename_of(text);
         let _: &str = strip_extension(text);
         let _: Result<DerivedKey> = derive_aes_key(text);
-        let _: String = render_decoded_with_header(text, HEADER_ELAPSED, PYTHON_VERSION);
-        let _: ProvenanceHeader = python_decoded_header(HEADER_ELAPSED, PYTHON_VERSION);
     }
 }
 

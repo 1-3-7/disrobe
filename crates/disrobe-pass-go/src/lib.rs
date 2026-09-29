@@ -19,7 +19,6 @@ mod garble_thunk;
 pub mod llm;
 pub mod moduledata;
 pub mod pclntab;
-pub mod provenance_header;
 pub mod redress;
 pub mod symbols;
 pub mod types;
@@ -52,9 +51,6 @@ pub use moduledata::{
     extract_modulename, locate_moduledata,
 };
 pub use pclntab::{LocatedPclntab, PclntabHeader, PclntabVersion, locate_pclntab};
-pub use provenance_header::{
-    go_decompiled_header, go_extracted_header, render_go_decompiled_with_header,
-};
 pub use redress::{StrippedReport, analyze_stripped, synth_main_candidates};
 pub use symbols::{
     GoFunc, GoSymbols, assign_absolute_vas, package_histogram, package_path, parse_symbols,
@@ -281,9 +277,6 @@ pub fn analyze(bytes: &[u8]) -> Result<GoAnalysis> {
     dbg_kv("garble_quality", || format!("{:?}", garble.quality));
     dbg_kv("garble_detection_score", || {
         garble.detection_score.to_string()
-    });
-    dbg_kv("garble_seed_recoverable", || {
-        garble.seed_recoverable.to_string()
     });
     dbg_kv("garble_residual", || format!("{:?}", garble.residual));
     let embed: EmbedReport = extract_embed(&image);

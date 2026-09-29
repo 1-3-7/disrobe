@@ -14,7 +14,6 @@ mod inlined;
 mod kdf;
 mod layered;
 mod modern_gcm;
-mod provenance_header;
 mod source_recover;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -45,7 +44,6 @@ pub use modern_gcm::{
     GCM_NONCE_LEN, GCM_TAG_LEN, GcmFramingShape, KDF_SALT_LEN, ModernGcmFraming,
     decrypt_modern_gcm_with_key, frame_modern_gcm_body,
 };
-pub use provenance_header::{python_decoded_header, render_decoded_with_header};
 pub use source_recover::{
     CodeObjectSummary as SourceRecoverCodeObjectSummary, ParsedPyeArrayEnvelope, SourceRecoverOpts,
     SourceRecoverOutput, decrypt_pye_to_source, parse_array_envelope, recover_from_marshal_bytes,

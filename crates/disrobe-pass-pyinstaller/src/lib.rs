@@ -14,7 +14,6 @@ mod manifest;
 #[cfg(feature = "chain")]
 pub mod native_surface;
 mod onedir;
-mod provenance_header;
 mod pyc_zipper;
 mod pyz;
 mod toc;
@@ -27,10 +26,6 @@ pub use manifest::{
     EntryClassification, ProtectionReport, ProtectionSignal, PyInstallerManifest, build_manifest,
 };
 pub use onedir::{OnedirLayout, OnedirPlan, plan_onedir};
-pub use provenance_header::{
-    python_extracted_header, python_unpacked_header, render_extracted_with_header,
-    render_unpacked_with_header,
-};
 pub use pyc_zipper::{UnzippedPyc, ZipperCompression, looks_like_pyc, unzip_pyc};
 pub use pyz::{PyzEntry, PyzTocKind, extract_pyz, extract_pyz_with_key};
 pub use toc::{DependencyReference, EntryType, TocEntry, TocNameStatus, walk_toc};

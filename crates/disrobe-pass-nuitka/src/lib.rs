@@ -27,7 +27,6 @@ mod onefile;
 mod onefile_locator;
 mod origin;
 mod plugin;
-mod provenance_header;
 mod reassembly;
 mod signed;
 mod skeleton;
@@ -96,9 +95,6 @@ pub use origin::{
     filename_is_app_source, infer_app_packages,
 };
 pub use plugin::{NuitkaPlugin, PluginConfidence, PluginHit, PluginScan, scan_plugins};
-pub use provenance_header::{
-    c_disasm_header, python_extracted_header, render_c_disasm_with_header,
-};
 pub use reassembly::{
     EntryRole, ReassembledTree, ReassemblyPlan, ReassemblyStats, plan_reassembly,
 };

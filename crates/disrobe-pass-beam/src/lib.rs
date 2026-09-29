@@ -38,7 +38,6 @@ pub mod etf;
 pub mod ez;
 pub mod file;
 pub mod opcodes;
-pub mod provenance_header;
 pub mod reader;
 pub mod surface;
 pub mod symbolic;
@@ -56,10 +55,6 @@ pub use error::{Error, Result};
 pub use etf::{Term, decode_etf};
 pub use ez::{EzArchive, EzEntry, EzQuota};
 pub use file::{BeamFile, RawBeam, RawChunk};
-pub use provenance_header::{
-    core_erlang_lifted_header, elixir_decompiled_header, erlang_decompiled_header,
-    render_core_erlang_with_header, render_elixir_with_header, render_erlang_with_header,
-};
 pub use surface::{ErlangSurface, RecoverySource, recover as recover_erlang};
 pub use symbolic::{
     SymbolicFunction, SymbolicInstruction, SymbolicModule, render_symbolic, symbolic_disassemble,

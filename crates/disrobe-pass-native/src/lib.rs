@@ -62,7 +62,6 @@ pub mod pass;
 pub mod patch;
 pub mod pdb_cxx;
 pub mod plt_resolve;
-pub mod provenance_header;
 pub mod pseudo_c;
 pub mod rust_recovery;
 pub mod sig_engine;
@@ -275,10 +274,6 @@ pub use pdb_cxx::{
 pub use plt_resolve::{
     ImportStub, TailCall, TailCallKind, classify_tail_calls, resolve_elf_plt_imports,
     resolve_pe_iat_imports,
-};
-pub use provenance_header::{
-    c_lifted_header, cpp_lifted_header, render_c_with_header, render_cpp_with_header,
-    render_rust_with_header, rust_lifted_header,
 };
 pub use pseudo_c::{
     AARCH64_SCALAR_FP_LOWERED_MNEMONICS, Abi as PseudoAbi, CallSiteReturnProof,

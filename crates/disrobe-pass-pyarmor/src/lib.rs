@@ -76,7 +76,6 @@ mod mix_string;
 mod mode_class;
 mod nine_pro;
 mod provenance;
-mod provenance_header;
 mod runtime;
 mod sourcedefender_cross;
 pub mod static_unpack;
@@ -131,10 +130,6 @@ pub use mode_class::{
 };
 pub use nine_pro::{NineProBindMode, NineProDetection, detect_nine_pro};
 pub use provenance::{ProvenanceRegion, ProvenanceStage, PyarmorProvenance};
-pub use provenance_header::{
-    python_disasm_header, python_unpacked_header, render_disasm_with_header,
-    render_unpacked_with_header,
-};
 pub use sourcedefender_cross::{
     CrossoverFinding, SourcedefenderCrossKind, detect_sourcedefender_cross,
 };

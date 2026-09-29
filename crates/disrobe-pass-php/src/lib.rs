@@ -24,7 +24,6 @@ pub mod peel;
 pub mod phar;
 pub mod pipeline;
 pub mod protectors;
-pub mod provenance_header;
 pub mod restructure;
 pub mod sigs;
 pub mod token;
@@ -65,10 +64,6 @@ pub use pipeline::{RecoveryReport, RecoveryStage, recover as recover_php};
 pub use protectors::{
     ProtectorDetection, ProtectorFamily, ioncube as ioncube_protector,
     sourceguardian as sourceguardian_protector, zend_guard as zend_guard_protector,
-};
-pub use provenance_header::{
-    php_deobfuscated_header, php_extracted_header, render_php_deobfuscated_with_header,
-    render_php_extracted_with_header,
 };
 pub use restructure::{RestructureReport, restructure};
 pub use sigs::{ScanReport, SignatureFamily, SignatureHit, scan as signature_scan};

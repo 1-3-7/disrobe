@@ -56,7 +56,6 @@ mod obfuscators;
 mod op_lift;
 mod op_names;
 pub mod pass;
-mod provenance_header;
 pub mod recover;
 mod signature;
 mod simd;
@@ -135,11 +134,6 @@ pub use obfuscators::{
     lift_op_to_rust_fn, peel_cryptic_bytes, recover_heap_regions, reinline_imported_ops,
     simplify_mba, strip_dead_functions, strip_integrity_imports, unflatten,
     unflatten_to_fixed_point, unwrap_decryption,
-};
-pub use provenance_header::{
-    c_lifted_header, render_c_lifted_with_header, render_rust_lifted_with_header,
-    render_ts_lifted_with_header, render_wat_decompiled_with_header, rust_lifted_header,
-    ts_lifted_header, wat_decompiled_header,
 };
 pub use recover::{RecoveredModule, RecoveryReport, recover_module};
 pub use signature::{

@@ -22,7 +22,6 @@ pub mod llm;
 pub mod marshal;
 pub mod obfuscators;
 mod peel;
-mod provenance_header;
 mod pyint;
 mod pyrandom;
 mod shuffled_base64;
@@ -59,7 +58,6 @@ pub use obfuscators::{
     PeelOutcome as ObfuscatorPeelOutcome, Quality as ObfuscatorQuality, iter_passes,
 };
 pub use peel::{ObfuscatorPeelSummary, PeelResult, PeelStep, peel, peel_with_pyver};
-pub use provenance_header::{python_deobfuscated_header, render_deobfuscated_with_header};
 pub use source_cleanup::{CleanupStats, cleanup_source};
 pub use unrename::UnrenameStats;
 

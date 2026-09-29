@@ -77,7 +77,6 @@ pub mod detect;
 pub mod error;
 pub mod pass;
 pub mod pex;
-pub mod provenance_header;
 pub mod py2exe;
 pub mod pyoxidizer;
 pub mod recover;
@@ -91,9 +90,6 @@ pub use common::quota::{ExtractionQuota, QuotaGuard, QuotaReport};
 pub use detect::{Detection, detect_bytes};
 pub use error::{Error, Result};
 pub use pass::{PyfreezeOutput, PyfreezeRecovery, detect, extract};
-pub use provenance_header::{
-    python_extracted_header, python_unpacked_header, render_extracted_with_header,
-};
 pub use recover::{
     RecoveredModule, SurfacedNative, recover_bytecode, recover_bytecode_file, recover_raw_marshal,
     surface_native, surface_native_file,

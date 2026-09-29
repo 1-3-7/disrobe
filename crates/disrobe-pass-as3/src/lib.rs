@@ -11,7 +11,6 @@ pub mod error;
 pub mod lifter;
 pub mod obf;
 pub mod other_langs;
-pub mod provenance_header;
 pub mod swf;
 
 pub use abc::{AbcFile, ConstantPool, DisasmLine, Multiname};
@@ -22,7 +21,6 @@ pub use lifter::{
 };
 pub use obf::{ConfidenceScore, KnownTool, ObfuscationReport, ObfuscationSignal, analyze};
 pub use other_langs::{DetectedLanguage, DetectionReport, detect_source_or_binary};
-pub use provenance_header::{as3_decompiled_header, render_as3_with_header};
 pub use swf::{
     DefineSprite, DoAbc, FileAttributes, Swf, SwfCompression, SwfHeader, SwfTag, SymbolClassEntry,
     TagCode,

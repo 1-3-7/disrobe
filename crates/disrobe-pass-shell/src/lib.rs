@@ -38,7 +38,6 @@ pub mod format_wire;
 pub mod pdf;
 pub mod policy;
 pub mod powershell;
-pub mod provenance_header;
 pub mod vba;
 pub mod xlm;
 
@@ -70,11 +69,6 @@ pub use powershell::{
     reverse_chameleon, reverse_compress, reverse_encoding, reverse_invoke_stealth,
     reverse_isesteroids, reverse_launcher, reverse_powerhell, reverse_psobf, reverse_string,
     reverse_token,
-};
-pub use provenance_header::{
-    bash_deobfuscated_header, batch_deobfuscated_header, powershell_deobfuscated_header,
-    render_bash_with_header, render_batch_with_header, render_powershell_with_header,
-    render_vba_with_header, vba_deobfuscated_header,
 };
 pub use vba::extract::ContainerKind;
 pub use vba::{

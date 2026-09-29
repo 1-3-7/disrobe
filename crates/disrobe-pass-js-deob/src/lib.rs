@@ -36,8 +36,6 @@ mod obfuscator_io;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod protectors;
 #[cfg(not(target_arch = "wasm32"))]
-mod provenance_header;
-#[cfg(not(target_arch = "wasm32"))]
 mod rename;
 #[cfg(not(target_arch = "wasm32"))]
 #[allow(clippy::redundant_pub_crate)]
@@ -167,13 +165,6 @@ pub use protectors::{
         FAMILY as PACE_FAMILY, LEGAL as PACE_LEGAL, deobfuscate as pace_deobfuscate,
         detect as detect_pace, detect_only_report as pace_detect_only_report,
     },
-};
-#[cfg(not(target_arch = "wasm32"))]
-pub use provenance_header::{
-    js_decoded_header, js_deobfuscated_header, js_extracted_header,
-    render_js_deobfuscated_with_header, render_ts_deobfuscated_with_header,
-    render_v8_disasm_with_header, ts_deobfuscated_header, v8_bytecode_disasm_header,
-    v8_bytecode_lifted_header,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use rename::{RenameStats, ScopeAwareStats, rename_hex_idents, rename_scope_aware};

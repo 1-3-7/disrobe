@@ -9,7 +9,6 @@ pub mod jruby;
 pub mod mri;
 pub mod mruby;
 pub mod pass;
-pub mod provenance_header;
 pub mod truffleruby;
 pub mod wrappers;
 pub mod yarv;
@@ -26,10 +25,6 @@ pub use mruby::irep::{IrepRecord, IrepTree, PoolEntry, PoolKind};
 pub use mruby::ops::{MrubyOp, OperandFormat};
 pub use mruby::reader::{RiteBinary, RiteHeader, RiteSection};
 pub use pass::{RubyAnalysis, analyze_bytes};
-pub use provenance_header::{
-    mruby_decompiled_header, render_ruby_with_header, render_yarv_with_header,
-    ruby_decompiled_header, yarv_disasm_header,
-};
 pub use truffleruby::TruffleRubyAot;
 pub use wrappers::{OcraFile, OcraImage, OcraProcess, WrapperExtract, WrapperKind};
 pub use yarv::YarvAnalysis;

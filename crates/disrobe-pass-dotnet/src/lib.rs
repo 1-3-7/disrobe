@@ -37,7 +37,6 @@ pub(crate) mod positional_switch_reverse;
 pub(crate) mod property_switch_reverse;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod protectors;
-pub mod provenance_header;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod r2r;
 pub(crate) mod range_switch_reverse;
@@ -110,11 +109,6 @@ pub use peel::{
 pub use protectors::{
     DetectionReport, ExecuteOptions, ExecutionOutcome, GreyZone, Handling, Protector, detect_all,
     is_dotnet_assembly, plan_execution,
-};
-pub use provenance_header::{
-    cil_disasm_header, csharp_decompiled_header, fsharp_decompiled_header, render_cil_with_header,
-    render_csharp_with_header, render_fsharp_with_header, render_vbnet_with_header,
-    vbnet_decompiled_header,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use r2r::{R2rHeader, R2rReport};

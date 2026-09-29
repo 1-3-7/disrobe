@@ -45,42 +45,31 @@ const UNREACHABLE_CEILING: &[(&str, usize, &str)] = &[
     ),
     (
         "disrobe-pass-as3",
-        3,
-        "detect_source_or_binary is a narrower sibling of the detector the chain and CLI call, and \
-         render_as3_with_header is one of this workspace's per-language provenance-header \
-         renderers, proven by a real test but never spliced into the `--emit` output path; \
+        2,
+        "detect_source_or_binary is a narrower sibling of the detector the chain and CLI call; \
          lift_body_raw exposes the unstructured statement stream only to the CFG equivalence \
          grader and is not a product recovery surface",
     ),
     (
-        "disrobe-pass-beam",
-        3,
-        "all three are per-dialect provenance-header renderers, proven by a real test but never \
-         spliced into the `--emit` output path",
-    ),
-    (
         "disrobe-pass-dotnet",
-        8,
+        4,
         "decompile_method and emit_csharp are lower-level steps the real decompile entry point \
          wraps, plan_execution is a protector planner the CLI does not yet call ahead of \
-         extraction, capture_observations is feature-gated parser instrumentation for the seed \
-         reach harness, and four are per-dialect provenance-header renderers never spliced into \
-         `--emit` output path",
+         extraction, and capture_observations is feature-gated parser instrumentation for the \
+         seed reach harness",
     ),
     (
         "disrobe-pass-go",
-        2,
+        1,
         "probe_thunk_literals is a garble string-recovery helper only its own oracle drives \
-         directly, and one is the per-language provenance-header renderer never spliced into the \
-         `--emit` output path",
+         directly",
     ),
     (
         "disrobe-pass-js-deob",
-        34,
+        30,
         "most are jscrambler per-template deobfuscators and jsconfuser shape detectors exercised \
          one at a time by their own oracle rather than through a single dispatcher, plus bundler, \
-         source-map and TypeScript-recovery helpers with the same shape and four per-dialect \
-         provenance-header renderers never spliced into the `--emit` output path",
+         source-map and TypeScript-recovery helpers with the same shape",
     ),
     (
         "disrobe-pass-jvm",
@@ -100,13 +89,11 @@ const UNREACHABLE_CEILING: &[(&str, usize, &str)] = &[
     ),
     (
         "disrobe-pass-mobile",
-        16,
+        12,
         "Dart, Flutter and Hermes parsing and demangling helpers each proven by their own oracle \
          but not yet called from the crate's own extraction entry points, one more of the same \
          shape added when the pinned Dart declaration graph moved into this crate from the \
-         now-retired disrobe-dart, plus four per-dialect provenance-header renderers never \
-         spliced into the `--emit` output path. Ratcheted 17 to 16 when the isolate snapshot \
-         instructions table gained a caller and started naming functions in a stripped libapp",
+         now-retired disrobe-dart",
     ),
     (
         "disrobe-pass-nativelang",
@@ -119,7 +106,7 @@ const UNREACHABLE_CEILING: &[(&str, usize, &str)] = &[
     ),
     (
         "disrobe-pass-native",
-        62,
+        59,
         "the largest single group in this sweep: convenience wrappers over a sibling variant the \
          real caller uses (apply_patches over apply_patches_reported, collect_recovered_symbols \
          over the _with_oep form, discover_functions over discover_functions_with_status, and \
@@ -127,22 +114,19 @@ const UNREACHABLE_CEILING: &[(&str, usize, &str)] = &[
          packer-roster's own count already states chain_detector does not dispatch to, \
          reconstruction and recovery helpers proven by a dedicated oracle test but not yet called \
          from the CLI's native subcommands, fixture builders exposed publicly for their own tests, \
-         and three per-language provenance-header renderers never spliced into the `--emit` \
-         output path, plus the public sparse integer arity adapter retained for library users",
+         plus the public sparse integer arity adapter retained for library users",
     ),
     (
         "disrobe-pass-nuitka",
-        12,
+        11,
         "manifest, surface and constant-blob builders proven by their own test but not yet called \
-         from the crate's extraction entry point, plus one provenance-header renderer never \
-         spliced into the `--emit` output path",
+         from the crate's extraction entry point",
     ),
     (
         "disrobe-pass-php",
-        10,
-        "CFG and protector-container builders proven by their own oracle, a tokenizer and a bcg \
-         header reader with the same shape, plus two per-dialect provenance-header renderers \
-         never spliced into the `--emit` output path",
+        8,
+        "CFG and protector-container builders proven by their own oracle, and a tokenizer and a \
+         bcg header reader with the same shape",
     ),
     (
         "disrobe-pass-pickle",
@@ -152,10 +136,9 @@ const UNREACHABLE_CEILING: &[(&str, usize, &str)] = &[
     ),
     (
         "disrobe-pass-py-deob",
-        5,
+        4,
         "the hyperion v2v3 layer-peeling helpers and recover_pyc_zipper are proven by their own \
-         oracle but not yet called from the crate's dispatch entry point, plus one \
-         provenance-header renderer never spliced into the `--emit` output path",
+         oracle but not yet called from the crate's dispatch entry point",
     ),
     (
         "disrobe-pass-py-disasm",
@@ -166,45 +149,34 @@ const UNREACHABLE_CEILING: &[(&str, usize, &str)] = &[
     ),
     (
         "disrobe-pass-pyarmor",
-        4,
+        3,
         "remaining bcc analysis helpers are proven by their own tests but not called from the \
-         crate's extraction entry point, plus one provenance-header renderer never spliced into \
-         the `--emit` output path",
-    ),
-    (
-        "disrobe-pass-pyfreeze",
-        1,
-        "the one finding is the provenance-header renderer, proven by a real test but never \
-         spliced into the `--emit` output path",
+         crate's extraction entry point",
     ),
     (
         "disrobe-pass-pyinstaller",
-        7,
+        6,
         "dependency-tree, manifest and pyz-extraction helpers proven by their own test but not yet \
-         called from the crate's extraction entry point, plus one provenance-header renderer \
-         never spliced into the `--emit` output path",
+         called from the crate's extraction entry point",
     ),
     (
         "disrobe-pass-ruby",
-        6,
+        4,
         "yarv disassembly and opcode-table helpers proven by their own test but not yet called \
-         from the crate's decompile entry point, plus two per-dialect provenance-header renderers \
-         never spliced into the `--emit` output path",
+         from the crate's decompile entry point",
     ),
     (
         "disrobe-pass-scriptlang",
-        2,
+        1,
         "route_cross_target is proven by a real haxe fixture but the routing decision is not yet \
-         made from the crate's own dispatch path, and one is the provenance-header renderer never \
-         spliced into the `--emit` output path",
+         made from the crate's own dispatch path",
     ),
     (
         "disrobe-pass-shell",
-        12,
+        8,
         "PowerShell AST and obfuscation-bible parsers, a batch CFG resolver and reverser, and a \
          bash tokenizer, each proven by their own test but not yet called from the crate's \
-         dispatch entry point, plus four per-dialect provenance-header renderers never spliced \
-         into the `--emit` output path. Raised 10 to 12 for opcode_table and opcode_table_slots, \
+         dispatch entry point. Raised 6 to 8 for opcode_table and opcode_table_slots, \
          which are roster diagnostics rather than recovery capabilities: they enumerate the VBA \
          p-code opcode table so a test can prove every opcode is either reached by a committed \
          fixture or listed as unreached, which is what stops the published p-code ceiling drifting \
@@ -212,27 +184,23 @@ const UNREACHABLE_CEILING: &[(&str, usize, &str)] = &[
     ),
     (
         "disrobe-pass-sourcedefender",
-        5,
+        4,
         "decrypt, extract and recover helpers proven by their own oracle but not yet called from \
-         the crate's dispatch entry point, plus one provenance-header renderer never spliced into \
-         the `--emit` output path",
+         the crate's dispatch entry point",
     ),
     (
         "disrobe-pass-swift-objc",
-        9,
+        7,
         "entitlement, import-thunk, selector-index and dyld-cache-reconstruction helpers proven by \
-         their own oracle but not yet called from the crate's analyze entry point, plus two \
-         per-dialect provenance-header renderers never spliced into the `--emit` output path",
+         their own oracle but not yet called from the crate's analyze entry point",
     ),
     (
         "disrobe-pass-wasm-deob",
-        35,
+        31,
         "the second-largest group in this sweep: per-obfuscator reverse, detect and lift helpers \
          (wasmixer, wobfuscator, jscrambler, tigress) and per-feature scanners (SIMD, threads, \
          tail calls, GC externals, custom page sizes) each proven by their own oracle but driven \
-         one at a time rather than from a single dispatcher, plus four per-language \
-         provenance-header renderers never spliced into the `--emit` output path, and \
-         `lift_module_to_wat`, the stub-import module printer the per-function graders still \
+         one at a time rather than from a single dispatcher, and `lift_module_to_wat`, the stub-import module printer the per-function graders still \
          drive after every product WAT output moved to `lift_module_faithful_wat`",
     ),
     (

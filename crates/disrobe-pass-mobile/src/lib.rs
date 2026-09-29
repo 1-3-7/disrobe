@@ -32,7 +32,6 @@ pub mod hermes;
 pub mod ios;
 pub mod nativescript;
 pub mod pass;
-pub mod provenance_header;
 pub mod react_native;
 pub mod res_decode;
 pub mod xamarin;
@@ -141,11 +140,6 @@ pub use nativescript::{NativeScriptBundle, NativeScriptReport, extract_nativescr
 pub use pass::{
     AndroidDexEntry, AndroidDexReport, DetectedKind, HermesSummary, MobilePass, MobilePassOutput,
     detect_kind, extract_android_bundle_children, extract_android_dex_children,
-};
-pub use provenance_header::{
-    dart_decompiled_header, hermes_disasm_header, hermes_lifted_to_js_header,
-    render_dart_with_header, render_hermes_disasm_with_header, render_hermes_lifted_with_header,
-    render_rn_bundle_with_header, rn_bundle_extracted_header,
 };
 pub use react_native::{
     RnBundleEntry, RnBundleFormat, RnBundlePlatform, RnExtractionReport, classify_bundle_path,

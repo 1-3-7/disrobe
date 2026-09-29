@@ -23,7 +23,6 @@ pub mod chain_detector;
 pub(crate) mod debug;
 pub mod error;
 pub mod lang;
-pub mod provenance_header;
 
 pub use error::{Error, Result};
 pub use lang::hashlink::{
@@ -48,7 +47,6 @@ pub use lang::winscript::{
     RecoveredLayer, WallReason, WinScriptLang, WinScriptRecovery, WinTechnique, WinWall,
 };
 pub use lang::{ScriptArtifact, ScriptLang, analyze, analyze_rcpp, classify};
-pub use provenance_header::{language_for, render_with_header, scriptlang_header};
 
 #[must_use]
 pub fn version() -> &'static str {
