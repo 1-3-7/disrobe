@@ -2769,10 +2769,11 @@ mod tests {
     const ELF_REFERENCE_ARTIFACTS: [&str; 2] =
         ["native/formats/hello.elf64", "native/nim/hello.nim.elf"];
     const MACHO_REFERENCE_ARTIFACTS: [&str; 2] = [
-        "mobile/macho-mac/SwiftHello.original",
+        "binfmt/dotnet-single-file/probe.v6.osx-x64",
         "native/formats/hello.macho64.o",
     ];
-    const REFERENCE_EXECUTABLE_REGIONS: usize = 11;
+    const ARM64_MACHO_ARTIFACT: &str = "mobile/macho-mac/SwiftHello.original";
+    const REFERENCE_EXECUTABLE_REGIONS: usize = 10;
 
     type CodeLayoutWalk = fn(&[u8]) -> CodeLayout;
     type ReferenceWalk = fn(&[u8]) -> ReferenceLayout;
@@ -2978,6 +2979,21 @@ mod tests {
         assert_eq!(
             expected, REFERENCE_EXECUTABLE_REGIONS,
             "the six committed artifacts no longer hold the recorded number of reference executable regions; re-derive this count from the reference parser after a fixture change, never raise it to match a walk"
+        );
+    }
+
+    #[test]
+    fn an_arm64_macho_is_not_walked_as_x86_code() {
+        let bytes: Vec<u8> = reference_artifact(ARM64_MACHO_ARTIFACT);
+        assert!(
+            !reference_macho_layout(&bytes).regions.is_empty(),
+            "the arm64 reference mach-o holds executable sections"
+        );
+        let layout: CodeLayout = macho_code_layout(&bytes);
+        assert!(
+            layout.regions.is_empty() && layout.bitness.is_none(),
+            "arm64 instructions must not be decoded as x86: {:?}",
+            observed_regions(&layout)
         );
     }
 
