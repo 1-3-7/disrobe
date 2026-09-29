@@ -255,7 +255,13 @@ impl Lifter<'_> {
         pairs
     }
 
-    pub(super) fn exec_bif(&self, ins: &Instruction, env: &mut Env, flags: &mut Flags) {
+    pub(super) fn exec_bif(
+        &self,
+        ins: &Instruction,
+        env: &mut Env,
+        out: &mut Vec<Stmt>,
+        flags: &mut Flags,
+    ) {
         let (import_op, dst, args): (&Operand, &Operand, Vec<Expr>) = match ins.name {
             "bif0" => (&ins.operands[0], &ins.operands[1], Vec::new()),
             "bif1" => (
@@ -273,7 +279,17 @@ impl Lifter<'_> {
             ),
             _ => return,
         };
-        self.apply_bif(import_op, &args, dst, env, flags);
+        if self.apply_bif(import_op, &args, dst, env, flags)
+            && args.is_empty()
+            && let Some(reg) = as_reg(dst)
+        {
+            let var: String = flags.fresh_var();
+            out.push(Stmt::Bind {
+                pattern: Expr::Var(var.clone()),
+                value: env.get(reg),
+            });
+            env.set(reg, Expr::Var(var));
+        }
     }
 
     pub(super) fn exec_gc_bif(&self, ins: &Instruction, env: &mut Env, flags: &mut Flags) {
@@ -312,17 +328,18 @@ impl Lifter<'_> {
         dst: &Operand,
         env: &mut Env,
         flags: &mut Flags,
-    ) {
+    ) -> bool {
         let Some((module, name, arity)): Option<(String, String, u32)> =
             self.resolve_import(import_op)
         else {
             flags.degraded = true;
-            return;
+            return false;
         };
         let expr: Expr = build_bif_expr(&module, &name, arity, args);
         if let Some(reg) = as_reg(dst) {
             env.set(reg, expr);
         }
+        true
     }
 
     pub(super) fn exec_call_local(

@@ -4,10 +4,16 @@ use crate::body_lift::expr::{AfterClause, CaseArm, CatchArm, Expr, IfArm, Stmt};
 
 #[must_use]
 pub fn simplify_body(stmts: Vec<Stmt>) -> Vec<Stmt> {
-    let mut counts: BTreeMap<String, u32> = BTreeMap::new();
+    let mut counts: BTreeMap<String, Uses> = BTreeMap::new();
     count_stmts(&stmts, &mut counts);
     let mut defs: BTreeMap<String, Expr> = BTreeMap::new();
     inline_pass(stmts, &counts, &mut defs)
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct Uses {
+    reads: u32,
+    captured: bool,
 }
 
 fn is_temp(name: &str) -> bool {
@@ -15,7 +21,7 @@ fn is_temp(name: &str) -> bool {
         .is_some_and(|rest: &str| !rest.is_empty() && rest.bytes().all(|b: u8| b.is_ascii_digit()))
 }
 
-fn count_stmts(stmts: &[Stmt], counts: &mut BTreeMap<String, u32>) {
+fn count_stmts(stmts: &[Stmt], counts: &mut BTreeMap<String, Uses>) {
     for stmt in stmts {
         match stmt {
             Stmt::Return(e) | Stmt::Expr(e) => count_expr(e, counts),
@@ -29,11 +35,12 @@ fn count_stmts(stmts: &[Stmt], counts: &mut BTreeMap<String, u32>) {
     }
 }
 
-fn count_expr(expr: &Expr, counts: &mut BTreeMap<String, u32>) {
+fn count_expr(expr: &Expr, counts: &mut BTreeMap<String, Uses>) {
     match expr {
         Expr::Var(name) => {
             if is_temp(name) {
-                *counts.entry(name.clone()).or_insert(0) += 1;
+                let uses: &mut Uses = counts.entry(name.clone()).or_default();
+                uses.reads = uses.reads.saturating_add(1);
             }
         }
         Expr::Atom(_)
@@ -76,7 +83,16 @@ fn count_expr(expr: &Expr, counts: &mut BTreeMap<String, u32>) {
             count_expr(rhs, counts);
         }
         Expr::UnOp { operand, .. } => count_expr(operand, counts),
-        Expr::MakeFun { env, .. } => count_each(env, counts),
+        Expr::MakeFun { env, .. } => {
+            count_each(env, counts);
+            for item in env {
+                if let Expr::Var(name) = item
+                    && is_temp(name)
+                {
+                    counts.entry(name.clone()).or_default().captured = true;
+                }
+            }
+        }
         Expr::CallFun { fun, args } => {
             count_expr(fun, counts);
             count_each(args, counts);
@@ -131,13 +147,13 @@ fn count_expr(expr: &Expr, counts: &mut BTreeMap<String, u32>) {
     }
 }
 
-fn count_each(items: &[Expr], counts: &mut BTreeMap<String, u32>) {
+fn count_each(items: &[Expr], counts: &mut BTreeMap<String, Uses>) {
     for e in items {
         count_expr(e, counts);
     }
 }
 
-fn count_arm(arm: &CaseArm, counts: &mut BTreeMap<String, u32>) {
+fn count_arm(arm: &CaseArm, counts: &mut BTreeMap<String, Uses>) {
     if let Some(g) = &arm.guard {
         count_expr(g, counts);
     }
@@ -146,7 +162,7 @@ fn count_arm(arm: &CaseArm, counts: &mut BTreeMap<String, u32>) {
 
 fn inline_pass(
     stmts: Vec<Stmt>,
-    counts: &BTreeMap<String, u32>,
+    counts: &BTreeMap<String, Uses>,
     defs: &mut BTreeMap<String, Expr>,
 ) -> Vec<Stmt> {
     let mut out: Vec<Stmt> = Vec::with_capacity(stmts.len());
@@ -157,9 +173,10 @@ fn inline_pass(
                 if let Expr::Var(name) = &pattern
                     && is_temp(name)
                 {
-                    match counts.get(name).copied().unwrap_or(0) {
+                    let uses: Uses = counts.get(name).copied().unwrap_or_default();
+                    match uses.reads {
                         0 => out.push(Stmt::Expr(value)),
-                        1 => {
+                        1 if !(uses.captured && calls_a_function(&value)) => {
                             defs.insert(name.clone(), value);
                         }
                         _ => out.push(Stmt::Bind {
@@ -190,6 +207,31 @@ fn inline_pass(
     out
 }
 
+fn calls_a_function(expr: &Expr) -> bool {
+    match expr {
+        Expr::Call { .. } | Expr::CallFun { .. } | Expr::Receive { .. } | Expr::Try { .. } => true,
+        Expr::Tuple(items) => items.iter().any(calls_a_function),
+        Expr::List { elements, tail } => {
+            elements.iter().any(calls_a_function) || calls_a_function(tail)
+        }
+        Expr::Cons { head, tail } => calls_a_function(head) || calls_a_function(tail),
+        Expr::BinOp { lhs, rhs, .. } => calls_a_function(lhs) || calls_a_function(rhs),
+        Expr::UnOp { operand, .. } => calls_a_function(operand),
+        Expr::Guard { args, .. } => args.is_empty() || args.iter().any(calls_a_function),
+        Expr::TupleElement { tuple, .. } => calls_a_function(tuple),
+        Expr::Var(_)
+        | Expr::Atom(_)
+        | Expr::Nil
+        | Expr::Int(_)
+        | Expr::BigInt { .. }
+        | Expr::Float(_)
+        | Expr::Str(_)
+        | Expr::CharLit(_)
+        | Expr::BinaryLit(_) => false,
+        _ => true,
+    }
+}
+
 fn rename_temp(name: &str) -> String {
     format!("T{}", name.trim_start_matches('V'))
 }
@@ -203,14 +245,14 @@ fn subst_pattern(pattern: Expr) -> Expr {
 
 fn subst_stmts(
     stmts: Vec<Stmt>,
-    counts: &BTreeMap<String, u32>,
+    counts: &BTreeMap<String, Uses>,
     defs: &BTreeMap<String, Expr>,
 ) -> Vec<Stmt> {
     let mut scoped: BTreeMap<String, Expr> = defs.clone();
     inline_pass(stmts, counts, &mut scoped)
 }
 
-fn subst_expr(expr: Expr, counts: &BTreeMap<String, u32>, defs: &BTreeMap<String, Expr>) -> Expr {
+fn subst_expr(expr: Expr, counts: &BTreeMap<String, Uses>, defs: &BTreeMap<String, Expr>) -> Expr {
     match expr {
         Expr::Var(name) => {
             if let Some(replacement) = defs.get(&name) {
@@ -346,7 +388,7 @@ fn subst_expr(expr: Expr, counts: &BTreeMap<String, u32>, defs: &BTreeMap<String
 
 fn subst_arm(
     arm: CaseArm,
-    counts: &BTreeMap<String, u32>,
+    counts: &BTreeMap<String, Uses>,
     defs: &BTreeMap<String, Expr>,
 ) -> CaseArm {
     CaseArm {
@@ -358,7 +400,7 @@ fn subst_arm(
 
 fn map_exprs(
     items: Vec<Expr>,
-    counts: &BTreeMap<String, u32>,
+    counts: &BTreeMap<String, Uses>,
     defs: &BTreeMap<String, Expr>,
 ) -> Vec<Expr> {
     items
@@ -369,7 +411,7 @@ fn map_exprs(
 
 fn map_pairs(
     pairs: Vec<(Expr, Expr)>,
-    counts: &BTreeMap<String, u32>,
+    counts: &BTreeMap<String, Uses>,
     defs: &BTreeMap<String, Expr>,
 ) -> Vec<(Expr, Expr)> {
     pairs

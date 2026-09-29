@@ -251,26 +251,27 @@ fn safe_helper_name(raw: &str) -> String {
 }
 
 fn rename_lifted_helpers(core: &mut CoreModule) {
-    let mut captured: BTreeSet<String> = BTreeSet::new();
-    for f in &core.functions {
-        for clause in &f.clauses {
-            collect_captured_stmts(&clause.body.stmts, &mut captured);
-        }
-    }
-    if captured.is_empty() {
-        return;
-    }
+    let mut taken: BTreeSet<String> = core
+        .functions
+        .iter()
+        .map(|f: &CoreFunction| f.name.clone())
+        .collect();
     let mut refs: BTreeMap<String, String> = BTreeMap::new();
     let mut defs: BTreeMap<String, String> = BTreeMap::new();
     for f in &core.functions {
-        if f.name.starts_with('-') {
-            let quoted: String = crate::body_lift::render::render_atom(&f.name);
-            if captured.contains(&quoted) {
-                let safe: String = safe_helper_name(&f.name);
-                refs.insert(quoted, safe.clone());
-                defs.insert(f.name.clone(), safe);
-            }
+        if !f.name.starts_with('-') || defs.contains_key(&f.name) {
+            continue;
         }
+        let base: String = safe_helper_name(&f.name);
+        let mut safe: String = base.clone();
+        let mut serial: u32 = 1;
+        while taken.contains(&safe) {
+            safe = format!("{base}_{serial}");
+            serial += 1;
+        }
+        taken.insert(safe.clone());
+        refs.insert(crate::body_lift::render::render_atom(&f.name), safe.clone());
+        defs.insert(f.name.clone(), safe);
     }
     if refs.is_empty() {
         return;
@@ -289,151 +290,6 @@ fn rename_lifted_helpers(core: &mut CoreModule) {
             rename_stmts(&mut clause.body.stmts, &refs);
         }
     }
-}
-
-fn collect_captured_stmts(stmts: &[Stmt], out: &mut BTreeSet<String>) {
-    for stmt in stmts {
-        match stmt {
-            Stmt::Bind { pattern, value } | Stmt::Match { pattern, value } => {
-                collect_captured_expr(pattern, out);
-                collect_captured_expr(value, out);
-            }
-            Stmt::Send { dest, msg } => {
-                collect_captured_expr(dest, out);
-                collect_captured_expr(msg, out);
-            }
-            Stmt::Expr(expr) | Stmt::Return(expr) => collect_captured_expr(expr, out),
-            Stmt::Comment(_) => {}
-        }
-    }
-}
-
-fn collect_captured_expr(expr: &Expr, out: &mut BTreeSet<String>) {
-    match expr {
-        Expr::MakeFun { name, env, .. } => {
-            if !env.is_empty() {
-                out.insert(name.clone());
-            }
-            for item in env {
-                collect_captured_expr(item, out);
-            }
-        }
-        Expr::Call { args, .. } | Expr::Guard { args, .. } => {
-            for arg in args {
-                collect_captured_expr(arg, out);
-            }
-        }
-        Expr::Tuple(items) => {
-            for item in items {
-                collect_captured_expr(item, out);
-            }
-        }
-        Expr::List { elements, tail } => {
-            for element in elements {
-                collect_captured_expr(element, out);
-            }
-            collect_captured_expr(tail, out);
-        }
-        Expr::Cons { head, tail } => {
-            collect_captured_expr(head, out);
-            collect_captured_expr(tail, out);
-        }
-        Expr::Map { pairs } | Expr::MapPattern { pairs } => {
-            for (key, value) in pairs {
-                collect_captured_expr(key, out);
-                collect_captured_expr(value, out);
-            }
-        }
-        Expr::MapUpdate { base, pairs, .. } => {
-            collect_captured_expr(base, out);
-            for (key, value) in pairs {
-                collect_captured_expr(key, out);
-                collect_captured_expr(value, out);
-            }
-        }
-        Expr::TupleElement { tuple, .. } => collect_captured_expr(tuple, out),
-        Expr::RecordUpdate { base, updates } => {
-            collect_captured_expr(base, out);
-            for (_, value) in updates {
-                collect_captured_expr(value, out);
-            }
-        }
-        Expr::BinOp { lhs, rhs, .. } => {
-            collect_captured_expr(lhs, out);
-            collect_captured_expr(rhs, out);
-        }
-        Expr::UnOp { operand, .. } => collect_captured_expr(operand, out),
-        Expr::CallFun { fun, args } => {
-            collect_captured_expr(fun, out);
-            for arg in args {
-                collect_captured_expr(arg, out);
-            }
-        }
-        Expr::BinaryConstruct(segments) => {
-            for seg in segments {
-                collect_captured_expr(&seg.value, out);
-                if let Some(size) = &seg.size {
-                    collect_captured_expr(size, out);
-                }
-            }
-        }
-        Expr::Catch(inner) => collect_captured_expr(inner, out),
-        Expr::Case { subject, arms } => {
-            collect_captured_expr(subject, out);
-            for arm in arms {
-                collect_captured_arm(arm, out);
-            }
-        }
-        Expr::If { arms } => {
-            for arm in arms {
-                collect_captured_expr(&arm.guard, out);
-                collect_captured_stmts(&arm.body, out);
-            }
-        }
-        Expr::Receive { arms, after } => {
-            for arm in arms {
-                collect_captured_arm(arm, out);
-            }
-            if let Some(after) = after {
-                collect_captured_expr(&after.timeout, out);
-                collect_captured_stmts(&after.body, out);
-            }
-        }
-        Expr::Try {
-            body,
-            of_arms,
-            catch_arms,
-            after,
-        } => {
-            collect_captured_stmts(body, out);
-            for arm in of_arms {
-                collect_captured_arm(arm, out);
-            }
-            for arm in catch_arms {
-                collect_captured_stmts(&arm.body, out);
-            }
-            collect_captured_stmts(after, out);
-        }
-        Expr::Block(stmts) => collect_captured_stmts(stmts, out),
-        Expr::Var(_)
-        | Expr::Atom(_)
-        | Expr::Nil
-        | Expr::Int(_)
-        | Expr::BigInt { .. }
-        | Expr::Float(_)
-        | Expr::Str(_)
-        | Expr::CharLit(_)
-        | Expr::BinaryLit(_)
-        | Expr::Raw(_) => {}
-    }
-}
-
-fn collect_captured_arm(arm: &CaseArm, out: &mut BTreeSet<String>) {
-    collect_captured_expr(&arm.pattern, out);
-    if let Some(guard) = &arm.guard {
-        collect_captured_expr(guard, out);
-    }
-    collect_captured_stmts(&arm.body, out);
 }
 
 fn rename_stmts(stmts: &mut [Stmt], refs: &BTreeMap<String, String>) {
@@ -582,8 +438,14 @@ fn rename_expr(expr: &mut Expr, refs: &BTreeMap<String, String>) {
         | Expr::Float(_)
         | Expr::Str(_)
         | Expr::CharLit(_)
-        | Expr::BinaryLit(_)
-        | Expr::Raw(_) => {}
+        | Expr::BinaryLit(_) => {}
+        Expr::Raw(text) => {
+            for (quoted, safe) in refs {
+                if text.contains(quoted.as_str()) {
+                    *text = text.replace(quoted.as_str(), safe);
+                }
+            }
+        }
     }
 }
 

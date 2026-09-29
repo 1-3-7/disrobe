@@ -481,7 +481,7 @@ impl Lifter<'_> {
                         out.push(stmt);
                     }
                 }
-                "bif0" | "bif1" | "bif2" => self.exec_bif(ins, env, flags),
+                "bif0" | "bif1" | "bif2" => self.exec_bif(ins, env, &mut out, flags),
                 "gc_bif1" | "gc_bif2" | "gc_bif3" => self.exec_gc_bif(ins, env, flags),
                 "call" | "call_only" | "call_last" => {
                     if self.exec_call_local(ins, env, &mut out, flags) {
@@ -569,7 +569,7 @@ impl Lifter<'_> {
                     return out;
                 }
                 "badmatch" | "case_end" | "if_end" | "badrecord" | "try_case_end" => {
-                    out.push(Stmt::Comment(format!("match failure ({name})")));
+                    out.push(self.runtime_failure(ins, env));
                     return out;
                 }
                 "catch_end" | "try_end" | "try_case" => {}
@@ -586,6 +586,27 @@ impl Lifter<'_> {
             out.extend(self.walk(next, env, flags, depth + 1));
         }
         out
+    }
+
+    fn runtime_failure(&self, ins: &Instruction, env: &Env) -> Stmt {
+        let reason: Option<&str> = match ins.name {
+            "badmatch" => Some("badmatch"),
+            "case_end" => Some("case_clause"),
+            "try_case_end" => Some("try_clause"),
+            "badrecord" => Some("badrecord"),
+            _ => None,
+        };
+        let error: Expr = match (reason, ins.operands.first()) {
+            (None, _) => Expr::Atom("if_clause".to_owned()),
+            (Some(tag), Some(operand)) => {
+                Expr::Tuple(vec![Expr::Atom(tag.to_owned()), self.value(operand, env)])
+            }
+            (Some(_), None) => return Stmt::Comment(format!("match failure ({})", ins.name)),
+        };
+        Stmt::Return(Expr::Call {
+            target: "erlang:error".to_owned(),
+            args: vec![error],
+        })
     }
 
     fn fall_through_label(&self, end: usize) -> Option<u32> {
