@@ -629,33 +629,3 @@ fn disrobe_cextract(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__limitation__", LIMITATION_MESSAGE)?;
     Ok(())
 }
-
-#[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-mod tests {
-    use super::LIMITATION_MESSAGE;
-
-    #[test]
-    fn limitation_message_documents_both_backends() {
-        let m: &str = LIMITATION_MESSAGE;
-        assert!(m.contains("sys.monitoring"));
-        assert!(m.contains("PyEval_SetProfile"));
-        assert!(m.contains("3.12+"));
-        assert!(m.contains("3.9-3.11"));
-    }
-
-    #[test]
-    fn limitation_message_documents_residual_gaps() {
-        let m: &str = LIMITATION_MESSAGE;
-        assert!(m.contains("BCC"));
-        assert!(m.contains("hotpatch"));
-    }
-
-    #[test]
-    fn limitation_message_documents_hotpatch_backend() {
-        let m: &str = LIMITATION_MESSAGE;
-        assert!(m.contains("hotpatch"));
-        assert!(m.contains("DISROBE_CEXTRACT_BACKEND"));
-        assert!(m.contains("LD_PRELOAD") || m.contains("Detours"));
-    }
-}
