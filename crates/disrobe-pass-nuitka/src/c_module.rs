@@ -2157,6 +2157,7 @@ fn parse_module_assignments(
     masked_source: &str,
     code: &[u8],
     module_name: &str,
+    notes: &mut Vec<String>,
 ) -> Result<Vec<CModuleAssignment>> {
     let Some(body): Option<&str> = module_code_body(masked_source, code, module_name) else {
         return Ok(Vec::new());
@@ -2172,6 +2173,27 @@ fn parse_module_assignments(
             _ => None,
         })
         .collect();
+    let mut unlifted: BTreeSet<&str> = BTreeSet::new();
+    let mut binds_function: bool = false;
+    for event in &events {
+        match event {
+            ModuleBodyEvent::TopLevelFunction(_) => binds_function = true,
+            ModuleBodyEvent::Store { name, value_const } => {
+                let lifted: bool =
+                    binds_function || (value_const.is_some() && !rebound.contains(name));
+                if !lifted && !NUITKA_MANAGED_MODULE_ATTRIBUTES.contains(name) {
+                    unlifted.insert(*name);
+                }
+                binds_function = false;
+            }
+        }
+    }
+    if !unlifted.is_empty() {
+        notes.push(format!(
+            "module globals bound by module code the surface does not lift: {}",
+            unlifted.into_iter().collect::<Vec<&str>>().join(", ")
+        ));
+    }
     let mut next_function_index: Option<u32> = None;
     let mut assignments: Vec<CModuleAssignment> = Vec::new();
     for event in events.iter().rev() {
@@ -2273,10 +2295,10 @@ fn parse_c_module_with_mask(
     }
 
     let has_main_guard: bool = detect_main_guard(&lines);
-    let module_assignments: Vec<CModuleAssignment> =
-        parse_module_assignments(masked_source, &code, &module_name)?;
-
     let mut notes: Vec<String> = Vec::new();
+    let module_assignments: Vec<CModuleAssignment> =
+        parse_module_assignments(masked_source, &code, &module_name, &mut notes)?;
+
     let n_recovered: usize = impl_bodies.len() + const_returns.len();
     let n_wire: usize = wirings.len();
     if n_recovered != n_wire {
@@ -3358,6 +3380,10 @@ UPDATE_STRING_DICT0(moduledict_m, (Nuitka_StringObject *)mod_consts.const_str_pl
                 value_const: "mod_consts.const_int_pos_1".to_owned(),
                 next_function_index: None,
             }]
+        );
+        assert_eq!(
+            parsed.notes,
+            ["module globals bound by module code the surface does not lift: CONDITIONAL, REBOUND"]
         );
     }
 }

@@ -298,6 +298,19 @@ fn build_dir_surface(
         notes.push("primary module pool vanished before surface build".to_owned());
         return None;
     };
+    let unsurfaced: Vec<String> = constants
+        .pools
+        .keys()
+        .map(|file_name: &String| blob_name_from_filename(file_name))
+        .filter(|blob: &String| !blob.is_empty() && *blob != primary_blob)
+        .collect();
+    if !unsurfaced.is_empty() {
+        notes.push(format!(
+            "modules not surfaced, their decoded constants kept (the surface covers module \
+             {primary_blob} only): {}",
+            unsurfaced.join(", ")
+        ));
+    }
     let built: Result<Option<SurfaceModule>> = surface_from_c_source(&c_path, pool, python_abi);
     match built {
         Ok(Some(surface)) => {

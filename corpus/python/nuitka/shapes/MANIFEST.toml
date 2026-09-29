@@ -1,0 +1,90 @@
+schema_version = 1
+generated_at = "2026-09-29"
+tool = "Nuitka"
+tool_version = "4.1.1"
+python_runtime = "CPython 3.14.7"
+host_platform = "win_amd64"
+c_backend = "MSVC 14.44.35207 (cl 19.44, Visual Studio 2022 Build Tools, x64)"
+source_app = "shapes and pkgsurf"
+source_app_description = """
+Self-authored programs that exercise the C-body lifter and the module surface. \
+shapes.src.py holds an if/else join, nested for loops, a closure over two free \
+variables, a try with a tuple handler, a negative power base and a boolean callee. \
+pkgsurf is a package whose submodule defines a function with *args and **kw and a \
+function returning `a or b`. Only the generated module C sources and their constant \
+blobs are kept; the compiled extensions, objects and build scaffolding are not \
+committed because no test reads them. Rebuilding with the commands below reproduces \
+every kept file byte for byte.
+"""
+licence = """
+The .src.py programs are authored for this repository and fall under its licence. \
+The .c files are Nuitka output and keep their generated header: in part copyright \
+2026 Kay Hayen, GNU Affero General Public License version 3 with the Nuitka runtime \
+exception. The .const blobs are Nuitka data-composer output for the same programs.
+"""
+
+[[builds]]
+name = "shapes"
+command = "py -3.14 -m nuitka --module shapes.py --output-dir=out --no-pyi-file --assume-yes-for-downloads"
+source = "shapes.src.py (built as shapes.py)"
+build_dir = "shapes.build"
+
+[[builds]]
+name = "pkgsurf"
+command = "py -3.14 -m nuitka --mode=package pkgsurf --output-dir=out --assume-yes-for-downloads"
+source = "pkgsurf/__init__.src.py and pkgsurf/tools.src.py (built as pkgsurf/__init__.py and pkgsurf/tools.py)"
+build_dir = "pkgsurf.build"
+
+[[fixtures]]
+file = "shapes.src.py"
+sha256 = "74efb18950bb965e8a2e79c7b397ac01f971c813fd9577e67c57794ca5614a73"
+bytes = 624
+role = "ground truth"
+
+[[fixtures]]
+file = "shapes.build/module.shapes.c"
+sha256 = "3da48122b4dc162448102ca3d3f3654d1d90b63f88fe43d2927afd41596a0103"
+bytes = 102_799
+role = "generated module C source, verbatim"
+
+[[fixtures]]
+file = "shapes.build/module.shapes.const"
+sha256 = "d6c59c38b862bd71aa6f0b517743bece5b43f8b60d2a432674b7ac78688855a6"
+bytes = 742
+role = "module constants blob, verbatim"
+
+[[fixtures]]
+file = "pkgsurf/__init__.src.py"
+sha256 = "e94117bc8cdef279ec2ce1a3cc04282ff4bf21aa91a035306ebd9efdd0aa256d"
+bytes = 68
+role = "ground truth"
+
+[[fixtures]]
+file = "pkgsurf/tools.src.py"
+sha256 = "05ab053fd14b9f09627abfd83de5ea967c23c8bfaf26e88e88c44940ee08dc1b"
+bytes = 107
+role = "ground truth"
+
+[[fixtures]]
+file = "pkgsurf.build/module.pkgsurf.c"
+sha256 = "851a40d9a5974e931e584525b2a360b74727d0561fb5194feab95cf510a52076"
+bytes = 46_167
+role = "generated package C source, verbatim"
+
+[[fixtures]]
+file = "pkgsurf.build/module.pkgsurf.const"
+sha256 = "219292bceb254e5ef5cd6776c47b70c2e43794b90551963796ab4a4d49bf3ef6"
+bytes = 333
+role = "package constants blob, verbatim"
+
+[[fixtures]]
+file = "pkgsurf.build/module.pkgsurf.tools.c"
+sha256 = "ef463a3b5b06bf1a2b7e549f56f071039329bbf581ddb3dd65e7afd3863f48f4"
+bytes = 40_652
+role = "generated submodule C source, verbatim"
+
+[[fixtures]]
+file = "pkgsurf.build/module.pkgsurf.tools.const"
+sha256 = "005abd2fc87598b9c68f34f38ffeb06b588f509650bd289c7c3036a65f5c56ee"
+bytes = 235
+role = "submodule constants blob, verbatim"

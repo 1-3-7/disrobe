@@ -1337,6 +1337,13 @@ pub(crate) fn resolve_const_token(token: &str, pool: &ConstantsPool) -> PythonEx
     {
         return PythonExpr::Const(literal);
     }
+    if let Some(name) = t.strip_prefix("const_type_")
+        && pool
+            .globals
+            .contains(&("builtins".to_owned(), name.to_owned()))
+    {
+        return PythonExpr::Name(name.to_owned());
+    }
     if t.starts_with("const_") {
         return PythonExpr::Name(format!("UNRESOLVED:{t}"));
     }
@@ -1562,6 +1569,7 @@ const SINGLE_SEGMENT_PREFIXES: &[&str] = &[
     "long_neg_",
     "long_hex_",
     "dict_",
+    "type_",
 ];
 
 const ATOMIC_FRAGMENTS: &[&str] = &[
@@ -3559,6 +3567,7 @@ impl<'a> Lifter<'a> {
             ("BUILTIN_TYPE1(", "type"),
             ("BUILTIN_REPR(", "repr"),
             ("BUILTIN_ABS(", "abs"),
+            ("PyNumber_Int(", "int"),
         ] {
             if let Some(after) = t.strip_prefix(prefix) {
                 let inner: &str = trim_matching_paren(after);
@@ -3936,10 +3945,7 @@ fn should_skip(line: &str) -> bool {
     if t.starts_with("static PyObject *impl_") || t.contains("= python_pars[") {
         return true;
     }
-    if t.starts_with("tmp_closure_")
-        || t == "self->m_closure[0]"
-        || t.starts_with("FORMAT_UNBOUND_CLOSURE")
-    {
+    if t.starts_with("tmp_closure_") || t.starts_with("FORMAT_UNBOUND_CLOSURE") {
         return true;
     }
     if is_codegen_label(t) {
@@ -4160,6 +4166,12 @@ fn is_attach_locals_fragment(t: &str) -> bool {
     let core: &str = t.trim_end_matches([',', ';']).trim();
     if core.is_empty() {
         return false;
+    }
+    if let Some(slot) = core
+        .strip_prefix("self->m_closure[")
+        .and_then(|rest: &str| rest.strip_suffix(']'))
+    {
+        return !slot.is_empty() && slot.bytes().all(|byte: u8| byte.is_ascii_digit());
     }
     let is_ident: bool = core
         .chars()
