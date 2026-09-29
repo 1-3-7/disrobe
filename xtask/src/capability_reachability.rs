@@ -83,7 +83,7 @@ const UNREACHABLE_CEILING: &[(&str, usize, &str)] = &[
     ),
     (
         "disrobe-pass-mobile",
-        12,
+        11,
         "Dart, Flutter and Hermes parsing and demangling helpers each proven by their own oracle \
          but not yet called from the crate's own extraction entry points, one more of the same \
          shape added when the pinned Dart declaration graph moved into this crate from the \
@@ -112,7 +112,7 @@ const UNREACHABLE_CEILING: &[(&str, usize, &str)] = &[
     ),
     (
         "disrobe-pass-nuitka",
-        12,
+        11,
         "manifest, surface and constant-blob builders proven by their own test but not yet called \
          from the crate's extraction entry point, and the build-directory decompiler with an \
          explicit Python ABI, graded by the package-surface test while the CLI calls the \
@@ -138,7 +138,7 @@ const UNREACHABLE_CEILING: &[(&str, usize, &str)] = &[
     ),
     (
         "disrobe-pass-py-disasm",
-        5,
+        4,
         "build_cfg, render_dot and the exception-table renderers are proven by their own test but \
          not yet called from the crate's disassembly entry point, plus one provenance-header \
          renderer never spliced into the `--emit` output path",
@@ -151,7 +151,7 @@ const UNREACHABLE_CEILING: &[(&str, usize, &str)] = &[
     ),
     (
         "disrobe-pass-pyinstaller",
-        6,
+        5,
         "dependency-tree, manifest and pyz-extraction helpers proven by their own test but not yet \
          called from the crate's extraction entry point",
     ),
@@ -160,12 +160,6 @@ const UNREACHABLE_CEILING: &[(&str, usize, &str)] = &[
         4,
         "yarv disassembly and opcode-table helpers proven by their own test but not yet called \
          from the crate's decompile entry point",
-    ),
-    (
-        "disrobe-pass-scriptlang",
-        1,
-        "route_cross_target is proven by a real haxe fixture but the routing decision is not yet \
-         made from the crate's own dispatch path",
     ),
     (
         "disrobe-pass-shell",
@@ -180,13 +174,13 @@ const UNREACHABLE_CEILING: &[(&str, usize, &str)] = &[
     ),
     (
         "disrobe-pass-sourcedefender",
-        4,
+        3,
         "decrypt, extract and recover helpers proven by their own oracle but not yet called from \
          the crate's dispatch entry point",
     ),
     (
         "disrobe-pass-swift-objc",
-        7,
+        6,
         "entitlement, import-thunk, selector-index and dyld-cache-reconstruction helpers proven by \
          their own oracle but not yet called from the crate's analyze entry point",
     ),
@@ -198,14 +192,6 @@ const UNREACHABLE_CEILING: &[(&str, usize, &str)] = &[
          tail calls, GC externals, custom page sizes) each proven by their own oracle but driven \
          one at a time rather than from a single dispatcher, and `lift_module_to_wat`, the stub-import module printer the per-function graders still \
          drive after every product WAT output moved to `lift_module_faithful_wat`",
-    ),
-    (
-        "disrobe-pass-webview",
-        2,
-        "carve and detect_family are proven by a real electron oracle but never called from any \
-         consumer surface; the crate's own chain_detector is registered in \
-         crates/disrobe-passes/src/lib.rs and reaches `disrobe auto`, and carve_report is wired to \
-         the dedicated `disrobe webview` command, so neither counts as uncalled here",
     ),
 ];
 
