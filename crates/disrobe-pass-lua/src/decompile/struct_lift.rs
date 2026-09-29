@@ -859,7 +859,7 @@ fn lower(
                 }
             }
             Op::TestSet => {
-                if let Some(consumed) = emit_and_or(state, names, live, p, &d, pc, dialect) {
+                if let Some(consumed) = emit_and_or(state, names, p, &d, pc, dialect) {
                     pc = consumed;
                 } else {
                     let v: String = state.reg(d.b);
@@ -1379,7 +1379,6 @@ fn define_at_merge(
 fn emit_and_or(
     state: &mut StructState,
     names: &LocalNames,
-    live: &LiveAcrossBranch,
     p: &LuaProto,
     d: &Decoded,
     pc: usize,
@@ -1409,7 +1408,6 @@ fn emit_and_or(
     let op: &str = if is_or { "or" } else { "and" };
     let expr: String = format!("({lhs} {op} {rhs})");
     define_at_merge(state, names, d.a, expr, merge as usize);
-    let _ = live;
     Some(pc + 2)
 }
 

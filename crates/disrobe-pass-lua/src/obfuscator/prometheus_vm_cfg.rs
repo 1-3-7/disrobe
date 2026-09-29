@@ -3464,7 +3464,7 @@ fn recover_function(
         stats,
     )?;
 
-    for (call_expr, creator, entry_arg, upvals_arg) in &ctx.all_creation_calls {
+    for (call_expr, _creator, entry_arg, upvals_arg) in &ctx.all_creation_calls {
         let call_key: u64 = span_key(call_expr.span);
         if subst.contains_key(&call_key) {
             continue;
@@ -3478,7 +3478,6 @@ fn recover_function(
         if !within_this_function {
             continue;
         }
-        let _ = creator;
         let Some(nested_entry) = number_of(entry_arg) else {
             return Err(refuse_owned(format!(
                 "the closure-creation call at byte {} takes a non-literal entry point, so the closure body cannot be located in the dispatch tree",

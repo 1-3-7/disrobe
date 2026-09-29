@@ -947,10 +947,10 @@ fn lift_proto_captured(
                 fully_structured = false;
             }
             Op::Call => {
-                emit_call(&mut state, &d, false, dialect);
+                emit_call(&mut state, &d, false);
             }
             Op::TailCall => {
-                emit_call(&mut state, &d, true, dialect);
+                emit_call(&mut state, &d, true);
                 suppress_dead_jmp_after_return(p, &mut pc, dialect, &jump_targets);
             }
             Op::Return => {
@@ -1404,7 +1404,7 @@ fn emit_closure(
     }
 }
 
-fn emit_call(state: &mut LiftState, d: &Decoded, tail: bool, dialect: LuaDialect) {
+fn emit_call(state: &mut LiftState, d: &Decoded, tail: bool) {
     let func: String = state.reg(d.a);
     let args: Vec<String> = if d.b == 0 {
         let mut v: Vec<String> = Vec::new();
@@ -1423,7 +1423,6 @@ fn emit_call(state: &mut LiftState, d: &Decoded, tail: bool, dialect: LuaDialect
         return;
     }
     let nresults: u32 = d.c;
-    let _ = dialect;
     if nresults == 1 {
         state.push(&call);
     } else if nresults == 2 {

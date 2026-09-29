@@ -834,7 +834,7 @@ fn lift_proto(
     }
     let loops: Vec<LoopRegion> = detect_loops(&proto.code);
     let jump_targets: Vec<bool> = compute_jump_targets(&proto.code, &loops);
-    let predeclare: Vec<u32> = compute_predeclare(proto, &loops);
+    let predeclare: Vec<u32> = compute_predeclare(proto);
     for slot in &predeclare {
         let name: String = state.slot_name(*slot);
         state.push(&format!("local {name}"));
@@ -1711,7 +1711,7 @@ fn writes_dst(op: u8) -> bool {
 }
 
 #[must_use]
-fn compute_predeclare(proto: &LjProto, loops: &[LoopRegion]) -> Vec<u32> {
+fn compute_predeclare(proto: &LjProto) -> Vec<u32> {
     let frame: usize = usize::from(proto.framesize).max(2);
     let mut counts: Vec<u32> = vec![0; frame + 1];
     let bump = |slot: usize, counts: &mut [u32]| {
@@ -1747,7 +1747,6 @@ fn compute_predeclare(proto: &LjProto, loops: &[LoopRegion]) -> Vec<u32> {
         }
     }
     let num_params: u32 = u32::from(proto.num_params);
-    let _ = loops;
     (0..frame as u32)
         .filter(|slot: &u32| {
             counts.get(*slot as usize).copied().unwrap_or(0) >= 1 && *slot >= num_params

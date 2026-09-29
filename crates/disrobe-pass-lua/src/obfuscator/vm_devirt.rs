@@ -294,10 +294,7 @@ pub fn emulate_perm_builder(builder: &[u8], seed: u32) -> Result<BootstrapKeys> 
                 xor_key = Some((value & 0xFF) as u8);
             }
             PB_HALT => break,
-            other => {
-                let _ = other;
-                return Err(Error::BootstrapEmulationFailed("unknown builder opcode"));
-            }
+            _ => return Err(Error::BootstrapEmulationFailed("unknown builder opcode")),
         }
     }
 
