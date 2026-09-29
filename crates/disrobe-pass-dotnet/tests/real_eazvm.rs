@@ -149,62 +149,17 @@ fn evaluate(method: &str, body: &LiftedBody, arguments: &[i32]) -> Result<i32, E
     }
 }
 
-fn lifted_from_rendered(method: &str, lines: &[String]) -> LiftedBody {
-    let instrs: Vec<LiftedInstr> = lines
-        .iter()
-        .enumerate()
-        .map(|(index, line): (usize, &String)| {
-            let mut fields: std::str::SplitWhitespace<'_> = line.split_whitespace();
-            assert_eq!(
-                fields.next(),
-                Some(format!("IL_{index:04}").as_str()),
-                "{method}: expected ordered CIL indexed by instruction, got {line}"
-            );
-            let key: &str = fields
-                .next()
-                .unwrap_or_else(|| panic!("{method}: no opcode in {line}"));
-            let op: CilOp = CilOp::from_handler_key(key)
-                .unwrap_or_else(|| panic!("{method}: {key} is not an EazVM opcode"));
-            let operand: LiftedOperand = match (op.operand(), fields.next()) {
-                (CilOperand::None, None) => LiftedOperand::None,
-                (CilOperand::InlineI8 | CilOperand::InlineI32, Some(text)) => LiftedOperand::I32(
-                    text.parse::<i32>()
-                        .unwrap_or_else(|_| panic!("{method}: bad integer in {line}")),
-                ),
-                (CilOperand::VarByte | CilOperand::VarWord, Some(text)) => LiftedOperand::Var(
-                    text.parse::<u16>()
-                        .unwrap_or_else(|_| panic!("{method}: bad slot in {line}")),
-                ),
-                (CilOperand::ShortBranch, Some(text)) => LiftedOperand::BranchTo(
-                    text.strip_prefix("IL_")
-                        .and_then(|target: &str| target.parse::<usize>().ok())
-                        .unwrap_or_else(|| panic!("{method}: bad branch target in {line}")),
-                ),
-                (CilOperand::InlineMember, Some(text)) => {
-                    LiftedOperand::Member(rendered_token(method, text, "member#", line))
-                }
-                (CilOperand::InlineString, Some(text)) => {
-                    LiftedOperand::StringLit(rendered_token(method, text, "string#", line))
-                }
-                (expected, found) => {
-                    panic!("{method}: {line} has operand {found:?} where {key} needs {expected:?}")
-                }
-            };
-            assert_eq!(fields.next(), None, "{method}: trailing operand in {line}");
-            LiftedInstr { op, operand }
-        })
-        .collect();
-    LiftedBody { instrs }
-}
-
-fn rendered_token(method: &str, text: &str, prefix: &str, line: &str) -> i32 {
-    let Some(token): Option<u32> = text
-        .strip_prefix(prefix)
-        .and_then(|hex: &str| u32::from_str_radix(hex, 16).ok())
-    else {
-        panic!("{method}: bad {prefix} token in {line}");
-    };
-    token.cast_signed()
+fn typed_body(method: &str, recovered: &disrobe_pass_dotnet::RecoveredMethod) -> LiftedBody {
+    let body: LiftedBody = recovered
+        .lifted_cil
+        .clone()
+        .unwrap_or_else(|| panic!("{method}: an EazVM recovery carries its lifted body"));
+    assert_eq!(
+        body.render(),
+        recovered.cil,
+        "{method}: the rendered CIL is the lifted body's rendering"
+    );
+    body
 }
 
 const fn clean_poly_i4(argument: i32) -> i32 {
@@ -414,12 +369,8 @@ fn peel_keeps_i4_overflow_semantics_when_handler_analysis_succeeds() {
     );
 
     let argument: i32 = 50_000;
-    let recovered: i32 = evaluate(
-        "Poly",
-        &lifted_from_rendered("Poly", &poly.cil),
-        &[argument],
-    )
-    .expect("the product CIL emulator evaluates the recovered Poly body");
+    let recovered: i32 = evaluate("Poly", &typed_body("Poly", poly), &[argument])
+        .expect("the product CIL emulator evaluates the recovered Poly body");
     let clean_reference: i32 = clean_poly_i4(argument);
     let promoted_i64: i64 =
         i64::from(argument) * i64::from(argument) + 3_i64 * i64::from(argument) - 1_i64;
@@ -460,7 +411,7 @@ fn mixed_differential_rejects_a_deliberate_operator_mutation() {
         .iter()
         .find(|method: &&disrobe_pass_dotnet::RecoveredMethod| method.method_name == "Mixed")
         .expect("Mixed recovery");
-    let recovered: LiftedBody = lifted_from_rendered("Mixed", &mixed.cil);
+    let recovered: LiftedBody = typed_body("Mixed", mixed);
     assert_eq!(recovered.instrs[2].op, CilOp::Add);
     let mut mutated: LiftedBody = recovered.clone();
     mutated.instrs[2].op = CilOp::Sub;

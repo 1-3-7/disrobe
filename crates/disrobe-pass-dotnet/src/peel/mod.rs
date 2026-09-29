@@ -107,6 +107,8 @@ pub struct RecoveredMethod {
     pub arg_count: u32,
     pub local_count: u32,
     pub cil: Vec<String>,
+    #[serde(skip)]
+    pub lifted_cil: Option<eazvm::lift::LiftedBody>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -364,26 +366,28 @@ pub(crate) fn apply_eazvm_tier(image: &[u8], report: &mut PeelReport, protector_
                     }
                 },
             );
-            let cil: Vec<String> = match eazvm::cil_mba::rewrite_method(m, &mut mba_budget) {
-                eazvm::cil_mba::RewriteOutcome::Rewritten(body) => body.render(),
-                eazvm::cil_mba::RewriteOutcome::Unchanged => ordered_cil,
-                eazvm::cil_mba::RewriteOutcome::Refused(reason) => {
-                    if analysis_refusals.len() < MAX_EAZVM_ANALYSIS_REFUSALS {
-                        analysis_refusals.push(format!(
-                            "{}: W32 MBA rewrite refused: {reason}",
-                            bounded_eazvm_analysis_name(&m.name)
-                        ));
+            let (cil, lifted_cil): (Vec<String>, eazvm::lift::LiftedBody) =
+                match eazvm::cil_mba::rewrite_method(m, &mut mba_budget) {
+                    eazvm::cil_mba::RewriteOutcome::Rewritten(body) => (body.render(), body),
+                    eazvm::cil_mba::RewriteOutcome::Unchanged => (ordered_cil, m.lifted.clone()),
+                    eazvm::cil_mba::RewriteOutcome::Refused(reason) => {
+                        if analysis_refusals.len() < MAX_EAZVM_ANALYSIS_REFUSALS {
+                            analysis_refusals.push(format!(
+                                "{}: W32 MBA rewrite refused: {reason}",
+                                bounded_eazvm_analysis_name(&m.name)
+                            ));
+                        }
+                        analysis_refusal_count = analysis_refusal_count.saturating_add(1);
+                        (ordered_cil, m.lifted.clone())
                     }
-                    analysis_refusal_count = analysis_refusal_count.saturating_add(1);
-                    ordered_cil
-                }
-            };
+                };
             RecoveredMethod {
                 method_name: m.name.clone(),
                 metadata_token: m.metadata_token,
                 arg_count: m.info.param_count,
                 local_count: m.info.local_count,
                 cil,
+                lifted_cil: Some(lifted_cil),
             }
         })
         .collect();
@@ -599,6 +603,7 @@ pub(crate) fn peel_koivm(image: &[u8]) -> Result<PeelReport> {
             arg_count: m.lifted.arg_count,
             local_count: m.lifted.local_count,
             cil: m.lifted.render(),
+            lifted_cil: None,
         })
         .collect();
     report.recovered_decoders = report
