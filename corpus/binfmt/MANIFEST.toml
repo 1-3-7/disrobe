@@ -756,3 +756,11 @@ size_bytes = 125
 sha256 = "8b1c1c2e19c9d84d7a7a9b30c36dcea09323c14164a747fc05b8cb1c3ca2cd9a"
 member = "poc_b76.txt"
 member_size_bytes = 4
+
+[[fixtures]]
+path = "sevenzip/hello.7z"
+format = "7z (7z\\xbc\\xaf\\x27\\x1c), one LZMA2 solid folder, two members including a nested path, no stored timestamps"
+tool = "7-Zip 26.03 (x64)"
+provenance = "run in sevenzip/expected: 7z a -t7z -m0=LZMA2 -mx=5 -mtm=off -mtc=off -mta=off -mtr=off ../hello.7z hello.txt docs/notes.txt; a second run reproduces the same bytes. expected/ holds the authored source members, graded byte-for-byte after extraction"
+size_bytes = 220
+sha256 = "b5b194ff781aaee743d3f932eb06998908a65b9357d1320ec71835c906e97213"

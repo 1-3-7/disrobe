@@ -1,0 +1,2 @@
+notes kept in a nested directory
+second line
