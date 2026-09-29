@@ -78,11 +78,9 @@ mod tests {
     fn manifest_from_validated_kay_blob() {
         let mut bytes: Vec<u8> = vec![0u8; 1024];
         bytes[0..4].copy_from_slice(&[0x7F, b'E', b'L', b'F']);
-        let off: usize = bytes.len();
         bytes.extend_from_slice(b"KAY");
         bytes.extend_from_slice(&ZSTD_MAGIC);
         bytes.extend_from_slice(&[0u8; 64]);
-        let _ = off;
         let m: NuitkaVariantManifest = build_manifest(&bytes).expect("manifest");
         assert_eq!(m.kind, NuitkaVariant::OnefileKay);
         assert_eq!(m.schema, "disrobe.nuitka.manifest/v0");

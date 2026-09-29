@@ -223,11 +223,7 @@ fn exercise_byte_entrypoints(bytes: &[u8], rng: &mut XorShift64) {
     let _ = extract_onefile_streaming(bytes, payload_offset, &mut sink);
     let _ = parse_c_module(&source);
     let _ = parse_c_module_with_python_abi(&source, PYTHON_ABI);
-    let _ = lift_body(
-        &source,
-        &names,
-        &disrobe_pass_nuitka::ConstantsPool::default(),
-    );
+    let _ = lift_body(&source, &disrobe_pass_nuitka::ConstantsPool::default());
 }
 
 fn exercise_file_entrypoints(bytes: &[u8], scratch: &Scratch) {

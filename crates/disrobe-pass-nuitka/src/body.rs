@@ -4181,7 +4181,7 @@ fn is_codegen_label(t: &str) -> bool {
 }
 
 #[must_use]
-pub fn lift_body_detailed(c_body: &str, params: &[String], pool: &ConstantsPool) -> BodyLift {
+pub fn lift_body_detailed(c_body: &str, pool: &ConstantsPool) -> BodyLift {
     if validate_c_source(c_body).is_err() {
         return BodyLift {
             stmts: Vec::new(),
@@ -4190,7 +4190,6 @@ pub fn lift_body_detailed(c_body: &str, params: &[String], pool: &ConstantsPool)
         };
     }
     let pack: EraPatternPack = pack_for_era(guess_era_from_csource(c_body));
-    let _ = params;
     let lifter: Lifter<'_> = Lifter::new(c_body, pool, pack);
     let mut env: BTreeMap<String, PythonExpr> = BTreeMap::new();
     let line_count: usize = lifter.lines.len();
@@ -4330,7 +4329,6 @@ fn block_contains_yield(stmts: &[PythonStmt]) -> bool {
 #[must_use]
 pub(crate) fn lift_body_with_source(
     impl_body: &str,
-    params: &[String],
     pool: &ConstantsPool,
     full_source: &str,
 ) -> BodyLift {
@@ -4339,16 +4337,12 @@ pub(crate) fn lift_body_with_source(
     {
         return lift;
     }
-    lift_body_detailed(impl_body, params, pool)
+    lift_body_detailed(impl_body, pool)
 }
 
 #[must_use]
-pub fn lift_body(
-    c_body: &str,
-    params: &[String],
-    pool: &ConstantsPool,
-) -> (Vec<PythonStmt>, LiftFidelity) {
-    let lift: BodyLift = lift_body_detailed(c_body, params, pool);
+pub fn lift_body(c_body: &str, pool: &ConstantsPool) -> (Vec<PythonStmt>, LiftFidelity) {
+    let lift: BodyLift = lift_body_detailed(c_body, pool);
     (lift.stmts, lift.fidelity)
 }
 
@@ -4729,7 +4723,7 @@ goto frame_return_exit_1;
 }
 }";
         let pool: ConstantsPool = ConstantsPool::default();
-        let lift: BodyLift = lift_body_detailed(body, &[], &pool);
+        let lift: BodyLift = lift_body_detailed(body, &pool);
         assert_eq!(lift.fidelity, LiftFidelity::FullBody);
         assert_eq!(
             lift.stmts,
@@ -4755,7 +4749,7 @@ tmp_return_value = BINARY_OPERATION_ADD_OBJECT_OBJECT_OBJECT(tmp_add_expr_left_1
 goto frame_return_exit_1;
 }";
         let pool: ConstantsPool = ConstantsPool::default();
-        let lift: BodyLift = lift_body_detailed(body, &[], &pool);
+        let lift: BodyLift = lift_body_detailed(body, &pool);
         assert_eq!(
             lift.stmts,
             vec![PythonStmt::Return(PythonExpr::BinOp {
@@ -4779,7 +4773,7 @@ tmp_return_value = UNARY_OPERATION(PyNumber_Negative, tmp_operand_value_1);
 goto frame_return_exit_1;
 }";
         let pool: ConstantsPool = ConstantsPool::default();
-        let lift: BodyLift = lift_body_detailed(body, &[], &pool);
+        let lift: BodyLift = lift_body_detailed(body, &pool);
         assert_eq!(
             lift.stmts,
             vec![PythonStmt::Return(PythonExpr::UnaryOp {
@@ -4799,7 +4793,7 @@ tmp_return_value = CALL_FUNCTION_NO_ARGS(tstate, tmp_called_value_1);
 goto frame_return_exit_1;
 }";
         let pool: ConstantsPool = ConstantsPool::default();
-        let lift: BodyLift = lift_body_detailed(body, &[], &pool);
+        let lift: BodyLift = lift_body_detailed(body, &pool);
         assert_eq!(
             lift.stmts,
             vec![PythonStmt::Return(PythonExpr::Call {
@@ -4832,7 +4826,7 @@ tmp_return_value = par_n;
 goto frame_return_exit_1;
 }";
         let pool: ConstantsPool = ConstantsPool::default();
-        let lift: BodyLift = lift_body_detailed(body, &[], &pool);
+        let lift: BodyLift = lift_body_detailed(body, &pool);
         assert_eq!(
             lift.stmts,
             vec![
@@ -4872,7 +4866,7 @@ tmp_return_value = var_z;
 goto frame_return_exit_1;
 }";
         let pool: ConstantsPool = ConstantsPool::default();
-        let lift: BodyLift = lift_body_detailed(body, &[], &pool);
+        let lift: BodyLift = lift_body_detailed(body, &pool);
         assert_eq!(
             lift.stmts.last(),
             Some(&PythonStmt::Return(PythonExpr::Name("z".to_owned()))),
@@ -4921,7 +4915,7 @@ tmp_return_value = var_z;
 goto frame_return_exit_1;
 }";
         let pool: ConstantsPool = ConstantsPool::default();
-        let lift: BodyLift = lift_body_detailed(body, &[], &pool);
+        let lift: BodyLift = lift_body_detailed(body, &pool);
         let Some(PythonStmt::Assign { targets, value }) = lift.stmts.first() else {
             panic!(
                 "z = a if c < a else b must lift to an assignment: {:?}",
@@ -4984,7 +4978,7 @@ and_end_1:;
 goto frame_return_exit_1;
 }";
         let pool: ConstantsPool = ConstantsPool::default();
-        let lift: BodyLift = lift_body_detailed(body, &[], &pool);
+        let lift: BodyLift = lift_body_detailed(body, &pool);
         let name = |n: &str| Box::new(PythonExpr::Name(n.to_owned()));
         let expected: PythonExpr = PythonExpr::BoolOp {
             op: BoolOpKind::And,
@@ -5077,7 +5071,7 @@ try_except_handler_4:;
 goto frame_exception_exit_1;
 }";
         let pool: ConstantsPool = ConstantsPool::default();
-        let lift: BodyLift = lift_body_detailed(body, &[], &pool);
+        let lift: BodyLift = lift_body_detailed(body, &pool);
         let Some(PythonStmt::Try { body, handlers }) = lift.stmts.first() else {
             panic!("expected the outer try first: {:?}", lift.stmts);
         };
@@ -5113,7 +5107,7 @@ SOME_UNMODELED_NUITKA_HELPER(tstate, tmp_x);
 goto frame_return_exit_1;
 }";
         let pool: ConstantsPool = ConstantsPool::default();
-        let lift: BodyLift = lift_body_detailed(body, &[], &pool);
+        let lift: BodyLift = lift_body_detailed(body, &pool);
         assert_eq!(lift.fidelity, LiftFidelity::PartialBody);
         assert!(
             lift.unrecognized_lines
@@ -5132,7 +5126,7 @@ RAISE_EXCEPTION_WITH_VALUE(tstate, &exception_state);
 goto frame_exception_exit_1;
 }";
         let pool: ConstantsPool = ConstantsPool::default();
-        let (stmts, _): (Vec<PythonStmt>, LiftFidelity) = lift_body(body, &[], &pool);
+        let (stmts, _): (Vec<PythonStmt>, LiftFidelity) = lift_body(body, &pool);
         assert_eq!(
             stmts,
             vec![PythonStmt::Raise(PythonExpr::Call {

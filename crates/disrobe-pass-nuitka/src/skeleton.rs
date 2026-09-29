@@ -212,10 +212,9 @@ fn merge_nested_qualnames(functions: &mut Vec<SkeletonFunction>, module: &Module
                 &mut existing_names,
                 &mut existing_quals,
             );
-        } else if let Some((class, method)) = split_dotted_method(qualname) {
+        } else if let Some((_, method)) = split_dotted_method(qualname) {
             merge_dotted_method(
                 qualname,
-                class,
                 method,
                 functions,
                 &mut existing_names,
@@ -271,13 +270,11 @@ fn merge_locals_qualname(
 
 fn merge_dotted_method(
     qualname: &str,
-    class: &str,
     method: &str,
     functions: &mut Vec<SkeletonFunction>,
     existing_names: &mut BTreeSet<String>,
     existing_quals: &mut BTreeSet<String>,
 ) {
-    let _ = class;
     if !existing_names.insert(method.to_owned()) {
         return;
     }

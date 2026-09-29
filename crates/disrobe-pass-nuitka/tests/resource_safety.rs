@@ -24,7 +24,7 @@ tmp_return_value = CALL_FUNCTION_WITH_ARGS1(called, par_x);
 goto frame_return_exit_1;
 }";
     let pool: ConstantsPool = ConstantsPool::default();
-    let lift: BodyLift = lift_body_detailed(body, &[], &pool);
+    let lift: BodyLift = lift_body_detailed(body, &pool);
     assert!(
         contains_call(&lift.stmts),
         "older-era CALL_FUNCTION_WITH_ARGS1 must lift to a Call via the threaded era pack, got: {:?}",
@@ -41,7 +41,7 @@ tmp_return_value = CALL_FUNCTION_WITH_POS_ARGS1(tstate, called, par_x);
 goto frame_return_exit_1;
 }";
     let pool: ConstantsPool = ConstantsPool::default();
-    let lift: BodyLift = lift_body_detailed(body, &[], &pool);
+    let lift: BodyLift = lift_body_detailed(body, &pool);
     assert!(
         contains_call(&lift.stmts),
         "modern CALL_FUNCTION_WITH_POS_ARGS1 must still lift to a Call, got: {:?}",
@@ -63,7 +63,7 @@ fn lift_nested_calls(levels: usize) -> (usize, PythonExpr) {
         "{{\nPyObject *par_x = python_pars[0];\ntmp_return_value = {rhs};\ngoto frame_return_exit_1;\n}}"
     );
     let pool: ConstantsPool = ConstantsPool::default();
-    let lift: BodyLift = lift_body_detailed(&body, &[], &pool);
+    let lift: BodyLift = lift_body_detailed(&body, &pool);
     let returned: &PythonExpr = lift
         .stmts
         .iter()

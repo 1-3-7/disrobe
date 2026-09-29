@@ -1058,7 +1058,7 @@ impl<'a> SurfaceBody<'a> {
                                     unrecognized_lines: Vec::new(),
                                 },
                                 |(src, slice): (&str, &str)| {
-                                    lift_body_with_source(slice, &body.params, pool, src)
+                                    lift_body_with_source(slice, pool, src)
                                 },
                             )
                     }
