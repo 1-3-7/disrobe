@@ -694,7 +694,23 @@ mod tests {
     }
 
     #[test]
-    fn catalog_detects_a_real_name_obfuscated_module() {
+    fn catalog_detects_a_module_whose_exports_are_all_hashes() {
+        let module: &str = r#"
+            (module
+              (func (export "9f86d081") (result i32) i32.const 1)
+              (func (export "2c26b46b") (result i32) i32.const 2)
+              (func (export "fcde2b2e") (result i32) i32.const 3)
+              (func (export "baa5a096") (result i32) i32.const 4))
+        "#;
+        let bytes: Vec<u8> = wat::parse_str(module).expect("assemble wat");
+        let out: DetectorOutput = ObfuscatorCatalog::detect(&WasmDetectorImpl, &ctx(&bytes))
+            .expect("a module exporting only hash names must be detected as a name obfuscator");
+        assert_eq!(out.entry_id, TAG_WASM_NAME_OBF);
+        assert!(out.confidence >= 0.80);
+    }
+
+    #[test]
+    fn short_exports_alone_do_not_claim_a_name_obfuscator() {
         let module: &str = r#"
             (module
               (func (export "aa") (result i32) i32.const 1)
@@ -703,10 +719,9 @@ mod tests {
               (func (export "dd") (result i32) i32.const 4))
         "#;
         let bytes: Vec<u8> = wat::parse_str(module).expect("assemble wat");
-        let out: DetectorOutput = ObfuscatorCatalog::detect(&WasmDetectorImpl, &ctx(&bytes))
-            .expect("stripped short-export module must be detected as a name obfuscator");
-        assert_eq!(out.entry_id, TAG_WASM_NAME_OBF);
-        assert!(out.confidence >= 0.80);
+        let claimed: Option<&str> = ObfuscatorCatalog::detect(&WasmDetectorImpl, &ctx(&bytes))
+            .map(|out: DetectorOutput| out.entry_id);
+        assert_ne!(claimed, Some(TAG_WASM_NAME_OBF));
     }
 
     #[test]
