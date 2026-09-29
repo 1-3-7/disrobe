@@ -23,7 +23,6 @@ const TAG_PYOXIDIZER: &str = "pyfreeze-pyoxidizer";
 const TAG_PEX: &str = "pyfreeze-pex";
 const TAG_SHIV: &str = "pyfreeze-shiv";
 const TAG_ZIPAPP: &str = "pyfreeze-zipapp";
-const TAG_PYC: &str = "pyfreeze-pyc";
 const TAG_BRIEFCASE: &str = "pyfreeze-briefcase";
 const TAG_BBFREEZE: &str = "pyfreeze-bbfreeze";
 
@@ -97,19 +96,8 @@ impl Pass for PyfreezePass {
     fn extract_children(&self, input: &Artifact) -> CoreResult<Vec<ChildArtifact>> {
         let bytes: &[u8] = input.envelope.as_slice();
         let detection: Detection = detect_bytes(bytes, None);
-        if matches!(detection.kind, FreezerKind::Unknown) {
+        if matches!(detection.kind, FreezerKind::Unknown | FreezerKind::Pyc) {
             return Ok(Vec::new());
-        }
-        if matches!(detection.kind, FreezerKind::Pyc) {
-            return Ok(vec![ChildArtifact {
-                handle: ChildHandle {
-                    artifact_index: 0,
-                    relative_path: "module.pyc".to_string(),
-                    hint: Some("python-bytecode".to_string()),
-                    materialization: disrobe_core::chain::ChildMaterialization::default(),
-                },
-                bytes: bytes.to_vec(),
-            }]);
         }
         let members: Vec<ZipMember> = carve_zip_members(bytes)?;
         let children: Vec<ChildArtifact> = members
@@ -248,10 +236,9 @@ fn verdict_for(d: &Detection) -> Option<DetectVerdict> {
         FreezerKind::Pex => (TAG_PEX, "PEX-INFO-marker"),
         FreezerKind::Shiv => (TAG_SHIV, "_bootstrap-marker"),
         FreezerKind::Zipapp => (TAG_ZIPAPP, "__main__-marker"),
-        FreezerKind::Pyc => (TAG_PYC, "pyc-magic"),
         FreezerKind::Briefcase => (TAG_BRIEFCASE, "briefcase-layout"),
         FreezerKind::Bbfreeze => (TAG_BBFREEZE, "bbfreeze-layout"),
-        FreezerKind::Unknown => return None,
+        FreezerKind::Pyc | FreezerKind::Unknown => return None,
     };
     let explain: String = if d.reasons.is_empty() {
         format!("pyfreeze kind={tag}")
@@ -296,20 +283,22 @@ mod tests {
     }
 
     #[test]
-    fn detect_verdict_explain_carries_the_resolved_python_version() {
+    fn a_bare_pyc_is_bytecode_and_never_a_freezer_container() {
         let magic: u32 = disrobe_py_marshal::magic_for(disrobe_py_marshal::PyVersion::PY315)
             .expect("known magic");
-        let mut bytes: Vec<u8> = magic.to_le_bytes().to_vec();
-        bytes.resize(16, 0);
-        let verdict: DetectVerdict = PyfreezeDetector
-            .detect(&ctx(&bytes))
-            .expect("pyc magic must detect");
-        assert_eq!(verdict.format_tag, TAG_PYC);
-        assert!(
-            verdict.explain.contains("3.15"),
-            "the durably-serialized DetectorPickDoc.explain must carry the resolved Python version, not a generic template; got {:?}",
-            verdict.explain,
-        );
+        let mut synthetic: Vec<u8> = magic.to_le_bytes().to_vec();
+        synthetic.resize(16, 0);
+        let real: Vec<u8> = corpus_file("python/decompile/authored/compiled/binary_ops.3.12.pyc");
+        for (label, bytes) in [("synthetic", synthetic), ("committed", real)] {
+            assert!(
+                matches!(detect_bytes(&bytes, None).kind, FreezerKind::Pyc),
+                "the {label} probe must carry a real pyc header"
+            );
+            assert!(
+                PyfreezeDetector.detect(&ctx(&bytes)).is_none(),
+                "a bare {label} pyc has no freezer layout, so pyfreeze.extract must not claim it as a packer archive"
+            );
+        }
     }
 
     #[test]
@@ -352,20 +341,22 @@ mod tests {
         assert!(msg.contains("DR-PYFRZ-0902") || msg.contains("DR-PYFRZ-0903"));
     }
 
-    fn freezer_fixture(rel: &str) -> Vec<u8> {
+    fn corpus_file(rel: &str) -> Vec<u8> {
         let path: std::path::PathBuf = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("..")
             .join("corpus")
-            .join("python")
-            .join("freezers")
             .join(rel);
         std::fs::read(&path).unwrap_or_else(|error: std::io::Error| {
             panic!(
-                "the committed freezer fixture {} is unreadable; restore it from git: {error}",
+                "the committed fixture {} is unreadable; restore it from git: {error}",
                 path.display()
             )
         })
+    }
+
+    fn freezer_fixture(rel: &str) -> Vec<u8> {
+        corpus_file(&format!("python/freezers/{rel}"))
     }
 
     #[test]
