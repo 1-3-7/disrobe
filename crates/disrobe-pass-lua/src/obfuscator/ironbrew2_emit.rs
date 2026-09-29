@@ -317,7 +317,7 @@ fn const_repr(k: &LuaConstant) -> String {
         LuaConstant::Bool(b) => b.to_string(),
         LuaConstant::Integer(i) => i.to_string(),
         LuaConstant::Number(n) => format_number(*n),
-        LuaConstant::Str(s) => lua_string(s),
+        LuaConstant::Str(s) => crate::decompile::lift::quote_lua_string(s),
         _ => "nil".to_owned(),
     }
 }
@@ -329,26 +329,6 @@ fn format_number(n: f64) -> String {
         let s: String = format!("{n:?}");
         s
     }
-}
-
-fn lua_string(s: &str) -> String {
-    let mut out: String = String::with_capacity(s.len() + 2);
-    out.push('"');
-    for ch in s.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => {
-                push_fmt(&mut out, format_args!("\\{}", c as u32));
-            }
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
 }
 
 fn ib_const(chunk: &IbChunk, idx1: i64) -> Option<&LuaConstant> {
@@ -608,7 +588,7 @@ fn emit_instr(
 
 fn const_name(k: &LuaConstant) -> String {
     match k {
-        LuaConstant::Str(s) => lua_string(s),
+        LuaConstant::Str(s) => crate::decompile::lift::quote_lua_string(s),
         other => const_repr(other),
     }
 }
@@ -736,6 +716,12 @@ mod tests {
             b,
             c,
         }
+    }
+
+    #[test]
+    fn a_control_byte_before_a_digit_keeps_a_three_digit_escape() {
+        let quoted: String = const_repr(&LuaConstant::Str("\u{1}2".to_owned()));
+        assert_eq!(quoted, "\"\\0012\"");
     }
 
     #[test]

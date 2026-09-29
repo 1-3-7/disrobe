@@ -37,6 +37,8 @@ Opcode availability is validated against Luau's bytecode history at [`367f9d83`]
 
 `decompile` writes the recovered source (default `./out/<stem>.lua`) and a `manifest.json` recording the format, fidelity grade, and warnings. `detect` reports the dialect and header field summary (constant, proto, and code counts) without writing output. MoonSec v3 and IronBrew2 are commercial-tier wrappers; their peelers require the explicit `--i-have-authorization` flag.
 
+Recovered Lua 5.x source wraps the main chunk in `local function _main(...)` and ends with `return _main(...)`, so the file runs unchanged. Short-circuit conditions such as `while a and (b or c) do`, `c and x or y` value selection, elseif ladders with compound arms, and `local x` declarations that Lua 5.1 compiles to nothing are rebuilt as source. The re-execution grade compiles self-authored programs with `luac -s` (no debug names), decompiles the stripped bytecode, and requires the recovered file to print exactly what the original prints under the same interpreter (`tests/reexec_diff_oracle.rs`, Lua 5.1 and 5.4 lanes).
+
 `--family` pins one peeler instead of letting `auto` choose. Auto-detection tries Prometheus first, so a `Vmify` container needs no flag. Pass `--family prometheus` when you want a file carrying no Prometheus signature to fail rather than fall through to another family.
 
 Output shapes below are illustrative.

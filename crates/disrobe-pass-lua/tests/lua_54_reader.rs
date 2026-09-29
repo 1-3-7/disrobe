@@ -37,12 +37,12 @@ fn read_lua54_empty_chunk() {
 fn decompile_lua54_empty_chunk_returns_empty_body() {
     let chunk: LuaChunk = lua54::read(LUA54_EMPTY_CHUNK).expect("parse");
     let dec: decompile::DecompiledChunk =
-        decompile::lua51::decompile(&chunk).expect("decompile pipeline lifts lua54");
+        decompile::decompile_chunk(&chunk).expect("decompile pipeline lifts lua54");
     assert!(dec.source.contains("function _main"));
     assert!(dec.source.contains("end"));
     assert!(
         dec.source.to_lowercase().contains("lua 5.4"),
-        "must honestly label the 5.4 dialect, got: {}",
+        "must label the 5.4 dialect, got: {}",
         dec.source
     );
 }

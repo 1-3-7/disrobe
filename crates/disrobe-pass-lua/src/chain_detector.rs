@@ -349,7 +349,6 @@ impl ObfuscatorCatalog for LuaDetector {
 fn deobfuscated_recovery(bytes: &[u8], det: &ObfuscatorDetection) -> CoreResult<LuaRecovery> {
     let opts: DeobfOptions = DeobfOptions {
         i_have_authorization: true,
-        strict: false,
     };
     let peel: PeelResult = match det.kind {
         LuaObfuscatorKind::Prometheus => prometheus::peel(bytes, &opts),
@@ -895,7 +894,7 @@ mod tests {
         let text: String = format!("{err}");
         assert!(
             text.contains("DR-LUA-0905") && text.contains("statically unrecoverable"),
-            "wall must be honest about why recovery failed; got: {text}"
+            "wall must state why recovery failed; got: {text}"
         );
     }
 

@@ -22,7 +22,7 @@ fn lua51_decompile_real_hello_lifts_print_call() {
     let bytes: Vec<u8> = std::fs::read(&path)
         .unwrap_or_else(|e: std::io::Error| panic!("hello.5_1.luac fixture must be tracked: {e}"));
     let chunk: LuaChunk = lua51::read(&bytes).expect("parse real luac");
-    let out: DecompiledChunk = decompile::lua51::decompile(&chunk).expect("decompile");
+    let out: DecompiledChunk = decompile::decompile_chunk(&chunk).expect("decompile");
     assert_eq!(out.fidelity, Fidelity::Lossless);
     assert!(out.source.contains("function _main"));
     assert!(

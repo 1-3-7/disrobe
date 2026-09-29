@@ -2,9 +2,9 @@
 use std::fs;
 use std::path::PathBuf;
 
+use disrobe_pass_lua::LuaDialect;
 use disrobe_pass_lua::reader::common::LuaChunk;
 use disrobe_pass_lua::reader::{DetectedFormat, detect, luajit};
-use disrobe_pass_lua::{LuaDialect, decompile};
 
 fn corpus_path(rel: &str) -> PathBuf {
     let manifest_dir: &str = env!("CARGO_MANIFEST_DIR");
@@ -68,20 +68,4 @@ fn real_luajit_megafile_stripped_parses() {
     let bytes: Vec<u8> = load("luajit/edge_cases.stripped.luajit");
     let chunk: LuaChunk = luajit::read(&bytes).expect("parse luajit stripped megafile");
     assert_eq!(chunk.dialect, LuaDialect::LuaJit21);
-}
-
-#[test]
-fn real_luajit_megafile_disassembly_runs() {
-    let bytes: Vec<u8> = load("luajit/edge_cases.luajit");
-    let chunk: LuaChunk = luajit::read(&bytes).expect("parse");
-    let dec: decompile::DecompiledChunk =
-        decompile::luajit21::decompile(&chunk).expect("decompile");
-    assert!(dec.source.contains("luajit bytecode disassembly"));
-    let has_real_mnemonic: bool = ["MOV", "CALL", "RET", "KSTR", "GGET", "ADDVV", "FORI", "JMP"]
-        .iter()
-        .any(|m: &&str| dec.source.contains(*m));
-    assert!(
-        has_real_mnemonic || chunk.main.code.is_empty(),
-        "disassembly should surface decoded luajit mnemonics"
-    );
 }

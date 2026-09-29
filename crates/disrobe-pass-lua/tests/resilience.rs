@@ -1,6 +1,6 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 use disrobe_pass_lua::Error;
-use disrobe_pass_lua::decompile::lua51::decompile as decompile_lua51;
+use disrobe_pass_lua::decompile::decompile_chunk;
 use disrobe_pass_lua::decompile::luajit_lift::decompile as decompile_luajit;
 use disrobe_pass_lua::reader::{lua51, lua53, lua54, luajit, luau, read_auto};
 
@@ -167,7 +167,7 @@ fn decompile_of_garbage_opcodes_never_panics() {
     bytes.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
     bytes.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
     if let Ok(chunk) = lua51::read(&bytes) {
-        let out = decompile_lua51(&chunk).expect("decompile must not panic on garbage opcodes");
+        let out = decompile_chunk(&chunk).expect("decompile must not panic on garbage opcodes");
         assert!(!out.source.is_empty());
     }
 }

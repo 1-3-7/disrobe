@@ -47,7 +47,7 @@ fn assert_no_failure_markers(src: &str) {
 fn lua52_hello_round_trips_to_print_call() {
     let bytes: Vec<u8> = load("luac/hello.5_2.luac");
     let chunk: LuaChunk = lua52::read(&bytes).expect("parse 5.2 hello");
-    let out: DecompiledChunk = decompile::lua51::decompile(&chunk).expect("decompile 5.2 hello");
+    let out: DecompiledChunk = decompile::decompile_chunk(&chunk).expect("decompile 5.2 hello");
     assert!(
         out.source.contains("print(\"hello world\")"),
         "expected print call recovery, got:\n{}",
@@ -62,7 +62,7 @@ fn lua52_hello_round_trips_to_print_call() {
 fn lua53_hello_round_trips_to_print_call() {
     let bytes: Vec<u8> = load("luac/hello.5_3.luac");
     let chunk: LuaChunk = lua53::read(&bytes).expect("parse 5.3 hello");
-    let out: DecompiledChunk = decompile::lua51::decompile(&chunk).expect("decompile 5.3 hello");
+    let out: DecompiledChunk = decompile::decompile_chunk(&chunk).expect("decompile 5.3 hello");
     assert!(
         out.source.contains("print(\"hello world\")"),
         "expected print call recovery, got:\n{}",
@@ -76,7 +76,7 @@ fn lua53_hello_round_trips_to_print_call() {
 fn lua54_hello_round_trips_to_print_call() {
     let bytes: Vec<u8> = load("luac/hello.5_4.luac");
     let chunk: LuaChunk = lua54::read(&bytes).expect("parse 5.4 hello");
-    let out: DecompiledChunk = decompile::lua51::decompile(&chunk).expect("decompile 5.4 hello");
+    let out: DecompiledChunk = decompile::decompile_chunk(&chunk).expect("decompile 5.4 hello");
     assert!(
         out.source.contains("print(\"hello world\")"),
         "expected print call recovery, got:\n{}",
@@ -90,7 +90,7 @@ fn lua54_hello_round_trips_to_print_call() {
 fn lua52_megafile_lifts_arithmetic_and_field_assignments() {
     let bytes: Vec<u8> = load("luac/edge_cases.5_2.luac");
     let chunk: LuaChunk = lua52::read(&bytes).expect("parse 5.2 megafile");
-    let out: DecompiledChunk = decompile::lua51::decompile(&chunk).expect("decompile 5.2 megafile");
+    let out: DecompiledChunk = decompile::decompile_chunk(&chunk).expect("decompile 5.2 megafile");
     assert_no_failure_markers(&out.source);
     assert!(
         out.source.contains("tbl_") && out.source.contains("integer = 42"),
@@ -122,7 +122,7 @@ fn lua52_megafile_lifts_arithmetic_and_field_assignments() {
 fn lua53_megafile_lifts_bitwise_and_integer_constants() {
     let bytes: Vec<u8> = load("luac/edge_cases.5_3.luac");
     let chunk: LuaChunk = lua53::read(&bytes).expect("parse 5.3 megafile");
-    let out: DecompiledChunk = decompile::lua51::decompile(&chunk).expect("decompile 5.3 megafile");
+    let out: DecompiledChunk = decompile::decompile_chunk(&chunk).expect("decompile 5.3 megafile");
     assert_no_failure_markers(&out.source);
     assert!(
         out.source.contains("integer = 42"),
@@ -143,7 +143,7 @@ fn lua53_megafile_lifts_bitwise_and_integer_constants() {
 fn lua54_megafile_lifts_5_4_constructs_with_real_constants() {
     let bytes: Vec<u8> = load("luac/edge_cases.5_4.luac");
     let chunk: LuaChunk = lua54::read(&bytes).expect("parse 5.4 megafile");
-    let out: DecompiledChunk = decompile::lua51::decompile(&chunk).expect("decompile 5.4 megafile");
+    let out: DecompiledChunk = decompile::decompile_chunk(&chunk).expect("decompile 5.4 megafile");
     assert_no_failure_markers(&out.source);
     assert!(
         out.source.contains("integer = 42"),
@@ -209,7 +209,7 @@ fn lua52_53_54_constants_are_faithful() {
             r if r.ends_with("5_3.luac") => lua53::read(&bytes).expect("parse 53"),
             _ => lua54::read(&bytes).expect("parse 54"),
         };
-        let out: DecompiledChunk = decompile::lua51::decompile(&chunk).expect("decompile megafile");
+        let out: DecompiledChunk = decompile::decompile_chunk(&chunk).expect("decompile megafile");
         assert!(
             out.source.contains("\"alpha\"") && out.source.contains("\"omega\""),
             "{rel} must preserve real string constants"

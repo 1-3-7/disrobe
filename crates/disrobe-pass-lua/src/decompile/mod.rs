@@ -1,7 +1,7 @@
 pub mod budget;
 pub mod lift;
-pub mod lua51;
-pub mod luajit21;
+#[cfg(test)]
+mod lua51;
 pub mod luajit_lift;
 pub mod luau_lift;
 pub(crate) mod luau_structure;
@@ -51,10 +51,10 @@ fn main_signature(main: &LuaProto) -> String {
         .collect::<Vec<String>>()
         .join(", ");
     match (params.is_empty(), main.is_vararg != 0) {
-        (true, false) => "function _main()".to_owned(),
-        (true, true) => "function _main(...)".to_owned(),
-        (false, false) => format!("function _main({params})"),
-        (false, true) => format!("function _main({params}, ...)"),
+        (true, false) => "local function _main()".to_owned(),
+        (true, true) => "local function _main(...)".to_owned(),
+        (false, false) => format!("local function _main({params})"),
+        (false, true) => format!("local function _main({params}, ...)"),
     }
 }
 
@@ -102,6 +102,11 @@ pub fn decompile_chunk_with_budget(
         out.push('\n');
     }
     out.push_str("end\n");
+    if chunk.main.is_vararg != 0 {
+        out.push_str("return _main(...)\n");
+    } else {
+        out.push_str("return _main()\n");
+    }
 
     let fidelity: Fidelity = if warnings.is_empty() && lifted.fully_structured {
         Fidelity::Lossless

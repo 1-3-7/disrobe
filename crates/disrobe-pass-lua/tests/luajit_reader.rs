@@ -1,7 +1,7 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+use disrobe_pass_lua::LuaDialect;
 use disrobe_pass_lua::reader::common::LuaChunk;
 use disrobe_pass_lua::reader::{DetectedFormat, detect, luajit};
-use disrobe_pass_lua::{LuaDialect, decompile};
 
 const LUAJIT_21_EMPTY_STRIPPED: &[u8] = &[
     0x1B, b'L', b'J', 0x02, 0x02, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -51,13 +51,4 @@ fn luajit_rejects_wrong_signature() {
     let bad: &[u8] = &[0x1B, b'X', b'X', 0x02];
     let err: disrobe_pass_lua::Error = luajit::read(bad).unwrap_err();
     assert!(matches!(err, disrobe_pass_lua::Error::BadLuaJitSignature));
-}
-
-#[test]
-fn decompile_luajit_21_stripped_produces_stub() {
-    let chunk: LuaChunk = luajit::read(LUAJIT_21_EMPTY_STRIPPED).expect("parse");
-    let dec: decompile::DecompiledChunk =
-        decompile::luajit21::decompile(&chunk).expect("decompile");
-    assert!(dec.source.contains("luajit bytecode disassembly"));
-    assert!(dec.source.contains("function _ljp_"));
 }

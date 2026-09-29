@@ -66,7 +66,6 @@ fn real_peel_path_recovers_known_strings() {
     let obf: String = load("obfuscated/hello.min.lua");
     let opts: DeobfOptions = DeobfOptions {
         i_have_authorization: true,
-        strict: false,
     };
     let result = ironbrew2::peel(obf.as_bytes(), &opts).expect("peel real ironbrew2");
     assert!(

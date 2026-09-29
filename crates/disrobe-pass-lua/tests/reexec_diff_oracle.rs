@@ -45,6 +45,14 @@ fn toolchain(version: &str) -> Toolchain {
             &["luac5.1", "luac5.1.exe", "luac51"],
             &["lua5.1", "lua5.1.exe", "lua51"],
         ),
+        "5.2" => (
+            &["luac5.2", "luac5.2.exe", "luac52"],
+            &["lua5.2", "lua5.2.exe", "lua52"],
+        ),
+        "5.3" => (
+            &["luac5.3", "luac5.3.exe", "luac53"],
+            &["lua5.3", "lua5.3.exe", "lua53"],
+        ),
         "5.4" => (
             &["luac5.4", "luac5.4.exe", "luac54", "luac"],
             &["lua5.4", "lua5.4.exe", "lua54", "lua"],
@@ -120,7 +128,11 @@ fn strip_main_wrapper(source: &str) -> String {
     let lines: Vec<&str> = source.lines().collect();
     let start: usize = lines
         .iter()
-        .position(|l: &&str| l.trim_start().starts_with("function _main"))
+        .position(|l: &&str| {
+            l.trim_start()
+                .trim_start_matches("local ")
+                .starts_with("function _main")
+        })
         .map_or(0, |i: usize| i + 1);
     let end: usize = lines
         .iter()
@@ -287,6 +299,127 @@ fn assert_vararg_table_constructor_reexecutes(tc: &Toolchain) {
         actual, expected,
         "vararg table constructor must preserve every argument\n--- recovered ---\n{body}"
     );
+}
+
+const UPVALUE_CLOSURE_PROGRAM: &str = "local function counter(start)\n  local n = start\n  return function(step)\n    n = n + step\n    return n\n  end\nend\nlocal c = counter(10)\nc(1)\nlocal d = counter(100)\nprint(c(2), d(3), c(4))\n";
+const NIL_ABOVE_R0_PROGRAM: &str = "local a = 1\nlocal b = 2\nlocal x = nil\nlocal y = nil\nprint(a, b, x, y)\nlocal p, q, r = nil, nil, 3\nprint(p, q, r)\n";
+
+fn constructor_program(elements: usize) -> String {
+    let items: Vec<String> = (1..=elements)
+        .map(|i: usize| ((i * 7) % 1000).to_string())
+        .collect();
+    format!(
+        "local t = {{{}}}\nlocal s = 0\nfor i = 1, #t do s = s + t[i] end\nprint(#t, t[1], t[{elements}], s)\n",
+        items.join(", ")
+    )
+}
+
+fn assert_dialect_shapes_reexecute(version: &str) {
+    let tc: Toolchain = toolchain(version);
+    let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
+    let programs: [(&str, String); 5] = [
+        ("upvalue_closure", UPVALUE_CLOSURE_PROGRAM.to_owned()),
+        ("nil_above_r0", NIL_ABOVE_R0_PROGRAM.to_owned()),
+        ("constructor_51", constructor_program(51)),
+        ("constructor_100", constructor_program(100)),
+        ("constructor_26000", constructor_program(26_000)),
+    ];
+    let mut diverged: Vec<String> = Vec::new();
+    for (name, source) in &programs {
+        let src: PathBuf = dir.join(format!("{name}.lua"));
+        std::fs::write(&src, source).expect("write source");
+        let bc: PathBuf = dir.join(format!("{name}.luac"));
+        let stripped: bool = Command::new(&tc.luac)
+            .arg("-s")
+            .arg("-o")
+            .arg(&bc)
+            .arg(&src)
+            .status()
+            .is_ok_and(|s: std::process::ExitStatus| s.success());
+        assert!(stripped, "{name}: luac {version} -s compiles the program");
+        let bytes: Vec<u8> = std::fs::read(&bc).expect("read bytecode");
+        let decompiled: DecompiledChunk = decompile_auto(&bytes)
+            .unwrap_or_else(|e| panic!("{name}: lua {version} bytecode decompiles: {e}"));
+        let expected: String =
+            run_source(&tc.lua, &dir, &format!("{name}.orig"), source).expect("original runs");
+        let actual: Option<String> =
+            run_source(&tc.lua, &dir, &format!("{name}.dec"), &decompiled.source);
+        if actual.as_deref() != Some(expected.as_str()) {
+            diverged.push(format!(
+                "{name} under lua {version}\n--- expected ---\n{expected}\n--- actual ---\n{}\n--- recovered (first 2000 bytes) ---\n{}",
+                actual.as_deref().unwrap_or("<failed to run>"),
+                decompiled.source.chars().take(2000).collect::<String>()
+            ));
+        }
+    }
+    assert!(diverged.is_empty(), "{}", diverged.join("\n====\n"));
+}
+
+#[test]
+fn dialect_shapes_reexecute_from_luac_5_1() {
+    assert_dialect_shapes_reexecute("5.1");
+}
+
+#[test]
+fn dialect_shapes_reexecute_from_luac_5_2() {
+    assert_dialect_shapes_reexecute("5.2");
+}
+
+#[test]
+fn dialect_shapes_reexecute_from_luac_5_3() {
+    assert_dialect_shapes_reexecute("5.3");
+}
+
+#[test]
+fn dialect_shapes_reexecute_from_luac_5_4() {
+    assert_dialect_shapes_reexecute("5.4");
+}
+
+const BEHAVIOUR_PROGRAMS_54: &[(&str, &str)] = &[
+    (
+        "tour",
+        include_str!("../../../corpus/lua/behaviour/tour.lua"),
+    ),
+    (
+        "objects",
+        include_str!("../../../corpus/lua/behaviour/objects.lua"),
+    ),
+];
+
+#[test]
+fn stripped_behaviour_programs_reexecute_as_emitted_lua_5_4() {
+    let tc: Toolchain = toolchain("5.4");
+    let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
+    let mut diverged: Vec<String> = Vec::new();
+    for (name, source) in BEHAVIOUR_PROGRAMS_54 {
+        let src: PathBuf = dir.join(format!("{name}.lua"));
+        std::fs::write(&src, source).expect("write source");
+        let bc: PathBuf = dir.join(format!("{name}.luac"));
+        let stripped: bool = Command::new(&tc.luac)
+            .arg("-s")
+            .arg("-o")
+            .arg(&bc)
+            .arg(&src)
+            .status()
+            .is_ok_and(|s: std::process::ExitStatus| s.success());
+        assert!(stripped, "{name}: luac -s compiles the program");
+        let bytes: Vec<u8> = std::fs::read(&bc).expect("read bytecode");
+        let decompiled: DecompiledChunk = decompile_auto(&bytes).expect("decompile");
+        let expected: String =
+            run_source(&tc.lua, &dir, &format!("{name}.orig"), source).expect("original runs");
+        let actual: Option<String> =
+            run_source(&tc.lua, &dir, &format!("{name}.dec"), &decompiled.source);
+        if actual.as_deref() != Some(expected.as_str()) {
+            diverged.push(format!(
+                "{name}\n--- expected ---\n{expected}\n--- actual ---\n{}\n--- recovered ---\n{}",
+                actual.as_deref().unwrap_or("<failed to run>"),
+                decompiled.source
+            ));
+        }
+    }
+    assert!(diverged.is_empty(), "{}", diverged.join("\n====\n"));
 }
 
 const GOTO_PROGRAM: &str = "local acc = 0\nlocal i = 1\n::top::\nif i > 5 then goto done end\nacc = acc + i\ni = i + 1\ngoto top\n::done::\nprint(acc)\n";
@@ -470,6 +603,34 @@ fn a_loop_head_before_the_test_keeps_its_edge_lua_5_1() {
 }
 
 const CORPUS: &[(&str, &str)] = &[
+    (
+        "elseif_ladder_with_a_conjunctive_arm",
+        "local function classify(x)\n  if x < 0 then return \"neg\"\n  elseif x == 0 then return \"zero\"\n  elseif x < 10 and x % 2 == 0 then return \"small-even\"\n  elseif x < 10 then return \"small-odd\"\n  else return \"big\" end\nend\nlocal parts = {}\nfor _, v in ipairs({-3, 0, 4, 7, 12}) do parts[#parts + 1] = classify(v) end\nprint(table.concat(parts, \" \"))\n",
+    ),
+    (
+        "and_or_value_selection",
+        "local function f(n, sum)\n  return sum, n > 0 and sum / n or 0\nend\nprint(f(3, 9), f(0, 0))\nlocal a, b = 2, -1\nlocal z = a > 0 and b > 0 and \"both\" or \"not both\"\nlocal w = a > 0 and b < 0 and \"mixed\" or \"same\"\nprint(z, w, a > 3 and \"big\" or \"small\")\n",
+    ),
+    (
+        "call_result_reassigned_inside_a_branch",
+        "local function memo(f)\n  local cache = {}\n  return function(n)\n    local hit = cache[n]\n    if hit == nil then\n      hit = f(n)\n      cache[n] = hit\n    end\n    return hit\n  end\nend\nlocal calls = 0\nlocal square = memo(function(n) calls = calls + 1 return n * n end)\nprint(square(4), square(4), square(5), calls)\n",
+    ),
+    (
+        "table_read_before_a_later_table_write",
+        "local q = {first = 1, last = 0, items = {}}\nlocal function push(v) q.last = q.last + 1 q.items[q.last] = v end\nlocal function pop()\n  if q.first > q.last then return nil end\n  local v = q.items[q.first]\n  q.items[q.first] = nil\n  q.first = q.first + 1\n  return v\nend\npush(\"x\") push(\"y\") push(\"z\")\nprint(pop(), pop(), q.last - q.first + 1)\n",
+    ),
+    (
+        "if_else_inside_a_generic_for",
+        "local state = \"idle\"\nlocal transitions = {idle = {go = \"running\"}, running = {stop = \"idle\", pause = \"paused\"}, paused = {go = \"running\"}}\nlocal log = {}\nfor _, event in ipairs({\"go\", \"pause\", \"go\", \"stop\", \"stop\"}) do\n  local nxt = transitions[state][event]\n  if nxt then\n    state = nxt\n    log[#log + 1] = event .. \">\" .. state\n  else\n    log[#log + 1] = event .. \"!\"\n  end\nend\nprint(table.concat(log, \" \"), state)\n",
+    ),
+    (
+        "while_body_ending_in_an_if",
+        "local n, acc = 0, {}\nwhile n < 20 and (n % 7 ~= 6 or #acc < 2) do\n  n = n + 1\n  if n % 3 == 0 then acc[#acc + 1] = n end\nend\nprint(n, #acc)\n",
+    ),
+    (
+        "local_function_called_twice",
+        "local function stats(...)\n  local n = select(\"#\", ...)\n  local sum = 0\n  for i = 1, n do sum = sum + select(i, ...) end\n  return sum, n > 0 and sum / n or 0\nend\nprint(stats(4, 9, 2), stats())\n",
+    ),
     (
         "arith",
         "local a = 7\nlocal b = 3\nprint(a + b, a - b, a * b, a % b)\nprint((a + b) * (a - b))\nprint(-a, #\"hello\")\n",

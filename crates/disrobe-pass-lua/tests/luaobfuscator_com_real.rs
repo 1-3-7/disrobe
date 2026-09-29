@@ -49,7 +49,7 @@ fn peel_real_luaobfuscator_com_obf_v1() {
     let out = luaobfuscator_com::peel(&data, &opts).expect("peel must succeed on real fixture");
     assert!(
         !out.fully_recovered,
-        "luaobfuscator.com vm string-layer decode requires key recovery; must report honestly"
+        "luaobfuscator.com vm string-layer decode requires key recovery; must report the missing key"
     );
     assert!(
         out.residual_markers

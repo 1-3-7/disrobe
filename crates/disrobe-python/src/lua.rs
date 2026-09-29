@@ -44,13 +44,12 @@ struct LuaDeobReport {
 }
 
 #[pyfunction]
-#[pyo3(signature = (source, *, authorize = false, strict = false))]
-#[pyo3(text_signature = "(source, *, authorize=False, strict=False)")]
-fn lua_deobfuscate(source: &str, authorize: bool, strict: bool) -> PyResult<LuaDeobfuscation> {
+#[pyo3(signature = (source, *, authorize = false))]
+#[pyo3(text_signature = "(source, *, authorize=False)")]
+fn lua_deobfuscate(source: &str, authorize: bool) -> PyResult<LuaDeobfuscation> {
     let bytes: &[u8] = source.as_bytes();
     let options: DeobfOptions = DeobfOptions {
         i_have_authorization: authorize,
-        strict,
     };
     let (kind, detection): (&'static str, Option<ObfuscatorDetection>) = identify(bytes);
     let report: LuaDeobReport = match detection {

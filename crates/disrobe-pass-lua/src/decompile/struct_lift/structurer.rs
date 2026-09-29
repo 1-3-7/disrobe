@@ -37,7 +37,7 @@ struct Ctx<'a> {
     end_pc: usize,
     repeats: std::collections::BTreeMap<usize, RepeatEdge>,
     active_repeats: std::collections::BTreeSet<usize>,
-    label_candidates: std::collections::BTreeSet<usize>,
+    label_candidates: LabelSites,
     placed_labels: std::collections::BTreeSet<usize>,
     edges: EdgeLedger,
     non_block_prefix: Vec<usize>,
@@ -97,17 +97,28 @@ struct RepeatEdge {
     cond: String,
 }
 
+type LabelSites = std::collections::BTreeMap<usize, std::collections::BTreeSet<usize>>;
+
+fn label_sites(nodes: &[PcNode]) -> LabelSites {
+    let node_pcs: std::collections::BTreeSet<usize> = nodes.iter().map(|n: &PcNode| n.pc).collect();
+    let mut sites: LabelSites = LabelSites::new();
+    for n in nodes {
+        if let Node::Jump { target } = n.node
+            && target != usize::MAX
+            && let Some(&site) = node_pcs.range(target..).next()
+        {
+            sites.entry(site).or_default().insert(target);
+        }
+    }
+    sites
+}
+
 #[must_use]
 pub(super) fn structure_standard(stmts: &[LiftedStmt], code_len: usize) -> StructureResult {
-    let nodes: Vec<PcNode> = build_nodes(stmts);
+    let mut nodes: Vec<PcNode> = recover_short_circuit_chains(build_nodes(stmts));
+    retarget_back_edges_through_closing_jumps(&mut nodes);
     let repeats: std::collections::BTreeMap<usize, RepeatEdge> = detect_repeats(&nodes);
-    let label_candidates: std::collections::BTreeSet<usize> = nodes
-        .iter()
-        .filter_map(|n: &PcNode| match n.node {
-            Node::Jump { target } if target != usize::MAX => Some(target),
-            _ => None,
-        })
-        .collect();
+    let label_candidates: LabelSites = label_sites(&nodes);
     let mut ctx: Ctx<'_> = Ctx {
         nodes: &nodes,
         end_pc: code_len + 1,
@@ -207,6 +218,104 @@ fn prune_unreferenced_labels(
                 }
                 _ => {}
             }
+        }
+    }
+}
+
+fn recover_short_circuit_chains(nodes: Vec<PcNode>) -> Vec<PcNode> {
+    let entered: std::collections::BTreeSet<usize> = nodes
+        .iter()
+        .filter_map(|n: &PcNode| match n.node {
+            Node::Cond { target, .. } | Node::Jump { target } => Some(target),
+            _ => None,
+        })
+        .collect();
+    let mut out: Vec<PcNode> = Vec::with_capacity(nodes.len());
+    let mut start: usize = 0;
+    while start < nodes.len() {
+        let mut end: usize = start;
+        while end < nodes.len()
+            && matches!(nodes[end].node, Node::Cond { .. })
+            && (end == start || !entered.contains(&nodes[end].pc))
+        {
+            end += 1;
+        }
+        if end - start >= 2
+            && let Some(next) = nodes.get(end)
+            && let Some(folded) = fold_condition_chain(&nodes[start..end], next.pc)
+        {
+            out.push(folded);
+            start = end;
+            continue;
+        }
+        out.push(nodes[start].clone());
+        start += 1;
+    }
+    out
+}
+
+fn fold_condition_chain(chain: &[PcNode], body_pc: usize) -> Option<PcNode> {
+    let (last, init): (&PcNode, &[PcNode]) = chain.split_last()?;
+    let Node::Cond {
+        cond: last_cond,
+        target: exit,
+    } = &last.node
+    else {
+        return None;
+    };
+    let enters_body = |target: usize| -> bool { target > last.pc && target <= body_pc };
+    if *exit == usize::MAX || enters_body(*exit) {
+        return None;
+    }
+    let mut folded: String = last_cond.clone();
+    for node in init.iter().rev() {
+        let Node::Cond { cond, target } = &node.node else {
+            return None;
+        };
+        folded = if *target == *exit {
+            format!("({cond}) and ({folded})")
+        } else if enters_body(*target) {
+            format!(
+                "({}) or ({folded})",
+                crate::decompile::luau_structure::negate_cond(cond)
+            )
+        } else {
+            return None;
+        };
+    }
+    Some(PcNode {
+        pc: chain.first()?.pc,
+        node: Node::Cond {
+            cond: folded,
+            target: *exit,
+        },
+    })
+}
+
+fn retarget_back_edges_through_closing_jumps(nodes: &mut [PcNode]) {
+    for i in 0..nodes.len() {
+        let Node::Cond { target: head, .. } = nodes[i].node else {
+            continue;
+        };
+        if head > nodes[i].pc || head == usize::MAX {
+            continue;
+        }
+        let mut closing: Option<usize> = None;
+        for later in &nodes[i + 1..] {
+            match later.node {
+                Node::Jump { target } if target == head => {
+                    closing = Some(later.pc);
+                    break;
+                }
+                Node::Jump { target } | Node::Cond { target, .. } if target <= later.pc => break,
+                Node::ForNum { .. } | Node::ForGen { .. } | Node::BlockEnd => break,
+                _ => {}
+            }
+        }
+        if let Some(closing_pc) = closing
+            && let Node::Cond { target, .. } = &mut nodes[i].node
+        {
+            *target = closing_pc;
         }
     }
 }
@@ -485,9 +594,12 @@ fn structure_seq(
 
         let cur: PcNode = ctx.nodes[*pos].clone();
         let cur_index: usize = *pos;
-        if ctx.label_candidates.contains(&cur.pc) && !ctx.placed_labels.contains(&cur.pc) {
-            ctx.placed_labels.insert(cur.pc);
-            frame.out.push(StructuredBlock::Label { pc: cur.pc });
+        if let Some(targets) = ctx.label_candidates.get(&cur.pc) {
+            for &target in targets {
+                if ctx.placed_labels.insert(target) {
+                    frame.out.push(StructuredBlock::Label { pc: target });
+                }
+            }
         }
         if let Some(edge) = ctx.repeats.get(&cur.pc).cloned()
             && !ctx.active_repeats.contains(&cur.pc)
@@ -1201,7 +1313,7 @@ mod tests {
             end_pc: 4,
             repeats,
             active_repeats: std::collections::BTreeSet::new(),
-            label_candidates: std::collections::BTreeSet::new(),
+            label_candidates: LabelSites::new(),
             placed_labels: std::collections::BTreeSet::new(),
             edges: EdgeLedger::build(&nodes),
             non_block_prefix: non_block_prefix(&nodes),
@@ -1688,6 +1800,79 @@ mod tests {
         let result: StructureResult = structure_standard(&stmts, 4);
 
         assert_eq!(result.unresolved_jumps, 0, "blocks: {:?}", result.blocks);
+    }
+
+    fn fold(stmts: &[LiftedStmt]) -> Vec<PcNode> {
+        recover_short_circuit_chains(build_nodes(stmts))
+    }
+
+    fn cond(pc: usize, text: &str, target: usize) -> LiftedStmt {
+        lifted(
+            pc,
+            LStmt::Cond {
+                cond: text.to_owned(),
+                target,
+            },
+        )
+    }
+
+    #[test]
+    fn conditions_sharing_the_false_exit_fold_into_a_conjunction() {
+        let nodes: Vec<PcNode> = fold(&[
+            cond(0, "x < 10", 5),
+            cond(2, "(x % 2) == 0", 5),
+            lifted(4, LStmt::Raw("return 1".to_owned())),
+            lifted(5, LStmt::Raw("return 2".to_owned())),
+        ]);
+        assert!(
+            matches!(&nodes[0].node, Node::Cond { cond, target: 5 } if cond == "(x < 10) and ((x % 2) == 0)"),
+            "{nodes:?}"
+        );
+        assert_eq!(nodes.len(), 3);
+    }
+
+    #[test]
+    fn a_condition_that_enters_the_body_folds_into_a_negated_disjunct() {
+        let nodes: Vec<PcNode> = fold(&[
+            cond(0, "n < 20", 9),
+            cond(2, "(n % 7) == 6", 6),
+            cond(4, "#acc < 2", 9),
+            lifted(6, LStmt::Raw("n = n + 1".to_owned())),
+            lifted(9, LStmt::Raw("print(n)".to_owned())),
+        ]);
+        assert!(
+            matches!(&nodes[0].node, Node::Cond { cond, target: 9 } if cond == "(n < 20) and (((n % 7) ~= 6) or (#acc < 2))"),
+            "{nodes:?}"
+        );
+    }
+
+    #[test]
+    fn a_chain_stops_before_a_condition_entered_from_elsewhere() {
+        let nodes: Vec<PcNode> = fold(&[
+            cond(0, "a", 4),
+            cond(2, "b", 9),
+            cond(4, "c", 9),
+            lifted(6, LStmt::Raw("x = 1".to_owned())),
+            lifted(9, LStmt::Raw("x = 2".to_owned())),
+        ]);
+        assert_eq!(nodes.len(), 4, "{nodes:?}");
+        assert!(
+            matches!(&nodes[0].node, Node::Cond { cond, target: 9 } if cond == "(not (a)) or (b)"),
+            "{nodes:?}"
+        );
+        assert!(matches!(&nodes[1].node, Node::Cond { cond, target: 9 } if cond == "c"));
+    }
+
+    #[test]
+    fn a_condition_that_jumps_past_the_body_start_is_left_unfolded() {
+        let nodes: Vec<PcNode> = fold(&[
+            cond(0, "a", 7),
+            cond(2, "b", 9),
+            lifted(4, LStmt::Raw("x = 1".to_owned())),
+            lifted(7, LStmt::Raw("x = 3".to_owned())),
+            lifted(9, LStmt::Raw("x = 2".to_owned())),
+        ]);
+        assert_eq!(nodes.len(), 5, "{nodes:?}");
     }
 
     #[test]

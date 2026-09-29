@@ -242,7 +242,7 @@ Invalid Python argument types can also raise standard Python exceptions.
 | | `js_unbundle(js_source, *, bundler=None)` | `JsUnbundle` |
 | Lua | `lua_detect(bytecode)` | `LuaDetection` |
 | | `lua_decompile(bytecode)` | `LuaDecompilation` |
-| | `lua_deobfuscate(source, *, authorize=False, strict=False)` | `LuaDeobfuscation` |
+| | `lua_deobfuscate(source, *, authorize=False)` | `LuaDeobfuscation` |
 | Go | `go_analyze(binary_bytes)` | `GoAnalysis` |
 | | `go_symbols(binary_bytes)` | `GoSymbols` |
 | | `go_pclntab(binary_bytes)` | `GoPclntab` |

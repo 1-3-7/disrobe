@@ -1272,12 +1272,16 @@ jobs:
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/local/lib/android /opt/hostedtoolcache/CodeQL /usr/local/share/boost
           sudo docker image prune --all --force 2>/dev/null || true
           df -h /
-      - name: install lua5.4 and luajit
+      - name: install lua 5.1 to 5.4 and luajit
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends lua5.1 lua5.4 luajit
+          sudo apt-get install -y --no-install-recommends lua5.1 lua5.2 lua5.3 lua5.4 luajit
           lua5.1 -v
           luac5.1 -v
+          lua5.2 -v
+          luac5.2 -v
+          lua5.3 -v
+          luac5.3 -v
           lua5.4 -v
           luajit -v
       - name: install C11 compiler
@@ -1392,7 +1396,7 @@ jobs:
         run: cargo test -p disrobe-pass-wasm-deob --features sandbox,dwarf -- --nocapture
       - name: lua interpreter re-execution differential
         run: cargo test -p disrobe-pass-lua --test ironbrew2_real_oracle -- --nocapture
-      - name: lua 5.1, 5.4 and luajit re-execution oracles
+      - name: lua 5.1 to 5.4 and luajit re-execution oracles
         env:
           DISROBE_REQUIRE_LUA_TOOLCHAIN: "1"
         run: cargo test -p disrobe-pass-lua --all-features --tests -- --nocapture

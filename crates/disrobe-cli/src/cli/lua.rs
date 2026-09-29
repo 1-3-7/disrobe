@@ -260,7 +260,6 @@ fn deobfuscate(
     let detection: Option<ObfuscatorDetection> = detect_family(&bytes, family);
     let opts: DeobfOptions = DeobfOptions {
         i_have_authorization,
-        strict: false,
     };
     let result: PeelResult = match family {
         LuaFamilyChoice::Prometheus => prometheus::peel(&bytes, &opts),

@@ -91,7 +91,6 @@ fn drive_bytes(bytes: &[u8], desc: &str) {
 
     let opts: DeobfOptions = DeobfOptions {
         i_have_authorization: true,
-        strict: false,
     };
     macro_rules! drive_obf {
         ($m:ident) => {{

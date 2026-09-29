@@ -108,7 +108,7 @@ fn recovered_permutation_is_a_real_permutation_not_identity() {
     }
     assert!(
         permuted >= 4,
-        "the runtime-derived table must genuinely permute the opcodes, not be the identity"
+        "the runtime-derived table must permute the opcodes, not be the identity"
     );
 }
 
@@ -242,7 +242,6 @@ fn ironbrew2_peel_devirtualizes_embedded_payload() {
 
     let opts: DeobfOptions = DeobfOptions {
         i_have_authorization: true,
-        strict: false,
     };
     let result: PeelResult = ironbrew2::peel(bootstrap.as_bytes(), &opts).expect("peel");
     assert!(
@@ -283,7 +282,6 @@ fn moonsec_v3_peel_devirtualizes_embedded_payload() {
 
     let opts: DeobfOptions = DeobfOptions {
         i_have_authorization: true,
-        strict: false,
     };
     let result: PeelResult = moonsec_v3::peel(bootstrap.as_bytes(), &opts).expect("peel");
     assert!(
@@ -321,7 +319,6 @@ fn moonsec_v3_peel_devirtualizes_lua_table_wrapper() {
 
     let opts: DeobfOptions = DeobfOptions {
         i_have_authorization: true,
-        strict: false,
     };
     let result: PeelResult = moonsec_v3::peel(bootstrap.as_bytes(), &opts).expect("peel");
     assert!(
@@ -347,12 +344,11 @@ fn ironbrew2_peel_without_payload_is_honest_passthrough() {
     let bootstrap: String = render_bootstrap(&recipe, "-- IronBrew2\nIRONBREW_VM");
     let opts: DeobfOptions = DeobfOptions {
         i_have_authorization: true,
-        strict: false,
     };
     let result: PeelResult = ironbrew2::peel(bootstrap.as_bytes(), &opts).expect("peel");
     assert!(
         !result.fully_recovered,
-        "no embedded payload means no honest full recovery"
+        "no embedded payload means no full recovery claim"
     );
     assert!(!result.residual_markers.is_empty());
 }

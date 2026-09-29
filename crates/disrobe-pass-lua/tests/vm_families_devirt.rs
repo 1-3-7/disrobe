@@ -136,7 +136,6 @@ fn moonsec_v3_marker_roundtrips_reference_container_with_authorization() {
         bootstrap_with_payload("-- MoonSec v3\nMS_VM_ENTRY", &recipe(0x3333_4444, 13, 0x60));
     let opts: DeobfOptions = DeobfOptions {
         i_have_authorization: true,
-        strict: false,
     };
     let result: PeelResult = moonsec_v3::peel(boot.as_bytes(), &opts).expect("peel");
     assert_reference_container_roundtrip("moonsec_v3", &result);
@@ -227,7 +226,7 @@ fn luraph_real_runtime_key_is_honest_wall() {
             .residual_markers
             .iter()
             .any(|m: &String| m.contains("WALL") && m.contains("runtime")),
-        "luraph must report the honest info-theoretic runtime-key wall: {:?}",
+        "luraph must report the information-theoretic runtime-key wall: {:?}",
         result.residual_markers
     );
 }
@@ -280,7 +279,7 @@ fn families_without_payload_are_honest_passthrough() {
     ] {
         assert!(
             !result.fully_recovered,
-            "{name}: no embedded payload means no honest full recovery"
+            "{name}: no embedded payload means no full recovery claim"
         );
         assert!(
             !result.residual_markers.is_empty(),

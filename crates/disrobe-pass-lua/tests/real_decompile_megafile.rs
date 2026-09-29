@@ -28,7 +28,7 @@ fn load(rel: &str) -> Vec<u8> {
 fn lua51_hello_decompile_produces_function_skeleton() {
     let bytes: Vec<u8> = load("luac/hello.5_1.luac");
     let chunk: LuaChunk = lua51::read(&bytes).expect("parse 5.1 hello");
-    let out: DecompiledChunk = decompile::lua51::decompile(&chunk).expect("decompile 5.1 hello");
+    let out: DecompiledChunk = decompile::decompile_chunk(&chunk).expect("decompile 5.1 hello");
     assert!(matches!(
         out.fidelity,
         Fidelity::Lossless | Fidelity::Lossy | Fidelity::BestEffort
@@ -41,7 +41,7 @@ fn lua51_hello_decompile_produces_function_skeleton() {
 fn lua51_megafile_decompile_produces_many_functions() {
     let bytes: Vec<u8> = load("luac/edge_cases.5_1.luac");
     let chunk: LuaChunk = lua51::read(&bytes).expect("parse 5.1 megafile");
-    let out: DecompiledChunk = decompile::lua51::decompile(&chunk).expect("decompile 5.1 megafile");
+    let out: DecompiledChunk = decompile::decompile_chunk(&chunk).expect("decompile 5.1 megafile");
     let fn_count: usize = out.source.matches("function").count();
     assert!(
         fn_count >= 2,
@@ -54,7 +54,7 @@ fn lua51_megafile_decompile_produces_many_functions() {
 fn lua51_megafile_decompile_lifts_real_calls() {
     let bytes: Vec<u8> = load("luac/edge_cases.5_1.luac");
     let chunk: LuaChunk = lua51::read(&bytes).expect("parse 5.1 megafile");
-    let out: DecompiledChunk = decompile::lua51::decompile(&chunk).expect("decompile 5.1 megafile");
+    let out: DecompiledChunk = decompile::decompile_chunk(&chunk).expect("decompile 5.1 megafile");
     let has_call: bool = out.source.contains('(') && out.source.contains(')');
     assert!(has_call, "lifted source should contain call/expr syntax");
     assert!(

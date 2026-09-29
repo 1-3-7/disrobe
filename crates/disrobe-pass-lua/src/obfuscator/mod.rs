@@ -82,7 +82,6 @@ pub struct ObfuscatorDetection {
 #[derive(Debug, Clone, Default)]
 pub struct DeobfOptions {
     pub i_have_authorization: bool,
-    pub strict: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

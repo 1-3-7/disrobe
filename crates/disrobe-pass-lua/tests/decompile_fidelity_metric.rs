@@ -63,7 +63,7 @@ fn placeholder_register_count(src: &str) -> usize {
 fn measure(rel: &str, chunk: LuaChunk) {
     let mut declared: BTreeSet<String> = BTreeSet::new();
     collect_debug_local_names(&chunk.main, &mut declared);
-    let out: DecompiledChunk = decompile::lua51::decompile(&chunk).expect("decompile");
+    let out: DecompiledChunk = decompile::decompile_chunk(&chunk).expect("decompile");
     let recovered: usize = declared
         .iter()
         .filter(|name: &&String| {
@@ -100,7 +100,7 @@ fn strip_debug(p: &mut LuaProto) {
 
 fn measure_stripped(rel: &str, mut chunk: LuaChunk) {
     strip_debug(&mut chunk.main);
-    let out: DecompiledChunk = decompile::lua51::decompile(&chunk).expect("decompile");
+    let out: DecompiledChunk = decompile::decompile_chunk(&chunk).expect("decompile");
     let placeholders: usize = placeholder_register_count(&out.source);
     let synthetic_locals: usize = out.source.matches("loc_").count();
     eprintln!(

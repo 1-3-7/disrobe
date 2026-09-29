@@ -24,7 +24,6 @@ fn peel_ironbrew2_blocks_without_authorization() {
 fn peel_ironbrew2_with_authorization() {
     let opts: DeobfOptions = DeobfOptions {
         i_have_authorization: true,
-        strict: false,
     };
     let out = ironbrew2::peel(SAMPLE, &opts).expect("peel");
     assert!(

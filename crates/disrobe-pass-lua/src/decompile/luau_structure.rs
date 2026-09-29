@@ -673,26 +673,105 @@ fn simplify_loop(mut body: Vec<StructuredBlock>) -> StructuredBlock {
 
 #[must_use]
 pub(crate) fn negate_cond(cond: &str) -> String {
-    if let Some(rest) = cond.strip_prefix("not (")
-        && let Some(inner) = rest.strip_suffix(')')
+    if let Some(inner) = cond.strip_prefix("not (")
+        && top_level_spans(cond).last() == Some(&(4, cond.len()))
+        && let Some(inner) = inner.strip_suffix(')')
     {
         return inner.to_owned();
     }
-    for (op, inv) in [
-        (" == ", " ~= "),
-        (" ~= ", " == "),
-        (" <= ", " > "),
-        (" >= ", " < "),
-        (" < ", " >= "),
-        (" > ", " <= "),
-    ] {
-        if let Some(idx) = cond.find(op) {
-            let (lhs, rhs): (&str, &str) = cond.split_at(idx);
-            let rhs: &str = &rhs[op.len()..];
-            return format!("{lhs}{inv}{rhs}");
+    let tokens: Vec<(usize, &str)> = top_level_operators(cond);
+    if let [(idx, op)] = tokens.as_slice() {
+        let inverse: Option<&str> = match *op {
+            " == " => Some(" ~= "),
+            " ~= " => Some(" == "),
+            " <= " => Some(" > "),
+            " >= " => Some(" < "),
+            " < " => Some(" >= "),
+            " > " => Some(" <= "),
+            _ => None,
+        };
+        if let Some(inverse) = inverse {
+            let (lhs, rhs): (&str, &str) = cond.split_at(*idx);
+            return format!("{lhs}{inverse}{}", &rhs[op.len()..]);
         }
     }
     format!("not ({cond})")
+}
+
+fn top_level_spans(text: &str) -> Vec<(usize, usize)> {
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    let mut open: Vec<usize> = Vec::new();
+    let mut quote: Option<u8> = None;
+    let mut escaped: bool = false;
+    for (i, b) in text.bytes().enumerate() {
+        if let Some(q) = quote {
+            if escaped {
+                escaped = false;
+            } else if b == b'\\' {
+                escaped = true;
+            } else if b == q {
+                quote = None;
+            }
+            continue;
+        }
+        match b {
+            b'"' | b'\'' => quote = Some(b),
+            b'(' | b'[' | b'{' => open.push(i),
+            b')' | b']' | b'}' => {
+                if let Some(start) = open.pop()
+                    && open.is_empty()
+                {
+                    spans.push((start, i + 1));
+                }
+            }
+            _ => {}
+        }
+    }
+    spans
+}
+
+fn top_level_operators(text: &str) -> Vec<(usize, &'static str)> {
+    const OPERATORS: [&str; 8] = [
+        " == ", " ~= ", " <= ", " >= ", " < ", " > ", " and ", " or ",
+    ];
+    let bytes: &[u8] = text.as_bytes();
+    let mut found: Vec<(usize, &'static str)> = Vec::new();
+    let mut depth: usize = 0;
+    let mut quote: Option<u8> = None;
+    let mut escaped: bool = false;
+    let mut i: usize = 0;
+    while i < bytes.len() {
+        let b: u8 = bytes[i];
+        if let Some(q) = quote {
+            if escaped {
+                escaped = false;
+            } else if b == b'\\' {
+                escaped = true;
+            } else if b == q {
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        match b {
+            b'"' | b'\'' => quote = Some(b),
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth = depth.saturating_sub(1),
+            b' ' if depth == 0 => {
+                if let Some(op) = OPERATORS
+                    .iter()
+                    .find(|op: &&&str| bytes[i..].starts_with(op.as_bytes()))
+                {
+                    found.push((i, op));
+                    i += op.len() - 1;
+                    continue;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    found
 }
 
 fn consume_back_edge(ctx: &mut SeqCtx<'_>, pos: &mut usize, head: usize) {
@@ -737,6 +816,23 @@ mod tests {
     use super::*;
 
     const PREVIOUS_STRUCTURE_DEPTH_LIMIT: usize = 256;
+
+    #[test]
+    fn negation_inverts_only_a_single_top_level_comparison() {
+        assert_eq!(negate_cond("x < 10"), "x >= 10");
+        assert_eq!(negate_cond("(x % 2) == 0"), "(x % 2) ~= 0");
+        assert_eq!(negate_cond("not (a or b)"), "a or b");
+        assert_eq!(
+            negate_cond("(x < 10) and (y == 0)"),
+            "not ((x < 10) and (y == 0))"
+        );
+        assert_eq!(negate_cond("a and b == c"), "not (a and b == c)");
+        assert_eq!(negate_cond("f(a < b)"), "not (f(a < b))");
+        assert_eq!(negate_cond("s == \"a < b\""), "s ~= \"a < b\"");
+        assert_eq!(negate_cond("t[\"x == y\"]"), "not (t[\"x == y\"])");
+        assert_eq!(negate_cond("not (a) and (b)"), "not (not (a) and (b))");
+        assert_eq!(negate_cond("\"h\u{e4}h\" == s"), "\"h\u{e4}h\" ~= s");
+    }
 
     fn lifted(pc: usize, stmt: LStmt) -> LiftedStmt {
         LiftedStmt { pc, stmt }

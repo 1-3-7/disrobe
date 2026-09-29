@@ -56,19 +56,6 @@ fn run_lua(interp: &str, source: &str) -> Option<String> {
     Some(String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n"))
 }
 
-fn runnable_from_decompiled(source: &str) -> String {
-    let mut body: String = String::with_capacity(source.len() + 16);
-    for line in source.lines() {
-        if line.trim_start().starts_with("--") {
-            continue;
-        }
-        body.push_str(line);
-        body.push('\n');
-    }
-    body.push_str("_main()\n");
-    body
-}
-
 fn ground_truth_chunk() -> LuaChunk {
     let main: LuaProto = LuaProto {
         source: Some("@hello.lua".to_owned()),
@@ -265,9 +252,9 @@ fn slua_recovered_bytecode_executes_like_original_under_real_lua() {
         common::lua_toolchain::missing_tool("no lua interpreter on PATH");
         return;
     };
-    let expected: String = run_lua(&interp, &runnable_from_decompiled(&original_source.source))
+    let expected: String = run_lua(&interp, &original_source.source)
         .expect("original decompiled source runs under real lua");
-    let actual: String = run_lua(&interp, &runnable_from_decompiled(&recovered_source.source))
+    let actual: String = run_lua(&interp, &recovered_source.source)
         .expect("recovered decompiled source runs under real lua");
     assert_eq!(
         actual.trim_end(),

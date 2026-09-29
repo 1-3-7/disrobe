@@ -1,15 +1,7 @@
-use crate::decompile::{DecompiledChunk, decompile_chunk};
-use crate::error::Result;
-use crate::reader::common::LuaChunk;
-
-pub fn decompile(chunk: &LuaChunk) -> Result<DecompiledChunk> {
-    decompile_chunk(chunk)
-}
-
-#[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
-    use super::*;
+    use crate::decompile::{DecompiledChunk, decompile_chunk as decompile};
+    use crate::reader::common::LuaChunk;
     use crate::reader::common::{LuaConstant, LuaDialect, LuaProto};
 
     fn enc_abc(op: u32, a: u32, b: u32, c: u32) -> u32 {

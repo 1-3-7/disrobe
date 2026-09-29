@@ -1,4 +1,6 @@
 baseline/hello.lua
+behaviour/objects.lua
+behaviour/tour.lua
 decompile_samples/src/arith_loops.lua
 decompile_samples/src/closures_recursion.lua
 decompile_samples/src/control_flow.lua

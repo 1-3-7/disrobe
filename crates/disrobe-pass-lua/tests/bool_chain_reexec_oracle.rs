@@ -50,7 +50,11 @@ fn strip_main_wrapper(source: &str) -> String {
     let lines: Vec<&str> = source.lines().collect();
     let start: usize = lines
         .iter()
-        .position(|l: &&str| l.trim_start().starts_with("function _main"))
+        .position(|l: &&str| {
+            l.trim_start()
+                .trim_start_matches("local ")
+                .starts_with("function _main")
+        })
         .map_or(0, |i: usize| i + 1);
     let end: usize = lines
         .iter()

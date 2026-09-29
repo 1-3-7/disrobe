@@ -643,7 +643,16 @@ pub(crate) fn render_blocks(blocks: &[StructuredBlock], indent: usize) -> Render
             RenderTask::Block { block, indent } => {
                 if out.push_indent(indent) {
                     match block {
-                        StructuredBlock::Raw(s) => out.push_str(s) && out.push_char('\n'),
+                        StructuredBlock::Raw(s) => {
+                            let mut accepted: bool = true;
+                            for (index, line) in s.split('\n').enumerate() {
+                                accepted = accepted
+                                    && (index == 0 || out.push_indent(indent))
+                                    && out.push_str(line)
+                                    && out.push_char('\n');
+                            }
+                            accepted
+                        }
                         StructuredBlock::Break => out.push_str("break\n"),
                         StructuredBlock::Goto { pc } => {
                             out.push_str("goto lbl_")

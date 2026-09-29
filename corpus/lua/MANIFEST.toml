@@ -12,6 +12,21 @@ kind = "lua-source"
 sha256_note = "trivial 'print(\"hello world\")' one-liner"
 size_bytes = 22
 
+[behaviour]
+description = "self-authored runnable Lua 5.4 programs with deterministic output; the re-execution oracle compiles each with luac -s, decompiles the stripped bytecode and runs the recovered source unchanged"
+
+[[behaviour.fixtures]]
+path = "behaviour/tour.lua"
+kind = "lua-source"
+size_bytes = 1598
+notes = "recursive local functions, table appends through #t + 1, word counting with `or` defaults, sorted key iteration, closures with optional arguments, select and multiple returns, string methods with multiple results, pcall of a table error, repeat/until, while true with break, integer and bitwise operators, metatables with __add/__tostring/__index functions, goto, coroutine.wrap, table.pack and table.unpack"
+
+[[behaviour.fixtures]]
+path = "behaviour/objects.lua"
+kind = "lua-source"
+size_bytes = 2027
+notes = "class and subclass tables with __index chains and method calls, per-iteration loop closures, varargs through select with multiple returns and an and/or value selection, an elseif ladder with a conjunctive arm, gsub with a function and its count, gmatch position captures, table.insert/remove/sort with a comparator, float and floor division and modulo of negatives, math.type, a while loop over a mixed and/or condition ending in an if, a repeat block whose until reads a body local, a negative-step numeric for"
+
 [megafile]
 description = "~1200-LOC fixture exercising 5.1/5.2/5.3/5.4 + LuaJIT feature surface; parses cleanly across all 5 runtimes"
 

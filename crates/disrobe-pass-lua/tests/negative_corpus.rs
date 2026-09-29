@@ -793,7 +793,6 @@ fn produce(entry: &CorpusEntry, root: &Path) -> Result<Produced, String> {
 const fn authorized() -> DeobfOptions {
     DeobfOptions {
         i_have_authorization: true,
-        strict: false,
     }
 }
 

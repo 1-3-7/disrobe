@@ -72,7 +72,11 @@ fn recovered_body_reparses_under_real_lua() {
     let src: String = recovered_body();
     let body: String = src
         .lines()
-        .skip_while(|l: &&str| !l.trim_start().starts_with("function _main"))
+        .skip_while(|l: &&str| {
+            !l.trim_start()
+                .trim_start_matches("local ")
+                .starts_with("function _main")
+        })
         .skip(1)
         .take_while(|l: &&str| l.trim() != "end")
         .collect::<Vec<&str>>()

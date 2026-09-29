@@ -14,7 +14,7 @@ fn peel_wearedevs() {
     let out = wearedevs::peel(b"wearedevs_luau", &opts).expect("peel");
     assert!(
         !out.fully_recovered,
-        "a bare marker with no alphabet table cannot be decoded; must report honestly"
+        "a bare marker with no alphabet table cannot be decoded; must report that it was not decoded"
     );
     assert!(
         out.recovered_strings.is_empty(),

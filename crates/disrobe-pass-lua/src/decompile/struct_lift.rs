@@ -221,11 +221,21 @@ fn lift_structured_captured(
     for i in 0..u32::from(p.num_params) {
         let name: String = names
             .name_at(0, i)
-            .map_or_else(|| format!("p{i}"), str::to_owned);
+            .map_or_else(|| synthetic_param_name(i, &state.upvalues), str::to_owned);
         state.set_reg(i, name);
         state.mark_defined(i);
     }
     let live: LiveAcrossBranch = LiveAcrossBranch::compute(p, dialect);
+    for slot in slots_read_through_an_elided_nil(p, dialect, &live) {
+        if names.name_at(0, slot).is_some() {
+            continue;
+        }
+        let var: String = state.temp(slot);
+        state.push_raw(format!("local {var}"));
+        state.set_reg(slot, var);
+        state.mark_defined(slot);
+        state.pinned.insert(slot);
+    }
     lower(p, dialect, depth, &names, &live, &mut state, ctx)?;
     if state.stmts.len() > MAX_STRUCT_NODES {
         return None;
@@ -266,6 +276,8 @@ struct LiveAcrossBranch {
     boundaries: Vec<bool>,
     targets: Vec<bool>,
     reads: Vec<Vec<u32>>,
+    writes: Vec<Vec<u32>>,
+    effects: Vec<bool>,
 }
 
 impl LiveAcrossBranch {
@@ -274,6 +286,8 @@ impl LiveAcrossBranch {
         let mut boundaries: Vec<bool> = vec![false; n + 1];
         let mut targets: Vec<bool> = vec![false; n + 1];
         let mut reads: Vec<Vec<u32>> = vec![Vec::new(); n];
+        let mut writes: Vec<Vec<u32>> = vec![Vec::new(); n];
+        let mut effects: Vec<bool> = vec![false; n];
         for (pc, raw) in p.code.iter().enumerate() {
             let d: Decoded = decode(*raw, dialect);
             for t in branch_targets(p, pc, &d, dialect) {
@@ -288,12 +302,59 @@ impl LiveAcrossBranch {
             if let Some(slot) = reads.get_mut(pc) {
                 *slot = read_registers(&d, dialect);
             }
+            if let Some(slot) = writes.get_mut(pc) {
+                *slot = written_registers(&d, dialect);
+            }
+            if let Some(slot) = effects.get_mut(pc) {
+                *slot = matches!(
+                    d.op,
+                    Op::Call
+                        | Op::TailCall
+                        | Op::SetTabUp
+                        | Op::SetTable
+                        | Op::SetField
+                        | Op::SetI
+                        | Op::SetUpval
+                        | Op::SetGlobal
+                        | Op::SetList
+                );
+            }
         }
         Self {
             boundaries,
             targets,
             reads,
+            writes,
+            effects,
         }
+    }
+
+    fn side_effect_before_first_read(&self, def_pc: usize, slot: u32) -> bool {
+        for pc in def_pc + 1..self.reads.len() {
+            if self.reads[pc].contains(&slot) {
+                return false;
+            }
+            if self.effects[pc] {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn reads_before_redefinition(&self, def_pc: usize, slot: u32) -> usize {
+        let mut count: usize = 0;
+        for pc in def_pc + 1..self.reads.len() {
+            if self.reads[pc].contains(&slot) {
+                count += 1;
+                if count > 1 {
+                    return count;
+                }
+            }
+            if self.writes[pc].contains(&slot) {
+                break;
+            }
+        }
+        count
     }
 
     #[inline]
@@ -325,6 +386,125 @@ impl LiveAcrossBranch {
 }
 
 #[must_use]
+fn slots_read_through_an_elided_nil(
+    p: &LuaProto,
+    dialect: LuaDialect,
+    live: &LiveAcrossBranch,
+) -> Vec<u32> {
+    if !matches!(dialect, LuaDialect::Lua51 | LuaDialect::GLua) {
+        return Vec::new();
+    }
+    let mut edges: Vec<(usize, usize)> = Vec::new();
+    for (pc, raw) in p.code.iter().enumerate() {
+        let d: Decoded = decode(*raw, dialect);
+        for target in branch_targets(p, pc, &d, dialect) {
+            if let Ok(target) = usize::try_from(target) {
+                edges.push((pc, target));
+            }
+        }
+    }
+    let n: usize = live.reads.len();
+    let mut out: Vec<u32> = Vec::new();
+    for slot in u32::from(p.num_params)..u32::from(p.max_stack_size) {
+        let Some(first_write) = (0..n)
+            .find(|&pc: &usize| live.reads[pc].contains(&slot) || live.writes[pc].contains(&slot))
+        else {
+            continue;
+        };
+        if live.reads[first_write].contains(&slot) {
+            continue;
+        }
+        let Some(first_read) =
+            (first_write + 1..n).find(|&pc: &usize| live.reads[pc].contains(&slot))
+        else {
+            continue;
+        };
+        let skipped: bool = edges.iter().any(|&(source, target): &(usize, usize)| {
+            source < first_write && first_write < target && target <= first_read
+        });
+        if skipped {
+            out.push(slot);
+        }
+    }
+    out
+}
+
+#[must_use]
+fn written_registers(d: &Decoded, dialect: LuaDialect) -> Vec<u32> {
+    let is51: bool = matches!(dialect, LuaDialect::Lua51 | LuaDialect::GLua);
+    match d.op {
+        Op::LoadNil => {
+            let last: u32 = if is51 { d.b } else { d.a + d.b };
+            (d.a..=last.max(d.a)).collect()
+        }
+        Op::Self_ => vec![d.a, d.a + 1],
+        Op::Call => {
+            if d.c > 1 {
+                (d.a..d.a + d.c - 1).collect()
+            } else {
+                vec![d.a]
+            }
+        }
+        Op::Vararg => {
+            let count: u32 = if is51 || matches!(dialect, LuaDialect::Lua52 | LuaDialect::Lua53) {
+                d.b
+            } else {
+                d.c
+            };
+            if count > 1 {
+                (d.a..d.a + count - 1).collect()
+            } else {
+                vec![d.a]
+            }
+        }
+        Op::ForPrep | Op::ForLoop => (d.a..d.a + 4).collect(),
+        Op::TForCall => {
+            let first: u32 = if matches!(dialect, LuaDialect::Lua54) {
+                d.a + 4
+            } else {
+                d.a + 3
+            };
+            (first..first + d.c.max(1)).collect()
+        }
+        Op::TForLoop if is51 => (d.a + 2..d.a + 3 + d.c.max(1)).collect(),
+        Op::TForLoop if matches!(dialect, LuaDialect::Lua54) => vec![d.a + 2],
+        Op::TForLoop => vec![d.a],
+        Op::TForPrep => Vec::new(),
+        Op::SetUpval
+        | Op::SetGlobal
+        | Op::SetTabUp
+        | Op::SetTable
+        | Op::SetI
+        | Op::SetField
+        | Op::Jmp
+        | Op::Eq
+        | Op::Lt
+        | Op::Le
+        | Op::EqK
+        | Op::EqI
+        | Op::LtI
+        | Op::LeI
+        | Op::GtI
+        | Op::GeI
+        | Op::Test
+        | Op::TailCall
+        | Op::Return
+        | Op::Return0
+        | Op::Return1
+        | Op::SetList
+        | Op::Close
+        | Op::Tbc
+        | Op::MmBin
+        | Op::MmBinI
+        | Op::MmBinK
+        | Op::VarargPrep
+        | Op::ExtraArg
+        | Op::Unknown => Vec::new(),
+        _ => vec![d.a],
+    }
+}
+
+#[must_use]
 fn read_registers(d: &Decoded, dialect: LuaDialect) -> Vec<u32> {
     let mut out: Vec<u32> = Vec::new();
     let is54: bool = matches!(dialect, LuaDialect::Lua54);
@@ -335,7 +515,7 @@ fn read_registers(d: &Decoded, dialect: LuaDialect) -> Vec<u32> {
         }
     };
     match d.op {
-        Op::Move | Op::Unm | Op::BNot | Op::Not | Op::Len | Op::Vararg => push_r(&mut out, d.b),
+        Op::Move | Op::Unm | Op::BNot | Op::Not | Op::Len => push_r(&mut out, d.b),
         Op::GetTable => {
             push_r(&mut out, d.b);
             push_rk(&mut out, d.c);
@@ -345,10 +525,19 @@ fn read_registers(d: &Decoded, dialect: LuaDialect) -> Vec<u32> {
             push_r(&mut out, d.b);
             if !is54 {
                 push_rk(&mut out, d.c);
+            } else if !d.k {
+                push_r(&mut out, d.c);
             }
         }
         Op::SetGlobal | Op::SetUpval | Op::Return1 | Op::Test | Op::TestSet => {
             push_r(&mut out, d.a);
+        }
+        Op::SetTable if is54 => {
+            push_r(&mut out, d.a);
+            push_r(&mut out, d.b);
+            if !d.k {
+                push_r(&mut out, d.c);
+            }
         }
         Op::SetTable => {
             push_r(&mut out, d.a);
@@ -357,10 +546,14 @@ fn read_registers(d: &Decoded, dialect: LuaDialect) -> Vec<u32> {
         }
         Op::SetField | Op::SetI => {
             push_r(&mut out, d.a);
-            push_rk(&mut out, d.c);
+            if !is54 || !d.k {
+                push_rk(&mut out, d.c);
+            }
         }
         Op::SetTabUp => {
-            push_rk(&mut out, d.c);
+            if !is54 || !d.k {
+                push_rk(&mut out, d.c);
+            }
         }
         Op::GetTabUp if !is54 => {
             push_rk(&mut out, d.c);
@@ -678,7 +871,7 @@ fn lower(
                 let method: String = match field {
                     Some(name) => {
                         state.method_regs.insert(d.a);
-                        format!("{table}:{name}")
+                        format!("{}:{name}", prefix_expression(&table))
                     }
                     None => index_expr(&table, None, &raw_key),
                 };
@@ -781,7 +974,9 @@ fn lower(
             }
             Op::Jmp => {
                 let target: i64 = jump_target(pc, &d, dialect);
-                if let Some(ctrl) = forin_controller(p, target, dialect) {
+                if let Some(ctrl) = forin_controller(p, target, dialect)
+                    && opens_generic_for(p, pc, &ctrl, dialect)
+                {
                     emit_forin_head(state, names, &ctrl, pc, dialect);
                 } else if target >= 0 {
                     state.push_stmt(LStmt::Jump {
@@ -839,6 +1034,8 @@ fn lower(
             }
             Op::Test => {
                 if let Some(consumed) = emit_ternary(state, names, live, p, &d, pc, dialect) {
+                    pc = consumed;
+                } else if let Some(consumed) = emit_test_or(state, names, p, &d, pc, dialect) {
                     pc = consumed;
                 } else {
                     let v: String = state.reg(d.a);
@@ -932,7 +1129,7 @@ fn lower(
                     .iter()
                     .map(|op: &Decoded| capture_name(state, names, op, &d, pc, resume_pc))
                     .collect();
-                emit_closure(state, ctx, p, &d, dialect, depth, &captured)?;
+                emit_closure(state, ctx, live, p, &d, dialect, depth, &captured)?;
                 pc += captures.pseudo_words;
             }
             Op::Vararg => define(state, names, live, p, d.a, "...".to_owned()),
@@ -988,8 +1185,11 @@ fn define(
         assign_pinned(state, slot, &value);
         return;
     }
-    let materialize: bool =
-        live.should_materialize(state.pc, slot) || contains_ident(&value, &state.temp(slot));
+    let materialize: bool = live.should_materialize(state.pc, slot)
+        || contains_ident(&value, &state.temp(slot))
+        || (!is_duplicable_expression(&value)
+            && (live.reads_before_redefinition(state.pc, slot) > 1
+                || live.side_effect_before_first_read(state.pc, slot)));
     if materialize && !value.is_empty() {
         let tmp: String = state.temp(slot);
         if state.is_defined(slot) {
@@ -1002,6 +1202,40 @@ fn define(
     } else {
         state.set_reg(slot, value);
     }
+}
+
+fn prefix_expression(value: &str) -> String {
+    let simple: bool = value
+        .chars()
+        .next()
+        .is_some_and(|c: char| c.is_ascii_alphabetic() || c == '_')
+        && value
+            .chars()
+            .all(|c: char| c.is_ascii_alphanumeric() || c == '_' || c == '.');
+    if simple {
+        value.to_owned()
+    } else {
+        format!("({value})")
+    }
+}
+
+fn operand_text(value: &str) -> String {
+    if is_duplicable_expression(value) {
+        value.to_owned()
+    } else {
+        format!("({value})")
+    }
+}
+
+fn is_duplicable_expression(value: &str) -> bool {
+    let v: &str = value.trim();
+    is_ident(v)
+        || matches!(v, "nil" | "true" | "false")
+        || v.parse::<f64>().is_ok()
+        || (v.len() >= 2
+            && v.starts_with('"')
+            && v.ends_with('"')
+            && !v[1..v.len() - 1].contains('"'))
 }
 
 fn assign_pinned(state: &mut StructState, slot: u32, value: &str) {
@@ -1068,8 +1302,12 @@ fn define_table(
         state.set_reg(d.a, name);
         state.suppress_local.push((act_pc, d.a));
     } else {
-        let tmp: String = format!("tbl_{}", state.table_locals);
+        let mut tmp: String = format!("tbl_{}", state.table_locals);
         state.table_locals += 1;
+        while state.upvalues.contains(&tmp) {
+            tmp = format!("tbl_{}", state.table_locals);
+            state.table_locals += 1;
+        }
         state.push_raw(format!("local {tmp} = {{}}"));
         state.mark_defined(d.a);
         state.set_reg(d.a, tmp);
@@ -1374,6 +1612,81 @@ fn define_at_merge(
     state.set_reg(slot, tmp);
 }
 
+#[must_use]
+fn emit_test_or(
+    state: &mut StructState,
+    names: &LocalNames,
+    p: &LuaProto,
+    d: &Decoded,
+    pc: usize,
+    dialect: LuaDialect,
+) -> Option<usize> {
+    let jmp: Decoded = decode(*p.code.get(pc + 1)?, dialect);
+    if jmp.op != Op::Jmp || jump_target(pc + 1, &jmp, dialect) != pc as i64 + 3 {
+        return None;
+    }
+    let second: Decoded = decode(*p.code.get(pc + 2)?, dialect);
+    if !is_single_value_op(second.op)
+        || second.a != d.a
+        || names.name_at(pc, d.a).is_some()
+        || names.name_at(pc + 3, d.a).is_some()
+        || state.pinned.contains(&d.a)
+    {
+        return None;
+    }
+    let lhs: String = state.reg(d.a);
+    let is_or: bool = if matches!(dialect, LuaDialect::Lua54) {
+        d.k
+    } else {
+        d.c != 0
+    };
+    let rhs: String = single_value_text(state, p, &second, dialect);
+    let or_operand: usize = pc + 2;
+    let targets_or_operand = |s: &LiftedStmt| -> bool {
+        matches!(&s.stmt, LStmt::Cond { target, .. } | LStmt::Jump { target } if *target == or_operand)
+    };
+    let guards: usize = if is_or {
+        state
+            .stmts
+            .iter()
+            .rev()
+            .take_while(|s: &&LiftedStmt| {
+                matches!(s.stmt, LStmt::Cond { .. }) && targets_or_operand(s)
+            })
+            .count()
+    } else {
+        0
+    };
+    let first_guard: usize = state.stmts.len() - guards;
+    let guard: Option<String> =
+        (guards > 0 && !state.stmts[..first_guard].iter().any(targets_or_operand)).then(|| {
+            state
+                .stmts
+                .drain(first_guard..)
+                .filter_map(|s: LiftedStmt| match s.stmt {
+                    LStmt::Cond { cond, .. } => Some(format!("({cond})")),
+                    _ => None,
+                })
+                .collect::<Vec<String>>()
+                .join(" and ")
+        });
+    let value: String = match guard {
+        Some(cond) => {
+            format!(
+                "({cond} and {} or {})",
+                operand_text(&lhs),
+                operand_text(&rhs)
+            )
+        }
+        None => {
+            let op: &str = if is_or { "or" } else { "and" };
+            format!("({lhs} {op} {rhs})")
+        }
+    };
+    define_at_merge(state, names, d.a, value, pc + 3);
+    Some(pc + 2)
+}
+
 #[allow(clippy::too_many_arguments)]
 #[must_use]
 fn emit_and_or(
@@ -1607,9 +1920,16 @@ fn emit_call(
             state.set_reg(dest, name);
         } else if state.pinned.contains(&dest) {
             assign_pinned(state, dest, &call);
-        } else if live.should_materialize(state.pc, dest) {
+        } else if live.should_materialize(state.pc, dest)
+            || live.reads_before_redefinition(state.pc, dest) > 1
+            || live.side_effect_before_first_read(state.pc, dest)
+        {
             let tmp: String = state.temp(dest);
-            state.push_raw(format!("local {tmp} = {call}"));
+            if state.is_defined(dest) && state.reg(dest) == tmp {
+                state.push_raw(format!("{tmp} = {call}"));
+            } else {
+                state.push_raw(format!("local {tmp} = {call}"));
+            }
             state.mark_defined(dest);
             state.set_reg(dest, tmp);
         } else {
@@ -1751,6 +2071,30 @@ fn forin_controller(p: &LuaProto, target: i64, dialect: LuaDialect) -> Option<Fo
             ctrl_pc: tpc,
         }),
         _ => None,
+    }
+}
+
+#[must_use]
+fn opens_generic_for(
+    p: &LuaProto,
+    jmp_pc: usize,
+    ctrl: &ForinController,
+    dialect: LuaDialect,
+) -> bool {
+    let Some(back) = p
+        .code
+        .get(ctrl.ctrl_pc + 1)
+        .map(|raw: &u32| decode(*raw, dialect))
+    else {
+        return false;
+    };
+    let body_start: i64 = jmp_pc as i64 + 1;
+    match dialect {
+        LuaDialect::Lua54 => false,
+        LuaDialect::Lua52 | LuaDialect::Lua53 => {
+            back.op == Op::TForLoop && ctrl.ctrl_pc as i64 + 2 + i64::from(back.sbx) == body_start
+        }
+        _ => back.op == Op::Jmp && jump_target(ctrl.ctrl_pc + 1, &back, dialect) == body_start,
     }
 }
 
@@ -2185,6 +2529,7 @@ fn is_fresh_vararg_table(p: &LuaProto, d: &Decoded, pc: usize, dialect: LuaDiale
 fn emit_closure(
     state: &mut StructState,
     ctx: &mut StructuredLift<'_>,
+    live: &LiveAcrossBranch,
     p: &LuaProto,
     d: &Decoded,
     dialect: LuaDialect,
@@ -2213,8 +2558,10 @@ fn emit_closure(
                 return None;
             }
             state.inlined_closure_bytes = inlined;
+            let child_upvalues: Vec<String> =
+                crate::decompile::lift::resolve_upvalue_names(child, captured, dialect, depth + 1);
             let params: String = (0..u32::from(child.num_params))
-                .map(|i: u32| child_param_name(child, i))
+                .map(|i: u32| child_param_name(child, i, &child_upvalues))
                 .collect::<Vec<String>>()
                 .join(", ");
             let header: String = if child.is_vararg != 0 {
@@ -2228,7 +2575,6 @@ fn emit_closure(
             };
             let mut block: String = format!("{header}\n");
             for ln in inner.source.lines() {
-                block.push_str("  ");
                 block.push_str(ln);
                 block.push('\n');
             }
@@ -2236,10 +2582,21 @@ fn emit_closure(
             if state.pinned.contains(&d.a) {
                 let var: String = state.reg(d.a);
                 state.push_raw(format!("{var} = {block}"));
+                state.mark_defined(d.a);
+            } else if live.should_materialize(state.pc, d.a)
+                || live.reads_before_redefinition(state.pc, d.a) > 1
+            {
+                let var: String = state.temp(d.a);
+                if state.is_defined(d.a) && state.reg(d.a) == var {
+                    state.push_raw(format!("{var} = {block}"));
+                } else {
+                    state.push_raw(format!("local {var} = {block}"));
+                }
+                state.set_reg(d.a, var);
+                state.mark_defined(d.a);
             } else {
                 state.set_reg(d.a, block);
             }
-            state.mark_defined(d.a);
             if first_use {
                 state.warnings.extend(inner.warnings);
             }
@@ -2261,7 +2618,15 @@ fn emit_closure(
 }
 
 #[must_use]
-fn child_param_name(p: &LuaProto, slot: u32) -> String {
+fn synthetic_param_name(slot: u32, upvalues: &[String]) -> String {
+    let mut name: String = format!("p{slot}");
+    while upvalues.contains(&name) {
+        name.push('_');
+    }
+    name
+}
+
+fn child_param_name(p: &LuaProto, slot: u32, upvalues: &[String]) -> String {
     let mut idx: u32 = 0;
     for loc in &p.locals {
         if loc.start_pc == 0 && idx < u32::from(p.num_params) {
@@ -2271,7 +2636,7 @@ fn child_param_name(p: &LuaProto, slot: u32) -> String {
             idx += 1;
         }
     }
-    format!("p{slot}")
+    synthetic_param_name(slot, upvalues)
 }
 
 #[inline]

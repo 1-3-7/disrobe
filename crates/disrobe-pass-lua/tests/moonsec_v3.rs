@@ -25,12 +25,11 @@ fn peel_moonsec_v3_blocks_without_authorization() {
 fn peel_moonsec_v3_with_authorization() {
     let opts: DeobfOptions = DeobfOptions {
         i_have_authorization: true,
-        strict: false,
     };
     let out = moonsec_v3::peel(V3_SAMPLE, &opts).expect("peel");
     assert!(
         !out.fully_recovered,
-        "moonsec v3 must honestly report it cannot statically peel the encrypted vm"
+        "moonsec v3 must report that it cannot statically peel the encrypted vm"
     );
     assert!(
         out.residual_markers

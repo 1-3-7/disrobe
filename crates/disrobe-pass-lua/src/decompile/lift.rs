@@ -1744,7 +1744,7 @@ mod tests {
         assert!(
             !out.fully_structured,
             "the parent's own opcodes hold no jump; only the child's does, so the parent can \
-             only be honest here if emit_closure carries the child's lost structure outward; \
+             only be accurate here if emit_closure carries the child's lost structure outward; \
              got:\n{}",
             out.source
         );

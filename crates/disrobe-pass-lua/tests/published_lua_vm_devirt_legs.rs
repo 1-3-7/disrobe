@@ -506,7 +506,6 @@ fn measure_real_samples() -> Vec<RealSampleOutcome> {
             &raw,
             &DeobfOptions {
                 i_have_authorization: true,
-                strict: false,
             },
         )
         .unwrap_or_else(|err: disrobe_pass_lua::Error| panic!("{name}: peel failed: {err}"));
@@ -529,7 +528,6 @@ fn peel_reference_container(family: &InHouseFamily) -> PeelResult {
         dvm1_reference::bootstrap_with_payload(family.header, &family.recipe);
     let opts: DeobfOptions = DeobfOptions {
         i_have_authorization: family.authorization_required,
-        strict: false,
     };
     (family.peel)(boot.as_bytes(), &opts).unwrap_or_else(|err: disrobe_pass_lua::Error| {
         panic!("{}: peel failed: {err}", family.name)
