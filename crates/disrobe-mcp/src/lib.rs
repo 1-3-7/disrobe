@@ -1190,20 +1190,7 @@ fn hex32(bytes: &[u8; 32]) -> String {
 
 #[cfg(feature = "chain")]
 fn verdict_label(v: &disrobe_core::chain::VerdictDoc) -> String {
-    use disrobe_core::chain::VerdictDoc;
-    match v {
-        VerdictDoc::Ok => "ok",
-        VerdictDoc::Complete => "complete",
-        VerdictDoc::FanOut => "fan-out",
-        VerdictDoc::FanOutPartial => "fan-out-partial",
-        VerdictDoc::Stalled => "stalled",
-        VerdictDoc::Cycle => "cycle",
-        VerdictDoc::CapReached => "cap-reached",
-        VerdictDoc::Extracted => "extracted",
-        VerdictDoc::Error => "error",
-        VerdictDoc::DryRun => "dry-run",
-    }
-    .to_owned()
+    v.as_str().to_owned()
 }
 
 fn workspace_root() -> Result<PathBuf, ErrorData> {

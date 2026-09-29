@@ -8,6 +8,7 @@ use super::detection::{
 };
 use super::registry::{DetectorPick, PassRegistry, PickOutcome, SelectionPolicy};
 use super::spec::{ChainSpec, SpecCursor};
+use crate::provenance::Language;
 
 pub type NodeId = u32;
 
@@ -22,6 +23,7 @@ pub enum Verdict {
     Cycle,
     CapReached,
     Extracted,
+    NotApplicable,
     Error { message: String },
     DryRun,
 }
@@ -310,6 +312,7 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
                 outcome.pick
             };
             let Some(pick): Option<DetectorPick> = pick_opt else {
+                let unclaimed: Verdict = unclaimed_verdict(&nodes, item.parent);
                 push_terminal_layer(
                     &mut nodes,
                     item.parent,
@@ -317,7 +320,7 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
                     item.branch_id.clone(),
                     in_hash,
                     in_size,
-                    Verdict::Stalled,
+                    unclaimed,
                     item_started.elapsed(),
                 );
                 continue;
@@ -386,6 +389,28 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
                             } else {
                                 None
                             };
+                            if out_hash == in_hash && is_unrecovered_input(&nodes, item.parent) {
+                                nodes.push(Node {
+                                    output_kind: Some(outcome.kind),
+                                    output_blake3: Some(out_hash),
+                                    output_size: Some(out_size),
+                                    output_bytes: captured,
+                                    duration: Some(outcome.duration),
+                                    metadata: outcome.metadata,
+                                    verdict: Verdict::NotApplicable,
+                                    ..pass_node_base(
+                                        layer_id,
+                                        item.parent,
+                                        item.depth,
+                                        item.branch_id.clone(),
+                                        in_hash,
+                                        in_size,
+                                        format_tag_in,
+                                        pick,
+                                    )
+                                });
+                                continue;
+                            }
                             let no_further_progress: bool = item.history.contains(&out_hash);
                             let further_pick: Option<DetectorPick> = if no_further_progress {
                                 None
@@ -445,6 +470,22 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
                                     parent_hint: Some(language.label().to_string()),
                                 });
                             } else {
+                                if self.config.persist_children {
+                                    let artifact: ExtractedArtifact = ExtractedArtifact {
+                                        node_id: layer_id,
+                                        relative_path: recovered_source_path(
+                                            item.path_hint.as_deref(),
+                                            layer_id,
+                                            language,
+                                        ),
+                                        materialization: ChildMaterialization::default(),
+                                        bytes: outcome.output_bytes.clone(),
+                                    };
+                                    sink(&artifact, &[]);
+                                    if !self.config.stream_extracted {
+                                        extracted.push(artifact);
+                                    }
+                                }
                                 nodes.push(Node {
                                     output_kind: Some(outcome.kind),
                                     output_blake3: Some(out_hash),
@@ -624,11 +665,21 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
                             let child_count: u32 =
                                 u32::try_from(children.len()).unwrap_or(u32::MAX);
                             let mut child_bytes: Vec<Vec<u8>> = outcome.children;
+                            let fan_out: Verdict = if children.is_empty() {
+                                Verdict::Error {
+                                    message: format!(
+                                        "{} opened a container that holds no members",
+                                        pick.verdict.pass_id
+                                    ),
+                                }
+                            } else {
+                                Verdict::FanOut { count: child_count }
+                            };
                             nodes.push(Node {
                                 output_kind: Some(outcome.kind),
                                 duration: Some(outcome.duration),
                                 metadata: outcome.metadata,
-                                verdict: Verdict::FanOut { count: child_count },
+                                verdict: fan_out,
                                 ..pass_node_base(
                                     layer_id,
                                     item.parent,
@@ -819,15 +870,39 @@ fn report_artifact_path(node: NodeId, format_tag: &str, bytes: &[u8]) -> String 
     )
 }
 
+const RECOVERED_DIR: &str = "recovered";
+
+fn recovered_source_path(path_hint: Option<&str>, node: NodeId, language: Language) -> String {
+    let mut parts: Vec<String> = path_hint
+        .unwrap_or_default()
+        .split(['/', '\\'])
+        .filter(|part: &&str| !part.is_empty() && *part != "." && *part != "..")
+        .map(sanitize_component)
+        .collect();
+    let stem: String = parts.pop().map_or_else(
+        || format!("chain-node-{node}"),
+        |last: String| {
+            let base: &str = last
+                .rsplit_once('.')
+                .map_or(last.as_str(), |(base, _): (&str, &str)| base);
+            parts.push(if base.is_empty() {
+                last.clone()
+            } else {
+                base.to_owned()
+            });
+            parts.join("/")
+        },
+    );
+    format!("{RECOVERED_DIR}/{stem}.{}", language.file_extension())
+}
+
 fn stage_artifact_path(nodes: &[Node], parent: NodeId) -> String {
     let node: Option<&Node> = nodes.get(parent as usize);
     let pass: String = node
         .and_then(|n: &Node| n.pass_id.as_deref())
         .map_or_else(|| "pass".to_owned(), sanitize_component);
     let ext: String = match node.and_then(|n: &Node| n.output_kind.as_ref()) {
-        Some(OutputKind::Source { language, .. }) => {
-            sanitize_component(&language.label().to_ascii_lowercase())
-        }
+        Some(OutputKind::Source { language, .. }) => language.file_extension().to_owned(),
         Some(OutputKind::Bytes { format_tag, .. }) => sanitize_component(format_tag),
         Some(OutputKind::Report { .. } | OutputKind::Mixed { .. }) | None => "bin".to_owned(),
     };
@@ -847,6 +922,9 @@ fn aggregate_verdict(nodes: &[Node]) -> Verdict {
     let mut stalled: bool = false;
     let mut formats: Vec<String> = Vec::new();
     for leaf in &leaves {
+        if matches!(leaf.verdict, Verdict::NotApplicable) {
+            continue;
+        }
         total = total.saturating_add(1);
         if matches!(leaf.verdict, Verdict::Error { .. })
             && leaf
@@ -873,7 +951,16 @@ fn aggregate_verdict(nodes: &[Node]) -> Verdict {
             _ => {}
         }
     }
-    if complete == total {
+    if total == 0 {
+        if nodes
+            .iter()
+            .any(|node: &Node| matches!(node.verdict, Verdict::FanOut { .. }))
+        {
+            Verdict::Extracted
+        } else {
+            Verdict::NotApplicable
+        }
+    } else if complete == total {
         Verdict::Complete { formats }
     } else if complete > 0 {
         Verdict::FanOutPartial {
@@ -892,6 +979,20 @@ fn aggregate_verdict(nodes: &[Node]) -> Verdict {
         Verdict::Stalled
     } else {
         Verdict::Ok
+    }
+}
+
+fn is_unrecovered_input(nodes: &[Node], parent: NodeId) -> bool {
+    nodes.get(parent as usize).is_none_or(|node: &Node| {
+        node.parent_id.is_none() || matches!(node.output_kind, Some(OutputKind::Mixed { .. }))
+    })
+}
+
+fn unclaimed_verdict(nodes: &[Node], parent: NodeId) -> Verdict {
+    if is_unrecovered_input(nodes, parent) {
+        Verdict::NotApplicable
+    } else {
+        Verdict::Stalled
     }
 }
 
@@ -1099,8 +1200,167 @@ mod tests {
         r
     }
 
+    fn fan_out_of(members: &'static [(&'static str, &'static [u8])]) -> RunnerFn {
+        Box::new(move |_n: u32, _bytes: &[u8]| {
+            Ok(PassRunOutcome {
+                output_bytes: Vec::new(),
+                kind: OutputKind::Mixed {
+                    children: members
+                        .iter()
+                        .zip(0_u32..)
+                        .map(|((path, _), index): (&(&str, &[u8]), u32)| ChildHandle {
+                            materialization: ChildMaterialization::default(),
+                            artifact_index: index,
+                            relative_path: (*path).to_string(),
+                            hint: None,
+                        })
+                        .collect(),
+                },
+                duration: Duration::from_millis(1),
+                metadata: BTreeMap::new(),
+                children: members
+                    .iter()
+                    .map(|(_, bytes): &(&str, &[u8])| bytes.to_vec())
+                    .collect(),
+            })
+        })
+    }
+
+    fn run_fan_out(members: &'static [(&'static str, &'static [u8])]) -> ChainPlan {
+        let r: PassRegistry = registry_with_a();
+        let runner: CountingRunner = CountingRunner {
+            calls: AtomicU32::new(0),
+            produce: fan_out_of(members),
+        };
+        let d: ChainDriver<'_, CountingRunner> =
+            ChainDriver::new(&r, &runner, ChainConfig::default());
+        d.run(b"container".to_vec(), &ChainSpec::Auto { cap: 8 }, None)
+    }
+
     #[test]
-    fn empty_registry_yields_stalled() {
+    fn a_container_with_no_members_is_a_failed_run() {
+        let plan: ChainPlan = run_fan_out(&[]);
+        assert!(
+            matches!(plan.nodes[1].verdict, Verdict::Error { .. }),
+            "{:?}",
+            plan.nodes[1].verdict
+        );
+        assert!(
+            matches!(plan.verdict, Verdict::Error { .. }),
+            "{:?}",
+            plan.verdict
+        );
+    }
+
+    #[test]
+    fn a_member_no_pass_claims_is_extracted_not_stalled() {
+        let plan: ChainPlan = run_fan_out(&[("notes/a.txt", STUB_ALREADY_CLEAN_SOURCE)]);
+        let unclaimed: usize = plan
+            .nodes
+            .iter()
+            .filter(|n: &&Node| matches!(n.verdict, Verdict::NotApplicable))
+            .count();
+        assert_eq!(unclaimed, 1, "{:?}", plan.nodes);
+        assert!(
+            matches!(plan.verdict, Verdict::Extracted),
+            "{:?}",
+            plan.verdict
+        );
+    }
+
+    #[test]
+    fn a_source_pass_that_returns_its_input_unchanged_is_not_applicable() {
+        let r: PassRegistry = registry_with_a();
+        let runner: CountingRunner = CountingRunner {
+            calls: AtomicU32::new(0),
+            produce: Box::new(|_n: u32, bytes: &[u8]| {
+                Ok(PassRunOutcome {
+                    output_bytes: bytes.to_vec(),
+                    kind: OutputKind::Source {
+                        language: Language::Python,
+                        formatted: true,
+                    },
+                    duration: Duration::from_millis(1),
+                    metadata: BTreeMap::new(),
+                    children: Vec::new(),
+                })
+            }),
+        };
+        let cfg: ChainConfig = ChainConfig {
+            persist_children: true,
+            ..ChainConfig::default()
+        };
+        let d: ChainDriver<'_, CountingRunner> = ChainDriver::new(&r, &runner, cfg);
+        let plan: ChainPlan = d.run(b"clean module".to_vec(), &ChainSpec::Auto { cap: 8 }, None);
+        assert_eq!(
+            runner.calls.load(AtomicOrdering::SeqCst),
+            1,
+            "{:?}",
+            plan.nodes
+        );
+        assert!(
+            matches!(plan.nodes[1].verdict, Verdict::NotApplicable),
+            "{:?}",
+            plan.nodes[1].verdict
+        );
+        assert!(
+            matches!(plan.verdict, Verdict::NotApplicable),
+            "{:?}",
+            plan.verdict
+        );
+        assert!(
+            plan.extracted.is_empty(),
+            "an unchanged input is not republished as recovered source: {:?}",
+            plan.extracted
+        );
+    }
+
+    #[test]
+    fn a_no_op_pass_after_a_recovery_keeps_the_recovered_source() {
+        let r: PassRegistry = registry_with_a();
+        let runner: CountingRunner = CountingRunner {
+            calls: AtomicU32::new(0),
+            produce: Box::new(|n: u32, bytes: &[u8]| {
+                let output: Vec<u8> = if n == 0 {
+                    b"recovered module".to_vec()
+                } else {
+                    bytes.to_vec()
+                };
+                Ok(PassRunOutcome {
+                    output_bytes: output,
+                    kind: OutputKind::Source {
+                        language: Language::Python,
+                        formatted: true,
+                    },
+                    duration: Duration::from_millis(1),
+                    metadata: BTreeMap::new(),
+                    children: Vec::new(),
+                })
+            }),
+        };
+        let cfg: ChainConfig = ChainConfig {
+            persist_children: true,
+            ..ChainConfig::default()
+        };
+        let d: ChainDriver<'_, CountingRunner> = ChainDriver::new(&r, &runner, cfg);
+        let plan: ChainPlan = d.run(b"packed module".to_vec(), &ChainSpec::Auto { cap: 8 }, None);
+        assert!(
+            matches!(plan.verdict, Verdict::Complete { .. }),
+            "{:?} over {:?}",
+            plan.verdict,
+            plan.nodes
+        );
+        assert!(
+            plan.extracted
+                .iter()
+                .any(|artifact: &ExtractedArtifact| artifact.bytes == b"recovered module"),
+            "{:?}",
+            plan.extracted
+        );
+    }
+
+    #[test]
+    fn an_input_no_pass_claims_is_not_applicable() {
         let r: PassRegistry = PassRegistry::new();
         let runner: CountingRunner = CountingRunner {
             calls: AtomicU32::new(0),
@@ -1110,7 +1370,11 @@ mod tests {
             ChainDriver::new(&r, &runner, ChainConfig::default());
         let spec: ChainSpec = ChainSpec::Auto { cap: 8 };
         let plan: ChainPlan = d.run(b"abc".to_vec(), &spec, None);
-        assert!(matches!(plan.verdict, Verdict::Stalled));
+        assert!(
+            matches!(plan.verdict, Verdict::NotApplicable),
+            "{:?}",
+            plan.verdict
+        );
         assert_eq!(plan.detector_calls, 0);
     }
 
@@ -1167,9 +1431,34 @@ mod tests {
         };
         let d: ChainDriver<'_, CountingRunner> = ChainDriver::new(&r, &runner, cfg);
         let plan: ChainPlan = d.run(b"root-onefile".to_vec(), &ChainSpec::Auto { cap: 8 }, None);
+        let recovered: Vec<&str> = plan
+            .extracted
+            .iter()
+            .map(|e: &ExtractedArtifact| e.relative_path.as_str())
+            .filter(|path: &&str| path.starts_with("recovered/"))
+            .collect();
+        let sources: usize = plan
+            .nodes
+            .iter()
+            .filter(|n: &&Node| matches!(n.output_kind, Some(OutputKind::Source { .. })))
+            .count();
+        assert!(sources > 0, "the fan-out must reach a recovered source");
+        assert_eq!(
+            recovered.len(),
+            sources,
+            "every recovered source is persisted under recovered/: {recovered:?}"
+        );
+        assert!(
+            recovered.iter().all(|path: &&str| {
+                std::path::Path::new(path)
+                    .extension()
+                    .is_some_and(|ext: &std::ffi::OsStr| ext == "py")
+            }),
+            "{recovered:?}"
+        );
         assert_eq!(
             plan.extracted.len(),
-            2,
+            2 + sources,
             "both fan-out children must be captured for on-disk persistence"
         );
         let by_path: BTreeMap<&str, &[u8]> = plan
@@ -2338,10 +2627,7 @@ mod tests {
             b"recovered-actionscript-source",
             "the ancestor's recovered output must still reach the caller"
         );
-        assert_eq!(
-            plan.extracted[0].relative_path,
-            "chain-node-1-stub.a.python"
-        );
+        assert_eq!(plan.extracted[0].relative_path, "chain-node-1-stub.a.py");
     }
 
     #[test]

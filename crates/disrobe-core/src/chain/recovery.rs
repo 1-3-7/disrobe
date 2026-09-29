@@ -68,7 +68,7 @@ pub const fn status_from_node(node: &Node) -> RecoveryStatus {
         }
         Verdict::Stalled | Verdict::Cycle | Verdict::CapReached => RecoveryStatus::Incomplete,
         Verdict::Error { .. } => RecoveryStatus::Failed,
-        Verdict::DryRun => RecoveryStatus::Skipped,
+        Verdict::NotApplicable | Verdict::DryRun => RecoveryStatus::Skipped,
     }
 }
 
@@ -223,7 +223,7 @@ mod tests {
 
     #[test]
     fn status_maps_every_verdict() {
-        let cases: [(Verdict, RecoveryStatus); 9] = [
+        let cases: [(Verdict, RecoveryStatus); 10] = [
             (
                 Verdict::Complete {
                     formats: vec!["Python".to_string()],
@@ -245,6 +245,7 @@ mod tests {
                 },
                 RecoveryStatus::Failed,
             ),
+            (Verdict::NotApplicable, RecoveryStatus::Skipped),
             (Verdict::DryRun, RecoveryStatus::Skipped),
         ];
         for (verdict, expected) in cases {

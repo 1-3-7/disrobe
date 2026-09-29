@@ -112,6 +112,7 @@ pub enum VerdictDoc {
     Cycle,
     CapReached,
     Extracted,
+    NotApplicable,
     Error,
     DryRun,
 }
@@ -186,9 +187,29 @@ impl VerdictThreshold {
 impl VerdictDoc {
     #[inline]
     #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Complete => "complete",
+            Self::FanOut => "fan-out",
+            Self::FanOutPartial => "fan-out-partial",
+            Self::Stalled => "stalled",
+            Self::Cycle => "cycle",
+            Self::CapReached => "cap-reached",
+            Self::Extracted => "extracted",
+            Self::NotApplicable => "not-applicable",
+            Self::Error => "error",
+            Self::DryRun => "dry-run",
+        }
+    }
+
+    #[inline]
+    #[must_use]
     pub const fn grade(&self) -> VerdictGrade {
         match self {
-            Self::Ok | Self::Complete | Self::FanOut | Self::Extracted => VerdictGrade::Ok,
+            Self::Ok | Self::Complete | Self::FanOut | Self::Extracted | Self::NotApplicable => {
+                VerdictGrade::Ok
+            }
             Self::FanOutPartial | Self::Stalled | Self::Cycle | Self::CapReached | Self::DryRun => {
                 VerdictGrade::Incomplete
             }
@@ -208,6 +229,7 @@ impl From<&Verdict> for VerdictDoc {
             Verdict::Cycle => Self::Cycle,
             Verdict::CapReached => Self::CapReached,
             Verdict::Extracted => Self::Extracted,
+            Verdict::NotApplicable => Self::NotApplicable,
             Verdict::Error { .. } => Self::Error,
             Verdict::DryRun => Self::DryRun,
         }
