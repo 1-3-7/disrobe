@@ -1,3 +1,4 @@
+use disrobe_bytes::{ByteReadError, ByteReader, Endian, read_u16_le_at, read_u32_le_at};
 use serde::Serialize;
 
 use crate::lang::r_rds::RdsObject;
@@ -147,108 +148,69 @@ fn image_extent(blob: &[u8], offset: usize, format: NativeImageFormat) -> Option
     }
 }
 
-fn read_u16(image: &[u8], at: usize, le: bool) -> Option<u64> {
-    let end: usize = at.checked_add(2)?;
-    let b: &[u8; 2] = image.get(at..end)?.try_into().ok()?;
-    Some(u64::from(if le {
-        u16::from_le_bytes(*b)
+fn read_elf_word(reader: &mut ByteReader<'_>, endian: Endian, is64: bool) -> Option<u64> {
+    if is64 {
+        reader.read_u64(endian).ok()
     } else {
-        u16::from_be_bytes(*b)
-    }))
-}
-
-fn read_u32(image: &[u8], at: usize, le: bool) -> Option<u64> {
-    let end: usize = at.checked_add(4)?;
-    let b: &[u8; 4] = image.get(at..end)?.try_into().ok()?;
-    Some(u64::from(if le {
-        u32::from_le_bytes(*b)
-    } else {
-        u32::from_be_bytes(*b)
-    }))
-}
-
-fn read_u64(image: &[u8], at: usize, le: bool) -> Option<u64> {
-    let end: usize = at.checked_add(8)?;
-    let b: &[u8; 8] = image.get(at..end)?.try_into().ok()?;
-    Some(if le {
-        u64::from_le_bytes(*b)
-    } else {
-        u64::from_be_bytes(*b)
-    })
+        reader.read_u32(endian).ok().map(u64::from)
+    }
 }
 
 const SHT_NOBITS: u64 = 8;
 
 fn elf_file_extent(image: &[u8]) -> Option<usize> {
     let class: u8 = *image.get(4)?;
-    let le: bool = *image.get(5)? == 1u8;
+    let endian: Endian = if *image.get(5)? == 1u8 {
+        Endian::Little
+    } else {
+        Endian::Big
+    };
     let is64: bool = class == 2u8;
     if class != 1u8 && class != 2u8 {
         return None;
     }
-    let (shoff, shentsize_off, shnum_off, phoff, phentsize_off, phnum_off): (
-        usize,
-        usize,
-        usize,
-        usize,
-        usize,
-        usize,
-    ) = if is64 {
-        (0x28, 0x3a, 0x3c, 0x20, 0x36, 0x38)
-    } else {
-        (0x20, 0x2e, 0x30, 0x1c, 0x2a, 0x2c)
-    };
-    let shoff: u64 = if is64 {
-        read_u64(image, shoff, le)?
-    } else {
-        read_u32(image, shoff, le)?
-    };
-    let phoff: u64 = if is64 {
-        read_u64(image, phoff, le)?
-    } else {
-        read_u32(image, phoff, le)?
-    };
-    let shentsize: u64 = read_u16(image, shentsize_off, le)?;
-    let shnum: u64 = read_u16(image, shnum_off, le)?;
-    let phentsize: u64 = read_u16(image, phentsize_off, le)?;
-    let phnum: u64 = read_u16(image, phnum_off, le)?;
+    let (phoff_off, phentsize_off, sh_offset_off, sh_size_off): (usize, usize, usize, usize) =
+        if is64 {
+            (0x20, 0x36, 0x18, 0x20)
+        } else {
+            (0x1c, 0x2a, 0x10, 0x14)
+        };
+    let mut reader: ByteReader<'_> = ByteReader::new(image);
+    reader.seek(phoff_off).ok()?;
+    let phoff: u64 = read_elf_word(&mut reader, endian, is64)?;
+    let shoff: u64 = read_elf_word(&mut reader, endian, is64)?;
+    reader.seek(phentsize_off).ok()?;
+    let phentsize: u64 = u64::from(reader.read_u16(endian).ok()?);
+    let phnum: u64 = u64::from(reader.read_u16(endian).ok()?);
+    let shentsize: u64 = u64::from(reader.read_u16(endian).ok()?);
+    let shnum: u64 = u64::from(reader.read_u16(endian).ok()?);
     let sht_end: u64 = shoff.checked_add(shentsize.checked_mul(shnum)?)?;
     let pht_end: u64 = phoff.checked_add(phentsize.checked_mul(phnum)?)?;
     let mut extent: u64 = sht_end.max(pht_end);
-    let sh_size_off: usize = if is64 { 0x20 } else { 0x14 };
-    let sh_offset_off: usize = if is64 { 0x18 } else { 0x10 };
     let sh_type_off: usize = 0x4;
     for idx in 0..shnum {
         let entry: usize = usize::try_from(shoff.checked_add(idx.checked_mul(shentsize)?)?).ok()?;
-        let sh_type_at: usize = entry.checked_add(sh_type_off)?;
-        let sh_type: u64 = read_u32(image, sh_type_at, le)?;
+        reader.seek(entry.checked_add(sh_type_off)?).ok()?;
+        let sh_type: u64 = u64::from(reader.read_u32(endian).ok()?);
         if sh_type == SHT_NOBITS {
             continue;
         }
-        let sh_offset_at: usize = entry.checked_add(sh_offset_off)?;
-        let s_off: u64 = if is64 {
-            read_u64(image, sh_offset_at, le)?
-        } else {
-            read_u32(image, sh_offset_at, le)?
-        };
-        let sh_size_at: usize = entry.checked_add(sh_size_off)?;
-        let s_size: u64 = if is64 {
-            read_u64(image, sh_size_at, le)?
-        } else {
-            read_u32(image, sh_size_at, le)?
-        };
+        reader.seek(entry.checked_add(sh_offset_off)?).ok()?;
+        let s_off: u64 = read_elf_word(&mut reader, endian, is64)?;
+        reader.seek(entry.checked_add(sh_size_off)?).ok()?;
+        let s_size: u64 = read_elf_word(&mut reader, endian, is64)?;
         extent = extent.max(s_off.checked_add(s_size)?);
     }
     usize::try_from(extent).ok()
 }
 
 fn pe_file_extent(image: &[u8]) -> Option<usize> {
-    let lfanew: usize = usize::try_from(read_u32(image, 0x3c, true)?).ok()?;
+    let lfanew: usize = usize::try_from(read_u32_le_at(image, 0x3c).ok()?).ok()?;
     let coff: usize = lfanew.checked_add(4)?;
     let num_sections_at: usize = coff.checked_add(2)?;
-    let num_sections: u64 = read_u16(image, num_sections_at, true)?;
+    let num_sections: u64 = u64::from(read_u16_le_at(image, num_sections_at).ok()?);
     let opt_header_size_at: usize = coff.checked_add(16)?;
-    let opt_header_size: u64 = read_u16(image, opt_header_size_at, true)?;
+    let opt_header_size: u64 = u64::from(read_u16_le_at(image, opt_header_size_at).ok()?);
     let section_table_base: usize = coff.checked_add(20)?;
     let section_table: usize =
         section_table_base.checked_add(usize::try_from(opt_header_size).ok()?)?;
@@ -257,9 +219,9 @@ fn pe_file_extent(image: &[u8]) -> Option<usize> {
         let offset: usize = usize::try_from(idx.checked_mul(40)?).ok()?;
         let entry: usize = section_table.checked_add(offset)?;
         let raw_size_at: usize = entry.checked_add(16)?;
-        let raw_size: u64 = read_u32(image, raw_size_at, true)?;
+        let raw_size: u64 = u64::from(read_u32_le_at(image, raw_size_at).ok()?);
         let raw_ptr_at: usize = entry.checked_add(20)?;
-        let raw_ptr: u64 = read_u32(image, raw_ptr_at, true)?;
+        let raw_ptr: u64 = u64::from(read_u32_le_at(image, raw_ptr_at).ok()?);
         extent = extent.max(raw_ptr.checked_add(raw_size)?);
     }
     usize::try_from(extent).ok()
@@ -289,16 +251,11 @@ fn is_pe_at(blob: &[u8], i: usize) -> bool {
     let Some(lfanew_pos): Option<usize> = i.checked_add(0x3c) else {
         return false;
     };
-    let Some(lfanew_end): Option<usize> = lfanew_pos.checked_add(4) else {
+    let Ok(raw_lfanew): core::result::Result<u32, ByteReadError> = read_u32_le_at(blob, lfanew_pos)
+    else {
         return false;
     };
-    let Some(raw_lfanew): Option<&[u8]> = blob.get(lfanew_pos..lfanew_end) else {
-        return false;
-    };
-    let Ok(raw_lfanew): core::result::Result<&[u8; 4], _> = raw_lfanew.try_into() else {
-        return false;
-    };
-    let lfanew: usize = u32::from_le_bytes(*raw_lfanew) as usize;
+    let lfanew: usize = raw_lfanew as usize;
     if lfanew < PE_LFANEW_MIN {
         return false;
     }
