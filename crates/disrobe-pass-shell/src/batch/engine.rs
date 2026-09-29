@@ -77,9 +77,12 @@ static SET_PLAIN: LazyLock<&'static Regex> = LazyLock::new(|| {
     )
 });
 
+static ASSIGNED_IN_EXPR: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r"(?P<target>[A-Za-z_][A-Za-z0-9_]*)\s*(?:<<|>>|[-+*/%&|^])?=[^=]"));
+
 static SET_A: LazyLock<&'static Regex> = LazyLock::new(|| {
     regex!(
-        r#"(?i)^\s*set\s+/a\s+(?:"(?P<qname>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?P<qexpr>[^"]*)"|(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?P<expr>.*))$"#
+        r#"(?i)^\s*set\s+/a\s+(?:"(?P<qname>[A-Za-z_][A-Za-z0-9_]*)\s*(?P<qop><<|>>|[-+*/%&|^])?=\s*(?P<qexpr>[^"]*)"|(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*(?P<op><<|>>|[-+*/%&|^])?=\s*(?P<expr>.*))$"#
     )
 });
 
@@ -261,16 +264,37 @@ fn handle_set_a(
         .or_else(|| cap.name("expr"))?
         .as_str()
         .trim();
+    let op: Option<&str> = cap
+        .name("qop")
+        .or_else(|| cap.name("op"))
+        .map(|m: regex::Match<'_>| m.as_str());
     let (expr_expanded, stats): (String, ExpandStats) =
         expand_repeated(expr_raw, env, args, delayed, MAX_EXPANSION_ROUNDS);
     counters.add_expand(stats);
-    match arith::eval(&expr_expanded, env) {
+    let combined: String = match op {
+        Some(op) => {
+            let current: String = env.get(&name).cloned().unwrap_or_else(|| "0".to_owned());
+            format!("({current}) {op} ({expr_expanded})")
+        }
+        None => expr_expanded.clone(),
+    };
+    let single_assignment: bool = !expr_expanded.contains(',') && !expr_expanded.contains('=');
+    match arith::eval(&combined, env).filter(|_| single_assignment) {
         Some(value) => {
             counters.arithmetic_folds += 1;
             env.insert(name.clone(), value.to_string());
             Some(format!("set {name}={value}"))
         }
-        None => Some(format!("set /a {name}={expr_expanded}")),
+        None => {
+            env.remove(&name);
+            for target in ASSIGNED_IN_EXPR.captures_iter(&expr_expanded) {
+                if let Some(assigned) = target.name("target") {
+                    env.remove(&assigned.as_str().to_ascii_uppercase());
+                }
+            }
+            let op_text: &str = op.unwrap_or_default();
+            Some(format!("set /a {name}{op_text}={expr_expanded}"))
+        }
     }
 }
 
@@ -406,6 +430,25 @@ mod tests {
         assert!(r.output.contains("set X=14"), "{}", r.output);
         assert!(r.output.contains("set Y=28"), "{}", r.output);
         assert_eq!(r.arithmetic_folds, 2);
+    }
+
+    #[test]
+    fn compound_set_a_updates_the_variable_it_names() {
+        let src: &str = "@echo off\nsetlocal enabledelayedexpansion\nset v=1\nset /a v+=2\nset /a v*=5\nset /a v-=1\necho !v!\n";
+        let r: BatchDeobReport = deobfuscate_batch(src, &[]);
+        assert!(r.output.contains("echo 14"), "{}", r.output);
+    }
+
+    #[test]
+    fn an_unevaluated_set_a_forgets_every_variable_it_assigns() {
+        let src: &str = "@echo off\nsetlocal enabledelayedexpansion\nset a=1\nset b=2\nset /a a=b+=1, c=7\necho !a! !b!\n";
+        let r: BatchDeobReport = deobfuscate_batch(src, &[]);
+        assert!(
+            !r.output.contains("echo 1 2"),
+            "stale values must not fold: {}",
+            r.output
+        );
+        assert!(r.output.contains("echo !a! !b!"), "{}", r.output);
     }
 
     #[test]
