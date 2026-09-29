@@ -602,7 +602,7 @@ impl Cpu {
     fn indirect_target(&self, insn: &Instruction) -> Result<u64> {
         let target: u64 = match insn.op0_kind() {
             OpKind::Register => self.read_reg(insn.op0_register())?,
-            OpKind::Memory => self.read_mem_operand(insn, 0)?,
+            OpKind::Memory => self.read_mem_operand(insn)?,
             _ => return Err(Error::GoblinParse("unsupported branch operand".into())),
         };
         Ok(target)
@@ -700,7 +700,7 @@ impl Cpu {
         Ok(())
     }
 
-    fn effective_addr(&self, insn: &Instruction, operand: u32) -> Result<u64> {
+    fn effective_addr(&self, insn: &Instruction) -> Result<u64> {
         let base: u64 = match insn.memory_base() {
             Register::None | Register::RIP | Register::EIP => 0,
             other => self.read_reg(other)?,
@@ -713,7 +713,6 @@ impl Cpu {
         };
         let scale: u64 = u64::from(insn.memory_index_scale());
         let disp: u64 = insn.memory_displacement64();
-        let _ = operand;
         let mut addr: u64 = base
             .wrapping_add(index_val.wrapping_mul(scale))
             .wrapping_add(disp);
@@ -748,8 +747,8 @@ impl Cpu {
         }
     }
 
-    fn read_mem_operand(&self, insn: &Instruction, operand: u32) -> Result<u64> {
-        let addr: u64 = self.effective_addr(insn, operand)?;
+    fn read_mem_operand(&self, insn: &Instruction) -> Result<u64> {
+        let addr: u64 = self.effective_addr(insn)?;
         let bits: u8 = Self::mem_size_bits(insn);
         Ok(match bits {
             8 => u64::from(self.mem.read_u8(addr)?),
@@ -759,8 +758,8 @@ impl Cpu {
         })
     }
 
-    fn write_mem_operand(&mut self, insn: &Instruction, operand: u32, value: u64) -> Result<()> {
-        let addr: u64 = self.effective_addr(insn, operand)?;
+    fn write_mem_operand(&mut self, insn: &Instruction, value: u64) -> Result<()> {
+        let addr: u64 = self.effective_addr(insn)?;
         let bits: u8 = Self::mem_size_bits(insn);
         match bits {
             8 => self.mem.write_u8(addr, value as u8),
@@ -773,7 +772,7 @@ impl Cpu {
     fn read_operand(&self, insn: &Instruction, operand: u32) -> Result<u64> {
         match insn.op_kind(operand) {
             OpKind::Register => self.read_reg(insn.op_register(operand)),
-            OpKind::Memory => self.read_mem_operand(insn, operand),
+            OpKind::Memory => self.read_mem_operand(insn),
             OpKind::Immediate8 => Ok(u64::from(insn.immediate8())),
             OpKind::Immediate8_2nd => Ok(u64::from(insn.immediate8_2nd())),
             OpKind::Immediate16 => Ok(u64::from(insn.immediate16())),
@@ -793,7 +792,7 @@ impl Cpu {
     fn write_operand(&mut self, insn: &Instruction, operand: u32, value: u64) -> Result<()> {
         match insn.op_kind(operand) {
             OpKind::Register => self.write_reg(insn.op_register(operand), value),
-            OpKind::Memory => self.write_mem_operand(insn, operand, value),
+            OpKind::Memory => self.write_mem_operand(insn, value),
             _ => Err(Error::GoblinParse(format!(
                 "cannot write to operand kind {:?}",
                 insn.op_kind(operand)
@@ -831,6 +830,15 @@ impl Cpu {
 
     fn sign_bit(bits: u8) -> u64 {
         1u64 << (bits - 1)
+    }
+
+    fn sign_extend(raw: u64, bits: u8) -> i128 {
+        let value: i128 = i128::from(raw & Self::mask(bits));
+        if raw & Self::sign_bit(bits) != 0 {
+            value - (i128::from(Self::mask(bits)) + 1)
+        } else {
+            value
+        }
     }
 
     fn set_logical_flags(&mut self, result: u64, bits: u8) {
@@ -1039,7 +1047,7 @@ impl Cpu {
                 Ok(true)
             }
             M::Lea => {
-                let addr: u64 = self.effective_addr(insn, 1)?;
+                let addr: u64 = self.effective_addr(insn)?;
                 let bits: u8 = Self::operand_size_bits(insn, 0);
                 self.write_operand(insn, 0, addr & Self::mask(bits))?;
                 Ok(true)
@@ -1281,94 +1289,47 @@ impl Cpu {
             M::Shl | M::Sal | M::Shr | M::Sar => self.shift(insn, mnem),
             M::Rol | M::Ror => self.rotate(insn, mnem == M::Rol),
             M::Imul => {
-                let r: u64 = match insn.op_count() {
-                    1 => {
-                        let bits: u8 = Self::operand_size_bits(insn, 0);
-                        let m: u64 = Self::mask(bits);
-                        let sb: u64 = Self::sign_bit(bits);
-                        let a_raw: u64 = self.regs.read_sized(Reg::Rax, bits);
-                        let b_raw: u64 = self.read_operand(insn, 0)? & m;
-                        let a_s: i128 = if (a_raw & sb) != 0 {
-                            i128::from(a_raw as i64) - (i128::from(m) + 1)
-                        } else {
-                            i128::from(a_raw)
-                        };
-                        let b_s: i128 = if (b_raw & sb) != 0 {
-                            i128::from(b_raw as i64) - (i128::from(m) + 1)
-                        } else {
-                            i128::from(b_raw)
-                        };
-                        let prod: i128 = a_s * b_s;
-                        let prod_u: u128 = prod as u128;
-                        match bits {
-                            8 => {
-                                self.regs.write_sized(Reg::Rax, prod_u as u64 & 0xFFFF, 16);
-                            }
-                            16 => {
-                                self.regs.write_sized(Reg::Rax, prod_u as u64 & 0xFFFF, 16);
-                                self.regs
-                                    .write_sized(Reg::Rdx, (prod_u >> 16) as u64 & 0xFFFF, 16);
-                            }
-                            32 => {
-                                self.regs
-                                    .write_sized(Reg::Rax, prod_u as u64 & 0xFFFF_FFFF, 32);
-                                self.regs.write_sized(
-                                    Reg::Rdx,
-                                    (prod_u >> 32) as u64 & 0xFFFF_FFFF,
-                                    32,
-                                );
-                            }
-                            _ => {
-                                self.regs.set(Reg::Rax, prod_u as u64);
-                                self.regs.set(Reg::Rdx, (prod_u >> 64) as u64);
-                            }
-                        }
-                        prod_u as u64
-                    }
-                    2 => {
-                        let bits: u8 = Self::operand_size_bits(insn, 0);
-                        let m: u64 = Self::mask(bits);
-                        let sb: u64 = Self::sign_bit(bits);
-                        let a_raw: u64 = self.read_operand(insn, 0)? & m;
-                        let b_raw: u64 = self.read_operand(insn, 1)? & m;
-                        let a_s: i128 = if (a_raw & sb) != 0 {
-                            i128::from(a_raw as i64) - (i128::from(m) + 1)
-                        } else {
-                            i128::from(a_raw)
-                        };
-                        let b_s: i128 = if (b_raw & sb) != 0 {
-                            i128::from(b_raw as i64) - (i128::from(m) + 1)
-                        } else {
-                            i128::from(b_raw)
-                        };
-                        let prod: i128 = a_s * b_s;
-                        let r: u64 = (prod as i128 as u128) as u64 & m;
-                        self.write_operand(insn, 0, r)?;
-                        r
-                    }
-                    _ => {
-                        let bits: u8 = Self::operand_size_bits(insn, 0);
-                        let m: u64 = Self::mask(bits);
-                        let sb: u64 = Self::sign_bit(bits);
-                        let a_raw: u64 = self.read_operand(insn, 1)? & m;
-                        let b_raw: u64 = self.read_operand(insn, 2)? & m;
-                        let a_s: i128 = if (a_raw & sb) != 0 {
-                            i128::from(a_raw as i64) - (i128::from(m) + 1)
-                        } else {
-                            i128::from(a_raw)
-                        };
-                        let b_s: i128 = if (b_raw & sb) != 0 {
-                            i128::from(b_raw as i64) - (i128::from(m) + 1)
-                        } else {
-                            i128::from(b_raw)
-                        };
-                        let prod: i128 = a_s * b_s;
-                        let r: u64 = (prod as i128 as u128) as u64 & m;
-                        self.write_operand(insn, 0, r)?;
-                        r
-                    }
+                let bits: u8 = Self::operand_size_bits(insn, 0);
+                let m: u64 = Self::mask(bits);
+                let (a_raw, b_raw): (u64, u64) = match insn.op_count() {
+                    1 => (
+                        self.regs.read_sized(Reg::Rax, bits),
+                        self.read_operand(insn, 0)?,
+                    ),
+                    2 => (self.read_operand(insn, 0)?, self.read_operand(insn, 1)?),
+                    _ => (self.read_operand(insn, 1)?, self.read_operand(insn, 2)?),
                 };
-                let _ = r;
+                let prod: i128 =
+                    Self::sign_extend(a_raw & m, bits) * Self::sign_extend(b_raw & m, bits);
+                let prod_u: u128 = prod as u128;
+                let low: u64 = prod_u as u64 & m;
+                if insn.op_count() == 1 {
+                    match bits {
+                        8 => self.regs.write_sized(Reg::Rax, prod_u as u64 & 0xFFFF, 16),
+                        16 => {
+                            self.regs.write_sized(Reg::Rax, low, 16);
+                            self.regs
+                                .write_sized(Reg::Rdx, (prod_u >> 16) as u64 & 0xFFFF, 16);
+                        }
+                        32 => {
+                            self.regs.write_sized(Reg::Rax, low, 32);
+                            self.regs.write_sized(
+                                Reg::Rdx,
+                                (prod_u >> 32) as u64 & 0xFFFF_FFFF,
+                                32,
+                            );
+                        }
+                        _ => {
+                            self.regs.set(Reg::Rax, low);
+                            self.regs.set(Reg::Rdx, (prod_u >> 64) as u64);
+                        }
+                    }
+                } else {
+                    self.write_operand(insn, 0, low)?;
+                }
+                let truncated: bool = prod != Self::sign_extend(low, bits);
+                self.regs.flags.cf = truncated;
+                self.regs.flags.of = truncated;
                 Ok(true)
             }
             M::Mul => {
@@ -1860,7 +1821,7 @@ impl Cpu {
     fn read_mm_packed_operand(&self, insn: &Instruction, operand: u32) -> Result<u64> {
         match insn.op_kind(operand) {
             OpKind::Register => self.read_mm_reg(insn.op_register(operand)),
-            OpKind::Memory => self.mem.read_u64(self.effective_addr(insn, operand)?),
+            OpKind::Memory => self.mem.read_u64(self.effective_addr(insn)?),
             other => Err(Error::GoblinParse(format!(
                 "emu: unsupported MMX source operand {other:?}"
             ))),
@@ -1870,9 +1831,7 @@ impl Cpu {
     fn read_mm_dword_operand(&self, insn: &Instruction, operand: u32) -> Result<u64> {
         match insn.op_kind(operand) {
             OpKind::Register => self.read_mm_reg(insn.op_register(operand)),
-            OpKind::Memory => Ok(u64::from(
-                self.mem.read_u32(self.effective_addr(insn, operand)?)?,
-            )),
+            OpKind::Memory => Ok(u64::from(self.mem.read_u32(self.effective_addr(insn)?)?)),
             other => Err(Error::GoblinParse(format!(
                 "emu: unsupported MMX source operand {other:?}"
             ))),
@@ -1939,7 +1898,7 @@ impl Cpu {
                 let src: u64 = self.read_mm_reg(insn.op_register(1))?;
                 match insn.op_kind(0) {
                     OpKind::Register => self.write_mm_reg(insn.op_register(0), src)?,
-                    OpKind::Memory => self.mem.write_u64(self.effective_addr(insn, 0)?, src)?,
+                    OpKind::Memory => self.mem.write_u64(self.effective_addr(insn)?, src)?,
                     other => {
                         return Err(Error::GoblinParse(format!(
                             "emu: unsupported movq destination {other:?}"
@@ -3309,6 +3268,55 @@ mod tests {
             0x0102_0304_0506_0708,
             "cf=0 pf=0 af=0 zf=0 sf=0 of=0",
         );
+    }
+
+    fn imul64(code: &[u8], regs: &[(Reg, u64)]) -> Cpu {
+        run_authored(&Authored {
+            mode: CpuMode::Bits64,
+            base: 0x1000,
+            code,
+            steps: 1,
+            regs,
+            data: &[],
+        })
+    }
+
+    #[test]
+    fn one_operand_imul_of_a_negative_qword_sign_extends_into_rdx() {
+        let cpu: Cpu = imul64(
+            &[0x48, 0xF7, 0xEB],
+            &[(Reg::Rax, (-3i64) as u64), (Reg::Rbx, 5)],
+        );
+        assert_eq!(cpu.regs.get(Reg::Rax), (-15i64) as u64);
+        assert_eq!(cpu.regs.get(Reg::Rdx), u64::MAX);
+        assert!(!cpu.regs.flags.cf && !cpu.regs.flags.of);
+    }
+
+    #[test]
+    fn two_operand_imul_sets_cf_and_of_when_the_product_is_truncated() {
+        let cpu: Cpu = imul64(
+            &[0x48, 0x0F, 0xAF, 0xC3],
+            &[(Reg::Rax, 1 << 62), (Reg::Rbx, 4)],
+        );
+        assert_eq!(cpu.regs.get(Reg::Rax), 0);
+        assert!(cpu.regs.flags.cf && cpu.regs.flags.of);
+
+        let cpu: Cpu = imul64(
+            &[0x48, 0x0F, 0xAF, 0xC3],
+            &[(Reg::Rax, (-3i64) as u64), (Reg::Rbx, 5)],
+        );
+        assert_eq!(cpu.regs.get(Reg::Rax), (-15i64) as u64);
+        assert!(!cpu.regs.flags.cf && !cpu.regs.flags.of);
+    }
+
+    #[test]
+    fn three_operand_dword_imul_overflow_sets_cf_and_of() {
+        let cpu: Cpu = imul64(
+            &[0x6B, 0xC3, 0x07],
+            &[(Reg::Rax, 0), (Reg::Rbx, 0x2000_0000)],
+        );
+        assert_eq!(cpu.regs.get(Reg::Rax), 0xE000_0000);
+        assert!(cpu.regs.flags.cf && cpu.regs.flags.of);
     }
 
     #[test]
