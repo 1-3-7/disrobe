@@ -703,6 +703,7 @@ struct Invocation {
     narrowed: bool,
     all_targets: bool,
     placeholder: bool,
+    filter: Option<String>,
 }
 
 fn trim_delimiters(token: &str, extra: &[char]) -> String {
@@ -734,6 +735,11 @@ fn parse_invocation(line: &str) -> Invocation {
     while let Some(token) = tokens.next() {
         let token: &str = token.trim_end_matches('`');
         if token == "--" {
+            out.filter = tokens
+                .by_ref()
+                .map(|rest: &str| rest.trim_end_matches('`'))
+                .find(|rest: &&str| !rest.starts_with('-'))
+                .map(str::to_owned);
             break;
         }
         match token {
@@ -761,6 +767,23 @@ fn parse_invocation(line: &str) -> Invocation {
         out.package = Some(name_token(raw));
     }
     out
+}
+
+fn filter_can_select(filter: Option<&str>, binary: &str, relative: &str) -> bool {
+    let Some(filter) = filter else {
+        return true;
+    };
+    let prefix: String = format!("tests/{binary}/");
+    let Some(module_file) = relative.strip_prefix(prefix.as_str()) else {
+        return true;
+    };
+    let module: String = module_file
+        .trim_end_matches(".rs")
+        .trim_end_matches("/mod")
+        .replace('/', "::");
+    filter
+        .split_once("::")
+        .is_none_or(|(leading, _): (&str, &str)| module.ends_with(leading))
 }
 
 fn invocation_selection(facts: &CrateFacts, invocation: &Invocation) -> Selection {
@@ -887,7 +910,9 @@ fn report_skipped_tests(
             else {
                 continue;
             };
-            if selection.satisfies(&file.requirements) {
+            if selection.satisfies(&file.requirements)
+                || !filter_can_select(invocation.filter.as_deref(), wanted, &file.relative)
+            {
                 continue;
             }
             findings.push(Finding {
@@ -978,36 +1003,65 @@ mod tests {
     }
 
     #[test]
-    fn a_gated_module_inside_a_directory_test_binary_is_attributed_to_that_binary() {
-        let root: tempfile::TempDir = tempfile::tempdir().expect("scratch workspace");
+    fn a_gated_module_inside_a_directory_test_binary_is_attributed_to_that_binary() -> Result<()> {
+        let root: tempfile::TempDir = tempfile::tempdir()?;
         let binary: PathBuf = root.path().join("crates/example/tests/lifting");
-        std::fs::create_dir_all(&binary).expect("create the test binary directory");
-        std::fs::write(binary.join("main.rs"), "mod gated;\n").expect("write main.rs");
+        std::fs::create_dir_all(&binary)?;
+        std::fs::write(binary.join("main.rs"), "mod gated;\n")?;
         std::fs::write(
             binary.join("gated.rs"),
             "#![cfg(feature = \"smt-solver\")]\n#[test]\nfn solves() {}\n",
-        )
-        .expect("write the gated module");
+        )?;
         let support: PathBuf = root.path().join("crates/example/tests/common");
-        std::fs::create_dir_all(&support).expect("create a support directory");
+        std::fs::create_dir_all(&support)?;
         std::fs::write(
             support.join("mod.rs"),
             "#![cfg(feature = \"other\")]\n#[test]\nfn helper() {}\n",
-        )
-        .expect("write the support module");
+        )?;
 
         let (gated, _): (Vec<GatedFile>, Option<usize>) =
-            scan_crate_sources(root.path(), "crates/example").expect("scan");
+            scan_crate_sources(root.path(), "crates/example")?;
 
         let [found] = gated.as_slice() else {
-            panic!("expected exactly the gated module of the lifting binary: {gated:?}");
+            bail!("expected exactly the gated module of the lifting binary: {gated:?}");
         };
         assert_eq!(found.relative, "tests/lifting/gated.rs");
-        assert!(matches!(&found.target, TestTarget::Integration(name) if name == "lifting"));
+        assert_eq!(found.target, TestTarget::Integration("lifting".to_owned()));
         assert_eq!(
             found.requirements,
             vec![Requirement::Enabled("smt-solver".to_owned())]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn a_name_filter_only_skips_the_gated_module_it_could_select() {
+        let relative: &str = "tests/lifting/opaque_predicate_ground_truth.rs";
+        assert!(!filter_can_select(
+            Some("aarch64_fp_semantics::helpers_agree"),
+            "lifting",
+            relative
+        ));
+        assert!(filter_can_select(
+            Some("opaque_predicate_ground_truth::solves"),
+            "lifting",
+            relative
+        ));
+        assert!(filter_can_select(None, "lifting", relative));
+        assert!(filter_can_select(
+            Some("anything"),
+            "opaque_predicate_ground_truth",
+            "tests/opaque_predicate_ground_truth.rs"
+        ));
+    }
+
+    #[test]
+    fn the_filter_after_the_separator_is_read_past_its_flags() {
+        let invocation: Invocation = parse_invocation(
+            "cargo test -p disrobe-pass-native --test lifting -- --ignored aarch64_fp::case --nocapture",
+        );
+        assert_eq!(invocation.filter.as_deref(), Some("aarch64_fp::case"));
+        assert_eq!(invocation.tests, vec!["lifting".to_owned()]);
     }
 
     #[test]
