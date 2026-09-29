@@ -342,6 +342,15 @@ fn try_render_exception_region(
     if rescue.is_none() && ensure.is_none() {
         return None;
     }
+    if body
+        .catch_entries
+        .iter()
+        .filter(|e| e.catch_type == CatchType::Ensure && e.handler_iseq.is_some())
+        .count()
+        > 1
+    {
+        return None;
+    }
 
     let rt_pc: Vec<u32> = runtime_pcs(body);
     let entry: &YarvCatchEntry = rescue.or(ensure)?;
@@ -510,6 +519,46 @@ fn region_is_inside_a_loop(body: &YarvIseqBody, start: usize, end: usize) -> boo
         .any(|(from, target): (usize, &Option<usize>)| {
             from >= end && target.is_some_and(|to: usize| to <= start)
         })
+}
+
+fn try_inline_ensure(
+    body: &YarvIseqBody,
+    ctx: &DecompileContext<'_>,
+    depth: u32,
+    i: usize,
+    hi: usize,
+    targets: &[Option<usize>],
+    stmts: &mut Vec<String>,
+) -> Option<usize> {
+    let rt_pc: Vec<u32> = runtime_pcs(body);
+    let here: u32 = *rt_pc.get(i)?;
+    let (end, cont): (usize, usize) = body
+        .catch_entries
+        .iter()
+        .filter(|e: &&YarvCatchEntry| {
+            e.catch_type == CatchType::Ensure && e.handler_iseq.is_some() && e.start_pc == here
+        })
+        .map(|e: &YarvCatchEntry| {
+            let end: usize = index_at_pc(&rt_pc, e.end_pc);
+            (end, index_at_pc(&rt_pc, e.cont_pc).max(end))
+        })
+        .filter(|&(end, cont): &(usize, usize)| end > i && end < hi && cont <= hi)
+        .max_by_key(|&(end, _): &(usize, usize)| end)?;
+    let pad: String = indent(depth);
+    let begin_line: usize = stmts.len();
+    stmts.push(format!("{pad}begin"));
+    stmts.extend(render_slice(body, ctx, depth + 1, i, end, targets));
+    stmts.push(format!("{pad}ensure"));
+    stmts.extend(render_slice(body, ctx, depth + 1, end, cont, targets));
+    stmts.push(format!("{pad}end"));
+    let after: Option<usize> = (cont..hi).find(|&k| body.instructions[k].mnemonic != "nop");
+    if let Some(k) = after
+        && let Some(target) = assignment_target(&body.instructions[k], &body.local_table, ctx)
+    {
+        stmts[begin_line] = format!("{pad}{target} = begin");
+        return Some(k + 1);
+    }
+    Some(cont)
 }
 
 fn try_inline_rescue(
@@ -734,6 +783,13 @@ fn render_region(
         let instr: &YarvIbfInstruction = &body.instructions[i];
         let m: &str = instr.mnemonic.as_str();
         let depth_before: usize = stack.len();
+        if !body.catch_entries.is_empty()
+            && stack.is_empty()
+            && let Some(next) = try_inline_ensure(body, ctx, depth, i, hi, targets, stmts)
+        {
+            i = next;
+            continue;
+        }
         if !body.catch_entries.is_empty()
             && let Some(next) = try_inline_rescue(body, ctx, depth, i, hi, targets, stack, stmts)
         {

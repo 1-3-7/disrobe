@@ -43,6 +43,25 @@ def two(v)
   @memo * 2
 end
 
+def nested_ensure
+  log = []
+  result = begin
+    begin
+      log << 1
+      return_value = 10
+      raise "inner"
+    rescue => e
+      log << e.message
+      return_value += 1
+    ensure
+      log << :inner_ensure
+    end
+  ensure
+    log << :outer_ensure
+  end
+  [result, log]
+end
+
 def external_iteration
   e = [1, 2, 3].each
   out = []
@@ -90,6 +109,6 @@ def while_modifiers(n)
   [total, steps]
 end
 
-p fetch(2), fetch(9), fetch(6), one(true), one(false), two("21"), two("zz"), external_iteration, generator
+p fetch(2), fetch(9), fetch(6), one(true), one(false), two("21"), two("zz"), nested_ensure, external_iteration, generator
 p set_ops, string_bits("maze"), throwing(4), throwing(2), while_modifiers(5)
 p [AppError.new.message, RetryableError.ancestors.take(3), (raise AppError rescue $!.class)]
