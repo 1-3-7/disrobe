@@ -1,0 +1,32 @@
+#[path = "../common/mod.rs"]
+mod common;
+
+mod anonymous_inner_declaration_type;
+mod anonymous_inner_recursion;
+mod d8_api_outline_projection;
+mod d8_captured_lambda_recovery;
+mod d8_constructor_delegate;
+mod d8_core_library_recovery;
+mod d8_date_retarget_recovery;
+mod d8_default_interface_recovery;
+mod d8_functional_wrapper_lowering;
+mod d8_lambda_helper_elision;
+mod d8_lambda_shape_recovery;
+mod d8_method_reference_recovery;
+mod dalvik_cfg_structure;
+mod dalvik_literal_lowering;
+mod dalvik_member_metadata;
+mod dalvik_sources_are_compilation_units;
+mod dalvik_stub_diag;
+mod dead_store_recovery;
+mod expr_construct_recovery;
+mod foreach_multicatch_recovery;
+mod generic_signature_recovery;
+mod handler_entry_branch_target;
+mod l_prefixed_class_recovery;
+mod local_naming_recovery;
+mod recovered_source_is_writable_java;
+mod structured_decompile;
+mod stub_recovery;
+mod translated_default_interface_contracts;
+mod try_finally_recovery;

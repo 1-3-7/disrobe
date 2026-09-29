@@ -8,7 +8,7 @@
   "ecosystem": "android",
   "floor": 92.6,
   "floor_holds": true,
-  "gate_source": "crates/disrobe-pass-jvm/tests/dalvik_realworld_body_attest.rs enforces the aggregate and per-APK counts against common::REAL_APKS, which pins each input SHA-256. tests/golden/dalvik_body_attest pins all 2998 verifier verdicts by method name. dex2jar_realworld_apks.rs independently checks the per-APK lowering counts. The attestation uses java -Xverify:all without invoking recovered methods.",
+  "gate_source": "crates/disrobe-pass-jvm/tests/oracles/dalvik_realworld_body_attest.rs enforces the aggregate and per-APK counts against common::REAL_APKS, which pins each input SHA-256. tests/golden/dalvik_body_attest pins all 2998 verifier verdicts by method name. dex2jar_realworld_apks.rs independently checks the per-APK lowering counts. The attestation uses java -Xverify:all without invoking recovered methods.",
   "id": "dalvik-realapk-coverage",
   "measured": "99.70%",
   "oracle": {

@@ -1,0 +1,35 @@
+#[path = "../common/mod.rs"]
+mod common;
+
+mod aab_extract;
+mod apk_extract;
+mod apk_resources_oracle;
+mod apk_v4_idsig;
+mod arsc_reconstruction;
+mod art_oat_odex;
+mod axml_framework_attrs;
+mod backends_detect;
+mod classfile_parse;
+mod debug_framework;
+mod dex_tables;
+mod dex_versions;
+mod groovy_decompile;
+mod implementors_fixture;
+mod jadx_backend_wrap;
+mod jadx_head_to_head;
+mod jar_walk;
+mod jmod_jimage;
+mod jni_native_surface;
+mod jni_prototype_oracle;
+mod jni_register_natives;
+mod jvm_container_chain;
+mod kotlin_metadata_recover;
+mod kotlin_suspend_abi;
+mod multi_dex;
+mod native_decompile;
+mod real_dex;
+mod resources_arsc;
+mod scala_demangle;
+mod smali_emit;
+mod smali_real_method;
+mod smali_roundtrip;

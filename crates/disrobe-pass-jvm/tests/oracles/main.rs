@@ -1,0 +1,37 @@
+#[path = "../common/mod.rs"]
+mod common;
+
+mod boolean_array_recompile;
+mod compound_loop_condition_recompile;
+mod conversion_cast_recompile;
+mod dalvik_boolean_boundary;
+mod dalvik_const_int_float_split;
+mod dalvik_conversion_frame_verifier;
+mod dalvik_conversion_merge_shapes;
+mod dalvik_debug_names_execution;
+mod dalvik_decompile_oracle;
+mod dalvik_fill_array_data;
+mod dalvik_large_method_merge_gate;
+mod dalvik_lift_probes_execution;
+mod dalvik_null_constant_frame;
+mod dalvik_realworld_body_attest;
+mod dalvik_static_values_execution;
+mod dalvik_uninitialized_frame;
+mod dalvik_verifier_gate;
+mod decompile_recompile_rate;
+mod dex2jar_body_census;
+mod dex2jar_differential;
+mod dex2jar_real_bodies;
+mod dex2jar_realworld_apks;
+mod ecj_jsr_recompile;
+mod edgecases_execution_differential;
+mod frame_infer_conversion_verifier;
+mod loop_coverage_recompile;
+mod nan_constant_recompile;
+mod narrow_arg_cast_recompile;
+mod precedence_recompile;
+mod shape_matrix_recompile;
+mod string_escape_recompile;
+mod synchronized_labeled_recompile;
+mod try_catch_finally_behavior;
+mod try_finally_return_recompile;

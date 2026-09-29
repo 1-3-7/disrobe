@@ -47,8 +47,9 @@ struct FigureClaim {
     sites: &'static [(&'static str, &'static str)],
 }
 
-const DALVIK_VERIFIER_GATE: &str = "crates/disrobe-pass-jvm/tests/dalvik_verifier_gate.rs";
-const JVM_RECOMPILE_GATE: &str = "crates/disrobe-pass-jvm/tests/decompile_recompile_rate.rs";
+const DALVIK_VERIFIER_GATE: &str = "crates/disrobe-pass-jvm/tests/oracles/dalvik_verifier_gate.rs";
+const JVM_RECOMPILE_GATE: &str =
+    "crates/disrobe-pass-jvm/tests/oracles/decompile_recompile_rate.rs";
 const PYTHON_BINDINGS_DOC: &str = "docs/src/python-bindings.md";
 const PACKER_BYTE_GATE: &str =
     "crates/disrobe-pass-native/tests/packers/committed_packer_byte_recovery.rs";
