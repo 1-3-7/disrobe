@@ -677,7 +677,10 @@ fn rva_to_file_off(pe: &PeLayout, rva: u32) -> Option<usize> {
                     .saturating_add(sec.virtual_size.max(sec.size_of_raw_data))
         {
             let delta: u32 = rva - sec.virtual_address;
-            return Some((sec.pointer_to_raw_data + delta) as usize);
+            return sec
+                .pointer_to_raw_data
+                .checked_add(delta)
+                .map(|offset: u32| offset as usize);
         }
     }
     None

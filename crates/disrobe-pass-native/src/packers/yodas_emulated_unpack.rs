@@ -287,12 +287,14 @@ fn rebuild_static_image(
         image[dst..dst + span].copy_from_slice(&packed[start..start + span]);
     }
     for desc in descriptors {
-        let src_off: usize = rva_to_file_off(img, desc.src_rva).ok_or_else(|| {
-            Error::SignatureDb(format!(
-                "Yoda's Crypter: descriptor src rva 0x{:x} not in any section",
-                desc.src_rva
-            ))
-        })?;
+        let src_off: usize = img
+            .file_offset_for_rva(desc.src_rva, packed.len())
+            .map_err(|_| {
+                Error::SignatureDb(format!(
+                    "Yoda's Crypter: descriptor src rva 0x{:x} not in any section",
+                    desc.src_rva
+                ))
+            })?;
         let src_end: usize = src_off
             .checked_add(desc.packed_len as usize)
             .ok_or(Error::UnknownFormat)?;
@@ -338,16 +340,6 @@ fn write_oep_into_header(image: &mut [u8], _image_base: u64, oep_rva: u32) {
     if field + 4 <= image.len() {
         image[field..field + 4].copy_from_slice(&oep_rva.to_le_bytes());
     }
-}
-
-fn rva_to_file_off(img: &PeImage, rva: u32) -> Option<usize> {
-    for sec in &img.sections {
-        let span: u32 = sec.virtual_size.max(sec.raw_size);
-        if rva >= sec.virtual_address && rva < sec.virtual_address.saturating_add(span) {
-            return Some((sec.raw_pointer + (rva - sec.virtual_address)) as usize);
-        }
-    }
-    None
 }
 
 fn read_u32(b: &[u8], off: usize) -> Result<u32> {
@@ -526,6 +518,48 @@ fn whole_image_recovery_pct(recovered: &[u8], baseline: &[u8]) -> f64 {
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_hostile_raw_pointer_is_a_typed_error_not_an_overflow() {
+        let hostile: PeSection = PeSection {
+            name: *b".text\0\0\0",
+            virtual_size: 0x1000,
+            virtual_address: 0x1000,
+            raw_size: 0x200,
+            raw_pointer: 0xFFFF_FF00,
+            pointer_to_relocations: 0,
+            characteristics: 0x6000_0020,
+        };
+        let img: PeImage = PeImage {
+            pe_header_offset: 0x80,
+            machine: 0x014C,
+            size_of_optional_header: 0xE0,
+            coff_characteristics: 0x0102,
+            is_pe32_plus: false,
+            entry_point_rva: 0x1000,
+            image_base: 0x40_0000,
+            section_alignment: 0x1000,
+            file_alignment: 0x200,
+            size_of_image: 0x2000,
+            size_of_headers: 0x200,
+            data_directories: Vec::new(),
+            raw_data_directories: Vec::new(),
+            sections: vec![hostile],
+        };
+        let descriptor: YodasSectionDescriptor = YodasSectionDescriptor {
+            dest_rva: 0x1000,
+            src_rva: 0x1100,
+            packed_len: 0x10,
+            unpacked_len: 0x10,
+        };
+        let packed: Vec<u8> = vec![0u8; 0x400];
+        let rebuilt: Result<Vec<u8>> =
+            rebuild_static_image(&packed, &img, &[descriptor], 0x2000, None);
+        assert!(
+            matches!(&rebuilt, Err(Error::SignatureDb(message)) if message.contains("0x1100")),
+            "{rebuilt:?}"
+        );
+    }
 
     #[test]
     fn rejects_image_without_stub_section() {

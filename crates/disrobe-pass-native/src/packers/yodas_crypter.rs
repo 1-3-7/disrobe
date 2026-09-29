@@ -314,9 +314,13 @@ fn seed_loader_iat(cpu: &mut Cpu, packed: &[u8], img: &PeImage, image_base: u64)
         return;
     }
     let mut idx: u32 = 0;
-    loop {
-        let desc_rva: u32 = import_rva + idx * 20;
-        let Some(desc_off): Option<usize> = rva_to_file_off(img, desc_rva) else {
+    while let Some(desc_rva) = idx
+        .checked_mul(20)
+        .and_then(|offset: u32| import_rva.checked_add(offset))
+    {
+        let Ok(desc_off): core::result::Result<usize, _> =
+            img.file_offset_for_rva(desc_rva, packed.len())
+        else {
             break;
         };
         if desc_off + 20 > packed.len() {
@@ -334,7 +338,11 @@ fn seed_loader_iat(cpu: &mut Cpu, packed: &[u8], img: &PeImage, image_base: u64)
             first_thunk_rva
         };
         let mut t: u32 = 0;
-        while let Some(thunk_off) = rva_to_file_off(img, thunk_table_rva + t * 4) {
+        while let Some(thunk_off) = t
+            .checked_mul(4)
+            .and_then(|offset: u32| thunk_table_rva.checked_add(offset))
+            .and_then(|rva: u32| img.file_offset_for_rva(rva, packed.len()).ok())
+        {
             if thunk_off + 4 > packed.len() {
                 break;
             }
@@ -343,7 +351,9 @@ fn seed_loader_iat(cpu: &mut Cpu, packed: &[u8], img: &PeImage, image_base: u64)
                 break;
             }
             if thunk & 0x8000_0000 == 0
-                && let Some(func_off) = rva_to_file_off(img, thunk + 2)
+                && let Some(func_off) = thunk
+                    .checked_add(2)
+                    .and_then(|rva: u32| img.file_offset_for_rva(rva, packed.len()).ok())
             {
                 let func_name: String = read_file_cstr(packed, func_off);
                 let synth: Option<u64> = YcStubHost::synth_addr_for(&func_name);
@@ -362,16 +372,6 @@ fn seed_loader_iat(cpu: &mut Cpu, packed: &[u8], img: &PeImage, image_base: u64)
             break;
         }
     }
-}
-
-fn rva_to_file_off(img: &PeImage, rva: u32) -> Option<usize> {
-    for sec in &img.sections {
-        let span: u32 = sec.virtual_size.max(sec.raw_size);
-        if rva >= sec.virtual_address && rva < sec.virtual_address.saturating_add(span) {
-            return Some((sec.raw_pointer + (rva - sec.virtual_address)) as usize);
-        }
-    }
-    None
 }
 
 fn read_file_cstr(bytes: &[u8], off: usize) -> String {
