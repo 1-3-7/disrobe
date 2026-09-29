@@ -17,3 +17,10 @@ p [3, 4, 50, 500].map { |n| bucket(n) }
 
 flags = [true, false, nil].map { |f| f ? (f == true ? 1 : 2) : 0 }
 p flags
+
+a, b = 1, 2
+a, b = b, a
+p [a, b]
+c, d, e = 1, 2, 3
+c, d, e = e, c, d
+p [c, d, e]

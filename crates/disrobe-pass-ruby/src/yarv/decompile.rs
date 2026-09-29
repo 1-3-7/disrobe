@@ -920,7 +920,7 @@ fn render_region(
             i = next;
             continue;
         }
-        if m == "opt_reverse"
+        if matches!(m, "opt_reverse" | "swap")
             && let Some(next) = try_parallel_assign(body, ctx, depth, i, hi, stack, stmts)
         {
             i = next;
@@ -1310,7 +1310,11 @@ fn try_parallel_assign(
     stack: &mut Vec<String>,
     stmts: &mut Vec<String>,
 ) -> Option<usize> {
-    let n: usize = operand_count(&body.instructions[i], 0);
+    let n: usize = if body.instructions[i].mnemonic == "swap" {
+        2
+    } else {
+        operand_count(&body.instructions[i], 0)
+    };
     if n < 2 || n > stack.len() || i + n >= hi {
         return None;
     }
