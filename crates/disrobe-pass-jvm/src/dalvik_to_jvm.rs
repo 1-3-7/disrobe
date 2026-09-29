@@ -629,10 +629,12 @@ pub(crate) fn emit_branch_method_code(
         if !nulls.is_empty() {
             pc_entry_null.insert(insn.pc, nulls);
         }
-        let Some(next): Option<&DalvikInsn> = insns.get(i + 1) else {
+        let (Some(_), Some(next_state)): (
+            Option<&DalvikInsn>,
+            Option<&crate::dalvik_typestate::RegState>,
+        ) = (insns.get(i + 1), states.entry_state.get(i + 1)) else {
             continue;
         };
-        let next_state: &crate::dalvik_typestate::RegState = &states.entry_state[i + 1];
         let slots: BTreeMap<u16, Slot> = next_state
             .iter()
             .map(|(&r, t)| (r, regtype_to_slot(t)))
@@ -646,7 +648,6 @@ pub(crate) fn emit_branch_method_code(
         if !elems.is_empty() {
             pc_post_array_elem.insert(insn.pc, elems);
         }
-        let _ = next;
         pc_post_slot.insert(insn.pc, slots);
     }
 
@@ -2468,7 +2469,7 @@ impl Emitter<'_> {
 
         if contiguous {
             self.push(0xAA);
-            self.pad_to_align(insn_offset);
+            self.pad_to_align();
             let default_operand_offset: usize = self.code.len();
             self.push_u32(0);
             let low: i32 = payload.keys[0];
@@ -2488,7 +2489,7 @@ impl Emitter<'_> {
             );
         } else {
             self.push(0xAB);
-            self.pad_to_align(insn_offset);
+            self.pad_to_align();
             let default_operand_offset: usize = self.code.len();
             self.push_u32(0);
             self.push_u32(payload.keys.len() as u32);
@@ -2518,8 +2519,7 @@ impl Emitter<'_> {
         self.code.extend_from_slice(&value.to_be_bytes());
     }
 
-    fn pad_to_align(&mut self, insn_offset: usize) {
-        let _ = insn_offset;
+    fn pad_to_align(&mut self) {
         while !self.code.len().is_multiple_of(4) {
             self.push(0);
         }

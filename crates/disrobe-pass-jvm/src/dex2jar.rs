@@ -1615,10 +1615,6 @@ impl ConstantPool {
     }
 }
 
-fn descriptor_return_is_void(descriptor: &str) -> bool {
-    descriptor.rsplit(')').next() == Some("V")
-}
-
 fn append_class_bytes(out: &mut Vec<u8>, bytes: &[u8], limit: usize) -> Result<()> {
     let actual: usize = out.len().saturating_add(bytes.len());
     if actual > limit {
@@ -1848,7 +1844,6 @@ fn build_method_attr(
         append_class_bytes(&mut out, &2u32.to_be_bytes(), max_class_bytes)?;
         append_class_bytes(&mut out, &signature_index.to_be_bytes(), max_class_bytes)?;
     }
-    let _ = descriptor_return_is_void;
     Ok((out, recovered, refusal))
 }
 
@@ -2459,7 +2454,6 @@ pub fn diagnose_dex_bytes(dex_bytes: &[u8]) -> Result<BTreeMap<String, usize>> {
             let width_conflict: bool =
                 crate::dalvik_to_jvm::diag_has_width_conflict(&dex, item, is_static);
             let label: String = classify_stub(
-                &dex,
                 item,
                 take_bail_op(),
                 take_bail_kind(),
@@ -2513,7 +2507,6 @@ pub fn diagnose_dex_methods(dex_bytes: &[u8]) -> Result<Vec<(String, String, Str
             let width_conflict: bool =
                 crate::dalvik_to_jvm::diag_has_width_conflict(&dex, item, is_static);
             let label: String = classify_stub(
-                &dex,
                 item,
                 branch_bail_op,
                 branch_bail_kind,
@@ -2538,7 +2531,6 @@ pub fn diagnose_dex_methods(dex_bytes: &[u8]) -> Result<Vec<(String, String, Str
 
 #[cfg(any(test, feature = "lifter-diag"))]
 fn classify_stub(
-    dex: &DexFile,
     item: &CodeItem,
     bail_op: i32,
     bail_kind: &str,
@@ -2599,7 +2591,6 @@ fn classify_stub(
     {
         return "linear-early-return-or-throw".to_string();
     }
-    let _ = dex;
     let dominant: u8 = insns.iter().map(|i: &DalvikInsn| i.op).max().unwrap_or(0);
     format!("linear-struct-max-op-{dominant:#04x}")
 }

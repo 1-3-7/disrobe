@@ -2769,7 +2769,6 @@ fn try_reconstruct_boolean_method(
         let allow_prelude: bool = block.id == cfg.entry;
         let node: BoolNode = classify_bool_block(
             cf,
-            cfg,
             insns,
             params,
             bootstraps,
@@ -2813,7 +2812,6 @@ fn try_reconstruct_boolean_method(
 
 fn classify_bool_block(
     cf: &ClassFile,
-    cfg: &Cfg,
     insns: &[Instruction],
     params: &[(u16, String)],
     bootstraps: &[crate::attributes::BootstrapMethod],
@@ -2856,7 +2854,6 @@ fn classify_bool_block(
     if taken == block.id || fallthrough == block.id {
         return None;
     }
-    let _ = cfg;
     let mut stack: Vec<Expr> = Vec::new();
     let mut prelude: String = String::new();
     for ins in &body[..body.len() - 1] {
@@ -5078,12 +5075,9 @@ fn render_region(ctx: &mut RenderCtx<'_>, region: &Region, out: &mut String, lev
             }
         }
         Region::IfThen {
-            head,
-            then_body,
-            join,
-            ..
+            head, then_body, ..
         } => {
-            if try_render_assert(ctx, *head, then_body, *join, out, level) {
+            if try_render_assert(ctx, *head, then_body, out, level) {
                 return;
             }
             let cond: String = render_if_condition(ctx, *head, out, level);
@@ -7792,7 +7786,6 @@ fn try_render_assert(
     ctx: &mut RenderCtx<'_>,
     head: BlockId,
     then_body: &Region,
-    join: Option<BlockId>,
     out: &mut String,
     level: usize,
 ) -> bool {
@@ -7843,7 +7836,6 @@ fn try_render_assert(
     else {
         return false;
     };
-    let _ = join;
     ctx.rendered_blocks.insert(head);
     ctx.rendered_blocks.insert(cond_head);
     ctx.rendered_blocks.insert(throw_bid);
@@ -8154,7 +8146,6 @@ fn try_reconstruct_pattern_method(
             &ctx,
             insns,
             *arm_pc,
-            selector_slot,
             dispatch_pc,
             *case_value,
             0,
@@ -8659,7 +8650,6 @@ fn reconstruct_pattern_arm(
     ctx: &RenderCtx<'_>,
     insns: &[Instruction],
     arm_pc: u32,
-    selector_slot: u16,
     dispatch_pc: u32,
     case_index: i32,
     low: i32,
@@ -8693,7 +8683,6 @@ fn reconstruct_pattern_arm(
     let store_insn: &Instruction = slice.get(2)?;
     let bind_slot: u16 = object_local_slot(store_insn)?;
     let var: String = local_name(bind_slot, ctx.params);
-    let _ = selector_slot;
 
     if let Some(record) =
         try_record_deconstruction(ctx, insns, start_idx + 3, bind_slot, dispatch_pc, end_pc)

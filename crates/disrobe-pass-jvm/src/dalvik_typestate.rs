@@ -396,7 +396,7 @@ pub(crate) fn analyze(
         }
 
         let mut out: RegState = cur;
-        transfer(dex, insn, parsed, &mut out, &tctx)?;
+        transfer(dex, insn, &mut out, &tctx)?;
 
         for spc in successor_pcs(insns, idx, switch_targets) {
             let sidx: usize = *pc_to_idx.get(&spc)?;
@@ -418,7 +418,6 @@ pub(crate) fn analyze(
     let null_refs: usize = resolve_null_constants(
         dex,
         insns,
-        parsed,
         &tctx,
         edges,
         &pc_to_idx,
@@ -617,7 +616,6 @@ fn link_null_edge(
 fn resolve_null_constants(
     dex: &DexFile,
     insns: &[DalvikInsn],
-    parsed: &MethodDescriptor,
     tctx: &TransferCtx<'_>,
     edges: &CfgEdges<'_>,
     pc_to_idx: &BTreeMap<u32, usize>,
@@ -642,7 +640,7 @@ fn resolve_null_constants(
             }
         }
         let mut out: RegState = cur;
-        if transfer(dex, insn, parsed, &mut out, tctx).is_none() {
+        if transfer(dex, insn, &mut out, tctx).is_none() {
             continue;
         }
         for spc in successor_pcs(insns, idx, edges.switch_targets) {
@@ -689,7 +687,6 @@ struct TransferCtx<'a> {
 fn transfer(
     dex: &DexFile,
     insn: &DalvikInsn,
-    parsed: &MethodDescriptor,
     regs: &mut RegState,
     ctx: &TransferCtx<'_>,
 ) -> Option<()> {
@@ -865,7 +862,6 @@ fn transfer(
         0xD0..=0xE2 => set(regs, r.first().copied(), RegType::Int),
         _ => return None,
     }
-    let _ = parsed;
     Some(())
 }
 

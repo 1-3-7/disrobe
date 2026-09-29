@@ -441,7 +441,7 @@ pub fn emulate_string_decrypt(
             }
             0xB6..=0xB9 => {
                 let cp: u16 = const_pool_index(insn)?;
-                let returned: Option<Value> = invoke(&mut emu, cp, op)?;
+                let returned: Option<Value> = invoke(&mut emu, cp)?;
                 if let Some(ret) = returned {
                     emu.stack.push(ret);
                 }
@@ -458,7 +458,7 @@ pub fn emulate_string_decrypt(
     Err(RecoveryError::NoReturn)
 }
 
-fn invoke(emu: &mut Emulator<'_>, cp: u16, op: u8) -> Result<Option<Value>, RecoveryError> {
+fn invoke(emu: &mut Emulator<'_>, cp: u16) -> Result<Option<Value>, RecoveryError> {
     let Some(sig): Option<String> = bytecode::resolve_ref(emu.cf, cp) else {
         return Err(RecoveryError::BadShape);
     };
@@ -531,10 +531,7 @@ fn invoke(emu: &mut Emulator<'_>, cp: u16, op: u8) -> Result<Option<Value>, Reco
             let new_ref: usize = emu.alloc(HeapObject::Text(units))?;
             Ok(Some(Value::Ref(new_ref)))
         }
-        _ => {
-            let _ = op;
-            Err(RecoveryError::UnknownCall(sig))
-        }
+        _ => Err(RecoveryError::UnknownCall(sig)),
     }
 }
 

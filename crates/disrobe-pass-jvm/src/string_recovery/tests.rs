@@ -191,13 +191,11 @@ fn recovers_constant_key_xor_via_bytecode_emulation() {
 }
 
 fn position_key_xor_decrypt_code(
-    base: i32,
     tochararray_ref: u16,
     new_string_ref: u16,
     string_class: u16,
     base_const: u16,
 ) -> Vec<u8> {
-    let _ = base;
     let mut c: Vec<u8> = Vec::new();
     c.push(0x2A);
     c.push(0xB6);
@@ -277,7 +275,7 @@ fn recovers_position_dependent_xor_with_int_seed() {
     let base_const: u16 = cb.integer(base);
 
     let code: Vec<u8> =
-        position_key_xor_decrypt_code(base, tochararray, new_string, string_class, base_const);
+        position_key_xor_decrypt_code(tochararray, new_string, string_class, base_const);
     let method: MethodInfo = MethodInfo {
         access_flags: 0x0008,
         name_index: decrypt_name,

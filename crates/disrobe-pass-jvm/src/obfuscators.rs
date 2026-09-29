@@ -64,7 +64,7 @@ pub fn detect_all(cf: &ClassFile) -> Vec<Detection> {
     if let Some(d) = detect_stringer(cf, &strings) {
         out.push(d);
     }
-    if let Some(d) = detect_dasho(cf, &strings) {
+    if let Some(d) = detect_dasho(&strings) {
         out.push(d);
     }
     if let Some(d) = detect_yguard(cf, &strings) {
@@ -292,7 +292,7 @@ fn detect_stringer(cf: &ClassFile, strings: &BTreeMap<u16, String>) -> Option<De
     }
 }
 
-fn detect_dasho(cf: &ClassFile, strings: &BTreeMap<u16, String>) -> Option<Detection> {
+fn detect_dasho(strings: &BTreeMap<u16, String>) -> Option<Detection> {
     let mut evidence: Vec<String> = Vec::new();
     let mut score: u8 = 0;
     for s in strings.values() {
@@ -302,7 +302,6 @@ fn detect_dasho(cf: &ClassFile, strings: &BTreeMap<u16, String>) -> Option<Detec
             evidence.push(format!("dasho marker: '{s}'"));
         }
     }
-    let _ = cf;
     if score >= 30 {
         Some(Detection {
             protector: Protector::DashO,

@@ -349,7 +349,6 @@ fn plan_split_candidate(
         return None;
     }
 
-    let _ = next_reg;
     Some(SplitPlan {
         insns: out_insns,
         virtual_local,
@@ -428,8 +427,7 @@ fn renamed_is_sound(
         return false;
     };
     let mut def_slot: BTreeMap<usize, SplitSlot> = BTreeMap::new();
-    for (reg, d) in &param_defs {
-        let _ = reg;
+    for d in param_defs.values() {
         def_slot.insert(d.site, d.slot);
     }
     for (i, d) in du.iter().enumerate() {

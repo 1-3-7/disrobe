@@ -204,10 +204,10 @@ fn apply_transfer(
             };
             state.push_wide(ty);
         }
-        0x15 => push_local(insn, state, VerificationType::Integer, false),
-        0x16 => push_local(insn, state, VerificationType::Long, true),
-        0x17 => push_local(insn, state, VerificationType::Float, false),
-        0x18 => push_local(insn, state, VerificationType::Double, true),
+        0x15 => push_local(state, VerificationType::Integer, false),
+        0x16 => push_local(state, VerificationType::Long, true),
+        0x17 => push_local(state, VerificationType::Float, false),
+        0x18 => push_local(state, VerificationType::Double, true),
         0x19 => {
             let idx: usize = local_index(insn);
             let ty: VerificationType = state.local(idx);
@@ -541,8 +541,7 @@ fn apply_transfer(
     Ok(())
 }
 
-fn push_local(insn: &Instruction, state: &mut FrameState, ty: VerificationType, wide: bool) {
-    let _ = insn;
+fn push_local(state: &mut FrameState, ty: VerificationType, wide: bool) {
     if wide {
         state.push_wide(ty);
     } else {

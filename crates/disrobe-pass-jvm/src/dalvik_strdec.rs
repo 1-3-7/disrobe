@@ -364,7 +364,6 @@ impl<'a> Interp<'a> {
             }
             ip += 1;
         }
-        let _ = result_reg;
         Err(EvalError::NoReturn)
     }
 

@@ -1,3 +1,4 @@
+use disrobe_bytes::read_u32_le_at;
 use disrobe_bytes::read_uleb128_at;
 
 use crate::dex::DexFile;
@@ -41,13 +42,6 @@ impl MethodMeta {
     }
 }
 
-fn read_u32_le(bytes: &[u8], off: usize) -> Option<u32> {
-    let window: &[u8] = bytes.get(off..off.checked_add(4)?)?;
-    Some(u32::from_le_bytes([
-        window[0], window[1], window[2], window[3],
-    ]))
-}
-
 fn method_descriptor(dex: &DexFile, method_id_index: u32) -> Option<(String, String, String)> {
     let method = dex.method_ids.get(method_id_index as usize)?;
     let params: String = method.proto.parameters.concat();
@@ -77,7 +71,7 @@ pub(crate) fn collect(dex: &DexFile, bytes: &[u8]) -> DexMeta {
             Some(v) => v,
             None => break,
         };
-        let Some(class_data_off): Option<u32> = read_u32_le(bytes, base + 24) else {
+        let Some(class_data_off): Option<u32> = read_u32_le_at(bytes, base + 24).ok() else {
             continue;
         };
         if class_data_off == 0 {

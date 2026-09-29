@@ -163,8 +163,7 @@ fn is_flattening_machinery(insn: &DalvikInsn, state_regs: &BTreeSet<u16>) -> boo
         .is_some_and(|dst: u16| state_regs.contains(&dst))
 }
 
-fn collect_state_regs(insns: &[DalvikInsn], switches: &[(u32, SwitchPayload)]) -> BTreeSet<u16> {
-    let _ = switches;
+fn collect_state_regs(insns: &[DalvikInsn]) -> BTreeSet<u16> {
     insns
         .iter()
         .filter(|i: &&DalvikInsn| i.is_switch())
@@ -200,8 +199,7 @@ fn normalized_opcode_stream(
 
 fn clean_opcode_stream(units: &[u16]) -> Vec<u8> {
     let (cfg, insns): (Cfg, Vec<DalvikInsn>) = build_cfg_from_units(units);
-    let switches: Vec<(u32, SwitchPayload)> = collect_switch_payloads(units, &insns);
-    let state_regs: BTreeSet<u16> = collect_state_regs(&insns, &switches);
+    let state_regs: BTreeSet<u16> = collect_state_regs(&insns);
     normalized_opcode_stream(&cfg, &insns, &state_regs)
 }
 
@@ -361,13 +359,9 @@ fn flattened_straight_line_unflattens_to_clean_cfg() {
     assert_eq!(result.dispatchers_resolved, 1);
     assert!(result.edges_redirected >= 3);
 
-    let DalvikMethodCfg {
-        cfg,
-        insns,
-        switch_payloads,
-        ..
-    } = rewired_method_cfg(&item).expect("a sound rewiring yields the rewired graph");
-    let state_regs: BTreeSet<u16> = collect_state_regs(&insns, &switch_payloads);
+    let DalvikMethodCfg { cfg, insns, .. } =
+        rewired_method_cfg(&item).expect("a sound rewiring yields the rewired graph");
+    let state_regs: BTreeSet<u16> = collect_state_regs(&insns);
 
     let recovered: Vec<u8> = normalized_opcode_stream(&cfg, &insns, &state_regs);
     let clean: Vec<u8> = clean_opcode_stream(&clean_straight_line());
@@ -391,13 +385,9 @@ fn flattened_with_opaque_predicate_folds_and_unflattens() {
         "after folding the opaque branch the dispatcher must fully resolve: {result:?}"
     );
 
-    let DalvikMethodCfg {
-        cfg,
-        insns,
-        switch_payloads,
-        ..
-    } = rewired_method_cfg(&item).expect("a sound rewiring yields the rewired graph");
-    let state_regs: BTreeSet<u16> = collect_state_regs(&insns, &switch_payloads);
+    let DalvikMethodCfg { cfg, insns, .. } =
+        rewired_method_cfg(&item).expect("a sound rewiring yields the rewired graph");
+    let state_regs: BTreeSet<u16> = collect_state_regs(&insns);
     let recovered: Vec<u8> = normalized_opcode_stream(&cfg, &insns, &state_regs);
     let clean: Vec<u8> = clean_opcode_stream(&clean_with_branch_folded());
     assert_eq!(
@@ -460,13 +450,9 @@ fn const16_state_writes_resolve() {
     );
     assert_eq!(result.residual_dispatcher_edges, 0);
 
-    let DalvikMethodCfg {
-        cfg,
-        insns,
-        switch_payloads,
-        ..
-    } = rewired_method_cfg(&item).expect("a sound rewiring yields the rewired graph");
-    let state_regs: BTreeSet<u16> = collect_state_regs(&insns, &switch_payloads);
+    let DalvikMethodCfg { cfg, insns, .. } =
+        rewired_method_cfg(&item).expect("a sound rewiring yields the rewired graph");
+    let state_regs: BTreeSet<u16> = collect_state_regs(&insns);
     let recovered: Vec<u8> = normalized_opcode_stream(&cfg, &insns, &state_regs);
     let clean: Vec<u8> = clean_opcode_stream(&clean_straight_line());
     assert_eq!(
