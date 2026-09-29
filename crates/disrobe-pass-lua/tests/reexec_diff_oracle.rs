@@ -417,6 +417,10 @@ const BEHAVIOUR_PROGRAMS_PORTABLE: &[(&str, &str)] = &[
         "values",
         include_str!("../../../corpus/lua/behaviour/values.lua"),
     ),
+    (
+        "branches",
+        include_str!("../../../corpus/lua/behaviour/branches.lua"),
+    ),
 ];
 
 #[test]

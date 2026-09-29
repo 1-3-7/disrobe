@@ -167,41 +167,65 @@ fn finalize_gotos(
 }
 
 fn drop_gotos_to_the_next_label(blocks: &mut Vec<StructuredBlock>) {
-    let mut pending: Vec<&mut Vec<StructuredBlock>> = vec![blocks];
-    while let Some(current) = pending.pop() {
-        let mut keep: Vec<bool> = vec![true; current.len()];
-        for (index, block) in current.iter().enumerate() {
-            let StructuredBlock::Goto { pc } = block else {
-                continue;
-            };
-            let next: Option<&StructuredBlock> = current[index + 1..]
-                .iter()
-                .find(|later: &&StructuredBlock| !matches!(later, StructuredBlock::Goto { pc: other } if other == pc));
-            if matches!(next, Some(StructuredBlock::Label { pc: label }) if label == pc) {
-                keep[index] = false;
-            }
-        }
+    let mut pending: Vec<(&mut Vec<StructuredBlock>, Option<usize>)> = vec![(blocks, None)];
+    while let Some((current, follow)) = pending.pop() {
+        let successors: Vec<Option<usize>> = (0..current.len())
+            .map(|index: usize| fallthrough_target(current, index, follow))
+            .collect();
+        let keep: Vec<bool> = current
+            .iter()
+            .zip(&successors)
+            .map(|(block, successor): (&StructuredBlock, &Option<usize>)| {
+                !matches!(block, StructuredBlock::Goto { pc } if *successor == Some(*pc))
+            })
+            .collect();
+        let kept_successors: Vec<Option<usize>> = successors
+            .into_iter()
+            .zip(&keep)
+            .filter_map(|(successor, kept): (Option<usize>, &bool)| kept.then_some(successor))
+            .collect();
         let mut flags: std::vec::IntoIter<bool> = keep.into_iter();
         current.retain(|_| flags.next().unwrap_or(true));
-        for block in current.iter_mut() {
+        for (block, successor) in current.iter_mut().zip(kept_successors) {
             match block {
                 StructuredBlock::If {
                     then_body,
                     else_body,
                     ..
                 } => {
-                    pending.push(then_body);
-                    pending.push(else_body);
+                    pending.push((then_body, successor));
+                    pending.push((else_body, successor));
                 }
                 StructuredBlock::While { body, .. }
                 | StructuredBlock::Repeat { body, .. }
                 | StructuredBlock::NumericFor { body, .. }
                 | StructuredBlock::GenericFor { body, .. } => {
-                    pending.push(body);
+                    pending.push((body, None));
                 }
                 _ => {}
             }
         }
+    }
+}
+
+fn fallthrough_target(
+    blocks: &[StructuredBlock],
+    index: usize,
+    follow: Option<usize>,
+) -> Option<usize> {
+    let own: Option<usize> = match blocks.get(index) {
+        Some(StructuredBlock::Goto { pc }) => Some(*pc),
+        _ => None,
+    };
+    let next: Option<&StructuredBlock> = blocks.get(index + 1..).and_then(|rest: &[StructuredBlock]| {
+        rest.iter().find(
+            |later: &&StructuredBlock| !matches!(later, StructuredBlock::Goto { pc } if Some(*pc) == own),
+        )
+    });
+    match next {
+        Some(StructuredBlock::Label { pc } | StructuredBlock::Goto { pc }) => Some(*pc),
+        Some(_) => None,
+        None => follow,
     }
 }
 
@@ -1740,6 +1764,62 @@ mod tests {
              must not read as a lost edge"
         );
         assert_eq!(result.truncated_regions, 0);
+    }
+
+    #[test]
+    fn a_goto_ending_a_nested_branch_whose_if_falls_into_its_label_is_dropped() {
+        let mut blocks: Vec<StructuredBlock> = vec![
+            StructuredBlock::If {
+                cond: "1 < p3".to_owned(),
+                then_body: vec![
+                    StructuredBlock::Raw("v5 = p2".to_owned()),
+                    StructuredBlock::If {
+                        cond: "v5".to_owned(),
+                        then_body: vec![
+                            StructuredBlock::Raw("v4 = v5".to_owned()),
+                            StructuredBlock::Goto { pc: 19 },
+                        ],
+                        else_body: Vec::new(),
+                    },
+                ],
+                else_body: vec![StructuredBlock::Raw("v4 = p2".to_owned())],
+            },
+            StructuredBlock::Label { pc: 19 },
+            StructuredBlock::Raw("return v4".to_owned()),
+        ];
+        let placed: std::collections::BTreeSet<usize> = std::collections::BTreeSet::from([19]);
+
+        let surviving: usize = finalize_gotos(&mut blocks, &placed);
+
+        assert_eq!(surviving, 0, "blocks: {blocks:?}");
+        assert!(!carries_goto_to(&blocks, 19), "blocks: {blocks:?}");
+        assert!(
+            !blocks
+                .iter()
+                .any(|b: &StructuredBlock| matches!(b, StructuredBlock::Label { .. })),
+            "an unreferenced label is pruned; blocks: {blocks:?}"
+        );
+    }
+
+    #[test]
+    fn a_goto_ending_a_loop_body_is_kept_because_the_body_falls_back_to_the_head() {
+        let mut blocks: Vec<StructuredBlock> = vec![
+            StructuredBlock::While {
+                cond: "i < n".to_owned(),
+                body: vec![
+                    StructuredBlock::Raw("i = i + 1".to_owned()),
+                    StructuredBlock::Goto { pc: 7 },
+                ],
+            },
+            StructuredBlock::Label { pc: 7 },
+            StructuredBlock::Raw("return i".to_owned()),
+        ];
+        let placed: std::collections::BTreeSet<usize> = std::collections::BTreeSet::from([7]);
+
+        let surviving: usize = finalize_gotos(&mut blocks, &placed);
+
+        assert_eq!(surviving, 1, "blocks: {blocks:?}");
+        assert!(carries_goto_to(&blocks, 7), "blocks: {blocks:?}");
     }
 
     fn carries_goto_to(blocks: &[StructuredBlock], target: usize) -> bool {
