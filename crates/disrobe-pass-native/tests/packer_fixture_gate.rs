@@ -47,7 +47,7 @@ fn an_absent_fixture_fails_the_load_instead_of_reaching_a_test_body_as_none() {
 }
 
 #[test]
-fn an_absent_committed_fixture_is_fatal_when_the_requirement_is_set() {
+fn an_absent_committed_fixture_is_always_fatal() {
     let fixture: PackerFixture<'static> = PackerFixture {
         decoder: "NSPack",
         family: "nspack",
@@ -57,7 +57,7 @@ fn an_absent_committed_fixture_is_fatal_when_the_requirement_is_set() {
         enforce_fixture_requirement(&fixture, true, FixtureRequirement::Committed);
     });
     let Err(payload): std::thread::Result<()> = outcome else {
-        panic!("an absent committed fixture was tolerated while {REQUIRE_FIXTURES_VAR} was set");
+        panic!("an absent committed fixture was tolerated");
     };
     let message: &str = payload
         .downcast_ref::<String>()
@@ -87,15 +87,18 @@ fn an_absent_local_only_fixture_skips_at_the_committed_level_and_fails_at_all() 
 
 #[test]
 fn requirement_levels_match_the_documented_spellings() {
-    assert_eq!(requirement_from_value(None), FixtureRequirement::Optional);
-    for falsey in ["", " ", "0", "false", "FALSE", "no", "off", "optional"] {
-        assert_eq!(
-            requirement_from_value(Some(OsStr::new(falsey))),
-            FixtureRequirement::Optional,
-            "{falsey:?} must not enable the requirement"
-        );
-    }
-    for committed in ["1", "true", "yes", "on", "committed"] {
+    assert_eq!(requirement_from_value(None), FixtureRequirement::Committed);
+    for committed in [
+        "",
+        " ",
+        "0",
+        "false",
+        "off",
+        "optional",
+        "1",
+        "true",
+        "committed",
+    ] {
         assert_eq!(
             requirement_from_value(Some(OsStr::new(committed))),
             FixtureRequirement::Committed,

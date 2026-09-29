@@ -332,7 +332,7 @@ fn no_manifest_path_resolves_to_nothing() {
         let committed: bool = is_committed(family, name);
         let fatal: bool = match requirement {
             FixtureRequirement::Every => true,
-            FixtureRequirement::Optional | FixtureRequirement::Committed => committed,
+            FixtureRequirement::Committed => committed,
         };
         if !fatal || entry.absent_is_recorded {
             continue;

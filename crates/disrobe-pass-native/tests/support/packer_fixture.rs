@@ -7,7 +7,6 @@ pub(crate) const REQUIRE_FIXTURES_VAR: &str = "DISROBE_REQUIRE_PACKER_FIXTURES";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FixtureRequirement {
-    Optional,
     Committed,
     Every,
 }
@@ -247,12 +246,10 @@ pub(crate) const COMMITTED_FIXTURES: &[CommittedFixture] = &[
 ];
 
 pub(crate) fn requirement_from_value(value: Option<&OsStr>) -> FixtureRequirement {
-    let Some(raw): Option<&OsStr> = value else {
-        return FixtureRequirement::Optional;
-    };
-    let text: String = raw.to_string_lossy().trim().to_ascii_lowercase();
+    let text: String = value
+        .map(|raw: &OsStr| raw.to_string_lossy().trim().to_ascii_lowercase())
+        .unwrap_or_default();
     match text.as_str() {
-        "" | "0" | "false" | "no" | "off" | "optional" => FixtureRequirement::Optional,
         "all" | "every" | "local" => FixtureRequirement::Every,
         _ => FixtureRequirement::Committed,
     }
@@ -306,19 +303,17 @@ pub(crate) fn enforce_fixture_requirement(
     requirement: FixtureRequirement,
 ) {
     let fatal: bool = match requirement {
-        FixtureRequirement::Optional => false,
         FixtureRequirement::Committed => committed,
         FixtureRequirement::Every => true,
     };
     let path: PathBuf = fixture_path(fixture.family, fixture.name);
     assert!(
         !fatal,
-        "{REQUIRE_FIXTURES_VAR} makes this fixture mandatory for this run, so the {decoder} \
-         decoder cannot be graded and this case must not report success. The {role} fixture of \
-         family {family} is absent: expected it at {resolved}, which is \
+        "the {decoder} decoder cannot be graded and this case must not report success: the \
+         {role} fixture of family {family} is absent at {resolved}, which is \
          corpus/native/packers/{family}/{name} in the repository (tracked_in_git={committed}). \
-         Restore that file, or clear {REQUIRE_FIXTURES_VAR} to permit a run that grades nothing \
-         here.",
+         A tracked fixture is always required, and {REQUIRE_FIXTURES_VAR}=all requires the \
+         local-only ones too. Restore that file.",
         decoder = fixture.decoder,
         role = fixture_role(fixture.name),
         family = fixture.family,
@@ -332,8 +327,8 @@ fn announce_ungraded(fixture: &PackerFixture<'_>, path: &Path) {
     let line: String = format!(
         "\nUNGRADED {decoder}: the {role} fixture of family {family} is absent at {resolved} \
          (corpus/native/packers/{family}/{name}), so this case measured nothing and graded \
-         nothing. Set {REQUIRE_FIXTURES_VAR}=1 to fail instead of skipping when a fixture tracked \
-         in git is missing, or {REQUIRE_FIXTURES_VAR}=all to fail on any absent fixture.\n",
+         nothing; this local-only sample is not tracked in git. Set {REQUIRE_FIXTURES_VAR}=all \
+         to fail on any absent fixture.\n",
         decoder = fixture.decoder,
         role = fixture_role(fixture.name),
         family = fixture.family,
