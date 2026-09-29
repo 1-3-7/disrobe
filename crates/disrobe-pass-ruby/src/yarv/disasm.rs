@@ -96,7 +96,17 @@ fn render_operand(op: &YarvOperand) -> String {
             method,
             argc,
             flags,
-        } => format!("<calldata :{method} argc:{argc} flags:{flags:#x}>"),
+            kwargs,
+        } if kwargs.is_empty() => format!("<calldata :{method} argc:{argc} flags:{flags:#x}>"),
+        YarvOperand::Call {
+            method,
+            argc,
+            flags,
+            kwargs,
+        } => format!(
+            "<calldata :{method} argc:{argc} flags:{flags:#x} kw:[{}]>",
+            kwargs.join(", ")
+        ),
     }
 }
 
@@ -119,6 +129,8 @@ mod tests {
             param_rest_start: 0,
             param_block_start: 0,
             catch_entries: Vec::new(),
+            param_opt_table: Vec::new(),
+            param_keyword: None,
             instructions: vec![
                 YarvIbfInstruction {
                     pc: 0,

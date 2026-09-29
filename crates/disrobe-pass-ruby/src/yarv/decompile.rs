@@ -105,6 +105,8 @@ const FROZEN_STRING_MAGIC: &str = "# frozen_string_literal: true";
 const SHAREABLE_CONSTANT_MAGIC: &str = "# shareable_constant_value: literal";
 const VM_CALL_ARGS_BLOCKARG: u32 = 1 << 1;
 const VM_CALL_KW_SPLAT: u32 = 1 << 6;
+const DEFINECLASS_FLAG_SCOPED: u64 = 0x08;
+const DEFINECLASS_FLAG_HAS_SUPERCLASS: u64 = 0x10;
 
 fn detect_frozen_string_literal(image: &IbfImage) -> bool {
     let mut saw_string_putobject: bool = false;
@@ -202,10 +204,11 @@ fn render_iseq_statements(
         return lines;
     }
     let targets: Vec<Option<usize>> = resolve_branch_targets(body);
+    let opt_end: usize = optional_prologue(body).map_or(0, |(_, end)| end);
     let start: usize = if body.param_flags & PARAM_FLAG_HAS_KW != 0 {
-        keyword_default_prologue(body, ctx).1
+        keyword_default_prologue(body, ctx, opt_end).1
     } else {
-        0
+        opt_end
     };
     let mut stack: Vec<String> = Vec::with_capacity(32);
     let mut stmts: Vec<String> = Vec::new();
@@ -272,7 +275,8 @@ fn try_render_exception_region(
         && let Some(handler) = ctx.body(handler_idx)
     {
         lines.push(format!("{pad}ensure"));
-        lines.extend(render_iseq_statements(handler, ctx, depth + 1));
+        let nested: DecompileContext<'_> = ctx.nested_in(&body.local_table);
+        lines.extend(render_iseq_statements(handler, &nested, depth + 1));
     }
     lines.push(format!("{pad}end"));
 
@@ -557,8 +561,32 @@ fn try_massign(
     stack: &mut Vec<String>,
     stmts: &mut Vec<String>,
 ) -> Option<usize> {
+    let (targets, j): (Vec<String>, usize) = massign_targets(body, ctx, i, hi, 0)?;
+    let rhs_raw: String = pop(stack);
+    let rhs: &str = rhs_raw
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .unwrap_or(&rhs_raw);
+    emit_stmt(stmts, depth, format!("{} = {rhs}", targets.join(", ")));
+    Some(j)
+}
+
+fn massign_targets(
+    body: &YarvIseqBody,
+    ctx: &DecompileContext<'_>,
+    i: usize,
+    hi: usize,
+    nesting: u32,
+) -> Option<(Vec<String>, usize)> {
+    if nesting > MAX_NEST_DEPTH {
+        return None;
+    }
+    let flags: u64 = operand_num(&body.instructions[i], 1);
+    if flags & !1 != 0 {
+        return None;
+    }
     let n: usize = operand_count(&body.instructions[i], 0);
-    let has_splat: bool = operand_num(&body.instructions[i], 1) & 1 == 1;
+    let has_splat: bool = flags & 1 == 1;
     let total: usize = n
         .saturating_add(usize::from(has_splat))
         .min(MAX_OPERAND_COUNT);
@@ -568,24 +596,23 @@ fn try_massign(
     let mut targets: Vec<String> = Vec::with_capacity(total);
     let mut j: usize = i + 1;
     while targets.len() < total && j < hi {
-        let target: String = assignment_target(&body.instructions[j], &body.local_table, ctx)?;
+        let target: String = if body.instructions[j].mnemonic == "expandarray" {
+            let (inner, next): (Vec<String>, usize) =
+                massign_targets(body, ctx, j, hi, nesting + 1)?;
+            j = next;
+            format!("({})", inner.join(", "))
+        } else {
+            let single: String = assignment_target(&body.instructions[j], &body.local_table, ctx)?;
+            j += 1;
+            single
+        };
         if has_splat && targets.len() == n {
             targets.push(format!("*{target}"));
         } else {
             targets.push(target);
         }
-        j += 1;
     }
-    if targets.len() != total {
-        return None;
-    }
-    let rhs_raw: String = pop(stack);
-    let rhs: &str = rhs_raw
-        .strip_prefix('[')
-        .and_then(|s| s.strip_suffix(']'))
-        .unwrap_or(&rhs_raw);
-    emit_stmt(stmts, depth, format!("{} = {rhs}", targets.join(", ")));
-    Some(j)
+    (targets.len() == total).then_some((targets, j))
 }
 
 fn assignment_target(
@@ -776,6 +803,12 @@ fn find_case_in_region(
             ) || is_named_raise_call(&body.instructions[k])
         })
         .map_or(i, |edge| edge + 1);
+    let last_failure: Option<usize> = (i..else_hi)
+        .filter(|&k| body.instructions[k].mnemonic == "jump")
+        .filter_map(|k| targets.get(k).copied().flatten())
+        .filter(|&t| t > i && t < else_hi)
+        .max();
+    let else_open: usize = last_failure.map_or(else_open, |t| t.max(else_open));
     let else_lo: usize = skip_pattern_body_prologue(body, else_open);
     if else_lo >= else_hi || else_lo <= i {
         return None;
@@ -1469,16 +1502,19 @@ fn read_hash_value_pattern(
     } else {
         after_aref
     };
-    if body
-        .instructions
-        .get(val_lo)
-        .is_some_and(is_array_index_literal)
+    if let Some(literal) = body.instructions.get(val_lo)
         && body
             .instructions
             .get(val_lo + 1)
             .is_some_and(|x| x.mnemonic == "checkmatch")
     {
-        let value: String = literal_value_in(body, val_lo, val_lo + 1).unwrap_or_default();
+        let value: String = match literal.mnemonic.as_str() {
+            "putobject" | "putstring" | "putchilledstring" => operand_value(literal, 0),
+            "putobject_INT2FIX_0_" => "0".to_owned(),
+            "putobject_INT2FIX_1_" => "1".to_owned(),
+            "putnil" => "nil".to_owned(),
+            _ => String::new(),
+        };
         if !value.is_empty() {
             return (format!("{key}: {value}"), val_lo + 2);
         }
@@ -1725,16 +1761,33 @@ fn try_case_when(
         return None;
     }
 
+    let region_end: usize = match else_hi
+        .checked_sub(1)
+        .and_then(|last: usize| body.instructions.get(last).map(|x| (last, x)))
+    {
+        Some((last, x)) if x.mnemonic == "jump" => targets
+            .get(last)
+            .copied()
+            .flatten()
+            .filter(|&end: &usize| end > else_hi && end <= hi)
+            .unwrap_or(hi),
+        _ => hi,
+    };
+    let mut starts: Vec<usize> = clauses.iter().map(|(_, start)| *start).collect();
+    starts.sort_unstable();
+    starts.dedup();
     let mut bodies: Vec<(usize, usize)> = Vec::with_capacity(clauses.len());
-    let mut last_end: usize = else_hi;
     for (_, start) in &clauses {
         let body_lo: usize = skip_leading_pop(body, *start);
-        let body_hi: usize = (body_lo..hi)
-            .find(|&x| body.instructions[x].mnemonic == "leave")
-            .map_or(hi, |leave| leave);
-        last_end = last_end.max(body_hi + 1);
+        let body_hi: usize = starts
+            .iter()
+            .copied()
+            .find(|&next: &usize| next > *start)
+            .unwrap_or(region_end)
+            .max(body_lo);
         bodies.push((body_lo, body_hi));
     }
+    let last_end: usize = region_end;
 
     let pad: String = indent(depth);
     stmts.push(format!("{pad}case {subject}"));
@@ -2959,10 +3012,14 @@ fn step(
             emit_stmt(stmts, depth, format!("{} = {v}", id_or_index(instr, 0)));
         }
         "setconstant" => {
+            let cbase: String = pop(stack);
             let v: String = pop(stack);
             let name: String = id_or_index(instr, 0);
-            let _ = pop(stack);
-            emit_stmt(stmts, depth, format!("{name} = {v}"));
+            if cbase == CBASE {
+                emit_stmt(stmts, depth, format!("{name} = {v}"));
+            } else {
+                emit_stmt(stmts, depth, format!("{cbase}::{name} = {v}"));
+            }
         }
         "definemethod" => {
             let name: String = id_or_index(instr, 0);
@@ -2986,12 +3043,20 @@ fn step(
                 Some(YarvOperand::IseqRef(index)) if *index != u32::MAX => ctx.body(*index),
                 _ => None,
             };
-            let _ = pop(stack);
-            let _ = pop(stack);
+            let superclass: String = pop(stack);
+            let cbase: String = pop(stack);
+            let scoped_name: String = if flags & DEFINECLASS_FLAG_SCOPED != 0 {
+                format!("{cbase}::{name}")
+            } else {
+                name
+            };
             let header: String = match flags & 7 {
-                1 => "class << self".to_owned(),
-                2 => format!("module {name}"),
-                _ => format!("class {name}"),
+                1 => format!("class << {cbase}"),
+                2 => format!("module {scoped_name}"),
+                _ if flags & DEFINECLASS_FLAG_HAS_SUPERCLASS != 0 => {
+                    format!("class {scoped_name} < {superclass}")
+                }
+                _ => format!("class {scoped_name}"),
             };
             stmts.extend(render_nested(header, child, ctx, depth, true));
             push(stack, "nil".to_owned());
@@ -3056,7 +3121,14 @@ fn step(
             }
         }
         "throw" => emit_throw(instr, depth, stack, stmts),
-        "nop" | "putspecialobject" | "intern" | "tostring" | "putchilledstring_dummy" => {}
+        "putspecialobject" => push(
+            stack,
+            match operand_num(instr, 0) {
+                1 => VMCORE.to_owned(),
+                _ => CBASE.to_owned(),
+            },
+        ),
+        "nop" | "intern" | "tostring" | "putchilledstring_dummy" => {}
         _ => {}
     }
 }
@@ -3150,10 +3222,6 @@ fn render_interpolation(parts: &[String]) -> String {
         [] => "\"\"".to_owned(),
         [single] => single.clone(),
         _ => {
-            let has_literal: bool = parts.iter().any(|p| is_string_literal(p));
-            if !has_literal {
-                return parts.join(" + ");
-            }
             let mut out: String = String::with_capacity(MAX_EXPR_LEN.min(128));
             out.push('"');
             for part in parts {
@@ -3171,17 +3239,21 @@ fn render_interpolation(parts: &[String]) -> String {
     }
 }
 
-#[inline]
-fn is_string_literal(s: &str) -> bool {
-    string_literal_body(s).is_some()
-}
-
 fn string_literal_body(s: &str) -> Option<&str> {
     let inner: &str = s.strip_prefix('"')?.strip_suffix('"')?;
-    if inner.contains('"') || inner.contains('\\') || inner.contains("#{") {
-        return None;
+    let mut escaped: bool = false;
+    for c in inner.chars() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match c {
+            '\\' => escaped = true,
+            '"' => return None,
+            _ => {}
+        }
     }
-    Some(inner)
+    (!escaped && !inner.contains("#{")).then_some(inner)
 }
 
 fn method_iseq<'a>(
@@ -3204,13 +3276,57 @@ const PARAM_FLAG_HAS_KW: u64 = 1 << 4;
 const PARAM_FLAG_HAS_KWREST: u64 = 1 << 5;
 const PARAM_FLAG_HAS_BLOCK: u64 = 1 << 6;
 
+fn instruction_at_pc(body: &YarvIseqBody, target: u32) -> Option<usize> {
+    let mut pc: u32 = 0;
+    for (idx, instr) in body.instructions.iter().enumerate() {
+        if pc == target {
+            return Some(idx);
+        }
+        pc = pc.saturating_add(1 + u32::try_from(instr.operands.len()).unwrap_or(u32::MAX));
+    }
+    (pc == target).then_some(body.instructions.len())
+}
+
+fn optional_prologue(body: &YarvIseqBody) -> Option<(Vec<usize>, usize)> {
+    if body.param_flags & PARAM_FLAG_HAS_OPT == 0 || body.param_opt_table.is_empty() {
+        return None;
+    }
+    let entries: Vec<usize> = body
+        .param_opt_table
+        .iter()
+        .map(|&pc: &u32| instruction_at_pc(body, pc))
+        .collect::<Option<Vec<usize>>>()?;
+    let end: usize = *entries.last()?;
+    Some((entries, end))
+}
+
+fn optional_defaults(body: &YarvIseqBody, ctx: &DecompileContext<'_>) -> Vec<Option<String>> {
+    let Some((entries, _)): Option<(Vec<usize>, usize)> = optional_prologue(body) else {
+        return Vec::new();
+    };
+    let targets: Vec<Option<usize>> = resolve_branch_targets(body);
+    entries
+        .windows(2)
+        .map(|pair: &[usize]| {
+            let (lo, hi): (usize, usize) = (pair[0], pair[1]);
+            let store: usize = hi.checked_sub(1)?;
+            let last: &YarvIbfInstruction = body.instructions.get(store)?;
+            if !matches!(last.mnemonic.as_str(), "setlocal_WC_0" | "setlocal") || store < lo {
+                return None;
+            }
+            render_value_region(body, ctx, 0, lo, store, &targets).filter(|v| !v.is_empty())
+        })
+        .collect()
+}
+
 fn keyword_default_prologue(
     body: &YarvIseqBody,
     ctx: &DecompileContext<'_>,
+    start: usize,
 ) -> (Vec<(String, String)>, usize) {
     let targets: Vec<Option<usize>> = resolve_branch_targets(body);
     let mut defaults: Vec<(String, String)> = Vec::new();
-    let mut i: usize = 0;
+    let mut i: usize = start;
     while let Some(check) = body.instructions.get(i) {
         if check.mnemonic != "checkkeyword" {
             break;
@@ -3271,11 +3387,27 @@ fn render_param_signature(body: &YarvIseqBody, ctx: &DecompileContext<'_>) -> St
     let kwrest_idx: Option<usize> = has_kwrest
         .then(|| block_idx.map_or_else(|| count.saturating_sub(1), |b| b.saturating_sub(1)));
     let kw_defaults: Vec<(String, String)> = if has_kw {
-        keyword_default_prologue(body, ctx).0
+        let opt_end: usize = optional_prologue(body).map_or(0, |(_, end)| end);
+        let mut defaults: Vec<(String, String)> = keyword_default_prologue(body, ctx, opt_end).0;
+        if let Some(keyword) = &body.param_keyword {
+            let optional: &[Option<String>] = keyword
+                .names
+                .get(keyword.required_num as usize..)
+                .unwrap_or(&[]);
+            for (name, value) in optional.iter().zip(&keyword.defaults) {
+                if let (Some(name), Some(value)) = (name, value)
+                    && !defaults.iter().any(|(kw, _)| kw == name)
+                {
+                    defaults.push((name.clone(), render_operand(value)));
+                }
+            }
+        }
+        defaults
     } else {
         Vec::new()
     };
 
+    let opt_defaults: Vec<Option<String>> = optional_defaults(body, ctx);
     let mut params: Vec<String> = Vec::with_capacity(count);
     for idx in 0..count {
         let Some(name): Option<&str> = body.local_table.get(idx).and_then(Option::as_deref) else {
@@ -3291,7 +3423,10 @@ fn render_param_signature(body: &YarvIseqBody, ctx: &DecompileContext<'_>) -> St
         } else if Some(idx) == kwrest_idx {
             format!("**{name}")
         } else if has_opt && (opt_lo..opt_hi).contains(&idx) {
-            format!("{name} = nil")
+            match opt_defaults.get(idx - opt_lo) {
+                Some(Some(value)) => format!("{name} = {value}"),
+                _ => format!("{name} = nil"),
+            }
         } else if has_kw && idx >= opt_hi && Some(idx) != rest_idx {
             match kw_defaults.iter().find(|(kw, _)| kw == name) {
                 Some((_, value)) => format!("{name}: {value}"),
@@ -3354,15 +3489,22 @@ fn emit_send(
     stack: &mut Vec<String>,
     stmts: &mut Vec<String>,
 ) {
-    let (method, argc, flags): (String, usize, u32) = match instr.operands.first() {
-        Some(YarvOperand::Call {
-            method,
-            argc,
-            flags,
-        }) => (method.clone(), call_arg_count(*argc), *flags),
-        Some(YarvOperand::Id(name)) => (name.clone(), 0, 0),
-        _ => ("call".to_owned(), 0, 0),
-    };
+    let (method, argc, flags, kwargs): (String, usize, u32, &[String]) =
+        match instr.operands.first() {
+            Some(YarvOperand::Call {
+                method,
+                argc,
+                flags,
+                kwargs,
+            }) => (
+                method.clone(),
+                call_arg_count(*argc),
+                *flags,
+                kwargs.as_slice(),
+            ),
+            Some(YarvOperand::Id(name)) => (name.clone(), 0, 0, &[]),
+            _ => ("call".to_owned(), 0, 0, &[]),
+        };
     if method == "ensure_shareable" && argc == 2 {
         let _name: String = pop(stack);
         let value: String = pop(stack);
@@ -3379,6 +3521,7 @@ fn emit_send(
         let _ = pop(stack);
     }
     let mut args: Vec<String> = pop_n(stack, argc);
+    name_keyword_arguments(&mut args, kwargs);
     if flags & VM_CALL_KW_SPLAT != 0
         && let Some(slot) = args.last_mut()
         && !slot.starts_with("**")
@@ -3398,12 +3541,47 @@ fn emit_send(
         args.push("...".to_owned());
     }
     let recv: String = pop(stack);
+    if recv == VMCORE
+        && let Some(rendered) = render_vmcore_call(&method, &args, block_iseq.is_some())
+    {
+        match rendered {
+            VmcoreCall::Value(value) => {
+                if block_iseq.is_none() {
+                    push(stack, value);
+                    return;
+                }
+            }
+            VmcoreCall::Statement(line) => {
+                emit_stmt(stmts, depth, line);
+                push(stack, "nil".to_owned());
+                return;
+            }
+        }
+    }
+    let stabby: bool = recv == VMCORE && method == "lambda" && args.is_empty();
+    let recv: String = if recv == VMCORE {
+        "self".to_owned()
+    } else {
+        recv
+    };
     let call: String = render_method_call(&recv, &method, &args);
 
     match block_iseq {
         Some(block) if depth <= MAX_NEST_DEPTH => {
             let block_ctx: DecompileContext<'_> = ctx.nested_in(enclosing);
-            let block_lines: Vec<String> = render_block_lines(block, &block_ctx, depth);
+            let mut block_lines: Vec<String> = render_block_lines(block, &block_ctx, depth);
+            if stabby && let Some(header) = block_lines.first_mut() {
+                *header = stabby_header(header);
+                let body: String = if block_lines.len() <= 1 {
+                    block_lines.concat()
+                } else {
+                    block_call_expression("", &block_lines, depth)
+                        .trim_start()
+                        .to_owned()
+                };
+                push(stack, format!("->{body}"));
+                return;
+            }
             if block_lines.len() <= 1 {
                 let inline: String = block_lines.first().map_or_else(
                     || format!("{call} {{ }}"),
@@ -3411,16 +3589,29 @@ fn emit_send(
                 );
                 push(stack, inline);
             } else {
-                emit_block_call(stmts, &call, &block_lines, depth);
-                push(stack, String::new());
+                push(stack, block_call_expression(&call, &block_lines, depth));
             }
         }
         _ => push(stack, call),
     }
 }
 
+fn stabby_header(header: &str) -> String {
+    let (opener, rest): (&str, &str) = if let Some(rest) = header.strip_prefix("{ |") {
+        ("{", rest)
+    } else if let Some(rest) = header.strip_prefix("do |") {
+        ("do", rest)
+    } else {
+        return format!(" {header}");
+    };
+    match rest.split_once('|') {
+        Some((params, body)) => format!("({params}) {opener}{body}"),
+        None => format!(" {header}"),
+    }
+}
+
 fn render_block_lines(block: &YarvIseqBody, ctx: &DecompileContext<'_>, depth: u32) -> Vec<String> {
-    let params: String = block_param_list(block);
+    let params: String = block_param_list(block, ctx);
     let inner: Vec<String> = render_iseq_statements(block, ctx, depth.saturating_add(1));
     let body_only: Vec<&str> = inner
         .iter()
@@ -3444,28 +3635,61 @@ fn render_block_lines(block: &YarvIseqBody, ctx: &DecompileContext<'_>, depth: u
     lines
 }
 
-fn emit_block_call(stmts: &mut Vec<String>, call: &str, block_lines: &[String], depth: u32) {
+fn block_call_expression(call: &str, block_lines: &[String], depth: u32) -> String {
     let pad: String = indent(depth);
+    let mut out: String = String::new();
     if let Some(header) = block_lines.first() {
-        stmts.push(format!("{pad}{call} {header}"));
+        out.push_str(call);
+        out.push(' ');
+        out.push_str(header);
     }
     for line in &block_lines[1..] {
-        stmts.push(line.clone());
+        out.push('\n');
+        out.push_str(line);
     }
-    stmts.push(format!("{pad}end"));
+    out.push('\n');
+    out.push_str(&pad);
+    out.push_str("end");
+    out
 }
 
-fn block_param_list(block: &YarvIseqBody) -> String {
-    let params: Vec<&str> = block
-        .local_table
-        .iter()
-        .take(block.param_lead_num as usize)
-        .filter_map(Option::as_deref)
-        .collect();
-    if params.is_empty() {
-        String::new()
+fn name_keyword_arguments(args: &mut [String], kwargs: &[String]) {
+    let Some(first): Option<usize> = args.len().checked_sub(kwargs.len()) else {
+        return;
+    };
+    if kwargs.is_empty() || kwargs.iter().any(String::is_empty) {
+        return;
+    }
+    for (slot, name) in args[first..].iter_mut().zip(kwargs) {
+        *slot = format!("{}: {slot}", keyword_label(name));
+    }
+}
+
+fn keyword_label(name: &str) -> String {
+    let plain: bool = name
+        .strip_suffix(['?', '!'])
+        .unwrap_or(name)
+        .chars()
+        .all(|c: char| c.is_ascii_alphanumeric() || c == '_')
+        && name
+            .chars()
+            .next()
+            .is_some_and(|c: char| c.is_ascii_alphabetic() || c == '_');
+    if plain {
+        name.to_owned()
     } else {
-        format!(" |{}|", params.join(", "))
+        format!("\"{name}\"")
+    }
+}
+
+fn block_param_list(block: &YarvIseqBody, ctx: &DecompileContext<'_>) -> String {
+    let signature: String = render_param_signature(block, ctx);
+    match signature
+        .strip_prefix('(')
+        .and_then(|s: &str| s.strip_suffix(')'))
+    {
+        Some(inner) if !inner.is_empty() => format!(" |{inner}|"),
+        _ => String::new(),
     }
 }
 
@@ -3474,12 +3698,18 @@ fn is_forward_marker(s: &str) -> bool {
 }
 
 fn emit_super(instr: &YarvIbfInstruction, stack: &mut Vec<String>) {
-    let (argc, flags): (usize, u32) = match instr.operands.first() {
-        Some(YarvOperand::Call { argc, flags, .. }) => (call_arg_count(*argc), *flags),
-        _ => (0, 0),
+    let (argc, flags, kwargs): (usize, u32, &[String]) = match instr.operands.first() {
+        Some(YarvOperand::Call {
+            argc,
+            flags,
+            kwargs,
+            ..
+        }) => (call_arg_count(*argc), *flags, kwargs.as_slice()),
+        _ => (0, 0, &[]),
     };
     let block_arg: Option<String> = (flags & VM_CALL_ARGS_BLOCKARG != 0).then(|| pop(stack));
     let mut args: Vec<String> = pop_n(stack, argc);
+    name_keyword_arguments(&mut args, kwargs);
     if flags & VM_CALL_KW_SPLAT != 0
         && let Some(slot) = args.last_mut()
         && !slot.starts_with("**")
@@ -3555,6 +3785,77 @@ const SELF_QUALIFIED_KEYWORDS: &[&str] = &[
     "false", "and", "or", "not", "in", "for", "ensure", "rescue", "raise",
 ];
 
+const VMCORE: &str = "\u{0}vmcore";
+const CBASE: &str = "\u{0}cbase";
+
+enum VmcoreCall {
+    Value(String),
+    Statement(String),
+}
+
+fn symbol_name(rendered: &str) -> Option<&str> {
+    rendered.strip_prefix(':').filter(|s: &&str| !s.is_empty())
+}
+
+fn render_vmcore_call(method: &str, args: &[String], has_block: bool) -> Option<VmcoreCall> {
+    match (method, args) {
+        ("lambda", []) if has_block => Some(VmcoreCall::Value("lambda".to_owned())),
+        ("core#hash_merge_ptr", [hash, pairs @ ..]) if pairs.len() % 2 == 0 => {
+            let rendered: Vec<String> = pairs
+                .chunks(2)
+                .map(|kv: &[String]| format!("{} => {}", kv[0], kv[1]))
+                .collect();
+            let merged: String = match hash.strip_suffix('}') {
+                Some(open) if open.trim_end().ends_with('{') => {
+                    format!("{{ {} }}", rendered.join(", "))
+                }
+                Some(open) if hash.starts_with('{') => {
+                    format!("{}, {} }}", open.trim_end(), rendered.join(", "))
+                }
+                _ => format!("{{ **{hash}, {} }}", rendered.join(", ")),
+            };
+            Some(VmcoreCall::Value(merged))
+        }
+        ("core#hash_merge_kwd", [lhs, rhs]) => {
+            Some(VmcoreCall::Value(format!("{{ **{lhs}, **{rhs} }}")))
+        }
+        ("core#set_method_alias", [_, new, old]) | ("core#set_variable_alias", [new, old]) => Some(
+            VmcoreCall::Statement(format!("alias {} {}", symbol_name(new)?, symbol_name(old)?)),
+        ),
+        ("core#undef_method", [_, name]) => Some(VmcoreCall::Statement(format!(
+            "undef {}",
+            symbol_name(name)?
+        ))),
+        _ => None,
+    }
+}
+
+fn needs_receiver_parens(recv: &str) -> bool {
+    let mut depth: i32 = 0;
+    let mut quote: Option<char> = None;
+    let mut escaped: bool = false;
+    for c in recv.chars() {
+        if let Some(q) = quote {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == q {
+                quote = None;
+            }
+            continue;
+        }
+        match c {
+            '"' | '\'' => quote = Some(c),
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            ' ' | '\n' if depth == 0 => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
 fn render_method_call(recv: &str, method: &str, args: &[String]) -> String {
     let method: &str = sanitize_method(method);
     let prefix: String = if (recv == "self" && !SELF_QUALIFIED_KEYWORDS.contains(&method))
@@ -3562,6 +3863,8 @@ fn render_method_call(recv: &str, method: &str, args: &[String]) -> String {
         || is_forward_marker(recv)
     {
         String::new()
+    } else if needs_receiver_parens(recv) {
+        format!("({recv}).")
     } else {
         format!("{recv}.")
     };
@@ -3758,18 +4061,24 @@ fn getspecial_name(instr: &YarvIbfInstruction) -> String {
 }
 
 fn operand_value(instr: &YarvIbfInstruction, idx: usize) -> String {
-    match instr.operands.get(idx) {
-        Some(YarvOperand::Literal(s) | YarvOperand::StrLiteral(s)) => ruby_string_literal(s),
-        Some(YarvOperand::SymLiteral(s)) => format!(":{}", symbol_literal(s)),
-        Some(YarvOperand::NumLiteral(s)) => s.clone(),
-        Some(YarvOperand::Id(s)) => format!(":{s}"),
-        Some(YarvOperand::ObjectRef(i)) => format!("obj[{i}]"),
-        Some(YarvOperand::IseqRef(i)) => format!("iseq[{i}]"),
-        Some(YarvOperand::Num(n)) => n.to_string(),
-        Some(YarvOperand::Offset(o)) => format!("->{o}"),
-        Some(YarvOperand::Builtin(b)) => format!("<builtin {b}>"),
-        Some(YarvOperand::Call { method, .. }) => format!(":{method}"),
-        None => "_".to_owned(),
+    instr
+        .operands
+        .get(idx)
+        .map_or_else(|| "_".to_owned(), render_operand)
+}
+
+fn render_operand(operand: &YarvOperand) -> String {
+    match operand {
+        YarvOperand::Literal(s) | YarvOperand::StrLiteral(s) => ruby_string_literal(s),
+        YarvOperand::SymLiteral(s) => format!(":{}", symbol_literal(s)),
+        YarvOperand::NumLiteral(s) => s.clone(),
+        YarvOperand::Id(s) => format!(":{s}"),
+        YarvOperand::ObjectRef(i) => format!("obj[{i}]"),
+        YarvOperand::IseqRef(i) => format!("iseq[{i}]"),
+        YarvOperand::Num(n) => n.to_string(),
+        YarvOperand::Offset(o) => format!("->{o}"),
+        YarvOperand::Builtin(b) => format!("<builtin {b}>"),
+        YarvOperand::Call { method, .. } => format!(":{method}"),
     }
 }
 
@@ -3869,6 +4178,16 @@ mod tests {
         decompile_in_image(body, &image)
     }
 
+    fn empty_image() -> IbfImage {
+        IbfImage {
+            iseq_offsets: Vec::new(),
+            objects: Vec::new(),
+            iseqs: Vec::new(),
+            recovered_literal_count: 0,
+            recovered_instruction_count: 0,
+        }
+    }
+
     fn decompile_in_image(body: &YarvIseqBody, image: &IbfImage) -> Vec<String> {
         let ctx: DecompileContext<'_> = DecompileContext::from_image(image);
         super::render_iseq_statements(body, &ctx, 0)
@@ -3900,6 +4219,8 @@ mod tests {
             param_rest_start: 0,
             param_block_start: 0,
             catch_entries: Vec::new(),
+            param_opt_table: Vec::new(),
+            param_keyword: None,
         }
     }
 
@@ -3927,6 +4248,8 @@ mod tests {
     #[test]
     fn catch_table_rescue_wraps_protected_range_in_begin_rescue_end() {
         let parent: YarvIseqBody = YarvIseqBody {
+            param_opt_table: Vec::new(),
+            param_keyword: None,
             index: 0,
             offset: 0,
             iseq_size: 0,
@@ -3953,6 +4276,7 @@ mod tests {
                         method: "/".to_owned(),
                         argc: 1,
                         flags: 0,
+                        kwargs: Vec::new(),
                     }],
                 ),
                 instr("nop", vec![]),
@@ -3971,6 +4295,8 @@ mod tests {
             param_rest_start: 0,
             param_block_start: 0,
             catch_entries: Vec::new(),
+            param_opt_table: Vec::new(),
+            param_keyword: None,
             instructions: vec![
                 instr("getlocal_WC_0", vec![YarvOperand::Num(3)]),
                 instr(
@@ -4005,6 +4331,8 @@ mod tests {
     #[test]
     fn rescue_clause_recovers_class_and_bound_variable_to_parent_scope() {
         let parent: YarvIseqBody = YarvIseqBody {
+            param_opt_table: Vec::new(),
+            param_keyword: None,
             index: 0,
             offset: 0,
             iseq_size: 0,
@@ -4035,6 +4363,7 @@ mod tests {
                         method: "/".to_owned(),
                         argc: 1,
                         flags: 0,
+                        kwargs: Vec::new(),
                     }],
                 ),
                 instr("nop", vec![]),
@@ -4053,6 +4382,8 @@ mod tests {
             param_rest_start: 0,
             param_block_start: 0,
             catch_entries: Vec::new(),
+            param_opt_table: Vec::new(),
+            param_keyword: None,
             instructions: vec![
                 instr("getlocal_WC_0", vec![YarvOperand::Num(3)]),
                 instr(
@@ -4070,6 +4401,7 @@ mod tests {
                         method: "message".to_owned(),
                         argc: 0,
                         flags: 0,
+                        kwargs: Vec::new(),
                     }],
                 ),
                 instr("leave", vec![]),
@@ -4113,6 +4445,8 @@ mod tests {
             param_rest_start: 0,
             param_block_start: 0,
             catch_entries: Vec::new(),
+            param_opt_table: Vec::new(),
+            param_keyword: None,
             instructions: vec![
                 instr(
                     "getinstancevariable",
@@ -4151,6 +4485,8 @@ mod tests {
             param_rest_start: 0,
             param_block_start: 0,
             catch_entries: Vec::new(),
+            param_opt_table: Vec::new(),
+            param_keyword: None,
             instructions: vec![
                 instr(
                     "getclassvariable",
@@ -4163,6 +4499,7 @@ mod tests {
                         method: "+".to_owned(),
                         argc: 1,
                         flags: 0,
+                        kwargs: Vec::new(),
                     }],
                 ),
                 instr(
@@ -4198,6 +4535,8 @@ mod tests {
             param_rest_start: 0,
             param_block_start: 0,
             catch_entries: Vec::new(),
+            param_opt_table: Vec::new(),
+            param_keyword: None,
             instructions: vec![
                 instr("newarray", vec![YarvOperand::Num(0)]),
                 instr(
@@ -4225,6 +4564,8 @@ mod tests {
             param_rest_start: 0,
             param_block_start: 0,
             catch_entries: Vec::new(),
+            param_opt_table: Vec::new(),
+            param_keyword: None,
             instructions: vec![
                 instr("getlocal_WC_0", vec![YarvOperand::Num(3)]),
                 instr("branchunless", vec![YarvOperand::Offset(4)]),
@@ -4254,6 +4595,8 @@ mod tests {
             param_rest_start: 0,
             param_block_start: 0,
             catch_entries: Vec::new(),
+            param_opt_table: Vec::new(),
+            param_keyword: None,
             instructions: vec![
                 instr("getlocal_WC_0", vec![YarvOperand::Num(3)]),
                 instr("putobject", vec![YarvOperand::Id("n".to_owned())]),
@@ -4264,6 +4607,7 @@ mod tests {
                         method: "[]".to_owned(),
                         argc: 1,
                         flags: 0,
+                        kwargs: Vec::new(),
                     }],
                 ),
                 instr("putobject", vec![YarvOperand::Num(4)]),
@@ -4273,6 +4617,7 @@ mod tests {
                         method: "+".to_owned(),
                         argc: 1,
                         flags: 0,
+                        kwargs: Vec::new(),
                     }],
                 ),
                 instr(
@@ -4281,6 +4626,7 @@ mod tests {
                         method: "[]=".to_owned(),
                         argc: 2,
                         flags: 0,
+                        kwargs: Vec::new(),
                     }],
                 ),
                 instr("pop", vec![]),
@@ -4308,6 +4654,8 @@ mod tests {
             param_rest_start: 0,
             param_block_start: 0,
             catch_entries: Vec::new(),
+            param_opt_table: Vec::new(),
+            param_keyword: None,
             instructions: vec![
                 instr("getlocal_WC_0", vec![YarvOperand::Num(3)]),
                 instr("dup", vec![]),
@@ -4317,6 +4665,7 @@ mod tests {
                         method: "value".to_owned(),
                         argc: 0,
                         flags: 0,
+                        kwargs: Vec::new(),
                     }],
                 ),
                 instr("branchif", vec![YarvOperand::Offset(4)]),
@@ -4327,6 +4676,7 @@ mod tests {
                         method: "value=".to_owned(),
                         argc: 1,
                         flags: 0,
+                        kwargs: Vec::new(),
                     }],
                 ),
                 instr("pop", vec![]),
@@ -4354,6 +4704,8 @@ mod tests {
             param_rest_start: 0,
             param_block_start: 0,
             catch_entries: Vec::new(),
+            param_opt_table: Vec::new(),
+            param_keyword: None,
             instructions: vec![
                 instr("getlocal_WC_0", vec![YarvOperand::Num(3)]),
                 instr(
@@ -4367,6 +4719,7 @@ mod tests {
                         method: "===".to_owned(),
                         argc: 1,
                         flags: 0,
+                        kwargs: Vec::new(),
                     }],
                 ),
                 instr("branchif", vec![YarvOperand::Offset(12)]),
@@ -4381,6 +4734,7 @@ mod tests {
                         method: "===".to_owned(),
                         argc: 1,
                         flags: 0,
+                        kwargs: Vec::new(),
                     }],
                 ),
                 instr("branchif", vec![YarvOperand::Offset(8)]),
@@ -4418,6 +4772,8 @@ mod tests {
             param_rest_start: 0,
             param_block_start: 0,
             catch_entries: Vec::new(),
+            param_opt_table: Vec::new(),
+            param_keyword: None,
             instructions: vec![
                 instr("getlocal_WC_0", vec![YarvOperand::Num(3)]),
                 instr("dup", vec![]),
@@ -4433,6 +4789,7 @@ mod tests {
                         method: "===".to_owned(),
                         argc: 1,
                         flags: 0,
+                        kwargs: Vec::new(),
                     }],
                 ),
                 instr("branchif", vec![YarvOperand::Offset(12)]),
@@ -4444,6 +4801,7 @@ mod tests {
                         method: "===".to_owned(),
                         argc: 1,
                         flags: 0,
+                        kwargs: Vec::new(),
                     }],
                 ),
                 instr("branchif", vec![YarvOperand::Offset(8)]),
@@ -4481,6 +4839,8 @@ mod tests {
             param_rest_start: 0,
             param_block_start: 0,
             catch_entries: Vec::new(),
+            param_opt_table: Vec::new(),
+            param_keyword: None,
             instructions: vec![
                 instr("getlocal_WC_0", vec![YarvOperand::Num(4)]),
                 instr("dup", vec![]),
@@ -4508,6 +4868,8 @@ mod tests {
             param_rest_start: 0,
             param_block_start: 0,
             catch_entries: Vec::new(),
+            param_opt_table: Vec::new(),
+            param_keyword: None,
             instructions: vec![
                 instr("getlocal_WC_0", vec![YarvOperand::Num(4)]),
                 instr("dup", vec![]),
@@ -4535,6 +4897,8 @@ mod tests {
             param_rest_start: 0,
             param_block_start: 0,
             catch_entries: Vec::new(),
+            param_opt_table: Vec::new(),
+            param_keyword: None,
             instructions: vec![
                 instr("getlocal_WC_0", vec![YarvOperand::Num(3)]),
                 instr("dup", vec![]),
@@ -4545,6 +4909,7 @@ mod tests {
                         method: "size".to_owned(),
                         argc: 0,
                         flags: 0,
+                        kwargs: Vec::new(),
                     }],
                 ),
                 instr("leave", vec![]),
@@ -4568,6 +4933,8 @@ mod tests {
             param_rest_start: 0,
             param_block_start: 0,
             catch_entries: Vec::new(),
+            param_opt_table: Vec::new(),
+            param_keyword: None,
             instructions: vec![
                 instr("putobject_INT2FIX_0_", vec![]),
                 instr("setlocal_WC_0", vec![YarvOperand::Num(3)]),
@@ -4580,6 +4947,7 @@ mod tests {
                         method: "+".to_owned(),
                         argc: 1,
                         flags: 0,
+                        kwargs: Vec::new(),
                     }],
                 ),
                 instr("setlocal_WC_0", vec![YarvOperand::Num(3)]),
@@ -4591,6 +4959,7 @@ mod tests {
                         method: "<".to_owned(),
                         argc: 1,
                         flags: 0,
+                        kwargs: Vec::new(),
                     }],
                 ),
                 instr("branchif", vec![YarvOperand::Offset((-15_i32) as u32)]),
@@ -4620,6 +4989,8 @@ mod tests {
             param_rest_start: 0,
             param_block_start: 0,
             catch_entries: Vec::new(),
+            param_opt_table: Vec::new(),
+            param_keyword: None,
             instructions: vec![
                 instr("getlocal_WC_0", vec![YarvOperand::Num(3)]),
                 instr("putobject_INT2FIX_0_", vec![]),
@@ -4629,6 +5000,7 @@ mod tests {
                         method: ">".to_owned(),
                         argc: 1,
                         flags: 0,
+                        kwargs: Vec::new(),
                     }],
                 ),
                 instr("branchunless", vec![YarvOperand::Offset(3)]),
@@ -4669,9 +5041,9 @@ mod tests {
     }
 
     #[test]
-    fn interpolation_all_expression_parts_fall_back_to_concat() {
+    fn interpolation_of_expression_parts_stays_an_interpolation() {
         let parts: Vec<String> = vec!["a".to_owned(), "b".to_owned()];
-        assert_eq!(render_interpolation(&parts), "a + b");
+        assert_eq!(render_interpolation(&parts), "\"#{a}#{b}\"");
     }
 
     #[test]
@@ -4693,6 +5065,8 @@ mod tests {
             param_rest_start: 0,
             param_block_start: 0,
             catch_entries: Vec::new(),
+            param_opt_table: Vec::new(),
+            param_keyword: None,
             instructions: vec![
                 instr(
                     "putobject",
@@ -4709,6 +5083,7 @@ mod tests {
                         method: "to_s".to_owned(),
                         argc: 0,
                         flags: 0,
+                        kwargs: Vec::new(),
                     }],
                 ),
                 instr("anytostring", vec![]),
@@ -4756,6 +5131,8 @@ mod tests {
             param_rest_start: 0,
             param_block_start: 0,
             catch_entries: Vec::new(),
+            param_opt_table: Vec::new(),
+            param_keyword: None,
             instructions: vec![
                 instr("putself", vec![]),
                 instr(
@@ -4768,6 +5145,7 @@ mod tests {
                         method: "puts".to_owned(),
                         argc: 1,
                         flags: 0,
+                        kwargs: Vec::new(),
                     }],
                 ),
                 instr("leave", vec![]),
@@ -4803,6 +5181,8 @@ mod tests {
             param_rest_start: 0,
             param_block_start: 0,
             catch_entries: Vec::new(),
+            param_opt_table: Vec::new(),
+            param_keyword: None,
             instructions: vec![
                 instr("putobject", vec![YarvOperand::Num(0)]),
                 instr("setlocal_WC_0", vec![YarvOperand::Num(3)]),
@@ -4829,6 +5209,8 @@ mod tests {
             param_rest_start: 0,
             param_block_start: 0,
             catch_entries: Vec::new(),
+            param_opt_table: Vec::new(),
+            param_keyword: None,
             instructions: Vec::new(),
         };
         let main: YarvIseqBody = YarvIseqBody {
@@ -4843,6 +5225,8 @@ mod tests {
             param_rest_start: 0,
             param_block_start: 0,
             catch_entries: Vec::new(),
+            param_opt_table: Vec::new(),
+            param_keyword: None,
             instructions: vec![
                 instr(
                     "definemethod",
@@ -4931,9 +5315,14 @@ mod tests {
             param_rest_start: 0,
             param_block_start: 0,
             catch_entries: Vec::new(),
+            param_opt_table: Vec::new(),
+            param_keyword: None,
             instructions: Vec::new(),
         };
-        assert_eq!(block_param_list(&with_params), " |x, y|");
+        assert_eq!(
+            block_param_list(&with_params, &DecompileContext::from_image(&empty_image())),
+            " |x, y|"
+        );
         let no_params: YarvIseqBody = YarvIseqBody {
             index: 0,
             offset: 0,
@@ -4946,9 +5335,14 @@ mod tests {
             param_rest_start: 0,
             param_block_start: 0,
             catch_entries: Vec::new(),
+            param_opt_table: Vec::new(),
+            param_keyword: None,
             instructions: Vec::new(),
         };
-        assert_eq!(block_param_list(&no_params), "");
+        assert_eq!(
+            block_param_list(&no_params, &DecompileContext::from_image(&empty_image())),
+            ""
+        );
     }
 
     #[test]
@@ -4965,6 +5359,8 @@ mod tests {
             param_rest_start: 0,
             param_block_start: 0,
             catch_entries: Vec::new(),
+            param_opt_table: Vec::new(),
+            param_keyword: None,
             instructions: Vec::new(),
         };
         let main: YarvIseqBody = YarvIseqBody {
@@ -4979,6 +5375,8 @@ mod tests {
             param_rest_start: 0,
             param_block_start: 0,
             catch_entries: Vec::new(),
+            param_opt_table: Vec::new(),
+            param_keyword: None,
             instructions: vec![
                 instr("getlocal_WC_0", vec![YarvOperand::Num(3)]),
                 instr(
@@ -4988,6 +5386,7 @@ mod tests {
                             method: "each".to_owned(),
                             argc: 0,
                             flags: 0,
+                            kwargs: Vec::new(),
                         },
                         YarvOperand::IseqRef(1),
                     ],
@@ -5023,6 +5422,8 @@ mod tests {
             param_rest_start: 0,
             param_block_start: 0,
             catch_entries: Vec::new(),
+            param_opt_table: Vec::new(),
+            param_keyword: None,
             instructions: vec![
                 instr("putself", vec![]),
                 instr(
@@ -5032,6 +5433,7 @@ mod tests {
                             method: "map".to_owned(),
                             argc: 0,
                             flags: 0,
+                            kwargs: Vec::new(),
                         },
                         YarvOperand::IseqRef(u32::MAX),
                     ],
@@ -5061,6 +5463,8 @@ mod tests {
             param_rest_start: 0,
             param_block_start: 0,
             catch_entries: Vec::new(),
+            param_opt_table: Vec::new(),
+            param_keyword: None,
             instructions: vec![
                 instr("putself", vec![]),
                 instr(
@@ -5070,6 +5474,7 @@ mod tests {
                             method: "each".to_owned(),
                             argc: 0,
                             flags: 0,
+                            kwargs: Vec::new(),
                         },
                         YarvOperand::IseqRef(0),
                     ],
@@ -5102,6 +5507,8 @@ mod tests {
             param_rest_start: 0,
             param_block_start: 0,
             catch_entries: Vec::new(),
+            param_opt_table: Vec::new(),
+            param_keyword: None,
             instructions: vec![
                 instr("putself", vec![]),
                 instr(
@@ -5111,6 +5518,7 @@ mod tests {
                             method: "lambda".to_owned(),
                             argc: 0,
                             flags: 0,
+                            kwargs: Vec::new(),
                         },
                         YarvOperand::IseqRef(0),
                     ],
@@ -5144,6 +5552,8 @@ mod tests {
             param_rest_start: 0,
             param_block_start: 0,
             catch_entries: Vec::new(),
+            param_opt_table: Vec::new(),
+            param_keyword: None,
             instructions: vec![
                 instr("putobject", vec![YarvOperand::Num(1)]),
                 instr("putobject", vec![YarvOperand::Num(2)]),
@@ -5259,6 +5669,8 @@ mod tests {
             param_rest_start: 0,
             param_block_start: 0,
             catch_entries: Vec::new(),
+            param_opt_table: Vec::new(),
+            param_keyword: None,
             instructions: vec![
                 instr("newarray", vec![YarvOperand::Num(0)]),
                 instr(

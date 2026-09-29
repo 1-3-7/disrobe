@@ -104,6 +104,8 @@ pub enum YarvOperand {
         method: String,
         argc: u32,
         flags: u32,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        kwargs: Vec<String>,
     },
 }
 
@@ -112,6 +114,7 @@ struct CallEntry {
     method: Option<String>,
     argc: u32,
     flags: u32,
+    kwargs: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -157,6 +160,19 @@ pub struct YarvIseqBody {
     pub param_block_start: u32,
 
     pub catch_entries: Vec<YarvCatchEntry>,
+
+    #[serde(default)]
+    pub param_opt_table: Vec<u32>,
+
+    #[serde(default)]
+    pub param_keyword: Option<YarvParamKeyword>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct YarvParamKeyword {
+    pub required_num: u32,
+    pub names: Vec<Option<String>>,
+    pub defaults: Vec<Option<YarvOperand>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -691,6 +707,8 @@ const BODY_READ_PARAM_LEAD_NUM: usize = 6;
 const BODY_READ_PARAM_OPT_NUM: usize = 7;
 const BODY_READ_PARAM_REST_START: usize = 8;
 const BODY_READ_PARAM_BLOCK_START: usize = 11;
+const BODY_READ_PARAM_OPT_TABLE_OFFSET: usize = 12;
+const BODY_READ_PARAM_KEYWORD_OFFSET: usize = 13;
 const BODY_READ_CATCH_TABLE_SIZE: usize = 27;
 const BODY_READ_CATCH_TABLE_OFFSET: usize = 28;
 const BODY_READ_LOCAL_TABLE_OFFSET: usize = 26;
@@ -712,6 +730,8 @@ struct BodyHeader {
     param_opt_num: u32,
     param_rest_start: u32,
     param_block_start: u32,
+    param_opt_table_offset: Option<usize>,
+    param_keyword_offset: Option<usize>,
     local_table_offset: Option<usize>,
     local_table_size: usize,
     ci_entries_offset: Option<usize>,
@@ -735,6 +755,8 @@ fn parse_body_header(
     let mut param_opt_num: u32 = 0;
     let mut param_rest_start: u32 = 0;
     let mut param_block_start: u32 = 0;
+    let mut param_opt_table_offset: Option<usize> = None;
+    let mut param_keyword_offset: Option<usize> = None;
     let mut local_table_offset: Option<usize> = None;
     let mut local_table_size: usize = 0;
     let mut ci_entries_offset: Option<usize> = None;
@@ -771,6 +793,13 @@ fn parse_body_header(
             BODY_READ_PARAM_BLOCK_START => {
                 param_block_start = raw.min(IBF_MAX_LOCALS as u64) as u32;
             }
+            BODY_READ_PARAM_OPT_TABLE_OFFSET => {
+                let rel: usize = usize::try_from(raw).ok()?;
+                param_opt_table_offset = body_offset.checked_sub(rel);
+            }
+            BODY_READ_PARAM_KEYWORD_OFFSET => {
+                param_keyword_offset = usize::try_from(raw).ok().filter(|&off: &usize| off != 0);
+            }
             BODY_READ_LOCAL_TABLE_OFFSET => {
                 let rel: usize = usize::try_from(raw).ok()?;
                 local_table_offset = body_offset.checked_sub(rel);
@@ -804,12 +833,80 @@ fn parse_body_header(
         param_opt_num,
         param_rest_start,
         param_block_start,
+        param_opt_table_offset,
+        param_keyword_offset,
         local_table_offset,
         local_table_size,
         ci_entries_offset,
         ci_size,
         catch_table_offset,
         catch_table_size,
+    })
+}
+
+const PARAM_FLAG_HAS_KW: u64 = 1 << 4;
+const IBF_VALUE_SIZE: usize = 8;
+
+fn read_value_array(bytes: &[u8], offset: usize, count: usize) -> Option<Vec<u64>> {
+    let end: usize = count
+        .checked_mul(IBF_VALUE_SIZE)
+        .and_then(|len: usize| offset.checked_add(len))?;
+    if end > bytes.len() {
+        return None;
+    }
+    (0..count)
+        .map(|i: usize| disrobe_bytes::read_u64_le_at(bytes, offset + i * IBF_VALUE_SIZE).ok())
+        .collect()
+}
+
+fn parse_opt_table(bytes: &[u8], offset: usize, opt_num: u32) -> Vec<u32> {
+    let count: usize = opt_num as usize + 1;
+    read_value_array(bytes, offset, count)
+        .map(|pcs: Vec<u64>| {
+            pcs.into_iter()
+                .map_while(|pc: u64| u32::try_from(pc).ok())
+                .collect()
+        })
+        .filter(|pcs: &Vec<u32>| pcs.len() == count && pcs.is_sorted())
+        .unwrap_or_default()
+}
+
+fn parse_param_keyword(
+    bytes: &[u8],
+    objects: &ObjectTable<'_>,
+    offset: usize,
+) -> Option<YarvParamKeyword> {
+    let header: Vec<u64> = read_value_array(bytes, offset, 4)?;
+    let num: usize = usize::try_from(header[0] & 0xFFFF_FFFF).ok()?;
+    let required_num: usize = usize::try_from(header[0] >> 32).ok()?;
+    if num > IBF_MAX_LOCALS || required_num > num {
+        return None;
+    }
+    let table_offset: usize = usize::try_from(header[2]).ok()?;
+    let ids: Vec<u64> = read_value_array(bytes, table_offset, num)?;
+    let names: Vec<Option<String>> = ids
+        .iter()
+        .map(|&id: &u64| objects.literal(id).map(str::to_owned))
+        .collect();
+    let optional: usize = num - required_num;
+    let defaults: Vec<Option<YarvOperand>> = if optional == 0 {
+        Vec::new()
+    } else {
+        let default_offset: usize = usize::try_from(header[3]).ok()?;
+        read_value_array(bytes, default_offset, optional)?
+            .into_iter()
+            .map(
+                |raw: u64| match resolve_operand(TsKind::Value, raw, objects) {
+                    YarvOperand::ObjectRef(_) => None,
+                    operand => Some(operand),
+                },
+            )
+            .collect()
+    };
+    Some(YarvParamKeyword {
+        required_num: u32::try_from(required_num).ok()?,
+        names,
+        defaults,
     })
 }
 
@@ -851,6 +948,7 @@ fn parse_ci_entries(
                 method: None,
                 argc: 0,
                 flags: 0,
+                kwargs: Vec::new(),
             });
             pos = p1;
             continue;
@@ -865,9 +963,13 @@ fn parse_ci_entries(
             break;
         };
         let mut np: usize = p4;
+        let mut kwargs: Vec<String> = Vec::new();
         for _ in 0..kwlen.min(IBF_ARRAY_LEN_CAP as u64) {
             match read_small_value(bytes, np) {
-                Some((_kw, n)) => np = n,
+                Some((kw, n)) => {
+                    kwargs.push(objects.literal(kw).unwrap_or("").to_owned());
+                    np = n;
+                }
                 None => break,
             }
         }
@@ -875,6 +977,7 @@ fn parse_ci_entries(
             method: objects.literal(mid_index).map(str::to_owned),
             argc: u32::try_from(argc).unwrap_or(u32::MAX),
             flags: u32::try_from(flag).unwrap_or(0),
+            kwargs,
         });
         pos = np;
     }
@@ -955,6 +1058,19 @@ fn decode_iseq_body(
         _ => Vec::new(),
     };
 
+    let param_opt_table: Vec<u32> = match header.param_opt_table_offset {
+        Some(off) if header.param_opt_num > 0 && off <= bytes.len() => {
+            parse_opt_table(bytes, off, header.param_opt_num)
+        }
+        _ => Vec::new(),
+    };
+    let param_keyword: Option<YarvParamKeyword> = match header.param_keyword_offset {
+        Some(off) if header.param_flags & PARAM_FLAG_HAS_KW != 0 && off <= bytes.len() => {
+            parse_param_keyword(bytes, objects, off)
+        }
+        _ => None,
+    };
+
     let catch_entries: Vec<YarvCatchEntry> = match header.catch_table_offset {
         Some(ct_off) if ct_off <= bytes.len() && header.catch_table_size > 0 => {
             parse_catch_table(bytes, ct_off, header.catch_table_size)
@@ -980,6 +1096,8 @@ fn decode_iseq_body(
             param_rest_start: header.param_rest_start,
             param_block_start: header.param_block_start,
             catch_entries,
+            param_opt_table,
+            param_keyword,
         });
     }
 
@@ -1010,19 +1128,23 @@ fn decode_iseq_body(
                             method: Some(name),
                             argc,
                             flags,
+                            kwargs,
                         }) => YarvOperand::Call {
                             method: name.clone(),
                             argc: *argc,
                             flags: *flags,
+                            kwargs: kwargs.clone(),
                         },
                         Some(CallEntry {
                             method: None,
                             argc,
                             flags,
+                            ..
                         }) => YarvOperand::Call {
                             method: "(call)".to_owned(),
                             argc: *argc,
                             flags: *flags,
+                            kwargs: Vec::new(),
                         },
                         None => YarvOperand::Num(0),
                     }
@@ -1082,6 +1204,8 @@ fn decode_iseq_body(
         param_rest_start: header.param_rest_start,
         param_block_start: header.param_block_start,
         catch_entries,
+        param_opt_table,
+        param_keyword,
     })
 }
 
