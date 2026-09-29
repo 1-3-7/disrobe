@@ -338,7 +338,7 @@ fn region_is_inside_a_loop(body: &YarvIseqBody, start: usize, end: usize) -> boo
         .iter()
         .enumerate()
         .any(|(from, target): (usize, &Option<usize>)| {
-            from >= end && target.is_some_and(|to: usize| to < start)
+            from >= end && target.is_some_and(|to: usize| to <= start)
         })
 }
 
@@ -3426,13 +3426,24 @@ fn step(
             });
             match lines.as_slice() {
                 [single] if !single.trim_start().starts_with("END {") => {
-                    push(stack, single.trim().to_owned());
+                    let value: &str = single.trim();
+                    if value.starts_with('/') {
+                        push(stack, format!("{value}o"));
+                    } else {
+                        push(stack, value.to_owned());
+                    }
                 }
                 _ => {
                     stmts.extend(lines);
                     push(stack, "nil".to_owned());
                 }
             }
+        }
+        "toregexp" => {
+            let options: u64 = operand_num(instr, 0);
+            let count: usize = operand_count(instr, 1);
+            let parts: Vec<String> = pop_n(stack, count);
+            push(stack, render_dynamic_regexp(&parts, options));
         }
         "definedivar" => {
             let name: String = id_or_index(instr, 0);
@@ -3599,6 +3610,7 @@ fn step(
 
 const THROW_TAG_RETURN: u64 = 1;
 const THROW_TAG_BREAK: u64 = 2;
+const THROW_TAG_NEXT: u64 = 3;
 const THROW_TAG_RETRY: u64 = 4;
 
 fn emit_value_flow(stmts: &mut Vec<String>, depth: u32, keyword: &str, value: String) {
@@ -3624,6 +3636,14 @@ fn emit_throw(
     }
     let tag: u64 = raw_tag & 0xff;
     match tag {
+        THROW_TAG_BREAK => {
+            let value: String = stack.pop().unwrap_or_default();
+            emit_value_flow(stmts, depth, "break", value);
+        }
+        THROW_TAG_NEXT => {
+            let value: String = stack.pop().unwrap_or_default();
+            emit_value_flow(stmts, depth, "next", value);
+        }
         THROW_TAG_RETRY => emit_stmt(stmts, depth, "retry".to_owned()),
         THROW_TAG_RETURN => {
             let value: String = stack.pop().unwrap_or_default();
@@ -3701,6 +3721,40 @@ fn render_interpolation(parts: &[String]) -> String {
             out
         }
     }
+}
+
+fn render_dynamic_regexp(parts: &[String], options: u64) -> String {
+    let mut source: String = String::new();
+    for part in parts {
+        let Some(body): Option<&str> = string_literal_body(part) else {
+            source.push_str("#{");
+            source.push_str(part);
+            source.push('}');
+            continue;
+        };
+        let mut chars: core::str::Chars<'_> = body.chars();
+        while let Some(c) = chars.next() {
+            match c {
+                '\\' => match chars.next() {
+                    Some('"') => source.push('"'),
+                    Some(other) if other != '\\' => {
+                        source.push('\\');
+                        source.push(other);
+                    }
+                    _ => source.push('\\'),
+                },
+                '/' => source.push_str("\\/"),
+                other => source.push(other),
+            }
+        }
+    }
+    let mut flags: String = String::new();
+    for (bit, letter) in [(1_u64, 'i'), (2, 'x'), (4, 'm')] {
+        if options & bit != 0 {
+            flags.push(letter);
+        }
+    }
+    format!("/{source}/{flags}")
 }
 
 fn string_literal_body(s: &str) -> Option<&str> {

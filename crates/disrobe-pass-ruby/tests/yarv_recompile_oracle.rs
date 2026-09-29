@@ -27,7 +27,7 @@ const MEGAFILE_EXPECTED_PCT: u32 = 99;
 
 const HELLO_MATCHED_TOTAL: u32 = 4;
 const GREETER_MATCHED_TOTAL: u32 = 79;
-const MEGAFILE_MATCHED_TOTAL: u32 = 23_792;
+const MEGAFILE_MATCHED_TOTAL: u32 = 23_815;
 
 const HELLO_COMPARED_TOTAL: u32 = 4;
 const GREETER_COMPARED_TOTAL: u32 = 79;
@@ -445,12 +445,12 @@ fn a_plotted_rate_that_does_not_equal_the_measurement_is_rejected_in_both_direct
     let compared: u32 = MEGAFILE_COMPARED_TOTAL;
     let truth: f64 = 100.0 * f64::from(matched) / f64::from(compared);
     assert!(
-        (truth - 99.27).abs() < PUBLISHED_VALUE_TOLERANCE,
+        (truth - 99.37).abs() < PUBLISHED_VALUE_TOLERANCE,
         "the pinned megafile counts are {matched}/{compared}, whose rate is {truth:.4}; the figure \
-         this crate expects to be published is 99.27"
+         this crate expects to be published is 99.37"
     );
     assert!(
-        published_rate_defect(99.27, matched, compared, PUBLISHED_MEGAFILE_BAR, "pinned").is_none(),
+        published_rate_defect(99.37, matched, compared, PUBLISHED_MEGAFILE_BAR, "pinned").is_none(),
         "the rate the pinned counts produce must be accepted, otherwise the published figure this \
          crate asks for could never be right"
     );
