@@ -2006,9 +2006,14 @@ fn emit_expr(expr: &PythonExpr) -> String {
                 emit_operand(orelse)
             )
         }
-        PythonExpr::Attribute { value, attr } => {
-            format!("{}.{attr}", emit_operand(value))
-        }
+        PythonExpr::Attribute { value, attr } => match value.as_ref() {
+            PythonExpr::Const(literal)
+                if !literal.is_empty() && literal.bytes().all(|b: u8| b.is_ascii_digit()) =>
+            {
+                format!("({literal}).{attr}")
+            }
+            other => format!("{}.{attr}", emit_operand(other)),
+        },
         PythonExpr::Subscript { value, index } => {
             format!("{}[{}]", emit_operand(value), emit_expr(index))
         }
@@ -2028,7 +2033,7 @@ fn emit_expr(expr: &PythonExpr) -> String {
                 .map(emit_expr)
                 .collect::<Vec<String>>()
                 .join(", ");
-            format!("{}({})", emit_expr(func), args_str)
+            format!("{}({})", emit_operand(func), args_str)
         }
         PythonExpr::Tuple(items) => emit_tuple_items(items),
         PythonExpr::List(items) => {
@@ -2047,7 +2052,7 @@ fn emit_expr(expr: &PythonExpr) -> String {
             format!(
                 "[{} for {target} in {}]",
                 emit_expr(element),
-                emit_expr(iter)
+                emit_operand(iter)
             )
         }
         PythonExpr::DictComp {
@@ -2060,7 +2065,7 @@ fn emit_expr(expr: &PythonExpr) -> String {
                 "{{{}: {} for {target} in {}}}",
                 emit_expr(key),
                 emit_expr(value),
-                emit_expr(iter)
+                emit_operand(iter)
             )
         }
         PythonExpr::SetComp {
@@ -2071,7 +2076,7 @@ fn emit_expr(expr: &PythonExpr) -> String {
             format!(
                 "{{{} for {target} in {}}}",
                 emit_expr(element),
-                emit_expr(iter)
+                emit_operand(iter)
             )
         }
     }
@@ -2099,6 +2104,7 @@ fn emit_operand(expr: &PythonExpr) -> String {
         | PythonExpr::IfExp { .. } => {
             format!("({})", emit_expr(expr))
         }
+        PythonExpr::Const(literal) if literal.starts_with('-') => format!("({literal})"),
         other => emit_expr(other),
     }
 }
@@ -2714,5 +2720,44 @@ UPDATE_STRING_DICT0(moduledict_m, (Nuitka_StringObject *)mod_consts.const_str_pl
         );
         assert!(!surface.python_source.contains("__doc__"));
         assert!(!surface.python_source.contains("f = "));
+    }
+
+    #[test]
+    fn a_negative_power_base_and_a_boolean_callee_keep_their_parentheses() {
+        let power: PythonExpr = PythonExpr::BinOp {
+            op: crate::body::BinOpKind::Pow,
+            left: Box::new(PythonExpr::Const("-2".to_owned())),
+            right: Box::new(PythonExpr::Name("x".to_owned())),
+        };
+        assert_eq!(emit_expr(&power), "(-2) ** x");
+        let call: PythonExpr = PythonExpr::Call {
+            func: Box::new(PythonExpr::BoolOp {
+                op: crate::body::BoolOpKind::Or,
+                left: Box::new(PythonExpr::Name("a".to_owned())),
+                right: Box::new(PythonExpr::Name("b".to_owned())),
+            }),
+            args: vec![PythonExpr::Name("x".to_owned())],
+        };
+        assert_eq!(emit_expr(&call), "(a or b)(x)");
+        let plain: PythonExpr = PythonExpr::Call {
+            func: Box::new(PythonExpr::Name("f".to_owned())),
+            args: vec![PythonExpr::Const("-1".to_owned())],
+        };
+        assert_eq!(emit_expr(&plain), "f(-1)");
+        let int_attribute: PythonExpr = PythonExpr::Attribute {
+            value: Box::new(PythonExpr::Const("1".to_owned())),
+            attr: "real".to_owned(),
+        };
+        assert_eq!(emit_expr(&int_attribute), "(1).real");
+        let conditional_iter: PythonExpr = PythonExpr::ListComp {
+            element: Box::new(PythonExpr::Name("v".to_owned())),
+            target: "v".to_owned(),
+            iter: Box::new(PythonExpr::IfExp {
+                test: Box::new(PythonExpr::Name("c".to_owned())),
+                body: Box::new(PythonExpr::Name("a".to_owned())),
+                orelse: Box::new(PythonExpr::Name("b".to_owned())),
+            }),
+        };
+        assert_eq!(emit_expr(&conditional_iter), "[v for v in (a if c else b)]");
     }
 }

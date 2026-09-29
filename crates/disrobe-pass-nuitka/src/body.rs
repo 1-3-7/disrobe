@@ -1,9 +1,10 @@
 use std::collections::BTreeMap;
 use std::ops::Range;
 
+use disrobe_pass_pickle::PickleValue;
 use serde::{Deserialize, Serialize};
 
-use crate::constants::{ConstantsPool, nuitka_bytes_repr, nuitka_string_repr};
+use crate::constants::{ConstantsPool, nuitka_bytes_repr, nuitka_string_repr, nuitka_value_repr};
 use crate::limits::{MAX_C_SOURCE_BYTES, validate_c_source};
 use crate::version_specific_patterns::{EraPatternPack, guess_era_from_csource, pack_for_era};
 
@@ -1326,6 +1327,19 @@ pub(crate) fn resolve_const_token(token: &str, pool: &ConstantsPool) -> PythonEx
     if t == "const_list_empty" {
         return PythonExpr::List(Vec::new());
     }
+    if t == "const_dict_empty" {
+        return PythonExpr::Dict(Vec::new());
+    }
+    if let Some(digest) = t.strip_prefix("const_dict_")
+        && !pool.ambiguous_dict_digests.contains(digest)
+        && let Some(pairs) = pool.dict_pairs_for_digest(digest)
+        && let Some(literal) = nuitka_value_repr(&PickleValue::Dict(pairs.to_vec()), 0)
+    {
+        return PythonExpr::Const(literal);
+    }
+    if t.starts_with("const_") {
+        return PythonExpr::Name(format!("UNRESOLVED:{t}"));
+    }
     if !t.is_empty()
         && t.chars()
             .all(|c: char| c.is_ascii_alphanumeric() || c == '_')
@@ -1661,9 +1675,12 @@ fn stmt_has_unresolved(stmt: &PythonStmt) -> bool {
         }
         PythonStmt::Try { body, handlers } => {
             body.iter().any(stmt_has_unresolved)
-                || handlers
-                    .iter()
-                    .any(|h: &ExceptHandler| h.body.iter().any(stmt_has_unresolved))
+                || handlers.iter().any(|h: &ExceptHandler| {
+                    h.exc_type
+                        .as_deref()
+                        .is_some_and(|ty: &str| ty.starts_with("UNRESOLVED:"))
+                        || h.body.iter().any(stmt_has_unresolved)
+                })
         }
         PythonStmt::Break | PythonStmt::Continue => false,
     }
@@ -2212,10 +2229,10 @@ impl<'a> Lifter<'a> {
         let inner: &str = trim_matching_paren(after);
         let args: Vec<&str> = split_top_args(inner)?;
         let type_tok: &str = args.last()?.trim();
-        match self.eval_operand(type_tok, env) {
-            PythonExpr::Name(n) => Some(n),
-            _ => None,
-        }
+        Some(
+            exception_type_text(&self.eval_operand(type_tok, env))
+                .unwrap_or_else(|| "UNRESOLVED:except-type".to_owned()),
+        )
     }
 
     fn try_tuple_unpack(
@@ -3131,6 +3148,9 @@ impl<'a> Lifter<'a> {
         if let Some(expr) = self.eval_truthiness(t, env) {
             return expr;
         }
+        if let Some(expr) = self.eval_dict_copy(t, env) {
+            return expr;
+        }
         if let Some(expr) = self.eval_format(t, env) {
             return expr;
         }
@@ -3245,6 +3265,13 @@ impl<'a> Lifter<'a> {
         })
     }
 
+    fn eval_dict_copy(&self, t: &str, env: &BTreeMap<String, PythonExpr>) -> Option<PythonExpr> {
+        let after: &str = t.strip_prefix("DICT_COPY(")?;
+        let inner: &str = trim_matching_paren(after);
+        let source: &str = split_top_args(inner)?.last()?.trim();
+        Some(self.eval_operand(source, env))
+    }
+
     fn eval_truthiness(&self, t: &str, env: &BTreeMap<String, PythonExpr>) -> Option<PythonExpr> {
         if let Some(after) = t.strip_prefix("CHECK_IF_TRUE(") {
             let inner: &str = trim_matching_paren(after);
@@ -3252,13 +3279,13 @@ impl<'a> Lifter<'a> {
             return Some(self.eval_operand(target, env));
         }
         if let Some(rest) = t.strip_prefix('(') {
-            if let Some(operand_part) = rest.split("== 0)").next()
+            if let Some((operand_part, _)) = rest.split_once("== 0)")
                 && t.contains("? true : false")
             {
                 let operand: PythonExpr = self.eval_operand(operand_part.trim(), env);
                 return Some(negate_condition(operand));
             }
-            if let Some(operand_part) = rest.split("!= 0)").next()
+            if let Some((operand_part, _)) = rest.split_once("!= 0)")
                 && t.contains("? true : false")
             {
                 return Some(self.eval_operand(operand_part.trim(), env));
@@ -3609,6 +3636,23 @@ impl<'a> Lifter<'a> {
             }
         }
         None
+    }
+}
+
+fn exception_type_text(expr: &PythonExpr) -> Option<String> {
+    match expr {
+        PythonExpr::Name(name) if !name.starts_with("UNRESOLVED") => Some(name.clone()),
+        PythonExpr::Attribute { value, attr } => {
+            exception_type_text(value).map(|base: String| format!("{base}.{attr}"))
+        }
+        PythonExpr::Tuple(items) if !items.is_empty() => {
+            let names: Vec<String> = items
+                .iter()
+                .map(exception_type_text)
+                .collect::<Option<Vec<String>>>()?;
+            Some(format!("({})", names.join(", ")))
+        }
+        _ => None,
     }
 }
 
@@ -4363,6 +4407,67 @@ FORMAT_UNBOUND_CLOSURE_ERROR(tstate, &exception_state, mod_consts.const_str_plai
     }
 
     #[test]
+    fn tuple_and_dotted_handler_types_render_exactly_or_stay_unresolved() {
+        let name = |n: &str| PythonExpr::Name(n.to_owned());
+        assert_eq!(
+            exception_type_text(&PythonExpr::Tuple(vec![
+                name("ValueError"),
+                name("KeyError")
+            ])),
+            Some("(ValueError, KeyError)".to_owned())
+        );
+        assert_eq!(
+            exception_type_text(&PythonExpr::Attribute {
+                value: Box::new(name("socket")),
+                attr: "timeout".to_owned(),
+            }),
+            Some("socket.timeout".to_owned())
+        );
+        assert_eq!(
+            exception_type_text(&PythonExpr::Call {
+                func: Box::new(name("make_error")),
+                args: Vec::new(),
+            }),
+            None
+        );
+        assert_eq!(exception_type_text(&name("UNRESOLVED:opaque")), None);
+    }
+
+    #[test]
+    fn a_dict_copy_evaluates_to_the_copied_constant() {
+        let pool: ConstantsPool = ConstantsPool::default();
+        let lifter: Lifter<'_> = Lifter::new("", &pool, pack_for_era(guess_era_from_csource("")));
+        let env: BTreeMap<String, PythonExpr> = BTreeMap::new();
+        assert_eq!(
+            lifter.eval_value("DICT_COPY(tstate, mod_consts.const_dict_empty);", &env),
+            PythonExpr::Dict(Vec::new())
+        );
+        assert_eq!(
+            lifter.eval_value(
+                "DICT_COPY(tstate, mod_consts.const_dict_0d747635c5b87742);",
+                &env
+            ),
+            PythonExpr::Name("UNRESOLVED:const_dict_0d747635c5b87742".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_nonzero_truth_test_is_not_negated() {
+        let pool: ConstantsPool = ConstantsPool::default();
+        let lifter: Lifter<'_> = Lifter::new("", &pool, pack_for_era(guess_era_from_csource("")));
+        let mut env: BTreeMap<String, PythonExpr> = BTreeMap::new();
+        env.insert("tmp_flag".to_owned(), PythonExpr::Name("flag".to_owned()));
+        assert_eq!(
+            lifter.eval_truthiness("(tmp_flag != 0) ? true : false", &env),
+            Some(PythonExpr::Name("flag".to_owned()))
+        );
+        assert_ne!(
+            lifter.eval_truthiness("(tmp_flag == 0) ? true : false", &env),
+            Some(PythonExpr::Name("flag".to_owned()))
+        );
+    }
+
+    #[test]
     fn builtin_format_keeps_non_string_fields_stringified() {
         let pool: ConstantsPool = ConstantsPool::default();
         let lifter: Lifter<'_> = Lifter::new("", &pool, pack_for_era(guess_era_from_csource("")));
@@ -4511,11 +4616,20 @@ FORMAT_UNBOUND_CLOSURE_ERROR(tstate, &exception_state, mod_consts.const_str_plai
     }
 
     #[test]
-    fn dictionary_sequence_fragments_remain_single_constants() {
+    fn dictionary_sequence_fragments_resolve_to_an_empty_dict() {
         let pool: ConstantsPool = ConstantsPool::default();
         assert_eq!(
             resolve_const_token("const_tuple_dict_empty_tuple", &pool),
-            PythonExpr::Tuple(vec![PythonExpr::Name("const_dict_empty".to_owned())])
+            PythonExpr::Tuple(vec![PythonExpr::Dict(Vec::new())])
+        );
+    }
+
+    #[test]
+    fn an_unmodelled_constant_token_is_unresolved_not_a_name() {
+        let pool: ConstantsPool = ConstantsPool::default();
+        assert_eq!(
+            resolve_const_token("const_frozenset_mystery", &pool),
+            PythonExpr::Name("UNRESOLVED:const_frozenset_mystery".to_owned())
         );
     }
 
