@@ -419,7 +419,11 @@ impl<'a> Cursor<'a> {
             return Ok(String::new());
         }
         let n: usize = len as usize;
-        let mut bytes: Vec<u8> = Vec::with_capacity(n.min(1 << 20));
+        let mut bytes: Vec<u8> = Vec::with_capacity(disrobe_bytes::bounded_element_capacity(
+            u64::from(len),
+            1,
+            self.remaining(),
+        ));
         for _ in 0..n {
             bytes.push(self.u8()?);
         }

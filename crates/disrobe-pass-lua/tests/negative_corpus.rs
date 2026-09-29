@@ -20,7 +20,7 @@ use disrobe_pass_lua::decompile::{DecompiledChunk, Fidelity};
 use disrobe_pass_lua::error::Error;
 use disrobe_pass_lua::luvit::{self, LuvitBundle};
 use disrobe_pass_lua::obfuscator::{
-    DeobfOptions, PeelResult, ironbrew2, ironbrew2_real, moonsec_v1, moonsec_v3,
+    DeobfOptions, PeelResult, ironbrew2, ironbrew2_real, luaobfuscator_com, moonsec_v1, moonsec_v3,
 };
 use disrobe_pass_lua::reader::{self, DetectedFormat, LuaChunk};
 
@@ -1435,6 +1435,34 @@ fn every_entry_is_labeled_and_names_a_real_guard() {
     assert!(
         manifest.regeneration.contains("negative_corpus"),
         "the manifest must record how its digests are regenerated"
+    );
+}
+
+#[test]
+fn luaobfuscator_com_inflated_instruction_count_reserves_by_remaining_bytes() {
+    let constants: &str = "00000000";
+    let params: &str = "00";
+    let instructions: &str = "00001000";
+    let source: String = format!(
+        "-- luaobfuscator.com\nlocal payload = \"LOL!{constants}{params}{instructions}\"\n"
+    );
+    let ceiling: usize = 64 * 1024;
+    reset_peak_allocation();
+    let peel: PeelResult = luaobfuscator_com::peel(source.as_bytes(), &DeobfOptions::default())
+        .expect("a chunk that fails to deserialize passes the source through");
+    let peak: usize = peak_allocation();
+    assert!(!peel.fully_recovered);
+    assert_eq!(peel.deobfuscated, source.as_bytes());
+    assert!(
+        peel.residual_markers
+            .iter()
+            .any(|marker: &String| marker.contains("did not validate")),
+        "the truncated chunk must be reported as unvalidated: {:?}",
+        peel.residual_markers
+    );
+    assert!(
+        peak <= ceiling,
+        "a declared 2^20 instructions over 0 remaining bytes reserved {peak} bytes in one allocation"
     );
 }
 

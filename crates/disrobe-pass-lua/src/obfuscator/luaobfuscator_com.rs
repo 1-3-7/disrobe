@@ -134,6 +134,14 @@ impl<'a> ChunkCursor<'a> {
         Self { data, pos: 0 }
     }
 
+    fn capacity(&self, count: usize, min_entry_bytes: usize) -> usize {
+        disrobe_bytes::bounded_element_capacity(
+            u64::try_from(count).unwrap_or(u64::MAX),
+            min_entry_bytes,
+            self.data.len().saturating_sub(self.pos),
+        )
+    }
+
     fn u8(&mut self) -> Result<u8> {
         let byte: u8 = *self
             .data
@@ -203,7 +211,7 @@ fn read_chunk(c: &mut ChunkCursor<'_>, depth: usize) -> Result<LocChunk> {
         return Err(Error::ProtoNestingTooDeep(depth));
     }
     let const_count: usize = checked_loc_count("loc constant", c.u32()?, MAX_LOC_CONSTANTS)?;
-    let mut constants: Vec<LuaConstant> = Vec::with_capacity(const_count);
+    let mut constants: Vec<LuaConstant> = Vec::with_capacity(c.capacity(const_count, 2));
     for _ in 0..const_count {
         let tag: u8 = c.u8()?;
         let value: LuaConstant = match tag {
@@ -218,7 +226,7 @@ fn read_chunk(c: &mut ChunkCursor<'_>, depth: usize) -> Result<LocChunk> {
     let param_count: u8 = c.u8()?;
 
     let instr_count: usize = checked_loc_count("loc instruction", c.u32()?, MAX_LOC_INSTRUCTIONS)?;
-    let mut instrs: Vec<LocInstr> = Vec::with_capacity(instr_count);
+    let mut instrs: Vec<LocInstr> = Vec::with_capacity(c.capacity(instr_count, 1));
     for _ in 0..instr_count {
         let desc: u8 = c.u8()?;
         if desc & 1 != 0 {
@@ -243,7 +251,7 @@ fn read_chunk(c: &mut ChunkCursor<'_>, depth: usize) -> Result<LocChunk> {
     }
 
     let proto_count: usize = checked_loc_count("loc proto", c.u32()?, MAX_LOC_PROTOS)?;
-    let mut protos: Vec<LocChunk> = Vec::with_capacity(proto_count);
+    let mut protos: Vec<LocChunk> = Vec::with_capacity(c.capacity(proto_count, 13));
     for _ in 0..proto_count {
         protos.push(read_chunk(c, depth + 1)?);
     }
