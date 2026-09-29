@@ -358,10 +358,19 @@ fn surface_from_c_source(
 }
 
 fn primary_module_blob(constants: &ConstantsTable) -> Option<(&String, String)> {
-    constants.pools.keys().find_map(|file_name: &String| {
-        let blob: String = blob_name_from_filename(file_name);
-        (!blob.is_empty()).then_some((file_name, blob))
-    })
+    let mut blobs: Vec<(&String, String)> = constants
+        .pools
+        .keys()
+        .map(|file_name: &String| (file_name, blob_name_from_filename(file_name)))
+        .filter(|(_, blob): &(&String, String)| !blob.is_empty())
+        .collect();
+    let main: Option<usize> = blobs
+        .iter()
+        .position(|(_, blob): &(&String, String)| blob == "__main__");
+    match main {
+        Some(index) => Some(blobs.swap_remove(index)),
+        None => blobs.into_iter().next(),
+    }
 }
 
 pub fn decompile_binary(path: &Path) -> Result<NuitkaDecompilation> {
@@ -1569,6 +1578,45 @@ mod tests {
             d.notes
                 .iter()
                 .any(|n: &String| n.contains(BYTECODE_CONST) && n.contains("frozen module"))
+        );
+    }
+
+    #[test]
+    fn the_main_module_blob_is_primary_even_when_a_bundled_module_sorts_first() {
+        let mut constants: ConstantsTable = ConstantsTable::default();
+        for file_name in [
+            "__constants.const",
+            "module.PIL.const",
+            "module.PIL.Image.const",
+            "module.__main__.const",
+        ] {
+            constants
+                .pools
+                .insert(file_name.to_owned(), ConstantsPool::default());
+        }
+
+        let primary: Option<(&String, String)> = primary_module_blob(&constants);
+
+        assert_eq!(
+            primary.map(|(file_name, blob): (&String, String)| (file_name.clone(), blob)),
+            Some(("module.__main__.const".to_owned(), "__main__".to_owned()))
+        );
+    }
+
+    #[test]
+    fn a_module_build_without_main_keeps_its_only_module_blob() {
+        let mut constants: ConstantsTable = ConstantsTable::default();
+        for file_name in ["__constants.const", "module.hello.const"] {
+            constants
+                .pools
+                .insert(file_name.to_owned(), ConstantsPool::default());
+        }
+
+        let primary: Option<(&String, String)> = primary_module_blob(&constants);
+
+        assert_eq!(
+            primary.map(|(_, blob): (&String, String)| blob),
+            Some("hello".to_owned())
         );
     }
 
