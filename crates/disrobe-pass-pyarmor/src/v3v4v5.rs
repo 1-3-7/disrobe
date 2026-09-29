@@ -1,3 +1,5 @@
+use disrobe_bytes::read_u32_le_at_or;
+
 use crate::detect::{Detection, DetectionConfidence, PyarmorVersion};
 use crate::error::{Error, Result};
 
@@ -68,8 +70,8 @@ pub(crate) fn analyze_legacy(payload: &[u8], detection: &Detection) -> Result<Le
         usize,
         bool,
     ) = if has_pyarmor_header {
-        let data_offset: usize = read_u32_le(payload, HEADER_DATA_OFFSET_FIELD) as usize;
-        let data_size: usize = read_u32_le(payload, HEADER_DATA_SIZE_FIELD) as usize;
+        let data_offset: usize = read_u32_le_at_or(payload, HEADER_DATA_OFFSET_FIELD, 0) as usize;
+        let data_size: usize = read_u32_le_at_or(payload, HEADER_DATA_SIZE_FIELD, 0) as usize;
         let offset: usize = if data_offset >= PYARMOR_HEADER_LEN && data_offset <= payload.len() {
             data_offset
         } else {
@@ -137,12 +139,6 @@ pub(crate) fn analyze_legacy(payload: &[u8], detection: &Detection) -> Result<Le
         wall_reason,
         diagnostics,
     })
-}
-
-#[inline]
-fn read_u32_le(buf: &[u8], offset: usize) -> u32 {
-    buf.get(offset..offset + 4)
-        .map_or(0, |s: &[u8]| u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
 }
 
 #[cfg(test)]

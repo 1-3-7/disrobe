@@ -3,6 +3,8 @@ use std::collections::BTreeMap;
 use std::num::TryFromIntError;
 
 #[cfg(not(target_arch = "wasm32"))]
+use disrobe_bytes::{ByteReadError, read_u16_le_at, read_u32_le_at, read_u64_le_at};
+#[cfg(not(target_arch = "wasm32"))]
 use disrobe_pass_native::{
     Arch, DisasmInsn, LeafRecovery, PseudoAbi, ResolvedCall, disassemble, recover_aarch64_function,
     recover_aarch64_function_with_calls, recover_leaf_function_abi,
@@ -777,11 +779,12 @@ fn parse_elf64(blob: &[u8]) -> Result<ExecutableImage> {
             "not a little-endian ELF64 relocatable object".to_owned(),
         ));
     }
-    let e_shoff: usize = usize::try_from(read_u64(blob, 0x28)?).map_err(|_: TryFromIntError| {
-        Error::BccLiftParse("ELF section table offset exceeds addressable memory".to_owned())
-    })?;
-    let e_shentsize: usize = usize::from(read_u16(blob, 0x3a)?);
-    let e_shnum: usize = usize::from(read_u16(blob, 0x3c)?);
+    let e_shoff: usize = usize::try_from(read_u64_le_at(blob, 0x28).map_err(truncated_elf)?)
+        .map_err(|_: TryFromIntError| {
+            Error::BccLiftParse("ELF section table offset exceeds addressable memory".to_owned())
+        })?;
+    let e_shentsize: usize = usize::from(read_u16_le_at(blob, 0x3a).map_err(truncated_elf)?);
+    let e_shnum: usize = usize::from(read_u16_le_at(blob, 0x3c).map_err(truncated_elf)?);
     if e_shentsize < 64 || e_shnum == 0 {
         return Err(Error::BccLiftParse(
             "degenerate ELF section table".to_owned(),
@@ -797,17 +800,19 @@ fn parse_elf64(blob: &[u8]) -> Result<ExecutableImage> {
         if sh.checked_add(64).is_none_or(|end: usize| end > blob.len()) {
             break;
         }
-        let sh_type: u32 = read_u32(blob, sh + 4)?;
-        let sh_flags: u64 = read_u64(blob, sh + 8)?;
-        let sh_addr: u64 = read_u64(blob, sh + 16)?;
-        let sh_offset: usize = match usize::try_from(read_u64(blob, sh + 24)?) {
-            Ok(value) => value,
-            Err(_) => continue,
-        };
-        let sh_size: usize = match usize::try_from(read_u64(blob, sh + 32)?) {
-            Ok(value) => value,
-            Err(_) => continue,
-        };
+        let sh_type: u32 = read_u32_le_at(blob, sh + 4).map_err(truncated_elf)?;
+        let sh_flags: u64 = read_u64_le_at(blob, sh + 8).map_err(truncated_elf)?;
+        let sh_addr: u64 = read_u64_le_at(blob, sh + 16).map_err(truncated_elf)?;
+        let sh_offset: usize =
+            match usize::try_from(read_u64_le_at(blob, sh + 24).map_err(truncated_elf)?) {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+        let sh_size: usize =
+            match usize::try_from(read_u64_le_at(blob, sh + 32).map_err(truncated_elf)?) {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
         let Some(section): Option<&[u8]> = sh_offset
             .checked_add(sh_size)
             .and_then(|end: usize| blob.get(sh_offset..end))
@@ -904,30 +909,8 @@ fn section_overflow() -> Error {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn read_u16(blob: &[u8], off: usize) -> Result<u16> {
-    let bytes: [u8; 2] = blob
-        .get(off..off + 2)
-        .and_then(|s: &[u8]| s.try_into().ok())
-        .ok_or_else(|| Error::BccLiftParse("truncated ELF u16".to_owned()))?;
-    Ok(u16::from_le_bytes(bytes))
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn read_u32(blob: &[u8], off: usize) -> Result<u32> {
-    let bytes: [u8; 4] = blob
-        .get(off..off + 4)
-        .and_then(|s: &[u8]| s.try_into().ok())
-        .ok_or_else(|| Error::BccLiftParse("truncated ELF u32".to_owned()))?;
-    Ok(u32::from_le_bytes(bytes))
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn read_u64(blob: &[u8], off: usize) -> Result<u64> {
-    let bytes: [u8; 8] = blob
-        .get(off..off + 8)
-        .and_then(|s: &[u8]| s.try_into().ok())
-        .ok_or_else(|| Error::BccLiftParse("truncated ELF u64".to_owned()))?;
-    Ok(u64::from_le_bytes(bytes))
+fn truncated_elf(error: ByteReadError) -> Error {
+    Error::BccLiftParse(format!("truncated ELF field at offset {}", error.offset))
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

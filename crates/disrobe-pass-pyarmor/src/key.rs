@@ -1,3 +1,4 @@
+use disrobe_bytes::{ByteReadError, read_u24_le_at, read_u32_le_at};
 use disrobe_core::byte_search;
 use iced_x86::{Code, Decoder, DecoderOptions, OpKind, Register};
 use md5::{Digest, Md5};
@@ -98,11 +99,18 @@ pub(crate) fn extract_runtime_key(runtime_bytes: &[u8]) -> Result<RuntimeKeyMate
         ));
     }
 
-    if u32_le(&buf, 0x4C)? != 0 {
-        let xor_flag: usize = checked_offset(0x60, u32_le(&buf, 0x48)? as usize)?;
-        let xor_target: usize = checked_offset(0x60, u32_le(&buf, 0x50)? as usize)?;
+    if read_u32_le_at(&buf, 0x4C).map_err(runtime_word_error)? != 0 {
+        let xor_flag: usize = checked_offset(
+            0x60,
+            read_u32_le_at(&buf, 0x48).map_err(runtime_word_error)? as usize,
+        )?;
+        let xor_target: usize = checked_offset(
+            0x60,
+            read_u32_le_at(&buf, 0x50).map_err(runtime_word_error)? as usize,
+        )?;
         let _: &[u8] = sub(&buf, xor_flag, 4)?;
-        let xor_length: usize = u24_le(&buf, checked_offset(xor_flag, 1)?)? as usize;
+        let xor_length: usize = read_u24_le_at(&buf, checked_offset(xor_flag, 1)?)
+            .map_err(runtime_word_error)? as usize;
         if buf[xor_flag] == 1 {
             let xor_source: usize = checked_offset(xor_flag, 4)?;
             let _: &[u8] = sub(&buf, xor_target, xor_length)?;
@@ -115,12 +123,16 @@ pub(crate) fn extract_runtime_key(runtime_bytes: &[u8]) -> Result<RuntimeKeyMate
 
     let part_1: Vec<u8> = sub(&buf, 0x2C, 20)?.to_vec();
 
-    let p2_offset: usize = u32_le(&buf, 0x50)? as usize;
-    let p2_len: usize = u32_le(&buf, 0x54)? as usize;
+    let p2_offset: usize = read_u32_le_at(&buf, 0x50).map_err(runtime_word_error)? as usize;
+    let p2_len: usize = read_u32_le_at(&buf, 0x54).map_err(runtime_word_error)? as usize;
     let part_2: Vec<u8> = sub(&buf, checked_offset(0x60, p2_offset)?, p2_len)?.to_vec();
 
-    let p3_record: usize = checked_offset(0x60, u32_le(&buf, 0x58)? as usize)?;
-    let p3_len: usize = u32_le(&buf, checked_offset(p3_record, 4)?)? as usize;
+    let p3_record: usize = checked_offset(
+        0x60,
+        read_u32_le_at(&buf, 0x58).map_err(runtime_word_error)? as usize,
+    )?;
+    let p3_len: usize =
+        read_u32_le_at(&buf, checked_offset(p3_record, 4)?).map_err(runtime_word_error)? as usize;
     let part_3: Vec<u8> = sub(&buf, checked_offset(p3_record, 0x20)?, p3_len)?.to_vec();
 
     let mut hasher: Md5 = Md5::new();
@@ -444,14 +456,8 @@ fn sub(buf: &[u8], offset: usize, len: usize) -> Result<&[u8]> {
     })
 }
 
-fn u32_le(buf: &[u8], offset: usize) -> Result<u32> {
-    let bytes: &[u8] = sub(buf, offset, 4)?;
-    Ok(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-}
-
-fn u24_le(buf: &[u8], offset: usize) -> Result<u32> {
-    let bytes: &[u8] = sub(buf, offset, 3)?;
-    Ok(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], 0]))
+fn runtime_word_error(error: ByteReadError) -> Error {
+    Error::KeyExtraction(format!("runtime word {error}"))
 }
 
 #[cfg(test)]
@@ -480,17 +486,6 @@ mod tests {
         assert!(sub(&bytes, bytes.len(), 1).is_err());
         assert_eq!(sub(&bytes, bytes.len(), 0).unwrap(), &[0_u8; 0]);
         assert_eq!(sub(&bytes, 1, 2).unwrap(), &[0x34, 0x56]);
-    }
-
-    #[test]
-    fn runtime_word_reads_reject_overflow_and_truncation() {
-        let bytes: [u8; 4] = [0x12, 0x34, 0x56, 0x78];
-        assert!(u32_le(&bytes, usize::MAX).is_err());
-        assert!(u24_le(&bytes, usize::MAX).is_err());
-        assert!(u32_le(&bytes, 1).is_err());
-        assert!(u24_le(&bytes, 2).is_err());
-        assert_eq!(u32_le(&bytes, 0).unwrap(), 0x7856_3412);
-        assert_eq!(u24_le(&bytes, 1).unwrap(), 0x0078_5634);
     }
 
     #[test]

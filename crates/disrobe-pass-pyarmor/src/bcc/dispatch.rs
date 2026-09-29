@@ -1,3 +1,4 @@
+use disrobe_bytes::{read_u16_le_at_or, read_u32_le_at_or, read_u64_le_at_or};
 use object::{Object as _, ObjectSection as _};
 
 use crate::v8v9::BccArch;
@@ -96,11 +97,11 @@ fn enumerate_elf_sections(blob: &[u8]) -> Vec<SectionView> {
     if blob.len() < 64 || blob[4] != 2 || blob[5] != 1 {
         return Vec::new();
     }
-    let Some(shoff): Option<usize> = read_u64(blob, 0x28).try_into().ok() else {
+    let Some(shoff): Option<usize> = read_u64_le_at_or(blob, 0x28, 0).try_into().ok() else {
         return Vec::new();
     };
-    let shentsize: usize = usize::from(read_u16(blob, 0x3a));
-    let shnum: usize = usize::from(read_u16(blob, 0x3c)).min(MAX_SECTIONS);
+    let shentsize: usize = usize::from(read_u16_le_at_or(blob, 0x3a, 0));
+    let shnum: usize = usize::from(read_u16_le_at_or(blob, 0x3c, 0)).min(MAX_SECTIONS);
     if shentsize < 64 {
         return Vec::new();
     }
@@ -120,13 +121,15 @@ fn enumerate_elf_sections(blob: &[u8]) -> Vec<SectionView> {
         {
             break;
         }
-        let sh_type: u32 = read_u32(blob, base + 4);
-        let sh_flags: u64 = read_u64(blob, base + 8);
-        let sh_addr: u64 = read_u64(blob, base + 16);
-        let Some(sh_offset): Option<usize> = read_u64(blob, base + 24).try_into().ok() else {
+        let sh_type: u32 = read_u32_le_at_or(blob, base + 4, 0);
+        let sh_flags: u64 = read_u64_le_at_or(blob, base + 8, 0);
+        let sh_addr: u64 = read_u64_le_at_or(blob, base + 16, 0);
+        let Some(sh_offset): Option<usize> = read_u64_le_at_or(blob, base + 24, 0).try_into().ok()
+        else {
             continue;
         };
-        let Some(sh_size): Option<usize> = read_u64(blob, base + 32).try_into().ok() else {
+        let Some(sh_size): Option<usize> = read_u64_le_at_or(blob, base + 32, 0).try_into().ok()
+        else {
             continue;
         };
         if sh_type == SHT_NOBITS || sh_size == 0 || sh_addr == 0 {
@@ -198,8 +201,8 @@ fn parse_records(
     let mut out: Vec<RawEntry> = Vec::new();
     let mut offset: usize = 0;
     while offset + RECORD_STRIDE <= section.len() && out.len() < MAX_RECORDS {
-        let name_ptr: u64 = read_u64(section, offset);
-        let code_offset: u64 = read_u64(section, offset + 8);
+        let name_ptr: u64 = read_u64_le_at_or(section, offset, 0);
+        let code_offset: u64 = read_u64_le_at_or(section, offset + 8, 0);
         if name_ptr == 0 && code_offset == 0 {
             break;
         }
@@ -283,24 +286,6 @@ fn finalize_entries(
 fn parse_bcc_line(name: &str) -> Option<i32> {
     let digits: &str = name.strip_prefix("bcc_")?;
     digits.parse::<i32>().ok()
-}
-
-fn read_u64(buf: &[u8], offset: usize) -> u64 {
-    buf.get(offset..offset + 8)
-        .and_then(|slice: &[u8]| slice.try_into().ok())
-        .map_or(0, u64::from_le_bytes)
-}
-
-fn read_u32(buf: &[u8], offset: usize) -> u32 {
-    buf.get(offset..offset + 4)
-        .and_then(|slice: &[u8]| slice.try_into().ok())
-        .map_or(0, u32::from_le_bytes)
-}
-
-fn read_u16(buf: &[u8], offset: usize) -> u16 {
-    buf.get(offset..offset + 2)
-        .and_then(|slice: &[u8]| slice.try_into().ok())
-        .map_or(0, u16::from_le_bytes)
 }
 
 #[cfg(test)]

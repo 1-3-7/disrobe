@@ -1,6 +1,7 @@
 use aes::Aes128;
 use ctr::Ctr128BE;
 use ctr::cipher::{KeyIvInit, StreamCipher};
+use disrobe_bytes::{ByteReadError, read_u32_le_at};
 
 use crate::detect::Detection;
 use crate::error::{Error, Result};
@@ -116,7 +117,9 @@ pub(crate) struct DecryptedBody {
 }
 
 pub(crate) fn decrypt_body(payload: &[u8], aes_key: &[u8; 16]) -> Result<DecryptedBody> {
-    let bcc_mode: bool = payload.len() >= 24 && u32_le(payload, 20)? == BCC_PROTECTION_TYPE;
+    let bcc_mode: bool = payload.len() >= 24
+        && read_u32_le_at(payload, 20).map_err(header_truncated(payload.len()))?
+            == BCC_PROTECTION_TYPE;
     let (bcc_blobs, working_start): (Vec<BccBlob>, usize) = if bcc_mode {
         peel_bcc(payload, aes_key)?
     } else {
@@ -129,8 +132,10 @@ pub(crate) fn decrypt_body(payload: &[u8], aes_key: &[u8; 16]) -> Result<Decrypt
             need: working_start.saturating_add(1),
             got: payload.len(),
         })?;
-    let cipher_offset: usize = u32_le(working, 28)? as usize;
-    let cipher_len: usize = u32_le(working, 32)? as usize;
+    let cipher_offset: usize =
+        read_u32_le_at(working, 28).map_err(header_truncated(working.len()))? as usize;
+    let cipher_len: usize =
+        read_u32_le_at(working, 32).map_err(header_truncated(working.len()))? as usize;
     let cipher_end: usize = cipher_offset
         .checked_add(cipher_len)
         .filter(|end: &usize| *end <= working.len())
@@ -156,9 +161,12 @@ pub(crate) fn decrypt_body(payload: &[u8], aes_key: &[u8; 16]) -> Result<Decrypt
 }
 
 fn peel_bcc(payload: &[u8], aes_key: &[u8; 16]) -> Result<(Vec<BccBlob>, usize)> {
-    let cipher_off: usize = u32_le(payload, 28)? as usize;
-    let cipher_len: usize = u32_le(payload, 32)? as usize;
-    let main_start: usize = u32_le(payload, 56)? as usize;
+    let cipher_off: usize =
+        read_u32_le_at(payload, 28).map_err(header_truncated(payload.len()))? as usize;
+    let cipher_len: usize =
+        read_u32_le_at(payload, 32).map_err(header_truncated(payload.len()))? as usize;
+    let main_start: usize =
+        read_u32_le_at(payload, 56).map_err(header_truncated(payload.len()))? as usize;
 
     if cipher_off
         .checked_add(cipher_len)
@@ -186,10 +194,13 @@ fn peel_bcc(payload: &[u8], aes_key: &[u8; 16]) -> Result<(Vec<BccBlob>, usize)>
     let mut total: usize = 0;
     let mut view: &[u8] = bcc_plain.as_slice();
     while view.len() >= 16 && blobs.len() < MAX_BCC_SEGMENTS {
-        let seg_off: usize = u32_le(view, 0)? as usize;
-        let seg_len: usize = u32_le(view, 4)? as usize;
-        let arch_id: u32 = u32_le(view, 8)?;
-        let next_off: usize = u32_le(view, 12)? as usize;
+        let seg_off: usize =
+            read_u32_le_at(view, 0).map_err(header_truncated(view.len()))? as usize;
+        let seg_len: usize =
+            read_u32_le_at(view, 4).map_err(header_truncated(view.len()))? as usize;
+        let arch_id: u32 = read_u32_le_at(view, 8).map_err(header_truncated(view.len()))?;
+        let next_off: usize =
+            read_u32_le_at(view, 12).map_err(header_truncated(view.len()))? as usize;
 
         let seg_end: usize = seg_off.checked_add(seg_len).ok_or(Error::HeaderTruncated {
             need: usize::MAX,
@@ -243,16 +254,11 @@ pub(crate) fn aes_ctr_init2(key: &[u8; 16], nonce: &[u8; 12], data: &mut [u8]) {
     cipher.apply_keystream(data);
 }
 
-fn u32_le(buf: &[u8], offset: usize) -> Result<u32> {
-    let end: usize = offset.checked_add(4).ok_or(Error::HeaderTruncated {
-        need: usize::MAX,
-        got: buf.len(),
-    })?;
-    let slice: &[u8] = buf.get(offset..end).ok_or(Error::HeaderTruncated {
-        need: end,
-        got: buf.len(),
-    })?;
-    Ok(u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
+fn header_truncated(got: usize) -> impl Fn(ByteReadError) -> Error {
+    move |error: ByteReadError| Error::HeaderTruncated {
+        need: error.offset.saturating_add(4),
+        got,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -267,8 +273,10 @@ pub(crate) struct PlaintextHeader {
 }
 
 pub(crate) fn parse_plaintext_header(plaintext: &[u8]) -> Result<PlaintextHeader> {
-    let code_object_offset: usize = u32_le(plaintext, 0)? as usize;
-    let xor_key_procedure_length: usize = u32_le(plaintext, 4)? as usize;
+    let code_object_offset: usize =
+        read_u32_le_at(plaintext, 0).map_err(header_truncated(plaintext.len()))? as usize;
+    let xor_key_procedure_length: usize =
+        read_u32_le_at(plaintext, 4).map_err(header_truncated(plaintext.len()))? as usize;
     let marshal_offset: usize = code_object_offset
         .checked_add(xor_key_procedure_length)
         .ok_or(Error::HeaderTruncated {
@@ -399,12 +407,6 @@ mod tests {
         aes_ctr_init2(&key, &nonce, &mut encrypted);
         payload[64..].copy_from_slice(&encrypted);
         let err: Error = peel_bcc(&payload, &key).unwrap_err();
-        assert!(matches!(err, Error::HeaderTruncated { .. }));
-    }
-
-    #[test]
-    fn u32_le_saturated_offset_returns_structured_error() {
-        let err: Error = u32_le(&[0u8; 8], usize::MAX).unwrap_err();
         assert!(matches!(err, Error::HeaderTruncated { .. }));
     }
 
