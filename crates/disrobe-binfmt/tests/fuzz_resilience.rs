@@ -5,30 +5,30 @@ use std::sync::OnceLock;
 use disrobe_binfmt::containers::{
     ApfsContainer, AppImageLayout, ArArchive, BlazorBoot, BtrfsSendHeader, BtrfsSendReplay,
     BunOffsets, BunStandalone, CabArchive, CabMember, CabRefusal, CramfsWalk, CythonIdentity,
-    CythonModule, DmgSummary, DotnetBundle, ElfOverlay, ElfOverlayCarve, ErofsSuperblock,
-    EszipArchive, Ext4Walk, FatBpb, FatVolume, FirmwareKind, FlatpakExtraction, FvExtraction,
-    FvHeader, GptTable, HfsVolume, InnoSetupInfo, InstallShieldHeader, Jffs2Endian, Jffs2Walk,
-    KolyTrailer, MbrTable, MinidumpFile, MinixSuperblock, MinixWalk, MsiExtractable, MsiSummary,
-    MsixManifest, NsisHeader, NtfsVolume, NtfsWalk, OciManifest, PartcloneImage, QnxKind,
-    QnxStartup, RomfsHeader, RomfsWalk, SparseHeader, SquashfsSuperblock, SquashfsWalk,
+    CythonModule, DenoCompilePayload, DmgSummary, DotnetBundle, ElfOverlay, ElfOverlayCarve,
+    ErofsSuperblock, EszipArchive, Ext4Walk, FatBpb, FatVolume, FirmwareKind, FlatpakExtraction,
+    FvExtraction, FvHeader, GptTable, HfsVolume, InnoSetupInfo, InstallShieldHeader, Jffs2Endian,
+    Jffs2Walk, KolyTrailer, MbrTable, MinidumpFile, MinixSuperblock, MinixWalk, MsiExtractable,
+    MsiSummary, MsixManifest, NsisHeader, NtfsVolume, NtfsWalk, OciManifest, PartcloneImage,
+    QnxKind, QnxStartup, RomfsHeader, RomfsWalk, SparseHeader, SquashfsSuperblock, SquashfsWalk,
     SquirrelLayout, StuffItKind, UbifsWalk, VhdFooter, VhdImage, VhdxImage, WebcilHeader,
     WimArchive, XarArchive, Yaffs2Endian, Yaffs2Walk, carve_elf_overlay, carve_wim_resources,
     detect_apfs, detect_ar, detect_blazor_boot, detect_btrfs_send, detect_bun, detect_cramfs,
-    detect_cython, detect_dmg, detect_dotnet_bundle, detect_elf_overlay, detect_erofs,
-    detect_eszip, detect_ext4, detect_fat, detect_firmware, detect_flatpak_bundle, detect_gzip,
-    detect_hfsplus, detect_innosetup, detect_installshield, detect_iso, detect_jffs2,
+    detect_cython, detect_deno_compile, detect_dmg, detect_dotnet_bundle, detect_elf_overlay,
+    detect_erofs, detect_eszip, detect_ext4, detect_fat, detect_firmware, detect_flatpak_bundle,
+    detect_gzip, detect_hfsplus, detect_innosetup, detect_installshield, detect_iso, detect_jffs2,
     detect_minidump, detect_minixfs, detect_nsis, detect_ntfs, detect_par2, detect_partclone,
     detect_qnx, detect_romfs, detect_snap, detect_sparse, detect_squirrel, detect_stuffit,
     detect_ubi, detect_ubifs, detect_uefi_fv, detect_unityfs, detect_xar, detect_yaffs2,
     elf_image_end, extract_flatpak_bundle, extract_uefi_fv, locate_embedded_nupkg,
     locate_hfsplus_volumes, minidump_extent, parse_apfs, parse_appimage, parse_appx_manifest,
-    parse_ar, parse_blazor_boot, parse_bpb, parse_bun, parse_cab, parse_docker_manifest,
-    parse_dotnet_bundle, parse_eszip, parse_fv_header, parse_gpt, parse_hfsplus, parse_koly,
-    parse_lzop, parse_mbr, parse_minidump, parse_msi_minimal, parse_oci_index, parse_oci_manifest,
-    parse_reshdr_at, parse_squashfs_superblock, parse_vhd, parse_vhd_footer, parse_vhdx,
-    parse_webcil_header, parse_wim, parse_xar, qnx_parse_startup, read_cab_members,
-    read_msi_extractable, reconstruct_image, reconstruct_partclone, recover_cython,
-    replay_btrfs_send, unsparse, unwrap_webcil, vhd_materialize_logical_disk,
+    parse_ar, parse_blazor_boot, parse_bpb, parse_bun, parse_cab, parse_deno_compile,
+    parse_docker_manifest, parse_dotnet_bundle, parse_eszip, parse_fv_header, parse_gpt,
+    parse_hfsplus, parse_koly, parse_lzop, parse_mbr, parse_minidump, parse_msi_minimal,
+    parse_oci_index, parse_oci_manifest, parse_reshdr_at, parse_squashfs_superblock, parse_vhd,
+    parse_vhd_footer, parse_vhdx, parse_webcil_header, parse_wim, parse_xar, qnx_parse_startup,
+    read_cab_members, read_msi_extractable, reconstruct_image, reconstruct_partclone,
+    recover_cython, replay_btrfs_send, unsparse, unwrap_webcil, vhd_materialize_logical_disk,
     vhdx_materialize_logical_disk, walk_cramfs, walk_ext4, walk_fat, walk_installshield,
     walk_jffs2, walk_minixfs, walk_ntfs, walk_romfs, walk_squashfs, walk_ubifs, walk_yaffs2,
 };
@@ -51,7 +51,7 @@ use disrobe_testkit::{BATCH_ENV, CorpusEntry, StressCase, StressConfig, XorShift
 const CASES_PER_INPUT: usize = 224;
 const BATCH_SIZE: usize = 448;
 
-const CORPUS_ENTRIES: usize = 30;
+const CORPUS_ENTRIES: usize = 32;
 const MIN_TOTAL_CASES: usize = 5_000;
 const MIN_ENTRY_POINTS_PER_CASE: u32 = 100;
 
@@ -732,6 +732,20 @@ fn corpus() -> Vec<CorpusEntry> {
         CorpusEntry::new("asar-package", asar_seed()),
         CorpusEntry::new("cfb-compound-file", cfb_seed()),
         CorpusEntry::new("cpio-newc", cpio_newc_seed()),
+        CorpusEntry::new(
+            "deno-compile-module-store",
+            include_bytes!(
+                "../../../corpus/javascript/deno/compiled/deno-2.9.7-x86_64-pc-windows-msvc.payload"
+            )
+            .to_vec(),
+        ),
+        CorpusEntry::new(
+            "deno-compile-eszip-trailer",
+            include_bytes!(
+                "../../../corpus/javascript/deno/compiled/deno-1.46.3-x86_64-pc-windows-msvc.payload"
+            )
+            .to_vec(),
+        ),
         CorpusEntry::new("docker-manifest-json", docker_manifest_seed()),
         CorpusEntry::new("elf64-dynamic", elf64_dynamic_seed()),
         CorpusEntry::new("empty", Vec::<u8>::new()),
@@ -883,6 +897,7 @@ reached_when_not_empty! {
     BunStandalone => modules,
     CramfsWalk => files,
     CythonModule => functions,
+    DenoCompilePayload => modules,
     DotnetBundle => files,
     ElfDynamic => needed,
     disrobe_binfmt::containers::squirrel::EmbeddedNupkg => nuspec_names,
@@ -1018,6 +1033,7 @@ fn probe_detectors(bytes: &[u8]) -> Hits {
     hits.record(detect_bun(bytes));
     hits.record(detect_cramfs(bytes));
     hits.record(detect_cython(bytes));
+    hits.record(detect_deno_compile(bytes));
     hits.record(detect_dmg(bytes));
     hits.record(detect_dotnet_bundle(bytes));
     hits.record(detect_elf_overlay(bytes));
@@ -1129,6 +1145,7 @@ fn probe_container_parsers(bytes: &[u8]) -> Hits {
     hits.record(carve_elf_overlay(bytes));
     hits.record(elf_image_end(bytes));
     hits.record(parse_eszip(bytes));
+    hits.record(parse_deno_compile(bytes));
     hits.record(walk_ext4(bytes, WALK_CAP));
     hits.record(parse_bpb(bytes));
     hits.record(walk_fat(bytes, WALK_CAP));

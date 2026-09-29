@@ -138,6 +138,8 @@ const TAG_EROFS: &str = "erofs";
 const TAG_INSTALLSHIELD: &str = "installshield";
 const TAG_ENIGMA: &str = "enigma-virtual-box";
 const TAG_LUKS1: &str = "luks1";
+const TAG_ESZIP: &str = "eszip";
+const TAG_DENO_COMPILE: &str = "deno-compile";
 
 #[derive(Debug)]
 pub struct ContainerDetector;
@@ -181,6 +183,8 @@ const fn tag_specificity(tag: &str) -> u16 {
             | b"erofs"
             | b"installshield"
             | b"enigma-virtual-box"
+            | b"eszip"
+            | b"deno-compile"
     ) {
         SPECIFICITY_VERIFIED_SIGNATURE
     } else {
@@ -197,6 +201,8 @@ const fn tag_marker(tag: &str) -> &'static str {
         b"erofs" => "superblock+root-inode",
         b"installshield" => "isc-signature+cabinet-descriptor",
         b"enigma-virtual-box" => "pe-enigma-sections+evb-directory",
+        b"eszip" => "eszip-magic+module-header",
+        b"deno-compile" => "d3n0l4nd-payload+module-index",
         _ => "container-magic",
     }
 }
@@ -371,6 +377,21 @@ fn inventory_entries(tag: &str, bytes: &[u8]) -> Inventory {
         TAG_ARJ => arj_inventory(bytes),
         TAG_INSTALLSHIELD => installshield_inventory(bytes),
         TAG_ENIGMA => enigma_inventory(bytes),
+        TAG_ESZIP | TAG_DENO_COMPILE => match extract_members(tag, bytes) {
+            Ok(extraction) => Inventory::Listed(
+                extraction
+                    .members
+                    .iter()
+                    .map(|member: &ChildArtifact| {
+                        (
+                            member.handle.relative_path.clone(),
+                            member.bytes.len() as u64,
+                        )
+                    })
+                    .collect(),
+            ),
+            Err(error) => Inventory::Unreadable(error.to_string()),
+        },
         _ => Inventory::ExtractionRequired,
     }
 }
@@ -573,8 +594,51 @@ fn extract_members(tag: &str, bytes: &[u8]) -> CoreResult<MemberExtraction> {
         TAG_BZIP2 => {
             extract_single_stream(bytes, "bz2", decode_bzip2).map(MemberExtraction::complete)
         }
+        TAG_ESZIP => eszip_members(bytes),
+        TAG_DENO_COMPILE => deno_compile_members(bytes),
         other => Err(unextracted_kind(other)),
     }
+}
+
+fn eszip_members(bytes: &[u8]) -> CoreResult<MemberExtraction> {
+    let modules: Vec<crate::containers::EszipExtractedModule> =
+        crate::containers::extract_eszip(bytes, &crate::quota::ExtractionQuota::default_safe())
+            .map_err(|error: crate::error::Error| fail(format!("eszip payload: {error}")))?;
+    let mut members: Vec<(String, Vec<u8>)> = Vec::with_capacity(modules.len());
+    for module in modules {
+        members.push((module.path, module.source));
+        if let Some(map) = module.source_map {
+            members.push((map.path, map.bytes));
+        }
+    }
+    Ok(MemberExtraction::complete(members))
+}
+
+fn deno_compile_members(bytes: &[u8]) -> CoreResult<MemberExtraction> {
+    let payload: crate::containers::DenoCompilePayload =
+        crate::containers::parse_deno_compile(bytes)
+            .map_err(|error: crate::error::Error| fail(format!("deno compile payload: {error}")))?;
+    let files: Vec<crate::containers::DenoCompileExtractedFile> =
+        crate::containers::extract_deno_compile_payload(
+            bytes,
+            &payload,
+            &crate::quota::ExtractionQuota::default_safe(),
+        )
+        .map_err(|error: crate::error::Error| fail(format!("deno compile payload: {error}")))?;
+    let mut extraction: MemberExtraction = MemberExtraction::complete(
+        files
+            .into_iter()
+            .map(|file: crate::containers::DenoCompileExtractedFile| (file.path, file.bytes))
+            .collect(),
+    );
+    if payload.unread_npm_files {
+        extraction.refusals.push(
+            "deno compile payload carries an npm package directory that this extractor does not \
+             read, so npm package files are not among the members"
+                .to_owned(),
+        );
+    }
+    Ok(extraction)
 }
 
 fn unextracted_kind(tag: &str) -> CoreError {
@@ -921,6 +985,15 @@ fn sniff_container_tag(bytes: &[u8]) -> Option<&'static str> {
     }
     if crate::containers::detect_dotnet_bundle(bytes).is_some() {
         return Some(TAG_DOTNET_SINGLE_FILE);
+    }
+    if bytes.starts_with(b"ESZIP")
+        && crate::containers::parse_eszip_at(bytes, 0)
+            .is_ok_and(|archive: crate::containers::EszipArchive| !archive.modules.is_empty())
+    {
+        return Some(TAG_ESZIP);
+    }
+    if crate::containers::detect_deno_compile(bytes).is_some() {
+        return Some(TAG_DENO_COMPILE);
     }
     None
 }

@@ -3,6 +3,7 @@ use object::{Object, ObjectSection};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::containers::deno_compile::UniquePaths;
 use crate::error::{Error, Result};
 use crate::quota::{ABSOLUTE_MAX_ENTRIES, ExtractionQuota, QuotaGuard, sanitize_entry_path};
 
@@ -137,11 +138,18 @@ impl EszipArchive {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EszipSourceMap {
+    pub path: String,
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EszipExtractedModule {
     pub specifier: String,
     pub path: String,
     pub kind: EszipModuleKind,
     pub source: Vec<u8>,
+    pub source_map: Option<EszipSourceMap>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -671,25 +679,46 @@ fn strip_drive_prefix(path: &str) -> &str {
 pub fn extract_eszip(bytes: &[u8], quota: &ExtractionQuota) -> Result<Vec<EszipExtractedModule>> {
     let archive: EszipArchive = parse_eszip(bytes)?;
     let mut guard: QuotaGuard = QuotaGuard::new(*quota);
+    let mut used_paths: UniquePaths = UniquePaths::default();
     let mut out: Vec<EszipExtractedModule> = Vec::new();
 
     for (index, module) in archive.modules.iter().enumerate() {
-        let Some(source): Option<&[u8]> = module_source(bytes, module) else {
-            continue;
-        };
         if module.source_len == 0 {
             continue;
         }
+        let Some(source): Option<&[u8]> = module_source(bytes, module) else {
+            continue;
+        };
         let source_len: u64 = source.len() as u64;
         guard.admit_entry(&module.specifier, source_len, source_len)?;
-        let path: String = sanitize_eszip_specifier(&module.specifier)
-            .unwrap_or_else(|| format!("module_{index}"));
+        let path: String = used_paths.claim(
+            sanitize_eszip_specifier(&module.specifier)
+                .unwrap_or_else(|| format!("module_{index}")),
+        );
+        let source_map: Option<EszipSourceMap> = match module_source_map(bytes, module) {
+            Some(map) if !map.is_empty() => {
+                let map_len: u64 = map.len() as u64;
+                guard.admit_entry(&module.specifier, map_len, map_len)?;
+                Some(EszipSourceMap {
+                    path: format!("{path}.map"),
+                    bytes: map.to_vec(),
+                })
+            }
+            _ => None,
+        };
         out.push(EszipExtractedModule {
             specifier: module.specifier.clone(),
             path,
             kind: module.kind,
             source: source.to_vec(),
+            source_map,
         });
+    }
+
+    for module in &mut out {
+        if let Some(map) = module.source_map.as_mut() {
+            map.path = used_paths.claim(std::mem::take(&mut map.path));
+        }
     }
 
     Ok(out)

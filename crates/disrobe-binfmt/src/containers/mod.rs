@@ -13,6 +13,7 @@ pub mod cab_lzms;
 pub mod cpio;
 pub mod cramfs;
 pub mod cython;
+pub mod deno_compile;
 pub mod dmg;
 pub mod docker;
 pub mod dotnet_bundle;
@@ -150,6 +151,12 @@ pub use cython::{
     CythonClass, CythonFunction, CythonIdentity, CythonModule, RecoverySource, detect_cython,
     recover_cython,
 };
+pub use deno_compile::{
+    ByteSpan, DENO_COMPILE_MAGIC, DenoCompileExtractedFile, DenoCompileLayout, DenoCompileModule,
+    DenoCompilePayload, DenoCompileRedirect, DenoCompileSymlink, DenoExtractedRole,
+    DenoModuleOrigin, detect_deno_compile, extract_deno_compile, extract_deno_compile_payload,
+    parse_deno_compile, parse_deno_compile_at,
+};
 pub use dmg::{DmgSummary, KolyTrailer, detect_dmg, parse_koly, reconstruct_image};
 pub use docker::{DockerManifest, parse_docker_manifest};
 pub use dotnet_bundle::{
@@ -168,8 +175,8 @@ pub use enigma::{
 pub use erofs::{ErofsFile, ErofsSuperblock, ErofsWalk, detect_erofs, walk_erofs};
 pub use eszip::{
     EszipArchive, EszipChecksum, EszipExtractedModule, EszipModuleEntry, EszipModuleKind,
-    EszipNpmSpecifier, EszipRedirect, EszipVersion, detect_eszip, extract_eszip, module_source,
-    module_source_map, parse_eszip, parse_eszip_at, sanitize_eszip_specifier,
+    EszipNpmSpecifier, EszipRedirect, EszipSourceMap, EszipVersion, detect_eszip, extract_eszip,
+    module_source, module_source_map, parse_eszip, parse_eszip_at, sanitize_eszip_specifier,
 };
 pub use ext4::{Ext4File, Ext4Walk, detect_ext4, walk_ext4};
 pub use fat::{

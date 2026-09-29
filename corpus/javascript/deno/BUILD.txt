@@ -1,0 +1,70 @@
+disrobe self-authored Deno program and its deno compile payloads
+================================================================
+
+Source: app/ (main.js imports lib/greet.js, lib/math.ts and lib/names.json;
+greet.js imports math.ts). Plain JavaScript, one TypeScript module and one
+JSON module, no third-party imports, no network, deterministic output.
+Authored for disrobe regression fixtures. Files are LF-terminated and git
+applies no text conversion to them.
+
+Toolchains (official GitHub release zips, x86_64-pc-windows-msvc):
+
+  Deno 2.9.7   deno-x86_64-pc-windows-msvc.zip
+                 sha256 a0c3101b4158d1dfb7d6a78a7bf0f3de80c96bb423c152beec8beb22786f2238
+               denort-x86_64-pc-windows-msvc.zip
+                 sha256 1ed45440e881cbadbfa754c8dd25c70635bf3b16a5ad663f65ec3c5cc4a975fd
+               deno.exe   sha256 e020f3e232bd16e33768dee528e5983349c962952051ced0a5d58ad42f5d9b33
+               denort.exe sha256 c59c2781a1dcb13b4cbf64a277064e4a0c78d93f30e36b053fbda7da9bfd5a99
+  Deno 1.46.3  deno-x86_64-pc-windows-msvc.zip
+                 sha256 d9428daa1b3763bdf562054d0fc40832658515b7071c7f7e98d61961adc2d61a
+               denort-x86_64-pc-windows-msvc.zip
+                 sha256 8345d969f22591005d05abfbfab967840a50bc53339f2d8acd1d60eb89eb9102
+               deno.exe   sha256 15d0a97b5dadbfa632cb773c966d98bd0f48f9add3bc6ad74d78a612ecf0a566
+               denort.exe sha256 632ffc011e356def261f3b469cf66c94563a7f916bc6cc939cae95ef25b24149
+
+Build commands, run with app/ as the working directory, DENO_DIR set to an
+empty scratch directory, DENORT_BIN set to the denort.exe of the same
+release and DENO_NO_UPDATE_CHECK=1:
+
+  <deno-2.9.7>/deno.exe compile --no-check --output <scratch>/app-2.9.7 ./main.js
+  <deno-1.46.3>/deno.exe compile --no-check --output <scratch>/app-1.46.3 ./main.js
+  <deno-1.46.3>/deno.exe cache --no-check ./main.js
+
+The compiled executables are not committed (79,793,328 and 82,014,720
+bytes). Their digests were:
+
+  app-2.9.7.exe   37e67a79446390fd66124fe28f17c2a5a45a1f4532ee82be9246c876e452eb3e
+  app-1.46.3.exe  e510d3425b4d4114cdaed7bb0da49e3a729ca31cc99e3af22e9b4302fd49225f
+
+Committed artifacts:
+
+  compiled/deno-2.9.7-x86_64-pc-windows-msvc.payload
+      The d3n0l4nd data section Deno 2.9.7 writes into the executable's PE
+      resource: opening "d3n0l4nd", u64-LE-length metadata JSON, npm
+      snapshot, specifier store, redirects, remote-module store,
+      virtual-file-system JSON and file data, closing "d3n0l4nd". Cut from
+      app-2.9.7.exe at the occurrence of "d3n0l4nd" whose length fields walk
+      to a closing "d3n0l4nd"; it ends at the end of the executable. Original
+      sources are stored verbatim; math.ts also carries the transpiled
+      JavaScript and its source map.
+
+  compiled/deno-1.46.3-x86_64-pc-windows-msvc.payload
+      The d3n0l4nd section Deno 1.46.3 writes: "d3n0l4nd", four u64-BE
+      positions (eszip 0, metadata 1080, npm directory 1904, npm data 1908)
+      relative to the end of the 40-byte header, then the eszip, the metadata
+      JSON and the npm directory JSON ("null"). Cut from app-1.46.3.exe at the
+      last "d3n0l4nd" followed by an eszip, up to the npm data position.
+
+  compiled/deno-1.46.3.eszip
+      Bytes 40 through 1119 of the payload above: a bare ESZIP2.2 archive
+      (checksum none) with specifiers app/main.js, app/lib/greet.js,
+      app/lib/math.ts (transpiled JavaScript plus a source map whose
+      sourcesContent holds the authored TypeScript) and app/lib/names.json.
+
+  expected/deno-1.46.3-emit-math.ts.js
+      The emit Deno 1.46.3 wrote for lib/math.ts to
+      DENO_DIR/gen/file/.../lib/math.ts.js during `deno cache`, with the final
+      `//# sourceMappingURL=data:...` line removed. It is the reference for the
+      transpiled module the eszip stores.
+
+SHA256SUMS lists every committed file.
