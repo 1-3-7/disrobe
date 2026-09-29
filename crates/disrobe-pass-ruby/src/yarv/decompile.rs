@@ -250,6 +250,9 @@ fn try_render_exception_region(
     if start >= end || end > body.instructions.len() {
         return None;
     }
+    if region_is_inside_a_loop(body, start, end) {
+        return None;
+    }
 
     let pad: String = indent(depth);
     let targets: Vec<Option<usize>> = resolve_branch_targets(body);
@@ -327,6 +330,70 @@ fn try_render_exception_region(
     );
     lines.extend(suffix);
     Some(lines)
+}
+
+fn region_is_inside_a_loop(body: &YarvIseqBody, start: usize, end: usize) -> bool {
+    let targets: Vec<Option<usize>> = resolve_branch_targets(body);
+    targets
+        .iter()
+        .enumerate()
+        .any(|(from, target): (usize, &Option<usize>)| {
+            from >= end && target.is_some_and(|to: usize| to < start)
+        })
+}
+
+fn try_inline_rescue(
+    body: &YarvIseqBody,
+    ctx: &DecompileContext<'_>,
+    depth: u32,
+    i: usize,
+    hi: usize,
+    targets: &[Option<usize>],
+    stack: &mut Vec<String>,
+    stmts: &mut Vec<String>,
+) -> Option<usize> {
+    let rt_pc: Vec<u32> = runtime_pcs(body);
+    let here: u32 = *rt_pc.get(i)?;
+    let entry: &YarvCatchEntry = body.catch_entries.iter().find(|e: &&YarvCatchEntry| {
+        e.catch_type == CatchType::Rescue && e.handler_iseq.is_some() && e.start_pc == here
+    })?;
+    let end: usize = index_at_pc(&rt_pc, entry.end_pc);
+    let cont: usize = index_at_pc(&rt_pc, entry.cont_pc).max(end);
+    if end <= i || end >= hi || cont > hi {
+        return None;
+    }
+    let handler: &YarvIseqBody = ctx.body(entry.handler_iseq?)?;
+    if let Some(protected) = single_value_region(body, ctx, depth, i, end, targets) {
+        let handler_lines: Vec<String> = render_rescue_handler(handler, &body.local_table, ctx, 0);
+        if let [header, value] = handler_lines.as_slice()
+            && matches!(header.trim(), "rescue" | "rescue StandardError")
+            && !value.trim().is_empty()
+            && !value.contains('\n')
+        {
+            push(stack, format!("({protected} rescue {})", value.trim()));
+            return Some(cont.min(hi));
+        }
+    }
+    let pad: String = indent(depth);
+    stmts.push(format!("{pad}begin"));
+    stmts.extend(render_slice(body, ctx, depth + 1, i, end, targets));
+    stmts.extend(render_rescue_handler(
+        handler,
+        &body.local_table,
+        ctx,
+        depth,
+    ));
+    stmts.push(format!("{pad}end"));
+    let resume: usize = if body
+        .instructions
+        .get(cont)
+        .is_some_and(|x| x.mnemonic == "pop")
+    {
+        cont + 1
+    } else {
+        cont
+    };
+    Some(resume.min(hi))
 }
 
 fn render_rescue_handler(
@@ -495,6 +562,16 @@ fn render_region(
     while i < hi {
         let instr: &YarvIbfInstruction = &body.instructions[i];
         let m: &str = instr.mnemonic.as_str();
+        let depth_before: usize = stack.len();
+        if !body.catch_entries.is_empty()
+            && let Some(next) = try_inline_rescue(body, ctx, depth, i, hi, targets, stack, stmts)
+        {
+            i = next;
+            if stack.len() <= depth_before {
+                stack.clear();
+            }
+            continue;
+        }
         if ctx.body_has_pattern(body.index)
             && let Some(next) = try_pattern_match(body, ctx, depth, i, hi, targets, stmts)
         {
@@ -576,6 +653,18 @@ fn render_region(
             let rhs: String = pop(stack);
             push(stack, format!("{target} = {rhs}"));
             i += 2;
+            continue;
+        }
+        if m == "setn"
+            && let Some(next) = try_retained_assignment(body, i, hi, stack)
+        {
+            i = next;
+            continue;
+        }
+        if m == "opt_reverse"
+            && let Some(next) = try_parallel_assign(body, ctx, depth, i, hi, stack, stmts)
+        {
+            i = next;
             continue;
         }
         if m == "expandarray"
@@ -755,6 +844,97 @@ fn try_massign(
         .unwrap_or(&rhs_raw);
     emit_stmt(stmts, depth, format!("{} = {rhs}", targets.join(", ")));
     Some(j)
+}
+
+fn assignment_receiver(recv: String) -> String {
+    if needs_receiver_parens(&recv) {
+        format!("({recv})")
+    } else {
+        recv
+    }
+}
+
+fn try_retained_assignment(
+    body: &YarvIseqBody,
+    i: usize,
+    hi: usize,
+    stack: &mut Vec<String>,
+) -> Option<usize> {
+    let n: usize = operand_count(&body.instructions[i], 0);
+    let assign: &YarvIbfInstruction = body.instructions.get(i + 1)?;
+    if i + 2 >= hi || body.instructions.get(i + 2)?.mnemonic != "pop" {
+        return None;
+    }
+    let consumed: usize = match assign.mnemonic.as_str() {
+        "opt_aset" => 3,
+        "opt_aset_with" => 2,
+        "opt_send_without_block" | "send" => match assign.operands.first() {
+            Some(YarvOperand::Call { method, argc, .. })
+                if method.ends_with('=') && !method.ends_with("==") && *argc == 1 =>
+            {
+                2
+            }
+            _ => return None,
+        },
+        _ => return None,
+    };
+    if n != consumed || stack.len() <= consumed {
+        return None;
+    }
+    let expr: String = match assign.mnemonic.as_str() {
+        "opt_aset" => {
+            let val: String = pop(stack);
+            let idx: String = pop(stack);
+            let recv: String = assignment_receiver(pop(stack));
+            format!("{recv}[{idx}] = {val}")
+        }
+        "opt_aset_with" => {
+            let val: String = pop(stack);
+            let recv: String = assignment_receiver(pop(stack));
+            format!("{recv}[{}] = {val}", operand_value(assign, 0))
+        }
+        _ => {
+            let Some(YarvOperand::Call { method, .. }) = assign.operands.first() else {
+                return None;
+            };
+            let val: String = pop(stack);
+            let recv: String = pop(stack);
+            let attribute: &str = method.strip_suffix('=')?;
+            if recv == "self" {
+                format!("self.{attribute} = {val}")
+            } else {
+                format!("{}.{attribute} = {val}", assignment_receiver(recv))
+            }
+        }
+    };
+    let slot: &mut String = stack.last_mut()?;
+    *slot = format!("({expr})");
+    Some(i + 3)
+}
+
+fn try_parallel_assign(
+    body: &YarvIseqBody,
+    ctx: &DecompileContext<'_>,
+    depth: u32,
+    i: usize,
+    hi: usize,
+    stack: &mut Vec<String>,
+    stmts: &mut Vec<String>,
+) -> Option<usize> {
+    let n: usize = operand_count(&body.instructions[i], 0);
+    if n < 2 || n > stack.len() || i + n >= hi {
+        return None;
+    }
+    let targets: Vec<String> = (1..=n)
+        .map(|k: usize| assignment_target(&body.instructions[i + k], &body.local_table, ctx))
+        .collect::<Option<Vec<String>>>()?;
+    let values: Vec<String> = pop_n(stack, n);
+    emit_stmt(
+        stmts,
+        depth,
+        format!("{} = {}", targets.join(", "), values.join(", ")),
+    );
+    Some(i + n + 1)
 }
 
 fn massign_targets(
@@ -2035,9 +2215,33 @@ fn begins_when_comparison(body: &YarvIseqBody, i: usize, hi: usize) -> bool {
     let Some(t): Option<usize> = topn else {
         return false;
     };
-    body.instructions
-        .get(t + 1)
-        .is_some_and(|x| is_send(x.mnemonic.as_str()))
+    let only_when_values: bool = body.instructions[i..t]
+        .iter()
+        .all(|x: &YarvIbfInstruction| {
+            matches!(
+                x.mnemonic.as_str(),
+                "putobject"
+                    | "putobject_INT2FIX_0_"
+                    | "putobject_INT2FIX_1_"
+                    | "putnil"
+                    | "putstring"
+                    | "putchilledstring"
+                    | "duparray"
+                    | "duphash"
+                    | "opt_getconstant_path"
+                    | "getconstant"
+                    | "getlocal"
+                    | "getlocal_WC_0"
+                    | "getlocal_WC_1"
+                    | "getinstancevariable"
+                    | "newrange"
+            )
+        });
+    only_when_values
+        && body
+            .instructions
+            .get(t + 1)
+            .is_some_and(|x| is_send(x.mnemonic.as_str()))
         && body
             .instructions
             .get(t + 2)
@@ -3131,7 +3335,7 @@ fn step(
             push(stack, format!("{}.freeze", operand_value(instr, 0)));
         }
         "opt_str_uminus" | "opt_nil_p" | "opt_size" | "opt_length" | "opt_empty_p" | "opt_succ"
-        | "opt_not" | "opt_regexpmatch2" => {
+        | "opt_not" => {
             emit_unary_call(instr, stack);
         }
         "objtostring" => {}
@@ -3164,7 +3368,24 @@ fn step(
             let val: String = pop(stack);
             let idx: String = pop(stack);
             let recv: String = pop(stack);
+            let recv: String = if needs_receiver_parens(&recv) {
+                format!("({recv})")
+            } else {
+                recv
+            };
             push(stack, format!("{recv}[{idx}] = {val}"));
+        }
+        "opt_regexpmatch2" => {
+            let arg: String = pop(stack);
+            let recv: String = pop(stack);
+            let recv: String = parenthesize_operand(recv, 4, false);
+            let arg: String = parenthesize_operand(arg, 4, true);
+            push(stack, format!("{recv} =~ {arg}"));
+        }
+        "opt_reverse" => {
+            let n: usize = operand_count(instr, 0).min(stack.len());
+            let from: usize = stack.len() - n;
+            stack[from..].reverse();
         }
         "opt_aset_with" => {
             let val: String = pop(stack);
@@ -3193,6 +3414,25 @@ fn step(
                 _ => name,
             };
             push(stack, format!("defined?({target})"));
+        }
+        "once" => {
+            let child: Option<&YarvIseqBody> = match instr.operands.first() {
+                Some(YarvOperand::IseqRef(index)) if *index != u32::MAX => ctx.body(*index),
+                _ => None,
+            };
+            let nested: DecompileContext<'_> = ctx.nested_in(local_table);
+            let lines: Vec<String> = child.map_or_else(Vec::new, |body: &YarvIseqBody| {
+                render_iseq_statements(body, &nested, depth)
+            });
+            match lines.as_slice() {
+                [single] if !single.trim_start().starts_with("END {") => {
+                    push(stack, single.trim().to_owned());
+                }
+                _ => {
+                    stmts.extend(lines);
+                    push(stack, "nil".to_owned());
+                }
+            }
         }
         "definedivar" => {
             let name: String = id_or_index(instr, 0);
@@ -3249,9 +3489,14 @@ fn step(
         }
         "definesmethod" => {
             let name: String = id_or_index(instr, 0);
-            let header: String = format!("def self.{name}{}", method_signature(instr, ctx));
+            let owner: String = pop(stack);
+            let owner: String = if owner.is_empty() || owner == "_" {
+                "self".to_owned()
+            } else {
+                owner
+            };
+            let header: String = format!("def {owner}.{name}{}", method_signature(instr, ctx));
             let child: Option<&YarvIseqBody> = method_iseq(instr, ctx);
-            let _ = pop(stack);
             stmts.extend(render_nested(header, child, ctx, depth, false));
             push(stack, format!(":{name}"));
         }
@@ -3787,6 +4032,19 @@ fn emit_send(
                 return;
             }
         }
+    }
+    if recv == VMCORE
+        && method == "core#set_postexe"
+        && let Some(block) = block_iseq
+        && depth <= MAX_NEST_DEPTH
+    {
+        let block_ctx: DecompileContext<'_> = ctx.nested_in(enclosing);
+        let pad: String = indent(depth);
+        emit_stmt(stmts, depth, "END {".to_owned());
+        stmts.extend(render_iseq_statements(block, &block_ctx, depth + 1));
+        stmts.push(format!("{pad}}}"));
+        push(stack, "nil".to_owned());
+        return;
     }
     let stabby: bool = recv == VMCORE && method == "lambda" && args.is_empty();
     let recv: String = if recv == VMCORE {
