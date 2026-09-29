@@ -1,5 +1,4 @@
 #![cfg(feature = "chain")]
-#![allow(clippy::module_name_repetitions)]
 use std::collections::BTreeMap;
 
 use disrobe_core::Artifact;

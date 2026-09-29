@@ -1,16 +1,10 @@
 #![forbid(unsafe_code)]
 #![deny(unreachable_pub)]
 #![allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_possible_wrap,
-    clippy::cast_lossless,
     clippy::missing_const_for_fn,
     clippy::option_if_let_else,
     clippy::format_push_string,
-    clippy::similar_names,
     clippy::match_same_arms,
-    clippy::too_many_lines,
     clippy::case_sensitive_file_extension_comparisons,
     clippy::redundant_pub_crate,
     clippy::use_self

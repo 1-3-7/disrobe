@@ -1008,7 +1008,6 @@ pub fn execute_full(dis: &Disassembly) -> Result<(VmTrace, BTreeMap<u64, PickleV
     Ok((trace, memo))
 }
 
-#[allow(clippy::too_many_lines)]
 fn step(m: &mut Machine, insn: &Insn) -> Result<()> {
     let off: usize = insn.offset;
     match insn.name.as_str() {
