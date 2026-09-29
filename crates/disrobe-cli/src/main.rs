@@ -117,10 +117,16 @@ use cli::webview;
 use cli::yara::{self, YaraCmd};
 
 const ABOUT: &str = "strip the obfuscation, read the source";
+const VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (commit ",
+    env!("DISROBE_COMMIT"),
+    ")"
+);
 const LONG_ABOUT: &str = "disrobe is a deterministic deobfuscator & decompiler suite. it covers Python bytecode, JavaScript / TypeScript, WebAssembly, JVM / Android, .NET, native PE / ELF / Mach-O, native packers (UPX, MPRESS, NSPack, FSG, kkrunchy, mew, ...), Go, Lua, PHP, Ruby, BEAM, Swift / Objective-C, AS3, Hermes, Flutter, & the freezer / protector chains stacked on top.\n\nrun `disrobe doctor` to probe external tools, `disrobe install <tool>` to install one, or `disrobe install --list` to list every known tool.";
 
 #[derive(Parser, Debug)]
-#[command(name = "disrobe", version, about = ABOUT, long_about = LONG_ABOUT, propagate_version = true, infer_subcommands = true)]
+#[command(name = "disrobe", version = VERSION, about = ABOUT, long_about = LONG_ABOUT, propagate_version = true, infer_subcommands = true)]
 struct Cli {
     #[command(subcommand)]
     command: Cmd,

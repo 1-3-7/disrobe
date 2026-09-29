@@ -322,13 +322,18 @@ fn swift_and_macho_help_distinguish_ipa_and_mapping_parsing() {
 }
 
 #[test]
-fn top_level_version_prints_cargo_version() {
+fn top_level_version_prints_cargo_version_and_commit() {
     let r: Run = run_disrobe(&["--version"]);
     assert_eq!(r.code, 0);
     let want: &'static str = env!("CARGO_PKG_VERSION");
+    let commit: &'static str = env!("DISROBE_COMMIT");
     assert!(
-        r.stdout.contains(want),
-        "expected version `{want}` in `{}`",
+        commit.len() == 40 && commit.bytes().all(|b: u8| b.is_ascii_hexdigit()),
+        "a build from a git checkout resolves its commit, got `{commit}`"
+    );
+    assert!(
+        r.stdout.contains(&format!("{want} (commit {commit})")),
+        "expected version `{want}` and commit `{commit}` in `{}`",
         r.stdout
     );
 }
