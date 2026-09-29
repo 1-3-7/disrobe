@@ -263,7 +263,7 @@ mod tests {
     use super::*;
     use crate::expr::equivalent_exhaustive;
 
-    fn composed(outer: &[u64], inner: &Expr, var: u32) -> Expr {
+    fn composed(outer: &[u64], inner: &Expr) -> Expr {
         let inner_expr: Expr = inner.clone();
         let degree: Option<usize> = outer.iter().rposition(|coeff: &u64| *coeff != 0);
         let Some(top): Option<usize> = degree else {
@@ -276,7 +276,6 @@ mod tests {
                 acc = Expr::add(acc, Expr::konst(outer[index]));
             }
         }
-        let _ = var;
         acc
     }
 
@@ -285,14 +284,14 @@ mod tests {
         assert!(poly.is_permutation(), "{coeffs:?} must be a permutation");
         let inverse: PermutationPolynomial = poly.inverse().expect("inverse must exist");
         let inverse_expr: Expr = inverse.to_expr(0);
-        let forward: Expr = composed(coeffs, &inverse_expr, 0);
+        let forward: Expr = composed(coeffs, &inverse_expr);
         assert!(
             equivalent_exhaustive(&forward, &Expr::var(0), width, 1),
             "P(P_inv(x)) must equal x at {width:?} for {coeffs:?}; inverse {:?}",
             inverse.coefficients()
         );
         let inverse_coeffs: Vec<u64> = inverse.coefficients().to_vec();
-        let backward: Expr = composed(&inverse_coeffs, &poly.to_expr(0), 0);
+        let backward: Expr = composed(&inverse_coeffs, &poly.to_expr(0));
         assert!(
             equivalent_exhaustive(&backward, &Expr::var(0), width, 1),
             "P_inv(P(x)) must equal x at {width:?} for {coeffs:?}"
