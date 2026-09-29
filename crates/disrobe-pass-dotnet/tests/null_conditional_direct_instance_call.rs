@@ -1,11 +1,10 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::Duration;
 
 use disrobe_core::scratch::ScratchDir;
-use disrobe_core::subprocess::{CapturedOutput, run_captured};
+use disrobe_core::subprocess::{CapturedOutput, run_captured, run_captured_with_env};
 use disrobe_pass_dotnet::decompile::{DecompiledAssembly, decompile_assembly};
 use disrobe_pass_dotnet::structurize::StructuredMethod;
 
@@ -13,23 +12,35 @@ const CSPROJ: &str = "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetF
 
 const SOURCE: &str = "namespace Sample;\n\npublic sealed class Money\n{\n    public void Reset() { }\n}\n\npublic static class Extensions\n{\n    public static void Announce(this Money value) { }\n}\n\npublic class Caller\n{\n    private Money _money;\n\n    public void Poke()\n    {\n        _money?.Reset();\n    }\n\n    public void PokeStatic()\n    {\n        _money?.Announce();\n    }\n}\n";
 
+const WITHOUT_LINGERING_SERVERS: [(&str, &str); 3] = [
+    ("MSBUILDDISABLENODEREUSE", "1"),
+    ("DOTNET_CLI_USE_MSBUILD_SERVER", "0"),
+    ("UseSharedCompilation", "false"),
+];
+
 fn dotnet_path() -> PathBuf {
+    let dotnet: PathBuf = PathBuf::from("dotnet");
     assert!(
-        Command::new("dotnet")
-            .arg("--version")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok_and(|status: std::process::ExitStatus| status.success()),
+        run_captured(&dotnet, &["--version"], Duration::from_mins(1), 4096).is_ok_and(
+            |captured: Option<CapturedOutput>| {
+                captured.is_some_and(|output: CapturedOutput| output.exit_code == Some(0))
+            }
+        ),
         "the .NET SDK (dotnet) is not on PATH; install it before running this oracle"
     );
-    PathBuf::from("dotnet")
+    dotnet
 }
 
 fn run_dotnet(dotnet: &Path, args: &[String], bound: Duration, step: &str) {
-    let captured: CapturedOutput = run_captured(dotnet, args, bound, 8 * 1024 * 1024)
-        .unwrap_or_else(|error: std::io::Error| panic!("spawn dotnet {step}: {error}"))
-        .unwrap_or_else(|| panic!("dotnet {step} exceeded {} s", bound.as_secs()));
+    let captured: CapturedOutput = run_captured_with_env(
+        dotnet,
+        args,
+        WITHOUT_LINGERING_SERVERS,
+        bound,
+        8 * 1024 * 1024,
+    )
+    .unwrap_or_else(|error: std::io::Error| panic!("spawn dotnet {step}: {error}"))
+    .unwrap_or_else(|| panic!("dotnet {step} exceeded {} s", bound.as_secs()));
     assert_eq!(
         captured.exit_code,
         Some(0),
