@@ -4003,15 +4003,17 @@ mod tests {
         .expect("write runtime-handle compiler project");
         std::fs::write(directory.join("RuntimeHandleProbe.cs"), source)
             .expect("write runtime-handle compiler source");
-        let output: std::process::Output = std::process::Command::new("dotnet")
-            .args(["build", "-c", "Release", "-v", "q", "-nologo"])
-            .current_dir(directory)
-            .output()
-            .expect("run runtime-handle compiler");
+        let output: disrobe_testkit::ToolOutput = disrobe_testkit::tool_output(
+            disrobe_testkit::CommandSpec::new("dotnet", std::time::Duration::from_mins(10))
+                .args(["build", "-c", "Release", "-v", "q", "-nologo"])
+                .current_dir(directory.to_path_buf()),
+        )
+        .expect("run runtime-handle compiler");
         assert!(
-            output.status.success(),
-            "runtime-handle refusal must compile in every C# expression position:\n{}",
-            String::from_utf8_lossy(&output.stderr)
+            output.success,
+            "runtime-handle refusal must compile in every C# expression position:\n{}{}",
+            output.stdout_text(),
+            output.stderr_text()
         );
     }
 
@@ -4083,7 +4085,7 @@ mod tests {
         }
     }
 
-    fn run_unbox_any_probe(source: &str, suffix: &str) -> std::process::Output {
+    fn run_unbox_any_probe(source: &str, suffix: &str) -> disrobe_testkit::ToolOutput {
         let scratch: disrobe_core::scratch::ScratchDir =
             disrobe_core::scratch::ScratchDir::create(&format!("disrobe_unbox_any_{suffix}"))
                 .expect("create unbox.any compiler scratch directory");
@@ -4095,11 +4097,12 @@ mod tests {
         .expect("write unbox.any compiler project");
         std::fs::write(directory.join("UnboxAnyProbe.cs"), source)
             .expect("write unbox.any compiler source");
-        std::process::Command::new("dotnet")
-            .args(["run", "-c", "Release", "-v", "q", "-nologo"])
-            .current_dir(directory)
-            .output()
-            .expect("run unbox.any compiler oracle")
+        disrobe_testkit::tool_output(
+            disrobe_testkit::CommandSpec::new("dotnet", std::time::Duration::from_mins(10))
+                .args(["run", "-c", "Release", "-v", "q", "-nologo"])
+                .current_dir(directory.to_path_buf()),
+        )
+        .expect("run unbox.any compiler oracle")
     }
 
     #[test]
@@ -4129,18 +4132,18 @@ mod tests {
             recovered = recovered.body,
             recovered_unbox = recovered_unbox.body
         );
-        let clean: std::process::Output = run_unbox_any_probe(&source, "clean");
+        let clean: disrobe_testkit::ToolOutput = run_unbox_any_probe(&source, "clean");
         assert!(
-            clean.status.success(),
+            clean.success,
             "the recovered unbox.any source must throw before calling a user conversion:\nstdout:\n{}\nstderr:\n{}",
             String::from_utf8_lossy(&clean.stdout),
             String::from_utf8_lossy(&clean.stderr)
         );
         let mutated: String = source.replacen("(Target)((object)arg1)", "(Target)arg1", 1);
         assert_ne!(mutated, source, "the object-boundary mutation must apply");
-        let mutated_output: std::process::Output = run_unbox_any_probe(&mutated, "mutated");
+        let mutated_output: disrobe_testkit::ToolOutput = run_unbox_any_probe(&mutated, "mutated");
         assert_eq!(
-            mutated_output.status.code(),
+            mutated_output.exit_code,
             Some(2),
             "without the object boundary, the user conversion must run:\nstdout:\n{}\nstderr:\n{}",
             String::from_utf8_lossy(&mutated_output.stdout),
@@ -4184,9 +4187,10 @@ mod tests {
             result = result.body,
             branch = branch.body
         );
-        let output: std::process::Output = run_unbox_any_probe(&source, "unsupported_isinst");
+        let output: disrobe_testkit::ToolOutput =
+            run_unbox_any_probe(&source, "unsupported_isinst");
         assert!(
-            output.status.success(),
+            output.success,
             "unsupported isinst must evaluate then refuse in value and branch paths:\nstdout:\n{}\nstderr:\n{}\nsource:\n{source}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
@@ -4213,9 +4217,9 @@ mod tests {
             "public static class Program\n{{\n    public static int Count;\n\n    public static object Next()\n    {{\n        Count += 1;\n        return new object();\n    }}\n\n    public static {recovered}\n\n    public static int Main()\n    {{\n        try\n        {{\n            _ = Probe();\n            return Count == 1 ? 1 : 2;\n        }}\n        catch (System.NotSupportedException)\n        {{\n            return Count == 1 ? 0 : 3;\n        }}\n    }}\n}}\n",
             recovered = recovered.body
         );
-        let output: std::process::Output = run_unbox_any_probe(&source, "unsupported");
+        let output: disrobe_testkit::ToolOutput = run_unbox_any_probe(&source, "unsupported");
         assert!(
-            output.status.success(),
+            output.success,
             "unsupported unbox.any must evaluate then refuse:\nstdout:\n{}\nstderr:\n{}\nsource:\n{source}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
@@ -4239,9 +4243,9 @@ mod tests {
             "public static class Program\n{{\n    public static {recovered}\n\n    public static int Main()\n    {{\n        int? boxed = Probe(37);\n        if (boxed != 37)\n        {{\n            return 1;\n        }}\n        int? absent = Probe(null);\n        if (absent.HasValue)\n        {{\n            return 2;\n        }}\n        try\n        {{\n            _ = Probe(\"not an integer\");\n            return 3;\n        }}\n        catch (System.InvalidCastException)\n        {{\n            return 0;\n        }}\n    }}\n}}\n",
             recovered = recovered.body
         );
-        let output: std::process::Output = run_unbox_any_probe(&source, "nullable");
+        let output: disrobe_testkit::ToolOutput = run_unbox_any_probe(&source, "nullable");
         assert!(
-            output.status.success(),
+            output.success,
             "nullable unbox.any must retain CLR boxing behavior:\nstdout:\n{}\nstderr:\n{}\nsource:\n{source}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)

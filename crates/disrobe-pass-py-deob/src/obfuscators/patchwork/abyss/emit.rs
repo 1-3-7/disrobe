@@ -385,7 +385,6 @@ fn render_bytes_literal(data: &[u8]) -> String {
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
-    use std::process::Command;
 
     use super::{Const, PyExpr, render_fstring, render_string_literal};
 
@@ -403,12 +402,11 @@ mod tests {
 
     fn python3() -> String {
         for candidate in ["py", "python", "python3"] {
-            let ok: bool = Command::new(candidate)
-                .args(["-c", "import sys;print(sys.version_info[0]==3)"])
-                .output()
-                .ok()
-                .and_then(|out: std::process::Output| String::from_utf8(out.stdout).ok())
-                .is_some_and(|s: String| s.trim() == "True");
+            let ok: bool = disrobe_testkit::tool_output(
+                disrobe_testkit::CommandSpec::new(candidate, std::time::Duration::from_secs(30))
+                    .args(["-c", "import sys;print(sys.version_info[0]==3)"]),
+            )
+            .is_ok_and(|out: disrobe_testkit::ToolOutput| out.stdout_text().trim() == "True");
             if ok {
                 return candidate.to_owned();
             }
@@ -429,12 +427,12 @@ mod tests {
         let path: std::path::PathBuf = scratch.path().to_path_buf();
         std::io::Write::write_all(&mut file, source.as_bytes()).expect("write emitted source");
         drop(file);
-        let output: std::process::Output = Command::new(python)
-            .arg(&path)
-            .output()
-            .expect("run python");
+        let output: disrobe_testkit::ToolOutput = disrobe_testkit::tool_output(
+            disrobe_testkit::CommandSpec::new(python, std::time::Duration::from_mins(1)).arg(&path),
+        )
+        .expect("run python");
         assert!(
-            output.status.success(),
+            output.success,
             "cpython rejected emitted source:\n{source}\nstderr: {stderr}",
             stderr = String::from_utf8_lossy(&output.stderr)
         );

@@ -8784,35 +8784,25 @@ mod tests {
         );
     }
 
-    fn node_available() -> bool {
-        std::process::Command::new("node")
-            .arg("--version")
-            .output()
-            .is_ok_and(|o: std::process::Output| o.status.success())
-    }
-
     fn node_eval_with_loc1(expr_src: &str) -> Option<i64> {
         let program: String = format!("var loc1 = 5; process.stdout.write(String(({expr_src})));");
-        let output: std::process::Output = std::process::Command::new("node")
-            .arg("-e")
-            .arg(&program)
-            .output()
-            .ok()?;
-        if !output.status.success() {
+        let output: disrobe_testkit::ToolOutput = disrobe_testkit::tool_output(
+            disrobe_testkit::CommandSpec::new("node", std::time::Duration::from_secs(30))
+                .arg("-e")
+                .arg(program),
+        )
+        .unwrap_or_else(|error: disrobe_testkit::ToolError| {
+            panic!("node is required to grade emitted AS3 expressions: {error}")
+        });
+        assert!(!output.timed_out, "node timed out evaluating {expr_src}");
+        if !output.success {
             return None;
         }
-        String::from_utf8(output.stdout)
-            .ok()?
-            .trim()
-            .parse::<i64>()
-            .ok()
+        output.stdout_text().trim().parse::<i64>().ok()
     }
 
     #[test]
     fn emitted_unary_recompiles_to_operator_tree_value() {
-        if !node_available() {
-            return;
-        }
         let neg_neg: Expr = Expr::Unary {
             op: "-",
             operand: Box::new(Expr::Unary {

@@ -45,6 +45,7 @@ llm-metadata = ["dep:disrobe-llm-metadata"]
 semantic-reach = []
 
 [dev-dependencies]
+disrobe-testkit = { workspace = true }
 des = { workspace = true }
 aes = { workspace = true }
 cbc = { workspace = true }

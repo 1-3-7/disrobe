@@ -4115,25 +4115,8 @@ mod merge_tests {
         );
     }
 
-    fn rustc_path() -> Option<std::path::PathBuf> {
-        let probe: &str = if cfg!(windows) { "where" } else { "which" };
-        let out: std::process::Output = std::process::Command::new(probe)
-            .arg("rustc")
-            .output()
-            .ok()?;
-        if !out.status.success() {
-            return None;
-        }
-        let text: String = String::from_utf8_lossy(&out.stdout).to_string();
-        let first: &str = text.lines().next()?.trim();
-        (!first.is_empty()).then(|| std::path::PathBuf::from(first))
-    }
-
     fn run_recovered_sum_to(wat: &str, arg: i32, tag: &str) -> i32 {
-        let rustc: std::path::PathBuf = rustc_path().expect(
-            "rustc is required on PATH (probed with `where rustc` or `which rustc`) to compile the \
-             recovered loop; every CI leg carries it beside cargo",
-        );
+        let rustc: std::path::PathBuf = std::path::PathBuf::from("rustc");
         let body: String = lift_only_function(wat, HighLang::Rust);
         let mut program: String = crate::lift::rust_runtime_prelude().to_owned();
         program.push('\n');
@@ -4148,21 +4131,30 @@ mod merge_tests {
         let rs: std::path::PathBuf = dir.join("recovered.rs");
         std::fs::write(&rs, &program).expect("write recovered source");
         let bin: std::path::PathBuf = dir.join(if cfg!(windows) { "rec.exe" } else { "rec" });
-        let compiled: std::process::Output = std::process::Command::new(&rustc)
-            .args(["--edition", "2021", "-O", "-o"])
-            .arg(&bin)
-            .arg(&rs)
-            .output()
-            .expect("spawn rustc");
+        let compiled: disrobe_testkit::ToolOutput = disrobe_testkit::tool_output(
+            disrobe_testkit::CommandSpec::new(&rustc, std::time::Duration::from_mins(5))
+                .args(["--edition", "2021", "-O", "-o"])
+                .arg(&bin)
+                .arg(&rs),
+        )
+        .expect(
+            "rustc is required on PATH to compile the recovered loop; every CI leg carries it \
+             beside cargo",
+        );
         assert!(
-            compiled.status.success(),
+            compiled.success,
             "rustc rejected recovered source ({tag}):\n{}",
             String::from_utf8_lossy(&compiled.stderr)
         );
-        let run: std::process::Output = std::process::Command::new(&bin)
-            .output()
-            .expect("run the compiled recovered loop");
-        let stdout: String = String::from_utf8_lossy(&run.stdout).trim().to_owned();
+        let run: disrobe_testkit::ToolOutput = disrobe_testkit::tool_output(
+            disrobe_testkit::CommandSpec::new(&bin, std::time::Duration::from_secs(30)),
+        )
+        .expect("run the compiled recovered loop");
+        assert!(
+            !run.timed_out,
+            "the compiled recovered loop ({tag}) did not finish"
+        );
+        let stdout: String = run.stdout_text().trim().to_owned();
         stdout
             .parse::<i32>()
             .unwrap_or_else(|error: std::num::ParseIntError| {
