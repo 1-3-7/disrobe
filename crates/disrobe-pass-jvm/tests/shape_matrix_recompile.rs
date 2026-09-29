@@ -209,6 +209,28 @@ const JSR_SHAPES: Shape = Shape {
     ),
 };
 
+const FINALLY_JOIN: Shape = Shape {
+    probe: (
+        "FinallyJoinProbe.java",
+        include_str!("fixtures/shape_matrix/FinallyJoinProbe.java"),
+    ),
+    driver: (
+        "FinallyJoinDriver.java",
+        include_str!("fixtures/shape_matrix/FinallyJoinDriver.java"),
+    ),
+};
+
+const FINALLY_EXIT: Shape = Shape {
+    probe: (
+        "FinallyExitProbe.java",
+        include_str!("fixtures/shape_matrix/FinallyExitProbe.java"),
+    ),
+    driver: (
+        "FinallyExitDriver.java",
+        include_str!("fixtures/shape_matrix/FinallyExitDriver.java"),
+    ),
+};
+
 fn find_on_path(name: &str) -> PathBuf {
     let path_var: std::ffi::OsString = std::env::var_os("PATH").expect("PATH is set");
     let exts: &[&str] = if cfg!(windows) { &["", ".exe"] } else { &[""] };
@@ -698,6 +720,45 @@ fn ecj_14_subroutines_with_branches_handlers_and_nesting_recompile() {
     assert!(
         recovered.original_class.contains(&OP_JSR),
         "the ecj 1.4 build must carry jsr subroutines"
+    );
+}
+
+const FINALLY_EXIT_OUTPUT: &str = "-1 -1 -6 -6 0 -6 -7 -7 -1 -7 5;5 5 1 1 0 1 1 1 6 2 9;10 10 7 7 0 7 8 8 -1 8 20;44 44 88 88 1 88 243 243 -1 243 250;33 500 33 999 3 999 3006 3006 -1 3006 3018;6044 6044 12095 12095 6 12101 36315 36315 6 36317 36312;72634 72634 145277 145277 6 145289 50 435867 -1 435867 435867;871746 871746 1743503 1743503 6 1743515 5230563 5230563 -1 5230563 5230558;10461130 10461130 20922273 20922273 6 20922285 62766876 62766876 -1 62766876 62766876;125533768 125533768 251067551 251067551 6 251067563 753202713 753202713 0 753202715 753202710;";
+
+#[test]
+fn branching_finally_bodies_run_once_on_early_exits_from_javac() {
+    assert_recovered(
+        Compiler::Javac,
+        "finally_exit_javac",
+        &FINALLY_EXIT,
+        FINALLY_EXIT_OUTPUT,
+    );
+}
+
+const FINALLY_JOIN_OUTPUT: &str = "0 0;0 0;0 0;1 0;3 0;3 3;7 7;12 15;12 11;19 28;";
+
+#[test]
+fn a_continue_that_leaves_a_branching_finally_from_javac_runs_equal_or_is_refused() {
+    let recovered: Recovery = recover(Compiler::Javac, "finally_join_javac", &FINALLY_JOIN);
+    let source: &str = &recovered.decompiled.source;
+    assert_eq!(
+        recovered.original_output, FINALLY_JOIN_OUTPUT,
+        "the authored program's own output changed under javac"
+    );
+    if recovered.recompiled_output.as_ref() == Ok(&recovered.original_output) {
+        assert_eq!(
+            recovered.decompiled.fully_lifted_methods, recovered.decompiled.method_count,
+            "a recovered source that runs like the javac build is fully lifted:\n{source}"
+        );
+        return;
+    }
+    assert!(
+        source.contains("// <decompile: not recovered: "),
+        "a recovered continue that does not run like the javac build must name its refusal:\n{source}"
+    );
+    assert!(
+        recovered.decompiled.fully_lifted_methods < recovered.decompiled.method_count,
+        "a refused method is not fully lifted:\n{source}"
     );
 }
 

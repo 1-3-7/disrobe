@@ -563,6 +563,7 @@ pub struct Structurer<'a> {
     exit_breaks: BTreeSet<BlockId>,
     duplicated: BTreeSet<BlockId>,
     finally_inline_skips: BTreeMap<BlockId, usize>,
+    finally_copy_exits: BTreeMap<BlockId, BlockId>,
     finally_tail_trims: BTreeMap<BlockId, usize>,
     finally_return_stores: BTreeMap<BlockId, u16>,
     finally_exception_slots: BTreeSet<u16>,
@@ -646,6 +647,7 @@ impl<'a> Structurer<'a> {
             exit_breaks: BTreeSet::new(),
             duplicated: BTreeSet::new(),
             finally_inline_skips: BTreeMap::new(),
+            finally_copy_exits: BTreeMap::new(),
             finally_tail_trims: BTreeMap::new(),
             finally_return_stores: BTreeMap::new(),
             finally_exception_slots: BTreeSet::new(),
@@ -1970,6 +1972,128 @@ impl<'a> Structurer<'a> {
             .collect()
     }
 
+    fn try_gap_entries(&self, group: &GroupedTry) -> Vec<BlockId> {
+        let protected = |pc: u32| -> bool {
+            group
+                .ranges
+                .iter()
+                .any(|(lo, hi): &(u32, u32)| pc >= *lo && pc < *hi)
+        };
+        self.try_gap_blocks(group)
+            .into_iter()
+            .filter(|gap: &BlockId| {
+                self.cfg.blocks[gap.0 as usize]
+                    .predecessors
+                    .iter()
+                    .any(|predecessor: &BlockId| {
+                        let block: &BasicBlock = &self.cfg.blocks[predecessor.0 as usize];
+                        protected(block.start_pc)
+                            && block.successors.iter().any(|edge: &Edge| {
+                                edge.target == *gap && !matches!(edge.kind, EdgeKind::Exception)
+                            })
+                    })
+            })
+            .collect()
+    }
+
+    fn finally_has_internal_control_flow(&self, chain: &FinallyChain) -> bool {
+        self.finally_body_instructions(chain)
+            .is_some_and(|body: Vec<Instruction>| {
+                body.iter().any(|instruction: &Instruction| {
+                    matches!(instruction.opcode, 0x99..=0xA7 | 0xAA..=0xAB | 0xC6..=0xC8)
+                })
+            })
+    }
+
+    fn finally_copy_fold(
+        &mut self,
+        chain: &FinallyChain,
+        entry: BlockId,
+    ) -> Option<FinallyCopyFold> {
+        if self.visited.contains(&entry) || self.finally_inline_skips.contains_key(&entry) {
+            return None;
+        }
+        let catch_parameter_slots: BTreeSet<u16> = self.finally_catch_parameter_slots.clone();
+        let scoped_local_slots: BTreeSet<u16> = self.finally_scoped_local_slots.clone();
+        let folded: Option<FinallyCopyFold> =
+            self.finally_inline_blocks(chain, entry)
+                .and_then(|found: FinallyInlineBlocks| {
+                    let exit: BlockId = found.continuation?;
+                    let copied: Vec<BlockId> = found
+                        .skips
+                        .iter()
+                        .filter(|(block, skip): &&(BlockId, usize)| {
+                            *skip == self.block_instructions(*block).len()
+                        })
+                        .map(|(block, _): &(BlockId, usize)| *block)
+                        .collect();
+                    (copied.first() == Some(&entry)
+                        && !copied.contains(&exit)
+                        && !copied
+                            .iter()
+                            .any(|block: &BlockId| self.visited.contains(block))
+                        && self.finally_chain_is_closed(&copied))
+                    .then_some(FinallyCopyFold {
+                        skips: found.skips,
+                        copied,
+                        exit,
+                    })
+                });
+        if folded.is_none() {
+            self.finally_catch_parameter_slots = catch_parameter_slots;
+            self.finally_scoped_local_slots = scoped_local_slots;
+        }
+        folded
+    }
+
+    fn commit_finally_copy_fold(&mut self, entry: BlockId, fold: FinallyCopyFold, resume: BlockId) {
+        for (block, skip) in fold.skips {
+            self.finally_inline_skips.insert(block, skip);
+        }
+        for block in fold.copied {
+            self.absorb(block);
+        }
+        self.finally_copy_exits.insert(entry, resume);
+    }
+
+    fn fold_exit_finally_copies(
+        &mut self,
+        chain: &FinallyChain,
+        finally_handler: BlockId,
+        gap_entries: &[BlockId],
+        try_end_block: Option<BlockId>,
+    ) {
+        for &entry in gap_entries {
+            if let Some(fold) = self.finally_copy_fold(chain, entry) {
+                let exit: BlockId = fold.exit;
+                self.commit_finally_copy_fold(entry, fold, exit);
+            }
+        }
+        let Some(normal_copy): Option<BlockId> = try_end_block else {
+            return;
+        };
+        let catch_parameter_slots: BTreeSet<u16> = self.finally_catch_parameter_slots.clone();
+        let scoped_local_slots: BTreeSet<u16> = self.finally_scoped_local_slots.clone();
+        let normal_exit: Option<BlockId> = self
+            .finally_copy_fold(chain, normal_copy)
+            .map(|fold: FinallyCopyFold| fold.exit);
+        self.finally_catch_parameter_slots = catch_parameter_slots;
+        self.finally_scoped_local_slots = scoped_local_slots;
+        let Some(normal_exit): Option<BlockId> = normal_exit else {
+            return;
+        };
+        for site in self.protected_exit_inline_sites(chain, finally_handler) {
+            if site == normal_copy || gap_entries.contains(&site) {
+                continue;
+            }
+            if let Some(fold) = self.finally_copy_fold(chain, site)
+                && fold.exit == normal_exit
+            {
+                self.commit_finally_copy_fold(site, fold, normal_copy);
+            }
+        }
+    }
+
     fn finally_return_copy(&mut self, chain: &FinallyChain, cont: BlockId) -> bool {
         let Some(body): Option<Vec<Instruction>> = self.finally_body_instructions(chain) else {
             return false;
@@ -2031,22 +2155,24 @@ impl<'a> Structurer<'a> {
         sites
     }
 
+    fn catch_body_is_finally_protected(&self, finally_handler: BlockId, catch: BlockId) -> bool {
+        let handler_pc: u32 = self.cfg.blocks[finally_handler.0 as usize].start_pc;
+        let catch_pc: u32 = self.cfg.blocks[catch.0 as usize].start_pc;
+        self.cfg
+            .exception_regions
+            .iter()
+            .any(|r: &ExceptionRegion| {
+                r.catch_type.is_none() && r.handler_pc == handler_pc && r.try_start_pc == catch_pc
+            })
+    }
+
     fn unprotected_catch_inline_skip(
         &mut self,
         chain: &FinallyChain,
         finally_handler: BlockId,
         handler_bid: BlockId,
     ) -> Option<usize> {
-        let handler_pc: u32 = self.cfg.blocks[finally_handler.0 as usize].start_pc;
-        let catch_pc: u32 = self.cfg.blocks[handler_bid.0 as usize].start_pc;
-        if self
-            .cfg
-            .exception_regions
-            .iter()
-            .any(|r: &ExceptionRegion| {
-                r.catch_type.is_none() && r.handler_pc == handler_pc && r.try_start_pc == catch_pc
-            })
-        {
+        if self.catch_body_is_finally_protected(finally_handler, handler_bid) {
             return None;
         }
         let exc_slot: u16 = astore_slot(self.block_instructions(handler_bid).first()?)?;
@@ -2522,6 +2648,10 @@ impl<'a> Structurer<'a> {
             if Some(b) == stop || self.handler_stops.contains(&b) {
                 break;
             }
+            if let Some(&exit) = self.finally_copy_exits.get(&b) {
+                cur = Some(exit);
+                continue;
+            }
             if let Some(jump) = self.outer_loop_jump(b) {
                 seq.push(jump);
                 break;
@@ -2585,6 +2715,13 @@ impl<'a> Structurer<'a> {
                     cur = try_end_block;
                     continue;
                 }
+                let gap_entries: Vec<BlockId> = self.try_gap_entries(&try_group);
+                if let Some(chain) = finally_chain.as_ref()
+                    && let Some(handler) = finally_handler
+                    && self.finally_has_internal_control_flow(chain)
+                {
+                    self.fold_exit_finally_copies(chain, handler, &gap_entries, try_end_block);
+                }
                 let catch_handler_ids: Vec<(Option<String>, BlockId)> = handler_block_ids
                     .iter()
                     .filter(|(_, bid)| Some(*bid) != finally_handler)
@@ -2608,7 +2745,24 @@ impl<'a> Structurer<'a> {
                     None
                 };
                 let body_stop: Option<BlockId> = handler_join.or(try_end_block);
+                let stop_structured_before: bool =
+                    body_stop.is_some_and(|stop: BlockId| self.visited.contains(&stop));
                 let mut body_region: Region = self.structure_at(b, body_stop);
+                if finally_chain.is_some()
+                    && !stop_structured_before
+                    && body_stop.is_some_and(|stop: BlockId| {
+                        self.visited.contains(&stop)
+                            && self.cfg.blocks[stop.0 as usize]
+                                .successors
+                                .iter()
+                                .any(|edge: &Edge| !matches!(edge.kind, EdgeKind::Exception))
+                    })
+                {
+                    self.unmodelled_region.get_or_insert(
+                        "a branch inside a try with a finally joins only after the try ends, so the \
+                         recovered try would run the code after it before the finally",
+                    );
+                }
                 if fresh_span {
                     self.suppressed_spans.remove(&span);
                 }
@@ -2684,13 +2838,8 @@ impl<'a> Structurer<'a> {
                     let gap_exits: Vec<BlockId> = self.try_gap_blocks(&try_group);
                     let all_exits: Vec<BlockId> =
                         gap_exits.iter().copied().chain(after_try).collect();
-                    let has_internal_control_flow: bool = self
-                        .finally_body_instructions(&chain)
-                        .is_some_and(|body: Vec<Instruction>| {
-                            body.iter().any(|instruction: &Instruction| {
-                                matches!(instruction.opcode, 0x99..=0xA7 | 0xAA..=0xAB | 0xC6..=0xC8)
-                            })
-                        });
+                    let has_internal_control_flow: bool =
+                        self.finally_has_internal_control_flow(&chain);
                     let multi_folds: Option<Vec<(BlockId, BlockId, u16)>> =
                         self.multi_exit_return_folds(&try_group, &chain, &all_exits);
                     if let Some(folds) = multi_folds {
@@ -2837,15 +2986,18 @@ impl<'a> Structurer<'a> {
                             }
                         }
                         let partial_copy: bool = has_internal_control_flow
-                            && (gap_exits.iter().any(|site: &BlockId| {
+                            && (gap_entries.iter().any(|site: &BlockId| {
+                                !self.finally_inline_skips.contains_key(site)
+                            }) || gap_exits.iter().any(|site: &BlockId| {
                                 !self.finally_inline_skips.contains_key(site)
                                     && !self.visited.contains(site)
                             }) || protected_sites.iter().any(|site: &BlockId| {
                                 !self.finally_inline_skips.contains_key(site)
-                                    && !self.visited.contains(site)
+                                    && !self.absorbed.contains(site)
                             }) || handler_set.iter().any(|site: &BlockId| {
                                 !self.finally_inline_skips.contains_key(site)
-                                    && !self.visited.contains(site)
+                                    && (!self.visited.contains(site)
+                                        || !self.catch_body_is_finally_protected(handler, *site))
                             }));
                         if partial_copy {
                             self.unmodelled_region.get_or_insert(
@@ -3068,6 +3220,7 @@ impl<'a> Structurer<'a> {
             exit_breaks: BTreeSet::new(),
             duplicated: BTreeSet::new(),
             finally_inline_skips: BTreeMap::new(),
+            finally_copy_exits: self.finally_copy_exits.clone(),
             finally_tail_trims: BTreeMap::new(),
             finally_return_stores: BTreeMap::new(),
             finally_exception_slots: BTreeSet::new(),
@@ -3162,6 +3315,8 @@ impl<'a> Structurer<'a> {
             .extend(inner.take_string_switch_tables());
         self.finally_inline_skips
             .extend(inner.take_finally_inline_skips());
+        self.finally_copy_exits
+            .extend(std::mem::take(&mut inner.finally_copy_exits));
         self.finally_tail_trims
             .extend(inner.take_finally_tail_trims());
         self.finally_return_stores
@@ -4113,6 +4268,13 @@ struct FinallyChain {
 struct FinallyInlineBlocks {
     skips: Vec<(BlockId, usize)>,
     continuation: Option<BlockId>,
+}
+
+#[derive(Debug)]
+struct FinallyCopyFold {
+    skips: Vec<(BlockId, usize)>,
+    copied: Vec<BlockId>,
+    exit: BlockId,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
