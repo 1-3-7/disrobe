@@ -17,7 +17,7 @@ pub struct VbsReport {
 }
 
 static CHR_CALL: LazyLock<&'static Regex> =
-    LazyLock::new(|| regex!(r"(?i)\bChr(?:W|B)?\s*\(\s*(\d{1,5})\s*\)"));
+    LazyLock::new(|| regex!(r"(?i)\bChr(W|B)?\s*\(\s*(\d{1,5})\s*\)"));
 
 static STRREVERSE: LazyLock<&'static Regex> =
     LazyLock::new(|| regex!(r#"(?i)\bStrReverse\s*\(\s*"((?:[^"]|"")*)"\s*\)"#));
@@ -135,12 +135,15 @@ pub fn deobfuscate_vbs_with_policy(input: &str, policy: DynamicPolicy) -> VbsRep
             if !whole.is_some_and(|m: regex::Match<'_>| in_code(&spans, m.start())) {
                 return whole.map_or_else(String::new, |m: regex::Match<'_>| m.as_str().to_owned());
             }
-            chr_subs += 1;
-            let n: u32 = c
-                .get(1)
+            let folded: Option<char> = c
+                .get(2)
                 .and_then(|m: regex::Match<'_>| m.as_str().parse::<u32>().ok())
-                .unwrap_or(0);
-            char::from_u32(n).map_or_else(String::new, |ch: char| vbs_literal(&ch.to_string()))
+                .and_then(|n: u32| chr_value(c.get(1).map(|m: regex::Match<'_>| m.as_str()), n));
+            let Some(ch) = folded else {
+                return whole.map_or_else(String::new, |m: regex::Match<'_>| m.as_str().to_owned());
+            };
+            chr_subs += 1;
+            vbs_literal(&ch.to_string())
         })
         .into_owned();
     current = fold_literal_concatenation(&current);
@@ -195,6 +198,18 @@ pub fn deobfuscate_vbs_with_policy(input: &str, policy: DynamicPolicy) -> VbsRep
     }
 }
 
+fn chr_value(suffix: Option<&str>, code: u32) -> Option<char> {
+    let ch: char = match suffix {
+        None => u8::try_from(code)
+            .ok()
+            .filter(u8::is_ascii)
+            .map(char::from)?,
+        Some(w) if w.eq_ignore_ascii_case("w") => char::from_u32(code)?,
+        Some(_) => return None,
+    };
+    (!ch.is_control() && !matches!(ch, '\u{2028}' | '\u{2029}')).then_some(ch)
+}
+
 fn vbs_literal(text: &str) -> String {
     format!("\"{}\"", text.replace('"', "\"\""))
 }
@@ -217,6 +232,32 @@ mod tests {
         assert_eq!(r.output, r#"x = "say ""hi""""#);
         let r: VbsReport = deobfuscate_vbs(r#"y = StrReverse("""ih"" yas")"#);
         assert_eq!(r.output, r#"y = "say ""hi""""#);
+    }
+
+    #[test]
+    fn chr_folds_only_values_vbscript_defines_without_the_code_page() {
+        let src: &str = "a = \"x\" & Chr(10) & \"y\"\nb = \"p\" & Chr(128) & \"q\"\nc = ChrB(65) & Chr(300)\nd = ChrW(8364) & ChrW(955) & Chr(9)\n";
+        let r: VbsReport = deobfuscate_vbs(src);
+        assert!(
+            lexemes(&r.output)
+                .iter()
+                .all(|(_, kind): &(Range<usize>, Lexeme)| *kind != Lexeme::Unterminated),
+            "a folded control character must not split a literal:\n{}",
+            r.output
+        );
+        for symbolic in ["Chr(10)", "Chr(128)", "ChrB(65)", "Chr(300)", "Chr(9)"] {
+            assert!(
+                r.output.contains(symbolic),
+                "{symbolic} must stay symbolic:\n{}",
+                r.output
+            );
+        }
+        assert!(
+            r.output.contains("d = \"\u{20ac}\u{3bb}\" & Chr(9)"),
+            "{}",
+            r.output
+        );
+        assert_eq!(r.chr_substitutions, 2);
     }
 
     #[test]
