@@ -219,6 +219,7 @@ labeled_enum!(LuaErrorId {
     LuauMainProtoOutOfRange => "luau_main_proto_out_of_range",
     PrometheusVmifyRefused => "prometheus_vmify_refused",
     LuauOpcodeMap => "luau_opcode_map",
+    LiftBudgetExceeded => "lift_budget_exceeded",
 });
 
 labeled_enum!(PartialFlag {
@@ -939,6 +940,7 @@ const fn error_id(error: &Error) -> LuaErrorId {
         Error::LuauMainProtoOutOfRange { .. } => LuaErrorId::LuauMainProtoOutOfRange,
         Error::PrometheusVmifyRefused(_) => LuaErrorId::PrometheusVmifyRefused,
         Error::LuauOpcodeMap(_) => LuaErrorId::LuauOpcodeMap,
+        Error::LiftBudgetExceeded { .. } => LuaErrorId::LiftBudgetExceeded,
     }
 }
 

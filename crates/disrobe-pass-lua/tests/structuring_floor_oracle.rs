@@ -206,7 +206,8 @@ fn measure_fallback(
     let Ok(chunk): Result<LuaChunk, _> = read_auto(&bytes) else {
         return compile_failed(name);
     };
-    let lifted: LiftedProto = lift_proto_dialect(&chunk.main, chunk.dialect, 0);
+    let lifted: LiftedProto =
+        lift_proto_dialect(&chunk.main, chunk.dialect, 0).expect("lift within the work budget");
     let expected: Option<String> = run_source(run_lua, dir, &format!("{name}.f.orig"), source);
     let actual: Option<String> = run_source(run_lua, dir, &format!("{name}.f.dec"), &lifted.source);
     let equivalent: bool = matches!((&expected, &actual), (Some(e), Some(a)) if e == a);

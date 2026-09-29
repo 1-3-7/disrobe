@@ -1,5 +1,6 @@
 mod structurer;
 
+use crate::decompile::budget::LiftBudget;
 use crate::decompile::lift::{
     LiftedProto, SetListBase, closure_capture_ops, fmt_number, kconst, kstr, loadnil_last,
     resolve_upvalue_names, setlist_base, upvalue_name,
@@ -27,7 +28,6 @@ struct StructState {
     suppress_local: Vec<(usize, u32)>,
     iter_call: Option<(u32, String)>,
     method_regs: std::collections::BTreeSet<u32>,
-    lifted_children: std::collections::BTreeMap<(usize, Vec<String>), Option<LiftedProto>>,
     inlined_closure_bytes: usize,
     upvalues: Vec<String>,
     pinned: std::collections::BTreeSet<u32>,
@@ -47,7 +47,6 @@ impl StructState {
             suppress_local: Vec::new(),
             iter_call: None,
             method_regs: std::collections::BTreeSet::new(),
-            lifted_children: std::collections::BTreeMap::new(),
             inlined_closure_bytes: 0,
             upvalues,
             pinned: std::collections::BTreeSet::new(),
@@ -176,9 +175,22 @@ impl LocalNames {
     }
 }
 
+struct StructuredLift<'b> {
+    budget: &'b mut LiftBudget,
+    children: std::collections::BTreeMap<(*const LuaProto, Vec<String>), Option<LiftedProto>>,
+}
+
 #[must_use]
-pub fn lift_structured(p: &LuaProto, dialect: LuaDialect, depth: usize) -> Option<LiftedProto> {
-    lift_structured_captured(p, dialect, depth, &[])
+pub fn lift_structured(
+    p: &LuaProto,
+    dialect: LuaDialect,
+    budget: &mut LiftBudget,
+) -> Option<LiftedProto> {
+    let mut ctx: StructuredLift<'_> = StructuredLift {
+        budget,
+        children: std::collections::BTreeMap::new(),
+    };
+    lift_structured_captured(p, dialect, 0, &[], &mut ctx)
 }
 
 #[must_use]
@@ -187,7 +199,11 @@ fn lift_structured_captured(
     dialect: LuaDialect,
     depth: usize,
     captured: &[String],
+    ctx: &mut StructuredLift<'_>,
 ) -> Option<LiftedProto> {
+    if !ctx.budget.charge_proto(p.code.len()) {
+        return None;
+    }
     if depth > MAX_STRUCT_DEPTH {
         return None;
     }
@@ -208,7 +224,7 @@ fn lift_structured_captured(
         state.mark_defined(i);
     }
     let live: LiveAcrossBranch = LiveAcrossBranch::compute(p, dialect);
-    lower(p, dialect, depth, &names, &live, &mut state)?;
+    lower(p, dialect, depth, &names, &live, &mut state, ctx)?;
     if state.stmts.len() > MAX_STRUCT_NODES {
         return None;
     }
@@ -499,6 +515,7 @@ fn lower(
     names: &LocalNames,
     live: &LiveAcrossBranch,
     state: &mut StructState,
+    ctx: &mut StructuredLift<'_>,
 ) -> Option<()> {
     let n: usize = p.code.len();
     let mut pc: usize = 0;
@@ -912,7 +929,7 @@ fn lower(
                     .iter()
                     .map(|op: &Decoded| capture_name(state, names, op, &d, pc, resume_pc))
                     .collect();
-                emit_closure(state, p, &d, dialect, depth, &captured)?;
+                emit_closure(state, ctx, p, &d, dialect, depth, &captured)?;
                 pc += captures.len();
             }
             Op::Vararg => define(state, names, live, p, d.a, "...".to_owned()),
@@ -2166,6 +2183,7 @@ fn is_fresh_vararg_table(p: &LuaProto, d: &Decoded, pc: usize, dialect: LuaDiale
 
 fn emit_closure(
     state: &mut StructState,
+    ctx: &mut StructuredLift<'_>,
     p: &LuaProto,
     d: &Decoded,
     dialect: LuaDialect,
@@ -2175,17 +2193,18 @@ fn emit_closure(
     let child_idx: usize = d.bx as usize;
     match p.protos.get(child_idx) {
         Some(child) => {
-            let lifted: Option<LiftedProto> = state
-                .lifted_children
-                .entry((child_idx, captured.to_vec()))
-                .or_insert_with(|| lift_structured_captured(child, dialect, depth + 1, captured))
-                .clone();
-            let inner: LiftedProto = match lifted {
-                Some(l) => l,
+            let key: (*const LuaProto, Vec<String>) =
+                (std::ptr::from_ref(child), captured.to_vec());
+            let (inner, first_use): (LiftedProto, bool) = match ctx.children.get(&key) {
+                Some(memo) => (memo.clone()?, false),
                 None => {
-                    return None;
+                    let fresh: Option<LiftedProto> =
+                        lift_structured_captured(child, dialect, depth + 1, captured, ctx);
+                    ctx.children.insert(key, fresh.clone());
+                    (fresh?, true)
                 }
             };
+            ctx.budget.charge_inlined(inner.source.len());
             let inlined: usize = state
                 .inlined_closure_bytes
                 .saturating_add(inner.source.len());
@@ -2220,7 +2239,9 @@ fn emit_closure(
                 state.set_reg(d.a, block);
             }
             state.mark_defined(d.a);
-            state.warnings.extend(inner.warnings);
+            if first_use {
+                state.warnings.extend(inner.warnings);
+            }
             if !inner.fully_structured {
                 state.fully_structured = false;
             }
@@ -2550,8 +2571,8 @@ mod tests {
         let depth: usize = 300;
         let p: LuaProto = proto(nested_branch_code(depth), 2, 4);
 
-        let out: LiftedProto =
-            lift_structured(&p, LuaDialect::Lua51, 0).expect("structured lift succeeds");
+        let out: LiftedProto = lift_structured(&p, LuaDialect::Lua51, &mut LiftBudget::default())
+            .expect("structured lift succeeds");
 
         assert!(
             out.fully_structured,
@@ -2580,7 +2601,8 @@ mod tests {
         parent.protos = vec![child];
 
         let out: LiftedProto =
-            lift_structured(&parent, LuaDialect::Lua51, 0).expect("structured lift succeeds");
+            lift_structured(&parent, LuaDialect::Lua51, &mut LiftBudget::default())
+                .expect("structured lift succeeds");
 
         assert!(
             out.fully_structured,
@@ -2610,7 +2632,7 @@ mod tests {
         ];
         let p: LuaProto = proto(vec![enc_abc(OP51_RETURN, 0, 1, 0)], 0, 2);
         for (dialect, structured_path) in PATHS {
-            let reached: bool = lift_structured(&p, dialect, 0).is_some();
+            let reached: bool = lift_structured(&p, dialect, &mut LiftBudget::default()).is_some();
             assert_eq!(
                 reached, structured_path,
                 "{dialect:?} must either reach this structurer or be routed to its own lifter, \
@@ -2633,8 +2655,8 @@ mod tests {
             2,
         );
 
-        let out: LiftedProto =
-            lift_structured(&p, LuaDialect::Lua51, 0).expect("structured lift succeeds");
+        let out: LiftedProto = lift_structured(&p, LuaDialect::Lua51, &mut LiftBudget::default())
+            .expect("structured lift succeeds");
 
         assert!(
             !out.fully_structured,
@@ -2697,8 +2719,8 @@ mod tests {
         for (why, dialect, code) in cases {
             let p: LuaProto = proto(code, 0, 8);
 
-            let out: LiftedProto =
-                lift_structured(&p, dialect, 0).expect("structured lift succeeds");
+            let out: LiftedProto = lift_structured(&p, dialect, &mut LiftBudget::default())
+                .expect("structured lift succeeds");
 
             assert!(
                 !out.fully_structured,
@@ -2718,8 +2740,8 @@ mod tests {
             enc_abc(OP51_RETURN, 2, 2, 0),
         ];
         let p: LuaProto = proto(code, 2, 3);
-        let out: LiftedProto =
-            lift_structured(&p, LuaDialect::Lua51, 0).expect("structured lift succeeds");
+        let out: LiftedProto = lift_structured(&p, LuaDialect::Lua51, &mut LiftBudget::default())
+            .expect("structured lift succeeds");
         assert!(
             out.source.contains("(p1 < p0)"),
             "a comparison materialized to a boolean must recover the comparison expression, \
@@ -2744,8 +2766,8 @@ mod tests {
             enc54_abc(OP54_RETURN1, 2, 0, 0, 0),
         ];
         let p: LuaProto = proto(code, 2, 3);
-        let out: LiftedProto =
-            lift_structured(&p, LuaDialect::Lua54, 0).expect("structured lift succeeds");
+        let out: LiftedProto = lift_structured(&p, LuaDialect::Lua54, &mut LiftBudget::default())
+            .expect("structured lift succeeds");
         assert!(
             out.source.contains("(p1 < p0)"),
             "5.4 LFALSESKIP/LOADTRUE materialization must recover the comparison, got:\n{}",
@@ -2781,7 +2803,7 @@ mod tests {
              peephole must not consume it",
         );
         assert!(
-            lift_structured(&p, LuaDialect::Lua51, 0).is_some(),
+            lift_structured(&p, LuaDialect::Lua51, &mut LiftBudget::default()).is_some(),
             "the and-chain proto must still lift without panicking",
         );
     }
@@ -2872,8 +2894,8 @@ mod tests {
     }
 
     fn assert_dynamic_setlist_rejected(label: &str, p: &LuaProto) {
-        let out: LiftedProto =
-            lift_structured(p, LuaDialect::Lua54, 0).expect("structured lift succeeds");
+        let out: LiftedProto = lift_structured(p, LuaDialect::Lua54, &mut LiftBudget::default())
+            .expect("structured lift succeeds");
         assert!(
             !out.fully_structured,
             "{label}: unsupported dynamic SETLIST must not claim a complete structure: {}",
@@ -2927,8 +2949,8 @@ mod tests {
             enc54_abc(OP54_RETURN1, 0, 0, 0, 0),
         ];
         let p: LuaProto = proto(code, 0, 2);
-        let out: LiftedProto =
-            lift_structured(&p, LuaDialect::Lua54, 0).expect("structured lift succeeds");
+        let out: LiftedProto = lift_structured(&p, LuaDialect::Lua54, &mut LiftBudget::default())
+            .expect("structured lift succeeds");
         assert!(
             !out.source.contains(" .. "),
             "a B=0 CONCAT spans a single register and must not fabricate a join, got:\n{}",
@@ -2948,8 +2970,8 @@ mod tests {
             enc54_abc(OP54_RETURN1, 1, 0, 0, 0),
         ];
         let p: LuaProto = proto(code, 0, 5);
-        let out: LiftedProto =
-            lift_structured(&p, LuaDialect::Lua54, 0).expect("structured lift succeeds");
+        let out: LiftedProto = lift_structured(&p, LuaDialect::Lua54, &mut LiftBudget::default())
+            .expect("structured lift succeeds");
         assert_eq!(
             out.source.matches(" .. ").count(),
             2,

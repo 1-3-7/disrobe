@@ -174,7 +174,8 @@ fn devirt_lifts_to_readable_lua_print_and_arithmetic() {
     assert_no_answer_key_in_bootstrap(&bootstrap, &keys, xor_key);
 
     let dv: Devirtualized = devirtualize(&payload, &bootstrap).expect("devirtualize");
-    let lifted: LiftedProto = lift_proto_dialect(&dv.proto, LuaDialect::Lua51, 0);
+    let lifted: LiftedProto =
+        lift_proto_dialect(&dv.proto, LuaDialect::Lua51, 0).expect("lift within the work budget");
 
     assert!(
         lifted.source.contains("print"),

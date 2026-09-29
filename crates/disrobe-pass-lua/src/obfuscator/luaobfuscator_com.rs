@@ -87,7 +87,7 @@ pub fn peel(src: &[u8], _opts: &DeobfOptions) -> Result<PeelResult> {
     if let Some(packed) = extract_packed_token(&text) {
         let raw: Vec<u8> = unpack_hex_rle(&packed);
         if let Ok(chunk) = deserialize_chunk(&raw) {
-            return Ok(chunk_peel_result(&chunk, packed.len(), raw.len()));
+            return chunk_peel_result(&chunk, packed.len(), raw.len());
         }
         return Ok(PeelResult::passthrough(
             src,
@@ -346,9 +346,9 @@ fn is_readable_constant(s: &str) -> bool {
     printable * 100 >= s.chars().count() * 80
 }
 
-fn chunk_peel_result(chunk: &LocChunk, packed_len: usize, raw_len: usize) -> PeelResult {
+fn chunk_peel_result(chunk: &LocChunk, packed_len: usize, raw_len: usize) -> Result<PeelResult> {
     let lifted: crate::decompile::lift::LiftedProto =
-        crate::decompile::lift::lift_proto_dialect(&chunk_to_proto(chunk), LuaDialect::Lua51, 0);
+        crate::decompile::lift::lift_proto_dialect(&chunk_to_proto(chunk), LuaDialect::Lua51, 0)?;
 
     let mut all_strings: Vec<String> = Vec::new();
     collect_strings(chunk, &mut all_strings);
@@ -374,7 +374,7 @@ fn chunk_peel_result(chunk: &LocChunk, packed_len: usize, raw_len: usize) -> Pee
         ));
     }
 
-    PeelResult {
+    Ok(PeelResult {
         deobfuscated: lifted.source.into_bytes(),
         passes_run: vec![
             "luaobfuscator-com-hex-rle-unpack".to_owned(),
@@ -385,7 +385,7 @@ fn chunk_peel_result(chunk: &LocChunk, packed_len: usize, raw_len: usize) -> Pee
         residual_markers,
         recovered_strings: readable,
         fully_recovered: false,
-    }
+    })
 }
 
 #[must_use]

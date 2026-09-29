@@ -1,3 +1,4 @@
+pub mod budget;
 pub mod lift;
 pub mod lua51;
 pub mod luajit21;
@@ -10,7 +11,8 @@ pub mod struct_lift;
 use serde::{Deserialize, Serialize};
 
 use crate::debug::{dbg_kv, dbg_line, dbg_section};
-use crate::decompile::lift::{LiftedProto, lift_proto_dialect};
+use crate::decompile::budget::LiftBudget;
+use crate::decompile::lift::{LiftedProto, lift_proto_with_budget};
 use crate::error::{Error, Result};
 use crate::reader::common::{LuaChunk, LuaDialect, LuaProto};
 use crate::reader::{DetectedFormat, detect, read_auto};
@@ -57,11 +59,18 @@ fn main_signature(main: &LuaProto) -> String {
 }
 
 pub fn decompile_chunk(chunk: &LuaChunk) -> Result<DecompiledChunk> {
+    decompile_chunk_with_budget(chunk, &mut LiftBudget::default())
+}
+
+pub fn decompile_chunk_with_budget(
+    chunk: &LuaChunk,
+    budget: &mut LiftBudget,
+) -> Result<DecompiledChunk> {
     dbg_section("lua.decompile_chunk");
     dbg_kv("dialect", || format!("{:?}", chunk.dialect));
     if matches!(chunk.dialect, LuaDialect::Luau) {
         dbg_kv("lifter", || "luau-structure".to_owned());
-        return luau_lift::decompile(chunk);
+        return luau_lift::decompile_with_budget(chunk, budget);
     }
     dbg_kv("lifter", || "register".to_owned());
     dbg_kv("main_instructions", || chunk.main.code.len().to_string());
@@ -73,17 +82,18 @@ pub fn decompile_chunk(chunk: &LuaChunk) -> Result<DecompiledChunk> {
     out.push('\n');
 
     let structured: Option<LiftedProto> =
-        crate::decompile::struct_lift::lift_structured(&chunk.main, chunk.dialect, 0);
-    let lifted: LiftedProto = match structured {
+        crate::decompile::struct_lift::lift_structured(&chunk.main, chunk.dialect, budget);
+    let lifted: LiftedProto = match budget.settle(structured)? {
         Some(s) => {
             dbg_kv("lifter_mode", || "structured".to_owned());
             s
         }
         None => {
             dbg_kv("lifter_mode", || "linear-fallback".to_owned());
-            lift_proto_dialect(&chunk.main, chunk.dialect, 0)
+            lift_proto_with_budget(&chunk.main, chunk.dialect, 0, budget)?
         }
     };
+    dbg_kv("lift_work", || budget.spent().to_string());
     dbg_kv("fully_structured", || lifted.fully_structured.to_string());
     dbg_kv("warnings", || lifted.warnings.len().to_string());
     warnings.extend(lifted.warnings);
@@ -113,12 +123,19 @@ pub fn decompile_luajit_bytes(bytes: &[u8]) -> Result<DecompiledChunk> {
 }
 
 pub fn decompile_auto(bytes: &[u8]) -> Result<DecompiledChunk> {
+    decompile_auto_with_budget(bytes, &mut LiftBudget::default())
+}
+
+pub fn decompile_auto_with_budget(
+    bytes: &[u8],
+    budget: &mut LiftBudget,
+) -> Result<DecompiledChunk> {
     let format: DetectedFormat = detect(bytes);
     dbg_kv("decompile_auto.format", || format!("{format:?}"));
     match format {
         DetectedFormat::LuaJit => {
             dbg_kv("decompile_auto.path", || "luajit-lift".to_owned());
-            luajit_lift::decompile(bytes)
+            luajit_lift::decompile_with_budget(bytes, budget)
         }
         DetectedFormat::Unknown => {
             dbg_line(|| "decompile_auto: unknown format, not decompilable".to_owned());
@@ -129,7 +146,7 @@ pub fn decompile_auto(bytes: &[u8]) -> Result<DecompiledChunk> {
                 "standard-register-lift".to_owned()
             });
             let chunk: LuaChunk = read_auto(bytes)?;
-            decompile_chunk(&chunk)
+            decompile_chunk_with_budget(&chunk, budget)
         }
     }
 }

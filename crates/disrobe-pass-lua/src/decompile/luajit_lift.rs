@@ -1,4 +1,5 @@
 use crate::cursor::ByteCursor;
+use crate::decompile::budget::LiftBudget;
 use crate::decompile::{DecompiledChunk, Fidelity};
 use crate::error::{Error, Result};
 use crate::reader::common::{LUAJIT_SIGNATURE, LuaDialect};
@@ -105,6 +106,13 @@ impl LjProto {
 }
 
 pub fn decompile(bytes: &[u8]) -> Result<DecompiledChunk> {
+    decompile_with_budget(bytes, &mut LiftBudget::default())
+}
+
+pub(crate) fn decompile_with_budget(
+    bytes: &[u8],
+    budget: &mut LiftBudget,
+) -> Result<DecompiledChunk> {
     let mut warnings: Vec<String> = Vec::new();
     let (protos, version): (Vec<LjProto>, u8) = parse_chunk(bytes, &mut warnings)?;
     let Some(main_idx): Option<usize> = protos.len().checked_sub(1) else {
@@ -121,7 +129,16 @@ pub fn decompile(bytes: &[u8]) -> Result<DecompiledChunk> {
     ));
     let mut fully_structured: bool = true;
     let main: &LjProto = &protos[main_idx];
-    let body: String = lift_proto(main, &protos, 0, &[], &mut warnings, &mut fully_structured);
+    let mut chunk: LjChunk<'_> = LjChunk::new(&protos, budget);
+    let body: String = lift_proto(
+        main,
+        &mut chunk,
+        0,
+        &[],
+        &mut warnings,
+        &mut fully_structured,
+    );
+    chunk.budget.settle(())?;
     out.push_str(&body);
     if main.is_vararg() {
         out.push_str("return _main(...)\n");
@@ -761,8 +778,31 @@ fn kpri_value(d: u16) -> &'static str {
 }
 
 #[derive(Debug)]
-struct LiftCtx<'a> {
-    all_protos: &'a [LjProto],
+struct LjChild {
+    body: String,
+    fully_structured: bool,
+}
+
+#[derive(Debug)]
+struct LjChunk<'c> {
+    all_protos: &'c [LjProto],
+    budget: &'c mut LiftBudget,
+    children: std::collections::BTreeMap<(usize, Vec<String>), LjChild>,
+}
+
+impl<'c> LjChunk<'c> {
+    fn new(all_protos: &'c [LjProto], budget: &'c mut LiftBudget) -> Self {
+        Self {
+            all_protos,
+            budget,
+            children: std::collections::BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct LiftCtx<'a, 'c> {
+    chunk: &'a mut LjChunk<'c>,
     depth: usize,
     warnings: &'a mut Vec<String>,
     fully_structured: &'a mut bool,
@@ -770,12 +810,16 @@ struct LiftCtx<'a> {
 
 fn lift_proto(
     proto: &LjProto,
-    all_protos: &[LjProto],
+    chunk: &mut LjChunk<'_>,
     depth: usize,
     uv_names: &[String],
     warnings: &mut Vec<String>,
     fully_structured: &mut bool,
 ) -> String {
+    if !chunk.budget.charge_proto(proto.code.len()) {
+        *fully_structured = false;
+        return String::new();
+    }
     let header: String = proto_header(proto, depth);
     if depth > MAX_LIFT_DEPTH {
         warnings.push("proto nesting exceeds lift depth limit".to_owned());
@@ -797,8 +841,8 @@ fn lift_proto(
         state.set_reg(*slot, name);
         state.mark_declared(*slot);
     }
-    let mut ctx: LiftCtx<'_> = LiftCtx {
-        all_protos,
+    let mut ctx: LiftCtx<'_, '_> = LiftCtx {
+        chunk,
         depth,
         warnings,
         fully_structured,
@@ -879,7 +923,7 @@ fn handle_inst(
     pc: usize,
     code_len: usize,
     state: &mut LjState,
-    ctx: &mut LiftCtx<'_>,
+    ctx: &mut LiftCtx<'_, '_>,
 ) -> usize {
     if !touches_open_multi(inst.op) {
         state.open_multi = None;
@@ -1519,9 +1563,9 @@ fn emit_vararg(inst: LjInst, state: &mut LjState) {
     }
 }
 
-fn emit_fnew(proto: &LjProto, inst: LjInst, state: &mut LjState, ctx: &mut LiftCtx<'_>) {
+fn emit_fnew(proto: &LjProto, inst: LjInst, state: &mut LjState, ctx: &mut LiftCtx<'_, '_>) {
     let child: Option<&LjProto> = match proto.kgc_at(u32::from(inst.d)) {
-        Some(LjKgc::Child) => resolve_child(proto, u32::from(inst.d), ctx.all_protos),
+        Some(LjKgc::Child) => resolve_child(proto, u32::from(inst.d), ctx.chunk.all_protos),
         _ => None,
     };
     match child {
@@ -1549,14 +1593,38 @@ fn emit_fnew(proto: &LjProto, inst: LjInst, state: &mut LjState, ctx: &mut LiftC
                     }
                 })
                 .collect();
-            let body: String = lift_proto(
-                child_proto,
-                ctx.all_protos,
-                ctx.depth + 1,
-                &child_uv,
-                ctx.warnings,
-                ctx.fully_structured,
-            );
+            let key: (usize, Vec<String>) = (child_proto.index, child_uv);
+            let body: String = match ctx.chunk.children.get(&key) {
+                Some(memo) => {
+                    if !memo.fully_structured {
+                        *ctx.fully_structured = false;
+                    }
+                    memo.body.clone()
+                }
+                None => {
+                    let mut child_structured: bool = true;
+                    let fresh: String = lift_proto(
+                        child_proto,
+                        ctx.chunk,
+                        ctx.depth + 1,
+                        &key.1,
+                        ctx.warnings,
+                        &mut child_structured,
+                    );
+                    if !child_structured {
+                        *ctx.fully_structured = false;
+                    }
+                    ctx.chunk.children.insert(
+                        key,
+                        LjChild {
+                            body: fresh.clone(),
+                            fully_structured: child_structured,
+                        },
+                    );
+                    fresh
+                }
+            };
+            ctx.chunk.budget.charge_inlined(body.len());
             let trimmed: &str = body.strip_suffix('\n').unwrap_or(&body);
             let prefix: &str = if state.declared(dst) { "" } else { "local " };
             let mut lines: std::str::Lines<'_> = trimmed.lines();
@@ -1779,7 +1847,7 @@ fn emit_range(
     loops: &[LoopRegion],
     jump_targets: &[bool],
     state: &mut LjState,
-    ctx: &mut LiftCtx<'_>,
+    ctx: &mut LiftCtx<'_, '_>,
 ) {
     let mut pc: usize = start;
     let mut dead: bool = false;
@@ -1831,7 +1899,7 @@ fn emit_loop(
     loops: &[LoopRegion],
     jump_targets: &[bool],
     state: &mut LjState,
-    ctx: &mut LiftCtx<'_>,
+    ctx: &mut LiftCtx<'_, '_>,
 ) {
     match region.kind {
         LoopKind::Numeric => {
@@ -1957,6 +2025,17 @@ mod tests {
         assert_eq!(sj16(0x7FFF), -1);
     }
 
+    fn lift_standalone(
+        proto: &LjProto,
+        depth: usize,
+        warnings: &mut Vec<String>,
+        fully_structured: &mut bool,
+    ) -> String {
+        let mut budget: LiftBudget = LiftBudget::default();
+        let mut chunk: LjChunk<'_> = LjChunk::new(&[], &mut budget);
+        lift_proto(proto, &mut chunk, depth, &[], warnings, fully_structured)
+    }
+
     fn minimal_lj_proto(code: Vec<u32>) -> LjProto {
         LjProto {
             index: 0,
@@ -1982,7 +2061,7 @@ mod tests {
         let mut warnings: Vec<String> = Vec::new();
         let mut fully_structured: bool = true;
 
-        let _: String = lift_proto(&proto, &[], 0, &[], &mut warnings, &mut fully_structured);
+        let _: String = lift_standalone(&proto, 0, &mut warnings, &mut fully_structured);
 
         assert!(
             fully_structured,
@@ -1997,7 +2076,7 @@ mod tests {
         let mut warnings: Vec<String> = Vec::new();
         let mut fully_structured: bool = true;
 
-        let _: String = lift_proto(&jumping, &[], 0, &[], &mut warnings, &mut fully_structured);
+        let _: String = lift_standalone(&jumping, 0, &mut warnings, &mut fully_structured);
 
         assert!(
             !fully_structured,
@@ -2010,7 +2089,7 @@ mod tests {
     fn lift_once(proto: &LjProto) -> (String, bool) {
         let mut warnings: Vec<String> = Vec::new();
         let mut fully_structured: bool = true;
-        let body: String = lift_proto(proto, &[], 0, &[], &mut warnings, &mut fully_structured);
+        let body: String = lift_standalone(proto, 0, &mut warnings, &mut fully_structured);
         (body, fully_structured)
     }
 
@@ -2077,11 +2156,9 @@ mod tests {
         let mut warnings: Vec<String> = Vec::new();
         let mut fully_structured: bool = true;
 
-        let body: String = lift_proto(
+        let body: String = lift_standalone(
             &proto,
-            &[],
             MAX_LIFT_DEPTH + 1,
-            &[],
             &mut warnings,
             &mut fully_structured,
         );
@@ -2101,7 +2178,7 @@ mod tests {
             let mut warnings: Vec<String> = Vec::new();
             let mut fully_structured: bool = true;
 
-            let _: String = lift_proto(&proto, &[], 0, &[], &mut warnings, &mut fully_structured);
+            let _: String = lift_standalone(&proto, 0, &mut warnings, &mut fully_structured);
 
             if warnings
                 .iter()

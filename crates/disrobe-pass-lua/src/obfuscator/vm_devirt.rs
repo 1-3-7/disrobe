@@ -1127,7 +1127,7 @@ pub fn devirt_to_peel(src: &[u8], text: &str, payload: &[u8], tag: &str) -> Resu
             )],
         ));
     };
-    let lifted: LiftedProto = lift_proto_dialect(&dv.proto, LuaDialect::Lua51, 0);
+    let lifted: LiftedProto = lift_proto_dialect(&dv.proto, LuaDialect::Lua51, 0)?;
     let recovered_strings: Vec<String> = dv
         .proto
         .constants

@@ -106,4 +106,9 @@ pub enum Error {
 
     #[error("DR-LUA-0030: Luau opcode map refused: {0}")]
     LuauOpcodeMap(String),
+
+    #[error(
+        "DR-LUA-0031: decompile work budget of {limit} operations exhausted; refusing to lift the rest of the chunk"
+    )]
+    LiftBudgetExceeded { limit: u64 },
 }

@@ -1,3 +1,4 @@
+use crate::decompile::budget::LiftBudget;
 use crate::decompile::luau_structure::{
     MAX_STRUCTURE_WORK, StructureResult, StructuredBlock, structure_blocks,
 };
@@ -99,22 +100,51 @@ const LOP_NAMECALLUDATA: u8 = 85;
 const LOP_NEWCLASSMEMBER: u8 = 86;
 const LOP_CALLFB: u8 = 87;
 
+struct LuauChild {
+    body: String,
+    fully_structured: bool,
+}
+
+struct LuauLift<'b> {
+    budget: &'b mut LiftBudget,
+    next_scope: usize,
+    children: std::collections::BTreeMap<(*const LuaProto, Vec<String>), LuauChild>,
+}
+
+impl<'b> LuauLift<'b> {
+    fn new(budget: &'b mut LiftBudget) -> Self {
+        Self {
+            budget,
+            next_scope: 1,
+            children: std::collections::BTreeMap::new(),
+        }
+    }
+}
+
 pub fn decompile(chunk: &LuaChunk) -> Result<DecompiledChunk> {
+    decompile_with_budget(chunk, &mut LiftBudget::default())
+}
+
+pub(crate) fn decompile_with_budget(
+    chunk: &LuaChunk,
+    budget: &mut LiftBudget,
+) -> Result<DecompiledChunk> {
     let main: &LuaProto = &chunk.main;
     let mut out: String = String::new();
     out.push_str("-- decompiled by disrobe (luau register lifter)\n");
     let mut warnings: Vec<String> = Vec::new();
     let mut fully_structured: bool = true;
-    let mut next_scope: usize = 1;
+    let mut ctx: LuauLift<'_> = LuauLift::new(budget);
     let body: String = lift_proto(
         main,
         0,
         0,
         &[],
-        &mut next_scope,
+        &mut ctx,
         &mut warnings,
         &mut fully_structured,
     );
+    ctx.budget.settle(())?;
     out.push_str(&body);
     if main.is_vararg != 0 {
         out.push_str("return _main(...)\n");
@@ -430,10 +460,14 @@ fn lift_proto(
     depth: usize,
     scope_id: usize,
     upvals: &[String],
-    next_scope: &mut usize,
+    ctx: &mut LuauLift<'_>,
     warnings: &mut Vec<String>,
     fully_structured: &mut bool,
 ) -> String {
+    if !ctx.budget.charge_proto(proto.code.len()) {
+        *fully_structured = false;
+        return String::new();
+    }
     let header: String = proto_header(proto, depth, scope_id);
     if depth > MAX_LIFT_DEPTH {
         warnings.push("luau proto nesting exceeds lift depth limit".to_owned());
@@ -458,14 +492,7 @@ fn lift_proto(
         state.mark_declared(*slot);
     }
 
-    lower_instructions(
-        proto,
-        &mut state,
-        depth,
-        next_scope,
-        warnings,
-        fully_structured,
-    );
+    lower_instructions(proto, &mut state, depth, ctx, warnings, fully_structured);
 
     let mut all: Vec<LiftedStmt> = pre;
     all.extend(state.stmts);
@@ -840,7 +867,7 @@ fn lower_instructions(
     proto: &LuaProto,
     state: &mut LuauState,
     depth: usize,
-    next_scope: &mut usize,
+    ctx: &mut LuauLift<'_>,
     warnings: &mut Vec<String>,
     fully_structured: &mut bool,
 ) {
@@ -860,7 +887,7 @@ fn lower_instructions(
             n,
             state,
             depth,
-            next_scope,
+            ctx,
             warnings,
             fully_structured,
         );
@@ -876,7 +903,7 @@ fn handle(
     code_len: usize,
     state: &mut LuauState,
     depth: usize,
-    next_scope: &mut usize,
+    ctx: &mut LuauLift<'_>,
     warnings: &mut Vec<String>,
     fully_structured: &mut bool,
 ) -> usize {
@@ -1000,7 +1027,7 @@ fn handle(
                 pc,
                 state,
                 depth,
-                next_scope,
+                ctx,
                 warnings,
                 fully_structured,
             );
@@ -1579,7 +1606,7 @@ fn emit_closure(
     pc: usize,
     state: &mut LuauState,
     depth: usize,
-    next_scope: &mut usize,
+    ctx: &mut LuauLift<'_>,
     warnings: &mut Vec<String>,
     fully_structured: &mut bool,
 ) {
@@ -1610,17 +1637,41 @@ fn emit_closure(
         Some(child_p) => {
             let capture_count: usize = count_captures(&proto.code, pc + 1);
             let child_uv: Vec<String> = resolve_captures(&proto.code, pc + 1, capture_count, state);
-            let child_scope: usize = *next_scope;
-            *next_scope += 1;
-            let body: String = lift_proto(
-                child_p,
-                depth + 1,
-                child_scope,
-                &child_uv,
-                next_scope,
-                warnings,
-                fully_structured,
-            );
+            let key: (*const LuaProto, Vec<String>) = (std::ptr::from_ref(child_p), child_uv);
+            let body: String = match ctx.children.get(&key) {
+                Some(memo) => {
+                    if !memo.fully_structured {
+                        *fully_structured = false;
+                    }
+                    memo.body.clone()
+                }
+                None => {
+                    let child_scope: usize = ctx.next_scope;
+                    ctx.next_scope += 1;
+                    let mut child_structured: bool = true;
+                    let fresh: String = lift_proto(
+                        child_p,
+                        depth + 1,
+                        child_scope,
+                        &key.1,
+                        ctx,
+                        warnings,
+                        &mut child_structured,
+                    );
+                    if !child_structured {
+                        *fully_structured = false;
+                    }
+                    ctx.children.insert(
+                        key,
+                        LuauChild {
+                            body: fresh.clone(),
+                            fully_structured: child_structured,
+                        },
+                    );
+                    fresh
+                }
+            };
+            ctx.budget.charge_inlined(body.len());
             state.inlined_closure_bytes = state.inlined_closure_bytes.saturating_add(body.len());
             let trimmed: &str = body.strip_suffix('\n').unwrap_or(&body);
             let prefix: &str = if state.declared(dst) { "" } else { "local " };
@@ -1777,13 +1828,14 @@ mod tests {
     fn lift_once(proto: &LuaProto) -> (String, Vec<String>, bool) {
         let mut warnings: Vec<String> = Vec::new();
         let mut fully_structured: bool = true;
-        let mut next_scope: usize = 1;
+        let mut budget: LiftBudget = LiftBudget::default();
+        let mut ctx: LuauLift<'_> = LuauLift::new(&mut budget);
         let body: String = lift_proto(
             proto,
             0,
             0,
             &[],
-            &mut next_scope,
+            &mut ctx,
             &mut warnings,
             &mut fully_structured,
         );
@@ -2016,14 +2068,15 @@ mod tests {
         let proto: LuaProto = luau_proto(vec![u32::from(LOP_RETURN)], 4);
         let mut warnings: Vec<String> = Vec::new();
         let mut fully_structured: bool = true;
-        let mut next_scope: usize = 1;
+        let mut budget: LiftBudget = LiftBudget::default();
+        let mut ctx: LuauLift<'_> = LuauLift::new(&mut budget);
 
         let body: String = lift_proto(
             &proto,
             MAX_LIFT_DEPTH + 1,
             0,
             &[],
-            &mut next_scope,
+            &mut ctx,
             &mut warnings,
             &mut fully_structured,
         );

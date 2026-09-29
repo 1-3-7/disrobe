@@ -505,7 +505,7 @@ pub fn lift_to_source(program: &RecoveredProgram) -> Result<String> {
             "no instructions recovered from ironbrew2 vm",
         ));
     }
-    let lifted: LiftedProto = lift_proto_dialect(&program.proto, LuaDialect::Lua51, 0);
+    let lifted: LiftedProto = lift_proto_dialect(&program.proto, LuaDialect::Lua51, 0)?;
     Ok(lifted.source)
 }
 

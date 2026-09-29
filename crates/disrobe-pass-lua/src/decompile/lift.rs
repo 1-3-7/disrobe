@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 
+use crate::decompile::budget::LiftBudget;
 use crate::decompile::opcode::{Decoded, Op, decode, is_k, rk_index};
-use crate::reader::common::{
-    LuaChunk, LuaConstant, LuaDialect, LuaLocal, LuaProto, LuaUpvalueName,
-};
+use crate::error::Result;
+use crate::reader::common::{LuaConstant, LuaDialect, LuaLocal, LuaProto, LuaUpvalueName};
 
 const MAX_LIFT_DEPTH: usize = 200;
 pub(crate) const MAX_INLINED_CLOSURE_BYTES: usize = 8 << 20;
@@ -76,7 +76,6 @@ struct LiftState {
     scopes: LocalScopes,
     register_alias_tracker: BTreeMap<u32, String>,
     pc: usize,
-    lifted_children: BTreeMap<(usize, Vec<String>), LiftedProto>,
     inlined_closure_bytes: usize,
     upvalues: Vec<String>,
 }
@@ -92,7 +91,6 @@ impl LiftState {
             scopes: LocalScopes::default(),
             register_alias_tracker: BTreeMap::new(),
             pc: 0,
-            lifted_children: BTreeMap::new(),
             inlined_closure_bytes: 0,
             upvalues,
         }
@@ -378,8 +376,12 @@ pub struct LiftedProto {
     pub fully_structured: bool,
 }
 
-#[must_use]
-pub fn lift_proto(p: &LuaProto, depth: usize) -> LiftedProto {
+struct LinearLift<'b> {
+    budget: &'b mut LiftBudget,
+    children: BTreeMap<(*const LuaProto, Vec<String>), LiftedProto>,
+}
+
+pub fn lift_proto(p: &LuaProto, depth: usize) -> Result<LiftedProto> {
     lift_proto_dialect(p, LuaDialect::Lua51, depth)
 }
 
@@ -507,9 +509,22 @@ pub(crate) fn setlist_base(
     }
 }
 
-#[must_use]
-pub fn lift_proto_dialect(p: &LuaProto, dialect: LuaDialect, depth: usize) -> LiftedProto {
-    lift_proto_captured(p, dialect, depth, &[])
+pub fn lift_proto_dialect(p: &LuaProto, dialect: LuaDialect, depth: usize) -> Result<LiftedProto> {
+    lift_proto_with_budget(p, dialect, depth, &mut LiftBudget::default())
+}
+
+pub(crate) fn lift_proto_with_budget(
+    p: &LuaProto,
+    dialect: LuaDialect,
+    depth: usize,
+    budget: &mut LiftBudget,
+) -> Result<LiftedProto> {
+    let mut ctx: LinearLift<'_> = LinearLift {
+        budget,
+        children: BTreeMap::new(),
+    };
+    let lifted: LiftedProto = lift_proto_captured(p, dialect, depth, &[], &mut ctx);
+    ctx.budget.settle(lifted)
 }
 
 #[must_use]
@@ -518,7 +533,15 @@ fn lift_proto_captured(
     dialect: LuaDialect,
     depth: usize,
     captured: &[String],
+    ctx: &mut LinearLift<'_>,
 ) -> LiftedProto {
+    if !ctx.budget.charge_proto(p.code.len()) {
+        return LiftedProto {
+            source: String::new(),
+            warnings: Vec::new(),
+            fully_structured: false,
+        };
+    }
     if depth > MAX_LIFT_DEPTH {
         return LiftedProto {
             source: "  -- (proto nesting limit reached)\n".to_owned(),
@@ -1008,6 +1031,7 @@ fn lift_proto_captured(
                     .collect();
                 emit_closure(
                     &mut state,
+                    ctx,
                     p,
                     &d,
                     dialect,
@@ -1250,8 +1274,10 @@ fn emit_compare(
     *fully_structured = false;
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_closure(
     state: &mut LiftState,
+    ctx: &mut LinearLift<'_>,
     p: &LuaProto,
     d: &Decoded,
     dialect: LuaDialect,
@@ -1262,11 +1288,18 @@ fn emit_closure(
     let child_idx: usize = d.bx as usize;
     match p.protos.get(child_idx) {
         Some(child) => {
-            let lifted: LiftedProto = state
-                .lifted_children
-                .entry((child_idx, captured.to_vec()))
-                .or_insert_with(|| lift_proto_captured(child, dialect, depth + 1, captured))
-                .clone();
+            let key: (*const LuaProto, Vec<String>) =
+                (std::ptr::from_ref(child), captured.to_vec());
+            let (lifted, first_use): (LiftedProto, bool) = match ctx.children.get(&key) {
+                Some(memo) => (memo.clone(), false),
+                None => {
+                    let fresh: LiftedProto =
+                        lift_proto_captured(child, dialect, depth + 1, captured, ctx);
+                    ctx.children.insert(key, fresh.clone());
+                    (fresh, true)
+                }
+            };
+            ctx.budget.charge_inlined(lifted.source.len());
             let inlined: usize = state
                 .inlined_closure_bytes
                 .saturating_add(lifted.source.len());
@@ -1306,7 +1339,9 @@ fn emit_closure(
             }
             block.push_str("end");
             define(state, d.a, block);
-            state.warnings.extend(lifted.warnings);
+            if first_use {
+                state.warnings.extend(lifted.warnings);
+            }
             if !lifted.fully_structured {
                 *fully_structured = false;
             }
@@ -1474,11 +1509,6 @@ fn compute_jump_targets(p: &LuaProto, dialect: LuaDialect) -> Vec<bool> {
     targets
 }
 
-#[must_use]
-pub fn lift_chunk(chunk: &LuaChunk) -> LiftedProto {
-    lift_proto_dialect(&chunk.main, chunk.dialect, 0)
-}
-
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
@@ -1531,7 +1561,7 @@ mod tests {
             enc_abc(30, 0, 1, 0),
         ];
         let p: LuaProto = proto(code, consts, 3);
-        let out: LiftedProto = lift_proto(&p, 0);
+        let out: LiftedProto = lift_proto(&p, 0).expect("lift within the work budget");
         assert!(
             out.source.contains("print(\"hello\")"),
             "got: {}",
@@ -1543,7 +1573,7 @@ mod tests {
     fn lift_arith_add() {
         let code: Vec<u32> = vec![enc_abc(12, 2, 0, 1), enc_abc(30, 0, 0, 0)];
         let p: LuaProto = proto(code, Vec::new(), 4);
-        let out: LiftedProto = lift_proto(&p, 0);
+        let out: LiftedProto = lift_proto(&p, 0).expect("lift within the work budget");
         assert!(out.source.contains("(loc0 + loc1)"), "got: {}", out.source);
     }
 
@@ -1556,7 +1586,7 @@ mod tests {
             enc_abc(30, 0, 1, 0),
         ];
         let p: LuaProto = proto(code, consts, 3);
-        let out: LiftedProto = lift_proto(&p, 0);
+        let out: LiftedProto = lift_proto(&p, 0).expect("lift within the work budget");
         assert!(out.source.contains(".x = loc1"), "got: {}", out.source);
     }
 
@@ -1571,7 +1601,7 @@ mod tests {
         ];
         let consts: Vec<LuaConstant> = vec![LuaConstant::Integer(1)];
         let p: LuaProto = proto(code, consts, 5);
-        let out: LiftedProto = lift_proto(&p, 0);
+        let out: LiftedProto = lift_proto(&p, 0).expect("lift within the work budget");
         assert!(out.source.contains("for fv_0 ="), "got: {}", out.source);
         assert!(out.source.contains("end"));
     }
@@ -1582,7 +1612,7 @@ mod tests {
         let mut child: LuaProto = proto(vec![enc_abc(30, 0, 1, 0)], Vec::new(), 2);
         child.num_params = 1;
         p.protos.push(child);
-        let out: LiftedProto = lift_proto(&p, 0);
+        let out: LiftedProto = lift_proto(&p, 0).expect("lift within the work budget");
         assert!(out.source.contains("function(p0)"), "got: {}", out.source);
     }
 
@@ -1608,7 +1638,7 @@ mod tests {
     fn many_closures_over_one_child_stay_within_the_output_budget() {
         let tower: LuaProto = repeated_closure_tower(8, 8);
         let started: std::time::Instant = std::time::Instant::now();
-        let lifted: LiftedProto = lift_proto(&tower, 0);
+        let lifted: LiftedProto = lift_proto(&tower, 0).expect("lift within the work budget");
         assert!(
             started.elapsed() < std::time::Duration::from_secs(10),
             "8 closures over 8 levels must not cost 8^8 child lifts"
@@ -1627,7 +1657,12 @@ mod tests {
                 .any(|warning: &String| warning.contains("bytes of inlined closure bodies"))
         );
         assert!(
-            crate::decompile::struct_lift::lift_structured(&tower, LuaDialect::Lua51, 0).is_none(),
+            crate::decompile::struct_lift::lift_structured(
+                &tower,
+                LuaDialect::Lua51,
+                &mut LiftBudget::default()
+            )
+            .is_none(),
             "the structured lifter refuses past the budget and leaves the named refusal to the linear lifter"
         );
     }
@@ -1643,7 +1678,7 @@ mod tests {
     fn a_closure_whose_own_body_has_no_jump_keeps_the_parent_fully_structured() {
         let p: LuaProto = closure_over_child(vec![enc_abc(30, 0, 1, 0)]);
 
-        let out: LiftedProto = lift_proto(&p, 0);
+        let out: LiftedProto = lift_proto(&p, 0).expect("lift within the work budget");
 
         assert!(
             out.fully_structured,
@@ -1658,7 +1693,7 @@ mod tests {
         let p: LuaProto =
             closure_over_child(vec![enc_abx(22, 0, SBX_BIAS_51), enc_abc(30, 0, 1, 0)]);
 
-        let out: LiftedProto = lift_proto(&p, 0);
+        let out: LiftedProto = lift_proto(&p, 0).expect("lift within the work budget");
 
         assert!(
             !out.fully_structured,
@@ -1747,7 +1782,8 @@ mod tests {
         for (why, dialect, code) in cases {
             let p: LuaProto = proto(code, Vec::new(), 8);
 
-            let out: LiftedProto = lift_proto_dialect(&p, dialect, 0);
+            let out: LiftedProto =
+                lift_proto_dialect(&p, dialect, 0).expect("lift within the work budget");
 
             assert!(
                 !out.fully_structured,
@@ -1765,7 +1801,8 @@ mod tests {
             4,
         );
 
-        let out: LiftedProto = lift_proto_dialect(&p, LuaDialect::Lua51, 0);
+        let out: LiftedProto =
+            lift_proto_dialect(&p, LuaDialect::Lua51, 0).expect("lift within the work budget");
 
         assert!(
             out.fully_structured,
@@ -1799,7 +1836,8 @@ mod tests {
             };
             let p: LuaProto = proto(code, Vec::new(), 4);
 
-            let out: LiftedProto = lift_proto_dialect(&p, dialect, 0);
+            let out: LiftedProto =
+                lift_proto_dialect(&p, dialect, 0).expect("lift within the work budget");
 
             assert!(
                 !out.fully_structured,
@@ -1847,7 +1885,8 @@ mod tests {
     #[test]
     fn lift_respects_depth_limit() {
         let p: LuaProto = proto(vec![enc_abc(30, 0, 1, 0)], Vec::new(), 2);
-        let out: LiftedProto = lift_proto(&p, MAX_LIFT_DEPTH + 1);
+        let out: LiftedProto =
+            lift_proto(&p, MAX_LIFT_DEPTH + 1).expect("lift within the work budget");
         assert!(!out.fully_structured);
         assert!(out.source.contains("nesting limit"));
     }
@@ -1862,7 +1901,7 @@ mod tests {
         p.upvalues.push(LuaUpvalueName {
             name: "shared".to_owned(),
         });
-        let out: LiftedProto = lift_proto(&p, 0);
+        let out: LiftedProto = lift_proto(&p, 0).expect("lift within the work budget");
         assert!(out.source.contains("shared"), "got: {}", out.source);
         let _ = LuaDialect::Lua51;
     }
@@ -1877,7 +1916,8 @@ mod tests {
             }],
             ..proto(vec![getup], consts, 2)
         };
-        let out: LiftedProto = lift_proto_dialect(&p, LuaDialect::Lua54, 0);
+        let out: LiftedProto =
+            lift_proto_dialect(&p, LuaDialect::Lua54, 0).expect("lift within the work budget");
         assert!(out.source.is_empty() || out.warnings.is_empty());
         assert_eq!(out.warnings.len(), 0, "got: {:?}", out.warnings);
     }
@@ -1887,7 +1927,8 @@ mod tests {
         let loadi: u32 = enc54_abx(1, 0, (42i32 + 0xFFFF) as u32);
         let ret: u32 = enc54_abc(72, 0, 0, 0, 0);
         let p: LuaProto = proto(vec![loadi, ret], Vec::new(), 2);
-        let out: LiftedProto = lift_proto_dialect(&p, LuaDialect::Lua54, 0);
+        let out: LiftedProto =
+            lift_proto_dialect(&p, LuaDialect::Lua54, 0).expect("lift within the work budget");
         assert!(out.source.contains("return 42"), "got: {}", out.source);
     }
 
@@ -1896,7 +1937,8 @@ mod tests {
         let band: u32 = enc_abc(20, 2, 0, 1);
         let ret: u32 = enc_abc(38, 2, 2, 0);
         let p: LuaProto = proto(vec![band, ret], Vec::new(), 4);
-        let out: LiftedProto = lift_proto_dialect(&p, LuaDialect::Lua53, 0);
+        let out: LiftedProto =
+            lift_proto_dialect(&p, LuaDialect::Lua53, 0).expect("lift within the work budget");
         assert!(out.source.contains("(loc0 & loc1)"), "got: {}", out.source);
     }
 
@@ -1906,7 +1948,7 @@ mod tests {
         let hidden_jmp: u32 = enc_abx(22, 0, (1i32 + 0x1FFFF) as u32);
         let ret: u32 = enc_abc(30, 0, 2, 0);
         let p: LuaProto = proto(vec![loadbool_skip, hidden_jmp, ret], Vec::new(), 2);
-        let out: LiftedProto = lift_proto(&p, 0);
+        let out: LiftedProto = lift_proto(&p, 0).expect("lift within the work budget");
         assert!(
             !out.fully_structured,
             "a LOADBOOL boolean-materialization skip elides whatever instruction follows \
@@ -1930,7 +1972,8 @@ mod tests {
         let hidden_jmp: u32 = 0x38_u32 | (ax << 7);
         let ret1: u32 = enc54_abc(72, 0, 0, 0, 0);
         let p: LuaProto = proto(vec![lfalseskip, hidden_jmp, ret1], Vec::new(), 2);
-        let out: LiftedProto = lift_proto_dialect(&p, LuaDialect::Lua54, 0);
+        let out: LiftedProto =
+            lift_proto_dialect(&p, LuaDialect::Lua54, 0).expect("lift within the work budget");
         assert!(
             !out.fully_structured,
             "LFALSESKIP unconditionally elides the next instruction (potentially a Jmp); \
@@ -1952,7 +1995,7 @@ mod tests {
         let jmp: u32 = enc_abx(22, 0, 0x1FFFF);
         let ret: u32 = enc_abc(30, 0, 2, 0);
         let p: LuaProto = proto(vec![test_op, jmp, ret], Vec::new(), 2);
-        let out: LiftedProto = lift_proto(&p, 0);
+        let out: LiftedProto = lift_proto(&p, 0).expect("lift within the work budget");
         assert!(
             out.source.contains("if loc0 then goto lbl_2 end"),
             "TEST must combine with its paired JMP into one self-closed if/goto/end \
@@ -1985,7 +2028,7 @@ mod tests {
             enc_abc(30, 0, 2, 0),
         ];
         let p: LuaProto = proto(code, consts, 3);
-        let out: LiftedProto = lift_proto(&p, 0);
+        let out: LiftedProto = lift_proto(&p, 0).expect("lift within the work budget");
         assert!(
             out.source.contains("[1] = \"x\""),
             "SETLIST must emit a real indexed assignment so the table is actually \
@@ -2008,7 +2051,7 @@ mod tests {
             enc_abc(30, 0, 2, 0),
         ];
         let p: LuaProto = proto(code, Vec::new(), 3);
-        let out: LiftedProto = lift_proto(&p, 0);
+        let out: LiftedProto = lift_proto(&p, 0).expect("lift within the work budget");
         assert!(
             !out.fully_structured,
             "a B=0 (top-of-stack span) SETLIST cannot statically recover its element \
@@ -2034,7 +2077,8 @@ mod tests {
             enc54_abc(OP54_RETURN1, 0, 0, 0, 0),
         ];
         let p: LuaProto = proto(code, Vec::new(), 2);
-        let out: LiftedProto = lift_proto_dialect(&p, LuaDialect::Lua54, 0);
+        let out: LiftedProto =
+            lift_proto_dialect(&p, LuaDialect::Lua54, 0).expect("lift within the work budget");
         assert!(
             !out.source.contains(" .. "),
             "a B=0 CONCAT spans a single register and must not fabricate a join, got:\n{}",
@@ -2054,7 +2098,8 @@ mod tests {
             enc54_abc(OP54_RETURN1, 1, 0, 0, 0),
         ];
         let p: LuaProto = proto(code, Vec::new(), 5);
-        let out: LiftedProto = lift_proto_dialect(&p, LuaDialect::Lua54, 0);
+        let out: LiftedProto =
+            lift_proto_dialect(&p, LuaDialect::Lua54, 0).expect("lift within the work budget");
         assert_eq!(
             out.source.matches(" .. ").count(),
             2,
