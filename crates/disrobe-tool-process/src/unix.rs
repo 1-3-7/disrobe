@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use crate::{
     CommandSpec, LaunchError, LaunchStage, LifecycleError, PipeSet, PlatformCompletion, arguments,
-    canonical_program, current_dir, environment, program,
+    current_dir, environment, program, resolve_program,
 };
 
 pub(crate) const PROVES_EMPTY_PROCESS_SET: bool = false;
@@ -67,8 +67,7 @@ enum MacosGroupObservation {
 }
 
 pub(crate) fn spawn(spec: &CommandSpec) -> Result<(ContainedProcess, PipeSet), LaunchError> {
-    let executable: std::path::PathBuf = canonical_program(program(spec))?;
-    let mut command: Command = Command::new(executable);
+    let mut command: Command = Command::new(resolve_program(program(spec))?);
     command
         .arg0(program(spec))
         .args(arguments(spec))

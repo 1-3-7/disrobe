@@ -590,24 +590,26 @@ enum CaptureStream {
 }
 
 #[cfg(any(unix, windows))]
-pub(crate) fn canonical_program(program: &Path) -> Result<PathBuf, LaunchError> {
-    if program.components().count() == 1
-        && let Some(path_value) = std::env::var_os("PATH")
-    {
-        for directory in std::env::split_paths(&path_value) {
-            for candidate in executable_candidates(&directory, program) {
-                if candidate.is_file()
-                    && let Ok(canonical) = std::fs::canonicalize(&candidate)
-                {
-                    return Ok(canonical);
-                }
-            }
-        }
-    }
-    std::fs::canonicalize(program).map_err(|source: io::Error| LaunchError::Resolve {
+pub(crate) fn resolve_program(program: &Path) -> Result<PathBuf, LaunchError> {
+    let resolve_error = |source: io::Error| LaunchError::Resolve {
         path: program.to_path_buf(),
         source,
-    })
+    };
+    let located: Option<PathBuf> = if program.components().count() == 1 {
+        std::env::var_os("PATH").and_then(|path_value: OsString| {
+            std::env::split_paths(&path_value).find_map(|directory: PathBuf| {
+                executable_candidates(&directory, program)
+                    .into_iter()
+                    .find(|candidate: &PathBuf| candidate.is_file())
+            })
+        })
+    } else {
+        None
+    };
+    let launch: PathBuf =
+        std::path::absolute(located.as_deref().unwrap_or(program)).map_err(resolve_error)?;
+    std::fs::canonicalize(&launch).map_err(resolve_error)?;
+    Ok(launch)
 }
 
 #[cfg(any(unix, windows))]
@@ -846,6 +848,36 @@ mod tests {
         assert_eq!(
             Path::new(std::str::from_utf8(&captured.bytes)?.trim()),
             root.as_path()
+        );
+        scratch.close()?;
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn a_symlinked_program_starts_under_its_link_name() -> Result<(), Box<dyn std::error::Error>> {
+        let scratch: tempfile::TempDir = tempfile::Builder::new()
+            .prefix("disrobe-tool-process-link-name-")
+            .tempdir()?;
+        let shell: PathBuf = std::env::var_os("SystemRoot")
+            .map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from)
+            .join("System32")
+            .join("cmd.exe");
+        let link: PathBuf = scratch.path().join("alias-shell.exe");
+        std::os::windows::fs::symlink_file(&shell, &link)?;
+        let execution: Execution = CommandSpec::new(link, Duration::from_secs(5))
+            .args(["/d", "/c", "echo", "%CMDCMDLINE%"])
+            .env("COMSPEC", shell.into_os_string())
+            .run()?;
+        let captured: &CapturedStream = execution
+            .stdout
+            .captured()
+            .ok_or_else(|| io::Error::other("the linked shell did not produce stdout"))?;
+        let command_line: &str = std::str::from_utf8(&captured.bytes)?.trim();
+        assert!(
+            command_line.contains("alias-shell.exe"),
+            "a multi-call program such as a rustup proxy picks its role from the name it was \
+             started under: {command_line}"
         );
         scratch.close()?;
         Ok(())

@@ -38,7 +38,7 @@ use windows_sys::Win32::System::Threading::{
 
 use crate::{
     CommandSpec, LaunchError, LaunchStage, LifecycleError, PipeSet, PlatformCompletion, arguments,
-    canonical_program, current_dir, environment, program,
+    current_dir, environment, program, resolve_program,
 };
 
 pub(crate) const PROVES_EMPTY_PROCESS_SET: bool = true;
@@ -140,7 +140,7 @@ struct InheritanceWindow<'a> {
               in one OwnedHandle"
 )]
 pub(crate) fn spawn(spec: &CommandSpec) -> Result<(ContainedProcess, PipeSet), LaunchError> {
-    let executable: PathBuf = canonical_program(program(spec))?;
+    let executable: PathBuf = resolve_program(program(spec))?;
     let prepared: PreparedCommand = prepare_command(
         &executable,
         arguments(spec),
@@ -567,16 +567,15 @@ fn prepare_command(
     environment: &[(OsString, OsString)],
     current_dir: Option<&Path>,
 ) -> Result<PreparedCommand, LaunchError> {
-    let extension: Option<String> = executable
-        .extension()
-        .map(OsStr::to_string_lossy)
-        .map(|extension: std::borrow::Cow<'_, str>| extension.to_ascii_lowercase());
-    let is_batch: bool = matches!(extension.as_deref(), Some("bat" | "cmd"));
+    let target: PathBuf = std::fs::canonicalize(executable).map_err(|source: std::io::Error| {
+        LaunchError::Resolve {
+            path: executable.to_path_buf(),
+            source,
+        }
+    })?;
+    let is_batch: bool = is_batch_script(executable) || is_batch_script(&target);
     let (mut application, mut command_line): (Vec<u16>, Vec<u16>) = if is_batch {
-        (
-            system_command_prompt()?,
-            batch_command_line(executable, args)?,
-        )
+        (system_command_prompt()?, batch_command_line(&target, args)?)
     } else {
         let visible_executable: OsString = child_visible_program_path(executable)?;
         (
@@ -981,6 +980,14 @@ fn compare_environment_key_units(left: &[u16], right: &[u16]) -> Result<Ordering
             "Windows environment key comparison failed",
         )),
     }
+}
+
+fn is_batch_script(path: &Path) -> bool {
+    path.extension().map(OsStr::to_string_lossy).is_some_and(
+        |extension: std::borrow::Cow<'_, str>| {
+            matches!(extension.to_ascii_lowercase().as_str(), "bat" | "cmd")
+        },
+    )
 }
 
 fn child_visible_program_path(path: &Path) -> Result<OsString, LaunchError> {
