@@ -102,7 +102,7 @@ impl ResolveCtx<'_> {
             .map_or(default_file, |s: &String| s.clone());
         format!(
             "{{line,[{{location,\"{}\",{}}}]}}",
-            escape_string(&file),
+            crate::erlang_abstract::escape_erlang_string(&file),
             item.line
         )
     }
@@ -1126,18 +1126,6 @@ fn strip_elixir_prefix(module: &str) -> String {
         Some(rest) => format!("{rest}.ex"),
         None => format!("{module}.erl"),
     }
-}
-
-fn escape_string(s: &str) -> String {
-    let mut out: String = String::with_capacity(s.len());
-    for ch in s.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            _ => out.push(ch),
-        }
-    }
-    out
 }
 
 fn render_atom_literal(name: &str) -> String {

@@ -176,7 +176,7 @@ pub fn render_expr(expr: &Expr) -> String {
         Expr::Int(v) => v.to_string(),
         Expr::BigInt { sign, magnitude_le } => render_bigint(*sign, magnitude_le),
         Expr::Float(s) => s.clone(),
-        Expr::Str(s) => format!("\"{}\"", escape_string(s)),
+        Expr::Str(s) => format!("\"{}\"", crate::erlang_abstract::escape_erlang_string(s)),
         Expr::CharLit(c) => format!("${}", render_char(*c)),
         Expr::BinaryLit(bytes) => render_binary_literal(bytes),
         Expr::Tuple(items) => {
@@ -344,14 +344,6 @@ fn render_char(c: u32) -> String {
     char::from_u32(c).map_or_else(|| format!("\\x{c:x}"), |ch: char| ch.to_string())
 }
 
-fn escape_string(s: &str) -> String {
-    s.replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('\n', "\\n")
-        .replace('\t', "\\t")
-        .replace('\r', "\\r")
-}
-
 fn render_binary_literal(bytes: &[u8]) -> String {
     if bytes.is_empty() {
         return "<<>>".to_owned();
@@ -360,7 +352,10 @@ fn render_binary_literal(bytes: &[u8]) -> String {
         && s.is_ascii()
         && s.chars().all(|c: char| !c.is_control() || c == '\n')
     {
-        return format!("<<\"{}\">>", escape_string(s));
+        return format!(
+            "<<\"{}\">>",
+            crate::erlang_abstract::escape_erlang_string(s)
+        );
     }
     let parts: Vec<String> = bytes.iter().map(u8::to_string).collect();
     format!("<<{}>>", parts.join(", "))

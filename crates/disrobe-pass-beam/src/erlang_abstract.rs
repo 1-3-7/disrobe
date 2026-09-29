@@ -112,7 +112,7 @@ fn render(term: &Term) -> String {
         "integer" => int_string(&parts[2]),
         "float" => float_string(&parts[2]),
         "char" => format!("${}", char_repr(&parts[2])),
-        "string" => format!("\"{}\"", escape_str(&str_value(&parts[2]))),
+        "string" => format!("\"{}\"", escape_erlang_string(&str_value(&parts[2]))),
         "var" => parts
             .get(2)
             .and_then(Term::as_atom)
@@ -638,18 +638,10 @@ fn literal_fallback(term: &Term) -> String {
         Term::Int(v) => v.to_string(),
         Term::Nil => "[]".to_owned(),
         Term::Binary(b) | Term::String(b) => {
-            format!("\"{}\"", escape_str(&String::from_utf8_lossy(b)))
+            format!("\"{}\"", escape_erlang_string(&String::from_utf8_lossy(b)))
         }
         _ => "_".to_owned(),
     }
-}
-
-fn escape_str(s: &str) -> String {
-    s.replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('\n', "\\n")
-        .replace('\t', "\\t")
-        .replace('\r', "\\r")
 }
 
 fn pad(indent: usize) -> String {
@@ -682,4 +674,47 @@ fn render_bigint(sign: u8, magnitude_le: &[u8]) -> String {
     digits.reverse();
     let body: String = String::from_utf8(digits).unwrap_or_else(|_| "0".to_owned());
     if sign == 1 { format!("-{body}") } else { body }
+}
+
+pub(crate) fn escape_erlang_string(s: &str) -> String {
+    let mut out: String = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{08}' => out.push_str("\\b"),
+            '\u{0b}' => out.push_str("\\v"),
+            '\u{0c}' => out.push_str("\\f"),
+            '\u{1b}' => out.push_str("\\e"),
+            '\u{7f}' => out.push_str("\\d"),
+            c if c.is_control() => {
+                out.push_str("\\x{");
+                out.push_str(&u32::from(c).to_string());
+                out.push('}');
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::escape_erlang_string;
+
+    #[test]
+    fn every_control_character_is_written_as_an_erlang_escape() {
+        assert_eq!(
+            escape_erlang_string("a\"b\\c\nd\te\rf"),
+            r#"a\"b\\c\nd\te\rf"#
+        );
+        assert_eq!(
+            escape_erlang_string("\u{8}\u{b}\u{c}\u{1b}\u{7f}\u{1}"),
+            r"\b\v\f\e\d\x{1}"
+        );
+        assert_eq!(escape_erlang_string("caf\u{e9}"), "caf\u{e9}");
+    }
 }
