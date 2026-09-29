@@ -12,7 +12,6 @@ mod dead_branch;
 pub(crate) mod debug;
 mod detect;
 mod error;
-pub mod format_wire;
 mod fstring_recover;
 mod hyperion_v2v3;
 mod junk_fn;
@@ -35,7 +34,6 @@ pub use auto_route::{
 pub use cipher::{CipherKind, KeyFinding, KeyProvenance};
 pub use detect::{Detection, Family, detect};
 pub use error::{Error, Result};
-pub use format_wire::format_python;
 pub use hyperion_v2v3::{
     CodeObjectSummary as HyperionCodeObjectSummary, HyperionPeelStep, HyperionV2V3Detection,
     HyperionV2V3PeelResult, HyperionVariant, InnerDecodeResult as HyperionInnerDecodeResult,

@@ -22,7 +22,6 @@ mod const_repr;
 pub use const_repr::is_python_printable;
 pub(crate) mod debug;
 mod exception_table;
-pub mod format_wire;
 mod jumps;
 mod lines;
 mod listing;
@@ -42,7 +41,6 @@ pub use cfg::{
 pub use exception_table::{
     ExceptionEntry, decode_exception_table, render_exception_table, render_exception_table_json,
 };
-pub use format_wire::{format_identity, format_python};
 pub use listing::render_listing;
 #[cfg(feature = "llm-metadata")]
 pub use llm::{METADATA_CAPABILITY, PyDisasmLlmInput};

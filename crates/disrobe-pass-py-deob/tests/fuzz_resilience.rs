@@ -4,9 +4,8 @@ use std::path::{Path, PathBuf};
 use disrobe_pass_py_deob::{
     ast_eval, auto_deobfuscate, cleanup_source, decode_hyperion_v2v3_inner,
     decode_hyperion_v2v3_inner_with_version, detect, detect_hyperion_v2v3, detect_marshal,
-    format_python, iter_passes, looks_obfuscated, peel, peel_hyperion_v2v3_all_layers,
-    peel_hyperion_v2v3_layer, peel_with_pyver, recover_marshal_source, recover_pyc_zipper,
-    unidentified_guidance,
+    iter_passes, looks_obfuscated, peel, peel_hyperion_v2v3_all_layers, peel_hyperion_v2v3_layer,
+    peel_with_pyver, recover_marshal_source, recover_pyc_zipper, unidentified_guidance,
 };
 use disrobe_py_marshal::PyVersion;
 use disrobe_testkit::{CorpusEntry, StressCase, StressConfig, StressError, XorShift64};
@@ -175,7 +174,6 @@ fn exercise_byte_entrypoints(bytes: &[u8]) {
     consume(recover_pyc_zipper(bytes));
     consume(cleanup_source(&source));
     consume(ast_eval::evaluate_source(&source));
-    consume(format_python(&source));
     consume(disrobe_pass_py_deob::obfuscators::kramer::try_recover_payload_bytes(bytes));
     let report: disrobe_pass_py_deob::obfuscators::pyminifier_variants::VariantReport =
         disrobe_pass_py_deob::obfuscators::pyminifier_variants::classify(&source);
