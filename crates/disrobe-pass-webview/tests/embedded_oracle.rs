@@ -1210,7 +1210,7 @@ fn a_traversal_key_is_dropped_while_the_rest_of_the_map_survives() {
     assert_eq!(
         report.declared - report.recovered,
         2,
-        "the refused keys must still be counted as declared, so coverage stays honest"
+        "the refused keys must still be counted as declared, so coverage stays accurate"
     );
     assert!(report.coverage() < 1.0);
 }

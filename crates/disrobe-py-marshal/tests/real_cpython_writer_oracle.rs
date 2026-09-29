@@ -127,7 +127,7 @@ fn grade_version(major: u8, minor: u8) -> VersionGrade {
     let version: PyVersion = PyVersion::new(major, minor);
     let Some(python) = python_for(major, minor) else {
         eprintln!(
-            "[real_cpython_writer_oracle] HONEST-PARTIAL: no CPython {major}.{minor} resolvable via uv; skipping this version"
+            "[real_cpython_writer_oracle] PARTIAL: no CPython {major}.{minor} resolvable via uv; skipping this version"
         );
         return VersionGrade {
             version,
