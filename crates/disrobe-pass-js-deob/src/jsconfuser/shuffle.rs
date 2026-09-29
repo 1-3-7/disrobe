@@ -21,9 +21,6 @@ pub fn reverse_shuffle(source: &str) -> ShuffleReversalResult {
         return passthrough(source);
     };
     for caps in decl_re.captures_iter(source) {
-        let Some(name): Option<&str> = caps.get(1).map(|m: regex::Match<'_>| m.as_str()) else {
-            continue;
-        };
         let Some(list_match): Option<regex::Match<'_>> = caps.get(2) else {
             continue;
         };
@@ -35,7 +32,7 @@ pub fn reverse_shuffle(source: &str) -> ShuffleReversalResult {
             continue;
         }
         let Some((stmt_start, stmt_end, items)): Option<(usize, usize, Vec<String>)> =
-            locate_companion_block(source, bytes, name)
+            locate_companion_block(source, bytes)
         else {
             continue;
         };
@@ -100,13 +97,8 @@ fn is_valid_permutation(order: &[usize]) -> bool {
     true
 }
 
-fn locate_companion_block(
-    source: &str,
-    bytes: &[u8],
-    order_name: &str,
-) -> Option<(usize, usize, Vec<String>)> {
+fn locate_companion_block(source: &str, bytes: &[u8]) -> Option<(usize, usize, Vec<String>)> {
     let pattern: &str = r"(?ms)\(\s*function\s*\(\s*\)\s*\{\s*var\s+([A-Za-z_$][\w$]*)\s*=\s*\[";
-    let _ = order_name;
     let Ok(re): Result<Regex, regex::Error> = Regex::new(pattern) else {
         return None;
     };

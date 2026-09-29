@@ -20,7 +20,7 @@ pub fn reverse_state_sum(source: &str) -> StateSumReversalResult {
     let mut machines: usize = 0;
     let mut blocks: usize = 0;
     for machine in find_state_sum_machines(source) {
-        let Some(linear): Option<Linearized> = linearize(source, &machine) else {
+        let Some(linear): Option<Linearized> = linearize(&machine) else {
             continue;
         };
         blocks += linear.block_count;
@@ -329,8 +329,7 @@ fn split_top_level_statements(segment: &str) -> Vec<String> {
     out
 }
 
-fn linearize(source: &str, machine: &StateSumMachine) -> Option<Linearized> {
-    let _ = source;
+fn linearize(machine: &StateSumMachine) -> Option<Linearized> {
     let arms: Vec<CaseArm> = parse_case_arms(&machine.switch_body, &machine.state_vars);
     if arms.is_empty() {
         return None;

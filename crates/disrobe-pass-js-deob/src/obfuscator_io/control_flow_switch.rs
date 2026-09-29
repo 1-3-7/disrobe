@@ -38,12 +38,11 @@ pub(super) fn unflatten_control_flow_switch(source: &str) -> ControlFlowSwitchRe
             continue;
         };
         let block_start: usize = whole.start();
-        let Some((iter_name, switch_open, after_iter)): Option<(String, usize, usize)> =
+        let Some((iter_name, switch_open, _)): Option<(String, usize, usize)> =
             locate_switch(source, seq_name, whole.end())
         else {
             continue;
         };
-        let _ = after_iter;
         let Some(switch_close): Option<usize> = find_brace_close(bytes, switch_open + 1) else {
             continue;
         };

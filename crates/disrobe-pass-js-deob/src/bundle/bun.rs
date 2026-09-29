@@ -129,7 +129,6 @@ fn extract_bun_register_table(source: &str, modules: &mut ModuleCollector) {
     let Ok(re): Result<Regex, regex::Error> = Regex::new(r"__bun_register\s*\(\s*\{") else {
         return;
     };
-    let bytes: &[u8] = source.as_bytes();
     for mat in re.find_iter(source) {
         let object_open: usize = mat.end() - 1;
         let Some(entries): Option<Vec<super::scan::ObjectEntry>> =
@@ -145,7 +144,6 @@ fn extract_bun_register_table(source: &str, modules: &mut ModuleCollector) {
             return;
         }
     }
-    let _ = bytes;
 }
 
 fn extract_export_functions(source: &str, modules: &mut ModuleCollector) {

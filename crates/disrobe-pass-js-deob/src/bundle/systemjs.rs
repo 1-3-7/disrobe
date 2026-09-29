@@ -129,11 +129,10 @@ fn extract_system_register(source: &str, modules: &mut ModuleCollector) {
             continue;
         }
         let array_open: usize = j;
-        let Some(array_close): Option<usize> = find_bracket_close(bytes, array_open + 1) else {
+        if find_bracket_close(bytes, array_open + 1).is_none() {
             continue;
-        };
+        }
         let snippet: &str = &source[paren_open + 1..paren_close];
-        let _ = array_close;
         modules.push(&id, Some("systemjs"), snippet.trim());
     }
 }

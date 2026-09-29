@@ -49,7 +49,6 @@ fn beautify(source: &str) -> String {
     let mut out: String = String::with_capacity(source.len() + source.len() / 4);
     let mut indent: usize = 0;
     let mut i: usize = 0;
-    let mut prev_non_ws: u8 = 0;
     let mut at_line_start: bool = true;
     while i < bytes.len() {
         let b: u8 = bytes[i];
@@ -63,7 +62,6 @@ fn beautify(source: &str) -> String {
                 at_line_start = false;
             }
             out.push_str(&source[i..end]);
-            prev_non_ws = bytes[end - 1];
             i = end;
             continue;
         }
@@ -79,7 +77,6 @@ fn beautify(source: &str) -> String {
                 out.push('\n');
                 indent += 1;
                 at_line_start = true;
-                prev_non_ws = b'{';
                 i += 1;
                 continue;
             }
@@ -90,11 +87,9 @@ fn beautify(source: &str) -> String {
                 indent = indent.saturating_sub(1);
                 push_indent(&mut out, indent);
                 out.push('}');
-                prev_non_ws = b'}';
                 i += 1;
                 if bytes.get(i) == Some(&b',') || bytes.get(i) == Some(&b';') {
                     out.push(bytes[i] as char);
-                    prev_non_ws = bytes[i];
                     i += 1;
                 }
                 out.push('\n');
@@ -108,7 +103,6 @@ fn beautify(source: &str) -> String {
                 out.push(';');
                 out.push('\n');
                 at_line_start = true;
-                prev_non_ws = b';';
                 i += 1;
                 continue;
             }
@@ -128,12 +122,10 @@ fn beautify(source: &str) -> String {
                     push_indent(&mut out, indent);
                     at_line_start = false;
                 }
-                prev_non_ws = b;
                 i += copy_char_at(&mut out, source, i);
             }
         }
     }
-    let _ = prev_non_ws;
     out
 }
 

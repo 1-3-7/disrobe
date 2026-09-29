@@ -363,7 +363,7 @@ fn babel_constructor(
         if stmt_is_class_call_check(stmt, ctor_name) {
             continue;
         }
-        if let Some(super_call) = rewrite_super_return(source, stmt, ctor_name, has_super) {
+        if let Some(super_call) = rewrite_super_return(source, stmt, has_super) {
             kept.push(super_call);
             continue;
         }
@@ -372,12 +372,7 @@ fn babel_constructor(
     Some((params_src, wrap_block(&kept)))
 }
 
-fn rewrite_super_return(
-    source: &str,
-    stmt: &Statement<'_>,
-    ctor_name: &str,
-    has_super: bool,
-) -> Option<String> {
+fn rewrite_super_return(source: &str, stmt: &Statement<'_>, has_super: bool) -> Option<String> {
     if !has_super {
         return None;
     }
@@ -404,7 +399,6 @@ fn rewrite_super_return(
         .skip(1)
         .map(|argument| argument.span().source_text(source))
         .collect();
-    let _ = ctor_name;
     Some(format!("super({});", rendered_args.join(", ")))
 }
 
