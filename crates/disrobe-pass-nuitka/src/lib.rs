@@ -108,8 +108,8 @@ pub use skeleton::{
 };
 pub use surface::{
     SurfaceAssignment, SurfaceFidelity, SurfaceFunction, SurfaceModule, SurfaceParam,
-    build_surface, build_surface_names_only, build_surface_names_only_with_skeleton,
-    build_surface_with_python_abi, emit_python,
+    build_surface, build_surface_names_only_with_skeleton, build_surface_with_python_abi,
+    emit_python,
 };
 pub use symbols::{ImpFunction, ModuleInit, SymbolGraph, scan_symbols};
 pub use variant::{BinaryFormat, NuitkaVariant, VariantClassification, classify, classify_in_file};

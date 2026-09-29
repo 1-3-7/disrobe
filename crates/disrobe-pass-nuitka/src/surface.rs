@@ -1579,11 +1579,6 @@ fn sort_tree(funcs: &mut [SurfaceFunction]) {
 }
 
 #[must_use]
-pub fn build_surface_names_only(graph: &SymbolGraph, pool: &ConstantsPool) -> SurfaceModule {
-    build_surface_names_only_with_skeleton(graph, pool, None)
-}
-
-#[must_use]
 pub fn build_surface_names_only_with_skeleton(
     graph: &SymbolGraph,
     pool: &ConstantsPool,
@@ -2557,7 +2552,7 @@ static PyObject *impl_m$$$function__1_f(PyThreadState *tstate, PyObject *const *
         });
         let pool: ConstantsPool =
             decode_const_file(CONST, "module.hello.const", "hello").expect("decode");
-        let s: SurfaceModule = build_surface_names_only(&graph, &pool);
+        let s: SurfaceModule = build_surface_names_only_with_skeleton(&graph, &pool, None);
         assert_eq!(s.fidelity, SurfaceFidelity::NamesOnly);
         assert_eq!(s.functions.len(), 1);
         assert_eq!(s.functions[0].name, "greet");
