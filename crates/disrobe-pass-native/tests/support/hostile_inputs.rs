@@ -598,20 +598,8 @@ pub(crate) fn committed_image(relative: &str) -> Option<Vec<u8>> {
 
 pub(crate) const COMPILED_VM_PROBE: &str = "<a virtual machine probe compiled by clang>";
 
-fn clang_path() -> Option<String> {
-    ["clang", "clang-18", "clang-17"]
-        .into_iter()
-        .find(|candidate: &&str| {
-            std::process::Command::new(candidate)
-                .arg("--version")
-                .output()
-                .is_ok_and(|out: std::process::Output| out.status.success())
-        })
-        .map(str::to_owned)
-}
-
 pub(crate) fn compiled_vm_probe() -> Option<Vec<u8>> {
-    let clang: String = clang_path()?;
+    let clang: String = crate::compiler_toolchain::calibrated_clang()?;
     let fixture: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("fixtures")

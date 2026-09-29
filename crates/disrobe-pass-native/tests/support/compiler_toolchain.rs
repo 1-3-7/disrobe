@@ -135,6 +135,41 @@ pub(crate) fn probe_any(candidates: &[&'static str]) -> Option<String> {
     None
 }
 
+const CALIBRATED_CLANG_MAJORS: std::ops::RangeInclusive<u32> = 18..=21;
+
+#[allow(dead_code)]
+pub(crate) fn calibrated_clang() -> Option<String> {
+    let bin: String = probe_one("clang")?;
+    let output: Output = Command::new(&bin)
+        .arg("--version")
+        .output()
+        .unwrap_or_else(|error: std::io::Error| panic!("run {bin} --version: {error}"));
+    let banner: String = String::from_utf8_lossy(&output.stdout).into_owned();
+    let first_line: &str = banner.lines().next().unwrap_or_default();
+    let major: Option<u32> = first_line
+        .split("clang version ")
+        .nth(1)
+        .and_then(|rest: &str| rest.split('.').next())
+        .and_then(|digits: &str| digits.trim().parse::<u32>().ok());
+    assert!(
+        major.is_some_and(|found: u32| CALIBRATED_CLANG_MAJORS.contains(&found)),
+        "the first clang on PATH reports `{first_line}`; the native graders are calibrated \
+         against clang 18 to 21 (CI: 18 on Linux, 20 on macOS; this repository's fixtures: \
+         19.1.7), so put one of those first on PATH"
+    );
+    Some(bin)
+}
+
+#[allow(dead_code)]
+pub(crate) fn require_calibrated_clang() -> String {
+    calibrated_clang().unwrap_or_else(|| {
+        panic!(
+            "clang is not callable on PATH, and every CI test runner provisions it, so this \
+             oracle requires it. To fix it, {INSTALL_HINT}."
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

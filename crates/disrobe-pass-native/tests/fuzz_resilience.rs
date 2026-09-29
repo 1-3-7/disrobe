@@ -21,6 +21,9 @@ use disrobe_pass_native::stub_emu::cpu::NoopHost;
 use disrobe_pass_native::stub_emu::mem::MAX_MAP_BYTES;
 use disrobe_pass_native::stub_emu::{Cpu, CpuMode, ExitReason, Memory, Perm, Reg};
 
+#[path = "support/compiler_toolchain.rs"]
+#[allow(clippy::redundant_pub_crate)]
+mod compiler_toolchain;
 #[path = "support/hostile_inputs.rs"]
 #[allow(clippy::redundant_pub_crate, dead_code)]
 mod hostile_inputs;

@@ -18,6 +18,10 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[path = "support/compiler_toolchain.rs"]
+#[allow(clippy::redundant_pub_crate)]
+mod compiler_toolchain;
+
 use disrobe_pass_native::vm_devirt::detect::Bitness;
 use disrobe_pass_native::vm_devirt::eval::evaluate;
 use disrobe_pass_native::vm_devirt::{
@@ -183,23 +187,7 @@ fn expected_max3(a: i64, b: i64, c: i64) -> i64 {
 }
 
 fn clang_path() -> PathBuf {
-    let candidates: [&str; 3] = [
-        "clang",
-        "C:\\Program Files\\LLVM\\bin\\clang.exe",
-        "/usr/bin/clang",
-    ];
-    for cand in candidates {
-        let ok: bool = Command::new(cand)
-            .arg("--version")
-            .output()
-            .is_ok_and(|o: std::process::Output| o.status.success());
-        if ok {
-            return PathBuf::from(cand);
-        }
-    }
-    panic!(
-        "clang is required to build the real VM oracle binary; every CI test runner provisions it"
-    );
+    PathBuf::from(compiler_toolchain::require_calibrated_clang())
 }
 
 fn fixtures_dir() -> PathBuf {

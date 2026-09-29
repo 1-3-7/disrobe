@@ -116,7 +116,7 @@ fn compile_translation_unit(
     let source_path: PathBuf = directory.join(format!("{stem}.{extension}"));
     let object_path: PathBuf = directory.join(format!("{stem}.o"));
     fs::write(&source_path, source).expect("fixture source must be writable");
-    let mut command: Command = Command::new("clang");
+    let mut command: Command = Command::new(crate::compiler_toolchain::require_calibrated_clang());
     command
         .arg("--target=aarch64-unknown-linux-gnu")
         .arg(format!("-{optimization}"))
@@ -135,7 +135,7 @@ fn compile_macho_translation_unit(directory: &Path, source: &str) -> PathBuf {
     let source_path: PathBuf = directory.join("address.c");
     let object_path: PathBuf = directory.join("address.macho.o");
     fs::write(&source_path, source).expect("fixture source must be writable");
-    let mut command: Command = Command::new("clang");
+    let mut command: Command = Command::new(crate::compiler_toolchain::require_calibrated_clang());
     command
         .arg("--target=arm64-apple-darwin")
         .arg("-O2")
@@ -153,7 +153,7 @@ fn compile_pic_translation_unit(directory: &Path, source: &str) -> PathBuf {
     let source_path: PathBuf = directory.join("pic.c");
     let object_path: PathBuf = directory.join("pic.o");
     fs::write(&source_path, source).expect("fixture source must be writable");
-    let mut command: Command = Command::new("clang");
+    let mut command: Command = Command::new(crate::compiler_toolchain::require_calibrated_clang());
     command
         .arg("--target=aarch64-unknown-linux-gnu")
         .arg("-O2")
@@ -170,7 +170,7 @@ fn compile_pic_translation_unit(directory: &Path, source: &str) -> PathBuf {
 }
 
 fn linker_path() -> PathBuf {
-    let mut locate: Command = Command::new("clang");
+    let mut locate: Command = Command::new(crate::compiler_toolchain::require_calibrated_clang());
     locate.arg("--print-prog-name=ld.lld");
     let located: Output = command_output(&mut locate);
     let printed: String = String::from_utf8(located.stdout).expect("linker path must be utf-8");
@@ -183,7 +183,7 @@ fn linker_path() -> PathBuf {
 }
 
 fn macho_linker_path() -> PathBuf {
-    let mut locate: Command = Command::new("clang");
+    let mut locate: Command = Command::new(crate::compiler_toolchain::require_calibrated_clang());
     locate.arg("--print-prog-name=ld64.lld");
     let located: Output = command_output(&mut locate);
     let printed: String = String::from_utf8(located.stdout).expect("linker path must be utf-8");

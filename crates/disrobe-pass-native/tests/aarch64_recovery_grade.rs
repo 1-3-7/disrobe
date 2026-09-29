@@ -21,6 +21,9 @@ use disrobe_pass_native::{
 mod aarch64_callsite_cases;
 #[path = "aarch64_grade/battery.rs"]
 mod battery;
+#[path = "support/compiler_toolchain.rs"]
+#[allow(clippy::redundant_pub_crate)]
+mod compiler_toolchain;
 
 use battery::{
     CASES, EXTERNS, FP_DRIVER_HELPERS, FpExpectation, HOST_FP_PRECHECK, ORACLE_FLAGS,

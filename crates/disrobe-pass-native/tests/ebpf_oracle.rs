@@ -12,20 +12,9 @@ mod prerequisite;
 
 fn clang_candidates() -> Vec<PathBuf> {
     let mut candidates: Vec<PathBuf> = vec![PathBuf::from("clang")];
-    if let Ok(program_files) = std::env::var("ProgramFiles") {
-        candidates.push(
-            PathBuf::from(program_files)
-                .join("LLVM")
-                .join("bin")
-                .join("clang.exe"),
-        );
-    }
-    candidates.push(PathBuf::from(r"C:\Program Files\LLVM\bin\clang.exe"));
     for minor in (13..=25).rev() {
         candidates.push(PathBuf::from(format!("clang-{minor}")));
-        candidates.push(PathBuf::from(format!("/usr/lib/llvm-{minor}/bin/clang")));
     }
-    candidates.push(PathBuf::from("/usr/bin/clang"));
     candidates
 }
 
