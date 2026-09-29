@@ -341,10 +341,19 @@ fn assert_dialect_shapes_reexecute(version: &str) {
         let bytes: Vec<u8> = std::fs::read(&bc).expect("read bytecode");
         let decompiled: DecompiledChunk = decompile_auto(&bytes)
             .unwrap_or_else(|e| panic!("{name}: lua {version} bytecode decompiles: {e}"));
-        let expected: String =
-            run_source(&tc.lua, &dir, &format!("{name}.orig"), source).expect("original runs");
-        let actual: Option<String> =
-            run_source(&tc.lua, &dir, &format!("{name}.dec"), &decompiled.source);
+        let expected: String = run_source(
+            &tc.lua,
+            &dir,
+            &format!("{name}.orig"),
+            &format!("{GLOBAL_WATCH}{source}"),
+        )
+        .expect("original runs");
+        let actual: Option<String> = run_source(
+            &tc.lua,
+            &dir,
+            &format!("{name}.dec"),
+            &format!("{GLOBAL_WATCH}{}", decompiled.source),
+        );
         if actual.as_deref() != Some(expected.as_str()) {
             diverged.push(format!(
                 "{name} under lua {version}\n--- expected ---\n{expected}\n--- actual ---\n{}\n--- recovered (first 2000 bytes) ---\n{}",
@@ -411,6 +420,8 @@ fn stripped_portable_behaviour_programs_reexecute_as_emitted_lua_5_3() {
     assert_behaviour_programs_reexecute("5.3", BEHAVIOUR_PROGRAMS_PORTABLE);
 }
 
+const GLOBAL_WATCH: &str = "setmetatable(_G, {__newindex = function(t, k, v) io.write(\"new global \", tostring(k), \"\\n\") rawset(t, k, v) end})\n";
+
 fn assert_behaviour_programs_reexecute(version: &str, programs: &[(&str, &str)]) {
     let tc: Toolchain = toolchain(version);
     let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
@@ -430,10 +441,19 @@ fn assert_behaviour_programs_reexecute(version: &str, programs: &[(&str, &str)])
         assert!(stripped, "{name}: luac -s compiles the program");
         let bytes: Vec<u8> = std::fs::read(&bc).expect("read bytecode");
         let decompiled: DecompiledChunk = decompile_auto(&bytes).expect("decompile");
-        let expected: String =
-            run_source(&tc.lua, &dir, &format!("{name}.orig"), source).expect("original runs");
-        let actual: Option<String> =
-            run_source(&tc.lua, &dir, &format!("{name}.dec"), &decompiled.source);
+        let expected: String = run_source(
+            &tc.lua,
+            &dir,
+            &format!("{name}.orig"),
+            &format!("{GLOBAL_WATCH}{source}"),
+        )
+        .expect("original runs");
+        let actual: Option<String> = run_source(
+            &tc.lua,
+            &dir,
+            &format!("{name}.dec"),
+            &format!("{GLOBAL_WATCH}{}", decompiled.source),
+        );
         if actual.as_deref() != Some(expected.as_str()) {
             diverged.push(format!(
                 "{name}\n--- expected ---\n{expected}\n--- actual ---\n{}\n--- recovered ---\n{}",

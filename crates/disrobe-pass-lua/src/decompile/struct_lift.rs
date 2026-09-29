@@ -1,3 +1,4 @@
+mod declare;
 mod structurer;
 mod value_region;
 
@@ -263,10 +264,13 @@ fn lift_structured_captured(
         p.max_stack_size,
         resolve_upvalue_names(p, captured, dialect, depth),
     );
+    let mut outer_names: std::collections::BTreeSet<String> =
+        state.upvalues.iter().cloned().collect();
     for i in 0..u32::from(p.num_params) {
         let name: String = names
             .name_at(0, i)
             .map_or_else(|| synthetic_param_name(i, &state.upvalues), str::to_owned);
+        outer_names.insert(name.clone());
         state.bind_reg(i, name);
     }
     let live: LiveAcrossBranch = LiveAcrossBranch::compute(p, dialect);
@@ -285,7 +289,9 @@ fn lift_structured_captured(
     }
     fold_table_constructors(&mut state.stmts);
     promote_local_functions(&mut state.stmts);
-    let structured: structurer::StructureResult = structure_standard(&state.stmts, p.code.len());
+    let mut structured: structurer::StructureResult =
+        structure_standard(&state.stmts, p.code.len());
+    declare::declare_scoped_temps(&mut structured.blocks, outer_names);
     let rendered: RenderedBlocks = render_blocks(&structured.blocks, 1);
     if structured.unresolved_jumps > 0 {
         state.fully_structured = false;
@@ -2164,6 +2170,7 @@ fn emit_call(
         } else {
             state.set_reg(dest, call);
         }
+        clear_from(state, d.a + 1);
     } else {
         let count: u32 = d.c - 1;
         let targets: Vec<String> = (0..count)
@@ -2179,6 +2186,7 @@ fn emit_call(
         for (i, t) in targets.iter().enumerate() {
             state.bind_reg(d.a + i as u32, t.clone());
         }
+        clear_from(state, d.a + count);
     }
 }
 
@@ -2186,7 +2194,7 @@ fn emit_call(
 fn clear_from(state: &mut StructState, start: u32) {
     let mut r: usize = start as usize;
     while r < state.regs.len() {
-        if !state.defined.get(r).copied().unwrap_or(false) {
+        if !state.bound[r] {
             state.regs[r] = String::new();
         }
         r += 1;
