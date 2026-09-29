@@ -300,6 +300,11 @@ fn assert_lane(dialect: Dialect, label: &str) {
 }
 
 #[test]
+fn generated_programs_reexecute_identically_lua_5_1() {
+    assert_lane(Dialect::Lua51, "lua5.1");
+}
+
+#[test]
 fn generated_programs_reexecute_identically_lua_5_4() {
     assert_lane(Dialect::Lua54, "lua5.4");
 }

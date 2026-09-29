@@ -420,7 +420,7 @@ impl LiveAcrossBranch {
                 *slot = read_registers(&d, dialect);
             }
             if let Some(slot) = writes.get_mut(pc) {
-                *slot = written_registers(&d, dialect);
+                *slot = liveness_writes(&d, dialect);
             }
             if let Some(slot) = effects.get_mut(pc) {
                 *slot = matches!(
@@ -689,6 +689,28 @@ fn written_registers(d: &Decoded, dialect: LuaDialect) -> Vec<u32> {
     }
 }
 
+const OPEN_RANGE_REGISTERS: u32 = 16;
+
+fn liveness_writes(d: &Decoded, dialect: LuaDialect) -> Vec<u32> {
+    let open_results: bool = match d.op {
+        Op::Call => d.c == 0,
+        Op::Vararg => {
+            let count: u32 = if matches!(dialect, LuaDialect::Lua54) {
+                d.c
+            } else {
+                d.b
+            };
+            count == 0
+        }
+        _ => false,
+    };
+    if open_results {
+        (d.a..d.a + OPEN_RANGE_REGISTERS).collect()
+    } else {
+        written_registers(d, dialect)
+    }
+}
+
 #[must_use]
 fn read_registers(d: &Decoded, dialect: LuaDialect) -> Vec<u32> {
     let mut out: Vec<u32> = Vec::new();
@@ -800,7 +822,7 @@ fn read_registers(d: &Decoded, dialect: LuaDialect) -> Vec<u32> {
             push_r(&mut out, d.a);
             let argc: u32 = d.b;
             if argc == 0 {
-                for r in (d.a + 1)..(d.a + 16) {
+                for r in (d.a + 1)..(d.a + OPEN_RANGE_REGISTERS) {
                     push_r(&mut out, r);
                 }
             } else {
@@ -812,7 +834,7 @@ fn read_registers(d: &Decoded, dialect: LuaDialect) -> Vec<u32> {
         Op::Return => {
             let count: u32 = d.b;
             if count == 0 {
-                for r in d.a..(d.a + 16) {
+                for r in d.a..(d.a + OPEN_RANGE_REGISTERS) {
                     push_r(&mut out, r);
                 }
             } else {
