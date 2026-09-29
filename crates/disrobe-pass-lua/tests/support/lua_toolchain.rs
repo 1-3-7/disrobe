@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use disrobe_core::scratch::ScratchFile;
 
-pub(crate) const REQUIRE_VAR: &str = "DISROBE_REQUIRE_LUA";
+pub(crate) const REQUIRE_VAR: &str = "DISROBE_REQUIRE_LUA_TOOLCHAIN";
 
 pub(crate) const INSTALL_HINT: &str =
     "install lua5.4 (apt-get install lua5.4) or luajit and put it on PATH";

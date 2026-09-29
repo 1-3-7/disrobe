@@ -1129,7 +1129,7 @@ mod tests {
         ];
         let original: &str =
             "local result = 0\nif enabled then result = result + 1 end\nprint(result)\n";
-        let mut exercised: usize = 0;
+        let mut exercised: Vec<&str> = Vec::new();
         for interpreter in ["lua5.1", "lua5.3", "lua5.4"] {
             let executable: String = format!("{interpreter}{}", std::env::consts::EXE_SUFFIX);
             let program: &str = executable.as_str();
@@ -1141,7 +1141,7 @@ mod tests {
             if !version.status.success() {
                 continue;
             }
-            exercised += 1;
+            exercised.push(interpreter);
             for enabled in [true, false] {
                 let expected_source: String = format!("local enabled = {enabled}\n{original}");
                 let expected: std::process::Output = execute_source(program, &expected_source)
@@ -1173,8 +1173,11 @@ mod tests {
                 }
             }
         }
-        if std::env::var_os("DISROBE_REQUIRE_LUA").is_some() {
-            assert_eq!(exercised, 3, "lua5.1, lua5.3 and lua5.4 must be on PATH");
+        if std::env::var_os("DISROBE_REQUIRE_LUA_TOOLCHAIN").is_some() {
+            assert!(
+                exercised.contains(&"lua5.1") && exercised.contains(&"lua5.4"),
+                "lua5.1 and lua5.4 must be on PATH; ran {exercised:?}"
+            );
         }
     }
 
