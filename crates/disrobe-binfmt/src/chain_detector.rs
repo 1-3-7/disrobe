@@ -546,6 +546,12 @@ fn extract_members(tag: &str, bytes: &[u8]) -> CoreResult<MemberExtraction> {
         | TAG_TAR
         | TAG_RAR
         | TAG_RPM
+        | TAG_ASAR
+        | TAG_AR
+        | TAG_SEVENZIP
+        | TAG_CAB
+        | TAG_ISO
+        | TAG_SQUASHFS
         | TAG_ARC
         | TAG_ARJ
         | TAG_LZH
@@ -567,8 +573,15 @@ fn extract_members(tag: &str, bytes: &[u8]) -> CoreResult<MemberExtraction> {
         TAG_BZIP2 => {
             extract_single_stream(bytes, "bz2", decode_bzip2).map(MemberExtraction::complete)
         }
-        _ => Ok(MemberExtraction::complete(Vec::new())),
+        other => Err(unextracted_kind(other)),
     }
+}
+
+fn unextracted_kind(tag: &str) -> CoreError {
+    fail(format!(
+        "DR-BINFMT-0960: the chain detects {tag} containers but has no member extractor for \
+         them, so the run would report members it never read"
+    ))
 }
 
 fn extract_members_with_direct_policy(tag: &str, bytes: &[u8]) -> CoreResult<MemberExtraction> {
@@ -577,6 +590,12 @@ fn extract_members_with_direct_policy(tag: &str, bytes: &[u8]) -> CoreResult<Mem
         TAG_TAR => crate::container::ContainerKind::Tar,
         TAG_RAR => crate::container::ContainerKind::Rar,
         TAG_RPM => crate::container::ContainerKind::Rpm,
+        TAG_ASAR => crate::container::ContainerKind::Asar,
+        TAG_AR => crate::container::ContainerKind::Ar,
+        TAG_SEVENZIP => crate::container::ContainerKind::SevenZ,
+        TAG_CAB => crate::container::ContainerKind::Cab,
+        TAG_ISO => crate::container::ContainerKind::Iso,
+        TAG_SQUASHFS => crate::container::ContainerKind::Squashfs,
         TAG_ARC => crate::container::ContainerKind::Arc,
         TAG_ARJ => crate::container::ContainerKind::Arj,
         TAG_LZH => crate::container::ContainerKind::Lzh,
@@ -588,7 +607,7 @@ fn extract_members_with_direct_policy(tag: &str, bytes: &[u8]) -> CoreResult<Mem
         TAG_DOTNET_SINGLE_FILE => crate::container::ContainerKind::DotnetSingleFile,
         TAG_UEFI_FV => crate::container::ContainerKind::UefiFv,
         TAG_EROFS => crate::container::ContainerKind::Erofs,
-        _ => return Ok(MemberExtraction::complete(Vec::new())),
+        other => return Err(unextracted_kind(other)),
     };
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("binfmt-chain-extract")
@@ -915,6 +934,44 @@ mod tests {
     const REAL_OS2_NE: &[u8] = include_bytes!("../../../corpus/native/formats/hello_os2_ne.exe");
     const REAL_LZH_LEVEL3: &[u8] = include_bytes!("../tests/fixtures/lzh/level3/h3_subdir.lzh");
     const REAL_RAR3_FILTER: &[u8] = include_bytes!("../../../corpus/binfmt/rar/filter-e8-rar3.rar");
+
+    #[test]
+    fn containers_the_chain_detects_yield_their_members() {
+        let samples: [(&str, &[u8]); 4] = [
+            (
+                TAG_ISO,
+                include_bytes!("../../../corpus/binfmt/iso/joliet-rockridge.iso"),
+            ),
+            (TAG_AR, include_bytes!("../../../corpus/binfmt/ar/hello.a")),
+            (
+                TAG_SQUASHFS,
+                include_bytes!("../../../corpus/binfmt/squashfs-lzo/hello-lzo.squashfs"),
+            ),
+            (
+                TAG_ASAR,
+                include_bytes!("../tests/fixtures/asar/real_electron.asar"),
+            ),
+        ];
+        for (tag, bytes) in samples {
+            let extraction: MemberExtraction = extract_members(tag, bytes)
+                .unwrap_or_else(|error: CoreError| panic!("{tag}: {error}"));
+            assert!(
+                !extraction.members.is_empty(),
+                "{tag}: the chain reported the container without reading a member"
+            );
+        }
+    }
+
+    #[test]
+    fn a_detected_kind_without_an_extractor_is_refused_by_name() {
+        let refused: CoreResult<MemberExtraction> = extract_members("future-kind", b"bytes");
+        assert!(
+            matches!(&refused, Err(CoreError::PassFailure(message))
+                if message.contains("DR-BINFMT-0960") && message.contains("future-kind")),
+            "{:?}",
+            refused.map(|extraction: MemberExtraction| extraction.members.len())
+        );
+    }
     const REAL_STUFFIT: &[u8] = include_bytes!("../tests/fixtures/stuffit/stuffit45-method13.sit");
     const REAL_INNOSETUP: &[u8] = include_bytes!("../tests/fixtures/innosetup/innosetup-6.3.3.exe");
     const REAL_EROFS: &[u8] = include_bytes!("../tests/fixtures/erofs/lzma-compact-mixed.erofs");
