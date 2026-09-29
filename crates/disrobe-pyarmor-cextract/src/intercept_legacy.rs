@@ -31,6 +31,11 @@ thread_local! {
     static LEGACY_GUARD: Cell<bool> = const { Cell::new(false) };
 }
 
+#[expect(
+    unsafe_code,
+    reason = "installed only through PyEval_SetProfile, which calls it with the GIL held and frame \
+              a borrowed frame object valid for the call; a null frame is ignored"
+)]
 unsafe extern "C" fn profile_callback(
     _obj: *mut PyObject,
     frame: *mut PyObject,
@@ -67,6 +72,12 @@ unsafe extern "C" fn profile_callback(
     0
 }
 
+#[expect(
+    unsafe_code,
+    reason = "GetModuleHandleA and GetProcAddress receive NUL-terminated names, and a non-null \
+              PyEval_SetProfile address from a loaded CPython DLL has the PyEvalSetProfileFn \
+              signature CPython exports"
+)]
 #[cfg(target_os = "windows")]
 fn resolve_setprofile() -> Option<PyEvalSetProfileFn> {
     use core::ffi::CStr;
@@ -119,6 +130,12 @@ fn resolve_setprofile() -> Option<PyEvalSetProfileFn> {
     None
 }
 
+#[expect(
+    unsafe_code,
+    reason = "dlsym receives RTLD_DEFAULT and a NUL-terminated name, and a non-null \
+              PyEval_SetProfile address from the loaded CPython runtime has the PyEvalSetProfileFn \
+              signature CPython exports"
+)]
 #[cfg(not(target_os = "windows"))]
 fn resolve_setprofile() -> Option<PyEvalSetProfileFn> {
     use core::ffi::CStr;
@@ -139,6 +156,11 @@ fn resolve_setprofile() -> Option<PyEvalSetProfileFn> {
     Some(unsafe { core::mem::transmute::<*mut c_void, PyEvalSetProfileFn>(p) })
 }
 
+#[expect(
+    unsafe_code,
+    reason = "setprofile is CPython's PyEval_SetProfile, called from Python-invoked code that \
+              holds the GIL, with a Py_tracefunc callback and a null argument object"
+)]
 pub(crate) fn install(buffer: &'static CaptureBuffer) -> Result<()> {
     if INSTALLED_FLAG.load(Ordering::SeqCst) {
         return Err(CextractError::AlreadyInstalled);
@@ -160,6 +182,11 @@ pub(crate) fn install(buffer: &'static CaptureBuffer) -> Result<()> {
     Ok(())
 }
 
+#[expect(
+    unsafe_code,
+    reason = "setprofile is CPython's PyEval_SetProfile, called from Python-invoked code that \
+              holds the GIL, to clear the callback"
+)]
 pub(crate) fn uninstall() -> Result<()> {
     if !INSTALLED_FLAG.swap(false, Ordering::SeqCst) {
         return Err(CextractError::NotInstalled);

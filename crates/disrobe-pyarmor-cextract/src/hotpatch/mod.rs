@@ -75,6 +75,12 @@ pub(crate) fn clear_trampoline() -> Result<()> {
     Ok(())
 }
 
+#[expect(
+    unsafe_code,
+    reason = "CPython reaches it through the patched PyEval_EvalCode entry with the GIL held and \
+              code a borrowed code object checked non-null, and trampoline runs the saved prologue \
+              before jumping back into PyEval_EvalCode with the same arguments"
+)]
 pub(crate) extern "C" fn evaluate_intercept(
     code: *mut PyObject,
     globals: *mut PyObject,

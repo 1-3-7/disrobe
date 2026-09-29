@@ -1,4 +1,5 @@
 #![deny(unreachable_pub)]
+#![deny(unsafe_code)]
 #![allow(clippy::needless_pass_by_value, clippy::redundant_pub_crate)]
 mod capture;
 mod error;

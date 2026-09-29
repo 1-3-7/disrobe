@@ -1,7 +1,7 @@
 use core::ffi::{CStr, c_void};
 use core::ptr;
 
-use windows_sys::Win32::Foundation::{GetLastError, HMODULE};
+use windows_sys::Win32::Foundation::HMODULE;
 use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
 use windows_sys::Win32::System::Memory::{
     MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE,
@@ -26,6 +26,11 @@ const PYTHON_DLL_CANDIDATES: &[&[u8]] = &[
     b"python3.dll\0",
 ];
 
+#[expect(
+    unsafe_code,
+    reason = "GetModuleHandleA and GetProcAddress receive NUL-terminated names and a module handle \
+              GetModuleHandleA returned, and only the resolved address leaves this function"
+)]
 fn resolve_pyeval_evalcode() -> Result<usize> {
     let proc_name: &CStr = c"PyEval_EvalCode";
     for needle in PYTHON_DLL_CANDIDATES {
@@ -55,6 +60,11 @@ fn resolve_pyeval_evalcode() -> Result<usize> {
     })
 }
 
+#[expect(
+    unsafe_code,
+    reason = "addr names the resolved PyEval_EvalCode entry inside a loaded module image, and \
+              VirtualProtect writes the old protection into a live local"
+)]
 fn make_rwx(addr: usize, size: usize) -> Result<u32> {
     let mut old: PAGE_PROTECTION_FLAGS = 0;
     let ok: i32 = unsafe {
@@ -66,23 +76,28 @@ fn make_rwx(addr: usize, size: usize) -> Result<u32> {
         )
     };
     if ok == 0 {
-        let last: u32 = unsafe { GetLastError() };
+        let last: std::io::Error = std::io::Error::last_os_error();
         return Err(CextractError::HotpatchFailed {
             stage: "virtual-protect-rwx",
-            reason: format!("VirtualProtect RWX failed: GetLastError={last}"),
+            reason: format!("VirtualProtect RWX failed: {last}"),
         });
     }
     Ok(old)
 }
 
+#[expect(
+    unsafe_code,
+    reason = "the range and old protection are the ones make_rwx recorded, and VirtualProtect \
+              writes the previous protection into a live local"
+)]
 fn restore_protection(addr: usize, size: usize, old: u32) -> Result<()> {
     let mut prev: PAGE_PROTECTION_FLAGS = 0;
     let ok: i32 = unsafe { VirtualProtect(addr as *mut c_void, size, old, &raw mut prev) };
     if ok == 0 {
-        let last: u32 = unsafe { GetLastError() };
+        let last: std::io::Error = std::io::Error::last_os_error();
         return Err(CextractError::HotpatchFailed {
             stage: "virtual-protect-restore",
-            reason: format!("VirtualProtect restore failed: GetLastError={last}"),
+            reason: format!("VirtualProtect restore failed: {last}"),
         });
     }
     Ok(())
@@ -90,6 +105,11 @@ fn restore_protection(addr: usize, size: usize, old: u32) -> Result<()> {
 
 const TRAMPOLINE_SIZE: usize = 4096;
 
+#[expect(
+    unsafe_code,
+    reason = "VirtualAlloc with a null base only reserves and commits a fresh private region, \
+              whose address is returned without a dereference"
+)]
 fn allocate_trampoline() -> Result<usize> {
     let p: *mut c_void = unsafe {
         VirtualAlloc(
@@ -100,15 +120,20 @@ fn allocate_trampoline() -> Result<usize> {
         )
     };
     if p.is_null() {
-        let last: u32 = unsafe { GetLastError() };
+        let last: std::io::Error = std::io::Error::last_os_error();
         return Err(CextractError::HotpatchFailed {
             stage: "virtual-alloc",
-            reason: format!("VirtualAlloc({TRAMPOLINE_SIZE}) failed: GetLastError={last}"),
+            reason: format!("VirtualAlloc({TRAMPOLINE_SIZE}) failed: {last}"),
         });
     }
     Ok(p as usize)
 }
 
+#[expect(
+    unsafe_code,
+    reason = "addr is the TRAMPOLINE_SIZE region allocate_trampoline committed, and VirtualProtect \
+              writes the old protection into a live local"
+)]
 fn finalize_trampoline_executable(addr: usize) -> Result<()> {
     let mut old: PAGE_PROTECTION_FLAGS = 0;
     let ok: i32 = unsafe {
@@ -120,27 +145,39 @@ fn finalize_trampoline_executable(addr: usize) -> Result<()> {
         )
     };
     if ok == 0 {
-        let last: u32 = unsafe { GetLastError() };
+        let last: std::io::Error = std::io::Error::last_os_error();
         return Err(CextractError::HotpatchFailed {
             stage: "trampoline-finalize",
-            reason: format!("VirtualProtect EXECUTE_READ failed: GetLastError={last}"),
+            reason: format!("VirtualProtect EXECUTE_READ failed: {last}"),
         });
     }
     Ok(())
 }
 
+#[expect(
+    unsafe_code,
+    reason = "addr is the base of a region VirtualAlloc reserved, released once with size 0 as \
+              MEM_RELEASE requires"
+)]
 fn free_trampoline(addr: usize) -> Result<()> {
     let ok: i32 = unsafe { VirtualFree(addr as *mut c_void, 0, MEM_RELEASE) };
     if ok == 0 {
-        let last: u32 = unsafe { GetLastError() };
+        let last: std::io::Error = std::io::Error::last_os_error();
         return Err(CextractError::HotpatchFailed {
             stage: "virtual-free",
-            reason: format!("VirtualFree failed: GetLastError={last}"),
+            reason: format!("VirtualFree failed: {last}"),
         });
     }
     Ok(())
 }
 
+#[expect(
+    unsafe_code,
+    reason = "PyEval_EvalCode's entry is mapped code with MAX_PROLOGUE_SCAN readable bytes, the \
+              trampoline is a fresh TRAMPOLINE_SIZE writable region that becomes a \
+              PyEvalEvalCodeFn only once it holds the copied whole-instruction prologue and a jump \
+              back and is executable, and the entry is written only while writable"
+)]
 pub(crate) fn install() -> Result<HotpatchHandle> {
     let target_addr: usize = resolve_pyeval_evalcode()?;
     let prologue_slice: &[u8] =
@@ -202,6 +239,11 @@ pub(crate) fn install() -> Result<HotpatchHandle> {
     })
 }
 
+#[expect(
+    unsafe_code,
+    reason = "install patched exactly saved_prologue_len bytes at target_addr, and that range is \
+              made writable before the saved prologue is copied back"
+)]
 pub(crate) fn uninstall(handle: HotpatchHandle) -> Result<()> {
     let old: u32 = make_rwx(handle.target_addr, handle.saved_prologue_len)?;
     let entry_buf: &mut [u8] = unsafe {
@@ -214,6 +256,12 @@ pub(crate) fn uninstall(handle: HotpatchHandle) -> Result<()> {
     Ok(())
 }
 
+#[expect(
+    unsafe_code,
+    reason = "FlushInstructionCache and GetCurrentProcess are declared with their kernel32 \
+              signatures, and the flush covers a code range this module just wrote in the current \
+              process"
+)]
 fn flush_instruction_cache(addr: usize, size: usize) -> Result<()> {
     unsafe extern "system" {
         fn FlushInstructionCache(
@@ -226,10 +274,10 @@ fn flush_instruction_cache(addr: usize, size: usize) -> Result<()> {
     let proc: isize = unsafe { GetCurrentProcess() };
     let ok: i32 = unsafe { FlushInstructionCache(proc, addr as *const c_void, size) };
     if ok == 0 {
-        let last: u32 = unsafe { GetLastError() };
+        let last: std::io::Error = std::io::Error::last_os_error();
         return Err(CextractError::HotpatchFailed {
             stage: "flush-icache",
-            reason: format!("FlushInstructionCache failed: GetLastError={last}"),
+            reason: format!("FlushInstructionCache failed: {last}"),
         });
     }
     Ok(())

@@ -10,6 +10,11 @@ use super::{
 
 const TRAMPOLINE_SIZE: usize = 4096;
 
+#[expect(
+    unsafe_code,
+    reason = "dlsym receives RTLD_DEFAULT and a NUL-terminated name, and only the resolved address \
+              leaves this function"
+)]
 fn resolve_pyeval_evalcode() -> Result<usize> {
     let proc_name: &CStr = c"PyEval_EvalCode";
     let p: *mut c_void = unsafe { libc::dlsym(libc::RTLD_DEFAULT, proc_name.as_ptr()) };
@@ -22,6 +27,7 @@ fn resolve_pyeval_evalcode() -> Result<usize> {
     Ok(p as usize)
 }
 
+#[expect(unsafe_code, reason = "sysconf takes an integer name and no pointers")]
 fn page_size() -> usize {
     let sz: i64 = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
     if sz <= 0 { 4096usize } else { sz as usize }
@@ -31,6 +37,11 @@ const fn page_align_down(addr: usize, page: usize) -> usize {
     addr & !(page - 1)
 }
 
+#[expect(
+    unsafe_code,
+    reason = "the page-aligned span covers the PyEval_EvalCode entry range the caller names, which \
+              lies in the mapped CPython text"
+)]
 fn mprotect_range(addr: usize, len: usize, prot: c_int) -> Result<()> {
     let page: usize = page_size();
     let base: usize = page_align_down(addr, page);
@@ -62,6 +73,11 @@ fn restore_rx(addr: usize, len: usize) -> Result<()> {
     mprotect_range(addr, len, libc::PROT_READ | libc::PROT_EXEC)
 }
 
+#[expect(
+    unsafe_code,
+    reason = "mmap with a null hint, MAP_PRIVATE | MAP_ANON and fd -1 only creates a fresh \
+              mapping, whose address is returned without a dereference"
+)]
 fn allocate_trampoline() -> Result<usize> {
     let p: *mut c_void = unsafe {
         libc::mmap(
@@ -85,6 +101,10 @@ fn allocate_trampoline() -> Result<usize> {
     Ok(p as usize)
 }
 
+#[expect(
+    unsafe_code,
+    reason = "addr is the TRAMPOLINE_SIZE mapping allocate_trampoline created"
+)]
 fn finalize_trampoline_executable(addr: usize) -> Result<()> {
     let rc: c_int = unsafe {
         libc::mprotect(
@@ -105,6 +125,10 @@ fn finalize_trampoline_executable(addr: usize) -> Result<()> {
     Ok(())
 }
 
+#[expect(
+    unsafe_code,
+    reason = "addr is the TRAMPOLINE_SIZE mapping allocate_trampoline created, unmapped once"
+)]
 fn free_trampoline(addr: usize) -> Result<()> {
     let rc: c_int = unsafe { libc::munmap(addr as *mut c_void, TRAMPOLINE_SIZE) };
     if rc != 0 {
@@ -119,6 +143,13 @@ fn free_trampoline(addr: usize) -> Result<()> {
     Ok(())
 }
 
+#[expect(
+    unsafe_code,
+    reason = "PyEval_EvalCode's entry is mapped code with MAX_PROLOGUE_SCAN readable bytes, the \
+              trampoline is a fresh TRAMPOLINE_SIZE writable region that becomes a \
+              PyEvalEvalCodeFn only once it holds the copied whole-instruction prologue and a jump \
+              back and is executable, and the entry is written only while writable"
+)]
 pub(crate) fn install() -> Result<HotpatchHandle> {
     let target_addr: usize = resolve_pyeval_evalcode()?;
     let prologue_slice: &[u8] =
@@ -179,6 +210,11 @@ pub(crate) fn install() -> Result<HotpatchHandle> {
     })
 }
 
+#[expect(
+    unsafe_code,
+    reason = "install patched exactly saved_prologue_len bytes at target_addr, and that range is \
+              made writable before the saved prologue is copied back"
+)]
 pub(crate) fn uninstall(handle: HotpatchHandle) -> Result<()> {
     make_rwx(handle.target_addr, handle.saved_prologue_len)?;
     let entry_buf: &mut [u8] = unsafe {
