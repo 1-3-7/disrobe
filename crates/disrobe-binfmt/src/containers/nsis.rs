@@ -252,9 +252,10 @@ fn try_methods_streaming(
         return Ok((NsisCompression::Lzma, out, region.len()));
     }
     if is_nsis_bzip2_framed(region)
-        && let Ok((out, consumed)) = super::nsis_bzip2::decompress_counting(region, MAX_SOLID_BYTES)
+        && let Ok(out) = super::nsis_bzip2::decompress_prefix(region, expected, MAX_SOLID_BYTES)
+        && out.len() >= expected
     {
-        return Ok((NsisCompression::Bzip2, out, consumed));
+        return Ok((NsisCompression::Bzip2, out, region.len()));
     }
     if let Ok(out) = bzip2_decode(region, expected as u64) {
         return Ok((NsisCompression::Bzip2, out, region.len()));

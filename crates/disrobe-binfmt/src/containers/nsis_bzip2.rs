@@ -502,6 +502,19 @@ pub fn decompress(input: &[u8], cap: u64) -> Result<Vec<u8>> {
     Ok(decompress_counting(input, cap)?.0)
 }
 
+pub fn decompress_prefix(input: &[u8], want: usize, cap: u64) -> Result<Vec<u8>> {
+    let cap_usize: usize =
+        usize::try_from(cap.min(u64::from(u32::MAX) * 4)).map_or(usize::MAX, |value: usize| value);
+    let mut reader: BitReader<'_> = BitReader::new(input);
+    let mut out: Vec<u8> = Vec::new();
+    while out.len() < want
+        && let Some(mut block) = read_block(&mut reader)?
+    {
+        emit_block(&mut block, &mut out, cap_usize)?;
+    }
+    Ok(out)
+}
+
 pub fn decompress_counting(input: &[u8], cap: u64) -> Result<(Vec<u8>, usize)> {
     let cap_usize: usize =
         usize::try_from(cap.min(u64::from(u32::MAX) * 4)).map_or(usize::MAX, |value: usize| value);
@@ -527,6 +540,18 @@ mod tests {
         0x16, 0x85, 0xd4, 0xbf, 0x8b, 0x62, 0xd0, 0xb2, 0x59, 0x2e, 0x84, 0x79, 0x2f, 0x25, 0xfe,
         0x2e,
     ];
+
+    #[test]
+    fn a_prefix_decode_stops_at_the_block_that_reaches_the_wanted_length() {
+        assert_eq!(
+            decompress_prefix(&FILE_STREAM, 10, 1 << 20).expect("prefix"),
+            expected_plain()
+        );
+        assert_eq!(
+            decompress_prefix(&FILE_STREAM, 0, 1 << 20).expect("empty prefix"),
+            Vec::<u8>::new()
+        );
+    }
 
     fn expected_plain() -> Vec<u8> {
         b"The quick brown fox jumps over the lazy dog. "
