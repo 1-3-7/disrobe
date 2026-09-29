@@ -685,7 +685,6 @@ fn extract_handler_code(segments: &[Segment], bitness: Bitness, va: u64) -> Opti
     let mut insn: Instruction = Instruction::default();
     let mut end_off: usize = 0;
     while decoder.can_decode() {
-        let start: usize = (decoder.ip() - va) as usize;
         decoder.decode_out(&mut insn);
         if insn.is_invalid() {
             break;
@@ -702,7 +701,6 @@ fn extract_handler_code(segments: &[Segment], bitness: Bitness, va: u64) -> Opti
         if end_off >= window.len() {
             break;
         }
-        let _ = start;
     }
     if end_off == 0 {
         return None;

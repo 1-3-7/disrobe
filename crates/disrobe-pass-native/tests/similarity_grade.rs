@@ -665,7 +665,7 @@ fn a_deliberately_wrong_matching_is_graded_as_wrong() {
         );
     }
 
-    let honest: Vec<Emission> = (0..4_u64)
+    let correct: Vec<Emission> = (0..4_u64)
         .map(|index: u64| Emission {
             subject: 0x1000 + index * 0x40,
             outcome: Outcome::Paired {
@@ -674,11 +674,11 @@ fn a_deliberately_wrong_matching_is_graded_as_wrong() {
             },
         })
         .collect();
-    let straight: Grade = grade::grade(&honest, &table);
+    let straight: Grade = grade::grade(&correct, &table);
     assert_eq!(straight.overall.recovered, 4);
     assert_eq!(straight.overall.wrong, 0);
 
-    let wrong: Vec<Emission> = rotated(&honest);
+    let wrong: Vec<Emission> = rotated(&correct);
     let broken: Grade = grade::grade(&wrong, &table);
     assert_eq!(
         broken.overall.wrong, 4,

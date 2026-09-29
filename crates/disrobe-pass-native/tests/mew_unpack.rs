@@ -372,7 +372,7 @@ fn run_byte_recovery_test(name: &str, floor: f64) {
     assert_eq!(
         out.recovery,
         MewRecovery::Decompressed,
-        "{name}: a decoded stream must carry the honest Decompressed verdict",
+        "{name}: a decoded stream must carry the Decompressed verdict",
     );
     assert!(
         !out.raw_image.is_empty(),
@@ -395,7 +395,7 @@ fn run_byte_recovery_test(name: &str, floor: f64) {
     );
     assert!(
         recovery_pct >= floor,
-        "{name}: REAL byte-recovery {recovery_pct:.2}% below honest floor {floor:.1}%",
+        "{name}: REAL byte-recovery {recovery_pct:.2}% below its floor {floor:.1}%",
     );
 }
 
@@ -473,7 +473,7 @@ fn run_va_content_recovery_test(name: &str, content_floor: f64, rdata_floor: f64
     );
     assert!(
         report.content_recovery_pct() >= content_floor,
-        "{name}: VA-aligned content recovery {:.2}% below honest floor {content_floor:.1}% \
+        "{name}: VA-aligned content recovery {:.2}% below its floor {content_floor:.1}% \
          (this is the TRUE recovery; the raw-window oracle under-reports because the decoded \
           image is a section-aligned memory image, not a file image)",
         report.content_recovery_pct(),

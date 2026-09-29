@@ -160,7 +160,7 @@ fn detect_and_parse_real_kkrunchy_k7_fixture() {
         out.note.contains("stub_emu")
             && out.note.contains("OEP")
             && out.note.contains("context-mixing"),
-        "note must honestly state the k7 image is reconstructed by replaying the real depacker stub through \
+        "note must state the k7 image is reconstructed by replaying the real depacker stub through \
          the stub_emu interpreter to the OEP, never a fabricated decode (got: {})",
         out.note,
     );
@@ -411,7 +411,7 @@ fn test_kkrunchy_hello_byte_recovery() {
                 .any(|w: &[u8]| w == marker),
             "recovered image must contain the verbatim import name {:?} that the k7 depacker decoded \
              from the REAL range stream into its staging descriptor: this is the anti-circular witness \
-             that the image was genuinely decoded, not echoed from the packed input",
+             that the image was decoded, not echoed from the packed input",
             std::str::from_utf8(marker).unwrap_or("<bin>"),
         );
         let in_packed: bool = packed.windows(marker.len()).any(|w: &[u8]| w == marker);

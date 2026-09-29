@@ -48,7 +48,7 @@ fn genuine_comparison_is_not_folded() {
     assert_eq!(
         result.result,
         OpaqueResult::DataDependent,
-        "eax < 100 is genuinely data-dependent and must never be folded"
+        "eax < 100 is data-dependent and must never be folded"
     );
     assert!(result.dead_target.is_none());
 }

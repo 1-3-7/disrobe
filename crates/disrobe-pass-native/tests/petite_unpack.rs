@@ -126,7 +126,7 @@ fn test_petite_hello32_round_trip() {
         "petite hello32 is routed through the phase-2 emulated memory image with an \
          original 4-section layout (.text/.rdata/.data/.reloc) reconstructed structurally \
          from the image: whole-file byte-diff vs hello.original.exe must stay at/below the \
-         genuinely-achieved 6.03% (the discarded .reloc page is loader-rebuilt and \
+         achieved 6.03% (the discarded .reloc page is loader-rebuilt and \
          unreproducible); got {diff_pct:.2}%"
     );
 }
@@ -172,7 +172,7 @@ fn test_petite_hello32_byte_recovery() {
     );
     assert!(
         match_pct_x100 >= 9400,
-        "byte-match against hello.original.exe must hold at/above the genuinely-achieved 94.50% \
+        "byte-match against hello.original.exe must hold at/above the achieved 94.50% \
          (content sections .text/.rdata/.data recover at ~97.8% per the phase-2 beats-static \
          test; the discarded .reloc page is loader-rebuilt); got {:.2}%",
         match_pct_x100 as f64 / 100.0

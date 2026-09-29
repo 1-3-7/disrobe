@@ -199,7 +199,7 @@ fn plain_linear_function_is_not_flattened() {
     assert_eq!(
         unflatten(64, BASE, &bytes, BASE),
         CffOutcome::NotFlattened,
-        "an honest linear function must not be misreported as flattened"
+        "a linear function must not be misreported as flattened"
     );
 }
 

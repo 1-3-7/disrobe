@@ -298,7 +298,6 @@ fn synthesize_structural_pe(
             .copy_from_slice(&packed_bytes[mpress2_src..mpress2_src + mpress2_copy_len]);
     }
     let section_names: Vec<String> = vec!["mp1.lzmat".to_owned(), "mp2.stub".to_owned()];
-    let _ = info;
     Ok((out, section_names))
 }
 

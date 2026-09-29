@@ -83,7 +83,7 @@ fn genuinely_unconstrained_register_across_a_jump_stays_data_dependent() {
     assert_eq!(
         result.result,
         OpaqueResult::DataDependent,
-        "eax is an unconstrained parameter, so ecx == 5 is genuinely data-dependent"
+        "eax is an unconstrained parameter, so ecx == 5 is data-dependent"
     );
     assert!(result.dead_target.is_none());
 }

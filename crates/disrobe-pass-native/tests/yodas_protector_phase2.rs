@@ -116,7 +116,7 @@ fn yp_int3_sled_is_bypassed_but_content_cipher_stays_walled() {
         );
         assert_eq!(
             out.content_bytes_mutated_by_stub, 0,
-            "{packed_n}: the honest claim is that the .text/.rdata/.data RC4 decryptor never runs \
+            "{packed_n}: the claim is that the .text/.rdata/.data RC4 decryptor never runs \
              before the anti-emulation gate; a nonzero mutation count would mean the wall narrative \
              is wrong and must be re-measured, not asserted away",
         );
@@ -229,7 +229,7 @@ fn yp_forced_rc4_replay_with_derived_key_yields_garbage_not_recovery() {
         assert!(
             replay.post_decrypt_mean_entropy > 7.5,
             "{packed_n}: after the forced RC4 decrypt the sections stay near-maximal entropy \
-             ({:.2}), confirming no plaintext/structure emerged - the decrypt is honestly refuted, \
+             ({:.2}), confirming no plaintext/structure emerged - the decrypt is refuted, \
              not faked",
             replay.post_decrypt_mean_entropy,
         );
@@ -253,7 +253,7 @@ fn yp_encrypted_content_is_not_falsely_claimed_recovered() {
         assert!(
             text.recovery_pct() < 20.0,
             "{packed_n}: .text is stream-encrypted behind the .yP stub; static recovery must stay \
-             low and honest (no fabricated decryption), got {:.2}%",
+             low (no fabricated decryption), got {:.2}%",
             text.recovery_pct(),
         );
         let rsrc: &GranuleRecovery = report

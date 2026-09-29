@@ -1435,7 +1435,6 @@ fn build_blocks(
     let mut blocks: Vec<EBlock> = Vec::with_capacity(block_count + 1);
     let mut i: usize = 0;
     while i < len {
-        let start: usize = i;
         let mut stmts: Vec<CStmt> = Vec::new();
         loop {
             match &effects[i] {
@@ -1480,7 +1479,6 @@ fn build_blocks(
             }
             SlotEffect::Stmt(_) | SlotEffect::Nop => ETerm::Jump(resolve_slot(i + 1)),
         };
-        let _ = start;
         blocks.push(EBlock { stmts, term });
         i += 1;
     }

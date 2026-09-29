@@ -141,7 +141,7 @@ mod tests {
         for c in &report.carved_code {
             assert!(
                 c.classic_decode_pct.abs() < f64::EPSILON,
-                "PEC/LZMA classic decode must be honestly 0",
+                "PEC/LZMA classic decode must be 0",
             );
         }
         assert!(

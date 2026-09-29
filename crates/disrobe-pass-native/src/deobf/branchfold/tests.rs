@@ -183,7 +183,7 @@ fn genuine_comparison_is_never_folded() {
 
     assert!(
         fold_block(64, BASE, block).is_none(),
-        "eax < 100 is genuinely data-dependent and must never be folded away"
+        "eax < 100 is data-dependent and must never be folded away"
     );
 }
 

@@ -251,11 +251,11 @@ fn measures_precision_and_recall_against_real_clang_compiled_ground_truth() {
 
         assert_eq!(
             fast.false_positive, 0,
-            "{opt_level}: the fast pattern-match pass must never claim a genuinely data-dependent branch is opaque"
+            "{opt_level}: the fast pattern-match pass must never claim a data-dependent branch is opaque"
         );
         assert_eq!(
             deep.false_positive, 0,
-            "{opt_level}: the composed backward DSE+SMT pass must never claim a genuinely data-dependent branch is opaque"
+            "{opt_level}: the composed backward DSE+SMT pass must never claim a data-dependent branch is opaque"
         );
         assert!(
             deep.true_positive >= fast.true_positive,

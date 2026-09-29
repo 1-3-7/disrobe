@@ -446,7 +446,7 @@ mod tests {
     #[test]
     fn peb_ldr_chain_finds_kernel32_by_base_name() {
         let mut cpu: Cpu = Cpu::new(CpuMode::Bits32);
-        let env: SyntheticWindows = install_synthetic_windows(&mut cpu).unwrap();
+        install_synthetic_windows(&mut cpu).unwrap();
 
         let peb: u64 = u64::from(cpu.mem.read_u32(TEB_BASE + TEB_PEB_OFFSET).unwrap());
         assert_eq!(peb, PEB_BASE);
@@ -472,7 +472,6 @@ mod tests {
             found_kernel32,
             "kernel32.dll must be reachable via InLoadOrderModuleList"
         );
-        let _ = env;
     }
 
     #[test]

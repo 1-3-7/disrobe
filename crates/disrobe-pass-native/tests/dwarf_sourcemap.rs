@@ -203,7 +203,7 @@ fn split_dwarf_resolver_detects_companion_sections_when_present() {
     let zig: TypeReconstruction = reconstruct_dwarf_types(ZIG_ELF).expect("zig reconstruct");
     assert!(
         !nim.split_dwarf.has_skeleton_units && !zig.split_dwarf.has_skeleton_units,
-        "neither fixture is a split-DWARF skeleton; the resolver must report that honestly",
+        "neither fixture is a split-DWARF skeleton; the resolver must report that",
     );
     assert!(
         !zig.split_dwarf.has_addr_index,
@@ -219,6 +219,6 @@ fn rejects_object_without_debug_sections() {
     let err: Error = synthesize_dwarf_sourcemap(&minimal_pe).unwrap_err();
     assert!(
         matches!(err, Error::UnknownFormat | Error::SignatureDb(_)),
-        "a non-DWARF / unparsable object must surface an honest error, never a fabricated map",
+        "a non-DWARF / unparsable object must surface an error, never a fabricated map",
     );
 }

@@ -3826,11 +3826,6 @@ mod tests {
 
     #[test]
     fn stripped_elf_resolves_the_dispatch_jump_table() {
-        let Some(unstripped): Option<Vec<u8>> =
-            corpus_bytes("native/discovery/disc.unstripped.elf")
-        else {
-            return;
-        };
         let stripped: Vec<u8> =
             corpus_bytes("native/discovery/disc.stripped.elf").expect("stripped twin present");
 
@@ -3875,7 +3870,6 @@ mod tests {
             "expected several case targets, got {:?}",
             hit.targets
         );
-        let _ = unstripped;
     }
 
     #[test]

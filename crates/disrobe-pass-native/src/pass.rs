@@ -906,7 +906,6 @@ fn basic_blocks<'a>(bits: DeobfBits, section: &'a CodeSection) -> Vec<CodeBlock<
     let mut block_start_off: usize = 0;
     let mut insn: Instruction = Instruction::default();
     while decoder.can_decode() {
-        let off_before: usize = decoder.position();
         decoder.decode_out(&mut insn);
         if insn.is_invalid() {
             block_start_off = decoder.position();
@@ -930,7 +929,6 @@ fn basic_blocks<'a>(bits: DeobfBits, section: &'a CodeSection) -> Vec<CodeBlock<
             }
             block_start_off = end_off;
         }
-        let _ = off_before;
         if blocks.len() >= DEOBF_MAX_FINDINGS * 4 {
             break;
         }

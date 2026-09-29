@@ -231,7 +231,7 @@ fn emulate_once(
 
     let sp: u64 = EMU_STACK_BASE + EMU_STACK_SIZE - 0x1000;
     cpu.regs.set(Reg::Rsp, sp);
-    seed_arguments(&mut cpu, mode, convention, buf_addr, output_addr, span, sp)?;
+    seed_arguments(&mut cpu, convention, buf_addr, output_addr, span, sp)?;
     cpu.regs.rip = entry;
 
     cpu.mem.enable_write_log();
@@ -243,7 +243,6 @@ fn emulate_once(
 
 fn seed_arguments(
     cpu: &mut Cpu,
-    mode: CpuMode,
     convention: ArgConvention,
     buf_addr: u64,
     output_addr: u64,
@@ -281,7 +280,6 @@ fn seed_arguments(
             cpu.regs.set(Reg::Rsp, ret_slot);
         }
     }
-    let _ = mode;
     Ok(())
 }
 

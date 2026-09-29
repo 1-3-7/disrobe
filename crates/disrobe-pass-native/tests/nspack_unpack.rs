@@ -70,7 +70,7 @@ fn assert_basic_report_shape(report: &NspackUnpackReport, packed_size: usize, la
     );
     assert!(
         !report.limitation_note.is_empty(),
-        "{label}: limitation_note must be present (honest disclosure)",
+        "{label}: limitation_note must be present (the limit is disclosed)",
     );
 }
 

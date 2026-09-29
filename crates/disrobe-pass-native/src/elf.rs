@@ -976,7 +976,7 @@ fn read_dynamic_entries(
         ElfClass::Elf32 => 8,
     };
     let Some(start): Option<usize> =
-        file_offset_for(bytes, header, segments, dynamic.vaddr, dynamic.offset)
+        file_offset_for(bytes, segments, dynamic.vaddr, dynamic.offset)
     else {
         return out;
     };
@@ -1029,7 +1029,6 @@ fn lookup(entries: &[(u64, u64)], tag: u64) -> Option<u64> {
 
 fn file_offset_for(
     bytes: &[u8],
-    header: &Header,
     segments: &[ProgramHeader],
     vaddr: u64,
     self_offset: u64,
@@ -1039,7 +1038,6 @@ fn file_offset_for(
         Some(value) => value,
         None => usize::try_from(self_offset).ok()?,
     };
-    let _ = header;
     (chosen <= bytes.len()).then_some(chosen)
 }
 

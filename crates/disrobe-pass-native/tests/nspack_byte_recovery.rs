@@ -62,7 +62,7 @@ fn assert_recovery(label: &str, packed: &str, orig: &str, whole_floor: f64, cont
     };
     assert!(
         whole_pct >= whole_floor,
-        "{label}: HONEST whole-image byte-recovery must be >= {whole_floor:.1}%; got {whole_pct:.2}%",
+        "{label}: whole-image byte-recovery must be >= {whole_floor:.1}%; got {whole_pct:.2}%",
     );
     assert!(
         content_pct >= content_floor,

@@ -281,7 +281,7 @@ fn abi_inference_matches_compiler_lowering() {
             s(CallingConvention::SysV64, Some(2), 2, ReturnKind::Value),
         );
     } else {
-        println!("SysV x86-64 leg could not be built: skipped honestly");
+        println!("SysV x86-64 leg could not be built: skipped");
     }
 
     let ms_obj: PathBuf = dir.join("ms.o");
@@ -301,7 +301,7 @@ fn abi_inference_matches_compiler_lowering() {
         grade(&funcs, 64, "f_long_two", m(Some(2), 2, ReturnKind::Value));
         grade(&funcs, 64, "f_branch", m(Some(2), 2, ReturnKind::Value));
     } else {
-        println!("MS x64 leg could not be built: skipped honestly");
+        println!("MS x64 leg could not be built: skipped");
     }
 
     let src32: PathBuf = write_src(dir, "fx32.c", FIXTURES_32);
@@ -355,7 +355,7 @@ fn abi_inference_matches_compiler_lowering() {
             },
         );
     } else {
-        println!("x86 32-bit leg could not be built on this clang: skipped honestly");
+        println!("x86 32-bit leg could not be built on this clang: skipped");
     }
 
     let tc_src: PathBuf = write_src(dir, "tc.c", FIXTURES_THISCALL);
@@ -373,7 +373,7 @@ fn abi_inference_matches_compiler_lowering() {
         grade(&funcs, 32, "tc_add", t(2));
         grade(&funcs, 32, "tc_add2", t(3));
     } else {
-        println!("x86 thiscall leg could not be built on this clang: skipped honestly");
+        println!("x86 thiscall leg could not be built on this clang: skipped");
     }
 
     let vc32_src: PathBuf = write_src(dir, "vc32.c", FIXTURES_VC32);
@@ -398,7 +398,7 @@ fn abi_inference_matches_compiler_lowering() {
         grade(&funcs, 32, "vc_if", v(2));
         grade(&funcs, 32, "vc_iif", v(3));
     } else {
-        println!("x86 vectorcall leg could not be built on this clang: skipped honestly");
+        println!("x86 vectorcall leg could not be built on this clang: skipped");
     }
 
     let vc64_src: PathBuf = write_src(dir, "vc64.c", FIXTURES_VC64);
@@ -419,7 +419,7 @@ fn abi_inference_matches_compiler_lowering() {
             },
         );
     } else {
-        println!("x64 vectorcall leg could not be built on this clang: skipped honestly");
+        println!("x64 vectorcall leg could not be built on this clang: skipped");
     }
 
     assert!(

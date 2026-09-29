@@ -50,7 +50,7 @@ fn pdb_recover_rejects_random_bytes() {
     let err: Error = recover_pdb(&bytes).expect_err("must reject non-pdb container");
     assert!(
         matches!(err, Error::Pdb(_)),
-        "recover_pdb must surface an honest Pdb error on a non-MSF buffer, never a fabricated map",
+        "recover_pdb must surface a Pdb error on a non-MSF buffer, never a fabricated map",
     );
 }
 

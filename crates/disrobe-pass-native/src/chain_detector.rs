@@ -1962,7 +1962,7 @@ mod tests {
         let msg: String = err_text(buf);
         assert!(
             msg.contains("DR-NAT-0909") && msg.contains("grey-zone"),
-            "VMProtect must surface the honest grey-zone detect-and-carve error; got: {msg}",
+            "VMProtect must surface the grey-zone detect-and-carve error; got: {msg}",
         );
         assert!(!msg.contains("no Rust unpacker yet"), "got: {msg}");
     }

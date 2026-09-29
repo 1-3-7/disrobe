@@ -162,7 +162,7 @@ mod tests {
         for block in &report.carved_blocks {
             assert!(
                 block.classic_aplib_decode_pct.abs() < f64::EPSILON,
-                "classic-aPLib decode must be honestly 0 for ASPack's modified dialect",
+                "classic-aPLib decode must be 0 for ASPack's modified dialect",
             );
         }
     }

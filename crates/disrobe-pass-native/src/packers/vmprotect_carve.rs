@@ -317,7 +317,7 @@ mod tests {
         assert!(
             carve.limitation.contains("vm_devirt")
                 && carve.limitation.contains("detect-and-extract"),
-            "carve must honestly point at the generic devirtualizer and frame itself as the carve half",
+            "carve must point at the generic devirtualizer and frame itself as the carve half",
         );
     }
 

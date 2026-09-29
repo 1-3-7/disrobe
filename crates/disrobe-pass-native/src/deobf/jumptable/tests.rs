@@ -2,7 +2,7 @@ use iced_x86::code_asm::{CodeAssembler, dword_ptr, ecx, qword_ptr, rax, rcx};
 use iced_x86::{Decoder, DecoderOptions, Instruction};
 
 use super::*;
-use crate::stub_emu::cpu::{ExitReason, NoopHost};
+use crate::stub_emu::cpu::NoopHost;
 use crate::stub_emu::{Cpu, CpuMode, Perm, Reg};
 
 const IMAGE_BASE: u64 = 0x40_0000;
@@ -238,8 +238,7 @@ fn run_from(image: &[u8], dispatch_va: u64, index: u64) -> (u64, u64) {
     cpu.regs.set(Reg::Rcx, index);
     cpu.regs.rip = dispatch_va;
     let mut host: NoopHost = NoopHost;
-    let exit: ExitReason = cpu.run(&mut host, STEP_CAP).expect("run dispatch");
-    let _ = exit;
+    cpu.run(&mut host, STEP_CAP).expect("run dispatch");
     (cpu.regs.rip, cpu.regs.get(Reg::Rcx))
 }
 
