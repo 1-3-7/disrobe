@@ -195,11 +195,16 @@ pub(crate) fn apply_splice_edits(
     edits: &mut [(core::ops::Range<usize>, Option<String>)],
 ) -> (String, usize) {
     edits.sort_by_key(|edit: &(core::ops::Range<usize>, Option<String>)| edit.0.start);
+    let literals: Vec<core::ops::Range<usize>> = literal_spans(source);
     let mut out: String = String::with_capacity(source.len());
     let mut cursor: usize = 0;
     let mut applied: usize = 0;
     for (range, replacement) in edits.iter() {
-        if range.start < cursor || range.end < range.start || !source.is_char_boundary(range.end) {
+        if range.start < cursor
+            || range.end < range.start
+            || !source.is_char_boundary(range.end)
+            || cuts_a_literal(range, &literals)
+        {
             continue;
         }
         let Some(kept): Option<&str> = source.get(cursor..range.start) else {
@@ -214,6 +219,62 @@ pub(crate) fn apply_splice_edits(
     }
     out.push_str(source.get(cursor..).unwrap_or_default());
     (out, applied)
+}
+
+fn cuts_a_literal(edit: &core::ops::Range<usize>, literals: &[core::ops::Range<usize>]) -> bool {
+    let inside = |offset: usize, literal: &core::ops::Range<usize>| {
+        offset > literal.start && offset < literal.end
+    };
+    let first: usize =
+        literals.partition_point(|literal: &core::ops::Range<usize>| literal.end <= edit.start);
+    literals
+        .get(first..)
+        .unwrap_or_default()
+        .iter()
+        .take_while(|literal: &&core::ops::Range<usize>| {
+            literal.start < edit.end.max(edit.start + 1)
+        })
+        .any(|literal: &core::ops::Range<usize>| {
+            inside(edit.start, literal) || inside(edit.end, literal)
+        })
+}
+
+struct LiteralSpans {
+    spans: Vec<core::ops::Range<usize>>,
+}
+
+impl<'a> oxc_ast::Visit<'a> for LiteralSpans {
+    fn visit_string_literal(&mut self, literal: &oxc_ast::ast::StringLiteral<'a>) {
+        self.spans
+            .push(literal.span.start as usize..literal.span.end as usize);
+    }
+
+    fn visit_template_element(&mut self, element: &oxc_ast::ast::TemplateElement<'a>) {
+        self.spans
+            .push(element.span.start as usize..element.span.end as usize);
+    }
+
+    fn visit_reg_exp_literal(&mut self, literal: &oxc_ast::ast::RegExpLiteral<'a>) {
+        self.spans
+            .push(literal.span.start as usize..literal.span.end as usize);
+    }
+}
+
+fn literal_spans(source: &str) -> Vec<core::ops::Range<usize>> {
+    let allocator: oxc_allocator::Allocator = oxc_allocator::Allocator::default();
+    let source_type: oxc_span::SourceType =
+        oxc_span::SourceType::from_path("splice.js").unwrap_or_default();
+    let parsed: oxc_parser::ParserReturn<'_> =
+        oxc_parser::Parser::new(&allocator, source, source_type).parse();
+    if parsed.panicked || !parsed.errors.is_empty() {
+        return Vec::new();
+    }
+    let mut collector: LiteralSpans = LiteralSpans { spans: Vec::new() };
+    oxc_ast::Visit::visit_program(&mut collector, &parsed.program);
+    collector
+        .spans
+        .sort_by_key(|span: &core::ops::Range<usize>| span.start);
+    collector.spans
 }
 
 #[must_use]
@@ -438,6 +499,25 @@ fn find_close(bytes: &[u8], start: usize, open: u8, close: u8) -> Option<usize> 
 #[allow(clippy::panic, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_splice_edit_never_lands_inside_a_string_template_or_regex_literal() {
+        let source: &str = "var a = 'keep me', b = `t${x}pl`, c = /re+x/g; f(a);";
+        let at = |needle: &str| source.find(needle).expect("needle");
+        let mut edits: Vec<(core::ops::Range<usize>, Option<String>)> = vec![
+            (at("me'")..at("me'") + 2, Some("XX".to_owned())),
+            (at("pl`") + 1..at("pl`") + 2, Some("Y".to_owned())),
+            (at("e+x")..at("e+x") + 1, Some("Z".to_owned())),
+            (
+                at("'keep")..at("'keep") + "'keep me'".len(),
+                Some("'whole'".to_owned()),
+            ),
+            (at("f(a)")..at("f(a)") + 1, Some("g".to_owned())),
+        ];
+        let (out, applied): (String, usize) = apply_splice_edits(source, &mut edits);
+        assert_eq!(out, "var a = 'whole', b = `t${x}pl`, c = /re+x/g; g(a);");
+        assert_eq!(applied, 2);
+    }
 
     #[test]
     fn splice_edits_skip_ranges_that_overlap_leave_the_source_or_split_a_character() {
