@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use super::replace_identifier;
 use crate::ast_eval::{EvalReport, evaluate_source};
 use crate::error::Result;
 use crate::obfuscators::{DetectReport, Obfuscator, ObfuscatorPass, PeelOutcome, Quality};
@@ -221,41 +222,6 @@ fn apply_reverse(text: &str, map: &BTreeMap<String, String>) -> String {
         out = replace_identifier(&out, k, v);
     }
     out
-}
-
-fn replace_identifier(text: &str, needle: &str, replacement: &str) -> String {
-    let bytes: &[u8] = text.as_bytes();
-    let n: &[u8] = needle.as_bytes();
-    if n.is_empty() {
-        return text.to_owned();
-    }
-    let mut out: String = String::with_capacity(text.len());
-    let mut run_start: usize = 0;
-    let mut i: usize = 0;
-    while i < bytes.len() {
-        if i + n.len() <= bytes.len()
-            && &bytes[i..i + n.len()] == n
-            && boundary(bytes, i)
-            && boundary(bytes, i + n.len())
-        {
-            out.push_str(text.get(run_start..i).unwrap_or_default());
-            out.push_str(replacement);
-            i += n.len();
-            run_start = i;
-        } else {
-            i += 1;
-        }
-    }
-    out.push_str(text.get(run_start..).unwrap_or_default());
-    out
-}
-
-fn boundary(bytes: &[u8], pos: usize) -> bool {
-    if pos == 0 || pos == bytes.len() {
-        return true;
-    }
-    let c: u8 = bytes[pos - 1];
-    !(c.is_ascii_alphanumeric() || c == b'_')
 }
 
 #[must_use]
