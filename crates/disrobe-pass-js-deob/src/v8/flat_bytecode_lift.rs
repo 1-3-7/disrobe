@@ -10,6 +10,7 @@ use super::flat_bytecode_disasm::{
 };
 
 const ACCUMULATOR_TEMP: &str = "__acc";
+const PROGRAM_COUNTER: &str = "__pc";
 const REGISTER_RANGE_SCAN_LIMIT: i64 = 256;
 const MAX_RENDERED_ARGUMENTS: i64 = 65_534;
 
@@ -46,6 +47,8 @@ pub struct LiftedFunction {
     pub reversible_count: usize,
     pub lossy_count: usize,
     pub opaque_runtime_count: usize,
+    #[serde(default)]
+    pub dispatcher: bool,
 }
 
 impl LiftedFunction {
@@ -81,6 +84,15 @@ impl LiftedFunction {
                 ),
             );
         }
+        let indent: &str = if self.dispatcher { "      " } else { "  " };
+        if self.dispatcher {
+            push_format(
+                &mut out,
+                format_args!(
+                    "  let {PROGRAM_COUNTER} = 0;\n  for (;;) {{\n    switch ({PROGRAM_COUNTER}) {{\n"
+                ),
+            );
+        }
         let mut emitted: usize = 0usize;
         for line in &self.lines {
             if line.js_surface.is_empty() {
@@ -90,11 +102,17 @@ impl LiftedFunction {
                 if stmt.is_empty() {
                     continue;
                 }
-                push_format(&mut out, format_args!("  {stmt}\n"));
+                if stmt.starts_with("case ") {
+                    push_format(&mut out, format_args!("    {stmt}\n"));
+                } else {
+                    push_format(&mut out, format_args!("{indent}{stmt}\n"));
+                }
                 emitted = emitted.saturating_add(1);
             }
         }
-        if emitted == 0usize {
+        if self.dispatcher {
+            out.push_str("    }\n  }\n");
+        } else if emitted == 0usize {
             out.push_str("  return undefined;\n");
         }
         out.push_str("}\n");
@@ -127,8 +145,29 @@ pub fn lift_disassembly_with_pool(
     let mut reversible: usize = 0usize;
     let mut lossy: usize = 0usize;
     let mut opaque: usize = 0usize;
+    let structure: Option<BlockStructure> = BlockStructure::build(disasm);
     for (position, ins) in disasm.instructions.iter().enumerate() {
         let next: Option<&DecodedInstruction> = disasm.instructions.get(position.saturating_add(1));
+        let mut entry: Option<String> = None;
+        if let Some(blocks) = &structure
+            && blocks.leaders.contains(&ins.offset)
+        {
+            entry = Some(format!("case {}:", ins.offset));
+            if position > 0 {
+                regs.literals.clear();
+                acc.assign(ACCUMULATOR_TEMP.to_owned(), ValueShape::Name);
+                acc.materialized = true;
+            }
+        }
+        if let Some(edge) = structure
+            .as_ref()
+            .and_then(|blocks: &BlockStructure| blocks.jumps.get(&position))
+            && let Some(line) = lower_jump(ins, *edge, &mut acc)
+        {
+            reversible = reversible.saturating_add(1);
+            lines.push(with_entry(line, entry));
+            continue;
+        }
         let (mut prelude, spent): (Vec<String>, bool) =
             prepare_accumulator(ins, next, &mut acc, &mut regs);
         let prior_pending: Option<String> = (acc.shape == ValueShape::Pending
@@ -144,6 +183,21 @@ pub fn lift_disassembly_with_pool(
             }
             line.js_surface = prelude.join("\n");
         }
+        if let Some(blocks) = &structure
+            && next.is_some_and(|following: &DecodedInstruction| {
+                blocks.leaders.contains(&following.offset)
+            })
+            && !is_terminal(ins.mnemonic)
+            && let Some(flush) = flush_accumulator(&mut acc)
+        {
+            if line.js_surface.is_empty() {
+                line.js_surface = flush;
+            } else {
+                line.js_surface.push('\n');
+                line.js_surface.push_str(&flush);
+            }
+        }
+        let line: LiftedLine = with_entry(line, entry);
         match line.fidelity {
             LiftFidelity::Reversible => reversible = reversible.saturating_add(1),
             LiftFidelity::Lossy => lossy = lossy.saturating_add(1),
@@ -168,7 +222,191 @@ pub fn lift_disassembly_with_pool(
         reversible_count: reversible,
         lossy_count: lossy,
         opaque_runtime_count: opaque,
+        dispatcher: structure.is_some(),
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JumpTest {
+    Always,
+    StrictTrue,
+    StrictFalse,
+    Truthy,
+    Falsy,
+    Null,
+    NotNull,
+    Undefined,
+    NotUndefined,
+    UndefinedOrNull,
+    JsReceiver,
+}
+
+impl JumpTest {
+    fn condition(self, value: &str) -> Option<String> {
+        match self {
+            Self::Always => None,
+            Self::StrictTrue => Some(format!("{value} === true")),
+            Self::StrictFalse => Some(format!("{value} === false")),
+            Self::Truthy => Some(value.to_owned()),
+            Self::Falsy => Some(format!("!{value}")),
+            Self::Null => Some(format!("{value} === null")),
+            Self::NotNull => Some(format!("{value} !== null")),
+            Self::Undefined => Some(format!("{value} === undefined")),
+            Self::NotUndefined => Some(format!("{value} !== undefined")),
+            Self::UndefinedOrNull => Some(format!("{value} == null")),
+            Self::JsReceiver => Some(format!(
+                "(typeof {value} === \"object\" && {value} !== null) || typeof {value} === \"function\""
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct JumpEdge {
+    target: usize,
+    test: JumpTest,
+}
+
+enum JumpShape {
+    NotAJump,
+    Relative { test: JumpTest, backward: bool },
+    Unstructured,
+}
+
+fn jump_shape(mnemonic: &str) -> JumpShape {
+    let test: JumpTest = match mnemonic {
+        "Jump" => JumpTest::Always,
+        "JumpLoop" => {
+            return JumpShape::Relative {
+                test: JumpTest::Always,
+                backward: true,
+            };
+        }
+        "JumpIfTrue" => JumpTest::StrictTrue,
+        "JumpIfFalse" => JumpTest::StrictFalse,
+        "JumpIfToBooleanTrue" => JumpTest::Truthy,
+        "JumpIfToBooleanFalse" => JumpTest::Falsy,
+        "JumpIfNull" => JumpTest::Null,
+        "JumpIfNotNull" => JumpTest::NotNull,
+        "JumpIfUndefined" => JumpTest::Undefined,
+        "JumpIfNotUndefined" => JumpTest::NotUndefined,
+        "JumpIfUndefinedOrNull" => JumpTest::UndefinedOrNull,
+        "JumpIfJSReceiver" => JumpTest::JsReceiver,
+        "JumpIfForInDone"
+        | "SwitchOnSmiNoFeedback"
+        | "SwitchOnGeneratorState"
+        | "SuspendGenerator"
+        | "ResumeGenerator"
+        | "SetPendingMessage"
+        | "ReThrow" => return JumpShape::Unstructured,
+        other if other.starts_with("Jump") => return JumpShape::Unstructured,
+        _ => return JumpShape::NotAJump,
+    };
+    JumpShape::Relative {
+        test,
+        backward: false,
+    }
+}
+
+struct BlockStructure {
+    leaders: BTreeSet<usize>,
+    jumps: BTreeMap<usize, JumpEdge>,
+}
+
+impl BlockStructure {
+    fn build(disasm: &Disassembly) -> Option<Self> {
+        let starts: BTreeSet<usize> = disasm
+            .instructions
+            .iter()
+            .map(|ins: &DecodedInstruction| ins.offset)
+            .collect();
+        let mut leaders: BTreeSet<usize> = BTreeSet::from([0usize]);
+        let mut jumps: BTreeMap<usize, JumpEdge> = BTreeMap::new();
+        for (position, ins) in disasm.instructions.iter().enumerate() {
+            let following: usize = ins.offset.saturating_add(ins.byte_size);
+            match jump_shape(ins.mnemonic) {
+                JumpShape::NotAJump => {
+                    if is_terminal(ins.mnemonic) && starts.contains(&following) {
+                        leaders.insert(following);
+                    }
+                }
+                JumpShape::Unstructured => return None,
+                JumpShape::Relative { test, backward } => {
+                    let distance: usize =
+                        ins.operands.first().and_then(|operand: &DecodedOperand| {
+                            usize::try_from(operand.unsigned_value).ok()
+                        })?;
+                    let target: usize = if backward {
+                        ins.offset.checked_sub(distance)?
+                    } else {
+                        ins.offset.checked_add(distance)?
+                    };
+                    if !starts.contains(&target) {
+                        return None;
+                    }
+                    leaders.insert(target);
+                    if starts.contains(&following) {
+                        leaders.insert(following);
+                    }
+                    jumps.insert(position, JumpEdge { target, test });
+                }
+            }
+        }
+        if jumps.is_empty() {
+            return None;
+        }
+        Some(Self { leaders, jumps })
+    }
+}
+
+fn flush_accumulator(acc: &mut Accumulator) -> Option<String> {
+    if acc.shape == ValueShape::Opaque || acc.expr == ACCUMULATOR_TEMP {
+        return None;
+    }
+    Some(acc.materialize())
+}
+
+fn lower_jump(
+    ins: &DecodedInstruction,
+    edge: JumpEdge,
+    acc: &mut Accumulator,
+) -> Option<LiftedLine> {
+    let mut statements: Vec<String> = Vec::new();
+    let transfer: String = format!("{PROGRAM_COUNTER} = {}; continue;", edge.target);
+    match edge.test.condition(ACCUMULATOR_TEMP) {
+        None => {
+            statements.extend(flush_accumulator(acc));
+            statements.push(transfer);
+        }
+        Some(condition) => {
+            if acc.shape == ValueShape::Opaque {
+                return None;
+            }
+            statements.extend(flush_accumulator(acc));
+            statements.push(format!("if ({condition}) {{ {transfer} }}"));
+        }
+    }
+    Some(LiftedLine {
+        source_offset: ins.offset,
+        mnemonic: ins.mnemonic,
+        fidelity: LiftFidelity::Reversible,
+        js_surface: statements.join("\n"),
+        ir_comment: Some(format!(
+            "{} to offset {} lowered to the dispatcher",
+            ins.mnemonic, edge.target
+        )),
+    })
+}
+
+fn with_entry(mut line: LiftedLine, entry: Option<String>) -> LiftedLine {
+    if let Some(label) = entry {
+        line.js_surface = if line.js_surface.is_empty() {
+            label
+        } else {
+            format!("{label}\n{}", line.js_surface)
+        };
+    }
+    line
 }
 
 fn referenced_parameter_count(disasm: &Disassembly) -> usize {
@@ -1815,6 +2053,119 @@ mod tests {
   return a1;
 }
 "
+        );
+    }
+    fn run_in_boa(program: &str) -> String {
+        let mut context: boa_engine::Context = boa_engine::Context::default();
+        context
+            .runtime_limits_mut()
+            .set_loop_iteration_limit(100_000);
+        let value: boa_engine::JsValue =
+            match context.eval(boa_engine::Source::from_bytes(program.as_bytes())) {
+                Ok(value) => value,
+                Err(error) => return format!("error: {error}"),
+            };
+        value.as_string().map_or_else(
+            || panic!("the harness returns a string: {value:?}"),
+            boa_engine::JsString::to_std_string_escaped,
+        )
+    }
+
+    fn to_operand(value: usize) -> i64 {
+        i64::try_from(value).expect("a test offset fits i64")
+    }
+
+    #[test]
+    fn a_counted_loop_lifts_to_a_dispatcher_that_runs_like_the_source() {
+        let table: OpcodeTable = OpcodeTable::for_node(NodeVersion::Node24);
+        let a0: i64 = register_file_start(NodeVersion::Node24) - 3i64;
+        let head: Vec<u8> = [
+            enc(&table, "LdaZero", &[]),
+            enc(&table, "Star0", &[]),
+            enc(&table, "LdaZero", &[]),
+            enc(&table, "Star1", &[]),
+        ]
+        .concat();
+        let condition: Vec<u8> = [
+            enc(&table, "Ldar", &[a0]),
+            enc(&table, "TestLessThan", &[1i64, 0i64]),
+        ]
+        .concat();
+        let body: Vec<u8> = [
+            enc(&table, "Ldar", &[0i64]),
+            enc(&table, "Add", &[1i64, 1i64]),
+            enc(&table, "Star0", &[]),
+            enc(&table, "Ldar", &[1i64]),
+            enc(&table, "Inc", &[2i64]),
+            enc(&table, "Star1", &[]),
+        ]
+        .concat();
+        let exit: Vec<u8> = [enc(&table, "Ldar", &[0i64]), enc(&table, "Return", &[])].concat();
+        let header: usize = head.len();
+        let branch: usize = header + condition.len();
+        let back: usize = branch + enc(&table, "JumpIfFalse", &[0i64]).len() + body.len();
+        let exit_at: usize = back + enc(&table, "JumpLoop", &[0i64, 0i64, 0i64]).len();
+        let stream: Vec<u8> = [
+            head,
+            condition,
+            enc(&table, "JumpIfFalse", &[to_operand(exit_at - branch)]),
+            body,
+            enc(&table, "JumpLoop", &[to_operand(back - header), 0i64, 0i64]),
+            exit,
+        ]
+        .concat();
+        let lifted: LiftedFunction = lift_node24(&stream);
+        let js: String = lifted.render_js("sum");
+        assert!(lifted.dispatcher, "{js}");
+        assert_eq!(lifted.lossy_count, 0usize, "{js}");
+        let reference: &str = "function reference(n) { let total = 0; for (let i = 0; i < n; i++) { total = total + i; } return total; }";
+        let harness = |source: &str| {
+            run_in_boa(&format!(
+                "{source}\n{reference}\nJSON.stringify([0, 1, 5, 9].map((n) => [sum(n), reference(n)]))"
+            ))
+        };
+        assert_eq!(harness(&js), "[[0,0],[0,0],[10,10],[36,36]]", "{js}");
+        let mutated: String = js.replacen("=== false", "=== true", 1);
+        assert_ne!(
+            mutated, js,
+            "the loop exit test is rendered as a strict false check"
+        );
+        assert_ne!(
+            harness(&mutated),
+            "[[0,0],[0,0],[10,10],[36,36]]",
+            "inverting the loop exit must change the results"
+        );
+    }
+
+    #[test]
+    fn a_two_way_return_keeps_both_arms() {
+        let table: OpcodeTable = OpcodeTable::for_node(NodeVersion::Node24);
+        let a0: i64 = register_file_start(NodeVersion::Node24) - 3i64;
+        let load: Vec<u8> = enc(&table, "Ldar", &[a0]);
+        let branch_len: usize = enc(&table, "JumpIfToBooleanFalse", &[0i64]).len();
+        let taken: Vec<u8> = [enc(&table, "LdaSmi", &[1i64]), enc(&table, "Return", &[])].concat();
+        let skipped_to: usize = load.len() + branch_len + taken.len();
+        let stream: Vec<u8> = [
+            load.clone(),
+            enc(
+                &table,
+                "JumpIfToBooleanFalse",
+                &[to_operand(skipped_to - load.len())],
+            ),
+            taken,
+            enc(&table, "LdaSmi", &[2i64]),
+            enc(&table, "Return", &[]),
+        ]
+        .concat();
+        let lifted: LiftedFunction = lift_node24(&stream);
+        let js: String = lifted.render_js("pick");
+        assert!(lifted.dispatcher, "{js}");
+        assert_eq!(
+            run_in_boa(&format!(
+                "{js}\nJSON.stringify([pick(0), pick(5), pick(\"\"), pick(\"x\"), pick(null)])"
+            )),
+            "[2,1,2,1,2]",
+            "{js}"
         );
     }
 }
