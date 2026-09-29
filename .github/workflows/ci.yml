@@ -849,6 +849,15 @@ jobs:
         env:
           DISROBE_YARV_EVIDENCE_DIR: ${{ runner.temp }}/yarv-evidence
           DISROBE_TYPEREC_CC: ${{ matrix.os != 'ubuntu-latest' && 'optional' || 'require-gnu' }}
+      - name: provision unicorn 2.1.4 and pypcode 4.0.0 for the lift-x86 differentials
+        if: matrix.shard == 'two'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "unicorn==2.1.4" "pypcode==4.0.0"
+          python -c "import unicorn, pypcode; assert unicorn.__version__ == '2.1.4', unicorn.__version__; assert pypcode.__version__ == '4.0.0', pypcode.__version__"
+          echo "DISROBE_REQUIRE_UNICORN=1" >> "$GITHUB_ENV"
+          echo "DISROBE_REQUIRE_PYPCODE=1" >> "$GITHUB_ENV"
       - name: workspace shard two
         if: matrix.shard == 'two'
         run: >-
