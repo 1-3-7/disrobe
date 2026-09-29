@@ -819,6 +819,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_scan_limit_inside_a_multibyte_character_does_not_split_it() {
+        let filler: String = "\u{e9}".repeat(DISPATCH_SCAN_LIMIT);
+        for lead in ["", "x"] {
+            let text: String = format!("while W do{lead}{filler}");
+            assert!(lift_dispatch(&text).is_none());
+        }
+    }
+
+    #[test]
     fn alphabet_recovery_rejects_duplicate_symbols_before_collapse() {
         assert!(find_alphabet("local W={A=0;A=1}").is_none());
     }

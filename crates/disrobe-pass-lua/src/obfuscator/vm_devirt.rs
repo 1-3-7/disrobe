@@ -1173,6 +1173,15 @@ pub fn devirt_to_peel(src: &[u8], text: &str, payload: &[u8], tag: &str) -> Resu
 mod tests {
     use super::*;
 
+    #[test]
+    fn an_assignment_whose_value_starts_with_a_multibyte_character_is_skipped() {
+        let text: &str = "x = \u{e9}\u{e9}; x = \u{20ac}; x = 'LuaQ'";
+        assert_eq!(
+            extract_named_lua_byte_buffer(text, &["x"], b"LuaQ"),
+            Some(b"LuaQ".to_vec())
+        );
+    }
+
     fn push_u32_le(out: &mut Vec<u8>, value: u32) {
         out.extend_from_slice(&value.to_le_bytes());
     }
