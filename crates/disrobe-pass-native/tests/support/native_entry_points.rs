@@ -292,6 +292,11 @@ pub(crate) const ENTRY_POINTS: &[Entry] = &[
         drive: |ctx: &Ctx<'_>| bounded_len(obfuscators::detect(ctx.bytes).len(), ctx),
     },
     Entry {
+        path: "obfuscators::detect_indicators",
+        cheap: true,
+        drive: |ctx: &Ctx<'_>| bounded_len(obfuscators::detect_indicators(ctx.bytes).len(), ctx),
+    },
+    Entry {
         path: "obfuscators::recover_obfuscxx_strings",
         cheap: false,
         drive: |ctx: &Ctx<'_>| {
