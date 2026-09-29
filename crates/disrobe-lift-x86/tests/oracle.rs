@@ -20,6 +20,9 @@ mod differential;
 #[path = "oracle/evaluator.rs"]
 mod evaluator;
 #[allow(clippy::redundant_pub_crate)]
+#[path = "oracle/flag_values.rs"]
+mod flag_values;
+#[allow(clippy::redundant_pub_crate)]
 #[path = "oracle/generator.rs"]
 mod generator;
 #[allow(clippy::redundant_pub_crate)]
@@ -32,6 +35,17 @@ const EXPECTED_CALLOTHER: usize = 58;
 const LEGACY_INSTRUCTIONS: usize = 95;
 const EXPECTED_ADDED_MODELED: usize = 130;
 const EXPECTED_ADDED_CALLOTHER: usize = 56;
+const EXPECTED_FLAG_GRADED_INSTRUCTIONS: usize = 57;
+const EXPECTED_FLAG_GRADED_WRITES: usize = 223;
+const IMMEDIATE_SHIFTS_WITH_UNDEFINED_OVERFLOW: [(u64, &str); 7] = [
+    (0x97, "shr"),
+    (0x9b, "shl"),
+    (0xb7, "sar"),
+    (0x249, "shld"),
+    (0x24e, "shrd"),
+    (0x253, "shld"),
+    (0x258, "shrd"),
+];
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Boundary {
     address: u64,
@@ -273,7 +287,7 @@ fn normalized_effects_match_ghidra_pypcode() {
         .filter(|line: &&str| !line.is_empty())
     {
         let fields: Vec<&str> = line.split('\t').collect();
-        assert_eq!(fields.len(), 4, "{line}");
+        assert_eq!(fields.len(), 5, "{line}");
         let address: u64 = u64::from_str_radix(fields[0], 16).unwrap_or(u64::MAX);
         let bytes: Vec<u8> = decode_hex(fields[1]);
         assert!(!bytes.is_empty(), "{line}");
@@ -316,6 +330,178 @@ fn normalized_effects_match_ghidra_pypcode() {
     println!(
         "x86-64 pypcode effects: {checked}/{EXPECTED_MODELED} modeled instructions agree, added {added_checked}/{EXPECTED_ADDED_MODELED}"
     );
+}
+
+#[test]
+fn flag_values_match_ghidra_pypcode() {
+    let records: Vec<ReferenceRecord> = modeled_reference_records();
+    assert_eq!(records.len(), EXPECTED_MODELED);
+    let mut disagreements: Vec<String> = Vec::new();
+    let mut unevaluated: BTreeMap<String, usize> = BTreeMap::new();
+    let mut ungraded: Vec<(u64, String, u32)> = Vec::new();
+    let mut graded_instructions: usize = 0;
+    let mut graded_flags: usize = 0;
+    let mut comparisons: usize = 0;
+    for record in &records {
+        let grade: flag_values::FlagGrade = flag_values::grade_flag_values(
+            record.address,
+            record.next_address,
+            &record.lifted,
+            &record.reference,
+        );
+        comparisons = comparisons.saturating_add(grade.comparisons);
+        graded_flags = graded_flags.saturating_add(grade.graded.len());
+        if !grade.graded.is_empty() {
+            graded_instructions = graded_instructions.saturating_add(1);
+        }
+        for bit in grade.written.difference(&grade.graded) {
+            ungraded.push((record.address, record.mnemonic.clone(), *bit));
+        }
+        for (reason, count) in grade.unevaluated {
+            *unevaluated
+                .entry(format!("{} {reason}", record.mnemonic))
+                .or_insert(0) += count;
+        }
+        disagreements.extend(
+            grade
+                .disagreements
+                .into_iter()
+                .map(|line: String| format!("{} {line}", record.mnemonic)),
+        );
+    }
+    println!(
+        "x86-64 pypcode flag values: {graded_flags} flags over {graded_instructions} instructions, {comparisons} comparisons, {} disagreements",
+        disagreements.len()
+    );
+    for line in disagreements.iter().take(40) {
+        println!("disagreement: {line}");
+    }
+    assert!(
+        disagreements.is_empty(),
+        "{} flag value disagreements",
+        disagreements.len()
+    );
+    assert!(
+        unevaluated
+            .keys()
+            .all(|reason: &String| reason.ends_with(" both fault")),
+        "{unevaluated:?}"
+    );
+    let expected_ungraded: Vec<(u64, String, u32)> = IMMEDIATE_SHIFTS_WITH_UNDEFINED_OVERFLOW
+        .iter()
+        .map(|(address, mnemonic): &(u64, &str)| {
+            (*address, (*mnemonic).to_owned(), machine::OVERFLOW_BIT)
+        })
+        .collect();
+    assert_eq!(ungraded, expected_ungraded);
+    assert_eq!(graded_instructions, EXPECTED_FLAG_GRADED_INSTRUCTIONS);
+    assert_eq!(graded_flags, EXPECTED_FLAG_GRADED_WRITES);
+}
+
+#[test]
+fn flag_value_grade_turns_red_when_one_flag_expression_is_negated() {
+    let records: Vec<ReferenceRecord> = modeled_reference_records();
+    let found: Option<&ReferenceRecord> = records
+        .iter()
+        .find(|record: &&ReferenceRecord| record.address == 0x18 && record.mnemonic == "add");
+    assert!(
+        found.is_some(),
+        "add rax, rdx at 0x18 is missing from the table"
+    );
+    let Some(record): Option<&ReferenceRecord> = found else {
+        return;
+    };
+    let carry: Varnode = Varnode {
+        offset: 0x200,
+        size_bytes: 1,
+        space: Space::Register,
+    };
+    let intact: flag_values::FlagGrade = flag_values::grade_flag_values(
+        record.address,
+        record.next_address,
+        &record.lifted,
+        &record.reference,
+    );
+    assert!(
+        intact.disagreements.is_empty(),
+        "{:?}",
+        intact.disagreements
+    );
+    assert!(intact.graded.contains(&machine::CARRY_BIT));
+    let mut mutated: Vec<PcodeOp> = record.lifted.clone();
+    let position: Option<usize> = mutated
+        .iter()
+        .position(|operation: &PcodeOp| matches!(operation, PcodeOp::IntCarry { output, .. } if *output == carry));
+    assert!(position.is_some(), "the lifted add writes no carry");
+    let Some(index): Option<usize> = position else {
+        return;
+    };
+    mutated.insert(
+        index.saturating_add(1),
+        PcodeOp::BoolNegate {
+            output: carry,
+            input: carry,
+        },
+    );
+    let perturbed: flag_values::FlagGrade = flag_values::grade_flag_values(
+        record.address,
+        record.next_address,
+        &mutated,
+        &record.reference,
+    );
+    assert!(perturbed.compared_states > 0);
+    assert_eq!(perturbed.compared_states, intact.compared_states);
+    assert_eq!(perturbed.disagreements.len(), perturbed.compared_states);
+    assert!(
+        perturbed
+            .disagreements
+            .iter()
+            .all(|line: &String| line.starts_with("0x18 CF ")),
+        "{:?}",
+        perturbed.disagreements
+    );
+}
+
+struct ReferenceRecord {
+    address: u64,
+    next_address: u64,
+    mnemonic: String,
+    lifted: Vec<PcodeOp>,
+    reference: Vec<evaluator::ReferenceOp>,
+}
+
+fn modeled_reference_records() -> Vec<ReferenceRecord> {
+    let records: &str = include_str!("corpus/x86_64_pypcode.tsv");
+    let mut modeled: Vec<ReferenceRecord> = Vec::new();
+    for line in records
+        .lines()
+        .skip(1)
+        .filter(|line: &&str| !line.is_empty())
+    {
+        let fields: Vec<&str> = line.split('\t').collect();
+        assert_eq!(fields.len(), 5, "{line}");
+        let address: u64 = u64::from_str_radix(fields[0], 16).unwrap_or(u64::MAX);
+        let bytes: Vec<u8> = decode_hex(fields[1]);
+        let block: DecodedBlock = decode_block_x86(&bytes, address, 64);
+        assert_eq!(block.instructions.len(), 1, "{line}");
+        let Some(instruction): Option<&PcodeInstr> = block.instructions.first() else {
+            continue;
+        };
+        if instruction.status != DecodeStatus::Supported {
+            continue;
+        }
+        let reference: Result<Vec<evaluator::ReferenceOp>, String> =
+            flag_values::parse_reference(fields[4]);
+        assert!(reference.is_ok(), "{line}: {reference:?}");
+        modeled.push(ReferenceRecord {
+            address,
+            next_address: address.saturating_add(bytes.len() as u64),
+            mnemonic: fields[2].to_owned(),
+            lifted: instruction.ops.clone(),
+            reference: reference.unwrap_or_default(),
+        });
+    }
+    modeled
 }
 
 #[cfg(target_arch = "x86_64")]

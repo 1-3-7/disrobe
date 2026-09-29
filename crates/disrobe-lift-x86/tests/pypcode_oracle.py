@@ -236,6 +236,23 @@ def canonical_add(
     return result
 
 
+def serialize(operations: list[object]) -> str:
+    rendered: list[str] = []
+    for operation in operations:
+        name = operation.opcode.name
+        if name == "IMARK":
+            continue
+        output = operation.output
+        fields = [name, "-" if output is None else render(node_expression(output, output.size))]
+        for index, node in enumerate(operation.inputs):
+            if index == 0 and name in {"LOAD", "STORE"}:
+                fields.append(node.getSpaceFromConst().name)
+            else:
+                fields.append(render(node_expression(node, node.size)))
+        rendered.append(" ".join(fields))
+    return ";".join(rendered) if rendered else "none"
+
+
 def architectural_register(node: object) -> bool:
     if node.space.name != "register":
         return False
@@ -587,7 +604,7 @@ def main() -> None:
         records.append((int(address, 16), int(length), mnemonic))
     context = pypcode.Context(LANGUAGE)
     raw_lines = [f"pypcode {VERSION}", LANGUAGE]
-    table_lines = ["address\tbytes\tmnemonic\tnormalized_architectural_effects"]
+    table_lines = ["address\tbytes\tmnemonic\tnormalized_architectural_effects\treference_pcode"]
     aliases = {
         "cmovc": "cmovb",
         "cmovna": "cmovbe",
@@ -644,10 +661,11 @@ def main() -> None:
         )
         raw_lines.append(f"{address:x} {encoded.hex()} {mnemonic}")
         raw_lines.extend(str(translation).splitlines())
-        facts = normalize(list(translation.ops), mnemonic)
+        operations = list(translation.ops)
+        facts = normalize(operations, mnemonic)
         normalized = "|".join(facts) if facts else "none"
         table_lines.append(
-            f"{address:x}\t{encoded.hex()}\t{mnemonic}\t{normalized}"
+            f"{address:x}\t{encoded.hex()}\t{mnemonic}\t{normalized}\t{serialize(operations)}"
         )
     (output / "x86_64_pypcode.raw").write_text(
         "\n".join(raw_lines) + "\n",

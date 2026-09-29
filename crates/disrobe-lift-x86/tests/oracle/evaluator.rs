@@ -10,6 +10,7 @@ use crate::machine::{
 const REGISTER_SPACE_BYTES: usize = 0x1600;
 const INSTRUCTION_POINTER_OFFSET: u64 = 0x288;
 const MAX_VARNODE_BYTES: u32 = 16;
+const REFERENCE_STEP_LIMIT: usize = 4096;
 const PARITY_CONTRACT: &str = "x86_parity8_pure_v1";
 const UNDEFINED_CONTRACT: &str = "x86_undefined_flag_pure_v1";
 const SIGNED_DIVIDE_CONTRACT: &str = "x86_divide_signed_checked_side_effecting_v1";
@@ -35,6 +36,21 @@ pub(crate) enum Evaluation {
     Completed(Box<MachineState>, BTreeSet<u32>),
     Faulted,
     Unmodeled(String),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ReferenceOp {
+    Pcode(PcodeOp),
+    Popcount { output: Varnode, input: Varnode },
+    LeadingZeroCount { output: Varnode, input: Varnode },
+    Opaque(String),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Flow {
+    Next,
+    Jump(usize),
+    Exit,
 }
 
 #[derive(Debug)]
@@ -77,7 +93,97 @@ pub(crate) fn evaluate(
     Evaluation::Completed(Box::new(state), interpreter.undefined)
 }
 
+pub(crate) fn evaluate_reference(
+    operations: &[ReferenceOp],
+    start: &MachineState,
+    next_address: u64,
+) -> Evaluation {
+    let mut interpreter: Interpreter = Interpreter::load(start);
+    let mut index: usize = 0;
+    let mut steps: usize = 0;
+    while let Some(operation) = operations.get(index) {
+        steps = steps.saturating_add(1);
+        if steps > REFERENCE_STEP_LIMIT {
+            return Evaluation::Unmodeled(format!(
+                "reference P-code did not leave the instruction within {REFERENCE_STEP_LIMIT} steps"
+            ));
+        }
+        let flow: Flow = match operation {
+            ReferenceOp::Pcode(PcodeOp::Branch { target }) => {
+                match interpreter.transfer(*target, index, operations.len()) {
+                    Ok(flow) => flow,
+                    Err(reason) => return Evaluation::Unmodeled(reason),
+                }
+            }
+            ReferenceOp::Pcode(PcodeOp::CBranch { target, condition }) => {
+                if interpreter.read(*condition) == 0 {
+                    Flow::Next
+                } else {
+                    match interpreter.transfer(*target, index, operations.len()) {
+                        Ok(flow) => flow,
+                        Err(reason) => return Evaluation::Unmodeled(reason),
+                    }
+                }
+            }
+            ReferenceOp::Pcode(
+                transfer @ (PcodeOp::Call { .. }
+                | PcodeOp::CallIndirect { .. }
+                | PcodeOp::BranchIndirect { .. }
+                | PcodeOp::Return { .. }),
+            ) => match interpreter.step(transfer) {
+                Step::Continued => Flow::Exit,
+                Step::Faulted => return Evaluation::Faulted,
+                Step::Unmodeled(reason) => return Evaluation::Unmodeled(reason),
+            },
+            ReferenceOp::Pcode(straight) => match interpreter.step(straight) {
+                Step::Continued => Flow::Next,
+                Step::Faulted => return Evaluation::Faulted,
+                Step::Unmodeled(reason) => return Evaluation::Unmodeled(reason),
+            },
+            ReferenceOp::Popcount { output, input } => {
+                let count: u32 = interpreter.read(*input).count_ones();
+                let _: Step = interpreter.assign(*output, u128::from(count));
+                Flow::Next
+            }
+            ReferenceOp::LeadingZeroCount { output, input } => {
+                let bits: u32 = bit_width(input.size_bytes);
+                let count: u32 = interpreter
+                    .read(*input)
+                    .leading_zeros()
+                    .saturating_sub(128u32.saturating_sub(bits));
+                let _: Step = interpreter.assign(*output, u128::from(count));
+                Flow::Next
+            }
+            ReferenceOp::Opaque(name) => {
+                return Evaluation::Unmodeled(format!("reference operation {name}"));
+            }
+        };
+        match flow {
+            Flow::Next => index = index.saturating_add(1),
+            Flow::Jump(target) => index = target,
+            Flow::Exit => break,
+        }
+    }
+    let state: MachineState = interpreter.store(start, next_address);
+    Evaluation::Completed(Box::new(state), interpreter.undefined)
+}
+
 impl Interpreter {
+    fn transfer(&mut self, target: Varnode, index: usize, length: usize) -> Result<Flow, String> {
+        if target.space != Space::Constant {
+            let _: Step = self.assign_instruction_pointer(self.read(target) as u64);
+            return Ok(Flow::Exit);
+        }
+        let distance: i128 = signed(u128::from(target.offset), bit_width(target.size_bytes));
+        let destination: i128 = (index as i128).saturating_add(distance);
+        match usize::try_from(destination) {
+            Ok(position) if position <= length => Ok(Flow::Jump(position)),
+            _ => Err(format!(
+                "relative branch by {distance} from operation {index} leaves the instruction"
+            )),
+        }
+    }
+
     fn load(start: &MachineState) -> Self {
         let mut interpreter: Self = Self {
             registers: vec![0; REGISTER_SPACE_BYTES],
