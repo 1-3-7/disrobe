@@ -14,12 +14,9 @@ names = sorted({alias.name for node in ast.walk(tree) if isinstance(node, (ast.I
 print(' '.join(names))\n";
 
 fn python() -> String {
-    let candidates: Vec<String> = std::env::var(PYTHON_OVERRIDE_VAR)
+    std::env::var(PYTHON_OVERRIDE_VAR)
         .into_iter()
         .chain(["python", "python3"].map(str::to_owned))
-        .collect();
-    candidates
-        .into_iter()
         .find(|exe: &String| {
             Command::new(exe)
                 .arg("--version")
