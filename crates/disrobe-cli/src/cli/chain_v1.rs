@@ -544,14 +544,13 @@ fn prepare_flutter_symbol_export(
     _input: &[u8],
     _input_path: &Path,
     engine_symbol_map_path: Option<&Path>,
-    target: Option<BackendExportTarget>,
+    _target: Option<BackendExportTarget>,
 ) -> miette::Result<Option<SupplementalOutput>> {
     if engine_symbol_map_path.is_some() {
         return Err(miette::miette!(
             "DR-CLI-0447: --engine-symbol-map requires a binary built with the `flutter` feature"
         ));
     }
-    let _ = target;
     Ok(None)
 }
 
