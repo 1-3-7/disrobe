@@ -45,6 +45,41 @@ Adversarial input can try to make a chain recurse forever (an archive nested ins
 - **Depth cap.** `--max-depth` (default 8) bounds how many passes can run in one chain.
 - **Cycle detection.** Each stage's output is content-hashed (BLAKE3); if a stage produces bytes already seen earlier in the chain, the runner stops rather than looping.
 
+## Output layout
+
+`auto` and `chain` write into the `--out` directory:
+
+```text
+out/
+├── extracted/
+│   ├── lib/app.dll          # a fan-out member, at its path inside the container
+│   └── recovered/
+│       ├── app.py           # recovered source, named after its input with the language's extension
+│       └── chain-node-4.cs  # a source whose input had no name
+├── chain.json
+└── recovery.json
+```
+
+- **Recovered source.** Every stage that ends a branch with recovered source writes it under `extracted/recovered/`. The file keeps the directory and stem of the member it came from, and takes the extension of its language: `.py` for Python, `.cs` for C#, `.java` for Java, `.m` for Objective-C and MATLAB. A source whose input had no name is written as `chain-node-<id>`.
+- **Existing output.** `--out` must be empty or absent. A directory that already holds files is refused with `DR-CLI-0913`, because the new run's reports would cite files the run did not write. `--force` accepts such a directory and first deletes the earlier run's `extracted/`. `DR-CLI-0912` reports a directory that cannot be read or cleared.
+- **Batch runs.** A directory run gives each input its own output directory, named after the input's relative path. Inputs whose names would give the same directory get numbered suffixes (`app-1`, `app-2`), so no two inputs share one.
+
+## Verdicts
+
+Every node in `chain.json` carries a verdict, and the run carries one overall verdict computed from the branches that end in a leaf.
+
+| Verdict | Meaning | Grade |
+| --- | --- | --- |
+| `complete` | every counted branch ends in recovered source; the formats are listed | ok |
+| `extracted` | a container was opened and its members written, and no pass claims any member | ok |
+| `not-applicable` | no pass claims the input, or the only claiming pass found nothing to reverse and returned the input unchanged; nothing is written as recovered | ok |
+| `fan-out-partial` | some branches ended in recovered source and others did not | incomplete |
+| `stalled` | a pass produced bytes that no further pass claims, or produced nothing | incomplete |
+| `cycle`, `cap-reached` | the branch repeated an artifact or hit the depth or output cap | incomplete |
+| `error` | every counted branch failed; a container that opens with no members is an error, not an empty success | failed |
+
+A member of a container that no pass claims is `not-applicable` on its own node and does not count against the run: a ZIP holding one `.pyc` and a README is `complete` once the `.pyc` decompiles. A directory run classifies each file from its verdict as recovered (grade ok), incomplete, not applicable or failed, and `manifest.json` counts each class.
+
 ## Stage mirrors
 
 Pass `--capture-stages` to materialize the exact bytes written by every executed pass. This records each stage faithfully; it does not mean decompiled source is byte-identical to the compiled input.
