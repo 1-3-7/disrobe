@@ -9,7 +9,7 @@ The Python decompiler is implemented in Rust. The command uses this engine; pycd
 | Layer | Coverage |
 |---|---|
 | Bytecode disassembly | CPython 3.8-3.15, PyPy, MicroPython `.mpy` v0-v6, Jython, IronPython, Brython |
-| Decompilation | CPython 3.8-3.15 with per-version opcode dispatch. Normalized opcode-structure agreement on CPython 3.14.5: <!-- m:py_stdlib_full_count -->17396 of 18276<!-- /m --> code objects in a fixed core population; <!-- m:py_stdlib_pinned_count -->6079 of 6286<!-- /m --> in its pinned 200-module subset. See the measurement definition below. |
+| Decompilation | CPython 3.8-3.15 with per-version opcode dispatch. Normalized opcode-structure agreement on CPython 3.14.5: <!-- m:py_stdlib_full_count -->17396 of 18276<!-- /m --> code objects in a fixed core population; <!-- m:py_stdlib_pinned_count -->6078 of 6286<!-- /m --> in its pinned 200-module subset. See the measurement definition below. |
 | Modern constructs | `match`, walrus, f-strings and PEP 750 t-strings, exception groups, PEP 695/696/709 |
 | Control flow | try/except/else and try/finally structured from the exception-table forest, with-statement folding, multi-exit `while True` and `while COND` loops, conditional (ternary) expressions, and chained comparisons in conditions, each recompile-checked |
 | Freezers | PyInstaller 2.x-6.20+, Nuitka, cx_Freeze, py2exe, shiv, pex, PyOxidizer (experimental, unvalidated), Briefcase, SourceDefender |
@@ -82,7 +82,7 @@ The engine reconstructs nested source constructs from the CPython 3.11+ exceptio
 
 The benchmark compiles each original module and its recovered source with CPython 3.14.5 at optimization level zero. It compares normalized opcode streams and three argument-count fields for each original code object. Normalization removes or merges selected instructions and omits jump targets and most operands. The comparison excludes `__annotate__` code objects and does not penalize additional recovered code objects. These results measure opcode structure, not bytecode identity or program equivalence.
 
-The fixed core population contains <!-- m:py_stdlib_full_modules -->574<!-- /m --> modules and excludes `idlelib` and `turtledemo`: **<!-- m:py_stdlib_full_count -->17396 of 18276<!-- /m -->** code objects agree, or **<!-- m:py_stdlib_full_pct -->95.18%<!-- /m -->**. Its pinned 200-module subset yields **<!-- m:py_stdlib_pinned_count -->6079 of 6286<!-- /m -->** (**<!-- m:py_stdlib_pinned_pct -->96.70%<!-- /m -->**). The committed module lists define both populations.
+The fixed core population contains <!-- m:py_stdlib_full_modules -->574<!-- /m --> modules and excludes `idlelib` and `turtledemo`: **<!-- m:py_stdlib_full_count -->17396 of 18276<!-- /m -->** code objects agree, or **<!-- m:py_stdlib_full_pct -->95.18%<!-- /m -->**. Its pinned 200-module subset yields **<!-- m:py_stdlib_pinned_count -->6078 of 6286<!-- /m -->** (**<!-- m:py_stdlib_pinned_pct -->96.69%<!-- /m -->**). The committed module lists define both populations.
 
 `full_stdlib_recompile_gate.rs` measures the 574-module population on explicit invocation. CI runs a 115-module subset and runs the 200-module gate on tags and scheduled builds, with a 96.70% regression threshold for the latter.
 
@@ -97,14 +97,14 @@ Each band uses the same normalized opcode-structure comparison and pinned module
 
 | Band | Interpreter | Recovered | Rate | Modules | Enforced on |
 |---|---|---|---|---|---|
-| 3.8 | CPython <!-- m:py_band_38_interpreter -->3.8.20<!-- /m --> | <!-- m:py_band_38_frac -->4564 / 5088<!-- /m --> code objects | <!-- m:py_band_38_rate -->89.70%<!-- /m --> | <!-- m:py_band_38_modules -->154<!-- /m --> | tag, schedule |
-| 3.9 | CPython <!-- m:py_band_39_interpreter -->3.9.25<!-- /m --> | <!-- m:py_band_39_frac -->4989 / 5233<!-- /m --> code objects | <!-- m:py_band_39_rate -->95.33%<!-- /m --> | <!-- m:py_band_39_modules -->157<!-- /m --> | tag, schedule |
-| 3.10 | CPython <!-- m:py_band_310_interpreter -->3.10.20<!-- /m --> | <!-- m:py_band_310_frac -->5266 / 5458<!-- /m --> code objects | <!-- m:py_band_310_rate -->96.48%<!-- /m --> | <!-- m:py_band_310_modules -->161<!-- /m --> | push, tag, schedule |
-| 3.11 | CPython <!-- m:py_band_311_interpreter -->3.11.15<!-- /m --> | <!-- m:py_band_311_frac -->5470 / 5638<!-- /m --> code objects | <!-- m:py_band_311_rate -->97.02%<!-- /m --> | <!-- m:py_band_311_modules -->172<!-- /m --> | tag, schedule |
-| 3.12 | CPython <!-- m:py_band_312_interpreter -->3.12.13<!-- /m --> | <!-- m:py_band_312_frac -->5428 / 5659<!-- /m --> code objects | <!-- m:py_band_312_rate -->95.91%<!-- /m --> | <!-- m:py_band_312_modules -->177<!-- /m --> | push, tag, schedule |
-| 3.13 | CPython <!-- m:py_band_313_interpreter -->3.13.14<!-- /m --> | <!-- m:py_band_313_frac -->5735 / 5966<!-- /m --> code objects | <!-- m:py_band_313_rate -->96.12%<!-- /m --> | <!-- m:py_band_313_modules -->190<!-- /m --> | push, tag, schedule |
-| 3.14 | CPython <!-- m:py_band_314_interpreter -->3.14.5<!-- /m --> | <!-- m:py_band_314_frac -->6079 / 6286<!-- /m --> code objects | <!-- m:py_band_314_rate -->96.70%<!-- /m --> | <!-- m:py_band_314_modules -->200<!-- /m --> | no band gate, mirrored |
-| 3.15 | CPython <!-- m:py_band_315_interpreter -->3.15.0b4<!-- /m --> | <!-- m:py_band_315_frac -->6232 / 6480<!-- /m --> code objects | <!-- m:py_band_315_rate -->96.17%<!-- /m --> | <!-- m:py_band_315_modules -->199<!-- /m --> | tag, schedule |
+| 3.8 | CPython <!-- m:py_band_38_interpreter -->3.8.20<!-- /m --> | <!-- m:py_band_38_frac -->4563 / 5088<!-- /m --> code objects | <!-- m:py_band_38_rate -->89.68%<!-- /m --> | <!-- m:py_band_38_modules -->154<!-- /m --> | tag, schedule |
+| 3.9 | CPython <!-- m:py_band_39_interpreter -->3.9.25<!-- /m --> | <!-- m:py_band_39_frac -->4988 / 5233<!-- /m --> code objects | <!-- m:py_band_39_rate -->95.31%<!-- /m --> | <!-- m:py_band_39_modules -->157<!-- /m --> | tag, schedule |
+| 3.10 | CPython <!-- m:py_band_310_interpreter -->3.10.20<!-- /m --> | <!-- m:py_band_310_frac -->5261 / 5458<!-- /m --> code objects | <!-- m:py_band_310_rate -->96.39%<!-- /m --> | <!-- m:py_band_310_modules -->161<!-- /m --> | push, tag, schedule |
+| 3.11 | CPython <!-- m:py_band_311_interpreter -->3.11.15<!-- /m --> | <!-- m:py_band_311_frac -->5462 / 5638<!-- /m --> code objects | <!-- m:py_band_311_rate -->96.87%<!-- /m --> | <!-- m:py_band_311_modules -->172<!-- /m --> | tag, schedule |
+| 3.12 | CPython <!-- m:py_band_312_interpreter -->3.12.13<!-- /m --> | <!-- m:py_band_312_frac -->5422 / 5659<!-- /m --> code objects | <!-- m:py_band_312_rate -->95.81%<!-- /m --> | <!-- m:py_band_312_modules -->177<!-- /m --> | push, tag, schedule |
+| 3.13 | CPython <!-- m:py_band_313_interpreter -->3.13.14<!-- /m --> | <!-- m:py_band_313_frac -->5734 / 5966<!-- /m --> code objects | <!-- m:py_band_313_rate -->96.11%<!-- /m --> | <!-- m:py_band_313_modules -->190<!-- /m --> | push, tag, schedule |
+| 3.14 | CPython <!-- m:py_band_314_interpreter -->3.14.5<!-- /m --> | <!-- m:py_band_314_frac -->6078 / 6286<!-- /m --> code objects | <!-- m:py_band_314_rate -->96.69%<!-- /m --> | <!-- m:py_band_314_modules -->200<!-- /m --> | no band gate, mirrored |
+| 3.15 | CPython <!-- m:py_band_315_interpreter -->3.15.0b4<!-- /m --> | <!-- m:py_band_315_frac -->6228 / 6480<!-- /m --> code objects | <!-- m:py_band_315_rate -->96.11%<!-- /m --> | <!-- m:py_band_315_modules -->199<!-- /m --> | tag, schedule |
 
 The recorded results and interpreter versions are in `xtask/data/recovery.json`.
 

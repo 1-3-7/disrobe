@@ -3,7 +3,7 @@
 - id: `ruby-yarv-recompile`
 - ecosystem: ruby
 - claim: disrobe recovers YARV source accepted by MRI's compiler; the benchmark measures original opcode-name multiset recall across the compiled instruction sequences.
-- measured: 99.98%
+- measured: 100.00%
 - oracle strength: recompile-only
 - CI-attested: yes [CI]
 - evidence basis: MRI compiles original and recovered sources without executing them. The comparison sums the smaller count for each opcode name and divides by the original instruction count. It ignores order, operands, constants, branch targets, and instruction ownership, and does not penalize additional recovered instructions.
