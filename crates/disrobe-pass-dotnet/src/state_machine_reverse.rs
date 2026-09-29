@@ -3056,7 +3056,7 @@ mod tests {
         let joined: String = out.join("\n");
         assert!(
             joined.contains("if (local0 != 0)"),
-            "a genuinely-assigned int local keeps its conditional:\n{joined}"
+            "an assigned int local keeps its conditional:\n{joined}"
         );
     }
 

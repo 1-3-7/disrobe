@@ -98,7 +98,7 @@ fn real_peel_path_stays_detect_only_and_is_not_shadowed() {
         report.strategy,
         PeelStrategy::DetectOnlyNativeOrVm,
         "ILProtector bodies are decrypted by a native runtime key, so the peel path must stay \
-         honestly walled, not promote to EncryptedResourceExtracted"
+         walled, not promote to EncryptedResourceExtracted"
     );
     assert_eq!(report.recovered_decoders, 0);
     assert!(

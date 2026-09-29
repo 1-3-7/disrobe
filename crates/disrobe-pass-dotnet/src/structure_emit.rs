@@ -2048,7 +2048,7 @@ mod tests {
         );
         assert!(
             decompile_chain(cap * 3).contains(UNSTRUCTURED_CONTROL_FLOW_MARKER),
-            "a longer chain still degrades to the same honest abstention, not a hang"
+            "a longer chain still degrades to the same abstention, not a hang"
         );
     }
 

@@ -135,7 +135,7 @@ fn surfacing_returns_none_when_no_named_or_executable_section_matches() {
     assert!(
         surface.is_none(),
         "with no named hit and the only executable section being the managed-metadata .text, the \
-         data-only .mtc must not be force-disassembled; surfacing honestly returns nothing rather \
+         data-only .mtc must not be force-disassembled; surfacing returns nothing rather \
          than presenting decoded data bytes as code"
     );
 }

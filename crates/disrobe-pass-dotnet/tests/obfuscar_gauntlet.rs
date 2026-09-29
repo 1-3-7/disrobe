@@ -283,7 +283,7 @@ fn peel_reports_obfuscar_and_states_the_honest_residual() {
         .expect("peel must emit a residual note");
     assert!(
         note.contains("not") && note.contains("statically recoverable"),
-        "the honest residual must be stated: Obfuscar embeds no in-PE name map, so original \
+        "the residual must be stated: Obfuscar embeds no in-PE name map, so original \
          identifiers are not statically recoverable; got note: {note:?}"
     );
 }
@@ -444,7 +444,7 @@ fn inlined_const_string_is_an_honest_residual() {
     );
     assert!(
         appears_utf8_or_utf16(&obf, INLINED_CONST_BANNER),
-        "honest residual: a `public const string` is a compile-time constant baked into metadata, \
+        "residual: a `public const string` is a compile-time constant baked into metadata, \
          so Obfuscar HideStrings cannot remove it; the banner is expected to survive in the \
          obfuscated assembly. If a future Obfuscar version hides it, this assertion documents the \
          behavior change."
