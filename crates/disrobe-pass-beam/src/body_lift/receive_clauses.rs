@@ -282,7 +282,7 @@ fn is_literal(expr: &Expr, depth: u32) -> bool {
     }
 }
 
-fn is_guard_safe(expr: &Expr, depth: u32) -> bool {
+pub(super) fn is_guard_safe(expr: &Expr, depth: u32) -> bool {
     if depth > MAX_TERM_DEPTH {
         return false;
     }

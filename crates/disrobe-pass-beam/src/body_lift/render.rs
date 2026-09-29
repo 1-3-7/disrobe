@@ -82,6 +82,12 @@ fn render_arms(arms: &[CaseArm], indent: usize) -> String {
 }
 
 fn render_if(arms: &[IfArm], indent: usize) -> String {
+    if !arms
+        .iter()
+        .all(|arm: &IfArm| crate::body_lift::receive_clauses::is_guard_safe(&arm.guard, 0))
+    {
+        return render_if_as_case(arms, indent);
+    }
     let p: String = pad(indent);
     let rendered: Vec<String> = arms
         .iter()
@@ -95,6 +101,29 @@ fn render_if(arms: &[IfArm], indent: usize) -> String {
         })
         .collect();
     format!("if\n{}\n{p}end", rendered.join(";\n"))
+}
+
+fn render_if_as_case(arms: &[IfArm], indent: usize) -> String {
+    let Some((first, rest)) = arms.split_first() else {
+        return "erlang:error(if_clause)".to_owned();
+    };
+    if matches!(&first.guard, Expr::Atom(atom) if atom == "true") {
+        return format!(
+            "begin\n{}\n{}end",
+            render_body(&first.body, indent + 1),
+            pad(indent)
+        );
+    }
+    let p: String = pad(indent);
+    format!(
+        "case {} of\n{}true ->\n{};\n{}_ ->\n{}{}\n{p}end",
+        render_expr(&first.guard),
+        pad(indent + 1),
+        render_body(&first.body, indent + 2),
+        pad(indent + 1),
+        pad(indent + 2),
+        render_if_as_case(rest, indent + 2)
+    )
 }
 
 fn render_receive(arms: &[CaseArm], after: Option<&AfterClause>, indent: usize) -> String {

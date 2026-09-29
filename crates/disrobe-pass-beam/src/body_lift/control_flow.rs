@@ -348,7 +348,8 @@ impl Lifter<'_> {
         };
         let mut body_env: Env = env.clone();
         let body: Vec<Stmt> = self.walk_synth(region, &mut body_env, flags, depth + 1);
-        let (cls, rsn, stk): (String, String, String) = choose_exc_names(&body);
+        let (cls, rsn, stk): (String, String, String) =
+            choose_exc_names(&body, self.exception_names);
         let (of_arms, catch_arms): (Vec<CaseArm>, Vec<CatchArm>) =
             self.build_try_handlers(catch_label, env, flags, depth, &cls, &rsn, &stk);
         Expr::Try {
@@ -414,6 +415,7 @@ impl Lifter<'_> {
             label_to_fun: self.label_to_fun,
             literals: self.literals,
             arity: self.arity,
+            exception_names: self.exception_names,
         };
         sub.blocks.insert(synth_label, synth);
         sub.walk(synth_label, env, flags, depth + 1)
@@ -518,6 +520,7 @@ impl Lifter<'_> {
             label_to_fun: self.label_to_fun,
             literals: self.literals,
             arity: self.arity,
+            exception_names: self.exception_names,
         };
         sub.blocks.insert(synth_label, synth);
         sub.walk(synth_label, env, flags, depth + 1)
@@ -619,8 +622,8 @@ impl Lifter<'_> {
     }
 }
 
-fn choose_exc_names(body: &[Stmt]) -> (String, String, String) {
-    for suffix_n in 0u32..64 {
+fn choose_exc_names(body: &[Stmt], serial: &std::cell::Cell<u32>) -> (String, String, String) {
+    for suffix_n in serial.get()..serial.get().saturating_add(64) {
         let suffix: String = if suffix_n == 0 {
             String::new()
         } else {
@@ -630,6 +633,7 @@ fn choose_exc_names(body: &[Stmt]) -> (String, String, String) {
         let rsn: String = format!("Reason{suffix}");
         let stk: String = format!("Stack{suffix}");
         if !body_uses_var(body, &cls) && !body_uses_var(body, &rsn) && !body_uses_var(body, &stk) {
+            serial.set(suffix_n.saturating_add(1));
             return (cls, rsn, stk);
         }
     }

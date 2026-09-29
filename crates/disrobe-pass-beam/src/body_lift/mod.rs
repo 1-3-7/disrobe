@@ -107,6 +107,7 @@ struct Lifter<'a> {
     label_to_fun: &'a BTreeMap<u32, (String, u32)>,
     literals: &'a [Term],
     arity: u32,
+    exception_names: &'a std::cell::Cell<u32>,
 }
 
 #[must_use]
@@ -121,6 +122,7 @@ pub fn lift_body(
         .literals
         .as_ref()
         .map_or(empty.as_slice(), |l| l.literals.as_slice());
+    let exception_names: std::cell::Cell<u32> = std::cell::Cell::new(0);
     let lifter: Lifter<'_> = Lifter {
         chunks,
         instrs,
@@ -128,6 +130,7 @@ pub fn lift_body(
         label_to_fun,
         literals,
         arity,
+        exception_names: &exception_names,
     };
     let entry: Option<u32> = lifter.blocks.keys().next().copied();
     let Some(entry) = entry else {
@@ -167,6 +170,7 @@ pub fn lift_function(
         .literals
         .as_ref()
         .map_or(empty.as_slice(), |l| l.literals.as_slice());
+    let exception_names: std::cell::Cell<u32> = std::cell::Cell::new(0);
     let lifter: Lifter<'_> = Lifter {
         chunks,
         instrs,
@@ -174,6 +178,7 @@ pub fn lift_function(
         label_to_fun,
         literals,
         arity,
+        exception_names: &exception_names,
     };
     let Some(entry): Option<u32> = lifter.blocks.keys().next().copied() else {
         return (
