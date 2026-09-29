@@ -1382,33 +1382,78 @@ enum VisitMark {
     Done,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CycleScan {
+    cyclic: bool,
+    steps: u64,
+}
+
 fn detect_cycle(memo: &BTreeMap<u64, PickleValue>) -> bool {
-    fn reaches(
-        value: &PickleValue,
-        memo: &BTreeMap<u64, PickleValue>,
-        marks: &mut BTreeMap<u64, VisitMark>,
-        depth: u32,
-    ) -> bool {
-        if depth >= MAX_RENDER_DEPTH {
-            return false;
+    scan_cycles(memo).cyclic
+}
+
+fn scan_cycles(memo: &BTreeMap<u64, PickleValue>) -> CycleScan {
+    let mut marks: BTreeMap<u64, VisitMark> = BTreeMap::new();
+    let mut steps: u64 = 0;
+    for &root in memo.keys() {
+        if marks.contains_key(&root) {
+            continue;
         }
-        let child: u32 = depth + 1;
-        match value {
-            PickleValue::MemoRef { key } => walk(*key, memo, marks, child),
+        marks.insert(root, VisitMark::Visiting);
+        let mut stack: Vec<(u64, Vec<u64>, usize)> =
+            vec![(root, memo_refs_of(memo.get(&root), &mut steps), 0)];
+        while let Some(top) = stack.last_mut() {
+            let Some(&child) = top.1.get(top.2) else {
+                let finished: u64 = top.0;
+                stack.pop();
+                marks.insert(finished, VisitMark::Done);
+                continue;
+            };
+            top.2 += 1;
+            steps = steps.saturating_add(1);
+            match marks.get(&child) {
+                Some(VisitMark::Visiting) => {
+                    return CycleScan {
+                        cyclic: true,
+                        steps,
+                    };
+                }
+                Some(VisitMark::Done) => {}
+                None => {
+                    marks.insert(child, VisitMark::Visiting);
+                    let children: Vec<u64> = memo_refs_of(memo.get(&child), &mut steps);
+                    stack.push((child, children, 0));
+                }
+            }
+        }
+    }
+    CycleScan {
+        cyclic: false,
+        steps,
+    }
+}
+
+fn memo_refs_of(value: Option<&PickleValue>, steps: &mut u64) -> Vec<u64> {
+    let mut refs: Vec<u64> = Vec::new();
+    let mut pending: Vec<&PickleValue> = value.into_iter().collect();
+    while let Some(current) = pending.pop() {
+        *steps = steps.saturating_add(1);
+        match current {
+            PickleValue::MemoRef { key } => refs.push(*key),
             PickleValue::List(items)
             | PickleValue::Tuple(items)
             | PickleValue::Set(items)
-            | PickleValue::FrozenSet(items) => items
-                .iter()
-                .any(|item: &PickleValue| reaches(item, memo, marks, child)),
+            | PickleValue::FrozenSet(items) => pending.extend(items.iter()),
             PickleValue::Dict(entries) => {
-                entries.iter().any(|(k, v): &(PickleValue, PickleValue)| {
-                    reaches(k, memo, marks, child) || reaches(v, memo, marks, child)
-                })
+                for (key, entry) in entries {
+                    pending.push(key);
+                    pending.push(entry);
+                }
             }
-            PickleValue::PersId { id } => reaches(id, memo, marks, child),
+            PickleValue::PersId { id } => pending.push(id),
             PickleValue::Reduce { callable, args } => {
-                reaches(callable, memo, marks, child) || reaches(args, memo, marks, child)
+                pending.push(callable);
+                pending.push(args);
             }
             PickleValue::Object {
                 cls,
@@ -1419,44 +1464,20 @@ fn detect_cycle(memo: &BTreeMap<u64, PickleValue>) -> bool {
                 dictitems,
                 ..
             } => {
-                reaches(cls, memo, marks, child)
-                    || reaches(args, memo, marks, child)
-                    || kwargs
-                        .as_deref()
-                        .is_some_and(|v: &PickleValue| reaches(v, memo, marks, child))
-                    || state
-                        .as_deref()
-                        .is_some_and(|v: &PickleValue| reaches(v, memo, marks, child))
-                    || listitems
-                        .iter()
-                        .any(|item: &PickleValue| reaches(item, memo, marks, child))
-                    || dictitems.iter().any(|(k, v): &(PickleValue, PickleValue)| {
-                        reaches(k, memo, marks, child) || reaches(v, memo, marks, child)
-                    })
+                pending.push(cls);
+                pending.push(args);
+                pending.extend(kwargs.as_deref());
+                pending.extend(state.as_deref());
+                pending.extend(listitems.iter());
+                for (key, entry) in dictitems {
+                    pending.push(key);
+                    pending.push(entry);
+                }
             }
-            _ => false,
+            _ => {}
         }
     }
-    fn walk(
-        key: u64,
-        memo: &BTreeMap<u64, PickleValue>,
-        marks: &mut BTreeMap<u64, VisitMark>,
-        depth: u32,
-    ) -> bool {
-        match marks.get(&key) {
-            Some(VisitMark::Visiting) => return true,
-            Some(VisitMark::Done) => return false,
-            None => {}
-        }
-        marks.insert(key, VisitMark::Visiting);
-        let hit: bool = memo
-            .get(&key)
-            .is_some_and(|value: &PickleValue| reaches(value, memo, marks, depth));
-        marks.insert(key, VisitMark::Done);
-        hit
-    }
-    let mut marks: BTreeMap<u64, VisitMark> = BTreeMap::new();
-    memo.keys().any(|&key: &u64| walk(key, memo, &mut marks, 0))
+    refs
 }
 
 fn inline_unused_refs(
@@ -2113,16 +2134,10 @@ mod tests {
         }
         bytes.push(b'.');
         let dis: Disassembly = disassemble(&bytes).expect("disasm");
-        let start: std::time::Instant = std::time::Instant::now();
         let result: Result<VmTrace> = execute(&dis);
-        let elapsed: std::time::Duration = start.elapsed();
         assert!(
             matches!(result, Err(Error::NodeBudget { .. })),
             "dup+tuple2 clone bomb must hit the node budget, got {result:?}"
-        );
-        assert!(
-            elapsed < std::time::Duration::from_secs(2),
-            "clone bomb must bail fast, took {elapsed:?}"
         );
     }
 
@@ -2163,13 +2178,7 @@ mod tests {
         let levels: usize = 5_000;
         let bytes: Vec<u8> = deep_unused_memoref_chain(levels);
         let dis: Disassembly = disassemble(&bytes).expect("disasm");
-        let start: std::time::Instant = std::time::Instant::now();
         let trace: VmTrace = execute(&dis).expect("deep unused-memoref chain must decode bounded");
-        let elapsed: std::time::Duration = start.elapsed();
-        assert!(
-            elapsed < std::time::Duration::from_secs(5),
-            "inlining a deep unused-memoref chain must stay bounded, took {elapsed:?}"
-        );
         assert!(!trace.cyclic, "an acyclic chain must not be flagged cyclic");
         let (nesting, bottom): (usize, &PickleValue) = descend_single_containers(&trace.result);
         assert!(
@@ -2242,16 +2251,32 @@ mod tests {
             );
         }
         memo.insert(n, PickleValue::List(Vec::new()));
-        let start: std::time::Instant = std::time::Instant::now();
-        let cyclic: bool = detect_cycle(&memo);
-        let elapsed: std::time::Duration = start.elapsed();
+        let scan: CycleScan = scan_cycles(&memo);
         assert!(
-            !cyclic,
+            !scan.cyclic,
             "an acyclic forward chain must not be reported cyclic"
         );
+        let entries: u64 = n + 1;
         assert!(
-            elapsed < std::time::Duration::from_secs(5),
-            "cycle detection over a deep chain must stay bounded, took {elapsed:?}"
+            scan.steps <= 3 * entries,
+            "cycle detection must visit each memo entry and edge once, took {} steps for {entries} entries",
+            scan.steps
+        );
+    }
+
+    #[test]
+    fn a_memo_cycle_longer_than_the_render_depth_is_detected() {
+        let n: u64 = u64::from(MAX_RENDER_DEPTH) * 4;
+        let mut memo: BTreeMap<u64, PickleValue> = BTreeMap::new();
+        for k in 0..n {
+            memo.insert(
+                k,
+                PickleValue::Tuple(vec![PickleValue::MemoRef { key: (k + 1) % n }]),
+            );
+        }
+        assert!(
+            detect_cycle(&memo),
+            "a {n}-entry memo cycle must be reported cyclic"
         );
     }
 

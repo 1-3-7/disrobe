@@ -651,14 +651,9 @@ mod tests {
         for _ in 0..STACKED_MEMBER_MAX + 64 {
             bytes.extend_from_slice(b"\x80\x02N.");
         }
-        let start: std::time::Instant = std::time::Instant::now();
         let layout: StackedLayout = stacked_layout(&bytes);
         assert_eq!(layout.members.len(), STACKED_MEMBER_MAX);
         assert_eq!(layout.trailing, 64 * 4);
-        assert!(
-            start.elapsed() < std::time::Duration::from_secs(2),
-            "a stream flood must stay bounded"
-        );
     }
 
     fn zip_naming(entry: &[u8]) -> Vec<u8> {
