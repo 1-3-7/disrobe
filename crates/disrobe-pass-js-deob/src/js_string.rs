@@ -108,9 +108,75 @@ fn read_hex4(chars: &[char], at: usize) -> Option<u32> {
     Some(code)
 }
 
+pub(crate) fn escape_string_body(value: &str, quote: char) -> String {
+    let mut out: String = String::with_capacity(value.len());
+    let mut chars: core::iter::Peekable<core::str::Chars<'_>> = value.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{08}' => out.push_str("\\b"),
+            '\u{0b}' => out.push_str("\\v"),
+            '\u{0c}' => out.push_str("\\f"),
+            '\0' if !chars.peek().is_some_and(char::is_ascii_digit) => out.push_str("\\0"),
+            '\u{2028}' => out.push_str("\\u2028"),
+            '\u{2029}' => out.push_str("\\u2029"),
+            c if c == quote => {
+                out.push('\\');
+                out.push(c);
+            }
+            c if c.is_control() => match u8::try_from(u32::from(c)) {
+                Ok(byte) => {
+                    out.push_str("\\x");
+                    disrobe_core::codec::hex::push_byte(&mut out, byte);
+                }
+                Err(_) => out.push(c),
+            },
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+pub(crate) fn quote_string(value: &str, quote: char) -> String {
+    let mut out: String = String::with_capacity(value.len() + 2);
+    out.push(quote);
+    out.push_str(&escape_string_body(value, quote));
+    out.push(quote);
+    out
+}
+
 #[cfg(test)]
 mod tests {
-    use super::unescape_string_literal;
+    use super::{quote_string, unescape_string_literal};
+
+    #[test]
+    fn a_quoted_string_reads_back_as_the_same_value() {
+        for value in [
+            "plain",
+            "it's",
+            "say \"hi\"",
+            "back\\slash",
+            "line\nbreak\ttab\r",
+            "nul\u{0}7 and nul\u{0}x",
+            "bell\u{7} esc\u{1b} del\u{7f}",
+            "sep\u{2028}para\u{2029}",
+            "caf\u{e9} \u{65e5}\u{672c} \u{1f600}",
+        ] {
+            for quote in ['\'', '"'] {
+                let quoted: String = quote_string(value, quote);
+                let body: &str = &quoted[1..quoted.len() - 1];
+                assert_eq!(unescape_string_literal(body), value, "{quoted}");
+                assert!(
+                    !body.contains('\n') && !body.contains('\u{2028}'),
+                    "{quoted}"
+                );
+            }
+        }
+        assert_eq!(quote_string("\u{0}1", '\''), "'\\x001'");
+    }
 
     fn with_backslashes(template: &str) -> String {
         template.replace('~', "\\")

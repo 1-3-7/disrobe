@@ -106,7 +106,7 @@ fn try_fold_iife(source: &str, bytes: &[u8], pos: usize) -> Option<(usize, Strin
     if !is_safe_literal_body(&value) {
         return None;
     }
-    Some((call_end, quote_literal(&value)))
+    Some((call_end, crate::js_string::quote_string(&value, '\'')))
 }
 
 const IIFE_BANNED_TOKENS: [&str; 12] = [
@@ -287,7 +287,7 @@ fn try_fold_at(source: &str, bytes: &[u8], pos: usize) -> Option<(usize, String)
     if !is_safe_literal_body(&value) {
         return None;
     }
-    Some((call_end, quote_literal(&value)))
+    Some((call_end, crate::js_string::quote_string(&value, '\'')))
 }
 
 fn match_balanced_paren(bytes: &[u8], open: usize) -> Option<usize> {
@@ -321,14 +321,6 @@ fn is_safe_literal_body(value: &str) -> bool {
     value.chars().all(|c: char| {
         !c.is_control() && c != '\\' && c != '\'' && c != '"' && c != '`' && c != '$'
     })
-}
-
-fn quote_literal(value: &str) -> String {
-    let mut lit: String = String::with_capacity(value.len() + 2);
-    lit.push('\'');
-    lit.push_str(value);
-    lit.push('\'');
-    lit
 }
 
 fn skip_string(bytes: &[u8], start: usize, quote: u8) -> usize {

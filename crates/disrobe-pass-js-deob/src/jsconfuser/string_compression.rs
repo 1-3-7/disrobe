@@ -52,9 +52,9 @@ fn collect_lzstring_code_strings(source: &str, edits: &mut Vec<(Range<usize>, Op
                 if nested.blocks_reversed > 0 {
                     edits.push((
                         i..end,
-                        Some(format!(
-                            "\"{}\"",
-                            escape_js_string(&nested.rewritten_source)
+                        Some(crate::js_string::quote_string(
+                            &nested.rewritten_source,
+                            '"',
                         )),
                     ));
                 }
@@ -95,7 +95,7 @@ fn collect_lzstring_calls(source: &str, edits: &mut Vec<(Range<usize>, Option<St
         };
         edits.push((
             whole.start()..call_end,
-            Some(format!("\"{}\"", escape_js_string(&decoded))),
+            Some(crate::js_string::quote_string(&decoded, '"')),
         ));
     }
 }
@@ -617,36 +617,6 @@ fn read_braced_unicode_scalar(chars: &mut std::str::Chars<'_>) -> Option<char> {
         saw_digit = true;
     }
     None
-}
-
-fn push_format(out: &mut String, args: std::fmt::Arguments<'_>) {
-    let result: std::result::Result<(), std::fmt::Error> = std::fmt::write(out, args);
-    if let Err(error) = result {
-        unreachable!("string formatting failed: {error}");
-    }
-}
-
-fn escape_js_string(value: &str) -> String {
-    let mut escaped: String = String::with_capacity(value.len());
-    for ch in value.chars() {
-        match ch {
-            '\\' => escaped.push_str("\\\\"),
-            '"' => escaped.push_str("\\\""),
-            '\n' => escaped.push_str("\\n"),
-            '\r' => escaped.push_str("\\r"),
-            '\t' => escaped.push_str("\\t"),
-            '\u{08}' => escaped.push_str("\\b"),
-            '\u{0c}' => escaped.push_str("\\f"),
-            c if c == ' ' || c.is_ascii_graphic() => escaped.push(c),
-            c if u32::from(c) <= 0xffff => {
-                push_format(&mut escaped, format_args!("\\u{:04x}", u32::from(c)));
-            }
-            c => {
-                push_format(&mut escaped, format_args!("\\u{{{:x}}}", u32::from(c)));
-            }
-        }
-    }
-    escaped
 }
 
 #[cfg(test)]

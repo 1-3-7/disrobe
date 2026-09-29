@@ -491,33 +491,19 @@ fn pool_entry(pool: &[ConstantPoolEntry], idx: u64) -> Option<&ConstantPoolEntry
     usize::try_from(idx).ok().and_then(|i: usize| pool.get(i))
 }
 
-fn js_string_literal(value: &str) -> String {
-    let mut out: String = String::with_capacity(value.len() + 2usize);
-    out.push('"');
-    for ch in value.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            _ => out.push(ch),
-        }
-    }
-    out.push('"');
-    out
-}
-
 fn const_literal(pool: &[ConstantPoolEntry], idx: u64) -> String {
     pool_entry(pool, idx)
         .and_then(ConstantPoolEntry::resolved_name)
-        .map_or_else(|| const_name(idx), js_string_literal)
+        .map_or_else(
+            || const_name(idx),
+            |value: &str| crate::js_string::quote_string(value, '"'),
+        )
 }
 
 fn property_access(pool: &[ConstantPoolEntry], receiver: &str, idx: u64) -> String {
     match pool_entry(pool, idx).and_then(ConstantPoolEntry::resolved_name) {
         Some(name) if is_identifier(name) => format!("{receiver}.{name}"),
-        Some(name) => format!("{receiver}[{}]", js_string_literal(name)),
+        Some(name) => format!("{receiver}[{}]", crate::js_string::quote_string(name, '"')),
         None => format!("{receiver}[{}]", const_name(idx)),
     }
 }
@@ -525,7 +511,7 @@ fn property_access(pool: &[ConstantPoolEntry], receiver: &str, idx: u64) -> Stri
 fn property_name_target(pool: &[ConstantPoolEntry], idx: u64) -> String {
     match pool_entry(pool, idx).and_then(ConstantPoolEntry::resolved_name) {
         Some(name) if is_identifier(name) => format!(".{name}"),
-        Some(name) => format!("[{}]", js_string_literal(name)),
+        Some(name) => format!("[{}]", crate::js_string::quote_string(name, '"')),
         None => format!("[{}]", const_name(idx)),
     }
 }
@@ -533,7 +519,7 @@ fn property_name_target(pool: &[ConstantPoolEntry], idx: u64) -> String {
 fn global_name(pool: &[ConstantPoolEntry], idx: u64) -> String {
     match pool_entry(pool, idx).and_then(ConstantPoolEntry::resolved_name) {
         Some(name) if is_identifier(name) => name.to_owned(),
-        Some(name) => format!("globalThis[{}]", js_string_literal(name)),
+        Some(name) => format!("globalThis[{}]", crate::js_string::quote_string(name, '"')),
         None => format!("globalThis[{}]", const_name(idx)),
     }
 }
