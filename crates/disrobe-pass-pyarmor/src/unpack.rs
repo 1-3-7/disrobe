@@ -231,9 +231,13 @@ pub fn unpack_wrapper_text_with_options(
         return Err(Error::BccRequiresAllowBcc);
     }
     let mut output: UnpackOutput = match detection.version {
-        PyarmorVersion::V8 | PyarmorVersion::V9 => {
-            unpack_v8v9(&payload, &detection, &runtime, options)
-        }
+        PyarmorVersion::V8 | PyarmorVersion::V9 => unpack_v8v9(
+            &payload,
+            &detection,
+            &runtime,
+            mode_classification.mix_str_enabled,
+            options,
+        ),
         PyarmorVersion::V6 | PyarmorVersion::V7 => {
             unpack_v6v7(&payload, &detection, &runtime, wrapper_path, options)
         }
@@ -349,10 +353,17 @@ fn unpack_v8v9(
     payload: &[u8],
     detection: &Detection,
     runtime: &RuntimeLocation,
+    mix_str_enabled: bool,
     options: &UnpackOptions,
 ) -> Result<UnpackOutput> {
     let decrypted: V8V9DecryptedPayload = v8v9::decrypt(payload, detection, runtime)?;
-    Ok(finalize_v8v9(detection, runtime, decrypted, options))
+    Ok(finalize_v8v9(
+        detection,
+        runtime,
+        decrypted,
+        mix_str_enabled,
+        options,
+    ))
 }
 
 fn unpack_v6v7(
@@ -743,6 +754,7 @@ fn finalize_v8v9(
     detection: &Detection,
     runtime: &RuntimeLocation,
     decrypted: V8V9DecryptedPayload,
+    mix_str_enabled: bool,
     options: &UnpackOptions,
 ) -> UnpackOutput {
     let (xor_key, xor_enabled): ([u8; 12], bool) =
@@ -755,6 +767,7 @@ fn finalize_v8v9(
         mix_str_nonce: decrypted.mix_str_nonce,
         co_code_nonce_xor_key: xor_key,
         xor_enabled,
+        mix_str_enabled,
         py_version,
     };
     let bcc_blobs: Vec<crate::v8v9::BccBlob> = decrypted.bcc_blobs.clone();
@@ -873,8 +886,11 @@ fn run_marshal_load(
         }
         inner_cipher_stats = Some(stats);
 
-        let mix_count: usize =
-            crate::mix_string::decrypt_mix_strings(&mut obj, &state.aes_key, &state.mix_str_nonce);
+        let mix_count: usize = if state.mix_str_enabled {
+            crate::mix_string::decrypt_mix_strings(&mut obj, &state.aes_key, &state.mix_str_nonce)
+        } else {
+            0
+        };
         if let Some(prov) = provenance.as_deref_mut()
             && mix_count > 0
         {
@@ -1130,6 +1146,55 @@ mod tests {
         assert!(
             pyt_score > trace_score,
             "pytrace {pyt_score} should beat trace {trace_score}"
+        );
+    }
+
+    fn marshalled_module_with_const(value: Vec<u8>) -> Vec<u8> {
+        let mut co: disrobe_py_marshal::CodeObject =
+            disrobe_py_marshal::CodeObject::new(disrobe_py_marshal::CodeEra::Py311Plus);
+        co.consts.push(Object::Bytes(value));
+        disrobe_py_marshal::dump(&Object::Code(Box::new(co)), PyVersion::PY312)
+            .expect("marshal the authored module")
+    }
+
+    fn consts_after_load(state: &PyarmorModuleState, stream: &[u8]) -> Vec<Object> {
+        let mut cache: DescriptorCache = DescriptorCache::new(DescriptorCacheConfig::default());
+        let outcome: MarshalLoadOutcome = run_marshal_load(
+            stream,
+            stream.len(),
+            0,
+            PyVersion::PY312,
+            Some(state),
+            &mut cache,
+            None,
+        );
+        let pyc: Vec<u8> = outcome.pyc_bytes.expect("the module reloads");
+        match disrobe_py_marshal::load(&pyc[16..], PyVersion::PY312).expect("reload") {
+            Object::Code(co) => co.consts,
+            other => panic!("expected a code object, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_build_without_mix_str_keeps_a_constant_that_looks_mixed() {
+        let msgpack_map: Vec<u8> = vec![0x81, 0xa1, b'k', 0x01];
+        let stream: Vec<u8> = marshalled_module_with_const(msgpack_map.clone());
+        let mut state: PyarmorModuleState = PyarmorModuleState {
+            aes_key: [0x42; 16],
+            mix_str_nonce: [0x07; 12],
+            co_code_nonce_xor_key: [0u8; 12],
+            xor_enabled: false,
+            mix_str_enabled: false,
+            py_version: PyVersion::PY312,
+        };
+        assert!(
+            consts_after_load(&state, &stream).contains(&Object::Bytes(msgpack_map.clone())),
+            "a msgpack constant in a build without mix-str must survive byte for byte"
+        );
+        state.mix_str_enabled = true;
+        assert!(
+            !consts_after_load(&state, &stream).contains(&Object::Bytes(msgpack_map)),
+            "the same constant is decrypted when the build enables mix-str"
         );
     }
 }

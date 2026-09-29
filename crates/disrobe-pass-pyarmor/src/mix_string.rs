@@ -52,15 +52,6 @@ fn walk_code_object(co: &mut CodeObject, key: &[u8; 16], nonce: &[u8; 12], count
     for c in &mut co.consts {
         walk_object(c, key, nonce, count);
     }
-    for n in &mut co.names {
-        walk_object(n, key, nonce, count);
-    }
-    for n in &mut co.varnames {
-        walk_object(n, key, nonce, count);
-    }
-    for n in &mut co.localsplusnames {
-        walk_object(n, key, nonce, count);
-    }
 }
 
 fn try_decrypt_mix_bytes(input: &[u8], key: &[u8; 16], nonce: &[u8; 12]) -> Option<Vec<u8>> {
@@ -116,5 +107,21 @@ mod tests {
         let key: [u8; 16] = [0u8; 16];
         let nonce: [u8; 12] = [0u8; 12];
         assert!(try_decrypt_mix_bytes(&bytes, &key, &nonce).is_none());
+    }
+
+    #[test]
+    fn identifier_tables_are_never_decrypted() {
+        let mut co: CodeObject = CodeObject::new(disrobe_py_marshal::CodeEra::Py311Plus);
+        let mixed_looking: Vec<u8> = vec![0x81, b'x', b'y'];
+        co.names.push(Object::Bytes(mixed_looking.clone()));
+        co.varnames.push(Object::Bytes(mixed_looking.clone()));
+        let mut module: Object = Object::Code(Box::new(co));
+        let rewritten: usize = decrypt_mix_strings(&mut module, &[0u8; 16], &[0u8; 12]);
+        assert_eq!(rewritten, 0);
+        let Object::Code(co) = module else {
+            panic!("the module stays a code object");
+        };
+        assert_eq!(co.names, vec![Object::Bytes(mixed_looking.clone())]);
+        assert_eq!(co.varnames, vec![Object::Bytes(mixed_looking)]);
     }
 }

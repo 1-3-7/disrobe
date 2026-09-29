@@ -155,6 +155,7 @@ pub struct PyarmorModuleState {
     pub mix_str_nonce: [u8; 12],
     pub co_code_nonce_xor_key: [u8; 12],
     pub xor_enabled: bool,
+    pub mix_str_enabled: bool,
     pub py_version: PyVersion,
 }
 
@@ -195,6 +196,7 @@ pub struct DecryptionStats {
     pub nine_pro_stage_2_bytes_unwrapped: u64,
     pub nine_pro_stage_2_bind_required: u32,
     pub depth_limit_truncations: u32,
+    pub objects_left_encrypted: u32,
 }
 
 fn decrypt_code_object(
@@ -211,6 +213,7 @@ fn decrypt_code_object(
     metrics.objects_visited += 1;
     let mut cache_slot: Option<&mut DescriptorCache> = cache;
 
+    let mut fully_decrypted: bool = true;
     if co.flags & CO_PYARMOR_OBFUSCATED != 0 && !co.pyarmor_trailer.is_empty() {
         metrics.objects_with_trailer += 1;
         if metrics.first_trailer_hex.is_none() {
@@ -225,10 +228,11 @@ fn decrypt_code_object(
                     Some(Object::Bytes(blob)) => {
                         if blob.len() < 8 {
                             metrics.trailer_parse_failures += 1;
+                            fully_decrypted = false;
                             continue;
                         }
                         if let Some(desc) = PyarmorCoDescriptor::parse(&blob[8..]) {
-                            apply_descriptor(
+                            fully_decrypted &= apply_descriptor(
                                 co,
                                 &desc,
                                 module_state,
@@ -237,16 +241,18 @@ fn decrypt_code_object(
                             );
                         } else {
                             metrics.trailer_parse_failures += 1;
+                            fully_decrypted = false;
                         }
                     }
                     Some(Object::String { value, .. } | Object::ShortAscii { value, .. }) => {
                         let bytes: &[u8] = value.as_bytes();
                         if bytes.len() < 8 {
                             metrics.trailer_parse_failures += 1;
+                            fully_decrypted = false;
                             continue;
                         }
                         if let Some(desc) = PyarmorCoDescriptor::parse(&bytes[8..]) {
-                            apply_descriptor(
+                            fully_decrypted &= apply_descriptor(
                                 co,
                                 &desc,
                                 module_state,
@@ -255,15 +261,18 @@ fn decrypt_code_object(
                             );
                         } else {
                             metrics.trailer_parse_failures += 1;
+                            fully_decrypted = false;
                         }
                     }
                     _ => {
                         metrics.missing_consts_failures += 1;
+                        fully_decrypted = false;
                     }
                 }
             }
         } else {
             metrics.trailer_parse_failures += 1;
+            fully_decrypted = false;
         }
     }
 
@@ -279,8 +288,12 @@ fn decrypt_code_object(
         }
     }
 
-    co.flags &= !CO_PYARMOR_OBFUSCATED;
-    co.pyarmor_trailer.clear();
+    if fully_decrypted {
+        co.flags &= !CO_PYARMOR_OBFUSCATED;
+        co.pyarmor_trailer.clear();
+    } else {
+        metrics.objects_left_encrypted += 1;
+    }
 }
 
 fn apply_descriptor(
@@ -289,7 +302,7 @@ fn apply_descriptor(
     module_state: &PyarmorModuleState,
     metrics: &mut DecryptionStats,
     mut cache: Option<&mut DescriptorCache>,
-) {
+) -> bool {
     let nonce_index: usize = if desc.short_code() {
         desc.short_nonce_index as usize
     } else {
@@ -297,21 +310,21 @@ fn apply_descriptor(
             .checked_add(desc.decrypt_begin_index as usize)
             .and_then(|v: usize| v.checked_add(desc.decrypt_length as usize))
         else {
-            return;
+            return false;
         };
         sum
     };
 
     let Some(nonce_end): Option<usize> = nonce_index.checked_add(12) else {
-        return;
+        return false;
     };
     if nonce_end > co.code.len() {
-        return;
+        return false;
     }
     let mut nonce: [u8; 12] = [0u8; 12];
     let Some(nonce_slice): Option<&[u8]> = co.code.get(nonce_index..nonce_end) else {
         metrics.trailer_parse_failures += 1;
-        return;
+        return false;
     };
     nonce.copy_from_slice(nonce_slice);
 
@@ -328,11 +341,11 @@ fn apply_descriptor(
     let len: usize = desc.decrypt_length as usize;
     let Some(end): Option<usize> = begin.checked_add(len) else {
         metrics.trailer_parse_failures += 1;
-        return;
+        return false;
     };
     if co.code.get(begin..end).is_none() {
         metrics.trailer_parse_failures += 1;
-        return;
+        return false;
     }
 
     let cache_key: CacheKey = CacheKey::from_trailer_and_prefix(
@@ -351,7 +364,7 @@ fn apply_descriptor(
         metrics.cache_hits += 1;
         let Some(target): Option<&mut [u8]> = co.code.get_mut(begin..end) else {
             metrics.trailer_parse_failures += 1;
-            return;
+            return false;
         };
         for (target, k) in target.iter_mut().zip(keystream.iter()) {
             *target ^= *k;
@@ -366,7 +379,7 @@ fn apply_descriptor(
         cipher.apply_keystream(&mut keystream);
         let Some(target): Option<&mut [u8]> = co.code.get_mut(begin..end) else {
             metrics.trailer_parse_failures += 1;
-            return;
+            return false;
         };
         for (target, k) in target.iter_mut().zip(keystream.iter()) {
             *target ^= *k;
@@ -391,27 +404,28 @@ fn apply_descriptor(
         let src_start: usize = len;
         let Some(src_end): Option<usize> = src_start.checked_add(begin) else {
             metrics.trailer_parse_failures += 1;
-            return;
+            return false;
         };
         let Some(prologue_src): Option<&[u8]> = co.code.get(src_start..src_end) else {
             metrics.trailer_parse_failures += 1;
-            return;
+            return false;
         };
         let prologue: Vec<u8> = prologue_src.to_vec();
         let Some(prefix): Option<&mut [u8]> = co.code.get_mut(..begin) else {
             metrics.trailer_parse_failures += 1;
-            return;
+            return false;
         };
         prefix.copy_from_slice(&prologue);
         let Some(src): Option<&mut [u8]> = co.code.get_mut(src_start..src_end) else {
             metrics.trailer_parse_failures += 1;
-            return;
+            return false;
         };
         for b in src {
             *b = nop;
         }
         metrics.copy_prologue_applied += 1;
     }
+    true
 }
 
 const fn nop_opcode(version: PyVersion) -> u8 {
@@ -757,6 +771,7 @@ mod tests {
             mix_str_nonce: [0u8; 12],
             co_code_nonce_xor_key: [0u8; 12],
             xor_enabled: false,
+            mix_str_enabled: false,
             py_version: PyVersion::PY312,
         }
     }
@@ -795,9 +810,32 @@ mod tests {
             enter_count: 0,
         };
         let mut metrics: DecryptionStats = DecryptionStats::default();
-        apply_descriptor(&mut co, &desc, &module_state, &mut metrics, None);
+        assert!(!apply_descriptor(
+            &mut co,
+            &desc,
+            &module_state,
+            &mut metrics,
+            None
+        ));
         assert_eq!(metrics.trailer_parse_failures, 1);
         assert_eq!(metrics.descriptors_applied, 0);
+    }
+
+    #[test]
+    fn a_code_object_whose_descriptor_fails_stays_marked_obfuscated() {
+        let module_state: PyarmorModuleState = make_state();
+        let mut co: disrobe_py_marshal::CodeObject = make_code_object_with_descriptor(&[0x11; 16]);
+        co.code.truncate(20);
+        let mut metrics: DecryptionStats = DecryptionStats::default();
+        decrypt_code_object(&mut co, &module_state, &mut metrics, None, 0);
+        assert_eq!(metrics.descriptors_applied, 0, "{metrics:?}");
+        assert_ne!(
+            co.flags & CO_PYARMOR_OBFUSCATED,
+            0,
+            "code the descriptor never decrypted must not be passed on as clear bytecode"
+        );
+        assert!(!co.pyarmor_trailer.is_empty());
+        assert_eq!(metrics.objects_left_encrypted, 1);
     }
 
     #[test]
