@@ -860,7 +860,7 @@ mod tests {
         assert_eq!(ivar.name, "_count");
         assert_eq!(
             ivar.size, None,
-            "an unreadable ivar size must be honestly absent, never a fabricated 0"
+            "an unreadable ivar size must be absent, never a fabricated 0"
         );
     }
 

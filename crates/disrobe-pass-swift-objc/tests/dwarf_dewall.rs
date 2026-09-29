@@ -1,9 +1,4 @@
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::print_stdout
-)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[path = "support/macho_corpus.rs"]
 #[allow(clippy::redundant_pub_crate, dead_code)]
 mod macho_corpus;
@@ -220,7 +215,6 @@ fn segname(name: &str) -> [u8; 16] {
     b
 }
 
-#[allow(clippy::too_many_lines)]
 fn build_macho_with_dwarf(elf: &[u8]) -> Vec<u8> {
     let (text_vaddr, text_vmsize): (u64, u64) =
         elf_section_addr_size(elf, ".text").expect("zig ELF carries a .text section");
@@ -377,7 +371,7 @@ fn dwarf_bearing_swift_macho_recovers_types_lines_and_disasm() {
         report.grade,
         SourceGrade::TypesAndLines,
         "with reconstructable types + a pc->line map the grade is TypesAndLines (the original Swift \
-         surface syntax stays an honest wall)",
+         surface syntax stays a wall)",
     );
     assert!(
         report.source_recoverable,
