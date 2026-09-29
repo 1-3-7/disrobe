@@ -2,14 +2,14 @@
 
 mod common;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use disrobe_pass_nuitka::{
     ConstantsPool, NativeBodyRecovery, NativeFunctionBody, NuitkaDecompilation, PythonExpr,
     PythonStmt, SurfaceFunction, SurfaceModule, decode_const_file, decompile_build_dir,
-    lift_native_bodies, parse_constants,
+    decompile_bytes, lift_native_bodies, parse_constants,
 };
 use serde_json::{Value, json};
 
@@ -206,48 +206,77 @@ fn native_body_lift_behavioral_differential_against_cpython() {
     let recovery: NativeBodyRecovery = lift_native_bodies(&bytes, Some(&constants))
         .expect("native body recovery on real release pyd");
 
-    let ground_truth: BTreeSet<(u32, Option<usize>)> = probe_source_shapes(&py, &src);
+    let truth: BTreeMap<String, (u32, Option<usize>)> = probe_source_shapes(&py, &src);
     assert!(
-        !ground_truth.is_empty(),
-        "ground-truth probe of the source module returned no pass-through shapes"
+        !truth.is_empty(),
+        "ground-truth probe of the source module returned no pass-through functions"
     );
-
-    let mut reconstructed_shapes: Vec<(u32, Option<usize>)> = Vec::new();
     for function in &recovery.functions {
         if function.recovered_stmts.is_empty() {
             continue;
         }
         let shape: (u32, Option<usize>) =
             shape_of(function).expect("reconstructed body must be a recognized pass-through/None");
-        assert!(
-            ground_truth.contains(&shape),
-            "SOUNDNESS VIOLATION: reconstructed shape {shape:?} for {} does not correspond to any \
-             real source function behavior {ground_truth:?}",
+        assert_eq!(
+            truth.get(&function.name),
+            Some(&shape),
+            "{} was reconstructed as {shape:?}, which is not what its own source does",
             function.name
         );
-        assert_behaviorally_equivalent(&py, function, shape);
-        reconstructed_shapes.push(shape);
     }
 
-    let unique: BTreeSet<(u32, Option<usize>)> = reconstructed_shapes.iter().copied().collect();
-    eprintln!(
-        "NATIVE BODY LIFT vs CPython: located {} impl(s); reconstructed {} behaviorally-exact \
-         body/bodies ({} distinct shapes); ground-truth pass-through shapes in source: {}",
-        recovery.located_impls,
-        reconstructed_shapes.len(),
-        unique.len(),
-        ground_truth.len()
+    let decompilation: NuitkaDecompilation =
+        decompile_bytes(&bytes).expect("decompile the fresh Nuitka extension");
+    let surface: &SurfaceModule = decompilation
+        .surface
+        .as_ref()
+        .expect("the fresh extension yields a recovered surface");
+    let recovered_names: BTreeSet<String> = surface
+        .functions
+        .iter()
+        .filter(|function: &&SurfaceFunction| function.body_recovered)
+        .map(|function: &SurfaceFunction| function.name.clone())
+        .collect();
+    let expected_names: BTreeSet<String> = truth.keys().cloned().collect();
+    assert!(
+        expected_names.is_subset(&recovered_names),
+        "every pass-through or None-returning source function must be recovered from its native \
+         body; expected {expected_names:?}, recovered {recovered_names:?}"
     );
 
-    assert_eq!(
-        unique, ground_truth,
-        "every pass-through or None-returning source function must be reconstructed from the \
-         native body, each exactly once"
+    let recovered_src: PathBuf = dir.path().join("gradmod_recovered.py");
+    std::fs::write(&recovered_src, surface.python_source.as_bytes())
+        .expect("write the recovered module");
+    let verdicts: BTreeMap<String, String> =
+        compare_with_source(&py, &src, &recovered_src, &recovered_names, None);
+    let differing: Vec<(&String, &String)> = verdicts
+        .iter()
+        .filter(|(_, verdict): &(&String, &String)| verdict.as_str() != "OK")
+        .collect();
+    assert!(
+        differing.is_empty(),
+        "recovered functions must behave as their source on the sentinel and integer batteries: \
+         {differing:?}\n{}",
+        surface.python_source
     );
     assert_eq!(
-        reconstructed_shapes.len(),
-        ground_truth.len(),
-        "each source shape belongs to exactly one function, so no shape may be reconstructed twice"
+        verdicts.keys().cloned().collect::<BTreeSet<String>>(),
+        recovered_names,
+        "the comparison must grade every recovered function"
+    );
+
+    let mutated: &String = expected_names
+        .iter()
+        .find(|name: &&String| truth.get(*name).is_some_and(|(argcount, _)| *argcount >= 2))
+        .expect("the source defines a pass-through function of two or more parameters");
+    let control: BTreeMap<String, String> =
+        compare_with_source(&py, &src, &recovered_src, &recovered_names, Some(mutated));
+    assert!(
+        control
+            .get(mutated)
+            .is_some_and(|verdict: &String| verdict.starts_with("DIFF")),
+        "replacing recovered {mutated} with a function returning its first argument must turn \
+         the comparison red: {control:?}"
     );
 }
 
@@ -590,7 +619,7 @@ fn real_nuitka_bytes_constants_match_cpython_and_digest_symbol() {
     );
 }
 
-fn probe_source_shapes(py: &Path, src: &Path) -> BTreeSet<(u32, Option<usize>)> {
+fn probe_source_shapes(py: &Path, src: &Path) -> BTreeMap<String, (u32, Option<usize>)> {
     let code: &str = r#"
 import importlib.util, sys, inspect
 spec = importlib.util.spec_from_file_location("gradmod", sys.argv[1])
@@ -600,8 +629,7 @@ sentinels = [object() for _ in range(8)]
 out = []
 for name, fn in inspect.getmembers(mod, inspect.isfunction):
     try:
-        sig = inspect.signature(fn)
-        n = len(sig.parameters)
+        n = len(inspect.signature(fn).parameters)
     except (TypeError, ValueError):
         continue
     args = sentinels[:n]
@@ -610,15 +638,12 @@ for name, fn in inspect.getmembers(mod, inspect.isfunction):
     except Exception:
         continue
     if result is None:
-        out.append(f"{n}:none")
+        out.append(f"{name}:{n}:none")
         continue
-    idx = None
     for i, a in enumerate(args):
         if result is a:
-            idx = i
+            out.append(f"{name}:{n}:{i}")
             break
-    if idx is not None:
-        out.append(f"{n}:{idx}")
 print("\n".join(out))
 "#;
     let output: Output = run_python(py, &["-c", code, &src.to_string_lossy()]);
@@ -628,54 +653,98 @@ print("\n".join(out))
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout: String = String::from_utf8_lossy(&output.stdout).into_owned();
-    let mut shapes: BTreeSet<(u32, Option<usize>)> = BTreeSet::new();
-    for line in stdout.lines() {
-        let Some((count, tail)): Option<(&str, &str)> = line.trim().split_once(':') else {
-            continue;
-        };
-        let Ok(argcount): Result<u32, _> = count.parse() else {
-            continue;
-        };
-        if tail == "none" {
-            shapes.insert((argcount, None));
-        } else if let Ok(index) = tail.parse::<usize>() {
-            shapes.insert((argcount, Some(index)));
-        }
-    }
-    shapes
+    stdout
+        .lines()
+        .map(|line: &str| {
+            let fields: Vec<&str> = line.trim().split(':').collect();
+            let [name, count, tail] = fields.as_slice() else {
+                panic!("ground-truth probe row {line:?}");
+            };
+            let argcount: u32 = count
+                .parse()
+                .unwrap_or_else(|error: std::num::ParseIntError| panic!("{line:?}: {error}"));
+            let target: Option<usize> = (*tail != "none").then(|| {
+                tail.parse()
+                    .unwrap_or_else(|error: std::num::ParseIntError| panic!("{line:?}: {error}"))
+            });
+            ((*name).to_owned(), (argcount, target))
+        })
+        .collect()
 }
 
-fn assert_behaviorally_equivalent(
+fn compare_with_source(
     py: &Path,
-    function: &NativeFunctionBody,
-    shape: (u32, Option<usize>),
-) {
-    let (argcount, target): (u32, Option<usize>) = shape;
-    let params: Vec<String> = (0..argcount).map(|i: u32| format!("a{i}")).collect();
-    let body: String = target.map_or_else(
-        || "return None".to_owned(),
-        |index: usize| format!("return a{index}"),
+    src: &Path,
+    recovered: &Path,
+    names: &BTreeSet<String>,
+    mutate: Option<&str>,
+) -> BTreeMap<String, String> {
+    let code: &str = r#"
+import importlib.util, itertools, sys
+
+def load(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+def outcome(function, args):
+    try:
+        result = function(*args)
+    except Exception as error:
+        return ("raise", type(error).__name__)
+    for index, arg in enumerate(args):
+        if result is arg:
+            return ("arg", index)
+    return ("value", repr(result))
+
+original = load("gradmod_original", sys.argv[1])
+recovered = load("gradmod_recovered", sys.argv[2])
+mutate = sys.argv[4]
+for name in sys.argv[3].split(","):
+    source_function = getattr(original, name, None)
+    recovered_function = getattr(recovered, name, None)
+    if source_function is None or recovered_function is None:
+        print(f"{name}\tMISSING")
+        continue
+    if name == mutate:
+        recovered_function = lambda *args: args[0]
+    count = source_function.__code__.co_argcount
+    batteries = [[object() for _ in range(count)]]
+    batteries += [list(values) for values in itertools.product([-3, 0, 2, 7], repeat=count)]
+    verdict = "OK"
+    for args in batteries:
+        want = outcome(source_function, args)
+        got = outcome(recovered_function, args)
+        if want != got:
+            verdict = f"DIFF {args!r}: source {want} recovered {got}"
+            break
+    print(f"{name}\t{verdict}")
+"#;
+    let joined: String = names.iter().cloned().collect::<Vec<String>>().join(",");
+    let output: Output = run_python(
+        py,
+        &[
+            "-c",
+            code,
+            &src.to_string_lossy(),
+            &recovered.to_string_lossy(),
+            &joined,
+            mutate.unwrap_or(""),
+        ],
     );
-    let recovered: String = format!("def rec({}):\n    {body}\n", params.join(", "));
-    let sentinels: Vec<String> = (0..argcount)
-        .map(|i: u32| format!("{}", 1000 + i))
-        .collect();
-    let want: String = target.map_or_else(
-        || "None".to_owned(),
-        |index: usize| format!("{}", 1000 + index as u32),
-    );
-    let code: String = format!("{recovered}\nprint(repr(rec({})))\n", sentinels.join(", "));
-    let output: Output = run_python(py, &["-c", &code]);
     assert!(
         output.status.success(),
-        "recovered body for {} failed to run: {}",
-        function.name,
+        "the source-versus-recovered comparison failed to run: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let got: String = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    assert_eq!(
-        got, want,
-        "recovered body for {} produced {got:?}, expected {want:?}",
-        function.name
-    );
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|line: &str| {
+            let (name, verdict): (&str, &str) = line
+                .split_once('\t')
+                .unwrap_or_else(|| panic!("comparison row {line:?}"));
+            (name.to_owned(), verdict.to_owned())
+        })
+        .collect()
 }

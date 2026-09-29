@@ -906,6 +906,15 @@ jobs:
           [string]$library = Join-Path $env:GITHUB_WORKSPACE "target/debug/$name"
           if (-not (Test-Path -LiteralPath $library -PathType Leaf)) { throw "Missing built extension: $library" }
           "DISROBE_PYTHON_EXTENSION=$library" >> $env:GITHUB_ENV
+      - name: provision Nuitka 4.1.1 for the native-body differential
+        if: matrix.shard == 'three'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python314="$(uv python find 3.14)"
+          uv pip install --python "$python314" --break-system-packages nuitka==4.1.1
+          "$python314" -m nuitka --version
+          echo "DISROBE_REQUIRE_NUITKA=1" >> "$GITHUB_ENV"
       - name: workspace shard three
         if: matrix.shard == 'three'
         run: >-
