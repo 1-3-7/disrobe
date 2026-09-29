@@ -21,7 +21,11 @@ Use **Stop** to cancel analysis and sample downloads. Switching modes or editing
 also stops pending work and clears its result. Sample downloads and analyses each time out
 after 30 seconds. The playground accepts files up to 64 MiB; use the CLI for larger inputs
 or longer runs. The analysis engine has a 512 MiB WebAssembly memory limit. A stopped or
-failed engine is discarded; the next request starts a fresh worker.
+failed engine is discarded; the next request starts a fresh worker. The engine is a 32-bit
+`wasm32` build, so offsets and sizes are 32-bit words there. The parsers use checked
+arithmetic on file-controlled values in both builds, but the hostile-input fuzz and
+parse-resilience suites run only on 64-bit hosts; the playground's parsers are not fuzzed at
+32 bits.
 
 APK inspection accepts up to 4096 archive entries, 32 MiB of decoded data per entry, and
 128 MiB across the archive. The decoded manifest is limited to 2 MiB. Resource-only APKs
