@@ -291,8 +291,8 @@ fn extend_from_native_deobf(bytes: &[u8], techniques: &mut Vec<AntiTechnique>) {
         push_unique_technique(techniques, AntiTechnique::OpaquePredicate);
     }
     if value
-        .get("cleaned_listing")
-        .is_some_and(serde_json::Value::is_string)
+        .get("anti_disassembly")
+        .is_some_and(serde_json::Value::is_object)
     {
         push_unique_technique(techniques, AntiTechnique::AntiDisassembly);
     }
@@ -2395,7 +2395,11 @@ mod tests {
             "bogus_branches": [{ "address": 8192 }],
             "mba_simplifications": [],
             "branch_folds": [],
-            "cleaned_listing": "entry:\n  ret\n",
+            "anti_disassembly": {
+                "junk_ranges": [{ "start": 4098, "end": 4099 }],
+                "overlap_addresses": []
+            },
+            "cleaned_listing": "entry:\n  jmp 0x1003\n  nop\n  ret\n",
             "stack_strings": [{ "value": "secret" }]
         });
         let child: ChildArtifact = anti_child("deobf.json", serde_json::to_vec(&report).unwrap());
@@ -2407,6 +2411,28 @@ mod tests {
         assert!(techniques.contains(&AntiTechnique::OpaquePredicate));
         assert!(techniques.contains(&AntiTechnique::AntiDisassembly));
         assert!(techniques.contains(&AntiTechnique::StringEncryption));
+    }
+
+    #[test]
+    fn a_listing_without_conflicting_decodes_is_not_anti_disassembly() {
+        let report: serde_json::Value = serde_json::json!({
+            "cff": null,
+            "bogus_branches": [],
+            "mba_simplifications": [],
+            "branch_folds": [],
+            "anti_disassembly": null,
+            "cleaned_listing": "entry:\n  ret\n",
+            "stack_strings": []
+        });
+        let child: ChildArtifact = anti_child("deobf.json", serde_json::to_vec(&report).unwrap());
+        let mut metadata: BTreeMap<String, String> = BTreeMap::new();
+        extend_anti_metadata("native.packer-unpack", &[child], &mut metadata).expect("metadata");
+        let techniques: Vec<AntiTechnique> =
+            recovered_techniques_for("native.packer-unpack", &metadata).expect("techniques");
+        assert!(
+            !techniques.contains(&AntiTechnique::AntiDisassembly),
+            "an ordinary listing of `entry: ret` has no conflicting decodes: {techniques:?}"
+        );
     }
 
     #[test]
