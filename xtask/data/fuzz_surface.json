@@ -9,9 +9,9 @@
     "targets_declaring_entry_points": 9,
     "with_declared_coverage_guided_target": 120,
     "with_replay_proven_semantic_reach": 18,
-    "named_by_a_resilience_suite": 662,
+    "named_by_a_resilience_suite": 650,
     "named_by_a_suite_recording_seed_reach": 131,
-    "named_by_neither": 771
+    "named_by_neither": 783
   },
   "seed_reach": {
     "satisfied_obligations": 23,
@@ -435,7 +435,7 @@
       "parse_shaped": 13,
       "with_declared_coverage_guided_target": 0,
       "with_replay_proven_semantic_reach": 0,
-      "named_by_a_resilience_suite": 3,
+      "named_by_a_resilience_suite": 2,
       "named_by_a_suite_recording_seed_reach": 1,
       "named_by_neither": [
         "disrobe-pass-js-deob/src/v8/asar_listing.rs::list_asar",
@@ -456,6 +456,7 @@
         "disrobe-pass-js-deob/src/v8/sea.rs::parse_sea_blob_at",
         "disrobe-pass-js-deob/src/v8/serialized_code.rs::count_sfi_markers",
         "disrobe-pass-js-deob/src/v8/serialized_code.rs::extract_framed_strings",
+        "disrobe-pass-js-deob/src/v8/serialized_code.rs::recover_structure",
         "disrobe-pass-js-deob/src/v8/tauri.rs::classify_tauri_binary"
       ]
     },
@@ -596,7 +597,7 @@
       "parse_shaped": 73,
       "with_declared_coverage_guided_target": 0,
       "with_replay_proven_semantic_reach": 0,
-      "named_by_a_resilience_suite": 27,
+      "named_by_a_resilience_suite": 18,
       "named_by_a_suite_recording_seed_reach": 11,
       "named_by_neither": [
         "disrobe-pass-native/src/api_hash.rs::harvested_hash_constants",
@@ -613,6 +614,7 @@
         "disrobe-pass-native/src/cxx_recovery.rs::parse_windows_seh_scope_table",
         "disrobe-pass-native/src/cxx_recovery.rs::recover_cxx_hierarchy",
         "disrobe-pass-native/src/cxx_recovery.rs::recover_itanium_exception_regions",
+        "disrobe-pass-native/src/debug_info.rs::parse_stabs",
         "disrobe-pass-native/src/debug_info.rs::recover_pdb",
         "disrobe-pass-native/src/debug_info.rs::summarize_pdb",
         "disrobe-pass-native/src/delphi/mod.rs::decode_dfm",
@@ -690,6 +692,7 @@
         "disrobe-pass-native/src/packers/kkrunchy_k7_phase2.rs::unpack_kkrunchy_k7_emulated",
         "disrobe-pass-native/src/packers/kkrunchy_phase2.rs::unpack_kkrunchy_phase2_emulated",
         "disrobe-pass-native/src/packers/kkrunchy_unpack.rs::compute_byte_recovery",
+        "disrobe-pass-native/src/packers/kkrunchy_unpack.rs::dis_filter",
         "disrobe-pass-native/src/packers/kkrunchy_unpack.rs::dis_unfilter",
         "disrobe-pass-native/src/packers/kkrunchy_unpack.rs::looks_like_kkrunchy",
         "disrobe-pass-native/src/packers/kkrunchy_unpack.rs::parse_kkrunchy_header",
@@ -725,6 +728,7 @@
         "disrobe-pass-native/src/packers/overlay.rs::analyze_pe_overlay",
         "disrobe-pass-native/src/packers/overlay.rs::carve_overlay",
         "disrobe-pass-native/src/packers/overlay.rs::normalize_pe",
+        "disrobe-pass-native/src/packers/overlay.rs::route_overlay_archive",
         "disrobe-pass-native/src/packers/overlay_extent.rs::archive_true_extent",
         "disrobe-pass-native/src/packers/pe_resource.rs::parse_resource_tree",
         "disrobe-pass-native/src/packers/pe_resource.rs::recover_resource_directory",
@@ -732,6 +736,8 @@
         "disrobe-pass-native/src/packers/pe_sections.rs::name_is",
         "disrobe-pass-native/src/packers/pe_sections.rs::name_trimmed",
         "disrobe-pass-native/src/packers/pe_sections.rs::parse_pe_image",
+        "disrobe-pass-native/src/packers/pe_sections.rs::read_u16",
+        "disrobe-pass-native/src/packers/pe_sections.rs::read_u32",
         "disrobe-pass-native/src/packers/pe_sections.rs::read_u64",
         "disrobe-pass-native/src/packers/pe_sections.rs::section_by_name",
         "disrobe-pass-native/src/packers/pe_unbind.rs::unbind_pe",
@@ -767,6 +773,7 @@
         "disrobe-pass-native/src/pass.rs::analyze_deobf_report",
         "disrobe-pass-native/src/patch.rs::apply_patches",
         "disrobe-pass-native/src/patch.rs::apply_patches_reported",
+        "disrobe-pass-native/src/pdb_cxx.rs::reconstruct_pdb_cxx",
         "disrobe-pass-native/src/plt_resolve.rs::classify_tail_calls",
         "disrobe-pass-native/src/plt_resolve.rs::resolve_elf_plt_imports",
         "disrobe-pass-native/src/plt_resolve.rs::resolve_macho_stub_imports",
@@ -802,6 +809,9 @@
         "disrobe-pass-native/src/stream_disasm.rs::stream_disasm_x86",
         "disrobe-pass-native/src/stub_emu/cpu.rs::map_buffer",
         "disrobe-pass-native/src/stub_emu/mem.rs::write_unchecked",
+        "disrobe-pass-native/src/vm_devirt/detect.rs::detect_vm",
+        "disrobe-pass-native/src/vm_devirt/detect.rs::recover_structure",
+        "disrobe-pass-native/src/vm_devirt/detect.rs::recover_structure_codescan_only",
         "disrobe-pass-native/src/vm_devirt/fingerprint.rs::fingerprint_handlers",
         "disrobe-pass-native/src/vm_devirt/lift.rs::lift_bytecode"
       ]
@@ -976,7 +986,7 @@
       "parse_shaped": 19,
       "with_declared_coverage_guided_target": 0,
       "with_replay_proven_semantic_reach": 0,
-      "named_by_a_resilience_suite": 19,
+      "named_by_a_resilience_suite": 17,
       "named_by_a_suite_recording_seed_reach": 5,
       "named_by_neither": [
         "disrobe-pass-shell/src/chain_detector.rs::recover_vba_source",
@@ -994,6 +1004,8 @@
         "disrobe-pass-shell/src/xlm/biff.rs::iter_biff12",
         "disrobe-pass-shell/src/xlm/biff.rs::iter_biff8",
         "disrobe-pass-shell/src/xlm/biff.rs::read_short_xlunicode",
+        "disrobe-pass-shell/src/xlm/biff.rs::read_u16",
+        "disrobe-pass-shell/src/xlm/biff.rs::read_u32",
         "disrobe-pass-shell/src/xlm/biff.rs::read_varint_u32",
         "disrobe-pass-shell/src/xlm/biff.rs::read_wide_string",
         "disrobe-pass-shell/src/xlm/biff.rs::read_wide_string32",
