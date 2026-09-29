@@ -2,7 +2,6 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    clippy::print_stderr,
     clippy::pedantic,
     clippy::nursery,
     clippy::missing_const_for_fn

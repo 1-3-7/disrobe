@@ -1,9 +1,6 @@
 #![allow(
     clippy::expect_used,
     clippy::unwrap_used,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_possible_wrap,
     clippy::doc_markdown,
     clippy::pedantic,
     clippy::nursery
@@ -735,7 +732,7 @@ fn measures_method_body_recovery_rate() {
                 lifted
                     .fidelity_warning()
                     .is_some_and(|w: String| w.contains("not fully restructured")),
-                "an unstructured body must declare its residual graph honestly"
+                "an unstructured body must declare its residual graph"
             );
         }
     }

@@ -918,7 +918,7 @@ pub struct DisasmLine {
 }
 
 #[must_use]
-#[allow(clippy::too_many_lines, clippy::match_same_arms)]
+#[allow(clippy::match_same_arms)]
 pub fn opcode_mnemonic(op: u8) -> &'static str {
     match op {
         0x01 => "bkpt",

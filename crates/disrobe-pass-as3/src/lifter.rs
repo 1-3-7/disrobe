@@ -2719,7 +2719,6 @@ fn block_entry_heights(
     }
 }
 
-#[allow(clippy::too_many_lines)]
 fn step(lifter: &mut Lifter<'_>, line: &DisasmLine, next_off: usize, end_off: usize) {
     let op: u8 = line.opcode;
     let ops: &[i64] = &line.operands;
