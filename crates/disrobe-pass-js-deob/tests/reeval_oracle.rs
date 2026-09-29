@@ -234,7 +234,7 @@ fn jsconfuser_algebraic_opaque_true_guards_reeval_equivalent() {
     );
     assert!(
         result.rewritten_source.contains("n > 5"),
-        "the genuinely data-dependent inner branch must be preserved:\n{}",
+        "the data-dependent inner branch must be preserved:\n{}",
         result.rewritten_source
     );
     assert_equivalent(
@@ -328,7 +328,7 @@ fn jsconfuser_algebraic_opaque_refuses_data_dependent_predicate() {
     let result: OpaqueReversalResult = reverse_opaque_predicates(OBF_ALGEBRAIC_DATA_DEPENDENT);
     assert_eq!(
         result.predicates_folded, 0,
-        "a genuinely input-dependent equality must never be folded:\n{}",
+        "an input-dependent equality must never be folded:\n{}",
         result.rewritten_source
     );
     let got: String = eval_capture(&result.rewritten_source).expect("recovered evaluates");

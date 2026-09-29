@@ -113,13 +113,13 @@ fn assert_content_present_byte_identical(label: &str, report: &RecoveryReport, m
         } else {
             assert!(
                 recovered.reconstructed,
-                "{label}/{base}: absent content must yield an honest reconstructed stub, never fabricated source"
+                "{label}/{base}: absent content must yield a reconstructed stub, never fabricated source"
             );
             let stub_text: String =
                 String::from_utf8(recovered.bytes.clone()).expect("stub is utf8");
             assert!(
                 stub_text.contains("reconstructed skeleton"),
-                "{label}/{base}: stub must carry the honest reconstruction banner, got {stub_text}"
+                "{label}/{base}: stub must carry the reconstruction banner, got {stub_text}"
             );
             graded_absent += 1;
         }
@@ -438,7 +438,7 @@ fn partial_content_map_recovers_present_and_stubs_absent_without_fabrication() {
     );
     assert_eq!(
         stub_count, 1,
-        "the one stripped source must become exactly one honest stub, never fabricated"
+        "the one stripped source must become exactly one stub, never fabricated"
     );
     assert_content_present_byte_identical("partial-content", &report, &map_json);
     let greet: &RecoveredFile =

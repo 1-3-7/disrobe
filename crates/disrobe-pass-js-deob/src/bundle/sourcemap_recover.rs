@@ -1688,7 +1688,7 @@ mod tests {
         );
         assert!(
             recovery.report.is_none(),
-            "an unresolvable external map yields no report, honestly walled"
+            "an unresolvable external map yields no report, walled"
         );
     }
 

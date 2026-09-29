@@ -66,7 +66,7 @@ fn real_obfuscator_io_fixture_hides_the_clean_string_literals() {
     for tok in STRING_ARRAY_LITERALS {
         assert!(
             !REAL_OBFUSCATOR_IO.contains(tok),
-            "fixture must be genuinely obfuscated: string literal {:?} must be string-array-encoded, \
+            "fixture must be obfuscated: string literal {:?} must be string-array-encoded, \
              not present verbatim in the real tool output",
             tok
         );

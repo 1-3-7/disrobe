@@ -310,10 +310,6 @@ static REGEX_REWRITERS: &[RegexRewriter] = &[
         coverage: Coverage::Ungraded(REASON_ESOTERIC),
     },
     RegexRewriter {
-        module: "src/esoteric/eval_indirection.rs",
-        coverage: Coverage::Ungraded(REASON_ESOTERIC),
-    },
-    RegexRewriter {
         module: "src/esoteric/packer.rs",
         coverage: Coverage::Ungraded(REASON_ESOTERIC),
     },
