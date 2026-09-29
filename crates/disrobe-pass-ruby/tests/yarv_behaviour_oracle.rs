@@ -141,6 +141,11 @@ fn recovered_guard_clauses_print_what_the_original_prints() {
 }
 
 #[test]
+fn recovered_blocks_and_defined_checks_print_what_the_original_prints() {
+    assert_same_output("introspection.rb");
+}
+
+#[test]
 fn a_changed_constant_in_the_recovered_program_turns_the_grade_red() {
     let graded: Graded = grade("programs.rb", |source: &str| {
         source.replacen("3.14159", "3.0", 1)

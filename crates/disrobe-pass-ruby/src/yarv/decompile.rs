@@ -226,15 +226,114 @@ fn render_iseq_statements(
     stmts
 }
 
+fn try_guarded_defined(
+    body: &YarvIseqBody,
+    ctx: &DecompileContext<'_>,
+    depth: u32,
+    i: usize,
+    hi: usize,
+    targets: &[Option<usize>],
+    stack: &mut Vec<String>,
+) -> Option<usize> {
+    if body.instructions.get(i + 1)?.mnemonic != "branchunless" {
+        return None;
+    }
+    let join: usize = targets.get(i + 1).copied().flatten()?;
+    if join < i + 4 || join > hi {
+        return None;
+    }
+    let tail_at = |defined: usize| -> bool {
+        body.instructions[defined].mnemonic == "defined"
+            && body.instructions[defined + 1].mnemonic == "swap"
+            && body.instructions[defined + 2].mnemonic == "pop"
+    };
+    let last_idx: usize = if join < hi && tail_at(join - 2) {
+        join - 2
+    } else if join >= i + 5 && tail_at(join - 3) {
+        join - 3
+    } else {
+        return None;
+    };
+    let end: usize = last_idx + 3;
+    if end > hi || stack.len() < 2 {
+        return None;
+    }
+    let last: &YarvIbfInstruction = &body.instructions[last_idx];
+    let is_link_check = |k: usize| -> bool {
+        body.instructions[k].mnemonic == "defined"
+            && body
+                .instructions
+                .get(k + 1)
+                .is_some_and(|x| x.mnemonic == "branchunless")
+            && targets.get(k + 1).copied().flatten() == Some(join)
+    };
+    let mut links: Vec<usize> = Vec::new();
+    let mut k: usize = i + 2;
+    while k < last_idx {
+        if is_link_check(k) {
+            links.push(k);
+            k += 2;
+            continue;
+        }
+        if matches!(
+            body.instructions[k].mnemonic.as_str(),
+            "branchif" | "branchunless" | "branchnil" | "jump" | "defined" | "leave" | "throw"
+        ) {
+            return None;
+        }
+        k += 1;
+    }
+    let mut work: Vec<String> = stack.clone();
+    work.pop();
+    let mut sink: Vec<String> = Vec::new();
+    let mut seg_lo: usize = i + 2;
+    for link in links {
+        render_region(
+            body, ctx, depth, seg_lo, link, targets, &mut work, &mut sink,
+        );
+        work.pop()?;
+        seg_lo = link + 2;
+    }
+    render_region(
+        body, ctx, depth, seg_lo, last_idx, targets, &mut work, &mut sink,
+    );
+    if !sink.is_empty() {
+        return None;
+    }
+    let receiver: String = work.pop()?;
+    let name: String = defined_operand(last);
+    let target: String = match operand_num(last, 0) {
+        DEFINED_METHOD => format!("{}.{name}", assignment_receiver(receiver)),
+        DEFINED_CONST | DEFINED_CONST_FROM => format!("{receiver}::{name}"),
+        _ => return None,
+    };
+    let slot: &mut String = work.last_mut()?;
+    *slot = format!("defined?({target})");
+    *stack = work;
+    Some(end)
+}
+
+fn is_user_rescue(entry: &YarvCatchEntry, ctx: &DecompileContext<'_>) -> bool {
+    if entry.catch_type != CatchType::Rescue {
+        return false;
+    }
+    let Some(handler): Option<&YarvIseqBody> = entry.handler_iseq.and_then(|h| ctx.body(h)) else {
+        return false;
+    };
+    let is_defined_guard: bool = matches!(
+        handler.instructions.as_slice(),
+        [nil, leave] if nil.mnemonic == "putnil" && leave.mnemonic == "leave"
+    );
+    !is_defined_guard
+}
+
 fn try_render_exception_region(
     body: &YarvIseqBody,
     ctx: &DecompileContext<'_>,
     depth: u32,
 ) -> Option<Vec<String>> {
-    let rescue: Option<&YarvCatchEntry> = body
-        .catch_entries
-        .iter()
-        .find(|e| e.catch_type == CatchType::Rescue && e.handler_iseq.is_some());
+    let rescue: Option<&YarvCatchEntry> =
+        body.catch_entries.iter().find(|e| is_user_rescue(e, ctx));
     let ensure: Option<&YarvCatchEntry> = body
         .catch_entries
         .iter()
@@ -397,9 +496,10 @@ fn try_inline_rescue(
 ) -> Option<usize> {
     let rt_pc: Vec<u32> = runtime_pcs(body);
     let here: u32 = *rt_pc.get(i)?;
-    let entry: &YarvCatchEntry = body.catch_entries.iter().find(|e: &&YarvCatchEntry| {
-        e.catch_type == CatchType::Rescue && e.handler_iseq.is_some() && e.start_pc == here
-    })?;
+    let entry: &YarvCatchEntry = body
+        .catch_entries
+        .iter()
+        .find(|e: &&YarvCatchEntry| is_user_rescue(e, ctx) && e.start_pc == here)?;
     let end: usize = index_at_pc(&rt_pc, entry.end_pc);
     let cont: usize = index_at_pc(&rt_pc, entry.cont_pc).max(end);
     if end <= i || end >= hi || cont > hi {
@@ -626,9 +726,18 @@ fn render_region(
             i = next;
             continue;
         }
-        if m == "leave" && ctx.is_method_body(body.index) && leave_is_inside_a_loop(i, targets) {
+        if m == "defined"
+            && let Some(next) = try_guarded_defined(body, ctx, depth, i, hi, targets, stack)
+        {
+            i = next;
+            continue;
+        }
+        if m == "leave"
+            && let Some(keyword) = ctx.early_exit_keyword(body.index)
+            && leave_is_inside_a_loop(i, targets)
+        {
             let value: String = stack.pop().unwrap_or_default();
-            emit_value_flow(stmts, depth, "return", value);
+            emit_value_flow(stmts, depth, keyword, value);
             i += 1;
             continue;
         }
@@ -786,7 +895,6 @@ fn try_guard_return(
     if merged.target >= hi
         || leave <= merged.branch_idx
         || body.instructions[leave].mnemonic != "leave"
-        || !ctx.is_method_body(body.index)
         || (merged.branch_idx + 1..leave).any(|j| {
             matches!(
                 body.instructions[j].mnemonic.as_str(),
@@ -811,13 +919,21 @@ fn try_guard_return(
     if !then_stmts.is_empty() || then_stack.len() > 1 {
         return None;
     }
+    let exit_keyword: &str = ctx.early_exit_keyword(body.index)?;
     let value: String = then_stack.pop().unwrap_or_default();
-    let exit: String = if value.is_empty() || value == "nil" {
-        "return".to_owned()
-    } else {
-        format!("return {value}")
-    };
     let keyword: &str = if merged.branch_if { "unless" } else { "if" };
+    let tail_returns_nil: bool = hi == merged.target + 2
+        && body.instructions[merged.target].mnemonic == "putnil"
+        && body.instructions[merged.target + 1].mnemonic == "leave";
+    if tail_returns_nil && !value.is_empty() && value != "nil" {
+        emit_stmt(stmts, depth, format!("{value} {keyword} {}", merged.cond));
+        return Some(hi);
+    }
+    let exit: String = if value.is_empty() || value == "nil" {
+        exit_keyword.to_owned()
+    } else {
+        format!("{exit_keyword} {value}")
+    };
     emit_stmt(stmts, depth, format!("{exit} {keyword} {}", merged.cond));
     Some(merged.target)
 }
@@ -989,7 +1105,14 @@ fn try_massign(
         .strip_prefix('[')
         .and_then(|s| s.strip_suffix(']'))
         .unwrap_or(&rhs_raw);
-    emit_stmt(stmts, depth, format!("{} = {rhs}", targets.join(", ")));
+    let assignment: String = format!("{} = {rhs}", targets.join(", "));
+    let retained: bool = i > 0
+        && body.instructions[i - 1].mnemonic == "dup"
+        && stack.last().is_some_and(|top| *top == rhs_raw);
+    match stack.last_mut() {
+        Some(top) if retained => *top = format!("({assignment})"),
+        _ => emit_stmt(stmts, depth, assignment),
+    }
     Some(j)
 }
 
@@ -3409,6 +3532,7 @@ fn compound_value(body: &YarvIseqBody, lo: usize, set_idx: usize) -> Option<Stri
         enclosing_scopes: Vec::new(),
         pattern_present: Rc::from(Vec::<bool>::new()),
         method_bodies: Rc::from(Vec::<bool>::new()),
+        block_bodies: Rc::from(Vec::<bool>::new()),
     };
     for j in lo..set_idx {
         let m: &str = body.instructions[j].mnemonic.as_str();
@@ -3588,6 +3712,7 @@ struct DecompileContext<'a> {
     enclosing_scopes: Vec<Vec<Option<String>>>,
     pattern_present: Rc<[bool]>,
     method_bodies: Rc<[bool]>,
+    block_bodies: Rc<[bool]>,
 }
 
 impl<'a> DecompileContext<'a> {
@@ -3601,11 +3726,19 @@ impl<'a> DecompileContext<'a> {
         let mut bodies_by_index: Vec<Option<&'a YarvIseqBody>> = vec![None; max_index];
         let mut pattern_present: Vec<bool> = vec![false; max_index];
         let mut method_bodies: Vec<bool> = vec![false; max_index];
+        let mut block_bodies: Vec<bool> = vec![false; max_index];
         for body in &image.iseqs {
             for instr in &body.instructions {
-                if matches!(instr.mnemonic.as_str(), "definemethod" | "definesmethod")
+                let kind: Option<&mut Vec<bool>> = match instr.mnemonic.as_str() {
+                    "definemethod" | "definesmethod" => Some(&mut method_bodies),
+                    "send" | "sendforward" | "invokesuper" | "invokesuperforward" => {
+                        Some(&mut block_bodies)
+                    }
+                    _ => None,
+                };
+                if let Some(flags) = kind
                     && let Some(YarvOperand::IseqRef(index)) = instr.operands.get(1)
-                    && let Some(flag) = method_bodies.get_mut(*index as usize)
+                    && let Some(flag) = flags.get_mut(*index as usize)
                 {
                     *flag = true;
                 }
@@ -3624,6 +3757,7 @@ impl<'a> DecompileContext<'a> {
             enclosing_scopes: Vec::new(),
             pattern_present: Rc::from(pattern_present),
             method_bodies: Rc::from(method_bodies),
+            block_bodies: Rc::from(block_bodies),
         }
     }
 
@@ -3638,14 +3772,19 @@ impl<'a> DecompileContext<'a> {
             enclosing_scopes,
             pattern_present: Rc::clone(&self.pattern_present),
             method_bodies: Rc::clone(&self.method_bodies),
+            block_bodies: Rc::clone(&self.block_bodies),
         }
     }
 
-    fn is_method_body(&self, iseq_index: u32) -> bool {
-        self.method_bodies
-            .get(iseq_index as usize)
-            .copied()
-            .unwrap_or(false)
+    fn early_exit_keyword(&self, iseq_index: u32) -> Option<&'static str> {
+        let index: usize = iseq_index as usize;
+        if self.method_bodies.get(index).copied().unwrap_or(false) {
+            Some("return")
+        } else if self.block_bodies.get(index).copied().unwrap_or(false) {
+            Some("next")
+        } else {
+            None
+        }
     }
 
     fn body_has_pattern(&self, iseq_index: u32) -> bool {
@@ -3714,7 +3853,47 @@ fn local_name(local_table: &[Option<String>], operand: u64) -> String {
 
 #[inline]
 fn emit_stmt(stmts: &mut Vec<String>, depth: u32, line: String) {
-    stmts.push(format!("{}{line}", indent(depth)));
+    let text: &str = unwrapped_assignment(&line).unwrap_or(&line);
+    stmts.push(format!("{}{text}", indent(depth)));
+}
+
+fn unwrapped_assignment(line: &str) -> Option<&str> {
+    let inner: &str = line.strip_prefix('(')?.strip_suffix(')')?;
+    if inner.starts_with('{') {
+        return None;
+    }
+    let mut depth: i32 = 0;
+    let mut quote: Option<char> = None;
+    let mut escaped: bool = false;
+    let mut assigns: bool = false;
+    let chars: Vec<char> = inner.chars().collect();
+    for (k, &c) in chars.iter().enumerate() {
+        if let Some(q) = quote {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == q {
+                quote = None;
+            }
+            continue;
+        }
+        match c {
+            '"' | '\'' => quote = Some(c),
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => {
+                depth -= 1;
+                if depth < 0 {
+                    return None;
+                }
+            }
+            '=' if depth == 0 && k > 0 && chars[k - 1] == ' ' && chars.get(k + 1) == Some(&' ') => {
+                assigns = true;
+            }
+            _ => {}
+        }
+    }
+    (depth == 0 && quote.is_none() && assigns).then_some(inner)
 }
 
 #[allow(clippy::match_same_arms, clippy::too_many_lines)]
@@ -3874,7 +4053,7 @@ fn step(
             let name: String = defined_operand(instr);
             let target: String = match operand_num(instr, 0) {
                 DEFINED_METHOD => format!("{base}.{name}"),
-                DEFINED_CONST if base != "nil" => format!("{base}::{name}"),
+                DEFINED_CONST | DEFINED_CONST_FROM if base != "nil" => format!("{base}::{name}"),
                 DEFINED_YIELD => "yield".to_owned(),
                 DEFINED_ZSUPER => "super".to_owned(),
                 _ => name,
@@ -5116,6 +5295,7 @@ const DEFINED_CONST: u64 = 6;
 const DEFINED_METHOD: u64 = 7;
 const DEFINED_YIELD: u64 = 8;
 const DEFINED_ZSUPER: u64 = 9;
+const DEFINED_CONST_FROM: u64 = 17;
 
 fn defined_operand(instr: &YarvIbfInstruction) -> String {
     let raw: String = match instr.operands.get(1) {
