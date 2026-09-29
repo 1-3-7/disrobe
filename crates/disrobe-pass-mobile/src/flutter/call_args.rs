@@ -1607,7 +1607,7 @@ fn apply_memory(state: &mut TrackState, raw: u32) {
             state.define_float(rt2, None);
         }
     } else {
-        let value: Option<DartValue> = load_value(state, raw, rn);
+        let value: Option<DartValue> = load_value(state, raw);
         state.define(rt, value);
         if rt == DART_IC_DATA_REGISTER && rn == DART_POOL_REGISTER {
             state.selector_registers.insert(rt);
@@ -1621,7 +1621,7 @@ fn apply_memory(state: &mut TrackState, raw: u32) {
     }
 }
 
-fn load_value(state: &TrackState, raw: u32, rn: u8) -> Option<DartValue> {
+fn load_value(state: &TrackState, raw: u32) -> Option<DartValue> {
     if let Some((_, base, byte_offset)) = ldr_imm_unsigned(raw) {
         if base == DART_POOL_REGISTER {
             return Some(DartValue::Pool {
@@ -1648,7 +1648,6 @@ fn load_value(state: &TrackState, raw: u32, rn: u8) -> Option<DartValue> {
         }
         return field_of(state, base, Some(offset));
     }
-    let _ = rn;
     None
 }
 

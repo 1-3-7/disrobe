@@ -2944,7 +2944,6 @@ mod tests {
         code.extend_from_slice(&[1u8, 1u8]);
         code.push(opcode_byte("LoadConstZero"));
         code.push(2u8);
-        let jbase: usize = code.len();
         code.push(opcode_byte("JNotLess"));
         let after_target: i8 = 6;
         code.push(after_target as u8);
@@ -2953,7 +2952,6 @@ mod tests {
         code.push(1u8);
         code.push(opcode_byte("Ret"));
         code.push(2u8);
-        let _ = jbase;
         let module: HermesModule = module_with(&["cmp"], &[], code, 2);
         let f: DecompiledFunction = decompile_function(&module, 0);
         assert!(f.has_if, "expected if; src: {}", f.source);
@@ -3873,12 +3871,10 @@ mod tests {
         while (code.len()) % 4 != 0 {
             code.push(opcode_byte("Debugger"));
         }
-        let table_at: usize = code.len();
         for k in 0i32..3 {
             let rel: i32 = 200 + k * 4 - switch_off as i32;
             code.extend_from_slice(&rel.to_le_bytes());
         }
-        let _ = table_at;
         let module: HermesModule = module_with(&[], &[], code, 2);
         let f: DecompiledFunction = decompile_function(&module, 0);
         assert!(
