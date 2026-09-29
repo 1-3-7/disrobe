@@ -17,6 +17,7 @@ const MAX_FLOW_WORDS: usize = 1 << 22;
 pub(crate) struct RegisterAccess {
     pub(crate) uses: Vec<u16>,
     pub(crate) defs: Vec<u16>,
+    pub(crate) throws: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -219,12 +220,17 @@ impl RegisterFlow {
                         .map(|&node: &usize| (register, node))
                 })
                 .collect();
-            let mut history: BTreeMap<u16, Vec<usize>> = current
-                .iter()
-                .map(|(&register, &node): (&u16, &usize)| (register, vec![node]))
-                .collect();
+            let handler_registers: &RegisterSet = handler_live.get(index)?;
+            let mut thrown: BTreeMap<u16, BTreeSet<usize>> = BTreeMap::new();
             for insn in block.insn_range.0..block.insn_range.1 {
                 let access: &RegisterAccess = accesses.get(insn)?;
+                if access.throws {
+                    for register in handler_registers.iter() {
+                        if let Some(&node) = current.get(&register) {
+                            thrown.entry(register).or_default().insert(node);
+                        }
+                    }
+                }
                 for &register in &access.uses {
                     let Some(&node): Option<&usize> = current.get(&register) else {
                         continue;
@@ -241,7 +247,6 @@ impl RegisterFlow {
                     def_nodes.insert((insn, register), node);
                     def_uses.insert(node, DefUses::default());
                     current.insert(register, node);
-                    history.entry(register).or_default().push(node);
                 }
             }
             for edge in &block.successors {
@@ -251,7 +256,10 @@ impl RegisterFlow {
                         continue;
                     };
                     let flowing: Vec<usize> = if matches!(edge.kind, EdgeKind::Exception) {
-                        history.get(&register).cloned().unwrap_or_default()
+                        thrown
+                            .get(&register)
+                            .map(|nodes: &BTreeSet<usize>| nodes.iter().copied().collect())
+                            .unwrap_or_default()
                     } else {
                         current.get(&register).copied().into_iter().collect()
                     };

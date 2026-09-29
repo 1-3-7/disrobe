@@ -3151,16 +3151,14 @@ impl<'a> Structurer<'a> {
         let block: &BasicBlock = &self.cfg.blocks[head.0 as usize];
         let (true_t, false_t): (BlockId, BlockId) = if_targets(block);
         let join: Option<BlockId> = find_if_join(self.cfg, self.dom, head, true_t, false_t);
-        let then_stop: Option<BlockId> = join;
-        let then_region: Region = self.structure_at(false_t, then_stop);
+        let arm_stop: Option<BlockId> = join.or(stop);
+        let then_region: Region = self.structure_at(false_t, arm_stop);
         let has_else: bool = match join {
             Some(j) => true_t != j,
             None => true,
         };
         if has_else {
-            let else_stop: Option<BlockId> = join;
-            let else_region: Region = self.structure_at(true_t, else_stop);
-            let _ = stop;
+            let else_region: Region = self.structure_at(true_t, arm_stop);
             Region::IfThenElse {
                 head,
                 cond_negated: false,
@@ -3169,7 +3167,6 @@ impl<'a> Structurer<'a> {
                 join,
             }
         } else {
-            let _ = stop;
             Region::IfThen {
                 head,
                 cond_negated: false,

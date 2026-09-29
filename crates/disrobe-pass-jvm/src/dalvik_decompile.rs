@@ -1753,7 +1753,7 @@ fn source_parameter_names(item: &CodeItem, count: usize, offset: usize) -> Vec<S
 
 fn is_generated_local_name(name: &str) -> bool {
     name == "ex"
-        || ["arg", "var", "tmp", "p", "q", "r", "s"]
+        || ["arg", "var", "tmp", "p", "q", "r", "s", "ex"]
             .iter()
             .filter_map(|prefix: &&str| name.strip_prefix(prefix))
             .any(|rest: &str| {
@@ -1949,6 +1949,7 @@ fn lift_method(
         fully_lifted: !structurer.had_irreducible,
         assigned: std::collections::BTreeSet::new(),
         temporaries: 0,
+        catch_depth: 0,
     };
     let mut out: String = String::new();
     render_region(&mut render, &root, &mut out, 2);
@@ -1992,12 +1993,13 @@ fn register_accesses(dex: &DexFile, cfg: &Cfg, insns: &[DalvikInsn]) -> MethodAc
             } else {
                 None
             };
-            let access: RegisterAccess = match insn.op {
+            let mut access: RegisterAccess = match insn.op {
                 0x6E..=0x72 | 0x74..=0x78 => {
                     invoke_access(dex, insn, next, &allocated, &mut threaded)
                 }
                 _ => instruction_access(insn),
             };
+            access.throws = may_throw(insn.op);
             for &register in &access.defs {
                 if insn.op == 0x22 {
                     allocated.insert(register);
@@ -2037,6 +2039,7 @@ fn instruction_access(insn: &DalvikInsn) -> RegisterAccess {
     RegisterAccess {
         uses: uses.into_iter().flatten().collect(),
         defs: defs.into_iter().flatten().collect(),
+        throws: false,
     }
 }
 
@@ -2058,6 +2061,7 @@ fn invoke_access(
         return RegisterAccess {
             uses,
             defs: Vec::new(),
+            throws: false,
         };
     };
     if !is_static {
@@ -2089,7 +2093,11 @@ fn invoke_access(
             defs.push(receiver);
         }
     }
-    RegisterAccess { uses, defs }
+    RegisterAccess {
+        uses,
+        defs,
+        throws: false,
+    }
 }
 
 fn method_type_states(
@@ -2623,6 +2631,7 @@ struct RenderState<'a> {
     fully_lifted: bool,
     assigned: std::collections::BTreeSet<usize>,
     temporaries: usize,
+    catch_depth: usize,
 }
 
 struct BlockWalk {
@@ -2737,9 +2746,7 @@ fn render_region(state: &mut RenderState<'_>, region: &Region, out: &mut String,
             let _ = writeln!(out, "{pad}try {{");
             render_region(state, try_body, out, level + 1);
             for (catch_types, handler_region) in handlers {
-                let ty: String = descriptor::catch_clause(catch_types);
-                let _ = writeln!(out, "{pad}}} catch ({ty} ex) {{");
-                render_region(state, handler_region, out, level + 1);
+                render_catch(state, catch_types, handler_region, out, level);
             }
             let _ = writeln!(out, "{pad}}}");
         }
@@ -2753,9 +2760,7 @@ fn render_region(state: &mut RenderState<'_>, region: &Region, out: &mut String,
             let _ = writeln!(out, "{pad}try {{");
             render_region(state, try_body, out, level + 1);
             for (catch_types, handler_region) in handlers {
-                let ty: String = descriptor::catch_clause(catch_types);
-                let _ = writeln!(out, "{pad}}} catch ({ty} ex) {{");
-                render_region(state, handler_region, out, level + 1);
+                render_catch(state, catch_types, handler_region, out, level);
             }
             let _ = writeln!(out, "{pad}}} finally {{");
             render_region(state, finally_body, out, level + 1);
@@ -3581,6 +3586,30 @@ fn render_switch_subject(
         .unwrap_or_else(|| "var0".to_string())
 }
 
+fn catch_variable(depth: usize) -> String {
+    if depth == 0 {
+        "ex".to_string()
+    } else {
+        format!("ex{depth}")
+    }
+}
+
+fn render_catch(
+    state: &mut RenderState<'_>,
+    catch_types: &[String],
+    handler_region: &Region,
+    out: &mut String,
+    level: usize,
+) {
+    let pad: String = indent_string(level);
+    let ty: String = descriptor::catch_clause(catch_types);
+    let name: String = catch_variable(state.catch_depth);
+    let _ = writeln!(out, "{pad}}} catch ({ty} {name}) {{");
+    state.catch_depth += 1;
+    render_region(state, handler_region, out, level + 1);
+    state.catch_depth -= 1;
+}
+
 fn lift_insn_tracked(
     state: &mut RenderState<'_>,
     file: &mut RegisterFile,
@@ -3588,6 +3617,12 @@ fn lift_insn_tracked(
     pending: &mut Option<PendingResult>,
 ) -> LiftOutcome {
     let outcome: LiftOutcome = lift_insn(state.ctx, file, insn, pending);
+    if insn.op == 0x0D
+        && let Some(depth) = state.catch_depth.checked_sub(1)
+        && let Some(&dest) = insn.regs.first()
+    {
+        file.replace(dest, Expr::Local(catch_variable(depth)));
+    }
     record_lift_outcome(&mut state.fully_lifted, &outcome);
     outcome
 }

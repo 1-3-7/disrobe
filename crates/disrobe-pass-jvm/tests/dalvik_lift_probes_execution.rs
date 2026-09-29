@@ -14,9 +14,9 @@ const RELEASE_DEX: &[u8] =
     include_bytes!("fixtures/dalvik_lift_probes/LiftProbes-release-min21.dex");
 const DEBUG_DEX: &[u8] = include_bytes!("fixtures/dalvik_lift_probes/LiftProbes-debug-min21.dex");
 const PROVENANCE: &str = include_str!("fixtures/dalvik_lift_probes/provenance.toml");
-const AUTHORED_SHA256: &str = "01b52ab5e0ef1aee17902b63878c1083bced84faf1abf7b2f43f78259f09f086";
-const RELEASE_SHA256: &str = "0b237301c3282b244de3123a99fdc4dd98a1fb0fa9eb11c41ef7e6aa5a2d9b5b";
-const DEBUG_SHA256: &str = "b8aa044cb368989a25794cd872b319906d3c56c7dc8011224c5c131aa3a44bd8";
+const AUTHORED_SHA256: &str = "366ebee984a8e5dc900a61c9b5a1237bc78a487310f3a3a1b1c21b1bc445b846";
+const RELEASE_SHA256: &str = "0cc65e82257b664f5aa725c6880bc8fbe9618e2078da2de516138b89b681e3e9";
+const DEBUG_SHA256: &str = "033c70449a04667626e50caae3436a8a2212399d71b71a480eec9d858b17f07b";
 const UNIT: &str = "LiftProbes.java";
 const CLASS: &str = "LiftProbes";
 
@@ -130,6 +130,10 @@ fn probe(method: &str, calls: &[&str]) -> String {
 }
 
 fn assert_method_matches(name: &str, calls: &[&str]) -> String {
+    assert_method_matches_in(RELEASE_DEX, RELEASE_SHA256, name, calls)
+}
+
+fn assert_method_matches_in(dex: &[u8], sha256: &str, name: &str, calls: &[&str]) -> String {
     let scratch: ScratchDir = ScratchDir::create("dalvik_lift_probes_method").expect("scratch");
     let reference: String = execute(
         scratch.path(),
@@ -137,7 +141,7 @@ fn assert_method_matches(name: &str, calls: &[&str]) -> String {
         &probe(&method_text(AUTHORED, name), calls),
     );
     assert_eq!(reference.lines().count(), calls.len(), "{reference}");
-    let recovered: String = method_text(&recovered_unit(), name);
+    let recovered: String = method_text(&recovered_unit_from(dex, sha256), name);
     let printed: String = execute(scratch.path(), "recovered", &probe(&recovered, calls));
     assert_eq!(
         printed, reference,
@@ -150,7 +154,7 @@ fn assert_method_matches(name: &str, calls: &[&str]) -> String {
 fn the_recovered_class_recompiles_and_prints_the_authored_output() {
     let scratch: ScratchDir = ScratchDir::create("dalvik_lift_probes_unit").expect("scratch");
     let reference: String = execute(scratch.path(), "authored", AUTHORED);
-    assert_eq!(reference.lines().count(), 20, "{reference}");
+    assert_eq!(reference.lines().count(), 26, "{reference}");
     let recovered: String = recovered_unit();
     let printed: String = execute(scratch.path(), "recovered", &recovered);
     assert_eq!(
@@ -242,6 +246,34 @@ fn registers_reused_across_types_recompile_and_run_as_authored() {
         "temporaries",
         &["temporaries(0)", "temporaries(2)", "temporaries(5)"],
     );
+}
+
+#[test]
+fn an_else_if_chain_meets_at_its_shared_join_in_both_builds() {
+    let calls: [&str; 4] = [
+        "chain(\"a\", 1)",
+        "chain(\"bb\", 2)",
+        "chain(\"k\", 3)",
+        "chain(\"\", 4)",
+    ];
+    assert_method_matches_in(RELEASE_DEX, RELEASE_SHA256, "chain", &calls);
+    let debug: String = assert_method_matches_in(DEBUG_DEX, DEBUG_SHA256, "chain", &calls);
+    assert!(debug.contains("(String key, int mode)"), "{debug}");
+    assert!(!debug.contains("arg0"), "{debug}");
+}
+
+#[test]
+fn a_try_inside_a_catch_handler_keeps_both_exceptions_apart() {
+    let calls: [&str; 4] = [
+        "fallback(\"4\", \"x\")",
+        "fallback(\"y\", \"5\")",
+        "fallback(\"zz\", \"wwww\")",
+        "fallback(\"\", \"-\")",
+    ];
+    assert_method_matches_in(RELEASE_DEX, RELEASE_SHA256, "fallback", &calls);
+    let debug: String = assert_method_matches_in(DEBUG_DEX, DEBUG_SHA256, "fallback", &calls);
+    assert!(debug.contains("(String first, String second)"), "{debug}");
+    assert!(debug.contains("Integer.parseInt(second)"), "{debug}");
 }
 
 #[test]

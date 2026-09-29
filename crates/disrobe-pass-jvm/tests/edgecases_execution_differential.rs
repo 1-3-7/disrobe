@@ -20,7 +20,7 @@ const PUBLISHED_RECOMPILE_BAR: &str = "per-method";
 const PUBLISHED_EXECUTION_BAR: &str = "per-method, execution-verified";
 
 const PER_METHOD_TOTAL: usize = 131;
-const EXECUTION_EQUIVALENT_FLOOR: usize = 117;
+const EXECUTION_EQUIVALENT_FLOOR: usize = 118;
 
 const OBSERVATION_TIMEOUT_MS: u64 = 5_000;
 
@@ -60,11 +60,6 @@ const BEHAVIOUR_DIVERGENT: &[(&str, &str)] = &[
         "maxOrMin",
         "does not terminate: the loop increment var3++ sits inside the wantMax-and-greater branch \
          only, and the wantMax=false arm drops the best=xs[i] assignment entirely",
-    ),
-    (
-        "classify",
-        "nests the Long / String / int[] / List instanceof tests inside the first arm's else \
-         instead of sequencing them, so every non-Integer input falls through to \"other\"",
     ),
     (
         "dispatchByType",

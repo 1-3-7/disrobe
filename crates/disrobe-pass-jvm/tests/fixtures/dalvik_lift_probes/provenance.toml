@@ -1,6 +1,6 @@
 schema = "disrobe.jvm.dalvik-lift-probes-fixture/v1"
 source = "LiftProbes.java"
-source_sha256 = "01b52ab5e0ef1aee17902b63878c1083bced84faf1abf7b2f43f78259f09f086"
+source_sha256 = "366ebee984a8e5dc900a61c9b5a1237bc78a487310f3a3a1b1c21b1bc445b846"
 
 [javac]
 vendor = "Eclipse Temurin"
@@ -20,6 +20,8 @@ polls = "polls(): a while header whose call folds into the exit test"
 strings = "strings(): a string constant with non-ASCII, control, quote, backslash, surrogate-pair and line-separator characters"
 order = "order(): call results bound to locals and combined in the reverse of their call order"
 temporaries = "temporaries(int): D8 reuses one register for an int, a StringBuilder, a String and a double, and the parameter register for the boxed Object result; the debug build keeps the parameter and local names"
+chain = "chain(String, int): an else-if chain whose three arms assign one local and meet at a join that no inner test dominates"
+fallback = "fallback(String, String): a try inside a catch handler; the debug build names both catch parameters, and the release build reuses the outer exception register for the inner try's String result"
 workers = "Worker implements Callable and Runnable; Counting extends Worker and gains a javac bridge call() that clashes with its own call() in source"
 notes = "The release build keeps every probe method; D8 turns the constant arrays into fill-array-data payloads and the computed int arrays into filled-new-array, and reuses registers across the call results of order()."
 
@@ -30,8 +32,8 @@ min_api = 21
 mode = "release"
 tool = "D8"
 command = "java -cp r8-9.1.31.jar com.android.tools.r8.D8 --release --min-api 21 --output dex classes/LiftProbes.class classes/LiftProbes$Counting.class classes/LiftProbes$Worker.class"
-sha256 = "0b237301c3282b244de3123a99fdc4dd98a1fb0fa9eb11c41ef7e6aa5a2d9b5b"
-bytes = 5340
+sha256 = "0cc65e82257b664f5aa725c6880bc8fbe9618e2078da2de516138b89b681e3e9"
+bytes = 6216
 
 [[artifact]]
 path = "LiftProbes-debug-min21.dex"
@@ -40,5 +42,5 @@ min_api = 21
 mode = "debug"
 tool = "D8"
 command = "java -cp r8-9.1.31.jar com.android.tools.r8.D8 --debug --min-api 21 --output dex classes/LiftProbes.class classes/LiftProbes$Counting.class classes/LiftProbes$Worker.class"
-sha256 = "b8aa044cb368989a25794cd872b319906d3c56c7dc8011224c5c131aa3a44bd8"
-bytes = 6108
+sha256 = "033c70449a04667626e50caae3436a8a2212399d71b71a480eec9d858b17f07b"
+bytes = 7124

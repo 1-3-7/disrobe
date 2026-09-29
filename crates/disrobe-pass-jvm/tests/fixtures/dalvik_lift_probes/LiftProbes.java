@@ -108,6 +108,30 @@ public class LiftProbes {
         return out.append(':').append(boxed).toString();
     }
 
+    static String chain(String key, int mode) {
+        String out;
+        if (key.equals("a")) {
+            out = "A" + mode;
+        } else if (key.equals("bb")) {
+            out = "B";
+        } else {
+            out = key.toUpperCase();
+        }
+        return out + mode;
+    }
+
+    static String fallback(String first, String second) {
+        try {
+            return "p" + Integer.parseInt(first);
+        } catch (NumberFormatException outer) {
+            try {
+                return "q" + Integer.parseInt(second);
+            } catch (NumberFormatException inner) {
+                return inner.getMessage().length() + ":" + outer.getMessage().length();
+            }
+        }
+    }
+
     public abstract static class Worker implements Callable<Integer>, Runnable {
         public final void run() {
             try {
@@ -153,5 +177,11 @@ public class LiftProbes {
         for (int count = 0; count < 5; count += 2) {
             System.out.println(temporaries(count));
         }
+        for (int round = 0; round < 3; round++) {
+            System.out.println(chain(round == 0 ? "a" : round == 1 ? "bb" : "k" + round, round));
+        }
+        System.out.println(fallback("4", "x"));
+        System.out.println(fallback("y", "5"));
+        System.out.println(fallback("zz", "wwww"));
     }
 }
