@@ -1,6 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use disrobe_bytes::{read_u16_le_at, read_u32_le_at, read_u64_le_at, read_uleb128_at};
+use disrobe_bytes::{
+    read_i32_le_at_or, read_u16_le_at, read_u32_le_at, read_u32_le_at_or, read_u64_le_at,
+    read_uleb128_at,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::macho::{self, LinkeditData, ParsedSlice, Section, SliceView};
@@ -624,8 +627,8 @@ fn build_arm64_stub_map(
     while offset + stride <= bytes.len() && entries < MAX_STUB_ENTRIES {
         entries += 1;
         let entry_va: u64 = base.saturating_add(offset as u64);
-        let w0: u32 = read_u32_le(bytes, offset);
-        let w1: u32 = read_u32_le(bytes, offset + 4);
+        let w0: u32 = read_u32_le_at_or(bytes, offset, 0);
+        let w1: u32 = read_u32_le_at_or(bytes, offset + 4, 0);
         if let Some((_, page)) = decode_adrp(entry_va, w0)
             && let Some((_, _, off)) = decode_ldr64(w1)
         {
@@ -651,7 +654,7 @@ fn build_x86_stub_map(
         entries += 1;
         if bytes.get(offset) == Some(&0xFF) && bytes.get(offset + 1) == Some(&0x25) {
             let entry_va: u64 = base.saturating_add(offset as u64);
-            let disp: i32 = read_i32_le(bytes, offset + 2);
+            let disp: i32 = read_i32_le_at_or(bytes, offset + 2, 0);
             let end: u64 = entry_va.saturating_add(stride as u64);
             let slot: u64 = end.wrapping_add(disp as i64 as u64);
             if let Some(symbol) = imports_by_addr.get(&slot) {
@@ -1439,7 +1442,7 @@ fn decode_arm64(addr: u64, bytes: &[u8]) -> Step {
     if bytes.len() < 4 {
         return step;
     }
-    let word: u32 = read_u32_le(bytes, 0);
+    let word: u32 = read_u32_le_at_or(bytes, 0, 0);
     if word & 0xFFFF_F01F == 0xD503_201F {
         step.recognized = true;
         return step;
@@ -1871,23 +1874,11 @@ fn decode_x86_group_imm(bytes: &[u8], i: usize, rex_b: u8, step: &mut Step) {
 }
 
 fn read_disp(bytes: &[u8], off: usize) -> u64 {
-    read_i32_le(bytes, off) as i64 as u64
+    read_i32_le_at_or(bytes, off, 0) as i64 as u64
 }
 
 fn read_disp8(bytes: &[u8], off: usize) -> u64 {
     bytes.get(off).map_or(0, |b: &u8| *b as i8 as i64 as u64)
-}
-
-fn read_u32_le(bytes: &[u8], off: usize) -> u32 {
-    let mut arr: [u8; 4] = [0u8; 4];
-    if let Some(window) = bytes.get(off..off + 4) {
-        arr.copy_from_slice(window);
-    }
-    u32::from_le_bytes(arr)
-}
-
-fn read_i32_le(bytes: &[u8], off: usize) -> i32 {
-    read_u32_le(bytes, off) as i32
 }
 
 fn hex_to_bytes(hex: &str) -> Vec<u8> {

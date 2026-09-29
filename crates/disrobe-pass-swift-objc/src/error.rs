@@ -1,3 +1,4 @@
+use disrobe_bytes::ByteReadError;
 use miette::Diagnostic;
 use thiserror::Error;
 
@@ -83,4 +84,10 @@ pub enum Error {
 
     #[error("DR-IOS-0021: dyld shared cache image '{image}' cannot be reconstructed: {reason}")]
     DyldImageUnsupported { image: String, reason: String },
+}
+
+impl From<ByteReadError> for Error {
+    fn from(error: ByteReadError) -> Self {
+        Self::Truncated(error.offset)
+    }
 }

@@ -1,4 +1,7 @@
-use disrobe_bytes::read_uleb128_at;
+use disrobe_bytes::{
+    ByteReadError, read_i32_be_at, read_i32_le_at, read_u32_be_at, read_u32_le_at, read_u64_be_at,
+    read_u64_le_at, read_uleb128_at,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
@@ -633,40 +636,6 @@ impl Default for ParsedSlice {
 }
 
 #[inline]
-pub(crate) fn u32_le(bytes: &[u8], off: usize) -> Result<u32> {
-    let end: usize = off.checked_add(4).ok_or(Error::Truncated(off))?;
-    let slice: &[u8] = bytes.get(off..end).ok_or(Error::Truncated(off))?;
-    let arr: [u8; 4] = [slice[0], slice[1], slice[2], slice[3]];
-    Ok(u32::from_le_bytes(arr))
-}
-
-#[inline]
-fn u32_be(bytes: &[u8], off: usize) -> Result<u32> {
-    let end: usize = off.checked_add(4).ok_or(Error::Truncated(off))?;
-    let slice: &[u8] = bytes.get(off..end).ok_or(Error::Truncated(off))?;
-    let arr: [u8; 4] = [slice[0], slice[1], slice[2], slice[3]];
-    Ok(u32::from_be_bytes(arr))
-}
-
-#[inline]
-pub(crate) fn u64_le(bytes: &[u8], off: usize) -> Result<u64> {
-    let end: usize = off.checked_add(8).ok_or(Error::Truncated(off))?;
-    let slice: &[u8] = bytes.get(off..end).ok_or(Error::Truncated(off))?;
-    let mut arr: [u8; 8] = [0u8; 8];
-    arr.copy_from_slice(slice);
-    Ok(u64::from_le_bytes(arr))
-}
-
-#[inline]
-fn u64_be(bytes: &[u8], off: usize) -> Result<u64> {
-    let end: usize = off.checked_add(8).ok_or(Error::Truncated(off))?;
-    let slice: &[u8] = bytes.get(off..end).ok_or(Error::Truncated(off))?;
-    let mut arr: [u8; 8] = [0u8; 8];
-    arr.copy_from_slice(slice);
-    Ok(u64::from_be_bytes(arr))
-}
-
-#[inline]
 fn read_cstr16(bytes: &[u8], off: usize) -> Result<String> {
     let end: usize = off.checked_add(16).ok_or(Error::Truncated(off))?;
     let raw: &[u8] = bytes.get(off..end).ok_or(Error::Truncated(off))?;
@@ -710,7 +679,7 @@ pub fn walk_fat(bytes: &[u8]) -> Result<Vec<FatArchEntry>> {
         MachoKind::Fat64 => (true, 4),
         _ => return Err(Error::BadFatHeader("not a fat header".to_owned())),
     };
-    let nfat: u32 = u32_be(bytes, nfat_arch_off)?;
+    let nfat: u32 = read_u32_be_at(bytes, nfat_arch_off)?;
     let entry_size: usize = if is_fat64 { 32 } else { 20 };
     let available: usize = bytes.len().saturating_sub(8);
     let nfat_usize: usize = usize::try_from(nfat)
@@ -731,14 +700,17 @@ pub fn walk_fat(bytes: &[u8]) -> Result<Vec<FatArchEntry>> {
     let mut out: Vec<FatArchEntry> = Vec::with_capacity(nfat_usize);
     let mut cursor: usize = 8;
     for _ in 0..nfat_usize {
-        let cputype: u32 = u32_be(bytes, cursor)?;
-        let _cpusubtype: u32 = u32_be(bytes, cursor + 4)?;
+        let cputype: u32 = read_u32_be_at(bytes, cursor)?;
+        let _cpusubtype: u32 = read_u32_be_at(bytes, cursor + 4)?;
         let (offset, size): (u64, u64) = if is_fat64 {
-            (u64_be(bytes, cursor + 8)?, u64_be(bytes, cursor + 16)?)
+            (
+                read_u64_be_at(bytes, cursor + 8)?,
+                read_u64_be_at(bytes, cursor + 16)?,
+            )
         } else {
             (
-                u64::from(u32_be(bytes, cursor + 8)?),
-                u64::from(u32_be(bytes, cursor + 12)?),
+                u64::from(read_u32_be_at(bytes, cursor + 8)?),
+                u64::from(read_u32_be_at(bytes, cursor + 12)?),
             )
         };
         out.push(FatArchEntry {
@@ -759,8 +731,8 @@ pub fn slice_bytes<'a>(image: &'a [u8], entry: &FatArchEntry) -> Option<&'a [u8]
     image.get(start..end)
 }
 
-type ReadU32 = fn(&[u8], usize) -> Result<u32>;
-type ReadU64 = fn(&[u8], usize) -> Result<u64>;
+type ReadU32 = fn(&[u8], usize) -> core::result::Result<u32, ByteReadError>;
+type ReadU64 = fn(&[u8], usize) -> core::result::Result<u64, ByteReadError>;
 
 fn parse_segment_64(
     slice: &[u8],
@@ -870,12 +842,12 @@ pub fn parse_slice(slice: &[u8]) -> Result<ParsedSlice> {
         _ => return Err(Error::NotMachO),
     };
     let read_u32: ReadU32 = match endian {
-        Endian::Little => u32_le,
-        Endian::Big => u32_be,
+        Endian::Little => read_u32_le_at,
+        Endian::Big => read_u32_be_at,
     };
     let read_u64: ReadU64 = match endian {
-        Endian::Little => u64_le,
-        Endian::Big => u64_be,
+        Endian::Little => read_u64_le_at,
+        Endian::Big => read_u64_be_at,
     };
     let cputype: u32 = read_u32(slice, 4)?;
     let _cpusubtype: u32 = read_u32(slice, 8)?;
@@ -1165,8 +1137,8 @@ pub fn import_thunks(slice: &[u8], parsed: &ParsedSlice) -> Vec<ImportThunk> {
         return Vec::new();
     }
     let read_u32: ReadU32 = match parsed.header.endian {
-        Endian::Little => u32_le,
-        Endian::Big => u32_be,
+        Endian::Little => read_u32_le_at,
+        Endian::Big => read_u32_be_at,
     };
     let entry_size: usize = match parsed.header.bitness {
         Bitness::Bits64 => NLIST_64_SIZE,
@@ -1212,7 +1184,9 @@ pub fn import_thunks(slice: &[u8], parsed: &ParsedSlice) -> Vec<ImportThunk> {
                 else {
                     break;
                 };
-                let Ok(symbol_index): Result<u32> = read_u32(slice, entry_off) else {
+                let Ok(symbol_index): core::result::Result<u32, ByteReadError> =
+                    read_u32(slice, entry_off)
+                else {
                     break;
                 };
                 let name: Option<String> = if symbol_index & INDIRECT_SYMBOL_ABS != 0
@@ -1256,8 +1230,8 @@ pub fn symbol_names(slice: &[u8], parsed: &ParsedSlice) -> Vec<String> {
         Bitness::Bits32 => NLIST_32_SIZE,
     };
     let read_u32: ReadU32 = match parsed.header.endian {
-        Endian::Little => u32_le,
-        Endian::Big => u32_be,
+        Endian::Little => read_u32_le_at,
+        Endian::Big => read_u32_be_at,
     };
     let sym_base: usize = symtab.sym_off as usize;
     let str_base: usize = symtab.str_off as usize;
@@ -1271,7 +1245,8 @@ pub fn symbol_names(slice: &[u8], parsed: &ParsedSlice) -> Vec<String> {
         else {
             break;
         };
-        let Ok(n_strx): Result<u32> = read_u32(slice, entry_off) else {
+        let Ok(n_strx): core::result::Result<u32, ByteReadError> = read_u32(slice, entry_off)
+        else {
             break;
         };
         let name_off: usize = str_base.saturating_add(n_strx as usize);
@@ -1317,8 +1292,8 @@ pub fn function_symbols(slice: &[u8], parsed: &ParsedSlice) -> Vec<FunctionSymbo
     let is_64: bool = matches!(parsed.header.bitness, Bitness::Bits64);
     let entry_size: usize = if is_64 { NLIST_64_SIZE } else { NLIST_32_SIZE };
     let read_u32: ReadU32 = match parsed.header.endian {
-        Endian::Little => u32_le,
-        Endian::Big => u32_be,
+        Endian::Little => read_u32_le_at,
+        Endian::Big => read_u32_be_at,
     };
     let sym_base: usize = symtab.sym_off as usize;
     let str_base: usize = symtab.str_off as usize;
@@ -1332,7 +1307,8 @@ pub fn function_symbols(slice: &[u8], parsed: &ParsedSlice) -> Vec<FunctionSymbo
         else {
             break;
         };
-        let Ok(n_strx): Result<u32> = read_u32(slice, entry_off) else {
+        let Ok(n_strx): core::result::Result<u32, ByteReadError> = read_u32(slice, entry_off)
+        else {
             break;
         };
         let Some(&n_type): Option<&u8> = slice.get(entry_off + 4) else {
@@ -1350,15 +1326,15 @@ pub fn function_symbols(slice: &[u8], parsed: &ParsedSlice) -> Vec<FunctionSymbo
         let value_off: usize = entry_off + 8;
         let address: u64 = if is_64 {
             let read_u64: ReadU64 = match parsed.header.endian {
-                Endian::Little => u64_le,
-                Endian::Big => u64_be,
+                Endian::Little => read_u64_le_at,
+                Endian::Big => read_u64_be_at,
             };
-            let Ok(v): Result<u64> = read_u64(slice, value_off) else {
+            let Ok(v): core::result::Result<u64, ByteReadError> = read_u64(slice, value_off) else {
                 continue;
             };
             v
         } else {
-            let Ok(v): Result<u32> = read_u32(slice, value_off) else {
+            let Ok(v): core::result::Result<u32, ByteReadError> = read_u32(slice, value_off) else {
                 continue;
             };
             u64::from(v)
@@ -1517,36 +1493,35 @@ impl<'a> SliceView<'a> {
 
     #[must_use]
     pub fn read_u32_at(&self, off: usize) -> Option<u32> {
-        let end: usize = off.checked_add(4)?;
         if !self.readable(off, 4) {
             return None;
         }
-        let raw: &[u8] = self.bytes.get(off..end)?;
-        let arr: [u8; 4] = [raw[0], raw[1], raw[2], raw[3]];
-        Some(match self.endian {
-            Endian::Little => u32::from_le_bytes(arr),
-            Endian::Big => u32::from_be_bytes(arr),
-        })
+        match self.endian {
+            Endian::Little => read_u32_le_at(self.bytes, off).ok(),
+            Endian::Big => read_u32_be_at(self.bytes, off).ok(),
+        }
     }
 
     #[must_use]
     pub fn read_u64_at(&self, off: usize) -> Option<u64> {
-        let end: usize = off.checked_add(8)?;
         if !self.readable(off, 8) {
             return None;
         }
-        let raw: &[u8] = self.bytes.get(off..end)?;
-        let mut arr: [u8; 8] = [0u8; 8];
-        arr.copy_from_slice(raw);
-        Some(match self.endian {
-            Endian::Little => u64::from_le_bytes(arr),
-            Endian::Big => u64::from_be_bytes(arr),
-        })
+        match self.endian {
+            Endian::Little => read_u64_le_at(self.bytes, off).ok(),
+            Endian::Big => read_u64_be_at(self.bytes, off).ok(),
+        }
     }
 
     #[must_use]
     pub fn read_i32_at(&self, off: usize) -> Option<i32> {
-        Some(self.read_u32_at(off)? as i32)
+        if !self.readable(off, 4) {
+            return None;
+        }
+        match self.endian {
+            Endian::Little => read_i32_le_at(self.bytes, off).ok(),
+            Endian::Big => read_i32_be_at(self.bytes, off).ok(),
+        }
     }
 
     #[must_use]
@@ -1743,22 +1718,10 @@ mod tests {
     #[test]
     fn readers_reject_offsets_near_usize_max_without_overflow() {
         let bytes: [u8; 16] = [0u8; 16];
-        assert!(matches!(
-            u32_le(&bytes, usize::MAX - 1),
-            Err(Error::Truncated(_))
-        ));
-        assert!(matches!(
-            u32_be(&bytes, usize::MAX - 2),
-            Err(Error::Truncated(_))
-        ));
-        assert!(matches!(
-            u64_le(&bytes, usize::MAX - 3),
-            Err(Error::Truncated(_))
-        ));
-        assert!(matches!(
-            u64_be(&bytes, usize::MAX - 4),
-            Err(Error::Truncated(_))
-        ));
+        let error: Error = Error::from(
+            read_u64_be_at(&bytes, usize::MAX - 4).expect_err("offset past the end is refused"),
+        );
+        assert!(matches!(error, Error::Truncated(offset) if offset == usize::MAX - 4));
         assert!(matches!(
             read_cstr16(&bytes, usize::MAX - 5),
             Err(Error::Truncated(_))
@@ -1771,7 +1734,6 @@ mod tests {
         };
         assert_eq!(view.read_u32_at(usize::MAX - 1), None);
         assert_eq!(view.read_u64_at(usize::MAX - 2), None);
-        assert!(u32_le(&bytes, 0).is_ok(), "in-range read still succeeds");
         assert_eq!(view.read_u32_at(0), Some(0));
     }
 

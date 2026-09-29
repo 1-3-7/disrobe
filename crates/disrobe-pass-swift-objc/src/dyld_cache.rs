@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, Result};
 use crate::macho::{
     self, Bitness, Endian, LC_SEGMENT, LC_SEGMENT_64, LoadCommand, ParsedSlice, Segment,
-    read_cstr_bounded, u32_le, u64_le,
+    read_cstr_bounded,
 };
 
 pub mod linkedit;
@@ -327,8 +327,8 @@ pub fn parse(cache: &[u8]) -> Result<DyldSharedCache> {
         .map_or("", str::trim)
         .to_owned();
 
-    let mapping_offset: u32 = u32_le(cache, MAPPING_OFFSET_FIELD)?;
-    let mapping_count: u32 = u32_le(cache, MAPPING_COUNT_FIELD)?;
+    let mapping_offset: u32 = read_u32_le_at(cache, MAPPING_OFFSET_FIELD)?;
+    let mapping_count: u32 = read_u32_le_at(cache, MAPPING_COUNT_FIELD)?;
     let header_size: usize = mapping_offset as usize;
     let layout: CacheHeaderLayout = CacheHeaderLayout::from_header_size(header_size)
         .ok_or_else(|| Error::UnsupportedDyldLayout {
@@ -338,16 +338,16 @@ pub fn parse(cache: &[u8]) -> Result<DyldSharedCache> {
             ),
         })?;
 
-    let images_offset_old: u32 = u32_le(cache, IMAGES_OFFSET_OLD_FIELD)?;
-    let images_count_old: u32 = u32_le(cache, IMAGES_COUNT_OLD_FIELD)?;
+    let images_offset_old: u32 = read_u32_le_at(cache, IMAGES_OFFSET_OLD_FIELD)?;
+    let images_count_old: u32 = read_u32_le_at(cache, IMAGES_COUNT_OLD_FIELD)?;
     let (images_offset, images_count): (u32, u32) = if images_count_old != 0
         && images_offset_old != 0
     {
         (images_offset_old, images_count_old)
     } else if layout.has_relocated_images() {
         (
-            u32_le(cache, IMAGES_OFFSET_NEW_FIELD)?,
-            u32_le(cache, IMAGES_COUNT_NEW_FIELD)?,
+            read_u32_le_at(cache, IMAGES_OFFSET_NEW_FIELD)?,
+            read_u32_le_at(cache, IMAGES_COUNT_NEW_FIELD)?,
         )
     } else if images_count_old == 0 {
         (images_offset_old, 0)
@@ -387,8 +387,8 @@ pub fn parse(cache: &[u8]) -> Result<DyldSharedCache> {
             } else {
                 SubCacheEntryKind::UuidAndOffsetOnly
             };
-            let array_offset: u32 = u32_le(cache, SUBCACHE_ARRAY_OFFSET_FIELD)?;
-            let array_count: u32 = u32_le(cache, SUBCACHE_ARRAY_COUNT_FIELD)?;
+            let array_offset: u32 = read_u32_le_at(cache, SUBCACHE_ARRAY_OFFSET_FIELD)?;
+            let array_count: u32 = read_u32_le_at(cache, SUBCACHE_ARRAY_COUNT_FIELD)?;
             if array_count == 0 {
                 (Vec::new(), Some(kind))
             } else {
@@ -402,8 +402,8 @@ pub fn parse(cache: &[u8]) -> Result<DyldSharedCache> {
         };
 
     let local_symbols: Option<LocalSymbolsLocation> = if layout.has_local_symbols_fields() {
-        let file_offset: u64 = u64_le(cache, LOCAL_SYMBOLS_OFFSET_FIELD)?;
-        let size: u64 = u64_le(cache, LOCAL_SYMBOLS_SIZE_FIELD)?;
+        let file_offset: u64 = read_u64_le_at(cache, LOCAL_SYMBOLS_OFFSET_FIELD)?;
+        let size: u64 = read_u64_le_at(cache, LOCAL_SYMBOLS_SIZE_FIELD)?;
         let in_symbols_file: bool = layout.has_sub_caches()
             && header_size >= SYMBOL_FILE_UUID_FIELD + UUID_LEN
             && has_symbol_file_uuid(cache)?;
@@ -429,8 +429,8 @@ pub fn parse(cache: &[u8]) -> Result<DyldSharedCache> {
 
     let (platform, format_flags): (u32, u32) = if header_size >= FORMAT_FLAGS_FIELD + 4 {
         (
-            u32_le(cache, PLATFORM_FIELD)?,
-            u32_le(cache, FORMAT_FLAGS_FIELD)?,
+            read_u32_le_at(cache, PLATFORM_FIELD)?,
+            read_u32_le_at(cache, FORMAT_FLAGS_FIELD)?,
         )
     } else {
         (0, 0)
@@ -438,8 +438,8 @@ pub fn parse(cache: &[u8]) -> Result<DyldSharedCache> {
     let (shared_region_start, shared_region_size): (u64, u64) =
         if header_size >= SHARED_REGION_SIZE_FIELD + 8 {
             (
-                u64_le(cache, SHARED_REGION_START_FIELD)?,
-                u64_le(cache, SHARED_REGION_SIZE_FIELD)?,
+                read_u64_le_at(cache, SHARED_REGION_START_FIELD)?,
+                read_u64_le_at(cache, SHARED_REGION_SIZE_FIELD)?,
             )
         } else {
             (0, 0)
@@ -453,7 +453,7 @@ pub fn parse(cache: &[u8]) -> Result<DyldSharedCache> {
         header_size: mapping_offset,
         uuid: read_uuid(cache, UUID_FIELD, header_size >= UUID_FIELD + UUID_LEN),
         cache_type: if header_size >= CACHE_TYPE_FIELD + 8 {
-            u64_le(cache, CACHE_TYPE_FIELD)?
+            read_u64_le_at(cache, CACHE_TYPE_FIELD)?
         } else {
             0
         },
@@ -548,19 +548,19 @@ fn parse_mappings(cache: &[u8], offset: u32, count: usize) -> Result<Vec<DyldMap
     for i in 0..count {
         let off: usize = base + i * MAPPING_INFO_SIZE;
         out.push(DyldMapping {
-            address: u64_le(cache, off)?,
-            size: u64_le(cache, off + 8)?,
-            file_offset: u64_le(cache, off + 16)?,
-            max_prot: u32_le(cache, off + 24)?,
-            init_prot: u32_le(cache, off + 28)?,
+            address: read_u64_le_at(cache, off)?,
+            size: read_u64_le_at(cache, off + 8)?,
+            file_offset: read_u64_le_at(cache, off + 16)?,
+            max_prot: read_u32_le_at(cache, off + 24)?,
+            init_prot: read_u32_le_at(cache, off + 28)?,
         });
     }
     Ok(out)
 }
 
 fn parse_slide_mappings(cache: &[u8]) -> Result<Vec<DyldSlideMapping>> {
-    let offset: u32 = u32_le(cache, MAPPING_WITH_SLIDE_OFFSET_FIELD)?;
-    let count: u32 = u32_le(cache, MAPPING_WITH_SLIDE_COUNT_FIELD)?;
+    let offset: u32 = read_u32_le_at(cache, MAPPING_WITH_SLIDE_OFFSET_FIELD)?;
+    let count: u32 = read_u32_le_at(cache, MAPPING_WITH_SLIDE_COUNT_FIELD)?;
     if offset == 0 || count == 0 {
         return Ok(Vec::new());
     }
@@ -580,14 +580,14 @@ fn parse_slide_mappings(cache: &[u8]) -> Result<Vec<DyldSlideMapping>> {
     let mut out: Vec<DyldSlideMapping> = Vec::with_capacity(count_usize);
     for i in 0..count_usize {
         let off: usize = base + i * MAPPING_AND_SLIDE_INFO_SIZE;
-        let slide_offset: u64 = u64_le(cache, off + 24)?;
-        let slide_size: u64 = u64_le(cache, off + 32)?;
+        let slide_offset: u64 = read_u64_le_at(cache, off + 24)?;
+        let slide_size: u64 = read_u64_le_at(cache, off + 32)?;
         out.push(DyldSlideMapping {
             index: u32::try_from(i).unwrap_or(u32::MAX),
-            address: u64_le(cache, off)?,
-            size: u64_le(cache, off + 8)?,
-            file_offset: u64_le(cache, off + 16)?,
-            flags: u64_le(cache, off + 40)?,
+            address: read_u64_le_at(cache, off)?,
+            size: read_u64_le_at(cache, off + 8)?,
+            file_offset: read_u64_le_at(cache, off + 16)?,
+            flags: read_u64_le_at(cache, off + 40)?,
             slide: SlideLocation {
                 file_offset: slide_offset,
                 size: slide_size,
@@ -602,8 +602,8 @@ fn parse_images(cache: &[u8], offset: u32, count: usize) -> Result<Vec<DyldImage
     let mut out: Vec<DyldImage> = Vec::with_capacity(count);
     for i in 0..count {
         let off: usize = base + i * IMAGE_INFO_SIZE;
-        let address: u64 = u64_le(cache, off)?;
-        let path_file_offset: u32 = u32_le(cache, off + 24)?;
+        let address: u64 = read_u64_le_at(cache, off)?;
+        let path_file_offset: u32 = read_u32_le_at(cache, off + 24)?;
         let install_name: String = read_cstr_bounded(cache, path_file_offset as usize, cache.len())
             .ok_or_else(|| {
                 Error::BadDyldCache(format!(
