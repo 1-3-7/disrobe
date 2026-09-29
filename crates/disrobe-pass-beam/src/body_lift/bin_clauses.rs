@@ -97,7 +97,9 @@ impl Lifter<'_> {
             clauses.push(expr::FnClause {
                 patterns: vec![pattern],
                 guard: None,
-                body: resugar::resugar_body(simplify::simplify_body(walked.body)),
+                body: resugar::resugar_body(simplify::simplify_body(resugar::resugar_body(
+                    walked.body,
+                ))),
             });
             for fail in walked.fails {
                 if !visited.contains(&fail) && !queue.contains(&fail) {

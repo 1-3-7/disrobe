@@ -149,7 +149,7 @@ pub fn lift_body(
         flags.degraded = true;
         vec![Stmt::Return(Expr::Atom("ok".to_owned()))]
     } else {
-        resugar::resugar_body(simplify::simplify_body(stmts))
+        resugar::resugar_body(simplify::simplify_body(resugar::resugar_body(stmts)))
     };
     let unresolved: bool = stmts.iter().any(has_unrecovered_marker);
     LiftedBody {
