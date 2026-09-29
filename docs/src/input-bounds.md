@@ -2,7 +2,7 @@
 
 Every parser treats its input as hostile. Counts, sizes, recursion depth, work and output are capped by named constants, and input that exceeds a cap is refused with a typed error instead of exhausting memory or time. `cargo xtask regen` generates this page from every module-level constant in `crates/*/src` whose name starts with `MAX_` or ends with `_LIMIT`, `_BUDGET` or `_CAP`, and `cargo xtask regen --check` fails when it is stale. The kind column is derived from the constant name.
 
-2154 bounds (count 214, other 1005, output 64, recursion 217, size 478, work 176).
+2157 bounds (count 214, other 1008, output 64, recursion 217, size 478, work 176).
 
 | Crate | Constant | Kind | Type | Value | File |
 | --- | --- | --- | --- | --- | --- |
@@ -916,6 +916,8 @@ Every parser treats its input as hostile. Counts, sizes, recursion depth, work a
 | `disrobe-pass-jvm` | `MAX_ARRAY_JOIN_DEPTH` | recursion | `usize` | `16` | `crates/disrobe-pass-jvm/src/dalvik_typestate.rs` |
 | `disrobe-pass-jvm` | `MAX_FIXPOINT_ITERS` | work | `usize` | `50_000` | `crates/disrobe-pass-jvm/src/dalvik_typestate.rs` |
 | `disrobe-pass-jvm` | `MAX_SUPERCLASS_DEPTH` | recursion | `usize` | `256` | `crates/disrobe-pass-jvm/src/dalvik_typestate.rs` |
+| `disrobe-pass-jvm` | `ARM_CONDITION_BLOCK_CAP` | other | `usize` | `32` | `crates/disrobe-pass-jvm/src/decompile.rs` |
+| `disrobe-pass-jvm` | `INT_USE_SCAN_LIMIT` | other | `usize` | `32` | `crates/disrobe-pass-jvm/src/decompile.rs` |
 | `disrobe-pass-jvm` | `MAX_BOOL_EXPR_BYTES` | size | `usize` | `64 * 1024` | `crates/disrobe-pass-jvm/src/decompile.rs` |
 | `disrobe-pass-jvm` | `MAX_DUP_EXPR_NODES` | count | `usize` | `1024` | `crates/disrobe-pass-jvm/src/decompile.rs` |
 | `disrobe-pass-jvm` | `MAX_GENERIC_REPLACEMENTS` | other | `usize` | `4_096` | `crates/disrobe-pass-jvm/src/decompile.rs` |
@@ -985,6 +987,7 @@ Every parser treats its input as hostile. Counts, sizes, recursion depth, work a
 | `disrobe-pass-lua` | `READ_SEARCH_STATE_BUDGET` | work | `usize` | `1 << 16` | `crates/disrobe-pass-lua/src/decompile/struct_lift.rs` |
 | `disrobe-pass-lua` | `MAX_SCOPE_DEPTH` | recursion | `usize` | `200` | `crates/disrobe-pass-lua/src/decompile/struct_lift/declare.rs` |
 | `disrobe-pass-lua` | `MAX_CONDITION_CHAIN` | other | `usize` | `64` | `crates/disrobe-pass-lua/src/decompile/struct_lift/structurer.rs` |
+| `disrobe-pass-lua` | `MAX_EXIT_SCAN` | other | `usize` | `4_096` | `crates/disrobe-pass-lua/src/decompile/struct_lift/structurer.rs` |
 | `disrobe-pass-lua` | `MAX_BUILD_STEPS` | work | `usize` | `4_096` | `crates/disrobe-pass-lua/src/decompile/struct_lift/value_region.rs` |
 | `disrobe-pass-lua` | `MAX_REGION_INSTRUCTIONS` | other | `usize` | `256` | `crates/disrobe-pass-lua/src/decompile/struct_lift/value_region.rs` |
 | `disrobe-pass-lua` | `MAX_LOADER_DEPTH` | recursion | `usize` | `16` | `crates/disrobe-pass-lua/src/obfuscator/hercules.rs` |
@@ -1103,7 +1106,7 @@ Every parser treats its input as hostile. Counts, sizes, recursion depth, work a
 | `disrobe-pass-mobile` | `MAX_DART_IDENTIFIER_COUNT` | count | `usize` | `1 << 16` | `crates/disrobe-pass-mobile/src/flutter/snapshot.rs` |
 | `disrobe-pass-mobile` | `MAX_FUNCTION_BOUNDARIES` | other | `usize` | `1 << 20` | `crates/disrobe-pass-mobile/src/flutter/snapshot.rs` |
 | `disrobe-pass-mobile` | `MAX_STRING_CHARS` | other | `usize` | `1 << 16` | `crates/disrobe-pass-mobile/src/flutter/string_pool.rs` |
-| `disrobe-pass-mobile` | `MAX_BIGINT_BYTES` | size | `usize` | `4096` | `crates/disrobe-pass-mobile/src/hermes/bigint.rs` |
+| `disrobe-pass-mobile` | `MAX_DECIMAL_BYTES` | size | `usize` | `4096` | `crates/disrobe-pass-mobile/src/hermes/bigint.rs` |
 | `disrobe-pass-mobile` | `MAX_DECODED_INSTRUCTIONS` | other | `usize` | `1 << 20` | `crates/disrobe-pass-mobile/src/hermes/decompile.rs` |
 | `disrobe-pass-mobile` | `MAX_INLINE_CLOSURE_BYTES` | size | `usize` | `1 << 16` | `crates/disrobe-pass-mobile/src/hermes/decompile.rs` |
 | `disrobe-pass-mobile` | `MAX_INLINE_CLOSURE_DEPTH` | recursion | `usize` | `8` | `crates/disrobe-pass-mobile/src/hermes/decompile.rs` |
