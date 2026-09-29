@@ -6,7 +6,7 @@
 
 | Surface | Support |
 |---|---|
-| Inputs | `.class`, `.jar`, `.dex`, `.apk`, `.aab`; the classfile itself validated in-house (format 1.0.2-25) |
+| Inputs | `.class`, `.jar`, `.dex`, `.apk`, `.aab`; ODEX, single-DEX OAT, JDK `.jmod` and `lib/modules` jimage containers; the classfile itself validated in-house (format 1.0.2-25) |
 | Decompilers | In-house classfile and Dalvik decompilers, the Dalvik one default on `.dex` and `.apk`; CFR, Vineflower, Procyon, JADX, and others via `--backend` |
 | Language surface | Records, sealed types, pattern matching, enum constant bodies, declaration and member annotations, enhanced `for`, multi-`catch`, plus Kotlin and Scala idioms |
 | Obfuscator handling | String recovery for supported Zelix KlassMaster, Allatori, Stringer, and DashO patterns; DexGuard and BlackObfuscator control-flow analysis; ProGuard/R8 name reports from `mapping.txt` |
@@ -57,6 +57,10 @@ The Dalvik lifter's recovered bodies are graded by the real JVM bytecode verifie
 The in-house Dalvik decompiler, the default for `disrobe jvm decompile` on `.dex` and `.apk`, is graded on the same corpus against the real `EdgeCases.java` source rather than its own output. A value computed in one basic block and consumed in another (an array length, or a wide argument to a call such as `Math.abs` or `charAt`) is materialized into a local at its real use site instead of being dropped across the block boundary, so all eight leaf methods reconstruct their call sites with full fidelity while every method's signature, control flow, and operators recover (`dalvik_decompile_oracle.rs`).
 
 The same source path reverses core-library desugaring emitted by D8 9.1.31 with `desugar_jdk_libs_configuration` 2.1.5. It restores marker-confirmed public API types in the `j$/time`, `j$/util`, and `j$/nio` namespaces, receiver-first `$-EL` calls, `$-CC` interface static calls, and exact supported `Desugar*` retarget helpers. The committed minimum-API-21 DEX covers time, streams, functions, `Optional`, concurrent, and NIO APIs. A minimum-API-34 DEX built from the same Java source provides the original call-shape reference. The test recompiles every recovered compilation unit with Java 11, then executes every recovered API probe method through an independent harness. Unknown configuration identifiers, application-owned `j$/` classes, wrapper conversions, API flips, unknown helpers, and malformed receiver shapes remain unreversed instead of being renamed by prefix.
+
+### Containers
+
+`auto` opens four container formats and passes their members to the class and DEX passes. An ODEX yields its embedded `classes.dex`. An OAT file yields its single DEX, found through the `oatdata` symbol and the OAT header; when the DEX lives in a separate `.vdex`, which is the usual layout on current ART, the OAT file yields only its manifest and a refusal, because VDEX is not read. A `.jmod` yields every entry at its archive path, and a jimage (`lib/modules`) yields every stored resource as `module/parent/name`; compressed jimage resources are refused rather than emitted, because no jimage decompressor is implemented. Each container also writes `jvm-container.json`. The jmod reader shares the zip limits (65,536 entries, 256 MiB per entry, 1 GiB in total) and the jimage reader enforces the same totals. `tests/jvm_container_chain.rs` grades a committed jmod against `jmod extract` and the grading JDK's own `lib/modules` against `jimage extract`, byte for byte.
 
 ### Obfuscator analysis and recovery
 
