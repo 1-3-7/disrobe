@@ -175,7 +175,7 @@ fn chain_evidence(plan: &ChainPlan) -> Result<ChainEvidence, MetadataValueError>
     for node in &plan.nodes {
         let succeeded: bool = !matches!(
             node.verdict,
-            Verdict::Error { .. } | Verdict::Stalled | Verdict::DryRun
+            Verdict::Error { .. } | Verdict::Stalled | Verdict::NotApplicable | Verdict::DryRun
         );
         if !succeeded {
             continue;
@@ -1321,6 +1321,7 @@ pub(crate) fn run_chain_to_dir(
         .map_err(|e| miette::miette!("DR-CLI-0291: --chain parse error: {e}"))?;
     let registry: PassRegistry = build_registry();
     validate_explicit_passes(&spec, &registry)?;
+    claim_out_dir(out_dir, super::globals::current().force)?;
     let progress: ChainProgress = ChainProgress::noop();
     let runner: ChainPassRunner<'_> = ChainPassRunner::new(&progress);
     let config: ChainConfig = ChainRunOptions {
@@ -1487,6 +1488,40 @@ struct StageMirror {
     finals: Vec<String>,
 }
 
+const EXTRACTED_OUTPUT_DIR: &str = "extracted";
+
+fn claim_out_dir(out_dir: &Path, force: bool) -> miette::Result<()> {
+    let mut entries: std::fs::ReadDir = match std::fs::read_dir(out_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(miette::miette!(
+                "DR-CLI-0912: cannot read output directory {}: {error}",
+                out_dir.display()
+            ));
+        }
+    };
+    if entries.next().is_none() {
+        return Ok(());
+    }
+    if !force {
+        return Err(miette::miette!(
+            "DR-CLI-0913: output directory {} already holds files, so this run's report would \
+             cite them as its own; choose an empty directory or pass --force",
+            out_dir.display()
+        ));
+    }
+    let extracted: PathBuf = out_dir.join(EXTRACTED_OUTPUT_DIR);
+    match std::fs::remove_dir_all(&extracted) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(miette::miette!(
+            "DR-CLI-0912: cannot clear the earlier run's {}: {error}",
+            extracted.display()
+        )),
+    }
+}
+
 fn write_stage_mirror(out_dir: &Path, plan: &ChainPlan) -> miette::Result<StageMirror> {
     let final_dir: PathBuf = out_dir.join("final");
     let mut steps: Vec<String> = Vec::new();
@@ -1583,6 +1618,28 @@ mod tests {
     use std::collections::BTreeSet;
     use std::io::Write as _;
     use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[test]
+    fn a_run_refuses_a_directory_that_already_holds_files() {
+        let scratch: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("disrobe-claim-out-dir").expect("scratch");
+        let out: PathBuf = scratch.path().join("run");
+        claim_out_dir(&out, false).expect("a missing directory is free");
+        std::fs::create_dir_all(out.join(EXTRACTED_OUTPUT_DIR)).expect("mkdir");
+        std::fs::write(out.join(EXTRACTED_OUTPUT_DIR).join("old.bin"), b"old").expect("old");
+        std::fs::write(out.join("notes.txt"), b"user").expect("notes");
+        let refused: miette::Result<()> = claim_out_dir(&out, false);
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|error: &miette::Report| error.to_string().contains("DR-CLI-0913")),
+            "{refused:?}"
+        );
+        assert!(out.join(EXTRACTED_OUTPUT_DIR).join("old.bin").is_file());
+        claim_out_dir(&out, true).expect("force claims the directory");
+        assert!(!out.join(EXTRACTED_OUTPUT_DIR).exists());
+        assert!(out.join("notes.txt").is_file());
+    }
 
     static OBSERVED_AUTHORIZATION: AtomicBool = AtomicBool::new(false);
 
