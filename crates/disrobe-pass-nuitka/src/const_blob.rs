@@ -108,6 +108,8 @@ pub struct ModuleConstants {
     pub float_count: usize,
     pub byte_blobs: usize,
     pub code_objects: Vec<CodeObjectMeta>,
+    #[serde(default)]
+    pub slot_strings: Vec<Option<String>>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -502,6 +504,7 @@ struct ModuleCollector {
     float_count: usize,
     byte_blobs: usize,
     code_objects: Vec<CodeObjectMeta>,
+    slot_strings: Vec<Option<String>>,
 }
 
 impl ModuleCollector {
@@ -509,6 +512,10 @@ impl ModuleCollector {
         if let Some(item) = const_item(value) {
             self.ordered_items.push(item);
         }
+        self.slot_strings.push(match value {
+            Value::Str(s) => Some(s.clone()),
+            _ => None,
+        });
         self.collect(value);
     }
 
@@ -692,6 +699,7 @@ fn try_chunk_with_layout(buf: &[u8], pos: usize, layout: ChunkValueLayout) -> Op
         float_count: collector.float_count,
         byte_blobs: collector.byte_blobs,
         code_objects: collector.code_objects,
+        slot_strings: collector.slot_strings,
     };
     Some(ParsedChunk {
         module,

@@ -29,7 +29,8 @@ use crate::onefile::{OnefilePayload, StreamedEntry, extract_onefile};
 use crate::reassembly::{ReassemblyPlan, plan_reassembly};
 use crate::skeleton::{NuitkaSkeleton, SkeletonModule, reconstruct};
 use crate::surface::{
-    SurfaceModule, build_surface_names_only_with_skeleton, build_surface_with_optional_python_abi,
+    ParamStar, SurfaceFunction, SurfaceModule, SurfaceParam,
+    build_surface_names_only_with_skeleton, build_surface_with_optional_python_abi,
 };
 use crate::symbols::{SymbolGraph, scan_symbols};
 use crate::version_db::{NuitkaVersionReport, detect_nuitka_version};
@@ -475,6 +476,48 @@ fn apply_native_bodies(
         function.body_stmts = body.recovered_stmts.clone();
         function.body_recovered = true;
         function.lift_fidelity = body.fidelity;
+        upgraded += 1;
+    }
+    let known: BTreeSet<String> = module
+        .functions
+        .iter()
+        .map(|function: &SurfaceFunction| function.name.clone())
+        .collect();
+    let mut added: BTreeSet<String> = BTreeSet::new();
+    for body in &bodies.functions {
+        if !body.is_name_bound()
+            || !body.is_body_recovered()
+            || known.contains(&body.name)
+            || !added.insert(body.name.clone())
+        {
+            continue;
+        }
+        let source_index: u32 = u32::try_from(module.functions.len()).unwrap_or(u32::MAX);
+        module.functions.push(SurfaceFunction {
+            name: body.name.clone(),
+            source_index,
+            params: body
+                .varnames
+                .iter()
+                .map(|name: &String| SurfaceParam {
+                    name: name.clone(),
+                    annotation: None,
+                    default: None,
+                    star: ParamStar::None,
+                    positional_only: false,
+                    keyword_only: false,
+                })
+                .collect(),
+            return_annotation: None,
+            docstring: None,
+            body_recovered: true,
+            body_stmts: body.recovered_stmts.clone(),
+            lift_fidelity: body.fidelity,
+            unrecognized_c_lines: Vec::new(),
+            source_line: None,
+            parent_names: Vec::new(),
+            nested: Vec::new(),
+        });
         upgraded += 1;
     }
     if upgraded > 0 {

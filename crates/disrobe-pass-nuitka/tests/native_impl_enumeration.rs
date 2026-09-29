@@ -184,7 +184,12 @@ fn every_function_carries_one_explicit_name_binding_state() {
     let bound: usize = recovery
         .functions
         .iter()
-        .filter(|f: &&NativeFunctionBody| matches!(f.name_binding, NameBinding::CodeObject))
+        .filter(|f: &&NativeFunctionBody| {
+            matches!(
+                f.name_binding,
+                NameBinding::CodeObject | NameBinding::ConstructorName
+            )
+        })
         .count();
     let positional: usize = recovery
         .functions
@@ -208,9 +213,10 @@ fn every_function_carries_one_explicit_name_binding_state() {
                 "a positional record must carry a synthetic name, got {}",
                 function.name
             ),
-            NameBinding::CodeObject => assert!(
-                !function.name.is_empty(),
-                "a code-object-bound record must carry the recovered name"
+            NameBinding::CodeObject | NameBinding::ConstructorName => assert!(
+                !function.name.is_empty() && !function.name.starts_with("native_impl_"),
+                "a bound record must carry the recovered name, got {}",
+                function.name
             ),
         }
     }

@@ -29,6 +29,7 @@ pub enum NativeOp {
     Attribute,
     Subscript,
     Branch,
+    SlotCall,
     UnclassifiedCall,
     Return,
 }
@@ -46,6 +47,7 @@ enum ReturnOrigin {
 #[serde(rename_all = "kebab-case")]
 pub enum NameBinding {
     CodeObject,
+    ConstructorName,
     Positional,
 }
 
@@ -77,7 +79,10 @@ impl NativeFunctionBody {
 
     #[must_use]
     pub const fn is_name_bound(&self) -> bool {
-        matches!(self.name_binding, NameBinding::CodeObject)
+        matches!(
+            self.name_binding,
+            NameBinding::CodeObject | NameBinding::ConstructorName
+        )
     }
 }
 
@@ -108,11 +113,25 @@ impl NativeBodyRecovery {
 }
 
 struct PeView {
+    image_base: u64,
+    sections: Vec<Section>,
     text_base: u64,
     text: Vec<u8>,
     functions: Vec<(u64, u64)>,
     function_begins: BTreeSet<u64>,
     iat: BTreeMap<u64, String>,
+}
+
+impl PeView {
+    fn file_offset(&self, va: u64) -> Option<usize> {
+        let rva: u64 = va.checked_sub(self.image_base)?;
+        self.sections.iter().find_map(|s: &Section| {
+            let delta: u64 = rva.checked_sub(s.virtual_address)?;
+            (delta < u64::from(s.raw_size))
+                .then(|| usize::try_from(u64::from(s.raw_ptr) + delta).ok())
+                .flatten()
+        })
+    }
 }
 
 struct Section {
@@ -210,6 +229,8 @@ fn parse_pe(image: &[u8]) -> Option<PeView> {
     let iat: BTreeMap<u64, String> = parse_imports(image, image_base, import_dir_rva, &rva_to_off);
 
     Some(PeView {
+        image_base,
+        sections,
         text_base,
         text,
         functions,
@@ -396,6 +417,21 @@ struct CtorSite {
     site: u64,
     impl_address: u64,
     callee: u64,
+    name_slot: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BlobLoad {
+    table: u64,
+    module_name: u64,
+}
+
+fn rip_load_into(insn: &Instruction, register: Register, mnemonic: Mnemonic) -> Option<u64> {
+    (insn.mnemonic() == mnemonic
+        && insn.op0_kind() == OpKind::Register
+        && insn.op0_register() == register)
+        .then(|| rip_target(insn))
+        .flatten()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -403,6 +439,7 @@ struct LocatedImpl {
     address: u64,
     host: u64,
     constructor: u64,
+    name_slot: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -412,11 +449,43 @@ struct ImplSites {
     constructors: Vec<u64>,
     hosts: usize,
     decode_budget_exhausted: bool,
+    blob_loads: Vec<BlobLoad>,
 }
 
-fn collect_ctor_sites(view: &PeView) -> (BTreeMap<u64, Vec<CtorSite>>, BTreeSet<u64>, bool) {
+struct CtorScan {
+    per_host: BTreeMap<u64, Vec<CtorSite>>,
+    constructors: BTreeSet<u64>,
+    exhausted: bool,
+    blob_loads: Vec<BlobLoad>,
+}
+
+fn blob_load_before(insns: &[Instruction], call: usize) -> Option<BlobLoad> {
+    let lo: usize = call.saturating_sub(CTOR_WINDOW);
+    let window: &[Instruction] = insns.get(lo..call)?;
+    let table: u64 = window
+        .iter()
+        .rev()
+        .find_map(|insn: &Instruction| rip_load_into(insn, Register::RDX, Mnemonic::Lea))?;
+    let module_name: u64 = window
+        .iter()
+        .rev()
+        .find_map(|insn: &Instruction| rip_load_into(insn, Register::R8, Mnemonic::Lea))?;
+    Some(BlobLoad { table, module_name })
+}
+
+fn name_slot_near(insns: &[Instruction], lea: usize, call: usize) -> Option<u64> {
+    let lo: usize = lea.saturating_sub(CTOR_WINDOW);
+    insns
+        .get(lo..call)?
+        .iter()
+        .rev()
+        .find_map(|insn: &Instruction| rip_load_into(insn, Register::RDX, Mnemonic::Mov))
+}
+
+fn collect_ctor_sites(view: &PeView) -> CtorScan {
     let mut callee_impls: BTreeMap<u64, BTreeSet<u64>> = BTreeMap::new();
     let mut per_host: BTreeMap<u64, Vec<CtorSite>> = BTreeMap::new();
+    let mut blob_loads: Vec<BlobLoad> = Vec::new();
     let mut decoded: usize = 0;
     let mut exhausted: bool = false;
 
@@ -428,6 +497,12 @@ fn collect_ctor_sites(view: &PeView) -> (BTreeMap<u64, Vec<CtorSite>>, BTreeSet<
         let insns: Vec<Instruction> = decode_function(view, begin, end);
         decoded = decoded.saturating_add(insns.len());
         for (index, insn) in insns.iter().enumerate() {
+            if insn.mnemonic() == Mnemonic::Call
+                && blob_loads.len() < MAX_FUNCTIONS
+                && let Some(load) = blob_load_before(&insns, index)
+            {
+                blob_loads.push(load);
+            }
             if insn.mnemonic() != Mnemonic::Lea {
                 continue;
             }
@@ -438,7 +513,7 @@ fn collect_ctor_sites(view: &PeView) -> (BTreeMap<u64, Vec<CtorSite>>, BTreeSet<
                 continue;
             }
             let upper: usize = (index + CTOR_WINDOW).min(insns.len());
-            for follow in &insns[index + 1..upper] {
+            for (offset, follow) in insns[index + 1..upper].iter().enumerate() {
                 if follow.flow_control() == FlowControl::Return {
                     break;
                 }
@@ -451,6 +526,7 @@ fn collect_ctor_sites(view: &PeView) -> (BTreeMap<u64, Vec<CtorSite>>, BTreeSet<
                         site: insn.ip(),
                         impl_address: target,
                         callee,
+                        name_slot: name_slot_near(&insns, index, index + 1 + offset),
                     });
                     break;
                 }
@@ -463,7 +539,12 @@ fn collect_ctor_sites(view: &PeView) -> (BTreeMap<u64, Vec<CtorSite>>, BTreeSet<
         .filter(|(_, impls): &(&u64, &BTreeSet<u64>)| impls.len() >= MIN_CONSTRUCTOR_IMPLS)
         .map(|(callee, _): (&u64, &BTreeSet<u64>)| *callee)
         .collect();
-    (per_host, constructors, exhausted)
+    CtorScan {
+        per_host,
+        constructors,
+        exhausted,
+        blob_loads,
+    }
 }
 
 fn ordered_host_impls<'a>(
@@ -479,14 +560,16 @@ fn ordered_host_impls<'a>(
 }
 
 fn locate_impls(view: &PeView) -> ImplSites {
-    let (per_host, constructors, decode_budget_exhausted): (
-        BTreeMap<u64, Vec<CtorSite>>,
-        BTreeSet<u64>,
-        bool,
-    ) = collect_ctor_sites(view);
+    let CtorScan {
+        per_host,
+        constructors,
+        exhausted: decode_budget_exhausted,
+        blob_loads,
+    }: CtorScan = collect_ctor_sites(view);
     if constructors.is_empty() {
         return ImplSites {
             decode_budget_exhausted,
+            blob_loads,
             ..ImplSites::default()
         };
     }
@@ -509,6 +592,7 @@ fn locate_impls(view: &PeView) -> ImplSites {
                     address: site.impl_address,
                     host,
                     constructor: site.callee,
+                    name_slot: site.name_slot,
                 });
             }
         }
@@ -543,7 +627,52 @@ fn locate_impls(view: &PeView) -> ImplSites {
         constructors: constructors.into_iter().collect(),
         hosts,
         decode_budget_exhausted,
+        blob_loads,
     }
+}
+
+fn constant_slot_names(
+    image: &[u8],
+    view: &PeView,
+    sites: &ImplSites,
+    constants: Option<&NuitkaConstants>,
+) -> BTreeMap<u64, String> {
+    let mut names: BTreeMap<u64, String> = BTreeMap::new();
+    let Some(constants): Option<&NuitkaConstants> = constants else {
+        return names;
+    };
+    for load in &sites.blob_loads {
+        let Some(label): Option<String> = view
+            .file_offset(load.module_name)
+            .and_then(|off: usize| read_ascii(image, off))
+        else {
+            continue;
+        };
+        DebugLog::for_scope("nuitka").kv("constants blob load", || {
+            format!("{label} table={:#x}", load.table)
+        });
+        let Some(module) = constants.modules.iter().find(|m| m.name == label) else {
+            continue;
+        };
+        for (index, slot) in module.slot_strings.iter().enumerate() {
+            if let Some(name) = slot
+                && let Some(address) = u64::try_from(index)
+                    .ok()
+                    .and_then(|i: u64| i.checked_mul(8))
+                    .and_then(|delta: u64| load.table.checked_add(delta))
+            {
+                names.entry(address).or_insert_with(|| name.clone());
+            }
+        }
+    }
+    names
+}
+
+fn is_python_identifier(name: &str) -> bool {
+    name.chars()
+        .next()
+        .is_some_and(|c: char| c == '_' || c.is_alphabetic())
+        && name.chars().all(|c: char| c == '_' || c.is_alphanumeric())
 }
 
 fn user_code_objects(constants: &NuitkaConstants) -> Vec<CodeObjectMeta> {
@@ -575,6 +704,7 @@ fn trace_ops(view: &PeView, insns: &[Instruction]) -> (Vec<NativeOp>, ReturnOrig
             Mnemonic::Call => {
                 match call_import_name(view, insn) {
                     Some(name) => classify_call(&name, last_small_imm, &mut ops),
+                    None if direct_branch_target(insn).is_none() => ops.push(NativeOp::SlotCall),
                     None => ops.push(NativeOp::UnclassifiedCall),
                 }
                 if insn.op0_kind() == OpKind::Register {
@@ -766,7 +896,6 @@ fn reconstruct(
                 | NativeOp::Attribute
                 | NativeOp::Subscript
                 | NativeOp::Call { .. }
-                | NativeOp::Branch
                 | NativeOp::UnclassifiedCall
         )
     });
@@ -823,6 +952,7 @@ fn marker(ops: &[NativeOp]) -> String {
             NativeOp::Attribute => "attribute",
             NativeOp::Subscript => "subscript",
             NativeOp::Call { .. } | NativeOp::UnclassifiedCall => "call",
+            NativeOp::SlotCall => "slot call",
             NativeOp::Branch => "branch",
             NativeOp::ParamLoad { .. }
             | NativeOp::NoneLoad
@@ -910,6 +1040,23 @@ pub fn lift_native_bodies(
         return None;
     }
     let codes: Vec<CodeObjectMeta> = constants.map(user_code_objects).unwrap_or_default();
+    let slot_names: BTreeMap<u64, String> = constant_slot_names(image, &view, &sites, constants);
+    dbg.kv("constants blob loads", || {
+        sites.blob_loads.len().to_string()
+    });
+    dbg.kv("constant slot names", || slot_names.len().to_string());
+    dbg.kv("impl name slots", || {
+        sites
+            .impls
+            .iter()
+            .map(|located: &LocatedImpl| {
+                located
+                    .name_slot
+                    .map_or_else(|| "-".to_owned(), |slot: u64| format!("{slot:#x}"))
+            })
+            .collect::<Vec<String>>()
+            .join(",")
+    });
     let plan: BindingPlan = plan_binding(&sites, &codes);
     let primary_order: BTreeMap<u64, usize> = match plan {
         BindingPlan::PrimaryHost => sites
@@ -942,15 +1089,31 @@ pub fn lift_native_bodies(
             BindingPlan::None => None,
         };
         let traced_argcount: usize = inferred_argcount(&ops, return_origin);
+        let constructor_name: Option<&String> = located
+            .name_slot
+            .and_then(|slot: u64| slot_names.get(&slot))
+            .filter(|name: &&String| is_python_identifier(name));
         let (name, qualname, kind, name_binding): (String, String, CodeKind, NameBinding) = code
             .map_or_else(
                 || {
-                    let label: String = format!("native_impl_{index}");
-                    (
-                        label.clone(),
-                        label,
-                        CodeKind::Function,
-                        NameBinding::Positional,
+                    constructor_name.map_or_else(
+                        || {
+                            let label: String = format!("native_impl_{index}");
+                            (
+                                label.clone(),
+                                label,
+                                CodeKind::Function,
+                                NameBinding::Positional,
+                            )
+                        },
+                        |name: &String| {
+                            (
+                                name.clone(),
+                                name.clone(),
+                                CodeKind::Function,
+                                NameBinding::ConstructorName,
+                            )
+                        },
                     )
                 },
                 |c: &CodeObjectMeta| {
@@ -1001,6 +1164,20 @@ pub fn lift_native_bodies(
         return None;
     }
 
+    dbg.kv("bound names", || {
+        functions
+            .iter()
+            .map(|f: &NativeFunctionBody| {
+                format!(
+                    "{}:{}:{}",
+                    f.name,
+                    f.is_name_bound(),
+                    f.recovered_stmts.len()
+                )
+            })
+            .collect::<Vec<String>>()
+            .join(",")
+    });
     let bound: usize = functions
         .iter()
         .filter(|f: &&NativeFunctionBody| f.is_name_bound())

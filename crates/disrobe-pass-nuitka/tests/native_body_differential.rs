@@ -267,8 +267,12 @@ fn native_body_lift_behavioral_differential_against_cpython() {
 
     let mutated: &String = expected_names
         .iter()
-        .find(|name: &&String| truth.get(*name).is_some_and(|(argcount, _)| *argcount >= 2))
-        .expect("the source defines a pass-through function of two or more parameters");
+        .find(|name: &&String| {
+            truth.get(*name).is_some_and(|(argcount, returned)| {
+                *argcount >= 2 && returned.is_some_and(|index: usize| index > 0)
+            })
+        })
+        .expect("the source defines a function of two or more parameters returning a later one");
     let control: BTreeMap<String, String> =
         compare_with_source(&py, &src, &recovered_src, &recovered_names, Some(mutated));
     assert!(
