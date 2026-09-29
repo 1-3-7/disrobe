@@ -5,7 +5,8 @@ use disrobe_core::Rung;
 use disrobe_core::chain::detection::{ChildArtifact, ChildHandle, TERMINAL_HINT};
 use disrobe_core::chain::{
     CatalogEntry, DetectContext, DetectVerdict, Detector, DetectorOutput,
-    FAMILY_OBFUSCATOR_WRAPPER, ObfuscatorCatalog, OutputKind, Pass, SupportQuality,
+    FAMILY_INTERPRETER_BYTECODE, FAMILY_OBFUSCATOR_WRAPPER, ObfuscatorCatalog, OutputKind, Pass,
+    SupportQuality,
 };
 use disrobe_core::error::{CoreError, Result as CoreResult};
 use disrobe_core::pass::PassId;
@@ -514,7 +515,7 @@ fn verdict_for_format(fmt: DetectedFormat) -> Option<DetectVerdict> {
     Some(DetectVerdict::new(
         PASS_ID,
         tag,
-        FAMILY_OBFUSCATOR_WRAPPER,
+        FAMILY_INTERPRETER_BYTECODE,
         confidence,
         30,
         vec![marker],
@@ -602,6 +603,30 @@ mod tests {
         let v: DetectVerdict = Detector::detect(&LuaDetector, &ctx(&bytes)).expect("must detect");
         assert_eq!(v.format_tag, TAG_LUA51);
         assert_eq!(v.specificity, 30);
+    }
+
+    #[test]
+    fn plain_compiled_chunks_are_interpreter_bytecode_not_obfuscator_wrappers() {
+        let corpus: std::path::PathBuf =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/lua");
+        for (rel, tag) in [
+            ("luac/hello.5_1.luac", TAG_LUA51),
+            ("luac/hello.5_2.luac", TAG_LUA52),
+            ("luac/hello.5_3.luac", TAG_LUA53),
+            ("luac/edge_cases.5_4.luac", TAG_LUA54),
+            ("luajit/hello.stripped.luajit", TAG_LUAJIT),
+            ("luau/hello.luau", TAG_LUAU),
+        ] {
+            let bytes: Vec<u8> = std::fs::read(corpus.join(rel))
+                .unwrap_or_else(|e: std::io::Error| panic!("read corpus/lua/{rel}: {e}"));
+            let v: DetectVerdict = Detector::detect(&LuaDetector, &ctx(&bytes))
+                .unwrap_or_else(|| panic!("{rel} must be claimed"));
+            assert_eq!(v.format_tag, tag, "{rel}");
+            assert_eq!(
+                v.family, FAMILY_INTERPRETER_BYTECODE,
+                "{rel} is compiler output with no protection layer"
+            );
+        }
     }
 
     #[test]

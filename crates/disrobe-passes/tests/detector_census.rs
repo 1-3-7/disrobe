@@ -506,16 +506,7 @@ const UNOBFUSCATED: [Selection; 27] = [
     },
 ];
 
-const PENDING_FALSE_CLAIMS: [(&str, &str); 8] = [
-    ("lua.deob", "lua-5.1"),
-    ("lua.deob", "lua-5.2"),
-    ("lua.deob", "lua-5.3"),
-    ("lua.deob", "lua-5.4"),
-    ("lua.deob", "luajit"),
-    ("lua.deob", "luau"),
-    ("mobile.classify", "react-native-hermes"),
-    ("php.peel", "php-source"),
-];
+const PENDING_FALSE_CLAIMS: [(&str, &str); 0] = [];
 
 const PROTECTION_WORDS: [&str; 4] = ["obfusc", "protect", "packer", "unpack"];
 
