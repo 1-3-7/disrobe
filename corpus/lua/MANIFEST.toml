@@ -30,8 +30,8 @@ notes = "class and subclass tables with __index chains and method calls, per-ite
 [[behaviour.fixtures]]
 path = "behaviour/loops.lua"
 kind = "lua-source"
-size_bytes = 1837
-notes = "an if/else inside a generic for whose then arm assigns an outer local that the loop and the code after it read, break inside generic and numeric for, a pairs loop assigning an outer local under a condition, a break from an inner generic for nested in another, a memoizing closure whose cached local is reassigned inside a branch and returned after it, varargs forwarded through a call and through select with multiple returns, an if/elseif inside a gmatch loop, a return from inside an ipairs loop"
+size_bytes = 1955
+notes = "an if/else inside a generic for whose then arm assigns an outer local that the loop and the code after it read, break inside generic and numeric for, a pairs loop assigning an outer local under a condition, a break from an inner generic for nested in another, a memoizing closure whose cached local is reassigned inside a branch and returned after it, varargs forwarded through a call and through select with multiple returns, an if/elseif inside a gmatch loop, a return from inside an ipairs loop, multi-result calls truncated by a local and by parentheses"
 
 [megafile]
 description = "~1200-LOC fixture exercising 5.1/5.2/5.3/5.4 + LuaJIT feature surface; parses cleanly across all 5 runtimes"

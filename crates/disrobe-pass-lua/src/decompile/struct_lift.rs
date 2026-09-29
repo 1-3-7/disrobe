@@ -1980,7 +1980,7 @@ fn emit_call(
     let args: Vec<String> = if d.b == 0 {
         collect_open(state, d.a + first_arg)
     } else {
-        (first_arg..d.b).map(|i: u32| state.reg(d.a + i)).collect()
+        fixed_value_list((first_arg..d.b).map(|i: u32| state.reg(d.a + i)).collect())
     };
     let call: String = format!("{func}({})", args.join(", "));
     if tail {
@@ -2087,9 +2087,56 @@ fn emit_return(state: &mut StructState, d: &Decoded) {
         let vals: Vec<String> = collect_open(state, d.a);
         state.push_raw(format!("return {}", vals.join(", ")));
     } else {
-        let vals: Vec<String> = (0..d.b - 1).map(|i: u32| state.reg(d.a + i)).collect();
+        let vals: Vec<String> =
+            fixed_value_list((0..d.b - 1).map(|i: u32| state.reg(d.a + i)).collect());
         state.push_raw(format!("return {}", vals.join(", ")));
     }
+}
+
+fn fixed_value_list(mut values: Vec<String>) -> Vec<String> {
+    if let Some(last) = values.last_mut()
+        && can_yield_several_values(last)
+    {
+        *last = format!("({last})");
+    }
+    values
+}
+
+fn can_yield_several_values(expr: &str) -> bool {
+    expr == "..." || (expr.ends_with(')') && !is_one_parenthesized_group(expr))
+}
+
+fn is_one_parenthesized_group(expr: &str) -> bool {
+    if !expr.starts_with('(') || expr.contains("[[") || expr.contains("[=") {
+        return false;
+    }
+    let mut depth: usize = 0;
+    let mut quote: Option<char> = None;
+    let mut escaped: bool = false;
+    for (index, ch) in expr.char_indices() {
+        if let Some(q) = quote {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == q {
+                quote = None;
+            }
+            continue;
+        }
+        match ch {
+            '"' | '\'' => quote = Some(ch),
+            '(' => depth += 1,
+            ')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return index + 1 == expr.len();
+                }
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 fn emit_fornum(

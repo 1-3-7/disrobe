@@ -75,3 +75,9 @@ print(first_even({1, 3}))
 
 local ok, count, second = pcall(function(...) return select("#", ...), ... end, "p", nil, "q")
 print(ok, count, second)
+
+local function two() return 1, 2 end
+local one = two()
+print(one)
+print((two()))
+print(ok, (("a,b"):gsub(",", ";")))
