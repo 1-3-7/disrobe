@@ -31,15 +31,19 @@ fn fixture_string_level_format() {
 }
 
 #[cfg(windows)]
+type Reversal = fn(&str) -> ReverseReport;
+
+#[cfg(windows)]
 #[test]
 fn string_level_reversal_matches_what_powershell_evaluates() {
-    let authored: [(&str, fn(&str) -> ReverseReport); 6] = [
+    let authored: [(&str, Reversal); 7] = [
         ("('{0}{1}{2}' -f 'Get','-','Process')", reverse_string),
         ("([char]73 + [char]69 + [char]88)", reverse_token),
         ("('Get-Pro'+'cess')", reverse_string),
         ("(-join ('ssecorP-teG'[-1..-11]))", reverse_string),
         ("('{1}{0}' -f 'Host','Write-')", reverse_string),
         ("([string][char]0x57 + 'rite')", reverse_token),
+        ("([char]0x48 + [char]105 + '!')", reverse_token),
     ];
     let mut mismatches: Vec<String> = Vec::new();
     for (expression, reverse) in authored {
@@ -58,13 +62,23 @@ fn string_level_reversal_matches_what_powershell_evaluates() {
         );
         let expected: String = String::from_utf8_lossy(&evaluated.stdout).trim().to_owned();
         let recovered: String = reverse(expression).output;
-        let unquoted: &str = recovered
+        let literal: &str = recovered
             .trim()
             .trim_start_matches('(')
-            .trim_end_matches(')')
+            .trim_end_matches(')');
+        let unquoted: String = if let Some(inner) = literal
+            .strip_prefix('\'')
+            .and_then(|s: &str| s.strip_suffix('\''))
+        {
+            inner.replace("''", "'")
+        } else if let Some(inner) = literal
             .strip_prefix('"')
             .and_then(|s: &str| s.strip_suffix('"'))
-            .unwrap_or(recovered.trim());
+        {
+            inner.to_owned()
+        } else {
+            literal.to_owned()
+        };
         if unquoted != expected {
             mismatches.push(format!(
                 "{expression}: powershell {expected:?}, recovered {recovered:?}"

@@ -52,6 +52,12 @@ pub fn reverse_token(input: &str) -> ReverseReport {
             out = charrun;
         }
     }
+    if let Some(folded) = fold_plain_literals(&out) {
+        if folded != out {
+            transformations.push("fold-plain-literals".to_owned());
+            out = folded;
+        }
+    }
     if let Some(decoded) = decode_multikey_xor_pipeline(&out) {
         if decoded != out {
             transformations.push("decode-multikey-xor-pipeline".to_owned());
@@ -288,10 +294,14 @@ fn normalize_invoke_expression_aliases(s: &str) -> Option<String> {
     Some(IEX_ALIAS.replace_all(s, "Invoke-Expression").into_owned())
 }
 
-static CHAR_ARRAY: LazyLock<&'static Regex> =
-    LazyLock::new(|| regex!(r"\[(?i)char\]\s*(\d{1,3})(?:\s*\+\s*\[(?i)char\]\s*(\d{1,3}))*"));
+static CHAR_ARRAY: LazyLock<&'static Regex> = LazyLock::new(|| {
+    regex!(
+        r"\[(?i)char\]\s*(?:0[xX][0-9A-Fa-f]{1,4}|\d{1,5})\b(?:\s*\+\s*\[(?i)char\]\s*(?:0[xX][0-9A-Fa-f]{1,4}|\d{1,5})\b)*"
+    )
+});
 
-static CHAR_LIT: LazyLock<&'static Regex> = LazyLock::new(|| regex!(r"\[(?i)char\]\s*(\d{1,3})"));
+static CHAR_LIT: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r"\[(?i)char\]\s*(?:0[xX]([0-9A-Fa-f]{1,4})|(\d{1,5}))\b"));
 
 fn decode_char_array_concatenations(s: &str) -> Option<String> {
     if !CHAR_ARRAY.is_match(s) {
@@ -303,16 +313,19 @@ fn decode_char_array_concatenations(s: &str) -> Option<String> {
         out.push_str(&s[last..m.start()]);
         let matched: &str = m.as_str();
         let mut decoded: String = String::new();
+        let mut complete: bool = true;
         for cap in CHAR_LIT.captures_iter(matched) {
-            if let Some(num) = cap.get(1) {
-                if let Ok(n) = num.as_str().parse::<u32>() {
-                    if let Some(c) = char::from_u32(n) {
-                        decoded.push(c);
-                    }
-                }
+            let code: Option<u32> = match (cap.get(1), cap.get(2)) {
+                (Some(hex), _) => u32::from_str_radix(hex.as_str(), 16).ok(),
+                (None, Some(dec)) => dec.as_str().parse::<u32>().ok(),
+                (None, None) => None,
+            };
+            match code.filter(|n: &u32| *n <= 0xFFFF).and_then(char::from_u32) {
+                Some(c) => decoded.push(c),
+                None => complete = false,
             }
         }
-        if decoded.is_empty() {
+        if decoded.is_empty() || !complete {
             out.push_str(matched);
         } else {
             out.push_str(&ps_double_quoted(&decoded));
@@ -321,6 +334,61 @@ fn decode_char_array_concatenations(s: &str) -> Option<String> {
     }
     out.push_str(&s[last..]);
     Some(out)
+}
+
+static STRING_CAST_OF_LITERAL: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r#"\[(?i)string\]\s*('(?:[^']|'')*'|"[^"`$]*")"#));
+
+static PLAIN_LITERAL_SUM: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r#"('(?:[^']|'')*'|"[^"`$]*")\s*\+\s*('(?:[^']|'')*'|"[^"`$]*")"#));
+
+fn plain_literal_value(literal: &str) -> String {
+    match literal.as_bytes().first() {
+        Some(b'\'') => literal[1..literal.len() - 1].replace("''", "'"),
+        _ => literal[1..literal.len() - 1].to_owned(),
+    }
+}
+
+fn ps_literal(value: &str) -> String {
+    if value.chars().any(char::is_control) {
+        ps_double_quoted(value)
+    } else {
+        format!("'{}'", value.replace('\'', "''"))
+    }
+}
+
+fn binds_tighter_than_addition(neighbour: Option<char>) -> bool {
+    matches!(neighbour, Some('+' | '-' | '*' | '/' | '%' | '.' | '['))
+}
+
+fn fold_plain_literals(s: &str) -> Option<String> {
+    let mut current: String = STRING_CAST_OF_LITERAL.replace_all(s, "$1").into_owned();
+    for _ in 0..64usize {
+        let Some((range, joined)): Option<(std::ops::Range<usize>, String)> = PLAIN_LITERAL_SUM
+            .captures_iter(&current)
+            .find_map(|c: regex::Captures<'_>| {
+                let (whole, left, right) = (c.get(0)?, c.get(1)?, c.get(2)?);
+                let before: Option<char> = current[..whole.start()].trim_end().chars().last();
+                let after: Option<char> = current[whole.end()..].trim_start().chars().next();
+                (!binds_tighter_than_addition(before)
+                    && !matches!(after, Some('*' | '/' | '%' | '.' | '[')))
+                .then(|| {
+                    (
+                        whole.range(),
+                        format!(
+                            "{}{}",
+                            plain_literal_value(left.as_str()),
+                            plain_literal_value(right.as_str())
+                        ),
+                    )
+                })
+            })
+        else {
+            break;
+        };
+        current.replace_range(range, &ps_literal(&joined));
+    }
+    (current != s).then_some(current)
 }
 
 static NUMERIC_PIPELINE: LazyLock<&'static Regex> = LazyLock::new(|| {
