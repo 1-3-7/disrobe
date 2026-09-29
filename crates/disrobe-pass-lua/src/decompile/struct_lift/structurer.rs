@@ -3,6 +3,7 @@ use crate::decompile::luau_structure::{StructureWorkBudget, StructuredBlock};
 
 const GENERIC_FOR_CONTROL_WIDTH: usize = 2;
 const MAX_CONDITION_CHAIN: usize = 64;
+const MAX_EXIT_SCAN: usize = 4_096;
 
 #[derive(Debug, Clone)]
 enum Node {
@@ -126,6 +127,7 @@ fn label_sites(nodes: &[PcNode]) -> LabelSites {
 pub(super) fn structure_standard(stmts: &[LiftedStmt], code_len: usize) -> StructureResult {
     let mut nodes: Vec<PcNode> = recover_short_circuit_chains(build_nodes(stmts));
     retarget_back_edges_through_closing_jumps(&mut nodes);
+    retarget_exits_through_skip_jumps(&mut nodes);
     let repeats: std::collections::BTreeMap<usize, RepeatEdge> = detect_repeats(&nodes);
     let label_candidates: LabelSites = label_sites(&nodes);
     let endless: std::collections::BTreeMap<usize, usize> = detect_endless_loops(&nodes, &repeats);
@@ -409,46 +411,73 @@ fn fold_condition_chain(
     })
 }
 
-fn retarget_back_edges_through_closing_jumps(nodes: &mut [PcNode]) {
+fn retarget_exits_through_skip_jumps(nodes: &mut [PcNode]) {
+    let mut first_cond_into: std::collections::BTreeMap<usize, usize> =
+        std::collections::BTreeMap::new();
+    for (index, node) in nodes.iter().enumerate() {
+        if let Node::Cond { target, .. } = node.node
+            && target > node.pc
+        {
+            first_cond_into.entry(target).or_insert(index);
+        }
+    }
     for i in 0..nodes.len() {
-        let Node::Cond { target: head, .. } = nodes[i].node else {
+        let (Node::Cond { target: exit, .. } | Node::Jump { target: exit }) = nodes[i].node else {
             continue;
         };
-        if head > nodes[i].pc || head == usize::MAX {
+        let at: usize = nodes[i].pc;
+        if exit <= at || exit == usize::MAX {
             continue;
         }
-        let cond_pc: usize = nodes[i].pc;
-        let threaded_exit: Option<usize> =
-            nodes[i + 1..].windows(2).find_map(|pair: &[PcNode]| {
-                match (&pair[0].node, &pair[1].node) {
-                    (Node::Jump { target: back }, Node::Jump { target: outer })
-                        if *back <= cond_pc && *back > head && *outer == head =>
-                    {
-                        Some(pair[1].pc)
-                    }
-                    _ => None,
-                }
-            });
-        if let Some(exit_pc) = threaded_exit
-            && let Node::Cond { target, .. } = &mut nodes[i].node
-        {
-            *target = exit_pc;
-            continue;
+        let mut threaded: Option<usize> = None;
+        for (offset, later) in nodes[i + 1..].iter().enumerate().take(MAX_EXIT_SCAN) {
+            if later.pc >= exit {
+                break;
+            }
+            let Node::Jump { target } = later.node else {
+                continue;
+            };
+            if target != exit {
+                continue;
+            }
+            let closes_enclosing_then: bool = nodes
+                .get(i + 2 + offset)
+                .and_then(|next: &PcNode| first_cond_into.get(&next.pc))
+                .is_some_and(|&opener: &usize| opener < i);
+            if closes_enclosing_then {
+                threaded = Some(later.pc);
+                break;
+            }
         }
-        let mut closing: Option<usize> = None;
-        for later in &nodes[i + 1..] {
-            match later.node {
-                Node::Jump { target } if target == head => {
-                    closing = Some(later.pc);
-                    break;
-                }
-                Node::Jump { target } | Node::Cond { target, .. } if target <= later.pc => break,
-                Node::ForNum { .. } | Node::ForGen { .. } | Node::BlockEnd => break,
+        if let Some(skip_pc) = threaded {
+            match &mut nodes[i].node {
+                Node::Cond { target, .. } | Node::Jump { target } => *target = skip_pc,
                 _ => {}
             }
         }
-        if let Some(closing_pc) = closing
-            && let Node::Cond { target, .. } = &mut nodes[i].node
+    }
+}
+
+fn retarget_back_edges_through_closing_jumps(nodes: &mut [PcNode]) {
+    let mut last_jump_to: std::collections::BTreeMap<usize, (usize, usize)> =
+        std::collections::BTreeMap::new();
+    for (index, node) in nodes.iter().enumerate() {
+        if let Node::Jump { target } = node.node
+            && target <= node.pc
+        {
+            last_jump_to.insert(target, (index, node.pc));
+        }
+    }
+    for (i, node) in nodes.iter_mut().enumerate() {
+        let pc: usize = node.pc;
+        let (Node::Cond { target, .. } | Node::Jump { target }) = &mut node.node else {
+            continue;
+        };
+        if *target > pc || *target == usize::MAX {
+            continue;
+        }
+        if let Some(&(index, closing_pc)) = last_jump_to.get(target)
+            && index > i
         {
             *target = closing_pc;
         }
@@ -1853,6 +1882,97 @@ mod tests {
                         && matches!(else_body.as_slice(), [StructuredBlock::Raw(b)] if b == "b()")
             ),
             "outer then: {outer_then:?}"
+        );
+        assert_eq!(result.unresolved_jumps, 0);
+    }
+
+    #[test]
+    fn an_inner_if_ending_a_then_branch_with_its_exit_past_the_else_nests() {
+        let stmts: Vec<LiftedStmt> = vec![
+            cond(0, "p", 5),
+            lifted(1, LStmt::Raw("a()".to_owned())),
+            cond(2, "q", 6),
+            lifted(3, LStmt::Raw("b()".to_owned())),
+            lifted(4, LStmt::Jump { target: 6 }),
+            lifted(5, LStmt::Raw("c()".to_owned())),
+            lifted(6, LStmt::Raw("d()".to_owned())),
+        ];
+
+        let result: StructureResult = structure_standard(&stmts, 7);
+
+        let [
+            StructuredBlock::If {
+                then_body,
+                else_body,
+                ..
+            },
+            StructuredBlock::Raw(after),
+        ] = result.blocks.as_slice()
+        else {
+            panic!("expected one if/else then d(); blocks: {:?}", result.blocks);
+        };
+        assert_eq!(after, "d()");
+        assert!(
+            matches!(
+                then_body.as_slice(),
+                [StructuredBlock::Raw(a), StructuredBlock::If { cond, then_body: inner, else_body: none }]
+                    if a == "a()"
+                        && cond == "q"
+                        && none.is_empty()
+                        && matches!(inner.as_slice(), [StructuredBlock::Raw(b)] if b == "b()")
+            ),
+            "then: {then_body:?}"
+        );
+        assert!(
+            matches!(else_body.as_slice(), [StructuredBlock::Raw(c)] if c == "c()"),
+            "else: {else_body:?}"
+        );
+        assert_eq!(result.unresolved_jumps, 0);
+    }
+
+    #[test]
+    fn a_while_ending_a_then_branch_with_its_exit_past_the_else_stays_a_while() {
+        let stmts: Vec<LiftedStmt> = vec![
+            cond(0, "p", 6),
+            lifted(1, LStmt::Raw("init()".to_owned())),
+            cond(2, "c", 8),
+            lifted(3, LStmt::Raw("body()".to_owned())),
+            lifted(4, LStmt::Jump { target: 2 }),
+            lifted(5, LStmt::Jump { target: 8 }),
+            lifted(6, LStmt::Raw("other()".to_owned())),
+            lifted(8, LStmt::Raw("done()".to_owned())),
+        ];
+
+        let result: StructureResult = structure_standard(&stmts, 9);
+
+        let [
+            StructuredBlock::If {
+                then_body,
+                else_body,
+                ..
+            },
+            StructuredBlock::Raw(after),
+        ] = result.blocks.as_slice()
+        else {
+            panic!(
+                "expected one if/else then done(); blocks: {:?}",
+                result.blocks
+            );
+        };
+        assert_eq!(after, "done()");
+        assert!(
+            matches!(
+                then_body.as_slice(),
+                [StructuredBlock::Raw(init), StructuredBlock::While { cond, body }]
+                    if init == "init()"
+                        && cond == "c"
+                        && matches!(body.as_slice(), [StructuredBlock::Raw(b)] if b == "body()")
+            ),
+            "then: {then_body:?}"
+        );
+        assert!(
+            matches!(else_body.as_slice(), [StructuredBlock::Raw(o)] if o == "other()"),
+            "else: {else_body:?}"
         );
         assert_eq!(result.unresolved_jumps, 0);
     }

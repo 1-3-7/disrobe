@@ -75,6 +75,16 @@ impl Value {
                 otherwise,
                 ..
             } => {
+                if let Self::Leaf { text, .. } = taken.as_ref()
+                    && text == cond
+                {
+                    return Some(format!("({cond} or {})", otherwise.render()?));
+                }
+                if let Self::Leaf { text, .. } = otherwise.as_ref()
+                    && cond.strip_prefix("not ") == Some(text.as_str())
+                {
+                    return Some(format!("({text} or {})", taken.render()?));
+                }
                 if !taken.falls_into(otherwise.entry()) {
                     if !otherwise.falls_into(taken.entry()) {
                         return None;
