@@ -26,7 +26,7 @@ pub use manifest::{
     EntryClassification, ProtectionReport, ProtectionSignal, PyInstallerManifest, build_manifest,
 };
 pub use onedir::{OnedirLayout, OnedirPlan, plan_onedir};
-pub use pyc_zipper::{UnzippedPyc, ZipperCompression, looks_like_pyc, unzip_pyc};
+pub use pyc_zipper::{UnzippedPyc, ZipperCompression, unzip_pyc};
 pub use pyz::{PyzEntry, PyzTocKind, extract_pyz, extract_pyz_with_key};
 pub use toc::{DependencyReference, EntryType, TocEntry, TocNameStatus, walk_toc};
 

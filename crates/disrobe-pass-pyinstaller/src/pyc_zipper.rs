@@ -131,15 +131,6 @@ pub struct UnzippedPyc {
     pub recovered_body_len: usize,
 }
 
-#[must_use]
-pub fn looks_like_pyc(bytes: &[u8]) -> bool {
-    if bytes.len() < 4 {
-        return false;
-    }
-    let magic: u32 = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-    pyversion_from_magic(magic).is_some()
-}
-
 pub fn unzip_pyc(pyc_bytes: &[u8]) -> Option<UnzippedPyc> {
     unzip_pyc_with_limits(pyc_bytes, ZipperLimits::default())
 }
@@ -538,13 +529,6 @@ mod tests {
         junk[2] = 0x0D;
         junk[3] = 0x0A;
         assert!(unzip_pyc(&junk).is_none());
-    }
-
-    #[test]
-    fn looks_like_pyc_gate() {
-        assert!(looks_like_pyc(&[0x2B, 0x0E, 0x0D, 0x0A, 0, 0, 0, 0]));
-        assert!(!looks_like_pyc(&[0x00, 0x00, 0x00, 0x00]));
-        assert!(!looks_like_pyc(&[0x2B]));
     }
 
     fn wrapper_with_consts(consts: Vec<Object>) -> Vec<u8> {
