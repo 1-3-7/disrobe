@@ -53,7 +53,6 @@ pub const DEFAULT_MAX_CUMULATIVE_OUTPUT_BYTES: u64 = 512 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct ChainConfig {
-    pub max_parallel_branches: u32,
     pub capture_stage_bytes: bool,
     pub persist_children: bool,
     pub stream_extracted: bool,
@@ -65,7 +64,6 @@ pub struct ChainConfig {
 impl Default for ChainConfig {
     fn default() -> Self {
         Self {
-            max_parallel_branches: 8,
             capture_stage_bytes: false,
             persist_children: false,
             stream_extracted: false,
