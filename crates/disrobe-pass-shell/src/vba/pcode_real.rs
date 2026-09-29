@@ -350,7 +350,6 @@ struct DirParse {
 fn parse_dir(dir: &[u8], endian: Endian) -> DirParse {
     let mut modules: Vec<String> = Vec::new();
     let mut is_64bit: bool = false;
-    let mut codepage_codec: CodepageCodec = CodepageCodec::Latin1;
     let mut offset: usize = 0;
     while offset + 6 <= dir.len() {
         let tag: u16 = read_u16(dir, offset, endian);
@@ -372,10 +371,6 @@ fn parse_dir(dir: &[u8], endian: Endian) -> DirParse {
                     is_64bit = true;
                 }
             }
-            3 if w_length >= 2 => {
-                let cp: u16 = read_u16(dir, offset, endian);
-                codepage_codec = CodepageCodec::from_codepage(cp);
-            }
             50 => {
                 let unicode_name: String = decode_utf16le(&dir[offset..payload_end]);
                 if !unicode_name.is_empty() {
@@ -386,23 +381,7 @@ fn parse_dir(dir: &[u8], endian: Endian) -> DirParse {
         }
         offset = payload_end;
     }
-    let _ = codepage_codec;
     DirParse { modules, is_64bit }
-}
-
-#[derive(Debug, Clone, Copy)]
-enum CodepageCodec {
-    Latin1,
-    Cp1252,
-}
-
-impl CodepageCodec {
-    fn from_codepage(cp: u16) -> Self {
-        match cp {
-            1252 => Self::Cp1252,
-            _ => Self::Latin1,
-        }
-    }
 }
 
 fn decode_utf16le(bytes: &[u8]) -> String {
