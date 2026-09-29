@@ -670,6 +670,11 @@ fn render_region(
             let first: String = pop(stack);
             let merged: MergedCondition =
                 merge_condition(body, ctx, depth, i, target, first, targets);
+            if let Some(next) = try_guard_return(body, ctx, depth, &merged, hi, targets, stmts) {
+                i = next;
+                stack.clear();
+                continue;
+            }
             if let Some((value, next)) =
                 try_value_conditional(body, ctx, depth, &merged, hi, targets)
             {
@@ -768,6 +773,55 @@ struct MergedCondition {
     branch_if: bool,
 }
 
+fn try_guard_return(
+    body: &YarvIseqBody,
+    ctx: &DecompileContext<'_>,
+    depth: u32,
+    merged: &MergedCondition,
+    hi: usize,
+    targets: &[Option<usize>],
+    stmts: &mut Vec<String>,
+) -> Option<usize> {
+    let leave: usize = merged.target.checked_sub(1)?;
+    if merged.target >= hi
+        || leave <= merged.branch_idx
+        || body.instructions[leave].mnemonic != "leave"
+        || !ctx.is_method_body(body.index)
+        || (merged.branch_idx + 1..leave).any(|j| {
+            matches!(
+                body.instructions[j].mnemonic.as_str(),
+                "branchif" | "branchunless" | "branchnil" | "jump" | "leave" | "throw"
+            )
+        })
+    {
+        return None;
+    }
+    let mut then_stack: Vec<String> = Vec::with_capacity(4);
+    let mut then_stmts: Vec<String> = Vec::new();
+    render_region(
+        body,
+        ctx,
+        depth,
+        merged.branch_idx + 1,
+        leave,
+        targets,
+        &mut then_stack,
+        &mut then_stmts,
+    );
+    if !then_stmts.is_empty() || then_stack.len() > 1 {
+        return None;
+    }
+    let value: String = then_stack.pop().unwrap_or_default();
+    let exit: String = if value.is_empty() || value == "nil" {
+        "return".to_owned()
+    } else {
+        format!("return {value}")
+    };
+    let keyword: &str = if merged.branch_if { "unless" } else { "if" };
+    emit_stmt(stmts, depth, format!("{exit} {keyword} {}", merged.cond));
+    Some(merged.target)
+}
+
 fn condition_operand(value: &str) -> String {
     if value.contains("||")
         || value.contains(" ? ")
@@ -828,6 +882,29 @@ fn merge_condition(
         let Some(next_target): Option<usize> = targets.get(k).copied().flatten() else {
             break;
         };
+        if body.instructions[k].mnemonic == "branchif" {
+            let op: &str = if !merged.branch_if && merged.target == k + 1 {
+                "&&"
+            } else if merged.branch_if && merged.target == next_target {
+                "||"
+            } else {
+                break;
+            };
+            let Some(value): Option<String> =
+                single_value_region(body, ctx, depth, merged.branch_idx + 1, k, targets)
+            else {
+                break;
+            };
+            merged.cond = format!(
+                "{} {op} {}",
+                condition_operand(&merged.cond),
+                condition_operand(&value)
+            );
+            merged.branch_idx = k;
+            merged.target = next_target;
+            merged.branch_if = true;
+            continue;
+        }
         if body.instructions[k].mnemonic != "branchunless" {
             break;
         }
@@ -4817,6 +4894,22 @@ fn needs_receiver_parens(recv: &str) -> bool {
 
 fn render_method_call(recv: &str, method: &str, args: &[String]) -> String {
     let method: &str = sanitize_method(method);
+    if let [arg] = args
+        && !arg.is_empty()
+        && !recv.is_empty()
+        && recv != "self"
+        && !is_forward_marker(recv)
+        && matches!(method, "<=>" | "**" | "===" | "=~" | "!~" | "^" | ">>")
+        && let Some(parent) = ruby_binop_precedence(method)
+    {
+        let lhs: String = if recv.starts_with('-') {
+            format!("({recv})")
+        } else {
+            parenthesize_operand(recv.to_owned(), parent, false)
+        };
+        let rhs: String = parenthesize_operand(arg.clone(), parent, true);
+        return format!("{lhs} {method} {rhs}");
+    }
     let prefix: String = if (recv == "self" && !SELF_QUALIFIED_KEYWORDS.contains(&method))
         || recv.is_empty()
         || is_forward_marker(recv)
@@ -4857,12 +4950,17 @@ fn emit_binop(_instr: &YarvIbfInstruction, stack: &mut Vec<String>, op: &str) {
 }
 
 fn parenthesize_operand(expr: String, parent_prec: u8, is_right: bool) -> String {
-    match top_level_binop_precedence(&expr) {
-        Some(child) if (is_right && child <= parent_prec) || (!is_right && child < parent_prec) => {
-            format!("({expr})")
-        }
-        _ => expr,
-    }
+    let Some(child): Option<u8> = top_level_binop_precedence(&expr) else {
+        return expr;
+    };
+    let non_associative: bool = parent_prec == ruby_binop_precedence("==").unwrap_or(0);
+    let right_associative: bool = parent_prec == ruby_binop_precedence("**").unwrap_or(0);
+    let wrap: bool = match child.cmp(&parent_prec) {
+        core::cmp::Ordering::Less => true,
+        core::cmp::Ordering::Greater => false,
+        core::cmp::Ordering::Equal => non_associative || (is_right != right_associative),
+    };
+    if wrap { format!("({expr})") } else { expr }
 }
 
 fn ruby_binop_precedence(op: &str) -> Option<u8> {

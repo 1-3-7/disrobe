@@ -529,15 +529,15 @@
         },
         {
           "label": "megafile",
-          "value": 99.7,
-          "detail": "The opcode-name multiset comparison matches 23895 of 23966 original occurrences after MRI compiles both sources, or 99.70%. There are 71 unmatched original occurrences. Ordering and operands are ignored, and additional recovered instructions do not reduce the score.",
+          "value": 99.87,
+          "detail": "The opcode-name multiset comparison matches 23934 of 23966 original occurrences after MRI compiles both sources, or 99.87%. There are 32 unmatched original occurrences. Ordering and operands are ignored, and additional recovered instructions do not reduce the score.",
           "verified_by": {
             "path": "crates/disrobe-pass-ruby/tests/yarv_recompile_oracle.rs",
             "function": "published_yarv_bars_match_the_counts_this_crate_pins",
             "measured_by": "yarv_opcode_name_multiset_recall_is_reproducible"
           },
           "source": "crates/disrobe-pass-ruby/tests/yarv_recompile_oracle.rs (megafile >= 99)",
-          "num": 23895,
+          "num": 23934,
           "den": 23966
         }
       ]
