@@ -305,12 +305,6 @@ line = "0x20..=0x7E => out.push(b as char),"
 reason = "ASCII-only: byte is matched 0x20..=0x7e (printable ASCII) in this arm"
 
 [[site]]
-file = "crates/disrobe-pass-lua/src/decompile/luau_lift.rs"
-fn = "quote_lua"
-line = "0x20..=0x7E => out.push(b as char),"
-reason = "ASCII-only: byte is matched 0x20..=0x7e (printable ASCII) in this arm"
-
-[[site]]
 file = "crates/disrobe-pass-lua/src/obfuscator/prometheus_vmlift.rs"
 fn = "find_state_loop"
 line = "return Some((var as char, j + 2));"
