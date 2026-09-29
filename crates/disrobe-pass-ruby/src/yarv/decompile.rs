@@ -31,6 +31,13 @@ pub enum Fidelity {
 
 #[must_use]
 pub fn decompile_from_ibf(image: &IbfImage) -> YarvDecompiled {
+    let normalized: IbfImage;
+    let image: &IbfImage = if image.iseqs.iter().any(needs_ruby_4_normalization) {
+        normalized = normalize_ruby_4(image);
+        &normalized
+    } else {
+        image
+    };
     let mut recovered_strings: Vec<String> = Vec::new();
     let mut recovered_symbols: Vec<String> = Vec::new();
     for obj in &image.objects {
@@ -138,6 +145,69 @@ fn detect_shareable_constant_value(image: &IbfImage) -> bool {
                 )
         })
     })
+}
+
+const RUBY_4_IT_PARAM: &str = "<it>";
+
+fn needs_ruby_4_normalization(body: &YarvIseqBody) -> bool {
+    body.instructions
+        .iter()
+        .any(|instr: &YarvIbfInstruction| instr.mnemonic == "opt_new")
+        || body
+            .local_table
+            .iter()
+            .any(|name: &Option<String>| name.as_deref() == Some(RUBY_4_IT_PARAM))
+}
+
+fn normalize_ruby_4(image: &IbfImage) -> IbfImage {
+    let mut folded: IbfImage = image.clone();
+    for body in &mut folded.iseqs {
+        for name in body.local_table.iter_mut().flatten() {
+            if name == RUBY_4_IT_PARAM {
+                "it".clone_into(name);
+            }
+        }
+        let rt_pc: Vec<u32> = runtime_pcs(body);
+        let fast_paths: Vec<usize> = (0..body.instructions.len())
+            .filter(|&k: &usize| opt_new_fast_path(body, &rt_pc, k))
+            .collect();
+        for k in fast_paths {
+            for instr in &mut body.instructions[k..k + 3] {
+                "nop".clone_into(&mut instr.mnemonic);
+            }
+        }
+    }
+    folded
+}
+
+fn opt_new_fast_path(body: &YarvIseqBody, rt_pc: &[u32], k: usize) -> bool {
+    let instrs: &[YarvIbfInstruction] = &body.instructions;
+    let mnemonic_at = |index: usize| -> Option<&str> {
+        instrs
+            .get(index)
+            .map(|instr: &YarvIbfInstruction| instr.mnemonic.as_str())
+    };
+    if mnemonic_at(k) != Some("opt_new")
+        || mnemonic_at(k + 1) != Some("opt_send_without_block")
+        || mnemonic_at(k + 2) != Some("jump")
+        || !matches!(mnemonic_at(k + 3), Some("opt_send_without_block" | "send"))
+        || mnemonic_at(k + 4) != Some("swap")
+        || mnemonic_at(k + 5) != Some("pop")
+    {
+        return false;
+    }
+    let lands_on = |index: usize, operand: usize, expected: usize| -> bool {
+        let Some(YarvOperand::Offset(offset)): Option<&YarvOperand> =
+            instrs[index].operands.get(operand)
+        else {
+            return false;
+        };
+        let next_pc: i64 = i64::from(rt_pc[index]) + 1 + instrs[index].operands.len() as i64;
+        rt_pc
+            .get(expected)
+            .is_some_and(|&pc: &u32| next_pc + i64::from(*offset as i32) == i64::from(pc))
+    };
+    lands_on(k, 1, k + 3) && lands_on(k + 2, 0, k + 5)
 }
 
 fn resolve_branch_targets(body: &YarvIseqBody) -> Vec<Option<usize>> {
@@ -4616,7 +4686,40 @@ fn step(
                 _ => CBASE.to_owned(),
             },
         ),
-        "nop" | "intern" | "tostring" | "putchilledstring_dummy" => {}
+        "nop" | "intern" | "tostring" | "putchilledstring_dummy" | "splatkw" => {}
+        "opt_duparray_send" => {
+            let args: Vec<String> = pop_n(stack, operand_count(instr, 2));
+            let array: String = operand_value(instr, 0);
+            push(
+                stack,
+                render_method_call(&array, &id_or_index(instr, 1), &args),
+            );
+        }
+        "setblockparam" => {
+            let v: String = pop(stack);
+            let level: u32 = operand_num(instr, 1) as u32;
+            let name: String = ctx.local_at_level(local_table, level, operand_num(instr, 0));
+            emit_stmt(stmts, depth, format!("{name} = {v}"));
+        }
+        "pushtoarraykwsplat" => {
+            let hash: String = pop(stack);
+            let array: String = pop(stack);
+            push(
+                stack,
+                append_array_element(&array, &format!("**{}", strip_splat(&hash))),
+            );
+        }
+        "setspecial"
+        | "invokebuiltin"
+        | "opt_invokebuiltin_delegate"
+        | "opt_invokebuiltin_delegate_leave"
+        | "opt_new" => {
+            emit_stmt(
+                stmts,
+                depth,
+                format!("raise NotImplementedError, \"YARV instruction {m} not recovered\""),
+            );
+        }
         _ => {}
     }
 }
@@ -5956,6 +6059,57 @@ mod tests {
             param_opt_table: Vec::new(),
             param_keyword: None,
         }
+    }
+
+    #[test]
+    fn a_literal_array_method_call_keeps_its_receiver_and_argument() {
+        let body: YarvIseqBody = synthetic_body(vec![
+            instr("putself", vec![]),
+            instr("putobject", vec![YarvOperand::NumLiteral("3".to_owned())]),
+            instr(
+                "opt_duparray_send",
+                vec![
+                    YarvOperand::NumLiteral("[1, 2]".to_owned()),
+                    YarvOperand::Id("include?".to_owned()),
+                    YarvOperand::Num(1),
+                ],
+            ),
+            instr(
+                "opt_send_without_block",
+                vec![YarvOperand::Call {
+                    method: "p".to_owned(),
+                    argc: 1,
+                    flags: 0x14,
+                    kwargs: Vec::new(),
+                }],
+            ),
+            instr("leave", vec![]),
+        ]);
+        let stmts: Vec<String> = decompile_body(&body);
+        assert!(
+            stmts
+                .iter()
+                .any(|line: &String| line.contains("[1, 2].include?(3)")),
+            "{stmts:?}"
+        );
+    }
+
+    #[test]
+    fn an_instruction_without_a_lowering_is_refused_by_name() {
+        let body: YarvIseqBody = synthetic_body(vec![
+            instr("putobject", vec![YarvOperand::NumLiteral("1".to_owned())]),
+            instr("setspecial", vec![YarvOperand::Num(2)]),
+            instr("leave", vec![]),
+        ]);
+        let stmts: Vec<String> = decompile_body(&body);
+        assert!(
+            stmts.iter().any(|line: &String| {
+                line.contains(
+                    "raise NotImplementedError, \"YARV instruction setspecial not recovered\"",
+                )
+            }),
+            "{stmts:?}"
+        );
     }
 
     #[test]

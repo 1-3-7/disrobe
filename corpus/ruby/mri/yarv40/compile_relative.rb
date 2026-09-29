@@ -1,0 +1,5 @@
+src_path = ARGV.fetch(0)
+out_path = ARGV.fetch(1)
+name = File.basename(src_path)
+iseq = RubyVM::InstructionSequence.compile(File.read(src_path), name, name)
+File.binwrite(out_path, iseq.to_binary)

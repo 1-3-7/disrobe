@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 
 pub use crate::yarv::opcode_tables::TsKind;
-pub(super) use crate::yarv::opcode_tables::{V2_6, V2_7, V3_0, V3_1, V3_2, V3_3, V3_4, YarvOpcode};
+pub(super) use crate::yarv::opcode_tables::{
+    V2_6, V2_7, V3_0, V3_1, V3_2, V3_3, V3_4, V4_0, YarvOpcode,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct YarvVersion {
@@ -19,7 +21,7 @@ impl YarvVersion {
     #[inline]
     #[must_use]
     pub const fn is_supported(self) -> bool {
-        matches!((self.major, self.minor), (2, 6 | 7) | (3, 0..=4))
+        matches!((self.major, self.minor), (2, 6 | 7) | (3, 0..=4) | (4, 0))
     }
 
     #[must_use]
@@ -32,6 +34,7 @@ impl YarvVersion {
             (3, 2) => Some(V3_2),
             (3, 3) => Some(V3_3),
             (3, 4) => Some(V3_4),
+            (4, 0) => Some(V4_0),
             _ => None,
         }
     }
@@ -65,7 +68,16 @@ mod tests {
 
     #[test]
     fn nop_is_opcode_zero_every_version() {
-        for (maj, min) in [(2, 6), (2, 7), (3, 0), (3, 1), (3, 2), (3, 3), (3, 4)] {
+        for (maj, min) in [
+            (2, 6),
+            (2, 7),
+            (3, 0),
+            (3, 1),
+            (3, 2),
+            (3, 3),
+            (3, 4),
+            (4, 0),
+        ] {
             let v: YarvVersion = YarvVersion::new(maj, min);
             assert_eq!(
                 opcode_spec(v, 0).expect("nop").mnemonic,
@@ -97,6 +109,7 @@ mod tests {
         assert_eq!(opcode_count(YarvVersion::new(3, 2)), 202);
         assert_eq!(opcode_count(YarvVersion::new(3, 3)), 204);
         assert_eq!(opcode_count(YarvVersion::new(3, 4)), 220);
+        assert_eq!(opcode_count(YarvVersion::new(4, 0)), 218);
     }
 
     #[test]
@@ -111,6 +124,21 @@ mod tests {
     }
 
     #[test]
+    fn ruby_4_0_adds_opt_new_and_drops_the_keyed_aref_forms() {
+        let v: YarvVersion = YarvVersion::new(4, 0);
+        let opt_new: OpcodeSpec = opcode_spec(v, 58).expect("opt_new");
+        assert_eq!(opt_new.mnemonic, "opt_new");
+        assert_eq!(opt_new.operands, 2);
+        let table: &[YarvOpcode] = v.opcode_table().expect("4.0 table");
+        assert!(
+            !table
+                .iter()
+                .any(|o: &YarvOpcode| o.mnemonic.ends_with("opt_aref_with")
+                    || o.mnemonic.ends_with("opt_aset_with"))
+        );
+    }
+
+    #[test]
     fn leave_is_present_and_zero_operand() {
         let v: YarvVersion = YarvVersion::new(3, 2);
         let table: &[YarvOpcode] = v.opcode_table().expect("table");
@@ -120,10 +148,19 @@ mod tests {
 
     #[test]
     fn supported_versions() {
-        for (maj, min) in [(2, 6), (2, 7), (3, 0), (3, 1), (3, 2), (3, 3), (3, 4)] {
+        for (maj, min) in [
+            (2, 6),
+            (2, 7),
+            (3, 0),
+            (3, 1),
+            (3, 2),
+            (3, 3),
+            (3, 4),
+            (4, 0),
+        ] {
             assert!(YarvVersion::new(maj, min).is_supported());
         }
         assert!(!YarvVersion::new(1, 9).is_supported());
-        assert!(!YarvVersion::new(4, 0).is_supported());
+        assert!(!YarvVersion::new(4, 1).is_supported());
     }
 }

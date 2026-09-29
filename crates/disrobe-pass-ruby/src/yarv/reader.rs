@@ -110,11 +110,11 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_version() {
-        let bytes: Vec<u8> = synth_header(4, 0);
+        let bytes: Vec<u8> = synth_header(4, 1);
         let err: RubyError = read_header(&bytes).expect_err("unsupported");
         assert!(matches!(
             err,
-            RubyError::YarvUnsupportedVersion { major: 4, minor: 0 }
+            RubyError::YarvUnsupportedVersion { major: 4, minor: 1 }
         ));
     }
 }

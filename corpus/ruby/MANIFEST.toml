@@ -25,6 +25,7 @@ ruby = "3.4.9 (2026-03-11 revision 76cca827ab) +PRISM [x64-mingw-ucrt]"
 "behaviour/cases.rb" = { kind = "source", description = "self-authored runnable program with deterministic output: several case/in blocks per method body covering alternatives with an if guard, unless guards, find patterns with pre and post rest binds, hash patterns with and without **rest and with nested array patterns, array patterns with nested rest binds, pins, nil, ranges and value patterns, else arms, case/in as an assigned value, and top-level cases with and without else; graded by the YARV behaviour check" }
 "behaviour/case_join.rb" = { kind = "source", description = "self-authored runnable program with deterministic output: a case/in whose else falls through to the next statement, followed by single-arm cases holding a hash pattern with a nested array pattern and an array pattern with a nested hash pattern; graded by the YARV behaviour check" }
 "behaviour/nested_cases.rb" = { kind = "source", description = "self-authored runnable program with deterministic output: case/in nested inside an arm body and inside an else that also holds a while loop, case/in inside map and sum blocks, rightward pattern assignment, boolean in predicates as assigned values, and a method whose value is a case/in without else; graded by the YARV behaviour check" }
+"mri/yarv40/compile_relative.rb" = { kind = "source", description = "harness: compiles one behaviour program with RubyVM::InstructionSequence.compile under its bare file name, so the dumped path and realpath carry no build directory" }
 "mruby/greet.rb" = { kind = "source", description = "greet(name) method with interpolated puts and a greet(\"world\") call, compiled to mruby bytecode" }
 "mruby/breadth/arith.rb" = { kind = "source", description = "integer arithmetic breadth: add/sub/mul/div/compare opcodes" }
 "mruby/breadth/strings.rb" = { kind = "source", description = "string interpolation and concatenation breadth" }
@@ -314,6 +315,246 @@ magic = "RITE"
 format_version = "0004"
 size_bytes = 205
 notes = "real mruby 1.4.1 RITE binary, built from real mruby 1.4.1 source with a real mrbc; header carries the pre-mruby-2.0 two-byte CRC field and exercises version_layout's catch-field-absent branch (format versions 0001 through 0006); the irep body predates mruby 2.0's switch to a byte-packed mrb_code and is honestly left unparsed rather than decoded against the wrong opcode table"
+
+[[fixtures]]
+path = "mri/yarv40/programs.yarvc"
+bucket = "yarv"
+runtime = "MRI"
+runtime_version = "4.0.7"
+generator = "ruby mri/yarv40/compile_relative.rb behaviour/programs.rb mri/yarv40/programs.yarvc"
+generator_script = "mri/yarv40/compile_relative.rb"
+status = "REAL"
+magic = "YARB"
+format_version = "4.0"
+size_bytes = 14216
+sha256 = "561db6d989fb083ef22698b6adeed3fb0ee18311137386687a20ab50a35cb582"
+source_sha256 = "f74a5ec5d568c34d2401d4511efd550d4aeadb6c978ec87a1c378f1b786548f4"
+notes = "Ruby 4.0.7 (x64-mingw-ucrt) IBF of behaviour/programs.rb; graded by tests/yarv40_behaviour_oracle.rs, which runs the recovered source and the original under Ruby 3.4.10"
+
+[[fixtures]]
+path = "mri/yarv40/control.yarvc"
+bucket = "yarv"
+runtime = "MRI"
+runtime_version = "4.0.7"
+generator = "ruby mri/yarv40/compile_relative.rb behaviour/control.rb mri/yarv40/control.yarvc"
+generator_script = "mri/yarv40/compile_relative.rb"
+status = "REAL"
+magic = "YARB"
+format_version = "4.0"
+size_bytes = 12816
+sha256 = "8352e4a1c683f53ac4aa550ab4bb324d2f27c49fdaad7642595839720ed2682c"
+source_sha256 = "2af0b91daa604daece91ffb5fbdb9512490e7450d5876fded61ded067b135399"
+notes = "Ruby 4.0.7 (x64-mingw-ucrt) IBF of behaviour/control.rb; graded by tests/yarv40_behaviour_oracle.rs, which runs the recovered source and the original under Ruby 3.4.10"
+
+[[fixtures]]
+path = "mri/yarv40/objects.yarvc"
+bucket = "yarv"
+runtime = "MRI"
+runtime_version = "4.0.7"
+generator = "ruby mri/yarv40/compile_relative.rb behaviour/objects.rb mri/yarv40/objects.yarvc"
+generator_script = "mri/yarv40/compile_relative.rb"
+status = "REAL"
+magic = "YARB"
+format_version = "4.0"
+size_bytes = 11808
+sha256 = "af2ebc0ae849fd4947ecc93e71ca97ed886169b26fc7f33be1e47023b3aa66ff"
+source_sha256 = "460d246cf5a1599867f391ab798f184467cc463b461cab32929c57f9aacca501"
+notes = "Ruby 4.0.7 (x64-mingw-ucrt) IBF of behaviour/objects.rb; graded by tests/yarv40_behaviour_oracle.rs, which runs the recovered source and the original under Ruby 3.4.10"
+
+[[fixtures]]
+path = "mri/yarv40/text.yarvc"
+bucket = "yarv"
+runtime = "MRI"
+runtime_version = "4.0.7"
+generator = "ruby mri/yarv40/compile_relative.rb behaviour/text.rb mri/yarv40/text.yarvc"
+generator_script = "mri/yarv40/compile_relative.rb"
+status = "REAL"
+magic = "YARB"
+format_version = "4.0"
+size_bytes = 7744
+sha256 = "cbc61f49dae2cacbd269b143506bb6bd5868cdac298160c3c39b9bf488971bfc"
+source_sha256 = "96cd75cbacfe0884b4893a75041aadf3cf3db68665ff0804fa3a743dd67f7924"
+notes = "Ruby 4.0.7 (x64-mingw-ucrt) IBF of behaviour/text.rb; graded by tests/yarv40_behaviour_oracle.rs, which runs the recovered source and the original under Ruby 3.4.10"
+
+[[fixtures]]
+path = "mri/yarv40/patterns.yarvc"
+bucket = "yarv"
+runtime = "MRI"
+runtime_version = "4.0.7"
+generator = "ruby mri/yarv40/compile_relative.rb behaviour/patterns.rb mri/yarv40/patterns.yarvc"
+generator_script = "mri/yarv40/compile_relative.rb"
+status = "REAL"
+magic = "YARB"
+format_version = "4.0"
+size_bytes = 4836
+sha256 = "f08dfba88c20546fe105b9198205df8bfa296676c3521c53c8f14642750478bd"
+source_sha256 = "560c05ac94122a31f4d0e02fae77e0c05bd289f4fea1eb1bcc55f3341979cd7b"
+notes = "Ruby 4.0.7 (x64-mingw-ucrt) IBF of behaviour/patterns.rb; graded by tests/yarv40_behaviour_oracle.rs, which runs the recovered source and the original under Ruby 3.4.10"
+
+[[fixtures]]
+path = "mri/yarv40/loops.yarvc"
+bucket = "yarv"
+runtime = "MRI"
+runtime_version = "4.0.7"
+generator = "ruby mri/yarv40/compile_relative.rb behaviour/loops.rb mri/yarv40/loops.yarvc"
+generator_script = "mri/yarv40/compile_relative.rb"
+status = "REAL"
+magic = "YARB"
+format_version = "4.0"
+size_bytes = 4620
+sha256 = "e965cf253b4c51fba3d99ba1cc744b441acbe37026b2721d6691ee79403b6fc1"
+source_sha256 = "f76d6758592ebd448565ea5aa75388e051c706a9625db38db9caa69f0713eef5"
+notes = "Ruby 4.0.7 (x64-mingw-ucrt) IBF of behaviour/loops.rb; graded by tests/yarv40_behaviour_oracle.rs, which runs the recovered source and the original under Ruby 3.4.10"
+
+[[fixtures]]
+path = "mri/yarv40/guards.yarvc"
+bucket = "yarv"
+runtime = "MRI"
+runtime_version = "4.0.7"
+generator = "ruby mri/yarv40/compile_relative.rb behaviour/guards.rb mri/yarv40/guards.yarvc"
+generator_script = "mri/yarv40/compile_relative.rb"
+status = "REAL"
+magic = "YARB"
+format_version = "4.0"
+size_bytes = 5080
+sha256 = "254bd36732a2baaea0a8c94eda296ef26613ce455aec5f77bf47e38ba52ac334"
+source_sha256 = "66306d72a74b287aaa57f81dce7454cdb53f8dea3d4c5e337d4837a0d7a7fc3c"
+notes = "Ruby 4.0.7 (x64-mingw-ucrt) IBF of behaviour/guards.rb; graded by tests/yarv40_behaviour_oracle.rs, which runs the recovered source and the original under Ruby 3.4.10"
+
+[[fixtures]]
+path = "mri/yarv40/introspection.yarvc"
+bucket = "yarv"
+runtime = "MRI"
+runtime_version = "4.0.7"
+generator = "ruby mri/yarv40/compile_relative.rb behaviour/introspection.rb mri/yarv40/introspection.yarvc"
+generator_script = "mri/yarv40/compile_relative.rb"
+status = "REAL"
+magic = "YARB"
+format_version = "4.0"
+size_bytes = 8304
+sha256 = "2ac865f6789e00d8e7424e963bfbd4d2772189e55bd7789b9c37d2cdba1cc281"
+source_sha256 = "f0348d79f132560d2eba5881a922f9a4d9429d6630e12acecaef66955e80dbae"
+notes = "Ruby 4.0.7 (x64-mingw-ucrt) IBF of behaviour/introspection.rb; graded by tests/yarv40_behaviour_oracle.rs, which runs the recovered source and the original under Ruby 3.4.10"
+
+[[fixtures]]
+path = "mri/yarv40/features.yarvc"
+bucket = "yarv"
+runtime = "MRI"
+runtime_version = "4.0.7"
+generator = "ruby mri/yarv40/compile_relative.rb behaviour/features.rb mri/yarv40/features.yarvc"
+generator_script = "mri/yarv40/compile_relative.rb"
+status = "REAL"
+magic = "YARB"
+format_version = "4.0"
+size_bytes = 7244
+sha256 = "4fd86881c3bab36355e6d2a58ec8d36afc5b5ef3b8d03edfd2597df7a0857ee9"
+source_sha256 = "0a690730e70de5350d3b26fa9ed4ae4ebe042aea9647e9051e7fe2e9f18a9078"
+notes = "Ruby 4.0.7 (x64-mingw-ucrt) IBF of behaviour/features.rb; graded by tests/yarv40_behaviour_oracle.rs, which runs the recovered source and the original under Ruby 3.4.10"
+
+[[fixtures]]
+path = "mri/yarv40/operators.yarvc"
+bucket = "yarv"
+runtime = "MRI"
+runtime_version = "4.0.7"
+generator = "ruby mri/yarv40/compile_relative.rb behaviour/operators.rb mri/yarv40/operators.yarvc"
+generator_script = "mri/yarv40/compile_relative.rb"
+status = "REAL"
+magic = "YARB"
+format_version = "4.0"
+size_bytes = 8736
+sha256 = "b7d66e672fe070a62408200fbd78459f6a1e62387fb11da5078ba9e870574776"
+source_sha256 = "9423e28297ad397fb6fa7b63984e965fcc9ca501286bf78be818d49e5d2d03af"
+notes = "Ruby 4.0.7 (x64-mingw-ucrt) IBF of behaviour/operators.rb; graded by tests/yarv40_behaviour_oracle.rs, which runs the recovered source and the original under Ruby 3.4.10"
+
+[[fixtures]]
+path = "mri/yarv40/functional.yarvc"
+bucket = "yarv"
+runtime = "MRI"
+runtime_version = "4.0.7"
+generator = "ruby mri/yarv40/compile_relative.rb behaviour/functional.rb mri/yarv40/functional.yarvc"
+generator_script = "mri/yarv40/compile_relative.rb"
+status = "REAL"
+magic = "YARB"
+format_version = "4.0"
+size_bytes = 5064
+sha256 = "60b1f357ec351e93dc7c2f30f7eb637c29cbaa31011ee0a9e8ab07d1db08ff4b"
+source_sha256 = "319f4aa6ea9c0a15b1bf136e62a628eb660626c218c5bb443af6583c9fb5139b"
+notes = "Ruby 4.0.7 (x64-mingw-ucrt) IBF of behaviour/functional.rb; graded by tests/yarv40_behaviour_oracle.rs, which runs the recovered source and the original under Ruby 3.4.10"
+
+[[fixtures]]
+path = "mri/yarv40/flow.yarvc"
+bucket = "yarv"
+runtime = "MRI"
+runtime_version = "4.0.7"
+generator = "ruby mri/yarv40/compile_relative.rb behaviour/flow.rb mri/yarv40/flow.yarvc"
+generator_script = "mri/yarv40/compile_relative.rb"
+status = "REAL"
+magic = "YARB"
+format_version = "4.0"
+size_bytes = 8036
+sha256 = "3a09703e3854b84eb3614881beba491f45097d4be30e79063cf67b5f0aafd2ef"
+source_sha256 = "dcfd872f041bbb26d54b2401176bea23c9bbf6be84c683df196f3dfc8ebca3d8"
+notes = "Ruby 4.0.7 (x64-mingw-ucrt) IBF of behaviour/flow.rb; graded by tests/yarv40_behaviour_oracle.rs, which runs the recovered source and the original under Ruby 3.4.10"
+
+[[fixtures]]
+path = "mri/yarv40/values.yarvc"
+bucket = "yarv"
+runtime = "MRI"
+runtime_version = "4.0.7"
+generator = "ruby mri/yarv40/compile_relative.rb behaviour/values.rb mri/yarv40/values.yarvc"
+generator_script = "mri/yarv40/compile_relative.rb"
+status = "REAL"
+magic = "YARB"
+format_version = "4.0"
+size_bytes = 2260
+sha256 = "31f327fc708c32514226bc9f5da82d0841ec74d7dab5e77666300b2b6a10d358"
+source_sha256 = "5cb07a7be893618e4759c2d5c7a6233f52d813331c3a3c4445337804c5e68de8"
+notes = "Ruby 4.0.7 (x64-mingw-ucrt) IBF of behaviour/values.rb; graded by tests/yarv40_behaviour_oracle.rs, which runs the recovered source and the original under Ruby 3.4.10"
+
+[[fixtures]]
+path = "mri/yarv40/cases.yarvc"
+bucket = "yarv"
+runtime = "MRI"
+runtime_version = "4.0.7"
+generator = "ruby mri/yarv40/compile_relative.rb behaviour/cases.rb mri/yarv40/cases.yarvc"
+generator_script = "mri/yarv40/compile_relative.rb"
+status = "REAL"
+magic = "YARB"
+format_version = "4.0"
+size_bytes = 8080
+sha256 = "7cdfaa24f76098696b530335ef1db52a808ad6e0e1c6ae958d3374564e9aa63e"
+source_sha256 = "166a01e8a798ce1c3fea0ec302bd98eff645e6d1607c7741330f19320a1b7b9e"
+notes = "Ruby 4.0.7 (x64-mingw-ucrt) IBF of behaviour/cases.rb; graded by tests/yarv40_behaviour_oracle.rs, which runs the recovered source and the original under Ruby 3.4.10"
+
+[[fixtures]]
+path = "mri/yarv40/case_join.yarvc"
+bucket = "yarv"
+runtime = "MRI"
+runtime_version = "4.0.7"
+generator = "ruby mri/yarv40/compile_relative.rb behaviour/case_join.rb mri/yarv40/case_join.yarvc"
+generator_script = "mri/yarv40/compile_relative.rb"
+status = "REAL"
+magic = "YARB"
+format_version = "4.0"
+size_bytes = 2428
+sha256 = "b5757b1de2275d753aa4fff24ce678520648c040ef5108417f3da1f0d1039880"
+source_sha256 = "2ab147747fc112db790a6b8d0409da822eaa6749049a69d90eac984482c9dd01"
+notes = "Ruby 4.0.7 (x64-mingw-ucrt) IBF of behaviour/case_join.rb; graded by tests/yarv40_behaviour_oracle.rs, which runs the recovered source and the original under Ruby 3.4.10"
+
+[[fixtures]]
+path = "mri/yarv40/nested_cases.yarvc"
+bucket = "yarv"
+runtime = "MRI"
+runtime_version = "4.0.7"
+generator = "ruby mri/yarv40/compile_relative.rb behaviour/nested_cases.rb mri/yarv40/nested_cases.yarvc"
+generator_script = "mri/yarv40/compile_relative.rb"
+status = "REAL"
+magic = "YARB"
+format_version = "4.0"
+size_bytes = 3492
+sha256 = "5e7d038152455aea6fc54e1e1e2e28ae34821152eb8228b959d7fd09153c1330"
+source_sha256 = "55ff950a2be2929a205bf87b45015020b4c8c18097fae9580e737d47f81df483"
+notes = "Ruby 4.0.7 (x64-mingw-ucrt) IBF of behaviour/nested_cases.rb; graded by tests/yarv40_behaviour_oracle.rs, which runs the recovered source and the original under Ruby 3.4.10"
 
 [blocked]
 jruby = { reason = "JRuby not available - no winget package; manual JDK+JRuby install out of scope", workaround = "download from jruby.org and run jrubyc on a Linux/macOS host", fixture_status = "SYNTHESIZED-RETAIN" }

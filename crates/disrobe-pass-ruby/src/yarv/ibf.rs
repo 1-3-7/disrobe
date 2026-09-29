@@ -709,13 +709,43 @@ const BODY_READ_PARAM_REST_START: usize = 8;
 const BODY_READ_PARAM_BLOCK_START: usize = 11;
 const BODY_READ_PARAM_OPT_TABLE_OFFSET: usize = 12;
 const BODY_READ_PARAM_KEYWORD_OFFSET: usize = 13;
-const BODY_READ_CATCH_TABLE_SIZE: usize = 27;
-const BODY_READ_CATCH_TABLE_OFFSET: usize = 28;
 const BODY_READ_LOCAL_TABLE_OFFSET: usize = 26;
-const BODY_READ_CI_ENTRIES_OFFSET: usize = 32;
-const BODY_READ_LOCAL_TABLE_SIZE: usize = 35;
-const BODY_READ_CI_SIZE: usize = 40;
-const BODY_HEADER_READS: usize = 41;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BodyLayout {
+    catch_table_size: usize,
+    catch_table_offset: usize,
+    ci_entries_offset: usize,
+    local_table_size: usize,
+    ci_size: usize,
+    reads: usize,
+}
+
+const BODY_LAYOUT_3_3: BodyLayout = BodyLayout {
+    catch_table_size: 27,
+    catch_table_offset: 28,
+    ci_entries_offset: 32,
+    local_table_size: 35,
+    ci_size: 40,
+    reads: 41,
+};
+
+const BODY_LAYOUT_4_0: BodyLayout = BodyLayout {
+    catch_table_size: 28,
+    catch_table_offset: 29,
+    ci_entries_offset: 33,
+    local_table_size: 36,
+    ci_size: 41,
+    reads: 42,
+};
+
+const fn body_layout(version: YarvVersion) -> Option<BodyLayout> {
+    match (version.major, version.minor) {
+        (3, 3 | 4) => Some(BODY_LAYOUT_3_3),
+        (4, 0) => Some(BODY_LAYOUT_4_0),
+        _ => None,
+    }
+}
 const IBF_MAX_CI_ENTRIES: usize = 1_048_576;
 const IBF_MAX_LOCALS: usize = 65_536;
 const IBF_MAX_CATCH_ENTRIES: usize = 65_536;
@@ -743,7 +773,7 @@ struct BodyHeader {
 fn parse_body_header(
     bytes: &[u8],
     body_offset: usize,
-    ci_layout_known: bool,
+    layout: Option<BodyLayout>,
 ) -> Option<BodyHeader> {
     let mut pos: usize = body_offset;
     let mut iseq_size: usize = 0;
@@ -763,10 +793,9 @@ fn parse_body_header(
     let mut ci_size: usize = 0;
     let mut catch_table_offset: Option<usize> = None;
     let mut catch_table_size: usize = 0;
-    let reads: usize = if ci_layout_known {
-        BODY_HEADER_READS
-    } else {
-        4
+    let reads: usize = layout.map_or(4, |known: BodyLayout| known.reads);
+    let at = |read_idx: usize, field: fn(&BodyLayout) -> usize| -> bool {
+        layout.is_some_and(|known: BodyLayout| field(&known) == read_idx)
     };
     for read_idx in 0..reads {
         let (raw, next): (u64, usize) = read_small_value(bytes, pos)?;
@@ -804,21 +833,23 @@ fn parse_body_header(
                 let rel: usize = usize::try_from(raw).ok()?;
                 local_table_offset = body_offset.checked_sub(rel);
             }
-            BODY_READ_CATCH_TABLE_SIZE => {
+            idx if at(idx, |known: &BodyLayout| known.catch_table_size) => {
                 catch_table_size = usize::try_from(raw).ok()?.min(IBF_MAX_CATCH_ENTRIES);
             }
-            BODY_READ_CATCH_TABLE_OFFSET => {
+            idx if at(idx, |known: &BodyLayout| known.catch_table_offset) => {
                 let rel: usize = usize::try_from(raw).ok()?;
                 catch_table_offset = body_offset.checked_sub(rel);
             }
-            BODY_READ_CI_ENTRIES_OFFSET => {
+            idx if at(idx, |known: &BodyLayout| known.ci_entries_offset) => {
                 let rel: usize = usize::try_from(raw).ok()?;
                 ci_entries_offset = body_offset.checked_sub(rel);
             }
-            BODY_READ_LOCAL_TABLE_SIZE => {
+            idx if at(idx, |known: &BodyLayout| known.local_table_size) => {
                 local_table_size = usize::try_from(raw).ok()?.min(IBF_MAX_LOCALS);
             }
-            BODY_READ_CI_SIZE => ci_size = usize::try_from(raw).ok()?.min(IBF_MAX_CI_ENTRIES),
+            idx if at(idx, |known: &BodyLayout| known.ci_size) => {
+                ci_size = usize::try_from(raw).ok()?.min(IBF_MAX_CI_ENTRIES);
+            }
             _ => {}
         }
         pos = next;
@@ -1038,10 +1069,10 @@ fn decode_iseq_body(
     objects: &ObjectTable<'_>,
     body_offset: u32,
     index: u32,
-    ci_layout_known: bool,
+    layout: Option<BodyLayout>,
 ) -> Option<YarvIseqBody> {
     let start: usize = body_offset as usize;
-    let header: BodyHeader = parse_body_header(bytes, start, ci_layout_known)?;
+    let header: BodyHeader = parse_body_header(bytes, start, layout)?;
 
     let calls: Vec<CallEntry> = match header.ci_entries_offset {
         Some(ci_off) if ci_off <= bytes.len() && header.ci_size > 0 => {
@@ -1301,7 +1332,7 @@ pub(crate) fn parse_image(
     let mut iseqs: Vec<YarvIseqBody> = Vec::new();
     let mut recovered_instruction_count: u32 = 0;
     if let Some(table) = version.opcode_table() {
-        let ci_layout_known: bool = version.major == 3 && version.minor >= 3;
+        let layout: Option<BodyLayout> = body_layout(version);
         let obj_table: ObjectTable<'_> = ObjectTable { objects: &objects };
         let limit: usize = iseq_offsets.len().min(IBF_MAX_ISEQ_BODIES);
         for (i, &body_off) in iseq_offsets.iter().take(limit).enumerate() {
@@ -1309,8 +1340,7 @@ pub(crate) fn parse_image(
                 continue;
             }
             let index: u32 = u32::try_from(i).unwrap_or(u32::MAX);
-            if let Some(body) =
-                decode_iseq_body(bytes, table, &obj_table, body_off, index, ci_layout_known)
+            if let Some(body) = decode_iseq_body(bytes, table, &obj_table, body_off, index, layout)
             {
                 recovered_instruction_count = recovered_instruction_count
                     .saturating_add(u32::try_from(body.instructions.len()).unwrap_or(u32::MAX));
@@ -1845,7 +1875,7 @@ mod tests {
         }];
         let objects: Vec<IbfObject> = Vec::new();
         let object_table: ObjectTable<'_> = ObjectTable { objects: &objects };
-        decode_iseq_body(&bytes, &opcodes, &object_table, body_offset, 0, false).expect("body")
+        decode_iseq_body(&bytes, &opcodes, &object_table, body_offset, 0, None).expect("body")
     }
 
     fn dump_small_value(mut x: u64) -> Vec<u8> {
