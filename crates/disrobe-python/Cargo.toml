@@ -45,7 +45,7 @@ disrobe-pass-native = { workspace = true, features = ["chain"] }
 disrobe-pass-beam = { workspace = true }
 disrobe-pass-pickle = { workspace = true, features = ["chain"] }
 disrobe-pass-lua = { workspace = true, features = ["chain"] }
-disrobe-pass-go = { workspace = true, features = ["chain", "llm-metadata"] }
+disrobe-pass-go = { workspace = true, features = ["chain"] }
 disrobe-pass-ruby = { workspace = true, features = ["chain"] }
 disrobe-pass-php = { workspace = true, features = ["chain"] }
 disrobe-pass-shell = { workspace = true, features = ["chain"] }

@@ -14,8 +14,6 @@ pub mod error;
 pub mod garble;
 mod garble_literals;
 mod garble_thunk;
-#[cfg(feature = "llm-metadata")]
-pub mod llm;
 pub mod moduledata;
 pub mod pclntab;
 pub mod redress;
@@ -42,8 +40,6 @@ pub use garble::{
     GarbleQuality, GarbleReport, GarbleResidual, LiteralRecoveryStats, NameRecoveryStats,
     analyze as analyze_garble, probe_simple_literals, probe_thunk_literals,
 };
-#[cfg(feature = "llm-metadata")]
-pub use llm::{GoLlmFn, GoLlmInput, METADATA_CAPABILITY as GO_METADATA_CAPABILITY};
 pub use moduledata::{
     GoBuildInfo, GoModule, Moduledata, ModuledataSource, extract_build_info, extract_buildversion,
     extract_modulename, locate_moduledata,

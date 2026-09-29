@@ -25,12 +25,10 @@ miette = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-disrobe-llm-metadata = { workspace = true, optional = true }
 
 [features]
 default = []
 chain = ["disrobe-core/chain"]
-llm-metadata = ["dep:disrobe-llm-metadata"]
 
 [dev-dependencies]
 

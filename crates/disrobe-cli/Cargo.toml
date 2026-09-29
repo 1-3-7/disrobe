@@ -155,7 +155,7 @@ disrobe-pass-pyfreeze = { workspace = true }
 disrobe-pass-nuitka = { workspace = true }
 disrobe-pass-sourcedefender = { workspace = true }
 disrobe-pass-py-deob = { workspace = true, features = ["llm-metadata"] }
-disrobe-pass-js-deob = { workspace = true, features = ["llm-metadata"], optional = true }
+disrobe-pass-js-deob = { workspace = true, optional = true }
 disrobe-pass-wasm-deob = { workspace = true, features = ["llm-metadata"], optional = true }
 disrobe-pass-py-disasm = { workspace = true, features = ["llm-metadata"] }
 disrobe-pass-py-decompile = { workspace = true, features = ["llm-metadata"] }
@@ -167,7 +167,7 @@ disrobe-pass-lua = { workspace = true, optional = true }
 disrobe-pass-swift-objc = { workspace = true, optional = true }
 disrobe-pass-jvm = { workspace = true, optional = true }
 disrobe-pass-dotnet = { workspace = true, features = ["llm-metadata"], optional = true }
-disrobe-pass-go = { workspace = true, features = ["llm-metadata"], optional = true }
+disrobe-pass-go = { workspace = true, optional = true }
 disrobe-pass-beam = { workspace = true, optional = true }
 disrobe-pass-as3 = { workspace = true, optional = true }
 disrobe-pass-pickle = { workspace = true, optional = true }

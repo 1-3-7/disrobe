@@ -33,12 +33,10 @@ oxc_span = { workspace = true }
 oxc_semantic = { workspace = true }
 boa_engine = { workspace = true }
 indexmap = { workspace = true }
-disrobe-llm-metadata = { workspace = true, optional = true }
 
 [features]
 default = []
 chain = ["disrobe-core/chain"]
-llm-metadata = ["dep:disrobe-llm-metadata"]
 
 [dev-dependencies]
 divan = { workspace = true }

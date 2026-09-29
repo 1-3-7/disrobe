@@ -26,8 +26,6 @@ mod jsconfuser;
 mod jscrambler;
 #[cfg(not(target_arch = "wasm32"))]
 mod jsobfu;
-#[cfg(all(feature = "llm-metadata", not(target_arch = "wasm32")))]
-pub mod llm;
 #[cfg(not(target_arch = "wasm32"))]
 mod mangled_names;
 #[cfg(not(target_arch = "wasm32"))]
@@ -181,8 +179,5 @@ pub use unminify::{
     AstPipeline, AstRuleId, AstUnminifyStats, UnminifyStats, try_unminify_ast, unminify,
     unminify_ast,
 };
-
-#[cfg(all(feature = "llm-metadata", not(target_arch = "wasm32")))]
-pub use llm::{JsLlmInput, METADATA_CAPABILITY as JS_METADATA_CAPABILITY};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
