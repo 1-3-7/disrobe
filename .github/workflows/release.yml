@@ -16,8 +16,28 @@ env:
   PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
 
 jobs:
+  full-ci-gate:
+    name: green full ci run on the released commit
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    steps:
+      - name: require a green scheduled or full dispatched ci run on this commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          green=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&status=success&per_page=100"             --jq '[.workflow_runs[] | select(.event == "schedule" or (.event == "workflow_dispatch" and .display_title == "ci dispatch scope=full os=all shard=all")) | .html_url] | first // empty')
+          if [ -z "$green" ]; then
+            echo "::error::no scheduled or full dispatched ci run succeeded on $GITHUB_SHA; dispatch ci with scope=full os=all shard=all on this commit and release once it is green"
+            exit 1
+          fi
+          echo "full ci run on $GITHUB_SHA: $green"
+
   build:
     name: build (${{ matrix.target }})
+    needs: [full-ci-gate]
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
@@ -242,6 +262,7 @@ jobs:
 
   sbom:
     name: sbom
+    needs: [full-ci-gate]
     runs-on: ubuntu-latest
     permissions:
       contents: read

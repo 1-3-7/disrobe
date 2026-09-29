@@ -1,4 +1,5 @@
 name: ci
+run-name: ${{ github.event_name == 'workflow_dispatch' && format('ci dispatch scope={0} os={1} shard={2}', inputs.scope, inputs.os, inputs.shard) || github.event_name == 'schedule' && 'ci scheduled full run' || '' }}
 
 on:
   push:
