@@ -1,5 +1,3 @@
-use std::time::{Duration, Instant};
-
 use disrobe_core::codec::DecodeError;
 use disrobe_core::codec::alphabets::base62_decode;
 use disrobe_core::codec::web_escape::html_entity_decode_with_scan;
@@ -8,7 +6,7 @@ use disrobe_core::recon::malware_config::{
     ConfigDecode, MalwareConfigWall, WorkBudget, asyncrat_lineage_decode, darkcomet_config_decode,
     quasar_config_decode, xworm_config_decode,
 };
-use disrobe_core::recon::secret_scan::scan_bytes;
+use disrobe_core::recon::secret_scan::{EntropyScanWork, scan_bytes_with_work};
 use disrobe_core::recon::{ReconConfig, ReconFinding, scan_bytes as recon_scan_bytes};
 
 const MEGABYTE: usize = 1 << 20;
@@ -21,13 +19,14 @@ const ASYNCRAT_SALT: [u8; 16] = [
 ];
 const XWORM_MARKER: &[u8] = b"XWorm";
 
-fn timed<T, F: FnOnce() -> T>(label: &str, body: F) -> Duration {
-    let start: Instant = Instant::now();
-    let value: T = body();
-    let elapsed: Duration = start.elapsed();
-    drop(value);
-    println!("{label}: {elapsed:?}");
-    elapsed
+const DARKCOMET_KEYS: u64 = 2;
+const DARKCOMET_BLOB_CAP: u64 = 256;
+const DARKCOMET_BLOB_WINDOW: u64 = 4096;
+const WORK_UNIT_BYTES: u64 = 16;
+const RC4_KEY_SCHEDULE_UNITS: u64 = 16;
+
+fn binary_search_probes(len: u64) -> u64 {
+    u64::from(u64::BITS - len.leading_zeros()) + 1
 }
 
 fn unterminated_entity_soup(len: usize) -> String {
@@ -117,34 +116,50 @@ fn radix_decode_rejects_oversized_input_before_the_quadratic_loop() {
 #[test]
 fn domain_collection_stays_bounded_on_url_rich_text() {
     let input: Vec<u8> = domain_rich_text(MEGABYTE + MEGABYTE / 2);
-    let elapsed: Duration = timed("ioc::extract 1.5MiB url-rich", || ioc::extract(&input));
+    let (_, work): (Vec<ioc::Indicator>, ioc::DomainScanWork) = ioc::extract_with_work(&input, &[]);
     assert!(
-        elapsed < Duration::from_secs(30),
-        "domain collection must use span containment, took {elapsed:?}"
+        work.candidates >= 10_000 && work.spans >= 10_000,
+        "the url-rich input must exercise containment: {work:?}"
+    );
+    let bound: u64 = work.candidates * 2 * binary_search_probes(work.spans);
+    assert!(
+        work.containment_probes <= bound,
+        "domain containment must binary-search the url and email spans: {work:?}, bound {bound}"
     );
 }
 
 #[test]
 fn entropy_scan_stays_bounded_against_many_claims() {
     let input: Vec<u8> = claim_heavy_secret_text(40_000, 40_000);
-    let elapsed: Duration = timed("scan_bytes 40k claims / 40k runs", || {
-        scan_bytes(&input, None)
-    });
+    let (_, work): (_, EntropyScanWork) = scan_bytes_with_work(&input, None);
     assert!(
-        elapsed < Duration::from_secs(30),
-        "entropy scan must binary-search the claim set, took {elapsed:?}"
+        work.runs >= 40_000 && work.claims >= 40_000,
+        "every claim and candidate run must reach the overlap check: {work:?}"
+    );
+    let bound: u64 = work.runs * binary_search_probes(work.claims);
+    assert!(
+        work.claim_probes <= bound,
+        "entropy scan must binary-search the claim set: {work:?}, bound {bound}"
     );
 }
 
 #[test]
 fn darkcomet_candidate_collection_is_capped() {
     let input: Vec<u8> = darkcomet_marker_soup(50_000);
-    let elapsed: Duration = timed("darkcomet_config_decode 50k markers", || {
-        darkcomet_config_decode(&input, 0, &mut WorkBudget::default())
-    });
+    let mut budget: WorkBudget = WorkBudget::default();
+    let before: u64 = budget.remaining();
+    let decode: ConfigDecode = darkcomet_config_decode(&input, 0, &mut budget);
     assert!(
-        elapsed < Duration::from_secs(10),
-        "darkcomet candidates must be capped and borrowed, took {elapsed:?}"
+        decode.fields.is_empty(),
+        "marker soup is no configuration: {decode:?}"
+    );
+    let scan_units: u64 = input.len() as u64 / WORK_UNIT_BYTES + 1;
+    let per_blob_units: u64 = DARKCOMET_BLOB_WINDOW / WORK_UNIT_BYTES + RC4_KEY_SCHEDULE_UNITS;
+    let bound: u64 = scan_units + DARKCOMET_KEYS * DARKCOMET_BLOB_CAP * per_blob_units;
+    let spent: u64 = before - budget.remaining();
+    assert!(
+        !budget.exhausted() && spent <= bound,
+        "darkcomet must cap its candidate blobs: spent {spent} of bound {bound}"
     );
 }
 

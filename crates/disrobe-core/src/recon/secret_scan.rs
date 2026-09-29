@@ -1192,8 +1192,20 @@ const fn describe(kind: SecretKind) -> &'static str {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EntropyScanWork {
+    pub runs: u64,
+    pub claims: u64,
+    pub claim_probes: u64,
+}
+
 #[must_use]
 pub fn scan_bytes(bytes: &[u8], uri: Option<&str>) -> Vec<Finding> {
+    scan_bytes_with_work(bytes, uri).0
+}
+
+#[must_use]
+pub fn scan_bytes_with_work(bytes: &[u8], uri: Option<&str>) -> (Vec<Finding>, EntropyScanWork) {
     let mut findings: Vec<Finding> = Vec::new();
     let mut claimed: Vec<(usize, usize)> = Vec::new();
 
@@ -1259,9 +1271,9 @@ pub fn scan_bytes(bytes: &[u8], uri: Option<&str>) -> Vec<Finding> {
     scan_pem_blocks(bytes, uri, &mut claimed, &mut findings);
     scan_solana_keypair(&text, uri, &mut claimed, &mut findings);
 
-    scan_entropy(bytes, uri, &claimed, &mut findings);
+    let work: EntropyScanWork = scan_entropy(bytes, uri, &claimed, &mut findings);
     findings.sort_by_key(|f: &Finding| f.offset);
-    findings
+    (findings, work)
 }
 
 const PEM_BEGIN: &[u8] = b"-----BEGIN ";
@@ -1462,8 +1474,11 @@ fn merge_claims(claimed: &[(usize, usize)]) -> Vec<(usize, usize)> {
     merged
 }
 
-fn claim_overlaps(merged: &[(usize, usize)], start: usize, end: usize) -> bool {
-    let next: usize = merged.partition_point(|&(_s, e): &(usize, usize)| e <= start);
+fn claim_overlaps(merged: &[(usize, usize)], start: usize, end: usize, probes: &mut u64) -> bool {
+    let next: usize = merged.partition_point(|&(_s, e): &(usize, usize)| {
+        *probes += 1;
+        e <= start
+    });
     merged
         .get(next)
         .is_some_and(|&(s, _e): &(usize, usize)| s < end)
@@ -1474,8 +1489,12 @@ fn scan_entropy(
     uri: Option<&str>,
     claimed: &[(usize, usize)],
     findings: &mut Vec<Finding>,
-) {
+) -> EntropyScanWork {
     let merged: Vec<(usize, usize)> = merge_claims(claimed);
+    let mut work: EntropyScanWork = EntropyScanWork {
+        claims: merged.len() as u64,
+        ..EntropyScanWork::default()
+    };
     let mut i: usize = 0;
     let n: usize = bytes.len();
     while i < n {
@@ -1491,7 +1510,8 @@ fn scan_entropy(
         if run.len() < ENTROPY_MIN_RUN {
             continue;
         }
-        if claim_overlaps(&merged, run_start, i) {
+        work.runs += 1;
+        if claim_overlaps(&merged, run_start, i, &mut work.claim_probes) {
             continue;
         }
         if crate::entropy::shannon_entropy_bits(run) < ENTROPY_THRESHOLD {
@@ -1508,6 +1528,7 @@ fn scan_entropy(
             uri,
         ));
     }
+    work
 }
 
 fn byte_offset_of(haystack: &[u8], needle: &[u8], claimed: &[(usize, usize)]) -> Option<usize> {
@@ -1574,7 +1595,7 @@ mod tests {
                 for len in 0..14usize {
                     let end: usize = start + len;
                     assert_eq!(
-                        claim_overlaps(&merged, start, end),
+                        claim_overlaps(&merged, start, end, &mut 0),
                         claim_overlap_linear_reference(claimed, start, end),
                         "claim overlap mismatch on {claimed:?} for {start}..{end}"
                     );

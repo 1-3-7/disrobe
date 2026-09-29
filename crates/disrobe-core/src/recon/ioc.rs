@@ -763,23 +763,36 @@ fn match_spans(regex: &Regex, text: &str) -> Vec<(usize, usize)> {
         .collect()
 }
 
-fn span_encloses(spans: &[(usize, usize)], start: usize, end: usize) -> bool {
-    let next: usize = spans.partition_point(|&(s, _e): &(usize, usize)| s <= start);
+fn span_encloses(spans: &[(usize, usize)], start: usize, end: usize, probes: &mut u64) -> bool {
+    let next: usize = spans.partition_point(|&(s, _e): &(usize, usize)| {
+        *probes += 1;
+        s <= start
+    });
     next > 0
         && spans
             .get(next - 1)
             .is_some_and(|&(_s, e): &(usize, usize)| e >= end)
 }
 
-fn collect_domains(text: &str, encoding: Encoding, layer: &Layer<'_>, out: &mut Vec<Indicator>) {
+fn collect_domains(
+    text: &str,
+    encoding: Encoding,
+    layer: &Layer<'_>,
+    out: &mut Vec<Indicator>,
+    work: &mut DomainScanWork,
+) {
     let urls: Vec<(usize, usize)> = match_spans(&URL_RE, text);
     let emails: Vec<(usize, usize)> = match_spans(&EMAIL_RE, text);
+    work.spans += (urls.len() + emails.len()) as u64;
     for m in DOMAIN_RE.find_iter(text) {
         if out.len() >= MAX_INDICATORS {
             return;
         }
+        work.candidates += 1;
         let value: &str = m.as_str();
-        if span_encloses(&urls, m.start(), m.end()) || span_encloses(&emails, m.start(), m.end()) {
+        if span_encloses(&urls, m.start(), m.end(), &mut work.containment_probes)
+            || span_encloses(&emails, m.start(), m.end(), &mut work.containment_probes)
+        {
             continue;
         }
         let (offset, length): (usize, usize) = layer.span(m.start(), m.end());
@@ -809,11 +822,17 @@ fn collect_crypto_constants(bytes: &[u8], out: &mut Vec<Indicator>) {
     }
 }
 
-fn scan_text_layer(text: &str, encoding: Encoding, layer: &Layer<'_>, out: &mut Vec<Indicator>) {
+fn scan_text_layer(
+    text: &str,
+    encoding: Encoding,
+    layer: &Layer<'_>,
+    out: &mut Vec<Indicator>,
+    work: &mut DomainScanWork,
+) {
     collect_simple(text, encoding, layer, out);
     collect_ipv6(text, encoding, layer, out);
     collect_unix_paths(text, encoding, layer, out);
-    collect_domains(text, encoding, layer, out);
+    collect_domains(text, encoding, layer, out, work);
     collect_validated(
         &ETH_RE,
         IocKind::EthereumAddress,
@@ -857,7 +876,12 @@ fn scan_text_layer(text: &str, encoding: Encoding, layer: &Layer<'_>, out: &mut 
     }
 }
 
-fn decode_and_recurse(text: &str, layer: &Layer<'_>, out: &mut Vec<Indicator>) {
+fn decode_and_recurse(
+    text: &str,
+    layer: &Layer<'_>,
+    out: &mut Vec<Indicator>,
+    work: &mut DomainScanWork,
+) {
     for m in B64_BLOB_RE.find_iter(text) {
         if out.len() >= MAX_INDICATORS {
             return;
@@ -881,6 +905,7 @@ fn decode_and_recurse(text: &str, layer: &Layer<'_>, out: &mut Vec<Indicator>) {
                 Encoding::Base64,
                 &Layer::within(LayerMap::Base64, m.start(), layer),
                 out,
+                work,
             );
         }
     }
@@ -901,10 +926,11 @@ fn decode_and_recurse(text: &str, layer: &Layer<'_>, out: &mut Vec<Indicator>) {
                 Encoding::Hex,
                 &Layer::within(LayerMap::TwoBytesPerUnit, m.start(), layer),
                 out,
+                work,
             );
         }
     }
-    decode_codecs_and_recurse(text, layer, out);
+    decode_codecs_and_recurse(text, layer, out, work);
 }
 
 #[inline]
@@ -912,7 +938,12 @@ const fn is_codec_token_byte(b: u8) -> bool {
     matches!(b, 0x21..=0x7e)
 }
 
-fn decode_codecs_and_recurse(text: &str, layer: &Layer<'_>, out: &mut Vec<Indicator>) {
+fn decode_codecs_and_recurse(
+    text: &str,
+    layer: &Layer<'_>,
+    out: &mut Vec<Indicator>,
+    work: &mut DomainScanWork,
+) {
     let bytes: &[u8] = text.as_bytes();
     let n: usize = bytes.len();
     let mut i: usize = 0;
@@ -957,6 +988,7 @@ fn decode_codecs_and_recurse(text: &str, layer: &Layer<'_>, out: &mut Vec<Indica
                     layer,
                 ),
                 out,
+                work,
             );
         }
     }
@@ -1103,7 +1135,7 @@ fn decode_utf16_runs(bytes: &[u8], endian: WideEndian) -> Vec<(usize, String)> {
     runs
 }
 
-fn scan_wide(bytes: &[u8], out: &mut Vec<Indicator>) {
+fn scan_wide(bytes: &[u8], out: &mut Vec<Indicator>, work: &mut DomainScanWork) {
     if bytes.len() < 8 {
         return;
     }
@@ -1116,15 +1148,28 @@ fn scan_wide(bytes: &[u8], out: &mut Vec<Indicator>) {
                 continue;
             }
             let wide: Layer<'_> = Layer::within(LayerMap::TwoBytesPerUnit, start, &Layer::INPUT);
-            scan_text_layer(&run, endian.encoding(), &wide, out);
-            decode_and_recurse(&run, &wide, out);
+            scan_text_layer(&run, endian.encoding(), &wide, out, work);
+            decode_and_recurse(&run, &wide, out, work);
         }
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DomainScanWork {
+    pub candidates: u64,
+    pub spans: u64,
+    pub containment_probes: u64,
+}
+
 #[must_use]
 pub fn extract_with_extra(bytes: &[u8], extra_text: &[&str]) -> Vec<Indicator> {
+    extract_with_work(bytes, extra_text).0
+}
+
+#[must_use]
+pub fn extract_with_work(bytes: &[u8], extra_text: &[&str]) -> (Vec<Indicator>, DomainScanWork) {
     let mut out: Vec<Indicator> = Vec::new();
+    let mut work: DomainScanWork = DomainScanWork::default();
     let text: std::borrow::Cow<'_, str> = std::str::from_utf8(bytes).map_or_else(
         |_: std::str::Utf8Error| {
             let mut text: String = String::with_capacity(bytes.len());
@@ -1136,10 +1181,10 @@ pub fn extract_with_extra(bytes: &[u8], extra_text: &[&str]) -> Vec<Indicator> {
         },
         std::borrow::Cow::Borrowed,
     );
-    scan_text_layer(&text, Encoding::Plain, &Layer::INPUT, &mut out);
+    scan_text_layer(&text, Encoding::Plain, &Layer::INPUT, &mut out, &mut work);
     collect_crypto_constants(bytes, &mut out);
-    decode_and_recurse(&text, &Layer::INPUT, &mut out);
-    scan_wide(bytes, &mut out);
+    decode_and_recurse(&text, &Layer::INPUT, &mut out, &mut work);
+    scan_wide(bytes, &mut out, &mut work);
     for (idx, extra) in extra_text.iter().enumerate() {
         if out.len() >= MAX_INDICATORS {
             break;
@@ -1149,10 +1194,10 @@ pub fn extract_with_extra(bytes: &[u8], extra_text: &[&str]) -> Vec<Indicator> {
             base: bytes.len().saturating_add(idx),
             parent: None,
         };
-        scan_text_layer(extra, Encoding::Plain, &synthetic, &mut out);
-        decode_and_recurse(extra, &synthetic, &mut out);
+        scan_text_layer(extra, Encoding::Plain, &synthetic, &mut out, &mut work);
+        decode_and_recurse(extra, &synthetic, &mut out, &mut work);
     }
-    dedup_and_sort(out)
+    (dedup_and_sort(out), work)
 }
 
 #[must_use]
