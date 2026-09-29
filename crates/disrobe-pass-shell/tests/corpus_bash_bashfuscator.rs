@@ -35,7 +35,7 @@ fn fixture_bashfuscator_token_hello_is_bash_dialect_and_progress_or_wall()
     let r: BashfuscatorReport = reverse_bashfuscator(BashfuscatorLevel::Token, &src)?;
     assert!(
         !r.steps.is_empty() || !r.walls.is_empty(),
-        "expected at least some peel steps or an honest wall on token fixture; got: {r:?}"
+        "expected at least some peel steps or a wall on token fixture; got: {r:?}"
     );
     Ok(())
 }
@@ -49,7 +49,7 @@ fn fixture_bashfuscator_string_hello_is_bash_dialect_and_progress_or_wall()
     let r: BashfuscatorReport = reverse_bashfuscator(BashfuscatorLevel::String, &src)?;
     assert!(
         !r.steps.is_empty() || !r.walls.is_empty(),
-        "expected at least some peel steps or an honest wall on string fixture; got: {r:?}"
+        "expected at least some peel steps or a wall on string fixture; got: {r:?}"
     );
     Ok(())
 }

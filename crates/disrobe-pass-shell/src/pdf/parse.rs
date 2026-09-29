@@ -356,7 +356,6 @@ impl<'a> Lexer<'a> {
     }
 
     fn parse_number_or_reference(&mut self) -> PdfObject {
-        let start: usize = self.pos;
         let token: &[u8] = self.read_regular_token();
         let first: PdfObject = parse_numeric(token);
         let PdfObject::Integer(number) = first else {
@@ -385,7 +384,6 @@ impl<'a> Lexer<'a> {
             self.pos = after_generation;
         }
         self.pos = save;
-        let _ = start;
         first
     }
 

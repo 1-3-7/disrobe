@@ -233,14 +233,12 @@ fn parse_for_lookup_loop(s: &str, array_var_name: &str) -> Option<ParsedForLoop>
         return None;
     }
     let do_idx: usize = find_keyword_from(bytes, b"do", in_end)?;
-    let printf_lookup: &[u8] = b"${";
     let after_do: usize = do_idx + 2;
     let array_ref: String = format!("${{{array_var_name}[");
     if !s.as_bytes()[after_do..]
         .windows(array_ref.len())
         .any(|w: &[u8]| w == array_ref.as_bytes())
     {
-        let _ = printf_lookup;
         return None;
     }
     let dollar_var: String = format!("${var_name}");

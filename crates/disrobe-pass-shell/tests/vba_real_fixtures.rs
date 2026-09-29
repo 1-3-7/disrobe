@@ -126,7 +126,7 @@ fn real_vba_project_pcode_parses_header_with_honest_wall() -> disrobe_pass_shell
     );
     assert!(
         d.instructions.is_empty(),
-        "honest detect-only must NOT fabricate any instructions"
+        "detect-only must NOT fabricate any instructions"
     );
     Ok(())
 }

@@ -1109,7 +1109,7 @@ mod tests {
         let text: String = format!("{err}");
         assert!(
             text.contains("DR-SHELL-0917") && text.contains("statically unrecoverable"),
-            "wall must carry the residual reason code and be honest about why recovery failed; got: {text}"
+            "wall must carry the residual reason code and be explicit about why recovery failed; got: {text}"
         );
     }
 

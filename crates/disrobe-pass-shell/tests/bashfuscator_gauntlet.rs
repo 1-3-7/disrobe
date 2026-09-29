@@ -61,7 +61,7 @@ fn gauntlet_fixtures_are_real_obfuscation_marker_hidden() {
         let src: String = read_gauntlet(name);
         assert!(
             !src.contains(MARKER),
-            "{name} leaks the cleartext marker; it is not genuinely obfuscated"
+            "{name} leaks the cleartext marker; it is not obfuscated"
         );
         let det: Detection = detect(src.as_bytes());
         assert_eq!(
