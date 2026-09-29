@@ -142,9 +142,9 @@ fn extract_args(source: &str) -> Option<PackerArgs> {
         .map(char::from)?;
     let (sep_raw, _rest): (String, &str) =
         consume_string_literal(&after_paren[sep_quote_off..], sep_quote)?;
-    let payload: String = unescape_string_literal(&payload_raw);
-    let sep: String = unescape_string_literal(&sep_raw);
-    let words_decoded: String = unescape_string_literal(&words_raw);
+    let payload: String = unescape_string_literal(&payload_raw)?;
+    let sep: String = unescape_string_literal(&sep_raw)?;
+    let words_decoded: String = unescape_string_literal(&words_raw)?;
     let words: Vec<String> = if sep.is_empty() {
         vec![words_decoded]
     } else {

@@ -119,7 +119,9 @@ fn fold_atob(source: &str, stats: &mut AtobIndirectionStats, payloads: &mut Vec<
         let Some(payload): Option<&str> = raw else {
             return caps[0].to_owned();
         };
-        let unescaped: String = unescape_string_literal(payload);
+        let Some(unescaped): Option<String> = unescape_string_literal(payload) else {
+            return caps[0].to_owned();
+        };
         decode_base64(&unescaped).map_or_else(
             || {
                 stats.failed_decodes += 1;
@@ -146,7 +148,9 @@ fn fold_btoa(source: &str, stats: &mut AtobIndirectionStats) -> String {
         let Some(payload): Option<&str> = raw else {
             return caps[0].to_owned();
         };
-        let unescaped: String = unescape_string_literal(payload);
+        let Some(unescaped): Option<String> = unescape_string_literal(payload) else {
+            return caps[0].to_owned();
+        };
         let encoded: String =
             base64::engine::general_purpose::STANDARD.encode(unescaped.as_bytes());
         stats.btoa_calls_folded += 1;

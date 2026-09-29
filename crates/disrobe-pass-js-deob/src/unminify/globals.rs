@@ -29,31 +29,35 @@ pub(super) fn evaluate_globals(source: &str) -> (String, GlobalsEvalStats) {
     let after_single: std::borrow::Cow<'_, str> =
         single.replace_all(&current, |caps: &Captures<'_>| {
             stats.call_sites += 1;
-            apply_global(&caps[1], &unescape_string_literal(&caps[2])).map_or_else(
-                || {
-                    stats.failed += 1;
-                    caps[0].to_owned()
-                },
-                |decoded| {
-                    stats.evaluated += 1;
-                    js_quote(&decoded)
-                },
-            )
+            unescape_string_literal(&caps[2])
+                .and_then(|arg: String| apply_global(&caps[1], &arg))
+                .map_or_else(
+                    || {
+                        stats.failed += 1;
+                        caps[0].to_owned()
+                    },
+                    |decoded| {
+                        stats.evaluated += 1;
+                        js_quote(&decoded)
+                    },
+                )
         });
     let intermediate: String = after_single.into_owned();
     let after_double: std::borrow::Cow<'_, str> =
         double.replace_all(&intermediate, |caps: &Captures<'_>| {
             stats.call_sites += 1;
-            apply_global(&caps[1], &unescape_string_literal(&caps[2])).map_or_else(
-                || {
-                    stats.failed += 1;
-                    caps[0].to_owned()
-                },
-                |decoded| {
-                    stats.evaluated += 1;
-                    js_quote(&decoded)
-                },
-            )
+            unescape_string_literal(&caps[2])
+                .and_then(|arg: String| apply_global(&caps[1], &arg))
+                .map_or_else(
+                    || {
+                        stats.failed += 1;
+                        caps[0].to_owned()
+                    },
+                    |decoded| {
+                        stats.evaluated += 1;
+                        js_quote(&decoded)
+                    },
+                )
         });
     (after_double.into_owned(), stats)
 }

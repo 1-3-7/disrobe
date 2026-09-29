@@ -48,11 +48,14 @@ pub(in crate::jscrambler) fn reverse(source: &str, _opts: &TransformOpts) -> Tra
     ) else {
         return TransformOutput::noop(source);
     };
-    let entries: Vec<String> = literal_re
+    let Some(entries): Option<Vec<String>> = literal_re
         .captures_iter(body.as_str())
         .filter_map(|literal: regex::Captures<'_>| literal.get(1).or_else(|| literal.get(2)))
         .map(|inner: regex::Match<'_>| crate::js_string::unescape_string_literal(inner.as_str()))
-        .collect();
+        .collect()
+    else {
+        return TransformOutput::noop(source);
+    };
     let table: Range<usize> = whole.range();
     let mut edits: Vec<(Range<usize>, Option<String>)> =
         index_edits(source, &idx_re, &entries, &table);
