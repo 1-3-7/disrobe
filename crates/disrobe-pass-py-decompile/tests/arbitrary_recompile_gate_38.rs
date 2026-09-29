@@ -31,7 +31,7 @@ const BAND_LABEL: &str = "CPython 3.8 (154 of the pinned modules)";
 const BAND_LABEL_PREFIX: &str = "CPython 3.8 (";
 const BAND_POPULATION: &str = "cpython-38-band";
 
-const OBJECT_PCT_FLOOR: f64 = 89.70;
+const OBJECT_PCT_FLOOR: f64 = 89.83;
 const BAND_OBJECTS_OK: u64 = 4_564;
 const BAND_CODE_OBJECTS: u64 = 5_088;
 const BAND_MODULES: u64 = 154;

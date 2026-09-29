@@ -24,8 +24,8 @@
         },
         {
           "label": "200-module pinned corpus (normalized opcode-structure agreement)",
-          "value": 96.7,
-          "num": 6079,
+          "value": 96.83,
+          "num": 6087,
           "den": 6286,
           "modules": 200,
           "verified_by": {
@@ -33,8 +33,8 @@
             "function": "published_pinned_bar_agrees_with_the_enforced_floor",
             "measured_by": "arbitrary_recompile_equivalence_gate"
           },
-          "detail": "6079 / 6286 code objects in the pinned 200-module CPython 3.14.5 population have matching normalized opcode structure. All 200 modules occur in the accepted 574-module measurement with the same source and comparator settings. The comparator omits jump targets, most operands, and __annotate__ objects, and does not penalize additional recovered objects. Regression threshold: 96.70%.",
-          "source": "evidence/results/captured/python-stdlib-full.json records the accepted capture and its pinned subset. crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs enforces OBJECT_PCT_FLOOR 96.70 and 124 wholly matching modules. The shared py_arbitrary_measure.py harness defines both populations."
+          "detail": "6087 / 6286 code objects in the pinned 200-module CPython 3.14.5 population have matching normalized opcode structure. All 200 modules occur in the accepted 574-module measurement with the same source and comparator settings. The comparator omits jump targets, most operands, and __annotate__ objects, and does not penalize additional recovered objects. Regression threshold: 96.83%.",
+          "source": "evidence/results/captured/python-stdlib-full.json records the accepted capture and its pinned subset. crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs enforces OBJECT_PCT_FLOOR 96.83 and 124 wholly matching modules. The shared py_arbitrary_measure.py harness defines both populations."
         }
       ]
     },
@@ -45,10 +45,10 @@
       "bars": [
         {
           "label": "CPython 3.8 (154 of the pinned modules)",
-          "value": 89.7,
-          "num": 4564,
+          "value": 89.83,
+          "num": 4571,
           "den": 5088,
-          "detail": "4564 / 5088 code objects over 154 modules on CPython 3.8.20. It was measured on Windows x86-64. 46 of the 200 pinned modules do not exist in this interpreter's Lib, so the denominators differ between bands and the percentages are not a like-for-like ranking.",
+          "detail": "4571 / 5088 code objects over 154 modules on CPython 3.8.20. It was measured on Windows x86-64. 46 of the 200 pinned modules do not exist in this interpreter's Lib, so the denominators differ between bands and the percentages are not a like-for-like ranking.",
           "source": "harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py run under CPython 3.8.20 over crates/disrobe-pass-py-decompile/tests/harness/pinned_modules_314.txt",
           "verified_by": {
             "path": "crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate_38.rs",
@@ -97,10 +97,10 @@
         },
         {
           "label": "CPython 3.12 (177 of the pinned modules)",
-          "value": 95.91,
-          "num": 5428,
+          "value": 96.05,
+          "num": 5436,
           "den": 5659,
-          "detail": "5428 / 5659 code objects over 177 modules on CPython 3.12.13. 23 of the 200 pinned modules do not exist in this interpreter's Lib, so the denominators differ between bands and the percentages are not a like-for-like ranking.",
+          "detail": "5436 / 5659 code objects over 177 modules on CPython 3.12.13. 23 of the 200 pinned modules do not exist in this interpreter's Lib, so the denominators differ between bands and the percentages are not a like-for-like ranking.",
           "source": "harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py run under CPython 3.12.13 over crates/disrobe-pass-py-decompile/tests/harness/pinned_modules_314.txt",
           "verified_by": {
             "path": "crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate_312.rs",
@@ -110,10 +110,10 @@
         },
         {
           "label": "CPython 3.13 (190 of the pinned modules)",
-          "value": 96.12,
-          "num": 5735,
+          "value": 96.29,
+          "num": 5745,
           "den": 5966,
-          "detail": "5735 / 5966 code objects over 190 modules on CPython 3.13.14. 10 of the 200 pinned modules do not exist in this interpreter's Lib, so the denominators differ between bands and the percentages are not a like-for-like ranking.",
+          "detail": "5745 / 5966 code objects over 190 modules on CPython 3.13.14. 10 of the 200 pinned modules do not exist in this interpreter's Lib, so the denominators differ between bands and the percentages are not a like-for-like ranking.",
           "source": "harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py run under CPython 3.13.14 over crates/disrobe-pass-py-decompile/tests/harness/pinned_modules_314.txt",
           "verified_by": {
             "path": "crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate_313.rs",
@@ -123,18 +123,18 @@
         },
         {
           "label": "CPython 3.14 (all 200 pinned modules)",
-          "value": 96.7,
-          "num": 6079,
+          "value": 96.83,
+          "num": 6087,
           "den": 6286,
-          "detail": "6079 / 6286 code objects over 200 modules on CPython 3.14.5. These modules share the accepted full measurement's source population and comparison rules. All 200 pinned modules exist in this interpreter's Lib. Other bands have different input populations.",
+          "detail": "6087 / 6286 code objects over 200 modules on CPython 3.14.5. These modules share the accepted full measurement's source population and comparison rules. All 200 pinned modules exist in this interpreter's Lib. Other bands have different input populations.",
           "source": "harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py run under CPython 3.14.5 over crates/disrobe-pass-py-decompile/tests/harness/pinned_modules_314.txt"
         },
         {
           "label": "CPython 3.15 (199 of the pinned modules)",
-          "value": 96.17,
-          "num": 6232,
+          "value": 96.29,
+          "num": 6240,
           "den": 6480,
-          "detail": "6232 / 6480 code objects over 199 modules on CPython 3.15.0b4. 1 of the 200 pinned modules do not exist in this interpreter's Lib, so the denominators differ between bands and the percentages are not a like-for-like ranking.",
+          "detail": "6240 / 6480 code objects over 199 modules on CPython 3.15.0b4. 1 of the 200 pinned modules do not exist in this interpreter's Lib, so the denominators differ between bands and the percentages are not a like-for-like ranking.",
           "source": "harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py run under CPython 3.15.0b4 over crates/disrobe-pass-py-decompile/tests/harness/pinned_modules_314.txt",
           "verified_by": {
             "path": "crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate_315.rs",
