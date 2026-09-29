@@ -2,6 +2,8 @@ use std::io::Read;
 
 use flate2::read::DeflateDecoder;
 
+use disrobe_bytes::{read_u16_le_at, read_u32_le_at};
+
 use crate::debug::{dbg_kv, dbg_line, dbg_section};
 
 const EOCD_SIGNATURE: u32 = 0x0605_4b50;
@@ -42,8 +44,10 @@ pub(crate) fn read_base_library_pyc_members(zip: &[u8], budget: &mut u64) -> Vec
         dbg_line(|| "no end-of-central-directory record: not a pkzip archive".to_owned());
         return Vec::new();
     };
-    let total_entries: u16 = read_u16_le(zip, eocd_offset + 10).unwrap_or(0);
-    let cd_offset_raw: u32 = read_u32_le(zip, eocd_offset + 16).unwrap_or(ZIP64_SENTINEL_U32);
+    let total_entries: u16 = read_u16_le_at(zip, eocd_offset + 10).ok().unwrap_or(0);
+    let cd_offset_raw: u32 = read_u32_le_at(zip, eocd_offset + 16)
+        .ok()
+        .unwrap_or(ZIP64_SENTINEL_U32);
     if total_entries == ZIP64_SENTINEL_U16 || cd_offset_raw == ZIP64_SENTINEL_U32 {
         dbg_line(|| "zip64 base_library.zip is out of scope for the plain-pkzip reader".to_owned());
         return Vec::new();
@@ -71,8 +75,8 @@ fn find_eocd(zip: &[u8]) -> Option<usize> {
     let lowest: usize = highest.saturating_sub(MAX_ZIP_COMMENT);
     let mut offset: usize = highest;
     loop {
-        if read_u32_le(zip, offset) == Some(EOCD_SIGNATURE) {
-            let comment_len: usize = read_u16_le(zip, offset + 20).map_or(0, usize::from);
+        if read_u32_le_at(zip, offset).ok() == Some(EOCD_SIGNATURE) {
+            let comment_len: usize = read_u16_le_at(zip, offset + 20).ok().map_or(0, usize::from);
             if offset + EOCD_MIN_LEN + comment_len == zip.len() {
                 return Some(offset);
             }
@@ -89,7 +93,7 @@ fn walk_central_directory(zip: &[u8], cd_offset: usize, declared: u16) -> Vec<Ce
     let mut records: Vec<CentralRecord> = Vec::with_capacity(cap);
     let mut cursor: usize = cd_offset;
     while records.len() < MAX_ZIP_ENTRIES {
-        if read_u32_le(zip, cursor) != Some(CENTRAL_DIR_SIGNATURE) {
+        if read_u32_le_at(zip, cursor).ok() != Some(CENTRAL_DIR_SIGNATURE) {
             break;
         }
         let (Some(method), Some(compressed_size), Some(uncompressed_size)): (
@@ -97,9 +101,9 @@ fn walk_central_directory(zip: &[u8], cd_offset: usize, declared: u16) -> Vec<Ce
             Option<u32>,
             Option<u32>,
         ) = (
-            read_u16_le(zip, cursor + 10),
-            read_u32_le(zip, cursor + 20),
-            read_u32_le(zip, cursor + 24),
+            read_u16_le_at(zip, cursor + 10).ok(),
+            read_u32_le_at(zip, cursor + 20).ok(),
+            read_u32_le_at(zip, cursor + 24).ok(),
         ) else {
             break;
         };
@@ -108,13 +112,13 @@ fn walk_central_directory(zip: &[u8], cd_offset: usize, declared: u16) -> Vec<Ce
             Option<u16>,
             Option<u16>,
         ) = (
-            read_u16_le(zip, cursor + 28),
-            read_u16_le(zip, cursor + 30),
-            read_u16_le(zip, cursor + 32),
+            read_u16_le_at(zip, cursor + 28).ok(),
+            read_u16_le_at(zip, cursor + 30).ok(),
+            read_u16_le_at(zip, cursor + 32).ok(),
         ) else {
             break;
         };
-        let Some(local_header_offset): Option<u32> = read_u32_le(zip, cursor + 42) else {
+        let Some(local_header_offset): Option<u32> = read_u32_le_at(zip, cursor + 42).ok() else {
             break;
         };
         let name_len: usize = usize::from(name_len_u16);
@@ -149,12 +153,12 @@ fn decode_member(zip: &[u8], record: &CentralRecord, budget: &mut u64) -> Option
         return None;
     };
     let local_offset: usize = usize::try_from(record.local_header_offset).ok()?;
-    if read_u32_le(zip, local_offset) != Some(LOCAL_FILE_SIGNATURE) {
+    if read_u32_le_at(zip, local_offset).ok() != Some(LOCAL_FILE_SIGNATURE) {
         dbg_line(|| format!("member '{safe_name}' local header signature mismatch; skipping"));
         return None;
     }
-    let local_name_len: usize = usize::from(read_u16_le(zip, local_offset + 26)?);
-    let local_extra_len: usize = usize::from(read_u16_le(zip, local_offset + 28)?);
+    let local_name_len: usize = usize::from(read_u16_le_at(zip, local_offset + 26).ok()?);
+    let local_extra_len: usize = usize::from(read_u16_le_at(zip, local_offset + 28).ok()?);
     let data_start: usize = local_offset
         .checked_add(LOCAL_FILE_FIXED_LEN)?
         .checked_add(local_name_len)?
@@ -229,16 +233,6 @@ fn sanitize_zip_path(name: &str) -> Option<String> {
         return None;
     }
     Some(normalized)
-}
-
-fn read_u16_le(buf: &[u8], at: usize) -> Option<u16> {
-    let slice: &[u8] = buf.get(at..at + 2)?;
-    Some(u16::from_le_bytes([slice[0], slice[1]]))
-}
-
-fn read_u32_le(buf: &[u8], at: usize) -> Option<u32> {
-    let slice: &[u8] = buf.get(at..at + 4)?;
-    Some(u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
 }
 
 #[cfg(test)]

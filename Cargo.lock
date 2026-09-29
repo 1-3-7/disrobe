@@ -2588,6 +2588,7 @@ name = "disrobe-pass-pyfreeze"
 version = "0.10.6"
 dependencies = [
  "disrobe-binfmt",
+ "disrobe-bytes",
  "disrobe-core",
  "disrobe-pass-native",
  "disrobe-pass-py-decompile",
@@ -2610,6 +2611,7 @@ dependencies = [
  "brotli",
  "bzip2-rs",
  "ctr",
+ "disrobe-bytes",
  "disrobe-capabilities",
  "disrobe-core",
  "disrobe-pass-native",

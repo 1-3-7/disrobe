@@ -1,3 +1,5 @@
+use disrobe_bytes::{ByteReadError, read_u32_le_at};
+
 use crate::error::{Error, Result};
 
 pub const PY2EXE_MAGIC_TAG: u32 = 0x7856_3412;
@@ -19,13 +21,19 @@ pub fn parse(bytes: &[u8]) -> Result<ScriptInfo> {
             got: bytes.len(),
         });
     }
-    let magic: u32 = read_u32_le(&bytes[0..4]);
+    let field = |offset: usize| -> Result<u32> {
+        read_u32_le_at(bytes, offset).map_err(|_: ByteReadError| Error::Py2exeScriptInfoTruncated {
+            need: 16,
+            got: bytes.len(),
+        })
+    };
+    let magic: u32 = field(0)?;
     if magic != PY2EXE_MAGIC_TAG {
         return Err(Error::Py2exeScriptInfoBadTag(magic));
     }
-    let optimize_level: u32 = read_u32_le(&bytes[4..8]);
-    let unbuffered: u32 = read_u32_le(&bytes[8..12]);
-    let script_data_len: u32 = read_u32_le(&bytes[12..16]);
+    let optimize_level: u32 = field(4)?;
+    let unbuffered: u32 = field(8)?;
+    let script_data_len: u32 = field(12)?;
 
     let mut cursor: usize = 16usize;
     let zip_name: String = read_cstring(bytes, &mut cursor)?;
@@ -46,10 +54,6 @@ pub fn parse(bytes: &[u8]) -> Result<ScriptInfo> {
         zip_archive_name: zip_name,
         marshalled_code: script.to_vec(),
     })
-}
-
-fn read_u32_le(slice: &[u8]) -> u32 {
-    u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]])
 }
 
 fn read_cstring(bytes: &[u8], cursor: &mut usize) -> Result<String> {

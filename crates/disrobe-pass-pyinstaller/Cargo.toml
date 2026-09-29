@@ -16,6 +16,7 @@ build = "build.rs"
 workspace = true
 
 [dependencies]
+disrobe-bytes = { workspace = true }
 disrobe-core = { workspace = true }
 disrobe-pass-native = { workspace = true, optional = true }
 disrobe-capabilities = { workspace = true, optional = true }
