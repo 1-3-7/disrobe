@@ -9,7 +9,7 @@
     "carve": "detect + carve"
   },
   "cells": [
-    { "label": "Python pyc", "kind": "bytecode", "note": "1.0-3.15 supported" },
+    { "label": "Python pyc", "kind": "bytecode", "note": "3.8-3.15 supported" },
     { "label": "PyArmor", "kind": "unpack", "note": "v6-v9 static-key" },
     { "label": "PyInstaller", "kind": "unpack", "note": "onefile + onedir" },
     { "label": "Nuitka", "kind": "unpack", "note": "onefile, C-bounded body" },

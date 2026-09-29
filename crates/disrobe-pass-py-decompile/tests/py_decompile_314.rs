@@ -87,10 +87,6 @@ fn py_decompile_band_3_12_to_3_15() {
                         recompiled_stable += 1;
                     }
                 }
-                BandOutcome::SourceTokenMatch => failures.push(format!(
-                    "py{} {construct}: token-match in an interpreter-present band is not allowed",
-                    interp.alias
-                )),
                 BandOutcome::Tolerated(detail) => {
                     if interp.is_prerelease {
                         prerelease_tolerated += 1;

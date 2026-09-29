@@ -9,7 +9,7 @@ pub(crate) const MAX_SCANNED_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_ACCOUNT_NAME: usize = 64;
 const WORKDIR: &[u8] = b"workdir";
 
-pub(crate) const ALLOWED_HOMES: [(&str, &str); 27] = [
+pub(crate) const ALLOWED_HOMES: [(&str, &str); 26] = [
     (
         "corpus/beam/megafile/Elixir.EdgeCases.MyServer.beam",
         "home/runner",
@@ -23,10 +23,6 @@ pub(crate) const ALLOWED_HOMES: [(&str, &str); 27] = [
     (
         "corpus/src/python/edge_cases/bytes_and_raw.py",
         "Users/name",
-    ),
-    (
-        "corpus/python/decompile/legacy/compiled/matrix_mult_oper.3.5.pyc",
-        "home/zrax",
     ),
     ("crates/disrobe-binfmt/src/containers/eszip.rs", "Users/x"),
     ("crates/disrobe-binfmt/src/containers/eszip.rs", "home/user"),

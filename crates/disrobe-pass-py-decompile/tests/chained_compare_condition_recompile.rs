@@ -36,7 +36,7 @@ fn assert_recompiles(label: &str, program: &str) {
                     checked_stable += 1;
                 }
             }
-            BandOutcome::SourceTokenMatch | BandOutcome::Tolerated(_) => {
+            BandOutcome::Tolerated(_) => {
                 assert!(
                     interp.is_prerelease,
                     "{label} py{}: non-equivalent outcome from a stable interpreter\n\

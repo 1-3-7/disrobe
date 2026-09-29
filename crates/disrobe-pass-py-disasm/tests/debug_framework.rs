@@ -10,7 +10,7 @@ use disrobe_pass_py_disasm::chain_detector::PY_DISASM_PASS;
 const HARNESS_ENV: &str = "DISROBE_PYDIS_DEBUG_HARNESS";
 
 const CPYTHON_311_PYC: &[u8] =
-    include_bytes!("../../../corpus/python/decompile/legacy/compiled/binary_ops.3.11.pyc");
+    include_bytes!("../../../corpus/python/decompile/authored/compiled/binary_ops.3.11.pyc");
 const MPY_BYTECODE: &[u8] =
     include_bytes!("../../../corpus/python/alt_runtimes/micropython/hello_bytecode.mpy");
 

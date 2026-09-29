@@ -547,18 +547,6 @@ const KEYS: &[KeySpec] = &[
         },
     },
     KeySpec {
-        name: "py_legacy_count",
-        formatter: Formatter::OfPlain,
-        nouns: &[],
-        extract: |r: &Recovery| r.bar("CPython legacy", "proven-correct")?.count_ratio(),
-    },
-    KeySpec {
-        name: "py_legacy_frac",
-        formatter: Formatter::Frac,
-        nouns: &[],
-        extract: |r: &Recovery| r.bar("CPython legacy", "proven-correct")?.count_ratio(),
-    },
-    KeySpec {
         name: "wasm_opcoverage_count",
         formatter: Formatter::OfPlain,
         nouns: &[],
@@ -644,12 +632,6 @@ const KEYS: &[KeySpec] = &[
             r.bar("React Native Hermes (committed", "op-coverage")?
                 .count_ratio()
         },
-    },
-    KeySpec {
-        name: "py_legacy_pct",
-        formatter: Formatter::Pct,
-        nouns: &[],
-        extract: |r: &Recovery| r.bar("CPython legacy", "proven-correct")?.percent(),
     },
     KeySpec {
         name: "go_typename_pct",

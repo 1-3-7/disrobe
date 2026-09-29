@@ -1,9 +1,0 @@
-a = 10 <EOL>
-b = [ 10 , 20 , 30 ] <EOL>
-if a in b : <EOL>
-<INDENT>
-pass <EOL>
-<OUTDENT>
-if a not in b : <EOL>
-<INDENT>
-pass <EOL>

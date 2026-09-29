@@ -1,6 +1,6 @@
 [package]
 name = "disrobe-py-marshal"
-description = "CPython `marshal` codec and `.pyc` file encoder/decoder spanning Python 2.7 through 3.14, used by the disrobe decompilation suite for PyArmor, PyInstaller, and direct `.pyc` analysis."
+description = "CPython `marshal` codec and `.pyc` file encoder/decoder spanning Python 3.8 through 3.15, used by the disrobe decompilation suite for PyArmor, PyInstaller, and direct `.pyc` analysis."
 version.workspace = true
 readme.workspace = true
 edition.workspace = true

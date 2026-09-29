@@ -36,14 +36,6 @@ fn assert_recompiles(label: &str, program: &str) {
                     checked_stable += 1;
                 }
             }
-            BandOutcome::SourceTokenMatch => {
-                assert!(
-                    interp.is_prerelease,
-                    "{label} py{}: token-match where recompile-equivalence is required\n\
-                     --- recovered:\n{source}",
-                    interp.alias
-                );
-            }
             BandOutcome::Tolerated(detail) => {
                 assert!(
                     interp.is_prerelease,

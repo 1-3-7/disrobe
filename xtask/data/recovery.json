@@ -145,26 +145,6 @@
       ]
     },
     {
-      "heading": "CPython legacy 1.0-3.7 (proven-correct: recompile-equivalence or structural token-match)",
-      "axis_label": "proven-correct decompiles over the legacy band, %",
-      "kind": "percent",
-      "bars": [
-        {
-          "label": "proven-correct",
-          "value": 78.5,
-          "verified_by": {
-            "path": "crates/disrobe-pass-py-decompile/tests/legacy_recompile.rs",
-            "function": "legacy_recompile_correctness_oracle",
-            "conditional": "Recompilation requires a matching legacy CPython interpreter. Otherwise, the grader compares structural tokens with the committed original source. The 150/191 floor applies in either case."
-          },
-          "detail": "The gate requires at least 150 of 191 committed fixtures to match through bytecode recompilation or structural token comparison. Recompilation uses a matching legacy interpreter when one is installed; structural comparison remains available for every fixture.",
-          "source": "crates/disrobe-pass-py-decompile/tests/legacy_recompile.rs enforces PROVEN_CORRECT_FLOOR 150 against the 191-fixture corpus.",
-          "num": 150,
-          "den": 191
-        }
-      ]
-    },
-    {
       "heading": "WebAssembly (committed 133-fn corpus: op-coverage, 57 execution-verified under wasmtime)",
       "axis_label": "opcodes lowered out of the 1034 an external disassembler counts across the same 38 parseable modules, %",
       "kind": "percent",

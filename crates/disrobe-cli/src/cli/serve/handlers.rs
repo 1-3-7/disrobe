@@ -112,11 +112,11 @@ pub(super) const PASS_DESCRIPTORS: &[PassDescriptorRef] = &[
     },
     PassDescriptorRef {
         name: "py-disasm",
-        description: "Python 2.7..3.14 disassembler",
+        description: "Python 3.8..3.15 disassembler",
     },
     PassDescriptorRef {
         name: "py-decompile",
-        description: "native CPython 1.0..3.15 decompiler + round-trip verify",
+        description: "native CPython 3.8..3.15 decompiler + round-trip verify",
     },
     PassDescriptorRef {
         name: "py-sourcedefender",

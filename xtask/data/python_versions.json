@@ -1,7 +1,7 @@
 {
   "title": "Python decompiler version coverage",
   "subtitle": "declared bytecode ranges; recovery quality and verification differ by tool",
-  "note": "Bars summarize upstream bytecode-version claims checked on 2026-09-09, not accuracy on a shared corpus. Disrobe also disassembles legacy CPython 1.0-2.7. Numeric versions encode as 3 + minor/100 so labels remain ordered.",
+  "note": "Bars summarize upstream bytecode-version claims checked on 2026-09-09, not accuracy on a shared corpus. Numeric versions encode as 3 + minor/100 so labels remain ordered.",
   "axis": {
     "min": 3.0,
     "max": 3.15,
@@ -12,11 +12,11 @@
       "name": "disrobe",
       "highlight": true,
       "segments": [
-        { "from": 3.0, "to": 3.15, "kind": "disasm", "label": "disassemble 3.0-3.15" },
-        { "from": 3.06, "to": 3.15, "kind": "verified", "label": "current 3.x recompile gates" }
+        { "from": 3.08, "to": 3.15, "kind": "disasm", "label": "disassemble 3.8-3.15" },
+        { "from": 3.08, "to": 3.15, "kind": "verified", "label": "current 3.x recompile gates" }
       ],
-      "mode": "deterministic, no LLM; + legacy 1.0-2.7 disasm",
-      "source": "README.md and xtask/data/recovery.json: CPython 1.0-3.15 dispatch, normalized opcode-structure comparison for the CPython 3.14.5 corpora, and legacy recompile or structural-token checks"
+      "mode": "deterministic, no LLM",
+      "source": "README.md and xtask/data/recovery.json: CPython 3.8-3.15 dispatch and normalized opcode-structure comparison for the CPython 3.14.5 corpora"
     },
     {
       "name": "uncompyle6",

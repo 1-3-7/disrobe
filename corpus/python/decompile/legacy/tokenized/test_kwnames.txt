@@ -1,5 +1,0 @@
-def foo ( x ) : <EOL>
-<INDENT>
-print ( x ) <EOL>
-<OUTDENT>
-foo ( x = 1 ) <EOL>

@@ -480,7 +480,12 @@ fn py_decompile_roundtrip_emits_source() {
             .expect("version")
             .starts_with("3.")
     );
-    assert!(!json["source"].as_str().expect("source").is_empty());
+    let source: &str = json["source"].as_str().expect("source");
+    assert!(
+        source.contains("stride = items[::2]")
+            && source.contains("items[0:2] = [head[-1], tail[0]]"),
+        "the recovered source must carry the slice statements of corpus/python/decompile/authored/slices.py: {source}"
+    );
 }
 
 #[test]

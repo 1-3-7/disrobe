@@ -1,6 +1,0 @@
-def func ( ) : <EOL>
-<INDENT>
-x = 1 <EOL>
-class my_class : <EOL>
-<INDENT>
-y = x <EOL>

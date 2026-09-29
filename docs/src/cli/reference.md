@@ -83,7 +83,7 @@ Nested commands are listed by ecosystem below. For measurements and their limits
 | Command | Purpose |
 |---|---|
 | `disrobe py decompile <pyc>` | Decompile a `.pyc` to source. `--backend native` (the only supported value). `--no-roundtrip` skips the recompile-equivalence check. |
-| `disrobe py disasm <pyc>` | Per-instruction disassembly (1.0-3.15 + PyPy/MicroPython/Jython/IronPython/Brython). |
+| `disrobe py disasm <pyc>` | Per-instruction disassembly (3.8-3.15 + PyPy/MicroPython/Jython/IronPython/Brython). |
 | `disrobe py deob <src>` | Peel a source obfuscator. `--cleanup` runs a ruff-AST fold. |
 | `disrobe py extract <archive>` | Extract a wheel / sdist / egg / `.whl` / `.zip` / any archive. |
 | `disrobe py sourcedefender <pye>` | Decrypt a SourceDefender `.pye` envelope. |

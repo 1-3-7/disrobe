@@ -110,7 +110,20 @@ fn dlink_encrpted_img_spec_constructed_restores_ubi_head() {
     assert_eq!(out.inner_kind_hint.as_deref(), Some("ubi"));
 }
 
+fn aes256_cbc_decrypt(key: &[u8], iv: &[u8], ciphertext: &[u8]) -> Vec<u8> {
+    use cipher::{BlockDecryptMut, KeyIvInit, block_padding::NoPadding};
+    type Dec = cbc::Decryptor<aes::Aes256>;
+    let mut buf: Vec<u8> = ciphertext.to_vec();
+    Dec::new(key.into(), iv.into())
+        .decrypt_padded_mut::<NoPadding>(&mut buf)
+        .expect("aes256 decrypt")
+        .to_vec()
+}
+
 const ALPHA_XOR_RANGE: usize = 0xfc;
+const ALPHA_V1_DAP1720_SIGNATURE: &[u8] = b"wapac28_dlink.2015_dap1720";
+const ALPHA_V1_DAP1720_KEY: &[u8] = b"qBiz6o/1RVQTtJBd3FS7FDbqogE8yoBm";
+const ALPHA_V1_DAP1720_IV: &[u8] = b"EfDMqWWxHCOhEqgY";
 
 fn alpha_mangle(signature: &[u8], data: &[u8]) -> Vec<u8> {
     data.iter()
@@ -184,7 +197,7 @@ fn dlink_alpha_v1_refuses_a_two_byte_gzip_prefix_over_fields_no_gzip_stream_carr
 #[test]
 fn dlink_alpha_v1_refuses_a_cpython_bytecode_file() {
     let path: PathBuf =
-        repo_root().join("corpus/python/decompile/legacy/compiled/unicode_future.3.3.pyc");
+        repo_root().join("corpus/python/decompile/authored/compiled/header_probe.3.12.pyc");
     let bytes: Vec<u8> = std::fs::read(&path).unwrap_or_else(|error: std::io::Error| {
         panic!(
             "{} is the committed input whose first block decrypts to a gzip prefix under the \
@@ -199,6 +212,19 @@ fn dlink_alpha_v1_refuses_a_cpython_bytecode_file() {
         "a CPython bytecode header carries a carriage return and line feed at offset 2, so a file \
          without them is not the input this check was written against"
     );
+    let first_block: Vec<u8> = aes256_cbc_decrypt(
+        &alpha_mangle(ALPHA_V1_DAP1720_SIGNATURE, ALPHA_V1_DAP1720_KEY),
+        &alpha_mangle(ALPHA_V1_DAP1720_SIGNATURE, ALPHA_V1_DAP1720_IV),
+        &bytes[..16],
+    );
+    assert_eq!(
+        &first_block[..2],
+        &[0x1f, 0x8b],
+        "{} must decrypt to the gzip prefix under the dap1720 key, or this check no longer \
+         exercises the prefix-only coincidence",
+        path.display()
+    );
+    assert_eq!(bytes.len() % 16, 0);
     assert_eq!(detect_firmware(&bytes), None);
     assert_eq!(detect_container(&bytes), None);
 }

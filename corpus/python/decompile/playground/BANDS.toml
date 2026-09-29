@@ -8,29 +8,6 @@ frontier_file = "known_open.py"
 pyc_path_rewrite = 'the compiled __pycache__ files carry a same-length rewrite of co_filename: the absolute build-directory prefix was overwritten by /_ followed by / padding; no other byte changed'
 
 [[bands]]
-file = "edge_cases_2_7.py"
-floor = "2.7"
-ceiling_parseable = "2.7"
-loc = 238
-band_marker = [2, 7]
-constructs = [
-  "PEP-3105-reversal: print statement (no parens)",
-  "PEP-3110-reversal: except X, e: comma binding",
-  "PEP-3137-reversal: long literals 123L, <> operator",
-  "PEP-252-partial: old-style class (no object base)",
-  "PEP-234-partial: xrange, has_key, iteritems",
-  "PEP-3131-reversal: bytes-is-str (b'...' is str)",
-  "PEP-3113-removed: tuple parameter unpacking",
-  "exec as statement",
-  "backtick repr",
-  "u-prefix unicode literals + unicode_literals future",
-  "print chevron redirection",
-  "% string formatting",
-  "raise X, msg, tb three-arg form",
-  "from __future__ import division",
-]
-
-[[bands]]
 file = "edge_cases_3_6.py"
 floor = "3.6"
 ceiling_parseable = "3.14"
@@ -189,7 +166,6 @@ constructs = [
 ]
 
 [interpreter_floor_map]
-"2.7"      = "edge_cases_2_7.py"
 "3.6"      = "edge_cases_3_6.py"
 "3.7"      = "edge_cases_3_6.py"
 "3.8"      = "edge_cases_3_8.py"

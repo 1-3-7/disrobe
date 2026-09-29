@@ -84,8 +84,8 @@ const DOCUMENT_FIGURE_BUDGET: [FigureBudget; 33] = [
     },
     FigureBudget {
         path: "benches/decompile-quality/results.md",
-        figures: 178,
-        digest: "d85ec8232eac581c",
+        figures: 174,
+        digest: "2dac9a5156a37ac3",
     },
     FigureBudget {
         path: "benches/head-to-head/results.md",
@@ -204,8 +204,8 @@ const DOCUMENT_FIGURE_BUDGET: [FigureBudget; 33] = [
     },
     FigureBudget {
         path: "docs/src/languages/python.md",
-        figures: 4,
-        digest: "4f786bc52059eb41",
+        figures: 3,
+        digest: "98d6c70ba013a5ef",
     },
     FigureBudget {
         path: "docs/src/languages/ruby.md",

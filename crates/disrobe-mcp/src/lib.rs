@@ -1995,7 +1995,7 @@ mod tests {
 
     #[cfg(feature = "chain")]
     const BINARY_OPS_PYC: &[u8] =
-        include_bytes!("../../../corpus/python/decompile/legacy/compiled/binary_ops.3.11.pyc");
+        include_bytes!("../../../corpus/python/decompile/authored/compiled/binary_ops.3.11.pyc");
 
     #[cfg(feature = "chain")]
     #[test]

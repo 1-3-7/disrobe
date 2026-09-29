@@ -1015,7 +1015,7 @@ mod tests {
     #[test]
     fn a_real_cpython_3_12_pyc_is_recognised() {
         let path: std::path::PathBuf = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../corpus/python/decompile/legacy/compiled/simple_const.3.12.pyc");
+            .join("../../corpus/python/decompile/authored/compiled/simple_const.3.12.pyc");
         let bytes: Vec<u8> = std::fs::read(&path)
             .unwrap_or_else(|error: std::io::Error| panic!("read {}: {error}", path.display()));
         assert!(super::has_marshal_pyc_header(&bytes));

@@ -1,3 +1,0 @@
-def GEN_START ( ) : <EOL>
-<INDENT>
-yield 0 <EOL>

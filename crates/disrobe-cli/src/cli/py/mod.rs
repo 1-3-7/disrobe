@@ -73,7 +73,7 @@ pub(crate) enum PyCmd {
         original_name: Option<String>,
     },
     #[command(
-        about = "disassemble a .pyc into a per-instruction trace (CPython 1.0 .. 3.15 + PyPy + MicroPython + Jython + IronPython + Brython)"
+        about = "disassemble a .pyc into a per-instruction trace (CPython 3.8 .. 3.15 + PyPy + MicroPython + Jython + IronPython + Brython)"
     )]
     Disasm {
         #[arg(help = ".pyc input file")]
@@ -88,7 +88,7 @@ pub(crate) enum PyCmd {
         emit: Vec<String>,
     },
     #[command(
-        about = "decompile a .pyc back to readable Python source (auto-deobfuscates first if the input matches a known Python obfuscator); in-tree native engine supporting CPython 1.0..3.15 with frame-tree + per-version opcode dispatch + round-trip verification"
+        about = "decompile a .pyc back to readable Python source (auto-deobfuscates first if the input matches a known Python obfuscator); in-tree native engine supporting CPython 3.8..3.15 with frame-tree + per-version opcode dispatch + round-trip verification"
     )]
     Decompile {
         #[arg(help = ".pyc input file (or obfuscated Python source; auto-deobfuscated)")]
@@ -99,7 +99,7 @@ pub(crate) enum PyCmd {
             long,
             value_enum,
             default_value_t = DecompileBackend::Native,
-            help = "decompiler backend: `native` (in-tree CPython 1.0..3.15 engine; the only supported value)"
+            help = "decompiler backend: `native` (in-tree CPython 3.8..3.15 engine; the only supported value)"
         )]
         backend: DecompileBackend,
         #[arg(

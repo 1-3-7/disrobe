@@ -75,7 +75,6 @@ function emitValueLabels(svg, labels, x, chartTop, gridTop, rowHeight, prefix, d
 function ecoShort(heading) {
   const h = heading.toLowerCase();
   if (h.startsWith("python bytecode")) return "python";
-  if (h.startsWith("cpython legacy")) return "python legacy";
   if (h.startsWith("webassembly")) return "wasm";
   if (h.startsWith("jvm")) return "jvm";
   if (h.startsWith("go ")) return "go";

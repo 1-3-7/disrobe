@@ -21,7 +21,7 @@ fn assert_recovers(label: &str, program: &str, must_contain: &[&str]) {
         let (outcome, source): (BandOutcome, String) =
             recompile_equiv_inline(interp, program, label, &scratch);
         match outcome {
-            BandOutcome::RecompileEquiv | BandOutcome::SourceTokenMatch => {}
+            BandOutcome::RecompileEquiv => {}
             BandOutcome::Tolerated(detail) => {
                 assert!(
                     interp.is_prerelease,

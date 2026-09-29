@@ -40,7 +40,7 @@ fn chain_native_listing_includes_viper_child() {
 }
 
 const CPYTHON_PYC_311: &[u8] =
-    include_bytes!("../../../corpus/python/decompile/legacy/compiled/binary_ops.3.11.pyc");
+    include_bytes!("../../../corpus/python/decompile/authored/compiled/binary_ops.3.11.pyc");
 
 #[test]
 fn chain_cpython_pyc_emits_dis_json_sidecar_child() {

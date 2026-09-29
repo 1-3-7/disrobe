@@ -51,7 +51,7 @@ seed = 42                    # RNG seed for non-deterministic backends
 max_depth = 8                # default chain depth for `auto`
 
 [backends]
-py = "native"                # native (in-tree CPython 1.0..3.15 engine; the only supported value)
+py = "native"                # native (in-tree CPython 3.8..3.15 engine; the only supported value)
 jvm = "cfr"                  # cfr | vineflower | procyon | jadx
 dotnet = "ilspy"             # ilspy | dnspy | dnspyex | de4dot
 wasm = "wat"                 # json | rust | ts | wat | c

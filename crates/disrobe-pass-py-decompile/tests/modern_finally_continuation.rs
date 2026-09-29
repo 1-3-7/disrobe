@@ -22,10 +22,6 @@ fn assert_single_finally(label: &str, program: &str, must_contain: &[&str]) {
             recompile_equiv_inline(interp, program, label, &scratch);
         match outcome {
             BandOutcome::RecompileEquiv => {}
-            BandOutcome::SourceTokenMatch => panic!(
-                "{label} py{}: token-match, not recompile-equivalent:\n{source}",
-                interp.alias
-            ),
             BandOutcome::Tolerated(detail) => {
                 assert!(
                     interp.is_prerelease,

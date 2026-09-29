@@ -43,7 +43,7 @@ fn assert_recompiles_on(
                     checked_stable += 1;
                 }
             }
-            BandOutcome::SourceTokenMatch | BandOutcome::Tolerated(_) if interp.is_prerelease => {}
+            BandOutcome::Tolerated(_) if interp.is_prerelease => {}
             BandOutcome::Failed(reason) if interp.is_prerelease => {
                 eprintln!("SKIP prerelease {label} py{}: {reason}", interp.alias);
             }

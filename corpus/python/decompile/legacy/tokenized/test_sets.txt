@@ -1,4 +1,0 @@
-a = set ( ) <EOL>
-b = { 1 , 2 } <EOL>
-c = { 'AB' , 'CD' } <EOL>
-d = { 1 , 2 , 3 , 4 } <EOL>

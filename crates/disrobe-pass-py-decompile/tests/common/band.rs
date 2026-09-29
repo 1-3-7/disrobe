@@ -23,11 +23,7 @@ use disrobe_pass_py_decompile::roundtrip::{
 };
 use disrobe_py_marshal::{CodeObject, Object, PyVersion as MarshalVersion, PycFile, read_pyc};
 
-use super::tokenize::{render, tokenize};
-
 pub(crate) const CONSTRUCT_CASES_DIR: &str = "../../corpus/python/decompile/construct/cases";
-pub(crate) const LEGACY_COMPILED_DIR: &str = "../../corpus/python/decompile/legacy/compiled";
-pub(crate) const LEGACY_SOURCE_DIR: &str = "../../corpus/python/decompile/legacy/source";
 pub(crate) const BAND_SCRATCH_ROOT: &str = concat!(env!("CARGO_TARGET_TMPDIR"), "/py-band-e2e");
 
 #[derive(Debug, Clone)]
@@ -40,7 +36,6 @@ pub(crate) struct BandInterpreter {
 #[derive(Debug, Clone)]
 pub(crate) enum BandOutcome {
     RecompileEquiv,
-    SourceTokenMatch,
     Tolerated(String),
     Failed(String),
 }
@@ -186,46 +181,6 @@ pub(crate) fn recompile_equiv_construct(
         ));
     }
     drive_recompile(interp, &source_path, construct, scratch)
-}
-
-pub(crate) fn recompile_equiv_legacy_pyc(
-    interp: &BandInterpreter,
-    pyc_path: &Path,
-    label: &str,
-    scratch: &Path,
-) -> BandOutcome {
-    let (original_code, marshal_version): (CodeObject, MarshalVersion) = match read_code(pyc_path) {
-        Ok(c) => c,
-        Err(e) => return BandOutcome::Failed(format!("{label}: read orig pyc: {e}")),
-    };
-    let (source, _): (String, DecompileVersion) =
-        match decompile_source(&original_code, marshal_version) {
-            Ok(s) => s,
-            Err(e) => return BandOutcome::Failed(format!("{label}: {e}")),
-        };
-    if let Err(e) = assert_no_placeholder(label, &source) {
-        return BandOutcome::Failed(e);
-    }
-    let recovered_path: PathBuf = scratch.join(format!("{label}.{}.dec.py", interp.alias));
-    if let Err(e) = fs::write(&recovered_path, &source) {
-        return BandOutcome::Failed(format!("{label}: write recovered: {e}"));
-    }
-    let recompiled_pyc: PathBuf = scratch.join(format!("{label}.{}.dec.pyc", interp.alias));
-    if let Err(e) = compile_source(&interp.path, &recovered_path, &recompiled_pyc) {
-        return BandOutcome::Failed(format!("{label}: recompile failed: {e}"));
-    }
-    let (recompiled_code, _): (CodeObject, MarshalVersion) = match read_code(&recompiled_pyc) {
-        Ok(c) => c,
-        Err(e) => return BandOutcome::Failed(format!("{label}: read recompiled: {e}")),
-    };
-    classify(
-        &original_code,
-        &recompiled_code,
-        marshal_version,
-        label,
-        interp.is_prerelease,
-        &source,
-    )
 }
 
 pub(crate) fn recompile_equiv_inline(
@@ -374,106 +329,6 @@ fn classify(
             }
         }
     }
-}
-
-pub(crate) fn source_token_match_legacy(
-    pyc_path: &Path,
-    source_path: &Path,
-    label: &str,
-) -> BandOutcome {
-    let (code, marshal_version): (CodeObject, MarshalVersion) = match read_code(pyc_path) {
-        Ok(c) => c,
-        Err(e) => return BandOutcome::Failed(format!("{label}: read pyc: {e}")),
-    };
-    let (recovered, _): (String, DecompileVersion) = match decompile_source(&code, marshal_version)
-    {
-        Ok(s) => s,
-        Err(e) => return BandOutcome::Failed(format!("{label}: {e}")),
-    };
-    if let Err(e) = assert_no_placeholder(label, &recovered) {
-        return BandOutcome::Failed(e);
-    }
-    let Ok(source): Result<String, _> = fs::read_to_string(source_path) else {
-        return BandOutcome::Failed(format!("{label}: vendored source unreadable"));
-    };
-    if source_token_equiv(&recovered, &source) {
-        BandOutcome::SourceTokenMatch
-    } else {
-        BandOutcome::Failed(format!(
-            "{label}: recovered source token-diffs vendored ORIGINAL"
-        ))
-    }
-}
-
-fn normalize(s: &str) -> String {
-    s.replace("\r\n", "\n").trim_end().to_owned()
-}
-
-fn source_token_equiv(recovered: &str, source: &str) -> bool {
-    let recovered_lf: String = recovered.replace("\r\n", "\n");
-    let source_lf: String = source.replace("\r\n", "\n");
-    let (Ok(a), Ok(b)) = (tokenize(&recovered_lf), tokenize(&source_lf)) else {
-        return false;
-    };
-    normalize(&render(&a)) == normalize(&render(&b))
-}
-
-#[must_use]
-pub(crate) fn legacy_pycs_in_range(
-    low: (u8, u8),
-    high: (u8, u8),
-) -> Vec<(PathBuf, (u8, u8), String)> {
-    let dir: PathBuf = PathBuf::from(LEGACY_COMPILED_DIR);
-    let mut files: Vec<PathBuf> = fs::read_dir(&dir).map_or_else(
-        |_| Vec::new(),
-        |rd| {
-            rd.filter_map(|e| e.ok().map(|e| e.path()))
-                .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("pyc"))
-                .collect()
-        },
-    );
-    files.sort();
-    let mut out: Vec<(PathBuf, (u8, u8), String)> = Vec::new();
-    for pyc in files {
-        let Ok((_, ver)): Result<(CodeObject, MarshalVersion), _> = read_code(&pyc) else {
-            continue;
-        };
-        let key: (u8, u8) = (ver.major, ver.minor);
-        if key < low || key > high {
-            continue;
-        }
-        let name: String = pyc
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let stem: String = legacy_stem(&name);
-        out.push((pyc, key, stem));
-    }
-    out
-}
-
-fn legacy_stem(pyc_name: &str) -> String {
-    let no_ext: &str = pyc_name.strip_suffix(".pyc").unwrap_or(pyc_name);
-    let parts: Vec<&str> = no_ext.rsplitn(3, '.').collect();
-    if parts.len() == 3 {
-        parts[2].to_owned()
-    } else {
-        no_ext.to_owned()
-    }
-}
-
-#[must_use]
-pub(crate) fn legacy_source_for(stem: &str) -> Option<PathBuf> {
-    let direct: PathBuf = PathBuf::from(LEGACY_SOURCE_DIR).join(format!("{stem}.py"));
-    if direct.is_file() {
-        return Some(direct);
-    }
-    let demoted: &str = stem.strip_suffix("_py3").unwrap_or(stem);
-    let fallback: PathBuf = PathBuf::from(LEGACY_SOURCE_DIR).join(format!("{demoted}.py"));
-    if fallback.is_file() {
-        return Some(fallback);
-    }
-    None
 }
 
 #[must_use]

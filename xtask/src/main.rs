@@ -45,6 +45,7 @@ mod plugins;
 mod prepush;
 mod prose_tells;
 mod push_graders;
+mod pycdc_blobs;
 mod regen;
 mod roster_breadth;
 mod shell_catalog;

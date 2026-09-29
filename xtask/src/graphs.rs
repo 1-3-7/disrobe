@@ -801,9 +801,8 @@ fn recovery_qualifier(label: &str) -> String {
 }
 
 fn recovery_category_labels(doc: &RecoveryDoc) -> Vec<String> {
-    let prefixes: [(&str, &str); 10] = [
+    let prefixes: [(&str, &str); 9] = [
         ("python bytecode", "python"),
-        ("cpython legacy", "python legacy"),
         ("webassembly", "wasm"),
         ("jvm", "jvm"),
         ("go ", "go"),

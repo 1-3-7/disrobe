@@ -287,9 +287,7 @@ fn classify(outcome: &BandOutcome, source: &str) -> Emission {
             Emission::Refused
         }
         BandOutcome::Failed(detail) if detail.contains("compile failed") => Emission::Refused,
-        BandOutcome::SourceTokenMatch | BandOutcome::Tolerated(_) | BandOutcome::Failed(_) => {
-            Emission::NotEquivalent
-        }
+        BandOutcome::Tolerated(_) | BandOutcome::Failed(_) => Emission::NotEquivalent,
     }
 }
 

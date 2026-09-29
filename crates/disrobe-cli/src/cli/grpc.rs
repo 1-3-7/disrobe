@@ -204,10 +204,10 @@ const PASSES: &[(&str, &str)] = &[
     ),
     ("nuitka", "--onefile payload extract + symbol scan"),
     ("py-deob", "encoder peel + ruff-AST cleanup"),
-    ("py-disasm", "Python 2.7..3.14 disassembler"),
+    ("py-disasm", "Python 3.8..3.15 disassembler"),
     (
         "py-decompile",
-        "in-tree native CPython 1.0..3.15 decompiler",
+        "in-tree native CPython 3.8..3.15 decompiler",
     ),
     ("py-sourcedefender", ".pye AES-CTR decrypt"),
     ("js-deob", "string-array + unminify + scope-aware rename"),

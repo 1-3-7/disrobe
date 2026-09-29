@@ -145,7 +145,7 @@ impl Pass for PyDisasmPass {
         let sidecar: PyDisasmSidecar = PyDisasmSidecar {
             runtime: extract.runtime,
             py_version: extract.py_version,
-            instruction_count: extract.instruction_count,
+            instruction_count: instructions.len(),
             instructions,
         };
         let json: Vec<u8> =

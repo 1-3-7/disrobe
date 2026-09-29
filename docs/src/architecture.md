@@ -16,7 +16,7 @@ The workspace splits into shared cores and dedicated ecosystem or recovery-surfa
 | `disrobe-passes` | Single assembly point for the feature-selected auto-chain registry. The standard CLI enables a specific subset; `disrobe passes` prints the resulting IDs. |
 | `disrobe-llm-metadata` | The `--llm` sidecar: 18 categories, 4 packs, `AGENTS.md` / `SKILL.md` brief generation. |
 | `disrobe-mcp` | The rmcp Model Context Protocol companion wired to `disrobe serve --mcp`. |
-| `disrobe-py-marshal` | CPython marshal reader: code objects across 1.0-3.15. |
+| `disrobe-py-marshal` | CPython marshal reader: code objects across 3.8-3.15. |
 | `disrobe-pass-*` | One crate per ecosystem or recovery surface, including Python, JavaScript, WebAssembly, JVM, .NET, native, Go, Lua, PHP, Ruby, BEAM, Swift/Objective-C, AS3, mobile, shell, and webview desktop assets. The native pass adds the iced-backed disassembler, symbol-independent function discovery, call graph and basic-block CFG, instruction re-encode/relocate, C++ RTTI/vtable recovery, and emulation-driven string recovery. |
 | `disrobe-query` | Queryable-IR layer over the disassembled native code: functions, calls-to, xrefs, string-decoders, complexity, capability sites, behind `disrobe query`. |
 | `disrobe-capabilities` | Capability rule engine over the queryable IR, mapping matched behaviors to MITRE ATT&CK and MBC, behind `disrobe capabilities`. |

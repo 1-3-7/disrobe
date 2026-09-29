@@ -73,12 +73,6 @@ fn py_decompile_band_3_9_to_3_11() {
             checked += 1;
             match recompile_equiv_construct(interp, construct, &scratch) {
                 BandOutcome::RecompileEquiv => recompiled += 1,
-                BandOutcome::SourceTokenMatch => {
-                    failures.push(format!(
-                        "py{} {construct}: token-match in an interpreter-present band is not allowed",
-                        interp.alias
-                    ));
-                }
                 BandOutcome::Tolerated(detail) => {
                     failures.push(format!(
                         "py{} {construct}: Tolerated outcome in a stable-only band is a real failure: {detail}",

@@ -62,7 +62,8 @@ fn threaded_args(threads: Option<u32>, rest: &[&str]) -> Vec<String> {
 }
 
 fn recover_py_decompile(threads: Option<u32>) -> Vec<u8> {
-    let input: PathBuf = corpus_path("python/decompile/playground/edge_cases_2_7.pyc");
+    let input: PathBuf =
+        corpus_path("python/decompile/playground/__pycache__/edge_cases_3_12.cpython-312.pyc");
     let out_dir_scratch: disrobe_core::scratch::ScratchDir = temp_dir("py");
     let out_dir: PathBuf = out_dir_scratch.path().to_path_buf();
     let input_arg: String = input.to_string_lossy().into_owned();
@@ -75,7 +76,7 @@ fn recover_py_decompile(threads: Option<u32>) -> Vec<u8> {
         "py decompile failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let recovered: PathBuf = out_dir.join("edge_cases_2_7.py");
+    let recovered: PathBuf = out_dir.join("edge_cases_3_12.cpython-312.py");
     std::fs::read(&recovered).unwrap_or_else(|e: std::io::Error| {
         panic!("reading recovered source {}: {e}", recovered.display())
     })
@@ -126,7 +127,7 @@ fn recover_pickle_decompile(threads: Option<u32>) -> Vec<u8> {
 type Recover = fn(Option<u32>) -> Vec<u8>;
 
 const FIXTURES: &[(&str, Recover)] = &[
-    ("py-decompile-edge-cases-2.7", recover_py_decompile),
+    ("py-decompile-edge-cases-3.12", recover_py_decompile),
     ("native-unpack-kkrunchy-classic", recover_native_unpack),
     (
         "pickle-decompile-reduce-os-system",
@@ -220,9 +221,9 @@ fn run_into(out: &Path, args: &[String]) -> (Output, Snapshot) {
 #[test]
 fn two_auto_runs_over_one_input_write_identical_bytes() {
     let scratch: disrobe_core::scratch::ScratchDir = temp_dir("auto-twice");
-    let input: PathBuf = scratch.path().join("edge_cases_2_7.pyc");
+    let input: PathBuf = scratch.path().join("edge_cases_3_12.pyc");
     std::fs::copy(
-        corpus_path("python/decompile/playground/edge_cases_2_7.pyc"),
+        corpus_path("python/decompile/playground/__pycache__/edge_cases_3_12.cpython-312.pyc"),
         &input,
     )
     .expect("stage the fixture");
@@ -268,9 +269,9 @@ fn add_recorded_duration(report_path: &Path, duration: u32) {
 #[test]
 fn a_duration_mutant_in_actual_auto_output_turns_the_comparison_red() {
     let scratch: disrobe_core::scratch::ScratchDir = temp_dir("auto-duration-mutant");
-    let input: PathBuf = scratch.path().join("edge_cases_2_7.pyc");
+    let input: PathBuf = scratch.path().join("edge_cases_3_12.pyc");
     std::fs::copy(
-        corpus_path("python/decompile/playground/edge_cases_2_7.pyc"),
+        corpus_path("python/decompile/playground/__pycache__/edge_cases_3_12.cpython-312.pyc"),
         &input,
     )
     .expect("stage the fixture");
@@ -296,7 +297,7 @@ fn stage_batch_input() -> (disrobe_core::scratch::ScratchDir, PathBuf) {
     let scratch: disrobe_core::scratch::ScratchDir = temp_dir("batch-input");
     let dir: PathBuf = scratch.path().to_path_buf();
     for rel in [
-        "python/decompile/playground/edge_cases_2_7.pyc",
+        "python/decompile/playground/__pycache__/edge_cases_3_12.cpython-312.pyc",
         "native/packers/kkrunchy/hello.packed.kkrunchy_classic.exe",
         "pickle/malicious/p3/reduce_os_system.pkl",
     ] {

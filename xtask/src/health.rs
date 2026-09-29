@@ -128,6 +128,7 @@ pub(crate) fn run(root: &Path, as_json: bool) -> Result<()> {
     check_shell_catalog(root, &mut report);
     check_tracked_paths(root, &mut report);
     check_pyarmor_serial_footprint(root, &mut report);
+    check_pycdc_blobs(root, &mut report);
     check_prose_tells(root, &mut report);
     check_readme_family_evidence(root, &mut report);
 
@@ -296,6 +297,41 @@ fn check_pyarmor_serial_footprint(root: &Path, report: &mut Report) {
                 found.files.len(),
                 found.files.len(),
                 found.set_sha256
+            ),
+        );
+    }
+}
+
+fn check_pycdc_blobs(root: &Path, report: &mut Report) {
+    const CHECK: &str = "pycdc-blobs";
+    let scanned: Result<(BTreeSet<String>, BTreeMap<String, String>)> =
+        crate::pycdc_blobs::load_list(root).and_then(|listed: BTreeSet<String>| {
+            Ok((listed, crate::pycdc_blobs::working_tree_blob_ids(root)?))
+        });
+    match scanned {
+        Ok((listed, blobs)) => report_pycdc_blobs(&blobs, &listed, report),
+        Err(error) => report.fail(
+            CHECK,
+            format!("could not compare tracked files with the pycdc blob list: {error:#}"),
+        ),
+    }
+}
+
+fn report_pycdc_blobs(
+    blobs: &BTreeMap<String, String>,
+    listed: &BTreeSet<String>,
+    report: &mut Report,
+) {
+    let found: Vec<String> = crate::pycdc_blobs::listed_files(blobs, listed);
+    report.fact("pycdc_blob_files", json!(found.len()));
+    if !found.is_empty() {
+        report.fail(
+            "pycdc-blobs",
+            format!(
+                "{} file(s) are byte-identical to files in pycdc's GPL-3.0 tree ({}); remove them and author a replacement: {}",
+                found.len(),
+                crate::pycdc_blobs::LIST_PATH,
+                found.join("; ")
             ),
         );
     }
@@ -1669,6 +1705,24 @@ fn collect_workspace_refs(section: Option<&toml::Value>, out: &mut BTreeSet<Stri
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_file_with_a_listed_pycdc_blob_fails_health() {
+        let id: &str = "24cc0f2f81a267dfc0a819000ef4f8d51af39dcd";
+        let listed: BTreeSet<String> = BTreeSet::from([id.to_owned()]);
+        let mut blobs: BTreeMap<String, String> = BTreeMap::new();
+        blobs.insert("probe/readded.pyc".to_owned(), id.to_owned());
+        let mut report: Report = Report::default();
+        report_pycdc_blobs(&blobs, &listed, &mut report);
+        assert_eq!(report.findings.len(), 1);
+        assert_eq!(report.findings[0].check, "pycdc-blobs");
+        assert!(report.findings[0].detail.contains("probe/readded.pyc"));
+
+        blobs.insert("probe/readded.pyc".to_owned(), "0".repeat(40));
+        let mut clean: Report = Report::default();
+        report_pycdc_blobs(&blobs, &listed, &mut clean);
+        assert!(clean.findings.is_empty());
+    }
 
     fn internal_version_report(member_manifest: &str) -> Result<Report, toml::de::Error> {
         let root_doc: toml::Value = toml::from_str(

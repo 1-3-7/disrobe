@@ -1,3 +1,0 @@
-def _lsbStrToInt ( str ) : <EOL>
-<INDENT>
-return ord ( str [ 0 ] ) + ( ord ( str [ 1 ] ) << 8 ) + ( ord ( str [ 2 ] ) << 16 ) + ( ord ( str [ 3 ] ) << 24 ) <EOL>

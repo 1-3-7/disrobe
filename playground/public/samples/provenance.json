@@ -78,6 +78,14 @@
       "reference": "crates/disrobe-pass-js-deob/tests/sourcemap_recover_real.rs",
       "bytes": 2338,
       "sha256": "cb4915c37032283447c8c52bc50ca7b0335c6e3fe92ad8958e27d019034fe2aa"
+    },
+    {
+      "name": "hello.pyc",
+      "source": "corpus/python/decompile/authored/compiled/hello.3.12.pyc",
+      "originalSource": "corpus/python/decompile/authored/hello.py",
+      "reference": "corpus/python/decompile/authored/BUILD.md",
+      "bytes": 402,
+      "sha256": "1dbf38f98a3065982f4f67a8745947db5519f35b59eb7ef03f10d9bb88a541d9"
     }
   ]
 }

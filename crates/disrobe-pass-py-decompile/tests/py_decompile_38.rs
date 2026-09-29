@@ -4,7 +4,6 @@
     clippy::panic,
     clippy::print_stdout,
     clippy::print_stderr,
-    clippy::too_many_lines,
     clippy::doc_markdown
 )]
 
@@ -13,12 +12,10 @@ mod common;
 use std::path::PathBuf;
 
 use common::band::{
-    BandInterpreter, BandOutcome, band_scratch, find_interpreter, legacy_pycs_in_range,
-    legacy_source_for, recompile_equiv_construct, recompile_equiv_legacy_pyc, resolve_band,
-    source_token_match_legacy,
+    BandInterpreter, BandOutcome, band_scratch, recompile_equiv_construct, resolve_band,
 };
 
-const RECOMPILE_ALIASES: &[&str] = &["3.6", "3.7", "3.8"];
+const RECOMPILE_ALIASES: &[&str] = &["3.8"];
 
 const CASES_38: &[&str] = &[
     "assign_chained",
@@ -34,43 +31,28 @@ const CASES_38: &[&str] = &[
     "with_multi",
 ];
 
-const SOURCE_DRIFTED_3X: &[&str] = &[
-    "loadbuild_class.3.4",
-    "op_precedence.3.5",
-    "test_integers_py3.3.5",
-    "unicode_future.3.3",
-    "unicode_py3.3.3",
-];
-
 #[test]
-fn py_decompile_band_3_0_to_3_8() {
+fn py_decompile_band_3_8() {
     let interpreters: Vec<BandInterpreter> = resolve_band(RECOMPILE_ALIASES, &[]);
-    println!("=== BAND 3.0-3.8 RECOMPILE INTERPRETERS (3.6/3.7/3.8) ===");
-    for i in &interpreters {
-        println!("  {} -> {}", i.alias, i.path.display());
-    }
     let scratch: PathBuf = band_scratch("band_38");
 
     let mut recompiled: usize = 0;
-    let mut token_matched: usize = 0;
-    let mut source_drifted_skipped: usize = 0;
     let mut failures: Vec<String> = Vec::new();
 
-    let interp_38: Option<&BandInterpreter> = interpreters.iter().find(|i| i.alias == "3.8");
-    let Some(interp): Option<&BandInterpreter> = interp_38 else {
+    let Some(interp): Option<&BandInterpreter> = interpreters.iter().find(|i| i.alias == "3.8")
+    else {
         panic!(
-            "CPython 3.8 is required for the construct-case recompile leg of band 3.0-3.8 (probed \
+            "CPython 3.8 is required for the construct-case recompile leg of band 3.8 (probed \
              `uv python find 3.8` and the known install paths); CI provisions it"
         );
     };
+    println!(
+        "=== BAND 3.8 RECOMPILE INTERPRETER -> {} ===",
+        interp.path.display()
+    );
     for &construct in CASES_38 {
         match recompile_equiv_construct(interp, construct, &scratch) {
             BandOutcome::RecompileEquiv => recompiled += 1,
-            BandOutcome::SourceTokenMatch => {
-                failures.push(format!(
-                    "py3.8 {construct}: unexpected token-match in recompile leg"
-                ));
-            }
             BandOutcome::Tolerated(detail) => {
                 failures.push(format!(
                     "py3.8 {construct}: Tolerated outcome in a stable-only band is a real failure: {detail}"
@@ -80,112 +62,11 @@ fn py_decompile_band_3_0_to_3_8() {
         }
     }
 
-    for (pyc, ver, stem) in legacy_pycs_in_range((3, 6), (3, 8)) {
-        let alias: String = format!("{}.{}", ver.0, ver.1);
-        let label: String = format!("{stem}.{alias}");
-        let Some(interp): Option<BandInterpreter> =
-            find_interpreter(&alias).map(|path: PathBuf| BandInterpreter {
-                alias: leak_alias(ver),
-                path,
-                is_prerelease: false,
-            })
-        else {
-            assert!(
-                alias != "3.8" && std::env::var_os("DISROBE_REQUIRE_PYTHON_RECOMPILE").is_none(),
-                "CPython {alias} is required to recompile {label} (probed `uv python find {alias}` \
-                 and the known install paths)"
-            );
-            eprintln!(
-                "UNGRADED: recompile {label} needs a CPython {alias} interpreter, which CI does not \
-                 provision; set DISROBE_REQUIRE_PYTHON_RECOMPILE=1 to make its absence fatal"
-            );
-            continue;
-        };
-        match recompile_equiv_legacy_pyc(&interp, &pyc, &label, &scratch) {
-            BandOutcome::RecompileEquiv => recompiled += 1,
-            BandOutcome::SourceTokenMatch => {}
-            BandOutcome::Tolerated(detail) => failures.push(format!(
-                "{label}: Tolerated outcome in a stable-only band is a real failure: {detail}"
-            )),
-            BandOutcome::Failed(e) => failures.push(e),
-        }
-    }
-
-    for (pyc, ver, stem) in legacy_pycs_in_range((3, 0), (3, 5)) {
-        let alias: String = format!("{}.{}", ver.0, ver.1);
-        let label: String = format!("{stem}.{alias}");
-        let maybe_interp: Option<BandInterpreter> =
-            find_interpreter(&alias).map(|path: PathBuf| BandInterpreter {
-                alias: leak_alias(ver),
-                path,
-                is_prerelease: false,
-            });
-        if let Some(interp) = maybe_interp {
-            match recompile_equiv_legacy_pyc(&interp, &pyc, &label, &scratch) {
-                BandOutcome::RecompileEquiv => recompiled += 1,
-                BandOutcome::SourceTokenMatch => token_matched += 1,
-                BandOutcome::Tolerated(detail) => failures.push(format!(
-                    "{label}: Tolerated outcome in a stable-only band is a real failure: {detail}"
-                )),
-                BandOutcome::Failed(e) => failures.push(e),
-            }
-            continue;
-        }
-        eprintln!(
-            "SKIP recompile {label}: no {alias} interpreter this run - falling back to token-match vs ORIGINAL source"
-        );
-        let Some(source_path): Option<PathBuf> = legacy_source_for(&stem) else {
-            failures.push(format!(
-                "{label}: no vendored ORIGINAL source for token-match fallback"
-            ));
-            continue;
-        };
-        match source_token_match_legacy(&pyc, &source_path, &label) {
-            BandOutcome::SourceTokenMatch => token_matched += 1,
-            BandOutcome::RecompileEquiv | BandOutcome::Tolerated(_) => {}
-            BandOutcome::Failed(e) => {
-                if SOURCE_DRIFTED_3X.contains(&label.as_str()) {
-                    eprintln!(
-                        "SKIP source-drifted {label}: vendored ORIGINAL drifted from its .pyc; \
-                         proven by recompile-equivalence where a {alias} interpreter is present - {e}"
-                    );
-                    source_drifted_skipped += 1;
-                } else {
-                    failures.push(e);
-                }
-            }
-        }
-    }
-
-    println!(
-        "=== BAND 3.0-3.8 SUMMARY: recompile-equiv={recompiled}, token-match={token_matched}, \
-         source-drifted-skipped={source_drifted_skipped} ==="
-    );
+    println!("=== BAND 3.8 SUMMARY: recompile-equiv={recompiled} ===");
     assert!(
         failures.is_empty(),
-        "{} band 3.0-3.8 failures:\n{}",
+        "{} band 3.8 failures:\n{}",
         failures.len(),
         failures.join("\n")
     );
-    assert!(
-        recompiled >= 1,
-        "band 3.0-3.8 proved 0 fixtures by recompile-equivalence; need >= 1 hard floor (3.6/3.7/3.8 \
-         interpreter required)"
-    );
-    assert!(
-        token_matched >= 1,
-        "band 3.0-3.8 proved 0 pre-3.6 fixtures by token-match; the 3.0-3.5 fallback is vacuous"
-    );
-}
-
-const fn leak_alias(ver: (u8, u8)) -> &'static str {
-    match ver {
-        (3, 3) => "3.3",
-        (3, 4) => "3.4",
-        (3, 5) => "3.5",
-        (3, 6) => "3.6",
-        (3, 7) => "3.7",
-        (3, 8) => "3.8",
-        _ => "3.x",
-    }
 }

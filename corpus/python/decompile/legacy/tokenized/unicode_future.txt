@@ -1,4 +1,0 @@
-from __future__ import unicode_literals <EOL>
-ustr = 'Unicode' <EOL>
-bstr = b'Bytes' <EOL>
-dstr = 'Default' <EOL>

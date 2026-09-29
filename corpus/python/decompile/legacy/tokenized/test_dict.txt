@@ -1,6 +1,0 @@
-x = { 'one' : 1 , 'two' : 2 } <EOL>
-if x [ 'one' ] == 1 : <EOL>
-<INDENT>
-print 'Correct!' <EOL>
-<OUTDENT>
-x [ 'three' ] = 3 <EOL>

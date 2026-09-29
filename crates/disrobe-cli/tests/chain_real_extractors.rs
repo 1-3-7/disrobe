@@ -448,7 +448,7 @@ fn real_extractor_shell_bash() {
 #[test]
 fn real_extractor_py_decompile_cpython_pyc() {
     let candidates: [&str; 3] = [
-        "python/decompile/playground/edge_cases_2_7.pyc",
+        "python/decompile/authored/compiled/slices.3.11.pyc",
         "python/decompile/playground/__pycache__/edge_cases.cpython-314.pyc",
         "python/decompile/playground/__pycache__/edge_cases_3_10.cpython-310.pyc",
     ];
@@ -673,12 +673,12 @@ fn real_extractor_swift_emits_swift_source_not_report() {
 fn real_extractor_python_emits_source_not_json() {
     for (rel, statement) in [
         (
-            "python/decompile/legacy/compiled/binary_ops.3.11.pyc",
-            "print(\"Addition:\", a + b)",
+            "python/decompile/authored/compiled/binary_ops.3.11.pyc",
+            "values = mix(12, 5, 2)",
         ),
         (
-            "python/decompile/legacy/compiled/binary_slice.3.12.pyc",
-            "print(l[1:3])",
+            "python/decompile/authored/compiled/slices.3.12.pyc",
+            "stride = items[::2]",
         ),
     ] {
         let bytes: Vec<u8> = read_fixture(rel);

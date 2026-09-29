@@ -28,7 +28,6 @@ use disrobe_pass_py_decompile::roundtrip::{Verdict, semantic_equiv};
 use disrobe_py_marshal::{CodeObject, Object, PyVersion as MarshalVersion, PycFile, read_pyc};
 
 const PYCACHE_DIR: &str = "../../corpus/python/decompile/playground/__pycache__";
-const STANDALONE_PYC_2_7: &str = "../../corpus/python/decompile/playground/edge_cases_2_7.pyc";
 const REPORT_DIR: &str = concat!(env!("CARGO_TARGET_TMPDIR"), "/v0.8-w6");
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,7 +67,6 @@ fn classify_filename(name: &str) -> Option<(String, String)> {
 
 fn marshal_to_decompile(version: MarshalVersion) -> DecompileVersion {
     match (version.major, version.minor) {
-        (2, 7) => DecompileVersion::V2_7,
         (3, 6) => DecompileVersion::V3_6,
         (3, 7) => DecompileVersion::V3_7,
         (3, 8) => DecompileVersion::V3_8,
@@ -277,10 +275,6 @@ fn semantic_mismatch(original_pyc: &Path, recompiled_pyc: &Path) -> Result<Optio
 
 fn collect_pyc_paths() -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
-    let standalone: PathBuf = PathBuf::from(STANDALONE_PYC_2_7);
-    if standalone.exists() {
-        out.push(standalone);
-    }
     if let Ok(rd) = fs::read_dir(PYCACHE_DIR) {
         for entry in rd.flatten() {
             let path: PathBuf = entry.path();
@@ -505,7 +499,6 @@ fn megafile_roundtrip_per_version_coverage() {
         "cpython-313",
         "cpython-314",
         "pypy310",
-        "self",
     ];
     for compiler in expected_compilers {
         assert!(

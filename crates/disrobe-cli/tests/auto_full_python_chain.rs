@@ -85,7 +85,7 @@ fn pyarmor_v8_wrapper() -> Option<Vec<u8>> {
 }
 
 fn pyc_3_11_body() -> Option<Vec<u8>> {
-    let fixture: PathBuf = corpus_path("python/decompile/legacy/compiled/binary_ops.3.11.pyc");
+    let fixture: PathBuf = corpus_path("python/decompile/authored/compiled/binary_ops.3.11.pyc");
     let raw: Vec<u8> = std::fs::read(&fixture).ok()?;
     if raw.len() <= 16 {
         return None;
@@ -260,10 +260,11 @@ fn test_auto_full_python_chain_pyinstaller_pyc_decompile() {
         prefix = &src[..src.len().min(400)]
     );
     assert!(
-        src.contains('+') && src.contains('a') && src.contains('b'),
-        "recovered source must reflect the binary_ops.3.11 body (a/b arithmetic), proving a \
-         non-circular decode rather than an echo of the archive; got prefix: {prefix}",
-        prefix = &src[..src.len().min(200)]
+        src.contains("total = left + right") && src.contains("values = mix(12, 5, 2)"),
+        "recovered source must reflect the binary_ops.3.11 body written in \
+         corpus/python/decompile/authored/binary_ops.py, proving a non-circular decode rather \
+         than an echo of the archive; got prefix: {prefix}",
+        prefix = &src[..src.len().min(400)]
     );
 
     let _ = std::fs::remove_file(&input);

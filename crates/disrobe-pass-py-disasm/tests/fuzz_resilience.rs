@@ -33,21 +33,19 @@ const PYPY_METHODS: &[u8] =
 const SEEDS: [(&str, &[u8]); 10] = [
     (
         "cpython-simple-const-3-11",
-        include_bytes!("../../../corpus/python/decompile/legacy/compiled/simple_const.3.11.pyc"),
+        include_bytes!("../../../corpus/python/decompile/authored/compiled/simple_const.3.11.pyc"),
     ),
     (
         "cpython-simple-const-3-12",
-        include_bytes!("../../../corpus/python/decompile/legacy/compiled/simple_const.3.12.pyc"),
+        include_bytes!("../../../corpus/python/decompile/authored/compiled/simple_const.3.12.pyc"),
     ),
     (
-        "cpython-build-const-key-map-2-7",
-        include_bytes!(
-            "../../../corpus/python/decompile/legacy/compiled/build_const_key_map.2.7.pyc"
-        ),
+        "cpython-slices-3-12",
+        include_bytes!("../../../corpus/python/decompile/authored/compiled/slices.3.12.pyc"),
     ),
     (
         "cpython-binary-ops-3-11",
-        include_bytes!("../../../corpus/python/decompile/legacy/compiled/binary_ops.3.11.pyc"),
+        include_bytes!("../../../corpus/python/decompile/authored/compiled/binary_ops.3.11.pyc"),
     ),
     ("pypy-methods-2-7", PYPY_METHODS),
     (

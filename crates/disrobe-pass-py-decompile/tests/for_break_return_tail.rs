@@ -29,12 +29,6 @@ fn break_return_tail_recompiles_equiv() {
         checked += 1;
         match recompile_equiv_construct(interp, "for_break_return_tail", &scratch) {
             BandOutcome::RecompileEquiv => {}
-            BandOutcome::SourceTokenMatch => {
-                failures.push(format!(
-                    "py{}: token-match where recompile-equiv required",
-                    interp.alias
-                ));
-            }
             BandOutcome::Tolerated(detail) => {
                 failures.push(format!(
                     "py{}: tolerated outcome unacceptable here: {detail}",

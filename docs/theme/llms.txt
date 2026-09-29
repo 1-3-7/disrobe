@@ -34,7 +34,7 @@ disrobe is proprietary, source-available software under the Disrobe Source-Avail
 
 ## Language and format guides
 
-- [Python](https://1-3-7.github.io/disrobe/latest/languages/python.html): disrobe disassembles and decompiles Python bytecode across CPython 1.0-3.15 and the alternative runtimes, peels source-level obfuscators, and unwraps freezers and protectors back to .pyc.
+- [Python](https://1-3-7.github.io/disrobe/latest/languages/python.html): disrobe disassembles and decompiles Python bytecode across CPython 3.8-3.15 and the alternative runtimes, peels source-level obfuscators, and unwraps freezers and protectors back to .pyc.
 - [JavaScript / TypeScript](https://1-3-7.github.io/disrobe/latest/languages/javascript.html): disrobe reverses supported JavaScript and TypeScript obfuscation, extracts modules from recognized bundle layouts, and inspects packaged JavaScript runtimes.
 - [Webview desktop frontends](https://1-3-7.github.io/disrobe/latest/languages/webview.html): disrobe webview statically recovers the frontend files embedded in Electron, Tauri, and Wails desktop applications.
 - [WebAssembly](https://1-3-7.github.io/disrobe/latest/languages/wasm.html): disrobe parses WebAssembly modules, lifts them to four target surfaces, reverses Wasm-specific obfuscators, and decodes the Component Model and GC type graphs.

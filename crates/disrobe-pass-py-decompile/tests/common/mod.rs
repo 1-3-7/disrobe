@@ -8,7 +8,6 @@
 pub(crate) mod band;
 pub(crate) mod band_gate;
 pub(crate) mod stdlib_measure;
-pub(crate) mod tokenize;
 
 use disrobe_pass_py_decompile::ast::{ConstValue, Expr, ExprCtx};
 use disrobe_pass_py_decompile::bytecode::version::PyVersion as DecompileVersion;

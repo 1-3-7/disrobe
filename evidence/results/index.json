@@ -1,5 +1,5 @@
 {
-  "descriptor_count": 33,
+  "descriptor_count": 32,
   "descriptors": [
     {
       "ci_attested": true,
@@ -511,22 +511,6 @@
       "oracle_strength": "strong",
       "pairs": [],
       "reproduce": "cargo test -p disrobe-pass-pickle --test roundtrip"
-    },
-    {
-      "ci_attested": true,
-      "claim": "disrobe decompiles legacy CPython bytecode (1.0 through 3.7) to source that is proven correct by recompile-equivalence or, where the period interpreter is absent, a structural token-match against the original .py.",
-      "comparison_basis": null,
-      "competitors": [],
-      "disrobe_leads": null,
-      "ecosystem": "python",
-      "external_oracle": "period CPython interpreters 1.0-3.7 (recompile-equivalence) or original .py source (structural token-match)",
-      "floor": 78.5,
-      "floor_holds": true,
-      "id": "py-legacy-recompile",
-      "measured": "78.50%",
-      "oracle_strength": "strong",
-      "pairs": [],
-      "reproduce": "cargo test -p disrobe-pass-py-decompile --test legacy_recompile"
     },
     {
       "ci_attested": false,

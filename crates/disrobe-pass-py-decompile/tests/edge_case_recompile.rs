@@ -43,14 +43,6 @@ fn assert_recompiles_with(label: &str, program: &str, band: &[BandInterpreter]) 
                     checked_stable += 1;
                 }
             }
-            BandOutcome::SourceTokenMatch => {
-                assert!(
-                    interp.is_prerelease,
-                    "{label} py{}: token-match in an interpreter-present band is not allowed; \
-                     expected recompile-equivalence\n--- recovered:\n{source}",
-                    interp.alias
-                );
-            }
             BandOutcome::Tolerated(detail) => {
                 assert!(
                     interp.is_prerelease,

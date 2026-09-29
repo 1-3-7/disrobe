@@ -31,7 +31,6 @@ use disrobe_pass_py_decompile::roundtrip::{Verdict, semantic_equiv};
 use disrobe_py_marshal::{CodeObject, Object, PyVersion as MarshalVersion, PycFile, read_pyc};
 
 const PYCACHE_DIR: &str = "../../corpus/python/decompile/playground/__pycache__";
-const STANDALONE_PYC_2_7: &str = "../../corpus/python/decompile/playground/edge_cases_2_7.pyc";
 const REPORT_DIR: &str = concat!(env!("CARGO_TARGET_TMPDIR"), "/v0.8-close-5-pydec-metric");
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,10 +76,6 @@ struct InterpreterSpec {
 }
 
 const INTERPRETERS: &[InterpreterSpec] = &[
-    InterpreterSpec {
-        tag: "cpython-2.7",
-        uv_alias: "2.7",
-    },
     InterpreterSpec {
         tag: "cpython-3.6",
         uv_alias: "3.6",
@@ -130,7 +125,6 @@ const INTERPRETERS: &[InterpreterSpec] = &[
 #[must_use]
 fn marshal_to_decompile(v: MarshalVersion) -> DecompileVersion {
     match (v.major, v.minor) {
-        (2, 7) => DecompileVersion::V2_7,
         (3, 6) => DecompileVersion::V3_6,
         (3, 7) => DecompileVersion::V3_7,
         (3, 8) => DecompileVersion::V3_8,
@@ -148,7 +142,6 @@ fn marshal_to_decompile(v: MarshalVersion) -> DecompileVersion {
 #[must_use]
 fn marshal_to_uv_alias(v: MarshalVersion) -> &'static str {
     match (v.major, v.minor) {
-        (2, 7) => "2.7",
         (3, 6) => "3.6",
         (3, 7) => "3.7",
         (3, 8) => "3.8",
@@ -178,10 +171,6 @@ fn classify_filename(name: &str) -> (String, String) {
 #[must_use]
 fn collect_pyc_paths() -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
-    let standalone: PathBuf = PathBuf::from(STANDALONE_PYC_2_7);
-    if standalone.exists() {
-        out.push(standalone);
-    }
     if let Ok(rd) = fs::read_dir(PYCACHE_DIR) {
         for entry in rd.flatten() {
             let path: PathBuf = entry.path();

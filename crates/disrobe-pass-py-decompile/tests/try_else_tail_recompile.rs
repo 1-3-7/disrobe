@@ -31,10 +31,6 @@ fn assert_recompiles_on(
             recompile_equiv_inline(interp, program, label, &scratch);
         match outcome {
             BandOutcome::RecompileEquiv => {}
-            BandOutcome::SourceTokenMatch => panic!(
-                "{label} py{}: token-match, not recompile-equivalent:\n{source}",
-                interp.alias
-            ),
             BandOutcome::Tolerated(detail) => {
                 assert!(
                     interp.is_prerelease,

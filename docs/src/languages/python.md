@@ -1,6 +1,6 @@
 # Python
 
-`disrobe` disassembles and decompiles Python bytecode across CPython 1.0-3.15 and the alternative runtimes, peels source-level obfuscators, and unwraps freezers and protectors back to `.pyc`.
+`disrobe` disassembles and decompiles Python bytecode across CPython 3.8-3.15 and the alternative runtimes, peels source-level obfuscators, and unwraps freezers and protectors back to `.pyc`.
 
 The Python decompiler is implemented in Rust. The command uses this engine; pycdc, PyLingual, decompyle3, and uncompyle6 appear in comparison benchmarks.
 
@@ -8,8 +8,8 @@ The Python decompiler is implemented in Rust. The command uses this engine; pycd
 
 | Layer | Coverage |
 |---|---|
-| Bytecode disassembly | CPython 1.0-3.15, PyPy, MicroPython `.mpy` v0-v6, Jython, IronPython, Brython |
-| Decompilation | CPython 1.0-3.15 with per-version opcode dispatch. Normalized opcode-structure agreement on CPython 3.14.5: <!-- m:py_stdlib_full_count -->17396 of 18276<!-- /m --> code objects in a fixed core population; <!-- m:py_stdlib_pinned_count -->6078 of 6286<!-- /m --> in its pinned 200-module subset. See the measurement definition below. |
+| Bytecode disassembly | CPython 3.8-3.15, PyPy, MicroPython `.mpy` v0-v6, Jython, IronPython, Brython |
+| Decompilation | CPython 3.8-3.15 with per-version opcode dispatch. Normalized opcode-structure agreement on CPython 3.14.5: <!-- m:py_stdlib_full_count -->17396 of 18276<!-- /m --> code objects in a fixed core population; <!-- m:py_stdlib_pinned_count -->6078 of 6286<!-- /m --> in its pinned 200-module subset. See the measurement definition below. |
 | Modern constructs | `match`, walrus, f-strings and PEP 750 t-strings, exception groups, PEP 695/696/709 |
 | Control flow | try/except/else and try/finally structured from the exception-table forest, with-statement folding, multi-exit `while True` and `while COND` loops, conditional (ternary) expressions, and chained comparisons in conditions, each recompile-checked |
 | Freezers | PyInstaller 2.x-6.20+, Nuitka, cx_Freeze, py2exe, shiv, pex, PyOxidizer (experimental, unvalidated), Briefcase, SourceDefender |
@@ -105,13 +105,12 @@ Each band uses the same normalized opcode-structure comparison and pinned module
 | 3.13 | CPython <!-- m:py_band_313_interpreter -->3.13.14<!-- /m --> | <!-- m:py_band_313_frac -->5734 / 5966<!-- /m --> code objects | <!-- m:py_band_313_rate -->96.11%<!-- /m --> | <!-- m:py_band_313_modules -->190<!-- /m --> | push, tag, schedule |
 | 3.14 | CPython <!-- m:py_band_314_interpreter -->3.14.5<!-- /m --> | <!-- m:py_band_314_frac -->6078 / 6286<!-- /m --> code objects | <!-- m:py_band_314_rate -->96.69%<!-- /m --> | <!-- m:py_band_314_modules -->200<!-- /m --> | no band gate, mirrored |
 | 3.15 | CPython <!-- m:py_band_315_interpreter -->3.15.0b4<!-- /m --> | <!-- m:py_band_315_frac -->6228 / 6480<!-- /m --> code objects | <!-- m:py_band_315_rate -->96.11%<!-- /m --> | <!-- m:py_band_315_modules -->199<!-- /m --> | tag, schedule |
-| 1.0 to 3.7 | matching legacy interpreter when available | <!-- m:py_legacy_frac -->150 / 191<!-- /m --> fixtures | floor, not a measured rate | not applicable | tag, schedule |
 
 The recorded results and interpreter versions are in `xtask/data/recovery.json`.
 
 The 3.10, 3.12, and 3.13 bands run on each push to `main`. Tag builds and weekly scheduled builds also run the remaining band gates. The dedicated 3.10, 3.12, 3.13, 3.14, and 3.15 checks require their pinned interpreters. The 3.8 and 3.9 counts were measured on Windows x86-64; their gates run in the weekly test job, which installs both interpreters, and skip when the interpreter is absent.
 
-Two rows read differently from the rest. The 3.14 row reports the pinned 200-module subset of the accepted 574-module measurement; both use the same source hashes and comparison rules. The legacy row counts fixtures rather than code objects, and its fraction is the floor `legacy_recompile.rs` asserts rather than a measured rate, so it carries no rate.
+The 3.14 row reads differently from the rest: it reports the pinned 200-module subset of the accepted 574-module measurement; both use the same source hashes and comparison rules.
 
 ### Cython compiled extensions
 
@@ -122,5 +121,4 @@ Recovery is graded against real compiled Cython fixtures (unstripped, stripped, 
 ## Limits
 
 - A Cython module's Python source is gone once compiled. Only the import surface described above is recoverable, not the `.pyx` bodies.
-- The legacy 1.0-3.7 gate requires at least 150 of 191 committed fixtures. It uses bytecode recompilation when a matching interpreter is available and structural token comparison otherwise.
 - PyArmor v6/v7 may need the opt-in dynamic-hook fallback, which executes the sample. The manifest-named v8/v9 default-trial result is a pure-static structural decoding check only; it does not establish recovery for other variants.

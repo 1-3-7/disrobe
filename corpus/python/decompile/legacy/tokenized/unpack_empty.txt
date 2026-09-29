@@ -1,7 +1,0 @@
-( ) = c <EOL>
-y = [ ] <EOL>
-for ( ) in x : <EOL>
-<INDENT>
-BLOCK <EOL>
-<OUTDENT>
-( ) = [ ] <EOL>
