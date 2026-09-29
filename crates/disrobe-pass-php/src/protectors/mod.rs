@@ -1,9 +1,4 @@
-#![allow(
-    clippy::needless_range_loop,
-    clippy::module_name_repetitions,
-    clippy::missing_errors_doc,
-    clippy::must_use_candidate
-)]
+#![allow(clippy::needless_range_loop)]
 
 use serde::{Deserialize, Serialize};
 

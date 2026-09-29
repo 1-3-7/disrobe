@@ -4,8 +4,6 @@
     clippy::panic,
     clippy::missing_panics_doc,
     unreachable_pub,
-    clippy::print_stdout,
-    clippy::print_stderr,
     clippy::pedantic,
     clippy::nursery,
     clippy::cargo
@@ -253,7 +251,7 @@ fn the_files_with_no_recognized_loader_are_declined_rather_than_guessed() {
             defects.push(format!(
                 "{fixture}: the loader path is pinned to decline this file, because its chain is \
                  peeled by the layer walker rather than the loader evaluator; it now claims the \
-                 {:?} sink and hands back {} bytes. Either the loader genuinely gained this family, \
+                 {:?} sink and hands back {} bytes. Either the loader gained this family, \
                  in which case move it into the pinned set with its expected body, or it is \
                  guessing.",
                 report.sink,

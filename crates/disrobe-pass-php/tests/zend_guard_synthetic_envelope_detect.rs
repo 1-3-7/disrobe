@@ -1,9 +1,4 @@
-#![allow(
-    clippy::expect_used,
-    clippy::unwrap_used,
-    clippy::missing_panics_doc,
-    clippy::needless_pass_by_value
-)]
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::missing_panics_doc)]
 
 use disrobe_pass_php::zend_guard_protector::{self, ZendGuardEra};
 use disrobe_pass_php::{ProtectorDetection, ProtectorFamily};

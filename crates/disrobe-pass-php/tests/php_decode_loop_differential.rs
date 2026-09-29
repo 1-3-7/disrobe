@@ -4,8 +4,6 @@
     clippy::panic,
     clippy::missing_panics_doc,
     unreachable_pub,
-    clippy::print_stdout,
-    clippy::print_stderr,
     clippy::pedantic,
     clippy::nursery,
     clippy::cargo

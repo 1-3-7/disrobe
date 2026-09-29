@@ -5,7 +5,6 @@
     clippy::missing_panics_doc,
     unreachable_pub,
     dead_code,
-    clippy::print_stdout,
     clippy::redundant_pub_crate,
     clippy::std_instead_of_alloc,
     clippy::pedantic,

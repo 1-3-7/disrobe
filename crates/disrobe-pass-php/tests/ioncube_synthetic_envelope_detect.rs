@@ -1,9 +1,4 @@
-#![allow(
-    clippy::expect_used,
-    clippy::unwrap_used,
-    clippy::missing_panics_doc,
-    clippy::needless_pass_by_value
-)]
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::missing_panics_doc)]
 
 use disrobe_pass_php::ioncube_protector::{self, IonCubeEra};
 use disrobe_pass_php::{ProtectorDetection, ProtectorFamily, build_ioncube_container};
@@ -44,7 +39,7 @@ fn analyze_is_honest_detect_only_recovers_no_php_source() {
     );
     assert!(
         detection.wall_reason.contains("native loader"),
-        "honest wall reason documented: {}",
+        "wall reason documented: {}",
         detection.wall_reason
     );
 }
