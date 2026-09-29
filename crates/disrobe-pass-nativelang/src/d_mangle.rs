@@ -1046,7 +1046,6 @@ impl Demangler<'_> {
     }
 
     fn parse_type_function_inner(&mut self, isdg: IsDelegate) -> Option<()> {
-        let beg: usize = self.out.len();
         let mut err: bool = false;
         self.parse_call_convention(&mut err);
         if err {
@@ -1071,7 +1070,6 @@ impl Demangler<'_> {
         self.parse_type()?;
         self.put_char(' ')?;
         self.shift_range(argbeg, retbeg);
-        let _ = beg;
         Some(())
     }
 
