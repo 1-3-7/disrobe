@@ -114,9 +114,7 @@ pub use debug_info::{
     PdbSymbolKind, PdbTypeInfo, PdbTypeKind, StabsEntry, classify_dwarf_versions, parse_stabs,
     recover_pdb, summarize_dwarf, summarize_pdb,
 };
-pub use decompile::{
-    DecompileOutput, DecompilerBackend, Probe, lift_llvm_ir_to_pseudo_c, probe, probe_all, run,
-};
+pub use decompile::{DecompilerBackend, Probe, probe, probe_all};
 pub use delphi::{
     DelphiClass, DelphiDynamicMethod, DelphiEra, DelphiField, DelphiForm, DelphiInitTable,
     DelphiInterface, DelphiMethod, DelphiOrigin, DelphiProperty, DelphiRecordField, DelphiReport,

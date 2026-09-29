@@ -41,22 +41,6 @@ pub enum Error {
         message: String,
     },
 
-    #[error("DR-NATIVE-0011: required external backend not on PATH: {0}")]
-    MissingTool(String),
-
-    #[error("DR-NATIVE-0012: external tool '{tool}' exited with status {status}: {stderr}")]
-    BackendFailed {
-        tool: String,
-        status: i32,
-        stderr: String,
-    },
-
-    #[error("DR-NATIVE-0013: external tool '{0}' exceeded {1} ms timeout")]
-    BackendTimeout(String, u64),
-
-    #[error("DR-NATIVE-0014: license-restricted backend required (no FOSS substitute): {0}")]
-    LicenseRequired(&'static str),
-
     #[error(
         "DR-NATIVE-0015: grey-zone protector detected ({0}); detection-only per its stance in docs/src/legal.md"
     )]
@@ -75,9 +59,6 @@ pub enum Error {
 
     #[error("DR-NATIVE-0019: signature database corrupt: {0}")]
     SignatureDb(String),
-
-    #[error("DR-NATIVE-0020: authorization required for {0}; re-run with --i-have-authorization")]
-    AuthorizationRequired(&'static str),
 
     #[error("DR-NATIVE-0022: UPX decode failure ({stage}): {detail}")]
     UpxDecode { stage: &'static str, detail: String },
