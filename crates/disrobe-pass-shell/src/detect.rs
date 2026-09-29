@@ -77,6 +77,12 @@ static PS_COMPRESS_HINT: LazyLock<&'static Regex> =
 static PS_STRING_FORMAT_OBF: LazyLock<&'static Regex> =
     LazyLock::new(|| regex!(r#"(?i)\(\s*['"][^'"]*\{0\}[^'"]*['"]\s*-f\s*"#));
 
+static PS_LITERAL_STRING_OPS: LazyLock<&'static Regex> = LazyLock::new(|| {
+    regex!(
+        r"(?i)\(\s*'[^']*'\s*-c?(?:replace|split)\s*'|\[string\]::join\(\s*'[^']*'\s*,\s*\(\s*'|-join\s*\[char\[\]\]\s*\(\s*(?:0x)?[0-9a-f]+\s*,|\(\s*'[^']*'\s*\[\s*-1\s*\.\.\s*-\d+\s*\]\s*-join"
+    )
+});
+
 static PS_AST_REORDER: LazyLock<&'static Regex> =
     LazyLock::new(|| regex!(r"(?i)&\s*\(\s*\$ExecutionContext\.InvokeCommand\.GetCommand"));
 
@@ -462,6 +468,10 @@ fn detect_ps_family(scan: &str, lower: &str, markers: &mut Vec<String>) -> Famil
     }
     if PS_STRING_FORMAT_OBF.is_match(scan) {
         markers.push("ps-string-format".to_owned());
+        return Family::InvokeObfuscationString;
+    }
+    if PS_LITERAL_STRING_OPS.is_match(scan) {
+        markers.push("ps-literal-string-ops".to_owned());
         return Family::InvokeObfuscationString;
     }
     if PS_TOKEN_OBF.is_match(scan) {

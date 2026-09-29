@@ -97,6 +97,28 @@ fn string_level_reversal_matches_what_powershell_evaluates() {
 }
 
 #[test]
+fn literal_string_operations_are_detected_but_variable_ones_are_not() {
+    for obfuscated in [
+        "Write-Output (('WrXite-XHost' -replace 'X',''))",
+        "Write-Output ([string]::join('', ('W','r','i','t','e')))",
+        "Write-Output (-join [char[]](87,114,105,116,101))",
+        "Write-Output (('etirW'[-1..-5] -join ''))",
+    ] {
+        assert_eq!(
+            detect(obfuscated.as_bytes()).family,
+            Family::InvokeObfuscationString,
+            "{obfuscated}"
+        );
+    }
+    let plain: &str =
+        "param($raw)\n$name = $raw -replace 'a','b'\nWrite-Output ($name -split ',')\n";
+    assert_ne!(
+        detect(plain.as_bytes()).family,
+        Family::InvokeObfuscationString
+    );
+}
+
+#[test]
 fn fixture_encoded_command_reverses() -> disrobe_pass_shell::Result<()> {
     let payload: &str = "Get-WmiObject Win32_Process";
     let utf16: Vec<u8> = payload
