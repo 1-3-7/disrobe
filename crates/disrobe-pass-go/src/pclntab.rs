@@ -1,5 +1,8 @@
 use crate::binary::{Endian, GoImage, Section};
 use crate::error::{Error, Result};
+use disrobe_bytes::{
+    ByteReadError, read_u32_be_at, read_u32_le_at, read_u64_be_at, read_u64_le_at,
+};
 
 pub const MAGIC_GO12: u32 = 0xffff_fffb;
 pub const MAGIC_GO116: u32 = 0xffff_fffa;
@@ -515,40 +518,24 @@ pub(crate) fn read_u8(buf: &[u8], off: usize) -> Result<u8> {
 }
 
 pub(crate) fn read_u32(buf: &[u8], off: usize, endian: Endian) -> Result<u32> {
-    let end: usize = off.checked_add(4).ok_or(Error::PclntabRead {
+    match endian {
+        Endian::Little => read_u32_le_at(buf, off),
+        Endian::Big => read_u32_be_at(buf, off),
+    }
+    .map_err(|_: ByteReadError| Error::PclntabRead {
         offset: off,
         len: buf.len(),
-    })?;
-    let slice: &[u8] = buf.get(off..end).ok_or(Error::PclntabRead {
-        offset: off,
-        len: buf.len(),
-    })?;
-    let arr: [u8; 4] = slice.try_into().map_err(|_| Error::PclntabRead {
-        offset: off,
-        len: buf.len(),
-    })?;
-    Ok(match endian {
-        Endian::Little => u32::from_le_bytes(arr),
-        Endian::Big => u32::from_be_bytes(arr),
     })
 }
 
 pub(crate) fn read_u64(buf: &[u8], off: usize, endian: Endian) -> Result<u64> {
-    let end: usize = off.checked_add(8).ok_or(Error::PclntabRead {
+    match endian {
+        Endian::Little => read_u64_le_at(buf, off),
+        Endian::Big => read_u64_be_at(buf, off),
+    }
+    .map_err(|_: ByteReadError| Error::PclntabRead {
         offset: off,
         len: buf.len(),
-    })?;
-    let slice: &[u8] = buf.get(off..end).ok_or(Error::PclntabRead {
-        offset: off,
-        len: buf.len(),
-    })?;
-    let arr: [u8; 8] = slice.try_into().map_err(|_| Error::PclntabRead {
-        offset: off,
-        len: buf.len(),
-    })?;
-    Ok(match endian {
-        Endian::Little => u64::from_le_bytes(arr),
-        Endian::Big => u64::from_be_bytes(arr),
     })
 }
 

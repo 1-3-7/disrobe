@@ -563,10 +563,10 @@ const fn flat_slice_is_consistent(
 #[cfg(test)]
 fn read_flat_word(bytes: &[u8], off: usize, ptr_size: u8) -> Option<u64> {
     match ptr_size {
-        4 => crate::pclntab::read_u32(bytes, off, Endian::Little)
+        4 => disrobe_bytes::read_u32_le_at(bytes, off)
             .ok()
             .map(u64::from),
-        8 => crate::pclntab::read_u64(bytes, off, Endian::Little).ok(),
+        8 => disrobe_bytes::read_u64_le_at(bytes, off).ok(),
         _ => None,
     }
 }
