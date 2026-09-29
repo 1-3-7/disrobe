@@ -46,7 +46,7 @@ struct ScopedTestCommands {
     selected_crates: usize,
 }
 
-pub(crate) fn run(root: &Path, full: bool, crate_tests: bool) -> Result<()> {
+pub(crate) fn run(root: &Path, full: bool, crate_tests: bool, tests: bool) -> Result<()> {
     let scope: Scope = compute_scope(root, full)?;
     match &scope {
         Scope::Skip => {
@@ -73,7 +73,13 @@ pub(crate) fn run(root: &Path, full: bool, crate_tests: bool) -> Result<()> {
         Ok(GateOutcome::Ran)
     })?;
     total += gate("clippy", || gate_clippy(root, &scope))?;
-    total += gate("test", || gate_test(root, &scope, crate_tests))?;
+    if tests {
+        total += gate("test", || gate_test(root, &scope, crate_tests))?;
+    } else {
+        println!(
+            "  test: left to the push CI run; pass --tests to run the changed test binaries here"
+        );
+    }
     println!(
         "xtask prepush: all gates passed in {:.1}s",
         total.as_secs_f64()

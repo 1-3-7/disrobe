@@ -142,6 +142,8 @@ enum Cmd {
         full: bool,
         #[arg(long, action = clap::ArgAction::SetTrue)]
         crate_tests: bool,
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        tests: bool,
     },
     PushGraders {
         #[command(subcommand)]
@@ -190,7 +192,11 @@ fn main() -> ExitCode {
         Cmd::Plugins { check } => run_plugins(check),
         Cmd::Sync { check } => run_sync(check),
         Cmd::Evidence { check, list } => run_evidence(check, list),
-        Cmd::Prepush { full, crate_tests } => run_prepush(full, crate_tests),
+        Cmd::Prepush {
+            full,
+            crate_tests,
+            tests,
+        } => run_prepush(full, crate_tests, tests),
         Cmd::PushGraders { mode } => run_push_graders(mode),
         Cmd::Health { json } => run_health(json),
         Cmd::TrackedPaths => workspace_root().and_then(|root: PathBuf| tracked_paths::run(&root)),
@@ -538,9 +544,9 @@ fn run_sync(check: bool) -> Result<()> {
     sync::run(&root, check)
 }
 
-fn run_prepush(full: bool, crate_tests: bool) -> Result<()> {
+fn run_prepush(full: bool, crate_tests: bool, tests: bool) -> Result<()> {
     let root: PathBuf = workspace_root()?;
-    prepush::run(&root, full, crate_tests)
+    prepush::run(&root, full, crate_tests, tests || crate_tests)
 }
 
 fn run_setup_hooks() -> Result<()> {
