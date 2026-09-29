@@ -195,7 +195,10 @@ fn reject_oversized_mmap(file: &File) -> Result<()> {
     Ok(())
 }
 
-#[allow(unsafe_code)]
+#[expect(
+    unsafe_code,
+    reason = "a read-only map of an envelope file this process opened and size-checked; memmap2 cannot rule out another process truncating the file while the view lives, and every read goes through bounds-checked slices"
+)]
 fn unsafe_mmap(file: &File) -> Result<Mmap> {
     unsafe { Mmap::map(file) }.map_err(io_to_envelope)
 }
