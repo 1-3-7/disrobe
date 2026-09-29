@@ -216,7 +216,6 @@ struct LiteralEntry {
     data_order: Vec<usize>,
     key_order: Vec<usize>,
     rotation: usize,
-    mode: i64,
 }
 
 fn extract_pool(module: &ModModule, pool_name: &str) -> Option<Vec<LiteralEntry>> {
@@ -252,7 +251,7 @@ fn parse_pool_entry(entry: &ConstValue) -> Option<LiteralEntry> {
         data_order,
         key_order,
         rotation,
-        mode,
+        ConstValue::Int(_),
     ]: &[ConstValue] = fields.as_slice()
     else {
         return None;
@@ -263,7 +262,6 @@ fn parse_pool_entry(entry: &ConstValue) -> Option<LiteralEntry> {
         data_order: usize_tuple(data_order)?,
         key_order: usize_tuple(key_order)?,
         rotation: usize::try_from(int_value(rotation)?).ok()?,
-        mode: int_value(mode)?,
     })
 }
 
@@ -306,7 +304,6 @@ fn decode_entry(entry: &LiteralEntry) -> Option<Vec<u8>> {
     if key.is_empty() {
         return Some(data);
     }
-    let _ = entry.mode;
     Some(
         data.iter()
             .enumerate()
