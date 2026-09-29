@@ -1,4 +1,3 @@
-use crate::detect::Detection;
 use crate::error::{Error, Result};
 use crate::static_unpack::decrypt_v8;
 use crate::static_unpack::runtime::RuntimeInfoSummary;
@@ -6,7 +5,6 @@ use crate::static_unpack::{DecryptStatus, UnpackConfig, VersionedOutcome};
 
 pub(crate) fn run(
     bytes: &[u8],
-    detection: &Detection,
     runtime: Option<&RuntimeInfoSummary>,
     cfg: &UnpackConfig,
 ) -> Result<VersionedOutcome> {
@@ -49,7 +47,6 @@ pub(crate) fn run(
             .push("DR-PYARM-STATIC: BCC blobs present; native lift gated behind allow_bcc=true (in-crate x86-64 pseudo-C)".to_owned());
     }
 
-    let _ = detection;
     Ok(outcome)
 }
 

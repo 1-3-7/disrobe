@@ -1,16 +1,14 @@
 use crate::detect::Detection;
 use crate::error::Result;
 use crate::static_unpack::decrypt_v6::decrypt_v6v7;
-use crate::static_unpack::runtime::RuntimeInfoSummary;
 use crate::static_unpack::{UnpackConfig, VersionedOutcome};
 
 pub(crate) fn run(
     bytes: &[u8],
     detection: &Detection,
-    runtime: Option<&RuntimeInfoSummary>,
     cfg: &UnpackConfig,
 ) -> Result<VersionedOutcome> {
-    decrypt_v6v7(bytes, detection, runtime, cfg, "v7")
+    decrypt_v6v7(bytes, detection, cfg, "v7")
 }
 
 #[cfg(test)]
@@ -45,7 +43,7 @@ mod tests {
     #[test]
     fn detect_only_when_no_runtime() {
         let outcome: VersionedOutcome =
-            run(&[], &dummy_detection(), None, &UnpackConfig::default()).unwrap();
+            run(&[], &dummy_detection(), &UnpackConfig::default()).unwrap();
         assert_eq!(outcome.status, DecryptStatus::DetectOnly);
         assert!(outcome.plaintext.is_empty());
     }
@@ -56,7 +54,7 @@ mod tests {
             strict: true,
             ..UnpackConfig::default()
         };
-        let err: Error = run(&[], &dummy_detection(), None, &cfg).unwrap_err();
+        let err: Error = run(&[], &dummy_detection(), &cfg).unwrap_err();
         assert!(matches!(err, Error::RuntimeNotFound { .. }));
     }
 
@@ -84,7 +82,7 @@ mod tests {
             ),
             ..UnpackConfig::default()
         };
-        let outcome: VersionedOutcome = run(&payload, &detection, None, &cfg).unwrap();
+        let outcome: VersionedOutcome = run(&payload, &detection, &cfg).unwrap();
         assert_eq!(outcome.status, DecryptStatus::Functional);
         assert_eq!(outcome.plaintext, plaintext_marshal);
     }

@@ -5,23 +5,20 @@ use ctr::cipher::{KeyIvInit, StreamCipher};
 use crate::detect::Detection;
 use crate::error::{Error, Result};
 use crate::key::scan_v6v7_rdata_for_key;
-use crate::static_unpack::runtime::RuntimeInfoSummary;
 use crate::static_unpack::{DecryptStatus, InnerCipherStats, UnpackConfig, VersionedOutcome};
 use crate::{MAX_RUNTIME_FILE_BYTES, read_file_bounded};
 
 pub(crate) fn run(
     bytes: &[u8],
     detection: &Detection,
-    runtime: Option<&RuntimeInfoSummary>,
     cfg: &UnpackConfig,
 ) -> Result<VersionedOutcome> {
-    decrypt_v6v7(bytes, detection, runtime, cfg, "v6")
+    decrypt_v6v7(bytes, detection, cfg, "v6")
 }
 
 pub(crate) fn decrypt_v6v7(
     bytes: &[u8],
     detection: &Detection,
-    runtime: Option<&RuntimeInfoSummary>,
     cfg: &UnpackConfig,
     label: &str,
 ) -> Result<VersionedOutcome> {
@@ -52,7 +49,6 @@ pub(crate) fn decrypt_v6v7(
     };
 
     let key: [u8; 16] = scan_v6v7_rdata_for_key(&runtime_bytes)?;
-    let _ = runtime;
 
     let plaintext: Vec<u8> = decrypt_payload_with_static_key(bytes, detection, &key)?;
     let original_bytecode: Option<Vec<u8>> = Some(plaintext.clone());
@@ -125,7 +121,7 @@ mod tests {
     #[test]
     fn detect_only_when_no_runtime() {
         let outcome: VersionedOutcome =
-            run(&[], &dummy_detection(), None, &UnpackConfig::default()).unwrap();
+            run(&[], &dummy_detection(), &UnpackConfig::default()).unwrap();
         assert_eq!(outcome.status, DecryptStatus::DetectOnly);
         assert!(outcome.plaintext.is_empty());
     }
@@ -136,7 +132,7 @@ mod tests {
             strict: true,
             ..UnpackConfig::default()
         };
-        let err: Error = run(&[], &dummy_detection(), None, &cfg).unwrap_err();
+        let err: Error = run(&[], &dummy_detection(), &cfg).unwrap_err();
         assert!(matches!(err, Error::RuntimeNotFound { .. }));
     }
 
@@ -185,7 +181,7 @@ mod tests {
             runtime_bytes: Some(synth_runtime_with_static_key(&key)),
             ..UnpackConfig::default()
         };
-        let outcome: VersionedOutcome = run(&payload, &detection, None, &cfg).unwrap();
+        let outcome: VersionedOutcome = run(&payload, &detection, &cfg).unwrap();
         assert_eq!(outcome.status, DecryptStatus::Functional);
         assert_eq!(outcome.plaintext, plaintext_marshal);
         assert_eq!(

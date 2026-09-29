@@ -280,10 +280,10 @@ pub fn unpack_static_with_config(bytes: &[u8], cfg: &UnpackConfig) -> Result<Unp
 
     crate::debug::dbg_kv("decrypt-route", || format!("{:?}", detection.version));
     let outcome: VersionedOutcome = match detection.version {
-        PyarmorVersion::V6 => decrypt_v6::run(bytes, &detection, runtime_info.as_ref(), cfg)?,
-        PyarmorVersion::V7 => decrypt_v7::run(bytes, &detection, runtime_info.as_ref(), cfg)?,
+        PyarmorVersion::V6 => decrypt_v6::run(bytes, &detection, cfg)?,
+        PyarmorVersion::V7 => decrypt_v7::run(bytes, &detection, cfg)?,
         PyarmorVersion::V8 => decrypt_v8::run(bytes, &detection, runtime_info.as_ref(), cfg)?,
-        PyarmorVersion::V9 => decrypt_v9::run(bytes, &detection, runtime_info.as_ref(), cfg)?,
+        PyarmorVersion::V9 => decrypt_v9::run(bytes, runtime_info.as_ref(), cfg)?,
         PyarmorVersion::V3 | PyarmorVersion::V4 | PyarmorVersion::V5 => {
             crate::debug::dbg_line(|| {
                 format!(
