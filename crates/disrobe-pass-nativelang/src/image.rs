@@ -4,6 +4,8 @@ use object::ObjectSymbol as _;
 use object::read::{File as ObjFile, FileKind};
 use object::{Architecture as ObjArch, ObjectKind, SectionKind, SymbolKind};
 
+use disrobe_bytes::{read_u32_le_at, read_u64_le_at};
+
 use crate::error::{Error, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -74,45 +76,35 @@ const MACHO_HEADER_64_LEN: usize = 32;
 const PE_RUNTIME_FUNCTION_X64_LEN: usize = 12;
 const PE_RUNTIME_FUNCTION_ARM64_LEN: usize = 8;
 
-fn read_u32_le(bytes: &[u8], at: usize) -> Option<u32> {
-    let end: usize = at.checked_add(4)?;
-    let chunk: [u8; 4] = bytes.get(at..end)?.try_into().ok()?;
-    Some(u32::from_le_bytes(chunk))
-}
-
-fn read_u64_le(bytes: &[u8], at: usize) -> Option<u64> {
-    let end: usize = at.checked_add(8)?;
-    let chunk: [u8; 8] = bytes.get(at..end)?.try_into().ok()?;
-    Some(u64::from_le_bytes(chunk))
-}
-
 fn macho_function_starts(raw: &[u8]) -> Vec<u64> {
     if raw.get(..4) != Some(&[0xCF, 0xFA, 0xED, 0xFE][..]) {
         return Vec::new();
     }
-    let Some(command_count): Option<u32> = read_u32_le(raw, 16) else {
+    let Some(command_count): Option<u32> = read_u32_le_at(raw, 16).ok() else {
         return Vec::new();
     };
     let mut cursor: usize = MACHO_HEADER_64_LEN;
     let mut text_base: Option<u64> = None;
     let mut starts_data: Option<(usize, usize)> = None;
     for _ in 0..command_count {
-        let (Some(command), Some(size)): (Option<u32>, Option<u32>) =
-            (read_u32_le(raw, cursor), read_u32_le(raw, cursor + 4))
-        else {
+        let (Some(command), Some(size)): (Option<u32>, Option<u32>) = (
+            read_u32_le_at(raw, cursor).ok(),
+            read_u32_le_at(raw, cursor + 4).ok(),
+        ) else {
             break;
         };
         match command {
             MACHO_LC_SEGMENT_64 => {
                 let name: &[u8] = raw.get(cursor + 8..cursor + 24).unwrap_or_default();
                 if name.split(|byte: &u8| *byte == 0).next() == Some(&b"__TEXT"[..]) {
-                    text_base = read_u64_le(raw, cursor + 24);
+                    text_base = read_u64_le_at(raw, cursor + 24).ok();
                 }
             }
             MACHO_LC_FUNCTION_STARTS => {
-                if let (Some(offset), Some(length)) =
-                    (read_u32_le(raw, cursor + 8), read_u32_le(raw, cursor + 12))
-                {
+                if let (Some(offset), Some(length)) = (
+                    read_u32_le_at(raw, cursor + 8).ok(),
+                    read_u32_le_at(raw, cursor + 12).ok(),
+                ) {
                     starts_data = Some((offset as usize, length as usize));
                 }
             }
@@ -176,7 +168,7 @@ fn pe_unwind_table_starts(sections: &[Section<'_>], arch: CodeArch, image_base: 
         .data
         .chunks_exact(entry_len)
         .take(MAX_TABLE_FUNCTION_STARTS)
-        .filter_map(|entry: &[u8]| read_u32_le(entry, 0))
+        .filter_map(|entry: &[u8]| read_u32_le_at(entry, 0).ok())
         .filter(|rva: &u32| *rva != 0)
         .map(|rva: u32| image_base.saturating_add(u64::from(rva)))
         .collect()
