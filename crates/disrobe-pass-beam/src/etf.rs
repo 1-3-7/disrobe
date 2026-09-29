@@ -409,8 +409,9 @@ fn usize_from_u32(value: u32, kind: &'static str) -> Result<usize> {
 }
 
 fn bounded_container_prealloc(declared: usize, min_item_bytes: usize, remaining: usize) -> usize {
-    let byte_bound: usize = remaining.checked_div(min_item_bytes).unwrap_or(0);
-    declared.min(byte_bound).min(MAX_ETF_CONTAINER_PREALLOC)
+    let declared_u64: u64 = u64::try_from(declared).unwrap_or(u64::MAX);
+    disrobe_bytes::bounded_element_capacity(declared_u64, min_item_bytes, remaining)
+        .min(MAX_ETF_CONTAINER_PREALLOC)
 }
 
 fn string_keys_are_unique(pairs: &[(Term, Term)]) -> bool {
@@ -436,7 +437,7 @@ mod tests {
         assert_eq!(cap, MAX_ETF_CONTAINER_PREALLOC);
 
         let byte_limited: usize = bounded_container_prealloc(usize::MAX, MIN_MAP_PAIR_BYTES, 31);
-        assert_eq!(byte_limited, 15);
+        assert_eq!(byte_limited, 16);
     }
 
     #[test]

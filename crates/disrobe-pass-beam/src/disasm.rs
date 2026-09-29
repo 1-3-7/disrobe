@@ -284,7 +284,8 @@ fn decode_extended(reader: &mut Reader<'_>, byte: u8, depth: usize) -> Result<Op
         EXT_LIST => {
             let size_op: Operand = decode_operand(reader, depth + 1)?;
             let size: u32 = list_size_u32(reader, &size_op)?;
-            let cap: usize = (size as usize).min(reader.remaining());
+            let cap: usize =
+                disrobe_bytes::bounded_element_capacity(u64::from(size), 1, reader.remaining());
             let mut items: Vec<Operand> = Vec::with_capacity(cap);
             for _ in 0..size {
                 items.push(decode_operand(reader, depth + 1)?);
@@ -300,7 +301,11 @@ fn decode_extended(reader: &mut Reader<'_>, byte: u8, depth: usize) -> Result<Op
             let size_op: Operand = decode_operand(reader, depth + 1)?;
             let size: u32 = list_size_u32(reader, &size_op)?;
             let pairs: usize = (size as usize).saturating_mul(2);
-            let cap: usize = pairs.min(reader.remaining());
+            let cap: usize = disrobe_bytes::bounded_element_capacity(
+                u64::from(size).saturating_mul(2),
+                1,
+                reader.remaining(),
+            );
             let mut items: Vec<Operand> = Vec::with_capacity(cap);
             for _ in 0..pairs {
                 items.push(decode_operand(reader, depth + 1)?);

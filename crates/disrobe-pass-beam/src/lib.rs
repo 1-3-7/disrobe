@@ -1,9 +1,6 @@
 #![forbid(unsafe_code)]
 #![deny(unreachable_pub)]
 #![allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_possible_wrap,
     clippy::cast_lossless,
     clippy::needless_type_cast,
     clippy::trivially_copy_pass_by_ref,
