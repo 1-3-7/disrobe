@@ -1474,7 +1474,7 @@ mod tests {
         corrupted[offset + 21] = 0x00;
         corrupted[offset + 22] = 0x00;
         let result: FvExtraction = extract_uefi_fv(&corrupted, ExtractionQuota::default_safe())
-            .expect("a zero-length file yields an honest truncated report, not an error");
+            .expect("a zero-length file yields a truncated report, not an error");
         assert!(result.truncated);
     }
 

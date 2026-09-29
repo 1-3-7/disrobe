@@ -1883,7 +1883,7 @@ mod tests {
         assert!(manifest.contains("format=gzip"), "manifest: {manifest}");
         assert!(
             manifest.contains("requires-extraction"),
-            "compressed container must honestly defer entry listing: {manifest}"
+            "compressed container must defer entry listing: {manifest}"
         );
     }
 }
