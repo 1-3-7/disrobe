@@ -835,6 +835,54 @@ jobs:
           if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) { throw "Missing built CLI: $binary" }
           "DISROBE_BIN=$binary" >> $env:GITHUB_ENV
           "DISROBE_MEASUREMENT_EXECUTABLE=$binary" >> $env:GITHUB_ENV
+      - name: provision Deno 2.9.7 and its denort runtime for the deno compile grader
+        if: matrix.shard == 'one'
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in
+            Linux)
+              triple=x86_64-unknown-linux-gnu
+              deno_sum=c6527f24f4b16031d3ae4fa9f658d5f11534c8d84ce7dc8502420280919c3490
+              denort_sum=ab416b7470f3f7c6d7b4363be475e5d8cf3d8469d866b3b8459a332a5874cd0d
+              root="$RUNNER_TEMP/deno-2.9.7"
+              exe=""
+              ;;
+            macOS)
+              triple=aarch64-apple-darwin
+              deno_sum=5cd46d6268f6f78f5d88bdc7159d20bd44cdaa4b3303474839f87ec6fe7ae25c
+              denort_sum=b0a08debcba347f9bf2391ac0e12f99f27c7a375ad561baeccb35f01369acda4
+              root="$RUNNER_TEMP/deno-2.9.7"
+              exe=""
+              ;;
+            Windows)
+              triple=x86_64-pc-windows-msvc
+              deno_sum=a0c3101b4158d1dfb7d6a78a7bf0f3de80c96bb423c152beec8beb22786f2238
+              denort_sum=1ed45440e881cbadbfa754c8dd25c70635bf3b16a5ad663f65ec3c5cc4a975fd
+              root="$(cygpath -u "$RUNNER_TEMP")/deno-2.9.7"
+              exe=".exe"
+              ;;
+          esac
+          mkdir -p "$root"
+          check_sum() {
+            if command -v sha256sum >/dev/null 2>&1; then
+              echo "$1  $2" | sha256sum --check
+            else
+              echo "$1  $2" | shasum -a 256 --check
+            fi
+          }
+          for tool in deno denort; do
+            curl --fail --location --max-time 600 --output "$root/$tool.zip"               "https://github.com/denoland/deno/releases/download/v2.9.7/$tool-$triple.zip"
+          done
+          check_sum "$deno_sum" "$root/deno.zip"
+          check_sum "$denort_sum" "$root/denort.zip"
+          unzip -q -o "$root/deno.zip" -d "$root"
+          unzip -q -o "$root/denort.zip" -d "$root"
+          "$root/deno$exe" --version
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            echo "DISROBE_DENO=$(cygpath -w "$root/deno.exe")" >> "$GITHUB_ENV"
+          else
+            echo "DISROBE_DENO=$root/deno" >> "$GITHUB_ENV"
+          fi
       - name: workspace shard one
         if: matrix.shard == 'one'
         run: >-
