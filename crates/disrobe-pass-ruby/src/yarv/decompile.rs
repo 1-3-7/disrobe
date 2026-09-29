@@ -1174,7 +1174,14 @@ fn try_value_conditional(
     if then_last <= merged.branch_idx || body.instructions.get(then_last)?.mnemonic != "jump" {
         return None;
     }
-    let join: usize = targets.get(then_last).copied().flatten()?;
+    let jumped_to: usize = targets.get(then_last).copied().flatten()?;
+    let threaded_through_hi: bool = jumped_to > hi
+        && body
+            .instructions
+            .get(hi)
+            .is_some_and(|x| x.mnemonic == "jump")
+        && targets.get(hi).copied().flatten() == Some(jumped_to);
+    let join: usize = if threaded_through_hi { hi } else { jumped_to };
     if join <= merged.target || join > hi {
         return None;
     }
