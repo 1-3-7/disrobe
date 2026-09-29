@@ -532,3 +532,21 @@ fn a_fold_that_changes_the_value_is_caught() {
         "the grader must reject a fold that changes one character"
     );
 }
+
+#[test]
+fn an_unwrapped_execute_runs_exactly_the_string_its_argument_evaluates_to() {
+    let arguments: [&str; 4] = [
+        "\"x = \" & Chr(34) & \"a\" & Chr(34)",
+        "StrReverse(\")1(tuO\")",
+        "\"MsgBox \" & Chr(34) & \"h\" & Chr(105) & Chr(34)",
+        "\"y = \" & \"\"\"q\"\"\"",
+    ];
+    for argument in arguments {
+        let expected: String = as_text(
+            &evaluate(argument).unwrap_or_else(|e| panic!("reference rejects {argument:?}: {e}")),
+        );
+        let report: VbsReport = deobfuscate_vbs(&format!("Execute({argument})"));
+        assert_eq!(report.execute_unwraps, 1, "{argument:?}: {}", report.output);
+        assert_eq!(report.output, expected, "{argument:?}");
+    }
+}
