@@ -66,7 +66,6 @@ mod descriptor_cache;
 mod detect;
 mod dynamic_hook;
 mod error;
-pub mod format_wire;
 mod inner_cipher;
 mod key;
 mod key_class;
@@ -114,7 +113,6 @@ pub use dynamic_hook::{
     run_dynamic_hook_with_target,
 };
 pub use error::{BccPublicationResource, Error, Result};
-pub use format_wire::format_python;
 pub use inner_cipher::{
     DecryptionStats, PyarmorCoDescriptor, PyarmorModuleState, PyarmorTrailer, decrypt_module,
     decrypt_module_with_cache, parse_plaintext_xor_procedure,

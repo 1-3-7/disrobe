@@ -50,7 +50,6 @@ pub mod fixtures;
 pub mod flirt;
 pub mod flow_facts;
 pub mod format;
-pub mod format_wire;
 pub mod identify;
 pub mod lang;
 #[cfg(feature = "llm-metadata")]
@@ -175,11 +174,6 @@ pub use flirt::{
     crc16_flirt, match_flirt, parse_flirt,
 };
 pub use format::{DetectedFormat, NativeFormat, detect as detect_format};
-pub use format_wire::{
-    format_c as format_c_lifted, format_cpp as format_cpp_lifted,
-    format_objc as format_objc_lifted, format_rust as format_rust_lifted,
-    format_swift as format_swift_lifted,
-};
 pub use identify::{
     IdentityHit, IdentityKind, IdentityReport, SupportRoute, detect as detect_identity,
 };

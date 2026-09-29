@@ -7,9 +7,8 @@ use disrobe_pass_pyarmor::{
     BccArch, ModeOverride, PyarmorCoDescriptor, PyarmorTrailer, StaticUnpackConfig,
     TargetPyVersion, UnpackOptions, classify_modes, classify_runtime_key, classify_serial,
     decode_mode_flags, detect_from_wrapper, detect_nine_pro, detect_sourcedefender_cross,
-    format_python, lift_bcc_code_region, lift_bcc_native, parse_plaintext_xor_procedure,
-    unpack_static, unpack_static_with_config, unpack_wrapper_text,
-    unpack_wrapper_text_with_options,
+    lift_bcc_code_region, lift_bcc_native, parse_plaintext_xor_procedure, unpack_static,
+    unpack_static_with_config, unpack_wrapper_text, unpack_wrapper_text_with_options,
 };
 use disrobe_testkit::{CorpusEntry, StressCase, StressConfig, XorShift64};
 
@@ -199,7 +198,6 @@ fn probe(bytes: &[u8]) {
         Some(wrapper_path),
         bytes,
     ));
-    consume(format_python(&source));
     consume(decode_mode_flags(bytes));
     consume(classify_serial(&source));
     consume(classify_runtime_key(&source, bytes));
