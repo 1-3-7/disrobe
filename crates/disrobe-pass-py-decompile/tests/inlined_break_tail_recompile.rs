@@ -247,3 +247,19 @@ fn a_break_ending_a_named_except_handler_stays_a_break() {
         "def f(xs, g):\n    for x in xs:\n        try:\n            g(x)\n        except ValueError as e:\n            g(e)\n            break\n    return 0\n",
     );
 }
+
+#[test]
+fn a_conditional_break_inside_a_named_except_handler_stays_conditional() {
+    assert_recompiles(
+        "conditional_break_in_named_except_handler",
+        "def f(xs, g, h):\n    for x in xs:\n        try:\n            g(x)\n        except ValueError as e:\n            if h(e):\n                break\n            g(e)\n    return 0\n",
+    );
+}
+
+#[test]
+fn a_break_in_an_inner_handler_does_not_end_the_outer_handler() {
+    assert_recompiles(
+        "inner_handler_break_in_named_handler",
+        "def f(xs, g, h):\n    for x in xs:\n        try:\n            g(x)\n        except ValueError as e:\n            try:\n                h(e)\n            except KeyError:\n                break\n    return 0\n",
+    );
+}

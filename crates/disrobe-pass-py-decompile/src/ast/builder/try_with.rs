@@ -16,9 +16,10 @@ use super::loops::{
 use super::postprocess::is_implicit_none_return;
 use super::stmts::{
     append_handler_loop_jump, detect_inline_comprehension, first_significant,
-    last_significant_back, loads_none, resolve_jump_target, rewrite_handler_inlined_break,
-    single_store_target, structure_stmts, test_is_polarity_sensitive, then_continues_to_loop,
-    then_terminating_jump, trailing_loop_jump_stmt,
+    handler_inlined_break_pop, handler_teardown_breaks_loop, last_significant_back, loads_none,
+    resolve_jump_target, rewrite_handler_inlined_break, single_store_target, structure_stmts,
+    test_is_polarity_sensitive, then_continues_to_loop, then_terminating_jump,
+    trailing_loop_jump_stmt,
 };
 use super::{
     DecodedStream, LoopFrameGuard, PY_CO_FLAG_FUNCTION_SCOPE, StructureHiCapGuard,
@@ -6243,6 +6244,7 @@ fn structure_modern_try_with_continuation(
     if tail_start >= tail_end
         || !slice_has_real_stmt(stream, tail_start, tail_end)
         || tail_is_implicit_none_return(code, stream, tail_start, tail_end)
+        || handler_inlined_break_pop(stream, pop_except, tail_end).is_some()
     {
         return Ok(None);
     }
@@ -11042,6 +11044,8 @@ fn parse_pre311_except_handlers(
             body_end,
             next_handler,
         )?;
+        let handler_body: Vec<Stmt> =
+            append_pre311_teardown_break(stream, handler_body, body_start, body_end);
         handlers.push(ExceptHandler {
             typ: exc_type,
             name,
@@ -11059,6 +11063,64 @@ fn parse_pre311_except_handlers(
         });
     }
     Ok(handlers)
+}
+
+fn append_pre311_teardown_break(
+    stream: &DecodedStream,
+    body: Vec<Stmt>,
+    body_start: usize,
+    body_end: usize,
+) -> Vec<Stmt> {
+    if matches!(
+        body.last(),
+        Some(Stmt::Break | Stmt::Continue | Stmt::Return(_) | Stmt::Raise { .. })
+    ) || !pre311_handler_breaks_after_body(stream, body_start, body_end)
+    {
+        return body;
+    }
+    let mut out: Vec<Stmt> = body;
+    out.retain(|stmt: &Stmt| !matches!(stmt, Stmt::Pass));
+    out.push(Stmt::Break);
+    out
+}
+
+#[deny(clippy::indexing_slicing)]
+fn pre311_handler_breaks_after_body(
+    stream: &DecodedStream,
+    body_start: usize,
+    body_end: usize,
+) -> bool {
+    let Some(pop_except): Option<usize> = (body_start..body_end)
+        .find(|&k: &usize| matches!(stream.ops.get(k), Some(CanonicalOp::PopExcept)))
+    else {
+        return false;
+    };
+    let after_teardown: usize = skip_except_name_teardown(stream, pop_except + 1, body_end);
+    let Some(pop_at): Option<usize> = first_significant(stream, after_teardown, body_end) else {
+        return false;
+    };
+    let (Some(&body_off), Some(&teardown_off)): (Option<&u32>, Option<&u32>) = (
+        stream.offsets.get(body_start),
+        stream.offsets.get(pop_except),
+    ) else {
+        return false;
+    };
+    let opens_nested_block: bool =
+        stream
+            .exception_table
+            .iter()
+            .any(|entry: &crate::bytecode::flow::ExceptionTableEntry| {
+                entry.start > body_off && entry.start < teardown_off
+            });
+    let leaves_before_teardown: bool = (body_start..pop_except).any(|k: usize| {
+        stream.ops.get(k).is_some_and(|op: &CanonicalOp| {
+            resolve_jump_target(stream, k, op).is_some_and(|target: usize| target > pop_except)
+        })
+    });
+    stream.is_pre_311()
+        && !opens_nested_block
+        && !leaves_before_teardown
+        && handler_teardown_breaks_loop(stream, body_start, pop_at + 1)
 }
 
 fn is_pre311_reraise_epilogue(stream: &DecodedStream, clause_start: usize, hi: usize) -> bool {
@@ -11686,14 +11748,21 @@ fn handler_gap_has_statement(stream: &DecodedStream, lo: usize, hi: usize) -> bo
 fn handler_body_end_at_pop_except(stream: &DecodedStream, lo: usize, hi: usize) -> usize {
     let mut depth: u32 = 0;
     let mut pop_at: Option<usize> = None;
+    let mut reach: usize = lo;
     for k in lo..hi {
         match stream.ops[k] {
             CanonicalOp::PushExcInfo => depth += 1,
-            CanonicalOp::PopExcept if depth == 0 => {
+            CanonicalOp::PopExcept if depth == 0 && k >= reach => {
                 pop_at = Some(k);
                 break;
             }
-            CanonicalOp::PopExcept => depth -= 1,
+            CanonicalOp::PopExcept if depth > 0 => depth -= 1,
+            ref op if is_forward_cond_jump(op) => {
+                if let Some(target) = resolve_jump_target(stream, k, op).filter(|&t: &usize| t < hi)
+                {
+                    reach = reach.max(target);
+                }
+            }
             _ => {}
         }
     }

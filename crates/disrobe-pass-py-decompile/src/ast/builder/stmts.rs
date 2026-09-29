@@ -3082,14 +3082,12 @@ fn handler_break_pops_for_iterator(stream: &DecodedStream, lo: usize, jump_idx: 
 }
 
 #[deny(clippy::indexing_slicing)]
-fn handler_teardown_breaks_loop(stream: &DecodedStream, lo: usize, hi: usize) -> bool {
+pub(super) fn handler_teardown_breaks_loop(stream: &DecodedStream, lo: usize, hi: usize) -> bool {
     let Some(pop_at): Option<usize> = last_significant_back(stream, lo, hi) else {
         return false;
     };
     let pops_after_except: bool = matches!(stream.ops.get(pop_at), Some(CanonicalOp::Pop))
-        && last_significant_back(stream, lo, pop_at).is_some_and(|prev: usize| {
-            matches!(stream.ops.get(prev), Some(CanonicalOp::PopExcept))
-        });
+        && run_ends_in_except_teardown(stream, &significant_run(stream, lo, pop_at));
     if !pops_after_except {
         return false;
     }
@@ -3131,7 +3129,31 @@ fn loop_exit_tail_run(stream: &DecodedStream) -> Option<Vec<usize>> {
 }
 
 #[deny(clippy::indexing_slicing)]
-fn handler_inlined_break_pop(stream: &DecodedStream, lo: usize, hi: usize) -> Option<usize> {
+fn run_ends_in_except_teardown(stream: &DecodedStream, run: &[usize]) -> bool {
+    let teardown: Vec<Option<&CanonicalOp>> = run
+        .iter()
+        .rev()
+        .take(4)
+        .map(|&k: &usize| stream.ops.get(k))
+        .collect();
+    matches!(
+        teardown.as_slice(),
+        [Some(CanonicalOp::PopExcept), ..]
+            | [
+                Some(CanonicalOp::DeleteFast(_) | CanonicalOp::DeleteName(_)),
+                Some(CanonicalOp::StoreFast(_) | CanonicalOp::StoreName(_)),
+                Some(CanonicalOp::LoadConst(_)),
+                Some(CanonicalOp::PopExcept),
+            ]
+    )
+}
+
+#[deny(clippy::indexing_slicing)]
+pub(super) fn handler_inlined_break_pop(
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+) -> Option<usize> {
     if !exit_tail_is_inlined_at_break(stream) {
         return None;
     }
@@ -3143,24 +3165,7 @@ fn handler_inlined_break_pop(stream: &DecodedStream, lo: usize, hi: usize) -> Op
     let run: Vec<usize> = significant_run(stream, lo, hi);
     let pop_pos: usize = run.len().checked_sub(tail.len() + 1)?;
     let pop_at: usize = *run.get(pop_pos)?;
-    let teardown: Vec<Option<&CanonicalOp>> = run
-        .get(..pop_pos)?
-        .iter()
-        .rev()
-        .take(4)
-        .map(|&k: &usize| stream.ops.get(k))
-        .collect();
-    let ends_except: bool = matches!(
-        teardown.as_slice(),
-        [Some(CanonicalOp::PopExcept), ..]
-            | [
-                Some(CanonicalOp::DeleteFast(_) | CanonicalOp::DeleteName(_)),
-                Some(CanonicalOp::StoreFast(_) | CanonicalOp::StoreName(_)),
-                Some(CanonicalOp::LoadConst(_)),
-                Some(CanonicalOp::PopExcept),
-            ]
-    );
-    (ends_except
+    (run_ends_in_except_teardown(stream, run.get(..pop_pos)?)
         && matches!(stream.ops.get(pop_at), Some(CanonicalOp::Pop))
         && ops_equal_run(stream, run.get(pop_pos + 1..)?, &tail))
     .then_some(pop_at)
