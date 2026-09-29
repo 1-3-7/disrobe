@@ -30,6 +30,6 @@ fn oxyry_real_corpus_sourcing_blocked() {
     let real_fixture: Option<Vec<u8>> = common::load_real_fixture("oxyry", "hello");
     assert!(
         real_fixture.is_none(),
-        "an independent Oxyry real fixture now exists; remove this sourcing-blocked marker and un-ignore the gating real test in oxyry_real.rs"
+        "an independent Oxyry real fixture now exists; replace this sourcing-blocked marker with a test that peels it and compares the recovered source with the original"
     );
 }

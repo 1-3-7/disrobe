@@ -24,5 +24,5 @@ implementation locally rather than relying on the (now-defunct) web endpoint.
 
 The synth-fixture test `crates/disrobe-pass-py-deob/tests/oxyry_unminify.rs` ships with
 hand-rolled fixtures derived from the previously-documented oxyry output format. The
-real-fixture test `oxyry_real.rs` stays `#[ignore = "DEAD-UPSTREAM"]` until a successor
-endpoint or a vendored fork appears.
+sourcing-blocked marker `oxyry_real_corpus_sourcing_blocked` fails once a real fixture
+lands, and is then replaced by a test that peels it and compares the recovered source.

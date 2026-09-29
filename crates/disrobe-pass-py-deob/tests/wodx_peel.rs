@@ -28,6 +28,6 @@ fn wodx_real_corpus_sourcing_blocked() {
     let real_fixture: Option<Vec<u8>> = common::load_real_fixture("wodx", "hello");
     assert!(
         real_fixture.is_none(),
-        "an independent WodX real fixture now exists; remove this sourcing-blocked marker and un-ignore the gating real test in wodx_real.rs"
+        "an independent WodX real fixture now exists; replace this sourcing-blocked marker with a test that peels it and compares the recovered source with the original"
     );
 }
