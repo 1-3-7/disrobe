@@ -70,7 +70,11 @@ fn deob(input: Option<PathBuf>, out: Option<PathBuf>, list: bool) -> miette::Res
     }
 
     let recovered: String = disrobe_pass_shell::chain_detector::recover_detected(&detection, bytes)
-        .map_err(|e| miette::miette!("{e}"))?;
+        .map_err(
+            |refusal: disrobe_pass_shell::chain_detector::ShellRefusal| {
+                miette::miette!("{}", refusal.into_error())
+            },
+        )?;
     let stem: String = input
         .file_stem()
         .and_then(OsStr::to_str)

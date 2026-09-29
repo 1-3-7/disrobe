@@ -81,34 +81,22 @@ fn office_files_without_macros_end_in_a_typed_shell_wall() {
 
 #[test]
 fn a_vba_input_is_claimed_once_and_its_rendered_output_is_not_reclaimed() {
-    let cases: [(&str, Option<&str>); 3] = [
-        (
-            "corpus/shell/vba/megafile/EdgeCases.bas",
-            Some("DR-SHELL-0928"),
-        ),
-        ("corpus/shell/vba/vbaProject.bin", None),
-        ("corpus/shell/vba/hello.docm", None),
+    let cases: [(&str, &str); 3] = [
+        ("corpus/shell/vba/megafile/EdgeCases.bas", "not-applicable"),
+        ("corpus/shell/vba/vbaProject.bin", "ok"),
+        ("corpus/shell/vba/hello.docm", "ok"),
     ];
     let mut failures: Vec<String> = Vec::new();
-    for (rel, wall) in cases {
+    for (rel, verdict) in cases {
         let chain: serde_json::Value = auto_chain(rel);
         let nodes: Vec<serde_json::Value> = shell_nodes(&chain);
-        let expected: bool = match nodes.as_slice() {
-            [only] if only["parent_id"] == 0 => wall.map_or_else(
-                || only["verdict"] == "ok",
-                |code: &str| {
-                    only["verdict"] == "error"
-                        && only["error"]
-                            .as_str()
-                            .is_some_and(|error: &str| error.contains(code))
-                },
-            ),
-            _ => false,
-        };
+        let expected: bool = matches!(
+            nodes.as_slice(),
+            [only] if only["parent_id"] == 0 && only["verdict"] == verdict && only["error"].is_null()
+        );
         if !expected {
             failures.push(format!(
-                "{rel}: expected shell.deob to claim the input once, ending in {}, got {nodes:#?}",
-                wall.unwrap_or("a recovered module")
+                "{rel}: expected shell.deob to claim the input once, ending {verdict}, got {nodes:#?}"
             ));
         }
     }

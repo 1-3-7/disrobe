@@ -88,7 +88,17 @@ impl Pass for ShellPass {
                     .to_string(),
             ));
         }
-        let source_text: String = recover_detected(&detection, bytes)?;
+        let source_text: String = match recover_detected(&detection, bytes) {
+            Ok(text) => text,
+            Err(ShellRefusal::Unchanged) => {
+                return Ok(Artifact::new(
+                    Rung::Raw,
+                    artifact.envelope.as_slice().to_vec(),
+                    artifact.root_hash,
+                ));
+            }
+            Err(ShellRefusal::Wall(error)) => return Err(error),
+        };
         let mut recovered: Artifact =
             Artifact::new(Rung::Surface, source_text.into_bytes(), artifact.root_hash);
         recovered.capabilities.insert(Capability::produces(
@@ -183,17 +193,42 @@ fn is_rendered_vba_modules(bytes: &[u8]) -> bool {
     bytes.starts_with(RENDERED_MODULE_PREFIX.as_bytes())
 }
 
-pub fn recover_detected(detection: &Detection, bytes: &[u8]) -> CoreResult<String> {
+#[derive(Debug)]
+pub enum ShellRefusal {
+    Unchanged,
+    Wall(CoreError),
+}
+
+impl From<CoreError> for ShellRefusal {
+    fn from(error: CoreError) -> Self {
+        Self::Wall(error)
+    }
+}
+
+impl ShellRefusal {
+    #[must_use]
+    pub fn into_error(self) -> CoreError {
+        match self {
+            Self::Unchanged => CoreError::PassFailure(
+                "DR-SHELL-0928: shell.deob: no obfuscation this pass reverses was found in the script (input passed through unchanged); nothing is republished as recovered source"
+                    .to_owned(),
+            ),
+            Self::Wall(error) => error,
+        }
+    }
+}
+
+pub fn recover_detected(detection: &Detection, bytes: &[u8]) -> Result<String, ShellRefusal> {
     if is_rendered_vba_modules(bytes) {
-        return Err(CoreError::PassFailure(
+        return Err(ShellRefusal::Wall(CoreError::PassFailure(
             "DR-SHELL-0927: shell.deob: the input is VBA module text this pass already rendered; recovering it again would re-claim its own output"
                 .to_owned(),
-        ));
+        )));
     }
     recovered_source(detection, bytes)
 }
 
-fn recovered_source(detection: &Detection, bytes: &[u8]) -> CoreResult<String> {
+fn recovered_source(detection: &Detection, bytes: &[u8]) -> Result<String, ShellRefusal> {
     if detection.dialect == Dialect::Pdf {
         let report: PdfReport = crate::pdf::analyze_pdf(bytes).ok_or_else(|| {
             CoreError::PassFailure(
@@ -207,10 +242,10 @@ fn recovered_source(detection: &Detection, bytes: &[u8]) -> CoreResult<String> {
         let recovered: Option<String> = crate::xlm::recover_xlm(bytes)
             .and_then(|report: XlmRecovery| crate::xlm::render_source(&report));
         return recovered.ok_or_else(|| {
-            CoreError::PassFailure(
+            ShellRefusal::Wall(CoreError::PassFailure(
                 "DR-SHELL-0925: shell.deob: xlm macro sheet detected but no recoverable formulas or entry points were found; the residual wall is the workbook itself"
                     .to_owned(),
-            )
+            ))
         });
     }
     if detection.dialect == Dialect::Batch {
@@ -249,11 +284,11 @@ fn recovered_source(detection: &Detection, bytes: &[u8]) -> CoreResult<String> {
     let text: &str = match std::str::from_utf8(bytes) {
         Ok(text) => text,
         Err(_) => {
-            return Err(CoreError::PassFailure(format!(
+            return Err(ShellRefusal::Wall(CoreError::PassFailure(format!(
                 "DR-SHELL-0926: shell.deob: the {:?} payload of {} bytes is not UTF-8 text and nothing was recovered from it",
                 detection.dialect,
                 bytes.len()
-            )));
+            ))));
         }
     };
     match detection.dialect {
@@ -301,21 +336,18 @@ fn reverse_failed(family: Family, err: &crate::error::Error) -> CoreError {
     CoreError::PassFailure(format!("{code}: shell.deob: {label} reverse failed: {err}"))
 }
 
-fn recover_nothing_wall(family: Family) -> CoreError {
+fn recover_nothing_wall(family: Family) -> ShellRefusal {
     if family == Family::Plain {
-        return CoreError::PassFailure(
-            "DR-SHELL-0928: shell.deob: no obfuscation this pass reverses was found in the script (input passed through unchanged); nothing is republished as recovered source"
-                .to_owned(),
-        );
+        return ShellRefusal::Unchanged;
     }
     let (code, label): (&'static str, &'static str) =
         residual_code_for_family(family).unwrap_or(("DR-SHELL-0909", "shell"));
-    CoreError::PassFailure(format!(
+    ShellRefusal::Wall(CoreError::PassFailure(format!(
         "{code}: shell.deob: {label} detected but statically unrecoverable (input passed through unchanged); the residual wall is the obfuscated artifact itself"
-    ))
+    )))
 }
 
-fn guard_recovered(family: Family, text: &str, recovered: String) -> CoreResult<String> {
+fn guard_recovered(family: Family, text: &str, recovered: String) -> Result<String, ShellRefusal> {
     if same_script(&recovered, text) {
         return Err(recover_nothing_wall(family));
     }
@@ -341,7 +373,7 @@ fn same_script(left: &str, right: &str) -> bool {
     left_lines == right_lines
 }
 
-fn reverse_for_family(family: Family, text: &str) -> CoreResult<String> {
+fn reverse_for_family(family: Family, text: &str) -> Result<String, ShellRefusal> {
     use crate::bash::{peel_indirection, reverse_bashfuscator_auto, reverse_node_bash_obfuscate};
     use crate::powershell::{
         reverse_ast, reverse_chameleon, reverse_compress, reverse_encoding, reverse_invoke_stealth,
@@ -1065,7 +1097,7 @@ mod tests {
             verdict_for(&detection).is_some(),
             "must clear the detector gate"
         );
-        let reversed: CoreResult<String> =
+        let reversed: Result<String, ShellRefusal> =
             reverse_for_family(detection.family, std::str::from_utf8(src).expect("utf8"));
         assert!(
             reversed.is_err(),
@@ -1284,40 +1316,52 @@ mod tests {
     }
 
     #[test]
-    fn a_plain_batch_or_vbs_script_is_refused_as_unchanged() {
-        for (label, script) in [
-            ("batch", "@echo off\r\necho hello\r\nexit /b 0\r\n"),
-            (
-                "vbs",
-                "Set sh = CreateObject(\"WScript.Shell\")\nsh.Run \"notepad\"\n",
-            ),
-        ] {
-            let bytes: Vec<u8> = script.as_bytes().to_vec();
-            assert!(
-                verdict_for(&detect_shell(&bytes)).is_some(),
-                "{label} must be claimed"
-            );
-            let artifact: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
-            let error: String = SHELL_PASS
-                .run(&artifact)
-                .expect_err("nothing was recovered")
-                .to_string();
-            assert!(
-                error.contains("passed through unchanged"),
-                "{label}: {error}"
-            );
-        }
+    fn a_detected_vbs_family_that_reverses_to_itself_stays_a_wall() {
+        let bytes: Vec<u8> =
+            b"Set sh = CreateObject(\"WScript.Shell\")\nsh.Run \"notepad\"\n".to_vec();
+        let error: String = SHELL_PASS
+            .run(&Artifact::new(Rung::Raw, bytes, [0u8; 32]))
+            .expect_err("a detected family that recovers nothing is a wall")
+            .to_string();
+        assert!(error.contains("passed through unchanged"), "{error}");
+        assert!(!error.contains("DR-SHELL-0928"), "{error}");
     }
 
     #[test]
-    fn unchanged_vba_module_text_is_walled_and_obfuscated_text_is_folded() {
+    fn a_plain_batch_script_passes_through_byte_for_byte() {
+        let bytes: &[u8] = b"@echo off\r\necho hello\r\nexit /b 0\r\n";
+        assert!(
+            verdict_for(&detect_shell(bytes)).is_some(),
+            "batch must be claimed"
+        );
+        let unchanged: Artifact = SHELL_PASS
+            .run(&Artifact::new(Rung::Raw, bytes.to_vec(), [0u8; 32]))
+            .unwrap_or_else(|error: CoreError| panic!("batch: {error}"));
+        assert_eq!(
+            unchanged.envelope.as_slice(),
+            bytes,
+            "a script with nothing to reverse comes back as its exact input, which the chain \
+             records as not applicable"
+        );
+        assert!(matches!(
+            recover_detected(&detect_shell(bytes), bytes),
+            Err(ShellRefusal::Unchanged)
+        ));
+    }
+
+    #[test]
+    fn unchanged_vba_module_text_passes_through_and_obfuscated_text_is_folded() {
         let plain: &[u8] = b"Attribute VB_Name = \"Module1\"\r\nSub Document_Open()\r\n    Set m = re.Execute(\"x\")\r\n    MsgBox \"hello\"\r\nEnd Sub\r\n";
         assert_eq!(detect_shell(plain).dialect, Dialect::Vba);
-        let error: String = SHELL_PASS
+        let unchanged: Artifact = SHELL_PASS
             .run(&Artifact::new(Rung::Raw, plain.to_vec(), [0u8; 32]))
-            .expect_err("nothing was deobfuscated")
+            .expect("unchanged module text passes through");
+        assert_eq!(unchanged.envelope.as_slice(), plain);
+        let refusal: String = recover_detected(&detect_shell(plain), plain)
+            .map_err(ShellRefusal::into_error)
+            .expect_err("the standalone command still refuses")
             .to_string();
-        assert!(error.contains("DR-SHELL-0928"), "{error}");
+        assert!(refusal.contains("DR-SHELL-0928"), "{refusal}");
 
         let obfuscated: &[u8] = b"Attribute VB_Name = \"Module1\"\nSub Document_Open()\n    MsgBox Chr(72) & Chr(105)\nEnd Sub\n";
         let recovered: Artifact = SHELL_PASS
