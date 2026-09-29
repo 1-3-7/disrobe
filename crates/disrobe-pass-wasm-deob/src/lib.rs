@@ -112,7 +112,7 @@ pub use lift::{
 };
 pub use lift_c::c_runtime_prelude;
 pub use lift_module_faithful::lift_module_faithful_wat;
-pub use lift_wat::{lift_module_to_wat, wat_module_header};
+pub use lift_wat::lift_module_to_wat;
 pub use memory64::{MemoryRecord, MemoryReport, scan_memories};
 #[cfg(feature = "dwarf")]
 pub use name_recovery::attach_dwarf_names;

@@ -259,25 +259,6 @@ fn emit_ref_func_targets(mut out: &mut impl std::fmt::Write, reqs: &FeatureReqs)
     push_text!(out, ")\n");
 }
 
-#[must_use]
-pub fn wat_module_header(globals_used: &[(u32, ValType)]) -> String {
-    let mut out: String = String::from("(module\n");
-    let mut seen: Vec<u32> = Vec::new();
-    let mut sorted: Vec<(u32, ValType)> = globals_used.to_vec();
-    sorted.sort_by_key(|(idx, _)| *idx);
-    for (idx, ty) in sorted {
-        if seen.contains(&idx) {
-            continue;
-        }
-        seen.push(idx);
-        let t: String = val_type_str(ty);
-        push_line!(out, "  (global $g{idx} (mut {t}) ({t}.const 0))");
-    }
-    out.push_str("  (memory 1)\n");
-    out.push_str("  (table 1 funcref)\n");
-    out
-}
-
 pub(crate) struct WatFunc {
     pub(crate) text: String,
     pub(crate) globals_used: Vec<(u32, ValType)>,
@@ -2869,14 +2850,6 @@ mod tests {
             "float WAT must reparse:\n{}",
             out.pseudo_source
         );
-    }
-
-    #[test]
-    fn module_header_declares_memory_and_globals() {
-        let header: String = wat_module_header(&[(0, ValType::I32), (2, ValType::I64)]);
-        assert!(header.contains("(global $g0 (mut i32)"));
-        assert!(header.contains("(global $g2 (mut i64)"));
-        assert!(header.contains("(memory 1)"));
     }
 
     #[test]
