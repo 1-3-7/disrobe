@@ -60,9 +60,18 @@ pub struct LuaLocal {
     pub end_pc: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpvalueDescriptor {
+    pub in_stack: u8,
+    pub index: u8,
+    pub kind: u8,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LuaUpvalueName {
     pub name: String,
+    #[serde(default)]
+    pub descriptor: Option<UpvalueDescriptor>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

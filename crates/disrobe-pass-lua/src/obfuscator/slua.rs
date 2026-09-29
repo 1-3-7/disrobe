@@ -5,7 +5,7 @@ use crate::error::{Error, Result};
 use crate::obfuscator::{DeobfOptions, LuaObfuscatorKind, ObfuscatorDetection, PeelResult};
 use crate::reader::common::{
     LUA_SIGNATURE, LUAC_DATA_TAIL, LuaChunk, LuaConstant, LuaDialect, LuaLocal, LuaProto,
-    LuaUpvalueName,
+    LuaUpvalueName, UpvalueDescriptor,
 };
 use crate::serialize::serialize_chunk;
 
@@ -805,10 +805,15 @@ fn obf_read_proto(
         checked_count(upval_count, MAX_SLUA_UPVALUE_COUNT, "slua upvalues", r, 2)?;
     let mut upvalues: Vec<LuaUpvalueName> = Vec::with_capacity(upvalue_count);
     for _ in 0..upvalue_count {
-        let _in_stack: u8 = r.read_u8()?;
-        let _idx: u8 = r.read_u8()?;
+        let in_stack: u8 = r.read_u8()?;
+        let index: u8 = r.read_u8()?;
         upvalues.push(LuaUpvalueName {
             name: String::new(),
+            descriptor: Some(UpvalueDescriptor {
+                in_stack,
+                index,
+                kind: 0,
+            }),
         });
     }
 

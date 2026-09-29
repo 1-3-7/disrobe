@@ -673,7 +673,7 @@ M.safe_caller = safe_caller
 
 local function string_interp_compat()
     local name, count = "world", 42
-    return string.format("hello, %s - count=%d", name, count)
+    return string.format("hello, %s \226\128\148 count=%d", name, count)
 end
 
 M.string_interp_compat = string_interp_compat

@@ -574,6 +574,23 @@ fn container_scope_locals(container: &ContainerShape<'_>) -> BTreeSet<LocalId> {
     out
 }
 
+fn container_initialized_locals(container: &ContainerShape<'_>) -> BTreeMap<LocalId, bool> {
+    let mut out: BTreeMap<LocalId, bool> = BTreeMap::new();
+    for stat in &container.full_body.stats {
+        if let StatKind::Local { targets, values } = &stat.kind
+            && !values.is_empty()
+        {
+            let spill_table: bool = targets.len() == 1
+                && values.len() == 1
+                && matches!(&values[0].kind, ExprKind::Table(fields) if fields.is_empty());
+            for target in targets {
+                out.insert(*target, spill_table);
+            }
+        }
+    }
+    out
+}
+
 fn collect_declared_locals(block: &Block, out: &mut BTreeSet<LocalId>) {
     for stat in &block.stats {
         match &stat.kind {
@@ -1166,6 +1183,7 @@ impl StaticNumberEvaluator {
     }
 
     fn evaluate(&self, expr: &Expr) -> Option<f64> {
+        self.fuel.set(MAX_STATIC_NUMBER_FUEL);
         self.evaluate_at_depth(expr, 0)
     }
 
@@ -1678,6 +1696,7 @@ struct GlobalStats {
     reached: BTreeSet<u64>,
     next_box: u32,
     boxes_bound: usize,
+    multret_packs: usize,
 }
 
 #[derive(Debug)]
@@ -1700,6 +1719,7 @@ struct Ctx<'a> {
     dispatch_root: &'a Block,
     container_span: Span,
     container_scope: BTreeSet<LocalId>,
+    container_initialized: BTreeMap<LocalId, bool>,
     upvalue_bindings: BTreeMap<LocalId, Span>,
     environment_locals: BTreeSet<LocalId>,
     unpack_local: Option<LocalId>,
@@ -1813,6 +1833,30 @@ fn region_contains_node(
         }
     }
     Some(false)
+}
+
+fn collect_region_nodes(
+    result: &disrobe_cfg::StructureResult,
+    id: RegionId,
+    out: &mut BTreeSet<u32>,
+    budget: &mut usize,
+) -> Option<()> {
+    *budget = budget.checked_sub(1)?;
+    let region: &Region = result.regions.get(id as usize)?;
+    if region.children.is_empty() {
+        if !matches!(region.kind, RegionKind::Block) {
+            return None;
+        }
+        out.insert(region.entry);
+        return Some(());
+    }
+    if let Some(head) = region.head {
+        collect_region_nodes(result, head, out, budget)?;
+    }
+    for child in &region.children {
+        collect_region_nodes(result, *child, out, budget)?;
+    }
+    Some(())
 }
 
 fn is_sink_leaf(result: &disrobe_cfg::StructureResult, id: RegionId, node: u32) -> bool {
@@ -2524,6 +2568,135 @@ fn collect_statement_defs(stat: &Stat, out: &mut BTreeSet<LocalId>) {
         StatKind::Local { targets, .. } => out.extend(targets.iter().copied()),
         _ => {}
     }
+}
+
+const MULTRET_PACK_HELPER: &str = "__vmpack";
+
+fn multret_unpack_argument(expr: &Expr, unpack: LocalId) -> Option<(&Expr, LocalId)> {
+    let ExprKind::Call { base, args } = &expr.kind else {
+        return None;
+    };
+    if !is_bare_local(base, unpack) {
+        return None;
+    }
+    let [argument]: &[Expr] = args.as_slice() else {
+        return None;
+    };
+    let ExprKind::Var(Var::Local(register)) = &argument.kind else {
+        return None;
+    };
+    Some((argument, *register))
+}
+
+fn multret_pack_value(expr: &Expr) -> Option<&Expr> {
+    let ExprKind::Table(fields) = &expr.kind else {
+        return None;
+    };
+    let [TableField::Positional(value)]: &[TableField] = fields.as_slice() else {
+        return None;
+    };
+    matches!(
+        value.kind,
+        ExprKind::Call { .. } | ExprKind::MethodCall { .. } | ExprKind::Vararg
+    )
+    .then_some(value)
+}
+
+fn straight_line_definition(stats: &[Stat], register: LocalId) -> Option<&Expr> {
+    for stat in stats.iter().rev() {
+        match &stat.kind {
+            StatKind::Assign { targets, values } => {
+                let position: Option<usize> = targets.iter().rposition(|target: &AssignTarget| {
+                    matches!(target, AssignTarget::Var(Var::Local(id), _) if *id == register)
+                });
+                if let Some(position) = position {
+                    return values.get(position);
+                }
+            }
+            StatKind::ExprStat(_) => {}
+            _ => return None,
+        }
+    }
+    None
+}
+
+fn bind_multret_packs(
+    ctx: &Ctx<'_>,
+    order: &[u64],
+    visited: &BTreeMap<u64, &Block>,
+    subst: &mut BTreeMap<u64, String>,
+    stats: &mut GlobalStats,
+) -> bool {
+    let Some(unpack) = ctx.unpack_local else {
+        return false;
+    };
+    let mut unpacks_arguments: bool = false;
+    let mut uses: Vec<&Expr> = Vec::new();
+    let mut packs: Vec<(Span, &Expr)> = Vec::new();
+    for key in order {
+        let Some(leaf) = visited.get(key).copied() else {
+            continue;
+        };
+        for (index, stat) in leaf.stats.iter().enumerate() {
+            let mut exprs: Vec<&Expr> = Vec::new();
+            walk_exprs_stat(stat, &mut exprs);
+            for expr in exprs {
+                let Some((argument, register)) = multret_unpack_argument(expr, unpack) else {
+                    continue;
+                };
+                if register == ctx.args_local {
+                    unpacks_arguments = true;
+                    uses.push(argument);
+                    continue;
+                }
+                let Some(definition) = straight_line_definition(&leaf.stats[..index], register)
+                else {
+                    continue;
+                };
+                let Some(value) = multret_pack_value(definition) else {
+                    continue;
+                };
+                let open: &str = ctx
+                    .src
+                    .get(definition.span.start as usize..value.span.start as usize)
+                    .unwrap_or_default();
+                let close: &str = ctx
+                    .src
+                    .get(value.span.end as usize..definition.span.end as usize)
+                    .unwrap_or_default();
+                if open.trim() != "{" || close.trim() != "}" {
+                    continue;
+                }
+                uses.push(argument);
+                packs.push((definition.span, value));
+            }
+        }
+    }
+    for argument in &uses {
+        let register: String = render_expr_span_with_subst(argument.span, ctx.src, subst);
+        subst.insert(
+            span_key(argument.span),
+            format!("{register}, 1, {register}.n"),
+        );
+    }
+    for (span, value) in &packs {
+        subst.insert(
+            span_key(Span {
+                start: span.start,
+                end: value.span.start,
+            }),
+            format!("{MULTRET_PACK_HELPER}("),
+        );
+        subst.insert(
+            span_key(Span {
+                start: value.span.end,
+                end: span.end,
+            }),
+            ")".to_owned(),
+        );
+    }
+    stats.multret_packs += packs.len();
+    unpacks_arguments
 }
 
 fn closure_upvalue_names(
@@ -3360,6 +3533,8 @@ fn recover_function(
     let budget: CnsBudget = CnsBudget::tight_for(&cfg);
     let outcome: Option<CnsOutcome> = structure_with_cns(&cfg, budget);
 
+    let unpacks_arguments: bool = bind_multret_packs(ctx, &order, &visited, subst, stats);
+
     let mut used_locals: BTreeSet<LocalId> = BTreeSet::new();
     for (leaf, plan) in leaf_of_node.iter().zip(&plan_of_node) {
         collect_rendered_locals(
@@ -3419,13 +3594,26 @@ fn recover_function(
     let mut prelude: String = String::new();
     prelude.push_str("local ");
     prelude.push_str(args_text);
-    prelude.push_str(" = { ... };\n");
+    prelude.push_str(if unpacks_arguments {
+        " = { n = select(\"#\", ...), ... };\n"
+    } else {
+        " = { ... };\n"
+    });
 
     let mut register_names: Vec<&str> = Vec::new();
     for id in &used_locals {
         if ctx.container_scope.contains(id) {
-            if let Some(name) = local_display_span(ctx.dispatch_root, *id, ctx.src) {
-                register_names.push(name);
+            let Some(name) = local_display_span(ctx.dispatch_root, *id, ctx.src) else {
+                continue;
+            };
+            match ctx.container_initialized.get(id) {
+                None => register_names.push(name),
+                Some(true) => prelude.push_str(&format!("local {name} = {{}};\n")),
+                Some(false) => {
+                    return Err(refuse_owned(format!(
+                        "the container register '{name}' is declared with an initializer other than the spill table, so its per-call value cannot be reproduced"
+                    )));
+                }
             }
         } else if let Some(arg_span) = ctx.upvalue_bindings.get(id) {
             let name: &str = local_display_span(ctx.dispatch_root, *id, ctx.src)
@@ -3468,6 +3656,8 @@ fn recover_function(
                 subst,
                 sinks: &no_sinks,
                 loop_depth: 0,
+                granted: BTreeSet::new(),
+                consumed: BTreeSet::new(),
                 ok: true,
             };
             let root: RegionId = outcome
@@ -3689,6 +3879,28 @@ fn render_leaf_body(
 
 fn render_return(ctx: &Ctx<'_>, leaf: &Block, subst: &BTreeMap<u64, String>) -> String {
     match last_target_value(&leaf.stats, ctx.return_local) {
+        Some(Expr {
+            kind: ExprKind::Table(fields),
+            ..
+        }) if fields
+            .iter()
+            .all(|field: &TableField| matches!(field, TableField::Positional(_))) =>
+        {
+            let values: Vec<String> = fields
+                .iter()
+                .filter_map(|field: &TableField| match field {
+                    TableField::Positional(value) => {
+                        Some(render_expr_span_with_subst(value.span, ctx.src, subst))
+                    }
+                    TableField::Named(..) | TableField::Indexed(..) => None,
+                })
+                .collect();
+            if values.is_empty() {
+                "return".to_owned()
+            } else {
+                format!("return {}", values.join(", "))
+            }
+        }
         Some(expr) => format!(
             "return (unpack or table.unpack)({})",
             render_expr_span_with_subst(expr.span, ctx.src, subst)
@@ -3749,6 +3961,8 @@ struct RegionRenderer<'a, 'b> {
     subst: &'b BTreeMap<u64, String>,
     sinks: &'b BTreeMap<u32, LoopSink>,
     loop_depth: usize,
+    granted: BTreeSet<u32>,
+    consumed: BTreeSet<u32>,
     ok: bool,
 }
 
@@ -3867,12 +4081,47 @@ impl<'a> RegionRenderer<'a, '_> {
             RegionKind::While
             | RegionKind::DoWhile
             | RegionKind::NaturalLoop
-            | RegionKind::SelfLoop => self.render_loop(region.entry),
-            RegionKind::Switch | RegionKind::Proper | RegionKind::Irreducible => {
+            | RegionKind::SelfLoop => self.render_loop(id, region.entry),
+            RegionKind::Proper => self.render_proper_loop_exits(&region),
+            RegionKind::Switch | RegionKind::Irreducible => {
                 self.ok = false;
                 String::new()
             }
         }
+    }
+
+    fn render_proper_loop_exits(&mut self, region: &Region) -> String {
+        let Some((first, rest)): Option<(&RegionId, &[RegionId])> = region.children.split_first()
+        else {
+            return self.decline();
+        };
+        if self
+            .result
+            .regions
+            .get(*first as usize)
+            .map(|r: &Region| r.entry)
+            != Some(region.entry)
+        {
+            return self.decline();
+        }
+        let mut owned: BTreeSet<u32> = BTreeSet::new();
+        let mut budget: usize = MAX_REGION_TREE_STEPS;
+        for child in rest {
+            if collect_region_nodes(self.result, *child, &mut owned, &mut budget).is_none() {
+                return self.decline();
+            }
+        }
+        if owned.iter().any(|node: &u32| self.granted.contains(node)) {
+            return self.decline();
+        }
+        let saved: BTreeSet<u32> = std::mem::take(&mut self.granted);
+        self.granted = owned.clone();
+        let text: String = self.render(*first);
+        self.granted = saved;
+        if !self.ok || !owned.iter().all(|node: &u32| self.consumed.contains(node)) {
+            return self.decline();
+        }
+        text
     }
 
     fn decline(&mut self) -> String {
@@ -3880,7 +4129,7 @@ impl<'a> RegionRenderer<'a, '_> {
         String::new()
     }
 
-    fn render_loop(&mut self, header: u32) -> String {
+    fn render_loop(&mut self, loop_region: RegionId, header: u32) -> String {
         if self.loop_depth >= MAX_LOOP_NESTING {
             return self.decline();
         }
@@ -3907,11 +4156,19 @@ impl<'a> RegionRenderer<'a, '_> {
                 }
             }
         }
-        if exits.len() > 1 {
-            return self.decline();
-        }
-        let follow: Option<u32> = exits.iter().copied().next();
         let preds: BTreeMap<u32, Vec<u32>> = predecessors_of(self.terms);
+        let Some((follow, exit_tails)): Option<(Option<u32>, BTreeSet<u32>)> = exits
+            .iter()
+            .copied()
+            .map(Some)
+            .chain(std::iter::once(None))
+            .find_map(|candidate: Option<u32>| {
+                self.loop_exit_tails(loop_region, &members, &exits, &preds, candidate)
+                    .map(|tails: BTreeSet<u32>| (candidate, tails))
+            })
+        else {
+            return self.decline();
+        };
         for node in &members {
             if *node == header {
                 continue;
@@ -3925,24 +4182,28 @@ impl<'a> RegionRenderer<'a, '_> {
 
         let mut order: Vec<u32> = vec![header];
         order.extend(members.iter().copied().filter(|node: &u32| *node != header));
+        order.extend(exit_tails.iter().copied());
         let index_of: BTreeMap<u32, u32> = order
             .iter()
             .enumerate()
             .map(|(position, node): (usize, &u32)| (*node, position as u32))
             .collect();
-        let continue_index: u32 = order.len() as u32;
-        let break_index: u32 = continue_index + 1;
-        let remap = |target: u32| -> Option<u32> {
-            if target == header {
-                return Some(continue_index);
-            }
-            if let Some(position) = index_of.get(&target) {
+        let mut sinks: BTreeMap<u32, LoopSink> = BTreeMap::new();
+        let mut next_sink: u32 = order.len() as u32;
+        let mut remap = |target: u32| -> Option<u32> {
+            let sink: LoopSink = if target == header {
+                LoopSink::Continue
+            } else if let Some(position) = index_of.get(&target) {
                 return Some(*position);
-            }
-            if Some(target) == follow {
-                return Some(break_index);
-            }
-            None
+            } else if Some(target) == follow {
+                LoopSink::Break
+            } else {
+                return None;
+            };
+            let index: u32 = next_sink;
+            next_sink = next_sink.checked_add(1)?;
+            sinks.insert(index, sink);
+            Some(index)
         };
 
         let mut sub_nodes: Vec<CfgNode> = Vec::with_capacity(order.len() + 2);
@@ -3989,10 +4250,17 @@ impl<'a> RegionRenderer<'a, '_> {
         let Some(entry_leaf): Option<&'a Block> = self.leaf_of_node.first().copied() else {
             return self.decline();
         };
-        let mut sinks: BTreeMap<u32, LoopSink> = BTreeMap::new();
-        sinks.insert(continue_index, LoopSink::Continue);
-        sinks.insert(break_index, LoopSink::Break);
-        for _ in 0..2 {
+        let continue_sinks: Vec<u32> = sinks
+            .iter()
+            .filter(|(_, sink): &(&u32, &LoopSink)| **sink == LoopSink::Continue)
+            .map(|(index, _): (&u32, &LoopSink)| *index)
+            .collect();
+        let break_sinks: Vec<u32> = sinks
+            .iter()
+            .filter(|(_, sink): &(&u32, &LoopSink)| **sink == LoopSink::Break)
+            .map(|(index, _): (&u32, &LoopSink)| *index)
+            .collect();
+        for _ in 0..sinks.len() {
             sub_nodes.push(CfgNode {
                 term: Terminator::Return,
                 pure: true,
@@ -4022,21 +4290,20 @@ impl<'a> RegionRenderer<'a, '_> {
             return self.decline();
         };
         let mut tree_budget: usize = MAX_REGION_TREE_STEPS;
-        let continue_ok: Option<bool> =
-            sink_reached_only_at_tail(&outcome.result, root, continue_index, &mut tree_budget);
-        if continue_ok != Some(true) {
-            return self.decline();
-        }
-        if follow.is_some() {
-            if region_contains_node(&outcome.result, root, break_index, &mut tree_budget)
+        for continue_sink in &continue_sinks {
+            if sink_reached_only_at_tail(&outcome.result, root, *continue_sink, &mut tree_budget)
                 != Some(true)
             {
                 return self.decline();
             }
-        } else if region_contains_node(&outcome.result, root, break_index, &mut tree_budget)
-            != Some(false)
-        {
+        }
+        if follow.is_some() == break_sinks.is_empty() {
             return self.decline();
+        }
+        for sink in sinks.keys() {
+            if region_contains_node(&outcome.result, root, *sink, &mut tree_budget) != Some(true) {
+                return self.decline();
+            }
         }
 
         let mut sub: RegionRenderer<'a, '_> = RegionRenderer {
@@ -4051,11 +4318,13 @@ impl<'a> RegionRenderer<'a, '_> {
             subst: self.subst,
             sinks: &sinks,
             loop_depth: self.loop_depth + 1,
+            granted: BTreeSet::new(),
+            consumed: BTreeSet::new(),
             ok: true,
         };
         let rendered: Option<String> =
-            sub.render_head_tested_loop(root, continue_index, break_index);
-        let text: String = match rendered {
+            sub.render_head_tested_loop(root, &continue_sinks, &break_sinks);
+        let mut text: String = match rendered {
             Some(text) => text,
             None => {
                 let body: String = sub.render(root);
@@ -4065,14 +4334,199 @@ impl<'a> RegionRenderer<'a, '_> {
         if !sub.ok {
             return self.decline();
         }
+        if let Some(follow) = follow
+            && (self.granted.contains(&follow)
+                || region_contains_node(self.result, loop_region, follow, &mut tree_budget)
+                    == Some(true))
+        {
+            let loop_side: BTreeSet<u32> = members.union(&exit_tails).copied().collect();
+            let Some(tail): Option<String> = self.render_tail(follow, &loop_side) else {
+                return self.decline();
+            };
+            text.push_str(&tail);
+        }
+        self.consumed.extend(exit_tails.iter().copied());
         text
+    }
+
+    fn loop_exit_tails(
+        &self,
+        loop_region: RegionId,
+        members: &BTreeSet<u32>,
+        exits: &BTreeSet<u32>,
+        preds: &BTreeMap<u32, Vec<u32>>,
+        follow: Option<u32>,
+    ) -> Option<BTreeSet<u32>> {
+        let mut tails: BTreeSet<u32> = BTreeSet::new();
+        let mut stack: Vec<u32> = exits
+            .iter()
+            .copied()
+            .filter(|exit: &u32| Some(*exit) != follow)
+            .collect();
+        let mut succ: Vec<u32> = Vec::new();
+        let mut budget: usize = MAX_REGION_TREE_STEPS;
+        while let Some(node) = stack.pop() {
+            budget = budget.checked_sub(1)?;
+            if Some(node) == follow || !tails.insert(node) {
+                continue;
+            }
+            if members.contains(&node)
+                || self.sinks.contains_key(&node)
+                || !(self.granted.contains(&node)
+                    || region_contains_node(self.result, loop_region, node, &mut budget)?)
+            {
+                return None;
+            }
+            succ.clear();
+            successors_of(self.terms.get(node as usize)?, &mut succ);
+            stack.extend(succ.iter().copied());
+        }
+        for node in &tails {
+            let incoming: &[u32] = preds.get(node).map_or(&[], Vec::as_slice);
+            if incoming
+                .iter()
+                .any(|from: &u32| !members.contains(from) && !tails.contains(from))
+            {
+                return None;
+            }
+        }
+        if let Some(follow) = follow {
+            let mut seen: BTreeSet<u32> = BTreeSet::new();
+            let mut stack: Vec<u32> = vec![follow];
+            while let Some(node) = stack.pop() {
+                budget = budget.checked_sub(1)?;
+                if tails.contains(&node) {
+                    return None;
+                }
+                if !seen.insert(node) || self.sinks.contains_key(&node) {
+                    continue;
+                }
+                succ.clear();
+                successors_of(self.terms.get(node as usize)?, &mut succ);
+                stack.extend(succ.iter().copied());
+            }
+        }
+        Some(tails)
+    }
+
+    fn render_tail(&mut self, follow: u32, loop_members: &BTreeSet<u32>) -> Option<String> {
+        let mut order: Vec<u32> = Vec::new();
+        let mut sink_nodes: Vec<(u32, LoopSink)> = Vec::new();
+        let mut seen: BTreeSet<u32> = BTreeSet::new();
+        let mut stack: Vec<u32> = vec![follow];
+        let mut succ: Vec<u32> = Vec::new();
+        let mut budget: usize = MAX_REACHABILITY_STEPS;
+        while let Some(node) = stack.pop() {
+            budget = budget.checked_sub(1)?;
+            if loop_members.contains(&node) {
+                return None;
+            }
+            if !seen.insert(node) {
+                continue;
+            }
+            if let Some(sink) = self.sinks.get(&node).copied() {
+                sink_nodes.push((node, sink));
+                continue;
+            }
+            order.push(node);
+            succ.clear();
+            successors_of(self.terms.get(node as usize)?, &mut succ);
+            stack.extend(succ.iter().rev().copied());
+        }
+        let tail: BTreeSet<u32> = order.iter().copied().collect();
+        let preds: BTreeMap<u32, Vec<u32>> = predecessors_of(self.terms);
+        for node in &order {
+            let incoming: &[u32] = preds.get(node).map_or(&[], Vec::as_slice);
+            let from_loop_or_tail = |from: &u32| -> bool {
+                tail.contains(from) || (*node == follow && loop_members.contains(from))
+            };
+            let foreign: bool = !incoming.iter().all(from_loop_or_tail);
+            if foreign {
+                return None;
+            }
+        }
+        let mut index_of: BTreeMap<u32, u32> = BTreeMap::new();
+        for (position, node) in order
+            .iter()
+            .chain(sink_nodes.iter().map(|(n, _)| n))
+            .enumerate()
+        {
+            index_of.insert(*node, u32::try_from(position).ok()?);
+        }
+        let mut sub_nodes: Vec<CfgNode> = Vec::with_capacity(index_of.len());
+        let mut sub_terms: Vec<Terminator> = Vec::with_capacity(index_of.len());
+        let mut sub_leaves: Vec<&'a Block> = Vec::with_capacity(index_of.len());
+        let mut sub_plans: Vec<LeafPlan> = Vec::with_capacity(index_of.len());
+        let mut sub_sinks: BTreeMap<u32, LoopSink> = BTreeMap::new();
+        for node in &order {
+            let remapped: Terminator = match self.terms.get(*node as usize)? {
+                Terminator::Return => Terminator::Return,
+                Terminator::Unreachable => Terminator::Unreachable,
+                Terminator::Goto(target) => Terminator::Goto(*index_of.get(target)?),
+                Terminator::Branch {
+                    atom,
+                    taken,
+                    not_taken,
+                } => Terminator::Branch {
+                    atom: *atom,
+                    taken: *index_of.get(taken)?,
+                    not_taken: *index_of.get(not_taken)?,
+                },
+                Terminator::Switch { .. } => return None,
+            };
+            sub_nodes.push(CfgNode {
+                term: remapped.clone(),
+                pure: true,
+            });
+            sub_terms.push(remapped);
+            sub_leaves.push(self.leaf_of_node.get(*node as usize).copied()?);
+            sub_plans.push(self.plan_of_node.get(*node as usize)?.clone());
+        }
+        for (node, sink) in &sink_nodes {
+            sub_sinks.insert(*index_of.get(node)?, *sink);
+            sub_nodes.push(CfgNode {
+                term: Terminator::Return,
+                pure: true,
+            });
+            sub_terms.push(Terminator::Return);
+            sub_leaves.push(self.leaf_of_node.get(*node as usize).copied()?);
+            sub_plans.push(self.plan_of_node.get(*node as usize)?.clone());
+        }
+        let sub_cfg: Cfg = Cfg::new(0, sub_nodes).ok()?;
+        let outcome: CnsOutcome = structure_with_cns(&sub_cfg, CnsBudget::tight_for(&sub_cfg))?;
+        if !outcome.result.is_complete() {
+            return None;
+        }
+        let root: RegionId = outcome.result.root?;
+        let mut sub: RegionRenderer<'a, '_> = RegionRenderer {
+            ctx: self.ctx,
+            leaf_of_node: &sub_leaves,
+            terms: &sub_terms,
+            plan_of_node: &sub_plans,
+            captures: self.captures,
+            allocation_initializers: self.allocation_initializers,
+            cond_of_atom: self.cond_of_atom,
+            result: &outcome.result,
+            subst: self.subst,
+            sinks: &sub_sinks,
+            loop_depth: self.loop_depth,
+            granted: BTreeSet::new(),
+            consumed: BTreeSet::new(),
+            ok: true,
+        };
+        let text: String = sub.render(root);
+        if !sub.ok {
+            return None;
+        }
+        self.consumed.extend(order.iter().copied());
+        Some(text)
     }
 
     fn render_head_tested_loop(
         &mut self,
         root: RegionId,
-        continue_index: u32,
-        break_index: u32,
+        continue_sinks: &[u32],
+        break_sinks: &[u32],
     ) -> Option<String> {
         let region: Region = self.result.regions.get(root as usize).cloned()?;
         if !matches!(region.kind, RegionKind::IfThenElse) {
@@ -4089,25 +4543,33 @@ impl<'a> RegionRenderer<'a, '_> {
             return None;
         }
         let mut tree_budget: usize = MAX_REGION_TREE_STEPS;
-        let (guard, body_id): (String, RegionId) =
-            if is_sink_leaf(self.result, not_taken, break_index) {
-                (
-                    render_cond(self.cond_of_atom, &self.result.conds, cond_id)?,
-                    taken,
-                )
-            } else if is_sink_leaf(self.result, taken, break_index) {
-                (
-                    negated_cond(self.cond_of_atom, &self.result.conds, cond_id)?,
-                    not_taken,
-                )
-            } else {
+        let is_break_leaf = |id: RegionId| -> bool {
+            break_sinks
+                .iter()
+                .any(|sink: &u32| is_sink_leaf(self.result, id, *sink))
+        };
+        let (guard, body_id): (String, RegionId) = if is_break_leaf(not_taken) {
+            (
+                render_cond(self.cond_of_atom, &self.result.conds, cond_id)?,
+                taken,
+            )
+        } else if is_break_leaf(taken) {
+            (
+                negated_cond(self.cond_of_atom, &self.result.conds, cond_id)?,
+                not_taken,
+            )
+        } else {
+            return None;
+        };
+        for sink in break_sinks {
+            if region_contains_node(self.result, body_id, *sink, &mut tree_budget)? {
                 return None;
-            };
-        if region_contains_node(self.result, body_id, break_index, &mut tree_budget)? {
-            return None;
+            }
         }
-        if !sink_reached_only_at_tail(self.result, body_id, continue_index, &mut tree_budget)? {
-            return None;
+        for sink in continue_sinks {
+            if !sink_reached_only_at_tail(self.result, body_id, *sink, &mut tree_budget)? {
+                return None;
+            }
         }
         let body: String = self.render(body_id);
         if !self.ok {
@@ -4581,6 +5043,7 @@ pub fn recover_with_string_pool(
         dispatch_root: container.dispatch_root,
         container_span: container.whole_span,
         container_scope,
+        container_initialized: container_initialized_locals(&container),
         upvalue_bindings,
         environment_locals,
         unpack_local,
@@ -4724,8 +5187,16 @@ pub fn recover_with_string_pool(
         fully_recovered.to_string()
     });
 
+    let source: String = if stats.multret_packs > 0 {
+        format!(
+            "local function {MULTRET_PACK_HELPER}(...) return {{ n = select(\"#\", ...), ... }} end\n{body}"
+        )
+    } else {
+        body.to_owned()
+    };
+
     Ok(Some(VmifyRecovery {
-        source: body.to_owned(),
+        source,
         handlers_recovered: stats.leaves_recovered.min(handlers_total),
         handlers_total,
         functions_recovered: stats.functions_fully_structured,
@@ -4755,6 +5226,14 @@ mod tests {
             panic!("expected one local value");
         };
         value.clone()
+    }
+
+    fn balanced_sum(leaves: usize) -> String {
+        if leaves <= 1 {
+            return "1".to_owned();
+        }
+        let half: usize = leaves / 2;
+        format!("({}+{})", balanced_sum(half), balanced_sum(leaves - half))
     }
 
     #[test]
@@ -4814,8 +5293,20 @@ mod tests {
         );
         assert_eq!(
             evaluator.evaluate(expressions[MAX_STATIC_NUMBER_FUEL]),
-            None
+            Some(MAX_STATIC_NUMBER_FUEL as f64),
+            "the fuel bounds one expression, so a program with more static numbers than the fuel \
+             still resolves every one of them"
         );
+
+        let oversized: Expr = local_value(&format!("local value = {}", balanced_sum(2048)));
+        let fresh: StaticNumberEvaluator = StaticNumberEvaluator::new();
+        assert_eq!(
+            fresh.evaluate(&oversized),
+            None,
+            "one expression with more nodes than the fuel is refused"
+        );
+        let within: Expr = local_value(&format!("local value = {}", balanced_sum(512)));
+        assert_eq!(fresh.evaluate(&within), Some(512.0));
     }
 
     #[test]
@@ -4823,9 +5314,8 @@ mod tests {
         let expression: Expr = local_value("local value = (8 * 7) + (9 % 4)");
         let evaluator: StaticNumberEvaluator = StaticNumberEvaluator::new();
         assert_eq!(evaluator.evaluate(&expression), Some(57.0));
-        let remaining: usize = evaluator.fuel.get();
         assert_eq!(evaluator.evaluate(&expression), Some(57.0));
-        assert_eq!(evaluator.fuel.get(), remaining);
+        assert_eq!(evaluator.fuel.get(), MAX_STATIC_NUMBER_FUEL);
     }
 
     #[test]
@@ -4905,6 +5395,7 @@ mod tests {
                 end: u32::try_from(source.len()).expect("fixture length fits u32"),
             },
             container_scope: BTreeSet::new(),
+            container_initialized: BTreeMap::new(),
             upvalue_bindings: BTreeMap::new(),
             environment_locals: BTreeSet::new(),
             unpack_local: None,
@@ -5007,6 +5498,7 @@ mod tests {
                 end: u32::try_from(source.len()).expect("fixture length fits u32"),
             },
             container_scope: BTreeSet::new(),
+            container_initialized: BTreeMap::new(),
             upvalue_bindings: BTreeMap::new(),
             environment_locals: BTreeSet::new(),
             unpack_local: None,

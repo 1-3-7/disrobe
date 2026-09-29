@@ -2,7 +2,7 @@ use crate::cursor::{ByteCursor, MAX_PROTO_DEPTH};
 use crate::error::{Error, Result};
 use crate::reader::common::{
     LUA_SIGNATURE, LUAC_DATA_TAIL, LuaChunk, LuaConstant, LuaDialect, LuaLocal, LuaProto,
-    LuaUpvalueName, capped_u32, low_u32,
+    LuaUpvalueName, UpvalueDescriptor, capped_u32, low_u32,
 };
 
 const LUAC_TAIL_5_2: [u8; 6] = LUAC_DATA_TAIL;
@@ -128,10 +128,15 @@ fn read_proto(
     let upval_count: usize = c.checked_count::<LuaUpvalueName>("lua52 upvalue", upval_count, 2)?;
     let mut upvalues: Vec<LuaUpvalueName> = Vec::with_capacity(upval_count);
     for _ in 0..upval_count {
-        let _in_stack: u8 = c.read_u8()?;
-        let _idx: u8 = c.read_u8()?;
+        let in_stack: u8 = c.read_u8()?;
+        let index: u8 = c.read_u8()?;
         upvalues.push(LuaUpvalueName {
             name: String::new(),
+            descriptor: Some(UpvalueDescriptor {
+                in_stack,
+                index,
+                kind: 0,
+            }),
         });
     }
 

@@ -19,7 +19,12 @@ description = "~1200-LOC fixture exercising 5.1/5.2/5.3/5.4 + LuaJIT feature sur
 path = "megafile/edge_cases.lua"
 kind = "lua-source"
 size_bytes = 36000
-notes = "covers metatables (__add/__sub/__mul/__unm/__eq/__lt/__le/__tostring/__concat/__len/__index/__newindex/__call/__metatable), closures, upvarargs, coroutines (create/resume/yield/wrap), pcall/xpcall, goto/labels (loadstring-gated for 5.1 compat), ipairs/pairs/rawget/rawset/rawequal/rawlen, string/table/math/io/os libs, string.format kitchen sink, string.pack/unpack (5.3+ gated), utf8 (5.3+ gated), bitops/integer-div (5.3+ gated), integer-for / to-be-closed / const-attrib (5.4 gated), debug lib, OOP via metatables (Vec/Stack/Queue/LinkedList/Set), functional combinators (map/filter/reduce/zip/compose/curry/partial), quicksort/binary_search/fib/fact/gcd/is_prime, event_emitter/state_machine/lru_cache/trampoline/range_gen/string_builder"
+notes = "string_interp_compat writes the em dash of every derived fixture as the decimal escapes \\226\\128\\148, so the text stays ASCII and the string bytes match the luac, LuaJIT and Prometheus builds. It covers metatables (__add/__sub/__mul/__unm/__eq/__lt/__le/__tostring/__concat/__len/__index/__newindex/__call/__metatable), closures, upvarargs, coroutines (create/resume/yield/wrap), pcall/xpcall, goto/labels (loadstring-gated for 5.1 compat), ipairs/pairs/rawget/rawset/rawequal/rawlen, string/table/math/io/os libs, string.format kitchen sink, string.pack/unpack (5.3+ gated), utf8 (5.3+ gated), bitops/integer-div (5.3+ gated), integer-for / to-be-closed / const-attrib (5.4 gated), debug lib, OOP via metatables (Vec/Stack/Queue/LinkedList/Set), functional combinators (map/filter/reduce/zip/compose/curry/partial), quicksort/binary_search/fib/fact/gcd/is_prime, event_emitter/state_machine/lru_cache/trampoline/range_gen/string_builder"
+
+[[megafile.fixtures]]
+path = "megafile/edge_cases_drive.lua"
+kind = "lua-source"
+notes = "Exercise driver for megafile/edge_cases.lua and its recoveries: loads the program named by its first argument under the chunk name megafile, calls every export with fixed arguments and prints one line per call with the value count and a key-sorted serialization. Error positions and the local, upvalue and callee names inside error messages are normalized, since no obfuscator preserves them."
 
 [[megafile.fixtures]]
 path = "megafile/edge_cases.luau"

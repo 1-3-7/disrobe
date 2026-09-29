@@ -4,6 +4,7 @@ decompile_samples/src/closures_recursion.lua
 decompile_samples/src/control_flow.lua
 decompile_samples/src/luau_continue_else.lua
 decompile_samples/src/oop_functional.lua
+dialect_operands/constructor_25600.lua
 dialect_operands/constructor_75.lua
 dialect_operands/loadnil_above_r0.lua
 dialect_operands/upvalue_capture.lua
@@ -26,6 +27,7 @@ ironbrew2/original/hello.lua
 ironbrew2/original/tables.lua
 luraph/signature_header.lua
 megafile/edge_cases.lua
+megafile/edge_cases_drive.lua
 obfuscators/edge_cases.prometheus_minify.lua
 obfuscators/edge_cases.prometheus_weak.lua
 obfuscators/hello.prometheus.lua

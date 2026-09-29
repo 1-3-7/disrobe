@@ -156,13 +156,17 @@ fn read_proto(
     let mut upvalues: Vec<LuaUpvalueName> = Vec::with_capacity(upval_count);
     for _ in 0..upval_count {
         let name: String = read_string(c, size_size_t)?.unwrap_or_default();
-        upvalues.push(LuaUpvalueName { name });
+        upvalues.push(LuaUpvalueName {
+            name,
+            descriptor: None,
+        });
     }
     if upvalues.len() < usize::from(nups) {
         upvalues.resize(
             usize::from(nups),
             LuaUpvalueName {
                 name: String::new(),
+                descriptor: None,
             },
         );
     }

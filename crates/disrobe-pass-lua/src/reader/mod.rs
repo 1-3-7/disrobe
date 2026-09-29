@@ -9,7 +9,7 @@ pub mod luau;
 
 pub use common::{
     LUA_SIGNATURE, LUAC_DATA_TAIL, LUAJIT_SIGNATURE, LuaChunk, LuaConstant, LuaDialect, LuaLocal,
-    LuaProto, LuaUpvalueName,
+    LuaProto, LuaUpvalueName, UpvalueDescriptor,
 };
 
 use crate::debug::{dbg_hex, dbg_kv, dbg_line, dbg_section};

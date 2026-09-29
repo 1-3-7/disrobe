@@ -2,8 +2,8 @@ mod structurer;
 
 use crate::decompile::budget::LiftBudget;
 use crate::decompile::lift::{
-    LiftedProto, SetListBase, closure_capture_ops, fmt_number, kconst, kstr, loadnil_last,
-    resolve_upvalue_names, setlist_base, upvalue_name,
+    ClosureCaptures, LiftedProto, SetListBase, closure_captures, fmt_number, kconst, kstr,
+    loadnil_last, resolve_upvalue_names, setlist_base, upvalue_name,
 };
 use crate::decompile::luau_lift::{
     LStmt, LiftedStmt, MAX_RENDERED_STRUCTURE_BYTES, RenderedBlocks, render_blocks,
@@ -214,8 +214,10 @@ fn lift_structured_captured(
         return None;
     }
     let names: LocalNames = LocalNames::build(&p.locals, p.code.len(), u32::from(p.num_params));
-    let mut state: StructState =
-        StructState::new(p.max_stack_size, resolve_upvalue_names(p, captured));
+    let mut state: StructState = StructState::new(
+        p.max_stack_size,
+        resolve_upvalue_names(p, captured, dialect, depth),
+    );
     for i in 0..u32::from(p.num_params) {
         let name: String = names
             .name_at(0, i)
@@ -923,14 +925,15 @@ fn lower(
             }
             Op::Tbc => {}
             Op::Closure => {
-                let captures: Vec<Decoded> = closure_capture_ops(p, &d, pc, dialect);
-                let resume_pc: usize = pc + 1 + captures.len();
+                let captures: ClosureCaptures = closure_captures(p, &d, pc, dialect);
+                let resume_pc: usize = pc + 1 + captures.pseudo_words;
                 let captured: Vec<String> = captures
+                    .ops
                     .iter()
                     .map(|op: &Decoded| capture_name(state, names, op, &d, pc, resume_pc))
                     .collect();
                 emit_closure(state, ctx, p, &d, dialect, depth, &captured)?;
-                pc += captures.len();
+                pc += captures.pseudo_words;
             }
             Op::Vararg => define(state, names, live, p, d.a, "...".to_owned()),
             Op::VarargPrep | Op::ExtraArg => {}

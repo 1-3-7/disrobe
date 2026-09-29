@@ -158,6 +158,7 @@ fn read_proto(
         let _slot: u16 = c.read_u16()?;
         upvalues.push(LuaUpvalueName {
             name: String::new(),
+            descriptor: None,
         });
     }
 

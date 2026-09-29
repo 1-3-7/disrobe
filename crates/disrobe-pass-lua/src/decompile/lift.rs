@@ -3,7 +3,9 @@ use std::collections::BTreeMap;
 use crate::decompile::budget::LiftBudget;
 use crate::decompile::opcode::{Decoded, Op, decode, is_k, rk_index};
 use crate::error::Result;
-use crate::reader::common::{LuaConstant, LuaDialect, LuaLocal, LuaProto, LuaUpvalueName};
+use crate::reader::common::{
+    LuaConstant, LuaDialect, LuaLocal, LuaProto, LuaUpvalueName, UpvalueDescriptor,
+};
 
 const MAX_LIFT_DEPTH: usize = 200;
 pub(crate) const MAX_INLINED_CLOSURE_BYTES: usize = 8 << 20;
@@ -386,7 +388,17 @@ pub fn lift_proto(p: &LuaProto, depth: usize) -> Result<LiftedProto> {
 }
 
 #[must_use]
-pub(crate) fn resolve_upvalue_names(p: &LuaProto, captured: &[String]) -> Vec<String> {
+pub(crate) fn resolve_upvalue_names(
+    p: &LuaProto,
+    captured: &[String],
+    dialect: LuaDialect,
+    depth: usize,
+) -> Vec<String> {
+    let environment_first: bool = depth == 0
+        && matches!(
+            dialect,
+            LuaDialect::Lua52 | LuaDialect::Lua53 | LuaDialect::Lua54
+        );
     let count: usize = p.upvalues.len().max(captured.len());
     (0..count)
         .map(|i: usize| {
@@ -400,6 +412,7 @@ pub(crate) fn resolve_upvalue_names(p: &LuaProto, captured: &[String]) -> Vec<St
                         .map(|u: &LuaUpvalueName| u.name.clone())
                         .filter(|name: &String| is_ident(name))
                 })
+                .or_else(|| (environment_first && i == 0).then(|| "_ENV".to_owned()))
                 .unwrap_or_else(|| format!("upval_{i}"))
         })
         .collect()
@@ -413,25 +426,57 @@ pub(crate) fn upvalue_name(names: &[String], idx: u32) -> String {
         .unwrap_or_else(|| format!("upval_{idx}"))
 }
 
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ClosureCaptures {
+    pub(crate) ops: Vec<Decoded>,
+    pub(crate) pseudo_words: usize,
+}
+
 #[must_use]
-pub(crate) fn closure_capture_ops(
+pub(crate) fn closure_captures(
     p: &LuaProto,
     closure: &Decoded,
     pc: usize,
     dialect: LuaDialect,
-) -> Vec<Decoded> {
-    if !matches!(dialect, LuaDialect::Lua51 | LuaDialect::GLua) {
-        return Vec::new();
-    }
+) -> ClosureCaptures {
     let Some(child): Option<&LuaProto> = p.protos.get(closure.bx as usize) else {
-        return Vec::new();
+        return ClosureCaptures::default();
     };
+    if !matches!(dialect, LuaDialect::Lua51 | LuaDialect::GLua) {
+        let ops: Option<Vec<Decoded>> = child
+            .upvalues
+            .iter()
+            .map(|upvalue: &LuaUpvalueName| {
+                upvalue
+                    .descriptor
+                    .map(|descriptor: UpvalueDescriptor| Decoded {
+                        op: if descriptor.in_stack == 0 {
+                            Op::GetUpval
+                        } else {
+                            Op::Move
+                        },
+                        a: closure.a,
+                        b: u32::from(descriptor.index),
+                        c: 0,
+                        k: false,
+                        bx: 0,
+                        sbx: 0,
+                        ax: 0,
+                        sj: 0,
+                    })
+            })
+            .collect();
+        return ClosureCaptures {
+            ops: ops.unwrap_or_default(),
+            pseudo_words: 0,
+        };
+    }
     let start: usize = pc.saturating_add(1);
     let Some(words): Option<&[u32]> = start
         .checked_add(child.upvalues.len())
         .and_then(|end: usize| p.code.get(start..end))
     else {
-        return Vec::new();
+        return ClosureCaptures::default();
     };
     let ops: Vec<Decoded> = words
         .iter()
@@ -441,9 +486,10 @@ pub(crate) fn closure_capture_ops(
         .iter()
         .all(|op: &Decoded| matches!(op.op, Op::Move | Op::GetUpval))
     {
-        ops
+        let pseudo_words: usize = ops.len();
+        ClosureCaptures { ops, pseudo_words }
     } else {
-        Vec::new()
+        ClosureCaptures::default()
     }
 }
 
@@ -552,7 +598,7 @@ fn lift_proto_captured(
     let mut state: LiftState = LiftState::new(
         p.max_stack_size,
         dialect,
-        resolve_upvalue_names(p, captured),
+        resolve_upvalue_names(p, captured, dialect, depth),
     );
     state.scopes = LocalScopes::build(&p.locals, p.code.len());
     for i in 0..u32::from(p.num_params) {
@@ -1021,8 +1067,9 @@ fn lift_proto_captured(
                 state.push(&format!("-- to-be-closed variable R{}", d.a));
             }
             Op::Closure => {
-                let captures: Vec<Decoded> = closure_capture_ops(p, &d, pc, dialect);
+                let captures: ClosureCaptures = closure_captures(p, &d, pc, dialect);
                 let captured: Vec<String> = captures
+                    .ops
                     .iter()
                     .map(|op: &Decoded| match op.op {
                         Op::GetUpval => state.upval(op.b),
@@ -1039,7 +1086,7 @@ fn lift_proto_captured(
                     &captured,
                     &mut fully_structured,
                 );
-                pc += captures.len();
+                pc += captures.pseudo_words;
             }
             Op::Vararg => {
                 define(&mut state, d.a, "...".to_owned());
@@ -1900,6 +1947,7 @@ mod tests {
         );
         p.upvalues.push(LuaUpvalueName {
             name: "shared".to_owned(),
+            descriptor: None,
         });
         let out: LiftedProto = lift_proto(&p, 0).expect("lift within the work budget");
         assert!(out.source.contains("shared"), "got: {}", out.source);
@@ -1913,6 +1961,7 @@ mod tests {
         let p: LuaProto = LuaProto {
             upvalues: vec![LuaUpvalueName {
                 name: "_ENV".to_owned(),
+                descriptor: None,
             }],
             ..proto(vec![getup], consts, 2)
         };

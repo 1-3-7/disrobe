@@ -58,7 +58,7 @@ pub use provenance_header::{
 pub use reader::luau::{OpcodeMap, OpcodeMapImport, import_opcode_map, read_with_opcode_map};
 pub use reader::{
     DetectedFormat, LUA_SIGNATURE, LUAC_DATA_TAIL, LUAJIT_SIGNATURE, LuaChunk, LuaConstant,
-    LuaDialect, LuaLocal, LuaProto, LuaUpvalueName, detect, read_auto,
+    LuaDialect, LuaLocal, LuaProto, LuaUpvalueName, UpvalueDescriptor, detect, read_auto,
 };
 pub use serialize::serialize_chunk;
 

@@ -174,12 +174,28 @@ fn real_prometheus_weak_static_string_pool_recovers_known_intrinsics() {
 }
 
 #[test]
-fn real_prometheus_weak_megafile_peel_reports_honestly() {
+fn real_prometheus_weak_megafile_peel_reports_every_layer_it_removed() {
     let bytes: Vec<u8> = load("obfuscators/edge_cases.prometheus_weak.lua");
     let opts: DeobfOptions = DeobfOptions::default();
     let out: PeelResult = prometheus::peel(&bytes, &opts).expect("peel prometheus weak megafile");
-    assert!(!out.fully_recovered);
-    assert!(!out.residual_markers.is_empty());
+    assert!(
+        out.fully_recovered,
+        "the weak megafile devirtualizes completely (graded by re-execution in \
+         prometheus_vmlift_oracle.rs): {:?}",
+        out.residual_markers
+    );
+    for expected in [
+        "592/594 constant-array entries decoded",
+        "Vmify container devirtualized over 1 layer(s), handlers 630/630 (100%), functions 171/171",
+    ] {
+        assert!(
+            out.residual_markers
+                .iter()
+                .any(|marker: &String| marker.contains(expected)),
+            "the peel report names {expected:?}: {:?}",
+            out.residual_markers
+        );
+    }
 }
 
 #[test]

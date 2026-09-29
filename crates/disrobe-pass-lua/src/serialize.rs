@@ -1,6 +1,7 @@
 use crate::error::{Error, Result};
 use crate::reader::common::{
     LUA_SIGNATURE, LUAC_DATA_TAIL, LuaChunk, LuaConstant, LuaDialect, LuaProto, LuaUpvalueName,
+    UpvalueDescriptor,
 };
 
 const LUAC_INT_5_3: i64 = 0x5678;
@@ -167,9 +168,14 @@ fn write_proto_53(w: &mut ByteWriter, proto: &LuaProto, chunk: &LuaChunk) -> Res
     write_constants_53(w, proto, chunk)?;
 
     w.write_size(proto.upvalues.len() as u64, chunk.size_of_int)?;
-    for _ in &proto.upvalues {
-        w.push(0);
-        w.push(0);
+    for upvalue in &proto.upvalues {
+        let descriptor: UpvalueDescriptor = upvalue.descriptor.unwrap_or(UpvalueDescriptor {
+            in_stack: 0,
+            index: 0,
+            kind: 0,
+        });
+        w.push(descriptor.in_stack);
+        w.push(descriptor.index);
     }
 
     w.write_size(proto.protos.len() as u64, chunk.size_of_int)?;
@@ -241,9 +247,14 @@ fn write_proto_52(w: &mut ByteWriter, proto: &LuaProto, chunk: &LuaChunk) -> Res
     }
 
     w.write_size(proto.upvalues.len() as u64, chunk.size_of_int)?;
-    for _ in &proto.upvalues {
-        w.push(0);
-        w.push(0);
+    for upvalue in &proto.upvalues {
+        let descriptor: UpvalueDescriptor = upvalue.descriptor.unwrap_or(UpvalueDescriptor {
+            in_stack: 0,
+            index: 0,
+            kind: 0,
+        });
+        w.push(descriptor.in_stack);
+        w.push(descriptor.index);
     }
 
     write_string_5152(w, proto.source.as_deref(), chunk.size_of_size_t)?;
@@ -543,6 +554,7 @@ mod tests {
             vec![
                 LuaUpvalueName {
                     name: String::new(),
+                    descriptor: None,
                 };
                 2
             ]
@@ -552,11 +564,50 @@ mod tests {
     }
 
     #[test]
+    fn upvalue_capture_descriptors_survive_a_round_trip() {
+        for (bytes, read) in [
+            (
+                include_bytes!("../../../corpus/lua/dialect_operands/upvalue_capture.5_2.luac")
+                    .as_slice(),
+                lua52::read as fn(&[u8]) -> Result<LuaChunk>,
+            ),
+            (
+                include_bytes!("../../../corpus/lua/dialect_operands/upvalue_capture.5_3.luac")
+                    .as_slice(),
+                lua53::read,
+            ),
+        ] {
+            let chunk: LuaChunk = read(bytes).expect("read committed chunk");
+            let captures: Vec<UpvalueDescriptor> = chunk
+                .main
+                .protos
+                .iter()
+                .flat_map(|proto: &LuaProto| proto.upvalues.iter())
+                .filter_map(|upvalue: &LuaUpvalueName| upvalue.descriptor)
+                .collect();
+            assert!(
+                captures
+                    .iter()
+                    .any(|descriptor: &UpvalueDescriptor| descriptor.in_stack == 1
+                        && descriptor.index > 0),
+                "the committed closures capture a local above register 0: {captures:?}"
+            );
+            assert_eq!(
+                serialize_chunk(&chunk).expect("serialize"),
+                bytes,
+                "{:?} upvalue descriptors are written back as read",
+                chunk.dialect
+            );
+        }
+    }
+
+    #[test]
     fn serialize_51_rejects_upvalue_count_over_u8() {
         let mut main: LuaProto = sample_proto_5152();
         main.upvalues = (0..=usize::from(u8::MAX))
             .map(|index: usize| crate::reader::common::LuaUpvalueName {
                 name: format!("up{index}"),
+                descriptor: None,
             })
             .collect();
         let chunk: LuaChunk = chunk_5152(LuaDialect::Lua51, main);

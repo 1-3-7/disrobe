@@ -22,6 +22,13 @@ const RUN_TIMEOUT: Duration = Duration::from_secs(20);
 const UPVALUE_CAPTURE: &str = "upvalue_capture";
 const LOADNIL_ABOVE_R0: &str = "loadnil_above_r0";
 const CONSTRUCTOR_75: &str = "constructor_75";
+const CONSTRUCTOR_25600: &str = "constructor_25600";
+const SHAPES: [&str; 4] = [
+    UPVALUE_CAPTURE,
+    LOADNIL_ABOVE_R0,
+    CONSTRUCTOR_75,
+    CONSTRUCTOR_25600,
+];
 
 fn fixture_dir() -> PathBuf {
     let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -139,6 +146,21 @@ fn reexec_compiled(dialect: Dialect, name: &str, source: &str, strip: bool) {
     assert_same_output(&lua, name, source, &recovered);
 }
 
+fn reexec_committed_chunk(suffix: &str, lifter: &str, name: &str) {
+    let Some(lua): Option<String> = interpreter(Dialect::Lua54) else {
+        return;
+    };
+    let source: String = fixture_source(name);
+    let bytes: Vec<u8> = fixture_bytes(&format!("{name}.{suffix}.luac"));
+    let recovered: DecompiledChunk = decompile_auto(&bytes).expect("decompile");
+    assert!(
+        recovered.source.contains(lifter),
+        "{name}.{suffix}.luac is read by the {lifter}:\n{}",
+        recovered.source.lines().next().unwrap_or_default()
+    );
+    assert_same_output(&lua, &format!("{name}_{suffix}"), &source, &recovered);
+}
+
 fn generated_constructor(items: u32) -> String {
     let values: Vec<String> = (1..=items)
         .map(|i: u32| (i * 7 % 1000).to_string())
@@ -180,6 +202,35 @@ fn glua_closure_upvalue_pseudo_instructions_are_consumed() {
         let recovered: DecompiledChunk = decompile_chunk(&chunk).expect("decompile");
         assert_same_output(&lua, "upvalue_glua", &source, &recovered);
     }
+}
+
+#[test]
+fn lua54_closure_upvalues_reexecute() {
+    let source: String = fixture_source(UPVALUE_CAPTURE);
+    reexec_compiled(Dialect::Lua54, "upvalue_54", &source, false);
+    reexec_compiled(Dialect::Lua54, "upvalue_54_stripped", &source, true);
+}
+
+#[test]
+fn lua52_builds_of_every_shape_reexecute() {
+    for name in SHAPES {
+        reexec_committed_chunk("5_2", "lua 5.2 register lifter", name);
+    }
+}
+
+#[test]
+fn lua53_constructor_past_25550_items_reads_the_extraarg_block() {
+    reexec_committed_chunk("5_3", "lua 5.3 register lifter", CONSTRUCTOR_25600);
+}
+
+#[test]
+fn lua54_constructor_past_25550_items_reexecutes() {
+    reexec_compiled(
+        Dialect::Lua54,
+        "ctor25600_54",
+        &fixture_source(CONSTRUCTOR_25600),
+        false,
+    );
 }
 
 #[test]
@@ -240,7 +291,7 @@ fn lua51_constructor_past_511_blocks_reads_the_block_word() {
     reexec_compiled(
         Dialect::Lua51,
         "ctor25600_51",
-        &generated_constructor(25_600),
+        &fixture_source(CONSTRUCTOR_25600),
         false,
     );
     reexec_compiled(
@@ -331,6 +382,7 @@ fn hand_chunk(dialect: LuaDialect, code: Vec<u32>, constants: Vec<LuaConstant>) 
             locals: Vec::new(),
             upvalues: vec![LuaUpvalueName {
                 name: "_ENV".to_owned(),
+                descriptor: None,
             }],
         },
     }

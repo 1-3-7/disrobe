@@ -87,6 +87,7 @@ fn ground_truth_chunk() -> LuaChunk {
         locals: Vec::new(),
         upvalues: vec![disrobe_pass_lua::reader::common::LuaUpvalueName {
             name: "_ENV".to_owned(),
+            descriptor: None,
         }],
     };
     LuaChunk {

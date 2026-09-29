@@ -721,7 +721,10 @@ fn read_proto(
                 .and_then(|idx: usize| strings.get(idx))
                 .cloned()
                 .unwrap_or_default();
-            upvalues.push(LuaUpvalueName { name });
+            upvalues.push(LuaUpvalueName {
+                name,
+                descriptor: None,
+            });
         }
     }
     if version >= 11 {
