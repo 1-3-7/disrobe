@@ -102,9 +102,8 @@ fn obfuscated_pair() -> (Vec<u8>, Vec<u8>) {
     let original: Vec<u8> = clean_original();
 
     let mut module: Module = Module::default();
-    let decode: FunctionId = add_identity(&mut module, "_Z6decodei");
-    let _run: FunctionId = add_identity(&mut module, "_Z3runv");
-    let _ = decode;
+    add_identity(&mut module, "_Z6decodei");
+    add_identity(&mut module, "_Z3runv");
     add_dead_trash(&mut module);
     add_dead_trash(&mut module);
     let obfuscated: Vec<u8> = module.emit_wasm();

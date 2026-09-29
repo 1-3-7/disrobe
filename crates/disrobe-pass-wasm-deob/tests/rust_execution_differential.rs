@@ -341,26 +341,20 @@ fn runtime_store_rejects_fuel_exhausting_loops() {
     let mut sandbox: Sandbox = instantiate(&engine, &loop_forever)
         .expect("the bounded store instantiates the finite-memory mutation-control module");
     assert_eq!(
-        wasm_outcome(&mut sandbox, "spin", &[], ValType::I32),
+        wasm_outcome(&mut sandbox, "spin", &[]),
         None,
         "the fuel budget must reject an infinite Wasmtime execution"
     );
 }
 
 #[cfg(feature = "sandbox")]
-fn wasm_outcome(
-    sandbox: &mut Sandbox,
-    export: &str,
-    args: &[Val],
-    result_ty: ValType,
-) -> Option<CmpVal> {
+fn wasm_outcome(sandbox: &mut Sandbox, export: &str, args: &[Val]) -> Option<CmpVal> {
     let func: wasmtime::Func = sandbox.instance.get_func(&mut sandbox.store, export)?;
     let mut results: Vec<Val> = vec![Val::I32(0)];
     if func.call(&mut sandbox.store, args, &mut results).is_err() {
         let _ = sandbox.store.set_fuel(FUEL_BUDGET);
         return None;
     }
-    let _ = result_ty;
     from_val(results.first()?)
 }
 
@@ -524,8 +518,7 @@ fn recovered_rust_executes_identically_to_original_under_wasmtime() {
             continue;
         };
         for args in &target.battery {
-            let Some(want): Option<CmpVal> =
-                wasm_outcome(&mut sandbox, &target.export, args, target.result_ty)
+            let Some(want): Option<CmpVal> = wasm_outcome(&mut sandbox, &target.export, args)
             else {
                 continue;
             };
@@ -726,12 +719,7 @@ fn divide_and_remainder_helpers_execute_identically_on_non_trapping_inputs() {
                 Val::I64(b.parse::<i64>().expect("i64 operand")),
             ]
         };
-        let result_ty: ValType = if op.starts_with("i32") {
-            ValType::I32
-        } else {
-            ValType::I64
-        };
-        let engine_value: String = match wasm_outcome(&mut sandbox, op, &args, result_ty) {
+        let engine_value: String = match wasm_outcome(&mut sandbox, op, &args) {
             Some(CmpVal::I32(v)) => v.to_string(),
             Some(CmpVal::I64(v)) => v.to_string(),
             other => panic!("{key}: the module must not trap on a non-trapping operand: {other:?}"),
