@@ -47,6 +47,39 @@ fn rebuilt_literals_double_embedded_single_quotes() {
 }
 
 #[test]
+fn char_code_rebuild_consumes_only_its_own_call() {
+    assert_eq!(
+        winscript::rebuild_char_codes(
+            "WScript.Echo(String.fromCharCode(72, 105) );",
+            WinScriptLang::VbScript
+        )
+        .as_deref(),
+        Some("WScript.Echo(\"Hi\" );")
+    );
+    assert_eq!(
+        winscript::rebuild_char_codes("f([char]72+[char]105)", WinScriptLang::PowerShell)
+            .as_deref(),
+        Some("f('H'+'i')")
+    );
+    assert_eq!(
+        winscript::rebuild_char_codes(
+            "iex (([char[]](72,105)) -join '')",
+            WinScriptLang::PowerShell
+        )
+        .as_deref(),
+        Some("iex (('Hi') -join '')")
+    );
+    assert_eq!(
+        winscript::rebuild_char_codes("String.fromCharCode(72, x)", WinScriptLang::VbScript),
+        None
+    );
+    assert_eq!(
+        winscript::rebuild_char_codes("String.fromCharCode(65601)", WinScriptLang::VbScript),
+        None
+    );
+}
+
+#[test]
 fn char_code_join_consumes_spaced_empty_separator() {
     assert_eq!(
         winscript::rebuild_char_codes(

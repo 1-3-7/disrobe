@@ -59,17 +59,24 @@ fn real_string_reverse_join_recovers_cleartext() {
     );
 }
 
+const MSGBOX_CODES: [u32; 6] = [77, 115, 103, 66, 111, 120];
+
+fn double_quoted_cleartext(codes: &[u32]) -> String {
+    let cleartext: String = codes
+        .iter()
+        .map(|code: &u32| char::from_u32(*code).expect("code point"))
+        .collect();
+    format!("\"{cleartext}\"")
+}
+
 #[test]
 fn real_jscript_fromcharcode_recovers_cleartext() {
     let obf: &str = "WScript.Echo(String.fromCharCode(77,115,103,66,111,120));";
     let lang: WinScriptLang = winscript::classify(obf).expect("classify wsh script");
     let r: WinScriptRecovery = recover(lang, obf);
     assert!(r.techniques.contains(&WinTechnique::CharCodeJoin));
-    assert!(
-        r.recovered_text.contains("'MsgBox'"),
-        "recovered: {}",
-        r.recovered_text
-    );
+    let expected: String = format!("WScript.Echo({});", double_quoted_cleartext(&MSGBOX_CODES));
+    assert_eq!(r.recovered_text, expected);
 }
 
 #[test]
@@ -79,9 +86,14 @@ fn real_vbscript_chr_concat_recovers_cleartext() {
     assert_eq!(lang, WinScriptLang::VbScript);
     let r: WinScriptRecovery = recover(lang, obf);
     assert!(r.techniques.contains(&WinTechnique::CharBuilderConcat));
+    let expected: String = format!(
+        "Execute({})\nWScript.CreateObject(\"x\")",
+        double_quoted_cleartext(&MSGBOX_CODES)
+    );
+    assert_eq!(r.recovered_text, expected);
     assert!(
-        r.recovered_text.contains("'MsgBox'"),
-        "recovered: {}",
+        !r.recovered_text.contains('\''),
+        "a VBScript apostrophe starts a comment: {}",
         r.recovered_text
     );
 }

@@ -1714,23 +1714,17 @@ fn match_char_code_run(text: &str, lower_text: &[u8], start: usize) -> Option<(S
     ];
     let bytes: &[u8] = text.as_bytes();
     let lower: &[u8] = lower_text.get(start..)?;
-    let mut header: usize = 0usize;
-    for p in PREFIXES {
-        if lower.len() >= p.len() && &lower[..p.len()] == p.as_bytes() {
-            header = p.len();
-            break;
-        }
-    }
-    if header == 0 {
-        return None;
-    }
+    let prefix: &str = PREFIXES
+        .iter()
+        .copied()
+        .find(|prefix: &&str| lower.starts_with(prefix.as_bytes()))?;
     let mut nums: Vec<u32> = Vec::new();
-    let mut i: usize = start + header;
+    let mut i: usize = start + prefix.len();
+    let mut after_numbers: usize = i;
     loop {
         while i < bytes.len() && matches!(bytes[i], b' ' | b'\t' | b',' | b'+') {
             i += 1;
         }
-        let num_start: usize = i;
         let mut hex: bool = false;
         if i + 1 < bytes.len() && bytes[i] == b'0' && (bytes[i + 1] | 0x20) == b'x' {
             hex = true;
@@ -1743,7 +1737,6 @@ fn match_char_code_run(text: &str, lower_text: &[u8], start: usize) -> Option<(S
             i += 1;
         }
         if i == digit_start {
-            i = num_start;
             break;
         }
         let token: &str = &text[digit_start..i];
@@ -1753,6 +1746,7 @@ fn match_char_code_run(text: &str, lower_text: &[u8], start: usize) -> Option<(S
             token.parse::<u32>().ok()?
         };
         nums.push(value);
+        after_numbers = i;
         let mut k: usize = i;
         while k < bytes.len() && matches!(bytes[k], b' ' | b'\t') {
             k += 1;
@@ -1766,18 +1760,32 @@ fn match_char_code_run(text: &str, lower_text: &[u8], start: usize) -> Option<(S
     if nums.is_empty() {
         return None;
     }
-    while i < bytes.len() && matches!(bytes[i], b' ' | b'\t' | b')') {
-        i += 1;
+    let mut end: usize = after_numbers;
+    for _ in prefix.bytes().filter(|byte: &u8| *byte == b'(') {
+        end = skip_blanks(bytes, end);
+        if bytes.get(end) != Some(&b')') {
+            return None;
+        }
+        end += 1;
     }
-    let consumed_join: usize = consume_join_empty_separator(bytes, i).unwrap_or(i);
+    let end: usize = consume_join_empty_separator(bytes, skip_blanks(bytes, end)).unwrap_or(end);
     let decoded: String = nums
         .iter()
-        .filter_map(|n: &u32| char::from_u32(*n))
-        .collect();
-    if decoded.is_empty() {
-        return None;
+        .map(|n: &u32| {
+            u16::try_from(*n)
+                .ok()
+                .and_then(|unit: u16| char::from_u32(u32::from(unit)))
+        })
+        .collect::<Option<String>>()?;
+    Some((decoded, end))
+}
+
+fn skip_blanks(bytes: &[u8], from: usize) -> usize {
+    let mut i: usize = from;
+    while i < bytes.len() && matches!(bytes[i], b' ' | b'\t') {
+        i += 1;
     }
-    Some((decoded, consumed_join.max(i)))
+    i
 }
 
 fn consume_join_empty_separator(bytes: &[u8], start: usize) -> Option<usize> {
