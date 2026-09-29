@@ -62,6 +62,12 @@ const DASH_SHEBANG: &str = "#!/bin/dash";
 const KSH_SHEBANG: &str = "#!/bin/ksh";
 const ZSH_SHEBANG: &str = "#!/bin/zsh";
 
+static PS_TICKED_COMMAND: LazyLock<&'static Regex> = LazyLock::new(|| {
+    regex!(
+        r"(?:\b[A-Za-z]+`[A-Za-z][A-Za-z`]*-[A-Za-z`]+|\b[A-Za-z]+-[A-Za-z]*`[A-Za-z][A-Za-z`]*)"
+    )
+});
+
 static PS_TOKEN_OBF: LazyLock<&'static Regex> =
     LazyLock::new(|| regex!(r"(?i)\$\{[A-Za-z0-9_]+\}\s*=\s*\(\s*\[(?:char|byte)\]"));
 
@@ -254,6 +260,7 @@ fn powershell_construct_kinds(scan: &str) -> usize {
 fn has_powershell_obfuscation_shape(scan: &str) -> bool {
     PS_STRING_FORMAT_OBF.is_match(scan)
         || PS_TOKEN_OBF.is_match(scan)
+        || PS_TICKED_COMMAND.is_match(scan)
         || PS_AST_REORDER.is_match(scan)
         || PS_GET_COMMAND_CALL.is_match(scan)
         || PS_CONCAT_INVOCATION.is_match(scan)
@@ -482,6 +489,10 @@ fn detect_ps_family(scan: &str, lower: &str, markers: &mut Vec<String>) -> Famil
         markers.push("ps-char-code-run".to_owned());
         return Family::InvokeObfuscationToken;
     }
+    if PS_TICKED_COMMAND.is_match(scan) {
+        markers.push("ps-ticked-command".to_owned());
+        return Family::InvokeObfuscationToken;
+    }
     if PS_CONCAT_INVOCATION.is_match(scan) {
         markers.push("ps-concatenated-invocation".to_owned());
         return Family::InvokeObfuscationString;
@@ -594,6 +605,24 @@ fn score(
         scored.max(OBFUSCATED_BATCH_CONFIDENCE)
     } else {
         scored
+    }
+}
+
+#[cfg(test)]
+mod ticked_command_tests {
+    use super::{Dialect, Family, detect};
+
+    #[test]
+    fn a_backticked_cmdlet_is_powershell_token_obfuscation() {
+        for script in ["wR`I`TE-oU`TpUt 'x'\n", "W`rite-`Output 'x'\n"] {
+            let found = detect(script.as_bytes());
+            assert_eq!(found.dialect, Dialect::PowerShell, "{script}");
+            assert_eq!(found.family, Family::InvokeObfuscationToken, "{script}");
+        }
+        assert_ne!(
+            detect(b"echo `date`-stamp\n").family,
+            Family::InvokeObfuscationToken
+        );
     }
 }
 

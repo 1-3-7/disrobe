@@ -295,8 +295,27 @@ fn recovered_source(detection: &Detection, bytes: &[u8]) -> Result<String, Shell
             text,
             crate::vba::deobfuscate_vbs(text).output,
         ),
+        Dialect::PowerShell if detection.family == Family::Unknown => {
+            guard_recovered(detection.family, text, reverse_powershell_layers(text))
+        }
         _ => reverse_for_family(detection.family, text),
     }
+}
+
+const MAX_POWERSHELL_LAYER_ROUNDS: usize = 16;
+
+fn reverse_powershell_layers(text: &str) -> String {
+    use crate::powershell::{reverse_ast, reverse_string, reverse_token};
+    let mut current: String = text.to_owned();
+    for _ in 0..MAX_POWERSHELL_LAYER_ROUNDS {
+        let next: String =
+            reverse_ast(&reverse_string(&reverse_token(&current).output).output).output;
+        if next == current {
+            break;
+        }
+        current = next;
+    }
+    current
 }
 
 const fn residual_code_for_family(family: Family) -> Option<(&'static str, &'static str)> {
@@ -374,19 +393,14 @@ fn same_script(left: &str, right: &str) -> bool {
 fn reverse_for_family(family: Family, text: &str) -> Result<String, ShellRefusal> {
     use crate::bash::{peel_indirection, reverse_bashfuscator_auto, reverse_node_bash_obfuscate};
     use crate::powershell::{
-        reverse_ast, reverse_chameleon, reverse_compress, reverse_encoding, reverse_invoke_stealth,
-        reverse_isesteroids, reverse_launcher, reverse_powerhell, reverse_psobf, reverse_string,
-        reverse_token,
+        reverse_chameleon, reverse_compress, reverse_encoding, reverse_invoke_stealth,
+        reverse_isesteroids, reverse_launcher, reverse_powerhell, reverse_psobf,
     };
     match family {
-        Family::InvokeObfuscationToken => guard_recovered(family, text, reverse_token(text).output),
-        Family::InvokeObfuscationAst => guard_recovered(
-            family,
-            text,
-            reverse_ast(&reverse_string(text).output).output,
-        ),
-        Family::InvokeObfuscationString => {
-            guard_recovered(family, text, reverse_string(text).output)
+        Family::InvokeObfuscationToken
+        | Family::InvokeObfuscationAst
+        | Family::InvokeObfuscationString => {
+            guard_recovered(family, text, reverse_powershell_layers(text))
         }
         Family::InvokeObfuscationEncoding => {
             let report: crate::powershell::ReverseReport = reverse_encoding(text)
