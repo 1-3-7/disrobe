@@ -4215,7 +4215,6 @@ fn step(
             let header: String = format!("def {name}{}", method_signature(instr, ctx));
             let child: Option<&YarvIseqBody> = method_iseq(instr, ctx);
             stmts.extend(render_nested(header, child, ctx, depth, false));
-            push(stack, format!(":{name}"));
         }
         "definesmethod" => {
             let name: String = id_or_index(instr, 0);
@@ -4228,7 +4227,6 @@ fn step(
             let header: String = format!("def {owner}.{name}{}", method_signature(instr, ctx));
             let child: Option<&YarvIseqBody> = method_iseq(instr, ctx);
             stmts.extend(render_nested(header, child, ctx, depth, false));
-            push(stack, format!(":{name}"));
         }
         "defineclass" => {
             let name: String = id_or_index(instr, 0);
@@ -5044,12 +5042,31 @@ fn block_param_list(block: &YarvIseqBody, ctx: &DecompileContext<'_>) -> String 
         return String::new();
     }
     let signature: String = render_param_signature(block, ctx);
-    match signature
+    let destructured: Vec<(String, String)> = destructured_block_params(block);
+    let shadowed: Vec<&str> = block
+        .local_table
+        .iter()
+        .skip(block.param_size as usize)
+        .filter_map(Option::as_deref)
+        .filter(|name: &&str| {
+            is_identifier(name)
+                && !destructured
+                    .iter()
+                    .any(|(_, targets)| targets.split(", ").any(|target: &str| target == *name))
+                && ctx
+                    .enclosing_scopes
+                    .iter()
+                    .any(|scope| scope.iter().any(|outer| outer.as_deref() == Some(*name)))
+        })
+        .collect();
+    let inner: &str = signature
         .strip_prefix('(')
         .and_then(|s: &str| s.strip_suffix(')'))
-    {
-        Some(inner) if !inner.is_empty() => format!(" |{inner}|"),
-        _ => String::new(),
+        .unwrap_or("");
+    match (inner.is_empty(), shadowed.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => format!(" |{inner}|"),
+        (_, false) => format!(" |{inner}; {}|", shadowed.join(", ")),
     }
 }
 
