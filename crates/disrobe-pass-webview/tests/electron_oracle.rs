@@ -7,8 +7,8 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use disrobe_pass_webview::{
-    CarveReport, Compression, IntegrityStatus, RecoveredAsset, WebviewFamily, carve, carve_report,
-    detect_family,
+    CarveReport, Compression, EntryRefusal, IntegrityStatus, RecoveredAsset, WebviewFamily, carve,
+    carve_report, detect_family,
 };
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -110,7 +110,34 @@ fn pickle_wrap(json: &[u8], data: &[u8]) -> Vec<u8> {
     out
 }
 
-const ASAR_PACKAGE: &str = "@electron/asar@3.4.1";
+fn split_asar(bytes: &[u8]) -> (Map<String, Value>, Vec<u8>) {
+    let size_field: u32 = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
+    assert_eq!(size_field, 4, "unexpected asar pickle wrapper size");
+    let header_buf_len: u32 = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
+    let json_len: u32 = u32::from_le_bytes(bytes[12..16].try_into().unwrap());
+    let json_start: usize = 16;
+    let json_end: usize = json_start + json_len as usize;
+    let root: Value = serde_json::from_slice(&bytes[json_start..json_end]).unwrap();
+    let files: Map<String, Value> = root
+        .as_object()
+        .unwrap()
+        .get("files")
+        .unwrap()
+        .as_object()
+        .unwrap()
+        .clone();
+    let data_base: usize = 8 + header_buf_len as usize;
+    (files, bytes[data_base..].to_vec())
+}
+
+fn rebuild_asar(files: Map<String, Value>, data: &[u8]) -> Vec<u8> {
+    let mut header: Map<String, Value> = Map::new();
+    header.insert("files".to_owned(), Value::Object(files));
+    let json: Vec<u8> = serde_json::to_vec(&Value::Object(header)).unwrap();
+    pickle_wrap(&json, data)
+}
+
+const ASAR_PACKAGE: &str = "@electron/asar@4.3.1";
 
 fn run_asar_pack(src: &Path, out: &Path) {
     let mut command: Command = if cfg!(windows) {
@@ -438,4 +465,72 @@ fn no_frontend_is_reported() {
     let bytes: Vec<u8> = vec![0u8; 2048];
     assert!(detect_family(&bytes).is_none());
     assert!(carve(&bytes).is_err());
+}
+
+#[test]
+fn each_bad_entry_patched_into_a_real_asar_is_refused_and_the_rest_survive() {
+    let workdir: PathBuf = unique_dir("webview-malformed");
+    let dist: PathBuf = workdir.join("dist");
+    let tree: Vec<(&str, Vec<u8>)> = vec![
+        ("keep1.txt", b"AAA".to_vec()),
+        ("nested/keep2.txt", b"BBBB".to_vec()),
+    ];
+    write_tree(&dist, &tree);
+    let asar_path: PathBuf = workdir.join("app.asar");
+    run_asar_pack(&dist, &asar_path);
+    let bytes: Vec<u8> = fs::read(&asar_path).unwrap();
+
+    let (mut files, data): (Map<String, Value>, Vec<u8>) = split_asar(&bytes);
+    files.insert(
+        "../x".to_owned(),
+        serde_json::json!({"size": 3, "offset": "0"}),
+    );
+    files.insert("nooffset.txt".to_owned(), serde_json::json!({"size": 3}));
+    files.insert(
+        "escape.js".to_owned(),
+        serde_json::json!({"link": "../../outside.txt"}),
+    );
+    files.insert(
+        "huge.bin".to_owned(),
+        serde_json::json!({"size": 3, "offset": "999999999"}),
+    );
+    let tampered: Vec<u8> = rebuild_asar(files, &data);
+
+    let report: CarveReport = carve_report(&tampered).expect("bad entries must not abort the walk");
+    assert_eq!(report.declared, 6);
+    assert_eq!(report.recovered, 2);
+    let extracted: BTreeMap<String, Vec<u8>> = recovered_map(&report.assets);
+    assert_eq!(
+        extracted.get("keep1.txt").map(Vec::as_slice),
+        Some(b"AAA".as_slice())
+    );
+    assert_eq!(
+        extracted.get("nested/keep2.txt").map(Vec::as_slice),
+        Some(b"BBBB".as_slice())
+    );
+    let refused: Vec<&str> = report
+        .refusals
+        .iter()
+        .map(|refusal: &EntryRefusal| refusal.path.as_str())
+        .collect();
+    assert_eq!(
+        refused,
+        vec!["../x", "escape.js", "huge.bin", "nooffset.txt"]
+    );
+    let reason_of = |path: &str| -> String {
+        let Some(refusal) = report
+            .refusals
+            .iter()
+            .find(|refusal: &&EntryRefusal| refusal.path == path)
+        else {
+            panic!("missing refusal for {path}")
+        };
+        refusal.reason.clone()
+    };
+    assert!(reason_of("../x").contains("not a safe relative path"));
+    assert!(reason_of("nooffset.txt").contains("no data offset"));
+    assert!(reason_of("escape.js").contains("escapes the archive"));
+    assert!(reason_of("huge.bin").contains("exceeds buffer length"));
+    assert!(report.coverage() < 1.0);
+    let _ = fs::remove_dir_all(&workdir);
 }
