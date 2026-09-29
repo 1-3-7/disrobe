@@ -33,10 +33,14 @@ impl Lifter<'_> {
             .unwrap_or(Expr::Nil);
         let mut then_env: Env = env.clone();
         let mut segments: Vec<BinSegment> = Vec::new();
+        let mut ctx_reused: bool = false;
         if let Some(Operand::List(items)) = ins.operands.get(2) {
             let decoded: binmatch::MatchCommands =
                 binmatch::decode_match_commands(items, self.chunks);
             flags.degraded = flags.degraded || decoded.degraded;
+            ctx_reused = decoded.segments.iter().any(|seg: &binmatch::MatchSegment| {
+                seg.binds && seg.dst.as_ref().and_then(as_reg) == ctx
+            });
             for seg in decoded.segments {
                 segments.push(inline_segment(seg, &mut then_env, flags));
             }
@@ -49,7 +53,9 @@ impl Lifter<'_> {
             kind: "binary".to_owned(),
             flags: Vec::new(),
         });
-        if let Some(c) = ctx {
+        if let Some(c) = ctx
+            && !ctx_reused
+        {
             then_env.set(c, Expr::Var(rest));
         }
         let then_body: Vec<Stmt> = self.walk_inline(block, idx + 1, &mut then_env, flags, depth);
@@ -640,6 +646,14 @@ fn choose_exc_names(body: &[Stmt], serial: &std::cell::Cell<u32>) -> (String, St
     ("Class".to_owned(), "Reason".to_owned(), "Stack".to_owned())
 }
 
+fn is_literal_reason(expr: &Expr) -> bool {
+    match expr {
+        Expr::Atom(_) | Expr::Int(_) | Expr::Nil | Expr::Str(_) | Expr::CharLit(_) => true,
+        Expr::Tuple(items) => items.iter().all(is_literal_reason),
+        _ => false,
+    }
+}
+
 fn to_catch_arms(stmts: Vec<Stmt>, cls: &str, rsn: &str, stk: &str) -> Vec<CatchArm> {
     if let [Stmt::Return(Expr::If { arms })] = stmts.as_slice() {
         let mut out: Vec<CatchArm> = Vec::with_capacity(arms.len());
@@ -648,19 +662,52 @@ fn to_catch_arms(stmts: Vec<Stmt>, cls: &str, rsn: &str, stk: &str) -> Vec<Catch
                 continue;
             }
             let (class, extra): (String, Option<Expr>) = class_from_guard(&arm.guard, cls);
-            let stacktrace: Option<String> = body_uses_var(&arm.body, stk).then(|| stk.to_owned());
-            let guarded_body: Vec<Stmt> = match extra {
-                Some(rest) => vec![Stmt::Return(Expr::If {
-                    arms: vec![IfArm {
-                        guard: rest,
-                        body: arm.body.clone(),
-                    }],
-                })],
-                None => arm.body.clone(),
+            let mut stacktrace: Option<String> =
+                body_uses_var(&arm.body, stk).then(|| stk.to_owned());
+            let (pattern, guarded_body): (Expr, Vec<Stmt>) = match extra {
+                Some(Expr::BinOp { op, lhs, rhs })
+                    if op == "=:="
+                        && matches!(&*lhs, Expr::Var(v) if v == rsn)
+                        && is_literal_reason(&rhs) =>
+                {
+                    (*rhs, arm.body.clone())
+                }
+                Some(rest) => {
+                    stacktrace = Some(stk.to_owned());
+                    let class_expr: Expr = if class == cls {
+                        Expr::Var(class.clone())
+                    } else {
+                        Expr::Atom(class.clone())
+                    };
+                    let reraise: Stmt = Stmt::Return(Expr::Call {
+                        target: "erlang:raise".to_owned(),
+                        args: vec![
+                            class_expr,
+                            Expr::Var(rsn.to_owned()),
+                            Expr::Var(stk.to_owned()),
+                        ],
+                    });
+                    (
+                        Expr::Var(rsn.to_owned()),
+                        vec![Stmt::Return(Expr::If {
+                            arms: vec![
+                                IfArm {
+                                    guard: rest,
+                                    body: arm.body.clone(),
+                                },
+                                IfArm {
+                                    guard: Expr::Atom("true".to_owned()),
+                                    body: vec![reraise],
+                                },
+                            ],
+                        })],
+                    )
+                }
+                None => (Expr::Var(rsn.to_owned()), arm.body.clone()),
             };
             out.push(CatchArm {
                 class,
-                pattern: Expr::Var(rsn.to_owned()),
+                pattern,
                 stacktrace,
                 body: guarded_body,
             });

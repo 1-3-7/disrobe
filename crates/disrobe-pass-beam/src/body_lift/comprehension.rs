@@ -14,23 +14,23 @@ pub fn resugar_module(core: &mut CoreModule) {
     if resugared.is_empty() {
         return;
     }
-    for (name, arity, shape) in &resugared {
-        for f in &mut core.functions {
-            if is_lc_helper(&f.name) {
-                continue;
-            }
-            for clause in &mut f.clauses {
-                rewrite_calls(&mut clause.body.stmts, name, *arity, shape);
-            }
+    let helpers: Helpers = resugared
+        .into_iter()
+        .map(|(name, _, shape): (String, u32, ComprehensionShape)| (name, shape))
+        .collect();
+    for f in &mut core.functions {
+        if is_lc_helper(&f.name) {
+            continue;
+        }
+        for clause in &mut f.clauses {
+            rewrite_calls(&mut clause.body.stmts, &helpers);
         }
     }
-    let removed: std::collections::BTreeSet<String> = resugared
-        .into_iter()
-        .map(|(n, _, _): (String, u32, ComprehensionShape)| n)
-        .collect();
     core.functions
-        .retain(|f: &CoreFunction| !removed.contains(&f.name));
+        .retain(|f: &CoreFunction| !helpers.contains_key(&f.name));
 }
+
+type Helpers = std::collections::BTreeMap<String, ComprehensionShape>;
 
 #[derive(Debug, Clone)]
 struct ComprehensionShape {
@@ -218,103 +218,102 @@ fn strip_quotes(s: &str) -> &str {
         .unwrap_or(s)
 }
 
-fn rewrite_calls(stmts: &mut [Stmt], helper: &str, _arity: u32, shape: &ComprehensionShape) {
+fn rewrite_calls(stmts: &mut [Stmt], helpers: &Helpers) {
     for stmt in stmts.iter_mut() {
         match stmt {
-            Stmt::Return(e) | Stmt::Expr(e) => rewrite_expr(e, helper, shape),
+            Stmt::Return(e) | Stmt::Expr(e) => rewrite_expr(e, helpers),
             Stmt::Bind { value, .. } | Stmt::Match { value, .. } => {
-                rewrite_expr(value, helper, shape);
+                rewrite_expr(value, helpers);
             }
             Stmt::Send { dest, msg } => {
-                rewrite_expr(dest, helper, shape);
-                rewrite_expr(msg, helper, shape);
+                rewrite_expr(dest, helpers);
+                rewrite_expr(msg, helpers);
             }
             Stmt::Comment(_) => {}
         }
     }
 }
 
-fn rewrite_expr(expr: &mut Expr, helper: &str, shape: &ComprehensionShape) {
+fn rewrite_expr(expr: &mut Expr, helpers: &Helpers) {
+    descend_expr(expr, helpers);
     if let Expr::Call { target, args } = expr
-        && strip_quotes(target) == helper
+        && let Some(shape) = helpers.get(strip_quotes(target))
         && let Some(src) = args.first()
     {
         *expr = render_comprehension(shape, src);
-        return;
     }
-    descend_expr(expr, helper, shape);
 }
 
-fn descend_expr(expr: &mut Expr, helper: &str, shape: &ComprehensionShape) {
+fn descend_expr(expr: &mut Expr, helpers: &Helpers) {
     match expr {
         Expr::Tuple(items) => {
             for e in items.iter_mut() {
-                rewrite_expr(e, helper, shape);
+                rewrite_expr(e, helpers);
             }
         }
         Expr::List { elements, tail } => {
             for e in elements.iter_mut() {
-                rewrite_expr(e, helper, shape);
+                rewrite_expr(e, helpers);
             }
-            rewrite_expr(tail, helper, shape);
+            rewrite_expr(tail, helpers);
         }
         Expr::Cons { head, tail } => {
-            rewrite_expr(head, helper, shape);
-            rewrite_expr(tail, helper, shape);
+            rewrite_expr(head, helpers);
+            rewrite_expr(tail, helpers);
         }
         Expr::Call { args, .. } | Expr::Guard { args, .. } => {
             for e in args.iter_mut() {
-                rewrite_expr(e, helper, shape);
+                rewrite_expr(e, helpers);
             }
         }
         Expr::BinOp { lhs, rhs, .. } => {
-            rewrite_expr(lhs, helper, shape);
-            rewrite_expr(rhs, helper, shape);
+            rewrite_expr(lhs, helpers);
+            rewrite_expr(rhs, helpers);
         }
-        Expr::UnOp { operand, .. } => rewrite_expr(operand, helper, shape),
+        Expr::UnOp { operand, .. } => rewrite_expr(operand, helpers),
         Expr::CallFun { fun, args } => {
-            rewrite_expr(fun, helper, shape);
+            rewrite_expr(fun, helpers);
             for e in args.iter_mut() {
-                rewrite_expr(e, helper, shape);
+                rewrite_expr(e, helpers);
             }
         }
-        Expr::Catch(inner) => rewrite_expr(inner, helper, shape),
-        Expr::TupleElement { tuple, .. } => rewrite_expr(tuple, helper, shape),
+        Expr::Catch(inner) => rewrite_expr(inner, helpers),
+        Expr::TupleElement { tuple, .. } => rewrite_expr(tuple, helpers),
         Expr::RecordUpdate { base, updates } => {
-            rewrite_expr(base, helper, shape);
+            rewrite_expr(base, helpers);
             for (_, v) in updates.iter_mut() {
-                rewrite_expr(v, helper, shape);
+                rewrite_expr(v, helpers);
             }
         }
-        Expr::Map { pairs } | Expr::MapPattern { pairs } => rewrite_pairs(pairs, helper, shape),
+        Expr::Map { pairs } | Expr::MapPattern { pairs } => rewrite_pairs(pairs, helpers),
         Expr::MapUpdate { base, pairs, .. } => {
-            rewrite_expr(base, helper, shape);
-            rewrite_pairs(pairs, helper, shape);
+            rewrite_expr(base, helpers);
+            rewrite_pairs(pairs, helpers);
         }
         Expr::BinaryConstruct(segments) => {
             for seg in segments.iter_mut() {
-                rewrite_segment(seg, helper, shape);
+                rewrite_segment(seg, helpers);
             }
         }
-        Expr::Block(stmts) => rewrite_calls(stmts, helper, 0, shape),
+        Expr::Block(stmts) => rewrite_calls(stmts, helpers),
         Expr::Case { subject, arms } => {
-            rewrite_expr(subject, helper, shape);
+            rewrite_expr(subject, helpers);
             for arm in arms.iter_mut() {
-                rewrite_calls(&mut arm.body, helper, 0, shape);
+                rewrite_calls(&mut arm.body, helpers);
             }
         }
         Expr::If { arms } => {
             for arm in arms.iter_mut() {
-                rewrite_expr(&mut arm.guard, helper, shape);
-                rewrite_calls(&mut arm.body, helper, 0, shape);
+                rewrite_expr(&mut arm.guard, helpers);
+                rewrite_calls(&mut arm.body, helpers);
             }
         }
         Expr::Receive { arms, after } => {
             for arm in arms.iter_mut() {
-                rewrite_calls(&mut arm.body, helper, 0, shape);
+                rewrite_calls(&mut arm.body, helpers);
             }
             if let Some(after) = after.as_deref_mut() {
-                rewrite_after(after, helper, shape);
+                rewrite_after(after, helpers);
             }
         }
         Expr::Try {
@@ -323,40 +322,40 @@ fn descend_expr(expr: &mut Expr, helper: &str, shape: &ComprehensionShape) {
             catch_arms,
             after,
         } => {
-            rewrite_calls(body, helper, 0, shape);
+            rewrite_calls(body, helpers);
             for arm in of_arms.iter_mut() {
-                rewrite_calls(&mut arm.body, helper, 0, shape);
+                rewrite_calls(&mut arm.body, helpers);
             }
             for arm in catch_arms.iter_mut() {
-                rewrite_catch(arm, helper, shape);
+                rewrite_catch(arm, helpers);
             }
-            rewrite_calls(after, helper, 0, shape);
+            rewrite_calls(after, helpers);
         }
         _ => {}
     }
 }
 
-fn rewrite_pairs(pairs: &mut [(Expr, Expr)], helper: &str, shape: &ComprehensionShape) {
+fn rewrite_pairs(pairs: &mut [(Expr, Expr)], helpers: &Helpers) {
     for (k, v) in pairs.iter_mut() {
-        rewrite_expr(k, helper, shape);
-        rewrite_expr(v, helper, shape);
+        rewrite_expr(k, helpers);
+        rewrite_expr(v, helpers);
     }
 }
 
-fn rewrite_segment(seg: &mut BinSegment, helper: &str, shape: &ComprehensionShape) {
-    rewrite_expr(&mut seg.value, helper, shape);
+fn rewrite_segment(seg: &mut BinSegment, helpers: &Helpers) {
+    rewrite_expr(&mut seg.value, helpers);
     if let Some(size) = seg.size.as_deref_mut() {
-        rewrite_expr(size, helper, shape);
+        rewrite_expr(size, helpers);
     }
 }
 
-fn rewrite_after(after: &mut AfterClause, helper: &str, shape: &ComprehensionShape) {
-    rewrite_expr(&mut after.timeout, helper, shape);
-    rewrite_calls(&mut after.body, helper, 0, shape);
+fn rewrite_after(after: &mut AfterClause, helpers: &Helpers) {
+    rewrite_expr(&mut after.timeout, helpers);
+    rewrite_calls(&mut after.body, helpers);
 }
 
-fn rewrite_catch(arm: &mut CatchArm, helper: &str, shape: &ComprehensionShape) {
-    rewrite_calls(&mut arm.body, helper, 0, shape);
+fn rewrite_catch(arm: &mut CatchArm, helpers: &Helpers) {
+    rewrite_calls(&mut arm.body, helpers);
 }
 
 fn render_comprehension(shape: &ComprehensionShape, src: &Expr) -> Expr {
@@ -450,6 +449,36 @@ fn map_children(expr: &Expr, f: &dyn Fn(&Expr) -> Expr) -> Expr {
         Expr::TupleElement { tuple, index } => Expr::TupleElement {
             tuple: Box::new(f(tuple)),
             index: *index,
+        },
+        Expr::MakeFun { name, arity, env } => Expr::MakeFun {
+            name: name.clone(),
+            arity: *arity,
+            env: env.iter().map(f).collect(),
+        },
+        Expr::CallFun { fun, args } => Expr::CallFun {
+            fun: Box::new(f(fun)),
+            args: args.iter().map(f).collect(),
+        },
+        Expr::Map { pairs } => Expr::Map {
+            pairs: pairs
+                .iter()
+                .map(|(k, v): &(Expr, Expr)| (f(k), f(v)))
+                .collect(),
+        },
+        Expr::MapUpdate { base, exact, pairs } => Expr::MapUpdate {
+            base: Box::new(f(base)),
+            exact: *exact,
+            pairs: pairs
+                .iter()
+                .map(|(k, v): &(Expr, Expr)| (f(k), f(v)))
+                .collect(),
+        },
+        Expr::RecordUpdate { base, updates } => Expr::RecordUpdate {
+            base: Box::new(f(base)),
+            updates: updates
+                .iter()
+                .map(|(i, v): &(u32, Expr)| (*i, f(v)))
+                .collect(),
         },
         other => other.clone(),
     }

@@ -432,6 +432,9 @@ impl Lifter<'_> {
             .map_or_else(|| ctx.var(), |s: &BinMatchState| env.get(s.source));
         let decoded: binmatch::MatchCommands = binmatch::decode_match_commands(items, self.chunks);
         flags.degraded = flags.degraded || decoded.degraded;
+        let ctx_reused: bool = decoded.segments.iter().any(|seg: &binmatch::MatchSegment| {
+            seg.binds && seg.dst.as_ref().and_then(as_reg) == Some(ctx)
+        });
         let mut segments: Vec<BinSegment> = Vec::new();
         for seg in decoded.segments {
             segments.push(inline_segment(seg, env, flags));
@@ -447,7 +450,9 @@ impl Lifter<'_> {
             kind: "binary".to_owned(),
             flags: Vec::new(),
         });
-        env.set(ctx, Expr::Var(rest));
+        if !ctx_reused {
+            env.set(ctx, Expr::Var(rest));
+        }
         Some(Stmt::Match {
             pattern: Expr::BinaryConstruct(segments),
             value: subject,

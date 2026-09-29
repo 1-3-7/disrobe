@@ -191,7 +191,21 @@ fn is_true_guard(guard: &Expr) -> bool {
 }
 
 fn is_implicit_failure(body: &[Stmt]) -> bool {
-    matches!(body, [Stmt::Comment(_)])
+    match body {
+        [Stmt::Comment(_)] => true,
+        [Stmt::Return(Expr::Call { target, args })] if target == "erlang:error" => {
+            match args.as_slice() {
+                [Expr::Atom(reason)] => reason == "if_clause",
+                [Expr::Tuple(items)] => matches!(
+                    items.as_slice(),
+                    [Expr::Atom(tag), _]
+                        if matches!(tag.as_str(), "badmatch" | "case_clause" | "try_clause" | "badrecord")
+                ),
+                _ => false,
+            }
+        }
+        _ => false,
+    }
 }
 
 fn drop_synthetic_if_default(mut arms: Vec<IfArm>) -> Vec<IfArm> {

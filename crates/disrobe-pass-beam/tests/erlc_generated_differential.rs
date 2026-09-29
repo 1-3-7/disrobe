@@ -11,18 +11,20 @@ mod common;
 
 use common::erlang_toolchain::{Erlang, require_erlang, run_bounded};
 
-const PROGRAMS: u64 = 24;
+const PROGRAMS: u64 = 40;
 const GRADED: &str = "generated Erlang programs through the stripped core lift";
 const VARIABLES: [&str; 4] = ["A", "B", "C", "D"];
 
 struct Generator {
     state: u64,
+    bindings: u32,
 }
 
 impl Generator {
     const fn new(seed: u64) -> Self {
         Self {
             state: seed ^ 0xA076_1D64_78BD_642F,
+            bindings: 0,
         }
     }
 
@@ -71,7 +73,38 @@ impl Generator {
     }
 
     fn value(&mut self, bound: usize) -> String {
-        match self.below(8) {
+        match self.below(13) {
+            8 => format!(
+                "g({{{}, {}}})",
+                ["small", "big", "other"][self.below(3) as usize],
+                self.arithmetic(1, bound)
+            ),
+            9 => format!(
+                "lists:foldl(fun(X, Acc) -> (Acc * 3 + X) rem 1000 end, {}, lists:seq(1, {}))",
+                self.arithmetic(1, bound),
+                self.below(6)
+            ),
+            10 => format!(
+                "case ({} andalso {}) orelse {} of true -> {}; false -> {} end",
+                self.guard(bound),
+                self.guard(bound),
+                self.guard(bound),
+                self.arithmetic(1, bound),
+                self.arithmetic(1, bound)
+            ),
+            11 => {
+                let n: u32 = self.bindings;
+                self.bindings += 1;
+                format!(
+                    "begin <<P{n}:8, Q{n}:8, _/binary>> = <<(({}) rem 256), (({}) rem 256), 7>>, P{n} * 256 + Q{n} end",
+                    self.arithmetic(1, bound),
+                    self.arithmetic(1, bound)
+                )
+            }
+            12 => format!(
+                "length(lists:reverse(lists:duplicate({}, $a) ++ \"xyz\"))",
+                self.below(5)
+            ),
             0 => format!(
                 "case {} of true -> {}; false -> {} end",
                 self.guard(bound),
@@ -118,7 +151,7 @@ impl Generator {
         let k: u64 = 1 + self.below(5);
         let c: u64 = 1 + self.below(4);
         let mut out: String = format!(
-            "-module({name}).\n-export([test/0]).\n\nf(X) when X > {k} -> X - {k};\nf(X) -> X + {k}.\n\nh(0, Acc) -> Acc;\nh(N, Acc) -> h(N - 1, (Acc + N * {c}) rem 1000).\n\ntest() ->\n"
+            "-module({name}).\n-export([test/0]).\n\nf(X) when X > {k} -> X - {k};\nf(X) -> X + {k}.\n\nh(0, Acc) -> Acc;\nh(N, Acc) -> h(N - 1, (Acc + N * {c}) rem 1000).\n\ng({{small, V}}) when V < 10 -> V * 2;\ng({{small, V}}) -> V;\ng({{big, V}}) -> V + 100;\ng({{_, V}}) -> -V.\n\ntest() ->\n"
         );
         for (index, name) in VARIABLES.iter().enumerate() {
             let value: String = if index == 0 {
@@ -223,6 +256,57 @@ fn generated_programs_recompile_and_run_identically() {
 }
 
 #[test]
+fn captured_calls_and_comprehension_helpers_recompile_and_run_identically() {
+    let erlang: Erlang = require_erlang(GRADED);
+    let scratch: ScratchDir = ScratchDir::create("disrobe_beam_captures").expect("scratch");
+    let source: &str = "-module(captures).\n-export([test/0]).\n\
+        counter(Parent, N) -> receive {add, V} -> counter(Parent, N + V); stop -> Parent ! {total, N} end.\n\
+        test() ->\n\
+        Adders = [fun(V) -> V + K end || K <- [1, 10, 100]],\n\
+        Applied = [F(5) || F <- Adders],\n\
+        Self = self(),\n\
+        Pid = spawn(fun() -> counter(Self, 0) end),\n\
+        [Pid ! {add, V} || V <- [1, 2, 3]],\n\
+        Pid ! stop,\n\
+        Total = receive {total, T} -> T after 2000 -> timeout end,\n\
+        {Applied, Total}.\n";
+    let (orig_dir, recovered): (PathBuf, String) =
+        recovered_source(&erlang, scratch.path(), "captures", source);
+    let expected: String = run_test(&erlang, &orig_dir, "captures").expect("original runs");
+    assert_eq!(expected.trim(), "{[6,15,105],6}");
+    assert_eq!(
+        recovered_output(&erlang, scratch.path(), "captures", &recovered),
+        Ok(expected),
+        "--- recovered ---\n{recovered}"
+    );
+}
+
+#[test]
+fn failed_matches_and_generators_still_raise_after_recovery() {
+    let erlang: Erlang = require_erlang(GRADED);
+    let scratch: ScratchDir = ScratchDir::create("disrobe_beam_badmatch").expect("scratch");
+    let source: &str = "-module(matches).\n-export([test/0]).\n\
+        deposit(B, V) when V > 0 -> {ok, B + V};\n\
+        deposit(B, _) -> {error, B}.\n\
+        step(B) -> {ok, B1} = deposit(B, 5), {error, _} = deposit(B1, -1), B1.\n\
+        sends(P, L) -> [P ! {add, V} || V <- L].\n\
+        test() ->\n\
+        Good = step(10),\n\
+        Bad = try {ok, X} = deposit(3, -2), X catch error:{badmatch, V} -> {caught, V} end,\n\
+        Gen = try sends(self(), not_a_list) catch error:{bad_generator, G} -> {bad, G} end,\n\
+        {Good, Bad, Gen}.\n";
+    let (orig_dir, recovered): (PathBuf, String) =
+        recovered_source(&erlang, scratch.path(), "matches", source);
+    let expected: String = run_test(&erlang, &orig_dir, "matches").expect("original runs");
+    assert_eq!(expected.trim(), "{15,{caught,{error,3}},{bad,not_a_list}}");
+    assert_eq!(
+        recovered_output(&erlang, scratch.path(), "matches", &recovered),
+        Ok(expected),
+        "--- recovered ---\n{recovered}"
+    );
+}
+
+#[test]
 fn the_generator_is_deterministic_and_varied() {
     assert_eq!(Generator::new(3).module("m"), Generator::new(3).module("m"));
     let all: String = (0..PROGRAMS)
@@ -237,6 +321,11 @@ fn the_generator_is_deterministic_and_varied() {
         "element(",
         "maps:get(",
         "f(",
+        "g({",
+        "lists:foldl(",
+        "andalso",
+        "<<P0:8",
+        "lists:duplicate(",
     ] {
         assert!(all.contains(shape), "the corpus never generates `{shape}`");
     }
