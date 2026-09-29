@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use disrobe_core::behavior::{BehaviorReport, CategoryFinding};
+use disrobe_core::chain::VerdictDoc;
 use disrobe_core::interop::{IndicatorBundle, IndicatorClass, UnifiedIndicator};
 use disrobe_core::ioc::{Indicator as IocIndicator, IocReport};
 use serde::Serialize;
@@ -960,7 +961,7 @@ fn batch_run(document: &ReportDocument, report: &BatchReport, stamp: Option<&str
                                 "{} ran chain [{}] with verdict {}",
                                 file.relative,
                                 file.chain.join(" -> "),
-                                file.verdict.as_deref().unwrap_or("none")
+                                file.verdict.as_ref().map_or("none", VerdictDoc::as_str)
                             )
                         },
                         |error: &String| format!("{} failed: {error}", file.relative),

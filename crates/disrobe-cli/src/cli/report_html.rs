@@ -963,11 +963,16 @@ pub(crate) fn render_batch_html(report: &BatchReport) -> String {
     );
     cell(
         &mut out,
-        "detect-only",
+        "incomplete",
         &format!(
             "<span class=\"num\" style=\"color:{COLOR_AMBER}\">{}</span>",
-            report.detect_only
+            report.incomplete
         ),
+    );
+    cell(
+        &mut out,
+        "not applicable",
+        &format!("<span class=\"num\">{}</span>", report.not_applicable),
     );
     cell(
         &mut out,

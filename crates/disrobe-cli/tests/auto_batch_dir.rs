@@ -37,7 +37,7 @@ fn auto_directory_writes_manifest_and_per_file_dirs() {
     assert_eq!(r.code, 0, "batch auto must exit 0; stderr={}", r.stderr);
 
     let manifest: serde_json::Value = read_manifest(&out);
-    assert_eq!(manifest["schema"], "disrobe.batch.manifest/v2");
+    assert_eq!(manifest["schema"], "disrobe.batch.manifest/v3");
     assert!(
         manifest.get("jobs").is_none(),
         "the manifest records no worker count: {manifest}"
@@ -53,6 +53,54 @@ fn auto_directory_writes_manifest_and_per_file_dirs() {
             "a manifest entry records no duration: {e}"
         );
     }
+}
+
+#[test]
+fn a_directory_run_classifies_each_file_by_its_verdict() {
+    let root_scratch: disrobe_core::scratch::ScratchDir = temp_dir("batch-classes");
+    let root: PathBuf = root_scratch.path().to_path_buf();
+    let pyc: Vec<u8> = std::fs::read(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../corpus/python/decompile/playground/__pycache__/tiny_3_14.cpython-314.pyc"),
+    )
+    .expect("the committed 3.14 pyc fixture");
+    let mut broken: Vec<u8> = pyc[..16].to_vec();
+    broken.extend_from_slice(&[0xff; 64]);
+    write(&root.join("recovered.pyc"), &pyc);
+    write(&root.join("broken.pyc"), &broken);
+    write(&root.join("notes.txt"), b"plain text that no pass claims\n");
+    let out_scratch: disrobe_core::scratch::ScratchDir = temp_dir("batch-classes-out");
+    let out: PathBuf = out_scratch.path().to_path_buf();
+
+    let r: Run = run_disrobe(&[
+        "auto",
+        root.to_str().unwrap(),
+        "--out",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(r.code, 0, "batch auto must exit 0; stderr={}", r.stderr);
+
+    let manifest: serde_json::Value = read_manifest(&out);
+    let verdict_of = |relative: &str| -> String {
+        manifest["entries"]
+            .as_array()
+            .expect("entries array")
+            .iter()
+            .find(|e: &&serde_json::Value| e["relative"] == relative)
+            .map_or_else(
+                || panic!("no entry for {relative}: {manifest}"),
+                |e: &serde_json::Value| e["verdict"].to_string(),
+            )
+    };
+    assert_eq!(verdict_of("recovered.pyc"), "\"complete\"", "{manifest}");
+    assert_eq!(verdict_of("broken.pyc"), "\"error\"", "{manifest}");
+    assert_eq!(verdict_of("notes.txt"), "\"not-applicable\"", "{manifest}");
+    let summary: &serde_json::Value = &manifest["summary"];
+    assert_eq!(summary["processed"], serde_json::json!(3), "{summary}");
+    assert_eq!(summary["recovered"], serde_json::json!(1), "{summary}");
+    assert_eq!(summary["errors"], serde_json::json!(1), "{summary}");
+    assert_eq!(summary["not_applicable"], serde_json::json!(1), "{summary}");
+    assert_eq!(summary["incomplete"], serde_json::json!(0), "{summary}");
 }
 
 #[test]
@@ -154,7 +202,7 @@ fn auto_directory_json_output_is_machine_readable() {
     assert_eq!(r.code, 0, "stderr={}", r.stderr);
     let parsed: serde_json::Value =
         serde_json::from_str(&r.stdout).expect("--json batch must emit valid json to stdout");
-    assert_eq!(parsed["schema"], "disrobe.batch.manifest/v2");
+    assert_eq!(parsed["schema"], "disrobe.batch.manifest/v3");
     assert_eq!(parsed["summary"]["processed"], serde_json::json!(1));
 }
 

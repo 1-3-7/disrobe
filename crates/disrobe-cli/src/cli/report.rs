@@ -383,7 +383,7 @@ pub(crate) struct BatchFileView {
     pub(crate) relative: String,
     pub(crate) detected_format: Option<String>,
     pub(crate) chain: Vec<String>,
-    pub(crate) verdict: Option<String>,
+    pub(crate) verdict: Option<VerdictDoc>,
     pub(crate) recovery_score: Option<f64>,
     pub(crate) error: Option<String>,
 }
@@ -397,7 +397,8 @@ pub(crate) struct BatchReport {
     pub(crate) chain: String,
     pub(crate) processed: usize,
     pub(crate) recovered: usize,
-    pub(crate) detect_only: usize,
+    pub(crate) incomplete: usize,
+    pub(crate) not_applicable: usize,
     pub(crate) errors: usize,
     pub(crate) mean_recovery_score: Option<f64>,
     pub(crate) files: Vec<BatchFileView>,
@@ -484,6 +485,13 @@ const fn wall_kind_for(node: &NodeDoc) -> Option<WallKind> {
         } else {
             WallKind::NoPassAccepted
         }),
+        VerdictDoc::NotApplicable => {
+            if node.pass.is_some() {
+                None
+            } else {
+                Some(WallKind::NoPassAccepted)
+            }
+        }
         VerdictDoc::Cycle => Some(WallKind::RepeatedArtifact),
         VerdictDoc::CapReached => Some(WallKind::DepthCapReached),
         VerdictDoc::DryRun => Some(WallKind::NotExecuted),
@@ -602,7 +610,7 @@ fn collect_walls(
 
 const fn document_wall_kind(verdict: &VerdictDoc) -> Option<WallKind> {
     match verdict {
-        VerdictDoc::Stalled => Some(WallKind::NoPassAccepted),
+        VerdictDoc::Stalled | VerdictDoc::NotApplicable => Some(WallKind::NoPassAccepted),
         VerdictDoc::Cycle => Some(WallKind::RepeatedArtifact),
         VerdictDoc::CapReached => Some(WallKind::DepthCapReached),
         VerdictDoc::DryRun => Some(WallKind::NotExecuted),
@@ -1023,7 +1031,8 @@ fn build_batch(manifest: &BatchManifest, source_dir: &Path) -> BatchReport {
         chain: manifest.chain.clone(),
         processed: manifest.summary.processed,
         recovered: manifest.summary.recovered,
-        detect_only: manifest.summary.detect_only,
+        incomplete: manifest.summary.incomplete,
+        not_applicable: manifest.summary.not_applicable,
         errors: manifest.summary.errors,
         mean_recovery_score,
         files,
@@ -1377,8 +1386,8 @@ fn render_text_batch(r: &BatchReport, out: &mut String) {
     let _ = writeln!(out, "  chain:       {}", r.chain);
     let _ = writeln!(
         out,
-        "  files:       {} processed, {} recovered, {} detect-only, {} errors",
-        r.processed, r.recovered, r.detect_only, r.errors
+        "  files:       {} processed, {} recovered, {} incomplete, {} not applicable, {} failed",
+        r.processed, r.recovered, r.incomplete, r.not_applicable, r.errors
     );
     if let Some(mean) = r.mean_recovery_score {
         let _ = writeln!(out, "  mean score:  {:.0}%", mean * 100.0);
@@ -1624,8 +1633,8 @@ fn render_markdown_batch(r: &BatchReport, out: &mut String) {
     let _ = writeln!(out, "- chain: `{}`", r.chain);
     let _ = writeln!(
         out,
-        "- {} processed, {} recovered, {} detect-only, {} errors",
-        r.processed, r.recovered, r.detect_only, r.errors
+        "- {} processed, {} recovered, {} incomplete, {} not applicable, {} failed",
+        r.processed, r.recovered, r.incomplete, r.not_applicable, r.errors
     );
     if let Some(mean) = r.mean_recovery_score {
         let _ = writeln!(out, "- mean recovery score: {:.0}%", mean * 100.0);
@@ -1791,7 +1800,8 @@ pub(crate) fn batch_report_for_test() -> BatchReport {
         chain: "auto:8".to_string(),
         processed: 2,
         recovered: 1,
-        detect_only: 0,
+        incomplete: 0,
+        not_applicable: 0,
         errors: 1,
         mean_recovery_score: Some(0.67),
         files: vec![
@@ -1799,7 +1809,7 @@ pub(crate) fn batch_report_for_test() -> BatchReport {
                 relative: "a.pyc".to_string(),
                 detected_format: Some("Python".to_string()),
                 chain: vec!["py.decompile".to_string()],
-                verdict: Some("Complete".to_string()),
+                verdict: Some(VerdictDoc::Complete),
                 recovery_score: Some(0.67),
                 error: None,
             },
@@ -2500,15 +2510,15 @@ mod tests {
         let scratch: ScratchDir = tmp_dir("batch");
         let dir: PathBuf = scratch.path().to_path_buf();
         let manifest: &str = r#"{
-          "schema": "disrobe.batch.manifest/v2",
+          "schema": "disrobe.batch.manifest/v3",
           "tool_version": "0.9.0",
           "root": "samples",
           "out_root": "out/samples-batch",
           "chain": "auto:8",
-          "summary": { "processed": 2, "recovered": 1, "detect_only": 0, "errors": 1 },
+          "summary": { "processed": 2, "recovered": 1, "incomplete": 0, "not_applicable": 0, "errors": 1 },
           "entries": [
             { "input": "samples/a.pyc", "relative": "a.pyc", "size": 64,
-              "detected_format": "Python", "chain": ["py.decompile"], "verdict": "Complete",
+              "detected_format": "Python", "chain": ["py.decompile"], "verdict": "complete",
               "recovery_score": 0.67, "output_dir": "out/samples-batch/a.pyc",
               "error": null },
             { "input": "samples/bad", "relative": "bad", "size": 0,

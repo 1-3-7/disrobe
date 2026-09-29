@@ -14,7 +14,7 @@ use super::glob::GlobMatcher;
 use super::output::{OutputFormat, emit};
 use super::progress_ui::{self, ActiveProgress};
 use disrobe_core::chain::run_record::millis;
-use disrobe_core::chain::{RunClock, RunRecord};
+use disrobe_core::chain::{RunClock, RunRecord, VerdictDoc, VerdictGrade};
 use disrobe_core::progress::Progress as _;
 use disrobe_core::time::WallClock;
 
@@ -40,7 +40,7 @@ pub(crate) struct ManifestEntry {
     pub(crate) size: u64,
     pub(crate) detected_format: Option<String>,
     pub(crate) chain: Vec<String>,
-    pub(crate) verdict: Option<String>,
+    pub(crate) verdict: Option<VerdictDoc>,
     pub(crate) recovery_score: Option<f64>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub(crate) anti_analysis: Vec<String>,
@@ -54,7 +54,8 @@ pub(crate) struct ManifestEntry {
 pub(crate) struct BatchSummary {
     pub(crate) processed: usize,
     pub(crate) recovered: usize,
-    pub(crate) detect_only: usize,
+    pub(crate) incomplete: usize,
+    pub(crate) not_applicable: usize,
     pub(crate) errors: usize,
 }
 
@@ -69,7 +70,7 @@ pub(crate) struct BatchManifest {
     pub(crate) entries: Vec<ManifestEntry>,
 }
 
-pub(crate) const MANIFEST_SCHEMA_VERSION: &str = "disrobe.batch.manifest/v2";
+pub(crate) const MANIFEST_SCHEMA_VERSION: &str = "disrobe.batch.manifest/v3";
 
 fn is_hidden(entry: &DirEntry) -> bool {
     entry
@@ -97,14 +98,11 @@ fn relative_stem(relative: &Path) -> String {
     }
 }
 
-fn output_stems(files: &[(PathBuf, PathBuf)], disambiguate: bool) -> miette::Result<Vec<String>> {
+fn output_stems(files: &[(PathBuf, PathBuf)]) -> miette::Result<Vec<String>> {
     let bases: Vec<String> = files
         .iter()
         .map(|(_path, relative): &(PathBuf, PathBuf)| relative_stem(relative))
         .collect();
-    if !disambiguate {
-        return Ok(bases);
-    }
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
     for base in &bases {
         let count: &mut usize = counts.entry(base.clone()).or_default();
@@ -294,7 +292,7 @@ fn manifest_entry(path: &Path, relative: &Path, stem: &str, opts: &BatchOptions)
             size,
             detected_format: detected_format(&doc),
             chain: chain_pass_names(&report),
-            verdict: Some(format!("{:?}", doc.verdict)),
+            verdict: Some(doc.verdict.clone()),
             recovery_score: recovery_score(&report),
             anti_analysis: anti_analysis_lines(&anti),
             supplemental_outputs,
@@ -317,14 +315,47 @@ fn manifest_entry(path: &Path, relative: &Path, stem: &str, opts: &BatchOptions)
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EntryClass {
+    Recovered,
+    Incomplete,
+    NotApplicable,
+    Failed,
+}
+
+impl EntryClass {
+    const fn of(entry: &ManifestEntry) -> Self {
+        if entry.error.is_some() {
+            return Self::Failed;
+        }
+        match &entry.verdict {
+            Some(VerdictDoc::NotApplicable) => Self::NotApplicable,
+            Some(verdict) => match verdict.grade() {
+                VerdictGrade::Ok => Self::Recovered,
+                VerdictGrade::Incomplete => Self::Incomplete,
+                VerdictGrade::Failed => Self::Failed,
+            },
+            None => Self::Failed,
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Recovered => "ok  ",
+            Self::Incomplete => "part",
+            Self::NotApplicable => "n/a ",
+            Self::Failed => "ERR ",
+        }
+    }
+}
+
 const fn classify(entry: &ManifestEntry, summary: &mut BatchSummary) {
     summary.processed += 1;
-    if entry.error.is_some() {
-        summary.errors += 1;
-    } else if entry.chain.is_empty() {
-        summary.detect_only += 1;
-    } else {
-        summary.recovered += 1;
+    match EntryClass::of(entry) {
+        EntryClass::Recovered => summary.recovered += 1,
+        EntryClass::Incomplete => summary.incomplete += 1,
+        EntryClass::NotApplicable => summary.not_applicable += 1,
+        EntryClass::Failed => summary.errors += 1,
     }
 }
 
@@ -340,7 +371,7 @@ fn compute_manifest_with(
     let started: WallClock = WallClock::now();
     let started_at: Instant = Instant::now();
     let files: Vec<(PathBuf, PathBuf)> = collect_files(root, opts)?;
-    let stems: Vec<String> = output_stems(&files, opts.backend_export.is_some())?;
+    let stems: Vec<String> = output_stems(&files)?;
     let bar: ActiveProgress = progress_ui::make_progress("disrobe auto");
     bar.set_total(u64::try_from(files.len()).unwrap_or(u64::MAX));
     let processed: Vec<Processed> = if opts.jobs <= 1 || files.len() <= 1 {
@@ -424,20 +455,15 @@ pub(crate) fn run_dir(root: PathBuf, opts: BatchOptions, fmt: OutputFormat) -> m
         println!("  out:         {}", display_manifest.out_root);
         println!("  chain:       {}", display_manifest.chain);
         println!(
-            "  files:       {} processed, {} recovered, {} detect-only, {} errors",
+            "  files:       {} processed, {} recovered, {} incomplete, {} not applicable, {} failed",
             display_manifest.summary.processed,
             display_manifest.summary.recovered,
-            display_manifest.summary.detect_only,
+            display_manifest.summary.incomplete,
+            display_manifest.summary.not_applicable,
             display_manifest.summary.errors
         );
         for entry in &display_manifest.entries {
-            let status: &str = if entry.error.is_some() {
-                "ERR "
-            } else if entry.chain.is_empty() {
-                "scan"
-            } else {
-                "ok  "
-            };
+            let status: &str = EntryClass::of(entry).label();
             let score: String = entry
                 .recovery_score
                 .map_or_else(|| "-".to_string(), |s: f64| format!("{s:.2}"));
@@ -497,6 +523,22 @@ fn run_parallel(
 mod tests {
     use super::*;
     use disrobe_core::scratch::ScratchDir;
+
+    #[test]
+    fn inputs_whose_paths_slug_alike_get_their_own_directories() {
+        let files: Vec<(PathBuf, PathBuf)> = ["a/b-c.bin", "a-b/c.bin", "d.bin"]
+            .into_iter()
+            .map(|relative: &str| (PathBuf::from(relative), PathBuf::from(relative)))
+            .collect();
+        let stems: Vec<String> = output_stems(&files).expect("stems");
+        assert_eq!(stems[2], "d.bin");
+        assert_ne!(stems[0], stems[1], "{stems:?}");
+        assert_eq!(
+            stems.iter().collect::<BTreeSet<&String>>().len(),
+            stems.len(),
+            "{stems:?}"
+        );
+    }
 
     #[test]
     fn a_panicking_input_becomes_a_failed_entry_instead_of_ending_the_run() {
@@ -663,7 +705,10 @@ mod tests {
         assert_eq!(manifest.schema, MANIFEST_SCHEMA_VERSION);
         assert_eq!(manifest.summary.processed, 2);
         assert_eq!(
-            manifest.summary.recovered + manifest.summary.detect_only + manifest.summary.errors,
+            manifest.summary.recovered
+                + manifest.summary.incomplete
+                + manifest.summary.not_applicable
+                + manifest.summary.errors,
             2,
             "every file must be classified exactly once"
         );
