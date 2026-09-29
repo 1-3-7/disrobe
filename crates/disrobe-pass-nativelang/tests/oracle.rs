@@ -292,7 +292,7 @@ fn zig_detects_and_demangles_matching_independent_symtab() {
         analysis.recovery.source_grade,
         SourceGrade::TypesAndLines,
         "the zig fixture is debug-built: DWARF types + pc->source line map are recoverable, so the \
-         grade is TypesAndLines (the original .zig surface syntax stays an honest wall - we recover \
+         grade is TypesAndLines (the original .zig surface syntax stays a wall - we recover \
          types/lines/disassembly, not source text)",
     );
     assert!(
@@ -417,7 +417,7 @@ fn nim_detects_and_demangles_itanium_matching_known_source() {
         analysis.recovery.source_grade,
         SourceGrade::TypesAndLines,
         "the nim fixture is debug-built: DWARF types + line map are recoverable (TypesAndLines); \
-         the original .nim surface syntax remains an honest wall",
+         the original .nim surface syntax remains a wall",
     );
     assert!(
         analysis.recovery.source_recoverable,
@@ -858,7 +858,7 @@ fn d_object_detects_and_demangles_matching_known_source() {
         SourceGrade::SymbolsOnly,
         "the d fixture is a relocatable .o: type DIEs are reconstructable but .text has no assigned \
          address so there is no usable pc->line coverage; the grade is SymbolsOnly and \
-         source_recoverable stays false honestly (not a hardcoded wall, a measured one)",
+         source_recoverable stays false (not a hardcoded wall, a measured one)",
     );
     assert!(
         !analysis.recovery.source_recoverable,
@@ -1572,7 +1572,7 @@ fn d_linked_pe_recovers_structural_classinfo_names_matching_symtab() {
     );
     assert!(
         analysis.recovery.std_symbol_count > 100,
-        "the druntime/phobos RTTI names must be recovered and honestly classified as std, got {}",
+        "the druntime/phobos RTTI names must be recovered and classified as std, got {}",
         analysis.recovery.std_symbol_count
     );
     assert!(

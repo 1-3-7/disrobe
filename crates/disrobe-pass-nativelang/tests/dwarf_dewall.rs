@@ -219,7 +219,7 @@ fn stripped_binary_degrades_honestly_carve_disasm_no_fabrication() {
             .functions
             .iter()
             .all(|f| f.name.starts_with("sub_")),
-        "stripped functions must surface as honest sub_<addr> names, got {:?}",
+        "stripped functions must surface as sub_<addr> names, got {:?}",
         analysis
             .function_recovery
             .functions

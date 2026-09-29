@@ -120,7 +120,7 @@ fn set_emits_decision_points() {
     assert!(
         stderr.contains("[debug:nativelang] source partial:")
             || stderr.contains("[debug:nativelang] source wall:"),
-        "expected an honest graded source line (partial when DWARF carries types+lines, wall \
+        "expected a graded source line (partial when DWARF carries types+lines, wall \
          otherwise), got:\n{stderr}"
     );
     assert!(

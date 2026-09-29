@@ -106,7 +106,7 @@ fn nim_mm_modes_classify_to_the_build_flag() {
         for token in spec.absent {
             assert!(
                 !raw_has(&bytes, token),
-                "mm_{}.exe: symbol {token} must be genuinely absent; its absence is what \
+                "mm_{}.exe: symbol {token} must be absent; its absence is what \
                  separates {} from a sibling mode",
                 spec.flag,
                 spec.flag
