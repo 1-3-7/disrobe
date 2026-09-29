@@ -1,5 +1,7 @@
 use std::io::Read;
 
+use disrobe_bytes::{ByteReadError, read_u16_le_at, read_u32_le_at, read_u64_le_at};
+
 use crate::error::{Error, Result};
 use crate::limits::validate_binary_input_size;
 
@@ -294,14 +296,14 @@ fn first_entry_plausible(prefix: &[u8], encoding: FilenameEncoding, has_checksum
             return read_name(prefix, cursor, encoding).is_some();
         }
     }
-    let Some(size): Option<u64> = read_u64_le(prefix, cursor) else {
+    let Some(size): Option<u64> = read_u64_le_at(prefix, cursor).ok() else {
         return false;
     };
     cursor += 8;
     if size > MAX_ENTRY_SIZE {
         return false;
     }
-    if has_checksums && read_u32_le(prefix, cursor).is_none() {
+    if has_checksums && read_u32_le_at(prefix, cursor).is_err() {
         return false;
     }
     true
@@ -574,13 +576,15 @@ fn count_walk(
                 continue;
             }
         }
-        let size: u64 = read_u64_le(stream, cursor).ok_or(Error::EntryTruncated(cursor))?;
+        let size: u64 = read_u64_le_at(stream, cursor)
+            .map_err(|_: ByteReadError| Error::EntryTruncated(cursor))?;
         cursor += 8;
         if size > MAX_ENTRY_SIZE {
             return Err(Error::EntryTruncated(cursor));
         }
         if has_checksums {
-            let _value: u32 = read_u32_le(stream, cursor).ok_or(Error::EntryTruncated(cursor))?;
+            let _value: u32 = read_u32_le_at(stream, cursor)
+                .map_err(|_: ByteReadError| Error::EntryTruncated(cursor))?;
             cursor += 4;
         }
         let size_usize: usize = usize::try_from(size).map_err(|_| Error::EntryTruncated(cursor))?;
@@ -639,14 +643,16 @@ fn stream_entries(
             }
         }
 
-        let size: u64 = read_u64_le(stream, cursor).ok_or(Error::EntryTruncated(cursor))?;
+        let size: u64 = read_u64_le_at(stream, cursor)
+            .map_err(|_: ByteReadError| Error::EntryTruncated(cursor))?;
         cursor += 8;
         if size > MAX_ENTRY_SIZE {
             return Err(Error::EntryTruncated(cursor));
         }
         data_total = checked_extracted_data_total(data_total, size)?;
         let crc32: Option<u32> = if has_checksums {
-            let value: u32 = read_u32_le(stream, cursor).ok_or(Error::EntryTruncated(cursor))?;
+            let value: u32 = read_u32_le_at(stream, cursor)
+                .map_err(|_: ByteReadError| Error::EntryTruncated(cursor))?;
             cursor += 4;
             Some(value)
         } else {
@@ -704,7 +710,7 @@ fn uncompressed_first_entry_plausible(body: &[u8]) -> bool {
         }) else {
             continue;
         };
-        let Some(size): Option<u64> = read_u64_le(body, size_at) else {
+        let Some(size): Option<u64> = read_u64_le_at(body, size_at).ok() else {
             continue;
         };
         let Some(end): Option<u64> = (size_at as u64)
@@ -903,14 +909,16 @@ fn try_walk(
             }
         }
 
-        let size: u64 = read_u64_le(stream, cursor).ok_or(Error::EntryTruncated(cursor))?;
+        let size: u64 = read_u64_le_at(stream, cursor)
+            .map_err(|_: ByteReadError| Error::EntryTruncated(cursor))?;
         cursor += 8;
         if size > MAX_ENTRY_SIZE {
             return Err(Error::EntryTruncated(cursor));
         }
 
         let crc32: Option<u32> = if has_checksums {
-            let value: u32 = read_u32_le(stream, cursor).ok_or(Error::EntryTruncated(cursor))?;
+            let value: u32 = read_u32_le_at(stream, cursor)
+                .map_err(|_: ByteReadError| Error::EntryTruncated(cursor))?;
             cursor += 4;
             Some(value)
         } else {
@@ -970,7 +978,7 @@ fn read_name_utf16le(stream: &[u8], start: usize) -> Option<(String, usize)> {
     let mut cursor: usize = start;
     let mut units: Vec<u16> = Vec::new();
     loop {
-        let unit: u16 = read_u16_le(stream, cursor)?;
+        let unit: u16 = read_u16_le_at(stream, cursor).ok()?;
         cursor += 2;
         if unit == 0 {
             break;
@@ -1020,29 +1028,6 @@ const fn is_plausible_path_unit(unit: u16) -> bool {
 const fn is_plausible_path_byte(byte: u8) -> bool {
     matches!(byte, 0x20..=0x7E | 0x80..=0xFF)
         && !matches!(byte, b'?' | b'*' | b'<' | b'>' | b'|' | b'"')
-}
-
-#[inline]
-fn read_u16_le(stream: &[u8], at: usize) -> Option<u16> {
-    let end: usize = at.checked_add(2)?;
-    let bytes: &[u8] = stream.get(at..end)?;
-    Some(u16::from_le_bytes([bytes[0], bytes[1]]))
-}
-
-#[inline]
-fn read_u32_le(stream: &[u8], at: usize) -> Option<u32> {
-    let end: usize = at.checked_add(4)?;
-    let bytes: &[u8] = stream.get(at..end)?;
-    Some(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-}
-
-#[inline]
-fn read_u64_le(stream: &[u8], at: usize) -> Option<u64> {
-    let end: usize = at.checked_add(8)?;
-    let bytes: &[u8] = stream.get(at..end)?;
-    Some(u64::from_le_bytes([
-        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-    ]))
 }
 
 #[cfg(test)]
@@ -1104,13 +1089,6 @@ mod tests {
     #[test]
     fn validation_offset_overflow_returns_none() {
         assert_eq!(validates_at(&[], usize::MAX), None);
-    }
-
-    #[test]
-    fn integer_read_offset_overflow_returns_none() {
-        assert_eq!(read_u16_le(&[], usize::MAX), None);
-        assert_eq!(read_u32_le(&[], usize::MAX), None);
-        assert_eq!(read_u64_le(&[], usize::MAX), None);
     }
 
     #[test]

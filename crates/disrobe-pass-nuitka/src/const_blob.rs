@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use disrobe_bytes::read_uleb128_at;
+use disrobe_bytes::{read_i32_le_at, read_i64_le_at, read_u64_le_at, read_uleb128_at};
 use serde::{Deserialize, Serialize};
 
 use disrobe_core::debug::DebugLog;
@@ -182,21 +182,21 @@ impl<'a> Reader<'a> {
     }
 
     fn i32(&mut self) -> Option<i32> {
-        let raw: &[u8] = self.buf.get(self.pos..self.pos + 4)?;
+        let value: i32 = read_i32_le_at(self.buf, self.pos).ok()?;
         self.pos += 4;
-        Some(i32::from_le_bytes(raw.try_into().ok()?))
+        Some(value)
     }
 
     fn i64(&mut self) -> Option<i64> {
-        let raw: &[u8] = self.buf.get(self.pos..self.pos + 8)?;
+        let value: i64 = read_i64_le_at(self.buf, self.pos).ok()?;
         self.pos += 8;
-        Some(i64::from_le_bytes(raw.try_into().ok()?))
+        Some(value)
     }
 
     fn u64(&mut self) -> Option<u64> {
-        let raw: &[u8] = self.buf.get(self.pos..self.pos + 8)?;
+        let value: u64 = read_u64_le_at(self.buf, self.pos).ok()?;
         self.pos += 8;
-        Some(u64::from_le_bytes(raw.try_into().ok()?))
+        Some(value)
     }
 
     fn length(&mut self) -> Option<u64> {

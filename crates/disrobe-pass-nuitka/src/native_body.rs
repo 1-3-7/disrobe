@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use disrobe_bytes::{read_u16_le_at, read_u32_le_at, read_u64_le_at};
 use disrobe_core::debug::DebugLog;
 use iced_x86::{Decoder, DecoderOptions, FlowControl, Instruction, Mnemonic, OpKind, Register};
 use serde::{Deserialize, Serialize};
@@ -114,18 +115,6 @@ struct PeView {
     iat: BTreeMap<u64, String>,
 }
 
-fn read_u16(image: &[u8], at: usize) -> Option<u16> {
-    Some(u16::from_le_bytes(image.get(at..at + 2)?.try_into().ok()?))
-}
-
-fn read_u32(image: &[u8], at: usize) -> Option<u32> {
-    Some(u32::from_le_bytes(image.get(at..at + 4)?.try_into().ok()?))
-}
-
-fn read_u64(image: &[u8], at: usize) -> Option<u64> {
-    Some(u64::from_le_bytes(image.get(at..at + 8)?.try_into().ok()?))
-}
-
 struct Section {
     name: String,
     virtual_address: u64,
@@ -138,36 +127,36 @@ fn parse_pe(image: &[u8]) -> Option<PeView> {
     if image.len() < 0x40 || &image[0..2] != b"MZ" {
         return None;
     }
-    let e_lfanew: usize = read_u32(image, 0x3c)? as usize;
+    let e_lfanew: usize = read_u32_le_at(image, 0x3c).ok()? as usize;
     if image.get(e_lfanew..e_lfanew + 4)? != b"PE\0\0" {
         return None;
     }
     let coff: usize = e_lfanew + 4;
-    let machine: u16 = read_u16(image, coff)?;
+    let machine: u16 = read_u16_le_at(image, coff).ok()?;
     if machine != 0x8664 {
         return None;
     }
-    let num_sections: usize = read_u16(image, coff + 2)? as usize;
-    let opt_size: usize = read_u16(image, coff + 16)? as usize;
+    let num_sections: usize = read_u16_le_at(image, coff + 2).ok()? as usize;
+    let opt_size: usize = read_u16_le_at(image, coff + 16).ok()? as usize;
     let opt: usize = coff + 20;
-    let magic: u16 = read_u16(image, opt)?;
+    let magic: u16 = read_u16_le_at(image, opt).ok()?;
     if magic != 0x20b {
         return None;
     }
-    let image_base: u64 = read_u64(image, opt + 24)?;
-    let dir_count: u32 = read_u32(image, opt + 108)?;
+    let image_base: u64 = read_u64_le_at(image, opt + 24).ok()?;
+    let dir_count: u32 = read_u32_le_at(image, opt + 108).ok()?;
     let import_dir_rva: u64 = if dir_count > 1 {
-        u64::from(read_u32(image, opt + 120)?)
+        u64::from(read_u32_le_at(image, opt + 120).ok()?)
     } else {
         0
     };
     let exception_dir_rva: u64 = if dir_count > 3 {
-        u64::from(read_u32(image, opt + 136)?)
+        u64::from(read_u32_le_at(image, opt + 136).ok()?)
     } else {
         0
     };
     let exception_dir_size: u32 = if dir_count > 3 {
-        read_u32(image, opt + 140)?
+        read_u32_le_at(image, opt + 140).ok()?
     } else {
         0
     };
@@ -180,10 +169,10 @@ fn parse_pe(image: &[u8]) -> Option<PeView> {
         let name: String = String::from_utf8_lossy(&raw_name[..name_end]).into_owned();
         sections.push(Section {
             name,
-            virtual_size: read_u32(image, sh + 8)?,
-            virtual_address: u64::from(read_u32(image, sh + 12)?),
-            raw_size: read_u32(image, sh + 16)?,
-            raw_ptr: read_u32(image, sh + 20)?,
+            virtual_size: read_u32_le_at(image, sh + 8).ok()?,
+            virtual_address: u64::from(read_u32_le_at(image, sh + 12).ok()?),
+            raw_size: read_u32_le_at(image, sh + 16).ok()?,
+            raw_ptr: read_u32_le_at(image, sh + 20).ok()?,
         });
     }
 
@@ -246,9 +235,10 @@ fn parse_pdata(
     let count: usize = (dir_size as usize / 12).min(MAX_FUNCTIONS);
     for i in 0..count {
         let at: usize = base_off + i * 12;
-        let (Some(begin), Some(end)): (Option<u32>, Option<u32>) =
-            (read_u32(image, at), read_u32(image, at + 4))
-        else {
+        let (Some(begin), Some(end)): (Option<u32>, Option<u32>) = (
+            read_u32_le_at(image, at).ok(),
+            read_u32_le_at(image, at + 4).ok(),
+        ) else {
             break;
         };
         if begin != 0 && end > begin {
@@ -272,9 +262,10 @@ fn parse_imports(
         return iat;
     };
     for _ in 0..4096 {
-        let (Some(original_first_thunk), Some(first_thunk)): (Option<u32>, Option<u32>) =
-            (read_u32(image, desc_off), read_u32(image, desc_off + 16))
-        else {
+        let (Some(original_first_thunk), Some(first_thunk)): (Option<u32>, Option<u32>) = (
+            read_u32_le_at(image, desc_off).ok(),
+            read_u32_le_at(image, desc_off + 16).ok(),
+        ) else {
             break;
         };
         if original_first_thunk == 0 && first_thunk == 0 {
@@ -317,7 +308,7 @@ fn collect_import_thunks(
     };
     let mut slot_va: u64 = image_base + u64::from(first_thunk_rva);
     for _ in 0..100_000 {
-        let Some(entry): Option<u64> = read_u64(image, lookup_off) else {
+        let Some(entry): Option<u64> = read_u64_le_at(image, lookup_off).ok() else {
             break;
         };
         if entry == 0 {
