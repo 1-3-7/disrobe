@@ -434,9 +434,7 @@ fn find_on_path(names: &[&str]) -> Result<PathBuf> {
             }
         }
     }
-    bail!(
-        "none of {names:?} is on PATH; source .developer/orchestration/tool_env.sh or see .developer/TOOLS.md"
-    )
+    bail!("none of {names:?} is on PATH; install it or add its directory to PATH")
 }
 
 fn find_python(version: &str) -> Result<PathBuf> {
