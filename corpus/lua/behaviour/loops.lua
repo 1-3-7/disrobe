@@ -97,3 +97,42 @@ local function grade(v) return v > 3 and (v > 4 and "big" or "mid") or "small" e
 print(grade(5), grade(4), grade(1))
 local function pick(flag, a, b) return flag and a or b end
 print(pick(true, false, "b"), pick(nil, 1, 2))
+
+local fns = {}
+for i = 1, 3 do
+  local k = i * 10
+  fns[i] = function(v) return v + k + i end
+end
+print(fns[1](1), fns[2](1), fns[3](1))
+
+local function account(balance)
+  local function deposit(v) balance = balance + v return balance end
+  local function withdraw(v)
+    if v > balance then return nil, "insufficient" end
+    balance = balance - v
+    return balance
+  end
+  return deposit, withdraw
+end
+local dep, wd = account(10)
+print(dep(5), wd(3), wd(100))
+
+local hit = nil
+for _, row in ipairs({{1, 2}, {3, 4}}) do
+  for _, v in ipairs(row) do
+    if v == 3 then hit = v break end
+  end
+  if hit then break end
+end
+print(hit)
+
+local shout = setmetatable({}, {__index = function(_, key) return key .. "!" end})
+print(shout.hello, rawget(shout, "hello"))
+
+local acc, step = 0, 10
+while true do
+  step = step - 3
+  if step < 0 then break end
+  acc = acc + step
+end
+print(acc, step)
