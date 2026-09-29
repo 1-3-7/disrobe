@@ -975,25 +975,6 @@ fn encrypted_literal_candidates(
             });
         }
     }
-
-    for (cp_idx, utf8_idx) in &string_const_to_utf8 {
-        let _ = cp_idx;
-        if seen.contains(utf8_idx) {
-            continue;
-        }
-        let Some(value): Option<&String> = strings.get(utf8_idx) else {
-            continue;
-        };
-        if value.is_empty() || !looks_encrypted(value) {
-            continue;
-        }
-        seen.insert(*utf8_idx);
-        out.push(LiteralCandidate {
-            utf8_idx: *utf8_idx,
-            literal: value.clone(),
-            seed: None,
-        });
-    }
     out
 }
 
@@ -1144,19 +1125,6 @@ fn string_pool_entries(cf: &ClassFile) -> BTreeMap<u16, u16> {
         }
     }
     map
-}
-
-fn looks_encrypted(s: &str) -> bool {
-    let count: usize = s.chars().count();
-    if count < 1 {
-        return false;
-    }
-    let non_printable: usize = s
-        .chars()
-        .filter(|c| !c.is_ascii_graphic() && !c.is_whitespace())
-        .count();
-    let ratio: f64 = non_printable as f64 / count as f64;
-    ratio > 0.30
 }
 
 fn is_plausible_plaintext(s: &str) -> bool {

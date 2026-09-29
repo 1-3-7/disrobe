@@ -383,7 +383,8 @@ fn recovers_stringbuilder_decrypt() {
         "toString",
         "()Ljava/lang/String;",
     );
-    let _lit: u16 = cb.string(&encrypted);
+    let lit: u16 = cb.string(&encrypted);
+    let self_decrypt: u16 = cb.methodref("Sample", "c", "(Ljava/lang/String;)Ljava/lang/String;");
 
     let code: Vec<u8> =
         builder_xor_decrypt_code(key, charat, length, sb_new, sb_init, sb_append, sb_tostring);
@@ -393,7 +394,21 @@ fn recovers_stringbuilder_decrypt() {
         descriptor_index: decrypt_desc,
         attributes: vec![code_attr(code_name, 3, &code)],
     };
-    let cf: ClassFile = make_class(cb, Vec::new(), vec![method]);
+    let caller_name: u16 = cb.utf8("run");
+    let caller_desc: u16 = cb.utf8("()V");
+    let mut caller_code: Vec<u8> = vec![0x13];
+    caller_code.extend_from_slice(&lit.to_be_bytes());
+    caller_code.push(0xB8);
+    caller_code.extend_from_slice(&self_decrypt.to_be_bytes());
+    caller_code.push(0x57);
+    caller_code.push(0xB1);
+    let caller: MethodInfo = MethodInfo {
+        access_flags: 0x0008,
+        name_index: caller_name,
+        descriptor_index: caller_desc,
+        attributes: vec![code_attr(code_name, 1, &caller_code)],
+    };
+    let cf: ClassFile = make_class(cb, Vec::new(), vec![method, caller]);
 
     let stubs: Vec<StringDecryptStub> = find_string_decrypt_methods(&cf);
     assert_eq!(stubs.len(), 1);

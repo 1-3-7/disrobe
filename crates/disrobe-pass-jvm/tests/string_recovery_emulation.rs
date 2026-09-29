@@ -240,3 +240,83 @@ fn runtime_derived_key_is_honestly_walled() {
         "emulator must refuse to evaluate a runtime-dependent decryptor"
     );
 }
+
+#[test]
+fn only_literals_passed_to_the_decryptor_are_decrypted() {
+    let key: u8 = 0x6B;
+    let secret: &str = "jdbc:mysql://10.0.0.5:3306/payments";
+    let displayed: &str = "ÇÀ ÉTÉ DÉCLARÉ";
+
+    let mut cp: Cp = Cp::new();
+    let code_name: u16 = cp.utf8("Code");
+    let decrypt_name: u16 = cp.utf8("a");
+    let decrypt_desc: u16 = cp.utf8("(Ljava/lang/String;)Ljava/lang/String;");
+    let tochararray: u16 = cp.methodref("java/lang/String", "toCharArray", "()[C");
+    let new_string: u16 = cp.methodref("java/lang/String", "<init>", "([C)V");
+    let string_class: u16 = cp.class("java/lang/String");
+    let self_decrypt: u16 = cp.methodref("App", "a", "(Ljava/lang/String;)Ljava/lang/String;");
+
+    let encrypted: String = secret
+        .encode_utf16()
+        .map(|u| u ^ u16::from(key))
+        .map(|u| char::from_u32(u32::from(u)).unwrap())
+        .collect();
+    let encrypted_literal: u16 = cp.string(&encrypted);
+    let displayed_literal: u16 = cp.string(displayed);
+    let displayed_utf8: u16 = match cp.entries[usize::from(displayed_literal)] {
+        ConstantPoolEntry::String { utf8_index } => utf8_index,
+        _ => panic!("the displayed literal is a String constant"),
+    };
+
+    let mut caller_code: Vec<u8> = vec![0x13];
+    caller_code.extend_from_slice(&encrypted_literal.to_be_bytes());
+    caller_code.push(0xB8);
+    caller_code.extend_from_slice(&self_decrypt.to_be_bytes());
+    caller_code.push(0x57);
+    caller_code.push(0x13);
+    caller_code.extend_from_slice(&displayed_literal.to_be_bytes());
+    caller_code.push(0x57);
+    caller_code.push(0xB1);
+
+    let caller_name: u16 = cp.utf8("run");
+    let caller_desc: u16 = cp.utf8("()V");
+    let decrypt_code: Vec<u8> = xor_string_decrypt(key, tochararray, new_string, string_class);
+
+    let cf: ClassFile = ClassFile {
+        minor_version: 0,
+        major_version: 52,
+        constant_pool: cp.entries,
+        access_flags: 0,
+        this_class: 0,
+        super_class: 0,
+        interfaces: Vec::new(),
+        fields: Vec::new(),
+        methods: vec![
+            MethodInfo {
+                access_flags: 0x0008,
+                name_index: decrypt_name,
+                descriptor_index: decrypt_desc,
+                attributes: vec![code_attr(code_name, 3, &decrypt_code)],
+            },
+            MethodInfo {
+                access_flags: 0x0008,
+                name_index: caller_name,
+                descriptor_index: caller_desc,
+                attributes: vec![code_attr(code_name, 1, &caller_code)],
+            },
+        ],
+        attributes: Vec::new(),
+    };
+
+    let report: StringRecoveryReport = recover_strings(&cf);
+    assert_eq!(
+        report.recovered.values().collect::<Vec<&String>>(),
+        vec![secret],
+        "only the literal handed to the decryptor is decrypted"
+    );
+    assert!(
+        !report.recovered.contains_key(&displayed_utf8),
+        "a literal never passed to the decryptor keeps its authored text: {:?}",
+        report.recovered
+    );
+}
