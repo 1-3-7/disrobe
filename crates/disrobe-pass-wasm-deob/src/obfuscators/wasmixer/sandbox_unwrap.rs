@@ -481,9 +481,7 @@ pub fn unwrap_decryption(bytes: &[u8], stubs: &[StubInfo]) -> Result<UnwrapRepor
     if stubs.is_empty() {
         return Ok(UnwrapReport::default());
     }
-    let (_probes, unresolved): (Vec<DecryptProbe>, Vec<u32>) =
-        collect_decrypt_probes(bytes, stubs)?;
-    let _ = unresolved;
+    collect_decrypt_probes(bytes, stubs)?;
     Err(crate::error::Error::Parse(
         "wasmtime sandbox feature disabled".to_owned(),
     ))
