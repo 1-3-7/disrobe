@@ -1048,7 +1048,9 @@ fn render_method_mode(
     let _ = write!(text, " {{\n{stackmap_note}{body_text}    }}");
     RenderedMethod {
         text,
-        fully_lifted: body.fully_lifted && !body_text.contains(UNRESOLVED_INVOKEDYNAMIC),
+        fully_lifted: body.fully_lifted
+            && !body_text.contains(UNRESOLVED_INVOKEDYNAMIC)
+            && !body_text.contains(HOLE_RENDER),
         has_body: true,
         refused: false,
     }
@@ -1959,6 +1961,9 @@ fn lift_method_body(
         if crate::jsr_inline::contains_jsr(&raw_insns) {
             let inlined: crate::jsr_inline::JsrInlined =
                 crate::jsr_inline::inline_jsr_subroutines(&raw_insns, &code.exception_table);
+            if let Some(reason) = inlined.refusal {
+                return Err(Error::UnrecoveredRegion { reason });
+            }
             (inlined.insns, inlined.exception_table)
         } else {
             (raw_insns, code.exception_table.clone())
@@ -2256,7 +2261,10 @@ fn lift_structured(
         structurer.take_finally_catch_parameter_slots();
     let finally_scoped_local_slots: BTreeSet<u16> = structurer.take_finally_scoped_local_slots();
     let absorbed_blocks: BTreeSet<BlockId> = structurer.take_absorbed_blocks();
-    let block_entry_stacks: BTreeMap<BlockId, Vec<Expr>> =
+    let EntryStacks {
+        stacks: block_entry_stacks,
+        folded_condition_heads,
+    }: EntryStacks =
         compute_block_entry_stacks(cf, &cfg, insns, params, bootstraps, has_this, bool_return);
     let reused_exc_slots: BTreeSet<u16> = reused_exception_slots(insns, &cfg.exception_regions);
     let bool_array_names: BTreeMap<String, u8> =
@@ -2293,6 +2301,7 @@ fn lift_structured(
         finally_inline_skips,
         finally_tail_trims,
         finally_return_stores,
+        folded_condition_heads,
     };
     let mut out: String = String::new();
     render_region(&mut ctx, &root, &mut out, 2);
@@ -2600,7 +2609,8 @@ fn region_falls_through(region: &Region, cfg: &Cfg) -> bool {
             else_body,
             ..
         } => region_falls_through(then_body, cfg) || region_falls_through(else_body, cfg),
-        Region::While { .. } | Region::DoWhile { .. } => true,
+        Region::While { .. } => true,
+        Region::DoWhile { exit, .. } => exit.is_some(),
         Region::Switch { cases, default, .. } => {
             default
                 .as_deref()
@@ -4909,6 +4919,7 @@ struct RenderCtx<'a> {
     finally_inline_skips: BTreeMap<BlockId, usize>,
     finally_tail_trims: BTreeMap<BlockId, usize>,
     finally_return_stores: BTreeMap<BlockId, u16>,
+    folded_condition_heads: BTreeMap<BlockId, [BlockId; 2]>,
 }
 
 fn indent_string(level: usize) -> String {
@@ -5089,6 +5100,9 @@ fn render_region(ctx: &mut RenderCtx<'_>, region: &Region, out: &mut String, lev
             ..
         } => {
             if try_render_conditional_expr(ctx, *head, then_body, else_body, *join, out, level) {
+                return;
+            }
+            if render_folded_condition_head(ctx, *head, then_body, else_body, out, level) {
                 return;
             }
             let cond: String = render_if_condition(ctx, *head, out, level);
@@ -6135,6 +6149,11 @@ const fn branch_pop_count(op: u8) -> usize {
     }
 }
 
+struct EntryStacks {
+    stacks: BTreeMap<BlockId, Vec<Expr>>,
+    folded_condition_heads: BTreeMap<BlockId, [BlockId; 2]>,
+}
+
 fn compute_block_entry_stacks(
     cf: &ClassFile,
     cfg: &Cfg,
@@ -6143,7 +6162,7 @@ fn compute_block_entry_stacks(
     bootstraps: &[crate::attributes::BootstrapMethod],
     has_this: bool,
     bool_return: bool,
-) -> BTreeMap<BlockId, Vec<Expr>> {
+) -> EntryStacks {
     let mut probe: RenderCtx<'_> = RenderCtx {
         cf,
         cfg,
@@ -6174,10 +6193,12 @@ fn compute_block_entry_stacks(
         finally_inline_skips: BTreeMap::new(),
         finally_tail_trims: BTreeMap::new(),
         finally_return_stores: BTreeMap::new(),
+        folded_condition_heads: BTreeMap::new(),
     };
     let dom: Dominators = compute_dominators(cfg);
     let mut exit_stacks: BTreeMap<BlockId, Vec<Expr>> = BTreeMap::new();
     let mut exit_clean: BTreeMap<BlockId, bool> = BTreeMap::new();
+    let mut folded_condition_heads: BTreeMap<BlockId, [BlockId; 2]> = BTreeMap::new();
     for bid in &dom.order {
         let block: &BasicBlock = &cfg.blocks[bid.0 as usize];
         let real_preds: Vec<BlockId> = block
@@ -6200,7 +6221,14 @@ fn compute_block_entry_stacks(
                 }
             }
             preds if preds.len() >= 2 => agreed_join_entry(preds, *bid, &exit_stacks, &exit_clean)
-                .or_else(|| bool_ternary_join_entry(&probe, *bid, preds, &exit_stacks, &exit_clean))
+                .or_else(|| {
+                    let fold: TernaryJoinEntry =
+                        bool_ternary_join_entry(&probe, *bid, preds, &exit_stacks, &exit_clean)?;
+                    if let Some(folded) = fold.folded {
+                        folded_condition_heads.insert(folded.head, folded.arms);
+                    }
+                    Some(fold.entry)
+                })
                 .unwrap_or_default(),
             _ => Vec::new(),
         };
@@ -6211,7 +6239,10 @@ fn compute_block_entry_stacks(
         exit_stacks.insert(*bid, exit);
         exit_clean.insert(*bid, clean);
     }
-    probe.block_entry_stacks
+    EntryStacks {
+        stacks: probe.block_entry_stacks,
+        folded_condition_heads,
+    }
 }
 
 fn agreed_join_entry(
@@ -6238,13 +6269,23 @@ fn agreed_join_entry(
     agreed
 }
 
+struct FoldedCondition {
+    head: BlockId,
+    arms: [BlockId; 2],
+}
+
+struct TernaryJoinEntry {
+    entry: Vec<Expr>,
+    folded: Option<FoldedCondition>,
+}
+
 fn bool_ternary_join_entry(
     ctx: &RenderCtx<'_>,
     bid: BlockId,
     preds: &[BlockId],
     exit_stacks: &BTreeMap<BlockId, Vec<Expr>>,
     exit_clean: &BTreeMap<BlockId, bool>,
-) -> Option<Vec<Expr>> {
+) -> Option<TernaryJoinEntry> {
     let [a, b]: [BlockId; 2] = preds.try_into().ok()?;
     if a == bid || b == bid {
         return None;
@@ -6278,6 +6319,10 @@ fn bool_ternary_join_entry(
     };
     let cond: String = head_condition_to(ctx, head, true_arm)?;
     let mut entry: Vec<Expr> = ea[..prefix_len].to_vec();
+    let pure_arms: bool =
+        arm_is_pure_value(ctx, a, prefix_len) && arm_is_pure_value(ctx, b, prefix_len);
+    let folded: Option<FoldedCondition> =
+        pure_arms.then_some(FoldedCondition { head, arms: [a, b] });
     if let ("1" | "0", "1" | "0") = (rendered_a.as_str(), rendered_b.as_str()) {
         let true_is_one: bool = if true_arm == a {
             rendered_a == "1"
@@ -6285,12 +6330,9 @@ fn bool_ternary_join_entry(
             rendered_b == "1"
         };
         entry.push(Expr::Opaque(if true_is_one { cond } else { invert(&cond) }));
-        return Some(entry);
+        return Some(TernaryJoinEntry { entry, folded });
     }
-    if expr_has_hole(top_a) || expr_has_hole(top_b) {
-        return None;
-    }
-    if !arm_is_pure_value(ctx, a, prefix_len) || !arm_is_pure_value(ctx, b, prefix_len) {
+    if expr_has_hole(top_a) || expr_has_hole(top_b) || !pure_arms {
         return None;
     }
     let (true_top, false_top): (&str, &str) = if true_arm == a {
@@ -6299,7 +6341,7 @@ fn bool_ternary_join_entry(
         (&rendered_b, &rendered_a)
     };
     entry.push(Expr::Opaque(format!("({cond} ? {true_top} : {false_top})")));
-    Some(entry)
+    Some(TernaryJoinEntry { entry, folded })
 }
 
 fn head_true_target_is(ctx: &RenderCtx<'_>, head: BlockId, want: BlockId) -> bool {
@@ -6499,6 +6541,36 @@ fn try_render_conditional_expr(
     ctx.rendered_blocks.insert(then_b);
     ctx.rendered_blocks.insert(else_b);
     render_block_seeded(ctx, join_bid, out, level, vec![ternary]);
+    true
+}
+
+fn render_folded_condition_head(
+    ctx: &mut RenderCtx<'_>,
+    head: BlockId,
+    then_body: &Region,
+    else_body: &Region,
+    out: &mut String,
+    level: usize,
+) -> bool {
+    let Some(arms): Option<[BlockId; 2]> = ctx.folded_condition_heads.get(&head).copied() else {
+        return false;
+    };
+    let (Some(then_b), Some(else_b)): (Option<BlockId>, Option<BlockId>) =
+        (single_block(then_body), single_block(else_body))
+    else {
+        return false;
+    };
+    if !(arms == [then_b, else_b] || arms == [else_b, then_b])
+        || ctx.rendered_blocks.contains(&then_b)
+        || ctx.rendered_blocks.contains(&else_b)
+    {
+        return false;
+    }
+    if !ctx.rendered_blocks.contains(&head) {
+        let _consumed_by_join: String = render_head_prefix_and_condition(ctx, head, out, level);
+    }
+    ctx.rendered_blocks.insert(then_b);
+    ctx.rendered_blocks.insert(else_b);
     true
 }
 
@@ -8235,6 +8307,7 @@ const fn pattern_render_ctx<'a>(
         finally_inline_skips: BTreeMap::new(),
         finally_tail_trims: BTreeMap::new(),
         finally_return_stores: BTreeMap::new(),
+        folded_condition_heads: BTreeMap::new(),
     }
 }
 
@@ -10713,12 +10786,91 @@ fn array_store(stack: &mut Vec<Expr>) -> LiftResult {
     if let Some(result) = try_fold_array_init(stack, &array, &index, &value) {
         return result;
     }
-    LiftResult::Statement(format!(
+    let statement: String = format!(
         "{}[{}] = {}",
         array.render(),
         index.render(),
         value.render()
-    ))
+    );
+    let location: Expr = Expr::ArrayLoad {
+        array: Box::new(array),
+        index: Box::new(index),
+    };
+    settle_memory_write(stack, &location, &value, statement)
+}
+
+fn settle_memory_write(
+    stack: &mut [Expr],
+    location: &Expr,
+    stored: &Expr,
+    statement: String,
+) -> LiftResult {
+    let Some((top, older)): Option<(&mut Expr, &mut [Expr])> = stack.split_last_mut() else {
+        return LiftResult::Statement(statement);
+    };
+    if older
+        .iter()
+        .any(|entry: &Expr| expr_may_read_location(entry, location))
+    {
+        return LiftResult::Unhandled;
+    }
+    if *top == *location
+        && let Some(step) = post_step_of(stored, location)
+    {
+        *top = Expr::Opaque(format!("{}{step}", location.render()));
+        return LiftResult::Pushed;
+    }
+    if *top == *stored {
+        if !matches!(stored, Expr::Const(_) | Expr::Local(_) | Expr::This) {
+            *top = location.clone();
+        }
+        return LiftResult::Statement(statement);
+    }
+    if expr_may_read_location(top, location) {
+        return LiftResult::Unhandled;
+    }
+    LiftResult::Statement(statement)
+}
+
+fn post_step_of(stored: &Expr, location: &Expr) -> Option<&'static str> {
+    let stepped: &Expr = match stored {
+        Expr::Cast { value, .. } => value,
+        other => other,
+    };
+    let Expr::Binary { op, lhs, rhs } = stepped else {
+        return None;
+    };
+    let unit: bool =
+        matches!(rhs.as_ref(), Expr::Const(c) if matches!(c.as_str(), "1" | "1L" | "1.0f" | "1.0"));
+    if !unit || lhs.as_ref() != location {
+        return None;
+    }
+    match *op {
+        "+" => Some("++"),
+        "-" => Some("--"),
+        _ => None,
+    }
+}
+
+fn expr_may_read_location(expr: &Expr, location: &Expr) -> bool {
+    expr_any(expr, |node: &Expr| match (node, location) {
+        (
+            Expr::StaticField { owner, name, .. },
+            Expr::StaticField {
+                owner: written_owner,
+                name: written_name,
+                ..
+            },
+        ) => owner == written_owner && name == written_name,
+        (
+            Expr::Field { name, .. },
+            Expr::Field {
+                name: written_name, ..
+            },
+        ) => name == written_name,
+        (Expr::ArrayLoad { .. }, Expr::ArrayLoad { .. }) => true,
+        _ => false,
+    })
 }
 
 fn try_fold_array_init(
@@ -11018,9 +11170,11 @@ fn field_put(
         return LiftResult::Unhandled;
     };
     let raw_value: Expr = pop_expr(stack);
-    let value: Expr = match descriptor::parse_field(&desc) {
-        Some(ty) => coerce_arg(raw_value, &ty),
-        None => raw_value,
+    let field_type: Option<JavaType> = descriptor::parse_field(&desc);
+    let boolean: bool = matches!(field_type, Some(JavaType::Boolean));
+    let value: Expr = match &field_type {
+        Some(ty) => coerce_arg(raw_value.clone(), ty),
+        None => raw_value.clone(),
     };
     if is_static {
         let qualifier: String = if cf.this_class_name().is_ok_and(|n: &str| n == owner) {
@@ -11028,11 +11182,24 @@ fn field_put(
         } else {
             format!("{}.", descriptor::binary_to_source(&owner))
         };
-        LiftResult::Statement(format!("{qualifier}{name} = {}", value.render()))
+        let statement: String = format!("{qualifier}{name} = {}", value.render());
+        let location: Expr = Expr::StaticField {
+            owner: descriptor::binary_to_source(&owner),
+            name,
+            boolean,
+        };
+        settle_memory_write(stack, &location, &raw_value, statement)
     } else {
         let receiver: Expr = stack.pop().unwrap_or(Expr::This);
         let lhs: String = render_field_access(&receiver, &owner, &name);
-        LiftResult::Statement(format!("{lhs} = {}", value.render()))
+        let statement: String = format!("{lhs} = {}", value.render());
+        let location: Expr = Expr::Field {
+            receiver: Box::new(receiver),
+            owner,
+            name,
+            boolean,
+        };
+        settle_memory_write(stack, &location, &raw_value, statement)
     }
 }
 

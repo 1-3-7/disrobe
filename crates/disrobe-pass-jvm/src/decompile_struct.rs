@@ -583,6 +583,7 @@ pub struct Structurer<'a> {
     depth: usize,
     work: usize,
     finally_body_depth: usize,
+    switch_depth: usize,
     pub had_irreducible: bool,
     unmodelled_region: Option<&'static str>,
 }
@@ -593,6 +594,7 @@ struct LoopFrame {
     exit: Option<BlockId>,
     label: u32,
     monitors: usize,
+    switches: usize,
 }
 
 impl<'a> Structurer<'a> {
@@ -664,6 +666,7 @@ impl<'a> Structurer<'a> {
             depth: 0,
             work: 0,
             finally_body_depth: 0,
+            switch_depth: 0,
             had_irreducible: false,
             unmodelled_region: None,
         }
@@ -2438,6 +2441,33 @@ impl<'a> Structurer<'a> {
         Some(Region::Break { label: None })
     }
 
+    fn innermost_exit_break(&mut self, block: BlockId) -> Option<Region> {
+        if self.explicit_loop_exits {
+            return None;
+        }
+        let frame: LoopFrame = *self.loop_stack.last()?;
+        if frame.exit != Some(block) {
+            return None;
+        }
+        let enclosing: Option<LoopFrame> = self
+            .loop_stack
+            .len()
+            .checked_sub(2)
+            .and_then(|index: usize| self.loop_stack.get(index).copied());
+        if let Some(outer) = enclosing
+            && let Some(jump) = self.continue_jump_at(block, &outer, Some(outer.label))
+        {
+            self.labels_used.insert(outer.label);
+            return Some(jump);
+        }
+        let label: Option<u32> = (self.switch_depth > frame.switches).then_some(frame.label);
+        if let Some(used) = label {
+            self.labels_used.insert(used);
+        }
+        self.exit_breaks.insert(block);
+        Some(Region::Break { label })
+    }
+
     fn exit_follows_loop(&self, loop_info: &NaturalLoop, exit: BlockId) -> bool {
         !self.explicit_loop_exits
             || self.exit_breaks.contains(&exit)
@@ -2482,6 +2512,10 @@ impl<'a> Structurer<'a> {
                 break;
             }
             if let Some(jump) = self.innermost_loop_jump(b) {
+                seq.push(jump);
+                break;
+            }
+            if let Some(jump) = self.innermost_exit_break(b) {
                 seq.push(jump);
                 break;
             }
@@ -2983,6 +3017,7 @@ impl<'a> Structurer<'a> {
                 exit,
                 label,
                 monitors: self.open_monitors.len(),
+                switches: self.switch_depth,
             },
             condition.as_ref(),
         );
@@ -3053,6 +3088,7 @@ impl<'a> Structurer<'a> {
             depth: self.depth,
             work: self.work,
             finally_body_depth: 0,
+            switch_depth: self.switch_depth,
             had_irreducible: false,
             unmodelled_region: None,
         };
@@ -3062,7 +3098,9 @@ impl<'a> Structurer<'a> {
             .successors
             .iter()
             .filter(|e: &&Edge| !matches!(e.kind, EdgeKind::Exception))
-            .all(|e: &Edge| loop_info.body.contains(&e.target));
+            .all(|e: &Edge| loop_info.body.contains(&e.target))
+            || (exit.is_none()
+                && switch_header_leaves_only_through_terminal_tails(self.cfg, loop_info));
         let first_succ: Option<BlockId> = header_block
             .successors
             .iter()
@@ -3474,7 +3512,7 @@ impl<'a> Structurer<'a> {
 
     fn structure_switch(&mut self, head: BlockId, _stop: Option<BlockId>) -> Region {
         if let Some(precomputed) = self.switch_map.get(&head).cloned() {
-            let join: Option<BlockId> = find_switch_join(self.cfg, self.dom, head);
+            let join: Option<BlockId> = self.find_switch_join(head);
             let arms: Vec<(SwitchKey, BlockId)> = precomputed
                 .cases
                 .into_iter()
@@ -3538,7 +3576,7 @@ impl<'a> Structurer<'a> {
             }
         }
 
-        let join: Option<BlockId> = find_switch_join(self.cfg, self.dom, head);
+        let join: Option<BlockId> = self.find_switch_join(head);
         let mut arms: Vec<(SwitchKey, BlockId)> = Vec::new();
         for target in ordered_targets {
             if Some(target) == default {
@@ -3587,7 +3625,19 @@ impl<'a> Structurer<'a> {
             if let Some(next) = next {
                 self.handler_stops.insert(next);
             }
-            let region: Region = self.structure_at(target, join);
+            self.switch_depth += 1;
+            let region: Region = match self.continue_arm(target).filter(
+                |(_, resolved, _): &(Region, BlockId, Vec<BlockId>)| Some(*resolved) != join,
+            ) {
+                Some((jump, _, trampolines)) => {
+                    for trampoline in trampolines {
+                        self.absorb(trampoline);
+                    }
+                    jump
+                }
+                None => self.structure_at(target, join),
+            };
+            self.switch_depth -= 1;
             self.handler_stops = saved;
             let falls: bool = next.is_some_and(|next: BlockId| self.falls_into(head, target, next));
             match key {
@@ -3628,7 +3678,20 @@ impl<'a> Structurer<'a> {
     }
 
     fn find_switch_join(&self, head: BlockId) -> Option<BlockId> {
-        find_switch_join(self.cfg, self.dom, head)
+        find_switch_join(self.cfg, self.dom, head, |target: BlockId| {
+            self.continue_arm(target).is_some()
+        })
+    }
+
+    fn continue_arm(&self, target: BlockId) -> Option<(Region, BlockId, Vec<BlockId>)> {
+        let frame: &LoopFrame = self.loop_stack.last()?;
+        let (resolved, trampolines): (BlockId, Vec<BlockId>) = self.trampoline_path(target);
+        let shared_latch: bool = self.normal_predecessors(resolved).len() > 1;
+        if resolved != frame.header && !shared_latch {
+            return None;
+        }
+        let jump: Region = self.continue_jump_at(resolved, frame, None)?;
+        Some((jump, resolved, trampolines))
     }
 }
 
@@ -3665,6 +3728,9 @@ fn classify_loop_header(cfg: &Cfg, loop_info: &NaturalLoop) -> LoopKind {
 }
 
 fn find_loop_exit(cfg: &Cfg, loop_info: &NaturalLoop) -> Option<BlockId> {
+    if switch_header_leaves_only_through_terminal_tails(cfg, loop_info) {
+        return None;
+    }
     for &b in std::iter::once(&loop_info.header).chain(&loop_info.body) {
         let block: &BasicBlock = &cfg.blocks[b.0 as usize];
         for edge in &block.successors {
@@ -3857,23 +3923,84 @@ fn find_if_join(
     candidates.into_iter().next()
 }
 
-fn find_switch_join(cfg: &Cfg, dom: &Dominators, head: BlockId) -> Option<BlockId> {
+fn find_switch_join(
+    cfg: &Cfg,
+    dom: &Dominators,
+    head: BlockId,
+    continues_loop: impl Fn(BlockId) -> bool,
+) -> Option<BlockId> {
     let head_block: &BasicBlock = &cfg.blocks[head.0 as usize];
-    let mut reach_sets: Vec<BTreeSet<BlockId>> = Vec::new();
+    let mut common: Option<BTreeSet<BlockId>> = None;
     for edge in &head_block.successors {
-        reach_sets.push(forward_reach(cfg, edge.target, head));
+        if matches!(edge.kind, EdgeKind::Switch | EdgeKind::SwitchDefault)
+            && continues_loop(edge.target)
+        {
+            continue;
+        }
+        let reach: BTreeSet<BlockId> = forward_reach(cfg, edge.target, head);
+        if !matches!(edge.kind, EdgeKind::Exception) && arm_owns_its_reach(cfg, head, &reach) {
+            continue;
+        }
+        common = Some(match common {
+            None => reach,
+            Some(previous) => previous.intersection(&reach).copied().collect(),
+        });
     }
-    if reach_sets.is_empty() {
-        return None;
-    }
-    let mut common: BTreeSet<BlockId> = reach_sets[0].clone();
-    for r in &reach_sets[1..] {
-        common = common.intersection(r).copied().collect();
-    }
-    let mut candidates: Vec<BlockId> = common.into_iter().collect();
+    let mut candidates: Vec<BlockId> = common?.into_iter().collect();
     candidates.retain(|c| dominates(dom, head, *c));
     candidates.sort_by_key(|c| cfg.blocks[c.0 as usize].start_pc);
     candidates.into_iter().next()
+}
+
+fn arm_owns_its_reach(cfg: &Cfg, head: BlockId, reach: &BTreeSet<BlockId>) -> bool {
+    reach.iter().all(|block: &BlockId| {
+        cfg.blocks[block.0 as usize]
+            .predecessors
+            .iter()
+            .all(|pred: &BlockId| *pred == head || reach.contains(pred))
+    })
+}
+
+fn switch_header_leaves_only_through_terminal_tails(cfg: &Cfg, loop_info: &NaturalLoop) -> bool {
+    let header: &BasicBlock = &cfg.blocks[loop_info.header.0 as usize];
+    if !is_switch(header, &cfg.blocks)
+        || normal_targets(header).all(|target: BlockId| loop_info.body.contains(&target))
+    {
+        return false;
+    }
+    let exits: BTreeSet<BlockId> = loop_info
+        .body
+        .iter()
+        .flat_map(|block: &BlockId| normal_targets(&cfg.blocks[block.0 as usize]))
+        .filter(|target: &BlockId| !loop_info.body.contains(target))
+        .collect();
+    let mut claimed: BTreeSet<BlockId> = BTreeSet::new();
+    for exit in exits {
+        let entries: BTreeSet<BlockId> = cfg.blocks[exit.0 as usize]
+            .predecessors
+            .iter()
+            .copied()
+            .collect();
+        if entries.len() != 1
+            || entries
+                .iter()
+                .any(|entry: &BlockId| !loop_info.body.contains(entry))
+        {
+            return false;
+        }
+        let tail: BTreeSet<BlockId> = forward_reach(cfg, exit, loop_info.header);
+        let owned: bool = tail.iter().all(|block: &BlockId| {
+            !loop_info.body.contains(block)
+                && cfg.blocks[block.0 as usize]
+                    .predecessors
+                    .iter()
+                    .all(|pred: &BlockId| tail.contains(pred) || loop_info.body.contains(pred))
+        });
+        if !owned || tail.iter().any(|block: &BlockId| !claimed.insert(*block)) {
+            return false;
+        }
+    }
+    true
 }
 
 fn forward_reach(cfg: &Cfg, start: BlockId, exclude: BlockId) -> BTreeSet<BlockId> {

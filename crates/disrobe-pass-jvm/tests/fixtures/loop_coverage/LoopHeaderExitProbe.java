@@ -6,19 +6,23 @@ public class LoopHeaderExitProbe {
         calls++;
     }
 
-    public int spinSwitchExit(int k) {
-        for (;;) {
-            switch (k) {
-                case 0:
-                    return count;
-                case 1:
-                    count += 7;
-                    break;
-                default:
-                    count += 11;
-                    break;
+    public int spinSwitchExit(int k, boolean run) {
+        if (run) {
+            loop:
+            for (;;) {
+                switch (k) {
+                    case 0:
+                        break loop;
+                    case 1:
+                        count += 7;
+                        break;
+                    default:
+                        count += 11;
+                        break;
+                }
+                foo();
             }
-            foo();
         }
+        return count * 2 + calls;
     }
 }

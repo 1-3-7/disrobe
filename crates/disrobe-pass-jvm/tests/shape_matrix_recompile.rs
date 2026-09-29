@@ -8,6 +8,7 @@ use disrobe_pass_jvm::{DecompiledClass, decompile_classfile_bytes};
 
 const OP_JSR: u8 = 0xA8;
 const UNRESOLVED_INDY: &str = "/* unresolved invokedynamic via ";
+const INCOMPLETE_MARKER: &str = "// <decompile: incomplete: ";
 
 #[derive(Clone, Copy, Debug)]
 enum Compiler {
@@ -150,6 +151,61 @@ const JSR_FINALLY: Shape = Shape {
     driver: (
         "FinallyDriver.java",
         include_str!("fixtures/shape_matrix/FinallyDriver.java"),
+    ),
+};
+
+const TERNARY: Shape = Shape {
+    probe: (
+        "TernaryProbe.java",
+        include_str!("fixtures/shape_matrix/TernaryProbe.java"),
+    ),
+    driver: (
+        "TernaryDriver.java",
+        include_str!("fixtures/shape_matrix/TernaryDriver.java"),
+    ),
+};
+
+const SWITCH_EXIT: Shape = Shape {
+    probe: (
+        "SwitchExitProbe.java",
+        include_str!("fixtures/shape_matrix/SwitchExitProbe.java"),
+    ),
+    driver: (
+        "SwitchExitDriver.java",
+        include_str!("fixtures/shape_matrix/SwitchExitDriver.java"),
+    ),
+};
+
+const INCREMENT: Shape = Shape {
+    probe: (
+        "IncrementProbe.java",
+        include_str!("fixtures/shape_matrix/IncrementProbe.java"),
+    ),
+    driver: (
+        "IncrementDriver.java",
+        include_str!("fixtures/shape_matrix/IncrementDriver.java"),
+    ),
+};
+
+const TYPE_SWITCH_BLOCK: Shape = Shape {
+    probe: (
+        "TypeSwitchBlockProbe.java",
+        include_str!("fixtures/shape_matrix/TypeSwitchBlockProbe.java"),
+    ),
+    driver: (
+        "TypeSwitchBlockDriver.java",
+        include_str!("fixtures/shape_matrix/TypeSwitchBlockDriver.java"),
+    ),
+};
+
+const JSR_SHAPES: Shape = Shape {
+    probe: (
+        "JsrShapesProbe.java",
+        include_str!("fixtures/shape_matrix/JsrShapesProbe.java"),
+    ),
+    driver: (
+        "JsrShapesDriver.java",
+        include_str!("fixtures/shape_matrix/JsrShapesDriver.java"),
     ),
 };
 
@@ -352,35 +408,11 @@ fn a_state_machine_reading_its_state_recompiles_from_ecj() {
     );
 }
 
-const INCOMPLETE_MARKER: &str =
-    "// <decompile: incomplete: a reachable block has no rendered statement>";
-
-fn assert_recovered_or_incomplete(compiler: Compiler, tag: &str, shape: &Shape, expected: &str) {
-    let recovered: Recovery = recover(compiler, tag, shape);
-    let source: &str = &recovered.decompiled.source;
-    assert_eq!(
-        recovered.original_output, expected,
-        "the authored program's own output changed under {compiler:?}"
-    );
-    let refused: bool = source.contains(INCOMPLETE_MARKER)
-        && recovered.decompiled.fully_lifted_methods < recovered.decompiled.method_count;
-    match &recovered.recompiled_output {
-        Ok(output) if output == &recovered.original_output => {}
-        Ok(output) => panic!(
-            "the recovered {tag} source runs differently from the {compiler:?} build ({output}); recovered source:\n{source}"
-        ),
-        Err(err) => assert!(
-            refused,
-            "the recovered {tag} source fails ({err}) without naming the incomplete method; recovered source:\n{source}"
-        ),
-    }
-}
-
 const DISPATCH_OUTPUT: &str = "-786089020;2404;2804;3004;2804;3604;4604;";
 
 #[test]
-fn a_returning_dispatcher_reading_its_state_is_recovered_or_marked_from_javac() {
-    assert_recovered_or_incomplete(
+fn a_returning_dispatcher_reading_its_state_recompiles_from_javac() {
+    assert_recovered(
         Compiler::Javac,
         "dispatch_javac",
         &DISPATCH,
@@ -389,20 +421,89 @@ fn a_returning_dispatcher_reading_its_state_is_recovered_or_marked_from_javac() 
 }
 
 #[test]
-fn a_returning_dispatcher_reading_its_state_is_recovered_or_marked_from_ecj() {
-    assert_recovered_or_incomplete(Compiler::Ecj16, "dispatch_ecj", &DISPATCH, DISPATCH_OUTPUT);
+fn a_returning_dispatcher_reading_its_state_recompiles_from_ecj() {
+    assert_recovered(Compiler::Ecj16, "dispatch_ecj", &DISPATCH, DISPATCH_OUTPUT);
 }
 
 const RELAY_OUTPUT: &str = "-1291;-291;709;1709;2709;3709;4709;";
 
 #[test]
-fn a_constant_dispatcher_reading_its_state_is_recovered_or_marked_from_javac() {
-    assert_recovered_or_incomplete(Compiler::Javac, "relay_javac", &RELAY, RELAY_OUTPUT);
+fn a_constant_dispatcher_reading_its_state_recompiles_from_javac() {
+    assert_recovered(Compiler::Javac, "relay_javac", &RELAY, RELAY_OUTPUT);
 }
 
 #[test]
-fn a_constant_dispatcher_reading_its_state_is_recovered_or_marked_from_ecj() {
-    assert_recovered_or_incomplete(Compiler::Ecj16, "relay_ecj", &RELAY, RELAY_OUTPUT);
+fn a_constant_dispatcher_reading_its_state_recompiles_from_ecj() {
+    assert_recovered(Compiler::Ecj16, "relay_ecj", &RELAY, RELAY_OUTPUT);
+}
+
+const SWITCH_EXIT_OUTPUT: &str = "0,21,17,7,100,55,11,17,29,18,55,31,1828";
+
+#[test]
+fn switch_arms_that_return_keep_the_join_from_javac() {
+    assert_recovered(
+        Compiler::Javac,
+        "switch_exit_javac",
+        &SWITCH_EXIT,
+        SWITCH_EXIT_OUTPUT,
+    );
+}
+
+#[test]
+fn switch_arms_that_return_keep_the_join_from_ecj() {
+    assert_recovered(
+        Compiler::Ecj16,
+        "switch_exit_ecj",
+        &SWITCH_EXIT,
+        SWITCH_EXIT_OUTPUT,
+    );
+}
+
+const TERNARY_OUTPUT: &str = "Tefalse-4,20;Fotrue-9,30;Fetrue-14,45;Fotrue19,60;Fetrue24,75;25";
+
+fn assert_no_empty_branch(tag: &str, source: &str) {
+    let squashed: String = source.split_whitespace().collect::<Vec<&str>>().join(" ");
+    assert!(
+        !squashed.contains(") { } else { }"),
+        "the recovered {tag} source keeps an empty if/else before a value-only ternary:\n{source}"
+    );
+}
+
+#[test]
+fn a_value_only_ternary_evaluates_its_condition_once_from_javac() {
+    let recovered: Recovery =
+        assert_recovered(Compiler::Javac, "ternary_javac", &TERNARY, TERNARY_OUTPUT);
+    assert_no_empty_branch("ternary_javac", &recovered.decompiled.source);
+}
+
+#[test]
+fn a_value_only_ternary_evaluates_its_condition_once_from_ecj() {
+    let recovered: Recovery =
+        assert_recovered(Compiler::Ecj16, "ternary_ecj", &TERNARY, TERNARY_OUTPUT);
+    assert_no_empty_branch("ternary_ecj", &recovered.decompiled.source);
+}
+
+const INCREMENT_OUTPUT: &str =
+    "0,2,7,0,2,5,0,0,0,2,22;7,9,14,5,7,10,1,1,0,2,36;7,9,14,10,12,15,2,2,0,2,36;";
+
+#[test]
+fn increments_used_as_values_recompile_from_javac() {
+    assert_recovered(
+        Compiler::Javac,
+        "increment_javac",
+        &INCREMENT,
+        INCREMENT_OUTPUT,
+    );
+}
+
+#[test]
+fn increments_used_as_values_recompile_from_ecj() {
+    assert_recovered(
+        Compiler::Ecj16,
+        "increment_ecj",
+        &INCREMENT,
+        INCREMENT_OUTPUT,
+    );
 }
 
 const LONG_COMPARE_OUTPUT: &str = "0y000 -1n-1-1-1 -1n-1-1-1 -1n-1-1-1 -1n-1-1-1 -1n-1-1-1 1;1y111 0y000 -1n-1-1-1 -1n-1-1-1 -1n-1-1-1 -1n-1-1-1 2;1y111 1y111 0y000 -1n-1-1-1 -1n-1-1-1 -1n-1-1-1 3;1y111 1y111 1y111 0y000 -1n-1-1-1 -1n-1-1-1 4;1y111 1y111 1y111 1y111 0y000 -1n-1-1-1 5;1y111 1y111 1y111 1y111 1y111 0y000 6;";
@@ -452,6 +553,16 @@ fn nan_compares_recompile_from_ecj() {
 const LOOP_HEADER_OUTPUT: &str = "0,4,0,12,8,12,20,28,44,";
 
 #[test]
+fn a_loop_header_branch_without_an_exit_recompiles_from_javac() {
+    assert_recovered(
+        Compiler::Javac,
+        "loop_header_javac",
+        &LOOP_HEADER,
+        LOOP_HEADER_OUTPUT,
+    );
+}
+
+#[test]
 fn a_loop_header_branch_without_an_exit_recompiles_from_ecj() {
     assert_recovered(
         Compiler::Ecj16,
@@ -489,10 +600,18 @@ fn assert_named_indy_refusal(compiler: Compiler, tag: &str, shape: &Shape, expec
             output, &recovered.original_output,
             "a recovered {tag} source that recompiles must run like the {compiler:?} build; recovered source:\n{source}"
         );
+        assert!(
+            !source.contains(UNRESOLVED_INDY),
+            "a recovered {tag} source that runs like the {compiler:?} build names no unresolved invokedynamic:\n{source}"
+        );
+        assert_eq!(
+            recovered.decompiled.fully_lifted_methods, recovered.decompiled.method_count,
+            "a recovered {tag} source that runs like the {compiler:?} build is fully lifted:\n{source}"
+        );
         return;
     }
     assert!(
-        source.contains(UNRESOLVED_INDY),
+        source.contains(UNRESOLVED_INDY) || source.contains(INCOMPLETE_MARKER),
         "a non-concat invokedynamic the decompiler cannot lower must be named in the source:\n{source}"
     );
     assert!(
@@ -514,12 +633,27 @@ fn a_record_object_methods_invokedynamic_from_ecj_is_recovered_or_named() {
 }
 
 #[test]
-fn a_type_switch_invokedynamic_from_javac_is_recovered_or_named() {
-    assert_named_indy_refusal(
+fn a_type_switch_expression_from_javac_recompiles() {
+    let recovered: Recovery = assert_recovered(
         Compiler::Javac,
         "type_switch_javac",
         &TYPE_SWITCH,
         "int5,big12,str3,null,other,",
+    );
+    assert!(
+        !recovered.decompiled.source.contains(UNRESOLVED_INDY),
+        "the typeSwitch bootstrap is lowered to a pattern switch:\n{}",
+        recovered.decompiled.source
+    );
+}
+
+#[test]
+fn a_type_switch_statement_from_javac_is_recovered_or_named() {
+    assert_named_indy_refusal(
+        Compiler::Javac,
+        "type_switch_block_javac",
+        &TYPE_SWITCH_BLOCK,
+        "int,big,str3,null,other,big,48",
     );
 }
 
@@ -548,6 +682,80 @@ fn an_ecj_14_try_finally_with_jsr_recompiles_and_runs_like_the_original() {
     assert_eq!(
         recovered.decompiled.fully_lifted_methods, recovered.decompiled.method_count,
         "every jsr method must be fully lifted; recovered source:\n{source}"
+    );
+}
+
+const JSR_SHAPES_OUTPUT: &str = "-99 -1 116 116;-99 0 415 415;0 1 1290 1290;7 2 3845 3845;14 3 -11645 -11645;21 4 -34860 -34860;28 5 -104527 -104527;35 6 -313598 -313598;42 7 -940662 -940662;49 8 -2821903 -2821903;56 9 -8465648 -8465648;";
+
+#[test]
+fn ecj_14_subroutines_with_branches_handlers_and_nesting_recompile() {
+    let recovered: Recovery = assert_recovered(
+        Compiler::Ecj14,
+        "jsr_shapes_ecj14",
+        &JSR_SHAPES,
+        JSR_SHAPES_OUTPUT,
+    );
+    assert!(
+        recovered.original_class.contains(&OP_JSR),
+        "the ecj 1.4 build must carry jsr subroutines"
+    );
+}
+
+const JSR_REFUSED_PROBE: (&str, &str) = (
+    "JsrRefusedProbe.java",
+    include_str!("fixtures/shape_matrix/JsrRefusedProbe.java"),
+);
+
+const REFUSAL_MARKERS: [&str; 3] = [
+    "// <decompile: not recovered: ",
+    INCOMPLETE_MARKER,
+    "__unresolved__",
+];
+
+#[test]
+fn ecj_14_subroutines_the_structurer_cannot_fold_are_refused_by_name() {
+    let dir: ScratchDir = ScratchDir::create("disrobe_jvm_shape_jsr_refused").expect("scratch dir");
+    compile(Compiler::Ecj14, dir.path(), &[JSR_REFUSED_PROBE])
+        .unwrap_or_else(|err: String| panic!("the authored program must compile: {err}"));
+    let class: Vec<u8> =
+        std::fs::read(dir.path().join("JsrRefusedProbe.class")).expect("read class");
+    assert!(
+        class.contains(&OP_JSR),
+        "the ecj 1.4 build must carry jsr subroutines"
+    );
+    let decompiled: DecompiledClass = decompile_classfile_bytes(&class).expect("decompile");
+    let source: &str = &decompiled.source;
+    for method in [
+        "static int branchy(",
+        "static int looping(",
+        "static int nested(",
+    ] {
+        let start: usize = source.find(method).unwrap_or_else(|| {
+            panic!(
+                "{method} is missing from the recovered source:
+{source}"
+            )
+        });
+        let body: &str = &source[start..];
+        let body: &str = &body[..body
+            .find(
+                "
+    }",
+            )
+            .unwrap_or(body.len())];
+        assert!(
+            REFUSAL_MARKERS
+                .iter()
+                .any(|marker: &&str| body.contains(marker)),
+            "{method} is not recovered soundly yet, so its body must name the refusal:
+{source}"
+        );
+    }
+    assert_eq!(
+        decompiled.fully_lifted_methods + 3,
+        decompiled.method_count,
+        "exactly the three refused methods are not fully lifted:
+{source}"
     );
 }
 

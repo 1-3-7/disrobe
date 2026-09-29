@@ -69,8 +69,8 @@ fn obf_class_parses_through_jbco_control_flow_obfuscation() {
         dc.method_count
     );
     assert_eq!(
-        dc.fallback_methods, 1,
-        "only l1lll(I)I stays incomplete: its structured body loses the return and two trap handlers, got {} fallbacks",
+        dc.fallback_methods, 3,
+        "l1lll(I)I stays incomplete (its structured body loses the return and two trap handlers),          and $$S5$ and II1l1 still render unresolved operands, got {} fallbacks",
         dc.fallback_methods
     );
     assert_eq!(
@@ -80,7 +80,7 @@ fn obf_class_parses_through_jbco_control_flow_obfuscation() {
     );
     assert_eq!(
         dc.fully_lifted_methods,
-        dc.method_count - 1,
+        dc.method_count - 3,
         "every other method body must lift past the JBCO control-flow obfuscation"
     );
     assert!(

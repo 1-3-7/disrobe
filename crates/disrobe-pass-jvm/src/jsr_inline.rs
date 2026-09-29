@@ -13,8 +13,36 @@ const OP_ASTORE: u8 = 0x3A;
 const OP_ASTORE_0: u8 = 0x4B;
 const OP_ASTORE_3: u8 = 0x4E;
 const OP_POP: u8 = 0x57;
+const OP_ATHROW: u8 = 0xBF;
+const OP_TABLESWITCH: u8 = 0xAA;
+const OP_LOOKUPSWITCH: u8 = 0xAB;
 const MAX_INLINE_DEPTH: usize = 64;
 const MAX_OUTPUT: usize = 1_000_000;
+const MAX_HANDLER_COVERAGE: usize = 4_000_000;
+const MAX_REMAP_WORK: usize = 64_000_000;
+
+const JSR_TARGET_UNRESOLVED: &str =
+    "a jsr subroutine could not be inlined: a jsr targets a pc that is not an instruction";
+const RET_OUTSIDE_SUBROUTINE: &str =
+    "a jsr subroutine could not be inlined: a ret is reachable outside every subroutine";
+const SHARED_WITH_CALLER: &str =
+    "a jsr subroutine could not be inlined: its instructions are also reached without a jsr";
+const SHARED_SUBROUTINES: &str =
+    "a jsr subroutine could not be inlined: two subroutines share instructions";
+const NO_RETURN_ADDRESS_STORE: &str = "a jsr subroutine could not be inlined: it does not store or discard its return address on entry";
+const FOREIGN_RET: &str = "a jsr subroutine could not be inlined: a ret returns through a local other than the one its subroutine stored";
+const RETURN_ADDRESS_REUSED: &str =
+    "a jsr subroutine could not be inlined: it reads or overwrites its return-address local";
+const FALLS_OFF_CODE: &str =
+    "a jsr subroutine could not be inlined: a path through it falls off the end of the code";
+const TOO_DEEP: &str =
+    "a jsr subroutine could not be inlined: subroutines nest or recurse past the inlining bound";
+const TOO_LARGE: &str =
+    "a jsr subroutine could not be inlined: the inlined method exceeds the output bound";
+const UNRESOLVED_BRANCH: &str =
+    "a jsr subroutine could not be inlined: a branch in the inlined code has no target";
+const UNPLACED_HANDLER: &str =
+    "a jsr subroutine could not be inlined: an exception handler has no place in the inlined code";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JsrInlineReport {
@@ -27,9 +55,21 @@ pub struct JsrInlineReport {
 
 #[must_use]
 pub fn contains_jsr(insns: &[Instruction]) -> bool {
-    insns
-        .iter()
-        .any(|i: &Instruction| i.opcode == OP_JSR || i.opcode == OP_JSR_W || i.opcode == OP_RET)
+    insns.iter().any(|i: &Instruction| is_jsr_or_ret(i.opcode))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JsrInlined {
+    pub insns: Vec<Instruction>,
+    pub exception_table: Vec<ExceptionEntry>,
+    pub report: JsrInlineReport,
+    pub refusal: Option<&'static str>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Target {
+    scope: usize,
+    pc: u32,
 }
 
 struct Emitted {
@@ -38,28 +78,25 @@ struct Emitted {
     wide: bool,
     operands: Operands,
     old_pc: u32,
-    target_old_pc: Option<u32>,
-    switch_targets_old_pc: Vec<u32>,
+    scope: usize,
+    target: Option<Target>,
+    switch_targets: Vec<Target>,
+    ret_of: Option<usize>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct JsrInlined {
-    pub insns: Vec<Instruction>,
-    pub exception_table: Vec<ExceptionEntry>,
-    pub report: JsrInlineReport,
+struct Subroutine {
+    entry: usize,
+    body: BTreeSet<usize>,
 }
 
-fn unmodified(
-    insns: &[Instruction],
-    exception_table: &[ExceptionEntry],
-    report: JsrInlineReport,
-) -> JsrInlined {
-    JsrInlined {
-        insns: insns.to_vec(),
-        exception_table: exception_table.to_vec(),
-        report,
-    }
+struct Scope {
+    subroutine: Option<usize>,
+    parent: usize,
+    returns_to: Option<Target>,
+    labels: BTreeMap<u32, usize>,
 }
+
+const MAIN_SCOPE: usize = 0;
 
 #[must_use]
 pub fn inline_jsr_subroutines(
@@ -70,431 +107,636 @@ pub fn inline_jsr_subroutines(
         .iter()
         .filter(|i: &&Instruction| i.opcode == OP_JSR || i.opcode == OP_JSR_W)
         .count();
-    if jsr_sites == 0 {
-        return unmodified(
-            insns,
-            exception_table,
-            JsrInlineReport {
+    if !contains_jsr(insns) {
+        return JsrInlined {
+            insns: insns.to_vec(),
+            exception_table: exception_table.to_vec(),
+            report: JsrInlineReport {
                 jsr_sites: 0,
                 subroutines: 0,
                 inlined_instructions: insns.len(),
                 bailed: false,
                 note: "no jsr subroutines present".to_owned(),
             },
-        );
+            refusal: None,
+        };
     }
-
-    let pc_index: BTreeMap<u32, usize> = insns
-        .iter()
-        .enumerate()
-        .map(|(i, ins): (usize, &Instruction)| (ins.pc, i))
-        .collect();
-
-    let mut subroutine_targets: BTreeSet<u32> = BTreeSet::new();
-    for ins in insns {
-        if (ins.opcode == OP_JSR || ins.opcode == OP_JSR_W)
-            && let Operands::Branch(off) = ins.operands
-        {
-            subroutine_targets.insert((i64::from(ins.pc) + i64::from(off)) as u32);
-        }
-    }
-
-    let mut emitted: Vec<Emitted> = Vec::with_capacity(insns.len());
-    let mut label_map: BTreeMap<u32, usize> = BTreeMap::new();
-    let mut bailed: bool = false;
-    let mut i: usize = 0;
-    while i < insns.len() {
-        let ins: &Instruction = &insns[i];
-        if (ins.opcode == OP_JSR || ins.opcode == OP_JSR_W)
-            && let Operands::Branch(off) = ins.operands
-        {
-            let target: u32 = (i64::from(ins.pc) + i64::from(off)) as u32;
-            let return_pc: u32 = next_pc(insns, i);
-            let body_start: usize = emitted.len();
-            if !inline_one(insns, &pc_index, target, return_pc, &mut emitted, 0) {
-                bailed = true;
-                break;
+    match Inliner::plan(insns, exception_table).and_then(|mut inliner: Inliner<'_>| {
+        inliner.emit_main()?;
+        let out: Vec<Instruction> = inliner.renumber()?;
+        let table: Vec<ExceptionEntry> = inliner.remap_exception_table()?;
+        Ok((out, table, inliner.subroutines.len()))
+    }) {
+        Ok((out, table, subroutines)) => {
+            let inlined_instructions: usize = out.len();
+            JsrInlined {
+                insns: out,
+                exception_table: table,
+                report: JsrInlineReport {
+                    jsr_sites,
+                    subroutines,
+                    inlined_instructions,
+                    bailed: false,
+                    note: format!(
+                        "inlined {jsr_sites} jsr call-site(s) across {subroutines} subroutine(s) into a jsr-free linear stream"
+                    ),
+                },
+                refusal: None,
             }
-            if insns.get(i + 1).is_some_and(|next: &Instruction| {
-                !subroutine_targets.contains(&next.pc) && !is_jsr_or_ret(next.opcode)
-            }) {
-                drop_return_goto(&mut emitted, body_start, return_pc);
-            }
-            label_map.entry(ins.pc).or_insert(body_start);
-            i += 1;
-            continue;
         }
-        if subroutine_targets.contains(&ins.pc) {
-            i = skip_subroutine_body(insns, i);
-            continue;
-        }
-        if let Some((jsr_target, jsr_return)) = goto_into_jsr(insns, &pc_index, ins) {
-            let body_start: usize = emitted.len();
-            if !inline_one(insns, &pc_index, jsr_target, jsr_return, &mut emitted, 0) {
-                bailed = true;
-                break;
-            }
-            label_map.entry(ins.pc).or_insert(body_start);
-            i += 1;
-            continue;
-        }
-        label_map.entry(ins.pc).or_insert(emitted.len());
-        emitted.push(copy_insn(ins));
-        i += 1;
-        if emitted.len() > MAX_OUTPUT {
-            bailed = true;
-            break;
-        }
-    }
-
-    if bailed {
-        return unmodified(
-            insns,
-            exception_table,
-            JsrInlineReport {
+        Err(reason) => JsrInlined {
+            insns: insns.to_vec(),
+            exception_table: exception_table.to_vec(),
+            report: JsrInlineReport {
                 jsr_sites,
-                subroutines: subroutine_targets.len(),
+                subroutines: distinct_jsr_targets(insns),
                 inlined_instructions: insns.len(),
                 bailed: true,
-                note: "jsr subroutine structure is irregular (recursive, shared, or oversized); left unmodified rather than mis-linearised".to_owned(),
+                note: reason.to_owned(),
             },
-        );
-    }
-
-    let Some(out): Option<Vec<Instruction>> = renumber(&emitted, &label_map) else {
-        return unmodified(
-            insns,
-            exception_table,
-            JsrInlineReport {
-                jsr_sites,
-                subroutines: subroutine_targets.len(),
-                inlined_instructions: insns.len(),
-                bailed: true,
-                note: "jsr inlining produced a branch target that could not be resolved in the linearised stream; left unmodified rather than mis-linearised".to_owned(),
-            },
-        );
-    };
-    let Some(remapped): Option<Vec<ExceptionEntry>> =
-        remap_exception_table(&emitted, &label_map, exception_table)
-    else {
-        return unmodified(
-            insns,
-            exception_table,
-            JsrInlineReport {
-                jsr_sites,
-                subroutines: subroutine_targets.len(),
-                inlined_instructions: insns.len(),
-                bailed: true,
-                note: "an exception handler could not be placed in the linearised stream; left unmodified rather than bound to unrelated instructions".to_owned(),
-            },
-        );
-    };
-
-    let inlined_count: usize = out.len();
-    JsrInlined {
-        insns: out,
-        exception_table: remapped,
-        report: JsrInlineReport {
-            jsr_sites,
-            subroutines: subroutine_targets.len(),
-            inlined_instructions: inlined_count,
-            bailed: false,
-            note: format!(
-                "inlined {jsr_sites} jsr call-site(s) across {} subroutine(s) into a jsr-free linear stream",
-                subroutine_targets.len()
-            ),
+            refusal: Some(reason),
         },
     }
 }
 
-fn remap_exception_table(
-    emitted: &[Emitted],
-    label_map: &BTreeMap<u32, usize>,
-    exception_table: &[ExceptionEntry],
-) -> Option<Vec<ExceptionEntry>> {
-    let mut out: Vec<ExceptionEntry> = Vec::with_capacity(exception_table.len());
-    for entry in exception_table {
-        let protected = u32::from(entry.start_pc)..u32::from(entry.end_pc);
-        let handler_pc: u16 = u16::try_from(*label_map.get(&u32::from(entry.handler_pc))?).ok()?;
-        let mut run_start: Option<usize> = None;
-        for (idx, e) in emitted.iter().enumerate() {
-            match (protected.contains(&e.old_pc), run_start) {
-                (true, None) => run_start = Some(idx),
-                (false, Some(start)) => {
-                    out.push(ExceptionEntry {
-                        start_pc: u16::try_from(start).ok()?,
-                        end_pc: u16::try_from(idx).ok()?,
-                        handler_pc,
-                        catch_type: entry.catch_type,
-                    });
-                    run_start = None;
+fn distinct_jsr_targets(insns: &[Instruction]) -> usize {
+    insns
+        .iter()
+        .filter(|ins: &&Instruction| ins.opcode == OP_JSR || ins.opcode == OP_JSR_W)
+        .filter_map(branch_target_old_pc)
+        .collect::<BTreeSet<u32>>()
+        .len()
+}
+
+struct Inliner<'a> {
+    insns: &'a [Instruction],
+    exception_table: &'a [ExceptionEntry],
+    pc_index: BTreeMap<u32, usize>,
+    handlers_of: Vec<Vec<usize>>,
+    handler_entries: BTreeSet<usize>,
+    flow_entries: Vec<usize>,
+    subroutines: Vec<Subroutine>,
+    subroutine_at: BTreeMap<usize, usize>,
+    owner: BTreeMap<usize, usize>,
+    emitted: Vec<Emitted>,
+    scopes: Vec<Scope>,
+}
+
+impl<'a> Inliner<'a> {
+    fn plan(
+        insns: &'a [Instruction],
+        exception_table: &'a [ExceptionEntry],
+    ) -> Result<Self, &'static str> {
+        let pc_index: BTreeMap<u32, usize> = insns
+            .iter()
+            .enumerate()
+            .map(|(i, ins): (usize, &Instruction)| (ins.pc, i))
+            .collect();
+        let mut handlers_of: Vec<Vec<usize>> = vec![Vec::new(); insns.len()];
+        let mut coverage: usize = 0;
+        for entry in exception_table {
+            let Some(&handler) = pc_index.get(&u32::from(entry.handler_pc)) else {
+                continue;
+            };
+            let range = u32::from(entry.start_pc)..u32::from(entry.end_pc);
+            for (_, &idx) in pc_index.range(range) {
+                coverage += 1;
+                if coverage > MAX_HANDLER_COVERAGE {
+                    return Err(TOO_LARGE);
                 }
-                _ => {}
+                if !handlers_of[idx].contains(&handler) {
+                    handlers_of[idx].push(handler);
+                }
             }
         }
-        if let Some(start) = run_start {
-            out.push(ExceptionEntry {
-                start_pc: u16::try_from(start).ok()?,
-                end_pc: u16::try_from(emitted.len()).ok()?,
-                handler_pc,
-                catch_type: entry.catch_type,
-            });
+        let handler_entries: BTreeSet<usize> = handlers_of.iter().flatten().copied().collect();
+        let mut flow_entries: Vec<usize> = vec![0; insns.len()];
+        for (idx, ins) in insns.iter().enumerate() {
+            if ins.opcode == OP_RET {
+                continue;
+            }
+            let (targets, falls_through): (Vec<u32>, bool) = flow_of(ins)?;
+            let mut successors: BTreeSet<usize> = targets
+                .iter()
+                .filter_map(|target: &u32| pc_index.get(target).copied())
+                .collect();
+            if falls_through && idx + 1 < insns.len() {
+                successors.insert(idx + 1);
+            }
+            for successor in successors {
+                flow_entries[successor] += 1;
+            }
         }
-    }
-    Some(out)
-}
-
-fn copy_insn(ins: &Instruction) -> Emitted {
-    let target_old_pc: Option<u32> = branch_target_old_pc(ins);
-    let at = |off: i32| -> u32 { (i64::from(ins.pc) + i64::from(off)) as u32 };
-    let switch_targets_old_pc: Vec<u32> = match &ins.operands {
-        Operands::TableSwitch {
-            default, offsets, ..
-        } => std::iter::once(*default)
-            .chain(offsets.iter().copied())
-            .map(at)
-            .collect(),
-        Operands::LookupSwitch { default, pairs } => std::iter::once(*default)
-            .chain(pairs.iter().map(|(_, off): &(i32, i32)| *off))
-            .map(at)
-            .collect(),
-        _ => Vec::new(),
-    };
-    Emitted {
-        opcode: ins.opcode,
-        mnemonic: ins.mnemonic,
-        wide: ins.wide,
-        operands: ins.operands.clone(),
-        old_pc: ins.pc,
-        target_old_pc,
-        switch_targets_old_pc,
-    }
-}
-
-fn branch_target_old_pc(ins: &Instruction) -> Option<u32> {
-    match ins.operands {
-        Operands::Branch(off) => Some((i64::from(ins.pc) + i64::from(off)) as u32),
-        _ => None,
-    }
-}
-
-fn inline_one(
-    insns: &[Instruction],
-    pc_index: &BTreeMap<u32, usize>,
-    target: u32,
-    return_pc: u32,
-    emitted: &mut Vec<Emitted>,
-    depth: usize,
-) -> bool {
-    if depth > MAX_INLINE_DEPTH || emitted.len() > MAX_OUTPUT {
-        return false;
-    }
-    let Some(&start): Option<&usize> = pc_index.get(&target) else {
-        return false;
-    };
-    let mut j: usize = start;
-    let mut skipped_store: bool = false;
-    while j < insns.len() {
-        let ins: &Instruction = &insns[j];
-        if !skipped_store && is_return_address_consumer(ins.opcode) {
-            skipped_store = true;
-            j += 1;
-            continue;
+        let mut inliner: Self = Self {
+            insns,
+            exception_table,
+            pc_index,
+            handlers_of,
+            handler_entries,
+            flow_entries,
+            subroutines: Vec::new(),
+            subroutine_at: BTreeMap::new(),
+            owner: BTreeMap::new(),
+            emitted: Vec::new(),
+            scopes: vec![Scope {
+                subroutine: None,
+                parent: MAIN_SCOPE,
+                returns_to: None,
+                labels: BTreeMap::new(),
+            }],
+        };
+        let main: BTreeSet<usize> = inliner.reach(0, None)?;
+        let mut entries: BTreeSet<usize> = BTreeSet::new();
+        for ins in insns {
+            if ins.opcode == OP_JSR || ins.opcode == OP_JSR_W {
+                let target: u32 = branch_target_old_pc(ins).ok_or(JSR_TARGET_UNRESOLVED)?;
+                entries.insert(*inliner.pc_index.get(&target).ok_or(JSR_TARGET_UNRESOLVED)?);
+            }
         }
-        match ins.opcode {
-            OP_RET => {
-                if body_branches_past(&insns[start..=j], ins.pc) {
-                    return false;
+        for entry in entries {
+            let body: BTreeSet<usize> = inliner.reach(entry, Some(&main))?;
+            if body.iter().any(|idx: &usize| main.contains(idx)) {
+                return Err(SHARED_WITH_CALLER);
+            }
+            inliner.check_return_address(entry, &body)?;
+            let index: usize = inliner.subroutines.len();
+            for idx in &body {
+                if inliner.owner.insert(*idx, index).is_some() {
+                    return Err(SHARED_SUBROUTINES);
                 }
-                emitted.push(Emitted {
+            }
+            inliner.subroutine_at.insert(entry, index);
+            inliner.subroutines.push(Subroutine { entry, body });
+        }
+        Ok(inliner)
+    }
+
+    fn reach(
+        &self,
+        start: usize,
+        caller: Option<&BTreeSet<usize>>,
+    ) -> Result<BTreeSet<usize>, &'static str> {
+        let mut seen: BTreeSet<usize> = BTreeSet::new();
+        let mut pending: Vec<usize> = vec![start];
+        while let Some(idx) = pending.pop() {
+            if !seen.insert(idx) {
+                continue;
+            }
+            let Some(ins): Option<&Instruction> = self.insns.get(idx) else {
+                return Err(FALLS_OFF_CODE);
+            };
+            for handler in &self.handlers_of[idx] {
+                if caller.is_none_or(|main: &BTreeSet<usize>| !main.contains(handler)) {
+                    pending.push(*handler);
+                }
+            }
+            if ins.opcode == OP_RET {
+                if caller.is_none() {
+                    return Err(RET_OUTSIDE_SUBROUTINE);
+                }
+                continue;
+            }
+            let (targets, falls_through): (Vec<u32>, bool) = flow_of(ins)?;
+            for target in targets {
+                pending.push(*self.pc_index.get(&target).ok_or(UNRESOLVED_BRANCH)?);
+            }
+            if falls_through {
+                if idx + 1 >= self.insns.len() {
+                    if caller.is_some() {
+                        return Err(FALLS_OFF_CODE);
+                    }
+                    continue;
+                }
+                pending.push(idx + 1);
+            }
+        }
+        Ok(seen)
+    }
+
+    fn check_return_address(
+        &self,
+        entry: usize,
+        body: &BTreeSet<usize>,
+    ) -> Result<(), &'static str> {
+        let slot: Option<u16> = match return_address_store(&self.insns[entry]) {
+            Some(ReturnAddress::Stored(slot)) => Some(slot),
+            Some(ReturnAddress::Discarded) => None,
+            None => return Err(NO_RETURN_ADDRESS_STORE),
+        };
+        for idx in body.iter().filter(|idx: &&usize| **idx != entry) {
+            let ins: &Instruction = &self.insns[*idx];
+            if ins.opcode == OP_RET {
+                match (&ins.operands, slot) {
+                    (Operands::Local(used), Some(stored)) if *used == stored => {}
+                    _ => return Err(FOREIGN_RET),
+                }
+            } else if slot.is_some() && local_slot(ins) == slot {
+                return Err(RETURN_ADDRESS_REUSED);
+            }
+        }
+        Ok(())
+    }
+
+    fn emit_main(&mut self) -> Result<(), &'static str> {
+        let members: BTreeSet<usize> = (0..self.insns.len())
+            .filter(|idx: &usize| !self.owner.contains_key(idx))
+            .collect();
+        self.emit_sequence(members, MAIN_SCOPE, 0)
+    }
+
+    fn emit_copy(
+        &mut self,
+        subroutine: usize,
+        caller: usize,
+        return_pc: u32,
+        depth: usize,
+    ) -> Result<usize, &'static str> {
+        if depth > MAX_INLINE_DEPTH {
+            return Err(TOO_DEEP);
+        }
+        let scope: usize = self.scopes.len();
+        let entry: usize = self.subroutines[subroutine].entry;
+        let mut labels: BTreeMap<u32, usize> = BTreeMap::new();
+        labels.insert(self.insns[entry].pc, self.emitted.len());
+        self.scopes.push(Scope {
+            subroutine: Some(subroutine),
+            parent: caller,
+            returns_to: Some(Target {
+                scope: caller,
+                pc: return_pc,
+            }),
+            labels,
+        });
+        let members: BTreeSet<usize> = self.subroutines[subroutine]
+            .body
+            .iter()
+            .copied()
+            .filter(|idx: &usize| *idx != entry)
+            .collect();
+        self.emit_sequence(members, scope, depth)?;
+        Ok(scope)
+    }
+
+    fn emit_sequence(
+        &mut self,
+        mut pending: BTreeSet<usize>,
+        scope: usize,
+        depth: usize,
+    ) -> Result<(), &'static str> {
+        let insns: &'a [Instruction] = self.insns;
+        let mut next: Option<usize> = None;
+        while let Some(idx) = next.take().or_else(|| pending.first().copied()) {
+            pending.remove(&idx);
+            let ins: &'a Instruction = &insns[idx];
+            let here: usize = self.emitted.len();
+            self.scopes[scope].labels.entry(ins.pc).or_insert(here);
+            if ins.opcode == OP_JSR || ins.opcode == OP_JSR_W {
+                let return_pc: u32 = self.continuation_pc(idx)?;
+                let copy: usize =
+                    self.emit_copy(self.subroutine_called_by(ins)?, scope, return_pc, depth + 1)?;
+                if pending.contains(&(idx + 1)) {
+                    self.drop_trailing_ret(copy);
+                    next = Some(idx + 1);
+                }
+            } else if scope == MAIN_SCOPE
+                && let Some((jsr, return_pc)) = self.goto_into_main_jsr(ins)
+            {
+                let subroutine: usize = self.subroutine_called_by(jsr)?;
+                self.emit_copy(subroutine, MAIN_SCOPE, return_pc, depth + 1)?;
+            } else if ins.opcode == OP_RET {
+                let returns_to: Target = self.scopes[scope]
+                    .returns_to
+                    .ok_or(RET_OUTSIDE_SUBROUTINE)?;
+                self.push(Emitted {
                     opcode: OP_GOTO,
                     mnemonic: "goto",
                     wide: false,
                     operands: Operands::Branch(0),
                     old_pc: ins.pc,
-                    target_old_pc: Some(return_pc),
-                    switch_targets_old_pc: Vec::new(),
-                });
-                return true;
+                    scope,
+                    target: Some(returns_to),
+                    switch_targets: Vec::new(),
+                    ret_of: Some(scope),
+                })?;
+            } else if let Some(target) = self.goto_to_sole_entry(ins, &pending) {
+                next = Some(target);
+            } else {
+                self.emit_instruction(ins, scope)?;
+                if flow_of(ins)?.1 && pending.contains(&(idx + 1)) {
+                    next = Some(idx + 1);
+                }
             }
-            OP_JSR | OP_JSR_W => {
-                if let Operands::Branch(off) = ins.operands {
-                    let inner_target: u32 = (i64::from(ins.pc) + i64::from(off)) as u32;
-                    let inner_return: u32 = next_pc(insns, j);
-                    let inner_start: usize = emitted.len();
-                    if !inline_one(
-                        insns,
-                        pc_index,
-                        inner_target,
-                        inner_return,
-                        emitted,
-                        depth + 1,
-                    ) {
-                        return false;
-                    }
-                    if insns
-                        .get(j + 1)
-                        .is_some_and(|next: &Instruction| !is_jsr_or_ret(next.opcode))
-                    {
-                        drop_return_goto(emitted, inner_start, inner_return);
+        }
+        Ok(())
+    }
+
+    fn goto_to_sole_entry(&self, ins: &Instruction, pending: &BTreeSet<usize>) -> Option<usize> {
+        if !matches!(ins.opcode, OP_GOTO | OP_GOTO_W) {
+            return None;
+        }
+        let target: usize = *self.pc_index.get(&branch_target_old_pc(ins)?)?;
+        (pending.contains(&target)
+            && self.flow_entries.get(target) == Some(&1)
+            && !self.handler_entries.contains(&target))
+        .then_some(target)
+    }
+
+    fn emit_instruction(&mut self, ins: &Instruction, scope: usize) -> Result<(), &'static str> {
+        let at = |pc: u32| -> Target { Target { scope, pc } };
+        let switch_targets: Vec<Target> = switch_target_pcs(ins)?.into_iter().map(at).collect();
+        self.push(Emitted {
+            opcode: ins.opcode,
+            mnemonic: ins.mnemonic,
+            wide: ins.wide,
+            operands: ins.operands.clone(),
+            old_pc: ins.pc,
+            scope,
+            target: branch_target_old_pc(ins).map(at),
+            switch_targets,
+            ret_of: None,
+        })
+    }
+
+    fn push(&mut self, emitted: Emitted) -> Result<(), &'static str> {
+        if self.emitted.len() >= MAX_OUTPUT {
+            return Err(TOO_LARGE);
+        }
+        self.emitted.push(emitted);
+        Ok(())
+    }
+
+    fn drop_trailing_ret(&mut self, copy: usize) {
+        if self
+            .emitted
+            .last()
+            .is_some_and(|last: &Emitted| last.ret_of == Some(copy))
+        {
+            self.emitted.pop();
+        }
+    }
+
+    fn continuation_pc(&self, idx: usize) -> Result<u32, &'static str> {
+        self.insns
+            .get(idx + 1)
+            .map(|next: &Instruction| next.pc)
+            .ok_or(FALLS_OFF_CODE)
+    }
+
+    fn subroutine_called_by(&self, jsr: &Instruction) -> Result<usize, &'static str> {
+        let target: u32 = branch_target_old_pc(jsr).ok_or(JSR_TARGET_UNRESOLVED)?;
+        let entry: usize = *self.pc_index.get(&target).ok_or(JSR_TARGET_UNRESOLVED)?;
+        self.subroutine_at
+            .get(&entry)
+            .copied()
+            .ok_or(JSR_TARGET_UNRESOLVED)
+    }
+
+    fn goto_into_main_jsr(&self, ins: &Instruction) -> Option<(&'a Instruction, u32)> {
+        if !matches!(ins.opcode, OP_GOTO | OP_GOTO_W) {
+            return None;
+        }
+        let index: usize = *self.pc_index.get(&branch_target_old_pc(ins)?)?;
+        let jsr: &'a Instruction = self.insns.get(index)?;
+        if !matches!(jsr.opcode, OP_JSR | OP_JSR_W) || self.owner.contains_key(&index) {
+            return None;
+        }
+        Some((jsr, self.insns.get(index + 1)?.pc))
+    }
+
+    fn resolve(&self, target: Target) -> Option<usize> {
+        let mut current: Target = target;
+        for _ in 0..=self.scopes.len() {
+            let scope: &Scope = self.scopes.get(current.scope)?;
+            let at_ret: bool = self
+                .pc_index
+                .get(&current.pc)
+                .is_some_and(|idx: &usize| self.insns[*idx].opcode == OP_RET);
+            match scope.returns_to {
+                Some(back) if at_ret => current = back,
+                _ => return scope.labels.get(&current.pc).copied(),
+            }
+        }
+        None
+    }
+
+    fn renumber(&self) -> Result<Vec<Instruction>, &'static str> {
+        let mut out: Vec<Instruction> = Vec::with_capacity(self.emitted.len());
+        for (idx, e) in self.emitted.iter().enumerate() {
+            let new_pc: u32 = u32::try_from(idx).map_err(|_| TOO_LARGE)?;
+            let relative = |target: Target| -> Result<i32, &'static str> {
+                let target_idx: usize = self.resolve(target).ok_or(UNRESOLVED_BRANCH)?;
+                let target_pc: i64 = i64::try_from(target_idx).map_err(|_| TOO_LARGE)?;
+                i32::try_from(target_pc - i64::from(new_pc)).map_err(|_| TOO_LARGE)
+            };
+            let operands: Operands = match (&e.operands, e.target) {
+                (_, Some(target)) => Operands::Branch(relative(target)?),
+                (Operands::TableSwitch { low, high, .. }, None) => {
+                    let (default, offsets): (&Target, &[Target]) =
+                        e.switch_targets.split_first().ok_or(UNRESOLVED_BRANCH)?;
+                    Operands::TableSwitch {
+                        default: relative(*default)?,
+                        low: *low,
+                        high: *high,
+                        offsets: offsets
+                            .iter()
+                            .map(|target: &Target| relative(*target))
+                            .collect::<Result<Vec<i32>, &'static str>>()?,
                     }
                 }
-                j += 1;
-            }
-            _ => {
-                emitted.push(copy_insn(ins));
-                j += 1;
-            }
+                (Operands::LookupSwitch { pairs, .. }, None) => {
+                    let (default, offsets): (&Target, &[Target]) =
+                        e.switch_targets.split_first().ok_or(UNRESOLVED_BRANCH)?;
+                    if offsets.len() != pairs.len() {
+                        return Err(UNRESOLVED_BRANCH);
+                    }
+                    Operands::LookupSwitch {
+                        default: relative(*default)?,
+                        pairs: pairs
+                            .iter()
+                            .zip(offsets)
+                            .map(|((key, _), target): (&(i32, i32), &Target)| {
+                                relative(*target).map(|off: i32| (*key, off))
+                            })
+                            .collect::<Result<Vec<(i32, i32)>, &'static str>>()?,
+                    }
+                }
+                (operands, None) => operands.clone(),
+            };
+            out.push(Instruction {
+                pc: new_pc,
+                opcode: e.opcode,
+                mnemonic: e.mnemonic,
+                wide: e.wide,
+                operands,
+            });
         }
-        if emitted.len() > MAX_OUTPUT {
-            return false;
-        }
+        Ok(out)
     }
-    false
+
+    fn handler_for(&self, e: &Emitted, handler_pc: u32, owner: Option<usize>) -> Option<usize> {
+        let Some(subroutine) = owner else {
+            return self.resolve(Target {
+                scope: MAIN_SCOPE,
+                pc: handler_pc,
+            });
+        };
+        let mut scope: usize = e.scope;
+        for _ in 0..=self.scopes.len() {
+            let current: &Scope = self.scopes.get(scope)?;
+            if current.subroutine == Some(subroutine) {
+                return current.labels.get(&handler_pc).copied();
+            }
+            if scope == MAIN_SCOPE {
+                return None;
+            }
+            scope = current.parent;
+        }
+        None
+    }
+
+    fn remap_exception_table(&self) -> Result<Vec<ExceptionEntry>, &'static str> {
+        if self
+            .exception_table
+            .len()
+            .saturating_mul(self.emitted.len())
+            > MAX_REMAP_WORK
+        {
+            return Err(TOO_LARGE);
+        }
+        let mut out: Vec<ExceptionEntry> = Vec::with_capacity(self.exception_table.len());
+        for entry in self.exception_table {
+            let protected = u32::from(entry.start_pc)..u32::from(entry.end_pc);
+            let handler_pc: u32 = u32::from(entry.handler_pc);
+            let owner: Option<usize> = match self.pc_index.get(&handler_pc) {
+                Some(idx) => self.owner.get(idx).copied(),
+                None => {
+                    if self
+                        .emitted
+                        .iter()
+                        .any(|e: &Emitted| protected.contains(&e.old_pc))
+                    {
+                        return Err(UNPLACED_HANDLER);
+                    }
+                    continue;
+                }
+            };
+            let mut run: Option<(usize, usize)> = None;
+            for (idx, e) in self.emitted.iter().enumerate() {
+                let handler: Option<usize> = if protected.contains(&e.old_pc) {
+                    Some(
+                        self.handler_for(e, handler_pc, owner)
+                            .ok_or(UNPLACED_HANDLER)?,
+                    )
+                } else {
+                    None
+                };
+                match (run, handler) {
+                    (Some((_, current)), Some(next)) if current == next => {}
+                    (previous, next) => {
+                        if let Some((start, current)) = previous {
+                            out.push(table_entry(start, idx, current, entry.catch_type)?);
+                        }
+                        run = next.map(|handler: usize| (idx, handler));
+                    }
+                }
+            }
+            if let Some((start, current)) = run {
+                out.push(table_entry(
+                    start,
+                    self.emitted.len(),
+                    current,
+                    entry.catch_type,
+                )?);
+            }
+        }
+        Ok(out)
+    }
 }
 
-fn goto_into_jsr(
-    insns: &[Instruction],
-    pc_index: &BTreeMap<u32, usize>,
-    ins: &Instruction,
-) -> Option<(u32, u32)> {
-    if !matches!(ins.opcode, OP_GOTO | OP_GOTO_W) {
-        return None;
+fn table_entry(
+    start: usize,
+    end: usize,
+    handler: usize,
+    catch_type: u16,
+) -> Result<ExceptionEntry, &'static str> {
+    Ok(ExceptionEntry {
+        start_pc: u16::try_from(start).map_err(|_| TOO_LARGE)?,
+        end_pc: u16::try_from(end).map_err(|_| TOO_LARGE)?,
+        handler_pc: u16::try_from(handler).map_err(|_| TOO_LARGE)?,
+        catch_type,
+    })
+}
+
+enum ReturnAddress {
+    Stored(u16),
+    Discarded,
+}
+
+fn return_address_store(ins: &Instruction) -> Option<ReturnAddress> {
+    match (ins.opcode, &ins.operands) {
+        (OP_ASTORE, Operands::Local(slot)) => Some(ReturnAddress::Stored(*slot)),
+        (OP_ASTORE_0..=OP_ASTORE_3, _) => {
+            Some(ReturnAddress::Stored(u16::from(ins.opcode - OP_ASTORE_0)))
+        }
+        (OP_POP, _) => Some(ReturnAddress::Discarded),
+        _ => None,
     }
-    let index: usize = *pc_index.get(&branch_target_old_pc(ins)?)?;
-    let jsr: &Instruction = insns.get(index)?;
-    if !matches!(jsr.opcode, OP_JSR | OP_JSR_W) {
-        return None;
+}
+
+fn local_slot(ins: &Instruction) -> Option<u16> {
+    match (ins.opcode, &ins.operands) {
+        (0x15..=0x19 | 0x36..=0x3A, Operands::Local(slot)) => Some(*slot),
+        (0x84, Operands::Iinc { index, .. }) => Some(*index),
+        (0x1A..=0x2D, _) => Some(u16::from((ins.opcode - 0x1A) % 4)),
+        (0x3B..=0x4E, _) => Some(u16::from((ins.opcode - 0x3B) % 4)),
+        _ => None,
     }
-    let Operands::Branch(off) = jsr.operands else {
-        return None;
+}
+
+fn flow_of(ins: &Instruction) -> Result<(Vec<u32>, bool), &'static str> {
+    let branch = || -> Result<Vec<u32>, &'static str> {
+        branch_target_old_pc(ins)
+            .map(|target: u32| vec![target])
+            .ok_or(UNRESOLVED_BRANCH)
     };
-    Some((
-        (i64::from(jsr.pc) + i64::from(off)) as u32,
-        next_pc(insns, index),
-    ))
+    Ok(match ins.opcode {
+        OP_GOTO | OP_GOTO_W => (branch()?, false),
+        0x99..=0xA6 | 0xC6 | 0xC7 => (branch()?, true),
+        OP_TABLESWITCH | OP_LOOKUPSWITCH => (switch_target_pcs(ins)?, false),
+        0xAC..=0xB1 | OP_ATHROW | OP_RET => (Vec::new(), false),
+        _ => (Vec::new(), true),
+    })
+}
+
+fn switch_target_pcs(ins: &Instruction) -> Result<Vec<u32>, &'static str> {
+    let offsets: Vec<i32> = match &ins.operands {
+        Operands::TableSwitch {
+            default, offsets, ..
+        } => std::iter::once(*default)
+            .chain(offsets.iter().copied())
+            .collect(),
+        Operands::LookupSwitch { default, pairs } => std::iter::once(*default)
+            .chain(pairs.iter().map(|(_, off): &(i32, i32)| *off))
+            .collect(),
+        _ => Vec::new(),
+    };
+    offsets
+        .into_iter()
+        .map(|off: i32| {
+            u32::try_from(i64::from(ins.pc) + i64::from(off)).map_err(|_| UNRESOLVED_BRANCH)
+        })
+        .collect()
+}
+
+fn branch_target_old_pc(ins: &Instruction) -> Option<u32> {
+    match ins.operands {
+        Operands::Branch(off) => u32::try_from(i64::from(ins.pc) + i64::from(off)).ok(),
+        _ => None,
+    }
 }
 
 const fn is_jsr_or_ret(opcode: u8) -> bool {
     matches!(opcode, OP_JSR | OP_JSR_W | OP_RET)
-}
-
-fn drop_return_goto(emitted: &mut Vec<Emitted>, body_start: usize, return_pc: u32) {
-    let Some((last, body)): Option<(&Emitted, &[Emitted])> =
-        emitted.get(body_start..).and_then(<[Emitted]>::split_last)
-    else {
-        return;
-    };
-    let ret_pc: u32 = last.old_pc;
-    let is_return_goto: bool = last.opcode == OP_GOTO && last.target_old_pc == Some(return_pc);
-    let ret_is_targeted: bool = body.iter().any(|e: &Emitted| {
-        e.target_old_pc == Some(ret_pc) || e.switch_targets_old_pc.contains(&ret_pc)
-    });
-    if is_return_goto && !ret_is_targeted {
-        emitted.pop();
-    }
-}
-
-fn body_branches_past(body: &[Instruction], ret_pc: u32) -> bool {
-    body.iter().any(|ins: &Instruction| {
-        branch_target_old_pc(ins).is_some_and(|target: u32| target > ret_pc)
-    })
-}
-
-const fn is_return_address_consumer(opcode: u8) -> bool {
-    opcode == OP_ASTORE || opcode == OP_POP || (opcode >= OP_ASTORE_0 && opcode <= OP_ASTORE_3)
-}
-
-fn skip_subroutine_body(insns: &[Instruction], start: usize) -> usize {
-    let mut j: usize = start;
-    while j < insns.len() {
-        if insns[j].opcode == OP_RET {
-            return j + 1;
-        }
-        j += 1;
-    }
-    insns.len()
-}
-
-fn renumber(emitted: &[Emitted], label_map: &BTreeMap<u32, usize>) -> Option<Vec<Instruction>> {
-    let mut out: Vec<Instruction> = Vec::with_capacity(emitted.len());
-    for (idx, e) in emitted.iter().enumerate() {
-        let new_pc: u32 = u32::try_from(idx).ok()?;
-        let relative = |old_target: u32| -> Option<i32> {
-            let target_idx: usize = resolve_target_index(emitted, idx, old_target, label_map)?;
-            let target_pc: i64 = i64::try_from(target_idx).ok()?;
-            i32::try_from(target_pc - i64::from(new_pc)).ok()
-        };
-        let operands: Operands = match (&e.operands, e.target_old_pc) {
-            (_, Some(old_target)) => Operands::Branch(relative(old_target)?),
-            (Operands::TableSwitch { low, high, .. }, None) => {
-                let mut targets = e.switch_targets_old_pc.iter().copied();
-                let default: i32 = relative(targets.next()?)?;
-                let offsets: Vec<i32> = targets.map(relative).collect::<Option<Vec<i32>>>()?;
-                Operands::TableSwitch {
-                    default,
-                    low: *low,
-                    high: *high,
-                    offsets,
-                }
-            }
-            (Operands::LookupSwitch { pairs, .. }, None) => {
-                let mut targets = e.switch_targets_old_pc.iter().copied();
-                let default: i32 = relative(targets.next()?)?;
-                let offsets: Vec<i32> = targets.map(relative).collect::<Option<Vec<i32>>>()?;
-                if offsets.len() != pairs.len() {
-                    return None;
-                }
-                Operands::LookupSwitch {
-                    default,
-                    pairs: pairs
-                        .iter()
-                        .zip(offsets)
-                        .map(|((key, _), off): (&(i32, i32), i32)| (*key, off))
-                        .collect(),
-                }
-            }
-            (operands, None) => operands.clone(),
-        };
-        out.push(Instruction {
-            pc: new_pc,
-            opcode: e.opcode,
-            mnemonic: e.mnemonic,
-            wide: e.wide,
-            operands,
-        });
-    }
-    Some(out)
-}
-
-fn resolve_target_index(
-    emitted: &[Emitted],
-    source_idx: usize,
-    old_target: u32,
-    label_map: &BTreeMap<u32, usize>,
-) -> Option<usize> {
-    let mut nearest_backward: Option<usize> = None;
-    for idx in (0..source_idx).rev() {
-        if emitted[idx].old_pc == old_target {
-            nearest_backward = Some(idx);
-            break;
-        }
-    }
-    if let Some(idx) = nearest_backward {
-        return Some(idx);
-    }
-    for (idx, e) in emitted.iter().enumerate().skip(source_idx) {
-        if e.old_pc == old_target {
-            return Some(idx);
-        }
-    }
-    label_map.get(&old_target).copied()
-}
-
-fn next_pc(insns: &[Instruction], idx: usize) -> u32 {
-    insns
-        .get(idx + 1)
-        .map_or_else(|| insns[idx].pc, |n: &Instruction| n.pc)
 }
 
 #[cfg(test)]
@@ -527,24 +769,178 @@ mod tests {
     }
 
     #[test]
-    fn a_subroutine_with_a_second_ret_is_not_cut_at_the_first() {
+    fn a_subroutine_with_a_second_ret_returns_from_both() {
         let insns: Vec<Instruction> = vec![
             ins(0, OP_JSR, "jsr", Operands::Branch(5)),
             ins(3, 0xB1, "return", Operands::None),
             ins(4, 0x00, "nop", Operands::None),
             ins(5, OP_ASTORE, "astore", Operands::Local(1)),
             ins(7, 0x1A, "iload_0", Operands::None),
-            ins(8, 0x99, "ifeq", Operands::Branch(6)),
+            ins(8, 0x99, "ifeq", Operands::Branch(5)),
             ins(11, OP_RET, "ret", Operands::Local(1)),
             ins(13, 0x04, "iconst_1", Operands::None),
             ins(14, 0x3B, "istore_0", Operands::None),
             ins(15, OP_RET, "ret", Operands::Local(1)),
         ];
         let JsrInlined {
+            insns: out,
+            report,
+            refusal,
+            ..
+        } = inline_jsr_subroutines(&insns, &[]);
+        assert!(!report.bailed, "{report:?}");
+        assert_eq!(refusal, None);
+        assert_eq!(
+            out.iter()
+                .map(|i: &Instruction| i.opcode)
+                .collect::<Vec<u8>>(),
+            vec![0x1A, 0x99, OP_GOTO, 0x04, 0x3B, 0xB1, 0x00],
+            "{out:?}"
+        );
+        assert_eq!(
+            out[1].operands,
+            Operands::Branch(2),
+            "the branch past the first ret stays in the copy: {out:?}"
+        );
+        assert_eq!(
+            out[2].operands,
+            Operands::Branch(3),
+            "the first ret returns to the call site: {out:?}"
+        );
+    }
+
+    #[test]
+    fn each_copy_branches_inside_itself() {
+        let insns: Vec<Instruction> = vec![
+            ins(0, OP_JSR, "jsr", Operands::Branch(11)),
+            ins(3, 0x04, "iconst_1", Operands::None),
+            ins(4, 0x3C, "istore_1", Operands::None),
+            ins(5, OP_JSR, "jsr", Operands::Branch(6)),
+            ins(8, 0x1B, "iload_1", Operands::None),
+            ins(9, 0xAC, "ireturn", Operands::None),
+            ins(10, 0x00, "nop", Operands::None),
+            ins(11, OP_ASTORE, "astore", Operands::Local(2)),
+            ins(13, 0x1A, "iload_0", Operands::None),
+            ins(14, 0x99, "ifeq", Operands::Branch(6)),
+            ins(17, 0x84, "iinc", Operands::Iinc { index: 0, delta: 1 }),
+            ins(20, OP_RET, "ret", Operands::Local(2)),
+        ];
+        let JsrInlined {
             insns: out, report, ..
         } = inline_jsr_subroutines(&insns, &[]);
+        assert!(!report.bailed, "{report:?}");
+        assert_eq!(
+            out.iter()
+                .map(|i: &Instruction| i.opcode)
+                .collect::<Vec<u8>>(),
+            vec![
+                0x1A, 0x99, 0x84, 0x04, 0x3C, 0x1A, 0x99, 0x84, 0x1B, 0xAC, 0x00
+            ],
+            "{out:?}"
+        );
+        assert_eq!(
+            out[1].operands,
+            Operands::Branch(2),
+            "the first copy's branch to its ret returns to the first call site: {out:?}"
+        );
+        assert_eq!(
+            out[6].operands,
+            Operands::Branch(2),
+            "the second copy's branch to its ret returns to the second call site: {out:?}"
+        );
+    }
+
+    #[test]
+    fn a_handler_inside_a_subroutine_follows_each_copy() {
+        let insns: Vec<Instruction> = vec![
+            ins(0, OP_JSR, "jsr", Operands::Branch(10)),
+            ins(3, OP_JSR, "jsr", Operands::Branch(7)),
+            ins(6, 0xB1, "return", Operands::None),
+            ins(7, 0x00, "nop", Operands::None),
+            ins(8, 0x00, "nop", Operands::None),
+            ins(9, 0x00, "nop", Operands::None),
+            ins(10, 0x4C, "astore_1", Operands::None),
+            ins(11, 0xB8, "invokestatic", Operands::ConstPool(9)),
+            ins(14, OP_GOTO, "goto", Operands::Branch(6)),
+            ins(17, 0x57, "pop", Operands::None),
+            ins(18, 0x04, "iconst_1", Operands::None),
+            ins(19, 0x3B, "istore_0", Operands::None),
+            ins(20, OP_RET, "ret", Operands::Local(1)),
+        ];
+        let table: [ExceptionEntry; 1] = [ExceptionEntry {
+            start_pc: 11,
+            end_pc: 14,
+            handler_pc: 17,
+            catch_type: 5,
+        }];
+        let JsrInlined {
+            insns: out,
+            exception_table,
+            report,
+            ..
+        } = inline_jsr_subroutines(&insns, &table);
+        assert!(!report.bailed, "{report:?}");
+        assert_eq!(
+            out.iter()
+                .map(|i: &Instruction| i.opcode)
+                .collect::<Vec<u8>>(),
+            vec![
+                0xB8, OP_GOTO, 0x57, 0x04, 0x3B, 0xB8, OP_GOTO, 0x57, 0x04, 0x3B, 0xB1, 0x00, 0x00,
+                0x00
+            ],
+            "{out:?}"
+        );
+        assert_eq!(out[1].operands, Operands::Branch(4), "{out:?}");
+        assert_eq!(out[6].operands, Operands::Branch(4), "{out:?}");
+        assert_eq!(
+            exception_table,
+            vec![
+                ExceptionEntry {
+                    start_pc: 0,
+                    end_pc: 1,
+                    handler_pc: 2,
+                    catch_type: 5,
+                },
+                ExceptionEntry {
+                    start_pc: 5,
+                    end_pc: 6,
+                    handler_pc: 7,
+                    catch_type: 5,
+                },
+            ],
+            "each copy's call is caught by that copy's own handler"
+        );
+    }
+
+    #[test]
+    fn a_subroutine_the_caller_falls_into_is_refused_by_name() {
+        let insns: Vec<Instruction> = vec![
+            ins(0, OP_JSR, "jsr", Operands::Branch(4)),
+            ins(3, 0x00, "nop", Operands::None),
+            ins(4, OP_ASTORE, "astore", Operands::Local(1)),
+            ins(6, OP_RET, "ret", Operands::Local(1)),
+        ];
+        let JsrInlined {
+            insns: out,
+            report,
+            refusal,
+            ..
+        } = inline_jsr_subroutines(&insns, &[]);
         assert!(report.bailed, "{report:?}");
+        assert_eq!(refusal, Some(RET_OUTSIDE_SUBROUTINE));
         assert_eq!(out, insns);
+    }
+
+    #[test]
+    fn a_ret_through_another_local_is_refused_by_name() {
+        let insns: Vec<Instruction> = vec![
+            ins(0, OP_JSR, "jsr", Operands::Branch(4)),
+            ins(3, 0xB1, "return", Operands::None),
+            ins(4, OP_ASTORE, "astore", Operands::Local(1)),
+            ins(6, OP_RET, "ret", Operands::Local(2)),
+        ];
+        let JsrInlined { refusal, .. } = inline_jsr_subroutines(&insns, &[]);
+        assert_eq!(refusal, Some(FOREIGN_RET));
     }
 
     #[test]
@@ -612,6 +1008,7 @@ mod tests {
             insns: out,
             exception_table,
             report,
+            ..
         } = inline_jsr_subroutines(&insns, &table);
         assert!(!report.bailed, "{report:?}");
         assert_eq!(
@@ -725,7 +1122,7 @@ mod tests {
     }
 
     #[test]
-    fn a_ret_the_subroutine_branches_to_keeps_its_goto() {
+    fn a_branch_to_a_ret_lands_on_the_return_site() {
         let insns: Vec<Instruction> = vec![
             ins(0, OP_JSR, "jsr", Operands::Branch(5)),
             ins(3, 0xB1, "return", Operands::None),
@@ -745,13 +1142,13 @@ mod tests {
             out.iter()
                 .map(|i: &Instruction| i.opcode)
                 .collect::<Vec<u8>>(),
-            vec![0x1A, 0x99, 0x04, 0x3B, OP_GOTO, 0xB1, 0x00],
+            vec![0x1A, 0x99, 0x04, 0x3B, 0xB1, 0x00],
             "{out:?}"
         );
         assert_eq!(
             out[1].operands,
             Operands::Branch(3),
-            "the branch to the ret lands on the goto back to the return site: {out:?}"
+            "the branch to the ret lands on the return site: {out:?}"
         );
     }
 

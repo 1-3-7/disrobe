@@ -20,7 +20,7 @@ const PUBLISHED_RECOMPILE_BAR: &str = "per-method";
 const PUBLISHED_EXECUTION_BAR: &str = "per-method, execution-verified";
 
 const PER_METHOD_TOTAL: usize = 131;
-const EXECUTION_EQUIVALENT_FLOOR: usize = 118;
+const EXECUTION_EQUIVALENT_FLOOR: usize = 119;
 
 const OBSERVATION_TIMEOUT_MS: u64 = 5_000;
 
@@ -75,11 +75,6 @@ const BEHAVIOUR_DIVERGENT: &[(&str, &str)] = &[
         "closureCaptureLoop",
         "the inlined anonymous Iterator loses the inner = Collections.emptyIterator() field \
          initializer, so hasNext dereferences null",
-    ),
-    (
-        "lambda$closureCaptureLoop$0",
-        "the recovered per-stage iterator is off by one: it yields 1,2,3 where the original yields \
-         0,1,2 for the same capture",
     ),
     (
         "lambda$closureCaptureLoop$1",

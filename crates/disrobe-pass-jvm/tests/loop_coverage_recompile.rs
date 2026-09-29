@@ -184,10 +184,10 @@ fn a_loop_header_branch_the_structurer_cannot_place_is_reported_incomplete() {
         std::fs::read(scratch.path().join("LoopHeaderExitProbe.class")).expect("read class");
     let decompiled: DecompiledClass = decompile_classfile_bytes(&bytes).expect("decompile");
     let source: &str = &decompiled.source;
-    let body: &str = method_body(source, "public int spinSwitchExit(int arg0)");
+    let body: &str = method_body(source, "public int spinSwitchExit(int arg0, boolean arg1)");
     assert!(
         body.contains("// <decompile: incomplete: a reachable block has no rendered statement>"),
-        "a loop whose header switch also leaves the loop loses switch arms, so the method must          carry the coverage marker; recovered source:
+        "a loop whose header switch breaks out to code the loop shares with its skip path loses switch arms, so the method must carry the coverage marker; recovered source:
 {source}"
     );
     assert_eq!(
