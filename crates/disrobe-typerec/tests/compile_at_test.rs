@@ -218,7 +218,7 @@ fn an_empty_or_unset_compiler_requirement_keeps_the_compiler_mandatory() {
     assert_eq!(parse_requirement(Some("optional")), Requirement::Optional);
     assert_eq!(
         parse_requirement(Some("Require-GNU")),
-        Requirement::RequireGnu
+        Requirement::RequirePresent
     );
 }
 

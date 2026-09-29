@@ -18,7 +18,6 @@ const OBJCOPY_NAMES: [&str; 2] = ["objcopy", "llvm-objcopy"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Requirement {
-    RequireGnu,
     RequirePresent,
     Optional,
 }
@@ -102,7 +101,6 @@ pub(crate) fn parse_requirement(raw: Option<&str>) -> Requirement {
         .as_deref()
     {
         Some("0" | "false" | "no" | "off" | "optional") => Requirement::Optional,
-        Some("gnu" | "require-gnu" | "strict") => Requirement::RequireGnu,
         _ => Requirement::RequirePresent,
     }
 }
@@ -267,16 +265,16 @@ pub(crate) fn require(graded: &str) -> Option<CcToolchain> {
         }
         Probe::NotGnu { identity } => {
             assert!(
-                requirement() != Requirement::RequireGnu,
-                "{REQUIREMENT_VAR} demands a GNU C compiler on this host, so {graded} was measured \
-                 against nothing and this case must not report success: the compiler here \
-                 announces itself as {identity:?}. Install gcc, or point {GCC_BIN_VAR} at one; to \
+                requirement() == Requirement::Optional,
+                "{graded} reads the debug information GNU cc emits, but the C compiler here \
+                 announces itself as {identity:?}, so the case would be measured against nothing \
+                 and must not report success. Install gcc, or point {GCC_BIN_VAR} at one; to \
                  permit a run that measures nothing here, set {REQUIREMENT_VAR}=optional."
             );
             eprintln!(
                 "\nNOT MEASURED: {graded} graded nothing, because the C compiler on this host \
-                 announces itself as {identity:?} rather than GNU cc, and this grade reads the \
-                 debug information GNU cc emits. Set {REQUIREMENT_VAR}=gnu to fail instead.\n"
+                 announces itself as {identity:?} rather than GNU cc. {REQUIREMENT_VAR} is set \
+                 to optional for this run.\n"
             );
             None
         }
