@@ -412,6 +412,15 @@ pub(crate) fn substitute(expr: &Expr, args: &[Expr]) -> Expr {
         Expr::Const(_) | Expr::This | Expr::StaticField { .. } | Expr::New(_) | Expr::Opaque(_) => {
             expr.clone()
         }
+        Expr::Choice {
+            cond,
+            then_val,
+            else_val,
+        } => Expr::Choice {
+            cond: cond.clone(),
+            then_val: Box::new(substitute(then_val, args)),
+            else_val: Box::new(substitute(else_val, args)),
+        },
         Expr::Field {
             receiver,
             owner,
@@ -490,6 +499,15 @@ fn parse_placeholder(name: &str) -> Option<usize> {
 fn effect_atoms(expr: &Expr, out: &mut Vec<String>) {
     match expr {
         Expr::Const(_) | Expr::Local(_) | Expr::This | Expr::Opaque(_) => {}
+        Expr::Choice {
+            cond,
+            then_val,
+            else_val,
+        } => {
+            effect_atoms(then_val, out);
+            effect_atoms(else_val, out);
+            out.push(format!("choice {cond}"));
+        }
         Expr::Field {
             receiver,
             owner,

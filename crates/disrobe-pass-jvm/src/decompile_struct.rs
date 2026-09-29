@@ -2155,6 +2155,51 @@ impl<'a> Structurer<'a> {
         sites
     }
 
+    fn unfolded_branch_exit_copy(
+        &mut self,
+        chain: &FinallyChain,
+        finally_handler: BlockId,
+    ) -> bool {
+        let handler_pc: u32 = self.cfg.blocks[finally_handler.0 as usize].start_pc;
+        let ranges: Vec<(u32, u32)> = self
+            .cfg
+            .exception_regions
+            .iter()
+            .filter(|region: &&ExceptionRegion| {
+                region.catch_type.is_none() && region.handler_pc == handler_pc
+            })
+            .map(|region: &ExceptionRegion| (region.try_start_pc, region.try_end_pc))
+            .collect();
+        let protected = |pc: u32| -> bool {
+            ranges
+                .iter()
+                .any(|&(start, end): &(u32, u32)| (start..end).contains(&pc))
+        };
+        let chain_blocks: BTreeSet<BlockId> = chain.blocks.iter().copied().collect();
+        let sites: BTreeSet<BlockId> = self
+            .cfg
+            .blocks
+            .iter()
+            .filter(|block: &&BasicBlock| protected(block.start_pc))
+            .flat_map(|block: &BasicBlock| {
+                block
+                    .successors
+                    .iter()
+                    .filter(|edge: &&Edge| !matches!(edge.kind, EdgeKind::Exception))
+                    .map(|edge: &Edge| edge.target)
+            })
+            .filter(|target: &BlockId| {
+                !chain_blocks.contains(target)
+                    && !protected(self.cfg.blocks[target.0 as usize].start_pc)
+                    && !self.finally_inline_skips.contains_key(target)
+                    && !self.absorbed.contains(target)
+            })
+            .collect();
+        sites
+            .into_iter()
+            .any(|site: BlockId| self.finally_inline_prefix(chain, site).is_some())
+    }
+
     fn catch_body_is_finally_protected(&self, finally_handler: BlockId, catch: BlockId) -> bool {
         let handler_pc: u32 = self.cfg.blocks[finally_handler.0 as usize].start_pc;
         let catch_pc: u32 = self.cfg.blocks[catch.0 as usize].start_pc;
@@ -3003,6 +3048,12 @@ impl<'a> Structurer<'a> {
                             self.unmodelled_region.get_or_insert(
                                 "a finally body with internal control flow was only partly folded \
                                  out of its exit paths",
+                            );
+                        }
+                        if self.unfolded_branch_exit_copy(&chain, handler) {
+                            self.unmodelled_region.get_or_insert(
+                                "a branch leaves the try into a copy of the finally that was not \
+                                 folded, so the recovered try would run the finally twice",
                             );
                         }
                     }

@@ -1701,6 +1701,11 @@ pub(crate) enum Expr {
         args: Vec<Self>,
         returns_bool: bool,
     },
+    Choice {
+        cond: String,
+        then_val: Box<Self>,
+        else_val: Box<Self>,
+    },
     Opaque(String),
 }
 
@@ -1733,6 +1738,13 @@ fn int_literal_values(arg: &Expr) -> Option<Vec<i32>> {
                 parse_int_literal(else_arm)?,
             ])
         }
+        Expr::Choice {
+            then_val, else_val, ..
+        } => {
+            let mut values: Vec<i32> = int_literal_values(then_val)?;
+            values.extend(int_literal_values(else_val)?);
+            Some(values)
+        }
         _ => None,
     }
 }
@@ -1743,6 +1755,12 @@ fn coerce_arg(arg: Expr, want: &JavaType) -> Expr {
         && let Some(b) = int_literal_as_bool(c)
     {
         return Expr::Const(b.to_string());
+    }
+    if matches!(want, JavaType::Boolean)
+        && matches!(arg, Expr::Choice { .. } | Expr::Binary { .. })
+        && let Some(condition) = boolean_view(&arg)
+    {
+        return Expr::Opaque(condition);
     }
     if let Some((ty, lo, hi)) = narrow_int_param_bounds(want)
         && let Some(values) = int_literal_values(&arg)
@@ -1808,6 +1826,11 @@ impl Expr {
                 format!("({} instanceof {ty})", value.render())
             }
             Self::Cmp { kind, lhs, rhs } => kind.render_value(&lhs.render(), &rhs.render()),
+            Self::Choice {
+                cond,
+                then_val,
+                else_val,
+            } => format!("({cond} ? {} : {})", then_val.render(), else_val.render()),
             Self::ArrayLength(arr) => format!("{}.length", arr.render()),
             Self::ArrayLoad { array, index } => {
                 format!("{}[{}]", array.render(), index.render())
@@ -2302,6 +2325,8 @@ fn lift_structured(
         finally_tail_trims,
         finally_return_stores,
         folded_condition_heads,
+        folded_members: BTreeSet::new(),
+        applied_folds: BTreeSet::new(),
     };
     let mut out: String = String::new();
     render_region(&mut ctx, &root, &mut out, 2);
@@ -3384,6 +3409,99 @@ fn conditional_boolean_store_slots(insns: &[Instruction]) -> BTreeSet<u16> {
     out
 }
 
+const INT_USE_SCAN_LIMIT: usize = 32;
+
+fn int_used_local_slots(cf: &ClassFile, insns: &[Instruction]) -> BTreeSet<u16> {
+    let mut out: BTreeSet<u16> = BTreeSet::new();
+    for (index, insn) in insns.iter().enumerate() {
+        if let Operands::Iinc { index: slot, .. } = insn.operands {
+            out.insert(slot);
+        } else if let Some(slot) = iload_slot_of(insn)
+            && loaded_int_has_int_use(cf, &insns[index + 1..])
+        {
+            out.insert(slot);
+        }
+    }
+    out
+}
+
+const fn is_int_like(ty: &JavaType) -> bool {
+    matches!(
+        ty,
+        JavaType::Int | JavaType::Short | JavaType::Byte | JavaType::Char
+    )
+}
+
+fn loaded_int_has_int_use(cf: &ClassFile, following: &[Instruction]) -> bool {
+    let mut depth: usize = 0;
+    for insn in following.iter().take(INT_USE_SCAN_LIMIT) {
+        match insn.opcode {
+            0x01..=0x2D | 0xB2 => depth += 1,
+            0x2E..=0x35 => {
+                if depth == 0 {
+                    return true;
+                }
+                depth -= 1;
+            }
+            0x59 | 0x57 if depth == 0 => return false,
+            0x59 => depth += 1,
+            0x57 => depth -= 1,
+            0x60 | 0x64 | 0x68 | 0x6C | 0x70 | 0x78..=0x7D => {
+                if depth <= 1 {
+                    return true;
+                }
+                depth -= 1;
+            }
+            0x61..=0x63 | 0x65..=0x67 | 0x69..=0x6B | 0x6D..=0x6F | 0x71..=0x73 => {
+                if depth <= 1 {
+                    return false;
+                }
+                depth -= 1;
+            }
+            0x74 | 0x85..=0x87 | 0x91..=0x93 | 0xAA | 0xAB | 0x9B..=0x9E => return depth == 0,
+            0x75..=0x77 | 0x88..=0x90 | 0xB4 if depth > 0 => {}
+            0xA1..=0xA4 => return depth <= 1,
+            0xB3 | 0xB5 if depth == 0 => {
+                let Operands::ConstPool(idx) = insn.operands else {
+                    return false;
+                };
+                return bytecode::resolve_ref(cf, idx)
+                    .and_then(|reference: String| {
+                        let (_, desc): (&str, &str) = reference.rsplit_once(':')?;
+                        descriptor::parse_field(desc)
+                    })
+                    .is_some_and(|ty: JavaType| is_int_like(&ty));
+            }
+            0xB6..=0xB9 => {
+                let idx: u16 = match insn.operands {
+                    Operands::ConstPool(i) => i,
+                    Operands::InvokeInterface { index, .. } => index,
+                    _ => return false,
+                };
+                let Some(method): Option<MethodDescriptor> = bytecode::resolve_ref(cf, idx)
+                    .and_then(|reference: String| {
+                        let (_, desc): (&str, &str) = reference.rsplit_once(':')?;
+                        descriptor::parse_method(desc)
+                    })
+                else {
+                    return false;
+                };
+                let argc: usize = method.params.len();
+                if depth < argc {
+                    return method.params.get(argc - 1 - depth).is_some_and(is_int_like);
+                }
+                let popped: usize = argc + usize::from(insn.opcode != 0xB8);
+                let Some(rest): Option<usize> = depth.checked_sub(popped) else {
+                    return false;
+                };
+                depth = rest + usize::from(method.returns != JavaType::Void);
+            }
+            _ => return false,
+        }
+    }
+    false
+}
+
 fn int_store_slot(insn: &Instruction) -> Option<u16> {
     matches!(insn.opcode, 0x36 | 0x3B..=0x3E)
         .then(|| store_target_slot(insn))
@@ -3531,9 +3649,12 @@ fn boolean_scalar_local_slots(
         }
     }
     bool_stores.extend(conditional_boolean_store_slots(insns));
+    let int_used: BTreeSet<u16> = int_used_local_slots(cf, insns);
     bool_stores
         .into_iter()
-        .filter(|slot: &u16| !other_stores.contains(slot) && !param_slots.contains(slot))
+        .filter(|slot: &u16| {
+            !other_stores.contains(slot) && !param_slots.contains(slot) && !int_used.contains(slot)
+        })
         .collect()
 }
 
@@ -3570,6 +3691,8 @@ fn reference_seen_types(
     infer_reference_local_slots(cf, insns, &BTreeMap::new(), handler_pcs).1
 }
 
+const NULL_REFERENCE: &str = "null";
+
 fn infer_reference_local_slots(
     cf: &ClassFile,
     insns: &[Instruction],
@@ -3583,10 +3706,16 @@ fn infer_reference_local_slots(
     let mut slots: BTreeMap<u16, Option<String>> = BTreeMap::new();
     let mut distinct: BTreeMap<u16, BTreeSet<String>> = BTreeMap::new();
     let mut live_types: BTreeMap<u16, String> = param_types.clone();
-    let record = |slots: &mut BTreeMap<u16, Option<String>>,
-                  distinct: &mut BTreeMap<u16, BTreeSet<String>>,
-                  slot: u16,
-                  ty: Option<String>| {
+    let store_reference = |slots: &mut BTreeMap<u16, Option<String>>,
+                           distinct: &mut BTreeMap<u16, BTreeSet<String>>,
+                           live_types: &mut BTreeMap<u16, String>,
+                           slot: u16,
+                           ty: Option<String>| {
+        if ty.as_deref() == Some(NULL_REFERENCE) {
+            live_types.remove(&slot);
+            return;
+        }
+        update_live(live_types, slot, ty.clone());
         if let Some(t) = &ty
             && t != "Object"
             && t != "void"
@@ -3606,7 +3735,7 @@ fn infer_reference_local_slots(
     for insn in insns {
         let op: u8 = insn.opcode;
         match op {
-            0x01 => type_stack.push(None),
+            0x01 => type_stack.push(Some(NULL_REFERENCE.to_string())),
             0x12..=0x14 => type_stack.push(ldc_static_type(cf, insn)),
             0xBB => type_stack.push(new_static_type(cf, insn)),
             0xBC | 0xBD => {
@@ -3678,8 +3807,7 @@ fn infer_reference_local_slots(
                 if let Operands::Local(idx) = &insn.operands
                     && !catch_bind
                 {
-                    record(&mut slots, &mut distinct, *idx, top.clone());
-                    update_live(&mut live_types, *idx, top);
+                    store_reference(&mut slots, &mut distinct, &mut live_types, *idx, top);
                 }
             }
             0x4B..=0x4E => {
@@ -3687,8 +3815,7 @@ fn infer_reference_local_slots(
                 let top: Option<String> = type_stack.pop().flatten();
                 let slot: u16 = u16::from(op - 0x4B);
                 if !catch_bind {
-                    record(&mut slots, &mut distinct, slot, top.clone());
-                    update_live(&mut live_types, slot, top);
+                    store_reference(&mut slots, &mut distinct, &mut live_types, slot, top);
                 }
             }
             _ => {
@@ -4916,7 +5043,9 @@ struct RenderCtx<'a> {
     finally_inline_skips: BTreeMap<BlockId, usize>,
     finally_tail_trims: BTreeMap<BlockId, usize>,
     finally_return_stores: BTreeMap<BlockId, u16>,
-    folded_condition_heads: BTreeMap<BlockId, [BlockId; 2]>,
+    folded_condition_heads: BTreeMap<BlockId, FoldedCondition>,
+    folded_members: BTreeSet<BlockId>,
+    applied_folds: BTreeSet<BlockId>,
 }
 
 fn indent_string(level: usize) -> String {
@@ -5077,7 +5206,13 @@ fn render_region(ctx: &mut RenderCtx<'_>, region: &Region, out: &mut String, lev
         Region::IfThen {
             head, then_body, ..
         } => {
-            if try_render_assert(ctx, *head, then_body, out, level) {
+            if ctx.folded_members.contains(head) {
+                render_region(ctx, then_body, out, level);
+                return;
+            }
+            if try_render_assert(ctx, *head, then_body, out, level)
+                || render_folded_condition_head(ctx, *head, &[then_body], out, level)
+            {
                 return;
             }
             let cond: String = render_if_condition(ctx, *head, out, level);
@@ -5093,10 +5228,15 @@ fn render_region(ctx: &mut RenderCtx<'_>, region: &Region, out: &mut String, lev
             join,
             ..
         } => {
+            if ctx.folded_members.contains(head) {
+                render_region(ctx, then_body, out, level);
+                render_region(ctx, else_body, out, level);
+                return;
+            }
             if try_render_conditional_expr(ctx, *head, then_body, else_body, *join, out, level) {
                 return;
             }
-            if render_folded_condition_head(ctx, *head, then_body, else_body, out, level) {
+            if render_folded_condition_head(ctx, *head, &[then_body, else_body], out, level) {
                 return;
             }
             let cond: String = render_if_condition(ctx, *head, out, level);
@@ -5932,6 +6072,22 @@ fn render_block_statements(
         .saturating_add(handler_entry_skip)
         .min(end);
     let pad: String = indent_string(level);
+    if seed.is_empty()
+        && start == block_start
+        && ctx
+            .folded_condition_heads
+            .iter()
+            .any(|(head, fold): (&BlockId, &FoldedCondition)| {
+                fold.join == bid && !ctx.applied_folds.contains(head)
+            })
+    {
+        ctx.fully_lifted = false;
+        let _ = writeln!(
+            out,
+            "{pad}// <decompile: incomplete: a conditional value's branches were not structured \
+             around its condition>"
+        );
+    }
     let mut stack: Vec<Expr> = if seed.is_empty() {
         ctx.block_entry_stacks.get(&bid).cloned().unwrap_or(seed)
     } else {
@@ -6115,6 +6271,9 @@ fn simulate_block(ctx: &RenderCtx<'_>, bid: BlockId, entry: &[Expr]) -> (Vec<Exp
 fn expr_has_hole(e: &Expr) -> bool {
     match e {
         Expr::Opaque(s) => s == HOLE_TOKEN,
+        Expr::Choice {
+            then_val, else_val, ..
+        } => expr_has_hole(then_val) || expr_has_hole(else_val),
         Expr::Const(_) | Expr::Local(_) | Expr::This | Expr::New(_) => false,
         Expr::StaticField { .. } => false,
         Expr::Field { receiver, .. } => expr_has_hole(receiver),
@@ -6145,7 +6304,7 @@ const fn branch_pop_count(op: u8) -> usize {
 
 struct EntryStacks {
     stacks: BTreeMap<BlockId, Vec<Expr>>,
-    folded_condition_heads: BTreeMap<BlockId, [BlockId; 2]>,
+    folded_condition_heads: BTreeMap<BlockId, FoldedCondition>,
 }
 
 fn compute_block_entry_stacks(
@@ -6188,11 +6347,13 @@ fn compute_block_entry_stacks(
         finally_tail_trims: BTreeMap::new(),
         finally_return_stores: BTreeMap::new(),
         folded_condition_heads: BTreeMap::new(),
+        folded_members: BTreeSet::new(),
+        applied_folds: BTreeSet::new(),
     };
     let dom: Dominators = compute_dominators(cfg);
     let mut exit_stacks: BTreeMap<BlockId, Vec<Expr>> = BTreeMap::new();
     let mut exit_clean: BTreeMap<BlockId, bool> = BTreeMap::new();
-    let mut folded_condition_heads: BTreeMap<BlockId, [BlockId; 2]> = BTreeMap::new();
+    let mut folded_condition_heads: BTreeMap<BlockId, FoldedCondition> = BTreeMap::new();
     for bid in &dom.order {
         let block: &BasicBlock = &cfg.blocks[bid.0 as usize];
         let real_preds: Vec<BlockId> = block
@@ -6217,10 +6378,8 @@ fn compute_block_entry_stacks(
             preds if preds.len() >= 2 => agreed_join_entry(preds, *bid, &exit_stacks, &exit_clean)
                 .or_else(|| {
                     let fold: TernaryJoinEntry =
-                        bool_ternary_join_entry(&probe, *bid, preds, &exit_stacks, &exit_clean)?;
-                    if let Some(folded) = fold.folded {
-                        folded_condition_heads.insert(folded.head, folded.arms);
-                    }
+                        ternary_join_entry(&probe, *bid, preds, &exit_stacks, &exit_clean)?;
+                    folded_condition_heads.insert(fold.head, fold.folded);
                     Some(fold.entry)
                 })
                 .unwrap_or_default(),
@@ -6263,87 +6422,286 @@ fn agreed_join_entry(
     agreed
 }
 
+#[derive(Clone)]
 struct FoldedCondition {
-    head: BlockId,
-    arms: [BlockId; 2],
+    members: BTreeSet<BlockId>,
+    join: BlockId,
 }
 
 struct TernaryJoinEntry {
     entry: Vec<Expr>,
-    folded: Option<FoldedCondition>,
+    head: BlockId,
+    folded: FoldedCondition,
 }
 
-fn bool_ternary_join_entry(
+fn ternary_join_entry(
     ctx: &RenderCtx<'_>,
     bid: BlockId,
     preds: &[BlockId],
     exit_stacks: &BTreeMap<BlockId, Vec<Expr>>,
     exit_clean: &BTreeMap<BlockId, bool>,
 ) -> Option<TernaryJoinEntry> {
-    let [a, b]: [BlockId; 2] = preds.try_into().ok()?;
-    if a == bid || b == bid {
+    if preds.len() > ARM_CONDITION_BLOCK_CAP || preds.contains(&bid) {
         return None;
     }
-    if !exit_clean.get(&a).copied().unwrap_or(false)
-        || !exit_clean.get(&b).copied().unwrap_or(false)
+    let mut exits: Vec<&Vec<Expr>> = Vec::with_capacity(preds.len());
+    for pred in preds {
+        if !exit_clean.get(pred).copied().unwrap_or(false) {
+            return None;
+        }
+        exits.push(exit_stacks.get(pred)?);
+    }
+    let first: &Vec<Expr> = exits.first()?;
+    let prefix_len: usize = first.len().checked_sub(1)?;
+    if exits.iter().any(|exit: &&Vec<Expr>| {
+        exit.len() != first.len() || !stacks_render_equal(&exit[..prefix_len], &first[..prefix_len])
+    }) {
+        return None;
+    }
+    let tops: Vec<Expr> = exits
+        .iter()
+        .map(|exit: &&Vec<Expr>| exit[prefix_len].clone())
+        .collect();
+    if tops
+        .iter()
+        .all(|top: &Expr| top.render() == first[prefix_len].render())
+        || tops.iter().any(expr_has_hole)
+        || preds
+            .iter()
+            .any(|pred: &BlockId| !arm_is_pure_value(ctx, *pred, prefix_len))
     {
         return None;
     }
-    let ea: &Vec<Expr> = exit_stacks.get(&a)?;
-    let eb: &Vec<Expr> = exit_stacks.get(&b)?;
-    if ea.is_empty()
-        || ea.len() != eb.len()
-        || !stacks_render_equal(&ea[..ea.len() - 1], &eb[..eb.len() - 1])
-    {
-        return None;
-    }
-    let prefix_len: usize = ea.len() - 1;
-    let (top_a, top_b): (&Expr, &Expr) = (&ea[prefix_len], &eb[prefix_len]);
-    let (rendered_a, rendered_b): (String, String) = (top_a.render(), top_b.render());
-    if rendered_a == rendered_b {
-        return None;
-    }
-    let head: BlockId = sole_common_predecessor(ctx.cfg, a, b)?;
-    let true_arm: BlockId = if head_true_target_is(ctx, head, a) {
-        a
-    } else if head_true_target_is(ctx, head, b) {
-        b
-    } else {
-        return None;
-    };
-    let cond: String = head_condition_to(ctx, head, true_arm)?;
-    let mut entry: Vec<Expr> = ea[..prefix_len].to_vec();
-    let pure_arms: bool =
-        arm_is_pure_value(ctx, a, prefix_len) && arm_is_pure_value(ctx, b, prefix_len);
-    let folded: Option<FoldedCondition> =
-        pure_arms.then_some(FoldedCondition { head, arms: [a, b] });
-    if let ("1" | "0", "1" | "0") = (rendered_a.as_str(), rendered_b.as_str()) {
-        let true_is_one: bool = if true_arm == a {
-            rendered_a == "1"
-        } else {
-            rendered_b == "1"
-        };
-        entry.push(Expr::Opaque(if true_is_one { cond } else { invert(&cond) }));
-        return Some(TernaryJoinEntry { entry, folded });
-    }
-    if expr_has_hole(top_a) || expr_has_hole(top_b) || !pure_arms {
-        return None;
-    }
-    let (true_top, false_top): (&str, &str) = if true_arm == a {
-        (&rendered_a, &rendered_b)
-    } else {
-        (&rendered_b, &rendered_a)
-    };
-    entry.push(Expr::Opaque(format!("({cond} ? {true_top} : {false_top})")));
-    Some(TernaryJoinEntry { entry, folded })
+    let (head, value, mut members): (BlockId, Expr, BTreeSet<BlockId>) =
+        arm_value(ctx, preds, &tops, prefix_len)?;
+    let mut entry: Vec<Expr> = first[..prefix_len].to_vec();
+    entry.push(value);
+    members.extend(preds.iter().copied());
+    Some(TernaryJoinEntry {
+        entry,
+        head,
+        folded: FoldedCondition { members, join: bid },
+    })
 }
 
-fn head_true_target_is(ctx: &RenderCtx<'_>, head: BlockId, want: BlockId) -> bool {
-    let block: &BasicBlock = &ctx.cfg.blocks[head.0 as usize];
-    block
-        .successors
+const ARM_CONDITION_BLOCK_CAP: usize = 32;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ArmTarget {
+    Block(BlockId),
+    Arm(usize),
+}
+
+struct ArmNode {
+    holds: String,
+    fails: String,
+    taken: ArmTarget,
+    not_taken: ArmTarget,
+}
+
+fn real_predecessors(cfg: &Cfg, bid: BlockId) -> BTreeSet<BlockId> {
+    cfg.blocks[bid.0 as usize]
+        .predecessors
         .iter()
-        .any(|e| matches!(e.kind, EdgeKind::CondTrue | EdgeKind::CondFalse) && e.target == want)
+        .copied()
+        .filter(|p: &BlockId| {
+            cfg.blocks[p.0 as usize]
+                .successors
+                .iter()
+                .any(|e| e.target == bid && !matches!(e.kind, EdgeKind::Exception))
+        })
+        .collect()
+}
+
+fn conditional_successors(cfg: &Cfg, bid: BlockId) -> Option<(BlockId, BlockId)> {
+    let block: &BasicBlock = &cfg.blocks[bid.0 as usize];
+    let target = |kind: EdgeKind| -> Option<BlockId> {
+        block
+            .successors
+            .iter()
+            .find(|e| e.kind == kind)
+            .map(|e| e.target)
+    };
+    let (taken, not_taken): (BlockId, BlockId) =
+        (target(EdgeKind::CondTrue)?, target(EdgeKind::CondFalse)?);
+    (taken != not_taken).then_some((taken, not_taken))
+}
+
+fn arm_value(
+    ctx: &RenderCtx<'_>,
+    arms: &[BlockId],
+    tops: &[Expr],
+    prefix_len: usize,
+) -> Option<(BlockId, Expr, BTreeSet<BlockId>)> {
+    let cfg: &Cfg = ctx.cfg;
+    let mut members: BTreeSet<BlockId> = BTreeSet::new();
+    let mut pending: Vec<BlockId> = arms
+        .iter()
+        .flat_map(|arm: &BlockId| real_predecessors(cfg, *arm))
+        .collect();
+    while let Some(candidate) = pending.pop() {
+        if arms.contains(&candidate) || members.contains(&candidate) {
+            continue;
+        }
+        let Some((taken, not_taken)): Option<(BlockId, BlockId)> =
+            conditional_successors(cfg, candidate)
+        else {
+            continue;
+        };
+        let known = |bid: BlockId| -> bool { arms.contains(&bid) || members.contains(&bid) };
+        if !known(taken) || !known(not_taken) {
+            continue;
+        }
+        members.insert(candidate);
+        if members.len() > ARM_CONDITION_BLOCK_CAP {
+            return None;
+        }
+        pending.extend(real_predecessors(cfg, candidate));
+    }
+    if arms
+        .iter()
+        .any(|arm: &BlockId| !real_predecessors(cfg, *arm).is_subset(&members))
+    {
+        return None;
+    }
+    let (roots, inner): (Vec<BlockId>, Vec<BlockId>) = members
+        .iter()
+        .copied()
+        .partition(|bid: &BlockId| real_predecessors(cfg, *bid).is_disjoint(&members));
+    let [head]: [BlockId; 1] = roots.try_into().ok()?;
+    if !inner
+        .iter()
+        .all(|bid: &BlockId| real_predecessors(cfg, *bid).is_subset(&members))
+    {
+        return None;
+    }
+    let target_of = |bid: BlockId| -> ArmTarget {
+        arms.iter()
+            .position(|arm: &BlockId| *arm == bid)
+            .map_or(ArmTarget::Block(bid), ArmTarget::Arm)
+    };
+    let mut nodes: BTreeMap<BlockId, ArmNode> = BTreeMap::new();
+    for member in &members {
+        if *member != head && !condition_block_is_pure(ctx, *member, prefix_len) {
+            return None;
+        }
+        let (taken, not_taken): (BlockId, BlockId) = conditional_successors(cfg, *member)?;
+        let node: ArmNode = ArmNode {
+            holds: head_condition_to(ctx, *member, taken)?,
+            fails: head_condition_to(ctx, *member, not_taken)?,
+            taken: target_of(taken),
+            not_taken: target_of(not_taken),
+        };
+        nodes.insert(*member, node);
+    }
+    while let Some((outer, inner, merged)) = next_condition_merge(&nodes) {
+        nodes.remove(&inner);
+        nodes.insert(outer, merged);
+    }
+    let value: Expr = arm_tree_value(&nodes, ArmTarget::Block(head), tops, 0)?;
+    members.remove(&head);
+    Some((head, value, members))
+}
+
+fn incoming_arm_edges(nodes: &BTreeMap<BlockId, ArmNode>, target: ArmTarget) -> usize {
+    nodes
+        .values()
+        .map(|node: &ArmNode| {
+            usize::from(node.taken == target) + usize::from(node.not_taken == target)
+        })
+        .sum()
+}
+
+fn next_condition_merge(nodes: &BTreeMap<BlockId, ArmNode>) -> Option<(BlockId, BlockId, ArmNode)> {
+    nodes.iter().find_map(|(outer, x): (&BlockId, &ArmNode)| {
+        [(x.taken, x.not_taken, true), (x.not_taken, x.taken, false)]
+            .into_iter()
+            .find_map(|(via, other, via_taken): (ArmTarget, ArmTarget, bool)| {
+                let ArmTarget::Block(inner) = via else {
+                    return None;
+                };
+                if inner == *outer || incoming_arm_edges(nodes, via) != 1 {
+                    return None;
+                }
+                let y: &ArmNode = nodes.get(&inner)?;
+                let merged: ArmNode = match (via_taken, y.taken == other, y.not_taken == other) {
+                    (true, false, true) => ArmNode {
+                        holds: format!("({} && {})", x.holds, y.holds),
+                        fails: format!("({} || {})", x.fails, y.fails),
+                        taken: y.taken,
+                        not_taken: other,
+                    },
+                    (true, true, false) => ArmNode {
+                        holds: format!("({} && {})", x.holds, y.fails),
+                        fails: format!("({} || {})", x.fails, y.holds),
+                        taken: y.not_taken,
+                        not_taken: other,
+                    },
+                    (false, true, false) => ArmNode {
+                        holds: format!("({} || {})", x.holds, y.holds),
+                        fails: format!("({} && {})", x.fails, y.fails),
+                        taken: other,
+                        not_taken: y.not_taken,
+                    },
+                    (false, false, true) => ArmNode {
+                        holds: format!("({} || {})", x.holds, y.fails),
+                        fails: format!("({} && {})", x.fails, y.holds),
+                        taken: other,
+                        not_taken: y.taken,
+                    },
+                    _ => return None,
+                };
+                Some((*outer, inner, merged))
+            })
+    })
+}
+
+fn arm_tree_value(
+    nodes: &BTreeMap<BlockId, ArmNode>,
+    target: ArmTarget,
+    tops: &[Expr],
+    depth: usize,
+) -> Option<Expr> {
+    let bid: BlockId = match target {
+        ArmTarget::Arm(index) => return tops.get(index).cloned(),
+        ArmTarget::Block(bid) => bid,
+    };
+    if depth > ARM_CONDITION_BLOCK_CAP || (depth > 0 && incoming_arm_edges(nodes, target) != 1) {
+        return None;
+    }
+    let node: &ArmNode = nodes.get(&bid)?;
+    Some(Expr::Choice {
+        cond: node.fails.clone(),
+        then_val: Box::new(arm_tree_value(nodes, node.not_taken, tops, depth + 1)?),
+        else_val: Box::new(arm_tree_value(nodes, node.taken, tops, depth + 1)?),
+    })
+}
+
+fn condition_block_is_pure(ctx: &RenderCtx<'_>, bid: BlockId, prefix_len: usize) -> bool {
+    let (start, end): (usize, usize) = block_insn_range(ctx, bid);
+    let Some(term): Option<&Instruction> = end
+        .checked_sub(1)
+        .filter(|last: &usize| *last >= start)
+        .and_then(|last: usize| ctx.insns.get(last))
+    else {
+        return false;
+    };
+    let mut stack: Vec<Expr> = vec![Expr::This; prefix_len];
+    for ins in &ctx.insns[start..end - 1] {
+        let result: LiftResult = lift_one(
+            ctx.cf,
+            ins,
+            &mut stack,
+            ctx.params,
+            ctx.bootstraps,
+            ctx.has_this,
+            ctx.bool_return,
+        );
+        if !matches!(result, LiftResult::Pushed) {
+            return false;
+        }
+    }
+    stack.len() == prefix_len + branch_pop_count(term.opcode)
 }
 
 fn arm_is_pure_value(ctx: &RenderCtx<'_>, bid: BlockId, prefix_len: usize) -> bool {
@@ -6381,27 +6739,6 @@ fn arm_is_pure_value(ctx: &RenderCtx<'_>, bid: BlockId, prefix_len: usize) -> bo
         }
     }
     stack.len() == prefix_len + 1
-}
-
-fn sole_common_predecessor(cfg: &Cfg, a: BlockId, b: BlockId) -> Option<BlockId> {
-    let preds_of = |bid: BlockId| -> BTreeSet<BlockId> {
-        cfg.blocks[bid.0 as usize]
-            .predecessors
-            .iter()
-            .copied()
-            .filter(|p: &BlockId| {
-                cfg.blocks[p.0 as usize]
-                    .successors
-                    .iter()
-                    .any(|e| e.target == bid && !matches!(e.kind, EdgeKind::Exception))
-            })
-            .collect()
-    };
-    let common: Vec<BlockId> = preds_of(a).intersection(&preds_of(b)).copied().collect();
-    match common.as_slice() {
-        [single] => Some(*single),
-        _ => None,
-    }
 }
 
 fn head_condition_to(ctx: &RenderCtx<'_>, head: BlockId, want: BlockId) -> Option<String> {
@@ -6527,11 +6864,11 @@ fn try_render_conditional_expr(
     {
         return false;
     }
-    let ternary: Expr = Expr::Opaque(format!(
-        "({displayed} ? {} : {})",
-        then_val.render(),
-        else_val.render()
-    ));
+    let ternary: Expr = Expr::Choice {
+        cond: displayed,
+        then_val: Box::new(then_val),
+        else_val: Box::new(else_val),
+    };
     ctx.rendered_blocks.insert(then_b);
     ctx.rendered_blocks.insert(else_b);
     render_block_seeded(ctx, join_bid, out, level, vec![ternary]);
@@ -6541,31 +6878,78 @@ fn try_render_conditional_expr(
 fn render_folded_condition_head(
     ctx: &mut RenderCtx<'_>,
     head: BlockId,
-    then_body: &Region,
-    else_body: &Region,
+    bodies: &[&Region],
     out: &mut String,
     level: usize,
 ) -> bool {
-    let Some(arms): Option<[BlockId; 2]> = ctx.folded_condition_heads.get(&head).copied() else {
-        return false;
-    };
-    let (Some(then_b), Some(else_b)): (Option<BlockId>, Option<BlockId>) =
-        (single_block(then_body), single_block(else_body))
+    let Some(FoldedCondition { members, join }): Option<FoldedCondition> =
+        ctx.folded_condition_heads.get(&head).cloned()
     else {
         return false;
     };
-    if !(arms == [then_b, else_b] || arms == [else_b, then_b])
-        || ctx.rendered_blocks.contains(&then_b)
-        || ctx.rendered_blocks.contains(&else_b)
+    let mut placed: BTreeSet<BlockId> = BTreeSet::new();
+    if !bodies
+        .iter()
+        .all(|body: &&Region| collect_condition_region_blocks(body, &mut placed))
+        || placed
+            .iter()
+            .any(|bid: &BlockId| *bid != join && !members.contains(bid))
+        || members
+            .iter()
+            .chain([&join])
+            .any(|bid: &BlockId| ctx.rendered_blocks.contains(bid))
     {
         return false;
     }
     if !ctx.rendered_blocks.contains(&head) {
         let _consumed_by_join: String = render_head_prefix_and_condition(ctx, head, out, level);
     }
-    ctx.rendered_blocks.insert(then_b);
-    ctx.rendered_blocks.insert(else_b);
+    ctx.rendered_blocks.extend(members.iter().copied());
+    ctx.folded_members.extend(members);
+    ctx.applied_folds.insert(head);
+    if placed.contains(&join) {
+        render_block(ctx, join, out, level);
+    }
     true
+}
+
+fn collect_condition_region_blocks(region: &Region, placed: &mut BTreeSet<BlockId>) -> bool {
+    match region {
+        Region::Block(bid) => {
+            placed.insert(*bid);
+            true
+        }
+        Region::Sequence(items) => items
+            .iter()
+            .all(|item: &Region| collect_condition_region_blocks(item, placed)),
+        Region::IfThen {
+            head, then_body, ..
+        } => {
+            placed.insert(*head);
+            collect_condition_region_blocks(then_body, placed)
+        }
+        Region::IfThenElse {
+            head,
+            then_body,
+            else_body,
+            ..
+        } => {
+            placed.insert(*head);
+            collect_condition_region_blocks(then_body, placed)
+                && collect_condition_region_blocks(else_body, placed)
+        }
+        Region::While { .. }
+        | Region::DoWhile { .. }
+        | Region::Switch { .. }
+        | Region::Try { .. }
+        | Region::TryFinally { .. }
+        | Region::TryWithResources { .. }
+        | Region::Synchronized { .. }
+        | Region::LabeledLoop { .. }
+        | Region::Break { .. }
+        | Region::Continue { .. }
+        | Region::Irreducible { .. } => false,
+    }
 }
 
 fn try_render_nested_conditional_expr(
@@ -6605,11 +6989,11 @@ fn try_render_nested_conditional_expr(
     for bid in &consumed {
         ctx.rendered_blocks.insert(*bid);
     }
-    let ternary: Expr = Expr::Opaque(format!(
-        "({displayed} ? {} : {})",
-        then_val.render(),
-        else_val.render()
-    ));
+    let ternary: Expr = Expr::Choice {
+        cond: displayed,
+        then_val: Box::new(then_val),
+        else_val: Box::new(else_val),
+    };
     render_block_seeded(ctx, join_bid, out, level, vec![ternary]);
     true
 }
@@ -6648,11 +7032,11 @@ fn lift_nested_conditional_value(
     let else_val: Expr = lift_nested_conditional_value(ctx, else_body, join_bid, consumed)?;
     let cond: String = head_condition_to(ctx, *head, then_entry)?;
     consumed.push(*head);
-    Some(Expr::Opaque(format!(
-        "({cond} ? {} : {})",
-        then_val.render(),
-        else_val.render()
-    )))
+    Some(Expr::Choice {
+        cond,
+        then_val: Box::new(then_val),
+        else_val: Box::new(else_val),
+    })
 }
 
 fn collapse_bool_ternary(
@@ -6757,7 +7141,11 @@ fn render_head_prefix_and_condition(
 
 fn expr_has_side_effect(expr: &Expr) -> bool {
     match expr {
-        Expr::Invoke { .. } | Expr::New(_) | Expr::NewArray { .. } | Expr::ArrayInit { .. } => true,
+        Expr::Invoke { .. }
+        | Expr::New(_)
+        | Expr::NewArray { .. }
+        | Expr::ArrayInit { .. }
+        | Expr::Choice { .. } => true,
         Expr::Cast { value, .. } => expr_has_side_effect(value),
         Expr::Binary { lhs, rhs, .. } => expr_has_side_effect(lhs) || expr_has_side_effect(rhs),
         Expr::ArrayLoad { array, index } => {
@@ -6936,6 +7324,15 @@ fn unary_or_cmp_cond(
                 format!("!({rendered})")
             } else {
                 rendered
+            };
+        }
+        if matches!(v, Expr::Choice { .. })
+            && let Some(condition) = boolean_view(&v)
+        {
+            return if zero_suffix == "== 0" {
+                invert(&condition)
+            } else {
+                condition
             };
         }
     }
@@ -8299,6 +8696,8 @@ const fn pattern_render_ctx<'a>(
         finally_tail_trims: BTreeMap::new(),
         finally_return_stores: BTreeMap::new(),
         folded_condition_heads: BTreeMap::new(),
+        folded_members: BTreeSet::new(),
+        applied_folds: BTreeSet::new(),
     }
 }
 
@@ -8896,9 +9295,8 @@ fn boolean_array_store(
         return None;
     }
     let value: &Expr = &stack[len - 1];
-    let literal: &str = match value {
-        Expr::Const(c) if c == "0" => "false",
-        Expr::Const(c) if c == "1" => "true",
+    let literal: String = match value {
+        Expr::Const(_) | Expr::Choice { .. } => boolean_view(value)?,
         _ => return None,
     };
     let index: &Expr = &stack[len - 2];
@@ -8919,12 +9317,38 @@ fn boolean_local_store(
     {
         return None;
     }
-    let rendered: String = stack.last()?.render();
-    let value: String = int_literal_as_bool(&rendered)
-        .map(str::to_owned)
-        .or_else(|| bool_ternary_condition(&rendered))?;
+    let value: String = boolean_view(stack.last()?)?;
     stack.pop();
     Some(format!("{} = {value}", local_name(slot, params)))
+}
+
+fn boolean_view(expr: &Expr) -> Option<String> {
+    match expr {
+        Expr::Const(c) => match c.as_str() {
+            "true" | "false" => Some(c.clone()),
+            other => int_literal_as_bool(other).map(str::to_owned),
+        },
+        Expr::Choice {
+            cond,
+            then_val,
+            else_val,
+        } => {
+            let (when_true, when_false): (String, String) =
+                (boolean_view(then_val)?, boolean_view(else_val)?);
+            Some(match (when_true.as_str(), when_false.as_str()) {
+                ("true", "false") => cond.clone(),
+                ("false", "true") => invert(cond),
+                _ => format!("({cond} ? {when_true} : {when_false})"),
+            })
+        }
+        Expr::Binary { op, lhs, rhs } if matches!(*op, "&" | "|" | "^") => Some(format!(
+            "({} {op} {})",
+            boolean_view(lhs)?,
+            boolean_view(rhs)?
+        )),
+        Expr::Opaque(rendered) => bool_ternary_condition(rendered),
+        other => other.is_boolean().then(|| other.render()),
+    }
 }
 
 fn bool_ternary_condition(rendered: &str) -> Option<String> {
@@ -9298,6 +9722,12 @@ pub(crate) fn expr_node_count_capped(e: &Expr, cap: usize) -> usize {
                 }
             }
             Expr::Field { receiver, .. } => walk(receiver, cap, acc),
+            Expr::Choice {
+                then_val, else_val, ..
+            } => {
+                walk(then_val, cap, acc);
+                walk(else_val, cap, acc);
+            }
             Expr::Const(_)
             | Expr::Local(_)
             | Expr::This
@@ -10350,10 +10780,9 @@ fn lift_one_inner(
             let value: Expr = pop_expr(stack);
             if op == 0xAC
                 && bool_return
-                && let Expr::Const(c) = &value
-                && let Some(b) = int_literal_as_bool(c)
+                && let Some(condition) = boolean_view(&value)
             {
-                return LiftResult::Statement(format!("return {b}"));
+                return LiftResult::Statement(format!("return {condition}"));
             }
             LiftResult::Statement(format!("return {}", value.render()))
         }
@@ -10857,7 +11286,7 @@ fn expr_may_read_location(expr: &Expr, location: &Expr) -> bool {
                 name: written_name, ..
             },
         ) => name == written_name,
-        (Expr::ArrayLoad { .. }, Expr::ArrayLoad { .. }) => true,
+        (Expr::ArrayLoad { .. }, Expr::ArrayLoad { .. }) | (Expr::Choice { .. }, _) => true,
         _ => false,
     })
 }
@@ -10960,10 +11389,11 @@ fn settle_local_write(stack: &mut [Expr], name: &str, stored: &Expr) -> bool {
 }
 
 fn expr_reads_local(expr: &Expr, name: &str) -> bool {
-    expr_any(
-        expr,
-        |node: &Expr| matches!(node, Expr::Local(local) if local == name),
-    )
+    expr_any(expr, |node: &Expr| match node {
+        Expr::Local(local) => local == name,
+        Expr::Choice { cond, .. } => crate::dalvik_lift::text_mentions_identifier(cond, name),
+        _ => false,
+    })
 }
 
 fn expr_has_post_step(expr: &Expr) -> bool {
@@ -10986,6 +11416,12 @@ fn expr_any(expr: &Expr, matches_node: impl Fn(&Expr) -> bool) -> bool {
             | Expr::StaticField { .. }
             | Expr::New(_)
             | Expr::Opaque(_) => {}
+            Expr::Choice {
+                then_val, else_val, ..
+            } => {
+                pending.push(then_val);
+                pending.push(else_val);
+            }
             Expr::Field { receiver, .. } => pending.push(receiver),
             Expr::Binary { lhs, rhs, .. }
             | Expr::Cmp { lhs, rhs, .. }

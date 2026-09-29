@@ -231,6 +231,50 @@ const FINALLY_EXIT: Shape = Shape {
     ),
 };
 
+const COMPOUND_TERNARY: Shape = Shape {
+    probe: (
+        "CompoundTernaryProbe.java",
+        include_str!("fixtures/shape_matrix/CompoundTernaryProbe.java"),
+    ),
+    driver: (
+        "CompoundTernaryDriver.java",
+        include_str!("fixtures/shape_matrix/CompoundTernaryDriver.java"),
+    ),
+};
+
+const FLAG_VALUE: Shape = Shape {
+    probe: (
+        "FlagValueProbe.java",
+        include_str!("fixtures/shape_matrix/FlagValueProbe.java"),
+    ),
+    driver: (
+        "FlagValueDriver.java",
+        include_str!("fixtures/shape_matrix/FlagValueDriver.java"),
+    ),
+};
+
+const NULL_LOCAL: Shape = Shape {
+    probe: (
+        "NullLocalProbe.java",
+        include_str!("fixtures/shape_matrix/NullLocalProbe.java"),
+    ),
+    driver: (
+        "NullLocalDriver.java",
+        include_str!("fixtures/shape_matrix/NullLocalDriver.java"),
+    ),
+};
+
+const FINALLY_BRANCH_EXIT: Shape = Shape {
+    probe: (
+        "FinallyBranchExitProbe.java",
+        include_str!("fixtures/shape_matrix/FinallyBranchExitProbe.java"),
+    ),
+    driver: (
+        "FinallyBranchExitDriver.java",
+        include_str!("fixtures/shape_matrix/FinallyBranchExitDriver.java"),
+    ),
+};
+
 fn find_on_path(name: &str) -> PathBuf {
     let path_var: std::ffi::OsString = std::env::var_os("PATH").expect("PATH is set");
     let exts: &[&str] = if cfg!(windows) { &["", ".exe"] } else { &[""] };
@@ -505,6 +549,114 @@ fn a_value_only_ternary_evaluates_its_condition_once_from_ecj() {
     assert_no_empty_branch("ternary_ecj", &recovered.decompiled.source);
 }
 
+const COMPOUND_TERNARY_OUTPUT: &str = "4,2,none,2,-22;3,2,none,2,39;2,2,none,2,-60;1,2,none,2,-79;0,2,s2,1,102;-1,2,s3,1,133;-2,2,s4,1,-156;16";
+
+#[test]
+fn compound_conditions_choosing_a_value_recompile_from_javac() {
+    assert_recovered(
+        Compiler::Javac,
+        "compound_ternary_javac",
+        &COMPOUND_TERNARY,
+        COMPOUND_TERNARY_OUTPUT,
+    );
+}
+
+#[test]
+fn compound_conditions_choosing_a_value_recompile_from_ecj() {
+    assert_recovered(
+        Compiler::Ecj16,
+        "compound_ternary_ecj",
+        &COMPOUND_TERNARY,
+        COMPOUND_TERNARY_OUTPUT,
+    );
+}
+
+const FLAG_VALUE_OUTPUT: &str = "10,5,50,false,true,0,8;10,5,50,false,true,0,8;10,5,50,false,false,0,8;10,5,50,false,false,0,8;10,5,50,false,false,0,9;10,5,50,true,false,0,9;10,5,50,true,true,1,9;10,5,50,false,false,1,9;11,9,50,false,false,1,9;11,9,60,false,false,1,9;11,9,70,false,false,2,9;11,9,80,false,false,2,9;";
+
+#[test]
+fn conditional_flags_and_nested_boolean_values_recompile_from_javac() {
+    assert_recovered(
+        Compiler::Javac,
+        "flag_value_javac",
+        &FLAG_VALUE,
+        FLAG_VALUE_OUTPUT,
+    );
+}
+
+#[test]
+fn conditional_flags_and_nested_boolean_values_recompile_from_ecj() {
+    assert_recovered(
+        Compiler::Ecj16,
+        "flag_value_ecj",
+        &FLAG_VALUE,
+        FLAG_VALUE_OUTPUT,
+    );
+}
+
+const NULL_LOCAL_OUTPUT: &str = "null,even0;null,null;null,even2;k3,null;k4,even4;k5,null;";
+
+#[test]
+fn a_local_holding_null_or_a_string_recompiles_from_javac() {
+    assert_recovered(
+        Compiler::Javac,
+        "null_local_javac",
+        &NULL_LOCAL,
+        NULL_LOCAL_OUTPUT,
+    );
+}
+
+#[test]
+fn a_local_holding_null_or_a_string_recompiles_from_ecj() {
+    assert_recovered(
+        Compiler::Ecj16,
+        "null_local_ecj",
+        &NULL_LOCAL,
+        NULL_LOCAL_OUTPUT,
+    );
+}
+
+const FINALLY_BRANCH_EXIT_OUTPUT: &str =
+    "-1 22 1;0 88 1;289 289 1;895 895 2;2716 2716 2;8182 8182 2;24583 24583 3;";
+
+const UNFOLDED_BRANCH_COPY_REFUSAL: &str = "// <decompile: not recovered: a branch leaves the try into a copy of the finally that was not folded";
+
+fn assert_finally_branch_exit_runs_equal_or_is_refused(compiler: Compiler, tag: &str) {
+    let recovered: Recovery = recover(compiler, tag, &FINALLY_BRANCH_EXIT);
+    let source: &str = &recovered.decompiled.source;
+    assert_eq!(
+        recovered.original_output, FINALLY_BRANCH_EXIT_OUTPUT,
+        "the authored program's own output changed under {compiler:?}"
+    );
+    if recovered.recompiled_output.as_ref() == Ok(&recovered.original_output) {
+        assert_eq!(
+            recovered.decompiled.fully_lifted_methods, recovered.decompiled.method_count,
+            "a recovered source that runs like the {compiler:?} build is fully lifted:\n{source}"
+        );
+        return;
+    }
+    assert!(
+        method_body(source, "static void voidExits(").contains(UNFOLDED_BRANCH_COPY_REFUSAL),
+        "a finally copy the structurer left inside the try must be refused by name:\n{source}"
+    );
+    assert!(
+        recovered.decompiled.fully_lifted_methods < recovered.decompiled.method_count,
+        "a refused method is not fully lifted:\n{source}"
+    );
+}
+
+#[test]
+fn a_branch_into_a_finally_copy_runs_the_finally_once_or_is_refused_from_javac() {
+    assert_finally_branch_exit_runs_equal_or_is_refused(
+        Compiler::Javac,
+        "finally_branch_exit_javac",
+    );
+}
+
+#[test]
+fn a_branch_into_a_finally_copy_runs_the_finally_once_or_is_refused_from_ecj() {
+    assert_finally_branch_exit_runs_equal_or_is_refused(Compiler::Ecj16, "finally_branch_exit_ecj");
+}
+
 const INCREMENT_OUTPUT: &str =
     "0,2,7,0,2,5,0,0,0,2,22;7,9,14,5,7,10,1,1,0,2,36;7,9,14,10,12,15,2,2,0,2,36;";
 
@@ -669,13 +821,43 @@ fn a_type_switch_expression_from_javac_recompiles() {
     );
 }
 
+const UNRENDERED_BLOCK_MARKER: &str =
+    "// <decompile: incomplete: a reachable block has no rendered statement>";
+
+fn method_body<'a>(source: &'a str, signature: &str) -> &'a str {
+    let start: usize = source
+        .find(signature)
+        .unwrap_or_else(|| panic!("{signature} is missing from the recovered source:\n{source}"));
+    let body: &str = &source[start..];
+    &body[..body.find("\n    }").unwrap_or(body.len())]
+}
+
 #[test]
 fn a_type_switch_statement_from_javac_is_recovered_or_named() {
-    assert_named_indy_refusal(
+    let recovered: Recovery = recover(
         Compiler::Javac,
         "type_switch_block_javac",
         &TYPE_SWITCH_BLOCK,
-        "int,big,str3,null,other,big,48",
+    );
+    let source: &str = &recovered.decompiled.source;
+    assert_eq!(
+        recovered.original_output, "int,big,str3,null,other,big,48",
+        "the authored program's own output changed under javac"
+    );
+    if recovered.recompiled_output.as_ref() == Ok(&recovered.original_output)
+        && recovered.decompiled.fully_lifted_methods == recovered.decompiled.method_count
+    {
+        return;
+    }
+    assert!(
+        method_body(source, "public static String describe(").contains(UNRENDERED_BLOCK_MARKER),
+        "a type switch statement whose restart loop is not lowered must carry the coverage \
+         marker in its own method:\n{source}"
+    );
+    assert_eq!(
+        recovered.decompiled.fully_lifted_methods + 1,
+        recovered.decompiled.method_count,
+        "exactly the type switch method is degraded:\n{source}"
     );
 }
 

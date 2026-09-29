@@ -584,6 +584,15 @@ pub(crate) fn expr_mentions_local(expr: &Expr, name: &str) -> bool {
     match expr {
         Expr::Local(local) => local == name,
         Expr::Opaque(text) => text_mentions_identifier(text, name),
+        Expr::Choice {
+            cond,
+            then_val,
+            else_val,
+        } => {
+            text_mentions_identifier(cond, name)
+                || expr_mentions_local(then_val, name)
+                || expr_mentions_local(else_val, name)
+        }
         Expr::Const(_) | Expr::This | Expr::StaticField { .. } | Expr::New(_) => false,
         Expr::Field { receiver, .. } => expr_mentions_local(receiver, name),
         Expr::Binary { lhs, rhs, .. }
@@ -623,7 +632,7 @@ fn identifier_at(text: &str, start: usize, length: usize) -> bool {
         && !after.is_some_and(is_identifier_byte)
 }
 
-fn text_mentions_identifier(text: &str, name: &str) -> bool {
+pub(crate) fn text_mentions_identifier(text: &str, name: &str) -> bool {
     text.match_indices(name)
         .any(|(start, _): (usize, &str)| identifier_at(text, start, name.len()))
 }
@@ -633,6 +642,15 @@ pub(crate) fn rename_local(expr: &Expr, from: &str, to: &str) -> Expr {
     match expr {
         Expr::Local(local) if local == from => Expr::Local(to.to_owned()),
         Expr::Opaque(text) => Expr::Opaque(rename_identifier(text, from, to)),
+        Expr::Choice {
+            cond,
+            then_val,
+            else_val,
+        } => Expr::Choice {
+            cond: rename_identifier(cond, from, to),
+            then_val: rename(then_val),
+            else_val: rename(else_val),
+        },
         Expr::Const(_) | Expr::Local(_) | Expr::This | Expr::StaticField { .. } | Expr::New(_) => {
             expr.clone()
         }
@@ -723,6 +741,7 @@ pub(crate) fn expr_has_effect(expr: &Expr) -> bool {
     match expr {
         Expr::Invoke { .. } | Expr::NewArray { .. } | Expr::ArrayInit { .. } => true,
         Expr::Opaque(text) => text != "?",
+        Expr::Choice { .. } => true,
         Expr::Const(_) | Expr::Local(_) | Expr::This | Expr::StaticField { .. } | Expr::New(_) => {
             false
         }
@@ -782,6 +801,7 @@ pub(crate) fn expr_reads_state(expr: &Expr) -> bool {
         Expr::Opaque(text) => !CONFINED_BUILDERS
             .iter()
             .any(|builder: &&str| *text == format!("new {builder}()")),
+        Expr::Choice { .. } => true,
         Expr::Const(_) | Expr::Local(_) | Expr::This | Expr::New(_) => false,
         Expr::Binary { lhs, rhs, .. } | Expr::Cmp { lhs, rhs, .. } => {
             expr_reads_state(lhs) || expr_reads_state(rhs)
@@ -909,6 +929,7 @@ fn expression_is_boolean(value: &Expr) -> bool {
         Expr::Unary { op, .. } => *op == "!",
         Expr::Local(_)
         | Expr::Opaque(_)
+        | Expr::Choice { .. }
         | Expr::This
         | Expr::Cmp { .. }
         | Expr::ArrayLength(_)
@@ -1782,7 +1803,7 @@ fn operation_node_counts(expr: &Expr) -> (usize, usize, usize) {
                     walk(arg, invokes, opaques, news);
                 }
             }
-            Expr::Opaque(_) => *opaques = opaques.saturating_add(1),
+            Expr::Opaque(_) | Expr::Choice { .. } => *opaques = opaques.saturating_add(1),
             Expr::New(_) => *news = news.saturating_add(1),
             Expr::Const(_) | Expr::Local(_) | Expr::This | Expr::StaticField { .. } => {}
         }
