@@ -4,7 +4,8 @@
 use disrobe_core::chain::detection::TERMINAL_HINT;
 use disrobe_core::chain::{
     CatalogEntry, ChildArtifact, ChildHandle, DetectContext, DetectVerdict, Detector,
-    DetectorOutput, FAMILY_PACKER_ARCHIVE, ObfuscatorCatalog, OutputKind, Pass, SupportQuality,
+    DetectorOutput, FAMILY_INTERPRETER_BYTECODE, FAMILY_PACKER_ARCHIVE, ObfuscatorCatalog,
+    OutputKind, Pass, SupportQuality,
 };
 use disrobe_core::error::{CoreError, Result as CoreResult};
 use disrobe_core::pass::PassId;
@@ -316,10 +317,15 @@ fn verdict_for(kind: DetectedKind) -> Option<DetectVerdict> {
         DetectedKind::AndroidBundle => (TAG_ANDROID_BUNDLE, "android-bundle", 0.93),
         DetectedKind::Unknown => return None,
     };
+    let family: &'static str = if matches!(kind, DetectedKind::HermesRawBytecode) {
+        FAMILY_INTERPRETER_BYTECODE
+    } else {
+        FAMILY_PACKER_ARCHIVE
+    };
     Some(DetectVerdict::new(
         PASS_ID,
         tag,
-        FAMILY_PACKER_ARCHIVE,
+        family,
         confidence,
         28,
         vec![marker],
@@ -545,6 +551,21 @@ mod tests {
     fn catalog_detect_misses_random_bytes() {
         let bytes: Vec<u8> = vec![0u8; 32];
         assert!(ObfuscatorCatalog::detect(&MobileDetector, &ctx(&bytes)).is_none());
+    }
+
+    #[test]
+    fn hermes_bytecode_is_interpreter_bytecode_not_a_packer() {
+        let path: PathBuf = corpus_path("mobile/hermes/sample/sample.hbc.v96");
+        let bytes: Vec<u8> = std::fs::read(&path).unwrap_or_else(|error: std::io::Error| {
+            panic!(
+                "the tracked fixture {} must be readable: {error}",
+                path.display()
+            )
+        });
+        let v: DetectVerdict =
+            Detector::detect(&MobileDetector, &ctx(&bytes)).expect("hermes must detect");
+        assert_eq!(v.format_tag, TAG_HERMES);
+        assert_eq!(v.family, FAMILY_INTERPRETER_BYTECODE);
     }
 
     #[test]
