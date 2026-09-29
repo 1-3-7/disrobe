@@ -79,7 +79,7 @@ fn harness_entrypoint() {
         output.status,
         disrobe_pass_pyarmor::StaticDecryptStatus::DetectOnly
     );
-    let _ = det;
+    assert_eq!(det.version, disrobe_pass_pyarmor::PyarmorVersion::V8);
 }
 
 #[test]
