@@ -103,6 +103,7 @@ pub fn decompile_from_ibf(image: &IbfImage) -> YarvDecompiled {
 const MAX_NEST_DEPTH: u32 = 64;
 const FROZEN_STRING_MAGIC: &str = "# frozen_string_literal: true";
 const SHAREABLE_CONSTANT_MAGIC: &str = "# shareable_constant_value: literal";
+const VM_CALL_ARGS_SPLAT: u32 = 1;
 const VM_CALL_ARGS_BLOCKARG: u32 = 1 << 1;
 const VM_CALL_KW_SPLAT: u32 = 1 << 6;
 const VM_CALL_ZSUPER: u32 = 1 << 9;
@@ -4769,13 +4770,7 @@ fn emit_send(
     }
     let mut args: Vec<String> = pop_n(stack, argc);
     name_keyword_arguments(&mut args, kwargs);
-    if flags & VM_CALL_KW_SPLAT != 0
-        && let Some(slot) = args.last_mut()
-        && !slot.starts_with("**")
-        && !slot.starts_with('{')
-    {
-        *slot = format!("**{slot}");
-    }
+    mark_splatted_arguments(&mut args, flags, kwargs.len());
     if let Some(blk) = block_arg {
         let rendered: String = if blk.starts_with('&') {
             blk
@@ -5074,6 +5069,26 @@ fn is_forward_marker(s: &str) -> bool {
     matches!(s, "..." | "*" | "**" | "&") || s.starts_with("...")
 }
 
+fn mark_splatted_arguments(args: &mut [String], flags: u32, keyword_count: usize) {
+    let kw_splat: bool = flags & VM_CALL_KW_SPLAT != 0;
+    if kw_splat
+        && let Some(slot) = args.last_mut()
+        && !slot.starts_with("**")
+    {
+        *slot = format!("**{slot}");
+    }
+    let positional: usize = args
+        .len()
+        .saturating_sub(keyword_count + usize::from(kw_splat));
+    if flags & VM_CALL_ARGS_SPLAT != 0
+        && positional > 0
+        && let Some(slot) = args.get_mut(positional - 1)
+        && !slot.starts_with('*')
+    {
+        *slot = format!("*{slot}");
+    }
+}
+
 fn emit_super(instr: &YarvIbfInstruction, stack: &mut Vec<String>) {
     let (argc, flags, kwargs): (usize, u32, &[String]) = match instr.operands.first() {
         Some(YarvOperand::Call {
@@ -5095,13 +5110,7 @@ fn emit_super(instr: &YarvIbfInstruction, stack: &mut Vec<String>) {
         return;
     }
     name_keyword_arguments(&mut args, kwargs);
-    if flags & VM_CALL_KW_SPLAT != 0
-        && let Some(slot) = args.last_mut()
-        && !slot.starts_with("**")
-        && !slot.starts_with('{')
-    {
-        *slot = format!("**{slot}");
-    }
+    mark_splatted_arguments(&mut args, flags, kwargs.len());
     if let Some(blk) = block_arg {
         args.push(if blk.starts_with('&') {
             blk
