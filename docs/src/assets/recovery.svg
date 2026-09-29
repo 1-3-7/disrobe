@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="920" height="2497" viewBox="0 0 920 2497" font-family="'Manrope', sans-serif"><desc>generated from recovery.json sha256:7781984ec386ceb2089be23e07c6972d</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="2497" viewBox="0 0 920 2497" font-family="'Manrope', sans-serif"><desc>generated from recovery.json sha256:bef4af03c61823fe5e4d9def3874ffdd</desc>
   <rect x="0" y="0" width="920" height="2497" rx="10" fill="#111111"/>
   <rect x="0.5" y="0.5" width="919" height="2496" rx="9.5" fill="none" stroke="#404040"/>
   <desc>graded from evidence/descriptors sha256:ccc64e38dd9c1dbb43e6b89199baa140</desc>
@@ -250,7 +250,7 @@
   <text x="703.00" y="932.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-20" dominant-baseline="central" xml:space="preserve">51.43%</text>
   <text x="703.00" y="970.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-21" dominant-baseline="central" xml:space="preserve">97.73%</text>
   <text x="703.00" y="1008.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-22" dominant-baseline="central" xml:space="preserve">100.00%</text>
-  <text x="703.00" y="1046.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-23" dominant-baseline="central" xml:space="preserve">99.97%</text>
+  <text x="703.00" y="1046.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-23" dominant-baseline="central" xml:space="preserve">99.98%</text>
   <text x="703.00" y="1084.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-24" dominant-baseline="central" xml:space="preserve">100.00%</text>
   <text x="703.00" y="1122.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-25" dominant-baseline="central" xml:space="preserve">94.92%</text>
   <text x="703.00" y="1160.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-26" dominant-baseline="central" xml:space="preserve">100.00%</text>
