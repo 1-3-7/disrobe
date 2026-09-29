@@ -79,17 +79,6 @@ pub enum Error {
     #[error("DR-NATIVE-0020: authorization required for {0}; re-run with --i-have-authorization")]
     AuthorizationRequired(&'static str),
 
-    #[error(
-        "DR-NATIVE-0021: stub-emulation provider required for {packer}; \
-         enable the `stub-emulation` Cargo feature and supply a {trait_name} implementation. \
-         See {pr_hint}"
-    )]
-    EmulatorNotConfigured {
-        packer: &'static str,
-        trait_name: &'static str,
-        pr_hint: &'static str,
-    },
-
     #[error("DR-NATIVE-0022: UPX decode failure ({stage}): {detail}")]
     UpxDecode { stage: &'static str, detail: String },
 

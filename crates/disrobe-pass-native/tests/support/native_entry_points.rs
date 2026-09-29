@@ -836,15 +836,6 @@ pub(crate) const ENTRY_POINTS: &[Entry] = &[
         },
     },
     Entry {
-        path: "packers::kkrunchy_unpack::unpack_kkrunchy_emulated",
-        cheap: false,
-        drive: |ctx: &Ctx<'_>| {
-            from_result(packers::kkrunchy_unpack::unpack_kkrunchy_emulated(
-                ctx.bytes, None,
-            ))
-        },
-    },
-    Entry {
         path: "packers::kkrunchy_unpack::compute_byte_recovery",
         cheap: false,
         drive: |ctx: &Ctx<'_>| {

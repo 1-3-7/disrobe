@@ -10,11 +10,10 @@
 )]
 
 use disrobe_pass_native::{
-    DisFilterStreamSizes, Error, KkrunchyByteRecoveryReport, KkrunchyClassicStream,
-    KkrunchyEmulatedUnpackOutput, KkrunchyEmulationSnapshot, KkrunchyEmulator, KkrunchyHeaderInfo,
+    DisFilterStreamSizes, KkrunchyByteRecoveryReport, KkrunchyClassicStream, KkrunchyHeaderInfo,
     KkrunchyUnpackOutput, KkrunchyVariant, Packer, PackerDetection, UnpackerStatus,
     compute_byte_recovery, detect_packers, dis_filter, dis_unfilter, locate_classic_stream,
-    parse_kkrunchy_header, unpack_kkrunchy, unpack_kkrunchy_emulated,
+    parse_kkrunchy_header, unpack_kkrunchy,
 };
 
 const CLASSIC_MEASURED_FLOOR_BP: u32 = 10_000;
@@ -332,60 +331,6 @@ fn dis_unfilter_rejects_oversized_dest() {
 }
 
 #[test]
-fn unpack_emulated_without_provider_surfaces_pr_welcome_error() {
-    let packed: &[u8] = HELLO_PACKED_K7;
-    let err: Error = unpack_kkrunchy_emulated(packed, None).unwrap_err();
-    match err {
-        Error::EmulatorNotConfigured {
-            packer,
-            trait_name,
-            pr_hint,
-        } => {
-            assert_eq!(packer, "kkrunchy");
-            assert_eq!(trait_name, "KkrunchyEmulator");
-            assert!(
-                pr_hint.contains("rangecoder_depack") || pr_hint.contains("kkrunchy_k7_cm"),
-                "PR hint must point at the implemented in-tree k7 context-mixing decoder (got: {pr_hint})",
-            );
-        }
-        other => panic!("expected EmulatorNotConfigured, got {other:?}"),
-    }
-}
-
-#[derive(Debug)]
-struct FakePassthroughEmulator;
-
-impl KkrunchyEmulator for FakePassthroughEmulator {
-    fn label(&self) -> &'static str {
-        "fake-passthrough"
-    }
-    fn emulate_until_oep(
-        &self,
-        packed_bytes: &[u8],
-        header: &KkrunchyHeaderInfo,
-    ) -> Result<KkrunchyEmulationSnapshot, Error> {
-        Ok(KkrunchyEmulationSnapshot {
-            image_base: header.image_base,
-            image_bytes: packed_bytes.to_vec(),
-            original_entry_rva: header.entry_rva,
-            recovered_imports: Vec::new(),
-        })
-    }
-}
-
-#[test]
-fn unpack_emulated_with_fake_provider_returns_snapshot() {
-    let packed: &[u8] = HELLO_PACKED_K7;
-    let provider: FakePassthroughEmulator = FakePassthroughEmulator;
-    let out: KkrunchyEmulatedUnpackOutput =
-        unpack_kkrunchy_emulated(packed, Some(&provider)).expect("emulated unpack");
-    assert_eq!(out.provider_label, "fake-passthrough");
-    assert_eq!(out.reconstructed_image.len(), packed.len());
-    assert_eq!(out.header.variant, KkrunchyVariant::K7Variant023A2);
-    assert!(out.note.contains("fake-passthrough"));
-}
-
-#[test]
 fn compute_byte_recovery_metric_is_correct() {
     let zero_match: KkrunchyByteRecoveryReport =
         compute_byte_recovery(&[1, 2, 3, 4], &[5, 6, 7, 8]);
@@ -432,14 +377,6 @@ fn test_kkrunchy_hello_byte_recovery() {
         report.original_len,
         report.pct(),
         report.recovered_len,
-    );
-
-    let emulator_attempt: Result<KkrunchyEmulatedUnpackOutput, Error> =
-        unpack_kkrunchy_emulated(packed, None);
-    assert!(
-        matches!(emulator_attempt, Err(Error::EmulatorNotConfigured { .. })),
-        "without a pluggable emulator provider, the KkrunchyEmulator trait path must still surface a \
-         PR-WELCOME error (the in-tree stub_emu reconstruction is a separate, default path)",
     );
 
     assert!(

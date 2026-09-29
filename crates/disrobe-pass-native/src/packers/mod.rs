@@ -95,10 +95,9 @@ pub use nspack_unpack::{
 pub mod kkrunchy_unpack;
 
 pub use kkrunchy_unpack::{
-    DisFilterStreamSizes, KkrunchyByteRecoveryReport, KkrunchyEmulatedUnpackOutput,
-    KkrunchyEmulationSnapshot, KkrunchyEmulator, KkrunchyHeaderInfo, KkrunchyUnpackOutput,
+    DisFilterStreamSizes, KkrunchyByteRecoveryReport, KkrunchyHeaderInfo, KkrunchyUnpackOutput,
     KkrunchyVariant, compute_byte_recovery, dis_filter, dis_unfilter, parse_kkrunchy_header,
-    unpack_kkrunchy, unpack_kkrunchy_emulated,
+    unpack_kkrunchy,
 };
 
 pub mod kkrunchy_cca;
