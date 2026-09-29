@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use disrobe_bytes::read_u32_le_at;
+
 use crate::error::{Error, Result};
 
 const DIR_ENTRY_LEN: usize = 32;
@@ -60,10 +62,6 @@ fn read_u16_le(bytes: &[u8], offset: usize) -> Option<u16> {
     disrobe_bytes::read_u16_le_at(bytes, offset).ok()
 }
 
-fn read_u32_le(bytes: &[u8], offset: usize) -> Option<u32> {
-    disrobe_bytes::read_u32_le_at(bytes, offset).ok()
-}
-
 #[must_use]
 pub fn detect_fat(bytes: &[u8]) -> bool {
     parse_bpb(bytes).is_ok()
@@ -106,7 +104,8 @@ pub fn parse_bpb(bytes: &[u8]) -> Result<FatBpb> {
         .ok_or_else(|| Error::Decompression("fat root-entry count truncated".to_owned()))?;
     let total_sectors_16: u16 = read_u16_le(boot, 19)
         .ok_or_else(|| Error::Decompression("fat total-sectors16 truncated".to_owned()))?;
-    let total_sectors_32: u32 = read_u32_le(boot, 32)
+    let total_sectors_32: u32 = read_u32_le_at(boot, 32)
+        .ok()
         .ok_or_else(|| Error::Decompression("fat total-sectors32 truncated".to_owned()))?;
     let fat_size_16: u16 = read_u16_le(boot, 22)
         .ok_or_else(|| Error::Decompression("fat size16 truncated".to_owned()))?;
@@ -121,7 +120,8 @@ pub fn parse_bpb(bytes: &[u8]) -> Result<FatBpb> {
     let fat_size_sectors: u32 = if fat_size_16 != 0 {
         u32::from(fat_size_16)
     } else {
-        read_u32_le(boot, 36)
+        read_u32_le_at(boot, 36)
+            .ok()
             .ok_or_else(|| Error::Decompression("fat size32 truncated".to_owned()))?
     };
     if fat_size_sectors == 0 {
@@ -154,7 +154,8 @@ pub fn parse_bpb(bytes: &[u8]) -> Result<FatBpb> {
         FatKind::Fat32
     };
     let root_cluster: u32 = if kind == FatKind::Fat32 {
-        read_u32_le(boot, 44)
+        read_u32_le_at(boot, 44)
+            .ok()
             .ok_or_else(|| Error::Decompression("fat32 root-cluster truncated".to_owned()))?
     } else {
         0
