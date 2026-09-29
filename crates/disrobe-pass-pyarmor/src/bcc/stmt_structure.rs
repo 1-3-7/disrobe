@@ -1431,7 +1431,6 @@ mod real {
     clippy::vec_init_then_push
 )]
 mod tests {
-    use std::process::Command;
 
     use disrobe_nir::{SourceLang, SourceRef};
 
@@ -1576,10 +1575,11 @@ mod tests {
 
     fn interpreter() -> String {
         for candidate in PYTHON_CANDIDATES {
-            if Command::new(candidate)
-                .arg("--version")
-                .output()
-                .is_ok_and(|o: std::process::Output| o.status.success())
+            if disrobe_testkit::tool_output(
+                disrobe_testkit::CommandSpec::new(candidate, std::time::Duration::from_secs(30))
+                    .arg("--version"),
+            )
+            .is_ok_and(|o: disrobe_testkit::ToolOutput| o.success)
             {
                 return candidate.to_owned();
             }
@@ -1710,13 +1710,13 @@ mod tests {
                 .expect("scratch dir");
         let path: std::path::PathBuf = scratch.path().join("check_clamp.py");
         std::fs::write(&path, script).expect("write script");
-        let output: std::process::Output = Command::new(python)
-            .arg(&path)
-            .output()
-            .expect("run python");
+        let output: disrobe_testkit::ToolOutput = disrobe_testkit::tool_output(
+            disrobe_testkit::CommandSpec::new(python, std::time::Duration::from_mins(2)).arg(&path),
+        )
+        .expect("run python");
         let stdout: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&output.stdout);
         assert!(
-            output.status.success() && stdout.contains("OK"),
+            output.success && stdout.contains("OK"),
             "recovered clamp diverges from CPython: {stdout}\nstderr: {}\nbody:\n{body}",
             String::from_utf8_lossy(&output.stderr)
         );
