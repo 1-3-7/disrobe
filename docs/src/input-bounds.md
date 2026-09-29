@@ -2,7 +2,7 @@
 
 Every parser treats its input as hostile. Counts, sizes, recursion depth, work and output are capped by named constants, and input that exceeds a cap is refused with a typed error instead of exhausting memory or time. `cargo xtask regen` generates this page from every module-level constant in `crates/*/src` whose name starts with `MAX_` or ends with `_LIMIT`, `_BUDGET` or `_CAP`, and `cargo xtask regen --check` fails when it is stale. The kind column is derived from the constant name.
 
-2152 bounds (count 214, other 1004, output 64, recursion 217, size 478, work 175).
+2153 bounds (count 214, other 1004, output 64, recursion 217, size 478, work 176).
 
 | Crate | Constant | Kind | Type | Value | File |
 | --- | --- | --- | --- | --- | --- |
@@ -1764,6 +1764,7 @@ Every parser treats its input as hostile. Counts, sizes, recursion depth, work a
 | `disrobe-pass-shell` | `MAX_FOR_ITERATIONS` | work | `usize` | `4096` | `crates/disrobe-pass-shell/src/batch/forloop.rs` |
 | `disrobe-pass-shell` | `MAX_REVERSE_ADDED_BYTES` | size | `usize` | `expand::MAX_EXPANSION_OUTPUT` | `crates/disrobe-pass-shell/src/batch/mod.rs` |
 | `disrobe-pass-shell` | `MAX_DECODE_LEN` | size | `usize` | `1 << 20` | `crates/disrobe-pass-shell/src/batch/payload.rs` |
+| `disrobe-pass-shell` | `MAX_POWERSHELL_LAYER_ROUNDS` | work | `usize` | `16` | `crates/disrobe-pass-shell/src/chain_detector.rs` |
 | `disrobe-pass-shell` | `MAX_SCRIPT_SCAN_BYTES` | size | `usize` | `16 * 1024 * 1024` | `crates/disrobe-pass-shell/src/detect.rs` |
 | `disrobe-pass-shell` | `MAX_ACTION_DEPTH` | recursion | `usize` | `64` | `crates/disrobe-pass-shell/src/pdf/limits.rs` |
 | `disrobe-pass-shell` | `MAX_ARRAY_ELEMENTS` | other | `usize` | `1 << 20` | `crates/disrobe-pass-shell/src/pdf/limits.rs` |
