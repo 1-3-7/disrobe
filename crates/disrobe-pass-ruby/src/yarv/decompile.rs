@@ -1451,6 +1451,7 @@ fn try_pattern_match(
     let first_dup: usize = find_case_in_subject(body, i, region.terminal_lo)?;
     let subject_idx: usize = first_dup - 1;
     let subject: String = pattern_subject_text(body, ctx, i, first_dup);
+    let prelude_start: usize = case_scratch_start(body, i, subject_expr_start(body, i, first_dup));
 
     let bodies: Vec<ArmBody> =
         collect_arm_bodies(body, subject_idx, region.body_floor, hi, targets);
@@ -1510,8 +1511,24 @@ fn try_pattern_match(
     if lines.iter().any(|l| line_has_leak(l)) {
         return None;
     }
+    if prelude_start > i {
+        stmts.extend(render_slice(body, ctx, depth, i, prelude_start, targets));
+    }
     stmts.extend(lines);
     Some(region_end)
+}
+
+fn case_scratch_start(body: &YarvIseqBody, region_lo: usize, subject_lo: usize) -> usize {
+    (region_lo..subject_lo)
+        .rev()
+        .take_while(|&j| {
+            matches!(
+                body.instructions[j].mnemonic.as_str(),
+                "putnil" | "putobject"
+            )
+        })
+        .last()
+        .unwrap_or(subject_lo)
 }
 
 fn is_valid_pattern(pattern: &str) -> bool {
