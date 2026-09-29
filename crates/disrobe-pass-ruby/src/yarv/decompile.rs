@@ -4797,9 +4797,84 @@ fn stabby_header(header: &str) -> String {
     }
 }
 
+fn destructured_block_params(block: &YarvIseqBody) -> Vec<(String, String)> {
+    let mut found: Vec<(String, String)> = Vec::new();
+    let mut i: usize = 0;
+    while let [get, expand, ..] = &block.instructions[i..] {
+        if get.mnemonic != "getlocal_WC_0" || expand.mnemonic != "expandarray" {
+            break;
+        }
+        let count: usize = operand_count(expand, 0);
+        if count < 2 || operand_num(expand, 1) != 0 {
+            break;
+        }
+        let slot: u64 = operand_num(get, 0);
+        let anonymous: String = local_name(&block.local_table, slot);
+        let sets: Option<&[YarvIbfInstruction]> = block.instructions.get(i + 2..i + 2 + count);
+        let Some(sets) = sets.filter(|sets| sets.iter().all(|s| s.mnemonic == "setlocal_WC_0"))
+        else {
+            break;
+        };
+        let targets: Vec<String> = sets
+            .iter()
+            .map(|s| local_name(&block.local_table, operand_num(s, 0)))
+            .collect();
+        if targets
+            .iter()
+            .any(|name| !is_identifier(name) || name.starts_with("local"))
+        {
+            break;
+        }
+        found.push((anonymous, targets.join(", ")));
+        i += 2 + count;
+    }
+    found
+}
+
+fn apply_destructured_params(
+    params: String,
+    inner: Vec<String>,
+    destructured: &[(String, String)],
+) -> (String, Vec<String>) {
+    let mut params: String = params;
+    let mut inner: Vec<String> = inner;
+    for (anonymous, targets) in destructured {
+        let assignment: String = format!("{targets} = {anonymous}");
+        let Some(first) = inner.iter().position(|l| !l.trim().is_empty()) else {
+            break;
+        };
+        if inner[first].trim() != assignment {
+            break;
+        }
+        let pattern: String = format!("({targets})");
+        let replaced: String = params
+            .split(", ")
+            .map(|piece| {
+                let bare: &str = piece.trim_start_matches(" |").trim_end_matches('|');
+                if bare == anonymous {
+                    piece.replacen(anonymous.as_str(), &pattern, 1)
+                } else {
+                    piece.to_owned()
+                }
+            })
+            .collect::<Vec<String>>()
+            .join(", ");
+        if replaced == params {
+            break;
+        }
+        params = replaced;
+        inner.remove(first);
+    }
+    (params, inner)
+}
+
 fn render_block_lines(block: &YarvIseqBody, ctx: &DecompileContext<'_>, depth: u32) -> Vec<String> {
-    let params: String = block_param_list(block, ctx);
-    let inner: Vec<String> = render_iseq_statements(block, ctx, depth.saturating_add(1));
+    let destructured: Vec<(String, String)> = destructured_block_params(block);
+    let (params, inner): (String, Vec<String>) = apply_destructured_params(
+        block_param_list(block, ctx),
+        render_iseq_statements(block, ctx, depth.saturating_add(1)),
+        &destructured,
+    );
     let body_only: Vec<&str> = inner
         .iter()
         .map(|l| l.trim())
@@ -4814,11 +4889,14 @@ fn render_block_lines(block: &YarvIseqBody, ctx: &DecompileContext<'_>, depth: u
         };
         return vec![one];
     }
-    let mut lines: Vec<String> = Vec::with_capacity(inner.len() + 2);
+    let (_, deeper): (String, Vec<String>) = apply_destructured_params(
+        block_param_list(block, ctx),
+        render_iseq_statements(block, ctx, depth + 1),
+        &destructured,
+    );
+    let mut lines: Vec<String> = Vec::with_capacity(deeper.len() + 2);
     lines.push(format!("do{params}"));
-    for l in render_iseq_statements(block, ctx, depth + 1) {
-        lines.push(l);
-    }
+    lines.extend(deeper);
     lines
 }
 

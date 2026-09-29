@@ -46,3 +46,7 @@ p with_value(3) { |v| v + 1 }, with_value(3)
 p parse_year("2024-05-06T00:00:00Z"), parse_year("garbage"), probe(1)
 p defined?(Deep::K.go), defined?(Deep::K.nope), defined?(Deep::Missing.go), defined?(String.new)
 p defined?(s.upcase.downcase), defined?(s.upcase.nope), defined?(Deep::K), defined?(Deep::Nope), defined?(@x), defined?(puts)
+stages = { double: ->(x) { x * 2 }, inc: ->(x) { x + 1 } }
+p stages.reduce(3) { |acc, (_name, stage)| stage.call(acc) }
+p [[1, [2, 3]], [4, [5, 6]]].map { |a, (b, c)| a + b * c }
+p({ a: 1, b: 2 }.map { |(k, v)| "#{k}=#{v}" })
