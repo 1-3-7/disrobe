@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::io::Read;
 
+use disrobe_bytes::{ByteReadError, read_u16_le_at, read_u32_le_at};
 use serde::{Deserialize, Serialize};
 
 use crate::debug::{dbg_hex, dbg_kv, dbg_line, dbg_section};
@@ -519,35 +520,33 @@ impl<'a> BitReader<'a> {
         Ok((raw << shift).cast_signed() >> shift)
     }
 
+    fn truncated(&self, needed: usize) -> Error {
+        Error::SwfTruncated {
+            offset: self.byte_pos,
+            needed,
+            had: self.bytes.len().saturating_sub(self.byte_pos),
+        }
+    }
+
     fn need_bytes(&self, n: usize) -> Result<()> {
-        let avail: usize = self.bytes.len().saturating_sub(self.byte_pos);
-        if avail < n {
-            return Err(Error::SwfTruncated {
-                offset: self.byte_pos,
-                needed: n,
-                had: avail,
-            });
+        if self.bytes.len().saturating_sub(self.byte_pos) < n {
+            return Err(self.truncated(n));
         }
         Ok(())
     }
 
     fn read_u16_le(&mut self) -> Result<u16> {
         self.align();
-        self.need_bytes(2)?;
-        let v: u16 = u16::from_le_bytes([self.bytes[self.byte_pos], self.bytes[self.byte_pos + 1]]);
+        let v: u16 = read_u16_le_at(self.bytes, self.byte_pos)
+            .map_err(|_: ByteReadError| self.truncated(2))?;
         self.byte_pos += 2;
         Ok(v)
     }
 
     fn read_u32_le(&mut self) -> Result<u32> {
         self.align();
-        self.need_bytes(4)?;
-        let v: u32 = u32::from_le_bytes([
-            self.bytes[self.byte_pos],
-            self.bytes[self.byte_pos + 1],
-            self.bytes[self.byte_pos + 2],
-            self.bytes[self.byte_pos + 3],
-        ]);
+        let v: u32 = read_u32_le_at(self.bytes, self.byte_pos)
+            .map_err(|_: ByteReadError| self.truncated(4))?;
         self.byte_pos += 4;
         Ok(v)
     }
