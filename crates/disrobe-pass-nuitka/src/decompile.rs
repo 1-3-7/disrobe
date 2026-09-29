@@ -156,10 +156,22 @@ fn decompile_build_dir_with_binary(
 
     let manifest: Option<ConstantManifest> = read_manifest(build_dir, &mut notes)?;
 
-    let constants_c: Option<Vec<u8>> = read_c_source(&build_dir.join("__constants.c"))?;
-    if constants_c.is_none() {
-        notes.push("__constants.c absent: exact version unavailable (Tier-A skipped)".to_owned());
-    }
+    let constants_c: Option<Vec<u8>> = match read_c_source(&build_dir.join("__constants.c")) {
+        Ok(Some(bytes)) => Some(bytes),
+        Ok(None) => {
+            notes.push(
+                "__constants.c absent: exact version unavailable (Tier-A skipped)".to_owned(),
+            );
+            None
+        }
+        Err(error @ Error::CSourceTooLarge { .. }) => {
+            notes.push(format!(
+                "__constants.c not used: {error}; exact version unavailable (Tier-A skipped)"
+            ));
+            None
+        }
+        Err(error) => return Err(error),
+    };
 
     let sibling_binary: Option<SiblingBinary> = if supplied_binary.is_none() {
         locate_sibling_binary(build_dir)?

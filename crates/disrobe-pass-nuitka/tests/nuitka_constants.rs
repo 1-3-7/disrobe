@@ -208,6 +208,33 @@ fn an_unusable_c_source_keeps_the_decoded_constants_as_a_note() {
 }
 
 #[test]
+fn an_oversized_constants_c_keeps_the_decoded_constants_as_a_note() {
+    use disrobe_pass_nuitka::decompile_build_dir;
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("nuitka-big-constants-c").expect("scratch dir");
+    for name in ["__constants.const", "module.hello.const", "module.hello.c"] {
+        std::fs::copy(
+            fixture("module/hello.build").join(name),
+            scratch.path().join(name),
+        )
+        .expect("copy build-dir inputs");
+    }
+    std::fs::File::create(scratch.path().join("__constants.c"))
+        .and_then(|file: std::fs::File| file.set_len(64 * 1024 * 1024 + 1))
+        .expect("write a __constants.c one byte over the C-source cap");
+    let d: disrobe_pass_nuitka::NuitkaDecompilation = decompile_build_dir(scratch.path())
+        .expect("an oversized __constants.c must not abort the decompile");
+    assert!(d.constants.pools.contains_key("module.hello.const"));
+    assert!(
+        d.notes
+            .iter()
+            .any(|note: &String| note.starts_with("__constants.c not used")),
+        "{:?}",
+        d.notes
+    );
+}
+
+#[test]
 fn decompile_build_dir_end_to_end() {
     use disrobe_pass_nuitka::{VersionConfidence, decompile_build_dir};
     let d: disrobe_pass_nuitka::NuitkaDecompilation =
