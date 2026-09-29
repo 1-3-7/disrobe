@@ -50,3 +50,16 @@ stages = { double: ->(x) { x * 2 }, inc: ->(x) { x + 1 } }
 p stages.reduce(3) { |acc, (_name, stage)| stage.call(acc) }
 p [[1, [2, 3]], [4, [5, 6]]].map { |a, (b, c)| a + b * c }
 p({ a: 1, b: 2 }.map { |(k, v)| "#{k}=#{v}" })
+class Account
+  attr_reader :cents
+  def initialize(cents, currency = :usd) = (@cents = cents; @currency = currency)
+  def classify(other) = other.cents <=> @cents
+end
+class Forwarder < Account
+  def initialize(*) = super
+  def classify(*) = [:forwarded, super]
+  def describe(*, **) = Kernel.format(*, **)
+  def each_twice(&) = [1, 2].map(&)
+end
+f = Forwarder.new(250)
+p f.cents, f.classify(Account.new(300)), f.describe("%s-%s", 1, 2), f.each_twice { |x| x * 3 }

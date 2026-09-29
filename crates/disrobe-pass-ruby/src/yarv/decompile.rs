@@ -4599,6 +4599,7 @@ fn render_param_signature(body: &YarvIseqBody, ctx: &DecompileContext<'_>) -> St
             }
             _ => &anonymous,
         };
+        let name: &str = name.trim_start_matches(['*', '&']);
         let rendered: String = if Some(idx) == rest_idx {
             format!("*{name}")
         } else if Some(idx) == block_idx {
