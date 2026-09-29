@@ -28,21 +28,76 @@ impl Detector for SourceDefenderDetector {
 
     fn detect(&self, ctx: &DetectContext<'_>) -> Option<DetectVerdict> {
         let bytes: &[u8] = ctx.bytes;
-        let has_begin: bool = window_contains(bytes, PYE_BEGIN_MARKER.as_bytes());
-        let has_end: bool = window_contains(bytes, PYE_END_MARKER.as_bytes());
-        if has_begin && has_end {
-            return Some(verdict_full());
+        match armor_span(bytes, PYE_BEGIN_MARKER, PYE_END_MARKER) {
+            ArmorSpan::Closed => return Some(verdict_full()),
+            ArmorSpan::Open => return Some(verdict_inlined()),
+            ArmorSpan::Absent => {}
         }
-        if has_begin {
-            return Some(verdict_inlined());
+        match armor_span(bytes, MODERN_BEGIN_MARKER, MODERN_END_MARKER) {
+            ArmorSpan::Closed => Some(verdict_modern()),
+            ArmorSpan::Open | ArmorSpan::Absent => None,
         }
-        let modern_begin: bool = window_contains(bytes, MODERN_BEGIN_MARKER.as_bytes());
-        let modern_end: bool = window_contains(bytes, MODERN_END_MARKER.as_bytes());
-        if modern_begin && modern_end {
-            return Some(verdict_modern());
-        }
-        None
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ArmorSpan {
+    Absent,
+    Open,
+    Closed,
+}
+
+fn armor_span(bytes: &[u8], begin: &str, end: &str) -> ArmorSpan {
+    let mut lines = bytes.split(|b: &u8| *b == b'\n');
+    if !lines
+        .by_ref()
+        .any(|line: &[u8]| is_armor_line(line, begin.as_bytes()))
+    {
+        return ArmorSpan::Absent;
+    }
+    let mut body_lines: usize = 0;
+    for line in lines {
+        if is_armor_line(line, end.as_bytes()) {
+            return if body_lines == 0 {
+                ArmorSpan::Absent
+            } else {
+                ArmorSpan::Closed
+            };
+        }
+        if !is_armor_body_line(line) {
+            return ArmorSpan::Absent;
+        }
+        if !line.trim_ascii().is_empty() {
+            body_lines += 1;
+        }
+    }
+    if body_lines == 0 {
+        ArmorSpan::Absent
+    } else {
+        ArmorSpan::Open
+    }
+}
+
+fn is_armor_line(line: &[u8], marker: &[u8]) -> bool {
+    let line: &[u8] = line
+        .strip_prefix(b"\xEF\xBB\xBF")
+        .unwrap_or(line)
+        .trim_ascii();
+    let Some(inner): Option<&[u8]> = line
+        .strip_prefix(b"-")
+        .and_then(|rest: &[u8]| rest.strip_suffix(b"-"))
+    else {
+        return false;
+    };
+    let start: usize = inner.iter().take_while(|b: &&u8| **b == b'-').count();
+    let stop: usize = inner.iter().rev().take_while(|b: &&u8| **b == b'-').count();
+    inner
+        .get(start..inner.len().saturating_sub(stop))
+        .is_some_and(|core: &[u8]| core == marker)
+}
+
+fn is_armor_body_line(line: &[u8]) -> bool {
+    line.trim_ascii().iter().all(|b: &u8| b.is_ascii_graphic())
 }
 
 #[derive(Debug)]
@@ -152,14 +207,6 @@ fn verdict_inlined() -> DetectVerdict {
     )
 }
 
-#[inline]
-fn window_contains(haystack: &[u8], needle: &[u8]) -> bool {
-    if needle.is_empty() || haystack.len() < needle.len() {
-        return false;
-    }
-    haystack.windows(needle.len()).any(|w: &[u8]| w == needle)
-}
-
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
@@ -199,6 +246,26 @@ mod tests {
             .expect("must detect");
         assert_eq!(v.format_tag, FORMAT_PYE_INLINED);
         assert_eq!(v.specificity, 14);
+    }
+
+    #[test]
+    fn detect_ignores_text_that_only_quotes_the_armor_markers() {
+        let dir: std::path::PathBuf = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../corpus/python/sourcedefender");
+        for name in ["PROVENANCE.txt", "build_crafted_modern.mjs"] {
+            let path: std::path::PathBuf = dir.join(name);
+            let bytes: Vec<u8> = std::fs::read(&path).unwrap_or_else(|e: std::io::Error| {
+                panic!(
+                    "required tracked fixture {} is unreadable: {e}",
+                    path.display()
+                )
+            });
+            assert!(
+                SourceDefenderDetector.detect(&ctx(&bytes)).is_none(),
+                "{name} mentions the armor markers inside prose or a template literal and is \
+                 not a sourcedefender envelope",
+            );
+        }
     }
 
     #[test]
