@@ -13,6 +13,12 @@ fn next_u64() -> u64 {
 }
 
 #[unsafe(no_mangle)]
+#[expect(
+    unsafe_code,
+    reason = "the getrandom v0.3 custom backend symbol is defined once, getrandom passes dest with \
+              len writable bytes, and each copy writes take bytes at offset with offset + take <= \
+              len"
+)]
 unsafe extern "Rust" fn __getrandom_v03_custom(
     dest: *mut u8,
     len: usize,

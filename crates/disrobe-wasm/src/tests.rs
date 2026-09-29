@@ -86,6 +86,11 @@ fn phar_lists_oversized_members_but_refuses_their_extraction() {
     assert!(error["error"].as_str().expect("message").contains("32 MiB"));
 }
 
+#[expect(
+    unsafe_code,
+    reason = "input comes from write_input with bytes.len() bytes, and the result buffer is read \
+              within its header length and freed once, like the input"
+)]
 fn extract_phar_payload(bytes: &[u8], index: u32) -> Vec<u8> {
     let input: *mut u8 = write_input(bytes);
     let result: *mut u8 = unsafe { super::phar_extract(input, bytes.len(), index) };
@@ -342,6 +347,11 @@ const SHARED_ATOMIC_WAT: &str = r#"
     memory.atomic.notify))
 "#;
 
+#[expect(
+    unsafe_code,
+    reason = "disrobe_alloc returned a non-null buffer of bytes.len() bytes, which cannot overlap \
+              the borrowed source slice"
+)]
 fn write_input(bytes: &[u8]) -> *mut u8 {
     let ptr: *mut u8 = super::disrobe_alloc(bytes.len());
     assert!(!ptr.is_null());
@@ -351,6 +361,11 @@ fn write_input(bytes: &[u8]) -> *mut u8 {
     ptr
 }
 
+#[expect(
+    unsafe_code,
+    reason = "result is a non-null unfreed result buffer, read within its header length before it \
+              is freed once"
+)]
 fn read_result_json(result: *mut u8) -> Value {
     assert!(!result.is_null());
     let payload_len: usize = unsafe { super::disrobe_result_len(result) } as usize;
@@ -361,6 +376,11 @@ fn read_result_json(result: *mut u8) -> Value {
     parsed
 }
 
+#[expect(
+    unsafe_code,
+    reason = "input comes from write_input with bytes.len() bytes, every entry passed here follows \
+              the bridge contract, and the input is freed once"
+)]
 fn run(entry: unsafe extern "C" fn(*const u8, usize) -> *mut u8, bytes: &[u8]) -> Value {
     let input: *mut u8 = write_input(bytes);
     let result: *mut u8 = unsafe { entry(input, bytes.len()) };
@@ -369,6 +389,10 @@ fn run(entry: unsafe extern "C" fn(*const u8, usize) -> *mut u8, bytes: &[u8]) -
 }
 
 #[test]
+#[expect(
+    unsafe_code,
+    reason = "the pointer and zero length come from disrobe_alloc and are freed once"
+)]
 fn alloc_zero_yields_freeable_pointer() {
     let ptr: *mut u8 = super::disrobe_alloc(0);
     assert!(!ptr.is_null());
@@ -382,6 +406,10 @@ fn alloc_over_cap_returns_null() {
 }
 
 #[test]
+#[expect(
+    unsafe_code,
+    reason = "pack_result returned a result buffer, read within its header length and freed once"
+)]
 fn result_header_encodes_payload_length() {
     let payload: &[u8] = br#"{"ok":true}"#;
     let result: *mut u8 = super::pack_result(payload);
@@ -408,6 +436,11 @@ fn result_over_cap_returns_error_payload() {
 }
 
 #[test]
+#[expect(
+    unsafe_code,
+    reason = "the oversized length is rejected by input_slice before any read, and the one-byte \
+              buffer from disrobe_alloc is freed once"
+)]
 fn over_cap_input_len_is_reported() {
     let ptr: *mut u8 = super::disrobe_alloc(1);
     assert!(!ptr.is_null());
@@ -655,6 +688,10 @@ fn empty_pickle_yields_error_not_trap() {
 }
 
 #[test]
+#[expect(
+    unsafe_code,
+    reason = "input_slice rejects a null pointer with a nonzero length before any read"
+)]
 fn null_pointer_nonzero_len_is_reported() {
     let result: *mut u8 = unsafe { super::detect(core::ptr::null(), 8) };
     let json: Value = read_result_json(result);
