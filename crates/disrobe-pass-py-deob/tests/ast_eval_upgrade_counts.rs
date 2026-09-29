@@ -1,4 +1,4 @@
-#![allow(clippy::expect_used, clippy::panic, clippy::print_stdout)]
+#![allow(clippy::expect_used, clippy::panic)]
 mod common;
 
 use disrobe_pass_py_deob::ObfuscatorPass;

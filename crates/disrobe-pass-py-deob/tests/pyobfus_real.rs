@@ -68,7 +68,7 @@ fn pyobfus_real_marshal_chain_reaches_bytecode_handoff() {
     assert_eq!(
         peel.quality,
         Quality::Partial,
-        "marshal-terminated chain is an honest bytecode handoff, not source"
+        "marshal-terminated chain is a bytecode handoff, not source"
     );
     assert_eq!(
         peel.stages_applied,

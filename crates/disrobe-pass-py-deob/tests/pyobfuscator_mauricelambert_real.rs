@@ -36,7 +36,7 @@ fn mauricelambert_real_fixtures_peel_gzip_layer() {
         assert_eq!(
             peel.quality,
             Quality::Partial,
-            "mauricelambert slot {slot}: gzip layer-peel is an honest Partial, got {:?}",
+            "mauricelambert slot {slot}: gzip layer-peel is a Partial, got {:?}",
             peel.quality
         );
         assert_eq!(

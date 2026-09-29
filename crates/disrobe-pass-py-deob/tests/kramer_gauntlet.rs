@@ -1,4 +1,4 @@
-#![allow(clippy::expect_used, clippy::panic, clippy::print_stdout)]
+#![allow(clippy::expect_used, clippy::panic)]
 
 use disrobe_pass_py_deob::ObfuscatorPass;
 use disrobe_pass_py_deob::obfuscators::kramer::KramerPass;

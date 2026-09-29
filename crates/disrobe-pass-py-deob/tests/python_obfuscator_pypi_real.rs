@@ -37,7 +37,7 @@ fn python_obfuscator_pypi_real_hello_unwraps_exec_to_inner_source() {
     assert_eq!(
         peel.quality,
         Quality::Partial,
-        "exec-unwrap is an honest Partial (junk vars remain), got {:?}",
+        "exec-unwrap is a Partial (junk vars remain), got {:?}",
         peel.quality
     );
     assert!(

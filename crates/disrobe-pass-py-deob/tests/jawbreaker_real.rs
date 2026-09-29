@@ -31,7 +31,7 @@ fn jawbreaker_real_fixtures_are_honest_detect_only_remote_loader() {
         assert_eq!(
             peel.quality,
             Quality::DetectOnly,
-            "jawbreaker slot {slot}: remote-fetch loader must be honest DetectOnly, got {:?}",
+            "jawbreaker slot {slot}: remote-fetch loader must be DetectOnly, got {:?}",
             peel.quality
         );
         assert!(

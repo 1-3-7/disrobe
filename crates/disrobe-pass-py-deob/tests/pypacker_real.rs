@@ -25,7 +25,7 @@ fn assert_marshal_handoff(slot: &str, expected_compressor: &str) {
     assert_eq!(
         peel.quality,
         Quality::Partial,
-        "marshal code object is an honest bytecode handoff, not source"
+        "marshal code object is a bytecode handoff, not source"
     );
     assert_eq!(
         peel.stages_applied,
@@ -49,7 +49,7 @@ fn assert_marshal_handoff(slot: &str, expected_compressor: &str) {
     assert!(
         peel.recovered_source
             .contains("compiled bytecode, not source"),
-        "handoff must state the honest ceiling"
+        "handoff must state its ceiling"
     );
 }
 

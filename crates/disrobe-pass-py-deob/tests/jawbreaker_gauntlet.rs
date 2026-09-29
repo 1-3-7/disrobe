@@ -49,7 +49,7 @@ fn jawbreaker_real_remote_loader_peels_to_url_and_honest_wall() {
     assert_eq!(
         peel.quality,
         Quality::DetectOnly,
-        "Jawbreaker uploads the user source to a remote paste at build time and leaves only a fetch URL; recovery is an info-theoretic wall (remote payload), so the honest verdict is DetectOnly"
+        "Jawbreaker uploads the user source to a remote paste at build time and leaves only a fetch URL; recovery is an info-theoretic wall (remote payload), so the correct verdict is DetectOnly"
     );
     assert!(
         peel.recovered_source.is_empty(),
