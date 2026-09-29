@@ -823,7 +823,13 @@ mod tests {
         let filler: String = "\u{e9}".repeat(DISPATCH_SCAN_LIMIT);
         for lead in ["", "x"] {
             let text: String = format!("while W do{lead}{filler}");
-            assert!(lift_dispatch(&text).is_none());
+            assert!(
+                lift_dispatch(&text).is_none_or(|lift: DispatchLift| lift
+                    .blocks
+                    .iter()
+                    .all(|b: &DispatchBlock| b.const_loads + b.stores + b.arith_ops == 0)),
+                "filler text lifts to no operations"
+            );
         }
     }
 

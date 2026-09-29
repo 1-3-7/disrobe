@@ -722,10 +722,11 @@ fn control_successors(p: &LuaProto, pc: usize, d: &Decoded, dialect: LuaDialect)
             .filter_map(|t: i64| usize::try_from(t).ok())
             .collect()
     };
-    let falls_through: bool = !matches!(
+    let ends_the_block: bool = matches!(
         d.op,
         Op::Jmp | Op::Return | Op::Return0 | Op::Return1 | Op::TailCall
-    ) && !(d.op == Op::LoadBool && d.c != 0);
+    ) || (d.op == Op::LoadBool && d.c != 0);
+    let falls_through: bool = !ends_the_block;
     if falls_through {
         out.push(pc + 1);
     }
