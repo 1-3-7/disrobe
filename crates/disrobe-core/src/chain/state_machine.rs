@@ -241,6 +241,14 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
         while let Some(item) = queue.pop_front() {
             let item_started: Instant = Instant::now();
             if item.depth > spec.cap() {
+                if self.config.persist_children
+                    && let Some(artifact) = ended_recovery(&nodes, &item)
+                {
+                    sink(&artifact, &[]);
+                    if !self.config.stream_extracted {
+                        extracted.push(artifact);
+                    }
+                }
                 push_terminal_layer(
                     &mut nodes,
                     item.parent,
@@ -254,6 +262,14 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
                 continue;
             }
             if output_budget_exceeded {
+                if self.config.persist_children
+                    && let Some(artifact) = ended_recovery(&nodes, &item)
+                {
+                    sink(&artifact, &[]);
+                    if !self.config.stream_extracted {
+                        extracted.push(artifact);
+                    }
+                }
                 push_terminal_layer(
                     &mut nodes,
                     item.parent,
@@ -269,6 +285,14 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
             let in_hash: [u8; 32] = blake3_of(&item.bytes);
             let in_size: u64 = item.bytes.len() as u64;
             if !seen_inputs.insert(in_hash) {
+                if self.config.persist_children
+                    && let Some(artifact) = ended_recovery(&nodes, &item)
+                {
+                    sink(&artifact, &[]);
+                    if !self.config.stream_extracted {
+                        extracted.push(artifact);
+                    }
+                }
                 push_terminal_layer(
                     &mut nodes,
                     item.parent,
@@ -879,6 +903,22 @@ fn recovered_source_path(path_hint: Option<&str>, node: NodeId, language: Langua
     format!("{RECOVERED_DIR}/{stem}.{}", language.file_extension())
 }
 
+fn ended_recovery(nodes: &[Node], item: &WorkItem) -> Option<ExtractedArtifact> {
+    let node: &Node = nodes.get(item.parent as usize)?;
+    let Some(OutputKind::Source { language, .. }) = &node.output_kind else {
+        return None;
+    };
+    if !matches!(node.verdict, Verdict::Ok) {
+        return None;
+    }
+    Some(ExtractedArtifact {
+        node_id: item.parent,
+        relative_path: recovered_source_path(item.path_hint.as_deref(), item.parent, *language),
+        materialization: ChildMaterialization::default(),
+        bytes: item.bytes.clone(),
+    })
+}
+
 fn stage_artifact_path(nodes: &[Node], parent: NodeId) -> String {
     let node: Option<&Node> = nodes.get(parent as usize);
     let pass: String = node
@@ -1420,29 +1460,15 @@ mod tests {
             .map(|e: &ExtractedArtifact| e.relative_path.as_str())
             .filter(|path: &&str| path.starts_with("recovered/"))
             .collect();
-        let sources: usize = plan
-            .nodes
-            .iter()
-            .filter(|n: &&Node| matches!(n.output_kind, Some(OutputKind::Source { .. })))
-            .count();
-        assert!(sources > 0, "the fan-out must reach a recovered source");
         assert_eq!(
-            recovered.len(),
-            sources,
-            "every recovered source is persisted under recovered/: {recovered:?}"
-        );
-        assert!(
-            recovered.iter().all(|path: &&str| {
-                std::path::Path::new(path)
-                    .extension()
-                    .is_some_and(|ext: &std::ffi::OsStr| ext == "py")
-            }),
-            "{recovered:?}"
+            recovered,
+            ["recovered/main.py", "recovered/sub/_wmi.py"],
+            "each fan-out lineage persists the source it ends on, including one whose repeat              input the global memo halts"
         );
         assert_eq!(
             plan.extracted.len(),
-            2 + sources,
-            "both fan-out children must be captured for on-disk persistence"
+            4,
+            "both fan-out children and both recovered sources are captured for on-disk persistence"
         );
         let by_path: BTreeMap<&str, &[u8]> = plan
             .extracted
