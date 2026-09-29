@@ -332,10 +332,6 @@ fn looks_like_aes_key(candidate: &[u8]) -> bool {
     if distinct_count < 6 {
         return false;
     }
-    #[allow(
-        clippy::cast_precision_loss,
-        reason = "16-byte key length fits f64 mantissa exactly; Shannon-entropy needs floating point"
-    )]
     let n: f64 = candidate.len() as f64;
     let mut h: f64 = 0.0;
     for &c in &counts {

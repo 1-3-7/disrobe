@@ -1,4 +1,3 @@
-#![allow(clippy::module_name_repetitions)]
 pub mod arxan;
 pub mod jsdefender;
 pub mod pace;

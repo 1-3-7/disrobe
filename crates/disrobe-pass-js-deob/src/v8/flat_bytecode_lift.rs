@@ -53,7 +53,6 @@ pub struct LiftedFunction {
 
 impl LiftedFunction {
     #[must_use]
-    #[allow(clippy::cast_precision_loss)]
     pub fn reversible_fraction(&self) -> f64 {
         let total: usize = self.lines.len();
         if total == 0 {
@@ -855,7 +854,6 @@ fn call_arg_list(regs: &mut Registers, first: i64, count: i64, skip_receiver: bo
     parts.join(", ")
 }
 
-#[allow(clippy::too_many_lines)]
 fn lift_instruction(
     ins: &DecodedInstruction,
     pool: &[ConstantPoolEntry],

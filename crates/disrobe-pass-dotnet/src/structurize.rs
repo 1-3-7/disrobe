@@ -2376,7 +2376,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
         }
     }
 
-    #[allow(clippy::too_many_lines, clippy::match_same_arms)]
+    #[allow(clippy::match_same_arms)]
     fn lift_one(&mut self, ins: &Instruction) {
         match decode_slot(ins) {
             Ok(access) => return self.lift_slot_access(access),

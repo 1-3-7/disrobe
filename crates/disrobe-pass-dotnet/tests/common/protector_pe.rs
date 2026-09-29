@@ -2,8 +2,6 @@
     dead_code,
     clippy::redundant_pub_crate,
     unreachable_pub,
-    clippy::cast_possible_truncation,
-    clippy::too_many_lines,
     clippy::too_many_arguments,
     clippy::unwrap_used,
     clippy::expect_used,

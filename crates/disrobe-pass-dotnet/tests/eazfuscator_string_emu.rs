@@ -2,8 +2,7 @@
     clippy::expect_used,
     clippy::unwrap_used,
     clippy::panic,
-    clippy::missing_panics_doc,
-    clippy::cast_possible_truncation
+    clippy::missing_panics_doc
 )]
 
 use disrobe_pass_dotnet::peel::string_emu::{

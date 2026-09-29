@@ -179,7 +179,6 @@ impl Interp {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
     fn exec_stmt(&mut self, stmt: &Stmt, ctx: &Ctx) -> Flow {
         if !self.tick() {
             return Flow::Bail;
@@ -1004,7 +1003,6 @@ impl Interp {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
     fn eval(&mut self, expr: &Expr, ctx: &Ctx) -> Value {
         if !self.tick() {
             return Value::Undefined;
@@ -1517,7 +1515,6 @@ impl Interp {
         }))
     }
 
-    #[allow(clippy::too_many_lines)]
     fn eval_call(&mut self, callee: &Expr, args: &[Expr], spread_last: bool, ctx: &Ctx) -> Value {
         let (callee_val, receiver): (Value, Option<Value>) = self.eval_callee(callee, ctx);
         if self.bailed {

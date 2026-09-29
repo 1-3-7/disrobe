@@ -2,10 +2,7 @@
     clippy::type_complexity,
     clippy::unnecessary_wraps,
     clippy::needless_continue,
-    clippy::single_match_else,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
+    clippy::single_match_else
 )]
 
 pub(crate) mod detect;

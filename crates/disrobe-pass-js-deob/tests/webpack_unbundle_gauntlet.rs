@@ -1,9 +1,4 @@
-#![allow(
-    clippy::expect_used,
-    clippy::panic,
-    clippy::unwrap_used,
-    clippy::print_stdout
-)]
+#![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
 use disrobe_pass_js_deob::{
     BundlerDetection, BundlerKind, ExtractedModule, UnbundleResult, auto_unbundle, unbundle,

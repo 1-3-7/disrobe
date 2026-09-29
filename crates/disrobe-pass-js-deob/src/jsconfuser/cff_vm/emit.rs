@@ -29,7 +29,6 @@ fn emit_block(stmts: &[Stmt], level: usize, out: &mut String) {
     out.push('}');
 }
 
-#[allow(clippy::too_many_lines)]
 fn emit_stmt(stmt: &Stmt, level: usize, out: &mut String) {
     match stmt {
         Stmt::Expr(e) => {
@@ -260,7 +259,6 @@ fn emit_params(params: &[Param]) -> String {
     format!("({})", parts.join(", "))
 }
 
-#[allow(clippy::too_many_lines)]
 pub(super) fn emit_expr(expr: &Expr) -> String {
     match expr {
         Expr::Num(n) => format_number(*n),

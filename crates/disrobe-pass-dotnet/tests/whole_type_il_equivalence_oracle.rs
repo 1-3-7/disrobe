@@ -3024,7 +3024,6 @@ fn percent(numerator: usize, denominator: usize) -> f64 {
     if denominator == 0 {
         return 0.0;
     }
-    #[allow(clippy::cast_precision_loss)]
     let ratio: f64 = numerator as f64 / denominator as f64;
     ratio * 100.0
 }

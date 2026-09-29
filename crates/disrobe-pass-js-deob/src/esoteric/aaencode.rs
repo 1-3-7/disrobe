@@ -83,7 +83,6 @@ fn strip_trailing_invocation(source: &str) -> String {
     no_tail.to_owned()
 }
 
-#[allow(clippy::cast_precision_loss)]
 fn ratio(num: usize, den: usize) -> f32 {
     (num as f32) / (den as f32)
 }

@@ -83,7 +83,6 @@ impl OpcodeDef {
     }
 }
 
-#[allow(clippy::too_many_lines)]
 pub const ONE_BYTE_OPCODES: &[OpcodeDef] = &[
     OpcodeDef::one(0x00, "nop", OperandKind::InlineNone, FlowControl::Next),
     OpcodeDef::one(0x01, "break", OperandKind::InlineNone, FlowControl::Break),
@@ -795,7 +794,6 @@ pub const fn coverage_percent() -> u32 {
     if pct > u32::MAX as u64 {
         u32::MAX
     } else {
-        #[allow(clippy::cast_possible_truncation)]
         let narrowed: u32 = pct as u32;
         narrowed
     }

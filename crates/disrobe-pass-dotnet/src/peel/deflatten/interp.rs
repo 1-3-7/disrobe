@@ -227,7 +227,6 @@ fn next_off(instrs: &[Instruction], idx: usize, code_size: u32) -> u32 {
         .map_or(code_size, |n: &Instruction| n.offset)
 }
 
-#[allow(clippy::too_many_lines)]
 fn run_segment(
     interp: &mut Interp<'_>,
     instrs: &[Instruction],

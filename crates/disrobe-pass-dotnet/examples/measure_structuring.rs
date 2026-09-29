@@ -1,9 +1,4 @@
-#![allow(
-    clippy::missing_panics_doc,
-    clippy::print_stdout,
-    clippy::expect_used,
-    clippy::cast_precision_loss
-)]
+#![allow(clippy::missing_panics_doc, clippy::expect_used)]
 
 use std::path::PathBuf;
 

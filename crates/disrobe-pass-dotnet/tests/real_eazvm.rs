@@ -2,9 +2,7 @@
     clippy::expect_used,
     clippy::unwrap_used,
     clippy::panic,
-    clippy::missing_panics_doc,
-    clippy::print_stdout,
-    clippy::print_stderr
+    clippy::missing_panics_doc
 )]
 
 use std::collections::{BTreeMap, BTreeSet};

@@ -3,12 +3,7 @@ use std::io::Write as _;
 use std::process::ExitCode;
 use std::time::Duration;
 
-#[allow(
-    clippy::print_stderr,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::unwrap_used
-)]
+#[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let Some(mode): Option<&String> = args.first() else {

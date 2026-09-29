@@ -233,7 +233,6 @@ pub fn disassemble(bytes: &[u8], node: NodeVersion) -> Disassembly {
     disassemble_with_table(bytes, &table)
 }
 
-#[allow(clippy::too_many_lines)]
 #[must_use]
 pub fn disassemble_with_table(bytes: &[u8], table: &OpcodeTable) -> Disassembly {
     let mut instructions: Vec<DecodedInstruction> = Vec::with_capacity(bytes.len() / 4usize);

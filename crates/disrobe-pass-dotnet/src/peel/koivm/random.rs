@@ -76,7 +76,6 @@ impl NetRandom {
     #[must_use]
     pub fn next_bounded(&mut self, max_value: i32) -> i32 {
         debug_assert!(max_value >= 0);
-        #[allow(clippy::cast_possible_truncation)]
         let scaled: i32 = (self.sample() * f64::from(max_value)) as i32;
         scaled
     }

@@ -312,7 +312,6 @@ impl<'a> Vm<'a> {
         Ok(())
     }
 
-    #[allow(clippy::too_many_lines)]
     fn run(&mut self) -> Result<StubOutput, EmulationError> {
         let mut ip: usize = 0;
         loop {

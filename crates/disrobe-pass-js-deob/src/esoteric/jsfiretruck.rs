@@ -77,7 +77,6 @@ pub fn decode_jsfiretruck(source: &str) -> JsFireTruckDecode {
     }
 }
 
-#[allow(clippy::cast_precision_loss)]
 fn ratio(num: usize, den: usize) -> f32 {
     (num as f32) / (den as f32)
 }

@@ -878,7 +878,6 @@ pub(crate) fn parse_single_assembly_row(
     Ok(assembly)
 }
 
-#[allow(clippy::too_many_lines)]
 fn decode_table(
     id: TableId,
     stream: &[u8],

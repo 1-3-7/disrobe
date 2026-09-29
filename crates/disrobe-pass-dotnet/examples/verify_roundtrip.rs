@@ -1,6 +1,5 @@
 #![allow(
     clippy::missing_panics_doc,
-    clippy::print_stdout,
     clippy::expect_used,
     clippy::collapsible_if
 )]

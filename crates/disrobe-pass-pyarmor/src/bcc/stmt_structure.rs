@@ -1428,7 +1428,6 @@ mod real {
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    clippy::print_stderr,
     clippy::vec_init_then_push
 )]
 mod tests {

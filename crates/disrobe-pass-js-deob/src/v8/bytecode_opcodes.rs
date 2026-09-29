@@ -115,7 +115,6 @@ pub struct V8OpcodeSpec {
 
 impl V8OpcodeSpec {
     #[must_use]
-    #[allow(clippy::cast_possible_truncation)]
     pub const fn new(
         mnemonic: &'static str,
         accumulator_use: AccumulatorUse,
@@ -3510,7 +3509,6 @@ impl OpcodeTable {
     }
 
     #[must_use]
-    #[allow(clippy::cast_precision_loss)]
     pub fn coverage_fraction(&self) -> f64 {
         let n: f64 = self.by_byte.len() as f64;
         let upstream: f64 = BASE_OPCODES_V13_6.len() as f64;
