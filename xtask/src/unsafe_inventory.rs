@@ -13,7 +13,6 @@ const SYNTAX: RegionSyntax = RegionSyntax {
 const SITES_SLUG: &str = "sites";
 const DOC: &str = "SECURITY.md";
 const MAX_SOURCE_BYTES: u64 = 16 * 1024 * 1024;
-const MACRO_EXPANSION_CRATES: [&str; 1] = ["disrobe-python"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CrateLint {
@@ -27,7 +26,6 @@ struct CrateReport {
     lint: CrateLint,
     expected_sites: usize,
     allowed_sites: Vec<String>,
-    unsafe_tokens: usize,
 }
 
 pub(crate) fn run(root: &Path, mode: Mode) -> Result<()> {
@@ -118,12 +116,9 @@ fn survey(root: &Path) -> Result<BTreeMap<String, CrateReport>> {
             lint,
             expected_sites: 0,
             allowed_sites: Vec::new(),
-            unsafe_tokens: 0,
         };
         for file in production_sources(&dir.join("src"))? {
             let text: String = read_text_bounded(&file, MAX_SOURCE_BYTES)?;
-            let code: String = strip_comments_and_strings(&text);
-            report.unsafe_tokens += count_unsafe_tokens(&code);
             for attribute in attributes(&text, "#[expect(") {
                 if mentions_unsafe_code(attribute) {
                     report.expected_sites += 1;
@@ -217,12 +212,6 @@ fn mentions_unsafe_code(attribute: &str) -> bool {
         .any(|word: &str| word == "unsafe_code")
 }
 
-fn count_unsafe_tokens(code: &str) -> usize {
-    code.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-        .filter(|word: &&str| *word == "unsafe")
-        .count()
-}
-
 fn strip_comments_and_strings(text: &str) -> String {
     let bytes: &[u8] = text.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
@@ -277,7 +266,6 @@ fn coherence_issues(reports: &BTreeMap<String, CrateReport>) -> Vec<String> {
                  reason = ..)]` on the item instead"
             ));
         }
-        let macro_crate: bool = MACRO_EXPANSION_CRATES.contains(&name.as_str());
         match report.lint {
             CrateLint::Forbid if report.expected_sites > 0 => issues.push(format!(
                 "{name} forbids unsafe code yet carries {} `#[expect(unsafe_code)]` site(s)",
@@ -287,13 +275,8 @@ fn coherence_issues(reports: &BTreeMap<String, CrateReport>) -> Vec<String> {
                 "{name} denies unsafe code but no item expects it; raise the lint to \
                  `#![forbid(unsafe_code)]`"
             )),
-            CrateLint::Unset if !macro_crate => issues.push(format!(
+            CrateLint::Unset => issues.push(format!(
                 "{name} sets neither `#![forbid(unsafe_code)]` nor `#![deny(unsafe_code)]`"
-            )),
-            CrateLint::Unset if report.unsafe_tokens > 0 => issues.push(format!(
-                "{name} leaves the lint off for its binding macros but writes `unsafe` \
-                 {} time(s) in its own source",
-                report.unsafe_tokens
             )),
             _ => {}
         }
@@ -334,10 +317,11 @@ mod tests {
     }
 
     #[test]
-    fn unsafe_in_comments_and_strings_is_not_counted() {
+    fn comments_and_string_contents_are_stripped() {
         let code: String =
             strip_comments_and_strings("// unsafe here\nlet s = \"unsafe\";\nunsafe { x() }\n");
-        assert_eq!(count_unsafe_tokens(&code), 1);
+        assert!(!code.contains("unsafe here"), "{code}");
+        assert_eq!(code.matches("unsafe").count(), 1, "{code}");
     }
 
     #[test]
@@ -349,7 +333,6 @@ mod tests {
                 lint: CrateLint::Deny,
                 expected_sites: 0,
                 allowed_sites: vec!["crates/disrobe-a/src/x.rs".to_owned()],
-                unsafe_tokens: 1,
             },
         );
         reports.insert(
@@ -358,7 +341,6 @@ mod tests {
                 lint: CrateLint::Unset,
                 expected_sites: 0,
                 allowed_sites: Vec::new(),
-                unsafe_tokens: 0,
             },
         );
         let issues: Vec<String> = coherence_issues(&reports);
@@ -379,7 +361,6 @@ mod tests {
                     },
                     expected_sites: sites,
                     allowed_sites: Vec::new(),
-                    unsafe_tokens: sites,
                 },
             );
         }
