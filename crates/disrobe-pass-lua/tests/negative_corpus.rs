@@ -1,3 +1,7 @@
+#![expect(
+    unsafe_code,
+    reason = "a counting global allocator implements the unsafe GlobalAlloc trait"
+)]
 #![allow(clippy::expect_used, clippy::panic, clippy::print_stdout)]
 
 use std::alloc::{GlobalAlloc, Layout, System};

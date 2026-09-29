@@ -1,3 +1,7 @@
+#![expect(
+    unsafe_code,
+    reason = "a counting global allocator implements the unsafe GlobalAlloc trait"
+)]
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 

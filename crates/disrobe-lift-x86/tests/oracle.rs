@@ -1,3 +1,10 @@
+#![cfg_attr(
+    target_arch = "x86_64",
+    expect(
+        unsafe_code,
+        reason = "the live oracle runs xadd and reads the flags with inline assembly"
+    )
+)]
 #[cfg(target_arch = "x86_64")]
 use std::arch::asm;
 use std::collections::{BTreeMap, BTreeSet};

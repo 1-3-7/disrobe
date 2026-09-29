@@ -82,6 +82,7 @@ keywords = ["decompiler", "deobfuscator", "unpacker", "reverse-engineering", "ma
 categories = ["development-tools", "command-line-utilities"]
 
 [workspace.lints.rust]
+unsafe_code = "deny"
 unsafe_op_in_unsafe_fn = "warn"
 unreachable_pub = "warn"
 missing_debug_implementations = "warn"
