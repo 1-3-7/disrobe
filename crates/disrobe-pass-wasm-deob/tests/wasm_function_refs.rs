@@ -8,6 +8,7 @@ use wasmparser::{Parser, Payload, Validator, WasmFeatures};
 const WAT_TYPED_CALL_REF: &str = r#"
     (module
       (type $ft (func (param i32) (result i32)))
+      (elem declare func $square)
       (func $square (param i32) (result i32)
         local.get 0
         local.get 0
@@ -21,6 +22,7 @@ const WAT_TYPED_CALL_REF: &str = r#"
 const WAT_TAIL_CALL_REF: &str = r#"
     (module
       (type $ft (func (param i32) (result i32)))
+      (elem declare func $square)
       (func $square (param i32) (result i32)
         local.get 0
         local.get 0
@@ -91,10 +93,7 @@ fn declared_memories_and_tables(bytes: &[u8]) -> (u32, u32) {
 #[test]
 fn lifted_wat_declares_only_the_memories_and_tables_of_the_input() {
     for (name, source) in [
-        (
-            "function_refs",
-            include_str!("../../../corpus/wasm/wat/function_refs.wat"),
-        ),
+        ("typed_call_ref", WAT_TYPED_CALL_REF),
         ("tail_call_ref", WAT_TAIL_CALL_REF),
         ("br_on_null", WAT_BR_ON_NULL),
     ] {
