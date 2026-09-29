@@ -1,5 +1,5 @@
 name: Lua oracle toolchains
-description: Install the Lua and Luau versions used by recovery differentials
+description: Install the Lua 5.1 to 5.4 and Luau versions used by recovery differentials
 runs:
   using: composite
   steps:
@@ -20,6 +20,42 @@ runs:
           Copy-Item -LiteralPath (Join-Path $bin "$tool$suffix") -Destination (Join-Path $bin "${tool}5.1$suffix")
           $version = & (Join-Path $bin "${tool}5.1$suffix") -v 2>&1
           if ($LASTEXITCODE -ne 0 -or "$version" -notmatch 'Lua 5\.1\.5\b') { throw "Unexpected ${tool} version: $version" }
+        }
+        $bin | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+    - uses: leafo/gh-actions-lua@6919171ccf181b826f44b9bca76307b577217377
+      with:
+        luaVersion: "5.2.4"
+    - name: Keep the Lua 5.2 interpreter and compiler
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $root = [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE)
+        $source = Join-Path $root '.lua'
+        Rename-Item -LiteralPath $source -NewName '.lua52'
+        $bin = Join-Path $root '.lua52/bin'
+        $suffix = if ($IsWindows) { '.exe' } else { '' }
+        foreach ($tool in @('lua', 'luac')) {
+          Copy-Item -LiteralPath (Join-Path $bin "$tool$suffix") -Destination (Join-Path $bin "${tool}5.2$suffix")
+          $version = & (Join-Path $bin "${tool}5.2$suffix") -v 2>&1
+          if ($LASTEXITCODE -ne 0 -or "$version" -notmatch 'Lua 5\.2\.4\b') { throw "Unexpected ${tool} version: $version" }
+        }
+        $bin | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+    - uses: leafo/gh-actions-lua@6919171ccf181b826f44b9bca76307b577217377
+      with:
+        luaVersion: "5.3.6"
+    - name: Keep the Lua 5.3 interpreter and compiler
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $root = [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE)
+        $source = Join-Path $root '.lua'
+        Rename-Item -LiteralPath $source -NewName '.lua53'
+        $bin = Join-Path $root '.lua53/bin'
+        $suffix = if ($IsWindows) { '.exe' } else { '' }
+        foreach ($tool in @('lua', 'luac')) {
+          Copy-Item -LiteralPath (Join-Path $bin "$tool$suffix") -Destination (Join-Path $bin "${tool}5.3$suffix")
+          $version = & (Join-Path $bin "${tool}5.3$suffix") -v 2>&1
+          if ($LASTEXITCODE -ne 0 -or "$version" -notmatch 'Lua 5\.3\.6\b') { throw "Unexpected ${tool} version: $version" }
         }
         $bin | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
     - uses: leafo/gh-actions-lua@6919171ccf181b826f44b9bca76307b577217377
