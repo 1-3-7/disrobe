@@ -479,21 +479,34 @@ mod tests {
             .to_path_buf()
     }
 
-    fn find_versioned_native_host(base: &std::path::Path, filename: &str) -> Option<Vec<u8>> {
-        let entries: std::fs::ReadDir = std::fs::read_dir(base).ok()?;
-        let mut version_dirs: Vec<std::path::PathBuf> = entries
+    #[cfg(windows)]
+    fn installed_native_host(subdir: &[&str], filename: &str) -> Vec<u8> {
+        let root: std::path::PathBuf = std::env::var_os("DOTNET_ROOT")
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("ProgramFiles")
+                    .map(|p: std::ffi::OsString| std::path::PathBuf::from(p).join("dotnet"))
+            })
+            .expect("DOTNET_ROOT or ProgramFiles names the .NET install root");
+        let base: std::path::PathBuf = subdir.iter().fold(root, |dir, part| dir.join(part));
+        let mut version_dirs: Vec<std::path::PathBuf> = std::fs::read_dir(&base)
+            .unwrap_or_else(|e: std::io::Error| {
+                panic!(
+                    "{filename} is graded against the installed .NET runtime, and {} is \
+                     unreadable ({e}); install the .NET SDK or set DOTNET_ROOT",
+                    base.display()
+                )
+            })
             .filter_map(|e: std::io::Result<std::fs::DirEntry>| e.ok())
             .map(|e: std::fs::DirEntry| e.path())
             .filter(|p: &std::path::PathBuf| p.is_dir())
             .collect();
         version_dirs.sort();
-        for version_dir in version_dirs.into_iter().rev() {
-            let candidate: std::path::PathBuf = version_dir.join(filename);
-            if let Ok(bytes) = std::fs::read(&candidate) {
-                return Some(bytes);
-            }
-        }
-        None
+        version_dirs
+            .into_iter()
+            .rev()
+            .find_map(|dir: std::path::PathBuf| std::fs::read(dir.join(filename)).ok())
+            .unwrap_or_else(|| panic!("no version under {} carries {filename}", base.display()))
     }
 
     #[test]
@@ -513,35 +526,21 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
     #[test]
     fn detect_rejects_dotnet_hostpolicy_as_go() {
-        let base: std::path::PathBuf =
-            std::path::PathBuf::from(r"C:\Program Files\dotnet\shared\Microsoft.NETCore.App");
-        let Some(bytes): Option<Vec<u8>> = find_versioned_native_host(&base, "hostpolicy.dll")
-        else {
-            eprintln!(
-                "SKIP: no local dotnet runtime install found under {}",
-                base.display()
-            );
-            return;
-        };
+        let bytes: Vec<u8> =
+            installed_native_host(&["shared", "Microsoft.NETCore.App"], "hostpolicy.dll");
         assert!(
             Detector::detect(&GoDetector, &ctx(&bytes)).is_none(),
             "microsoft's hostpolicy.dll must not classify as go",
         );
     }
 
+    #[cfg(windows)]
     #[test]
     fn detect_rejects_dotnet_hostfxr_as_go() {
-        let base: std::path::PathBuf =
-            std::path::PathBuf::from(r"C:\Program Files\dotnet\host\fxr");
-        let Some(bytes): Option<Vec<u8>> = find_versioned_native_host(&base, "hostfxr.dll") else {
-            eprintln!(
-                "SKIP: no local dotnet host fxr install found under {}",
-                base.display()
-            );
-            return;
-        };
+        let bytes: Vec<u8> = installed_native_host(&["host", "fxr"], "hostfxr.dll");
         assert!(
             Detector::detect(&GoDetector, &ctx(&bytes)).is_none(),
             "microsoft's hostfxr.dll must not classify as go",
