@@ -111,13 +111,7 @@ pub(crate) fn run(root: &Path) -> Result<()> {
 
 pub(crate) fn run_at(root: &Path, rev: &str) -> Result<()> {
     let sources: Vec<(String, String)> = committed_sources(root, rev)?;
-    if sources.len() < MIN_SOURCES {
-        bail!(
-            "the rust source surface of {rev} resolved to {} file(s), fewer than the {MIN_SOURCES} \
-             this check requires; a walk that finds almost nothing passes whatever the sources say",
-            sources.len()
-        );
-    }
+    require_surface(sources.len(), rev)?;
     let tally: Tally = tally(&sources)?;
     judge(&tally, PINNED_COMMENT_LINES, rev)?;
     println!(
@@ -126,6 +120,17 @@ pub(crate) fn run_at(root: &Path, rev: &str) -> Result<()> {
         sources.len(),
         tally.allowed_lines
     );
+    Ok(())
+}
+
+fn require_surface(files: usize, rev: &str) -> Result<()> {
+    if files < MIN_SOURCES {
+        bail!(
+            "the rust source surface of {rev} resolved to {files} file(s), fewer than the \
+             {MIN_SOURCES} this check requires; a walk that finds almost nothing passes whatever \
+             the sources say"
+        );
+    }
     Ok(())
 }
 
@@ -763,6 +768,35 @@ mod tests {
             read(SRC, "/* never closed\n").terminal.unclosed(),
             Some("a block comment")
         );
+    }
+
+    #[test]
+    fn a_desynchronised_file_fails_the_tally_instead_of_passing_silently() {
+        let sources: Vec<(String, String)> = vec![
+            (SRC.to_owned(), "fn f() {}\n".to_owned()),
+            (
+                "crates/p/src/bad.rs".to_owned(),
+                "let s: &str = \"never closed\n/// swallowed\n".to_owned(),
+            ),
+        ];
+        let error: String = tally(&sources)
+            .expect_err("a desynchronised lexer must fail the tally")
+            .to_string();
+        assert!(error.contains("crates/p/src/bad.rs"), "{error}");
+        assert!(error.contains("a string literal"), "{error}");
+    }
+
+    #[test]
+    fn a_surface_below_the_file_floor_fails_and_the_floor_itself_passes() {
+        let error: String = require_surface(MIN_SOURCES - 1, "HEAD")
+            .expect_err("one file short of the floor must fail")
+            .to_string();
+        assert!(
+            error.contains(&format!("{} file(s)", MIN_SOURCES - 1)),
+            "{error}"
+        );
+        assert!(require_surface(0, "HEAD").is_err());
+        assert!(require_surface(MIN_SOURCES, "HEAD").is_ok());
     }
 
     #[test]
