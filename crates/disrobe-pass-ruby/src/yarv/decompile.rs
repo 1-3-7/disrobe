@@ -733,6 +733,18 @@ fn render_region(
             continue;
         }
         if m == "leave"
+            && i >= 2
+            && body.instructions[i - 1].mnemonic == "putnil"
+            && body.instructions[i - 2].mnemonic == "pop"
+            && stack.last().is_some_and(|top| top == "nil")
+            && !leave_is_inside_a_loop(i, targets)
+        {
+            stack.pop();
+            emit_stmt(stmts, depth, "nil".to_owned());
+            i += 1;
+            continue;
+        }
+        if m == "leave"
             && let Some(keyword) = ctx.early_exit_keyword(body.index)
             && leave_is_inside_a_loop(i, targets)
         {
@@ -2626,15 +2638,12 @@ fn try_case_when(
         .find(|&x| body.instructions[x].mnemonic == "leave")
         .map_or(else_hi, |leave| leave);
     if else_body_lo < else_body_hi {
-        stmts.push(format!("{pad}else"));
-        stmts.extend(render_slice(
-            body,
-            ctx,
-            depth + 1,
-            else_body_lo,
-            else_body_hi,
-            targets,
-        ));
+        let else_lines: Vec<String> =
+            render_slice(body, ctx, depth + 1, else_body_lo, else_body_hi, targets);
+        if else_lines.iter().any(|l| !l.trim().is_empty()) {
+            stmts.push(format!("{pad}else"));
+            stmts.extend(else_lines);
+        }
     }
     stmts.push(format!("{pad}end"));
     Some(last_end.min(hi))
