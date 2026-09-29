@@ -4438,15 +4438,15 @@ FORMAT_UNBOUND_CLOSURE_ERROR(tstate, &exception_state, mod_consts.const_str_plai
         let pool: ConstantsPool = ConstantsPool::default();
         assert_eq!(
             resolve_const_token("const_int_pos_not_a_number", &pool),
-            PythonExpr::Name("const_int_pos_not_a_number".to_owned())
+            PythonExpr::Name("UNRESOLVED:const_int_pos_not_a_number".to_owned())
         );
         assert_eq!(
             resolve_const_token("const_float_not_a_number", &pool),
-            PythonExpr::Name("const_float_not_a_number".to_owned())
+            PythonExpr::Name("UNRESOLVED:const_float_not_a_number".to_owned())
         );
         assert_eq!(
             resolve_const_token("const_complex_invalid", &pool),
-            PythonExpr::Name("const_complex_invalid".to_owned())
+            PythonExpr::Name("UNRESOLVED:const_complex_invalid".to_owned())
         );
     }
 

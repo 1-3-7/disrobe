@@ -796,6 +796,19 @@ fn render_default_expression(value: &PythonExpr, pool: &ConstantsPool) -> Option
             .strip_prefix("const_dict_")
             .and_then(|digest: &str| render_static_dict_digest(digest, pool)),
         PythonExpr::Tuple(values) => render_default_sequence(values, '(', ')', true, pool),
+        PythonExpr::Dict(pairs) => {
+            let rendered: Vec<String> = pairs
+                .iter()
+                .map(|(key, value): &(PythonExpr, PythonExpr)| {
+                    Some(format!(
+                        "{}: {}",
+                        render_default_expression(key, pool)?,
+                        render_default_expression(value, pool)?
+                    ))
+                })
+                .collect::<Option<Vec<String>>>()?;
+            Some(format!("{{{}}}", rendered.join(", ")))
+        }
         PythonExpr::List(values) => render_default_sequence(values, '[', ']', false, pool),
         _ => None,
     }
