@@ -312,7 +312,10 @@ mod tests {
         let err: CoreError = SOURCEDEFENDER_PASS
             .run(&a)
             .expect_err("legacy body keyed to a different basename must not falsely recover");
-        assert!(format!("{err}").contains("DR-SD-0902"));
+        let message: String = format!("{err}");
+        assert!(message.contains("DR-SD-0901"), "{message}");
+        assert!(message.contains("DR-SDEF-0014"), "{message}");
+        assert!(message.contains("`chain.pye`"), "{message}");
     }
 
     #[test]
