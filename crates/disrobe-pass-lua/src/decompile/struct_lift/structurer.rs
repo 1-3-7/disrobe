@@ -1120,8 +1120,6 @@ fn skip_block_end(nodes: &[PcNode], pos: &mut usize) {
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
-    use std::io::Write;
-    use std::process::{Command, Stdio};
 
     const PREVIOUS_STRUCTURE_DEPTH_LIMIT: usize = 256;
 
@@ -1217,22 +1215,15 @@ mod tests {
         stmts
     }
 
-    fn execute_source(interpreter: &str, source: &str) -> Option<std::process::Output> {
-        let mut child: std::process::Child = Command::new(interpreter)
-            .arg("-")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .ok()?;
-        let mut stdin: std::process::ChildStdin = child.stdin.take()?;
-        let write_result: std::io::Result<()> = stdin.write_all(source.as_bytes());
-        drop(stdin);
-        let output: std::process::Output = child.wait_with_output().ok()?;
-        if write_result.is_err() && output.status.success() {
-            return None;
-        }
-        Some(output)
+    fn execute_source(interpreter: &str, source: &str) -> disrobe_testkit::ToolOutput {
+        disrobe_testkit::tool_output(
+            disrobe_testkit::CommandSpec::new(interpreter, std::time::Duration::from_secs(30))
+                .arg("-")
+                .stdin(source.as_bytes().to_vec()),
+        )
+        .unwrap_or_else(|error: disrobe_testkit::ToolError| {
+            panic!("{interpreter} is required on PATH to execute the structured bodies: {error}")
+        })
     }
 
     fn nested_else_conditionals(depth: usize) -> (Vec<LiftedStmt>, usize) {
@@ -1540,42 +1531,27 @@ mod tests {
         ];
         let original: &str =
             "local result = 0\nif enabled then result = result + 1 end\nprint(result)\n";
-        let mut exercised: Vec<&str> = Vec::new();
         for interpreter in ["lua5.1", "lua5.3", "lua5.4"] {
             let executable: String = format!("{interpreter}{}", std::env::consts::EXE_SUFFIX);
             let program: &str = executable.as_str();
-            let Some(version): Option<std::process::Output> =
-                Command::new(program).arg("-v").output().ok()
-            else {
-                continue;
-            };
-            if !version.status.success() {
-                continue;
-            }
-            exercised.push(interpreter);
             for enabled in [true, false] {
                 let expected_source: String = format!("local enabled = {enabled}\n{original}");
-                let expected: std::process::Output = execute_source(program, &expected_source)
-                    .unwrap_or_else(|| panic!("{interpreter} must execute the original source"));
+                let expected: disrobe_testkit::ToolOutput =
+                    execute_source(program, &expected_source);
                 assert!(
-                    expected.status.success(),
+                    expected.success,
                     "{interpreter} rejected the original source with enabled={enabled}: {}",
-                    String::from_utf8_lossy(&expected.stderr)
+                    expected.stderr_text()
                 );
                 for (index, body) in recovered_bodies.iter().enumerate() {
                     let source: String = format!(
                         "local enabled = {enabled}\nlocal result = 0\n{body}print(result)\n"
                     );
-                    let actual: std::process::Output = execute_source(program, &source)
-                        .unwrap_or_else(|| {
-                            panic!(
-                                "{interpreter} must execute recovered body {index} with enabled={enabled}"
-                            )
-                        });
+                    let actual: disrobe_testkit::ToolOutput = execute_source(program, &source);
                     assert!(
-                        actual.status.success(),
+                        actual.success,
                         "{interpreter} rejected recovered body {index} with enabled={enabled}: {}\n{source}",
-                        String::from_utf8_lossy(&actual.stderr)
+                        actual.stderr_text()
                     );
                     assert_eq!(
                         actual.stdout, expected.stdout,
@@ -1583,12 +1559,6 @@ mod tests {
                     );
                 }
             }
-        }
-        if std::env::var_os("DISROBE_REQUIRE_LUA_TOOLCHAIN").is_some() {
-            assert!(
-                exercised.contains(&"lua5.1") && exercised.contains(&"lua5.4"),
-                "lua5.1 and lua5.4 must be on PATH; ran {exercised:?}"
-            );
         }
     }
 
