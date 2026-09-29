@@ -343,7 +343,6 @@ fn parse_if_goto(stmt: &[Token<'_>]) -> Option<(String, Vec<u8>)> {
     let goto_target: Vec<u8> = lone_goto(inner)?;
     let cond_negated: bool = is_negated_cond(&stmt[open..=close]);
     let cond_text: String = render_condition(&stmt[open + 1..close], cond_negated);
-    let _ = cond_negated;
     Some((cond_text, goto_target))
 }
 

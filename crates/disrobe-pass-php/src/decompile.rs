@@ -3815,9 +3815,8 @@ impl<'a> Lifter<'a> {
     fn lift_condition(&mut self, start: u32, jump_idx: u32, jump_op: &Op) -> Option<Expr> {
         let mut k: u32 = start;
         while k < jump_idx {
-            let op: Op = self.ops.get(k as usize)?.clone();
+            self.ops.get(k as usize)?;
             self.eval_op(k);
-            let _ = op;
             k += 1;
         }
         self.operand_expr(jump_op.op1_type, jump_op.op1)
