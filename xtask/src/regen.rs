@@ -132,6 +132,12 @@ pub(crate) fn run(root: &Path, check: bool) -> Result<()> {
         &mut stale,
     )?;
     run_one(
+        "unsafe-inventory",
+        check,
+        || crate::unsafe_inventory::run(root, region_mode(check)),
+        &mut stale,
+    )?;
+    run_one(
         "published-figures",
         check,
         || crate::figures::run(root),

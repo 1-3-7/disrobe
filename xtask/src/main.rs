@@ -53,6 +53,7 @@ mod skip_census;
 mod sync;
 mod tracked_paths;
 mod typography;
+mod unsafe_inventory;
 mod unused_deps;
 
 use std::fs;
