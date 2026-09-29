@@ -2366,6 +2366,44 @@ fn sourcedefender_modern_body_decrypts_with_a_supplied_known_key() {
 }
 
 #[test]
+fn sourcedefender_modern_body_with_a_wrong_key_is_refused_without_a_success_line() {
+    let pye: PathBuf = corpus_path("python/sourcedefender/crafted_modern_aesgcm_known_key.pye");
+    assert!(
+        pye.exists(),
+        "{} is tracked in git and this case grades nothing without it, so its \
+         absence is a damaged checkout rather than an optional dependency",
+        pye.display()
+    );
+    let (_out_py_scratch, out_py): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        temp_path("sdef-wrong-key", "py");
+    let wrong_key: String = "ff".repeat(32);
+    let r: Run = run_disrobe(&[
+        "py",
+        "sourcedefender",
+        pye.to_str().unwrap(),
+        "--key",
+        &wrong_key,
+        "--out",
+        out_py.to_str().unwrap(),
+    ]);
+    assert_ne!(r.code, 0, "a rejected key must not exit successfully");
+    assert!(
+        r.stderr.contains("DR-CLI-0041") && r.stderr.contains("did not authenticate"),
+        "the refusal must name the rejected key:\n{}",
+        r.stderr
+    );
+    assert!(
+        !r.stdout.contains("decrypt: OK"),
+        "a rejected key must not print a success line:\n{}",
+        r.stdout
+    );
+    assert!(
+        !out_py.exists(),
+        "a rejected key must not write a source file"
+    );
+}
+
+#[test]
 fn sourcedefender_modern_body_without_key_walls_honestly() {
     let pye: PathBuf = corpus_path("python/sourcedefender/known_v16_trial.pye");
     assert!(

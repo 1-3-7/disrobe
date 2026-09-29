@@ -187,7 +187,12 @@ fn sourcedefender_modern(
         .unwrap_or("sourcedefender")
         .to_owned();
 
-    println!("sourcedefender decrypt: OK");
+    let recovered: bool =
+        recovery.recovered_source.is_some() || recovery.recovered_marshal.is_some();
+    println!(
+        "sourcedefender decrypt: {}",
+        if recovered { "OK" } else { "sealed" }
+    );
     println!("  variant:      {}", recovery.variant.tag());
     println!("  layers peeled: {}", recovery.layers.len());
     for layer in &recovery.layers {
@@ -236,6 +241,12 @@ fn sourcedefender_modern(
         );
     } else {
         println!("  note:         {}", wall.detail);
+    }
+    if modern_key.is_some() {
+        return Err(miette::miette!(
+            "DR-CLI-0041: modern v16 body is an aes-256-gcm wall ({}); the supplied --key did not authenticate it",
+            wall.reason.tag()
+        ));
     }
     Err(miette::miette!(
         "DR-CLI-0041: modern v16 body is an aes-256-gcm wall ({}); supply the 32-byte key via --key to decrypt statically",
