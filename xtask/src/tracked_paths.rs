@@ -188,7 +188,33 @@ pub(crate) fn run(root: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{PathKind, classify};
+    use super::{Inventory, PathKind, classify, inventory};
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn the_repository_is_fully_classified_and_the_inventory_is_stable() {
+        let root: std::path::PathBuf = crate::workspace_root().expect("workspace root");
+        let first: Inventory = inventory(&root).expect("first inventory");
+        let second: Inventory = inventory(&root).expect("second inventory");
+        assert!(
+            first.unclassified.is_empty(),
+            "unclassified tracked paths: {:?}",
+            first.unclassified
+        );
+        assert!(
+            first.ignored_but_tracked.is_empty(),
+            "tracked but ignored: {:?}",
+            first.ignored_but_tracked
+        );
+        assert!(
+            !first.kinds.is_empty(),
+            "the inventory lists the tracked files"
+        );
+        assert_eq!(
+            first.kinds, second.kinds,
+            "two runs produce the same inventory"
+        );
+    }
 
     #[test]
     fn each_kind_is_reached_and_an_unknown_root_file_is_not_classified() {
