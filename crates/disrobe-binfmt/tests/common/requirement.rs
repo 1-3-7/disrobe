@@ -293,7 +293,7 @@ pub fn unmeasured(toolchain: &Toolchain, graded: &str, defect: &str) {
     enforce(toolchain, graded, defect, requirement(toolchain));
 }
 
-#[allow(clippy::panic, clippy::print_stderr)]
+#[allow(clippy::panic)]
 pub fn enforce(toolchain: &Toolchain, graded: &str, defect: &str, requirement: Requirement) {
     assert!(
         requirement != Requirement::Mandatory,
@@ -315,7 +315,6 @@ pub fn enforce(toolchain: &Toolchain, graded: &str, defect: &str, requirement: R
     );
 }
 
-#[allow(clippy::print_stderr)]
 pub fn regenerable_fixture(format_dir: &str, filename: &str, graded: &str) -> Option<Vec<u8>> {
     let path: PathBuf = fixture_path(format_dir, filename);
     if let Ok(bytes) = std::fs::read(&path) {

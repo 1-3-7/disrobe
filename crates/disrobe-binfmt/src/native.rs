@@ -181,7 +181,6 @@ fn representable_range(kind: &str, name: &str, address: u64, size: u64) -> Resul
     }
 }
 
-#[allow(clippy::too_many_lines)]
 pub fn parse_native(bytes: &[u8]) -> Result<NativeFile> {
     if crate::ne::is_ne(bytes) {
         return crate::ne::parse_ne(bytes);

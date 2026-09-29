@@ -1,4 +1,3 @@
-#![allow(clippy::module_name_repetitions)]
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 

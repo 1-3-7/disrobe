@@ -250,7 +250,6 @@ fn read_command_head(bytes: &[u8], header: &MachHeader, offset: u64) -> Result<(
     Ok((command, u64::from(size)))
 }
 
-#[allow(clippy::too_many_lines)]
 fn claim_command_payload(
     claims: &mut ClaimSet<'_>,
     bytes: &[u8],

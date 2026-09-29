@@ -2,7 +2,6 @@
     clippy::expect_used,
     clippy::unwrap_used,
     clippy::panic,
-    clippy::print_stderr,
     clippy::missing_panics_doc
 )]
 

@@ -3,8 +3,6 @@
     clippy::unwrap_used,
     clippy::panic,
     clippy::missing_docs_in_private_items,
-    clippy::print_stdout,
-    clippy::print_stderr,
     clippy::pedantic,
     clippy::nursery
 )]
@@ -109,7 +107,6 @@ struct Case {
     label: &'static str,
 }
 
-#[allow(clippy::too_many_lines)]
 fn corpus(cx: &mut Cx<'_>) -> Vec<Case> {
     let pair: Symbol = cx.sym("pair");
     let nest: Symbol = cx.sym("nest");

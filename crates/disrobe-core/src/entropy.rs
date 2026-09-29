@@ -19,12 +19,10 @@ pub fn shannon_entropy_bits(bytes: &[u8]) -> f64 {
     bits
 }
 
-#[allow(clippy::cast_precision_loss)]
 const fn usize_to_f64(n: usize) -> f64 {
     n as f64
 }
 
-#[allow(clippy::cast_precision_loss)]
 const fn u64_to_f64(n: u64) -> f64 {
     n as f64
 }

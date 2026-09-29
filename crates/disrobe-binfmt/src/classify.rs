@@ -96,7 +96,6 @@ const SOURCEDEFENDER_MAGIC: &[u8; 8] = b"PYE006.0";
 const SOURCE_HEAD_BYTES: usize = 4096;
 
 #[must_use]
-#[allow(clippy::too_many_lines)]
 pub fn classify_input(path: &Path, bytes: &[u8]) -> InputClassification {
     if bytes.is_empty() {
         return InputClassification {

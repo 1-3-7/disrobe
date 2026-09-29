@@ -163,7 +163,6 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
     }
 
     #[must_use]
-    #[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
     pub fn run_with_sink(
         &self,
         seed: Vec<u8>,

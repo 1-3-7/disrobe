@@ -1,10 +1,5 @@
 #![cfg(feature = "chain")]
-#![allow(
-    clippy::expect_used,
-    clippy::unwrap_used,
-    clippy::missing_panics_doc,
-    clippy::cast_possible_truncation
-)]
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::missing_panics_doc)]
 
 use std::collections::BTreeMap;
 use std::time::Duration;

@@ -62,7 +62,6 @@ pub(super) fn map_pe64(bytes: &[u8]) -> Result<ByteCoverage> {
     map(bytes, NativeFormat::Pe64)
 }
 
-#[allow(clippy::too_many_lines)]
 fn map(bytes: &[u8], format: NativeFormat) -> Result<ByteCoverage> {
     let mut claims: ClaimSet<'_> = ClaimSet::new(bytes)?;
     let file_len: u64 = claims.file_len();

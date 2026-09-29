@@ -4,12 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
-#[allow(
-    clippy::print_stderr,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::unwrap_used
-)]
+#[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 fn main() -> ExitCode {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let stem_mode: Option<String> = std::env::current_exe()
@@ -41,7 +36,6 @@ fn main() -> ExitCode {
     }
 }
 
-#[allow(clippy::print_stderr)]
 fn mock_unrar(rest: &[String]) -> ExitCode {
     let Some(last) = rest.last() else {
         eprintln!("mock_unrar: missing dest");
@@ -51,7 +45,6 @@ fn mock_unrar(rest: &[String]) -> ExitCode {
     write_marker(&dest, "mock.txt", b"extracted\n", "mock_unrar")
 }
 
-#[allow(clippy::print_stderr)]
 fn mock_unrar_fail(rest: &[String]) -> ExitCode {
     let Some(archive): Option<&String> = rest.get(3) else {
         eprintln!("mock_unrar_fail: missing archive");
@@ -70,7 +63,6 @@ fn mock_unrar_fail(rest: &[String]) -> ExitCode {
     }
 }
 
-#[allow(clippy::print_stderr)]
 fn mock_sevenz(rest: &[String]) -> ExitCode {
     let out_dir: Option<PathBuf> = rest
         .iter()
@@ -82,7 +74,6 @@ fn mock_sevenz(rest: &[String]) -> ExitCode {
     write_marker(&dest, "iso.txt", b"seveniso\n", "mock_sevenz")
 }
 
-#[allow(clippy::print_stderr)]
 fn write_marker(dest: &Path, name: &str, body: &[u8], tag: &str) -> ExitCode {
     if let Err(e) = std::fs::create_dir_all(dest) {
         eprintln!("{tag}: mkdir {} failed: {e}", dest.display());

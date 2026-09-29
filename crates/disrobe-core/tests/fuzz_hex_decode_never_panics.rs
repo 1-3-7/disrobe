@@ -1,7 +1,6 @@
 #![allow(
     clippy::unwrap_used,
     clippy::panic,
-    clippy::cast_possible_truncation,
     clippy::missing_const_for_fn,
     clippy::items_after_statements
 )]
