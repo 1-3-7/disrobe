@@ -1,10 +1,4 @@
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::print_stdout,
-    clippy::too_many_lines
-)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod common;
 
 use std::collections::BTreeSet;

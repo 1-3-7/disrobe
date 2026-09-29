@@ -1,11 +1,5 @@
 #![cfg(feature = "llm-metadata")]
-#![allow(
-    clippy::doc_markdown,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_lossless,
-    clippy::needless_pass_by_value
-)]
+#![allow(clippy::doc_markdown)]
 
 use std::collections::{BTreeMap, BTreeSet};
 

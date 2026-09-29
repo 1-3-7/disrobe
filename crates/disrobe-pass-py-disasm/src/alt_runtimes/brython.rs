@@ -91,7 +91,6 @@ fn has_marker(haystack: &[u8], needle: &[u8]) -> bool {
     haystack.windows(needle.len()).any(|w: &[u8]| w == needle)
 }
 
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn scale_confidence(confidence: f32) -> u32 {
     let scaled: f32 = (confidence * 100.0_f32).clamp(0.0_f32, 100.0_f32);
     scaled.round() as u32

@@ -256,7 +256,7 @@ pub(crate) fn probe() -> Probe {
     }))
 }
 
-#[allow(clippy::panic, clippy::print_stderr)]
+#[allow(clippy::panic)]
 pub(crate) fn require(graded: &str) -> Option<CcToolchain> {
     match probe() {
         Probe::Usable(toolchain) => Some(*toolchain),
