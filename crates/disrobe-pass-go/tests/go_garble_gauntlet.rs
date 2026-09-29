@@ -130,10 +130,6 @@ fn gauntlet_garble_detection_fires_on_real_build() {
         b.garble_plain.garble.detection_score
     );
     assert!(
-        !b.garble_plain.garble.seed_recoverable,
-        "a seedless garble build embeds no seed"
-    );
-    assert!(
         b.garble_plain.garble.name_recovery_wall.is_some(),
         "a seedless garble build must document the keyed-hash name-recovery wall"
     );

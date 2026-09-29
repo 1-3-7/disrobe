@@ -809,9 +809,7 @@ See also [Python decompiler](./languages/python.md) for the full decompiler desi
 Decompiles a `.pyc` with its header to source. Normalized opcode-structure agreement
 on the fixed 574-module CPython 3.14 core population is
 <!-- m:py_stdlib_full_pct -->95.18%<!-- /m --> (<!-- m:py_stdlib_full_count -->17396 of 18276<!-- /m --> code objects); the pinned
-200-module corpus is <!-- m:py_stdlib_pinned_pct -->96.69%<!-- /m --> (<!-- m:py_stdlib_pinned_count -->6078 of 6286<!-- /m -->, regression threshold 96.69%). Legacy CPython
-1.0-3.7: the regression threshold is <!-- m:py_legacy_pct -->78.5%<!-- /m -->,
-or <!-- m:py_legacy_count -->150 of 191<!-- /m --> fixtures, checked through recompiled bytecode or structural token comparison.
+200-module corpus is <!-- m:py_stdlib_pinned_pct -->96.69%<!-- /m --> (<!-- m:py_stdlib_pinned_count -->6078 of 6286<!-- /m -->, regression threshold 96.69%).
 
 The 574-module population excludes `idlelib` and `turtledemo`. The structural
 comparison omits jump targets, most operands and `__annotate__` code objects;
@@ -1439,8 +1437,6 @@ func_count: int | None = pclntab.func_count
 garble: disrobe.GarbleReport = disrobe.go_garble(go_bytes)
 quality: str | None = garble.quality
 detection_score: int | None = garble.detection_score
-seed_recoverable: bool = garble.seed_recoverable
-seed_hash: str | None = garble.seed_hash
 recovered_string_count: int = garble.recovered_string_count
 ```
 
@@ -1451,7 +1447,7 @@ recovered_string_count: int = garble.recovered_string_count
 | `GoAnalysis` | `image_kind: str \| None`, `pclntab_version: str \| None`, `buildversion: str \| None`, `ptr_size: int \| None`, `llm` |
 | `GoSymbols` | `version_label: str \| None`, `function_count: int`, `source_file_count: int`, `package_count: int`, `llm` |
 | `GoPclntab` | `version: str \| None`, `ptr_size: int \| None`, `func_count: int \| None`, `image_kind: str \| None`, `llm` |
-| `GarbleReport` | `quality: str \| None`, `detection_score: int \| None`, `seed_recoverable: bool`, `seed_hash: str \| None`, `recovered_string_count: int`, `llm` |
+| `GarbleReport` | `quality: str \| None`, `detection_score: int \| None`, `recovered_string_count: int`, `llm` |
 
 ## Ruby
 

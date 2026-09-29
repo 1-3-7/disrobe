@@ -81,11 +81,8 @@ fn report(name: &str, check_literals: bool) {
         (s.stdlib_recovered + s.user_readable_surviving) as f64 / s.total_funcs.max(1) as f64;
     println!("==== {name} ====");
     println!(
-        "  quality={q:?} residual={:?} score={} seed_recoverable={} fingerprints={}",
-        a.garble.residual,
-        a.garble.detection_score,
-        a.garble.seed_recoverable,
-        a.garble.stdlib_fingerprints_present
+        "  quality={q:?} residual={:?} score={} fingerprints={}",
+        a.garble.residual, a.garble.detection_score, a.garble.stdlib_fingerprints_present
     );
     println!(
         "  names: total={} stdlib={} ({:.1}%) hashed_erased={} user_surviving={} recoverable={:.1}%",

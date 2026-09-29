@@ -17,10 +17,6 @@ fn garble_detected_on_garble_binary() {
         analysis.garble.name_recovery_wall.is_some(),
         "seedless garble build must document the name-recovery wall"
     );
-    assert!(
-        !analysis.garble.seed_recoverable,
-        "no seed is embedded in a trimpath garble build"
-    );
 }
 
 #[test]

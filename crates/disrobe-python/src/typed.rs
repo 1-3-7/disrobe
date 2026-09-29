@@ -1189,8 +1189,6 @@ typed_report!(
     accessors {
         quality -> Option<String> : |d| field_str(d, "quality"),
         detection_score -> Option<u64> : |d| field_u64(d, "detection_score"),
-        seed_recoverable -> bool : |d| field_bool(d, "seed_recoverable"),
-        seed_hash -> Option<String> : |d| field_str(d, "seed_hash"),
         recovered_string_count -> usize : |d| array_len(d, "recovered_strings"),
     }
 );

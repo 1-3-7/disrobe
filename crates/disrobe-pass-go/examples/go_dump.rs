@@ -113,11 +113,10 @@ fn dump(name: &str) {
         a.stripped.buildid
     );
     println!(
-        "  garble quality={:?} score={} stdlib_fp={} seed={:?} wall={}",
+        "  garble quality={:?} score={} stdlib_fp={} wall={}",
         a.garble.quality,
         a.garble.detection_score,
         a.garble.stdlib_fingerprints_present,
-        a.garble.seed_hash,
         a.garble.name_recovery_wall.is_some()
     );
     let nr: disrobe_pass_go::NameRecoveryStats = a.garble.name_recovery;

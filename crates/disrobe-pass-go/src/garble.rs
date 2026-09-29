@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use crate::binary::{CallArchitecture, GoImage};
-use crate::debug::{dbg_kv, dbg_kv_guarded, dbg_line, dbg_section};
+use crate::debug::{dbg_kv, dbg_line, dbg_section};
 use crate::pclntab::{LocatedPclntab, locate_pclntab};
 use crate::symbols::{GoFunc, GoSymbols, parse_symbols};
 
@@ -21,8 +21,6 @@ pub struct GarbleReport {
     pub quality: GarbleQuality,
     pub detection_score: u32,
     pub stdlib_fingerprints_present: usize,
-    pub seed_hash: Option<String>,
-    pub seed_recoverable: bool,
     pub name_recovery_wall: Option<String>,
     pub literal_recovery_limit: Option<String>,
     pub surviving_stdlib_names: BTreeSet<String>,
@@ -166,21 +164,11 @@ pub fn analyze(image: &GoImage<'_>, syms: &GoSymbols) -> GarbleReport {
         )
     });
     let stdlib_fingerprints_present: usize = surviving.len();
-    let seed_hash: Option<String> = extract_seed_hash(image);
-    let total_stdlib: usize = STDLIB_FINGERPRINT_NAMES.len();
-    let seed_recoverable: bool = seed_hash.is_some();
-    dbg_kv("seed_recoverable", || seed_recoverable.to_string());
-    if let Some(ref hash) = seed_hash {
-        dbg_kv_guarded("seed_hash", || hash.clone());
-    }
     let literals_present: bool = garble_literals_likely || literal_recovery.garble_thunk > 0;
     let literals_recovered: bool =
         literal_recovery.garble_thunk > 0 || literal_recovery.garble_simple > 0;
     let (quality, residual): (GarbleQuality, GarbleResidual) = classify(
         detection_score,
-        stdlib_fingerprints_present,
-        total_stdlib,
-        seed_recoverable,
         &name_recovery,
         literals_present,
         literals_recovered,
@@ -188,7 +176,6 @@ pub fn analyze(image: &GoImage<'_>, syms: &GoSymbols) -> GarbleReport {
     dbg_kv("classify", || format!("{quality:?} residual={residual:?}"));
     let name_recovery_wall: Option<String> = match quality {
         GarbleQuality::None => None,
-        _ if seed_recoverable => None,
         _ => Some(SEEDLESS_WALL.to_owned()),
     };
     if name_recovery_wall.is_some() {
@@ -204,8 +191,6 @@ pub fn analyze(image: &GoImage<'_>, syms: &GoSymbols) -> GarbleReport {
         quality,
         detection_score,
         stdlib_fingerprints_present,
-        seed_hash,
-        seed_recoverable,
         name_recovery_wall,
         literal_recovery_limit,
         surviving_stdlib_names: surviving,
@@ -246,14 +231,10 @@ const GARBLE_CONFIDENCE_THRESHOLD: u32 = 2;
 #[allow(clippy::too_many_arguments)]
 const fn classify(
     score: u32,
-    surviving: usize,
-    total_stdlib: usize,
-    seed_recoverable: bool,
     name_recovery: &NameRecoveryStats,
     literals_present: bool,
     literals_recovered: bool,
 ) -> (GarbleQuality, GarbleResidual) {
-    let _ = (surviving, total_stdlib);
     let confidently_garble: bool = score >= GARBLE_CONFIDENCE_THRESHOLD
         || (literals_recovered && name_recovery.user_hashed_erased > 0);
     if !confidently_garble {
@@ -264,8 +245,7 @@ const fn classify(
             >= name_recovery.total_funcs * STRUCTURE_RECOVERY_NUM;
     let literals_complete: bool = !literals_present || literals_recovered;
     if structure_recovered && literals_complete {
-        let residual: GarbleResidual = if seed_recoverable || name_recovery.user_hashed_erased == 0
-        {
+        let residual: GarbleResidual = if name_recovery.user_hashed_erased == 0 {
             GarbleResidual::None
         } else {
             GarbleResidual::SeedNameHash
@@ -868,32 +848,6 @@ fn plausible_string(s: &str) -> bool {
     token_hits >= 2 || strong_marker || multiword_phrase
 }
 
-fn extract_seed_hash(image: &GoImage<'_>) -> Option<String> {
-    let needle: &[u8] = b"GARBLE_SEED";
-    for sec in &image.sections {
-        let mut i: usize = 0;
-        while i + needle.len() <= sec.data.len() {
-            if &sec.data[i..i + needle.len()] == needle {
-                let start: usize = i + needle.len();
-                let tail_len: usize = (sec.data.len() - start).min(64);
-                let tail: &[u8] = &sec.data[start..start + tail_len];
-                let limit: usize = tail.len().min(44);
-                let end: usize = tail
-                    .iter()
-                    .position(|b: &u8| !b.is_ascii_alphanumeric())
-                    .unwrap_or(limit);
-                if end >= 22
-                    && let Ok(s) = std::str::from_utf8(&tail[..end])
-                {
-                    return Some(s.to_owned());
-                }
-            }
-            i += 1;
-        }
-    }
-    None
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
@@ -1133,36 +1087,6 @@ mod tests {
     }
 
     #[test]
-    fn seed_hash_scan_continues_after_short_tail_marker() {
-        let first_data: &[u8] = b"prefixGARBLE_SEEDshort";
-        let second_data: &[u8] = b"noiseGARBLE_SEED0123456789abcdefghijklmn";
-        let image: GoImage<'_> = GoImage {
-            kind: crate::binary::ImageKind::Pe,
-            endian: crate::binary::Endian::Little,
-            ptr_size: 8,
-            sections: vec![
-                crate::binary::Section {
-                    name: ".rdata".to_owned(),
-                    address: 0x1000,
-                    data: first_data,
-                    mapped_len: u64::try_from(first_data.len()).expect("fixture size fits u64"),
-                },
-                crate::binary::Section {
-                    name: ".rdata".to_owned(),
-                    address: 0x2000,
-                    data: second_data,
-                    mapped_len: u64::try_from(second_data.len()).expect("fixture size fits u64"),
-                },
-            ],
-            raw: b"",
-            symbol_addrs: Vec::new(),
-            flat: false,
-        };
-        let seed_hash: Option<String> = extract_seed_hash(&image);
-        assert_eq!(seed_hash.as_deref(), Some("0123456789abcdefghijklmn"));
-    }
-
-    #[test]
     fn stdlib_package_classification() {
         assert!(is_known_stdlib_package("runtime.main"));
         assert!(is_known_stdlib_package("internal/abi.TypeOf"));
@@ -1212,7 +1136,7 @@ mod tests {
     #[test]
     fn full_recovery_on_seedless_structure_plus_recovered_literals() {
         let s: NameRecoveryStats = stats(1000, 900, 50);
-        let (q, r): (GarbleQuality, GarbleResidual) = classify(3, 8, 15, false, &s, true, true);
+        let (q, r): (GarbleQuality, GarbleResidual) = classify(3, &s, true, true);
         assert_eq!(
             q,
             GarbleQuality::Full,
@@ -1234,7 +1158,7 @@ mod tests {
     #[test]
     fn full_recovery_when_no_literal_obfuscation_present() {
         let s: NameRecoveryStats = stats(1000, 870, 60);
-        let (q, _): (GarbleQuality, GarbleResidual) = classify(3, 8, 15, false, &s, false, false);
+        let (q, _): (GarbleQuality, GarbleResidual) = classify(3, &s, false, false);
         assert_eq!(
             q,
             GarbleQuality::Full,
@@ -1246,7 +1170,7 @@ mod tests {
     #[test]
     fn partial_when_literals_present_but_unrecovered() {
         let s: NameRecoveryStats = stats(1000, 900, 50);
-        let (q, r): (GarbleQuality, GarbleResidual) = classify(4, 8, 15, false, &s, true, false);
+        let (q, r): (GarbleQuality, GarbleResidual) = classify(4, &s, true, false);
         assert_eq!(
             q,
             GarbleQuality::Partial,
@@ -1258,7 +1182,7 @@ mod tests {
     #[test]
     fn partial_when_structure_below_floor() {
         let s: NameRecoveryStats = stats(1000, 500, 50);
-        let (q, _): (GarbleQuality, GarbleResidual) = classify(3, 8, 15, false, &s, true, true);
+        let (q, _): (GarbleQuality, GarbleResidual) = classify(3, &s, true, true);
         assert_eq!(
             q,
             GarbleQuality::Partial,
@@ -1269,7 +1193,7 @@ mod tests {
     #[test]
     fn full_residual_is_none_when_no_user_names_were_hashed() {
         let s: NameRecoveryStats = stats(1000, 950, 0);
-        let (q, r): (GarbleQuality, GarbleResidual) = classify(3, 8, 15, false, &s, false, false);
+        let (q, r): (GarbleQuality, GarbleResidual) = classify(3, &s, false, false);
         assert_eq!(q, GarbleQuality::Full);
         assert_eq!(
             r,
@@ -1282,7 +1206,7 @@ mod tests {
     #[test]
     fn none_when_score_zero() {
         let s: NameRecoveryStats = stats(1000, 900, 0);
-        let (q, r): (GarbleQuality, GarbleResidual) = classify(0, 0, 15, false, &s, false, false);
+        let (q, r): (GarbleQuality, GarbleResidual) = classify(0, &s, false, false);
         assert_eq!(q, GarbleQuality::None);
         assert_eq!(r, GarbleResidual::None);
     }
@@ -1290,7 +1214,7 @@ mod tests {
     #[test]
     fn a_single_weak_signal_is_not_garble() {
         let s: NameRecoveryStats = stats(1000, 900, 0);
-        let (q, r): (GarbleQuality, GarbleResidual) = classify(1, 0, 15, false, &s, false, false);
+        let (q, r): (GarbleQuality, GarbleResidual) = classify(1, &s, false, false);
         assert_eq!(q, GarbleQuality::None);
         assert_eq!(r, GarbleResidual::None);
     }
