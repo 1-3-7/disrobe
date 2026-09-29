@@ -1,16 +1,15 @@
 #![allow(clippy::expect_used)]
 
 use disrobe_pass_sourcedefender::{
-    ContainerVariant, DecoratorStripReport, DecryptedPye, DerivedKey, InlinedBlock,
-    InlinedExtractOptions, InlinedExtraction, LayeredRecovery, ModernGcmFraming,
-    ParsedPyeArrayEnvelope, PyeEnvelope, PyeFrame, Result, SourceRecoverOpts, SourceRecoverOutput,
-    apply_aes_ctr, ascii85_decode, base85_decode_rfc1924, basename_of, classify_container,
-    decode_armored_line, decrypt_frame, decrypt_modern_gcm_with_key, decrypt_pye,
-    decrypt_pye_to_source, decrypt_pye_with_key, derive_aes_key, extract_inlined,
-    frame_modern_gcm_body, hex_decode, hex_encode, locate_inlined_blocks, parse_array_envelope,
-    parse_msgpack_envelope, parse_pye_frame, recover_from_marshal_bytes, recover_from_plaintext,
-    recover_layered, recover_layered_with_modern_key, strip_extension,
-    strip_sourcedefender_decorators,
+    ContainerVariant, DecryptedPye, DerivedKey, InlinedBlock, InlinedExtractOptions,
+    InlinedExtraction, LayeredRecovery, ModernGcmFraming, ParsedPyeArrayEnvelope, PyeEnvelope,
+    PyeFrame, Result, SourceRecoverOpts, SourceRecoverOutput, apply_aes_ctr, ascii85_decode,
+    base85_decode_rfc1924, basename_of, classify_container, decode_armored_line, decrypt_frame,
+    decrypt_modern_gcm_with_key, decrypt_pye, decrypt_pye_to_source, decrypt_pye_with_key,
+    derive_aes_key, extract_inlined, frame_modern_gcm_body, hex_decode, hex_encode,
+    locate_inlined_blocks, parse_array_envelope, parse_msgpack_envelope, parse_pye_frame,
+    recover_from_marshal_bytes, recover_from_plaintext, recover_layered,
+    recover_layered_with_modern_key, strip_extension,
 };
 use disrobe_testkit::{CorpusEntry, StressCase, StressConfig, XorShift64};
 
@@ -176,7 +175,6 @@ fn exercise_byte_entrypoints(bytes: &[u8], rng: &mut XorShift64) {
                 require_known_basename: true,
             },
         );
-        let _: DecoratorStripReport = strip_sourcedefender_decorators(text);
         let _: &str = basename_of(text);
         let _: &str = strip_extension(text);
         let _: Result<DerivedKey> = derive_aes_key(text);

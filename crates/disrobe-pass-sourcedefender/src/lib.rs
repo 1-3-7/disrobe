@@ -6,7 +6,6 @@ mod cache;
 pub mod chain_detector;
 mod codec;
 pub(crate) mod debug;
-mod decorator;
 mod envelope;
 mod error;
 mod gcm_tag;
@@ -23,7 +22,6 @@ pub use codec::{
     ascii85_decode, base85_decode_rfc1924, basename_of, decode_armored_line, hex_decode,
     hex_encode, strip_extension,
 };
-pub use decorator::{DecoratorStripReport, strip_sourcedefender_decorators};
 pub use envelope::{
     DecryptedPye, PYE_BEGIN_MARKER, PYE_END_MARKER, PyeCodePayload, PyeEnvelope, PyeFrame,
     apply_aes_ctr, decrypt_frame, decrypt_pye, decrypt_pye_with_key, parse_msgpack_envelope,
