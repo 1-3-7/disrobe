@@ -1,9 +1,8 @@
 #![allow(clippy::expect_used)]
 
 use disrobe_pass_swift_objc::{
-    analyze, decode_entitlements_from_code_signature, decode_entitlements_xml, extract_ipa,
-    ipa_inventory, looks_like_swift_mangled, parse_info_plist, parse_slice, parse_swiftinterface,
-    swift_demangle, walk_fat,
+    analyze, decode_entitlements_xml, extract_ipa, ipa_inventory, looks_like_swift_mangled,
+    parse_info_plist, parse_slice, parse_swiftinterface, swift_demangle, walk_fat,
 };
 use disrobe_testkit::{CorpusEntry, StressCase, StressConfig, XorShift64};
 
@@ -139,7 +138,6 @@ fn probe_bytes(bytes: &[u8]) {
     let _ = extract_ipa(bytes);
     let _ = ipa_inventory(bytes);
     let _ = parse_info_plist(bytes);
-    let _ = decode_entitlements_from_code_signature(bytes);
     let _ = decode_entitlements_xml(bytes);
     let _ = parse_swiftinterface(&String::from_utf8_lossy(bytes));
 }

@@ -297,18 +297,6 @@ pub fn build_ipa_from_files(files: &[(String, Vec<u8>)]) -> Vec<u8> {
 }
 
 #[must_use]
-pub fn wrap_in_code_signature_blob(xml: &[u8]) -> Vec<u8> {
-    let mut out: Vec<u8> = Vec::with_capacity(xml.len() + 32);
-    out.extend_from_slice(b"\x00\x00\x00\x00prefix\x00\x00");
-    let magic: u32 = 0xFADE_7171;
-    let len: u32 = u32::try_from(xml.len() + 8).expect("blob len fits");
-    out.extend_from_slice(&magic.to_be_bytes());
-    out.extend_from_slice(&len.to_be_bytes());
-    out.extend_from_slice(xml);
-    out
-}
-
-#[must_use]
 pub fn build_ipa_with_main_binary(
     app_name: &str,
     main_binary: &[u8],

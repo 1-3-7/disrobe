@@ -88,8 +88,8 @@ pub use pass::{
     SliceReport, SwiftObjcReport, UnanalyzedEmbeddedImage, analyze,
 };
 pub use plist_decode::{
-    EntitlementValue, EntitlementsDecode, InfoPlistSummary,
-    decode_entitlements_from_code_signature, decode_entitlements_xml, parse_info_plist,
+    EntitlementValue, EntitlementsDecode, InfoPlistSummary, decode_entitlements_xml,
+    parse_info_plist,
 };
 pub use swift::{
     SwiftClassDump, SwiftReflectionStrings, SwiftSectionPointers, SwiftShieldUndoMap,

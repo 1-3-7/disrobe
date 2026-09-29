@@ -33,9 +33,6 @@ pub enum Error {
     #[error("DR-IOS-0009: plist parse error: {0}")]
     Plist(String),
 
-    #[error("DR-IOS-0010: entitlements blob (CMS/Magic 0xFADE7171) not found in code-signature")]
-    NoEntitlementsBlob,
-
     #[error("DR-IOS-0011: Swift demangle failed on symbol '{0}'")]
     Demangle(String),
 
