@@ -2,12 +2,11 @@
 use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use serde::Serialize;
 
-use disrobe_core::subprocess::{CapturedOutput, wait_with_output_timeout};
+use disrobe_core::subprocess::{CapturedOutput, run_captured};
 
 use super::output::{OutputFormat, emit};
 pub(crate) use actions::install_action_map;
@@ -298,15 +297,27 @@ fn execute_action(action: &InstallAction) -> ExecResult {
     } else {
         (action.cmd, &[])
     };
-    let spawn: Result<std::process::Child, std::io::Error> = Command::new(program)
-        .args(leading_args)
-        .args(&action.args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn();
-    let child: std::process::Child = match spawn {
-        Ok(child) => child,
+    let args: Vec<&str> = leading_args
+        .iter()
+        .chain(action.args.iter())
+        .copied()
+        .collect();
+    let captured: CapturedOutput = match run_captured(
+        Path::new(program),
+        &args,
+        Duration::from_secs(INSTALL_TIMEOUT_SECS),
+        CAPTURE_CAP_BYTES,
+    ) {
+        Ok(Some(captured)) => captured,
+        Ok(None) => {
+            return ExecResult {
+                stdout: String::new(),
+                stderr: format!(
+                    "install command timed out after {INSTALL_TIMEOUT_SECS}s and was killed"
+                ),
+                exit_code: None,
+            };
+        }
         Err(e) => {
             return ExecResult {
                 stdout: String::new(),
@@ -314,19 +325,6 @@ fn execute_action(action: &InstallAction) -> ExecResult {
                 exit_code: None,
             };
         }
-    };
-    let Some(captured): Option<CapturedOutput> = wait_with_output_timeout(
-        child,
-        Duration::from_secs(INSTALL_TIMEOUT_SECS),
-        CAPTURE_CAP_BYTES,
-    ) else {
-        return ExecResult {
-            stdout: String::new(),
-            stderr: format!(
-                "install command timed out after {INSTALL_TIMEOUT_SECS}s and was killed"
-            ),
-            exit_code: None,
-        };
     };
     ExecResult {
         stdout: String::from_utf8_lossy(&captured.stdout).into_owned(),
