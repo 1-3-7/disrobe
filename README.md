@@ -127,7 +127,7 @@ A wider CPython 3.14.5 population of <!-- m:py_stdlib_full_modules -->574<!-- /m
 | Tauri and Wails frontends | Every embedded file of real Tauri 1.8.3, Tauri 2.11.5, and Wails 2.13.0 builds matches its source file | The frontend trees the builds were made from | `strong` | weekly |
 | Pickle reconstruction | <!-- m:pickle_roundtrip_frac -->470 / 470<!-- /m --> reconstructed fixtures pass re-execution equality checks ([Result](evidence/results/pickle-roundtrip.md)) | CPython re-execution | `strong` | weekly |
 | Pickle disassembly and classification | 102 / 102 committed fixtures | CPython `pickletools` | `strong` | weekly |
-| Ruby YARV, Ruby 3.4.9 | Opcode-name recall after recompiling: greeter <!-- m:ruby_greeter_pct -->100%<!-- /m -->, megafile <!-- m:ruby_megafile_pct -->98.67%<!-- /m -->; order and operands are ignored | MRI recompilation | `recompile-only` | weekly |
+| Ruby YARV, Ruby 3.4.9 | Opcode-name recall after recompiling: greeter <!-- m:ruby_greeter_pct -->100%<!-- /m -->, megafile <!-- m:ruby_megafile_pct -->99%<!-- /m -->; order and operands are ignored | MRI recompilation | `recompile-only` | weekly |
 | PyArmor v8 and v9 | <!-- m:pyarmor_frac -->72 / 72<!-- /m --> default-trial wrappers (PyArmor 8.5.12 and 9.2.5) decrypt and decode a complete root code object | Disrobe's own count; source equivalence is not measured | `coverage-self-reported` | weekly |
 
 **Against other tools on the same input.** Each pair runs Disrobe and another tool on the same input and grades both outputs the same way. In the Java rows each tool emits its own set of regions, so the counts are not a ranking; the APKLeaks row counts exact matches of eight secrets planted in one APK.
