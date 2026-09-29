@@ -376,6 +376,7 @@ fn try_render_exception_region(
     let prefix: Vec<String> = render_slice(body, ctx, depth, 0, start, &targets);
     lines.extend(prefix);
 
+    let begin_line: usize = lines.len();
     lines.push(format!("{pad}begin"));
     let protected: Vec<String> = render_slice(body, ctx, depth + 1, start, end, &targets);
     lines.extend(protected);
@@ -435,6 +436,17 @@ fn try_render_exception_region(
     });
     let suffix_start: usize =
         rescue_else.map_or(suffix_start, |(_, else_hi)| suffix_start.max(else_hi));
+    let assigned_at: Option<usize> =
+        (suffix_start..body.instructions.len()).find(|&k| body.instructions[k].mnemonic != "nop");
+    let suffix_start: usize = match assigned_at.and_then(|k| {
+        assignment_target(&body.instructions[k], &body.local_table, ctx).map(|target| (k, target))
+    }) {
+        Some((k, target)) => {
+            lines[begin_line] = format!("{pad}{target} = begin");
+            k + 1
+        }
+        None => suffix_start,
+    };
     let suffix: Vec<String> = render_slice(
         body,
         ctx,
