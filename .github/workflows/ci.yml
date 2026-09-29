@@ -654,6 +654,13 @@ jobs:
                 ;;
             esac
             demand wix DISROBE_REQUIRE_WIX
+            nsis_root="$(cygpath -u "$RUNNER_TEMP")"
+            curl --fail --location --retry 3 --max-time 600 --output "$nsis_root/nsis-3.11.zip"               "https://downloads.sourceforge.net/project/nsis/NSIS%203/3.11/nsis-3.11.zip"
+            echo "c7d27f780ddb6cffb4730138cd1591e841f4b7edb155856901cdf5f214394fa1  $nsis_root/nsis-3.11.zip" | sha256sum --check
+            unzip -q -o "$nsis_root/nsis-3.11.zip" -d "$nsis_root"
+            export PATH="$nsis_root/nsis-3.11:$PATH"
+            cygpath -w "$nsis_root/nsis-3.11" >> "$GITHUB_PATH"
+            demand makensis DISROBE_REQUIRE_MAKENSIS
           fi
           if [ "$RUNNER_OS" = "Linux" ]; then
             demand readelf DISROBE_REQUIRE_READELF
