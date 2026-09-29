@@ -279,23 +279,19 @@ fn handle_set_a(
         None => expr_expanded.clone(),
     };
     let single_assignment: bool = !expr_expanded.contains(',') && !expr_expanded.contains('=');
-    match arith::eval(&combined, env).filter(|_| single_assignment) {
-        Some(value) => {
-            counters.arithmetic_folds += 1;
-            env.insert(name.clone(), value.to_string());
-            Some(format!("set {name}={value}"))
-        }
-        None => {
-            env.remove(&name);
-            for target in ASSIGNED_IN_EXPR.captures_iter(&expr_expanded) {
-                if let Some(assigned) = target.name("target") {
-                    env.remove(&assigned.as_str().to_ascii_uppercase());
-                }
-            }
-            let op_text: &str = op.unwrap_or_default();
-            Some(format!("set /a {name}{op_text}={expr_expanded}"))
+    if let Some(value) = arith::eval(&combined, env).filter(|_| single_assignment) {
+        counters.arithmetic_folds += 1;
+        env.insert(name.clone(), value.to_string());
+        return Some(format!("set {name}={value}"));
+    }
+    env.remove(&name);
+    for target in ASSIGNED_IN_EXPR.captures_iter(&expr_expanded) {
+        if let Some(assigned) = target.name("target") {
+            env.remove(&assigned.as_str().to_ascii_uppercase());
         }
     }
+    let op_text: &str = op.unwrap_or_default();
+    Some(format!("set /a {name}{op_text}={expr_expanded}"))
 }
 
 fn handle_set(

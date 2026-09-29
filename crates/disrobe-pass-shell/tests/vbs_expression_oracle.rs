@@ -486,7 +486,7 @@ fn hand_written_obfuscation_shapes_fold_to_the_same_value() {
 
 #[test]
 fn generated_expressions_fold_to_the_same_value() {
-    let mut seed: u64 = 0x5EED_0F_0B5C;
+    let mut seed: u64 = 0x005E_ED0F_0B5C;
     let mut next = |bound: u64| -> u64 {
         seed = seed
             .wrapping_mul(6_364_136_223_846_793_005)
@@ -503,7 +503,7 @@ fn generated_expressions_fold_to_the_same_value() {
                 1 => format!("ChrW({})", 32 + next(0x2FFF)),
                 2 => format!("ChrW(&H{:X})", 0x20 + next(0x5E)),
                 3 => {
-                    let text: String = (0..1 + next(5))
+                    let text: String = (0..=next(5))
                         .map(|_| char::from(b'a' + u8::try_from(next(26)).unwrap_or(0)))
                         .collect();
                     format!("StrReverse(\"{text}\")")
