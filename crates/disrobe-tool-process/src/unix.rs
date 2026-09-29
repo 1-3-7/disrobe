@@ -15,6 +15,8 @@ use crate::{
     canonical_program, current_dir, environment, program,
 };
 
+pub(crate) const PROVES_EMPTY_PROCESS_SET: bool = false;
+
 pub(crate) fn opened_file_matches_path(path: &Path, file: &File) -> io::Result<bool> {
     let path_metadata: std::fs::Metadata = std::fs::symlink_metadata(path)?;
     let opened_metadata: std::fs::Metadata = file.metadata()?;
@@ -454,7 +456,24 @@ mod macos_tests {
         assert!(
             matches!(execution.completion, crate::Completion::Exited(status) if status.success())
         );
-        assert!(execution.containment.empty_process_set_proven);
+        assert!(!execution.containment.empty_process_set_proven);
+        Ok(())
+    }
+
+    #[test]
+    fn a_grandchild_that_leaves_the_group_is_not_claimed_as_contained()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let execution: crate::Execution = CommandSpec::new("/bin/sh", Duration::from_secs(2))
+            .args([
+                "-c",
+                "setsid sh -c 'sleep 1' </dev/null >/dev/null 2>&1 & printf started",
+            ])
+            .run()?;
+        assert!(
+            matches!(execution.completion, crate::Completion::Exited(status) if status.success()),
+            "the launcher did not exit cleanly: {execution:?}"
+        );
+        assert!(!execution.containment.empty_process_set_proven);
         Ok(())
     }
 
@@ -488,7 +507,7 @@ mod macos_tests {
                 matches!(execution.completion, crate::Completion::Exited(status) if status.success()),
                 "concurrent Python execution did not exit successfully: {execution:?}"
             );
-            assert!(execution.containment.empty_process_set_proven);
+            assert!(!execution.containment.empty_process_set_proven);
             let captured: &crate::CapturedStream =
                 execution.stdout.captured().ok_or_else(|| {
                     io::Error::other("concurrent Python execution did not produce stdout")

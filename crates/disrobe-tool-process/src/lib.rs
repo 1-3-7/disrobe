@@ -221,7 +221,7 @@ impl CommandSpec {
                     Completion::Exited(completion.status)
                 },
                 containment: ContainmentEvidence {
-                    empty_process_set_proven: true,
+                    empty_process_set_proven: platform::PROVES_EMPTY_PROCESS_SET,
                     completion_notification_observed: completion.completion_notification_observed,
                 },
                 stdin,

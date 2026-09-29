@@ -5,6 +5,8 @@ use std::time::Instant;
 
 use crate::{CommandSpec, LaunchError, LaunchStage, LifecycleError, PipeSet, PlatformCompletion};
 
+pub(crate) const PROVES_EMPTY_PROCESS_SET: bool = false;
+
 pub(crate) fn opened_file_matches_path(_path: &Path, _file: &File) -> io::Result<bool> {
     Ok(false)
 }

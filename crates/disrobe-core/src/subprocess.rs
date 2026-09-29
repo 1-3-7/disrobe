@@ -712,7 +712,10 @@ mod tests {
             panic!("dual-stream flood timed out");
         };
         assert!(status.success());
-        assert!(execution.containment.empty_process_set_proven);
+        assert_eq!(
+            execution.containment.empty_process_set_proven,
+            cfg!(windows)
+        );
         let CaptureOutcome::Complete(stdout) = execution.stdout else {
             panic!("stdout capture did not complete");
         };
@@ -786,7 +789,10 @@ mod tests {
             .run()
             .expect("run zero-deadline fixture");
         assert!(matches!(execution.completion, Completion::TimedOut(_)));
-        assert!(execution.containment.empty_process_set_proven);
+        assert_eq!(
+            execution.containment.empty_process_set_proven,
+            cfg!(windows)
+        );
         assert!(start.elapsed() < Duration::from_secs(1));
     }
 

@@ -41,6 +41,8 @@ use crate::{
     canonical_program, current_dir, environment, program,
 };
 
+pub(crate) const PROVES_EMPTY_PROCESS_SET: bool = true;
+
 pub(crate) fn opened_file_matches_path(path: &Path, file: &File) -> io::Result<bool> {
     let path_file: File = open_identity_file(path)?;
     let path_identity: BY_HANDLE_FILE_INFORMATION = file_identity(&path_file)?;
