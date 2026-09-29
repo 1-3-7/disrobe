@@ -2,7 +2,7 @@
 
 Every parser treats its input as hostile. Counts, sizes, recursion depth, work and output are capped by named constants, and input that exceeds a cap is refused with a typed error instead of exhausting memory or time. `cargo xtask regen` generates this page from every module-level constant in `crates/*/src` whose name starts with `MAX_` or ends with `_LIMIT`, `_BUDGET` or `_CAP`, and `cargo xtask regen --check` fails when it is stale. The kind column is derived from the constant name.
 
-2153 bounds (count 214, other 1004, output 64, recursion 217, size 478, work 176).
+2154 bounds (count 214, other 1005, output 64, recursion 217, size 478, work 176).
 
 | Crate | Constant | Kind | Type | Value | File |
 | --- | --- | --- | --- | --- | --- |
@@ -984,6 +984,7 @@ Every parser treats its input as hostile. Counts, sizes, recursion depth, work a
 | `disrobe-pass-lua` | `MAX_STRUCT_NODES` | count | `usize` | `1 << 20` | `crates/disrobe-pass-lua/src/decompile/struct_lift.rs` |
 | `disrobe-pass-lua` | `READ_SEARCH_STATE_BUDGET` | work | `usize` | `1 << 16` | `crates/disrobe-pass-lua/src/decompile/struct_lift.rs` |
 | `disrobe-pass-lua` | `MAX_SCOPE_DEPTH` | recursion | `usize` | `200` | `crates/disrobe-pass-lua/src/decompile/struct_lift/declare.rs` |
+| `disrobe-pass-lua` | `MAX_CONDITION_CHAIN` | other | `usize` | `64` | `crates/disrobe-pass-lua/src/decompile/struct_lift/structurer.rs` |
 | `disrobe-pass-lua` | `MAX_BUILD_STEPS` | work | `usize` | `4_096` | `crates/disrobe-pass-lua/src/decompile/struct_lift/value_region.rs` |
 | `disrobe-pass-lua` | `MAX_REGION_INSTRUCTIONS` | other | `usize` | `256` | `crates/disrobe-pass-lua/src/decompile/struct_lift/value_region.rs` |
 | `disrobe-pass-lua` | `MAX_LOADER_DEPTH` | recursion | `usize` | `16` | `crates/disrobe-pass-lua/src/obfuscator/hercules.rs` |
