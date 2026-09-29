@@ -1,5 +1,4 @@
 use std::collections::BTreeSet;
-use std::time::Instant;
 
 use disrobe_py_marshal::{
     CodeObject, Object, PyVersion as MarshalVersion, PycFile, load, pyversion_from_magic, read_pyc,
@@ -190,18 +189,6 @@ pub fn decompile_micropython(bytes: &[u8]) -> Result<NativeDecompile> {
 #[cfg(not(target_arch = "wasm32"))]
 const STRUCTURE_STACK_BYTES: usize = 256 * 1024 * 1024;
 
-#[cfg(not(target_arch = "wasm32"))]
-#[inline]
-fn wall_clock_start() -> Option<Instant> {
-    Some(Instant::now())
-}
-
-#[cfg(target_arch = "wasm32")]
-#[inline]
-const fn wall_clock_start() -> Option<Instant> {
-    None
-}
-
 fn structure_module_here(
     code: &CodeObject,
     frame_tree: &FrameTree,
@@ -257,29 +244,13 @@ pub fn build_recovered_source(
     decompile_version: &DecompileVersion,
     marshal_version: MarshalVersion,
 ) -> Result<RecoveredSource> {
-    let started: Option<Instant> = wall_clock_start();
     let frame_tree: FrameTree = builder_for(marshal_version).build(code, marshal_version)?;
     let (mut module, mut stubbed_scopes): (AstModule, usize) =
         structure_module(code, &frame_tree, decompile_version)?;
     crate::selfcheck::verify_and_repair(&mut module, code, decompile_version);
     let unicode_literals: bool = module_has_unicode_literals(&module);
-    let pipeline: EmitPipeline = EmitPipeline {
-        emitter: Box::new(DefaultEmitter {
-            unicode_literals,
-            ..DefaultEmitter::new()
-        }),
-        formatter_enabled: false,
-        include_provenance: false,
-        include_llm_json: false,
-        preserve_blank_lines: true,
-    };
-    let module_is_empty: bool = module.docstring.is_none() && module.body.is_empty();
-    let mut out: EmitOutput = pipeline.run(&module, decompile_version, started)?;
-    if !module_is_empty && out.source.trim().is_empty() {
-        return Err(DecompileError::Emit {
-            reason: "emit pipeline produced empty source".to_owned(),
-        });
-    }
+    let pipeline: EmitPipeline = EmitPipeline::default();
+    let mut out: EmitOutput = pipeline.run(&module, decompile_version)?;
     if carries_a_marker(&out.source) {
         let authentic: BTreeSet<String> = authentic_literal_markers(code);
         if find_leaked_marker(&out.source, &authentic).is_some() {
@@ -298,7 +269,7 @@ pub fn build_recovered_source(
             }
             if refuser.refused > 0 {
                 stubbed_scopes = stubbed_scopes.saturating_add(refuser.refused);
-                out = pipeline.run(&module, decompile_version, started)?;
+                out = pipeline.run(&module, decompile_version)?;
             }
             if let Some(marker) = find_leaked_marker(&out.source, &authentic) {
                 return Err(DecompileError::UnresolvedMarker {

@@ -15,7 +15,6 @@ pub mod dominators;
 pub mod entropy;
 pub use entropy::{shannon_entropy_bits, shannon_entropy_bits as shannon_entropy};
 pub mod error;
-pub mod format;
 pub mod graph;
 pub mod pass;
 pub mod progress;
@@ -62,15 +61,6 @@ pub use codec::{
 pub use complexity::{Cfg, FunctionComplexity, cyclomatic_complexity, from_decision_points};
 pub use dominators::{AdjGraph, DiGraph, Dominators, immediate_post_dominators};
 pub use error::{CoreError, Result};
-pub use format::{
-    CClangFormatFormatter, CSharpDotnetFormatFormatter, CppClangFormatFormatter, DartFormatter,
-    FormatConfig, FormatError, FormatterLanguage, GoGofmtFormatter, IdentityFormatter,
-    JavaGoogleJavaFormatFormatter, JsPrettierFormatter, KotlinKtlintFormatter, LuaStyluaFormatter,
-    ObjcClangFormatFormatter, PhpPhpcsFormatter, PythonRuffFormatter, RubyRubocopFormatter,
-    RustRustfmtFormatter, ScalaScalafmtFormatter, SourceFormatter, SwiftSwiftFormatFormatter,
-    TsPrettierFormatter, WatWasmFmtFormatter, current_config, format_or_passthrough, formatter_for,
-    set_config,
-};
 #[cfg(feature = "redact")]
 pub use recon::{RedactionError, Redactor};
 pub use recon::{interop, ioc, malware_config, secret_scan};

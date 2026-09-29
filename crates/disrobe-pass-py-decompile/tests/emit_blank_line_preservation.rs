@@ -1,6 +1,5 @@
 #![allow(clippy::expect_used)]
 use std::collections::BTreeMap;
-use std::time::Instant;
 
 use disrobe_pass_py_decompile::ast::{AstModule, ConstValue, Expr, ExprCtx, Stmt};
 use disrobe_pass_py_decompile::bytecode::version::PyVersion;
@@ -33,15 +32,9 @@ fn preserve_blank_lines_inserts_blanks_per_map() {
         blank_lines: blanks,
     };
     let pipeline: EmitPipeline = EmitPipeline {
-        formatter_enabled: false,
-        include_provenance: false,
-        include_llm_json: false,
         preserve_blank_lines: true,
-        ..EmitPipeline::default()
     };
-    let out: EmitOutput = pipeline
-        .run(&module, &PyVersion::V3_13, Some(Instant::now()))
-        .expect("emit ok");
+    let out: EmitOutput = pipeline.run(&module, &PyVersion::V3_13).expect("emit ok");
     let src: &str = &out.source;
 
     let body_start: usize = src.find("a = 1").expect("a = 1 present");
@@ -73,15 +66,9 @@ fn preserve_blank_lines_disabled_emits_no_blanks() {
         blank_lines: blanks,
     };
     let pipeline: EmitPipeline = EmitPipeline {
-        formatter_enabled: false,
-        include_provenance: false,
-        include_llm_json: false,
         preserve_blank_lines: false,
-        ..EmitPipeline::default()
     };
-    let out: EmitOutput = pipeline
-        .run(&module, &PyVersion::V3_13, Some(Instant::now()))
-        .expect("emit ok");
+    let out: EmitOutput = pipeline.run(&module, &PyVersion::V3_13).expect("emit ok");
     let src: &str = &out.source;
     let a_pos: usize = src.find("a = 1").expect("a = 1 present");
     let b_pos: usize = src.find("b = 2").expect("b = 2 present");
