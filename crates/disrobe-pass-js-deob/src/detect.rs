@@ -229,11 +229,12 @@ fn detect_jsconfuser(text: &str) -> Option<Detection> {
         markers.push("state-sum-control-flow".to_owned());
         score += 2;
     }
-    let has_base91: bool = scan.contains("indexOf")
-        && (scan.contains("* 91") || scan.contains("*91"))
+    let has_base91_template: bool = (scan.contains("* 91") || scan.contains("*91"))
         && (scan.contains("bufferToString")
             || scan.contains("(v&8191)")
             || scan.contains("(v & 8191)"));
+    let has_base91: bool =
+        scan.contains("indexOf") && (has_base91_template || has_shuffled_base91_alphabet(scan));
     if has_base91 {
         markers.push("base91-string-concealing".to_owned());
         score += 2;
@@ -278,6 +279,55 @@ fn detect_jsconfuser(text: &str) -> Option<Detection> {
         });
     }
     None
+}
+
+const BASE91_ALPHABET: &[u8; 91] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!#$%&()*+,./:;<=>?@[]^_`{|}~\"";
+
+fn has_shuffled_base91_alphabet(scan: &str) -> bool {
+    let without_escapes: Vec<u8> = scan.bytes().filter(|byte: &u8| *byte != b'\\').collect();
+    let mut last_seen: [Option<usize>; 128] = [None; 128];
+    let mut start: usize = 0;
+    for (index, byte) in without_escapes.iter().copied().enumerate() {
+        let Some(slot): Option<&mut Option<usize>> = BASE91_ALPHABET
+            .contains(&byte)
+            .then(|| last_seen.get_mut(usize::from(byte)))
+            .flatten()
+        else {
+            start = index + 1;
+            continue;
+        };
+        if let Some(previous) = *slot
+            && previous >= start
+        {
+            start = previous + 1;
+        }
+        *slot = Some(index);
+        let window: &[u8] = without_escapes.get(start..=index).unwrap_or_default();
+        if window.len() == BASE91_ALPHABET.len() && !follows_standard_base91_order(window) {
+            return true;
+        }
+    }
+    false
+}
+
+fn follows_standard_base91_order(window: &[u8]) -> bool {
+    let ordered_pairs: usize = window
+        .iter()
+        .zip(window.iter().skip(1))
+        .filter(|(current, next): &(&u8, &u8)| {
+            base91_position(**current)
+                .zip(base91_position(**next))
+                .is_some_and(|(at, next_at): (usize, usize)| next_at == at + 1)
+        })
+        .count();
+    ordered_pairs * 2 >= BASE91_ALPHABET.len()
+}
+
+fn base91_position(byte: u8) -> Option<usize> {
+    BASE91_ALPHABET
+        .iter()
+        .position(|member: &u8| *member == byte)
 }
 
 const JSOBFU_SCAN_BYTES: usize = 262_144;
@@ -453,6 +503,38 @@ mod tests {
                 .iter()
                 .any(|m: &String| m == "base91-string-concealing")
         );
+    }
+
+    fn base91_decoder_with_table(table: &[u8]) -> String {
+        let literal: String = String::from_utf8_lossy(table).replace('"', "\\\"");
+        format!(
+            "function d(s){{var t=\"{literal}\",r=[];for(var i=0;i<s.length;i++){{var p=t.indexOf(s[i]);if(p===-1)continue;r.push(p)}}return r}}"
+        )
+    }
+
+    #[test]
+    fn detects_jsconfuser_shuffled_base91_table_with_hoisted_constants() {
+        let mut shuffled: Vec<u8> = BASE91_ALPHABET.to_vec();
+        shuffled.reverse();
+        let source: String = base91_decoder_with_table(&shuffled);
+        let det: Detection = detect(source.as_bytes());
+        assert_eq!(det.family, JsObfuscator::JsConfuser, "{det:?}");
+        assert!(
+            det.markers
+                .iter()
+                .any(|m: &String| m == "base91-string-concealing")
+        );
+        let wrapped: String = format!(
+            "Function(\"a\",{:?})()",
+            base91_decoder_with_table(&shuffled)
+        );
+        assert_eq!(detect(wrapped.as_bytes()).family, JsObfuscator::JsConfuser);
+    }
+
+    #[test]
+    fn a_base91_library_with_the_standard_table_is_not_jsconfuser() {
+        let source: String = base91_decoder_with_table(BASE91_ALPHABET);
+        assert_ne!(detect(source.as_bytes()).family, JsObfuscator::JsConfuser);
     }
 
     #[test]

@@ -2,7 +2,9 @@
 use std::fs;
 use std::path::PathBuf;
 
-use disrobe_pass_js_deob::{DeobOptions, DeobOutput, deobfuscate_all};
+use disrobe_pass_js_deob::{
+    DeobOptions, DeobOutput, Detection, JsObfuscator, deobfuscate_all, detect,
+};
 
 fn corpus_path(rel: &str) -> PathBuf {
     let manifest: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -31,6 +33,36 @@ fn reparses(source: &str) -> bool {
     let parsed: oxc_parser::ParserReturn<'_> =
         oxc_parser::Parser::new(&allocator, source, source_type).parse();
     parsed.errors.is_empty() && !parsed.panicked
+}
+
+#[test]
+fn every_megafile_preset_is_detected_as_jsconfuser() {
+    for rel in [
+        "jsconfuser/obfuscated.megafile.low.js",
+        "jsconfuser/obfuscated.megafile.medium.js",
+        "jsconfuser/obfuscated.megafile.high.js",
+    ] {
+        let src: String = load(rel);
+        let detection: Detection = detect(src.as_bytes());
+        assert_eq!(
+            detection.family,
+            JsObfuscator::JsConfuser,
+            "{rel}: {detection:?}"
+        );
+    }
+    for rel in [
+        "jsconfuser/obfuscated.megafile.low.js",
+        "jsconfuser/obfuscated.megafile.medium.js",
+    ] {
+        let detection: Detection = detect(load(rel).as_bytes());
+        assert!(
+            detection
+                .markers
+                .iter()
+                .any(|marker: &String| marker == "base91-string-concealing"),
+            "{rel}: {detection:?}"
+        );
+    }
 }
 
 #[test]

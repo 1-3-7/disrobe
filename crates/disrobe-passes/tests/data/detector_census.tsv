@@ -386,8 +386,8 @@ corpus/js/jsconfuser/edge_cases.js	-	-	-	-	-	-	-
 corpus/js/jsconfuser/gauntlet-obfuscated.js	js.deob	js-jsconfuser	obfuscator-wrapper	high	-	-	-
 corpus/js/jsconfuser/gauntlet-source.js	-	-	-	-	-	-	-
 corpus/js/jsconfuser/obfuscated.megafile.high.js	js.deob	js-jsconfuser	obfuscator-wrapper	medium	-	-	-
-corpus/js/jsconfuser/obfuscated.megafile.low.js	js.deob	js-minified	source	low	-	-	-
-corpus/js/jsconfuser/obfuscated.megafile.medium.js	js.deob	js-minified	source	low	-	-	-
+corpus/js/jsconfuser/obfuscated.megafile.low.js	js.deob	js-jsconfuser	obfuscator-wrapper	medium	-	-	-
+corpus/js/jsconfuser/obfuscated.megafile.medium.js	js.deob	js-jsconfuser	obfuscator-wrapper	medium	-	-	-
 corpus/js/jsconfuser/recovery/expected.json	-	-	-	-	-	-	-
 corpus/js/jsconfuser/recovery/obf_checksum.stringconceal.js	js.deob	js-jsconfuser	obfuscator-wrapper	medium	-	-	-
 corpus/js/jsconfuser/recovery/obf_deadcode.real.js	js.deob	js-jsconfuser	obfuscator-wrapper	medium	-	-	-
