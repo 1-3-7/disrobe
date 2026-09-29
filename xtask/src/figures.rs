@@ -75,7 +75,7 @@ const DOCUMENT_FIGURE_BUDGET: [FigureBudget; 33] = [
     FigureBudget {
         path: "README.md",
         figures: 20,
-        digest: "a58f0f50bd54f4b1",
+        digest: "9ac8e50533ed948e",
     },
     FigureBudget {
         path: "SECURITY.md",
@@ -205,7 +205,7 @@ const DOCUMENT_FIGURE_BUDGET: [FigureBudget; 33] = [
     FigureBudget {
         path: "docs/src/languages/python.md",
         figures: 3,
-        digest: "98d6c70ba013a5ef",
+        digest: "8cd66227c167f94c",
     },
     FigureBudget {
         path: "docs/src/languages/ruby.md",
@@ -225,7 +225,7 @@ const DOCUMENT_FIGURE_BUDGET: [FigureBudget; 33] = [
     FigureBudget {
         path: "docs/src/python-bindings.md",
         figures: 7,
-        digest: "5619a223035e2cfd",
+        digest: "f2f4a2b2d23998ec",
     },
     FigureBudget {
         path: "evidence/README.md",
