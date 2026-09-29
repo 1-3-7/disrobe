@@ -203,3 +203,34 @@ fn chain_disassembles_bytenode_jsc() {
         "at least one BytecodeArray must be recovered and disassembled, got {fn_count}"
     );
 }
+
+#[test]
+fn chain_lifts_bytenode_functions_to_javascript() {
+    let report: String = run_chain_text(BYTENODE_JSC);
+    let parsed: serde_json::Value = serde_json::from_str(&report).expect("report must be json");
+    let functions: &Vec<serde_json::Value> = parsed["functions"]
+        .as_array()
+        .expect("the report lists its functions");
+    let lifted: Vec<&str> = functions
+        .iter()
+        .map(|function: &serde_json::Value| {
+            function["lifted_js"]
+                .as_str()
+                .expect("every function carries its lifted JavaScript")
+        })
+        .collect();
+    assert!(
+        lifted
+            .iter()
+            .any(|js: &&str| js.contains("\"hello \" + a0") && js.contains(".length")),
+        "greet(name) builds \"hello \" + name and returns its length in hello-24.js; no lifted function reads so:\n{lifted:#?}"
+    );
+    let complete: u64 = parsed["lifted_complete_count"]
+        .as_u64()
+        .expect("lifted_complete_count present");
+    let flagged: usize = functions
+        .iter()
+        .filter(|function: &&serde_json::Value| function["lift_complete"] == true)
+        .count();
+    assert_eq!(usize::try_from(complete).ok(), Some(flagged));
+}

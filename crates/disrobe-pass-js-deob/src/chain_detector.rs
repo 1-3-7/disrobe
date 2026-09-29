@@ -35,9 +35,9 @@ use crate::protectors::{
 use crate::string_array::{StringArrayRecovery, recover as recover_string_array};
 use crate::unminify::{AstUnminifyStats, UnminifyStats, try_unminify_ast, unminify};
 use crate::v8::{
-    BytenodeCacheBody, Disassembly, NodeVersion, RecoveredBytecodeArray, SeaBlob,
-    carve_sea_main_code, disassemble, parse_bytenode_full, parse_code_serializer_graph,
-    parse_sea_blob,
+    BytenodeCacheBody, Disassembly, LiftedFunction, NodeVersion, RecoveredBytecodeArray, SeaBlob,
+    carve_sea_main_code, disassemble, lift_disassembly_with_pool, parse_bytenode_full,
+    parse_code_serializer_graph, parse_sea_blob,
 };
 
 pub const PASS_ID: PassId = "js.deob";
@@ -71,12 +71,18 @@ struct V8DisasmFunction {
     bytecode_length: usize,
     instruction_count: usize,
     disassembly: String,
+    lifted_js: String,
+    lift_complete: bool,
+    reversible_lines: usize,
+    lossy_lines: usize,
+    opaque_runtime_lines: usize,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
 struct V8DisasmReport {
     node_version: String,
     function_count: usize,
+    lifted_complete_count: usize,
     functions: Vec<V8DisasmFunction>,
     #[serde(skip_serializing_if = "Option::is_none")]
     note: Option<String>,
@@ -757,8 +763,11 @@ fn run_bytenode(bytes: &[u8], artifact: &Artifact) -> CoreResult<Artifact> {
             let functions: Vec<V8DisasmFunction> = graph
                 .bytecode_arrays
                 .iter()
-                .map(|bc: &RecoveredBytecodeArray| {
+                .enumerate()
+                .map(|(index, bc): (usize, &RecoveredBytecodeArray)| {
                     let disasm: Disassembly = disassemble(&bc.bytecode, node);
+                    let lifted: LiftedFunction =
+                        lift_disassembly_with_pool(&disasm, &bc.constant_pool);
                     V8DisasmFunction {
                         bytecode_file_offset: bc.bytecode_file_offset,
                         frame_size: bc.frame_size,
@@ -766,12 +775,21 @@ fn run_bytenode(bytes: &[u8], artifact: &Artifact) -> CoreResult<Artifact> {
                         bytecode_length: bc.bytecode.len(),
                         instruction_count: disasm.instructions.len(),
                         disassembly: disasm.render_text(),
+                        lifted_js: lifted.render_js(&format!("function_{index}")),
+                        lift_complete: lifted.lossy_count == 0 && lifted.opaque_runtime_count == 0,
+                        reversible_lines: lifted.reversible_count,
+                        lossy_lines: lifted.lossy_count,
+                        opaque_runtime_lines: lifted.opaque_runtime_count,
                     }
                 })
                 .collect();
             V8DisasmReport {
                 node_version: format!("{node:?}"),
                 function_count: functions.len(),
+                lifted_complete_count: functions
+                    .iter()
+                    .filter(|function: &&V8DisasmFunction| function.lift_complete)
+                    .count(),
                 functions,
                 note: None,
             }
@@ -779,6 +797,7 @@ fn run_bytenode(bytes: &[u8], artifact: &Artifact) -> CoreResult<Artifact> {
         Err(e) => V8DisasmReport {
             node_version: format!("{node:?}"),
             function_count: 0,
+            lifted_complete_count: 0,
             functions: Vec::new(),
             note: Some(format!("{e}")),
         },

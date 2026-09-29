@@ -41,7 +41,7 @@ For Rust callers, `AstRuleId::AsyncRestore` is a selector-compatibility no-op: B
 
 `js v8` classifies the artifact and prints real detection: bytenode header layout and Node version for `.jsc`, SEA flags and code length, nexe/nw.js payload geometry, or the `.asar` entry listing.
 
-For `.jsc`, Disrobe recovers user strings and structure and detects serializer versions across Node 18-24. This static path runs locally without a patched V8 binary or an external decompiler; it does not recover the complete bytecode or original source.
+For `.jsc`, Disrobe detects the serializer version across Node 18-24, recovers user strings and every serialized bytecode array, and `disrobe auto` reports each function's Ignition disassembly with registers named as `node --print-bytecode` names them, together with a JavaScript lift of it (`lifted_js`). Each function states `lift_complete` and its reversible, lossy and runtime-opaque line counts; an instruction without a lift rule is kept as a comment and its accumulator reads as `__unlifted_<op>`, so an incomplete lift fails when run instead of computing a wrong value. The path runs locally without a patched V8 binary or an external decompiler. Branches and loops lower to a `for (;;) switch (__pc)` dispatcher over the bytecode offsets, so a lifted function keeps its control flow; functions with jump tables, generators, `try`/`catch`, `for`-`in` or constant-pool jump offsets keep their jumps as comments and are not complete. It does not rebuild the original source: functions are named `function_<index>` in serialization order, and loops are not restructured into `for` or `while`.
 
 ## Limits
 
