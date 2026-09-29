@@ -485,7 +485,7 @@ pub fn looks_like_pyoxidizer(bytes: &[u8]) -> bool {
 
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn rand_suffix() -> u64 {
@@ -518,7 +518,7 @@ mod tests {
     const RES_END_OF_ENTRY: u8 = 0xff;
     const RES_END_OF_INDEX: u8 = 0x00;
 
-    fn build_blob(modules: &[(&str, bool, &[u8])]) -> Vec<u8> {
+    pub(crate) fn build_blob(modules: &[(&str, bool, &[u8])]) -> Vec<u8> {
         let mut name_section: Vec<u8> = Vec::new();
         let mut bytecode_section: Vec<u8> = Vec::new();
         for (name, _, bc) in modules {

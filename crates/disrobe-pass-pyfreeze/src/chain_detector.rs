@@ -314,10 +314,23 @@ mod tests {
 
     #[test]
     fn pyoxidizer_verdict_preserves_serialized_marker() {
-        let bytes: &[u8] = b"PyOxidizer\0pyembed\0python312.dll";
+        let markers_only: &[u8] = b"PyOxidizer\0pyembed\0python312.dll";
+        assert!(
+            PyfreezeDetector.detect(&ctx(markers_only)).is_none(),
+            "runtime marker strings without a resources index are not PyOxidizer"
+        );
+        let mut bytes: Vec<u8> = vec![0u8; 64];
+        bytes.extend_from_slice(b"PyOxidizer");
+        bytes.extend_from_slice(b"python312.dll");
+        bytes.extend_from_slice(&[0u8; 16]);
+        bytes.extend_from_slice(&crate::pyoxidizer::tests::build_blob(&[(
+            "app",
+            false,
+            b"app bytecode body",
+        )]));
         let verdict: DetectVerdict = PyfreezeDetector
-            .detect(&ctx(bytes))
-            .expect("PyOxidizer markers must detect");
+            .detect(&ctx(&bytes))
+            .expect("a PyOxidizer build with a resources index must detect");
         assert_eq!(verdict.format_tag, TAG_PYOXIDIZER);
         assert_eq!(verdict.markers, vec!["pyoxidizer-symbol"]);
     }
