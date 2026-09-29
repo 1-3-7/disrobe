@@ -776,9 +776,9 @@
         "reason": "a plain Lua source file that begins with a newline, whose first byte 0x0A falls inside the Luau version range 1 to 11"
       },
       "input_fnv1a64": "5a88ca4ea6c10797",
-      "expect": [{ "outcome": "detection_only", "format": "luau", "error": "limit_exceeded" }],
+      "expect": [{ "outcome": "refuse", "error": "bad_signature", "detail_contains": null }],
       "guard": { "file": "src/reader/mod.rs", "symbol": "pub fn detect" },
-      "reason": "Luau bytecode has no magic, only a small version byte, so ordinary text can be classified as Luau. Classification is allowed to be wrong here, but recovery must refuse, otherwise a source file would be reported as a recovered module."
+      "reason": "Luau bytecode has no magic, only a small version byte, so ordinary text answers to the Luau version range. Detection classifies Luau only when the Luau reader parses the whole chunk, so this text stays unclassified and the dispatcher refuses it rather than reporting a source file as a recovered module."
     },
     {
       "id": "luac-header-prepended-to-zip",
