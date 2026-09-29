@@ -35,7 +35,6 @@ pub mod decompile;
 pub mod error;
 pub mod luvit;
 pub mod obfuscator;
-pub mod provenance_header;
 pub mod reader;
 pub mod serialize;
 
@@ -48,10 +47,6 @@ pub use obfuscator::{
     darksec, hercules, ironbrew2, ironbrew2_dispatch, ironbrew2_real, ironbrew2_recover,
     luaobfuscator_com, luraph, moonsec_v1, moonsec_v2, moonsec_v3, prometheus, prometheus_vmlift,
     psu, slua, vm_devirt, wearedevs,
-};
-pub use provenance_header::{
-    lua_decompiled_header, lua_deobfuscated_header, render_lua_decompiled_with_header,
-    render_lua_deobfuscated_with_header,
 };
 pub use reader::luau::{OpcodeMap, OpcodeMapImport, import_opcode_map, read_with_opcode_map};
 pub use reader::{

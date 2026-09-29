@@ -83,12 +83,6 @@ const UNREACHABLE_CEILING: &[(&str, usize, &str)] = &[
          emitter pair this count once carried is now wired to `disrobe jvm jni`",
     ),
     (
-        "disrobe-pass-lua",
-        2,
-        "both are per-dialect provenance-header renderers, proven by a real test but never spliced \
-         into the `--emit` output path",
-    ),
-    (
         "disrobe-pass-mobile",
         12,
         "Dart, Flutter and Hermes parsing and demangling helpers each proven by their own oracle \
