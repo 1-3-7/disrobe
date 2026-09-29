@@ -4,6 +4,7 @@ mod methods;
 mod pyformat;
 mod value;
 
+pub(crate) use fold::int_to_expr;
 pub use public::{EvalReport, evaluate_source};
 
 mod public {

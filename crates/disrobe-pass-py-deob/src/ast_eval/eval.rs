@@ -216,8 +216,12 @@ fn eval_binop(b: &ExprBinOp, scope: &Scope) -> EvalResult {
         (Value::Int(_a), Value::Int(0), Operator::FloorDiv | Operator::Mod) => {
             Err(EvalError::DivisionByZero)
         }
-        (Value::Int(a), Value::Int(c), Operator::FloorDiv) => Ok(Value::Int(a.div_euclid(c))),
-        (Value::Int(a), Value::Int(c), Operator::Mod) => Ok(Value::Int(a.rem_euclid(c))),
+        (Value::Int(a), Value::Int(c), Operator::FloorDiv) => crate::pyint::floor_div(a, c)
+            .map(Value::Int)
+            .ok_or(EvalError::Overflow),
+        (Value::Int(a), Value::Int(c), Operator::Mod) => crate::pyint::floor_mod(a, c)
+            .map(Value::Int)
+            .ok_or(EvalError::Overflow),
         (Value::Int(a), Value::Int(c), Operator::BitAnd) => Ok(Value::Int(a & c)),
         (Value::Int(a), Value::Int(c), Operator::BitOr) => Ok(Value::Int(a | c)),
         (Value::Int(a), Value::Int(c), Operator::BitXor) => Ok(Value::Int(a ^ c)),
@@ -909,8 +913,8 @@ fn call_builtin(name: &str, args: &[Value]) -> EvalResult {
             ))
         }
         ("divmod", [Value::Int(a), Value::Int(d)]) if *d != 0 => Ok(Value::Tuple(vec![
-            Value::Int(a.div_euclid(*d)),
-            Value::Int(a.rem_euclid(*d)),
+            Value::Int(crate::pyint::floor_div(*a, *d).ok_or(EvalError::Overflow)?),
+            Value::Int(crate::pyint::floor_mod(*a, *d).ok_or(EvalError::Overflow)?),
         ])),
         ("pow", [Value::Int(base), Value::Int(exp)]) if (0..256).contains(exp) => {
             let e: u32 = u32::try_from(*exp).map_err(|_| EvalError::Overflow)?;
@@ -921,7 +925,9 @@ fn call_builtin(name: &str, args: &[Value]) -> EvalResult {
         ("pow", [Value::Int(base), Value::Int(exp), Value::Int(modulus)])
             if *exp >= 0 && *modulus != 0 =>
         {
-            Ok(Value::Int(pow_mod(*base, *exp, *modulus)))
+            crate::pyint::pow_mod(*base, *exp, *modulus)
+                .map(Value::Int)
+                .ok_or(EvalError::Overflow)
         }
         ("repr" | "ascii", [v]) => py_repr(v, name == "ascii")
             .map(Value::Str)
@@ -1058,24 +1064,6 @@ fn enumerate_iter(v: &Value, start: i128) -> EvalResult {
         index = index.checked_add(1).ok_or(EvalError::Overflow)?;
     }
     Ok(Value::List(out))
-}
-
-const fn pow_mod(base: i128, exp: i128, modulus: i128) -> i128 {
-    let m: i128 = modulus.abs();
-    if m == 1 {
-        return 0;
-    }
-    let mut result: i128 = 1;
-    let mut b: i128 = base.rem_euclid(m);
-    let mut e: i128 = exp;
-    while e > 0 {
-        if e & 1 == 1 {
-            result = (result * b).rem_euclid(m);
-        }
-        e >>= 1;
-        b = (b * b).rem_euclid(m);
-    }
-    result
 }
 
 pub(crate) fn py_repr(v: &Value, ascii_only: bool) -> Option<String> {

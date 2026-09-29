@@ -5,7 +5,7 @@ use ruff_python_ast::visitor::transformer::{Transformer, walk_expr};
 use ruff_python_ast::{
     AtomicNodeIndex, BoolOp, BytesLiteral, BytesLiteralFlags, BytesLiteralValue, CmpOp, Expr,
     ExprBinOp, ExprBooleanLiteral, ExprBytesLiteral, ExprCall, ExprCompare, ExprName,
-    ExprNumberLiteral, ExprStringLiteral, ExprSubscript, ExprUnaryOp, Int, Number, Operator,
+    ExprNumberLiteral, ExprStringLiteral, ExprSubscript, ExprUnaryOp, Number, Operator,
     StringLiteral, StringLiteralFlags, StringLiteralValue, UnaryOp,
 };
 use ruff_text_size::TextRange;
@@ -108,11 +108,11 @@ fn fold_binop(b: &ExprBinOp) -> Option<Expr> {
         (Literal::Int(a), Literal::Int(c), Operator::Add) => Literal::Int(a.checked_add(c)?),
         (Literal::Int(a), Literal::Int(c), Operator::Sub) => Literal::Int(a.checked_sub(c)?),
         (Literal::Int(a), Literal::Int(c), Operator::Mult) => Literal::Int(a.checked_mul(c)?),
-        (Literal::Int(a), Literal::Int(c), Operator::FloorDiv) if c != 0 => {
-            Literal::Int(a.div_euclid(c))
+        (Literal::Int(a), Literal::Int(c), Operator::FloorDiv) => {
+            Literal::Int(crate::pyint::floor_div(a, c)?)
         }
-        (Literal::Int(a), Literal::Int(c), Operator::Mod) if c != 0 => {
-            Literal::Int(a.rem_euclid(c))
+        (Literal::Int(a), Literal::Int(c), Operator::Mod) => {
+            Literal::Int(crate::pyint::floor_mod(a, c)?)
         }
         (Literal::Int(a), Literal::Int(c), Operator::BitAnd) => Literal::Int(a & c),
         (Literal::Int(a), Literal::Int(c), Operator::BitOr) => Literal::Int(a | c),
@@ -143,7 +143,7 @@ fn fold_binop(b: &ExprBinOp) -> Option<Expr> {
         }
         _ => return None,
     };
-    Some(folded.into_expr(b.range))
+    folded.into_expr(b.range)
 }
 
 fn fold_unop(u: &ExprUnaryOp) -> Option<Expr> {
@@ -155,7 +155,7 @@ fn fold_unop(u: &ExprUnaryOp) -> Option<Expr> {
         (UnaryOp::Not, Literal::Bool(b)) => Literal::Bool(!b),
         _ => return None,
     };
-    Some(folded.into_expr(u.range))
+    folded.into_expr(u.range)
 }
 
 fn fold_call(c: &ExprCall) -> Option<Expr> {
@@ -184,7 +184,7 @@ fn fold_call(c: &ExprCall) -> Option<Expr> {
         ("bool", Literal::Str(s)) => Literal::Bool(!s.is_empty()),
         _ => return None,
     };
-    Some(folded.into_expr(c.range))
+    folded.into_expr(c.range)
 }
 
 fn fold_method_call(c: &ExprCall) -> Option<Expr> {
@@ -205,13 +205,13 @@ fn fold_method_call(c: &ExprCall) -> Option<Expr> {
                 .step_by(2)
                 .map(|i| u8::from_str_radix(cleaned.get(i..i + 2)?, 16).ok())
                 .collect::<Option<Vec<u8>>>()?;
-            Some(Literal::Bytes(bytes).into_expr(c.range))
+            Literal::Bytes(bytes).into_expr(c.range)
         }
         (Expr::Name(n), "b64decode", Literal::Str(b64)) if n.id.as_str() == "base64" => {
             base64::engine::general_purpose::STANDARD
                 .decode(b64.as_bytes())
                 .ok()
-                .map(|b| Literal::Bytes(b).into_expr(c.range))
+                .and_then(|b| Literal::Bytes(b).into_expr(c.range))
         }
         _ => None,
     }
@@ -271,7 +271,7 @@ fn fold_int_from_bytes(c: &ExprCall, attr: &ruff_python_ast::ExprAttribute) -> O
     {
         value -= 1i128 << (8 * ordered.len());
     }
-    Some(Literal::Int(value).into_expr(c.range))
+    Literal::Int(value).into_expr(c.range)
 }
 
 fn fold_compare(c: &ExprCompare) -> Option<Expr> {
@@ -294,7 +294,7 @@ fn fold_compare(c: &ExprCompare) -> Option<Expr> {
         (Literal::Bool(a), Literal::Bool(b), CmpOp::NotEq) => a != b,
         _ => return None,
     };
-    Some(Literal::Bool(result).into_expr(c.range))
+    Literal::Bool(result).into_expr(c.range)
 }
 
 fn fold_boolop(b: &ruff_python_ast::ExprBoolOp) -> Option<Expr> {
@@ -309,7 +309,7 @@ fn fold_boolop(b: &ruff_python_ast::ExprBoolOp) -> Option<Expr> {
         BoolOp::And => values.into_iter().all(|x| x),
         BoolOp::Or => values.into_iter().any(|x| x),
     };
-    Some(Literal::Bool(result).into_expr(b.range))
+    Literal::Bool(result).into_expr(b.range)
 }
 
 #[derive(Debug, Clone)]
@@ -321,33 +321,9 @@ enum Literal {
 }
 
 impl Literal {
-    fn into_expr(self, range: TextRange) -> Expr {
-        match self {
-            Self::Int(n) => {
-                let abs: u128 = n.unsigned_abs();
-                let Ok(abs_u64): core::result::Result<u64, _> = u64::try_from(abs) else {
-                    return Expr::NumberLiteral(ExprNumberLiteral {
-                        range,
-                        node_index: AtomicNodeIndex::default(),
-                        value: Number::Int(Int::from(0u64)),
-                    });
-                };
-                let int_expr: Expr = Expr::NumberLiteral(ExprNumberLiteral {
-                    range,
-                    node_index: AtomicNodeIndex::default(),
-                    value: Number::Int(Int::from(abs_u64)),
-                });
-                if n >= 0 {
-                    int_expr
-                } else {
-                    Expr::UnaryOp(ruff_python_ast::ExprUnaryOp {
-                        range,
-                        node_index: AtomicNodeIndex::default(),
-                        op: ruff_python_ast::UnaryOp::USub,
-                        operand: Box::new(int_expr),
-                    })
-                }
-            }
+    fn into_expr(self, range: TextRange) -> Option<Expr> {
+        Some(match self {
+            Self::Int(n) => return crate::ast_eval::int_to_expr(n, range),
             Self::Str(s) => Expr::StringLiteral(ExprStringLiteral {
                 range,
                 node_index: AtomicNodeIndex::default(),
@@ -373,7 +349,7 @@ impl Literal {
                 node_index: AtomicNodeIndex::default(),
                 value: v,
             }),
-        }
+        })
     }
 }
 
@@ -416,6 +392,41 @@ mod tests {
         let mut expr: Expr = *parsed.into_syntax().body;
         let _ = fold(&mut expr);
         expr
+    }
+
+    #[test]
+    fn floor_division_and_modulo_fold_to_what_python_computes() {
+        for (source, expected) in [
+            ("7 // -2", -4),
+            ("7 % -2", -1),
+            ("-7 // 2", -4),
+            ("-7 % 2", 1),
+        ] {
+            let value: Option<super::Literal> = super::literal_value(&folded(source));
+            assert!(
+                matches!(value, Some(super::Literal::Int(n)) if n == expected),
+                "{source} folded to {value:?}, python gives {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_int_wider_than_64_bits_folds_to_its_value() {
+        let value: Option<super::Literal> =
+            super::literal_value(&folded("18446744073709551616 + 1"));
+        assert!(
+            matches!(value, Some(super::Literal::Int(18_446_744_073_709_551_617))),
+            "folded to {value:?}"
+        );
+        let negative: Option<super::Literal> =
+            super::literal_value(&folded("-18446744073709551616 - 1"));
+        assert!(
+            matches!(
+                negative,
+                Some(super::Literal::Int(-18_446_744_073_709_551_617))
+            ),
+            "folded to {negative:?}"
+        );
     }
 
     #[test]

@@ -23,6 +23,7 @@ pub mod marshal;
 pub mod obfuscators;
 mod peel;
 mod provenance_header;
+mod pyint;
 mod pyrandom;
 mod shuffled_base64;
 mod source_cleanup;

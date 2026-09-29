@@ -266,7 +266,7 @@ pub(crate) fn value_to_expr(value: Value, range: TextRange) -> Option<Expr> {
             node_index: AtomicNodeIndex::default(),
             value: b,
         })),
-        Value::Int(n) => Some(int_to_expr(n, range)),
+        Value::Int(n) => int_to_expr(n, range),
         Value::Str(s) => Some(Expr::StringLiteral(ExprStringLiteral {
             range,
             node_index: AtomicNodeIndex::default(),
@@ -316,18 +316,18 @@ pub(crate) fn value_to_expr(value: Value, range: TextRange) -> Option<Expr> {
     }
 }
 
-fn int_to_expr(n: i128, range: TextRange) -> Expr {
+pub(crate) fn int_to_expr(n: i128, range: TextRange) -> Option<Expr> {
     let abs: u128 = n.unsigned_abs();
-    let int_value: Int = u64::try_from(abs).map_or_else(
-        |_| Int::from_str(&abs.to_string()).unwrap_or(Int::ZERO),
-        Int::from,
-    );
+    let int_value: Int = match u64::try_from(abs) {
+        Ok(small) => Int::from(small),
+        Err(_) => Int::from_str(&abs.to_string()).ok()?,
+    };
     let int_expr: Expr = Expr::NumberLiteral(ExprNumberLiteral {
         range,
         node_index: AtomicNodeIndex::default(),
         value: Number::Int(int_value),
     });
-    if n >= 0 {
+    Some(if n >= 0 {
         int_expr
     } else {
         Expr::UnaryOp(ExprUnaryOp {
@@ -336,5 +336,5 @@ fn int_to_expr(n: i128, range: TextRange) -> Expr {
             op: UnaryOp::USub,
             operand: Box::new(int_expr),
         })
-    }
+    })
 }
