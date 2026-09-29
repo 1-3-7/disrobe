@@ -1,7 +1,5 @@
 use std::sync::LazyLock;
 
-use base64::Engine as _;
-use base64::engine::general_purpose::STANDARD as B64_STANDARD;
 use lazy_regex::regex;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -868,7 +866,12 @@ fn decode_and_recurse(text: &str, layer: &Layer<'_>, out: &mut Vec<Indicator>) {
         if blob.len() < MIN_BLOB_LEN || blob.len() > MAX_BLOB_DECODE {
             continue;
         }
-        let Ok(decoded): Result<Vec<u8>, _> = B64_STANDARD.decode(blob.trim_end_matches('='))
+        let Ok(decoded): Result<Vec<u8>, crate::codec::DecodeError> =
+            crate::codec::base64::base64_decode(
+                blob.as_bytes(),
+                crate::codec::base64::Base64Alphabet::Standard,
+                crate::codec::base64::Base64Padding::Optional,
+            )
         else {
             continue;
         };
@@ -1186,6 +1189,9 @@ pub fn defang(value: &str, kind: IocKind) -> String {
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::STANDARD as B64_STANDARD;
+
     use super::*;
 
     fn kinds_of(ind: &[Indicator], kind: IocKind) -> Vec<&str> {
