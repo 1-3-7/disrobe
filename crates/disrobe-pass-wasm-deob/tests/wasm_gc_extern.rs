@@ -9,15 +9,15 @@ const WAT: &str = r#"
         extern.convert_any))
 "#;
 
-fn baked(src: &str) -> Option<Vec<u8>> {
-    wat::parse_str(src).ok()
+fn baked(src: &str) -> Vec<u8> {
+    wat::parse_str(src).unwrap_or_else(|error: wat::Error| {
+        panic!("the authored fixture must assemble with the pinned wat crate: {error}")
+    })
 }
 
 #[test]
 fn detects_extern_internalize_and_externalize_pair() {
-    let Some(bytes): Option<Vec<u8>> = baked(WAT) else {
-        return;
-    };
+    let bytes: Vec<u8> = baked(WAT);
     let report: GcExternReport = scan_gc_extern(&bytes).expect("scan");
     assert_eq!(report.any_to_extern, 1usize);
     assert_eq!(report.extern_to_any, 1usize);

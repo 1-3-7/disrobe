@@ -28,10 +28,12 @@ fn custom_page_size_detected_when_supported() {
         r"(module (memory 1 (pagesize 1)))",
         r"(module (memory 16 (pagesize 1)))",
     ];
+    let mut assembled: usize = 0;
     for src in candidates {
         let Ok(bytes): Result<Vec<u8>, _> = wat::parse_str(src) else {
             continue;
         };
+        assembled += 1;
         let report: CustomPageSizeReport = scan_custom_page_sizes(&bytes).expect("scan");
         if report.uses_custom_page_size {
             assert!(
@@ -42,4 +44,9 @@ fn custom_page_size_detected_when_supported() {
             return;
         }
     }
+    panic!(
+        "none of the {} custom-page-size spellings was detected ({assembled} assembled with the \
+         pinned wat crate)",
+        candidates.len()
+    );
 }

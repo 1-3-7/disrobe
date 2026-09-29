@@ -15,15 +15,15 @@ const WAT_FULL_STACK_SWITCH: &str = r#"
         (return)))
 "#;
 
-fn baked(src: &str) -> Option<Vec<u8>> {
-    wat::parse_str(src).ok()
+fn baked(src: &str) -> Vec<u8> {
+    wat::parse_str(src).unwrap_or_else(|error: wat::Error| {
+        panic!("the authored fixture must assemble with the pinned wat crate: {error}")
+    })
 }
 
 #[test]
 fn detects_full_stack_switching_chain_when_supported() {
-    let Some(bytes): Option<Vec<u8>> = baked(WAT_FULL_STACK_SWITCH) else {
-        return;
-    };
+    let bytes: Vec<u8> = baked(WAT_FULL_STACK_SWITCH);
     let report: StackSwitchReport = scan_stack_switching(&bytes).expect("scan");
     assert!(!report.is_empty());
     assert!(report.kinds.contains_key(&StackSwitchOpKind::ContNew));
