@@ -59,7 +59,6 @@ impl Writer {
         self.out.extend_from_slice(&v.to_le_bytes());
     }
 
-    #[allow(clippy::too_many_lines)]
     fn write_object(&mut self, obj: &Object) -> Result<()> {
         match obj {
             Object::None => self.push_tag(b'N'),

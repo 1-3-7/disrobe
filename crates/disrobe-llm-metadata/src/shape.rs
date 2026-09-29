@@ -1,4 +1,3 @@
-#![allow(clippy::needless_pass_by_value)]
 use std::collections::BTreeMap;
 
 use serde_json::{Map, Value as Json, json};

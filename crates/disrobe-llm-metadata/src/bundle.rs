@@ -1,4 +1,4 @@
-#![allow(clippy::needless_pass_by_value, clippy::too_long_first_doc_paragraph)]
+#![allow(clippy::too_long_first_doc_paragraph)]
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
