@@ -463,9 +463,49 @@ fn scan_crate_sources(root: &Path, member: &str) -> Result<(Vec<GatedFile>, Opti
                 });
             }
         }
+        for binary_dir in test_binary_dirs(&tests_dir)? {
+            let Some(binary) = binary_dir
+                .file_name()
+                .and_then(|n: &std::ffi::OsStr| n.to_str())
+                .map(str::to_owned)
+            else {
+                continue;
+            };
+            for path in rust_files_recursive(&binary_dir)? {
+                let relative: String = relative_label(&crate_root, &path);
+                let text: String = read_text_bounded(&path, MAX_SOURCE_BYTES)
+                    .wrap_err_with(|| format!("reading {member}/{relative}"))?;
+                if let Some(requirements) =
+                    file_requirements(&text, &format!("{member}/{relative}"))?
+                {
+                    gated.push(GatedFile {
+                        relative,
+                        target: TestTarget::Integration(binary.clone()),
+                        requirements,
+                        tests: count_tests(&text),
+                    });
+                }
+            }
+        }
     }
 
     Ok((gated, chain_detector_tests))
+}
+
+fn test_binary_dirs(tests_dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    for entry in walkdir::WalkDir::new(tests_dir)
+        .min_depth(1)
+        .max_depth(1)
+        .sort_by_file_name()
+    {
+        let entry: walkdir::DirEntry =
+            entry.wrap_err_with(|| format!("walking {}", tests_dir.display()))?;
+        if entry.file_type().is_dir() && entry.path().join("main.rs").is_file() {
+            out.push(entry.into_path());
+        }
+    }
+    Ok(out)
 }
 
 fn relative_label(crate_root: &Path, path: &Path) -> String {
@@ -935,6 +975,39 @@ mod tests {
             requirements: vec![Requirement::Enabled("chain".to_owned())],
             tests,
         }
+    }
+
+    #[test]
+    fn a_gated_module_inside_a_directory_test_binary_is_attributed_to_that_binary() {
+        let root: tempfile::TempDir = tempfile::tempdir().expect("scratch workspace");
+        let binary: PathBuf = root.path().join("crates/example/tests/lifting");
+        std::fs::create_dir_all(&binary).expect("create the test binary directory");
+        std::fs::write(binary.join("main.rs"), "mod gated;\n").expect("write main.rs");
+        std::fs::write(
+            binary.join("gated.rs"),
+            "#![cfg(feature = \"smt-solver\")]\n#[test]\nfn solves() {}\n",
+        )
+        .expect("write the gated module");
+        let support: PathBuf = root.path().join("crates/example/tests/common");
+        std::fs::create_dir_all(&support).expect("create a support directory");
+        std::fs::write(
+            support.join("mod.rs"),
+            "#![cfg(feature = \"other\")]\n#[test]\nfn helper() {}\n",
+        )
+        .expect("write the support module");
+
+        let (gated, _): (Vec<GatedFile>, Option<usize>) =
+            scan_crate_sources(root.path(), "crates/example").expect("scan");
+
+        let [found] = gated.as_slice() else {
+            panic!("expected exactly the gated module of the lifting binary: {gated:?}");
+        };
+        assert_eq!(found.relative, "tests/lifting/gated.rs");
+        assert!(matches!(&found.target, TestTarget::Integration(name) if name == "lifting"));
+        assert_eq!(
+            found.requirements,
+            vec![Requirement::Enabled("smt-solver".to_owned())]
+        );
     }
 
     #[test]
