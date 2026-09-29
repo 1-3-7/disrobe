@@ -13,7 +13,7 @@ const SYNTAX: RegionSyntax = RegionSyntax {
 const SITES_SLUG: &str = "sites";
 const DOC: &str = "SECURITY.md";
 const MAX_SOURCE_BYTES: u64 = 16 * 1024 * 1024;
-const MACRO_EXPANSION_CRATES: [&str; 2] = ["disrobe-plugin-host", "disrobe-python"];
+const MACRO_EXPANSION_CRATES: [&str; 1] = ["disrobe-python"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CrateLint {

@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 #![deny(unreachable_pub)]
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
