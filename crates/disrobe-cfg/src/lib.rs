@@ -18,7 +18,6 @@ pub type CondId = u32;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Terminator {
     Return,
-    #[allow(dead_code)]
     Unreachable,
     Goto(NodeId),
     Branch {
@@ -26,7 +25,6 @@ pub enum Terminator {
         taken: NodeId,
         not_taken: NodeId,
     },
-    #[allow(dead_code)]
     Switch {
         atom: Atom,
         cases: Vec<(i64, NodeId)>,
