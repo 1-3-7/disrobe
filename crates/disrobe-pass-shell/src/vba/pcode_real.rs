@@ -1616,24 +1616,9 @@ fn resolve_identifier(id_code: u16, identifiers: &[String], vba_ver: u8, is_64bi
 
 fn translate_opcode(opcode: u16, vba_ver: u8, is_64bit: bool) -> u16 {
     match vba_ver {
-        3 => translate_v3(opcode),
         5 => translate_v5(opcode),
         _ if !is_64bit => translate_v6or7_32(opcode),
         _ => opcode,
-    }
-}
-
-fn translate_v3(o: u16) -> u16 {
-    match o {
-        0..=67 => o,
-        68..=70 => o + 2,
-        71..=111 => o + 4,
-        112..=150 => o + 8,
-        151..=164 => o + 9,
-        165..=166 => o + 10,
-        167..=169 => o + 11,
-        170..=238 => o + 12,
-        _ => o + 24,
     }
 }
 
@@ -2667,16 +2652,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn oracle_round_trips_translated_opcode_via_v3_table() {
-        let mut asm: PCodeAsm = PCodeAsm::new();
-        asm.word(67);
-        let text: String = disasm_line(&asm, &[], 3, false);
-        let translated: u16 = translate_opcode(67, 3, false);
-        let info: &OpcodeInfo = lookup_opcode(translated).expect("opcode 67 must map under v3");
-        assert!(text.starts_with(info.mnem), "v3 translation: {text}");
-    }
-
     fn empty_ctx(vba_ver: u8, is_64bit: bool) -> LineContext<'static> {
         LineContext {
             identifiers: &[],
@@ -2793,7 +2768,6 @@ mod tests {
 
     fn config_translate(tag: &str, raw: u16) -> u16 {
         match tag {
-            "v3_x86" => translate_opcode(raw, 3, false),
             "v5_x86" => translate_opcode(raw, 5, false),
             "v6_x86" => translate_opcode(raw, 6, false),
             "v7_x86" => translate_opcode(raw, 7, false),
@@ -2833,8 +2807,8 @@ mod tests {
             configs_checked += 1;
         }
         assert_eq!(
-            configs_checked, 6,
-            "expected all 6 per-version configs (v3/v5/v6/v7 x x86/x64) graded against pcodedmp"
+            configs_checked, 5,
+            "expected all 5 reachable per-version configs (v5 x86, v6/v7 x x86/x64) graded against pcodedmp"
         );
     }
 }
