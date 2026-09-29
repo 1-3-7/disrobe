@@ -636,6 +636,9 @@ corpus/jvm/zkmshape/StaticTableCrypt.class	jvm.classify	jvm-classfile	interprete
 corpus/jvm/zkmshape/StaticTableCrypt.java	-	-	-	-	-	-	-
 corpus/lua/CAPTURE-MANUAL.md	lua.deob	lua-obf-aztup-brew	obfuscator-wrapper	high	-	-	-
 corpus/lua/baseline/hello.lua	-	-	-	-	-	-	-
+corpus/lua/behaviour/loops.lua	-	-	-	-	-	-	-
+corpus/lua/behaviour/objects.lua	-	-	-	-	-	-	-
+corpus/lua/behaviour/tour.lua	-	-	-	-	-	-	-
 corpus/lua/decompile_samples/arith_loops.lj20.luajit	lua.deob	luajit	interpreter-bytecode	high	-	-	-
 corpus/lua/decompile_samples/arith_loops.luajit	lua.deob	luajit	interpreter-bytecode	high	-	-	-
 corpus/lua/decompile_samples/arith_loops.luau	lua.deob	luau	interpreter-bytecode	medium	-	-	-
@@ -2928,6 +2931,7 @@ corpus/ruby/behaviour/operators.rb	-	-	-	-	-	-	-
 corpus/ruby/behaviour/patterns.rb	-	-	-	-	-	-	-
 corpus/ruby/behaviour/programs.rb	-	-	-	-	-	-	-
 corpus/ruby/behaviour/text.rb	-	-	-	-	-	-	-
+corpus/ruby/behaviour/values.rb	-	-	-	-	-	-	-
 corpus/ruby/greeter.rb	-	-	-	-	-	-	-
 corpus/ruby/hello.rb	-	-	-	-	-	-	-
 corpus/ruby/megafile/edge_cases.rb	ruby.classify	ruby-mri-source	interpreter-bytecode	medium	js.deob	obfuscator-wrapper	low
