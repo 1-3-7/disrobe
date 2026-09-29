@@ -300,10 +300,93 @@ static IEX_ALIAS: LazyLock<&'static Regex> = LazyLock::new(|| {
 });
 
 fn normalize_invoke_expression_aliases(s: &str) -> Option<String> {
-    if !IEX_ALIAS.is_match(s) {
+    let literals: Vec<std::ops::Range<usize>> = non_code_spans(s);
+    let mut out: String = String::with_capacity(s.len());
+    let mut cursor: usize = 0;
+    let mut replaced: bool = false;
+    for found in IEX_ALIAS.find_iter(s) {
+        let in_literal: bool = literals
+            .iter()
+            .any(|span: &std::ops::Range<usize>| span.contains(&found.start()));
+        if in_literal {
+            continue;
+        }
+        out.push_str(&s[cursor..found.start()]);
+        out.push_str("Invoke-Expression");
+        cursor = found.end();
+        replaced = true;
+    }
+    if !replaced {
         return None;
     }
-    Some(IEX_ALIAS.replace_all(s, "Invoke-Expression").into_owned())
+    out.push_str(&s[cursor..]);
+    Some(out)
+}
+
+fn non_code_spans(s: &str) -> Vec<std::ops::Range<usize>> {
+    let bytes: &[u8] = s.as_bytes();
+    let mut spans: Vec<std::ops::Range<usize>> = Vec::new();
+    let mut i: usize = 0;
+    while i < bytes.len() {
+        let start: usize = i;
+        match bytes[i] {
+            b'@' if matches!(bytes.get(i + 1), Some(b'\'' | b'"')) => {
+                let quote: u8 = bytes[i + 1];
+                let close: [u8; 3] = [b'\n', quote, b'@'];
+                i += 2;
+                while i < bytes.len() && !bytes[i..].starts_with(&close) {
+                    i += 1;
+                }
+                i = (i + close.len()).min(bytes.len());
+            }
+            b'\'' => {
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == b'\'' {
+                        if bytes.get(i + 1) == Some(&b'\'') {
+                            i += 2;
+                            continue;
+                        }
+                        i += 1;
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            b'"' => {
+                i += 1;
+                while i < bytes.len() {
+                    match bytes[i] {
+                        b'`' => i += 2,
+                        b'"' if bytes.get(i + 1) == Some(&b'"') => i += 2,
+                        b'"' => {
+                            i += 1;
+                            break;
+                        }
+                        _ => i += 1,
+                    }
+                }
+            }
+            b'<' if bytes.get(i + 1) == Some(&b'#') => {
+                i += 2;
+                while i < bytes.len() && !bytes[i..].starts_with(b"#>") {
+                    i += 1;
+                }
+                i = (i + 2).min(bytes.len());
+            }
+            b'#' => {
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            _ => {
+                i += 1;
+                continue;
+            }
+        }
+        spans.push(start..i.min(bytes.len()));
+    }
+    spans
 }
 
 static CHAR_ARRAY: LazyLock<&'static Regex> = LazyLock::new(|| {
@@ -1228,6 +1311,27 @@ fn strip_wmic_proxy(s: &str) -> Option<String> {
             })
             .into_owned(),
     )
+}
+
+#[cfg(test)]
+mod iex_literal_tests {
+    use super::normalize_invoke_expression_aliases;
+
+    #[test]
+    fn an_iex_alias_inside_a_string_or_comment_is_left_alone() {
+        assert_eq!(
+            normalize_invoke_expression_aliases("IEX ('Write-Output ' + \"'from iex'\")"),
+            Some("Invoke-Expression ('Write-Output ' + \"'from iex'\")".to_owned())
+        );
+        assert_eq!(
+            normalize_invoke_expression_aliases("Write-Output 'iex' # iex here\n<# iex #>"),
+            None
+        );
+        assert_eq!(
+            normalize_invoke_expression_aliases("Write-Output @'\niex\n'@\niex $x"),
+            Some("Write-Output @'\niex\n'@\nInvoke-Expression $x".to_owned())
+        );
+    }
 }
 
 #[cfg(test)]
