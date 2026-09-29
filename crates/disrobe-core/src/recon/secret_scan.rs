@@ -1234,8 +1234,7 @@ pub fn scan_bytes_with_work(bytes: &[u8], uri: Option<&str>) -> (Vec<Finding>, E
         }
     }
 
-    let text: std::borrow::Cow<'_, str> = String::from_utf8_lossy(bytes);
-    let valid_utf8: bool = matches!(text, std::borrow::Cow::Borrowed(_));
+    let text: std::borrow::Cow<'_, str> = offset_preserving_text(bytes);
 
     for rule in REGEX_RULES.iter() {
         for m in rule.pattern.find_iter(&text) {
@@ -1243,15 +1242,7 @@ pub fn scan_bytes_with_work(bytes: &[u8], uri: Option<&str>) -> (Vec<Finding>, E
             if is_allowlisted(matched) {
                 continue;
             }
-            let offset: usize = if valid_utf8 {
-                m.start()
-            } else {
-                let Some(at): Option<usize> = byte_offset_of(bytes, matched.as_bytes(), &claimed)
-                else {
-                    continue;
-                };
-                at
-            };
+            let offset: usize = m.start();
             claimed.push((offset, offset + matched.len()));
             let mut finding: Finding = finding_for(
                 rule.kind,
@@ -1531,16 +1522,18 @@ fn scan_entropy(
     work
 }
 
-fn byte_offset_of(haystack: &[u8], needle: &[u8], claimed: &[(usize, usize)]) -> Option<usize> {
-    let mut start: usize = 0;
-    while let Some(rel) = crate::byte_search::find(&haystack[start..], needle) {
-        let at: usize = start + rel;
-        if !claimed.iter().any(|&(s, _e): &(usize, usize)| s == at) {
-            return Some(at);
-        }
-        start = at + 1;
-    }
-    None
+fn offset_preserving_text(bytes: &[u8]) -> std::borrow::Cow<'_, str> {
+    std::str::from_utf8(bytes).map_or_else(
+        |_: std::str::Utf8Error| {
+            let mut text: String = String::with_capacity(bytes.len());
+            for chunk in bytes.utf8_chunks() {
+                text.push_str(chunk.valid());
+                text.extend(std::iter::repeat_n('\0', chunk.invalid().len()));
+            }
+            std::borrow::Cow::Owned(text)
+        },
+        std::borrow::Cow::Borrowed,
+    )
 }
 
 #[must_use]
@@ -1566,7 +1559,7 @@ pub fn scan_report(bytes: &[u8], uri: Option<&str>) -> SecretScanReport {
 
 #[cfg(test)]
 mod tests {
-    use super::{byte_offset_of, claim_overlaps, merge_claims};
+    use super::{Finding, claim_overlaps, merge_claims, scan_bytes};
 
     fn claim_overlap_linear_reference(
         claimed: &[(usize, usize)],
@@ -1621,12 +1614,25 @@ mod tests {
     }
 
     #[test]
-    fn byte_offset_of_reports_absence_instead_of_zero() {
-        let haystack: &[u8] = b"alpha beta gamma";
-        assert_eq!(byte_offset_of(haystack, b"beta", &[]), Some(6));
-        assert_eq!(byte_offset_of(haystack, b"alpha", &[]), Some(0));
-        assert_eq!(byte_offset_of(haystack, b"delta", &[]), None);
-        assert_eq!(byte_offset_of(haystack, b"alpha", &[(0, 5)]), None);
+    fn a_secret_after_invalid_utf8_is_reported_at_its_own_byte_offset() {
+        let mut input: Vec<u8> = vec![0xff, 0xfe, b' ', b'x'];
+        input.extend_from_slice(b"AKIAQWERTYUIOPASDFGH ");
+        let expected: usize = input.len();
+        input.extend_from_slice(b"AKIAQWERTYUIOPASDFGH\n");
+
+        let findings: Vec<Finding> = scan_bytes(&input, None);
+
+        let offsets: Vec<usize> = findings
+            .iter()
+            .filter(|f: &&Finding| f.code == "DR-SEC-AWS-AKID")
+            .map(|f: &Finding| f.offset)
+            .collect();
+        assert_eq!(
+            offsets,
+            vec![expected],
+            "the key embedded in `xAKIA...` is no match, so only the free-standing key is \
+             reported, at its byte offset: {findings:?}"
+        );
     }
 
     #[test]
