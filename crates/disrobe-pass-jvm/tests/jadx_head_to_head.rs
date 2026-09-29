@@ -6,6 +6,10 @@
     clippy::case_sensitive_file_extension_comparisons
 )]
 
+#[allow(unreachable_pub)]
+mod common;
+
+use common::{find_on_path, grader_jdk_tool};
 use std::io::Read as _;
 use std::path::PathBuf;
 use std::process::Command;
@@ -36,24 +40,6 @@ fn corpus(parts: &[&str]) -> PathBuf {
         p.push(part);
     }
     p
-}
-
-fn find_on_path(name: &str) -> Option<PathBuf> {
-    let path_var: std::ffi::OsString = std::env::var_os("PATH")?;
-    let exts: &[&str] = if cfg!(windows) {
-        &["", ".exe", ".bat", ".cmd"]
-    } else {
-        &[""]
-    };
-    for dir in std::env::split_paths(&path_var) {
-        for ext in exts {
-            let candidate: PathBuf = dir.join(format!("{name}{ext}"));
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
-    }
-    None
 }
 
 fn classes_from_jar(jar_path: &PathBuf) -> Option<Vec<(String, Vec<u8>)>> {
@@ -192,11 +178,7 @@ fn in_house_is_the_default_android_engine_not_jadx() {
 
 #[test]
 fn in_house_construct_recovery_meets_floor_via_real_javac() {
-    let Some(javac): Option<PathBuf> = find_on_path("javac") else {
-        panic!(
-            "the JDK is on PATH in every CI job that runs these tests: javac not on PATH; correctness floor not enforced on this machine"
-        );
-    };
+    let javac: PathBuf = grader_jdk_tool("javac");
     let jar: PathBuf = corpus(&["megafile", "EdgeCases-baseline.jar"]);
     let source: String = edgecases_top_level_source();
     let errors: Vec<usize> = javac_error_lines(&javac, &source, "inhouse", &jar);
@@ -237,11 +219,7 @@ fn disrobe_decompiles_the_whole_jar_fast_in_process() {
 
 #[test]
 fn disrobe_meets_or_beats_jadx_on_recompile_when_jadx_present() {
-    let Some(javac): Option<PathBuf> = find_on_path("javac") else {
-        panic!(
-            "the JDK is on PATH in every CI job that runs these tests: javac not on PATH; head-to-head needs the javac oracle"
-        );
-    };
+    let javac: PathBuf = grader_jdk_tool("javac");
     let Some(_jadx): Option<PathBuf> = find_on_path("jadx") else {
         assert!(
             std::env::var_os("DISROBE_REQUIRE_JADX").is_none(),

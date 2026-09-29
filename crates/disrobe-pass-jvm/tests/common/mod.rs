@@ -390,7 +390,7 @@ pub fn assert_compiled_verifier_never_initialises(directory: &Path) {
 pub fn find_on_path(name: &str) -> Option<PathBuf> {
     let path_var: std::ffi::OsString = std::env::var_os("PATH")?;
     let exts: &[&str] = if cfg!(windows) {
-        &["", ".exe", ".bat"]
+        &["", ".exe", ".bat", ".cmd"]
     } else {
         &[""]
     };
@@ -403,6 +403,64 @@ pub fn find_on_path(name: &str) -> Option<PathBuf> {
         }
     }
     None
+}
+
+pub const GRADER_JDK_MAJOR: u32 = 25;
+
+pub fn grader_jdk_tool(name: &str) -> PathBuf {
+    let Some(tool): Option<PathBuf> = find_on_path(name) else {
+        panic!(
+            "missing prerequisite: {name} is not on PATH; the JVM graders need JDK \
+             {GRADER_JDK_MAJOR} (actions/setup-java in CI, a JDK {GRADER_JDK_MAJOR} bin first on \
+             PATH locally)"
+        );
+    };
+    let major: u32 = javac_major();
+    assert!(
+        major >= GRADER_JDK_MAJOR,
+        "missing prerequisite: the javac on PATH is JDK {major}; the JVM graders' floors were \
+         measured with JDK {GRADER_JDK_MAJOR}, so an older JDK would read as a recovery \
+         regression. Put a JDK {GRADER_JDK_MAJOR} bin first on PATH"
+    );
+    tool
+}
+
+fn javac_major() -> u32 {
+    static MAJOR: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *MAJOR.get_or_init(|| {
+        let Some(javac): Option<PathBuf> = find_on_path("javac") else {
+            panic!("missing prerequisite: javac is not on PATH");
+        };
+        let output: Output = Command::new(&javac)
+            .arg("-version")
+            .output()
+            .unwrap_or_else(|error: std::io::Error| {
+                panic!(
+                    "missing prerequisite: `{} -version` did not start: {error}",
+                    javac.display()
+                )
+            });
+        let text: String = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        parse_javac_major(&text)
+            .unwrap_or_else(|| panic!("`javac -version` printed no version: {text:?}"))
+    })
+}
+
+pub fn parse_javac_major(text: &str) -> Option<u32> {
+    let version: &str = text
+        .split_whitespace()
+        .find(|word: &&str| word.starts_with(|ch: char| ch.is_ascii_digit()))?;
+    let mut parts: std::str::Split<'_, char> = version.split('.');
+    let first: u32 = parts.next()?.parse().ok()?;
+    if first == 1 {
+        parts.next()?.parse().ok()
+    } else {
+        Some(first)
+    }
 }
 
 pub fn parse_metric(stdout: &str, key: &str) -> usize {

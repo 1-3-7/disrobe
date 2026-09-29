@@ -6,6 +6,10 @@
     clippy::case_sensitive_file_extension_comparisons
 )]
 
+#[allow(unreachable_pub)]
+mod common;
+
+use common::grader_jdk_tool;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
@@ -206,24 +210,6 @@ fn corpus(parts: &[&str]) -> PathBuf {
     p
 }
 
-fn find_on_path(name: &str) -> Option<PathBuf> {
-    let path_var: std::ffi::OsString = std::env::var_os("PATH")?;
-    let exts: &[&str] = if cfg!(windows) {
-        &["", ".exe", ".bat"]
-    } else {
-        &[""]
-    };
-    for dir in std::env::split_paths(&path_var) {
-        for ext in exts {
-            let candidate: PathBuf = dir.join(format!("{name}{ext}"));
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
-    }
-    None
-}
-
 fn classes_from_jar(jar_path: &PathBuf) -> Option<Vec<(String, Vec<u8>)>> {
     let f: std::fs::File = std::fs::File::open(jar_path).ok()?;
     let mut z: zip::ZipArchive<std::fs::File> = zip::ZipArchive::new(f).expect("zip read");
@@ -357,9 +343,7 @@ fn report_per_method_clean_recovery() {
 
 #[test]
 fn report_decompiled_recompile_acceptance() {
-    let Some(javac): Option<PathBuf> = find_on_path("javac") else {
-        panic!("the JDK is on PATH in every CI job that runs these tests: javac not on PATH");
-    };
+    let javac: PathBuf = grader_jdk_tool("javac");
     let jar: PathBuf = corpus(&["megafile", "EdgeCases-baseline.jar"]);
     let Some(classes): Option<Vec<(String, Vec<u8>)>> = classes_from_jar(&jar) else {
         panic!("the committed input is required, restore it from git: baseline jar absent");
@@ -466,9 +450,7 @@ fn javac_error_files(stderr: &str) -> BTreeSet<String> {
 
 #[test]
 fn report_multi_class_javac_recompile() {
-    let Some(javac): Option<PathBuf> = find_on_path("javac") else {
-        panic!("the JDK is on PATH in every CI job that runs these tests: javac not on PATH");
-    };
+    let javac: PathBuf = grader_jdk_tool("javac");
     let jar: PathBuf = corpus(&["proguard", "Hello-baseline.jar"]);
     let Some(classes): Option<Vec<(String, Vec<u8>)>> = classes_from_jar(&jar) else {
         panic!("the committed input is required, restore it from git: baseline jar absent");
@@ -533,16 +515,6 @@ const ATTRIBUTION_PROBE_SOURCE: &str = "final class TypeCheckReached {\n    stat
                                         VALUE = typeCheckReachedSymbolThatCannotResolve;\n}\n";
 const ATTRIBUTION_PROBE_DIAGNOSTIC: &str = "TypeCheckReached.java:";
 const DIAGNOSTIC_LIMIT: &str = "1000000";
-
-fn require_javac() -> PathBuf {
-    find_on_path("javac").unwrap_or_else(|| {
-        panic!(
-            "the per-method javac recompile gate requires javac on PATH: without it the STRONG \
-             {PER_METHOD_JAVAC_OK_FLOOR}/{PER_METHOD_JAVAC_TOTAL} figure cannot be measured, and \
-             a skip must never read as a pass. Install a JDK (actions/setup-java in CI)."
-        )
-    })
-}
 
 fn type_check_was_reached(
     javac: &Path,
@@ -676,7 +648,7 @@ fn decompile_edgecases() -> Option<String> {
 
 #[test]
 fn report_per_method_javac_recompile() {
-    let javac: PathBuf = require_javac();
+    let javac: PathBuf = grader_jdk_tool("javac");
     let jar: PathBuf = corpus(&["megafile", "EdgeCases-baseline.jar"]);
     let Some(source): Option<String> = decompile_edgecases() else {
         panic!("the committed input is required, restore it from git: EdgeCases baseline absent");
@@ -739,7 +711,7 @@ const SEEDED_DEFECT_IN_RECOVERED_SOURCE: &str = "int ) broken;\n";
 
 #[test]
 fn a_seeded_defect_in_the_real_recovered_unit_drops_the_figure_to_zero_not_to_one_less() {
-    let javac: PathBuf = require_javac();
+    let javac: PathBuf = grader_jdk_tool("javac");
     let jar: PathBuf = corpus(&["megafile", "EdgeCases-baseline.jar"]);
     let Some(source): Option<String> = decompile_edgecases() else {
         panic!("the committed input is required, restore it from git: EdgeCases baseline absent");
@@ -857,7 +829,7 @@ const SEEDED_PARSE_DEFECTS: &[SeededParseDefect] = &[
 
 #[test]
 fn a_seeded_parse_defect_at_any_position_zeroes_the_per_method_certification() {
-    let javac: PathBuf = require_javac();
+    let javac: PathBuf = grader_jdk_tool("javac");
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("disrobe_seeded_parse_defect")
             .expect("create scratch dir");
@@ -922,7 +894,7 @@ const REAL_RESOLUTION_DEFECT_SRC: &str = r"public class Resolved {
 
 #[test]
 fn a_real_resolution_failure_costs_only_its_own_method_once_attribution_ran() {
-    let javac: PathBuf = require_javac();
+    let javac: PathBuf = grader_jdk_tool("javac");
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("disrobe_seeded_resolution_defect")
             .expect("create scratch dir");
@@ -969,7 +941,7 @@ fn many_broken_methods_source() -> String {
 
 #[test]
 fn xmaxerrs_is_raised_high_enough_that_no_diagnostic_is_truncated_into_a_false_clean() {
-    let javac: PathBuf = require_javac();
+    let javac: PathBuf = grader_jdk_tool("javac");
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("disrobe_xmaxerrs_truncation")
             .expect("create scratch dir");
@@ -1021,17 +993,8 @@ public class Load {\n\
 
 #[test]
 fn recompiled_class_links_under_jvm_verifier() {
-    let Some(javac): Option<PathBuf> = find_on_path("javac") else {
-        panic!(
-            "the JDK is on PATH in every CI job that runs these tests: whole-unit -Xverify:all gate: javac not on PATH; the recompiled EdgeCases \
-             classfile is NOT attested to load under the real JVM verifier on this machine"
-        );
-    };
-    let Some(java): Option<PathBuf> = find_on_path("java") else {
-        panic!(
-            "the JDK is on PATH in every CI job that runs these tests: whole-unit -Xverify:all gate: java not on PATH"
-        );
-    };
+    let javac: PathBuf = grader_jdk_tool("javac");
+    let java: PathBuf = grader_jdk_tool("java");
     let jar: PathBuf = corpus(&["megafile", "EdgeCases-baseline.jar"]);
     let Some(source): Option<String> = decompile_edgecases() else {
         panic!("the committed input is required, restore it from git: EdgeCases baseline absent");
@@ -1165,15 +1128,7 @@ fn report_gapcases_family_recovery() {
         );
     }
 
-    let Some(javac): Option<PathBuf> = find_on_path("javac") else {
-        panic!(
-            "the JDK is on PATH in every CI job that runs these tests: \n========================================================================\n\
-             SKIPPED javac recompile of GapCases: javac not on PATH. Token fidelity was\n\
-             checked, but the per-method recompile floor (>= {GAP_METHOD_OK_FLOOR} of\n\
-             {GAP_METHOD_TOTAL}) did NOT run and is NOT enforced on this machine.\n\
-             ========================================================================\n"
-        );
-    };
+    let javac: PathBuf = grader_jdk_tool("javac");
     let jar: PathBuf = corpus(&["megafile", "GapCases-baseline.jar"]);
     let purpose: String = format!("disrobe_gapcases_recompile_{}", std::process::id());
     let scratch: disrobe_core::scratch::ScratchDir =
@@ -1242,12 +1197,8 @@ fn run_annotation_probe(java: &PathBuf, classpath: std::ffi::OsString) -> String
 
 #[test]
 fn repeatable_class_annotations_recompile_with_reflection_equivalence() {
-    let Some(javac): Option<PathBuf> = find_on_path("javac") else {
-        panic!("the JDK is on PATH in every CI job that runs these tests: javac not on PATH");
-    };
-    let Some(java): Option<PathBuf> = find_on_path("java") else {
-        panic!("the JDK is on PATH in every CI job that runs these tests: java not on PATH");
-    };
+    let javac: PathBuf = grader_jdk_tool("javac");
+    let java: PathBuf = grader_jdk_tool("java");
     let jar: PathBuf = corpus(&["megafile", "EdgeCases-baseline.jar"]);
     let classes: Vec<(String, Vec<u8>)> =
         classes_from_jar(&jar).expect("tracked EdgeCases-baseline.jar");
@@ -1386,12 +1337,8 @@ fn javap_verbose(javap: &PathBuf, classpath: &PathBuf, class_name: &str) -> Stri
 
 #[test]
 fn runtime_invisible_class_annotation_recompiles_to_the_same_bucket() {
-    let Some(javac): Option<PathBuf> = find_on_path("javac") else {
-        panic!("the JDK is on PATH in every CI job that runs these tests: javac not on PATH");
-    };
-    let Some(javap): Option<PathBuf> = find_on_path("javap") else {
-        panic!("the JDK is on PATH in every CI job that runs these tests: javap not on PATH");
-    };
+    let javac: PathBuf = grader_jdk_tool("javac");
+    let javap: PathBuf = grader_jdk_tool("javap");
     let purpose: String = format!("disrobe_invisible_annotation_{}", std::process::id());
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
@@ -1702,15 +1649,9 @@ fn hidden_mark_values(javap_output: &str) -> Vec<i32> {
 
 #[test]
 fn member_annotations_recompile_with_retention_and_runtime_equivalence() {
-    let Some(javac): Option<PathBuf> = find_on_path("javac") else {
-        panic!("the JDK is on PATH in every CI job that runs these tests: javac not on PATH");
-    };
-    let Some(java): Option<PathBuf> = find_on_path("java") else {
-        panic!("the JDK is on PATH in every CI job that runs these tests: java not on PATH");
-    };
-    let Some(javap): Option<PathBuf> = find_on_path("javap") else {
-        panic!("the JDK is on PATH in every CI job that runs these tests: javap not on PATH");
-    };
+    let javac: PathBuf = grader_jdk_tool("javac");
+    let java: PathBuf = grader_jdk_tool("java");
+    let javap: PathBuf = grader_jdk_tool("javap");
     let purpose: String = format!("disrobe_member_annotation_{}", std::process::id());
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
@@ -1878,5 +1819,17 @@ fn member_annotations_recompile_with_retention_and_runtime_equivalence() {
     assert_eq!(
         semantic_method_code(&recovered_cf, "read"),
         semantic_method_code(&original_cf, "read")
+    );
+}
+
+#[test]
+fn javac_version_banners_parse_to_their_feature_release() {
+    assert_eq!(common::parse_javac_major("javac 25.0.4\n"), Some(25));
+    assert_eq!(common::parse_javac_major("javac 17"), Some(17));
+    assert_eq!(common::parse_javac_major("javac 1.8.0_402"), Some(8));
+    assert_eq!(common::parse_javac_major("javac: command failed"), None);
+    assert!(
+        common::parse_javac_major("javac 21.0.2")
+            .is_some_and(|major: u32| major < common::GRADER_JDK_MAJOR)
     );
 }
