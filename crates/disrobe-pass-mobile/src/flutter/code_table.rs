@@ -1,3 +1,4 @@
+use disrobe_bytes::{ByteReadError, read_u32_le_at};
 use serde::{Deserialize, Serialize};
 
 use super::dart_graph_layout::DartCodeTableLayout;
@@ -132,8 +133,8 @@ pub fn parse_code_table(
         .ok_or(Error::DartCodeTableUnavailable {
             reason: "the instructions-table object offset overflows",
         })?;
-    let declared: usize = usize::try_from(read_u32(image, descriptor_offset).ok_or(
-        Error::DartCodeTableUnavailable {
+    let declared: usize = usize::try_from(read_u32_le_at(image, descriptor_offset).map_err(
+        |_: ByteReadError| Error::DartCodeTableUnavailable {
             reason: "the instructions-table descriptor is outside the read-only image",
         },
     )?)
@@ -165,8 +166,10 @@ pub fn parse_code_table(
     for index in 0..instructions_table_len {
         let at: usize = entries_offset + index * layout.entry_stride;
         let instructions_offset: u64 =
-            u64::from(read_u32(image, at).ok_or(Error::DartCodeTableUnavailable {
-                reason: "an instructions-table entry is outside the read-only image",
+            u64::from(read_u32_le_at(image, at).map_err(|_: ByteReadError| {
+                Error::DartCodeTableUnavailable {
+                    reason: "an instructions-table entry is outside the read-only image",
+                }
             })?);
         let ascending: bool = previous.is_none_or(|last: u64| instructions_offset > last);
         if !ascending
@@ -189,11 +192,4 @@ pub fn parse_code_table(
         descriptor_offset,
         entries,
     })
-}
-
-fn read_u32(bytes: &[u8], at: usize) -> Option<u32> {
-    bytes
-        .get(at..at.checked_add(4)?)
-        .and_then(|slice: &[u8]| <[u8; 4]>::try_from(slice).ok())
-        .map(u32::from_le_bytes)
 }

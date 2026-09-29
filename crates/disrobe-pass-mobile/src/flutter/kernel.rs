@@ -1,3 +1,4 @@
+use disrobe_bytes::{ByteReadError, read_u32_be_at};
 use serde::{Deserialize, Serialize};
 
 use crate::debug::{dbg_kv, dbg_section};
@@ -154,14 +155,8 @@ struct MemberTable {
     start: usize,
 }
 
-#[must_use]
-fn read_be_u32(bytes: &[u8], at: usize) -> Option<u32> {
-    let slice: &[u8] = bytes.get(at..at.checked_add(4)?)?;
-    Some(u32::from_be_bytes([slice[0], slice[1], slice[2], slice[3]]))
-}
-
 fn member_table_from_count(bytes: &[u8], count_field_at: usize) -> Option<MemberTable> {
-    let count: usize = usize::try_from(read_be_u32(bytes, count_field_at)?).ok()?;
+    let count: usize = usize::try_from(read_u32_be_at(bytes, count_field_at).ok()?).ok()?;
     if count > MEMBER_TABLE_CAP {
         return None;
     }
@@ -222,7 +217,7 @@ fn parse_component_index(bytes: &[u8]) -> Option<ComponentIndex> {
     if n < 16 {
         return None;
     }
-    let library_count: usize = usize::try_from(read_be_u32(bytes, n - 8)?).ok()?;
+    let library_count: usize = usize::try_from(read_u32_be_at(bytes, n - 8).ok()?).ok()?;
     if library_count > (1 << 24) {
         return None;
     }
@@ -231,16 +226,16 @@ fn parse_component_index(bytes: &[u8]) -> Option<ComponentIndex> {
     let mut library_offsets: Vec<usize> = Vec::with_capacity(library_count + 1);
     for i in 0..=library_count {
         let off: usize =
-            usize::try_from(read_be_u32(bytes, library_offsets_start + i * 4)?).ok()?;
+            usize::try_from(read_u32_be_at(bytes, library_offsets_start + i * 4).ok()?).ok()?;
         library_offsets.push(off);
     }
     let fixed_block_start: usize = library_offsets_start
         .checked_sub(4)?
         .checked_sub(COMPONENT_INDEX_FIXED_FIELDS * 4)?;
     let source_table_offset: usize =
-        usize::try_from(read_be_u32(bytes, fixed_block_start)?).ok()?;
+        usize::try_from(read_u32_be_at(bytes, fixed_block_start).ok()?).ok()?;
     let string_table_offset: usize =
-        usize::try_from(read_be_u32(bytes, fixed_block_start + 6 * 4)?).ok()?;
+        usize::try_from(read_u32_be_at(bytes, fixed_block_start + 6 * 4).ok()?).ok()?;
     Some(ComponentIndex {
         source_table_offset,
         string_table_offset,
@@ -250,8 +245,9 @@ fn parse_component_index(bytes: &[u8]) -> Option<ComponentIndex> {
 
 fn parse_sources(bytes: &[u8], offset: usize) -> Vec<KernelSource> {
     let mut out: Vec<KernelSource> = Vec::new();
-    let Some(length): Option<usize> =
-        read_be_u32(bytes, offset).and_then(|v: u32| usize::try_from(v).ok())
+    let Some(length): Option<usize> = read_u32_be_at(bytes, offset)
+        .ok()
+        .and_then(|v: u32| usize::try_from(v).ok())
     else {
         return out;
     };
@@ -411,7 +407,7 @@ fn member_offsets(bytes: &[u8], member_block_end: usize) -> Option<Vec<usize>> {
     let mut out: Vec<usize> = Vec::with_capacity(table.count);
     for i in 0..table.count {
         let at: usize = table.start.checked_add(i.checked_mul(4)?)?;
-        out.push(usize::try_from(read_be_u32(bytes, at)?).ok()?);
+        out.push(usize::try_from(read_u32_be_at(bytes, at).ok()?).ok()?);
     }
     Some(out)
 }
@@ -496,7 +492,9 @@ fn parse_library(
     let mut procedures: Vec<KernelProcedure> = Vec::with_capacity(proc_table.count);
     for i in 0..proc_table.count {
         let at: usize = proc_table.start.checked_add(i.checked_mul(4)?)?;
-        if let Some(off) = read_be_u32(bytes, at).and_then(|v: u32| usize::try_from(v).ok())
+        if let Some(off) = read_u32_be_at(bytes, at)
+            .ok()
+            .and_then(|v: u32| usize::try_from(v).ok())
             && let Some(proc) = parse_procedure(bytes, off, strings, sources)
         {
             procedures.push(proc);
@@ -509,7 +507,9 @@ fn parse_library(
     let mut class_offsets: Vec<usize> = Vec::with_capacity(class_offset_count);
     for i in 0..class_offset_count {
         let at: usize = class_table.start.checked_add(i.checked_mul(4)?)?;
-        let off: usize = read_be_u32(bytes, at).and_then(|v: u32| usize::try_from(v).ok())?;
+        let off: usize = read_u32_be_at(bytes, at)
+            .ok()
+            .and_then(|v: u32| usize::try_from(v).ok())?;
         class_offsets.push(off);
     }
     let mut classes: Vec<KernelClass> = Vec::with_capacity(class_table.count);
@@ -533,8 +533,8 @@ pub fn parse_kernel(bytes: &[u8]) -> Result<DartKernel> {
     if bytes.len() < KERNEL_HEADER_MIN || !is_dart_kernel(bytes) {
         return Err(Error::DartKernelBadMagic);
     }
-    let format_version: u32 =
-        read_be_u32(bytes, 4).ok_or(Error::DartKernelSection("kernel-version"))?;
+    let format_version: u32 = read_u32_be_at(bytes, 4)
+        .map_err(|_: ByteReadError| Error::DartKernelSection("kernel-version"))?;
     dbg_kv("format_version", || format_version.to_string());
     let index: ComponentIndex =
         parse_component_index(bytes).ok_or(Error::DartKernelSection("component-index"))?;
