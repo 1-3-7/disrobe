@@ -379,7 +379,6 @@ mod tests {
                 best_off = off;
             }
         }
-        let _ = last_m_off;
         (best_off, best_len)
     }
 

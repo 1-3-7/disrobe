@@ -292,7 +292,6 @@ pub fn parse_sit5(bytes: &[u8]) -> Result<Sit5Archive> {
             bytes.len()
         )));
     }
-    let declared_entries: usize = usize::from(rd_u16(header, 92)?);
     let first_offset: usize = usize::try_from(rd_u32(header, 94)?)
         .map_err(|_| sit5_error("stuffit 5: first entry offset exceeds address space"))?;
     if first_offset < ARCHIVE_HEADER_LEN || first_offset > bytes.len() {
@@ -407,7 +406,6 @@ pub fn parse_sit5(bytes: &[u8]) -> Result<Sit5Archive> {
     if visited > MAX_ENTRIES {
         return Err(sit5_error("stuffit 5: entry limit exceeded"));
     }
-    let _ = declared_entries;
     Ok(Sit5Archive { entries })
 }
 

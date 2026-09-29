@@ -419,7 +419,7 @@ mod tests {
 
     use super::*;
 
-    fn build_elf(arch: Architecture, bit64: bool) -> Vec<u8> {
+    fn build_elf(arch: Architecture) -> Vec<u8> {
         let mut obj: WriteObject<'_> =
             WriteObject::new(BinaryFormat::Elf, arch, Endianness::Little);
         let text_id: object::write::SectionId = obj.section_id(StandardSection::Text);
@@ -435,16 +435,14 @@ mod tests {
             flags: WriteSymbolFlags::None,
         };
         let _ = obj.add_symbol(sym);
-        let _ = bit64;
         obj.write().expect("elf write")
     }
 
-    fn build_macho(arch: Architecture, bit64: bool) -> Vec<u8> {
+    fn build_macho(arch: Architecture) -> Vec<u8> {
         let mut obj: WriteObject<'_> =
             WriteObject::new(BinaryFormat::MachO, arch, Endianness::Little);
         let text_id: object::write::SectionId = obj.section_id(StandardSection::Text);
         let _ = obj.append_section_data(text_id, &[0x90u8; 32], 16);
-        let _ = bit64;
         obj.write().expect("macho write")
     }
 
@@ -458,7 +456,7 @@ mod tests {
 
     #[test]
     fn parse_elf32_x86() {
-        let bytes: Vec<u8> = build_elf(Architecture::I386, false);
+        let bytes: Vec<u8> = build_elf(Architecture::I386);
         let nf: NativeFile = parse_native(&bytes).expect("parse elf32");
         assert_eq!(nf.format, NativeFormat::Elf32);
         assert_eq!(nf.arch, Arch::X86);
@@ -469,7 +467,7 @@ mod tests {
 
     #[test]
     fn parse_elf64_x86_64() {
-        let bytes: Vec<u8> = build_elf(Architecture::X86_64, true);
+        let bytes: Vec<u8> = build_elf(Architecture::X86_64);
         let nf: NativeFile = parse_native(&bytes).expect("parse elf64");
         assert_eq!(nf.format, NativeFormat::Elf64);
         assert_eq!(nf.arch, Arch::X86_64);
@@ -478,7 +476,7 @@ mod tests {
 
     #[test]
     fn parse_elf64_aarch64() {
-        let bytes: Vec<u8> = build_elf(Architecture::Aarch64, true);
+        let bytes: Vec<u8> = build_elf(Architecture::Aarch64);
         let nf: NativeFile = parse_native(&bytes).expect("parse elf64 arm64");
         assert_eq!(nf.format, NativeFormat::Elf64);
         assert_eq!(nf.arch, Arch::Aarch64);
@@ -486,7 +484,7 @@ mod tests {
 
     #[test]
     fn parse_elf64_riscv64() {
-        let bytes: Vec<u8> = build_elf(Architecture::Riscv64, true);
+        let bytes: Vec<u8> = build_elf(Architecture::Riscv64);
         let nf: NativeFile = parse_native(&bytes).expect("parse elf64 riscv64");
         assert_eq!(nf.format, NativeFormat::Elf64);
         assert_eq!(nf.arch, Arch::RiscV64);
@@ -494,7 +492,7 @@ mod tests {
 
     #[test]
     fn parse_elf32_arm() {
-        let bytes: Vec<u8> = build_elf(Architecture::Arm, false);
+        let bytes: Vec<u8> = build_elf(Architecture::Arm);
         let nf: NativeFile = parse_native(&bytes).expect("parse elf32 arm");
         assert_eq!(nf.format, NativeFormat::Elf32);
         assert_eq!(nf.arch, Arch::Arm);
@@ -502,7 +500,7 @@ mod tests {
 
     #[test]
     fn parse_macho32_i386() {
-        let bytes: Vec<u8> = build_macho(Architecture::I386, false);
+        let bytes: Vec<u8> = build_macho(Architecture::I386);
         let nf: NativeFile = parse_native(&bytes).expect("parse macho32");
         assert_eq!(nf.format, NativeFormat::MachO32);
         assert_eq!(nf.arch, Arch::X86);
@@ -511,7 +509,7 @@ mod tests {
 
     #[test]
     fn parse_macho64_x86_64() {
-        let bytes: Vec<u8> = build_macho(Architecture::X86_64, true);
+        let bytes: Vec<u8> = build_macho(Architecture::X86_64);
         let nf: NativeFile = parse_native(&bytes).expect("parse macho64");
         assert_eq!(nf.format, NativeFormat::MachO64);
         assert_eq!(nf.arch, Arch::X86_64);

@@ -160,7 +160,6 @@ fn parse_dentry(metadata: &[u8], offset: usize) -> Result<Option<Dentry>> {
         .get(hash_start..hash_start + SHA1_LEN)
         .ok_or_else(|| Error::Decompression("wim dentry hash truncated".to_owned()))?;
     hash.copy_from_slice(hash_slice);
-    let short_name_nbytes: u16 = read_u16(metadata, offset + 98)?;
     let name_nbytes: u16 = read_u16(metadata, offset + 100)?;
     let name: String = if name_nbytes == 0 {
         String::new()
@@ -174,7 +173,6 @@ fn parse_dentry(metadata: &[u8], offset: usize) -> Result<Option<Dentry>> {
             .ok_or_else(|| Error::Decompression("wim dentry name out of bounds".to_owned()))?;
         decode_utf16le_name(raw)
     };
-    let _ = short_name_nbytes;
     Ok(Some(Dentry {
         length,
         attributes,

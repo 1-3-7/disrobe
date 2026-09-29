@@ -608,7 +608,6 @@ fn read_directory(
                 return Ok(out);
             }
             let entry_offset: u16 = endian.u16(region, pos);
-            let entry_type: u16 = endian.u16(region, pos + 4);
             let name_size: usize = endian.u16(region, pos + 6) as usize + 1;
             pos += 8;
             let name_bytes: &[u8] = match region.get(pos..pos + name_size) {
@@ -617,12 +616,6 @@ fn read_directory(
             };
             pos += name_size;
             let name: String = String::from_utf8_lossy(name_bytes).into_owned();
-            let basic_type: u16 = if entry_type > 7 {
-                entry_type - 7
-            } else {
-                entry_type
-            };
-            let _ = basic_type;
             out.push((u64::from(inode_start), entry_offset, name));
         }
     }
@@ -978,8 +971,6 @@ pub(crate) fn build_squashfs_with_links(file_names: &[&str], file_body: &[u8]) -
     }
     image.extend_from_slice(&uncompressed_metadata(&dir_payload));
     let dir_file_size: u32 = dir_payload.len() as u32 + 3;
-
-    let _ = dir_file_size;
     let mut dir_inode_fixed: Vec<u8> = Vec::new();
     put_u16(&mut dir_inode_fixed, INODE_TYPE_DIR);
     put_u16(&mut dir_inode_fixed, 0o755);

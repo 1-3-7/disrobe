@@ -1655,8 +1655,6 @@ mod tests {
         let root_inode_off: usize = b.meta_base() + (root_nid as usize) * 32;
         b.image[root_inode_off + 16..root_inode_off + 20]
             .copy_from_slice(&root_dir_blk.to_le_bytes());
-        let root_size: u32 = (3 * 12 + "..".len() + ".".len() + "sub".len()) as u32;
-        let _ = root_size;
 
         let sub_inode_off: usize = b.meta_base() + (sub_nid as usize) * 32;
         b.image[sub_inode_off + 16..sub_inode_off + 20].copy_from_slice(&sub_dir_blk.to_le_bytes());
