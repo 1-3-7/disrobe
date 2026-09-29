@@ -1,4 +1,4 @@
-#![deny(unsafe_code)]
+#![forbid(unsafe_code)]
 #![deny(unreachable_pub)]
 use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
