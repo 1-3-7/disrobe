@@ -228,7 +228,7 @@ fn decode_wearedevs(text: &str) -> Option<PeelResult> {
     out.push_str("local STRINGS = {\n");
     for s in &ordered {
         out.push_str("  ");
-        out.push_str(&quote(s));
+        out.push_str(&crate::decompile::lift::quote_lua_string(s));
         out.push_str(",\n");
     }
     out.push_str("}\n");
@@ -810,24 +810,6 @@ fn parse_string_literals(body: &str) -> Vec<String> {
         }
         i += 1;
     }
-    out
-}
-
-fn quote(s: &str) -> String {
-    let mut out: String = String::with_capacity(s.len() + 2);
-    out.push('"');
-    for ch in s.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\{}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
     out
 }
 

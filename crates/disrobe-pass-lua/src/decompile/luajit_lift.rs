@@ -618,7 +618,7 @@ impl LjState {
 }
 
 #[must_use]
-fn quote_lua(s: &str) -> String {
+pub(crate) fn quote_lua(s: &str) -> String {
     let bytes: &[u8] = s.as_bytes();
     let mut out: String = String::with_capacity(bytes.len() + 2);
     out.push('"');

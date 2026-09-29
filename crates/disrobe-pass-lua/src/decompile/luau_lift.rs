@@ -309,35 +309,6 @@ fn decode(raw: u32) -> Insn {
 }
 
 #[must_use]
-fn quote_lua(s: &str) -> String {
-    let bytes: &[u8] = s.as_bytes();
-    let mut out: String = String::with_capacity(bytes.len() + 2);
-    out.push('"');
-    for (i, &b) in bytes.iter().enumerate() {
-        match b {
-            b'"' => out.push_str("\\\""),
-            b'\\' => out.push_str("\\\\"),
-            b'\n' => out.push_str("\\n"),
-            b'\r' => out.push_str("\\r"),
-            b'\t' => out.push_str("\\t"),
-            0x20..=0x7E => out.push(b as char),
-            other => {
-                if bytes
-                    .get(i + 1)
-                    .is_some_and(|next: &u8| next.is_ascii_digit())
-                {
-                    out.push_str(&format!("\\{other:03}"));
-                } else {
-                    out.push_str(&format!("\\{other}"));
-                }
-            }
-        }
-    }
-    out.push('"');
-    out
-}
-
-#[must_use]
 fn format_num(n: f64) -> String {
     if n.is_nan() {
         return "(0/0)".to_owned();
@@ -369,7 +340,7 @@ fn const_str(c: &LuaConstant) -> String {
         LuaConstant::Bool(false) => "false".to_owned(),
         LuaConstant::Integer(i) => i.to_string(),
         LuaConstant::Number(n) => format_num(*n),
-        LuaConstant::Str(s) => quote_lua(s),
+        LuaConstant::Str(s) => crate::decompile::luajit_lift::quote_lua(s),
         LuaConstant::Import(path) if !path.is_empty() => path.join("."),
         LuaConstant::Import(_) => "nil".to_owned(),
         LuaConstant::ClosureRef(_) => "function() end".to_owned(),
@@ -1041,7 +1012,7 @@ fn handle(
             let method: Option<&str> = const_string_raw(proto, aux);
             let callee: String = match method {
                 Some(name) if is_ident(name) => format!("{obj}:{name}"),
-                Some(name) => format!("{obj}[{}]", quote_lua(name)),
+                Some(name) => format!("{obj}[{}]", crate::decompile::luajit_lift::quote_lua(name)),
                 None => format!("{obj}.__namecall"),
             };
             state.set_reg(u32::from(inst.a), callee);
@@ -1409,7 +1380,7 @@ fn arithk_sym(op: u8) -> &'static str {
 fn index_field(table: &str, key: Option<&str>) -> String {
     match key {
         Some(k) if is_ident(k) => format!("{table}.{k}"),
-        Some(k) => format!("{table}[{}]", quote_lua(k)),
+        Some(k) => format!("{table}[{}]", crate::decompile::luajit_lift::quote_lua(k)),
         None => format!("{table}.__index"),
     }
 }

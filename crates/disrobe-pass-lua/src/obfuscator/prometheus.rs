@@ -369,7 +369,7 @@ fn decode_string_pool(
     out.push_str("local PROMETHEUS_STRINGS = {\n");
     for s in &recovered {
         out.push_str("  ");
-        out.push_str(&quote(s));
+        out.push_str(&crate::decompile::lift::quote_lua_string(s));
         out.push_str(",\n");
     }
     out.push_str("}\n");
@@ -492,25 +492,6 @@ fn is_plausible_plaintext(bytes: &[u8]) -> bool {
         .filter(|b: &&u8| (0x20..0x7F).contains(*b) || matches!(**b, b'\n' | b'\t' | b'\r'))
         .count();
     printable == bytes.len()
-}
-
-#[must_use]
-fn quote(s: &str) -> String {
-    let mut out: String = String::with_capacity(s.len() + 2);
-    out.push('"');
-    for ch in s.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\{}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
 }
 
 fn matches_constarray_wrap(src: &[u8]) -> bool {

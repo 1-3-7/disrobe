@@ -67,7 +67,7 @@ pub fn peel(src: &[u8], _opts: &DeobfOptions) -> Result<PeelResult> {
     let mut out: String = String::from("local MOONSEC_V1_STRINGS = {\n");
     for s in &pool {
         out.push_str("  ");
-        out.push_str(&quote_lua(s));
+        out.push_str(&crate::decompile::lift::quote_lua_string(s));
         out.push_str(",\n");
     }
     out.push_str("}\n");
@@ -139,23 +139,4 @@ fn recover_string_pool(text: &str) -> Vec<String> {
             }
         })
         .collect()
-}
-
-#[must_use]
-fn quote_lua(s: &str) -> String {
-    let mut out: String = String::with_capacity(s.len() + 2);
-    out.push('"');
-    for ch in s.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\{}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
 }
