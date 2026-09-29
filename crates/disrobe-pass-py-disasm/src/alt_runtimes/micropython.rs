@@ -815,8 +815,7 @@ fn decode_opcodes(code: &[u8], qstrs: &[String]) -> Result<Vec<MpyDecodedInsn>> 
             });
             break;
         };
-        let (operand, arg): (Option<String>, MpyArg) =
-            decode_operand(kind, op, code, &mut ip, qstrs)?;
+        let (operand, arg): (Option<String>, MpyArg) = decode_operand(kind, code, &mut ip, qstrs)?;
         out.push(MpyDecodedInsn {
             offset,
             opcode: op,
@@ -891,7 +890,6 @@ fn decode_multi_opcode(op: u8, offset: usize) -> Option<MpyDecodedInsn> {
 
 fn decode_operand(
     kind: OperandKind,
-    op: u8,
     code: &[u8],
     ip: &mut usize,
     qstrs: &[String],
@@ -970,7 +968,6 @@ fn decode_operand(
             )
         }
     };
-    let _ = op;
     Ok(result)
 }
 
