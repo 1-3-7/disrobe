@@ -7,6 +7,7 @@ use wasmparser::{
     TableType, TypeRef, ValType,
 };
 
+use crate::lift::LiftCoverage;
 use crate::lift_wat::{
     FeatureReqs, RenderMode, WatFunc, escape_wat_name, render_func_in_module, val_type_str,
 };
@@ -61,6 +62,13 @@ struct ModuleScaffold {
 
 #[must_use]
 pub fn lift_module_faithful_wat(bytes: &[u8]) -> Option<String> {
+    lift_module_faithful_wat_with_coverage(bytes).map(|(source, _): (String, LiftCoverage)| source)
+}
+
+#[must_use]
+pub(crate) fn lift_module_faithful_wat_with_coverage(
+    bytes: &[u8],
+) -> Option<(String, LiftCoverage)> {
     crate::debug::dbg_section("faithful-lift");
     let scaffold: ModuleScaffold = collect_scaffold(bytes)?;
     let module_sigs: Vec<(Vec<ValType>, Vec<ValType>)> = scaffold.func_signatures();
@@ -83,6 +91,7 @@ pub fn lift_module_faithful_wat(bytes: &[u8]) -> Option<String> {
     let sigs: Vec<FunctionSig> = scaffold.defined_signatures();
     let mut sig_iter: std::slice::Iter<'_, FunctionSig> = sigs.iter();
     let mut bodies_lifted: u32 = 0;
+    let mut coverage: LiftCoverage = LiftCoverage::default();
 
     for payload in Parser::new(0).parse_all(bytes) {
         let Ok(Payload::CodeSectionEntry(body)) = payload else {
@@ -99,6 +108,13 @@ pub fn lift_module_faithful_wat(bytes: &[u8]) -> Option<String> {
         );
         reqs.merge(&rendered.reqs);
         bodies.push_str(&rendered.text);
+        coverage.total_ops = coverage
+            .total_ops
+            .checked_add(rendered.coverage.total_ops)?;
+        coverage.translated_ops = coverage
+            .translated_ops
+            .checked_add(rendered.coverage.translated_ops)?;
+        coverage.untranslated.extend(rendered.coverage.untranslated);
         defined_index = defined_index.checked_add(1)?;
         bodies_lifted += 1;
     }
@@ -106,7 +122,7 @@ pub fn lift_module_faithful_wat(bytes: &[u8]) -> Option<String> {
     crate::debug::dbg_kv("bodies", || {
         format!("function_bodies_lifted={bodies_lifted}")
     });
-    Some(assemble(&scaffold, &bodies, &reqs))
+    Some((assemble(&scaffold, &bodies, &reqs), coverage))
 }
 
 fn assemble(scaffold: &ModuleScaffold, bodies: &str, reqs: &FeatureReqs) -> String {

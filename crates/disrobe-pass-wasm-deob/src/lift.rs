@@ -855,6 +855,14 @@ fn assemble_wat_module(
     let mut prefix: ModuleSourceBuffer<'_> = ModuleSourceBuffer::new(budget);
     prefix.push_str(";; disrobe wasm lift target=wat\n");
     let mut source: String = prefix.finish()?;
+    if let Some((module, coverage)) =
+        crate::lift_module_faithful::lift_module_faithful_wat_with_coverage(bytes)
+    {
+        let mut faithful: ModuleSourceBuffer<'_> = ModuleSourceBuffer::new(budget);
+        faithful.push_str(&module);
+        source.push_str(&faithful.finish()?);
+        return Ok((source, bodies.len(), coverage));
+    }
     let (module, coverage): (String, LiftCoverage) =
         crate::lift_wat::lift_module_to_wat_with_budget(&bodies, function_offset, budget)?;
     source.push_str(&module);
