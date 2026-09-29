@@ -568,9 +568,8 @@ fn new_provider_rules_reject_placeholders() {
 
     let anthropic_ph: String = format!("{}{}", "sk-ant-oat01-", "EXAMPLE".repeat(12));
     let ph_findings: Vec<Finding> = scan_bytes(format!("k={anthropic_ph}").as_bytes(), None);
-    if let Some(f) = first_of(&ph_findings, SecretKind::AnthropicOauth) {
+    if first_of(&ph_findings, SecretKind::AnthropicOauth).is_some() {
         use disrobe_core::{Confidence, secret_validate};
-        let _ = f;
         assert_eq!(
             secret_validate(SecretKind::AnthropicOauth, "sk-ant-oat01-EXAMPLE"),
             Confidence::Speculative
