@@ -391,13 +391,32 @@ const BEHAVIOUR_PROGRAMS_54: &[(&str, &str)] = &[
     ),
 ];
 
+const BEHAVIOUR_PROGRAMS_PORTABLE: &[(&str, &str)] = &[(
+    "loops",
+    include_str!("../../../corpus/lua/behaviour/loops.lua"),
+)];
+
 #[test]
 fn stripped_behaviour_programs_reexecute_as_emitted_lua_5_4() {
-    let tc: Toolchain = toolchain("5.4");
+    assert_behaviour_programs_reexecute("5.4", BEHAVIOUR_PROGRAMS_54);
+}
+
+#[test]
+fn stripped_portable_behaviour_programs_reexecute_as_emitted_lua_5_1() {
+    assert_behaviour_programs_reexecute("5.1", BEHAVIOUR_PROGRAMS_PORTABLE);
+}
+
+#[test]
+fn stripped_portable_behaviour_programs_reexecute_as_emitted_lua_5_3() {
+    assert_behaviour_programs_reexecute("5.3", BEHAVIOUR_PROGRAMS_PORTABLE);
+}
+
+fn assert_behaviour_programs_reexecute(version: &str, programs: &[(&str, &str)]) {
+    let tc: Toolchain = toolchain(version);
     let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
     let mut diverged: Vec<String> = Vec::new();
-    for (name, source) in BEHAVIOUR_PROGRAMS_54 {
+    for (name, source) in programs {
         let src: PathBuf = dir.join(format!("{name}.lua"));
         std::fs::write(&src, source).expect("write source");
         let bc: PathBuf = dir.join(format!("{name}.luac"));
@@ -423,7 +442,11 @@ fn stripped_behaviour_programs_reexecute_as_emitted_lua_5_4() {
             ));
         }
     }
-    assert!(diverged.is_empty(), "{}", diverged.join("\n====\n"));
+    assert!(
+        diverged.is_empty(),
+        "lua {version}: {}",
+        diverged.join("\n====\n")
+    );
 }
 
 const GOTO_PROGRAM: &str = "local acc = 0\nlocal i = 1\n::top::\nif i > 5 then goto done end\nacc = acc + i\ni = i + 1\ngoto top\n::done::\nprint(acc)\n";
