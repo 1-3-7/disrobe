@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
@@ -6,6 +8,7 @@ use super::pe_emit::{self, PeEmitReport};
 use super::{MAX_SIZE_OF_IMAGE, MinidumpFile, MinidumpModule, err};
 
 const PAGE_SIZE: u64 = 4096;
+const MAX_CARVE_STEPS: u64 = 1 << 26;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -76,7 +79,7 @@ pub fn carve_module(
         .map_err(|_e: std::num::TryFromIntError| err("minidump: module size overflows usize"))?;
 
     let mut image: Vec<u8> = vec![0u8; size_usize];
-    let mut covered: Vec<(u64, u64)> = Vec::new();
+    let mut cover: CoverSet = CoverSet::default();
     let mut truncated: Vec<(u64, u64)> = Vec::new();
     let mut notes: Vec<String> = Vec::new();
     let mut overlap_detected: bool = false;
@@ -96,7 +99,7 @@ pub fn carve_module(
         let src_skip: u64 = overlap_start - region.start_va;
         let available_here: u64 = region.file_available.saturating_sub(src_skip);
 
-        let frees: Vec<(u64, u64)> = subtract(module_start, module_end, &covered);
+        let frees: Vec<(u64, u64)> = cover.gaps(module_start, module_end)?;
         let free_total: u64 = frees.iter().map(|&(a, b): &(u64, u64)| b - a).sum();
         if free_total < module_end - module_start {
             overlap_detected = true;
@@ -116,37 +119,21 @@ pub fn carve_module(
                 copy_region(
                     dump, &mut image, file_start, free_start, copy_len, &mut notes,
                 );
-                insert_interval(&mut covered, free_start, free_start + copy_len);
+                cover.insert(free_start, free_start + copy_len)?;
             }
             if copy_len < want {
+                cover.charge(1)?;
                 truncated.push((free_start + copy_len, free_end));
             }
         }
     }
 
     let truncated_merged: Vec<(u64, u64)> = merged(truncated);
+    let gaps: Vec<(u64, u64)> = cover.gaps(0, size)?;
+    let covered: Vec<(u64, u64)> = cover.spans.into_iter().collect();
     let covered_bytes: u64 = covered.iter().map(|&(a, b): &(u64, u64)| b - a).sum();
-    let gaps: Vec<(u64, u64)> = subtract(0, size, &covered);
-    let mut absent_ranges: Vec<AbsentRange> = Vec::new();
-    let mut truncated_bytes: u64 = 0;
-    for (gap_start, gap_end) in gaps {
-        for (a, b) in intersect(gap_start, gap_end, &truncated_merged) {
-            truncated_bytes += b - a;
-            absent_ranges.push(AbsentRange {
-                start_va: base + a,
-                end_va: base + b,
-                reason: AbsentReason::TruncatedDescriptor,
-            });
-        }
-        for (a, b) in subtract(gap_start, gap_end, &truncated_merged) {
-            absent_ranges.push(AbsentRange {
-                start_va: base + a,
-                end_va: base + b,
-                reason: AbsentReason::NotPresentInDump,
-            });
-        }
-    }
-    absent_ranges.sort_by_key(|range: &AbsentRange| range.start_va);
+    let (absent_ranges, truncated_bytes): (Vec<AbsentRange>, u64) =
+        classify_gaps(&gaps, &truncated_merged, base);
 
     let headers_present: bool = covered
         .first()
@@ -224,57 +211,136 @@ fn copy_region(
     dst.copy_from_slice(src);
 }
 
-fn subtract(start: u64, end: u64, covered: &[(u64, u64)]) -> Vec<(u64, u64)> {
-    let mut result: Vec<(u64, u64)> = Vec::new();
-    if start >= end {
-        return result;
-    }
-    let mut cursor: u64 = start;
-    for &(a, b) in covered {
-        if b <= cursor {
-            continue;
-        }
-        if a >= end {
-            break;
-        }
-        if a > cursor {
-            result.push((cursor, a.min(end)));
-        }
-        cursor = cursor.max(b);
-        if cursor >= end {
-            break;
-        }
-    }
-    if cursor < end {
-        result.push((cursor, end));
-    }
-    result
+#[derive(Debug, Default)]
+struct CoverSet {
+    spans: BTreeMap<u64, u64>,
+    steps: u64,
 }
 
-fn intersect(start: u64, end: u64, set: &[(u64, u64)]) -> Vec<(u64, u64)> {
-    let mut out: Vec<(u64, u64)> = Vec::new();
-    for &(a, b) in set {
-        let lo: u64 = a.max(start);
-        let hi: u64 = b.min(end);
-        if lo < hi {
-            out.push((lo, hi));
+impl CoverSet {
+    fn charge(&mut self, steps: u64) -> Result<()> {
+        self.steps = self.steps.saturating_add(steps);
+        if self.steps > MAX_CARVE_STEPS {
+            return Err(err(format!(
+                "minidump: carving exceeded its work budget of {MAX_CARVE_STEPS} interval steps"
+            )));
         }
+        Ok(())
     }
-    out
+
+    fn gaps(&mut self, start: u64, end: u64) -> Result<Vec<(u64, u64)>> {
+        let mut result: Vec<(u64, u64)> = Vec::new();
+        if start >= end {
+            return Ok(result);
+        }
+        self.charge(1)?;
+        let mut cursor: u64 = start;
+        if let Some((_, &before_end)) = self.spans.range(..start).next_back() {
+            cursor = cursor.max(before_end);
+        }
+        let mut visited: u64 = 0;
+        for (&a, &b) in self.spans.range(start..end) {
+            visited += 1;
+            if self.steps.saturating_add(visited) > MAX_CARVE_STEPS {
+                return Err(err(format!(
+                    "minidump: carving exceeded its work budget of {MAX_CARVE_STEPS} interval steps"
+                )));
+            }
+            if a > cursor {
+                result.push((cursor, a));
+            }
+            cursor = cursor.max(b);
+            if cursor >= end {
+                break;
+            }
+        }
+        if cursor < end {
+            result.push((cursor, end));
+        }
+        self.charge(visited)?;
+        Ok(result)
+    }
+
+    fn insert(&mut self, a: u64, b: u64) -> Result<()> {
+        if a >= b {
+            return Ok(());
+        }
+        let mut lo: u64 = a;
+        let mut hi: u64 = b;
+        if let Some((&before_start, &before_end)) = self.spans.range(..a).next_back()
+            && before_end >= a
+        {
+            lo = before_start;
+            hi = hi.max(before_end);
+        }
+        let absorbed: Vec<u64> = self.spans.range(lo..=b).map(|(&start, _)| start).collect();
+        self.charge(1 + absorbed.len() as u64)?;
+        for start in absorbed {
+            if let Some(end) = self.spans.remove(&start) {
+                hi = hi.max(end);
+            }
+        }
+        self.spans.insert(lo, hi);
+        Ok(())
+    }
 }
 
-fn insert_interval(covered: &mut Vec<(u64, u64)>, a: u64, b: u64) {
-    if a >= b {
-        return;
+fn classify_gaps(
+    gaps: &[(u64, u64)],
+    truncated: &[(u64, u64)],
+    base: u64,
+) -> (Vec<AbsentRange>, u64) {
+    let mut absent: Vec<AbsentRange> = Vec::new();
+    let mut truncated_bytes: u64 = 0;
+    let mut next: usize = 0;
+    for &(gap_start, gap_end) in gaps {
+        while next < truncated.len() && truncated[next].1 <= gap_start {
+            next += 1;
+        }
+        let mut cursor: u64 = gap_start;
+        let mut index: usize = next;
+        while index < truncated.len() && truncated[index].0 < gap_end {
+            let lo: u64 = truncated[index].0.max(gap_start);
+            let hi: u64 = truncated[index].1.min(gap_end);
+            if lo > cursor {
+                absent.push(absent_range(
+                    base,
+                    cursor,
+                    lo,
+                    AbsentReason::NotPresentInDump,
+                ));
+            }
+            truncated_bytes += hi - lo;
+            absent.push(absent_range(
+                base,
+                lo,
+                hi,
+                AbsentReason::TruncatedDescriptor,
+            ));
+            cursor = hi;
+            if truncated[index].1 > gap_end {
+                break;
+            }
+            index += 1;
+        }
+        if cursor < gap_end {
+            absent.push(absent_range(
+                base,
+                cursor,
+                gap_end,
+                AbsentReason::NotPresentInDump,
+            ));
+        }
     }
-    let first: usize = covered.partition_point(|&(_, end): &(u64, u64)| end < a);
-    let last: usize = covered.partition_point(|&(start, _): &(u64, u64)| start <= b);
-    let merged_span: (u64, u64) = if first < last {
-        (a.min(covered[first].0), b.max(covered[last - 1].1))
-    } else {
-        (a, b)
-    };
-    covered.splice(first..last, [merged_span]);
+    (absent, truncated_bytes)
+}
+
+const fn absent_range(base: u64, start: u64, end: u64, reason: AbsentReason) -> AbsentRange {
+    AbsentRange {
+        start_va: base + start,
+        end_va: base + end,
+        reason,
+    }
 }
 
 fn merged(mut intervals: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
@@ -313,12 +379,16 @@ fn count_covered_pages(covered: &[(u64, u64)], size: u64) -> u64 {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod insert_tests {
-    use super::{insert_interval, merged};
+    use super::{CoverSet, MAX_CARVE_STEPS, carve_module, merged};
+    use crate::containers::minidump::{
+        MemorySource, MinidumpFile, MinidumpMemoryRegion, MinidumpModule, ProcessorArch,
+    };
 
     #[test]
-    fn a_sorted_insert_matches_merging_the_whole_list() {
-        let mut covered: Vec<(u64, u64)> = Vec::new();
+    fn a_cover_set_insert_matches_merging_the_whole_list() {
+        let mut cover: CoverSet = CoverSet::default();
         let mut all: Vec<(u64, u64)> = Vec::new();
         let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
         for _ in 0..2_000 {
@@ -327,11 +397,85 @@ mod insert_tests {
                 .wrapping_add(1_442_695_040_888_963_407);
             let start: u64 = (seed >> 33) % 100_000;
             let len: u64 = (seed >> 13) % 700;
-            insert_interval(&mut covered, start, start + len);
+            cover.insert(start, start + len).expect("within budget");
             if len > 0 {
                 all.push((start, start + len));
             }
-            assert_eq!(covered, merged(all.clone()));
+            let spans: Vec<(u64, u64)> = cover.spans.iter().map(|(&a, &b)| (a, b)).collect();
+            assert_eq!(spans, merged(all.clone()));
         }
+    }
+
+    fn module(size: u32) -> MinidumpModule {
+        MinidumpModule {
+            base_of_image: 0x1000_0000,
+            size_of_image: size,
+            checksum: 0,
+            timestamp: 0,
+            name: "probe.dll".to_owned(),
+            cv_record: None,
+        }
+    }
+
+    fn dump_with(regions: Vec<MinidumpMemoryRegion>, size: u32) -> MinidumpFile {
+        MinidumpFile {
+            version: 0xA793,
+            arch: ProcessorArch::Amd64,
+            pointer_width: 8,
+            stream_directory_rva: 0,
+            number_of_streams: 0,
+            streams: Vec::new(),
+            modules: vec![module(size)],
+            memory_regions: regions,
+            notes: Vec::new(),
+        }
+    }
+
+    fn region(offset: u64, len: u64, available: u64) -> MinidumpMemoryRegion {
+        MinidumpMemoryRegion {
+            start_va: 0x1000_0000 + offset,
+            data_size: len,
+            file_offset: 0,
+            file_available: available,
+            source: MemorySource::Memory64List,
+        }
+    }
+
+    #[test]
+    fn many_disjoint_regions_in_descending_order_carve_in_near_linear_work() {
+        let count: u64 = 200_000;
+        let size: u32 = 2 * 200_000;
+        let regions: Vec<MinidumpMemoryRegion> = (0..count)
+            .rev()
+            .map(|index: u64| region(2 * index, 1, 1))
+            .collect();
+        let file: MinidumpFile = dump_with(regions, size);
+        let dump: Vec<u8> = vec![0x5A; 16];
+
+        let carved = carve_module(&file, &dump, &file.modules[0], u64::from(size))
+            .expect("the carve stays within its work budget");
+
+        assert_eq!(carved.coverage.covered_bytes, count);
+        assert_eq!(carved.absent_ranges.len() as u64, count);
+    }
+
+    #[test]
+    fn regions_rescanning_many_gaps_stop_at_the_work_budget() {
+        let islands: u64 = 100_000;
+        let size: u32 = 2 * 100_000;
+        let mut regions: Vec<MinidumpMemoryRegion> = (0..islands)
+            .map(|index: u64| region(2 * index, 1, 1))
+            .collect();
+        regions.extend((0..100_000).map(|_| region(0, u64::from(size), 0)));
+        let file: MinidumpFile = dump_with(regions, size);
+        let dump: Vec<u8> = vec![0x5A; 16];
+
+        let refused = carve_module(&file, &dump, &file.modules[0], u64::from(size))
+            .expect_err("rescanning 100,000 gaps 100,000 times exceeds the budget");
+
+        assert!(
+            refused.to_string().contains(&MAX_CARVE_STEPS.to_string()),
+            "the refusal names its budget: {refused}"
+        );
     }
 }
