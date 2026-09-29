@@ -1,8 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::LazyLock;
 
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as BASE64_STD;
 use lazy_regex::regex;
 use regex::Regex;
 use serde::Serialize;
@@ -170,7 +168,12 @@ fn decode_frombase64_payload(s: &str) -> Option<String> {
     if b64.len() > MAX_BASE64_INPUT {
         return None;
     }
-    let bytes: Vec<u8> = BASE64_STD.decode(b64.trim()).ok()?;
+    let bytes: Vec<u8> = disrobe_core::codec::base64_decode(
+        b64.trim().as_bytes(),
+        disrobe_core::codec::Base64Alphabet::Standard,
+        disrobe_core::codec::Base64Padding::Required,
+    )
+    .ok()?;
     let text: String = String::from_utf8(bytes).ok()?;
     Some(text.trim_end_matches(['\r', '\n']).to_owned())
 }
@@ -196,6 +199,8 @@ fn is_long_random_identifier(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine;
+    use base64::engine::general_purpose::STANDARD as BASE64_STD;
 
     #[test]
     fn renames_mangled_variables() {

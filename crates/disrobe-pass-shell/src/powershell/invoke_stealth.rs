@@ -1,5 +1,3 @@
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as BASE64_STD;
 use lazy_regex::regex;
 use regex::Regex;
 use serde::Serialize;
@@ -101,20 +99,14 @@ fn reverse_then_b64_decode(literal: &str) -> Option<String> {
         return None;
     }
     let reversed: String = literal.chars().rev().collect::<String>();
-    let stripped: String = reversed.trim_end_matches('=').to_owned();
-    let padded: String = pad_base64(&stripped);
-    let bytes: Vec<u8> = BASE64_STD.decode(&padded).ok()?;
+    let bytes: Vec<u8> = disrobe_core::codec::base64_decode(
+        reversed.as_bytes(),
+        disrobe_core::codec::Base64Alphabet::Standard,
+        disrobe_core::codec::Base64Padding::Optional,
+    )
+    .ok()?;
     let text: String = String::from_utf8(bytes).ok()?;
     Some(text.trim_end_matches(['\r', '\n']).to_owned())
-}
-
-fn pad_base64(s: &str) -> String {
-    match s.len() % 4 {
-        0 => s.to_owned(),
-        1 => s[..s.len() - 1].to_owned(),
-        2 => format!("{s}=="),
-        _ => format!("{s}="),
-    }
 }
 
 fn apply_rot13_unwrap(s: &str) -> String {
@@ -132,6 +124,8 @@ fn apply_rot13_unwrap(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine;
+    use base64::engine::general_purpose::STANDARD as BASE64_STD;
 
     #[test]
     fn rot13_round_trip() {
