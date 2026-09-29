@@ -2071,7 +2071,6 @@ impl<'a> Lifter<'a> {
         unrecognized: &mut Vec<String>,
     ) -> Option<usize> {
         let handler_label: usize = self.try_body_handler(i, end)?;
-        let handler_tag: &str = self.lines[handler_label].trim_end_matches(":;");
 
         let mut body_env: BTreeMap<String, PythonExpr> = env.clone();
         let body: Block = self.lift_block(i, handler_label, &mut body_env);
@@ -2083,7 +2082,6 @@ impl<'a> Lifter<'a> {
         if body.stmts.is_empty() && handlers.iter().all(|h: &ExceptHandler| h.body.is_empty()) {
             return None;
         }
-        let _ = handler_tag;
         stmts.push(PythonStmt::Try {
             body: body.stmts,
             handlers,
@@ -2092,23 +2090,25 @@ impl<'a> Lifter<'a> {
     }
 
     fn try_body_handler(&self, i: usize, end: usize) -> Option<usize> {
-        let mut depth_handler: Option<usize> = None;
-        let mut saw_goto: bool = false;
+        let mut handler: Option<usize> = None;
+        let mut open_tries: usize = 0;
         for idx in i..end.min(self.lines.len()) {
             let t: &str = self.lines[idx];
-            if t.starts_with("goto try_except_handler_") {
-                saw_goto = true;
-            }
-            if t.starts_with("try_except_handler_") && t.ends_with(":;") {
-                depth_handler = Some(idx);
-                break;
-            }
-            if t.starts_with("loop_start_") {
+            if t == "// Tried code:" {
+                open_tries = open_tries.saturating_add(1);
+            } else if t.starts_with("try_except_handler_") && t.ends_with(":;") {
+                if open_tries <= 1 {
+                    handler = Some(idx);
+                    break;
+                }
+                open_tries -= 1;
+            } else if t.starts_with("loop_start_") {
                 return None;
             }
         }
-        let handler: usize = depth_handler?;
-        if !saw_goto {
+        let handler: usize = handler?;
+        let jump: String = format!("goto {};", self.lines[handler].trim_end_matches(":;"));
+        if !self.lines[i..handler].iter().any(|l: &&str| **l == jump) {
             return None;
         }
         if !self.lines[handler + 1..end.min(self.lines.len())]
@@ -5001,6 +5001,108 @@ goto frame_return_exit_1;
             "return a and (b or c): {:?}",
             lift.stmts
         );
+    }
+
+    #[test]
+    fn a_try_nested_first_in_a_try_body_keeps_the_outer_handler() {
+        let body: &str = r"{
+PyObject *par_a = python_pars[0];
+PyObject *par_b = python_pars[1];
+// Tried code:
+// Tried code:
+{
+tmp_floordiv_expr_left_1 = par_a;
+tmp_floordiv_expr_right_1 = par_b;
+tmp_return_value = BINARY_OPERATION_FLOORDIV_OBJECT_OBJECT_OBJECT(tmp_floordiv_expr_left_1, tmp_floordiv_expr_right_1);
+if (tmp_return_value == NULL) {
+exception_lineno = 4;
+goto try_except_handler_2;
+}
+goto frame_return_exit_1;
+}
+// Exception handler code:
+try_except_handler_2:;
+exception_keeper_name_2 = exception_state;
+PUBLISH_CURRENT_EXCEPTION(tstate, &exception_keeper_name_2);
+// Tried code:
+{
+tmp_cmp_expr_left_1 = EXC_TYPE(tstate);
+tmp_cmp_expr_right_1 = PyExc_ZeroDivisionError;
+tmp_res = EXCEPTION_MATCH_BOOL(tstate, tmp_cmp_expr_left_1, tmp_cmp_expr_right_1);
+tmp_condition_result_1 = (tmp_res != 0) ? true : false;
+if (tmp_condition_result_1 != false) {
+goto branch_yes_1;
+} else {
+goto branch_no_1;
+}
+}
+branch_yes_1:;
+tmp_return_value = par_b;
+goto try_return_handler_3;
+goto branch_end_1;
+branch_no_1:;
+tmp_result = RERAISE_EXCEPTION(tstate, &exception_state);
+goto try_except_handler_3;
+branch_end_1:;
+// Exception handler code:
+try_except_handler_3:;
+exception_state = exception_keeper_name_2;
+goto try_except_handler_1;
+// Exception handler code:
+try_except_handler_1:;
+exception_keeper_name_1 = exception_state;
+PUBLISH_CURRENT_EXCEPTION(tstate, &exception_keeper_name_1);
+// Tried code:
+{
+tmp_cmp_expr_left_2 = EXC_TYPE(tstate);
+tmp_cmp_expr_right_2 = PyExc_TypeError;
+tmp_res = EXCEPTION_MATCH_BOOL(tstate, tmp_cmp_expr_left_2, tmp_cmp_expr_right_2);
+tmp_condition_result_2 = (tmp_res != 0) ? true : false;
+if (tmp_condition_result_2 != false) {
+goto branch_yes_2;
+} else {
+goto branch_no_2;
+}
+}
+branch_yes_2:;
+tmp_return_value = par_a;
+goto try_return_handler_4;
+goto branch_end_2;
+branch_no_2:;
+tmp_result = RERAISE_EXCEPTION(tstate, &exception_state);
+goto try_except_handler_4;
+branch_end_2:;
+// Exception handler code:
+try_except_handler_4:;
+goto frame_exception_exit_1;
+}";
+        let pool: ConstantsPool = ConstantsPool::default();
+        let lift: BodyLift = lift_body_detailed(body, &[], &pool);
+        let Some(PythonStmt::Try { body, handlers }) = lift.stmts.first() else {
+            panic!("expected the outer try first: {:?}", lift.stmts);
+        };
+        let outer: Vec<Option<&str>> = handlers
+            .iter()
+            .map(|handler: &ExceptHandler| handler.exc_type.as_deref())
+            .collect();
+        assert_eq!(
+            outer,
+            vec![Some("TypeError")],
+            "the outer try catches TypeError: {:?}",
+            lift.stmts
+        );
+        let Some(PythonStmt::Try {
+            handlers: inner_handlers,
+            ..
+        }) = body.first()
+        else {
+            panic!("the outer body holds the inner try: {body:?}");
+        };
+        let inner: Vec<Option<&str>> = inner_handlers
+            .iter()
+            .map(|handler: &ExceptHandler| handler.exc_type.as_deref())
+            .collect();
+        assert_eq!(inner, vec![Some("ZeroDivisionError")]);
     }
 
     #[test]
