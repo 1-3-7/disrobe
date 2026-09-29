@@ -635,6 +635,48 @@ mod tests {
     }
 
     #[test]
+    fn a_two_thousand_member_folder_is_decoded_once_not_once_per_member() {
+        const MEMBER_COUNT: u32 = 2_000;
+        let mut members: Vec<(String, Vec<u8>)> = Vec::with_capacity(MEMBER_COUNT as usize);
+        for index in 0..MEMBER_COUNT {
+            let mut body: Vec<u8> = pseudo_random(180, index + 1);
+            body.extend_from_slice(format!("member {index} tail ").as_bytes());
+            members.push((format!("m{index:04}.bin"), body));
+        }
+        let files: Vec<(&str, &[u8])> = members
+            .iter()
+            .map(|(name, body): &(String, Vec<u8>)| (name.as_str(), body.as_slice()))
+            .collect();
+        let bytes: Vec<u8> = crate_built_cab(cab::CompressionType::MsZip, &files);
+        let archive: CabArchive = parse_cab(&bytes).expect("parse");
+        assert_eq!(archive.folders.len(), 1);
+        let blocks: u64 = u64::from(archive.folders[0].num_blocks);
+        assert!(
+            blocks > 4,
+            "fixture must span several data blocks, got {blocks}"
+        );
+        let (seen, stats): (Seen, CabReadStats) = collect(&bytes, 1 << 24);
+        assert_eq!(
+            stats.folder_passes, 1,
+            "a parent that decodes each member's own copy of the folder would run this about \
+             {MEMBER_COUNT} times instead of once"
+        );
+        assert_eq!(
+            stats.blocks_decoded, blocks,
+            "each data block decodes exactly once across all 2,000 members"
+        );
+        assert_eq!(seen.len(), members.len());
+        for ((name, body), (got_name, got)) in members.iter().zip(seen.iter()) {
+            assert_eq!(name, got_name);
+            assert_eq!(
+                got.as_ref().expect("member bytes"),
+                body,
+                "{name} differs from its input"
+            );
+        }
+    }
+
+    #[test]
     fn duplicate_names_are_refused_not_aliased() {
         let files: [(&str, &[u8]); 3] = [
             ("dup.txt", b"first body"),
