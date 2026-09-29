@@ -1,4 +1,5 @@
 use crate::error::{Error, Result};
+use disrobe_bytes::{ByteReadError, read_i64_le_at, read_u32_le_at};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -642,23 +643,25 @@ impl<'a> Cursor<'a> {
     }
 
     fn u32(&mut self) -> Result<u32> {
-        self.need(4)?;
-        let v: u32 = u32::from_le_bytes([
-            self.buf[self.pos],
-            self.buf[self.pos + 1],
-            self.buf[self.pos + 2],
-            self.buf[self.pos + 3],
-        ]);
+        let v: u32 = read_u32_le_at(self.buf, self.pos).map_err(|error: ByteReadError| {
+            Error::OpArrayTruncated {
+                offset: error.offset,
+                need: 4,
+            }
+        })?;
         self.pos += 4;
         Ok(v)
     }
 
     fn i64(&mut self) -> Result<i64> {
-        self.need(8)?;
-        let mut bytes: [u8; 8] = [0u8; 8];
-        bytes.copy_from_slice(&self.buf[self.pos..self.pos + 8]);
+        let v: i64 = read_i64_le_at(self.buf, self.pos).map_err(|error: ByteReadError| {
+            Error::OpArrayTruncated {
+                offset: error.offset,
+                need: 8,
+            }
+        })?;
         self.pos += 8;
-        Ok(i64::from_le_bytes(bytes))
+        Ok(v)
     }
 
     fn f64(&mut self) -> Result<f64> {

@@ -1,5 +1,6 @@
 use crate::debug::{dbg_kv, dbg_line, dbg_section};
 use crate::error::{Error, Result};
+use disrobe_bytes::{ByteReadError, read_u16_be_at, read_u32_le_at};
 use flate2::read::{DeflateDecoder, GzDecoder};
 use memchr::memmem;
 use serde::{Deserialize, Serialize};
@@ -66,7 +67,7 @@ pub fn parse(bytes: &[u8]) -> Result<PharArchive> {
 
     let manifest_offset: usize = cursor;
     dbg_kv("phar-manifest-offset", || format!("0x{manifest_offset:x}"));
-    let manifest_len: usize = read_u32_le(bytes, &mut cursor)? as usize;
+    let manifest_len: usize = read_manifest_word(bytes, &mut cursor, read_u32_le_at)? as usize;
     let manifest_end: usize = manifest_offset
         .checked_add(4)
         .and_then(|n: usize| n.checked_add(manifest_len))
@@ -75,7 +76,7 @@ pub fn parse(bytes: &[u8]) -> Result<PharArchive> {
             need: manifest_len,
         })?;
     ensure_manifest_range(cursor, 4, manifest_end)?;
-    let entry_count: u32 = read_u32_le(bytes, &mut cursor)?;
+    let entry_count: u32 = read_manifest_word(bytes, &mut cursor, read_u32_le_at)?;
     dbg_kv("phar-manifest-len", || manifest_len.to_string());
     dbg_kv("phar-entry-count", || entry_count.to_string());
     if entry_count > PHAR_MANIFEST_ENTRY_CAP {
@@ -522,51 +523,32 @@ fn read_entry_meta(bytes: &[u8], cursor: &mut usize, manifest_end: usize) -> Res
     })
 }
 
-fn read_u32_le(bytes: &[u8], cursor: &mut usize) -> Result<u32> {
-    let end: usize = cursor.checked_add(4).ok_or(Error::PharManifestTruncated {
-        offset: *cursor,
-        need: 4,
-    })?;
-    if end > bytes.len() {
-        return Err(Error::PharManifestTruncated {
-            offset: *cursor,
-            need: end - bytes.len(),
-        });
-    }
-    let raw: [u8; 4] = [
-        bytes[*cursor],
-        bytes[*cursor + 1],
-        bytes[*cursor + 2],
-        bytes[*cursor + 3],
-    ];
-    *cursor = end;
-    Ok(u32::from_le_bytes(raw))
+fn read_manifest_word<T>(
+    bytes: &[u8],
+    cursor: &mut usize,
+    read: fn(&[u8], usize) -> std::result::Result<T, ByteReadError>,
+) -> Result<T> {
+    let width: usize = size_of::<T>();
+    let value: T =
+        read(bytes, *cursor).map_err(|error: ByteReadError| Error::PharManifestTruncated {
+            offset: error.offset,
+            need: error
+                .offset
+                .checked_add(width)
+                .map_or(width, |end: usize| end.saturating_sub(bytes.len())),
+        })?;
+    *cursor += width;
+    Ok(value)
 }
 
 fn read_u32_le_within(bytes: &[u8], cursor: &mut usize, manifest_end: usize) -> Result<u32> {
     ensure_manifest_range(*cursor, 4, manifest_end)?;
-    read_u32_le(bytes, cursor)
-}
-
-fn read_u16_be(bytes: &[u8], cursor: &mut usize) -> Result<u16> {
-    let end: usize = cursor.checked_add(2).ok_or(Error::PharManifestTruncated {
-        offset: *cursor,
-        need: 2,
-    })?;
-    if end > bytes.len() {
-        return Err(Error::PharManifestTruncated {
-            offset: *cursor,
-            need: end - bytes.len(),
-        });
-    }
-    let raw: [u8; 2] = [bytes[*cursor], bytes[*cursor + 1]];
-    *cursor = end;
-    Ok(u16::from_be_bytes(raw))
+    read_manifest_word(bytes, cursor, read_u32_le_at)
 }
 
 fn read_u16_be_within(bytes: &[u8], cursor: &mut usize, manifest_end: usize) -> Result<u16> {
     ensure_manifest_range(*cursor, 2, manifest_end)?;
-    read_u16_be(bytes, cursor)
+    read_manifest_word(bytes, cursor, read_u16_be_at)
 }
 
 fn take_bytes<'a>(bytes: &'a [u8], cursor: &mut usize, len: usize) -> Result<&'a [u8]> {

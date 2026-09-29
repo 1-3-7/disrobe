@@ -3,6 +3,7 @@ use crate::encoder::EncoderFamily;
 use crate::error::{Error, Result};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64_STD;
+use disrobe_bytes::{ByteReadError, read_u32_le_at};
 use flate2::read::ZlibDecoder;
 use memchr::memmem;
 use serde::{Deserialize, Serialize};
@@ -158,13 +159,6 @@ fn looks_like_zlib(data: &[u8]) -> bool {
         (data.first().copied(), data.get(1).copied()),
         (Some(0x78), Some(0x01 | 0x5e | 0x9c | 0xda))
     )
-}
-
-#[inline]
-#[must_use]
-fn read_u32_le(data: &[u8], at: usize) -> Option<u32> {
-    data.get(at..at + 4)
-        .map(|s: &[u8]| u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
 }
 
 const IONCUBE_CONTAINER_MAGIC: [u8; 4] = *b"ICUB";
@@ -428,18 +422,21 @@ fn parse_container_header(
             reason: "decoded body lacks container header magic",
         });
     }
-    let version: u32 = read_u32_le(decoded, 4).ok_or(Error::ContainerBadFraming {
-        family,
-        reason: "version field truncated",
-    })?;
-    let flags: u32 = read_u32_le(decoded, 8).ok_or(Error::ContainerBadFraming {
-        family,
-        reason: "flags field truncated",
-    })?;
-    let declared_payload_len: u32 = read_u32_le(decoded, 12).ok_or(Error::ContainerBadFraming {
-        family,
-        reason: "declared length field truncated",
-    })?;
+    let version: u32 =
+        read_u32_le_at(decoded, 4).map_err(|_: ByteReadError| Error::ContainerBadFraming {
+            family,
+            reason: "version field truncated",
+        })?;
+    let flags: u32 =
+        read_u32_le_at(decoded, 8).map_err(|_: ByteReadError| Error::ContainerBadFraming {
+            family,
+            reason: "flags field truncated",
+        })?;
+    let declared_payload_len: u32 =
+        read_u32_le_at(decoded, 12).map_err(|_: ByteReadError| Error::ContainerBadFraming {
+            family,
+            reason: "declared length field truncated",
+        })?;
     Ok(ContainerHeader {
         version,
         flags,
@@ -607,10 +604,11 @@ pub fn synthetic_transport_surface_ioncube(
             reason: "inner segment lacks ICF1 frame magic",
         });
     }
-    let inner_len: u32 = read_u32_le(&decoded, 4).ok_or(Error::ContainerBadFraming {
-        family: FAMILY,
-        reason: "frame length prefix truncated",
-    })?;
+    let inner_len: u32 =
+        read_u32_le_at(&decoded, 4).map_err(|_: ByteReadError| Error::ContainerBadFraming {
+            family: FAMILY,
+            reason: "frame length prefix truncated",
+        })?;
     let payload_start: usize = 8;
     let payload_end: usize =
         payload_start
