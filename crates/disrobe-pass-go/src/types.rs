@@ -90,6 +90,8 @@ pub struct GoTypeMeta {
     pub itabs: Vec<GoItab>,
     pub strings: Vec<String>,
     pub generics: Vec<GoGenericInstantiation>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -115,6 +117,7 @@ pub fn extract_typemeta(image: &GoImage<'_>, md: &Moduledata) -> GoTypeMeta {
             itabs: Vec::new(),
             strings: Vec::new(),
             generics: Vec::new(),
+            truncated: false,
         },
     }
 }
@@ -136,13 +139,24 @@ pub fn try_extract_typemeta(image: &GoImage<'_>, md: &Moduledata) -> Result<GoTy
         usize::from(image.ptr_size),
         ITABLINKS_WALK_CAP,
     )?;
-    Ok(extract_typemeta_versioned(
+    let mut meta: GoTypeMeta = extract_typemeta_versioned(
         image,
         md,
         infer_layout(md, image.ptr_size),
         typelinks_len,
         itablinks_len,
-    ))
+    );
+    meta.truncated = walk_was_capped(md, meta.types.len());
+    Ok(meta)
+}
+
+fn walk_was_capped(md: &Moduledata, types_found: usize) -> bool {
+    let over_cap = |declared: u64, cap: usize| -> bool {
+        usize::try_from(declared).map_or(true, |declared: usize| declared > cap)
+    };
+    over_cap(md.typelinks_len, TYPELINKS_WALK_CAP)
+        || over_cap(md.itablinks_len, ITABLINKS_WALK_CAP)
+        || types_found >= TYPELINKS_WALK_CAP
 }
 
 fn extract_typemeta_versioned(
@@ -270,6 +284,7 @@ fn extract_typemeta_versioned(
         itabs,
         strings: strings.into_iter().collect(),
         generics,
+        truncated: false,
     }
 }
 
@@ -369,16 +384,13 @@ fn recover_type_ref(
     }
 }
 
-pub fn link_method_functions(meta: &mut GoTypeMeta, funcs: &[(u64, &str)], text_va: u64) {
+pub fn link_method_functions(meta: &mut GoTypeMeta, funcs: &[(u64, &str)]) {
     if funcs.is_empty() {
         return;
     }
     let mut by_va: BTreeMap<u64, &str> = BTreeMap::new();
-    for (entry, name) in funcs.iter().copied() {
-        by_va.entry(entry).or_insert(name);
-        if let Some(abs) = text_va.checked_add(entry) {
-            by_va.entry(abs).or_insert(name);
-        }
+    for (va, name) in funcs.iter().copied() {
+        by_va.entry(va).or_insert(name);
     }
     for ty in &mut meta.types {
         for m in &mut ty.methods {
@@ -729,6 +741,7 @@ fn split_top_level_commas(inner: &str) -> Vec<String> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct AbiTypeLayout {
     name_decoder: NameDecoder,
+    field_offset_embed: bool,
     kind_off: u64,
     str_off: u64,
     ptr_size: u64,
@@ -772,25 +785,34 @@ const NAME_FLAG_EXPORTED: u8 = 1 << 0;
 const NAME_FLAG_HAS_TAG: u8 = 1 << 1;
 const NAME_FLAG_EMBEDDED: u8 = 1 << 3;
 
+const GO_MINOR_VARINT_NAMES: u32 = 17;
+const GO_MINOR_OFFSET_EMBED_FIRST: u32 = 9;
+const GO_MINOR_OFFSET_EMBED_LAST: u32 = 18;
+const GO_MINOR_DEFAULT: u32 = 20;
+
 fn infer_layout(md: &Moduledata, ptr_size: u8) -> AbiTypeLayout {
-    let version: PclntabVersion =
-        infer_version_from_build(md.buildversion.as_deref()).unwrap_or(PclntabVersion::Go120);
-    layout_for_version(version, ptr_size == 8)
+    let minor: u32 = go_minor_from_build(md.buildversion.as_deref()).unwrap_or(GO_MINOR_DEFAULT);
+    layout_for_minor(minor, ptr_size == 8)
 }
 
-fn infer_version_from_build(build: Option<&str>) -> Option<PclntabVersion> {
-    let s: &str = build?;
-    let rest: &str = s.strip_prefix("go1.")?;
+fn go_minor_from_build(build: Option<&str>) -> Option<u32> {
+    let rest: &str = build?.strip_prefix("go1.")?;
     let dot: usize = rest
         .find(|c: char| !c.is_ascii_digit())
         .unwrap_or(rest.len());
-    let minor: u32 = rest[..dot].parse().ok()?;
-    Some(match minor {
-        0..=15 => PclntabVersion::Go12,
-        16..=17 => PclntabVersion::Go116,
-        18..=19 => PclntabVersion::Go118,
-        _ => PclntabVersion::Go120,
-    })
+    rest[..dot].parse().ok()
+}
+
+const fn layout_for_minor(minor: u32, sixty_four_bit: bool) -> AbiTypeLayout {
+    let version: PclntabVersion = if minor >= GO_MINOR_VARINT_NAMES {
+        PclntabVersion::Go120
+    } else {
+        PclntabVersion::Go116
+    };
+    let mut layout: AbiTypeLayout = layout_for_version(version, sixty_four_bit);
+    layout.field_offset_embed =
+        minor >= GO_MINOR_OFFSET_EMBED_FIRST && minor <= GO_MINOR_OFFSET_EMBED_LAST;
+    layout
 }
 
 const fn layout_for_version(version: PclntabVersion, sixty_four_bit: bool) -> AbiTypeLayout {
@@ -815,6 +837,7 @@ const fn layout_for_version(version: PclntabVersion, sixty_four_bit: bool) -> Ab
     };
     AbiTypeLayout {
         name_decoder,
+        field_offset_embed: false,
         kind_off,
         str_off,
         ptr_size,
@@ -927,7 +950,12 @@ fn read_struct_field(
     let type_ptr_va: u64 = entry_va.checked_add(ps)?;
     let offset_va: u64 = type_ptr_va.checked_add(ps)?;
     let type_va: u64 = image.read_ptr(type_ptr_va)?;
-    let offset: u64 = image.read_ptr(offset_va)?;
+    let raw_offset: u64 = image.read_ptr(offset_va)?;
+    let (offset, embedded_by_offset): (u64, bool) = if layout.field_offset_embed {
+        (raw_offset >> 1, raw_offset & 1 != 0)
+    } else {
+        (raw_offset, false)
+    };
     if name_va == 0 || !type_in_module(md, type_va) || offset > struct_size {
         return None;
     }
@@ -950,7 +978,7 @@ fn read_struct_field(
         kind_label: type_kind_label(kind).to_owned(),
         offset,
         tag: decoded_name.tag,
-        embedded: decoded_name.embedded,
+        embedded: decoded_name.embedded || embedded_by_offset,
         exported: decoded_name.exported,
     })
 }
@@ -1895,14 +1923,16 @@ mod tests {
 
     #[test]
     fn buildversion_dispatch_routes_to_varint_for_go126() {
-        let v: Option<PclntabVersion> = infer_version_from_build(Some("go1.26.3"));
-        assert_eq!(v, Some(PclntabVersion::Go120));
+        let layout: AbiTypeLayout =
+            layout_for_minor(go_minor_from_build(Some("go1.26.3")).expect("minor"), true);
+        assert_eq!(layout.name_decoder, NameDecoder::Varint);
     }
 
     #[test]
     fn buildversion_dispatch_routes_to_pre117_for_old() {
-        let v: Option<PclntabVersion> = infer_version_from_build(Some("go1.15.6"));
-        assert_eq!(v, Some(PclntabVersion::Go12));
+        let layout: AbiTypeLayout =
+            layout_for_minor(go_minor_from_build(Some("go1.15.6")).expect("minor"), true);
+        assert_eq!(layout.name_decoder, NameDecoder::Pre117BigEndianLen);
     }
 
     #[test]
@@ -2286,5 +2316,88 @@ mod tests {
                 available: 2,
             }
         ));
+    }
+
+    #[test]
+    fn methods_link_by_absolute_address_even_when_text_starts_low() {
+        let mut meta: GoTypeMeta = GoTypeMeta {
+            types: Vec::new(),
+            itabs: vec![GoItab {
+                va: 0x9000,
+                interface_name: Some("io.Reader".to_owned()),
+                concrete_name: Some("*main.file".to_owned()),
+                fun: vec![GoItabSlot {
+                    index: 0,
+                    func_va: 0x1020,
+                    method_name: Some("Read".to_owned()),
+                    linker_name: None,
+                }],
+                unimplemented: false,
+            }],
+            strings: Vec::new(),
+            generics: Vec::new(),
+            truncated: false,
+        };
+        let funcs: [(u64, &str); 2] = [(0x2020, "main.other"), (0x1020, "main.(*file).Read")];
+        link_method_functions(&mut meta, &funcs);
+        assert_eq!(
+            meta.itabs[0].fun[0].linker_name.as_deref(),
+            Some("main.(*file).Read"),
+            "an entry offset equal to another function's address must not win"
+        );
+    }
+
+    #[test]
+    fn a_declared_table_past_the_walk_cap_marks_the_metadata_truncated() {
+        let md = |typelinks_len: u64, itablinks_len: u64| -> Moduledata {
+            Moduledata {
+                pclntab_va: 0,
+                typelinks_va: 0,
+                typelinks_len,
+                itablinks_va: 0,
+                itablinks_len,
+                types_va: 0,
+                etypes_va: 0,
+                text_va: 0,
+                etext_va: 0,
+                modulename: None,
+                buildversion: None,
+                build_info: None,
+                via: crate::moduledata::ModuledataSource::None,
+            }
+        };
+        let cap: u64 = u64::try_from(TYPELINKS_WALK_CAP).expect("cap fits u64");
+        assert!(!walk_was_capped(&md(cap, 10), 10));
+        assert!(walk_was_capped(&md(cap + 1, 10), 10));
+        assert!(walk_was_capped(&md(10, cap + 1), 10));
+        assert!(walk_was_capped(&md(10, 10), TYPELINKS_WALK_CAP));
+    }
+
+    #[test]
+    fn the_layout_follows_the_exact_go_minor_version() {
+        assert_eq!(go_minor_from_build(Some("go1.17.13")), Some(17));
+        assert_eq!(
+            go_minor_from_build(Some("go1.26.3 X:nocoverageredesign")),
+            Some(26)
+        );
+        assert_eq!(go_minor_from_build(Some("devel +abc")), None);
+        let go116: AbiTypeLayout = layout_for_minor(16, true);
+        assert_eq!(go116.name_decoder, NameDecoder::Pre117BigEndianLen);
+        assert!(go116.field_offset_embed);
+        let go117: AbiTypeLayout = layout_for_minor(17, true);
+        assert_eq!(
+            go117.name_decoder,
+            NameDecoder::Varint,
+            "go1.17 moved type names to varint lengths"
+        );
+        assert!(go117.field_offset_embed);
+        let go118: AbiTypeLayout = layout_for_minor(18, true);
+        assert!(
+            go118.field_offset_embed,
+            "go1.18 still packs embedded into the offset"
+        );
+        let go119: AbiTypeLayout = layout_for_minor(19, true);
+        assert!(!go119.field_offset_embed, "go1.19 stores plain offsets");
+        assert!(!layout_for_minor(8, true).field_offset_embed);
     }
 }

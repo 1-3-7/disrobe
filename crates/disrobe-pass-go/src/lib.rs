@@ -172,9 +172,9 @@ pub fn analyze(bytes: &[u8]) -> Result<GoAnalysis> {
             let func_vas: Vec<(u64, &str)> = symbols
                 .funcs
                 .iter()
-                .map(|f: &GoFunc| (f.entry, f.name.as_str()))
+                .filter_map(|f: &GoFunc| f.va.map(|va: u64| (va, f.name.as_str())))
                 .collect();
-            link_method_functions(&mut typemeta, &func_vas, moduledata.text_va);
+            link_method_functions(&mut typemeta, &func_vas);
             dbg_kv("typemeta_types", || typemeta.types.len().to_string());
             dbg_kv("typemeta_itabs", || typemeta.itabs.len().to_string());
             dbg_kv("typemeta_methods", || {
@@ -261,6 +261,7 @@ pub fn analyze(bytes: &[u8]) -> Result<GoAnalysis> {
                 itabs: Vec::new(),
                 strings: Vec::new(),
                 generics: Vec::new(),
+                truncated: false,
             };
             (
                 "pclntab-absent".to_owned(),
