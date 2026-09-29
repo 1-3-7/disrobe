@@ -179,7 +179,6 @@ fn parse_entry_points(bytes: &[u8]) {
     let _: disrobe_pass_scriptlang::Result<tcl::StarkitContainer> = tcl::extract(bytes);
 
     let _: Option<haxe::HaxeFingerprint> = haxe::detect(bytes);
-    let _: Option<haxe::HaxeCrossRoute> = disrobe_pass_scriptlang::route_cross_target(bytes);
     let code: core::result::Result<HlCode, HlError> = disrobe_pass_scriptlang::read_code(bytes);
     if let Ok(parsed) = code {
         hashlink_entry_points(&parsed);

@@ -23,9 +23,7 @@ pub use lang::hashlink::{
     HlCode, HlConstant, HlEnumData, HlError, HlFunData, HlFunction, HlNative, HlObjData,
     HlObjField, HlObjProto, HlOpcode, HlSummary, HlType, read_code,
 };
-pub use lang::haxe::{
-    HaxeCrossRoute, HaxeCrossTarget, HaxeFingerprint, HaxeTarget, route_cross_target,
-};
+pub use lang::haxe::{HaxeFingerprint, HaxeTarget};
 pub use lang::perl::{PerlOp, PerlOpTree, PerlSub};
 pub use lang::perl_bytecode::{ByteOrder, BytecodeHeader, is_bytecode, read_bytecode};
 pub use lang::perl_decompile::{DecompileWalker, PerlSource, PerlStatement, PerlSubSource};
