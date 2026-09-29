@@ -282,7 +282,6 @@ fn render_remote_call(remote: &(Term, String), args: &[Term], parent: Prec) -> S
     format!("{module_str}.{fun}({})", rendered.join(", "))
 }
 
-#[allow(clippy::too_many_lines)]
 fn render_named_call(name: &str, args: &[Term], parent: Prec) -> String {
     match (name, args.len()) {
         (".", 2) => {

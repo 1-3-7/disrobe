@@ -1,7 +1,6 @@
 #![forbid(unsafe_code)]
 #![deny(unreachable_pub)]
 #![allow(
-    clippy::cast_lossless,
     clippy::needless_type_cast,
     clippy::trivially_copy_pass_by_ref,
     clippy::missing_const_for_fn,
@@ -9,14 +8,12 @@
     clippy::option_if_let_else,
     clippy::map_unwrap_or,
     clippy::format_push_string,
-    clippy::similar_names,
     clippy::single_char_add_str,
     clippy::case_sensitive_file_extension_comparisons,
     clippy::format_collect,
     clippy::match_same_arms,
     clippy::unnecessary_wraps,
     clippy::or_fun_call,
-    clippy::too_many_lines,
     clippy::use_self,
     clippy::redundant_pub_crate
 )]

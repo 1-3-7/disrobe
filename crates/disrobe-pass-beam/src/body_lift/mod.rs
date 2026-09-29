@@ -382,7 +382,6 @@ const TEST_OPS: &[&str] = &[
 ];
 
 impl Lifter<'_> {
-    #[allow(clippy::too_many_lines)]
     fn walk(&self, label: u32, env: &mut Env, flags: &mut Flags, depth: u32) -> Vec<Stmt> {
         if depth > 400 || flags.over_walk_budget() {
             flags.degraded = true;

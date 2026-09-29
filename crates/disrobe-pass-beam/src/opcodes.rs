@@ -6,7 +6,6 @@ pub struct OpcodeSpec {
 
 pub const MAX_OPCODE: u32 = 191;
 
-#[allow(clippy::too_many_lines)]
 #[must_use]
 pub const fn opcode_spec(op: u32) -> Option<OpcodeSpec> {
     Some(match op {

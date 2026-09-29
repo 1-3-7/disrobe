@@ -183,7 +183,6 @@ fn decode_term(reader: &mut Reader<'_>, depth: usize) -> Result<Term> {
     decode_term_after_first(reader, tag, depth)
 }
 
-#[allow(clippy::too_many_lines)]
 fn decode_term_after_first(reader: &mut Reader<'_>, tag: u8, depth: usize) -> Result<Term> {
     if depth > MAX_ETF_DEPTH {
         return Err(Error::DepthExceeded {
@@ -195,7 +194,6 @@ fn decode_term_after_first(reader: &mut Reader<'_>, tag: u8, depth: usize) -> Re
         TAG_SMALL_INTEGER => Ok(Term::SmallInt(reader.u8()?)),
         TAG_INTEGER => {
             let raw: u32 = reader.u32()?;
-            #[allow(clippy::cast_possible_wrap)]
             Ok(Term::Int(raw as i32))
         }
         TAG_NEW_FLOAT => Ok(Term::Float(reader.f64()?)),
@@ -368,7 +366,6 @@ fn decode_term_after_first(reader: &mut Reader<'_>, tag: u8, depth: usize) -> Re
                 .to_owned();
             let arity: u32 = match arity_term {
                 Term::SmallInt(v) => u32::from(v),
-                #[allow(clippy::cast_sign_loss)]
                 Term::Int(v) if v >= 0 => v as u32,
                 _ => return Err(Error::UnsupportedEtfTag { tag, offset: 0 }),
             };

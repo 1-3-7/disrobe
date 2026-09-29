@@ -29,7 +29,6 @@ fn count_stmts(stmts: &[Stmt], counts: &mut BTreeMap<String, u32>) {
     }
 }
 
-#[allow(clippy::too_many_lines)]
 fn count_expr(expr: &Expr, counts: &mut BTreeMap<String, u32>) {
     match expr {
         Expr::Var(name) => {
@@ -211,7 +210,6 @@ fn subst_stmts(
     inline_pass(stmts, counts, &mut scoped)
 }
 
-#[allow(clippy::too_many_lines)]
 fn subst_expr(expr: Expr, counts: &BTreeMap<String, u32>, defs: &BTreeMap<String, Expr>) -> Expr {
     match expr {
         Expr::Var(name) => {

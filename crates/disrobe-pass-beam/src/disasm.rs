@@ -189,7 +189,6 @@ enum CompactValue {
 }
 
 impl CompactValue {
-    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
     fn into_u64(self) -> u64 {
         match self {
             Self::Small(v) => v as u64,
@@ -203,7 +202,6 @@ impl CompactValue {
         }
     }
 
-    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
     fn into_u32_saturating(self) -> u32 {
         match self {
             Self::Small(v) => {
@@ -239,7 +237,6 @@ fn decode_compact_value(reader: &mut Reader<'_>, byte: u8) -> Result<CompactValu
         let next: u8 = reader.u8()?;
         let high: u64 = u64::from((byte & 0b1110_0000) >> 5);
         let combined: u64 = (high << 8) | u64::from(next);
-        #[allow(clippy::cast_possible_wrap)]
         return Ok(CompactValue::Small(combined as i64));
     }
     let high_nibble: u8 = byte >> 5;
@@ -270,7 +267,6 @@ fn decode_compact_value(reader: &mut Reader<'_>, byte: u8) -> Result<CompactValu
     }
 }
 
-#[allow(clippy::cast_possible_wrap)]
 const fn sign_extend(value: u64, bits: usize) -> i64 {
     if bits >= 64 {
         return value as i64;

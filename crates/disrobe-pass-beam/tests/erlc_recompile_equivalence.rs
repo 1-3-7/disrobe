@@ -2,8 +2,6 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    clippy::print_stdout,
-    clippy::print_stderr,
     clippy::pedantic,
     clippy::nursery,
     clippy::cargo,
