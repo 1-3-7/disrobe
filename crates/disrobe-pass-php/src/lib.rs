@@ -16,7 +16,6 @@ pub mod deflatten;
 pub mod detect;
 pub mod encoder;
 pub mod error;
-pub mod format_wire;
 pub mod key_extractor;
 mod literal;
 pub mod loader;
@@ -45,7 +44,6 @@ pub use encoder::{
     zend_guard as zend_guard_encoder,
 };
 pub use error::{Error, Result};
-pub use format_wire::format_php;
 pub use key_extractor::{
     AesOutcome, KeyProvenance, KeyScan, aes_cbc_decrypt, scan as scan_key, xor_decrypt,
 };

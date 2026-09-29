@@ -138,11 +138,6 @@ fn drive_bytes(bytes: &[u8], desc: &str) {
         let _ = luvit::extract(bytes);
     });
 
-    guard("format_lua", desc, || {
-        let text: std::borrow::Cow<'_, str> = String::from_utf8_lossy(bytes);
-        let _ = disrobe_pass_lua::format_lua(&text);
-    });
-
     guard("read_auto->serialize+decompile_chunk", desc, || {
         if let Ok(chunk) = read_auto(bytes) {
             let _ = serialize_chunk(&chunk);

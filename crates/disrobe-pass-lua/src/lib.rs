@@ -33,7 +33,6 @@ pub mod cursor;
 pub(crate) mod debug;
 pub mod decompile;
 pub mod error;
-pub mod format_wire;
 pub mod luvit;
 pub mod obfuscator;
 pub mod provenance_header;
@@ -42,7 +41,6 @@ pub mod serialize;
 
 pub use decompile::{DecompiledChunk, Fidelity, decompile_auto, decompile_luajit_bytes};
 pub use error::{Error, Result};
-pub use format_wire::format_lua;
 pub use luvit::{LuvitBundle, LuvitFormat};
 pub use obfuscator::vm_devirt::{DevirtReport, Devirtualized, devirtualize};
 pub use obfuscator::{

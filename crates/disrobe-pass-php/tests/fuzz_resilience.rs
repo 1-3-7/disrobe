@@ -7,11 +7,10 @@ use disrobe_pass_php::protectors;
 use disrobe_pass_php::{
     AesOutcome, AuthorizationToken, ContainerSurface, EncoderFamily, KeyScan, LoaderReport,
     OpArray, PeelOptions, PeelReport, PharArchive, PhpDetection, RecoveryReport, Result, build_cfg,
-    decompile_oparray, deflatten, detect_php, extract_phar_entry, format_php, parse_oparray,
-    parse_phar, peel_eval_chain, peel_modern_loader, recover_php, restructure,
-    reverse_ioncube_container, reverse_sourceguardian_container, scan_key, signature_scan,
-    surface_zend_guard, synthetic_transport_surface_ioncube,
-    synthetic_transport_surface_sourceguardian, tokenize,
+    decompile_oparray, deflatten, detect_php, extract_phar_entry, parse_oparray, parse_phar,
+    peel_eval_chain, peel_modern_loader, recover_php, restructure, reverse_ioncube_container,
+    reverse_sourceguardian_container, scan_key, signature_scan, surface_zend_guard,
+    synthetic_transport_surface_ioncube, synthetic_transport_surface_sourceguardian, tokenize,
 };
 use disrobe_testkit::{CorpusEntry, StressCase, StressConfig, XorShift64};
 
@@ -124,7 +123,6 @@ fn exercise_byte_entrypoints(bytes: &[u8], rng: &mut XorShift64) {
         *byte = rng.next_byte();
     }
     let loader_key: u32 = u32::try_from(rng.next_u64() >> u32::BITS).unwrap_or(0);
-    let source: String = String::from_utf8_lossy(bytes).into_owned();
 
     let _: Result<bcompiler::BcgHeader> = bcompiler::read_header(bytes);
     let parsed_oparray: Result<OpArray> = parse_oparray(bytes);
@@ -141,7 +139,6 @@ fn exercise_byte_entrypoints(bytes: &[u8], rng: &mut XorShift64) {
     let _: Option<LoaderReport> = peel_modern_loader(bytes, loader_key);
     let _: Result<PeelReport> = peel_eval_chain(bytes, PeelOptions::default());
     let _: Result<RecoveryReport> = recover_php(bytes, authorization);
-    let _: String = format_php(&source);
 
     for family in [
         EncoderFamily::IonCube,

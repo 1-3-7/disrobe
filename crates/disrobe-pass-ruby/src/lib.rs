@@ -4,7 +4,6 @@
 pub mod chain_detector;
 pub mod detect;
 pub mod error;
-pub mod format_wire;
 pub mod jruby;
 pub mod mri;
 pub mod mruby;
@@ -15,7 +14,6 @@ pub mod yarv;
 
 pub use detect::Flavor;
 pub use error::RubyError;
-pub use format_wire::format_ruby;
 pub use jruby::JrubyDelegation;
 pub use mri::{DefinitionRecord, MriAst, Token, TokenKind};
 pub use mruby::MrubyAnalysis;
