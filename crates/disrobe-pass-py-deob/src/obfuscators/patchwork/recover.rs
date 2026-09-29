@@ -634,25 +634,20 @@ fn is_dead_runtime_artifact(
         || bindings.pool_name.as_deref() == Some(name)
         || bindings.str_decoder.as_deref() == Some(name)
         || bindings.bytes_decoder.as_deref() == Some(name)
-        || is_runtime_helper_name(name, referenced, bindings);
+        || is_runtime_helper_name(name, referenced);
     if !is_runtime_root {
         return false;
     }
     referenced.get(name).copied().unwrap_or(0) == 0
 }
 
-fn is_runtime_helper_name(
-    name: &str,
-    referenced: &ReferenceSet,
-    bindings: &RuntimeBindings,
-) -> bool {
+fn is_runtime_helper_name(name: &str, referenced: &ReferenceSet) -> bool {
     if !name.starts_with('_') {
         return false;
     }
     if referenced.get(name).copied().unwrap_or(0) != 0 {
         return false;
     }
-    let _ = bindings;
     true
 }
 

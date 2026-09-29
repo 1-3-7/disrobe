@@ -79,7 +79,6 @@ fn extract_d_list_lengths(text: &str) -> Option<Vec<usize>> {
     let close: usize = after.find("];exec(")?;
     let body: &str = &after[..close];
     let mut lengths: Vec<usize> = Vec::new();
-    let mut depth: i32 = 0;
     let mut current_len: usize = 0;
     let mut in_str: bool = false;
     let mut quote: u8 = 0;
@@ -102,12 +101,7 @@ fn extract_d_list_lengths(text: &str) -> Option<Vec<usize>> {
         } else if b == b'\'' || b == b'"' {
             in_str = true;
             quote = b;
-        } else if b == b'(' || b == b'[' {
-            depth += 1;
-        } else if b == b')' || b == b']' {
-            depth -= 1;
         }
-        let _ = depth;
         i += 1;
     }
     if lengths.is_empty() {

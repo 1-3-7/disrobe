@@ -95,7 +95,6 @@ fn count_o0_identifiers(text: &str) -> usize {
     let mut count: usize = 0;
     let mut i: usize = 0;
     while i < bytes.len() {
-        let start: usize = i;
         let mut len: usize = 0;
         let mut all_o0: bool = true;
         while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
@@ -107,7 +106,6 @@ fn count_o0_identifiers(text: &str) -> usize {
         }
         if all_o0 && len >= 14 {
             count += 1;
-            let _ = start;
         }
         if len == 0 {
             i += 1;

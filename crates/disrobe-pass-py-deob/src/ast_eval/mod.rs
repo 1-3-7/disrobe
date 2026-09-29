@@ -178,10 +178,10 @@ mod tests {
     }
 
     #[test]
-    fn rejects_dict_use() {
+    fn folds_a_constant_dict_subscript() {
         let src: &str = "x = {1: 'a', 2: 'b'}[1]\n";
         let out: String = fold(src);
-        let _ = out;
+        assert_eq!(out.trim_end(), "x = 'a'");
     }
 
     fn assert_folds(src: &str, expected: &str) {
