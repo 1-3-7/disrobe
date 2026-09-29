@@ -8,6 +8,8 @@ pub const V8_MAGIC_HIGH_BITS: u32 = 0xC0DE_0000;
 
 pub const V8_MAGIC_MARKER_MASK: u32 = 0x0000_FFFF;
 
+pub const V8_EXTERNAL_REFERENCE_CEILING: u32 = 0x4000;
+
 pub const V8_MAGIC_NODE_18: u32 = 0xC0DE_0563;
 
 pub const V8_MAGIC_NODE_20: u32 = 0xC0DE_05CC;
@@ -169,6 +171,12 @@ pub fn parse_bytenode_header(bytes: &[u8]) -> Result<BytenodeCacheHeader> {
         return Err(Error::OxcParse(format!(
             "bytenode magic mismatch: got 0x{magic_number:08X}, expected high16 == 0xC0DE \
              (V8 SerializedCodeData::kMagicNumber)"
+        )));
+    }
+    let external_references: u32 = magic_number & V8_MAGIC_MARKER_MASK;
+    if external_references == 0 || external_references >= V8_EXTERNAL_REFERENCE_CEILING {
+        return Err(Error::OxcParse(format!(
+            "bytenode magic 0x{magic_number:08X} carries an external reference count of {external_references}, outside the 1..{V8_EXTERNAL_REFERENCE_CEILING} range every V8 code cache stores in its low 16 bits"
         )));
     }
     let node: NodeVersion = NodeVersion::from_v8_magic(magic_number);
@@ -407,6 +415,41 @@ mod tests {
     }
 
     #[test]
+    fn a_pypy_pyc_sharing_the_c0de_high_half_is_not_a_v8_code_cache() {
+        let root: std::path::PathBuf =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../corpus");
+        for rel in [
+            "python/alt_runtimes/pypy/methods.pypy27.pyc",
+            "python/alt_runtimes/pypy/hello_pypy39_legacy.pypy39.pyc",
+        ] {
+            let bytes: Vec<u8> =
+                std::fs::read(root.join(rel)).unwrap_or_else(|error: std::io::Error| {
+                    panic!("the committed {rel} is unreadable: {error}")
+                });
+            let magic: u32 = read_u32_le(&bytes, 0).expect("pyc magic");
+            assert_eq!(
+                magic & !V8_MAGIC_MARKER_MASK,
+                V8_MAGIC_HIGH_BITS,
+                "{rel} must share the high half this guard separates"
+            );
+            assert!(
+                !looks_like_bytenode(&bytes),
+                "{rel} is PyPy bytecode, not a bytenode cache"
+            );
+        }
+        for rel in ["v8/node-18/hello-18.jsc", "v8/node-24/hello-24.jsc"] {
+            let bytes: Vec<u8> =
+                std::fs::read(root.join(rel)).unwrap_or_else(|error: std::io::Error| {
+                    panic!("the committed {rel} is unreadable: {error}")
+                });
+            assert!(
+                looks_like_bytenode(&bytes),
+                "{rel} is a real bytenode cache"
+            );
+        }
+    }
+
+    #[test]
     fn looks_like_bytenode_accepts_valid_and_rejects_garbage() {
         let valid: Vec<u8> = synth_v11_jsc(V8_MAGIC_NODE_18, 0x3569_A082, 32);
         assert!(looks_like_bytenode(&valid));
@@ -482,13 +525,13 @@ mod tests {
 
     #[test]
     fn unknown_v8_marker_high_bits_match_but_low_unknown() {
-        let bytes: Vec<u8> = synth_v11_jsc(0xC0DE_9999, 0x1234_5678, 16);
+        let bytes: Vec<u8> = synth_v11_jsc(0xC0DE_0999, 0x1234_5678, 16);
         let header: BytenodeCacheHeader =
             parse_bytenode_header(&bytes).expect("unknown low marker still parses");
         assert_eq!(header.version_hash.node, NodeVersion::Unknown);
         match snapshot_deserialize_status(&header) {
             SnapshotDeserializeStatus::UnknownV8Marker { magic_low } => {
-                assert_eq!(magic_low, 0x9999u16);
+                assert_eq!(magic_low, 0x0999u16);
             }
             known @ SnapshotDeserializeStatus::KnownV8Version { .. } => {
                 panic!("expected UnknownV8Marker, got {known:?}");

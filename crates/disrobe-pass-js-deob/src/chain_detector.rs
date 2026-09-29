@@ -4,8 +4,8 @@ use disrobe_core::Artifact;
 use disrobe_core::Rung;
 use disrobe_core::chain::detection::{ChildArtifact, ChildHandle, TERMINAL_HINT};
 use disrobe_core::chain::{
-    CatalogEntry, DetectContext, DetectVerdict, Detector, DetectorOutput,
-    FAMILY_OBFUSCATOR_WRAPPER, ObfuscatorCatalog, OutputKind, Pass, SelectionPolicy,
+    CatalogEntry, DetectContext, DetectVerdict, Detector, DetectorOutput, FAMILY_CONTAINER,
+    FAMILY_OBFUSCATOR_WRAPPER, FAMILY_SOURCE, ObfuscatorCatalog, OutputKind, Pass, SelectionPolicy,
     SupportQuality,
 };
 use disrobe_core::error::{CoreError, Result as CoreResult};
@@ -54,6 +54,7 @@ const TAG_ATOB: &str = "js-atob-indirection";
 const TAG_EVAL: &str = "js-eval-indirection";
 const TAG_WEBPACK: &str = "js-webpack-bundle";
 const TAG_GENERIC: &str = "js-obfuscated";
+const TAG_MINIFIED: &str = "js-minified";
 const TAG_JSDEFENDER: &str = "js-jsdefender";
 const TAG_ARXAN: &str = "js-arxan";
 const TAG_PACE: &str = "js-pace";
@@ -145,7 +146,7 @@ impl Detector for JsObfDetector {
             return Some(DetectVerdict::new(
                 PASS_ID,
                 TAG_TS_HELPERS,
-                FAMILY_OBFUSCATOR_WRAPPER,
+                FAMILY_SOURCE,
                 0.8,
                 50,
                 vec!["typescript-awaiter-generator"],
@@ -559,22 +560,25 @@ fn verdict_from_obfuscator(bytes: &[u8], det: &Detection) -> Option<DetectVerdic
     if det.family == JsObfuscator::Minified && is_structured_document(bytes) {
         return None;
     }
-    let (format_tag, specificity): (&'static str, u16) = match det.family {
-        JsObfuscator::ObfuscatorIo => (TAG_JAVASCRIPT_OBF, 30),
-        JsObfuscator::JsConfuser => (TAG_JSCONFUSER, 28),
-        JsObfuscator::Jscrambler => (TAG_JSCRAMBLER, 30),
-        JsObfuscator::Webpack => (TAG_WEBPACK, 35),
+    let (format_tag, family, specificity): (&'static str, &'static str, u16) = match det.family {
+        JsObfuscator::ObfuscatorIo => (TAG_JAVASCRIPT_OBF, FAMILY_OBFUSCATOR_WRAPPER, 30),
+        JsObfuscator::JsConfuser => (TAG_JSCONFUSER, FAMILY_OBFUSCATOR_WRAPPER, 28),
+        JsObfuscator::Jscrambler => (TAG_JSCRAMBLER, FAMILY_OBFUSCATOR_WRAPPER, 30),
+        JsObfuscator::Webpack => (TAG_WEBPACK, FAMILY_CONTAINER, 35),
         JsObfuscator::Vite
         | JsObfuscator::Rollup
         | JsObfuscator::Esbuild
         | JsObfuscator::Turbopack
-        | JsObfuscator::Bun => (TAG_WEBPACK, 36),
-        JsObfuscator::JsObfu | JsObfuscator::Minified | JsObfuscator::Unknown => (TAG_GENERIC, 50),
+        | JsObfuscator::Bun => (TAG_WEBPACK, FAMILY_CONTAINER, 36),
+        JsObfuscator::Minified => (TAG_MINIFIED, FAMILY_SOURCE, 50),
+        JsObfuscator::JsObfu | JsObfuscator::Unknown => {
+            (TAG_GENERIC, FAMILY_OBFUSCATOR_WRAPPER, 50)
+        }
     };
     Some(DetectVerdict::new(
         PASS_ID,
         format_tag,
-        FAMILY_OBFUSCATOR_WRAPPER,
+        family,
         det.confidence,
         specificity,
         vec!["js-obf-marker"],
@@ -1083,6 +1087,10 @@ mod tests {
         let body: Vec<u8> = std::fs::read(&path).expect("committed tsc ES5 fixture");
         let verdict: DetectVerdict = detect_bytes(&body).expect("tsc helper output is claimed");
         assert_eq!(verdict.format_tag, TAG_TS_HELPERS);
+        assert_eq!(
+            verdict.family, FAMILY_SOURCE,
+            "compiler helper output is source, not an obfuscator wrapper"
+        );
         let artifact: Artifact = Artifact::new(Rung::Surface, body.clone(), [0; 32]);
         let recovered: Artifact = run_unminify(&body, &artifact).expect("helpers are rewritten");
         let text: String = String::from_utf8(recovered.envelope).expect("utf-8 output");
@@ -1161,7 +1169,11 @@ mod tests {
             assert_eq!(body.len(), size);
             let v: DetectVerdict = detect_bytes(&body)
                 .unwrap_or_else(|| panic!("minified javascript of {size} bytes must be claimed"));
-            assert_eq!(v.format_tag, TAG_GENERIC);
+            assert_eq!(v.format_tag, TAG_MINIFIED);
+            assert_eq!(
+                v.family, FAMILY_SOURCE,
+                "minified javascript is source, not an obfuscator wrapper"
+            );
         }
         for size in [199usize, 200] {
             let body: Vec<u8> = minified_body(size);
@@ -1175,11 +1187,29 @@ mod tests {
     #[test]
     fn a_json_document_that_is_not_a_report_shaped_object_is_unaffected() {
         let almost: &[u8] =
-            b"{this is not json but starts with a brace and runs well past two hundred bytes to reach the single line minified rule which needs more than two hundred characters in total so keep typing until the body is long enough}";
+            b"{let note=\"this is not json but starts with a brace and runs well past two hundred bytes to reach the single line minified rule which needs more than two hundred characters in total so keep typing until the body is long enough\";sink(note)}";
         assert!(almost.len() > 200);
-        let v: DetectVerdict =
-            detect_bytes(almost).expect("a non-json single-line body keeps the minified claim");
-        assert_eq!(v.format_tag, TAG_GENERIC);
+        let v: DetectVerdict = detect_bytes(almost)
+            .expect("a non-json single-line javascript body keeps the minified claim");
+        assert_eq!(v.format_tag, TAG_MINIFIED);
+    }
+
+    #[test]
+    fn a_long_single_line_of_plain_text_is_not_claimed() {
+        let text: Vec<u8> = b"fatfs-encoded FAT payload one 0123456789 ".repeat(40);
+        assert!(
+            detect_bytes(&text).is_none(),
+            "a single line of prose is neither javascript nor an obfuscator"
+        );
+    }
+
+    #[test]
+    fn bundler_output_is_a_container_not_an_obfuscator() {
+        let bundle: &[u8] =
+            b"(self.webpackChunkapp=self.webpackChunkapp||[]).push([[1],{1:(e,t,n)=>{n.r(t)}}]);";
+        let v: DetectVerdict = detect_bytes(bundle).expect("webpack runtime is claimed");
+        assert_eq!(v.format_tag, TAG_WEBPACK);
+        assert_eq!(v.family, FAMILY_CONTAINER);
     }
 
     #[test]

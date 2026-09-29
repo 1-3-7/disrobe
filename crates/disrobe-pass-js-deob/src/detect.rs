@@ -142,7 +142,10 @@ pub fn detect(source: &[u8]) -> Detection {
         return classified(JsObfuscator::Rollup, 0.7, markers, "rollup-output");
     }
     let single_line_head: &str = head.trim_end_matches(['\r', '\n']);
-    if !single_line_head.contains(['\r', '\n']) && single_line_head.len() > 200 {
+    if !single_line_head.contains(['\r', '\n'])
+        && single_line_head.len() > 200
+        && has_javascript_syntax(single_line_head)
+    {
         markers.push("single-line-large".to_owned());
         return classified(JsObfuscator::Minified, 0.5, markers, "single-line-large");
     }
@@ -153,6 +156,15 @@ pub fn detect(source: &[u8]) -> Detection {
         confidence: 0.0,
         markers,
     }
+}
+
+fn has_javascript_syntax(head: &str) -> bool {
+    const KEYWORDS: [&str; 12] = [
+        "function", "=>", "var ", "let ", "const ", "return", "typeof ", "new ", "this.", "void 0",
+        "require(", "export",
+    ];
+    let has_keyword: bool = KEYWORDS.iter().any(|keyword: &&str| head.contains(keyword));
+    has_keyword && head.contains([';', '(', '='])
 }
 
 pub(crate) fn leading_comment_mentions(head: &str, marker: &str) -> bool {
@@ -357,6 +369,15 @@ mod tests {
         let src: &[u8] = b"var _0x1234 = 'a'; function _0xabcd() { return _0x1234; }";
         let det: Detection = detect(src);
         assert_eq!(det.family, JsObfuscator::ObfuscatorIo);
+    }
+
+    #[test]
+    fn a_long_single_line_of_prose_is_not_minified_javascript() {
+        let prose: String = "fatfs-encoded FAT payload one 0123456789 ".repeat(40);
+        let det: Detection = detect(prose.as_bytes());
+        assert_eq!(det.family, JsObfuscator::Unknown, "got {det:?}");
+        let letters: String = "AHOVCJQXELSZGNUBIPWDKRYFMT".repeat(20);
+        assert_eq!(detect(letters.as_bytes()).family, JsObfuscator::Unknown);
     }
 
     #[test]
