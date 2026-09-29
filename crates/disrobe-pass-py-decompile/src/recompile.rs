@@ -127,6 +127,8 @@ fn probe_python(name: &str) -> Option<(PathBuf, MarshalVersion)> {
         disrobe_core::subprocess::run_captured(
             &exe,
             &[
+                "-E",
+                "-s",
                 "-c",
                 "import sys;print(f'{sys.version_info.major}.{sys.version_info.minor}')",
             ],
@@ -179,14 +181,16 @@ fn recompile_via_interpreter(interpreter: &Path, source: &str) -> Result<CodeObj
     let src_lit: String = py_path_literal(&src_path);
     let pyc_lit: String = py_path_literal(&pyc_path);
     let script: String = format!(
-        "import py_compile,sys\n\
+        "import sys\n\
+sys.path[:] = [p for p in sys.path if p not in ('', '.')]\n\
+import py_compile\n\
 try:\n    py_compile.compile({src_lit}, cfile={pyc_lit}, doraise=True)\n\
 except Exception as e:\n    sys.stderr.write(str(e));sys.exit(2)\n"
     );
     let captured: disrobe_core::subprocess::CapturedOutput =
         disrobe_core::subprocess::run_captured(
             interpreter,
-            &["-c", &script],
+            &["-E", "-s", "-c", &script],
             Duration::from_secs(RECOMPILE_TIMEOUT_SECS),
             MAX_PROBE_CAPTURE,
         )
@@ -257,6 +261,36 @@ mod tests {
                     .map(str::to_owned)
             })
             .collect()
+    }
+
+    #[test]
+    fn a_py_compile_module_in_the_working_directory_is_never_imported() {
+        let interpreter: PathBuf = ["python", "python3"]
+            .iter()
+            .find_map(|name: &&str| {
+                probe_python(name).map(|(exe, _): (PathBuf, MarshalVersion)| exe)
+            })
+            .expect("a working Python interpreter on PATH is required by this test");
+        let workdir: ScratchDir = ScratchDir::create("py-decompile-planted-cwd").expect("scratch");
+        let marker: PathBuf = workdir.path().join("imported.marker");
+        std::fs::write(
+            workdir.path().join("py_compile.py"),
+            format!(
+                "open({}, 'w').write('imported')\n",
+                py_path_literal(&marker)
+            ),
+        )
+        .expect("plant py_compile.py");
+        std::env::set_current_dir(workdir.path()).expect("enter the planted directory");
+
+        let recompiled: Result<CodeObject, String> =
+            recompile_via_interpreter(&interpreter, "value = 1\n");
+
+        assert!(
+            !marker.exists(),
+            "the planted py_compile.py in the working directory was imported"
+        );
+        assert!(recompiled.is_ok(), "recompile failed: {recompiled:?}");
     }
 
     #[test]
