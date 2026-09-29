@@ -30,12 +30,10 @@ disrobe-binfmt = { workspace = true }
 zip = { workspace = true }
 object = { workspace = true }
 encoding_rs = "0.8"
-disrobe-llm-metadata = { workspace = true, optional = true }
 
 [features]
 default = []
 chain = ["disrobe-core/chain"]
-llm-metadata = ["dep:disrobe-llm-metadata"]
 lifter-diag = []
 opcode-census = []
 semantic-reach = []

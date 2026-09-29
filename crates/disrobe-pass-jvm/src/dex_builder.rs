@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 
+use disrobe_core::codec::{adler32, sha1_digest};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EncodedValue {
     String(String),
@@ -539,7 +541,7 @@ impl DexBuilder {
 
         out.extend_from_slice(&data);
 
-        let signature: [u8; 20] = sha1(&out[32..]);
+        let signature: [u8; 20] = sha1_digest(&out[32..]);
         out[12..32].copy_from_slice(&signature);
         let checksum: u32 = adler32(1, &out[12..]);
         out[8..12].copy_from_slice(&checksum.to_le_bytes());
@@ -1079,81 +1081,6 @@ fn base64_encode_standard(data: &[u8]) -> String {
             '='
         });
     }
-    out
-}
-
-pub(crate) use disrobe_core::codec::adler32;
-
-#[allow(clippy::many_single_char_names)]
-pub(crate) fn sha1(data: &[u8]) -> [u8; 20] {
-    let mut h0: u32 = 0x6745_2301;
-    let mut h1: u32 = 0xEFCD_AB89;
-    let mut h2: u32 = 0x98BA_DCFE;
-    let mut h3: u32 = 0x1032_5476;
-    let mut h4: u32 = 0xC3D2_E1F0;
-
-    let ml: u64 = (data.len() as u64) * 8;
-    let mut msg: Vec<u8> = data.to_vec();
-    msg.push(0x80);
-    while msg.len() % 64 != 56 {
-        msg.push(0);
-    }
-    msg.extend_from_slice(&ml.to_be_bytes());
-
-    for chunk in msg.chunks_exact(64) {
-        let mut w: [u32; 80] = [0u32; 80];
-        for (i, word) in w.iter_mut().enumerate().take(16) {
-            let base: usize = i * 4;
-            *word = u32::from_be_bytes([
-                chunk[base],
-                chunk[base + 1],
-                chunk[base + 2],
-                chunk[base + 3],
-            ]);
-        }
-        for i in 16..80 {
-            w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
-        }
-
-        let mut a: u32 = h0;
-        let mut b: u32 = h1;
-        let mut c: u32 = h2;
-        let mut d: u32 = h3;
-        let mut e: u32 = h4;
-
-        for (i, word) in w.iter().enumerate() {
-            let (f, k): (u32, u32) = match i {
-                0..=19 => ((b & c) | ((!b) & d), 0x5A82_7999),
-                20..=39 => (b ^ c ^ d, 0x6ED9_EBA1),
-                40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1B_BCDC),
-                _ => (b ^ c ^ d, 0xCA62_C1D6),
-            };
-            let temp: u32 = a
-                .rotate_left(5)
-                .wrapping_add(f)
-                .wrapping_add(e)
-                .wrapping_add(k)
-                .wrapping_add(*word);
-            e = d;
-            d = c;
-            c = b.rotate_left(30);
-            b = a;
-            a = temp;
-        }
-
-        h0 = h0.wrapping_add(a);
-        h1 = h1.wrapping_add(b);
-        h2 = h2.wrapping_add(c);
-        h3 = h3.wrapping_add(d);
-        h4 = h4.wrapping_add(e);
-    }
-
-    let mut out: [u8; 20] = [0u8; 20];
-    out[0..4].copy_from_slice(&h0.to_be_bytes());
-    out[4..8].copy_from_slice(&h1.to_be_bytes());
-    out[8..12].copy_from_slice(&h2.to_be_bytes());
-    out[12..16].copy_from_slice(&h3.to_be_bytes());
-    out[16..20].copy_from_slice(&h4.to_be_bytes());
     out
 }
 
@@ -3100,16 +3027,6 @@ pub mod insn {
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn sha1_known_vector() {
-        let digest: [u8; 20] = sha1(b"abc");
-        let expected: [u8; 20] = [
-            0xa9, 0x99, 0x3e, 0x36, 0x47, 0x06, 0x81, 0x6a, 0xba, 0x3e, 0x25, 0x71, 0x78, 0x50,
-            0xc2, 0x6c, 0x9c, 0xd0, 0xd8, 0x9d,
-        ];
-        assert_eq!(digest, expected);
-    }
 
     #[test]
     fn adler32_known_vector() {

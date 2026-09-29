@@ -2,18 +2,13 @@
 
 use std::process::{Command, Output};
 
-const HARNESS_ENV: &str = "DISROBE_JVM_DEBUG_HARNESS";
+use disrobe_pass_jvm::dex_builder::dexguard_reflect_sample;
+use disrobe_pass_jvm::{
+    DexFile, DexStringRecoveryReport, GenericStringRecovery, parse_dex,
+    recover_dex_reflection_report, recover_dex_strings_generic,
+};
 
-fn minimal_classfile(major: u16) -> Vec<u8> {
-    let mut buf: Vec<u8> = Vec::new();
-    buf.extend_from_slice(&0xCAFE_BABE_u32.to_be_bytes());
-    buf.extend_from_slice(&0u16.to_be_bytes());
-    buf.extend_from_slice(&major.to_be_bytes());
-    for _ in 0..8 {
-        buf.extend_from_slice(&0u16.to_be_bytes());
-    }
-    buf
-}
+const HARNESS_ENV: &str = "DISROBE_JVM_DEBUG_HARNESS";
 
 fn run_harness(debug: Option<&str>, json: bool) -> Output {
     let exe: std::path::PathBuf = std::env::current_exe().expect("test executable path");
@@ -42,10 +37,13 @@ fn harness_entrypoint() {
     if std::env::var_os(HARNESS_ENV).is_none() {
         return;
     }
-    let bytes: Vec<u8> = minimal_classfile(52);
-    let summary: disrobe_pass_jvm::pass::JvmSummary =
-        disrobe_pass_jvm::pass::analyze(&bytes).expect("minimal classfile analyzes");
-    assert_eq!(summary.kind, "classfile");
+    let bytes: Vec<u8> = dexguard_reflect_sample(&["java.lang.Runtime", "getDeclaredMethod"], 0x5A);
+    let dex: DexFile = parse_dex(&bytes).expect("reflect sample parses");
+    let report: DexStringRecoveryReport = recover_dex_reflection_report(&dex, &bytes);
+    assert!(report.code_scan_complete);
+    assert!(!report.recoveries.is_empty());
+    let generic: GenericStringRecovery = recover_dex_strings_generic(&dex, &bytes);
+    assert!(generic.code_scan_complete);
 }
 
 #[test]
@@ -76,20 +74,12 @@ fn set_emits_decision_points() {
     assert!(out.status.success(), "child failed: {out:?}");
     let stderr: String = String::from_utf8_lossy(&out.stderr).into_owned();
     assert!(
-        stderr.contains("[debug:jvm] === jvm analyze ==="),
-        "expected the analyze section header, got:\n{stderr}"
+        stderr.contains("[debug:jvm] dex-strdec = Lcom/disrobe/sample/DexGuardReflectStrings;->"),
+        "expected the per-class string decryptor decision point, got:\n{stderr}"
     );
     assert!(
-        stderr.contains("[debug:jvm] classify = classfile"),
-        "expected the classify decision point, got:\n{stderr}"
-    );
-    assert!(
-        stderr.contains("[debug:jvm] classfile ="),
-        "expected the classfile structural facts, got:\n{stderr}"
-    );
-    assert!(
-        stderr.contains("[debug:jvm] protector-peel ="),
-        "expected the protector-peel decision point, got:\n{stderr}"
+        stderr.contains("[debug:jvm] dex-strdec-generic = candidates="),
+        "expected the call-site interpreter decision point, got:\n{stderr}"
     );
 }
 
@@ -113,11 +103,22 @@ fn json_mode_is_one_object_per_line() {
         .lines()
         .filter(|line: &&str| line.trim_start().starts_with("{\"scope\":\"jvm\""))
         .collect();
-    assert!(
-        events.len() >= 4,
-        "expected several jvm json events, got {}:\n{stderr}",
-        events.len()
-    );
+    let keys: Vec<String> = events
+        .iter()
+        .filter_map(|line: &&str| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter_map(|value: serde_json::Value| {
+            value
+                .get("key")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
+        .collect();
+    for expected in ["dex-strdec", "dex-strdec-generic"] {
+        assert!(
+            keys.iter().any(|key: &String| key == expected),
+            "expected a {expected} json event, got keys {keys:?}:\n{stderr}"
+        );
+    }
     for line in &events {
         let value: serde_json::Value = serde_json::from_str(line)
             .unwrap_or_else(|e| panic!("invalid json line {line:?}: {e}"));

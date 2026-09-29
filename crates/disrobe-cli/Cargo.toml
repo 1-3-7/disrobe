@@ -165,7 +165,7 @@ disrobe-pass-shell = { workspace = true, optional = true }
 disrobe-pass-mobile = { workspace = true, optional = true }
 disrobe-pass-lua = { workspace = true, optional = true }
 disrobe-pass-swift-objc = { workspace = true, optional = true }
-disrobe-pass-jvm = { workspace = true, features = ["llm-metadata"], optional = true }
+disrobe-pass-jvm = { workspace = true, optional = true }
 disrobe-pass-dotnet = { workspace = true, features = ["llm-metadata"], optional = true }
 disrobe-pass-go = { workspace = true, features = ["llm-metadata"], optional = true }
 disrobe-pass-beam = { workspace = true, optional = true }

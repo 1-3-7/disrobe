@@ -213,10 +213,10 @@ pub fn verify_recovered_dex(bytes: &[u8]) -> VerificationSignals {
         .as_ref()
         .is_some_and(|h: &DexHeader| dex_header_self_consistent(h, bytes.len()));
     let embedded_checksum_matched: bool = parsed_header.as_ref().is_some_and(|h: &DexHeader| {
-        bytes.len() > 12 && crate::dex_builder::adler32(1, &bytes[12..]) == h.checksum
+        bytes.len() > 12 && disrobe_core::codec::adler32(1, &bytes[12..]) == h.checksum
     });
     let embedded_signature_matched: bool = parsed_header.as_ref().is_some_and(|h: &DexHeader| {
-        bytes.len() > 32 && crate::dex_builder::sha1(&bytes[32..]) == h.signature
+        bytes.len() > 32 && disrobe_core::codec::sha1_digest(&bytes[32..]) == h.signature
     });
     let parsed: Option<DexFile> = dex::parse(bytes).ok();
     let existing_parser_succeeded: bool = parsed.is_some();

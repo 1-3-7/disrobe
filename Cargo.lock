@@ -2288,7 +2288,6 @@ dependencies = [
  "disrobe-bytes",
  "disrobe-cfg",
  "disrobe-core",
- "disrobe-llm-metadata",
  "disrobe-tool-process",
  "encoding_rs",
  "miette",

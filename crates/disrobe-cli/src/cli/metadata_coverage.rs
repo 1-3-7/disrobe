@@ -25,8 +25,6 @@ fn linked_capabilities() -> Vec<MetadataCapability> {
     capabilities.push(disrobe_pass_js_deob::JS_METADATA_CAPABILITY);
     #[cfg(feature = "wasm")]
     capabilities.push(disrobe_pass_wasm_deob::WASM_METADATA_CAPABILITY);
-    #[cfg(feature = "jvm")]
-    capabilities.push(disrobe_pass_jvm::JVM_METADATA_CAPABILITY);
     #[cfg(feature = "dotnet")]
     capabilities.push(disrobe_pass_dotnet::DOTNET_METADATA_CAPABILITY);
     #[cfg(feature = "go")]

@@ -93,8 +93,6 @@ pub mod dex2jar;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod dex_builder;
 pub mod error;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod format_wire;
 pub mod frame_infer;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod hierarchy;
@@ -104,24 +102,17 @@ pub mod jar;
 pub mod jni;
 pub mod jsr_inline;
 pub mod kotlin;
-#[cfg(feature = "llm-metadata")]
-#[cfg(not(target_arch = "wasm32"))]
-pub mod llm;
 pub mod name_disambig;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod oat;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod obfuscators;
 #[cfg(not(target_arch = "wasm32"))]
-pub mod pass;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod proguard;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod proguard_fingerprint;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod protectors;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod provenance_header;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod rasp;
 #[cfg(feature = "semantic-reach")]
@@ -261,8 +252,6 @@ pub use dex2jar::{
     translate_with_limits, validate_dex2jar_entries,
 };
 pub use error::{Error, Result};
-#[cfg(not(target_arch = "wasm32"))]
-pub use format_wire::{format_java, format_kotlin, format_scala};
 pub use frame_infer::{FrameInferOutcome, FrameInferReport, FrameState, infer_frames};
 #[cfg(not(target_arch = "wasm32"))]
 pub use hierarchy::{HierarchyKind, HierarchyNode, classfile_hierarchy_node, dex_hierarchy_nodes};
@@ -281,9 +270,6 @@ pub use jni::{
 };
 pub use jsr_inline::{JsrInlineReport, JsrInlined, contains_jsr, inline_jsr_subroutines};
 pub use kotlin::{KotlinKind, KotlinMetadata, recover_metadata as recover_kotlin_metadata};
-#[cfg(feature = "llm-metadata")]
-#[cfg(not(target_arch = "wasm32"))]
-pub use llm::{JvmInstr, JvmLlmInput, METADATA_CAPABILITY as JVM_METADATA_CAPABILITY};
 pub use name_disambig::{
     CollisionReport, NameDisambiguator, classify as classify_name_collisions,
     remap_class_bytes as remap_renamed_class_bytes, rewrite_active, with_rename_scope,
@@ -325,12 +311,6 @@ pub use protectors::{
     name_keyed as name_keyed_protector, peel_and_decompile as peel_and_decompile_classfile,
     peel_classfile, peel_for_family, stringer as stringer_protector, substitute_recovered_strings,
     zelix as zelix_protector,
-};
-#[cfg(not(target_arch = "wasm32"))]
-pub use provenance_header::{
-    java_decompiled_header, kotlin_decompiled_header, render_java_with_header,
-    render_kotlin_with_header, render_scala_with_header, render_smali_with_header,
-    scala_decompiled_header, smali_disasm_header,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use rasp::{RaspReport, RaspSignal, RaspVendor, detect_in_apk as detect_rasp_in_apk};
