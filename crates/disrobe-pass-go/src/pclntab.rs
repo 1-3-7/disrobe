@@ -79,17 +79,80 @@ pub fn locate_pclntab<'a>(image: &GoImage<'a>) -> Result<LocatedPclntab<'a>> {
         (MAGIC_GO118, magic_needle(MAGIC_GO118, image.endian)),
         (MAGIC_GO120, magic_needle(MAGIC_GO120, image.endian)),
     ];
+    let mut found: Vec<(u64, LocatedPclntab<'a>)> = Vec::new();
     for sec in ranked_sections(image) {
         if sec.data.len() < 16 {
             continue;
         }
+        let dedicated: bool = matches!(sec.name.as_str(), ".gopclntab" | "__gopclntab");
         for (magic, needle) in candidates {
-            if let Some(located) = locate_needle_in_section(image, sec, magic, needle) {
-                return Ok(located);
+            if dedicated {
+                if let Some(located) = locate_needle_in_section(image, sec, magic, needle) {
+                    return Ok(located);
+                }
+                continue;
             }
+            collect_needles_in_section(image, sec, magic, needle, &mut found);
         }
     }
+    if let Some(index) = found
+        .iter()
+        .position(|(va, _): &(u64, LocatedPclntab<'a>)| referenced_from_data(image, *va))
+    {
+        return Ok(found.swap_remove(index).1);
+    }
+    if let Some((_, located)) = found.into_iter().next() {
+        return Ok(located);
+    }
     signature_scan_pclntab(image)
+}
+
+const MAX_PCLNTAB_CANDIDATES: usize = 16;
+
+fn collect_needles_in_section<'a>(
+    image: &GoImage<'a>,
+    sec: &Section<'a>,
+    magic: u32,
+    needle: [u8; 4],
+    found: &mut Vec<(u64, LocatedPclntab<'a>)>,
+) {
+    let mut search: usize = 0;
+    while found.len() < MAX_PCLNTAB_CANDIDATES
+        && let Some(rel) = find_subslice(&sec.data[search..], &needle)
+    {
+        let pos: usize = search + rel;
+        search = pos + 1;
+        if let Some(located) =
+            try_structural_header(image, sec.address, sec.data, pos, magic, false)
+            && let Some(va) = u64::try_from(pos)
+                .ok()
+                .and_then(|offset: u64| sec.address.checked_add(offset))
+        {
+            found.push((va, located));
+        }
+    }
+}
+
+fn referenced_from_data(image: &GoImage<'_>, va: u64) -> bool {
+    let pointer: Vec<u8> = match (image.ptr_size, image.endian) {
+        (8, Endian::Little) => va.to_le_bytes().to_vec(),
+        (8, Endian::Big) => va.to_be_bytes().to_vec(),
+        (_, endian) => match u32::try_from(va) {
+            Ok(narrow) if endian == Endian::Little => narrow.to_le_bytes().to_vec(),
+            Ok(narrow) => narrow.to_be_bytes().to_vec(),
+            Err(_) => return false,
+        },
+    };
+    image
+        .sections
+        .iter()
+        .filter(|sec: &&Section<'_>| {
+            matches!(
+                sec.name.as_str(),
+                ".data" | ".noptrdata" | "__data" | "__noptrdata" | ".data.rel.ro"
+            )
+        })
+        .any(|sec: &Section<'_>| find_subslice(sec.data, &pointer).is_some())
 }
 
 fn ranked_sections<'i, 'a>(image: &'i GoImage<'a>) -> Vec<&'i Section<'a>> {
@@ -572,6 +635,37 @@ mod tests {
             .map(|sec: &&Section<'_>| sec.name.as_str())
             .collect();
         assert_eq!(order, vec![".text", ".rdata", ".data", ".rsrc"]);
+    }
+
+    #[test]
+    fn a_pclntab_address_stored_in_a_data_section_counts_as_referenced() {
+        let mut data: Vec<u8> = vec![0u8; 32];
+        data[8..16].copy_from_slice(&0x0014_2040_u64.to_le_bytes());
+        let empty: [u8; 16] = [0u8; 16];
+        let image: GoImage<'_> = GoImage {
+            kind: crate::binary::ImageKind::Pe,
+            endian: Endian::Little,
+            ptr_size: 8,
+            sections: vec![
+                Section {
+                    name: ".data".to_owned(),
+                    address: 0x0015_0000,
+                    data: &data,
+                    mapped_len: 32,
+                },
+                Section {
+                    name: ".rdata".to_owned(),
+                    address: 0x0014_0000,
+                    data: &empty,
+                    mapped_len: 16,
+                },
+            ],
+            raw: &data,
+            symbol_addrs: Vec::new(),
+            flat: false,
+        };
+        assert!(referenced_from_data(&image, 0x0014_2040));
+        assert!(!referenced_from_data(&image, 0x0014_2080));
     }
 
     #[test]
