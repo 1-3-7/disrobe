@@ -167,26 +167,19 @@ fn recover_ez_source(bytes: &[u8]) -> CoreResult<String> {
         if entry.is_dir || !entry.path.ends_with(".beam") {
             continue;
         }
+        let shown: std::borrow::Cow<'_, str> =
+            disrobe_core::source_text::escape_unsafe_chars(&entry.path);
         let beam: BeamFile = BeamFile::parse(&entry.data).map_err(|e: crate::error::Error| {
-            CoreError::PassFailure(format!(
-                "DR-BEAM-0908: ez member {} beam parse: {e}",
-                entry.path
-            ))
+            CoreError::PassFailure(format!("DR-BEAM-0908: ez member {shown} beam parse: {e}"))
         })?;
         let recovered: surface::ErlangSurface =
             surface::recover(&beam).map_err(|e: crate::error::Error| {
-                CoreError::PassFailure(format!(
-                    "DR-BEAM-0909: ez member {} beam recover: {e}",
-                    entry.path
-                ))
+                CoreError::PassFailure(format!("DR-BEAM-0909: ez member {shown} beam recover: {e}"))
             })?;
         if !out.is_empty() {
             out.push('\n');
         }
-        out.push_str(&format!(
-            "%% {}\n",
-            disrobe_core::source_text::escape_unsafe_chars(&entry.path)
-        ));
+        out.push_str(&format!("%% {shown}\n"));
         out.push_str(&recovered.source);
     }
     if out.is_empty() {
@@ -463,6 +456,35 @@ mod tests {
         assert!(
             message.contains("app-1.0/ebin/corrupt.beam"),
             "expected corrupt member path, got {message}"
+        );
+    }
+
+    #[test]
+    fn a_hostile_member_path_stays_on_one_line_of_the_error() {
+        let mut bytes: Vec<u8> = Vec::new();
+        {
+            let cursor: std::io::Cursor<&mut Vec<u8>> = std::io::Cursor::new(&mut bytes);
+            let mut writer: ZipWriter<std::io::Cursor<&mut Vec<u8>>> = ZipWriter::new(cursor);
+            let options: SimpleFileOptions =
+                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+            writer
+                .start_file("app-1.0/ebin/bad\nERROR forged\u{202e}.beam", options)
+                .expect("start invalid member");
+            writer
+                .write_all(b"FOR1\x00\x00\x00\x04BEAM")
+                .expect("write invalid member");
+            writer.finish().expect("finish ez");
+        }
+        let artifact: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
+        let message: String = BEAM_PASS
+            .run(&artifact)
+            .expect_err("a corrupt member fails")
+            .to_string();
+        assert!(
+            message.contains("DR-BEAM-0908")
+                && !message.contains('\n')
+                && !message.contains('\u{202e}'),
+            "the member path must be escaped in the error: {message:?}"
         );
     }
 }
