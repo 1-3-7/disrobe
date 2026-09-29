@@ -1,6 +1,6 @@
 # x86-64 GCC oracle corpus
 
-The GCC oracle corpus was produced on Windows with Strawberry Perl's MinGW-w64 toolchain. GCC reports `gcc.exe (MinGW-W64 x86_64-ucrt-posix-seh, built by Brecht Sanders, r8) 13.2.0`. GNU objcopy and GNU objdump report Binutils 2.42.
+The GCC oracle corpus was produced on Windows with a MinGW-w64 GCC. GCC reports `gcc.exe (MinGW-W64 x86_64-ucrt-posix-seh, built by Brecht Sanders, r8) 13.2.0`. GNU objcopy and GNU objdump report Binutils 2.42.
 
 `x86_64_oracle_o2.text` was compiled from `tests/fixtures/x86_64_oracle.c` with:
 
