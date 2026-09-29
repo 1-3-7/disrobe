@@ -35,11 +35,11 @@ const WAT_BR_ON_NULL: &str = r#"
     (module
       (type $ft (func))
       (func (export "go") (param (ref null $ft))
-        block $b (result (ref $ft))
+        block $b
           local.get 0
           br_on_null $b
-        end
-        call_ref $ft))
+          call_ref $ft
+        end))
 "#;
 
 fn baked(src: &str) -> Vec<u8> {
@@ -99,6 +99,9 @@ fn lifted_wat_declares_only_the_memories_and_tables_of_the_input() {
         ("br_on_null", WAT_BR_ON_NULL),
     ] {
         let original: Vec<u8> = baked(source);
+        Validator::new_with_features(WasmFeatures::all())
+            .validate_all(&original)
+            .unwrap_or_else(|e| panic!("{name}: the authored module must validate: {e}"));
         let lifted: ModuleSourceLift =
             lift_module_source(&original, LiftTarget::Wat).expect("the module lifts");
         let recovered: Vec<u8> = wat::parse_str(&lifted.source).unwrap_or_else(|e| {
