@@ -99,12 +99,17 @@ fn entry_points(bytes: &[u8]) {
     let _: String = winscript::strip_backticks(&text);
     let _: String = winscript::strip_carets(&text);
     let _: Option<String> = winscript::decode_encoded_command(&text);
-    let _: Option<String> = winscript::rebuild_string_concat(&text);
-    let _: Option<String> = winscript::rebuild_format_operator(&text);
-    let _: Option<String> = winscript::rebuild_replace(&text);
-    let _: Option<String> = winscript::rebuild_string_reverse(&text);
-    let _: Option<String> = winscript::rebuild_char_builder(&text);
-    let _: Option<String> = winscript::rebuild_char_codes(&text);
+    let _: Option<String> =
+        winscript::rebuild_string_concat(&text, winscript::WinScriptLang::PowerShell);
+    let _: Option<String> =
+        winscript::rebuild_format_operator(&text, winscript::WinScriptLang::PowerShell);
+    let _: Option<String> = winscript::rebuild_replace(&text, winscript::WinScriptLang::PowerShell);
+    let _: Option<String> =
+        winscript::rebuild_string_reverse(&text, winscript::WinScriptLang::PowerShell);
+    let _: Option<String> =
+        winscript::rebuild_char_builder(&text, winscript::WinScriptLang::PowerShell);
+    let _: Option<String> =
+        winscript::rebuild_char_codes(&text, winscript::WinScriptLang::PowerShell);
     let _: Option<String> = winscript::resolve_batch_substrings(&text);
     let _: Option<String> = winscript::detect_embedded_pe(&text);
     let _: Option<String> = winscript::recover_securestring_plaintext(&text);

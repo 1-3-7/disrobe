@@ -9,7 +9,7 @@ fn format_operator_multibyte_template_does_not_panic() {
         123, 48, 125, 123, 49, 165, 39, 32, 45, 102, 32, 39, 73, 69, 39, 44, 39, 88, 39,
     ];
     let text: String = winscript::decode_text(&bytes);
-    let _ = winscript::rebuild_format_operator(&text);
+    let _ = winscript::rebuild_format_operator(&text, winscript::WinScriptLang::PowerShell);
     let recovery: winscript::WinScriptRecovery =
         winscript::recover(WinScriptLang::PowerShell, &text);
     assert_eq!(recovery.language, WinScriptLang::PowerShell);
@@ -19,7 +19,8 @@ fn format_operator_multibyte_template_does_not_panic() {
 fn format_operator_repeated_rewrite_shrinking_buffer() {
     let text: &str =
         "$a=('{0}{1}' -f 'A','B'); $b=('{0}' -f 'CD'); $c=('{0}{1}{2}' -f 'x','y','z')";
-    let rebuilt: Option<String> = winscript::rebuild_format_operator(text);
+    let rebuilt: Option<String> =
+        winscript::rebuild_format_operator(text, winscript::WinScriptLang::PowerShell);
     let Some(out): Option<String> = rebuilt else {
         panic!("expected at least one format-operator rewrite");
     };
@@ -30,28 +31,45 @@ fn format_operator_repeated_rewrite_shrinking_buffer() {
 
 #[test]
 fn rebuilt_literals_double_embedded_single_quotes() {
-    let concat: Option<String> = winscript::rebuild_string_concat("'a''b' + 'c'");
+    let concat: Option<String> =
+        winscript::rebuild_string_concat("'a''b' + 'c'", winscript::WinScriptLang::PowerShell);
     assert_eq!(concat.as_deref(), Some("'a''bc'"));
 
-    let char_codes: Option<String> = winscript::rebuild_char_codes("String.fromCharCode(39,97)");
+    let char_codes: Option<String> = winscript::rebuild_char_codes(
+        "String.fromCharCode(39,97)",
+        winscript::WinScriptLang::PowerShell,
+    );
     assert_eq!(char_codes.as_deref(), Some("'''a'"));
 
-    let char_builder: Option<String> = winscript::rebuild_char_builder("Chr(39) & Chr(97)");
+    let char_builder: Option<String> =
+        winscript::rebuild_char_builder("Chr(39) & Chr(97)", winscript::WinScriptLang::PowerShell);
     assert_eq!(char_builder.as_deref(), Some("'''a'"));
 }
 
 #[test]
 fn char_code_join_consumes_spaced_empty_separator() {
     assert_eq!(
-        winscript::rebuild_char_codes("[char[]](72,101,108,108,111) -join ''").as_deref(),
+        winscript::rebuild_char_codes(
+            "[char[]](72,101,108,108,111) -join ''",
+            winscript::WinScriptLang::PowerShell
+        )
+        .as_deref(),
         Some("'Hello'")
     );
     assert_eq!(
-        winscript::rebuild_char_codes("[char[]](72,105) -join \"\"").as_deref(),
+        winscript::rebuild_char_codes(
+            "[char[]](72,105) -join \"\"",
+            winscript::WinScriptLang::PowerShell
+        )
+        .as_deref(),
         Some("'Hi'")
     );
     assert_eq!(
-        winscript::rebuild_char_codes("[char[]](72,105)-join''").as_deref(),
+        winscript::rebuild_char_codes(
+            "[char[]](72,105)-join''",
+            winscript::WinScriptLang::PowerShell
+        )
+        .as_deref(),
         Some("'Hi'")
     );
 }

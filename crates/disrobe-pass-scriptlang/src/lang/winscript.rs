@@ -550,14 +550,14 @@ pub fn recover(language: WinScriptLang, text: &str) -> WinScriptRecovery {
 
     let mut current: String = escaped;
 
-    reassemble_syntactic(&mut current, &mut techniques, &mut layers);
+    reassemble_syntactic(&mut current, &mut techniques, &mut layers, language);
 
     let mut layer_guard: usize = 0usize;
     while layer_guard < MAX_LAYERS {
         layer_guard += 1;
         let before: String = current.clone();
 
-        reassemble_syntactic(&mut current, &mut techniques, &mut layers);
+        reassemble_syntactic(&mut current, &mut techniques, &mut layers, language);
 
         if let Some(decoded) = decode_encoded_command(&current) {
             push_unique(&mut techniques, WinTechnique::EncodedCommand);
@@ -660,8 +660,9 @@ fn reassemble_syntactic(
     current: &mut String,
     techniques: &mut Vec<WinTechnique>,
     layers: &mut Vec<RecoveredLayer>,
+    language: WinScriptLang,
 ) {
-    if let Some(rebuilt) = rebuild_char_builder(current) {
+    if let Some(rebuilt) = rebuild_char_builder(current, language) {
         push_unique(techniques, WinTechnique::CharBuilderConcat);
         layers.push(RecoveredLayer {
             technique: WinTechnique::CharBuilderConcat,
@@ -669,7 +670,7 @@ fn reassemble_syntactic(
         });
         *current = rebuilt;
     }
-    if let Some(rebuilt) = rebuild_string_concat(current) {
+    if let Some(rebuilt) = rebuild_string_concat(current, language) {
         push_unique(techniques, WinTechnique::StringConcat);
         layers.push(RecoveredLayer {
             technique: WinTechnique::StringConcat,
@@ -677,7 +678,7 @@ fn reassemble_syntactic(
         });
         *current = rebuilt;
     }
-    if let Some(rebuilt) = rebuild_format_operator(current) {
+    if let Some(rebuilt) = rebuild_format_operator(current, language) {
         push_unique(techniques, WinTechnique::FormatOperator);
         layers.push(RecoveredLayer {
             technique: WinTechnique::FormatOperator,
@@ -685,7 +686,7 @@ fn reassemble_syntactic(
         });
         *current = rebuilt;
     }
-    if let Some(rebuilt) = rebuild_replace(current) {
+    if let Some(rebuilt) = rebuild_replace(current, language) {
         push_unique(techniques, WinTechnique::ReplaceTransform);
         layers.push(RecoveredLayer {
             technique: WinTechnique::ReplaceTransform,
@@ -693,7 +694,7 @@ fn reassemble_syntactic(
         });
         *current = rebuilt;
     }
-    if let Some(rebuilt) = rebuild_string_reverse(current) {
+    if let Some(rebuilt) = rebuild_string_reverse(current, language) {
         push_unique(techniques, WinTechnique::StringReverse);
         layers.push(RecoveredLayer {
             technique: WinTechnique::StringReverse,
@@ -701,7 +702,7 @@ fn reassemble_syntactic(
         });
         *current = rebuilt;
     }
-    if let Some(rebuilt) = rebuild_char_codes(current) {
+    if let Some(rebuilt) = rebuild_char_codes(current, language) {
         push_unique(techniques, WinTechnique::CharCodeJoin);
         layers.push(RecoveredLayer {
             technique: WinTechnique::CharCodeJoin,
@@ -922,6 +923,20 @@ fn emit_single_quoted(inner: &str) -> String {
     out
 }
 
+fn emit_literal(inner: &str, language: WinScriptLang) -> String {
+    match language {
+        WinScriptLang::VbScript => emit_quoted(inner, '"'),
+        WinScriptLang::PowerShell | WinScriptLang::Batch => emit_single_quoted(inner),
+    }
+}
+
+const fn opens_literal(byte: u8, language: WinScriptLang) -> bool {
+    match language {
+        WinScriptLang::VbScript => byte == b'"',
+        WinScriptLang::PowerShell | WinScriptLang::Batch => byte == b'\'' || byte == b'"',
+    }
+}
+
 fn emit_quoted(inner: &str, quote: char) -> String {
     let mut out: String = String::with_capacity(inner.len() + 2);
     out.push(quote);
@@ -936,7 +951,7 @@ fn emit_quoted(inner: &str, quote: char) -> String {
 }
 
 #[must_use]
-pub fn rebuild_string_concat(text: &str) -> Option<String> {
+pub fn rebuild_string_concat(text: &str, language: WinScriptLang) -> Option<String> {
     let mut out: String = String::with_capacity(text.len());
     let bytes: &[u8] = text.as_bytes();
     let mut run_start: usize = 0usize;
@@ -944,7 +959,7 @@ pub fn rebuild_string_concat(text: &str) -> Option<String> {
     let mut changed: bool = false;
     while i < bytes.len() {
         let quote: u8 = bytes[i];
-        if quote != b'\'' && quote != b'"' {
+        if !opens_literal(quote, language) {
             i += 1;
             continue;
         }
@@ -1022,7 +1037,7 @@ fn skip_concat_plus(bytes: &[u8], from: usize) -> usize {
 }
 
 #[must_use]
-pub fn rebuild_format_operator(text: &str) -> Option<String> {
+pub fn rebuild_format_operator(text: &str, language: WinScriptLang) -> Option<String> {
     let mut lower: String = text.to_ascii_lowercase();
     let mut changed: bool = false;
     let mut result: String = text.to_owned();
@@ -1058,7 +1073,7 @@ pub fn rebuild_format_operator(text: &str) -> Option<String> {
         };
         let mut rebuilt: String = String::with_capacity(result.len());
         rebuilt.push_str(prefix);
-        rebuilt.push_str(&emit_single_quoted(&rendered));
+        rebuilt.push_str(&emit_literal(&rendered, language));
         rebuilt.push_str(suffix);
         result = rebuilt;
         lower = result.to_ascii_lowercase();
@@ -1210,7 +1225,7 @@ fn copy_char_at(out: &mut String, text: &str, at: usize) -> usize {
     character.map_or(1, char::len_utf8)
 }
 
-pub fn rebuild_replace(text: &str) -> Option<String> {
+pub fn rebuild_replace(text: &str, language: WinScriptLang) -> Option<String> {
     let bytes: &[u8] = text.as_bytes();
     let lower: Vec<u8> = text.to_ascii_lowercase().into_bytes();
     let mut result: String = String::with_capacity(text.len());
@@ -1243,7 +1258,7 @@ pub fn rebuild_replace(text: &str) -> Option<String> {
                 applied = true;
             }
             if applied {
-                result.push_str(&emit_single_quoted(&subject));
+                result.push_str(&emit_literal(&subject, language));
                 changed = true;
                 i = cursor;
                 continue;
@@ -1325,7 +1340,7 @@ fn parse_replace_args(bytes: &[u8], start: usize, paren: bool) -> Option<(String
 }
 
 #[must_use]
-pub fn rebuild_string_reverse(text: &str) -> Option<String> {
+pub fn rebuild_string_reverse(text: &str, language: WinScriptLang) -> Option<String> {
     let bytes: &[u8] = text.as_bytes();
     let lower: Vec<u8> = text.to_ascii_lowercase().into_bytes();
     let mut result: String = String::with_capacity(text.len());
@@ -1337,7 +1352,7 @@ pub fn rebuild_string_reverse(text: &str) -> Option<String> {
             && let Some(end) = match_reverse_suffix(bytes, &lower, after)
         {
             let reversed: String = literal.chars().rev().collect();
-            result.push_str(&emit_single_quoted(&reversed));
+            result.push_str(&emit_literal(&reversed, language));
             changed = true;
             i = end;
             continue;
@@ -1404,7 +1419,7 @@ fn match_reverse_suffix(bytes: &[u8], lower: &[u8], after_subject: usize) -> Opt
 }
 
 #[must_use]
-pub fn rebuild_char_builder(text: &str) -> Option<String> {
+pub fn rebuild_char_builder(text: &str, language: WinScriptLang) -> Option<String> {
     let bytes: &[u8] = text.as_bytes();
     let lower: Vec<u8> = text.to_ascii_lowercase().into_bytes();
     let mut result: String = String::with_capacity(text.len());
@@ -1412,7 +1427,7 @@ pub fn rebuild_char_builder(text: &str) -> Option<String> {
     let mut changed: bool = false;
     while i < bytes.len() {
         if let Some((decoded, end)) = match_char_builder_run(bytes, &lower, i) {
-            result.push_str(&emit_single_quoted(&decoded));
+            result.push_str(&emit_literal(&decoded, language));
             i = end;
             changed = true;
         } else {
@@ -1645,14 +1660,14 @@ pub fn detect_embedded_pe(text: &str) -> Option<String> {
 }
 
 #[must_use]
-pub fn rebuild_char_codes(text: &str) -> Option<String> {
+pub fn rebuild_char_codes(text: &str, language: WinScriptLang) -> Option<String> {
     let mut result: String = String::with_capacity(text.len());
     let lower: String = text.to_ascii_lowercase();
     let mut i: usize = 0usize;
     let mut changed: bool = false;
     while let Some(ch) = text[i..].chars().next() {
         if let Some((decoded, end)) = match_char_code_run(text, lower.as_bytes(), i) {
-            result.push_str(&emit_single_quoted(&decoded));
+            result.push_str(&emit_literal(&decoded, language));
             i = end;
             changed = true;
         } else {
@@ -1898,17 +1913,23 @@ mod tests {
     #[test]
     fn string_concat_keeps_single_literals_and_their_quoting() {
         assert_eq!(
-            rebuild_string_concat("MsgBox \"Python's naïve\"\n' a comment"),
+            rebuild_string_concat(
+                "MsgBox \"Python's naïve\"\n' a comment",
+                WinScriptLang::VbScript
+            ),
             None,
             "nothing is concatenated, so nothing may be rewritten"
         );
         assert_eq!(
-            rebuild_string_concat("x = \"say \"\"hi\"\" \" & \"日本\""),
+            rebuild_string_concat(
+                "x = \"say \"\"hi\"\" \" & \"日本\"",
+                WinScriptLang::VbScript
+            ),
             Some("x = \"say \"\"hi\"\" 日本\"".to_owned()),
             "a double-quoted chain stays double-quoted"
         );
         assert_eq!(
-            rebuild_string_concat("x = 'a' + \"b\""),
+            rebuild_string_concat("x = 'a' + \"b\"", WinScriptLang::PowerShell),
             None,
             "mixed quotes are left alone"
         );
@@ -1916,8 +1937,11 @@ mod tests {
 
     #[test]
     fn char_code_rebuild_keeps_non_ascii_text_intact() {
-        let rebuilt: String =
-            rebuild_char_codes("x = \"héllo\" + Chr(72) + Chr(105)").expect("a run was rebuilt");
+        let rebuilt: String = rebuild_char_codes(
+            "x = \"héllo\" + Chr(72) + Chr(105)",
+            WinScriptLang::PowerShell,
+        )
+        .expect("a run was rebuilt");
         assert!(rebuilt.contains("héllo"), "{rebuilt}");
         assert!(rebuilt.contains("'H'"), "{rebuilt}");
     }
@@ -1925,12 +1949,43 @@ mod tests {
 
     #[test]
     fn rebuilders_copy_non_ascii_text_around_their_matches() {
-        let replaced: String = rebuild_replace("$m = 'Wxrld'.replace('x','o'); \"héllo ü\"")
-            .expect("a replace was rebuilt");
+        let replaced: String = rebuild_replace(
+            "$m = 'Wxrld'.replace('x','o'); \"héllo ü\"",
+            WinScriptLang::PowerShell,
+        )
+        .expect("a replace was rebuilt");
         assert!(replaced.contains("héllo ü"), "{replaced}");
         let built: String =
-            rebuild_char_builder("naïve = Chr(39) & Chr(97)").expect("a builder was rebuilt");
+            rebuild_char_builder("naïve = Chr(39) & Chr(97)", WinScriptLang::VbScript)
+                .expect("a builder was rebuilt");
         assert!(built.starts_with("naïve = "), "{built}");
+    }
+
+    #[test]
+    fn vbscript_rebuilds_emit_double_quoted_literals() {
+        assert_eq!(
+            rebuild_char_builder("x = Chr(72) & Chr(105)", WinScriptLang::VbScript).as_deref(),
+            Some("x = \"Hi\""),
+            "a single quote starts a VBScript comment, so a rebuilt literal is double-quoted"
+        );
+        assert_eq!(
+            rebuild_char_builder("x = Chr(34) & Chr(97)", WinScriptLang::VbScript).as_deref(),
+            Some("x = \"\"\"a\""),
+            "a double quote inside a VBScript literal is doubled"
+        );
+        assert_eq!(
+            rebuild_char_builder("$x = Chr(72) & Chr(105)", WinScriptLang::PowerShell).as_deref(),
+            Some("$x = 'Hi'")
+        );
+        assert_eq!(
+            rebuild_string_concat(
+                "x = \"a\" & \"b\" ' it's 'c' + 'd'",
+                WinScriptLang::VbScript
+            )
+            .as_deref(),
+            Some("x = \"ab\" ' it's 'c' + 'd'"),
+            "text after a VBScript comment quote is not a literal"
+        );
     }
 
     #[test]
@@ -1939,7 +1994,10 @@ mod tests {
         let subject: String = "a".repeat(1000);
         let src: String = format!("'{subject}'.replace('a','{big_to}')");
         assert!(
-            rebuild_replace(&src).as_deref().map_or(0, str::len) < 1_000_000,
+            rebuild_replace(&src, WinScriptLang::PowerShell)
+                .as_deref()
+                .map_or(0, str::len)
+                < 1_000_000,
             "amplifying replace must be capped"
         );
     }
