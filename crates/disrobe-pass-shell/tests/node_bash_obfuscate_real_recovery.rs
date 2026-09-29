@@ -6,7 +6,9 @@
 )]
 
 use std::path::PathBuf;
-use std::process::Command;
+use std::time::Duration;
+
+use disrobe_testkit::{CommandSpec, ToolOutput, tool_output};
 
 use disrobe_pass_shell::{
     Detection, Dialect, Family, NodeBashObfuscateReport, detect, is_node_bash_obfuscate,
@@ -34,19 +36,13 @@ fn shell_path(names: &[&str], absolute: &[&str]) -> Option<String> {
             return Some((*candidate).to_owned());
         }
     }
-    for name in names {
-        let probe: std::io::Result<std::process::Output> =
-            Command::new(name).arg("--version").output();
-        if probe.is_ok_and(|o: std::process::Output| o.status.success()) {
-            return Some((*name).to_owned());
-        }
-        let probe_c: std::io::Result<std::process::Output> =
-            Command::new(name).arg("-c").arg("exit 0").output();
-        if probe_c.is_ok_and(|o: std::process::Output| o.status.success()) {
-            return Some((*name).to_owned());
-        }
-    }
-    None
+    names
+        .iter()
+        .find(|name: &&&str| {
+            tool_output(CommandSpec::new(**name, Duration::from_secs(30)).args(["-c", "exit 0"]))
+                .is_ok_and(|o: ToolOutput| o.success)
+        })
+        .map(|name: &&str| (*name).to_owned())
 }
 
 fn bash_path() -> Option<String> {
@@ -67,6 +63,7 @@ fn dash_path() -> Option<String> {
         &[
             "/usr/bin/dash",
             "/bin/dash",
+            "C:/Program Files/Git/usr/bin/dash.exe",
             "C:/msys64/usr/bin/dash.exe",
             "C:/cygwin64/bin/dash.exe",
         ],
@@ -79,14 +76,16 @@ struct Observed {
 }
 
 fn run_script(shell: &str, script: &str) -> Observed {
-    let out: std::process::Output = Command::new(shell)
-        .arg("-c")
-        .arg(script)
-        .output()
-        .expect("spawn sandboxed shell");
+    let out: ToolOutput = tool_output(
+        CommandSpec::new(shell, Duration::from_secs(30))
+            .arg("-c")
+            .arg(script),
+    )
+    .expect("spawn sandboxed shell");
+    assert!(!out.timed_out, "{shell} did not finish the script in 30 s");
     Observed {
         stdout: out.stdout,
-        code: out.status.code(),
+        code: out.exit_code,
     }
 }
 
@@ -153,16 +152,11 @@ fn recovery_matches_original_behavior_under_bash() {
 #[test]
 fn recovery_matches_original_behavior_under_dash() {
     let Some(dash): Option<String> = dash_path() else {
-        assert!(
-            cfg!(windows) && std::env::var_os("DISROBE_REQUIRE_DASH").is_none(),
+        panic!(
             "dash is required for the non-circular exec-diff grading; tried /usr/bin/dash, \
-             /bin/dash, C:/msys64/usr/bin/dash.exe, C:/cygwin64/bin/dash.exe and `dash` on PATH"
+             /bin/dash, C:/Program Files/Git/usr/bin/dash.exe, C:/msys64/usr/bin/dash.exe, \
+             C:/cygwin64/bin/dash.exe and `dash` on PATH"
         );
-        eprintln!(
-            "UNGRADED: the dash exec-diff grading needs dash, which Windows does not carry by \
-             default; set DISROBE_REQUIRE_DASH=1 to make its absence fatal"
-        );
-        return;
     };
     let original: String = read_corpus("bash/node-bash-obfuscate/clean_original.sh");
     let obf: String = read_corpus("bash/node-bash-obfuscate/obfuscated_chunk4.sh");
