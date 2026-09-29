@@ -800,10 +800,9 @@ fn render_region(
             continue;
         }
         if ctx.body_has_pattern(body.index)
-            && let Some(next) = try_pattern_match(body, ctx, depth, i, hi, targets, stmts)
+            && let Some(next) = try_pattern_match(body, ctx, depth, i, hi, targets, stack, stmts)
         {
             i = next;
-            stack.clear();
             continue;
         }
         if let Some(next) = try_short_circuit(body, ctx, depth, i, hi, targets, stack) {
@@ -1431,11 +1430,24 @@ struct CaseInArm {
 }
 
 #[derive(Clone, Copy)]
-struct ArmBody {
-    target: usize,
+struct ArmLayout {
+    test_lo: usize,
+    success: usize,
     body_lo: usize,
     body_hi: usize,
 }
+
+struct CaseInLayout {
+    single: bool,
+    subject_lo: usize,
+    first_dup: usize,
+    arms: Vec<ArmLayout>,
+    else_body: Option<(usize, usize)>,
+    end: usize,
+    yields_value: bool,
+}
+
+const CASE_IN_REFUSAL: &str = "raise NotImplementedError, \"case/in pattern match not recovered\"";
 
 #[allow(clippy::too_many_arguments)]
 fn try_pattern_match(
@@ -1445,49 +1457,79 @@ fn try_pattern_match(
     i: usize,
     hi: usize,
     targets: &[Option<usize>],
+    stack: &mut Vec<String>,
     stmts: &mut Vec<String>,
 ) -> Option<usize> {
-    let region: CaseInRegion = find_case_in_region(body, i, hi, targets)?;
-    let first_dup: usize = find_case_in_subject(body, i, region.terminal_lo)?;
-    let subject_idx: usize = first_dup - 1;
-    let subject: String = pattern_subject_text(body, ctx, i, first_dup);
-    let prelude_start: usize = case_scratch_start(body, i, subject_expr_start(body, i, first_dup));
+    let layout: CaseInLayout = case_in_layout(body, ctx, i, hi, targets)?;
+    let lines: Vec<String> = render_case_in(body, ctx, depth, &layout, targets)
+        .unwrap_or_else(|| vec![format!("{}{CASE_IN_REFUSAL}", indent(depth))]);
+    if layout.yields_value {
+        let mut text: String = lines.join("\n");
+        text.drain(..indent(depth).len());
+        push(stack, text);
+    } else {
+        stack.clear();
+        stmts.extend(lines);
+    }
+    Some(layout.end)
+}
 
-    let bodies: Vec<ArmBody> =
-        collect_arm_bodies(body, subject_idx, region.body_floor, hi, targets);
-    if bodies.is_empty() {
+fn render_case_in(
+    body: &YarvIseqBody,
+    ctx: &DecompileContext<'_>,
+    depth: u32,
+    layout: &CaseInLayout,
+    targets: &[Option<usize>],
+) -> Option<Vec<String>> {
+    let subject: String = pattern_value_region(body, ctx, layout.subject_lo, layout.first_dup);
+    if subject.trim().is_empty() || line_has_leak(&subject) {
         return None;
     }
-
-    let else_body: Option<(usize, usize)> = region.else_body;
-
-    let mut arms: Vec<CaseInArm> = Vec::with_capacity(bodies.len());
-    let mut test_lo: usize = subject_idx + 1;
-    for arm_body in &bodies {
-        let success: usize = find_success_branch(body, test_lo, arm_body.target, targets)?;
+    let plain: Option<DiagnosticFree> = layout.single.then(|| {
+        let hi: usize = layout
+            .arms
+            .last()
+            .map_or(layout.first_dup, |arm| arm.success + 1);
+        without_match_diagnostics(body, layout.first_dup, hi, targets)
+    });
+    let mut arms: Vec<CaseInArm> = Vec::with_capacity(layout.arms.len());
+    for arm in &layout.arms {
+        let (arm_body, arm_targets, test_lo, success): (
+            &YarvIseqBody,
+            &[Option<usize>],
+            usize,
+            usize,
+        ) = plain.as_ref().map_or(
+            (body, targets, arm.test_lo, arm.success),
+            |plain: &DiagnosticFree| {
+                (
+                    &plain.body,
+                    &plain.targets,
+                    plain.index[arm.test_lo],
+                    plain.index[arm.success],
+                )
+            },
+        );
         let (pattern, guard): (String, Option<String>) =
-            parse_case_in_arm(body, ctx, depth, test_lo, success, targets);
+            parse_case_in_arm(arm_body, ctx, depth, test_lo, success, arm_targets);
+        if !is_valid_pattern(&pattern) {
+            return None;
+        }
         arms.push(CaseInArm {
             pattern,
             guard,
-            body_lo: arm_body.body_lo,
-            body_hi: arm_body.body_hi,
+            body_lo: arm.body_lo,
+            body_hi: arm.body_hi,
         });
-        test_lo = skip_type_error_tail(body, success + 1, hi);
     }
 
-    let region_end: usize = case_in_region_end(&bodies, else_body, hi);
-
     let pad: String = indent(depth);
-    let mut lines: Vec<String> = Vec::with_capacity(arms.len() * 2 + 2);
+    let mut lines: Vec<String> = Vec::with_capacity(arms.len() * 2 + 3);
     lines.push(format!("{pad}case {subject}"));
     for arm in &arms {
-        if !is_valid_pattern(&arm.pattern) {
-            return None;
-        }
         let header: String = arm.guard.as_ref().map_or_else(
             || format!("{pad}in {}", arm.pattern),
-            |guard| format!("{pad}in {} if {guard}", arm.pattern),
+            |guard| format!("{pad}in {} {guard}", arm.pattern),
         );
         lines.push(header);
         lines.extend(render_slice(
@@ -1499,36 +1541,16 @@ fn try_pattern_match(
             targets,
         ));
     }
-    if let Some((lo, ehi)) = else_body {
-        let else_lines: Vec<String> = render_slice(body, ctx, depth + 1, lo, ehi, targets);
-        if else_lines.iter().any(|l| !l.trim().is_empty()) {
-            lines.push(format!("{pad}else"));
-            lines.extend(else_lines);
-        }
+    if let Some((lo, ehi)) = layout.else_body {
+        lines.push(format!("{pad}else"));
+        lines.extend(render_slice(body, ctx, depth + 1, lo, ehi, targets));
     }
     lines.push(format!("{pad}end"));
 
     if lines.iter().any(|l| line_has_leak(l)) {
         return None;
     }
-    if prelude_start > i {
-        stmts.extend(render_slice(body, ctx, depth, i, prelude_start, targets));
-    }
-    stmts.extend(lines);
-    Some(region_end)
-}
-
-fn case_scratch_start(body: &YarvIseqBody, region_lo: usize, subject_lo: usize) -> usize {
-    (region_lo..subject_lo)
-        .rev()
-        .take_while(|&j| {
-            matches!(
-                body.instructions[j].mnemonic.as_str(),
-                "putnil" | "putobject"
-            )
-        })
-        .last()
-        .unwrap_or(subject_lo)
+    Some(lines)
 }
 
 fn is_valid_pattern(pattern: &str) -> bool {
@@ -1551,118 +1573,339 @@ fn line_has_leak(line: &str) -> bool {
         || line.trim_start().starts_with("_.")
 }
 
-struct CaseInRegion {
-    terminal_lo: usize,
-    body_floor: usize,
-    else_body: Option<(usize, usize)>,
+struct DiagnosticFree {
+    body: YarvIseqBody,
+    targets: Vec<Option<usize>>,
+    index: Vec<usize>,
 }
 
-fn find_case_in_region(
+fn without_match_diagnostics(
     body: &YarvIseqBody,
-    i: usize,
+    lo: usize,
     hi: usize,
     targets: &[Option<usize>],
-) -> Option<CaseInRegion> {
-    let has_checkmatch: bool = (i..hi).any(|k| body.instructions[k].mnemonic == "checkmatch");
-    let has_deconstruct: bool = (i..hi).any(|k| {
-        body.instructions[k].mnemonic == "checktype"
-            && matches!(operand_num(&body.instructions[k], 0), T_ARRAY | T_HASH)
-    });
-    if !has_checkmatch && !has_deconstruct {
-        return None;
+) -> DiagnosticFree {
+    let ins: &[YarvIbfInstruction] = &body.instructions;
+    let mut keep: Vec<bool> = vec![true; ins.len()];
+    let mut j: usize = lo;
+    while j < hi {
+        let Some(join): Option<usize> = diagnostic_block_end(body, j, hi, targets) else {
+            j += 1;
+            continue;
+        };
+        keep[j..join].fill(false);
+        let settles: bool = ["setn", "pop", "pop"]
+            .iter()
+            .enumerate()
+            .all(|(n, m)| ins.get(join + n).is_some_and(|x| x.mnemonic == *m));
+        if j >= 2 && ins[j - 1].mnemonic == "checkmatch" && ins[j - 2].mnemonic == "dupn" && settles
+        {
+            keep[j - 2] = false;
+            keep[join..join + 3].fill(false);
+            j = join + 3;
+        } else {
+            j = join;
+        }
     }
 
-    if let Some(start) = (i..hi).find(|&k| is_no_match_epilogue_head(body, k)) {
-        let raise_idx: usize = (start..hi)
-            .find(|&k| is_named_raise_call(&body.instructions[k]))
-            .unwrap_or(start);
-        let body_floor: usize = (raise_idx..hi)
-            .find(|&k| body.instructions[k].mnemonic == "adjuststack")
-            .map_or(raise_idx, |adj| adj + 1);
-        return Some(CaseInRegion {
-            terminal_lo: start,
-            body_floor,
-            else_body: None,
-        });
+    let mut index: Vec<usize> = Vec::with_capacity(ins.len() + 1);
+    let mut kept: Vec<YarvIbfInstruction> = Vec::with_capacity(ins.len());
+    for (k, instr) in ins.iter().enumerate() {
+        index.push(kept.len());
+        if keep[k] {
+            kept.push(instr.clone());
+        }
     }
-
-    let first_cluster: usize = first_arm_body_cluster(body, i, hi, targets)?;
-    let else_hi: usize = first_cluster.checked_sub(1).filter(|&leave| {
-        body.instructions
-            .get(leave)
-            .is_some_and(|x| x.mnemonic == "leave")
-    })?;
-    let else_open: usize = (i..else_hi)
-        .rev()
-        .find(|&k| {
-            matches!(
-                body.instructions[k].mnemonic.as_str(),
-                "leave" | "jump" | "adjuststack"
-            ) || is_named_raise_call(&body.instructions[k])
-        })
-        .map_or(i, |edge| edge + 1);
-    let last_failure: Option<usize> = (i..else_hi)
-        .filter(|&k| body.instructions[k].mnemonic == "jump")
-        .filter_map(|k| targets.get(k).copied().flatten())
-        .filter(|&t| t > i && t < else_hi)
-        .max();
-    let else_open: usize = last_failure.map_or(else_open, |t| t.max(else_open));
-    let else_lo: usize = skip_pattern_body_prologue(body, else_open);
-    if else_lo >= else_hi || else_lo <= i {
-        return None;
+    index.push(kept.len());
+    let mut pcs: Vec<u32> = Vec::with_capacity(kept.len() + 1);
+    let mut pc: u32 = 0;
+    for instr in &mut kept {
+        pcs.push(pc);
+        instr.pc = pc;
+        pc = pc.saturating_add(1 + instr.operands.len() as u32);
     }
-    if (else_lo..else_hi).any(|j| is_named_raise_call(&body.instructions[j])) {
-        return None;
+    pcs.push(pc);
+    for (k, target) in targets.iter().enumerate() {
+        let Some(t): Option<usize> = *target else {
+            continue;
+        };
+        if !keep[k] {
+            continue;
+        }
+        let at: usize = index[k];
+        let next_pc: i64 = i64::from(pcs[at]) + 1 + kept[at].operands.len() as i64;
+        let delta: i64 = i64::from(pcs[index[t]]) - next_pc;
+        if let (Some(slot), Ok(delta)) = (kept[at].operands.first_mut(), i32::try_from(delta)) {
+            *slot = YarvOperand::Offset(delta.cast_unsigned());
+        }
     }
-    Some(CaseInRegion {
-        terminal_lo: else_open,
-        body_floor: first_cluster,
-        else_body: Some((else_lo, else_hi)),
-    })
+    let plain: YarvIseqBody = YarvIseqBody {
+        instructions: kept,
+        ..body.clone()
+    };
+    let plain_targets: Vec<Option<usize>> = resolve_branch_targets(&plain);
+    DiagnosticFree {
+        body: plain,
+        targets: plain_targets,
+        index,
+    }
 }
 
-fn first_arm_body_cluster(
+fn diagnostic_block_end(
     body: &YarvIseqBody,
-    i: usize,
+    j: usize,
     hi: usize,
     targets: &[Option<usize>],
 ) -> Option<usize> {
-    (i + 1..hi)
-        .filter(|&idx| {
-            matches!(
-                body.instructions[idx].mnemonic.as_str(),
-                "jump" | "branchif" | "branchnil"
-            )
-        })
-        .filter_map(|idx| targets.get(idx).copied().flatten())
-        .filter(|&t| {
-            t > i
-                && t < hi
-                && body.instructions[t].mnemonic == "adjuststack"
-                && body
-                    .instructions
-                    .get(skip_pattern_body_prologue(body, t))
-                    .is_some_and(|x| x.mnemonic != "jump")
-        })
-        .min()
+    let ins: &[YarvIbfInstruction] = &body.instructions;
+    if ins[j].mnemonic != "dup" || ins.get(j + 1)?.mnemonic != "branchif" {
+        return None;
+    }
+    let join: usize = targets.get(j + 1).copied().flatten()?;
+    if join <= j + 2 || join > hi {
+        return None;
+    }
+    let block: &[YarvIbfInstruction] = &ins[j + 2..join];
+    (block.iter().any(|x| x.mnemonic == "setn") && !block.iter().any(is_branch_opcode))
+        .then_some(join)
 }
 
-fn is_no_match_epilogue_head(body: &YarvIseqBody, k: usize) -> bool {
-    body.instructions[k].mnemonic == "putspecialobject"
-        && body
-            .instructions
-            .get(k + 1)
-            .is_some_and(|x| x.mnemonic == "topn")
-        && body
-            .instructions
-            .get(k + 2)
-            .is_some_and(|x| x.mnemonic == "branchif")
-        && (k + 3..(k + 12).min(body.instructions.len())).any(|j| {
-            matches!(
-                body.instructions[j].operands.first(),
-                Some(YarvOperand::StrLiteral(s)) if s == "%p: %s"
-            )
+const CASE_IN_SINGLE_SCRATCH: usize = 5;
+const CASE_IN_ARM_SCRATCH: u64 = 2;
+const CASE_IN_SINGLE_ARM_SCRATCH: u64 = 6;
+
+fn case_in_layout(
+    body: &YarvIseqBody,
+    ctx: &DecompileContext<'_>,
+    i: usize,
+    hi: usize,
+    targets: &[Option<usize>],
+) -> Option<CaseInLayout> {
+    let ins: &[YarvIbfInstruction] = &body.instructions;
+    if ins.get(i)?.mnemonic != "putnil" {
+        return None;
+    }
+    let single: bool = is_single_pattern_head(body, i);
+    let subject_lo: usize = if single {
+        i + CASE_IN_SINGLE_SCRATCH
+    } else {
+        i + 1
+    };
+    let first_dup: usize = (subject_lo..hi).find(|&k| ins[k].mnemonic == "dup")?;
+    if first_dup == subject_lo || !is_single_expression(body, ctx, subject_lo, first_dup, targets) {
+        return None;
+    }
+    let arm_scratch: u64 = if single {
+        CASE_IN_SINGLE_ARM_SCRATCH
+    } else {
+        CASE_IN_ARM_SCRATCH
+    };
+    let is_arm_head = |t: usize| -> bool {
+        t > first_dup
+            && t < hi
+            && ins[t].mnemonic == "adjuststack"
+            && operand_num(&ins[t], 0) == arm_scratch
+            && matches!(ins[t - 1].mnemonic.as_str(), "jump" | "leave")
+    };
+    let first_head: usize = (first_dup..hi).find_map(|k| {
+        targets
+            .get(k)
+            .copied()
+            .flatten()
+            .filter(|&t| t > k && is_arm_head(t))
+    })?;
+    let terminator: usize = first_head - 1;
+
+    let mut heads: Vec<usize> = Vec::new();
+    let mut ends: Vec<usize> = Vec::new();
+    for k in first_dup..first_head {
+        let Some(t): Option<usize> = targets.get(k).copied().flatten() else {
+            continue;
+        };
+        if t < first_head {
+            continue;
+        }
+        if is_arm_head(t) {
+            heads.push(t);
+        } else {
+            ends.push(t);
+        }
+    }
+    heads.sort_unstable();
+    heads.dedup();
+
+    let mut clauses: Vec<(usize, usize)> = Vec::with_capacity(heads.len());
+    let mut test_lo: usize = first_dup;
+    for &head in &heads {
+        if ins.get(test_lo)?.mnemonic != "dup" {
+            return None;
+        }
+        let success: usize = (test_lo..terminator).rev().find(|&j| {
+            is_branch_opcode(&ins[j]) && targets.get(j).copied().flatten() == Some(head)
+        })?;
+        clauses.push((test_lo, success));
+        test_lo = skip_clause_cleanup(body, success + 1, terminator, targets);
+    }
+
+    let else_body: Option<(usize, usize)> = if is_no_match_epilogue(body, test_lo) {
+        None
+    } else if test_lo <= terminator {
+        Some((test_lo, terminator))
+    } else {
+        return None;
+    };
+
+    for pair in heads.windows(2) {
+        let arm_end: &YarvIbfInstruction = &ins[pair[1] - 1];
+        match arm_end.mnemonic.as_str() {
+            "leave" => {}
+            "jump" => ends.push(targets.get(pair[1] - 1).copied().flatten()?),
+            _ => return None,
+        }
+    }
+    ends.sort_unstable();
+    ends.dedup();
+    let last_head: usize = *heads.last()?;
+    let (last_hi, end): (usize, usize) = match ends.as_slice() {
+        [] => {
+            let leave: usize = region_leave(body, targets, last_head + 1, hi)?;
+            (leave, leave + 1)
+        }
+        [end] if *end > last_head => (*end.min(&hi), *end.min(&hi)),
+        _ => return None,
+    };
+
+    let yields_value: bool = ins[terminator].mnemonic == "jump"
+        && match else_body {
+            None => ins[terminator - 1].mnemonic == "putnil",
+            Some((lo, ehi)) => leaves_value(body, ctx, lo, ehi, targets),
+        };
+
+    let arms: Vec<ArmLayout> = clauses
+        .iter()
+        .zip(heads.iter().enumerate())
+        .map(|(&(test_lo, success), (n, &head))| ArmLayout {
+            test_lo,
+            success,
+            body_lo: head + 1,
+            body_hi: heads.get(n + 1).map_or(last_hi, |next| next - 1),
         })
+        .collect();
+    Some(CaseInLayout {
+        single,
+        subject_lo,
+        first_dup,
+        arms,
+        else_body,
+        end,
+        yields_value,
+    })
+}
+
+fn is_single_pattern_head(body: &YarvIseqBody, i: usize) -> bool {
+    const HEAD: [&str; CASE_IN_SINGLE_SCRATCH] =
+        ["putnil", "putnil", "putobject", "putnil", "putnil"];
+    HEAD.iter().enumerate().all(|(n, m)| {
+        body.instructions
+            .get(i + n)
+            .is_some_and(|x| x.mnemonic == *m)
+    })
+}
+
+fn is_single_expression(
+    body: &YarvIseqBody,
+    ctx: &DecompileContext<'_>,
+    lo: usize,
+    hi: usize,
+    targets: &[Option<usize>],
+) -> bool {
+    if (lo..hi).any(|k| targets.get(k).copied().flatten().is_some()) {
+        return false;
+    }
+    let mut stack: Vec<String> = Vec::new();
+    let mut sink: Vec<String> = Vec::new();
+    for instr in &body.instructions[lo..hi] {
+        step(instr, &body.local_table, ctx, 0, &mut stack, &mut sink);
+    }
+    stack.len() == 1 && sink.is_empty()
+}
+
+fn leaves_value(
+    body: &YarvIseqBody,
+    ctx: &DecompileContext<'_>,
+    lo: usize,
+    hi: usize,
+    targets: &[Option<usize>],
+) -> bool {
+    let mut stack: Vec<String> = Vec::new();
+    let mut sink: Vec<String> = Vec::new();
+    render_region(body, ctx, 0, lo, hi, targets, &mut stack, &mut sink);
+    !stack.is_empty()
+}
+
+fn is_branch_opcode(instr: &YarvIbfInstruction) -> bool {
+    matches!(
+        instr.mnemonic.as_str(),
+        "jump" | "branchif" | "branchunless" | "branchnil"
+    )
+}
+
+fn skip_clause_cleanup(
+    body: &YarvIseqBody,
+    lo: usize,
+    hi: usize,
+    targets: &[Option<usize>],
+) -> usize {
+    let ins: &[YarvIbfInstruction] = &body.instructions;
+    let mut j: usize = lo;
+    while j < hi {
+        let m: &str = ins[j].mnemonic.as_str();
+        let skips: bool =
+            matches!(m, "pop" | "adjuststack")
+                || (m == "jump"
+                    && targets.get(j).copied().flatten().is_some_and(|t| {
+                        t > j && matches!(ins[t].mnemonic.as_str(), "pop" | "dup")
+                    }));
+        if skips {
+            j += 1;
+        } else if let Some(raise) = type_error_raise_end(body, j, hi) {
+            j = raise;
+        } else {
+            break;
+        }
+    }
+    j
+}
+
+fn type_error_raise_end(body: &YarvIseqBody, lo: usize, hi: usize) -> Option<usize> {
+    let ins: &[YarvIbfInstruction] = &body.instructions;
+    if ins[lo].mnemonic != "putspecialobject"
+        || !matches!(
+            ins.get(lo + 2).and_then(|x| x.operands.first()),
+            Some(YarvOperand::StrLiteral(_))
+        )
+    {
+        return None;
+    }
+    (lo..hi.min(lo + 5))
+        .find(|&k| is_named_raise_call(&ins[k]))
+        .map(|raise| raise + 1)
+}
+
+fn is_no_match_epilogue(body: &YarvIseqBody, k: usize) -> bool {
+    let at = |n: usize| -> &str {
+        body.instructions
+            .get(k + n)
+            .map_or("", |x| x.mnemonic.as_str())
+    };
+    at(0) == "putspecialobject"
+        && ((at(1) == "topn" && at(2) == "branchif")
+            || (at(1) == "putobject"
+                && at(2) == "topn"
+                && body
+                    .instructions
+                    .get(k + 3)
+                    .is_some_and(is_named_raise_call)))
 }
 
 fn is_named_raise_call(instr: &YarvIbfInstruction) -> bool {
@@ -1672,100 +1915,22 @@ fn is_named_raise_call(instr: &YarvIbfInstruction) -> bool {
     )
 }
 
-fn find_case_in_subject(body: &YarvIseqBody, i: usize, terminal_lo: usize) -> Option<usize> {
-    let first_dup: usize = (i..terminal_lo).find(|&k| body.instructions[k].mnemonic == "dup")?;
-    if first_dup == 0 {
-        return None;
-    }
-    Some(first_dup)
-}
-
-fn collect_arm_bodies(
+fn region_leave(
     body: &YarvIseqBody,
-    subject_idx: usize,
-    epilogue_end: usize,
+    targets: &[Option<usize>],
+    lo: usize,
     hi: usize,
-    targets: &[Option<usize>],
-) -> Vec<ArmBody> {
-    let mut found: Vec<usize> = Vec::new();
-    for idx in subject_idx + 1..hi {
-        if !matches!(
-            body.instructions[idx].mnemonic.as_str(),
-            "jump" | "branchif" | "branchnil"
-        ) {
-            continue;
-        }
-        let Some(t): Option<usize> = targets.get(idx).copied().flatten() else {
-            continue;
-        };
-        if t >= epilogue_end && t < hi && body.instructions[t].mnemonic == "adjuststack" && t > idx
-        {
-            found.push(t);
-        }
-    }
-    found.sort_unstable();
-    found.dedup();
-
-    found
-        .into_iter()
-        .filter_map(|target| {
-            let body_lo: usize = skip_pattern_body_prologue(body, target);
-            if body
-                .instructions
-                .get(body_lo)
-                .is_some_and(|x| x.mnemonic == "jump")
-            {
-                return None;
-            }
-            let body_hi: usize = (body_lo..hi)
-                .find(|&x| body.instructions[x].mnemonic == "leave")
-                .unwrap_or(hi);
-            Some(ArmBody {
-                target,
-                body_lo,
-                body_hi,
-            })
-        })
-        .collect()
-}
-
-fn find_success_branch(
-    body: &YarvIseqBody,
-    test_lo: usize,
-    target: usize,
-    targets: &[Option<usize>],
 ) -> Option<usize> {
-    (test_lo..target).rev().find(|&j| {
-        matches!(
-            body.instructions[j].mnemonic.as_str(),
-            "jump" | "branchif" | "branchnil"
-        ) && targets.get(j).copied().flatten() == Some(target)
-    })
-}
-
-fn skip_type_error_tail(body: &YarvIseqBody, lo: usize, hi: usize) -> usize {
-    if body.instructions.get(lo).map(|x| x.mnemonic.as_str()) != Some("putspecialobject") {
-        return lo;
+    let mut reach: usize = lo;
+    for k in lo..hi {
+        if let Some(t) = targets.get(k).copied().flatten() {
+            reach = reach.max(t);
+        }
+        if body.instructions[k].mnemonic == "leave" && reach <= k {
+            return Some(k);
+        }
     }
-    let Some(raise): Option<usize> = (lo..hi)
-        .take(5)
-        .find(|&k| is_named_raise_call(&body.instructions[k]))
-    else {
-        return lo;
-    };
-    let mut end: usize = raise + 1;
-    while end < hi && body.instructions[end].mnemonic == "pop" {
-        end += 1;
-    }
-    end
-}
-
-fn case_in_region_end(bodies: &[ArmBody], else_body: Option<(usize, usize)>, hi: usize) -> usize {
-    let mut end: usize = bodies.iter().map(|b| b.body_hi).max().unwrap_or(hi);
-    if let Some((_, ehi)) = else_body {
-        end = end.max(ehi);
-    }
-    (end + 1).min(hi)
+    None
 }
 
 fn parse_case_in_arm(
@@ -1780,14 +1945,19 @@ fn parse_case_in_arm(
         top_level_capture(body, test_lo, success);
     let guard_lo: usize =
         capture_at.map_or_else(|| guard_region_anchor(body, test_lo, success), |c| c + 1);
-    let guard: Option<String> = if body.instructions[success].mnemonic == "branchif"
-        && guard_lo < success
-        && (guard_lo..success).any(|j| is_guard_value_opcode(&body.instructions[j]))
-    {
-        parse_guard_expr(body, ctx, guard_lo, success)
-    } else {
-        None
+    let guard_keyword: Option<&str> = match body.instructions[success].mnemonic.as_str() {
+        "branchif" => Some("if"),
+        "branchunless" => Some("unless"),
+        _ => None,
     };
+    let guard: Option<String> = guard_keyword
+        .filter(|_| {
+            guard_lo < success
+                && (guard_lo..success).any(|j| is_guard_value_opcode(&body.instructions[j]))
+        })
+        .and_then(|keyword| {
+            parse_guard_expr(body, ctx, guard_lo, success).map(|expr| format!("{keyword} {expr}"))
+        });
     let pattern_end: usize = capture_at.map_or_else(
         || {
             if guard.is_some() {
@@ -1850,7 +2020,7 @@ fn checkmatch_is_nested(body: &YarvIseqBody, test_lo: usize, checkmatch: usize) 
         body.instructions[j].mnemonic == "opt_aref"
             || matches!(
                 body.instructions[j].operands.first(),
-                Some(YarvOperand::Call { method, .. }) if method == "[]"
+                Some(YarvOperand::Call { method, .. }) if method == "[]" || method == "delete"
             )
     })
 }
@@ -2018,7 +2188,7 @@ fn single_pattern(
     if let Some(checktype_idx) = array_check
         && hash_check.is_none_or(|hash: usize| checktype_idx < hash)
     {
-        return Some(parse_array_or_find(body, ctx, checktype_idx + 1, hi));
+        return parse_array_or_find(body, ctx, depth, checktype_idx + 1, hi);
     }
     if let Some(checktype_idx) = hash_check {
         let const_prefix: Option<String> = deconstruct_const_prefix(body, ctx, lo, checktype_idx);
@@ -2165,11 +2335,12 @@ fn is_literal_pattern_op(mnemonic: &str) -> bool {
 fn parse_array_or_find(
     body: &YarvIseqBody,
     ctx: &DecompileContext<'_>,
+    depth: u32,
     from: usize,
     hi: usize,
-) -> String {
+) -> Option<String> {
     if is_find_pattern(body, from, hi) {
-        return parse_find(body, from, hi);
+        return parse_find(body, ctx, depth, from, hi);
     }
     let is_splat: bool = (from..hi)
         .take(6)
@@ -2206,7 +2377,7 @@ fn parse_array_or_find(
         j += 1;
     }
     if pre.is_empty() && post.is_empty() && splat.is_none() && !is_splat {
-        return "[]".to_owned();
+        return Some("[]".to_owned());
     }
     let mut elements: Vec<String> = pre;
     if let Some(rest) = splat {
@@ -2215,7 +2386,7 @@ fn parse_array_or_find(
         elements.push("*".to_owned());
     }
     elements.extend(post);
-    format!("[{}]", elements.join(", "))
+    Some(format!("[{}]", elements.join(", ")))
 }
 
 fn read_element_nested(
@@ -2238,7 +2409,13 @@ fn read_nested_subpattern(
     lo: usize,
     hi: usize,
 ) -> Option<(String, usize)> {
-    if body.instructions.get(lo).map(|x| x.mnemonic.as_str()) != Some("dup") {
+    let at = |k: usize| -> &str { body.instructions.get(k).map_or("", |x| x.mnemonic.as_str()) };
+    let lo: usize = if at(lo) == "putobject_INT2FIX_0_" && at(lo + 1) == "swap" {
+        lo + 2
+    } else {
+        lo
+    };
+    if at(lo) != "dup" {
         return None;
     }
     let checktype: usize = (lo..hi)
@@ -2262,7 +2439,7 @@ fn read_nested_subpattern(
     }
     let kind: u64 = operand_num(&body.instructions[checktype], 0);
     let pattern: String = if kind == T_ARRAY {
-        parse_array_or_find(body, ctx, checktype + 1, tail - 1)
+        parse_array_or_find(body, ctx, 0, checktype + 1, tail - 1)?
     } else if kind == T_HASH {
         let const_prefix: Option<String> = deconstruct_const_prefix(body, ctx, lo, checktype);
         parse_hash(body, ctx, checktype + 1, tail - 1, const_prefix.as_deref())
@@ -2376,42 +2553,100 @@ fn is_find_pattern(body: &YarvIseqBody, from: usize, hi: usize) -> bool {
             .any(|k| body.instructions[k].mnemonic == "checkmatch")
 }
 
-fn parse_find(body: &YarvIseqBody, from: usize, hi: usize) -> String {
+fn parse_find(
+    body: &YarvIseqBody,
+    ctx: &DecompileContext<'_>,
+    depth: u32,
+    from: usize,
+    hi: usize,
+) -> Option<String> {
+    let ins: &[YarvIbfInstruction] = &body.instructions;
+    let at = |k: usize| -> &str { ins.get(k).map_or("", |x| x.mnemonic.as_str()) };
+    let topn_is = |k: usize, n: u64| -> bool { at(k) == "topn" && operand_num(&ins[k], 0) == n };
+    let loop_test: usize = (from..hi).find(|&k| at(k) == "opt_le")?;
+    if at(loop_test + 1) != "branchunless" {
+        return None;
+    }
+    let loop_head: usize = loop_test.checked_sub(2)?;
+    let targets: Vec<Option<usize>> = resolve_branch_targets(body);
+    let next_loop: usize = (loop_test + 2..hi).find(|&k| {
+        at(k) == "putobject_INT2FIX_1_"
+            && at(k + 1) == "opt_plus"
+            && at(k + 2) == "jump"
+            && targets.get(k + 2).copied().flatten() == Some(loop_head)
+    })?;
+    let succeeded: usize = if at(next_loop - 1) == "jump" {
+        next_loop - 1
+    } else {
+        next_loop
+    };
     let mut mids: Vec<String> = Vec::new();
-    if let Some(cm) = (from..hi).find(|&j| body.instructions[j].mnemonic == "checkmatch") {
-        let val_lo: usize = (from..cm)
-            .rev()
-            .find(|&j| body.instructions[j].mnemonic == "opt_aref")
-            .map_or(from, |aref| aref + 1);
-        if let Some(v) = literal_value_in(body, val_lo, cm) {
-            mids.push(v);
+    let mut j: usize = loop_test + 2;
+    while topn_is(j, 3) && topn_is(j + 1, 1) {
+        let mut k: usize = j + 2;
+        if ins.get(k).is_some_and(is_array_index_literal) && at(k + 1) == "opt_plus" {
+            k += 2;
         }
-    }
-    for j in from..hi {
-        if let Some((bind, _)) = read_element_bind(body, j) {
-            mids.push(bind);
+        if at(k) != "opt_aref" {
+            break;
         }
+        let lo: usize = k + 1;
+        let end: usize = (lo..succeeded)
+            .find(|&e| topn_is(e, 3) && (topn_is(e + 1, 1) || at(e + 1) == "putobject_INT2FIX_0_"))
+            .unwrap_or(succeeded);
+        mids.push(find_element(body, ctx, depth, lo, end)?);
+        j = end;
     }
-    if mids.is_empty() {
-        return "[*, *]".to_owned();
+    let mut pre: Option<String> = None;
+    if topn_is(j, 3) && at(j + 1) == "putobject_INT2FIX_0_" && topn_is(j + 2, 2) {
+        let set: usize = j + 4;
+        if !ins.get(j + 3).is_some_and(|x| call_method_is(x, "[]"))
+            || !at(set).starts_with("setlocal")
+        {
+            return None;
+        }
+        pre = Some(local_name(&body.local_table, operand_num(&ins[set], 0)));
+        j = set + 1;
     }
-    format!("[*, {}, *]", mids.join(", "))
+    let mut post: Option<String> = None;
+    if topn_is(j, 3) && topn_is(j + 1, 1) {
+        let set: usize = j + 6;
+        if at(j + 3) != "opt_plus"
+            || !topn_is(j + 4, 3)
+            || !ins.get(j + 5).is_some_and(|x| call_method_is(x, "[]"))
+            || !at(set).starts_with("setlocal")
+        {
+            return None;
+        }
+        post = Some(local_name(&body.local_table, operand_num(&ins[set], 0)));
+        j = set + 1;
+    }
+    if j != succeeded || mids.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "[*{}, {}, *{}]",
+        pre.unwrap_or_default(),
+        mids.join(", "),
+        post.unwrap_or_default()
+    ))
 }
 
-fn literal_value_in(body: &YarvIseqBody, lo: usize, hi: usize) -> Option<String> {
-    (lo..hi)
-        .rev()
-        .find(|&j| {
-            matches!(
-                body.instructions[j].mnemonic.as_str(),
-                "putobject" | "putobject_INT2FIX_0_" | "putobject_INT2FIX_1_"
-            )
-        })
-        .map(|j| match body.instructions[j].mnemonic.as_str() {
-            "putobject_INT2FIX_0_" => "0".to_owned(),
-            "putobject_INT2FIX_1_" => "1".to_owned(),
-            _ => operand_value(&body.instructions[j], 0),
-        })
+fn find_element(
+    body: &YarvIseqBody,
+    ctx: &DecompileContext<'_>,
+    depth: u32,
+    lo: usize,
+    hi: usize,
+) -> Option<String> {
+    let ins: &[YarvIbfInstruction] = &body.instructions;
+    if hi == lo + 1 && ins[lo].mnemonic.starts_with("setlocal") {
+        return Some(local_name(&body.local_table, operand_num(&ins[lo], 0)));
+    }
+    if (lo..hi).any(|k| ins[k].mnemonic.starts_with("setlocal")) {
+        return None;
+    }
+    single_pattern(body, ctx, depth, lo, hi)
 }
 
 fn parse_hash(
@@ -2580,34 +2815,6 @@ fn call_method_is(instr: &YarvIbfInstruction, name: &str) -> bool {
     )
 }
 
-fn pattern_subject_text(
-    body: &YarvIseqBody,
-    ctx: &DecompileContext<'_>,
-    region_lo: usize,
-    first_dup: usize,
-) -> String {
-    let subject_lo: usize = subject_expr_start(body, region_lo, first_dup);
-    let text: String = pattern_value_region(body, ctx, subject_lo, first_dup);
-    if text.is_empty() {
-        "subject".to_owned()
-    } else {
-        text
-    }
-}
-
-fn subject_expr_start(body: &YarvIseqBody, region_lo: usize, first_dup: usize) -> usize {
-    (region_lo..first_dup)
-        .rev()
-        .take_while(|&j| {
-            !matches!(
-                body.instructions[j].mnemonic.as_str(),
-                "putnil" | "setlocal" | "setlocal_WC_0" | "setlocal_WC_1"
-            )
-        })
-        .last()
-        .unwrap_or_else(|| first_dup.saturating_sub(1))
-}
-
 fn pattern_value_region(
     body: &YarvIseqBody,
     ctx: &DecompileContext<'_>,
@@ -2645,18 +2852,6 @@ fn is_identifier(s: &str) -> bool {
             .next()
             .is_some_and(|c| c.is_ascii_lowercase() || c == '_')
         && s.chars().all(|c| c.is_alphanumeric() || c == '_')
-}
-
-fn skip_pattern_body_prologue(body: &YarvIseqBody, idx: usize) -> usize {
-    let mut j: usize = idx;
-    while body
-        .instructions
-        .get(j)
-        .is_some_and(|x| matches!(x.mnemonic.as_str(), "adjuststack" | "pop"))
-    {
-        j += 1;
-    }
-    j
 }
 
 fn symbol_literal(s: &str) -> String {
@@ -7164,17 +7359,25 @@ mod tests {
     }
 
     #[test]
-    fn find_case_in_region_is_none_without_pattern_opcodes() {
+    fn case_in_layout_is_none_without_pattern_opcodes() {
         let body: YarvIseqBody = synthetic_body(vec![
             instr("putnil", vec![]),
             instr("pop", vec![]),
             instr("putself", vec![]),
             instr("leave", vec![]),
         ]);
+        let image: IbfImage = IbfImage {
+            iseq_offsets: Vec::new(),
+            objects: Vec::new(),
+            iseqs: vec![body.clone()],
+            recovered_literal_count: 0,
+            recovered_instruction_count: 0,
+        };
+        let ctx: DecompileContext<'_> = DecompileContext::from_image(&image);
         let targets: Vec<Option<usize>> = resolve_branch_targets(&body);
         let n: usize = body.instructions.len();
         for i in 0..n {
-            assert!(find_case_in_region(&body, i, n, &targets).is_none());
+            assert!(case_in_layout(&body, &ctx, i, n, &targets).is_none());
         }
     }
 

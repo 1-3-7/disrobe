@@ -57,12 +57,15 @@ struct Graded {
 }
 
 fn grade(name: &str, transform: fn(&str) -> String) -> Graded {
+    grade_file(&program_path(name), transform)
+}
+
+fn grade_file(source: &Path, transform: fn(&str) -> String) -> Graded {
     let toolchain: ToolchainBanner = require_exact_mri_recompile(GRADED);
     let scratch: ScratchDir =
         ScratchDir::create("disrobe_ruby_behaviour").expect("create scratch directory");
-    let source: PathBuf = program_path(name);
     let ibf_path: PathBuf = scratch.path().join("programs.yarvc");
-    let ibf: Vec<u8> = compile_to_ibf(&toolchain.executable, &source, &ibf_path);
+    let ibf: Vec<u8> = compile_to_ibf(&toolchain.executable, source, &ibf_path);
     let analysis = analyze_bytes(&ibf, "programs.yarvc").expect("analyze the compiled program");
     let yarv = analysis
         .yarv
@@ -70,7 +73,7 @@ fn grade(name: &str, transform: fn(&str) -> String) -> Graded {
     let recovered_source: String = transform(&yarv.decompiled.source);
     let recovered_path: PathBuf = scratch.path().join("recovered.rb");
     std::fs::write(&recovered_path, &recovered_source).expect("write the recovered program");
-    let original: Output = run(&toolchain.executable, &[source.as_path()]);
+    let original: Output = run(&toolchain.executable, &[source]);
     assert!(
         original.status.success() && !original.stdout.is_empty(),
         "the original program must run and print: {}",
@@ -163,6 +166,60 @@ fn recovered_exceptions_and_enumerators_print_what_the_original_prints() {
 #[test]
 fn recovered_nested_value_conditionals_print_what_the_original_prints() {
     assert_same_output("values.rb");
+}
+
+#[test]
+fn several_case_in_blocks_in_one_body_print_what_the_original_prints() {
+    assert_same_output("cases.rb");
+}
+
+#[test]
+fn a_case_in_else_joining_the_next_statement_prints_what_the_original_prints() {
+    assert_same_output("case_join.rb");
+}
+
+#[test]
+fn nested_and_value_case_in_blocks_print_what_the_original_prints() {
+    assert_same_output("nested_cases.rb");
+}
+
+#[test]
+fn a_case_in_the_recogniser_cannot_recover_is_refused_by_name_between_surviving_statements() {
+    let scratch: ScratchDir =
+        ScratchDir::create("disrobe_ruby_refusal").expect("create scratch directory");
+    let source: PathBuf = scratch.path().join("refused.rb");
+    std::fs::write(
+        &source,
+        "p :before\ncase [1, 2]\nin [*, Integer => x, *]\n  p x\nend\np :after\n",
+    )
+    .expect("write the program");
+    let graded: Graded = grade_file(&source, str::to_owned);
+    assert_eq!(
+        String::from_utf8_lossy(&graded.original.stdout)
+            .lines()
+            .collect::<Vec<&str>>(),
+        [":before", "1", ":after"]
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&graded.recovered.stdout)
+            .lines()
+            .collect::<Vec<&str>>(),
+        [":before"],
+        "recovered source:\n{}",
+        graded.recovered_source
+    );
+    assert!(
+        String::from_utf8_lossy(&graded.recovered.stderr)
+            .contains("case/in pattern match not recovered (NotImplementedError)"),
+        "the refused case/in must raise by name: {}\nsource:\n{}",
+        String::from_utf8_lossy(&graded.recovered.stderr),
+        graded.recovered_source
+    );
+    assert!(
+        graded.recovered_source.contains("p(:after)"),
+        "the statement after the refused case/in must survive:\n{}",
+        graded.recovered_source
+    );
 }
 
 #[test]
