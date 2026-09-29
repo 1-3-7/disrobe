@@ -904,7 +904,7 @@ fn lower_instructions(
     }
 }
 
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[allow(clippy::too_many_arguments)]
 fn handle(
     proto: &LuaProto,
     inst: &Insn,

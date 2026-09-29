@@ -2,9 +2,7 @@
 #![deny(unreachable_pub)]
 #![allow(
     clippy::redundant_pub_crate,
-    clippy::too_many_lines,
     clippy::naive_bytecount,
-    clippy::cast_precision_loss,
     clippy::case_sensitive_file_extension_comparisons,
     clippy::option_if_let_else,
     clippy::single_match_else,
@@ -19,7 +17,6 @@
     clippy::manual_saturating_arithmetic,
     clippy::missing_const_for_fn,
     clippy::format_push_string,
-    clippy::similar_names,
     clippy::unnecessary_wraps,
     clippy::or_fun_call,
     clippy::struct_field_names

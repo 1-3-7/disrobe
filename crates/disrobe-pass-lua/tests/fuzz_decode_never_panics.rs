@@ -2,10 +2,8 @@
     clippy::expect_used,
     clippy::unwrap_used,
     clippy::panic,
-    clippy::cast_possible_truncation,
     clippy::missing_const_for_fn,
-    clippy::items_after_statements,
-    clippy::too_many_lines
+    clippy::items_after_statements
 )]
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
