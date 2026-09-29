@@ -2081,12 +2081,7 @@ fn patch_branch(code: &mut [u8], operand_at: usize, after: usize, target: usize)
 fn structures_for_each_iterator_loop_into_for_each_block() {
     use disrobe_pass_as3::lifter::Stmt;
 
-    let mut code: Vec<u8> = Vec::new();
-    code.push(0x24);
-    code.push(0x00);
-    code.push(0xD6);
-    let jump_at: usize = code.len();
-    code.push(0x10);
+    let mut code: Vec<u8> = vec![0x24, 0x00, 0xD6, 0x10];
     let jump_operand: usize = code.len();
     s24(0, &mut code);
     let after_jump: usize = code.len();
@@ -2103,13 +2098,11 @@ fn structures_for_each_iterator_loop_into_for_each_block() {
     code.push(0x32);
     code.push(0x01);
     code.push(0x02);
-    let iftrue_at: usize = code.len();
     code.push(0x11);
     let iftrue_operand: usize = code.len();
     s24(0, &mut code);
     let after_iftrue: usize = code.len();
     code.push(0x47);
-    let _ = (jump_at, iftrue_at);
     patch_branch(&mut code, jump_operand, after_jump, test_off);
     patch_branch(&mut code, iftrue_operand, after_iftrue, top_off);
 
@@ -2288,19 +2281,13 @@ fn structures_counted_loop_into_c_style_for() {
 fn structures_if_else_diamond_into_nested_blocks() {
     use disrobe_pass_as3::lifter::Stmt;
 
-    let mut code: Vec<u8> = Vec::new();
-    code.push(0xD1);
-    code.push(0x24);
-    code.push(0x00);
-    let ifne_at: usize = code.len();
-    code.push(0x14);
+    let mut code: Vec<u8> = vec![0xD1, 0x24, 0x00, 0x14];
     let ifne_operand: usize = code.len();
     s24(0, &mut code);
     let after_ifne: usize = code.len();
     code.push(0x24);
     code.push(0x0A);
     code.push(0xD6);
-    let jump_at: usize = code.len();
     code.push(0x10);
     let jump_operand: usize = code.len();
     s24(0, &mut code);
@@ -2312,8 +2299,6 @@ fn structures_if_else_diamond_into_nested_blocks() {
     let end_off: usize = code.len();
     code.push(0xD2);
     code.push(0x48);
-    let _ = ifne_at;
-    let _ = jump_at;
     patch_branch(&mut code, ifne_operand, after_ifne, else_off);
     patch_branch(&mut code, jump_operand, after_jump, end_off);
 
