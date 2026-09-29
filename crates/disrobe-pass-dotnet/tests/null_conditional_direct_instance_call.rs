@@ -14,28 +14,16 @@ const CSPROJ: &str = "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetF
 
 const SOURCE: &str = "namespace Sample;\n\npublic sealed class Money\n{\n    public void Reset() { }\n}\n\npublic static class Extensions\n{\n    public static void Announce(this Money value) { }\n}\n\npublic class Caller\n{\n    private Money _money;\n\n    public void Poke()\n    {\n        _money?.Reset();\n    }\n\n    public void PokeStatic()\n    {\n        _money?.Announce();\n    }\n}\n";
 
-#[cfg(windows)]
 fn dotnet_path() -> PathBuf {
-    if Command::new("dotnet")
-        .arg("--version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|status: std::process::ExitStatus| status.success())
-    {
-        return PathBuf::from("dotnet");
-    }
-    let known_install: PathBuf = PathBuf::from(r"C:\Program Files\dotnet\dotnet.exe");
     assert!(
-        known_install.is_file(),
-        "dotnet SDK was not found on PATH or at {}; install the .NET SDK before running this oracle",
-        known_install.display()
+        Command::new("dotnet")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status: std::process::ExitStatus| status.success()),
+        "the .NET SDK (dotnet) is not on PATH; install it before running this oracle"
     );
-    known_install
-}
-
-#[cfg(not(windows))]
-fn dotnet_path() -> PathBuf {
     PathBuf::from("dotnet")
 }
 
