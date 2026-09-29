@@ -228,17 +228,23 @@ mod tests {
         }
     }
 
-    fn cxx_compiler() -> Option<String> {
-        for compiler in ["g++", "clang++", "c++"] {
-            if std::process::Command::new(compiler)
-                .arg("--version")
-                .output()
-                .is_ok_and(|o: std::process::Output| o.status.success())
-            {
-                return Some(compiler.to_owned());
-            }
-        }
-        None
+    fn cxx_compiler() -> String {
+        ["g++", "clang++", "c++"]
+            .into_iter()
+            .find(|compiler: &&str| {
+                disrobe_testkit::tool_output(
+                    disrobe_testkit::CommandSpec::new(
+                        *compiler,
+                        std::time::Duration::from_secs(30),
+                    )
+                    .arg("--version"),
+                )
+                .is_ok_and(|o: disrobe_testkit::ToolOutput| o.success)
+            })
+            .map(str::to_owned)
+            .expect(
+                "a C++ compiler (g++, clang++ or c++) is required on PATH to grade member names",
+            )
     }
 
     fn compiles_as_cxx(compiler: &str, std_flag: &str, source: &str, tag: &str) -> bool {
@@ -248,18 +254,18 @@ mod tests {
         let dir: &std::path::Path = scratch.path();
         let src: std::path::PathBuf = dir.join(format!("names_{tag}.cpp"));
         std::fs::write(&src, source.as_bytes()).expect("write source");
-        std::process::Command::new(compiler)
-            .args([std_flag, "-fsyntax-only"])
-            .arg(&src)
-            .output()
-            .is_ok_and(|o: std::process::Output| o.status.success())
+        disrobe_testkit::tool_output(
+            disrobe_testkit::CommandSpec::new(compiler, std::time::Duration::from_mins(2))
+                .args([std_flag, "-fsyntax-only"])
+                .arg(&src),
+        )
+        .expect("run the C++ compiler")
+        .success
     }
 
     #[test]
     fn sanitized_reserved_member_names_compile_as_cxx() {
-        let Some(compiler): Option<String> = cxx_compiler() else {
-            return;
-        };
+        let compiler: String = cxx_compiler();
         let std_flag: &str = if compiles_as_cxx(
             &compiler,
             "-std=c++20",

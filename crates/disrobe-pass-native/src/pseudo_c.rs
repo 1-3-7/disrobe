@@ -36030,13 +36030,6 @@ mod tests {
 
     #[test]
     fn x86_stack_argument_vector_bits_execute_under_strict_optimization() {
-        if !std::process::Command::new("clang")
-            .arg("--version")
-            .output()
-            .is_ok_and(|output: std::process::Output| output.status.success())
-        {
-            return;
-        }
         let address: MemRef = MemRef {
             base: Some(Reg::X86Stack0),
             index: None,
@@ -36102,31 +36095,32 @@ mod tests {
                 "{source}\nint main(void) {{ return recovered(0, 0, 0, 0, 0, 0, UINT64_C(0x8877665544332211)) == UINT64_C(0x8877665544332211) ? 0 : 1; }}\n"
             );
             std::fs::write(&source_path, driver.as_bytes()).expect("write vector stack C driver");
-            let build: std::process::Output = std::process::Command::new("clang")
-                .args([
-                    "-std=c11",
-                    optimization,
-                    "-fstrict-aliasing",
-                    "-Wstrict-aliasing=2",
-                    "-Werror",
-                    "-o",
-                ])
-                .arg(&executable_path)
-                .arg(&source_path)
-                .output()
-                .expect("compile vector stack C driver");
+            let build: disrobe_testkit::ToolOutput = disrobe_testkit::tool_output(
+                disrobe_testkit::CommandSpec::new("clang", std::time::Duration::from_mins(2))
+                    .args([
+                        "-std=c11",
+                        optimization,
+                        "-fstrict-aliasing",
+                        "-Wstrict-aliasing=2",
+                        "-Werror",
+                        "-o",
+                    ])
+                    .arg(&executable_path)
+                    .arg(&source_path),
+            )
+            .expect("clang is required on PATH to execute the vector stack-argument driver");
             assert!(
-                build.status.success(),
+                build.success,
                 "vector {optimization} compile failed: {}\n{driver}",
-                String::from_utf8_lossy(&build.stderr)
+                build.stderr_text()
             );
-            let run: std::process::Output = std::process::Command::new(&executable_path)
-                .output()
+            let run: disrobe_testkit::ToolOutput =
+                disrobe_testkit::tool_output(disrobe_testkit::CommandSpec::new(
+                    &executable_path,
+                    std::time::Duration::from_secs(30),
+                ))
                 .expect("run vector stack C driver");
-            assert!(
-                run.status.success(),
-                "vector {optimization} result diverged"
-            );
+            assert!(run.success, "vector {optimization} result diverged");
         }
     }
 

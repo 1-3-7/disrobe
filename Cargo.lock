@@ -2370,6 +2370,7 @@ dependencies = [
  "disrobe-mba",
  "disrobe-query",
  "disrobe-similarity",
+ "disrobe-testkit",
  "disrobe-typerec",
  "divan",
  "flate2",

@@ -66,6 +66,7 @@ smt-solver = ["disrobe-mba/smt-solver"]
 benchmarks = []
 
 [dev-dependencies]
+disrobe-testkit = { workspace = true }
 disrobe-query = { workspace = true }
 iced-x86 = { workspace = true, features = ["code_asm"] }
 object = { workspace = true, features = ["write"] }
