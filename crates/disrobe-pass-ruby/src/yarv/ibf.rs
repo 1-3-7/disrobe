@@ -203,12 +203,6 @@ pub(crate) fn read_small_value(bytes: &[u8], pos: usize) -> Option<(u64, usize)>
 }
 
 #[inline]
-fn read_u32_le(bytes: &[u8], pos: usize) -> Option<u32> {
-    let slice: &[u8] = bytes.get(pos..pos.checked_add(4)?)?;
-    let arr: [u8; 4] = slice.try_into().ok()?;
-    Some(u32::from_le_bytes(arr))
-}
-
 const fn classify_tag(tag: u8) -> IbfObjectKind {
     match tag & 0x1f {
         0x01 => IbfObjectKind::Object,
@@ -832,7 +826,7 @@ fn parse_local_table(
             Some(at) => at,
             None => break,
         };
-        let Some(id_index): Option<u32> = read_u32_le(bytes, at) else {
+        let Some(id_index): Option<u32> = disrobe_bytes::read_u32_le_at(bytes, at).ok() else {
             break;
         };
         names.push(objects.literal(u64::from(id_index)).map(str::to_owned));
@@ -1142,7 +1136,7 @@ pub(crate) fn parse_image(
             Some(at) => at,
             None => break,
         };
-        let Some(v): Option<u32> = read_u32_le(bytes, at) else {
+        let Some(v): Option<u32> = disrobe_bytes::read_u32_le_at(bytes, at).ok() else {
             break;
         };
         iseq_offsets.push(v);
@@ -1156,7 +1150,7 @@ pub(crate) fn parse_image(
             Some(at) => at,
             None => break,
         };
-        let Some(obj_off): Option<u32> = read_u32_le(bytes, at) else {
+        let Some(obj_off): Option<u32> = disrobe_bytes::read_u32_le_at(bytes, at).ok() else {
             break;
         };
         let index: u32 = u32::try_from(i).unwrap_or(u32::MAX);
