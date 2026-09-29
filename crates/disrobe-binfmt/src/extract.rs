@@ -2735,18 +2735,19 @@ fn extract_nsis(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<
     let mut encoding: BTreeMap<String, EntryCompression> = BTreeMap::new();
     let mut violations: Vec<String> = Vec::new();
     let cap: u64 = quota.max_per_entry_uncompressed;
-    let solid_stream: Option<Vec<u8>> = if archive.solid {
+    let solid_stream: Option<std::result::Result<Vec<u8>, String>> = archive.solid.then(|| {
         crate::containers::nsis::decode_solid_region(bytes, &archive, quota.max_total_uncompressed)
-            .ok()
-    } else {
-        None
-    };
+            .map_err(|e: Error| e.to_string())
+    });
 
     let decode = |file: &crate::containers::NsisFileEntry| -> Result<Vec<u8>> {
-        solid_stream.as_deref().map_or_else(
-            || crate::containers::nsis::decompress_file(bytes, &archive, file, cap),
-            |stream: &[u8]| crate::containers::nsis::slice_solid_file(stream, file, cap),
-        )
+        match &solid_stream {
+            None => crate::containers::nsis::decompress_file(bytes, &archive, file, cap),
+            Some(Ok(stream)) => crate::containers::nsis::slice_solid_file(stream, file, cap),
+            Some(Err(reason)) => Err(Error::Nsis(format!(
+                "the solid stream did not decode, so no member can be sliced from it: {reason}"
+            ))),
+        }
     };
 
     let mut recovered: usize = 0;
@@ -9091,6 +9092,27 @@ mod tests {
         let err: Error = extract_to(ContainerKind::Squirrel, &stub, &out).unwrap_err();
         assert!(matches!(err, Error::Squirrel(_)));
         assert!(out.join(".disrobe-squirrel-layout.json").is_file());
+    }
+
+    #[test]
+    fn a_solid_stream_that_does_not_decode_is_reported_not_read_as_separate_blocks() {
+        let scratch: disrobe_core::scratch::ScratchDir = temp_dir("nsis-solid-cap");
+        let body: Vec<u8> = b"solid payload that the capped decoder never reaches ".repeat(8);
+        let bytes: Vec<u8> = crate::containers::nsis::build_test_nsis_solid(r"app\data.bin", &body);
+        let quota: ExtractionQuota = ExtractionQuota {
+            max_total_uncompressed: 64,
+            ..ExtractionQuota::default_safe()
+        };
+        let r: ExtractionResult =
+            extract_nsis(&bytes, scratch.path(), quota).expect("nsis extract reports violations");
+        assert!(r.entries.is_empty(), "{:?}", r.entries);
+        assert!(
+            r.integrity_violations
+                .iter()
+                .any(|v: &String| v.contains("the solid stream did not decode")),
+            "{:?}",
+            r.integrity_violations
+        );
     }
 
     #[test]
