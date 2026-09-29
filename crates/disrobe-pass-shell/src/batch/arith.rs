@@ -143,20 +143,45 @@ fn lex_number(chars: &[char]) -> Option<(i64, usize)> {
             return None;
         }
         let s: String = chars[2..j].iter().collect();
-        let value: i64 = i64::from_str_radix(&s, 16).ok()?;
-        return Some((value, j));
+        let word: u32 = u64::from_str_radix(&s, 16)
+            .ok()
+            .and_then(|v: u64| u32::try_from(v).ok())
+            .unwrap_or(u32::MAX);
+        return Some((i64::from(word.cast_signed()), j));
     }
     let mut j: usize = 0;
     while j < chars.len() && chars[j].is_ascii_digit() {
         j += 1;
     }
     let s: String = chars[..j].iter().collect();
-    if s.len() > 1 && s.starts_with('0') {
-        let value: i64 = i64::from_str_radix(&s, 8).ok()?;
-        return Some((value, j));
+    let radix: u32 = if s.len() > 1 && s.starts_with('0') {
+        8
+    } else {
+        10
+    };
+    let value: i32 = i32::from_str_radix(&s, radix).ok()?;
+    Some((i64::from(value), j))
+}
+
+fn env_number(raw: &str) -> Option<i64> {
+    let chars: Vec<char> = raw.trim().chars().collect();
+    let (negative, digits): (bool, &[char]) = match chars.split_first() {
+        Some(('-', rest)) => (true, rest),
+        _ => (false, chars.as_slice()),
+    };
+    let (value, used): (i64, usize) = lex_number(digits)?;
+    if used != digits.len() {
+        return None;
     }
-    let value: i64 = s.parse::<i64>().ok()?;
-    Some((value, j))
+    Some(if negative {
+        word(value).wrapping_neg().into()
+    } else {
+        value
+    })
+}
+
+const fn word(value: i64) -> i32 {
+    value as i32
 }
 
 struct Parser<'a> {
@@ -223,7 +248,7 @@ impl Parser<'_> {
             Some(Tok::Minus) => {
                 self.bump();
                 let v: i64 = self.parse_unary()?;
-                Some(v.wrapping_neg())
+                Some(i64::from(word(v).wrapping_neg()))
             }
             Some(Tok::Plus) => {
                 self.bump();
@@ -232,7 +257,7 @@ impl Parser<'_> {
             Some(Tok::Tilde) => {
                 self.bump();
                 let v: i64 = self.parse_unary()?;
-                Some(!v)
+                Some(i64::from(!word(v)))
             }
             _ => self.parse_atom(),
         }
@@ -244,7 +269,7 @@ impl Parser<'_> {
             Tok::Var(idx) => {
                 let name: &String = self.names.get(idx)?;
                 let raw: &String = self.env.get(name)?;
-                raw.trim().parse::<i64>().ok()
+                env_number(raw)
             }
             Tok::LParen => {
                 let v: i64 = self.parse_expr(0)?;
@@ -273,30 +298,24 @@ const fn binding_power(op: Tok) -> Option<(u8, u8)> {
 }
 
 fn apply(op: Tok, lhs: i64, rhs: i64) -> Option<i64> {
-    let value: i64 = match op {
-        Tok::Plus => lhs.wrapping_add(rhs),
-        Tok::Minus => lhs.wrapping_sub(rhs),
-        Tok::Star => lhs.wrapping_mul(rhs),
-        Tok::Slash => {
-            if rhs == 0 {
-                return None;
-            }
-            lhs.wrapping_div(rhs)
+    let (a, b): (i32, i32) = (word(lhs), word(rhs));
+    let value: i32 = match op {
+        Tok::Plus => a.wrapping_add(b),
+        Tok::Minus => a.wrapping_sub(b),
+        Tok::Star => a.wrapping_mul(b),
+        Tok::Slash => a.checked_div(b).or_else(|| (b == -1).then_some(a))?,
+        Tok::Percent => a.checked_rem(b).or_else(|| (b == -1).then_some(0))?,
+        Tok::Amp => a & b,
+        Tok::Pipe => a | b,
+        Tok::Caret => a ^ b,
+        Tok::Shl => {
+            let count: u32 = b.cast_unsigned();
+            if count >= i32::BITS { 0 } else { a << count }
         }
-        Tok::Percent => {
-            if rhs == 0 {
-                return None;
-            }
-            lhs.wrapping_rem(rhs)
-        }
-        Tok::Amp => lhs & rhs,
-        Tok::Pipe => lhs | rhs,
-        Tok::Caret => lhs ^ rhs,
-        Tok::Shl => lhs.wrapping_shl(rhs as u32),
-        Tok::Shr => lhs.wrapping_shr(rhs as u32),
+        Tok::Shr => a >> b.cast_unsigned().min(i32::BITS - 1),
         _ => return None,
     };
-    Some(value)
+    Some(i64::from(value))
 }
 
 #[cfg(test)]
@@ -305,6 +324,34 @@ mod tests {
 
     fn empty() -> BTreeMap<String, String> {
         BTreeMap::new()
+    }
+
+    #[test]
+    fn set_a_arithmetic_is_32_bit_as_cmd_computes_it() {
+        for (expr, expected) in [
+            ("2147483647+1", Some(-2_147_483_648)),
+            ("0x7fffffff*2", Some(-2)),
+            ("(-2147483647-1)/-1", Some(-2_147_483_648)),
+            ("1<<31", Some(-2_147_483_648)),
+            ("1<<32", Some(0)),
+            ("1<<33", Some(0)),
+            ("1<<-1", Some(0)),
+            ("-1>>40", Some(-1)),
+            ("64>>32", Some(0)),
+            ("-8>>1", Some(-4)),
+            ("7%-2", Some(1)),
+            ("-7/2", Some(-3)),
+            ("0xFFFFFFFF", Some(-1)),
+            ("0x80000000", Some(-2_147_483_648)),
+            ("0x100000000", Some(-1)),
+            ("017777777777", Some(2_147_483_647)),
+            ("037777777777", None),
+            ("2147483648", None),
+            ("-2147483648", None),
+            ("~0", Some(-1)),
+        ] {
+            assert_eq!(eval(expr, &empty()), expected, "set /a {expr}");
+        }
     }
 
     #[test]
