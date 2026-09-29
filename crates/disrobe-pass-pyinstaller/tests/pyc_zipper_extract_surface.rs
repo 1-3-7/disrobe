@@ -6,7 +6,6 @@
 )]
 
 use std::path::PathBuf;
-use std::process::Command;
 
 use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_pyinstaller::{
@@ -152,40 +151,22 @@ fn manifest_surfaces_pyc_zipper_recovery() {
     );
 }
 
-fn workspace_target_dir() -> PathBuf {
-    let manifest_dir: String =
-        std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR set under cargo test");
-    let mut p: PathBuf = PathBuf::from(manifest_dir);
-    p.pop();
-    p.pop();
-    p.push("target");
-    p
-}
-
-fn locate_disrobe_cli() -> Option<PathBuf> {
-    let exe_name: &str = if cfg!(windows) {
-        "disrobe.exe"
-    } else {
-        "disrobe"
-    };
-    let target: PathBuf = workspace_target_dir();
-    for profile in ["debug", "release"] {
-        let candidate: PathBuf = target.join(profile).join(exe_name);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    None
+fn disrobe_cli() -> PathBuf {
+    let cli: PathBuf = std::env::var_os("DISROBE_BIN").map(PathBuf::from).expect(
+        "DISROBE_BIN is not set; build the CLI with `cargo build -p disrobe-cli --bin disrobe` \
+         and point DISROBE_BIN at it, because this test grades the user-facing extract surface",
+    );
+    assert!(
+        cli.is_file(),
+        "DISROBE_BIN names {}, which is not a file",
+        cli.display()
+    );
+    cli
 }
 
 #[test]
 fn cli_extract_json_manifest_reports_pyc_zipper_decompression() {
-    let Some(cli): Option<PathBuf> = locate_disrobe_cli() else {
-        eprintln!(
-            "SKIP: built `disrobe` CLI not found under target/{{debug,release}}; run `cargo build -p disrobe-cli` first to exercise the user-facing extract surface"
-        );
-        return;
-    };
+    let cli: PathBuf = disrobe_cli();
 
     let archive: Vec<u8> = assemble_zipped_module_carchive();
     let scratch: ScratchDir =
@@ -195,20 +176,21 @@ fn cli_extract_json_manifest_reports_pyc_zipper_decompression() {
     let out_dir: PathBuf = tmp.join("extracted");
     std::fs::write(&input, &archive).expect("write carchive fixture");
 
-    let output: std::process::Output = Command::new(&cli)
-        .arg("pyinstaller")
-        .arg("extract")
-        .arg(&input)
-        .arg("--out")
-        .arg(&out_dir)
-        .arg("--force")
-        .output()
-        .expect("spawn the built disrobe cli");
+    let output: disrobe_testkit::ToolOutput = disrobe_testkit::tool_output(
+        disrobe_testkit::CommandSpec::new(&cli, std::time::Duration::from_mins(2))
+            .arg("pyinstaller")
+            .arg("extract")
+            .arg(&input)
+            .arg("--out")
+            .arg(&out_dir)
+            .arg("--force"),
+    )
+    .expect("spawn the built disrobe cli");
 
-    let stdout: String = String::from_utf8_lossy(&output.stdout).into_owned();
-    let stderr: String = String::from_utf8_lossy(&output.stderr).into_owned();
+    let stdout: String = output.stdout_text();
+    let stderr: String = output.stderr_text();
     assert!(
-        output.status.success(),
+        output.success,
         "disrobe pyinstaller extract must succeed; stdout:\n{stdout}\nstderr:\n{stderr}"
     );
     assert!(
