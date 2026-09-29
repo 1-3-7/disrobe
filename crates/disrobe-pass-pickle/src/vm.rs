@@ -324,6 +324,7 @@ struct Machine {
     global_refs: Vec<GlobalRef>,
     reduce_count: usize,
     materialized_nodes: u64,
+    memo_copied_nodes: u64,
     oob_buffer_count: usize,
     call_graph: Vec<CallSite>,
 }
@@ -341,9 +342,16 @@ impl Machine {
             global_refs: Vec::new(),
             reduce_count: 0,
             materialized_nodes: 0,
+            memo_copied_nodes: 0,
             oob_buffer_count: 0,
             call_graph: Vec::new(),
         }
+    }
+
+    fn record_memo_copy(&mut self, value: &PickleValue) {
+        self.memo_copied_nodes = self
+            .memo_copied_nodes
+            .saturating_add(node_count_capped(value, NODE_BUDGET.saturating_add(1)));
     }
 
     fn charge(&mut self, nodes: u64) -> Result<()> {
@@ -514,6 +522,7 @@ impl Machine {
         else {
             return;
         };
+        self.record_memo_copy(&value);
         self.memo.insert(memo_id, value);
     }
 
@@ -523,7 +532,9 @@ impl Machine {
                 continue;
             };
             if is_container(&p.value) && self.dirty_memos.remove(&k) {
-                self.memo.insert(k, p.value.clone());
+                let copy: PickleValue = p.value.clone();
+                self.record_memo_copy(&copy);
+                self.memo.insert(k, copy);
             }
         }
     }
@@ -537,7 +548,9 @@ impl Machine {
             && is_container(value)
             && self.dirty_memos.remove(k)
         {
-            self.memo.insert(*k, value.clone());
+            let (key, copy): (u64, PickleValue) = (*k, value.clone());
+            self.record_memo_copy(&copy);
+            self.memo.insert(key, copy);
         }
     }
 
@@ -557,7 +570,9 @@ impl Machine {
             .collect();
         for (i, k) in open {
             if let Some(Slot::Value { value, .. }) = self.stack.get(i) {
-                self.memo.insert(k, value.clone());
+                let copy: PickleValue = value.clone();
+                self.record_memo_copy(&copy);
+                self.memo.insert(k, copy);
             }
         }
         self.dirty_memos.clear();
@@ -958,6 +973,12 @@ pub fn execute_full(dis: &Disassembly) -> Result<(VmTrace, BTreeMap<u64, PickleV
     let result: PickleValue = session.run(dis)?;
     let root_memo_key: Option<u64> = session.root_memo_key();
     let m: Machine = session.machine;
+    crate::debug::dbg_kv("vm-work", || {
+        format!(
+            "materialized_nodes={} memo_copied_nodes={}",
+            m.materialized_nodes, m.memo_copied_nodes
+        )
+    });
 
     let unused_memos: Vec<u64> = m
         .memo_indices
@@ -2516,14 +2537,17 @@ mod tests {
         let count: usize = 100_000;
         let bytes: Vec<u8> = incremental_append_list(count);
         let dis: Disassembly = disassemble(&bytes).expect("disasm");
-        let start: std::time::Instant = std::time::Instant::now();
-        let trace: VmTrace = execute(&dis).expect("incrementally grown list must decode bounded");
-        let elapsed: std::time::Duration = start.elapsed();
+        let mut session: Session = Session::new();
+        let result: PickleValue = session
+            .run(&dis)
+            .expect("incrementally grown list must decode bounded");
+        let copied: u64 = session.machine.memo_copied_nodes;
         assert!(
-            elapsed < std::time::Duration::from_secs(5),
-            "per-append memo materialization must stay linear, took {elapsed:?}"
+            copied <= 2 * count as u64 + 2,
+            "per-append memo materialization must copy the list a bounded number of times, \
+             copied {copied} nodes for {count} appends"
         );
-        let PickleValue::List(items): PickleValue = trace.result else {
+        let PickleValue::List(items): PickleValue = result else {
             panic!("expected a list result");
         };
         assert_eq!(items.len(), count, "every append must land in the list");

@@ -363,13 +363,19 @@ fn bare_pickle_framing(len: usize, member: Option<StreamEnd>) -> String {
 }
 
 fn scan_for_embedded(bytes: &[u8]) -> Vec<EmbeddedPickle> {
+    scan_for_embedded_with_work(bytes).0
+}
+
+fn scan_for_embedded_with_work(bytes: &[u8]) -> (Vec<EmbeddedPickle>, usize) {
     let mut out: Vec<EmbeddedPickle> = Vec::new();
     let mut budget: usize = scan_budget(bytes.len());
+    let mut work: usize = 0;
     let mut i: usize = 0;
     while i + 1 < bytes.len() && out.len() < STACKED_MEMBER_MAX && budget > 0 {
         if bytes[i] == 0x80 && bytes[i + 1] <= max_proto() {
             let probe: StreamProbe = probe_stream(&bytes[i..], budget.min(ANCHOR_OPCODE_BUDGET));
             budget = budget.saturating_sub(probe.opcodes.max(1));
+            work = work.saturating_add(probe.opcodes);
             if let Some(end) = probe.end {
                 out.push(EmbeddedPickle {
                     path: format!("<stacked@{i}>"),
@@ -383,7 +389,7 @@ fn scan_for_embedded(bytes: &[u8]) -> Vec<EmbeddedPickle> {
         }
         i = i.saturating_add(1);
     }
-    out
+    (out, work)
 }
 
 const NPY_HEADER_SCAN: usize = 256;
@@ -509,15 +515,15 @@ mod tests {
             bytes.push(0x80);
             bytes.push(0x00);
         }
-        let start: std::time::Instant = std::time::Instant::now();
-        let found: Vec<EmbeddedPickle> = scan_for_embedded(&bytes);
-        let elapsed: std::time::Duration = start.elapsed();
+        let (found, work): (Vec<EmbeddedPickle>, usize) = scan_for_embedded_with_work(&bytes);
         assert_eq!(found.len(), 1, "only the leading valid pickle is embedded");
         assert_eq!(found[0].offset, 0);
         assert_eq!(found[0].length, 5);
         assert!(
-            elapsed < std::time::Duration::from_secs(2),
-            "a stop-less marker flood must not scan quadratically, took {elapsed:?}"
+            work <= scan_budget(bytes.len()),
+            "a stop-less marker flood must stay within the linear scan budget of {} opcodes, \
+             probed {work}",
+            scan_budget(bytes.len())
         );
     }
 
