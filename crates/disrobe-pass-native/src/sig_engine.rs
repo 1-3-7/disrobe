@@ -4,6 +4,7 @@ use iced_x86::{Decoder, DecoderOptions, Instruction, Mnemonic, OpKind, Register}
 use object::{Object, ObjectSection, ObjectSymbol};
 use serde::{Deserialize, Serialize};
 
+use disrobe_bytes::read_u32_le_at;
 use disrobe_bytes::read_uleb128_at;
 use disrobe_core::byte_search::find as byte_find;
 
@@ -2281,14 +2282,14 @@ fn rich_compiler_finding(bytes: &[u8], out: &mut Vec<StructFinding>) {
     let Some(rich_pos): Option<usize> = byte_find(scan, RICH_TAG) else {
         return;
     };
-    let Some(key): Option<u32> = read_u32_le(scan, rich_pos + 4) else {
+    let Some(key): Option<u32> = read_u32_le_at(scan, rich_pos + 4).ok() else {
         return;
     };
     let mut cursor: usize = rich_pos;
     let mut dans: Option<usize> = None;
     while cursor >= 4 {
         cursor -= 4;
-        let Some(raw): Option<u32> = read_u32_le(scan, cursor) else {
+        let Some(raw): Option<u32> = read_u32_le_at(scan, cursor).ok() else {
             break;
         };
         if raw ^ key == DANS_TAG {
@@ -2302,7 +2303,7 @@ fn rich_compiler_finding(bytes: &[u8], out: &mut Vec<StructFinding>) {
     let mut best: Option<(u16, u16)> = None;
     let mut entry: usize = dans_pos + 16;
     while entry + 8 <= rich_pos {
-        let Some(comp_id): Option<u32> = read_u32_le(scan, entry) else {
+        let Some(comp_id): Option<u32> = read_u32_le_at(scan, entry).ok() else {
             break;
         };
         let decoded: u32 = comp_id ^ key;
@@ -2392,7 +2393,7 @@ fn dotnet_bsjb_finding(image: &PeImage, bytes: &[u8], out: &mut Vec<StructFindin
             Some(value) => value,
             None => return,
         };
-    let meta_rva: u32 = match read_u32_le(bytes, clr_off + 8) {
+    let meta_rva: u32 = match read_u32_le_at(bytes, clr_off + 8).ok() {
         Some(value) => value,
         None => return,
     };
@@ -2412,10 +2413,10 @@ fn dotnet_bsjb_finding(image: &PeImage, bytes: &[u8], out: &mut Vec<StructFindin
             Some(value) => value,
             None => return,
         };
-    if read_u32_le(bytes, meta_off) != Some(0x424A_5342) {
+    if read_u32_le_at(bytes, meta_off).ok() != Some(0x424A_5342) {
         return;
     }
-    let ver_len: u32 = match read_u32_le(bytes, meta_off + 12) {
+    let ver_len: u32 = match read_u32_le_at(bytes, meta_off + 12).ok() {
         Some(value) => value,
         None => return,
     };
@@ -2443,7 +2444,7 @@ fn nsis_finding(bytes: &[u8], out: &mut Vec<StructFinding>) {
     let mut firstheader: Option<usize> = None;
     let mut cursor: usize = 0;
     while cursor + 4 <= bytes.len() {
-        if read_u32_le(bytes, cursor) == Some(NSIS_MAGIC) {
+        if read_u32_le_at(bytes, cursor).ok() == Some(NSIS_MAGIC) {
             firstheader = Some(cursor);
             break;
         }
@@ -2481,7 +2482,7 @@ fn nsis_finding(bytes: &[u8], out: &mut Vec<StructFinding>) {
 }
 
 fn nsis_compression(bytes: &[u8], firstheader: usize) -> &'static str {
-    match read_u32_le(bytes, firstheader + 0x1C) {
+    match read_u32_le_at(bytes, firstheader + 0x1C).ok() {
         Some(value) if value & 0x8000_0000 != 0 => "solid",
         Some(_) => "non-solid",
         None => "unknown",
@@ -2595,19 +2596,13 @@ fn autoit_finding(bytes: &[u8], out: &mut Vec<StructFinding>) {
     }
 }
 
-#[inline]
-fn read_u32_le(bytes: &[u8], at: usize) -> Option<u32> {
-    let slice: &[u8] = bytes.get(at..at.checked_add(4)?)?;
-    Some(u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
-}
-
 const SECTION_CHARACTERISTIC_CODE_EXEC_READ: u32 = 0xE000_0020;
 const SUBSYSTEM_WINDOWS_GUI: u16 = 2;
 const DATA_DIRECTORY_IMPORT: usize = 1;
 const DATA_DIRECTORY_RESOURCE: usize = 2;
 
 fn pe_optional_header_offset(bytes: &[u8]) -> Option<usize> {
-    let e_lfanew: usize = read_u32_le(bytes, 0x3C)? as usize;
+    let e_lfanew: usize = read_u32_le_at(bytes, 0x3C).ok()? as usize;
     let coff_off: usize = e_lfanew.checked_add(4)?;
     if bytes.get(e_lfanew..e_lfanew.checked_add(4)?)? != b"PE\x00\x00" {
         return None;
@@ -2617,7 +2612,7 @@ fn pe_optional_header_offset(bytes: &[u8]) -> Option<usize> {
 
 fn pe_size_of_headers(bytes: &[u8]) -> Option<u32> {
     let opt_off: usize = pe_optional_header_offset(bytes)?;
-    read_u32_le(bytes, opt_off + 60)
+    read_u32_le_at(bytes, opt_off + 60).ok()
 }
 
 fn pe_subsystem(bytes: &[u8]) -> Option<u16> {

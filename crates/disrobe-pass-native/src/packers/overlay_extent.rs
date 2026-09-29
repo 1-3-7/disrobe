@@ -1,3 +1,4 @@
+use disrobe_bytes::read_u32_le_at;
 use disrobe_bytes::{align_up_usize as align_up, read_uleb128_at};
 use disrobe_core::codec::crc32_ieee;
 use flate2::{Decompress, FlushDecompress, Status};
@@ -81,11 +82,6 @@ pub fn archive_true_extent(window: &[u8], archive: ArchiveKind) -> Option<usize>
 fn read_u16_le(bytes: &[u8], at: usize) -> Option<u16> {
     let s: &[u8] = bytes.get(at..at + 2)?;
     Some(u16::from_le_bytes([s[0], s[1]]))
-}
-
-fn read_u32_le(bytes: &[u8], at: usize) -> Option<u32> {
-    let s: &[u8] = bytes.get(at..at + 4)?;
-    Some(u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
 }
 
 fn read_u64_le(bytes: &[u8], at: usize) -> Option<u64> {
@@ -290,9 +286,9 @@ fn zstd_frame_len(window: &[u8], start: usize) -> Option<usize> {
 }
 
 fn zstd_one_frame(window: &[u8], pos: usize) -> Option<usize> {
-    let magic: u32 = read_u32_le(window, pos)?;
+    let magic: u32 = read_u32_le_at(window, pos).ok()?;
     if (ZSTD_SKIPPABLE_LOW..=ZSTD_SKIPPABLE_HIGH).contains(&magic) {
-        let frame_size: usize = read_u32_le(window, pos + 4)? as usize;
+        let frame_size: usize = read_u32_le_at(window, pos + 4).ok()? as usize;
         let end: usize = pos.checked_add(8 + frame_size)?;
         (end <= window.len()).then_some(end)
     } else if magic == u32::from_le_bytes(ZSTD_MAGIC) {
@@ -308,7 +304,7 @@ fn zstd_extent(window: &[u8]) -> Option<usize> {
         return None;
     }
     let mut pos: usize = zstd_one_frame(window, 0)?;
-    while read_u32_le(window, pos).is_some_and(|m: u32| {
+    while read_u32_le_at(window, pos).ok().is_some_and(|m: u32| {
         m == u32::from_le_bytes(ZSTD_MAGIC)
             || (ZSTD_SKIPPABLE_LOW..=ZSTD_SKIPPABLE_HIGH).contains(&m)
     }) {
@@ -445,7 +441,7 @@ fn cab_extent(window: &[u8]) -> Option<usize> {
     if !window.starts_with(&CAB_MAGIC) {
         return None;
     }
-    let cb_cabinet: u32 = read_u32_le(window, CAB_CB_CABINET_OFFSET)?;
+    let cb_cabinet: u32 = read_u32_le_at(window, CAB_CB_CABINET_OFFSET).ok()?;
     Some(cb_cabinet as usize)
 }
 
@@ -462,7 +458,7 @@ fn rar5_extent(window: &[u8]) -> Option<usize> {
             return None;
         }
         let block_start: usize = pos;
-        let _crc: u32 = read_u32_le(window, pos)?;
+        let _crc: u32 = read_u32_le_at(window, pos).ok()?;
         let (header_size, after_size): (u64, usize) = rar5_vint(window, pos + 4)?;
         let header_body_start: usize = after_size;
         let header_end: usize = header_body_start.checked_add(header_size as usize)?;
@@ -477,13 +473,11 @@ fn rar5_extent(window: &[u8]) -> Option<usize> {
             field_pos = next;
         }
         let data_size: u64 = if header_flags & RAR5_HEADER_FLAG_DATA != 0 {
-            let (value, next): (u64, usize) = rar5_vint(window, field_pos)?;
-            field_pos = next;
+            let (value, _): (u64, usize) = rar5_vint(window, field_pos)?;
             value
         } else {
             0
         };
-        let _ = field_pos;
         let data_end: usize = header_end.checked_add(data_size as usize)?;
         if data_end > window.len() || data_end <= block_start {
             return None;
@@ -512,9 +506,9 @@ fn rar4_extent(window: &[u8]) -> Option<usize> {
         }
         let mut add_size: u64 = 0;
         if head_flags & RAR4_FLAG_DATA != 0 {
-            add_size = u64::from(read_u32_le(window, pos + 7)?);
+            add_size = u64::from(read_u32_le_at(window, pos + 7).ok()?);
             if head_flags & RAR4_FLAG_BIG_DATA != 0 {
-                let high: u64 = u64::from(read_u32_le(window, pos + 11)?);
+                let high: u64 = u64::from(read_u32_le_at(window, pos + 11).ok()?);
                 add_size |= high << 32;
             }
         }

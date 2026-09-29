@@ -1214,7 +1214,7 @@ fn aplib_step(
         return aplib_long_match_arm(br, out, last_off, lwm);
     }
     if br.read_bit()? == 0 {
-        return aplib_short_match_arm(br, out, last_off);
+        return aplib_short_match_arm(br, out);
     }
     aplib_nibble_arm(br, out, last_off)
 }
@@ -1254,11 +1254,7 @@ fn aplib_long_match_arm(
     })
 }
 
-fn aplib_short_match_arm(
-    br: &mut ByteTaggedBitReader<'_>,
-    out: &mut Vec<u8>,
-    last_off: u32,
-) -> Result<AplibStep> {
+fn aplib_short_match_arm(br: &mut ByteTaggedBitReader<'_>, out: &mut Vec<u8>) -> Result<AplibStep> {
     let byte: u8 = br.read_byte()?;
     let offset: u32 = u32::from(byte) >> 1;
     if offset == 0 {
@@ -1266,7 +1262,6 @@ fn aplib_short_match_arm(
     }
     let length: u32 = 2 + u32::from(byte & 1);
     copy_match(out, offset as usize, length as usize)?;
-    let _ = last_off;
     Ok(AplibStep::Continue {
         lwm: true,
         last_off: offset,
@@ -1340,18 +1335,12 @@ fn read_u16_le(bytes: &[u8], off: usize) -> Result<u16> {
 }
 
 fn read_u32_le(bytes: &[u8], off: usize) -> Result<u32> {
-    if off + 4 > bytes.len() {
-        return Err(Error::Truncated {
-            needed: off + 4,
+    disrobe_bytes::read_u32_le_at(bytes, off).map_err(|_: disrobe_bytes::ByteReadError| {
+        Error::Truncated {
+            needed: off.saturating_add(4),
             had: bytes.len(),
-        });
-    }
-    Ok(u32::from_le_bytes([
-        bytes[off],
-        bytes[off + 1],
-        bytes[off + 2],
-        bytes[off + 3],
-    ]))
+        }
+    })
 }
 
 #[cfg(test)]

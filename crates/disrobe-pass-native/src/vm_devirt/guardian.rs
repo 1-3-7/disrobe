@@ -1,5 +1,7 @@
 use std::collections::BTreeSet;
 
+use disrobe_bytes::read_u32_le_at;
+
 use crate::packers::{PeImage, PeSection, parse_pe_image};
 
 use super::cfg::{VmCfg, build_cfg};
@@ -171,7 +173,7 @@ fn find_entry_stub(
             if section_data[offset] != 0x68 || section_data[offset + 5] != 0xE9 {
                 continue;
             }
-            let bytecode_rva: u32 = read_u32_le(section_data, offset + 1)?;
+            let bytecode_rva: u32 = read_u32_le_at(section_data, offset + 1).ok()?;
             if bytecode_rva < byte_start || bytecode_rva >= byte_end {
                 continue;
             }
@@ -511,12 +513,6 @@ fn section_bytes<'a>(bytes: &'a [u8], section: &PeSection) -> Option<&'a [u8]> {
 fn rva_in_section(section: &PeSection, rva: u32) -> bool {
     let span: u32 = section.virtual_size.max(section.raw_size);
     rva >= section.virtual_address && rva < section.virtual_address.saturating_add(span)
-}
-
-fn read_u32_le(bytes: &[u8], off: usize) -> Option<u32> {
-    let end: usize = off.checked_add(4)?;
-    let raw: [u8; 4] = bytes.get(off..end)?.try_into().ok()?;
-    Some(u32::from_le_bytes(raw))
 }
 
 fn read_i32_le(bytes: &[u8], off: usize) -> Option<i32> {

@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use disrobe_bytes::read_u32_le_at;
+
 use crate::authenticode::AuthenticodeReport;
 
 const PE_MAGIC: &[u8; 2] = b"MZ";
@@ -1120,13 +1122,13 @@ fn dedup_hits(hits: &mut Vec<IdentityHit>) {
 fn pe_rich_linker(bytes: &[u8]) -> Option<(u16, u16)> {
     let scan: &[u8] = &bytes[..bytes.len().min(4096)];
     let rich_pos: usize = find_subslice(scan, RICH_TAG)?;
-    let key: u32 = read_u32_le(scan, rich_pos + 4)?;
+    let key: u32 = read_u32_le_at(scan, rich_pos + 4).ok()?;
     let mut cursor: usize = rich_pos;
     while cursor >= 4 {
         cursor -= 4;
-        let raw: u32 = read_u32_le(scan, cursor)?;
+        let raw: u32 = read_u32_le_at(scan, cursor).ok()?;
         if raw ^ key == DANS_TAG {
-            let entry: u32 = read_u32_le(scan, cursor + 8)? ^ key;
+            let entry: u32 = read_u32_le_at(scan, cursor + 8).ok()? ^ key;
             let product_id: u16 = (entry >> 16) as u16;
             let build: u16 = (entry & 0xFFFF) as u16;
             return Some((product_id, build));
@@ -1142,12 +1144,6 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack
         .windows(needle.len())
         .position(|w: &[u8]| w == needle)
-}
-
-#[inline]
-fn read_u32_le(bytes: &[u8], at: usize) -> Option<u32> {
-    let s: &[u8] = bytes.get(at..at + 4)?;
-    Some(u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
 }
 
 #[cfg(test)]

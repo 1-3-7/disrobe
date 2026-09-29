@@ -3,6 +3,7 @@ use std::path::Path;
 use disrobe_binfmt::{
     ContainerKind, ExtractionQuota, ExtractionResult, detect_container, extract_to_with_quota,
 };
+use disrobe_bytes::read_u32_le_at;
 use serde::{Deserialize, Serialize};
 
 use crate::entropy::shannon_entropy_bits;
@@ -194,11 +195,6 @@ fn certificate_region(image: &PeImage, file_len: usize) -> Option<CertRegion> {
     })
 }
 
-fn read_u32_le(bytes: &[u8], at: usize) -> Option<u32> {
-    let s: &[u8] = bytes.get(at..at + 4)?;
-    Some(u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
-}
-
 fn read_u16_le(bytes: &[u8], at: usize) -> Option<u16> {
     let s: &[u8] = bytes.get(at..at + 2)?;
     Some(u16::from_le_bytes([s[0], s[1]]))
@@ -308,7 +304,7 @@ fn classify_window_into(window: &[u8], base_offset: u64, out: &mut Vec<OverlaySe
 
 fn classify_authenticode(bytes: &[u8], cert: CertRegion) -> Option<OverlayClass> {
     let header: &[u8] = bytes.get(cert.start..cert.start + WIN_CERT_HEADER_LEN)?;
-    let dw_length: u32 = read_u32_le(header, 0)?;
+    let dw_length: u32 = read_u32_le_at(header, 0).ok()?;
     let revision: u16 = read_u16_le(header, 4)?;
     let w_cert_type: u16 = read_u16_le(header, 6)?;
     let span: usize = cert.end - cert.start;
@@ -421,7 +417,9 @@ pub fn normalize_pe(bytes: &[u8]) -> Result<Vec<u8>> {
 }
 
 fn zero_security_directory(bytes: &mut [u8]) -> Result<()> {
-    let e_lfanew: usize = read_u32_le(bytes, 0x3C).ok_or(Error::UnknownFormat)? as usize;
+    let e_lfanew: usize = read_u32_le_at(bytes, 0x3C)
+        .ok()
+        .ok_or(Error::UnknownFormat)? as usize;
     let coff_off: usize = e_lfanew.checked_add(4).ok_or(Error::UnknownFormat)?;
     let opt_hdr_off: usize = coff_off + 20;
     let opt_magic: u16 = read_u16_le(bytes, opt_hdr_off).ok_or(Error::UnknownFormat)?;

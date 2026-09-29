@@ -5,6 +5,8 @@ use object::ObjectSection as _;
 use object::read::File as ObjFile;
 use serde::{Deserialize, Serialize};
 
+use disrobe_bytes::read_u32_le_at;
+
 use crate::format::{NativeFormat, detect as detect_format};
 use crate::identify::{IdentityKind, SupportRoute, detect as detect_byte_identity};
 use crate::packers::pe_sections::{PeImage, PeSection, parse_pe_image};
@@ -730,7 +732,7 @@ fn detect_dotnet(image: &PeImage, bytes: &[u8], builder: &mut Builder) {
                 start.checked_add(delta as usize)
             });
     let header_size_ok: bool = file_offset
-        .and_then(|off: usize| read_u32_le(bytes, off))
+        .and_then(|off: usize| read_u32_le_at(bytes, off).ok())
         .is_some_and(|cb: u32| (0x48..=0x100).contains(&cb));
     if !header_size_ok {
         return;
@@ -818,14 +820,14 @@ fn detect_rich(bytes: &[u8], builder: &mut Builder) {
     let Some(rich_pos): Option<usize> = find_subslice(scan, RICH_TAG) else {
         return;
     };
-    let Some(key): Option<u32> = read_u32_le(scan, rich_pos + 4) else {
+    let Some(key): Option<u32> = read_u32_le_at(scan, rich_pos + 4).ok() else {
         return;
     };
     let mut cursor: usize = rich_pos;
     let mut dans: Option<usize> = None;
     while cursor >= 4 {
         cursor -= 4;
-        let Some(raw): Option<u32> = read_u32_le(scan, cursor) else {
+        let Some(raw): Option<u32> = read_u32_le_at(scan, cursor).ok() else {
             break;
         };
         if raw ^ key == DANS_TAG {
@@ -839,7 +841,7 @@ fn detect_rich(bytes: &[u8], builder: &mut Builder) {
     let mut best: Option<(u16, &'static RichProduct)> = None;
     let mut entry: usize = dans_pos + 16;
     while entry + 8 <= rich_pos {
-        let Some(comp_id): Option<u32> = read_u32_le(scan, entry) else {
+        let Some(comp_id): Option<u32> = read_u32_le_at(scan, entry).ok() else {
             break;
         };
         let product_id: u16 = ((comp_id ^ key) >> 16) as u16;
@@ -1207,12 +1209,6 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         from = at + 1;
     }
     None
-}
-
-#[inline]
-fn read_u32_le(bytes: &[u8], at: usize) -> Option<u32> {
-    let s: &[u8] = bytes.get(at..at + 4)?;
-    Some(u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
 }
 
 #[cfg(test)]
