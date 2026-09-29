@@ -1247,7 +1247,7 @@ fn lower(
                     .iter()
                     .map(|op: &Decoded| capture_name(state, names, op, &d, pc, resume_pc))
                     .collect();
-                emit_closure(state, ctx, live, p, &d, dialect, depth, &captured)?;
+                emit_closure(state, ctx, names, live, p, &d, dialect, depth, &captured)?;
                 pc += captures.pseudo_words;
             }
             Op::Vararg => {
@@ -2707,9 +2707,11 @@ fn is_fresh_vararg_table(p: &LuaProto, d: &Decoded, pc: usize, dialect: LuaDiale
         && new_table.a == d.a
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_closure(
     state: &mut StructState,
     ctx: &mut StructuredLift<'_>,
+    names: &LocalNames,
     live: &LiveAcrossBranch,
     p: &LuaProto,
     d: &Decoded,
@@ -2764,8 +2766,9 @@ fn emit_closure(
                 let var: String = state.reg(d.a);
                 state.push_raw(format!("{var} = {block}"));
                 state.mark_defined(d.a);
-            } else if live.should_materialize(state.pc, d.a)
-                || live.reads_before_redefinition(state.pc, d.a) > 1
+            } else if names.name_at(state.pc + 1, d.a).is_none()
+                && (live.should_materialize(state.pc, d.a)
+                    || live.reads_before_redefinition(state.pc, d.a) > 1)
             {
                 let var: String = state.temp(d.a);
                 if state.is_defined(d.a) && state.reg(d.a) == var {
