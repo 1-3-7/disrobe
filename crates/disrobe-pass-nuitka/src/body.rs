@@ -1829,7 +1829,7 @@ impl<'a> Lifter<'a> {
         if let Some(consumed) = self.try_while_loop(i, end, env, stmts, unrecognized) {
             return Some(consumed);
         }
-        if let Some(consumed) = self.try_value_diamond(i, end, env, stmts) {
+        if let Some(consumed) = self.try_value_diamond(i, end, env, stmts, 0) {
             return Some(consumed);
         }
         if let Some(consumed) = self.try_if_branch(i, end, env, stmts, unrecognized) {
@@ -2734,13 +2734,14 @@ impl<'a> Lifter<'a> {
         end: usize,
         env: &mut BTreeMap<String, PythonExpr>,
         stmts: &mut Vec<PythonStmt>,
+        depth: usize,
     ) -> Option<usize> {
         let line: &str = self.lines[i];
         if line.starts_with("if (tmp_and_left_truth_") {
-            return self.try_bool_diamond(i, end, env, stmts, BoolOpKind::And);
+            return self.try_bool_diamond(i, end, env, stmts, BoolOpKind::And, depth);
         }
         if line.starts_with("if (tmp_or_left_truth_") {
-            return self.try_bool_diamond(i, end, env, stmts, BoolOpKind::Or);
+            return self.try_bool_diamond(i, end, env, stmts, BoolOpKind::Or, depth);
         }
         if line.starts_with("if (tmp_condition_result_")
             && (line.contains("== NUITKA_BOOL_TRUE") || line.contains("!= false"))
@@ -2748,7 +2749,7 @@ impl<'a> Lifter<'a> {
             let yes_idx: usize = self.find_after(i, (i + 4).min(end), |l: &str| {
                 l.starts_with("goto condexpr_true_")
             })?;
-            return self.try_condexpr_diamond(i, yes_idx, end, env, stmts);
+            return self.try_condexpr_diamond(i, yes_idx, end, env, stmts, depth);
         }
         None
     }
@@ -2760,6 +2761,7 @@ impl<'a> Lifter<'a> {
         env: &mut BTreeMap<String, PythonExpr>,
         stmts: &mut Vec<PythonStmt>,
         op: BoolOpKind,
+        depth: usize,
     ) -> Option<usize> {
         let kw: &str = if matches!(op, BoolOpKind::And) {
             "and"
@@ -2770,42 +2772,36 @@ impl<'a> Lifter<'a> {
         let left_value_temp: String = truth_var.replace("_truth_", "_value_");
         let left: PythonExpr = env.get(&left_value_temp)?.clone();
 
-        let end_label: usize = self.find_label(i, end, &format!("{kw}_end_"))?;
-        let right_label: usize = self.find_label(i, end, &format!("{kw}_right_"))?;
-        let left_label: usize = self.find_label(i, end, &format!("{kw}_left_"))?;
+        let right_prefix: String = format!("goto {kw}_right_");
+        let left_prefix: String = format!("goto {kw}_left_");
+        let tag: &str = self.goto_tag(i, end, &[right_prefix.as_str(), left_prefix.as_str()])?;
+        let end_label: usize = self.find_exact_label(i, end, &format!("{kw}_end_{tag}:;"))?;
+        let right_label: usize =
+            self.find_exact_label(i, end_label, &format!("{kw}_right_{tag}:;"))?;
+        let left_label: usize =
+            self.find_exact_label(i, end_label, &format!("{kw}_left_{tag}:;"))?;
         let (right_from, right_to): (usize, usize) = if right_label < left_label {
             (right_label + 1, left_label)
         } else {
             (right_label + 1, end_label)
         };
+        let (left_from, left_to): (usize, usize) = if left_label < right_label {
+            (left_label + 1, right_label)
+        } else {
+            (left_label + 1, end_label)
+        };
 
-        let mut right_env: BTreeMap<String, PythonExpr> = env.clone();
-        let mut right: Option<PythonExpr> = None;
-        let mut result_temp: Option<String> = None;
-        for idx in right_from..right_to {
-            let t: &str = self.lines[idx];
-            if let Some((name, rhs)) = parse_assignment(t) {
-                if name.starts_with("tmp_") && rhs.trim() != "NULL" {
-                    right_env.insert(name.to_owned(), self.eval_value(rhs, &right_env));
-                }
-                if name.starts_with("tmp_return_value") {
-                    right = Some(self.eval_value(rhs, &right_env));
-                    result_temp = Some(name.to_owned());
-                }
-            }
+        let (target, left_arm_value): (&str, &str) = self.arm_target(left_from, left_to)?;
+        if left_arm_value.trim() != left_value_temp {
+            return None;
         }
-        let right_expr: PythonExpr = right?;
+        let right: PythonExpr = self.arm_value(right_from, right_to, target, env, depth)?;
         let value: PythonExpr = PythonExpr::BoolOp {
             op,
             left: Box::new(left),
-            right: Box::new(right_expr),
+            right: Box::new(right),
         };
-        let target: String = result_temp.unwrap_or_else(|| "tmp_return_value".to_owned());
-        if target.starts_with("tmp_return_value") {
-            stmts.push(PythonStmt::Return(value));
-        } else {
-            env.insert(target, value);
-        }
+        Self::place_diamond_value(target, value, env, stmts);
         Some(end_label.saturating_sub(i) + 1)
     }
 
@@ -2816,69 +2812,127 @@ impl<'a> Lifter<'a> {
         end: usize,
         env: &mut BTreeMap<String, PythonExpr>,
         stmts: &mut Vec<PythonStmt>,
+        depth: usize,
     ) -> Option<usize> {
         let cond_var: &str = condition_var_from_if(self.lines[i])?;
         let test: PythonExpr = env.get(cond_var)?.clone();
-        let _ = yes_idx;
+        let tag: &str = self.goto_tag(yes_idx, yes_idx + 1, &["goto condexpr_true_"])?;
 
-        let true_label: usize = self.find_label(i, end, "condexpr_true_")?;
-        let false_label: usize = self.find_label(i, end, "condexpr_false_")?;
-        let end_label: usize = self.find_label(i, end, "condexpr_end_")?;
+        let true_label: usize = self.find_exact_label(i, end, &format!("condexpr_true_{tag}:;"))?;
+        let false_label: usize =
+            self.find_exact_label(true_label, end, &format!("condexpr_false_{tag}:;"))?;
+        let end_label: usize =
+            self.find_exact_label(false_label, end, &format!("condexpr_end_{tag}:;"))?;
 
-        let body: PythonExpr = self.diamond_branch_value(true_label + 1, false_label, env)?;
-        let orelse: PythonExpr = self.diamond_branch_value(false_label + 1, end_label, env)?;
+        let (target, _): (&str, &str) = self.arm_target(false_label + 1, end_label)?;
+        let body: PythonExpr = self.arm_value(true_label + 1, false_label, target, env, depth)?;
+        let orelse: PythonExpr = self.arm_value(false_label + 1, end_label, target, env, depth)?;
         let value: PythonExpr = PythonExpr::IfExp {
             test: Box::new(test),
             body: Box::new(body),
             orelse: Box::new(orelse),
         };
-        let target: String = self
-            .diamond_result_temp(true_label + 1, false_label)
-            .unwrap_or_else(|| "tmp_return_value".to_owned());
-        if target.starts_with("tmp_return_value") {
-            stmts.push(PythonStmt::Return(value));
-        } else {
-            env.insert(target, value);
-        }
+        Self::place_diamond_value(target, value, env, stmts);
         Some(end_label.saturating_sub(i) + 1)
     }
 
-    fn diamond_branch_value(
+    fn place_diamond_value(
+        target: &str,
+        value: PythonExpr,
+        env: &mut BTreeMap<String, PythonExpr>,
+        stmts: &mut Vec<PythonStmt>,
+    ) {
+        if target.starts_with("tmp_return_value") {
+            stmts.push(PythonStmt::Return(value));
+        } else {
+            env.insert(target.to_owned(), value);
+        }
+    }
+
+    fn goto_tag(&self, from: usize, to: usize, prefixes: &[&str]) -> Option<&'a str> {
+        let end: usize = to.min(self.lines.len());
+        (from..end).find_map(|idx: usize| {
+            let line: &'a str = self.lines[idx];
+            prefixes
+                .iter()
+                .find_map(|prefix: &&str| line.strip_prefix(*prefix))
+                .map(|rest: &'a str| rest.trim_end_matches(';'))
+        })
+    }
+
+    fn arm_target(&self, from: usize, to: usize) -> Option<(&'a str, &'a str)> {
+        let end: usize = to.min(self.lines.len());
+        (from..end).rev().find_map(|idx: usize| {
+            parse_assignment(self.lines[idx]).filter(|(name, rhs): &(&str, &str)| {
+                name.starts_with("tmp_") && rhs.trim() != "NULL"
+            })
+        })
+    }
+
+    fn opens_value_diamond(&self, idx: usize, to: usize) -> bool {
+        let line: &str = self.lines[idx];
+        if line.starts_with("if (tmp_and_left_truth_") || line.starts_with("if (tmp_or_left_truth_")
+        {
+            return true;
+        }
+        line.starts_with("if (tmp_condition_result_")
+            && (line.contains("== NUITKA_BOOL_TRUE") || line.contains("!= false"))
+            && self
+                .find_after(idx, (idx + 4).min(to), |l: &str| {
+                    l.starts_with("goto condexpr_true_")
+                })
+                .is_some()
+    }
+
+    fn arm_value(
         &self,
         from: usize,
         to: usize,
+        target: &str,
         env: &BTreeMap<String, PythonExpr>,
+        depth: usize,
     ) -> Option<PythonExpr> {
+        if depth >= MAX_VALUE_DIAMOND_DEPTH {
+            return None;
+        }
+        let end: usize = to.min(self.lines.len());
         let mut local: BTreeMap<String, PythonExpr> = env.clone();
-        let mut result: Option<PythonExpr> = None;
-        for idx in from..to.min(self.lines.len()) {
-            let t: &str = self.lines[idx];
-            if let Some((name, rhs)) = parse_assignment(t) {
-                if rhs.trim() == "NULL" {
-                    continue;
+        local.remove(target);
+        let mut value: Option<PythonExpr> = None;
+        let mut idx: usize = from;
+        while idx < end {
+            if self.opens_value_diamond(idx, end) {
+                let mut nested: Vec<PythonStmt> = Vec::new();
+                let consumed: usize =
+                    self.try_value_diamond(idx, end, &mut local, &mut nested, depth + 1)?;
+                match nested.as_slice() {
+                    [] => {
+                        if let Some(inner) = local.get(target) {
+                            value = Some(inner.clone());
+                        }
+                    }
+                    [PythonStmt::Return(inner)] if target.starts_with("tmp_return_value") => {
+                        value = Some(inner.clone());
+                    }
+                    _ => return None,
                 }
-                let value: PythonExpr = self.eval_value(rhs, &local);
-                if name.starts_with("tmp_") {
-                    local.insert(name.to_owned(), value.clone());
-                }
-                let is_return: bool = name.starts_with("tmp_return_value");
-                if is_return || result.is_none() {
-                    result = Some(value);
-                }
+                idx = idx.saturating_add(consumed);
+                continue;
             }
-        }
-        result
-    }
-
-    fn diamond_result_temp(&self, from: usize, to: usize) -> Option<String> {
-        for idx in from..to.min(self.lines.len()) {
-            if let Some((name, _)) = parse_assignment(self.lines[idx])
-                && name.starts_with("tmp_return_value")
+            if let Some((name, rhs)) = parse_assignment(self.lines[idx])
+                && rhs.trim() != "NULL"
             {
-                return Some(name.to_owned());
+                let evaluated: PythonExpr = self.eval_value(rhs, &local);
+                if name == target {
+                    value = Some(evaluated.clone());
+                }
+                if name.starts_with("tmp_") {
+                    local.insert(name.to_owned(), evaluated);
+                }
             }
+            idx += 1;
         }
-        None
+        value
     }
 
     fn try_if_branch(
@@ -3705,6 +3759,8 @@ fn is_buildable_tuple_var(name: &str) -> bool {
         || name.starts_with("tmp_tuple_")
         || name.starts_with("tmp_assign_source_")
 }
+
+const MAX_VALUE_DIAMOND_DEPTH: usize = 64;
 
 fn condition_var_from_if(line: &str) -> Option<&str> {
     let after: &str = line.strip_prefix("if (")?;
@@ -4833,6 +4889,117 @@ goto frame_return_exit_1;
                 value: PythonExpr::Name("n".to_owned()),
             }],
             "the else suite holds only its own assignment"
+        );
+    }
+
+    #[test]
+    fn a_conditional_expression_assigned_to_a_name_is_not_a_return() {
+        let body: &str = r"{
+PyObject *par_a = python_pars[0];
+PyObject *par_b = python_pars[1];
+PyObject *par_c = python_pars[2];
+tmp_cmp_expr_left_1 = par_c;
+tmp_cmp_expr_right_1 = par_a;
+tmp_condition_result_1 = RICH_COMPARE_LT_NBOOL_OBJECT_OBJECT(tmp_cmp_expr_left_1, tmp_cmp_expr_right_1);
+if (tmp_condition_result_1 == NUITKA_BOOL_EXCEPTION) {
+exception_lineno = 3;
+goto frame_exception_exit_1;
+}
+if (tmp_condition_result_1 == NUITKA_BOOL_TRUE) {
+goto condexpr_true_1;
+} else {
+goto condexpr_false_1;
+}
+condexpr_true_1:;
+tmp_assign_source_1 = par_a;
+goto condexpr_end_1;
+condexpr_false_1:;
+tmp_assign_source_1 = par_b;
+condexpr_end_1:;
+var_z = tmp_assign_source_1;
+tmp_return_value = var_z;
+goto frame_return_exit_1;
+}";
+        let pool: ConstantsPool = ConstantsPool::default();
+        let lift: BodyLift = lift_body_detailed(body, &[], &pool);
+        let Some(PythonStmt::Assign { targets, value }) = lift.stmts.first() else {
+            panic!(
+                "z = a if c < a else b must lift to an assignment: {:?}",
+                lift.stmts
+            );
+        };
+        assert_eq!(targets, &vec!["z".to_owned()]);
+        let PythonExpr::IfExp { body, orelse, .. } = value else {
+            panic!("z takes the conditional expression: {value:?}");
+        };
+        assert_eq!(**body, PythonExpr::Name("a".to_owned()));
+        assert_eq!(**orelse, PythonExpr::Name("b".to_owned()));
+        assert_eq!(
+            lift.stmts.last(),
+            Some(&PythonStmt::Return(PythonExpr::Name("z".to_owned())))
+        );
+    }
+
+    #[test]
+    fn an_or_nested_in_an_and_keeps_both_inner_operands() {
+        let body: &str = r"{
+PyObject *par_a = python_pars[0];
+PyObject *par_b = python_pars[1];
+PyObject *par_c = python_pars[2];
+tmp_and_left_value_1 = par_a;
+tmp_and_left_truth_1 = CHECK_IF_TRUE(tmp_and_left_value_1);
+if (tmp_and_left_truth_1 == -1) {
+exception_lineno = 3;
+goto frame_exception_exit_1;
+}
+if (tmp_and_left_truth_1 == 1) {
+goto and_right_1;
+} else {
+goto and_left_1;
+}
+and_right_1:;
+tmp_or_left_value_1 = par_b;
+tmp_or_left_truth_1 = CHECK_IF_TRUE(tmp_or_left_value_1);
+if (tmp_or_left_truth_1 == -1) {
+exception_lineno = 3;
+goto frame_exception_exit_1;
+}
+if (tmp_or_left_truth_1 == 1) {
+goto or_left_1;
+} else {
+goto or_right_1;
+}
+or_right_1:;
+tmp_or_right_value_1 = par_c;
+tmp_and_right_value_1 = tmp_or_right_value_1;
+goto or_end_1;
+or_left_1:;
+tmp_and_right_value_1 = tmp_or_left_value_1;
+or_end_1:;
+tmp_return_value = tmp_and_right_value_1;
+goto and_end_1;
+and_left_1:;
+tmp_return_value = tmp_and_left_value_1;
+and_end_1:;
+goto frame_return_exit_1;
+}";
+        let pool: ConstantsPool = ConstantsPool::default();
+        let lift: BodyLift = lift_body_detailed(body, &[], &pool);
+        let name = |n: &str| Box::new(PythonExpr::Name(n.to_owned()));
+        let expected: PythonExpr = PythonExpr::BoolOp {
+            op: BoolOpKind::And,
+            left: name("a"),
+            right: Box::new(PythonExpr::BoolOp {
+                op: BoolOpKind::Or,
+                left: name("b"),
+                right: name("c"),
+            }),
+        };
+        assert_eq!(
+            lift.stmts.first(),
+            Some(&PythonStmt::Return(expected)),
+            "return a and (b or c): {:?}",
+            lift.stmts
         );
     }
 
