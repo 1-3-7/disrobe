@@ -1,41 +1,8 @@
-use super::BigIntTableEntry;
-
-const MAX_BIGINT_BYTES: usize = 4096;
-
-#[must_use]
-pub fn recover_bigints(table: &[BigIntTableEntry], storage: &[u8]) -> Vec<String> {
-    let mut out: Vec<String> = Vec::with_capacity(table.len());
-    for entry in table {
-        let Some(start): Option<usize> = usize::try_from(entry.offset).ok() else {
-            out.push("0n".to_owned());
-            continue;
-        };
-        let Some(length): Option<usize> = usize::try_from(entry.length).ok() else {
-            out.push("0n".to_owned());
-            continue;
-        };
-        let Some(end): Option<usize> = start.checked_add(length) else {
-            out.push("0n".to_owned());
-            continue;
-        };
-        let Some(slice): Option<&[u8]> = storage.get(start..end) else {
-            out.push("0n".to_owned());
-            continue;
-        };
-        if slice.is_empty() {
-            out.push("0n".to_owned());
-            continue;
-        }
-        out.push(bigint_literal(slice));
-    }
-    out
-}
+const MAX_DECIMAL_BYTES: usize = 4096;
+const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 
 #[must_use]
 pub fn bigint_literal(le_twos_complement: &[u8]) -> String {
-    if le_twos_complement.len() > MAX_BIGINT_BYTES {
-        return format!("/* bigint {} bytes */ 0n", le_twos_complement.len());
-    }
     let negative: bool = le_twos_complement
         .last()
         .is_some_and(|b: &u8| *b & 0x80 != 0);
@@ -44,12 +11,38 @@ pub fn bigint_literal(le_twos_complement: &[u8]) -> String {
     } else {
         le_twos_complement.to_vec()
     };
-    let decimal: String = le_bytes_to_decimal(&magnitude);
-    if negative {
-        format!("-{decimal}n")
+    let digits: String = if magnitude.len() > MAX_DECIMAL_BYTES {
+        le_bytes_to_hex(&magnitude)
     } else {
-        format!("{decimal}n")
+        le_bytes_to_decimal(&magnitude)
+    };
+    if negative {
+        format!("-{digits}n")
+    } else {
+        format!("{digits}n")
     }
+}
+
+#[must_use]
+fn le_bytes_to_hex(le: &[u8]) -> String {
+    let significant: &[u8] = match le.iter().rposition(|b: &u8| *b != 0) {
+        Some(last) => &le[..=last],
+        None => return "0".to_owned(),
+    };
+    let mut out: String = String::with_capacity(2 + significant.len() * 2);
+    out.push_str("0x");
+    let mut bytes: std::iter::Rev<std::slice::Iter<'_, u8>> = significant.iter().rev();
+    if let Some(first) = bytes.next() {
+        if *first >= 0x10 {
+            out.push(char::from(HEX_DIGITS[usize::from(first >> 4)]));
+        }
+        out.push(char::from(HEX_DIGITS[usize::from(first & 0x0f)]));
+    }
+    for byte in bytes {
+        out.push(char::from(HEX_DIGITS[usize::from(byte >> 4)]));
+        out.push(char::from(HEX_DIGITS[usize::from(byte & 0x0f)]));
+    }
+    out
 }
 
 #[must_use]
@@ -164,31 +157,15 @@ mod tests {
     }
 
     #[test]
-    fn recover_from_table() {
-        let mut storage: Vec<u8> = Vec::new();
-        storage.extend_from_slice(&100u32.to_le_bytes());
-        storage.extend_from_slice(&[0xff, 0xff, 0xff, 0xff]);
-        let table: Vec<BigIntTableEntry> = vec![
-            BigIntTableEntry {
-                offset: 0,
-                length: 4,
-            },
-            BigIntTableEntry {
-                offset: 4,
-                length: 4,
-            },
-        ];
-        let recovered: Vec<String> = recover_bigints(&table, &storage);
-        assert_eq!(recovered, vec!["100n".to_owned(), "-1n".to_owned()]);
-    }
-
-    #[test]
-    fn out_of_bounds_entry_yields_zero() {
-        let storage: Vec<u8> = vec![1, 2, 3, 4];
-        let table: Vec<BigIntTableEntry> = vec![BigIntTableEntry {
-            offset: 100,
-            length: 8,
-        }];
-        assert_eq!(recover_bigints(&table, &storage), vec!["0n".to_owned()]);
+    fn a_bigint_past_the_decimal_cap_renders_exactly_in_hex() {
+        let mut bytes: Vec<u8> = vec![0u8; MAX_DECIMAL_BYTES + 8];
+        bytes[0] = 0x2a;
+        bytes[MAX_DECIMAL_BYTES + 6] = 0x01;
+        let rendered: String = bigint_literal(&bytes);
+        let expected: String = format!("0x1{}2an", "00".repeat(MAX_DECIMAL_BYTES + 5));
+        assert_eq!(rendered, expected);
+        let mut negative: Vec<u8> = vec![0xffu8; MAX_DECIMAL_BYTES + 8];
+        negative[0] = 0xfe;
+        assert_eq!(bigint_literal(&negative), "-0x2n");
     }
 }

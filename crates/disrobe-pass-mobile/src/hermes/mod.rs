@@ -14,7 +14,7 @@ pub(crate) mod opcodes;
 pub mod regex;
 pub mod structure;
 
-pub use bigint::{bigint_literal, recover_bigints};
+pub use bigint::bigint_literal;
 pub use builtins::{builtin_name, get_template_object_builtin, is_template_object_builtin};
 pub use decompile::{
     DeclineCount, DecompileReport, DecompiledFunction, OpcodeCount, decompile_function,
