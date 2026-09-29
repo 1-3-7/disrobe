@@ -39,6 +39,8 @@ struct Ctx<'a> {
     end_pc: usize,
     repeats: std::collections::BTreeMap<usize, RepeatEdge>,
     active_repeats: std::collections::BTreeSet<usize>,
+    endless: std::collections::BTreeMap<usize, usize>,
+    active_endless: std::collections::BTreeSet<usize>,
     label_candidates: LabelSites,
     placed_labels: std::collections::BTreeSet<usize>,
     edges: EdgeLedger,
@@ -121,11 +123,14 @@ pub(super) fn structure_standard(stmts: &[LiftedStmt], code_len: usize) -> Struc
     retarget_back_edges_through_closing_jumps(&mut nodes);
     let repeats: std::collections::BTreeMap<usize, RepeatEdge> = detect_repeats(&nodes);
     let label_candidates: LabelSites = label_sites(&nodes);
+    let endless: std::collections::BTreeMap<usize, usize> = detect_endless_loops(&nodes, &repeats);
     let mut ctx: Ctx<'_> = Ctx {
         nodes: &nodes,
         end_pc: code_len + 1,
         repeats,
         active_repeats: std::collections::BTreeSet::new(),
+        endless,
+        active_endless: std::collections::BTreeSet::new(),
         label_candidates,
         placed_labels: std::collections::BTreeSet::new(),
         edges: EdgeLedger::build(&nodes),
@@ -349,6 +354,35 @@ fn detect_repeats(nodes: &[PcNode]) -> std::collections::BTreeMap<usize, RepeatE
     out
 }
 
+#[must_use]
+fn detect_endless_loops(
+    nodes: &[PcNode],
+    repeats: &std::collections::BTreeMap<usize, RepeatEdge>,
+) -> std::collections::BTreeMap<usize, usize> {
+    let mut out: std::collections::BTreeMap<usize, usize> = std::collections::BTreeMap::new();
+    for n in nodes {
+        let Node::Jump { target } = n.node else {
+            continue;
+        };
+        if target == usize::MAX || target > n.pc {
+            continue;
+        }
+        let Some(head) = nodes.get(nodes.partition_point(|node: &PcNode| node.pc < target)) else {
+            continue;
+        };
+        let is_while_test: bool =
+            matches!(head.node, Node::Cond { target: exit, .. } if exit == n.pc + 1);
+        let is_counted: bool = matches!(head.node, Node::ForNum { .. } | Node::ForGen { .. });
+        if is_while_test || is_counted || repeats.contains_key(&head.pc) {
+            continue;
+        }
+        out.entry(head.pc)
+            .and_modify(|jump_pc: &mut usize| *jump_pc = (*jump_pc).max(n.pc))
+            .or_insert(n.pc);
+    }
+    out
+}
+
 fn build_nodes(stmts: &[LiftedStmt]) -> Vec<PcNode> {
     let mut nodes: Vec<PcNode> = Vec::with_capacity(stmts.len());
     let mut forgen_pending: Vec<usize> = Vec::new();
@@ -445,6 +479,10 @@ enum SequenceState {
         cond: String,
         head: usize,
     },
+    AfterEndless {
+        head: usize,
+        jump_pc: usize,
+    },
     AfterThen {
         cond: String,
         target: usize,
@@ -532,6 +570,20 @@ fn structure_seq(
                         body: while_body,
                     });
                 }
+                SequenceState::AfterEndless { head, jump_pc } => {
+                    ctx.active_endless.remove(&head);
+                    if let Some(node) = ctx.nodes.get(*pos)
+                        && node.pc == jump_pc
+                        && matches!(node.node, Node::Jump { .. })
+                    {
+                        ctx.edges.carry(*pos);
+                        *pos += 1;
+                    }
+                    frame.out.push(StructuredBlock::While {
+                        cond: "true".to_owned(),
+                        body,
+                    });
+                }
                 SequenceState::AfterThen {
                     cond,
                     target,
@@ -617,6 +669,20 @@ fn structure_seq(
                 Some(LoopCtx {
                     exit: edge.cond_pc + 2,
                 }),
+            ));
+            continue;
+        }
+        if let Some(&jump_pc) = ctx.endless.get(&cur.pc)
+            && jump_pc < frame.stop_pc
+            && ctx.active_endless.insert(cur.pc)
+        {
+            frame.state = SequenceState::AfterEndless {
+                head: cur.pc,
+                jump_pc,
+            };
+            frames.push(SequenceFrame::new(
+                jump_pc,
+                Some(LoopCtx { exit: jump_pc + 1 }),
             ));
             continue;
         }
@@ -1322,6 +1388,8 @@ mod tests {
             end_pc: 4,
             repeats,
             active_repeats: std::collections::BTreeSet::new(),
+            endless: std::collections::BTreeMap::new(),
+            active_endless: std::collections::BTreeSet::new(),
             label_candidates: LabelSites::new(),
             placed_labels: std::collections::BTreeSet::new(),
             edges: EdgeLedger::build(&nodes),
@@ -1567,7 +1635,7 @@ mod tests {
     }
 
     #[test]
-    fn a_back_edge_that_re_enters_a_statement_before_the_test_is_never_absorbed_into_a_while() {
+    fn a_back_edge_that_re_enters_a_statement_before_the_test_loops_over_that_statement() {
         let stmts: Vec<LiftedStmt> = vec![
             lifted(0, LStmt::Raw("local acc = 0".to_owned())),
             lifted(2, LStmt::Raw("acc = acc + 1".to_owned())),
@@ -1585,22 +1653,41 @@ mod tests {
 
         let result: StructureResult = structure_standard(&stmts, 7);
 
+        let exit_test: String = crate::decompile::luau_structure::negate_cond("i < 5");
+        let shape_holds: bool = match result.blocks.as_slice() {
+            [
+                StructuredBlock::Raw(before),
+                StructuredBlock::While { cond, body },
+                StructuredBlock::Raw(after),
+            ] => {
+                before == "local acc = 0"
+                    && cond == "true"
+                    && after == "print(i, acc)"
+                    && matches!(
+                        body.as_slice(),
+                        [
+                            StructuredBlock::Raw(head),
+                            StructuredBlock::If { cond: test, then_body, else_body },
+                            StructuredBlock::Raw(step),
+                        ] if head == "acc = acc + 1"
+                            && *test == exit_test
+                            && matches!(then_body.as_slice(), [StructuredBlock::Break])
+                            && else_body.is_empty()
+                            && step == "i = i + 1"
+                    )
+            }
+            _ => false,
+        };
         assert!(
-            !carries_while(&result.blocks),
-            "a while re-tests at the condition, so it cannot carry a back edge that re-enters the \
-             statement at pc 2; absorbing it moves that statement out of the loop and runs it \
-             once; blocks: {:?}",
-            result.blocks
-        );
-        assert!(
-            carries_goto_to(&result.blocks, 2),
-            "the edge no structure carries must survive as a labelled jump rather than vanish; \
+            shape_holds,
+            "the back edge re-enters the statement at pc 2, so that statement must stay inside \
+             an endless loop that tests after it and breaks, never run once before a while; \
              blocks: {:?}",
             result.blocks
         );
-        assert!(
-            result.unresolved_jumps > 0,
-            "and the report must say the region is not fully structured; blocks: {:?}",
+        assert_eq!(
+            result.unresolved_jumps, 0,
+            "every edge is carried by the loop; blocks: {:?}",
             result.blocks
         );
     }

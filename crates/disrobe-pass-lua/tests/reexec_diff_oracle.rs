@@ -452,7 +452,7 @@ fn assert_behaviour_programs_reexecute(version: &str, programs: &[(&str, &str)])
 const GOTO_PROGRAM: &str = "local acc = 0\nlocal i = 1\n::top::\nif i > 5 then goto done end\nacc = acc + i\ni = i + 1\ngoto top\n::done::\nprint(acc)\n";
 
 #[test]
-fn goto_edges_preserved_not_dropped_lua_5_4() {
+fn goto_loop_edges_are_carried_not_dropped_lua_5_4() {
     let tc: Toolchain = toolchain("5.4");
     let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
@@ -468,11 +468,7 @@ fn goto_edges_preserved_not_dropped_lua_5_4() {
     let body: String = strip_main_wrapper(&decompiled.source);
 
     assert!(
-        body.contains("goto lbl_") && body.contains("::lbl_"),
-        "unstructured edge must be recovered as goto/label, not dropped; got:\n{body}"
-    );
-    assert!(
-        !matches!(decompiled.fidelity, Fidelity::Lossless),
+        !body.contains("goto ") || !matches!(decompiled.fidelity, Fidelity::Lossless),
         "output containing a recovered goto must not claim Lossless; fidelity was {:?}",
         decompiled.fidelity
     );
@@ -481,7 +477,8 @@ fn goto_edges_preserved_not_dropped_lua_5_4() {
     let actual: String = run_source(&tc.lua, &dir, "goto_dec", &body).expect("recovered runs");
     assert_eq!(
         expected, actual,
-        "goto-preserved recovery must re-execute identically; recovered:\n{body}"
+        "the goto loop's edges must be carried by a structure or a labelled jump, so the \
+         recovery re-executes identically; recovered:\n{body}"
     );
 }
 
@@ -609,12 +606,10 @@ fn a_loop_head_before_the_test_keeps_its_edge_lua_5_4() {
     let claims: LaneClaims =
         assert_structure_claim_matches_reexecution("5.4", LOOP_HEAD_PROGRAMS_54);
 
-    assert!(
-        claims.claimed_structure < claims.graded,
-        "every program here runs a statement at a loop head that the recovered while cannot \
-         re-enter, so at least one must report less than a complete structure; a lane where all \
-         {} claim one is measuring nothing",
-        claims.graded
+    assert_eq!(
+        claims.claimed_structure, claims.graded,
+        "every program here runs a statement at a loop head before its test, which an endless \
+         loop that breaks at the test carries completely"
     );
     assert_eq!(
         claims.unclaimed_with_labelled_jump,

@@ -21,6 +21,7 @@ const MAX_STRUCT_NODES: usize = 1 << 20;
 struct StructState {
     regs: Vec<String>,
     defined: Vec<bool>,
+    bound: Vec<bool>,
     pc: usize,
     stmts: Vec<LiftedStmt>,
     warnings: Vec<String>,
@@ -40,6 +41,7 @@ impl StructState {
         Self {
             regs: vec![String::new(); size],
             defined: vec![false; size],
+            bound: vec![false; size],
             pc: 0,
             stmts: Vec::new(),
             warnings: Vec::new(),
@@ -81,8 +83,50 @@ impl StructState {
         if idx >= self.regs.len() {
             self.regs.resize(idx + 1, String::new());
             self.defined.resize(idx + 1, false);
+            self.bound.resize(idx + 1, false);
         }
         self.regs[idx] = value;
+        self.bound[idx] = false;
+    }
+
+    fn bind_reg(&mut self, i: u32, name: String) {
+        self.set_reg(i, name);
+        self.mark_defined(i);
+        self.bound[i as usize] = true;
+    }
+
+    fn release_scope(&mut self, base: u32) {
+        self.pinned.retain(|slot: &u32| *slot < base);
+        for slot in base as usize..self.regs.len() {
+            if self.bound[slot] {
+                self.regs[slot] = String::new();
+                self.bound[slot] = false;
+                self.defined[slot] = false;
+            }
+        }
+    }
+
+    fn materialize_readers_of(&mut self, name: &str, keep: &[u32], live: &LiveAcrossBranch) {
+        for slot in 0..self.regs.len() {
+            let t: u32 = slot as u32;
+            let value: &str = &self.regs[slot];
+            if self.bound[slot]
+                || value.is_empty()
+                || keep.contains(&t)
+                || !contains_ident(value, name)
+                || live.reads_before_redefinition(self.pc, t) == 0
+            {
+                continue;
+            }
+            let value: String = value.to_owned();
+            let tmp: String = self.temp(t);
+            if self.is_defined(t) {
+                self.push_raw(format!("{tmp} = {value}"));
+            } else {
+                self.push_raw(format!("local {tmp} = {value}"));
+            }
+            self.bind_reg(t, tmp);
+        }
     }
 
     #[inline]
@@ -223,8 +267,7 @@ fn lift_structured_captured(
         let name: String = names
             .name_at(0, i)
             .map_or_else(|| synthetic_param_name(i, &state.upvalues), str::to_owned);
-        state.set_reg(i, name);
-        state.mark_defined(i);
+        state.bind_reg(i, name);
     }
     let live: LiveAcrossBranch = LiveAcrossBranch::compute(p, dialect);
     for slot in slots_read_through_an_elided_nil(p, dialect, &live) {
@@ -233,8 +276,7 @@ fn lift_structured_captured(
         }
         let var: String = state.temp(slot);
         state.push_raw(format!("local {var}"));
-        state.set_reg(slot, var);
-        state.mark_defined(slot);
+        state.bind_reg(slot, var);
         state.pinned.insert(slot);
     }
     lower(p, dialect, depth, &names, &live, &mut state, ctx)?;
@@ -283,6 +325,7 @@ struct LiveAcrossBranch {
     effects: Vec<bool>,
     successors: Vec<Vec<usize>>,
     skipped: Vec<bool>,
+    loop_heads: Vec<bool>,
 }
 
 impl LiveAcrossBranch {
@@ -338,6 +381,14 @@ impl LiveAcrossBranch {
                 }
             }
         }
+        let mut loop_heads: Vec<bool> = vec![false; n + 1];
+        for (pc, next) in successors.iter().enumerate() {
+            for &target in next {
+                if target <= pc {
+                    loop_heads[target] = true;
+                }
+            }
+        }
         let mut open: i64 = 0;
         let skipped: Vec<bool> = crossings
             .iter()
@@ -355,7 +406,12 @@ impl LiveAcrossBranch {
             effects,
             successors,
             skipped,
+            loop_heads,
         }
+    }
+
+    fn is_loop_head(&self, pc: usize) -> bool {
+        self.loop_heads.get(pc).copied().unwrap_or(false)
     }
 
     fn is_skipped_by_a_forward_jump(&self, pc: usize) -> bool {
@@ -818,9 +874,10 @@ fn lower(
     let mut pc: usize = 0;
     while pc < n {
         state.pc = pc;
-        activate_locals(state, names, pc);
+        activate_locals(state, names, live, pc);
         let raw: u32 = p.code[pc];
         let d: Decoded = decode(raw, dialect);
+        overwritten_names_invalidate_readers(state, p, &d, dialect, live);
         match d.op {
             Op::Move => define(state, names, live, p, d.a, state.reg(d.b)),
             Op::LoadK => define(state, names, live, p, d.a, kconst(p, d.bx, dialect)),
@@ -1075,6 +1132,9 @@ fn lower(
                 );
             }
             Op::Jmp => {
+                if matches!(dialect, LuaDialect::Lua52 | LuaDialect::Lua53) && d.a > 0 {
+                    state.pinned.retain(|slot: &u32| *slot < d.a - 1);
+                }
                 let target: i64 = jump_target(pc, &d, dialect);
                 if let Some(ctrl) = forin_controller(p, target, dialect)
                     && opens_generic_for(p, pc, &ctrl, dialect)
@@ -1210,7 +1270,10 @@ fn lower(
             }
             Op::Return1 => state.push_raw(format!("return {}", state.reg(d.a))),
             Op::ForPrep => emit_fornum(state, names, &d, pc, dialect),
-            Op::ForLoop => state.push_stmt(LStmt::BlockEnd),
+            Op::ForLoop => {
+                state.push_stmt(LStmt::BlockEnd);
+                state.release_scope(d.a);
+            }
             Op::TForPrep => {
                 let target: i64 = pc as i64 + 1 + i64::from(d.bx);
                 if let Some(ctrl) = forin_controller(p, target, dialect) {
@@ -1219,6 +1282,7 @@ fn lower(
             }
             Op::TForCall => {
                 state.push_stmt(LStmt::BlockEnd);
+                state.release_scope(d.a);
             }
             Op::TForLoop => {
                 if !matches!(
@@ -1226,6 +1290,7 @@ fn lower(
                     LuaDialect::Lua52 | LuaDialect::Lua53 | LuaDialect::Lua54
                 ) {
                     state.push_stmt(LStmt::BlockEnd);
+                    state.release_scope(d.a);
                 }
                 if matches!(
                     p.code.get(pc + 1).map(|r: &u32| decode(*r, dialect).op),
@@ -1277,6 +1342,34 @@ fn lower(
 }
 
 #[inline]
+fn overwritten_names_invalidate_readers(
+    state: &mut StructState,
+    p: &LuaProto,
+    d: &Decoded,
+    dialect: LuaDialect,
+    live: &LiveAcrossBranch,
+) {
+    let written: Vec<u32> = written_registers(d, dialect);
+    let mut names: Vec<String> = written
+        .iter()
+        .filter(|w: &&u32| state.bound.get(**w as usize).copied().unwrap_or(false))
+        .map(|w: &u32| state.reg(*w))
+        .collect();
+    match d.op {
+        Op::SetUpval => names.push(state.upval(d.b)),
+        Op::SetGlobal => names.push(kstr(p, d.bx, dialect)),
+        Op::SetTabUp => {
+            if let (Some(field), _, _) = settabup_operands(state, p, d, dialect) {
+                names.push(field);
+            }
+        }
+        _ => {}
+    }
+    for name in names {
+        state.materialize_readers_of(&name, &written, live);
+    }
+}
+
 fn bool_lit(b: u32) -> String {
     if b != 0 { "true" } else { "false" }.to_owned()
 }
@@ -1307,7 +1400,7 @@ fn define(
             state.push_raw(format!("local {name} = {value}"));
             state.mark_defined(slot);
         }
-        state.set_reg(slot, name);
+        state.bind_reg(slot, name);
         return;
     }
     if state.pinned.contains(&slot) {
@@ -1332,7 +1425,7 @@ fn define(
             state.push_raw(format!("local {tmp} = {value}"));
             state.mark_defined(slot);
         }
-        state.set_reg(slot, tmp);
+        state.bind_reg(slot, tmp);
     } else {
         state.set_reg(slot, value);
     }
@@ -1405,8 +1498,7 @@ fn capture_name(
         } else {
             state.push_raw(format!("local {var} = {current}"));
         }
-        state.mark_defined(slot);
-        state.set_reg(slot, var);
+        state.bind_reg(slot, var);
     }
     state.pinned.insert(slot);
     state.reg(slot)
@@ -1432,8 +1524,7 @@ fn define_table(
         .map(str::to_owned);
     if let Some(name) = nm {
         state.push_raw(format!("local {name} = {{}}"));
-        state.mark_defined(d.a);
-        state.set_reg(d.a, name);
+        state.bind_reg(d.a, name);
         state.suppress_local.push((act_pc, d.a));
     } else {
         let mut tmp: String = format!("tbl_{}", state.table_locals);
@@ -1443,8 +1534,7 @@ fn define_table(
             state.table_locals += 1;
         }
         state.push_raw(format!("local {tmp} = {{}}"));
-        state.mark_defined(d.a);
-        state.set_reg(d.a, tmp);
+        state.bind_reg(d.a, tmp);
     }
 }
 
@@ -1480,15 +1570,20 @@ fn is_ident_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 
-fn activate_locals(state: &mut StructState, names: &LocalNames, pc: usize) {
+fn activate_locals(
+    state: &mut StructState,
+    names: &LocalNames,
+    live: &LiveAcrossBranch,
+    pc: usize,
+) {
     if !names.has_names {
         return;
     }
+    let first_new: usize = state.stmts.len();
     let acts: Vec<(u32, String)> = names.activating_at(pc).to_vec();
     for (slot, name) in acts {
         if state.suppress_local.contains(&(pc, slot)) {
-            state.mark_defined(slot);
-            state.set_reg(slot, name);
+            state.bind_reg(slot, name);
             continue;
         }
         if state.reg(slot) == name {
@@ -1506,8 +1601,12 @@ fn activate_locals(state: &mut StructState, names: &LocalNames, pc: usize) {
         } else {
             state.push_raw(format!("local {name} = {raw}"));
         }
-        state.mark_defined(slot);
-        state.set_reg(slot, name);
+        state.bind_reg(slot, name);
+    }
+    if pc > 0 && live.is_loop_head(pc) {
+        for stmt in &mut state.stmts[first_new..] {
+            stmt.pc = pc - 1;
+        }
     }
 }
 
@@ -1735,15 +1834,13 @@ fn define_at_merge(
     if let Some(name) = names.name_at(merge_pc, slot) {
         let name: String = name.to_owned();
         state.push_raw(format!("local {name} = {value}"));
-        state.mark_defined(slot);
-        state.set_reg(slot, name);
+        state.bind_reg(slot, name);
         state.suppress_local.push((merge_pc, slot));
         return;
     }
     let tmp: String = state.temp(slot);
     state.push_raw(format!("local {tmp} = {value}"));
-    state.mark_defined(slot);
-    state.set_reg(slot, tmp);
+    state.bind_reg(slot, tmp);
 }
 
 #[must_use]
@@ -2050,8 +2147,7 @@ fn emit_call(
             .map(str::to_owned);
         if let Some(name) = name {
             state.push_raw(format!("local {name} = {call}"));
-            state.mark_defined(dest);
-            state.set_reg(dest, name);
+            state.bind_reg(dest, name);
         } else if state.pinned.contains(&dest) {
             assign_pinned(state, dest, &call);
         } else if live.should_materialize(state.pc, dest)
@@ -2064,8 +2160,7 @@ fn emit_call(
             } else {
                 state.push_raw(format!("local {tmp} = {call}"));
             }
-            state.mark_defined(dest);
-            state.set_reg(dest, tmp);
+            state.bind_reg(dest, tmp);
         } else {
             state.set_reg(dest, call);
         }
@@ -2082,8 +2177,7 @@ fn emit_call(
             .collect();
         state.push_raw(format!("local {} = {call}", targets.join(", ")));
         for (i, t) in targets.iter().enumerate() {
-            state.mark_defined(d.a + i as u32);
-            state.set_reg(d.a + i as u32, t.clone());
+            state.bind_reg(d.a + i as u32, t.clone());
         }
     }
 }
@@ -2104,6 +2198,7 @@ fn clear_scratch_above(state: &mut StructState, start: u32) {
     let mut r: usize = start as usize;
     while r < state.regs.len() {
         state.regs[r] = String::new();
+        state.bound[r] = false;
         if let Some(d) = state.defined.get_mut(r) {
             *d = false;
         }
@@ -2197,8 +2292,7 @@ fn emit_fornum(
     let var: String = names
         .name_at(pc + 1, d.a + 3)
         .map_or_else(|| format!("fv_{}", d.a), str::to_owned);
-    state.set_reg(d.a + 3, var.clone());
-    state.mark_defined(d.a + 3);
+    state.bind_reg(d.a + 3, var.clone());
     state.suppress_local.push((pc + 1, d.a + 3));
     let end: usize = loop_end_from_prep(pc, d, dialect);
     state.push_stmt(LStmt::ForNum {
@@ -2328,8 +2422,7 @@ fn emit_forin_head(
         .collect();
     for (i, v) in vars.iter().enumerate() {
         let slot: u32 = var_base + i as u32;
-        state.set_reg(slot, v.clone());
-        state.mark_defined(slot);
+        state.bind_reg(slot, v.clone());
         state.suppress_local.push((body_pc, slot));
     }
     state.push_stmt(LStmt::ForGen {
@@ -2776,8 +2869,7 @@ fn emit_closure(
                 } else {
                     state.push_raw(format!("local {var} = {block}"));
                 }
-                state.set_reg(d.a, var);
-                state.mark_defined(d.a);
+                state.bind_reg(d.a, var);
             } else {
                 state.set_reg(d.a, block);
             }

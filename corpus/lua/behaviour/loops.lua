@@ -136,3 +136,21 @@ while true do
   acc = acc + step
 end
 print(acc, step)
+
+g_counter = 1
+local before = g_counter
+g_counter = g_counter + 1
+print(before, g_counter)
+
+local shared = 1
+local function scale_shared()
+  local old = shared
+  shared = shared * 10
+  return old, shared
+end
+print(scale_shared())
+
+local base = 3
+local tripled = base * 3
+base = 0
+print(tripled, base)
