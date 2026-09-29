@@ -1776,10 +1776,18 @@ mod tests {
         .expect("copy constants");
         std::fs::write(dir.join("module.hello.c"), [0xffu8]).expect("write invalid C source");
 
-        assert!(matches!(
-            decompile_build_dir(&dir),
-            Err(Error::CSourceInvalidUtf8(_))
-        ));
+        let decompiled: NuitkaDecompilation =
+            decompile_build_dir(&dir).expect("the constants still decode");
+        assert!(decompiled.surface.is_none());
+        assert!(
+            decompiled
+                .notes
+                .iter()
+                .any(|note: &String| note.contains("module.hello.c not used")
+                    && note.contains("DR-NUITKA-0025")),
+            "{:?}",
+            decompiled.notes
+        );
     }
 
     #[test]

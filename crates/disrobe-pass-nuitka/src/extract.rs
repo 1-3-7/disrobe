@@ -159,6 +159,8 @@ mod tests {
         bytes.extend_from_slice(b"pkg-1.0.dist-info/METADATA");
         bytes.extend_from_slice(b"pkg-1.0.dist-info/RECORD");
         bytes.extend_from_slice(b"pkg-1.0.dist-info/WHEEL");
+        assert!(matches!(extract_variant(&bytes), Err(Error::NotNuitka)));
+        bytes.extend_from_slice(b"__nuitka_version__");
         let extraction: VariantExtraction = extract_variant(&bytes).expect("wheel extract");
         let VariantExtraction::NotExtractable { reason }: VariantExtraction = extraction else {
             panic!("expected wheel to route to a not-extractable result");
