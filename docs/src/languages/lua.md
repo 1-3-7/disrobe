@@ -83,6 +83,8 @@ The Prometheus `Vmify` step rewrites a chunk into a register machine held inside
 
 The committed `corpus/lua/prometheus/vmify_upvalue` pair holds real Prometheus `Vmify` output for a counter factory whose inner function captures a local. The gate first requires that no Prometheus layer is left in the recovered source, then runs it under a real `lua` 5.1 binary and requires the output the clean file prints (`tests/reexec_diff_oracle.rs`). The obfuscated file itself is never run.
 
+The Prometheus `Weak` preset (`Vmify`, `ConstantArray` and `WrapInFunction`) is graded on the Lua megafile. All 171 functions in its dispatch tree come back structured with no dispatch fallback, and 630 of the 630 reached handlers are lifted. The recovered program then runs under real Lua 5.1 and 5.4 against a driver that calls every export, and it must print the same 116 lines as the clean source (`tests/real_prometheus_megafile.rs`). A mutation that drops trailing `nil` results from calls turns that grade red.
+
 Set `DISROBE_DEBUG=lua` to trace the capture analysis. It emits `prometheus_vmify.box_model`, naming the registers the capture helpers resolved to, and `prometheus_vmify.captured_variables`, the number of captured variables bound in the run.
 
 ## Limits
