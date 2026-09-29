@@ -6,7 +6,7 @@ The [head-to-head results](../benches/head-to-head/results.md) compare JADX, CFR
 
 | Surface | Existing Disrobe evidence | Relevant tools | Shared-input comparison needed |
 |---|---|---|---|
-| Python `.pyc` | <!-- m:py_stdlib_full_pct -->95.18%<!-- /m --> of code objects in a fixed 574-module CPython 3.14 core population; <!-- m:py_stdlib_pinned_pct -->96.7%<!-- /m --> in the pinned subset. Both compare normalized opcode structure, omitting jump targets and most operands | pycdc, pylingual, uncompyle6, decompyle3 | same `.pyc` corpus and comparison rules |
+| Python `.pyc` | <!-- m:py_stdlib_full_pct -->95.18%<!-- /m --> of code objects in a fixed 574-module CPython 3.14 core population; <!-- m:py_stdlib_pinned_pct -->96.83%<!-- /m --> in the pinned subset. Both compare normalized opcode structure, omitting jump targets and most operands | pycdc, pylingual, uncompyle6, decompyle3 | same `.pyc` corpus and comparison rules |
 | Python freezers | PyInstaller and freezer chains extract `.pyc` payloads before the Python gate | pyinstxtractor-ng, pydecipher | shared onefile corpus, byte-exact `.pyc` carve, then source gate |
 | PyArmor | <!-- m:pyarmor_frac -->72 / 72<!-- /m --> manifest-named v8/v9 default-trial wrappers statically decrypt and decode one complete header-anchored root `CodeObject` `[CI]` | Pyarmor-Static-Unpack-1shot | same named wrappers plus an external source, emitted-`.pyc`, or execution comparison |
 | Pickle safety | 102 / 102 fixtures disassemble, trace, and classify by pickletools semantics | fickling | same malicious and benign corpus, safety-label agreement |

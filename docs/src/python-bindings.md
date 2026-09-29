@@ -809,7 +809,7 @@ See also [Python decompiler](./languages/python.md) for the full decompiler desi
 Decompiles a `.pyc` with its header to source. Normalized opcode-structure agreement
 on the fixed 574-module CPython 3.14 core population is
 <!-- m:py_stdlib_full_pct -->95.18%<!-- /m --> (<!-- m:py_stdlib_full_count -->17396 of 18276<!-- /m --> code objects); the pinned
-200-module corpus is <!-- m:py_stdlib_pinned_pct -->96.7%<!-- /m --> (<!-- m:py_stdlib_pinned_count -->6079 of 6286<!-- /m -->, regression threshold 96.70%).
+200-module corpus is <!-- m:py_stdlib_pinned_pct -->96.83%<!-- /m --> (<!-- m:py_stdlib_pinned_count -->6087 of 6286<!-- /m -->, regression threshold 96.70%).
 
 The 574-module population excludes `idlelib` and `turtledemo`. The structural
 comparison omits jump targets, most operands and `__annotate__` code objects;
