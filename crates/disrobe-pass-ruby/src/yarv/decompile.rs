@@ -5126,9 +5126,8 @@ mod tests {
             recovered_instruction_count: 0,
         };
         let ctx: DecompileContext<'_> = DecompileContext::from_image(&image);
-        let lambda: Option<String> =
+        let _: Option<String> =
             super::parse_lambda_pattern(&main, &ctx, 0, 0, main.instructions.len());
-        let _ = lambda;
     }
 
     #[test]
