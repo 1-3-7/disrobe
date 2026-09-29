@@ -38,3 +38,18 @@ for _, row in ipairs({{1, 2}, {3, 4}, {5}}) do
   end
 end
 print(total)
+
+local function memo(f)
+  local cache = {}
+  return function(n)
+    local hit = cache[n]
+    if hit == nil then
+      hit = f(n)
+      cache[n] = hit
+    end
+    return hit
+  end
+end
+local calls = 0
+local square = memo(function(n) calls = calls + 1 return n * n end)
+print(square(4), square(4), square(5), calls)

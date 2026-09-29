@@ -272,6 +272,8 @@ fn lift_structured_captured(
     })
 }
 
+const READ_SEARCH_STATE_BUDGET: usize = 1 << 16;
+
 struct LiveAcrossBranch {
     boundaries: Vec<bool>,
     targets: Vec<bool>,
@@ -339,7 +341,12 @@ impl LiveAcrossBranch {
         let n: usize = self.reads.len();
         let mut seen: Vec<[bool; 2]> = vec![[false; 2]; n];
         let mut stack: Vec<(usize, bool)> = vec![(def_pc + 1, false)];
+        let mut budget: usize = READ_SEARCH_STATE_BUDGET;
         while let Some((pc, crossed)) = stack.pop() {
+            let Some(left) = budget.checked_sub(1) else {
+                return true;
+            };
+            budget = left;
             let Some(visited) = seen.get_mut(pc) else {
                 continue;
             };
@@ -691,21 +698,38 @@ fn read_registers(d: &Decoded, dialect: LuaDialect) -> Vec<u32> {
 #[must_use]
 fn control_successors(p: &LuaProto, pc: usize, d: &Decoded, dialect: LuaDialect) -> Vec<usize> {
     let n: usize = p.code.len();
-    let mut out: Vec<usize> = branch_targets(p, pc, d, dialect)
-        .into_iter()
-        .filter_map(|t: i64| usize::try_from(t).ok())
-        .filter(|t: &usize| *t < n)
-        .collect();
+    let skips_next: bool = matches!(
+        d.op,
+        Op::Eq
+            | Op::Lt
+            | Op::Le
+            | Op::EqK
+            | Op::EqI
+            | Op::LtI
+            | Op::LeI
+            | Op::GtI
+            | Op::GeI
+            | Op::Test
+            | Op::TestSet
+    ) || (d.op == Op::TForLoop
+        && matches!(dialect, LuaDialect::Lua51 | LuaDialect::GLua))
+        || (d.op == Op::LoadBool && d.c != 0);
+    let mut out: Vec<usize> = if skips_next {
+        vec![pc + 2]
+    } else {
+        branch_targets(p, pc, d, dialect)
+            .into_iter()
+            .filter_map(|t: i64| usize::try_from(t).ok())
+            .collect()
+    };
     let falls_through: bool = !matches!(
         d.op,
         Op::Jmp | Op::Return | Op::Return0 | Op::Return1 | Op::TailCall
-    );
-    if falls_through && pc + 1 < n {
+    ) && !(d.op == Op::LoadBool && d.c != 0);
+    if falls_through {
         out.push(pc + 1);
     }
-    if d.op == Op::LoadBool && d.c != 0 && pc + 2 < n {
-        out.push(pc + 2);
-    }
+    out.retain(|t: &usize| *t < n);
     out
 }
 
@@ -1237,10 +1261,8 @@ fn define(
         assign_pinned(state, slot, &value);
         return;
     }
-    let overwrites_a_declared_local: bool =
-        state.is_defined(slot) && state.reg(slot) == state.temp(slot);
     let materialize: bool = live.should_materialize(state.pc, slot)
-        || (overwrites_a_declared_local && live.read_after_control_flow(state.pc, slot))
+        || live.read_after_control_flow(state.pc, slot)
         || contains_ident(&value, &state.temp(slot))
         || (!is_duplicable_expression(&value)
             && (live.reads_before_redefinition(state.pc, slot) > 1
