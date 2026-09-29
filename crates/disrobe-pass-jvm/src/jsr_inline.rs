@@ -8,6 +8,7 @@ const OP_JSR: u8 = 0xA8;
 const OP_JSR_W: u8 = 0xC9;
 const OP_RET: u8 = 0xA9;
 const OP_GOTO: u8 = 0xA7;
+const OP_GOTO_W: u8 = 0xC8;
 const OP_ASTORE: u8 = 0x3A;
 const OP_ASTORE_0: u8 = 0x4B;
 const OP_ASTORE_3: u8 = 0x4E;
@@ -114,12 +115,27 @@ pub fn inline_jsr_subroutines(
                 bailed = true;
                 break;
             }
+            if insns.get(i + 1).is_some_and(|next: &Instruction| {
+                !subroutine_targets.contains(&next.pc) && !is_jsr_or_ret(next.opcode)
+            }) {
+                drop_return_goto(&mut emitted, body_start, return_pc);
+            }
             label_map.entry(ins.pc).or_insert(body_start);
             i += 1;
             continue;
         }
         if subroutine_targets.contains(&ins.pc) {
             i = skip_subroutine_body(insns, i);
+            continue;
+        }
+        if let Some((jsr_target, jsr_return)) = goto_into_jsr(insns, &pc_index, ins) {
+            let body_start: usize = emitted.len();
+            if !inline_one(insns, &pc_index, jsr_target, jsr_return, &mut emitted, 0) {
+                bailed = true;
+                break;
+            }
+            label_map.entry(ins.pc).or_insert(body_start);
+            i += 1;
             continue;
         }
         label_map.entry(ins.pc).or_insert(emitted.len());
@@ -305,6 +321,7 @@ fn inline_one(
                 if let Operands::Branch(off) = ins.operands {
                     let inner_target: u32 = (i64::from(ins.pc) + i64::from(off)) as u32;
                     let inner_return: u32 = next_pc(insns, j);
+                    let inner_start: usize = emitted.len();
                     if !inline_one(
                         insns,
                         pc_index,
@@ -314,6 +331,12 @@ fn inline_one(
                         depth + 1,
                     ) {
                         return false;
+                    }
+                    if insns
+                        .get(j + 1)
+                        .is_some_and(|next: &Instruction| !is_jsr_or_ret(next.opcode))
+                    {
+                        drop_return_goto(emitted, inner_start, inner_return);
                     }
                 }
                 j += 1;
@@ -328,6 +351,48 @@ fn inline_one(
         }
     }
     false
+}
+
+fn goto_into_jsr(
+    insns: &[Instruction],
+    pc_index: &BTreeMap<u32, usize>,
+    ins: &Instruction,
+) -> Option<(u32, u32)> {
+    if !matches!(ins.opcode, OP_GOTO | OP_GOTO_W) {
+        return None;
+    }
+    let index: usize = *pc_index.get(&branch_target_old_pc(ins)?)?;
+    let jsr: &Instruction = insns.get(index)?;
+    if !matches!(jsr.opcode, OP_JSR | OP_JSR_W) {
+        return None;
+    }
+    let Operands::Branch(off) = jsr.operands else {
+        return None;
+    };
+    Some((
+        (i64::from(jsr.pc) + i64::from(off)) as u32,
+        next_pc(insns, index),
+    ))
+}
+
+const fn is_jsr_or_ret(opcode: u8) -> bool {
+    matches!(opcode, OP_JSR | OP_JSR_W | OP_RET)
+}
+
+fn drop_return_goto(emitted: &mut Vec<Emitted>, body_start: usize, return_pc: u32) {
+    let Some((last, body)): Option<(&Emitted, &[Emitted])> =
+        emitted.get(body_start..).and_then(<[Emitted]>::split_last)
+    else {
+        return;
+    };
+    let ret_pc: u32 = last.old_pc;
+    let is_return_goto: bool = last.opcode == OP_GOTO && last.target_old_pc == Some(return_pc);
+    let ret_is_targeted: bool = body.iter().any(|e: &Emitted| {
+        e.target_old_pc == Some(ret_pc) || e.switch_targets_old_pc.contains(&ret_pc)
+    });
+    if is_return_goto && !ret_is_targeted {
+        emitted.pop();
+    }
 }
 
 fn body_branches_past(body: &[Instruction], ret_pc: u32) -> bool {
@@ -508,11 +573,11 @@ mod tests {
             out.iter()
                 .map(|i: &Instruction| i.opcode)
                 .collect::<Vec<u8>>(),
-            vec![OP_GOTO, 0x1A, 0xAB, 0xB1],
+            vec![0x1A, 0xAB, 0xB1],
             "{out:?}"
         );
         assert_eq!(
-            out[2].operands,
+            out[1].operands,
             Operands::LookupSwitch {
                 default: 1,
                 pairs: vec![(1, 1)],
@@ -553,9 +618,7 @@ mod tests {
             out.iter()
                 .map(|i: &Instruction| i.opcode)
                 .collect::<Vec<u8>>(),
-            vec![
-                0x04, 0x3B, 0x05, 0x3B, OP_GOTO, 0xB1, 0x4C, 0x05, 0x3B, OP_GOTO, 0x2B, 0xBF
-            ],
+            vec![0x04, 0x3B, 0x05, 0x3B, 0xB1, 0x4C, 0x05, 0x3B, 0x2B, 0xBF],
             "{out:?}"
         );
         assert_eq!(
@@ -564,13 +627,13 @@ mod tests {
                 ExceptionEntry {
                     start_pc: 0,
                     end_pc: 2,
-                    handler_pc: 6,
+                    handler_pc: 5,
                     catch_type: 0,
                 },
                 ExceptionEntry {
-                    start_pc: 5,
-                    end_pc: 6,
-                    handler_pc: 6,
+                    start_pc: 4,
+                    end_pc: 5,
+                    handler_pc: 5,
                     catch_type: 0,
                 },
             ],
@@ -604,9 +667,12 @@ mod tests {
             out.iter().any(|i: &Instruction| i.mnemonic == "iconst_1"),
             "subroutine body must be inlined"
         );
-        assert!(
-            out.iter().any(|i: &Instruction| i.opcode == OP_GOTO),
-            "ret must become a goto back to the return site"
+        assert_eq!(
+            out.iter()
+                .map(|i: &Instruction| i.opcode)
+                .collect::<Vec<u8>>(),
+            vec![0x04, 0xB1, 0x00],
+            "a ret whose return site follows the copy falls through without a goto: {out:?}"
         );
     }
 
@@ -650,34 +716,42 @@ mod tests {
         }
         let body: Vec<&'static str> = out.iter().map(|i: &Instruction| i.mnemonic).collect();
         assert_eq!(
-            &body[..7],
+            &body[..6],
             &[
-                "iload_0", "iload_0", "iadd", "istore_1", "goto", "iload_1", "ireturn"
+                "iload_0", "iload_0", "iadd", "istore_1", "iload_1", "ireturn"
             ][..],
-            "the computation must be inlined before the goto back to the return site: {body:?}"
+            "the computation must be inlined straight before the return tail: {body:?}"
         );
-        let goto: &Instruction = out
-            .iter()
-            .find(|i: &&Instruction| i.opcode == OP_GOTO)
-            .expect("goto");
-        let goto_target: u32 = (i64::from(goto.pc)
-            + match goto.operands {
-                Operands::Branch(off) => i64::from(off),
-                _ => panic!("goto must carry a branch offset"),
-            }) as u32;
-        let ireturn_pc: u32 = out
-            .iter()
-            .find(|i: &&Instruction| i.opcode == 0xac)
-            .map(|i: &Instruction| i.pc)
-            .expect("ireturn present");
-        let iload_pc: u32 = out
-            .iter()
-            .find(|i: &&Instruction| i.mnemonic == "iload_1")
-            .map(|i: &Instruction| i.pc)
-            .expect("iload_1 present");
-        assert!(
-            goto_target == iload_pc || goto_target == ireturn_pc,
-            "goto must jump to the return tail (iload_1/ireturn), got pc {goto_target}"
+    }
+
+    #[test]
+    fn a_ret_the_subroutine_branches_to_keeps_its_goto() {
+        let insns: Vec<Instruction> = vec![
+            ins(0, OP_JSR, "jsr", Operands::Branch(5)),
+            ins(3, 0xB1, "return", Operands::None),
+            ins(4, 0x00, "nop", Operands::None),
+            ins(5, OP_ASTORE, "astore", Operands::Local(1)),
+            ins(7, 0x1A, "iload_0", Operands::None),
+            ins(8, 0x99, "ifeq", Operands::Branch(5)),
+            ins(11, 0x04, "iconst_1", Operands::None),
+            ins(12, 0x3B, "istore_0", Operands::None),
+            ins(13, OP_RET, "ret", Operands::Local(1)),
+        ];
+        let JsrInlined {
+            insns: out, report, ..
+        } = inline_jsr_subroutines(&insns, &[]);
+        assert!(!report.bailed, "{report:?}");
+        assert_eq!(
+            out.iter()
+                .map(|i: &Instruction| i.opcode)
+                .collect::<Vec<u8>>(),
+            vec![0x1A, 0x99, 0x04, 0x3B, OP_GOTO, 0xB1, 0x00],
+            "{out:?}"
+        );
+        assert_eq!(
+            out[1].operands,
+            Operands::Branch(3),
+            "the branch to the ret lands on the goto back to the return site: {out:?}"
         );
     }
 
@@ -716,6 +790,48 @@ mod tests {
                 assert!(pcs.contains(&target), "unresolved target {target}: {out:?}");
             }
         }
+    }
+
+    #[test]
+    fn a_goto_into_a_jsr_receives_its_own_subroutine_copy() {
+        let insns: Vec<Instruction> = vec![
+            ins(0, 0x1A, "iload_0", Operands::None),
+            ins(1, 0x99, "ifeq", Operands::Branch(8)),
+            ins(4, 0x04, "iconst_1", Operands::None),
+            ins(5, 0x3B, "istore_0", Operands::None),
+            ins(6, OP_GOTO, "goto", Operands::Branch(5)),
+            ins(9, 0x05, "iconst_2", Operands::None),
+            ins(10, 0x3B, "istore_0", Operands::None),
+            ins(11, OP_JSR, "jsr", Operands::Branch(5)),
+            ins(14, 0x1A, "iload_0", Operands::None),
+            ins(15, 0xAC, "ireturn", Operands::None),
+            ins(16, 0x4C, "astore_1", Operands::None),
+            ins(17, 0x1A, "iload_0", Operands::None),
+            ins(18, 0x04, "iconst_1", Operands::None),
+            ins(19, 0x60, "iadd", Operands::None),
+            ins(20, 0x3B, "istore_0", Operands::None),
+            ins(21, OP_RET, "ret", Operands::Local(1)),
+        ];
+        let JsrInlined {
+            insns: out, report, ..
+        } = inline_jsr_subroutines(&insns, &[]);
+        assert!(!report.bailed, "{report:?}");
+        assert_eq!(
+            out.iter()
+                .map(|i: &Instruction| i.opcode)
+                .collect::<Vec<u8>>(),
+            vec![
+                0x1A, 0x99, 0x04, 0x3B, 0x1A, 0x04, 0x60, 0x3B, OP_GOTO, 0x05, 0x3B, 0x1A, 0x04,
+                0x60, 0x3B, 0x1A, 0xAC
+            ],
+            "{out:?}"
+        );
+        assert_eq!(out[1].operands, Operands::Branch(8), "{out:?}");
+        assert_eq!(
+            out[8].operands,
+            Operands::Branch(7),
+            "the duplicated copy returns to the shared tail: {out:?}"
+        );
     }
 
     #[test]

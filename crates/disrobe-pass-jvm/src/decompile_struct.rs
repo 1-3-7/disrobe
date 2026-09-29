@@ -471,6 +471,7 @@ pub enum Region {
         default: Option<Box<Self>>,
         join: Option<BlockId>,
         fallthrough: BTreeSet<usize>,
+        default_position: usize,
     },
     Try {
         try_body: Box<Self>,
@@ -927,9 +928,46 @@ impl<'a> Structurer<'a> {
         }
     }
 
+    fn stackless_monitor_release_chain(&self, handler_bid: BlockId) -> Option<FinallyChain> {
+        let mut chain: Vec<BlockId> = vec![handler_bid];
+        let mut body: Vec<&Instruction> = self.block_instructions(handler_bid).iter().collect();
+        while body.len() < 3 {
+            let last: BlockId = *chain.last()?;
+            if !matches!(
+                self.block_instructions(last).last()?.opcode,
+                0x19 | 0x2A..=0x2D | 0xC3
+            ) {
+                return None;
+            }
+            let next: BlockId = self.next_block_by_pc(last)?;
+            chain.push(next);
+            body.extend(self.block_instructions(next));
+        }
+        let [load, release, throw]: [&Instruction; 3] = body.try_into().ok()?;
+        (aload_slot(load).is_some()
+            && release.opcode == 0xC3
+            && throw.opcode == 0xBF
+            && self.finally_chain_is_closed(&chain))
+        .then_some(FinallyChain {
+            blocks: chain,
+            termination: FinallyTermination::Rethrow,
+        })
+    }
+
+    fn stores_pending_exception(&self, chain: &FinallyChain) -> bool {
+        chain
+            .blocks
+            .first()
+            .and_then(|head: &BlockId| self.block_instructions(*head).first())
+            .and_then(astore_slot)
+            .is_some()
+    }
+
     fn finally_handler_chain(&self, handler_bid: BlockId) -> Option<FinallyChain> {
         let entry_insns: &[Instruction] = self.block_instructions(handler_bid);
-        let slot: u16 = astore_slot(entry_insns.first()?)?;
+        let Some(slot): Option<u16> = entry_insns.first().and_then(astore_slot) else {
+            return self.stackless_monitor_release_chain(handler_bid);
+        };
         let handler_pc: u32 = self.cfg.blocks[handler_bid.0 as usize].start_pc;
         let rethrow_tail_pc: Option<u32> = self
             .cfg
@@ -2125,6 +2163,7 @@ impl<'a> Structurer<'a> {
                     continue;
                 }
                 match self.finally_handler_chain(handler_bid) {
+                    Some(chain) if !self.stores_pending_exception(&chain) => {}
                     Some(chain) => {
                         let empty_finally: bool = self
                             .finally_body_span(&chain)
@@ -2262,11 +2301,7 @@ impl<'a> Structurer<'a> {
                     },
                 );
                 if unchained_finally {
-                    self.unmodelled_region.get_or_insert(
-                        "a compiler-inserted finally handler forms no foldable chain, so its body \
-                         cannot be recovered without changing what the method does with a pending \
-                         exception",
-                    );
+                    self.unmodelled_region.get_or_insert(UNCHAINED_FINALLY);
                 }
                 let finally_chain: Option<FinallyChain> =
                     finally_handler.and_then(|bid| self.finally_handler_chain(bid));
@@ -2368,6 +2403,9 @@ impl<'a> Structurer<'a> {
                         });
                         cur = after_try;
                         continue;
+                    }
+                    if !self.stores_pending_exception(&chain) {
+                        self.unmodelled_region.get_or_insert(UNCHAINED_FINALLY);
                     }
                     let gap_exits: Vec<BlockId> = self.try_gap_blocks(&try_group);
                     let all_exits: Vec<BlockId> =
@@ -3228,42 +3266,59 @@ impl<'a> Structurer<'a> {
     ) -> Region {
         let start_pc = |block: BlockId| -> u32 { self.cfg.blocks[block.0 as usize].start_pc };
         arms.sort_by_key(|(_, target): &(SwitchKey, BlockId)| start_pc(*target));
-        let default_is_last: bool = default.is_none_or(|d: BlockId| {
+        let case_count: usize = arms.len();
+        let default_position: usize = default.map_or(case_count, |d: BlockId| {
             arms.iter()
-                .all(|(_, target): &(SwitchKey, BlockId)| start_pc(*target) < start_pc(d))
+                .filter(|(_, target): &&(SwitchKey, BlockId)| start_pc(*target) < start_pc(d))
+                .count()
         });
-        let mut entries: Vec<BlockId> = arms
-            .iter()
-            .map(|(_, target): &(SwitchKey, BlockId)| *target)
+        let mut entries: Vec<(Option<SwitchKey>, BlockId)> = arms
+            .into_iter()
+            .map(|(key, target): (SwitchKey, BlockId)| (Some(key), target))
             .collect();
-        if let Some(d) = default.filter(|_| default_is_last) {
-            entries.push(d);
+        if let Some(d) = default {
+            entries.insert(default_position, (None, d));
         }
-        let mut cases: Vec<(SwitchKey, Region)> = Vec::with_capacity(arms.len());
+        let next_entries: Vec<Option<BlockId>> = (0..entries.len())
+            .map(|index: usize| {
+                entries
+                    .get(index + 1)
+                    .map(|(_, next): &(Option<SwitchKey>, BlockId)| *next)
+            })
+            .collect();
+        let mut cases: Vec<(SwitchKey, Region)> = Vec::with_capacity(case_count);
+        let mut default_region: Option<Box<Region>> = None;
         let mut fallthrough: BTreeSet<usize> = BTreeSet::new();
-        for (index, (key, target)) in arms.into_iter().enumerate() {
-            let next: Option<BlockId> = entries.get(index + 1).copied();
+        for ((key, target), next) in entries.into_iter().zip(next_entries) {
             let saved: BTreeSet<BlockId> = self.handler_stops.clone();
             if let Some(next) = next {
                 self.handler_stops.insert(next);
             }
             let region: Region = self.structure_at(target, join);
             self.handler_stops = saved;
-            if let Some(next) = next
-                && self.falls_into(head, target, next)
-            {
-                fallthrough.insert(index);
+            let falls: bool = next.is_some_and(|next: BlockId| self.falls_into(head, target, next));
+            match key {
+                Some(key) => {
+                    if falls {
+                        fallthrough.insert(cases.len());
+                    }
+                    cases.push((key, region));
+                }
+                None => {
+                    if falls {
+                        fallthrough.insert(case_count);
+                    }
+                    default_region = Some(Box::new(region));
+                }
             }
-            cases.push((key, region));
         }
-        let default_region: Option<Box<Region>> =
-            default.map(|d| Box::new(self.structure_at(d, join)));
         Region::Switch {
             head,
             cases,
             default: default_region,
             join,
             fallthrough,
+            default_position,
         }
     }
 
@@ -3317,7 +3372,7 @@ fn classify_loop_header(cfg: &Cfg, loop_info: &NaturalLoop) -> LoopKind {
 }
 
 fn find_loop_exit(cfg: &Cfg, loop_info: &NaturalLoop) -> Option<BlockId> {
-    for &b in &loop_info.body {
+    for &b in std::iter::once(&loop_info.header).chain(&loop_info.body) {
         let block: &BasicBlock = &cfg.blocks[b.0 as usize];
         for edge in &block.successors {
             if !loop_info.body.contains(&edge.target) && !matches!(edge.kind, EdgeKind::Exception) {
@@ -3362,6 +3417,9 @@ fn if_targets(block: &BasicBlock) -> (BlockId, BlockId) {
     }
     (true_t, false_t)
 }
+
+const UNCHAINED_FINALLY: &str = "a compiler-inserted finally handler forms no foldable chain, so its \
+     body cannot be recovered without changing what the method does with a pending exception";
 
 const fn astore_slot(ins: &Instruction) -> Option<u16> {
     match (ins.opcode, &ins.operands) {

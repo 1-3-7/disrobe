@@ -1048,11 +1048,13 @@ fn render_method_mode(
     let _ = write!(text, " {{\n{stackmap_note}{body_text}    }}");
     RenderedMethod {
         text,
-        fully_lifted: body.fully_lifted,
+        fully_lifted: body.fully_lifted && !body_text.contains(UNRESOLVED_INVOKEDYNAMIC),
         has_body: true,
         refused: false,
     }
 }
+
+const UNRESOLVED_INVOKEDYNAMIC: &str = "/* unresolved invokedynamic via ";
 
 fn generic_body_source_compatible(
     body: &str,
@@ -1717,6 +1719,22 @@ const fn narrow_int_param_bounds(want: &JavaType) -> Option<(&'static str, i32, 
     }
 }
 
+fn int_literal_values(arg: &Expr) -> Option<Vec<i32>> {
+    match arg {
+        Expr::Const(c) => parse_int_literal(c).map(|value: i32| vec![value]),
+        Expr::Opaque(rendered) => {
+            let inner: &str = rendered.strip_prefix('(')?.strip_suffix(')')?;
+            let (_, arms): (&str, &str) = inner.rsplit_once(" ? ")?;
+            let (then_arm, else_arm): (&str, &str) = arms.split_once(" : ")?;
+            Some(vec![
+                parse_int_literal(then_arm)?,
+                parse_int_literal(else_arm)?,
+            ])
+        }
+        _ => None,
+    }
+}
+
 fn coerce_arg(arg: Expr, want: &JavaType) -> Expr {
     if matches!(want, JavaType::Boolean)
         && let Expr::Const(c) = &arg
@@ -1725,10 +1743,8 @@ fn coerce_arg(arg: Expr, want: &JavaType) -> Expr {
         return Expr::Const(b.to_string());
     }
     if let Some((ty, lo, hi)) = narrow_int_param_bounds(want)
-        && let Expr::Const(c) = &arg
-        && let Some(value) = parse_int_literal(c)
-        && value >= lo
-        && value <= hi
+        && let Some(values) = int_literal_values(&arg)
+        && values.iter().all(|value: &i32| (lo..=hi).contains(value))
     {
         return Expr::Cast {
             ty: ty.to_string(),
@@ -1947,6 +1963,11 @@ fn lift_method_body(
         } else {
             (raw_insns, code.exception_table.clone())
         };
+    let linear_code: CodeAttribute = CodeAttribute {
+        exception_table: exception_table.clone(),
+        ..code.clone()
+    };
+    let code: &CodeAttribute = &linear_code;
     let boolean_param_slots: BTreeSet<u16> = params
         .iter()
         .filter(|(_, name): &&(u16, String)| boolean_params.contains(name))
@@ -5136,6 +5157,7 @@ fn render_region(ctx: &mut RenderCtx<'_>, region: &Region, out: &mut String, lev
             default,
             join,
             fallthrough,
+            default_position,
         } => {
             if fallthrough.is_empty()
                 && try_render_type_switch(ctx, *head, cases, default.as_deref(), *join, out, level)
@@ -5162,22 +5184,27 @@ fn render_region(ctx: &mut RenderCtx<'_>, region: &Region, out: &mut String, lev
             let expr: String = render_switch_subject(ctx, *head, out, level);
             let pad: String = indent_string(level);
             let _ = writeln!(out, "{pad}switch ({expr}) {{");
-            for (i, (key, body)) in cases.iter().enumerate() {
-                let label: String = format_switch_key(key, i);
+            for position in 0..=cases.len() {
+                if position == *default_position
+                    && let Some(def) = default
+                {
+                    let _ = writeln!(out, "{pad}    default:");
+                    let mut arm: String = String::new();
+                    render_region(ctx, def, &mut arm, level + 2);
+                    out.push_str(&arm);
+                    if !fallthrough.contains(&cases.len()) && !arm_leaves_the_switch(&arm) {
+                        let _ = writeln!(out, "{pad}        break;");
+                    }
+                }
+                let Some((key, body)): Option<&(SwitchKey, Region)> = cases.get(position) else {
+                    continue;
+                };
+                let label: String = format_switch_key(key, position);
                 let _ = writeln!(out, "{pad}    case {label}:");
                 let mut arm: String = String::new();
                 render_region(ctx, body, &mut arm, level + 2);
                 out.push_str(&arm);
-                if !fallthrough.contains(&i) && !arm_leaves_the_switch(&arm) {
-                    let _ = writeln!(out, "{pad}        break;");
-                }
-            }
-            if let Some(def) = default {
-                let _ = writeln!(out, "{pad}    default:");
-                let mut arm: String = String::new();
-                render_region(ctx, def, &mut arm, level + 2);
-                out.push_str(&arm);
-                if !arm_leaves_the_switch(&arm) {
+                if !fallthrough.contains(&position) && !arm_leaves_the_switch(&arm) {
                     let _ = writeln!(out, "{pad}        break;");
                 }
             }
@@ -6117,7 +6144,7 @@ fn compute_block_entry_stacks(
     has_this: bool,
     bool_return: bool,
 ) -> BTreeMap<BlockId, Vec<Expr>> {
-    let probe: RenderCtx<'_> = RenderCtx {
+    let mut probe: RenderCtx<'_> = RenderCtx {
         cf,
         cfg,
         insns,
@@ -6151,7 +6178,6 @@ fn compute_block_entry_stacks(
     let dom: Dominators = compute_dominators(cfg);
     let mut exit_stacks: BTreeMap<BlockId, Vec<Expr>> = BTreeMap::new();
     let mut exit_clean: BTreeMap<BlockId, bool> = BTreeMap::new();
-    let mut entry_stacks: BTreeMap<BlockId, Vec<Expr>> = BTreeMap::new();
     for bid in &dom.order {
         let block: &BasicBlock = &cfg.blocks[bid.0 as usize];
         let real_preds: Vec<BlockId> = block
@@ -6178,14 +6204,14 @@ fn compute_block_entry_stacks(
                 .unwrap_or_default(),
             _ => Vec::new(),
         };
-        if !entry.is_empty() {
-            entry_stacks.insert(*bid, entry.clone());
-        }
         let (exit, clean): (Vec<Expr>, bool) = simulate_block(&probe, *bid, &entry);
+        if !entry.is_empty() {
+            probe.block_entry_stacks.insert(*bid, entry);
+        }
         exit_stacks.insert(*bid, exit);
         exit_clean.insert(*bid, clean);
     }
-    entry_stacks
+    probe.block_entry_stacks
 }
 
 fn agreed_join_entry(
@@ -6753,7 +6779,10 @@ fn render_if_condition(
         Some((target, pending)) if target == head => pending,
         other => {
             ctx.pending_handler_seed = other;
-            Vec::new()
+            ctx.block_entry_stacks
+                .get(&head)
+                .cloned()
+                .unwrap_or_default()
         }
     };
     let already_rendered: bool = !ctx.rendered_blocks.insert(head);
@@ -8997,9 +9026,89 @@ fn strip_outer_not(cond: &str) -> Option<&str> {
     (depth == 0).then_some(inner)
 }
 
+const RELATIONAL_COMPLEMENTS: [(&str, &str); 6] = [
+    (" <= ", " > "),
+    (" >= ", " < "),
+    (" == ", " != "),
+    (" != ", " == "),
+    (" < ", " >= "),
+    (" > ", " <= "),
+];
+
+struct TopLevelScan {
+    relation: Option<(usize, &'static str, &'static str)>,
+    relations: usize,
+    logical: bool,
+    wrapped: bool,
+}
+
+fn scan_top_level(cond: &str) -> Option<TopLevelScan> {
+    let bytes: &[u8] = cond.as_bytes();
+    let mut scan: TopLevelScan = TopLevelScan {
+        relation: None,
+        relations: 0,
+        logical: false,
+        wrapped: bytes.first() == Some(&b'('),
+    };
+    let mut depth: usize = 0;
+    let mut quote: Option<u8> = None;
+    let mut escaped: bool = false;
+    for (index, &byte) in bytes.iter().enumerate() {
+        if let Some(open) = quote {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == open {
+                quote = None;
+            }
+            continue;
+        }
+        match byte {
+            b'"' | b'\'' => quote = Some(byte),
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 && index + 1 < bytes.len() {
+                    scan.wrapped = false;
+                }
+            }
+            b' ' if depth == 0 => {
+                scan.wrapped = false;
+                let rest: &str = &cond[index..];
+                if [" && ", " || ", " ? "]
+                    .iter()
+                    .any(|op: &&str| rest.starts_with(*op))
+                {
+                    scan.logical = true;
+                }
+                if let Some(&(from, to)) = RELATIONAL_COMPLEMENTS
+                    .iter()
+                    .find(|pair: &&(&str, &str)| rest.starts_with(pair.0))
+                {
+                    scan.relations += 1;
+                    scan.relation = Some((index, from, to));
+                }
+            }
+            _ => {}
+        }
+    }
+    (depth == 0 && quote.is_none()).then_some(scan)
+}
+
+fn simple_relation(cond: &str) -> Option<(usize, &'static str, &'static str)> {
+    scan_top_level(cond)
+        .filter(|scan: &TopLevelScan| !scan.logical && scan.relations == 1)
+        .and_then(|scan: TopLevelScan| scan.relation)
+}
+
 fn invert(cond: &str) -> String {
     if let Some(inner) = strip_outer_not(cond) {
-        return inner.to_string();
+        return if simple_relation(inner).is_some() {
+            format!("({inner})")
+        } else {
+            inner.to_string()
+        };
     }
     if let Some(rest) = cond.strip_suffix(" == 0") {
         return format!("{rest} != 0");
@@ -9013,23 +9122,11 @@ fn invert(cond: &str) -> String {
     if let Some(rest) = cond.strip_suffix(" != null") {
         return format!("{rest} == null");
     }
-    if cond.contains(" < ") {
-        return cond.replacen(" < ", " >= ", 1);
+    if let Some((index, from, to)) = simple_relation(cond) {
+        return format!("{}{to}{}", &cond[..index], &cond[index + from.len()..]);
     }
-    if cond.contains(" <= ") {
-        return cond.replacen(" <= ", " > ", 1);
-    }
-    if cond.contains(" > ") {
-        return cond.replacen(" > ", " <= ", 1);
-    }
-    if cond.contains(" >= ") {
-        return cond.replacen(" >= ", " < ", 1);
-    }
-    if cond.contains(" == ") {
-        return cond.replacen(" == ", " != ", 1);
-    }
-    if cond.contains(" != ") {
-        return cond.replacen(" != ", " == ", 1);
+    if scan_top_level(cond).is_some_and(|scan: TopLevelScan| scan.wrapped) {
+        return format!("!{cond}");
     }
     format!("!({cond})")
 }
@@ -10555,7 +10652,10 @@ impl CmpKind {
             Self::NanHigh => matches!(rel_op, ">" | ">=" | "!="),
         };
         if !true_on_nan {
-            return format!("{lhs} {rel_op} {rhs}");
+            return match self {
+                Self::Long => format!("{lhs} {rel_op} {rhs}"),
+                Self::NanLow | Self::NanHigh => format!("({lhs} {rel_op} {rhs})"),
+            };
         }
         let complement: &str = match rel_op {
             "<" => ">=",
@@ -11167,7 +11267,7 @@ fn invoke_dynamic(
     push(
         stack,
         Expr::Opaque(format!(
-            "/* unresolved invokedynamic via {} */ {indy_name}({rendered_args})",
+            "{UNRESOLVED_INVOKEDYNAMIC}{} */ {indy_name}({rendered_args})",
             bsm_name.as_deref().unwrap_or("an unknown bootstrap")
         )),
     )
@@ -12779,11 +12879,18 @@ mod tests {
 
     #[test]
     fn floating_compares_keep_their_nan_bias() {
-        assert_eq!(CmpKind::NanLow.render_relation("a", ">=", "b"), "a >= b");
+        assert_eq!(CmpKind::NanLow.render_relation("a", ">=", "b"), "(a >= b)");
         assert_eq!(CmpKind::NanLow.render_relation("a", "<=", "b"), "!(a > b)");
-        assert_eq!(CmpKind::NanHigh.render_relation("a", "<", "b"), "a < b");
+        assert_eq!(CmpKind::NanHigh.render_relation("a", "<", "b"), "(a < b)");
         assert_eq!(CmpKind::NanHigh.render_relation("a", ">", "b"), "!(a <= b)");
         assert_eq!(CmpKind::Long.render_relation("a", "!=", "b"), "a != b");
+        assert_eq!(invert("(a < b)"), "!(a < b)");
+        assert_eq!(invert("!(a < b)"), "(a < b)");
+        assert_eq!(invert(&invert("(a >= b)")), "(a >= b)");
+        assert_eq!(invert("x < y"), "x >= y");
+        assert_eq!(invert("f(a < b)"), "!(f(a < b))");
+        assert_eq!(invert("f(a < b) > 3"), "f(a < b) <= 3");
+        assert_eq!(invert("s.equals(\" < \")"), "!(s.equals(\" < \"))");
         assert_eq!(CmpKind::Long.render_value("a", "b"), "Long.compare(a, b)");
         assert_eq!(
             CmpKind::NanLow.render_value("x", "y"),
