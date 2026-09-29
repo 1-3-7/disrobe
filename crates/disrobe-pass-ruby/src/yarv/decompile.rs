@@ -2013,10 +2013,14 @@ fn single_pattern(
     lo: usize,
     hi: usize,
 ) -> Option<String> {
-    if let Some(checktype_idx) = find_checktype(body, lo, hi, T_ARRAY) {
+    let array_check: Option<usize> = find_checktype(body, lo, hi, T_ARRAY);
+    let hash_check: Option<usize> = find_checktype(body, lo, hi, T_HASH);
+    if let Some(checktype_idx) = array_check
+        && hash_check.is_none_or(|hash: usize| checktype_idx < hash)
+    {
         return Some(parse_array_or_find(body, ctx, checktype_idx + 1, hi));
     }
-    if let Some(checktype_idx) = find_checktype(body, lo, hi, T_HASH) {
+    if let Some(checktype_idx) = hash_check {
         let const_prefix: Option<String> = deconstruct_const_prefix(body, ctx, lo, checktype_idx);
         return Some(parse_hash(
             body,
