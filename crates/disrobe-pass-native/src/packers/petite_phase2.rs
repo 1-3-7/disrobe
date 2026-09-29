@@ -30,7 +30,7 @@
 
 use crate::error::{Error, Result};
 use crate::packers::pe_sections::{
-    PeImage, memory_to_file_image, parse_pe_image, read_u16 as read_u16_le, read_u32 as read_u32_le,
+    memory_to_file_image, read_u16 as read_u16_le, read_u32 as read_u32_le,
 };
 use crate::stub_emu::mem::{MAX_MAP_BYTES, PAGE_SIZE};
 use crate::stub_emu::{Cpu, CpuMode, ExitReason, HostCall, Memory, Perm, Reg, Regs};
@@ -488,13 +488,10 @@ fn rewrite_iat(
     if imp_rva == 0 {
         return Ok(());
     }
-    let image: PeImage = parse_pe_image(packed)?;
-    let rva_to_file_off =
-        |rva: u32| -> Option<usize> { image.file_offset_for_rva(rva, packed.len()).ok() };
     let mut idx: u32 = 0;
     loop {
         let desc_rva: u32 = imp_rva.saturating_add(idx.saturating_mul(20));
-        let desc_off: usize = match rva_to_file_off(desc_rva) {
+        let desc_off: usize = match rva_to_file_off(pe, desc_rva) {
             Some(o) => o,
             None => break,
         };
@@ -507,7 +504,7 @@ fn rewrite_iat(
         if oft_rva == 0 && first_thunk_rva == 0 && name_rva == 0 {
             break;
         }
-        let dll_name: String = match rva_to_file_off(name_rva) {
+        let dll_name: String = match rva_to_file_off(pe, name_rva) {
             Some(off) => read_cstr(packed, off, 64).unwrap_or_default(),
             None => String::new(),
         };
@@ -522,7 +519,7 @@ fn rewrite_iat(
                 break;
             }
             let thunk_rva: u32 = thunk_table_rva.saturating_add(t.saturating_mul(4));
-            let thunk_off: usize = match rva_to_file_off(thunk_rva) {
+            let thunk_off: usize = match rva_to_file_off(pe, thunk_rva) {
                 Some(o) => o,
                 None => break,
             };
@@ -537,7 +534,7 @@ fn rewrite_iat(
                 t += 1;
                 continue;
             }
-            let func_off: usize = match rva_to_file_off(thunk) {
+            let func_off: usize = match rva_to_file_off(pe, thunk) {
                 Some(o) => o,
                 None => {
                     t += 1;
@@ -669,6 +666,24 @@ fn parse_pe_layout(bytes: &[u8]) -> Result<PeLayout> {
         sections,
         last_section_end_va: last_end_va,
     })
+}
+
+fn rva_to_file_off(pe: &PeLayout, rva: u32) -> Option<usize> {
+    for sec in &pe.sections {
+        if rva >= sec.virtual_address
+            && rva
+                < sec
+                    .virtual_address
+                    .saturating_add(sec.virtual_size.max(sec.size_of_raw_data))
+        {
+            let delta: u32 = rva - sec.virtual_address;
+            return sec
+                .pointer_to_raw_data
+                .checked_add(delta)
+                .map(|offset: u32| offset as usize);
+        }
+    }
+    None
 }
 
 fn read_cstr(bytes: &[u8], off: usize, cap: usize) -> Option<String> {
