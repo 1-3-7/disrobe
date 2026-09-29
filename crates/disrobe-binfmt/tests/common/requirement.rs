@@ -16,6 +16,7 @@ pub struct Toolchain {
     pub programs: &'static [&'static str],
     pub install_paths: &'static [&'static str],
     pub identity: Option<&'static str>,
+    pub probe_arguments: &'static [&'static str],
     pub require_var: &'static str,
     pub install_hint: &'static str,
 }
@@ -25,6 +26,7 @@ pub const MAKECAB: Toolchain = Toolchain {
     programs: &["makecab"],
     install_paths: &[r"C:\Windows\System32\makecab.exe"],
     identity: None,
+    probe_arguments: &[],
     require_var: "DISROBE_REQUIRE_MAKECAB",
     install_hint: "run on Windows, where makecab.exe ships in System32, or put makecab on PATH",
 };
@@ -37,6 +39,7 @@ pub const SEVEN_ZIP: Toolchain = Toolchain {
         r"C:\Program Files (x86)\7-Zip\7z.exe",
     ],
     identity: Some("7-Zip"),
+    probe_arguments: &[],
     require_var: "DISROBE_REQUIRE_SEVEN_ZIP",
     install_hint: "install 7-Zip and put 7z, 7za, 7zz or 7zr on PATH",
 };
@@ -50,6 +53,7 @@ pub const WIX: Toolchain = Toolchain {
         r"C:\Program Files (x86)\WiX Toolset v7.0\bin\wix.exe",
     ],
     identity: None,
+    probe_arguments: &[],
     require_var: "DISROBE_REQUIRE_WIX",
     install_hint: "install the WiX toolset and put candle.exe and light.exe, or wix.exe, on PATH",
 };
@@ -62,8 +66,19 @@ pub const MAKENSIS: Toolchain = Toolchain {
         r"C:\Program Files\NSIS\makensis.exe",
     ],
     identity: None,
+    probe_arguments: &[],
     require_var: "DISROBE_REQUIRE_MAKENSIS",
     install_hint: "install NSIS and put makensis on PATH",
+};
+
+pub const PYTHON: Toolchain = Toolchain {
+    program: "python",
+    programs: &["python", "python3"],
+    install_paths: &[],
+    identity: Some("Python 3"),
+    probe_arguments: &["--version"],
+    require_var: "DISROBE_REQUIRE_PYTHON",
+    install_hint: "install CPython 3.8 or newer and put python on PATH",
 };
 
 pub const LLVM_READOBJ: Toolchain = Toolchain {
@@ -71,6 +86,7 @@ pub const LLVM_READOBJ: Toolchain = Toolchain {
     programs: &["llvm-readobj"],
     install_paths: &[],
     identity: None,
+    probe_arguments: &[],
     require_var: "DISROBE_REQUIRE_LLVM_READOBJ",
     install_hint: "install llvm (llvm-readobj) and put it on PATH",
 };
@@ -80,6 +96,7 @@ pub const BUN: Toolchain = Toolchain {
     programs: &["bun"],
     install_paths: &[],
     identity: None,
+    probe_arguments: &[],
     require_var: "DISROBE_REQUIRE_BUN",
     install_hint: "install Bun and put bun on PATH",
 };
@@ -89,6 +106,7 @@ pub const CABEXTRACT: Toolchain = Toolchain {
     programs: &["cabextract"],
     install_paths: &[],
     identity: Some("cabextract"),
+    probe_arguments: &[],
     require_var: "DISROBE_REQUIRE_CABEXTRACT",
     install_hint: "install cabextract and put it on PATH",
 };
@@ -98,6 +116,7 @@ pub const READELF: Toolchain = Toolchain {
     programs: &["readelf", "llvm-readelf", "eu-readelf"],
     install_paths: &[],
     identity: None,
+    probe_arguments: &[],
     require_var: "DISROBE_REQUIRE_READELF",
     install_hint: "install binutils (readelf), llvm (llvm-readelf) or elfutils (eu-readelf) and put \
                    it on PATH",
@@ -174,10 +193,14 @@ fn candidates(
 const BUSY_EXECUTABLE_ATTEMPTS: u32 = 20;
 const BUSY_EXECUTABLE_BACKOFF: std::time::Duration = std::time::Duration::from_millis(25);
 
-fn run_candidate(candidate: &Path) -> std::io::Result<Output> {
+fn run_candidate(candidate: &Path, arguments: &[&str]) -> std::io::Result<Output> {
     let mut attempt: u32 = 1;
     loop {
-        match Command::new(candidate).stdin(Stdio::null()).output() {
+        match Command::new(candidate)
+            .args(arguments)
+            .stdin(Stdio::null())
+            .output()
+        {
             Err(error)
                 if error.kind() == std::io::ErrorKind::ExecutableFileBusy
                     && attempt < BUSY_EXECUTABLE_ATTEMPTS =>
@@ -191,7 +214,7 @@ fn run_candidate(candidate: &Path) -> std::io::Result<Output> {
 }
 
 fn starts(candidate: &Path, toolchain: &Toolchain) -> Result<(), String> {
-    let outcome: std::io::Result<Output> = run_candidate(candidate);
+    let outcome: std::io::Result<Output> = run_candidate(candidate, toolchain.probe_arguments);
     let output: Output = match outcome {
         Ok(output) => output,
         Err(error) => {

@@ -18,6 +18,7 @@ const PROBE: Toolchain = Toolchain {
     programs: &["7z"],
     install_paths: &[],
     identity: Some("7-Zip"),
+    probe_arguments: &[],
     require_var: "DISROBE_REQUIRE_SEVEN_ZIP",
     install_hint: "install 7-Zip and put 7z, 7za, 7zz or 7zr on PATH",
 };

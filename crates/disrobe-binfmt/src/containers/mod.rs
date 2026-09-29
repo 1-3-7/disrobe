@@ -13,6 +13,7 @@ pub mod cab_lzms;
 pub mod cpio;
 pub mod cramfs;
 pub mod cython;
+pub mod cython_stub;
 pub mod deno_compile;
 pub mod dmg;
 pub mod docker;
@@ -151,6 +152,7 @@ pub use cython::{
     CythonClass, CythonFunction, CythonIdentity, CythonModule, RecoverySource, detect_cython,
     recover_cython,
 };
+pub use cython_stub::render_cython_stub;
 pub use deno_compile::{
     ByteSpan, DENO_COMPILE_MAGIC, DenoCompileExtractedFile, DenoCompileLayout, DenoCompileModule,
     DenoCompilePayload, DenoCompileRedirect, DenoCompileSymlink, DenoExtractedRole,

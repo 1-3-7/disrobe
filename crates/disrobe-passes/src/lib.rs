@@ -18,6 +18,7 @@ pub fn build_registry() -> PassRegistry {
     r.register(&disrobe_binfmt::chain_detector::CONTAINER_PASS);
     #[cfg(feature = "container")]
     r.register(&disrobe_binfmt::chain_detector::NE_PASS);
+    r.register(&disrobe_binfmt::chain_detector::CYTHON_PASS);
     #[cfg(feature = "sourcedefender")]
     r.register(&disrobe_pass_sourcedefender::chain_detector::SOURCEDEFENDER_PASS);
     #[cfg(feature = "pyfreeze")]

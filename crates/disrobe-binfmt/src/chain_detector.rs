@@ -112,6 +112,129 @@ pub const NE_META: disrobe_core::chain::PassMeta = disrobe_core::chain::PassMeta
 
 pub static NE_PASS: NePass = NePass;
 
+pub const CYTHON_PASS_ID: PassId = "python.cython-surface";
+
+#[derive(Debug)]
+pub struct CythonDetector;
+
+impl Detector for CythonDetector {
+    fn id(&self) -> PassId {
+        CYTHON_PASS_ID
+    }
+
+    fn detect(&self, ctx: &DetectContext<'_>) -> Option<DetectVerdict> {
+        let identity: crate::containers::CythonIdentity =
+            crate::containers::detect_cython(ctx.bytes)?;
+        let (confidence, marker): (f32, &'static str) = if identity.pyx_symbols_present {
+            (0.95, "pyinit-export+pyx-symbols")
+        } else {
+            (0.85, "pyinit-export+cython-marker-strings")
+        };
+        Some(DetectVerdict::new(
+            CYTHON_PASS_ID,
+            "cython-extension",
+            FAMILY_NATIVE_FORMAT,
+            confidence,
+            20,
+            vec![marker],
+            format!(
+                "Cython extension module `{}` exporting `{}`",
+                identity.module_name, identity.init_symbol
+            ),
+        ))
+    }
+}
+
+#[derive(Debug)]
+pub struct CythonPass;
+
+impl Pass for CythonPass {
+    fn meta(&self) -> disrobe_core::chain::PassMeta {
+        CYTHON_META
+    }
+
+    fn id(&self) -> PassId {
+        CYTHON_PASS_ID
+    }
+
+    fn detector(&self) -> &'static dyn Detector {
+        &CythonDetector
+    }
+
+    fn output_kind(&self, _output: &Artifact) -> OutputKind {
+        OutputKind::Mixed {
+            children: Vec::new(),
+        }
+    }
+
+    fn run(&self, artifact: &Artifact) -> CoreResult<Artifact> {
+        let module: crate::containers::CythonModule = recover_cython_surface(artifact)?;
+        Ok(Artifact::new(
+            Rung::Surface,
+            crate::containers::render_cython_stub(&module).into_bytes(),
+            artifact.root_hash,
+        ))
+    }
+
+    fn extract_children(&self, artifact: &Artifact) -> CoreResult<Vec<ChildArtifact>> {
+        let module: crate::containers::CythonModule = recover_cython_surface(artifact)?;
+        let report: Vec<u8> =
+            serde_json::to_vec_pretty(&module).map_err(|error: serde_json::Error| {
+                CoreError::PassFailure(format!("DR-BINFMT-0908: python.cython-surface: {error}"))
+            })?;
+        let stub_name: String = format!("{}.pyi", sanitize_module_file_name(&module.module_name));
+        let stub: Vec<u8> = crate::containers::render_cython_stub(&module).into_bytes();
+        Ok(vec![
+            ChildArtifact {
+                handle: ChildHandle {
+                    materialization: ChildMaterialization::default(),
+                    artifact_index: 0,
+                    relative_path: stub_name,
+                    hint: Some(disrobe_core::chain::detection::TERMINAL_HINT.to_owned()),
+                },
+                bytes: stub,
+            },
+            ChildArtifact {
+                handle: ChildHandle {
+                    materialization: ChildMaterialization::default(),
+                    artifact_index: 1,
+                    relative_path: "cython-surface.json".to_owned(),
+                    hint: Some(disrobe_core::chain::detection::TERMINAL_HINT.to_owned()),
+                },
+                bytes: report,
+            },
+        ])
+    }
+}
+
+fn recover_cython_surface(artifact: &Artifact) -> CoreResult<crate::containers::CythonModule> {
+    crate::containers::recover_cython(&artifact.envelope).map_err(|error: crate::Error| {
+        CoreError::PassFailure(format!("DR-BINFMT-0907: python.cython-surface: {error}"))
+    })
+}
+
+fn sanitize_module_file_name(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .filter(|c: &char| c.is_ascii_alphanumeric() || matches!(c, '_' | '.'))
+        .collect();
+    if cleaned.is_empty() || cleaned.starts_with('.') {
+        "cython_module".to_owned()
+    } else {
+        cleaned
+    }
+}
+
+pub const CYTHON_META: disrobe_core::chain::PassMeta = disrobe_core::chain::PassMeta::new(
+    CYTHON_PASS_ID,
+    disrobe_core::chain::Ecosystem::Python,
+    disrobe_core::chain::SupportQuality::Partial,
+    disrobe_core::chain::Determinism::Deterministic,
+    disrobe_core::chain::SafetyClass::Static,
+);
+
+pub static CYTHON_PASS: CythonPass = CythonPass;
+
 const TAG_ASAR: &str = "asar";
 const TAG_ZIP: &str = "zip";
 const TAG_TAR: &str = "tar";
