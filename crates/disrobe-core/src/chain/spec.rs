@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -9,7 +7,6 @@ pub const MAX_CAP: u8 = 16;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PassToken {
     pub pass_id: String,
-    pub kv: BTreeMap<String, String>,
 }
 
 impl PassToken {
@@ -18,7 +15,6 @@ impl PassToken {
     pub fn new(pass_id: impl Into<String>) -> Self {
         Self {
             pass_id: pass_id.into(),
-            kv: BTreeMap::new(),
         }
     }
 }
@@ -175,6 +171,11 @@ pub enum ChainSpecError {
     BadPassId(String, &'static str),
     #[error("DR-CORE-0108: malformed kv argument {0:?} in pass {1:?}")]
     BadKvSyntax(String, String),
+    #[error(
+        "DR-CORE-0109: pass {pass:?} takes no arguments; {argument:?} would be ignored, so the \
+         chain is refused"
+    )]
+    PassArgumentsUnsupported { pass: String, argument: String },
 }
 
 fn split_top_level_commas(s: &str) -> Result<Vec<&str>, ChainSpecError> {
@@ -232,31 +233,19 @@ fn parse_pass_token(raw: &str) -> Result<PassToken, ChainSpecError> {
         }
     };
     validate_pass_id(id_part)?;
-    let mut kv: BTreeMap<String, String> = BTreeMap::new();
-    if let Some(body) = kv_part {
-        if body.is_empty() {
-            return Ok(PassToken {
-                pass_id: id_part.to_string(),
-                kv,
-            });
-        }
-        for piece in body.split(',') {
-            let (k, v): (&str, &str) = piece.split_once('=').ok_or_else(|| {
-                ChainSpecError::BadKvSyntax(piece.to_string(), id_part.to_string())
-            })?;
-            if k.is_empty() {
-                return Err(ChainSpecError::BadKvSyntax(
-                    piece.to_string(),
-                    id_part.to_string(),
-                ));
-            }
-            kv.insert(k.to_string(), v.to_string());
-        }
+    if let Some(body) = kv_part.filter(|body: &&str| !body.is_empty()) {
+        let first: &str = body.split(',').next().unwrap_or(body);
+        let key: &str = first
+            .split_once('=')
+            .map(|(key, _): (&str, &str)| key)
+            .filter(|key: &&str| !key.is_empty())
+            .ok_or_else(|| ChainSpecError::BadKvSyntax(first.to_string(), id_part.to_string()))?;
+        return Err(ChainSpecError::PassArgumentsUnsupported {
+            pass: id_part.to_string(),
+            argument: key.to_string(),
+        });
     }
-    Ok(PassToken {
-        pass_id: id_part.to_string(),
-        kv,
-    })
+    Ok(PassToken::new(id_part))
 }
 
 fn validate_pass_id(s: &str) -> Result<(), ChainSpecError> {
@@ -390,14 +379,27 @@ mod tests {
     }
 
     #[test]
-    fn parse_pass_token_kv_args() {
-        let s: ChainSpec = ChainSpec::parse("pyarmor(version=v8,key=abc)").unwrap();
-        let ChainSpec::Explicit { passes } = s else {
-            panic!()
-        };
-        assert_eq!(passes[0].pass_id, "pyarmor");
-        assert_eq!(passes[0].kv.get("version").map(String::as_str), Some("v8"));
-        assert_eq!(passes[0].kv.get("key").map(String::as_str), Some("abc"));
+    fn a_pass_argument_is_refused_instead_of_ignored() {
+        let refused: Result<ChainSpec, ChainSpecError> = ChainSpec::parse("pyarmor.unpack(key=x)");
+        assert!(
+            matches!(
+                &refused,
+                Err(ChainSpecError::PassArgumentsUnsupported { pass, argument })
+                    if pass == "pyarmor.unpack" && argument == "key"
+            ),
+            "{refused:?}"
+        );
+        assert!(matches!(
+            ChainSpec::parse("pyarmor(=v8)"),
+            Err(ChainSpecError::BadKvSyntax(_, _))
+        ));
+        let bare: ChainSpec = ChainSpec::parse("pyarmor()").unwrap();
+        assert_eq!(
+            bare,
+            ChainSpec::Explicit {
+                passes: vec![PassToken::new("pyarmor")]
+            }
+        );
     }
 
     #[test]
