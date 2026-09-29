@@ -354,7 +354,7 @@ fn graded_against_hand_labeled_fixture() {
     assert_eq!(correct, total, "every hand-labeled case must match");
     assert_eq!(
         ambiguous_to_unknown, ambiguous_total,
-        "every genuinely-ambiguous case must resolve to Unknown, never a confident guess"
+        "every ambiguous case must resolve to Unknown, never a confident guess"
     );
     assert!(ambiguous_total > 0, "fixture must include ambiguous cases");
 }

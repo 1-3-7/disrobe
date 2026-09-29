@@ -1765,7 +1765,7 @@ mod tests {
         assert_eq!(
             runner.calls.load(AtomicOrdering::SeqCst),
             2,
-            "a still-wrapped recovered source must genuinely drive a second real pass \
+            "a still-wrapped recovered source must drive a second real pass \
              invocation, not merely flip a verdict label"
         );
         let first_hop: &Node = plan
@@ -1860,7 +1860,7 @@ mod tests {
                 .nodes
                 .iter()
                 .any(|n: &Node| n.parent_id == Some(leaf.id)),
-            "a genuinely terminal source must never enqueue a child work item"
+            "a terminal source must never enqueue a child work item"
         );
         assert_eq!(plan.final_format.as_deref(), Some("Python"));
     }
@@ -2631,7 +2631,7 @@ mod tests {
         let plan: ChainPlan = d.run(b"seed".to_vec(), &ChainSpec::Auto { cap: 8 }, None);
         assert!(
             matches!(plan.verdict, Verdict::Error { .. }),
-            "nothing was recovered, so the chain genuinely failed; got {:?}",
+            "nothing was recovered, so the chain failed; got {:?}",
             plan.verdict
         );
         assert!(plan.extracted.is_empty());

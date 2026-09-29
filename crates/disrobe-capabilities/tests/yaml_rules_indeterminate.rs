@@ -95,7 +95,7 @@ fn not_wrapped_scope_descent_truncation_cannot_flip_a_missed_instance_into_a_spu
     assert!(
         outcome.matches.is_empty(),
         "a truncated scope descent under not: must never report a confident match \
-         (the marker instruction sits beyond the visit cap, so the honest full-scope \
+         (the marker instruction sits beyond the visit cap, so the full-scope \
          answer is unknown, not a match): {:?}",
         outcome.matches
     );
@@ -204,7 +204,7 @@ const VALID_STRING_REGEX_CONTROL: &str = "rule:
 fn not_wrapped_invalid_regex_is_rejected_at_load_time_instead_of_always_matching() {
     assert!(
         regex::Regex::new("(").is_err(),
-        "the fixture pattern must be genuinely unparseable"
+        "the fixture pattern must be unparseable"
     );
 
     let ruleset: LoadedRuleSet =
