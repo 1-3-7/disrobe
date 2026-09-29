@@ -3815,7 +3815,6 @@ impl<'a> Demangler<'a> {
                 if is_assoc {
                     self.demangle_identifier(Kind::Identifier)?;
                 }
-                let _ = &lhs;
                 let constrained: NodeRef = self.requirement_subject()?;
                 let layout: &str = self.demangle_layout_constraint()?;
                 Some(Node::branch(

@@ -137,7 +137,6 @@ pub fn build_macho64_slice(builder: &MachoSliceBuilder) -> Vec<u8> {
 
     for (seg, offsets) in builder.segments.iter().zip(section_data_offsets.iter()) {
         for (sec, off) in seg.sections.iter().zip(offsets.iter()) {
-            let _ = seg;
             out[*off..*off + sec.data.len()].copy_from_slice(&sec.data);
         }
     }
