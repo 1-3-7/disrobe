@@ -1579,9 +1579,10 @@ fn lift_instruction(
         _ => {
             fidelity = LiftFidelity::Lossy;
             ir_comment = Some(format!(
-                "lift rule for {mn} not yet specialized; preserved as comment in surface"
+                "no lift rule for {mn}; the accumulator it may write is poisoned so a later read fails instead of reusing a stale value"
             ));
             surface = format!("/* {mn} */");
+            acc.set(format!("__DR_UNLIFTED__(\"{mn}\")"));
         }
     }
     LiftedLine {
