@@ -355,6 +355,21 @@ fn try_render_exception_region(
 
     let pad: String = indent(depth);
     let targets: Vec<Option<usize>> = resolve_branch_targets(body);
+    let mut pending: Vec<String> = Vec::new();
+    let mut discarded: Vec<String> = Vec::new();
+    render_region(
+        body,
+        ctx,
+        depth,
+        0,
+        start,
+        &targets,
+        &mut pending,
+        &mut discarded,
+    );
+    if !pending.is_empty() {
+        return None;
+    }
     let mut lines: Vec<String> = Vec::new();
 
     let prefix: Vec<String> = render_slice(body, ctx, depth, 0, start, &targets);
@@ -873,6 +888,22 @@ fn render_region(
                 let keyword: &str = if m == "branchif" { "if" } else { "unless" };
                 emit_stmt(stmts, depth, format!("next {keyword} {cond}"));
             }
+            i += 1;
+            continue;
+        }
+        if m == "jump"
+            && ctx.early_exit_keyword(body.index) == Some("next")
+            && targets[i].is_some_and(|t| {
+                t <= i
+                    && t > 0
+                    && t == body
+                        .instructions
+                        .iter()
+                        .position(|x: &YarvIbfInstruction| x.mnemonic != "nop")
+                        .unwrap_or(0)
+            })
+        {
+            emit_stmt(stmts, depth, "redo".to_owned());
             i += 1;
             continue;
         }
@@ -1993,7 +2024,41 @@ fn parse_value_or_class(
     if trimmed.is_empty() || trimmed == "_" {
         return None;
     }
-    Some(trimmed.to_owned())
+    let ops: Vec<&str> = (lo..checkmatch)
+        .map(|j| body.instructions[j].mnemonic.as_str())
+        .filter(|m: &&str| *m != "dup")
+        .collect();
+    let pinned: String = match ops.as_slice() {
+        [single]
+            if single.starts_with("getlocal")
+                || matches!(
+                    *single,
+                    "getinstancevariable" | "getglobal" | "getclassvariable"
+                ) =>
+        {
+            format!("^{trimmed}")
+        }
+        _ if ops.iter().all(|m: &&str| is_literal_pattern_op(m)) => trimmed.to_owned(),
+        _ => format!("^({trimmed})"),
+    };
+    Some(pinned)
+}
+
+fn is_literal_pattern_op(mnemonic: &str) -> bool {
+    matches!(
+        mnemonic,
+        "putobject"
+            | "putobject_INT2FIX_0_"
+            | "putobject_INT2FIX_1_"
+            | "putstring"
+            | "putchilledstring"
+            | "putnil"
+            | "opt_getconstant_path"
+            | "getconstant"
+            | "newrange"
+            | "toregexp"
+            | "once"
+    )
 }
 
 fn parse_array_or_find(
