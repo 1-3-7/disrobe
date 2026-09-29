@@ -1702,7 +1702,7 @@ mod tests {
                 .notes
                 .iter()
                 .any(|n: &String| n.contains("Precompiler::DropFields")),
-            "the field-name wall must be stated honestly"
+            "the field-name wall must be stated"
         );
     }
 }

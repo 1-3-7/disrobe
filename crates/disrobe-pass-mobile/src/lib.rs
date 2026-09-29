@@ -2,8 +2,6 @@
 #![deny(unreachable_pub)]
 #![allow(
     clippy::redundant_pub_crate,
-    clippy::too_many_lines,
-    clippy::cast_lossless,
     clippy::case_sensitive_file_extension_comparisons,
     clippy::needless_type_cast,
     clippy::manual_is_multiple_of,

@@ -2,7 +2,6 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    clippy::print_stderr,
     clippy::uninlined_format_args
 )]
 
@@ -219,7 +218,7 @@ fn structuring_reports_structured_and_fallback_counts() {
     );
     assert!(
         report.flat_fallback_count >= 1,
-        "functions with unrecovered control flow must honestly fall back to the flat list, got {}",
+        "functions with unrecovered control flow must fall back to the flat list, got {}",
         report.flat_fallback_count
     );
 
@@ -440,14 +439,14 @@ fn abi_is_version_pinned_and_functions_lift() {
             .notes
             .iter()
             .any(|n: &String| n.contains("Precompiler::DropFields")),
-        "the field-name wall must be stated honestly in the report notes"
+        "the field-name wall must be stated in the report notes"
     );
     assert!(
         report
             .notes
             .iter()
             .any(|n: &String| n.contains("ObjectPool cluster")),
-        "the pool-content wall must be stated honestly"
+        "the pool-content wall must be stated"
     );
 }
 
@@ -476,7 +475,7 @@ fn function_boundary_recall_graded_against_dill() {
     );
     eprintln!("  recovered: {:?}", recovered);
     eprintln!(
-        "  walled (inlined/tree-shaken by the AOT compiler, honestly absent): {:?}",
+        "  walled (inlined/tree-shaken by the AOT compiler, absent): {:?}",
         walled
     );
 
@@ -847,11 +846,11 @@ fn field_names_and_inlined_leaves_stay_walled() {
     for inlined in ["InventoryItem.extendedValue", "classifyMagnitude"] {
         assert!(
             !lifted.contains(inlined),
-            "{inlined} is inlined/tree-shaken by the AOT compiler; its boundary is genuinely absent and must not be fabricated"
+            "{inlined} is inlined/tree-shaken by the AOT compiler; its boundary is absent and must not be fabricated"
         );
     }
 
     eprintln!(
-        "honest walls confirmed: field names dropped by product precompiler (0 in .so), inlined leaves absent from AOT boundaries, pool content unresolved without the cluster"
+        "walls confirmed: field names dropped by product precompiler (0 in .so), inlined leaves absent from AOT boundaries, pool content unresolved without the cluster"
     );
 }

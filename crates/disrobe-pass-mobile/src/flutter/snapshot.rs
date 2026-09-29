@@ -884,7 +884,7 @@ mod tests {
             for method in &class.methods {
                 assert!(
                     method.signature.contains("version-keyed"),
-                    "every signature must honestly flag the wall, got {:?}",
+                    "every signature must flag the wall, got {:?}",
                     method.signature
                 );
             }

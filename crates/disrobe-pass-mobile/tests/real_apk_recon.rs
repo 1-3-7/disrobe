@@ -217,7 +217,7 @@ fn commercial_shield_walls_honestly() {
             .protector_walls
             .iter()
             .any(|w| w.protector == AppProtector::CommercialShield && !w.recoverable),
-        "libjiagu runtime shield must produce an honest non-recoverable wall: {:?}",
+        "libjiagu runtime shield must produce a non-recoverable wall: {:?}",
         report.protector_walls
     );
     assert!(

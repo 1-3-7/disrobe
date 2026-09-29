@@ -2,7 +2,6 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    clippy::print_stderr,
     clippy::uninlined_format_args,
     clippy::case_sensitive_file_extension_comparisons
 )]

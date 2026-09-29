@@ -2,7 +2,6 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    clippy::print_stderr,
     clippy::uninlined_format_args
 )]
 
@@ -83,7 +82,7 @@ fn recovers_app_method_selectors_from_real_aot() {
     ] {
         assert!(
             !methods.contains(&inlined.to_owned()),
-            "honest boundary: {inlined} is a small leaf the AOT compiler inlined and tree-shook, so its name is absent from the object pool; recovery must not invent it"
+            "boundary: {inlined} is a small leaf the AOT compiler inlined and tree-shook, so its name is absent from the object pool; recovery must not invent it"
         );
     }
 
@@ -195,6 +194,6 @@ fn honest_boundary_is_stated_not_source() {
     assert!(
         recovery.source_boundary.contains("machine code")
             && recovery.source_boundary.contains(".dill"),
-        "the recovery must state the honest boundary: bodies stay machine code, source lives in the kernel"
+        "the recovery must state the boundary: bodies stay machine code, source lives in the kernel"
     );
 }

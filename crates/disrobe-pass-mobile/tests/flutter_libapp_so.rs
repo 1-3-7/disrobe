@@ -2,12 +2,7 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_lossless,
-    clippy::cast_sign_loss,
     clippy::identity_op,
-    clippy::too_many_lines,
     clippy::needless_type_cast,
     clippy::missing_const_for_fn,
     clippy::too_many_arguments

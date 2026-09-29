@@ -1,5 +1,4 @@
 #![cfg(feature = "chain")]
-#![allow(clippy::module_name_repetitions)]
 #[cfg(feature = "jni")]
 use disrobe_core::chain::detection::TERMINAL_HINT;
 use disrobe_core::chain::{
