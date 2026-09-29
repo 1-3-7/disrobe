@@ -23,6 +23,7 @@ const FSG_STUB_INIT_TAIL: [u8; 7] = [0xFC, 0xB2, 0x80, 0xA4, 0x6A, 0x02, 0x5B];
 
 const APLIB_MAX_OFFSET: u32 = 0x0100_0000;
 const APLIB_MAX_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
+const APLIB_MAX_GAMMA: u32 = 64 * 1024 * 1024;
 const FSG_STUB_AUTHORED_IMAGE_BASE: u32 = 0x0040_0000;
 
 const FSG_BLOCK_DEST_ABSOLUTE: u16 = 1;
@@ -485,6 +486,11 @@ impl<'a> BitReader<'a> {
         let mut v: u32 = 1;
         loop {
             v = (v << 1) | self.read_bit()?;
+            if v > APLIB_MAX_GAMMA {
+                return Err(Error::PackerUnpackerNotImplemented(
+                    "FSG: aPLib gamma value exceeds the 64 MiB output cap",
+                ));
+            }
             if self.read_bit()? == 0 {
                 return Ok(v);
             }
@@ -576,6 +582,11 @@ fn aplib_depack(packed: &[u8]) -> Result<(Vec<u8>, usize)> {
 }
 
 fn copy_match(out: &mut Vec<u8>, offset: usize, len: usize) -> Result<()> {
+    if len > APLIB_MAX_OUTPUT_BYTES.saturating_sub(out.len()) {
+        return Err(Error::PackerUnpackerNotImplemented(
+            "FSG: aPLib match overruns the 64 MiB output cap",
+        ));
+    }
     if offset == 0 || offset > out.len() {
         return Err(Error::PackerUnpackerNotImplemented(
             "FSG: aPLib match-offset out of range",
@@ -609,6 +620,69 @@ mod tests {
             r,
             Err(Error::UnknownFormat | Error::Truncated { .. })
         ));
+    }
+
+    fn aplib_stream_with_length_gamma(data_bits: &[u32]) -> Vec<u8> {
+        let mut out: Vec<u8> = vec![b'a'];
+        let mut tag_at: usize = 0;
+        let mut used: u32 = 8;
+        let mut bits: Vec<u32> = vec![1, 0, 1, 0];
+        for (index, bit) in data_bits.iter().enumerate() {
+            bits.push(*bit);
+            bits.push(u32::from(index + 1 < data_bits.len()));
+        }
+        let mut push_bit = |out: &mut Vec<u8>, bit: u32| {
+            if used == 8 {
+                tag_at = out.len();
+                out.push(0);
+                used = 0;
+            }
+            out[tag_at] |= u8::from(bit == 1) << (7 - used);
+            used += 1;
+        };
+        for bit in &bits[..4] {
+            push_bit(&mut out, *bit);
+        }
+        out.push(0x01);
+        for bit in &bits[4..] {
+            push_bit(&mut out, *bit);
+        }
+        out
+    }
+
+    #[test]
+    fn an_aplib_match_longer_than_the_output_cap_is_refused_before_copying() {
+        let data_bits: Vec<u32> = vec![0; 26];
+        let stream: Vec<u8> = aplib_stream_with_length_gamma(&data_bits);
+        let refusal: Error = aplib_depack(&stream)
+            .map(|(out, _): (Vec<u8>, usize)| out)
+            .expect_err("a 64 MiB match cannot fit");
+        assert!(
+            matches!(
+                refusal,
+                Error::PackerUnpackerNotImplemented(
+                    "FSG: aPLib match overruns the 64 MiB output cap"
+                )
+            ),
+            "{refusal:?}"
+        );
+    }
+
+    #[test]
+    fn an_aplib_gamma_wider_than_the_output_cap_is_refused_not_wrapped() {
+        let stream: Vec<u8> = aplib_stream_with_length_gamma(&[0; 40]);
+        let refusal: Error = aplib_depack(&stream)
+            .map(|(out, _): (Vec<u8>, usize)| out)
+            .expect_err("a 40-bit gamma cannot fit");
+        assert!(
+            matches!(
+                refusal,
+                Error::PackerUnpackerNotImplemented(
+                    "FSG: aPLib gamma value exceeds the 64 MiB output cap"
+                )
+            ),
+            "{refusal:?}"
+        );
     }
 
     #[test]

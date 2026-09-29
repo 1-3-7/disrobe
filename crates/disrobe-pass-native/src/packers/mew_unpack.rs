@@ -20,6 +20,7 @@ const OPTIONAL_HEADER_AEP_OFFSET: usize = 0x10;
 const OPTIONAL_HEADER_IMAGE_BASE_OFFSET: usize = 0x1C;
 const SECTION_HEADER_LEN: usize = 40;
 const APLIB_MAX_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
+const APLIB_MAX_GAMMA: u32 = 64 * 1024 * 1024;
 const MAX_MEW_LEADING_CHUNKS: usize = 64;
 const MEW_OUTPUT_QUOTA: ExtractionQuota = ExtractionQuota {
     max_entries: MAX_MEW_LEADING_CHUNKS + 1,
@@ -1057,6 +1058,11 @@ impl<'a> ByteTaggedBitReader<'a> {
         let mut value: u32 = 1;
         loop {
             value = (value << 1) | self.read_bit()?;
+            if value > APLIB_MAX_GAMMA {
+                return Err(Error::PackerUnpackerNotImplemented(
+                    "MEW: aPLib gamma value exceeds the 64 MiB output cap",
+                ));
+            }
             if self.read_bit()? == 0 {
                 return Ok(value);
             }
@@ -1308,6 +1314,11 @@ const fn aplib_long_match_len(base: u32, new_off: u32) -> u32 {
 }
 
 fn copy_match(out: &mut Vec<u8>, offset: usize, len: usize) -> Result<()> {
+    if len > APLIB_MAX_OUTPUT_BYTES.saturating_sub(out.len()) {
+        return Err(Error::PackerUnpackerNotImplemented(
+            "MEW: aPLib match overruns the 64 MiB output cap",
+        ));
+    }
     if offset == 0 || offset > out.len() {
         return Err(Error::PackerUnpackerNotImplemented(
             "MEW: aPLib match-offset out of range",
@@ -1347,6 +1358,67 @@ fn read_u32_le(bytes: &[u8], off: usize) -> Result<u32> {
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    fn aplib_stream_with_length_gamma(data_bits: &[u32]) -> Vec<u8> {
+        let mut out: Vec<u8> = vec![b'a'];
+        let mut tag_at: usize = 0;
+        let mut used: u32 = 8;
+        let mut bits: Vec<u32> = vec![1, 0, 1, 0];
+        for (index, bit) in data_bits.iter().enumerate() {
+            bits.push(*bit);
+            bits.push(u32::from(index + 1 < data_bits.len()));
+        }
+        let mut push_bit = |out: &mut Vec<u8>, bit: u32| {
+            if used == 8 {
+                tag_at = out.len();
+                out.push(0);
+                used = 0;
+            }
+            out[tag_at] |= u8::from(bit == 1) << (7 - used);
+            used += 1;
+        };
+        for bit in &bits[..4] {
+            push_bit(&mut out, *bit);
+        }
+        out.push(0x01);
+        for bit in &bits[4..] {
+            push_bit(&mut out, *bit);
+        }
+        out
+    }
+
+    #[test]
+    fn an_aplib_match_longer_than_the_output_cap_is_refused_before_copying() {
+        let data_bits: Vec<u32> = vec![0; 26];
+        let stream: Vec<u8> = aplib_stream_with_length_gamma(&data_bits);
+        let refusal: Error =
+            aplib_decode_bytetagged(&stream, 16).expect_err("a 64 MiB match cannot fit");
+        assert!(
+            matches!(
+                refusal,
+                Error::PackerUnpackerNotImplemented(
+                    "MEW: aPLib match overruns the 64 MiB output cap"
+                )
+            ),
+            "{refusal:?}"
+        );
+    }
+
+    #[test]
+    fn an_aplib_gamma_wider_than_the_output_cap_is_refused_not_wrapped() {
+        let stream: Vec<u8> = aplib_stream_with_length_gamma(&[0; 40]);
+        let refusal: Error =
+            aplib_decode_bytetagged(&stream, 16).expect_err("a 40-bit gamma cannot fit");
+        assert!(
+            matches!(
+                refusal,
+                Error::PackerUnpackerNotImplemented(
+                    "MEW: aPLib gamma value exceeds the 64 MiB output cap"
+                )
+            ),
+            "{refusal:?}"
+        );
+    }
 
     #[test]
     fn rejects_non_pe_input() {
