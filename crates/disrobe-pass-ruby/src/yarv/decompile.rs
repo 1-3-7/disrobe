@@ -1072,14 +1072,14 @@ fn try_pattern_match(
     for arm_body in &bodies {
         let success: usize = find_success_branch(body, test_lo, arm_body.target, targets)?;
         let (pattern, guard): (String, Option<String>) =
-            parse_case_in_arm(body, ctx, depth, test_lo, success);
+            parse_case_in_arm(body, ctx, depth, test_lo, success, targets);
         arms.push(CaseInArm {
             pattern,
             guard,
             body_lo: arm_body.body_lo,
             body_hi: arm_body.body_hi,
         });
-        test_lo = success + 1;
+        test_lo = skip_type_error_tail(body, success + 1, hi);
     }
 
     let region_end: usize = case_in_region_end(&bodies, else_body, hi);
@@ -1333,6 +1333,23 @@ fn find_success_branch(
     })
 }
 
+fn skip_type_error_tail(body: &YarvIseqBody, lo: usize, hi: usize) -> usize {
+    if body.instructions.get(lo).map(|x| x.mnemonic.as_str()) != Some("putspecialobject") {
+        return lo;
+    }
+    let Some(raise): Option<usize> = (lo..hi)
+        .take(5)
+        .find(|&k| is_named_raise_call(&body.instructions[k]))
+    else {
+        return lo;
+    };
+    let mut end: usize = raise + 1;
+    while end < hi && body.instructions[end].mnemonic == "pop" {
+        end += 1;
+    }
+    end
+}
+
 fn case_in_region_end(bodies: &[ArmBody], else_body: Option<(usize, usize)>, hi: usize) -> usize {
     let mut end: usize = bodies.iter().map(|b| b.body_hi).max().unwrap_or(hi);
     if let Some((_, ehi)) = else_body {
@@ -1347,6 +1364,7 @@ fn parse_case_in_arm(
     depth: u32,
     test_lo: usize,
     success: usize,
+    targets: &[Option<usize>],
 ) -> (String, Option<String>) {
     let (bind, capture_at): (Option<String>, Option<usize>) =
         top_level_capture(body, test_lo, success);
@@ -1370,8 +1388,11 @@ fn parse_case_in_arm(
         },
         |c| capture_value_start(body, c),
     );
+    let arm_target: Option<usize> = targets.get(success).copied().flatten();
     let pattern: String =
-        parse_pattern(body, ctx, depth, test_lo, pattern_end).unwrap_or_else(|| "_".to_owned());
+        split_structural_alternatives(body, ctx, depth, test_lo, pattern_end, targets, arm_target)
+            .or_else(|| parse_pattern(body, ctx, depth, test_lo, pattern_end))
+            .unwrap_or_else(|| "_".to_owned());
     let pattern_bound: String = match bind {
         Some(b) if is_identifier(&b) => format!("{pattern} => {b}"),
         _ => pattern,
@@ -1529,6 +1550,36 @@ fn split_alternatives(
     Some(alts.join(" | "))
 }
 
+fn split_structural_alternatives(
+    body: &YarvIseqBody,
+    ctx: &DecompileContext<'_>,
+    depth: u32,
+    lo: usize,
+    hi: usize,
+    targets: &[Option<usize>],
+    arm_target: Option<usize>,
+) -> Option<String> {
+    let arm_target: usize = arm_target?;
+    let ends: Vec<usize> = (lo + 1..hi)
+        .filter(|&j| {
+            body.instructions[j].mnemonic == "jump"
+                && body.instructions[j - 1].mnemonic == "pop"
+                && targets.get(j).copied().flatten() == Some(arm_target)
+        })
+        .collect();
+    if ends.is_empty() || !(lo..hi).any(|j| body.instructions[j].mnemonic == "checktype") {
+        return None;
+    }
+    let mut alts: Vec<String> = Vec::with_capacity(ends.len() + 1);
+    let mut seg_lo: usize = lo;
+    for end in ends {
+        alts.push(parse_pattern(body, ctx, depth, seg_lo, end - 1)?);
+        seg_lo = end + 1;
+    }
+    alts.push(parse_pattern(body, ctx, depth, seg_lo, hi)?);
+    Some(alts.join(" | "))
+}
+
 fn segment_is_structural(body: &YarvIseqBody, lo: usize, hi: usize) -> bool {
     (lo..hi).any(|j| body.instructions[j].mnemonic == "checktype")
 }
@@ -1553,7 +1604,7 @@ fn single_pattern(
     hi: usize,
 ) -> Option<String> {
     if let Some(checktype_idx) = find_checktype(body, lo, hi, T_ARRAY) {
-        return Some(parse_array_or_find(body, checktype_idx + 1, hi));
+        return Some(parse_array_or_find(body, ctx, checktype_idx + 1, hi));
     }
     if let Some(checktype_idx) = find_checktype(body, lo, hi, T_HASH) {
         let const_prefix: Option<String> = deconstruct_const_prefix(body, ctx, lo, checktype_idx);
@@ -1649,6 +1700,12 @@ fn parse_value_or_class(
     let checkmatch: usize = (lo..hi)
         .find(|&j| body.instructions[j].mnemonic == "checkmatch")
         .unwrap_or(hi);
+    if checkmatch > lo
+        && body.instructions[checkmatch - 1].mnemonic == "putnil"
+        && (lo..checkmatch - 1).all(|j| body.instructions[j].mnemonic == "dup")
+    {
+        return Some("nil".to_owned());
+    }
     let value: String = pattern_value_region(body, ctx, lo, checkmatch);
     let trimmed: &str = value.trim();
     if trimmed.is_empty() || trimmed == "_" {
@@ -1657,11 +1714,19 @@ fn parse_value_or_class(
     Some(trimmed.to_owned())
 }
 
-fn parse_array_or_find(body: &YarvIseqBody, from: usize, hi: usize) -> String {
+fn parse_array_or_find(
+    body: &YarvIseqBody,
+    ctx: &DecompileContext<'_>,
+    from: usize,
+    hi: usize,
+) -> String {
     if is_find_pattern(body, from, hi) {
         return parse_find(body, from, hi);
     }
-    let is_splat: bool = (from..hi).any(|j| body.instructions[j].mnemonic == "opt_ge");
+    let is_splat: bool = (from..hi)
+        .take(6)
+        .find(|&j| matches!(body.instructions[j].mnemonic.as_str(), "opt_eq" | "opt_ge"))
+        .is_some_and(|j| body.instructions[j].mnemonic == "opt_ge");
     let mut pre: Vec<String> = Vec::new();
     let mut post: Vec<String> = Vec::new();
     let mut splat: Option<String> = None;
@@ -1670,7 +1735,10 @@ fn parse_array_or_find(body: &YarvIseqBody, from: usize, hi: usize) -> String {
         if body.instructions[j].mnemonic == "jump" {
             break;
         }
-        if let Some((bind, next)) = read_element_bind(body, j) {
+        if let Some((bind, next)) = read_element_bind(body, j)
+            .or_else(|| read_element_value(body, ctx, j, hi))
+            .or_else(|| read_element_nested(body, ctx, j, hi))
+        {
             if splat.is_some() {
                 post.push(bind);
             } else {
@@ -1694,16 +1762,111 @@ fn parse_array_or_find(body: &YarvIseqBody, from: usize, hi: usize) -> String {
     }
     let mut elements: Vec<String> = pre;
     if let Some(rest) = splat {
-        elements.push(if rest == "_" {
-            "*".to_owned()
-        } else {
-            format!("*{rest}")
-        });
+        elements.push(format!("*{rest}"));
     } else if is_splat {
         elements.push("*".to_owned());
     }
     elements.extend(post);
     format!("[{}]", elements.join(", "))
+}
+
+fn read_element_nested(
+    body: &YarvIseqBody,
+    ctx: &DecompileContext<'_>,
+    j: usize,
+    hi: usize,
+) -> Option<(String, usize)> {
+    if !is_array_index_literal(&body.instructions[j])
+        || body.instructions.get(j + 1).map(|x| x.mnemonic.as_str()) != Some("opt_aref")
+    {
+        return None;
+    }
+    read_nested_subpattern(body, ctx, j + 2, hi)
+}
+
+fn read_nested_subpattern(
+    body: &YarvIseqBody,
+    ctx: &DecompileContext<'_>,
+    lo: usize,
+    hi: usize,
+) -> Option<(String, usize)> {
+    if body.instructions.get(lo).map(|x| x.mnemonic.as_str()) != Some("dup") {
+        return None;
+    }
+    let checktype: usize = (lo..hi)
+        .take(16)
+        .find(|&k| body.instructions[k].mnemonic == "checktype")?;
+    if body.instructions.get(checktype + 1)?.mnemonic != "branchunless" {
+        return None;
+    }
+    let targets: Vec<Option<usize>> = resolve_branch_targets(body);
+    let tail: usize = targets.get(checktype + 1).copied().flatten()?;
+    if tail <= checktype + 2
+        || tail > hi
+        || body.instructions[tail].mnemonic != "putspecialobject"
+        || body.instructions[tail - 1].mnemonic != "jump"
+    {
+        return None;
+    }
+    let next: usize = targets.get(tail - 1).copied().flatten()?;
+    if next <= tail {
+        return None;
+    }
+    let kind: u64 = operand_num(&body.instructions[checktype], 0);
+    let pattern: String = if kind == T_ARRAY {
+        parse_array_or_find(body, ctx, checktype + 1, tail - 1)
+    } else if kind == T_HASH {
+        let const_prefix: Option<String> = deconstruct_const_prefix(body, ctx, lo, checktype);
+        parse_hash(body, ctx, checktype + 1, tail - 1, const_prefix.as_deref())
+    } else {
+        return None;
+    };
+    Some((pattern, next))
+}
+
+fn read_element_value(
+    body: &YarvIseqBody,
+    ctx: &DecompileContext<'_>,
+    j: usize,
+    hi: usize,
+) -> Option<(String, usize)> {
+    if !is_array_index_literal(&body.instructions[j])
+        || body.instructions.get(j + 1).map(|x| x.mnemonic.as_str()) != Some("opt_aref")
+    {
+        return None;
+    }
+    let bound: bool = body.instructions.get(j + 2)?.mnemonic == "dup";
+    let value_lo: usize = if bound { j + 3 } else { j + 2 };
+    let checkmatch: usize = (value_lo..hi)
+        .take(8)
+        .find(|&k| body.instructions[k].mnemonic == "checkmatch")?;
+    if (value_lo..checkmatch).any(|k| {
+        matches!(
+            body.instructions[k].mnemonic.as_str(),
+            "dup" | "checktype" | "branchif" | "branchunless" | "branchnil" | "jump" | "topn"
+        ) || body.instructions[k].mnemonic.starts_with("setlocal")
+    }) || body.instructions.get(checkmatch + 1)?.mnemonic != "branchunless"
+    {
+        return None;
+    }
+    let value: String = parse_value_or_class(body, ctx, value_lo, checkmatch + 1)?;
+    if !bound {
+        return Some((value, checkmatch + 2));
+    }
+    let set: &YarvIbfInstruction = body.instructions.get(checkmatch + 2)?;
+    let tail: [&str; 3] = ["jump", "pop", "jump"];
+    if !set.mnemonic.starts_with("setlocal")
+        || (0..3).any(|n| {
+            body.instructions
+                .get(checkmatch + 3 + n)
+                .map(|x| x.mnemonic.as_str())
+                != Some(tail[n])
+        })
+    {
+        return None;
+    }
+    let name: String = local_name(&body.local_table, operand_num(set, 0));
+    Some((format!("{value} => {name}"), checkmatch + 6))
 }
 
 fn read_element_bind(body: &YarvIseqBody, j: usize) -> Option<(String, usize)> {
@@ -1835,7 +1998,7 @@ fn parse_hash(
                         || call_method_is(&body.instructions[j + 1], "fetch")));
             if is_fetch {
                 let (pair, consumed): (String, usize) =
-                    read_hash_value_pattern(body, ctx, &key, j + 2);
+                    read_hash_value_pattern(body, ctx, &key, j + 2, hi);
                 pairs.push(pair);
                 j = consumed;
                 continue;
@@ -1874,7 +2037,11 @@ fn read_hash_value_pattern(
     ctx: &DecompileContext<'_>,
     key: &str,
     after_aref: usize,
+    hi: usize,
 ) -> (String, usize) {
+    if let Some((pattern, next)) = read_nested_subpattern(body, ctx, after_aref, hi) {
+        return (format!("{key}: {pattern}"), next);
+    }
     if let Some(set) = body.instructions.get(after_aref)
         && set.mnemonic.starts_with("setlocal")
     {
