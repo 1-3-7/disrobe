@@ -1426,7 +1426,7 @@ struct ArmBody {
     body_hi: usize,
 }
 
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[allow(clippy::too_many_arguments)]
 fn try_pattern_match(
     body: &YarvIseqBody,
     ctx: &DecompileContext<'_>,
@@ -2655,7 +2655,7 @@ fn is_bare_symbol(s: &str) -> bool {
         && core.chars().all(|c| c.is_alphanumeric() || c == '_')
 }
 
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[allow(clippy::too_many_arguments)]
 fn try_case_when(
     body: &YarvIseqBody,
     ctx: &DecompileContext<'_>,
@@ -4039,7 +4039,7 @@ fn unwrapped_assignment(line: &str) -> Option<&str> {
     (depth == 0 && quote.is_none() && assigns).then_some(inner)
 }
 
-#[allow(clippy::match_same_arms, clippy::too_many_lines)]
+#[allow(clippy::match_same_arms)]
 fn step(
     instr: &YarvIbfInstruction,
     local_table: &[Option<String>],

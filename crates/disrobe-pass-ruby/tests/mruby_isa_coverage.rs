@@ -1,10 +1,4 @@
-#![allow(
-    clippy::expect_used,
-    clippy::unwrap_used,
-    clippy::panic,
-    clippy::print_stderr,
-    clippy::print_stdout
-)]
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 #[path = "support/ruby_toolchain.rs"]
 #[allow(clippy::redundant_pub_crate, dead_code)]

@@ -1032,7 +1032,6 @@ fn parse_catch_table(bytes: &[u8], offset: usize, count: usize) -> Vec<YarvCatch
     entries
 }
 
-#[allow(clippy::too_many_lines)]
 fn decode_iseq_body(
     bytes: &[u8],
     table: &[YarvOpcode],

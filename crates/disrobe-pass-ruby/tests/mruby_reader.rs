@@ -133,7 +133,7 @@ fn real_rite0004_binary_parses_its_header_and_sections_through_the_crc_and_no_ca
         mrb.irep.is_none(),
         "mruby switched its irep record body from a 32-bit packed mrb_code word to a byte-packed \
          encoding at mruby 2.0; a RITE0004 body predates that switch and this disassembler is \
-         calibrated to the byte-packed encoding, so the irep body is honestly unparsed rather \
+         calibrated to the byte-packed encoding, so the irep body is unparsed rather \
          than guessed at, even though the header and section framing now succeed"
     );
 }

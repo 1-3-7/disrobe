@@ -1,10 +1,4 @@
-#![allow(
-    clippy::expect_used,
-    clippy::unwrap_used,
-    clippy::panic,
-    clippy::print_stderr,
-    clippy::print_stdout
-)]
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 #[path = "support/ruby_toolchain.rs"]
 #[allow(clippy::redundant_pub_crate, dead_code)]
@@ -318,7 +312,7 @@ fn rescue_control_flow_withholds_partial_reconstruction() {
     let dec: MrubyDecompiled = recover("exceptions");
     assert!(
         dec.unmodeled_opcodes > 0,
-        "rescue/ensure control flow is not structured yet, so its jumps stay honest markers"
+        "rescue/ensure control flow is not structured yet, so its jumps stay markers"
     );
     assert!(
         dec.unmodeled_mnemonics.iter().any(|m| m.starts_with("JMP")),

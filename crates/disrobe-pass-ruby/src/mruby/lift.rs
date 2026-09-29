@@ -104,7 +104,6 @@ impl MrubyLowering {
 }
 
 #[must_use]
-#[allow(clippy::too_many_lines)]
 pub const fn lowering(op: MrubyOp) -> MrubyLowering {
     match op {
         MrubyOp::Nop
@@ -930,7 +929,6 @@ impl Lifter<'_> {
     }
 
     #[allow(
-        clippy::too_many_lines,
         clippy::too_many_arguments,
         clippy::match_same_arms,
         clippy::many_single_char_names
