@@ -488,11 +488,11 @@ pub fn recover_from_code(
             return degraded(options, Vec::new(), notes);
         }
     };
-    recover_from_nir(&nir, options, resolver, notes)
+    recover_lowered(&nir, options, resolver, notes)
 }
 
 #[must_use]
-pub fn recover_from_nir(
+fn recover_lowered(
     nir: &NirFunction,
     options: &RecoverOptions,
     resolver: &dyn CallResolver,

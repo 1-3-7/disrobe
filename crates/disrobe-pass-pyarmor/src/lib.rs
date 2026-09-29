@@ -89,7 +89,7 @@ pub use bcc::dispatch_recover::{binop_selector, recover_bcc_arith};
 #[cfg(not(target_arch = "wasm32"))]
 pub use bcc::recover::{
     CallResolver, MapCallResolver, PyAbi, RecognizedCall, RecoverOptions, RecoveredBody,
-    recover_from_code, recover_from_nir,
+    recover_from_code,
 };
 pub use bcc::{
     BCC_PSEUDO_C_PATH, BCC_RECOVERED_PYTHON_PATH, BCC_RECOVERY_PATH, BCC_RECOVERY_SCHEMA,

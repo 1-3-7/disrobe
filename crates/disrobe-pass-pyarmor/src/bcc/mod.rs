@@ -40,7 +40,7 @@ pub use publication::{
 #[cfg(not(target_arch = "wasm32"))]
 pub use recover::{
     CallResolver, MapCallResolver, PyAbi, RecognizedCall, RecoverOptions, RecoveredBody,
-    recover_from_code, recover_from_nir,
+    recover_from_code,
 };
 
 #[derive(Debug, Clone)]
