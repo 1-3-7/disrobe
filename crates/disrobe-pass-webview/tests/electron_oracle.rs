@@ -1,19 +1,13 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::collections::BTreeMap;
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use disrobe_pass_webview::{
-    CarveReport, Compression, EntryRefusal, IntegrityStatus, RecoveredAsset, WebviewFamily, carve,
-    carve_report, detect_family,
+    CarveReport, Compression, IntegrityStatus, RecoveredAsset, WebviewFamily, carve, carve_report,
+    detect_family,
 };
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
-
-static DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn sample_tree() -> Vec<(&'static str, Vec<u8>)> {
     vec![
@@ -29,24 +23,6 @@ fn sample_tree() -> Vec<(&'static str, Vec<u8>)> {
         ),
         ("assets/deep/x.js", b"export const x=42;".to_vec()),
     ]
-}
-
-fn unique_dir(tag: &str) -> PathBuf {
-    let pid: u32 = std::process::id();
-    let seq: u64 = DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let base: PathBuf = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("{tag}-{pid}-{seq}"));
-    fs::create_dir_all(&base).unwrap();
-    base
-}
-
-fn write_tree(root: &Path, files: &[(&str, Vec<u8>)]) {
-    for (rel, data) in files {
-        let path: PathBuf = root.join(rel);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).unwrap();
-        }
-        fs::write(&path, data).unwrap();
-    }
 }
 
 fn recovered_map(assets: &[RecoveredAsset]) -> BTreeMap<String, Vec<u8>> {
@@ -110,157 +86,6 @@ fn pickle_wrap(json: &[u8], data: &[u8]) -> Vec<u8> {
     out
 }
 
-fn split_asar(bytes: &[u8]) -> (Map<String, Value>, Vec<u8>) {
-    let size_field: u32 = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
-    assert_eq!(size_field, 4, "unexpected asar pickle wrapper size");
-    let header_buf_len: u32 = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
-    let json_len: u32 = u32::from_le_bytes(bytes[12..16].try_into().unwrap());
-    let json_start: usize = 16;
-    let json_end: usize = json_start + json_len as usize;
-    let root: Value = serde_json::from_slice(&bytes[json_start..json_end]).unwrap();
-    let files: Map<String, Value> = root
-        .as_object()
-        .unwrap()
-        .get("files")
-        .unwrap()
-        .as_object()
-        .unwrap()
-        .clone();
-    let data_base: usize = 8 + header_buf_len as usize;
-    (files, bytes[data_base..].to_vec())
-}
-
-fn rebuild_asar(files: Map<String, Value>, data: &[u8]) -> Vec<u8> {
-    let mut header: Map<String, Value> = Map::new();
-    header.insert("files".to_owned(), Value::Object(files));
-    let json: Vec<u8> = serde_json::to_vec(&Value::Object(header)).unwrap();
-    pickle_wrap(&json, data)
-}
-
-const ASAR_PACKAGE: &str = "@electron/asar@4.3.1";
-
-fn run_asar_pack(src: &Path, out: &Path) {
-    let mut command: Command = if cfg!(windows) {
-        let mut c: Command = Command::new("cmd");
-        c.args(["/C", "npx"]);
-        c
-    } else {
-        Command::new("npx")
-    };
-    command
-        .args(["--yes", ASAR_PACKAGE, "pack"])
-        .arg(src)
-        .arg(out);
-    let output: std::process::Output = command.output().unwrap_or_else(|error: std::io::Error| {
-        panic!("required tool missing: npx cannot be spawned to run {ASAR_PACKAGE}: {error}")
-    });
-    assert!(
-        output.status.success() && out.is_file(),
-        "required tool missing: `npx --yes {ASAR_PACKAGE} pack` exited with {} and wrote no \
-         archive at {}\nstdout: {}\nstderr: {}",
-        output.status,
-        out.display(),
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-}
-
-fn tricky_tree() -> Vec<(&'static str, Vec<u8>)> {
-    let mut url_js: Vec<u8> = Vec::new();
-    url_js.extend_from_slice(
-        "const endpoint = \"https://\u{4f8b}\u{3048}.\u{30c6}\u{30b9}\u{30c8}/p?q=caf\u{e9}&x=1#frag\";\n"
-            .as_bytes(),
-    );
-    url_js.extend_from_slice(br#"const meta = {"path":"C:\\Users\\a","tab":"x\ty"};"#);
-    url_js.extend_from_slice(&[0x00, 0xff, 0x80, 0xc0]);
-
-    let mut html: Vec<u8> = b"<!doctype html><title>".to_vec();
-    html.extend_from_slice("\u{2713}".as_bytes());
-    html.extend_from_slice(b"</title>");
-
-    vec![
-        ("index.html", html),
-        ("\u{65e5}\u{672c}\u{8a9e}/\u{6982}\u{8981}.js", url_js),
-        (
-            "\u{43f}\u{440}\u{438}\u{432}\u{435}\u{442}.css",
-            "body{content:\"\u{2713}\"}".as_bytes().to_vec(),
-        ),
-        ("emoji \u{1f600}.txt", vec![0x00, 0x01, 0x02, 0xfe, 0xff]),
-        ("a+b@c#d.json", br#"{"ok":true}"#.to_vec()),
-    ]
-}
-
-fn run_asar_extract(archive: &Path, destination: &Path) {
-    let mut command: Command = if cfg!(windows) {
-        let mut c: Command = Command::new("cmd");
-        c.args(["/C", "npx"]);
-        c
-    } else {
-        Command::new("npx")
-    };
-    command
-        .args(["--yes", ASAR_PACKAGE, "extract"])
-        .arg(archive)
-        .arg(destination);
-    let output: std::process::Output = command.output().unwrap_or_else(|error: std::io::Error| {
-        panic!("required tool missing: npx cannot be spawned to run {ASAR_PACKAGE}: {error}")
-    });
-    assert!(
-        output.status.success() && destination.is_dir(),
-        "`npx --yes {ASAR_PACKAGE} extract` exited with {} and wrote nothing at {}\nstdout: \
-         {}\nstderr: {}",
-        output.status,
-        destination.display(),
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-}
-
-fn tree_digests(root: &Path) -> BTreeMap<String, String> {
-    let mut out: BTreeMap<String, String> = BTreeMap::new();
-    let mut pending: Vec<PathBuf> = vec![root.to_path_buf()];
-    while let Some(directory) = pending.pop() {
-        for entry in fs::read_dir(&directory).unwrap() {
-            let path: PathBuf = entry.unwrap().path();
-            if path.is_dir() {
-                pending.push(path);
-                continue;
-            }
-            let relative: String = path
-                .strip_prefix(root)
-                .unwrap()
-                .to_string_lossy()
-                .replace('\\', "/");
-            out.insert(relative, sha256_hex(&fs::read(&path).unwrap()));
-        }
-    }
-    out
-}
-
-fn assert_round_trip(bytes: &[u8], expected: &[(&str, Vec<u8>)]) {
-    let assets: Vec<RecoveredAsset> = carve(bytes).unwrap();
-    let recovered: BTreeMap<String, Vec<u8>> = recovered_map(&assets);
-    let want: BTreeMap<String, Vec<u8>> = expected
-        .iter()
-        .map(|(path, body): &(&str, Vec<u8>)| ((*path).to_owned(), body.clone()))
-        .collect();
-    assert_eq!(
-        recovered.keys().collect::<Vec<&String>>(),
-        want.keys().collect::<Vec<&String>>(),
-        "recovered name set must equal the source tree"
-    );
-    for (path, body) in &want {
-        assert_eq!(
-            recovered.get(path),
-            Some(body),
-            "content mismatch for {path}"
-        );
-    }
-    for asset in &assets {
-        assert_eq!(asset.compression, Compression::None);
-    }
-}
-
 fn assert_matches_sample(assets: &[RecoveredAsset]) {
     let recovered: BTreeMap<String, Vec<u8>> = recovered_map(assets);
     let expected: BTreeMap<String, Vec<u8>> = sample_tree()
@@ -282,41 +107,6 @@ fn assert_matches_sample(assets: &[RecoveredAsset]) {
     for asset in assets {
         assert_eq!(asset.compression, Compression::None);
     }
-}
-
-#[test]
-fn carves_real_electron_asar_from_cli() {
-    let workdir: PathBuf = unique_dir("webview-cli");
-    let dist: PathBuf = workdir.join("dist");
-    write_tree(&dist, &sample_tree());
-    let asar_path: PathBuf = workdir.join("app.asar");
-    run_asar_pack(&dist, &asar_path);
-    let bytes: Vec<u8> = fs::read(&asar_path).unwrap();
-    assert_eq!(detect_family(&bytes), Some(WebviewFamily::Electron));
-    let assets: Vec<RecoveredAsset> = carve(&bytes).unwrap();
-    assert_matches_sample(&assets);
-    let unverified: Vec<(&str, IntegrityStatus)> = assets
-        .iter()
-        .filter(|asset: &&RecoveredAsset| asset.integrity != IntegrityStatus::Verified)
-        .map(|asset: &RecoveredAsset| (asset.path.as_str(), asset.integrity))
-        .collect();
-    assert!(
-        unverified.is_empty(),
-        "{ASAR_PACKAGE} writes a sha256 integrity block for every file, so every recovered asset \
-         must verify against it: {unverified:?}"
-    );
-    let reference_root: PathBuf = workdir.join("reference");
-    run_asar_extract(&asar_path, &reference_root);
-    let reference: BTreeMap<String, String> = tree_digests(&reference_root);
-    let recovered: BTreeMap<String, String> = assets
-        .iter()
-        .map(|asset: &RecoveredAsset| (asset.path.clone(), sha256_hex(&asset.bytes)))
-        .collect();
-    assert_eq!(
-        recovered, reference,
-        "every recovered member must equal `{ASAR_PACKAGE} extract` output by sha256"
-    );
-    let _ = fs::remove_dir_all(&workdir);
 }
 
 fn sha256_hex(data: &[u8]) -> String {
@@ -445,92 +235,8 @@ fn hostile_path_never_escapes_output_root() {
 }
 
 #[test]
-fn recovers_non_ascii_names_and_binary_content_byte_identically() {
-    let tree: Vec<(&str, Vec<u8>)> = tricky_tree();
-    assert_round_trip(&build_genuine_asar(&tree), &tree);
-
-    let workdir: PathBuf = unique_dir("webview-nonascii");
-    let dist: PathBuf = workdir.join("dist");
-    write_tree(&dist, &tree);
-    let asar_path: PathBuf = workdir.join("app.asar");
-    run_asar_pack(&dist, &asar_path);
-    let bytes: Vec<u8> = fs::read(&asar_path).unwrap();
-    assert_eq!(detect_family(&bytes), Some(WebviewFamily::Electron));
-    assert_round_trip(&bytes, &tree);
-    let _ = fs::remove_dir_all(&workdir);
-}
-
-#[test]
 fn no_frontend_is_reported() {
     let bytes: Vec<u8> = vec![0u8; 2048];
     assert!(detect_family(&bytes).is_none());
     assert!(carve(&bytes).is_err());
-}
-
-#[test]
-fn each_bad_entry_patched_into_a_real_asar_is_refused_and_the_rest_survive() {
-    let workdir: PathBuf = unique_dir("webview-malformed");
-    let dist: PathBuf = workdir.join("dist");
-    let tree: Vec<(&str, Vec<u8>)> = vec![
-        ("keep1.txt", b"AAA".to_vec()),
-        ("nested/keep2.txt", b"BBBB".to_vec()),
-    ];
-    write_tree(&dist, &tree);
-    let asar_path: PathBuf = workdir.join("app.asar");
-    run_asar_pack(&dist, &asar_path);
-    let bytes: Vec<u8> = fs::read(&asar_path).unwrap();
-
-    let (mut files, data): (Map<String, Value>, Vec<u8>) = split_asar(&bytes);
-    files.insert(
-        "../x".to_owned(),
-        serde_json::json!({"size": 3, "offset": "0"}),
-    );
-    files.insert("nooffset.txt".to_owned(), serde_json::json!({"size": 3}));
-    files.insert(
-        "escape.js".to_owned(),
-        serde_json::json!({"link": "../../outside.txt"}),
-    );
-    files.insert(
-        "huge.bin".to_owned(),
-        serde_json::json!({"size": 3, "offset": "999999999"}),
-    );
-    let tampered: Vec<u8> = rebuild_asar(files, &data);
-
-    let report: CarveReport = carve_report(&tampered).expect("bad entries must not abort the walk");
-    assert_eq!(report.declared, 6);
-    assert_eq!(report.recovered, 2);
-    let extracted: BTreeMap<String, Vec<u8>> = recovered_map(&report.assets);
-    assert_eq!(
-        extracted.get("keep1.txt").map(Vec::as_slice),
-        Some(b"AAA".as_slice())
-    );
-    assert_eq!(
-        extracted.get("nested/keep2.txt").map(Vec::as_slice),
-        Some(b"BBBB".as_slice())
-    );
-    let refused: Vec<&str> = report
-        .refusals
-        .iter()
-        .map(|refusal: &EntryRefusal| refusal.path.as_str())
-        .collect();
-    assert_eq!(
-        refused,
-        vec!["../x", "escape.js", "huge.bin", "nooffset.txt"]
-    );
-    let reason_of = |path: &str| -> String {
-        let Some(refusal) = report
-            .refusals
-            .iter()
-            .find(|refusal: &&EntryRefusal| refusal.path == path)
-        else {
-            panic!("missing refusal for {path}")
-        };
-        refusal.reason.clone()
-    };
-    assert!(reason_of("../x").contains("not a safe relative path"));
-    assert!(reason_of("nooffset.txt").contains("no data offset"));
-    assert!(reason_of("escape.js").contains("escapes the archive"));
-    assert!(reason_of("huge.bin").contains("exceeds buffer length"));
-    assert!(report.coverage() < 1.0);
-    let _ = fs::remove_dir_all(&workdir);
 }

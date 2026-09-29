@@ -1,0 +1,4 @@
+body { font-family: system-ui, sans-serif; margin: 2rem; }
+table { border-collapse: collapse; width: 100%; }
+tr:nth-child(even) { background: #f4f4f4; }
+.total { font-variant-numeric: tabular-nums; text-align: right; }

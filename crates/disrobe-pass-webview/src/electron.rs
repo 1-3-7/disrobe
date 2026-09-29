@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use disrobe_binfmt::{QuotaGuard, sanitize_entry_path};
 use disrobe_bytes::{ByteReader, align_up_u32};
@@ -7,6 +7,7 @@ use sha2::{Digest, Sha256};
 
 use crate::CarveConfig;
 use crate::detect::find_from;
+use crate::embedded::case_collision_key;
 use crate::error::{Error, Result};
 use crate::model::{
     CarveReport, Compression, EntryRefusal, IntegrityStatus, RecoveredAsset, SymlinkEntry,
@@ -17,6 +18,7 @@ const ANCHOR: &[u8] = b"{\"files\":";
 const PREFIX_LEN: usize = 16;
 const SIZE_PICKLE_PAYLOAD: u32 = 4;
 const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
+const MAX_ENTRY_PATH_BYTES: usize = 4096;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct AsarHeader {
@@ -114,19 +116,26 @@ pub(crate) fn extract(bytes: &[u8], cfg: &CarveConfig) -> Result<CarveReport> {
         .get(header.json_start..header.json_end)
         .ok_or_else(|| Error::AsarHeader("json slice out of range".to_owned()))?;
     let root: RawNode = serde_json::from_slice(json)?;
+    let mut leaves: Vec<Leaf<'_>> = Vec::new();
+    let mut path_stack: Vec<&str> = Vec::new();
+    collect_leaves(&root, &mut path_stack, 0, cfg, &mut leaves)?;
+    let declared: usize = leaves.len();
+    let colliding: BTreeSet<String> = colliding_keys(&leaves);
     let mut walk: Walk<'_> = Walk {
         bytes,
         data_base: header.data_base,
-        max_depth: cfg.max_depth,
+        data_len: bytes.len().saturating_sub(header.data_base) as u64,
+        max_aggregate_ratio: cfg.quota.max_aggregate_ratio,
+        emitted: 0,
         guard: QuotaGuard::new(cfg.quota),
         assets: Vec::new(),
         external: Vec::new(),
         symlinks: Vec::new(),
         refusals: Vec::new(),
-        declared: 0,
     };
-    let mut path_stack: Vec<String> = Vec::new();
-    walk.descend(&root, &mut path_stack, 0)?;
+    for leaf in leaves {
+        walk.admit(leaf, &colliding);
+    }
     let recovered: usize = walk.assets.len() + walk.external.len() + walk.symlinks.len();
     Ok(CarveReport {
         family: WebviewFamily::Electron,
@@ -134,55 +143,124 @@ pub(crate) fn extract(bytes: &[u8], cfg: &CarveConfig) -> Result<CarveReport> {
         external_unpacked: walk.external,
         symlinks: walk.symlinks,
         directories: Vec::new(),
-        declared: walk.declared,
+        declared,
         recovered,
         refusals: walk.refusals,
     })
 }
 
+struct Leaf<'n> {
+    path: String,
+    safe: Option<String>,
+    node: &'n RawNode,
+}
+
+fn collect_leaves<'n>(
+    node: &'n RawNode,
+    path_stack: &mut Vec<&'n str>,
+    depth: usize,
+    cfg: &CarveConfig,
+    leaves: &mut Vec<Leaf<'n>>,
+) -> Result<()> {
+    if depth > cfg.max_depth {
+        return Err(Error::DepthExceeded(cfg.max_depth));
+    }
+    if let Some(children) = node.files.as_ref() {
+        for (name, child) in children {
+            path_stack.push(name);
+            collect_leaves(child, path_stack, depth + 1, cfg, leaves)?;
+            path_stack.pop();
+        }
+        return Ok(());
+    }
+    let (path, overlong): (String, bool) = bounded_join(path_stack);
+    if leaves.len() >= cfg.quota.max_entries {
+        return Err(Error::Quota {
+            entry: path,
+            reason: format!(
+                "the table declares more than {} entries",
+                cfg.quota.max_entries
+            ),
+        });
+    }
+    let safe: Option<String> = if overlong {
+        None
+    } else {
+        sanitize_entry_path(&path).ok()
+    };
+    leaves.push(Leaf { path, safe, node });
+    Ok(())
+}
+
+fn bounded_join(components: &[&str]) -> (String, bool) {
+    let mut out: String = String::new();
+    for (index, component) in components.iter().enumerate() {
+        if index > 0 {
+            out.push('/');
+        }
+        let room: usize = MAX_ENTRY_PATH_BYTES.saturating_sub(out.len());
+        if component.len() > room {
+            let mut cut: usize = room;
+            while !component.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            out.push_str(&component[..cut]);
+            return (out, true);
+        }
+        out.push_str(component);
+    }
+    (out, false)
+}
+
+fn colliding_keys(leaves: &[Leaf<'_>]) -> BTreeSet<String> {
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for safe in leaves
+        .iter()
+        .filter_map(|leaf: &Leaf<'_>| leaf.safe.as_deref())
+    {
+        *counts.entry(case_collision_key(safe)).or_insert(0) += 1;
+    }
+    counts
+        .into_iter()
+        .filter(|(_, count): &(String, usize)| *count > 1)
+        .map(|(key, _): (String, usize)| key)
+        .collect()
+}
+
 struct Walk<'a> {
     bytes: &'a [u8],
     data_base: usize,
-    max_depth: usize,
+    data_len: u64,
+    max_aggregate_ratio: u64,
+    emitted: u64,
     guard: QuotaGuard,
     assets: Vec<RecoveredAsset>,
     external: Vec<String>,
     symlinks: Vec<SymlinkEntry>,
     refusals: Vec<EntryRefusal>,
-    declared: usize,
 }
 
 impl Walk<'_> {
-    fn refuse(&mut self, path: &str, reason: &str) {
-        self.refusals.push(EntryRefusal {
-            path: path.to_owned(),
-            reason: reason.to_owned(),
-        });
+    fn refuse(&mut self, path: String, reason: String) {
+        self.refusals.push(EntryRefusal { path, reason });
     }
 
-    fn descend(
-        &mut self,
-        node: &RawNode,
-        path_stack: &mut Vec<String>,
-        depth: usize,
-    ) -> Result<()> {
-        if depth > self.max_depth {
-            return Err(Error::DepthExceeded(self.max_depth));
-        }
-        if let Some(children) = node.files.as_ref() {
-            for (name, child) in children {
-                path_stack.push(name.clone());
-                self.descend(child, path_stack, depth + 1)?;
-                path_stack.pop();
-            }
-            return Ok(());
-        }
-        let joined: String = path_stack.join("/");
-        self.declared += 1;
-        let Ok(safe) = sanitize_entry_path(&joined) else {
-            self.refuse(&joined, "the entry name is not a safe relative path");
-            return Ok(());
+    fn admit(&mut self, leaf: Leaf<'_>, colliding: &BTreeSet<String>) {
+        let node: &RawNode = leaf.node;
+        let Some(safe) = leaf.safe else {
+            self.refuse(
+                leaf.path,
+                "the entry name is not a safe relative path".to_owned(),
+            );
+            return;
         };
+        if colliding.contains(&case_collision_key(&safe)) {
+            self.refuse(
+                safe,
+                "another entry names the same path when case is ignored".to_owned(),
+            );
+            return;
+        }
         if let Some(target) = node.link.as_deref() {
             if resolve_symlink_target(&safe, target).is_some() {
                 self.symlinks.push(SymlinkEntry {
@@ -190,28 +268,43 @@ impl Walk<'_> {
                     target: target.to_owned(),
                 });
             } else {
-                self.refuse(&safe, "the link target escapes the archive");
+                self.refuse(safe, "the link target escapes the archive".to_owned());
             }
-            return Ok(());
+            return;
         }
         if node.unpacked.unwrap_or(false) {
             self.external.push(safe);
-            return Ok(());
+            return;
         }
         let Some(offset_str) = node.offset.as_deref() else {
-            self.refuse(&safe, "the entry has no data offset");
-            return Ok(());
+            self.refuse(safe, "the entry has no data offset".to_owned());
+            return;
         };
         let size: u64 = node.size.unwrap_or(0);
         let slice: &[u8] = match read_entry(self.bytes, self.data_base, &safe, offset_str, size) {
             Ok(slice) => slice,
             Err(error) => {
-                self.refuse(&safe, &error.to_string());
-                return Ok(());
+                self.refuse(safe, error.to_string());
+                return;
             }
         };
-        self.guard
-            .admit_entry(&safe, slice.len() as u64, slice.len() as u64)?;
+        let len: u64 = slice.len() as u64;
+        let emitted: u64 = self.emitted.saturating_add(len);
+        if emitted > self.data_len.saturating_mul(self.max_aggregate_ratio) {
+            self.refuse(
+                safe,
+                format!(
+                    "its {len} bytes would lift the recovered total to {emitted}, over {} times the {}-byte data region",
+                    self.max_aggregate_ratio, self.data_len
+                ),
+            );
+            return;
+        }
+        if let Err(error) = self.guard.admit_entry(&safe, len, len) {
+            self.refuse(safe, error.to_string());
+            return;
+        }
+        self.emitted = emitted;
         let integrity: IntegrityStatus = verify_integrity(slice, node.integrity.as_ref());
         self.assets.push(RecoveredAsset {
             path: safe,
@@ -220,7 +313,6 @@ impl Walk<'_> {
             executable: node.executable.unwrap_or(false),
             integrity,
         });
-        Ok(())
     }
 }
 
@@ -425,5 +517,46 @@ mod tests {
         assert_eq!(report.declared, 6);
         assert_eq!(report.recovered, 2);
         assert!(report.coverage() < 1.0);
+    }
+
+    #[test]
+    fn a_case_colliding_pair_an_aliasing_entry_and_an_overlong_name_are_each_refused() {
+        let long_dir: String = "d".repeat(5000);
+        let json: String = format!(
+            r#"{{"files":{{"a.txt":{{"size":3,"offset":"0"}},"A.TXT":{{"size":3,"offset":"0"}},"b.txt":{{"size":3,"offset":"3"}},"zz.bin":{{"size":6,"offset":"0"}},"{long_dir}":{{"files":{{"x":{{"size":1,"offset":"0"}},"y":{{"size":1,"offset":"0"}}}}}}}}}}"#
+        );
+        let bytes: Vec<u8> = pickle(json.as_bytes(), b"abcdef");
+        let mut cfg: CarveConfig = CarveConfig::default();
+        cfg.quota.max_aggregate_ratio = 1;
+        let report: CarveReport = extract(&bytes, &cfg).expect("bad entries do not abort");
+        let extracted: Vec<&str> = report
+            .assets
+            .iter()
+            .map(|asset: &RecoveredAsset| asset.path.as_str())
+            .collect();
+        assert_eq!(extracted, vec!["b.txt"]);
+        assert_eq!(report.refusals.len(), 5, "{:?}", report.refusals);
+        assert_eq!(report.refusals[0].path, "A.TXT");
+        assert_eq!(report.refusals[1].path, "a.txt");
+        for refusal in &report.refusals[2..4] {
+            assert_eq!(refusal.path.len(), MAX_ENTRY_PATH_BYTES);
+            assert!(refusal.reason.contains("not a safe relative path"));
+        }
+        assert_eq!(report.refusals[4].path, "zz.bin");
+        assert!(report.refusals[4].reason.contains("data region"));
+        assert_eq!(report.declared, 6);
+        assert_eq!(report.recovered, 1);
+    }
+
+    #[test]
+    fn a_table_past_the_entry_quota_is_a_typed_error() {
+        let json: &[u8] = br#"{"files":{"a":{"size":0,"offset":"0"},"b":{"size":0,"offset":"0"},"c":{"size":0,"offset":"0"}}}"#;
+        let bytes: Vec<u8> = pickle(json, b"");
+        let mut cfg: CarveConfig = CarveConfig::default();
+        cfg.quota.max_entries = 2;
+        assert!(matches!(
+            extract(&bytes, &cfg),
+            Err(Error::Quota { entry, .. }) if entry == "c"
+        ));
     }
 }

@@ -544,7 +544,7 @@ fn case_collisions(run: &[Record<'_>], quota: ExtractionQuota) -> Result<BTreeSe
     Ok(colliding)
 }
 
-fn case_collision_key(path: &str) -> String {
+pub(crate) fn case_collision_key(path: &str) -> String {
     path.to_uppercase()
 }
 

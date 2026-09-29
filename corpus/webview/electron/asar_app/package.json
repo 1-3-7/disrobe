@@ -1,0 +1,7 @@
+{
+  "name": "ledger-viewer",
+  "version": "1.4.2",
+  "private": true,
+  "main": "main.js",
+  "description": "Desktop viewer for household ledger exports"
+}

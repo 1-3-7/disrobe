@@ -9,10 +9,14 @@ enum Coverage {
     Unobserved(&'static str),
 }
 
-const SOURCES: [(&str, &str); 4] = [
+const SOURCES: [(&str, &str); 5] = [
     ("real_toolchain.rs", include_str!("real_toolchain.rs")),
     ("embedded_oracle.rs", include_str!("embedded_oracle.rs")),
     ("electron_oracle.rs", include_str!("electron_oracle.rs")),
+    (
+        "electron_asar_reference.rs",
+        include_str!("electron_asar_reference.rs"),
+    ),
     ("fuzz_resilience.rs", include_str!("fuzz_resilience.rs")),
 ];
 
@@ -228,7 +232,7 @@ const ASSET_KINDS: [(&str, Coverage); 6] = [
     ),
     (
         "asset name outside ascii",
-        Coverage::GradedBy("recovers_non_ascii_names_and_binary_content_byte_identically"),
+        Coverage::GradedBy("non_ascii_names_and_binary_content_match_asar_extract_by_sha256"),
     ),
 ];
 
@@ -291,7 +295,11 @@ const INTEGRITY: [(&str, Coverage); 3] = [
     ),
 ];
 
-const HOSTILE_SHAPES: [(&str, Coverage); 9] = [
+const HOSTILE_SHAPES: [(&str, Coverage); 10] = [
+    (
+        "asar entry with an unsafe name, no offset, an escaping link, a range past the data, bytes aliased past the aggregate ratio or a case-colliding twin",
+        Coverage::GradedBy("each_hostile_entry_is_refused_alone_while_the_rest_match_asar_extract"),
+    ),
     (
         "key that escapes the output root by traversal, absolute prefix or drive letter",
         Coverage::GradedBy("a_traversal_key_is_dropped_while_the_rest_of_the_map_survives"),
