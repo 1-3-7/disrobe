@@ -134,7 +134,7 @@ fn corpus_recovery_requires_full_op_coverage_not_just_parseability() {
     let name_pct: f64 = 100.0 * tally.name_recovered as f64 / tally.total_functions as f64;
 
     eprintln!(
-        "wasm corpus recovery (HONEST): {} modules parsed, {} skipped, {} functions",
+        "wasm corpus recovery: {} modules parsed, {} skipped, {} functions",
         tally.modules_parsed, tally.modules_skipped, tally.total_functions
     );
     eprintln!(
@@ -167,7 +167,7 @@ fn corpus_recovery_requires_full_op_coverage_not_just_parseability() {
     let no_untranslated: bool = tally.untranslated_by_family.is_empty();
     assert!(
         no_untranslated || semantic_pct < parse_pct,
-        "while any op family is untranslated, honest recovery MUST be strictly below \
+        "while any op family is untranslated, recovery MUST be strictly below \
          parseability ({semantic_pct:.1}% vs {parse_pct:.1}%); equality is allowed only when \
          nothing is stubbed"
     );

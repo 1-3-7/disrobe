@@ -53,7 +53,6 @@ pub fn classify_export_strategy(names: &[String]) -> NameStrategy {
     NameStrategy::Clean
 }
 
-#[allow(clippy::cast_precision_loss)]
 const fn usize_to_f64(n: usize) -> f64 {
     n as f64
 }

@@ -3,7 +3,6 @@
     clippy::panic,
     clippy::unwrap_used,
     clippy::redundant_pub_crate,
-    clippy::cast_possible_truncation,
     unreachable_pub
 )]
 

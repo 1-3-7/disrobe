@@ -73,7 +73,6 @@ pub fn detect(input: &[u8]) -> Result<CrypticBytesDetection> {
                             if unsigned == CAFEBABE {
                                 det.cafe_constant_hits = det.cafe_constant_hits.saturating_add(1);
                             }
-                            #[allow(clippy::cast_possible_truncation)]
                             let key_byte: u8 = (unsigned & 0xFFu32) as u8;
                             last_const = Some(key_byte);
                         }

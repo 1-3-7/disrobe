@@ -1166,7 +1166,7 @@ enum Rendered {
     Untranslated,
 }
 
-#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn render_op(
     op: &Operator<'_>,
     sig: &FunctionSig,
@@ -1415,7 +1415,6 @@ fn render_simd_op(op: &Operator<'_>, reqs: &mut FeatureReqs) -> Option<String> {
     })
 }
 
-#[allow(clippy::too_many_lines)]
 fn render_simd_generic(op: &Operator<'_>) -> Option<String> {
     Some(match op {
         Operator::F32x4ExtractLane { lane } => format!("f32x4.extract_lane {lane}"),
@@ -1678,7 +1677,6 @@ fn render_atomic_op(op: &Operator<'_>, reqs: &mut FeatureReqs) -> Option<String>
     }
 }
 
-#[allow(clippy::too_many_lines)]
 const fn atomic_mem_mnemonic(op: &Operator<'_>) -> Option<(&'static str, wasmparser::MemArg)> {
     Some(match op {
         Operator::MemoryAtomicNotify { memarg } => ("memory.atomic.notify", *memarg),
@@ -1918,7 +1916,6 @@ fn render_struct_field_op(
     Some(format!("{opcode} $t{struct_type_index} {field_index}"))
 }
 
-#[allow(clippy::too_many_lines)]
 fn render_extended_op(op: &Operator<'_>, reqs: &mut FeatureReqs) -> Option<String> {
     Some(match op {
         Operator::RefEq => "ref.eq".to_owned(),

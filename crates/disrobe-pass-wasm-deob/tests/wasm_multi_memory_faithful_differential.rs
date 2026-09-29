@@ -43,7 +43,6 @@ const fn mem_access(mnemonic: &'static str, memarg: &MemArg) -> MemFact {
     }
 }
 
-#[allow(clippy::too_many_lines)]
 const fn classify(op: &Operator<'_>) -> Option<MemFact> {
     Some(match op {
         Operator::I32Load { memarg } => mem_access("i32.load", memarg),

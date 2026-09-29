@@ -8,7 +8,6 @@ pub(crate) fn operator_mnemonic(op: &Operator<'_>) -> String {
     discriminant_name(op)
 }
 
-#[allow(clippy::too_many_lines)]
 const fn explicit_mnemonic(op: &Operator<'_>) -> Option<&'static str> {
     Some(match op {
         Operator::Unreachable => "unreachable",

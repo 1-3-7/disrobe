@@ -1,9 +1,4 @@
-#![allow(
-    clippy::expect_used,
-    clippy::panic,
-    clippy::unwrap_used,
-    clippy::cast_possible_truncation
-)]
+#![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
 use disrobe_mba::{BinOp, Expr, Width, equivalent_exhaustive};
 use disrobe_pass_wasm_deob::{

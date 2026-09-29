@@ -136,7 +136,6 @@ const fn sd(helper: &'static str, shape: SimdShape) -> SimdDesc {
     SimdDesc { helper, shape }
 }
 
-#[allow(clippy::too_many_lines)]
 pub(crate) const fn simd_descriptor(op: &Operator<'_>) -> Option<SimdDesc> {
     Some(match op {
         Operator::I8x16Shuffle { .. } => sd("wasm_i8x16_shuffle", SimdShape::Shuffle),
@@ -450,7 +449,6 @@ const fn ad(helper: &'static str, shape: AtomicShape, result: ValType) -> Atomic
     }
 }
 
-#[allow(clippy::too_many_lines)]
 pub(crate) const fn atomic_descriptor(op: &Operator<'_>) -> Option<AtomicDesc> {
     Some(match op {
         Operator::MemoryAtomicNotify { .. } => ad(

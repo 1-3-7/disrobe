@@ -1,9 +1,4 @@
-#![allow(
-    clippy::expect_used,
-    clippy::panic,
-    clippy::unwrap_used,
-    clippy::cast_possible_truncation
-)]
+#![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
 use wasmparser::{Parser, Payload};
 
