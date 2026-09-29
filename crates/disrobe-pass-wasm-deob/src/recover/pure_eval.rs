@@ -464,3 +464,37 @@ fn eval_binop_i64(op: BinaryOp, a: i64, b: i64) -> Option<Scalar> {
     };
     Some(Scalar::I64(wide))
 }
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::{MAX_MODULE_STEPS, MAX_STEPS, PureModule};
+    use walrus::ir::{Call, Instr};
+    use walrus::{FunctionId, LocalFunction, Module};
+
+    #[test]
+    fn guards_that_never_return_share_one_module_step_budget() {
+        let bytes: Vec<u8> =
+            wat::parse_str("(module (func (result i32) (loop $l (br $l)) (i32.const 0)))")
+                .expect("assemble");
+        let module: Module = Module::from_buffer(&bytes).expect("walrus reads the module");
+        let spin: FunctionId = module
+            .funcs
+            .iter_local()
+            .next()
+            .map(|(id, _): (FunctionId, &LocalFunction)| id)
+            .expect("one local function");
+        let pure: PureModule = PureModule::snapshot(&module);
+        let guard: [Instr; 1] = [Instr::Call(Call { func: spin })];
+        let guards: u64 = MAX_MODULE_STEPS / MAX_STEPS + 2;
+        for _ in 0..guards {
+            assert_eq!(pure.eval_guard(&guard), None);
+        }
+        assert!(pure.budget_exhausted());
+        assert!(
+            pure.spent.get() <= MAX_MODULE_STEPS + guards,
+            "every guard after the module budget is spent must stop at its first step, spent {}",
+            pure.spent.get()
+        );
+    }
+}
