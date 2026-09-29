@@ -70,14 +70,26 @@ fn obf_class_parses_through_jbco_control_flow_obfuscation() {
     );
     assert_eq!(
         dc.fallback_methods, 3,
-        "l1lll(I)I stays incomplete (its structured body loses the return and two trap handlers),          and $$S5$ and II1l1 still render unresolved operands, got {} fallbacks",
+        "l1lll, $$S5$ and II1l1 still render unresolved stack operands after the JBCO trap \
+         handlers, got {} fallbacks",
         dc.fallback_methods
     );
-    assert_eq!(
-        dc.source.matches("// <decompile: incomplete:").count(),
-        1,
-        "the one incomplete body carries the coverage marker"
-    );
+    for method in [
+        "public int l1lll(",
+        "public long $$S5$(",
+        "public String II1l1(",
+    ] {
+        let start: usize = dc
+            .source
+            .find(method)
+            .unwrap_or_else(|| panic!("{method} is missing from the recovered source"));
+        let body: &str = &dc.source[start..];
+        let body: &str = &body[..body.find("\n    }").unwrap_or(body.len())];
+        assert!(
+            body.contains("__unresolved__") || body.contains("// <decompile: incomplete:"),
+            "{method} is not fully lifted, so its body must name what is unresolved:\n{body}"
+        );
+    }
     assert_eq!(
         dc.fully_lifted_methods,
         dc.method_count - 3,

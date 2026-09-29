@@ -486,10 +486,11 @@ fn generated_kotlin_d8_artifact_covers_the_suspend_abi_matrix() {
         })
         .expect("ContinuationImpl descriptor has a legal rendered class name");
     assert!(
-        stripped_out
-            .source
-            .contains(&format!("public class {class_name} {{")),
-        "the ContinuationImpl descriptor must render as its class declaration: {descriptor}: {}",
+        stripped_out.source.contains(&format!(
+            "public class {class_name} extends kotlin.coroutines.jvm.internal.ContinuationImpl {{"
+        )),
+        "the ContinuationImpl descriptor must render as its class declaration with its declared \
+         superclass: {descriptor}: {}",
         stripped_out.source
     );
     assert!(
