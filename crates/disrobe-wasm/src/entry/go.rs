@@ -230,9 +230,9 @@ pub fn analyze(bytes: &[u8]) -> Result<GoResult, String> {
         let functions: Vec<(u64, &str)> = symbols
             .funcs
             .iter()
-            .map(|function: &GoFunc| (function.entry, function.name.as_str()))
+            .filter_map(|function: &GoFunc| function.va.map(|va: u64| (va, function.name.as_str())))
             .collect();
-        link_method_functions(&mut metadata, &functions, module.text_va);
+        link_method_functions(&mut metadata, &functions);
         Some(types_view(metadata)?)
     };
     if symbols.funcs.len() > MAX_SYMBOLS as usize
