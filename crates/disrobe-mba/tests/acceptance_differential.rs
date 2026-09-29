@@ -4,7 +4,6 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
 
 #[path = "support/solver_requirement.rs"]
 #[allow(clippy::redundant_pub_crate)]
@@ -32,8 +31,6 @@ const DEEP_SWEEP_VAR: &str = "DISROBE_MBA_DEEP_DIFFERENTIAL";
 const FIXED_CASES_PER_CELL: usize = 4;
 const FIXED_PREDICATES_PER_CELL: u64 = 10;
 const FIXED_PREDICATE_MAX_NODES: usize = 48;
-const DEEP_SWEEP_BUDGET: Duration = Duration::from_mins(10);
-const DEEP_PREDICATE_BUDGET: Duration = Duration::from_mins(5);
 const FIXED_ACCEPTED_FLOORS: [(Width, usize); 3] =
     [(Width::W1, 69), (Width::W4, 45), (Width::W8, 40)];
 const FIXED_EXHAUSTIVE_FLOORS: [(Width, usize); 3] =
@@ -100,7 +97,7 @@ fn active_plan() -> Plan {
         return DEEP_PLAN;
     }
     eprintln!(
-        "NOT RUN: the deep sweep is opt-in. This run uses the {} matrix. Set {DEEP_SWEEP_VAR}=1 to run the broad timed sweep.",
+        "NOT RUN: the deep sweep is opt-in. This run uses the {} matrix. Set {DEEP_SWEEP_VAR}=1 to run the broad sweep.",
         FAST_PLAN.label
     );
     FAST_PLAN
@@ -1008,7 +1005,6 @@ struct Tally {
     exhaustively_checked_by_width: BTreeMap<u32, usize>,
     accepted_by_width: BTreeMap<u32, usize>,
     accepted_by_shape: BTreeMap<(&'static str, u32), usize>,
-    deadline_hit: bool,
 }
 
 impl Tally {
@@ -1258,17 +1254,12 @@ fn sweep_fixed_matrix(plan: Plan) -> Tally {
 }
 
 fn sweep_deep(plan: Plan) -> Tally {
-    let deadline: Instant = Instant::now() + DEEP_SWEEP_BUDGET;
     let mut tally: Tally = Tally::default();
     let mut batteries: Batteries = Batteries::new(plan);
     for width in plan.widths.iter().copied() {
         for var_count in 1u32..=plan.max_vars {
             for shape in SHAPES {
                 for seed in 0..plan.sweep_seeds {
-                    if Instant::now() >= deadline {
-                        tally.deadline_hit = true;
-                        return tally;
-                    }
                     let original: Expr = generate(shape, seed, var_count, width);
                     if original.node_count() > plan.max_nodes {
                         continue;
@@ -1298,14 +1289,13 @@ fn sweep(plan: Plan) -> Tally {
 
 fn report(tally: &Tally) {
     eprintln!(
-        "acceptance differential: generated={} accepted={} exhaustively_checked={} sampled_only={} independent_evaluations={} failures={} deadline_hit={}",
+        "acceptance differential: generated={} accepted={} exhaustively_checked={} sampled_only={} independent_evaluations={} failures={}",
         tally.generated,
         tally.accepted,
         tally.exhaustively_checked,
         tally.sampled_only,
         tally.sample_points,
         tally.failures.len(),
-        tally.deadline_hit
     );
     for ((tag, bits), count) in &tally.by_tag {
         eprintln!("  verdict {tag} at {bits} bits: {count}");
@@ -1430,11 +1420,6 @@ fn accepted_rewrites_survive_an_independent_equivalence_check() {
         tally.exhaustively_checked
     );
     if deep {
-        assert!(
-            !tally.deadline_hit,
-            "the deep sweep ran out of wall clock after {} expressions, so its verdict does not cover the plan",
-            tally.generated
-        );
         assert!(
             tally.wide_tag_total("polynomial_identity") > 0,
             "the polynomial-identity leg is the weakest wide acceptance path and the sweep never reached it"
@@ -1657,7 +1642,6 @@ fn random_predicate(rng: &mut SplitMix, pool: &[Expr], width: Width, depth: u32)
 fn accepted_predicate_rewrites_and_opaque_verdicts_survive_an_independent_check() {
     let plan: Plan = active_plan();
     let deep: bool = plan.kind == SweepKind::Deep;
-    let deadline: Option<Instant> = deep.then(|| Instant::now() + DEEP_PREDICATE_BUDGET);
     let seeds_per_cell: u64 = if deep {
         plan.predicate_seeds
     } else {
@@ -1678,7 +1662,6 @@ fn accepted_predicate_rewrites_and_opaque_verdicts_survive_an_independent_check(
     let mut data_dependent: usize = 0;
     let mut out_of_budget: usize = 0;
     let mut failures: Vec<String> = Vec::new();
-    let mut deadline_hit: bool = false;
 
     for width in plan.widths.iter().copied() {
         for var_count in 1u32..=plan.max_vars.min(3) {
@@ -1692,12 +1675,6 @@ fn accepted_predicate_rewrites_and_opaque_verdicts_survive_an_independent_check(
                 exhaustive_environments(width, var_count)
             };
             for seed in 0..seeds_per_cell {
-                if let Some(limit) = deadline
-                    && Instant::now() >= limit
-                {
-                    deadline_hit = true;
-                    break;
-                }
                 let mut rng: SplitMix = SplitMix::new(
                     seed ^ (u64::from(width.bits()) << 48) ^ (u64::from(var_count) << 40),
                 );
@@ -1772,7 +1749,7 @@ fn accepted_predicate_rewrites_and_opaque_verdicts_survive_an_independent_check(
     }
 
     eprintln!(
-        "predicate differential: generated={generated} rewritten={rewritten} always_true={always_true} always_false={always_false} data_dependent={data_dependent} out_of_budget={out_of_budget} exhaustive_by_width={exhaustively_checked_by_width:?} failures={} deadline_hit={deadline_hit}",
+        "predicate differential: generated={generated} rewritten={rewritten} always_true={always_true} always_false={always_false} data_dependent={data_dependent} out_of_budget={out_of_budget} exhaustive_by_width={exhaustively_checked_by_width:?} failures={}",
         failures.len(),
     );
     assert!(
@@ -1786,12 +1763,7 @@ fn accepted_predicate_rewrites_and_opaque_verdicts_survive_an_independent_check(
     } else {
         FAST_PLAN.widths.len() * FAST_PLAN.max_vars as usize * FIXED_PREDICATES_PER_CELL as usize
     };
-    if deep {
-        assert!(
-            !deadline_hit,
-            "the deep predicate sweep ran out of wall clock after {generated} predicates"
-        );
-    } else {
+    if !deep {
         let expected_per_width: usize =
             FAST_PLAN.max_vars as usize * FIXED_PREDICATES_PER_CELL as usize;
         for width in FAST_PLAN.widths.iter().copied() {
