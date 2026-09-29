@@ -1,5 +1,4 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
-use std::time::{Duration, Instant};
 
 use disrobe_pass_jvm::dex_builder::{ClassDef, DexBuilder, EncodedMethod, MethodRef, ProtoRef};
 use disrobe_pass_jvm::{
@@ -285,19 +284,22 @@ fn first_code_offset(bytes: &[u8], class_defs_off: usize) -> usize {
 }
 
 #[test]
-fn dex_oversized_proto_and_class_counts_terminate_fast() {
+fn dex_oversized_proto_and_class_counts_are_refused_before_iterating() {
     let base: Vec<u8> = build_minimal_dex();
-    let limit: Duration = Duration::from_secs(5);
-    for &count_off in &[72_usize, 96] {
+    for (count_off, table_reason) in [
+        (72_usize, "DEX prototype identifier table is out of range"),
+        (96, "DEX class definition table is out of range"),
+    ] {
         let mut bytes: Vec<u8> = base.clone();
         bytes[count_off..count_off + 4].copy_from_slice(&0xFFFF_FFFF_u32.to_le_bytes());
-        let t0: Instant = Instant::now();
         let parsed: disrobe_pass_jvm::Result<disrobe_pass_jvm::DexFile> = parse_dex(&bytes);
-        let elapsed: Duration = t0.elapsed();
-        assert!(parsed.is_err());
         assert!(
-            elapsed < limit,
-            "corrupt count at offset {count_off} must not hang: took {elapsed:?}"
+            matches!(
+                &parsed,
+                Err(disrobe_pass_jvm::Error::BadBytecode { reason, .. }) if *reason == table_reason
+            ),
+            "a count at offset {count_off} that the file cannot hold must be refused by the \
+             table range check before any entry is read: {parsed:?}"
         );
     }
 }
