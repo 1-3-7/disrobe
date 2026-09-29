@@ -15,7 +15,7 @@
 use disrobe_pass_php::decompile::op;
 use disrobe_pass_php::{
     Branch, Decompilation, Fidelity, OPARRAY_MAGIC, OPARRAY_VERSION, Op, OpArray, OperandType,
-    UnrecoveredOp, build_cfg, decompile_oparray, opcode_name, parse_oparray,
+    UnrecoveredOp, decompile_oparray, opcode_name, parse_oparray,
 };
 
 const T_UNUSED: u8 = 0;
@@ -628,8 +628,6 @@ fn cfg_recovers_if_skeleton_from_jmpz_branch() {
     let bytes: Vec<u8> = b.build_container();
 
     let parsed = parse_oparray(&bytes).expect("parse");
-    let cfg = build_cfg(&parsed.ops);
-    assert!(cfg.blocks.len() >= 3, "expected multiple blocks");
     assert!(matches!(parsed.ops[0].branch_target(), Branch::Cond { .. }));
     assert!(matches!(parsed.ops[2].branch_target(), Branch::Uncond(4)));
 

@@ -6,7 +6,7 @@ use disrobe_pass_php::encoder;
 use disrobe_pass_php::protectors;
 use disrobe_pass_php::{
     AesOutcome, AuthorizationToken, ContainerSurface, EncoderFamily, KeyScan, LoaderReport,
-    OpArray, PeelOptions, PeelReport, PharArchive, PhpDetection, RecoveryReport, Result, build_cfg,
+    OpArray, PeelOptions, PeelReport, PharArchive, PhpDetection, RecoveryReport, Result,
     decompile_oparray, deflatten, detect_php, extract_phar_entry, parse_oparray, parse_phar,
     peel_eval_chain, peel_modern_loader, recover_php, restructure, reverse_ioncube_container,
     reverse_sourceguardian_container, scan_key, signature_scan, surface_zend_guard,
@@ -127,7 +127,6 @@ fn exercise_byte_entrypoints(bytes: &[u8], rng: &mut XorShift64) {
     let _: Result<bcompiler::BcgHeader> = bcompiler::read_header(bytes);
     let parsed_oparray: Result<OpArray> = parse_oparray(bytes);
     if let Ok(oparray) = parsed_oparray {
-        let _: disrobe_pass_php::Cfg = build_cfg(&oparray.ops);
         let _: disrobe_pass_php::Decompilation = decompile_oparray(&oparray);
     }
     let _: Result<OpArray> = decompile::parse_oparray(bytes);

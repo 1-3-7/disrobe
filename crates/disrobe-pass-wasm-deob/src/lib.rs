@@ -61,7 +61,6 @@ mod simd;
 pub mod sourcemap;
 mod ssa;
 mod stack_switching;
-mod structure;
 mod structured;
 mod tail_call;
 mod threads;
@@ -150,7 +149,6 @@ pub use stack_switching::{
     ResumeHandlerRecord, StackSwitchOpKind, StackSwitchOpRecord, StackSwitchReport,
     scan_stack_switching,
 };
-pub use structure::{StructuredFunction, StructuredNode, reloop_inverse};
 pub use structured::rust_module_decls;
 pub use tail_call::{TailCallKind, TailCallRecord, TailCallReport, scan_tail_calls};
 pub use threads::{AtomicOpKind, AtomicOpRecord, SharedMemoryRecord, ThreadsReport, scan_threads};

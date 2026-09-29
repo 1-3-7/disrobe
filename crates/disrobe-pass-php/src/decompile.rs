@@ -244,19 +244,6 @@ pub struct OpArray {
     pub try_catch: Vec<TryCatch>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BasicBlock {
-    pub start: u32,
-    pub end: u32,
-    pub successors: Vec<u32>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Cfg {
-    pub blocks: Vec<BasicBlock>,
-    pub block_at: BTreeMap<u32, usize>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Fidelity {
     Partial,
@@ -961,84 +948,6 @@ fn parse_ops(cur: &mut Cursor<'_>) -> Result<Vec<Op>> {
         });
     }
     Ok(out)
-}
-
-#[must_use]
-pub fn build_cfg(ops: &[Op]) -> Cfg {
-    if ops.is_empty() {
-        return Cfg {
-            blocks: Vec::new(),
-            block_at: BTreeMap::new(),
-        };
-    }
-    let n: u32 = ops.len() as u32;
-    let mut leaders: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
-    leaders.insert(0);
-    for (idx, op) in ops.iter().enumerate() {
-        let i: u32 = idx as u32;
-        match op.branch_target() {
-            Branch::Uncond(t) => {
-                if t < n {
-                    leaders.insert(t);
-                }
-                if i + 1 < n {
-                    leaders.insert(i + 1);
-                }
-            }
-            Branch::Cond { taken, .. } => {
-                if taken < n {
-                    leaders.insert(taken);
-                }
-                if i + 1 < n {
-                    leaders.insert(i + 1);
-                }
-            }
-            Branch::Terminal => {
-                if i + 1 < n {
-                    leaders.insert(i + 1);
-                }
-            }
-            Branch::None => {}
-        }
-    }
-    let leader_vec: Vec<u32> = leaders.iter().copied().collect();
-    let mut blocks: Vec<BasicBlock> = Vec::with_capacity(leader_vec.len());
-    let mut block_at: BTreeMap<u32, usize> = BTreeMap::new();
-    for (bi, &start) in leader_vec.iter().enumerate() {
-        let end: u32 = leader_vec.get(bi + 1).copied().unwrap_or(n);
-        block_at.insert(start, bi);
-        blocks.push(BasicBlock {
-            start,
-            end,
-            successors: Vec::new(),
-        });
-    }
-    for block in &mut blocks {
-        let last: u32 = block.end - 1;
-        let op: &Op = &ops[last as usize];
-        match op.branch_target() {
-            Branch::Uncond(t) => {
-                if t < n {
-                    block.successors.push(t);
-                }
-            }
-            Branch::Cond { taken, fallthrough } => {
-                if taken < n {
-                    block.successors.push(taken);
-                }
-                if fallthrough && block.end < n {
-                    block.successors.push(block.end);
-                }
-            }
-            Branch::Terminal => {}
-            Branch::None => {
-                if block.end < n {
-                    block.successors.push(block.end);
-                }
-            }
-        }
-    }
-    Cfg { blocks, block_at }
 }
 
 #[must_use]
