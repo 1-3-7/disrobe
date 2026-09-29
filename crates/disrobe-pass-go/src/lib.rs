@@ -11,7 +11,6 @@ pub mod dwarf;
 mod embed_digest;
 pub mod embed_fs;
 pub mod error;
-pub mod format_wire;
 pub mod garble;
 mod garble_literals;
 mod garble_thunk;
@@ -39,7 +38,6 @@ pub use embed_digest::{
 };
 pub use embed_fs::{EmbedFile, EmbedMap, EmbedReport, EmbedScanStats, extract_embed};
 pub use error::{Error, Result};
-pub use format_wire::format_go;
 pub use garble::{
     GarbleQuality, GarbleReport, GarbleResidual, LiteralRecoveryStats, NameRecoveryStats,
     analyze as analyze_garble, probe_simple_literals, probe_thunk_literals,

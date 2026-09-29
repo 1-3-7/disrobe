@@ -17,7 +17,6 @@ mod error;
 #[allow(clippy::redundant_pub_crate)]
 mod esoteric;
 #[cfg(not(target_arch = "wasm32"))]
-pub mod format_wire;
 #[cfg(not(target_arch = "wasm32"))]
 #[allow(clippy::redundant_pub_crate)]
 mod js_string;
@@ -96,7 +95,6 @@ pub use esoteric::{
     unpack_packer,
 };
 #[cfg(not(target_arch = "wasm32"))]
-pub use format_wire::{format_javascript, format_typescript};
 #[cfg(not(target_arch = "wasm32"))]
 pub use jsconfuser::{
     AstScramblerResult, CalculatorReversalResult, CalculatorShape, DeadCodeReversalResult,

@@ -2,8 +2,6 @@
 use std::fs;
 use std::path::PathBuf;
 
-use disrobe_pass_js_deob::format_javascript;
-
 fn corpus_path(rel: &str) -> PathBuf {
     let manifest: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     manifest
@@ -37,13 +35,6 @@ fn reparses(source: &str) -> bool {
 fn megafile_is_parseable_by_oxc() {
     let src: String = load("megafile/edge_cases.js");
     assert!(reparses(&src), "the edge-case canvas itself must parse");
-    let formatted: String = format_javascript(&src);
-    assert!(reparses(&formatted), "formatted megafile must still parse");
-    assert_eq!(
-        format_javascript(&formatted),
-        formatted,
-        "formatting must be idempotent on its own output"
-    );
 }
 
 #[test]

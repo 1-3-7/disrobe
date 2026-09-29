@@ -19,7 +19,6 @@ pub mod devirt;
 pub mod error;
 pub(crate) mod field_rva;
 #[cfg(not(target_arch = "wasm32"))]
-pub mod format_wire;
 pub mod iterator_reverse;
 pub mod lambda_reverse;
 pub(crate) mod list_switch_reverse;
@@ -69,7 +68,6 @@ pub use decompile::{
 };
 pub use error::{Error, Result};
 #[cfg(not(target_arch = "wasm32"))]
-pub use format_wire::format_csharp;
 #[cfg(feature = "llm-metadata")]
 pub use llm::{DotnetInstr, DotnetLlmInput, METADATA_CAPABILITY as DOTNET_METADATA_CAPABILITY};
 pub use metadata::{
