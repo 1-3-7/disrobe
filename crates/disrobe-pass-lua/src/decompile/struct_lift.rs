@@ -1209,7 +1209,18 @@ fn lower(
                 emit_closure(state, ctx, live, p, &d, dialect, depth, &captured)?;
                 pc += captures.pseudo_words;
             }
-            Op::Vararg => define(state, names, live, p, d.a, "...".to_owned()),
+            Op::Vararg => {
+                let count: u32 = if matches!(dialect, LuaDialect::Lua54) {
+                    d.c
+                } else {
+                    d.b
+                };
+                if count == 0 {
+                    state.set_reg(d.a, "...".to_owned());
+                } else {
+                    define(state, names, live, p, d.a, "...".to_owned());
+                }
+            }
             Op::VarargPrep | Op::ExtraArg => {}
             Op::Unknown => {
                 state.push_raw(format!("-- unknown opcode raw=0x{raw:08X} pc={pc}"));

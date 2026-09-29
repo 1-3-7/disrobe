@@ -53,3 +53,25 @@ end
 local calls = 0
 local square = memo(function(n) calls = calls + 1 return n * n end)
 print(square(4), square(4), square(5), calls)
+
+local function curry(f, a) return function(...) return f(a, ...) end end
+local add3 = curry(function(x, y, z) return x + y + (z or 0) end, 1)
+print(add3(2), add3(2, 3))
+
+local words = {}
+for w in ("The rain in Spain"):gmatch("%a+") do
+  if #w > 3 then words[#words + 1] = w:lower() elseif w == "in" then words[#words + 1] = "IN" end
+end
+print(table.concat(words, " "))
+
+local function first_even(list)
+  for idx, v in ipairs(list) do
+    if v % 2 == 0 then return idx, v end
+  end
+  return nil
+end
+print(first_even({1, 3, 6, 8}))
+print(first_even({1, 3}))
+
+local ok, count, second = pcall(function(...) return select("#", ...), ... end, "p", nil, "q")
+print(ok, count, second)
