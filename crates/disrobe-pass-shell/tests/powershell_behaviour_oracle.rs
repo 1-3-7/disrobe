@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use disrobe_pass_shell::chain_detector::{ShellRefusal, recover_detected};
 use disrobe_pass_shell::{Detection, detect};
 
-const PROGRAMS: [(&str, &str); 7] = [
+const PROGRAMS: [(&str, &str); 8] = [
     (
         "format_reorder",
         "$a = ('{2}{0}{1}' -f 'ell','o','H')\nWrite-Output $a\nWrite-Output ('{1}-{0}' -f 'two','one')\n",
@@ -35,13 +35,11 @@ const PROGRAMS: [(&str, &str); 7] = [
         "call_operator_and_format",
         "& ('Wr' + 'ite-Output') ('{0} and {1}' -f (6 * 7), 40)\n",
     ),
+    (
+        "subexpressions_in_strings",
+        "Write-Output \"Wr$('ite')-$('x' + 'y')\"\n",
+    ),
 ];
-
-const REFUSED: [(&str, &str, &str); 1] = [(
-    "subexpressions_in_strings",
-    "Write-Output \"Wr$('ite')-$('x' + 'y')\"\n",
-    "DR-SHELL-0928",
-)];
 
 fn run_powershell(dir: &Path, name: &str, script: &str) -> String {
     let path: PathBuf = dir.join(format!("{name}.ps1"));
@@ -114,17 +112,4 @@ fn a_recovery_that_changes_one_character_is_caught() {
         run_powershell(dir, &format!("{name}.mut"), &mutated),
         expected
     );
-}
-
-#[test]
-fn shapes_the_detector_does_not_claim_are_refused_by_name() {
-    for (name, program, code) in REFUSED {
-        match recover(program) {
-            Ok(recovered) => panic!("{name}: now recovered, move it to PROGRAMS:\n{recovered}"),
-            Err(refusal) => {
-                let message: String = refusal.into_error().to_string();
-                assert!(message.contains(code), "{name}: {message}");
-            }
-        }
-    }
 }

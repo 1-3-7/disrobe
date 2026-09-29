@@ -62,6 +62,9 @@ const DASH_SHEBANG: &str = "#!/bin/dash";
 const KSH_SHEBANG: &str = "#!/bin/ksh";
 const ZSH_SHEBANG: &str = "#!/bin/zsh";
 
+static PS_LITERAL_SUBEXPRESSION: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r#""[^"\n]*\$\(\s*'[^'\n]*'(?:\s*\+\s*'[^'\n]*')*\s*\)"#));
+
 static PS_TICKED_COMMAND: LazyLock<&'static Regex> = LazyLock::new(|| {
     regex!(
         r"(?:\b[A-Za-z]+`[A-Za-z][A-Za-z`]*-[A-Za-z`]+|\b[A-Za-z]+-[A-Za-z]*`[A-Za-z][A-Za-z`]*)"
@@ -261,6 +264,7 @@ fn has_powershell_obfuscation_shape(scan: &str) -> bool {
     PS_STRING_FORMAT_OBF.is_match(scan)
         || PS_TOKEN_OBF.is_match(scan)
         || PS_TICKED_COMMAND.is_match(scan)
+        || PS_LITERAL_SUBEXPRESSION.is_match(scan)
         || PS_AST_REORDER.is_match(scan)
         || PS_GET_COMMAND_CALL.is_match(scan)
         || PS_CONCAT_INVOCATION.is_match(scan)
@@ -492,6 +496,10 @@ fn detect_ps_family(scan: &str, lower: &str, markers: &mut Vec<String>) -> Famil
     if PS_TICKED_COMMAND.is_match(scan) {
         markers.push("ps-ticked-command".to_owned());
         return Family::InvokeObfuscationToken;
+    }
+    if PS_LITERAL_SUBEXPRESSION.is_match(scan) {
+        markers.push("ps-literal-subexpression".to_owned());
+        return Family::InvokeObfuscationString;
     }
     if PS_CONCAT_INVOCATION.is_match(scan) {
         markers.push("ps-concatenated-invocation".to_owned());
