@@ -1,7 +1,7 @@
 use super::{
-    Decoded, LocalNames, LuaDialect, LuaProto, Op, StructState, compare_value_expr, decode,
-    define_at_merge, is_single_value_op, jump_target, region_has_external_entry, rk,
-    single_value_text,
+    Decoded, LiveAcrossBranch, LocalNames, LuaDialect, LuaProto, Op, StructState, StructuredLift,
+    compare_value_expr, decode, define_at_merge, is_single_value_op, jump_target, lower_span,
+    region_has_external_entry, rk, single_value_text, written_registers,
 };
 
 const MAX_REGION_INSTRUCTIONS: usize = 256;
@@ -76,7 +76,19 @@ impl Value {
                 ..
             } => {
                 if !taken.falls_into(otherwise.entry()) {
-                    return None;
+                    if !otherwise.falls_into(taken.entry()) {
+                        return None;
+                    }
+                    let chosen: String = match otherwise.as_ref() {
+                        Self::Or { first, rest, .. } if rest.entry() == taken.entry() => {
+                            first.clone()
+                        }
+                        other => other.render()?,
+                    };
+                    return Some(format!(
+                        "(not ({cond}) and {chosen} or {})",
+                        taken.render()?
+                    ));
                 }
                 let chosen: String = match taken.as_ref() {
                     Self::Or { first, rest, .. } if rest.entry() == otherwise.entry() => {
@@ -101,6 +113,7 @@ struct Region<'a> {
     target: u32,
     join: usize,
     steps: usize,
+    trial: &'a mut dyn FnMut(usize, usize) -> Option<String>,
 }
 
 fn never_falsy(text: &str) -> bool {
@@ -110,6 +123,48 @@ fn never_falsy(text: &str) -> bool {
         || text.starts_with('{')
         || text.starts_with("function")
         || text.parse::<f64>().is_ok()
+}
+
+fn is_segment_op(d: &Decoded, dialect: LuaDialect) -> bool {
+    match d.op {
+        Op::Jmp
+        | Op::Test
+        | Op::TestSet
+        | Op::Eq
+        | Op::Lt
+        | Op::Le
+        | Op::EqK
+        | Op::EqI
+        | Op::LtI
+        | Op::LeI
+        | Op::GtI
+        | Op::GeI
+        | Op::ForLoop
+        | Op::ForPrep
+        | Op::TForPrep
+        | Op::TForCall
+        | Op::TForLoop
+        | Op::Return
+        | Op::Return0
+        | Op::Return1
+        | Op::TailCall
+        | Op::SetUpval
+        | Op::SetGlobal
+        | Op::SetTabUp
+        | Op::SetTable
+        | Op::SetField
+        | Op::SetI
+        | Op::SetList
+        | Op::Closure
+        | Op::Close
+        | Op::Tbc
+        | Op::LFalseSkip
+        | Op::VarargPrep
+        | Op::Unknown => false,
+        Op::LoadBool => d.c == 0 || matches!(dialect, LuaDialect::Lua54),
+        Op::Call => d.c == 2,
+        _ => true,
+    }
 }
 
 fn is_compare(op: Op) -> bool {
@@ -172,12 +227,49 @@ impl Region<'_> {
         }
     }
 
+    fn segment_end(&self, pc: usize) -> usize {
+        let mut end: usize = pc;
+        while end < self.join
+            && self
+                .decoded(end)
+                .is_some_and(|d: Decoded| is_segment_op(&d, self.dialect))
+        {
+            end += 1;
+        }
+        end
+    }
+
+    fn segment_leaf(&mut self, pc: usize, depth: usize) -> Option<Value> {
+        let end: usize = self.segment_end(pc);
+        if end <= pc + 1 {
+            return None;
+        }
+        let writes_only_scratch: bool = (pc..end).all(|at: usize| {
+            self.decoded(at).is_some_and(|d: Decoded| {
+                written_registers(&d, self.dialect)
+                    .iter()
+                    .all(|register: &u32| *register >= self.target)
+            })
+        });
+        let last_writes_target: bool = self
+            .decoded(end - 1)
+            .is_some_and(|d: Decoded| written_registers(&d, self.dialect).contains(&self.target));
+        if !writes_only_scratch || !last_writes_target {
+            return None;
+        }
+        let text: String = (self.trial)(pc, end)?;
+        self.after_load(pc, end, text, depth)
+    }
+
     fn build(&mut self, pc: usize, depth: usize) -> Option<Value> {
         self.steps = self.steps.checked_add(1)?;
         if self.steps > MAX_BUILD_STEPS || depth > MAX_REGION_INSTRUCTIONS || pc >= self.join {
             return None;
         }
         let d: Decoded = self.decoded(pc)?;
+        if is_segment_op(&d, self.dialect) && self.segment_end(pc) > pc + 1 {
+            return self.segment_leaf(pc, depth);
+        }
         if is_compare(d.op) {
             if self.compare_reads_target(&d) {
                 return None;
@@ -192,7 +284,10 @@ impl Region<'_> {
             });
         }
         match d.op {
-            Op::Test if d.a != self.target => {
+            Op::Test
+                if d.a != self.target
+                    || (self.jump_after(pc)? != self.join && pc + 2 != self.join) =>
+            {
                 let taken: usize = self.jump_after(pc)?;
                 let register: String = self.state.reg(d.a);
                 let cond: String = if jumps_when_truthy(&d, self.dialect) {
@@ -312,14 +407,13 @@ fn region_bounds(p: &LuaProto, start: usize, dialect: LuaDialect) -> Option<(u32
             }
             furthest = furthest.max(to);
         } else if let Some(register) = written_value_register(&d, dialect) {
-            if target.is_some_and(|known: u32| known != register) {
-                return None;
-            }
-            target = Some(register);
+            target = Some(target.map_or(register, |known: u32| known.min(register)));
             let width: usize = if d.op == Op::TestSet { 2 } else { 1 };
             furthest = furthest.max(pc + width);
         } else if is_compare(d.op) || d.op == Op::Test {
             furthest = furthest.max(pc + 2);
+        } else if is_segment_op(&d, dialect) {
+            furthest = furthest.max(pc + 1);
         } else {
             return None;
         }
@@ -328,24 +422,52 @@ fn region_bounds(p: &LuaProto, start: usize, dialect: LuaDialect) -> Option<(u32
     None
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn emit_value_region(
     state: &mut StructState,
     names: &LocalNames,
+    live: &LiveAcrossBranch,
     p: &LuaProto,
     pc: usize,
     dialect: LuaDialect,
+    depth: usize,
+    ctx: &mut StructuredLift<'_>,
 ) -> Option<usize> {
     let (target, join): (u32, usize) = region_bounds(p, pc, dialect)?;
     if region_has_external_entry(p, pc, join - 1, dialect) {
         return None;
     }
+    let snapshot: &StructState = state;
+    let mut trial = |start: usize, end: usize| -> Option<String> {
+        let mut scratch: StructState = snapshot.clone();
+        let statements: usize = scratch.stmts.len();
+        let warnings: usize = scratch.warnings.len();
+        let reached: usize = lower_span(
+            p,
+            dialect,
+            depth,
+            names,
+            live,
+            &mut scratch,
+            ctx,
+            start,
+            end,
+        )?;
+        let clean: bool = reached == end
+            && scratch.stmts.len() == statements
+            && scratch.warnings.len() == warnings
+            && !scratch.bound.get(target as usize).copied().unwrap_or(false);
+        let text: String = scratch.reg(target);
+        (clean && !text.is_empty()).then_some(text)
+    };
     let mut region: Region<'_> = Region {
-        state,
+        state: snapshot,
         p,
         dialect,
         target,
         join,
         steps: 0,
+        trial: &mut trial,
     };
     let value: Value = region.build(pc, 0)?;
     if !value.is_selection() {

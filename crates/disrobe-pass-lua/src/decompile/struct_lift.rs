@@ -22,7 +22,7 @@ const KEY_NAMES: [&str; 4] = ["k", "key", "idx", "index"];
 const VALUE_NAMES: [&str; 4] = ["v", "value", "item", "elem"];
 const MAX_STRUCT_NODES: usize = 1 << 20;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct StructState {
     regs: Vec<String>,
     defined: Vec<bool>,
@@ -932,8 +932,23 @@ fn lower(
     state: &mut StructState,
     ctx: &mut StructuredLift<'_>,
 ) -> Option<()> {
-    let n: usize = p.code.len();
-    let mut pc: usize = 0;
+    lower_span(p, dialect, depth, names, live, state, ctx, 0, p.code.len()).map(|_| ())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn lower_span(
+    p: &LuaProto,
+    dialect: LuaDialect,
+    depth: usize,
+    names: &LocalNames,
+    live: &LiveAcrossBranch,
+    state: &mut StructState,
+    ctx: &mut StructuredLift<'_>,
+    start: usize,
+    end: usize,
+) -> Option<usize> {
+    let n: usize = end.min(p.code.len());
+    let mut pc: usize = start;
     while pc < n {
         state.pc = pc;
         activate_locals(state, names, live, pc);
@@ -1216,7 +1231,7 @@ fn lower(
                 {
                     pc = consumed;
                 } else if let Some(consumed) =
-                    value_region::emit_value_region(state, names, p, pc, dialect)
+                    value_region::emit_value_region(state, names, live, p, pc, dialect, depth, ctx)
                 {
                     pc = consumed;
                 } else {
@@ -1234,7 +1249,7 @@ fn lower(
                 {
                     pc = consumed;
                 } else if let Some(consumed) =
-                    value_region::emit_value_region(state, names, p, pc, dialect)
+                    value_region::emit_value_region(state, names, live, p, pc, dialect, depth, ctx)
                 {
                     pc = consumed;
                 } else {
@@ -1255,7 +1270,7 @@ fn lower(
                 {
                     pc = consumed;
                 } else if let Some(consumed) =
-                    value_region::emit_value_region(state, names, p, pc, dialect)
+                    value_region::emit_value_region(state, names, live, p, pc, dialect, depth, ctx)
                 {
                     pc = consumed;
                 } else {
@@ -1274,7 +1289,7 @@ fn lower(
                 } else if let Some(consumed) = emit_test_or(state, names, p, &d, pc, dialect) {
                     pc = consumed;
                 } else if let Some(consumed) =
-                    value_region::emit_value_region(state, names, p, pc, dialect)
+                    value_region::emit_value_region(state, names, live, p, pc, dialect, depth, ctx)
                 {
                     pc = consumed;
                 } else {
@@ -1419,7 +1434,7 @@ fn lower(
         }
         pc += 1;
     }
-    Some(())
+    Some(pc)
 }
 
 #[inline]
