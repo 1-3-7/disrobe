@@ -22,7 +22,6 @@ pub mod error;
 pub mod frame_tree;
 #[cfg(feature = "llm-metadata")]
 pub mod llm;
-pub mod reader;
 pub mod recompile;
 pub mod roundtrip;
 pub mod selfcheck;
