@@ -30,7 +30,7 @@ const CLUSTER_CEILINGS: &[(&str, u64)] = &[
     ("CODE:LOAD_FAST->LOAD_GLOBAL", 5),
     ("CODE:JUMP->LOAD_FAST", 17),
     ("CODE:POP_TOP->JUMP", 5),
-    ("CODE:GET_ITER->STORE_FAST", 12),
+    ("CODE:GET_ITER->STORE_FAST", 7),
     ("CODE:SETUP_FINALLY->LOAD_GLOBAL", 2),
     ("CODE:JUMP->LOAD_CONST", 2),
     ("CODE:LOAD_FAST(arg)->LOAD_FAST(arg)", 4),
