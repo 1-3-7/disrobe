@@ -1735,7 +1735,7 @@ mod tests {
             .expect("genuine-wall free function present");
         assert!(
             sorted.shape_args,
-            "a shape-only free function with no concrete sibling stays an honest shape wall"
+            "a shape-only free function with no concrete sibling stays a shape wall"
         );
         assert_eq!(sorted.type_args, vec!["go.shape.string".to_owned()]);
         assert!(sorted.concrete_candidates.is_empty());

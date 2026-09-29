@@ -159,7 +159,6 @@ fn big_endian_s390x_stripped_recovers_types_and_itabs_via_backsearch() {
         .filter(|n| recovered_types.contains(*n))
         .count();
     let eq_total: usize = eq_truth.len();
-    #[allow(clippy::cast_precision_loss)]
     let eq_ratio: f64 = eq_hit as f64 / eq_total.max(1) as f64;
     let eq_missing: Vec<&String> = eq_truth
         .iter()
@@ -197,7 +196,6 @@ fn big_endian_s390x_stripped_recovers_types_and_itabs_via_backsearch() {
         .filter(|p| recovered_itabs.contains(*p))
         .count();
     let itab_total: usize = itab_truth.len();
-    #[allow(clippy::cast_precision_loss)]
     let itab_ratio: f64 = itab_hit as f64 / itab_total.max(1) as f64;
     let itab_missing: Vec<&(String, String)> = itab_truth
         .iter()

@@ -292,7 +292,6 @@ fn score_garble_signals(image: &GoImage<'_>, syms: &GoSymbols) -> u32 {
         }
     }
     if total > 0 {
-        #[allow(clippy::cast_precision_loss)]
         let non_goresym_ratio: f64 = (total - goresym_seen) as f64 / total as f64;
         if non_goresym_ratio < 0.30 && short_pkg_hits * 4 > total {
             score += 2;
@@ -898,7 +897,7 @@ mod tests {
         );
         assert!(
             limit.contains("seed") && limit.contains("indirect"),
-            "the limit must honestly name the residual seed / indirect-call boundary"
+            "the limit must name the residual seed / indirect-call boundary"
         );
         assert!(
             !limit.contains("one-time-pad with no statically recoverable key"),

@@ -153,7 +153,6 @@ fn gauntlet_stdlib_recovery_matches_clean_build_nm_oracle() {
         .filter(|n: &&String| recovered.contains(*n))
         .count();
     let total: usize = preserved.len();
-    #[allow(clippy::cast_precision_loss)]
     let ratio: f64 = hit as f64 / total.max(1) as f64;
     assert!(
         ratio >= 0.85,
@@ -191,7 +190,6 @@ fn gauntlet_non_runtime_stdlib_packages_are_hashed_by_garble() {
         .iter()
         .filter(|n: &&String| recovered.contains(*n))
         .collect();
-    #[allow(clippy::cast_precision_loss)]
     let leak_ratio: f64 = leaked.len() as f64 / hashed.len().max(1) as f64;
     assert!(
         leak_ratio <= 0.05,
@@ -304,7 +302,6 @@ fn gauntlet_literals_stdlib_recovery_holds_vs_clean_nm() {
         .filter(|n: &&String| recovered.contains(*n))
         .count();
     let total: usize = preserved.len();
-    #[allow(clippy::cast_precision_loss)]
     let ratio: f64 = hit as f64 / total.max(1) as f64;
     assert!(
         ratio >= 0.80,

@@ -832,7 +832,6 @@ impl Emu<'_, '_> {
         self.regs.insert(Register::R14, STACK_BASE + 0x1000);
     }
 
-    #[allow(clippy::too_many_lines)]
     fn run_block(&mut self, start: u64, end_va: u64, stop_call: Option<u64>, data_va: &mut u64) {
         let Some(view): Option<&TextView<'_>> = view_for(self.text, start) else {
             return;

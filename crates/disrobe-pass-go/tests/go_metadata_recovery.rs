@@ -30,7 +30,7 @@ fn modulename_absent_when_buildinfo_stripped() {
     let analysis: GoAnalysis = analyze(&bytes).expect("analyze garble");
     assert!(
         analysis.moduledata.modulename.is_none(),
-        "garble strips the buildinfo module path to `unknown`; recovery must honestly report None, \
+        "garble strips the buildinfo module path to `unknown`; recovery must report None, \
          got {:?}",
         analysis.moduledata.modulename
     );

@@ -29,7 +29,6 @@ fn garble_name_recovery_measured_against_fixture() {
         "garble keeps stdlib funcs in pclntab; got {}",
         stats.total_funcs
     );
-    #[allow(clippy::cast_precision_loss)]
     let stdlib_ratio: f64 = stats.stdlib_recovered as f64 / stats.total_funcs as f64;
     assert!(
         stdlib_ratio >= 0.50,
@@ -50,7 +49,7 @@ fn garble_name_recovery_measured_against_fixture() {
     let lowered: String = limit.to_ascii_lowercase();
     assert!(
         lowered.contains("not a one-time pad") || lowered.contains("not an information-theoretic"),
-        "the -literals limit must be honestly reclassified away from the false one-time-pad claim; \
+        "the -literals limit must be reclassified away from the false one-time-pad claim; \
          got: {limit}"
     );
     assert!(

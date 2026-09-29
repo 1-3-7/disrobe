@@ -100,7 +100,6 @@ fn typemeta_type_names_match_go_tool_nm_eq_oracle() {
 
     let hit: usize = truth.iter().filter(|n| recovered.contains(*n)).count();
     let total: usize = truth.len();
-    #[allow(clippy::cast_precision_loss)]
     let ratio: f64 = hit as f64 / total.max(1) as f64;
     let missing: Vec<&String> = truth.iter().filter(|n| !recovered.contains(*n)).collect();
     eprintln!(
@@ -144,7 +143,6 @@ fn typemeta_itab_pairs_match_go_tool_nm_itab_oracle() {
 
     let hit: usize = truth.iter().filter(|p| recovered.contains(*p)).count();
     let total: usize = truth.len();
-    #[allow(clippy::cast_precision_loss)]
     let ratio: f64 = hit as f64 / total.max(1) as f64;
     let missing: Vec<&(String, String)> =
         truth.iter().filter(|p| !recovered.contains(*p)).collect();

@@ -62,7 +62,6 @@ fn go124_moduledata_recovers_typelinks_without_epclntab_word() {
         total > 100,
         "go1.24 typelinks walk should expose hundreds of types (got {total})"
     );
-    #[allow(clippy::cast_precision_loss)]
     let ratio: f64 = named as f64 / total.max(1) as f64;
     assert!(
         ratio >= 0.85,
@@ -164,7 +163,6 @@ fn go124_type_names_match_go_tool_nm_eq_oracle() {
     let missing: Vec<&String> = truth.iter().filter(|n| !recovered.contains(*n)).collect();
     let hit: usize = truth.len() - missing.len();
     let total: usize = truth.len();
-    #[allow(clippy::cast_precision_loss)]
     let oracle_ratio: f64 = hit as f64 / total.max(1) as f64;
     eprintln!("go1.24 windows/amd64 (pe): type-eq recovery {hit}/{total} = {oracle_ratio:.4}");
     assert!(
@@ -199,7 +197,6 @@ fn go124_itab_pairs_match_go_tool_nm_itab_oracle() {
         truth.iter().filter(|p| !recovered.contains(*p)).collect();
     let hit: usize = truth.len() - missing.len();
     let total: usize = truth.len();
-    #[allow(clippy::cast_precision_loss)]
     let oracle_ratio: f64 = hit as f64 / total.max(1) as f64;
     eprintln!("go1.24 windows/amd64 (pe): itab recovery {hit}/{total} = {oracle_ratio:.4}");
     assert!(

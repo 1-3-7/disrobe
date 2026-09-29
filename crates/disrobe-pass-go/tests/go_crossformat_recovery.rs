@@ -99,7 +99,6 @@ fn assert_type_eq_recovery(bin: &str, nm_eq: &str, expect_kind: &str) {
     let recovered: BTreeSet<String> = recovered_type_names(&analysis);
     let hit: usize = truth.iter().filter(|n| recovered.contains(*n)).count();
     let total: usize = truth.len();
-    #[allow(clippy::cast_precision_loss)]
     let ratio: f64 = hit as f64 / total.max(1) as f64;
     let missing: Vec<&String> = truth.iter().filter(|n| !recovered.contains(*n)).collect();
     eprintln!(
@@ -140,7 +139,6 @@ fn assert_itab_recovery(bin: &str, nm_itab: &str, expect_kind: &str) {
     let recovered: BTreeSet<(String, String)> = recovered_itab_pairs(&analysis);
     let hit: usize = truth.iter().filter(|p| recovered.contains(*p)).count();
     let total: usize = truth.len();
-    #[allow(clippy::cast_precision_loss)]
     let ratio: f64 = hit as f64 / total.max(1) as f64;
     let missing: Vec<&(String, String)> =
         truth.iter().filter(|p| !recovered.contains(*p)).collect();

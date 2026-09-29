@@ -43,7 +43,6 @@ fn report_fixture(name: &str) {
     };
     let lr: disrobe_pass_go::LiteralRecoveryStats = a.garble.literal_recovery;
     let s: disrobe_pass_go::NameRecoveryStats = a.garble.name_recovery;
-    #[allow(clippy::cast_precision_loss)]
     let stdlib_ratio: f64 = s.stdlib_recovered as f64 / s.total_funcs.max(1) as f64;
     println!(
         "==== {name} (fixture) ====\n  quality={:?} residual={:?} score={} | stdlib={:.1}% hashed_erased={} | thunk={} simple={} xor={} rep={}",
@@ -74,9 +73,7 @@ fn report(name: &str, check_literals: bool) {
     };
     let q: GarbleQuality = a.garble.quality;
     let s: disrobe_pass_go::NameRecoveryStats = a.garble.name_recovery;
-    #[allow(clippy::cast_precision_loss)]
     let stdlib_ratio: f64 = s.stdlib_recovered as f64 / s.total_funcs.max(1) as f64;
-    #[allow(clippy::cast_precision_loss)]
     let recoverable: f64 =
         (s.stdlib_recovered + s.user_readable_surviving) as f64 / s.total_funcs.max(1) as f64;
     println!("==== {name} ====");

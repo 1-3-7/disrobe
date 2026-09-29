@@ -121,9 +121,7 @@ fn signature_scan_recovers_funcs_matching_go_tool_nm_oracle() {
         .filter(|n| stomped_recovered.contains(*n))
         .count();
     let total: usize = truth.len();
-    #[allow(clippy::cast_precision_loss)]
     let intact_ratio: f64 = hit_intact as f64 / total.max(1) as f64;
-    #[allow(clippy::cast_precision_loss)]
     let stomped_ratio: f64 = hit_stomped as f64 / total.max(1) as f64;
 
     assert!(

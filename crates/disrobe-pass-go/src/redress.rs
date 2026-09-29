@@ -60,7 +60,6 @@ pub fn analyze_stripped(
     let (stdlib_hits, user_pkgs): (usize, Vec<String>) = classify(syms);
     let stripped: bool = is_stripped(image);
     let total: usize = syms.funcs.len().max(1);
-    #[allow(clippy::cast_precision_loss)]
     let stdlib_ratio: f64 = stdlib_hits as f64 / total as f64;
     let buildid: Option<String> = extract_buildid(image);
     StrippedReport {
