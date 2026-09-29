@@ -200,3 +200,30 @@ fn a_try_region_inside_a_with_body_survives_recovery_on_every_banded_interpreter
         failures.join("\n\n")
     );
 }
+
+#[test]
+fn a_statement_after_a_with_inside_a_try_finally_body_stays_in_the_body() {
+    let label: &str = "statement_after_with_in_try_finally";
+    let program: &str = "def f(m, g):\n    try:\n        g(0)\n        with m:\n            g(1)\n        g(2)\n    finally:\n        g(3)\n";
+    let band: Vec<BandInterpreter> = resolve_band(BAND, PRERELEASE);
+    assert_eq!(
+        band.len(),
+        BAND.len(),
+        "{label}: every interpreter in {BAND:?} is required"
+    );
+    let scratch: PathBuf = band_scratch(label);
+    let mut failures: Vec<String> = Vec::new();
+    for interp in &band {
+        let (outcome, source): (BandOutcome, String) =
+            recompile_equiv_inline(interp, program, label, &scratch);
+        match outcome {
+            BandOutcome::RecompileEquiv => {}
+            BandOutcome::Tolerated(_) if interp.is_prerelease => {}
+            other => failures.push(format!(
+                "py{}: expected recompile-equivalence, got {other:?}\n--- recovered:\n{source}",
+                interp.alias
+            )),
+        }
+    }
+    assert!(failures.is_empty(), "{label}:\n{}", failures.join("\n\n"));
+}

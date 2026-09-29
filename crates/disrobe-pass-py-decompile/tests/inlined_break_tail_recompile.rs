@@ -263,3 +263,91 @@ fn a_break_in_an_inner_handler_does_not_end_the_outer_handler() {
         "def f(xs, g, h):\n    for x in xs:\n        try:\n            g(x)\n        except ValueError as e:\n            try:\n                h(e)\n            except KeyError:\n                break\n    return 0\n",
     );
 }
+
+#[test]
+fn a_break_ending_a_named_except_handler_in_a_while_loop_stays_a_break() {
+    assert_recompiles(
+        "while_break_ending_named_except_handler",
+        "def f(it, g):\n    while it.more():\n        try:\n            g(it.next())\n        except ValueError as e:\n            g(e)\n            break\n    return 0\n",
+    );
+}
+
+#[test]
+fn a_break_ending_an_except_handler_in_a_while_loop_stays_a_break() {
+    assert_recompiles(
+        "while_break_ending_except_handler",
+        "def f(it, g):\n    while it.more():\n        try:\n            g(it.next())\n        except ValueError:\n            g(0)\n            break\n    return 0\n",
+    );
+}
+
+#[test]
+fn a_named_handler_break_before_a_statement_tail_stays_in_the_while_loop() {
+    assert_recompiles(
+        "while_named_handler_break_statement_tail",
+        "def f(it, g):\n    while it.more():\n        try:\n            g(it.next())\n        except ValueError as e:\n            g(e)\n            break\n    g(2)\n    return 0\n",
+    );
+}
+
+#[test]
+fn a_named_handler_break_leaves_a_while_loop_with_an_else() {
+    assert_recompiles(
+        "while_else_named_handler_break",
+        "def f(it, g):\n    while it.more():\n        try:\n            g(it.next())\n        except ValueError as e:\n            g(e)\n            break\n    else:\n        g(5)\n    return 0\n",
+    );
+}
+
+#[test]
+fn a_while_loop_around_a_named_handler_stays_a_loop() {
+    assert_recompiles(
+        "while_loop_around_named_handler",
+        "def f(it, g):\n    while it.more():\n        try:\n            g(it.next())\n        except ValueError as e:\n            g(e)\n    return 0\n",
+    );
+}
+
+#[test]
+fn a_while_loop_around_a_handler_before_a_bare_tail_stays_a_loop() {
+    assert_recompiles(
+        "while_loop_around_handler_bare_tail",
+        "def f(active, next_item, sink):\n    while active():\n        try:\n            sink(next_item())\n        except ValueError:\n            sink(None)\n    sink(0)\n",
+    );
+}
+
+#[test]
+fn a_break_ending_a_with_body_stays_inside_the_with() {
+    assert_recompiles(
+        "break_ending_with_body",
+        "def f(xs, m, g):\n    for x in xs:\n        with m:\n            g(x)\n            break\n    return 0\n",
+    );
+}
+
+#[test]
+fn a_break_ending_a_with_body_before_an_implicit_return_stays_inside_the_with() {
+    assert_recompiles(
+        "break_ending_with_body_implicit_return",
+        "def f(xs, m, g):\n    for x in xs:\n        with m:\n            g(x)\n            break\n",
+    );
+}
+
+#[test]
+fn a_try_else_break_before_an_implicit_return_keeps_the_for_else() {
+    assert_recompiles(
+        "try_else_break_for_else_implicit_return",
+        "def f(xs, g, h):\n    for x in xs:\n        try:\n            g(x)\n        except ValueError:\n            pass\n        else:\n            break\n    else:\n        h()\n",
+    );
+}
+
+#[test]
+fn a_try_body_ending_in_a_break_stays_a_break() {
+    assert_recompiles(
+        "try_body_ending_in_break",
+        "def f(xs, g):\n    for x in xs:\n        try:\n            g(x)\n            break\n        except ValueError:\n            g(0)\n    return 0\n",
+    );
+}
+
+#[test]
+fn a_break_before_a_return_in_a_loop_that_never_repeats_stays_a_break() {
+    assert_recompiles(
+        "break_before_return_single_pass_loop",
+        "def f(xs, g):\n    for x in xs:\n        if g(x):\n            break\n        return 1\n    return 0\n",
+    );
+}

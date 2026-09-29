@@ -31,9 +31,9 @@ use super::try_with::{
     guard_test_expr_start, is_back_edge, is_forward_cond_jump, is_shortcircuit_cleanup_pop,
     is_value_boundary, is_value_form_shortcircuit, leading_guard_prelude_split,
     loop_inside_unpeeled_pre311_try, preflight_guarded_finally_raise_mismatch, recover_return_at,
-    region_is_linear, skip_await_poll, structure_try, trim_trailing_comp_cleanup,
-    try_enclosed_by_leading_guard, try_structure_cold_sibling_try, try_structure_else_try,
-    try_structure_empty_body_try, try_structure_guarded_try,
+    region_is_linear, skip_await_poll, skip_except_name_teardown, structure_try,
+    trim_trailing_comp_cleanup, try_enclosed_by_leading_guard, try_structure_cold_sibling_try,
+    try_structure_else_try, try_structure_empty_body_try, try_structure_guarded_try,
     try_structure_loop_continue_guard_over_try, try_structure_loop_else_nested_try,
     try_structure_loop_then_nested_try, try_structure_multibranch_guarded_try,
 };
@@ -1276,6 +1276,93 @@ fn legacy_async_with_trailing_return(
     recover_return_at(code, stream, after_poll, hi)
 }
 
+#[deny(clippy::indexing_slicing)]
+pub(super) fn with_suppressed_resume_jump(
+    stream: &DecodedStream,
+    handler: usize,
+    hi: usize,
+) -> Option<usize> {
+    let suppressed: usize = match (handler..hi)
+        .find(|&k: &usize| matches!(stream.ops.get(k), Some(CanonicalOp::WithExceptStart)))
+    {
+        Some(exit_start) => {
+            let jump: usize = (exit_start + 1..hi)
+                .find(|&k: &usize| stream.ops.get(k).is_some_and(is_forward_cond_jump))?;
+            resolve_jump_target(stream, jump, stream.ops.get(jump)?)?
+        }
+        None => handler,
+    };
+    let resume: usize = (suppressed..stream.ops.len()).find(|&k: &usize| {
+        !matches!(
+            stream.ops.get(k),
+            Some(
+                CanonicalOp::Pop
+                    | CanonicalOp::PopExcept
+                    | CanonicalOp::Nop
+                    | CanonicalOp::Cache
+                    | CanonicalOp::ExtendedArg(_)
+            )
+        )
+    })?;
+    stream
+        .ops
+        .get(resume)
+        .is_some_and(is_unconditional_jump)
+        .then_some(resume)
+}
+
+#[deny(clippy::indexing_slicing)]
+fn legacy_with_body_break_start(
+    stream: &DecodedStream,
+    body_start: usize,
+    body_end: usize,
+    cleanup_idx: usize,
+    hi: usize,
+) -> Option<usize> {
+    let header: usize = loop_continue_target()?;
+    let resume: usize = with_suppressed_resume_jump(stream, cleanup_idx, hi)?;
+    if resume >= hi
+        || stream
+            .ops
+            .get(resume)
+            .and_then(|op: &CanonicalOp| resolve_jump_target(stream, resume, op))
+            != Some(header)
+        || first_significant(stream, resume + 1, hi).is_some()
+    {
+        return None;
+    }
+    let (statements_end, break_start): (usize, usize) = if let Some(after_exit) =
+        skip_legacy_with_exit(stream, body_end, cleanup_idx)
+    {
+        (body_end, after_exit)
+    } else {
+        let jump: usize = last_live_significant(stream, body_start, body_end)?;
+        let pops_iterator: bool = matches!(stream.ops.get(header), Some(CanonicalOp::ForIter(_)));
+        let start: usize = if pops_iterator {
+            last_significant_back(stream, body_start, jump)?
+        } else {
+            jump
+        };
+        (start, start)
+    };
+    ops_break_active_loop(stream, break_start, cleanup_idx.min(hi)).then_some(statements_end)
+}
+
+#[deny(clippy::indexing_slicing)]
+fn skip_legacy_with_exit(stream: &DecodedStream, body_end: usize, hi: usize) -> Option<usize> {
+    if !is_legacy_with_exit_triple(stream, body_end, hi) {
+        return None;
+    }
+    let call: usize = (body_end..hi).find(|&k: &usize| {
+        matches!(
+            stream.ops.get(k),
+            Some(CanonicalOp::CallFunction(_) | CanonicalOp::CallFunctionKw(_))
+        )
+    })?;
+    let pop: usize = first_significant(stream, call + 1, hi)?;
+    matches!(stream.ops.get(pop), Some(CanonicalOp::Pop)).then_some(pop + 1)
+}
+
 fn structure_legacy_with(
     code: &CodeObject,
     stream: &DecodedStream,
@@ -1335,6 +1422,25 @@ fn structure_legacy_with(
     let region_end: usize = cleanup_idx.min(hi).max(body_start);
     let (body_end, is_return): (usize, bool) =
         legacy_with_body_bound(stream, body_start, region_end);
+    if !is_return
+        && let Some(statements_end) =
+            legacy_with_body_break_start(stream, body_start, body_end, cleanup_idx, hi)
+    {
+        let mut body: Vec<Stmt> = structure_stmts(code, stream, body_start, statements_end)?;
+        body.retain(|stmt: &Stmt| !matches!(stmt, Stmt::Pass));
+        body.push(Stmt::Break);
+        let mut out: Vec<Stmt> = head_stmts;
+        out.push(Stmt::With {
+            items: vec![WithItem {
+                context_expr,
+                optional_vars,
+            }],
+            body,
+            is_async: false,
+            line: None,
+        });
+        return Ok(Some((out, hi)));
+    }
     let trailing_return: Option<Stmt> = if is_return
         || region_contains_setup_with(stream, body_start, body_end)
         || legacy_with_exit_return_duplicates_continuation(
@@ -1627,8 +1733,15 @@ fn jump_leaves_the_loop(stream: &DecodedStream, target: usize) -> bool {
             )
         })
         .is_some_and(|k: usize| {
-            is_back_edge(&stream.ops[k])
-                && resolve_jump_target(stream, k, &stream.ops[k]) == Some(header)
+            (is_back_edge(&stream.ops[k])
+                && resolve_jump_target(stream, k, &stream.ops[k]) == Some(header))
+                || matches!(
+                    stream.ops[k],
+                    CanonicalOp::Return
+                        | CanonicalOp::ReturnConst(_)
+                        | CanonicalOp::Raise(_)
+                        | CanonicalOp::Reraise(_)
+                )
         })
 }
 
@@ -2992,6 +3105,7 @@ pub(super) fn append_handler_loop_jump(
 ) -> Vec<Stmt> {
     let Some(jump): Option<Stmt> = trailing_loop_jump_stmt(stream, lo, hi)
         .or_else(|| handler_teardown_breaks_loop(stream, lo, hi).then_some(Stmt::Break))
+        .or_else(|| handler_teardown_jumps_to_loop_exit(stream, lo, hi).then_some(Stmt::Break))
     else {
         return body;
     };
@@ -3103,6 +3217,77 @@ pub(super) fn handler_teardown_breaks_loop(stream: &DecodedStream, lo: usize, hi
         _ => pop_at + 1,
     };
     trailing_iterator_break_pop(stream, pop_at, window_end) == Some(pop_at)
+}
+
+#[deny(clippy::indexing_slicing)]
+fn handler_teardown_jumps_to_loop_exit(stream: &DecodedStream, lo: usize, hi: usize) -> bool {
+    let len: usize = stream.ops.len();
+    let after_teardown: usize =
+        if run_ends_in_except_teardown(stream, &significant_run(stream, lo, hi)) {
+            hi
+        } else {
+            let Some(pop_except): Option<usize> = first_significant(stream, hi, len)
+                .filter(|&k: &usize| matches!(stream.ops.get(k), Some(CanonicalOp::PopExcept)))
+            else {
+                return false;
+            };
+            skip_except_name_teardown(stream, pop_except + 1, len)
+        };
+    let Some(jump): Option<usize> = first_significant(stream, after_teardown, len) else {
+        return false;
+    };
+    let Some(op): Option<&CanonicalOp> = stream
+        .ops
+        .get(jump)
+        .filter(|op: &&CanonicalOp| is_unconditional_jump(op))
+    else {
+        return false;
+    };
+    matches!(
+        trailing_loop_jump_stmt(stream, jump, jump + 1),
+        Some(Stmt::Break)
+    ) || resolve_jump_target(stream, jump, op)
+        .is_some_and(|target: usize| loop_break_target() == Some(target))
+}
+
+#[deny(clippy::indexing_slicing)]
+pub(super) fn ops_break_active_loop(stream: &DecodedStream, lo: usize, hi: usize) -> bool {
+    loop_break_sequence_end(stream, lo, hi).is_some()
+}
+
+#[deny(clippy::indexing_slicing)]
+pub(super) fn span_is_loop_break(stream: &DecodedStream, lo: usize, hi: usize) -> bool {
+    loop_break_sequence_end(stream, lo, hi)
+        .is_some_and(|end: usize| first_significant(stream, end, hi).is_none())
+}
+
+#[deny(clippy::indexing_slicing)]
+pub(super) fn loop_break_sequence_end(
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+) -> Option<usize> {
+    let header: usize = loop_continue_target()?;
+    let exit: usize = loop_break_target()?;
+    let mut at: usize = first_significant(stream, lo, hi)?;
+    if matches!(stream.ops.get(header), Some(CanonicalOp::ForIter(_))) {
+        if !matches!(stream.ops.get(at), Some(CanonicalOp::Pop)) {
+            return None;
+        }
+        at = first_significant(stream, at + 1, hi)?;
+    }
+    let op: &CanonicalOp = stream.ops.get(at)?;
+    if is_unconditional_jump(op) {
+        return (resolve_jump_target(stream, at, op) == Some(exit)).then_some(at + 1);
+    }
+    if !exit_tail_is_inlined_at_break(stream) {
+        return None;
+    }
+    let tail: Vec<usize> = loop_exit_tail_run(stream)?;
+    let run: Vec<usize> = significant_run(stream, at, hi);
+    let copy: &[usize] = run.get(..tail.len())?;
+    let last: usize = *copy.last()?;
+    ops_equal_run(stream, copy, &tail).then_some(last + 1)
 }
 
 #[deny(clippy::indexing_slicing)]

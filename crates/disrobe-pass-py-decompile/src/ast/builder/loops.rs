@@ -3,6 +3,7 @@ use super::branches::{
     parse_cond_range,
 };
 use super::exprs::{build_linear_stmts_sim, is_chain_cond_jump, local_target, name_at};
+use super::postprocess::is_implicit_none_return;
 use super::stmts::{
     InlineComp, append_trailing_loop_exit_break, collect_unpack_targets,
     detect_inline_comprehension, exit_tail_is_inlined_at_break, first_significant,
@@ -1267,16 +1268,51 @@ fn in_any_envelope(envelopes: &[(usize, usize)], idx: usize) -> bool {
 }
 
 fn max_back_edge_to_header(stream: &DecodedStream, header: usize, lo: usize, hi: usize) -> usize {
-    (lo..hi.min(stream.ops.len()))
+    let latches: Vec<usize> = (lo..hi.min(stream.ops.len()))
         .rev()
-        .find(|&k: &usize| {
+        .filter(|&k: &usize| {
             is_back_edge(&stream.ops[k])
                 && !is_async_send_back_edge(stream, k)
                 && !is_async_cleanup_throw_back_edge(stream, k)
                 && !back_edge_inside_exc_handler_cold_block(stream, header, k)
                 && resolve_jump_target(stream, k, &stream.ops[k]) == Some(header)
         })
+        .collect();
+    latches
+        .iter()
+        .copied()
+        .find(|&k: &usize| !back_edge_inside_body_try_handler(stream, header, k))
+        .or_else(|| latches.first().copied())
         .unwrap_or(header)
+}
+
+fn back_edge_inside_body_try_handler(
+    stream: &DecodedStream,
+    header: usize,
+    back_edge: usize,
+) -> bool {
+    if stream.is_pre_311() {
+        return false;
+    }
+    stream
+        .exception_table
+        .iter()
+        .any(|entry: &crate::bytecode::flow::ExceptionTableEntry| {
+            let (Some(try_start), Some(handler_start)): (Option<usize>, Option<usize>) = (
+                stream.index_for_offset(entry.start),
+                stream.index_for_offset(entry.target),
+            ) else {
+                return false;
+            };
+            try_start > header
+                && handler_start <= back_edge
+                && matches!(
+                    stream.ops.get(handler_start),
+                    Some(CanonicalOp::PushExcInfo)
+                )
+                && handler_chain_end(stream, handler_start, stream.ops.len())
+                    .is_some_and(|handler_end: usize| back_edge < handler_end)
+        })
 }
 
 fn is_generator_stopiteration_terminal(
@@ -2242,13 +2278,25 @@ pub(super) fn peeled_while_test_relation(
     {
         return Some(PeeledWhileTestRelation::EnclosingGuard);
     }
+    let loop_test: Expr = recover_while_test(code, stream, &region);
     let (entry_start, entry_test): (usize, Expr) =
-        recover_entry_guard_test(code, stream, lo, hi, &region)?;
+        if let Some(recovered) = recover_entry_guard_test(code, stream, lo, hi, &region) {
+            recovered
+        } else {
+            let (jump_count, start, single_test): (usize, usize, Expr) =
+                recover_entry_guard(code, stream, lo, hi, &region)?;
+            if jump_count != 1
+                || entry_target != region.exit
+                || !exprs_equal_ignoring_lines(&single_test, &loop_test)
+            {
+                return None;
+            }
+            (start, single_test)
+        };
     if entry_start > test || last_significant_back(stream, entry_start, region.header) != Some(test)
     {
         return None;
     }
-    let loop_test: Expr = recover_while_test(code, stream, &region);
     if entry_target != region.exit {
         return Some(PeeledWhileTestRelation::NonExiting);
     }
@@ -2712,46 +2760,98 @@ fn permits_single_entry_guard_jump(
     ) && resolve_jump_target(stream, exit_edge, &stream.ops[exit_edge]) == Some(region.exit)
 }
 
-fn loop_exit_leading_return(
+fn loop_exit_terminal_tail(
     code: &CodeObject,
     stream: &DecodedStream,
     region: &LoopRegion,
     hi: usize,
-) -> Option<Expr> {
+) -> Option<Vec<Stmt>> {
     let tail_start: usize = loop_tail_start(stream, region, hi);
     if tail_start >= hi {
         return None;
     }
-    let tail: Vec<Stmt> = structure_stmts(code, stream, tail_start, hi).ok()?;
-    match tail.first() {
-        Some(Stmt::Return(Some(value))) => Some(value.clone()),
-        _ => None,
+    let mut tail: Vec<Stmt> = structure_stmts(code, stream, tail_start, hi).ok()?;
+    let end: usize = tail
+        .iter()
+        .position(|stmt: &Stmt| matches!(stmt, Stmt::Return(_) | Stmt::Raise { .. }))?;
+    tail.truncate(end + 1);
+    Some(tail)
+}
+
+fn strip_stmt_suffix(stmts: &mut Vec<Stmt>, suffix: &[Stmt]) -> bool {
+    let Some(start): Option<usize> = stmts.len().checked_sub(suffix.len()) else {
+        return false;
+    };
+    let matches: bool = !suffix.is_empty()
+        && stmts[start..]
+            .iter()
+            .zip(suffix)
+            .all(|(a, b): (&Stmt, &Stmt)| stmts_equal_ignoring_lines(a, b));
+    if matches {
+        stmts.truncate(start);
+    }
+    matches
+}
+
+fn strip_exit_tail_copy(stmts: &mut Vec<Stmt>, exit_tail: &[Stmt]) {
+    if strip_stmt_suffix(stmts, exit_tail) {
+        return;
+    }
+    if let Some((last, rest)) = exit_tail.split_last()
+        && is_implicit_none_return(last)
+    {
+        strip_stmt_suffix(stmts, rest);
     }
 }
 
-fn loop_exit_return_absorbed(
+fn is_loop_latch_stmt(stmt: Option<&Stmt>, test: &Expr) -> bool {
+    matches!(
+        stmt,
+        Some(Stmt::If {
+            test: latch_test,
+            body,
+            orelse,
+            ..
+        }) if exprs_equal_ignoring_lines(latch_test, test)
+            && matches!(body.as_slice(), [Stmt::Continue])
+            && orelse.is_empty()
+    )
+}
+
+fn strip_absorbed_loop_latch(
     code: &CodeObject,
     stream: &DecodedStream,
     region: &LoopRegion,
     hi: usize,
-    body: &[Stmt],
-) -> bool {
-    let Some(Stmt::Return(Some(last_val))): Option<&Stmt> = body.last() else {
-        return false;
-    };
-    let Some(exit_ret): Option<Expr> = loop_exit_leading_return(code, stream, region, hi) else {
-        return false;
-    };
-    if *last_val != exit_ret {
-        return false;
-    }
+    test: &Expr,
+    body: &mut Vec<Stmt>,
+) {
     let exit: usize = region.exit.min(stream.ops.len());
-    let Some(prev): Option<usize> = last_significant_back(stream, region.body_start, exit) else {
-        return false;
-    };
-    is_back_edge(&stream.ops[prev])
-        && resolve_jump_target(stream, prev, &stream.ops[prev])
-            .is_some_and(|t: usize| t <= region.header)
+    let latch_before_exit: bool = last_significant_back(stream, region.body_start, exit)
+        .is_some_and(|prev: usize| {
+            is_back_edge(&stream.ops[prev])
+                && resolve_jump_target(stream, prev, &stream.ops[prev])
+                    .is_some_and(|target: usize| target <= region.header)
+        });
+    if !latch_before_exit {
+        return;
+    }
+    let exit_tail: Vec<Stmt> =
+        loop_exit_terminal_tail(code, stream, region, hi).unwrap_or_default();
+    strip_exit_tail_copy(body, &exit_tail);
+    if region.body_end >= region.back_edge {
+        return;
+    }
+    if is_loop_latch_stmt(body.last(), test) {
+        body.pop();
+    } else if let Some(Stmt::Try { orelse, .. }) = body.last_mut() {
+        let mut stripped: Vec<Stmt> = orelse.clone();
+        strip_exit_tail_copy(&mut stripped, &exit_tail);
+        if is_loop_latch_stmt(stripped.last(), test) {
+            stripped.pop();
+            *orelse = stripped;
+        }
+    }
 }
 
 fn structure_while_body_absorbing_break_handler(
@@ -2783,9 +2883,7 @@ fn structure_while_body_absorbing_break_handler(
             let exit_tail: Vec<Stmt> = structure_stmts(code, stream, region.exit, hi)?;
             strip_loop_exit_prefix_suffix(&mut body, &exit_tail);
         }
-        if loop_exit_return_absorbed(code, stream, region, hi, &body) {
-            body.pop();
-        }
+        strip_absorbed_loop_latch(code, stream, region, hi, test, &mut body);
         return Ok(body);
     }
     let body: Vec<Stmt> = structure_stmts(code, stream, region.body_start, region.body_end)?;
@@ -4566,6 +4664,25 @@ fn recover_entry_guard_test(
     hi: usize,
     region: &LoopRegion,
 ) -> Option<(usize, Expr)> {
+    let (jump_count, entry_start, test): (usize, usize, Expr) =
+        recover_entry_guard(code, stream, lo, hi, region)?;
+    if jump_count < 2 {
+        let entry_jump: usize = last_significant_back(stream, lo, region.header)?;
+        let entry_target: usize = resolve_jump_target(stream, entry_jump, &stream.ops[entry_jump])?;
+        if !permits_single_entry_guard_jump(stream, region, hi, entry_target) {
+            return None;
+        }
+    }
+    Some((entry_start, test))
+}
+
+fn recover_entry_guard(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+    region: &LoopRegion,
+) -> Option<(usize, usize, Expr)> {
     let body: usize = region.header;
     let exit: usize = region.exit;
     let last: usize = last_significant_back(stream, lo, region.header)?;
@@ -4601,13 +4718,6 @@ fn recover_entry_guard_test(
         jump_idxs.push(prev);
         boundary = cond_expr_start(stream, prev, lo);
     }
-    if jump_idxs.len() < 2 {
-        let entry_jump: usize = *jump_idxs.first()?;
-        let entry_target: usize = resolve_jump_target(stream, entry_jump, &stream.ops[entry_jump])?;
-        if !permits_single_entry_guard_jump(stream, region, hi, entry_target) {
-            return None;
-        }
-    }
     jump_idxs.reverse();
     let entry_start: usize = cond_expr_start(stream, jump_idxs[0], lo);
     let mut operands: Vec<CondOperand> = Vec::with_capacity(jump_idxs.len());
@@ -4638,7 +4748,7 @@ fn recover_entry_guard_test(
         value_lo = first_significant(stream, jump + 1, region.header).unwrap_or(jump + 1);
     }
     let test: Expr = parse_cond_range(&operands, body, exit)?;
-    Some((entry_start, test))
+    Some((jump_idxs.len(), entry_start, test))
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]

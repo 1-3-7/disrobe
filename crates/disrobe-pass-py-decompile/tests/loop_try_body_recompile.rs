@@ -362,6 +362,26 @@ fn recover_registered_source(interpreter: &BandInterpreter, source: &str, label:
 }
 
 #[cfg(feature = "chain")]
+fn assert_break_is_recompile_equivalent(
+    interpreter: &BandInterpreter,
+    fixture: &str,
+    label: &str,
+    recovered: &str,
+) {
+    if !recovered.contains("break") {
+        return;
+    }
+    let scratch: PathBuf = band_scratch(&format!("{label}_break_equivalence"));
+    let (outcome, source): (BandOutcome, String) =
+        recompile_equiv_inline(interpreter, fixture, label, &scratch);
+    assert!(
+        matches!(outcome, BandOutcome::RecompileEquiv) && source.contains("break"),
+        "{label}: a recovered handler break must come from a recovery that recompiles \
+         equivalently, got {outcome:?}:\n{recovered}"
+    );
+}
+
+#[cfg(feature = "chain")]
 #[test]
 fn post311_two_call_and_dispatch_excludes_or_and_longer_chains() {
     for interpreter in required_post311_interpreters() {
@@ -375,10 +395,11 @@ fn post311_two_call_and_dispatch_excludes_or_and_longer_chains() {
             0,
             "OR must not enter the two-call AND path:\n{recovered_or}"
         );
-        assert_eq!(
-            recovered_or.matches("break").count(),
-            0,
-            "OR must not receive the declared handler normalization:\n{recovered_or}"
+        assert_break_is_recompile_equivalent(
+            &interpreter,
+            WHILE_OR_TRY_BREAK,
+            &or_label,
+            &recovered_or,
         );
 
         let chain_label: String = format!("while_three_call_and_exclusion_{}", interpreter.alias);
@@ -391,10 +412,11 @@ fn post311_two_call_and_dispatch_excludes_or_and_longer_chains() {
             0,
             "a longer chain must not be truncated into the declared shape:\n{recovered_chain}"
         );
-        assert_eq!(
-            recovered_chain.matches("break").count(),
-            0,
-            "a longer chain must not receive the declared handler normalization:\n{recovered_chain}"
+        assert_break_is_recompile_equivalent(
+            &interpreter,
+            WHILE_THREE_CALL_AND_TRY_BREAK,
+            &chain_label,
+            &recovered_chain,
         );
     }
 }
