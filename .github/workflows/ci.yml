@@ -570,6 +570,13 @@ jobs:
           if [ "$RUNNER_OS" = "Windows" ]; then
             demand makecab DISROBE_REQUIRE_MAKECAB
           fi
+      - name: fetch the pinned asar packer the electron grader compares against
+        if: matrix.shard == 'two' || matrix.shard == 'three'
+        shell: bash
+        run: |
+          unset FORCE_COLOR
+          test "$(npm view @electron/asar@4.3.1 dist.integrity)" = "sha512-6pI64z/tMSBkUTZLQFYhs2YiB7fS9sKA6gy7/2nH1Ju7GGwT32UPsj4Mxsws5NMmtR6C0zYdXVxEU/rGqJRCJA=="
+          test "$(npx --yes @electron/asar@4.3.1 --version)" = "v4.3.1"
       - name: require the decoders, PowerShell, npx and qpdf the shell and webview graders run, so an absent one fails here by name
         if: matrix.shard == 'two' || matrix.shard == 'three'
         shell: bash
