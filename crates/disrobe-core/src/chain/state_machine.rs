@@ -89,7 +89,6 @@ pub struct WorkItem {
     pub depth: u8,
     pub branch_id: String,
     pub history: BTreeSet<[u8; 32]>,
-    pub container_lineage: BTreeSet<String>,
     pub spec_cursor: SpecCursor,
     pub path_hint: Option<String>,
     pub parent_hint: Option<String>,
@@ -232,7 +231,6 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
                 h.insert(seed_hash);
                 h
             },
-            container_lineage: BTreeSet::new(),
             spec_cursor: ChainSpec::cursor_for_root(),
             path_hint,
             parent_hint: None,
@@ -453,16 +451,12 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
                                 });
                                 let mut next_history: BTreeSet<[u8; 32]> = item.history.clone();
                                 next_history.insert(out_hash);
-                                let mut next_container_lineage: BTreeSet<String> =
-                                    item.container_lineage.clone();
-                                next_container_lineage.insert(format_tag_in);
                                 queue.push_back(WorkItem {
                                     parent: layer_id,
                                     bytes: outcome.output_bytes,
                                     depth: item.depth.saturating_add(1),
                                     branch_id: item.branch_id.clone(),
                                     history: next_history,
-                                    container_lineage: next_container_lineage,
                                     spec_cursor: item.spec_cursor.advance(),
                                     path_hint: item.path_hint.clone(),
                                     parent_hint: Some(language.label().to_string()),
@@ -581,16 +575,12 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
                             });
                             let mut next_history: BTreeSet<[u8; 32]> = item.history.clone();
                             next_history.insert(out_hash);
-                            let mut next_container_lineage: BTreeSet<String> =
-                                item.container_lineage.clone();
-                            next_container_lineage.insert(format_tag_in);
                             queue.push_back(WorkItem {
                                 parent: layer_id,
                                 bytes: outcome.output_bytes,
                                 depth: item.depth.saturating_add(1),
                                 branch_id: item.branch_id.clone(),
                                 history: next_history,
-                                container_lineage: next_container_lineage,
                                 spec_cursor: item.spec_cursor.advance(),
                                 path_hint: item.path_hint.clone(),
                                 parent_hint: Some(format_tag.to_string()),
@@ -779,16 +769,12 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
                                         extracted.push(artifact);
                                     }
                                 }
-                                let mut child_container_lineage: BTreeSet<String> =
-                                    item.container_lineage.clone();
-                                child_container_lineage.insert(format_tag_in.clone());
                                 queue.push_back(WorkItem {
                                     parent: layer_id,
                                     bytes: next_bytes,
                                     depth: item.depth.saturating_add(1),
                                     branch_id: child_branch,
                                     history: child_history,
-                                    container_lineage: child_container_lineage,
                                     spec_cursor: item.spec_cursor.advance(),
                                     path_hint: Some(ch.relative_path.clone()),
                                     parent_hint: ch.hint.clone(),

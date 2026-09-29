@@ -322,11 +322,10 @@ mod tests {
     #[test]
     fn sweeping_leaves_fresh_scratch_alone() {
         let dir: ScratchDir = ScratchDir::create("unit-sweep").expect("create");
-        let swept: usize = sweep_stale(Duration::from_hours(1)).expect("sweep");
+        sweep_stale(Duration::from_hours(1)).expect("sweep");
         assert!(
             dir.path().is_dir(),
             "a sweep with a one hour cutoff must not touch a directory created just now"
         );
-        let _ = swept;
     }
 }
