@@ -779,7 +779,7 @@ fn net_stack_effect(op: &CanonicalOp) -> Option<i32> {
         | CanonicalOp::FormatWithSpec
         | CanonicalOp::ImportName(_) => -1,
         CanonicalOp::CallFunction(argc) | CanonicalOp::CallFunctionKw(argc) => {
-            -i32::from(*argc) - 1
+            -i32::try_from(*argc).unwrap_or(i32::MAX) - 1
         }
         CanonicalOp::BuildList(n)
         | CanonicalOp::BuildTuple(n)

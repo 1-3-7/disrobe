@@ -1017,104 +1017,14 @@ pub(super) fn build_linear_stmts_sim_seed(
                     }
                 }
             }
-            CanonicalOp::KwNames(i) => {
-                let names: Vec<String> = load_const(code, *i, idx)
-                    .ok()
-                    .and_then(|e: Expr| extract_tuple_of_strings(&e))
-                    .unwrap_or_default();
-                sim.push(Expr::Name {
-                    id: encode_kw_names(&names),
-                    ctx: ExprCtx::Load,
-                    line: None,
-                });
-            }
+            CanonicalOp::KwNames(i) => sim.push(kw_names_marker(code, *i, idx)),
             CanonicalOp::CallFunction(argc) => {
-                let pending_kw: Option<Vec<String>> =
-                    sim.peek_clone().as_ref().and_then(decode_kw_names);
-                if let Some(kw_names) = pending_kw {
-                    let _: Option<Expr> = sim.try_pop();
-                    let total: usize = usize::from(*argc);
-                    let kw_count: usize = kw_names.len().min(total);
-                    let pos_count: usize = total - kw_count;
-                    let mut kw_values: Vec<Expr> = Vec::with_capacity(kw_count);
-                    for _ in 0..kw_count {
-                        kw_values.insert(0, sim.pop_or_synth(code, idx));
-                    }
-                    let mut args: Vec<Expr> = Vec::with_capacity(pos_count);
-                    for _ in 0..pos_count {
-                        args.insert(0, sim.pop_or_synth(code, idx));
-                    }
-                    let (func, implicit_self): (Expr, Option<Expr>) =
-                        sim.pop_call_target(code, idx);
-                    if let Some(self_arg) = implicit_self {
-                        args.insert(0, self_arg);
-                    }
-                    let keywords: Vec<crate::ast::node::Keyword> = kw_names
-                        .into_iter()
-                        .zip(kw_values)
-                        .map(|(name, value): (String, Expr)| crate::ast::node::Keyword {
-                            arg: Some(name),
-                            value,
-                        })
-                        .collect();
-                    sim.push(Expr::Call {
-                        func: Box::new(func),
-                        args,
-                        keywords,
-                    });
-                    continue;
-                }
-                let mut args: Vec<Expr> = Vec::with_capacity(usize::from(*argc));
-                for _ in 0..*argc {
-                    args.insert(0, sim.pop_or_synth(code, idx));
-                }
-                let (func, implicit_self): (Expr, Option<Expr>) = sim.pop_call_target(code, idx);
-                if let Some(self_arg) = implicit_self {
-                    args.insert(0, self_arg);
-                }
-                if let Some(comp) = try_build_comprehension_expr(code, &func, &args) {
-                    sim.push(comp);
-                    continue;
-                }
-                sim.push(Expr::Call {
-                    func: Box::new(func),
-                    args,
-                    keywords: Vec::new(),
-                });
+                let call: Expr = sim.pop_call_expr(code, idx, *argc, CallKind::Positional);
+                sim.push(call);
             }
             CanonicalOp::CallFunctionKw(argc) => {
-                let kw_names_expr: Expr = sim.pop_or_synth(code, idx);
-                let kw_names: Vec<String> = decode_kw_names(&kw_names_expr)
-                    .or_else(|| extract_tuple_of_strings(&kw_names_expr))
-                    .unwrap_or_default();
-                let total: usize = usize::from(*argc);
-                let kw_count: usize = kw_names.len().min(total);
-                let pos_count: usize = total - kw_count;
-                let mut kw_values: Vec<Expr> = Vec::with_capacity(kw_count);
-                for _ in 0..kw_count {
-                    kw_values.insert(0, sim.pop_or_synth(code, idx));
-                }
-                let mut args: Vec<Expr> = Vec::with_capacity(pos_count);
-                for _ in 0..pos_count {
-                    args.insert(0, sim.pop_or_synth(code, idx));
-                }
-                let (func, implicit_self): (Expr, Option<Expr>) = sim.pop_call_target(code, idx);
-                if let Some(self_arg) = implicit_self {
-                    args.insert(0, self_arg);
-                }
-                let keywords: Vec<crate::ast::node::Keyword> = kw_names
-                    .into_iter()
-                    .zip(kw_values)
-                    .map(|(name, value): (String, Expr)| crate::ast::node::Keyword {
-                        arg: Some(name),
-                        value,
-                    })
-                    .collect();
-                sim.push(Expr::Call {
-                    func: Box::new(func),
-                    args,
-                    keywords,
-                });
+                let call: Expr = sim.pop_call_expr(code, idx, *argc, CallKind::KeywordTuple);
+                sim.push(call);
             }
             CanonicalOp::CallFunctionLegacy(packed) => {
                 let call: Expr = build_legacy_call(code, idx, *packed, false, false, &mut sim);
@@ -2823,6 +2733,56 @@ impl StackSim {
         }
     }
 
+    pub(super) fn pop_call_expr(
+        &mut self,
+        code: &CodeObject,
+        idx: usize,
+        argc: u32,
+        kind: CallKind,
+    ) -> Expr {
+        let kw_names: Vec<String> = match kind {
+            CallKind::KeywordTuple => {
+                let names_expr: Expr = self.pop_or_synth(code, idx);
+                decode_kw_names(&names_expr)
+                    .or_else(|| extract_tuple_of_strings(&names_expr))
+                    .unwrap_or_default()
+            }
+            CallKind::Positional => {
+                let pending: Option<Vec<String>> = self.stack.last().and_then(decode_kw_names);
+                if pending.is_some() {
+                    let _marker: Option<Expr> = self.try_pop();
+                }
+                pending.unwrap_or_default()
+            }
+        };
+        let total: usize = argc as usize;
+        let kw_count: usize = kw_names.len().min(total);
+        let kw_values: Vec<Expr> = self.pop_n(kw_count);
+        let mut args: Vec<Expr> = self.pop_n(total - kw_count);
+        let (func, implicit_self): (Expr, Option<Expr>) = self.pop_call_target(code, idx);
+        if let Some(self_arg) = implicit_self {
+            args.insert(0, self_arg);
+        }
+        if kw_names.is_empty()
+            && let Some(comp) = try_build_comprehension_expr(code, &func, &args)
+        {
+            return comp;
+        }
+        let keywords: Vec<crate::ast::node::Keyword> = kw_names
+            .into_iter()
+            .zip(kw_values)
+            .map(|(name, value): (String, Expr)| crate::ast::node::Keyword {
+                arg: Some(name),
+                value,
+            })
+            .collect();
+        Expr::Call {
+            func: Box::new(func),
+            args,
+            keywords,
+        }
+    }
+
     #[allow(dead_code)]
     fn pop(&mut self, offset: usize, ctx: &'static str) -> Result<Expr> {
         self.stack.pop().ok_or_else(|| DecompileError::AstDesync {
@@ -2996,6 +2956,24 @@ fn is_call_assembly_marker(expr: &Expr) -> bool {
 
 fn is_assertion_error_marker(expr: &Expr) -> bool {
     matches!(expr, Expr::Name { id, .. } if id == DR_ASSERTION_ERROR_MARKER)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CallKind {
+    Positional,
+    KeywordTuple,
+}
+
+pub(super) fn kw_names_marker(code: &CodeObject, const_index: u32, idx: usize) -> Expr {
+    let names: Vec<String> = load_const(code, const_index, idx)
+        .ok()
+        .and_then(|e: Expr| extract_tuple_of_strings(&e))
+        .unwrap_or_default();
+    Expr::Name {
+        id: encode_kw_names(&names),
+        ctx: ExprCtx::Load,
+        line: None,
+    }
 }
 
 fn encode_kw_names(names: &[String]) -> String {

@@ -1,7 +1,6 @@
 use super::exprs::{
-    DR_NULL_MARKER, StackSim, build_linear_stmts_sim, decode_kw_names, extract_tuple_of_strings,
-    is_chain_compare_jump, is_null_marker, load_common_constant, load_local, load_name,
-    local_name_at,
+    CallKind, DR_NULL_MARKER, StackSim, build_linear_stmts_sim, is_chain_compare_jump,
+    is_null_marker, kw_names_marker, load_common_constant, load_local, load_name, local_name_at,
 };
 use super::function_meta::{
     FunctionMeta, call_ex_args, call_ex_kwargs, fold_set_function_attributes, load_const,
@@ -1062,58 +1061,14 @@ fn extract_comprehension_parts(
                     sim.push(value);
                 }
             }
+            CanonicalOp::KwNames(i) => sim.push(kw_names_marker(nested, *i, idx)),
             CanonicalOp::CallFunction(argc) => {
-                let mut args: Vec<Expr> = Vec::with_capacity(usize::from(*argc));
-                for _ in 0..*argc {
-                    args.insert(0, sim.pop_or_synth(nested, idx));
-                }
-                let (func, implicit_self): (Expr, Option<Expr>) = sim.pop_call_target(nested, idx);
-                if let Some(self_arg) = implicit_self {
-                    args.insert(0, self_arg);
-                }
-                if let Some(inner) = try_build_comprehension_expr(nested, &func, &args) {
-                    sim.push(inner);
-                } else {
-                    sim.push(Expr::Call {
-                        func: Box::new(func),
-                        args,
-                        keywords: Vec::new(),
-                    });
-                }
+                let call: Expr = sim.pop_call_expr(nested, idx, *argc, CallKind::Positional);
+                sim.push(call);
             }
             CanonicalOp::CallFunctionKw(argc) => {
-                let kw_names_expr: Expr = sim.pop_or_synth(nested, idx);
-                let kw_names: Vec<String> = decode_kw_names(&kw_names_expr)
-                    .or_else(|| extract_tuple_of_strings(&kw_names_expr))
-                    .unwrap_or_default();
-                let total: usize = usize::from(*argc);
-                let kw_count: usize = kw_names.len().min(total);
-                let pos_count: usize = total - kw_count;
-                let mut kw_values: Vec<Expr> = Vec::with_capacity(kw_count);
-                for _ in 0..kw_count {
-                    kw_values.insert(0, sim.pop_or_synth(nested, idx));
-                }
-                let mut args: Vec<Expr> = Vec::with_capacity(pos_count);
-                for _ in 0..pos_count {
-                    args.insert(0, sim.pop_or_synth(nested, idx));
-                }
-                let (func, implicit_self): (Expr, Option<Expr>) = sim.pop_call_target(nested, idx);
-                if let Some(self_arg) = implicit_self {
-                    args.insert(0, self_arg);
-                }
-                let keywords: Vec<crate::ast::node::Keyword> = kw_names
-                    .into_iter()
-                    .zip(kw_values)
-                    .map(|(name, value): (String, Expr)| crate::ast::node::Keyword {
-                        arg: Some(name),
-                        value,
-                    })
-                    .collect();
-                sim.push(Expr::Call {
-                    func: Box::new(func),
-                    args,
-                    keywords,
-                });
+                let call: Expr = sim.pop_call_expr(nested, idx, *argc, CallKind::KeywordTuple);
+                sim.push(call);
             }
             CanonicalOp::CallFunctionEx(has_kw) => {
                 let kwargs_on_314: bool =

@@ -188,8 +188,8 @@ pub enum CanonicalOp {
     BuildClassLegacy,
     Return,
     ReturnConst(ConstIndex),
-    CallFunction(u8),
-    CallFunctionKw(u8),
+    CallFunction(u32),
+    CallFunctionKw(u32),
     CallFunctionLegacy(u32),
     CallFunctionVarLegacy(u32),
     CallFunctionKwLegacy(u32),
@@ -577,8 +577,8 @@ fn decode_by_name(
         "JUMP_BACKWARD_NO_INTERRUPT" => CanonicalOp::JumpBackwardNoInterrupt(arg),
         "RETURN_VALUE" => CanonicalOp::Return,
         "RETURN_CONST" => CanonicalOp::ReturnConst(arg),
-        "CALL_FUNCTION" | "CALL" => CanonicalOp::CallFunction(arg_lo),
-        "CALL_FUNCTION_KW" | "CALL_KW" => CanonicalOp::CallFunctionKw(arg_lo),
+        "CALL_FUNCTION" | "CALL" => CanonicalOp::CallFunction(arg),
+        "CALL_FUNCTION_KW" | "CALL_KW" => CanonicalOp::CallFunctionKw(arg),
         "CALL_FUNCTION_EX" => CanonicalOp::CallFunctionEx(arg & 1 == 1),
         "MAKE_FUNCTION" => CanonicalOp::MakeFunction(arg_lo),
         "MAKE_CELL" => CanonicalOp::MakeCell(arg),
@@ -685,8 +685,8 @@ fn decode_by_name(
         "BUILD_LIST_FROM_ARG" => CanonicalOp::BuildList(arg),
         "JUMP_IF_NOT_DEBUG" => CanonicalOp::JumpForward(i32::try_from(arg).unwrap_or(0)),
         "LOOKUP_METHOD" => CanonicalOp::LoadAttr(arg),
-        "CALL_METHOD" => CanonicalOp::CallFunction(arg_lo),
-        "CALL_METHOD_KW" => CanonicalOp::CallFunctionKw(arg_lo),
+        "CALL_METHOD" => CanonicalOp::CallFunction(arg),
+        "CALL_METHOD_KW" => CanonicalOp::CallFunctionKw(arg),
         "LOAD_REVDB_VAR" => CanonicalOp::LoadName(arg),
         "GET_YIELD_FROM_ITER" => CanonicalOp::GetIter,
         "LIST_TO_TUPLE" => CanonicalOp::ListToTuple,
@@ -816,9 +816,9 @@ fn demote_specialized(name: &'static str, arg: u32) -> Option<CanonicalOp> {
         | "CALL_ALLOC_AND_ENTER_INIT"
         | "CALL_ISINSTANCE"
         | "CALL_LEN"
-        | "CALL_NON_PY_GENERAL" => Some(CanonicalOp::CallFunction(arg_lo)),
+        | "CALL_NON_PY_GENERAL" => Some(CanonicalOp::CallFunction(arg)),
         "CALL_KW_BOUND_METHOD" | "CALL_KW_NON_PY" | "CALL_KW_PY" => {
-            Some(CanonicalOp::CallFunctionKw(arg_lo))
+            Some(CanonicalOp::CallFunctionKw(arg))
         }
         "LOAD_ATTR_CLASS"
         | "LOAD_ATTR_GETATTRIBUTE_OVERRIDDEN"

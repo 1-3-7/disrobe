@@ -1395,10 +1395,10 @@ pub(super) fn make_function_meta_legacy(packed: u32, sim: &mut StackSim) -> Func
     let mut meta: FunctionMeta = FunctionMeta::default();
     let pos_defaults: usize = (packed & 0xFF) as usize;
     let kw_defaults: usize = ((packed >> 8) & 0xFF) as usize;
-    let num_annotations: usize = ((packed >> 16) & 0x7FFF) as usize;
-    if num_annotations > 0 {
+    let annotation_slots: usize = ((packed >> 16) & 0x7FFF) as usize;
+    if let Some(num_annotations) = annotation_slots.checked_sub(1) {
         let names: Option<Expr> = sim.try_pop();
-        let mut values: Vec<Expr> = Vec::with_capacity(num_annotations);
+        let mut values: Vec<Expr> = Vec::with_capacity(num_annotations.min(sim.stack.len()));
         for _ in 0..num_annotations {
             if let Some(v) = sim.try_pop() {
                 values.insert(0, v);
@@ -2319,4 +2319,51 @@ fn lambda_structured_body(nested: &CodeObject, nested_version: &PyVersion) -> Op
         Stmt::Return(Some(e)) | Stmt::Expr(e) => Some(e),
         _ => None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn name(id: &str) -> Expr {
+        Expr::Name {
+            id: id.to_owned(),
+            ctx: ExprCtx::Load,
+            line: None,
+        }
+    }
+
+    fn str_const(s: &str) -> Expr {
+        Expr::Constant {
+            value: ConstValue::Str(s.to_owned()),
+            line: None,
+        }
+    }
+
+    #[test]
+    fn legacy_annotation_count_includes_the_names_tuple() {
+        let mut sim: StackSim = StackSim::new();
+        sim.push(name("below"));
+        sim.push(str_const("x"));
+        sim.push(name("int"));
+        sim.push(name("str"));
+        sim.push(name("bool"));
+        sim.push(Expr::Constant {
+            value: ConstValue::Tuple(vec![
+                ConstValue::Str("a".to_owned()),
+                ConstValue::Str("b".to_owned()),
+                ConstValue::Str("return".to_owned()),
+            ]),
+            line: None,
+        });
+        let packed: u32 = 1 | (4 << 16);
+        let meta: FunctionMeta = make_function_meta_legacy(packed, &mut sim);
+        assert_eq!(
+            meta.annotations,
+            vec![("a".to_owned(), name("int")), ("b".to_owned(), name("str"))]
+        );
+        assert_eq!(meta.returns, Some(name("bool")));
+        assert_eq!(meta.defaults, vec![str_const("x")]);
+        assert_eq!(sim.stack, vec![name("below")]);
+    }
 }

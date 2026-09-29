@@ -84,12 +84,7 @@ fn emit_expr_inner(em: &DefaultEmitter, e: &Expr, version: &PyVersion) -> String
     match e {
         Expr::Constant { value, .. } => emit_const(em, value, version),
         Expr::Name { id, .. } => id.clone(),
-        Expr::FormattedValue {
-            value,
-            conversion,
-            format_spec,
-            ..
-        } => emit_formatted_value(em, value, *conversion, format_spec.as_deref(), version),
+        Expr::FormattedValue { .. } => emit_joined_str(em, std::slice::from_ref(e), version),
         Expr::JoinedStr { values, .. } => emit_joined_str(em, values, version),
         Expr::TStr { items, .. } => crate::codegen::tstring_emit::emit_tstring(items, version),
         Expr::BoolOp { op, values } => emit_boolop(em, *op, values, version),
@@ -190,6 +185,7 @@ fn emit_expr_inner(em: &DefaultEmitter, e: &Expr, version: &PyVersion) -> String
 #[must_use]
 pub fn expr_precedence(e: &Expr) -> Precedence {
     match e {
+        Expr::Constant { value, .. } if const_prints_with_leading_minus(value) => Precedence::Unary,
         Expr::Constant { .. }
         | Expr::Name { .. }
         | Expr::List { .. }
@@ -332,13 +328,13 @@ fn unary_symbol(op: UnaryOp) -> &'static str {
 
 #[must_use]
 fn attribute_receiver_needs_parens(value: &Expr) -> bool {
-    matches!(
-        value,
+    match value {
         Expr::Constant {
-            value: ConstValue::Int(_) | ConstValue::BigInt(_),
+            value: constant @ (ConstValue::Int(_) | ConstValue::BigInt(_)),
             ..
-        }
-    )
+        } => !const_prints_with_leading_minus(constant),
+        _ => false,
+    }
 }
 
 fn emit_const(em: &DefaultEmitter, v: &ConstValue, version: &PyVersion) -> String {
@@ -350,15 +346,7 @@ fn emit_const(em: &DefaultEmitter, v: &ConstValue, version: &PyVersion) -> Strin
         ConstValue::Int(i) => i.to_string(),
         ConstValue::BigInt(b) => emit_long_literal(b, version),
         ConstValue::Float(f) => emit_float(*f),
-        ConstValue::Complex { real, imag } => {
-            if !real.is_finite() || !imag.is_finite() {
-                format!("complex({}, {})", emit_float(*real), emit_float(*imag))
-            } else if *real == 0.0 {
-                format!("{}j", emit_float(*imag))
-            } else {
-                format!("({}{:+}j)", emit_float(*real), imag)
-            }
-        }
+        ConstValue::Complex { real, imag } => emit_complex(*real, *imag),
         ConstValue::Str(s) => {
             let literal: String = match latin1_bytes(s) {
                 Some(bytes) if version.major() < 3 && !s.is_ascii() => {
@@ -432,23 +420,86 @@ fn unicode_const_prefix(em: &DefaultEmitter, version: &PyVersion) -> &'static st
 }
 
 const MARSHAL_LONG_SHIFT: u32 = 15;
+const CPYTHON_DECIMAL_LITERAL_LIMBS: usize = 900;
+const DECIMAL_CHUNK: u64 = 1_000_000_000;
 
 #[must_use]
 pub(crate) fn emit_bigint(b: &crate::ast::node::BigUint) -> String {
-    let mut acc: u128 = 0u128;
-    let mut shift: u32 = 0u32;
-    for d in &b.digits {
-        acc |= u128::from(*d) << shift;
-        shift = shift.saturating_add(MARSHAL_LONG_SHIFT);
-        if shift >= 128 {
-            return "0".to_owned();
+    let significant: usize = b
+        .digits
+        .iter()
+        .rposition(|d: &u16| *d != 0)
+        .map_or(0, |p: usize| p + 1);
+    let limbs: &[u16] = &b.digits[..significant];
+    let magnitude: String = if limbs.is_empty() {
+        "0".to_owned()
+    } else if limbs.len() <= CPYTHON_DECIMAL_LITERAL_LIMBS {
+        decimal_magnitude(limbs)
+    } else {
+        hex_magnitude(limbs)
+    };
+    if b.sign < 0 && !limbs.is_empty() {
+        format!("-{magnitude}")
+    } else {
+        magnitude
+    }
+}
+
+#[must_use]
+fn decimal_magnitude(limbs: &[u16]) -> String {
+    let mut chunks: Vec<u64> = Vec::with_capacity(limbs.len() / 2 + 1);
+    for limb in limbs.iter().rev() {
+        let mut carry: u64 = u64::from(*limb);
+        for chunk in &mut chunks {
+            let value: u64 = (*chunk << MARSHAL_LONG_SHIFT) + carry;
+            *chunk = value % DECIMAL_CHUNK;
+            carry = value / DECIMAL_CHUNK;
+        }
+        while carry > 0 {
+            chunks.push(carry % DECIMAL_CHUNK);
+            carry /= DECIMAL_CHUNK;
         }
     }
-    if b.sign < 0 {
-        format!("-{acc}")
-    } else {
-        acc.to_string()
+    let mut out: String = String::with_capacity(chunks.len() * 9);
+    for (position, chunk) in chunks.iter().rev().enumerate() {
+        if position == 0 {
+            out.push_str(&chunk.to_string());
+        } else {
+            out.push_str(&format!("{chunk:09}"));
+        }
     }
+    if out.is_empty() {
+        out.push('0');
+    }
+    out
+}
+
+#[must_use]
+fn hex_magnitude(limbs: &[u16]) -> String {
+    const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut reversed: Vec<u8> = Vec::with_capacity(limbs.len() * 4 + 2);
+    let mut acc: u64 = 0;
+    let mut acc_bits: u32 = 0;
+    for limb in limbs {
+        acc += u64::from(*limb) << acc_bits;
+        acc_bits += MARSHAL_LONG_SHIFT;
+        while acc_bits >= 4 {
+            reversed.push(HEX_DIGITS[(acc & 0xF) as usize]);
+            acc >>= 4;
+            acc_bits -= 4;
+        }
+    }
+    while acc > 0 {
+        reversed.push(HEX_DIGITS[(acc & 0xF) as usize]);
+        acc >>= 4;
+    }
+    while reversed.len() > 1 && reversed.last() == Some(&b'0') {
+        reversed.pop();
+    }
+    let mut out: String = String::with_capacity(reversed.len() + 2);
+    out.push_str("0x");
+    out.extend(reversed.iter().rev().map(|d: &u8| char::from(*d)));
+    out
 }
 
 #[must_use]
@@ -462,7 +513,7 @@ fn emit_long_literal(b: &crate::ast::node::BigUint, version: &PyVersion) -> Stri
 }
 
 #[must_use]
-fn emit_float(f: f64) -> String {
+pub(crate) fn emit_float(f: f64) -> String {
     if f.is_nan() {
         if f.is_sign_negative() {
             "(1e309 * 0)".to_owned()
@@ -475,10 +526,75 @@ fn emit_float(f: f64) -> String {
         } else {
             "1e309".to_owned()
         }
-    } else if f.fract() == 0.0 && f.abs() < 1e16 {
-        format!("{f:.1}")
     } else {
-        format!("{f}")
+        python_float_repr(f)
+    }
+}
+
+#[must_use]
+pub(crate) fn emit_complex(real: f64, imag: f64) -> String {
+    if !real.is_finite() || !imag.is_finite() {
+        format!("complex({}, {})", emit_float(real), emit_float(imag))
+    } else if real == 0.0 {
+        format!("{}j", emit_float(imag))
+    } else {
+        let imag_repr: String = emit_float(imag);
+        let imag_sign: &str = if imag_repr.starts_with('-') { "" } else { "+" };
+        format!("({}{imag_sign}{imag_repr}j)", emit_float(real))
+    }
+}
+
+#[must_use]
+fn python_float_repr(f: f64) -> String {
+    let sign: &str = if f.is_sign_negative() { "-" } else { "" };
+    if f == 0.0 {
+        return format!("{sign}0.0");
+    }
+    let scientific: String = format!("{:e}", f.abs());
+    let Some((mantissa, exponent)): Option<(&str, &str)> = scientific.split_once('e') else {
+        return format!("{f:?}");
+    };
+    let Ok(exponent): Result<i64, std::num::ParseIntError> = exponent.parse::<i64>() else {
+        return format!("{f:?}");
+    };
+    let digits: String = mantissa.chars().filter(char::is_ascii_digit).collect();
+    let decimal_point: i64 = exponent + 1;
+    let digit_count: i64 = digits.len() as i64;
+    let body: String = if decimal_point <= -4 || decimal_point > 16 {
+        let (lead, rest): (&str, &str) = digits.split_at(1);
+        let exp: i64 = decimal_point - 1;
+        let exp_sign: char = if exp < 0 { '-' } else { '+' };
+        if rest.is_empty() {
+            format!("{lead}e{exp_sign}{:02}", exp.unsigned_abs())
+        } else {
+            format!("{lead}.{rest}e{exp_sign}{:02}", exp.unsigned_abs())
+        }
+    } else if decimal_point <= 0 {
+        let zeros: String = "0".repeat((-decimal_point) as usize);
+        format!("0.{zeros}{digits}")
+    } else if decimal_point >= digit_count {
+        let zeros: String = "0".repeat((decimal_point - digit_count) as usize);
+        format!("{digits}{zeros}.0")
+    } else {
+        let (int_part, frac_part): (&str, &str) = digits.split_at(decimal_point as usize);
+        format!("{int_part}.{frac_part}")
+    };
+    format!("{sign}{body}")
+}
+
+#[must_use]
+fn const_prints_with_leading_minus(v: &ConstValue) -> bool {
+    match v {
+        ConstValue::Int(i) => *i < 0,
+        ConstValue::BigInt(b) => b.sign < 0 && b.digits.iter().any(|d: &u16| *d != 0),
+        ConstValue::Float(f) => emit_float(*f).starts_with('-'),
+        ConstValue::Complex { real, imag } => {
+            real.is_finite()
+                && imag.is_finite()
+                && *real == 0.0
+                && emit_float(*imag).starts_with('-')
+        }
+        _ => false,
     }
 }
 
@@ -945,38 +1061,26 @@ fn is_none_constant(e: &Expr) -> bool {
 #[must_use]
 pub fn emit_arguments(em: &DefaultEmitter, args: &Arguments, version: &PyVersion) -> String {
     let mut parts: Vec<String> = Vec::new();
-    let pos_default_offset: usize = args.args.len().saturating_sub(args.defaults.len());
-    let posonly_default_offset: usize = if args.posonly.is_empty() {
-        0
-    } else {
-        let total_pos: usize = args.posonly.len() + args.args.len();
-        total_pos.saturating_sub(args.defaults.len())
+    let positional_count: usize = args.posonly.len() + args.args.len();
+    let first_default: usize = positional_count.saturating_sub(args.defaults.len());
+    let default_for = |absolute_i: usize| -> Option<&Expr> {
+        absolute_i
+            .checked_sub(first_default)
+            .and_then(|k: usize| args.defaults.get(k))
     };
     for (i, a) in args.posonly.iter().enumerate() {
-        let default: Option<&Expr> = if i >= posonly_default_offset {
-            args.defaults.get(i - posonly_default_offset)
-        } else {
-            None
-        };
-        parts.push(format_arg(em, a, default, version));
+        parts.push(format_arg(em, a, default_for(i), version));
     }
     if !args.posonly.is_empty() && version_dispatch::supports_positional_only(version) {
         parts.push("/".to_owned());
     }
-    let pos_d_base: usize = args.posonly.len();
     for (i, a) in args.args.iter().enumerate() {
-        let absolute_i: usize = pos_d_base + i;
-        let default: Option<&Expr> = if absolute_i >= pos_default_offset + pos_d_base {
-            args.defaults
-                .get(absolute_i - (pos_default_offset + pos_d_base))
-        } else if !args.posonly.is_empty() {
-            None
-        } else if i >= pos_default_offset {
-            args.defaults.get(i - pos_default_offset)
-        } else {
-            None
-        };
-        parts.push(format_arg(em, a, default, version));
+        parts.push(format_arg(
+            em,
+            a,
+            default_for(args.posonly.len() + i),
+            version,
+        ));
     }
     if let Some(v) = &args.vararg {
         parts.push(format!("*{}", format_arg(em, v, None, version)));
@@ -1073,23 +1177,6 @@ fn emit_type_param(em: &DefaultEmitter, p: &TypeParam, version: &PyVersion) -> S
             s
         }
     }
-}
-
-#[must_use]
-fn emit_formatted_value(
-    em: &DefaultEmitter,
-    value: &Expr,
-    conversion: crate::ast::node::FormatConversion,
-    format_spec: Option<&Expr>,
-    version: &PyVersion,
-) -> String {
-    let inner: String = emit_expr(em, value, version, Precedence::Lowest);
-    let conv: &str = conversion_suffix(conversion);
-    let spec: String = match format_spec {
-        Some(s) => format!(":{}", emit_format_spec(em, s, version)),
-        None => String::new(),
-    };
-    format!("f\"{{{inner}{conv}{spec}}}\"")
 }
 
 #[must_use]
@@ -1419,5 +1506,55 @@ mod tests {
         let expr: Expr = bigint_expr();
         let out: String = emit_expr(&emitter, &expr, &PyVersion::V3_11, Precedence::Lowest);
         assert_eq!(out, "42");
+    }
+
+    #[test]
+    fn floats_render_as_cpython_repr() {
+        let cases: [(f64, &str); 18] = [
+            (1e16, "1e+16"),
+            (1e15, "1000000000000000.0"),
+            (123_456_789_012_345_678.0, "1.2345678901234568e+17"),
+            (1e22, "1e+22"),
+            (1.5e300, "1.5e+300"),
+            (1e-05, "1e-05"),
+            (0.0001, "0.0001"),
+            (-0.0, "-0.0"),
+            (0.0, "0.0"),
+            (0.1, "0.1"),
+            (-2.5, "-2.5"),
+            (5e-324, "5e-324"),
+            (f64::MAX, "1.7976931348623157e+308"),
+            (1.0 / 3.0, "0.3333333333333333"),
+            (100.0, "100.0"),
+            (-1e-7, "-1e-07"),
+            (2.5e-320, "2.5e-320"),
+            (12345.678, "12345.678"),
+        ];
+        for (value, expected) in cases {
+            assert_eq!(emit_float(value), expected, "repr of {value:e}");
+        }
+    }
+
+    #[test]
+    fn bigints_beyond_the_decimal_literal_limit_render_in_hex() {
+        let decimal: BigUint = BigUint {
+            sign: -1,
+            digits: vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+        };
+        assert_eq!(
+            emit_bigint(&decimal),
+            "-43556142965880123323311949751266331066368"
+        );
+        let wide: BigUint = BigUint {
+            sign: 1,
+            digits: vec![0x7FFF; CPYTHON_DECIMAL_LITERAL_LIMBS + 1],
+        };
+        let rendered: String = emit_bigint(&wide);
+        assert_eq!(
+            rendered.len(),
+            2 + (15 * (CPYTHON_DECIMAL_LITERAL_LIMBS + 1)).div_ceil(4)
+        );
+        assert!(rendered.starts_with("0x7fff"), "{}", &rendered[..8]);
+        assert!(rendered[2..].bytes().skip(1).all(|b: u8| b == b'f'));
     }
 }

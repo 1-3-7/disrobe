@@ -16,7 +16,9 @@ pub fn render_expr(expr: &Expr, version: &PyVersion) -> String {
                     value: ConstValue::Int(_) | ConstValue::BigInt(_),
                     ..
                 }
-            ) {
+            ) || crate::codegen::expr::expr_precedence(value)
+                < crate::codegen::expr::Precedence::PostfixCall
+            {
                 format!("({rendered}).{attr}")
             } else {
                 format!("{rendered}.{attr}")
@@ -156,16 +158,8 @@ pub fn render_const(value: &ConstValue) -> String {
         ConstValue::False => "False".to_owned(),
         ConstValue::Int(i) => i.to_string(),
         ConstValue::BigInt(big) => crate::codegen::expr::emit_bigint(big),
-        ConstValue::Float(f) => format_float(*f),
-        ConstValue::Complex { real, imag } => {
-            if !real.is_finite() || !imag.is_finite() {
-                format!("complex({}, {})", format_float(*real), format_float(*imag))
-            } else if *real == 0.0 {
-                format!("{}j", format_float(*imag))
-            } else {
-                format!("({}+{}j)", format_float(*real), format_float(*imag))
-            }
-        }
+        ConstValue::Float(f) => crate::codegen::expr::emit_float(*f),
+        ConstValue::Complex { real, imag } => crate::codegen::expr::emit_complex(*real, *imag),
         ConstValue::Str(s) | ConstValue::Unicode(s) => render_string_literal(s),
         ConstValue::Bytes(b) => render_bytes_literal(b),
         ConstValue::Tuple(elts) => {
@@ -199,27 +193,6 @@ pub fn render_const(value: &ConstValue) -> String {
             render_const(step)
         ),
         ConstValue::Code(c) => format!("<code {}>", c.qualname),
-    }
-}
-
-#[must_use]
-fn format_float(f: f64) -> String {
-    if f.is_nan() {
-        if f.is_sign_negative() {
-            "(1e309 * 0)".to_owned()
-        } else {
-            "-(1e309 * 0)".to_owned()
-        }
-    } else if f.is_infinite() {
-        if f > 0.0 {
-            "1e309".to_owned()
-        } else {
-            "-1e309".to_owned()
-        }
-    } else if f.fract() == 0.0 && f.abs() < 1e16 {
-        format!("{f:.1}")
-    } else {
-        format!("{f}")
     }
 }
 

@@ -21,10 +21,8 @@ impl OpcodeMap for PyPyOpcodeMap {
     fn decode(&self, raw: u8, arg: u32) -> CanonicalOp {
         match raw {
             PYPY_LOOKUP_METHOD => CanonicalOp::LoadAttr(arg),
-            PYPY_CALL_METHOD => CanonicalOp::CallFunction(u8::try_from(arg & 0xFF).unwrap_or(0)),
-            PYPY_CALL_METHOD_KW => {
-                CanonicalOp::CallFunctionKw(u8::try_from(arg & 0xFF).unwrap_or(0))
-            }
+            PYPY_CALL_METHOD => CanonicalOp::CallFunction(arg & 0xFF),
+            PYPY_CALL_METHOD_KW => CanonicalOp::CallFunctionKw(arg & 0xFF),
             PYPY_BUILD_LIST_FROM_ARG => CanonicalOp::BuildList(arg),
             PYPY_JUMP_IF_NOT_DEBUG => CanonicalOp::JumpForward(i32::try_from(arg).unwrap_or(0)),
             PYPY_LOAD_REVDB_VAR => CanonicalOp::LoadName(arg),
