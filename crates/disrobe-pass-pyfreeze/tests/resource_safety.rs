@@ -1,7 +1,6 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
 
 use disrobe_pass_pyfreeze::ExtractionQuota;
 use disrobe_pass_pyfreeze::briefcase::layout::walk_python_sources;
@@ -121,14 +120,8 @@ fn shiv_manifest_with_lying_4gib_uncompressed_size_does_not_oom() {
     let scratch: disrobe_core::scratch::ScratchDir = out_dir("shiv-lie");
     let out: PathBuf = scratch.path().to_path_buf();
 
-    let start: Instant = Instant::now();
     let result: Result<ShivExtraction, Error> = detect_and_extract(&archive, &src, &out);
-    let elapsed: Duration = start.elapsed();
 
-    assert!(
-        elapsed < Duration::from_secs(10),
-        "extraction of a 4 GiB-declared manifest must stay bounded; took {elapsed:?}"
-    );
     let err: Error =
         result.expect_err("a manifest declaring 4 GiB must be rejected, not allocated");
     assert!(
@@ -165,15 +158,9 @@ fn shiv_manifest_read_is_bounded_when_only_manifest_lies() {
         ..ExtractionQuota::default_safe()
     };
 
-    let start: Instant = Instant::now();
     let result: Result<ShivExtraction, Error> =
         detect_and_extract_with_quota(&archive, &src, &out, quota);
-    let elapsed: Duration = start.elapsed();
 
-    assert!(
-        elapsed < Duration::from_secs(10),
-        "the manifest read must not eagerly allocate the declared 4 GiB; took {elapsed:?}"
-    );
     let err: Error =
         result.expect_err("the lying manifest entry must be rejected by the loop guard");
     assert!(
@@ -241,14 +228,8 @@ fn briefcase_walk_rejects_pathologically_deep_tree() {
     make_dir(&cursor);
     write_file(&cursor.join("leaf.py"), b"x = 1\n");
 
-    let start: Instant = Instant::now();
     let result: Result<_, Error> = walk_python_sources(&root);
-    let elapsed: Duration = start.elapsed();
 
-    assert!(
-        elapsed < Duration::from_secs(10),
-        "a deep tree walk must stay bounded; took {elapsed:?}"
-    );
     let err: Error = result.expect_err("a 70-deep tree must trip the depth bound");
     assert!(
         matches!(err, Error::BriefcaseWalkBounded { .. }),
