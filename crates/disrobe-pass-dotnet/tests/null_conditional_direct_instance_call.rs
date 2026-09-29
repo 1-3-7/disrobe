@@ -1,7 +1,6 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use std::path::{Path, PathBuf};
-#[cfg(windows)]
 use std::process::Command;
 use std::time::Duration;
 
@@ -27,9 +26,34 @@ fn dotnet_path() -> PathBuf {
     PathBuf::from("dotnet")
 }
 
+fn run_dotnet(dotnet: &Path, args: &[String], bound: Duration, step: &str) {
+    let captured: CapturedOutput = run_captured(dotnet, args, bound, 8 * 1024 * 1024)
+        .unwrap_or_else(|error: std::io::Error| panic!("spawn dotnet {step}: {error}"))
+        .unwrap_or_else(|| panic!("dotnet {step} exceeded {} s", bound.as_secs()));
+    assert_eq!(
+        captured.exit_code,
+        Some(0),
+        "dotnet {step} failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&captured.stdout),
+        String::from_utf8_lossy(&captured.stderr)
+    );
+}
+
+fn restore(dotnet: &Path, project: &Path) {
+    let args: Vec<String> = vec![
+        "restore".to_owned(),
+        project.to_string_lossy().into_owned(),
+        "-v".to_owned(),
+        "q".to_owned(),
+        "-nologo".to_owned(),
+    ];
+    run_dotnet(dotnet, &args, Duration::from_mins(10), "restore");
+}
+
 fn build(dotnet: &Path, project: &Path, out_dir: &Path, configuration: &str) -> PathBuf {
     let args: Vec<String> = vec![
         "build".to_owned(),
+        "--no-restore".to_owned(),
         project.to_string_lossy().into_owned(),
         "-c".to_owned(),
         configuration.to_owned(),
@@ -39,18 +63,11 @@ fn build(dotnet: &Path, project: &Path, out_dir: &Path, configuration: &str) -> 
         "q".to_owned(),
         "-nologo".to_owned(),
     ];
-    let captured: CapturedOutput =
-        run_captured(dotnet, &args, Duration::from_mins(3), 8 * 1024 * 1024)
-            .unwrap_or_else(|error: std::io::Error| {
-                panic!("spawn dotnet build ({configuration}): {error}")
-            })
-            .unwrap_or_else(|| panic!("dotnet build ({configuration}) timed out"));
-    assert_eq!(
-        captured.exit_code,
-        Some(0),
-        "dotnet build ({configuration}) failed:\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&captured.stdout),
-        String::from_utf8_lossy(&captured.stderr)
+    run_dotnet(
+        dotnet,
+        &args,
+        Duration::from_mins(10),
+        &format!("build ({configuration})"),
     );
     out_dir.join("Fixture.dll")
 }
@@ -77,6 +94,7 @@ fn direct_instance_call_folds_and_static_extension_call_declines() {
     let project: PathBuf = dir.join("Fixture.csproj");
     std::fs::write(&project, CSPROJ).expect("write csproj");
     std::fs::write(dir.join("Fixture.cs"), SOURCE).expect("write source");
+    restore(&dotnet, &project);
 
     for configuration in ["Debug", "Release"] {
         let out_dir: PathBuf = dir.join("out").join(configuration);
