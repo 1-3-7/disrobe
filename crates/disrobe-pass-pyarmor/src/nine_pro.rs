@@ -59,7 +59,10 @@ fn classify(markers: &[String]) -> NineProBindMode {
         .any(|m: &String| m.contains("hwid") || m.contains("machine") || m == "__pyarmor_bind__")
     {
         NineProBindMode::HardwareBound
-    } else if markers.iter().any(|m: &String| m.ends_with(".lic")) {
+    } else if markers
+        .iter()
+        .any(|m: &String| matches!(m.as_str(), "pyarmor.license.lic" | "pyarmor.bind.lic"))
+    {
         NineProBindMode::LicenseFileBound
     } else {
         NineProBindMode::Unknown
