@@ -35,6 +35,10 @@ pub enum DecompileError {
     #[diagnostic(code("DR-PYDEC-0012"))]
     StructuringDepthExceeded { limit: usize },
 
+    #[error("structuring step budget {limit} exhausted probing loop exit tails")]
+    #[diagnostic(code("DR-PYDEC-0015"))]
+    StructuringBudgetExceeded { limit: usize },
+
     #[error("structuring block [{lo}, {hi}) out of range for {len} decoded ops")]
     #[diagnostic(code("DR-PYDEC-0013"))]
     BlockOutOfRange { lo: usize, hi: usize, len: usize },

@@ -1148,6 +1148,118 @@ thread_local! {
     static CODEOBJ_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static STUBBED_SCOPES: std::cell::RefCell<std::collections::BTreeSet<usize>> =
         const { std::cell::RefCell::new(std::collections::BTreeSet::new()) };
+    static EXIT_PROBES: std::cell::RefCell<ExitProbeState> =
+        const { std::cell::RefCell::new(ExitProbeState::new()) };
+}
+
+const EXIT_PROBE_STEP_BUDGET: usize = 1 << 22;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct ExitProbeKey {
+    ops_addr: usize,
+    ops_len: usize,
+    tail_start: usize,
+    hi: usize,
+    frame: Option<(usize, usize)>,
+    frame_depth: usize,
+    hi_cap: usize,
+    then_arm_cap: usize,
+}
+
+impl ExitProbeKey {
+    fn new(stream: &DecodedStream, tail_start: usize, hi: usize) -> Self {
+        let (frame, frame_depth): (Option<(usize, usize)>, usize) =
+            LOOP_FRAMES.with(|slot: &std::cell::RefCell<Vec<LoopFrame>>| {
+                let frames: std::cell::Ref<Vec<LoopFrame>> = slot.borrow();
+                (
+                    frames.last().map(|f: &LoopFrame| (f.header, f.exit)),
+                    frames.len(),
+                )
+            });
+        Self {
+            ops_addr: stream.ops.as_ptr().addr(),
+            ops_len: stream.ops.len(),
+            tail_start,
+            hi,
+            frame,
+            frame_depth,
+            hi_cap: structure_hi_cap(),
+            then_arm_cap: then_arm_end_cap(),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ExitProbeState {
+    memo: std::collections::BTreeMap<ExitProbeKey, Option<Expr>>,
+    steps: usize,
+}
+
+impl ExitProbeState {
+    const fn new() -> Self {
+        Self {
+            memo: std::collections::BTreeMap::new(),
+            steps: 0,
+        }
+    }
+}
+
+const fn exit_probe_budget_error() -> DecompileError {
+    DecompileError::StructuringBudgetExceeded {
+        limit: EXIT_PROBE_STEP_BUDGET,
+    }
+}
+
+fn exit_probe_over_budget() -> Result<()> {
+    EXIT_PROBES.with(|slot: &std::cell::RefCell<ExitProbeState>| {
+        if slot.borrow().steps > EXIT_PROBE_STEP_BUDGET {
+            return Err(exit_probe_budget_error());
+        }
+        Ok(())
+    })
+}
+
+fn charge_exit_probe(steps: usize) -> Result<()> {
+    EXIT_PROBES.with(|slot: &std::cell::RefCell<ExitProbeState>| {
+        let mut state: std::cell::RefMut<ExitProbeState> = slot.borrow_mut();
+        state.steps = state.steps.saturating_add(steps.max(1));
+        if state.steps > EXIT_PROBE_STEP_BUDGET {
+            return Err(exit_probe_budget_error());
+        }
+        Ok(())
+    })
+}
+
+fn memoized_exit_probe(
+    key: ExitProbeKey,
+    probe: impl FnOnce() -> Result<Option<Expr>>,
+) -> Result<Option<Expr>> {
+    exit_probe_over_budget()?;
+    if let Some(value) = EXIT_PROBES
+        .with(|slot: &std::cell::RefCell<ExitProbeState>| slot.borrow().memo.get(&key).cloned())
+    {
+        return Ok(value);
+    }
+    let value: Option<Expr> = probe()?;
+    exit_probe_over_budget()?;
+    EXIT_PROBES.with(|slot: &std::cell::RefCell<ExitProbeState>| {
+        slot.borrow_mut().memo.insert(key, value.clone());
+    });
+    Ok(value)
+}
+
+impl Drop for DecodedStream {
+    fn drop(&mut self) {
+        let owner: (usize, usize) = (self.ops.as_ptr().addr(), self.ops.len());
+        let _: std::result::Result<(), std::thread::AccessError> =
+            EXIT_PROBES.try_with(|slot: &std::cell::RefCell<ExitProbeState>| {
+                if let Ok(mut state) = slot.try_borrow_mut() {
+                    state
+                        .memo
+                        .retain(|key: &ExitProbeKey, _| (key.ops_addr, key.ops_len) != owner);
+                }
+            });
+    }
 }
 
 fn clear_stubbed_scopes() {
@@ -1311,6 +1423,7 @@ struct NestedCodeScope {
     hi_cap: usize,
     frames: Vec<LoopFrame>,
     active: Vec<(usize, usize)>,
+    exit_probes: ExitProbeState,
 }
 
 impl NestedCodeScope {
@@ -1325,11 +1438,16 @@ impl NestedCodeScope {
             STRUCTURE_ACTIVE.with(|slot: &std::cell::RefCell<Vec<(usize, usize)>>| {
                 std::mem::take(&mut *slot.borrow_mut())
             });
+        let exit_probes: ExitProbeState =
+            EXIT_PROBES.with(|slot: &std::cell::RefCell<ExitProbeState>| {
+                std::mem::replace(&mut *slot.borrow_mut(), ExitProbeState::new())
+            });
         Self {
             depth,
             hi_cap,
             frames,
             active,
+            exit_probes,
         }
     }
 }
@@ -1343,6 +1461,9 @@ impl Drop for NestedCodeScope {
         });
         STRUCTURE_ACTIVE.with(|slot: &std::cell::RefCell<Vec<(usize, usize)>>| {
             *slot.borrow_mut() = std::mem::take(&mut self.active);
+        });
+        EXIT_PROBES.with(|slot: &std::cell::RefCell<ExitProbeState>| {
+            *slot.borrow_mut() = std::mem::replace(&mut self.exit_probes, ExitProbeState::new());
         });
     }
 }

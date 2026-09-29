@@ -26,9 +26,9 @@ use super::try_with::{
     structure_try,
 };
 use super::{
-    DecodedStream, LoopFrame, MAX_SYNTH_OPERANDS, PY_CO_FLAG_FUNCTION_SCOPE, ScDesc,
-    StructureHiCapGuard, loop_frame_has_header, negate_cond_expr, none_jump_test, pop_loop_frame,
-    push_loop_frame, with_boolop_context,
+    DecodedStream, ExitProbeKey, LoopFrame, MAX_SYNTH_OPERANDS, PY_CO_FLAG_FUNCTION_SCOPE, ScDesc,
+    StructureHiCapGuard, charge_exit_probe, loop_frame_has_header, memoized_exit_probe,
+    negate_cond_expr, none_jump_test, pop_loop_frame, push_loop_frame, with_boolop_context,
 };
 use crate::ast::node::{BoolOpKind, ConstValue, Expr, ExprCtx, Stmt};
 use crate::bytecode::opcode::CanonicalOp;
@@ -2949,7 +2949,7 @@ pub(super) fn structure_loop(
         entry_guard_start.is_some_and(|start: usize| start < region.header);
     let head_end: usize = entry_guard_start.unwrap_or(region.header);
     let head: Vec<Stmt> = structure_stmts(code, stream, lo, head_end)?;
-    let exit_return: Option<Expr> = loop_shared_exit_return(code, stream, region, hi);
+    let exit_return: Option<Expr> = loop_shared_exit_return(code, stream, region, hi)?;
     push_loop_frame(LoopFrame {
         header: pre311_handler_continue_target(stream, region),
         exit: region.exit,
@@ -3116,7 +3116,7 @@ pub(super) fn structure_for_loop_with_iter(
     if !matches!(region.kind, LoopKind::For) || region.header != header {
         return Ok(None);
     }
-    let exit_return: Option<Expr> = loop_shared_exit_return(code, stream, &region, hi);
+    let exit_return: Option<Expr> = loop_shared_exit_return(code, stream, &region, hi)?;
     push_loop_frame(LoopFrame {
         header: region.header,
         exit: region.exit,
@@ -3596,7 +3596,7 @@ fn loop_shared_exit_return(
     stream: &DecodedStream,
     region: &LoopRegion,
     hi: usize,
-) -> Option<Expr> {
+) -> Result<Option<Expr>> {
     let hi: usize = hi.min(stream.ops.len());
     let tail_start: usize = if region.infinite {
         skip_loop_epilogue(stream, infinite_tail_start(stream, region).min(hi), hi)
@@ -3604,13 +3604,82 @@ fn loop_shared_exit_return(
         loop_tail_start(stream, region, hi)
     };
     if tail_start >= hi {
-        return None;
+        return Ok(None);
     }
-    let tail: Vec<Stmt> = structure_stmts(code, stream, tail_start, hi).ok()?;
-    match tail.as_slice() {
-        [Stmt::Return(Some(value))] => Some(value.clone()),
-        _ => None,
+    memoized_exit_probe(ExitProbeKey::new(stream, tail_start, hi), || {
+        let (holds_statement_loop, scanned): (bool, usize) =
+            tail_holds_statement_loop(stream, tail_start, hi);
+        charge_exit_probe(scanned)?;
+        if holds_statement_loop {
+            return Ok(None);
+        }
+        charge_exit_probe(hi - tail_start)?;
+        match structure_stmts(code, stream, tail_start, hi) {
+            Ok(tail) => match tail.as_slice() {
+                [Stmt::Return(Some(value))] => Ok(Some(value.clone())),
+                _ => Ok(None),
+            },
+            Err(err @ DecompileError::StructuringBudgetExceeded { .. }) => Err(err),
+            Err(_) => Ok(None),
+        }
+    })
+}
+
+const LOOP_HEADER_PREFIX_LIMIT: usize = 4;
+
+#[deny(clippy::indexing_slicing)]
+fn tail_holds_statement_loop(stream: &DecodedStream, lo: usize, hi: usize) -> (bool, usize) {
+    let hi: usize = hi.min(stream.ops.len());
+    let mut last_accumulator: Option<usize> = None;
+    let mut open_for_loops: std::collections::BTreeSet<(usize, usize)> =
+        std::collections::BTreeSet::new();
+    for k in lo..hi {
+        while let Some(&(exit, header)) = open_for_loops.first()
+            && exit <= k
+        {
+            if last_accumulator.is_none_or(|at: usize| at < header) {
+                return (true, k - lo);
+            }
+            open_for_loops.pop_first();
+        }
+        let Some(op): Option<&CanonicalOp> = stream.ops.get(k) else {
+            break;
+        };
+        if matches!(
+            op,
+            CanonicalOp::ListAppend | CanonicalOp::SetAdd | CanonicalOp::MapAdd
+        ) {
+            last_accumulator = Some(k);
+            continue;
+        }
+        let Some(target): Option<usize> = resolve_jump_target(stream, k, op) else {
+            continue;
+        };
+        if target < lo
+            || target > k
+            || matches!(op, CanonicalOp::JumpBackwardNoInterrupt(_))
+            || is_async_cleanup_throw_back_edge(stream, k)
+        {
+            continue;
+        }
+        let header_window_end: usize = target.saturating_add(LOOP_HEADER_PREFIX_LIMIT).min(k + 1);
+        let Some(header): Option<usize> = first_significant(stream, target, header_window_end)
+        else {
+            continue;
+        };
+        match stream.ops.get(header) {
+            Some(header_op @ CanonicalOp::ForIter(_)) => {
+                if let Some(exit) = resolve_jump_target(stream, header, header_op)
+                    && exit > k
+                {
+                    open_for_loops.insert((exit, header));
+                }
+            }
+            Some(CanonicalOp::GetAnext) | None => {}
+            Some(_) => return (true, k + 1 - lo),
+        }
     }
+    (false, hi.saturating_sub(lo))
 }
 
 fn loop_exit_tail_range(
