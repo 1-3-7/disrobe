@@ -16,49 +16,14 @@ struct Toolchain {
     lua: String,
 }
 
-fn first_existing(candidates: &[String]) -> Option<String> {
-    for c in candidates {
-        if c.contains('/') || c.contains('\\') {
-            if Path::new(c).exists() {
-                return Some(c.clone());
-            }
-        } else if Command::new(c).arg("-v").output().is_ok() {
-            return Some(c.clone());
-        }
-    }
-    None
-}
-
 fn toolchain_51() -> Option<Toolchain> {
-    let luac: String = first_existing(&[
-        "C:/Program Files (x86)/Lua/5.1/luac.exe".to_owned(),
-        "C:/Program Files/Lua/5.1/luac.exe".to_owned(),
-        "luac5.1".to_owned(),
-    ])?;
-    let lua: String = first_existing(&[
-        "C:/Program Files (x86)/Lua/5.1/lua.exe".to_owned(),
-        "C:/Program Files/Lua/5.1/lua.exe".to_owned(),
-        "lua5.1".to_owned(),
-    ])?;
-    Some(Toolchain { luac, lua })
+    common::lua_toolchain::toolchain(common::lua_toolchain::Dialect::Lua51)
+        .map(|(luac, lua): (String, String)| Toolchain { luac, lua })
 }
 
 fn toolchain_54() -> Option<Toolchain> {
-    let mut luac_cands: Vec<String> = vec![
-        "C:/Program Files/Lua/5.4/luac.exe".to_owned(),
-        "luac5.4".to_owned(),
-    ];
-    let mut lua_cands: Vec<String> = vec![
-        "C:/Program Files/Lua/5.4/lua.exe".to_owned(),
-        "lua5.4".to_owned(),
-    ];
-    if let Ok(home) = std::env::var("LOCALAPPDATA") {
-        luac_cands.insert(0, format!("{home}/Programs/Lua/bin/luac.exe"));
-        lua_cands.insert(0, format!("{home}/Programs/Lua/bin/lua.exe"));
-    }
-    let luac: String = first_existing(&luac_cands)?;
-    let lua: String = first_existing(&lua_cands)?;
-    Some(Toolchain { luac, lua })
+    common::lua_toolchain::toolchain(common::lua_toolchain::Dialect::Lua54)
+        .map(|(luac, lua): (String, String)| Toolchain { luac, lua })
 }
 
 fn scratch_dir() -> disrobe_core::scratch::ScratchDir {

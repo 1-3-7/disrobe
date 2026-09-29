@@ -20,43 +20,6 @@ const TRICKY_SOURCE: &str = r#"local t = {
 return t
 "#;
 
-fn luac_51_candidates() -> Vec<String> {
-    let mut v: Vec<String> = vec![
-        "C:/Program Files (x86)/Lua/5.1/luac.exe".to_owned(),
-        "C:/Program Files/Lua/5.1/luac.exe".to_owned(),
-        "luac5.1".to_owned(),
-    ];
-    if let Ok(home) = std::env::var("LOCALAPPDATA") {
-        v.push(format!("{home}/Programs/Lua/5.1/luac.exe"));
-    }
-    v
-}
-
-fn luac_54_candidates() -> Vec<String> {
-    let mut v: Vec<String> = vec![
-        "C:/Program Files/Lua/5.4/luac.exe".to_owned(),
-        "luac5.4".to_owned(),
-        "luac".to_owned(),
-    ];
-    if let Ok(home) = std::env::var("LOCALAPPDATA") {
-        v.push(format!("{home}/Programs/Lua/bin/luac.exe"));
-    }
-    v
-}
-
-fn find_luac(candidates: &[String]) -> Option<String> {
-    for c in candidates {
-        if c.contains('/') || c.contains('\\') {
-            if Path::new(c).exists() {
-                return Some(c.clone());
-            }
-        } else if Command::new(c).arg("-v").output().is_ok() {
-            return Some(c.clone());
-        }
-    }
-    None
-}
-
 fn scratch_dir(tag: &str) -> disrobe_core::scratch::ScratchDir {
     let seq: u64 = SEQ.fetch_add(1, Ordering::Relaxed);
     let purpose: String = format!(
@@ -154,7 +117,9 @@ fn assert_string_constants_survive(luac: &str, tag: &str) {
 
 #[test]
 fn string_constants_round_trip_lua_5_1() {
-    let Some(luac): Option<String> = find_luac(&luac_51_candidates()) else {
+    let Some(luac): Option<String> =
+        common::lua_toolchain::compiler(common::lua_toolchain::Dialect::Lua51)
+    else {
         common::lua_toolchain::missing_tool("luac 5.1 not found on box");
         return;
     };
@@ -163,7 +128,9 @@ fn string_constants_round_trip_lua_5_1() {
 
 #[test]
 fn string_constants_round_trip_lua_5_4() {
-    let Some(luac): Option<String> = find_luac(&luac_54_candidates()) else {
+    let Some(luac): Option<String> =
+        common::lua_toolchain::compiler(common::lua_toolchain::Dialect::Lua54)
+    else {
         common::lua_toolchain::missing_tool("luac 5.4 not found on box");
         return;
     };

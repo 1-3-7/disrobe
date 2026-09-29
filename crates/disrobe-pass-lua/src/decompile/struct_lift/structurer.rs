@@ -1130,16 +1130,9 @@ mod tests {
         let original: &str =
             "local result = 0\nif enabled then result = result + 1 end\nprint(result)\n";
         let mut exercised: usize = 0;
-        for (interpreter, installed) in [
-            ("lua5.1", "C:/msys64/ucrt64/bin/lua5.1.exe"),
-            ("lua5.3", "C:/msys64/ucrt64/bin/lua5.3.exe"),
-            ("lua5.4", "C:/msys64/ucrt64/bin/lua5.4.exe"),
-        ] {
-            let program: &str = if std::path::Path::new(installed).is_file() {
-                installed
-            } else {
-                interpreter
-            };
+        for interpreter in ["lua5.1", "lua5.3", "lua5.4"] {
+            let executable: String = format!("{interpreter}{}", std::env::consts::EXE_SUFFIX);
+            let program: &str = executable.as_str();
             let Some(version): Option<std::process::Output> =
                 Command::new(program).arg("-v").output().ok()
             else {

@@ -15,21 +15,6 @@ static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 const FIXTURE: &str = "local function f()\n  local a = 2.0\n  local b = 1000000.0\n  local c = 3.5\n  local d = 7\n  return a, b, c, d\nend\nreturn f\n";
 
-fn lua_bin(name: &str) -> Option<String> {
-    let home: String = std::env::var("LOCALAPPDATA").ok()?;
-    let p: String = format!("{home}/Programs/Lua/bin/{name}.exe");
-    let alt: String = "C:/Program Files/Lua/5.4/luac.exe".to_owned();
-    if Path::new(&p).exists() {
-        Some(p)
-    } else if Path::new(&alt).exists() && name == "luac" {
-        Some(alt)
-    } else if Command::new(name).arg("-v").output().is_ok() {
-        Some(name.to_owned())
-    } else {
-        None
-    }
-}
-
 fn scratch_dir() -> disrobe_core::scratch::ScratchDir {
     let seq: u64 = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
     let purpose: String = format!("disrobe_lua_float_type-{}-{seq}", std::process::id());
@@ -97,11 +82,15 @@ fn run_math_type(interp: &str, dir: &Path, chunk: &str) -> Option<String> {
 
 #[test]
 fn lua54_float_literals_keep_float_type_after_recovery() {
-    let Some(luac): Option<String> = lua_bin("luac") else {
+    let Some(luac): Option<String> =
+        common::lua_toolchain::compiler(common::lua_toolchain::Dialect::Lua54)
+    else {
         common::lua_toolchain::missing_tool("luac 5.4 not found on box");
         return;
     };
-    let Some(interp): Option<String> = lua_bin("lua") else {
+    let Some(interp): Option<String> =
+        common::lua_toolchain::interpreter(common::lua_toolchain::Dialect::Lua54)
+    else {
         common::lua_toolchain::missing_tool("lua 5.4 interpreter not found on box");
         return;
     };
