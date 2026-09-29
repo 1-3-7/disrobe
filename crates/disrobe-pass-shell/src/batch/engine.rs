@@ -36,7 +36,16 @@ pub struct BatchDeobReport {
     pub embedded_payloads: Vec<EmbeddedPayload>,
     pub decrypted_stages: Vec<DecryptedStage>,
     pub iocs: BatchIocReport,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stopped: Option<BatchStop>,
     pub output: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct BatchStop {
+    pub processed_lines: usize,
+    pub output_bytes: usize,
+    pub unprocessed_lines: usize,
 }
 
 #[derive(Debug, Default)]
@@ -97,14 +106,15 @@ pub fn deobfuscate_batch(input: &str, args: &[String]) -> BatchDeobReport {
     let mut output_counted: usize = 0;
 
     while let Some(line) = worklist.pop_front() {
-        processed += 1;
         while output_counted < output_lines.len() {
             output_bytes = output_bytes.saturating_add(output_lines[output_counted].len());
             output_counted = output_counted.saturating_add(1);
         }
-        if processed > MAX_LINES || output_bytes > MAX_TOTAL_OUTPUT {
+        if processed >= MAX_LINES || output_bytes > MAX_TOTAL_OUTPUT {
+            worklist.push_front(line);
             break;
         }
+        processed += 1;
         let trimmed: &str = line.trim();
         if trimmed.is_empty() {
             output_lines.push(line);
@@ -147,6 +157,11 @@ pub fn deobfuscate_batch(input: &str, args: &[String]) -> BatchDeobReport {
         output_lines.push(emulated);
     }
 
+    let stopped: Option<BatchStop> = (!worklist.is_empty()).then_some(BatchStop {
+        processed_lines: processed,
+        output_bytes,
+        unprocessed_lines: worklist.len(),
+    });
     if !worklist.is_empty() {
         output_lines.push(format!(
             "rem disrobe: emulation stopped after {processed} lines or {output_bytes} output bytes (limits {MAX_LINES} and {MAX_TOTAL_OUTPUT}); the {} lines below are unprocessed",
@@ -187,6 +202,7 @@ pub fn deobfuscate_batch(input: &str, args: &[String]) -> BatchDeobReport {
         embedded_payloads,
         decrypted_stages,
         iocs,
+        stopped,
         output,
     }
 }

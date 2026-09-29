@@ -20,7 +20,7 @@ pub mod payload;
 pub use cfg::{BasicBlock, BatchCfg, CfgEdge, EdgeKind, resolve_cfg};
 pub use chain::{DecryptedStage, StageMethod, StageOutcome, recover_stages};
 pub use emulate::{EmuResult, EmuState, emulate};
-pub use engine::{BatchDeobReport, deobfuscate_batch};
+pub use engine::{BatchDeobReport, BatchStop, deobfuscate_batch};
 pub use expand::{ExpandStats, expand_line, expand_repeated};
 pub use forloop::{ForKind, ForLoop, parse_for_f_string, parse_for_l, unroll};
 pub use iff::{IfOutcome, eval_if};

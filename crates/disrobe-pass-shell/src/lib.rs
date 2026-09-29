@@ -43,11 +43,11 @@ pub use bash::{
 };
 pub use batch::{
     BasicBlock, BatchCfg, BatchDeobReport, BatchIndicator, BatchIocKind, BatchIocReport,
-    BatchReport, CfgEdge, DecryptedStage, EdgeKind, EmbeddedPayload, EmuResult, EmuState,
-    ExpandStats, ForKind, ForLoop, IfOutcome, NormalizeReport, PayloadKind, RecoveryState,
-    StageMethod, StageOutcome, deobfuscate_batch, emulate, eval_if, expand_line, expand_repeated,
-    extract_embedded, normalize as normalize_batch, parse_for_f_string, parse_for_l,
-    recover_stages, resolve_cfg, reverse_batch, surface_iocs, unroll,
+    BatchReport, BatchStop, CfgEdge, DecryptedStage, EdgeKind, EmbeddedPayload, EmuResult,
+    EmuState, ExpandStats, ForKind, ForLoop, IfOutcome, NormalizeReport, PayloadKind,
+    RecoveryState, StageMethod, StageOutcome, deobfuscate_batch, emulate, eval_if, expand_line,
+    expand_repeated, extract_embedded, normalize as normalize_batch, parse_for_f_string,
+    parse_for_l, recover_stages, resolve_cfg, reverse_batch, surface_iocs, unroll,
 };
 pub use detect::{Detection, Dialect, Family, decode_script_bytes, detect};
 pub use error::{Error, Result};

@@ -418,3 +418,41 @@ fn corpus_multistage_xor_recovers_second_stage() {
         report.iocs.core
     );
 }
+
+#[test]
+fn a_script_past_the_line_limit_keeps_every_unprocessed_line_after_its_wall() {
+    let script: String = (0..50_005)
+        .map(|n: usize| format!("echo line{n}"))
+        .collect::<Vec<String>>()
+        .join("\r\n");
+    let report: disrobe_pass_shell::BatchDeobReport =
+        disrobe_pass_shell::deobfuscate_batch(&script, &[]);
+    let stop: disrobe_pass_shell::BatchStop =
+        report.stopped.expect("the line limit stops emulation");
+    assert_eq!(
+        (stop.processed_lines, stop.unprocessed_lines),
+        (50_000, 5),
+        "{stop:?}"
+    );
+    let after_wall: Vec<&str> = report
+        .output
+        .lines()
+        .skip_while(|line: &&str| !line.starts_with("rem disrobe: emulation stopped"))
+        .skip(1)
+        .collect();
+    assert_eq!(
+        after_wall,
+        (50_000..50_005)
+            .map(|n: usize| format!("echo line{n}"))
+            .collect::<Vec<String>>(),
+        "every line past the wall stays in the output, in order"
+    );
+    assert_eq!(
+        report
+            .output
+            .lines()
+            .filter(|l: &&str| l.starts_with("echo line"))
+            .count(),
+        50_005
+    );
+}
