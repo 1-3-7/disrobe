@@ -639,9 +639,21 @@ fn fold_string_concatenations(s: &str) -> Option<String> {
 }
 
 static FORMAT_STR: LazyLock<&'static Regex> =
-    LazyLock::new(|| regex!(r#"\(\s*['"]([^'"]*)['"]\s*-f\s*([^)]+)\)"#));
+    LazyLock::new(|| regex!(r#"\(\s*['"]([^'"]*)['"]\s*-f\s*((?:\([^()]*\)|[^()])+)\)"#));
 
-fn split_format_args(args_raw: &str) -> Vec<String> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum FormatArg {
+    Literal(String),
+    Expression(String),
+}
+
+fn split_format_args(args_raw: &str) -> Vec<FormatArg> {
+    let trimmed: &str = args_raw.trim();
+    let args_raw: &str = trimmed
+        .strip_prefix('(')
+        .and_then(|inner: &str| inner.strip_suffix(')'))
+        .filter(|inner: &&str| !inner.contains(['(', ')']))
+        .unwrap_or(trimmed);
     let mut fields: Vec<String> = Vec::new();
     let mut current: String = String::new();
     let mut chars: std::iter::Peekable<std::str::Chars<'_>> = args_raw.chars().peekable();
@@ -676,20 +688,61 @@ fn split_format_args(args_raw: &str) -> Vec<String> {
     fields.push(current);
     fields
         .into_iter()
-        .map(|field: String| unquote_format_arg(field.trim()))
+        .map(|field: String| classify_format_arg(field.trim()))
         .collect()
 }
 
-fn unquote_format_arg(field: &str) -> String {
+fn format_with_literals(template: &str, args: &[FormatArg]) -> Option<String> {
+    let mut out: String = String::with_capacity(template.len());
+    let mut chars: std::iter::Peekable<std::str::Chars<'_>> = template.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '{' if chars.peek() == Some(&'{') => {
+                chars.next();
+                out.push('{');
+            }
+            '}' if chars.peek() == Some(&'}') => {
+                chars.next();
+                out.push('}');
+            }
+            '{' => {
+                let mut num: String = String::new();
+                for nc in chars.by_ref() {
+                    if nc == '}' {
+                        break;
+                    }
+                    num.push(nc);
+                }
+                let index: usize = num.trim().parse::<usize>().ok()?;
+                match args.get(index)? {
+                    FormatArg::Literal(value) => out.push_str(value),
+                    FormatArg::Expression(_) => return None,
+                }
+            }
+            '}' => return None,
+            _ => out.push(c),
+        }
+    }
+    Some(out)
+}
+
+fn classify_format_arg(field: &str) -> FormatArg {
     let bytes: &[u8] = field.as_bytes();
     if bytes.len() >= 2 {
         let first: u8 = bytes[0];
         let last: u8 = bytes[bytes.len() - 1];
-        if first == last && (first == b'\'' || first == b'"') {
-            return field[1..field.len() - 1].to_owned();
+        let inner: &str = &field[1..field.len() - 1];
+        if first == last && first == b'\'' {
+            return FormatArg::Literal(inner.to_owned());
+        }
+        if first == last && first == b'"' && !inner.contains(['$', '`']) {
+            return FormatArg::Literal(inner.to_owned());
         }
     }
-    field.to_owned()
+    if !field.is_empty() && field.bytes().all(|b: u8| b.is_ascii_digit()) {
+        return FormatArg::Literal(field.to_owned());
+    }
+    FormatArg::Expression(field.to_owned())
 }
 
 fn fold_format_strings(s: &str) -> Option<String> {
@@ -699,44 +752,12 @@ fn fold_format_strings(s: &str) -> Option<String> {
     Some(
         FORMAT_STR
             .replace_all(s, |c: &regex::Captures<'_>| {
-                let template: &str = c.get(1).map(|m: regex::Match<'_>| m.as_str()).unwrap_or("");
-                let args_raw: &str = c.get(2).map(|m: regex::Match<'_>| m.as_str()).unwrap_or("");
-                let args: Vec<String> = split_format_args(args_raw);
-                let mut out: String = String::with_capacity(template.len());
-                let mut chars: std::iter::Peekable<std::str::Chars<'_>> =
-                    template.chars().peekable();
-                while let Some(c) = chars.next() {
-                    match c {
-                        '{' if chars.peek() == Some(&'{') => {
-                            chars.next();
-                            out.push('{');
-                        }
-                        '}' if chars.peek() == Some(&'}') => {
-                            chars.next();
-                            out.push('}');
-                        }
-                        '{' => {
-                            let mut num: String = String::new();
-                            for nc in chars.by_ref() {
-                                if nc == '}' {
-                                    break;
-                                }
-                                num.push(nc);
-                            }
-                            if let Ok(idx) = num.parse::<usize>() {
-                                if let Some(v) = args.get(idx) {
-                                    out.push_str(v);
-                                    continue;
-                                }
-                            }
-                            out.push('{');
-                            out.push_str(&num);
-                            out.push('}');
-                        }
-                        _ => out.push(c),
-                    }
-                }
-                ps_double_quoted(&out)
+                let whole: &str = c.get(0).map_or("", |m: regex::Match<'_>| m.as_str());
+                let template: &str = c.get(1).map_or("", |m: regex::Match<'_>| m.as_str());
+                let args_raw: &str = c.get(2).map_or("", |m: regex::Match<'_>| m.as_str());
+                let args: Vec<FormatArg> = split_format_args(args_raw);
+                format_with_literals(template, &args)
+                    .map_or_else(|| whole.to_owned(), |out: String| ps_double_quoted(&out))
             })
             .into_owned(),
     )
@@ -1038,8 +1059,30 @@ mod tests {
 
     #[test]
     fn split_format_args_keeps_variable_argument_verbatim() {
-        let args: Vec<String> = split_format_args("'Host: ',$ComputerName");
-        assert_eq!(args, vec!["Host: ".to_owned(), "$ComputerName".to_owned()]);
+        let args: Vec<FormatArg> = split_format_args("'Host: ',$ComputerName");
+        assert_eq!(
+            args,
+            vec![
+                FormatArg::Literal("Host: ".to_owned()),
+                FormatArg::Expression("$ComputerName".to_owned())
+            ]
+        );
+    }
+
+    #[test]
+    fn a_format_over_a_variable_or_a_format_spec_is_left_for_powershell() {
+        for kept in [
+            "('{0}{1}' -f 'Host: ',$ComputerName)",
+            "('{0,5}' -f 'ab')",
+            "('{0:X}' -f 255)",
+            "('{2}' -f 'a','b')",
+        ] {
+            assert_eq!(reverse_string(kept).output, kept, "{kept}");
+        }
+        assert_eq!(
+            reverse_string("('{0}{1}' -f ('Wr','ite'))").output,
+            "\"Write\""
+        );
     }
 
     #[test]

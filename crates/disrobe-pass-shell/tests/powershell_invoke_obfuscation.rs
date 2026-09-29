@@ -36,7 +36,7 @@ type Reversal = fn(&str) -> ReverseReport;
 #[cfg(windows)]
 #[test]
 fn string_level_reversal_matches_what_powershell_evaluates() {
-    let authored: [(&str, Reversal); 7] = [
+    let authored: [(&str, Reversal); 8] = [
         ("('{0}{1}{2}' -f 'Get','-','Process')", reverse_string),
         ("([char]73 + [char]69 + [char]88)", reverse_token),
         ("('Get-Pro'+'cess')", reverse_string),
@@ -44,6 +44,7 @@ fn string_level_reversal_matches_what_powershell_evaluates() {
         ("('{1}{0}' -f 'Host','Write-')", reverse_string),
         ("([string][char]0x57 + 'rite')", reverse_token),
         ("([char]0x48 + [char]105 + '!')", reverse_token),
+        ("('{0}{1}' -f ('Wr','ite'))", reverse_string),
     ];
     let mut mismatches: Vec<String> = Vec::new();
     for (expression, reverse) in authored {
