@@ -66,19 +66,19 @@ fn string_level_reversal_matches_what_powershell_evaluates() {
             .trim()
             .trim_start_matches('(')
             .trim_end_matches(')');
-        let unquoted: String = if let Some(inner) = literal
+        let unquoted: String = literal
             .strip_prefix('\'')
             .and_then(|s: &str| s.strip_suffix('\''))
-        {
-            inner.replace("''", "'")
-        } else if let Some(inner) = literal
-            .strip_prefix('"')
-            .and_then(|s: &str| s.strip_suffix('"'))
-        {
-            inner.to_owned()
-        } else {
-            literal.to_owned()
-        };
+            .map_or_else(
+                || {
+                    literal
+                        .strip_prefix('"')
+                        .and_then(|s: &str| s.strip_suffix('"'))
+                        .unwrap_or(literal)
+                        .to_owned()
+                },
+                |inner: &str| inner.replace("''", "'"),
+            );
         if unquoted != expected {
             mismatches.push(format!(
                 "{expression}: powershell {expected:?}, recovered {recovered:?}"
