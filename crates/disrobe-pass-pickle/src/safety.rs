@@ -90,9 +90,40 @@ const OVERTLY_MALICIOUS: &[(&str, &str)] = &[
     ("pdb", "runeval"),
     ("pdb", "runctx"),
     ("pdb", "runcall"),
+    ("pdb", "Pdb"),
+    ("builtins", "breakpoint"),
+    ("__builtin__", "execfile"),
+    ("code", "InteractiveInterpreter"),
+    ("code", "InteractiveConsole"),
+    ("numpy.testing._private.utils", "runstring"),
+    ("numpy.testing.utils", "runstring"),
+    ("torch.hub", "load"),
+    ("torch.hub", "load_state_dict_from_url"),
+    ("torch._inductor.codecache", "compile_file"),
+    ("pip", "main"),
+    ("pip._internal", "main"),
+    ("pip._internal.cli.main", "main"),
+    ("ctypes", "CDLL"),
+    ("ctypes", "cdll"),
+    ("ctypes", "PyDLL"),
+    ("ctypes", "pydll"),
+    ("ctypes", "WinDLL"),
+    ("ctypes", "windll"),
+    ("ctypes", "OleDLL"),
+    ("ctypes", "oledll"),
+    ("ctypes", "LibraryLoader"),
+    ("_ctypes", "dlopen"),
+    ("_ctypes", "LoadLibrary"),
 ];
 
-const OVERTLY_MALICIOUS_MODULES: &[&str] = &["subprocess", "_posixsubprocess", "pty", "commands"];
+const OVERTLY_MALICIOUS_MODULES: &[&str] = &[
+    "subprocess",
+    "_posixsubprocess",
+    "pty",
+    "commands",
+    "bdb",
+    "runpy",
+];
 
 const PROCESS_MODULES: &[&str] = &["os", "posix", "nt"];
 
@@ -149,10 +180,6 @@ const SUSPICIOUS_PAIRS: &[(&str, &str)] = &[
     ("os", "environ"),
     ("os", "getcwd"),
     ("sys", "modules"),
-    ("copyreg", "__newobj__"),
-    ("copyreg", "_reconstructor"),
-    ("copy_reg", "__newobj__"),
-    ("copy_reg", "_reconstructor"),
 ];
 
 #[derive(Debug, Clone, Default)]
@@ -1454,6 +1481,37 @@ mod tests {
     }
 
     #[test]
+    fn every_code_execution_entry_point_grades_overtly_malicious() {
+        for (module, name) in [
+            ("builtins", "breakpoint"),
+            ("__builtin__", "execfile"),
+            ("code", "InteractiveConsole"),
+            ("numpy.testing._private.utils", "runstring"),
+            ("torch.hub", "load"),
+            ("torch._inductor.codecache", "compile_file"),
+            ("pip", "main"),
+            ("ctypes", "CDLL"),
+            ("_ctypes", "dlopen"),
+            ("bdb", "Bdb"),
+            ("runpy", "run_path"),
+            ("pdb", "Pdb"),
+        ] {
+            let mut bytes: Vec<u8> = vec![0x80, 0x02];
+            bytes.extend(global(module, name));
+            bytes.push(b')');
+            bytes.push(b'R');
+            bytes.push(b'.');
+            let report: SafetyReport = deep_report(&bytes);
+            assert_eq!(
+                report.severity,
+                Severity::OvertlyMalicious,
+                "{module}.{name}: {:?}",
+                report.findings
+            );
+        }
+    }
+
+    #[test]
     fn deep_resolves_copyreg_newobj_target() {
         let mut bytes: Vec<u8> = vec![0x80, 0x02];
         bytes.extend(global("copyreg", "__newobj__"));
@@ -1472,6 +1530,21 @@ mod tests {
             "copyreg.__newobj__ target must be resolved, got {:?}",
             deep.findings
         );
+    }
+
+    #[test]
+    fn a_protocol_zero_instance_rebuilt_by_copy_reg_is_benign() {
+        let mut bytes: Vec<u8> = Vec::new();
+        bytes.extend(global("copy_reg", "_reconstructor"));
+        bytes.push(b'(');
+        bytes.extend(global("geometry", "Point"));
+        bytes.extend(global("__builtin__", "object"));
+        bytes.push(b'N');
+        bytes.push(b't');
+        bytes.push(b'R');
+        bytes.push(b'.');
+        let deep: SafetyReport = deep_report(&bytes);
+        assert_eq!(deep.severity, Severity::Benign, "{:?}", deep.findings);
     }
 
     #[test]

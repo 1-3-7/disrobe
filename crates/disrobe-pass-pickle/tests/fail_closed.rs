@@ -64,8 +64,7 @@ const EXPECTATIONS: [Expectation; 14] = [
 
 const BENIGN_CORPUS_DIRS: [&str; 2] = ["benign", "structural"];
 const BENIGN_CORPUS_FIXTURES: usize = 96;
-const BENIGN_CORPUS_FALSE_POSITIVES: usize = 2;
-const COPYREG_RECONSTRUCTOR_PROTOCOLS: [u8; 2] = [0, 1];
+const BENIGN_CORPUS_FALSE_POSITIVES: usize = 0;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Truth {
@@ -425,21 +424,6 @@ fn the_benign_corpus_keeps_its_verdicts() {
         }
     }
     not_benign.sort();
-    assert_eq!(
-        not_benign,
-        expected_false_positives(),
-        "benign corpus verdicts"
-    );
+    assert_eq!(not_benign, Vec::<String>::new(), "benign corpus verdicts");
     assert_eq!(not_benign.len(), BENIGN_CORPUS_FALSE_POSITIVES);
-}
-
-fn expected_false_positives() -> Vec<String> {
-    let mut expected: Vec<String> = COPYREG_RECONSTRUCTOR_PROTOCOLS
-        .iter()
-        .map(|protocol: &u8| {
-            format!("benign/p{protocol}/instance.pkl: Suspicious global.suspicious_callable")
-        })
-        .collect();
-    expected.sort();
-    expected
 }
