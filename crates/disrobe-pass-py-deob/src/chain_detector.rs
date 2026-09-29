@@ -493,6 +493,41 @@ mod tests {
         assert!(ObfuscatorCatalog::detect(&PyDeobDetector, &ctx(&pyc)).is_none());
     }
 
+    fn corpus_fixture(relative: &str) -> Vec<u8> {
+        let path: std::path::PathBuf = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../corpus")
+            .join(relative);
+        std::fs::read(&path).unwrap_or_else(|e: std::io::Error| {
+            panic!(
+                "required tracked fixture {} is unreadable: {e}",
+                path.display()
+            )
+        })
+    }
+
+    #[test]
+    fn plain_build_script_reading_a_marshal_resource_is_not_a_marshal_packer() {
+        let src: Vec<u8> = corpus_fixture("python/freezers/py2exe/build.py");
+        assert!(
+            Detector::detect(&PyDeobDetector, &ctx(&src)).is_none(),
+            "a build script that inspects a frozen marshal resource carries no packed payload"
+        );
+        assert!(ObfuscatorCatalog::detect(&PyDeobDetector, &ctx(&src)).is_none());
+    }
+
+    #[test]
+    fn pyinstaller_pyz_archive_is_left_to_the_container_pass() {
+        for name in ["real_py311.pyz", "real_py313.pyz"] {
+            let pyz: Vec<u8> =
+                corpus_fixture(&format!("python/freezers/pyinstaller/pyz_versions/{name}"));
+            assert!(
+                Detector::detect(&PyDeobDetector, &ctx(&pyz)).is_none(),
+                "{name} is a pyinstaller pyz archive whose embedded pyc magic is not kramer evidence"
+            );
+            assert!(ObfuscatorCatalog::detect(&PyDeobDetector, &ctx(&pyz)).is_none());
+        }
+    }
+
     #[test]
     fn catalog_is_non_empty_and_covers_registered_passes() {
         let entries: Vec<&'static dyn CatalogEntry> = PyDeobDetector.catalog();

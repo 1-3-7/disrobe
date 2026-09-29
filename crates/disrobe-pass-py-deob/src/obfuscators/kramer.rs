@@ -120,7 +120,7 @@ impl ObfuscatorPass for KramerPass {
     }
 }
 
-fn is_pyc_with_kramer_signature(source: &[u8]) -> bool {
+pub(crate) fn is_pyc_with_kramer_signature(source: &[u8]) -> bool {
     if source.len() < 16 {
         return false;
     }

@@ -119,7 +119,13 @@ pub fn detect_marshal(source: &[u8]) -> f32 {
         return 0.0;
     }
     let has_exec: bool = text.contains("exec(") || text.contains("eval(");
-    if has_exec { 0.9 } else { 0.7 }
+    if has_exec {
+        0.9
+    } else if peel_to_marshal_blob(head).is_ok() {
+        0.7
+    } else {
+        0.0
+    }
 }
 
 fn looks_like_raw_marshal(bytes: &[u8]) -> bool {
@@ -574,6 +580,23 @@ mod tests {
     fn detect_plain_marshal_exec() {
         let src: &[u8] = b"import marshal\nexec(marshal.loads(b'c\\x00'))\n";
         assert!(detect_marshal(src) >= 0.9);
+    }
+
+    #[test]
+    fn detect_marshal_without_exec_needs_an_embedded_code_object() {
+        let reader: &[u8] = b"import marshal\ncode = marshal.loads(blob_from_disk)\n";
+        assert!(detect_marshal(reader).abs() < f32::EPSILON);
+        let path: std::path::PathBuf = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../corpus/python/marshal/variants/arith.py311.exec_plain.py");
+        let packed: String = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e: std::io::Error| {
+                panic!(
+                    "required tracked fixture {} is unreadable: {e}",
+                    path.display()
+                )
+            })
+            .replacen("exec(", "run(", 1);
+        assert!((detect_marshal(packed.as_bytes()) - 0.7).abs() < f32::EPSILON);
     }
 
     #[test]

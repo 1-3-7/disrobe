@@ -1,10 +1,10 @@
 use std::sync::LazyLock;
 
-use disrobe_core::byte_search;
 use regex::Regex;
 use serde::Serialize;
 
 use crate::debug::dbg_kv;
+use crate::obfuscators::kramer::is_pyc_with_kramer_signature;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum Family {
@@ -27,7 +27,6 @@ pub struct Detection {
 
 const HYPERION_MARKER: &str = "__obfuscator__ = 'Hyperion'";
 const HYPERION_AUTHOR: &str = "billythegoat356";
-const KRAMER_BINARY_MARKER: &[u8] = b"\r\r\n";
 const BLANK_OBF_MARKER: &str = "BlankOBF";
 
 #[must_use]
@@ -46,12 +45,10 @@ pub fn detect(source: &[u8]) -> Detection {
         family = Family::Hyperion;
         confidence = 0.7;
         markers.push("hyperion-author".to_owned());
-    } else if source.len() > 16
-        && byte_search::contains(&source[..16.min(source.len())], KRAMER_BINARY_MARKER)
-    {
+    } else if is_pyc_with_kramer_signature(source) {
         family = Family::KramerSpecterBerserker;
         confidence = 0.85;
-        markers.push("crrn-pyc-magic".to_owned());
+        markers.push("kramer-signed-pyc".to_owned());
     } else if text_head.contains(BLANK_OBF_MARKER) {
         family = Family::BlankObf;
         confidence = 0.85;
@@ -118,6 +115,7 @@ fn extract_dropper_modules(text: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use disrobe_core::byte_search;
 
     #[test]
     fn detects_hyperion_banner() {
@@ -172,11 +170,19 @@ mod tests {
     }
 
     #[test]
-    fn detects_kramer_marker_in_binary() {
+    fn detects_kramer_signed_pyc() {
         let mut src: Vec<u8> = vec![0u8; 32];
-        src[0..3].copy_from_slice(b"\r\r\n");
+        src[0..4].copy_from_slice(b"\xa7\r\r\n");
+        src[16..22].copy_from_slice(b"Kramer");
         let det: Detection = detect(&src);
         assert_eq!(det.family, Family::KramerSpecterBerserker);
+    }
+
+    #[test]
+    fn embedded_pyc_magic_alone_is_not_kramer() {
+        let mut pyz: Vec<u8> = vec![0u8; 32];
+        pyz[0..8].copy_from_slice(b"PYZ\0\xa7\r\r\n");
+        assert_eq!(detect(&pyz).family, Family::Unknown);
     }
 
     #[test]
