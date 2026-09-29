@@ -83,6 +83,7 @@ disrobe is proprietary, source-available software under the Disrobe Source-Avail
 
 - [Contributing](https://1-3-7.github.io/disrobe/latest/contributing.html): This guide covers building, testing, and extending Disrobe, including the evidence required for recovery claims.
 - [Security](https://1-3-7.github.io/disrobe/latest/security.html): Report a vulnerability privately through GitHub's advisory channel, never in a public issue: <https://github.com/1-3-7/disrobe/security/advisories/new>.
+- [Input bounds](https://1-3-7.github.io/disrobe/latest/input-bounds.html): Every parser treats its input as hostile.
 - [Legal](https://1-3-7.github.io/disrobe/latest/legal.html): This page states the project's legal policy, its per-protector stances, and the takedown channel.
 
 ## Optional

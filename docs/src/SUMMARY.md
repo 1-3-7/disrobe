@@ -75,4 +75,5 @@
 
 - [Contributing](./contributing.md)
 - [Security](./security.md)
+- [Input bounds](./input-bounds.md)
 - [Legal](./legal.md)
