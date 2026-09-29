@@ -38,7 +38,7 @@ fn corpus_dir() -> PathBuf {
 }
 
 fn stage_build_tree(root: &Path) -> PathBuf {
-    for relative in INPUTS.iter().chain([SCRIPT].iter()) {
+    for relative in INPUTS.iter().chain(std::iter::once(&SCRIPT)) {
         let from: PathBuf = corpus_dir().join(relative);
         let to: PathBuf = root.join(relative);
         std::fs::create_dir_all(to.parent().expect("staged file has a parent"))
