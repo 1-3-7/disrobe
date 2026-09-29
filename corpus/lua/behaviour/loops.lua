@@ -88,3 +88,12 @@ repeat
   reps = reps + 1
 until doubled >= 6
 print(reps)
+
+local sel = 5
+local label = sel > 3 and (sel > 4 and "big" or "mid") or "small"
+local neg = not (sel == 5) or sel
+print(label, neg)
+local function grade(v) return v > 3 and (v > 4 and "big" or "mid") or "small" end
+print(grade(5), grade(4), grade(1))
+local function pick(flag, a, b) return flag and a or b end
+print(pick(true, false, "b"), pick(nil, 1, 2))

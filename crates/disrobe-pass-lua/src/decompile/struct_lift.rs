@@ -1,4 +1,5 @@
 mod structurer;
+mod value_region;
 
 use crate::decompile::budget::LiftBudget;
 use crate::decompile::lift::{
@@ -1092,6 +1093,10 @@ fn lower(
                     emit_bool_materialize(state, names, live, p, &d, pc, dialect)
                 {
                     pc = consumed;
+                } else if let Some(consumed) =
+                    value_region::emit_value_region(state, names, p, pc, dialect)
+                {
+                    pc = consumed;
                 } else {
                     emit_compare(state, p, &d, pc, dialect);
                     if next_is_jmp(p, pc, dialect) {
@@ -1104,6 +1109,10 @@ fn lower(
                     pc = consumed;
                 } else if let Some(consumed) =
                     emit_bool_materialize(state, names, live, p, &d, pc, dialect)
+                {
+                    pc = consumed;
+                } else if let Some(consumed) =
+                    value_region::emit_value_region(state, names, p, pc, dialect)
                 {
                     pc = consumed;
                 } else {
@@ -1123,6 +1132,10 @@ fn lower(
                     emit_bool_materialize(state, names, live, p, &d, pc, dialect)
                 {
                     pc = consumed;
+                } else if let Some(consumed) =
+                    value_region::emit_value_region(state, names, p, pc, dialect)
+                {
+                    pc = consumed;
                 } else {
                     let lhs: String = state.reg(d.a);
                     let imm: i32 = d.b as i32 - 127;
@@ -1137,6 +1150,10 @@ fn lower(
                 if let Some(consumed) = emit_ternary(state, names, live, p, &d, pc, dialect) {
                     pc = consumed;
                 } else if let Some(consumed) = emit_test_or(state, names, p, &d, pc, dialect) {
+                    pc = consumed;
+                } else if let Some(consumed) =
+                    value_region::emit_value_region(state, names, p, pc, dialect)
+                {
                     pc = consumed;
                 } else {
                     let v: String = state.reg(d.a);
