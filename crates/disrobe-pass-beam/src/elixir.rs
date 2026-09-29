@@ -115,6 +115,17 @@ pub fn recover_with_docs(
         DebugInfo::ElixirV1 { backend, metadata } => (backend.as_str(), metadata),
         _ => return Err(Error::NotElixirDbgi("not ElixirV1 debug_info".to_owned())),
     };
+    Ok(elixir_quoted::within_module(module_atom, || {
+        recover_metadata(module_atom, backend, metadata, docs)
+    }))
+}
+
+fn recover_metadata(
+    module_atom: &str,
+    backend: &str,
+    metadata: &Term,
+    docs: Option<&ModuleDocs>,
+) -> ElixirRecovery {
     let mut attributes: Vec<(String, Term)> = Vec::new();
     let mut definitions: Vec<ElixirDefinition> = Vec::new();
     let mut default_stubs: Vec<DefaultStub> = Vec::new();
@@ -241,7 +252,7 @@ pub fn recover_with_docs(
     }
     src.push_str("end\n");
 
-    Ok(ElixirRecovery {
+    ElixirRecovery {
         module: module_atom.to_owned(),
         backend: backend.to_owned(),
         attributes,
@@ -249,7 +260,7 @@ pub fn recover_with_docs(
         module_doc,
         definitions,
         source: src,
-    })
+    }
 }
 
 fn capture_struct_fields(metadata: &Term) -> Vec<StructField> {

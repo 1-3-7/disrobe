@@ -24,7 +24,8 @@ use common::erlang_toolchain::{
 
 const GRADED: &str = "the recovered-elixir recompile-execution check";
 
-const MEGAFILE_BATTERY: &str = "M = 'Elixir.EdgeCases', Calls = [\
+const MEGAFILE_BATTERY: &str = "{ok, _} = application:ensure_all_started(elixir), \
+    M = 'Elixir.EdgeCases', Calls = [\
     fun() -> M:pattern_match_basic({ok, 42}) end, \
     fun() -> M:pattern_match_basic({partial, [3, 4]}) end, \
     fun() -> M:pattern_match_basic(foo) end, \
@@ -65,8 +66,11 @@ const MEGAFILE_BATTERY: &str = "M = 'Elixir.EdgeCases', Calls = [\
     fun() -> [M:binary_pattern(B) || B <- [<<16#89, \"PNG\", 0>>, <<16#FF, 16#D8>>, <<\"GIF87a\">>, <<\"GIF89a\">>, <<\"x\">>]] end, \
     fun() -> M:binary_construct(tag, <<\"pay\">>) end, \
     fun() -> M:string_interp(<<\"n\">>, 3) end, \
-    fun() -> {W, R, S, C, D} = M:sigil_demo(), {W, maps:get(source, R), S, C, D} end\
-    ], [try F() catch Class:Reason -> {caught, Class, Reason} end || F <- Calls]";
+    fun() -> {W, R, S, C, D} = M:sigil_demo(), {W, maps:get(source, R), S, C, D} end, \
+    fun() -> M:behaviour_user() end, \
+    fun() -> M:'MACRO-debug'(nil, {x, [], nil}) end, \
+    fun() -> M:'MACRO-unless_macro'(nil, {c, [], nil}, [{do, 1}, {'else', 2}]) end\
+    ],[try F() catch Class:Reason -> {caught, Class, Reason} end || F <- Calls]";
 
 fn corpus_file(relative: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -297,9 +301,85 @@ fn the_recovered_megafile_recompiles_every_module_and_answers_the_battery_alike(
         "the battery must run cleanly on the original: {}",
         graded.original
     );
+    assert!(
+        graded.original.contains("<<\"Hi, world\">>"),
+        "the battery must define the nested module at run time and call its injected function: {}",
+        graded.original
+    );
     assert_eq!(
         recovered, graded.original,
         "recovered source:\n{}",
         graded.recovered_source
+    );
+}
+
+#[test]
+fn recovered_macros_read_as_quote_blocks_and_a_nested_module_as_defmodule() {
+    let graded: Graded = grade(
+        "megafile/edge_cases.ex",
+        "EdgeCases",
+        MEGAFILE_BATTERY,
+        str::to_owned,
+    );
+    let source: &str = &graded.recovered_source;
+    for expected in [
+        "defmacro __using__(_opts) do\n    quote do\n",
+        "defmacro debug(expr) do\n    quote do\n",
+        "result = unquote(expr)",
+        "if !unquote(cond) do",
+        "def behaviour_user do\n    defmodule UserGreeter do\n",
+    ] {
+        assert!(
+            source.contains(expected),
+            "the recovered macros and nested module must read as source, missing `{expected}`:\n{source}"
+        );
+    }
+    for leaked in [
+        ":elixir_module.compile",
+        ":elixir_quote.",
+        "Macro.Env",
+        "{:__block__",
+    ] {
+        assert!(
+            !source.contains(leaked),
+            "the recovered source still carries macro-expansion internals `{leaked}`:\n{source}"
+        );
+    }
+    let host_path: Option<&str> = source
+        .lines()
+        .find(|line: &&str| line.contains(":/") || line.contains(":\\") || line.contains("\"/"));
+    assert!(
+        host_path.is_none(),
+        "the recovered source must not carry a compile-host path: {host_path:?}"
+    );
+}
+
+fn recovered_source_with_a_changed_nested_greeting(source: &str) -> String {
+    const TARGET: &str = "\"Hi, \" <> name";
+    const MUTANT: &str = "\"Hey, \" <> name";
+    match source.matches(TARGET).count() {
+        0 => source.to_owned(),
+        1 => source.replacen(TARGET, MUTANT, 1),
+        sites => panic!("the mutation control expected one nested greeting and found {sites}"),
+    }
+}
+
+#[test]
+fn changing_the_recovered_nested_module_turns_the_megafile_grade_red() {
+    let graded: Graded = grade(
+        "megafile/edge_cases.ex",
+        "EdgeCases",
+        MEGAFILE_BATTERY,
+        recovered_source_with_a_changed_nested_greeting,
+    );
+    assert!(
+        graded.recovered_source.contains("\"Hey, \" <> name"),
+        "the mutation control must reach the recovered nested module:\n{}",
+        graded.recovered_source
+    );
+    assert_ne!(
+        graded.recovered_output(),
+        graded.original,
+        "{GRADED} accepted a recovered nested module whose greeting changed"
     );
 }

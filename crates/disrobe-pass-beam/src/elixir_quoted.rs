@@ -1,4 +1,5 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::etf::Term;
 
@@ -6,6 +7,19 @@ const MAX_RENDER_DEPTH: u32 = 256;
 
 thread_local! {
     static RENDER_DEPTH: Cell<u32> = const { Cell::new(0) };
+    static RENDERED_MODULE: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+pub fn within_module<R>(module_atom: &str, render: impl FnOnce() -> R) -> R {
+    let previous: Option<String> = RENDERED_MODULE
+        .with(|slot: &RefCell<Option<String>>| slot.replace(Some(module_atom.to_owned())));
+    let result: R = render();
+    RENDERED_MODULE.with(|slot: &RefCell<Option<String>>| slot.replace(previous));
+    result
+}
+
+fn rendered_module() -> Option<String> {
+    RENDERED_MODULE.with(|slot: &RefCell<Option<String>>| slot.borrow().clone())
 }
 
 struct DepthGuard;
@@ -79,6 +93,9 @@ pub fn render_block(term: &Term) -> String {
         && tuple[0].as_atom() == Some("__block__")
         && let Some(stmts) = tuple.get(2).map(list_items)
     {
+        if let Some(nested) = render_nested_defmodule(&stmts) {
+            return nested;
+        }
         return stmts
             .iter()
             .map(|s: &Term| render(s, Prec::Lowest))
@@ -95,6 +112,7 @@ enum Prec {
     And,
     Equality,
     Relational,
+    Pipe,
     In,
     Concat,
     Additive,
@@ -139,6 +157,9 @@ fn render(term: &Term, parent: Prec) -> String {
 }
 
 fn render_quoted_tuple(items: &[Term], parent: Prec) -> String {
+    if let Some(quoted) = render_as_quote(items) {
+        return quoted;
+    }
     if items.len() == 3 {
         let meta_is_list: bool = matches!(&items[1], Term::List { .. } | Term::Nil);
         if meta_is_list {
@@ -273,6 +294,9 @@ fn render_named_call(name: &str, args: &[Term], parent: Prec) -> String {
             return format!("{module}.{fun}");
         }
         ("__block__", _) => {
+            if let Some(nested) = render_nested_defmodule(args) {
+                return nested;
+            }
             let parts: Vec<String> = args
                 .iter()
                 .map(|a: &Term| render(a, Prec::Lowest))
@@ -282,9 +306,25 @@ fn render_named_call(name: &str, args: &[Term], parent: Prec) -> String {
         ("__aliases__", _) => {
             let parts: Vec<String> = args
                 .iter()
-                .filter_map(|a: &Term| a.as_atom().map(strip_elixir))
+                .map(|a: &Term| match a {
+                    Term::Atom(segment) => strip_elixir(segment),
+                    other => render(other, Prec::Highest),
+                })
                 .collect();
             return parts.join(".");
+        }
+        ("@", 1) => {
+            if let Some(attribute) = render_attribute(&args[0]) {
+                return attribute;
+            }
+        }
+        ("def" | "defp" | "defmacro" | "defmacrop", 1 | 2) => {
+            if let Some(definition) = render_definition(name, args) {
+                return definition;
+            }
+        }
+        ("\\\\", 2) => {
+            return render_binary_op("\\\\", &args[0], &args[1], Prec::Lowest, parent);
         }
         ("%{}", _) => return render_map_call(args),
         ("{}", _) => {
@@ -339,8 +379,11 @@ fn render_named_call(name: &str, args: &[Term], parent: Prec) -> String {
 fn infix_operator(name: &str) -> Option<(&'static str, Prec)> {
     let entry: (&'static str, Prec) = match name {
         "orelse" | "or" => ("or", Prec::Or),
+        "||" => ("||", Prec::Or),
         "andalso" | "and" => ("and", Prec::And),
+        "&&" => ("&&", Prec::And),
         "==" => ("==", Prec::Equality),
+        "=~" => ("=~", Prec::Equality),
         "=:=" | "===" => ("===", Prec::Equality),
         "/=" | "!=" => ("!=", Prec::Equality),
         "=/=" | "!==" => ("!==", Prec::Equality),
@@ -348,9 +391,11 @@ fn infix_operator(name: &str) -> Option<(&'static str, Prec)> {
         ">" => (">", Prec::Relational),
         "=<" | "<=" => ("<=", Prec::Relational),
         ">=" => (">=", Prec::Relational),
+        "|>" => ("|>", Prec::Pipe),
         "<>" => ("<>", Prec::Concat),
         "++" => ("++", Prec::Concat),
         "--" => ("--", Prec::Concat),
+        ".." => ("..", Prec::Concat),
         "+" => ("+", Prec::Additive),
         "-" => ("-", Prec::Additive),
         "*" => ("*", Prec::Multiplicative),
@@ -413,7 +458,8 @@ const fn next_prec(prec: Prec) -> Prec {
         Prec::Or => Prec::And,
         Prec::And => Prec::Equality,
         Prec::Equality => Prec::Relational,
-        Prec::Relational => Prec::In,
+        Prec::Relational => Prec::Pipe,
+        Prec::Pipe => Prec::In,
         Prec::In => Prec::Concat,
         Prec::Concat => Prec::Additive,
         Prec::Additive => Prec::Multiplicative,
@@ -975,6 +1021,445 @@ fn render_bigint(sign: u8, magnitude_le: &[u8]) -> String {
     if sign == 1 { format!("-{body}") } else { body }
 }
 
+fn render_attribute(attribute: &Term) -> Option<String> {
+    let [name, _, value] = attribute.as_tuple()? else {
+        return None;
+    };
+    let name: &str = name.as_atom().filter(|n: &&str| is_identifier(n))?;
+    match value {
+        Term::Atom(_) => Some(format!("@{name}")),
+        Term::List { .. } | Term::Nil | Term::String(_) => match list_items(value).as_slice() {
+            [single] => Some(format!("@{name} {}", render(single, Prec::Lowest))),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn render_definition(kind: &str, args: &[Term]) -> Option<String> {
+    let head: String = render(args.first()?, Prec::Lowest);
+    let Some(options) = args.get(1) else {
+        return Some(format!("{kind} {head}"));
+    };
+    if !is_keyword_list(options) || list_items(options).len() != 1 {
+        return None;
+    }
+    let body: Term = keyword_value(options, "do")?;
+    Some(format!(
+        "{kind} {head} do\n{}\nend",
+        indent(&render_block(&body))
+    ))
+}
+
+fn is_identifier(name: &str) -> bool {
+    let body: &str = name.strip_suffix(['?', '!']).unwrap_or(name);
+    body.chars()
+        .next()
+        .is_some_and(|c: char| c.is_ascii_lowercase() || c == '_')
+        && body
+            .chars()
+            .all(|c: char| c.is_ascii_alphanumeric() || c == '_')
+}
+
+fn is_alias_segment(segment: &str) -> bool {
+    segment
+        .chars()
+        .next()
+        .is_some_and(|c: char| c.is_ascii_uppercase())
+        && segment
+            .chars()
+            .all(|c: char| c.is_ascii_alphanumeric() || c == '_')
+}
+
+fn call_name_renderable(name: &str, arity: usize) -> bool {
+    if is_identifier(name) {
+        return true;
+    }
+    if arity == 2 && infix_operator(name).is_some() {
+        return true;
+    }
+    matches!(
+        (name, arity),
+        ("%{}" | "{}" | "<<>>", _)
+            | ("." | "%" | "->" | "=" | "<-" | "|" | "::" | "\\\\", 2)
+            | ("^" | "&" | "!" | "-" | "+" | "@", 1)
+    )
+}
+
+fn source_renderable(term: &Term) -> bool {
+    let Some(_guard): Option<DepthGuard> = DepthGuard::enter() else {
+        return false;
+    };
+    match term {
+        Term::Tuple(items) => {
+            if let [head, meta, args] = items.as_slice()
+                && matches!(meta, Term::List { .. } | Term::Nil)
+                && matches!(args, Term::List { .. } | Term::Nil | Term::String(_))
+            {
+                let arguments: Vec<Term> = list_items(args);
+                let head_ok: bool = match head {
+                    Term::Atom(name) => call_name_renderable(name, arguments.len()),
+                    other => source_renderable(other),
+                };
+                return head_ok && arguments.iter().all(source_renderable);
+            }
+            items.iter().all(source_renderable)
+        }
+        Term::List { elements, tail } => {
+            matches!(**tail, Term::Nil) && elements.iter().all(source_renderable)
+        }
+        Term::Map(_) | Term::MapMixed(_) | Term::Pid { .. } | Term::Reference { .. } => false,
+        _ => true,
+    }
+}
+
+fn escaped_tuple_fields(term: &Term) -> Option<Vec<Term>> {
+    let [marker, _, fields] = term.as_tuple()? else {
+        return None;
+    };
+    if marker.as_atom() != Some("{}") || !matches!(fields, Term::List { .. } | Term::Nil) {
+        return None;
+    }
+    Some(list_items(fields))
+}
+
+fn unescape_data(term: &Term) -> Option<Term> {
+    let _guard: DepthGuard = DepthGuard::enter()?;
+    match term {
+        Term::Atom(_)
+        | Term::SmallInt(_)
+        | Term::Int(_)
+        | Term::BigInt { .. }
+        | Term::Float(_)
+        | Term::Binary(_)
+        | Term::String(_)
+        | Term::Nil => Some(term.clone()),
+        Term::List { elements, tail } if matches!(**tail, Term::Nil) => Some(Term::List {
+            elements: elements
+                .iter()
+                .map(unescape_data)
+                .collect::<Option<Vec<Term>>>()?,
+            tail: Box::new(Term::Nil),
+        }),
+        Term::Tuple(items) if items.len() == 2 => Some(Term::Tuple(
+            items
+                .iter()
+                .map(unescape_data)
+                .collect::<Option<Vec<Term>>>()?,
+        )),
+        Term::Tuple(_) => Some(Term::Tuple(
+            escaped_tuple_fields(term)?
+                .iter()
+                .map(unescape_data)
+                .collect::<Option<Vec<Term>>>()?,
+        )),
+        _ => None,
+    }
+}
+
+fn render_nested_defmodule(statements: &[Term]) -> Option<String> {
+    let [Term::Atom(_), compile] = statements else {
+        return None;
+    };
+    let [target, _, arguments] = compile.as_tuple()? else {
+        return None;
+    };
+    let (callee, function): (Term, String) = remote_target(target)?;
+    if callee.as_atom() != Some("elixir_module") || function != "compile" {
+        return None;
+    }
+    let arguments: Vec<Term> = list_items(arguments);
+    let [_, module, escaped, _, _, env] = arguments.as_slice() else {
+        return None;
+    };
+    let body: Term = unescape_data(escaped)?;
+    if !source_renderable(&body) {
+        return None;
+    }
+    let env_fields: Vec<Term> = match env.as_tuple()? {
+        [marker, _, fields] if marker.as_atom() == Some("%{}") => list_items(fields),
+        _ => return None,
+    };
+    let env_fields: Term = Term::List {
+        elements: env_fields,
+        tail: Box::new(Term::Nil),
+    };
+    if keyword_value(&env_fields, "__struct__")
+        .as_ref()
+        .and_then(Term::as_atom)
+        != Some("Elixir.Macro.Env")
+    {
+        return None;
+    }
+    let enclosing: Option<Term> = keyword_value(&env_fields, "module");
+    let name: String = nested_module_name(module, enclosing.as_ref().and_then(Term::as_atom));
+    let lexical: BTreeMap<String, String> = keyword_value(&env_fields, "aliases")
+        .map(|aliases: Term| lexical_aliases(&aliases))
+        .unwrap_or_default();
+    let mut referenced: BTreeSet<String> = BTreeSet::new();
+    collect_alias_heads(&body, &mut referenced);
+    let mut lines: Vec<String> = Vec::new();
+    for head in &referenced {
+        if let Some(full) = lexical.get(head) {
+            let full: String = strip_elixir(full);
+            if full.rsplit('.').next() == Some(head.as_str()) {
+                lines.push(format!("alias {full}"));
+            } else {
+                lines.push(format!("alias {full}, as: {head}"));
+            }
+        }
+    }
+    lines.push(render_block(&body));
+    Some(format!(
+        "defmodule {name} do\n{}\nend",
+        indent(&lines.join("\n"))
+    ))
+}
+
+fn nested_module_name(module: &Term, enclosing: Option<&str>) -> String {
+    let Term::Atom(full) = module else {
+        return render(module, Prec::Lowest);
+    };
+    if let Some(enclosing) = enclosing
+        && let Some(nested) = full
+            .strip_prefix(enclosing)
+            .and_then(|rest: &str| rest.strip_prefix('.'))
+        && nested.split('.').all(is_alias_segment)
+    {
+        return nested.to_owned();
+    }
+    if let Some(rest) = full.strip_prefix("Elixir.")
+        && rest.split('.').all(is_alias_segment)
+    {
+        return full.clone();
+    }
+    render_atom_literal(full)
+}
+
+fn lexical_aliases(aliases: &Term) -> BTreeMap<String, String> {
+    list_items(aliases)
+        .iter()
+        .filter_map(|pair: &Term| match pair.as_tuple()? {
+            [Term::Atom(short), Term::Atom(full)] => {
+                Some((short.strip_prefix("Elixir.")?.to_owned(), full.clone()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn collect_alias_heads(term: &Term, out: &mut BTreeSet<String>) {
+    let Some(_guard): Option<DepthGuard> = DepthGuard::enter() else {
+        return;
+    };
+    match term {
+        Term::Tuple(items) => {
+            if let [head, _, segments] = items.as_slice()
+                && head.as_atom() == Some("__aliases__")
+                && let Some(Term::Atom(first)) = list_items(segments).first()
+            {
+                out.insert(first.clone());
+            }
+            for item in items {
+                collect_alias_heads(item, out);
+            }
+        }
+        Term::List { elements, tail } => {
+            for element in elements {
+                collect_alias_heads(element, out);
+            }
+            collect_alias_heads(tail, out);
+        }
+        _ => {}
+    }
+}
+
+struct QuoteScan<'a> {
+    module: &'a str,
+    quoted: bool,
+}
+
+fn render_as_quote(items: &[Term]) -> Option<String> {
+    let [marker, _, fields] = items else {
+        return None;
+    };
+    if marker.as_atom() != Some("{}") || !matches!(fields, Term::List { .. }) {
+        return None;
+    }
+    let module: String = rendered_module()?;
+    let mut scan: QuoteScan<'_> = QuoteScan {
+        module: &module,
+        quoted: false,
+    };
+    let ast: Term = unquote_ast(&Term::Tuple(items.to_vec()), &mut scan);
+    if !scan.quoted || is_unquote_hole(&ast) {
+        return None;
+    }
+    Some(format!("quote do\n{}\nend", indent(&render_block(&ast))))
+}
+
+fn is_unquote_hole(term: &Term) -> bool {
+    term.as_tuple()
+        .and_then(<[Term]>::first)
+        .and_then(Term::as_atom)
+        == Some("unquote")
+}
+
+fn unquote_hole(expression: &Term, scan: &mut QuoteScan<'_>) -> Term {
+    let inner: Term = match expression.as_tuple() {
+        Some([target, _, arguments])
+            if remote_target(target).is_some_and(|(callee, function): (Term, String)| {
+                callee.as_atom() == Some("elixir_quote") && function == "shallow_validate_ast"
+            }) =>
+        {
+            match list_items(arguments).as_slice() {
+                [validated] => {
+                    scan.quoted = true;
+                    validated.clone()
+                }
+                _ => expression.clone(),
+            }
+        }
+        _ => expression.clone(),
+    };
+    Term::Tuple(vec![
+        Term::Atom("unquote".to_owned()),
+        Term::Nil,
+        Term::List {
+            elements: vec![inner],
+            tail: Box::new(Term::Nil),
+        },
+    ])
+}
+
+fn unquote_ast(term: &Term, scan: &mut QuoteScan<'_>) -> Term {
+    let Some(_guard): Option<DepthGuard> = DepthGuard::enter() else {
+        return unquote_hole(term, scan);
+    };
+    match term {
+        Term::Atom(_)
+        | Term::SmallInt(_)
+        | Term::Int(_)
+        | Term::BigInt { .. }
+        | Term::Float(_)
+        | Term::Binary(_)
+        | Term::String(_)
+        | Term::Nil => term.clone(),
+        Term::List { elements, tail }
+            if matches!(**tail, Term::Nil) && !has_cons_tail(elements) =>
+        {
+            Term::List {
+                elements: elements
+                    .iter()
+                    .map(|e: &Term| unquote_ast(e, scan))
+                    .collect(),
+                tail: Box::new(Term::Nil),
+            }
+        }
+        Term::Tuple(items) if items.len() == 2 => Term::Tuple(
+            items
+                .iter()
+                .map(|item: &Term| unquote_ast(item, scan))
+                .collect(),
+        ),
+        Term::Tuple(_) => match escaped_tuple_fields(term).as_deref() {
+            Some([head, meta, arguments]) => unquote_node(term, head, meta, arguments, scan),
+            _ => unquote_hole(term, scan),
+        },
+        _ => unquote_hole(term, scan),
+    }
+}
+
+fn has_cons_tail(elements: &[Term]) -> bool {
+    elements
+        .last()
+        .and_then(Term::as_tuple)
+        .is_some_and(|t: &[Term]| t.len() == 3 && t[0].as_atom() == Some("|"))
+}
+
+fn unquote_node(
+    term: &Term,
+    head: &Term,
+    meta: &Term,
+    arguments: &Term,
+    scan: &mut QuoteScan<'_>,
+) -> Term {
+    let Some(meta) = quote_generated_meta(meta, scan.module) else {
+        return unquote_hole(term, scan);
+    };
+    if meta.context {
+        scan.quoted = true;
+    }
+    if head.as_atom() == Some("__aliases__")
+        && let Some(expanded) = meta.alias
+    {
+        return Term::Atom(expanded);
+    }
+    if let Term::Atom(context) = arguments {
+        if !matches!(head, Term::Atom(_)) || context != scan.module {
+            return unquote_hole(term, scan);
+        }
+        scan.quoted = true;
+        return Term::Tuple(vec![head.clone(), Term::Nil, arguments.clone()]);
+    }
+    if !matches!(arguments, Term::List { .. } | Term::Nil | Term::String(_))
+        || matches!(arguments, Term::List { elements, tail } if !matches!(**tail, Term::Nil) || has_cons_tail(elements))
+    {
+        return unquote_hole(term, scan);
+    }
+    let arguments: Vec<Term> = list_items(arguments);
+    if let Term::Atom(name) = head
+        && !call_name_renderable(name, arguments.len())
+    {
+        return unquote_hole(term, scan);
+    }
+    let head: Term = unquote_ast(head, scan);
+    let arguments: Vec<Term> = arguments
+        .iter()
+        .map(|argument: &Term| unquote_ast(argument, scan))
+        .collect();
+    let arguments: Term = if arguments.is_empty() {
+        Term::Nil
+    } else {
+        Term::List {
+            elements: arguments,
+            tail: Box::new(Term::Nil),
+        }
+    };
+    Term::Tuple(vec![head, Term::Nil, arguments])
+}
+
+struct GeneratedMeta {
+    context: bool,
+    alias: Option<String>,
+}
+
+fn quote_generated_meta(meta: &Term, module: &str) -> Option<GeneratedMeta> {
+    let mut generated: GeneratedMeta = GeneratedMeta {
+        context: false,
+        alias: None,
+    };
+    for entry in list_items(meta) {
+        let [Term::Atom(key), value] = entry.as_tuple()? else {
+            return None;
+        };
+        match (key.as_str(), value) {
+            ("context", Term::Atom(context)) if context == module => generated.context = true,
+            ("imports", imports) if imports_are_kernel(imports) => {}
+            ("alias", Term::Atom(alias)) if alias == "false" => {}
+            ("alias", Term::Atom(alias)) => generated.alias = Some(alias.clone()),
+            _ => return None,
+        }
+    }
+    Some(generated)
+}
+
+fn imports_are_kernel(imports: &Term) -> bool {
+    list_items(imports).iter().all(|import: &Term| {
+        matches!(import.as_tuple(), Some([Term::SmallInt(_), Term::Atom(module)]) if module == "Elixir.Kernel")
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1069,6 +1554,143 @@ mod tests {
         assert_eq!(
             render_block(&Term::Binary(b"\x1b\x00q\\".to_vec())),
             "\"\\u{1B}\\u{0}q\\\\\""
+        );
+    }
+
+    fn pair(key: &str, value: Term) -> Term {
+        Term::Tuple(vec![atom(key), value])
+    }
+
+    fn escaped_node(head: Term, meta: Term, args: Term) -> Term {
+        Term::Tuple(vec![atom("{}"), Term::Nil, list(vec![head, meta, args])])
+    }
+
+    fn nested_defmodule(module: &str, body: Term) -> Term {
+        let compile: Term = Term::Tuple(vec![
+            Term::Tuple(vec![
+                atom("."),
+                Term::Nil,
+                list(vec![atom("elixir_module"), atom("compile")]),
+            ]),
+            Term::Nil,
+            list(vec![
+                Term::Nil,
+                atom(module),
+                body,
+                Term::Nil,
+                atom("false"),
+                Term::Tuple(vec![
+                    atom("%{}"),
+                    Term::Nil,
+                    list(vec![
+                        pair("__struct__", atom("Elixir.Macro.Env")),
+                        pair(
+                            "aliases",
+                            list(vec![Term::Tuple(vec![
+                                atom("Elixir.Peer"),
+                                atom("Elixir.Outer.Peer"),
+                            ])]),
+                        ),
+                        pair("file", Term::Binary(b"/build/outer.ex".to_vec())),
+                        pair("module", atom("Elixir.Outer")),
+                    ]),
+                ]),
+            ]),
+        ]);
+        Term::Tuple(vec![
+            atom("__block__"),
+            Term::Nil,
+            list(vec![atom(module), compile]),
+        ])
+    }
+
+    #[test]
+    fn an_escaped_ast_with_quote_metadata_renders_as_a_quote_block() {
+        let context: Term = list(vec![pair("context", atom("Elixir.Outer"))]);
+        let kernel_call: Term = escaped_node(
+            atom("helper"),
+            context,
+            list(vec![escaped_node(
+                atom("name"),
+                Term::Nil,
+                atom("Elixir.Outer"),
+            )]),
+        );
+        assert_eq!(
+            within_module("Elixir.Outer", || render_block(&kernel_call)),
+            "quote do\n  helper(name)\nend"
+        );
+        let foreign_context: String =
+            within_module("Elixir.Elsewhere", || render_block(&kernel_call));
+        assert!(!foreign_context.contains("quote"), "{foreign_context}");
+        let foreign_import: Term = escaped_node(
+            atom("helper"),
+            list(vec![
+                pair("context", atom("Elixir.Outer")),
+                pair(
+                    "imports",
+                    list(vec![Term::Tuple(vec![
+                        Term::SmallInt(0),
+                        atom("Elixir.Imported"),
+                    ])]),
+                ),
+            ]),
+            Term::Nil,
+        );
+        let rendered: String = within_module("Elixir.Outer", || render_block(&foreign_import));
+        assert!(!rendered.contains("quote"), "{rendered}");
+    }
+
+    #[test]
+    fn a_macro_body_variable_becomes_an_unquote() {
+        let validated: Term = Term::Tuple(vec![
+            Term::Tuple(vec![
+                atom("."),
+                Term::Nil,
+                list(vec![atom("elixir_quote"), atom("shallow_validate_ast")]),
+            ]),
+            Term::Nil,
+            list(vec![var("expr")]),
+        ]);
+        let node: Term = escaped_node(atom("inspect"), Term::Nil, list(vec![validated]));
+        assert_eq!(
+            within_module("Elixir.Outer", || render_block(&node)),
+            "quote do\n  inspect(unquote(expr))\nend"
+        );
+    }
+
+    #[test]
+    fn a_module_defined_in_a_function_renders_as_a_nested_defmodule() {
+        let body: Term = escaped_node(
+            atom("use"),
+            Term::Nil,
+            list(vec![escaped_node(
+                atom("__aliases__"),
+                Term::Nil,
+                list(vec![atom("Peer")]),
+            )]),
+        );
+        let rendered: String = render_block(&nested_defmodule("Elixir.Outer.Inner", body));
+        assert_eq!(
+            rendered,
+            "defmodule Inner do\n  alias Outer.Peer\n  use(Peer)\nend"
+        );
+        let unrelated: String = render_block(&nested_defmodule(
+            "Elixir.Other.Inner",
+            escaped_node(atom("x"), Term::Nil, Term::Nil),
+        ));
+        assert_eq!(unrelated, "defmodule Elixir.Other.Inner do\n  x()\nend");
+    }
+
+    #[test]
+    fn a_nested_module_body_that_is_not_source_ast_keeps_the_compile_call() {
+        let rendered: String = render_block(&nested_defmodule(
+            "Elixir.Outer.Inner",
+            Term::Map(BTreeMap::new()),
+        ));
+        assert!(
+            rendered.contains(":elixir_module.compile") && !rendered.contains("defmodule"),
+            "{rendered}"
         );
     }
 
