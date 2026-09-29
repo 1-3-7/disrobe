@@ -3,7 +3,7 @@ use core::ops::Range;
 use regex::Regex;
 
 use super::{TransformOpts, TransformOutput, TransformStats};
-use crate::jscrambler::scanner::{apply_splice_edits, js_quote};
+use crate::jscrambler::scanner::apply_splice_edits;
 
 pub(in crate::jscrambler) fn detect(source: &str) -> usize {
     let Ok(re): core::result::Result<Regex, regex::Error> = Regex::new(table_pattern()) else {
@@ -21,68 +21,82 @@ pub(in crate::jscrambler) fn reverse(source: &str, _opts: &TransformOpts) -> Tra
         return TransformOutput::noop(source);
     };
     stats.matched = 1;
-    let Some(whole): Option<regex::Match<'_>> = cap.get(0) else {
+    let (Some(whole), Some(name), Some(body)): (
+        Option<regex::Match<'_>>,
+        Option<regex::Match<'_>>,
+        Option<regex::Match<'_>>,
+    ) = (cap.get(0), cap.get(1), cap.get(2)) else {
         return TransformOutput {
             source: source.to_owned(),
             stats,
         };
     };
-    let Some(name): Option<regex::Match<'_>> = cap.get(1) else {
-        return TransformOutput {
-            source: source.to_owned(),
-            stats,
-        };
+    let (Ok(literal_re), Ok(idx_re), Ok(any_use_re)): (
+        core::result::Result<Regex, regex::Error>,
+        core::result::Result<Regex, regex::Error>,
+        core::result::Result<Regex, regex::Error>,
+    ) = (
+        Regex::new(r#"'([^']*)'|"([^"]*)""#),
+        Regex::new(&format!(
+            r"\b{}\s*\[\s*(\d+)\s*\]",
+            regex::escape(name.as_str())
+        )),
+        Regex::new(&format!(
+            r"(?:^|[^\w$.]){}(?:[^\w$]|$)",
+            regex::escape(name.as_str())
+        )),
+    ) else {
+        return TransformOutput::noop(source);
     };
-    let Some(body): Option<regex::Match<'_>> = cap.get(2) else {
-        return TransformOutput {
-            source: source.to_owned(),
-            stats,
-        };
-    };
-    let entries: Vec<&str> = body
-        .as_str()
-        .split(',')
-        .map(|s: &str| s.trim().trim_matches(|c: char| c == '\'' || c == '"'))
+    let entries: Vec<String> = literal_re
+        .captures_iter(body.as_str())
+        .filter_map(|literal: regex::Captures<'_>| literal.get(1).or_else(|| literal.get(2)))
+        .map(|inner: regex::Match<'_>| crate::js_string::unescape_string_literal(inner.as_str()))
         .collect();
-    let table_name: &str = name.as_str();
-    let mut working: String = String::with_capacity(source.len());
-    working.push_str(&source[..whole.start()]);
-    working.push_str(&source[whole.end()..]);
-    let Ok(idx_re): core::result::Result<Regex, regex::Error> = Regex::new(&format!(
-        r"\b{}\s*\[\s*(\d+)\s*\]",
-        regex::escape(table_name)
-    )) else {
-        return TransformOutput {
-            source: source.to_owned(),
-            stats,
-        };
-    };
-    let mut edits: Vec<(Range<usize>, Option<String>)> = Vec::new();
-    for cap2 in idx_re.captures_iter(&working) {
-        let Some(m): Option<regex::Match<'_>> = cap2.get(0) else {
-            continue;
-        };
-        let Some(idx_cap): Option<regex::Match<'_>> = cap2.get(1) else {
-            continue;
-        };
-        let Ok(idx): Result<usize, _> = idx_cap.as_str().parse::<usize>() else {
-            continue;
-        };
-        let Some(value): Option<&&str> = entries.get(idx) else {
-            continue;
-        };
-        edits.push((m.range(), Some(js_quote(value, '"'))));
-    }
+    let table: Range<usize> = whole.range();
+    let mut edits: Vec<(Range<usize>, Option<String>)> =
+        index_edits(source, &idx_re, &entries, &table);
     if edits.is_empty() {
         stats.skipped = 1;
         return TransformOutput {
-            source: working,
+            source: source.to_owned(),
             stats,
         };
     }
-    let (out, applied): (String, usize) = apply_splice_edits(&working, &mut edits);
-    stats.reversed = applied;
+    let references: usize = any_use_re
+        .find_iter(source)
+        .filter(|found: &regex::Match<'_>| found.end() <= table.start || found.start() >= table.end)
+        .count();
+    let removes_table: bool = references == edits.len();
+    if removes_table {
+        edits.push((table, None));
+    }
+    let (out, applied): (String, usize) = apply_splice_edits(source, &mut edits);
+    stats.reversed = applied.saturating_sub(usize::from(removes_table));
     TransformOutput { source: out, stats }
+}
+
+fn index_edits(
+    source: &str,
+    idx_re: &Regex,
+    entries: &[String],
+    table: &Range<usize>,
+) -> Vec<(Range<usize>, Option<String>)> {
+    idx_re
+        .captures_iter(source)
+        .filter_map(|found: regex::Captures<'_>| {
+            let whole: regex::Match<'_> = found.get(0)?;
+            if whole.end() > table.start && whole.start() < table.end {
+                return None;
+            }
+            let idx: usize = found.get(1)?.as_str().parse::<usize>().ok()?;
+            let value: &String = entries.get(idx)?;
+            Some((
+                whole.range(),
+                Some(crate::js_string::quote_string(value, '"')),
+            ))
+        })
+        .collect()
 }
 
 const fn table_pattern() -> &'static str {
@@ -114,5 +128,36 @@ mod tests {
         let src: &str = "var x = 1; console.log(x);";
         let out: TransformOutput = reverse(src, &TransformOpts::default());
         assert_eq!(out.source, src);
+    }
+
+    #[test]
+    fn a_table_with_another_use_keeps_its_declaration() {
+        let src: &str = "var T = ['alpha', 'beta']; console.log(T[0], T.length);";
+        let out: TransformOutput = reverse(src, &TransformOpts::default());
+        assert!(
+            out.source.contains("var T = ['alpha', 'beta'];"),
+            "{}",
+            out.source
+        );
+        assert!(
+            out.source.contains("console.log(\"alpha\", T.length)"),
+            "{}",
+            out.source
+        );
+    }
+
+    #[test]
+    fn an_entry_holding_a_comma_stays_whole() {
+        let src: &str = "var T = ['a, b', 'c']; f(T[0], T[1]);";
+        let out: TransformOutput = reverse(src, &TransformOpts::default());
+        assert_eq!(out.source.trim(), "f(\"a, b\", \"c\");");
+    }
+
+    #[test]
+    fn a_table_used_only_by_constant_index_is_removed() {
+        let src: &str = "var T = ['x', 'y']; g(T[1]);";
+        let out: TransformOutput = reverse(src, &TransformOpts::default());
+        assert_eq!(out.source.trim(), "g(\"y\");");
+        assert_eq!(out.stats.reversed, 1);
     }
 }
