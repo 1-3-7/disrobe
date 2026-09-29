@@ -111,9 +111,11 @@ struct Region<'a> {
     p: &'a LuaProto,
     dialect: LuaDialect,
     target: u32,
+    start: usize,
     join: usize,
+    back: Option<usize>,
     steps: usize,
-    trial: &'a mut dyn FnMut(usize, usize) -> Option<String>,
+    trial: &'a mut dyn FnMut(usize, usize, u32) -> Option<String>,
 }
 
 fn never_falsy(text: &str) -> bool {
@@ -204,7 +206,15 @@ impl Region<'_> {
         if jmp.op != Op::Jmp {
             return None;
         }
-        usize::try_from(jump_target(pc + 1, &jmp, self.dialect)).ok()
+        self.resolve(usize::try_from(jump_target(pc + 1, &jmp, self.dialect)).ok()?)
+    }
+
+    fn resolve(&self, target: usize) -> Option<usize> {
+        if self.back == Some(target) {
+            Some(self.join)
+        } else {
+            Some(target)
+        }
     }
 
     fn compare_reads_target(&self, d: &Decoded) -> bool {
@@ -217,6 +227,13 @@ impl Region<'_> {
             }
             _ => d.a == self.target,
         }
+    }
+
+    fn target_written_before(&self, pc: usize) -> bool {
+        (self.start..pc).any(|at: usize| {
+            self.decoded(at)
+                .is_none_or(|d: Decoded| written_registers(&d, self.dialect).contains(&self.target))
+        })
     }
 
     fn leaf_text(&self, d: &Decoded) -> String {
@@ -241,7 +258,7 @@ impl Region<'_> {
 
     fn segment_leaf(&mut self, pc: usize, depth: usize) -> Option<Value> {
         let end: usize = self.segment_end(pc);
-        if end <= pc + 1 {
+        if end <= pc {
             return None;
         }
         let writes_only_scratch: bool = (pc..end).all(|at: usize| {
@@ -251,13 +268,16 @@ impl Region<'_> {
                     .all(|register: &u32| *register >= self.target)
             })
         });
-        let last_writes_target: bool = self
-            .decoded(end - 1)
-            .is_some_and(|d: Decoded| written_registers(&d, self.dialect).contains(&self.target));
+        let last_writes_target: bool = (pc..end)
+            .rev()
+            .filter_map(|at: usize| self.decoded(at))
+            .map(|d: Decoded| written_registers(&d, self.dialect))
+            .find(|written: &Vec<u32>| !written.is_empty())
+            .is_some_and(|written: Vec<u32>| written.contains(&self.target));
         if !writes_only_scratch || !last_writes_target {
             return None;
         }
-        let text: String = (self.trial)(pc, end)?;
+        let text: String = (self.trial)(pc, end, self.target)?;
         self.after_load(pc, end, text, depth)
     }
 
@@ -267,11 +287,24 @@ impl Region<'_> {
             return None;
         }
         let d: Decoded = self.decoded(pc)?;
-        if is_segment_op(&d, self.dialect) && self.segment_end(pc) > pc + 1 {
+        if let Some(value) = self.scratch_test_set(pc, depth) {
+            return Some(value);
+        }
+        if is_segment_op(&d, self.dialect)
+            && (self.segment_end(pc) > pc + 1 || written_value_register(&d, self.dialect).is_none())
+        {
             return self.segment_leaf(pc, depth);
         }
+        if d.op == Op::Test
+            && d.a == self.target
+            && self.jump_after(pc) == Some(self.join)
+            && !self.target_written_before(pc)
+        {
+            let text: String = self.state.reg(self.target);
+            return self.test_target(pc, pc, text, depth);
+        }
         if is_compare(d.op) {
-            if self.compare_reads_target(&d) {
+            if self.compare_reads_target(&d) && self.target_written_before(pc) {
                 return None;
             }
             let taken: usize = self.jump_after(pc)?;
@@ -303,28 +336,12 @@ impl Region<'_> {
                 })
             }
             Op::TestSet if d.a == self.target && d.b != self.target => {
-                if self.jump_after(pc)? != self.join {
-                    return None;
-                }
                 let first: String = self.state.reg(d.b);
-                let rest: Box<Value> = Box::new(self.build(pc + 2, depth + 1)?);
-                Some(if jumps_when_truthy(&d, self.dialect) {
-                    Value::Or {
-                        entry: pc,
-                        first_never_falsy: never_falsy(&first),
-                        first,
-                        rest,
-                    }
-                } else {
-                    Value::And {
-                        entry: pc,
-                        first,
-                        rest,
-                    }
-                })
+                self.test_set(pc, pc, first, depth)
             }
             Op::Jmp => {
-                let target: usize = usize::try_from(jump_target(pc, &d, self.dialect)).ok()?;
+                let target: usize =
+                    self.resolve(usize::try_from(jump_target(pc, &d, self.dialect)).ok()?)?;
                 if target <= pc {
                     return None;
                 }
@@ -359,53 +376,129 @@ impl Region<'_> {
         }
         let d: Decoded = self.decoded(next)?;
         match d.op {
-            Op::Jmp if usize::try_from(jump_target(next, &d, self.dialect)).ok()? == self.join => {
+            Op::Jmp
+                if self.resolve(usize::try_from(jump_target(next, &d, self.dialect)).ok()?)?
+                    == self.join =>
+            {
                 Some(Value::Leaf {
                     entry,
                     text,
                     never_falsy: leaf_never_falsy,
                 })
             }
-            Op::Test if d.a == self.target => {
-                if self.jump_after(next)? != self.join {
-                    return None;
-                }
-                let rest: Box<Value> = Box::new(self.build(next + 2, depth + 1)?);
-                Some(if jumps_when_truthy(&d, self.dialect) {
-                    Value::Or {
-                        entry,
-                        first: text,
-                        first_never_falsy: leaf_never_falsy,
-                        rest,
-                    }
-                } else {
-                    Value::And {
-                        entry,
-                        first: text,
-                        rest,
-                    }
-                })
-            }
+            Op::Test if d.a == self.target => self.test_target(entry, next, text, depth),
             _ => None,
         }
     }
+
+    fn scratch_test_set(&mut self, pc: usize, depth: usize) -> Option<Value> {
+        let end: usize = self.segment_end(pc);
+        let test: Decoded = self.decoded(end)?;
+        let feeds_target: bool = test.op == Op::TestSet && test.a == self.target;
+        if end <= pc || !feeds_target || test.b <= self.target {
+            return None;
+        }
+        let scratch_only: bool = (pc..end).all(|at: usize| {
+            self.decoded(at).is_some_and(|d: Decoded| {
+                written_registers(&d, self.dialect)
+                    .iter()
+                    .all(|register: &u32| *register > self.target)
+            })
+        });
+        if !scratch_only {
+            return None;
+        }
+        let first: String = (self.trial)(pc, end, test.b)?;
+        self.test_set(pc, end, first, depth)
+    }
+
+    fn test_set(
+        &mut self,
+        entry: usize,
+        test_pc: usize,
+        first: String,
+        depth: usize,
+    ) -> Option<Value> {
+        let d: Decoded = self.decoded(test_pc)?;
+        if self.jump_after(test_pc)? != self.join {
+            return None;
+        }
+        let rest: Box<Value> = Box::new(self.build(test_pc + 2, depth + 1)?);
+        Some(if jumps_when_truthy(&d, self.dialect) {
+            Value::Or {
+                entry,
+                first_never_falsy: never_falsy(&first),
+                first,
+                rest,
+            }
+        } else {
+            Value::And { entry, first, rest }
+        })
+    }
+
+    fn test_target(
+        &mut self,
+        entry: usize,
+        test_pc: usize,
+        text: String,
+        depth: usize,
+    ) -> Option<Value> {
+        let d: Decoded = self.decoded(test_pc)?;
+        if self.jump_after(test_pc)? != self.join {
+            return None;
+        }
+        let rest: Box<Value> = Box::new(self.build(test_pc + 2, depth + 1)?);
+        Some(if jumps_when_truthy(&d, self.dialect) {
+            Value::Or {
+                entry,
+                first_never_falsy: never_falsy(&text),
+                first: text,
+                rest,
+            }
+        } else {
+            Value::And {
+                entry,
+                first: text,
+                rest,
+            }
+        })
+    }
 }
 
-fn region_bounds(p: &LuaProto, start: usize, dialect: LuaDialect) -> Option<(u32, usize)> {
+fn region_bounds(
+    p: &LuaProto,
+    start: usize,
+    dialect: LuaDialect,
+) -> Option<(u32, usize, Option<usize>)> {
     let mut target: Option<u32> = None;
+    let mut back: Option<usize> = None;
     let mut furthest: usize = start + 1;
     let mut pc: usize = start;
     while pc < p.code.len() && pc - start <= MAX_REGION_INSTRUCTIONS {
         if pc > start && pc >= furthest {
-            return target.map(|register: u32| (register, pc));
+            let closes_loop: bool = back.is_none_or(|head: usize| {
+                p.code.get(pc).is_some_and(|raw: &u32| {
+                    let closing: Decoded = decode(*raw, dialect);
+                    closing.op == Op::Jmp
+                        && usize::try_from(jump_target(pc, &closing, dialect)).ok() == Some(head)
+                })
+            });
+            if closes_loop {
+                return target.map(|register: u32| (register, pc, back));
+            }
         }
         let d: Decoded = decode(*p.code.get(pc)?, dialect);
         if d.op == Op::Jmp {
             let to: usize = usize::try_from(jump_target(pc, &d, dialect)).ok()?;
             if to <= pc {
-                return None;
+                if to >= start || back.is_some_and(|head: usize| head != to) {
+                    return None;
+                }
+                back = Some(to);
+                furthest = furthest.max(pc + 1);
+            } else {
+                furthest = furthest.max(to);
             }
-            furthest = furthest.max(to);
         } else if let Some(register) = written_value_register(&d, dialect) {
             target = Some(target.map_or(register, |known: u32| known.min(register)));
             let width: usize = if d.op == Op::TestSet { 2 } else { 1 };
@@ -413,6 +506,9 @@ fn region_bounds(p: &LuaProto, start: usize, dialect: LuaDialect) -> Option<(u32
         } else if is_compare(d.op) || d.op == Op::Test {
             furthest = furthest.max(pc + 2);
         } else if is_segment_op(&d, dialect) {
+            if let Some(lowest) = written_registers(&d, dialect).into_iter().min() {
+                target = Some(target.map_or(lowest, |known: u32| known.min(lowest)));
+            }
             furthest = furthest.max(pc + 1);
         } else {
             return None;
@@ -433,13 +529,14 @@ pub(super) fn emit_value_region(
     depth: usize,
     ctx: &mut StructuredLift<'_>,
 ) -> Option<usize> {
-    let (target, join): (u32, usize) = region_bounds(p, pc, dialect)?;
+    let (target, join, back): (u32, usize, Option<usize>) = region_bounds(p, pc, dialect)?;
     if region_has_external_entry(p, pc, join - 1, dialect) {
         return None;
     }
     let snapshot: &StructState = state;
-    let mut trial = |start: usize, end: usize| -> Option<String> {
+    let mut trial = |start: usize, end: usize, read: u32| -> Option<String> {
         let mut scratch: StructState = snapshot.clone();
+        scratch.inline_values = true;
         let statements: usize = scratch.stmts.len();
         let warnings: usize = scratch.warnings.len();
         let reached: usize = lower_span(
@@ -456,8 +553,8 @@ pub(super) fn emit_value_region(
         let clean: bool = reached == end
             && scratch.stmts.len() == statements
             && scratch.warnings.len() == warnings
-            && !scratch.bound.get(target as usize).copied().unwrap_or(false);
-        let text: String = scratch.reg(target);
+            && !scratch.bound.get(read as usize).copied().unwrap_or(false);
+        let text: String = scratch.reg(read);
         (clean && !text.is_empty()).then_some(text)
     };
     let mut region: Region<'_> = Region {
@@ -465,7 +562,9 @@ pub(super) fn emit_value_region(
         p,
         dialect,
         target,
+        start: pc,
         join,
+        back,
         steps: 0,
         trial: &mut trial,
     };

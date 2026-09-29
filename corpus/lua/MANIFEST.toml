@@ -36,8 +36,8 @@ notes = "an if/else inside a generic for whose then arm assigns an outer local t
 [[behaviour.fixtures]]
 path = "behaviour/values.lua"
 kind = "lua-source"
-size_bytes = 2090
-notes = "value-producing and/or: first-truthy, conjunction, a and b or c, guarded and nested chains over nil, false and values; defaults read from and written back to a table; boolean flags combined with and, or and not; clamping by reassignment through and/or; varargs through or; short-circuit evaluation counted through a side-effecting call; field defaults on a nested table; a length guarded by and; a three-way sign; not over nil and values; globals named i, k and v read inside numeric, pairs and ipairs loops and inside a closure created in a loop"
+size_bytes = 2400
+notes = "value-producing and/or: first-truthy, conjunction, a and b or c, guarded and nested chains over nil, false and values; defaults read from and written back to a table; boolean flags combined with and, or and not; clamping by reassignment through and/or; varargs through or; short-circuit evaluation counted through a side-effecting call; field defaults on a nested table; a length guarded by and; a three-way sign; not over nil and values; globals named i, k and v read inside numeric, pairs and ipairs loops and inside a closure created in a loop; an `or` condition whose then-branch opens with a computed `if`"
 
 [megafile]
 description = "~1200-LOC fixture exercising 5.1/5.2/5.3/5.4 + LuaJIT feature surface; parses cleanly across all 5 runtimes"

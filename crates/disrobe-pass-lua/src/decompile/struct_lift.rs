@@ -39,6 +39,7 @@ struct StructState {
     upvalues: Vec<String>,
     pinned: std::collections::BTreeSet<u32>,
     reserved: Option<std::collections::BTreeSet<String>>,
+    inline_values: bool,
 }
 
 impl StructState {
@@ -60,6 +61,7 @@ impl StructState {
             upvalues,
             pinned: std::collections::BTreeSet::new(),
             reserved: None,
+            inline_values: false,
         }
     }
 
@@ -1507,12 +1509,13 @@ fn define(
         state.is_defined(slot) && state.reg(slot) == state.temp(slot);
     let may_declare_here: bool =
         overwrites_a_declared_local || !live.is_skipped_by_a_forward_jump(state.pc);
-    let materialize: bool = live.should_materialize(state.pc, slot)
-        || (may_declare_here && live.read_after_control_flow(state.pc, slot))
-        || contains_ident(&value, &state.temp(slot))
-        || (!is_duplicable_expression(&value)
-            && (live.reads_before_redefinition(state.pc, slot) > 1
-                || live.side_effect_before_first_read(state.pc, slot)));
+    let materialize: bool = !state.inline_values
+        && (live.should_materialize(state.pc, slot)
+            || (may_declare_here && live.read_after_control_flow(state.pc, slot))
+            || contains_ident(&value, &state.temp(slot))
+            || (!is_duplicable_expression(&value)
+                && (live.reads_before_redefinition(state.pc, slot) > 1
+                    || live.side_effect_before_first_read(state.pc, slot))));
     if materialize && !value.is_empty() {
         let tmp: String = state.temp(slot);
         if state.is_defined(slot) {
@@ -1609,6 +1612,10 @@ fn define_table(
     _pc: usize,
     dialect: LuaDialect,
 ) {
+    if state.inline_values {
+        set_temp(state, d.a, "{}".to_owned());
+        return;
+    }
     let carried: String = state.temp(d.a);
     if state.bound.get(d.a as usize).copied().unwrap_or(false)
         && state.reg(d.a) == carried
@@ -2312,10 +2319,11 @@ fn emit_call(
             state.bind_reg(dest, name);
         } else if state.pinned.contains(&dest) {
             assign_pinned(state, dest, &call);
-        } else if live.should_materialize(state.pc, dest)
-            || live.reads_before_redefinition(state.pc, dest) > 1
-            || live.side_effect_before_first_read(state.pc, dest)
-            || live.read_after_control_flow(state.pc, dest)
+        } else if !state.inline_values
+            && (live.should_materialize(state.pc, dest)
+                || live.reads_before_redefinition(state.pc, dest) > 1
+                || live.side_effect_before_first_read(state.pc, dest)
+                || live.read_after_control_flow(state.pc, dest))
         {
             let tmp: String = state.temp(dest);
             if state.is_defined(dest) && state.reg(dest) == tmp {

@@ -404,10 +404,16 @@ const BEHAVIOUR_PROGRAMS_54: &[(&str, &str)] = &[
     ),
 ];
 
-const BEHAVIOUR_PROGRAMS_PORTABLE: &[(&str, &str)] = &[(
-    "loops",
-    include_str!("../../../corpus/lua/behaviour/loops.lua"),
-)];
+const BEHAVIOUR_PROGRAMS_PORTABLE: &[(&str, &str)] = &[
+    (
+        "loops",
+        include_str!("../../../corpus/lua/behaviour/loops.lua"),
+    ),
+    (
+        "values",
+        include_str!("../../../corpus/lua/behaviour/values.lua"),
+    ),
+];
 
 #[test]
 fn stripped_behaviour_programs_reexecute_as_emitted_lua_5_4() {

@@ -90,3 +90,17 @@ for _, w in ipairs({"a"}) do
   local reader = function() return i .. w end
   print(reader())
 end
+
+local g, h = 0, 0
+for _, probe in ipairs({{8, 10}, {9, 0}, {5, 0}, {4, 3}}) do
+  g, h = probe[1], probe[2]
+  if ((g % 6) <= h) or g == 9 then
+    if ((13 % 2) >= (h % 9)) and h > 2 then
+      print("inner", g, h)
+    else
+      print("inner else", g, h)
+    end
+  else
+    print("outer else", g, h)
+  end
+end
