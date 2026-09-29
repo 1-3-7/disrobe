@@ -639,7 +639,14 @@ mod tests {
                 .findings
                 .iter()
                 .find(|f: &&ReconFinding| f.rule_id == rule_id)
-                .unwrap_or_else(|| panic!("{rule_id} did not fire: {:?}", report.findings));
+                .unwrap_or_else(|| {
+                    let fired: Vec<&str> = report
+                        .findings
+                        .iter()
+                        .map(|f: &ReconFinding| f.rule_id.as_str())
+                        .collect();
+                    panic!("{rule_id} did not fire; rules that fired: {fired:?}")
+                });
             assert!(
                 finding.value.len() > bare.len() && finding.value.contains(bare.as_str()),
                 "{rule_id} reports the whole match: {finding:?}"
@@ -651,7 +658,8 @@ mod tests {
             );
             assert!(
                 known.contains(&bare),
-                "{rule_id} bare credential seeded: {known:?}"
+                "{rule_id} bare credential seeded among {} known values",
+                known.len()
             );
 
             let mut elsewhere: serde_json::Value =
