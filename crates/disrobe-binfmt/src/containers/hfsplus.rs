@@ -280,8 +280,9 @@ pub fn parse_hfsplus_at(image: &[u8], base: usize) -> Result<HfsVolume> {
     let header_off: usize = base
         .checked_add(VOLUME_HEADER_OFFSET)
         .ok_or_else(|| Error::Decompression("hfs+ volume base overflow".to_owned()))?;
-    let header: &[u8] = image
-        .get(header_off..header_off + 512)
+    let header: &[u8] = header_off
+        .checked_add(512)
+        .and_then(|end: usize| image.get(header_off..end))
         .ok_or_else(|| Error::Decompression("hfs+ volume header truncated".to_owned()))?;
     let block_size: u32 = be_u32(header, 40)
         .filter(|&b: &u32| b >= 512 && b.is_power_of_two())
@@ -416,8 +417,9 @@ fn walk_leaf_records(
         let node_start: usize = node_index.checked_mul(node_size).ok_or_else(|| {
             Error::Decompression(format!("hfs+ {tree_name} leaf offset overflow"))
         })?;
-        let node: &[u8] = tree
-            .get(node_start..node_start + node_size)
+        let node: &[u8] = node_start
+            .checked_add(node_size)
+            .and_then(|node_end: usize| tree.get(node_start..node_end))
             .ok_or_else(|| {
                 Error::Decompression(format!(
                     "hfs+ {tree_name} leaf link {node_index} points past the {node_count}-node tree"
@@ -477,21 +479,24 @@ fn parse_catalog_record(
     overflow: &OverflowExtents,
 ) -> Option<CatalogRecord> {
     let key_length: usize = usize::from(be_u16(node, record_off)?);
-    let parent_cnid: u32 = be_u32(node, record_off + 2)?;
-    let name_length: usize = usize::from(be_u16(node, record_off + 6)?);
-    let name_start: usize = record_off + 8;
+    let parent_cnid: u32 = be_u32(node, record_off.checked_add(2)?)?;
+    let name_length: usize = usize::from(be_u16(node, record_off.checked_add(6)?)?);
+    let name_start: usize = record_off.checked_add(8)?;
     let mut name: String = String::with_capacity(name_length);
     for i in 0..name_length {
-        let unit: u16 = be_u16(node, name_start + i * 2)?;
+        let unit: u16 = be_u16(node, name_start.checked_add(i.checked_mul(2)?)?)?;
         if unit == 0 {
             break;
         }
         name.push(char::from_u32(u32::from(unit)).map_or('\u{fffd}', |value: char| value));
     }
-    let data_start: usize = record_off + 2 + key_length + (key_length % 2);
+    let data_start: usize = record_off
+        .checked_add(2)?
+        .checked_add(key_length)?
+        .checked_add(key_length % 2)?;
     let record_type: u16 = be_u16(node, data_start)?;
+    let cnid: u32 = be_u32(node, data_start.checked_add(8)?)?;
     if record_type == RECORD_FOLDER {
-        let cnid: u32 = be_u32(node, data_start + 8)?;
         return Some(CatalogRecord::Folder(HfsFolder {
             name,
             cnid,
@@ -501,9 +506,8 @@ fn parse_catalog_record(
     if record_type != RECORD_FILE {
         return None;
     }
-    let cnid: u32 = be_u32(node, data_start + 8)?;
-    let owner_flags: u8 = *node.get(data_start + 41)?;
-    let data_fork: ForkData = read_fork(node, data_start + 88)?;
+    let owner_flags: u8 = *node.get(data_start.checked_add(41)?)?;
+    let data_fork: ForkData = read_fork(node, data_start.checked_add(88)?)?;
     let extents: Vec<ForkExtent> = resolve_fork_extents(
         data_fork.extents,
         data_fork.total_blocks,

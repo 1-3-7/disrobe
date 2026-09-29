@@ -384,8 +384,9 @@ impl RawSuperblock {
 }
 
 fn read_raw_superblock(bytes: &[u8], base: usize, endian: Endian) -> Result<RawSuperblock> {
-    let sb: &[u8] = bytes
-        .get(base..base + SUPERBLOCK_MIN_BYTES)
+    let sb: &[u8] = base
+        .checked_add(SUPERBLOCK_MIN_BYTES)
+        .and_then(|end: usize| bytes.get(base..end))
         .ok_or_else(|| Error::Squashfs("superblock truncated".to_owned()))?;
     Ok(RawSuperblock {
         block_size: endian.u32(sb, 0x0C),
@@ -571,7 +572,12 @@ fn read_directory(
     block_offset: u16,
     file_size: u32,
 ) -> Result<Vec<(u64, u16, String)>> {
-    let want: usize = block_offset as usize + file_size as usize;
+    let start: usize = usize::from(block_offset);
+    let want: usize = usize::try_from(file_size)
+        .ok()
+        .and_then(|size: usize| start.checked_add(size))
+        .ok_or_else(|| Error::Squashfs("directory listing end overflows".to_owned()))?;
+    let listed_end: usize = want.saturating_sub(3).max(start);
     let total: u64 = (bytes.len() as u64).saturating_sub(base as u64);
     let table: Vec<u8> = read_metadata_at(
         bytes,
@@ -583,8 +589,7 @@ fn read_directory(
         want,
         raw.directory_table_end(total),
     )?;
-    let start: usize = block_offset as usize;
-    let end: usize = (start + file_size.saturating_sub(3) as usize).min(table.len());
+    let end: usize = listed_end.min(table.len());
     let region: &[u8] = table
         .get(start..end)
         .map_or(&[] as &[u8], |value: &[u8]| value);
@@ -633,7 +638,9 @@ fn read_file_data(
     meta: &FileInode,
 ) -> Result<Vec<u8>> {
     let mut out: Vec<u8> = Vec::with_capacity(meta.file_size.min(64 * 1024 * 1024) as usize);
-    let mut cursor: u64 = base as u64 + meta.blocks_start;
+    let mut cursor: u64 = (base as u64)
+        .checked_add(meta.blocks_start)
+        .ok_or_else(|| Error::Squashfs("file blocks start overflows".to_owned()))?;
     for &size_word in &meta.block_sizes {
         let on_disk: u32 = size_word & 0x00FF_FFFF;
         let uncompressed: bool = size_word & 0x0100_0000 != 0;
@@ -655,7 +662,9 @@ fn read_file_data(
             decompress_block(chunk, compression, raw.block_size as usize)?
         };
         out.extend_from_slice(&block);
-        cursor += u64::from(on_disk);
+        cursor = cursor
+            .checked_add(u64::from(on_disk))
+            .ok_or_else(|| Error::Squashfs("data block offset overflows".to_owned()))?;
     }
     let tail: u64 = meta.file_size - (out.len() as u64).min(meta.file_size);
     if tail > 0 && meta.fragment_block_index != 0xFFFF_FFFF {
@@ -672,7 +681,7 @@ fn read_file_data(
             .ok_or_else(|| Error::Squashfs("fragment slice out of range".to_owned()))?;
         out.extend_from_slice(slice);
     }
-    out.truncate(meta.file_size as usize);
+    out.truncate(usize::try_from(meta.file_size).map_or(usize::MAX, |size: usize| size));
     Ok(out)
 }
 
@@ -683,12 +692,13 @@ fn read_fragment_block(
     compression: SquashfsCompression,
     block_size: usize,
 ) -> Result<Vec<u8>> {
-    let start: usize =
-        usize::try_from(base as u64 + frag.start).map_err(|_e: std::num::TryFromIntError| {
-            Error::Squashfs("fragment offset overflow".to_owned())
-        })?;
-    let chunk: &[u8] = bytes
-        .get(start..start + frag.size as usize)
+    let start: usize = (base as u64)
+        .checked_add(frag.start)
+        .and_then(|start: u64| usize::try_from(start).ok())
+        .ok_or_else(|| Error::Squashfs("fragment offset overflow".to_owned()))?;
+    let chunk: &[u8] = start
+        .checked_add(frag.size as usize)
+        .and_then(|end: usize| bytes.get(start..end))
         .ok_or_else(|| Error::Squashfs("fragment block past end of input".to_owned()))?;
     if frag.compressed {
         decompress_block(chunk, compression, block_size)
@@ -708,11 +718,14 @@ fn read_fragment_table(
         return Ok(Vec::new());
     }
     let index_count: usize = raw.fragment_entry_count.div_ceil(512) as usize;
-    let index_start: usize = usize::try_from(base as u64 + raw.fragment_table_start).map_err(
-        |_e: std::num::TryFromIntError| Error::Squashfs("fragment index overflow".to_owned()),
-    )?;
-    let index_bytes: &[u8] = bytes
-        .get(index_start..index_start + index_count * 8)
+    let index_start: usize = (base as u64)
+        .checked_add(raw.fragment_table_start)
+        .and_then(|start: u64| usize::try_from(start).ok())
+        .ok_or_else(|| Error::Squashfs("fragment index overflow".to_owned()))?;
+    let index_bytes: &[u8] = index_count
+        .checked_mul(8)
+        .and_then(|len: usize| index_start.checked_add(len))
+        .and_then(|end: usize| bytes.get(index_start..end))
         .ok_or_else(|| Error::Squashfs("fragment index table truncated".to_owned()))?;
     let mut entries: Vec<FragmentEntry> =
         Vec::with_capacity((raw.fragment_entry_count as usize).min(bytes.len() / 16));
@@ -746,7 +759,9 @@ fn read_metadata_at(
     table_end: u64,
 ) -> Result<Vec<u8>> {
     let mut out: Vec<u8> = Vec::new();
-    let mut loc: u64 = table_start + block;
+    let mut loc: u64 = table_start
+        .checked_add(block)
+        .ok_or_else(|| Error::Squashfs("metadata block location overflows".to_owned()))?;
     let mut guard: usize = 0;
     while out.len() < want_bytes.min(MAX_METADATA_BLOCK * 64) {
         if loc >= table_end {
@@ -792,27 +807,37 @@ fn read_metadata_block_at(
     compression: SquashfsCompression,
     endian: Endian,
 ) -> Result<(Vec<u8>, u64)> {
-    let at: usize =
-        usize::try_from(base as u64 + loc).map_err(|_e: std::num::TryFromIntError| {
-            Error::Squashfs("metadata loc overflow".to_owned())
-        })?;
+    let at: usize = (base as u64)
+        .checked_add(loc)
+        .and_then(|at: u64| usize::try_from(at).ok())
+        .ok_or_else(|| Error::Squashfs("metadata loc overflow".to_owned()))?;
+    let payload_at: usize = at
+        .checked_add(2)
+        .ok_or_else(|| Error::Squashfs("metadata loc overflow".to_owned()))?;
+    let payload_loc: u64 = loc
+        .checked_add(2)
+        .ok_or_else(|| Error::Squashfs("metadata loc overflow".to_owned()))?;
     let header: u16 = endian
         .u16_opt(bytes, at)
         .ok_or_else(|| Error::Squashfs("metadata header out of bounds".to_owned()))?;
     let size: usize = (header & METADATA_SIZE_MASK) as usize;
     let uncompressed: bool = header & METADATA_UNCOMPRESSED_FLAG != 0;
     if size == 0 || size > MAX_METADATA_BLOCK {
-        return Ok((Vec::new(), loc + 2));
+        return Ok((Vec::new(), payload_loc));
     }
-    let payload: &[u8] = bytes
-        .get(at + 2..at + 2 + size)
+    let payload: &[u8] = payload_at
+        .checked_add(size)
+        .and_then(|end: usize| bytes.get(payload_at..end))
         .ok_or_else(|| Error::Squashfs("metadata payload out of bounds".to_owned()))?;
     let decoded: Vec<u8> = if uncompressed {
         payload.to_vec()
     } else {
         decompress_block(payload, compression, MAX_METADATA_BLOCK)?
     };
-    Ok((decoded, loc + 2 + size as u64))
+    let next: u64 = payload_loc
+        .checked_add(size as u64)
+        .ok_or_else(|| Error::Squashfs("metadata loc overflow".to_owned()))?;
+    Ok((decoded, next))
 }
 
 fn decompress_block(input: &[u8], compression: SquashfsCompression, cap: usize) -> Result<Vec<u8>> {
@@ -1006,6 +1031,31 @@ mod tests {
 
     const APPIMAGE_TYPE2_HOST: &[u8] =
         include_bytes!("../../tests/fixtures/appimage/host-type2.elf");
+
+    #[test]
+    fn table_offsets_past_the_address_space_are_errors_not_panics() {
+        let mut inode_table: Vec<u8> = build_real_squashfs("file.bin", b"body");
+        inode_table[0x20..0x28].copy_from_slice(&(1u64 << 16).to_le_bytes());
+        inode_table[0x40..0x48].copy_from_slice(&u64::MAX.to_le_bytes());
+        let error: Error =
+            walk_squashfs(&inode_table, 0, u64::MAX).expect_err("inode table past the end");
+        assert!(
+            error
+                .to_string()
+                .contains("metadata block location overflows"),
+            "{error}"
+        );
+
+        let mut fragment_table: Vec<u8> = build_real_squashfs("file.bin", b"body");
+        fragment_table[0x10..0x14].copy_from_slice(&1u32.to_le_bytes());
+        fragment_table[0x50..0x58].copy_from_slice(&(u64::MAX - 3).to_le_bytes());
+        let error: Error =
+            walk_squashfs(&fragment_table, 0, u64::MAX).expect_err("fragment index past the end");
+        assert!(
+            error.to_string().contains("fragment index table truncated"),
+            "{error}"
+        );
+    }
 
     #[test]
     fn every_name_of_a_hard_linked_file_is_extracted() {

@@ -175,8 +175,10 @@ fn read_inode(bytes: &[u8], geo: &Ext4Geometry, ino: u32) -> Result<Ext4Inode> {
     let index: u32 = ino - 1;
     let group: u32 = index / geo.inodes_per_group;
     let inode_in_group: u32 = index % geo.inodes_per_group;
-    let gdt_block: u64 = u64::from(geo.first_data_block) + 1;
-    let desc_offset: u64 = gdt_block * geo.block_size + u64::from(group) * u64::from(geo.desc_size);
+    let desc_offset: u64 = (u64::from(geo.first_data_block) + 1)
+        .checked_mul(geo.block_size)
+        .and_then(|gdt: u64| gdt.checked_add(u64::from(group) * u64::from(geo.desc_size)))
+        .ok_or_else(|| Error::Ext4("ext4 group descriptor offset overflows".to_owned()))?;
     let desc_at: usize = usize::try_from(desc_offset)
         .map_err(|_e: std::num::TryFromIntError| Error::Ext4("desc offset overflow".to_owned()))?;
     let desc: &[u8] = desc_at
@@ -282,7 +284,10 @@ fn read_inode_data(
     }
     let mut out: Vec<u8> = Vec::with_capacity(inode.size.min(64 * 1024 * 1024) as usize);
     walk_extent_node(bytes, geo, &inode.i_block, &mut out, 0, max_total)?;
-    out.resize(inode.size as usize, 0);
+    let size: usize = usize::try_from(inode.size).map_err(|_e: std::num::TryFromIntError| {
+        Error::Ext4("ext4 inode size exceeds host range".to_owned())
+    })?;
+    out.resize(size, 0);
     Ok(out)
 }
 
@@ -382,8 +387,12 @@ fn write_extent_blocks(
             "ext4 extent logical offset exceeds total cap".to_owned(),
         ));
     }
-    if out.len() as u64 != want_offset {
-        out.resize(want_offset as usize, 0);
+    let want_at: usize =
+        usize::try_from(want_offset).map_err(|_e: std::num::TryFromIntError| {
+            Error::Ext4("extent logical offset exceeds host range".to_owned())
+        })?;
+    if out.len() != want_at {
+        out.resize(want_at, 0);
     }
     let start: usize = usize::try_from(
         phys_block
@@ -396,11 +405,13 @@ fn write_extent_blocks(
             .ok_or_else(|| Error::Ext4("extent byte length overflow".to_owned()))?,
     )
     .map_err(|_e: std::num::TryFromIntError| Error::Ext4("extent len overflow".to_owned()))?;
-    if out.len().saturating_add(byte_len) as u64 > max_total {
-        return Err(Error::Ext4("ext4 extent data exceeds total cap".to_owned()));
-    }
+    let filled: usize = out
+        .len()
+        .checked_add(byte_len)
+        .filter(|&filled: &usize| filled as u64 <= max_total)
+        .ok_or_else(|| Error::Ext4("ext4 extent data exceeds total cap".to_owned()))?;
     if unwritten {
-        out.resize(out.len() + byte_len, 0);
+        out.resize(filled, 0);
         return Ok(());
     }
     let end: usize = start
@@ -615,6 +626,25 @@ mod tests {
             desc_size: 32,
             first_data_block: 1,
         }
+    }
+
+    #[test]
+    fn an_inode_table_past_the_address_space_is_refused_not_a_panic() {
+        let mut image: Vec<u8> = build_real_ext4("file.txt", b"body");
+        let sb: usize = EXT4_SUPERBLOCK_OFFSET;
+        image[sb + 0x60..sb + 0x64].copy_from_slice(&0x80u32.to_le_bytes());
+        image[sb + 0xFE..sb + 0x100].copy_from_slice(&64u16.to_le_bytes());
+        let desc: usize = 2 * BS;
+        image[desc + 0x28..desc + 0x2C].copy_from_slice(&u32::MAX.to_le_bytes());
+        let walk: Ext4Walk = walk_ext4(&image, u64::MAX).expect("a hostile table is a refusal");
+        assert!(walk.files.is_empty(), "{:?}", walk.refusals);
+        assert!(
+            walk.refusals
+                .iter()
+                .any(|refusal: &String| refusal.contains("inode table offset overflows")),
+            "{:?}",
+            walk.refusals
+        );
     }
 
     #[test]

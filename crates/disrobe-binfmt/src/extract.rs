@@ -1725,11 +1725,17 @@ fn extract_dmg(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<E
                 continue;
             }
             let files: Vec<crate::containers::ApfsExtractedFile> =
-                crate::containers::apfs::extract_apfs_files(
+                match crate::containers::apfs::extract_apfs_files(
                     &image,
                     block_size,
                     volume.root_tree_oid,
-                );
+                ) {
+                    Ok(files) => files,
+                    Err(e) => {
+                        violations.push(format!("dmg-apfs-tree `{}`: {e}", volume.name));
+                        continue;
+                    }
+                };
             for file in &files {
                 let safe_name: String = match sanitize_entry_path(&file.name) {
                     Ok(s) => s,
@@ -1738,12 +1744,18 @@ fn extract_dmg(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<E
                         continue;
                     }
                 };
-                let data: Vec<u8> = crate::containers::apfs::apfs_file_bytes(
+                let data: Vec<u8> = match crate::containers::apfs::apfs_file_bytes(
                     &image,
                     block_size,
                     file,
                     quota.max_per_entry_uncompressed,
-                );
+                ) {
+                    Ok(data) => data,
+                    Err(e) => {
+                        violations.push(format!("dmg-apfs-extent `{safe_name}`: {e}"));
+                        continue;
+                    }
+                };
                 let size: u64 = data.len() as u64;
                 if let Err(e) = guard.admit_entry(&safe_name, size, size) {
                     violations.push(format!("dmg-apfs-quota `{safe_name}`: {e}"));

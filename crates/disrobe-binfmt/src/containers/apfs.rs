@@ -194,22 +194,37 @@ fn omap_leaf_mappings(node: &[u8], out: &mut Vec<(u64, u64)>) -> Option<()> {
     Some(())
 }
 
-#[must_use]
-pub fn resolve_omap_tree(image: &[u8], block_size: u32, omap_tree_block: u64) -> Vec<(u64, u64)> {
+fn block_at(image: &[u8], block_size: usize, block: u64) -> Result<Option<&[u8]>> {
+    let start: usize = usize::try_from(block)
+        .ok()
+        .and_then(|block: usize| block.checked_mul(block_size))
+        .ok_or_else(|| {
+            Error::Decompression(format!("apfs block {block} lies past the address space"))
+        })?;
+    let end: usize = start.checked_add(block_size).ok_or_else(|| {
+        Error::Decompression(format!("apfs block {block} ends past the address space"))
+    })?;
+    Ok(image.get(start..end))
+}
+
+pub fn resolve_omap_tree(
+    image: &[u8],
+    block_size: u32,
+    omap_tree_block: u64,
+) -> Result<Vec<(u64, u64)>> {
     let mut mappings: Vec<(u64, u64)> = Vec::new();
     let block_size: usize = block_size as usize;
     if block_size == 0 {
-        return mappings;
+        return Ok(mappings);
     }
-    let start: usize = (omap_tree_block as usize).saturating_mul(block_size);
-    let Some(node): Option<&[u8]> = image.get(start..start + block_size) else {
-        return mappings;
+    let Some(node): Option<&[u8]> = block_at(image, block_size, omap_tree_block)? else {
+        return Ok(mappings);
     };
     if parse_btree_node(node).is_none() {
-        return mappings;
+        return Ok(mappings);
     }
     let _ = omap_leaf_mappings(node, &mut mappings);
-    mappings
+    Ok(mappings)
 }
 
 const J_OBJ_TYPE_SHIFT: u64 = 60;
@@ -226,22 +241,24 @@ pub struct ApfsFsRecord {
     pub value: Vec<u8>,
 }
 
-#[must_use]
-pub fn walk_fs_tree_leaf(image: &[u8], block_size: u32, tree_block: u64) -> Vec<ApfsFsRecord> {
+pub fn walk_fs_tree_leaf(
+    image: &[u8],
+    block_size: u32,
+    tree_block: u64,
+) -> Result<Vec<ApfsFsRecord>> {
     let mut records: Vec<ApfsFsRecord> = Vec::new();
     let block_size: usize = block_size as usize;
     if block_size == 0 {
-        return records;
+        return Ok(records);
     }
-    let start: usize = (tree_block as usize).saturating_mul(block_size);
-    let Some(node): Option<&[u8]> = image.get(start..start + block_size) else {
-        return records;
+    let Some(node): Option<&[u8]> = block_at(image, block_size, tree_block)? else {
+        return Ok(records);
     };
     let Some(meta): Option<BtreeNode> = parse_btree_node(node) else {
-        return records;
+        return Ok(records);
     };
     if meta.level != 0 || meta.fixed_kv {
-        return records;
+        return Ok(records);
     }
     let nkeys: usize = meta.nkeys as usize;
     for i in 0..nkeys.min(MAX_OMAP_ENTRIES) {
@@ -282,7 +299,7 @@ pub fn walk_fs_tree_leaf(image: &[u8], block_size: u32, tree_block: u64) -> Vec<
             value: value.to_vec(),
         });
     }
-    records
+    Ok(records)
 }
 
 #[must_use]
@@ -328,13 +345,12 @@ fn drec_target_oid(record: &ApfsFsRecord) -> Option<u64> {
     Some(oid & ((1u64 << J_OBJ_TYPE_SHIFT) - 1))
 }
 
-#[must_use]
 pub fn extract_apfs_files(
     image: &[u8],
     block_size: u32,
     root_tree_block: u64,
-) -> Vec<ApfsExtractedFile> {
-    let records: Vec<ApfsFsRecord> = walk_fs_tree_leaf(image, block_size, root_tree_block);
+) -> Result<Vec<ApfsExtractedFile>> {
+    let records: Vec<ApfsFsRecord> = walk_fs_tree_leaf(image, block_size, root_tree_block)?;
     let mut names_by_oid: std::collections::BTreeMap<u64, String> =
         std::collections::BTreeMap::new();
     let mut extents_by_oid: std::collections::BTreeMap<u64, Vec<(u64, u64)>> =
@@ -363,7 +379,16 @@ pub fn extract_apfs_files(
         let Some(name): Option<&String> = names_by_oid.get(&oid) else {
             continue;
         };
-        let size: u64 = extents.iter().map(|(_, len): &(u64, u64)| *len).sum();
+        let size: u64 = extents
+            .iter()
+            .try_fold(0u64, |size: u64, &(_, len): &(u64, u64)| {
+                size.checked_add(len)
+            })
+            .ok_or_else(|| {
+                Error::Decompression(format!(
+                    "apfs file `{name}` declares extents whose lengths overflow a 64-bit size"
+                ))
+            })?;
         out.push(ApfsExtractedFile {
             name: name.clone(),
             object_id: oid,
@@ -371,30 +396,44 @@ pub fn extract_apfs_files(
             extents,
         });
     }
-    out
+    Ok(out)
 }
 
-#[must_use]
 pub fn apfs_file_bytes(
     image: &[u8],
     block_size: u32,
     file: &ApfsExtractedFile,
     cap: u64,
-) -> Vec<u8> {
+) -> Result<Vec<u8>> {
     let mut out: Vec<u8> = Vec::new();
     let block_size: u64 = u64::from(block_size);
-    for (phys_block, byte_len) in &file.extents {
-        let start: u64 = phys_block.saturating_mul(block_size);
-        let end: u64 = start.saturating_add(*byte_len).min(image.len() as u64);
-        if let Some(slice) = image.get(start as usize..end as usize) {
+    for &(phys_block, byte_len) in &file.extents {
+        let start: u64 = phys_block.checked_mul(block_size).ok_or_else(|| {
+            Error::Decompression(format!(
+                "apfs file `{}` extent at block {phys_block} lies past the address space",
+                file.name
+            ))
+        })?;
+        let end: u64 = start.checked_add(byte_len).ok_or_else(|| {
+            Error::Decompression(format!(
+                "apfs file `{}` extent at block {phys_block} ends past the address space",
+                file.name
+            ))
+        })?;
+        let slice: Option<&[u8]> = usize::try_from(start).ok().and_then(|start: usize| {
+            let end: usize =
+                usize::try_from(end).map_or(image.len(), |end: usize| end.min(image.len()));
+            image.get(start..end)
+        });
+        if let Some(slice) = slice {
             out.extend_from_slice(slice);
         }
         if out.len() as u64 > cap {
-            out.truncate(cap as usize);
+            out.truncate(usize::try_from(cap).map_or(out.len(), |cap: usize| cap));
             break;
         }
     }
-    out
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -426,6 +465,87 @@ mod tests {
         let name_bytes: &[u8] = volume_name.as_bytes();
         image[name_off..name_off + name_bytes.len()].copy_from_slice(name_bytes);
         image
+    }
+
+    #[test]
+    fn a_tree_block_past_the_address_space_is_an_error_not_a_panic() {
+        let image: Vec<u8> = vec![0u8; 4096];
+        let error: Error = walk_fs_tree_leaf(&image, 4096, u64::MAX).expect_err("fs tree block");
+        assert!(
+            error.to_string().contains("past the address space"),
+            "{error}"
+        );
+        let error: Error = resolve_omap_tree(&image, 4096, u64::MAX).expect_err("omap block");
+        assert!(
+            error.to_string().contains("past the address space"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn extents_whose_lengths_overflow_a_file_size_are_an_error_not_a_panic() {
+        let block_size: usize = 4096;
+        let mut image: Vec<u8> = vec![0u8; 2 * block_size];
+        let node_off: usize = block_size;
+        let extent_records: usize = 257;
+        let table_len: u16 = u16::try_from((extent_records + 1) * 8).expect("fits");
+        let nkeys: u32 = u32::try_from(extent_records + 1).expect("fits");
+        image[node_off + OBJ_HEADER_LEN..node_off + OBJ_HEADER_LEN + 2]
+            .copy_from_slice(&0x0001u16.to_le_bytes());
+        image[node_off + OBJ_HEADER_LEN + 4..node_off + OBJ_HEADER_LEN + 8]
+            .copy_from_slice(&nkeys.to_le_bytes());
+        image[node_off + OBJ_HEADER_LEN + 10..node_off + OBJ_HEADER_LEN + 12]
+            .copy_from_slice(&table_len.to_le_bytes());
+
+        let inode_oid: u64 = 0x30;
+        let mut ext_key: Vec<u8> = Vec::new();
+        ext_key.extend_from_slice(
+            &((u64::from(APFS_TYPE_FILE_EXTENT) << J_OBJ_TYPE_SHIFT) | inode_oid).to_le_bytes(),
+        );
+        ext_key.extend_from_slice(&0u64.to_le_bytes());
+        let mut ext_val: Vec<u8> = Vec::new();
+        ext_val.extend_from_slice(&J_FILE_EXTENT_LEN_MASK.to_le_bytes());
+        ext_val.extend_from_slice(&0u64.to_le_bytes());
+        let name: &str = "huge.bin";
+        let mut drec_key: Vec<u8> = Vec::new();
+        drec_key.extend_from_slice(
+            &((u64::from(APFS_TYPE_DREC) << J_OBJ_TYPE_SHIFT) | 0x10).to_le_bytes(),
+        );
+        drec_key.extend_from_slice(&u32::try_from(name.len() + 1).expect("fits").to_le_bytes());
+        drec_key.extend_from_slice(name.as_bytes());
+        drec_key.push(0);
+        let drec_val: [u8; 8] = inode_oid.to_le_bytes();
+
+        let toc_off: usize = node_off + BTREE_TOC_OFFSET;
+        let key_area: usize = toc_off + usize::from(table_len);
+        let val_area_end: usize = node_off + block_size - BTREE_INFO_LEN;
+        let ext_key_rel: u16 = 0;
+        let drec_key_rel: u16 = 16;
+        let ext_val_rel: u16 = 16;
+        let drec_val_rel: u16 = 24;
+        image[key_area..key_area + 16].copy_from_slice(&ext_key);
+        image[key_area + 16..key_area + 16 + drec_key.len()].copy_from_slice(&drec_key);
+        image[val_area_end - 16..val_area_end].copy_from_slice(&ext_val);
+        image[val_area_end - 24..val_area_end - 16].copy_from_slice(&drec_val);
+        let drec_key_len: u16 = u16::try_from(drec_key.len()).expect("fits");
+        for index in 0..=extent_records {
+            let toc: [u16; 4] = if index < extent_records {
+                [ext_key_rel, 16, ext_val_rel, 16]
+            } else {
+                [drec_key_rel, drec_key_len, drec_val_rel, 8]
+            };
+            let entry: usize = toc_off + index * 8;
+            for (field, value) in toc.iter().enumerate() {
+                image[entry + field * 2..entry + field * 2 + 2]
+                    .copy_from_slice(&value.to_le_bytes());
+            }
+        }
+
+        let error: Error = extract_apfs_files(&image, 4096, 1).expect_err("overflowing size");
+        assert!(
+            error.to_string().contains("overflow a 64-bit size"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -487,7 +607,8 @@ mod tests {
             image[val_off + 8..val_off + 16].copy_from_slice(&paddr.to_le_bytes());
         }
 
-        let mappings: Vec<(u64, u64)> = resolve_omap_tree(&image, block_size, omap_block);
+        let mappings: Vec<(u64, u64)> =
+            resolve_omap_tree(&image, block_size, omap_block).expect("omap block in range");
         assert_eq!(mappings.len(), 2);
         assert!(mappings.contains(&(0x0400, 0x10)));
         assert!(mappings.contains(&(0x0401, 0x11)));
@@ -544,7 +665,8 @@ mod tests {
             key_cursor += key.len();
         }
 
-        let records: Vec<ApfsFsRecord> = walk_fs_tree_leaf(&image, block_size, tree_block);
+        let records: Vec<ApfsFsRecord> =
+            walk_fs_tree_leaf(&image, block_size, tree_block).expect("tree block in range");
         assert_eq!(records.len(), 2);
         let drec: &ApfsFsRecord = records
             .iter()
@@ -620,7 +742,8 @@ mod tests {
         let data_off: usize = data_block as usize * block_size as usize;
         image[data_off..data_off + body.len()].copy_from_slice(body);
 
-        let files: Vec<ApfsExtractedFile> = extract_apfs_files(&image, block_size, tree_block);
+        let files: Vec<ApfsExtractedFile> =
+            extract_apfs_files(&image, block_size, tree_block).expect("tree block in range");
         assert_eq!(
             files.len(),
             1,
@@ -628,7 +751,8 @@ mod tests {
         );
         assert_eq!(files[0].name, "doc.bin");
         assert_eq!(files[0].size, body.len() as u64);
-        let recovered: Vec<u8> = apfs_file_bytes(&image, block_size, &files[0], u64::MAX);
+        let recovered: Vec<u8> =
+            apfs_file_bytes(&image, block_size, &files[0], u64::MAX).expect("extent in range");
         assert_eq!(recovered, body);
     }
 }
