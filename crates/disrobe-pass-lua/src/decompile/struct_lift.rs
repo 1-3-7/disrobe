@@ -295,6 +295,7 @@ fn lift_structured_captured(
             .map_or_else(|| synthetic_param_name(i, &state.upvalues), str::to_owned);
         outer_names.insert(name.clone());
         state.bind_reg(i, name);
+        state.pinned.insert(i);
     }
     if !names.has_names {
         state.reserved =
@@ -1480,8 +1481,12 @@ fn define(
     slot: u32,
     value: String,
 ) {
-    let active_name: Option<String> = names.name_at(state.pc, slot).map(str::to_owned);
-    let upcoming_name: Option<String> = if active_name.is_none() {
+    let active_name: Option<String> = if state.inline_values {
+        None
+    } else {
+        names.name_at(state.pc, slot).map(str::to_owned)
+    };
+    let upcoming_name: Option<String> = if active_name.is_none() && !state.inline_values {
         names
             .name_at(state.pc + 1, slot)
             .filter(|n: &&str| names.name_at(state.pc, slot) != Some(*n))
@@ -1501,7 +1506,7 @@ fn define(
         state.bind_reg(slot, name);
         return;
     }
-    if state.pinned.contains(&slot) {
+    if state.pinned.contains(&slot) && !state.inline_values {
         assign_pinned(state, slot, &value);
         return;
     }
@@ -2310,14 +2315,18 @@ fn emit_call(
         clear_from(state, d.a);
     } else if d.c == 2 {
         let dest: u32 = d.a;
-        let name: Option<String> = names
-            .name_at(state.pc + 1, dest)
-            .or_else(|| names.name_at(state.pc, dest))
-            .map(str::to_owned);
+        let name: Option<String> = if state.inline_values {
+            None
+        } else {
+            names
+                .name_at(state.pc + 1, dest)
+                .or_else(|| names.name_at(state.pc, dest))
+                .map(str::to_owned)
+        };
         if let Some(name) = name {
             state.push_raw(format!("local {name} = {call}"));
             state.bind_reg(dest, name);
-        } else if state.pinned.contains(&dest) {
+        } else if state.pinned.contains(&dest) && !state.inline_values {
             assign_pinned(state, dest, &call);
         } else if !state.inline_values
             && (live.should_materialize(state.pc, dest)

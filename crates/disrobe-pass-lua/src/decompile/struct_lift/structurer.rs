@@ -440,10 +440,14 @@ fn retarget_exits_through_skip_jumps(nodes: &mut [PcNode]) {
             if target != exit {
                 continue;
             }
-            let closes_enclosing_then: bool = nodes
-                .get(i + 2 + offset)
-                .and_then(|next: &PcNode| first_cond_into.get(&next.pc))
-                .is_some_and(|&opener: &usize| opener < i);
+            let closes_enclosing_then: bool = nodes[i + 2 + offset..]
+                .iter()
+                .find(|next: &&PcNode| !matches!(next.node, Node::BlockEnd))
+                .is_some_and(|next: &PcNode| {
+                    first_cond_into
+                        .range(later.pc + 1..=next.pc)
+                        .any(|(_, &opener): (&usize, &usize)| opener < i)
+                });
             if closes_enclosing_then {
                 threaded = Some(later.pc);
                 break;
@@ -2427,6 +2431,93 @@ mod tests {
         assert!(
             matches!(&nodes[0].node, Node::Cond { cond, target: 9 } if cond == "((not (a)) or (b)) and (c)"),
             "{nodes:?}"
+        );
+    }
+
+    #[test]
+    fn a_compound_guard_while_ending_a_then_branch_with_its_exits_past_the_else_stays_a_while() {
+        let stmts: Vec<LiftedStmt> = vec![
+            cond(0, "p", 10),
+            lifted(1, LStmt::Raw("init()".to_owned())),
+            cond(2, "n < 2", 12),
+            cond(3, "not a", 5),
+            cond(4, "n == 0", 12),
+            lifted(5, LStmt::Raw("body()".to_owned())),
+            lifted(6, LStmt::Jump { target: 2 }),
+            lifted(7, LStmt::Jump { target: 12 }),
+            lifted(10, LStmt::Raw("other()".to_owned())),
+            lifted(12, LStmt::Raw("done()".to_owned())),
+        ];
+
+        let result: StructureResult = structure_standard(&stmts, 13);
+
+        let [
+            StructuredBlock::If {
+                then_body,
+                else_body,
+                ..
+            },
+            StructuredBlock::Raw(after),
+        ] = result.blocks.as_slice()
+        else {
+            panic!(
+                "expected one if/else then done(); blocks: {:?}",
+                result.blocks
+            );
+        };
+        assert_eq!(after, "done()");
+        assert!(
+            matches!(
+                then_body.as_slice(),
+                [StructuredBlock::Raw(init), StructuredBlock::While { cond, body }]
+                    if init == "init()"
+                        && cond.starts_with("(n < 2) and (")
+                        && matches!(body.as_slice(), [StructuredBlock::Raw(b)] if b == "body()")
+            ),
+            "then: {then_body:?}"
+        );
+        assert!(
+            matches!(else_body.as_slice(), [StructuredBlock::Raw(o)] if o == "other()"),
+            "else: {else_body:?}"
+        );
+        assert_eq!(result.unresolved_jumps, 0);
+    }
+
+    #[test]
+    fn a_while_ending_a_then_branch_whose_else_opens_past_its_target_stays_a_while() {
+        let stmts: Vec<LiftedStmt> = vec![
+            cond(0, "p", 10),
+            lifted(1, LStmt::Raw("init()".to_owned())),
+            cond(2, "n < 2", 14),
+            cond(3, "not a", 5),
+            cond(4, "n == 0", 14),
+            lifted(5, LStmt::Raw("body()".to_owned())),
+            lifted(6, LStmt::Jump { target: 2 }),
+            lifted(7, LStmt::Jump { target: 14 }),
+            lifted(12, LStmt::Raw("other()".to_owned())),
+            lifted(14, LStmt::Raw("done()".to_owned())),
+        ];
+
+        let result: StructureResult = structure_standard(&stmts, 15);
+
+        assert_eq!(result.unresolved_jumps, 0, "{:?}", result.blocks);
+        let [
+            StructuredBlock::If { then_body, .. },
+            StructuredBlock::Raw(after),
+        ] = result.blocks.as_slice()
+        else {
+            panic!(
+                "expected one if/else then done(); blocks: {:?}",
+                result.blocks
+            );
+        };
+        assert_eq!(after, "done()");
+        assert!(
+            then_body.iter().any(|block: &StructuredBlock| matches!(
+                block,
+                StructuredBlock::While { cond, .. } if cond.starts_with("(n < 2) and (")
+            )),
+            "then: {then_body:?}"
         );
     }
 

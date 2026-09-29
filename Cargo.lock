@@ -2309,6 +2309,7 @@ dependencies = [
  "disrobe-bytes",
  "disrobe-cfg",
  "disrobe-core",
+ "disrobe-testkit",
  "flate2",
  "lazy-regex",
  "miette",
