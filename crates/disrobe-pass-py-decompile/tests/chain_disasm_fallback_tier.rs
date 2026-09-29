@@ -4,9 +4,11 @@
 use std::collections::BTreeMap;
 use std::time::Instant;
 
+use disrobe_core::chain::metadata_keys::keys::CONTAINER_REFUSALS_KEY;
 use disrobe_core::chain::state_machine::{ChainConfig, ChainDriver, ChainPlan, PassRunner};
 use disrobe_core::chain::{
-    ChainSpec, DetectorPick, Node, OutputKind, PassRegistry, PassRunOutcome, tier_from_node,
+    ChainSpec, DetectorPick, Node, OutputKind, PassRegistry, PassRunOutcome, RecoveryStatus,
+    status_from_node, tier_from_node,
 };
 use disrobe_core::pass::PassContext;
 use disrobe_core::recovery::ConfidenceTier;
@@ -45,11 +47,23 @@ impl PassRunner for RealRunner {
             .run_with_context(&artifact, context)
             .map_err(|error: disrobe_core::error::CoreError| error.to_string())?;
         let kind: OutputKind = pick.pass.output_kind(&output);
+        let refusals: Vec<String> = pick
+            .pass
+            .chain_refusals(&artifact)
+            .map_err(|error: disrobe_core::error::CoreError| error.to_string())?;
+        let mut metadata: BTreeMap<String, String> = BTreeMap::new();
+        if !refusals.is_empty() {
+            metadata.insert(
+                CONTAINER_REFUSALS_KEY.name().to_owned(),
+                serde_json::to_string(&refusals)
+                    .map_err(|error: serde_json::Error| error.to_string())?,
+            );
+        }
         Ok(PassRunOutcome {
             output_bytes: output.envelope,
             kind,
             duration: started.elapsed(),
-            metadata: BTreeMap::new(),
+            metadata,
             children: Vec::new(),
         })
     }
@@ -200,6 +214,29 @@ fn a_module_with_a_stubbed_nested_scope_is_not_reported_as_direct_recovery() {
     assert_eq!(result.stubbed_scopes, 1);
     let confidence: f64 = result.source_confidence();
     assert!(confidence > 0.0 && confidence < 1.0, "{confidence}");
+}
+
+#[test]
+fn a_module_with_a_stubbed_nested_scope_tiers_partial_in_the_chain() {
+    let node: Node = decompile_node(&stubbed_module_pyc());
+    assert!(
+        matches!(node.output_kind, Some(OutputKind::Source { .. })),
+        "{:?}",
+        node.output_kind
+    );
+    let refusals: &str = node
+        .metadata
+        .get(CONTAINER_REFUSALS_KEY.name())
+        .map_or("", String::as_str);
+    assert!(
+        refusals.contains("DR-PYDEC-0913") && refusals.contains("1 of "),
+        "the stubbed scope must be reported: {:?}",
+        node.metadata
+    );
+    assert_eq!(tier_from_node(&node), ConfidenceTier::Partial);
+    assert_eq!(status_from_node(&node), RecoveryStatus::Incomplete);
+    let direct: Node = decompile_node(DIRECT_MODULE);
+    assert!(!direct.metadata.contains_key(CONTAINER_REFUSALS_KEY.name()));
 }
 
 #[test]

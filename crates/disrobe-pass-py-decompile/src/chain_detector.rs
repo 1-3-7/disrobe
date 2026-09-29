@@ -81,40 +81,43 @@ impl Pass for PyDecompilePass {
     }
 
     fn run(&self, artifact: &Artifact) -> CoreResult<Artifact> {
-        let bytes: &[u8] = artifact.envelope.as_slice();
-        let ctx: DetectContext<'_> = DetectContext {
-            bytes,
-            path_hint: None,
-            parent_hint: None,
-            depth: 0,
-        };
-        if PyDecompileDetector.detect(&ctx).is_none() {
-            return Err(CoreError::PassFailure(
-                "DR-PYDEC-0902: py.decompile: input is not a recognized cpython pyc or pypy/micropython magic"
-                    .to_string(),
-            ));
-        }
-        match detect_alt_runtime(bytes) {
-            Some(AltRuntime::PyPy) => {
-                let result: NativeDecompile = decompile_pypy(bytes).map_err(|e| {
-                    CoreError::PassFailure(format!("DR-PYDEC-0911: py.decompile pypy engine: {e}"))
-                })?;
-                return Ok(decompiled_artifact(result, artifact));
-            }
-            Some(AltRuntime::MicroPython) => {
-                let result: NativeDecompile = decompile_micropython(bytes).map_err(|e| {
-                    CoreError::PassFailure(format!(
-                        "DR-PYDEC-0912: py.decompile micropython engine: {e}"
-                    ))
-                })?;
-                return Ok(decompiled_artifact(result, artifact));
-            }
-            _ => {}
-        }
-        let result: NativeDecompile = decompile_pyc(bytes).map_err(|e| {
-            CoreError::PassFailure(format!("DR-PYDEC-0908: py.decompile engine: {e}"))
-        })?;
+        let result: NativeDecompile = decompile_input(artifact.envelope.as_slice())?;
         Ok(decompiled_artifact(result, artifact))
+    }
+
+    fn chain_refusals(&self, input: &Artifact) -> CoreResult<Vec<String>> {
+        Ok(decompile_input(input.envelope.as_slice())?
+            .stub_refusal()
+            .into_iter()
+            .collect())
+    }
+}
+
+fn decompile_input(bytes: &[u8]) -> CoreResult<NativeDecompile> {
+    let ctx: DetectContext<'_> = DetectContext {
+        bytes,
+        path_hint: None,
+        parent_hint: None,
+        depth: 0,
+    };
+    if PyDecompileDetector.detect(&ctx).is_none() {
+        return Err(CoreError::PassFailure(
+            "DR-PYDEC-0902: py.decompile: input is not a recognized cpython pyc or pypy/micropython magic"
+                .to_string(),
+        ));
+    }
+    match detect_alt_runtime(bytes) {
+        Some(AltRuntime::PyPy) => decompile_pypy(bytes).map_err(|e| {
+            CoreError::PassFailure(format!("DR-PYDEC-0911: py.decompile pypy engine: {e}"))
+        }),
+        Some(AltRuntime::MicroPython) => decompile_micropython(bytes).map_err(|e| {
+            CoreError::PassFailure(format!(
+                "DR-PYDEC-0912: py.decompile micropython engine: {e}"
+            ))
+        }),
+        _ => decompile_pyc(bytes).map_err(|e| {
+            CoreError::PassFailure(format!("DR-PYDEC-0908: py.decompile engine: {e}"))
+        }),
     }
 }
 

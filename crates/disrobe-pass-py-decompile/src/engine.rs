@@ -39,6 +39,18 @@ impl NativeDecompile {
     }
 
     #[must_use]
+    pub fn stub_refusal(&self) -> Option<String> {
+        if self.is_disasm_fallback() || self.stubbed_scopes == 0 {
+            return None;
+        }
+        Some(format!(
+            "DR-PYDEC-0913: {} of {} code objects did not decompile and are stubbed in the recovered source",
+            self.stubbed_scopes,
+            code_object_count(&self.code).max(1)
+        ))
+    }
+
+    #[must_use]
     pub fn source_confidence(&self) -> f64 {
         if self.is_disasm_fallback() {
             return 0.0;

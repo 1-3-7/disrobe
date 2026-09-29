@@ -58,10 +58,16 @@ pub struct ChainRecoveryReport {
     pub verdict: VerdictDoc,
 }
 
+fn reports_refusals(node: &Node) -> bool {
+    node.metadata
+        .contains_key(super::metadata_keys::keys::CONTAINER_REFUSALS_KEY.name())
+}
+
 #[inline]
 #[must_use]
-pub const fn status_from_node(node: &Node) -> RecoveryStatus {
+pub fn status_from_node(node: &Node) -> RecoveryStatus {
     match &node.verdict {
+        Verdict::Complete { .. } if reports_refusals(node) => RecoveryStatus::Incomplete,
         Verdict::Complete { .. } | Verdict::Extracted => RecoveryStatus::Recovered,
         Verdict::Ok | Verdict::FanOut { .. } | Verdict::FanOutPartial { .. } => {
             RecoveryStatus::Advanced
@@ -74,8 +80,11 @@ pub const fn status_from_node(node: &Node) -> RecoveryStatus {
 
 #[inline]
 #[must_use]
-pub const fn tier_from_node(node: &Node) -> ConfidenceTier {
+pub fn tier_from_node(node: &Node) -> ConfidenceTier {
     match (&node.verdict, node.output_kind.as_ref()) {
+        (Verdict::Complete { .. }, Some(OutputKind::Source { .. })) if reports_refusals(node) => {
+            ConfidenceTier::Partial
+        }
         (Verdict::Complete { .. }, Some(OutputKind::Source { .. })) => ConfidenceTier::Semantic,
         (Verdict::Ok, Some(OutputKind::Bytes { .. })) => ConfidenceTier::Partial,
         _ => ConfidenceTier::Skeleton,
@@ -302,6 +311,33 @@ mod tests {
             },
         );
         assert_eq!(tier_from_node(&unformatted), ConfidenceTier::Semantic);
+    }
+
+    #[test]
+    fn a_source_node_that_reports_refusals_is_partial_and_incomplete() {
+        let mut n: Node = pass_node(
+            1,
+            "p",
+            [1u8; 32],
+            Some([2u8; 32]),
+            Some(OutputKind::Source {
+                language: crate::provenance::Language::Python,
+                formatted: true,
+            }),
+            Verdict::Complete {
+                formats: vec!["Python".to_owned()],
+            },
+        );
+        assert_eq!(tier_from_node(&n), ConfidenceTier::Semantic);
+        assert_eq!(status_from_node(&n), RecoveryStatus::Recovered);
+        n.metadata.insert(
+            super::super::metadata_keys::keys::CONTAINER_REFUSALS_KEY
+                .name()
+                .to_owned(),
+            "[\"one scope stubbed\"]".to_owned(),
+        );
+        assert_eq!(tier_from_node(&n), ConfidenceTier::Partial);
+        assert_eq!(status_from_node(&n), RecoveryStatus::Incomplete);
     }
 
     #[test]
