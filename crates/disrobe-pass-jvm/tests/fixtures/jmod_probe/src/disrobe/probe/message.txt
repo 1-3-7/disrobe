@@ -1,0 +1,1 @@
+the probe module carries this resource beside its class

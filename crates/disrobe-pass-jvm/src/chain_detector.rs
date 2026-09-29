@@ -1,5 +1,7 @@
 #![cfg(feature = "chain")]
 #![allow(clippy::module_name_repetitions)]
+mod containers;
+
 use disrobe_core::Artifact;
 use disrobe_core::Rung;
 use disrobe_core::chain::detection::TERMINAL_HINT;
@@ -56,6 +58,9 @@ impl Detector for JvmDetector {
         if bytes.len() >= 8 && &bytes[..4] == DEX_MAGIC_PREFIX.as_slice() && bytes[7] == 0 {
             return Some(verdict_dex(bytes));
         }
+        if let Some(verdict) = containers::detect(bytes) {
+            return Some(verdict);
+        }
         if bytes.len() >= 4 && &bytes[..4] == ZIP_LOCAL_HEADER.as_slice() {
             return Some(verdict_zip(ctx.path_hint));
         }
@@ -98,7 +103,8 @@ impl Pass for JvmPass {
         };
         let verdict: DetectVerdict = Detector::detect(&JvmDetector, &ctx).ok_or_else(|| {
             CoreError::PassFailure(
-                "DR-JVM-0902: jvm.classify: input does not match classfile/dex/jar signatures"
+                "DR-JVM-0902: jvm.classify: input does not match classfile, dex, jar, jmod, jimage, \
+                 odex or oat signatures"
                     .to_string(),
             )
         })?;
@@ -119,7 +125,20 @@ impl Pass for JvmPass {
         match verdict.format_tag {
             TAG_CLASSFILE => classfile_children(bytes),
             TAG_DEX => dex_children(bytes),
+            tag if containers::is_container_tag(tag) => {
+                let mut children: Vec<ChildArtifact> = containers::children(tag, bytes)?;
+                reindex(&mut children);
+                Ok(children)
+            }
             _ => Ok(Vec::new()),
+        }
+    }
+
+    fn chain_refusals(&self, input: &Artifact) -> CoreResult<Vec<String>> {
+        let bytes: &[u8] = input.envelope.as_slice();
+        match containers::detect(bytes) {
+            Some(verdict) => Ok(containers::listing(verdict.format_tag, bytes)?.refusals),
+            None => Ok(Vec::new()),
         }
     }
 }
@@ -143,6 +162,14 @@ fn decompile_for(format_tag: &str, bytes: &[u8], root_hash: [u8; 32]) -> CoreRes
             archive_note(format_tag).into_bytes(),
             root_hash,
         )),
+        tag if containers::is_container_tag(tag) => {
+            let listing: containers::ContainerListing<'_> = containers::listing(tag, bytes)?;
+            Ok(Artifact::new(
+                Rung::Disasm,
+                containers::manifest_bytes(&listing)?,
+                root_hash,
+            ))
+        }
         other => Err(CoreError::PassFailure(format!(
             "DR-JVM-0906: jvm.classify: unknown format tag {other}"
         ))),

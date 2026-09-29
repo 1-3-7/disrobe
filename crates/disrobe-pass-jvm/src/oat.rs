@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use disrobe_binfmt::{NativeFile, SectionInfo, SymbolInfo, parse_native};
+use object::{Object, ObjectSection, ObjectSymbol};
 
 use crate::dex::{DexFile, parse as parse_dex};
 use crate::error::{Error, Result};
@@ -8,7 +8,6 @@ use crate::error::{Error, Result};
 pub const OAT_MAGIC: [u8; 4] = [b'o', b'a', b't', b'\n'];
 pub const ODEX_MAGIC: [u8; 4] = [b'd', b'e', b'y', b'\n'];
 pub const OAT_DATA_SYMBOL: &str = "oatdata";
-pub const RODATA_SECTION: &str = ".rodata";
 
 const OAT_HEADER_FIXED_SIZE: usize = 56;
 const ODEX_HEADER_MIN: usize = 40;
@@ -237,30 +236,42 @@ pub struct OatFile {
     pub dex_locations: Vec<String>,
 }
 
-fn find_oat_offset(elf_bytes: &[u8], native: &NativeFile) -> Result<usize> {
-    let _anchor_symbol: Option<&SymbolInfo> = native
-        .symbols
-        .iter()
-        .find(|s: &&SymbolInfo| s.name == OAT_DATA_SYMBOL);
-    let _anchor_section: Option<&SectionInfo> = native
-        .sections
-        .iter()
-        .find(|s: &&SectionInfo| s.name == RODATA_SECTION);
-    elf_bytes
-        .windows(OAT_MAGIC.len())
-        .position(|w: &[u8]| w == OAT_MAGIC)
-        .ok_or(Error::OatOffsetOutOfRange {
-            offset: 0,
-            size: elf_bytes.len(),
-        })
+fn symbol_file_offset(file: &object::File<'_>, symbol: &object::Symbol<'_, '_>) -> Option<usize> {
+    let section: object::Section<'_, '_> = file.section_by_index(symbol.section_index()?).ok()?;
+    let (file_start, file_size): (u64, u64) = section.file_range()?;
+    let delta: u64 = symbol.address().checked_sub(section.address())?;
+    if delta >= file_size {
+        return None;
+    }
+    usize::try_from(file_start.checked_add(delta)?).ok()
 }
 
 fn locate_oat_region(elf_bytes: &[u8]) -> Result<usize> {
-    let native: NativeFile = parse_native(elf_bytes).map_err(|_e| Error::OatOffsetOutOfRange {
+    let unlocatable = || Error::OatOffsetOutOfRange {
         offset: 0,
         size: elf_bytes.len(),
-    })?;
-    find_oat_offset(elf_bytes, &native)
+    };
+    let file: object::File<'_> = object::File::parse(elf_bytes).map_err(|_| unlocatable())?;
+    if file.format() != object::BinaryFormat::Elf {
+        return Err(unlocatable());
+    }
+    let offset: usize = file
+        .dynamic_symbols()
+        .chain(file.symbols())
+        .find(|symbol: &object::Symbol<'_, '_>| symbol.name() == Ok(OAT_DATA_SYMBOL))
+        .and_then(|symbol: object::Symbol<'_, '_>| symbol_file_offset(&file, &symbol))
+        .ok_or_else(unlocatable)?;
+    let magic: &[u8] =
+        elf_bytes
+            .get(offset..offset + OAT_MAGIC.len())
+            .ok_or(Error::OatOffsetOutOfRange {
+                offset,
+                size: elf_bytes.len(),
+            })?;
+    if magic != OAT_MAGIC {
+        return Err(Error::BadOatMagic([magic[0], magic[1], magic[2], magic[3]]));
+    }
+    Ok(offset)
 }
 
 pub fn parse_oat(elf_bytes: &[u8]) -> Result<OatFile> {

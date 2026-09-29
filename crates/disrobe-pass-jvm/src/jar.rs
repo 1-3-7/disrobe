@@ -1,6 +1,7 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Cursor, Read};
 
+use disrobe_bytes::quota::{ExtractionQuota, QuotaExceeded, QuotaGuard};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
@@ -213,13 +214,6 @@ pub fn parse_jimage_header(bytes: &[u8]) -> Result<JimageHeader> {
             return Err(Error::BadJimageMagic(magic));
         }
     };
-    let read16 = |o: usize| -> u16 {
-        if big_endian {
-            u16::from_be_bytes([bytes[o], bytes[o + 1]])
-        } else {
-            u16::from_le_bytes([bytes[o], bytes[o + 1]])
-        }
-    };
     let read32 = |o: usize| -> u32 {
         if big_endian {
             u32::from_be_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]])
@@ -227,10 +221,11 @@ pub fn parse_jimage_header(bytes: &[u8]) -> Result<JimageHeader> {
             u32::from_le_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]])
         }
     };
+    let version: u32 = read32(4);
     Ok(JimageHeader {
         magic: JIMAGE_MAGIC,
-        version_major: read16(4),
-        version_minor: read16(6),
+        version_major: (version >> 16) as u16,
+        version_minor: (version & 0xFFFF) as u16,
         flags: read32(8),
         resource_count: read32(12),
         table_length: read32(16),
@@ -246,6 +241,7 @@ pub struct JimageResource {
     pub base: String,
     pub extension: String,
     pub full_name: String,
+    pub content_offset: u64,
     pub uncompressed_size: u64,
     pub compressed_size: u64,
 }
@@ -254,7 +250,70 @@ pub struct JimageResource {
 pub struct Jimage {
     pub header: JimageHeader,
     pub endian_big: bool,
+    pub index_size: usize,
     pub resources: Vec<JimageResource>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JimageMembers<'a> {
+    pub members: BTreeMap<String, &'a [u8]>,
+    pub compressed: BTreeSet<String>,
+}
+
+const JIMAGE_INDEX_MODULES: [&str; 2] = ["modules", "packages"];
+
+const JIMAGE_QUOTA: ExtractionQuota = ExtractionQuota {
+    max_entries: ZIP_ENTRY_COUNT_CAP,
+    max_total_uncompressed: ZIP_TOTAL_BYTES_CAP,
+    max_per_entry_uncompressed: ZIP_ENTRY_BYTES_CAP,
+    max_per_entry_ratio: 1,
+    max_aggregate_ratio: 1,
+};
+
+pub fn jimage_members<'a>(bytes: &'a [u8], image: &Jimage) -> Result<JimageMembers<'a>> {
+    let mut guard: QuotaGuard = QuotaGuard::new(JIMAGE_QUOTA);
+    let mut members: BTreeMap<String, &'a [u8]> = BTreeMap::new();
+    let mut compressed: BTreeSet<String> = BTreeSet::new();
+    for resource in &image.resources {
+        if resource.module.is_empty() || JIMAGE_INDEX_MODULES.contains(&resource.module.as_str()) {
+            continue;
+        }
+        let name: &str = resource
+            .full_name
+            .strip_prefix('/')
+            .unwrap_or(&resource.full_name);
+        if members.contains_key(name) || compressed.contains(name) {
+            return Err(Error::JimageDuplicateResource(name.to_owned()));
+        }
+        if resource.compressed_size != 0 {
+            compressed.insert(name.to_owned());
+            continue;
+        }
+        guard
+            .admit_entry(name, resource.uncompressed_size, resource.uncompressed_size)
+            .map_err(|e: QuotaExceeded| Error::JimageQuota(e.to_string()))?;
+        let out_of_range = || Error::JimageOutOfRange {
+            offset: usize::MAX,
+            size: bytes.len(),
+        };
+        let start: usize = usize::try_from(resource.content_offset)
+            .ok()
+            .and_then(|offset: usize| image.index_size.checked_add(offset))
+            .ok_or_else(out_of_range)?;
+        let end: usize = usize::try_from(resource.uncompressed_size)
+            .ok()
+            .and_then(|size: usize| start.checked_add(size))
+            .ok_or_else(out_of_range)?;
+        let content: &'a [u8] = bytes.get(start..end).ok_or(Error::JimageOutOfRange {
+            offset: end,
+            size: bytes.len(),
+        })?;
+        members.insert(name.to_owned(), content);
+    }
+    Ok(JimageMembers {
+        members,
+        compressed,
+    })
 }
 
 const JIMAGE_HEADER_SIZE: usize = 28;
@@ -391,6 +450,7 @@ pub fn parse_jimage(bytes: &[u8]) -> Result<Jimage> {
     Ok(Jimage {
         header,
         endian_big,
+        index_size: strings_end,
         resources,
     })
 }
@@ -406,6 +466,7 @@ fn decode_location(locations: &[u8], start: usize, strings: &[u8]) -> Result<Jim
     let mut parent_off: u64 = 0;
     let mut base_off: u64 = 0;
     let mut extension_off: u64 = 0;
+    let mut content_offset: u64 = 0;
     let mut uncompressed_size: u64 = 0;
     let mut compressed_size: u64 = 0;
 
@@ -441,7 +502,7 @@ fn decode_location(locations: &[u8], start: usize, strings: &[u8]) -> Result<Jim
             ATTRIBUTE_PARENT => parent_off = value,
             ATTRIBUTE_BASE => base_off = value,
             ATTRIBUTE_EXTENSION => extension_off = value,
-            ATTRIBUTE_OFFSET => {}
+            ATTRIBUTE_OFFSET => content_offset = value,
             ATTRIBUTE_COMPRESSED => compressed_size = value,
             ATTRIBUTE_UNCOMPRESSED => uncompressed_size = value,
             _ => {}
@@ -454,9 +515,11 @@ fn decode_location(locations: &[u8], start: usize, strings: &[u8]) -> Result<Jim
     let extension: String = read_string(strings, extension_off as usize)?;
 
     let mut full_name: String = String::new();
-    full_name.push('/');
-    full_name.push_str(&module);
-    full_name.push('/');
+    if !module.is_empty() {
+        full_name.push('/');
+        full_name.push_str(&module);
+        full_name.push('/');
+    }
     if !parent.is_empty() {
         full_name.push_str(&parent);
         full_name.push('/');
@@ -473,6 +536,7 @@ fn decode_location(locations: &[u8], start: usize, strings: &[u8]) -> Result<Jim
         base,
         extension,
         full_name,
+        content_offset,
         uncompressed_size,
         compressed_size,
     })
@@ -697,11 +761,10 @@ mod tests {
     fn jimage_header_parses_little_endian() {
         let mut bytes: Vec<u8> = Vec::with_capacity(32);
         bytes.extend_from_slice(&JIMAGE_MAGIC.to_le_bytes());
-        bytes.extend_from_slice(&1u16.to_le_bytes());
-        bytes.extend_from_slice(&0u16.to_le_bytes());
+        bytes.extend_from_slice(&((1u32 << 16) | 2).to_le_bytes());
         bytes.extend_from_slice(&[0u8; 20]);
         let hdr: JimageHeader = parse_jimage_header(&bytes).expect("le magic");
-        assert_eq!(hdr.version_major, 1);
+        assert_eq!((hdr.version_major, hdr.version_minor), (1, 2));
     }
 
     fn build_aab(with_bundle_config: bool) -> Vec<u8> {

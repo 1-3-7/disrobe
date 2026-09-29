@@ -139,8 +139,8 @@ pub enum Error {
     UnsupportedOatVersion([u8; 4]),
 
     #[error(
-        "DR-JVM-0030: OAT data region not locatable (no 'oatdata' symbol or '.rodata' section); \
-         offset {offset} out of range (size {size})"
+        "DR-JVM-0030: OAT data region not locatable (no ELF 'oatdata' symbol inside a \
+         file-backed section); offset {offset} out of range (size {size})"
     )]
     OatOffsetOutOfRange { offset: usize, size: usize },
 
@@ -173,6 +173,12 @@ pub enum Error {
          version-dependent and not derivable from the header alone"
     )]
     OatMultiDexUnsupported { count: u32 },
+
+    #[error("DR-JVM-0098: JIMAGE names resource {0} more than once")]
+    JimageDuplicateResource(String),
+
+    #[error("DR-JVM-0099: JIMAGE extraction quota exceeded: {0}")]
+    JimageQuota(String),
 }
 
 impl From<ByteReadError> for Error {

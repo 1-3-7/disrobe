@@ -1,0 +1,48 @@
+schema = "disrobe.jvm.jmod-probe-fixture/v1"
+module = "disrobe.probe"
+
+[jdk]
+vendor = "Eclipse Temurin"
+version = "25.0.4.1+1-LTS"
+
+[[source]]
+path = "src/module-info.java"
+sha256 = "f795dcd935f58f7cbdc232bef6c1b62720a098dc56036d032f5fec9da3b29907"
+
+[[source]]
+path = "src/disrobe/probe/Probe.java"
+sha256 = "dfb0feb3098ed35ae67489e1f0f5f8fb47c6290a9eda45addb6fd3efc053ae14"
+
+[[source]]
+path = "src/disrobe/probe/message.txt"
+sha256 = "a00bab53ae0e64d6baf77364e83398068d114a35750824d7bdf2bfbd5612c06f"
+
+[[source]]
+path = "conf/probe.properties"
+sha256 = "a63061e32e91adc145b61f2885ee1772895d855e490ef9014358ce2133b96221"
+
+[[source]]
+path = "include/probe.h"
+sha256 = "6946d118920a781d25c6b5746a75b862f1f8a2630c4e5095b3afc22f8d02f905"
+
+[[step]]
+command = "javac --release 25 -d classes src/module-info.java src/disrobe/probe/Probe.java"
+
+[[step]]
+command = "cp src/disrobe/probe/message.txt classes/disrobe/probe/"
+
+[[step]]
+command = "jmod create --class-path classes --config conf --header-files include --date 2026-01-01T00:00:00Z probe.jmod"
+
+[[artifact]]
+path = "probe.jmod"
+format = "JMOD 1.0"
+sha256 = "e975f6c6758f1eb4699541060667dee5cea51bdf2703468ee7f71358264f643c"
+bytes = 1397
+entries = [
+    "classes/module-info.class",
+    "classes/disrobe/probe/Probe.class",
+    "classes/disrobe/probe/message.txt",
+    "conf/probe.properties",
+    "include/probe.h",
+]

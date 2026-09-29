@@ -59,8 +59,7 @@ fn build_jimage_le() -> (Vec<u8>, String) {
 
     let mut img: Vec<u8> = Vec::new();
     img.extend_from_slice(&disrobe_pass_jvm::JIMAGE_MAGIC.to_le_bytes());
-    img.extend_from_slice(&1u16.to_le_bytes());
-    img.extend_from_slice(&0u16.to_le_bytes());
+    img.extend_from_slice(&(1u32 << 16).to_le_bytes());
     img.extend_from_slice(&0u32.to_le_bytes());
     img.extend_from_slice(&1u32.to_le_bytes());
     img.extend_from_slice(&table_length.to_le_bytes());
