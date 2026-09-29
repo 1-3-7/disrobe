@@ -144,7 +144,7 @@ fn bcc_pass_output_carries_recovered_bodies() {
     let main: &FunctionRecord = record(&output, "main");
     assert!(
         main.recovered_body.is_none(),
-        "main loops and calls helpers; it degrades honestly"
+        "main loops and calls helpers; it degrades and says so"
     );
 
     assert!(

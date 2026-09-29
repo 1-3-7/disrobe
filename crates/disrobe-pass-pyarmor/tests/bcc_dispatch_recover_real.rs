@@ -376,7 +376,7 @@ fn straight_line_bcc_bodies_recover_and_match_cpython() {
     let main: RecoveredBody = recover_named(&prep, "main").expect("main native record");
     assert!(
         main.recovered_python.is_none(),
-        "main calls helpers and loops; it must degrade honestly"
+        "main calls helpers and loops; it must degrade and say so"
     );
 
     let py: String = python();

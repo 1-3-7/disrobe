@@ -416,7 +416,7 @@ fn real_pyarmor_bcc_body_degrades_honestly() {
             degraded_bodies += 1;
         }
         println!(
-            "{}: {} call sites, {} recognized (honest degrade, indirect dispatch not yet decoded)",
+            "{}: {} call sites, {} recognized (stated degrade, indirect dispatch not yet decoded)",
             record.source.qualname, body.total_call_sites, body.recognized_call_sites
         );
     }

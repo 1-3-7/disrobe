@@ -122,10 +122,10 @@ fn real_bcc_body_is_surfaced_as_pseudo_c_in_crate() {
             let note: &String = func
                 .note
                 .as_ref()
-                .expect("an unmodeled function records an honest reason");
+                .expect("an unmodeled function records its reason");
             assert!(
                 !note.is_empty() && func.pseudo_c.contains("/*"),
-                "an unmodeled function surfaces verified native disassembly plus the honest reason, never a fabricated body"
+                "an unmodeled function surfaces verified native disassembly plus the reason, never a fabricated body"
             );
             assert!(
                 func.pseudo_c.contains("push")

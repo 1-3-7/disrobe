@@ -115,7 +115,7 @@ fn license_id_serial_resolves_v9_via_runtime_descriptor() {
     assert_eq!(
         detection.confidence,
         DetectionConfidence::Medium,
-        "from the wrapper header alone a license-id serial cannot prove the format version (the same 015009 ships from 8.x and 9.x), so the serial-only verdict is honestly Medium"
+        "from the wrapper header alone a license-id serial cannot prove the format version (the same 015009 ships from 8.x and 9.x), so the serial-only verdict is Medium"
     );
 
     let out: StaticUnpackOutput = unpack_mode("default");
