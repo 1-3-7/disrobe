@@ -159,7 +159,7 @@ impl Expr {
             Term::Float(f) => Self::Float(format_float(*f)),
             Term::Atom(a) => Self::Atom(a.clone()),
             Term::Nil => Self::Nil,
-            Term::String(b) => Self::Str(String::from_utf8_lossy(b).into_owned()),
+            Term::String(b) => Self::from_byte_list(b),
             Term::Binary(b) => Self::BinaryLit(b.clone()),
             Term::BitBinary { data, .. } => Self::BinaryLit(data.clone()),
             Term::Tuple(items) => Self::Tuple(items.iter().map(Self::from_term).collect()),
@@ -188,6 +188,23 @@ impl Expr {
             } => Self::Raw(format!("fun {module}:{function}/{arity}")),
         }
     }
+
+    fn from_byte_list(bytes: &[u8]) -> Self {
+        if bytes.iter().copied().all(is_printable_latin1) {
+            return Self::Str(crate::erlang_abstract::latin1_string(bytes));
+        }
+        Self::List {
+            elements: bytes
+                .iter()
+                .map(|b: &u8| Self::Int(i64::from(*b)))
+                .collect(),
+            tail: Box::new(Self::Nil),
+        }
+    }
+}
+
+fn is_printable_latin1(byte: u8) -> bool {
+    matches!(byte, b' '..=b'~' | 0xA0..=0xFF | b'\n' | b'\r' | b'\t' | 0x0B | 0x08 | 0x0C | 0x1B)
 }
 
 #[must_use]

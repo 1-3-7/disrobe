@@ -78,6 +78,12 @@ pub fn recover(beam: &BeamFile) -> Result<ErlangSurface> {
                     recovered_from: RecoverySource::ElixirDbgiForm,
                 });
             }
+            DebugInfo::Withheld { .. } => {
+                dbg_kv("dbgi_class", || {
+                    "abstract code withheld at compile time (no_debug_info), falling back to core lift"
+                        .to_owned()
+                });
+            }
             DebugInfo::Other(_) => {
                 dbg_kv("dbgi_class", || {
                     "unrecognized debug_info term, falling back to core lift".to_owned()

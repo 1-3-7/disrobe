@@ -177,7 +177,7 @@ pub fn render_expr(expr: &Expr) -> String {
         Expr::BigInt { sign, magnitude_le } => render_bigint(*sign, magnitude_le),
         Expr::Float(s) => s.clone(),
         Expr::Str(s) => format!("\"{}\"", crate::erlang_abstract::escape_erlang_string(s)),
-        Expr::CharLit(c) => format!("${}", render_char(*c)),
+        Expr::CharLit(c) => crate::erlang_abstract::render_char_literal(*c),
         Expr::BinaryLit(bytes) => render_binary_literal(bytes),
         Expr::Tuple(items) => {
             let parts: Vec<String> = items.iter().map(render_expr).collect();
@@ -340,10 +340,6 @@ fn needs_quoting(a: &str) -> bool {
     crate::symbolic::RESERVED_WORDS.contains(&a)
 }
 
-fn render_char(c: u32) -> String {
-    char::from_u32(c).map_or_else(|| format!("\\x{c:x}"), |ch: char| ch.to_string())
-}
-
 fn render_binary_literal(bytes: &[u8]) -> String {
     if bytes.is_empty() {
         return "<<>>".to_owned();
@@ -435,6 +431,7 @@ fn render_bigint(sign: u8, magnitude_le: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::etf::Term;
 
     #[test]
     fn non_ascii_binary_literal_renders_byte_exact() {
@@ -455,6 +452,14 @@ mod tests {
         let bytes: Vec<u8> = vec![0xff, 0x00, 0x80];
         let rendered: String = render_expr(&Expr::BinaryLit(bytes));
         assert_eq!(rendered, "<<255, 0, 128>>");
+    }
+
+    #[test]
+    fn a_string_ext_literal_renders_the_code_points_the_erlang_scanner_reads_back() {
+        let printable: Expr = Expr::from_term(&Term::String(vec![104, 105, 10, 233]));
+        assert_eq!(render_expr(&printable), "\"hi\\n\u{e9}\"");
+        let codes: Expr = Expr::from_term(&Term::String(vec![10, 20, 30]));
+        assert_eq!(render_expr(&codes), "[10, 20, 30]");
     }
 
     #[test]

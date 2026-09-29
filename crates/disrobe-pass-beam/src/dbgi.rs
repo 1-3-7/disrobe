@@ -12,6 +12,7 @@ const DBGI_METADATA_INFLATE_MAX_U64: u64 = 16 * 1024 * 1024;
 pub enum DebugInfo {
     ElixirV1 { backend: String, metadata: Term },
     ErlangAbstractCode { forms: Term, compile_opts: Term },
+    Withheld { compile_opts: Term },
     Other(Term),
 }
 
@@ -58,6 +59,11 @@ fn parse_erl_abstract_code(payload: &Term) -> DebugInfo {
     if let Some(inner) = payload.as_tuple()
         && inner.len() == 2
     {
+        if inner[0].as_atom() == Some("none") {
+            return DebugInfo::Withheld {
+                compile_opts: inner[1].clone(),
+            };
+        }
         return DebugInfo::ErlangAbstractCode {
             forms: inner[0].clone(),
             compile_opts: inner[1].clone(),
@@ -143,6 +149,26 @@ mod tests {
             ZlibEncoder::new(Vec::new(), Compression::default());
         encoder.write_all(data).expect("zlib write");
         encoder.finish().expect("zlib finish")
+    }
+
+    #[test]
+    fn a_no_debug_info_build_withholds_its_abstract_code() {
+        let options: Term = Term::List {
+            elements: vec![Term::Atom("no_debug_info".to_owned())],
+            tail: Box::new(Term::Nil),
+        };
+        let term: Term = Term::Tuple(vec![
+            Term::Atom("debug_info_v1".to_owned()),
+            Term::Atom("erl_abstract_code".to_owned()),
+            Term::Tuple(vec![Term::Atom("none".to_owned()), options.clone()]),
+        ]);
+        let parsed: DebugInfo = parse(&term).expect("parse a withheld Dbgi term");
+        assert_eq!(
+            parsed,
+            DebugInfo::Withheld {
+                compile_opts: options
+            }
+        );
     }
 
     #[test]

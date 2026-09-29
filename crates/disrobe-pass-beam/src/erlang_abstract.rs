@@ -111,7 +111,7 @@ fn render(term: &Term) -> String {
         "atom" => render_atom(parts.get(2).and_then(Term::as_atom).unwrap_or("?")),
         "integer" => int_string(&parts[2]),
         "float" => float_string(&parts[2]),
-        "char" => format!("${}", char_repr(&parts[2])),
+        "char" => render_char_literal(char_code(&parts[2])),
         "string" => format!("\"{}\"", escape_erlang_string(&str_value(&parts[2]))),
         "var" => parts
             .get(2)
@@ -606,18 +606,29 @@ fn float_string(term: &Term) -> String {
     }
 }
 
-fn char_repr(term: &Term) -> String {
-    let code: u32 = match term {
+fn char_code(term: &Term) -> u32 {
+    match term {
         Term::SmallInt(v) => u32::from(*v),
         Term::Int(v) => u32::try_from(*v).unwrap_or(0),
         _ => 0,
-    };
-    char::from_u32(code).map_or_else(|| format!("\\x{code:x}"), |c: char| c.to_string())
+    }
+}
+
+pub(crate) fn render_char_literal(code: u32) -> String {
+    match char::from_u32(code) {
+        Some(ch) => format!("${}", escape_erlang_string(ch.encode_utf8(&mut [0_u8; 4]))),
+        None => code.to_string(),
+    }
+}
+
+pub(crate) fn latin1_string(bytes: &[u8]) -> String {
+    bytes.iter().map(|b: &u8| char::from(*b)).collect()
 }
 
 fn str_value(term: &Term) -> String {
     match term {
-        Term::String(b) | Term::Binary(b) => String::from_utf8_lossy(b).into_owned(),
+        Term::String(b) => latin1_string(b),
+        Term::Binary(b) => String::from_utf8_lossy(b).into_owned(),
         Term::Nil => String::new(),
         Term::List { elements, .. } => elements
             .iter()
@@ -637,9 +648,10 @@ fn literal_fallback(term: &Term) -> String {
         Term::SmallInt(v) => v.to_string(),
         Term::Int(v) => v.to_string(),
         Term::Nil => "[]".to_owned(),
-        Term::Binary(b) | Term::String(b) => {
+        Term::Binary(b) => {
             format!("\"{}\"", escape_erlang_string(&String::from_utf8_lossy(b)))
         }
+        Term::String(b) => format!("\"{}\"", escape_erlang_string(&latin1_string(b))),
         _ => "_".to_owned(),
     }
 }
@@ -691,9 +703,7 @@ pub(crate) fn escape_erlang_string(s: &str) -> String {
             '\u{1b}' => out.push_str("\\e"),
             '\u{7f}' => out.push_str("\\d"),
             c if c.is_control() => {
-                out.push_str("\\x{");
-                out.push_str(&u32::from(c).to_string());
-                out.push('}');
+                out.push_str(&format!("\\x{{{:X}}}", u32::from(c)));
             }
             c => out.push(c),
         }
@@ -703,7 +713,7 @@ pub(crate) fn escape_erlang_string(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::escape_erlang_string;
+    use super::{escape_erlang_string, latin1_string, render_char_literal};
 
     #[test]
     fn every_control_character_is_written_as_an_erlang_escape() {
@@ -716,5 +726,27 @@ mod tests {
             r"\b\v\f\e\d\x{1}"
         );
         assert_eq!(escape_erlang_string("caf\u{e9}"), "caf\u{e9}");
+    }
+
+    #[test]
+    fn numeric_escapes_are_hexadecimal_as_the_erlang_scanner_reads_them() {
+        assert_eq!(
+            escape_erlang_string("\u{10}\u{14}\u{1e}"),
+            r"\x{10}\x{14}\x{1E}"
+        );
+        assert_eq!(escape_erlang_string("\u{85}"), r"\x{85}");
+    }
+
+    #[test]
+    fn string_ext_bytes_are_latin1_code_points() {
+        assert_eq!(latin1_string(&[99, 97, 102, 233]), "caf\u{e9}");
+    }
+
+    #[test]
+    fn character_literals_escape_controls_and_keep_non_characters_numeric() {
+        assert_eq!(render_char_literal(u32::from(b'a')), "$a");
+        assert_eq!(render_char_literal(10), r"$\n");
+        assert_eq!(render_char_literal(20), r"$\x{14}");
+        assert_eq!(render_char_literal(0xD800), "55296");
     }
 }

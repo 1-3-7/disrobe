@@ -71,9 +71,9 @@ fn strip_chunk(bytes: &[u8], target: &[u8; 4]) -> Vec<u8> {
     out
 }
 
-fn erlc_compile(erlc: &Path, src: &Path, out_dir: &Path) -> (bool, String) {
+fn erlc_compile(erlc: &Path, options: &[&str], src: &Path, out_dir: &Path) -> (bool, String) {
     let mut cmd: Command = Command::new(erlc);
-    cmd.arg("-o").arg(out_dir).arg(src);
+    cmd.args(options).arg("-o").arg(out_dir).arg(src);
     match run_bounded(cmd) {
         Some((ok, so, se)) => (ok, format!("stdout:\n{so}\nstderr:\n{se}")),
         None => (false, "erlc timed out".to_owned()),
@@ -207,7 +207,7 @@ fn measure(
     std::fs::create_dir_all(&orig_dir).expect("mkdir orig");
     std::fs::create_dir_all(&rec_dir).expect("mkdir rec");
 
-    let (compiled, msg): (bool, String) = erlc_compile(erlc, src, &orig_dir);
+    let (compiled, msg): (bool, String) = erlc_compile(erlc, &[], src, &orig_dir);
     assert!(compiled, "corpus module {module} must compile:\n{msg}");
 
     let raw: Vec<u8> =
@@ -240,7 +240,7 @@ fn measure(
     let recovered_source: String = transform(&surface.source);
     let rec_src: PathBuf = rec_dir.join(format!("{module}.erl"));
     std::fs::write(&rec_src, &recovered_source).expect("write recovered");
-    let (recompiled, rec_msg): (bool, String) = erlc_compile(erlc, &rec_src, &rec_dir);
+    let (recompiled, rec_msg): (bool, String) = erlc_compile(erlc, &[], &rec_src, &rec_dir);
 
     let mut exports_match: bool = false;
     let mut runtime_identical: bool = false;
@@ -496,6 +496,64 @@ fn real_erlang_runtime_rejects_a_recompiled_wrong_test_result() {
         result.detail.contains("runtime differs"),
         "the mutation must be rejected by the runtime differential rather than another leg: {}",
         result.detail
+    );
+}
+
+#[test]
+fn a_no_debug_info_build_recovers_through_the_core_lift() {
+    let erlang: Erlang = require_erlang(GRADED);
+    let scratch: ScratchDir =
+        ScratchDir::create("disrobe_recompile_eq_no_debug_info").expect("create scratch directory");
+    let orig_dir: PathBuf = scratch.path().join("orig");
+    let rec_dir: PathBuf = scratch.path().join("rec");
+    std::fs::create_dir_all(&orig_dir).expect("mkdir orig");
+    std::fs::create_dir_all(&rec_dir).expect("mkdir rec");
+    let module: &str = "lists_ops";
+    let source: PathBuf = corpus_dir().join(format!("{module}.erl"));
+    let (compiled, msg): (bool, String) =
+        erlc_compile(&erlang.erlc, &["+no_debug_info"], &source, &orig_dir);
+    assert!(
+        compiled,
+        "{module} must compile with +no_debug_info:
+{msg}"
+    );
+
+    let raw: Vec<u8> =
+        std::fs::read(orig_dir.join(format!("{module}.beam"))).expect("read orig beam");
+    let original: BeamFile = BeamFile::parse(&raw).expect("parse original beam");
+    assert!(
+        original.chunks.dbgi.is_some(),
+        "erlc +no_debug_info must still write a Dbgi chunk that withholds the abstract code"
+    );
+    let surface: ErlangSurface = recover_erlang(&original).expect("recover");
+    assert_eq!(
+        surface.recovered_from,
+        RecoverySource::CoreLifted,
+        "a withheld abstract-code Dbgi chunk must fall back to the bytecode core lift"
+    );
+
+    let rec_src: PathBuf = rec_dir.join(format!("{module}.erl"));
+    std::fs::write(&rec_src, &surface.source).expect("write recovered");
+    let (recompiled, rec_msg): (bool, String) = erlc_compile(&erlang.erlc, &[], &rec_src, &rec_dir);
+    assert!(
+        recompiled,
+        "recovered {module} must recompile:
+{rec_msg}
+{}",
+        surface.source
+    );
+    let (orig_ok, orig_out): (bool, String) = run_test0(&erlang.erl, &orig_dir, module);
+    assert!(
+        orig_ok,
+        "{module}:test() must succeed on the original:
+{orig_out}"
+    );
+    let (rec_ok, rec_out): (bool, String) = run_test0(&erlang.erl, &rec_dir, module);
+    assert!(
+        rec_ok && rec_out == orig_out,
+        "recovered {module}:test() differs:
+  orig: {orig_out}
+  rec:  {rec_out}"
     );
 }
 
