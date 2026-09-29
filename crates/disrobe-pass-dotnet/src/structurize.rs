@@ -4004,7 +4004,7 @@ mod tests {
         std::fs::write(directory.join("RuntimeHandleProbe.cs"), source)
             .expect("write runtime-handle compiler source");
         let output: disrobe_testkit::ToolOutput = disrobe_testkit::tool_output(
-            disrobe_testkit::CommandSpec::new("dotnet", std::time::Duration::from_mins(10))
+            dotnet_without_lingering_servers()
                 .args(["build", "-c", "Release", "-v", "q", "-nologo"])
                 .current_dir(directory.to_path_buf()),
         )
@@ -4085,6 +4085,13 @@ mod tests {
         }
     }
 
+    fn dotnet_without_lingering_servers() -> disrobe_testkit::CommandSpec {
+        disrobe_testkit::CommandSpec::new("dotnet", std::time::Duration::from_mins(10))
+            .env("MSBUILDDISABLENODEREUSE", "1")
+            .env("DOTNET_CLI_USE_MSBUILD_SERVER", "0")
+            .env("UseSharedCompilation", "false")
+    }
+
     fn run_unbox_any_probe(source: &str, suffix: &str) -> disrobe_testkit::ToolOutput {
         let scratch: disrobe_core::scratch::ScratchDir =
             disrobe_core::scratch::ScratchDir::create(&format!("disrobe_unbox_any_{suffix}"))
@@ -4098,7 +4105,7 @@ mod tests {
         std::fs::write(directory.join("UnboxAnyProbe.cs"), source)
             .expect("write unbox.any compiler source");
         disrobe_testkit::tool_output(
-            disrobe_testkit::CommandSpec::new("dotnet", std::time::Duration::from_mins(10))
+            dotnet_without_lingering_servers()
                 .args(["run", "-c", "Release", "-v", "q", "-nologo"])
                 .current_dir(directory.to_path_buf()),
         )
