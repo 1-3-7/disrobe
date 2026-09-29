@@ -823,7 +823,7 @@ fn is_plain_pattern(pattern: &str) -> bool {
 }
 
 fn literal_positions(text: &str, pattern: &str, case_sensitive: bool) -> Option<Vec<usize>> {
-    if !case_sensitive && !(text.is_ascii() && pattern.is_ascii()) {
+    if !(case_sensitive || (text.is_ascii() && pattern.is_ascii())) {
         return None;
     }
     let haystack: String = if case_sensitive {
@@ -1471,6 +1471,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::literal_string_with_formatting_args,
+        reason = "the literals are PowerShell -f format strings"
+    )]
     fn a_format_over_a_variable_or_a_format_spec_is_left_for_powershell() {
         for kept in [
             "('{0}{1}' -f 'Host: ',$ComputerName)",
