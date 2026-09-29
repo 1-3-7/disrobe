@@ -2,6 +2,7 @@ use crate::decompile::luau_lift::{LStmt, LiftedStmt};
 use crate::decompile::luau_structure::{StructureWorkBudget, StructuredBlock};
 
 const GENERIC_FOR_CONTROL_WIDTH: usize = 2;
+const MAX_CONDITION_CHAIN: usize = 64;
 
 #[derive(Debug, Clone)]
 enum Node {
@@ -274,28 +275,50 @@ fn prune_unreferenced_labels(
 }
 
 fn recover_short_circuit_chains(nodes: Vec<PcNode>) -> Vec<PcNode> {
-    let entered: std::collections::BTreeSet<usize> = nodes
-        .iter()
-        .filter_map(|n: &PcNode| match n.node {
-            Node::Cond { target, .. } | Node::Jump { target } => Some(target),
-            _ => None,
-        })
-        .collect();
+    let landing = |target: usize| -> usize {
+        nodes
+            .get(nodes.partition_point(|node: &PcNode| node.pc < target))
+            .map_or(usize::MAX, |node: &PcNode| node.pc)
+    };
+    let follow = |target: usize| -> usize {
+        let at: usize = landing(target);
+        match nodes
+            .get(nodes.partition_point(|node: &PcNode| node.pc < at))
+            .map(|node: &PcNode| &node.node)
+        {
+            Some(Node::Jump { target: onward }) if *onward > at && *onward != usize::MAX => {
+                landing(*onward)
+            }
+            _ => at,
+        }
+    };
+    let mut sources: std::collections::BTreeMap<usize, Vec<usize>> =
+        std::collections::BTreeMap::new();
+    for (index, node) in nodes.iter().enumerate() {
+        if let Node::Cond { target, .. } | Node::Jump { target } = node.node {
+            sources.entry(landing(target)).or_default().push(index);
+        }
+    }
     let mut out: Vec<PcNode> = Vec::with_capacity(nodes.len());
     let mut start: usize = 0;
     while start < nodes.len() {
         let mut end: usize = start;
         while end < nodes.len()
+            && end - start < MAX_CONDITION_CHAIN
             && matches!(nodes[end].node, Node::Cond { .. })
-            && (end == start || !entered.contains(&nodes[end].pc))
+            && (end == start
+                || sources.get(&nodes[end].pc).is_none_or(|from: &Vec<usize>| {
+                    from.iter()
+                        .all(|&index: &usize| index >= start && index < end)
+                }))
         {
             end += 1;
         }
         if end - start >= 2
             && let Some(next) = nodes.get(end)
-            && let Some(folded) = fold_condition_chain(&nodes[start..end], next.pc)
+            && let Some(folded) = fold_condition_chain(&nodes[start..end], next.pc, &follow)
         {
-            out.push(folded);
+            out.extend(folded);
             start = end;
             continue;
         }
@@ -305,41 +328,84 @@ fn recover_short_circuit_chains(nodes: Vec<PcNode>) -> Vec<PcNode> {
     out
 }
 
-fn fold_condition_chain(chain: &[PcNode], body_pc: usize) -> Option<PcNode> {
-    let (last, init): (&PcNode, &[PcNode]) = chain.split_last()?;
-    let Node::Cond {
-        cond: last_cond,
-        target: exit,
-    } = &last.node
-    else {
-        return None;
-    };
-    let enters_body = |target: usize| -> bool { target > last.pc && target <= body_pc };
-    if *exit == usize::MAX || enters_body(*exit) {
-        return None;
+struct ChainItem {
+    entry: usize,
+    last: usize,
+    cond: String,
+    target: usize,
+    landing: usize,
+}
+
+fn fold_condition_chain(
+    chain: &[PcNode],
+    body_pc: usize,
+    landing: &dyn Fn(usize) -> usize,
+) -> Option<Vec<PcNode>> {
+    let mut items: Vec<ChainItem> = chain
+        .iter()
+        .map(|node: &PcNode| match &node.node {
+            Node::Cond { cond, target } => Some(ChainItem {
+                entry: node.pc,
+                last: node.pc,
+                cond: cond.clone(),
+                target: *target,
+                landing: if *target == usize::MAX {
+                    usize::MAX
+                } else {
+                    landing(*target)
+                },
+            }),
+            _ => None,
+        })
+        .collect::<Option<Vec<ChainItem>>>()?;
+    let initial: usize = items.len();
+    let mut merged: bool = true;
+    while merged {
+        merged = false;
+        for i in 0..items.len().saturating_sub(1) {
+            let second: usize = items[i + 1].entry;
+            if items.iter().any(|item: &ChainItem| item.landing == second) {
+                continue;
+            }
+            let after: usize = items
+                .get(i + 2)
+                .map_or_else(|| landing(body_pc), |item: &ChainItem| item.entry);
+            let first: &ChainItem = &items[i];
+            let next: &ChainItem = &items[i + 1];
+            if first.landing == usize::MAX {
+                continue;
+            }
+            let cond: String = if first.landing == next.landing {
+                format!("({}) and ({})", first.cond, next.cond)
+            } else if first.landing == after {
+                format!(
+                    "({}) or ({})",
+                    crate::decompile::luau_structure::negate_cond(&first.cond),
+                    next.cond
+                )
+            } else {
+                continue;
+            };
+            let removed: ChainItem = items.remove(i + 1);
+            items[i].cond = cond;
+            items[i].target = removed.target;
+            items[i].last = removed.last;
+            items[i].landing = removed.landing;
+            merged = true;
+            break;
+        }
     }
-    let mut folded: String = last_cond.clone();
-    for node in init.iter().rev() {
-        let Node::Cond { cond, target } = &node.node else {
-            return None;
-        };
-        folded = if *target == *exit {
-            format!("({cond}) and ({folded})")
-        } else if enters_body(*target) {
-            format!(
-                "({}) or ({folded})",
-                crate::decompile::luau_structure::negate_cond(cond)
-            )
-        } else {
-            return None;
-        };
-    }
-    Some(PcNode {
-        pc: chain.first()?.pc,
-        node: Node::Cond {
-            cond: folded,
-            target: *exit,
-        },
+    (items.len() < initial).then(|| {
+        items
+            .into_iter()
+            .map(|item: ChainItem| PcNode {
+                pc: item.last,
+                node: Node::Cond {
+                    cond: item.cond,
+                    target: item.target,
+                },
+            })
+            .collect()
     })
 }
 
@@ -349,6 +415,24 @@ fn retarget_back_edges_through_closing_jumps(nodes: &mut [PcNode]) {
             continue;
         };
         if head > nodes[i].pc || head == usize::MAX {
+            continue;
+        }
+        let cond_pc: usize = nodes[i].pc;
+        let threaded_exit: Option<usize> =
+            nodes[i + 1..].windows(2).find_map(|pair: &[PcNode]| {
+                match (&pair[0].node, &pair[1].node) {
+                    (Node::Jump { target: back }, Node::Jump { target: outer })
+                        if *back <= cond_pc && *back > head && *outer == head =>
+                    {
+                        Some(pair[1].pc)
+                    }
+                    _ => None,
+                }
+            });
+        if let Some(exit_pc) = threaded_exit
+            && let Node::Cond { target, .. } = &mut nodes[i].node
+        {
+            *target = exit_pc;
             continue;
         }
         let mut closing: Option<usize> = None;
@@ -403,26 +487,31 @@ fn detect_endless_loops(
     nodes: &[PcNode],
     repeats: &std::collections::BTreeMap<usize, RepeatEdge>,
 ) -> std::collections::BTreeMap<usize, usize> {
+    let back_jumps: Vec<(usize, &PcNode)> = nodes
+        .iter()
+        .filter_map(|n: &PcNode| match n.node {
+            Node::Jump { target } if target != usize::MAX && target <= n.pc => nodes
+                .get(nodes.partition_point(|node: &PcNode| node.pc < target))
+                .map(|head: &PcNode| (n.pc, head)),
+            _ => None,
+        })
+        .collect();
+    let while_heads: std::collections::BTreeSet<usize> = back_jumps
+        .iter()
+        .filter(|(jump_pc, head): &&(usize, &PcNode)| {
+            matches!(head.node, Node::Cond { target: exit, .. } if exit == jump_pc + 1)
+        })
+        .map(|(_, head): &(usize, &PcNode)| head.pc)
+        .collect();
     let mut out: std::collections::BTreeMap<usize, usize> = std::collections::BTreeMap::new();
-    for n in nodes {
-        let Node::Jump { target } = n.node else {
-            continue;
-        };
-        if target == usize::MAX || target > n.pc {
-            continue;
-        }
-        let Some(head) = nodes.get(nodes.partition_point(|node: &PcNode| node.pc < target)) else {
-            continue;
-        };
-        let is_while_test: bool =
-            matches!(head.node, Node::Cond { target: exit, .. } if exit == n.pc + 1);
+    for (jump_pc, head) in back_jumps {
         let is_counted: bool = matches!(head.node, Node::ForNum { .. } | Node::ForGen { .. });
-        if is_while_test || is_counted || repeats.contains_key(&head.pc) {
+        if while_heads.contains(&head.pc) || is_counted || repeats.contains_key(&head.pc) {
             continue;
         }
         out.entry(head.pc)
-            .and_modify(|jump_pc: &mut usize| *jump_pc = (*jump_pc).max(n.pc))
-            .or_insert(n.pc);
+            .and_modify(|closing: &mut usize| *closing = (*closing).max(jump_pc))
+            .or_insert(jump_pc);
     }
     out
 }
@@ -643,6 +732,16 @@ fn structure_seq(
                             pop_trailing_goto(&mut then_body, else_end);
                             frame.state = SequenceState::AfterElse { cond, then_body };
                             frames.push(SequenceFrame::new(else_end, cur_loop));
+                        }
+                        Some(else_end)
+                            if else_end > target
+                                && let Some(closing_pc) =
+                                    closing_jump_pc(ctx.nodes, target, frame.stop_pc, else_end) =>
+                        {
+                            let mut then_body: Vec<StructuredBlock> = body;
+                            pop_trailing_goto(&mut then_body, else_end);
+                            frame.state = SequenceState::AfterElse { cond, then_body };
+                            frames.push(SequenceFrame::new(closing_pc, cur_loop));
                         }
                         _ => frame.out.push(StructuredBlock::If {
                             cond,
@@ -920,6 +1019,21 @@ fn preceding_forward_jump(
         return Some(j);
     }
     None
+}
+
+#[must_use]
+fn closing_jump_pc(
+    nodes: &[PcNode],
+    else_start: usize,
+    stop_pc: usize,
+    else_end: usize,
+) -> Option<usize> {
+    let end: usize = nodes.partition_point(|node: &PcNode| node.pc < stop_pc);
+    let last: &PcNode = nodes.get(end.checked_sub(1)?)?;
+    match last.node {
+        Node::Jump { target } if target == else_end && last.pc >= else_start => Some(last.pc),
+        _ => None,
+    }
 }
 
 fn pop_trailing_goto(body: &mut Vec<StructuredBlock>, absorbed_target: usize) {
@@ -1688,6 +1802,137 @@ mod tests {
     }
 
     #[test]
+    fn an_inner_else_whose_then_jumps_past_the_outer_else_stays_inside_the_outer_then() {
+        let stmts: Vec<LiftedStmt> = vec![
+            lifted(
+                0,
+                LStmt::Cond {
+                    cond: "outer".to_owned(),
+                    target: 6,
+                },
+            ),
+            lifted(
+                1,
+                LStmt::Cond {
+                    cond: "inner".to_owned(),
+                    target: 4,
+                },
+            ),
+            lifted(2, LStmt::Raw("a()".to_owned())),
+            lifted(3, LStmt::Jump { target: 8 }),
+            lifted(4, LStmt::Raw("b()".to_owned())),
+            lifted(5, LStmt::Jump { target: 8 }),
+            lifted(6, LStmt::Raw("c()".to_owned())),
+            lifted(8, LStmt::Raw("d()".to_owned())),
+        ];
+
+        let result: StructureResult = structure_standard(&stmts, 9);
+
+        let [
+            StructuredBlock::If {
+                cond: outer,
+                then_body: outer_then,
+                else_body: outer_else,
+            },
+            StructuredBlock::Raw(after),
+        ] = result.blocks.as_slice()
+        else {
+            panic!("expected one if/else then d(); blocks: {:?}", result.blocks);
+        };
+        assert_eq!((outer.as_str(), after.as_str()), ("outer", "d()"));
+        assert!(
+            matches!(outer_else.as_slice(), [StructuredBlock::Raw(c)] if c == "c()"),
+            "outer else: {outer_else:?}"
+        );
+        assert!(
+            matches!(
+                outer_then.as_slice(),
+                [StructuredBlock::If { cond, then_body, else_body }]
+                    if cond == "inner"
+                        && matches!(then_body.as_slice(), [StructuredBlock::Raw(a)] if a == "a()")
+                        && matches!(else_body.as_slice(), [StructuredBlock::Raw(b)] if b == "b()")
+            ),
+            "outer then: {outer_then:?}"
+        );
+        assert_eq!(result.unresolved_jumps, 0);
+    }
+
+    #[test]
+    fn an_inner_while_whose_exit_is_threaded_to_the_outer_head_stays_a_while() {
+        let stmts: Vec<LiftedStmt> = vec![
+            cond(0, "a", 6),
+            lifted(1, LStmt::Raw("x()".to_owned())),
+            cond(2, "b", 0),
+            lifted(3, LStmt::Raw("y()".to_owned())),
+            lifted(4, LStmt::Jump { target: 2 }),
+            lifted(5, LStmt::Jump { target: 0 }),
+            lifted(6, LStmt::Raw("done()".to_owned())),
+        ];
+
+        let result: StructureResult = structure_standard(&stmts, 7);
+
+        let [
+            StructuredBlock::While { cond: outer, body },
+            StructuredBlock::Raw(after),
+        ] = result.blocks.as_slice()
+        else {
+            panic!("expected one outer while; blocks: {:?}", result.blocks);
+        };
+        assert_eq!((outer.as_str(), after.as_str()), ("a", "done()"));
+        assert!(
+            matches!(
+                body.as_slice(),
+                [StructuredBlock::Raw(x), StructuredBlock::While { cond, body: inner }]
+                    if x == "x()"
+                        && cond == "b"
+                        && matches!(inner.as_slice(), [StructuredBlock::Raw(y)] if y == "y()")
+            ),
+            "outer body: {body:?}"
+        );
+        assert_eq!(result.unresolved_jumps, 0);
+    }
+
+    #[test]
+    fn a_while_with_an_early_back_jump_keeps_its_else_inside_the_loop() {
+        let stmts: Vec<LiftedStmt> = vec![
+            cond(6, "n < 2", 22),
+            lifted(7, LStmt::Raw("n = n + 1".to_owned())),
+            cond(10, "c", 18),
+            lifted(16, LStmt::Raw("a = x".to_owned())),
+            lifted(17, LStmt::Jump { target: 6 }),
+            lifted(18, LStmt::Raw("a = y".to_owned())),
+            lifted(21, LStmt::Jump { target: 6 }),
+            lifted(22, LStmt::Raw("print(a)".to_owned())),
+        ];
+
+        let result: StructureResult = structure_standard(&stmts, 23);
+
+        let Some(body) = result
+            .blocks
+            .iter()
+            .find_map(|block: &StructuredBlock| match block {
+                StructuredBlock::While { cond, body } if cond == "n < 2" => Some(body),
+                _ => None,
+            })
+        else {
+            panic!("expected the guarded while; blocks: {:?}", result.blocks);
+        };
+        assert!(
+            matches!(result.blocks.last(), Some(StructuredBlock::Raw(last)) if last == "print(a)"),
+            "blocks: {:?}",
+            result.blocks
+        );
+        assert!(leaf_depth(body, "a = y").is_some(), "body: {body:?}");
+        assert!(
+            !result.blocks.iter().any(
+                |block: &StructuredBlock| matches!(block, StructuredBlock::While { cond, .. } if cond == "true")
+            ),
+            "blocks: {:?}",
+            result.blocks
+        );
+    }
+
+    #[test]
     fn a_jump_to_the_next_statement_leaves_no_goto_and_reports_clean() {
         let stmts: Vec<LiftedStmt> = vec![
             lifted(0, LStmt::Raw("a()".to_owned())),
@@ -2050,7 +2295,7 @@ mod tests {
     }
 
     #[test]
-    fn a_chain_stops_before_a_condition_entered_from_elsewhere() {
+    fn a_condition_entered_from_inside_the_chain_folds_through_its_join() {
         let nodes: Vec<PcNode> = fold(&[
             cond(0, "a", 4),
             cond(2, "b", 9),
@@ -2058,12 +2303,80 @@ mod tests {
             lifted(6, LStmt::Raw("x = 1".to_owned())),
             lifted(9, LStmt::Raw("x = 2".to_owned())),
         ]);
-        assert_eq!(nodes.len(), 4, "{nodes:?}");
+        assert_eq!(nodes.len(), 3, "{nodes:?}");
         assert!(
-            matches!(&nodes[0].node, Node::Cond { cond, target: 9 } if cond == "(not (a)) or (b)"),
+            matches!(&nodes[0].node, Node::Cond { cond, target: 9 } if cond == "((not (a)) or (b)) and (c)"),
             "{nodes:?}"
         );
-        assert!(matches!(&nodes[1].node, Node::Cond { cond, target: 9 } if cond == "c"));
+    }
+
+    #[test]
+    fn a_loop_guard_with_a_nested_disjunction_folds_to_one_condition() {
+        let nodes: Vec<PcNode> = fold(&[
+            cond(0, "n < 2", 12),
+            cond(2, "a", 6),
+            cond(4, "not b", 8),
+            cond(6, "n == 0", 12),
+            lifted(8, LStmt::Raw("n = n + 1".to_owned())),
+            lifted(12, LStmt::Raw("print(n)".to_owned())),
+        ]);
+        assert_eq!(nodes.len(), 3, "{nodes:?}");
+        let Node::Cond { cond, target: 12 } = &nodes[0].node else {
+            panic!("{nodes:?}");
+        };
+        assert!(cond.starts_with("(n < 2) and ("), "{cond}");
+        assert!(cond.ends_with(") or (n == 0))"), "{cond}");
+    }
+
+    #[test]
+    fn a_chain_stops_before_a_condition_entered_from_outside() {
+        let nodes: Vec<PcNode> = fold(&[
+            lifted(0, LStmt::Jump { target: 4 }),
+            cond(2, "a", 9),
+            cond(4, "b", 9),
+            lifted(6, LStmt::Raw("x = 1".to_owned())),
+            lifted(9, LStmt::Raw("x = 2".to_owned())),
+        ]);
+        assert_eq!(nodes.len(), 5, "{nodes:?}");
+    }
+
+    #[test]
+    fn an_until_chain_whose_exits_skip_the_else_jump_folds_into_one_repeat() {
+        let stmts: Vec<LiftedStmt> = vec![
+            cond(0, "p", 6),
+            lifted(1, LStmt::Raw("x()".to_owned())),
+            cond(2, "not a", 8),
+            cond(3, "not b", 8),
+            cond(4, "c", 1),
+            lifted(5, LStmt::Jump { target: 8 }),
+            lifted(6, LStmt::Raw("y()".to_owned())),
+            lifted(8, LStmt::Raw("z()".to_owned())),
+        ];
+
+        let result: StructureResult = structure_standard(&stmts, 9);
+
+        let [
+            StructuredBlock::If {
+                then_body,
+                else_body,
+                ..
+            },
+            StructuredBlock::Raw(after),
+        ] = result.blocks.as_slice()
+        else {
+            panic!("expected one if/else then z(); blocks: {:?}", result.blocks);
+        };
+        assert_eq!(after, "z()");
+        assert!(
+            matches!(then_body.as_slice(), [StructuredBlock::Repeat { body, .. }]
+                if matches!(body.as_slice(), [StructuredBlock::Raw(x)] if x == "x()")),
+            "then: {then_body:?}"
+        );
+        assert!(
+            matches!(else_body.as_slice(), [StructuredBlock::Raw(y)] if y == "y()"),
+            "else: {else_body:?}"
+        );
+        assert_eq!(result.unresolved_jumps, 0);
     }
 
     #[test]
