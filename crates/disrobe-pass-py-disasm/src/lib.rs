@@ -28,7 +28,6 @@ mod listing;
 #[cfg(feature = "llm-metadata")]
 pub mod llm;
 mod opcodes;
-mod provenance_header;
 
 use disrobe_py_marshal::{CodeObject, PyVersion};
 use serde::Serialize;
@@ -45,7 +44,6 @@ pub use listing::render_listing;
 #[cfg(feature = "llm-metadata")]
 pub use llm::{METADATA_CAPABILITY, PyDisasmLlmInput};
 pub use opcodes::{cache_size, has_arg, opname};
-pub use provenance_header::{python_disasm_header, render_disasm_with_header};
 
 const LEGACY_HAVE_ARGUMENT: u8 = 90;
 const WIDE_INSTRUCTION_STEP: usize = 2;
