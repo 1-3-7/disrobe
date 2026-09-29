@@ -134,6 +134,12 @@ pub fn reverse_string(input: &str) -> ReverseReport {
             out = folded;
         }
     }
+    if let Some(folded) = fold_literal_subexpressions(&out) {
+        if folded != out {
+            transformations.push("fold-literal-subexpressions".to_owned());
+            out = folded;
+        }
+    }
     if let Some(ascii) = decode_ascii_chains(&out) {
         if ascii != out {
             transformations.push("decode-ascii-chains".to_owned());
@@ -676,6 +682,72 @@ static CHAR_ARRAY_JOIN: LazyLock<&'static Regex> = LazyLock::new(|| {
 static INDEX_REVERSE_JOIN: LazyLock<&'static Regex> = LazyLock::new(|| {
     regex!(r"\(\s*'((?:[^']|'')*)'\s*\[\s*-1\s*\.\.\s*-(\d+)\s*\]\s*-join\s*'((?:[^']|'')*)'\s*\)")
 });
+
+static LITERAL_SUBEXPRESSION: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r"\$\(\s*'((?:[^']|'')*)'\s*\)"));
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QuoteState {
+    Code,
+    Single,
+    Double,
+}
+
+fn quote_state_at(text: &str, position: usize) -> QuoteState {
+    let mut state: QuoteState = QuoteState::Code;
+    let mut chars: std::iter::Peekable<std::str::CharIndices<'_>> = text.char_indices().peekable();
+    while let Some((at, c)) = chars.next() {
+        if at >= position {
+            break;
+        }
+        state = match (state, c) {
+            (QuoteState::Code, '\'') => QuoteState::Single,
+            (QuoteState::Code, '"') => QuoteState::Double,
+            (QuoteState::Single, '\'') if chars.peek().is_some_and(|(_, n)| *n == '\'') => {
+                chars.next();
+                QuoteState::Single
+            }
+            (QuoteState::Single, '\'') | (QuoteState::Double, '"') => QuoteState::Code,
+            (QuoteState::Double | QuoteState::Code, '`') => {
+                chars.next();
+                state
+            }
+            (other, _) => other,
+        };
+    }
+    state
+}
+
+fn double_quoted_body(value: &str) -> Option<String> {
+    let quoted: String = ps_double_quoted(value);
+    quoted
+        .strip_prefix('"')
+        .and_then(|inner: &str| inner.strip_suffix('"'))
+        .map(str::to_owned)
+}
+
+fn fold_literal_subexpressions(s: &str) -> Option<String> {
+    if !LITERAL_SUBEXPRESSION.is_match(s) {
+        return None;
+    }
+    let folded: String = LITERAL_SUBEXPRESSION
+        .replace_all(s, |c: &regex::Captures<'_>| {
+            let Some(whole): Option<regex::Match<'_>> = c.get(0) else {
+                return String::new();
+            };
+            let value: String =
+                single_quoted_value(c.get(1).map_or("", |m: regex::Match<'_>| m.as_str()));
+            match quote_state_at(s, whole.start()) {
+                QuoteState::Double => {
+                    double_quoted_body(&value).unwrap_or_else(|| whole.as_str().to_owned())
+                }
+                QuoteState::Code => ps_literal(&value),
+                QuoteState::Single => whole.as_str().to_owned(),
+            }
+        })
+        .into_owned();
+    (folded != s).then_some(folded)
+}
 
 fn single_quoted_value(raw: &str) -> String {
     raw.replace("''", "'")
@@ -1297,6 +1369,15 @@ mod tests {
         ] {
             assert_eq!(reverse_string(kept).output, kept, "{kept}");
         }
+    }
+
+    #[test]
+    fn a_literal_subexpression_folds_in_its_quoting_context() {
+        assert_eq!(reverse_string("\"Wr$('ite')\"").output, "\"Write\"");
+        assert_eq!(reverse_string("x = $('Host')").output, "x = 'Host'");
+        assert_eq!(reverse_string("\"a$('$b')\"").output, "\"a`$b\"");
+        let kept: &str = "'$(''x'')'";
+        assert_eq!(reverse_string(kept).output, kept);
     }
 
     #[test]
