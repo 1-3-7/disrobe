@@ -391,7 +391,6 @@ fn function_hosts_inline_literals(
     let mut byte_movzx: usize = 0;
     let mut allocs: usize = 0;
     let mut user_calls: usize = 0;
-    let mut indirect_calls: usize = 0;
     while decoder.can_decode() {
         decoder.decode_out(&mut insn);
         if insn.mnemonic() == Mnemonic::Movzx
@@ -401,30 +400,23 @@ fn function_hosts_inline_literals(
         {
             byte_movzx += 1;
         }
-        if insn.mnemonic() == Mnemonic::Call {
-            match insn.op0_kind() {
-                OpKind::NearBranch64 => {
-                    let target: u64 = insn.near_branch64();
-                    match runtime_name_at(syms, text_base, target) {
-                        Some(n)
-                            if n == "runtime.newobject"
-                                || n == "runtime.newarray"
-                                || n.contains("makeslice")
-                                || n.starts_with("runtime.growslice") =>
-                        {
-                            allocs += 1;
-                        }
-                        Some(n) if is_garble_closure_name(n) => user_calls += 1,
-                        None => user_calls += 1,
-                        _ => {}
-                    }
+        if insn.mnemonic() == Mnemonic::Call && insn.op0_kind() == OpKind::NearBranch64 {
+            let target: u64 = insn.near_branch64();
+            match runtime_name_at(syms, text_base, target) {
+                Some(n)
+                    if n == "runtime.newobject"
+                        || n == "runtime.newarray"
+                        || n.contains("makeslice")
+                        || n.starts_with("runtime.growslice") =>
+                {
+                    allocs += 1;
                 }
-                OpKind::Register | OpKind::Memory => indirect_calls += 1,
+                Some(n) if is_garble_closure_name(n) => user_calls += 1,
+                None => user_calls += 1,
                 _ => {}
             }
         }
     }
-    let _ = indirect_calls;
     byte_movzx >= INLINE_HOST_MIN_MOVZX
         && allocs >= INLINE_HOST_MIN_ALLOC
         && user_calls >= INLINE_HOST_MIN_USER_CALLS
