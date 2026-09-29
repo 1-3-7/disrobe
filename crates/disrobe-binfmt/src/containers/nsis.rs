@@ -9,7 +9,9 @@ const NSIS_FIRSTHEADER_MAGIC: [u8; 16] = [
 ];
 
 const FIRSTHEADER_LEN: usize = 28;
-const SIGINFO_TO_DATA: usize = 24;
+const FLAGS_LEN: usize = 4;
+const CRC_LEN: usize = 4;
+const FH_FLAGS_NO_CRC: u32 = 4;
 const COMPRESSED_FLAG: u32 = 0x8000_0000;
 const SIZE_MASK: u32 = 0x7FFF_FFFF;
 const BLOCK_COUNT: usize = 8;
@@ -22,11 +24,15 @@ const EW_EXTRACTFILE: u32 = 20;
 const NS_VAR_CODE: u16 = 1;
 const NS_SHELL_CODE: u16 = 2;
 const NS_LANG_CODE: u16 = 3;
+const LEADING_EMPTY_UTF16_STRING: [u8; 2] = [0, 0];
 
 const MAX_HEADER_BYTES: usize = 64 * 1024 * 1024;
 const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_SOLID_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 const MAX_ENTRIES: usize = 1_000_000;
+const LZMA_PROPS_LEN: usize = 5;
+const LZMA_PROPS_LIMIT: u8 = 9 * 5 * 5;
+const LZMA_MIN_DICT: u32 = 4096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NsisHeader {
@@ -110,22 +116,14 @@ pub fn parse_nsis(bytes: &[u8]) -> Result<NsisHeader> {
 
 pub fn parse_nsis_archive(bytes: &[u8]) -> Result<NsisArchive> {
     let header: NsisHeader = parse_nsis(bytes)?;
-    let data_start: usize = (header.offset as usize)
-        .checked_add(SIGINFO_TO_DATA)
-        .ok_or_else(|| nsis_err("first-header offset overflow"))?;
-    let region_end: usize = data_start
-        .checked_add(header.archive_size as usize)
-        .map_or(bytes.len(), |e: usize| e.min(bytes.len()));
-    let compressed_region: &[u8] = bytes
-        .get(data_start..region_end)
-        .ok_or_else(|| nsis_err("compressed data region out of bounds"))?;
+    let (data_start, compressed_region): (usize, &[u8]) = data_region(bytes, &header)?;
     let header_size: usize = usize::try_from(header.header_size)
         .map_err(|_e: std::num::TryFromIntError| nsis_err("header_size exceeds usize"))?;
     if header_size == 0 || header_size > MAX_HEADER_BYTES {
         return Err(nsis_err("nsis header_size is zero or implausibly large"));
     }
 
-    let (compression, _header_was_streamed, header_consumed, header_bytes): (
+    let (compression, solid, header_consumed, header_bytes): (
         NsisCompression,
         bool,
         usize,
@@ -136,10 +134,7 @@ pub fn parse_nsis_archive(bytes: &[u8]) -> Result<NsisArchive> {
         .checked_add(header_consumed as u64)
         .ok_or_else(|| nsis_err("data region offset overflow"))?;
 
-    let unicode: bool = detect_unicode(&header_bytes);
-    let files: Vec<NsisFileEntry> = parse_entries(&header_bytes, unicode)?;
-
-    let solid: bool = !files_are_size_prefixed(bytes, data_region_offset, &files);
+    let (unicode, files): (bool, Vec<NsisFileEntry>) = parse_entries(&header_bytes)?;
 
     Ok(NsisArchive {
         header,
@@ -151,21 +146,30 @@ pub fn parse_nsis_archive(bytes: &[u8]) -> Result<NsisArchive> {
     })
 }
 
-fn files_are_size_prefixed(bytes: &[u8], data_region_offset: u64, files: &[NsisFileEntry]) -> bool {
-    let Some(first): Option<&NsisFileEntry> = files.first() else {
-        return true;
+fn data_region<'a>(bytes: &'a [u8], header: &NsisHeader) -> Result<(usize, &'a [u8])> {
+    let first_header: usize = usize::try_from(header.offset)
+        .ok()
+        .and_then(|siginfo: usize| siginfo.checked_sub(FLAGS_LEN))
+        .ok_or_else(|| nsis_err("nsis first-header offset out of range"))?;
+    let data_start: usize = first_header
+        .checked_add(FIRSTHEADER_LEN)
+        .ok_or_else(|| nsis_err("nsis first-header offset overflow"))?;
+    let crc_len: usize = if header.flags & FH_FLAGS_NO_CRC == 0 {
+        CRC_LEN
+    } else {
+        0
     };
-    let Some(abs): Option<usize> =
-        (data_region_offset as usize).checked_add(first.position as usize)
-    else {
-        return false;
-    };
-    let Some(size_word): Option<u32> = read_u32(bytes, abs) else {
-        return false;
-    };
-    let declared: usize = (size_word & SIZE_MASK) as usize;
-    let remaining: usize = bytes.len().saturating_sub(abs).saturating_sub(4);
-    declared > 0 && declared <= remaining
+    let data_len: usize = usize::try_from(header.archive_size)
+        .ok()
+        .and_then(|archive: usize| archive.checked_sub(FIRSTHEADER_LEN + crc_len))
+        .ok_or_else(|| nsis_err("nsis archive size is smaller than its first header"))?;
+    let data_end: usize = data_start
+        .checked_add(data_len)
+        .map_or(bytes.len(), |end: usize| end.min(bytes.len()));
+    let region: &[u8] = bytes
+        .get(data_start..data_end)
+        .ok_or_else(|| nsis_err("nsis data region out of bounds"))?;
+    Ok((data_start, region))
 }
 
 fn decode_first_block(
@@ -244,7 +248,7 @@ fn try_methods_streaming(
     if let Ok((out, consumed)) = inflate_raw_counting(region, expected) {
         return Ok((NsisCompression::Deflate, out, consumed));
     }
-    if let Ok(out) = lzma_decode(region, expected as u64) {
+    if let Ok(out) = lzma_decode_prefix(region, expected) {
         return Ok((NsisCompression::Lzma, out, region.len()));
     }
     if is_nsis_bzip2_framed(region)
@@ -260,25 +264,7 @@ fn try_methods_streaming(
     ))
 }
 
-fn detect_unicode(header: &[u8]) -> bool {
-    let end: usize = header.len().min(200);
-    let sample: &[u8] = header
-        .get(4..end)
-        .map_or(&[] as &[u8], |value: &[u8]| value);
-    if sample.len() < 16 {
-        return false;
-    }
-    let zero_odds: usize = sample
-        .iter()
-        .skip(1)
-        .step_by(2)
-        .filter(|&&b: &&u8| b == 0)
-        .count();
-    let odd_total: usize = sample.len() / 2;
-    odd_total > 0 && zero_odds * 2 > odd_total
-}
-
-fn parse_entries(header: &[u8], unicode: bool) -> Result<Vec<NsisFileEntry>> {
+fn parse_entries(header: &[u8]) -> Result<(bool, Vec<NsisFileEntry>)> {
     let blocks: [NsisBlock; BLOCK_COUNT] = read_block_table(header)?;
     let entries: NsisBlock = blocks[BLOCK_ENTRIES];
     let strings_start: usize = blocks[BLOCK_STRINGS].offset as usize;
@@ -286,6 +272,7 @@ fn parse_entries(header: &[u8], unicode: bool) -> Result<Vec<NsisFileEntry>> {
     let string_block: &[u8] = header
         .get(strings_start..strings_end.min(header.len()))
         .map_or(&[] as &[u8], |value: &[u8]| value);
+    let unicode: bool = string_block.starts_with(&LEADING_EMPTY_UTF16_STRING);
 
     let entry_count: usize = entries.num as usize;
     if entry_count > MAX_ENTRIES {
@@ -331,7 +318,7 @@ fn parse_entries(header: &[u8], unicode: bool) -> Result<Vec<NsisFileEntry>> {
             mtime_high: params[4],
         });
     }
-    Ok(out)
+    Ok((unicode, out))
 }
 
 fn read_block_table(header: &[u8]) -> Result<[NsisBlock; BLOCK_COUNT]> {
@@ -467,7 +454,7 @@ pub fn decompress_file(
     match archive.compression {
         NsisCompression::Stored => Ok(payload.to_vec()),
         NsisCompression::Deflate => inflate_raw_capped(payload, limit),
-        NsisCompression::Lzma => lzma_decode_capped(payload, limit),
+        NsisCompression::Lzma => lzma_decode(payload, limit),
         NsisCompression::Bzip2 => bzip2_decode(payload, limit),
     }
 }
@@ -506,33 +493,93 @@ fn inflate_raw_capped(input: &[u8], cap: u64) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-fn lzma_decode(input: &[u8], expected: u64) -> Result<Vec<u8>> {
-    lzma_decode_capped(input, expected)
-}
-
-fn lzma_decode_capped(input: &[u8], expected: u64) -> Result<Vec<u8>> {
-    if input.len() < 5 {
+fn lzma_decode(input: &[u8], cap: u64) -> Result<Vec<u8>> {
+    if input.len() < LZMA_PROPS_LEN {
         return Err(nsis_err("nsis lzma stream too short for props"));
     }
-    let mut synthetic: Vec<u8> = Vec::with_capacity(input.len() + 8);
-    synthetic.extend_from_slice(&input[..5]);
-    let size_field: u64 = if expected == 0 || expected >= MAX_SOLID_BYTES {
-        u64::MAX
-    } else {
-        expected
+    let options: lzma_rs::decompress::Options = lzma_rs::decompress::Options {
+        unpacked_size: lzma_rs::decompress::UnpackedSize::UseProvided(None),
+        memlimit: Some(usize::try_from(cap).map_or(usize::MAX, |limit: usize| limit)),
+        allow_incomplete: false,
     };
-    synthetic.extend_from_slice(&size_field.to_le_bytes());
-    synthetic.extend_from_slice(&input[5..]);
-    let mut reader: std::io::Cursor<&[u8]> = std::io::Cursor::new(synthetic.as_slice());
-    let mut out: Vec<u8> = Vec::new();
-    lzma_rs::lzma_decompress(&mut reader, &mut out).map_err(|e: lzma_rs::error::Error| {
-        nsis_err_owned(format!("nsis lzma decode failed: {e}"))
-    })?;
-    let cap: u64 = expected.clamp(1, MAX_FILE_BYTES);
-    if expected != 0 && out.len() as u64 > cap.saturating_add(1) {
-        return Err(nsis_err("nsis lzma output exceeds size cap"));
+    let mut reader: &[u8] = input;
+    let mut sink: CappedSink = CappedSink {
+        out: Vec::new(),
+        cap,
+    };
+    lzma_rs::lzma_decompress_with_options(&mut reader, &mut sink, &options).map_err(
+        |e: lzma_rs::error::Error| nsis_err_owned(format!("nsis lzma decode failed: {e}")),
+    )?;
+    Ok(sink.out)
+}
+
+fn lzma_decode_prefix(input: &[u8], want: usize) -> Result<Vec<u8>> {
+    let props: u8 = *input
+        .first()
+        .ok_or_else(|| nsis_err("nsis lzma stream too short for props"))?;
+    if props >= LZMA_PROPS_LIMIT {
+        return Err(nsis_err("nsis lzma props byte out of range"));
     }
+    let declared_dict: u32 =
+        read_u32(input, 1).ok_or_else(|| nsis_err("nsis lzma stream too short for props"))?;
+    let want_dict: u32 = u32::try_from(want).map_or(u32::MAX, |size: u32| size);
+    let mut options: liblzma::stream::LzmaOptions =
+        liblzma::stream::LzmaOptions::new_preset(0).map_err(lzma_stream_err)?;
+    options
+        .dict_size(declared_dict.min(want_dict).max(LZMA_MIN_DICT))
+        .literal_context_bits(u32::from(props % 9))
+        .literal_position_bits(u32::from(props / 9 % 5))
+        .position_bits(u32::from(props / 45));
+    let mut filters: liblzma::stream::Filters = liblzma::stream::Filters::new();
+    filters.lzma1(&options);
+    let mut stream: liblzma::stream::Stream =
+        liblzma::stream::Stream::new_raw_decoder(&filters).map_err(lzma_stream_err)?;
+    let data: &[u8] = input.get(LZMA_PROPS_LEN..).map_or(&[], |rest: &[u8]| rest);
+    let mut out: Vec<u8> = Vec::with_capacity(want);
+    while out.len() < want {
+        let consumed: usize = usize::try_from(stream.total_in()).map_or(data.len(), |n: usize| n);
+        let rest: &[u8] = data.get(consumed..).map_or(&[], |tail: &[u8]| tail);
+        let produced: usize = out.len();
+        let status: liblzma::stream::Status = stream
+            .process_vec(rest, &mut out, liblzma::stream::Action::Run)
+            .map_err(lzma_stream_err)?;
+        let stalled: bool = out.len() == produced && stream.total_in() == consumed as u64;
+        if status == liblzma::stream::Status::StreamEnd || stalled {
+            break;
+        }
+    }
+    if out.len() < want {
+        return Err(nsis_err("nsis lzma stream ends before the header does"));
+    }
+    out.truncate(want);
     Ok(out)
+}
+
+fn lzma_stream_err(e: liblzma::stream::Error) -> Error {
+    nsis_err_owned(format!("nsis lzma decode failed: {e}"))
+}
+
+struct CappedSink {
+    out: Vec<u8>,
+    cap: u64,
+}
+
+impl std::io::Write for CappedSink {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let total: u64 = (self.out.len() as u64).saturating_add(buf.len() as u64);
+        if total > self.cap {
+            return Err(std::io::Error::other(format!(
+                "nsis output exceeds its {} byte cap",
+                self.cap
+            )));
+        }
+        self.out.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 fn bzip2_decode(input: &[u8], cap: u64) -> Result<Vec<u8>> {
@@ -559,18 +606,7 @@ fn is_nsis_bzip2_framed(input: &[u8]) -> bool {
 }
 
 pub fn decode_solid_region(bytes: &[u8], archive: &NsisArchive, cap: u64) -> Result<Vec<u8>> {
-    let region_start: usize = archive
-        .header
-        .offset
-        .checked_add(SIGINFO_TO_DATA as u64)
-        .and_then(|v: u64| usize::try_from(v).ok())
-        .ok_or_else(|| nsis_err("solid region start overflow"))?;
-    let region_end: usize = (region_start)
-        .checked_add(archive.header.archive_size as usize)
-        .map_or(bytes.len(), |e: usize| e.min(bytes.len()));
-    let region: &[u8] = bytes
-        .get(region_start..region_end)
-        .ok_or_else(|| nsis_err("solid region out of bounds"))?;
+    let (_, region): (usize, &[u8]) = data_region(bytes, &archive.header)?;
     let limit: u64 = cap.clamp(1, MAX_SOLID_BYTES);
     let mut full: Vec<u8> = match archive.compression {
         NsisCompression::Stored => {
@@ -580,7 +616,7 @@ pub fn decode_solid_region(bytes: &[u8], archive: &NsisArchive, cap: u64) -> Res
             Ok(region.to_vec())
         }
         NsisCompression::Deflate => inflate_raw_capped(region, limit),
-        NsisCompression::Lzma => lzma_decode_streaming(region, limit),
+        NsisCompression::Lzma => lzma_decode(region, limit),
         NsisCompression::Bzip2 => bzip2_decode(region, limit),
     }?;
     let header_size: usize = archive.header.header_size as usize;
@@ -619,25 +655,6 @@ pub fn slice_solid_file(solid: &[u8], entry: &NsisFileEntry, cap: u64) -> Result
         .get(data_start..data_end)
         .map(<[u8]>::to_vec)
         .ok_or_else(|| nsis_err("solid file slice out of bounds"))
-}
-
-fn lzma_decode_streaming(input: &[u8], cap: u64) -> Result<Vec<u8>> {
-    if input.len() < 5 {
-        return Err(nsis_err("nsis lzma solid stream too short for props"));
-    }
-    let mut synthetic: Vec<u8> = Vec::with_capacity(input.len() + 8);
-    synthetic.extend_from_slice(&input[..5]);
-    synthetic.extend_from_slice(&u64::MAX.to_le_bytes());
-    synthetic.extend_from_slice(&input[5..]);
-    let mut reader: std::io::Cursor<&[u8]> = std::io::Cursor::new(synthetic.as_slice());
-    let mut out: Vec<u8> = Vec::new();
-    lzma_rs::lzma_decompress(&mut reader, &mut out).map_err(|e: lzma_rs::error::Error| {
-        nsis_err_owned(format!("nsis lzma solid decode failed: {e}"))
-    })?;
-    if out.len() as u64 > cap {
-        return Err(nsis_err("nsis lzma solid output exceeds cap"));
-    }
-    Ok(out)
 }
 
 #[inline]
@@ -710,15 +727,17 @@ pub(crate) fn build_test_nsis(file_name: &str, file_body: &[u8]) -> Vec<u8> {
     put_u32(&mut data_region, COMPRESSED_FLAG | file_comp.len() as u32);
     data_region.extend_from_slice(&file_comp);
     let mut archive: Vec<u8> = Vec::new();
+    put_u32(&mut archive, COMPRESSED_FLAG | header_comp.len() as u32);
     archive.extend_from_slice(&header_comp);
     archive.extend_from_slice(&data_region);
-    let archive_size: u32 = archive.len() as u32;
+    let archive_size: u32 = (FIRSTHEADER_LEN + archive.len() + CRC_LEN) as u32;
     let mut out: Vec<u8> = vec![0u8; 256];
     put_u32(&mut out, 0);
     out.extend_from_slice(&NSIS_FIRSTHEADER_MAGIC);
     put_u32(&mut out, header_size);
     put_u32(&mut out, archive_size);
     out.extend_from_slice(&archive);
+    out.extend_from_slice(&[0u8; CRC_LEN]);
     out
 }
 
@@ -776,7 +795,7 @@ pub(crate) fn build_test_nsis_solid(file_name: &str, file_body: &[u8]) -> Vec<u8
     put_u32(&mut plain, file_body.len() as u32);
     plain.extend_from_slice(file_body);
     let solid_comp: Vec<u8> = raw_deflate(&plain);
-    let archive_size: u32 = solid_comp.len() as u32;
+    let archive_size: u32 = (FIRSTHEADER_LEN + solid_comp.len() + CRC_LEN) as u32;
 
     let mut out: Vec<u8> = vec![0u8; 256];
     put_u32(&mut out, 0);
@@ -784,6 +803,7 @@ pub(crate) fn build_test_nsis_solid(file_name: &str, file_body: &[u8]) -> Vec<u8
     put_u32(&mut out, header_size);
     put_u32(&mut out, archive_size);
     out.extend_from_slice(&solid_comp);
+    out.extend_from_slice(&[0u8; CRC_LEN]);
     out
 }
 
