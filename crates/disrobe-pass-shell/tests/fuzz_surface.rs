@@ -8,9 +8,9 @@ use disrobe_pass_shell::{
     BashfuscatorLevel, BatchReport, DynamicPolicy, EmuState, Lexer, PdfReport, XlmRecovery,
     analyze_pdf, analyze_stomp, deobfuscate_batch, deobfuscate_vbs, deobfuscate_vbs_with_policy,
     detect, disassemble_pcode, disassemble_pcode_real, emulate, eval_if, expand_line,
-    expand_repeated, extract_embedded, extract_from_bytes, format_identity, is_node_bash_obfuscate,
-    is_pdf_document, is_xlm_macro_document, normalize_batch, obfuscator_detect, parse_ast,
-    parse_bible, parse_for_f_string, parse_for_l, peel_indirection, peel_indirection_with_policy,
+    expand_repeated, extract_embedded, extract_from_bytes, is_node_bash_obfuscate, is_pdf_document,
+    is_xlm_macro_document, normalize_batch, obfuscator_detect, parse_ast, parse_bible,
+    parse_for_f_string, parse_for_l, peel_indirection, peel_indirection_with_policy,
     recover_stages, recover_xlm, render_report, render_xlm_source, resolve_cfg, reverse_ast,
     reverse_bashfuscator, reverse_bashfuscator_auto, reverse_batch, reverse_chameleon,
     reverse_compress, reverse_encoding, reverse_invoke_stealth, reverse_isesteroids,
@@ -197,7 +197,6 @@ fn exercise_text(text: &str) {
 
     let _ = deobfuscate_vbs(text);
     let _ = deobfuscate_vbs_with_policy(text, DynamicPolicy::default());
-    let _ = format_identity(text);
     let _ = reverse_psobf(text);
     let _ = reverse_token(text);
     let _ = reverse_ast(text);

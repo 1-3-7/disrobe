@@ -34,7 +34,6 @@ pub mod batch;
 pub mod chain_detector;
 pub mod detect;
 pub mod error;
-pub mod format_wire;
 pub mod pdf;
 pub mod policy;
 pub mod powershell;
@@ -57,7 +56,6 @@ pub use batch::{
 };
 pub use detect::{Detection, Dialect, Family, decode_script_bytes, detect};
 pub use error::{Error, Result};
-pub use format_wire::format_identity;
 pub use pdf::{
     ActionFinding, EmbeddedFileFinding, EncryptionInfo, JsFinding, NameObfuscation, PdfReport,
     analyze_pdf, is_pdf_document, render_report,

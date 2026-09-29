@@ -1616,24 +1616,9 @@ fn resolve_identifier(id_code: u16, identifiers: &[String], vba_ver: u8, is_64bi
 
 fn translate_opcode(opcode: u16, vba_ver: u8, is_64bit: bool) -> u16 {
     match vba_ver {
-        3 => translate_v3(opcode),
         5 => translate_v5(opcode),
         _ if !is_64bit => translate_v6or7_32(opcode),
         _ => opcode,
-    }
-}
-
-fn translate_v3(o: u16) -> u16 {
-    match o {
-        0..=67 => o,
-        68..=70 => o + 2,
-        71..=111 => o + 4,
-        112..=150 => o + 8,
-        151..=164 => o + 9,
-        165..=166 => o + 10,
-        167..=169 => o + 11,
-        170..=238 => o + 12,
-        _ => o + 24,
     }
 }
 

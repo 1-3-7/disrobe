@@ -15,7 +15,6 @@ use disrobe_core::provenance::Language;
 use serde::Serialize;
 
 use crate::detect::{Detection, Dialect, Family, detect as detect_shell};
-use crate::format_wire::format_identity;
 use crate::pdf::PdfReport;
 use crate::xlm::XlmRecovery;
 
@@ -434,11 +433,11 @@ fn reverse_for_family(family: Family, text: &str) -> Result<String, ShellRefusal
                 reverse_node_bash_obfuscate(text).ok_or_else(|| recover_nothing_wall(family))?;
             guard_recovered(family, text, report.output)
         }
-        Family::Plain | Family::Unknown => guard_recovered(family, text, format_identity(text)),
+        Family::Plain | Family::Unknown => guard_recovered(family, text, text.to_owned()),
         Family::BatchRandom
         | Family::BatchSetIndirection
         | Family::VbaMacro
-        | Family::VbsWshObfuscated => Ok(format_identity(text)),
+        | Family::VbsWshObfuscated => Ok(text.to_owned()),
     }
 }
 
