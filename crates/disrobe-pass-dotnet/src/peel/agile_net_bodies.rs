@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use disrobe_bytes::read_u32_le_at;
+
 use crate::pe::{ClrHeader, PeImage, parse, parse_clr_header};
 
 pub const SIGNATURE_LEN: usize = 16;
@@ -58,11 +60,6 @@ pub struct AgileCodeHeader {
     pub method_element_size: u32,
 }
 
-fn read_u32_le(bytes: &[u8], at: usize) -> Option<u32> {
-    let slice: &[u8] = bytes.get(at..at + 4)?;
-    Some(u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
-}
-
 #[must_use]
 pub fn end_of_metadata(image: &[u8]) -> Option<u32> {
     let pe: PeImage = parse(image).ok()?;
@@ -84,10 +81,10 @@ pub fn locate_agile_code_header(image: &[u8]) -> Option<AgileCodeHeader> {
         variant,
         file_offset: eom,
         key,
-        total_code_size: read_u32_le(header, 0x20)?,
-        method_count: read_u32_le(header, 0x24)?,
-        method_table_offset: read_u32_le(header, 0x28)?,
-        method_element_size: read_u32_le(header, 0x2C)?,
+        total_code_size: read_u32_le_at(header, 0x20).ok()?,
+        method_count: read_u32_le_at(header, 0x24).ok()?,
+        method_table_offset: read_u32_le_at(header, 0x28).ok()?,
+        method_element_size: read_u32_le_at(header, 0x2C).ok()?,
     })
 }
 
