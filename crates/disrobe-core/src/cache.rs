@@ -33,6 +33,32 @@ impl CacheKey {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BuildIdentity {
+    digest: [u8; 32],
+}
+
+impl BuildIdentity {
+    pub fn of_file(path: &Path) -> std::io::Result<Self> {
+        let file: std::fs::File = std::fs::File::open(path)?;
+        let mut hasher: blake3::Hasher = blake3::Hasher::new();
+        hasher.update_reader(file)?;
+        Ok(Self {
+            digest: *hasher.finalize().as_bytes(),
+        })
+    }
+
+    pub fn of_running_executable() -> std::io::Result<Self> {
+        Self::of_file(&std::env::current_exe()?)
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn from_digest(digest: [u8; 32]) -> Self {
+        Self { digest }
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct CacheKeyBuilder {
     hasher: blake3::Hasher,
@@ -40,11 +66,11 @@ pub struct CacheKeyBuilder {
 
 impl CacheKeyBuilder {
     #[must_use]
-    pub fn new(operation: &str) -> Self {
+    pub fn new(operation: &str, build: &BuildIdentity) -> Self {
         let mut hasher: blake3::Hasher = blake3::Hasher::new();
         write_field(&mut hasher, b"disrobe-cache-key");
         write_u32(&mut hasher, CACHE_FORMAT_VERSION);
-        write_field(&mut hasher, crate::VERSION.as_bytes());
+        write_field(&mut hasher, &build.digest);
         write_field(&mut hasher, operation.as_bytes());
         Self { hasher }
     }
@@ -252,10 +278,37 @@ mod tests {
         (scratch, cache)
     }
 
+    const TEST_BUILD: BuildIdentity = BuildIdentity::from_digest([7u8; 32]);
+
     fn key_for(op: &str, config: &str, input: &[u8]) -> CacheKey {
-        let mut b: CacheKeyBuilder = CacheKeyBuilder::new(op);
+        let mut b: CacheKeyBuilder = CacheKeyBuilder::new(op, &TEST_BUILD);
         b.field("config", config.as_bytes());
         b.input(input)
+    }
+
+    #[test]
+    fn two_builds_of_one_version_share_no_cache_entry() {
+        let other_build: BuildIdentity = BuildIdentity::from_digest([8u8; 32]);
+        let mut first: CacheKeyBuilder = CacheKeyBuilder::new("envelope.create", &TEST_BUILD);
+        first.field("config", b"rung=raw");
+        let mut second: CacheKeyBuilder = CacheKeyBuilder::new("envelope.create", &other_build);
+        second.field("config", b"rung=raw");
+        assert_ne!(first.input(b"same input"), second.input(b"same input"));
+    }
+
+    #[test]
+    fn a_build_identity_is_the_hash_of_the_file_bytes() {
+        let scratch: ScratchDir = scratch_dir("identity");
+        let path: PathBuf = scratch.path().join("binary");
+        std::fs::write(&path, b"one build").expect("write build");
+        let first: BuildIdentity = BuildIdentity::of_file(&path).expect("hash build");
+        std::fs::write(&path, b"a rebuilt build").expect("rewrite build");
+        let second: BuildIdentity = BuildIdentity::of_file(&path).expect("hash rebuild");
+        assert_ne!(first, second);
+        assert_eq!(
+            first,
+            BuildIdentity::from_digest(*blake3::hash(b"one build").as_bytes())
+        );
     }
 
     #[test]

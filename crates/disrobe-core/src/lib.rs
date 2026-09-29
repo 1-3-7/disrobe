@@ -50,7 +50,9 @@ pub use behavior::{
     analyze_with_uri as analyze_behavior_with_uri,
 };
 #[cfg(feature = "cache")]
-pub use cache::{CACHE_FORMAT_VERSION, Cache, CacheKey, CacheKeyBuilder, default_cache_dir};
+pub use cache::{
+    BuildIdentity, CACHE_FORMAT_VERSION, Cache, CacheKey, CacheKeyBuilder, default_cache_dir,
+};
 pub use capability::{Capability, CapabilityKind};
 pub use codec::{
     Base58Variant, CascadeHit, CascadeRecovery, CryptoWall, CryptoWallKind, DecodeError,

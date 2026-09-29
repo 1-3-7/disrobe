@@ -4,7 +4,7 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use clap::Subcommand;
-use disrobe_core::{Cache, CacheKeyBuilder, Capability, CapabilityKind};
+use disrobe_core::{BuildIdentity, Cache, CacheKeyBuilder, Capability, CapabilityKind};
 use disrobe_ir::TranscodeRegistry;
 use serde::Serialize;
 
@@ -17,14 +17,21 @@ pub(crate) struct CacheSettings {
 }
 
 impl CacheSettings {
-    fn store(&self) -> Option<Cache> {
+    fn store(&self) -> Option<(Cache, BuildIdentity)> {
         if !self.enabled {
             return None;
         }
+        let build: BuildIdentity = running_build()?;
         self.dir
             .clone()
             .map_or_else(Cache::at_default_dir, |dir: PathBuf| Some(Cache::new(dir)))
+            .map(|cache: Cache| (cache, build))
     }
+}
+
+fn running_build() -> Option<BuildIdentity> {
+    static BUILD: std::sync::OnceLock<Option<BuildIdentity>> = std::sync::OnceLock::new();
+    *BUILD.get_or_init(|| BuildIdentity::of_running_executable().ok())
 }
 
 #[derive(Subcommand, Debug)]
@@ -515,18 +522,20 @@ fn create(
     let source_hash: [u8; 32] = *blake3::hash(&bytes).as_bytes();
     let producer: String = produced_by.unwrap_or_else(|| "disrobe-cli".to_owned());
 
-    let store: Option<Cache> = cache.store();
-    let key: Option<disrobe_core::CacheKey> = store.as_ref().map(|_| {
-        let mut b: CacheKeyBuilder = CacheKeyBuilder::new("envelope.create");
-        b.field("rung", b"raw");
-        b.field("producer", producer.as_bytes());
-        b.field("format", format.as_deref().unwrap_or("").as_bytes());
-        b.field(
-            "envelope_format_version",
-            &disrobe_ir::ENVELOPE_FORMAT_VERSION.to_le_bytes(),
-        );
-        b.input(&bytes)
-    });
+    let (store, key): (Option<Cache>, Option<disrobe_core::CacheKey>) = match cache.store() {
+        None => (None, None),
+        Some((store, build)) => {
+            let mut b: CacheKeyBuilder = CacheKeyBuilder::new("envelope.create", &build);
+            b.field("rung", b"raw");
+            b.field("producer", producer.as_bytes());
+            b.field("format", format.as_deref().unwrap_or("").as_bytes());
+            b.field(
+                "envelope_format_version",
+                &disrobe_ir::ENVELOPE_FORMAT_VERSION.to_le_bytes(),
+            );
+            (Some(store), Some(b.input(&bytes)))
+        }
+    };
 
     if let (Some(store), Some(key)) = (store.as_ref(), key.as_ref())
         && let Some(cached) = store.get(key)
