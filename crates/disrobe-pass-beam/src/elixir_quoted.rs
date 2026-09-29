@@ -473,23 +473,25 @@ fn render_try(opts: &Term) -> String {
 }
 
 fn render_for(args: &[Term]) -> String {
-    let (opts, quals): (&[Term], &[Term]) =
-        args.split_last().map_or((&[], args), |(last, head)| {
-            if is_keyword_list(last) {
-                (head, std::slice::from_ref(last))
-            } else {
-                (args, &[])
-            }
-        });
-    let _ = quals;
     let (do_opts, gens): (Option<Term>, Vec<&Term>) = split_do(args);
-    let qual_strs: Vec<String> = gens
+    let mut parts: Vec<String> = gens
         .iter()
         .map(|q: &&Term| render(q, Prec::Lowest))
         .collect();
+    if let Some(last) = args.last()
+        && is_keyword_list(last)
+    {
+        for item in list_items(last) {
+            if let Some([key, value]) = item.as_tuple()
+                && let Some(name) = key.as_atom()
+                && name != "do"
+            {
+                parts.push(format!("{name}: {}", render(value, Prec::Lowest)));
+            }
+        }
+    }
     let body: String = do_opts.map_or_else(|| "nil".to_owned(), |t: Term| render_block(&t));
-    let _ = opts;
-    format!("for {}, do: {body}", qual_strs.join(", "))
+    format!("for {}, do: {body}", parts.join(", "))
 }
 
 fn render_with(args: &[Term]) -> String {
@@ -859,4 +861,43 @@ fn render_bigint(sign: u8, magnitude_le: &[u8]) -> String {
     digits.reverse();
     let body: String = String::from_utf8(digits).unwrap_or_else(|_| "0".to_owned());
     if sign == 1 { format!("-{body}") } else { body }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn atom(name: &str) -> Term {
+        Term::Atom(name.to_owned())
+    }
+
+    fn list(elements: Vec<Term>) -> Term {
+        Term::List {
+            elements,
+            tail: Box::new(Term::Nil),
+        }
+    }
+
+    fn var(name: &str) -> Term {
+        Term::Tuple(vec![atom(name), Term::Nil, atom("nil")])
+    }
+
+    #[test]
+    fn a_for_comprehension_keeps_its_into_option() {
+        let generator: Term =
+            Term::Tuple(vec![atom("<-"), Term::Nil, list(vec![var("x"), var("xs")])]);
+        let empty_map: Term = Term::Tuple(vec![atom("%{}"), Term::Nil, Term::Nil]);
+        let options: Term = list(vec![
+            Term::Tuple(vec![atom("into"), empty_map]),
+            Term::Tuple(vec![atom("do"), var("x")]),
+        ]);
+        let call: Term = Term::Tuple(vec![atom("for"), Term::Nil, list(vec![generator, options])]);
+        let rendered: String = render_block(&call);
+        assert!(
+            rendered.contains("x <- xs")
+                && rendered.contains("into: %{}")
+                && rendered.contains("do: x"),
+            "{rendered}"
+        );
+    }
 }
