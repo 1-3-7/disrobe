@@ -10,6 +10,7 @@ ruby = "3.4.9 (2026-03-11 revision 76cca827ab) +PRISM [x64-mingw-ucrt]"
 "hello.rb" = { kind = "source", description = "minimal hello-world Ruby source" }
 "greeter.rb" = { kind = "source", description = "module/class/method/string-interp Ruby source" }
 "behaviour/programs.rb" = { kind = "source", description = "self-authored runnable program with deterministic output: inheritance and super, mixins, keyword and optional arguments, case/when, case/in patterns with guards, rescue/retry/ensure, nested destructuring, lambdas, Struct with a block, heredoc interpolation; the YARV behaviour grader compiles it, decompiles it and compares stdout" }
+"behaviour/control.rb" = { kind = "source", description = "self-authored runnable program with deterministic output: custom exceptions, class-level state and singleton methods, method_missing, zero-argument super with keywords, until/loop/break/next/catch/throw, rescue/else/ensure, argument forwarding, destructuring and numbered block parameters, post-splat assignment, for and do-while loops, defined?; graded by the YARV behaviour check" }
 "mruby/greet.rb" = { kind = "source", description = "greet(name) method with interpolated puts and a greet(\"world\") call, compiled to mruby bytecode" }
 "mruby/breadth/arith.rb" = { kind = "source", description = "integer arithmetic breadth: add/sub/mul/div/compare opcodes" }
 "mruby/breadth/strings.rb" = { kind = "source", description = "string interpolation and concatenation breadth" }

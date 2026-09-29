@@ -105,6 +105,7 @@ const FROZEN_STRING_MAGIC: &str = "# frozen_string_literal: true";
 const SHAREABLE_CONSTANT_MAGIC: &str = "# shareable_constant_value: literal";
 const VM_CALL_ARGS_BLOCKARG: u32 = 1 << 1;
 const VM_CALL_KW_SPLAT: u32 = 1 << 6;
+const VM_CALL_ZSUPER: u32 = 1 << 9;
 const DEFINECLASS_FLAG_SCOPED: u64 = 0x08;
 const DEFINECLASS_FLAG_HAS_SUPERCLASS: u64 = 0x10;
 
@@ -271,6 +272,35 @@ fn try_render_exception_region(
             depth,
         ));
     }
+    let rescue_else: Option<(usize, usize)> = rescue.and_then(|entry| {
+        let cont: usize = index_at_pc(&rt_pc, entry.cont_pc).min(body.instructions.len());
+        let mut else_hi: usize = cont;
+        while else_hi > end + 1
+            && body
+                .instructions
+                .get(else_hi - 1)
+                .is_some_and(|x| x.mnemonic == "nop")
+        {
+            else_hi -= 1;
+        }
+        (body
+            .instructions
+            .get(end)
+            .is_some_and(|x| x.mnemonic == "pop")
+            && end + 1 < else_hi)
+            .then_some((end + 1, else_hi))
+    });
+    if let Some((else_lo, else_hi)) = rescue_else {
+        lines.push(format!("{pad}else"));
+        lines.extend(render_slice(
+            body,
+            ctx,
+            depth + 1,
+            else_lo,
+            else_hi,
+            &targets,
+        ));
+    }
     if let Some(handler_idx) = ensure.and_then(|e| e.handler_iseq)
         && let Some(handler) = ctx.body(handler_idx)
     {
@@ -285,6 +315,8 @@ fn try_render_exception_region(
             .max(end)
             .min(body.instructions.len())
     });
+    let suffix_start: usize =
+        rescue_else.map_or(suffix_start, |(_, else_hi)| suffix_start.max(else_hi));
     let suffix: Vec<String> = render_slice(
         body,
         ctx,
@@ -509,12 +541,30 @@ fn render_region(
             && target <= hi
             && target > i
         {
-            let keyword: &str = if m == "branchunless" { "if" } else { "unless" };
-            let cond: String = pop(stack);
+            let first: String = pop(stack);
+            let merged: MergedCondition =
+                merge_condition(body, ctx, depth, i, target, first, targets);
+            if let Some((value, next)) =
+                try_value_conditional(body, ctx, depth, &merged, hi, targets)
+            {
+                push(stack, value);
+                i = next;
+                continue;
+            }
+            let keyword: &str = if merged.branch_if { "unless" } else { "if" };
             render_conditional(
-                body, ctx, depth, i, target, hi, keyword, &cond, targets, stmts,
+                body,
+                ctx,
+                depth,
+                merged.branch_idx,
+                merged.target,
+                hi,
+                keyword,
+                &merged.cond,
+                targets,
+                stmts,
             );
-            i = region_end_after_conditional(body, target, hi, targets);
+            i = region_end_after_conditional(body, merged.target, hi, targets);
             stack.clear();
             continue;
         }
@@ -550,6 +600,142 @@ fn render_region(
         step(instr, &body.local_table, ctx, depth, stack, stmts);
         i += 1;
     }
+}
+
+struct MergedCondition {
+    cond: String,
+    branch_idx: usize,
+    target: usize,
+    branch_if: bool,
+}
+
+fn condition_operand(value: &str) -> String {
+    if value.contains("||")
+        || value.contains(" ? ")
+        || value.contains(" or ")
+        || value.contains(" and ")
+    {
+        format!("({value})")
+    } else {
+        value.to_owned()
+    }
+}
+
+fn single_value_region(
+    body: &YarvIseqBody,
+    ctx: &DecompileContext<'_>,
+    depth: u32,
+    lo: usize,
+    hi: usize,
+    targets: &[Option<usize>],
+) -> Option<String> {
+    if lo >= hi {
+        return None;
+    }
+    let mut stack: Vec<String> = Vec::new();
+    let mut sink: Vec<String> = Vec::new();
+    render_region(body, ctx, depth, lo, hi, targets, &mut stack, &mut sink);
+    match (sink.is_empty(), stack.as_slice()) {
+        (true, [value]) if !value.is_empty() && !value.contains('\n') => Some(value.clone()),
+        _ => None,
+    }
+}
+
+fn next_branch(body: &YarvIseqBody, from: usize, hi: usize) -> Option<usize> {
+    (from..hi).find(|&k| {
+        matches!(
+            body.instructions[k].mnemonic.as_str(),
+            "branchunless" | "branchif" | "branchnil" | "jump" | "leave" | "throw"
+        )
+    })
+}
+
+fn merge_condition(
+    body: &YarvIseqBody,
+    ctx: &DecompileContext<'_>,
+    depth: u32,
+    i: usize,
+    target: usize,
+    first: String,
+    targets: &[Option<usize>],
+) -> MergedCondition {
+    let mut merged: MergedCondition = MergedCondition {
+        cond: first,
+        branch_idx: i,
+        target,
+        branch_if: body.instructions[i].mnemonic == "branchif",
+    };
+    while let Some(k) = next_branch(body, merged.branch_idx + 1, merged.target) {
+        let Some(next_target): Option<usize> = targets.get(k).copied().flatten() else {
+            break;
+        };
+        if body.instructions[k].mnemonic != "branchunless" {
+            break;
+        }
+        let joins: bool = if merged.branch_if {
+            merged.target == k + 1
+        } else {
+            next_target == merged.target
+        };
+        if !joins {
+            break;
+        }
+        let Some(value): Option<String> =
+            single_value_region(body, ctx, depth, merged.branch_idx + 1, k, targets)
+        else {
+            break;
+        };
+        let op: &str = if merged.branch_if { "||" } else { "&&" };
+        merged.cond = format!(
+            "{} {op} {}",
+            condition_operand(&merged.cond),
+            condition_operand(&value)
+        );
+        merged.branch_idx = k;
+        merged.target = next_target;
+        merged.branch_if = false;
+    }
+    merged
+}
+
+fn try_value_conditional(
+    body: &YarvIseqBody,
+    ctx: &DecompileContext<'_>,
+    depth: u32,
+    merged: &MergedCondition,
+    hi: usize,
+    targets: &[Option<usize>],
+) -> Option<(String, usize)> {
+    let then_last: usize = merged.target.checked_sub(1)?;
+    if then_last <= merged.branch_idx || body.instructions.get(then_last)?.mnemonic != "jump" {
+        return None;
+    }
+    let join: usize = targets.get(then_last).copied().flatten()?;
+    if join <= merged.target || join > hi {
+        return None;
+    }
+    if body
+        .instructions
+        .get(join)
+        .is_none_or(|x| matches!(x.mnemonic.as_str(), "pop" | "leave"))
+    {
+        return None;
+    }
+    let fall: String =
+        single_value_region(body, ctx, depth, merged.branch_idx + 1, then_last, targets)?;
+    let taken: String = single_value_region(body, ctx, depth, merged.target, join, targets)?;
+    let (when_true, when_false): (String, String) = if merged.branch_if {
+        (taken, fall)
+    } else {
+        (fall, taken)
+    };
+    Some((
+        format!(
+            "({} ? {when_true} : {when_false})",
+            condition_operand(&merged.cond)
+        ),
+        join,
+    ))
 }
 
 fn try_massign(
@@ -594,8 +780,30 @@ fn massign_targets(
         return None;
     }
     let mut targets: Vec<String> = Vec::with_capacity(total);
+    let mut total: usize = total;
     let mut j: usize = i + 1;
     while targets.len() < total && j < hi {
+        if has_splat
+            && targets.len() == n
+            && body.instructions[j].mnemonic == "expandarray"
+            && operand_num(&body.instructions[j], 1) == 3
+        {
+            let post: usize = operand_count(&body.instructions[j], 0).min(MAX_OPERAND_COUNT);
+            let splat: String =
+                assignment_target(body.instructions.get(j + 1)?, &body.local_table, ctx)?;
+            targets.push(format!("*{splat}"));
+            j += 2;
+            for _ in 0..post {
+                targets.push(assignment_target(
+                    body.instructions.get(j)?,
+                    &body.local_table,
+                    ctx,
+                )?);
+                j += 1;
+            }
+            total += post;
+            continue;
+        }
         let target: String = if body.instructions[j].mnemonic == "expandarray" {
             let (inner, next): (Vec<String>, usize) =
                 massign_targets(body, ctx, j, hi, nesting + 1)?;
@@ -2975,9 +3183,20 @@ fn step(
             push(stack, format!("({low}{dots}{high})"));
         }
         "defined" => {
-            let _ = pop(stack);
-            let target: String = defined_operand(instr);
+            let base: String = pop(stack);
+            let name: String = defined_operand(instr);
+            let target: String = match operand_num(instr, 0) {
+                DEFINED_METHOD => format!("{base}.{name}"),
+                DEFINED_CONST if base != "nil" => format!("{base}::{name}"),
+                DEFINED_YIELD => "yield".to_owned(),
+                DEFINED_ZSUPER => "super".to_owned(),
+                _ => name,
+            };
             push(stack, format!("defined?({target})"));
+        }
+        "definedivar" => {
+            let name: String = id_or_index(instr, 0);
+            push(stack, format!("defined?({name})"));
         }
         "getspecial" => {
             push(stack, getspecial_name(instr));
@@ -3271,6 +3490,7 @@ fn method_signature(instr: &YarvIbfInstruction, ctx: &DecompileContext<'_>) -> S
 }
 
 const PARAM_FLAG_HAS_OPT: u64 = 1 << 1;
+const PARAM_FLAG_HAS_POST: u64 = 1 << 3;
 const PARAM_FLAG_HAS_REST: u64 = 1 << 2;
 const PARAM_FLAG_HAS_KW: u64 = 1 << 4;
 const PARAM_FLAG_HAS_KWREST: u64 = 1 << 5;
@@ -3410,12 +3630,22 @@ fn render_param_signature(body: &YarvIseqBody, ctx: &DecompileContext<'_>) -> St
     let opt_defaults: Vec<Option<String>> = optional_defaults(body, ctx);
     let mut params: Vec<String> = Vec::with_capacity(count);
     for idx in 0..count {
-        let Some(name): Option<&str> = body.local_table.get(idx).and_then(Option::as_deref) else {
-            continue;
+        let anonymous: String = format!(
+            "local{}",
+            (body.local_table.len() - 1 - idx) as u64 + VM_ENV_DATA_SIZE
+        );
+        let name: &str = match body.local_table.get(idx).and_then(Option::as_deref) {
+            Some(name) if !name.is_empty() => name,
+            _ if has_kw
+                && idx >= opt_hi
+                && Some(idx) != rest_idx
+                && Some(idx) != block_idx
+                && Some(idx) != kwrest_idx =>
+            {
+                continue;
+            }
+            _ => &anonymous,
         };
-        if name.is_empty() {
-            continue;
-        }
         let rendered: String = if Some(idx) == rest_idx {
             format!("*{name}")
         } else if Some(idx) == block_idx {
@@ -3683,6 +3913,26 @@ fn keyword_label(name: &str) -> String {
 }
 
 fn block_param_list(block: &YarvIseqBody, ctx: &DecompileContext<'_>) -> String {
+    let lead: &[Option<String>] = block
+        .local_table
+        .get(..block.param_lead_num as usize)
+        .unwrap_or(&[]);
+    let numbered: bool = !lead.is_empty()
+        && block.param_flags
+            & (PARAM_FLAG_HAS_OPT
+                | PARAM_FLAG_HAS_REST
+                | PARAM_FLAG_HAS_POST
+                | PARAM_FLAG_HAS_KW
+                | PARAM_FLAG_HAS_KWREST
+                | PARAM_FLAG_HAS_BLOCK)
+            == 0
+        && lead
+            .iter()
+            .enumerate()
+            .all(|(i, name)| name.as_deref() == Some(format!("_{}", i + 1).as_str()));
+    if numbered {
+        return String::new();
+    }
     let signature: String = render_param_signature(block, ctx);
     match signature
         .strip_prefix('(')
@@ -3709,6 +3959,14 @@ fn emit_super(instr: &YarvIbfInstruction, stack: &mut Vec<String>) {
     };
     let block_arg: Option<String> = (flags & VM_CALL_ARGS_BLOCKARG != 0).then(|| pop(stack));
     let mut args: Vec<String> = pop_n(stack, argc);
+    if flags & VM_CALL_ZSUPER != 0 {
+        let _receiver: String = pop(stack);
+        push(
+            stack,
+            block_arg.map_or_else(|| "super".to_owned(), |blk| format!("super(&{blk})")),
+        );
+        return;
+    }
     name_keyword_arguments(&mut args, kwargs);
     if flags & VM_CALL_KW_SPLAT != 0
         && let Some(slot) = args.last_mut()
@@ -3964,6 +4222,22 @@ fn top_level_binop_precedence(expr: &str) -> Option<u8> {
 
 fn spaced_operator_at(bytes: &[u8], space_idx: usize) -> Option<(u8, usize)> {
     const OPERATORS: &[(&str, u8)] = &[
+        ("||=", 0),
+        ("&&=", 0),
+        ("<<=", 0),
+        (">>=", 0),
+        ("**=", 0),
+        ("+=", 0),
+        ("-=", 0),
+        ("*=", 0),
+        ("/=", 0),
+        ("%=", 0),
+        ("|=", 0),
+        ("&=", 0),
+        ("^=", 0),
+        ("=", 0),
+        ("?", 0),
+        (":", 0),
         ("<=>", 4),
         ("===", 4),
         ("...", 1),
@@ -4039,9 +4313,16 @@ fn pop_n(stack: &mut Vec<String>, n: usize) -> Vec<String> {
     out
 }
 
+const DEFINED_CONST: u64 = 6;
+const DEFINED_METHOD: u64 = 7;
+const DEFINED_YIELD: u64 = 8;
+const DEFINED_ZSUPER: u64 = 9;
+
 fn defined_operand(instr: &YarvIbfInstruction) -> String {
     let raw: String = match instr.operands.get(1) {
-        Some(YarvOperand::Id(s) | YarvOperand::Literal(s)) => s.clone(),
+        Some(YarvOperand::Id(s) | YarvOperand::Literal(s) | YarvOperand::SymLiteral(s)) => {
+            s.clone()
+        }
         Some(YarvOperand::NumLiteral(s)) if s == "false" => "yield".to_owned(),
         _ => return "x".to_owned(),
     };

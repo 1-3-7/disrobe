@@ -17,9 +17,9 @@ use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_ruby::analyze_bytes;
 use ruby_toolchain::{ToolchainBanner, require_exact_mri_recompile};
 
-const GRADED: &str = "the recovered-ruby behaviour check over corpus/ruby/behaviour/programs.rb";
+const GRADED: &str = "the recovered-ruby behaviour check over corpus/ruby/behaviour";
 
-fn program_path() -> PathBuf {
+fn program_path(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("crates")
@@ -28,7 +28,7 @@ fn program_path() -> PathBuf {
         .join("corpus")
         .join("ruby")
         .join("behaviour")
-        .join("programs.rb")
+        .join(name)
 }
 
 fn run(ruby: &OsString, args: &[&Path]) -> Output {
@@ -61,11 +61,11 @@ struct Graded {
     recovered: Output,
 }
 
-fn grade(transform: fn(&str) -> String) -> Graded {
+fn grade(name: &str, transform: fn(&str) -> String) -> Graded {
     let toolchain: ToolchainBanner = require_exact_mri_recompile(GRADED);
     let scratch: ScratchDir =
         ScratchDir::create("disrobe_ruby_behaviour").expect("create scratch directory");
-    let source: PathBuf = program_path();
+    let source: PathBuf = program_path(name);
     let ibf_path: PathBuf = scratch.path().join("programs.yarvc");
     let ibf: Vec<u8> = compile_to_ibf(&toolchain.executable, &source, &ibf_path);
     let analysis = analyze_bytes(&ibf, "programs.yarvc").expect("analyze the compiled program");
@@ -89,9 +89,8 @@ fn grade(transform: fn(&str) -> String) -> Graded {
     }
 }
 
-#[test]
-fn the_recovered_program_prints_what_the_original_prints() {
-    let graded: Graded = grade(str::to_owned);
+fn assert_same_output(name: &str) {
+    let graded: Graded = grade(name, str::to_owned);
     assert!(
         graded.recovered.status.success(),
         "the recovered program failed: {}\nsource:\n{}",
@@ -107,8 +106,20 @@ fn the_recovered_program_prints_what_the_original_prints() {
 }
 
 #[test]
+fn the_recovered_program_prints_what_the_original_prints() {
+    assert_same_output("programs.rb");
+}
+
+#[test]
+fn recovered_control_flow_prints_what_the_original_prints() {
+    assert_same_output("control.rb");
+}
+
+#[test]
 fn a_changed_constant_in_the_recovered_program_turns_the_grade_red() {
-    let graded: Graded = grade(|source: &str| source.replacen("3.14159", "3.0", 1));
+    let graded: Graded = grade("programs.rb", |source: &str| {
+        source.replacen("3.14159", "3.0", 1)
+    });
     assert!(
         graded.recovered_source.contains("3.0"),
         "the mutation must reach the recovered source:\n{}",
