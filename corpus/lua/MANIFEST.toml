@@ -27,6 +27,12 @@ kind = "lua-source"
 size_bytes = 2027
 notes = "class and subclass tables with __index chains and method calls, per-iteration loop closures, varargs through select with multiple returns and an and/or value selection, an elseif ladder with a conjunctive arm, gsub with a function and its count, gmatch position captures, table.insert/remove/sort with a comparator, float and floor division and modulo of negatives, math.type, a while loop over a mixed and/or condition ending in an if, a repeat block whose until reads a body local, a negative-step numeric for"
 
+[[behaviour.fixtures]]
+path = "behaviour/loops.lua"
+kind = "lua-source"
+size_bytes = 846
+notes = "an if/else inside a generic for whose then arm assigns an outer local that the loop and the code after it read, break inside generic and numeric for, a pairs loop assigning an outer local under a condition, a break from an inner generic for nested in another"
+
 [megafile]
 description = "~1200-LOC fixture exercising 5.1/5.2/5.3/5.4 + LuaJIT feature surface; parses cleanly across all 5 runtimes"
 

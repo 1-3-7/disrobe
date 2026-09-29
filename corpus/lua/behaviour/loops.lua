@@ -1,0 +1,40 @@
+local state = "idle"
+local transitions = {idle = {go = "running"}, running = {stop = "idle", pause = "paused"}, paused = {go = "running"}}
+local log = {}
+for _, event in ipairs({"go", "pause", "go", "stop", "stop"}) do
+  local nxt = transitions[state][event]
+  if nxt then
+    state = nxt
+    log[#log + 1] = event .. ">" .. state
+  else
+    log[#log + 1] = event .. "!"
+  end
+end
+print(table.concat(log, " "), state)
+
+for _, v in ipairs({1, 2, 3}) do
+  if v == 2 then break end
+  print("ipairs", v)
+end
+
+for i = 1, 3 do
+  if i == 2 then break end
+  print("numeric", i)
+end
+
+local found
+for k, v in pairs({a = 1}) do
+  if v > 0 then
+    found = k
+  end
+end
+print(found)
+
+local total = 0
+for _, row in ipairs({{1, 2}, {3, 4}, {5}}) do
+  for _, cell in ipairs(row) do
+    if cell == 4 then break end
+    total = total + cell
+  end
+end
+print(total)

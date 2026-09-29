@@ -278,6 +278,7 @@ struct LiveAcrossBranch {
     reads: Vec<Vec<u32>>,
     writes: Vec<Vec<u32>>,
     effects: Vec<bool>,
+    successors: Vec<Vec<usize>>,
 }
 
 impl LiveAcrossBranch {
@@ -288,8 +289,12 @@ impl LiveAcrossBranch {
         let mut reads: Vec<Vec<u32>> = vec![Vec::new(); n];
         let mut writes: Vec<Vec<u32>> = vec![Vec::new(); n];
         let mut effects: Vec<bool> = vec![false; n];
+        let mut successors: Vec<Vec<usize>> = vec![Vec::new(); n];
         for (pc, raw) in p.code.iter().enumerate() {
             let d: Decoded = decode(*raw, dialect);
+            if let Some(next) = successors.get_mut(pc) {
+                *next = control_successors(p, pc, &d, dialect);
+            }
             for t in branch_targets(p, pc, &d, dialect) {
                 if (0..=n as i64).contains(&t) {
                     boundaries[t as usize] = true;
@@ -326,7 +331,34 @@ impl LiveAcrossBranch {
             reads,
             writes,
             effects,
+            successors,
         }
+    }
+
+    fn read_after_control_flow(&self, def_pc: usize, slot: u32) -> bool {
+        let n: usize = self.reads.len();
+        let mut seen: Vec<[bool; 2]> = vec![[false; 2]; n];
+        let mut stack: Vec<(usize, bool)> = vec![(def_pc + 1, false)];
+        while let Some((pc, crossed)) = stack.pop() {
+            let Some(visited) = seen.get_mut(pc) else {
+                continue;
+            };
+            if visited[usize::from(crossed)] {
+                continue;
+            }
+            visited[usize::from(crossed)] = true;
+            if self.reads[pc].contains(&slot) && crossed {
+                return true;
+            }
+            if self.writes[pc].contains(&slot) {
+                continue;
+            }
+            for &next in &self.successors[pc] {
+                let jumped: bool = next != pc + 1 || self.is_jump_target(next);
+                stack.push((next, crossed || jumped));
+            }
+        }
+        false
     }
 
     fn side_effect_before_first_read(&self, def_pc: usize, slot: u32) -> bool {
@@ -657,6 +689,26 @@ fn read_registers(d: &Decoded, dialect: LuaDialect) -> Vec<u32> {
 }
 
 #[must_use]
+fn control_successors(p: &LuaProto, pc: usize, d: &Decoded, dialect: LuaDialect) -> Vec<usize> {
+    let n: usize = p.code.len();
+    let mut out: Vec<usize> = branch_targets(p, pc, d, dialect)
+        .into_iter()
+        .filter_map(|t: i64| usize::try_from(t).ok())
+        .filter(|t: &usize| *t < n)
+        .collect();
+    let falls_through: bool = !matches!(
+        d.op,
+        Op::Jmp | Op::Return | Op::Return0 | Op::Return1 | Op::TailCall
+    );
+    if falls_through && pc + 1 < n {
+        out.push(pc + 1);
+    }
+    if d.op == Op::LoadBool && d.c != 0 && pc + 2 < n {
+        out.push(pc + 2);
+    }
+    out
+}
+
 fn branch_targets(p: &LuaProto, pc: usize, d: &Decoded, dialect: LuaDialect) -> Vec<i64> {
     let mut out: Vec<i64> = Vec::new();
     match d.op {
@@ -1185,7 +1237,10 @@ fn define(
         assign_pinned(state, slot, &value);
         return;
     }
+    let overwrites_a_declared_local: bool =
+        state.is_defined(slot) && state.reg(slot) == state.temp(slot);
     let materialize: bool = live.should_materialize(state.pc, slot)
+        || (overwrites_a_declared_local && live.read_after_control_flow(state.pc, slot))
         || contains_ident(&value, &state.temp(slot))
         || (!is_duplicable_expression(&value)
             && (live.reads_before_redefinition(state.pc, slot) > 1

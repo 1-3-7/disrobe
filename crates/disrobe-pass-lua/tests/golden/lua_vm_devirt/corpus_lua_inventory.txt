@@ -1,4 +1,5 @@
 baseline/hello.lua
+behaviour/loops.lua
 behaviour/objects.lua
 behaviour/tour.lua
 decompile_samples/src/arith_loops.lua

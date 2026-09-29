@@ -1,6 +1,8 @@
 use crate::decompile::luau_lift::{LStmt, LiftedStmt};
 use crate::decompile::luau_structure::{StructureWorkBudget, StructuredBlock};
 
+const GENERIC_FOR_CONTROL_WIDTH: usize = 2;
+
 #[derive(Debug, Clone)]
 enum Node {
     Raw(String),
@@ -648,7 +650,11 @@ fn structure_seq(
                     ctx.edges.carry(cur_index);
                 }
                 frame.state = SequenceState::AfterGenericFor { vars, iter };
-                frames.push(SequenceFrame::new(exit, Some(LoopCtx { exit })));
+                let break_target: usize = exit.saturating_add(GENERIC_FOR_CONTROL_WIDTH);
+                frames.push(SequenceFrame::new(
+                    exit,
+                    Some(LoopCtx { exit: break_target }),
+                ));
             }
             Node::Jump { target } => {
                 *pos += 1;
