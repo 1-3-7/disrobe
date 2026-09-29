@@ -1,9 +1,4 @@
-#![allow(
-    clippy::expect_used,
-    clippy::unwrap_used,
-    clippy::panic,
-    clippy::print_stdout
-)]
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use disrobe_pass_pyinstaller::{
     EntryType, ExtractOutput, ExtractedEntry, PyzEntry, extract_archive, extract_pyz_with_key,
