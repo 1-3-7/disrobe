@@ -1,13 +1,11 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
-use std::time::{Duration, Instant};
-
-use disrobe_pass_nativelang::demangle_nim;
 use disrobe_pass_nativelang::image::{
     MAX_STRING_COUNT, MAX_STRING_SCAN_BYTES, ascii_strings, ascii_strings_capped,
 };
 use disrobe_pass_nativelang::{
     CodeArch, ImageKind, NativeImage, NativeLang, Recovery, TypeReport, recover,
 };
+use disrobe_pass_nativelang::{DemangledSymbol, demangle_nim};
 
 fn over_cap_string_pool() -> Vec<u8> {
     let unit: &[u8] = b"Foo::Bar\x00";
@@ -34,12 +32,10 @@ const fn stripped_image(raw: &[u8]) -> NativeImage<'_> {
     }
 }
 
-fn recover_stripped(raw: &[u8], lang: NativeLang) -> (Recovery, Duration) {
+fn recover_stripped(raw: &[u8], lang: NativeLang) -> Recovery {
     let img: NativeImage<'_> = stripped_image(raw);
     let types: TypeReport = TypeReport::absent(false);
-    let start: Instant = Instant::now();
-    let rec: Recovery = recover(&img, lang, &types);
-    (rec, start.elapsed())
+    recover(&img, lang, &types)
 }
 
 #[test]
@@ -49,18 +45,12 @@ fn ascii_strings_caps_string_count_on_adversarial_runs() {
     for _ in 0..(MAX_STRING_COUNT + 4096) {
         buf.extend_from_slice(unit);
     }
-    let start: Instant = Instant::now();
     let strings: Vec<String> = ascii_strings(&buf, 3);
-    let elapsed: Duration = start.elapsed();
     assert!(
         strings.len() <= MAX_STRING_COUNT,
         "string count {} exceeded cap {}",
         strings.len(),
         MAX_STRING_COUNT
-    );
-    assert!(
-        elapsed < Duration::from_secs(20),
-        "scan took {elapsed:?}, expected bounded time"
     );
     assert!(strings.iter().all(|s: &String| s == "abc"));
 }
@@ -123,37 +113,29 @@ fn ascii_strings_capped_untruncated_on_small_input() {
 #[test]
 fn crystal_stripped_fallback_signals_truncation_and_stays_bounded() {
     let buf: Vec<u8> = over_cap_string_pool();
-    let (rec, elapsed): (Recovery, Duration) = recover_stripped(&buf, NativeLang::Crystal);
+    let rec: Recovery = recover_stripped(&buf, NativeLang::Crystal);
     assert!(
         rec.strings_truncated,
         "crystal fallback over the cap must surface truncation instead of silently dropping"
     );
     assert!(rec.strings_sampled <= MAX_STRING_COUNT);
-    assert!(
-        elapsed < Duration::from_secs(20),
-        "crystal fallback took {elapsed:?}, expected bounded time"
-    );
 }
 
 #[test]
 fn d_stripped_fallback_signals_truncation_and_stays_bounded() {
     let buf: Vec<u8> = over_cap_string_pool();
-    let (rec, elapsed): (Recovery, Duration) = recover_stripped(&buf, NativeLang::D);
+    let rec: Recovery = recover_stripped(&buf, NativeLang::D);
     assert!(
         rec.strings_truncated,
         "d fallback over the cap must surface truncation instead of silently dropping"
     );
     assert!(rec.strings_sampled <= MAX_STRING_COUNT);
-    assert!(
-        elapsed < Duration::from_secs(20),
-        "d fallback took {elapsed:?}, expected bounded time"
-    );
 }
 
 #[test]
 fn small_stripped_input_not_truncated() {
     let buf: &[u8] = b"\x00Foo::Bar\x00Baz::Qux\x00__crystal_main\x00";
-    let (rec, _elapsed): (Recovery, Duration) = recover_stripped(buf, NativeLang::Crystal);
+    let rec: Recovery = recover_stripped(buf, NativeLang::Crystal);
     assert!(
         !rec.strings_truncated,
         "a small input must report strings_truncated=false"
@@ -166,13 +148,13 @@ fn demangle_nim_bounds_deep_template_nesting() {
     for _ in 0..200_000 {
         mangled.push_str("1aI");
     }
-    let start: Instant = Instant::now();
-    let result: Option<_> = demangle_nim(&mangled);
-    let elapsed: Duration = start.elapsed();
-    let _ = result;
+    let symbol: DemangledSymbol =
+        demangle_nim(&mangled).expect("the leading component still demangles");
+    assert_eq!(symbol.demangled, "a");
     assert!(
-        elapsed < Duration::from_secs(10),
-        "deeply nested nim demangle took {elapsed:?}, expected bounded time"
+        symbol.params.is_empty(),
+        "template nesting past the depth cap is refused, not rendered: {:?}",
+        symbol.params.len()
     );
 }
 

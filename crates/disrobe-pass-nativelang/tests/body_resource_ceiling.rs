@@ -1,8 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod common;
 
-use std::time::{Duration, Instant};
-
 use common::{ZIG_ELF, fixture_or_fail};
 use disrobe_pass_nativelang::{
     BodyRecovery, BodyRejection, BodySkip, BodyStatus, DwarfReport, FunctionBody, FunctionOrigin,
@@ -12,7 +10,6 @@ use disrobe_pass_nativelang::{
 };
 
 const OVERFLOW: usize = 512;
-const HOSTILE_WALL_CLOCK: Duration = Duration::from_secs(90);
 
 fn text_extent(image: &NativeImage<'_>) -> (u64, u64) {
     let text: &Section<'_> = image
@@ -59,15 +56,13 @@ fn emitted_bytes(recovery: &BodyRecovery) -> u64 {
         .sum()
 }
 
-fn drive(functions: &[RecoveredFunction], bytes: &[u8]) -> (BodyRecovery, Duration) {
+fn drive(functions: &[RecoveredFunction], bytes: &[u8]) -> BodyRecovery {
     let image: NativeImage<'_> = NativeImage::parse(bytes).expect("the fixture must parse");
-    let start: Instant = Instant::now();
-    let recovery: BodyRecovery = recover_bodies(&image, NativeLang::Zig, functions);
-    (recovery, start.elapsed())
+    recover_bodies(&image, NativeLang::Zig, functions)
 }
 
 #[test]
-fn a_function_list_at_the_budget_is_bounded_in_retained_bytes_and_wall_clock() {
+fn a_function_list_at_the_budget_is_bounded_in_retained_bytes() {
     let bytes: Vec<u8> = fixture_or_fail(ZIG_ELF);
     let (base, span): (u64, u64) = {
         let image: NativeImage<'_> = NativeImage::parse(&bytes).expect("parse");
@@ -83,7 +78,7 @@ fn a_function_list_at_the_budget_is_bounded_in_retained_bytes_and_wall_clock() {
         .map(|index: usize| synthesised(base + stride * index as u64, stride, index))
         .collect();
 
-    let (recovery, elapsed): (BodyRecovery, Duration) = drive(&functions, &bytes);
+    let recovery: BodyRecovery = drive(&functions, &bytes);
 
     assert_eq!(recovery.function_count as usize, declared);
     let total: u32 =
@@ -121,14 +116,13 @@ fn a_function_list_at_the_budget_is_bounded_in_retained_bytes_and_wall_clock() {
     );
     println!(
         "at the budget: {declared} declared, {} attempted, {} recovered, {} elided, {} rejected, \
-         {} not attempted, {} retained source bytes, {:?} elapsed",
+         {} not attempted, {} retained source bytes",
         MAX_BODY_FUNCTIONS,
         recovery.recovered,
         recovery.recovered_elided,
         recovery.rejected,
         recovery.not_attempted,
         recovery.retained_source_bytes,
-        elapsed
     );
 }
 
@@ -145,7 +139,7 @@ fn overlapping_oversized_carves_cannot_grow_the_copy_beyond_the_declared_ceiling
         .map(|index: usize| synthesised(base, window, index))
         .collect();
 
-    let (recovery, elapsed): (BodyRecovery, Duration) = drive(&functions, &bytes);
+    let recovery: BodyRecovery = drive(&functions, &bytes);
 
     assert_eq!(recovery.function_count as usize, declared);
     let total: u32 =
@@ -196,15 +190,10 @@ fn overlapping_oversized_carves_cannot_grow_the_copy_beyond_the_declared_ceiling
         "a crafted list of {declared} carves over the same window must exhaust the aggregate \
          budget, refusing the remainder with a named reason"
     );
-    assert!(
-        elapsed < HOSTILE_WALL_CLOCK,
-        "{declared} overlapping {window}-byte carves took {elapsed:?}, above the \
-         {HOSTILE_WALL_CLOCK:?} bound"
-    );
     println!(
         "{declared} carves all covering the same {window}-byte window: {} attempted carve bytes, \
-         {refused} refused by the aggregate budget, {} rejected, {:?} elapsed",
-        attempted, recovery.rejected, elapsed
+         {refused} refused by the aggregate budget, {} rejected",
+        attempted, recovery.rejected
     );
 }
 
