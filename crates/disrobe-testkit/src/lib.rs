@@ -11,6 +11,7 @@ mod mutate;
 mod reach;
 mod rng;
 mod run;
+mod tool;
 mod wire;
 mod workspace;
 
@@ -19,9 +20,11 @@ pub use config::{
     SEED_ENV, StressConfig,
 };
 pub use corpus::{CheckFn, CorpusEntry, CorpusSource, StressCase};
+pub use disrobe_tool_process::CommandSpec;
 pub use error::{BatchFailure, BatchFailureReason, CulpritCase, StressError};
 pub use isolate::{BATCH_ENV, WorkerTest, run_isolated, worker_main};
 pub use mutate::{MutationKind, mutate};
 pub use reach::{ReachTally, SeedReach, ShapelessSeed};
 pub use rng::XorShift64;
 pub use run::run_cases;
+pub use tool::{ToolError, ToolOutput, tool_output};

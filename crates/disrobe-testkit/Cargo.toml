@@ -16,7 +16,9 @@ publish = false
 workspace = true
 
 [dependencies]
+disrobe-tool-process = { workspace = true }
 tempfile = "3"
+thiserror = { workspace = true }
 
 [package.metadata.disrobe]
 level = "dev"

@@ -2224,6 +2224,7 @@ dependencies = [
  "disrobe-llm-metadata",
  "disrobe-mba",
  "disrobe-pass-native",
+ "disrobe-testkit",
  "flate2",
  "lzma-rs",
  "miette",
@@ -2243,7 +2244,6 @@ version = "0.10.6"
 dependencies = [
  "disrobe-bytes",
  "disrobe-core",
- "disrobe-llm-metadata",
  "flate2",
  "gimli 0.32.3",
  "iced-x86",
@@ -2261,7 +2261,6 @@ dependencies = [
  "base64",
  "boa_engine",
  "disrobe-core",
- "disrobe-llm-metadata",
  "disrobe-mba",
  "divan",
  "indexmap 2.14.0",
@@ -2733,6 +2732,7 @@ dependencies = [
  "disrobe-core",
  "disrobe-llm-metadata",
  "disrobe-mba",
+ "disrobe-testkit",
  "divan",
  "gimli 0.32.3",
  "indexmap 2.14.0",
@@ -3003,7 +3003,9 @@ dependencies = [
 name = "disrobe-testkit"
 version = "0.10.6"
 dependencies = [
+ "disrobe-tool-process",
  "tempfile",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
