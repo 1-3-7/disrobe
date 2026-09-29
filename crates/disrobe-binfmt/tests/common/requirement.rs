@@ -84,6 +84,15 @@ pub const BUN: Toolchain = Toolchain {
     install_hint: "install Bun and put bun on PATH",
 };
 
+pub const CABEXTRACT: Toolchain = Toolchain {
+    program: "cabextract",
+    programs: &["cabextract"],
+    install_paths: &[],
+    identity: Some("cabextract"),
+    require_var: "DISROBE_REQUIRE_CABEXTRACT",
+    install_hint: "install cabextract and put it on PATH",
+};
+
 pub const READELF: Toolchain = Toolchain {
     program: "readelf",
     programs: &["readelf", "llvm-readelf", "eu-readelf"],
