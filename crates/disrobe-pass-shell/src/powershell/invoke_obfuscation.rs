@@ -128,6 +128,12 @@ pub fn reverse_string(input: &str) -> ReverseReport {
             out = ascii;
         }
     }
+    if let Some(reversed) = fold_reversed_index_joins(&out) {
+        if reversed != out {
+            transformations.push("fold-reversed-index-joins".to_owned());
+            out = reversed;
+        }
+    }
     ReverseReport {
         level: InvokeObfuscationLevel::String,
         transformations,
@@ -663,6 +669,33 @@ fn fold_format_strings(s: &str) -> Option<String> {
                     }
                 }
                 ps_double_quoted(&out)
+            })
+            .into_owned(),
+    )
+}
+
+static REVERSED_INDEX_JOIN: LazyLock<&'static Regex> =
+    LazyLock::new(|| regex!(r"-join\s*\(\s*'([^']*)'\s*\[\s*-1\s*\.\.\s*-\s*(\d+)\s*\]\s*\)"));
+
+fn fold_reversed_index_joins(s: &str) -> Option<String> {
+    if !REVERSED_INDEX_JOIN.is_match(s) {
+        return None;
+    }
+    Some(
+        REVERSED_INDEX_JOIN
+            .replace_all(s, |c: &regex::Captures<'_>| {
+                let whole: &str = c.get(0).map_or("", |m: regex::Match<'_>| m.as_str());
+                let literal: &str = c.get(1).map_or("", |m: regex::Match<'_>| m.as_str());
+                let count: Option<usize> = c
+                    .get(2)
+                    .and_then(|m: regex::Match<'_>| m.as_str().parse::<usize>().ok());
+                let chars: Vec<char> = literal.chars().collect();
+                match count {
+                    Some(n) if n == chars.len() => {
+                        ps_double_quoted(&chars.iter().rev().collect::<String>())
+                    }
+                    _ => whole.to_owned(),
+                }
             })
             .into_owned(),
     )
