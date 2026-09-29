@@ -84,10 +84,10 @@ fn scan_pro_markers(payload: &[u8]) -> Vec<String> {
 mod tests {
     use super::*;
 
-    fn default_build_header(serial: &[u8; 6]) -> Vec<u8> {
+    fn default_build_header(serial: [u8; 6]) -> Vec<u8> {
         let mut p: Vec<u8> = vec![0u8; 128];
         p[..2].copy_from_slice(b"PY");
-        p[2..8].copy_from_slice(serial);
+        p[2..8].copy_from_slice(&serial);
         p[9] = 3;
         p[10] = 12;
         p[16] = 0x80;
@@ -104,13 +104,13 @@ mod tests {
 
     #[test]
     fn a_licence_serial_and_nonce_bytes_are_not_pro_evidence() {
-        let det: NineProDetection = detect_nine_pro(&default_build_header(b"009070"));
+        let det: NineProDetection = detect_nine_pro(&default_build_header(*b"009070"));
         assert_eq!(det, NineProDetection::default());
     }
 
     #[test]
     fn a_hardware_marker_signals_a_bound_pro_build() {
-        let mut p: Vec<u8> = default_build_header(b"000000");
+        let mut p: Vec<u8> = default_build_header(*b"000000");
         p.extend_from_slice(b"__pyarmor_hwid__");
         let det: NineProDetection = detect_nine_pro(&p);
         assert!(det.is_nine_pro);
@@ -120,7 +120,7 @@ mod tests {
 
     #[test]
     fn a_licence_file_marker_is_a_licence_file_binding() {
-        let mut p: Vec<u8> = default_build_header(b"000000");
+        let mut p: Vec<u8> = default_build_header(*b"000000");
         p.extend_from_slice(b"pyarmor.license.lic");
         assert_eq!(
             detect_nine_pro(&p).bind_mode,
