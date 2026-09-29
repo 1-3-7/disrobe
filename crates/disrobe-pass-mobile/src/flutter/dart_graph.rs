@@ -246,6 +246,14 @@ impl<'data> DartGraphCursor<'data> {
         self.stream.position()
     }
 
+    fn capacity(&self, count: usize) -> usize {
+        disrobe_bytes::bounded_element_capacity(
+            u64::try_from(count).unwrap_or(u64::MAX),
+            1,
+            self.stream.remaining(),
+        )
+    }
+
     fn read_u8(&mut self, resource: &'static str) -> Result<u8> {
         let offset: usize = self.position();
         self.stream
@@ -444,7 +452,8 @@ pub(super) fn parse_dart_graph(
         reference_count: 0,
         total_string_bytes: 0,
     };
-    let mut clusters: Vec<DartGraphCluster> = Vec::with_capacity(cluster_count);
+    let mut clusters: Vec<DartGraphCluster> =
+        Vec::with_capacity(parser.cursor.capacity(cluster_count));
     for index in 0..cluster_count {
         let cluster: DartGraphCluster = parser.read_allocation(index)?;
         clusters.push(cluster);
@@ -650,7 +659,7 @@ impl DartGraphParser<'_> {
         class_id: u32,
     ) -> Result<DartGraphAllocation> {
         let count: usize = self.read_count(index, "object count")?;
-        let mut lengths: Vec<usize> = Vec::with_capacity(count);
+        let mut lengths: Vec<usize> = Vec::with_capacity(self.cursor.capacity(count));
         for _ in 0..count {
             let encoded: usize = self.read_variable_length(index)?;
             let length: usize = if kind == DartClusterBodyKind::String {
@@ -1247,7 +1256,8 @@ impl DartGraphParser<'_> {
             let actual: usize = self.read_variable_length(cluster.index)?;
             self.validate_repeated_length(cluster, reference, actual, expected)?;
             let mut references: Vec<u32> = Vec::new();
-            let mut slots: Vec<DartPoolSlot> = Vec::with_capacity(expected.min(MAX_POOL_SLOTS));
+            let mut slots: Vec<DartPoolSlot> =
+                Vec::with_capacity(self.cursor.capacity(expected).min(MAX_POOL_SLOTS));
             for _ in 0..expected {
                 let bits: u8 = self.cursor.read_u8("object pool entry bits")?;
                 let behavior: u8 =
@@ -1429,7 +1439,7 @@ impl DartGraphParser<'_> {
                 limit: self.limits.references,
             });
         }
-        let mut references: Vec<u32> = Vec::with_capacity(count);
+        let mut references: Vec<u32> = Vec::with_capacity(self.cursor.capacity(count));
         for _ in 0..count {
             references.push(self.cursor.read_ref(self.object_count)?);
         }

@@ -274,9 +274,13 @@ fn parse_string_pool(bytes: &[u8], chunk_off: usize) -> Result<StringPool> {
     let is_utf8: bool = flags & FLAG_UTF8 != 0;
 
     let offsets_base: usize = chunk_off + header_size as usize;
-    let mut offsets: Vec<u32> = Vec::with_capacity(string_count.min(1 << 20) as usize);
     let mut off_reader: ByteReader<'_> = ByteReader::new(bytes);
     off_reader.seek(offsets_base).map_err(axml_truncated)?;
+    let mut offsets: Vec<u32> = Vec::with_capacity(disrobe_bytes::bounded_element_capacity(
+        u64::from(string_count),
+        4,
+        off_reader.remaining(),
+    ));
     for _ in 0..string_count {
         offsets.push(off_reader.read_u32_le().map_err(axml_truncated)?);
     }
@@ -580,7 +584,9 @@ fn parse_start_element(
         .as_deref()
         .and_then(|u: &str| ns_uri_to_prefix.get(u).cloned());
 
-    let mut attributes: Vec<AxmlAttribute> = Vec::with_capacity(attr_count as usize);
+    let mut attributes: Vec<AxmlAttribute> = Vec::with_capacity(
+        disrobe_bytes::bounded_element_capacity(u64::from(attr_count), 20, r.remaining()),
+    );
     for _ in 0..attr_count {
         let attr_ns_idx: i32 = r.read_i32_le().map_err(axml_truncated)?;
         let attr_name_idx: i32 = r.read_i32_le().map_err(axml_truncated)?;

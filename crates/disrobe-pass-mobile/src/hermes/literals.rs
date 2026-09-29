@@ -37,7 +37,11 @@ pub fn decode_literals(
     kind: BufferKind,
 ) -> Vec<LiteralValue> {
     let capped: usize = count.min(MAX_DECODED_LITERALS);
-    let mut out: Vec<LiteralValue> = Vec::with_capacity(capped.min(buffer.len()));
+    let mut out: Vec<LiteralValue> = Vec::with_capacity(disrobe_bytes::bounded_element_capacity(
+        u64::try_from(capped).unwrap_or(u64::MAX),
+        1,
+        buffer.len().saturating_sub(start),
+    ));
     let mut idx: usize = start;
     let mut remaining: usize = count;
     while remaining > 0 && idx < buffer.len() && out.len() < MAX_DECODED_LITERALS {

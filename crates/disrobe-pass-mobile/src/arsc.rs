@@ -136,10 +136,13 @@ fn parse_string_pool(bytes: &[u8], chunk_off: usize) -> Result<Vec<String>> {
     let is_utf8: bool = flags & FLAG_UTF8 != 0;
 
     let offsets_base: usize = chunk_off + header_size as usize;
-    let available_slots: usize = bytes.len().saturating_sub(offsets_base) / 4;
     let mut off_reader: ByteReader<'_> = ByteReader::new(bytes);
     off_reader.seek(offsets_base).map_err(arsc_truncated)?;
-    let mut offsets: Vec<u32> = Vec::with_capacity((string_count as usize).min(available_slots));
+    let mut offsets: Vec<u32> = Vec::with_capacity(disrobe_bytes::bounded_element_capacity(
+        u64::from(string_count),
+        4,
+        off_reader.remaining(),
+    ));
     for _ in 0..string_count {
         offsets.push(off_reader.read_u32_le().map_err(arsc_truncated)?);
     }

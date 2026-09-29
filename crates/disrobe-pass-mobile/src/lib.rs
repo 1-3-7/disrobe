@@ -3,10 +3,7 @@
 #![allow(
     clippy::redundant_pub_crate,
     clippy::too_many_lines,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
     clippy::cast_lossless,
-    clippy::cast_sign_loss,
     clippy::case_sensitive_file_extension_comparisons,
     clippy::needless_type_cast,
     clippy::manual_is_multiple_of,
