@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use crate::binary::GoImage;
+use crate::binary::{CallArchitecture, GoImage};
 use crate::debug::{dbg_kv, dbg_kv_guarded, dbg_line, dbg_section};
 use crate::pclntab::{LocatedPclntab, locate_pclntab};
 use crate::symbols::{GoFunc, GoSymbols, parse_symbols};
@@ -96,6 +96,22 @@ const LITERAL_RECOVERY_LIMIT: &str = "garble -literals string encryption is not 
      cannot reach its thunk (for example a -tiny build that strips the function table the thunk \
      scan uses); this is not an information-theoretic boundary.";
 
+const LITERAL_NO_INTERPRETER_LIMIT: &str = "garble -literals string encryption is recovered by emulating each \
+     literal's decrypt thunk, and the thunk interpreter covers x86-64 code only. this build's \
+     architecture has no interpreter, so its encrypted literals are reported as present but stay \
+     encrypted; the key material is still in the file.";
+
+fn literal_limit_for(
+    quality: GarbleQuality,
+    architecture: Option<CallArchitecture>,
+) -> Option<String> {
+    match (quality, architecture) {
+        (GarbleQuality::None, _) => None,
+        (_, Some(CallArchitecture::X86_64)) => Some(LITERAL_RECOVERY_LIMIT.to_owned()),
+        _ => Some(LITERAL_NO_INTERPRETER_LIMIT.to_owned()),
+    }
+}
+
 const STDLIB_FINGERPRINT_NAMES: &[&str] = &[
     "runtime.main",
     "runtime.goexit",
@@ -182,10 +198,8 @@ pub fn analyze(image: &GoImage<'_>, syms: &GoSymbols) -> GarbleReport {
                 .to_owned()
         });
     }
-    let literal_recovery_limit: Option<String> = match quality {
-        GarbleQuality::None => None,
-        _ => Some(LITERAL_RECOVERY_LIMIT.to_owned()),
-    };
+    let literal_recovery_limit: Option<String> =
+        literal_limit_for(quality, image.call_architecture());
     GarbleReport {
         quality,
         detection_score,
@@ -884,6 +898,30 @@ fn extract_seed_hash(image: &GoImage<'_>) -> Option<String> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_x86_64_interpreter_limit_is_not_claimed_for_other_architectures() {
+        let x86_64: Option<String> =
+            literal_limit_for(GarbleQuality::Detected, Some(CallArchitecture::X86_64));
+        assert!(x86_64.is_some_and(|text: String| text.contains("x86-64 interpreter")));
+        for architecture in [
+            Some(CallArchitecture::Arm64),
+            Some(CallArchitecture::X86),
+            None,
+        ] {
+            let text: String = literal_limit_for(GarbleQuality::Detected, architecture)
+                .expect("a garbled build carries a literal limit");
+            assert!(
+                text.contains("covers x86-64 code only")
+                    && !text.contains("x86-64 interpreter runs"),
+                "{architecture:?}: {text}"
+            );
+        }
+        assert_eq!(
+            literal_limit_for(GarbleQuality::None, Some(CallArchitecture::Arm64)),
+            None
+        );
+    }
 
     #[test]
     fn literal_limit_is_reclassified_off_the_one_time_pad_claim() {
