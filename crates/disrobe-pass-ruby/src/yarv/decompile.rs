@@ -435,6 +435,12 @@ fn try_render_exception_region(
 
     let pad: String = indent(depth);
     let targets: Vec<Option<usize>> = resolve_branch_targets(body);
+    if targets[..start]
+        .iter()
+        .any(|target: &Option<usize>| target.is_some_and(|t: usize| t > start))
+    {
+        return None;
+    }
     let mut pending: Vec<String> = Vec::new();
     let mut discarded: Vec<String> = Vec::new();
     render_region(

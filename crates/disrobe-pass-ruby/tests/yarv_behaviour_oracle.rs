@@ -184,6 +184,11 @@ fn nested_and_value_case_in_blocks_print_what_the_original_prints() {
 }
 
 #[test]
+fn a_branch_holding_a_rescue_keeps_its_else_arm() {
+    assert_same_output("branch_rescue.rb");
+}
+
+#[test]
 fn a_case_in_the_recogniser_cannot_recover_is_refused_by_name_between_surviving_statements() {
     let scratch: ScratchDir =
         ScratchDir::create("disrobe_ruby_refusal").expect("create scratch directory");
