@@ -124,7 +124,6 @@ fn install_ghidra(dry_run: bool, fmt: OutputFormat) -> miette::Result<()> {
             install_dir.display()
         )
     })?;
-    prepend_path_for_current_process(&support_dir);
     let export_line: String = path_export_line(&support_dir);
 
     let report: InstallReport = InstallReport {
@@ -455,19 +454,6 @@ fn ghidra_install_dir() -> PathBuf {
             .join("ghidra");
     }
     PathBuf::from("./.disrobe-deps/ghidra")
-}
-
-fn prepend_path_for_current_process(dir: &Path) {
-    let sep: char = if cfg!(windows) { ';' } else { ':' };
-    let old: std::ffi::OsString = std::env::var_os("PATH").unwrap_or_default();
-    let mut new: std::ffi::OsString = dir.as_os_str().to_os_string();
-    if !old.is_empty() {
-        new.push(sep.to_string());
-        new.push(&old);
-    }
-    unsafe {
-        std::env::set_var("PATH", &new);
-    }
 }
 
 fn path_export_line(dir: &Path) -> String {

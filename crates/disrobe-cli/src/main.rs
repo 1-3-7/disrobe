@@ -1,4 +1,5 @@
 #![recursion_limit = "256"]
+#![forbid(unsafe_code)]
 #![allow(
     clippy::print_stdout,
     clippy::print_stderr,
