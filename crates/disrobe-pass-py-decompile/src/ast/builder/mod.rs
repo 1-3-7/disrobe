@@ -77,6 +77,7 @@ impl AstBuilder for DefaultAstBuilder {
         } else {
             build_frame(code, &frame_tree.root, &stream.ops)?
         };
+        loops::verify_recovered_loops(&stream, &raw_body)?;
         let stripped: Vec<Stmt> =
             strip_module_implicit_return(strip_module_docstring_stmt(raw_body, code));
         let mut postprocessed: Vec<Stmt> = postprocess_body(stripped, BodyKind::Module);

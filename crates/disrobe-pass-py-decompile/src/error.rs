@@ -59,6 +59,13 @@ pub enum DecompileError {
     #[diagnostic(code("DR-PYDEC-0014"))]
     UnresolvedMarker { stem: String, line: usize },
 
+    #[error(
+        "the structured body keeps {recovered} loops but the bytecode holds {cycles} separate \
+         loop cycles; the body is refused rather than published without a loop"
+    )]
+    #[diagnostic(code("DR-PYDEC-0016"))]
+    LoopDropped { cycles: usize, recovered: usize },
+
     #[error("io error: {0}")]
     #[diagnostic(code("DR-PYDEC-0010"))]
     Io(#[from] std::io::Error),

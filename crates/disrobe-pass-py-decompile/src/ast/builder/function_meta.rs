@@ -3,6 +3,7 @@ use super::exprs::{
     DR_TYPEVAR_MARKER, StackSim, build_linear_stmts_sim, is_build_class_marker, load_local,
     load_name, local_name_at, name_at, object_to_const,
 };
+use super::loops::verify_recovered_loops;
 use super::postprocess::{
     BodyKind, parse_annotation_string, postprocess_body, strip_generator_stopiteration_raise,
     strip_module_docstring_stmt, strip_module_implicit_return,
@@ -2073,8 +2074,15 @@ fn function_trailing_return_is_explicit(code: &CodeObject, stream: &DecodedStrea
     let Some(&site_off): Option<&u32> = stream.offsets.get(return_site) else {
         return false;
     };
+    if (stream.version.major(), stream.version.minor()) >= (3, 10)
+        && return_site_predecessors(stream, return_site) >= 2
+    {
+        return true;
+    }
     let reached_by_forward_cond: bool = (0..return_site).any(|j: usize| {
-        (is_forward_cond_jump(&stream.ops[j]) || stream.none_jump_kind.contains_key(&j))
+        (is_forward_cond_jump(&stream.ops[j])
+            || stream.none_jump_kind.contains_key(&j)
+            || matches!(stream.ops[j], CanonicalOp::ForIter(_)))
             && stream
                 .offsets
                 .get(resolve_jump_target(stream, j, &stream.ops[j]).unwrap_or(usize::MAX))
@@ -2096,6 +2104,33 @@ fn function_trailing_return_is_explicit(code: &CodeObject, stream: &DecodedStrea
                 | CanonicalOp::JumpAbsolute(_)
         )
     })
+}
+
+fn return_site_predecessors(stream: &DecodedStream, return_site: usize) -> usize {
+    let jumps: usize = (0..stream.ops.len())
+        .filter(|&j: &usize| {
+            stream.ops.get(j).is_some_and(|op: &CanonicalOp| {
+                resolve_jump_target(stream, j, op) == Some(return_site)
+            })
+        })
+        .count();
+    let falls_in: bool =
+        last_significant_back(stream, 0, return_site).is_some_and(|prev: usize| {
+            !matches!(
+                stream.ops.get(prev),
+                Some(
+                    CanonicalOp::Return
+                        | CanonicalOp::ReturnConst(_)
+                        | CanonicalOp::Raise(_)
+                        | CanonicalOp::Reraise(_)
+                        | CanonicalOp::JumpForward(_)
+                        | CanonicalOp::JumpBackward(_)
+                        | CanonicalOp::JumpBackwardNoInterrupt(_)
+                        | CanonicalOp::JumpAbsolute(_)
+                )
+            )
+        });
+    jumps + usize::from(falls_in)
 }
 
 pub(super) fn build_nested_function_def(
@@ -2144,7 +2179,10 @@ pub(super) fn build_nested_function_def(
     };
     let structured: Result<Vec<Stmt>> = {
         let _code_scope: NestedCodeScope = NestedCodeScope::enter();
-        structure_stmts(nested, &stream, 0, stream.ops.len())
+        structure_stmts(nested, &stream, 0, stream.ops.len()).and_then(|body: Vec<Stmt>| {
+            verify_recovered_loops(&stream, &body)?;
+            Ok(body)
+        })
     };
     let body_raw: Vec<Stmt> = match structured {
         Ok(body) => body,

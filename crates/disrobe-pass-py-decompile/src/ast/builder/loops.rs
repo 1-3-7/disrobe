@@ -31,7 +31,8 @@ use super::{
     StructureHiCapGuard, charge_exit_probe, loop_frame_has_header, memoized_exit_probe,
     negate_cond_expr, none_jump_test, pop_loop_frame, push_loop_frame, with_boolop_context,
 };
-use crate::ast::node::{BoolOpKind, ConstValue, Expr, ExprCtx, Stmt};
+use crate::ast::node::{BoolOpKind, Comprehension, ConstValue, Expr, ExprCtx, Stmt};
+use crate::ast::visitor::{Visitor, walk_comprehension, walk_stmt};
 use crate::bytecode::opcode::CanonicalOp;
 use crate::error::{DecompileError, Result};
 use disrobe_py_marshal::CodeObject;
@@ -391,6 +392,7 @@ fn find_infinite_while(
                 && !is_async_cleanup_throw_back_edge(stream, j)
                 && !back_edge_inside_exc_handler_cold_block(stream, header, j)
                 && resolve_jump_target(stream, j, &stream.ops[j]) == Some(header)
+                && !back_edge_leaves_handler_inside_loop(stream, header, j, hi)
         });
         let Some(back_edge): Option<usize> = back_edge else {
             continue;
@@ -399,6 +401,9 @@ fn find_infinite_while(
             continue;
         }
         if has_loop_entry_gate(stream, lo, header) {
+            continue;
+        }
+        if exits_to_enclosing_header_in_region(stream, lo, header, back_edge) {
             continue;
         }
         if allow_inline_break
@@ -436,6 +441,52 @@ fn find_infinite_while(
         });
     }
     None
+}
+
+#[deny(clippy::indexing_slicing)]
+fn back_edge_leaves_handler_inside_loop(
+    stream: &DecodedStream,
+    header: usize,
+    back_edge: usize,
+    hi: usize,
+) -> bool {
+    let reenters_header = |j: usize| -> bool {
+        stream.ops.get(j).is_some_and(|op: &CanonicalOp| {
+            is_back_edge(op)
+                && resolve_jump_target(stream, j, op) == Some(header)
+                && !back_edge_inside_exc_handler_cold_block(stream, header, j)
+        })
+    };
+    stream.exception_table.iter().any(|entry| {
+        let (Some(try_start), Some(handler)): (Option<usize>, Option<usize>) = (
+            stream.index_for_offset(entry.start),
+            stream.index_for_offset(entry.target),
+        ) else {
+            return false;
+        };
+        try_start >= header
+            && try_start < back_edge
+            && handler > back_edge
+            && handler < hi
+            && (handler + 1..hi).any(reenters_header)
+    })
+}
+
+fn exits_to_enclosing_header_in_region(
+    stream: &DecodedStream,
+    lo: usize,
+    header: usize,
+    back_edge: usize,
+) -> bool {
+    (header..back_edge).any(|k: usize| {
+        stream.ops.get(k).is_some_and(|op: &CanonicalOp| {
+            resolve_jump_target(stream, k, op).is_some_and(|target: usize| {
+                target >= lo
+                    && target < header
+                    && matches!(stream.ops.get(target), Some(CanonicalOp::ForIter(_)))
+            })
+        })
+    })
 }
 
 fn back_edge_inside_exc_handler_cold_block(
@@ -1050,9 +1101,10 @@ pub(super) fn guard_peels_enclosed_while(
         && if stream.is_pre_311() {
             pre311_terminal_peel(stream, region.exit, target)
         } else {
-            target == after_exit
-                && terminal_exit_pad_relation(stream, region.exit, target, hi)
-                    != TerminalExitPadRelation::Distinct
+            let relation: TerminalExitPadRelation =
+                terminal_exit_pad_relation(stream, region.exit, target, hi);
+            relation == TerminalExitPadRelation::Equivalent
+                || target == after_exit && relation != TerminalExitPadRelation::Distinct
         }
         && last_significant_back(stream, 0, region.header) == Some(guard)
 }
@@ -2367,7 +2419,8 @@ pub(super) fn try_enclosed_by_loop(
             && loop_region.header <= region.try_start
             && region.try_start < loop_region.back_edge
             && region.protected_end() <= loop_region.back_edge
-            && region.handler_start >= loop_region.back_edge
+            && (region.handler_start >= loop_region.back_edge
+                || region.region_end() <= loop_region.body_end)
         {
             return true;
         }
@@ -4866,6 +4919,178 @@ fn redundant_entry_guard_start(
         });
     }
     Ok(Some(start))
+}
+
+pub(super) fn verify_recovered_loops(stream: &DecodedStream, body: &[Stmt]) -> Result<()> {
+    if (stream.version.major(), stream.version.minor()) < (3, 8) {
+        return Ok(());
+    }
+    let cycles: usize = loop_cycle_count(stream);
+    if cycles == 0 {
+        return Ok(());
+    }
+    let mut counter: LoopCounter = LoopCounter { loops: 0 };
+    for stmt in body {
+        counter.visit_stmt(stmt);
+    }
+    if counter.loops >= cycles {
+        Ok(())
+    } else {
+        Err(DecompileError::LoopDropped {
+            cycles,
+            recovered: counter.loops,
+        })
+    }
+}
+
+struct LoopCounter {
+    loops: usize,
+}
+
+impl Visitor for LoopCounter {
+    fn visit_stmt(&mut self, stmt: &Stmt) {
+        if matches!(stmt, Stmt::For { .. } | Stmt::While { .. }) {
+            self.loops += 1;
+        }
+        walk_stmt(self, stmt);
+    }
+
+    fn visit_comprehension(&mut self, comp: &Comprehension) {
+        self.loops += 1;
+        walk_comprehension(self, comp);
+    }
+}
+
+fn loop_cycle_count(stream: &DecodedStream) -> usize {
+    let len: usize = stream.ops.len();
+    let mut successors: Vec<Vec<usize>> = vec![Vec::new(); len];
+    for (index, op) in stream.ops.iter().enumerate() {
+        let falls_through: bool = !matches!(
+            op,
+            CanonicalOp::JumpForward(_)
+                | CanonicalOp::JumpAbsolute(_)
+                | CanonicalOp::JumpBackward(_)
+                | CanonicalOp::JumpBackwardNoInterrupt(_)
+                | CanonicalOp::Return
+                | CanonicalOp::ReturnConst(_)
+                | CanonicalOp::Raise(_)
+                | CanonicalOp::Reraise(_)
+        );
+        if falls_through && index + 1 < len {
+            successors[index].push(index + 1);
+        }
+        if let Some(target) = resolve_jump_target(stream, index, op)
+            && target < len
+            && (target > index || can_close_a_loop(op))
+        {
+            successors[index].push(target);
+        }
+    }
+    let mut budget: usize = len.saturating_mul(8).saturating_add(1024);
+    'entries: for entry in &stream.exception_table {
+        let Some(handler): Option<usize> = stream.index_for_offset(entry.target) else {
+            continue;
+        };
+        let first: usize = stream
+            .offsets
+            .partition_point(|&offset: &u32| offset < entry.start);
+        let last: usize = stream
+            .offsets
+            .partition_point(|&offset: &u32| offset < entry.end());
+        for edges in successors.iter_mut().take(last).skip(first) {
+            if budget == 0 {
+                break 'entries;
+            }
+            budget -= 1;
+            edges.push(handler);
+        }
+    }
+    distinct_source_loop_count(&successors, &stream.lines)
+}
+
+fn can_close_a_loop(op: &CanonicalOp) -> bool {
+    matches!(
+        op,
+        CanonicalOp::JumpBackward(_)
+            | CanonicalOp::JumpAbsolute(_)
+            | CanonicalOp::ContinueLoop(_)
+            | CanonicalOp::PopJumpIfFalse(_)
+            | CanonicalOp::PopJumpIfTrue(_)
+            | CanonicalOp::PopJumpIfFalseBackward(_)
+            | CanonicalOp::PopJumpIfTrueBackward(_)
+    )
+}
+
+fn distinct_source_loop_count(successors: &[Vec<usize>], lines: &[Option<u32>]) -> usize {
+    let len: usize = successors.len();
+    let mut order: Vec<Option<usize>> = vec![None; len];
+    let mut low: Vec<usize> = vec![0; len];
+    let mut on_stack: Vec<bool> = vec![false; len];
+    let mut stack: Vec<usize> = Vec::new();
+    let mut work: Vec<(usize, usize)> = Vec::new();
+    let mut next: usize = 0;
+    let mut unlocated: usize = 0;
+    let mut located: std::collections::BTreeSet<std::collections::BTreeSet<u32>> =
+        std::collections::BTreeSet::new();
+    for root in 0..len {
+        if order[root].is_some() {
+            continue;
+        }
+        order[root] = Some(next);
+        low[root] = next;
+        next += 1;
+        stack.push(root);
+        on_stack[root] = true;
+        work.push((root, 0));
+        while let Some(frame) = work.last_mut() {
+            let node: usize = frame.0;
+            if let Some(&succ) = successors[node].get(frame.1) {
+                frame.1 += 1;
+                match order[succ] {
+                    None => {
+                        order[succ] = Some(next);
+                        low[succ] = next;
+                        next += 1;
+                        stack.push(succ);
+                        on_stack[succ] = true;
+                        work.push((succ, 0));
+                    }
+                    Some(succ_order) if on_stack[succ] => {
+                        low[node] = low[node].min(succ_order);
+                    }
+                    Some(_) => {}
+                }
+                continue;
+            }
+            work.pop();
+            if let Some(&(parent, _)) = work.last() {
+                low[parent] = low[parent].min(low[node]);
+            }
+            if order[node] == Some(low[node]) {
+                let mut size: usize = 0;
+                let mut member_lines: std::collections::BTreeSet<u32> =
+                    std::collections::BTreeSet::new();
+                while let Some(member) = stack.pop() {
+                    on_stack[member] = false;
+                    size += 1;
+                    if let Some(Some(line)) = lines.get(member) {
+                        member_lines.insert(*line);
+                    }
+                    if member == node {
+                        break;
+                    }
+                }
+                if size > 1 || successors[node].contains(&node) {
+                    if member_lines.is_empty() {
+                        unlocated += 1;
+                    } else {
+                        located.insert(member_lines);
+                    }
+                }
+            }
+        }
+    }
+    located.len() + unlocated
 }
 
 #[cfg(test)]

@@ -1307,10 +1307,14 @@ fn pre311_trailing_bare_except(stream: &DecodedStream, lo: usize, hi: usize) -> 
 }
 
 fn with_prologue_crosses_then_jump(stream: &DecodedStream, idx: usize, start: usize) -> bool {
-    matches!(
-        stream.ops[idx],
-        CanonicalOp::JumpForward(_) | CanonicalOp::JumpAbsolute(_)
-    ) && resolve_jump_target(stream, idx, &stream.ops[idx]).is_some_and(|t: usize| t > start)
+    let inline_comprehensions: bool = (stream.version.major(), stream.version.minor()) >= (3, 12);
+    match stream.ops[idx] {
+        CanonicalOp::JumpForward(_) | CanonicalOp::JumpAbsolute(_) => {
+            resolve_jump_target(stream, idx, &stream.ops[idx]).is_some_and(|t: usize| t > start)
+        }
+        CanonicalOp::JumpBackward(_) => !inline_comprehensions,
+        _ => false,
+    }
 }
 
 fn with_prologue_walk_back(stream: &DecodedStream, start: usize, lo: usize) -> usize {
@@ -4369,7 +4373,19 @@ fn structure_for_typed_except_continue_body(
         return Ok(None);
     }
     let continuation: Vec<Stmt> = if continuation_start < raw_exit {
-        structure_stmts(code, stream, continuation_start, raw_exit)?
+        match iterator_break_pop_before_end_for(stream, continuation_start, raw_exit) {
+            Some(pop_at) => {
+                let mut continuation: Vec<Stmt> =
+                    structure_stmts(code, stream, continuation_start, pop_at)?;
+                continuation.retain(|stmt: &Stmt| !matches!(stmt, Stmt::Pass));
+                continuation.push(Stmt::Break);
+                continuation
+            }
+            None if span_is_loop_break(stream, continuation_start, raw_exit) => {
+                vec![Stmt::Break]
+            }
+            None => structure_stmts(code, stream, continuation_start, raw_exit)?,
+        }
     } else {
         Vec::new()
     };
@@ -4821,6 +4837,41 @@ pub(super) fn structure_try(
         if let Some(enclosing) = with_enclosing_try_region(stream, region, hi) {
             let enclosing: TryRegion = enclosing;
             let (with_stmt, with_tail): (Stmt, Vec<Stmt>) = structure_with(code, stream, region)?;
+            if let Some(split) = enclosed_with_rest_split(stream, region, &enclosing) {
+                let mut try_body: Vec<Stmt> = vec![with_stmt];
+                try_body.extend(structure_stmts(
+                    code,
+                    stream,
+                    split.rest_start,
+                    split.covered_end,
+                )?);
+                let after_try: Vec<Stmt> = if split.covered_end < split.gap_end
+                    && slice_has_real_stmt(stream, split.covered_end, split.gap_end)
+                {
+                    structure_stmts(code, stream, split.covered_end, split.gap_end)?
+                } else {
+                    Vec::new()
+                };
+                let handlers: Vec<ExceptHandler> = parse_except_handlers(
+                    code,
+                    stream,
+                    enclosing.handler_start,
+                    enclosing.region_end,
+                )?;
+                let mut out: Vec<Stmt> = head;
+                out.push(Stmt::Try {
+                    body: non_empty(try_body),
+                    handlers,
+                    orelse: Vec::new(),
+                    finalbody: Vec::new(),
+                    line: None,
+                });
+                out.extend(after_try);
+                if enclosing.region_end < hi {
+                    out.extend(structure_stmts(code, stream, enclosing.region_end, hi)?);
+                }
+                return Ok(out);
+            }
             let mut try_body: Vec<Stmt> = vec![with_stmt];
             try_body.extend(with_tail);
             let rest_start: usize = with_continuation_cold_end(stream, region, hi);
@@ -4949,6 +5000,123 @@ pub(super) fn structure_try(
         out.extend(structure_stmts(code, stream, consumed_end, hi)?);
     }
     Ok(out)
+}
+
+struct EnclosedWithRest {
+    rest_start: usize,
+    covered_end: usize,
+    gap_end: usize,
+}
+
+#[deny(clippy::indexing_slicing)]
+fn enclosed_with_rest_split(
+    stream: &DecodedStream,
+    region: &TryRegion,
+    enclosing: &TryRegion,
+) -> Option<EnclosedWithRest> {
+    if stream.is_pre_311() || enclosing.is_finally {
+        return None;
+    }
+    let with_handler_off: u32 = *stream.offsets.get(region.handler_start)?;
+    let cold_start: usize = (region.try_end..region.handler_start)
+        .find(|&index: &usize| {
+            matches!(
+                stream.ops.get(index),
+                Some(CanonicalOp::CleanupThrow | CanonicalOp::PushExcInfo)
+            )
+        })
+        .unwrap_or(region.handler_start);
+    let cold_off: u32 = *stream.offsets.get(cold_start)?;
+    let body_last_off: u32 = stream
+        .exception_table
+        .iter()
+        .filter(|entry: &&crate::bytecode::flow::ExceptionTableEntry| {
+            entry.target == with_handler_off && entry.end() <= cold_off
+        })
+        .map(|entry: &crate::bytecode::flow::ExceptionTableEntry| entry.end())
+        .max()?;
+    let exit_start: usize = stream
+        .offsets
+        .partition_point(|&offset: &u32| offset < body_last_off);
+    if exit_start < region.try_end || exit_start >= region.handler_start {
+        return None;
+    }
+    let exit_end: usize = skip_with_cleanup_block(stream, exit_start, region.handler_start)
+        .or_else(|| async_with_cleanup_end(stream, exit_start, region.handler_start))?;
+    let rest_start: usize = match first_significant(stream, exit_end, enclosing.handler_start) {
+        Some(jump)
+            if matches!(
+                stream.ops.get(jump),
+                Some(CanonicalOp::JumpForward(_) | CanonicalOp::JumpAbsolute(_))
+            ) =>
+        {
+            let op: &CanonicalOp = stream.ops.get(jump)?;
+            resolve_jump_target(stream, jump, op)
+                .filter(|&target: &usize| target > jump && target <= enclosing.handler_start)?
+        }
+        _ => exit_end,
+    };
+    let handler_off: u32 = *stream.offsets.get(enclosing.handler_start)?;
+    let covered = |index: usize| -> bool {
+        stream.offsets.get(index).is_some_and(|&offset: &u32| {
+            stream.exception_table.iter().any(
+                |entry: &crate::bytecode::flow::ExceptionTableEntry| {
+                    entry.target == handler_off && entry.start <= offset && offset < entry.end()
+                },
+            )
+        })
+    };
+    let mut covered_end: usize = rest_start;
+    while covered_end < enclosing.handler_start
+        && stream.ops.get(covered_end).is_some_and(|op: &CanonicalOp| {
+            matches!(
+                op,
+                CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_)
+            ) || covered(covered_end)
+        })
+    {
+        covered_end += 1;
+    }
+    let rest_start_off: u32 = *stream.offsets.get(rest_start)?;
+    let covered_end_off: u32 = *stream.offsets.get(covered_end)?;
+    let rest_opens_region: bool =
+        stream
+            .exception_table
+            .iter()
+            .any(|entry: &crate::bytecode::flow::ExceptionTableEntry| {
+                entry.target != handler_off
+                    && entry.start >= rest_start_off
+                    && entry.start <= covered_end_off
+                    && stream
+                        .index_for_offset(entry.target)
+                        .is_some_and(|target: usize| {
+                            target > rest_start && target < enclosing.handler_start
+                        })
+            });
+    if rest_opens_region {
+        return None;
+    }
+    let gap_end: usize = (covered_end..enclosing.handler_start)
+        .find(|&index: &usize| {
+            index == region.handler_start
+                || matches!(
+                    stream.ops.get(index),
+                    Some(CanonicalOp::CleanupThrow | CanonicalOp::PushExcInfo)
+                )
+        })
+        .unwrap_or(enclosing.handler_start);
+    let leaves_by_jump: bool =
+        first_significant(stream, covered_end, gap_end).is_some_and(|index: usize| {
+            matches!(
+                stream.ops.get(index),
+                Some(CanonicalOp::JumpForward(_) | CanonicalOp::JumpAbsolute(_))
+            )
+        });
+    Some(EnclosedWithRest {
+        rest_start,
+        covered_end,
+        gap_end: if leaves_by_jump { covered_end } else { gap_end },
+    })
 }
 
 fn slice_has_real_stmt(stream: &DecodedStream, lo: usize, hi: usize) -> bool {
@@ -5211,6 +5379,7 @@ fn try_continuation_split(
     }
     let start: usize = protected_end;
     let end: usize = trim_trailing_comp_cleanup(stream, start, region.handler_start);
+    let end: usize = loop_latch_within(stream, start, end).unwrap_or(end);
     if start >= end {
         return None;
     }
@@ -5365,6 +5534,32 @@ fn try_else_handler_continuation_split(
         return None;
     }
     Some((else_start, cont_start, cont_end))
+}
+
+#[deny(clippy::indexing_slicing)]
+fn loop_latch_within(stream: &DecodedStream, lo: usize, hi: usize) -> Option<usize> {
+    let header: usize = loop_continue_target().filter(|&header: &usize| {
+        matches!(stream.ops.get(header), Some(CanonicalOp::ForIter(_)))
+    })?;
+    let mut reach: usize = lo;
+    for k in lo..hi {
+        let op: &CanonicalOp = stream.ops.get(k)?;
+        let target: Option<usize> = resolve_jump_target(stream, k, op);
+        if matches!(
+            op,
+            CanonicalOp::JumpBackward(_) | CanonicalOp::JumpAbsolute(_)
+        ) && target == Some(header)
+            && reach <= k
+        {
+            return Some(k);
+        }
+        if let Some(target) = target
+            && target > k
+        {
+            reach = reach.max(target);
+        }
+    }
+    None
 }
 
 fn continuation_span_end(stream: &DecodedStream, lo: usize, hi: usize) -> usize {
@@ -5959,6 +6154,13 @@ fn structure_try_except_family(
         } else {
             Vec::new()
         };
+
+    let body: Vec<Stmt> = if normal_region.is_none() && continuation_region.is_none() && !has_combo
+    {
+        append_protected_body_break(stream, body, protected_end, region.handler_start)
+    } else {
+        body
+    };
 
     let else_fallthrough_tail: Option<(usize, usize, usize)> =
         if !has_combo && normal_region.is_some() && handler_cont_split.is_none() {
@@ -6654,6 +6856,22 @@ fn structure_pre311_try_except(
         }
         None => structure_stmts(code, stream, region.try_start, body_end)?,
     };
+    let body_exit_breaks: bool = pop_block.is_some_and(|pb: usize| {
+        body_break_pop_block.is_none()
+            && else_region.is_none_or(|(else_start, _): (usize, usize)| {
+                else_start > pb && else_start < region.handler_start
+            })
+            && protected_body_exit_breaks(stream, &body, pb + 1, region.handler_start)
+    });
+    let body: Vec<Stmt> = if body_exit_breaks {
+        else_region = None;
+        let mut body: Vec<Stmt> = body;
+        body.retain(|stmt: &Stmt| !matches!(stmt, Stmt::Pass));
+        body.push(Stmt::Break);
+        body
+    } else {
+        body
+    };
     let mut handlers: Vec<ExceptHandler> =
         parse_except_handlers(code, stream, region.handler_start, handler_region_end)?;
     let mut orelse: Vec<Stmt> = match else_region {
@@ -6703,6 +6921,52 @@ fn structure_pre311_try_except(
         },
         consumed,
     ))
+}
+
+#[deny(clippy::indexing_slicing)]
+fn iterator_break_pop_before_end_for(
+    stream: &DecodedStream,
+    lo: usize,
+    raw_exit: usize,
+) -> Option<usize> {
+    let jump: usize = last_significant_back(stream, lo, raw_exit)?;
+    let jump_op: &CanonicalOp = stream.ops.get(jump)?;
+    if !matches!(
+        jump_op,
+        CanonicalOp::JumpForward(_) | CanonicalOp::JumpAbsolute(_)
+    ) || resolve_jump_target(stream, jump, jump_op)
+        .is_none_or(|target: usize| target <= raw_exit)
+    {
+        return None;
+    }
+    let pop_at: usize = last_significant_back(stream, lo, jump)?;
+    matches!(stream.ops.get(pop_at), Some(CanonicalOp::Pop)).then_some(pop_at)
+}
+
+fn protected_body_exit_breaks(
+    stream: &DecodedStream,
+    body: &[Stmt],
+    after_body: usize,
+    handler_start: usize,
+) -> bool {
+    !matches!(
+        body.last(),
+        Some(Stmt::Break | Stmt::Continue | Stmt::Return(_) | Stmt::Raise { .. })
+    ) && loop_break_sequence_end(stream, after_body, handler_start)
+        .is_some_and(|end: usize| first_significant(stream, end, handler_start).is_none())
+}
+
+fn append_protected_body_break(
+    stream: &DecodedStream,
+    mut body: Vec<Stmt>,
+    after_body: usize,
+    handler_start: usize,
+) -> Vec<Stmt> {
+    if protected_body_exit_breaks(stream, &body, after_body, handler_start) {
+        body.retain(|stmt: &Stmt| !matches!(stmt, Stmt::Pass));
+        body.push(Stmt::Break);
+    }
+    body
 }
 
 #[deny(clippy::indexing_slicing)]
@@ -10932,9 +11196,8 @@ fn parse_except_handlers(
                 .flatten()
                 .unwrap_or_else(|| bare_except_body_end(stream, bare_start, region_end));
             let bare_body: Vec<Stmt> = structure_stmts(code, stream, bare_start, bare_end)?;
-            let bare_body: Vec<Stmt> = rewrite_handler_inlined_break(
-                code, stream, bare_body, bare_start, bare_end, region_end,
-            )?;
+            let bare_body: Vec<Stmt> =
+                rewrite_handler_inlined_break(code, stream, bare_body, bare_start, bare_end)?;
             handlers.push(ExceptHandler {
                 typ: None,
                 name: None,
@@ -11021,6 +11284,11 @@ fn parse_except_handlers(
             body_end,
             next_handler,
         )?;
+        let handler_body: Vec<Stmt> = if name.is_some() {
+            append_named_handler_teardown_jump(stream, handler_body, body_start, next_handler)
+        } else {
+            handler_body
+        };
         handlers.push(ExceptHandler {
             typ: exc_type,
             name,
@@ -11170,6 +11438,11 @@ fn parse_pre311_except_handlers(
         )?;
         let handler_body: Vec<Stmt> =
             append_pre311_teardown_break(stream, handler_body, body_start, body_end);
+        let handler_body: Vec<Stmt> = if name.is_some() {
+            append_named_handler_teardown_jump(stream, handler_body, body_start, next_handler)
+        } else {
+            handler_body
+        };
         handlers.push(ExceptHandler {
             typ: exc_type,
             name,
@@ -11349,8 +11622,7 @@ fn append_handler_loop_jump_after_teardown(
     body_end: usize,
     handler_end: usize,
 ) -> Result<Vec<Stmt>> {
-    let body: Vec<Stmt> =
-        rewrite_handler_inlined_break(code, stream, body, body_start, body_end, handler_end)?;
+    let body: Vec<Stmt> = rewrite_handler_inlined_break(code, stream, body, body_start, body_end)?;
     Ok(append_handler_teardown_jump(
         stream,
         body,
@@ -11402,6 +11674,66 @@ fn append_handler_teardown_jump(
         return append_handler_loop_jump(stream, body, body_start, body_end);
     }
     append_handler_loop_jump(stream, body, body_start, jump + 1)
+}
+
+fn append_named_handler_teardown_jump(
+    stream: &DecodedStream,
+    body: Vec<Stmt>,
+    body_start: usize,
+    handler_end: usize,
+) -> Vec<Stmt> {
+    if matches!(
+        body.last(),
+        Some(Stmt::Break | Stmt::Continue | Stmt::Return(_) | Stmt::Raise { .. })
+    ) {
+        return body;
+    }
+    match named_handler_teardown_jump(stream, body_start, handler_end) {
+        Some(jump) => append_handler_loop_jump(stream, body, body_start, jump + 1),
+        None => body,
+    }
+}
+
+#[deny(clippy::indexing_slicing)]
+fn named_handler_teardown_jump(
+    stream: &DecodedStream,
+    body_start: usize,
+    handler_end: usize,
+) -> Option<usize> {
+    let end: usize = handler_end.min(stream.ops.len());
+    let pop_except: usize = (body_start..end)
+        .find(|&k: &usize| matches!(stream.ops.get(k), Some(CanonicalOp::PopExcept)))?;
+    let after_teardown: usize = skip_except_name_teardown(stream, pop_except + 1, end);
+    let jump: usize = first_significant(stream, after_teardown, end)?;
+    let jump_op: &CanonicalOp = stream.ops.get(jump)?;
+    if !matches!(
+        jump_op,
+        CanonicalOp::JumpForward(_)
+            | CanonicalOp::JumpAbsolute(_)
+            | CanonicalOp::JumpBackward(_)
+            | CanonicalOp::JumpBackwardNoInterrupt(_)
+    ) {
+        return None;
+    }
+    let body_off: u32 = *stream.offsets.get(body_start)?;
+    let teardown_off: u32 = *stream.offsets.get(pop_except)?;
+    let opens_nested_block: bool =
+        stream
+            .exception_table
+            .iter()
+            .any(|entry: &crate::bytecode::flow::ExceptionTableEntry| {
+                entry.start > body_off && entry.start < teardown_off
+            });
+    let leaves_before_teardown: bool = (body_start..pop_except).any(|k: usize| {
+        stream.ops.get(k).is_some_and(|op: &CanonicalOp| {
+            resolve_jump_target(stream, k, op).is_some_and(|target: usize| target > pop_except)
+        })
+    });
+    let jump_is_final_exit: bool =
+        !(jump + 1..end).any(|k: usize| matches!(stream.ops.get(k), Some(CanonicalOp::PopExcept)));
+    let exit_is_ambiguous: bool =
+        (stream.version.major(), stream.version.minor()) < (3, 10) && jump_is_final_exit;
+    (!opens_nested_block && !leaves_before_teardown && !exit_is_ambiguous).then_some(jump)
 }
 
 fn pre311_construct_continuation(stream: &DecodedStream, handler_start: usize) -> Option<usize> {
