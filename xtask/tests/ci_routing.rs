@@ -977,13 +977,29 @@ fn ci_routes_full_coverage_to_scheduled_and_tag_runs() {
     );
     let release_jobs: &Value = release.get("jobs").expect("release.yml jobs");
     assert!(release_jobs.get("full-ci").is_none());
+    let gate: String = release_jobs
+        .get("full-ci-gate")
+        .and_then(|value: &Value| value.get("steps"))
+        .and_then(Value::as_sequence)
+        .expect("release.yml full-ci-gate steps")
+        .iter()
+        .filter_map(|step: &Value| step.get("run").and_then(Value::as_str))
+        .collect::<Vec<&str>>()
+        .join("\n");
+    assert!(
+        gate.contains("actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&status=success")
+            && gate.contains("exit 1"),
+        "the release gate must refuse a tag whose commit has no green full ci run, not run ci itself"
+    );
     for job in ["build", "sbom"] {
-        assert!(
-            release_jobs
-                .get(job)
-                .and_then(|value: &Value| value.get("needs"))
-                .is_none(),
-            "release.yml {job} must stay independent from CI completion"
+        let job_needs: Option<&Vec<Value>> = release_jobs
+            .get(job)
+            .and_then(|value: &Value| value.get("needs"))
+            .and_then(Value::as_sequence);
+        assert_eq!(
+            job_needs,
+            Some(&vec![Value::String("full-ci-gate".to_owned())]),
+            "release.yml {job} waits only for the green-ci gate"
         );
     }
     let needs: &Vec<Value> = release_jobs
