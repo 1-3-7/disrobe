@@ -1609,6 +1609,46 @@ pub(super) fn for_cold_handler_exit_epilogue(
     (stmt_start < first_cold).then_some((stmt_start, first_cold))
 }
 
+#[deny(clippy::indexing_slicing)]
+fn body_ends_in_inlined_epilogue(
+    stream: &DecodedStream,
+    body_start: usize,
+    raw_exit: usize,
+    stmt_start: usize,
+    first_cold: usize,
+) -> bool {
+    if !exit_tail_is_inlined_at_break(stream) {
+        return false;
+    }
+    let Some(epilogue): Option<Vec<usize>> =
+        straightline_terminator_run(stream, stmt_start, first_cold)
+    else {
+        return false;
+    };
+    let body_run: Vec<usize> = (body_start..raw_exit)
+        .filter(|&k: &usize| {
+            stream
+                .ops
+                .get(k)
+                .is_some_and(|op: &CanonicalOp| !is_insignificant(op))
+        })
+        .collect();
+    let Some(pop_pos): Option<usize> = body_run.len().checked_sub(epilogue.len() + 1) else {
+        return false;
+    };
+    let (Some(&pop_at), Some(copy)): (Option<&usize>, Option<&[usize]>) =
+        (body_run.get(pop_pos), body_run.get(pop_pos + 1..))
+    else {
+        return false;
+    };
+    matches!(stream.ops.get(pop_at), Some(CanonicalOp::Pop))
+        && !is_shortcircuit_cleanup_pop(stream, pop_at)
+        && copy
+            .iter()
+            .zip(&epilogue)
+            .all(|(&a, &b): (&usize, &usize)| stream.ops.get(a) == stream.ops.get(b))
+}
+
 fn epilogue_absent_from_body(body: &[Stmt], tail: &[Stmt]) -> bool {
     matches!(tail.last(), Some(Stmt::Return(_) | Stmt::Raise { .. }))
         && !matches!(
@@ -1647,6 +1687,20 @@ fn lift_cold_handler_exit_epilogue(
                 CanonicalOp::JumpForward(_) | CanonicalOp::JumpAbsolute(_)
             ) && resolve_jump_target(stream, k, &stream.ops[k]) == Some(stmt_start)
         });
+    if body_ends_in_inlined_epilogue(stream, body_start, raw_exit, stmt_start, first_cold)
+        && let Some(split) = body.len().checked_sub(tail.len())
+        && body.get(split..).is_some_and(|ending: &[Stmt]| {
+            ending
+                .iter()
+                .zip(&tail)
+                .all(|(a, b): (&Stmt, &Stmt)| stmts_equal_ignoring_lines(a, b))
+        })
+    {
+        body.truncate(split);
+        body.retain(|s: &Stmt| !matches!(s, Stmt::Pass));
+        body.push(Stmt::Break);
+        return Ok(tail);
+    }
     if body_bounded_at_raw_exit {
         if body_breaks_to_epilogue
             && !matches!(
@@ -2254,8 +2308,9 @@ pub(super) fn try_enclosed_by_loop(
     };
     if stream.is_pre_311() {
         return loop_region.header < region.try_start
-            && loop_region.back_edge > region.handler_start
-            && loop_region.back_edge <= hi;
+            && ((loop_region.back_edge > region.handler_start && loop_region.back_edge <= hi)
+                || (matches!(loop_region.kind, LoopKind::For)
+                    && region.handler_start < loop_region.exit));
     }
     if !loop_region.infinite {
         if matches!(loop_region.kind, LoopKind::While)

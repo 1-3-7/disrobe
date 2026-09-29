@@ -16,9 +16,9 @@ use super::loops::{
 use super::postprocess::is_implicit_none_return;
 use super::stmts::{
     append_handler_loop_jump, detect_inline_comprehension, first_significant,
-    last_significant_back, loads_none, resolve_jump_target, single_store_target, structure_stmts,
-    test_is_polarity_sensitive, then_continues_to_loop, then_terminating_jump,
-    trailing_loop_jump_stmt,
+    last_significant_back, loads_none, resolve_jump_target, rewrite_handler_inlined_break,
+    single_store_target, structure_stmts, test_is_polarity_sensitive, then_continues_to_loop,
+    then_terminating_jump, trailing_loop_jump_stmt,
 };
 use super::{
     DecodedStream, LoopFrameGuard, PY_CO_FLAG_FUNCTION_SCOPE, StructureHiCapGuard,
@@ -5986,6 +5986,17 @@ fn structure_try_except_family(
                 } else if body_had_comp {
                     (Vec::new(), raw)
                 } else {
+                    if matches!(trailing_loop_jump_stmt(stream, s, e), Some(Stmt::Break))
+                        && !matches!(
+                            raw.last(),
+                            Some(
+                                Stmt::Break | Stmt::Continue | Stmt::Return(_) | Stmt::Raise { .. }
+                            )
+                        )
+                    {
+                        raw.retain(|stmt: &Stmt| !matches!(stmt, Stmt::Pass));
+                        raw.push(Stmt::Break);
+                    }
                     (raw, Vec::new())
                 }
             }
@@ -6466,6 +6477,7 @@ fn structure_pre311_try_except(
     let mut fallthrough_continuation: Option<(usize, usize)> = None;
     let mut handler_region_end: usize = region.region_end;
     let mut consumed: usize = region.region_end;
+    let mut handlers_fall_to_latch: bool = false;
 
     if let Some(pb) = pop_block {
         let after: usize = pre311_skip_pop_except(stream, pb + 1, region.handler_start);
@@ -6505,7 +6517,24 @@ fn structure_pre311_try_except(
             let real_else: bool = !pre311_enclosed_by_finally(stream, region)
                 && (pre311_else_is_real(code, stream, else_start, else_end)
                     || handler_breaks && !handler_reaches_else);
-            if let Some(hj) = handler_join
+            let breaking_else_latch: Option<usize> = if pre311_enclosed_by_finally(stream, region) {
+                None
+            } else {
+                pre311_breaking_else_before_loop_latch(
+                    stream,
+                    region.handler_start,
+                    jt,
+                    else_start,
+                    region_bound,
+                )
+            };
+            if let Some(latch) = breaking_else_latch {
+                body_end = pb;
+                handler_region_end = jt;
+                else_region = Some((else_start, latch));
+                handlers_fall_to_latch = true;
+                consumed = latch;
+            } else if let Some(hj) = handler_join
                 && !pre311_enclosed_by_finally(stream, region)
                 && !pre311_span_is_implicit_none_exit(stream, hj, region_bound)
                 && pre311_region_has_real_stmt(stream, hj, region_bound)
@@ -6570,6 +6599,15 @@ fn structure_pre311_try_except(
         Some((s, e)) => structure_stmts(code, stream, s, e)?,
         None => Vec::new(),
     };
+    if handlers_fall_to_latch && let Some((else_start, else_end)) = else_region {
+        for handler in &mut handlers {
+            if matches!(handler.body.last(), Some(Stmt::Continue)) {
+                handler.body.pop();
+                handler.body = non_empty(std::mem::take(&mut handler.body));
+            }
+        }
+        orelse = append_handler_loop_jump(stream, orelse, else_start, else_end);
+    }
     if let Some((else_start, else_end)) = else_region
         && let Some(shared) = shared_construct_exit_return_at_range(
             &orelse,
@@ -6603,6 +6641,45 @@ fn structure_pre311_try_except(
         },
         consumed,
     ))
+}
+
+#[deny(clippy::indexing_slicing)]
+fn pre311_breaking_else_before_loop_latch(
+    stream: &DecodedStream,
+    handler_start: usize,
+    body_exit: usize,
+    else_start: usize,
+    hi: usize,
+) -> Option<usize> {
+    let header: usize = loop_continue_target()?;
+    let latch: usize = last_significant_back(stream, else_start, hi)?;
+    let latch_op: &CanonicalOp = stream.ops.get(latch)?;
+    if !is_back_edge(latch_op) || resolve_jump_target(stream, latch, latch_op) != Some(header) {
+        return None;
+    }
+    if !matches!(
+        trailing_loop_jump_stmt(stream, else_start, latch),
+        Some(Stmt::Break)
+    ) {
+        return None;
+    }
+    let handler_exits: Vec<usize> = (handler_start..body_exit)
+        .filter(|&k: &usize| {
+            stream.ops.get(k).is_some_and(|op: &CanonicalOp| {
+                matches!(
+                    op,
+                    CanonicalOp::JumpForward(_) | CanonicalOp::JumpAbsolute(_)
+                ) && resolve_jump_target(stream, k, op) == Some(header)
+            })
+        })
+        .collect();
+    let exits_are_clause_ends: bool = !handler_exits.is_empty()
+        && handler_exits.iter().all(|&k: &usize| {
+            !first_significant(stream, k + 1, body_exit).is_some_and(|next: usize| {
+                matches!(stream.ops.get(next), Some(CanonicalOp::PopExcept))
+            })
+        });
+    exits_are_clause_ends.then_some(latch)
 }
 
 fn pre311_enclosed_by_finally(stream: &DecodedStream, region: &TryRegion) -> bool {
@@ -10729,6 +10806,9 @@ fn parse_except_handlers(
                 .flatten()
                 .unwrap_or_else(|| bare_except_body_end(stream, bare_start, region_end));
             let bare_body: Vec<Stmt> = structure_stmts(code, stream, bare_start, bare_end)?;
+            let bare_body: Vec<Stmt> = rewrite_handler_inlined_break(
+                code, stream, bare_body, bare_start, bare_end, region_end,
+            )?;
             handlers.push(ExceptHandler {
                 typ: None,
                 name: None,
@@ -10808,12 +10888,13 @@ fn parse_except_handlers(
             strip_named_exc_cleanup(&mut handler_body, bound);
         }
         let handler_body: Vec<Stmt> = append_handler_loop_jump_after_teardown(
+            code,
             stream,
             handler_body,
             body_start,
             body_end,
             next_handler,
-        );
+        )?;
         handlers.push(ExceptHandler {
             typ: exc_type,
             name,
@@ -10869,8 +10950,8 @@ fn parse_pre311_except_handlers(
             let next: usize = pre311_advance_after_handler(stream, body_end, region_end);
             let body: Vec<Stmt> = structure_stmts(code, stream, body_start, body_end)?;
             let body: Vec<Stmt> = append_handler_loop_jump_after_teardown(
-                stream, body, body_start, body_end, region_end,
-            );
+                code, stream, body, body_start, body_end, region_end,
+            )?;
             handlers.push(ExceptHandler {
                 typ: None,
                 name: None,
@@ -10954,12 +11035,13 @@ fn parse_pre311_except_handlers(
             strip_named_exc_cleanup(&mut handler_body, bound);
         }
         let handler_body: Vec<Stmt> = append_handler_loop_jump_after_teardown(
+            code,
             stream,
             handler_body,
             body_start,
             body_end,
             next_handler,
-        );
+        )?;
         handlers.push(ExceptHandler {
             typ: exc_type,
             name,
@@ -11064,6 +11146,25 @@ fn pre311_handler_body_end(
 }
 
 fn append_handler_loop_jump_after_teardown(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    body: Vec<Stmt>,
+    body_start: usize,
+    body_end: usize,
+    handler_end: usize,
+) -> Result<Vec<Stmt>> {
+    let body: Vec<Stmt> =
+        rewrite_handler_inlined_break(code, stream, body, body_start, body_end, handler_end)?;
+    Ok(append_handler_teardown_jump(
+        stream,
+        body,
+        body_start,
+        body_end,
+        handler_end,
+    ))
+}
+
+fn append_handler_teardown_jump(
     stream: &DecodedStream,
     body: Vec<Stmt>,
     body_start: usize,

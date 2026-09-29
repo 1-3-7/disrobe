@@ -44,7 +44,7 @@ fn assert_recompiles_on(
                     checked_stable += 1;
                 }
             }
-            BandOutcome::SourceTokenMatch | BandOutcome::Tolerated(_) if interp.is_prerelease => {}
+            BandOutcome::Tolerated(_) if interp.is_prerelease => {}
             BandOutcome::Failed(reason) if interp.is_prerelease => {
                 eprintln!("SKIP prerelease {label} py{}: {reason}", interp.alias);
             }
@@ -205,5 +205,45 @@ fn a_break_in_an_else_arm_before_an_implicit_return_stays_a_break() {
     assert_recompiles(
         "else_arm_break_implicit_return",
         "def f(xs, a, g):\n    for x in xs:\n        if a(x):\n            g(x)\n        else:\n            break\n",
+    );
+}
+
+#[test]
+fn a_break_after_a_with_block_stays_a_break() {
+    assert_recompiles(
+        "break_after_with",
+        "def f(xs, m, g):\n    for x in xs:\n        with m:\n            g(x)\n        break\n    return 1\n",
+    );
+}
+
+#[test]
+fn a_while_loop_ending_in_a_break_stays_a_loop() {
+    assert_recompiles(
+        "while_ending_in_break",
+        "def f(n, g):\n    while n > 0:\n        g(n)\n        n -= 1\n        break\n    return n\n",
+    );
+}
+
+#[test]
+fn a_break_ending_an_except_handler_stays_a_break() {
+    assert_recompiles(
+        "break_ending_except_handler",
+        "def f(xs, g):\n    for x in xs:\n        try:\n            g(x)\n        except ValueError:\n            break\n    return 0\n",
+    );
+}
+
+#[test]
+fn a_try_else_ending_in_a_break_keeps_the_for_else() {
+    assert_recompiles(
+        "try_else_break_for_else",
+        "def f(xs, g, h):\n    for x in xs:\n        try:\n            g(x)\n        except ValueError:\n            pass\n        else:\n            break\n    else:\n        h()\n    return 0\n",
+    );
+}
+
+#[test]
+fn a_break_ending_a_named_except_handler_stays_a_break() {
+    assert_recompiles(
+        "break_ending_named_except_handler",
+        "def f(xs, g):\n    for x in xs:\n        try:\n            g(x)\n        except ValueError as e:\n            g(e)\n            break\n    return 0\n",
     );
 }
