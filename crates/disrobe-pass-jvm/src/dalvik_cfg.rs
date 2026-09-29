@@ -496,7 +496,7 @@ fn collect_leaders(
                 leaders.insert(t);
             }
         }
-        prev_terminator = ins.is_terminator();
+        prev_terminator = ins.is_terminator() || matches!(ins.op, 0x1D | 0x1E);
     }
     for t in tries {
         leaders.insert(t.start_addr);

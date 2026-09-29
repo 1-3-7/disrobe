@@ -92,6 +92,8 @@ pub(crate) struct RegisterNaming {
     pub(crate) def_locals: BTreeMap<(u32, u16), usize>,
     pub(crate) by_name: BTreeMap<String, usize>,
     pub(crate) threaded_receivers: BTreeSet<u32>,
+    pub(crate) final_static_locals: BTreeMap<String, u32>,
+    pub(crate) catch_parameters: BTreeSet<usize>,
 }
 
 impl RegisterNaming {
@@ -1675,12 +1677,29 @@ fn render_functional(
 ) -> Option<String> {
     match recovered {
         crate::dalvik_desugar::RecoveredFunctional::MethodReference(reference) => {
-            render_method_reference(ctx.desugar.core_library, reference, args)
+            let receivers: Vec<Expr> = args
+                .iter()
+                .map(|arg: &Expr| final_static_receiver(ctx, arg).unwrap_or_else(|| arg.clone()))
+                .collect();
+            render_method_reference(ctx.desugar.core_library, reference, &receivers)
         }
         crate::dalvik_desugar::RecoveredFunctional::CapturedLambda(lambda) => {
             render_captured_lambda(ctx, lambda, args)
         }
     }
+}
+
+fn final_static_receiver(ctx: &MethodContext<'_>, arg: &Expr) -> Option<Expr> {
+    let Expr::Local(name) = arg else {
+        return None;
+    };
+    let index: u32 = *ctx.naming?.final_static_locals.get(name)?;
+    let field: &FieldId = ctx.field_id(index)?;
+    Some(Expr::StaticField {
+        owner: source_type(ctx, &field.class),
+        name: field.name.clone(),
+        boolean: field.type_name == "Z",
+    })
 }
 
 fn render_method_reference(

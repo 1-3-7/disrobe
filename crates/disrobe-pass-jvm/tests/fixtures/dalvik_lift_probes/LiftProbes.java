@@ -4,6 +4,7 @@ import java.util.concurrent.Callable;
 public class LiftProbes {
     static int counter;
     static String trace;
+    static final Object LOCK = new Object();
 
     static int tick(String tag) {
         trace = trace + tag;
@@ -132,6 +133,123 @@ public class LiftProbes {
         }
     }
 
+    static String settle(int mode) {
+        StringBuilder log = new StringBuilder();
+        try {
+            if (mode == 0) {
+                return "zero";
+            }
+            log.append(Integer.parseInt(mode == 1 ? "x" : "7"));
+        } catch (NumberFormatException e) {
+            log.append("bad");
+            return log.toString();
+        } finally {
+            log.append("|f");
+            trace = trace + log;
+        }
+        return log.toString();
+    }
+
+    static int rescue(String first, String second) {
+        int total = 0;
+        try {
+            total = Integer.parseInt(first);
+        } catch (NumberFormatException outer) {
+            try {
+                total = Integer.parseInt(second) * 2;
+            } catch (NumberFormatException nested) {
+                total = -1;
+            }
+            total += 100;
+        }
+        return total;
+    }
+
+    static int keyed(String key) {
+        int result = 0;
+        switch (key) {
+            case "alpha":
+                result = 1;
+                break;
+            case "beta":
+                result = 2;
+            case "Aa":
+                result += 30;
+                break;
+            case "BB":
+                result = 4;
+                break;
+            default:
+                result = key.length() * 100;
+        }
+        return result;
+    }
+
+    static String spelled(String key) {
+        String out = "";
+        switch (key) {
+            case "one":
+                out = "1";
+                break;
+            case "two":
+                out = "2";
+            case "three":
+                out = out + "3";
+                break;
+            default:
+                out = "?";
+        }
+        return out;
+    }
+
+    static String guarded(int n) {
+        int sum = 0;
+        synchronized (LOCK) {
+            for (int i = 0; i < n; i++) {
+                sum += i;
+            }
+            counter += sum + (Thread.holdsLock(LOCK) ? 1000 : 0);
+        }
+        return sum + ":" + counter + ":" + Thread.holdsLock(LOCK);
+    }
+
+    static int guardedReturn(int[] cells, int index) {
+        synchronized (cells) {
+            if (index < 0) {
+                return Thread.holdsLock(cells) ? -1 : -2;
+            }
+            cells[index] = cells[index] + 1;
+            return cells[index] + (Thread.holdsLock(cells) ? 100 : 0);
+        }
+    }
+
+    static int looped(int n) {
+        int total = 0;
+        for (int i = 0; i < n; i++) {
+            synchronized (LOCK) {
+                total += Thread.holdsLock(LOCK) ? i : -i;
+                if (total > 20) {
+                    break;
+                }
+            }
+            tick("l");
+        }
+        return total;
+    }
+
+    static int drained(int n) {
+        int total = 0;
+        for (int i = 0; i < n; i++) {
+            total += i;
+            if (total > 20) {
+                tick("b");
+                break;
+            }
+            tick("p");
+        }
+        return total;
+    }
+
     public abstract static class Worker implements Callable<Integer>, Runnable {
         public final void run() {
             try {
@@ -183,5 +301,16 @@ public class LiftProbes {
         System.out.println(fallback("4", "x"));
         System.out.println(fallback("y", "5"));
         System.out.println(fallback("zz", "wwww"));
+        for (int mode = 0; mode < 3; mode++) {
+            System.out.println(settle(mode) + " " + trace);
+        }
+        System.out.println(rescue("4", "x") + ":" + rescue("y", "5") + ":" + rescue("zz", "w"));
+        for (String key : new String[] {"alpha", "beta", "Aa", "BB", "one", "two", "three", ""}) {
+            System.out.println(keyed(key) + ":" + spelled(key));
+        }
+        System.out.println(guarded(5));
+        int[] cells = {4, 5};
+        System.out.println(guardedReturn(cells, 1) + ":" + guardedReturn(cells, -1));
+        System.out.println(looped(3) + ":" + looped(10) + ":" + drained(3) + ":" + drained(10) + ":" + trace);
     }
 }

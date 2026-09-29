@@ -408,7 +408,7 @@ fn dispatcher_at_block(
     if !register_is_const_pure(insns, state_reg) {
         return None;
     }
-    if !has_const_state_predecessor(cfg, block, insns, state_reg) {
+    if !has_const_state_predecessor(cfg, block, insns, state_reg) || !reenters(cfg, block.id) {
         return None;
     }
     let default: Option<BlockId> = block
@@ -422,6 +422,41 @@ fn dispatcher_at_block(
         cases,
         default,
     })
+}
+
+#[must_use]
+fn reenters(cfg: &Cfg, dispatcher: BlockId) -> bool {
+    let mut seen: BTreeSet<BlockId> = BTreeSet::new();
+    let mut pending: Vec<BlockId> = cfg
+        .blocks
+        .get(dispatcher.0 as usize)
+        .map(|block: &BasicBlock| {
+            block
+                .successors
+                .iter()
+                .filter(|edge: &&Edge| !matches!(edge.kind, EdgeKind::Exception))
+                .map(|edge: &Edge| edge.target)
+                .collect()
+        })
+        .unwrap_or_default();
+    while let Some(current) = pending.pop() {
+        if current == dispatcher {
+            return true;
+        }
+        if !seen.insert(current) {
+            continue;
+        }
+        if let Some(block) = cfg.blocks.get(current.0 as usize) {
+            pending.extend(
+                block
+                    .successors
+                    .iter()
+                    .filter(|edge: &&Edge| !matches!(edge.kind, EdgeKind::Exception))
+                    .map(|edge: &Edge| edge.target),
+            );
+        }
+    }
+    false
 }
 
 #[must_use]

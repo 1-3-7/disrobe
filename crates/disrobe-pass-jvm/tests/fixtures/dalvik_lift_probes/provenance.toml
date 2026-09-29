@@ -1,6 +1,6 @@
 schema = "disrobe.jvm.dalvik-lift-probes-fixture/v1"
 source = "LiftProbes.java"
-source_sha256 = "366ebee984a8e5dc900a61c9b5a1237bc78a487310f3a3a1b1c21b1bc445b846"
+source_sha256 = "c66c8dc7b82571a30baa90f82f58304ff51e0a445ca2661c3cd4ecd35d2809bc"
 
 [javac]
 vendor = "Eclipse Temurin"
@@ -22,6 +22,14 @@ order = "order(): call results bound to locals and combined in the reverse of th
 temporaries = "temporaries(int): D8 reuses one register for an int, a StringBuilder, a String and a double, and the parameter register for the boxed Object result; the debug build keeps the parameter and local names"
 chain = "chain(String, int): an else-if chain whose three arms assign one local and meet at a join that no inner test dominates"
 fallback = "fallback(String, String): a try inside a catch handler; the debug build names both catch parameters, and the release build reuses the outer exception register for the inner try's String result"
+settle = "settle(int): a try with a catch and a finally whose protected ranges D8 splits across the arms of an if and a conditional expression; the finally copies end each exit path"
+rescue = "rescue(String, String): a try inside a catch handler whose try body keeps computing after the last throwing call, so the continuation that follows the inner handler is not the first block after the protected range"
+keyed = "keyed(String): javac's string switch (a hashCode switch, equals buckets and an index switch) with a hash collision, a fall-through arm and a default"
+spelled = "spelled(String): a string switch whose fall-through arm the release build lowers into a tail shared with the next arm"
+guarded = "guarded(int): a synchronized block around a loop; Thread.holdsLock observes the monitor inside and after the block"
+guardedReturn = "guardedReturn(int[], int): a synchronized block on a parameter that returns from both arms; D8 trims the monitor handler's protected range"
+looped = "looped(int): a synchronized block inside a loop whose break leaves the loop from inside the monitor"
+drained = "drained(int): a loop whose break runs a call first, so the break is not part of the loop condition"
 workers = "Worker implements Callable and Runnable; Counting extends Worker and gains a javac bridge call() that clashes with its own call() in source"
 notes = "The release build keeps every probe method; D8 turns the constant arrays into fill-array-data payloads and the computed int arrays into filled-new-array, and reuses registers across the call results of order()."
 
@@ -32,8 +40,8 @@ min_api = 21
 mode = "release"
 tool = "D8"
 command = "java -cp r8-9.1.31.jar com.android.tools.r8.D8 --release --min-api 21 --output dex classes/LiftProbes.class classes/LiftProbes$Counting.class classes/LiftProbes$Worker.class"
-sha256 = "0cc65e82257b664f5aa725c6880bc8fbe9618e2078da2de516138b89b681e3e9"
-bytes = 6216
+sha256 = "2ea3ef6930b6a02acd7565a34a9680523f9a492f7e2fb2c29cdc5cb5a267aff4"
+bytes = 8836
 
 [[artifact]]
 path = "LiftProbes-debug-min21.dex"
@@ -42,5 +50,5 @@ min_api = 21
 mode = "debug"
 tool = "D8"
 command = "java -cp r8-9.1.31.jar com.android.tools.r8.D8 --debug --min-api 21 --output dex classes/LiftProbes.class classes/LiftProbes$Counting.class classes/LiftProbes$Worker.class"
-sha256 = "033c70449a04667626e50caae3436a8a2212399d71b71a480eec9d858b17f07b"
-bytes = 7124
+sha256 = "255a598c648e15013cbdb3171780ddfd6d4d5c8e29c46a3aea7df376cd53942a"
+bytes = 10036

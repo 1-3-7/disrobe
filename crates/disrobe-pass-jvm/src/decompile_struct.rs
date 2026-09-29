@@ -11,6 +11,8 @@ const MAX_STRUCTURE_DEPTH: usize = 256;
 const MAX_STRUCTURE_WORK: usize = 200_000;
 const MAX_JOIN_CHAIN: usize = 8;
 const MAX_CONDITION_CHAIN: usize = 64;
+const MAX_TAIL_BLOCKS: usize = 8;
+const MAX_TAIL_INSTRUCTIONS: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct BlockId(pub u32);
@@ -530,6 +532,20 @@ pub struct StringSwitchTable {
     pub bucket_blocks: Vec<BlockId>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalStringSwitch {
+    pub index_head: BlockId,
+    pub absorbed: BTreeSet<BlockId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MonitorRegion {
+    pub body: BlockId,
+    pub lock_register: u16,
+    pub continuation: Option<BlockId>,
+    pub blocks: BTreeSet<BlockId>,
+}
+
 #[derive(Debug)]
 pub struct Structurer<'a> {
     cf: Option<&'a ClassFile>,
@@ -539,6 +555,13 @@ pub struct Structurer<'a> {
     insns: &'a [Instruction],
     switch_map: BTreeMap<BlockId, PrecomputedSwitch>,
     string_switch_tables: BTreeMap<BlockId, StringSwitchTable>,
+    monitor_regions: BTreeMap<BlockId, MonitorRegion>,
+    external_string_switches: BTreeMap<BlockId, ExternalStringSwitch>,
+    duplicate_terminal_tails: bool,
+    explicit_loop_exits: bool,
+    open_monitors: Vec<BTreeSet<BlockId>>,
+    exit_breaks: BTreeSet<BlockId>,
+    duplicated: BTreeSet<BlockId>,
     finally_inline_skips: BTreeMap<BlockId, usize>,
     finally_tail_trims: BTreeMap<BlockId, usize>,
     finally_return_stores: BTreeMap<BlockId, u16>,
@@ -569,6 +592,7 @@ struct LoopFrame {
     header: BlockId,
     exit: Option<BlockId>,
     label: u32,
+    monitors: usize,
 }
 
 impl<'a> Structurer<'a> {
@@ -612,6 +636,13 @@ impl<'a> Structurer<'a> {
             insns,
             switch_map,
             string_switch_tables: BTreeMap::new(),
+            monitor_regions: BTreeMap::new(),
+            external_string_switches: BTreeMap::new(),
+            duplicate_terminal_tails: false,
+            explicit_loop_exits: false,
+            open_monitors: Vec::new(),
+            exit_breaks: BTreeSet::new(),
+            duplicated: BTreeSet::new(),
             finally_inline_skips: BTreeMap::new(),
             finally_tail_trims: BTreeMap::new(),
             finally_return_stores: BTreeMap::new(),
@@ -642,6 +673,49 @@ impl<'a> Structurer<'a> {
     pub const fn with_class(mut self, cf: &'a ClassFile) -> Self {
         self.cf = Some(cf);
         self
+    }
+
+    #[must_use]
+    pub fn with_string_switches(
+        mut self,
+        switches: BTreeMap<BlockId, ExternalStringSwitch>,
+    ) -> Self {
+        self.external_string_switches = switches;
+        self
+    }
+
+    #[must_use]
+    pub const fn duplicating_terminal_tails(mut self) -> Self {
+        self.duplicate_terminal_tails = true;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_explicit_loop_exits(mut self) -> Self {
+        self.explicit_loop_exits = true;
+        self
+    }
+
+    #[must_use]
+    pub fn with_try_groups(mut self, groups: Vec<GroupedTry>) -> Self {
+        self.try_groups = groups;
+        self
+    }
+
+    #[must_use]
+    pub fn with_monitor_regions(mut self, regions: BTreeMap<BlockId, MonitorRegion>) -> Self {
+        self.monitor_regions = regions;
+        self
+    }
+
+    #[must_use]
+    pub fn take_duplicated_blocks(&mut self) -> BTreeSet<BlockId> {
+        std::mem::take(&mut self.duplicated)
+    }
+
+    #[must_use]
+    pub fn monitor_regions_pending(&self) -> bool {
+        !self.monitor_regions.is_empty()
     }
 
     #[must_use]
@@ -893,7 +967,10 @@ impl<'a> Structurer<'a> {
                 let loop_info: NaturalLoop = loop_info.clone();
                 let exit: Option<BlockId> = self.loop_exits.get(&b).copied();
                 seq.push(self.structure_loop(&loop_info, exit));
-                cur = exit.filter(|e| self.cfg.blocks[e.0 as usize].start_pc < try_end);
+                cur = exit.filter(|e| {
+                    self.cfg.blocks[e.0 as usize].start_pc < try_end
+                        && self.exit_follows_loop(&loop_info, *e)
+                });
                 continue;
             }
             let block: &BasicBlock = &self.cfg.blocks[b.0 as usize];
@@ -1993,6 +2070,7 @@ impl<'a> Structurer<'a> {
                 if let Some(used) = label {
                     self.labels_used.insert(used);
                 }
+                self.exit_breaks.insert(target);
                 return Some(Region::Break { label });
             }
             if let Some(jump) = self.continue_jump_at(target, frame, label) {
@@ -2237,6 +2315,148 @@ impl<'a> Structurer<'a> {
         Some(terminal)
     }
 
+    fn handler_join_after(
+        &self,
+        group: &GroupedTry,
+        try_start: BlockId,
+        try_end_block: Option<BlockId>,
+        handlers: &BTreeSet<BlockId>,
+    ) -> Option<BlockId> {
+        let first: BlockId = try_end_block?;
+        let protected = |block: &BlockId| -> bool {
+            let pc: u32 = self.cfg.blocks[block.0 as usize].start_pc;
+            group
+                .ranges
+                .iter()
+                .any(|(low, high): &(u32, u32)| pc >= *low && pc < *high)
+        };
+        let entered_from_try: bool = {
+            let predecessors: Vec<BlockId> = self.normal_predecessors(first);
+            !predecessors.is_empty() && predecessors.iter().all(protected)
+        };
+        if !entered_from_try {
+            return None;
+        }
+        let mut reached: BTreeSet<BlockId> = BTreeSet::new();
+        for &handler in handlers {
+            reached.extend(forward_reach(self.cfg, handler, try_start));
+        }
+        let mut current: BlockId = first;
+        for _ in 0..MAX_JOIN_CHAIN {
+            if reached.contains(&current) || self.visited.contains(&current) {
+                return None;
+            }
+            let next: BlockId = follow_single_successor(&self.cfg.blocks[current.0 as usize])?;
+            if reached.contains(&next) {
+                return Some(next);
+            }
+            if self.normal_predecessors(next).as_slice() != [current] {
+                return None;
+            }
+            current = next;
+        }
+        None
+    }
+
+    fn duplicable_tail(&mut self, start: BlockId, stop: Option<BlockId>) -> Option<Vec<Region>> {
+        if !self.duplicate_terminal_tails {
+            return None;
+        }
+        let header: Option<BlockId> = self.loop_stack.last().map(|frame: &LoopFrame| frame.header);
+        let mut chain: Vec<BlockId> = Vec::new();
+        let mut instructions: usize = 0;
+        let mut current: BlockId = start;
+        let continues: bool = loop {
+            if Some(current) == stop || self.handler_stops.contains(&current) {
+                if chain.is_empty() {
+                    return None;
+                }
+                break false;
+            }
+            let block: &BasicBlock = self.cfg.blocks.get(current.0 as usize)?;
+            if Some(current) == header
+                || chain.contains(&current)
+                || chain.len() >= MAX_TAIL_BLOCKS
+                || block
+                    .successors
+                    .iter()
+                    .any(|edge: &Edge| matches!(edge.kind, EdgeKind::Exception))
+            {
+                return None;
+            }
+            instructions += block.insn_range.1.saturating_sub(block.insn_range.0);
+            if instructions > MAX_TAIL_INSTRUCTIONS {
+                return None;
+            }
+            chain.push(current);
+            let normal: Vec<BlockId> = normal_targets(block).collect();
+            match normal.as_slice() {
+                [] => break false,
+                [next] if Some(*next) == header => break true,
+                [next] => current = *next,
+                _ => return None,
+            }
+        };
+        self.duplicated.extend(chain.iter().copied());
+        let mut regions: Vec<Region> = chain.into_iter().map(Region::Block).collect();
+        if continues {
+            regions.push(Region::Continue {
+                label: None,
+                latch: None,
+            });
+        }
+        Some(regions)
+    }
+
+    fn innermost_loop_jump(&mut self, block: BlockId) -> Option<Region> {
+        if !self.explicit_loop_exits {
+            return None;
+        }
+        let frame: LoopFrame = *self.loop_stack.last()?;
+        if frame.header == block {
+            return Some(Region::Continue {
+                label: None,
+                latch: None,
+            });
+        }
+        if frame.exit != Some(block) {
+            return None;
+        }
+        let held: bool = self.open_monitors.get(frame.monitors..).is_some_and(
+            |opened: &[BTreeSet<BlockId>]| {
+                opened
+                    .iter()
+                    .any(|blocks: &BTreeSet<BlockId>| blocks.contains(&block))
+            },
+        );
+        if held {
+            self.duplicated
+                .extend(forward_reach(self.cfg, block, frame.header));
+            return None;
+        }
+        self.exit_breaks.insert(block);
+        Some(Region::Break { label: None })
+    }
+
+    fn exit_follows_loop(&self, loop_info: &NaturalLoop, exit: BlockId) -> bool {
+        !self.explicit_loop_exits
+            || self.exit_breaks.contains(&exit)
+            || normal_targets(&self.cfg.blocks[loop_info.header.0 as usize])
+                .any(|target: BlockId| target == exit)
+    }
+
+    fn normal_predecessors(&self, block: BlockId) -> Vec<BlockId> {
+        self.cfg.blocks[block.0 as usize]
+            .predecessors
+            .iter()
+            .copied()
+            .filter(|predecessor: &BlockId| {
+                normal_targets(&self.cfg.blocks[predecessor.0 as usize])
+                    .any(|target: BlockId| target == block)
+            })
+            .collect()
+    }
+
     fn structure_at(&mut self, start: BlockId, stop: Option<BlockId>) -> Region {
         self.work += 1;
         if self.work > MAX_STRUCTURE_WORK {
@@ -2261,6 +2481,10 @@ impl<'a> Structurer<'a> {
                 self.had_irreducible = true;
                 break;
             }
+            if let Some(jump) = self.innermost_loop_jump(b) {
+                seq.push(jump);
+                break;
+            }
             if Some(b) == stop || self.handler_stops.contains(&b) {
                 break;
             }
@@ -2269,6 +2493,9 @@ impl<'a> Structurer<'a> {
                 break;
             }
             if self.visited.contains(&b) {
+                if let Some(tail) = self.duplicable_tail(b, stop) {
+                    seq.extend(tail);
+                }
                 break;
             }
 
@@ -2340,16 +2567,24 @@ impl<'a> Structurer<'a> {
                 } else {
                     false
                 };
-                let mut body_region: Region = self.structure_at(b, try_end_block);
+                let handler_join: Option<BlockId> = if finally_handler.is_none() && !end_is_handler
+                {
+                    self.handler_join_after(&try_group, b, try_end_block, &handler_set)
+                } else {
+                    None
+                };
+                let body_stop: Option<BlockId> = handler_join.or(try_end_block);
+                let mut body_region: Region = self.structure_at(b, body_stop);
                 if fresh_span {
                     self.suppressed_spans.remove(&span);
                 }
                 let mut handlers_out: Vec<(Vec<String>, Region)> = Vec::new();
-                let absorbed_terminal: Option<BlockId> = if finally_handler.is_none() {
-                    self.absorbable_value_return(&try_group, try_end_block, &handler_set)
-                } else {
-                    None
-                };
+                let absorbed_terminal: Option<BlockId> =
+                    if finally_handler.is_none() && handler_join.is_none() {
+                        self.absorbable_value_return(&try_group, try_end_block, &handler_set)
+                    } else {
+                        None
+                    };
                 let mut after_try: Option<BlockId> = if let Some(terminal) = absorbed_terminal {
                     self.visited.insert(terminal);
                     body_region = append_region_block(body_region, terminal);
@@ -2357,7 +2592,7 @@ impl<'a> Structurer<'a> {
                 } else if end_is_handler {
                     handler_continuation(self.cfg, &handler_set)
                 } else {
-                    try_end_block
+                    body_stop
                 };
                 let mut handler_index: BTreeMap<BlockId, usize> = BTreeMap::new();
                 let joins: BTreeSet<BlockId> = self.continuation_joins(after_try);
@@ -2373,6 +2608,11 @@ impl<'a> Structurer<'a> {
                         continue;
                     }
                     if self.visited.contains(&handler_bid) {
+                        if let Some(tail) = self.duplicable_tail(handler_bid, after_try) {
+                            handler_index.insert(handler_bid, handlers_out.len());
+                            handlers_out
+                                .push((catch_type.into_iter().collect(), Region::Sequence(tail)));
+                        }
                         continue;
                     }
                     let handler_region: Region = self.structure_at(handler_bid, after_try);
@@ -2668,12 +2908,20 @@ impl<'a> Structurer<'a> {
                 let loop_info: NaturalLoop = loop_info.clone();
                 let exit: Option<BlockId> = self.loop_exits.get(&b).copied();
                 seq.push(self.structure_loop(&loop_info, exit));
-                cur = exit;
+                cur = exit.filter(|target: &BlockId| self.exit_follows_loop(&loop_info, *target));
                 continue;
             }
 
             let block: &BasicBlock = &self.cfg.blocks[b.0 as usize];
             if is_switch(block, &self.cfg.blocks) {
+                if let Some(idiom) = self.external_string_switches.get(&b).cloned() {
+                    for &absorbed in &idiom.absorbed {
+                        self.absorb(absorbed);
+                    }
+                    seq.push(Region::Block(b));
+                    cur = Some(idiom.index_head);
+                    continue;
+                }
                 if let Some(cf) = self.cf
                     && let Some(table) = detect_string_switch(cf, self.cfg, self.insns, b)
                 {
@@ -2700,6 +2948,18 @@ impl<'a> Structurer<'a> {
                 cur = join;
                 continue;
             }
+            if let Some(monitor) = self.monitor_regions.remove(&b) {
+                self.open_monitors.push(monitor.blocks.clone());
+                let body: Region = self.structure_at(monitor.body, monitor.continuation);
+                self.open_monitors.pop();
+                seq.push(Region::Synchronized {
+                    lock_block: b,
+                    lock_slot: monitor.lock_register,
+                    body: Box::new(body),
+                });
+                cur = monitor.continuation;
+                continue;
+            }
             seq.push(Region::Block(b));
             cur = follow_single_successor(block);
         }
@@ -2722,6 +2982,7 @@ impl<'a> Structurer<'a> {
                 header,
                 exit,
                 label,
+                monitors: self.open_monitors.len(),
             },
             condition.as_ref(),
         );
@@ -2764,6 +3025,13 @@ impl<'a> Structurer<'a> {
             insns: self.insns,
             switch_map: self.switch_map.clone(),
             string_switch_tables: BTreeMap::new(),
+            monitor_regions: std::mem::take(&mut self.monitor_regions),
+            external_string_switches: self.external_string_switches.clone(),
+            duplicate_terminal_tails: self.duplicate_terminal_tails,
+            explicit_loop_exits: self.explicit_loop_exits,
+            open_monitors: self.open_monitors.clone(),
+            exit_breaks: BTreeSet::new(),
+            duplicated: BTreeSet::new(),
             finally_inline_skips: BTreeMap::new(),
             finally_tail_trims: BTreeMap::new(),
             finally_return_stores: BTreeMap::new(),
@@ -2816,12 +3084,39 @@ impl<'a> Structurer<'a> {
             inner.structure_header_branch(loop_info.header, exit)
         } else {
             match first_succ {
-                Some(start) => inner.structure_at(start, exit),
+                Some(start) => match inner.monitor_regions.get(&loop_info.header).cloned() {
+                    Some(monitor) if monitor.body == start => {
+                        inner.monitor_regions.remove(&loop_info.header);
+                        inner.open_monitors.push(monitor.blocks.clone());
+                        let body: Region = inner.structure_at(start, monitor.continuation);
+                        inner.open_monitors.pop();
+                        let synchronized: Region = Region::Synchronized {
+                            lock_block: loop_info.header,
+                            lock_slot: monitor.lock_register,
+                            body: Box::new(body),
+                        };
+                        match monitor
+                            .continuation
+                            .filter(|next: &BlockId| *next != loop_info.header)
+                        {
+                            Some(next) => {
+                                append_region(synchronized, inner.structure_at(next, exit))
+                            }
+                            None => synchronized,
+                        }
+                    }
+                    _ => inner.structure_at(start, exit),
+                },
                 None => Region::Block(loop_info.header),
             }
         };
         self.work = inner.work;
         self.next_label = inner.next_label;
+        self.monitor_regions = std::mem::take(&mut inner.monitor_regions);
+        self.exit_breaks
+            .extend(std::mem::take(&mut inner.exit_breaks));
+        self.duplicated
+            .extend(std::mem::take(&mut inner.duplicated));
         self.had_irreducible |= inner.had_irreducible;
         self.absorbed.extend(inner.take_absorbed_blocks());
         self.unmodelled_region = self.unmodelled_region.or(inner.unmodelled_region);
@@ -3069,6 +3364,7 @@ impl<'a> Structurer<'a> {
         let mut cur: BlockId = start;
         while cur != stop {
             if cur == chain.exit {
+                self.exit_breaks.insert(cur);
                 seq.push(Region::Break { label: None });
                 break;
             }
@@ -3488,6 +3784,18 @@ fn count_slot_uses(insns: &[Instruction]) -> BTreeMap<u16, usize> {
 fn aload_slot_of_prev(block_insns: &[Instruction], target: &Instruction) -> Option<u16> {
     let idx: usize = block_insns.iter().position(|i| i.pc == target.pc)?;
     aload_slot(block_insns.get(idx.checked_sub(1)?)?)
+}
+
+fn append_region(first: Region, rest: Region) -> Region {
+    let mut items: Vec<Region> = match first {
+        Region::Sequence(items) => items,
+        single => vec![single],
+    };
+    match rest {
+        Region::Sequence(more) => items.extend(more),
+        single => items.push(single),
+    }
+    Region::Sequence(items)
 }
 
 fn append_region_block(region: Region, bid: BlockId) -> Region {

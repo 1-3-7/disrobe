@@ -3,7 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::dalvik::{DalvikInsn, decode_method};
 use crate::descriptor::{JavaType, MethodDescriptor};
 use crate::dex::{
-    ACC_ABSTRACT, ACC_STATIC, CodeItem, CodeItemsReport, DexCodeState, DexFile, DexMethodCode,
+    ACC_ABSTRACT, ACC_STATIC, CodeItem, CodeItemsReport, DexCodeState, DexFieldDecl, DexFile,
+    DexMethodCode, FieldId,
 };
 
 const ACC_INTERFACE: u32 = 0x0200;
@@ -673,6 +674,7 @@ pub(crate) enum RecoveredFunctional {
 #[derive(Debug, Default)]
 pub(crate) struct FunctionalRecovery {
     by_class: BTreeMap<String, RecoveredFunctional>,
+    final_static_fields: BTreeSet<u32>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1079,6 +1081,7 @@ impl FunctionalRecovery {
                 .into_iter()
                 .filter(|(class, _): &(String, RecoveredFunctional)| accepted.contains(class))
                 .collect(),
+            final_static_fields: final_static_fields(dex, report),
         }
     }
 
@@ -1086,9 +1089,40 @@ impl FunctionalRecovery {
         self.by_class.contains_key(class)
     }
 
+    pub(crate) fn is_final_static_field(&self, field: u32) -> bool {
+        self.final_static_fields.contains(&field)
+    }
+
     pub(crate) fn recovered(&self, class: &str) -> Option<&RecoveredFunctional> {
         self.by_class.get(class)
     }
+}
+
+fn final_static_fields(dex: &DexFile, report: &CodeItemsReport) -> BTreeSet<u32> {
+    let declared: BTreeSet<(&str, &str, &str)> = report
+        .fields()
+        .iter()
+        .filter(|field: &&DexFieldDecl| field.is_static && field.access_flags & ACC_FINAL != 0)
+        .map(|field: &DexFieldDecl| {
+            (
+                field.class.as_str(),
+                field.name.as_str(),
+                field.type_name.as_str(),
+            )
+        })
+        .collect();
+    dex.field_ids
+        .iter()
+        .enumerate()
+        .filter(|(_, field): &(usize, &FieldId)| {
+            declared.contains(&(
+                field.class.as_str(),
+                field.name.as_str(),
+                field.type_name.as_str(),
+            ))
+        })
+        .filter_map(|(index, _): (usize, &FieldId)| u32::try_from(index).ok())
+        .collect()
 }
 
 fn is_lambda_shaped(declaration: &ClassDeclaration) -> bool {

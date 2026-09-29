@@ -1872,7 +1872,7 @@ fn instruction_reads_register(insn: &DalvikInsn, register: u16) -> bool {
         .is_some_and(|regs: &[u16]| regs.contains(&register))
 }
 
-fn instruction_writes_register(insn: &DalvikInsn, register: u16) -> bool {
+pub(crate) fn instruction_writes_register(insn: &DalvikInsn, register: u16) -> bool {
     writes_first_register(insn.op) && insn.regs.first() == Some(&register)
 }
 
@@ -1892,7 +1892,7 @@ fn lift_method(
             fully_lifted: true,
         };
     }
-    let Some(built): Option<DalvikMethodCfg> =
+    let Some(mut built): Option<DalvikMethodCfg> =
         rewired.or_else(|| build_dalvik_cfg_from_code_item(item))
     else {
         return MethodBody {
@@ -1900,9 +1900,32 @@ fn lift_method(
             fully_lifted: false,
         };
     };
+    let mut string_switches: BTreeMap<BlockId, crate::dalvik_string_switch::DalvikStringSwitch> =
+        crate::dalvik_string_switch::detect_string_switches(
+            &built.cfg,
+            &built.insns,
+            &built.switch_map,
+            dex,
+        );
+    let string_switch_pcs: std::collections::BTreeSet<u32> = string_switches
+        .keys()
+        .filter_map(|head: &BlockId| built.cfg.blocks.get(head.0 as usize))
+        .filter_map(|block: &BasicBlock| block.insn_range.1.checked_sub(1))
+        .filter_map(|last: usize| built.insns.get(last))
+        .map(|insn: &DalvikInsn| insn.pc)
+        .collect();
+    let dispatcher_candidates: Vec<(u32, crate::dalvik::SwitchPayload)> = built
+        .switch_payloads
+        .iter()
+        .filter(|(pc, _): &&(u32, crate::dalvik::SwitchPayload)| !string_switch_pcs.contains(pc))
+        .cloned()
+        .collect();
     let blackobf_note: String =
-        blackobfuscator_annotation(&built.insns, &built.switch_payloads, dex);
-    let accesses: MethodAccesses = register_accesses(dex, &built.cfg, &built.insns);
+        blackobfuscator_annotation(&built.insns, &dispatcher_candidates, dex);
+    let monitors: crate::dalvik_monitor::MonitorPlan =
+        crate::dalvik_monitor::recover_monitors(&mut built);
+    let accesses: MethodAccesses =
+        register_accesses(dex, &built.cfg, &built.insns, &monitors.released);
     let Some(flow): Option<RegisterFlow> =
         RegisterFlow::analyze(&built.cfg, &accesses.accesses, item.registers_size)
     else {
@@ -1913,9 +1936,45 @@ fn lift_method(
     };
     let dom: Dominators = compute_dominators(&built.cfg);
     let loops: Vec<NaturalLoop> = find_natural_loops(&built.cfg, &dom);
+    string_switches.retain(|head: &BlockId, _| {
+        !loops
+            .iter()
+            .any(|found: &NaturalLoop| found.header == *head)
+    });
+    let try_layout: crate::dalvik_try_regions::TryLayout =
+        crate::dalvik_try_regions::merged_try_layout(&built.cfg, &built.insns).unwrap_or_default();
     let mut structurer: Structurer<'_> =
-        Structurer::with_switch_map(&built.cfg, &dom, &loops, &[], built.switch_map.clone());
+        Structurer::with_switch_map(&built.cfg, &dom, &loops, &[], built.switch_map.clone())
+            .with_monitor_regions(monitors.regions.clone())
+            .with_string_switches(
+                string_switches
+                    .iter()
+                    .map(
+                        |(&head, found): (
+                            &BlockId,
+                            &crate::dalvik_string_switch::DalvikStringSwitch,
+                        )| {
+                            (
+                                head,
+                                crate::decompile_struct::ExternalStringSwitch {
+                                    index_head: found.index_head,
+                                    absorbed: found.absorbed.clone(),
+                                },
+                            )
+                        },
+                    )
+                    .collect(),
+            );
+    structurer = structurer
+        .duplicating_terminal_tails()
+        .with_explicit_loop_exits();
+    if !try_layout.groups.is_empty() {
+        structurer = structurer.with_try_groups(try_layout.groups);
+    }
     let root: Region = structurer.structure();
+    let duplicated_blocks: std::collections::BTreeSet<BlockId> =
+        structurer.take_duplicated_blocks();
+    let monitors_lifted: bool = !monitors.unrecovered && !structurer.monitor_regions_pending();
 
     let base: MethodContext<'_> = MethodContext::new(
         dex,
@@ -1936,6 +1995,7 @@ fn lift_method(
         &flow,
         states.as_ref(),
         accesses.threaded,
+        item.method_name != "<clinit>",
     );
     let ctx: MethodContext<'_> = base.with_naming(&locals.naming);
     let mut render: RenderState<'_> = RenderState {
@@ -1946,10 +2006,18 @@ fn lift_method(
         flow: &flow,
         locals: &locals,
         rendered_blocks: std::collections::BTreeSet::new(),
-        fully_lifted: !structurer.had_irreducible,
+        fully_lifted: !structurer.had_irreducible && monitors_lifted,
         assigned: std::collections::BTreeSet::new(),
         temporaries: 0,
         catch_depth: 0,
+        catch_names: Vec::new(),
+        monitor_subject: None,
+        split_try_heads: try_layout.split_heads,
+        duplicated_blocks,
+        string_switches: string_switches
+            .into_values()
+            .map(|found: crate::dalvik_string_switch::DalvikStringSwitch| (found.index_head, found))
+            .collect(),
     };
     let mut out: String = String::new();
     render_region(&mut render, &root, &mut out, 2);
@@ -1980,7 +2048,12 @@ struct MethodAccesses {
     threaded: std::collections::BTreeSet<u32>,
 }
 
-fn register_accesses(dex: &DexFile, cfg: &Cfg, insns: &[DalvikInsn]) -> MethodAccesses {
+fn register_accesses(
+    dex: &DexFile,
+    cfg: &Cfg,
+    insns: &[DalvikInsn],
+    released_monitors: &std::collections::BTreeSet<usize>,
+) -> MethodAccesses {
     let mut accesses: Vec<RegisterAccess> = vec![RegisterAccess::default(); insns.len()];
     let mut threaded: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
     for block in &cfg.blocks {
@@ -1997,6 +2070,7 @@ fn register_accesses(dex: &DexFile, cfg: &Cfg, insns: &[DalvikInsn]) -> MethodAc
                 0x6E..=0x72 | 0x74..=0x78 => {
                     invoke_access(dex, insn, next, &allocated, &mut threaded)
                 }
+                _ if released_monitors.contains(&index) => RegisterAccess::default(),
                 _ => instruction_access(insn),
             };
             access.throws = may_throw(insn.op);
@@ -2166,6 +2240,12 @@ fn method_type_states(
 struct MethodLocals {
     naming: RegisterNaming,
     web_local: BTreeMap<usize, usize>,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct CaughtWeb {
+    escapes: bool,
+    other_def: bool,
 }
 
 #[derive(Default)]
@@ -2426,11 +2506,14 @@ fn method_locals(
     flow: &RegisterFlow,
     states: Option<&TypeStates>,
     threaded: std::collections::BTreeSet<u32>,
+    rematerialize_final_statics: bool,
 ) -> MethodLocals {
     let dex: &DexFile = ctx.dex;
     let parameters: BTreeMap<u16, LocalType> = parameter_types(ctx, identity);
     let mut web_register: BTreeMap<usize, u16> = BTreeMap::new();
     let mut evidence: BTreeMap<usize, WebEvidence> = BTreeMap::new();
+    let mut web_static_source: BTreeMap<usize, Option<u32>> = BTreeMap::new();
+    let mut web_caught: BTreeMap<usize, CaughtWeb> = BTreeMap::new();
     for (node_index, node) in flow.nodes().iter().enumerate() {
         let Some(web): Option<usize> = flow.web_of(node_index) else {
             continue;
@@ -2442,12 +2525,38 @@ fn method_locals(
         let facts: &mut WebEvidence = evidence.entry(web).or_default();
         match node {
             ValueNode::Entry { block, register } if BlockId(*block) == built.cfg.entry => {
+                web_static_source.insert(web, None);
+                web_caught.entry(web).or_default().other_def = true;
                 if let Some(declared) = parameters.get(register) {
                     facts.declared = Some(declared.clone());
                 }
             }
             ValueNode::Entry { .. } => {}
-            ValueNode::Def { insn, .. } => facts.record_def(dex, &built.insns, *insn),
+            ValueNode::Def { insn, .. } => {
+                let loaded: Option<u32> = built
+                    .insns
+                    .get(*insn)
+                    .filter(|instruction: &&DalvikInsn| instruction.op == 0x62)
+                    .and_then(|instruction: &DalvikInsn| instruction.index);
+                let merged: Option<u32> = match web_static_source.get(&web) {
+                    None => loaded,
+                    Some(previous) => previous.filter(|field: &u32| loaded == Some(*field)),
+                };
+                web_static_source.insert(web, merged);
+                let caught: &mut CaughtWeb = web_caught.entry(web).or_default();
+                if built
+                    .insns
+                    .get(*insn)
+                    .is_some_and(|instruction: &DalvikInsn| instruction.op == 0x0D)
+                {
+                    caught.escapes |= flow
+                        .def_uses(*insn, register)
+                        .is_some_and(|uses: crate::dalvik_cfg::DefUses| uses.escapes);
+                } else {
+                    caught.other_def = true;
+                }
+                facts.record_def(dex, &built.insns, *insn);
+            }
         }
     }
     for (insn, register, web) in flow.uses() {
@@ -2494,6 +2603,34 @@ fn method_locals(
                 .get(&web)
                 .and_then(|facts: &WebEvidence| facts.local_type(&lattice, ctx.desugar));
             let holds_entry: bool = entry_web == Some(web);
+            let catch_parameter: bool = web_caught
+                .get(&web)
+                .is_some_and(|caught: &CaughtWeb| caught.escapes && !caught.other_def);
+            if catch_parameter {
+                let mut ordinal: usize = 0;
+                let name: String = loop {
+                    let candidate: String = if ordinal == 0 {
+                        format!("exc{register}")
+                    } else {
+                        format!("exc{register}_{ordinal}")
+                    };
+                    if !naming.by_name.contains_key(&candidate) {
+                        break candidate;
+                    }
+                    ordinal += 1;
+                };
+                let index: usize = intern_local(
+                    &mut naming,
+                    NamedLocal {
+                        name,
+                        ty,
+                        declared: false,
+                    },
+                );
+                naming.catch_parameters.insert(index);
+                web_local.insert(web, index);
+                continue;
+            }
             let local: NamedLocal = if is_this && holds_entry {
                 NamedLocal {
                     name: "this".to_owned(),
@@ -2547,6 +2684,27 @@ fn method_locals(
                     declared: false,
                 },
             );
+        }
+    }
+    if !rematerialize_final_statics {
+        web_static_source.clear();
+    }
+    let mut local_static_source: BTreeMap<usize, Option<u32>> = BTreeMap::new();
+    for (web, &index) in &web_local {
+        let source: Option<u32> = web_static_source
+            .get(web)
+            .copied()
+            .flatten()
+            .filter(|field: &u32| ctx.desugar.functionals.is_final_static_field(*field));
+        let merged: Option<u32> = match local_static_source.get(&index) {
+            None => source,
+            Some(previous) => previous.filter(|field: &u32| source == Some(*field)),
+        };
+        local_static_source.insert(index, merged);
+    }
+    for (index, source) in local_static_source {
+        if let (Some(field), Some(local)) = (source, naming.locals.get(index)) {
+            naming.final_static_locals.insert(local.name.clone(), field);
         }
     }
     for (node_index, node) in flow.nodes().iter().enumerate() {
@@ -2632,6 +2790,11 @@ struct RenderState<'a> {
     assigned: std::collections::BTreeSet<usize>,
     temporaries: usize,
     catch_depth: usize,
+    catch_names: Vec<CatchName>,
+    monitor_subject: Option<String>,
+    split_try_heads: std::collections::BTreeSet<BlockId>,
+    duplicated_blocks: std::collections::BTreeSet<BlockId>,
+    string_switches: BTreeMap<BlockId, crate::dalvik_string_switch::DalvikStringSwitch>,
 }
 
 struct BlockWalk {
@@ -2707,14 +2870,14 @@ fn render_region(state: &mut RenderState<'_>, region: &Region, out: &mut String,
                 let _ = writeln!(out, "{pad}        break;");
                 let _ = writeln!(out, "{pad}    }}");
             }
-            render_region(state, body, out, level + 1);
+            render_loop_body(state, body, out, level + 1);
             let _ = writeln!(out, "{pad}}}");
         }
         Region::DoWhile { header, body, .. } => {
             let pad: String = indent_string(level);
             let _ = writeln!(out, "{pad}do {{");
             render_block(state, *header, out, level + 1);
-            render_region(state, body, out, level + 1);
+            render_loop_body(state, body, out, level + 1);
             let _ = writeln!(out, "{pad}}} while (true);");
         }
         Region::Switch {
@@ -2722,26 +2885,62 @@ fn render_region(state: &mut RenderState<'_>, region: &Region, out: &mut String,
             cases,
             default,
             fallthrough,
+            default_position,
             ..
         } => {
-            let subject: String = render_switch_subject(state, *head, out, level);
+            let string_switch: Option<crate::dalvik_string_switch::DalvikStringSwitch> =
+                state.string_switches.get(head).cloned();
+            let int_subject: String = render_switch_subject(state, *head, out, level);
+            let subject: String = string_switch.as_ref().map_or(
+                int_subject,
+                |found: &crate::dalvik_string_switch::DalvikStringSwitch| {
+                    entry_value(state, found.subject_block, found.subject_register).render()
+                },
+            );
             let pad: String = indent_string(level);
             let _ = writeln!(out, "{pad}switch ({subject}) {{");
-            for (i, (key, body)) in cases.iter().enumerate() {
-                let _ = writeln!(out, "{pad}    case {}:", format_switch_key(key, i));
+            let mut arms: Vec<(Option<(usize, &SwitchKey)>, &Region)> = cases
+                .iter()
+                .enumerate()
+                .map(|(index, (key, body)): (usize, &(SwitchKey, Region))| {
+                    (Some((index, key)), body)
+                })
+                .collect();
+            if let Some(def) = default {
+                arms.insert((*default_position).min(arms.len()), (None, def));
+            }
+            for (label, body) in arms {
+                match label {
+                    Some((index, key)) => {
+                        let labels: Vec<String> = match &string_switch {
+                            Some(found) => crate::dalvik_string_switch::string_case_labels(
+                                key,
+                                &found.literals,
+                            )
+                            .unwrap_or_else(|| {
+                                state.fully_lifted = false;
+                                Vec::new()
+                            }),
+                            None => switch_case_labels(key, index),
+                        };
+                        for text in labels {
+                            let _ = writeln!(out, "{pad}    case {text}:");
+                        }
+                    }
+                    None => {
+                        let _ = writeln!(out, "{pad}    default:");
+                    }
+                }
                 render_region(state, body, out, level + 2);
-                if !fallthrough.contains(&i) {
+                let position: usize = label.map_or(cases.len(), |(index, _)| index);
+                if !fallthrough.contains(&position) && region_completes(state, body) {
                     let _ = writeln!(out, "{pad}        break;");
                 }
-            }
-            if let Some(def) = default {
-                let _ = writeln!(out, "{pad}    default:");
-                render_region(state, def, out, level + 2);
-                let _ = writeln!(out, "{pad}        break;");
             }
             let _ = writeln!(out, "{pad}}}");
         }
         Region::Try { try_body, handlers } => {
+            render_split_try_head(state, try_body, out, level);
             let pad: String = indent_string(level);
             let _ = writeln!(out, "{pad}try {{");
             render_region(state, try_body, out, level + 1);
@@ -2756,6 +2955,7 @@ fn render_region(state: &mut RenderState<'_>, region: &Region, out: &mut String,
             finally_body,
             ..
         } => {
+            render_split_try_head(state, try_body, out, level);
             let pad: String = indent_string(level);
             let _ = writeln!(out, "{pad}try {{");
             render_region(state, try_body, out, level + 1);
@@ -2782,7 +2982,11 @@ fn render_region(state: &mut RenderState<'_>, region: &Region, out: &mut String,
         } => {
             render_block(state, *lock_block, out, level);
             let pad: String = indent_string(level);
-            let _ = writeln!(out, "{pad}synchronized (v{lock_slot}) {{");
+            let subject: String = state.monitor_subject.take().unwrap_or_else(|| {
+                state.fully_lifted = false;
+                state.ctx.register_name(*lock_slot).render()
+            });
+            let _ = writeln!(out, "{pad}synchronized ({subject}) {{");
             render_region(state, body, out, level + 1);
             let _ = writeln!(out, "{pad}}}");
         }
@@ -2824,6 +3028,51 @@ fn render_region(state: &mut RenderState<'_>, region: &Region, out: &mut String,
             }
             state.fully_lifted = false;
         }
+    }
+}
+
+fn render_loop_body(state: &mut RenderState<'_>, body: &Region, out: &mut String, level: usize) {
+    let trailing = |region: &Region| -> bool {
+        matches!(
+            region,
+            Region::Continue {
+                label: None,
+                latch: None
+            }
+        )
+    };
+    match body {
+        Region::Sequence(items) if items.last().is_some_and(trailing) => {
+            for item in items.iter().take(items.len() - 1) {
+                render_region(state, item, out, level);
+            }
+        }
+        single if trailing(single) => {}
+        other => render_region(state, other, out, level),
+    }
+}
+
+fn render_split_try_head(
+    state: &mut RenderState<'_>,
+    try_body: &Region,
+    out: &mut String,
+    level: usize,
+) {
+    let Some(head): Option<BlockId> = leading_branch_head(try_body) else {
+        return;
+    };
+    if state.split_try_heads.contains(&head) && !state.rendered_blocks.contains(&head) {
+        let _: Option<(BlockWalk, usize)> = walk_head(state, head, out, level);
+    }
+}
+
+fn leading_branch_head(region: &Region) -> Option<BlockId> {
+    match region {
+        Region::Sequence(items) => items.first().and_then(leading_branch_head),
+        Region::IfThen { head, .. }
+        | Region::IfThenElse { head, .. }
+        | Region::Switch { head, .. } => Some(*head),
+        _ => None,
     }
 }
 
@@ -3122,6 +3371,11 @@ fn walk_insn(
             flush(state, walk, &request, out, level);
         }
     }
+    if insn.op == 0x1D
+        && let Some(&lock) = insn.regs.first()
+    {
+        enter_monitor(state, walk, lock, &after, out, level);
+    }
     let null_check: bool = walk
         .pending
         .as_ref()
@@ -3174,6 +3428,32 @@ fn walk_insn(
     if insn.op == 0x26 {
         anchor_filled_array(state, walk, index, &after, out, level);
     }
+}
+
+fn enter_monitor(
+    state: &mut RenderState<'_>,
+    walk: &mut BlockWalk,
+    lock: u16,
+    after: &RegisterSet,
+    out: &mut String,
+    level: usize,
+) {
+    let inline: bool = !after.contains(lock);
+    let assign: Vec<u16> = if !inline && walk.file.is_pending(lock) {
+        vec![lock]
+    } else {
+        Vec::new()
+    };
+    let exclude: Vec<u16> = if inline { vec![lock] } else { Vec::new() };
+    let request: FlushRequest<'_> = FlushRequest {
+        assign,
+        external: None,
+        effect: true,
+        live: after,
+        exclude: &exclude,
+    };
+    flush(state, walk, &request, out, level);
+    state.monitor_subject = Some(walk.file.current(state.ctx, lock).render());
 }
 
 fn order_pending_effects(
@@ -3324,7 +3604,7 @@ fn anchor_filled_array(
     flush(state, walk, &request, out, level);
 }
 
-const fn may_throw(op: u8) -> bool {
+pub(crate) const fn may_throw(op: u8) -> bool {
     matches!(
         op,
         0x1C..=0x27
@@ -3530,7 +3810,7 @@ fn walk_block_body(
 }
 
 fn render_block(state: &mut RenderState<'_>, bid: BlockId, out: &mut String, level: usize) {
-    if !state.rendered_blocks.insert(bid) {
+    if !state.rendered_blocks.insert(bid) && !state.duplicated_blocks.contains(&bid) {
         return;
     }
     let (_, end): (usize, usize) = block_insn_range(state, bid);
@@ -3603,11 +3883,64 @@ fn render_catch(
 ) {
     let pad: String = indent_string(level);
     let ty: String = descriptor::catch_clause(catch_types);
-    let name: String = catch_variable(state.catch_depth);
-    let _ = writeln!(out, "{pad}}} catch ({ty} {name}) {{");
+    let caught: CatchName = catch_parameter(state, handler_region).map_or_else(
+        || CatchName {
+            name: catch_variable(state.catch_depth),
+            parameter_local: false,
+        },
+        |name: String| CatchName {
+            name,
+            parameter_local: true,
+        },
+    );
+    let _ = writeln!(out, "{pad}}} catch ({ty} {}) {{", caught.name);
     state.catch_depth += 1;
+    state.catch_names.push(caught);
     render_region(state, handler_region, out, level + 1);
+    state.catch_names.pop();
     state.catch_depth -= 1;
+}
+
+struct CatchName {
+    name: String,
+    parameter_local: bool,
+}
+
+fn catch_parameter(state: &RenderState<'_>, handler_region: &Region) -> Option<String> {
+    let head: BlockId = leading_block(handler_region)?;
+    let (start, _): (usize, usize) = block_insn_range(state, head);
+    let caught: &DalvikInsn = state
+        .insns
+        .get(start)
+        .filter(|insn: &&DalvikInsn| insn.op == 0x0D)?;
+    let register: u16 = *caught.regs.first()?;
+    let index: usize = *state.locals.naming.def_locals.get(&(caught.pc, register))?;
+    if !state.locals.naming.catch_parameters.contains(&index) {
+        return None;
+    }
+    state
+        .locals
+        .naming
+        .locals
+        .get(index)
+        .map(|local: &NamedLocal| local.name.clone())
+}
+
+fn leading_block(region: &Region) -> Option<BlockId> {
+    match region {
+        Region::Block(block) => Some(*block),
+        Region::Sequence(items) => items.first().and_then(leading_block),
+        Region::IfThen { head, .. }
+        | Region::IfThenElse { head, .. }
+        | Region::Switch { head, .. } => Some(*head),
+        Region::Try { try_body, .. }
+        | Region::TryFinally { try_body, .. }
+        | Region::TryWithResources { try_body, .. } => leading_block(try_body),
+        Region::Synchronized { lock_block, .. } => Some(*lock_block),
+        Region::While { header, .. } | Region::DoWhile { header, .. } => Some(*header),
+        Region::LabeledLoop { body, .. } => leading_block(body),
+        Region::Break { .. } | Region::Continue { .. } | Region::Irreducible { .. } => None,
+    }
 }
 
 fn lift_insn_tracked(
@@ -3618,10 +3951,14 @@ fn lift_insn_tracked(
 ) -> LiftOutcome {
     let outcome: LiftOutcome = lift_insn(state.ctx, file, insn, pending);
     if insn.op == 0x0D
-        && let Some(depth) = state.catch_depth.checked_sub(1)
+        && let Some(caught) = state.catch_names.last()
         && let Some(&dest) = insn.regs.first()
     {
-        file.replace(dest, Expr::Local(catch_variable(depth)));
+        if caught.parameter_local {
+            file.set_variable(dest, caught.name.clone());
+        } else {
+            file.replace(dest, Expr::Local(caught.name.clone()));
+        }
     }
     record_lift_outcome(&mut state.fully_lifted, &outcome);
     outcome
@@ -3642,18 +3979,99 @@ fn header_cond_true_target(cfg: &Cfg, head: BlockId) -> Option<BlockId> {
         .map(|e| e.target)
 }
 
-fn format_switch_key(key: &SwitchKey, fallback_idx: usize) -> String {
+fn switch_case_labels(key: &SwitchKey, fallback_idx: usize) -> Vec<String> {
     match key {
-        SwitchKey::Range { low, high } => (*low..=*high)
-            .map(|v: i32| v.to_string())
-            .collect::<Vec<String>>()
-            .join(", "),
-        SwitchKey::Values(vs) if !vs.is_empty() => vs
+        SwitchKey::Range { low, high } => (*low..=*high).map(|v: i32| v.to_string()).collect(),
+        SwitchKey::Values(vs) if !vs.is_empty() => vs.iter().map(i32::to_string).collect(),
+        SwitchKey::Values(_) => vec![fallback_idx.to_string()],
+    }
+}
+
+fn region_completes(state: &RenderState<'_>, region: &Region) -> bool {
+    match region {
+        Region::Block(block) => {
+            let (_, end): (usize, usize) = block_insn_range(state, *block);
+            !end.checked_sub(1)
+                .and_then(|last: usize| state.insns.get(last))
+                .is_some_and(|last: &DalvikInsn| last.is_return() || last.is_throw())
+        }
+        Region::Sequence(items) => items
             .iter()
-            .map(i32::to_string)
-            .collect::<Vec<String>>()
-            .join(", "),
-        SwitchKey::Values(_) => fallback_idx.to_string(),
+            .all(|item: &Region| region_completes(state, item)),
+        Region::IfThenElse {
+            then_body,
+            else_body,
+            ..
+        } => region_completes(state, then_body) || region_completes(state, else_body),
+        Region::DoWhile { body, .. } => breaks_out(body),
+        Region::Try { try_body, handlers } => {
+            region_completes(state, try_body)
+                || handlers
+                    .iter()
+                    .any(|(_, handler): &(Vec<String>, Region)| region_completes(state, handler))
+        }
+        Region::TryFinally {
+            try_body,
+            handlers,
+            finally_body,
+            ..
+        } => {
+            (region_completes(state, try_body)
+                || handlers
+                    .iter()
+                    .any(|(_, handler): &(Vec<String>, Region)| region_completes(state, handler)))
+                && region_completes(state, finally_body)
+        }
+        Region::TryWithResources { try_body: body, .. }
+        | Region::Synchronized { body, .. }
+        | Region::LabeledLoop { body, .. } => region_completes(state, body),
+        Region::Break { .. } | Region::Continue { .. } => false,
+        Region::IfThen { .. }
+        | Region::While { .. }
+        | Region::Switch { .. }
+        | Region::Irreducible { .. } => true,
+    }
+}
+
+fn breaks_out(region: &Region) -> bool {
+    match region {
+        Region::Break { label: None } => true,
+        Region::Sequence(items) => items.iter().any(breaks_out),
+        Region::IfThen { then_body, .. } => breaks_out(then_body),
+        Region::IfThenElse {
+            then_body,
+            else_body,
+            ..
+        } => breaks_out(then_body) || breaks_out(else_body),
+        Region::Try { try_body, handlers } => {
+            breaks_out(try_body)
+                || handlers
+                    .iter()
+                    .any(|(_, handler): &(Vec<String>, Region)| breaks_out(handler))
+        }
+        Region::TryFinally {
+            try_body,
+            handlers,
+            finally_body,
+            ..
+        } => {
+            breaks_out(try_body)
+                || breaks_out(finally_body)
+                || handlers
+                    .iter()
+                    .any(|(_, handler): &(Vec<String>, Region)| breaks_out(handler))
+        }
+        Region::TryWithResources { try_body: body, .. } | Region::Synchronized { body, .. } => {
+            breaks_out(body)
+        }
+        Region::Block(_)
+        | Region::While { .. }
+        | Region::DoWhile { .. }
+        | Region::Switch { .. }
+        | Region::LabeledLoop { .. }
+        | Region::Break { label: Some(_) }
+        | Region::Continue { .. }
+        | Region::Irreducible { .. } => false,
     }
 }
 

@@ -1,7 +1,9 @@
 #![allow(clippy::expect_used, clippy::panic)]
 
+use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Child, Command, ExitStatus, Output};
+use std::time::{Duration, Instant};
 
 use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_jvm::{DecompiledDex, decompile_dex_from_bytes};
@@ -14,11 +16,13 @@ const RELEASE_DEX: &[u8] =
     include_bytes!("fixtures/dalvik_lift_probes/LiftProbes-release-min21.dex");
 const DEBUG_DEX: &[u8] = include_bytes!("fixtures/dalvik_lift_probes/LiftProbes-debug-min21.dex");
 const PROVENANCE: &str = include_str!("fixtures/dalvik_lift_probes/provenance.toml");
-const AUTHORED_SHA256: &str = "366ebee984a8e5dc900a61c9b5a1237bc78a487310f3a3a1b1c21b1bc445b846";
-const RELEASE_SHA256: &str = "0cc65e82257b664f5aa725c6880bc8fbe9618e2078da2de516138b89b681e3e9";
-const DEBUG_SHA256: &str = "033c70449a04667626e50caae3436a8a2212399d71b71a480eec9d858b17f07b";
+const AUTHORED_SHA256: &str = "c66c8dc7b82571a30baa90f82f58304ff51e0a445ca2661c3cd4ecd35d2809bc";
+const RELEASE_SHA256: &str = "2ea3ef6930b6a02acd7565a34a9680523f9a492f7e2fb2c29cdc5cb5a267aff4";
+const DEBUG_SHA256: &str = "255a598c648e15013cbdb3171780ddfd6d4d5c8e29c46a3aea7df376cd53942a";
 const UNIT: &str = "LiftProbes.java";
 const CLASS: &str = "LiftProbes";
+const RUN_TIMEOUT: Duration = Duration::from_mins(1);
+const RUN_POLL: Duration = Duration::from_millis(20);
 
 fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
@@ -97,25 +101,42 @@ fn execute(scratch: &Path, tag: &str, source: &str) -> String {
         String::from_utf8_lossy(&compiled.stdout),
         String::from_utf8_lossy(&compiled.stderr)
     );
-    let ran: Output = Command::new(tool("java"))
+    let stdout_path: PathBuf = root.join("stdout.txt");
+    let stderr_path: PathBuf = root.join("stderr.txt");
+    let mut child: Child = Command::new(tool("java"))
         .arg("-cp")
         .arg(&classes)
         .arg(CLASS)
         .env_remove("FORCE_COLOR")
-        .output()
+        .stdout(File::create(&stdout_path).expect("create stdout capture"))
+        .stderr(File::create(&stderr_path).expect("create stderr capture"))
+        .spawn()
         .expect("run java");
+    let started: Instant = Instant::now();
+    let status: ExitStatus = loop {
+        if let Some(status) = child.try_wait().expect("poll java") {
+            break status;
+        }
+        if started.elapsed() > RUN_TIMEOUT {
+            child.kill().expect("stop the runaway program");
+            child.wait().expect("reap the runaway program");
+            panic!("{tag} did not finish within {RUN_TIMEOUT:?}:\n{source}");
+        }
+        std::thread::sleep(RUN_POLL);
+    };
     assert!(
-        ran.status.success(),
+        status.success(),
         "{tag} fails at run time:\n{}\n{source}",
-        String::from_utf8_lossy(&ran.stderr)
+        std::fs::read_to_string(&stderr_path).unwrap_or_default()
     );
-    String::from_utf8(ran.stdout).expect("utf8 stdout")
+    std::fs::read_to_string(&stdout_path).expect("utf8 stdout")
 }
 
 fn probe(method: &str, calls: &[&str]) -> String {
     let mut source: String =
         String::from("import java.util.Arrays;\n\npublic class LiftProbes {\n");
     source.push_str("    static int counter;\n    static String trace = \"\";\n");
+    source.push_str("    static final Object LOCK = new Object();\n");
     source.push_str(&method_text(AUTHORED, "tick"));
     source.push_str(&method_text(AUTHORED, "combine"));
     source.push_str(method);
@@ -154,7 +175,7 @@ fn assert_method_matches_in(dex: &[u8], sha256: &str, name: &str, calls: &[&str]
 fn the_recovered_class_recompiles_and_prints_the_authored_output() {
     let scratch: ScratchDir = ScratchDir::create("dalvik_lift_probes_unit").expect("scratch");
     let reference: String = execute(scratch.path(), "authored", AUTHORED);
-    assert_eq!(reference.lines().count(), 26, "{reference}");
+    assert_eq!(reference.lines().count(), 41, "{reference}");
     let recovered: String = recovered_unit();
     let printed: String = execute(scratch.path(), "recovered", &recovered);
     assert_eq!(
@@ -291,4 +312,113 @@ fn nested_classes_declare_their_supertypes_without_the_clashing_bridge() {
     );
     assert!(!recovered.contains("public Object call()"), "{recovered}");
     assert_eq!(recovered.matches(" call() {").count(), 1, "{recovered}");
+}
+
+fn assert_in_both_builds(name: &str, calls: &[&str]) -> (String, String) {
+    let release: String = assert_method_matches_in(RELEASE_DEX, RELEASE_SHA256, name, calls);
+    let debug: String = assert_method_matches_in(DEBUG_DEX, DEBUG_SHA256, name, calls);
+    (release, debug)
+}
+
+#[test]
+fn a_finally_split_across_branches_keeps_every_catch_path_in_both_builds() {
+    let (release, debug): (String, String) = assert_in_both_builds(
+        "settle",
+        &["settle(0)", "settle(1)", "settle(2)", "settle(1)", "trace"],
+    );
+    for recovered in [&release, &debug] {
+        assert!(
+            recovered.contains("catch (NumberFormatException "),
+            "{recovered}"
+        );
+        assert!(!recovered.contains("Throwable var"), "{recovered}");
+    }
+}
+
+#[test]
+fn a_try_inside_a_catch_keeps_the_continuation_after_its_handler() {
+    let (release, debug): (String, String) = assert_in_both_builds(
+        "rescue",
+        &[
+            "rescue(\"4\", \"x\")",
+            "rescue(\"y\", \"5\")",
+            "rescue(\"zz\", \"w\")",
+        ],
+    );
+    for recovered in [&release, &debug] {
+        let doubled: usize = recovered.find("* 2)").expect("the doubled parse");
+        let fallback: usize = recovered.find("= -1;").expect("the nested handler");
+        assert!(
+            doubled < fallback,
+            "the doubling stays in the inner try body:\n{recovered}"
+        );
+    }
+}
+
+#[test]
+fn string_switches_recompile_as_string_switches_in_both_builds() {
+    let (release, debug): (String, String) = assert_in_both_builds(
+        "keyed",
+        &[
+            "keyed(\"alpha\")",
+            "keyed(\"beta\")",
+            "keyed(\"Aa\")",
+            "keyed(\"BB\")",
+            "keyed(\"one\")",
+            "keyed(\"\")",
+        ],
+    );
+    for recovered in [&release, &debug] {
+        assert!(recovered.contains("case \"Aa\":"), "{recovered}");
+        assert!(!recovered.contains("equals("), "{recovered}");
+        assert!(!recovered.contains("flattening"), "{recovered}");
+    }
+    let (release, debug): (String, String) = assert_in_both_builds(
+        "spelled",
+        &[
+            "spelled(\"two\")",
+            "spelled(\"three\")",
+            "spelled(\"one\")",
+            "spelled(\"\")",
+            "spelled(\"four\")",
+        ],
+    );
+    for recovered in [&release, &debug] {
+        assert!(recovered.contains("case \"two\":"), "{recovered}");
+    }
+}
+
+#[test]
+fn synchronized_blocks_hold_their_monitor_in_both_builds() {
+    let (release, debug): (String, String) =
+        assert_in_both_builds("guarded", &["guarded(0)", "guarded(5)"]);
+    for recovered in [&release, &debug] {
+        assert!(
+            recovered.contains("synchronized (LiftProbes.LOCK) {"),
+            "{recovered}"
+        );
+        assert!(!recovered.contains("try {"), "{recovered}");
+    }
+    let (release, debug): (String, String) = assert_in_both_builds(
+        "guardedReturn",
+        &[
+            "guardedReturn(new int[] {4, 5}, 1)",
+            "guardedReturn(new int[] {4, 5}, -1)",
+        ],
+    );
+    for recovered in [&release, &debug] {
+        assert!(recovered.contains("synchronized ("), "{recovered}");
+    }
+    let (release, debug): (String, String) =
+        assert_in_both_builds("looped", &["looped(3)", "looped(10)", "trace"]);
+    for recovered in [&release, &debug] {
+        assert!(recovered.contains("synchronized ("), "{recovered}");
+    }
+}
+
+#[test]
+fn a_loop_break_after_a_call_leaves_the_loop_in_both_builds() {
+    let (release, debug): (String, String) =
+        assert_in_both_builds("drained", &["drained(3)", "drained(10)", "trace"]);
+    assert!(debug.contains("break;"), "{debug}\n{release}");
 }

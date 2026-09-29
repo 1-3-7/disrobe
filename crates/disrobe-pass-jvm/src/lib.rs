@@ -61,6 +61,8 @@ pub(crate) mod dalvik_interp;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod dalvik_lift;
 #[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod dalvik_monitor;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod dalvik_pack_recover;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod dalvik_pack_stub_loader;
@@ -73,7 +75,11 @@ pub mod dalvik_strdec;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod dalvik_strdec_generic;
 #[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod dalvik_string_switch;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod dalvik_to_jvm;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod dalvik_try_regions;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod dalvik_typestate;
 pub(crate) mod debug;
