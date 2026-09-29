@@ -83,8 +83,8 @@ fn office_files_without_macros_end_in_a_typed_shell_wall() {
 fn a_vba_input_is_claimed_once_and_its_rendered_output_is_not_reclaimed() {
     let cases: [(&str, &str); 3] = [
         ("corpus/shell/vba/megafile/EdgeCases.bas", "not-applicable"),
-        ("corpus/shell/vba/vbaProject.bin", "ok"),
-        ("corpus/shell/vba/hello.docm", "ok"),
+        ("corpus/shell/vba/vbaProject.bin", "complete"),
+        ("corpus/shell/vba/hello.docm", "complete"),
     ];
     let mut failures: Vec<String> = Vec::new();
     for (rel, verdict) in cases {
