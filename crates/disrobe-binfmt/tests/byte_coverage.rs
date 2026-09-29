@@ -575,14 +575,8 @@ fn read_u16_le(bytes: &[u8], offset: usize) -> u16 {
     )
 }
 
-fn read_u32_le(bytes: &[u8], offset: usize) -> u32 {
-    u32::from_le_bytes(
-        bytes
-            .get(offset..offset + 4)
-            .expect("a PE field is present")
-            .try_into()
-            .expect("a four byte field"),
-    )
+fn pe_field_u32(bytes: &[u8], offset: usize) -> u32 {
+    disrobe_bytes::read_u32_le_at(bytes, offset).expect("a PE field is present")
 }
 
 fn write_u16_le(bytes: &mut [u8], offset: usize, value: u16) {
@@ -600,7 +594,7 @@ fn write_u32_le(bytes: &mut [u8], offset: usize, value: u32) {
 }
 
 fn pe_lfanew(bytes: &[u8]) -> usize {
-    read_u32_le(bytes, 0x3C) as usize
+    pe_field_u32(bytes, 0x3C) as usize
 }
 
 fn pe_section_count(bytes: &[u8]) -> usize {
@@ -637,7 +631,7 @@ fn place_debug_directory_at_section_boundary(
     section_index: usize,
     starts_in_raw_padding: bool,
 ) {
-    let raw_size: u32 = read_u32_le(
+    let raw_size: u32 = pe_field_u32(
         bytes,
         pe_section_field(bytes, section_index, RAW_SIZE_FIELD),
     );
@@ -645,11 +639,11 @@ fn place_debug_directory_at_section_boundary(
         raw_size > 56,
         "the boundary case needs a nontrivial section"
     );
-    let raw_offset: u32 = read_u32_le(
+    let raw_offset: u32 = pe_field_u32(
         bytes,
         pe_section_field(bytes, section_index, RAW_OFFSET_FIELD),
     );
-    let virtual_address: u32 = read_u32_le(
+    let virtual_address: u32 = pe_field_u32(
         bytes,
         pe_section_field(bytes, section_index, VIRTUAL_ADDRESS_FIELD),
     );
@@ -701,8 +695,8 @@ fn assert_debug_payload_claims_match_entries(
         let entry_offset: usize = table_start
             .checked_add(index.checked_mul(28).expect("the entry delta fits usize"))
             .expect("the entry offset fits usize");
-        let data_size: u32 = read_u32_le(bytes, entry_offset + 16);
-        let data_pointer: u32 = read_u32_le(bytes, entry_offset + 24);
+        let data_size: u32 = pe_field_u32(bytes, entry_offset + 16);
+        let data_pointer: u32 = pe_field_u32(bytes, entry_offset + 24);
         if data_size == 0 {
             continue;
         }
@@ -811,8 +805,8 @@ fn an_appended_blob_shows_as_one_unclaimed_range() {
 #[test]
 fn a_shortened_section_leaves_its_hidden_tail_unclaimed() {
     let mut bytes: Vec<u8> = fixture("hello.pe64.exe");
-    let raw_size: u32 = read_u32_le(&bytes, pe_section_field(&bytes, 0, RAW_SIZE_FIELD));
-    let raw_offset: u32 = read_u32_le(&bytes, pe_section_field(&bytes, 0, RAW_OFFSET_FIELD));
+    let raw_size: u32 = pe_field_u32(&bytes, pe_section_field(&bytes, 0, RAW_SIZE_FIELD));
+    let raw_offset: u32 = pe_field_u32(&bytes, pe_section_field(&bytes, 0, RAW_OFFSET_FIELD));
     assert!(
         raw_size > 0x400,
         "this case needs a first section with room to hide a payload behind"
@@ -853,8 +847,8 @@ fn a_shortened_section_leaves_its_hidden_tail_unclaimed() {
 #[test]
 fn a_section_without_a_file_offset_claims_nothing_and_is_named() {
     let mut bytes: Vec<u8> = fixture("hello.pe64.exe");
-    let raw_size: u32 = read_u32_le(&bytes, pe_section_field(&bytes, 0, RAW_SIZE_FIELD));
-    let raw_offset: u32 = read_u32_le(&bytes, pe_section_field(&bytes, 0, RAW_OFFSET_FIELD));
+    let raw_size: u32 = pe_field_u32(&bytes, pe_section_field(&bytes, 0, RAW_SIZE_FIELD));
+    let raw_offset: u32 = pe_field_u32(&bytes, pe_section_field(&bytes, 0, RAW_OFFSET_FIELD));
     let offset_field: usize = pe_section_field(&bytes, 0, RAW_OFFSET_FIELD);
     write_u32_le(&mut bytes, offset_field, 0);
 
@@ -911,7 +905,7 @@ fn two_sections_that_share_raw_bytes_record_the_overlap() {
         pe_section_count(&bytes) >= 2,
         "this case needs two sections"
     );
-    let first_offset: u32 = read_u32_le(&bytes, pe_section_field(&bytes, 0, RAW_OFFSET_FIELD));
+    let first_offset: u32 = pe_field_u32(&bytes, pe_section_field(&bytes, 0, RAW_OFFSET_FIELD));
     let second_field: usize = pe_section_field(&bytes, 1, RAW_OFFSET_FIELD);
     write_u32_le(&mut bytes, second_field, first_offset);
 
@@ -953,7 +947,7 @@ fn two_sections_that_share_raw_bytes_record_the_overlap() {
 fn a_section_that_runs_past_the_end_is_clamped_and_recorded() {
     let mut bytes: Vec<u8> = fixture("hello.pe64.exe");
     let last: usize = pe_section_count(&bytes) - 1;
-    let raw_offset: u64 = u64::from(read_u32_le(
+    let raw_offset: u64 = u64::from(pe_field_u32(
         &bytes,
         pe_section_field(&bytes, last, RAW_OFFSET_FIELD),
     ));
@@ -1290,7 +1284,7 @@ fn every_section_an_independent_parser_reports_in_a_pe32_is_claimed_under_its_ow
 fn pe32_directory(bytes: &[u8], index: usize) -> (u32, u32) {
     let lfanew: usize = pe_lfanew(bytes);
     let base: usize = lfanew + 24 + 0x60 + index * 8;
-    (read_u32_le(bytes, base), read_u32_le(bytes, base + 4))
+    (pe_field_u32(bytes, base), pe_field_u32(bytes, base + 4))
 }
 
 #[test]
