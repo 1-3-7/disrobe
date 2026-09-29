@@ -18,7 +18,6 @@ pub mod decompile;
 pub mod devirt;
 pub mod error;
 pub(crate) mod field_rva;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod iterator_reverse;
 pub mod lambda_reverse;
 pub(crate) mod list_switch_reverse;
