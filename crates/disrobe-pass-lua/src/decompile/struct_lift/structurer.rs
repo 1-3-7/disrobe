@@ -329,12 +329,15 @@ fn detect_repeats(nodes: &[PcNode]) -> std::collections::BTreeMap<usize, RepeatE
         if let Node::Cond { cond, target } = &n.node
             && *target <= n.pc
         {
+            let head: usize = nodes
+                .get(nodes.partition_point(|node: &PcNode| node.pc < *target))
+                .map_or(*target, |node: &PcNode| node.pc.min(n.pc));
             let candidate: RepeatEdge = RepeatEdge {
-                head: *target,
+                head,
                 cond_pc: n.pc,
                 cond: cond.clone(),
             };
-            out.entry(*target)
+            out.entry(head)
                 .and_modify(|edge: &mut RepeatEdge| {
                     if candidate.cond_pc > edge.cond_pc {
                         *edge = candidate.clone();
@@ -1753,6 +1756,33 @@ mod tests {
         assert!(
             matches!(result.blocks.first(), Some(StructuredBlock::Repeat { .. })),
             "blocks: {:?}",
+            result.blocks
+        );
+        assert_eq!(result.unresolved_jumps, 0, "blocks: {:?}", result.blocks);
+    }
+
+    #[test]
+    fn a_repeat_whose_head_instruction_emits_no_statement_still_loops() {
+        let stmts: Vec<LiftedStmt> = vec![
+            lifted(1, LStmt::Raw("n = n + 1".to_owned())),
+            lifted(
+                2,
+                LStmt::Cond {
+                    cond: "(n * 2) >= 6".to_owned(),
+                    target: 0,
+                },
+            ),
+            lifted(3, LStmt::Raw("print(n)".to_owned())),
+        ];
+
+        let result: StructureResult = structure_standard(&stmts, 4);
+
+        assert!(
+            matches!(
+                result.blocks.first(),
+                Some(StructuredBlock::Repeat { body, .. }) if body.len() == 1
+            ),
+            "the back condition targets pc 0, which only folded into the condition; blocks: {:?}",
             result.blocks
         );
         assert_eq!(result.unresolved_jumps, 0, "blocks: {:?}", result.blocks);

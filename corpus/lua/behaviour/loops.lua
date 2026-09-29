@@ -81,3 +81,10 @@ local one = two()
 print(one)
 print((two()))
 print(ok, (("a,b"):gsub(",", ";")))
+
+local reps = 0
+repeat
+  local doubled = reps * 2
+  reps = reps + 1
+until doubled >= 6
+print(reps)
