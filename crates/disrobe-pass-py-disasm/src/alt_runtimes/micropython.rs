@@ -1008,12 +1008,12 @@ const OBJ_NONE: u8 = 1;
 const OBJ_FALSE: u8 = 2;
 const OBJ_TRUE: u8 = 3;
 const OBJ_ELLIPSIS: u8 = 4;
-const OBJ_STR: u8 = b'r';
-const OBJ_BYTES: u8 = b'e';
-const OBJ_INT: u8 = b'i';
-const OBJ_FLOAT: u8 = b'f';
-const OBJ_COMPLEX: u8 = b'c';
-const OBJ_TUPLE: u8 = b't';
+const OBJ_STR: u8 = 5;
+const OBJ_BYTES: u8 = 6;
+const OBJ_INT: u8 = 7;
+const OBJ_FLOAT: u8 = 8;
+const OBJ_COMPLEX: u8 = 9;
+const OBJ_TUPLE: u8 = 10;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MpyObject {
@@ -1069,11 +1069,18 @@ fn read_obj(cursor: &mut Cursor<'_>, depth: u8) -> Result<MpyObject> {
         OBJ_STR | OBJ_BYTES => {
             let len: usize = usize_from_u64(cursor.uint()?, "obj_bytes_length", cursor.pos)?;
             let raw: &[u8] = cursor.take(len)?;
-            if obj_type == OBJ_STR {
-                Ok(MpyObject::Str(String::from_utf8_lossy(raw).into_owned()))
+            let object: MpyObject = if obj_type == OBJ_STR {
+                MpyObject::Str(String::from_utf8_lossy(raw).into_owned())
             } else {
-                Ok(MpyObject::Bytes(raw.to_vec()))
+                MpyObject::Bytes(raw.to_vec())
+            };
+            if cursor.byte()? != 0 {
+                return Err(AltRuntimeError::BadEncoding {
+                    field: "obj_bytes_terminator",
+                    offset: cursor.pos,
+                });
             }
+            Ok(object)
         }
         OBJ_INT | OBJ_FLOAT | OBJ_COMPLEX => {
             let len: usize = usize_from_u64(cursor.uint()?, "obj_number_length", cursor.pos)?;
@@ -1494,6 +1501,35 @@ mod tests {
                 .all(|i: &MpyDecodedInsn| i.mnemonic != "DUP_TOP" && i.mnemonic != "POP_TOP"),
             "no downstream opcode may be fabricated from the unknown op's operand bytes: {decoded:?}"
         );
+    }
+
+    #[test]
+    fn read_obj_decodes_the_v6_object_table_tags() {
+        let payload: Vec<u8> = vec![
+            OBJ_TUPLE, 0x04, OBJ_STR, 0x03, b'a', b'b', b'c', 0x00, OBJ_BYTES, 0x02, 0xff, 0x00,
+            0x00, OBJ_INT, 0x02, b'4', b'2', OBJ_FLOAT, 0x03, b'1', b'.', b'5',
+        ];
+        let mut cursor: Cursor<'_> = Cursor::new(&payload);
+        let object: MpyObject = read_obj(&mut cursor, 0).expect("v6 object table");
+        assert_eq!(
+            object,
+            MpyObject::Tuple(vec![
+                MpyObject::Str("abc".to_owned()),
+                MpyObject::Bytes(vec![0xff, 0x00]),
+                MpyObject::Int("42".to_owned()),
+                MpyObject::Float("1.5".to_owned()),
+            ])
+        );
+        assert_eq!(cursor.pos, payload.len());
+        let unterminated: Vec<u8> = vec![OBJ_STR, 0x01, b'a', b'b'];
+        let mut cursor: Cursor<'_> = Cursor::new(&unterminated);
+        assert!(matches!(
+            read_obj(&mut cursor, 0),
+            Err(AltRuntimeError::BadEncoding {
+                field: "obj_bytes_terminator",
+                ..
+            })
+        ));
     }
 
     #[test]
