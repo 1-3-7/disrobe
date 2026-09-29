@@ -162,7 +162,7 @@ fn per_method_publication_permits_a_partial_count_once_attribution_ran() {
 
 const GAP_METHOD_TOTAL: usize = 7;
 const GAP_METHOD_OK_FLOOR: usize = 7;
-const FLOOR_PROVENANCE: &str = "floor is the honest count of top-level methods that recompile clean \
+const FLOOR_PROVENANCE: &str = "floor is the count of top-level methods that recompile clean \
      under real javac attribution; an earlier 130/131 was a parse-mask artifact (one empty try {} \
      short-circuited javac before the attribution phase, hiding the real type errors); the 119->122 \
      gain came from splitting reused primitive/reference slot ranges and expanding unbound instance \

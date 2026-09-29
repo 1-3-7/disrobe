@@ -177,7 +177,7 @@ fn native_jar_decompile_survives_one_corrupt_class() {
         std::fs::read_to_string(out.join("manifest.json")).expect("manifest.json must exist");
     assert!(
         manifest.contains("\"native_classes_failed\": 1") && manifest.contains("Broken.class"),
-        "manifest must honestly record the failed class: {manifest}"
+        "manifest must record the failed class: {manifest}"
     );
 
     let _ = std::fs::remove_dir_all(&out);

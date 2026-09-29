@@ -50,7 +50,7 @@ fn cff_undo_clean_dex_finds_no_flattening() {
             .notes
             .iter()
             .any(|n: &String| n.contains("commercial-sample gap")),
-        "must disclose the enterprise-sample sourcing gap honestly"
+        "must disclose the enterprise-sample sourcing gap"
     );
 }
 

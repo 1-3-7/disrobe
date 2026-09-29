@@ -138,7 +138,7 @@ fn stringer_self_checksum_keyed_class_is_detected_but_walled_honestly() {
         peeled.report.status,
         PeelStatus::DetectOnly,
         "the Stringer AES key word is masked by a self-integrity checksum over the decryptor's own \
-         reflectively-read class bytes; the peel must stay an honest wall and must not fabricate \
+         reflectively-read class bytes; the peel must stay a wall and must not fabricate \
          plaintext"
     );
     assert!(
