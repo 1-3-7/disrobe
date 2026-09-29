@@ -263,7 +263,7 @@ fn collect_tree_blobs(
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
-    use std::process::Command;
+    use disrobe_tool_process::{CommandSpec, Completion, Execution};
 
     use super::*;
 
@@ -272,8 +272,8 @@ mod tests {
     }
 
     fn git(dir: &Path, args: &[&str]) {
-        let status: std::process::ExitStatus = Command::new("git")
-            .current_dir(dir)
+        let execution: Execution = CommandSpec::new("git", std::time::Duration::from_mins(1))
+            .current_dir(dir.to_path_buf())
             .args(args)
             .env("GIT_AUTHOR_NAME", "Frisk Tester")
             .env("GIT_AUTHOR_EMAIL", "frisk@example.test")
@@ -281,17 +281,13 @@ mod tests {
             .env("GIT_COMMITTER_EMAIL", "frisk@example.test")
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .env("GIT_CONFIG_SYSTEM", "/dev/null")
-            .output()
-            .map(|o: std::process::Output| o.status)
+            .run()
             .expect("git must be on PATH for the git-history oracle");
-        assert!(status.success(), "git {args:?} failed");
-    }
-
-    fn git_available() -> bool {
-        Command::new("git")
-            .arg("--version")
-            .output()
-            .is_ok_and(|o: std::process::Output| o.status.success())
+        assert!(
+            matches!(execution.completion, Completion::Exited(status) if status.success()),
+            "git {args:?} failed: {:?}",
+            execution.completion
+        );
     }
 
     fn temp_repo() -> crate::scratch::ScratchDir {
@@ -303,10 +299,6 @@ mod tests {
 
     #[test]
     fn finds_secret_deleted_in_a_later_commit() {
-        assert!(
-            git_available(),
-            "git history recon is graded against real git, which must be on PATH"
-        );
         let scratch: crate::scratch::ScratchDir = temp_repo();
         let repo: &Path = scratch.path();
         let secret_file: std::path::PathBuf = repo.join("config.env");
@@ -355,10 +347,6 @@ mod tests {
 
     #[test]
     fn report_serializes_with_commit_attribution() {
-        assert!(
-            git_available(),
-            "git history recon is graded against real git, which must be on PATH"
-        );
         let scratch: crate::scratch::ScratchDir = temp_repo();
         let repo: &Path = scratch.path();
         let key: String = aws_akid();
