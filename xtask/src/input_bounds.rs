@@ -3,15 +3,14 @@ use std::path::{Path, PathBuf};
 
 use eyre::{Result, WrapErr, bail};
 
-use crate::doc_region::{self, Mode, RegionSyntax};
+use crate::doc_region::{self, Mode};
 use crate::fileio::read_text_bounded;
 
-const SYNTAX: RegionSyntax = RegionSyntax {
-    open_prefix: "<!-- bounds:",
-    close: "<!-- /bounds -->",
-};
-const TABLE_SLUG: &str = "table";
 const DOC: &str = "docs/src/input-bounds.md";
+const PREAMBLE: &str = "# Input bounds
+
+Every parser treats its input as hostile. Counts, sizes, recursion depth, work and output are capped by named constants, and input that exceeds a cap is refused with a typed error instead of exhausting memory or time. `cargo xtask regen` generates this page from every module-level constant in `crates/*/src` whose name starts with `MAX_` or ends with `_LIMIT`, `_BUDGET` or `_CAP`, and `cargo xtask regen --check` fails when it is stale. The kind column is derived from the constant name.
+";
 const MAX_SOURCE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_DECLARATION_LINES: usize = 8;
 
@@ -71,16 +70,7 @@ pub(crate) fn run(root: &Path, mode: Mode) -> Result<()> {
     let rendered: String = render(&bounds);
     let path: PathBuf = root.join(DOC);
     let text: String = doc_region::read_doc(&path)?;
-    if !text.contains(&format!("{}{TABLE_SLUG} -->", SYNTAX.open_prefix)) {
-        bail!("{DOC} carries no `<!-- bounds:{TABLE_SLUG} -->` region for the input-bound table");
-    }
-    let updated: String = doc_region::rewrite(SYNTAX, &text, &|slug: &str| {
-        if slug == TABLE_SLUG {
-            Ok(rendered.clone())
-        } else {
-            bail!("unknown input-bound region `{slug}`")
-        }
-    })?;
+    let updated: String = format!("{PREAMBLE}{rendered}");
     match mode {
         Mode::Write => {
             if updated != text {

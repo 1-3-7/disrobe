@@ -1,8 +1,7 @@
 # Input bounds
 
-Every parser treats its input as hostile. Counts, sizes, recursion depth, work and output are capped by named constants, and input that exceeds a cap is refused with a typed error instead of exhausting memory or time. `cargo xtask regen` generates the table below from every module-level constant in `crates/*/src` whose name starts with `MAX_` or ends with `_LIMIT`, `_BUDGET` or `_CAP`, and `cargo xtask regen --check` fails when it is stale. The kind column is derived from the constant name.
+Every parser treats its input as hostile. Counts, sizes, recursion depth, work and output are capped by named constants, and input that exceeds a cap is refused with a typed error instead of exhausting memory or time. `cargo xtask regen` generates this page from every module-level constant in `crates/*/src` whose name starts with `MAX_` or ends with `_LIMIT`, `_BUDGET` or `_CAP`, and `cargo xtask regen --check` fails when it is stale. The kind column is derived from the constant name.
 
-<!-- bounds:table -->
 2152 bounds (count 214, other 1004, output 64, recursion 217, size 478, work 175).
 
 | Crate | Constant | Kind | Type | Value | File |
@@ -2159,4 +2158,3 @@ Every parser treats its input as hostile. Counts, sizes, recursion depth, work a
 | `disrobe-wasm` | `MAX_GUEST_ALLOC` | other | `usize` | `1 << 30` | `crates/disrobe-wasm/src/lib.rs` |
 | `disrobe-wasm` | `MAX_INPUT_BYTES` | size | `usize` | `64 * 1024 * 1024` | `crates/disrobe-wasm/src/lib.rs` |
 | `disrobe-wasm` | `MAX_RESULT_PAYLOAD` | other | `usize` | `64 * 1024 * 1024` | `crates/disrobe-wasm/src/lib.rs` |
-<!-- /bounds -->

@@ -112,9 +112,11 @@ const UNREACHABLE_CEILING: &[(&str, usize, &str)] = &[
     ),
     (
         "disrobe-pass-nuitka",
-        11,
+        12,
         "manifest, surface and constant-blob builders proven by their own test but not yet called \
-         from the crate's extraction entry point",
+         from the crate's extraction entry point, and the build-directory decompiler with an \
+         explicit Python ABI, graded by the package-surface test while the CLI calls the \
+         ABI-detecting form",
     ),
     (
         "disrobe-pass-php",
