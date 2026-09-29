@@ -281,6 +281,7 @@ struct LiveAcrossBranch {
     writes: Vec<Vec<u32>>,
     effects: Vec<bool>,
     successors: Vec<Vec<usize>>,
+    skipped: Vec<bool>,
 }
 
 impl LiveAcrossBranch {
@@ -327,6 +328,24 @@ impl LiveAcrossBranch {
                 );
             }
         }
+        let mut crossings: Vec<i64> = vec![0; n + 1];
+        for (pc, next) in successors.iter().enumerate() {
+            for &target in next {
+                if target > pc + 1 {
+                    crossings[pc + 1] += 1;
+                    crossings[target] -= 1;
+                }
+            }
+        }
+        let mut open: i64 = 0;
+        let skipped: Vec<bool> = crossings
+            .iter()
+            .take(n)
+            .map(|delta: &i64| {
+                open += delta;
+                open > 0
+            })
+            .collect();
         Self {
             boundaries,
             targets,
@@ -334,7 +353,12 @@ impl LiveAcrossBranch {
             writes,
             effects,
             successors,
+            skipped,
         }
+    }
+
+    fn is_skipped_by_a_forward_jump(&self, pc: usize) -> bool {
+        self.skipped.get(pc).copied().unwrap_or(true)
     }
 
     fn read_after_control_flow(&self, def_pc: usize, slot: u32) -> bool {
@@ -1273,8 +1297,12 @@ fn define(
         assign_pinned(state, slot, &value);
         return;
     }
+    let overwrites_a_declared_local: bool =
+        state.is_defined(slot) && state.reg(slot) == state.temp(slot);
+    let may_declare_here: bool =
+        overwrites_a_declared_local || !live.is_skipped_by_a_forward_jump(state.pc);
     let materialize: bool = live.should_materialize(state.pc, slot)
-        || live.read_after_control_flow(state.pc, slot)
+        || (may_declare_here && live.read_after_control_flow(state.pc, slot))
         || contains_ident(&value, &state.temp(slot))
         || (!is_duplicable_expression(&value)
             && (live.reads_before_redefinition(state.pc, slot) > 1

@@ -1759,7 +1759,7 @@ mod tests {
     }
 
     #[test]
-    fn a_second_back_condition_on_the_same_head_is_reported_rather_than_discarded() {
+    fn two_back_conditions_on_the_same_head_close_the_repeat_together() {
         let stmts: Vec<LiftedStmt> = vec![
             lifted(0, LStmt::Raw("i = i + 1".to_owned())),
             lifted(
@@ -1781,10 +1781,14 @@ mod tests {
 
         let result: StructureResult = structure_standard(&stmts, 4);
 
+        assert_eq!(result.unresolved_jumps, 0, "blocks: {:?}", result.blocks);
         assert!(
-            result.unresolved_jumps > 0,
-            "only one back condition can close the repeat; the other is a live edge the structure \
-             does not carry and must be reported, not dropped in silence; blocks: {:?}",
+            matches!(
+                result.blocks.first(),
+                Some(StructuredBlock::Repeat { cond, .. }) if cond == "(i >= 5) and (s > 100)"
+            ),
+            "each condition branches back when false, so the loop ends only when both hold; \
+             blocks: {:?}",
             result.blocks
         );
     }
