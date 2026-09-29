@@ -27,15 +27,6 @@ mod reference_compiler {
 static long long sib_caller(long long a, long long b) { return sib_callee(a, b) + 7; }\n\
 long long sib_entry(long long a, long long b) { return sib_caller(a, b); }\n";
 
-    const ABSOLUTE_COMPILER_PROBES: &[&str] = &[
-        "C:/msys64/ucrt64/bin/gcc.exe",
-        "C:/msys64/mingw64/bin/gcc.exe",
-        "C:/Program Files/LLVM/bin/clang.exe",
-        "/usr/bin/gcc",
-        "/usr/bin/clang",
-        "/usr/bin/cc",
-    ];
-
     fn compiler() -> String {
         for candidate in ["gcc", "clang", "cc"] {
             if Command::new(candidate)
@@ -46,13 +37,8 @@ long long sib_entry(long long a, long long b) { return sib_caller(a, b); }\n";
                 return candidate.to_owned();
             }
         }
-        for candidate in ABSOLUTE_COMPILER_PROBES {
-            if Path::new(candidate).is_file() {
-                return (*candidate).to_owned();
-            }
-        }
         panic!(
-            "no C compiler resolved on PATH (gcc/clang/cc) or at {ABSOLUTE_COMPILER_PROBES:?}; this grade needs a real compiler as its reference and must not be skipped"
+            "no C compiler (gcc, clang or cc) resolved on PATH; this grade needs a real compiler as its reference and must not be skipped"
         );
     }
 
