@@ -346,6 +346,55 @@ impl Language {
 
     #[inline]
     #[must_use]
+    pub const fn file_extension(self) -> &'static str {
+        match self {
+            Self::Python => "py",
+            Self::JavaScript => "js",
+            Self::TypeScript => "ts",
+            Self::Wat => "wat",
+            Self::Rust => "rs",
+            Self::C => "c",
+            Self::Cpp => "cpp",
+            Self::Java => "java",
+            Self::Kotlin => "kt",
+            Self::Scala => "scala",
+            Self::Groovy => "groovy",
+            Self::Smali => "smali",
+            Self::CSharp => "cs",
+            Self::VbNet => "vb",
+            Self::FSharp => "fs",
+            Self::Cil => "il",
+            Self::Ruby => "rb",
+            Self::Lua => "lua",
+            Self::PowerShell => "ps1",
+            Self::Bash => "sh",
+            Self::Batch => "bat",
+            Self::Vba => "bas",
+            Self::Php => "php",
+            Self::Erlang => "erl",
+            Self::Elixir => "ex",
+            Self::CoreErlang => "core",
+            Self::Go => "go",
+            Self::Swift => "swift",
+            Self::ObjectiveC | Self::Matlab => "m",
+            Self::ActionScript3 => "as",
+            Self::Dart => "dart",
+            Self::Haskell => "hs",
+            Self::CommonLisp => "lisp",
+            Self::R => "r",
+            Self::Html => "html",
+            Self::Xml => "xml",
+            Self::Hermes => "hasm",
+            Self::V8Bytecode => "v8asm",
+            Self::JvmBytecode => "jasm",
+            Self::Perl => "pl",
+            Self::Tcl => "tcl",
+            Self::Haxe => "hx",
+        }
+    }
+
+    #[inline]
+    #[must_use]
     pub const fn style(self) -> CommentStyle {
         match self {
             Self::Python
@@ -410,6 +459,124 @@ pub fn header_for(
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    const EVERY_LANGUAGE: [Language; 43] = [
+        Language::Python,
+        Language::JavaScript,
+        Language::TypeScript,
+        Language::Wat,
+        Language::Rust,
+        Language::C,
+        Language::Cpp,
+        Language::Java,
+        Language::Kotlin,
+        Language::Scala,
+        Language::Groovy,
+        Language::Smali,
+        Language::CSharp,
+        Language::VbNet,
+        Language::FSharp,
+        Language::Cil,
+        Language::Ruby,
+        Language::Lua,
+        Language::PowerShell,
+        Language::Bash,
+        Language::Batch,
+        Language::Vba,
+        Language::Php,
+        Language::Erlang,
+        Language::Elixir,
+        Language::CoreErlang,
+        Language::Go,
+        Language::Swift,
+        Language::ObjectiveC,
+        Language::ActionScript3,
+        Language::Dart,
+        Language::Haskell,
+        Language::CommonLisp,
+        Language::Matlab,
+        Language::R,
+        Language::Html,
+        Language::Xml,
+        Language::Hermes,
+        Language::V8Bytecode,
+        Language::JvmBytecode,
+        Language::Perl,
+        Language::Tcl,
+        Language::Haxe,
+    ];
+
+    const fn listed(language: Language) -> bool {
+        match language {
+            Language::Python
+            | Language::JavaScript
+            | Language::TypeScript
+            | Language::Wat
+            | Language::Rust
+            | Language::C
+            | Language::Cpp
+            | Language::Java
+            | Language::Kotlin
+            | Language::Scala
+            | Language::Groovy
+            | Language::Smali
+            | Language::CSharp
+            | Language::VbNet
+            | Language::FSharp
+            | Language::Cil
+            | Language::Ruby
+            | Language::Lua
+            | Language::PowerShell
+            | Language::Bash
+            | Language::Batch
+            | Language::Vba
+            | Language::Php
+            | Language::Erlang
+            | Language::Elixir
+            | Language::CoreErlang
+            | Language::Go
+            | Language::Swift
+            | Language::ObjectiveC
+            | Language::ActionScript3
+            | Language::Dart
+            | Language::Haskell
+            | Language::CommonLisp
+            | Language::Matlab
+            | Language::R
+            | Language::Html
+            | Language::Xml
+            | Language::Hermes
+            | Language::V8Bytecode
+            | Language::JvmBytecode
+            | Language::Perl
+            | Language::Tcl
+            | Language::Haxe => true,
+        }
+    }
+
+    #[test]
+    fn every_language_has_a_plain_file_extension() {
+        assert_eq!(
+            EVERY_LANGUAGE
+                .iter()
+                .collect::<std::collections::BTreeSet<&Language>>()
+                .len(),
+            EVERY_LANGUAGE.len()
+        );
+        for language in EVERY_LANGUAGE {
+            assert!(listed(language));
+            let extension: &str = language.file_extension();
+            assert!(
+                !extension.is_empty()
+                    && extension
+                        .bytes()
+                        .all(|b: u8| b.is_ascii_lowercase() || b.is_ascii_digit()),
+                "{language:?} has extension {extension:?}"
+            );
+        }
+        assert_eq!(Language::Python.file_extension(), "py");
+        assert_eq!(Language::CSharp.file_extension(), "cs");
+    }
 
     #[test]
     fn pretty_duration_zero_is_zero_ms() {
