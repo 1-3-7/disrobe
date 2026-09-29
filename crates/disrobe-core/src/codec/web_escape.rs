@@ -162,13 +162,20 @@ const fn percent_encode_capacity(input_len: usize) -> usize {
 }
 
 pub fn html_entity_decode(input: &str) -> Result<String, DecodeError> {
+    html_entity_decode_with_scan(input).map(|(out, _): (String, usize)| out)
+}
+
+#[doc(hidden)]
+pub fn html_entity_decode_with_scan(input: &str) -> Result<(String, usize), DecodeError> {
     if input.len() > MAX_WEB_INPUT {
         return Err(DecodeError::TooLarge { len: input.len() });
     }
     let bytes: &[u8] = input.as_bytes();
     let mut out: String = String::with_capacity(input.len());
     let mut i: usize = 0;
+    let mut scanned: usize = 0;
     let mut next_terminator: Option<usize> = memchr::memchr(b';', bytes);
+    scanned = scanned.saturating_add(next_terminator.map_or(bytes.len(), |at: usize| at + 1));
     while i < bytes.len() {
         if bytes[i] != b'&' {
             let ch: char = input[i..]
@@ -182,7 +189,11 @@ pub fn html_entity_decode(input: &str) -> Result<String, DecodeError> {
         while let Some(at) = next_terminator
             && at <= i
         {
-            next_terminator = memchr::memchr(b';', &bytes[at + 1..]).map(|rel: usize| at + 1 + rel);
+            let from: usize = at + 1;
+            let found: Option<usize> = memchr::memchr(b';', &bytes[from..]);
+            scanned =
+                scanned.saturating_add(found.map_or(bytes.len() - from, |rel: usize| rel + 1));
+            next_terminator = found.map(|rel: usize| from + rel);
         }
         let Some(terminator) = next_terminator else {
             out.push_str(&input[i..]);
@@ -199,7 +210,7 @@ pub fn html_entity_decode(input: &str) -> Result<String, DecodeError> {
             i += 1;
         }
     }
-    Ok(out)
+    Ok((out, scanned))
 }
 
 fn decode_one_entity(entity: &str) -> Option<char> {

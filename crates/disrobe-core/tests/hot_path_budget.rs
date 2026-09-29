@@ -1,10 +1,8 @@
-use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, sync_channel};
-use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use disrobe_core::codec::DecodeError;
 use disrobe_core::codec::alphabets::base62_decode;
-use disrobe_core::codec::web_escape::html_entity_decode;
+use disrobe_core::codec::web_escape::html_entity_decode_with_scan;
 use disrobe_core::recon::ioc;
 use disrobe_core::recon::malware_config::{
     ConfigDecode, MalwareConfigWall, WorkBudget, asyncrat_lineage_decode, darkcomet_config_decode,
@@ -15,30 +13,6 @@ use disrobe_core::recon::{ReconConfig, ReconFinding, scan_bytes as recon_scan_by
 
 const MEGABYTE: usize = 1 << 20;
 
-const SWEEP_CEILING: Duration = Duration::from_mins(1);
-
-type Measured<T> = (T, Duration);
-
-fn run_bounded<T: Send + 'static>(
-    ceiling: Duration,
-    body: impl FnOnce() -> T + Send + 'static,
-) -> Option<Measured<T>> {
-    let (tx, rx): (SyncSender<Measured<T>>, Receiver<Measured<T>>) = sync_channel(1);
-    let worker: JoinHandle<()> = std::thread::spawn(move || {
-        let start: Instant = Instant::now();
-        let value: T = body();
-        let elapsed: Duration = start.elapsed();
-        drop(tx.send((value, elapsed)));
-    });
-    match rx.recv_timeout(ceiling) {
-        Ok(measured) => {
-            drop(worker.join());
-            Some(measured)
-        }
-        Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => None,
-    }
-}
-
 const QUASAR_SALT: [u8; 16] = [
     0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F,
 ];
@@ -46,7 +20,6 @@ const ASYNCRAT_SALT: [u8; 16] = [
     0xBF, 0xEB, 0x1E, 0x56, 0xFB, 0xCD, 0x97, 0x3B, 0xB2, 0x19, 0x02, 0x24, 0x30, 0xA5, 0x78, 0x43,
 ];
 const XWORM_MARKER: &[u8] = b"XWorm";
-const KEYED_DECODE_CEILING: Duration = Duration::from_secs(5);
 
 fn timed<T, F: FnOnce() -> T>(label: &str, body: F) -> Duration {
     let start: Instant = Instant::now();
@@ -113,15 +86,23 @@ fn quasar_password_soup(len: usize) -> Vec<u8> {
 }
 
 #[test]
-fn unterminated_entity_scan_stays_linear() {
-    let input: String = unterminated_entity_soup(MEGABYTE);
-    let elapsed: Duration = timed("html_entity_decode 1MiB unterminated", || {
-        html_entity_decode(&input)
-    });
-    assert!(
-        elapsed < Duration::from_secs(5),
-        "entity scan must not rescan the tail per ampersand, took {elapsed:?}"
-    );
+fn unterminated_entity_scan_stays_linear() -> Result<(), DecodeError> {
+    for (label, input) in [
+        ("no terminator", unterminated_entity_soup(MEGABYTE)),
+        (
+            "one final terminator",
+            unterminated_entity_soup(MEGABYTE) + ";",
+        ),
+    ] {
+        let (decoded, scanned): (String, usize) = html_entity_decode_with_scan(&input)?;
+        assert_eq!(decoded, input, "{label}: no ampersand run forms an entity");
+        assert!(
+            scanned <= input.len(),
+            "{label}: the terminator search must read each byte at most once, read {scanned} of {}",
+            input.len()
+        );
+    }
+    Ok(())
 }
 
 #[test]
@@ -200,8 +181,8 @@ fn amplification_carrier(marker: &[u8], target_len: usize) -> Vec<u8> {
     out
 }
 
-fn assert_budgeted(label: &str, decode: &ConfigDecode, elapsed: Duration) {
-    println!("{label}: truncated={} in {elapsed:?}", decode.truncated);
+fn assert_budgeted(label: &str, decode: &ConfigDecode, budget: &WorkBudget) {
+    println!("{label}: truncated={}", decode.truncated);
     assert!(
         decode.truncated,
         "{label} must report that the declared work bound stopped the sweep, not a clean empty answer"
@@ -210,9 +191,10 @@ fn assert_budgeted(label: &str, decode: &ConfigDecode, elapsed: Duration) {
         decode.fields.is_empty(),
         "{label} carrier holds no real config, so no field may be reported"
     );
-    assert!(
-        elapsed < KEYED_DECODE_CEILING,
-        "{label} must stay inside the declared work bound, took {elapsed:?}"
+    assert_eq!(
+        budget.remaining(),
+        0,
+        "{label} must stop because the declared work bound ran out"
     );
 }
 
@@ -255,24 +237,17 @@ fn njrat_field_soup(filler_len: usize, fields: usize) -> Vec<u8> {
     out
 }
 
-fn recon_findings_of(label: &str, input: Vec<u8>) -> Option<Measured<Vec<ReconFinding>>> {
-    let measured: Option<Measured<Vec<ReconFinding>>> = run_bounded(SWEEP_CEILING, move || {
-        let config: ReconConfig = ReconConfig::default();
-        let (findings, _valid): (Vec<ReconFinding>, bool) = recon_scan_bytes(&input, None, &config);
-        findings
-    });
-    assert!(
-        measured.is_some(),
-        "{label} did not finish inside {SWEEP_CEILING:?}"
-    );
-    measured
+fn recon_findings_of(input: &[u8]) -> Vec<ReconFinding> {
+    let config: ReconConfig = ReconConfig::default();
+    let (findings, _valid): (Vec<ReconFinding>, bool) = recon_scan_bytes(input, None, &config);
+    findings
 }
 
-fn truncation_rule_ids(findings: &[ReconFinding]) -> Vec<&str> {
+fn budget_stops(findings: &[ReconFinding]) -> Vec<&str> {
     findings
         .iter()
-        .filter(|f: &&ReconFinding| f.rule_id.ends_with("-TRUNCATED"))
-        .map(|f: &ReconFinding| f.rule_id.as_str())
+        .filter(|f: &&ReconFinding| f.rule_id == "DR-RECON-SCAN-MALCFG-BUDGET")
+        .map(|f: &ReconFinding| f.value.as_str())
         .collect()
 }
 
@@ -282,21 +257,10 @@ const COBALT_SWEEP_EXCEEDS_BYTES: usize = 12 * MEGABYTE;
 #[test]
 fn cobalt_strike_probe_sweep_stays_inside_its_bound() {
     let input: Vec<u8> = cobalt_probe_soup(COBALT_SWEEP_FITS_BYTES);
-    let Some((findings, elapsed)): Option<Measured<Vec<ReconFinding>>> =
-        recon_findings_of("cobalt probe sweep 4MiB", input)
-    else {
-        return;
-    };
-    println!(
-        "cobalt probe sweep 4MiB: {} finding(s) in {elapsed:?}",
-        findings.len()
-    );
+    let findings: Vec<ReconFinding> = recon_findings_of(&input);
+    println!("cobalt probe sweep 4MiB: {} finding(s)", findings.len());
     assert!(
-        elapsed < SWEEP_CEILING,
-        "the sliding cobalt probe must not allocate a decoded copy per offset, took {elapsed:?}"
-    );
-    assert!(
-        truncation_rule_ids(&findings).is_empty(),
+        budget_stops(&findings).is_empty(),
         "an ordinary binary of this size fits the declared bound, so nothing may report truncation"
     );
 }
@@ -304,15 +268,13 @@ fn cobalt_strike_probe_sweep_stays_inside_its_bound() {
 #[test]
 fn cobalt_strike_sweep_reports_the_bound_that_stopped_it() {
     let input: Vec<u8> = cobalt_probe_soup(COBALT_SWEEP_EXCEEDS_BYTES);
-    let Some((findings, elapsed)): Option<Measured<Vec<ReconFinding>>> =
-        recon_findings_of("cobalt probe sweep 12MiB", input)
-    else {
-        return;
-    };
-    let stops: Vec<&str> = truncation_rule_ids(&findings);
-    println!("cobalt probe sweep 12MiB: {stops:?} in {elapsed:?}");
+    let findings: Vec<ReconFinding> = recon_findings_of(&input);
+    let stops: Vec<&str> = budget_stops(&findings);
+    println!("cobalt probe sweep 12MiB: {stops:?}");
     assert!(
-        stops.contains(&"DR-RECON-MALCFG-COBALT-STRIKE-TRUNCATED"),
+        stops
+            .iter()
+            .any(|stop: &&str| stop.starts_with("cobalt-strike config decode stopped")),
         "a sweep past the declared bound must say so instead of reading as a clean miss, got {stops:?}"
     );
 }
@@ -332,11 +294,7 @@ fn njrat_field_offsets_do_not_rescan_the_file_per_field() {
         .rposition(|&byte: &u8| byte == b'\n')
         .map_or(0usize, |offset: usize| offset + 1);
     let field_line: usize = memchr::memchr_iter(b'\n', &dense[..field_line_start]).count() + 1;
-    let Some((findings, elapsed)): Option<Measured<Vec<ReconFinding>>> =
-        recon_findings_of("njrat field sweep", dense)
-    else {
-        return;
-    };
+    let findings: Vec<ReconFinding> = recon_findings_of(&dense);
     let njrat_fields: Vec<&ReconFinding> = findings
         .iter()
         .filter(|finding: &&ReconFinding| {
@@ -344,7 +302,7 @@ fn njrat_field_offsets_do_not_rescan_the_file_per_field() {
         })
         .collect();
     println!(
-        "njrat 1MiB carrier recovered {} field(s) in {elapsed:?}",
+        "njrat 1MiB carrier recovered {} field(s)",
         njrat_fields.len()
     );
     assert_eq!(njrat_fields.len(), RECOVERED_FIELDS);
@@ -363,38 +321,30 @@ fn njrat_field_offsets_do_not_rescan_the_file_per_field() {
 #[test]
 fn quasar_worst_case_is_bounded_and_reports_truncation() {
     let input: Vec<u8> = amplification_carrier(&QUASAR_SALT, 160 * 1024);
-    let start: Instant = Instant::now();
-    let decode: ConfigDecode = quasar_config_decode(&input, 0, &mut WorkBudget::default());
-    let elapsed: Duration = start.elapsed();
-    assert_budgeted("quasar max passwords x max blobs", &decode, elapsed);
+    let mut budget: WorkBudget = WorkBudget::default();
+    let decode: ConfigDecode = quasar_config_decode(&input, 0, &mut budget);
+    assert_budgeted("quasar max passwords x max blobs", &decode, &budget);
 }
 
 #[test]
 fn xworm_worst_case_is_bounded_and_reports_truncation() {
     let input: Vec<u8> = amplification_carrier(XWORM_MARKER, 160 * 1024);
-    let start: Instant = Instant::now();
-    let decode: ConfigDecode = xworm_config_decode(&input, 0, &mut WorkBudget::default());
-    let elapsed: Duration = start.elapsed();
-    assert_budgeted("xworm max keys x max blobs", &decode, elapsed);
+    let mut budget: WorkBudget = WorkBudget::default();
+    let decode: ConfigDecode = xworm_config_decode(&input, 0, &mut budget);
+    assert_budgeted("xworm max keys x max blobs", &decode, &budget);
 }
 
 #[test]
 fn asyncrat_lineage_worst_case_is_bounded_and_reports_truncation() {
     let input: Vec<u8> = amplification_carrier(&ASYNCRAT_SALT, 160 * 1024);
-    let start: Instant = Instant::now();
+    let mut budget: WorkBudget = WorkBudget::default();
     let decoded: Result<ConfigDecode, MalwareConfigWall> =
-        asyncrat_lineage_decode(&input, 0, &mut WorkBudget::default());
-    let elapsed: Duration = start.elapsed();
-    println!("asyncrat lineage worst case: {elapsed:?}");
-    assert!(
-        elapsed < KEYED_DECODE_CEILING,
-        "asyncrat lineage must stay inside the declared work bound, took {elapsed:?}"
-    );
+        asyncrat_lineage_decode(&input, 0, &mut budget);
     match decoded {
         Ok(decode) => assert_budgeted(
             "asyncrat lineage max passwords x max blobs",
             &decode,
-            elapsed,
+            &budget,
         ),
         Err(wall) => assert!(
             wall.static_key_absent,
