@@ -1270,7 +1270,7 @@ fn nrv2b_decompress(src: &[u8], out_len: usize) -> Result<Vec<u8>> {
         }
         let mut m_off: usize = 1;
         loop {
-            m_off = (m_off << 1) + bits.get_bit()? as usize;
+            m_off = nrv_gamma_step(m_off, bits.get_bit()?, NRV_MAX_OFFSET_GAMMA, "nrv2-offset")?;
             if bits.get_bit()? == 1 {
                 break;
             }
@@ -1296,7 +1296,7 @@ fn nrv2b_decompress(src: &[u8], out_len: usize) -> Result<Vec<u8>> {
         if m_len == 0 {
             m_len += 1;
             loop {
-                m_len = (m_len << 1) + bits.get_bit()? as usize;
+                m_len = nrv_gamma_step(m_len, bits.get_bit()?, out_len - out.len(), "nrv2-length")?;
                 if bits.get_bit()? == 1 {
                     break;
                 }
@@ -1320,11 +1320,11 @@ fn nrv2d_decompress(src: &[u8], out_len: usize) -> Result<Vec<u8>> {
         }
         let mut m_off: usize = 1;
         loop {
-            m_off = (m_off << 1) + bits.get_bit()? as usize;
+            m_off = nrv_gamma_step(m_off, bits.get_bit()?, NRV_MAX_OFFSET_GAMMA, "nrv2-offset")?;
             if bits.get_bit()? == 1 {
                 break;
             }
-            m_off = (m_off << 1) + bits.get_bit()? as usize;
+            m_off = nrv_gamma_step(m_off, bits.get_bit()?, NRV_MAX_OFFSET_GAMMA, "nrv2-offset")?;
         }
         let (m_off_final, mut m_len): (usize, usize) = if m_off == 2 {
             (last_m_off, bits.get_bit()? as usize)
@@ -1345,7 +1345,7 @@ fn nrv2d_decompress(src: &[u8], out_len: usize) -> Result<Vec<u8>> {
         if m_len == 0 {
             m_len += 1;
             loop {
-                m_len = (m_len << 1) + bits.get_bit()? as usize;
+                m_len = nrv_gamma_step(m_len, bits.get_bit()?, out_len - out.len(), "nrv2-length")?;
                 if bits.get_bit()? == 1 {
                     break;
                 }
@@ -1369,11 +1369,16 @@ fn nrv2e_decompress(src: &[u8], out_len: usize) -> Result<Vec<u8>> {
         }
         let mut m_off: usize = 1;
         loop {
-            m_off = (m_off << 1) + bits.get_bit()? as usize;
+            m_off = nrv_gamma_step(m_off, bits.get_bit()?, NRV_MAX_OFFSET_GAMMA, "nrv2-offset")?;
             if bits.get_bit()? == 1 {
                 break;
             }
-            m_off = ((m_off - 1) << 1) + bits.get_bit()? as usize;
+            m_off = nrv_gamma_step(
+                m_off - 1,
+                bits.get_bit()?,
+                NRV_MAX_OFFSET_GAMMA,
+                "nrv2-offset",
+            )?;
         }
         let (m_off_final, mut m_len): (usize, usize) = if m_off == 2 {
             (last_m_off, bits.get_bit()? as usize)
@@ -1399,7 +1404,7 @@ fn nrv2e_decompress(src: &[u8], out_len: usize) -> Result<Vec<u8>> {
         } else {
             m_len += 1;
             loop {
-                m_len = (m_len << 1) + bits.get_bit()? as usize;
+                m_len = nrv_gamma_step(m_len, bits.get_bit()?, out_len - out.len(), "nrv2-length")?;
                 if bits.get_bit()? == 1 {
                     break;
                 }
@@ -1451,9 +1456,22 @@ fn lzma_decompress(src: &[u8], out_len: usize) -> Result<Vec<u8>> {
     })
 }
 
+const NRV_MAX_OFFSET_GAMMA: usize = 0x00ff_ffff + 3;
+
+fn nrv_gamma_step(value: usize, bit: u32, limit: usize, stage: &'static str) -> Result<usize> {
+    let next: usize = (value << 1) + bit as usize;
+    if next > limit {
+        return Err(Error::UpxDecode {
+            stage,
+            detail: format!("gamma-coded value {next} exceeds its bound {limit}"),
+        });
+    }
+    Ok(next)
+}
+
 #[inline]
 fn copy_match(out: &mut Vec<u8>, m_off: usize, m_len: usize, out_len: usize) -> Result<()> {
-    if out.len() + m_len > out_len {
+    if m_len > out_len.saturating_sub(out.len()) {
         return Err(Error::UpxDecode {
             stage: "copy-match",
             detail: format!(
@@ -1573,6 +1591,93 @@ mod tests {
         );
         assert_eq!(checksums.remaining_bytes, stream.len() - 1);
         assert_eq!(decompression.attempts(DecodeRoute::Generic), 0);
+    }
+
+    struct NrvBitWriter {
+        out: Vec<u8>,
+        word_at: usize,
+        word: u32,
+        used: u32,
+    }
+
+    impl NrvBitWriter {
+        const fn new() -> Self {
+            Self {
+                out: Vec::new(),
+                word_at: 0,
+                word: 0,
+                used: 0,
+            }
+        }
+
+        fn bit(&mut self, bit: u32) {
+            if self.used == 0 {
+                self.word_at = self.out.len();
+                self.out.extend_from_slice(&[0; 4]);
+                self.word = 0;
+            }
+            self.word |= bit << (31 - self.used);
+            self.out[self.word_at..self.word_at + 4].copy_from_slice(&self.word.to_le_bytes());
+            self.used = (self.used + 1) % 32;
+        }
+
+        fn byte(&mut self, byte: u8) {
+            self.out.push(byte);
+        }
+    }
+
+    fn nrv_stream_with_length_gamma_of(data_bits: usize) -> Vec<u8> {
+        let mut writer: NrvBitWriter = NrvBitWriter::new();
+        writer.bit(1);
+        writer.byte(b'a');
+        for bit in [0, 0, 1, 0, 0] {
+            writer.bit(bit);
+        }
+        for index in 0..data_bits {
+            writer.bit(1);
+            writer.bit(u32::from(index + 1 == data_bits));
+        }
+        writer.out
+    }
+
+    #[test]
+    fn a_short_repeated_match_still_decodes_under_every_nrv_method() {
+        let stream: Vec<u8> = nrv_stream_with_length_gamma_of(1);
+        for (method, expected) in [
+            (UpxMethod::Nrv2b, 7_usize),
+            (UpxMethod::Nrv2d, 7),
+            (UpxMethod::Nrv2e, 8),
+        ] {
+            let decoded: Vec<u8> = decompress_block(
+                method,
+                &stream,
+                DecompressionPermit {
+                    output_bytes: expected,
+                },
+            )
+            .unwrap_or_else(|error: Error| panic!("{method:?}: {error}"));
+            assert_eq!(decoded, vec![b'a'; expected], "{method:?}");
+        }
+    }
+
+    #[test]
+    fn an_nrv_length_gamma_longer_than_the_output_is_refused_not_overflowed() {
+        let stream: Vec<u8> = nrv_stream_with_length_gamma_of(80);
+        for method in [UpxMethod::Nrv2b, UpxMethod::Nrv2d, UpxMethod::Nrv2e] {
+            let refusal: Error =
+                decompress_block(method, &stream, DecompressionPermit { output_bytes: 64 })
+                    .expect_err("an 80-bit length gamma cannot fit a 64-byte output");
+            assert!(
+                matches!(
+                    refusal,
+                    Error::UpxDecode {
+                        stage: "nrv2-length",
+                        ..
+                    }
+                ),
+                "{method:?}: {refusal:?}"
+            );
+        }
     }
 
     #[test]
