@@ -59,6 +59,7 @@ struct ObjectHeader {
 
 #[derive(Debug, Clone, Copy)]
 struct Tags {
+    sequence: u32,
     object_id: u32,
     chunk_id: u32,
     byte_count: u32,
@@ -123,12 +124,12 @@ fn read_tags(reader: &Reader, bytes: &[u8], geom: Geometry, chunk_index: usize) 
     let chunk_start: usize = chunk_index * (geom.chunk_size + geom.spare_size);
     let spare_start: usize = chunk_start + geom.chunk_size;
     let spare: &[u8] = bytes.get(spare_start..spare_start + geom.spare_size)?;
-    let seq: u32 = reader.u32(spare, 0);
+    let sequence: u32 = reader.u32(spare, 0);
     let object_id: u32 = reader.u32(spare, 4);
     let chunk_id: u32 = reader.u32(spare, 8);
     let byte_count: u32 = reader.u32(spare, 12);
-    let _ = seq;
     Some(Tags {
+        sequence,
         object_id,
         chunk_id: chunk_id & 0x3FFF_FFFF,
         byte_count,
@@ -177,7 +178,8 @@ pub fn walk_yaffs2(bytes: &[u8], max_total: u64) -> Result<Yaffs2Walk> {
     let total_chunk: usize = geom.chunk_size + geom.spare_size;
     let chunk_count: usize = bytes.len() / total_chunk;
 
-    let mut headers: BTreeMap<u32, ObjectHeader> = BTreeMap::new();
+    let mut headers: BTreeMap<u32, (u32, ObjectHeader)> = BTreeMap::new();
+    let mut chunk_sequences: BTreeMap<(u32, u32), u32> = BTreeMap::new();
     let mut file_chunks: BTreeMap<u32, BTreeMap<u32, (usize, usize)>> = BTreeMap::new();
     let mut notes: Vec<String> = Vec::new();
 
@@ -194,11 +196,24 @@ pub fn walk_yaffs2(bytes: &[u8], max_total: u64) -> Result<Yaffs2Walk> {
         }
         let chunk_start: usize = chunk_index * total_chunk;
         if tags.chunk_id == 0 {
+            if headers
+                .get(&tags.object_id)
+                .is_some_and(|(sequence, _)| *sequence > tags.sequence)
+            {
+                continue;
+            }
             let region: &[u8] = &bytes[chunk_start..chunk_start + geom.chunk_size];
             let header: ObjectHeader = read_object_header(&reader, region);
-            headers.insert(tags.object_id, header);
+            headers.insert(tags.object_id, (tags.sequence, header));
         } else {
             let data_index: u32 = tags.chunk_id - 1;
+            let newest: &mut u32 = chunk_sequences
+                .entry((tags.object_id, data_index))
+                .or_insert(tags.sequence);
+            if *newest > tags.sequence {
+                continue;
+            }
+            *newest = tags.sequence;
             file_chunks
                 .entry(tags.object_id)
                 .or_default()
@@ -208,12 +223,12 @@ pub fn walk_yaffs2(bytes: &[u8], max_total: u64) -> Result<Yaffs2Walk> {
 
     let names: BTreeMap<u32, (String, u32)> = headers
         .iter()
-        .map(|(id, h)| (*id, (h.name.clone(), h.parent_object_id)))
+        .map(|(id, (_, h))| (*id, (h.name.clone(), h.parent_object_id)))
         .collect();
 
     let mut files: Vec<Yaffs2File> = Vec::new();
     let mut total: u64 = 0;
-    for (object_id, header) in &headers {
+    for (object_id, (_, header)) in &headers {
         if *object_id == YAFFS_OBJECTID_ROOT {
             continue;
         }
@@ -243,7 +258,7 @@ pub fn walk_yaffs2(bytes: &[u8], max_total: u64) -> Result<Yaffs2Walk> {
                 is_symlink: true,
             }),
             YAFFS_OBJECT_TYPE_HARDLINK => {
-                if let Some(target) = headers.get(&header.equiv_id)
+                if let Some((_, target)) = headers.get(&header.equiv_id)
                     && target.object_type == YAFFS_OBJECT_TYPE_FILE
                 {
                     let data: Vec<u8> =
@@ -355,6 +370,7 @@ mod tests {
 
     struct Yaffs2Builder {
         endian: Yaffs2Endian,
+        sequence: u32,
         out: Vec<u8>,
     }
 
@@ -369,6 +385,7 @@ mod tests {
         fn new(endian: Yaffs2Endian) -> Self {
             Self {
                 endian,
+                sequence: 1,
                 out: Vec::new(),
             }
         }
@@ -378,7 +395,7 @@ mod tests {
             chunk[..data.len()].copy_from_slice(data);
             self.out.extend_from_slice(&chunk);
             let mut spare: Vec<u8> = vec![0xFFu8; SPARE_SIZE];
-            spare[0..4].copy_from_slice(&w32(self.endian, 1));
+            spare[0..4].copy_from_slice(&w32(self.endian, self.sequence));
             spare[4..8].copy_from_slice(&w32(self.endian, object_id));
             spare[8..12].copy_from_slice(&w32(self.endian, chunk_id));
             spare[12..16].copy_from_slice(&w32(self.endian, byte_count));
@@ -501,6 +518,53 @@ mod tests {
         let link: &Yaffs2File = walk.files.iter().find(|f| f.path == "link").expect("link");
         assert!(link.is_symlink);
         assert_eq!(link.data, b"small.txt");
+    }
+
+    #[test]
+    fn an_older_copy_of_a_chunk_later_in_the_image_does_not_replace_the_newer_one() {
+        let current: &[u8] = b"current contents written in the newer block";
+        let stale: &[u8] = b"stale contents left in an erased-late block";
+        let mut b: Yaffs2Builder = Yaffs2Builder::new(Yaffs2Endian::Little);
+        b.sequence = 7;
+        b.object_header(
+            YAFFS_OBJECTID_ROOT,
+            YAFFS_OBJECT_TYPE_DIRECTORY,
+            1,
+            "",
+            0,
+            0o755,
+            "",
+        );
+        b.object_header(
+            2,
+            YAFFS_OBJECT_TYPE_FILE,
+            YAFFS_OBJECTID_ROOT,
+            "note.txt",
+            current.len() as u64,
+            0o644,
+            "",
+        );
+        b.file_data(2, current);
+        b.sequence = 3;
+        b.object_header(
+            2,
+            YAFFS_OBJECT_TYPE_FILE,
+            YAFFS_OBJECTID_ROOT,
+            "old-name.txt",
+            stale.len() as u64,
+            0o644,
+            "",
+        );
+        b.file_data(2, stale);
+        let image: Vec<u8> = b.finish();
+        let walk: Yaffs2Walk = walk_yaffs2(&image, 64 * 1024 * 1024).expect("walk yaffs2");
+        let note: &Yaffs2File = walk
+            .files
+            .iter()
+            .find(|f| f.path == "note.txt")
+            .expect("the newest header names the file");
+        assert_eq!(note.data, current);
+        assert!(walk.files.iter().all(|f| f.path != "old-name.txt"));
     }
 
     #[test]
