@@ -9,6 +9,7 @@ pub struct PythonObfuscatorPypiPass;
 
 const SIDECAR_TAG: &str = "# python-obfuscator-pypi-rename-map: ";
 const BANNER: &str = "# python-obfuscator (PyPI, AST-based)";
+const JUNK_LITERAL_LETTERS: usize = 79;
 
 impl ObfuscatorPass for PythonObfuscatorPypiPass {
     fn id(&self) -> Obfuscator {
@@ -24,13 +25,17 @@ impl ObfuscatorPass for PythonObfuscatorPypiPass {
         let exec_string_head: bool =
             leading.starts_with("exec(\"") || leading.starts_with("exec('");
         let hex_literal: bool = text.contains("bytes.fromhex(");
-        let real: bool = exec_string_head && hex_literal;
+        let junk_literal: bool = has_junk_letter_literal(text);
+        let real: bool = exec_string_head && (hex_literal || junk_literal);
         let mut markers: Vec<String> = Vec::new();
         if banner {
             markers.push("python-obfuscator-banner".to_owned());
         }
-        if real {
+        if exec_string_head && hex_literal {
             markers.push("exec-string-with-bytes-fromhex".to_owned());
+        }
+        if exec_string_head && junk_literal {
+            markers.push("exec-string-with-junk-letter-literal".to_owned());
         }
         let matched: bool = banner || real;
         let confidence: f32 = if banner {
@@ -77,6 +82,23 @@ impl ObfuscatorPass for PythonObfuscatorPypiPass {
             diagnostics,
         })
     }
+}
+
+fn has_junk_letter_literal(text: &str) -> bool {
+    text.match_indices("= ").any(|(at, _): (usize, &str)| {
+        let rest: &[u8] = text.as_bytes().get(at + 2..).unwrap_or_default();
+        let rest: &[u8] = rest.strip_prefix(b"\\").unwrap_or(rest);
+        let Some(body): Option<&[u8]> = rest.strip_prefix(b"'") else {
+            return false;
+        };
+        let letters: usize = body
+            .iter()
+            .take_while(|b: &&u8| b.is_ascii_alphabetic())
+            .count();
+        let tail: &[u8] = body.get(letters..).unwrap_or_default();
+        let tail: &[u8] = tail.strip_prefix(b"\\").unwrap_or(tail);
+        letters == JUNK_LITERAL_LETTERS && tail.starts_with(b"'")
+    })
 }
 
 fn peel_real_exec(id: Obfuscator, inner: &str) -> PeelOutcome {

@@ -106,3 +106,31 @@ fn python_obfuscator_pypi_real_detector_matches() {
     let detect: DetectReport = PythonObfuscatorPypiPass.detect(&fixture);
     assert!(detect.matched);
 }
+
+#[test]
+fn python_obfuscator_pypi_detector_matches_every_real_edge_case_without_hex_strings() {
+    let edges: [&str; 9] = [
+        "edge_async_fn",
+        "edge_class_decorator",
+        "edge_generator",
+        "edge_lambda_in_listcomp",
+        "edge_match_statement",
+        "edge_recursive",
+        "edge_structural_pattern",
+        "edge_typing_generic",
+        "edge_walrus_operator",
+    ];
+    let mut missed: Vec<&str> = Vec::new();
+    for slot in edges {
+        let fixture: Vec<u8> = common::require_real_fixture(OBF, slot);
+        let detect: DetectReport = PythonObfuscatorPypiPass.detect(&fixture);
+        if !detect.matched || detect.confidence < 0.5 {
+            missed.push(slot);
+        }
+    }
+    assert!(
+        missed.is_empty(),
+        "the python-obfuscator exec wrapper must be detected on every real edge case, including \
+         the ones with no string literal to hex-encode; missed {missed:?}"
+    );
+}
