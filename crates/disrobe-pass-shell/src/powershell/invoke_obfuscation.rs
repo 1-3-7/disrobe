@@ -536,31 +536,96 @@ fn parse_int_list(list: &str) -> Vec<u32> {
         .collect()
 }
 
-static IEX_INDIRECT: LazyLock<Vec<&'static Regex>> = LazyLock::new(|| {
-    vec![
-        regex!(
-            r"(?i)&?\s*\(\s*\$env:ComSpec\s*\[\s*\d+\s*,\s*\d+\s*,\s*\d+\s*\]\s*-Join\s*''\s*\)"
-        ),
-        regex!(
-            r"(?i)&?\s*\(\s*\(\s*(?:Get-Variable|GV|Variable)\s+'?\*mdr\*'?\s*\)\.Name\s*\[[\d,\s]+\]\s*-Join\s*''\s*\)"
-        ),
-        regex!(
-            r"(?i)&?\s*\(\s*\$VerbosePreference\.ToString\s*\(\s*\)\s*\[[\d,\s]+\]\s*-Join\s*''\s*\)"
-        ),
-        regex!(r"(?i)&?\s*\(\s*\$ShellId\s*\[\s*\d+\s*,\s*\d+\s*,\s*\d+\s*\]\s*-Join\s*''\s*\)"),
-    ]
+const COMSPEC_VALUE: &str = r"C:\WINDOWS\system32\cmd.exe";
+const SHELLID_VALUE: &str = "Microsoft.PowerShell";
+const PSHOME_VALUE: &str = r"C:\Windows\System32\WindowsPowerShell\v1.0";
+const MDR_VARIABLE_NAME: &str = "MaximumDriveCount";
+const VERBOSE_PREFERENCE_VALUE: &str = "SilentlyContinue";
+
+static IEX_INDEX_JOIN: LazyLock<&'static Regex> = LazyLock::new(|| {
+    regex!(
+        r"(?i)&?\s*\(\s*(\$env:ComSpec|\$ShellId|\$PSHome|\(\s*(?:Get-Variable|GV|Variable)\s+'?\*mdr\*'?\s*\)\.Name|\$VerbosePreference\.ToString\s*\(\s*\))\s*\[\s*([\d,\s]+)\]\s*-Join\s*''\s*\)"
+    )
 });
 
-fn canonicalise_iex_indirection(s: &str) -> Option<String> {
-    let mut out: String = s.to_owned();
-    let mut touched: bool = false;
-    for re in IEX_INDIRECT.iter() {
-        if re.is_match(&out) {
-            out = re.replace_all(&out, "Invoke-Expression").into_owned();
-            touched = true;
-        }
+static IEX_INDEX_SUM: LazyLock<&'static Regex> = LazyLock::new(|| {
+    regex!(
+        r"(?i)&?\s*\(\s*\$(ShellId|PSHome)\s*\[\s*(\d+)\s*\]\s*\+\s*\$(ShellId|PSHome)\s*\[\s*(\d+)\s*\]\s*\+\s*['\x22]x['\x22]\s*\)"
+    )
+});
+
+fn iex_source_value(source: &str) -> Option<&'static str> {
+    let lower: String = source.to_ascii_lowercase();
+    if lower.starts_with("$env:comspec") {
+        Some(COMSPEC_VALUE)
+    } else if lower.starts_with("$shellid") || lower == "shellid" {
+        Some(SHELLID_VALUE)
+    } else if lower.starts_with("$pshome") || lower == "pshome" {
+        Some(PSHOME_VALUE)
+    } else if lower.contains("mdr") {
+        Some(MDR_VARIABLE_NAME)
+    } else if lower.contains("verbosepreference") {
+        Some(VERBOSE_PREFERENCE_VALUE)
+    } else {
+        None
     }
-    if touched { Some(out) } else { None }
+}
+
+fn indexed_chars(value: &str, indices: &[usize]) -> Option<String> {
+    let chars: Vec<char> = value.chars().collect();
+    indices
+        .iter()
+        .map(|index: &usize| chars.get(*index).copied())
+        .collect()
+}
+
+fn canonicalise_iex_indirection(s: &str) -> Option<String> {
+    let joined: String = IEX_INDEX_JOIN
+        .replace_all(s, |c: &regex::Captures<'_>| {
+            let whole: &str = c.get(0).map_or("", |m: regex::Match<'_>| m.as_str());
+            let indices: Vec<usize> = c
+                .get(2)
+                .map_or("", |m: regex::Match<'_>| m.as_str())
+                .split(',')
+                .filter_map(|item: &str| item.trim().parse::<usize>().ok())
+                .collect();
+            let spelled: Option<String> = c
+                .get(1)
+                .and_then(|m: regex::Match<'_>| iex_source_value(m.as_str()))
+                .and_then(|value: &str| indexed_chars(value, &indices));
+            match spelled {
+                Some(word) if word.eq_ignore_ascii_case("iex") => "Invoke-Expression".to_owned(),
+                _ => whole.to_owned(),
+            }
+        })
+        .into_owned();
+    let summed: String = IEX_INDEX_SUM
+        .replace_all(&joined, |c: &regex::Captures<'_>| {
+            let whole: &str = c.get(0).map_or("", |m: regex::Match<'_>| m.as_str());
+            let first: Option<&str> = c.get(1).map(|m: regex::Match<'_>| m.as_str());
+            let second: Option<&str> = c.get(3).map(|m: regex::Match<'_>| m.as_str());
+            let (Some(first), Some(second)) = (first, second) else {
+                return whole.to_owned();
+            };
+            if !first.eq_ignore_ascii_case(second) {
+                return whole.to_owned();
+            }
+            let indices: Vec<usize> = [c.get(2), c.get(4)]
+                .into_iter()
+                .filter_map(|m: Option<regex::Match<'_>>| m?.as_str().parse::<usize>().ok())
+                .collect();
+            let spelled: Option<String> = iex_source_value(first)
+                .and_then(|value: &str| indexed_chars(value, &indices))
+                .map(|prefix: String| prefix + "x");
+            match spelled {
+                Some(word) if indices.len() == 2 && word.eq_ignore_ascii_case("iex") => {
+                    "Invoke-Expression".to_owned()
+                }
+                _ => whole.to_owned(),
+            }
+        })
+        .into_owned();
+    (summed != s).then_some(summed)
 }
 
 static SPLAT: LazyLock<&'static Regex> =
@@ -1283,6 +1348,31 @@ mod tests {
             "inline-key output: {}",
             r.output
         );
+    }
+
+    #[test]
+    fn iex_indirection_is_canonicalised_only_when_the_indices_spell_iex() {
+        for spelled in [
+            "&($ShellId[1]+$ShellId[13]+'x') 'Get-Process'",
+            "&($PSHome[4]+$PSHome[30]+'x') 'Get-Process'",
+            "&( $env:ComSpec[4,24,25]-Join'') 'Get-Process'",
+            "&((GV '*mdr*').Name[3,11,2]-Join'') 'Get-Process'",
+        ] {
+            assert!(
+                reverse_token(spelled).output.contains("Invoke-Expression"),
+                "{spelled}"
+            );
+        }
+        for kept in [
+            "&( $env:ComSpec[4,15,26]-Join'') 'x'",
+            "&($ShellId[1]+$PSHome[13]+'x') 'x'",
+            "&($ShellId[2]+$ShellId[13]+'x') 'x'",
+        ] {
+            assert!(
+                !reverse_token(kept).output.contains("Invoke-Expression"),
+                "{kept}"
+            );
+        }
     }
 
     #[test]
