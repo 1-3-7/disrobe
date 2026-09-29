@@ -128,6 +128,12 @@ pub fn reverse_string(input: &str) -> ReverseReport {
             out = formatted;
         }
     }
+    if let Some(folded) = fold_literal_string_ops(&out) {
+        if folded != out {
+            transformations.push("fold-literal-string-ops".to_owned());
+            out = folded;
+        }
+    }
     if let Some(ascii) = decode_ascii_chains(&out) {
         if ascii != out {
             transformations.push("decode-ascii-chains".to_owned());
@@ -641,6 +647,207 @@ fn fold_string_concatenations(s: &str) -> Option<String> {
 static FORMAT_STR: LazyLock<&'static Regex> =
     LazyLock::new(|| regex!(r#"\(\s*['"]([^'"]*)['"]\s*-f\s*((?:\([^()]*\)|[^()])+)\)"#));
 
+static LITERAL_REPLACE: LazyLock<&'static Regex> = LazyLock::new(|| {
+    regex!(
+        r"(?i)\(\s*'((?:[^']|'')*)'\s*-(c?)replace\s*'((?:[^']|'')*)'\s*,\s*'((?:[^']|'')*)'\s*\)"
+    )
+});
+
+static LITERAL_SPLIT_JOIN: LazyLock<&'static Regex> = LazyLock::new(|| {
+    regex!(
+        r"(?i)\(\s*'((?:[^']|'')*)'\s*-(c?)split\s*'((?:[^']|'')*)'\s*\)\s*-join\s*'((?:[^']|'')*)'"
+    )
+});
+
+static STATIC_JOIN: LazyLock<&'static Regex> = LazyLock::new(|| {
+    regex!(
+        r"(?i)\[string\]::join\(\s*'((?:[^']|'')*)'\s*,\s*\(\s*((?:'(?:[^']|'')*'\s*,\s*)*'(?:[^']|'')*')\s*\)\s*\)"
+    )
+});
+
+static SINGLE_QUOTED: LazyLock<&'static Regex> = LazyLock::new(|| regex!(r"'((?:[^']|'')*)'"));
+
+static CHAR_ARRAY_JOIN: LazyLock<&'static Regex> = LazyLock::new(|| {
+    regex!(
+        r"(?i)-join\s*\[char\[\]\]\s*\(\s*((?:0x[0-9a-f]{1,4}|\d{1,5})(?:\s*,\s*(?:0x[0-9a-f]{1,4}|\d{1,5}))*)\s*\)"
+    )
+});
+
+static INDEX_REVERSE_JOIN: LazyLock<&'static Regex> = LazyLock::new(|| {
+    regex!(r"\(\s*'((?:[^']|'')*)'\s*\[\s*-1\s*\.\.\s*-(\d+)\s*\]\s*-join\s*'((?:[^']|'')*)'\s*\)")
+});
+
+fn single_quoted_value(raw: &str) -> String {
+    raw.replace("''", "'")
+}
+
+fn is_plain_pattern(pattern: &str) -> bool {
+    !pattern.is_empty() && !pattern.chars().any(|c: char| "\\^$.|?*+()[]{}".contains(c))
+}
+
+fn literal_positions(text: &str, pattern: &str, case_sensitive: bool) -> Option<Vec<usize>> {
+    if !case_sensitive && !(text.is_ascii() && pattern.is_ascii()) {
+        return None;
+    }
+    let haystack: String = if case_sensitive {
+        text.to_owned()
+    } else {
+        text.to_ascii_lowercase()
+    };
+    let needle: String = if case_sensitive {
+        pattern.to_owned()
+    } else {
+        pattern.to_ascii_lowercase()
+    };
+    Some(
+        haystack
+            .match_indices(&needle)
+            .map(|(at, _): (usize, &str)| at)
+            .collect(),
+    )
+}
+
+fn literal_replace(text: &str, pattern: &str, with: &str, case_sensitive: bool) -> Option<String> {
+    if !is_plain_pattern(pattern) || with.contains('$') {
+        return None;
+    }
+    let mut out: String = String::with_capacity(text.len());
+    let mut last: usize = 0;
+    for at in literal_positions(text, pattern, case_sensitive)? {
+        out.push_str(&text[last..at]);
+        out.push_str(with);
+        last = at + pattern.len();
+    }
+    out.push_str(&text[last..]);
+    Some(out)
+}
+
+fn literal_split(text: &str, pattern: &str, case_sensitive: bool) -> Option<Vec<String>> {
+    if !is_plain_pattern(pattern) {
+        return None;
+    }
+    let mut parts: Vec<String> = Vec::new();
+    let mut last: usize = 0;
+    for at in literal_positions(text, pattern, case_sensitive)? {
+        parts.push(text[last..at].to_owned());
+        last = at + pattern.len();
+    }
+    parts.push(text[last..].to_owned());
+    Some(parts)
+}
+
+fn unary_join_position(before: &str) -> bool {
+    before
+        .trim_end()
+        .chars()
+        .last()
+        .is_none_or(|c: char| matches!(c, '(' | '=' | ',' | ';' | '|' | '{'))
+}
+
+fn fold_literal_string_ops(s: &str) -> Option<String> {
+    let mut current: String = s.to_owned();
+    for _ in 0..16usize {
+        let before: String = current.clone();
+        current = LITERAL_REPLACE
+            .replace_all(&current, |c: &regex::Captures<'_>| {
+                let whole: &str = c.get(0).map_or("", |m: regex::Match<'_>| m.as_str());
+                let text: String =
+                    single_quoted_value(c.get(1).map_or("", |m: regex::Match<'_>| m.as_str()));
+                let case_sensitive: bool =
+                    c.get(2).is_some_and(|m: regex::Match<'_>| !m.is_empty());
+                let pattern: String =
+                    single_quoted_value(c.get(3).map_or("", |m: regex::Match<'_>| m.as_str()));
+                let with: String =
+                    single_quoted_value(c.get(4).map_or("", |m: regex::Match<'_>| m.as_str()));
+                literal_replace(&text, &pattern, &with, case_sensitive)
+                    .map_or_else(|| whole.to_owned(), |v: String| ps_literal(&v))
+            })
+            .into_owned();
+        current = LITERAL_SPLIT_JOIN
+            .replace_all(&current, |c: &regex::Captures<'_>| {
+                let whole: &str = c.get(0).map_or("", |m: regex::Match<'_>| m.as_str());
+                let text: String =
+                    single_quoted_value(c.get(1).map_or("", |m: regex::Match<'_>| m.as_str()));
+                let case_sensitive: bool =
+                    c.get(2).is_some_and(|m: regex::Match<'_>| !m.is_empty());
+                let pattern: String =
+                    single_quoted_value(c.get(3).map_or("", |m: regex::Match<'_>| m.as_str()));
+                let glue: String =
+                    single_quoted_value(c.get(4).map_or("", |m: regex::Match<'_>| m.as_str()));
+                literal_split(&text, &pattern, case_sensitive).map_or_else(
+                    || whole.to_owned(),
+                    |parts: Vec<String>| ps_literal(&parts.join(&glue)),
+                )
+            })
+            .into_owned();
+        current = STATIC_JOIN
+            .replace_all(&current, |c: &regex::Captures<'_>| {
+                let glue: String =
+                    single_quoted_value(c.get(1).map_or("", |m: regex::Match<'_>| m.as_str()));
+                let items: Vec<String> = SINGLE_QUOTED
+                    .captures_iter(c.get(2).map_or("", |m: regex::Match<'_>| m.as_str()))
+                    .map(|item: regex::Captures<'_>| {
+                        single_quoted_value(
+                            item.get(1).map_or("", |m: regex::Match<'_>| m.as_str()),
+                        )
+                    })
+                    .collect();
+                ps_literal(&items.join(&glue))
+            })
+            .into_owned();
+        let snapshot: String = current.clone();
+        current = CHAR_ARRAY_JOIN
+            .replace_all(&snapshot, |c: &regex::Captures<'_>| {
+                let Some(whole): Option<regex::Match<'_>> = c.get(0) else {
+                    return String::new();
+                };
+                let decoded: Option<String> = c
+                    .get(1)
+                    .map_or("", |m: regex::Match<'_>| m.as_str())
+                    .split(',')
+                    .map(|item: &str| {
+                        let item: &str = item.trim();
+                        let code: Option<u32> = match item.get(..2) {
+                            Some(prefix) if prefix.eq_ignore_ascii_case("0x") => {
+                                u32::from_str_radix(&item[2..], 16).ok()
+                            }
+                            _ => item.parse::<u32>().ok(),
+                        };
+                        code.filter(|n: &u32| *n <= 0xFFFF).and_then(char::from_u32)
+                    })
+                    .collect();
+                match decoded {
+                    Some(text) if unary_join_position(&snapshot[..whole.start()]) => {
+                        ps_literal(&text)
+                    }
+                    _ => whole.as_str().to_owned(),
+                }
+            })
+            .into_owned();
+        current = INDEX_REVERSE_JOIN
+            .replace_all(&current, |c: &regex::Captures<'_>| {
+                let whole: &str = c.get(0).map_or("", |m: regex::Match<'_>| m.as_str());
+                let text: String =
+                    single_quoted_value(c.get(1).map_or("", |m: regex::Match<'_>| m.as_str()));
+                let count: Option<usize> = c
+                    .get(2)
+                    .and_then(|m: regex::Match<'_>| m.as_str().parse::<usize>().ok());
+                let glue: String =
+                    single_quoted_value(c.get(3).map_or("", |m: regex::Match<'_>| m.as_str()));
+                if count != Some(text.chars().count()) {
+                    return whole.to_owned();
+                }
+                let reversed: Vec<String> = text.chars().rev().map(String::from).collect();
+                ps_literal(&reversed.join(&glue))
+            })
+            .into_owned();
+        if current == before {
+            break;
+        }
+    }
+    (current != s).then_some(current)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum FormatArg {
     Literal(String),
@@ -1067,6 +1274,29 @@ mod tests {
                 FormatArg::Expression("$ComputerName".to_owned())
             ]
         );
+    }
+
+    #[test]
+    fn literal_replace_split_join_and_reversal_fold_to_their_values() {
+        for (input, expected) in [
+            ("('WrXite-XHost' -replace 'X','')", "'Write-Host'"),
+            ("('Write' -replace 'RIT','xyz')", "'Wxyze'"),
+            ("('Write' -creplace 'RIT','xyz')", "'Write'"),
+            ("[String]::Join('-', ('a','b'))", "'a-b'"),
+            ("x = -join [char[]](72,0x69)", "x = 'Hi'"),
+            ("('a,b' -split ',') -join '+'", "'a+b'"),
+            ("('cba'[-1..-3] -join '')", "'abc'"),
+        ] {
+            assert_eq!(reverse_string(input).output, expected, "{input}");
+        }
+        for kept in [
+            "('a.b' -replace '.','x')",
+            "('ab' -replace 'a','$0')",
+            "$s -join [char[]](72,105)",
+            "('cba'[-1..-2] -join '')",
+        ] {
+            assert_eq!(reverse_string(kept).output, kept, "{kept}");
+        }
     }
 
     #[test]
