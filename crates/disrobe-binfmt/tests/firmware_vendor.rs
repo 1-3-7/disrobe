@@ -6,6 +6,7 @@ use disrobe_binfmt::container::{ContainerKind, detect_container};
 use disrobe_binfmt::containers::firmware::{
     FirmwareExtraction, FirmwareKind, detect_firmware, extract_firmware,
 };
+use disrobe_binfmt::quota::ExtractionQuota;
 use disrobe_binfmt::{ExtractionResult, extract_to};
 
 const SQUASHFS_MAGIC: [u8; 4] = [0x68, 0x73, 0x71, 0x73];
@@ -78,7 +79,8 @@ fn dlink_shrs_spec_constructed_decrypts_to_inner_squashfs() {
     assert_eq!(detect_container(&image), Some(ContainerKind::FwDlinkShrs));
 
     let out: FirmwareExtraction =
-        extract_firmware(FirmwareKind::DlinkShrs, &image).expect("shrs decrypt");
+        extract_firmware(FirmwareKind::DlinkShrs, &image, &ExtractionQuota::default())
+            .expect("shrs decrypt");
     assert_eq!(out.members.len(), 1);
     assert_eq!(out.members[0].data, plaintext);
     assert_eq!(out.inner_kind_hint.as_deref(), Some("squashfs"));
@@ -104,8 +106,12 @@ fn dlink_encrpted_img_spec_constructed_restores_ubi_head() {
         detect_firmware(&image),
         Some(FirmwareKind::DlinkEncrptedImg)
     );
-    let out: FirmwareExtraction =
-        extract_firmware(FirmwareKind::DlinkEncrptedImg, &image).expect("encrpted_img decrypt");
+    let out: FirmwareExtraction = extract_firmware(
+        FirmwareKind::DlinkEncrptedImg,
+        &image,
+        &ExtractionQuota::default(),
+    )
+    .expect("encrpted_img decrypt");
     assert_eq!(out.members[0].data, plaintext);
     assert_eq!(out.inner_kind_hint.as_deref(), Some("ubi"));
 }
@@ -143,8 +149,12 @@ fn dlink_alpha_v1_spec_constructed_decrypts_with_device_table() {
         detect_firmware(&ciphertext),
         Some(FirmwareKind::DlinkAlphaV1)
     );
-    let out: FirmwareExtraction =
-        extract_firmware(FirmwareKind::DlinkAlphaV1, &ciphertext).expect("alpha v1 decrypt");
+    let out: FirmwareExtraction = extract_firmware(
+        FirmwareKind::DlinkAlphaV1,
+        &ciphertext,
+        &ExtractionQuota::default(),
+    )
+    .expect("alpha v1 decrypt");
     assert_eq!(out.members[0].data, plaintext);
     assert_eq!(out.inner_kind_hint.as_deref(), Some("squashfs"));
 }
@@ -246,8 +256,12 @@ fn dlink_alpha_v2_spec_constructed_decrypts_fixed_key_with_wrgg_signature() {
     image[0..signature.len()].copy_from_slice(signature);
     image.extend_from_slice(&ciphertext);
 
-    let out: FirmwareExtraction =
-        extract_firmware(FirmwareKind::DlinkAlphaV2, &image).expect("alpha v2 decrypt");
+    let out: FirmwareExtraction = extract_firmware(
+        FirmwareKind::DlinkAlphaV2,
+        &image,
+        &ExtractionQuota::default(),
+    )
+    .expect("alpha v2 decrypt");
     assert_eq!(out.members[0].data, plaintext);
     assert_eq!(out.inner_kind_hint.as_deref(), Some("squashfs"));
 }
@@ -274,7 +288,8 @@ fn engenius_spec_constructed_rolling_xor_decrypts() {
 
     assert_eq!(detect_firmware(&image), Some(FirmwareKind::EnGenius));
     let out: FirmwareExtraction =
-        extract_firmware(FirmwareKind::EnGenius, &image).expect("engenius decrypt");
+        extract_firmware(FirmwareKind::EnGenius, &image, &ExtractionQuota::default())
+            .expect("engenius decrypt");
     assert_eq!(out.members[0].data, plaintext);
     assert_eq!(out.inner_kind_hint.as_deref(), Some("squashfs"));
 }
@@ -559,7 +574,8 @@ fn autel_ecc_spec_constructed_table_decrypts() {
 
     assert_eq!(detect_firmware(&image), Some(FirmwareKind::AutelEcc));
     let out: FirmwareExtraction =
-        extract_firmware(FirmwareKind::AutelEcc, &image).expect("autel decrypt");
+        extract_firmware(FirmwareKind::AutelEcc, &image, &ExtractionQuota::default())
+            .expect("autel decrypt");
     assert_eq!(out.members[0].data, plaintext);
     assert_eq!(out.inner_kind_hint.as_deref(), Some("squashfs"));
 }
@@ -662,7 +678,8 @@ fn qnap_spec_constructed_pc1_decrypts() {
 
     assert_eq!(detect_firmware(&full), Some(FirmwareKind::Qnap));
     let out: FirmwareExtraction =
-        extract_firmware(FirmwareKind::Qnap, &full).expect("qnap decrypt");
+        extract_firmware(FirmwareKind::Qnap, &full, &ExtractionQuota::default())
+            .expect("qnap decrypt");
     assert_eq!(
         &out.members[0].data[..plaintext.len()],
         plaintext.as_slice()
@@ -707,8 +724,12 @@ fn netgear_chk_spec_constructed_carves_and_verifies_checksum() {
     image[32..36].copy_from_slice(&checksum.to_be_bytes());
 
     assert_eq!(detect_firmware(&image), Some(FirmwareKind::NetgearChk));
-    let out: FirmwareExtraction =
-        extract_firmware(FirmwareKind::NetgearChk, &image).expect("chk carve");
+    let out: FirmwareExtraction = extract_firmware(
+        FirmwareKind::NetgearChk,
+        &image,
+        &ExtractionQuota::default(),
+    )
+    .expect("chk carve");
     let kern: &disrobe_binfmt::containers::firmware::FirmwareMember = out
         .members
         .iter()
@@ -751,8 +772,12 @@ fn netgear_trx_v1_spec_constructed_carves_partitions_and_verifies_crc() {
         detect_container(&image),
         Some(ContainerKind::FwNetgearTrxV1)
     );
-    let out: FirmwareExtraction =
-        extract_firmware(FirmwareKind::NetgearTrxV1, &image).expect("trx carve");
+    let out: FirmwareExtraction = extract_firmware(
+        FirmwareKind::NetgearTrxV1,
+        &image,
+        &ExtractionQuota::default(),
+    )
+    .expect("trx carve");
     assert_eq!(out.members[0].data, part0);
     assert_eq!(out.members[0].crc_ok, Some(true));
     assert_eq!(out.members[1].data, part1);
@@ -785,8 +810,12 @@ fn xiaomi_hdr1_spec_constructed_carves_blob_and_verifies_crc() {
     image[8..12].copy_from_slice(&crc.to_le_bytes());
 
     assert_eq!(detect_firmware(&image), Some(FirmwareKind::XiaomiHdr1));
-    let out: FirmwareExtraction =
-        extract_firmware(FirmwareKind::XiaomiHdr1, &image).expect("hdr1 carve");
+    let out: FirmwareExtraction = extract_firmware(
+        FirmwareKind::XiaomiHdr1,
+        &image,
+        &ExtractionQuota::default(),
+    )
+    .expect("hdr1 carve");
     assert_eq!(out.members[0].name, "rootfs0");
     assert_eq!(out.members[0].data, blob_payload);
     assert_eq!(out.members[0].crc_ok, Some(true));
@@ -836,7 +865,8 @@ fn tesla_sbfh_spec_constructed_carves_mrvl_segments_with_crc() {
 
     assert_eq!(detect_firmware(&image), Some(FirmwareKind::TeslaSbfh));
     let out: FirmwareExtraction =
-        extract_firmware(FirmwareKind::TeslaSbfh, &image).expect("sbfh carve");
+        extract_firmware(FirmwareKind::TeslaSbfh, &image, &ExtractionQuota::default())
+            .expect("sbfh carve");
     assert_eq!(out.members.len(), 2);
     assert_eq!(out.members[0].data, seg0);
     assert_eq!(out.members[0].crc_ok, Some(true));
@@ -866,7 +896,9 @@ fn hp_bdl_spec_constructed_carves_toc_members() {
     image.extend_from_slice(member1);
 
     assert_eq!(detect_firmware(&image), Some(FirmwareKind::HpBdl));
-    let out: FirmwareExtraction = extract_firmware(FirmwareKind::HpBdl, &image).expect("bdl carve");
+    let out: FirmwareExtraction =
+        extract_firmware(FirmwareKind::HpBdl, &image, &ExtractionQuota::default())
+            .expect("bdl carve");
     assert_eq!(out.members[0].data, member0);
     assert_eq!(out.members[1].data, member1);
 }
@@ -893,7 +925,8 @@ fn hp_ipkg_spec_constructed_carves_named_members_with_crc() {
 
     assert_eq!(detect_firmware(&image), Some(FirmwareKind::HpIpkg));
     let out: FirmwareExtraction =
-        extract_firmware(FirmwareKind::HpIpkg, &image).expect("ipkg carve");
+        extract_firmware(FirmwareKind::HpIpkg, &image, &ExtractionQuota::default())
+            .expect("ipkg carve");
     assert_eq!(out.members[0].name, "kernel.img");
     assert_eq!(out.members[0].data, payload);
     assert_eq!(out.members[0].crc_ok, Some(true));
@@ -934,7 +967,8 @@ fn moxa_frm_spec_constructed_carves_sections() {
 
     assert_eq!(detect_firmware(&image), Some(FirmwareKind::MoxaFrm));
     let out: FirmwareExtraction =
-        extract_firmware(FirmwareKind::MoxaFrm, &image).expect("frm carve");
+        extract_firmware(FirmwareKind::MoxaFrm, &image, &ExtractionQuota::default())
+            .expect("frm carve");
     assert_eq!(out.members[0].data, fw);
     assert_eq!(out.members[1].data, fs);
 }
@@ -954,8 +988,12 @@ fn instar_bneg_spec_constructed_carves_two_partitions() {
     image.extend_from_slice(part2);
 
     assert_eq!(detect_firmware(&image), Some(FirmwareKind::InstarBneg));
-    let out: FirmwareExtraction =
-        extract_firmware(FirmwareKind::InstarBneg, &image).expect("bneg carve");
+    let out: FirmwareExtraction = extract_firmware(
+        FirmwareKind::InstarBneg,
+        &image,
+        &ExtractionQuota::default(),
+    )
+    .expect("bneg carve");
     assert_eq!(out.members[0].data, part1);
     assert_eq!(out.members[1].data, part2);
 }
@@ -979,7 +1017,8 @@ fn instar_hd_spec_constructed_rewrites_zip_signatures() {
 
     assert_eq!(detect_firmware(&instar), Some(FirmwareKind::InstarHd));
     let out: FirmwareExtraction =
-        extract_firmware(FirmwareKind::InstarHd, &instar).expect("instar hd");
+        extract_firmware(FirmwareKind::InstarHd, &instar, &ExtractionQuota::default())
+            .expect("instar hd");
     assert_eq!(out.members[0].data, zip);
     assert_eq!(out.inner_kind_hint.as_deref(), Some("zip"));
 }
@@ -1003,8 +1042,12 @@ fn dlink_deafbead_spec_constructed_decompresses_files() {
     image.extend_from_slice(&gz);
 
     assert_eq!(detect_firmware(&image), Some(FirmwareKind::DlinkDeafbead));
-    let out: FirmwareExtraction =
-        extract_firmware(FirmwareKind::DlinkDeafbead, &image).expect("deafbead carve");
+    let out: FirmwareExtraction = extract_firmware(
+        FirmwareKind::DlinkDeafbead,
+        &image,
+        &ExtractionQuota::default(),
+    )
+    .expect("deafbead carve");
     assert_eq!(out.members[0].data, inner);
 }
 
@@ -1031,7 +1074,8 @@ fn dlink_fpkg_spec_constructed_carves_named_entries() {
 
     assert_eq!(detect_firmware(&image), Some(FirmwareKind::DlinkFpkg));
     let out: FirmwareExtraction =
-        extract_firmware(FirmwareKind::DlinkFpkg, &image).expect("fpkg carve");
+        extract_firmware(FirmwareKind::DlinkFpkg, &image, &ExtractionQuota::default())
+            .expect("fpkg carve");
     assert_eq!(out.members[0].name, "rootfs");
     assert_eq!(out.members[0].data, payload);
 }
@@ -1055,7 +1099,8 @@ fn airoha_lzma_aes_is_carve_only_with_documented_physical_reason() {
 
     assert_eq!(detect_firmware(&image), Some(FirmwareKind::Airoha));
     let out: FirmwareExtraction =
-        extract_firmware(FirmwareKind::Airoha, &image).expect("airoha carve");
+        extract_firmware(FirmwareKind::Airoha, &image, &ExtractionQuota::default())
+            .expect("airoha carve");
     assert_eq!(out.members[0].data, blob);
     assert!(
         out.notes

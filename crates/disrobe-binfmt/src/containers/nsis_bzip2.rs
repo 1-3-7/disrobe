@@ -9,6 +9,7 @@ const BZ_G_SIZE: u32 = 50;
 const NSIS_BLOCK_SIZE: usize = 900_000;
 const MTFA_SIZE: usize = 4096;
 const MTFL_SIZE: usize = 16;
+const BZ_MAX_RUN_SHIFT: u32 = 21;
 
 const NSIS_BLOCK_TAG: u8 = 0x31;
 const NSIS_STREAM_END_TAG: u8 = 0x17;
@@ -318,6 +319,11 @@ fn read_block(reader: &mut BitReader<'_>) -> Result<Option<BlockState>> {
             let mut es: i64 = -1;
             let mut shift: u32 = 0;
             while next_sym == BZ_RUNA || next_sym == BZ_RUNB {
+                if shift >= BZ_MAX_RUN_SHIFT {
+                    return Err(Error::Decompression(
+                        "nsis bzip2 run length exceeds the block size".to_owned(),
+                    ));
+                }
                 if next_sym == BZ_RUNA {
                     es += 1i64 << shift;
                 } else {
@@ -405,7 +411,7 @@ fn read_block(reader: &mut BitReader<'_>) -> Result<Option<BlockState>> {
     }))
 }
 
-fn emit_block(block: &mut BlockState, out: &mut Vec<u8>, cap: usize) -> Result<()> {
+fn emit_block(block: &mut BlockState, out: &mut Vec<u8>, cap: usize) -> Result<bool> {
     let mut cftab: [i32; 257] = [0i32; 257];
     cftab[0] = 0;
     for i in 1..=256 {
@@ -440,23 +446,25 @@ fn emit_block(block: &mut BlockState, out: &mut Vec<u8>, cap: usize) -> Result<(
         let mut k1: i32 = next(&mut t_pos);
         n_block_used += 1;
         if k1 != k0 {
-            push_run(out, ch, 1, cap)?;
+            if !push_run(out, ch, 1, cap) {
+                return Ok(false);
+            }
             k0 = k1;
             continue;
         }
         if n_block_used == stop {
-            push_run(out, ch, 1, cap)?;
-            break;
+            return Ok(push_run(out, ch, 1, cap));
         }
 
         k1 = next(&mut t_pos);
         n_block_used += 1;
         if n_block_used == stop {
-            push_run(out, ch, 2, cap)?;
-            break;
+            return Ok(push_run(out, ch, 2, cap));
         }
         if k1 != k0 {
-            push_run(out, ch, 2, cap)?;
+            if !push_run(out, ch, 2, cap) {
+                return Ok(false);
+            }
             k0 = k1;
             continue;
         }
@@ -464,53 +472,49 @@ fn emit_block(block: &mut BlockState, out: &mut Vec<u8>, cap: usize) -> Result<(
         k1 = next(&mut t_pos);
         n_block_used += 1;
         if n_block_used == stop {
-            push_run(out, ch, 3, cap)?;
-            break;
+            return Ok(push_run(out, ch, 3, cap));
         }
         if k1 != k0 {
-            push_run(out, ch, 3, cap)?;
+            if !push_run(out, ch, 3, cap) {
+                return Ok(false);
+            }
             k0 = k1;
             continue;
         }
 
         let extra: i32 = next(&mut t_pos);
         n_block_used += 1;
-        let run_len: i32 = extra + 4;
         k0 = next(&mut t_pos);
         n_block_used += 1;
-        push_run(out, ch, run_len, cap)?;
+        if n_block_used > stop {
+            return Err(Error::Decompression(
+                "nsis bzip2 block ends inside a run".to_owned(),
+            ));
+        }
+        if !push_run(out, ch, extra as usize + 4, cap) {
+            return Ok(false);
+        }
     }
-    Ok(())
+    Ok(true)
 }
 
-fn push_run(out: &mut Vec<u8>, byte: u8, count: i32, cap: usize) -> Result<()> {
-    if count <= 0 {
-        return Ok(());
-    }
-    if out.len() + count as usize > cap {
-        return Err(Error::Decompression(
-            "nsis bzip2 output exceeds size cap".to_owned(),
-        ));
-    }
-    for _ in 0..count {
-        out.push(byte);
-    }
-    Ok(())
+fn push_run(out: &mut Vec<u8>, byte: u8, count: usize, cap: usize) -> bool {
+    let room: usize = cap.saturating_sub(out.len());
+    out.extend(std::iter::repeat_n(byte, count.min(room)));
+    count <= room
 }
 
 pub fn decompress(input: &[u8], cap: u64) -> Result<Vec<u8>> {
     Ok(decompress_counting(input, cap)?.0)
 }
 
-pub fn decompress_prefix(input: &[u8], want: usize, cap: u64) -> Result<Vec<u8>> {
-    let cap_usize: usize =
-        usize::try_from(cap.min(u64::from(u32::MAX) * 4)).map_or(usize::MAX, |value: usize| value);
+pub fn decompress_prefix(input: &[u8], want: usize) -> Result<Vec<u8>> {
     let mut reader: BitReader<'_> = BitReader::new(input);
     let mut out: Vec<u8> = Vec::new();
     while out.len() < want
         && let Some(mut block) = read_block(&mut reader)?
     {
-        emit_block(&mut block, &mut out, cap_usize)?;
+        emit_block(&mut block, &mut out, want)?;
     }
     Ok(out)
 }
@@ -521,7 +525,11 @@ pub fn decompress_counting(input: &[u8], cap: u64) -> Result<(Vec<u8>, usize)> {
     let mut reader: BitReader<'_> = BitReader::new(input);
     let mut out: Vec<u8> = Vec::new();
     while let Some(mut block) = read_block(&mut reader)? {
-        emit_block(&mut block, &mut out, cap_usize)?;
+        if !emit_block(&mut block, &mut out, cap_usize)? {
+            return Err(Error::Decompression(
+                "nsis bzip2 output exceeds size cap".to_owned(),
+            ));
+        }
     }
     Ok((out, reader.consumed_bytes()))
 }
@@ -542,13 +550,13 @@ mod tests {
     ];
 
     #[test]
-    fn a_prefix_decode_stops_at_the_block_that_reaches_the_wanted_length() {
+    fn a_prefix_decode_stops_at_the_wanted_length() {
         assert_eq!(
-            decompress_prefix(&FILE_STREAM, 10, 1 << 20).expect("prefix"),
-            expected_plain()
+            decompress_prefix(&FILE_STREAM, 10).expect("prefix"),
+            expected_plain()[..10]
         );
         assert_eq!(
-            decompress_prefix(&FILE_STREAM, 0, 1 << 20).expect("empty prefix"),
+            decompress_prefix(&FILE_STREAM, 0).expect("empty prefix"),
             Vec::<u8>::new()
         );
     }

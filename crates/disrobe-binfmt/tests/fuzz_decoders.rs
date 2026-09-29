@@ -115,7 +115,12 @@ fn exercise(bytes: &[u8]) {
     let _ = par2::parse_par2(bytes);
     let _ = stuffit::parse_classic(bytes);
     if let Some(kind) = firmware::detect_firmware(bytes) {
-        let _ = firmware::extract_firmware(kind, bytes);
+        let quota: ExtractionQuota = ExtractionQuota {
+            max_total_uncompressed: CAP,
+            max_per_entry_uncompressed: CAP,
+            ..ExtractionQuota::default()
+        };
+        let _ = firmware::extract_firmware(kind, bytes, &quota);
     }
 }
 

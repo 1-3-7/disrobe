@@ -34,14 +34,8 @@ pub fn build_lzms_cab(files: &[(&str, &[u8])]) -> Vec<u8> {
     while cursor < folder_stream.len() {
         let end: usize = (cursor + CFDATA_MAX_UNCOMP).min(folder_stream.len());
         let chunk: &[u8] = &folder_stream[cursor..end];
-        let compressed: Vec<u8> = lzms_compress(chunk);
-        if compressed.len() < chunk.len() {
-            blocks.push(compressed);
-            block_uncomp.push(chunk.len() as u16);
-        } else {
-            blocks.push(chunk.to_vec());
-            block_uncomp.push(0);
-        }
+        blocks.push(lzms_compress(chunk));
+        block_uncomp.push(chunk.len() as u16);
         cursor = end;
     }
     if blocks.is_empty() {

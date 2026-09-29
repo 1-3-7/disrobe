@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use crate::quota::{ExtractionQuota, QuotaGuard};
+use crate::quota::{ExtractionQuota, QuotaGuard, bounded_prealloc};
 
 use super::wim::{WimCompression, WimHeader, WimResource};
 
@@ -611,7 +611,9 @@ fn chunk_table_layout(original_size: u64, chunk_size: u32) -> Result<ChunkTable>
     } else {
         4
     };
-    let table_bytes: usize = (num_chunks - 1) * entry_width;
+    let table_bytes: usize = (num_chunks - 1)
+        .checked_mul(entry_width)
+        .ok_or_else(|| Error::Decompression("wim chunk table size overflow".to_owned()))?;
     Ok(ChunkTable {
         chunk_size: chunk_size_usize,
         num_chunks,
@@ -669,7 +671,7 @@ pub fn decompress_wim_resource(
     let layout: ChunkTable = chunk_table_layout(original_size, chunk_size)?;
     let offsets: Vec<usize> = read_chunk_offsets(resource, layout)?;
     let payload: &[u8] = &resource[layout.table_bytes..];
-    let mut out: Vec<u8> = Vec::with_capacity(original_usize);
+    let mut out: Vec<u8> = Vec::with_capacity(bounded_prealloc(original_size));
     for chunk_index in 0..layout.num_chunks {
         let begin: usize = offsets[chunk_index];
         let end: usize = offsets[chunk_index + 1];

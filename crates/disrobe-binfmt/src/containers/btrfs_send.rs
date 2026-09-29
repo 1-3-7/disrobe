@@ -280,9 +280,20 @@ fn apply_command(
             if let (Some(path), Some(target)) = (
                 attrs.string(BTRFS_SEND_A_PATH),
                 attrs.string(BTRFS_SEND_A_PATH_LINK),
-            ) && let Some(Node::File { data, truncate }) = nodes.get(&target).cloned()
+            ) && let Some(Node::File { data, truncate }) = nodes.get(&target)
             {
-                insert_node(nodes, order, path, Node::File { data, truncate });
+                let new_total: u64 = total.saturating_add(data.len() as u64);
+                if new_total > max_total {
+                    return Err(Error::BtrfsSend(format!(
+                        "replay exceeds total cap {max_total}"
+                    )));
+                }
+                *total = new_total;
+                let link: Node = Node::File {
+                    data: data.clone(),
+                    truncate: *truncate,
+                };
+                insert_node(nodes, order, path, link);
             }
         }
         BTRFS_SEND_C_UNLINK | BTRFS_SEND_C_RMDIR => {

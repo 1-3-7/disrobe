@@ -377,6 +377,11 @@ impl<'a> FolderStream<'a> {
                 )));
             }
         }
+        if cb_uncomp == 0 {
+            return Err(fail(
+                "the block declares no uncompressed bytes, which marks a block continued in the next cabinet".to_owned(),
+            ));
+        }
         let data: &[u8] = &checked[self.data_reserve..];
         let expected: usize = usize::from(cb_uncomp);
         let before: usize = self.window.len();
@@ -401,17 +406,13 @@ impl<'a> FolderStream<'a> {
                 self.window.extend_from_slice(decoded);
             }
             BlockDecoder::Lzms => {
-                if cb_uncomp == 0 {
-                    self.window.extend_from_slice(data);
-                } else {
-                    let decoded: Vec<u8> = lzms_decompress(data, expected)
-                        .map_err(|e: Error| fail(format!("lzms: {e}")))?;
-                    self.window.extend_from_slice(&decoded);
-                }
+                let decoded: Vec<u8> = lzms_decompress(data, expected)
+                    .map_err(|e: Error| fail(format!("lzms: {e}")))?;
+                self.window.extend_from_slice(&decoded);
             }
         }
         let produced: usize = self.window.len() - before;
-        if cb_uncomp != 0 && produced != expected {
+        if produced != expected {
             return Err(fail(format!(
                 "the block produced {produced} bytes but declares {expected}"
             )));
@@ -800,11 +801,14 @@ mod tests {
     }
 
     #[test]
-    fn stored_block_in_an_lzms_folder_passes_through() {
-        let payload: &[u8] = b"uncompressed stored bytes in an lzms folder block";
-        let bytes: Vec<u8> = raw_lzms_block_cab("stored.bin", payload, 0);
+    fn a_block_continued_in_the_next_cabinet_is_refused() {
+        let payload: &[u8] = b"the first half of a block split across two cabinets";
+        let bytes: Vec<u8> = raw_lzms_block_cab("split.bin", payload, 0);
         let (seen, _): (Seen, CabReadStats) = collect(&bytes, 1 << 20);
-        assert_eq!(seen[0].1.as_deref(), Ok(payload));
+        assert!(
+            matches!(&seen[0].1, Err(CabRefusal::Decode { reason, .. }) if reason.contains("continued in the next cabinet")),
+            "{seen:?}"
+        );
     }
 
     #[test]

@@ -256,11 +256,10 @@ pub fn file_data(bytes: &[u8], archive: &XarArchive, file: &XarFile) -> Result<V
         XarEncoding::Gzip => {
             let mut out: Vec<u8> = Vec::new();
             let mut d: flate2::read::ZlibDecoder<&[u8]> = flate2::read::ZlibDecoder::new(raw);
-            let read: u64 = std::io::copy(&mut d.by_ref().take(file.size + 1), &mut out).map_err(
-                |e: std::io::Error| {
+            let read: u64 = std::io::copy(&mut d.by_ref().take(member_cap(file.size)), &mut out)
+                .map_err(|e: std::io::Error| {
                     Error::Decompression(format!("xar gzip member inflate failed: {e}"))
-                },
-            )?;
+                })?;
             if read > file.size.max(1).saturating_add(1) && file.size != 0 {
                 return Err(Error::Decompression(
                     "xar file inflated beyond declared size".to_owned(),
@@ -271,7 +270,7 @@ pub fn file_data(bytes: &[u8], archive: &XarArchive, file: &XarFile) -> Result<V
         XarEncoding::Bzip2 => {
             let mut out: Vec<u8> = Vec::new();
             let mut d: bzip2_rs::DecoderReader<&[u8]> = bzip2_rs::DecoderReader::new(raw);
-            std::io::copy(&mut d.by_ref().take(file.size + 1), &mut out).map_err(
+            std::io::copy(&mut d.by_ref().take(member_cap(file.size)), &mut out).map_err(
                 |e: std::io::Error| {
                     Error::Decompression(format!("xar bzip2 member decode failed: {e}"))
                 },
@@ -303,17 +302,8 @@ fn decode_lzma(raw: &[u8], declared: u64) -> Result<Vec<u8>> {
     if let Ok(out) = decode_xz(raw, declared) {
         return Ok(out);
     }
-    let mut reader: std::io::Cursor<&[u8]> = std::io::Cursor::new(raw);
-    let mut out: Vec<u8> = Vec::new();
-    lzma_rs::lzma_decompress(&mut reader, &mut out).map_err(|e: lzma_rs::error::Error| {
-        Error::Decompression(format!("xar lzma member decode failed: {e}"))
-    })?;
-    if out.len() as u64 > MAX_MEMBER_BYTES {
-        return Err(Error::Decompression(
-            "xar lzma member exceeds sanity bound".to_owned(),
-        ));
-    }
-    Ok(out)
+    super::bare_stream::decompress_lzma_alone(raw, member_cap(declared))
+        .map_err(|e: Error| Error::Decompression(format!("xar lzma member decode failed: {e}")))
 }
 
 #[cfg(test)]

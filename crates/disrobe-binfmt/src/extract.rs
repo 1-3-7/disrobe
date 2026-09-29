@@ -270,7 +270,7 @@ fn extract_firmware(
         .firmware_kind()
         .ok_or_else(|| Error::Firmware(format!("{} is not a firmware kind", kind.label())))?;
     let extraction: crate::containers::FirmwareExtraction =
-        crate::containers::extract_firmware(fw_kind, bytes)?;
+        crate::containers::extract_firmware(fw_kind, bytes, &quota)?;
     std::fs::create_dir_all(out_dir)?;
     let mut guard: QuotaGuard = QuotaGuard::new(ExtractionQuota {
         max_aggregate_ratio: quota.max_aggregate_ratio.max(1000),
@@ -1650,6 +1650,14 @@ fn extract_xar(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<E
                 continue;
             }
         };
+        if file.size > guard.max_per_entry_uncompressed() {
+            violations.push(format!(
+                "xar-quota `{safe_name}`: declares {} bytes, above the {}-byte per-entry cap",
+                file.size,
+                guard.max_per_entry_uncompressed()
+            ));
+            continue;
+        }
         let data: Vec<u8> = match crate::containers::xar::file_data(bytes, &archive, file) {
             Ok(d) => d,
             Err(e) => {
@@ -4576,8 +4584,12 @@ fn extract_uzip(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<
 }
 
 fn extract_xalz(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<ExtractionResult> {
-    let asm: crate::containers::XalzAssembly =
-        crate::containers::parse_xalz(bytes, quota.max_total_uncompressed)?;
+    let asm: crate::containers::XalzAssembly = crate::containers::parse_xalz(
+        bytes,
+        quota
+            .max_per_entry_uncompressed
+            .min(quota.max_total_uncompressed),
+    )?;
     let mut guard: QuotaGuard = QuotaGuard::new(ExtractionQuota {
         max_aggregate_ratio: quota.max_aggregate_ratio.max(1000),
         max_per_entry_ratio: quota.max_per_entry_ratio.max(1000),

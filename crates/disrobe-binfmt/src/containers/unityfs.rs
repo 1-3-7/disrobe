@@ -359,6 +359,7 @@ pub fn extract_nodes(
 ) -> Result<Vec<UnityExtractedNode>> {
     let blob: Vec<u8> = assemble_data(bytes, archive, max_total)?;
     let mut out: Vec<UnityExtractedNode> = Vec::with_capacity(archive.nodes.len());
+    let mut copied_total: u64 = 0;
     for node in &archive.nodes {
         let start: usize =
             usize::try_from(node.offset).map_err(|_: std::num::TryFromIntError| {
@@ -376,6 +377,15 @@ pub fn extract_nodes(
                 node.path
             ))
         })?;
+        copied_total = copied_total.saturating_add(len as u64);
+        if copied_total > max_total {
+            return Err(Error::QuotaExceeded {
+                entry: node.path.clone(),
+                reason: format!(
+                    "node copies reach {copied_total} bytes, above the {max_total}-byte cap"
+                ),
+            });
+        }
         out.push(UnityExtractedNode {
             path: node.path.clone(),
             data: slice.to_vec(),

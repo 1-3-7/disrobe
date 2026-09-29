@@ -484,11 +484,15 @@ fn dynrubin_decompress(src: &[u8], destlen: usize) -> std::result::Result<Vec<u8
 
 fn zlib_inflate(input: &[u8], expected: usize) -> std::result::Result<Vec<u8>, String> {
     use std::io::Read as _;
-    let mut decoder: flate2::read::ZlibDecoder<&[u8]> = flate2::read::ZlibDecoder::new(input);
+    let decoder: flate2::read::ZlibDecoder<&[u8]> = flate2::read::ZlibDecoder::new(input);
     let mut out: Vec<u8> = Vec::with_capacity(expected);
     decoder
+        .take(expected as u64 + 1)
         .read_to_end(&mut out)
         .map_err(|e| format!("zlib inflate: {e}"))?;
+    if out.len() > expected {
+        return Err(format!("zlib output exceeds the declared {expected} bytes"));
+    }
     Ok(out)
 }
 

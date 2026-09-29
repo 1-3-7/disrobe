@@ -26,7 +26,9 @@ pub fn decompress_stop_at(src: &[u8], target_len: usize) -> Result<Vec<u8>> {
 
         let mut literal_len: usize = (token >> 4) as usize;
         if literal_len == 0x0F {
-            literal_len += read_length_extension(src, &mut ip)?;
+            literal_len = literal_len
+                .checked_add(read_length_extension(src, &mut ip)?)
+                .ok_or_else(length_overflow)?;
         }
 
         let literal_end: usize = ip.checked_add(literal_len).ok_or_else(length_overflow)?;
@@ -50,18 +52,23 @@ pub fn decompress_stop_at(src: &[u8], target_len: usize) -> Result<Vec<u8>> {
 
         let mut match_len: usize = (token & 0x0F) as usize;
         if match_len == 0x0F {
-            match_len += read_length_extension(src, &mut ip)?;
+            match_len = match_len
+                .checked_add(read_length_extension(src, &mut ip)?)
+                .ok_or_else(length_overflow)?;
         }
-        match_len += MIN_MATCH;
+        match_len = match_len
+            .checked_add(MIN_MATCH)
+            .ok_or_else(length_overflow)?;
 
-        copy_match(&mut out, offset, match_len);
+        let room: usize = target_len - out.len();
+        copy_match(&mut out, offset, match_len.min(room));
     }
     out.truncate(target_len);
     Ok(out)
 }
 
-fn decode_block(src: &[u8], cap_hint: usize) -> Result<Vec<u8>> {
-    let mut out: Vec<u8> = Vec::with_capacity(cap_hint);
+fn decode_block(src: &[u8], cap: usize) -> Result<Vec<u8>> {
+    let mut out: Vec<u8> = Vec::with_capacity(crate::quota::bounded_prealloc(cap as u64));
     let mut ip: usize = 0;
     while ip < src.len() {
         let token: u8 = src[ip];
@@ -69,13 +76,18 @@ fn decode_block(src: &[u8], cap_hint: usize) -> Result<Vec<u8>> {
 
         let mut literal_len: usize = (token >> 4) as usize;
         if literal_len == 0x0F {
-            literal_len += read_length_extension(src, &mut ip)?;
+            literal_len = literal_len
+                .checked_add(read_length_extension(src, &mut ip)?)
+                .ok_or_else(length_overflow)?;
         }
 
         let literal_end: usize = ip.checked_add(literal_len).ok_or_else(length_overflow)?;
         let literals: &[u8] = src
             .get(ip..literal_end)
             .ok_or_else(|| Error::Decompression("lz4: literal run past end of input".to_owned()))?;
+        if literal_len > cap - out.len() {
+            return Err(output_overrun(cap));
+        }
         out.extend_from_slice(literals);
         ip = literal_end;
 
@@ -93,9 +105,16 @@ fn decode_block(src: &[u8], cap_hint: usize) -> Result<Vec<u8>> {
 
         let mut match_len: usize = (token & 0x0F) as usize;
         if match_len == 0x0F {
-            match_len += read_length_extension(src, &mut ip)?;
+            match_len = match_len
+                .checked_add(read_length_extension(src, &mut ip)?)
+                .ok_or_else(length_overflow)?;
         }
-        match_len += MIN_MATCH;
+        match_len = match_len
+            .checked_add(MIN_MATCH)
+            .ok_or_else(length_overflow)?;
+        if match_len > cap - out.len() {
+            return Err(output_overrun(cap));
+        }
 
         copy_match(&mut out, offset, match_len);
     }
@@ -136,6 +155,12 @@ fn copy_match(out: &mut Vec<u8>, offset: usize, match_len: usize) {
 
 fn length_overflow() -> Error {
     Error::Decompression("lz4: length arithmetic overflow".to_owned())
+}
+
+fn output_overrun(cap: usize) -> Error {
+    Error::Decompression(format!(
+        "lz4: sequence runs past the {cap}-byte output bound"
+    ))
 }
 
 #[cfg(test)]

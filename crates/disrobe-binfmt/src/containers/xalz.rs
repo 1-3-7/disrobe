@@ -17,7 +17,7 @@ pub fn detect_xalz(bytes: &[u8]) -> bool {
     bytes.len() >= HEADER_LEN && bytes.starts_with(XALZ_MAGIC)
 }
 
-pub fn parse_xalz(bytes: &[u8], max_total: u64) -> Result<XalzAssembly> {
+pub fn parse_xalz(bytes: &[u8], max_entry: u64) -> Result<XalzAssembly> {
     if !detect_xalz(bytes) {
         return Err(Error::Xalz(
             "xalz: missing XALZ header or truncated".to_owned(),
@@ -25,9 +25,9 @@ pub fn parse_xalz(bytes: &[u8], max_total: u64) -> Result<XalzAssembly> {
     }
     let descriptor_index: u32 = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
     let uncompressed_size: u32 = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
-    if u64::from(uncompressed_size) > max_total {
+    if u64::from(uncompressed_size) > max_entry {
         return Err(Error::Xalz(format!(
-            "xalz: declared size {uncompressed_size} exceeds quota {max_total}"
+            "xalz: declared size {uncompressed_size} exceeds the {max_entry}-byte entry cap"
         )));
     }
     let payload: &[u8] = &bytes[HEADER_LEN..];

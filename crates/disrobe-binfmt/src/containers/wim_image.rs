@@ -37,7 +37,11 @@ pub struct WimImageExtraction {
     pub notes: Vec<String>,
 }
 
-fn lookup_table_bytes(bytes: &[u8], header: &WimHeader) -> Result<Vec<u8>> {
+fn lookup_table_bytes(
+    bytes: &[u8],
+    header: &WimHeader,
+    quota: &ExtractionQuota,
+) -> Result<Vec<u8>> {
     let resource: WimResource = header.offset_table;
     if resource.size == 0 {
         return Err(Error::Decompression(
@@ -70,7 +74,7 @@ fn lookup_table_bytes(bytes: &[u8], header: &WimHeader) -> Result<Vec<u8>> {
         header.compression,
         resource.original_size,
         chunk_size,
-        &ExtractionQuota::unrestricted(),
+        quota,
     )
 }
 
@@ -371,7 +375,7 @@ pub fn extract_wim_files(
     header: &WimHeader,
     quota: &ExtractionQuota,
 ) -> Result<WimImageExtraction> {
-    let table: Vec<u8> = lookup_table_bytes(bytes, header)?;
+    let table: Vec<u8> = lookup_table_bytes(bytes, header, quota)?;
     let (blobs, metadata_resources): (BlobMap, Vec<WimResource>) = parse_lookup_table(&table);
     if metadata_resources.is_empty() {
         return Err(Error::Decompression(

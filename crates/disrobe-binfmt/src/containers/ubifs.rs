@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
+use crate::quota::bounded_prealloc;
 
 const UBI_EC_HDR_MAGIC: &[u8; 4] = b"UBI#";
 const UBI_VID_HDR_MAGIC: &[u8; 4] = b"UBI!";
@@ -378,6 +379,12 @@ fn walk_ubi(bytes: &[u8], max_total: u64) -> Result<UbifsWalk> {
         if vid.vol_id >= UBI_INTERNAL_VOL_START {
             continue;
         }
+        if vid.lnum as usize >= peb_count {
+            return Err(Error::Ubifs(format!(
+                "volume {} names logical erase block {}, past the {peb_count} erase blocks the image holds",
+                vid.vol_id, vid.lnum
+            )));
+        }
         let data_start: usize = ec.data_offset as usize;
         let payload: &[u8] = peb
             .get(data_start..)
@@ -409,18 +416,29 @@ fn walk_ubi(bytes: &[u8], max_total: u64) -> Result<UbifsWalk> {
     let mut leb_images: BTreeMap<u32, Vec<u8>> = BTreeMap::new();
     let mut files: Vec<UbifsFile> = Vec::new();
     let mut saw_ubifs: bool = false;
+    let mut reassembled_total: u64 = 0;
     for (vol_id, lebs) in &leb_data {
         let (vol_type, used_ebs, data_pad): (u8, u32, u32) = vol_meta
             .get(vol_id)
             .copied()
             .map_or((UBI_VID_DYNAMIC, 0, 0), |value: (u8, u32, u32)| value);
-        let mut image: Vec<u8> = Vec::new();
         let max_leb: u32 = lebs.keys().copied().max().map_or(0, |value: u32| value);
         let leb_payload_size: usize = lebs
             .values()
             .map(Vec::len)
             .max()
             .map_or(0, |value: usize| value);
+        let image_len: u64 = (u64::from(max_leb) + 1).saturating_mul(leb_payload_size as u64);
+        reassembled_total = reassembled_total.saturating_add(image_len);
+        if reassembled_total > max_total {
+            return Err(Error::QuotaExceeded {
+                entry: format!("vol{vol_id}"),
+                reason: format!(
+                    "reassembled UBI volumes reach {reassembled_total} bytes, above the {max_total}-byte cap"
+                ),
+            });
+        }
+        let mut image: Vec<u8> = Vec::with_capacity(bounded_prealloc(image_len));
         for lnum in 0..=max_leb {
             match lebs.get(&lnum) {
                 Some(data) => image.extend_from_slice(data),

@@ -2,6 +2,7 @@ use disrobe_core::codec::{CbcPadding, aes_cbc_decrypt, crc32_ieee};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
+use crate::quota::{ExtractionQuota, read_entry_to_limit};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -1778,8 +1779,9 @@ const DEAFBEAD_HEADER_LEN: usize = 4;
 const DEAFBEAD_DIR_MAGIC: u8 = 0x86;
 const DEAFBEAD_FILE_MAGIC: u8 = 0x87;
 
-fn carve_dlink_deafbead(bytes: &[u8]) -> Result<FirmwareExtraction> {
+fn carve_dlink_deafbead(bytes: &[u8], quota: &ExtractionQuota) -> Result<FirmwareExtraction> {
     let mut cursor: usize = DEAFBEAD_HEADER_LEN;
+    let mut decoded_total: u64 = 0;
     let mut members: Vec<FirmwareMember> = Vec::new();
     let mut notes: Vec<String> = Vec::new();
     while let Some(&magic) = bytes.get(cursor) {
@@ -1808,7 +1810,10 @@ fn carve_dlink_deafbead(bytes: &[u8]) -> Result<FirmwareExtraction> {
                     Error::Firmware("dlink-deafbead: file contents run past the image".to_owned())
                 })?;
                 let name: String = sanitize_member_name(&String::from_utf8_lossy(name_raw));
-                let decompressed: Vec<u8> = match gunzip(raw) {
+                let cap: u64 = quota
+                    .max_per_entry_uncompressed
+                    .min(quota.max_total_uncompressed.saturating_sub(decoded_total));
+                let decompressed: Vec<u8> = match gunzip(raw, &name, cap) {
                     Ok(d) => d,
                     Err(e) => {
                         notes.push(format!("dlink-deafbead: `{name}` gzip decode failed: {e}"));
@@ -1821,6 +1826,7 @@ fn carve_dlink_deafbead(bytes: &[u8]) -> Result<FirmwareExtraction> {
                 } else {
                     name
                 };
+                decoded_total = decoded_total.saturating_add(decompressed.len() as u64);
                 members.push(plain_member(&final_name, data_start as u64, decompressed));
                 cursor = data_end;
             }
@@ -2007,14 +2013,9 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     disrobe_core::byte_search::find(haystack, needle)
 }
 
-fn gunzip(data: &[u8]) -> Result<Vec<u8>> {
-    use std::io::Read as _;
+fn gunzip(data: &[u8], name: &str, cap: u64) -> Result<Vec<u8>> {
     let mut decoder: flate2::read::GzDecoder<&[u8]> = flate2::read::GzDecoder::new(data);
-    let mut out: Vec<u8> = Vec::new();
-    decoder
-        .read_to_end(&mut out)
-        .map_err(|e| Error::Firmware(format!("gzip decode: {e}")))?;
-    Ok(out)
+    read_entry_to_limit(&mut decoder, name, cap)
 }
 
 #[cfg(test)]
@@ -2044,13 +2045,17 @@ pub(crate) fn hostile_named_image(name: &str, body: &[u8]) -> Option<Vec<u8>> {
     Some(image)
 }
 
-pub fn extract_firmware(kind: FirmwareKind, bytes: &[u8]) -> Result<FirmwareExtraction> {
+pub fn extract_firmware(
+    kind: FirmwareKind,
+    bytes: &[u8],
+    quota: &ExtractionQuota,
+) -> Result<FirmwareExtraction> {
     match kind {
         FirmwareKind::DlinkShrs => decrypt_dlink_shrs(bytes),
         FirmwareKind::DlinkEncrptedImg => decrypt_dlink_encrpted_img(bytes),
         FirmwareKind::DlinkAlphaV1 => decrypt_dlink_alpha_v1(bytes),
         FirmwareKind::DlinkAlphaV2 => decrypt_dlink_alpha_v2(bytes),
-        FirmwareKind::DlinkDeafbead => carve_dlink_deafbead(bytes),
+        FirmwareKind::DlinkDeafbead => carve_dlink_deafbead(bytes, quota),
         FirmwareKind::DlinkFpkg => carve_dlink_fpkg(bytes),
         FirmwareKind::EnGenius => decrypt_engenius(bytes),
         FirmwareKind::AutelEcc => decrypt_autel_ecc(bytes),

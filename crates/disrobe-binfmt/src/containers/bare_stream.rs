@@ -16,6 +16,7 @@ pub const ZSTD_MAGIC: &[u8; 4] = &[0x28, 0xb5, 0x2f, 0xfd];
 pub const LZMA_ALONE_PROPS_MAX: u8 = 225;
 
 const LZ4_LEGACY_MAX_BLOCK: usize = 8 * 1024 * 1024;
+const LZMA_ALONE_DETECT_DICT_LIMIT: usize = 64 * 1024 * 1024;
 const COMPRESS_MAX_CODE_BITS: u8 = 16;
 const COMPRESS_MIN_CODE_BITS: u8 = 9;
 
@@ -628,15 +629,12 @@ pub fn detect_lzma_alone(bytes: &[u8]) -> bool {
         return false;
     }
     let mut reader: std::io::Cursor<&[u8]> = std::io::Cursor::new(bytes);
-    let mut sink: Vec<u8> = Vec::new();
+    let mut sink: std::io::Sink = std::io::sink();
     let options: lzma_rs::decompress::Options = lzma_rs::decompress::Options {
-        memlimit: Some(256 * 1024 * 1024),
+        memlimit: Some(LZMA_ALONE_DETECT_DICT_LIMIT),
         ..Default::default()
     };
-    match lzma_rs::lzma_decompress_with_options(&mut reader, &mut sink, &options) {
-        Ok(()) => sink.len() as u64 == declared,
-        Err(_) => false,
-    }
+    lzma_rs::lzma_decompress_with_options(&mut reader, &mut sink, &options).is_ok()
 }
 
 struct CapWriter {
