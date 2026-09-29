@@ -15,7 +15,6 @@ use windows_sys::Win32::Foundation::{
     HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation, WAIT_FAILED,
     WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
-use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::Storage::FileSystem::{
     BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
 };
@@ -27,7 +26,6 @@ use windows_sys::Win32::System::JobObjects::{
     JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation,
     QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
 };
-use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
 use windows_sys::Win32::System::SystemServices::JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO;
 use windows_sys::Win32::System::Threading::{
@@ -60,8 +58,13 @@ fn open_identity_file(path: &Path) -> io::Result<File> {
     std::fs::OpenOptions::new().read(true).open(path)
 }
 
+#[expect(
+    unsafe_code,
+    reason = "the handle is borrowed from a live File for the call and the output pointer names \
+              a local BY_HANDLE_FILE_INFORMATION that GetFileInformationByHandle fully writes"
+)]
 fn file_identity(file: &File) -> io::Result<BY_HANDLE_FILE_INFORMATION> {
-    let mut information: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    let mut information: BY_HANDLE_FILE_INFORMATION = BY_HANDLE_FILE_INFORMATION::default();
     let succeeded: i32 =
         unsafe { GetFileInformationByHandle(file.as_raw_handle().cast(), &raw mut information) };
     if succeeded == 0 {
@@ -86,6 +89,11 @@ const COMPARE_STRING_GREATER_THAN: i32 = 3;
 const COMPARE_STRING_IGNORE_CASE: i32 = 1;
 
 #[link(name = "kernel32")]
+#[expect(
+    unsafe_code,
+    reason = "CompareStringOrdinal is declared with its kernel32 signature: two UTF-16 pointer and \
+              i32 length pairs, an i32 flag and an i32 result"
+)]
 unsafe extern "system" {
     fn CompareStringOrdinal(
         left: *const u16,
@@ -122,6 +130,13 @@ struct InheritanceWindow<'a> {
     enabled: usize,
 }
 
+#[expect(
+    unsafe_code,
+    reason = "CreateProcessW reads NUL-terminated application, command-line, environment and \
+              directory buffers and an initialized attribute list that all outlive the call; on \
+              success hProcess and hThread are fresh handles nothing else owns, so each is wrapped \
+              in one OwnedHandle"
+)]
 pub(crate) fn spawn(spec: &CommandSpec) -> Result<(ContainedProcess, PipeSet), LaunchError> {
     let executable: PathBuf = canonical_program(program(spec))?;
     let prepared: PreparedCommand = prepare_command(
@@ -228,6 +243,11 @@ pub(crate) fn spawn(spec: &CommandSpec) -> Result<(ContainedProcess, PipeSet), L
 }
 
 impl ContainedProcess {
+    #[expect(
+        unsafe_code,
+        reason = "ResumeThread receives the primary thread handle this function owns until the end \
+                  of the call"
+    )]
     pub(crate) fn start(&mut self) -> Result<(), LifecycleError> {
         let thread: OwnedHandle = self.primary_thread.take().ok_or_else(|| {
             LifecycleError::Resume(io::Error::other("primary thread handle missing"))
@@ -308,6 +328,10 @@ impl ContainedProcess {
         }
     }
 
+    #[expect(
+        unsafe_code,
+        reason = "TerminateJobObject receives the job handle self owns, open for the whole call"
+    )]
     fn terminate_job(&self) -> Result<(), LifecycleError> {
         let terminated: i32 =
             unsafe { TerminateJobObject(raw_handle(&self.job), TERMINATION_EXIT_CODE) };
@@ -317,6 +341,11 @@ impl ContainedProcess {
         Ok(())
     }
 
+    #[expect(
+        unsafe_code,
+        reason = "WaitForSingleObject and GetExitCodeProcess receive the process handle self owns \
+                  and a pointer to a live local u32"
+    )]
     fn poll_direct_status(&mut self) -> Result<Option<ExitStatus>, LifecycleError> {
         if let Some(status) = self.direct_status {
             return Ok(Some(status));
@@ -342,6 +371,11 @@ impl ContainedProcess {
         }
     }
 
+    #[expect(
+        unsafe_code,
+        reason = "QueryInformationJobObject receives the job handle self owns and a live local \
+                  accounting structure together with its exact size"
+    )]
     fn active_processes(&self) -> Result<u32, LifecycleError> {
         let mut accounting: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION =
             JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
@@ -361,6 +395,11 @@ impl ContainedProcess {
         Ok(accounting.ActiveProcesses)
     }
 
+    #[expect(
+        unsafe_code,
+        reason = "GetQueuedCompletionStatus receives the completion port self owns and pointers to \
+                  three live locals of the types it writes"
+    )]
     fn observe_completion_port(&mut self, wait: Duration) -> Result<(), LifecycleError> {
         let mut message: u32 = 0;
         let mut key: usize = 0;
@@ -393,6 +432,11 @@ impl ContainedProcess {
 }
 
 impl Drop for ContainedProcess {
+    #[expect(
+        unsafe_code,
+        reason = "the job and process handles self owns stay open until the fields drop after this \
+                  body, so every call receives a valid handle"
+    )]
     fn drop(&mut self) {
         if self.finished {
             return;
@@ -410,6 +454,12 @@ impl Drop for ContainedProcess {
 }
 
 impl AttributeList {
+    #[expect(
+        unsafe_code,
+        reason = "the first InitializeProcThreadAttributeList call only reports the size, the list \
+                  is then built in storage of at least that many bytes, and the handle array it \
+                  records outlives the list at its one call site in spawn"
+    )]
     fn new(handles: &[HANDLE; 3]) -> Result<Self, LaunchError> {
         let mut bytes: usize = 0;
         let _: i32 = unsafe { InitializeProcThreadAttributeList(null_mut(), 1, 0, &raw mut bytes) };
@@ -454,6 +504,11 @@ impl AttributeList {
 }
 
 impl Drop for AttributeList {
+    #[expect(
+        unsafe_code,
+        reason = "the initialized flag records that InitializeProcThreadAttributeList succeeded on \
+                  this storage, which self still owns"
+    )]
     fn drop(&mut self) {
         if self.initialized {
             unsafe { DeleteProcThreadAttributeList(self.as_mut_ptr()) };
@@ -462,6 +517,11 @@ impl Drop for AttributeList {
 }
 
 impl<'a> InheritanceWindow<'a> {
+    #[expect(
+        unsafe_code,
+        reason = "SetHandleInformation receives child pipe handles borrowed for the window's \
+                  lifetime, so they stay open while their inherit flag changes"
+    )]
     fn new(handles: &'a [HANDLE; 3]) -> Result<Self, LaunchError> {
         let mut window: Self = Self {
             handles,
@@ -480,6 +540,11 @@ impl<'a> InheritanceWindow<'a> {
 }
 
 impl Drop for InheritanceWindow<'_> {
+    #[expect(
+        unsafe_code,
+        reason = "only handles whose inherit flag this window set are reset, and the borrow keeps \
+                  each of them open"
+    )]
     fn drop(&mut self) {
         for handle in &self.handles[..self.enabled] {
             let _: i32 = unsafe { SetHandleInformation(*handle, HANDLE_FLAG_INHERIT, 0) };
@@ -885,6 +950,11 @@ fn is_ascii_drive_letter(unit: u16) -> bool {
         || (u16::from(b'a')..=u16::from(b'z')).contains(&unit)
 }
 
+#[expect(
+    unsafe_code,
+    reason = "CompareStringOrdinal reads exactly left.len() and right.len() UTF-16 units from two \
+              live slices, and both lengths were checked to fit in i32"
+)]
 fn compare_environment_key_units(left: &[u16], right: &[u16]) -> Result<Ordering, LaunchError> {
     let left_length: i32 = i32::try_from(left.len()).map_err(|_| {
         LaunchError::InvalidInput("Windows environment key length cannot be represented")
@@ -1054,6 +1124,11 @@ fn user_path(path: &Path) -> Result<Vec<u16>, LaunchError> {
         .to_vec())
 }
 
+#[expect(
+    unsafe_code,
+    reason = "GetSystemDirectoryW writes at most buffer_size units into buffer, whose length is \
+              exactly buffer_size"
+)]
 fn system_command_prompt() -> Result<Vec<u16>, LaunchError> {
     let mut capacity: usize = 260;
     loop {
@@ -1079,6 +1154,11 @@ fn system_command_prompt() -> Result<Vec<u16>, LaunchError> {
     }
 }
 
+#[expect(
+    unsafe_code,
+    reason = "CreateJobObjectW takes null attributes and name, and SetInformationJobObject reads a \
+              live local limit structure with its exact size on the job handle created here"
+)]
 fn create_job() -> Result<OwnedHandle, LaunchError> {
     let raw: HANDLE = unsafe { CreateJobObjectW(null(), null()) };
     let job: OwnedHandle = owned_handle(raw, LaunchStage::Job)?;
@@ -1099,11 +1179,21 @@ fn create_job() -> Result<OwnedHandle, LaunchError> {
     Ok(job)
 }
 
+#[expect(
+    unsafe_code,
+    reason = "CreateIoCompletionPort with INVALID_HANDLE_VALUE and no existing port only creates a \
+              new port, whose handle owned_handle validates and takes"
+)]
 fn create_completion_port() -> Result<OwnedHandle, LaunchError> {
     let raw: HANDLE = unsafe { CreateIoCompletionPort(INVALID_HANDLE_VALUE, null_mut(), 0, 1) };
     owned_handle(raw, LaunchStage::CompletionPort)
 }
 
+#[expect(
+    unsafe_code,
+    reason = "SetInformationJobObject reads a live local association structure with its exact \
+              size, and both handles are borrowed from OwnedHandles open for the call"
+)]
 fn associate_completion_port(job: &OwnedHandle, port: &OwnedHandle) -> Result<(), LaunchError> {
     let association: JOBOBJECT_ASSOCIATE_COMPLETION_PORT = JOBOBJECT_ASSOCIATE_COMPLETION_PORT {
         CompletionKey: raw_handle(job),
@@ -1124,26 +1214,13 @@ fn associate_completion_port(job: &OwnedHandle, port: &OwnedHandle) -> Result<()
 }
 
 fn create_pipe(parent_writes: bool) -> Result<PipePair, LaunchError> {
-    let attributes: SECURITY_ATTRIBUTES = SECURITY_ATTRIBUTES {
-        nLength: structure_size::<SECURITY_ATTRIBUTES>()?,
-        lpSecurityDescriptor: null_mut(),
-        bInheritHandle: 0,
-    };
-    let mut read_raw: HANDLE = null_mut();
-    let mut write_raw: HANDLE = null_mut();
-    let created: i32 = unsafe {
-        CreatePipe(
-            &raw mut read_raw,
-            &raw mut write_raw,
-            &raw const attributes,
-            0,
-        )
-    };
-    if created == 0 {
-        return Err(platform_launch(LaunchStage::Pipe));
-    }
-    let read: OwnedHandle = unsafe { OwnedHandle::from_raw_handle(read_raw.cast()) };
-    let write: OwnedHandle = unsafe { OwnedHandle::from_raw_handle(write_raw.cast()) };
+    let (reader, writer): (io::PipeReader, io::PipeWriter) =
+        io::pipe().map_err(|source: io::Error| LaunchError::Platform {
+            stage: LaunchStage::Pipe,
+            source,
+        })?;
+    let read: OwnedHandle = OwnedHandle::from(reader);
+    let write: OwnedHandle = OwnedHandle::from(writer);
     Ok(if parent_writes {
         PipePair {
             parent: write,
@@ -1157,6 +1234,11 @@ fn create_pipe(parent_writes: bool) -> Result<PipePair, LaunchError> {
     })
 }
 
+#[expect(
+    unsafe_code,
+    reason = "TerminateProcess and WaitForSingleObject receive a process handle borrowed from a \
+              live OwnedHandle"
+)]
 fn cleanup_suspended_process(process: &OwnedHandle) -> io::Result<()> {
     let terminated: i32 = unsafe { TerminateProcess(raw_handle(process), TERMINATION_EXIT_CODE) };
     if terminated == 0 {
@@ -1174,6 +1256,11 @@ fn cleanup_suspended_process(process: &OwnedHandle) -> io::Result<()> {
     Ok(())
 }
 
+#[expect(
+    unsafe_code,
+    reason = "callers pass a handle just returned by a Win32 create function that nothing else \
+              owns, and null and INVALID_HANDLE_VALUE are rejected first"
+)]
 fn owned_handle(raw: HANDLE, stage: LaunchStage) -> Result<OwnedHandle, LaunchError> {
     if raw.is_null() || raw == INVALID_HANDLE_VALUE {
         return Err(platform_launch(stage));

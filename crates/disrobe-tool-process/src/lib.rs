@@ -1,4 +1,5 @@
 #![deny(unreachable_pub)]
+#![deny(unsafe_code)]
 
 use std::ffi::OsString;
 use std::fmt::{self, Display, Formatter};

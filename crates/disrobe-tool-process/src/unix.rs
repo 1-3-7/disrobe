@@ -292,6 +292,11 @@ impl ContainedProcess {
         }
     }
 
+    #[expect(
+        unsafe_code,
+        reason = "kill takes a process group id and a signal number, no pointers, so the call has \
+                  no memory preconditions"
+    )]
     fn signal_group(&self, signal: i32) -> io::Result<bool> {
         let result: i32 = unsafe { libc::kill(-self.process_group, signal) };
         if result == 0 {
@@ -316,6 +321,12 @@ const fn macos_zombie_only_error(_process_group: i32, _source: &io::Error) -> bo
 }
 
 #[cfg(target_os = "macos")]
+#[expect(
+    unsafe_code,
+    reason = "proc_listpgrppids writes at most buffer_size bytes into members, which holds exactly \
+              buffer_size bytes, and assume_init runs only after proc_pidinfo reports writing the \
+              full ProcBsdShortInfo"
+)]
 fn macos_group_contains_only_zombies(process_group: i32) -> bool {
     let Ok(process_group_id): Result<u32, _> = u32::try_from(process_group) else {
         return false;
@@ -488,6 +499,10 @@ mod macos_tests {
     }
 
     #[test]
+    #[expect(
+        unsafe_code,
+        reason = "kill with signal 0 only probes the process group and takes no pointers"
+    )]
     fn zombie_only_process_group_probe_is_distinguished_from_live_members()
     -> Result<(), Box<dyn std::error::Error>> {
         let mut command: Command = Command::new("/bin/sh");
