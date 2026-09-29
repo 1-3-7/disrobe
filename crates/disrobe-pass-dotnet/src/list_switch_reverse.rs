@@ -602,8 +602,7 @@ fn element_access_konst<'a, N: TokenNamer>(
     head: &'a [&'a Instruction],
 ) -> Option<(ElementSlot, &'a &'a Instruction)> {
     let (konst, rest): (&&Instruction, &[&Instruction]) = head.split_last()?;
-    let (slot, ldelem): (ElementSlot, &&Instruction) = element_access_slot(ctx, rest)?;
-    let _ = ldelem;
+    let (slot, _): (ElementSlot, &&Instruction) = element_access_slot(ctx, rest)?;
     Some((slot, konst))
 }
 

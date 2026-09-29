@@ -30,8 +30,7 @@ pub struct BlockGraph {
 const MAX_BLOCKS: usize = 4096;
 
 #[must_use]
-pub fn absolute_target(ins: &Instruction, rel: i32, next_off: u32) -> u32 {
-    let _ = ins;
+pub fn absolute_target(rel: i32, next_off: u32) -> u32 {
     u32::try_from(i64::from(next_off) + i64::from(rel)).unwrap_or(next_off)
 }
 
@@ -60,7 +59,7 @@ pub fn find_dispatcher(body: &MethodBody) -> Option<Dispatcher> {
         let next_off: u32 = next_offset(body, idx);
         let switch_targets: Vec<u32> = rels
             .iter()
-            .map(|r: &i32| absolute_target(ins, *r, next_off))
+            .map(|r: &i32| absolute_target(*r, next_off))
             .collect();
         let header_entry: u32 = header_entry_offset(body, idx);
         return Some(Dispatcher {
@@ -87,7 +86,7 @@ fn header_entry_offset(body: &MethodBody, switch_idx: usize) -> u32 {
         let OperandValue::BrTarget(rel) = ins.operand else {
             continue;
         };
-        let target: u32 = absolute_target(ins, rel, next_offset(body, idx));
+        let target: u32 = absolute_target(rel, next_offset(body, idx));
         if target <= dup_off && target < switch_off {
             *indegree.entry(target).or_insert(0) += 1;
         }
@@ -206,7 +205,7 @@ fn reaches_dispatcher_switch(body: &MethodBody, dispatcher: &Dispatcher, start_o
                 let OperandValue::BrTarget(rel) = ins.operand else {
                     return false;
                 };
-                let target: u32 = absolute_target(ins, rel, next_offset(body, idx));
+                let target: u32 = absolute_target(rel, next_offset(body, idx));
                 let Some(next_idx): Option<usize> = instr_index(instrs, target) else {
                     return false;
                 };
@@ -243,7 +242,7 @@ fn collect_leaders(body: &MethodBody, dispatcher: &Dispatcher) -> BTreeSet<u32> 
         else {
             continue;
         };
-        let target: u32 = absolute_target(ins, rel, next_off);
+        let target: u32 = absolute_target(rel, next_off);
         if target < body.code_size && !reaches_dispatcher_switch(body, dispatcher, target) {
             leaders.insert(target);
         }

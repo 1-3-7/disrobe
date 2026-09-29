@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use crate::metadata::{MetadataRoot, StreamHeader, read_strings_heap, read_us_heap_strings};
+use crate::metadata::{MetadataRoot, StreamHeader, read_us_heap_strings};
 use crate::model::{AssemblyModel, MethodModel, TypeModel};
 use crate::pe::{ClrHeader, PeImage};
 
@@ -58,7 +58,6 @@ pub fn build_name_table(
     for literal in user_strings(image, pe, clr, root) {
         string_by_id.entry(string_id(&literal)).or_insert(literal);
     }
-    let _ = read_strings_heap;
 
     NameTable {
         member_by_id,

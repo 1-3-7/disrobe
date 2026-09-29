@@ -20,9 +20,8 @@ impl NetRandom {
         let mut mj: i32 = MSEED.wrapping_sub(subtraction);
         seed_array[55] = mj;
         let mut mk: i32 = 1;
-        let mut ii: usize = 0;
         for i in 1..55usize {
-            ii = (21usize.wrapping_mul(i)) % 55;
+            let ii: usize = (21usize.wrapping_mul(i)) % 55;
             seed_array[ii] = mk;
             mk = mj.wrapping_sub(mk);
             if mk < 0 {
@@ -30,7 +29,6 @@ impl NetRandom {
             }
             mj = seed_array[ii];
         }
-        let _ = ii;
         for _ in 0..4 {
             for i in 1..56usize {
                 let idx: usize = 1 + (i + 30) % 55;
@@ -121,10 +119,8 @@ mod tests {
             &head,
             "opcode order head must match real KoiVM"
         );
-        let tail: [u8; 5] = [141, 195, 208, 185, 51];
         let n: usize = order.len();
         assert_eq!(order[n - 1], 185);
-        let _ = tail;
     }
 
     #[test]

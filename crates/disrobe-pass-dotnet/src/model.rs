@@ -2118,7 +2118,6 @@ impl Resolver {
         let field_constants: BTreeMap<u32, FieldConstant> = self.materialize_field_constants();
 
         let mut types: Vec<TypeModel> = Vec::with_capacity(self.tables.type_defs.len());
-        let n_types: usize = self.tables.type_defs.len();
         for (idx, t) in self.tables.type_defs.iter().enumerate() {
             let type_rid: u32 = idx as u32 + 1;
             let field_start: u32 = t.field_list;
@@ -2155,7 +2154,6 @@ impl Resolver {
                 fields,
                 methods,
             });
-            let _ = n_types;
         }
 
         AssemblyModel {

@@ -192,7 +192,7 @@ pub fn resolve_header_key(
             let OperandValue::BrTarget(rel) = ins.operand else {
                 return None;
             };
-            let target: u32 = absolute_target(ins, rel, next_off(instrs, idx, code_size));
+            let target: u32 = absolute_target(rel, next_off(instrs, idx, code_size));
             idx = ins_index(instrs, target)?;
             continue;
         }
@@ -264,7 +264,7 @@ fn run_segment(
             let OperandValue::BrTarget(rel) = ins.operand else {
                 return Err(ResolveError::BadShape);
             };
-            let target: u32 = absolute_target(ins, rel, next_off(instrs, idx, code_size));
+            let target: u32 = absolute_target(rel, next_off(instrs, idx, code_size));
             if target == header_entry {
                 idx = ins_index(instrs, header_entry).ok_or(ResolveError::BadShape)?;
                 in_header = true;
@@ -283,7 +283,7 @@ fn run_segment(
             let OperandValue::BrTarget(rel) = ins.operand else {
                 return Err(ResolveError::BadShape);
             };
-            let target: u32 = absolute_target(ins, rel, next_off(instrs, idx, code_size));
+            let target: u32 = absolute_target(rel, next_off(instrs, idx, code_size));
             return resolve_conditional(interp, instrs, code_size, ins, idx, target);
         }
         if name == "switch" {
@@ -379,7 +379,7 @@ fn run_key_path(
             let OperandValue::BrTarget(rel) = ins.operand else {
                 return Err(ResolveError::BadShape);
             };
-            let target: u32 = absolute_target(ins, rel, next_off(instrs, idx, code_size));
+            let target: u32 = absolute_target(rel, next_off(instrs, idx, code_size));
             if target == header_entry {
                 idx = ins_index(instrs, header_entry).ok_or(ResolveError::BadShape)?;
                 in_header = true;

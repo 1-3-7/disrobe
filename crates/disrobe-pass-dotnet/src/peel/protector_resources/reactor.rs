@@ -630,7 +630,7 @@ fn reactor_target_index(
                 instruction.offset
             )
         })?;
-    let target: u32 = absolute_target(instruction, relative, next_offset);
+    let target: u32 = absolute_target(relative, next_offset);
     if target != checked_target {
         return Err(format!(
             "branch at IL_{:04X} target calculation is inconsistent",

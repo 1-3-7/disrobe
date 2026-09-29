@@ -1,7 +1,7 @@
 use crate::cil::{Instruction, MethodBody, OperandValue, parse_method_body};
 use crate::error::Result;
 use crate::metadata::MetadataRoot;
-use crate::model::{AssemblyModel, MethodModel, Resolver, TypeModel};
+use crate::model::{AssemblyModel, MethodModel, Resolver};
 use crate::pe::{ClrHeader, PeImage};
 
 #[derive(Debug, Clone)]
@@ -24,7 +24,7 @@ pub fn find_vm_stubs(
 
     for ty in &model.types {
         for method in &ty.methods {
-            if let Some(stub) = classify_stub(image, pe, ty, method) {
+            if let Some(stub) = classify_stub(image, pe, method) {
                 stubs.push(stub);
             }
         }
@@ -35,12 +35,7 @@ pub fn find_vm_stubs(
     Ok(stubs)
 }
 
-fn classify_stub(
-    image: &[u8],
-    pe: &PeImage,
-    ty: &TypeModel,
-    method: &MethodModel,
-) -> Option<VmStub> {
+fn classify_stub(image: &[u8], pe: &PeImage, method: &MethodModel) -> Option<VmStub> {
     if method.rva == 0 {
         return None;
     }
@@ -48,9 +43,7 @@ fn classify_stub(
     let body: MethodBody = parse_method_body(image.get(off..)?).ok()?;
     let export_id: u32 = stub_export_id(&body.instructions)?;
     let param_count: u32 = u32::try_from(method.signature.params.len()).unwrap_or(0);
-    let full_name: String = format!("{}::{}", ty.full_name, method.name);
     let short_name: String = method.name.clone();
-    let _ = full_name;
     Some(VmStub {
         export_id,
         metadata_token: method.token,

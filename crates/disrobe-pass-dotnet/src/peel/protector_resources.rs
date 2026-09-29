@@ -560,12 +560,6 @@ fn inflate_raw_to_limit(data: &[u8], limit: usize) -> std::result::Result<Vec<u8
     Ok(out)
 }
 
-#[must_use]
-#[allow(clippy::missing_const_for_fn)]
-pub fn recover_babel_strings(_image: &[u8]) -> Option<ResourceStringRecovery> {
-    None
-}
-
 #[cfg(test)]
 fn babel_decrypt_blob(
     blob: &[u8],

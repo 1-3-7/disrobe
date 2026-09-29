@@ -42,7 +42,7 @@ pub fn reverse_move_next(body: &str, sm: &StateMachine) -> (String, u32) {
     };
     let reflowed: Vec<String> = match sm.kind {
         StateMachineKind::AsyncIterator | StateMachineKind::Iterator => {
-            fold_yield_assignments(&redeferred, sm)
+            fold_yield_assignments(&redeferred)
         }
         StateMachineKind::Async => redeferred,
     };
@@ -1300,8 +1300,7 @@ fn is_completion_residue(line: &str) -> bool {
     is_get_result_line(t) || (t.starts_with("local") && t.ends_with(" = this;"))
 }
 
-fn fold_yield_assignments(lines: &[String], sm: &StateMachine) -> Vec<String> {
-    let _ = sm;
+fn fold_yield_assignments(lines: &[String]) -> Vec<String> {
     let mut out: Vec<String> = Vec::with_capacity(lines.len());
     let mut i: usize = 0;
     while i < lines.len() {
@@ -2022,12 +2021,11 @@ fn collapse_entry_state_dispatch(lines: &[String]) -> Vec<String> {
     let mut out: Vec<String> = Vec::with_capacity(lines.len());
     let mut i: usize = 0;
     while i < lines.len() {
-        if let Some((mirror, taken)) = entry_dispatch_condition(&lines[i], &mirrors)
+        if let Some((_, taken)) = entry_dispatch_condition(&lines[i], &mirrors)
             && let Some(open) = brace_open_index(lines, i)
             && let Some(close) = block_extent(lines, i)
             && close > open
         {
-            let _ = mirror;
             if taken {
                 for body_line in &lines[open + 1..close] {
                     out.push(dedent_once(body_line));
@@ -2759,7 +2757,7 @@ mod tests {
             "    /*current*/ = i + 1;".to_owned(),
             "    /*current*/ = 0;".to_owned(),
         ];
-        let out: Vec<String> = fold_yield_assignments(&lines, &async_sm());
+        let out: Vec<String> = fold_yield_assignments(&lines);
         let joined: String = out.join("\n");
         assert!(
             joined.contains("yield return i + 1;"),
@@ -2775,7 +2773,7 @@ mod tests {
             "    return 0;".to_owned(),
             "    return;".to_owned(),
         ];
-        let out: Vec<String> = fold_yield_assignments(&lines, &async_sm());
+        let out: Vec<String> = fold_yield_assignments(&lines);
         let joined: String = out.join("\n");
         assert_eq!(joined, "    yield break;");
     }

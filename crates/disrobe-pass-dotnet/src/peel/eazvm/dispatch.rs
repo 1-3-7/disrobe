@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use crate::cil::{Instruction, MethodBody, OperandValue, parse_method_body};
 use crate::metadata::MetadataRoot;
-use crate::model::{AssemblyModel, MethodModel, Resolver, TypeModel};
+use crate::model::{AssemblyModel, MethodModel, Resolver};
 use crate::pe::{ClrHeader, PeImage};
 
 use super::opcodes::CilOp;
@@ -192,8 +192,7 @@ pub fn stub_position_string(
 }
 
 #[must_use]
-pub fn is_vm_stub(image: &[u8], pe: &PeImage, ty: &TypeModel, method: &MethodModel) -> bool {
-    let _ = ty;
+pub fn is_vm_stub(image: &[u8], pe: &PeImage, method: &MethodModel) -> bool {
     let Some(body): Option<MethodBody> = read_body(image, pe, method.rva) else {
         return false;
     };

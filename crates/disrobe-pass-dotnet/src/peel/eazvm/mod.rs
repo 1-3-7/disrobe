@@ -8,9 +8,7 @@ pub mod opcodes;
 pub mod resource;
 pub mod stream;
 
-use crate::metadata::{
-    MetadataRoot, StreamHeader, parse_metadata_root, parse_table_stream, read_strings_heap,
-};
+use crate::metadata::{MetadataRoot, StreamHeader, parse_metadata_root, read_strings_heap};
 use crate::model::{AssemblyModel, Resolver};
 use crate::pe::{ClrHeader, DataDirectory, PeImage, parse, parse_clr_header};
 use crate::tables::{Tables, parse_tables};
@@ -112,7 +110,6 @@ fn manifest_resource_offset(
             return Some(row.offset);
         }
     }
-    let _ = parse_table_stream;
     None
 }
 
@@ -158,7 +155,7 @@ pub fn detect(image: &[u8]) -> EazVmDetection {
         let mut count: u32 = 0;
         for ty in &model.types {
             for method in &ty.methods {
-                if is_vm_stub(image, &pe, ty, method) {
+                if is_vm_stub(image, &pe, method) {
                     count += 1;
                 }
             }
@@ -194,7 +191,7 @@ pub fn devirtualize(image: &[u8]) -> Result<EazVmRecovery, EazVmError> {
 
     for ty in &model.types {
         for method in &ty.methods {
-            if !is_vm_stub(image, &pe, ty, method) {
+            if !is_vm_stub(image, &pe, method) {
                 continue;
             }
             match decode_stub(
@@ -350,7 +347,7 @@ fn stub_constants(image: &[u8], pe: &PeImage, model: &AssemblyModel) -> Vec<i32>
     use dispatch::ldc_i4_value;
     for ty in &model.types {
         for method in &ty.methods {
-            if !is_vm_stub(image, pe, ty, method) {
+            if !is_vm_stub(image, pe, method) {
                 continue;
             }
             let Some(off): Option<usize> = pe.rva_to_offset(method.rva) else {
