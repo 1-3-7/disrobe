@@ -23,6 +23,22 @@ provenance = "self-authored"
 source_tool = "Erlang/OTP 28.5.0.3 erlc +deterministic"
 description = "OTP 28 long AtU8 boundary source: one atom with 255 two-byte UTF-8 characters."
 
+[[fixture]]
+name = "elixir-recompile-oracle-operators"
+path = "elixir_recompile_oracle/operators.ex"
+kind = "source"
+provenance = "self-authored"
+source_tool = "Elixir 1.18.4 elixirc at test time"
+description = "Strict and loose equality, Bitwise operators beside arithmetic, div and rem, nested list subtraction, double negation and an equality inside a comparison; the recovered module must recompile and return the same test/0 value."
+
+[[fixture]]
+name = "elixir-recompile-oracle-literals"
+path = "elixir_recompile_oracle/literals.ex"
+kind = "source"
+provenance = "self-authored"
+source_tool = "Elixir 1.18.4 elixirc at test time"
+description = "String, charlist and atom literals holding a literal hash-brace, escape and NUL characters and quotes; the recovered module must recompile and return the same test/0 value."
+
 [[sample]]
 name = "erlang/hello.beam"
 path_rewrite = 'same-length in-place rewrite: the absolute build-directory prefix of the recorded source path was overwritten by /_ followed by / padding, so every length field is unchanged; no other byte changed'

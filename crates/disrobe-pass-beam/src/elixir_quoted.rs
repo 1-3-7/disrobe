@@ -93,7 +93,9 @@ enum Prec {
     Lowest,
     Or,
     And,
-    Comparison,
+    Equality,
+    Relational,
+    In,
     Concat,
     Additive,
     Multiplicative,
@@ -142,8 +144,9 @@ fn render_quoted_tuple(items: &[Term], parent: Prec) -> String {
         if meta_is_list {
             match &items[2] {
                 Term::Atom(_) => return render_variable(&items[0]),
-                Term::Nil => return render_variable(&items[0]),
-                Term::List { .. } => return render_call(&items[0], &items[2], parent),
+                Term::Nil | Term::List { .. } | Term::String(_) => {
+                    return render_call(&items[0], &items[2], parent);
+                }
                 _ => {}
             }
         }
@@ -177,6 +180,17 @@ fn render_call(target: &Term, args_term: &Term, parent: Prec) -> String {
     if let Some(remote) = remote_target(target) {
         return render_remote_call(&remote, &args, parent);
     }
+    if let Some(dot) = target.as_tuple()
+        && dot.len() == 3
+        && dot[0].as_atom() == Some(".")
+        && let [fun] = list_items(&dot[2]).as_slice()
+    {
+        let rendered: Vec<String> = args
+            .iter()
+            .map(|a: &Term| render(a, Prec::Lowest))
+            .collect();
+        return format!("{}.({})", render(fun, Prec::Highest), rendered.join(", "));
+    }
     let rendered: Vec<String> = args
         .iter()
         .map(|a: &Term| render(a, Prec::Lowest))
@@ -209,31 +223,33 @@ fn render_remote_call(remote: &(Term, String), args: &[Term], parent: Prec) -> S
         }
         if args.len() == 1 {
             match fun.as_str() {
-                "-" => return format!("-{}", render(&args[0], Prec::Unary)),
-                "+" => return format!("+{}", render(&args[0], Prec::Unary)),
+                "-" | "+" => return render_sign(fun, &args[0]),
                 "not" => return format!("not {}", render(&args[0], Prec::Unary)),
-                "bnot" => return format!("~~~{}", render(&args[0], Prec::Unary)),
                 _ => {}
             }
+        }
+        if is_bitwise(fun, args.len()) {
+            let rendered: Vec<String> = args
+                .iter()
+                .map(|a: &Term| render(a, Prec::Lowest))
+                .collect();
+            return format!("Bitwise.{fun}({})", rendered.join(", "));
         }
         if is_kernel_imported(fun, args.len()) {
             let rendered: Vec<String> = args
                 .iter()
                 .map(|a: &Term| render(a, Prec::Lowest))
                 .collect();
-            if rendered.is_empty() {
-                return fun.clone();
-            }
             return format!("{fun}({})", rendered.join(", "));
         }
     }
-    let module_is_alias: bool = matches!(module, Term::Atom(a) if a.starts_with("Elixir.") || a.chars().next().is_some_and(|c: char| c.is_ascii_uppercase()));
+    let module_is_atom: bool = matches!(module, Term::Atom(_));
     let module_str: String = match module {
-        Term::Atom(a) => render_module_alias(a),
+        Term::Atom(a) => render_atom_literal(a),
         other => render(other, Prec::Highest),
     };
     if args.is_empty() {
-        if module_is_alias {
+        if module_is_atom {
             return format!("{module_str}.{fun}()");
         }
         return format!("{module_str}.{fun}");
@@ -304,8 +320,8 @@ fn render_named_call(name: &str, args: &[Term], parent: Prec) -> String {
         ("&", 1) => return format!("&{}", render(&args[0], Prec::Unary)),
         ("not", 1) => return format!("not {}", render(&args[0], Prec::Unary)),
         ("!", 1) => return format!("!{}", render(&args[0], Prec::Unary)),
-        ("-", 1) => return format!("-{}", render(&args[0], Prec::Unary)),
-        ("in", 2) => return render_binary_op("in", &args[0], &args[1], Prec::Comparison, parent),
+        ("-" | "+", 1) => return render_sign(name, &args[0]),
+        ("in", 2) => return render_binary_op("in", &args[0], &args[1], Prec::In, parent),
         _ => {}
     }
     if let Some((op, prec)) = infix_operator(name)
@@ -317,9 +333,6 @@ fn render_named_call(name: &str, args: &[Term], parent: Prec) -> String {
         .iter()
         .map(|a: &Term| render(a, Prec::Lowest))
         .collect();
-    if rendered.is_empty() {
-        return name.to_owned();
-    }
     format!("{name}({})", rendered.join(", "))
 }
 
@@ -327,12 +340,14 @@ fn infix_operator(name: &str) -> Option<(&'static str, Prec)> {
     let entry: (&'static str, Prec) = match name {
         "orelse" | "or" => ("or", Prec::Or),
         "andalso" | "and" => ("and", Prec::And),
-        "==" | "=:=" => ("==", Prec::Comparison),
-        "/=" | "=/=" => ("!=", Prec::Comparison),
-        "<" => ("<", Prec::Comparison),
-        ">" => (">", Prec::Comparison),
-        "=<" => ("<=", Prec::Comparison),
-        ">=" => (">=", Prec::Comparison),
+        "==" => ("==", Prec::Equality),
+        "=:=" | "===" => ("===", Prec::Equality),
+        "/=" | "!=" => ("!=", Prec::Equality),
+        "=/=" | "!==" => ("!==", Prec::Equality),
+        "<" => ("<", Prec::Relational),
+        ">" => (">", Prec::Relational),
+        "=<" | "<=" => ("<=", Prec::Relational),
+        ">=" => (">=", Prec::Relational),
         "<>" => ("<>", Prec::Concat),
         "++" => ("++", Prec::Concat),
         "--" => ("--", Prec::Concat),
@@ -340,13 +355,6 @@ fn infix_operator(name: &str) -> Option<(&'static str, Prec)> {
         "-" => ("-", Prec::Additive),
         "*" => ("*", Prec::Multiplicative),
         "/" => ("/", Prec::Multiplicative),
-        "div" => ("div", Prec::Multiplicative),
-        "rem" => ("rem", Prec::Multiplicative),
-        "band" => ("&&&", Prec::Multiplicative),
-        "bor" => ("|||", Prec::Additive),
-        "bxor" => ("^^^", Prec::Additive),
-        "bsl" => ("<<<", Prec::Comparison),
-        "bsr" => (">>>", Prec::Comparison),
         _ => return None,
     };
     Some(entry)
@@ -368,12 +376,30 @@ fn is_kernel_imported(fun: &str, arity: usize) -> bool {
     }
 }
 
+fn is_bitwise(fun: &str, arity: usize) -> bool {
+    match fun {
+        "band" | "bor" | "bxor" | "bsl" | "bsr" => arity == 2,
+        "bnot" => arity == 1,
+        _ => false,
+    }
+}
+
+fn render_sign(sign: &str, operand: &Term) -> String {
+    let inner: String = render(operand, Prec::Unary);
+    if inner.starts_with(['-', '+']) {
+        format!("{sign}({inner})")
+    } else {
+        format!("{sign}{inner}")
+    }
+}
+
 fn render_binary_op(op: &str, lhs: &Term, rhs: &Term, prec: Prec, parent: Prec) -> String {
-    let inner: String = format!(
-        "{} {op} {}",
-        render(lhs, prec),
-        render(rhs, next_prec(prec))
-    );
+    let (lhs_prec, rhs_prec): (Prec, Prec) = if prec == Prec::Concat {
+        (next_prec(prec), prec)
+    } else {
+        (prec, next_prec(prec))
+    };
+    let inner: String = format!("{} {op} {}", render(lhs, lhs_prec), render(rhs, rhs_prec));
     if parent > prec {
         format!("({inner})")
     } else {
@@ -385,8 +411,10 @@ const fn next_prec(prec: Prec) -> Prec {
     match prec {
         Prec::Lowest => Prec::Or,
         Prec::Or => Prec::And,
-        Prec::And => Prec::Comparison,
-        Prec::Comparison => Prec::Concat,
+        Prec::And => Prec::Equality,
+        Prec::Equality => Prec::Relational,
+        Prec::Relational => Prec::In,
+        Prec::In => Prec::Concat,
         Prec::Concat => Prec::Additive,
         Prec::Additive => Prec::Multiplicative,
         Prec::Multiplicative | Prec::Unary => Prec::Unary,
@@ -669,7 +697,7 @@ fn render_bit_segment(seg: &Term) -> String {
         if args.len() == 2 {
             let value: String = render(&args[0], Prec::Highest);
             let spec: String = render_bit_spec(&args[1]);
-            if spec.is_empty() || spec == "binary" {
+            if spec.is_empty() || (spec == "binary" && matches!(args[0], Term::Binary(_))) {
                 return value;
             }
             return format!("{value}::{spec}");
@@ -687,6 +715,9 @@ fn render_bit_spec(spec: &Term) -> String {
         && let Term::Atom(name) = &tuple[0]
     {
         let args: Vec<Term> = list_items(&tuple[2]);
+        if let ("-" | "*", [lhs, rhs]) = (name.as_str(), args.as_slice()) {
+            return format!("{}{name}{}", render_bit_spec(lhs), render_bit_spec(rhs));
+        }
         if args.is_empty() || matches!(&tuple[2], Term::Atom(_)) {
             return name.clone();
         }
@@ -706,7 +737,11 @@ fn render_list(elements: &[Term], tail: &Term) -> String {
             .filter_map(|e: &Term| {
                 let t: &[Term] = e.as_tuple()?;
                 let key: &str = t[0].as_atom()?;
-                Some(format!("{key}: {}", render(&t[1], Prec::Lowest)))
+                Some(format!(
+                    "{} {}",
+                    keyword_key(key),
+                    render(&t[1], Prec::Lowest)
+                ))
             })
             .collect::<Vec<_>>()
             .join(", ");
@@ -747,6 +782,7 @@ fn list_items(term: &Term) -> Vec<Term> {
     match term {
         Term::List { elements, .. } => elements.clone(),
         Term::Nil => Vec::new(),
+        Term::String(bytes) => bytes.iter().map(|b: &u8| Term::SmallInt(*b)).collect(),
         other => vec![other.clone()],
     }
 }
@@ -758,7 +794,7 @@ fn render_atom_literal(a: &str) -> String {
         "false" => "false".to_owned(),
         _ if a.starts_with("Elixir.") => render_module_alias(a),
         _ if is_plain_atom(a) => format!(":{a}"),
-        _ => format!(":\"{}\"", a.replace('"', "\\\"")),
+        _ => format!(":\"{}\"", escape_double(a)),
     }
 }
 
@@ -774,9 +810,70 @@ fn is_plain_atom(a: &str) -> bool {
     let Some(first): Option<char> = a.chars().next() else {
         return false;
     };
+    let body: &str = a.strip_suffix(['?', '!']).unwrap_or(a);
     (first.is_ascii_lowercase() || first == '_')
-        && a.chars()
+        && !body.is_empty()
+        && body
+            .chars()
             .all(|c: char| c.is_ascii_alphanumeric() || c == '_' || c == '@')
+}
+
+fn keyword_key(a: &str) -> String {
+    if is_plain_atom(a) {
+        format!("{a}:")
+    } else {
+        format!("\"{}\":", escape_double(a))
+    }
+}
+
+#[must_use]
+pub fn render_value(term: &Term) -> String {
+    let Some(_guard): Option<DepthGuard> = DepthGuard::enter() else {
+        return "nil".to_owned();
+    };
+    match term {
+        Term::Tuple(items) => {
+            let parts: Vec<String> = items.iter().map(render_value).collect();
+            format!("{{{}}}", parts.join(", "))
+        }
+        Term::List { elements, tail } => {
+            if is_keyword_pairs(elements) && matches!(**tail, Term::Nil) {
+                let body: Vec<String> = elements
+                    .iter()
+                    .filter_map(|e: &Term| {
+                        let t: &[Term] = e.as_tuple()?;
+                        Some(format!(
+                            "{} {}",
+                            keyword_key(t[0].as_atom()?),
+                            render_value(&t[1])
+                        ))
+                    })
+                    .collect();
+                return format!("[{}]", body.join(", "));
+            }
+            let parts: Vec<String> = elements.iter().map(render_value).collect();
+            if matches!(**tail, Term::Nil) {
+                format!("[{}]", parts.join(", "))
+            } else {
+                format!("[{} | {}]", parts.join(", "), render_value(tail))
+            }
+        }
+        Term::Map(m) => {
+            let parts: Vec<String> = m
+                .iter()
+                .map(|(k, v): (&String, &Term)| format!("{} {}", keyword_key(k), render_value(v)))
+                .collect();
+            format!("%{{{}}}", parts.join(", "))
+        }
+        Term::MapMixed(pairs) => {
+            let parts: Vec<String> = pairs
+                .iter()
+                .map(|(k, v): &(Term, Term)| format!("{} => {}", render_value(k), render_value(v)))
+                .collect();
+            format!("%{{{}}}", parts.join(", "))
+        }
+        other => render(other, Prec::Lowest),
+    }
 }
 
 fn is_plain_key(a: &str) -> bool {
@@ -791,9 +888,14 @@ fn render_string_literal(bytes: &[u8]) -> String {
 }
 
 fn render_charlist_literal(bytes: &[u8]) -> String {
-    match core::str::from_utf8(bytes) {
-        Ok(s) => format!("~c\"{}\"", escape_double(s)),
-        Err(_) => format!("[{}]", join_bytes(bytes)),
+    if bytes
+        .iter()
+        .all(|b: &u8| b.is_ascii_graphic() || matches!(b, b' ' | b'\n' | b'\t' | b'\r'))
+    {
+        let text: String = bytes.iter().map(|b: &u8| char::from(*b)).collect();
+        format!("~c\"{}\"", escape_double(&text))
+    } else {
+        format!("[{}]", join_bytes(bytes))
     }
 }
 
@@ -806,11 +908,21 @@ fn join_bytes(bytes: &[u8]) -> String {
 }
 
 fn escape_double(s: &str) -> String {
-    s.replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('\n', "\\n")
-        .replace('\t', "\\t")
-        .replace('\r', "\\r")
+    let mut out: String = String::with_capacity(s.len());
+    let mut chars: core::iter::Peekable<core::str::Chars<'_>> = s.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            '#' if chars.peek() == Some(&'{') => out.push_str("\\#"),
+            c if c.is_control() => out.push_str(&format!("\\u{{{:X}}}", u32::from(c))),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 fn indent(s: &str) -> String {
@@ -880,6 +992,84 @@ mod tests {
 
     fn var(name: &str) -> Term {
         Term::Tuple(vec![atom(name), Term::Nil, atom("nil")])
+    }
+
+    fn erlang_call(fun: &str, args: Vec<Term>) -> Term {
+        let dot: Term = Term::Tuple(vec![
+            atom("."),
+            Term::Nil,
+            list(vec![atom("erlang"), atom(fun)]),
+        ]);
+        Term::Tuple(vec![dot, Term::Nil, list(args)])
+    }
+
+    #[test]
+    fn erlang_operators_render_with_elixir_semantics_and_precedence() {
+        let strict: Term = erlang_call("=:=", vec![var("a"), var("b")]);
+        assert_eq!(render_block(&strict), "a === b");
+        let loose: Term = erlang_call("/=", vec![var("a"), var("b")]);
+        assert_eq!(render_block(&loose), "a != b");
+        let masked: Term = erlang_call(
+            "+",
+            vec![
+                erlang_call("band", vec![var("a"), var("b")]),
+                Term::SmallInt(1),
+            ],
+        );
+        assert_eq!(render_block(&masked), "Bitwise.band(a, b) + 1");
+        let quotient: Term = erlang_call("div", vec![var("a"), var("b")]);
+        assert_eq!(render_block(&quotient), "div(a, b)");
+        let left_nested: Term = erlang_call(
+            "--",
+            vec![erlang_call("--", vec![var("a"), var("b")]), var("c")],
+        );
+        assert_eq!(render_block(&left_nested), "(a -- b) -- c");
+        let right_nested: Term = erlang_call(
+            "--",
+            vec![var("a"), erlang_call("--", vec![var("b"), var("c")])],
+        );
+        assert_eq!(render_block(&right_nested), "a -- b -- c");
+        let double_negation: Term = erlang_call("-", vec![Term::Int(-1)]);
+        assert_eq!(render_block(&double_negation), "-(-1)");
+        let relational_in_equality: Term = erlang_call(
+            "==",
+            vec![erlang_call("<", vec![var("a"), var("b")]), atom("true")],
+        );
+        assert_eq!(render_block(&relational_in_equality), "a < b == true");
+        let equality_in_relational: Term = erlang_call(
+            "<",
+            vec![erlang_call("==", vec![var("a"), var("b")]), atom("true")],
+        );
+        assert_eq!(render_block(&equality_in_relational), "(a == b) < true");
+    }
+
+    #[test]
+    fn local_calls_keep_their_parentheses_and_integer_list_arguments() {
+        let no_args: Term = Term::Tuple(vec![atom("helper"), Term::Nil, Term::Nil]);
+        assert_eq!(render_block(&no_args), "helper()");
+        let byte_args: Term =
+            Term::Tuple(vec![atom("masked"), Term::Nil, Term::String(vec![6, 3])]);
+        assert_eq!(render_block(&byte_args), "masked(6, 3)");
+        assert_eq!(render_block(&var("helper")), "helper");
+        assert_eq!(render_block(&Term::String(vec![1, 2, 3])), "[1, 2, 3]");
+        assert_eq!(render_block(&Term::String(b"ok".to_vec())), "~c\"ok\"");
+    }
+
+    #[test]
+    fn literals_escape_interpolation_and_control_characters() {
+        assert_eq!(
+            render_block(&Term::Binary(b"a#{b} #x".to_vec())),
+            "\"a\\#{b} #x\""
+        );
+        assert_eq!(
+            render_block(&Term::String(b"c#{d}".to_vec())),
+            "~c\"c\\#{d}\""
+        );
+        assert_eq!(render_block(&atom("x#{y}")), ":\"x\\#{y}\"");
+        assert_eq!(
+            render_block(&Term::Binary(b"\x1b\x00q\\".to_vec())),
+            "\"\\u{1B}\\u{0}q\\\\\""
+        );
     }
 
     #[test]
