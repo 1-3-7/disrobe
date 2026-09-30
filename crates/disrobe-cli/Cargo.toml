@@ -115,7 +115,6 @@ chain = [
     "disrobe-passes/py-decompile",
     "disrobe-passes/pyinstaller",
     "disrobe-binfmt/chain",
-    "disrobe-pass-pyarmor/chain",
     "disrobe-pass-native/chain",
     "disrobe-pass-py-deob/chain",
     "disrobe-pass-py-decompile/chain",
@@ -137,7 +136,7 @@ disrobe-core = { workspace = true, features = ["chain", "cache", "redact"] }
 disrobe-ir = { workspace = true }
 disrobe-binfmt = { workspace = true }
 disrobe-capabilities = { workspace = true }
-disrobe-pass-pyarmor = { workspace = true, features = ["llm-metadata", "chain"] }
+disrobe-pass-pyarmor = { workspace = true, features = ["llm-metadata"] }
 disrobe-pass-native = { workspace = true, features = ["llm-metadata", "chain"] }
 disrobe-pass-pyinstaller = { workspace = true }
 disrobe-pass-pyfreeze = { workspace = true }

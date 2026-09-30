@@ -46,7 +46,7 @@ full = [
     "webview",
 ]
 
-pyarmor = ["dep:disrobe-pass-pyarmor", "disrobe-pass-pyarmor/chain"]
+pyarmor = ["dep:disrobe-pass-pyarmor"]
 native = ["dep:disrobe-pass-native", "disrobe-pass-native/chain"]
 py-deob = ["dep:disrobe-pass-py-deob", "disrobe-pass-py-deob/chain"]
 container = ["dep:disrobe-binfmt", "disrobe-binfmt/chain"]

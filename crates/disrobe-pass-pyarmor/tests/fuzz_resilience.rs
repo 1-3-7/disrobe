@@ -146,7 +146,6 @@ fn saturate(bytes: &[u8], case_seed: u64) -> Vec<u8> {
 
 fn consume<T>(_: T) {}
 
-#[cfg(feature = "chain")]
 fn exercise_chain_entrypoints(bytes: &[u8]) {
     use disrobe_core::Artifact;
     use disrobe_core::Rung;
@@ -208,7 +207,6 @@ fn probe(bytes: &[u8]) {
     consume(parse_plaintext_xor_procedure(bytes));
     consume(lift_bcc_native(bytes, BccArch::WinX64));
     consume(lift_bcc_code_region(bytes, 0, BccArch::WinX64));
-    #[cfg(feature = "chain")]
     exercise_chain_entrypoints(bytes);
 }
 

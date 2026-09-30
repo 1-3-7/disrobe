@@ -196,7 +196,6 @@ fn real_925_header_is_python_314_magic() {
     );
 }
 
-#[cfg(feature = "chain")]
 #[test]
 fn chain_detect_paths_classify_925_serial_as_v9_not_v8_super() {
     use disrobe_core::chain::{DetectContext, Detector, DetectorOutput, ObfuscatorCatalog};
@@ -229,7 +228,6 @@ fn chain_detect_paths_classify_925_serial_as_v9_not_v8_super() {
     );
 }
 
-#[cfg(feature = "chain")]
 #[test]
 fn chain_run_with_path_recovers_real_pyc_via_sibling_runtime() {
     use disrobe_core::Artifact;

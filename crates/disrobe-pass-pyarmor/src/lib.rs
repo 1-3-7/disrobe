@@ -59,7 +59,6 @@ fn read_file_bounded(path: &Path, max_bytes: u64) -> Result<Vec<u8>> {
 
 pub mod bcc;
 mod bcc_lift;
-#[cfg(feature = "chain")]
 pub mod chain_detector;
 mod debug;
 mod descriptor_cache;

@@ -171,7 +171,6 @@ pub fn unpack_static(bytes: &[u8]) -> Result<UnpackOutput> {
     unpack_static_with_config(bytes, &UnpackConfig::default())
 }
 
-#[cfg(feature = "chain")]
 pub(crate) fn unpack_static_or_legacy_wall(bytes: &[u8]) -> Result<UnpackOutput> {
     match unpack_static(bytes) {
         Err(Error::LegacyDetectedOnly { .. }) => legacy_wall_output(bytes),
@@ -179,7 +178,6 @@ pub(crate) fn unpack_static_or_legacy_wall(bytes: &[u8]) -> Result<UnpackOutput>
     }
 }
 
-#[cfg(feature = "chain")]
 fn legacy_wall_output(bytes: &[u8]) -> Result<UnpackOutput> {
     let magic: WrapperMagic = sniff(bytes)?;
     let detection: Detection = bcdetect::detect_payload(bytes)?;

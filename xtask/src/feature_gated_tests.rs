@@ -15,7 +15,7 @@ const CHAIN_DETECTOR_FILE: &str = "chain_detector.rs";
 const CHAIN_FEATURE: &str = "chain";
 
 const MIN_CHAIN_DETECTORS: usize = 25;
-const MIN_HIDDEN_CRATES: usize = 22;
+const MIN_HIDDEN_CRATES: usize = 21;
 const MIN_SCANNED_COMMANDS: usize = 20;
 
 const UNDECLARED: &str = "hidden-test-surface-undeclared";
@@ -51,7 +51,6 @@ const HIDDEN_TEST_SURFACE: &[(&str, &[&str])] = &[
         "disrobe-pass-py-disasm",
         &["alt-brython", "alt-ironpython", "alt-jython"],
     ),
-    ("disrobe-pass-pyarmor", &["chain"]),
     ("disrobe-pass-pyinstaller", &["chain"]),
     ("disrobe-pass-ruby", &["chain"]),
     ("disrobe-pass-swift-objc", &["chain"]),

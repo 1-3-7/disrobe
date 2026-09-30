@@ -32,7 +32,7 @@ disrobe-pass-py-decompile = { workspace = true, features = ["chain", "llm-metada
 disrobe-pass-py-deob = { workspace = true, features = ["chain", "llm-metadata"] }
 disrobe-pass-py-disasm = { workspace = true, features = ["llm-metadata"] }
 disrobe-py-marshal = { workspace = true }
-disrobe-pass-pyarmor = { workspace = true, features = ["chain", "llm-metadata"] }
+disrobe-pass-pyarmor = { workspace = true, features = ["llm-metadata"] }
 disrobe-pass-pyinstaller = { workspace = true, features = ["chain"] }
 disrobe-pass-nuitka = { workspace = true }
 disrobe-pass-mobile = { workspace = true, features = ["chain", "native-image"] }

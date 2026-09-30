@@ -1,6 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[cfg(feature = "chain")]
 mod tier {
     use std::path::{Path, PathBuf};
 
