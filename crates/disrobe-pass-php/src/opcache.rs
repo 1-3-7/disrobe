@@ -1670,6 +1670,7 @@ fn lower(
         op::SEND_UNPACK => {
             out.op1_type = op1_type;
             out.op1 = op1;
+            out.op2 = raw.op2.value;
         }
         op::INIT_ARRAY | op::ADD_ARRAY_ELEMENT => {
             out.op1_type = op1_type;

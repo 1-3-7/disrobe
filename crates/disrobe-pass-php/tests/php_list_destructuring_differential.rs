@@ -17,8 +17,13 @@
 )]
 mod php_toolchain;
 
-use disrobe_pass_php::{Decompilation, Op, OpArray, OperandType, decompile_oparray, parse_oparray};
-use php_toolchain::{PHP, PhpRun, PhpRuntime, required_fixture};
+use disrobe_pass_php::{
+    Decompilation, Op, OpArray, OperandType, decompile_oparray, parse_oparray, parse_opcache_file,
+};
+use php_toolchain::{
+    PHP, PhpRun, PhpRuntime, compile_opcache_image, opcache_extension, required_fixture,
+};
+use std::path::PathBuf;
 
 const SAMPLE: &str = "oparray_list/destructuring";
 const FETCH_LIST_R: u8 = 98;
@@ -178,13 +183,108 @@ fn every_php_84_fetch_list_site_is_recovered_once() {
     assert_eq!(source.matches(" = $values;").count(), 6);
 }
 
+const DYNAMIC_KEYS: &str = r#"<?php
+function pick(array $values, int $index): string
+{
+    [$index => $picked, 'tail' => $tail] = $values;
+
+    return $picked . '/' . $tail;
+}
+
+$key = 'b';
+['a' => $a, $key => $b] = ['a' => 1, 'b' => 2];
+echo $a, $b, "\n";
+echo pick([10 => 'ten', 'tail' => 'end'], 10), "\n";
+echo pick(['x', 'y', 'tail' => 'z'], 1), "\n";
+"#;
+fn simple_fetch_with_key_in_values(parsed: &mut OpArray) {
+    let simple: &mut OpArray = parsed
+        .children
+        .iter_mut()
+        .find(|child: &&mut OpArray| child.name.as_deref() == Some("simple"))
+        .expect("simple function");
+    let fetch: &mut Op = simple
+        .ops
+        .iter_mut()
+        .find(|op: &&mut Op| op.opcode == FETCH_LIST_R)
+        .expect("simple FETCH_LIST_R");
+    fetch.op2_type = OperandType::Cv;
+    fetch.op2 = 0;
+}
+
 #[test]
-fn dynamic_or_out_of_range_list_operands_are_refused_by_name() {
-    let cases: [(&str, OpMutation); 3] = [
-        ("dynamic key", |op: &mut Op| {
-            op.op2_type = OperandType::Cv;
-            op.op2 = 0;
-        }),
+fn a_list_key_read_from_a_variable_is_rendered_as_that_variable() {
+    let mut parsed: OpArray = parsed_fixture();
+    simple_fetch_with_key_in_values(&mut parsed);
+    let result: Decompilation = recovered(&parsed);
+    assert!(
+        result.unrecovered.is_empty(),
+        "a list key held in a compiled variable is a php 8.4 shape, not a malformed one: {:?}\n{}",
+        result.unrecovered,
+        result.php_skeleton
+    );
+    assert!(
+        result
+            .php_skeleton
+            .contains("[$values => $first, 1 => $second] = $values;"),
+        "the variable key must be read where the op array reads it, and the literal key beside \
+         it must stay explicit because the list is no longer positional\n{}",
+        result.php_skeleton
+    );
+}
+
+#[test]
+fn list_keys_read_from_variables_recover_and_run_like_php_84() {
+    let graded: &str = "the php 8.4 variable list-key recovery differential";
+    let php: PhpRuntime = graded_php(graded);
+    let opcache: PathBuf = opcache_extension(&php).unwrap_or_else(|| {
+        panic!(
+            "{graded} compiles its program with the php 8.4 opcache extension, which was not found \
+             beside the php binary"
+        )
+    });
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_php_list_keys")
+            .expect("create the list-key scratch directory");
+    let image: Vec<u8> = compile_opcache_image(
+        &php,
+        &opcache,
+        DYNAMIC_KEYS.as_bytes(),
+        scratch.path(),
+        "dynamic_keys",
+    )
+    .unwrap_or_else(|defect: String| panic!("{graded}: {defect}"));
+    let parsed: OpArray =
+        parse_opcache_file(&image).expect("parse the php 8.4 file-cache image of the program");
+    let result: Decompilation = recovered(&parsed);
+    assert!(
+        result.unrecovered.is_empty(),
+        "{graded} must recover every opcode: {:?}\n{}",
+        result.unrecovered,
+        result.php_skeleton
+    );
+    let source: &str = &result.php_skeleton;
+    let expected: Vec<u8> = php_stdout(&php, "list-key original", DYNAMIC_KEYS.as_bytes());
+    let actual: Vec<u8> = php_stdout(&php, "list-key recovered", source.as_bytes());
+    assert_eq!(
+        actual, expected,
+        "the recovered variable-key list assignments run differently from the php 8.4 source\n{source}"
+    );
+    let wrong: String = source.replacen("$key => $b", "'a' => $b", 1);
+    assert_ne!(
+        wrong, source,
+        "the control needs the recovered `$key => $b` entry to mutate\n{source}"
+    );
+    let counterfactual: Vec<u8> = php_stdout(&php, "list-key wrong-key control", wrong.as_bytes());
+    assert_ne!(
+        counterfactual, expected,
+        "the differential must reject a recovery that replaces the variable key"
+    );
+}
+
+#[test]
+fn out_of_range_list_operands_are_refused_by_name() {
+    let cases: [(&str, OpMutation); 2] = [
         ("out-of-range literal", |op: &mut Op| {
             op.op2_type = OperandType::Const;
             op.op2 = u32::MAX;

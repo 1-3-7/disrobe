@@ -6624,7 +6624,10 @@ impl<'a> Lifter<'a> {
         if op.op2_type != OperandType::Unused || op.result_type != OperandType::Unused {
             return Some(self.refuse(idx, op.opcode, REASON_CALL_ARGUMENT_SHAPE));
         }
-        if self.call_stack.is_empty() {
+        let Some(call): Option<&PendingCall> = self.call_stack.last() else {
+            return Some(self.refuse(idx, op.opcode, REASON_CALL_ARGUMENT_SHAPE));
+        };
+        if op.op2 != call.positional_count {
             return Some(self.refuse(idx, op.opcode, REASON_CALL_ARGUMENT_SHAPE));
         }
         let Some(value): Option<Expr> = self.operand_expr(op.op1_type, op.op1) else {
