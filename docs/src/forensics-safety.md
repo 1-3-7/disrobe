@@ -14,7 +14,7 @@ Only `--allow-dynamic` executes sample code. `--allow-bcc` enables additional st
 
 | Path | Gate | What it does |
 |---|---|---|
-| PyArmor v6/v7 dynamic-hook | `--allow-dynamic` | Runs the obfuscated wrapper in a watched subprocess to capture marshal streams. Watchdog timeout via `--dynamic-timeout` (default 60s). |
+| PyArmor v6/v7 dynamic-hook | `--allow-dynamic` | Runs the obfuscated wrapper in a watched subprocess to capture marshal streams. Watchdog timeout via `--dynamic-timeout` (default 60s). On timeout or exit the wrapper's whole process tree is killed: on Windows a Job Object holds every descendant; on Unix the process group is killed, so a descendant that leaves its group (for example through `setsid`) is not contained. |
 | PyArmor BCC native-body analysis | `--allow-bcc` | Parses extracted BCC objects in-process and attempts x86-64 pseudo-C analysis. It does not execute the sample or invoke Ghidra. |
 
 Once wrapper and runtime discovery succeeds, omitting `--allow-bcc` makes a detected BCC unpack return `DR-PYARM-0050` before version-specific unpacking. Native builds use the Microsoft x64 ABI for Windows x86-64, the System V ABI for Linux x86-64, and AAPCS64 for Darwin ARM64. Unknown architecture IDs produce a typed refusal instead of selecting an ABI. Wasm builds record that native lifting is unavailable. The dedicated command and path-aware automatic extraction publish the same bounded recovery JSON, pseudo-C, and recovered Python skeleton. Each unmodeled function retains its native disassembly and typed reason.

@@ -184,7 +184,7 @@ Disrobe is built to open hostile files, but it is not a sandbox. Run it on input
 
 | What runs | When | Bound |
 |---|---|---|
-| The program under analysis | Only `pyarmor unpack --allow-dynamic`, for PyArmor v6 and v7 | A watchdog stops the Python process it starts; processes that the wrapper spawns are not contained |
+| The program under analysis | Only `pyarmor unpack --allow-dynamic`, for PyArmor v6 and v7 | A watchdog kills the Python process and every descendant on timeout or exit (a Job Object on Windows, the process group on Unix, which misses a descendant that leaves its group) |
 | JavaScript taken from the input: string-array decoders, jsobfu character folding, JSFuck, aaencode, jjencode, JSFiretruck | By default in `js deob` and in `auto` | The embedded Boa engine, with `fetch` removed. String-array probes stop at 4 seconds and 100,000 loop iterations (a rotation search at 180 seconds and 10 million), recursion depth 256, a 256 KiB prelude, and 4 MiB of generated script. The esoteric decoders stop waiting after 30 seconds, but their worker thread is not killed |
 | Packer stubs and string decoders taken from the input | By default, when a packer needs stub emulation, and in `strings` unless `--no-decode` is given | The in-house x86 emulator, with a step cap per packer and 256 MiB per mapping |
 | .NET, Java, and Dalvik string-decryption methods taken from the input | By default, for the protectors that need them | In-process interpreters: 4 million steps for CIL, up to 6 million for JVM bytecode, and 2 million steps per call site for Dalvik |

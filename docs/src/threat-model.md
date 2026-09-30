@@ -83,7 +83,7 @@ This is the boundary an analyst can choose to *not* cross at all. Two distinct s
 
 | Path | Gate | What runs |
 |---|---|---|
-| PyArmor v6/v7 dynamic-hook | `--allow-dynamic` | The obfuscated wrapper, in a watched subprocess, to capture marshal streams. Watchdog via `--dynamic-timeout` (default 60s). |
+| PyArmor v6/v7 dynamic-hook | `--allow-dynamic` | The obfuscated wrapper, in a watched subprocess, to capture marshal streams. Watchdog via `--dynamic-timeout` (default 60s). Its process tree is killed on timeout or exit: a Job Object on Windows, the process group on Unix, which does not reach a descendant that leaves its group. |
 
 `--allow-bcc` is a separate static-analysis gate and does not cross this execution boundary. Once wrapper and runtime discovery succeeds, omitting the flag makes the unpack return `DR-PYARM-0050` before version-specific unpacking. With the flag, native builds analyze extracted BCC objects in process without executing the sample or invoking Ghidra. Windows x86-64 uses the Microsoft x64 ABI, Linux x86-64 uses the System V ABI, and Darwin ARM64 uses AAPCS64. Unknown architecture IDs and unavailable native targets produce typed refusals. The dedicated command and path-aware automatic extraction publish the same bounded recovery JSON, pseudo-C, and recovered Python skeleton. Unmodeled functions remain present with native disassembly and a typed reason.
 
