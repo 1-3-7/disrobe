@@ -1,9 +1,7 @@
 use std::ffi::{OsStr, OsString};
-use std::io::Read;
 use std::path::Path;
-use std::process::{Child, ChildStderr, ChildStdout, ExitStatus};
-use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::process::ExitStatus;
+use std::time::Duration;
 
 pub use disrobe_tool_process::{
     CaptureOutcome, CapturedStream, CommandSpec, Completion, ContainmentEvidence, Execution,
@@ -11,108 +9,11 @@ pub use disrobe_tool_process::{
     WorkerStream,
 };
 
-const CAPTURE_READ_CHUNK: usize = 8192;
-const DIRECT_PROCESS_CLEANUP_GRACE: Duration = Duration::from_secs(1);
-const DIRECT_PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(2);
-
 #[derive(Debug)]
 pub struct CapturedOutput {
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
     pub exit_code: Option<i32>,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[must_use]
-pub fn wait_with_direct_process_output_timeout(
-    mut child: Child,
-    timeout: Duration,
-    max_capture_bytes: usize,
-) -> Option<CapturedOutput> {
-    use wait_timeout::ChildExt as _;
-
-    let stdout: Option<JoinHandle<Vec<u8>>> = child
-        .stdout
-        .take()
-        .map(|pipe: ChildStdout| std::thread::spawn(move || read_capped(pipe, max_capture_bytes)));
-    let stderr: Option<JoinHandle<Vec<u8>>> = child
-        .stderr
-        .take()
-        .map(|pipe: ChildStderr| std::thread::spawn(move || read_capped(pipe, max_capture_bytes)));
-    let Some(status): Option<ExitStatus> = child.wait_timeout(timeout).ok().flatten() else {
-        let cleanup_deadline: Instant = direct_process_cleanup_deadline();
-        let _: bool = terminate_direct_process_until(&mut child, cleanup_deadline);
-        drop(join_capture_until(stdout, cleanup_deadline));
-        drop(join_capture_until(stderr, cleanup_deadline));
-        return None;
-    };
-    let collection_deadline: Instant = direct_process_cleanup_deadline();
-    Some(CapturedOutput {
-        stdout: join_capture_until(stdout, collection_deadline)?,
-        stderr: join_capture_until(stderr, collection_deadline)?,
-        exit_code: status.code(),
-    })
-}
-
-#[cfg(target_arch = "wasm32")]
-#[must_use]
-pub fn wait_with_direct_process_output_timeout(
-    mut child: Child,
-    timeout: Duration,
-    max_capture_bytes: usize,
-) -> Option<CapturedOutput> {
-    let stdout: Option<JoinHandle<Vec<u8>>> = child
-        .stdout
-        .take()
-        .map(|pipe: ChildStdout| std::thread::spawn(move || read_capped(pipe, max_capture_bytes)));
-    let stderr: Option<JoinHandle<Vec<u8>>> = child
-        .stderr
-        .take()
-        .map(|pipe: ChildStderr| std::thread::spawn(move || read_capped(pipe, max_capture_bytes)));
-    let Some(deadline): Option<Instant> = Instant::now().checked_add(timeout) else {
-        let cleanup_deadline: Instant = direct_process_cleanup_deadline();
-        let _: bool = terminate_direct_process_until(&mut child, cleanup_deadline);
-        drop(join_capture_until(stdout, cleanup_deadline));
-        drop(join_capture_until(stderr, cleanup_deadline));
-        return None;
-    };
-    let status: ExitStatus = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) => {
-                if std::time::Instant::now() >= deadline {
-                    let cleanup_deadline: Instant = direct_process_cleanup_deadline();
-                    let _: bool = terminate_direct_process_until(&mut child, cleanup_deadline);
-                    drop(join_capture_until(stdout, cleanup_deadline));
-                    drop(join_capture_until(stderr, cleanup_deadline));
-                    return None;
-                }
-                std::thread::sleep(Duration::from_millis(25));
-            }
-            Err(_) => {
-                let cleanup_deadline: Instant = direct_process_cleanup_deadline();
-                let _: bool = terminate_direct_process_until(&mut child, cleanup_deadline);
-                drop(join_capture_until(stdout, cleanup_deadline));
-                drop(join_capture_until(stderr, cleanup_deadline));
-                return None;
-            }
-        }
-    };
-    let collection_deadline: Instant = direct_process_cleanup_deadline();
-    Some(CapturedOutput {
-        stdout: join_capture_until(stdout, collection_deadline)?,
-        stderr: join_capture_until(stderr, collection_deadline)?,
-        exit_code: status.code(),
-    })
-}
-
-#[must_use]
-pub fn wait_with_output_timeout(
-    child: Child,
-    timeout: Duration,
-    max_capture_bytes: usize,
-) -> Option<CapturedOutput> {
-    wait_with_direct_process_output_timeout(child, timeout, max_capture_bytes)
 }
 
 pub fn run_captured<S: AsRef<OsStr>>(
@@ -196,71 +97,10 @@ fn legacy_capture(outcome: CaptureOutcome, stream: &'static str) -> std::io::Res
     }
 }
 
-fn join_capture_until(handle: Option<JoinHandle<Vec<u8>>>, deadline: Instant) -> Option<Vec<u8>> {
-    let Some(handle): Option<JoinHandle<Vec<u8>>> = handle else {
-        return Some(Vec::new());
-    };
-    while !handle.is_finished() {
-        let now: Instant = Instant::now();
-        if now >= deadline {
-            return None;
-        }
-        std::thread::sleep(
-            deadline
-                .saturating_duration_since(now)
-                .min(DIRECT_PROCESS_POLL_INTERVAL),
-        );
-    }
-    handle.join().ok()
-}
-
-fn direct_process_cleanup_deadline() -> Instant {
-    Instant::now()
-        .checked_add(DIRECT_PROCESS_CLEANUP_GRACE)
-        .unwrap_or_else(Instant::now)
-}
-
-fn terminate_direct_process_until(child: &mut Child, deadline: Instant) -> bool {
-    let _: std::io::Result<()> = child.kill();
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => return true,
-            Err(_) => return false,
-            Ok(None) => {
-                let now: Instant = Instant::now();
-                if now >= deadline {
-                    return false;
-                }
-                std::thread::sleep(
-                    deadline
-                        .saturating_duration_since(now)
-                        .min(DIRECT_PROCESS_POLL_INTERVAL),
-                );
-            }
-        }
-    }
-}
-
-fn read_capped<R: Read>(mut reader: R, max_capture_bytes: usize) -> Vec<u8> {
-    let mut out: Vec<u8> = Vec::with_capacity(max_capture_bytes.min(CAPTURE_READ_CHUNK));
-    let mut chunk: [u8; CAPTURE_READ_CHUNK] = [0u8; CAPTURE_READ_CHUNK];
-    loop {
-        let n: usize = match reader.read(&mut chunk) {
-            Ok(0) | Err(_) => break,
-            Ok(n) => n,
-        };
-        let remaining: usize = max_capture_bytes.saturating_sub(out.len());
-        let keep: usize = remaining.min(n);
-        out.extend_from_slice(&chunk[..keep]);
-    }
-    out
-}
-
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use std::path::PathBuf;
-    use std::process::{Command, Stdio};
 
     use super::*;
 
@@ -305,111 +145,6 @@ mod tests {
              starts cargo",
             candidate.display()
         );
-    }
-
-    fn spawn_mock(args: &[&str]) -> Child {
-        Command::new(mock_bin_path())
-            .args(args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("spawn mock-proc")
-    }
-
-    fn spawn_mock_null(args: &[&str]) -> Child {
-        Command::new(mock_bin_path())
-            .args(args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn null-stdio mock-proc")
-    }
-
-    struct FlakyReader {
-        chunks: Vec<std::io::Result<Vec<u8>>>,
-    }
-
-    impl Read for FlakyReader {
-        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-            if self.chunks.is_empty() {
-                return Ok(0);
-            }
-            match self.chunks.remove(0) {
-                Ok(bytes) => {
-                    let n: usize = bytes.len().min(buf.len());
-                    buf[..n].copy_from_slice(&bytes[..n]);
-                    Ok(n)
-                }
-                Err(e) => Err(e),
-            }
-        }
-    }
-
-    #[test]
-    fn read_capped_stops_on_read_error_and_keeps_partial_data() {
-        let reader: FlakyReader = FlakyReader {
-            chunks: vec![
-                Ok(b"partial-output-before-the-crash".to_vec()),
-                Err(std::io::Error::other("simulated broken pipe")),
-                Ok(b"unreachable-data-after-the-error".to_vec()),
-            ],
-        };
-        let out: Vec<u8> = read_capped(reader, TEST_CAPTURE_CAP);
-        assert_eq!(
-            out, b"partial-output-before-the-crash",
-            "a mid-read error must stop the read and keep already-captured bytes, not discard them"
-        );
-    }
-
-    #[test]
-    fn timeout_actually_kills_a_sleeping_child() {
-        let _guard: std::sync::MutexGuard<'_, ()> = PROCESS_TIMING_TEST_LOCK
-            .lock()
-            .expect("lock process timing test");
-        let child: Child = spawn_mock(&["sleep", "5"]);
-        let start: std::time::Instant = std::time::Instant::now();
-        let result: Option<CapturedOutput> = wait_with_direct_process_output_timeout(
-            child,
-            Duration::from_millis(300),
-            TEST_CAPTURE_CAP,
-        );
-        let elapsed: Duration = start.elapsed();
-        eprintln!(
-            "[evidence] disrobe-core subprocess timeout test: elapsed={elapsed:?} deadline=300ms sleep_requested=5s killed={}",
-            result.is_none()
-        );
-        assert!(
-            result.is_none(),
-            "child sleeping 5s must be killed, not exit cleanly"
-        );
-        assert!(
-            elapsed < Duration::from_secs(2),
-            "wait must return near the 300ms deadline, not the 5s sleep; took {elapsed:?}"
-        );
-    }
-
-    #[test]
-    fn output_cap_truncates_a_flooding_child() {
-        let flood_bytes: usize = TEST_CAPTURE_CAP * 3;
-        let child: Child = spawn_mock(&["flood", &flood_bytes.to_string()]);
-        let out: CapturedOutput = wait_with_direct_process_output_timeout(
-            child,
-            Duration::from_secs(20),
-            TEST_CAPTURE_CAP,
-        )
-        .expect("flood child must complete within timeout");
-        eprintln!(
-            "[evidence] disrobe-core subprocess cap test: child_wrote={flood_bytes} captured={} cap={TEST_CAPTURE_CAP}",
-            out.stdout.len()
-        );
-        assert_eq!(
-            out.stdout.len(),
-            TEST_CAPTURE_CAP,
-            "captured stdout must be truncated to the cap, not the full {flood_bytes} bytes written"
-        );
-        assert_eq!(out.exit_code, Some(0));
     }
 
     #[test]
@@ -641,64 +376,6 @@ mod tests {
             elapsed >= Duration::from_millis(450),
             "completion returned before the descendant marker delay: {elapsed:?}"
         );
-    }
-
-    #[test]
-    fn compatibility_helper_is_direct_process_only() {
-        let _guard: std::sync::MutexGuard<'_, ()> = PROCESS_TIMING_TEST_LOCK
-            .lock()
-            .expect("lock process timing test");
-        let scratch: crate::scratch::ScratchDir =
-            crate::scratch::ScratchDir::create("disrobe-core-direct-child")
-                .expect("mkdir direct child dir");
-        let marker: PathBuf = scratch.path().join("direct-child-marker");
-        let marker_arg: String = marker.to_string_lossy().into_owned();
-        let child: Child = spawn_mock_null(&["spawn-marker-null", &marker_arg, "500"]);
-        let result: Option<CapturedOutput> =
-            wait_with_output_timeout(child, Duration::from_secs(5), TEST_CAPTURE_CAP);
-        let marker_existed_at_return: bool = marker.exists();
-        std::thread::sleep(Duration::from_millis(700));
-        let marker_existed_eventually: bool = marker.exists();
-        let _: std::io::Result<()> = std::fs::remove_file(&marker);
-        assert!(result.is_some(), "the direct parent must complete");
-        assert!(
-            !marker_existed_at_return,
-            "the direct-child helper must not claim descendant containment"
-        );
-        assert!(
-            marker_existed_eventually,
-            "the delayed descendant marker must prove the non-tree contract"
-        );
-    }
-
-    #[test]
-    fn canonical_direct_process_helper_bounds_descendant_pipe_collection() {
-        let _guard: std::sync::MutexGuard<'_, ()> = PROCESS_TIMING_TEST_LOCK
-            .lock()
-            .expect("lock process timing test");
-        let scratch: crate::scratch::ScratchDir =
-            crate::scratch::ScratchDir::create("disrobe-core-direct-pipe")
-                .expect("mkdir direct pipe dir");
-        let marker: PathBuf = scratch.path().join("direct-pipe-marker");
-        let marker_arg: String = marker.to_string_lossy().into_owned();
-        let child: Child = spawn_mock(&["spawn-marker-pipe", &marker_arg, "1500"]);
-        let started: std::time::Instant = std::time::Instant::now();
-        let result: Option<CapturedOutput> = wait_with_direct_process_output_timeout(
-            child,
-            Duration::from_secs(5),
-            TEST_CAPTURE_CAP,
-        );
-        let elapsed: Duration = started.elapsed();
-        assert!(
-            result.is_none(),
-            "an inherited pipe beyond the direct process must not yield a partial result"
-        );
-        assert!(
-            elapsed < Duration::from_millis(1400),
-            "direct-process capture collection exceeded its bound: {elapsed:?}"
-        );
-        std::thread::sleep(Duration::from_millis(600));
-        let _: std::io::Result<()> = std::fs::remove_file(marker);
     }
 
     #[test]
