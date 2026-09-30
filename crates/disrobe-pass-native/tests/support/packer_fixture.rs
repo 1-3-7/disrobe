@@ -1,15 +1,8 @@
-use std::ffi::{OsStr, OsString};
 use std::fs;
-use std::io::{ErrorKind, Write};
-use std::path::{Path, PathBuf};
+use std::io::ErrorKind;
+use std::path::PathBuf;
 
-pub(crate) const REQUIRE_FIXTURES_VAR: &str = "DISROBE_REQUIRE_PACKER_FIXTURES";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum FixtureRequirement {
-    Committed,
-    Every,
-}
+pub(crate) const LOCAL_SAMPLES: &str = "disrobe-pass-native::local-packer-samples";
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PackerFixture<'a> {
@@ -245,21 +238,6 @@ pub(crate) const COMMITTED_FIXTURES: &[CommittedFixture] = &[
     },
 ];
 
-pub(crate) fn requirement_from_value(value: Option<&OsStr>) -> FixtureRequirement {
-    let text: String = value
-        .map(|raw: &OsStr| raw.to_string_lossy().trim().to_ascii_lowercase())
-        .unwrap_or_default();
-    match text.as_str() {
-        "all" | "every" | "local" => FixtureRequirement::Every,
-        _ => FixtureRequirement::Committed,
-    }
-}
-
-pub(crate) fn fixture_requirement() -> FixtureRequirement {
-    let raw: Option<OsString> = std::env::var_os(REQUIRE_FIXTURES_VAR);
-    requirement_from_value(raw.as_deref())
-}
-
 pub(crate) fn packers_root() -> PathBuf {
     let mut root: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     root.push("..");
@@ -297,53 +275,37 @@ pub(crate) fn fixture_role(name: &str) -> &'static str {
     }
 }
 
-pub(crate) fn enforce_fixture_requirement(
-    fixture: &PackerFixture<'_>,
-    committed: bool,
-    requirement: FixtureRequirement,
-) {
-    let fatal: bool = match requirement {
-        FixtureRequirement::Committed => committed,
-        FixtureRequirement::Every => true,
-    };
+pub(crate) fn enforce_fixture_requirement(fixture: &PackerFixture<'_>, committed: bool) {
     let path: PathBuf = fixture_path(fixture.family, fixture.name);
     assert!(
-        !fatal,
+        !committed,
         "the {decoder} decoder cannot be graded and this case must not report success: the \
          {role} fixture of family {family} is absent at {resolved}, which is \
-         corpus/native/packers/{family}/{name} in the repository (tracked_in_git={committed}). \
-         A tracked fixture is always required, and {REQUIRE_FIXTURES_VAR}=all requires the \
-         local-only ones too. Restore that file.",
+         corpus/native/packers/{family}/{name} in the repository and tracked in git, so it is \
+         always required. Restore that file.",
         decoder = fixture.decoder,
         role = fixture_role(fixture.name),
         family = fixture.family,
         resolved = path.display(),
         name = fixture.name,
     );
-    announce_ungraded(fixture, &path);
-}
-
-fn announce_ungraded(fixture: &PackerFixture<'_>, path: &Path) {
-    let line: String = format!(
-        "\nUNGRADED {decoder}: the {role} fixture of family {family} is absent at {resolved} \
-         (corpus/native/packers/{family}/{name}), so this case measured nothing and graded \
-         nothing; this local-only sample is not tracked in git. Set {REQUIRE_FIXTURES_VAR}=all \
-         to fail on any absent fixture.\n",
-        decoder = fixture.decoder,
+    let what: String = format!(
+        "the {role} fixture of family {family} at {resolved} \
+         (corpus/native/packers/{family}/{name}), a local-only sample that is not tracked in git",
         role = fixture_role(fixture.name),
         family = fixture.family,
         resolved = path.display(),
         name = fixture.name,
     );
-    let mut sink: std::io::StdoutLock<'static> = std::io::stdout().lock();
-    drop(sink.write_all(line.as_bytes()));
-    drop(sink.flush());
+    if let Err(error) = disrobe_testkit::require::<()>(LOCAL_SAMPLES, &what, None) {
+        panic!(
+            "the {} decoder cannot be graded and this case must not report success: {error}",
+            fixture.decoder
+        );
+    }
 }
 
-pub(crate) fn load_fixture_with_requirement(
-    fixture: PackerFixture<'_>,
-    requirement: FixtureRequirement,
-) -> Option<Vec<u8>> {
+pub(crate) fn load_fixture(fixture: PackerFixture<'_>) -> Option<Vec<u8>> {
     let path: PathBuf = fixture_path(fixture.family, fixture.name);
     match fs::read(&path) {
         Ok(bytes) => {
@@ -352,7 +314,7 @@ pub(crate) fn load_fixture_with_requirement(
         }
         Err(err) if err.kind() == ErrorKind::NotFound => {
             let committed: bool = is_committed(fixture.family, fixture.name);
-            enforce_fixture_requirement(&fixture, committed, requirement);
+            enforce_fixture_requirement(&fixture, committed);
             None
         }
         Err(err) => panic!(
@@ -364,10 +326,6 @@ pub(crate) fn load_fixture_with_requirement(
     }
 }
 
-pub(crate) fn load_fixture(fixture: PackerFixture<'_>) -> Option<Vec<u8>> {
-    load_fixture_with_requirement(fixture, fixture_requirement())
-}
-
 pub(crate) fn require_committed(fixture: PackerFixture<'_>) -> Vec<u8> {
     assert!(
         is_committed(fixture.family, fixture.name),
@@ -376,9 +334,7 @@ pub(crate) fn require_committed(fixture: PackerFixture<'_>) -> Vec<u8> {
         fixture.family,
         fixture.name
     );
-    let Some(bytes): Option<Vec<u8>> =
-        load_fixture_with_requirement(fixture, FixtureRequirement::Committed)
-    else {
+    let Some(bytes): Option<Vec<u8>> = load_fixture(fixture) else {
         panic!(
             "the committed fixture corpus/native/packers/{}/{} is absent; restore it from git",
             fixture.family, fixture.name
@@ -401,7 +357,6 @@ pub(crate) fn enforce_something_was_graded(decoder: &str, graded: usize, family:
             name: "<any fixture>",
         },
         committed_here,
-        fixture_requirement(),
     );
 }
 

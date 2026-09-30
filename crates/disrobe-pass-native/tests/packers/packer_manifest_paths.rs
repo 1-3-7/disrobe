@@ -2,7 +2,7 @@ use crate::packer_fixture;
 
 use std::path::{Path, PathBuf};
 
-use packer_fixture::{FixtureRequirement, REQUIRE_FIXTURES_VAR, fixture_requirement, is_committed};
+use packer_fixture::{PackerFixture, enforce_fixture_requirement, is_committed};
 use toml::Value;
 
 #[derive(Debug, Clone, Copy)]
@@ -311,7 +311,6 @@ fn every_manifest_path_points_inside_the_packer_corpus() {
 fn no_manifest_path_resolves_to_nothing() {
     let manifest: toml::Table = manifest();
     let root: PathBuf = repo_root();
-    let requirement: FixtureRequirement = fixture_requirement();
     let mut offenders: Vec<String> = Vec::new();
     let mut resolved: usize = 0;
 
@@ -328,11 +327,18 @@ fn no_manifest_path_resolves_to_nothing() {
             continue;
         }
         let committed: bool = is_committed(family, name);
-        let fatal: bool = match requirement {
-            FixtureRequirement::Every => true,
-            FixtureRequirement::Committed => committed,
-        };
-        if !fatal || entry.absent_is_recorded {
+        if entry.absent_is_recorded {
+            continue;
+        }
+        if !committed {
+            enforce_fixture_requirement(
+                &PackerFixture {
+                    decoder: "packer manifest",
+                    family,
+                    name,
+                },
+                false,
+            );
             continue;
         }
         offenders.push(format!(
@@ -349,8 +355,8 @@ fn no_manifest_path_resolves_to_nothing() {
         "a manifest row naming a fixture that is not there describes a sample nobody can grade, \
          and every figure beside it is a record of some earlier run rather than something this \
          tree can re-derive. Stage the file, or set fixture_absent = true with \
-         fixture_absent_reason on that row so the gap is stated rather than implied. Set \
-         {REQUIRE_FIXTURES_VAR}=all to apply this to local-only samples too. Offending rows:\n  {}",
+         fixture_absent_reason on that row so the gap is stated rather than implied. Offending \
+         rows:\n  {}",
         offenders.join("\n  ")
     );
     assert!(

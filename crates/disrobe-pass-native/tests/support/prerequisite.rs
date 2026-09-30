@@ -1,16 +1,6 @@
 use std::path::{Path, PathBuf};
 
-pub(crate) const REQUIRE_LOCAL_CORPUS_VAR: &str = "DISROBE_REQUIRE_NATIVE_LOCAL_CORPUS";
-pub(crate) const REQUIRE_TOOLCHAIN_VAR: &str = "DISROBE_REQUIRE_NATIVE_TOOLCHAIN";
-
-fn demanded(variable: &str) -> bool {
-    std::env::var_os(variable).is_some_and(|value: std::ffi::OsString| {
-        !matches!(
-            value.to_string_lossy().trim().to_ascii_lowercase().as_str(),
-            "" | "0" | "false" | "no" | "off" | "optional"
-        )
-    })
-}
+pub(crate) const TOOLCHAIN_CAPABILITY: &str = "disrobe-pass-native::toolchain-capability";
 
 pub(crate) fn repo_path(relative: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -53,30 +43,21 @@ pub(crate) fn local_only_path(relative: &str, graded: &str) -> Option<PathBuf> {
 }
 
 fn local_input_absent(relative: &str, graded: &str, reason: &str) {
-    assert!(
-        !demanded(REQUIRE_LOCAL_CORPUS_VAR),
-        "{REQUIRE_LOCAL_CORPUS_VAR} requires the local-only input {relative} for {graded}, but it \
-         is unavailable: {reason}"
-    );
-    eprintln!(
-        "UNGRADED: {graded} needs the local-only input {relative}, which is unavailable ({reason}); \
-         set {REQUIRE_LOCAL_CORPUS_VAR}=1 to fail instead"
+    tool_unavailable(
+        &format!("disrobe-pass-native::local::{relative}"),
+        graded,
+        &format!("the local-only input {relative} ({reason})"),
     );
 }
 
 #[allow(dead_code)]
 pub(crate) fn toolchain_capability_absent(graded: &str, absent: &str) {
-    tool_unavailable(REQUIRE_TOOLCHAIN_VAR, graded, absent);
+    tool_unavailable(TOOLCHAIN_CAPABILITY, graded, absent);
 }
 
 #[allow(dead_code)]
-pub(crate) fn tool_unavailable(variable: &str, graded: &str, absent: &str) {
-    assert!(
-        !demanded(variable),
-        "{variable} makes this tool mandatory for this run, so {graded} cannot report success: \
-         {absent}"
-    );
-    eprintln!(
-        "UNGRADED: {graded} measured nothing because {absent}; set {variable}=1 to fail instead"
-    );
+pub(crate) fn tool_unavailable(prerequisite: &str, graded: &str, absent: &str) {
+    if let Err(error) = disrobe_testkit::require::<()>(prerequisite, absent, None) {
+        panic!("{graded} cannot report success: {error}");
+    }
 }

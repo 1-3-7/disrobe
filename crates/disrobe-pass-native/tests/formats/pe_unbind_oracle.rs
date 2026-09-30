@@ -19,7 +19,7 @@ use disrobe_pass_native::{
 
 use crate::prerequisite;
 
-const REQUIRE_LIEF_VAR: &str = "DISROBE_REQUIRE_LIEF";
+const LIEF_PREREQUISITE: &str = "disrobe-pass-native::python-lief";
 
 fn corpus_pe(name: &str) -> Option<Vec<u8>> {
     prerequisite::local_only(
@@ -390,7 +390,7 @@ fn python_with_lief(graded: &str) -> Option<PathBuf> {
         }
     }
     prerequisite::tool_unavailable(
-        REQUIRE_LIEF_VAR,
+        LIEF_PREREQUISITE,
         graded,
         "no python, python3 or py on PATH can import lief",
     );

@@ -220,7 +220,7 @@ fn ossl_calculated_digest(tool: &Path, sample: &Path) -> Option<(String, bool, b
 fn osslsigncode_cross_check_of_hash_and_verdict() {
     let Some(tool): Option<PathBuf> = find_osslsigncode() else {
         prerequisite::tool_unavailable(
-            "DISROBE_REQUIRE_OSSLSIGNCODE",
+            "disrobe-pass-native::osslsigncode",
             "the osslsigncode Authenticode cross-check",
             "osslsigncode is not on PATH, in %LOCALAPPDATA%\\Microsoft\\WinGet\\Packages, or named by DISROBE_OSSLSIGNCODE",
         );

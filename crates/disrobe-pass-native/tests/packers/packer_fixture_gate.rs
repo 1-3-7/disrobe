@@ -2,47 +2,10 @@
 
 use crate::packer_fixture;
 
-use std::ffi::OsStr;
-
 use packer_fixture::{
-    COMMITTED_FIXTURES, CommittedFixture, FixtureRequirement, PackerFixture, REQUIRE_FIXTURES_VAR,
-    committed_fixture_defect, enforce_fixture_requirement, load_fixture_with_requirement,
-    requirement_from_value,
+    COMMITTED_FIXTURES, CommittedFixture, PackerFixture, committed_fixture_defect,
+    enforce_fixture_requirement,
 };
-
-#[test]
-fn an_absent_fixture_fails_the_load_instead_of_reaching_a_test_body_as_none() {
-    let absent: PackerFixture<'static> = PackerFixture {
-        decoder: "NSPack",
-        family: "nspack",
-        name: "this-path-does-not-exist.packed.nspack.exe",
-    };
-    let outcome: std::thread::Result<Option<Vec<u8>>> = std::panic::catch_unwind(|| {
-        load_fixture_with_requirement(absent, FixtureRequirement::Every)
-    });
-    let Err(payload): std::thread::Result<Option<Vec<u8>>> = outcome else {
-        panic!(
-            "load_fixture returned to its caller while the requirement was set; an absent fixture \
-             must fail the load, because a None that reaches a test body is what lets a case \
-             report success after measuring nothing"
-        );
-    };
-    let message: &str = payload
-        .downcast_ref::<String>()
-        .map_or("", |text: &String| text.as_str());
-    for expected in [
-        REQUIRE_FIXTURES_VAR,
-        "this-path-does-not-exist.packed.nspack.exe",
-        "nspack",
-        "packed",
-    ] {
-        assert!(
-            message.contains(expected),
-            "the failure must name the variable, the expected path, the family and the fixture \
-             role; {expected:?} is missing from {message:?}"
-        );
-    }
-}
 
 #[test]
 fn an_absent_committed_fixture_is_always_fatal() {
@@ -52,7 +15,7 @@ fn an_absent_committed_fixture_is_always_fatal() {
         name: "hash.packed.nspack.exe",
     };
     let outcome: std::thread::Result<()> = std::panic::catch_unwind(|| {
-        enforce_fixture_requirement(&fixture, true, FixtureRequirement::Committed);
+        enforce_fixture_requirement(&fixture, true);
     });
     let Err(payload): std::thread::Result<()> = outcome else {
         panic!("an absent committed fixture was tolerated");
@@ -61,55 +24,9 @@ fn an_absent_committed_fixture_is_always_fatal() {
         .downcast_ref::<String>()
         .map_or("", |text: &String| text.as_str());
     assert!(
-        message.contains(REQUIRE_FIXTURES_VAR) && message.contains("hash.packed.nspack.exe"),
-        "the panic must name the variable and the fixture that caused it, got {message:?}"
+        message.contains("tracked in git") && message.contains("hash.packed.nspack.exe"),
+        "the panic must name the fixture that caused it and say it is tracked, got {message:?}"
     );
-}
-
-#[test]
-fn an_absent_local_only_fixture_skips_at_the_committed_level_and_fails_at_all() {
-    let local_only: PackerFixture<'static> = PackerFixture {
-        decoder: "NSPack",
-        family: "nspack",
-        name: "a-fixture-this-repo-never-commits.packed.nspack.exe",
-    };
-    enforce_fixture_requirement(&local_only, false, FixtureRequirement::Committed);
-    let strict: std::thread::Result<()> = std::panic::catch_unwind(|| {
-        enforce_fixture_requirement(&local_only, false, FixtureRequirement::Every);
-    });
-    assert!(
-        strict.is_err(),
-        "{REQUIRE_FIXTURES_VAR}=all must reject a fixture that is not committed"
-    );
-}
-
-#[test]
-fn requirement_levels_match_the_documented_spellings() {
-    assert_eq!(requirement_from_value(None), FixtureRequirement::Committed);
-    for committed in [
-        "",
-        " ",
-        "0",
-        "false",
-        "off",
-        "optional",
-        "1",
-        "true",
-        "committed",
-    ] {
-        assert_eq!(
-            requirement_from_value(Some(OsStr::new(committed))),
-            FixtureRequirement::Committed,
-            "{committed:?} must require the committed fixtures"
-        );
-    }
-    for every in ["all", "ALL", "every", "local"] {
-        assert_eq!(
-            requirement_from_value(Some(OsStr::new(every))),
-            FixtureRequirement::Every,
-            "{every:?} must require every fixture"
-        );
-    }
 }
 
 #[test]
