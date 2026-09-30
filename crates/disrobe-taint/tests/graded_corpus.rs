@@ -157,7 +157,20 @@ fn validate_cli(path: &Path) -> Result<(), String> {
         .map_err(|error: std::io::Error| format!("execute {}: {error}", path.display()))?
         .ok_or_else(|| format!("{} --version exceeded its bounded probe", path.display()))?;
     let expected: String = format!("disrobe {}", env!("CARGO_PKG_VERSION"));
-    if output.exit_code != Some(0) || String::from_utf8_lossy(&output.stdout).trim() != expected {
+    let reported: String = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    let names_this_version: bool =
+        reported
+            .strip_prefix(expected.as_str())
+            .is_some_and(|rest: &str| {
+                rest.is_empty()
+                    || rest
+                        .strip_prefix(" (commit ")
+                        .and_then(|commit: &str| commit.strip_suffix(')'))
+                        .is_some_and(|commit: &str| {
+                            commit.len() == 40 && commit.bytes().all(|b: u8| b.is_ascii_hexdigit())
+                        })
+            });
+    if output.exit_code != Some(0) || !names_this_version {
         return Err(format!(
             "{} must report {expected:?}; exit {:?}, stdout {:?}, stderr {:?}",
             path.display(),
