@@ -6,12 +6,7 @@ use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 
 use common::repository_root;
-use common::requirement::{
-    MAKECAB, MAKENSIS, REQUIRE_ALL_VAR, Requirement, SEVEN_ZIP, Toolchain, WIX, enforce, locate_in,
-    required_fixture, requirement_from_values,
-};
-
-const GATED: [Toolchain; 4] = [MAKECAB, SEVEN_ZIP, WIX, MAKENSIS];
+use common::requirement::{SEVEN_ZIP, Toolchain, locate_in, required_fixture};
 
 const PROBE: Toolchain = Toolchain {
     program: "7z",
@@ -19,7 +14,7 @@ const PROBE: Toolchain = Toolchain {
     install_paths: &[],
     identity: Some("7-Zip"),
     probe_arguments: &[],
-    require_var: "DISROBE_REQUIRE_SEVEN_ZIP",
+    prerequisite: "disrobe-binfmt::7z",
     install_hint: "install 7-Zip and put 7z, 7za, 7zz or 7zr on PATH",
 };
 
@@ -61,10 +56,6 @@ fn shell_shim_windows_cannot_start(directory: &Path, stem: &str) -> PathBuf {
     path
 }
 
-fn value(text: &str) -> &OsStr {
-    OsStr::new(text)
-}
-
 fn panic_message(body: impl FnOnce()) -> String {
     let outcome: Result<(), Box<dyn std::any::Any + Send>> =
         std::panic::catch_unwind(AssertUnwindSafe(body));
@@ -78,72 +69,6 @@ fn panic_message(body: impl FnOnce()) -> String {
                 .map(|text: &&str| (*text).to_owned())
         })
         .expect("a panic payload carries its message")
-}
-
-#[test]
-fn an_unset_variable_leaves_a_toolchain_optional() {
-    assert_eq!(requirement_from_values(None, None), Requirement::Optional);
-    for text in ["", " ", "0", "false", "no", "off", "optional", "OPTIONAL"] {
-        assert_eq!(
-            requirement_from_values(Some(value(text)), None),
-            Requirement::Optional,
-            "{text:?} must not make a toolchain mandatory"
-        );
-    }
-}
-
-#[test]
-fn either_variable_makes_a_toolchain_mandatory() {
-    for text in ["1", "true", "yes", "on", "all", "please"] {
-        assert_eq!(
-            requirement_from_values(Some(value(text)), None),
-            Requirement::Mandatory,
-            "the per-tool variable set to {text:?} must make the toolchain mandatory"
-        );
-        assert_eq!(
-            requirement_from_values(None, Some(value(text))),
-            Requirement::Mandatory,
-            "the blanket variable set to {text:?} must make the toolchain mandatory"
-        );
-    }
-    assert_eq!(
-        requirement_from_values(Some(value("0")), Some(value("1"))),
-        Requirement::Mandatory,
-        "the blanket variable must not be overridden by an unset-looking per-tool value"
-    );
-}
-
-#[test]
-fn a_mandatory_toolchain_turns_an_unmeasured_case_into_a_failure() {
-    for toolchain in GATED {
-        let message: String = panic_message(|| {
-            enforce(
-                &toolchain,
-                "the byte-exact recovery this case exists to measure",
-                "the tool was not found",
-                Requirement::Mandatory,
-            );
-        });
-        assert!(
-            message.contains(toolchain.require_var)
-                && message.contains(REQUIRE_ALL_VAR)
-                && message.contains("must not report success"),
-            "the failure for {} must name both variables and say the case cannot pass: {message}",
-            toolchain.program
-        );
-    }
-}
-
-#[test]
-fn an_optional_toolchain_lets_an_unmeasured_case_continue() {
-    for toolchain in GATED {
-        enforce(
-            &toolchain,
-            "the byte-exact recovery this case exists to measure",
-            "the tool was not found",
-            Requirement::Optional,
-        );
-    }
 }
 
 #[test]
@@ -226,14 +151,15 @@ fn a_batch_shim_wins_over_the_shell_shim_that_sits_beside_it() {
 #[test]
 fn the_workflow_demands_the_same_programs_the_search_accepts() {
     let path: PathBuf = repository_root().join(CI_WORKFLOW);
-    let workflow: String = std::fs::read_to_string(&path).unwrap_or_else(|error: std::io::Error| {
-        panic!(
-            "{CI_WORKFLOW} arms {} and this case exists to keep that demand and this search on the \
-             same programs, so its absence is a damaged checkout: {error} ({})",
-            SEVEN_ZIP.require_var,
-            path.display()
-        )
-    });
+    let workflow: String =
+        std::fs::read_to_string(&path).unwrap_or_else(|error: std::io::Error| {
+            panic!(
+                "{CI_WORKFLOW} provisions {} and this case exists to keep that demand and this \
+             search on the same programs, so its absence is a damaged checkout: {error} ({})",
+                SEVEN_ZIP.program,
+                path.display()
+            )
+        });
     let loop_header: &str = workflow
         .lines()
         .map(str::trim)
@@ -241,8 +167,8 @@ fn the_workflow_demands_the_same_programs_the_search_accepts() {
         .unwrap_or_else(|| {
             panic!(
                 "{CI_WORKFLOW} no longer carries a `for candidate in ...` probe, so the demand \
-                 that arms {} can no longer be checked against the programs this search accepts",
-                SEVEN_ZIP.require_var
+                 that provisions {} can no longer be checked against the programs this search accepts",
+                SEVEN_ZIP.program
             )
         });
     let iterated: &str = loop_header
@@ -267,9 +193,9 @@ fn probed_programs<'a>(workflow: &'a str, iterated: &'a str) -> Vec<&'a str> {
     };
     assigned_array_entries(workflow, name).unwrap_or_else(|| {
         panic!(
-            "{CI_WORKFLOW} iterates {name} but never assigns it, so the demand that arms {} can no \
-             longer be checked against the programs this search accepts",
-            SEVEN_ZIP.require_var
+            "{CI_WORKFLOW} iterates {name} but never assigns it, so the demand that provisions \
+             {} can no longer be checked against the programs this search accepts",
+            SEVEN_ZIP.program
         )
     })
 }

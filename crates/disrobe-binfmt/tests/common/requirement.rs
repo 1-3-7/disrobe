@@ -1,11 +1,8 @@
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 use super::{corpus_binfmt_root, fixture_path};
-
-pub const REQUIRE_ALL_VAR: &str = "DISROBE_REQUIRE_BINFMT_TOOLS";
-pub const REQUIRE_FIXTURES_VAR: &str = "DISROBE_REQUIRE_BINFMT_FIXTURES";
 
 const WINDOWS_EXECUTABLE_SUFFIXES: [&str; 5] = [".exe", ".com", ".bat", ".cmd", ""];
 const POSIX_EXECUTABLE_SUFFIXES: [&str; 1] = [""];
@@ -17,7 +14,7 @@ pub struct Toolchain {
     pub install_paths: &'static [&'static str],
     pub identity: Option<&'static str>,
     pub probe_arguments: &'static [&'static str],
-    pub require_var: &'static str,
+    pub prerequisite: &'static str,
     pub install_hint: &'static str,
 }
 
@@ -27,7 +24,7 @@ pub const MAKECAB: Toolchain = Toolchain {
     install_paths: &[r"C:\Windows\System32\makecab.exe"],
     identity: None,
     probe_arguments: &[],
-    require_var: "DISROBE_REQUIRE_MAKECAB",
+    prerequisite: "disrobe-binfmt::makecab",
     install_hint: "run on Windows, where makecab.exe ships in System32, or put makecab on PATH",
 };
 
@@ -40,7 +37,7 @@ pub const SEVEN_ZIP: Toolchain = Toolchain {
     ],
     identity: Some("7-Zip"),
     probe_arguments: &[],
-    require_var: "DISROBE_REQUIRE_SEVEN_ZIP",
+    prerequisite: "disrobe-binfmt::7z",
     install_hint: "install 7-Zip and put 7z, 7za, 7zz or 7zr on PATH",
 };
 
@@ -54,7 +51,7 @@ pub const WIX: Toolchain = Toolchain {
     ],
     identity: None,
     probe_arguments: &[],
-    require_var: "DISROBE_REQUIRE_WIX",
+    prerequisite: "disrobe-binfmt::wix",
     install_hint: "install the WiX toolset and put candle.exe and light.exe, or wix.exe, on PATH",
 };
 
@@ -67,7 +64,7 @@ pub const MAKENSIS: Toolchain = Toolchain {
     ],
     identity: None,
     probe_arguments: &[],
-    require_var: "DISROBE_REQUIRE_MAKENSIS",
+    prerequisite: "disrobe-binfmt::makensis",
     install_hint: "install NSIS and put makensis on PATH",
 };
 
@@ -77,7 +74,7 @@ pub const PYTHON: Toolchain = Toolchain {
     install_paths: &[],
     identity: Some("Python 3"),
     probe_arguments: &["--version"],
-    require_var: "DISROBE_REQUIRE_PYTHON",
+    prerequisite: "disrobe-binfmt::python",
     install_hint: "install CPython 3.8 or newer and put python on PATH",
 };
 
@@ -87,7 +84,7 @@ pub const LLVM_READOBJ: Toolchain = Toolchain {
     install_paths: &[],
     identity: None,
     probe_arguments: &[],
-    require_var: "DISROBE_REQUIRE_LLVM_READOBJ",
+    prerequisite: "disrobe-binfmt::llvm-readobj",
     install_hint: "install llvm (llvm-readobj) and put it on PATH",
 };
 
@@ -97,7 +94,7 @@ pub const BUN: Toolchain = Toolchain {
     install_paths: &[],
     identity: None,
     probe_arguments: &[],
-    require_var: "DISROBE_REQUIRE_BUN",
+    prerequisite: "disrobe-binfmt::bun",
     install_hint: "install Bun and put bun on PATH",
 };
 
@@ -107,7 +104,7 @@ pub const CABEXTRACT: Toolchain = Toolchain {
     install_paths: &[],
     identity: Some("cabextract"),
     probe_arguments: &[],
-    require_var: "DISROBE_REQUIRE_CABEXTRACT",
+    prerequisite: "disrobe-binfmt::cabextract",
     install_hint: "install cabextract and put it on PATH",
 };
 
@@ -117,39 +114,10 @@ pub const READELF: Toolchain = Toolchain {
     install_paths: &[],
     identity: None,
     probe_arguments: &[],
-    require_var: "DISROBE_REQUIRE_READELF",
+    prerequisite: "disrobe-binfmt::readelf",
     install_hint: "install binutils (readelf), llvm (llvm-readelf) or elfutils (eu-readelf) and put \
                    it on PATH",
 };
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Requirement {
-    Optional,
-    Mandatory,
-}
-
-pub fn requirement_from_values(per_tool: Option<&OsStr>, blanket: Option<&OsStr>) -> Requirement {
-    if asks_for_it(per_tool) || asks_for_it(blanket) {
-        return Requirement::Mandatory;
-    }
-    Requirement::Optional
-}
-
-pub fn requirement(toolchain: &Toolchain) -> Requirement {
-    let per_tool: Option<OsString> = std::env::var_os(toolchain.require_var);
-    let blanket: Option<OsString> = std::env::var_os(REQUIRE_ALL_VAR);
-    requirement_from_values(per_tool.as_deref(), blanket.as_deref())
-}
-
-fn asks_for_it(value: Option<&OsStr>) -> bool {
-    let Some(raw): Option<&OsStr> = value else {
-        return false;
-    };
-    !matches!(
-        raw.to_string_lossy().trim().to_ascii_lowercase().as_str(),
-        "" | "0" | "false" | "no" | "off" | "optional"
-    )
-}
 
 const fn executable_suffixes() -> &'static [&'static str] {
     if cfg!(windows) {
@@ -289,52 +257,32 @@ pub fn describe_run(program: &Path, arguments: &[&str], output: &Output) -> Stri
     )
 }
 
-pub fn unmeasured(toolchain: &Toolchain, graded: &str, defect: &str) {
-    enforce(toolchain, graded, defect, requirement(toolchain));
-}
-
 #[allow(clippy::panic)]
-pub fn enforce(toolchain: &Toolchain, graded: &str, defect: &str, requirement: Requirement) {
-    assert!(
-        requirement != Requirement::Mandatory,
-        "{var} (or {all}) makes the {program} toolchain mandatory for this run, so {graded} was \
-         measured against nothing and this case must not report success: {defect}. To fix it, \
-         {hint}; to permit a run that measures nothing here, clear both variables.",
-        var = toolchain.require_var,
-        all = REQUIRE_ALL_VAR,
+pub fn unmeasured(toolchain: &Toolchain, graded: &str, defect: &str) {
+    let what: String = format!(
+        "a usable {program} ({defect}); to fix it, {hint}",
         program = toolchain.program,
         hint = toolchain.install_hint,
     );
-    eprintln!(
-        "\nNOT MEASURED: {graded} was compared against nothing and graded nothing, because the \
-         {program} toolchain is not usable here ({defect}). Set {var}=1 (or {all}=1) to fail \
-         instead of skipping when {program} cannot produce the reference archive.\n",
-        program = toolchain.program,
-        var = toolchain.require_var,
-        all = REQUIRE_ALL_VAR,
-    );
+    if let Err(error) = disrobe_testkit::require::<()>(toolchain.prerequisite, &what, None) {
+        panic!("{graded} was measured against nothing and must not report success: {error}");
+    }
 }
 
+#[allow(clippy::panic)]
 pub fn regenerable_fixture(format_dir: &str, filename: &str, graded: &str) -> Option<Vec<u8>> {
     let path: PathBuf = fixture_path(format_dir, filename);
-    if let Ok(bytes) = std::fs::read(&path) {
-        return Some(bytes);
+    let found: Option<Vec<u8>> = std::fs::read(&path).ok();
+    let what: String = format!(
+        "{}, a local-only artifact kept out of the tree that corpus/binfmt/MANIFEST.toml records \
+         how to rebuild for {format_dir}",
+        path.display()
+    );
+    let prerequisite: String = format!("disrobe-binfmt::regenerable::{format_dir}");
+    match disrobe_testkit::require(&prerequisite, &what, found) {
+        Ok(available) => available.present(),
+        Err(error) => panic!("{graded} graded nothing and must not report success: {error}"),
     }
-    assert!(
-        !asks_for_it(std::env::var_os(REQUIRE_FIXTURES_VAR).as_deref()),
-        "{REQUIRE_FIXTURES_VAR} makes the regenerable binfmt fixtures mandatory for this run, so \
-         {graded} was measured against nothing and this case must not report success: {} is \
-         absent. Build it with the recipe corpus/binfmt/MANIFEST.toml records for {format_dir}; to \
-         permit a run that grades nothing here, clear {REQUIRE_FIXTURES_VAR}.",
-        path.display()
-    );
-    eprintln!(
-        "\nUNGRADED: {} is absent, so {graded} graded nothing. It is a local-only multi-megabyte \
-         artifact a blanket .gitignore rule keeps out of the tree; corpus/binfmt/MANIFEST.toml \
-         records how to rebuild it. Set {REQUIRE_FIXTURES_VAR}=1 to fail instead.\n",
-        path.display()
-    );
-    None
 }
 
 #[allow(clippy::panic)]
