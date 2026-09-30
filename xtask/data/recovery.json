@@ -24,18 +24,18 @@
         },
         {
           "label": "200-module pinned corpus (normalized opcode-structure agreement)",
-          "value": 96.83,
-          "num": 6087,
+          "value": 96.99,
+          "num": 6097,
           "den": 6286,
           "modules": 200,
-          "floor_pct": 96.83,
-          "modules_exact": 124,
+          "floor_pct": 96.99,
+          "modules_exact": 127,
           "verified_by": {
             "path": "crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs",
             "function": "published_pinned_bar_agrees_with_the_enforced_floor",
             "measured_by": "arbitrary_recompile_equivalence_gate"
           },
-          "detail": "6087 / 6286 code objects in the pinned 200-module CPython 3.14.5 population have matching normalized opcode structure. All 200 modules occur in the accepted 574-module measurement with the same source and comparator settings. The comparator omits jump targets, most operands, and __annotate__ objects, and does not penalize additional recovered objects.",
+          "detail": "6097 / 6286 code objects in the pinned 200-module CPython 3.14.5 population have matching normalized opcode structure. All 200 modules occur in the accepted 574-module measurement with the same source and comparator settings. The comparator omits jump targets, most operands, and __annotate__ objects, and does not penalize additional recovered objects.",
           "source": "evidence/results/captured/python-stdlib-full.json records the accepted capture and its pinned subset. crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs enforces this bar's floor_pct as OBJECT_PCT_FLOOR and its modules_exact count of wholly matching modules as MODULES_EXACT_FLOOR. The shared py_arbitrary_measure.py harness defines both populations."
         }
       ]
@@ -125,10 +125,10 @@
         },
         {
           "label": "CPython 3.14 (all 200 pinned modules)",
-          "value": 96.83,
-          "num": 6087,
+          "value": 96.99,
+          "num": 6097,
           "den": 6286,
-          "detail": "6087 / 6286 code objects over 200 modules on CPython 3.14.5. These modules share the accepted full measurement's source population and comparison rules. All 200 pinned modules exist in this interpreter's Lib. Other bands have different input populations.",
+          "detail": "6097 / 6286 code objects over 200 modules on CPython 3.14.5. These modules share the accepted full measurement's source population and comparison rules. All 200 pinned modules exist in this interpreter's Lib. Other bands have different input populations.",
           "source": "harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py run under CPython 3.14.5 over crates/disrobe-pass-py-decompile/tests/harness/pinned_modules_314.txt"
         },
         {
