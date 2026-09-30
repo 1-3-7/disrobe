@@ -32,6 +32,7 @@
 "disrobe-pass-scriptlang::tclsh" = "CI installs Tcl on the Linux runner only"
 "disrobe-pass-php::php" = "the macOS runner image carries no php and CI installs php 8.4 on the Linux and Windows runners only"
 "disrobe-pass-php::php-opcache" = "the macOS runner image carries no php, so it has no opcache extension either"
+"disrobe-typerec::gnu-cc" = "the macOS runner's cc is Apple clang targeting arm64 Mach-O, and the typerec fixtures are graded against an x86-64 GNU toolchain CI provides on the Linux and Windows runners only"
 
 [optional.windows]
 "disrobe-binfmt::readelf" = "CI provisions and verifies readelf by name on the Linux runner only, and macOS gets llvm-readelf from its llvm@20 install"
