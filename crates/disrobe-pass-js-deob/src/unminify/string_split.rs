@@ -63,7 +63,7 @@ fn single_pass(source: &str) -> (String, usize) {
                     i = first_end;
                     continue;
                 };
-                if count < 2 {
+                if count < 2 || !binds_as_one_operand(bytes, i, after_chain) {
                     i = first_end;
                     continue;
                 }
@@ -163,6 +163,113 @@ fn scan_string_end(bytes: &[u8], start: usize, quote: u8) -> Option<usize> {
 }
 
 type StringSpan = (usize, usize, u8);
+
+fn binds_as_one_operand(bytes: &[u8], start: usize, end: usize) -> bool {
+    left_context_is_looser(bytes, start) && right_context_is_looser(bytes, end)
+}
+
+fn previous_significant(bytes: &[u8], before: usize) -> Option<usize> {
+    let mut i: usize = before;
+    while i > 0 {
+        i -= 1;
+        if !matches!(bytes[i], b' ' | b'\t' | b'\r' | b'\n') {
+            return Some(i);
+        }
+    }
+    None
+}
+
+fn left_context_is_looser(bytes: &[u8], start: usize) -> bool {
+    let Some(at) = previous_significant(bytes, start) else {
+        return true;
+    };
+    match bytes[at] {
+        b'(' | b'[' | b'{' | b'}' | b',' | b';' | b':' | b'?' | b'=' | b'<' | b'>' | b'&'
+        | b'|' | b'^' => true,
+        b'+' => {
+            let Some(operand) = previous_significant(bytes, at) else {
+                return false;
+            };
+            let binary_plus: bool = bytes[operand].is_ascii_alphanumeric()
+                || matches!(
+                    bytes[operand],
+                    b'_' | b'$' | b')' | b']' | b'\'' | b'"' | b'`'
+                );
+            binary_plus && !preceded_by_word(bytes, operand + 1, &OPERATOR_WORDS)
+        }
+        byte if byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'$' => {
+            preceded_by_word(bytes, at + 1, &LOOSE_PREFIX_WORDS)
+        }
+        _ => false,
+    }
+}
+
+const OPERATOR_WORDS: [&str; 14] = [
+    "return",
+    "case",
+    "throw",
+    "in",
+    "of",
+    "instanceof",
+    "yield",
+    "else",
+    "do",
+    "typeof",
+    "void",
+    "delete",
+    "await",
+    "new",
+];
+
+const LOOSE_PREFIX_WORDS: [&str; 8] = [
+    "return",
+    "case",
+    "throw",
+    "in",
+    "of",
+    "instanceof",
+    "yield",
+    "else",
+];
+
+fn preceded_by_word(bytes: &[u8], end: usize, words: &[&str]) -> bool {
+    let mut start: usize = end;
+    while start > 0
+        && (bytes[start - 1].is_ascii_alphanumeric() || matches!(bytes[start - 1], b'_' | b'$'))
+    {
+        start -= 1;
+    }
+    words
+        .iter()
+        .any(|word: &&str| &bytes[start..end] == word.as_bytes())
+}
+
+fn right_context_is_looser(bytes: &[u8], end: usize) -> bool {
+    let mut i: usize = end;
+    while i < bytes.len() && matches!(bytes[i], b' ' | b'\t' | b'\r' | b'\n') {
+        i += 1;
+    }
+    let Some(&next) = bytes.get(i) else {
+        return true;
+    };
+    match next {
+        b')' | b']' | b'}' | b',' | b';' | b':' | b'=' | b'!' | b'<' | b'>' | b'&' | b'|'
+        | b'^' | b'+' | b'-' => true,
+        b'?' => bytes.get(i + 1) != Some(&b'.'),
+        b'i' => {
+            let rest: &[u8] = &bytes[i..];
+            (rest.starts_with(b"in") || rest.starts_with(b"instanceof"))
+                && !rest
+                    .get(if rest.starts_with(b"instanceof") {
+                        10
+                    } else {
+                        2
+                    })
+                    .is_some_and(|byte: &u8| byte.is_ascii_alphanumeric() || *byte == b'_')
+        }
+        _ => false,
+    }
+}
 
 fn collect_chain(
     bytes: &[u8],
@@ -440,6 +547,51 @@ mod tests {
         let (out, stats): (String, StringSplitStats) = fold_string_concat(src);
         assert_eq!(stats.literals_merged, 1);
         assert!(out.contains("'realliteral'"));
+    }
+
+    #[test]
+    fn a_chain_whose_last_literal_is_a_member_or_call_target_is_left_alone() {
+        for src in [
+            "var s = 'q' + 'Zed'.toUpperCase();",
+            "var s = 'q' + 'Zed'[0];",
+            "var s = 'q' + 'Zed'\n(f);",
+            "var s = 'a' + 'b' * 2;",
+            "var s = 'a' + 'b' ** 2;",
+        ] {
+            let (out, stats): (String, StringSplitStats) = fold_string_concat(src);
+            assert_eq!(stats.literals_merged, 0, "{src}");
+            assert_eq!(out, src);
+        }
+    }
+
+    #[test]
+    fn a_chain_whose_first_literal_is_bound_by_a_tighter_operator_is_left_alone() {
+        for src in [
+            "var s = typeof 'a' + 'b';",
+            "var s = x - 'a' + 'b';",
+            "var s = +'a' + 'b';",
+            "var s = -'1' + '2';",
+            "var s = x * 'a' + 'b';",
+            "var s = void 'a' + 'b';",
+        ] {
+            let (out, stats): (String, StringSplitStats) = fold_string_concat(src);
+            assert_eq!(stats.literals_merged, 0, "{src}");
+            assert_eq!(out, src);
+        }
+    }
+
+    #[test]
+    fn a_chain_after_a_binary_plus_or_a_loose_keyword_still_folds() {
+        for (src, want) in [
+            ("var s = x + 'a' + 'b';", "var s = x + 'ab';"),
+            ("return 'a' + 'b';", "return 'ab';"),
+            ("f('a' + 'b', 1);", "f('ab', 1);"),
+            ("var s = 'a' + 'b' + x;", "var s = 'ab' + x;"),
+            ("var t = 'a' + 'b' in o;", "var t = 'ab' in o;"),
+        ] {
+            let (out, _stats): (String, StringSplitStats) = fold_string_concat(src);
+            assert_eq!(out, want);
+        }
     }
 
     #[test]

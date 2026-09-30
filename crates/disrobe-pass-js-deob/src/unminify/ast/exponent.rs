@@ -1,6 +1,13 @@
+use std::collections::BTreeSet;
+
 use oxc_allocator::Allocator;
 use oxc_ast::Visit;
-use oxc_ast::ast::{Argument, CallExpression, Expression};
+use oxc_ast::ast::{
+    Argument, AwaitExpression, BinaryExpression, BinaryOperator, CallExpression,
+    ComputedMemberExpression, Expression, NewExpression, PrivateFieldExpression,
+    StaticMemberExpression, TaggedTemplateExpression, UnaryExpression,
+};
+use oxc_ast::visit::walk;
 use oxc_parser::Parser;
 use oxc_span::{GetSpan, SourceType};
 
@@ -19,8 +26,13 @@ pub(super) fn recover(source: &str) -> (RuleOutcome, ExponentStats) {
         return (RuleOutcome::empty(), ExponentStats::default());
     }
 
+    let mut tight: TightPositions = TightPositions {
+        spans: BTreeSet::new(),
+    };
+    tight.visit_program(&parsed.program);
     let mut collector: Collector = Collector {
         source,
+        tight: tight.spans,
         edits: Vec::new(),
         rewritten: 0,
     };
@@ -38,15 +50,82 @@ pub(super) fn recover(source: &str) -> (RuleOutcome, ExponentStats) {
     )
 }
 
+struct TightPositions {
+    spans: BTreeSet<(u32, u32)>,
+}
+
+impl TightPositions {
+    fn mark(&mut self, expr: &Expression<'_>) {
+        if let Expression::CallExpression(call) = expr {
+            self.spans.insert((call.span.start, call.span.end));
+        }
+    }
+}
+
+impl<'a> Visit<'a> for TightPositions {
+    fn visit_unary_expression(&mut self, it: &UnaryExpression<'a>) {
+        self.mark(&it.argument);
+        walk::walk_unary_expression(self, it);
+    }
+
+    fn visit_await_expression(&mut self, it: &AwaitExpression<'a>) {
+        self.mark(&it.argument);
+        walk::walk_await_expression(self, it);
+    }
+
+    fn visit_binary_expression(&mut self, it: &BinaryExpression<'a>) {
+        if it.operator == BinaryOperator::Exponential {
+            self.mark(&it.left);
+        }
+        walk::walk_binary_expression(self, it);
+    }
+
+    fn visit_static_member_expression(&mut self, it: &StaticMemberExpression<'a>) {
+        self.mark(&it.object);
+        walk::walk_static_member_expression(self, it);
+    }
+
+    fn visit_computed_member_expression(&mut self, it: &ComputedMemberExpression<'a>) {
+        self.mark(&it.object);
+        walk::walk_computed_member_expression(self, it);
+    }
+
+    fn visit_private_field_expression(&mut self, it: &PrivateFieldExpression<'a>) {
+        self.mark(&it.object);
+        walk::walk_private_field_expression(self, it);
+    }
+
+    fn visit_call_expression(&mut self, it: &CallExpression<'a>) {
+        self.mark(&it.callee);
+        walk::walk_call_expression(self, it);
+    }
+
+    fn visit_new_expression(&mut self, it: &NewExpression<'a>) {
+        self.mark(&it.callee);
+        walk::walk_new_expression(self, it);
+    }
+
+    fn visit_tagged_template_expression(&mut self, it: &TaggedTemplateExpression<'a>) {
+        self.mark(&it.tag);
+        walk::walk_tagged_template_expression(self, it);
+    }
+}
+
 struct Collector<'s> {
     source: &'s str,
+    tight: BTreeSet<(u32, u32)>,
     edits: Vec<Edit>,
     rewritten: usize,
 }
 
 impl<'a> Visit<'a> for Collector<'_> {
     fn visit_call_expression(&mut self, call: &CallExpression<'a>) {
-        if let Some((replacement, count)) = rewrite_pow(call, self.source) {
+        if let Some((rewritten, count)) = rewrite_pow(call, self.source) {
+            let replacement: String = if self.tight.contains(&(call.span.start, call.span.end)) {
+                format!("({rewritten})")
+            } else {
+                rewritten
+            };
             self.edits.push(Edit {
                 start: call.span.start as usize,
                 end: call.span.end as usize,
@@ -199,5 +278,18 @@ mod tests {
     #[test]
     fn rewrites_nested_pow_to_fixpoint() {
         assert_eq!(apply("Math.pow(Math.pow(a, b), c);"), "(a ** b) ** c;");
+    }
+
+    #[test]
+    fn parenthesizes_a_power_that_a_tighter_operator_consumes() {
+        assert_eq!(apply("x = -Math.pow(a, 2);"), "x = -(a ** 2);");
+        assert_eq!(apply("x = typeof Math.pow(a, 2);"), "x = typeof (a ** 2);");
+        assert_eq!(
+            apply("x = Math.pow(2, 3).toFixed(1);"),
+            "x = (2 ** 3).toFixed(1);"
+        );
+        assert_eq!(apply("x = Math.pow(2, 3)[k];"), "x = (2 ** 3)[k];");
+        assert_eq!(apply("x = Math.pow(a, b) ** c;"), "x = (a ** b) ** c;");
+        assert_eq!(apply("x = y * Math.pow(a, b);"), "x = y * a ** b;");
     }
 }

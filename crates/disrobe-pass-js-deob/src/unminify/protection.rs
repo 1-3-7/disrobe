@@ -53,7 +53,11 @@ fn remove_if_true_blocks(source: &str) -> (String, usize) {
         return (source.to_owned(), 0);
     };
     replace_in_code(source, &re, |caps: &Captures<'_>| {
-        Some(caps.get(1)?.as_str().trim().to_owned())
+        let whole: regex::Match<'_> = caps.get(0)?;
+        if followed_by_else(source, whole.end()) {
+            return None;
+        }
+        Some(format!("{{{}}}", caps.get(1)?.as_str()))
     })
 }
 
@@ -66,7 +70,11 @@ fn remove_if_false_blocks(source: &str) -> (String, usize) {
     };
     let (intermediate, with_else_count): (String, usize) =
         replace_in_code(source, &with_else, |caps: &Captures<'_>| {
-            Some(caps.get(1)?.as_str().trim().to_owned())
+            let whole: regex::Match<'_> = caps.get(0)?;
+            if followed_by_else(source, whole.end()) {
+                return None;
+            }
+            Some(format!("{{{}}}", caps.get(1)?.as_str()))
         });
     count += with_else_count;
 
@@ -75,11 +83,27 @@ fn remove_if_false_blocks(source: &str) -> (String, usize) {
     else {
         return (intermediate, count);
     };
+    let skips: Vec<Range<usize>> = literal_and_comment_ranges(&intermediate);
     let (stage2, without_else_count): (String, usize) =
-        replace_in_code(&intermediate, &without_else, |_: &Captures<'_>| {
-            Some(String::new())
+        replace_in_code(&intermediate, &without_else, |caps: &Captures<'_>| {
+            let whole: regex::Match<'_> = caps.get(0)?;
+            if followed_by_else(&intermediate, whole.end()) {
+                return None;
+            }
+            if starts_a_statement(&intermediate, &skips, whole.start()) {
+                Some(String::new())
+            } else {
+                Some("{}".to_owned())
+            }
         });
     (stage2, count + without_else_count)
+}
+
+fn followed_by_else(source: &str, end: usize) -> bool {
+    let rest: &str = source.get(end..).unwrap_or_default().trim_start();
+    rest.strip_prefix("else").is_some_and(|after: &str| {
+        !after.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+    })
 }
 
 fn enclosing_skip(skips: &[Range<usize>], index: usize) -> Option<&Range<usize>> {
@@ -224,6 +248,22 @@ mod tests {
         assert!(out.contains("before();"));
         assert!(out.contains("after();"));
         assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn a_folded_branch_keeps_its_block_and_never_strands_an_else() {
+        let (out, _): (String, usize) =
+            remove_if_true_blocks("if (a) { x(); } else if (true) { let y = 1; f(y); }");
+        assert_eq!(out, "if (a) { x(); } else { let y = 1; f(y); }");
+        let src: &str = "if (a) { x(); } else if (true) {} else { if (b) { c(); } }";
+        let (out, n): (String, usize) = remove_if_true_blocks(src);
+        assert_eq!((out.as_str(), n), (src, 0));
+        let (out, _): (String, usize) =
+            remove_if_false_blocks("if (a) { x(); } else if (false) { y(); }\nz();");
+        assert_eq!(out, "if (a) { x(); } else {}\nz();");
+        let src: &str = "if (false) { y(); } else if (b) { z(); }";
+        let (out, n): (String, usize) = remove_if_false_blocks(src);
+        assert_eq!((out.as_str(), n), (src, 0));
     }
 
     #[test]
