@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
@@ -20,6 +21,18 @@ use crate::tables::{
     FieldRow, GenericParamRow, InterfaceImplRow, MemberRefRow, MethodDefRow, MethodSpecRow, RowRef,
     TableId, Tables, TypeDefRow, TypeRefRow, TypeSpecRow, parse_tables,
 };
+
+fn spell_unsafe_chars(name: &str) -> String {
+    let mut spelled: String = String::with_capacity(name.len());
+    for c in name.chars() {
+        if disrobe_core::source_text::is_unsafe_in_source(c) {
+            let _: std::fmt::Result = write!(spelled, "_u{:04X}_", u32::from(c));
+        } else {
+            spelled.push(c);
+        }
+    }
+    spelled
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TypeModel {
@@ -1552,8 +1565,7 @@ impl Resolver {
         }
         let rest: &[u8] = &self.strings_heap[start..];
         let len: usize = rest.iter().position(|&b: &u8| b == 0).unwrap_or(rest.len());
-        disrobe_core::source_text::escape_unsafe_chars(&String::from_utf8_lossy(&rest[..len]))
-            .into_owned()
+        spell_unsafe_chars(&String::from_utf8_lossy(&rest[..len]))
     }
 
     #[must_use]
