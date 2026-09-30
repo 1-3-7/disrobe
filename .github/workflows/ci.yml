@@ -439,7 +439,6 @@ jobs:
               exit 1
             fi
           done
-          echo "DISROBE_REQUIRE_PACKER_FIXTURES=1" >> "$GITHUB_ENV"
       - name: provision erlang and elixir so the beam differentials run instead of returning early
         uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
         with:
@@ -563,12 +562,12 @@ jobs:
               dirname "$seven" >> "$GITHUB_PATH"
             fi
             echo "using $seven"
-            echo "DISROBE_REQUIRE_SEVEN_ZIP=1" >> "$GITHUB_ENV"
           else
-            echo "macOS carries no php and its 7-zip name is unconfirmed, so those two stay unset here and their tests announce what they did not grade"
+            echo "macOS carries no php and its 7-zip name is unconfirmed, so neither is demanded here and tests/optional.toml lists 7-zip as optional on macOS"
           fi
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            demand makecab DISROBE_REQUIRE_MAKECAB
+          if [ "$RUNNER_OS" = "Windows" ] && ! command -v makecab >/dev/null 2>&1; then
+            echo "makecab is expected on Windows but is not callable, so the cabinet round trips would fail"
+            exit 1
           fi
       - name: fetch the pinned asar packer the electron grader compares against
         if: matrix.shard == 'two' || matrix.shard == 'three'
@@ -639,13 +638,11 @@ jobs:
         run: |
           demand() {
             probe="$1"
-            var="$2"
             if ! command -v "$probe" >/dev/null 2>&1; then
-              echo "$probe is not callable after provisioning, so the tests behind $var would grade nothing"
+              echo "$probe is not callable after provisioning, so the tests that require it would fail"
               exit 1
             fi
             ("$probe" --version 2>&1 || true) | head -1
-            echo "$var=1" >> "$GITHUB_ENV"
           }
           if [ "$RUNNER_OS" = "Windows" ]; then
             dotnet tool install --global wix --version "$WIX_VERSION" \
@@ -660,22 +657,22 @@ jobs:
                 exit 1
                 ;;
             esac
-            demand wix DISROBE_REQUIRE_WIX
+            demand wix
             nsis_root="$(cygpath -u "$RUNNER_TEMP")"
             curl --fail --location --retry 3 --max-time 600 --output "$nsis_root/nsis-3.11.zip"               "https://downloads.sourceforge.net/project/nsis/NSIS%203/3.11/nsis-3.11.zip"
             echo "c7d27f780ddb6cffb4730138cd1591e841f4b7edb155856901cdf5f214394fa1  $nsis_root/nsis-3.11.zip" | sha256sum --check
             unzip -q -o "$nsis_root/nsis-3.11.zip" -d "$nsis_root"
             export PATH="$nsis_root/nsis-3.11:$PATH"
             cygpath -w "$nsis_root/nsis-3.11" >> "$GITHUB_PATH"
-            demand makensis DISROBE_REQUIRE_MAKENSIS
+            demand makensis
           fi
           if [ "$RUNNER_OS" = "Linux" ]; then
-            demand readelf DISROBE_REQUIRE_READELF
+            demand readelf
             sudo apt-get update
             sudo apt-get install -y nsis
-            demand makensis DISROBE_REQUIRE_MAKENSIS
+            demand makensis
           fi
-          demand bun DISROBE_REQUIRE_BUN
+          demand bun
       - name: provision Swift 6.3.2 with automatic differentiation on macOS
         if: matrix.os == 'macos-latest' && matrix.shard == 'two'
         shell: bash
@@ -715,7 +712,6 @@ jobs:
           clang --version
           ld.lld --version
           llvm-readobj --version
-          echo "DISROBE_REQUIRE_LLVM_READOBJ=1" >> "$GITHUB_ENV"
           llvm-as --version
           lli --version
           echo "DISROBE_REQUIRE_LLVM_IR_TOOLS=1" >> "$GITHUB_ENV"
