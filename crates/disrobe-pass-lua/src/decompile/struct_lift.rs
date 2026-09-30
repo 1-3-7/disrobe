@@ -535,7 +535,8 @@ impl LiveAcrossBranch {
                     return count;
                 }
             }
-            if self.writes[pc].contains(&slot) {
+            if self.writes[pc].contains(&slot) || self.successors.get(pc).is_some_and(Vec::is_empty)
+            {
                 break;
             }
         }

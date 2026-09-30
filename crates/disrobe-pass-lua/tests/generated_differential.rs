@@ -332,6 +332,21 @@ fn the_generator_is_deterministic_and_varied() {
 }
 
 #[test]
+fn a_field_read_feeding_a_tail_call_stays_inline() {
+    let (luac, _lua): (String, String) =
+        toolchain(Dialect::Lua54).unwrap_or_else(|| panic!("this check needs Lua 5.4"));
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_lua_tail_call_inline").expect("scratch");
+    let source: &str =
+        "local function join(t)\n  return table.concat(t, \",\")\nend\nprint(join({1, 2}))\n";
+    let recovered: String = recovered_source(&luac, scratch.path(), "tail_inline", source);
+    assert!(
+        recovered.contains("return table.concat(") && !recovered.contains("= table.concat"),
+        "the unreachable RETURN after a TAILCALL must not count as a second read:\n{recovered}"
+    );
+}
+
+#[test]
 fn a_recovery_that_changes_one_operator_is_caught() {
     let (luac, lua): (String, String) =
         toolchain(Dialect::Lua54).unwrap_or_else(|| panic!("the mutation control needs Lua 5.4"));
