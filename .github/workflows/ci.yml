@@ -550,7 +550,6 @@ jobs:
           fi
           demand ruby DISROBE_REQUIRE_RUBY
           if [ "$RUNNER_OS" != "macOS" ]; then
-            demand php DISROBE_REQUIRE_PHP
             seven=""
             seven_candidates=(7z 7za 7zz 7zr)
             if [ "$RUNNER_OS" = "Windows" ]; then
@@ -1430,9 +1429,6 @@ jobs:
       - name: mruby opcode table graded against the installed ops.h
         run: cargo test -p disrobe-pass-ruby --test mruby_isa_coverage -- --nocapture
       - name: php op_array behavioral differential
-        env:
-          DISROBE_REQUIRE_PHP: "1"
-          DISROBE_REQUIRE_PHP_OPCACHE: "1"
         run: cargo test -p disrobe-pass-php --test oparray_behavioral -- --nocapture
       - name: php loader re-execution differential
         run: cargo test -p disrobe-pass-php --test loader_behavioral -- --nocapture

@@ -15,7 +15,7 @@ use disrobe_pass_php::{
     Decompilation, Literal, Op, OpArray, OperandType, RecoveryReport, RecoveryStage,
     decompile_oparray, parse_oparray, recover_php,
 };
-use php_toolchain::{PHP, PhpRun, ToolchainRequirement, require_with_requirement};
+use php_toolchain::{PHP, PhpRun, require_toolchain};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
@@ -82,12 +82,8 @@ fn bounded_command_output(command: &mut Command, label: &str) -> Output {
 
 #[test]
 fn tracked_variadic_op_array_reproduces_from_php_84() {
-    let runtime = require_with_requirement(
-        &PHP,
-        "the tracked variadic op array against PHP 8.4",
-        ToolchainRequirement::Mandatory,
-    )
-    .expect("PHP 8.4 is required to regenerate the tracked variadic op array");
+    let runtime = require_toolchain(&PHP, "the tracked variadic op array against PHP 8.4")
+        .expect("PHP 8.4 is required to regenerate the tracked variadic op array");
     assert!(
         runtime.banner.starts_with("PHP 8.4."),
         "the reference must be PHP 8.4, found {}",
@@ -287,12 +283,8 @@ fn php_84_variadic_calls_reach_the_registered_recovery_route() {
 
 #[test]
 fn recovered_variadic_calls_match_php_84_and_fail_the_perturbation() {
-    let runtime = require_with_requirement(
-        &PHP,
-        "PHP 8.4 variadic call recovery",
-        ToolchainRequirement::Mandatory,
-    )
-    .expect("PHP 8.4 is a required reference for the variadic behavioral grade");
+    let runtime = require_toolchain(&PHP, "PHP 8.4 variadic call recovery")
+        .expect("PHP 8.4 is a required reference for the variadic behavioral grade");
     assert!(
         runtime.banner.starts_with("PHP 8.4."),
         "the reference must be PHP 8.4, found {}",

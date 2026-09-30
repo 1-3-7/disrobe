@@ -18,7 +18,7 @@
 mod php_toolchain;
 
 use disrobe_pass_php::{Decompilation, Op, OpArray, OperandType, decompile_oparray, parse_oparray};
-use php_toolchain::{PHP, PhpRun, PhpRuntime, ToolchainRequirement, required_fixture};
+use php_toolchain::{PHP, PhpRun, PhpRuntime, required_fixture};
 
 const SAMPLE: &str = "oparray_list/destructuring";
 const FETCH_LIST_R: u8 = 98;
@@ -26,13 +26,12 @@ const FREE: u8 = 70;
 type OpMutation = fn(&mut Op);
 
 fn graded_php(graded: &str) -> PhpRuntime {
-    php_toolchain::require_with_requirement(&PHP, graded, ToolchainRequirement::Mandatory)
-        .unwrap_or_else(|| {
-            panic!(
-                "{graded} requires a php 8.4 interpreter at DISROBE_PHP_BIN; a missing runtime \
+    php_toolchain::require_toolchain(&PHP, graded).unwrap_or_else(|| {
+        panic!(
+            "{graded} requires a php 8.4 interpreter at DISROBE_PHP_BIN; a missing runtime \
                  cannot count as a passing differential"
-            )
-        })
+        )
+    })
 }
 
 fn parsed_fixture() -> OpArray {

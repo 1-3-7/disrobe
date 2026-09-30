@@ -942,21 +942,6 @@ fn ci_routes_full_coverage_to_scheduled_and_tag_runs() {
         "ci.yml opcache locator must export DZOA_OPCACHE_DLL"
     );
     let php_oparray: &Value = &differential_steps[php_oparray_index];
-    let php_environment: &Value = php_oparray
-        .get("env")
-        .expect("ci.yml php op_array behavioral differential environment");
-    assert_eq!(
-        php_environment
-            .get("DISROBE_REQUIRE_PHP")
-            .and_then(Value::as_str),
-        Some("1")
-    );
-    assert_eq!(
-        php_environment
-            .get("DISROBE_REQUIRE_PHP_OPCACHE")
-            .and_then(Value::as_str),
-        Some("1")
-    );
     assert_eq!(
         php_oparray.get("run").and_then(Value::as_str),
         Some("cargo test -p disrobe-pass-php --test oparray_behavioral -- --nocapture")

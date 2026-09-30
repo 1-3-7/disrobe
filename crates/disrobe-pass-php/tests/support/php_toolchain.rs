@@ -8,30 +8,24 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub(crate) struct Toolchain {
     pub(crate) program: &'static str,
     pub(crate) binary_var: &'static str,
-    pub(crate) require_var: &'static str,
+    pub(crate) prerequisite: &'static str,
     pub(crate) install_hint: &'static str,
 }
 
 pub(crate) const PHP: Toolchain = Toolchain {
     program: "php",
     binary_var: "DISROBE_PHP_BIN",
-    require_var: "DISROBE_REQUIRE_PHP",
+    prerequisite: "disrobe-pass-php::php",
     install_hint: "install php 8.x and put it on PATH, or point DISROBE_PHP_BIN at the binary",
 };
 
 pub(crate) const PHP_OPCACHE: Toolchain = Toolchain {
     program: "php opcache",
     binary_var: "DZOA_OPCACHE_DLL",
-    require_var: "DISROBE_REQUIRE_PHP_OPCACHE",
+    prerequisite: "disrobe-pass-php::php-opcache",
     install_hint: "install the opcache extension beside the php binary, or point DZOA_OPCACHE_DLL \
                    at it",
 };
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ToolchainRequirement {
-    Optional,
-    Mandatory,
-}
 
 #[derive(Debug, Clone)]
 pub(crate) struct PhpRuntime {
@@ -47,59 +41,15 @@ pub(crate) struct PhpRun {
     pub(crate) stderr: String,
 }
 
-pub(crate) fn requirement_from_value(value: Option<&OsStr>) -> ToolchainRequirement {
-    let Some(raw): Option<&OsStr> = value else {
-        return ToolchainRequirement::Optional;
-    };
-    let text: String = raw.to_string_lossy().trim().to_ascii_lowercase();
-    match text.as_str() {
-        "" | "0" | "false" | "no" | "off" | "optional" => ToolchainRequirement::Optional,
-        _ => ToolchainRequirement::Mandatory,
-    }
-}
-
-pub(crate) fn requirement(toolchain: &Toolchain) -> ToolchainRequirement {
-    let raw: Option<OsString> = std::env::var_os(toolchain.require_var);
-    requirement_from_value(raw.as_deref())
-}
-
-pub(crate) fn enforce_requirement(
-    toolchain: &Toolchain,
-    graded: &str,
-    defect: &str,
-    requirement: ToolchainRequirement,
-) {
-    if requirement != ToolchainRequirement::Optional {
-        assert!(
-            std::env::var_os(toolchain.require_var).is_some(),
-            "{graded} is graded only by running {program}, so this case must not report success \
-             without it: {defect}. Missing prerequisite: {hint}.",
-            program = toolchain.program,
-            hint = toolchain.install_hint,
-        );
-        panic!(
-            "{var} makes the {program} toolchain mandatory for this run, so {graded} cannot be \
-             measured and this case must not report success: {defect}. To fix it, {hint}; to \
-             permit a run that measures nothing here, clear {var}.",
-            var = toolchain.require_var,
-            program = toolchain.program,
-            hint = toolchain.install_hint,
-        );
-    }
-    announce_unmeasured(toolchain, graded, defect);
-}
-
-fn announce_unmeasured(toolchain: &Toolchain, graded: &str, defect: &str) {
-    let line: String = format!(
-        "\nNOT MEASURED: {graded} was compared against nothing and graded nothing, because the \
-         {program} toolchain is not usable here ({defect}). Set {var}=1 to fail instead of skipping \
-         when {program} cannot be run.\n",
+pub(crate) fn unmeasured(toolchain: &Toolchain, graded: &str, defect: &str) {
+    let what: String = format!(
+        "{program} to grade {graded} ({defect}); {hint}",
         program = toolchain.program,
-        var = toolchain.require_var,
+        hint = toolchain.install_hint,
     );
-    let mut sink: std::io::StdoutLock<'static> = std::io::stdout().lock();
-    drop(sink.write_all(line.as_bytes()));
-    drop(sink.flush());
+    if let Err(error) = disrobe_testkit::require::<()>(toolchain.prerequisite, &what, None) {
+        panic!("{error}");
+    }
 }
 
 fn configured_binary(toolchain: &Toolchain) -> Result<PathBuf, String> {
@@ -144,22 +94,18 @@ fn version_output(toolchain: &Toolchain, binary: &Path, graded: &str) -> Result<
     }
 }
 
-pub(crate) fn require_with_requirement(
-    toolchain: &Toolchain,
-    graded: &str,
-    requirement: ToolchainRequirement,
-) -> Option<PhpRuntime> {
+pub(crate) fn require_toolchain(toolchain: &Toolchain, graded: &str) -> Option<PhpRuntime> {
     let binary: PathBuf = match configured_binary(toolchain) {
         Ok(binary) => binary,
         Err(defect) => {
-            enforce_requirement(toolchain, graded, &defect, requirement);
+            unmeasured(toolchain, graded, &defect);
             return None;
         }
     };
     let output: Output = match version_output(toolchain, &binary, graded) {
         Ok(output) => output,
         Err(defect) => {
-            enforce_requirement(toolchain, graded, &defect, requirement);
+            unmeasured(toolchain, graded, &defect);
             return None;
         }
     };
@@ -177,7 +123,7 @@ pub(crate) fn require_with_requirement(
 }
 
 pub(crate) fn require_php(graded: &str) -> Option<PhpRuntime> {
-    require_with_requirement(&PHP, graded, requirement(&PHP))
+    require_toolchain(&PHP, graded)
 }
 
 pub(crate) fn require_php_extensions(
@@ -207,12 +153,8 @@ pub(crate) fn require_php_extensions(
         "{} cannot load the {names:?} extension(s), so the functions they provide cannot be run",
         base.banner
     );
-    enforce_requirement(&PHP, graded, &defect, requirement(&PHP));
+    unmeasured(&PHP, graded, &defect);
     None
-}
-
-pub(crate) fn unmeasured(toolchain: &Toolchain, graded: &str, defect: &str) {
-    enforce_requirement(toolchain, graded, defect, requirement(toolchain));
 }
 
 static SCRATCH_SEQ: AtomicU64 = AtomicU64::new(0);

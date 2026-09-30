@@ -19,8 +19,8 @@ mod php_toolchain;
 
 use disrobe_pass_php::{Decompilation, OpArray, decompile_oparray, parse_oparray};
 use php_toolchain::{
-    PHP, PHP_OPCACHE, PhpRun, PhpRuntime, ToolchainRequirement, fixture_path,
-    require_with_requirement, required_fixture, write_opcache_source,
+    PHP, PHP_OPCACHE, PhpRun, PhpRuntime, fixture_path, require_toolchain, required_fixture,
+    write_opcache_source,
 };
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -94,7 +94,7 @@ fn count(haystack: &str, needle: &str) -> usize {
 }
 
 fn graded_php(graded: &str) -> PhpRuntime {
-    require_with_requirement(&PHP, graded, ToolchainRequirement::Mandatory).unwrap_or_else(|| {
+    require_toolchain(&PHP, graded).unwrap_or_else(|| {
         panic!(
             "{graded} is graded only by running php, so this case cannot report success without \
              it. Missing prerequisite: a php 8.4 interpreter on PATH or at DISROBE_PHP_BIN."
