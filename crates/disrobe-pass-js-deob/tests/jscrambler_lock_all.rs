@@ -2,10 +2,8 @@
 use std::collections::BTreeSet;
 
 use disrobe_pass_js_deob::{
-    CodeLockKind, Error, JscramblerDetection, JscramblerOptions, JscramblerOutput,
-    JscramblerTransform, JscramblerTransformOpts, JscramblerTransformOutput,
-    JscramblerTransformStats, deobfuscate_jscrambler, deobfuscate_jscrambler_transform_strict,
-    detect_jscrambler_full,
+    CodeLockKind, JscramblerDetection, JscramblerOptions, JscramblerOutput, JscramblerTransform,
+    JscramblerTransformStats, deobfuscate_jscrambler, detect_jscrambler_full,
 };
 
 fn opts_with(t: JscramblerTransform, auth: bool) -> JscramblerOptions {
@@ -53,17 +51,6 @@ fn browser_lock_detection_classifies_kind_browser() {
 }
 
 #[test]
-fn browser_lock_strict_requires_authorization() {
-    let err: Error = deobfuscate_jscrambler_transform_strict(
-        JscramblerTransform::BrowserLock,
-        "if (navigator.userAgent.indexOf('Chrome') !== -1) { run(); }",
-        &JscramblerTransformOpts::default(),
-    )
-    .unwrap_err();
-    assert!(matches!(err, Error::AuthorizationRequired { .. }));
-}
-
-#[test]
 fn date_lock_detect_only_default_preserves_source() {
     let src: &str = "if (Date.now() > 1735689600000) { stop(); }";
     let opts: JscramblerOptions = opts_with(JscramblerTransform::DateLock, false);
@@ -96,17 +83,6 @@ fn date_lock_detects_get_full_year_form() {
     let opts: JscramblerOptions = opts_with(JscramblerTransform::DateLock, true);
     let out: JscramblerOutput = deobfuscate_jscrambler(src, &opts).expect("ok");
     assert!(out.source.contains("if (true)"));
-}
-
-#[test]
-fn date_lock_strict_requires_authorization() {
-    let err: Error = deobfuscate_jscrambler_transform_strict(
-        JscramblerTransform::DateLock,
-        "if (Date.now() > 1) { stop(); }",
-        &JscramblerTransformOpts::default(),
-    )
-    .unwrap_err();
-    assert!(matches!(err, Error::AuthorizationRequired { .. }));
 }
 
 #[test]
@@ -146,17 +122,6 @@ fn domain_lock_detects_document_domain_form() {
 }
 
 #[test]
-fn domain_lock_strict_requires_authorization() {
-    let err: Error = deobfuscate_jscrambler_transform_strict(
-        JscramblerTransform::DomainLock,
-        "if (location.hostname !== 'x') { y(); }",
-        &JscramblerTransformOpts::default(),
-    )
-    .unwrap_err();
-    assert!(matches!(err, Error::AuthorizationRequired { .. }));
-}
-
-#[test]
 fn os_lock_detect_only_default_preserves_source() {
     let src: &str = "if (navigator.platform !== 'Win32') { stop(); }";
     let opts: JscramblerOptions = opts_with(JscramblerTransform::OsLock, false);
@@ -181,17 +146,6 @@ fn os_lock_detects_navigator_oscpu_form() {
     let opts: JscramblerOptions = opts_with(JscramblerTransform::OsLock, true);
     let out: JscramblerOutput = deobfuscate_jscrambler(src, &opts).expect("ok");
     assert!(out.source.contains("if (true)"));
-}
-
-#[test]
-fn os_lock_strict_requires_authorization() {
-    let err: Error = deobfuscate_jscrambler_transform_strict(
-        JscramblerTransform::OsLock,
-        "if (navigator.platform !== 'Win32') { stop(); }",
-        &JscramblerTransformOpts::default(),
-    )
-    .unwrap_err();
-    assert!(matches!(err, Error::AuthorizationRequired { .. }));
 }
 
 #[test]
@@ -240,22 +194,4 @@ fn lock_chain_bypasses_all_four_locks_with_authorization() {
     let out: JscramblerOutput = deobfuscate_jscrambler(src, &opts).expect("ok");
     let true_count: usize = out.source.matches("if (true)").count();
     assert_eq!(true_count, 4, "all four guards must be rewritten to true");
-}
-
-#[test]
-fn lock_strict_dispatch_accepts_all_four_with_authorization() {
-    let src: &str = "var x = 1;";
-    let opts: JscramblerTransformOpts = JscramblerTransformOpts {
-        i_have_authorization: true,
-    };
-    for t in [
-        JscramblerTransform::BrowserLock,
-        JscramblerTransform::DateLock,
-        JscramblerTransform::DomainLock,
-        JscramblerTransform::OsLock,
-    ] {
-        let res: Result<JscramblerTransformOutput, _> =
-            deobfuscate_jscrambler_transform_strict(t, src, &opts);
-        assert!(res.is_ok(), "{t:?} must succeed when authorized");
-    }
 }

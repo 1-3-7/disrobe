@@ -74,10 +74,10 @@ pub use bundle::{
     encode_mappings, find_source_map, merge_reports, parse_source_map, parse_source_map_v3,
     parse_source_map_with_limits, parse_vite_manifest, recover_source_map,
     recover_source_map_inline, recover_source_map_json, recover_source_tree_from_chunks,
-    recover_source_tree_from_js, renamed_bindings, rewrite_modules, rewrite_requires,
-    serialize_source_map, sibling_map_path, synthesize_from_modules, unbundle, unbundle_with_graph,
-    unbundle_with_limits, unbundle_with_sourcemaps, vite_manifest_to_graph, write_graph,
-    write_modules, write_recovered_sources, write_sourcemaps,
+    recover_source_tree_from_js, renamed_bindings, rewrite_requires, serialize_source_map,
+    sibling_map_path, synthesize_from_modules, unbundle, unbundle_with_graph, unbundle_with_limits,
+    unbundle_with_sourcemaps, vite_manifest_to_graph, write_graph, write_modules,
+    write_recovered_sources, write_sourcemaps,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use detect::{Detection, JsObfuscator, detect};
@@ -95,18 +95,17 @@ pub use esoteric::{
 #[cfg(not(target_arch = "wasm32"))]
 #[cfg(not(target_arch = "wasm32"))]
 pub use jsconfuser::{
-    AstScramblerResult, CalculatorReversalResult, CalculatorShape, DeadCodeReversalResult,
-    DeobOptions, DeobOutput, DispatcherReversalResult, DispatcherShape, FlattenReversalResult,
-    IntegrityReversalResult, IntegritySelfCheckResult, LockReversalResult, MovedDeclReversalResult,
-    OpaqueReversalResult, PackingReversalResult, PredicateValue, RgfEvalReversalResult,
-    RgfReversalResult, RgfShape, ShuffleReversalResult, StateSumReversalResult,
-    StringCompressionResult, StringConcealResult, StringEncodingResult, VariableMaskingResult,
-    deobfuscate_all, detect_calculator_shapes, detect_dispatcher_shapes, detect_rgf_shapes,
-    recognize_predicate, reverse_ast_scrambler, reverse_calculator, reverse_dead_code,
-    reverse_dispatcher, reverse_flatten, reverse_moved_declarations, reverse_opaque_predicates,
-    reverse_packing, reverse_rgf, reverse_rgf_eval, reverse_shuffle, reverse_state_sum,
-    reverse_string_compression, reverse_string_conceal, reverse_string_encoding,
-    reverse_variable_masking, strip_integrity, strip_integrity_self_check, strip_locks,
+    AstScramblerResult, CalculatorReversalResult, DeadCodeReversalResult, DeobOptions, DeobOutput,
+    DispatcherReversalResult, FlattenReversalResult, IntegrityReversalResult,
+    IntegritySelfCheckResult, LockReversalResult, MovedDeclReversalResult, OpaqueReversalResult,
+    PackingReversalResult, PredicateValue, RgfEvalReversalResult, RgfReversalResult,
+    ShuffleReversalResult, StateSumReversalResult, StringCompressionResult, StringConcealResult,
+    StringEncodingResult, VariableMaskingResult, deobfuscate_all, recognize_predicate,
+    reverse_ast_scrambler, reverse_calculator, reverse_dead_code, reverse_dispatcher,
+    reverse_flatten, reverse_moved_declarations, reverse_opaque_predicates, reverse_packing,
+    reverse_rgf, reverse_rgf_eval, reverse_shuffle, reverse_state_sum, reverse_string_compression,
+    reverse_string_conceal, reverse_string_encoding, reverse_variable_masking, strip_integrity,
+    strip_integrity_self_check, strip_locks,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use jscrambler::{
@@ -120,7 +119,7 @@ pub use jscrambler::{
     deobfuscate_template_minification, deobfuscate_template_obfuscation,
     deobfuscate_template_os_lock, deobfuscate_template_self_defending,
     deobfuscate_template_self_healing, detect_free_tier, detect_full as detect_jscrambler_full,
-    dispatch_reverse_strict as deobfuscate_jscrambler_transform_strict, strip_integrity_loops,
+    strip_integrity_loops,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use jsobfu::{
@@ -143,7 +142,7 @@ pub use obfuscator_io::{
     MAX_PASS_CEILING as OBFUSCATOR_IO_MAX_PASS_CEILING, ObfControl as ObfuscatorIoControl,
     ObfuscatorIoDetection, Options as ObfuscatorIoOptions, Output as ObfuscatorIoOutput,
     Preset as ObfuscatorIoPreset, deobfuscate as obfuscator_io_deobfuscate,
-    deobfuscate_preset as obfuscator_io_deobfuscate_preset, detect as obfuscator_io_detect,
+    detect as obfuscator_io_detect,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use protectors::{
@@ -159,7 +158,7 @@ pub use protectors::{
     },
     pace::{
         FAMILY as PACE_FAMILY, LEGAL as PACE_LEGAL, deobfuscate as pace_deobfuscate,
-        detect as detect_pace, detect_only_report as pace_detect_only_report,
+        detect as detect_pace,
     },
 };
 #[cfg(not(target_arch = "wasm32"))]
@@ -168,11 +167,8 @@ pub use rename::{RenameStats, ScopeAwareStats, rename_hex_idents, rename_scope_a
 pub use string_array::{StringArrayRecovery, recover as recover_string_array};
 #[cfg(not(target_arch = "wasm32"))]
 pub use typescript::{
-    ClosureAdvancedReport, DtsCorpus, DtsModule, DtsReverseResult, DtsSymbol, DtsSymbolKind,
-    InferredType, MangledCandidate, PresetEnvUndoResult, SourceMapEmitResult, TerserRestoreReport,
-    TypeFlowReport, TypeRecoveryResult, TypeScriptEmitStats, analyze_flow, emit_ts_with_source_map,
-    recover_types as recover_typescript, restore_terser_mangled, reverse_declarations,
-    undo_closure_advanced, undo_preset_env,
+    MangledCandidate, PresetEnvUndoResult, TerserRestoreReport, restore_terser_mangled,
+    undo_preset_env,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use unminify::{

@@ -2,9 +2,8 @@
 use std::collections::BTreeSet;
 
 use disrobe_pass_js_deob::{
-    Error, JscramblerOptions, JscramblerOutput, JscramblerTransform, JscramblerTransformOpts,
-    JscramblerTransformOutput, JscramblerTransformStats, deobfuscate_jscrambler,
-    deobfuscate_jscrambler_transform_strict,
+    JscramblerOptions, JscramblerOutput, JscramblerTransform, JscramblerTransformStats,
+    deobfuscate_jscrambler,
 };
 
 fn opts_with(t: JscramblerTransform, auth: bool) -> JscramblerOptions {
@@ -69,17 +68,6 @@ fn anti_debugging_detect_only_without_authorization() {
 }
 
 #[test]
-fn anti_debugging_strict_requires_authorization() {
-    let err: Error = deobfuscate_jscrambler_transform_strict(
-        JscramblerTransform::AntiDebugging,
-        "function f(){ debugger; }",
-        &JscramblerTransformOpts::default(),
-    )
-    .unwrap_err();
-    assert!(matches!(err, Error::AuthorizationRequired { .. }));
-}
-
-#[test]
 fn anti_monkey_patching_strips_object_freeze_prototype() {
     let src: &str = "Object.freeze(Array.prototype); var x = 1;";
     let opts: JscramblerOptions = opts_with(JscramblerTransform::AntiMonkeyPatching, true);
@@ -126,17 +114,6 @@ fn anti_tampering_leaves_a_probe_with_no_checked_value_in_place() {
 }
 
 #[test]
-fn anti_tampering_strict_requires_authorization() {
-    let err: Error = deobfuscate_jscrambler_transform_strict(
-        JscramblerTransform::AntiTampering,
-        "var n = fn.toString().replace(/ /g,'').length;",
-        &JscramblerTransformOpts::default(),
-    )
-    .unwrap_err();
-    assert!(matches!(err, Error::AuthorizationRequired { .. }));
-}
-
-#[test]
 fn dead_objects_strips_underscored_decoy_decl_when_authorized() {
     let src: &str = "var __deadFoo = { a: 1, b: 2 }; var real = 5;";
     let opts: JscramblerOptions = opts_with(JscramblerTransform::DeadObjects, true);
@@ -166,17 +143,6 @@ fn self_defending_strips_tostring_search_iife() {
 }
 
 #[test]
-fn self_defending_strict_requires_authorization() {
-    let err: Error = deobfuscate_jscrambler_transform_strict(
-        JscramblerTransform::SelfDefending,
-        "(function(){var t = function(){return ('xy').toString().search('z');}; t();}());",
-        &JscramblerTransformOpts::default(),
-    )
-    .unwrap_err();
-    assert!(matches!(err, Error::AuthorizationRequired { .. }));
-}
-
-#[test]
 fn self_healing_strips_window_onerror_tamper_handler() {
     let src: &str = "var x = 1; window.onerror = function(e){ tamper(); };";
     let opts: JscramblerOptions = opts_with(JscramblerTransform::SelfHealing, true);
@@ -194,46 +160,6 @@ fn self_healing_detect_only_without_authorization() {
     let s: &JscramblerTransformStats = stats_for(&out, JscramblerTransform::SelfHealing);
     assert!(s.matched >= 1);
     assert!(s.skipped >= 1);
-}
-
-#[test]
-fn rasp_strict_dispatch_rejects_all_six_without_authorization() {
-    let src: &str = "var x = 1;";
-    let opts: JscramblerTransformOpts = JscramblerTransformOpts::default();
-    for t in [
-        JscramblerTransform::AntiDebugging,
-        JscramblerTransform::AntiMonkeyPatching,
-        JscramblerTransform::AntiTampering,
-        JscramblerTransform::DeadObjects,
-        JscramblerTransform::SelfDefending,
-        JscramblerTransform::SelfHealing,
-    ] {
-        let err: Error = deobfuscate_jscrambler_transform_strict(t, src, &opts).unwrap_err();
-        assert!(
-            matches!(err, Error::AuthorizationRequired { .. }),
-            "{t:?} must gate on authorization"
-        );
-    }
-}
-
-#[test]
-fn rasp_strict_dispatch_accepts_all_six_with_authorization() {
-    let src: &str = "var x = 1;";
-    let opts: JscramblerTransformOpts = JscramblerTransformOpts {
-        i_have_authorization: true,
-    };
-    for t in [
-        JscramblerTransform::AntiDebugging,
-        JscramblerTransform::AntiMonkeyPatching,
-        JscramblerTransform::AntiTampering,
-        JscramblerTransform::DeadObjects,
-        JscramblerTransform::SelfDefending,
-        JscramblerTransform::SelfHealing,
-    ] {
-        let res: Result<JscramblerTransformOutput, _> =
-            deobfuscate_jscrambler_transform_strict(t, src, &opts);
-        assert!(res.is_ok(), "{t:?} must succeed when authorized");
-    }
 }
 
 #[test]

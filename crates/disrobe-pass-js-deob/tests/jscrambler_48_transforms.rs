@@ -277,21 +277,6 @@ fn detect_finds_browser_lock_signature() {
 }
 
 #[test]
-fn deobfuscate_returns_authorization_required_via_strict_dispatch() {
-    use disrobe_pass_js_deob::deobfuscate_jscrambler_transform_strict;
-    let err: disrobe_pass_js_deob::Error = deobfuscate_jscrambler_transform_strict(
-        JscramblerTransform::AntiDebugging,
-        "function f(){ debugger; }",
-        &disrobe_pass_js_deob::JscramblerTransformOpts::default(),
-    )
-    .unwrap_err();
-    assert!(matches!(
-        err,
-        disrobe_pass_js_deob::Error::AuthorizationRequired { .. }
-    ));
-}
-
-#[test]
 fn deobfuscate_chains_obfuscation_pipeline_on_synthetic_fixture() {
     let src: &str =
         "var v = obj[\"foo\"]; var z = String.fromCharCode(65); var alias = console; alias.log(z);";

@@ -7,6 +7,7 @@ use oxc_span::SourceType;
 use regex::Regex;
 use serde::Serialize;
 
+use super::ast_shape::{RgfShape, detect_rgf_shapes};
 use super::scanner::{
     consume_trailing_semicolon, decode_string_literal_at, find_paren_close, scan_balanced_bracket,
 };
@@ -152,7 +153,9 @@ impl Event {
 fn find_rgf_declaration(source: &str) -> Option<RgfDeclaration> {
     let header_re: Regex =
         Regex::new(r"(?ms)(?:var|let|const)\s+(_rgf_\w*|_\w+_rgf)\s*=\s*\[").ok()?;
-    let cap: regex::Captures<'_> = header_re.captures(source)?;
+    let Some(cap): Option<regex::Captures<'_>> = header_re.captures(source) else {
+        return find_unprefixed_rgf_declaration(source);
+    };
     let array_id: String = cap.get(1)?.as_str().to_owned();
     let whole: regex::Match<'_> = cap.get(0)?;
     let decl_start: usize = whole.start();
@@ -171,6 +174,22 @@ fn find_rgf_declaration(source: &str) -> Option<RgfDeclaration> {
         entries_start,
         entries_end,
     })
+}
+
+fn find_unprefixed_rgf_declaration(source: &str) -> Option<RgfDeclaration> {
+    detect_rgf_shapes(source)
+        .into_iter()
+        .find_map(|shape: RgfShape| {
+            let sites: usize = find_call_sites(source, &shape.array_id).len();
+            let every_reference_is_a_call_site: bool =
+                sites > 0 && sites.checked_mul(2) == Some(shape.references);
+            every_reference_is_a_call_site.then_some(RgfDeclaration {
+                array_id: shape.array_id,
+                decl_range: shape.declaration,
+                entries_start: shape.entries.start,
+                entries_end: shape.entries.end,
+            })
+        })
 }
 
 fn body_contains_new_function(body: &str) -> bool {
@@ -230,17 +249,17 @@ fn validate_function_body(body: &str) -> bool {
 fn find_call_sites(source: &str, array_id: &str) -> Vec<CallSite> {
     let id: String = regex::escape(array_id);
     let pattern: String = format!(
-        r"(?ms){id}\s*\[\s*(\d+)\s*\]\s*\.\s*apply\s*\(\s*this\s*,\s*\[\s*{id}\s*,\s*(?:arguments|args)\s*\]\s*\)"
+        r"(?ms)(?:^|[^\w$.])({id}\s*\[\s*(\d+)\s*\]\s*\.\s*apply\s*\(\s*this\s*,\s*\[\s*{id}\s*,\s*(?:arguments|args)\s*\]\s*\))"
     );
     let Ok(re): Result<Regex, regex::Error> = Regex::new(&pattern) else {
         return Vec::new();
     };
     let mut out: Vec<CallSite> = Vec::new();
     for cap in re.captures_iter(source) {
-        let Some(whole): Option<regex::Match<'_>> = cap.get(0) else {
+        let Some(whole): Option<regex::Match<'_>> = cap.get(1) else {
             continue;
         };
-        let Some(idx_match): Option<regex::Match<'_>> = cap.get(1) else {
+        let Some(idx_match): Option<regex::Match<'_>> = cap.get(2) else {
             continue;
         };
         let Ok(index): Result<usize, std::num::ParseIntError> = idx_match.as_str().parse::<usize>()

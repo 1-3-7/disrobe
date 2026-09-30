@@ -28,10 +28,6 @@ use crate::error::Result;
 use crate::scan_utils::ReparseGate;
 
 pub use ast_scrambler::{AstScramblerResult, reverse_ast_scrambler};
-pub use ast_shape::{
-    CalculatorShape, DispatcherShape, RgfShape, detect_calculator_shapes, detect_dispatcher_shapes,
-    detect_rgf_shapes,
-};
 pub use calculator::{CalculatorReversalResult, reverse_calculator};
 pub use dead_code::{DeadCodeReversalResult, reverse_dead_code};
 pub use dispatcher::{DispatcherReversalResult, reverse_dispatcher};

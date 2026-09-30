@@ -9,7 +9,6 @@
 use disrobe_pass_js_deob::{
     Error, LegalStance, PACE_FAMILY, PACE_LEGAL, ProtectorDetection, ProtectorOptions,
     ProtectorOutput, detect_pace as detect, pace_deobfuscate as deob,
-    pace_detect_only_report as detect_only_report,
 };
 
 const SYNTHESIZED_PACE: &str = r#"/* PACE Anti-Piracy Fusion (synthesized fixture, mimics public PACE documentation) */
@@ -71,18 +70,21 @@ fn authorized_strip_removes_static_guards_and_preserves_program() {
 }
 
 #[test]
-fn detect_only_report_returns_unstripped_telemetry() {
-    let out: ProtectorOutput = detect_only_report(SYNTHESIZED_PACE);
-    assert_eq!(out.family, PACE_FAMILY);
-    assert_eq!(out.legal_stance, LegalStance::AmberDetectOnly);
-    assert_eq!(out.stance_doc, "docs/src/legal.md#pace");
-    assert!(out.detection.is_some());
-    assert_eq!(out.stats.reversed, 0);
+fn authorized_strip_refuses_markers_without_a_strippable_guard() {
+    let src: &str = "var guard = __PACE__; var x = 1;";
+    assert!(detect(src).is_some());
+    let opts: ProtectorOptions = ProtectorOptions {
+        i_have_authorization: true,
+    };
+    let err: Error = deob(src, &opts).unwrap_err();
     assert!(
-        out.stats
-            .errors
-            .iter()
-            .any(|e: &String| e.contains("DR-JS-PACE-UnsupportedPattern"))
+        matches!(
+            err,
+            Error::PaceUnsupportedPattern {
+                stance_doc: "docs/src/legal.md#pace"
+            }
+        ),
+        "{err}"
     );
-    assert_eq!(out.source, SYNTHESIZED_PACE);
+    assert!(err.to_string().contains("DR-JS-PACE-UnsupportedPattern"));
 }

@@ -158,31 +158,6 @@ pub fn deobfuscate(source: &str, opts: &ProtectorOptions) -> Result<ProtectorOut
     })
 }
 
-#[must_use]
-pub fn detect_only_report(source: &str) -> ProtectorOutput {
-    let detection: Option<ProtectorDetection> = detect(source);
-    let bytes_in: usize = source.len();
-    let matched: usize = detection
-        .as_ref()
-        .map_or(0, |d: &ProtectorDetection| d.markers.len());
-    let stats: ProtectorStats = ProtectorStats {
-        matched,
-        reversed: 0,
-        skipped: matched,
-        errors: vec!["DR-JS-PACE-UnsupportedPattern: no static guard pattern stripped".to_owned()],
-    };
-    ProtectorOutput {
-        source: source.to_owned(),
-        bytes_in,
-        bytes_out: bytes_in,
-        family: FAMILY,
-        legal_stance: LEGAL,
-        stance_doc: FAMILY.stance_doc(),
-        detection,
-        stats,
-    }
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
@@ -233,19 +208,5 @@ mod tests {
         assert!(!out.source.contains("__PACE__"));
         assert!(out.source.contains("var x = 1"));
         assert_eq!(out.stats.reversed, 1usize);
-    }
-
-    #[test]
-    fn detect_only_report_returns_detection_with_skip_message() {
-        let src: &str = "/* PACE Anti-Piracy */ var x = 1;";
-        let out: ProtectorOutput = detect_only_report(src);
-        assert!(out.detection.is_some());
-        assert!(
-            out.stats
-                .errors
-                .iter()
-                .any(|e: &String| e.contains("DR-JS-PACE-UnsupportedPattern"))
-        );
-        assert_eq!(out.stats.reversed, 0);
     }
 }

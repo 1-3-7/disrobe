@@ -5,9 +5,8 @@ use std::fs;
 use std::path::PathBuf;
 
 use disrobe_pass_js_deob::{
-    JscramblerTransform, JscramblerTransformOpts, JscramblerTransformOutput,
-    JscramblerTransformStats, Result as JscramblerResult, TemplateOutput,
-    deobfuscate_jscrambler_transform_strict, deobfuscate_template_advanced_obfuscation,
+    JscramblerTransform, JscramblerTransformOpts, JscramblerTransformStats,
+    Result as JscramblerResult, TemplateOutput, deobfuscate_template_advanced_obfuscation,
     deobfuscate_template_anti_tampering_and_debugging, deobfuscate_template_browser_lock,
     deobfuscate_template_date_lock, deobfuscate_template_dead_objects,
     deobfuscate_template_domain_lock, deobfuscate_template_light_obfuscation,
@@ -873,38 +872,28 @@ fn catalog_quality_matches_the_measured_jscrambler_result() {
 
 #[test]
 fn first_chain_step_that_breaks_real_output_is_located() {
-    let probe: TemplateOutput =
-        deobfuscate_template_obfuscation("var x = 1;", &JscramblerTransformOpts::default())
-            .expect("chain order probe runs");
-    let order: Vec<JscramblerTransform> = probe
+    let protected: String = read_sample("obfuscation");
+    assert!(
+        reparses(&protected),
+        "the protected sample must parse first"
+    );
+    let out: TemplateOutput =
+        deobfuscate_template_obfuscation(&protected, &JscramblerTransformOpts::default())
+            .expect("obfuscation template runs on the protected sample");
+    let culprit: Option<JscramblerTransform> = out
         .per_transform
         .iter()
-        .map(|(kind, _): &(JscramblerTransform, JscramblerTransformStats)| *kind)
-        .collect();
-    let mut current: String = read_sample("obfuscation");
-    assert!(reparses(&current), "the protected sample must parse first");
-    let mut culprit: Option<JscramblerTransform> = None;
-    for transform in order {
-        let stepped: JscramblerTransformOutput = match deobfuscate_jscrambler_transform_strict(
-            transform,
-            &current,
-            &JscramblerTransformOpts::default(),
-        ) {
-            Ok(stepped) => stepped,
-            Err(error) => {
-                eprintln!("  {transform:?}: strict reverse refused: {error}");
-                continue;
-            }
-        };
-        current = stepped.source;
-        if !reparses(&current) {
-            culprit = Some(transform);
-            eprintln!(
-                "  {transform:?}: first step whose output stops parsing: {:?}",
-                parse_diagnostic(&current)
-            );
-            break;
-        }
+        .find(
+            |(_, stats): &&(JscramblerTransform, JscramblerTransformStats)| {
+                stats
+                    .errors
+                    .iter()
+                    .any(|error: &String| error.starts_with("DR-JS-0930"))
+            },
+        )
+        .map(|(kind, _): &(JscramblerTransform, JscramblerTransformStats)| *kind);
+    if let Some(transform) = culprit {
+        eprintln!("  {transform:?}: first step whose output stops parsing");
     }
     assert_eq!(
         culprit, FIRST_BREAKING_STEP,

@@ -12,26 +12,6 @@ const LIMITS: UnbundleLimits = UnbundleLimits {
 const WEBPACK: &str = include_str!("../../../corpus/js/webpack5/gauntlet/bundle.js");
 
 #[test]
-fn wrapper_normalization_preserves_following_statements() {
-    let source: &str = "function(module, exports) { module.exports = 1; }; report();";
-    let mut modules: Vec<ExtractedModule> = vec![ExtractedModule {
-        id: "0".to_owned(),
-        chunk_id: None,
-        source: source.to_owned(),
-    }];
-    disrobe_pass_js_deob::rewrite_modules(&mut modules);
-    assert_eq!(modules[0].source, source);
-    for separator in ["\n", "\r", "\u{2028}", "\u{2029}"] {
-        let source: String = format!(
-            "function(module, exports) {{ module.exports = 1; }}; // trailer{separator}report();"
-        );
-        modules[0].source.clone_from(&source);
-        disrobe_pass_js_deob::rewrite_modules(&mut modules);
-        assert_eq!(modules[0].source, source);
-    }
-}
-
-#[test]
 fn real_bundle_module_bodies_parse_as_javascript() -> Result<(), Error> {
     for source in [
         WEBPACK,

@@ -3,8 +3,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use disrobe_pass_js_deob::{
-    ObfuscatorIoDetection, ObfuscatorIoOutput, ObfuscatorIoPreset,
-    obfuscator_io_deobfuscate_preset, obfuscator_io_detect,
+    ObfuscatorIoDetection, ObfuscatorIoOptions, ObfuscatorIoOutput, ObfuscatorIoPreset,
+    obfuscator_io_deobfuscate, obfuscator_io_detect,
 };
 
 fn fixture_root() -> PathBuf {
@@ -108,8 +108,11 @@ fn e2e_low_preset_recovers_real_string_array() {
         det.matched,
         "detection must fire on real low-preset output: {det:?}"
     );
-    let out: ObfuscatorIoOutput =
-        obfuscator_io_deobfuscate_preset(&src, ObfuscatorIoPreset::Low).expect("ok");
+    let out: ObfuscatorIoOutput = obfuscator_io_deobfuscate(
+        &src,
+        &ObfuscatorIoOptions::for_preset(ObfuscatorIoPreset::Low),
+    )
+    .expect("ok");
     assert!(
         out.string_array_call_sites_inlined > 0,
         "low preset must inline string-array call sites; got {}",
@@ -131,8 +134,11 @@ fn e2e_medium_preset_recovers_real_string_array() {
         det.matched,
         "detection must fire on real medium-preset output: {det:?}"
     );
-    let out: ObfuscatorIoOutput =
-        obfuscator_io_deobfuscate_preset(&src, ObfuscatorIoPreset::Medium).expect("ok");
+    let out: ObfuscatorIoOutput = obfuscator_io_deobfuscate(
+        &src,
+        &ObfuscatorIoOptions::for_preset(ObfuscatorIoPreset::Medium),
+    )
+    .expect("ok");
     assert!(
         out.string_array_call_sites_inlined >= 80,
         "medium preset must inline >=80 call sites; got {}",
@@ -154,8 +160,11 @@ fn e2e_high_preset_recovers_real_string_array() {
         det.matched,
         "detection must fire on real high-preset output"
     );
-    let out: ObfuscatorIoOutput =
-        obfuscator_io_deobfuscate_preset(&src, ObfuscatorIoPreset::High).expect("ok");
+    let out: ObfuscatorIoOutput = obfuscator_io_deobfuscate(
+        &src,
+        &ObfuscatorIoOptions::for_preset(ObfuscatorIoPreset::High),
+    )
+    .expect("ok");
     assert!(
         out.string_array_call_sites_inlined >= 400,
         "high preset must inline >=400 call sites; got {}",

@@ -173,16 +173,6 @@ fn to_relative(id: &str) -> String {
     }
 }
 
-pub fn rewrite_modules(modules: &mut [ExtractedModule]) {
-    let map: BTreeMap<String, String> = build_id_to_path_map(modules);
-    for m in modules.iter_mut() {
-        if let Some(unwrapped) = unwrap_module_wrapper(&m.source) {
-            m.source = unwrapped;
-        }
-        m.source = rewrite_requires(&m.source, &map);
-    }
-}
-
 pub(super) fn rewrite_modules_with_limit(
     modules: &mut [ExtractedModule],
     maximum: usize,
@@ -328,7 +318,7 @@ mod tests {
                 source: "(function(module, exports, __webpack_require__){ module.exports = 'leaf'; })".to_owned(),
             },
         ];
-        rewrite_modules(&mut mods);
+        rewrite_modules_with_limit(&mut mods, usize::MAX).expect("unbounded rewrite");
         assert!(
             !mods[0].source.starts_with("(function"),
             "got: {}",
@@ -361,5 +351,25 @@ mod tests {
         let map: BTreeMap<String, String> = build_id_to_path_map(&mods);
         let rewritten: String = rewrite_requires(&mods[0].source, &map);
         assert!(rewritten.contains("./src/b.js"));
+    }
+
+    #[test]
+    fn wrapper_normalization_preserves_following_statements() {
+        let source: &str = "function(module, exports) { module.exports = 1; }; report();";
+        let mut modules: Vec<ExtractedModule> = vec![ExtractedModule {
+            id: "0".to_owned(),
+            chunk_id: None,
+            source: source.to_owned(),
+        }];
+        rewrite_modules_with_limit(&mut modules, usize::MAX).expect("unbounded rewrite");
+        assert_eq!(modules[0].source, source);
+        for separator in ["\n", "\r", "\u{2028}", "\u{2029}"] {
+            let source: String = format!(
+                "function(module, exports) {{ module.exports = 1; }}; // trailer{separator}report();"
+            );
+            modules[0].source.clone_from(&source);
+            rewrite_modules_with_limit(&mut modules, usize::MAX).expect("unbounded rewrite");
+            assert_eq!(modules[0].source, source);
+        }
     }
 }

@@ -1,9 +1,9 @@
-#![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 use boa_engine::{Context, Source};
-use disrobe_pass_js_deob::{
-    JscramblerTransform, JscramblerTransformOpts, JscramblerTransformOutput,
-    deobfuscate_jscrambler_transform_strict,
-};
+
+use super::detect::JscramblerTransform;
+use super::dispatch_reverse_strict;
+use super::transforms::{TransformOpts, TransformOutput};
+use crate::error::{Error, Result};
 
 const LOOP_LIMIT: u64 = 2_000_000;
 const RECURSION_LIMIT: usize = 1_500;
@@ -47,9 +47,9 @@ fn assert_recovered_equivalent(label: &str, original: &str, recovered: &str) {
     );
 }
 
-fn reverse(transform: JscramblerTransform, source: &str) -> JscramblerTransformOutput {
-    let opts: JscramblerTransformOpts = JscramblerTransformOpts::default();
-    deobfuscate_jscrambler_transform_strict(transform, source, &opts).expect("strict reverse ok")
+fn reverse(transform: JscramblerTransform, source: &str) -> TransformOutput {
+    let opts: TransformOpts = TransformOpts::default();
+    dispatch_reverse_strict(transform, source, &opts).expect("strict reverse ok")
 }
 
 const FN_REORDER_CLEAN: &str = r"
@@ -73,8 +73,7 @@ print(log.join(','));
 #[test]
 fn function_reordering_restores_dependency_order_and_behavior() {
     assert_faithful_input("function-reordering", FN_REORDER_CLEAN, FN_REORDER_OBF);
-    let out: JscramblerTransformOutput =
-        reverse(JscramblerTransform::FunctionReordering, FN_REORDER_OBF);
+    let out: TransformOutput = reverse(JscramblerTransform::FunctionReordering, FN_REORDER_OBF);
     assert!(
         out.stats.reversed >= 1,
         "the reordered declarations must be detected and restored; stats={:?}",
@@ -116,8 +115,7 @@ run();
 #[test]
 fn function_outlining_inlines_single_use_helper_and_behavior() {
     assert_faithful_input("function-outlining", FN_OUTLINE_CLEAN, FN_OUTLINE_OBF);
-    let out: JscramblerTransformOutput =
-        reverse(JscramblerTransform::FunctionOutlining, FN_OUTLINE_OBF);
+    let out: TransformOutput = reverse(JscramblerTransform::FunctionOutlining, FN_OUTLINE_OBF);
     assert!(
         out.stats.reversed >= 1,
         "the single-use outlined helper must be inlined; stats={:?}",
@@ -144,7 +142,7 @@ print(consume(helper));
 
 #[test]
 fn function_outlining_preserves_non_eager_reference() {
-    let out: JscramblerTransformOutput =
+    let out: TransformOutput =
         reverse(JscramblerTransform::FunctionOutlining, FN_OUTLINE_NEG_CLEAN);
     assert_eq!(
         out.stats.reversed, 0,
@@ -183,8 +181,7 @@ print(build());
 #[test]
 fn object_properties_sparsing_gathers_props_and_behavior() {
     assert_faithful_input("object-sparsing", SPARSE_CLEAN, SPARSE_OBF);
-    let out: JscramblerTransformOutput =
-        reverse(JscramblerTransform::ObjectPropertiesSparsing, SPARSE_OBF);
+    let out: TransformOutput = reverse(JscramblerTransform::ObjectPropertiesSparsing, SPARSE_OBF);
     assert!(
         out.stats.reversed >= 1,
         "the sparse assignments must be gathered into the literal; stats={:?}",
@@ -220,8 +217,7 @@ print(build());
 
 #[test]
 fn object_properties_sparsing_stops_on_self_dependent_value() {
-    let out: JscramblerTransformOutput =
-        reverse(JscramblerTransform::ObjectPropertiesSparsing, SPARSE_NEG);
+    let out: TransformOutput = reverse(JscramblerTransform::ObjectPropertiesSparsing, SPARSE_NEG);
     assert!(
         out.source.contains("acc.b = acc.a"),
         "an assignment whose value reads the object being built must not be folded:\n{}",
@@ -254,7 +250,7 @@ print(o.alpha + ',' + o.beta + ',' + o.gamma);
 #[test]
 fn property_keys_reordering_canonicalizes_keys_and_behavior() {
     assert_faithful_input("property-keys", PROP_REORDER_CLEAN, PROP_REORDER_OBF);
-    let out: JscramblerTransformOutput = reverse(
+    let out: TransformOutput = reverse(
         JscramblerTransform::PropertyKeysReordering,
         PROP_REORDER_OBF,
     );
@@ -282,8 +278,7 @@ function tag(name, value) { seq.push(name); return value; }
 var o = { b: tag('b', 2), a: tag('a', 1) };
 print(o.a + ',' + o.b + '|' + seq.join(','));
 ";
-    let out: JscramblerTransformOutput =
-        reverse(JscramblerTransform::PropertyKeysReordering, with_calls);
+    let out: TransformOutput = reverse(JscramblerTransform::PropertyKeysReordering, with_calls);
     assert_eq!(
         out.stats.reversed, 0,
         "object values with observable evaluation-order side effects must NOT be reordered:\n{}",
@@ -299,7 +294,7 @@ print(o.a + ',' + o.b + '|' + seq.join(','));
 
 #[test]
 fn strict_reverse_surfaces_parse_failure_not_a_panic() {
-    let opts: JscramblerTransformOpts = JscramblerTransformOpts::default();
+    let opts: TransformOpts = TransformOpts::default();
     let broken: &str = "function (";
     for transform in [
         JscramblerTransform::FunctionReordering,
@@ -307,11 +302,90 @@ fn strict_reverse_surfaces_parse_failure_not_a_panic() {
         JscramblerTransform::ObjectPropertiesSparsing,
         JscramblerTransform::PropertyKeysReordering,
     ] {
-        let res: Result<JscramblerTransformOutput, _> =
-            deobfuscate_jscrambler_transform_strict(transform, broken, &opts);
+        let res: Result<TransformOutput> = dispatch_reverse_strict(transform, broken, &opts);
         assert!(
             res.is_err(),
             "unparseable input must return a typed error, not a fabricated pass, for {transform:?}"
         );
+    }
+}
+
+const AUTHORIZATION_GATED: &[(JscramblerTransform, &str)] = &[
+    (
+        JscramblerTransform::AntiDebugging,
+        "function f(){ debugger; }",
+    ),
+    (JscramblerTransform::AntiMonkeyPatching, "var x = 1;"),
+    (
+        JscramblerTransform::AntiTampering,
+        "var n = fn.toString().replace(/ /g,'').length;",
+    ),
+    (
+        JscramblerTransform::DeadObjects,
+        "var __deadFoo = { a: 1 };",
+    ),
+    (
+        JscramblerTransform::SelfDefending,
+        "(function(){var t = function(){return ('xy').toString().search('z');}; t();}());",
+    ),
+    (
+        JscramblerTransform::SelfHealing,
+        "window.onerror = function(e){ tamper(); };",
+    ),
+    (
+        JscramblerTransform::BrowserLock,
+        "if (navigator.userAgent.indexOf('Chrome') !== -1) { run(); }",
+    ),
+    (
+        JscramblerTransform::DateLock,
+        "if (Date.now() > 1) { stop(); }",
+    ),
+    (
+        JscramblerTransform::DomainLock,
+        "if (location.hostname !== 'x') { y(); }",
+    ),
+    (
+        JscramblerTransform::OsLock,
+        "if (navigator.platform !== 'Win32') { stop(); }",
+    ),
+];
+
+#[test]
+fn strict_dispatch_refuses_every_rasp_and_lock_transform_without_authorization() {
+    for (transform, source) in AUTHORIZATION_GATED {
+        let err: Error = dispatch_reverse_strict(*transform, source, &TransformOpts::default())
+            .expect_err("an unauthorized RASP or lock reversal must refuse");
+        assert!(
+            matches!(err, Error::AuthorizationRequired { .. }),
+            "{transform:?} must gate on authorization, got {err}"
+        );
+    }
+}
+
+#[test]
+fn strict_dispatch_runs_every_rasp_and_lock_transform_with_authorization() {
+    let opts: TransformOpts = TransformOpts {
+        i_have_authorization: true,
+    };
+    for (transform, _) in AUTHORIZATION_GATED {
+        let res: Result<TransformOutput> = dispatch_reverse_strict(*transform, "var x = 1;", &opts);
+        assert!(res.is_ok(), "{transform:?} must succeed when authorized");
+    }
+}
+
+#[test]
+fn strict_dispatch_does_not_gate_optimization_transforms() {
+    for transform in [
+        JscramblerTransform::AssertionsRemoval,
+        JscramblerTransform::ConstantFolding,
+        JscramblerTransform::DeadCodeElimination,
+        JscramblerTransform::DebugCodeElimination,
+        JscramblerTransform::DuplicateLiteralsRemoval,
+        JscramblerTransform::IdentifiersRenaming,
+        JscramblerTransform::WhitespaceRemoval,
+    ] {
+        let res: Result<TransformOutput> =
+            dispatch_reverse_strict(transform, "var x = 1;", &TransformOpts::default());
+        assert!(res.is_ok(), "{transform:?} must not gate on authorization");
     }
 }

@@ -38,7 +38,7 @@ pub use graph::{
 };
 pub use manifest::{ViteManifest, ViteManifestEntry, parse_vite_manifest, vite_manifest_to_graph};
 pub use parcel::detect as detect_parcel;
-pub use require_rewrite::{build_id_to_path_map, rewrite_modules, rewrite_requires};
+pub use require_rewrite::{build_id_to_path_map, rewrite_requires};
 pub use rolldown::detect as detect_rolldown;
 pub use rollup::detect as detect_rollup;
 pub use sourcemap::{

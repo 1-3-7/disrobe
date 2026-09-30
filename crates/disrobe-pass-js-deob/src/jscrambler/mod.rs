@@ -8,6 +8,9 @@
 pub(crate) mod detect;
 mod integrity;
 mod scanner;
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+mod strict_dispatch_tests;
 mod templates;
 mod transforms;
 
@@ -197,7 +200,7 @@ fn dispatch_reverse(t: JscramblerTransform, source: &str, opts: &TransformOpts) 
     }
 }
 
-pub fn dispatch_reverse_strict(
+pub(crate) fn dispatch_reverse_strict(
     t: JscramblerTransform,
     source: &str,
     opts: &TransformOpts,

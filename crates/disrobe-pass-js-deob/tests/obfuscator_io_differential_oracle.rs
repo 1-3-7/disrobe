@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 
 use disrobe_pass_js_deob::{
     ObfuscatorIoOptions, ObfuscatorIoOutput, ObfuscatorIoPreset, obfuscator_io_deobfuscate,
-    obfuscator_io_deobfuscate_preset,
 };
 
 fn corpus_root() -> PathBuf {
@@ -389,8 +388,11 @@ fn high_preset_route_decodes_the_tokens_it_encodes() {
     let clean: String = clean_source();
     let src: String = read_preset("high");
     let tokens: CleanTokens = derive_clean_tokens(&clean);
-    let out: ObfuscatorIoOutput =
-        obfuscator_io_deobfuscate_preset(&src, ObfuscatorIoPreset::High).expect("ok");
+    let out: ObfuscatorIoOutput = obfuscator_io_deobfuscate(
+        &src,
+        &ObfuscatorIoOptions::for_preset(ObfuscatorIoPreset::High),
+    )
+    .expect("ok");
     let (_, possible): (usize, usize) = recovery_rate(&out.source, &tokens);
     assert!(
         possible >= 19,

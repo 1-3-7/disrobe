@@ -105,3 +105,64 @@ var second =   _rgf_pretty[1].apply(this,[_rgf_pretty,arguments]);
         result.rewritten_source
     );
 }
+
+fn evaluate(program: &str) -> String {
+    let mut context: boa_engine::Context = boa_engine::Context::default();
+    let value: boa_engine::JsValue = context
+        .eval(boa_engine::Source::from_bytes(program.as_bytes()))
+        .expect("program evaluates");
+    value
+        .to_string(&mut context)
+        .expect("result converts to a string")
+        .to_std_string_escaped()
+}
+
+#[test]
+fn reverses_rgf_array_under_a_minified_identifier() {
+    let src: &str = "var a = [new Function('return 1'), new Function('return 2')]; function f(){ return a[1].apply(this, [a, arguments]); }";
+    let result: RgfReversalResult = reverse_rgf(src);
+
+    assert_eq!(result.array_id.as_deref(), Some("a"));
+    assert_eq!(result.entries_extracted, 2);
+    assert_eq!(result.call_sites_inlined, 1);
+    assert!(
+        !result.rewritten_source.contains("new Function"),
+        "the minified rgf array must be dropped, got: {}",
+        result.rewritten_source
+    );
+    assert!(
+        result
+            .rewritten_source
+            .contains("return (function(){return 2})();"),
+        "expected IIFE substitution, got: {}",
+        result.rewritten_source
+    );
+    assert_eq!(
+        evaluate(&format!("{src}\nf();")),
+        evaluate(&format!("{}\nf();", result.rewritten_source))
+    );
+}
+
+#[test]
+fn keeps_a_minified_function_array_that_is_read_outside_rgf_calls() {
+    let src: &str = "var a = [new Function('return 1')]; function f(){ return a[0].apply(this, [a, arguments]); } var n = a.length;";
+    let result: RgfReversalResult = reverse_rgf(src);
+
+    assert!(result.array_id.is_none(), "{result:?}");
+    assert_eq!(result.rewritten_source, src);
+}
+
+#[test]
+fn leaves_a_call_on_a_longer_identifier_ending_in_the_array_name() {
+    let src: &str = "var _rgf_a = [new Function('return 1')]; var y = x_rgf_a[0].apply(this, [_rgf_a, arguments]);";
+    let result: RgfReversalResult = reverse_rgf(src);
+
+    assert_eq!(result.call_sites_inlined, 0, "{result:?}");
+    assert!(
+        result
+            .rewritten_source
+            .contains("var y = x_rgf_a[0].apply(this, [_rgf_a, arguments]);"),
+        "a call through a different identifier must stay untouched, got: {}",
+        result.rewritten_source
+    );
+}

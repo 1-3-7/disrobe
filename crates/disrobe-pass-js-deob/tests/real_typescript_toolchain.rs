@@ -8,8 +8,7 @@ use std::time::Duration;
 use disrobe_core::scratch::ScratchDir;
 use disrobe_core::subprocess::{CapturedOutput, run_captured};
 use disrobe_pass_js_deob::{
-    ClosureAdvancedReport, Error, PresetEnvUndoResult, TerserRestoreReport, restore_terser_mangled,
-    undo_closure_advanced, undo_preset_env,
+    Error, PresetEnvUndoResult, TerserRestoreReport, restore_terser_mangled, undo_preset_env,
 };
 
 const TSC_BACKSTOP: Duration = Duration::from_mins(5);
@@ -264,29 +263,6 @@ fn real_terser_megafile_restore_rewrites_into_parseable_source() {
         reparses(&report.rewritten),
         "restored terser output must parse"
     );
-}
-
-fn assert_closure_undo(rel: &str) {
-    let src: String = load(rel);
-    let report: ClosureAdvancedReport = undo_closure_advanced(&src);
-    assert!(
-        report.detected,
-        "{rel}: real Closure output must be detected"
-    );
-    assert!(
-        report.rewritten != src && reparses(&report.rewritten),
-        "{rel}: Closure undo must rewrite the input into source that parses"
-    );
-}
-
-#[test]
-fn real_closure_simple_megafile_undo_rewrites_detected_output() {
-    assert_closure_undo("closure/obfuscated.megafile.simple.js");
-}
-
-#[test]
-fn real_closure_whitespace_megafile_undo_rewrites_detected_output() {
-    assert_closure_undo("closure/obfuscated.megafile.whitespace.js");
 }
 
 #[test]

@@ -23,7 +23,8 @@ use crate::jscrambler::{
 };
 use crate::jsobfu::{JsObfuRecovery, recover as recover_jsobfu};
 use crate::obfuscator_io::{
-    Output as ObfuscatorIoOutput, Preset as ObfPreset, deobfuscate_preset as obfuscator_io_deob,
+    Options as ObfuscatorIoOptions, Output as ObfuscatorIoOutput, Preset as ObfPreset,
+    deobfuscate as obfuscator_io_deob,
 };
 use crate::protectors::{
     ProtectorDetection, ProtectorFamily, ProtectorOptions, ProtectorOutput,
@@ -696,8 +697,9 @@ fn decode_esoteric(eso: &EsotericClassification, text: &str) -> Option<String> {
 fn run_javascript_obfuscator(bytes: &[u8], artifact: &Artifact) -> CoreResult<Artifact> {
     let text: &str = std::str::from_utf8(bytes)
         .map_err(|e| CoreError::PassFailure(format!("DR-JS-0902: input not utf-8: {e}")))?;
-    let out: ObfuscatorIoOutput = obfuscator_io_deob(text, ObfPreset::High)
-        .map_err(|e| CoreError::PassFailure(format!("DR-JS-0903: obfuscator.io deob: {e}")))?;
+    let out: ObfuscatorIoOutput =
+        obfuscator_io_deob(text, &ObfuscatorIoOptions::for_preset(ObfPreset::High))
+            .map_err(|e| CoreError::PassFailure(format!("DR-JS-0903: obfuscator.io deob: {e}")))?;
     let body: Vec<u8> = serde_json::to_vec_pretty(&out)
         .map_err(|e| CoreError::PassFailure(format!("DR-JS-0921: obfuscator.io serialize: {e}")))?;
     Ok(Artifact::new(Rung::Surface, body, artifact.root_hash))
@@ -995,7 +997,8 @@ fn emit_dedicated_sidecars(bytes: &[u8]) -> Vec<ChildArtifact> {
         }
     }
     if matches!(detection.family, JsObfuscator::ObfuscatorIo)
-        && let Ok(pipeline) = obfuscator_io_deob(text, ObfPreset::High)
+        && let Ok(pipeline) =
+            obfuscator_io_deob(text, &ObfuscatorIoOptions::for_preset(ObfPreset::High))
         && let Ok(json) = serde_json::to_vec_pretty(&pipeline)
     {
         children.push(terminal_child("js-deob.pipeline.json".to_string(), json));

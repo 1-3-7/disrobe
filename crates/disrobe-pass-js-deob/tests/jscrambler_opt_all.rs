@@ -2,9 +2,8 @@
 use std::collections::BTreeSet;
 
 use disrobe_pass_js_deob::{
-    JscramblerOptions, JscramblerOutput, JscramblerTransform, JscramblerTransformOpts,
-    JscramblerTransformOutput, JscramblerTransformStats, deobfuscate_jscrambler,
-    deobfuscate_jscrambler_transform_strict,
+    JscramblerOptions, JscramblerOutput, JscramblerTransform, JscramblerTransformStats,
+    deobfuscate_jscrambler,
 };
 
 fn opts_with(t: JscramblerTransform) -> JscramblerOptions {
@@ -14,6 +13,12 @@ fn opts_with(t: JscramblerTransform) -> JscramblerOptions {
         i_have_authorization: false,
         transforms: set,
     }
+}
+
+fn is_recorded(out: &JscramblerOutput, t: JscramblerTransform) -> bool {
+    out.per_transform
+        .iter()
+        .any(|(k, _): &(JscramblerTransform, JscramblerTransformStats)| *k == t)
 }
 
 fn stats_for(out: &JscramblerOutput, t: JscramblerTransform) -> &JscramblerTransformStats {
@@ -41,8 +46,11 @@ fn assertions_removal_detect_returns_zero_on_unmarked_source() {
     let opts: JscramblerOptions = opts_with(JscramblerTransform::AssertionsRemoval);
     let out: JscramblerOutput = deobfuscate_jscrambler(src, &opts).expect("ok");
     assert_eq!(out.source, src);
-    let s: &JscramblerTransformStats = stats_for(&out, JscramblerTransform::AssertionsRemoval);
-    assert_eq!(s.matched, 0);
+    assert!(
+        !is_recorded(&out, JscramblerTransform::AssertionsRemoval),
+        "an undetected transform must not run: {:?}",
+        out.per_transform
+    );
 }
 
 #[test]
@@ -96,8 +104,12 @@ fn dead_code_elimination_detect_zero_on_clean_source() {
     let src: &str = "var a = 1; if (a) { run(); }";
     let opts: JscramblerOptions = opts_with(JscramblerTransform::DeadCodeElimination);
     let out: JscramblerOutput = deobfuscate_jscrambler(src, &opts).expect("ok");
-    let s: &JscramblerTransformStats = stats_for(&out, JscramblerTransform::DeadCodeElimination);
-    assert_eq!(s.matched, 0);
+    assert_eq!(out.source, src);
+    assert!(
+        !is_recorded(&out, JscramblerTransform::DeadCodeElimination),
+        "an undetected transform must not run: {:?}",
+        out.per_transform
+    );
 }
 
 #[test]
@@ -176,7 +188,7 @@ fn whitespace_removal_is_noop_on_already_formatted_source() {
 }
 
 #[test]
-fn optimization_chain_runs_all_seven_steps_in_order() {
+fn optimization_chain_runs_each_detected_step_once_in_order() {
     let src: &str = "var x = 2 + 3; var T = ['a','b']; T[0];";
     let mut set: BTreeSet<JscramblerTransform> = BTreeSet::new();
     for t in [
@@ -192,29 +204,26 @@ fn optimization_chain_runs_all_seven_steps_in_order() {
     }
     let opts: JscramblerOptions = JscramblerOptions {
         i_have_authorization: false,
-        transforms: set,
+        transforms: set.clone(),
     };
     let out: JscramblerOutput = deobfuscate_jscrambler(src, &opts).expect("ok");
-    assert_eq!(out.per_transform.len(), 7);
+    let expected: Vec<JscramblerTransform> = set
+        .intersection(&out.detection.detected_transforms)
+        .copied()
+        .collect();
+    let ran: Vec<JscramblerTransform> = out
+        .per_transform
+        .iter()
+        .map(|(k, _): &(JscramblerTransform, JscramblerTransformStats)| *k)
+        .collect();
+    assert_eq!(
+        ran, expected,
+        "each requested and detected step runs once, in order"
+    );
+    assert!(
+        ran.contains(&JscramblerTransform::ConstantFolding),
+        "the folded addition must be detected and reversed: {ran:?}"
+    );
     assert!(out.source.contains('5'));
     assert!(out.source.contains("\"a\""));
-}
-
-#[test]
-fn optimization_transforms_do_not_require_authorization_via_strict_dispatch() {
-    let src: &str = "var x = 1;";
-    let opts: JscramblerTransformOpts = JscramblerTransformOpts::default();
-    for t in [
-        JscramblerTransform::AssertionsRemoval,
-        JscramblerTransform::ConstantFolding,
-        JscramblerTransform::DeadCodeElimination,
-        JscramblerTransform::DebugCodeElimination,
-        JscramblerTransform::DuplicateLiteralsRemoval,
-        JscramblerTransform::IdentifiersRenaming,
-        JscramblerTransform::WhitespaceRemoval,
-    ] {
-        let res: Result<JscramblerTransformOutput, _> =
-            deobfuscate_jscrambler_transform_strict(t, src, &opts);
-        assert!(res.is_ok(), "{t:?} must not gate on authorization");
-    }
 }
