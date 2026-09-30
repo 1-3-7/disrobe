@@ -242,8 +242,6 @@ const REASON_JSCRAMBLER: &str = "the Jscrambler chain is graded against real Jsc
                                  by tests/jscrambler_template_all.rs";
 const REASON_ESOTERIC: &str =
     "esoteric encodings are graded by tests/esoteric_recovery_graded.rs and its siblings";
-const REASON_TYPESCRIPT: &str =
-    "TypeScript and Closure recovery is graded by tests/ts_type_recover.rs and its siblings";
 const REASON_PROTECTOR: &str =
     "commercial protector recovery is graded by tests/protectors_chain.rs and its siblings";
 const REASON_JSOBFU: &str = "the jsobfu chain is graded by tests/real_jsobfu_recovery_oracle.rs";
@@ -566,14 +564,6 @@ static REGEX_REWRITERS: &[RegexRewriter] = &[
         coverage: Coverage::Ungraded(
             "modern string-array shapes are graded by tests/obfuscator_io_modern_string_array.rs",
         ),
-    },
-    RegexRewriter {
-        module: "src/typescript/closure_advanced.rs",
-        coverage: Coverage::Ungraded(REASON_TYPESCRIPT),
-    },
-    RegexRewriter {
-        module: "src/typescript/dts_reverse.rs",
-        coverage: Coverage::Ungraded(REASON_TYPESCRIPT),
     },
     RegexRewriter {
         module: "src/unminify/arithmetic.rs",
