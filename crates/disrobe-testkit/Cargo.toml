@@ -19,6 +19,7 @@ workspace = true
 disrobe-tool-process = { workspace = true }
 tempfile = "3"
 thiserror = { workspace = true }
+toml = { workspace = true }
 
 [package.metadata.disrobe]
 level = "dev"
