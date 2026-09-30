@@ -498,7 +498,21 @@ jobs:
             exit 1
           fi
           echo "r $r_version"
-          echo "DISROBE_REQUIRE_R=1" >> "$GITHUB_ENV"
+      - name: provision Tcl so the recovered starkit sources are parsed by real tclsh
+        if: runner.os == 'Linux' && matrix.shard == 'three'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends tcl
+          tcl_patchlevel="$(echo 'puts [info patchlevel]' | tclsh)"
+          case "$tcl_patchlevel" in
+            8.*|9.*) echo "tcl $tcl_patchlevel" ;;
+            *)
+              echo "tclsh reported '$tcl_patchlevel' after provisioning, so the starkit parse grade would fail"
+              exit 1
+              ;;
+          esac
       - name: require XLMMacroDeobfuscator 0.2.7, the deobfuscator that grades the recovered XLM formulas
         shell: bash
         run: |

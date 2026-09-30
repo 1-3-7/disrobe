@@ -28,7 +28,7 @@ zip = { workspace = true }
 
 [dev-dependencies]
 zip = { workspace = true }
-wait-timeout = { workspace = true }
+disrobe-testkit = { workspace = true }
 
 [package.metadata.disrobe]
 level = 8

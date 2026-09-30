@@ -8,7 +8,6 @@
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_scriptlang::lang::tcl::{StarkitContainer, StarkitEntry, StarkitFormat, extract};
@@ -23,7 +22,7 @@ use disrobe_pass_scriptlang::lang::tcl::{StarkitContainer, StarkitEntry, Starkit
 )]
 mod r_toolchain;
 
-use r_toolchain::{TclRuntime, require_tclsh, run_bounded};
+use r_toolchain::{Finished, TclRuntime, require_tclsh, run_bounded};
 
 const SDX_KIT: &[u8] = include_bytes!("fixtures/sdx.kit");
 
@@ -224,14 +223,20 @@ fn recovered_starkit_sources_are_complete_scripts_to_real_tclsh() {
     )
     .expect("write driver");
 
-    let mut cmd: Command = Command::new(&runtime.tclsh);
-    cmd.arg(&driver);
-    for (_, file) in &sources {
-        cmd.arg(file);
-    }
-    let (ok, out, err): (bool, String, String) =
-        run_bounded(cmd).expect("tclsh answers within the bound");
-    assert!(ok, "tclsh failed: stdout {out:?} stderr {err:?}");
+    let mut args: Vec<&Path> = vec![driver.as_path()];
+    args.extend(
+        sources
+            .iter()
+            .map(|(_, file): &(String, PathBuf)| file.as_path()),
+    );
+    let finished: Finished =
+        run_bounded(&runtime.tclsh, args).expect("tclsh answers within the bound");
+    let out: &str = &finished.stdout;
+    assert!(
+        finished.success,
+        "tclsh failed: stdout {out:?} stderr {:?}",
+        finished.stderr
+    );
     let complete: usize = out
         .lines()
         .filter(|l: &&str| l.starts_with("complete "))

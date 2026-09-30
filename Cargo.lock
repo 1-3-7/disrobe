@@ -2656,13 +2656,13 @@ dependencies = [
  "bzip2-rs",
  "disrobe-bytes",
  "disrobe-core",
+ "disrobe-testkit",
  "flate2",
  "liblzma",
  "miette",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
- "wait-timeout",
  "zip",
 ]
 
