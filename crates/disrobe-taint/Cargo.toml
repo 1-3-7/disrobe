@@ -24,6 +24,7 @@ disrobe-nir-lift = { workspace = true, features = ["wasm"] }
 disrobe-ir = { workspace = true }
 disrobe-pass-native = { workspace = true }
 disrobe-query = { workspace = true }
+disrobe-testkit = { workspace = true }
 rayon = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

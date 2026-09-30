@@ -2996,6 +2996,7 @@ dependencies = [
  "disrobe-nir-lift",
  "disrobe-pass-native",
  "disrobe-query",
+ "disrobe-testkit",
  "rayon",
  "serde",
  "serde_json",

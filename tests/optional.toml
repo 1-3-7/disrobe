@@ -1,0 +1,2 @@
+[optional]
+"disrobe-taint::graded_corpus" = "the pinned NIST SARD Juliet v1.3 corpus (153 MB) is not committed and no CI job downloads it"

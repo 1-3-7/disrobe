@@ -17,7 +17,7 @@ pub(crate) const CORPUS_URL: &str = "https://samate.nist.gov/SARD/downloads/test
 pub(crate) const CORPUS_SHA256: &str =
     "ada9d7e1c323d283446df3f55bdee0d00bda1fed786785fe98764d58688f38eb";
 pub(crate) const CORPUS_SIZE_BYTES: u64 = 152_957_342;
-pub(crate) const REQUIRE_CORPUS_VAR: &str = "DISROBE_REQUIRE_JULIET_CORPUS";
+pub(crate) const JULIET_PREREQUISITE: &str = "disrobe-taint::graded_corpus";
 
 const MANIFEST_PATH: &str = "C/manifest.xml";
 const TESTCASESUPPORT_FILES: [&str; 3] = [
@@ -242,24 +242,6 @@ pub(crate) fn default_taint_config() -> TaintConfig {
     taint_config_for(SinkFamily::System)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CorpusRequirement {
-    Optional,
-    Mandatory,
-}
-
-pub(crate) fn corpus_requirement() -> CorpusRequirement {
-    let raw: Option<std::ffi::OsString> = std::env::var_os(REQUIRE_CORPUS_VAR);
-    let Some(raw): Option<std::ffi::OsString> = raw else {
-        return CorpusRequirement::Optional;
-    };
-    let text: String = raw.to_string_lossy().trim().to_ascii_lowercase();
-    match text.as_str() {
-        "" | "0" | "false" | "no" | "off" => CorpusRequirement::Optional,
-        _ => CorpusRequirement::Mandatory,
-    }
-}
-
 pub(crate) fn cache_root() -> PathBuf {
     disrobe_core::scratch::scratch_root().join("juliet-corpus-cache")
 }
@@ -302,29 +284,6 @@ fn fetch_command() -> String {
     )
 }
 
-fn announce_ungraded(case: &str) {
-    println!(
-        "\nUNGRADED {case}: the NIST SARD Juliet Test Suite for C/C++ v1.3 is absent from the \
-         local cache at {zip}. It is {CORPUS_SIZE_BYTES} bytes, pinned by sha256 {CORPUS_SHA256}, \
-         and is never fetched automatically or tracked in this repository. Populate the cache \
-         reproducibly with:\n  {cmd}\nthen re-run this test. Set {REQUIRE_CORPUS_VAR}=1 to fail \
-         instead of skipping when the corpus is absent.\n",
-        zip = cached_zip_path().display(),
-        cmd = fetch_command(),
-    );
-}
-
-fn enforce_requirement(case: &str, requirement: CorpusRequirement) {
-    assert!(
-        requirement == CorpusRequirement::Optional,
-        "{REQUIRE_CORPUS_VAR} makes the Juliet corpus mandatory for {case}, so it cannot be \
-         graded and must not report success. Populate the cache with:\n  {}\nor clear \
-         {REQUIRE_CORPUS_VAR} to permit a run that grades nothing here.",
-        fetch_command(),
-    );
-    announce_ungraded(case);
-}
-
 pub(crate) fn ensure_corpus_zip(case: &str) -> Option<Vec<u8>> {
     let zip_path: PathBuf = cached_zip_path();
     match std::fs::read(&zip_path) {
@@ -341,8 +300,16 @@ pub(crate) fn ensure_corpus_zip(case: &str) -> Option<Vec<u8>> {
             Some(bytes)
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            enforce_requirement(case, corpus_requirement());
-            None
+            let what: String = format!(
+                "the NIST SARD Juliet Test Suite for C/C++ v1.3 in the local cache at {} \
+                 ({CORPUS_SIZE_BYTES} bytes, sha256 {CORPUS_SHA256}); populate it with: {}",
+                zip_path.display(),
+                fetch_command()
+            );
+            match disrobe_testkit::require::<()>(JULIET_PREREQUISITE, &what, None) {
+                Ok(_) => None,
+                Err(error) => panic!("{case}: {error}"),
+            }
         }
         Err(err) => panic!(
             "{case}: {} exists but could not be read ({err}); an unreadable cache entry is never \
