@@ -58,7 +58,6 @@ const HIDDEN_TEST_SURFACE: &[(&str, &[&str])] = &[
     ("disrobe-pass-pyfreeze", &["chain"]),
     ("disrobe-pass-pyinstaller", &["chain"]),
     ("disrobe-pass-ruby", &["chain"]),
-    ("disrobe-pass-scriptlang", &["chain"]),
     ("disrobe-pass-shell", &["chain"]),
     ("disrobe-pass-swift-objc", &["chain"]),
     ("disrobe-pass-wasm-deob", &["chain", "sandbox"]),

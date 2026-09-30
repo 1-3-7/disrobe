@@ -7,17 +7,12 @@ use disrobe_pass_scriptlang::{
     DecompileWalker, HlCode, HlError, PerlOpTree, PerlSource, RdsObject, WinScriptLang,
 };
 
-#[cfg(feature = "chain")]
 use disrobe_core::Artifact;
-#[cfg(feature = "chain")]
 use disrobe_core::Rung;
-#[cfg(feature = "chain")]
 use disrobe_core::chain::{
     ChildArtifact, DetectContext, DetectVerdict, Detector, OutputKind, Pass,
 };
-#[cfg(feature = "chain")]
 use disrobe_core::error::Result as CoreResult;
-#[cfg(feature = "chain")]
 use disrobe_pass_scriptlang::chain_detector::{SCRIPTLANG_PASS, ScriptLangDetector};
 
 struct XorShift64 {
@@ -191,11 +186,9 @@ fn parse_entry_points(bytes: &[u8]) {
     let _: Vec<rcpp::EmbeddedNativeImage> = rcpp::scan_native_images(bytes);
     entry_points(bytes);
 
-    #[cfg(feature = "chain")]
     chain_entry_points(bytes);
 }
 
-#[cfg(feature = "chain")]
 fn chain_entry_points(bytes: &[u8]) {
     let artifact: Artifact = Artifact::new(Rung::Raw, bytes.to_vec(), [0u8; 32]);
     let context: DetectContext<'_> = DetectContext {

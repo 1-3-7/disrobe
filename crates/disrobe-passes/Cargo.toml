@@ -70,7 +70,7 @@ dotnet = ["dep:disrobe-pass-dotnet", "disrobe-pass-dotnet/chain"]
 go = ["dep:disrobe-pass-go", "disrobe-pass-go/chain"]
 beam = ["dep:disrobe-pass-beam"]
 as3 = ["dep:disrobe-pass-as3"]
-scriptlang = ["dep:disrobe-pass-scriptlang", "disrobe-pass-scriptlang/chain"]
+scriptlang = ["dep:disrobe-pass-scriptlang"]
 nativelang = ["dep:disrobe-pass-nativelang", "disrobe-pass-nativelang/chain"]
 webview = ["dep:disrobe-pass-webview", "disrobe-pass-webview/chain"]
 

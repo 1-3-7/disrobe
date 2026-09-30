@@ -26,13 +26,9 @@ bzip2-rs = { workspace = true }
 liblzma = { workspace = true }
 zip = { workspace = true }
 
-[features]
-default = []
-chain = ["disrobe-core/chain"]
-
 [dev-dependencies]
 zip = { workspace = true }
-wait-timeout = { workspace = true }
+disrobe-testkit = { workspace = true }
 
 [package.metadata.disrobe]
 level = 8

@@ -12,7 +12,6 @@
     clippy::struct_field_names
 )]
 
-#[cfg(feature = "chain")]
 pub mod chain_detector;
 pub(crate) mod debug;
 pub mod error;
