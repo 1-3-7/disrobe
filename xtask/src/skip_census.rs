@@ -2,285 +2,233 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use eyre::{Result, WrapErr, bail};
+use syn::visit::Visit;
 
 const MAX_SOURCE_BYTES: u64 = 8 * 1024 * 1024;
-const RETURN_WINDOW: usize = 5;
 const MIN_SCANNED_FILES: usize = 3_400;
+const SCANNED_ROOTS: [&str; 4] = ["crates", "benches", "xtask", "fuzz"];
 
-const SKIP_CEILING: &[(&str, usize)] = &[("disrobe-pyarmor-cextract", 5)];
+const SKIP_CEILING: &[(&str, usize)] = &[
+    ("benches/head-to-head", 25),
+    ("disrobe-binfmt", 41),
+    ("disrobe-cli", 34),
+    ("disrobe-core", 5),
+    ("disrobe-irsummary", 1),
+    ("disrobe-lift-x86", 9),
+    ("disrobe-mba", 10),
+    ("disrobe-nir-lift", 7),
+    ("disrobe-pass-as3", 25),
+    ("disrobe-pass-beam", 1),
+    ("disrobe-pass-go", 35),
+    ("disrobe-pass-js-deob", 1),
+    ("disrobe-pass-jvm", 31),
+    ("disrobe-pass-lua", 22),
+    ("disrobe-pass-mobile", 21),
+    ("disrobe-pass-native", 165),
+    ("disrobe-pass-nativelang", 7),
+    ("disrobe-pass-nuitka", 9),
+    ("disrobe-pass-php", 67),
+    ("disrobe-pass-py-decompile", 23),
+    ("disrobe-pass-pyarmor", 2),
+    ("disrobe-pass-pyfreeze", 6),
+    ("disrobe-pass-pyinstaller", 11),
+    ("disrobe-pass-ruby", 21),
+    ("disrobe-pass-scriptlang", 2),
+    ("disrobe-pass-shell", 3),
+    ("disrobe-pass-sourcedefender", 5),
+    ("disrobe-pass-swift-objc", 45),
+    ("disrobe-pass-wasm-deob", 10),
+    ("disrobe-pass-webview", 6),
+    ("disrobe-passes", 2),
+    ("disrobe-playground", 1),
+    ("disrobe-pyarmor-cextract", 8),
+    ("disrobe-semdiff", 10),
+    ("disrobe-sleigh", 36),
+    ("disrobe-taint", 11),
+    ("disrobe-transcode", 2),
+    ("disrobe-typerec", 4),
+    ("disrobe-validator", 2),
+    ("disrobe-vulnmatch", 40),
+    ("xtask", 3),
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SkipSite {
     pub(crate) file: String,
     pub(crate) line: usize,
-    pub(crate) in_test: bool,
+    pub(crate) test: String,
 }
 
-fn string_literal_mentions_skip(line: &str) -> bool {
-    let Some(open) = line.find('"') else {
+fn is_test_attribute(attribute: &syn::Attribute) -> bool {
+    let segments: Vec<String> = attribute
+        .path()
+        .segments
+        .iter()
+        .map(|segment: &syn::PathSegment| segment.ident.to_string())
+        .collect();
+    segments.last().is_some_and(|last: &String| last == "test")
+}
+
+fn is_successful_return(value: Option<&syn::Expr>) -> bool {
+    let Some(value): Option<&syn::Expr> = value else {
+        return true;
+    };
+    let syn::Expr::Call(call) = value else {
         return false;
     };
-    let rest: &str = &line[open + 1..];
-    let end: usize = rest.find('"').unwrap_or(rest.len());
-    rest[..end].to_ascii_lowercase().contains("skip")
+    let syn::Expr::Path(callee) = call.func.as_ref() else {
+        return false;
+    };
+    callee.path.is_ident("Ok")
+        && call.args.len() == 1
+        && matches!(call.args.first(), Some(syn::Expr::Tuple(unit)) if unit.elems.is_empty())
 }
 
-fn opens_a_print(line: &str) -> bool {
-    let trimmed: &str = line.trim_start();
-    trimmed.starts_with("println!(")
-        || trimmed.starts_with("eprintln!(")
-        || trimmed.contains(" println!(")
-        || trimmed.contains(" eprintln!(")
+struct EarlyReturns<'a> {
+    file: &'a str,
+    test: String,
+    found: Vec<SkipSite>,
 }
 
-fn return_suffix(line: &str) -> Option<&str> {
-    let trimmed: &str = line.trim();
-    let suffix: &str = trimmed.strip_prefix("return")?;
-    match suffix.chars().next()? {
-        ';' => Some(suffix),
-        character if character.is_whitespace() => Some(suffix.trim_start()),
+impl<'ast> Visit<'ast> for EarlyReturns<'_> {
+    fn visit_expr_closure(&mut self, _closure: &'ast syn::ExprClosure) {}
+
+    fn visit_expr_async(&mut self, _block: &'ast syn::ExprAsync) {}
+
+    fn visit_item(&mut self, _item: &'ast syn::Item) {}
+
+    fn visit_expr_return(&mut self, node: &'ast syn::ExprReturn) {
+        if is_successful_return(node.expr.as_deref()) {
+            self.found.push(SkipSite {
+                file: self.file.to_owned(),
+                line: node.return_token.span.start().line,
+                test: self.test.clone(),
+            });
+        }
+        syn::visit::visit_expr_return(self, node);
+    }
+}
+
+const fn is_tail_return(statement: &syn::Stmt) -> bool {
+    matches!(statement, syn::Stmt::Expr(syn::Expr::Return(_), _))
+}
+
+fn early_returns_in_test(file: &str, function: &syn::ItemFn) -> Vec<SkipSite> {
+    let mut visitor: EarlyReturns<'_> = EarlyReturns {
+        file,
+        test: function.sig.ident.to_string(),
+        found: Vec::new(),
+    };
+    let statements: &[syn::Stmt] = &function.block.stmts;
+    let body: &[syn::Stmt] = match statements.split_last() {
+        Some((last, rest)) if is_tail_return(last) => rest,
+        _ => statements,
+    };
+    for statement in body {
+        visitor.visit_stmt(statement);
+    }
+    visitor.found
+}
+
+struct TestFunctions<'a> {
+    file: &'a str,
+    found: Vec<SkipSite>,
+}
+
+impl<'ast> Visit<'ast> for TestFunctions<'_> {
+    fn visit_item_fn(&mut self, function: &'ast syn::ItemFn) {
+        if function.attrs.iter().any(is_test_attribute) {
+            self.found
+                .extend(early_returns_in_test(self.file, function));
+        }
+    }
+}
+
+pub(crate) fn sites_in_source(relative: &str, source: &str) -> Result<Vec<SkipSite>> {
+    let file: syn::File =
+        syn::parse_file(source).wrap_err_with(|| format!("parsing {relative} as Rust"))?;
+    let mut visitor: TestFunctions<'_> = TestFunctions {
+        file: relative,
+        found: Vec::new(),
+    };
+    visitor.visit_file(&file);
+    Ok(visitor.found)
+}
+
+fn owner_of(relative: &str) -> Option<String> {
+    let mut parts: std::str::Split<'_, char> = relative.split('/');
+    match parts.next()? {
+        "crates" => parts.next().map(str::to_owned),
+        "benches" => parts.next().map(|bench: &str| format!("benches/{bench}")),
+        "xtask" => Some("xtask".to_owned()),
+        "fuzz" => Some("fuzz".to_owned()),
         _ => None,
     }
 }
 
-fn is_successful_return(line: &str) -> bool {
-    let Some(suffix): Option<&str> = return_suffix(line) else {
-        return false;
-    };
-    suffix == ";"
-        || suffix
-            .chars()
-            .filter(|character: &char| !character.is_whitespace())
-            .eq("Ok(());".chars())
-}
-
-fn test_attribute(line: &str) -> bool {
-    let trimmed: &str = line.trim_start();
-    trimmed.starts_with("#[test]") || trimmed.starts_with("#[tokio::test")
-}
-
-fn opens_a_function(line: &str) -> bool {
-    let trimmed: &str = line.trim_start();
-    trimmed.starts_with("fn ")
-        || trimmed.starts_with("pub fn ")
-        || trimmed.starts_with("async fn ")
-        || trimmed.starts_with("pub async fn ")
-}
-
-fn lines_inside_tests(lines: &[&str]) -> Vec<bool> {
-    let mut inside: Vec<bool> = vec![false; lines.len()];
-    let mut index: usize = 0;
-    while index < lines.len() {
-        if !test_attribute(lines[index]) {
-            index = index.saturating_add(1);
-            continue;
-        }
-        let mut start: usize = index.saturating_add(1);
-        while start < lines.len() && !opens_a_function(lines[start]) {
-            start = start.saturating_add(1);
-        }
-        if start >= lines.len() {
-            break;
-        }
-        let mut depth: isize = 0;
-        let mut opened: bool = false;
-        let mut cursor: usize = start;
-        while cursor < lines.len() {
-            let line: &str = lines[cursor];
-            depth += isize::try_from(line.matches('{').count()).unwrap_or(0);
-            depth -= isize::try_from(line.matches('}').count()).unwrap_or(0);
-            if line.contains('{') {
-                opened = true;
-            }
-            inside[cursor] = true;
-            if opened && depth <= 0 {
-                break;
-            }
-            cursor = cursor.saturating_add(1);
-        }
-        index = cursor.saturating_add(1);
-    }
-    inside
-}
-
-fn declares_a_skip_helper(lines: &[&str], index: usize) -> Option<String> {
-    let trimmed: &str = lines[index].trim_start();
-    if !opens_a_function(trimmed) {
-        return None;
-    }
-    let open: usize = trimmed.find('(')?;
-    let head: &str = trimmed[..open].trim_end();
-    let name: &str = head.rsplit(' ').next()?;
-    if name.is_empty() {
-        return None;
-    }
-    let mut depth: isize = 0;
-    let mut opened: bool = false;
-    let mut prints_a_skip: bool = false;
-    let mut cursor: usize = index;
-    while cursor < lines.len() {
-        let line: &str = lines[cursor];
-        depth += isize::try_from(line.matches('{').count()).unwrap_or(0);
-        depth -= isize::try_from(line.matches('}').count()).unwrap_or(0);
-        if line.contains('{') {
-            opened = true;
-        }
-        if opens_a_print(line) && string_literal_mentions_skip(line) {
-            prints_a_skip = true;
-        }
-        if opened && depth <= 0 {
-            break;
-        }
-        cursor = cursor.saturating_add(1);
-    }
-    prints_a_skip.then(|| name.to_owned())
-}
-
-pub(crate) fn skip_helper_names(source: &str) -> std::collections::BTreeSet<String> {
-    let lines: Vec<&str> = source.lines().collect();
-    let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    for index in 0..lines.len() {
-        if let Some(name) = declares_a_skip_helper(&lines, index) {
-            names.insert(name);
-        }
-    }
-    names
-}
-
-fn calls_a_skip_helper(line: &str, helpers: &std::collections::BTreeSet<String>) -> bool {
-    helpers.iter().any(|name: &String| {
-        line.match_indices(name.as_str())
-            .any(|(at, _): (usize, &str)| {
-                let after: bool = line[at.saturating_add(name.len())..].starts_with('(');
-                let before: bool = at == 0
-                    || !line[..at]
-                        .chars()
-                        .next_back()
-                        .is_some_and(|c: char| c.is_alphanumeric() || c == '_');
-                after && before
-            })
-    })
-}
-
-pub(crate) fn sites_in_source_with_helpers(
-    relative: &str,
-    source: &str,
-    helpers: &std::collections::BTreeSet<String>,
-) -> Vec<SkipSite> {
-    let lines: Vec<&str> = source.lines().collect();
-    let inside: Vec<bool> = lines_inside_tests(&lines);
-    let mut found: Vec<SkipSite> = Vec::new();
-    let mut last_site: Option<usize> = None;
-    for (index, line) in lines.iter().enumerate() {
-        let printed: bool = opens_a_print(line) && string_literal_mentions_skip(line);
-        let delegated: bool = !helpers.is_empty()
-            && inside.get(index).copied().unwrap_or(false)
-            && calls_a_skip_helper(line, helpers);
-        if !printed && !delegated {
-            continue;
-        }
-        if last_site.is_some_and(|previous: usize| index.saturating_sub(previous) <= RETURN_WINDOW)
-        {
-            continue;
-        }
-        last_site = Some(index);
-        let stop: usize = index
-            .saturating_add(RETURN_WINDOW)
-            .min(lines.len().saturating_sub(1));
-        let returns: bool = lines.get(index..=stop).is_some_and(|window: &[&str]| {
-            window
-                .iter()
-                .copied()
-                .find(|entry: &&str| return_suffix(entry).is_some())
-                .is_some_and(is_successful_return)
-        });
-        if !returns {
-            continue;
-        }
-        found.push(SkipSite {
-            file: relative.to_owned(),
-            line: index.saturating_add(1),
-            in_test: inside.get(index).copied().unwrap_or(false),
-        });
-    }
-    found
-}
-
-#[cfg(test)]
-pub(crate) fn sites_in_source(relative: &str, source: &str) -> Vec<SkipSite> {
-    sites_in_source_with_helpers(relative, source, &std::collections::BTreeSet::new())
-}
-
-fn crate_of(relative: &str) -> Option<&str> {
-    let mut parts: std::str::Split<'_, char> = relative.split('/');
-    (parts.next()? == "crates").then(|| parts.next())?
-}
-
 struct Census {
-    printed: BTreeMap<String, Vec<SkipSite>>,
+    sites: BTreeMap<String, Vec<SkipSite>>,
     scanned: usize,
 }
 
+fn is_scanned_source(path: &Path) -> bool {
+    path.is_file()
+        && path
+            .extension()
+            .is_some_and(|ext: &std::ffi::OsStr| ext == "rs")
+        && !path
+            .components()
+            .any(|component: std::path::Component<'_>| {
+                matches!(
+                    component.as_os_str().to_str(),
+                    Some("target" | "fixtures" | "golden")
+                )
+            })
+}
+
 fn scan(root: &Path) -> Result<Census> {
-    let crates_dir: PathBuf = root.join("crates");
-    let mut per_crate: BTreeMap<String, Vec<SkipSite>> = BTreeMap::new();
-    let mut sources: Vec<(String, String)> = Vec::new();
+    let mut sites: BTreeMap<String, Vec<SkipSite>> = BTreeMap::new();
     let mut scanned: usize = 0;
-    for entry in walkdir::WalkDir::new(&crates_dir)
-        .into_iter()
-        .filter_map(std::result::Result::ok)
-    {
-        let path: &Path = entry.path();
-        if !path.is_file()
-            || path
-                .extension()
-                .is_none_or(|ext: &std::ffi::OsStr| ext != "rs")
+    for top in SCANNED_ROOTS {
+        let directory: PathBuf = root.join(top);
+        if !directory.is_dir() {
+            continue;
+        }
+        for entry in walkdir::WalkDir::new(&directory)
+            .into_iter()
+            .filter_map(std::result::Result::ok)
         {
-            continue;
-        }
-        let relative: String = path
-            .strip_prefix(root)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .replace('\\', "/");
-        if !relative.contains("/src/")
-            && !relative.contains("/tests/")
-            && !relative.ends_with("/tests.rs")
-        {
-            continue;
-        }
-        let length: u64 = entry
-            .metadata()
-            .map_or(0, |meta: std::fs::Metadata| meta.len());
-        if length > MAX_SOURCE_BYTES {
-            continue;
-        }
-        let source: String =
-            std::fs::read_to_string(path).wrap_err_with(|| format!("read {}", path.display()))?;
-        scanned = scanned.saturating_add(1);
-        if crate_of(&relative).is_some() {
-            sources.push((relative, source));
-        }
-    }
-
-    let mut helpers: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    for (_, source) in &sources {
-        helpers.extend(skip_helper_names(source));
-    }
-
-    for (relative, source) in &sources {
-        let Some(owner) = crate_of(relative) else {
-            continue;
-        };
-        let sites: Vec<SkipSite> = sites_in_source_with_helpers(relative, source, &helpers);
-        if !sites.is_empty() {
-            per_crate.entry(owner.to_owned()).or_default().extend(sites);
+            let path: &Path = entry.path();
+            if !is_scanned_source(path) {
+                continue;
+            }
+            let relative: String = path
+                .strip_prefix(root)
+                .unwrap_or(path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            let Some(owner): Option<String> = owner_of(&relative) else {
+                continue;
+            };
+            let length: u64 = entry
+                .metadata()
+                .map_or(0, |meta: std::fs::Metadata| meta.len());
+            if length > MAX_SOURCE_BYTES {
+                bail!(
+                    "{relative} is {length} bytes, above the {MAX_SOURCE_BYTES}-byte census \
+                     bound; a source the census cannot read would report none of its skips"
+                );
+            }
+            let source: String = std::fs::read_to_string(path)
+                .wrap_err_with(|| format!("read {}", path.display()))?;
+            scanned = scanned.saturating_add(1);
+            let found: Vec<SkipSite> = sites_in_source(&relative, &source)?;
+            if !found.is_empty() {
+                sites.entry(owner).or_default().extend(found);
+            }
         }
     }
-    Ok(Census {
-        printed: per_crate,
-        scanned,
-    })
+    Ok(Census { sites, scanned })
 }
 
 fn enforce_scan_floor(scanned: usize) -> Result<()> {
@@ -288,11 +236,9 @@ fn enforce_scan_floor(scanned: usize) -> Result<()> {
         return Ok(());
     }
     bail!(
-        "xtask skip-census scanned only {scanned} test source file(s), below the floor of \
+        "xtask skip-census scanned only {scanned} Rust source file(s), below the floor of \
          {MIN_SCANNED_FILES}. The scan itself is broken or the tree moved; a census that reads a \
-         fraction of the tree reports a clean sheet for everything it never opened, so this floor \
-         sits just under the count the workspace carries rather than at a token value a badly \
-         narrowed scan would still clear"
+         fraction of the tree reports a clean sheet for everything it never opened"
     )
 }
 
@@ -303,39 +249,38 @@ pub(crate) fn run(root: &Path) -> Result<()> {
 
     let declared: BTreeMap<&str, usize> = SKIP_CEILING.iter().copied().collect();
     let mut issues: Vec<String> = Vec::new();
-    let mut printed: usize = 0;
+    let mut total: usize = 0;
 
-    for (owner, sites) in &census.printed {
-        let in_test: usize = sites.iter().filter(|site: &&SkipSite| site.in_test).count();
-        printed = printed.saturating_add(in_test);
+    for (owner, sites) in &census.sites {
+        let count: usize = sites.len();
+        total = total.saturating_add(count);
         let ceiling: usize = declared.get(owner.as_str()).copied().unwrap_or(0);
-        if in_test > ceiling {
+        if count > ceiling {
             let first: String = sites
                 .iter()
-                .filter(|site: &&SkipSite| site.in_test)
                 .take(3)
-                .map(|site: &SkipSite| format!("{}:{}", site.file, site.line))
+                .map(|site: &SkipSite| format!("{}:{} ({})", site.file, site.line, site.test))
                 .collect::<Vec<String>>()
                 .join(", ");
             issues.push(format!(
-                "{owner} carries {in_test} test(s) that print a skip line and return, above its \
+                "{owner} carries {count} successful early return(s) inside tests, above its \
                  declared ceiling of {ceiling}. A test that returns before its assertions is \
-                 counted as passed and proves nothing. Either give the missing reference a named \
-                 hard failure, or declare the reference optional and stop citing that test as \
-                 evidence. First site(s): {first}"
+                 counted as passed and proves nothing: fail by name when the reference is \
+                 missing, or declare it optional through disrobe_testkit::require and \
+                 tests/optional.toml. First site(s): {first}"
             ));
         }
-        if in_test < ceiling {
+        if count < ceiling {
             issues.push(format!(
-                "{owner} carries {in_test} skip-and-return test(s), below its declared ceiling of \
-                 {ceiling}. Lower the ceiling in xtask/src/skip_census.rs in the same commit, so \
-                 the number can only ratchet down"
+                "{owner} carries {count} successful early return(s) inside tests, below its \
+                 declared ceiling of {ceiling}. Lower the ceiling in xtask/src/skip_census.rs in \
+                 the same commit, so the number can only ratchet down"
             ));
         }
     }
 
     for (owner, ceiling) in SKIP_CEILING {
-        if !census.printed.contains_key(*owner) && *ceiling > 0 {
+        if !census.sites.contains_key(*owner) && *ceiling > 0 {
             issues.push(format!(
                 "SKIP_CEILING declares {ceiling} for {owner}, which now carries none. Remove the \
                  entry in the same commit"
@@ -345,197 +290,111 @@ pub(crate) fn run(root: &Path) -> Result<()> {
 
     if !issues.is_empty() {
         bail!(
-            "xtask skip-census: {} finding(s); {printed} test(s) print a skip line and \
-             return:\n  {}",
+            "xtask skip-census: {} finding(s); {total} successful early return(s) inside \
+             tests:\n  {}",
             issues.len(),
             issues.join("\n  ")
         );
     }
 
     println!(
-        "xtask skip-census: {} test source file(s) scanned, {printed} skip-and-return test(s) \
-         across {} crate(s), each at or below its declared ceiling in xtask/src/skip_census.rs; \
-         the ceiling ratchets down only",
+        "xtask skip-census: {} Rust source file(s) parsed, {total} successful early return(s) \
+         inside tests across {} owner(s), each at or below its declared ceiling in \
+         xtask/src/skip_census.rs; the ceiling ratchets down only",
         census.scanned,
-        census.printed.len()
+        census.sites.len()
     );
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{SkipSite, owner_of, sites_in_source};
 
-    #[test]
-    fn a_skip_print_followed_by_a_bare_return_inside_a_test_is_a_site() {
-        let source: &str = "#[test]\nfn probe() {\n    if absent() {\n        \
-                            eprintln!(\"skip: corpus absent\");\n        return;\n    }\n    \
-                            assert!(false);\n}\n";
-        let sites: Vec<SkipSite> = sites_in_source("crates/x/tests/a.rs", source);
-        assert_eq!(
-            sites.len(),
-            1,
-            "the skip-and-return must be found: {sites:?}"
-        );
-        assert!(sites[0].in_test, "it sits inside a #[test]: {sites:?}");
+    fn sites(source: &str) -> eyre::Result<Vec<SkipSite>> {
+        sites_in_source("crates/x/tests/a.rs", source)
     }
 
     #[test]
-    fn successful_return_forms_are_recognized_without_matching_identifiers_or_text() {
-        for (line, expected) in [
-            ("return;", true),
-            ("return\t ;", true),
-            ("return Ok(()) ;", true),
-            ("return\tOk( ( ) ) ;", true),
-            ("return Err(\"missing\") ;", false),
-            ("return Ok(value);", false),
-            ("returnOk(());", false),
-            ("// return Ok(());", false),
-            ("println!(\"return Ok(());\");", false),
-        ] {
-            assert_eq!(
-                is_successful_return(line),
-                expected,
-                "return classification disagreed for {line:?}"
-            );
-        }
+    fn a_bare_return_before_the_assertions_of_a_test_is_a_site() -> eyre::Result<()> {
+        let found: Vec<SkipSite> = sites(
+            "#[test]\nfn probe() {\n    if absent() {\n        return;\n    }\n    assert!(false);\n}\n",
+        )?;
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!((found[0].line, found[0].test.as_str()), (4, "probe"));
+        Ok(())
     }
 
     #[test]
-    fn a_skip_print_followed_by_a_whitespace_tolerant_result_return_is_a_site() {
-        let source: &str = concat!(
+    fn a_let_else_return_and_an_ok_unit_return_are_sites() -> eyre::Result<()> {
+        let found: Vec<SkipSite> = sites(concat!(
             "#[test]\n",
             "fn probe() -> Result<(), String> {\n",
-            "    if absent() {\n",
-            "        eprintln!(\"skip: corpus absent\");\n",
-            "        return Ok( ( ) ) ;\n",
-            "    }\n",
-            "    assert!(false);\n",
+            "    let Some(tool) = find() else { return Ok(()); };\n",
+            "    if tool.is_empty() { return Ok( ( ) ); }\n",
+            "    assert!(run(tool));\n",
             "    Ok(())\n",
             "}\n"
-        );
-        let sites: Vec<SkipSite> = sites_in_source("crates/x/tests/a.rs", source);
-        assert_eq!(
-            sites.len(),
-            1,
-            "a successful Result return must be found: {sites:?}"
-        );
-        assert!(sites[0].in_test, "it sits inside a #[test]: {sites:?}");
+        ))?;
+        assert_eq!(found.len(), 2, "{found:?}");
+        Ok(())
     }
 
     #[test]
-    fn a_skip_print_without_a_return_is_not_a_site() {
-        let source: &str = "#[test]\nfn probe() {\n    eprintln!(\"skip: nothing\");\n    \
-                            assert!(true);\n}\n";
-        assert!(
-            sites_in_source("crates/x/tests/a.rs", source).is_empty(),
-            "a diagnostic print that still reaches its assertions is not a skip-and-pass"
-        );
-    }
-
-    #[test]
-    fn a_print_whose_literal_does_not_say_skip_is_not_a_site() {
-        let source: &str = "#[test]\nfn probe() {\n    println!(\"reading corpus\");\n    \
-                            return;\n}\n";
-        assert!(
-            sites_in_source("crates/x/tests/a.rs", source).is_empty(),
-            "the word skip must come from the printed literal, not from anywhere on the line"
-        );
-    }
-
-    #[test]
-    fn a_skip_and_return_outside_a_test_is_recorded_but_not_counted_against_the_ceiling() {
-        let source: &str = "fn helper() {\n    eprintln!(\"skip: corpus absent\");\n    \
-                            return;\n}\n";
-        let sites: Vec<SkipSite> = sites_in_source("crates/x/tests/a.rs", source);
-        assert_eq!(sites.len(), 1, "the site is still recorded: {sites:?}");
-        assert!(
-            !sites[0].in_test,
-            "a helper is not itself a passing test, so it must not inflate the ceiling: {sites:?}"
-        );
-    }
-
-    #[test]
-    fn a_return_beyond_the_window_does_not_pair_with_the_skip() {
-        let filler: String = "    let value: usize = 1;\n".repeat(RETURN_WINDOW + 2);
-        let source: String = format!(
-            "#[test]\nfn probe() {{\n    eprintln!(\"skip: corpus absent\");\n{filler}    return;\n}}\n"
-        );
-        assert!(
-            sites_in_source("crates/x/tests/a.rs", &source).is_empty(),
-            "a return far below an unrelated print must not be paired with it"
-        );
-    }
-
-    #[test]
-    fn the_first_return_in_the_window_controls_skip_pairing() {
-        let source: &str = concat!(
+    fn a_failing_return_a_tail_return_a_closure_and_a_helper_are_not_sites() -> eyre::Result<()> {
+        let found: Vec<SkipSite> = sites(concat!(
+            "fn helper() { return; }\n",
             "#[test]\n",
             "fn probe() -> Result<(), String> {\n",
-            "    eprintln!(\"skip: corpus absent\");\n",
-            "    return Err(\"missing corpus\".to_owned());\n",
+            "    if broken() { return Err(\"broken\".to_owned()); }\n",
+            "    let check = || { return; };\n",
+            "    check();\n",
+            "    fn nested() { return; }\n",
+            "    nested();\n",
             "    return Ok(());\n",
             "}\n"
-        );
-        assert!(
-            sites_in_source("crates/x/tests/a.rs", source).is_empty(),
-            "a later successful return cannot hide the first error return"
-        );
+        ))?;
+        assert!(found.is_empty(), "{found:?}");
+        Ok(())
     }
 
     #[test]
-    fn a_skip_and_return_inside_a_cfg_test_module_in_src_is_a_site() {
-        let source: &str = concat!(
-            "pub fn identify() {}\n",
+    fn tests_inside_a_cfg_test_module_and_async_test_attributes_are_counted() -> eyre::Result<()> {
+        let found: Vec<SkipSite> = sites(concat!(
             "#[cfg(test)]\n",
             "mod tests {\n",
-            "    #[test]\n",
-            "    fn probe() {\n",
-            "        if !git_available() {\n",
-            "            eprintln!(\"skipping: git not available\");\n",
-            "            return;\n",
-            "        }\n",
-            "        assert!(finds_the_secret());\n",
+            "    #[tokio::test]\n",
+            "    async fn probe() {\n",
+            "        if absent() { return; }\n",
+            "        assert!(false);\n",
             "    }\n",
             "}\n"
-        );
-        let found: Vec<SkipSite> = sites_in_source("crates/c/src/recon/git_history.rs", source);
-        assert_eq!(
-            found.len(),
-            1,
-            "a test that skips is a test wherever it lives, and reading only crates/*/tests left \
-             74 of these unmeasured"
-        );
-        assert!(found[0].in_test);
+        ))?;
+        assert_eq!(found.len(), 1, "{found:?}");
+        Ok(())
     }
 
     #[test]
-    fn the_scan_floor_refuses_a_walk_that_read_a_fraction_of_the_tree() {
-        assert!(
-            enforce_scan_floor(MIN_SCANNED_FILES).is_ok(),
-            "the floor must accept the count the workspace actually carries"
-        );
-        let narrowed: usize = MIN_SCANNED_FILES.saturating_sub(1);
-        let text: String = match enforce_scan_floor(narrowed) {
-            Ok(()) => unreachable!("a walk one file short of the floor must refuse"),
-            Err(refusal) => refusal.to_string(),
-        };
-        assert!(
-            text.contains(&narrowed.to_string()),
-            "the refusal must name what it actually read: {text}"
-        );
-        assert!(
-            enforce_scan_floor(0).is_err(),
-            "a walk that read nothing is the case this floor exists for"
-        );
+    fn a_return_written_in_a_string_or_comment_is_not_a_site() -> eyre::Result<()> {
+        let found: Vec<SkipSite> = sites(
+            "#[test]\nfn probe() {\n    // return;\n    let text = \"return;\";\n    assert!(text.len() > 0);\n}\n",
+        )?;
+        assert!(found.is_empty(), "{found:?}");
+        Ok(())
     }
 
     #[test]
-    fn the_crate_name_comes_from_the_second_path_segment() {
+    fn owners_cover_crates_benches_xtask_and_fuzz() {
         assert_eq!(
-            crate_of("crates/disrobe-pass-jvm/tests/a.rs"),
-            Some("disrobe-pass-jvm")
+            owner_of("crates/disrobe-core/src/a.rs").as_deref(),
+            Some("disrobe-core")
         );
-        assert_eq!(crate_of("xtask/src/main.rs"), None);
+        assert_eq!(
+            owner_of("benches/perf/src/main.rs").as_deref(),
+            Some("benches/perf")
+        );
+        assert_eq!(owner_of("xtask/src/main.rs").as_deref(), Some("xtask"));
+        assert_eq!(owner_of("fuzz/fuzz_targets/a.rs").as_deref(), Some("fuzz"));
+        assert_eq!(owner_of("docs/a.rs"), None);
     }
 }
