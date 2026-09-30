@@ -1064,7 +1064,7 @@ mod tests {
     }
 
     #[test]
-    fn catalog_quality_is_honest() {
+    fn catalog_quality_matches_each_recovery_tier() {
         let entries: Vec<&'static dyn CatalogEntry> = ObfuscatorCatalog::catalog(&JvmDetector);
         let find = |id: &str| -> SupportQuality {
             entries

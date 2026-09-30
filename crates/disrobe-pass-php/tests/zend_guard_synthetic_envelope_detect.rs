@@ -13,7 +13,7 @@ fn detects_zend3_marker_layout() {
 }
 
 #[test]
-fn analyze_is_honest_detect_only() {
+fn analyze_is_detect_only() {
     let mut blob: Vec<u8> = b"<?php @Zend;\n4".to_vec();
     blob.extend_from_slice(b"0030EncryptedZendOpcodeStreamBehindZendOptimizerLoader");
     let detection: ProtectorDetection = zend_guard_protector::analyze(&blob).expect("analyze");

@@ -1442,7 +1442,7 @@ mod tests {
     }
 
     #[test]
-    fn truncated_input_never_panics_and_reports_honestly() {
+    fn truncated_input_never_panics_and_reports_the_truncation() {
         for cut in (0..OUTER_FV.len()).step_by(4099) {
             let _ = extract_uefi_fv(&OUTER_FV[..cut], ExtractionQuota::default_safe());
         }

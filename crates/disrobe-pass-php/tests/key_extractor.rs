@@ -35,7 +35,7 @@ const AES_SBOX: [u8; 256] = [
 ];
 
 #[test]
-fn ioncube_key_is_honestly_loader_derived_not_recovered() {
+fn ioncube_key_is_loader_derived_not_recovered() {
     let mut envelope: Vec<u8> = b"<?php //004F\n".to_vec();
     envelope.extend_from_slice(b"-----BEGIN PUBLIC KEY-----\nMIIBdummyblob\n");
     envelope.extend_from_slice(&[0xAAu8; 64]);

@@ -125,7 +125,7 @@ fn dexguard_dex_recovered_plaintext_lands_in_decompiled_source() {
 }
 
 #[test]
-fn stringer_self_checksum_keyed_class_is_detected_but_walled_honestly() {
+fn stringer_self_checksum_keyed_class_is_detected_and_refused() {
     let cf: ClassFile = parse_classfile(STRINGER_DIGI).expect("real Stringer Digi.class parses");
     assert_eq!(
         detect_protector_family(&cf),

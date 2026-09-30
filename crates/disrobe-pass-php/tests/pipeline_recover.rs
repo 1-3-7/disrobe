@@ -542,7 +542,7 @@ fn pipeline_plain_source_is_passthrough() {
 }
 
 #[test]
-fn pipeline_corrupt_oparray_container_errors_honestly() {
+fn pipeline_corrupt_oparray_container_is_a_typed_error() {
     let mut bytes: Vec<u8> = OPARRAY_MAGIC.to_vec();
     bytes.push(OPARRAY_VERSION);
     bytes.push(0);
@@ -551,7 +551,7 @@ fn pipeline_corrupt_oparray_container_errors_honestly() {
 }
 
 #[test]
-fn pipeline_ioncube_without_auth_is_structural_only_and_honest() {
+fn pipeline_ioncube_without_auth_is_structural_only() {
     let mut envelope: Vec<u8> = b"<?php //004F\n".to_vec();
     envelope.extend_from_slice(b"-----BEGIN PUBLIC KEY-----\nblob\n");
     envelope.extend_from_slice(&[0x11u8; 128]);

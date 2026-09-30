@@ -194,7 +194,7 @@ fn recover_strings_emulates_string_input_decryptor_over_real_secrets() {
 }
 
 #[test]
-fn runtime_derived_key_is_honestly_walled() {
+fn runtime_derived_key_is_refused_by_name() {
     let mut cp: Cp = Cp::new();
     let code_name: u16 = cp.utf8("Code");
     let decrypt_name: u16 = cp.utf8("a");

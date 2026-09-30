@@ -2130,7 +2130,7 @@ mod tests {
     }
 
     #[test]
-    fn catalog_lists_every_packer_with_honest_quality() {
+    fn catalog_lists_every_packer_with_its_recovery_tier() {
         let entries: Vec<&'static dyn CatalogEntry> = PackerDetector.catalog();
         assert_eq!(entries.len(), CATALOG_COUNT);
         for e in &entries {

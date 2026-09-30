@@ -98,7 +98,7 @@ mod tests {
     }
 
     #[test]
-    fn analyze_is_honest_detect_only_no_source() {
+    fn analyze_is_detect_only_and_emits_no_source() {
         let mut blob: Vec<u8> = b"<?php //004F\n".to_vec();
         blob.extend_from_slice(b"encrypted Zend opcode payload that we cannot decrypt");
         let detection: ProtectorDetection = analyze(&blob).expect("analyze");

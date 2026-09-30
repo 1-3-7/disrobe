@@ -23,7 +23,7 @@ fn detects_v6_era_from_real_marker_layout() {
 }
 
 #[test]
-fn analyze_is_honest_detect_only_recovers_no_php_source() {
+fn analyze_is_detect_only_and_recovers_no_php_source() {
     let blob: Vec<u8> = ioncube_v6_envelope();
     let detection: ProtectorDetection = ioncube_protector::analyze(&blob).expect("analyze");
     assert_eq!(detection.family, ProtectorFamily::IonCube);

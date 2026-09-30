@@ -40,7 +40,7 @@ fn has_named_method_ref(cf: &ClassFile, name: &str, descriptor: &str) -> bool {
 }
 
 #[test]
-fn real_stringer_digi_class_is_honest_detect_only() {
+fn real_stringer_digi_class_is_detect_only() {
     let Ok(cf): Result<ClassFile, _> = parse_classfile(DIGI) else {
         unreachable!("real Stringer Digi.class must parse")
     };

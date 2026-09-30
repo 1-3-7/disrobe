@@ -99,7 +99,7 @@ fn real_vba_project_pcode_entry_routes_to_real_decoder() -> disrobe_pass_shell::
 }
 
 #[test]
-fn real_vba_project_pcode_parses_header_with_honest_wall() -> disrobe_pass_shell::Result<()> {
+fn real_vba_project_pcode_parses_header_and_refuses_the_body() -> disrobe_pass_shell::Result<()> {
     let raw: Vec<u8> = read_corpus("vba/vbaProject.bin");
     let cursor: std::io::Cursor<&[u8]> = std::io::Cursor::new(&raw[..]);
     let mut comp: cfb::CompoundFile<std::io::Cursor<&[u8]>> =

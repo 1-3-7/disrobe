@@ -57,18 +57,18 @@ fn circular_detector_flags_self_emit_provenance() {
 }
 
 #[test]
-fn circular_detector_clean_on_honest_golden() {
+fn circular_detector_clean_on_an_interpreter_backed_golden() {
     let tmp: tempfile::TempDir = tempfile::tempdir().unwrap();
     let goldens: PathBuf = tmp.path().join("goldens");
     write(
         &goldens,
-        "honest.golden.json",
+        "interpreter.golden.json",
         "{\"input\":\"corpus://x.pyc\",\"expected_source_from\":\"cpython interpreter recompile\"}",
     );
     let report: CircularityReport = scan_circularity(&[tmp.path().to_path_buf()]);
     assert!(
         report.is_clean(),
-        "honest golden must not trip: {:#?}",
+        "an interpreter-backed golden must not trip: {:#?}",
         report.findings
     );
 }

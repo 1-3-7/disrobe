@@ -13,7 +13,7 @@ fn detects_legacy_sgv_banner_layout() {
 }
 
 #[test]
-fn analyze_modern_is_honest_detect_only() {
+fn analyze_modern_is_detect_only() {
     let mut blob: Vec<u8> = b"<?php @SourceGuardian;\n".to_vec();
     blob.extend_from_slice(b"ixedLoaderEncryptedZendOpcodeStreamNotRecoverableFromEnvelope");
     let detection: ProtectorDetection = sourceguardian_protector::analyze(&blob).expect("analyze");

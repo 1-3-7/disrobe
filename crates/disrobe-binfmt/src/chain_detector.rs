@@ -1873,7 +1873,7 @@ mod tests {
     }
 
     #[test]
-    fn compressed_container_reports_extraction_required_honestly() {
+    fn compressed_container_reports_that_extraction_is_required() {
         let mut gz: Vec<u8> = vec![0x1f, 0x8b, 0x08, 0x00];
         gz.extend(std::iter::repeat_n(0u8, 32));
         let artifact: Artifact = Artifact::new(Rung::Raw, gz, [0u8; 32]);

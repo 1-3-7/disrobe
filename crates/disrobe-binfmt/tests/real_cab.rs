@@ -198,7 +198,7 @@ fn real_cab_stored_round_trips() {
 }
 
 #[test]
-fn real_cab_lzx_round_trips_or_walls_honestly() {
+fn real_cab_lzx_round_trips_or_is_refused_by_name() {
     let makecab: PathBuf = match locate(&MAKECAB) {
         Ok(path) => path,
         Err(reason) => {
