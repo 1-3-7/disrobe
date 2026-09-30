@@ -36281,7 +36281,6 @@ mod structuring_corpus {
     use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
     use std::collections::BTreeSet;
     use std::path::PathBuf;
-    use std::process::Command;
 
     pub(super) const HOST_ABI: Abi = if cfg!(windows) { Abi::MsX64 } else { Abi::SysV };
 
@@ -36363,10 +36362,11 @@ mod structuring_corpus {
 
     pub(super) fn gcc() -> String {
         for compiler in ["gcc", "cc", "clang"] {
-            if Command::new(compiler)
-                .arg("--version")
-                .output()
-                .is_ok_and(|o: std::process::Output| o.status.success())
+            if disrobe_testkit::tool_output(
+                disrobe_testkit::CommandSpec::new(compiler, std::time::Duration::from_mins(2))
+                    .arg("--version"),
+            )
+            .is_ok_and(|o: disrobe_testkit::ToolOutput| o.success)
             {
                 return compiler.to_owned();
             }
@@ -36387,16 +36387,17 @@ mod structuring_corpus {
         let src: PathBuf = scratch.path().join(format!("{name}.s"));
         let obj: PathBuf = scratch.path().join(format!("{name}.o"));
         std::fs::write(&src, source.as_bytes()).expect("write object-test assembly");
-        let compiled: std::process::Output = Command::new(&compiler)
-            .args(["-c", "-o"])
-            .arg(&obj)
-            .arg(&src)
-            .output()
-            .expect("invoke object-test compiler");
+        let compiled: disrobe_testkit::ToolOutput = disrobe_testkit::tool_output(
+            disrobe_testkit::CommandSpec::new(&compiler, std::time::Duration::from_mins(2))
+                .args(["-c", "-o"])
+                .arg(&obj)
+                .arg(&src),
+        )
+        .expect("invoke object-test compiler");
         assert!(
-            compiled.status.success(),
+            compiled.success,
             "object-test assembly failed: {}",
-            String::from_utf8_lossy(&compiled.stderr)
+            compiled.stderr_text()
         );
         std::fs::read(obj).expect("read object-test object")
     }
@@ -36406,16 +36407,17 @@ mod structuring_corpus {
         let src: PathBuf = scratch.path().join(format!("{name}.s"));
         let obj: PathBuf = scratch.path().join(format!("{name}.o"));
         std::fs::write(&src, source.as_bytes()).expect("write ELF object-test assembly");
-        let compiled: std::process::Output = Command::new("clang")
-            .args(["--target=x86_64-unknown-linux-gnu", "-c", "-o"])
-            .arg(&obj)
-            .arg(&src)
-            .output()
-            .expect("invoke ELF object-test compiler");
+        let compiled: disrobe_testkit::ToolOutput = disrobe_testkit::tool_output(
+            disrobe_testkit::CommandSpec::new("clang", std::time::Duration::from_mins(2))
+                .args(["--target=x86_64-unknown-linux-gnu", "-c", "-o"])
+                .arg(&obj)
+                .arg(&src),
+        )
+        .expect("invoke ELF object-test compiler");
         assert!(
-            compiled.status.success(),
+            compiled.success,
             "ELF object-test assembly failed: {}",
-            String::from_utf8_lossy(&compiled.stderr)
+            compiled.stderr_text()
         );
         std::fs::read(obj).expect("read ELF object-test object")
     }
@@ -36935,24 +36937,25 @@ mod structuring_corpus {
         let src: PathBuf = dir.join(format!("cf_corpus_{tag}.c"));
         let obj: PathBuf = dir.join(format!("cf_corpus_{tag}.o"));
         std::fs::write(&src, source.as_bytes()).expect("write corpus source");
-        let compiled: std::process::Output = Command::new(compiler)
-            .args([
-                "-O1",
-                "-fno-stack-protector",
-                "-fno-if-conversion",
-                "-fno-if-conversion2",
-                "-fno-tree-loop-if-convert",
-                "-c",
-                "-o",
-            ])
-            .arg(&obj)
-            .arg(&src)
-            .output()
-            .expect("invoke compiler for cf corpus");
+        let compiled: disrobe_testkit::ToolOutput = disrobe_testkit::tool_output(
+            disrobe_testkit::CommandSpec::new(compiler, std::time::Duration::from_mins(2))
+                .args([
+                    "-O1",
+                    "-fno-stack-protector",
+                    "-fno-if-conversion",
+                    "-fno-if-conversion2",
+                    "-fno-tree-loop-if-convert",
+                    "-c",
+                    "-o",
+                ])
+                .arg(&obj)
+                .arg(&src),
+        )
+        .expect("invoke compiler for cf corpus");
         assert!(
-            compiled.status.success(),
+            compiled.success,
             "{compiler} failed to compile the cf corpus: {}",
-            String::from_utf8_lossy(&compiled.stderr)
+            compiled.stderr_text()
         );
         std::fs::read(&obj).expect("read the compiled cf corpus object")
     }
@@ -37097,25 +37100,26 @@ mod structuring_corpus {
         let src: PathBuf = scratch.path().join("wp_nested_loop_o3.c");
         let obj: PathBuf = scratch.path().join("wp_nested_loop_o3.o");
         std::fs::write(&src, source.as_bytes()).expect("write nested loop source");
-        let compiled: std::process::Output = Command::new(&compiler)
-            .args([
-                "-O3",
-                "-fno-stack-protector",
-                "-fno-optimize-sibling-calls",
-                "-fno-if-conversion",
-                "-fno-if-conversion2",
-                "-fno-tree-loop-if-convert",
-                "-c",
-                "-o",
-            ])
-            .arg(&obj)
-            .arg(&src)
-            .output()
-            .expect("invoke host gcc");
+        let compiled: disrobe_testkit::ToolOutput = disrobe_testkit::tool_output(
+            disrobe_testkit::CommandSpec::new(&compiler, std::time::Duration::from_mins(2))
+                .args([
+                    "-O3",
+                    "-fno-stack-protector",
+                    "-fno-optimize-sibling-calls",
+                    "-fno-if-conversion",
+                    "-fno-if-conversion2",
+                    "-fno-tree-loop-if-convert",
+                    "-c",
+                    "-o",
+                ])
+                .arg(&obj)
+                .arg(&src),
+        )
+        .expect("invoke host gcc");
         assert!(
-            compiled.status.success(),
+            compiled.success,
             "host gcc failed: {}",
-            String::from_utf8_lossy(&compiled.stderr)
+            compiled.stderr_text()
         );
         let object: Vec<u8> = std::fs::read(&obj).expect("read nested loop object");
         let (code, base): (Vec<u8>, u64) =
