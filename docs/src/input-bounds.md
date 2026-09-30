@@ -2,7 +2,7 @@
 
 Every parser treats its input as hostile. Counts, sizes, recursion depth, work and output are capped by named constants, and input that exceeds a cap is refused with a typed error instead of exhausting memory or time. `cargo xtask regen` generates this page from every module-level constant in `crates/*/src` whose name starts with `MAX_` or ends with `_LIMIT`, `_BUDGET` or `_CAP`, and `cargo xtask regen --check` fails when it is stale. The kind column is derived from the constant name.
 
-2175 bounds (count 215, other 1020, output 64, recursion 219, size 478, work 179).
+2177 bounds (count 215, other 1021, output 64, recursion 219, size 479, work 179).
 
 | Crate | Constant | Kind | Type | Value | File |
 | --- | --- | --- | --- | --- | --- |
@@ -1059,6 +1059,8 @@ Every parser treats its input as hostile. Counts, sizes, recursion depth, work a
 | `disrobe-pass-lua` | `DISPATCH_GUARD_LIMIT` | other | `usize` | `256` | `crates/disrobe-pass-lua/src/obfuscator/wearedevs.rs` |
 | `disrobe-pass-lua` | `DISPATCH_PARSE_DEPTH_LIMIT` | recursion | `usize` | `512` | `crates/disrobe-pass-lua/src/obfuscator/wearedevs.rs` |
 | `disrobe-pass-lua` | `DISPATCH_SCAN_LIMIT` | other | `usize` | `256 * 1024` | `crates/disrobe-pass-lua/src/obfuscator/wearedevs.rs` |
+| `disrobe-pass-lua` | `INT_VARINT_LIMIT` | other | `u64` | `i32::MAX as u64` | `crates/disrobe-pass-lua/src/reader/lua55.rs` |
+| `disrobe-pass-lua` | `MAX_MATERIALIZED_STRING_BYTES` | size | `usize` | `64 << 20` | `crates/disrobe-pass-lua/src/reader/lua55.rs` |
 | `disrobe-pass-lua` | `MAX_ASSEMBLED_NODES` | count | `usize` | `1 << 16` | `crates/disrobe-pass-lua/src/reader/luau.rs` |
 | `disrobe-pass-lua` | `MAX_BUILD_ID_BYTES` | size | `usize` | `128` | `crates/disrobe-pass-lua/src/reader/luau.rs` |
 | `disrobe-pass-lua` | `MAX_OPCODE_MAP_BYTES` | size | `u64` | `64 << 10` | `crates/disrobe-pass-lua/src/reader/luau.rs` |

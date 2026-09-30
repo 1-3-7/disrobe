@@ -4,13 +4,13 @@
 
 | Measure | Count |
 | --- | ---: |
-| Scanned source files | 1964 |
-| Emission sites | 2348 |
-| Sites carrying a message | 2265 |
-| Distinct emitted codes | 1797 |
+| Scanned source files | 1965 |
+| Emission sites | 2354 |
+| Sites carrying a message | 2271 |
+| Distinct emitted codes | 1803 |
 | Registered codes | 177 |
 | Codes with two or more distinct messages | 254 |
-| Emitted codes missing from the registry | 1620 |
+| Emitted codes missing from the registry | 1626 |
 | Registered codes no source emits | 0 |
 
 ## Codes with two or more distinct messages (254)
@@ -1447,7 +1447,7 @@
 - `"{}"`: `crates/disrobe-cli/src/cli/wasm.rs:160`
 - no message: `crates/disrobe-python/src/wasm.rs:55`
 
-## Emitted codes missing from the registry (1620)
+## Emitted codes missing from the registry (1626)
 
 - `DR-AS3-0001`: `crates/disrobe-pass-as3/src/error.rs:8`
 - `DR-AS3-0002`: `crates/disrobe-pass-as3/src/error.rs:11`
@@ -2379,11 +2379,17 @@
 - `DR-LUA-0029`: `crates/disrobe-pass-lua/src/error.rs:104`
 - `DR-LUA-0030`: `crates/disrobe-pass-lua/src/error.rs:107`
 - `DR-LUA-0031`: `crates/disrobe-pass-lua/src/error.rs:111`
-- `DR-LUA-0902`: `crates/disrobe-pass-lua/src/chain_detector.rs:127`
-- `DR-LUA-0903`: `crates/disrobe-pass-lua/src/chain_detector.rs:370`
-- `DR-LUA-0904`: `crates/disrobe-pass-lua/src/chain_detector.rs:411`
-- `DR-LUA-0905`: `crates/disrobe-pass-lua/src/chain_detector.rs:381`
-- `DR-LUA-0906`: `crates/disrobe-pass-lua/src/chain_detector.rs:91`
+- `DR-LUA-0032`: `crates/disrobe-pass-lua/src/error.rs:115`
+- `DR-LUA-0033`: `crates/disrobe-pass-lua/src/error.rs:119`
+- `DR-LUA-0034`: `crates/disrobe-pass-lua/src/error.rs:127`
+- `DR-LUA-0035`: `crates/disrobe-pass-lua/src/error.rs:130`
+- `DR-LUA-0036`: `crates/disrobe-pass-lua/src/error.rs:137`
+- `DR-LUA-0037`: `crates/disrobe-pass-lua/src/error.rs:141`
+- `DR-LUA-0902`: `crates/disrobe-pass-lua/src/chain_detector.rs:128`
+- `DR-LUA-0903`: `crates/disrobe-pass-lua/src/chain_detector.rs:371`
+- `DR-LUA-0904`: `crates/disrobe-pass-lua/src/chain_detector.rs:412`
+- `DR-LUA-0905`: `crates/disrobe-pass-lua/src/chain_detector.rs:382`
+- `DR-LUA-0906`: `crates/disrobe-pass-lua/src/chain_detector.rs:92`
 - `DR-MARSHAL-0013`: `crates/disrobe-py-marshal/src/error.rs:69`
 - `DR-MARSHAL-0014`: `crates/disrobe-py-marshal/src/error.rs:74`
 - `DR-MARSHAL-0015`: `crates/disrobe-py-marshal/src/error.rs:79`
@@ -2852,19 +2858,19 @@
 - `DR-PYARM-0069`: `crates/disrobe-pass-pyarmor/src/error.rs:172`
 - `DR-PYARM-0070`: `crates/disrobe-pass-pyarmor/src/error.rs:175`
 - `DR-PYARM-0071`: `crates/disrobe-pass-pyarmor/src/error.rs:178`
-- `DR-PYARM-0901`: `crates/disrobe-pass-pyarmor/src/chain_detector.rs:113`
-- `DR-PYARM-0902`: `crates/disrobe-pass-pyarmor/src/chain_detector.rs:118`
-- `DR-PYARM-0904`: `crates/disrobe-pass-pyarmor/src/chain_detector.rs:130`
-- `DR-PYARM-0905`: `crates/disrobe-pass-pyarmor/src/chain_detector.rs:135`
-- `DR-PYARM-0906`: `crates/disrobe-pass-pyarmor/src/chain_detector.rs:191`
-- `DR-PYARM-0907`: `crates/disrobe-pass-pyarmor/src/chain_detector.rs:200`
-- `DR-PYARM-0908`: `crates/disrobe-pass-pyarmor/src/chain_detector.rs:204`
-- `DR-PYARM-0909`: `crates/disrobe-pass-pyarmor/src/chain_detector.rs:217`
-- `DR-PYARM-0910`: `crates/disrobe-pass-pyarmor/src/chain_detector.rs:238`
-- `DR-PYARM-0911`: `crates/disrobe-pass-pyarmor/src/chain_detector.rs:242`
-- `DR-PYARM-0912`: `crates/disrobe-pass-pyarmor/src/chain_detector.rs:259`
-- `DR-PYARM-0913`: `crates/disrobe-pass-pyarmor/src/chain_detector.rs:270`
-- `DR-PYARM-0914`: `crates/disrobe-pass-pyarmor/src/chain_detector.rs:425`
+- `DR-PYARM-0901`: `crates/disrobe-pass-pyarmor/src/chain_detector.rs:112`
+- `DR-PYARM-0902`: `crates/disrobe-pass-pyarmor/src/chain_detector.rs:117`
+- `DR-PYARM-0904`: `crates/disrobe-pass-pyarmor/src/chain_detector.rs:129`
+- `DR-PYARM-0905`: `crates/disrobe-pass-pyarmor/src/chain_detector.rs:134`
+- `DR-PYARM-0906`: `crates/disrobe-pass-pyarmor/src/chain_detector.rs:190`
+- `DR-PYARM-0907`: `crates/disrobe-pass-pyarmor/src/chain_detector.rs:199`
+- `DR-PYARM-0908`: `crates/disrobe-pass-pyarmor/src/chain_detector.rs:203`
+- `DR-PYARM-0909`: `crates/disrobe-pass-pyarmor/src/chain_detector.rs:216`
+- `DR-PYARM-0910`: `crates/disrobe-pass-pyarmor/src/chain_detector.rs:237`
+- `DR-PYARM-0911`: `crates/disrobe-pass-pyarmor/src/chain_detector.rs:241`
+- `DR-PYARM-0912`: `crates/disrobe-pass-pyarmor/src/chain_detector.rs:258`
+- `DR-PYARM-0913`: `crates/disrobe-pass-pyarmor/src/chain_detector.rs:269`
+- `DR-PYARM-0914`: `crates/disrobe-pass-pyarmor/src/chain_detector.rs:424`
 - `DR-PYDEC-0001`: `crates/disrobe-pass-py-decompile/src/error.rs:7`
 - `DR-PYDEC-0002`: `crates/disrobe-pass-py-decompile/src/error.rs:11`
 - `DR-PYDEC-0003`: `crates/disrobe-pass-py-decompile/src/error.rs:15`
