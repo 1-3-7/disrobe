@@ -199,7 +199,7 @@ fn clean_control_apk_without_planted_data_yields_nothing() {
 }
 
 #[test]
-fn commercial_shield_walls_honestly() {
+fn commercial_shield_walls() {
     let real_manifest: Vec<u8> = real_manifest_bytes();
     let elf_so: &[u8] = &[0x7f, b'E', b'L', b'F', 2, 1, 1, 0];
     let embedded_dex: Vec<u8> = dex_blob(b"payload");

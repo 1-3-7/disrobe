@@ -184,7 +184,7 @@ fn reconstructs_real_dwarf_types_from_nim_elf() {
 }
 
 #[test]
-fn split_dwarf_info_reports_single_file_dwarf_honestly() {
+fn split_dwarf_info_reports_single_file_dwarf() {
     let rec: TypeReconstruction = reconstruct_dwarf_types(ZIG_ELF).expect("zig reconstruct");
     assert!(
         !rec.split_dwarf.has_skeleton_units,

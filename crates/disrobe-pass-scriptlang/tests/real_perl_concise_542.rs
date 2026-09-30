@@ -105,7 +105,7 @@ fn real_542_main_reconstructs_calls() {
 }
 
 #[test]
-fn real_542_recovery_is_honest() {
+fn real_542_recovery_matches_its_measurement() {
     let src: PerlSource = decompiled();
     assert!(src.statements_total >= 6);
     assert!(src.statements_recovered <= src.statements_total);

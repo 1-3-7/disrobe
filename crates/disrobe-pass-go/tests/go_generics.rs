@@ -142,7 +142,7 @@ fn shape_bodies_recover_concrete_args_from_sibling_symbols_on_real_binary() {
 }
 
 #[test]
-fn shape_only_generics_with_no_sibling_stay_an_honest_wall_on_real_binary() {
+fn shape_only_generics_with_no_sibling_stay_a_wall_on_real_binary() {
     let bytes: Vec<u8> = common::required_fixture(common::BENCH_GENERICS);
     let analysis: GoAnalysis = analyze(&bytes).expect("analyze bench_generics");
     let generics: &[GoGenericInstantiation] = &analysis.typemeta.generics;

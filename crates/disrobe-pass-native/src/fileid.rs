@@ -1284,7 +1284,7 @@ mod tests {
     }
 
     #[test]
-    fn labeled_packed_corpus_is_identified_by_family_with_honest_precision() {
+    fn labeled_packed_corpus_is_identified_by_family_with_measured_precision() {
         let cases: &[(&str, &str)] = &[
             ("native/packers/upx/hello.packed.nrv2b.exe", "upx"),
             (

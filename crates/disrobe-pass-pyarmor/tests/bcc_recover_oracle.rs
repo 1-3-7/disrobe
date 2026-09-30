@@ -346,7 +346,7 @@ fn text_section(blob: &[u8]) -> Option<(u64, Vec<u8>)> {
 }
 
 #[test]
-fn real_pyarmor_bcc_body_degrades_honestly() {
+fn real_pyarmor_bcc_body_degrades() {
     let dir: PathBuf = corpus_default_dir();
     let wrapper_path: PathBuf = dir.join("known_plaintext.py");
     let wrapper_text: String = std::fs::read_to_string(&wrapper_path).expect("read wrapper");

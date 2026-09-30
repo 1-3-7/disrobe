@@ -1225,7 +1225,7 @@ mod tests {
     }
 
     #[test]
-    fn genuinely_unresolvable_vcall_surfaces_unknown_with_count() {
+    fn unresolvable_vcall_surfaces_unknown_with_count() {
         use super::super::koistream::KoiStream;
 
         const PUSHI_DWORD: u8 = 231;

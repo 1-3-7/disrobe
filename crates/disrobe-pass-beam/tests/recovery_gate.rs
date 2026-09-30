@@ -163,7 +163,7 @@ fn elixir_struct_fields_render_atoms_before_keywords() {
 }
 
 #[test]
-fn stripped_dbgi_is_honest_core_lift_wall_not_abstract() {
+fn stripped_dbgi_is_core_lift_wall_not_abstract() {
     let bytes: Vec<u8> = read("megafile/edge_cases.ez");
     let archive: EzArchive = EzArchive::parse(&bytes).expect("ez parse");
     let entry: EzEntry = archive

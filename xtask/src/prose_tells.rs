@@ -7,7 +7,7 @@ use crate::fileio::read_bytes_bounded;
 
 const MAX_SCANNED_BYTES: u64 = 8 * 1024 * 1024;
 
-pub(crate) const RUST_SOURCE_CEILING: usize = 74;
+pub(crate) const RUST_SOURCE_CEILING: usize = 27;
 
 const WORD_TELLS: [&str; 27] = [
     "honest",

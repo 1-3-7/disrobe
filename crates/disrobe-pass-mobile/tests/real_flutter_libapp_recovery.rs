@@ -188,7 +188,7 @@ fn recovers_object_pool_and_dispatch_from_real_aot() {
 }
 
 #[test]
-fn honest_boundary_is_stated_not_source() {
+fn recovery_boundary_is_stated_not_source() {
     let bytes: Vec<u8> = sample_so();
     let recovery: DartLibAppRecovery = decompile_libapp_so_recovery(&bytes).expect("recover");
     assert!(

@@ -14,7 +14,7 @@ use disrobe_pass_swift_objc::{
 use macho_corpus::{SWIFT_HELLO_ORIGINAL, ZIG_HELLO_ELF, first_slice, read_tracked};
 
 #[test]
-fn stripped_swift_macho_degrades_honestly_with_carve_and_disasm() {
+fn stripped_swift_macho_degrades_with_carve_and_disasm() {
     let bytes: Vec<u8> = read_tracked(SWIFT_HELLO_ORIGINAL);
     let (slice, parsed): (Vec<u8>, ParsedSlice) = first_slice(SWIFT_HELLO_ORIGINAL, &bytes);
     assert!(

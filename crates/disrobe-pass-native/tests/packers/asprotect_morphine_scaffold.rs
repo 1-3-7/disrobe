@@ -338,7 +338,7 @@ fn warzone_crypter_emulator_inverts_a_synthetic_decrypt_stub() {
 }
 
 #[test]
-fn stub_eval_pending_wall_reason_is_honest_and_distinct() {
+fn stub_eval_pending_wall_reason_is_named_and_distinct() {
     let pending: &str = UnpackerStatus::StubEvalPending.wall_reason();
     assert!(
         pending.contains("real-sample recovery is unproven"),

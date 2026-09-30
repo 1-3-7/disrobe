@@ -93,7 +93,7 @@ fn reversing_the_successor_list_of_every_block_keeps_the_fingerprint() {
 }
 
 #[test]
-fn genuinely_different_shapes_produce_different_fingerprints() {
+fn different_shapes_produce_different_fingerprints() {
     let shapes: Vec<(&str, ControlFlowGraph)> = vec![
         (
             "chain",

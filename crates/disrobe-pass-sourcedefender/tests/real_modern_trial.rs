@@ -23,7 +23,7 @@ fn classifies_real_modern_container_as_hex() {
 }
 
 #[test]
-fn modern_trial_peels_hex_layer_then_honest_walls_aes_gcm_body() {
+fn modern_trial_peels_hex_layer_then_walls_aes_gcm_body() {
     let Ok(rec): Result<LayeredRecovery, _> = recover_layered(MODERN_TRIAL, "known.pye") else {
         unreachable!("recover_layered failed on real modern sample")
     };
@@ -34,7 +34,7 @@ fn modern_trial_peels_hex_layer_then_honest_walls_aes_gcm_body() {
         "modern licensed body must not claim full recovery"
     );
     assert!(
-        rec.is_honest_wall(),
+        rec.is_info_theoretic_wall(),
         "the wall must be an info-theoretic wall, not a soft failure"
     );
 

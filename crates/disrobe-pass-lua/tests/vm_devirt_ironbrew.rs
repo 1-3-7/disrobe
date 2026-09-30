@@ -331,7 +331,7 @@ fn moonsec_v3_peel_devirtualizes_lua_table_wrapper() {
 }
 
 #[test]
-fn ironbrew2_peel_without_payload_is_honest_passthrough() {
+fn ironbrew2_peel_without_payload_is_passthrough() {
     use disrobe_pass_lua::ironbrew2;
     use disrobe_pass_lua::obfuscator::{DeobfOptions, PeelResult};
 

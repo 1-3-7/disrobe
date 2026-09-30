@@ -1178,7 +1178,7 @@ mod tests {
     }
 
     #[test]
-    fn recovery_ratio_is_honest_and_bounded() {
+    fn recovery_ratio_is_measured_and_bounded() {
         let src: PerlSource = decompiled();
         assert!(src.statements_total > 0);
         assert!(src.statements_recovered <= src.statements_total);

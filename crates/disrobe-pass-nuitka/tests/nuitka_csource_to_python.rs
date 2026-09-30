@@ -138,7 +138,7 @@ fn emitted_python_function_set_equals_independent_pyi() {
 }
 
 #[test]
-fn skeleton_emission_is_honest_when_c_source_absent() {
+fn skeleton_emission_is_labelled_when_c_source_absent() {
     let cmod: CModuleStructure =
         parse_c_module_with_python_abi(C_SRC, FIXTURE_PYTHON_ABI).expect("parse module.hello.c");
     let pool: ConstantsPool =

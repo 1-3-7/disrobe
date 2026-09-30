@@ -383,7 +383,7 @@ fn corpus_lookupswitch_dispatch_recovery_holds_its_measured_floor() {
 }
 
 #[test]
-fn corpus_recovery_rate_holds_an_honest_floor() {
+fn corpus_recovery_rate_holds_its_floor() {
     let Some((bodies, full, _leak)): Option<(usize, usize, String)> = rendered_corpus_bodies()
     else {
         return;

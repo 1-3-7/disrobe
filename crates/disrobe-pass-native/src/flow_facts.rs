@@ -845,7 +845,7 @@ mod tests {
     }
 
     #[test]
-    fn a_genuinely_sequential_instruction_is_decoded_not_blind() {
+    fn a_sequential_instruction_is_decoded_not_blind() {
         let cases: [(DisasmArch, &[u8]); 4] = [
             (DisasmArch::Aarch64, &[0x1F, 0x20, 0x03, 0xD5]),
             (DisasmArch::MipsBe32, &[0x00, 0x00, 0x00, 0x00]),

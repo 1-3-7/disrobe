@@ -187,7 +187,7 @@ fn build_stripped_zig_elf() -> Vec<u8> {
 }
 
 #[test]
-fn stripped_binary_degrades_honestly_carve_disasm_no_fabrication() {
+fn stripped_binary_degrades_carve_disasm_no_fabrication() {
     let bytes: Vec<u8> = build_stripped_zig_elf();
     assert!(
         !debug_str(&bytes),

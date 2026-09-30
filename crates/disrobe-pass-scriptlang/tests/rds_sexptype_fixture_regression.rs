@@ -253,7 +253,7 @@ fn committed_external_pointer_fixture_marks_a_runtime_address() {
     let ep: &disrobe_pass_scriptlang::lang::r_rds::RdsExternalPointer = &obj.external_pointers[0];
     assert!(
         ep.note.contains("runtime"),
-        "the extptr address must be honestly marked as a non-serialized runtime value: {}",
+        "the extptr address must be marked as a non-serialized runtime value: {}",
         ep.note
     );
 }

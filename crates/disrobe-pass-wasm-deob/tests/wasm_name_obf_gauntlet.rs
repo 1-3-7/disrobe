@@ -132,7 +132,7 @@ fn exported_names_are_canonicalized_from_the_export_table() {
 }
 
 #[test]
-fn internal_function_names_are_the_honest_residual() {
+fn internal_function_names_are_the_residual() {
     let clean: ModuleSignatures = extract_signatures(CLEAN).expect("clean sigs");
     let stripped: ModuleSignatures = extract_signatures(STRIPPED).expect("stripped sigs");
     let clean_square: &FunctionSig = clean.defined_sig(0).expect("clean square");

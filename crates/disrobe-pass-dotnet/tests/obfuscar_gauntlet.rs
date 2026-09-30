@@ -268,7 +268,7 @@ fn rename_raises_obfuscated_identifier_count_over_clean() {
 }
 
 #[test]
-fn peel_reports_obfuscar_and_states_the_honest_residual() {
+fn peel_reports_obfuscar_and_states_the_residual() {
     let obf: Vec<u8> = load(OBFUSCATED_REL);
     let report: PeelReport = peel_obfuscar(&obf).expect("peel must succeed on real managed PE");
     assert_eq!(report.protector, Protector::Obfuscar);
@@ -435,7 +435,7 @@ fn recovery_reads_the_carrier_and_not_a_baked_in_table() {
 }
 
 #[test]
-fn inlined_const_string_is_an_honest_residual() {
+fn inlined_const_string_is_a_residual() {
     let clean: Vec<u8> = load(CLEAN_REL);
     let obf: Vec<u8> = load(OBFUSCATED_REL);
     assert!(

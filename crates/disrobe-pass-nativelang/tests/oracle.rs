@@ -1839,7 +1839,7 @@ fn debug_binaries_recover_types_lines_and_disassembly_but_not_source_text() {
 }
 
 #[test]
-fn stripped_binary_surfaces_entry_points_honestly() {
+fn stripped_binary_surfaces_entry_points() {
     let Some(bytes): Option<Vec<u8>> = common::fixture_or_skip(common::ZIG_ELF) else {
         panic!(
             "missing committed fixture corpus/native/zig/hello.zig.elf (a tracked corpus file - see corpus/native/MANIFEST or regen.ps1)"

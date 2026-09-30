@@ -41,7 +41,7 @@ fn case_insensitive_matches_lowercase_input() {
 }
 
 #[test]
-fn unknown_hash_is_honest_miss() {
+fn unknown_hash_is_a_miss() {
     let bogus: u32 = 0xDEAD_BEEF;
     assert!(
         resolve_hash_any_family(bogus).is_none(),

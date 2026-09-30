@@ -1466,7 +1466,7 @@ mod tests {
     }
 
     #[test]
-    fn quality_map_is_honest() {
+    fn quality_map_matches_the_recovery() {
         assert_eq!(
             quality_for(Protector::EazfuscatorNet),
             SupportQuality::Partial

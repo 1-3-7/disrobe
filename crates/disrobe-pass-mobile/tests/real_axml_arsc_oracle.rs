@@ -351,7 +351,7 @@ fn rich_arsc_resolves_all_three_types() {
 }
 
 #[test]
-fn unresolvable_reference_stays_honest() {
+fn unresolvable_reference_stays_unresolved() {
     let apk: Vec<u8> = read_fixture("corpus/apk/fixture-rich.apk");
     let table: ArscResources = arsc_of(&apk);
     assert_eq!(

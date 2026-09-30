@@ -28,7 +28,7 @@ fn unwrap_fixture(wrapped: &[u8]) -> Vec<u8> {
 }
 
 #[test]
-fn jawbreaker_real_remote_loader_peels_to_url_and_honest_wall() {
+fn jawbreaker_real_remote_loader_peels_to_url_and_wall() {
     let artifact: Vec<u8> = unwrap_fixture(WRAPPED);
     let text: &str = std::str::from_utf8(&artifact).expect("utf-8 artifact");
     assert!(

@@ -2404,7 +2404,7 @@ fn sourcedefender_modern_body_with_a_wrong_key_is_refused_without_a_success_line
 }
 
 #[test]
-fn sourcedefender_modern_body_without_key_walls_honestly() {
+fn sourcedefender_modern_body_without_key_walls() {
     let pye: PathBuf = corpus_path("python/sourcedefender/known_v16_trial.pye");
     assert!(
         pye.exists(),

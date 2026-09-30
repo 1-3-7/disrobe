@@ -119,7 +119,7 @@ fn linked_method_names_match_pclntab_function_names_exactly() {
 }
 
 #[test]
-fn unlinked_methods_are_honestly_dead_code_not_fabricated() {
+fn unlinked_methods_are_dead_code_not_fabricated() {
     let bytes: Vec<u8> = common::fixture(common::HELLO_NORMAL);
     let analysis: GoAnalysis = analyze(&bytes).expect("analyze hello_normal");
 

@@ -3509,7 +3509,7 @@ mod tests {
             finding(&report, Technique::VmVirtualization).expect("vmp detected");
         assert!(
             matches!(f.defeated_by, DefeatStatus::DetectedNotDefeated { .. }),
-            "native VM virtualization must wall honestly: {:?}",
+            "native VM virtualization must report its wall: {:?}",
             f.defeated_by
         );
     }
@@ -3545,7 +3545,7 @@ mod tests {
     }
 
     #[test]
-    fn packing_routed_but_unrecovered_is_honest() {
+    fn packing_routed_but_unrecovered_names_its_wall() {
         let mut buf: Vec<u8> = b"MZ\x90\x00".to_vec();
         buf.extend_from_slice(b"......UPX!......compressed");
         let chain: ChainEvidence = ChainEvidence {

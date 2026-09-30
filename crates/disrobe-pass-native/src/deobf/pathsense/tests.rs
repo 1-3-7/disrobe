@@ -158,7 +158,7 @@ fn concrete_oracle_never_reaches_the_proven_dead_block() {
 }
 
 #[test]
-fn genuinely_reachable_branch_is_not_marked_dead() {
+fn reachable_branch_is_not_marked_dead() {
     let mut asm: CodeAssembler = CodeAssembler::new(64).expect("assembler");
     let mut small: CodeLabel = asm.create_label();
     let mut end: CodeLabel = asm.create_label();

@@ -20,7 +20,7 @@ const SLOTS: &[&str] = &[
 ];
 
 #[test]
-fn jawbreaker_real_fixtures_are_honest_detect_only_remote_loader() {
+fn jawbreaker_real_fixtures_are_detect_only_remote_loader() {
     for slot in SLOTS {
         let fixture: Vec<u8> = common::require_real_fixture("jawbreaker", slot);
         let det: DetectReport = JawbreakerPass.detect(&fixture);

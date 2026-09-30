@@ -64,7 +64,7 @@ fn proves_opacity_across_an_unconditional_jump_that_the_single_block_matcher_can
 }
 
 #[test]
-fn genuinely_unconstrained_register_across_a_jump_stays_data_dependent() {
+fn unconstrained_register_across_a_jump_stays_data_dependent() {
     let mut asm: CodeAssembler = CodeAssembler::new(64).expect("assembler");
     let mut mid: CodeLabel = asm.create_label();
     let mut real: CodeLabel = asm.create_label();

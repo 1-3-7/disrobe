@@ -116,7 +116,7 @@ impl LayeredRecovery {
     }
 
     #[must_use]
-    pub fn is_honest_wall(&self) -> bool {
+    pub fn is_info_theoretic_wall(&self) -> bool {
         self.wall
             .as_ref()
             .is_some_and(|w: &BodyWall| w.reason.is_info_theoretic())
@@ -538,11 +538,11 @@ mod tests {
     }
 
     #[test]
-    fn modern_trial_sample_peels_layers_then_honest_walls() {
+    fn modern_trial_sample_peels_layers_then_walls() {
         let rec: LayeredRecovery = recover_layered(MODERN_TRIAL, "known.pye").expect("recover");
         assert_eq!(rec.variant, ContainerVariant::ModernHex);
         assert!(!rec.is_fully_recovered());
-        assert!(rec.is_honest_wall());
+        assert!(rec.is_info_theoretic_wall());
         assert!(rec.recovered_source.is_none());
         assert!(rec.recovered_marshal.is_none());
 

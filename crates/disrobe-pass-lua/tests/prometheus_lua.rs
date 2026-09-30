@@ -23,7 +23,7 @@ fn detect_prometheus_marker() {
 }
 
 #[test]
-fn peel_prometheus_reports_honest_status() {
+fn peel_prometheus_reports_status() {
     let opts: DeobfOptions = DeobfOptions::default();
     let out: PeelResult = prometheus::peel(SAMPLE, &opts).expect("peel");
     assert!(

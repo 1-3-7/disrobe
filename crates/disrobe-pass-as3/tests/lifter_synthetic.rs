@@ -1064,7 +1064,7 @@ fn resolves_getslot_setslot_to_trait_names() {
 }
 
 #[test]
-fn unresolved_getslot_falls_back_honestly() {
+fn unresolved_getslot_falls_back() {
     let code: Vec<u8> = vec![0xD0, 0x6C, 0x09, 0x48];
     let abc: AbcFile = mk_abc(
         &["", "C", "Object", "x", "run"],

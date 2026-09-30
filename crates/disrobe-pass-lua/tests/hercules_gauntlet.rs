@@ -112,7 +112,7 @@ fn peel_extracts_embedded_next_layer_constant() {
 }
 
 #[test]
-fn peel_is_honest_about_the_vm_wall() {
+fn peel_names_the_vm_wall() {
     let bytes: Vec<u8> = load("gauntlet_obfuscated.lua");
     let out: PeelResult = hercules::peel(&bytes, &DeobfOptions::default()).expect("peel");
 
