@@ -4,20 +4,19 @@ mod common;
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use common::{
     EvalOutcome, ObservedValue, Terminal, TraceEvent, eval_capture, eval_outcome,
     eval_outcome_bare, outcomes_equivalent, try_eval_outcome_with_argv,
 };
 use disrobe_core::scratch::ScratchDir;
-use disrobe_core::subprocess::{CapturedOutput, wait_with_output_timeout};
 use disrobe_pass_js_deob::{
     DeobOptions, DeobOutput, Detection, JsObfuscator, OBFUSCATOR_IO_MAX_PASS_CEILING,
     ObfuscatorIoControl, ObfuscatorIoOptions, ObfuscatorIoOutput, deobfuscate_all, detect,
     obfuscator_io_deobfuscate,
 };
+use disrobe_testkit::{CommandSpec, ToolOutput, tool_output};
 use sha2::{Digest, Sha256};
 
 const DIFFERENTIAL_FLOOR: usize = 37;
@@ -1584,7 +1583,7 @@ fn boa_eval_subprocess_worker() {
         .expect("Boa evaluation worker must write its response");
 }
 
-fn worker_diagnostics(output: &CapturedOutput) -> String {
+fn worker_diagnostics(output: &ToolOutput) -> String {
     let stdout: String = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     let stderr: String = String::from_utf8_lossy(&output.stderr).trim().to_owned();
     format!(
@@ -1661,7 +1660,7 @@ fn eval_batch_guarded(program: &str, argv_battery: &[&[&str]]) -> GuardedBatch {
             return GuardedBatch::HarnessFailure(format!("resolve Boa worker executable: {error}"));
         }
     };
-    let child: Child = match Command::new(&executable)
+    let spec: CommandSpec = CommandSpec::new(executable, EVAL_BACKSTOP)
         .args([
             "--ignored",
             "--exact",
@@ -1671,28 +1670,16 @@ fn eval_batch_guarded(program: &str, argv_battery: &[&[&str]]) -> GuardedBatch {
         ])
         .env(WORKER_REQUEST_ENV, &request_path)
         .env(WORKER_RESPONSE_ENV, &response_path)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
-        Ok(child) => child,
+        .capture_limits(WORKER_CAPTURE_LIMIT, WORKER_CAPTURE_LIMIT);
+    let output: ToolOutput = match tool_output(spec) {
+        Ok(output) => output,
         Err(error) => {
-            return GuardedBatch::HarnessFailure(format!("spawn Boa worker: {error}"));
+            return GuardedBatch::HarnessFailure(format!("run Boa worker: {error}"));
         }
     };
-    let wait_started: Instant = Instant::now();
-    let Some(output): Option<CapturedOutput> =
-        wait_with_output_timeout(child, EVAL_BACKSTOP, WORKER_CAPTURE_LIMIT)
-    else {
-        let elapsed: Duration = wait_started.elapsed();
-        if elapsed >= EVAL_BACKSTOP {
-            return GuardedBatch::BackstopExceeded;
-        }
-        return GuardedBatch::HarnessFailure(format!(
-            "Boa worker wait or output capture failed after {elapsed:?}"
-        ));
-    };
+    if output.timed_out {
+        return GuardedBatch::BackstopExceeded;
+    }
     if output.exit_code != Some(0) {
         return GuardedBatch::HarnessFailure(format!(
             "Boa worker failed: {}",
