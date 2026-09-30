@@ -61,6 +61,12 @@ DZOA-CONTAINER-HONESTY: `decompile.rs` parses + lifts a Zend op_array via
   because their op_arrays are encrypted with a runtime loader key that is absent
   from the envelope, so no real-world commercial-encoder op_array decompile is
   claimed.
+STRICT-BEHAVIOUR: behaviour/*.php are programs written for this corpus. Each one is
+  compiled by PHP 8.4 opcache into a real file-cache image (opcache.file_cache_only=1),
+  that image is recovered through recover_php, and the recovered source is run by the
+  same PHP. Stdout must match the original byte for byte with nothing on stderr
+  (tests/php_behaviour_strict.rs). A function the decompiler cannot render refuses by
+  name and is listed in that test; no program is floor-graded.
 TOOL-DEAD-DOCUMENT: bcompiler (EOL ~PHP 5.3) - fixtures remain synthesized + documented.
 TOOL-CAPTURE-MANUAL: FOPO web obfuscator (online, CAPTCHA-protected) - fixture
   remains in-test synth via `build_fopo`.
@@ -173,3 +179,143 @@ source_tool = "manual"
 size_bytes = 409
 sha256 = "614f25abad0c2556af007ee0ff5983763eac8a748838e437d9ed740c4d74e62a"
 notes = "Benign op_array behavioral-oracle sample: user functions (add/greet/pick) with typed params, return, early-return if; main calls them. Nested op_arrays lifted to function declarations."
+
+[[sample]]
+name = "behaviour/anonymous.php"
+source_tool = "manual (PHP 8.4 strict behaviour program)"
+size_bytes = 564
+sha256 = "05992ab622344ca5dbfdf944edb2806f28309eeb6e3a2a2fff143884f929595d"
+notes = "Strict behaviour program compiled to an opcache file-cache image by PHP 8.4, decompiled from that image and re-run; stdout must match byte for byte (tests/php_behaviour_strict.rs). Covers an anonymous class implementing an interface, returned from a function and used through a variadic typed parameter; anonymous classes are refused by name, so this program pins that refusal."
+
+[[sample]]
+name = "behaviour/arrays.php"
+source_tool = "manual (PHP 8.4 strict behaviour program)"
+size_bytes = 2249
+sha256 = "22b52c8597caee45ba93d106b29f74119dcc8878a77c16bf1822d4584a2468e3"
+notes = "Strict behaviour program compiled to an opcache file-cache image by PHP 8.4, decompiled from that image and re-run; stdout must match byte for byte (tests/php_behaviour_strict.rs). Covers appends, explicit and gap keys, ksort/arsort, nested writes and increments, array_column, usort with a closure, spread of lists and string keys, union +, int/string/bool/null key coercion, unset of elements, isset/array_key_exists, 2-D fill, array_map null zip, counting, push/pop/shift/unshift, slice/splice/combine/flip/unique, loose and strict in_array, recursive count."
+
+[[sample]]
+name = "behaviour/branches.php"
+source_tool = "manual (PHP 8.4 strict behaviour program)"
+size_bytes = 1373
+sha256 = "ced813597d668566aeb6774e9b1b964b6ca74b99025e207071932b45442ebee2"
+notes = "Strict behaviour program compiled to an opcache file-cache image by PHP 8.4, decompiled from that image and re-run; stdout must match byte for byte (tests/php_behaviour_strict.rs). Covers if/elseif/else chains with nesting, early returns, && || xor and not, nested ternary, short ternary, a mixed && || condition."
+
+[[sample]]
+name = "behaviour/calls.php"
+source_tool = "manual (PHP 8.4 strict behaviour program)"
+size_bytes = 1883
+sha256 = "40f7cb9c8b45d143c7a756c12281f2e12a191121b4fc9f2872661da21c33c2e5"
+notes = "Strict behaviour program compiled to an opcache file-cache image by PHP 8.4, decompiled from that image and re-run; stdout must match byte for byte (tests/php_behaviour_strict.rs). Covers default and named arguments, variadics, spread of lists and string-keyed arrays, nullable and union parameters, by-reference return and parameter, dynamic, call_user_func and call_user_func_array calls, named arguments to internal functions, constant defaults, recursion."
+
+[[sample]]
+name = "behaviour/classes.php"
+source_tool = "manual (PHP 8.4 strict behaviour program)"
+size_bytes = 2826
+sha256 = "e1358b7428b9ebceea64719b4b15f5a3561328e6af7586348c97f64f288a54e4"
+notes = "Strict behaviour program compiled to an opcache file-cache image by PHP 8.4, decompiled from that image and re-run; stdout must match byte for byte (tests/php_behaviour_strict.rs). Covers interface, abstract class with static and instance members, promoted and readonly properties, typed and nullable properties, class constants overridden by a child, static:: and self:: access, parent constructor calls, new static and new self, __toString, __get, fluent calls, nullsafe calls, readonly violation, dynamic class and method names, callable arrays."
+
+[[sample]]
+name = "behaviour/closures.php"
+source_tool = "manual (PHP 8.4 strict behaviour program)"
+size_bytes = 1769
+sha256 = "357def26e4614e3e7c88014ccb1c739d8db357310d1eb873d203214678a5be6b"
+notes = "Strict behaviour program compiled to an opcache file-cache image by PHP 8.4, decompiled from that image and re-run; stdout must match byte for byte (tests/php_behaviour_strict.rs). Covers use by value and by reference, arrow functions and their by-value capture, nested arrows, closures passed to array_map/array_filter/array_reduce, closures returned in arrays, variadic callable composition, static closures, immediately invoked closures, first-class callable syntax."
+
+[[sample]]
+name = "behaviour/coalesce.php"
+source_tool = "manual (PHP 8.4 strict behaviour program)"
+size_bytes = 1542
+sha256 = "936882638ead20894c592702a3a143f56dbc771ea7e73f156d978b09e6c296c4"
+notes = "Strict behaviour program compiled to an opcache file-cache image by PHP 8.4, decompiled from that image and re-run; stdout must match byte for byte (tests/php_behaviour_strict.rs). Covers ?? on nested keys, nulls, undefined variables and properties; chained ??; ??= on array keys, variables and properties; short-circuit of the right side; ?: versus ??; nullsafe with ??."
+
+[[sample]]
+name = "behaviour/destructuring.php"
+source_tool = "manual (PHP 8.4 strict behaviour program)"
+size_bytes = 1240
+sha256 = "ae0013e470e44d4249f49129a379582f9b0f2e5a6e6d8fc1e532820d8720026d"
+notes = "Strict behaviour program compiled to an opcache file-cache image by PHP 8.4, decompiled from that image and re-run; stdout must match byte for byte (tests/php_behaviour_strict.rs). Covers list() and [] with skips, keys, nesting, swaps, function results, foreach targets, array-element and property targets, a reference target, a dynamic key."
+
+[[sample]]
+name = "behaviour/enums.php"
+source_tool = "manual (PHP 8.4 strict behaviour program)"
+size_bytes = 618
+sha256 = "14fcb20f0b62ac2d82838a7281fd081f3cd99987ef792365db62e68eec56fe3c"
+notes = "Strict behaviour program compiled to an opcache file-cache image by PHP 8.4, decompiled from that image and re-run; stdout must match byte for byte (tests/php_behaviour_strict.rs). Covers a backed enum with a method using match on $this, a static constructor, from/tryFrom and cases(); enum declarations are refused by name, so this program pins that refusal."
+
+[[sample]]
+name = "behaviour/exceptions.php"
+source_tool = "manual (PHP 8.4 strict behaviour program)"
+size_bytes = 2994
+sha256 = "cf1f032f3e531d139ca91eb861540d7c0066307b395e43be73a3d312b75173a2"
+notes = "Strict behaviour program compiled to an opcache file-cache image by PHP 8.4, decompiled from that image and re-run; stdout must match byte for byte (tests/php_behaviour_strict.rs). Covers try/catch/finally with multi-catch, return inside try and finally, rethrow, wrapping with a previous exception, nested try, finally with continue and break, exceptions escaping recursive functions, catch without a variable."
+
+[[sample]]
+name = "behaviour/foreach_forms.php"
+source_tool = "manual (PHP 8.4 strict behaviour program)"
+size_bytes = 1400
+sha256 = "76bc3e894c643911726ff16c65a02961e48da69ec305a8ab1ec60ae1a539d9ff"
+notes = "Strict behaviour program compiled to an opcache file-cache image by PHP 8.4, decompiled from that image and re-run; stdout must match byte for byte (tests/php_behaviour_strict.rs). Covers foreach by value, key => value and by reference, break 2 and continue 2 across nested foreach, destructuring targets with and without keys, iteration over object properties, an empty array, appending while iterating a copy, integer and string keys."
+
+[[sample]]
+name = "behaviour/generators.php"
+source_tool = "manual (PHP 8.4 strict behaviour program)"
+size_bytes = 1899
+sha256 = "038145b189d7f70f3b3eef44fb9d803160d0d6653d94936c3fab4c75d24b382e"
+notes = "Strict behaviour program compiled to an opcache file-cache image by PHP 8.4, decompiled from that image and re-run; stdout must match byte for byte (tests/php_behaviour_strict.rs). Covers yield, yield with keys, yield from generators and arrays, generator return values, send(), infinite generators stopped by break, finally in a generator destroyed early, immediately invoked generator closures, iterator_to_array."
+
+[[sample]]
+name = "behaviour/juggling.php"
+source_tool = "manual (PHP 8.4 strict behaviour program)"
+size_bytes = 1808
+sha256 = "18e86bf7f4344424547292e6a1ccbd9ccd518f8a0887c25809e5bffe272063c3"
+notes = "Strict behaviour program compiled to an opcache file-cache image by PHP 8.4, decompiled from that image and re-run; stdout must match byte for byte (tests/php_behaviour_strict.rs). Covers loose and strict comparison and <=> over int, float, numeric and non-numeric strings, null, bool and arrays; arithmetic juggling, overflow to float, casts, intval bases, string increment, bitwise operators, float formatting."
+
+[[sample]]
+name = "behaviour/loops.php"
+source_tool = "manual (PHP 8.4 strict behaviour program)"
+size_bytes = 1263
+sha256 = "2ce38ce50e31ab5960d186ccd262cab0c6510832aee3467471b07f37c3a3aed1"
+notes = "Strict behaviour program compiled to an opcache file-cache image by PHP 8.4, decompiled from that image and re-run; stdout must match byte for byte (tests/php_behaviour_strict.rs). Covers for with continue/break, multi-expression for, while, do-while that runs once, break 2 and continue 2 across nested for and while(true), do-while with continue, for(;;)."
+
+[[sample]]
+name = "behaviour/operators.php"
+source_tool = "manual (PHP 8.4 strict behaviour program)"
+size_bytes = 2150
+sha256 = "f3113d48618386bc3537ff6f85a20fec36547c0f12831aa69fcb3beffadd391b"
+notes = "Strict behaviour program compiled to an opcache file-cache image by PHP 8.4, decompiled from that image and re-run; stdout must match byte for byte (tests/php_behaviour_strict.rs). Covers nullsafe chains through method results, every compound assignment operator, increments of array elements, properties and static properties, string increment, isset with several operands, empty over nullsafe calls, instanceof against a string class, spaceship, integer and float division and modulo, bit flags, casts in arithmetic."
+
+[[sample]]
+name = "behaviour/references.php"
+source_tool = "manual (PHP 8.4 strict behaviour program)"
+size_bytes = 1606
+sha256 = "d4246d7fb21fa79ca684d407b8d855452dd9b373257f31afc2df0babcfd2b34d"
+notes = "Strict behaviour program compiled to an opcache file-cache image by PHP 8.4, decompiled from that image and re-run; stdout must match byte for byte (tests/php_behaviour_strict.rs). Covers reference assignment and unset, references inside arrays surviving copies, reference parameters, reference walks into nested arrays, foreach by reference over nested arrays, object handles versus clone, reference swap in a closure."
+
+[[sample]]
+name = "behaviour/scopes.php"
+source_tool = "manual (PHP 8.4 strict behaviour program)"
+size_bytes = 3343
+sha256 = "e03dbfcf178c76295da8197ac49dffb9f336a0ea0c85f551c5b38c4036585249"
+notes = "Strict behaviour program compiled to an opcache file-cache image by PHP 8.4, decompiled from that image and re-run; stdout must match byte for byte (tests/php_behaviour_strict.rs). Covers global and $GLOBALS access, variable variables, a trait, interface constants, __call/__callStatic/__invoke/__clone, instanceof self, method first-class callables, a string switch, a function declared conditionally, nested unset, object/array casts, print as statement and expression, a compound while condition, and a backward goto."
+
+[[sample]]
+name = "behaviour/statics.php"
+source_tool = "manual (PHP 8.4 strict behaviour program)"
+size_bytes = 1395
+sha256 = "e691f83643b8b726f2596d766810e2966891a94c26a5b53fe9a2037930887dc1"
+notes = "Strict behaviour program compiled to an opcache file-cache image by PHP 8.4, decompiled from that image and re-run; stdout must match byte for byte (tests/php_behaviour_strict.rs). Covers static variables in functions, methods and closures; static arrays keyed at runtime; static properties with +=."
+
+[[sample]]
+name = "behaviour/strings.php"
+source_tool = "manual (PHP 8.4 strict behaviour program)"
+size_bytes = 1286
+sha256 = "607b23550363fc6ea746252c92e6099456c16ee8265835d8601b3e068d479be0"
+notes = "Strict behaviour program compiled to an opcache file-cache image by PHP 8.4, decompiled from that image and re-run; stdout must match byte for byte (tests/php_behaviour_strict.rs). Covers simple and braced interpolation of variables, array keys and properties, heredoc and nowdoc, escapes, sprintf formats, string functions, concatenation precedence, multi-line strings, unicode and octal/hex escapes, NUL bytes, string offsets and offset writes."
+
+[[sample]]
+name = "behaviour/switch_match.php"
+source_tool = "manual (PHP 8.4 strict behaviour program)"
+size_bytes = 1902
+sha256 = "9866192c2224a1ce54e12b857ad6f7cb624b3f905e1b5d5915942da998421c83"
+notes = "Strict behaviour program compiled to an opcache file-cache image by PHP 8.4, decompiled from that image and re-run; stdout must match byte for byte (tests/php_behaviour_strict.rs). Covers switch with fallthrough, default first and last, return inside a case, loose switch comparison over mixed types, match with multiple conditions and default, match(true), UnhandledMatchError."

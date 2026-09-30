@@ -201,4 +201,42 @@ pub enum Error {
 
     #[error("DR-PHP-0110: goto-deflatten failed: {reason}")]
     Deflatten { reason: String },
+
+    #[error("DR-PHP-0120: opcache file-cache magic mismatch (expected 'OPCACHE\\0')")]
+    OpcacheBadMagic,
+
+    #[error(
+        "DR-PHP-0121: opcache file-cache image truncated: {region} needs {need} bytes at offset {offset} but holds {len}"
+    )]
+    OpcacheTruncated {
+        region: &'static str,
+        offset: u64,
+        need: u64,
+        len: u64,
+    },
+
+    #[error(
+        "DR-PHP-0122: opcache file-cache checksum mismatch: header records {stored:#010x}, the image hashes to {computed:#010x}"
+    )]
+    OpcacheChecksum { stored: u32, computed: u32 },
+
+    #[error(
+        "DR-PHP-0123: opcache file-cache field '{field}' points at {pointer:#x}, outside its region"
+    )]
+    OpcacheBadPointer { field: &'static str, pointer: u64 },
+
+    #[error("DR-PHP-0124: opcache file-cache field '{field}' value {value} exceeds sane cap {cap}")]
+    OpcacheOversize {
+        field: &'static str,
+        value: u64,
+        cap: u64,
+    },
+
+    #[error(
+        "DR-PHP-0125: opcache file-cache field '{field}' holds {value}, which the PHP 8.4 64-bit layout never writes"
+    )]
+    OpcacheLayout { field: &'static str, value: u64 },
+
+    #[error("DR-PHP-0126: opcache file-cache nesting exceeds depth {0}")]
+    OpcacheNestTooDeep(u32),
 }

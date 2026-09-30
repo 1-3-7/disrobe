@@ -1078,6 +1078,9 @@ function parse_dump(string $text): array
                 return !preg_match('/^\((?:local|global|static)\)$/', trim($t));
             }));
             $op = build_op($mnemonic, $resultTok, $nameOperands, $current['oa'], $addr + 1);
+            if (in_array('(global)', array_map('trim', $tokens), true)) {
+                $op->ext = 2;
+            }
             $current['oa']->ops[] = $op;
             $current['index'][$addr] = count($current['oa']->ops) - 1;
             continue;
@@ -1474,6 +1477,9 @@ $configs = [
     ]),
     array_merge($baseIni, ['opcache.optimization_level' => '0']),
 ];
+if (getenv('DZOA_AFTER_OPTIMIZER') === '1') {
+    $configs = [array_merge($baseIni, ['opcache.opt_debug_level' => '0x20000'])];
+}
 
 $dump = '';
 $attempts = [];

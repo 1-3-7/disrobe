@@ -501,3 +501,84 @@ pub(crate) fn write_opcache_source(path: &Path, source: &[u8]) -> Result<(), Str
     drop(file);
     Ok(())
 }
+
+pub(crate) fn opcache_extension(php: &PhpRuntime) -> Option<PathBuf> {
+    if let Some(configured) = std::env::var_os(PHP_OPCACHE.binary_var) {
+        let path: PathBuf = PathBuf::from(configured);
+        return path.is_file().then_some(path);
+    }
+    let reported: String = php.evaluate("echo PHP_BINARY;", &[])?;
+    let directory: PathBuf = PathBuf::from(reported).parent()?.to_path_buf();
+    ["ext/php_opcache.dll", "php_opcache.dll", "ext/opcache.so"]
+        .into_iter()
+        .map(|relative: &str| directory.join(relative))
+        .find(|candidate: &PathBuf| candidate.is_file())
+}
+
+pub(crate) fn compile_opcache_image(
+    php: &PhpRuntime,
+    opcache: &Path,
+    source: &[u8],
+    scratch: &Path,
+    stem: &str,
+) -> Result<Vec<u8>, String> {
+    let source_path: PathBuf = scratch.join(format!("{stem}.php"));
+    write_opcache_source(&source_path, source)?;
+    let cache: PathBuf = scratch.join(format!("{stem}.cache"));
+    std::fs::create_dir_all(&cache)
+        .map_err(|err: std::io::Error| format!("create {}: {err}", cache.display()))?;
+    let mut command: Command = Command::new(&php.binary);
+    command
+        .arg("-n")
+        .arg("-d")
+        .arg(format!("zend_extension={}", opcache.display()))
+        .args([
+            "-d",
+            "opcache.enable_cli=1",
+            "-d",
+            "opcache.file_cache_only=1",
+        ])
+        .args([
+            "-d",
+            "opcache.jit=disable",
+            "-d",
+            "opcache.jit_buffer_size=0",
+        ])
+        .arg("-d")
+        .arg(format!("opcache.file_cache={}", cache.display()))
+        .args(["-r", "exit(opcache_compile_file($argv[1]) ? 0 : 3);", "--"])
+        .arg(&source_path);
+    let output: Output = bounded_output(&mut command, stem, &php.binary, &source_path);
+    if !output.status.success() {
+        return Err(format!(
+            "php opcache compile of {stem} exited with {:?}: {}{}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout).trim(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let mut images: Vec<PathBuf> = Vec::new();
+    let mut pending: Vec<PathBuf> = vec![cache];
+    while let Some(directory) = pending.pop() {
+        let entries: std::fs::ReadDir = std::fs::read_dir(&directory)
+            .map_err(|err: std::io::Error| format!("list {}: {err}", directory.display()))?;
+        for entry in entries {
+            let path: PathBuf = entry
+                .map_err(|err: std::io::Error| format!("list {}: {err}", directory.display()))?
+                .path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension().is_some_and(|ext: &OsStr| ext == "bin") {
+                images.push(path);
+            }
+        }
+    }
+    match images.as_slice() {
+        [image] => std::fs::read(image)
+            .map_err(|err: std::io::Error| format!("read {}: {err}", image.display())),
+        other => Err(format!(
+            "php opcache wrote {} file-cache images for {stem}, expected exactly one: {other:?}",
+            other.len()
+        )),
+    }
+}

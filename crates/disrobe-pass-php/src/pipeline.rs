@@ -7,6 +7,7 @@ use crate::encoder::{
 };
 use crate::error::{Error, Result};
 use crate::key_extractor::{KeyProvenance, KeyScan, scan, xor_decrypt};
+use crate::opcache::{is_opcache_file, parse_opcache_file};
 use crate::peel::{PeelOptions, PeelReport, peel};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -46,6 +47,13 @@ pub fn recover(bytes: &[u8], auth: Option<AuthorizationToken>) -> Result<Recover
     dbg_kv("input-len", || bytes.len().to_string());
     dbg_kv("classify", || format!("{:?}", detect(bytes).kind));
     dbg_kv("auth-supplied", || auth.is_some().to_string());
+    if is_opcache_file(bytes)
+        && let Some(report) = try_oparray_container(bytes)?
+    {
+        dbg_kv("route", || "opcache-file-cache".to_owned());
+        dbg_kv("stage", || format!("{:?}", report.stage));
+        return Ok(report);
+    }
     if let Some(report) = try_encoder(bytes, auth)? {
         dbg_kv("route", || "encoder".to_owned());
         dbg_kv("stage", || format!("{:?}", report.stage));
@@ -290,17 +298,29 @@ fn decompile_if_container(
 }
 
 fn try_oparray_container(bytes: &[u8]) -> Result<Option<RecoveryReport>> {
-    if bytes.len() < 5 || &bytes[..4] != OPARRAY_MAGIC {
+    let (parsed, php_kind, subject): (OpArray, &str, &str) = if is_opcache_file(bytes) {
+        dbg_section("php opcache file cache");
+        (
+            parse_opcache_file(bytes)?,
+            "OpcacheFileCache",
+            "PHP 8.4 opcache file-cache image",
+        )
+    } else if bytes.len() >= 5 && &bytes[..4] == OPARRAY_MAGIC {
+        dbg_section("php oparray");
+        dbg_kv("oparray-magic", || "DZOA".to_owned());
+        dbg_kv("oparray-version", || {
+            bytes
+                .get(4)
+                .map_or_else(|| "?".to_owned(), |v: &u8| v.to_string())
+        });
+        (
+            parse_oparray(bytes)?,
+            "OpArray",
+            "raw Zend op_array container",
+        )
+    } else {
         return Ok(None);
-    }
-    dbg_section("php oparray");
-    dbg_kv("oparray-magic", || "DZOA".to_owned());
-    dbg_kv("oparray-version", || {
-        bytes
-            .get(4)
-            .map_or_else(|| "?".to_owned(), |v: &u8| v.to_string())
-    });
-    let parsed: OpArray = parse_oparray(bytes)?;
+    };
     let decomp: Decompilation = decompile(&parsed);
     dbg_kv("oparray-root-kind", || format!("{:?}", parsed.kind));
     dbg_kv("oparray-arrays", || decomp.op_array_count.to_string());
@@ -320,13 +340,13 @@ fn try_oparray_container(bytes: &[u8]) -> Result<Option<RecoveryReport>> {
             dbg_line(|| format!("skeleton| {line}"));
         }
     }
-    let mut notes: Vec<String> = vec![oparray_lift_note("raw Zend op_array container")];
+    let mut notes: Vec<String> = vec![oparray_lift_note(subject)];
     if let Some(refusal) = unrecovered_note(&decomp) {
         notes.push(refusal);
     }
     Ok(Some(RecoveryReport {
         stage: RecoveryStage::OpArrayDecompiled,
-        php_kind: "OpArray".to_owned(),
+        php_kind: php_kind.to_owned(),
         encoder: None,
         key_provenance: None,
         output: decomp.php_skeleton.clone(),

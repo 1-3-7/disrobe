@@ -1,3 +1,4 @@
+use crate::declaration::{ClassDecl, ClassKind, Modifiers, Property, Signature};
 use crate::error::{Error, Result};
 use disrobe_bytes::{ByteReadError, read_i64_le_at, read_u32_le_at};
 use serde::{Deserialize, Serialize};
@@ -19,6 +20,7 @@ const SANE_CHILD_CAP: u32 = 1 << 16;
 const SANE_NEST_DEPTH: u32 = 64;
 const MAX_PREALLOC: usize = 1 << 16;
 const SANE_LIFT_DEPTH: u32 = 256;
+const USE_SCAN_BUDGET: usize = 256;
 const MAX_UNRECOVERED_RECORDS: usize = 4096;
 const SANE_ROPE_WORK_CAP: usize = 1 << 16;
 const SANE_LIST_ELEMENT_CAP: usize = 1 << 16;
@@ -140,7 +142,7 @@ impl Op {
             o if o == op::RETURN || o == op::RETURN_BY_REF || o == op::GENERATOR_RETURN => {
                 Branch::Terminal
             }
-            o if o == op::THROW || o == op::EXIT => Branch::Terminal,
+            o if o == op::THROW || o == op::EXIT || o == op::MATCH_ERROR => Branch::Terminal,
             _ => Branch::None,
         }
     }
@@ -164,9 +166,14 @@ pub enum Literal {
     Long(i64),
     Double(f64),
     Str(String),
+    Bytes(Vec<u8>),
     Array(u32),
+    Values(Vec<(Self, Self)>),
+    ConstExpr(String),
+    Unrenderable(String),
     SwitchLong(Vec<(i64, u32)>),
     SwitchString(Vec<(String, u32)>),
+    MatchTable(Vec<(Self, u32)>),
 }
 
 impl Eq for Literal {}
@@ -180,7 +187,38 @@ impl Literal {
             Self::Long(n) => n.to_string(),
             Self::Double(d) => render_php_double(*d),
             Self::Str(s) => format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'")),
-            Self::Array(_) | Self::SwitchLong(_) | Self::SwitchString(_) => "array()".to_owned(),
+            Self::Bytes(bytes) => render_php_bytes(bytes),
+            Self::Values(entries) => render_php_array(entries),
+            Self::ConstExpr(text) => text.clone(),
+            Self::Array(_)
+            | Self::Unrenderable(_)
+            | Self::SwitchLong(_)
+            | Self::SwitchString(_)
+            | Self::MatchTable(_) => "array()".to_owned(),
+        }
+    }
+
+    #[must_use]
+    pub fn try_render(&self) -> Option<String> {
+        match self {
+            Self::Array(_)
+            | Self::Unrenderable(_)
+            | Self::SwitchLong(_)
+            | Self::SwitchString(_)
+            | Self::MatchTable(_) => None,
+            Self::Values(entries) => entries
+                .iter()
+                .all(|(key, value): &(Self, Self)| {
+                    key.try_render().is_some() && value.try_render().is_some()
+                })
+                .then(|| self.render()),
+            Self::Null
+            | Self::Bool(_)
+            | Self::Long(_)
+            | Self::Double(_)
+            | Self::Str(_)
+            | Self::Bytes(_)
+            | Self::ConstExpr(_) => Some(self.render()),
         }
     }
 
@@ -191,6 +229,49 @@ impl Literal {
             _ => None,
         }
     }
+}
+
+fn render_php_bytes(bytes: &[u8]) -> String {
+    let mut out: String = String::with_capacity(bytes.len().saturating_add(2));
+    out.push('"');
+    for &byte in bytes {
+        match byte {
+            b'"' | b'\\' | b'$' => {
+                out.push('\\');
+                out.push(char::from(byte));
+            }
+            0x20..=0x7e => out.push(char::from(byte)),
+            _ => {
+                const HEX: &[u8; 16] = b"0123456789abcdef";
+                out.push_str("\\x");
+                out.push(char::from(HEX[usize::from(byte >> 4)]));
+                out.push(char::from(HEX[usize::from(byte & 0x0f)]));
+            }
+        }
+    }
+    out.push('"');
+    out
+}
+
+fn render_php_array(entries: &[(Literal, Literal)]) -> String {
+    let packed: bool =
+        entries
+            .iter()
+            .enumerate()
+            .all(|(position, (key, _)): (usize, &(Literal, Literal))| {
+                i64::try_from(position).is_ok_and(|index: i64| *key == Literal::Long(index))
+            });
+    let items: Vec<String> = entries
+        .iter()
+        .map(|(key, value): &(Literal, Literal)| {
+            if packed {
+                value.render()
+            } else {
+                format!("{} => {}", key.render(), value.render())
+            }
+        })
+        .collect();
+    format!("[{}]", items.join(", "))
 }
 
 fn render_php_double(d: f64) -> String {
@@ -242,6 +323,12 @@ pub struct OpArray {
     pub var_names: Vec<Option<String>>,
     #[serde(default)]
     pub try_catch: Vec<TryCatch>,
+    #[serde(default)]
+    pub signature: Option<Signature>,
+    #[serde(default)]
+    pub static_variables: Vec<(String, Literal)>,
+    #[serde(default)]
+    pub classes: Vec<ClassDecl>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -432,6 +519,36 @@ pub mod op {
     pub const FETCH_STATIC_PROP_W: u8 = 174;
     pub const FETCH_STATIC_PROP_RW: u8 = 175;
     pub const FETCH_CLASS_CONSTANT: u8 = 181;
+    pub const BOOL_XOR: u8 = 15;
+    pub const UNSET_DIM: u8 = 75;
+    pub const UNSET_OBJ: u8 = 76;
+    pub const CHECK_VAR: u8 = 49;
+    pub const INIT_USER_CALL: u8 = 118;
+    pub const SEND_ARRAY: u8 = 119;
+    pub const SEND_USER: u8 = 120;
+    pub const DEFINED: u8 = 122;
+    pub const ADD_ARRAY_UNPACK: u8 = 147;
+    pub const SEPARATE: u8 = 156;
+    pub const FETCH_CLASS_NAME: u8 = 157;
+    pub const BIND_GLOBAL: u8 = 168;
+    pub const FUNC_NUM_ARGS: u8 = 171;
+    pub const FUNC_GET_ARGS: u8 = 172;
+    pub const FETCH_THIS: u8 = 184;
+    pub const ISSET_ISEMPTY_THIS: u8 = 186;
+    pub const GET_CLASS: u8 = 191;
+    pub const GET_CALLED_CLASS: u8 = 192;
+    pub const GET_TYPE: u8 = 193;
+    pub const ARRAY_KEY_EXISTS: u8 = 194;
+    pub const FETCH_GLOBALS: u8 = 200;
+    pub const VERIFY_NEVER_TYPE: u8 = 201;
+    pub const MATCH_ERROR: u8 = 197;
+    pub const MAKE_REF: u8 = 140;
+    pub const FETCH_LIST_W: u8 = 155;
+    pub const CASE_STRICT: u8 = 196;
+    pub const FRAMELESS_ICALL_0: u8 = 204;
+    pub const FRAMELESS_ICALL_1: u8 = 205;
+    pub const FRAMELESS_ICALL_2: u8 = 206;
+    pub const FRAMELESS_ICALL_3: u8 = 207;
 }
 
 #[must_use]
@@ -753,6 +870,9 @@ fn parse_one(cur: &mut Cursor<'_>, version: u8, depth: u32) -> Result<OpArray> {
         children,
         var_names,
         try_catch,
+        signature: None,
+        static_variables: Vec::new(),
+        classes: Vec::new(),
     })
 }
 
@@ -993,6 +1113,7 @@ struct SkeletonEmitter {
     unrecovered_total: usize,
     limitations: Vec<Limitation>,
     limitations_total: usize,
+    classes: Vec<ClassDecl>,
 }
 
 impl SkeletonEmitter {
@@ -1004,6 +1125,28 @@ impl SkeletonEmitter {
     }
 
     fn line(&mut self, indent: usize, text: &str) {
+        if let Some((before, rest)) = text.split_once(ANON_CLASS_MARK)
+            && let Some((key, after)) = rest.split_once(ANON_CLASS_MARK)
+            && let Some(class) = self
+                .classes
+                .iter()
+                .find(|class: &&ClassDecl| class.declaration_key == key)
+                .cloned()
+        {
+            let (arguments, tail): (&str, &str) = split_call_arguments(after);
+            let mut head: String = before.to_owned();
+            if class.modifiers.is_readonly {
+                head.push_str("readonly ");
+            }
+            head.push_str("class");
+            head.push_str(arguments);
+            head.push_str(&class_relations(&class));
+            head.push_str(" {");
+            self.line(indent, &head);
+            self.emit_class_members(&class, indent);
+            self.line(indent, &format!("}}{tail}"));
+            return;
+        }
         for _ in 0..indent {
             self.out.push_str("    ");
         }
@@ -1018,17 +1161,29 @@ impl SkeletonEmitter {
                     self.out.push_str("<?php\n");
                     self.emitted_open_tag = true;
                 }
+                self.classes.clone_from(&node.classes);
+                let mut declared_at_runtime: BTreeSet<String> = BTreeSet::new();
+                collect_runtime_class_keys(node, &mut declared_at_runtime);
+                for class in &node.classes {
+                    if !declared_at_runtime.contains(&class.declaration_key) {
+                        self.emit_declared_class(class, indent);
+                        self.out.push('\n');
+                    }
+                }
                 self.emit_children_first(node, indent);
                 self.emit_body(node, indent);
             }
             OpArrayKind::Function | OpArrayKind::Closure => {
-                let sig: String = Self::function_signature(node);
+                let sig: String = self.function_signature(node);
                 self.line(indent, &sig);
                 self.line(indent, "{");
                 self.emit_body(node, indent + 1);
                 self.line(indent, "}");
+                let declared_at_runtime: BTreeSet<String> = runtime_function_names(node);
                 for child in &node.children {
-                    if child.kind == OpArrayKind::Closure {
+                    if child.kind == OpArrayKind::Closure
+                        || is_runtime_function(child, &declared_at_runtime)
+                    {
                         continue;
                     }
                     self.out.push('\n');
@@ -1080,8 +1235,12 @@ impl SkeletonEmitter {
             self.emit_class(methods, indent);
             self.out.push('\n');
         }
+        let declared_at_runtime: BTreeSet<String> = runtime_function_names(node);
         for child in &node.children {
-            if child.kind == OpArrayKind::Method || child.kind == OpArrayKind::Closure {
+            if child.kind == OpArrayKind::Method
+                || child.kind == OpArrayKind::Closure
+                || is_runtime_function(child, &declared_at_runtime)
+            {
                 continue;
             }
             self.emit_oparray(child, indent);
@@ -1089,10 +1248,196 @@ impl SkeletonEmitter {
         }
     }
 
-    fn function_signature(node: &OpArray) -> String {
+    fn function_signature(&mut self, node: &OpArray) -> String {
         let name: &str = node.name.as_deref().unwrap_or("{closure}");
-        let params: String = Self::param_list(node);
-        format!("function {name}({params})")
+        if node.signature.is_none() {
+            let params: String = Self::param_list(node);
+            return format!("function {name}({params})");
+        }
+        let (by_reference, params, returns): (&str, String, String) = self.declared_signature(node);
+        format!("function {by_reference}{name}({params}){returns}")
+    }
+
+    fn declared_signature(&mut self, node: &OpArray) -> (&'static str, String, String) {
+        let Some(signature): Option<&Signature> = node.signature.as_ref() else {
+            return ("", Self::param_list(node), String::new());
+        };
+        let (params, refusal): (String, Option<&'static str>) = render_parameters(node, signature);
+        if let Some(reason) = refusal {
+            self.refuse_declaration(Self::container_label(node), op::RECV_INIT, reason);
+        }
+        let returns: String = signature
+            .return_type
+            .as_ref()
+            .map_or_else(String::new, |ty: &String| format!(": {ty}"));
+        let by_reference: &'static str = if signature.returns_reference { "&" } else { "" };
+        (by_reference, params, returns)
+    }
+
+    fn refuse_declaration(&mut self, container: String, opcode: u8, reason: &str) {
+        self.unrecovered_total = self.unrecovered_total.saturating_add(1);
+        if self.unrecovered.len() < MAX_UNRECOVERED_RECORDS {
+            self.unrecovered.push(UnrecoveredOp {
+                container,
+                index: 0,
+                opcode,
+                mnemonic: opcode_name(opcode).to_owned(),
+                reason: reason.to_owned(),
+            });
+        }
+    }
+
+    fn emit_class_by_key(&mut self, key: &str, indent: usize) {
+        let class: Option<ClassDecl> = self
+            .classes
+            .iter()
+            .find(|class: &&ClassDecl| class.declaration_key == key)
+            .cloned();
+        match class {
+            Some(class) => self.emit_declared_class(&class, indent),
+            None => {
+                self.refuse_declaration(
+                    key.to_owned(),
+                    op::DECLARE_CLASS,
+                    REASON_CLASS_DECLARATION,
+                );
+            }
+        }
+    }
+
+    fn emit_declared_class(&mut self, class: &ClassDecl, indent: usize) {
+        if let Some(feature) = &class.unsupported {
+            self.refuse_declaration(
+                class.name.clone(),
+                op::DECLARE_CLASS,
+                &format!("the class uses {feature}, which this decompiler does not render"),
+            );
+        }
+        let mut head: String = class.modifiers.render();
+        if !head.is_empty() {
+            head.push(' ');
+        }
+        head.push_str(class.kind.keyword());
+        head.push(' ');
+        head.push_str(&class.name);
+        if let Some(backing) = &class.enum_backing {
+            head.push_str(": ");
+            head.push_str(backing);
+        }
+        head.push_str(&class_relations(class));
+        self.line(indent, &head);
+        self.line(indent, "{");
+        self.emit_class_members(class, indent);
+        self.line(indent, "}");
+    }
+
+    fn emit_class_members(&mut self, class: &ClassDecl, indent: usize) {
+        if !class.traits.is_empty() {
+            self.line(indent + 1, &format!("use {};", class.traits.join(", ")));
+        }
+        for constant in &class.constants {
+            if constant.enum_case {
+                let line: Option<String> = match &constant.value {
+                    Literal::Null => Some(format!("case {};", constant.name)),
+                    value => value
+                        .try_render()
+                        .map(|value: String| format!("case {} = {value};", constant.name)),
+                };
+                match line {
+                    Some(line) => self.line(indent + 1, &line),
+                    None => self.refuse_declaration(
+                        format!("{}::{}", class.name, constant.name),
+                        op::DECLARE_CLASS,
+                        REASON_UNRENDERABLE_VALUE,
+                    ),
+                }
+                continue;
+            }
+            let Some(value): Option<String> = constant.value.try_render() else {
+                self.refuse_declaration(
+                    format!("{}::{}", class.name, constant.name),
+                    op::DECLARE_CLASS,
+                    REASON_UNRENDERABLE_VALUE,
+                );
+                continue;
+            };
+            let mut modifiers: String = constant.modifiers.render();
+            if !modifiers.is_empty() {
+                modifiers.push(' ');
+            }
+            self.line(
+                indent + 1,
+                &format!("{modifiers}const {} = {value};", constant.name),
+            );
+        }
+        for property in class.properties.iter().filter(|property: &&Property| {
+            class.kind != ClassKind::Enum || !matches!(property.name.as_str(), "name" | "value")
+        }) {
+            let modifiers: Modifiers = Modifiers {
+                is_readonly: property.modifiers.is_readonly && !class.modifiers.is_readonly,
+                ..property.modifiers
+            };
+            let mut text: String = modifiers.render();
+            if property.modifiers.visibility.is_none() {
+                text.insert_str(0, "public ");
+            }
+            if let Some(ty) = &property.type_decl {
+                text.push(' ');
+                text.push_str(ty);
+            }
+            text.push_str(" $");
+            text.push_str(&property.name);
+            if let Some(default) = &property.default {
+                let Some(value): Option<String> = default.try_render() else {
+                    self.refuse_declaration(
+                        format!("{}::${}", class.name, property.name),
+                        op::DECLARE_CLASS,
+                        REASON_UNRENDERABLE_VALUE,
+                    );
+                    continue;
+                };
+                text.push_str(" = ");
+                text.push_str(&value);
+            }
+            text.push(';');
+            self.line(indent + 1, text.trim_start());
+        }
+        for method in &class.methods {
+            self.emit_declared_method(class, method, indent + 1);
+        }
+    }
+
+    fn emit_declared_method(&mut self, class: &ClassDecl, method: &OpArray, indent: usize) {
+        let name: &str = method.name.as_deref().unwrap_or("method");
+        let mut modifiers: Modifiers = method
+            .signature
+            .as_ref()
+            .map_or_else(Modifiers::default, |signature: &Signature| {
+                signature.modifiers
+            });
+        let bodiless: bool = modifiers.is_abstract;
+        if class.kind == ClassKind::Interface {
+            modifiers.is_abstract = false;
+        }
+        let rendered_modifiers: String = modifiers.render();
+        let spacer: &str = if rendered_modifiers.is_empty() {
+            ""
+        } else {
+            " "
+        };
+        let (by_reference, params, returns): (&str, String, String) =
+            self.declared_signature(method);
+        let mut head: String =
+            format!("{rendered_modifiers}{spacer}function {by_reference}{name}({params}){returns}");
+        if bodiless {
+            head.push(';');
+            self.line(indent, &head);
+            return;
+        }
+        self.line(indent, &head);
+        self.line(indent, "{");
+        self.emit_body(method, indent + 1);
+        self.line(indent, "}");
     }
 
     fn method_signature(node: &OpArray) -> String {
@@ -1132,6 +1477,7 @@ impl SkeletonEmitter {
     }
 
     fn emit_body(&mut self, node: &OpArray, indent: usize) {
+        let classes: Vec<ClassDecl> = std::mem::take(&mut self.classes);
         let mut lifter: Lifter<'_> = Lifter::new(
             &node.ops,
             &node.literals,
@@ -1139,7 +1485,8 @@ impl SkeletonEmitter {
             &node.try_catch,
             &node.children,
             node.num_args,
-        );
+        )
+        .with_declarations(&classes, &node.static_variables);
         let stmts: Vec<Stmt> = lifter.lift();
         let container: String = Self::container_label(node);
         self.unrecovered_total = self.unrecovered_total.saturating_add(lifter.refused.len());
@@ -1172,6 +1519,8 @@ impl SkeletonEmitter {
                 note: note.to_owned(),
             });
         }
+        drop(lifter);
+        self.classes = classes;
         for stmt in &stmts {
             stmt.render_into(self, indent);
         }
@@ -1236,10 +1585,14 @@ const PREC_CMP: u8 = 50;
 const PREC_BITAND: u8 = 45;
 const PREC_BITXOR: u8 = 44;
 const PREC_BITOR: u8 = 43;
+const PREC_AND: u8 = 40;
+const PREC_OR: u8 = 39;
 const PREC_COALESCE: u8 = 35;
 const PREC_TERNARY: u8 = 30;
 const PREC_UNARY: u8 = 78;
 const PREC_INSTANCEOF: u8 = 75;
+const PREC_NOT: u8 = 74;
+const PREC_LOGICAL_XOR: u8 = 5;
 
 impl Expr {
     fn atom(text: String) -> Self {
@@ -1289,6 +1642,7 @@ enum Stmt {
         body: Vec<Self>,
     },
     Label(String),
+    Class(String),
     Closure {
         prefix: String,
         signature: String,
@@ -1429,6 +1783,7 @@ impl Stmt {
                 emitter.line(indent, "}");
             }
             Self::Label(label) => emitter.line(indent, &format!("{label}:")),
+            Self::Class(key) => emitter.emit_class_by_key(key, indent),
             Self::Closure {
                 prefix,
                 signature,
@@ -1464,6 +1819,12 @@ impl Stmt {
             }
         }
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MatchDefault {
+    Target(u32),
+    Unhandled,
 }
 
 #[derive(Clone)]
@@ -1503,6 +1864,7 @@ struct PendingCall {
     positional_count: u32,
     result: Option<(OperandType, u32, u32)>,
     callable_shape: bool,
+    user_call: bool,
 }
 
 struct LiftSnapshot {
@@ -1573,7 +1935,7 @@ struct ListEntry {
 }
 
 struct ListKey {
-    literal: u32,
+    text: String,
     position: Option<usize>,
 }
 
@@ -1606,6 +1968,12 @@ struct Lifter<'a> {
     unrecovered: Vec<(u32, u8, &'static str)>,
     breakables: Vec<BreakableFrame>,
     relift_work: usize,
+    classes: &'a [ClassDecl],
+    static_variables: &'a [(String, Literal)],
+    statement_queue: Vec<String>,
+    jump_sources: BTreeMap<u32, Vec<u32>>,
+    match_scan_work: usize,
+    operand_failed: std::cell::Cell<bool>,
 }
 
 impl<'a> Lifter<'a> {
@@ -1640,6 +2008,15 @@ impl<'a> Lifter<'a> {
                         *count = count.saturating_add(1);
                     }
                 }
+            }
+        }
+        for (idx, op) in ops.iter().enumerate() {
+            let delivered: bool = op.result_type == OperandType::Cv
+                || (matches!(op.result_type, OperandType::TmpVar | OperandType::Var)
+                    && result_use_counts[idx] == 0
+                    && read_after_jump(ops, idx, (op.result_type, op.result)));
+            if delivered {
+                result_use_counts[idx] = result_use_counts[idx].max(1);
             }
         }
         let mut reserved_names: BTreeSet<String> = var_names
@@ -1687,7 +2064,23 @@ impl<'a> Lifter<'a> {
             unrecovered: Vec::new(),
             breakables: Vec::new(),
             relift_work: 0,
+            classes: &[],
+            static_variables: &[],
+            statement_queue: Vec::new(),
+            jump_sources: jump_sources(ops, literals),
+            match_scan_work: 0,
+            operand_failed: std::cell::Cell::new(false),
         }
+    }
+
+    const fn with_declarations(
+        mut self,
+        classes: &'a [ClassDecl],
+        static_variables: &'a [(String, Literal)],
+    ) -> Self {
+        self.classes = classes;
+        self.static_variables = static_variables;
+        self
     }
 
     fn refuse(&mut self, idx: u32, opcode: u8, reason: &'static str) -> String {
@@ -1725,7 +2118,8 @@ impl<'a> Lifter<'a> {
             self.try_catch,
             self.children,
             self.num_args,
-        );
+        )
+        .with_declarations(self.classes, self.static_variables);
         second.goto_targets.clone_from(&targets);
         second.emit_gotos = true;
         second.record_opaque_literals(len);
@@ -1735,7 +2129,13 @@ impl<'a> Lifter<'a> {
         self.unrecovered = std::mem::take(&mut second.unrecovered);
         self.limitations = std::mem::take(&mut second.limitations);
         self.limited = std::mem::take(&mut second.limited);
-        if placed == targets {
+        let mut rendered_labels: BTreeMap<String, usize> = BTreeMap::new();
+        count_labels(&relabelled, &mut rendered_labels);
+        let every_label_once: bool = rendered_labels.len() == targets.len()
+            && targets
+                .iter()
+                .all(|target: &u32| rendered_labels.get(&Self::goto_label(*target)) == Some(&1));
+        if placed == targets && every_label_once {
             return relabelled;
         }
         let unplaced: Option<u32> = targets.difference(&placed).copied().next();
@@ -1786,25 +2186,39 @@ impl<'a> Lifter<'a> {
         let mut out: Vec<Stmt> = Vec::new();
         let mut i: u32 = start;
         while i < end {
+            if self.emit_gotos && self.goto_targets.contains(&i) && self.placed_labels.insert(i) {
+                self.slots.clear();
+                self.writable_slots.clear();
+                self.call_stack.clear();
+                out.push(Stmt::Label(Self::goto_label(i)));
+            }
             if depth < SANE_LIFT_DEPTH
                 && let Some((stmt, next)) = self.try_structure(i, end, depth)
             {
                 out.extend(stmt);
+                out.extend(self.statement_queue.drain(..).map(Stmt::Line));
                 i = next;
                 continue;
             }
-            if self.emit_gotos && self.goto_targets.contains(&i) {
-                self.placed_labels.insert(i);
-                out.push(Stmt::Label(Self::goto_label(i)));
-            }
             let marker: Option<String> = self.opaque_literal_marker(i);
-            let lifted: Option<String> = self.eval_op(i);
+            self.operand_failed.set(false);
+            let evaluated: Option<String> = self.eval_op(i);
+            let lifted: Option<String> = if self.operand_failed.replace(false) {
+                let opcode: u8 = self
+                    .ops
+                    .get(i as usize)
+                    .map_or(op::NOP, |op: &Op| op.opcode);
+                Some(self.refuse(i, opcode, REASON_EXPRESSION_OPERAND))
+            } else {
+                evaluated
+            };
             if let Some(marker) = marker {
                 out.push(Stmt::Line(marker));
             }
             if let Some(stmt) = lifted {
                 out.push(Stmt::Line(stmt));
             }
+            out.extend(self.statement_queue.drain(..).map(Stmt::Line));
             i += 1;
         }
         out
@@ -1827,9 +2241,11 @@ impl<'a> Lifter<'a> {
                 self.structure_switch(i, end, depth)
             }
             op::MATCH => self
-                .structure_optimized_match(i, end)
+                .structure_match_table(i, end)
+                .or_else(|| self.structure_optimized_match(i, end))
                 .or_else(|| self.refuse_optimized_match_region(i, end)),
             o if o == op::FETCH_LIST_R => self.fold_list_assign(i, end),
+            o if o == op::MAKE_REF => self.fold_reference_list_assign(i, end),
             o if o == op::ROPE_INIT => self.fold_rope(i, end),
             o if o == op::FE_RESET_R || o == op::FE_RESET_RW => {
                 self.structure_foreach(i, end, depth)
@@ -1838,6 +2254,9 @@ impl<'a> Lifter<'a> {
             o if o == op::COALESCE || o == op::JMP_SET => self.fold_default_join(i, end),
             o if o == op::JMP_NULL => self.fold_nullsafe_chain(i, end),
             o if o == op::DECLARE_LAMBDA_FUNCTION => self.fold_closure(i, end),
+            o if o == op::DECLARE_CLASS || o == op::DECLARE_CLASS_DELAYED => {
+                self.structure_class_declaration(i)
+            }
             o if o == op::JMP => {
                 let structured: Option<(Vec<Stmt>, u32)> = self
                     .structure_while(i, end, depth)
@@ -1850,6 +2269,12 @@ impl<'a> Lifter<'a> {
             o if o == op::JMPZ => self
                 .structure_ternary(i, end)
                 .or_else(|| self.structure_if(i, end, depth)),
+            o if o == op::JMPNZ => self
+                .structure_ternary(i, end)
+                .or_else(|| self.structure_do_while(i, end, depth)),
+            o if o == op::IS_IDENTICAL || o == op::CASE_STRICT => self
+                .structure_linear_match(i, end)
+                .or_else(|| self.structure_do_while(i, end, depth)),
             _ => self.structure_do_while(i, end, depth),
         }
     }
@@ -1879,16 +2304,25 @@ impl<'a> Lifter<'a> {
         } else {
             let catch_op: u32 = entry.catch_op?;
             let skip: &Op = self.ops.get(catch_op.checked_sub(1)? as usize)?;
-            if skip.opcode != op::JMP {
+            if skip.opcode == op::JMP {
+                skip.op1
+            } else if never_falls_through(skip) {
+                self.catch_region_end(catch_op, end)?
+            } else {
                 return None;
             }
-            skip.op1
         };
         if construct_end > end || construct_end <= entry.try_op {
             return None;
         }
         let finally_gate: u32 = match entry.finally_op {
-            Some(finally_op) => self.finally_trampoline(finally_op, construct_end)?,
+            Some(finally_op) => {
+                self.finally_trampoline(finally_op, construct_end)
+                    .or_else(|| {
+                        let before: &Op = self.ops.get(finally_op.checked_sub(1)? as usize)?;
+                        never_falls_through(before).then_some(finally_op)
+                    })?
+            }
             None => construct_end,
         };
         if let (Some(finally_op), Some(finally_end)) = (entry.finally_op, entry.finally_end)
@@ -1924,6 +2358,32 @@ impl<'a> Lifter<'a> {
             finally_end: entry.finally_end,
             construct_end,
         })
+    }
+
+    fn catch_region_end(&self, catch_op: u32, end: u32) -> Option<u32> {
+        let mut cursor: u32 = catch_op;
+        let mut clauses: usize = 0;
+        loop {
+            let entry: &Op = self.ops.get(cursor as usize)?;
+            clauses += 1;
+            if entry.opcode != op::CATCH || clauses > SANE_CATCH_CLAUSE_CAP {
+                return None;
+            }
+            if entry.extended_value == CATCH_LAST {
+                break;
+            }
+            if entry.op2 <= cursor {
+                return None;
+            }
+            cursor = entry.op2;
+        }
+        let last_body: u32 = cursor.checked_add(1)?;
+        let join: u32 = self
+            .jump_sources
+            .range(last_body.saturating_add(1)..=end)
+            .next()
+            .map_or(end, |(target, _): (&u32, &Vec<u32>)| *target);
+        Some(join)
     }
 
     fn finally_trampoline(&self, finally_op: u32, construct_end: u32) -> Option<u32> {
@@ -2429,11 +2889,252 @@ impl<'a> Lifter<'a> {
             rendered_arms.join(", ")
         ));
         let result_key: (OperandType, u32) = result_key?;
-        self.slots.insert(result_key, expression);
+        self.bind_slot(result_key, expression);
         if matches!(subject_key.0, OperandType::TmpVar | OperandType::Var) {
             self.slots.remove(&subject_key);
             self.writable_slots.remove(&subject_key);
         }
+        Some((Vec::new(), join))
+    }
+
+    fn match_table(&self, literal: u32) -> Option<Vec<(Literal, u32)>> {
+        Some(match self.literals.get(literal as usize)? {
+            Literal::MatchTable(entries) => entries.clone(),
+            Literal::SwitchLong(entries) => entries
+                .iter()
+                .map(|(key, target): &(i64, u32)| (Literal::Long(*key), *target))
+                .collect(),
+            Literal::SwitchString(entries) => entries
+                .iter()
+                .map(|(key, target): &(String, u32)| (Literal::Str(key.clone()), *target))
+                .collect(),
+            _ => return None,
+        })
+    }
+
+    fn structure_match_table(&mut self, i: u32, end: u32) -> Option<(Vec<Stmt>, u32)> {
+        if !self.call_stack.is_empty() {
+            return None;
+        }
+        let dispatch: Op = self.ops.get(i as usize)?.clone();
+        if dispatch.op2_type != OperandType::Const || dispatch.result_type != OperandType::Unused {
+            return None;
+        }
+        let subject: Expr = self.defined_operand_expr(dispatch.op1_type, dispatch.op1)?;
+        let table: Vec<(Literal, u32)> = self.match_table(dispatch.op2)?;
+        if table.len() > SANE_SWITCH_ARM_CAP {
+            return None;
+        }
+        let mut labels: BTreeMap<u32, Vec<String>> = BTreeMap::new();
+        for (key, target) in &table {
+            labels.entry(*target).or_default().push(key.try_render()?);
+        }
+        let finished: (Vec<Stmt>, u32) = self.finish_match(
+            &subject.text,
+            labels,
+            MatchDefault::Target(dispatch.extended_value),
+            i.checked_add(1)?,
+            end,
+        )?;
+        if matches!(dispatch.op1_type, OperandType::TmpVar | OperandType::Var) {
+            self.slots.remove(&(dispatch.op1_type, dispatch.op1));
+        }
+        Some(finished)
+    }
+
+    fn structure_linear_match(&mut self, i: u32, end: u32) -> Option<(Vec<Stmt>, u32)> {
+        type Comparison = (Op, u32, Option<Expr>, Option<Expr>);
+        if !self.call_stack.is_empty() {
+            return None;
+        }
+        let snapshot: LiftSnapshot = self.lift_snapshot();
+        let mut comparisons: Vec<Comparison> = Vec::new();
+        let mut cursor: u32 = i;
+        let dispatch_end: u32 = loop {
+            let comparison: Op = self.ops.get(cursor as usize)?.clone();
+            let jump: Op = self.ops.get(cursor as usize + 1)?.clone();
+            if !matches!(comparison.opcode, op::IS_IDENTICAL | op::CASE_STRICT)
+                || jump.opcode != op::JMPNZ
+                || (jump.op1_type, jump.op1) != (comparison.result_type, comparison.result)
+                || jump.op2 <= cursor + 1
+                || comparisons.len() >= SANE_SWITCH_ARM_CAP
+            {
+                self.restore_lift_snapshot(snapshot);
+                return None;
+            }
+            let left: Option<Expr> = self.defined_operand_expr(comparison.op1_type, comparison.op1);
+            let right: Option<Expr> =
+                self.defined_operand_expr(comparison.op2_type, comparison.op2);
+            comparisons.push((comparison, jump.op2, left, right));
+            let mut next: u32 = cursor + 2;
+            while next < end {
+                self.match_scan_work = self.match_scan_work.saturating_add(1);
+                if self.match_scan_work > SANE_SWITCH_STATE_WORK_CAP {
+                    self.restore_lift_snapshot(snapshot);
+                    return None;
+                }
+                let op: &Op = self.ops.get(next as usize)?;
+                let compares: bool = matches!(op.opcode, op::IS_IDENTICAL | op::CASE_STRICT)
+                    && self
+                        .ops
+                        .get(next as usize + 1)
+                        .is_some_and(|following: &Op| following.opcode == op::JMPNZ);
+                if compares || op.opcode == op::JMP || op.opcode == op::MATCH_ERROR {
+                    break;
+                }
+                next += 1;
+            }
+            let at: &Op = self.ops.get(next as usize)?;
+            if at.opcode == op::JMP || at.opcode == op::MATCH_ERROR {
+                if !self.eval_expression_range(cursor + 2, next) {
+                    self.restore_lift_snapshot(snapshot);
+                    return None;
+                }
+                break next;
+            }
+            if !self.eval_expression_range(cursor + 2, next) {
+                self.restore_lift_snapshot(snapshot);
+                return None;
+            }
+            cursor = next;
+        };
+        let true_subject: bool = comparisons.iter().all(|(comparison, ..): &Comparison| {
+            comparison.op2_type == OperandType::Const
+                && self.literals.get(comparison.op2 as usize) == Some(&Literal::Bool(true))
+        });
+        let (first, _, first_left, _): &Comparison = comparisons.first()?;
+        let subject_key: (OperandType, u32) = (first.op1_type, first.op1);
+        let same_subject: bool = comparisons.iter().all(|(comparison, ..): &Comparison| {
+            (comparison.op1_type, comparison.op1) == subject_key
+        });
+        let subject: Option<String> = if true_subject {
+            Some("true".to_owned())
+        } else if same_subject {
+            first_left.as_ref().map(|left: &Expr| left.text.clone())
+        } else {
+            None
+        };
+        let Some(subject): Option<String> = subject else {
+            self.restore_lift_snapshot(snapshot);
+            return None;
+        };
+        let mut labels: BTreeMap<u32, Vec<String>> = BTreeMap::new();
+        for (_, target, left, right) in &comparisons {
+            let condition: Option<&Expr> = if true_subject {
+                left.as_ref()
+            } else {
+                right.as_ref()
+            };
+            let Some(condition): Option<&Expr> = condition else {
+                self.restore_lift_snapshot(snapshot);
+                return None;
+            };
+            labels
+                .entry(*target)
+                .or_default()
+                .push(condition.text.clone());
+        }
+        let terminator: &Op = self.ops.get(dispatch_end as usize)?;
+        let default: MatchDefault = if terminator.opcode == op::MATCH_ERROR {
+            MatchDefault::Unhandled
+        } else {
+            MatchDefault::Target(terminator.op1)
+        };
+        let Some(finished): Option<(Vec<Stmt>, u32)> =
+            self.finish_match(&subject, labels, default, dispatch_end + 1, end)
+        else {
+            self.restore_lift_snapshot(snapshot);
+            return None;
+        };
+        if !true_subject && matches!(subject_key.0, OperandType::TmpVar | OperandType::Var) {
+            self.slots.remove(&subject_key);
+        }
+        Some(finished)
+    }
+
+    fn finish_match(
+        &mut self,
+        subject: &str,
+        labels: BTreeMap<u32, Vec<String>>,
+        default: MatchDefault,
+        first_arm: u32,
+        end: u32,
+    ) -> Option<(Vec<Stmt>, u32)> {
+        let mut starts: BTreeSet<u32> = labels.keys().copied().collect();
+        if let MatchDefault::Target(target) = default {
+            starts.insert(target);
+        }
+        let arm_starts: Vec<u32> = starts.iter().copied().collect();
+        if arm_starts.first().copied() != Some(first_arm)
+            || arm_starts.iter().any(|start: &u32| *start >= end)
+        {
+            return None;
+        }
+        let join: u32 = arm_starts.iter().find_map(|start: &u32| {
+            let next: u32 = starts.range(start + 1..).next().copied()?;
+            let jump: &Op = self.ops.get(next.checked_sub(1)? as usize)?;
+            (jump.opcode == op::JMP && jump.op1 > *start).then_some(jump.op1)
+        })?;
+        if join > end || arm_starts.iter().any(|start: &u32| *start >= join) {
+            return None;
+        }
+        let snapshot: LiftSnapshot = self.lift_snapshot();
+        let incoming: BTreeMap<(OperandType, u32), Expr> = self.slots.clone();
+        let mut result_key: Option<(OperandType, u32)> = None;
+        let mut rendered: BTreeMap<u32, String> = BTreeMap::new();
+        let mut unhandled: bool = matches!(default, MatchDefault::Unhandled);
+        for (position, start) in arm_starts.iter().enumerate() {
+            let limit: u32 = arm_starts.get(position + 1).copied().unwrap_or(join);
+            let first: &Op = self.ops.get(*start as usize)?;
+            if default == MatchDefault::Target(*start) && first.opcode == op::MATCH_ERROR {
+                if limit != start + 1 {
+                    self.restore_lift_snapshot(snapshot);
+                    return None;
+                }
+                unhandled = true;
+                continue;
+            }
+            let last: &Op = self.ops.get(limit.checked_sub(1)? as usize)?;
+            let value_end: u32 = if last.opcode == op::JMP && last.op1 == join {
+                limit - 1
+            } else if limit == join {
+                limit
+            } else {
+                self.restore_lift_snapshot(snapshot);
+                return None;
+            };
+            let producer: &Op = self.ops.get(value_end.checked_sub(1)? as usize)?;
+            let key: (OperandType, u32) = (producer.result_type, producer.result);
+            if !matches!(key.0, OperandType::TmpVar | OperandType::Var)
+                || result_key.is_some_and(|expected: (OperandType, u32)| expected != key)
+                || value_end <= *start
+            {
+                self.restore_lift_snapshot(snapshot);
+                return None;
+            }
+            result_key = Some(key);
+            self.slots.clone_from(&incoming);
+            let Some(value): Option<Expr> = self.branch_value(*start, value_end, key) else {
+                self.restore_lift_snapshot(snapshot);
+                return None;
+            };
+            rendered.insert(*start, value.text);
+        }
+        let result_key: (OperandType, u32) = result_key?;
+        let mut parts: Vec<String> = Vec::with_capacity(labels.len() + 1);
+        for (target, keys) in &labels {
+            let value: &String = rendered.get(target)?;
+            parts.push(format!("{} => {value}", keys.join(", ")));
+        }
+        if !unhandled && let MatchDefault::Target(target) = default {
+            parts.push(format!("default => {}", rendered.get(&target)?));
+        }
+        self.slots = incoming;
+        self.writable_slots.remove(&result_key);
+        self.bind_slot(
+            result_key,
+            Expr::atom(format!("match ({subject}) {{ {} }}", parts.join(", "))),
+        );
         Some((Vec::new(), join))
     }
 
@@ -2804,6 +3505,9 @@ impl<'a> Lifter<'a> {
 
     fn structure_do_while(&mut self, i: u32, end: u32, depth: u32) -> Option<(Vec<Stmt>, u32)> {
         let jump_idx: u32 = self.find_back_jump(i, end)?;
+        if self.entered_from_outside(i, jump_idx.saturating_add(1)) {
+            return None;
+        }
         let jump: Op = self.ops.get(jump_idx as usize)?.clone();
         let negate: bool = jump.opcode == op::JMPZ;
         let cond_start: u32 = self.condition_start(&jump, i, jump_idx);
@@ -2831,6 +3535,19 @@ impl<'a> Lifter<'a> {
             }],
             jump_idx + 1,
         ))
+    }
+
+    fn entered_from_outside(&self, start: u32, end: u32) -> bool {
+        if start.saturating_add(1) >= end {
+            return false;
+        }
+        self.jump_sources
+            .range(start + 1..end)
+            .any(|(_, sources): (&u32, &Vec<u32>)| {
+                sources
+                    .iter()
+                    .any(|source: &u32| *source < start || *source >= end)
+            })
     }
 
     fn find_back_jump(&self, body_start: u32, end: u32) -> Option<u32> {
@@ -2889,16 +3606,16 @@ impl<'a> Lifter<'a> {
         } else {
             "||"
         };
-        let mut k: u32 = i + 1;
-        while k < join {
-            self.eval_op(k);
-            k += 1;
+        if !self.eval_expression_range(i + 1, join) {
+            self.slots = incoming_slots;
+            self.writable_slots = incoming_writable;
+            return None;
         }
-        let rhs: Expr = self
-            .slots
-            .get(&result_key)
-            .cloned()
-            .unwrap_or_else(|| Expr::atom("true".to_owned()));
+        let Some(rhs): Option<Expr> = self.slots.get(&result_key).cloned() else {
+            self.slots = incoming_slots;
+            self.writable_slots = incoming_writable;
+            return None;
+        };
         let text: String = format!(
             "{} {} {}",
             lhs.wrapped(PREC_CMP),
@@ -2908,21 +3625,17 @@ impl<'a> Lifter<'a> {
         self.slots = Self::common_slots(&incoming_slots, &self.slots);
         self.writable_slots = Self::common_writable_slots(&incoming_writable, &self.writable_slots);
         self.writable_slots.remove(&result_key);
-        self.slots.insert(
+        self.bind_slot(
             result_key,
             Expr {
                 text,
-                prec: if connector == "&&" {
-                    PREC_BITAND
-                } else {
-                    PREC_BITOR
-                },
+                prec: if connector == "&&" { PREC_AND } else { PREC_OR },
             },
         );
         Some((Vec::new(), join))
     }
 
-    fn fold_closure(&self, i: u32, end: u32) -> Option<(Vec<Stmt>, u32)> {
+    fn fold_closure(&mut self, i: u32, end: u32) -> Option<(Vec<Stmt>, u32)> {
         let declare: Op = self.ops.get(i as usize)?.clone();
         if declare.result_type != OperandType::TmpVar {
             return None;
@@ -2934,6 +3647,7 @@ impl<'a> Lifter<'a> {
             .filter(|node: &&OpArray| node.kind == OpArrayKind::Closure)
             .nth(declare.extended_value as usize)?;
         let mut uses: Vec<String> = Vec::new();
+        let mut implicit: bool = false;
         let mut cursor: u32 = i.saturating_add(1);
         while cursor < end {
             let bind: &Op = self.ops.get(cursor as usize)?;
@@ -2943,7 +3657,14 @@ impl<'a> Lifter<'a> {
             if (bind.op1_type, bind.op1) != slot || bind.op2_type != OperandType::Cv {
                 return None;
             }
-            uses.push(format!("${}", self.cv(bind.op2)));
+            implicit |= bind.extended_value & crate::opcache::BIND_LEXICAL_IMPLICIT != 0;
+            let by_reference: &str =
+                if bind.extended_value & crate::opcache::BIND_LEXICAL_BY_REFERENCE != 0 {
+                    "&"
+                } else {
+                    ""
+                };
+            uses.push(format!("{by_reference}${}", self.cv(bind.op2)));
             if uses.len() > SANE_CLOSURE_USE_CAP {
                 return None;
             }
@@ -2957,24 +3678,51 @@ impl<'a> Lifter<'a> {
             cursor = cursor.saturating_add(1);
         }
         let consumer: Op = self.ops.get(cursor as usize)?.clone();
-        let (prefix, suffix): (String, String) = match consumer.opcode {
+        let statement: Option<(String, String)> = match consumer.opcode {
             op::ASSIGN
                 if (consumer.op2_type, consumer.op2) == slot
                     && consumer.op1_type == OperandType::Cv
                     && consumer.result_type == OperandType::Unused =>
             {
-                (format!("${} = ", self.cv(consumer.op1)), ";".to_owned())
+                Some((format!("${} = ", self.cv(consumer.op1)), ";".to_owned()))
             }
             op::RETURN if (consumer.op1_type, consumer.op1) == slot => {
-                ("return ".to_owned(), ";".to_owned())
+                Some(("return ".to_owned(), ";".to_owned()))
             }
-            _ => return None,
+            _ => None,
         };
-        let params: String = SkeletonEmitter::param_list(child);
+        let (head, params, returns): (String, String, String) = match &child.signature {
+            None => (
+                "function ".to_owned(),
+                SkeletonEmitter::param_list(child),
+                String::new(),
+            ),
+            Some(declared) => {
+                let (params, refusal): (String, Option<&'static str>) =
+                    render_parameters(child, declared);
+                if refusal.is_some() {
+                    return None;
+                }
+                let head: String = format!(
+                    "{}function {}",
+                    if declared.modifiers.is_static {
+                        "static "
+                    } else {
+                        ""
+                    },
+                    if declared.returns_reference { "&" } else { "" }
+                );
+                let returns: String = declared
+                    .return_type
+                    .as_ref()
+                    .map_or_else(String::new, |ty: &String| format!(": {ty}"));
+                (head, params, returns)
+            }
+        };
         let signature: String = if uses.is_empty() {
-            format!("function ({params})")
+            format!("{head}({params}){returns}")
         } else {
-            format!("function ({params}) use ({})", uses.join(", "))
+            format!("{head}({params}) use ({}){returns}", uses.join(", "))
         };
         let mut inner: Lifter<'_> = Lifter::new(
             &child.ops,
@@ -2983,11 +3731,44 @@ impl<'a> Lifter<'a> {
             &child.try_catch,
             &child.children,
             child.num_args,
-        );
+        )
+        .with_declarations(self.classes, &child.static_variables);
         let body: Vec<Stmt> = inner.lift();
         if !inner.unrecovered.is_empty() {
             return None;
         }
+        if implicit {
+            let [Stmt::Line(only)] = body.as_slice() else {
+                return None;
+            };
+            let value: &str = only.strip_prefix("return ")?.strip_suffix(';')?;
+            let arrow: String = format!(
+                "{}({params}){returns} => {value}",
+                head.replacen("function ", "fn ", 1)
+            );
+            if let Some((prefix, suffix)) = statement {
+                return Some((
+                    vec![Stmt::Line(format!("{prefix}{arrow}{suffix}"))],
+                    cursor.saturating_add(1),
+                ));
+            }
+            self.store_result(&declare, Expr::atom(format!("({arrow})")));
+            return Some((Vec::new(), cursor));
+        }
+        let Some((prefix, suffix)): Option<(String, String)> = statement else {
+            let mut rendered: SkeletonEmitter = SkeletonEmitter::default();
+            for stmt in &body {
+                stmt.render_into(&mut rendered, 1);
+            }
+            if !rendered.unrecovered.is_empty() {
+                return None;
+            }
+            self.store_result(
+                &declare,
+                Expr::atom(format!("({signature} {{\n{}}})", rendered.out)),
+            );
+            return Some((Vec::new(), cursor));
+        };
         Some((
             vec![Stmt::Closure {
                 prefix,
@@ -2997,6 +3778,20 @@ impl<'a> Lifter<'a> {
             }],
             cursor.saturating_add(1),
         ))
+    }
+
+    fn structure_class_declaration(&self, i: u32) -> Option<(Vec<Stmt>, u32)> {
+        let op: &Op = self.ops.get(i as usize)?;
+        if op.op1_type != OperandType::Const || op.result_type != OperandType::Unused {
+            return None;
+        }
+        let Some(Literal::Str(key)): Option<&Literal> = self.literals.get(op.op1 as usize) else {
+            return None;
+        };
+        self.classes
+            .iter()
+            .any(|class: &ClassDecl| class.declaration_key == *key)
+            .then(|| (vec![Stmt::Class(key.clone())], i.saturating_add(1)))
     }
 
     fn fold_nullsafe_chain(&mut self, i: u32, end: u32) -> Option<(Vec<Stmt>, u32)> {
@@ -3025,8 +3820,14 @@ impl<'a> Lifter<'a> {
             let segment_end: u32 = self.nullsafe_segment_end(cursor, join)?;
             let head: Op = self.ops.get(cursor as usize + 1)?.clone();
             let advanced: Option<((OperandType, u32), Expr)> =
-                if head.opcode == op::FETCH_OBJ_IS && segment_end == cursor.saturating_add(2) {
+                if matches!(head.opcode, op::FETCH_OBJ_IS | op::FETCH_OBJ_R)
+                    && segment_end == cursor.saturating_add(2)
+                {
                     self.nullsafe_property(&head, link, &chain)
+                } else if head.opcode == op::ISSET_ISEMPTY_PROP_OBJ
+                    && segment_end == cursor.saturating_add(2)
+                {
+                    self.nullsafe_isset(&head, link, &chain)
                 } else if head.opcode == op::INIT_METHOD_CALL && (head.op1_type, head.op1) == link {
                     self.nullsafe_call(cursor, segment_end, link, refused_before)
                 } else {
@@ -3047,7 +3848,7 @@ impl<'a> Lifter<'a> {
             return self.abandon_nullsafe(incoming_slots, incoming_writable);
         }
         self.writable_slots.remove(&result_key);
-        self.slots.insert(result_key, chain);
+        self.bind_slot(result_key, chain);
         Some((Vec::new(), join))
     }
 
@@ -3095,6 +3896,24 @@ impl<'a> Lifter<'a> {
         ))
     }
 
+    fn nullsafe_isset(
+        &self,
+        probe_op: &Op,
+        link: (OperandType, u32),
+        chain: &Expr,
+    ) -> Option<((OperandType, u32), Expr)> {
+        let probe: &'static str = isset_probe(probe_op.extended_value)?;
+        let (produced, property): ((OperandType, u32), Expr) =
+            self.nullsafe_property(probe_op, link, chain)?;
+        Some((
+            produced,
+            Expr {
+                text: format!("{probe}({})", property.text),
+                prec: PREC_CALL,
+            },
+        ))
+    }
+
     fn nullsafe_call(
         &mut self,
         cursor: u32,
@@ -3105,12 +3924,13 @@ impl<'a> Lifter<'a> {
         let depth: usize = self.call_stack.len();
         self.nullsafe_link = Some(link);
         let mut k: u32 = cursor.saturating_add(1);
+        let mut pure: bool = true;
         while k < segment_end {
-            self.eval_op(k);
+            pure &= self.eval_in_expression(k);
             k = k.saturating_add(1);
         }
         self.nullsafe_link = None;
-        if self.refused.len() != refused_before || self.call_stack.len() != depth {
+        if !pure || self.refused.len() != refused_before || self.call_stack.len() != depth {
             return None;
         }
         let last: Op = self.ops.get(segment_end as usize - 1)?.clone();
@@ -3130,15 +3950,16 @@ impl<'a> Lifter<'a> {
         }
         let result_key: (OperandType, u32) = (gate.result_type, gate.result);
         let lhs: Expr = self.operand_expr(gate.op1_type, gate.op1)?;
+        if gate.opcode == op::COALESCE
+            && let Some(folded) = self.fold_coalesce_assign(i, join, result_key, &lhs)
+        {
+            return Some(folded);
+        }
         let incoming_slots: BTreeMap<(OperandType, u32), Expr> = self.slots.clone();
         let incoming_writable: BTreeMap<(OperandType, u32), u32> = self.writable_slots.clone();
         let refused_before: usize = self.refused.len();
-        let mut k: u32 = i + 1;
-        while k < join {
-            self.eval_op(k);
-            k += 1;
-        }
-        if self.refused.len() != refused_before {
+        let pure: bool = self.eval_expression_range(i + 1, join);
+        if !pure || self.refused.len() != refused_before {
             self.slots = incoming_slots;
             self.writable_slots = incoming_writable;
             return None;
@@ -3158,7 +3979,61 @@ impl<'a> Lifter<'a> {
         self.slots = Self::common_slots(&incoming_slots, &self.slots);
         self.writable_slots = Self::common_writable_slots(&incoming_writable, &self.writable_slots);
         self.writable_slots.remove(&result_key);
-        self.slots.insert(result_key, Expr { text, prec });
+        self.bind_slot(result_key, Expr { text, prec });
+        Some((Vec::new(), join))
+    }
+
+    fn fold_coalesce_assign(
+        &mut self,
+        i: u32,
+        join: u32,
+        result_key: (OperandType, u32),
+        subject: &Expr,
+    ) -> Option<(Vec<Stmt>, u32)> {
+        let last: u32 = join.checked_sub(1)?;
+        let assign_idx: u32 = if self.ops.get(last as usize)?.opcode == op::OP_DATA {
+            last.checked_sub(1)?
+        } else {
+            last
+        };
+        let assign: Op = self.ops.get(assign_idx as usize)?.clone();
+        if assign_idx <= i || (assign.result_type, assign.result) != result_key {
+            return None;
+        }
+        let snapshot: LiftSnapshot = self.lift_snapshot();
+        let rendered: Option<(String, Expr)> = self
+            .eval_expression_range(i + 1, assign_idx)
+            .then(|| match assign.opcode {
+                op::ASSIGN if matches!(assign.op1_type, OperandType::Cv) => Some((
+                    self.defined_operand_expr(assign.op1_type, assign.op1)?.text,
+                    self.defined_operand_expr(assign.op2_type, assign.op2)?,
+                )),
+                op::ASSIGN_DIM => Some((
+                    self.dimension_access(&assign)?,
+                    self.op_data_value(assign_idx)?,
+                )),
+                op::ASSIGN_OBJ => Some((
+                    self.property_access(&assign),
+                    self.op_data_value(assign_idx)?,
+                )),
+                op::ASSIGN_STATIC_PROP => Some((
+                    self.static_property(&assign)?,
+                    self.op_data_value(assign_idx)?,
+                )),
+                _ => None,
+            })
+            .flatten();
+        let Some((target, value)): Option<(String, Expr)> =
+            rendered.filter(|(target, _): &(String, Expr)| *target == subject.text)
+        else {
+            self.restore_lift_snapshot(snapshot);
+            return None;
+        };
+        self.writable_slots.remove(&result_key);
+        self.bind_slot(
+            result_key,
+            Expr::atom(format!("({target} ??= {})", value.text)),
+        );
         Some((Vec::new(), join))
     }
 
@@ -3274,7 +4149,7 @@ impl<'a> Lifter<'a> {
             for (key, previous) in saved_slots {
                 match previous {
                     Some(expr) => {
-                        self.slots.insert(key, expr);
+                        self.bind_slot(key, expr);
                     }
                     None => {
                         self.slots.remove(&key);
@@ -3341,42 +4216,143 @@ impl<'a> Lifter<'a> {
     fn structure_ternary(&mut self, i: u32, end: u32) -> Option<(Vec<Stmt>, u32)> {
         let jmpz: Op = self.ops.get(i as usize)?.clone();
         let else_addr: u32 = jmpz.op2;
-        if else_addr <= i || else_addr > end {
+        if else_addr <= i.saturating_add(2) || else_addr > end {
             return None;
         }
-        let then_idx: u32 = i + 1;
-        let then_op: Op = self.ops.get(then_idx as usize)?.clone();
-        if then_op.opcode != op::QM_ASSIGN {
-            return None;
-        }
-        let jmp_idx: u32 = then_idx + 1;
+        let jmp_idx: u32 = else_addr - 1;
         let jmp_op: Op = self.ops.get(jmp_idx as usize)?.clone();
-        if jmp_op.opcode != op::JMP {
+        let join: u32 = jmp_op.op1;
+        if jmp_op.opcode != op::JMP || join <= else_addr || join > end {
             return None;
         }
-        let else_op: Op = self.ops.get(else_addr as usize)?.clone();
-        if else_op.opcode != op::QM_ASSIGN || else_op.result != then_op.result {
+        let then_op: Op = self.ops.get(jmp_idx as usize - 1)?.clone();
+        let else_op: Op = self.ops.get(join as usize - 1)?.clone();
+        let result_key: (OperandType, u32) = (then_op.result_type, then_op.result);
+        if !matches!(result_key.0, OperandType::TmpVar | OperandType::Var)
+            || (else_op.result_type, else_op.result) != result_key
+        {
             return None;
         }
-        let cond: Expr = self.operand_expr(jmpz.op1_type, jmpz.op1)?;
-        let then_val: Expr = self.operand_expr(then_op.op1_type, then_op.op1)?;
-        let else_val: Expr = self.operand_expr(else_op.op1_type, else_op.op1)?;
+        let snapshot: LiftSnapshot = self.lift_snapshot();
+        let incoming_slots: BTreeMap<(OperandType, u32), Expr> = self.slots.clone();
+        let Some((cond, then_start)): Option<(Expr, u32)> =
+            self.ternary_condition(i, jmp_idx, else_addr)
+        else {
+            self.restore_lift_snapshot(snapshot);
+            return None;
+        };
+        let guards: BTreeMap<(OperandType, u32), Expr> = self.slots.clone();
+        let then_val: Option<Expr> = self.branch_value(then_start, jmp_idx, result_key);
+        self.slots = guards;
+        let else_val: Option<Expr> = self.branch_value(else_addr, join, result_key);
+        let (Some(then_val), Some(else_val)): (Option<Expr>, Option<Expr>) = (then_val, else_val)
+        else {
+            self.restore_lift_snapshot(snapshot);
+            return None;
+        };
+        self.slots = incoming_slots;
         let text: String = format!(
             "{} ? {} : {}",
             cond.wrapped(PREC_CMP),
             then_val.wrapped(PREC_CMP),
             else_val.wrapped(PREC_CMP)
         );
-        let result_key: (OperandType, u32) = (then_op.result_type, then_op.result);
         self.writable_slots.remove(&result_key);
-        self.slots.insert(
+        self.bind_slot(
             result_key,
             Expr {
                 text,
                 prec: PREC_TERNARY,
             },
         );
-        Some((Vec::new(), else_addr + 1))
+        Some((Vec::new(), join))
+    }
+
+    fn ternary_guard(&self, jump: &Op) -> Option<Expr> {
+        let value: Expr = self.defined_operand_expr(jump.op1_type, jump.op1)?;
+        match jump.opcode {
+            op::JMPZ => Some(value),
+            op::JMPNZ => Some(Expr {
+                text: format!("!{}", value.wrapped(PREC_NOT)),
+                prec: PREC_NOT,
+            }),
+            _ => None,
+        }
+    }
+
+    fn ternary_condition(&mut self, i: u32, jmp_idx: u32, else_addr: u32) -> Option<(Expr, u32)> {
+        let first: Op = self.ops.get(i as usize)?.clone();
+        let mut cond: Expr = self.ternary_guard(&first)?;
+        let mut start: u32 = i.checked_add(1)?;
+        while let Some(guard) = (start..jmp_idx).find(|&k: &u32| {
+            self.ops.get(k as usize).is_some_and(|op: &Op| {
+                matches!(op.opcode, op::JMPZ | op::JMPNZ) && op.op2 == else_addr
+            })
+        }) {
+            if !self.eval_expression_range(start, guard) {
+                return None;
+            }
+            let jump: Op = self.ops.get(guard as usize)?.clone();
+            let next: Expr = self.ternary_guard(&jump)?;
+            cond = Expr {
+                text: format!("{} && {}", cond.wrapped(PREC_AND), next.wrapped(PREC_AND)),
+                prec: PREC_AND,
+            };
+            start = guard.checked_add(1)?;
+        }
+        Some((cond, start))
+    }
+
+    fn branch_value(
+        &mut self,
+        start: u32,
+        end: u32,
+        result_key: (OperandType, u32),
+    ) -> Option<Expr> {
+        let last: Op = self.ops.get(end.checked_sub(1)? as usize)?.clone();
+        if last.opcode == op::QM_ASSIGN {
+            if !self.eval_expression_range(start, end - 1) {
+                return None;
+            }
+            return self.defined_operand_expr(last.op1_type, last.op1);
+        }
+        if !self.eval_expression_range(start, end) {
+            return None;
+        }
+        self.slots.get(&result_key).cloned()
+    }
+
+    fn eval_expression_range(&mut self, start: u32, end: u32) -> bool {
+        let mut k: u32 = start;
+        while k < end {
+            let Some(op): Option<&Op> = self.ops.get(k as usize) else {
+                return false;
+            };
+            let folded: Option<(Vec<Stmt>, u32)> = match op.opcode {
+                op::JMPZ_EX | op::JMPNZ_EX => self.fold_short_circuit(k, end),
+                op::COALESCE | op::JMP_SET => self.fold_default_join(k, end),
+                op::JMPZ | op::JMPNZ => self.structure_ternary(k, end),
+                op::ROPE_INIT => self.fold_rope(k, end),
+                op::JMP_NULL => self.fold_nullsafe_chain(k, end),
+                op::DECLARE_LAMBDA_FUNCTION => self.fold_closure(k, end),
+                _ => {
+                    if !self.eval_in_expression(k) {
+                        return false;
+                    }
+                    k += 1;
+                    continue;
+                }
+            };
+            match folded {
+                Some((stmts, next))
+                    if stmts.is_empty() && self.statement_queue.is_empty() && next > k =>
+                {
+                    k = next;
+                }
+                _ => return false,
+            }
+        }
+        true
     }
 
     fn structure_if(&mut self, i: u32, end: u32, depth: u32) -> Option<(Vec<Stmt>, u32)> {
@@ -3488,7 +4464,7 @@ impl<'a> Lifter<'a> {
             tail += 1;
         }
         let cond_op: &Op = self.ops.get(tail as usize)?;
-        if cond_op.op2 != i + 1 {
+        if cond_op.op2 != i + 1 || self.entered_from_outside(i, tail.saturating_add(1)) {
             return None;
         }
         let after_loop: u32 = tail + 1;
@@ -3722,13 +4698,23 @@ impl<'a> Lifter<'a> {
     }
 
     fn lift_condition(&mut self, start: u32, jump_idx: u32, jump_op: &Op) -> Option<Expr> {
-        let mut k: u32 = start;
-        while k < jump_idx {
-            self.ops.get(k as usize)?;
-            self.eval_op(k);
-            k += 1;
+        if !self.eval_expression_range(start, jump_idx) {
+            return None;
         }
-        self.operand_expr(jump_op.op1_type, jump_op.op1)
+        self.defined_operand_expr(jump_op.op1_type, jump_op.op1)
+    }
+
+    fn eval_in_expression(&mut self, idx: u32) -> bool {
+        let queued: usize = self.statement_queue.len();
+        let refused: usize = self.refused.len();
+        self.operand_failed.set(false);
+        let statement: Option<String> = self.eval_op(idx);
+        let pure: bool = !self.operand_failed.replace(false)
+            && statement.is_none()
+            && self.statement_queue.len() == queued
+            && self.refused.len() == refused;
+        self.statement_queue.truncate(queued);
+        pure
     }
 
     fn structure_foreach(&mut self, i: u32, end: u32, depth: u32) -> Option<(Vec<Stmt>, u32)> {
@@ -3745,10 +4731,6 @@ impl<'a> Lifter<'a> {
             (op::FE_RESET_RW, op::FE_FETCH_RW) => true,
             _ => return None,
         };
-        let value: String = match fetch.op2_type {
-            OperandType::Cv => format!("${}", self.cv(fetch.op2)),
-            _ => return None,
-        };
         let mut value_start: u32 = fetch_idx + 1;
         let key: Option<String> =
             if fetch.extended_value != 0 && fetch.result_type != OperandType::Unused {
@@ -3760,8 +4742,17 @@ impl<'a> Lifter<'a> {
             } else {
                 None
             };
-        let body_start: u32 = value_start;
         let body_end: u32 = after_loop.saturating_sub(1);
+        if self.entered_from_outside(i, after_loop) {
+            return None;
+        }
+        let (value, body_start): (String, u32) = match fetch.op2_type {
+            OperandType::Cv => (format!("${}", self.cv(fetch.op2)), value_start),
+            OperandType::TmpVar | OperandType::Var if !by_reference => {
+                self.list_pattern(value_start, body_end, (fetch.op2_type, fetch.op2))?
+            }
+            _ => return None,
+        };
         let back: &Op = self.ops.get(body_end as usize)?;
         if back.opcode != op::JMP || back.op1 != fetch_idx {
             return None;
@@ -3822,13 +4813,7 @@ impl<'a> Lifter<'a> {
         }
         let subject: Expr = self.defined_operand_expr(first.op1_type, first.op1)?;
         let container: (OperandType, u32) = (first.op1_type, first.op1);
-        let mut work: usize = 0;
-        let mut name_bytes: usize = 0;
-        let (entries, nested_end): (Vec<ListEntry>, u32) =
-            self.list_entries(start, end, container, 0, &mut work, &mut name_bytes)?;
-        let next: u32 = self.skip_list_free(nested_end, end, container)?;
-        let mut pattern: String = String::new();
-        self.render_list_entries(&entries, &mut pattern)?;
+        let (pattern, next): (String, u32) = self.list_pattern(start, end, container)?;
         let statement_bytes: usize = pattern
             .len()
             .checked_add(subject.text.len())?
@@ -3862,7 +4847,7 @@ impl<'a> Lifter<'a> {
             return None;
         }
         self.writable_slots.remove(&container);
-        self.slots.insert(container, Expr::atom(spill_expr.clone()));
+        self.bind_slot(container, Expr::atom(spill_expr.clone()));
         Some((
             vec![
                 Stmt::Line(format!("{spill_expr} = {};", subject.text)),
@@ -3870,6 +4855,34 @@ impl<'a> Lifter<'a> {
             ],
             next,
         ))
+    }
+
+    fn fold_reference_list_assign(&self, start: u32, end: u32) -> Option<(Vec<Stmt>, u32)> {
+        let make: &Op = self.ops.get(start as usize)?;
+        if make.op1_type != OperandType::Cv || make.result_type != OperandType::Var {
+            return None;
+        }
+        let subject: String = format!("${}", self.cv(make.op1));
+        let container: (OperandType, u32) = (make.result_type, make.result);
+        let (pattern, next): (String, u32) =
+            self.list_pattern(start.checked_add(1)?, end, container)?;
+        Some((vec![Stmt::Line(format!("{pattern} = {subject};"))], next))
+    }
+
+    fn list_pattern(
+        &self,
+        start: u32,
+        end: u32,
+        container: (OperandType, u32),
+    ) -> Option<(String, u32)> {
+        let mut work: usize = 0;
+        let mut name_bytes: usize = 0;
+        let (entries, nested_end): (Vec<ListEntry>, u32) =
+            self.list_entries(start, end, container, 0, &mut work, &mut name_bytes)?;
+        let next: u32 = self.skip_list_free(nested_end, end, container)?;
+        let mut pattern: String = String::new();
+        self.render_list_entries(&entries, &mut pattern)?;
+        Some((pattern, next))
     }
 
     fn list_entries(
@@ -3888,32 +4901,79 @@ impl<'a> Lifter<'a> {
         let mut cursor: u32 = start;
         while cursor < end {
             let fetch: &Op = self.ops.get(cursor as usize)?;
-            if fetch.opcode != op::FETCH_LIST_R || (fetch.op1_type, fetch.op1) != container {
+            if !matches!(fetch.opcode, op::FETCH_LIST_R | op::FETCH_LIST_W)
+                || (fetch.op1_type, fetch.op1) != container
+            {
                 break;
             }
             *work = work.checked_add(1)?;
             if *work > SANE_LIST_ELEMENT_CAP
-                || fetch.op2_type != OperandType::Const
-                || !matches!(fetch.result_type, OperandType::TmpVar | OperandType::Var)
+                || !matches!(
+                    fetch.result_type,
+                    OperandType::TmpVar | OperandType::Var | OperandType::Cv
+                )
                 || fetch.extended_value != 0
             {
                 return None;
             }
-            let key_literal: &Literal = self.literals.get(fetch.op2 as usize)?;
-            let position: Option<usize> = match key_literal {
-                Literal::Long(value) if *value >= 0 => usize::try_from(*value)
-                    .ok()
-                    .filter(|position: &usize| *position < SANE_LIST_ELEMENT_CAP),
-                Literal::Long(_) | Literal::Str(_) => None,
+            let (text, position): (String, Option<usize>) = match fetch.op2_type {
+                OperandType::Const => {
+                    let key_literal: &Literal = self.literals.get(fetch.op2 as usize)?;
+                    let position: Option<usize> = match key_literal {
+                        Literal::Long(value) if *value >= 0 => usize::try_from(*value)
+                            .ok()
+                            .filter(|position: &usize| *position < SANE_LIST_ELEMENT_CAP),
+                        Literal::Long(_) | Literal::Str(_) => None,
+                        _ => return None,
+                    };
+                    (key_literal.render(), position)
+                }
+                OperandType::Cv => (format!("${}", self.cv(fetch.op2)), None),
                 _ => return None,
             };
-            let key: ListKey = ListKey {
-                literal: fetch.op2,
-                position,
-            };
+            let key: ListKey = ListKey { text, position };
             let result: (OperandType, u32) = (fetch.result_type, fetch.result);
             let consumer_index: u32 = cursor.checked_add(1)?;
+            if fetch.opcode == op::FETCH_LIST_R && fetch.result_type == OperandType::Cv {
+                let name: String = self
+                    .var_names
+                    .get(fetch.result as usize)
+                    .and_then(Option::as_deref)
+                    .filter(|name: &&str| is_valid_php_ident(name))
+                    .map(str::to_owned)?;
+                entries.push(ListEntry {
+                    key,
+                    value: ListValue::Variable(format!("${name}")),
+                });
+                cursor = consumer_index;
+                continue;
+            }
             let consumer: &Op = self.ops.get(consumer_index as usize)?;
+            if fetch.opcode == op::FETCH_LIST_W {
+                let bind_index: u32 = consumer_index.checked_add(1)?;
+                let bind: &Op = self.ops.get(bind_index as usize)?;
+                if consumer.opcode != op::MAKE_REF
+                    || (consumer.op1_type, consumer.op1) != result
+                    || bind.opcode != op::ASSIGN_REF
+                    || bind.op1_type != OperandType::Cv
+                    || (bind.op2_type, bind.op2) != (consumer.result_type, consumer.result)
+                    || bind.result_type != OperandType::Unused
+                {
+                    return None;
+                }
+                let name: String = self
+                    .var_names
+                    .get(bind.op1 as usize)
+                    .and_then(Option::as_deref)
+                    .filter(|name: &&str| is_valid_php_ident(name))
+                    .map(str::to_owned)?;
+                entries.push(ListEntry {
+                    key,
+                    value: ListValue::Variable(format!("&${name}")),
+                });
+                cursor = bind_index.checked_add(1)?;
+                continue;
+            }
             let (value, next): (ListValue, u32) = if consumer.opcode == op::ASSIGN {
                 if consumer.op1_type != OperandType::Cv
                     || (consumer.op2_type, consumer.op2) != result
@@ -4011,8 +5071,7 @@ impl<'a> Lifter<'a> {
                 if index != 0 {
                     Self::push_list_text(out, ", ")?;
                 }
-                let key: &Literal = self.literals.get(entry.key.literal as usize)?;
-                Self::push_list_text(out, &key.render())?;
+                Self::push_list_text(out, &entry.key.text)?;
                 Self::push_list_text(out, " => ")?;
                 self.render_list_value(&entry.value, out)?;
             }
@@ -4042,20 +5101,191 @@ impl<'a> Lifter<'a> {
         match op.opcode {
             o if o == op::OP_DATA || o == op::GENERATOR_CREATE => None,
             o if is_binary(o) => self.fold_binary(idx, op),
-            o if o == op::BOOL || o == op::QM_ASSIGN => {
-                if let Some(v) = self.operand_expr(op.op1_type, op.op1) {
-                    self.store_result(op, v);
-                }
+            o if o == op::QM_ASSIGN => {
+                let Some(v): Option<Expr> = self.operand_expr(op.op1_type, op.op1) else {
+                    return Some(self.refuse(idx, o, REASON_EXPRESSION_OPERAND));
+                };
+                self.store_result(op, v);
+                None
+            }
+            o if o == op::BOOL => {
+                let Some(v): Option<Expr> = self.operand_expr(op.op1_type, op.op1) else {
+                    return Some(self.refuse(idx, o, REASON_EXPRESSION_OPERAND));
+                };
+                let cast: Expr = Expr {
+                    text: format!("(bool) {}", v.wrapped(PREC_UNARY)),
+                    prec: PREC_UNARY,
+                };
+                self.store_result(op, cast);
                 None
             }
             o if o == op::BOOL_NOT => {
-                if let Some(v) = self.operand_expr(op.op1_type, op.op1) {
-                    let neg: Expr = Expr {
-                        text: format!("!{}", v.wrapped(PREC_CALL)),
+                let Some(v): Option<Expr> = self.operand_expr(op.op1_type, op.op1) else {
+                    return Some(self.refuse(idx, o, REASON_EXPRESSION_OPERAND));
+                };
+                let neg: Expr = Expr {
+                    text: format!("!{}", v.wrapped(PREC_NOT)),
+                    prec: PREC_NOT,
+                };
+                self.store_result(op, neg);
+                None
+            }
+            o if (op::FRAMELESS_ICALL_0..=op::FRAMELESS_ICALL_3).contains(&o) => {
+                self.fold_frameless_call(idx, op)
+            }
+            o if o == op::UNSET_DIM => {
+                let Some(target): Option<String> = self.dimension_access(op) else {
+                    return Some(self.refuse(idx, o, REASON_EXPRESSION_OPERAND));
+                };
+                Some(format!("unset({target});"))
+            }
+            o if o == op::UNSET_OBJ => {
+                let target: String = self.property_access(op);
+                Some(format!("unset({target});"))
+            }
+            o if o == op::GET_CLASS
+                || o == op::GET_TYPE
+                || o == op::FUNC_NUM_ARGS
+                || o == op::FUNC_GET_ARGS
+                || o == op::GET_CALLED_CLASS
+                || o == op::DEFINED
+                || o == op::FETCH_THIS
+                || o == op::FETCH_GLOBALS
+                || o == op::ISSET_ISEMPTY_THIS =>
+            {
+                let text: Option<String> = match o {
+                    op::GET_CLASS if op.op1_type == OperandType::Unused => {
+                        Some("self::class".to_owned())
+                    }
+                    op::GET_CLASS => self
+                        .operand_expr(op.op1_type, op.op1)
+                        .map(|v: Expr| format!("get_class({})", v.text)),
+                    op::GET_TYPE => self
+                        .operand_expr(op.op1_type, op.op1)
+                        .map(|v: Expr| format!("gettype({})", v.text)),
+                    op::FUNC_NUM_ARGS => Some("func_num_args()".to_owned()),
+                    op::FUNC_GET_ARGS if op.op1_type == OperandType::Unused => {
+                        Some("func_get_args()".to_owned())
+                    }
+                    op::GET_CALLED_CLASS => Some("static::class".to_owned()),
+                    op::DEFINED => self
+                        .operand_expr(op.op1_type, op.op1)
+                        .map(|v: Expr| format!("defined({})", v.text)),
+                    op::FETCH_THIS => Some("$this".to_owned()),
+                    op::FETCH_GLOBALS => Some("$GLOBALS".to_owned()),
+                    op::ISSET_ISEMPTY_THIS if op.extended_value == 0 => {
+                        Some("isset($this)".to_owned())
+                    }
+                    _ => None,
+                };
+                let Some(text): Option<String> = text else {
+                    return Some(self.refuse(idx, o, REASON_EXPRESSION_OPERAND));
+                };
+                self.store_result(
+                    op,
+                    Expr {
+                        text,
                         prec: PREC_CALL,
-                    };
-                    self.store_result(op, neg);
+                    },
+                );
+                None
+            }
+            o if o == op::ARRAY_KEY_EXISTS => {
+                let key: Option<Expr> = self.operand_expr(op.op1_type, op.op1);
+                let array: Option<Expr> = self.operand_expr(op.op2_type, op.op2);
+                let (Some(key), Some(array)): (Option<Expr>, Option<Expr>) = (key, array) else {
+                    return Some(self.refuse(idx, o, REASON_EXPRESSION_OPERAND));
+                };
+                self.store_result(
+                    op,
+                    Expr {
+                        text: format!("array_key_exists({}, {})", key.text, array.text),
+                        prec: PREC_CALL,
+                    },
+                );
+                None
+            }
+            o if o == op::FETCH_CLASS_NAME => {
+                let class: Option<String> = match op.op1_type {
+                    OperandType::Const => self.literal_string(op.op1_type, op.op1),
+                    OperandType::Unused => None,
+                    ty => self
+                        .operand_expr(ty, op.op1)
+                        .map(|value: Expr| value.wrapped(PREC_CALL)),
+                };
+                let Some(class): Option<String> = class else {
+                    return Some(self.refuse(idx, o, REASON_CLASS_REFERENCE));
+                };
+                self.store_result(op, Expr::atom(format!("{class}::class")));
+                None
+            }
+            o if o == op::BIND_GLOBAL => {
+                let name: String = self.cv(op.op1);
+                let declared: Option<String> = self.literal_string(op.op2_type, op.op2);
+                if op.op1_type != OperandType::Cv || declared.as_deref() != Some(name.as_str()) {
+                    return Some(self.refuse(idx, o, REASON_EXPRESSION_OPERAND));
                 }
+                Some(format!("global ${name};"))
+            }
+            o if o == op::CHECK_VAR => {
+                let Some(v): Option<Expr> = self.operand_expr(op.op1_type, op.op1) else {
+                    return Some(self.refuse(idx, o, REASON_EXPRESSION_OPERAND));
+                };
+                Some(format!("{};", v.text))
+            }
+            o if o == op::SEPARATE || o == op::VERIFY_NEVER_TYPE => None,
+            o if o == op::DECLARE_FUNCTION => {
+                let declared: BTreeSet<String> = self
+                    .literal_string(op.op1_type, op.op1)
+                    .into_iter()
+                    .collect();
+                let child: Option<&OpArray> = self
+                    .children
+                    .iter()
+                    .find(|child: &&OpArray| is_runtime_function(child, &declared));
+                let Some(child): Option<&OpArray> = child else {
+                    return Some(self.refuse(idx, o, REASON_DECLARATION));
+                };
+                let mut rendered: SkeletonEmitter = SkeletonEmitter {
+                    emitted_open_tag: true,
+                    classes: self.classes.to_vec(),
+                    ..SkeletonEmitter::default()
+                };
+                rendered.emit_oparray(child, 0);
+                if rendered.unrecovered_total != 0 {
+                    return Some(self.refuse(idx, o, REASON_DECLARATION));
+                }
+                Some(rendered.out.trim_end().to_owned())
+            }
+            o if o == op::MATCH_ERROR => {
+                let Some(subject): Option<Expr> = self.defined_operand_expr(op.op1_type, op.op1)
+                else {
+                    return Some(self.refuse(idx, o, REASON_EXPRESSION_OPERAND));
+                };
+                Some(format!("match ({}) {{}};", subject.text))
+            }
+            o if o == op::ADD_ARRAY_UNPACK => {
+                let slot: (OperandType, u32) = (op.result_type, op.result);
+                let array: Option<Expr> = self.slots.get(&slot).cloned();
+                let value: Option<Expr> = self.operand_expr(op.op1_type, op.op1);
+                let (Some(array), Some(value)): (Option<Expr>, Option<Expr>) = (array, value)
+                else {
+                    return Some(self.refuse(idx, o, REASON_ARRAY_SHAPE));
+                };
+                let Some(inner): Option<&str> = array
+                    .text
+                    .strip_prefix('[')
+                    .and_then(|s: &str| s.strip_suffix(']'))
+                else {
+                    return Some(self.refuse(idx, o, REASON_ARRAY_SHAPE));
+                };
+                let joined: String = if inner.is_empty() {
+                    format!("[...{}]", value.wrapped(PREC_TERNARY))
+                } else {
+                    format!("[{inner}, ...{}]", value.wrapped(PREC_TERNARY))
+                };
+                self.writable_slots.remove(&slot);
+                self.bind_slot(slot, Expr::atom(joined));
                 None
             }
             o if o == op::STRLEN || o == op::COUNT => {
@@ -4063,8 +5293,21 @@ impl<'a> Lifter<'a> {
                 None
             }
             o if o == op::FETCH_LIST_R => Some(self.refuse(idx, o, REASON_LIST_DESTRUCTURING)),
-            o if o == op::FETCH_DIM_R => {
-                self.fold_fetch_dim(op);
+            o if o == op::FETCH_DIM_R || o == op::FETCH_DIM_IS => {
+                let base: Option<Expr> = self.operand_expr(op.op1_type, op.op1);
+                let index: Option<Expr> = self.operand_expr(op.op2_type, op.op2);
+                let (Some(base), Some(index)): (Option<Expr>, Option<Expr>) = (base, index) else {
+                    return Some(self.refuse(idx, o, REASON_EXPRESSION_OPERAND));
+                };
+                self.store_result(
+                    op,
+                    Expr::atom(format!("{}[{}]", base.wrapped(PREC_CALL), index.text)),
+                );
+                None
+            }
+            o if o == op::FETCH_OBJ_IS => {
+                let text: String = self.property_access(op);
+                self.store_result(op, Expr::atom(text));
                 None
             }
             o if o == op::FETCH_OBJ_R => {
@@ -4185,7 +5428,26 @@ impl<'a> Lifter<'a> {
             o if o == op::FE_FREE => None,
             o if o == op::VERIFY_RETURN_TYPE || o == op::NOP || o == op::HANDLE_EXCEPTION => None,
             o if o == op::FAST_CALL || o == op::FAST_RET || o == op::DISCARD_EXCEPTION => None,
-            o if o == op::RECV || o == op::RECV_INIT || o == op::BIND_STATIC => None,
+            o if o == op::RECV || o == op::RECV_INIT => None,
+            o if o == op::BIND_STATIC && self.static_variables.is_empty() => None,
+            o if o == op::BIND_STATIC => {
+                let name: String = self.cv(op.op1);
+                let binding: Option<&(String, Literal)> =
+                    self.static_variables.get(op.extended_value as usize);
+                let Some((declared, initial)): Option<&(String, Literal)> =
+                    binding.filter(|(declared, _): &&(String, Literal)| {
+                        op.op1_type == OperandType::Cv
+                            && op.op2_type == OperandType::Unused
+                            && *declared == name
+                    })
+                else {
+                    return Some(self.refuse(idx, o, REASON_STATIC_VARIABLE));
+                };
+                let Some(value): Option<String> = initial.try_render() else {
+                    return Some(self.refuse(idx, o, REASON_UNRENDERABLE_VALUE));
+                };
+                Some(format!("static ${declared} = {value};"))
+            }
             o if o == op::RECV_VARIADIC => {
                 if self.num_args.checked_add(1) == Some(op.op1)
                     && op.op1_type == OperandType::Unused
@@ -4222,6 +5484,7 @@ impl<'a> Lifter<'a> {
                     positional_count: 0,
                     result: None,
                     callable_shape,
+                    user_call: false,
                 });
                 None
             }
@@ -4245,6 +5508,7 @@ impl<'a> Lifter<'a> {
                     positional_count: 0,
                     result: None,
                     callable_shape,
+                    user_call: false,
                 });
                 None
             }
@@ -4284,6 +5548,7 @@ impl<'a> Lifter<'a> {
                     positional_count: 0,
                     result: None,
                     callable_shape,
+                    user_call: false,
                 });
                 None
             }
@@ -4331,10 +5596,48 @@ impl<'a> Lifter<'a> {
                     positional_count: 0,
                     result: None,
                     callable_shape,
+                    user_call: false,
                 });
                 None
             }
-            o if is_send(o) => self.push_send(idx, op),
+            o if is_send(o) || o == op::SEND_USER => self.push_send(idx, op),
+            o if o == op::SEND_ARRAY => {
+                if self
+                    .call_stack
+                    .last()
+                    .is_some_and(|call: &PendingCall| call.user_call)
+                {
+                    self.push_send(idx, op)
+                } else {
+                    self.push_unpack(idx, op)
+                }
+            }
+            o if o == op::INIT_USER_CALL => {
+                let callee: Option<String> = self
+                    .literal_string(op.op1_type, op.op1)
+                    .filter(|name: &String| is_valid_php_ident(name));
+                let callable: Option<Expr> = self.defined_operand_expr(op.op2_type, op.op2);
+                let (Some(callee), Some(callable)): (Option<String>, Option<Expr>) =
+                    (callee, callable)
+                else {
+                    return Some(self.refuse(idx, o, REASON_CALL_ARGUMENT_SHAPE));
+                };
+                let argument: PendingArgument = PendingArgument::Positional(callable.text);
+                self.call_stack.push(PendingCall {
+                    callee,
+                    is_method: false,
+                    nullsafe: false,
+                    object: None,
+                    is_static: false,
+                    rendered_args: argument.rendered_len(),
+                    args: vec![argument],
+                    positional_count: 1,
+                    result: None,
+                    callable_shape: false,
+                    user_call: true,
+                });
+                None
+            }
             o if o == op::SEND_UNPACK => self.push_unpack(idx, op),
             o if o == op::CHECK_UNDEF_ARGS => {
                 if op.op1_type != OperandType::Unused
@@ -4369,6 +5672,28 @@ impl<'a> Lifter<'a> {
                 self.store_result(op, class);
                 None
             }
+            o if o == op::DECLARE_ANON_CLASS => {
+                let key: Option<String> = match (op.op1_type, self.literals.get(op.op1 as usize)) {
+                    (OperandType::Const, Some(Literal::Str(key)))
+                        if !key.contains(ANON_CLASS_MARK)
+                            && self
+                                .classes
+                                .iter()
+                                .any(|class: &ClassDecl| class.declaration_key == *key) =>
+                    {
+                        Some(key.clone())
+                    }
+                    _ => None,
+                };
+                let Some(key): Option<String> = key else {
+                    return Some(self.refuse(idx, o, REASON_DECLARATION));
+                };
+                self.store_result(
+                    op,
+                    Expr::atom(format!("{ANON_CLASS_MARK}{key}{ANON_CLASS_MARK}")),
+                );
+                None
+            }
             o if o == op::NEW => {
                 let cls: String = self
                     .operand_expr(op.op1_type, op.op1)
@@ -4388,6 +5713,7 @@ impl<'a> Lifter<'a> {
                         idx,
                     )),
                     callable_shape: false,
+                    user_call: false,
                 });
                 None
             }
@@ -4402,6 +5728,43 @@ impl<'a> Lifter<'a> {
                 }
                 self.refused.insert(idx);
                 Some(format!("goto {};", Self::goto_label(target)))
+            }
+            o if (o == op::JMPZ || o == op::JMPNZ) && op.result_type == OperandType::Unused => {
+                let target: u32 = op.op2;
+                if target as usize >= self.ops.len() {
+                    return Some(self.refuse(idx, o, REASON_JUMP));
+                }
+                let loop_exit: Option<(usize, bool)> = self
+                    .loop_jump_level(target, idx)
+                    .filter(|(position, _): &(usize, bool)| self.exit_frees_match(idx, *position));
+                if loop_exit.is_none() && !self.emit_gotos {
+                    self.goto_targets.insert(target);
+                    return Some(self.refuse(idx, o, REASON_JUMP));
+                }
+                let Some(condition): Option<Expr> = self.defined_operand_expr(op.op1_type, op.op1)
+                else {
+                    return Some(self.refuse(idx, o, REASON_EXPRESSION_OPERAND));
+                };
+                let test: String = if o == op::JMPZ {
+                    format!("!{}", condition.wrapped(PREC_NOT))
+                } else {
+                    condition.text
+                };
+                if let Some((position, is_break)) = loop_exit {
+                    let Some(level): Option<u32> =
+                        u32::try_from(self.breakables.len() - position).ok()
+                    else {
+                        return Some(self.refuse(idx, o, REASON_JUMP));
+                    };
+                    let keyword: &str = if is_break { "break" } else { "continue" };
+                    return Some(if level > 1 {
+                        format!("if ({test}) {{ {keyword} {level}; }}")
+                    } else {
+                        format!("if ({test}) {{ {keyword}; }}")
+                    });
+                }
+                self.refused.insert(idx);
+                Some(format!("if ({test}) goto {};", Self::goto_label(target)))
             }
             o if o == op::TYPE_CHECK => {
                 let Some(subject): Option<Expr> = self.operand_expr(op.op1_type, op.op1) else {
@@ -4570,9 +5933,8 @@ impl<'a> Lifter<'a> {
                 if op.result_type == OperandType::Unused || use_count == 0 {
                     return Some(format!("{} = {};", lhs.text, rhs.text));
                 }
-                let spill_name: String = self.reserve_spill("assign", idx);
-                self.store_result(op, Expr::atom(format!("${spill_name}")));
-                Some(format!("${spill_name} = ({} = {});", lhs.text, rhs.text))
+                self.store_result(op, Expr::atom(format!("({} = {})", lhs.text, rhs.text)));
+                None
             }
             o if o == op::ASSIGN_DIM => {
                 let target: Expr = self.operand_expr(op.op1_type, op.op1)?;
@@ -4672,12 +6034,37 @@ impl<'a> Lifter<'a> {
                 };
                 Some(format!("unset(${name});"))
             }
-            o if o == op::FREE => None,
+            o if o == op::FREE => self.free_unconsumed(idx, op),
             o if o == op::INCLUDE_OR_EVAL => {
-                let arg: Expr = self
-                    .operand_expr(op.op1_type, op.op1)
-                    .unwrap_or_else(|| Expr::atom("''".to_owned()));
-                Some(format!("{} {};", include_kind(op.extended_value), arg.text))
+                let Some(kind): Option<&'static str> = include_kind(op.extended_value) else {
+                    return Some(self.refuse(idx, o, REASON_EXPRESSION_OPERAND));
+                };
+                let Some(arg): Option<Expr> = self.operand_expr(op.op1_type, op.op1) else {
+                    return Some(self.refuse(idx, o, REASON_EXPRESSION_OPERAND));
+                };
+                let text: String = if kind == "eval" {
+                    format!("eval({})", arg.text)
+                } else {
+                    format!("{kind} {}", arg.wrapped(PREC_UNARY))
+                };
+                if op.result_type != OperandType::Unused
+                    && self
+                        .result_use_counts
+                        .get(idx as usize)
+                        .copied()
+                        .unwrap_or(0)
+                        > 0
+                {
+                    self.store_result(
+                        op,
+                        Expr {
+                            text,
+                            prec: PREC_UNARY,
+                        },
+                    );
+                    return None;
+                }
+                Some(format!("{text};"))
             }
             other => {
                 let typed_dispatch: bool = matches!(
@@ -4806,6 +6193,72 @@ impl<'a> Lifter<'a> {
             .or_else(|| self.literal_string(op.op1_type, op.op1))
     }
 
+    fn free_unconsumed(&mut self, idx: u32, op: &Op) -> Option<String> {
+        let key: (OperandType, u32) = (op.op1_type, op.op1);
+        if !matches!(key.0, OperandType::TmpVar | OperandType::Var) {
+            return None;
+        }
+        let lower: u32 = idx.saturating_sub(USE_SCAN_BUDGET as u32);
+        let producer: Option<u32> = (lower..idx).rev().find(|candidate: &u32| {
+            self.ops
+                .get(*candidate as usize)
+                .is_some_and(|producer: &Op| (producer.result_type, producer.result) == key)
+        });
+        let consumed: bool = producer
+            .and_then(|producer: u32| self.result_use_counts.get(producer as usize).copied())
+            .is_none_or(|uses: u32| uses > 0);
+        if consumed {
+            return None;
+        }
+        let expr: Expr = self.slots.remove(&key)?;
+        self.writable_slots.remove(&key);
+        Some(format!("{};", expr.text))
+    }
+
+    fn fold_frameless_call(&mut self, idx: u32, op: &Op) -> Option<String> {
+        let arity: u8 = op.opcode - op::FRAMELESS_ICALL_0;
+        let Some(name): Option<String> = self
+            .literal_string(OperandType::Const, op.extended_value)
+            .filter(|name: &String| is_valid_php_ident(name))
+        else {
+            return Some(self.refuse(idx, op.opcode, REASON_FRAMELESS_FUNCTION));
+        };
+        let mut args: Vec<String> = Vec::with_capacity(usize::from(arity));
+        let operands: [Option<Expr>; 3] = [
+            (arity >= 1)
+                .then(|| self.operand_expr(op.op1_type, op.op1))
+                .flatten(),
+            (arity >= 2)
+                .then(|| self.operand_expr(op.op2_type, op.op2))
+                .flatten(),
+            (arity >= 3).then(|| self.op_data_value(idx)).flatten(),
+        ];
+        for value in operands.into_iter().take(usize::from(arity)) {
+            let Some(value): Option<Expr> = value else {
+                return Some(self.refuse(idx, op.opcode, REASON_EXPRESSION_OPERAND));
+            };
+            args.push(value.text);
+        }
+        let text: String = format!("{name}({})", args.join(", "));
+        let uses: u32 = self
+            .result_use_counts
+            .get(idx as usize)
+            .copied()
+            .unwrap_or(0);
+        if op.result_type == OperandType::Unused || uses == 0 {
+            self.slots.remove(&(op.result_type, op.result));
+            return Some(format!("{text};"));
+        }
+        self.store_result(
+            op,
+            Expr {
+                text,
+                prec: PREC_CALL,
+            },
+        );
+        None
+    }
+
     fn fold_binary(&mut self, idx: u32, op: &Op) -> Option<String> {
         if !matches!(op.result_type, OperandType::TmpVar | OperandType::Var) {
             return Some(self.refuse(idx, op.opcode, REASON_EXPRESSION_OPERAND));
@@ -4819,6 +6272,8 @@ impl<'a> Lifter<'a> {
         let (symbol, precedence): (&str, u8) = binary_symbol(op.opcode);
         let (left_precedence, right_precedence): (u8, u8) = if is_right_associative(op.opcode) {
             (precedence + 1, precedence)
+        } else if is_non_associative(op.opcode) {
+            (precedence + 1, precedence + 1)
         } else {
             (precedence, precedence + 1)
         };
@@ -4970,32 +6425,25 @@ impl<'a> Lifter<'a> {
         }
     }
 
-    fn fold_fetch_dim(&mut self, op: &Op) {
-        let base: Option<Expr> = self.operand_expr(op.op1_type, op.op1);
-        let index: Option<Expr> = self.operand_expr(op.op2_type, op.op2);
-        if let (Some(b), Some(idx)) = (base, index) {
-            let text: String = format!("{}[{}]", b.wrapped(PREC_CALL), idx.text);
-            self.store_result(
-                op,
-                Expr {
-                    text,
-                    prec: PREC_ATOM,
-                },
-            );
-        }
-    }
-
     fn fold_variable_variable(&mut self, idx: u32, op: &Op) -> Option<String> {
         let Some(name): Option<Expr> = self.operand_expr(op.op1_type, op.op1) else {
             return Some(self.refuse(idx, op.opcode, REASON_EXPRESSION_OPERAND));
         };
-        let text: String = match op.op1_type {
-            OperandType::Cv => format!("${}", name.text),
-            OperandType::Const => match self.literals.get(op.op1 as usize) {
-                Some(Literal::Str(s)) if is_valid_php_ident(s) => format!("${s}"),
-                _ => format!("${{{}}}", name.text),
+        let literal: Option<&str> = match (op.op1_type, self.literals.get(op.op1 as usize)) {
+            (OperandType::Const, Some(Literal::Str(s))) if is_valid_php_ident(s) => Some(s),
+            _ => None,
+        };
+        let text: String = match op.extended_value {
+            FETCH_SCOPE_LOCAL => match (op.op1_type, literal) {
+                (OperandType::Cv, _) => format!("${}", name.text),
+                (_, Some(s)) => format!("${s}"),
+                (_, None) => format!("${{{}}}", name.text),
             },
-            _ => format!("${{{}}}", name.text),
+            FETCH_SCOPE_GLOBAL => match literal {
+                Some(s) if SUPERGLOBALS.contains(&s) => format!("${s}"),
+                _ => format!("$GLOBALS[{}]", name.text),
+            },
+            _ => return Some(self.refuse(idx, op.opcode, REASON_FETCH_SCOPE)),
         };
         self.store_result(
             op,
@@ -5061,11 +6509,16 @@ impl<'a> Lifter<'a> {
 
     fn array_element(&self, op: &Op) -> Option<String> {
         let value: Expr = self.operand_expr(op.op1_type, op.op1)?;
+        let value: String = if op.extended_value & ARRAY_ELEMENT_BY_REFERENCE != 0 {
+            format!("&{}", value.text)
+        } else {
+            value.text
+        };
         if op.op2_type == OperandType::Unused {
-            return Some(value.text);
+            return Some(value);
         }
         let key: Expr = self.operand_expr(op.op2_type, op.op2)?;
-        Some(format!("{} => {}", key.text, value.text))
+        Some(format!("{} => {value}", key.text))
     }
 
     fn fold_array_init(&mut self, idx: u32, op: &Op) -> Option<String> {
@@ -5113,7 +6566,7 @@ impl<'a> Lifter<'a> {
             format!("{inner}, {element}")
         };
         self.writable_slots.remove(&slot);
-        self.slots.insert(
+        self.bind_slot(
             slot,
             Expr {
                 text: format!("[{joined}]"),
@@ -5171,10 +6624,7 @@ impl<'a> Lifter<'a> {
         if op.op2_type != OperandType::Unused || op.result_type != OperandType::Unused {
             return Some(self.refuse(idx, op.opcode, REASON_CALL_ARGUMENT_SHAPE));
         }
-        let Some(call): Option<&PendingCall> = self.call_stack.last() else {
-            return Some(self.refuse(idx, op.opcode, REASON_CALL_ARGUMENT_SHAPE));
-        };
-        if op.op2 != call.positional_count {
+        if self.call_stack.is_empty() {
             return Some(self.refuse(idx, op.opcode, REASON_CALL_ARGUMENT_SHAPE));
         }
         let Some(value): Option<Expr> = self.operand_expr(op.op1_type, op.op1) else {
@@ -5225,7 +6675,9 @@ impl<'a> Lifter<'a> {
     }
 
     fn finish_call(&mut self, idx: u32, op: &Op) -> Option<String> {
-        let call: PendingCall = self.call_stack.pop()?;
+        let Some(call): Option<PendingCall> = self.call_stack.pop() else {
+            return Some(self.refuse(idx, op.opcode, REASON_CALL_ARGUMENT_SHAPE));
+        };
         let args: String = call
             .args
             .iter()
@@ -5250,7 +6702,7 @@ impl<'a> Lifter<'a> {
         match target {
             Some(key) if uses > 0 => {
                 self.writable_slots.remove(&key);
-                self.slots.insert(
+                self.bind_slot(
                     key,
                     Expr {
                         text,
@@ -5259,7 +6711,12 @@ impl<'a> Lifter<'a> {
                 );
                 None
             }
-            _ => Some(format!("{text};")),
+            Some(key) => {
+                self.slots.remove(&key);
+                self.writable_slots.remove(&key);
+                Some(format!("{text};"))
+            }
+            None => Some(format!("{text};")),
         }
     }
 
@@ -5292,8 +6749,24 @@ impl<'a> Lifter<'a> {
         None
     }
 
+    fn bind_slot(&mut self, key: (OperandType, u32), expr: Expr) {
+        if key.0 == OperandType::Cv {
+            let target: String = self.cv(key.1);
+            self.statement_queue
+                .push(format!("${target} = {};", expr.text));
+            return;
+        }
+        self.slots.insert(key, expr);
+    }
+
     fn store_result(&mut self, op: &Op, expr: Expr) {
         if op.result_type == OperandType::Unused {
+            return;
+        }
+        if op.result_type == OperandType::Cv {
+            let target: String = self.cv(op.result);
+            self.statement_queue
+                .push(format!("${target} = {};", expr.text));
             return;
         }
         let key: (OperandType, u32) = (op.result_type, op.result);
@@ -5304,17 +6777,32 @@ impl<'a> Lifter<'a> {
     fn operand_expr(&self, ty: OperandType, value: u32) -> Option<Expr> {
         match ty {
             OperandType::Unused => None,
-            OperandType::Const => Some(Expr::atom(
-                self.literals
-                    .get(value as usize)
-                    .map_or_else(|| format!("CONST#{value}"), Literal::render),
-            )),
+            OperandType::Const => {
+                let rendered: Option<String> =
+                    self.literals
+                        .get(value as usize)
+                        .and_then(|literal: &Literal| {
+                            if matches!(literal, Literal::Array(_)) {
+                                Some(literal.render())
+                            } else {
+                                literal.try_render()
+                            }
+                        });
+                if rendered.is_none() {
+                    self.operand_failed.set(true);
+                }
+                Some(Expr::atom(
+                    rendered.unwrap_or_else(|| format!("CONST#{value}")),
+                ))
+            }
             OperandType::Cv => Some(Expr::atom(format!("${}", self.cv(value)))),
-            OperandType::TmpVar | OperandType::Var => self
-                .slots
-                .get(&(ty, value))
-                .cloned()
-                .or_else(|| Some(Expr::atom(slot_fallback(ty, value)))),
+            OperandType::TmpVar | OperandType::Var => {
+                let found: Option<Expr> = self.slots.get(&(ty, value)).cloned();
+                if found.is_none() {
+                    self.operand_failed.set(true);
+                }
+                found.or_else(|| Some(Expr::atom(slot_fallback(ty, value))))
+            }
         }
     }
 
@@ -5349,6 +6837,294 @@ impl<'a> Lifter<'a> {
         (ty == OperandType::Const)
             .then(|| self.literals.get(value as usize).and_then(Literal::as_str))
             .flatten()
+    }
+}
+
+fn render_parameters(node: &OpArray, signature: &Signature) -> (String, Option<&'static str>) {
+    let mut defaults: BTreeMap<u32, &Literal> = BTreeMap::new();
+    for op in &node.ops {
+        if op.opcode == op::RECV_INIT
+            && op.result_type == OperandType::Cv
+            && op.op2_type == OperandType::Const
+            && let Some(literal) = node.literals.get(op.op2 as usize)
+        {
+            defaults.insert(op.result, literal);
+        }
+    }
+    let mut refusal: Option<&'static str> = None;
+    let mut rendered: Vec<String> = Vec::with_capacity(signature.params.len());
+    for (position, parameter) in signature.params.iter().enumerate() {
+        let mut text: String = String::new();
+        if let Some(ty) = &parameter.type_decl {
+            text.push_str(ty);
+            text.push(' ');
+        }
+        if parameter.by_reference {
+            text.push('&');
+        }
+        if parameter.variadic {
+            text.push_str("...");
+        }
+        text.push('$');
+        text.push_str(&parameter.name);
+        let default: Option<&&Literal> = u32::try_from(position)
+            .ok()
+            .and_then(|slot: u32| defaults.get(&slot));
+        if let Some(default) = default {
+            match default.try_render() {
+                Some(value) => {
+                    text.push_str(" = ");
+                    text.push_str(&value);
+                }
+                None => refusal = Some(REASON_UNRENDERABLE_VALUE),
+            }
+        }
+        rendered.push(text);
+    }
+    (rendered.join(", "), refusal)
+}
+
+fn never_falls_through(op: &Op) -> bool {
+    op.opcode == op::FAST_RET || op.branch_target() == Branch::Terminal
+}
+
+fn jump_sources(ops: &[Op], literals: &[Literal]) -> BTreeMap<u32, Vec<u32>> {
+    let mut sources: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
+    for (source, target) in jump_edges(ops, literals) {
+        sources.entry(target).or_default().push(source);
+    }
+    sources
+}
+
+fn jump_edges(ops: &[Op], literals: &[Literal]) -> Vec<(u32, u32)> {
+    let mut edges: Vec<(u32, u32)> = Vec::new();
+    for (index, op) in ops.iter().enumerate() {
+        let Some(source): Option<u32> = u32::try_from(index).ok() else {
+            break;
+        };
+        if op.opcode == op::FE_FETCH_R || op.opcode == op::FE_FETCH_RW {
+            continue;
+        }
+        match op.branch_target() {
+            Branch::Uncond(target) | Branch::Cond { taken: target, .. } => {
+                edges.push((source, target));
+            }
+            Branch::None | Branch::Terminal => {}
+        }
+        match op.opcode {
+            op::FAST_CALL => edges.push((source, op.op1)),
+            op::CATCH if op.op2 != 0 => edges.push((source, op.op2)),
+            op::SWITCH_LONG | op::SWITCH_STRING | op::MATCH => {
+                edges.push((source, op.extended_value));
+                match literals.get(op.op2 as usize) {
+                    Some(Literal::SwitchLong(table)) => {
+                        edges.extend(
+                            table
+                                .iter()
+                                .map(|(_, target): &(i64, u32)| (source, *target)),
+                        );
+                    }
+                    Some(Literal::MatchTable(table)) => {
+                        edges.extend(
+                            table
+                                .iter()
+                                .map(|(_, target): &(Literal, u32)| (source, *target)),
+                        );
+                    }
+                    Some(Literal::SwitchString(table)) => edges.extend(
+                        table
+                            .iter()
+                            .map(|(_, target): &(String, u32)| (source, *target)),
+                    ),
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+    edges
+}
+
+fn read_after_jump(ops: &[Op], producer: usize, key: (OperandType, u32)) -> bool {
+    let mut pending: Vec<usize> = vec![producer.saturating_add(1)];
+    let mut visited: BTreeSet<usize> = BTreeSet::new();
+    while let Some(start) = pending.pop() {
+        let mut cursor: usize = start;
+        while let Some(op) = ops.get(cursor) {
+            if !visited.insert(cursor) || visited.len() > USE_SCAN_BUDGET {
+                break;
+            }
+            let reads: bool = op.opcode != op::FREE
+                && ((op.op1_type, op.op1) == key || (op.op2_type, op.op2) == key);
+            if reads {
+                return true;
+            }
+            if (op.result_type, op.result) == key {
+                break;
+            }
+            match op.branch_target() {
+                Branch::Terminal => break,
+                Branch::Uncond(target) => {
+                    cursor = target as usize;
+                    continue;
+                }
+                Branch::Cond { taken, .. } => pending.push(taken as usize),
+                Branch::None => {}
+            }
+            cursor += 1;
+        }
+    }
+    false
+}
+
+fn count_labels(stmts: &[Stmt], labels: &mut BTreeMap<String, usize>) {
+    for stmt in stmts {
+        match stmt {
+            Stmt::Label(label) => *labels.entry(label.clone()).or_default() += 1,
+            Stmt::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                count_labels(then_body, labels);
+                count_labels(else_body, labels);
+            }
+            Stmt::While { body, .. }
+            | Stmt::For { body, .. }
+            | Stmt::DoWhile { body, .. }
+            | Stmt::Foreach { body, .. }
+            | Stmt::Closure { body, .. } => count_labels(body, labels),
+            Stmt::Switch { arms, .. } => {
+                for arm in arms {
+                    count_labels(&arm.body, labels);
+                }
+            }
+            Stmt::Try {
+                body,
+                catches,
+                finally_body,
+            } => {
+                count_labels(body, labels);
+                for arm in catches {
+                    count_labels(&arm.body, labels);
+                }
+                if let Some(finally_body) = finally_body {
+                    count_labels(finally_body, labels);
+                }
+            }
+            Stmt::Line(_) | Stmt::Break(_) | Stmt::Continue(_) | Stmt::Class(_) => {}
+        }
+    }
+}
+
+fn runtime_function_names(node: &OpArray) -> BTreeSet<String> {
+    node.ops
+        .iter()
+        .filter(|op: &&Op| op.opcode == op::DECLARE_FUNCTION && op.op1_type == OperandType::Const)
+        .filter_map(|op: &Op| {
+            node.literals
+                .get(op.op1 as usize)?
+                .as_str()
+                .map(str::to_owned)
+        })
+        .collect()
+}
+
+fn is_runtime_function(child: &OpArray, declared_at_runtime: &BTreeSet<String>) -> bool {
+    child.kind == OpArrayKind::Function
+        && child.signature.is_some()
+        && child
+            .name
+            .as_ref()
+            .is_some_and(|name: &String| declared_at_runtime.contains(&name.to_ascii_lowercase()))
+}
+
+fn join_names(names: &[&String]) -> String {
+    names
+        .iter()
+        .map(|name: &&String| name.as_str())
+        .collect::<Vec<&str>>()
+        .join(", ")
+}
+
+fn class_relations(class: &ClassDecl) -> String {
+    let mut relations: String = String::new();
+    let interfaces: Vec<&String> = class
+        .interfaces
+        .iter()
+        .filter(|name: &&String| {
+            class.kind != ClassKind::Enum || !matches!(name.as_str(), "UnitEnum" | "BackedEnum")
+        })
+        .collect();
+    if class.kind == ClassKind::Interface {
+        if !interfaces.is_empty() {
+            relations.push_str(" extends ");
+            relations.push_str(&join_names(&interfaces));
+        }
+        return relations;
+    }
+    if let Some(parent) = &class.parent {
+        relations.push_str(" extends ");
+        relations.push_str(parent);
+    }
+    if !interfaces.is_empty() {
+        relations.push_str(" implements ");
+        relations.push_str(&join_names(&interfaces));
+    }
+    relations
+}
+
+fn split_call_arguments(text: &str) -> (&str, &str) {
+    if !text.starts_with('(') {
+        return ("", text);
+    }
+    let mut depth: usize = 0;
+    let mut quote: Option<char> = None;
+    let mut escaped: bool = false;
+    for (at, c) in text.char_indices() {
+        if let Some(open) = quote {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == open {
+                quote = None;
+            }
+            continue;
+        }
+        match c {
+            '\'' | '"' => quote = Some(c),
+            '(' => depth = depth.saturating_add(1),
+            ')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return text.split_at(at + 1);
+                }
+            }
+            _ => {}
+        }
+    }
+    ("", text)
+}
+
+fn collect_runtime_class_keys(node: &OpArray, keys: &mut BTreeSet<String>) {
+    for op in &node.ops {
+        if matches!(
+            op.opcode,
+            op::DECLARE_CLASS | op::DECLARE_CLASS_DELAYED | op::DECLARE_ANON_CLASS
+        ) && op.op1_type == OperandType::Const
+            && let Some(Literal::Str(key)) = node.literals.get(op.op1 as usize)
+        {
+            keys.insert(key.clone());
+        }
+    }
+    for child in &node.children {
+        collect_runtime_class_keys(child, keys);
+    }
+    for class in &node.classes {
+        for method in &class.methods {
+            collect_runtime_class_keys(method, keys);
+        }
     }
 }
 
@@ -5465,6 +7241,13 @@ const REASON_INC_DEC_OPERAND: &str =
 const REASON_CONSTANT_NAME: &str = "the constant name is not a literal string in this op array";
 const REASON_EXPRESSION_OPERAND: &str =
     "an expression operand has no literal or reaching definition";
+const ANON_CLASS_MARK: char = '\u{1}';
+const FETCH_SCOPE_LOCAL: u32 = 0;
+const FETCH_SCOPE_GLOBAL: u32 = 1 << 1;
+const SUPERGLOBALS: [&str; 8] = [
+    "_GET", "_POST", "_COOKIE", "_FILES", "_SERVER", "_ENV", "_REQUEST", "_SESSION",
+];
+const REASON_FETCH_SCOPE: &str = "the variable fetch is neither a local nor a $GLOBALS read";
 const REASON_FETCH_IS_SHAPE: &str =
     "FETCH_IS must be a local read with one defined name operand and a temporary result";
 const REASON_FETCH_CLASS_SHAPE: &str =
@@ -5511,6 +7294,15 @@ const REASON_OPTIMIZED_MATCH: &str =
 const REASON_EXCEPTION: &str = "try, catch and finally regions are not reconstructed";
 const REASON_DECLARATION: &str = "the declared body is not carried in this op array";
 const REASON_UNMODELLED: &str = "the expression lifter does not model this opcode";
+const REASON_FRAMELESS_FUNCTION: &str =
+    "the frameless call names a function outside the php 8.4 frameless table";
+const ARRAY_ELEMENT_BY_REFERENCE: u32 = 1;
+const REASON_CLASS_DECLARATION: &str =
+    "the class declaration names a class this file-cache image does not carry";
+const REASON_UNRENDERABLE_VALUE: &str =
+    "a constant value is a compile-time expression this decompiler cannot render";
+const REASON_STATIC_VARIABLE: &str =
+    "the static variable binding does not name a slot of this function's static table";
 
 #[must_use]
 const fn refusal_reason(opcode: u8) -> &'static str {
@@ -5639,6 +7431,20 @@ const fn is_right_associative(opcode: u8) -> bool {
 }
 
 #[must_use]
+const fn is_non_associative(opcode: u8) -> bool {
+    matches!(
+        opcode,
+        op::IS_IDENTICAL
+            | op::IS_NOT_IDENTICAL
+            | op::IS_EQUAL
+            | op::IS_NOT_EQUAL
+            | op::IS_SMALLER
+            | op::IS_SMALLER_OR_EQUAL
+            | op::SPACESHIP
+    )
+}
+
+#[must_use]
 const fn is_binary(opcode: u8) -> bool {
     matches!(
         opcode,
@@ -5661,6 +7467,7 @@ const fn is_binary(opcode: u8) -> bool {
             | op::IS_SMALLER
             | op::IS_SMALLER_OR_EQUAL
             | op::SPACESHIP
+            | op::BOOL_XOR
     )
 }
 
@@ -5735,6 +7542,7 @@ const fn binary_symbol(opcode: u8) -> (&'static str, u8) {
         op::IS_SMALLER => ("<", PREC_REL),
         op::IS_SMALLER_OR_EQUAL => ("<=", PREC_REL),
         op::SPACESHIP => ("<=>", PREC_CMP),
+        op::BOOL_XOR => ("xor", PREC_LOGICAL_XOR),
         _ => ("/* op */", PREC_ATOM),
     }
 }
@@ -5770,13 +7578,14 @@ const fn assign_op_symbol(ext: u32) -> &'static str {
     }
 }
 
-const fn include_kind(ext: u32) -> &'static str {
+const fn include_kind(ext: u32) -> Option<&'static str> {
     match ext {
-        1 => "include",
-        2 => "include_once",
-        4 => "require",
-        8 => "require_once",
-        _ => "eval",
+        1 => Some("eval"),
+        2 => Some("include"),
+        4 => Some("include_once"),
+        8 => Some("require"),
+        16 => Some("require_once"),
+        _ => None,
     }
 }
 
@@ -6191,6 +8000,9 @@ mod oparray_bounds_tests {
             children: Vec::new(),
             var_names,
             try_catch: Vec::new(),
+            signature: None,
+            static_variables: Vec::new(),
+            classes: Vec::new(),
         };
         decompile(&node).php_skeleton
     }

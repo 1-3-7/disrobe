@@ -10,6 +10,7 @@ pub mod chain_detector;
 pub(crate) mod debug;
 #[cfg(feature = "chain")]
 pub use chain_detector::{PhpCatalogEntry, PhpDetectorImpl};
+pub mod declaration;
 pub mod decode_loop;
 pub mod decompile;
 pub mod deflatten;
@@ -19,6 +20,7 @@ pub mod error;
 pub mod key_extractor;
 mod literal;
 pub mod loader;
+pub mod opcache;
 pub mod peel;
 pub mod phar;
 pub mod pipeline;
@@ -50,6 +52,7 @@ pub use key_extractor::{
 pub use loader::{
     DEFAULT_LOADER_DEPTH, LoaderReport, LoaderSink, peel_loader as peel_modern_loader,
 };
+pub use opcache::{OPCACHE_MAGIC, is_opcache_file, parse_opcache_file};
 pub use peel::{
     DEFAULT_MAX_DEPTH, PeelLayer, PeelOptions, PeelReport, PeelTrace, peel as peel_eval_chain,
 };

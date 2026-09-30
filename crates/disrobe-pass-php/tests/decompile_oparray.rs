@@ -372,11 +372,15 @@ fn malformed_rope_indexes_and_lengths_are_refused_without_guessing() {
     let parsed: OpArray = parse_oparray(&bytes).expect("parse malformed rope op array");
     let decomp: Decompilation = decompile_oparray(&parsed);
 
-    assert_eq!(decomp.unrecovered_total, 3, "{decomp:#?}");
+    assert_eq!(decomp.unrecovered_total, 4, "{decomp:#?}");
     assert!(decomp.unrecovered.iter().all(|entry: &UnrecoveredOp| {
-        entry
-            .reason
-            .contains("operands, element indexes or declared length")
+        if entry.opcode == op::ECHO {
+            entry.reason.contains("no literal or reaching definition")
+        } else {
+            entry
+                .reason
+                .contains("operands, element indexes or declared length")
+        }
     }));
     assert!(!decomp.php_skeleton.contains("'[' . $value . ']'"));
 }
@@ -1544,16 +1548,9 @@ fn assignment_results_snapshot_values_before_the_target_is_overwritten() {
     let decomp: Decompilation = decompile_oparray(&parsed);
     let skel: &str = &decomp.php_skeleton;
     assert!(
-        skel.contains("$_disrobe_assign_0 = ($v0 = 1);"),
-        "skeleton: {skel}"
-    );
-    assert!(
-        skel.contains("$_disrobe_assign_1 = ($v0 = 2);"),
-        "skeleton: {skel}"
-    );
-    assert!(
-        skel.contains("return $_disrobe_assign_0 + $_disrobe_assign_1;"),
-        "skeleton: {skel}"
+        skel.contains("return ($v0 = 1) + ($v0 = 2);"),
+        "each assignment result must be its own parenthesized value, as php evaluates it into \
+         a temporary before the next write: {skel}"
     );
     assert!(!skel.contains("return $v0 + $v0;"), "skeleton: {skel}");
 }
@@ -1795,8 +1792,9 @@ fn an_identical_if_else_definition_reaches_the_join() {
     let decomp: Decompilation = decompile_oparray(&parsed);
     assert_eq!(decomp.unrecovered_total, 0, "{:?}", decomp.unrecovered);
     assert!(
-        decomp.php_skeleton.contains("return 1 + 2;"),
-        "skeleton: {}",
+        decomp.php_skeleton.contains("return $v0 ? 1 + 2 : 1 + 2;"),
+        "both arms define the joined value, so it is recovered as the conditional that php \
+         evaluates: {}",
         decomp.php_skeleton
     );
 }
@@ -2225,10 +2223,16 @@ fn used_increment_results_require_temporary_result_slots() {
     let parsed: OpArray = parse_oparray(&b.build_container()).expect("parse result slots");
     let decomp: Decompilation = decompile_oparray(&parsed);
 
-    assert_eq!(decomp.unrecovered_total, 1);
+    assert_eq!(decomp.unrecovered_total, 2, "{decomp:#?}");
     assert_eq!(
         decomp.unrecovered[0].reason,
         "increment or decrement requires a writable variable and an optional temporary result"
+    );
+    assert_eq!(
+        decomp.unrecovered[1].opcode,
+        op::ECHO,
+        "the echo of the refused increment's result must be refused rather than read a name \
+         nothing defined: {decomp:#?}"
     );
     assert!(!decomp.php_skeleton.contains("$used_source++"));
     assert!(decomp.php_skeleton.contains("$standalone_source++;"));
