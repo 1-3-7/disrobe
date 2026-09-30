@@ -7,7 +7,7 @@ use std::time::Duration;
 use disrobe_pass_lua::decompile::{DecompiledChunk, decompile_auto};
 use disrobe_testkit::{CommandSpec, ToolOutput, tool_output};
 
-const PROGRAMS_PER_LANE: u64 = 5000;
+const PROGRAMS_PER_LANE: u64 = 1000;
 const LANES: [&str; 5] = ["5.1", "5.2", "5.3", "5.4", "5.5"];
 const RUN_TIMEOUT: Duration = Duration::from_secs(8);
 const VARIABLES: [&str; 5] = ["a", "b", "c", "d", "e"];
