@@ -103,12 +103,12 @@ fn reference_module_shares_one_function_across_2049_exports() {
 }
 
 #[test]
-fn module_source_wat_keeps_every_function_export_alias() {
+fn module_source_wat_keeps_every_export_alias_of_every_kind() {
     let bytes: Vec<u8> = alias_module();
     let lifted: ModuleSourceLift =
         lift_module_source(&bytes, LiftTarget::Wat).expect("module lifts to WAT");
     let recovered: Vec<ExportEntry> = reassembled_exports("module source", &lifted.source);
-    assert_same_exports("module source", &recovered, &function_exports_of(&bytes));
+    assert_same_exports("module source", &recovered, &exports_of(&bytes));
 }
 
 #[test]

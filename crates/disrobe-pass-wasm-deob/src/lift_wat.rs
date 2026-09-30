@@ -512,30 +512,7 @@ fn emit_elem_declare_for_real_funcs(mut out: &mut impl std::fmt::Write, reqs: &F
     push_text!(out, ")\n");
 }
 
-pub(crate) fn render_func_in_module(
-    body: &FunctionBody<'_>,
-    sig: &FunctionSig,
-    func_index: u32,
-    mode: RenderMode,
-    module_sigs: &[(Vec<ValType>, Vec<ValType>)],
-    block_func_types: &[(Vec<ValType>, Vec<ValType>)],
-) -> WatFunc {
-    let mut budget: ModuleRenderBudget = ModuleRenderBudget::new(usize::MAX);
-    match render_func_in_module_with_budget(
-        body,
-        sig,
-        func_index,
-        mode,
-        module_sigs,
-        block_func_types,
-        &mut budget,
-    ) {
-        Ok(function) => function,
-        Err(error) => unreachable!("unbounded WAT function rendering failed: {error}"),
-    }
-}
-
-fn render_func_in_module_with_budget(
+pub(crate) fn render_func_in_module_with_budget(
     body: &FunctionBody<'_>,
     sig: &FunctionSig,
     func_index: u32,

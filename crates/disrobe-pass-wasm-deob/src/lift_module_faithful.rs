@@ -7,9 +7,11 @@ use wasmparser::{
     TableType, TypeRef, ValType,
 };
 
-use crate::lift::LiftCoverage;
+use crate::error::Result as CrateResult;
+use crate::lift::{LiftCoverage, ModuleRenderBudget, ModuleSourceBuffer, merge_coverage};
 use crate::lift_wat::{
-    FeatureReqs, RenderMode, WatFunc, escape_wat_name, render_func_in_module, val_type_str,
+    FeatureReqs, RenderMode, WatFunc, escape_wat_name, render_func_in_module_with_budget,
+    val_type_str,
 };
 use crate::signature::FunctionSig;
 
@@ -62,15 +64,21 @@ struct ModuleScaffold {
 
 #[must_use]
 pub fn lift_module_faithful_wat(bytes: &[u8]) -> Option<String> {
-    lift_module_faithful_wat_with_coverage(bytes).map(|(source, _): (String, LiftCoverage)| source)
+    let mut budget: ModuleRenderBudget = ModuleRenderBudget::new(usize::MAX);
+    match lift_module_faithful_wat_with_budget(bytes, &mut budget) {
+        Ok(lifted) => lifted.map(|(source, _): (String, LiftCoverage)| source),
+        Err(error) => unreachable!("unbounded faithful WAT rendering failed: {error}"),
+    }
 }
 
-#[must_use]
-pub(crate) fn lift_module_faithful_wat_with_coverage(
+pub(crate) fn lift_module_faithful_wat_with_budget(
     bytes: &[u8],
-) -> Option<(String, LiftCoverage)> {
+    budget: &mut ModuleRenderBudget,
+) -> CrateResult<Option<(String, LiftCoverage)>> {
     crate::debug::dbg_section("faithful-lift");
-    let scaffold: ModuleScaffold = collect_scaffold(bytes)?;
+    let Some(scaffold): Option<ModuleScaffold> = collect_scaffold(bytes) else {
+        return Ok(None);
+    };
     let module_sigs: Vec<(Vec<ValType>, Vec<ValType>)> = scaffold.func_signatures();
     crate::debug::dbg_kv("scaffold", || {
         format!(
@@ -97,36 +105,43 @@ pub(crate) fn lift_module_faithful_wat_with_coverage(
         let Ok(Payload::CodeSectionEntry(body)) = payload else {
             continue;
         };
-        let sig: &FunctionSig = sig_iter.next()?;
-        let rendered: WatFunc = render_func_in_module(
+        let Some(sig): Option<&FunctionSig> = sig_iter.next() else {
+            return Ok(None);
+        };
+        let rendered: WatFunc = render_func_in_module_with_budget(
             &body,
             sig,
             defined_index,
             RenderMode::WholeModule,
             &module_sigs,
             &scaffold.func_types,
-        );
+            budget,
+        )?;
         reqs.merge(&rendered.reqs);
         bodies.push_str(&rendered.text);
-        coverage.total_ops = coverage
-            .total_ops
-            .checked_add(rendered.coverage.total_ops)?;
-        coverage.translated_ops = coverage
-            .translated_ops
-            .checked_add(rendered.coverage.translated_ops)?;
-        coverage.untranslated.extend(rendered.coverage.untranslated);
-        defined_index = defined_index.checked_add(1)?;
+        merge_coverage(&mut coverage, rendered.coverage)?;
+        let Some(next_index): Option<u32> = defined_index.checked_add(1) else {
+            return Ok(None);
+        };
+        defined_index = next_index;
         bodies_lifted += 1;
     }
 
     crate::debug::dbg_kv("bodies", || {
         format!("function_bodies_lifted={bodies_lifted}")
     });
-    Some((assemble(&scaffold, &bodies, &reqs), coverage))
+    let mut out: ModuleSourceBuffer<'_> = ModuleSourceBuffer::new(budget);
+    assemble(&mut out, &scaffold, &bodies, &reqs)?;
+    Ok(Some((out.finish()?, coverage)))
 }
 
-fn assemble(scaffold: &ModuleScaffold, bodies: &str, reqs: &FeatureReqs) -> String {
-    let mut out: String = String::from("(module\n");
+fn assemble(
+    mut out: &mut ModuleSourceBuffer<'_>,
+    scaffold: &ModuleScaffold,
+    bodies: &str,
+    reqs: &FeatureReqs,
+) -> CrateResult<()> {
+    out.push_str("(module\n");
     for decl in &scaffold.type_decls {
         push_line!(out, "  {decl}");
     }
@@ -145,8 +160,8 @@ fn assemble(scaffold: &ModuleScaffold, bodies: &str, reqs: &FeatureReqs) -> Stri
     for global in &scaffold.globals {
         push_line!(out, "  {global}");
     }
-    emit_declared_funcs(&mut out, scaffold, reqs);
-    out.push_str(bodies);
+    emit_declared_funcs(out, scaffold, reqs);
+    out.push_precharged(bodies)?;
     for export in &scaffold.exports {
         push_line!(out, "  {export}");
     }
@@ -160,10 +175,14 @@ fn assemble(scaffold: &ModuleScaffold, bodies: &str, reqs: &FeatureReqs) -> Stri
         push_line!(out, "  (start $f{start})");
     }
     out.push_str(")\n");
-    out
+    out.ensure()
 }
 
-fn emit_declared_funcs(mut out: &mut String, scaffold: &ModuleScaffold, reqs: &FeatureReqs) {
+fn emit_declared_funcs(
+    mut out: &mut ModuleSourceBuffer<'_>,
+    scaffold: &ModuleScaffold,
+    reqs: &FeatureReqs,
+) {
     let mut declared: BTreeSet<u32> = scaffold.declared_funcs.clone();
     for idx in reqs.ref_func_indices() {
         declared.insert(*idx);
