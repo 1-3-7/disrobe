@@ -28,6 +28,12 @@ pub(crate) fn run(root: &Path, check: bool) -> Result<()> {
         || crate::run_gen_error_docs(check),
         &mut stale,
     )?;
+    run_one(
+        "errcodes",
+        check,
+        || crate::errcodes::run(root, check, false),
+        &mut stale,
+    )?;
     run_one("sync", check, || crate::sync::run(root, check), &mut stale)?;
     run_one(
         "attack-surface",

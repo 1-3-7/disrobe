@@ -19,6 +19,7 @@ mod denominator_floor;
 mod doc_region;
 mod docs_index;
 mod dotnet_string_evidence;
+mod errcodes;
 mod errdocs;
 mod evidence;
 mod evidence_tiers;
@@ -99,6 +100,12 @@ enum Cmd {
     GenErrorDocs {
         #[arg(long, action = clap::ArgAction::SetTrue)]
         check: bool,
+    },
+    Errcodes {
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        check: bool,
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        strict: bool,
     },
     Regen {
         #[arg(long, action = clap::ArgAction::SetTrue)]
@@ -194,6 +201,9 @@ fn main() -> ExitCode {
         Cmd::ReleasePackage => run_release_package(),
         Cmd::Schemas { check } => run_schemas(check),
         Cmd::GenErrorDocs { check } => run_gen_error_docs(check),
+        Cmd::Errcodes { check, strict } => {
+            workspace_root().and_then(|root: PathBuf| errcodes::run(&root, check, strict))
+        }
         Cmd::Regen { check } => run_regen(check),
         Cmd::FuzzSurface { check } => run_fuzz_surface(check),
         Cmd::SkipCensus => run_skip_census(),
