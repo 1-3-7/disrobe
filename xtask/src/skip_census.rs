@@ -43,12 +43,11 @@ const SKIP_CEILING: &[(&str, usize)] = &[
     ("disrobe-playground", 1),
     ("disrobe-pyarmor-cextract", 8),
     ("disrobe-semdiff", 10),
-    ("disrobe-sleigh", 36),
+    ("disrobe-sleigh", 14),
     ("disrobe-taint", 11),
     ("disrobe-transcode", 2),
     ("disrobe-typerec", 4),
     ("disrobe-validator", 2),
-    ("disrobe-vulnmatch", 40),
     ("xtask", 3),
 ];
 

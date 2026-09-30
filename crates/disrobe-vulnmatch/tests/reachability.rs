@@ -196,7 +196,7 @@ fn reachable_and_unreachable_sinks_keep_distinct_tiers_and_witnesses() {
         "reachable strcpy finding must exist"
     );
     let Some(reachable_strcpy) = reachable_strcpy else {
-        return;
+        unreachable!("the assertion on `reachable_strcpy` above has already failed the test");
     };
     let unreachable_strcpy: Option<&disrobe_vulnmatch::Finding> = report
         .findings
@@ -207,7 +207,7 @@ fn reachable_and_unreachable_sinks_keep_distinct_tiers_and_witnesses() {
         "unreachable strcpy finding must exist"
     );
     let Some(unreachable_strcpy) = unreachable_strcpy else {
-        return;
+        unreachable!("the assertion on `unreachable_strcpy` above has already failed the test");
     };
 
     assert_eq!(reachable_strcpy.tier, FindingTier::Reachable);
@@ -218,7 +218,7 @@ fn reachable_and_unreachable_sinks_keep_distinct_tiers_and_witnesses() {
         reachable_strcpy.witness_path.as_ref();
     assert!(reachable_witness.is_some(), "reachable path must be stored");
     let Some(reachable_witness) = reachable_witness else {
-        return;
+        unreachable!("the assertion on `reachable_witness` above has already failed the test");
     };
     assert_eq!(
         reachable_witness.functions,
@@ -241,7 +241,7 @@ fn source_required_rule_caps_at_reachable_when_taint_is_unknown() {
         .find(|finding| finding.sink_site.id == CallSiteId::new("main-printf"));
     assert!(printf.is_some(), "printf finding must exist");
     let Some(printf) = printf else {
-        return;
+        unreachable!("the assertion on `printf` above has already failed the test");
     };
 
     assert_eq!(printf.tier, FindingTier::Reachable);
@@ -265,10 +265,10 @@ fn reports_are_byte_identical_across_repeated_analysis() {
     assert!(first_json.is_ok());
     assert!(second_json.is_ok());
     let Ok(first_json) = first_json else {
-        return;
+        unreachable!("the assertion on `first_json` above has already failed the test");
     };
     let Ok(second_json) = second_json else {
-        return;
+        unreachable!("the assertion on `second_json` above has already failed the test");
     };
     assert_eq!(first_json, second_json);
     assert_eq!(first.human(), second.human());
@@ -378,14 +378,14 @@ fn scc_reachability_keeps_a_direct_function_witness() {
         .find(|candidate| candidate.sink_site.id == CallSiteId::new("beta-strcpy"));
     assert!(finding.is_some(), "SCC sink must be found");
     let Some(finding) = finding else {
-        return;
+        unreachable!("the assertion on `finding` above has already failed the test");
     };
 
     assert_eq!(finding.tier, FindingTier::Reachable);
     let witness: Option<&disrobe_vulnmatch::PathWitness> = finding.witness_path.as_ref();
     assert!(witness.is_some(), "SCC path must be stored");
     let Some(witness) = witness else {
-        return;
+        unreachable!("the assertion on `witness` above has already failed the test");
     };
     assert_eq!(
         witness.functions,
@@ -426,7 +426,7 @@ fn depth_exhaustion_reports_unknown_instead_of_unreachable() {
         .find(|candidate| candidate.sink_site.id == CallSiteId::new("child-strcpy"));
     assert!(finding.is_some(), "depth-limited sink must be found");
     let Some(finding) = finding else {
-        return;
+        unreachable!("the assertion on `finding` above has already failed the test");
     };
 
     assert_eq!(finding.tier, FindingTier::Unknown);
@@ -454,7 +454,7 @@ fn unresolved_target_makes_downstream_sink_reachability_unknown() {
 
     assert!(finding.is_some(), "downstream sink finding must exist");
     let Some(finding) = finding else {
-        return;
+        unreachable!("the assertion on `finding` above has already failed the test");
     };
     assert_eq!(finding.tier, FindingTier::ReachabilityUnknown);
     assert!(!report.complete);
@@ -473,14 +473,14 @@ fn resolved_indirect_sink_has_a_medium_soundness_witness() {
 
     assert!(finding.is_some(), "indirect sink finding must exist");
     let Some(finding) = finding else {
-        return;
+        unreachable!("the assertion on `finding` above has already failed the test");
     };
     let witness: Option<&disrobe_vulnmatch::PathWitness> = finding.witness_path.as_ref();
 
     assert_eq!(finding.tier, FindingTier::Reachable);
     assert!(witness.is_some(), "resolved indirect witness must exist");
     let Some(witness) = witness else {
-        return;
+        unreachable!("the assertion on `witness` above has already failed the test");
     };
     assert_eq!(witness.functions, vec![function("main"), function("sink")]);
     assert_eq!(witness.weakest_edge_soundness, EdgeSoundness::Medium);
@@ -505,7 +505,7 @@ fn unresolved_indirect_sink_is_reachability_unknown_with_a_witness() {
 
     assert!(finding.is_some(), "indirect sink finding must exist");
     let Some(finding) = finding else {
-        return;
+        unreachable!("the assertion on `finding` above has already failed the test");
     };
     let witness: Option<&disrobe_vulnmatch::PathWitness> = finding.witness_path.as_ref();
 
@@ -514,7 +514,7 @@ fn unresolved_indirect_sink_is_reachability_unknown_with_a_witness() {
     assert_ne!(finding.tier, FindingTier::Present);
     assert!(witness.is_some(), "unresolved indirect witness must exist");
     let Some(witness) = witness else {
-        return;
+        unreachable!("the assertion on `witness` above has already failed the test");
     };
     assert_eq!(witness.functions, vec![function("main")]);
     assert_eq!(witness.weakest_edge_soundness, EdgeSoundness::Unknown);
@@ -546,14 +546,14 @@ fn direct_sink_has_a_high_soundness_witness() {
 
     assert!(finding.is_some(), "indirect sink finding must exist");
     let Some(finding) = finding else {
-        return;
+        unreachable!("the assertion on `finding` above has already failed the test");
     };
     let witness: Option<&disrobe_vulnmatch::PathWitness> = finding.witness_path.as_ref();
 
     assert_eq!(finding.tier, FindingTier::Reachable);
     assert!(witness.is_some(), "direct witness must exist");
     let Some(witness) = witness else {
-        return;
+        unreachable!("the assertion on `witness` above has already failed the test");
     };
     assert_eq!(witness.functions, vec![function("main"), function("sink")]);
     assert_eq!(witness.weakest_edge_soundness, EdgeSoundness::High);
@@ -583,7 +583,7 @@ fn over_cap_indirect_candidates_collapse_to_bounded_reachability_unknown() {
 
     assert!(finding.is_some(), "indirect sink finding must exist");
     let Some(finding) = finding else {
-        return;
+        unreachable!("the assertion on `finding` above has already failed the test");
     };
     assert_eq!(finding.tier, FindingTier::ReachabilityUnknown);
     assert!(!budget.step_limit_reached());
@@ -606,10 +606,10 @@ fn indirect_reports_are_byte_identical_across_repeated_analysis() {
     assert!(first_json.is_ok());
     assert!(second_json.is_ok());
     let Ok(first_json) = first_json else {
-        return;
+        unreachable!("the assertion on `first_json` above has already failed the test");
     };
     let Ok(second_json) = second_json else {
-        return;
+        unreachable!("the assertion on `second_json` above has already failed the test");
     };
     assert_eq!(first_json, second_json);
     assert_eq!(first.human(), second.human());
@@ -653,7 +653,7 @@ fn unresolved_indirect_edge_respects_the_depth_limit() {
 
     assert!(finding.is_some(), "indirect sink finding must exist");
     let Some(finding) = finding else {
-        return;
+        unreachable!("the assertion on `finding` above has already failed the test");
     };
     assert_eq!(finding.tier, FindingTier::Unknown);
     assert!(finding.witness_path.is_none());
@@ -681,7 +681,7 @@ fn source_required_finding_with_absent_taint_remains_present_with_reachability_e
 
     assert!(finding.is_some(), "source-required finding must exist");
     let Some(finding) = finding else {
-        return;
+        unreachable!("the assertion on `finding` above has already failed the test");
     };
     assert_eq!(finding.tier, FindingTier::Present);
     assert!(finding.witness_path.is_some());
@@ -749,7 +749,7 @@ fn indeterminate_arguments_keep_possible_findings_and_mark_the_report_incomplete
         "indeterminate finding must exist"
     );
     let Some(unknown_finding) = unknown_finding else {
-        return;
+        unreachable!("the assertion on `unknown_finding` above has already failed the test");
     };
     assert_eq!(unknown_finding.tier, FindingTier::Unknown);
     assert!(unknown_finding.witness_path.is_some());
@@ -835,7 +835,7 @@ fn present_taint_witness_confirms_a_reachable_source_required_finding() {
         )]);
     assert!(witness.is_ok(), "nonempty taint witness path must be valid");
     let Ok(witness) = witness else {
-        return;
+        unreachable!("the assertion on `witness` above has already failed the test");
     };
     let taint: FixedTaint = FixedTaint {
         status: TaintStatus::Present(witness.clone()),
@@ -853,7 +853,7 @@ fn present_taint_witness_confirms_a_reachable_source_required_finding() {
 
     assert!(finding.is_some(), "source-required finding must exist");
     let Some(finding) = finding else {
-        return;
+        unreachable!("the assertion on `finding` above has already failed the test");
     };
     assert_eq!(finding.tier, FindingTier::Confirmed);
     assert_eq!(

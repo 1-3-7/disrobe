@@ -106,13 +106,13 @@ define token instruction(8) high=(4,7) low_six=(0,5);
     let parsed: Result<SleighSpec, SleighError> = parse_spec(source);
     assert!(parsed.is_ok(), "{parsed:?}");
     let Ok(spec) = parsed else {
-        return;
+        unreachable!("the assertion on `parsed` above has already failed the test");
     };
     let compiled: Result<CompiledSpec, SleighError> =
         compile_spec_with_policy(spec, ConflictPolicy::FirstDefined);
     assert!(compiled.is_ok(), "{compiled:?}");
     let Ok(compiled) = compiled else {
-        return;
+        unreachable!("the assertion on `compiled` above has already failed the test");
     };
     let outcome: DecodeOutcome = compiled.decode(&[0x12], 0, &BTreeMap::new());
     assert!(matches!(
@@ -207,7 +207,7 @@ define token instruction(72) op=(0,7);
     let parsed: Result<SleighSpec, SleighError> = parse_spec(source);
     assert!(parsed.is_ok(), "{parsed:?}");
     let Ok(spec) = parsed else {
-        return;
+        unreachable!("the assertion on `parsed` above has already failed the test");
     };
     let compiled: Result<CompiledSpec, SleighError> = compile_spec(spec);
     assert!(compiled.is_err());
@@ -222,7 +222,7 @@ define token instruction(8) op=(0,7);
     let parsed: Result<SleighSpec, SleighError> = parse_spec(source);
     assert!(parsed.is_ok(), "{parsed:?}");
     let Ok(spec) = parsed else {
-        return;
+        unreachable!("the assertion on `parsed` above has already failed the test");
     };
     let compiled: Result<CompiledSpec, SleighError> = compile_spec(spec);
     assert!(compiled.is_err());
@@ -253,7 +253,7 @@ fn compiler_rejects_residual_and_undefined_patterns() {
         let parsed: Result<SleighSpec, SleighError> = parse_spec(&source);
         assert!(parsed.is_ok(), "{parsed:?}");
         let Ok(spec) = parsed else {
-            return;
+            unreachable!("the assertion on `parsed` above has already failed the test");
         };
         let compiled: Result<CompiledSpec, SleighError> = compile_spec(spec);
         assert!(compiled.is_err());
@@ -271,7 +271,7 @@ choice: "cycle" is choice { export op; }
     let parsed: Result<SleighSpec, SleighError> = parse_spec(source);
     assert!(parsed.is_ok(), "{parsed:?}");
     let Ok(spec) = parsed else {
-        return;
+        unreachable!("the assertion on `parsed` above has already failed the test");
     };
     let compiled: Result<CompiledSpec, SleighError> = compile_spec(spec);
     assert!(matches!(
@@ -290,7 +290,7 @@ define token instruction(8) op=(0,7);
     let parsed: Result<SleighSpec, SleighError> = parse_spec(source);
     assert!(parsed.is_ok(), "{parsed:?}");
     let Ok(mut spec) = parsed else {
-        return;
+        unreachable!("the assertion on `parsed` above has already failed the test");
     };
     let mut pattern: PatternExpr = spec.constructors[0].pattern.clone();
     for _ in 0_usize..128 {
@@ -313,7 +313,7 @@ define endian=little;
     let parsed: Result<SleighSpec, SleighError> = parse_spec(source);
     assert!(parsed.is_ok(), "{parsed:?}");
     let Ok(spec) = parsed else {
-        return;
+        unreachable!("the assertion on `parsed` above has already failed the test");
     };
     let compiled: Result<CompiledSpec, SleighError> = compile_spec(spec);
     assert!(compiled.is_err());
@@ -382,17 +382,17 @@ fn decision_tree_selects_real_aarch64_scalar_constructors() {
     let source_result: Result<String, SleighError> = preprocessed_aarch64_source();
     assert!(source_result.is_ok(), "{source_result:?}");
     let Ok(source) = source_result else {
-        return;
+        unreachable!("the assertion on `source_result` above has already failed the test");
     };
     let parsed: Result<SleighSpec, SleighError> = parse_spec(&source);
     assert!(parsed.is_ok(), "{parsed:?}");
     let Ok(spec) = parsed else {
-        return;
+        unreachable!("the assertion on `parsed` above has already failed the test");
     };
     let compiled_result: Result<CompiledSpec, SleighError> = compile_spec(spec);
     assert!(compiled_result.is_ok(), "{compiled_result:?}");
     let Ok(compiled) = compiled_result else {
-        return;
+        unreachable!("the assertion on `compiled_result` above has already failed the test");
     };
     let context: ContextState = BTreeMap::from([("ImmS_ImmR_TestSet".to_owned(), 1)]);
     let cases: [(u32, &str); 6] = [
@@ -429,7 +429,7 @@ define token instruction(8)
     let parsed: Result<SleighSpec, SleighError> = parse_spec(&source);
     assert!(parsed.is_ok(), "{parsed:?}");
     let Ok(spec) = parsed else {
-        return;
+        unreachable!("the assertion on `parsed` above has already failed the test");
     };
     let compiled: Result<CompiledSpec, SleighError> =
         compile_spec_with_policy(spec, ConflictPolicy::FirstDefined);
@@ -444,12 +444,12 @@ fn the_constructor_bound_is_raised_only_as_far_as_the_vendored_specification_nee
     let source: Result<String, SleighError> = preprocessed_aarch64_source();
     assert!(source.is_ok(), "{source:?}");
     let Ok(source) = source else {
-        return;
+        unreachable!("the assertion on `source` above has already failed the test");
     };
     let parsed: Result<SleighSpec, SleighError> = parse_spec(&source);
     assert!(parsed.is_ok(), "{parsed:?}");
     let Ok(spec) = parsed else {
-        return;
+        unreachable!("the assertion on `parsed` above has already failed the test");
     };
     let mut sizes: BTreeMap<&str, usize> = BTreeMap::new();
     for constructor in &spec.constructors {
@@ -508,13 +508,13 @@ define token second(8)
     let parsed: Result<SleighSpec, SleighError> = parse_spec(&source);
     assert!(parsed.is_ok(), "{parsed:?}");
     let Ok(spec) = parsed else {
-        return;
+        unreachable!("the assertion on `parsed` above has already failed the test");
     };
     let compiled: Result<CompiledSpec, SleighError> =
         compile_spec_with_policy(spec, ConflictPolicy::FirstDefined);
     assert!(compiled.is_ok(), "{compiled:?}");
     let Ok(compiled) = compiled else {
-        return;
+        unreachable!("the assertion on `compiled` above has already failed the test");
     };
     let outcome: DecodeOutcome = compiled.decode(&[0, 0], 0, &BTreeMap::new());
     assert!(matches!(

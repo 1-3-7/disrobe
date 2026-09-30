@@ -205,7 +205,7 @@ fn tainted_reachable_query_sink_is_confirmed_with_a_taint_path() {
 
     assert!(finding.is_some(), "the sink candidate must be reported");
     let Some(finding) = finding else {
-        return;
+        unreachable!("the assertion on `finding` above has already failed the test");
     };
     assert_eq!(finding.tier, FindingTier::Confirmed);
     let status: Option<&TaintStatus> = finding.evidence.taint_status.as_ref();
@@ -214,7 +214,7 @@ fn tainted_reachable_query_sink_is_confirmed_with_a_taint_path() {
         "confirmed findings must retain taint evidence"
     );
     let Some(TaintStatus::Present(witness)) = status else {
-        return;
+        unreachable!("the assertion on `status` above has already failed the test");
     };
     assert!(
         witness
@@ -248,7 +248,7 @@ fn argument_sensitive_rule_stays_unknown_without_sink_argument_identity() {
         }]);
     assert!(rules_result.is_ok(), "test rule must be valid");
     let Ok(rules) = rules_result else {
-        return;
+        unreachable!("the assertion on `rules_result` above has already failed the test");
     };
     let graph: CallGraph = call_graph(SINK_SITE);
     let view: QueryCallGraphView<'_> = QueryCallGraphView::new(&graph);
@@ -265,7 +265,7 @@ fn argument_sensitive_rule_stays_unknown_without_sink_argument_identity() {
 
     assert!(finding.is_some(), "the sink candidate must be reported");
     let Some(finding) = finding else {
-        return;
+        unreachable!("the assertion on `finding` above has already failed the test");
     };
     assert_eq!(finding.tier, FindingTier::Unknown);
     assert!(matches!(
@@ -281,7 +281,7 @@ fn reachable_query_sink_without_taint_is_present() {
 
     assert!(finding.is_some(), "the sink candidate must be reported");
     let Some(finding) = finding else {
-        return;
+        unreachable!("the assertion on `finding` above has already failed the test");
     };
     assert_eq!(finding.tier, FindingTier::Present);
     assert_eq!(finding.evidence.taint_status, Some(TaintStatus::Absent));
@@ -294,7 +294,7 @@ fn sanitizer_on_the_real_taint_path_does_not_confirm_the_sink() {
 
     assert!(finding.is_some(), "the sink candidate must be reported");
     let Some(finding) = finding else {
-        return;
+        unreachable!("the assertion on `finding` above has already failed the test");
     };
     assert_ne!(finding.tier, FindingTier::Confirmed);
     assert_eq!(finding.tier, FindingTier::Present);

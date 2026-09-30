@@ -109,7 +109,7 @@ fn query_call_graph_direct_edges_prove_a_reachable_sink() {
     let rules_result: Result<RuleStore, RuleStoreError> = sink_rules();
     assert!(rules_result.is_ok(), "query sink rule must be valid");
     let Ok(rules) = rules_result else {
-        return;
+        unreachable!("the assertion on `rules_result` above has already failed the test");
     };
     let taint: UnknownTaint = UnknownTaint;
     let mut budget: Budget = Budget::new(128, 16);
@@ -118,7 +118,7 @@ fn query_call_graph_direct_edges_prove_a_reachable_sink() {
 
     assert!(finding.is_some(), "known sink must produce one finding");
     let Some(finding) = finding else {
-        return;
+        unreachable!("the assertion on `finding` above has already failed the test");
     };
     assert_eq!(finding.tier, FindingTier::Reachable);
     assert_eq!(
@@ -177,7 +177,7 @@ fn query_call_graph_unknown_target_preserves_reachability_unknown() {
     let rules_result: Result<RuleStore, RuleStoreError> = sink_rules();
     assert!(rules_result.is_ok(), "query sink rule must be valid");
     let Ok(rules) = rules_result else {
-        return;
+        unreachable!("the assertion on `rules_result` above has already failed the test");
     };
     let taint: UnknownTaint = UnknownTaint;
     let mut budget: Budget = Budget::new(128, 16);
@@ -187,7 +187,7 @@ fn query_call_graph_unknown_target_preserves_reachability_unknown() {
     assert_eq!(edges[0].kind, EdgeKind::UnresolvedIndirect);
     assert!(finding.is_some(), "sink must remain a candidate");
     let Some(finding) = finding else {
-        return;
+        unreachable!("the assertion on `finding` above has already failed the test");
     };
     assert_eq!(finding.tier, FindingTier::ReachabilityUnknown);
     assert_eq!(
@@ -244,7 +244,7 @@ fn query_call_graph_named_import_remains_a_direct_sink() {
     let rules_result: Result<RuleStore, RuleStoreError> = sink_rules();
     assert!(rules_result.is_ok(), "query sink rule must be valid");
     let Ok(rules) = rules_result else {
-        return;
+        unreachable!("the assertion on `rules_result` above has already failed the test");
     };
     let taint: UnknownTaint = UnknownTaint;
     let mut budget: Budget = Budget::new(128, 16);
@@ -257,7 +257,7 @@ fn query_call_graph_named_import_remains_a_direct_sink() {
         "named import sink must remain a candidate"
     );
     let Some(finding) = finding else {
-        return;
+        unreachable!("the assertion on `finding` above has already failed the test");
     };
     assert_eq!(finding.tier, FindingTier::Reachable);
     assert!(
@@ -335,7 +335,7 @@ fn query_call_graph_uses_roots_when_no_export_is_available() {
     let rules_result: Result<RuleStore, RuleStoreError> = sink_rules();
     assert!(rules_result.is_ok(), "query sink rule must be valid");
     let Ok(rules) = rules_result else {
-        return;
+        unreachable!("the assertion on `rules_result` above has already failed the test");
     };
     let taint: UnknownTaint = UnknownTaint;
     let mut budget: Budget = Budget::new(128, 16);
@@ -346,7 +346,7 @@ fn query_call_graph_uses_roots_when_no_export_is_available() {
     assert!(!view.entry_points_complete());
     assert!(finding.is_some(), "root sink must produce one finding");
     let Some(finding) = finding else {
-        return;
+        unreachable!("the assertion on `finding` above has already failed the test");
     };
     assert_eq!(finding.tier, FindingTier::Reachable);
     assert!(
@@ -405,7 +405,7 @@ fn query_call_graph_root_fallback_preserves_an_unresolved_witness() {
     let rules_result: Result<RuleStore, RuleStoreError> = sink_rules();
     assert!(rules_result.is_ok(), "query sink rule must be valid");
     let Ok(rules) = rules_result else {
-        return;
+        unreachable!("the assertion on `rules_result` above has already failed the test");
     };
     let taint: UnknownTaint = UnknownTaint;
     let mut budget: Budget = Budget::new(128, 16);
@@ -415,7 +415,7 @@ fn query_call_graph_root_fallback_preserves_an_unresolved_witness() {
     assert_eq!(entries, vec![function_id("root", 0x100)]);
     assert!(finding.is_some(), "unknown sink must remain a candidate");
     let Some(finding) = finding else {
-        return;
+        unreachable!("the assertion on `finding` above has already failed the test");
     };
     assert_eq!(finding.tier, FindingTier::ReachabilityUnknown);
     assert!(

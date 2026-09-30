@@ -40,7 +40,7 @@ operand: rd is rd { export rd; }
     let result: Result<SleighSpec, SleighError> = parse_spec(source);
     assert!(result.is_ok(), "{result:?}");
     let Ok(spec) = result else {
-        return;
+        unreachable!("the assertion on `result` above has already failed the test");
     };
     assert_eq!(spec.endian, Some(Endian::Little));
     assert_eq!(spec.spaces.len(), 2);
@@ -68,12 +68,12 @@ fn parses_vendored_scalar_aarch64_spec() {
     let source_result: Result<String, SleighError> = preprocessed_aarch64_source();
     assert!(source_result.is_ok(), "{source_result:?}");
     let Ok(source) = source_result else {
-        return;
+        unreachable!("the assertion on `source_result` above has already failed the test");
     };
     let result: Result<SleighSpec, SleighError> = parse_spec(&source);
     assert!(result.is_ok(), "{result:?}");
     let Ok(spec) = result else {
-        return;
+        unreachable!("the assertion on `result` above has already failed the test");
     };
     assert_eq!(spec.alignment, Some(4));
     assert_eq!(spec.endian, Some(Endian::Little));
@@ -115,7 +115,7 @@ fn parses_vendored_arm32_and_thumb_spec() {
         .and_then(parse_spec);
     assert!(result.is_ok(), "{result:?}");
     let Ok(spec) = result else {
-        return;
+        unreachable!("the assertion on `result` above has already failed the test");
     };
     assert_eq!(spec.endian, Some(Endian::Little));
     assert!(spec.contexts.iter().any(|context| context.name == "TMode"));
@@ -271,7 +271,7 @@ fn arm_decision_tree_selects_a32_and_thumb_constructors() {
         compile_spec_with_policy(spec, ConflictPolicy::FirstDefined);
     assert!(compiled.is_ok(), "{compiled:?}");
     let Ok(compiled) = compiled else {
-        return;
+        unreachable!("the assertion on `compiled` above has already failed the test");
     };
     let mut a32_context: ContextState = ContextState::new();
     a32_context.insert("TMode".to_owned(), 0);
@@ -363,7 +363,7 @@ define token second(8) tail=(0,7);
     let parsed: Result<SleighSpec, SleighError> = parse_spec(source);
     assert!(parsed.is_ok(), "{parsed:?}");
     let Ok(spec) = parsed else {
-        return;
+        unreachable!("the assertion on `parsed` above has already failed the test");
     };
     let Some(constructor) = spec.constructors.first() else {
         return;
