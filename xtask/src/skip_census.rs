@@ -9,7 +9,6 @@ const MIN_SCANNED_FILES: usize = 3_400;
 const SCANNED_ROOTS: [&str; 4] = ["crates", "benches", "xtask", "fuzz"];
 
 const SKIP_CEILING: &[(&str, usize)] = &[
-    ("benches/head-to-head", 25),
     ("disrobe-binfmt", 41),
     ("disrobe-cli", 34),
     ("disrobe-core", 5),

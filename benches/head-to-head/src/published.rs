@@ -1,6 +1,4 @@
 use std::collections::BTreeSet;
-use std::ffi::{OsStr, OsString};
-use std::io::Write as _;
 use std::path::PathBuf;
 
 use serde_json::Value;
@@ -216,116 +214,12 @@ pub(crate) fn assert_published_membership_is_exact(
     );
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ToolRequirement {
-    Optional,
-    Mandatory,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct CompetitorTool {
-    pub(crate) program: &'static str,
-    pub(crate) require_var: &'static str,
-    pub(crate) install_hint: &'static str,
-}
-
-pub(crate) fn requirement_from_value(value: Option<&OsStr>) -> ToolRequirement {
-    let Some(raw): Option<&OsStr> = value else {
-        return ToolRequirement::Optional;
-    };
-    let text: String = raw.to_string_lossy().trim().to_ascii_lowercase();
-    match text.as_str() {
-        "" | "0" | "false" | "no" | "off" | "optional" => ToolRequirement::Optional,
-        _ => ToolRequirement::Mandatory,
-    }
-}
-
-pub(crate) fn requirement_for(tool: &CompetitorTool) -> ToolRequirement {
-    let raw: Option<OsString> = std::env::var_os(tool.require_var);
-    requirement_from_value(raw.as_deref())
-}
-
-pub(crate) fn enforce_requirement(
-    tool: &CompetitorTool,
-    graded: &str,
-    defect: &str,
-    requirement: ToolRequirement,
-) {
-    assert!(
-        requirement == ToolRequirement::Optional,
-        "{var} makes {program} mandatory for this run, so {graded} cannot be measured and this \
-         case must not report success: {defect}. To fix it, {hint}; to permit a run that grades \
-         only disrobe here, clear {var}.",
-        var = tool.require_var,
-        program = tool.program,
-        hint = tool.install_hint,
-    );
-    announce_unmeasured(tool, graded, defect);
-}
-
-fn announce_unmeasured(tool: &CompetitorTool, graded: &str, defect: &str) {
-    let line: String = format!(
-        "\nNOT MEASURED: {graded} was compared against nothing and graded nothing, because \
-         {program} is not usable here ({defect}). Set {var}=1 to fail instead of skipping when \
-         {program} cannot be run.\n",
-        program = tool.program,
-        var = tool.require_var,
-    );
-    let mut sink: std::io::StdoutLock<'static> = std::io::stdout().lock();
-    drop(sink.write_all(line.as_bytes()));
-    drop(sink.flush());
-}
-
 #[cfg(test)]
 mod tests {
     use std::any::Any;
     use std::panic::UnwindSafe;
 
     use super::*;
-
-    #[test]
-    fn requirement_reads_the_off_switches_as_optional() {
-        for off in ["", "0", "false", "no", "off", "optional", "OFF"] {
-            assert_eq!(
-                requirement_from_value(Some(OsStr::new(off))),
-                ToolRequirement::Optional,
-                "`{off}` must leave the competitor optional"
-            );
-        }
-        assert_eq!(
-            requirement_from_value(None),
-            ToolRequirement::Optional,
-            "an unset variable must leave the competitor optional"
-        );
-        for on in ["1", "true", "yes", "mandatory"] {
-            assert_eq!(
-                requirement_from_value(Some(OsStr::new(on))),
-                ToolRequirement::Mandatory,
-                "`{on}` must make the competitor mandatory"
-            );
-        }
-    }
-
-    #[test]
-    fn a_mandatory_competitor_that_cannot_run_fails_instead_of_skipping() {
-        let tool: CompetitorTool = CompetitorTool {
-            program: "disrobe-competitor-that-is-not-installed",
-            require_var: "DISROBE_REQUIRE_A_TOOL_NO_RUN_EVER_SETS",
-            install_hint: "nothing, this name stands in for an absent competitor",
-        };
-        enforce_requirement(&tool, GRADED, DEFECT, ToolRequirement::Optional);
-        let refused: String = seeded_defect_message(|| {
-            enforce_requirement(&tool, GRADED, DEFECT, ToolRequirement::Mandatory);
-        });
-        assert!(
-            refused.contains("mandatory for this run"),
-            "a mandatory competitor that cannot run must fail the row rather than grade one side of \
-             it, got: {refused}"
-        );
-    }
-
-    const GRADED: &str = "the competitor side of a sample comparison row";
-    const DEFECT: &str = "it is not on PATH";
 
     fn labels(names: &[&str]) -> BTreeSet<String> {
         names.iter().map(|name: &&str| (*name).to_owned()).collect()

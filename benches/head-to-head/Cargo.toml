@@ -30,3 +30,6 @@ eyre = { workspace = true }
 sha2 = { workspace = true }
 walkdir = { workspace = true }
 zip = { workspace = true }
+
+[dev-dependencies]
+disrobe-testkit = { workspace = true }

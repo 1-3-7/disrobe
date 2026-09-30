@@ -4701,9 +4701,7 @@ EdgeCases.java\0public void run() {@2453:9";
 
     #[test]
     fn explicit_jadx_failed_body_is_unclean_while_javac_certifies_its_peer() {
-        let Some(javac): Option<PathBuf> = javac_or_announce("partial JADX producer output") else {
-            return;
-        };
+        let javac: PathBuf = required_javac();
         let sources: BTreeMap<String, String> = BTreeMap::from([(
             MAIN_CLASS_FILE.to_owned(),
             "public class EdgeCases {\n    public int failed() {\n        /* instructions */\n        throw new UnsupportedOperationException(\"Method not decompiled: EdgeCases.failed():int\");\n    }\n    public int peer() {\n        return 2;\n    }\n}\n"
@@ -4865,9 +4863,7 @@ EdgeCases.java\0public void run() {@2453:9";
     #[test]
     fn nonpinned_failed_output_cannot_enter_the_shared_scorer() -> core::result::Result<(), String>
     {
-        let Some(javac): Option<PathBuf> = javac_or_announce("nonpinned JADX output") else {
-            return Ok(());
-        };
+        let javac: PathBuf = required_javac();
         let output: AndroidDecompileOutput = AndroidDecompileOutput {
             engine: disrobe_pass_jvm::AndroidDecompiler::Jadx,
             sources: BTreeMap::from([(
@@ -4898,9 +4894,7 @@ EdgeCases.java\0public void run() {@2453:9";
 
     #[test]
     fn malformed_jadx_marker_cannot_certify_source() {
-        let Some(javac): Option<PathBuf> = javac_or_announce("malformed JADX marker") else {
-            return;
-        };
+        let javac: PathBuf = required_javac();
         let sources: BTreeMap<String, String> = BTreeMap::from([(
             MAIN_CLASS_FILE.to_owned(),
             "class EdgeCases { String peer() { return \"Method not decompiled: spoof\"; } }\n"
@@ -5218,10 +5212,7 @@ EdgeCases.java\0public void run() {@2453:9";
     #[test]
     fn initial_javac_directory_collision_propagates_from_the_scorer()
     -> core::result::Result<(), String> {
-        let Some(javac): Option<PathBuf> = javac_or_announce("initial javac archive collision")
-        else {
-            return Ok(());
-        };
+        let javac: PathBuf = required_javac();
         let artifacts: ScratchDir =
             ScratchDir::create("disrobe_h2h_javac_collision").map_err(|error| error.to_string())?;
         std::fs::create_dir(artifacts.path().join("initial-javac"))
@@ -5461,23 +5452,21 @@ EdgeCases.java\0public void run() {@2453:9";
         );
     }
 
-    const JAVAC: crate::published::CompetitorTool = crate::published::CompetitorTool {
-        program: "javac",
-        require_var: "DISROBE_REQUIRE_JAVAC",
-        install_hint: "install a JDK and put javac on PATH",
-    };
-
-    fn javac_or_announce(graded: &str) -> Option<PathBuf> {
+    #[allow(clippy::panic)]
+    fn required_javac() -> PathBuf {
         let found: Option<PathBuf> = find_on_path("javac");
-        if found.is_none() {
-            crate::published::enforce_requirement(
-                &JAVAC,
-                graded,
-                "javac is not on PATH",
-                crate::published::requirement_for(&JAVAC),
-            );
+        match disrobe_testkit::require(
+            "disrobe-bench-head-to-head::javac",
+            "javac from a JDK on PATH",
+            found,
+        ) {
+            Ok(disrobe_testkit::Available::Present(javac)) => javac,
+            Ok(disrobe_testkit::Available::NotMeasured { record }) => panic!(
+                "the javac-certified scoring rows grade nothing without javac, so javac cannot be optional (record {})",
+                record.display()
+            ),
+            Err(error) => panic!("{error}"),
         }
-        found
     }
 
     fn insert_after_line(source: &str, line: usize, inserted: &str) -> String {
@@ -5749,11 +5738,7 @@ EdgeCases.java\0public void run() {@2453:9";
     #[test]
     fn a_seeded_defect_outside_every_method_costs_no_method_of_the_real_jar()
     -> core::result::Result<(), String> {
-        let Some(javac): Option<PathBuf> = javac_or_announce(
-            "the class-level seeded-defect check over the recovered baseline jar",
-        ) else {
-            return Ok(());
-        };
+        let javac: PathBuf = required_javac();
         let root: PathBuf = crate::published::checked_workspace_root();
         let jar: Vec<u8> = read_bounded_file(
             &root
@@ -5802,11 +5787,7 @@ EdgeCases.java\0public void run() {@2453:9";
     #[test]
     fn the_type_check_probe_separates_a_parse_failure_from_a_resolution_failure()
     -> core::result::Result<(), String> {
-        let Some(javac): Option<PathBuf> =
-            javac_or_announce("the probe that decides whether javac reached type checking")
-        else {
-            return Ok(());
-        };
+        let javac: PathBuf = required_javac();
 
         let unparseable: &str = "public class EdgeCases {\n    public int a() {\n        return 1;\n    }\n    enum \
              Broken extends Object {\n        private Broken() { }\n    }\n}\n";
@@ -5842,11 +5823,7 @@ EdgeCases.java\0public void run() {@2453:9";
     #[test]
     fn a_parse_defect_inside_one_method_costs_only_that_method() -> core::result::Result<(), String>
     {
-        let Some(javac): Option<PathBuf> =
-            javac_or_announce("the direct-method region scoring regression")
-        else {
-            return Ok(());
-        };
+        let javac: PathBuf = required_javac();
         let source: &str = "public class EdgeCases {\n    public int first() {\n        return 1;\n    }\n    public int broken() {\n        return ( ;\n    }\n    public int last() {\n        return first();\n    }\n}\n";
         let ToolScore::Certified {
             clean,
@@ -5868,11 +5845,7 @@ EdgeCases.java\0public void run() {@2453:9";
     #[test]
     fn a_nested_type_parse_defect_costs_its_method_without_erasing_main_methods()
     -> core::result::Result<(), String> {
-        let Some(javac): Option<PathBuf> =
-            javac_or_announce("the nested-type region scoring regression")
-        else {
-            return Ok(());
-        };
+        let javac: PathBuf = required_javac();
         let source: &str = "public class EdgeCases {\n    public int first() {\n        return 1;\n    }\n    static class Nested {\n        public int broken() {\n            return ( ;\n        }\n    }\n    public int last() {\n        return first();\n    }\n}\n";
         assert_eq!(class_method_ranges(source), vec![(2, 5), (6, 9), (10, 13)]);
         let score: ToolScore = score_source(&javac, source, 3);
@@ -5896,11 +5869,7 @@ EdgeCases.java\0public void run() {@2453:9";
     #[test]
     fn a_nested_type_header_defect_costs_its_methods_without_erasing_main_methods()
     -> core::result::Result<(), String> {
-        let Some(javac): Option<PathBuf> =
-            javac_or_announce("the nested-type header region scoring regression")
-        else {
-            return Ok(());
-        };
+        let javac: PathBuf = required_javac();
         let source: &str = "public class EdgeCases {\n    public int first() {\n        return 1;\n    }\n    enum Nested extends Object {\n        VALUE;\n        public int nested() {\n            return 2;\n        }\n    }\n    public int last() {\n        return first();\n    }\n}\n";
         let mut source_map: BTreeMap<String, String> = BTreeMap::new();
         source_map.insert(MAIN_CLASS_FILE.to_owned(), source.to_owned());
@@ -5937,11 +5906,7 @@ EdgeCases.java\0public void run() {@2453:9";
     #[test]
     fn a_nested_type_header_defect_preserves_member_signatures_for_clean_callers()
     -> core::result::Result<(), String> {
-        let Some(javac): Option<PathBuf> =
-            javac_or_announce("the nested-type dependency scoring regression")
-        else {
-            return Ok(());
-        };
+        let javac: PathBuf = required_javac();
         let source: &str = "public class EdgeCases {\n    public int first() {\n        return 1;\n    }\n    enum Nested extends Object {\n        VALUE;\n        public int nested() {\n            return 2;\n        }\n    }\n    public int last() {\n        return new Nested().nested();\n    }\n}\n";
         let score: ToolScore = score_source(&javac, source, 3);
         let ToolScore::Certified {
@@ -5963,11 +5928,7 @@ EdgeCases.java\0public void run() {@2453:9";
     #[test]
     fn a_nested_type_header_defect_preserves_field_signatures_for_clean_callers()
     -> core::result::Result<(), String> {
-        let Some(javac): Option<PathBuf> =
-            javac_or_announce("the nested-type field dependency scoring regression")
-        else {
-            return Ok(());
-        };
+        let javac: PathBuf = required_javac();
         let source: &str = "public class EdgeCases {\n    public int first() {\n        return 1;\n    }\n    enum Nested extends Object {\n        VALUE;\n        static int recovered;\n        public int nested() {\n            return 2;\n        }\n    }\n    public int last() {\n        return Nested.recovered;\n    }\n}\n";
         let score: ToolScore = score_source(&javac, source, 3);
         let ToolScore::Certified { clean, emitted, .. } = score else {
@@ -5983,11 +5944,7 @@ EdgeCases.java\0public void run() {@2453:9";
     #[test]
     fn a_multiline_nested_type_header_defect_isolated_by_its_complete_header()
     -> core::result::Result<(), String> {
-        let Some(javac): Option<PathBuf> =
-            javac_or_announce("the multiline nested-type header scoring regression")
-        else {
-            return Ok(());
-        };
+        let javac: PathBuf = required_javac();
         let source: &str = "public class EdgeCases {\n    public int first() {\n        return 1;\n    }\n    enum\n        Nested\n        extends Object {\n        VALUE;\n        public int nested() {\n            return 2;\n        }\n    }\n    public int last() {\n        return new Nested().nested();\n    }\n}\n";
         let score: ToolScore = score_source(&javac, source, 3);
         let ToolScore::Certified { clean, emitted, .. } = score else {
@@ -6002,11 +5959,7 @@ EdgeCases.java\0public void run() {@2453:9";
 
     #[test]
     fn a_multifile_parse_defect_costs_only_its_method() -> core::result::Result<(), String> {
-        let Some(javac): Option<PathBuf> =
-            javac_or_announce("the multi-file region scoring regression")
-        else {
-            return Ok(());
-        };
+        let javac: PathBuf = required_javac();
         let mut sources: BTreeMap<String, String> = BTreeMap::new();
         sources.insert(
             MAIN_CLASS_FILE.to_owned(),
@@ -6033,11 +5986,7 @@ EdgeCases.java\0public void run() {@2453:9";
     #[test]
     fn duplicate_source_basenames_are_attributed_by_their_complete_relative_path()
     -> core::result::Result<(), String> {
-        let Some(javac): Option<PathBuf> =
-            javac_or_announce("the package-qualified diagnostic scoring regression")
-        else {
-            return Ok(());
-        };
+        let javac: PathBuf = required_javac();
         let mut sources: BTreeMap<String, String> = BTreeMap::new();
         sources.insert(
             MAIN_CLASS_FILE.to_owned(),
@@ -6076,11 +6025,7 @@ EdgeCases.java\0public void run() {@2453:9";
 
     #[test]
     fn a_field_initializer_parse_defect_costs_no_method() -> core::result::Result<(), String> {
-        let Some(javac): Option<PathBuf> =
-            javac_or_announce("the field-initializer region scoring regression")
-        else {
-            return Ok(());
-        };
+        let javac: PathBuf = required_javac();
         let source: &str = "public class EdgeCases {\n    private int broken = ( ;\n    public int first() {\n        return 1;\n    }\n    public int last() {\n        return first();\n    }\n}\n";
         let score: ToolScore = score_source(&javac, source, 2);
         let ToolScore::Certified { clean, emitted, .. } = score else {
@@ -6096,11 +6041,7 @@ EdgeCases.java\0public void run() {@2453:9";
     #[test]
     fn a_field_initializer_parse_defect_isolates_contained_anonymous_methods()
     -> core::result::Result<(), String> {
-        let Some(javac): Option<PathBuf> =
-            javac_or_announce("the anonymous field-method isolation regression")
-        else {
-            return Ok(());
-        };
+        let javac: PathBuf = required_javac();
         let source: &str = "class EdgeCases {\n    private Runnable broken = ((new Runnable() {\n        public void run() {}\n    });\n    public int peer() {\n        return 1;\n    }\n}\n";
         let score: ToolScore = score_source(&javac, source, 2);
         let ToolScore::Certified { clean, emitted, .. } = score else {
@@ -6115,11 +6056,7 @@ EdgeCases.java\0public void run() {@2453:9";
     #[test]
     fn an_annotated_field_initializer_isolated_at_its_declaration_assignment()
     -> core::result::Result<(), String> {
-        let Some(javac): Option<PathBuf> =
-            javac_or_announce("the annotated field-initializer scoring regression")
-        else {
-            return Ok(());
-        };
+        let javac: PathBuf = required_javac();
         let source: &str = "public class EdgeCases {\n    @SuppressWarnings(value = \"unused\")\n    private int broken = ( ;\n    public int first() {\n        return 1;\n    }\n    public int last() {\n        return first();\n    }\n}\n";
         let score: ToolScore = score_source(&javac, source, 2);
         let ToolScore::Certified { clean, emitted, .. } = score else {
@@ -6186,9 +6123,7 @@ EdgeCases.java\0public void run() {@2453:9";
 
     #[test]
     fn one_line_method_isolation_preserves_its_peer() -> core::result::Result<(), String> {
-        let Some(javac): Option<PathBuf> = javac_or_announce("one-line method isolation") else {
-            return Ok(());
-        };
+        let javac: PathBuf = required_javac();
         let source: &str =
             "class EdgeCases { int broken() { return ( ; } int healthy() { return 2; } }\n";
         let score: ToolScore = score_source(&javac, source, 2);
@@ -6203,9 +6138,7 @@ EdgeCases.java\0public void run() {@2453:9";
 
     #[test]
     fn constant_field_isolation_preserves_switch_callers() -> core::result::Result<(), String> {
-        let Some(javac): Option<PathBuf> = javac_or_announce("constant field isolation") else {
-            return Ok(());
-        };
+        let javac: PathBuf = required_javac();
         let source: &str = "class EdgeCases {\n    static final int FLAG = ( ;\n    int caller(int value) {\n        return switch (value) { case FLAG -> 1; default -> 0; };\n    }\n}\n";
         let score: ToolScore = score_source(&javac, source, 1);
         let ToolScore::Certified { clean, emitted, .. } = score else {
@@ -6219,9 +6152,7 @@ EdgeCases.java\0public void run() {@2453:9";
 
     #[test]
     fn generic_nested_fields_survive_type_shelling() -> core::result::Result<(), String> {
-        let Some(javac): Option<PathBuf> = javac_or_announce("generic field type shell") else {
-            return Ok(());
-        };
+        let javac: PathBuf = required_javac();
         let source: &str = "class EdgeCases {\n    enum Nested extends Object {\n        VALUE;\n        static java.util.Map<String, Integer> recovered;\n        int broken() { return 1; }\n    }\n    int caller() { return Nested.recovered.size(); }\n}\n";
         let score: ToolScore = score_source(&javac, source, 2);
         let ToolScore::Certified { clean, emitted, .. } = score else {
@@ -6273,9 +6204,7 @@ EdgeCases.java\0public void run() {@2453:9";
     #[test]
     fn enum_constants_and_inherited_contracts_survive_type_shelling()
     -> core::result::Result<(), String> {
-        let Some(javac): Option<PathBuf> = javac_or_announce("enum contract type shell") else {
-            return Ok(());
-        };
+        let javac: PathBuf = required_javac();
         let source: &str = "class EdgeCases {\n    interface Marker {}\n    static class Base {}\n    enum Nested extends Base implements Marker {\n        VALUE;\n    }\n    Marker caller() { return Nested.VALUE; }\n}\n";
         let original_verdict: OracleVerdict = javac_verdict(&javac, source)?;
         assert!(
@@ -6323,9 +6252,7 @@ EdgeCases.java\0public void run() {@2453:9";
 
     #[test]
     fn record_shells_without_component_contracts_fail_closed() {
-        let Some(javac): Option<PathBuf> = javac_or_announce("record component type shell") else {
-            return;
-        };
+        let javac: PathBuf = required_javac();
         let source: &str = "class EdgeCases {\n    record Nested(int value) extends Object {}\n    int caller() { return new Nested(1).value(); }\n}\n";
         let score: ToolScore = score_source(&javac, source, 1);
         assert!(
@@ -6336,10 +6263,7 @@ EdgeCases.java\0public void run() {@2453:9";
 
     #[test]
     fn attribution_probe_detection_uses_its_diagnostic_source() {
-        let Some(javac): Option<PathBuf> = javac_or_announce("attribution probe source matching")
-        else {
-            return;
-        };
+        let javac: PathBuf = required_javac();
         let source: &str = "@SuppressWarnings(value = \"TypeCheckReached.java:\"\nclass EdgeCases {\n    int first() { return 1; }\n    int last() { return 2; }\n}\n";
         let score: ToolScore = score_source(&javac, source, 2);
         assert!(
@@ -6365,11 +6289,7 @@ EdgeCases.java\0public void run() {@2453:9";
     #[test]
     fn attribution_probe_does_not_overwrite_recovered_source_with_same_name()
     -> core::result::Result<(), String> {
-        let Some(javac): Option<PathBuf> =
-            javac_or_announce("the attribution-probe collision regression")
-        else {
-            return Ok(());
-        };
+        let javac: PathBuf = required_javac();
         let scratch: ScratchDir =
             ScratchDir::create("disrobe_h2h_probe_collision").map_err(|error| error.to_string())?;
         let source_path: PathBuf = scratch.path().join(ATTRIBUTION_PROBE_FILE);
@@ -6389,11 +6309,7 @@ EdgeCases.java\0public void run() {@2453:9";
     #[test]
     fn more_than_one_hundred_diagnostics_cannot_hide_unclean_methods()
     -> core::result::Result<(), String> {
-        let Some(javac): Option<PathBuf> =
-            javac_or_announce("the diagnostic-limit scoring regression")
-        else {
-            return Ok(());
-        };
+        let javac: PathBuf = required_javac();
         let mut source: String = "public class EdgeCases {\n".to_owned();
         for index in 0..128_usize {
             writeln!(
