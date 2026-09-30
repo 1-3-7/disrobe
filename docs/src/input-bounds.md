@@ -15,6 +15,7 @@ Every parser treats its input as hostile. Counts, sizes, recursion depth, work a
 | `disrobe-binfmt` | `MAX_BASIC_HEADER` | other | `usize` | `2600` | `crates/disrobe-binfmt/src/containers/arj.rs` |
 | `disrobe-binfmt` | `MAX_EXT_HEADER_BLOCKS` | other | `usize` | `256` | `crates/disrobe-binfmt/src/containers/arj.rs` |
 | `disrobe-binfmt` | `MAX_EXT_HEADER_BYTES` | size | `usize` | `8 * 1024 * 1024` | `crates/disrobe-binfmt/src/containers/arj.rs` |
+| `disrobe-binfmt` | `LZMA_ALONE_DETECT_DICT_LIMIT` | other | `usize` | `64 * 1024 * 1024` | `crates/disrobe-binfmt/src/containers/bare_stream.rs` |
 | `disrobe-binfmt` | `MAX_ASSEMBLIES` | other | `usize` | `100_000` | `crates/disrobe-binfmt/src/containers/blazor_webcil.rs` |
 | `disrobe-binfmt` | `MAX_BOOT_MANIFEST_LEN` | size | `usize` | `64 * 1024 * 1024` | `crates/disrobe-binfmt/src/containers/blazor_webcil.rs` |
 | `disrobe-binfmt` | `MAX_WASM_DATA_SEGMENTS` | other | `u64` | `1024` | `crates/disrobe-binfmt/src/containers/blazor_webcil.rs` |
@@ -1146,7 +1147,6 @@ Every parser treats its input as hostile. Counts, sizes, recursion depth, work a
 | `disrobe-pass-native` | `MAX_RESOLVED_STRING_BYTES` | size | `usize` | `1024 * 1024` | `crates/disrobe-pass-native/src/debug_info/pdb_provenance.rs` |
 | `disrobe-pass-native` | `MAX_SUBSTRING_DEPTH` | recursion | `usize` | `64` | `crates/disrobe-pass-native/src/debug_info/pdb_provenance.rs` |
 | `disrobe-pass-native` | `MAX_SUBSTRING_REFERENCES` | other | `usize` | `16_384` | `crates/disrobe-pass-native/src/debug_info/pdb_provenance.rs` |
-| `disrobe-pass-native` | `MAX_BACKEND_CAPTURE` | other | `usize` | `4 * 1024 * 1024` | `crates/disrobe-pass-native/src/decompile.rs` |
 | `disrobe-pass-native` | `MAX_DEPTH` | recursion | `usize` | `512` | `crates/disrobe-pass-native/src/delphi/dfm.rs` |
 | `disrobe-pass-native` | `MAX_OBJECTS` | other | `usize` | `200_000` | `crates/disrobe-pass-native/src/delphi/dfm.rs` |
 | `disrobe-pass-native` | `MAX_OUTPUT_BYTES` | output | `usize` | `16 * 1024 * 1024` | `crates/disrobe-pass-native/src/delphi/dfm.rs` |

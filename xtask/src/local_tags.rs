@@ -315,21 +315,7 @@ fn declared_module_files(rel: &str, source: &str, tracked: &BTreeSet<String>) ->
             candidates.extend(resolve_relative(&directory, &literal));
         }
     }
-    for line in source.lines().map(str::trim) {
-        let Some(after): Option<&str> = line.find(MODULE_DECLARATION).and_then(|at: usize| {
-            line.get(at + MODULE_DECLARATION.len()..)
-                .and_then(|rest: &str| rest.strip_suffix(';'))
-        }) else {
-            continue;
-        };
-        let name: &str = after.trim();
-        if name.is_empty()
-            || !name
-                .chars()
-                .all(|c: char| c.is_ascii_alphanumeric() || c == '_')
-        {
-            continue;
-        }
+    for name in source.lines().filter_map(module_name) {
         candidates.extend(resolve_relative(&directory, &format!("{name}.rs")));
         candidates.extend(resolve_relative(&directory, &format!("{name}/mod.rs")));
     }
@@ -337,6 +323,89 @@ fn declared_module_files(rel: &str, source: &str, tracked: &BTreeSet<String>) ->
     candidates.sort_unstable();
     candidates.dedup();
     candidates
+}
+
+fn module_name(line: &str) -> Option<&str> {
+    let line: &str = line.trim();
+    let name: &str = line
+        .find(MODULE_DECLARATION)
+        .and_then(|at: usize| line.get(at + MODULE_DECLARATION.len()..))
+        .and_then(|rest: &str| rest.strip_suffix(';'))?
+        .trim();
+    (!name.is_empty()
+        && name
+            .chars()
+            .all(|c: char| c.is_ascii_alphanumeric() || c == '_'))
+    .then_some(name)
+}
+
+fn binary_root(rel: &str, tracked: &BTreeSet<String>) -> Option<String> {
+    let root: String = format!("{}main.rs", parent_directory(rel));
+    (root != rel && root.contains(FIXTURE_SEGMENT) && tracked.contains(&root)).then_some(root)
+}
+
+fn named_module_files(
+    rel: &str,
+    source: &str,
+    tracked: &BTreeSet<String>,
+) -> BTreeMap<String, String> {
+    let directory: String = parent_directory(rel);
+    let mut declared_path: Option<String> = None;
+    let mut named: BTreeMap<String, String> = BTreeMap::new();
+    for line in source.lines().map(str::trim) {
+        if let Some(rest) = line.strip_prefix(MODULE_PATH_ATTRIBUTE) {
+            declared_path = rest
+                .split_once('"')
+                .map(|(path, _): (&str, &str)| path.to_owned());
+            continue;
+        }
+        let Some(name): Option<&str> = module_name(line) else {
+            if !line.starts_with("#[") {
+                declared_path = None;
+            }
+            continue;
+        };
+        let candidates: Vec<String> = declared_path.take().map_or_else(
+            || {
+                [format!("{name}.rs"), format!("{name}/mod.rs")]
+                    .iter()
+                    .filter_map(|file: &String| resolve_relative(&directory, file))
+                    .collect()
+            },
+            |path: String| resolve_relative(&directory, &path).into_iter().collect(),
+        );
+        if let Some(file) = candidates
+            .into_iter()
+            .find(|file: &String| tracked.contains(file))
+        {
+            named.insert(name.to_owned(), file);
+        }
+    }
+    named
+}
+
+fn crate_path_members(
+    root: &Path,
+    rel: &str,
+    tracked: &BTreeSet<String>,
+    sources: &mut BTreeMap<String, String>,
+) -> Result<Vec<String>> {
+    let Some(binary): Option<String> = binary_root(rel, tracked) else {
+        return Ok(Vec::new());
+    };
+    read_source(root, &binary, sources)?;
+    let (Some(module), Some(binary_source)): (Option<&String>, Option<&String>) =
+        (sources.get(rel), sources.get(&binary))
+    else {
+        return Ok(Vec::new());
+    };
+    Ok(named_module_files(&binary, binary_source, tracked)
+        .into_iter()
+        .filter(|(name, file): &(String, String)| {
+            file != rel && module.contains(&format!("crate::{name}"))
+        })
+        .map(|(_, file): (String, String)| file)
+        .collect())
 }
 
 fn normalize_fragment(raw: &str) -> Option<String> {
@@ -604,10 +673,12 @@ fn module_family(
         let mut next: Vec<String> = Vec::new();
         for rel in &frontier {
             read_source(root, rel, sources)?;
+            let mut members: Vec<String> = crate_path_members(root, rel, tracked, sources)?;
             let Some(source): Option<&String> = sources.get(rel) else {
                 continue;
             };
-            for member in declared_module_files(rel, source, tracked) {
+            members.extend(declared_module_files(rel, source, tracked));
+            for member in members {
                 if !family.contains(&member) {
                     family.push(member.clone());
                     next.push(member);
@@ -724,6 +795,44 @@ mod tests {
                 "crates/p/tests/common/mod.rs".to_owned(),
                 "crates/p/tests/support/fixture.rs".to_owned()
             ]
+        );
+    }
+
+    #[test]
+    fn a_module_of_a_merged_test_binary_reaches_what_it_uses_through_the_crate_root() {
+        let tracked: BTreeSet<String> = tracked_set(&[
+            "crates/p/tests/area/main.rs",
+            "crates/p/tests/area/real_apks.rs",
+            "crates/p/tests/area/unrelated.rs",
+            "crates/p/tests/common/mod.rs",
+        ]);
+        let root_source: &str =
+            "#[path = \"../common/mod.rs\"]\nmod common;\nmod real_apks;\nmod unrelated;\n";
+        assert_eq!(
+            named_module_files("crates/p/tests/area/main.rs", root_source, &tracked),
+            BTreeMap::from([
+                (
+                    "common".to_owned(),
+                    "crates/p/tests/common/mod.rs".to_owned()
+                ),
+                (
+                    "real_apks".to_owned(),
+                    "crates/p/tests/area/real_apks.rs".to_owned()
+                ),
+                (
+                    "unrelated".to_owned(),
+                    "crates/p/tests/area/unrelated.rs".to_owned()
+                ),
+            ])
+        );
+        assert_eq!(
+            binary_root("crates/p/tests/area/real_apks.rs", &tracked),
+            Some("crates/p/tests/area/main.rs".to_owned())
+        );
+        assert_eq!(
+            binary_root("crates/p/tests/area/main.rs", &tracked),
+            None,
+            "the binary root is not a module of itself"
         );
     }
 
