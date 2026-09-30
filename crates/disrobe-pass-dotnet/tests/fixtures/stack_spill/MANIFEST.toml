@@ -1,0 +1,33 @@
+schema = "disrobe.corpus.v1"
+crate = "disrobe-pass-dotnet"
+generated = "2026-09-30"
+toolchain = "dotnet SDK 9.0.318 targeting net8.0"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+note = "self-authored C# program whose Release IL stores to a local, an argument, a static field and an array element while an operand stack entry that read the same location is still pending: a reused ToString temporary in a string concatenation, a ref argument, an argument reassigned inside a call, a temporary stored after a conditional expression, an assignment inside a conditional arm, and a control with no overlapping store; no binary is committed"
+
+[build]
+command = "dotnet build -c Release in a directory holding only Ledger.cs, Probe.cs and StackSpill.csproj; the program is bin/Release/net8.0/StackSpill.dll, run with dotnet"
+reproducible = true
+reproducibility_note = "stack_spill_before_store builds the program from these sources at test time with UseSharedCompilation=false, so no compiled output is stored; Deterministic=true, Optimize=true and DebugType=none"
+line_endings = "every hash-pinned file carries -text in this directory's .gitattributes, so no checkout rewrites the bytes the hashes cover"
+
+[[fixture]]
+name = "Ledger.cs"
+kind = "csharp-source"
+size = 1021
+sha256 = "c82c616c3f1efa0fca5d44b19f60a1e9bb1fa5770d3ddd8925dec7cf00620aef"
+source = "self-authored"
+
+[[fixture]]
+name = "Probe.cs"
+kind = "csharp-source"
+size = 1334
+sha256 = "a0fdbabb58764315030ec233d307e78c37297af5b88be5882fa0b5ec7d1b6410"
+source = "self-authored"
+
+[[fixture]]
+name = "StackSpill.csproj"
+kind = "msbuild-project"
+size = 440
+sha256 = "72700f26b01590f4865f785bd58210a4f3d13f31d885d482ad681a2ce5f1302c"
+source = "self-authored"

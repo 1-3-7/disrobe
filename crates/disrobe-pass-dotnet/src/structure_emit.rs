@@ -5,8 +5,8 @@ use crate::cfg::{BasicBlock, BlockId, Cfg, NaturalLoop, Terminator};
 use crate::cil::{ExceptionClause, ExceptionClauseKind, Instruction, MethodBody};
 use crate::names::NameTable;
 use crate::structurize::{
-    BlockCode, Expr, LinearStmt, TargetLang, TokenNamer, lift_block, lift_block_with_entry,
-    lift_filter_condition, merge_arm_stack, rendered_expression,
+    BlockCode, CarriedStack, Expr, LinearStmt, TargetLang, TokenNamer, lift_block,
+    lift_block_with_entry, lift_filter_condition, merge_arm_stack, rendered_expression,
 };
 
 pub const UNSTRUCTURED_CONTROL_FLOW_MARKER: &str =
@@ -346,6 +346,7 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
             block.first,
             block.last,
             carried.to_vec(),
+            CarriedStack::Settled,
         );
         let stack: Vec<Expr> = merge_arm_stack(&rebuilt, self.lang, self.names)?;
         Some((join, stack))
@@ -431,6 +432,7 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
             first,
             last,
             entry_stack,
+            CarriedStack::Spillable,
         );
         if rebuilt.entry_deficit != 0 {
             return None;
@@ -843,6 +845,10 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
             .last()
             .is_some_and(|f: &LoopFrame| f.header == next || f.continue_block == Some(next))
             && self.block_code[bid].stmts.len() <= MAX_DUP_STMTS
+            && !self.block_code[bid]
+                .stmts
+                .iter()
+                .any(|s: &LinearStmt| matches!(s, LinearStmt::Declare { .. }))
     }
 
     fn in_current_loop(&self, header: BlockId) -> bool {
@@ -1060,7 +1066,7 @@ pub(crate) struct StructuredOutput {
 fn stmt_text(stmt: &LinearStmt) -> Option<&str> {
     match stmt {
         LinearStmt::Expr(t) | LinearStmt::Comment(t) => Some(t),
-        LinearStmt::Assign { value, .. } => Some(value),
+        LinearStmt::Assign { value, .. } | LinearStmt::Declare { value, .. } => Some(value),
         LinearStmt::Return(_) | LinearStmt::Throw(_) => None,
     }
 }
@@ -1573,6 +1579,15 @@ fn render_linear(text: &mut String, s: &LinearStmt, depth: usize, lang: TargetLa
                 "="
             };
             let _ = writeln!(text, "{target} {op} {value}{term}");
+        }
+        LinearStmt::Declare { name, value } => {
+            indent(text, depth);
+            let keyword: &str = match lang {
+                TargetLang::CSharp => "var",
+                TargetLang::FSharp => "let",
+                TargetLang::VbNet => "Dim",
+            };
+            let _ = writeln!(text, "{keyword} {name} = {value}{term}");
         }
         LinearStmt::Expr(e) => {
             indent(text, depth);

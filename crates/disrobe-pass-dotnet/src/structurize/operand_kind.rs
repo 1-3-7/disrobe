@@ -306,7 +306,8 @@ fn may_convert(expression: &Expr, depth: usize) -> bool {
         | Expr::Arg(_)
         | Expr::This
         | Expr::Null
-        | Expr::StringLit(_) => false,
+        | Expr::StringLit(_)
+        | Expr::Temp { .. } => false,
         Expr::Field { text, .. } | Expr::Raw(text) => text.contains('('),
         Expr::Unary(_, operand)
         | Expr::LoadLen(operand)

@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
@@ -434,7 +434,54 @@ pub(crate) enum Expr {
     OpaqueHandle(u32),
     TypeOf(String),
     Abstain(AbstentionKind),
+    Temp {
+        name: String,
+        is_boolean: bool,
+        kind: CondKind,
+    },
     Raw(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Location {
+    Local(u32),
+    Arg(u32),
+    Field(u32),
+    Element,
+    Indirect,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StoreTarget {
+    Slot(Location),
+    Field(u32),
+    Element,
+    Indirect(Option<Location>),
+}
+
+impl StoreTarget {
+    fn overwrites(self, read: Location) -> bool {
+        match (self, read) {
+            (Self::Slot(slot) | Self::Indirect(Some(slot)), read) if slot == read => true,
+            (Self::Field(token), Location::Field(other)) => token == other,
+            (Self::Field(_) | Self::Element | Self::Indirect(_), Location::Indirect)
+            | (Self::Element | Self::Indirect(_), Location::Element)
+            | (Self::Indirect(_), Location::Field(_)) => true,
+            _ => false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct EntryFacts {
+    reads: BTreeSet<Location>,
+    origin: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CarriedStack {
+    Spillable,
+    Settled,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -559,6 +606,7 @@ impl Expr {
             | Self::OpaqueHandle(_)
             | Self::TypeOf(_)
             | Self::Abstain(_)
+            | Self::Temp { .. }
             | Self::Raw(_) => {}
         }
     }
@@ -582,6 +630,7 @@ impl Expr {
                 | Self::MethodPtr { .. }
                 | Self::TypeOf(_)
                 | Self::Abstain(_)
+                | Self::Temp { .. }
         )
     }
 
@@ -590,7 +639,7 @@ impl Expr {
             Self::Const(value) => matches!(value.as_str(), "true" | "false"),
             Self::Local(slot) => names.local_type(*slot).is_some_and(is_bool_type_name),
             Self::Arg(slot) => names.arg_type(*slot).is_some_and(is_bool_type_name),
-            Self::Field { is_boolean, .. } => *is_boolean,
+            Self::Field { is_boolean, .. } | Self::Temp { is_boolean, .. } => *is_boolean,
             Self::Unary(op, _) => *op == "!",
             Self::Binary(op, lhs, rhs) => {
                 is_comparison_or_logical(op)
@@ -711,6 +760,7 @@ fn expression_depth(expression: &Expr) -> usize {
             | Expr::OpaqueHandle(_)
             | Expr::TypeOf(_)
             | Expr::Abstain(_)
+            | Expr::Temp { .. }
             | Expr::Raw(_) => {}
         }
     }
@@ -783,7 +833,7 @@ fn render_expr(initial: RenderAction<'_>, lang: TargetLang, names: &NameTable) -
                     output.push_str(text);
                 }
                 Expr::Abstain(kind) => output.push_str(kind.marker()),
-                Expr::Field { text, .. } => output.push_str(text),
+                Expr::Field { text, .. } | Expr::Temp { name: text, .. } => output.push_str(text),
                 Expr::TypeHandle(_) => {
                     output.push_str(&runtime_handle_refusal(
                         lang,
@@ -1582,10 +1632,78 @@ fn escape(s: &str) -> String {
 #[derive(Debug, Clone)]
 enum Stmt {
     Assign { target: String, value: String },
+    Declare { name: String, value: String },
     Expr(String),
     Return(Option<String>),
     Throw(Option<String>),
     Comment(String),
+}
+
+fn forget_reads(pending: &mut BTreeMap<Location, usize>, expression: &Expr, facts: &EntryFacts) {
+    if matches!(expression, Expr::AddressOf(_)) {
+        return;
+    }
+    for read in &facts.reads {
+        if let Some(count) = pending.get_mut(read) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                pending.remove(read);
+            }
+        }
+    }
+}
+
+const fn needs_spill(expression: &Expr, conflicting: bool) -> bool {
+    match expression {
+        Expr::Local(_) | Expr::Arg(_) => conflicting,
+        Expr::Const(_)
+        | Expr::StringLit(_)
+        | Expr::Null
+        | Expr::This
+        | Expr::TypeOf(_)
+        | Expr::TypeHandle(_)
+        | Expr::FieldHandle(_)
+        | Expr::MethodHandle(_)
+        | Expr::OpaqueHandle(_)
+        | Expr::AddressOf(_)
+        | Expr::MethodPtr { .. }
+        | Expr::Abstain(_)
+        | Expr::Temp { .. } => false,
+        Expr::Field { .. }
+        | Expr::Unary(..)
+        | Expr::Binary(..)
+        | Expr::Call { .. }
+        | Expr::NewObj { .. }
+        | Expr::Tuple(_)
+        | Expr::Coalesce(..)
+        | Expr::Cond { .. }
+        | Expr::Cast(..)
+        | Expr::IsInst { .. }
+        | Expr::UnboxAny { .. }
+        | Expr::LoadElem(..)
+        | Expr::LoadLen(_)
+        | Expr::NewArr { .. }
+        | Expr::Deref(_)
+        | Expr::Raw(_) => true,
+    }
+}
+
+fn adopt_spill(spilled: &BTreeMap<u64, Expr>, operand: (Expr, Option<u64>)) -> Expr {
+    let (expression, origin): (Expr, Option<u64>) = operand;
+    origin
+        .and_then(|origin: u64| spilled.get(&origin).cloned())
+        .unwrap_or(expression)
+}
+
+fn address_slot(address: &Expr) -> Option<Location> {
+    let Expr::AddressOf(pointee) = address else {
+        return None;
+    };
+    match pointee.as_ref() {
+        Expr::Local(slot) => Some(Location::Local(*slot)),
+        Expr::Arg(slot) => Some(Location::Arg(*slot)),
+        _ => None,
+    }
 }
 
 struct Lifter<'a, N: TokenNamer> {
@@ -1595,6 +1713,14 @@ struct Lifter<'a, N: TokenNamer> {
     stack: Vec<Expr>,
     stack_depths: Vec<usize>,
     stack_kinds: Vec<StackKind>,
+    stack_facts: Vec<EntryFacts>,
+    pending_reads: BTreeMap<Location, usize>,
+    consumed: BTreeSet<Location>,
+    low_water: usize,
+    next_origin: u64,
+    last_popped_origin: Option<u64>,
+    spill_floor: usize,
+    offset: u32,
     stmts: Vec<Stmt>,
     locals_used: BTreeSet<u32>,
     locals_assigned: BTreeSet<u32>,
@@ -1614,6 +1740,14 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
             stack: Vec::new(),
             stack_depths: Vec::new(),
             stack_kinds: Vec::new(),
+            stack_facts: Vec::new(),
+            pending_reads: BTreeMap::new(),
+            consumed: BTreeSet::new(),
+            low_water: 0,
+            next_origin: 0,
+            last_popped_origin: None,
+            spill_floor: 0,
+            offset: 0,
             stmts: Vec::new(),
             locals_used: BTreeSet::new(),
             locals_assigned: BTreeSet::new(),
@@ -1649,6 +1783,11 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
         self.stack.push(expression);
         self.stack_depths.push(depth);
         self.stack_kinds.push(kind);
+        self.stack_facts.push(EntryFacts {
+            reads: BTreeSet::new(),
+            origin: self.next_origin,
+        });
+        self.next_origin = self.next_origin.wrapping_add(1);
     }
 
     #[inline]
@@ -1664,18 +1803,29 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
 
     #[inline]
     fn pop_typed(&mut self) -> (Expr, usize, StackKind) {
-        match (
+        let (Some(expression), Some(depth), Some(kind), Some(facts)) = (
             self.stack.pop(),
             self.stack_depths.pop(),
             self.stack_kinds.pop(),
-        ) {
-            (Some(expression), Some(depth), Some(kind)) => (expression, depth, kind),
-            _ => (
+            self.stack_facts.pop(),
+        ) else {
+            self.last_popped_origin = None;
+            return (
                 self.abstain_on_underflow(),
                 ATOM_EXPRESSION_DEPTH,
                 StackKind::Unknown,
-            ),
-        }
+            );
+        };
+        forget_reads(&mut self.pending_reads, &expression, &facts);
+        self.consumed.extend(facts.reads);
+        self.low_water = self.low_water.min(self.stack.len());
+        self.last_popped_origin = Some(facts.origin);
+        (expression, depth, kind)
+    }
+
+    fn pop_operand(&mut self) -> (Expr, Option<u64>) {
+        let expression: Expr = self.pop();
+        (expression, self.last_popped_origin.take())
     }
 
     fn abstain(&mut self, kind: AbstentionKind) -> Expr {
@@ -1693,6 +1843,203 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
         self.stack.clear();
         self.stack_depths.clear();
         self.stack_kinds.clear();
+        self.stack_facts.clear();
+        self.pending_reads.clear();
+        self.low_water = 0;
+        self.spill_floor = 0;
+    }
+
+    fn register_reads(&mut self, index: usize) {
+        let (Some(expression), Some(facts)): (Option<&Expr>, Option<&EntryFacts>) =
+            (self.stack.get(index), self.stack_facts.get(index))
+        else {
+            return;
+        };
+        if matches!(expression, Expr::AddressOf(_)) {
+            return;
+        }
+        for read in &facts.reads {
+            let count: &mut usize = self.pending_reads.entry(*read).or_insert(0);
+            *count = count.saturating_add(1);
+        }
+    }
+
+    fn set_reads(&mut self, index: usize, reads: BTreeSet<Location>) {
+        if let (Some(expression), Some(facts)) =
+            (self.stack.get(index), self.stack_facts.get_mut(index))
+        {
+            forget_reads(&mut self.pending_reads, expression, facts);
+            facts.reads = reads;
+        }
+        self.register_reads(index);
+    }
+
+    fn settle_pushed(&mut self, direct: Option<Location>, duplicated: bool) {
+        let len: usize = self.stack.len();
+        let start: usize = self.low_water.min(len);
+        for index in start..len {
+            let mut reads: BTreeSet<Location> = self.consumed.clone();
+            reads.extend(direct);
+            self.set_reads(index, reads);
+        }
+        if duplicated
+            && len >= start.saturating_add(2)
+            && let Some(origin) = self
+                .stack_facts
+                .get(len - 2)
+                .map(|facts: &EntryFacts| facts.origin)
+            && let Some(top) = self.stack_facts.get_mut(len - 1)
+        {
+            top.origin = origin;
+        }
+    }
+
+    fn merge_consumed_into_top(&mut self) {
+        let Some(index): Option<usize> = self.stack.len().checked_sub(1) else {
+            return;
+        };
+        let mut reads: BTreeSet<Location> = self
+            .stack_facts
+            .get(index)
+            .map_or_else(BTreeSet::new, |facts: &EntryFacts| facts.reads.clone());
+        reads.extend(self.consumed.iter().copied());
+        self.set_reads(index, reads);
+    }
+
+    fn direct_read(&self, ins: &Instruction) -> Option<Location> {
+        if let Ok(access) = decode_slot(ins) {
+            let index: u32 = u32::from(access.index);
+            return match access.op {
+                SlotOp::LoadLocal | SlotOp::LocalAddress => Some(Location::Local(index)),
+                SlotOp::LoadArgument | SlotOp::ArgumentAddress => (index != 0
+                    || !self.namer.outer_has_this())
+                .then(|| Location::Arg(self.arg_slot(index))),
+                SlotOp::StoreLocal | SlotOp::StoreArgument => None,
+            };
+        }
+        match ins.name.as_str() {
+            "ldfld" | "ldflda" | "ldsfld" | "ldsflda" => match ins.operand {
+                OperandValue::Token(token) => Some(Location::Field(token)),
+                _ => Some(Location::Indirect),
+            },
+            "ldobj" => Some(Location::Indirect),
+            name if name.starts_with("ldind.") => Some(Location::Indirect),
+            name if name.starts_with("ldelem") => Some(Location::Element),
+            _ => None,
+        }
+    }
+
+    fn carried_reads(&self, expression: &Expr) -> BTreeSet<Location> {
+        let mut reads: BTreeSet<Location> = BTreeSet::new();
+        let parameter_count: u32 =
+            u32::try_from(self.names.param_names().len()).unwrap_or(u32::MAX);
+        let arguments: BTreeMap<String, u32> = (1..=parameter_count)
+            .map(|slot: u32| (self.names.arg_name(slot), slot))
+            .collect();
+        let rendered: String = expression.render(self.lang, self.names);
+        for identifier in rendered.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
+            if let Some(slot) = identifier
+                .strip_prefix("local")
+                .and_then(|digits: &str| digits.parse::<u32>().ok())
+            {
+                reads.insert(Location::Local(slot));
+            } else if let Some(slot) = arguments.get(identifier) {
+                reads.insert(Location::Arg(*slot));
+            }
+        }
+        if !matches!(
+            expression,
+            Expr::Const(_)
+                | Expr::StringLit(_)
+                | Expr::Null
+                | Expr::This
+                | Expr::Local(_)
+                | Expr::Arg(_)
+        ) {
+            reads.insert(Location::Indirect);
+        }
+        reads
+    }
+
+    fn push_carried(&mut self, expression: Expr, carried: CarriedStack) {
+        let reads: BTreeSet<Location> = match carried {
+            CarriedStack::Spillable => self.carried_reads(&expression),
+            CarriedStack::Settled => BTreeSet::new(),
+        };
+        self.push(expression);
+        if let Some(index) = self.stack.len().checked_sub(1) {
+            self.set_reads(index, reads);
+        }
+    }
+
+    fn pending_overwritten(&self, store: StoreTarget) -> bool {
+        let reads: &BTreeMap<Location, usize> = &self.pending_reads;
+        match store {
+            StoreTarget::Slot(slot) => reads.contains_key(&slot),
+            StoreTarget::Field(token) => {
+                reads.contains_key(&Location::Field(token))
+                    || reads.contains_key(&Location::Indirect)
+            }
+            StoreTarget::Element => {
+                reads.contains_key(&Location::Element) || reads.contains_key(&Location::Indirect)
+            }
+            StoreTarget::Indirect(slot) => {
+                slot.is_some_and(|slot: Location| reads.contains_key(&slot))
+                    || reads.contains_key(&Location::Element)
+                    || reads.contains_key(&Location::Indirect)
+                    || reads
+                        .range(Location::Field(0)..=Location::Field(u32::MAX))
+                        .next()
+                        .is_some()
+            }
+        }
+    }
+
+    fn spill_before_store(&mut self, store: StoreTarget) -> BTreeMap<u64, Expr> {
+        let mut shared: BTreeMap<u64, Expr> = BTreeMap::new();
+        if !self.pending_overwritten(store) {
+            return shared;
+        }
+        for index in self.spill_floor..self.stack.len() {
+            let (Some(expression), Some(facts)): (Option<&Expr>, Option<&EntryFacts>) =
+                (self.stack.get(index), self.stack_facts.get(index))
+            else {
+                continue;
+            };
+            let origin: u64 = facts.origin;
+            let replacement: Expr = if let Some(temp) = shared.get(&origin) {
+                temp.clone()
+            } else {
+                let conflicting: bool = facts
+                    .reads
+                    .iter()
+                    .any(|read: &Location| store.overwrites(*read));
+                if !needs_spill(expression, conflicting) {
+                    continue;
+                }
+                let name: String =
+                    self.fresh_name(format!("__disrobe_spill_{:04X}_{index}", self.offset));
+                let temp: Expr = Expr::Temp {
+                    name: name.clone(),
+                    is_boolean: expression.is_known_boolean(self.names),
+                    kind: classify_cond_kind(expression, self.names),
+                };
+                self.stmts.push(Stmt::Declare {
+                    name,
+                    value: expression.render(self.lang, self.names),
+                });
+                shared.insert(origin, temp.clone());
+                temp
+            };
+            self.set_reads(index, BTreeSet::new());
+            if let (Some(slot), Some(depth)) =
+                (self.stack.get_mut(index), self.stack_depths.get_mut(index))
+            {
+                *slot = replacement;
+                *depth = ATOM_EXPRESSION_DEPTH;
+            }
+        }
+        shared
     }
 
     fn pop_n(&mut self, n: usize) -> Vec<Expr> {
@@ -1908,7 +2255,10 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
     }
 
     fn isinst_capture_name(&self, offset: u32) -> String {
-        let base: String = format!("__disrobe_isinst_{offset:04X}");
+        self.fresh_name(format!("__disrobe_isinst_{offset:04X}"))
+    }
+
+    fn fresh_name(&self, base: String) -> String {
         let mut suffix: usize = 0;
         loop {
             let candidate: String = if suffix == 0 {
@@ -2001,7 +2351,10 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
 
     fn store_loc(&mut self, n: u32) {
         self.locals_used.insert(n);
-        let val: Expr = self.pop();
+        let val: (Expr, Option<u64>) = self.pop_operand();
+        let spilled: BTreeMap<u64, Expr> =
+            self.spill_before_store(StoreTarget::Slot(Location::Local(n)));
+        let val: Expr = adopt_spill(&spilled, val);
         let val: Expr = coerce_constant(val, self.names.local_type(n), self.lang);
         self.locals_assigned.insert(n);
         self.stmts.push(Stmt::Assign {
@@ -2349,7 +2702,10 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
             }
             SlotOp::StoreArgument => {
                 let slot: u32 = self.arg_slot(index);
-                let value: Expr = self.pop();
+                let value: (Expr, Option<u64>) = self.pop_operand();
+                let spilled: BTreeMap<u64, Expr> =
+                    self.spill_before_store(StoreTarget::Slot(Location::Arg(slot)));
+                let value: Expr = adopt_spill(&spilled, value);
                 let value: Expr = coerce_constant(value, self.names.arg_type(slot), self.lang);
                 self.stmts.push(Stmt::Assign {
                     target: self.names.arg_name(slot),
@@ -2376,8 +2732,24 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
         }
     }
 
-    #[allow(clippy::match_same_arms)]
     fn lift_one(&mut self, ins: &Instruction) {
+        self.consumed.clear();
+        self.low_water = self.stack.len();
+        self.offset = ins.offset;
+        self.lift_instruction(ins);
+        let direct: Option<Location> = self.direct_read(ins);
+        self.settle_pushed(direct, ins.name == "dup");
+    }
+
+    const fn field_store_target(ins: &Instruction) -> StoreTarget {
+        match ins.operand {
+            OperandValue::Token(token) => StoreTarget::Field(token),
+            _ => StoreTarget::Indirect(None),
+        }
+    }
+
+    #[allow(clippy::match_same_arms)]
+    fn lift_instruction(&mut self, ins: &Instruction) {
         match decode_slot(ins) {
             Ok(access) => return self.lift_slot_access(access),
             Err(SlotDecodeError::UndecodableOperand(op)) => {
@@ -2611,15 +2983,22 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 self.push(Expr::Deref(Box::new(addr)));
             }
             "stobj" | "cpobj" => {
-                let val: Expr = self.pop();
-                let addr: Expr = self.pop();
+                let val: (Expr, Option<u64>) = self.pop_operand();
+                let addr: (Expr, Option<u64>) = self.pop_operand();
+                let spilled: BTreeMap<u64, Expr> =
+                    self.spill_before_store(StoreTarget::Indirect(address_slot(&addr.0)));
+                let val: Expr = adopt_spill(&spilled, val);
+                let addr: Expr = adopt_spill(&spilled, addr);
                 self.stmts.push(Stmt::Assign {
                     target: deref_target(&addr, self.lang, self.names),
                     value: val.render(self.lang, self.names),
                 });
             }
             "initobj" => {
-                let addr: Expr = self.pop();
+                let addr: (Expr, Option<u64>) = self.pop_operand();
+                let spilled: BTreeMap<u64, Expr> =
+                    self.spill_before_store(StoreTarget::Indirect(address_slot(&addr.0)));
+                let addr: Expr = adopt_spill(&spilled, addr);
                 let ty: String = short(&self.token_name(ins));
                 self.stmts.push(Stmt::Assign {
                     target: deref_target(&addr, self.lang, self.names),
@@ -2733,8 +3112,12 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 })));
             }
             "stfld" => {
-                let val: Expr = self.pop();
-                let obj: Expr = self.pop();
+                let val: (Expr, Option<u64>) = self.pop_operand();
+                let obj: (Expr, Option<u64>) = self.pop_operand();
+                let spilled: BTreeMap<u64, Expr> =
+                    self.spill_before_store(Self::field_store_target(ins));
+                let val: Expr = adopt_spill(&spilled, val);
+                let obj: Expr = adopt_spill(&spilled, obj);
                 let fld: String = field_name(&self.token_name(ins));
                 let field_type: Option<String> = self.stored_field_type(ins);
                 let val: Expr = coerce_constant(val, field_type.as_deref(), self.lang);
@@ -2744,7 +3127,10 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 });
             }
             "stsfld" => {
-                let val: Expr = self.pop();
+                let val: (Expr, Option<u64>) = self.pop_operand();
+                let spilled: BTreeMap<u64, Expr> =
+                    self.spill_before_store(Self::field_store_target(ins));
+                let val: Expr = adopt_spill(&spilled, val);
                 let fld: String = field_name(&self.token_name(ins));
                 let field_type: Option<String> = self.stored_field_type(ins);
                 let val: Expr = coerce_constant(val, field_type.as_deref(), self.lang);
@@ -2775,20 +3161,28 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 self.push_typed(Expr::LoadElem(Box::new(arr), Box::new(idx)), kind);
             }
             n if n.starts_with("stelem") => {
-                let val: Expr = self.pop();
-                let idx: Expr = self.pop();
-                let arr: Expr = self.pop();
-                let element_type: Option<String> = array_element_type(&arr, self.names);
+                let (val, val_origin): (Expr, Option<u64>) = self.pop_operand();
+                let idx: (Expr, Option<u64>) = self.pop_operand();
+                let arr: (Expr, Option<u64>) = self.pop_operand();
+                let element_type: Option<String> = array_element_type(&arr.0, self.names);
                 let val: Expr = coerce_constant(val, element_type.as_deref(), self.lang);
-                if let Err(val) = self.append_to_duplicated_array_literal(&arr, &idx, val) {
-                    self.stmts.push(Stmt::Assign {
-                        target: format!(
-                            "{}[{}]",
-                            paren(&arr, self.lang, self.names),
-                            idx.render(self.lang, self.names)
-                        ),
-                        value: val.render(self.lang, self.names),
-                    });
+                match self.append_to_duplicated_array_literal(&arr.0, &idx.0, val) {
+                    Ok(()) => self.merge_consumed_into_top(),
+                    Err(val) => {
+                        let spilled: BTreeMap<u64, Expr> =
+                            self.spill_before_store(StoreTarget::Element);
+                        let val: Expr = adopt_spill(&spilled, (val, val_origin));
+                        let idx: Expr = adopt_spill(&spilled, idx);
+                        let arr: Expr = adopt_spill(&spilled, arr);
+                        self.stmts.push(Stmt::Assign {
+                            target: format!(
+                                "{}[{}]",
+                                paren(&arr, self.lang, self.names),
+                                idx.render(self.lang, self.names)
+                            ),
+                            value: val.render(self.lang, self.names),
+                        });
+                    }
                 }
             }
             n if n.starts_with("ldc.i4") => {
@@ -2811,8 +3205,12 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 self.push_typed(Expr::Deref(Box::new(addr)), StackKind::of_element_opcode(n));
             }
             n if n.starts_with("stind.") => {
-                let val: Expr = self.pop();
-                let addr: Expr = self.pop();
+                let val: (Expr, Option<u64>) = self.pop_operand();
+                let addr: (Expr, Option<u64>) = self.pop_operand();
+                let spilled: BTreeMap<u64, Expr> =
+                    self.spill_before_store(StoreTarget::Indirect(address_slot(&addr.0)));
+                let val: Expr = adopt_spill(&spilled, val);
+                let addr: Expr = adopt_spill(&spilled, addr);
                 self.stmts.push(Stmt::Assign {
                     target: deref_target(&addr, self.lang, self.names),
                     value: val.render(self.lang, self.names),
@@ -2909,6 +3307,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
 #[derive(Debug, Clone)]
 pub(crate) enum LinearStmt {
     Assign { target: String, value: String },
+    Declare { name: String, value: String },
     Expr(String),
     Return(Option<String>),
     Throw(Option<String>),
@@ -3102,7 +3501,7 @@ fn final_comparison<N: TokenNamer>(lifter: &mut Lifter<'_, N>, lang: TargetLang)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CondKind {
+pub(crate) enum CondKind {
     Bool,
     Reference,
     Integral,
@@ -3192,6 +3591,7 @@ fn classify_cond_kind(e: &Expr, names: &NameTable) -> CondKind {
     match e {
         Expr::Call { return_kind, .. } => cond_kind_of(*return_kind).unwrap_or(CondKind::Bool),
         Expr::Field { kind, .. } => cond_kind_of(*kind).unwrap_or(CondKind::Bool),
+        Expr::Temp { kind, .. } => *kind,
         Expr::Binary(op, _, _) => {
             if is_comparison_or_logical(op) {
                 CondKind::Bool
@@ -3293,7 +3693,16 @@ pub(crate) fn lift_block<N: TokenNamer>(
     first: usize,
     last: usize,
 ) -> BlockCode {
-    lift_block_with_entry(namer, names, lang, instrs, first, last, Vec::new())
+    lift_block_with_entry(
+        namer,
+        names,
+        lang,
+        instrs,
+        first,
+        last,
+        Vec::new(),
+        CarriedStack::Spillable,
+    )
 }
 
 pub(crate) fn rendered_expression(
@@ -3362,10 +3771,14 @@ pub(crate) fn lift_block_with_entry<N: TokenNamer>(
     first: usize,
     last: usize,
     entry_stack: Vec<Expr>,
+    carried: CarriedStack,
 ) -> BlockCode {
     let mut lifter: Lifter<'_, N> = Lifter::new(namer, names, lang);
     for expression in entry_stack {
-        lifter.push(expression);
+        lifter.push_carried(expression, carried);
+    }
+    if carried == CarriedStack::Settled {
+        lifter.spill_floor = lifter.stack.len();
     }
     let mut condition: Option<String> = None;
     let mut switch_selector: Option<String> = None;
@@ -3414,6 +3827,7 @@ pub(crate) fn lift_block_with_entry<N: TokenNamer>(
 fn stmt_to_linear(s: Stmt) -> LinearStmt {
     match s {
         Stmt::Assign { target, value } => LinearStmt::Assign { target, value },
+        Stmt::Declare { name, value } => LinearStmt::Declare { name, value },
         Stmt::Expr(e) => LinearStmt::Expr(e),
         Stmt::Return(v) => LinearStmt::Return(v),
         Stmt::Throw(v) => LinearStmt::Throw(v),
