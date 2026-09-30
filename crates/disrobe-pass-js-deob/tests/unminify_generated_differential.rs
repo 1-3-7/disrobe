@@ -1147,8 +1147,14 @@ fn generation_is_deterministic_and_the_rules_rewrite_most_programs() {
     );
 }
 
-#[test]
-fn a_one_operator_mutation_of_a_recovered_program_fails_the_grade() {
+struct ChangingMutation {
+    seed: u64,
+    expected: Run,
+    recovered: String,
+    mutated: String,
+}
+
+fn first_changing_mutation() -> Option<ChangingMutation> {
     for seed in 0..SEED_COUNT {
         let source: String = generate(seed);
         let expected: Run = run_node(&source);
@@ -1162,19 +1168,37 @@ fn a_one_operator_mutation_of_a_recovered_program_fails_the_grade() {
             mutated.replace_range(at..at + from.len(), to);
             let observed: Run = run_node(&mutated);
             if observed.success && observed.stdout != expected.stdout {
-                assert!(
-                    grade("mutation", &expected, &mutated).is_err(),
-                    "seed {seed}: the grade accepted a program whose output changed"
-                );
-                assert!(
-                    grade("unmutated", &expected, &final_text).is_ok(),
-                    "seed {seed}: the unmutated recovery must pass the same grade"
-                );
-                return;
+                return Some(ChangingMutation {
+                    seed,
+                    expected,
+                    recovered: final_text,
+                    mutated,
+                });
             }
         }
     }
-    panic!("no single-operator mutation of any recovered program changed its output");
+    None
+}
+
+#[test]
+fn a_one_operator_mutation_of_a_recovered_program_fails_the_grade() {
+    let found: Option<ChangingMutation> = first_changing_mutation();
+    assert!(
+        found.is_some(),
+        "no single-operator mutation of any recovered program changed its output"
+    );
+    let Some(case) = found else {
+        unreachable!("the assertion above has already failed the test");
+    };
+    let seed: u64 = case.seed;
+    assert!(
+        grade("mutation", &case.expected, &case.mutated).is_err(),
+        "seed {seed}: the grade accepted a program whose output changed"
+    );
+    assert!(
+        grade("unmutated", &case.expected, &case.recovered).is_ok(),
+        "seed {seed}: the unmutated recovery must pass the same grade"
+    );
 }
 
 fn pinned_cases() -> Vec<PathBuf> {
