@@ -18,6 +18,6 @@
   },
   "oracle_strength": "strong",
   "pairs": [],
-  "reproduce": "DISROBE_REQUIRE_JULIET_CORPUS=1 cargo test -p disrobe-taint --test graded_corpus juliet_cwe78_command_injection_precision_recall_o2 -- --exact --nocapture. CI does not provision the pinned Juliet corpus cache.",
+  "reproduce": "cargo test -p disrobe-taint --test graded_corpus juliet_cwe78_command_injection_precision_recall_o2 -- --exact --nocapture, with the pinned Juliet corpus cache populated. CI does not provision it, so tests/optional.toml lists the binary and a run without it writes a not-measured record instead of passing.",
   "title": "Native taint analysis on Juliet CWE-78"
 }
