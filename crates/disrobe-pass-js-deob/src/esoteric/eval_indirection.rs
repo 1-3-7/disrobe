@@ -1,7 +1,10 @@
 use oxc_allocator::Allocator;
-use oxc_ast::ast::{Argument, Expression, Statement};
+use oxc_ast::ast::{
+    Argument, BindingPatternKind, Expression, Statement, VariableDeclaration,
+    VariableDeclarationKind,
+};
 use oxc_parser::{Parser, ParserReturn};
-use oxc_span::SourceType;
+use oxc_span::{GetSpan, SourceType};
 use serde::Serialize;
 
 use crate::scan_utils::reparses;
@@ -196,6 +199,15 @@ fn collect_statement_folds(statements: &[Statement<'_>], folds: &mut Vec<Stateme
                     });
                 }
             }
+            Statement::VariableDeclaration(declaration) => {
+                if let Some(replacement) = declaration_fold(declaration) {
+                    folds.push(StatementFold {
+                        start: declaration.span.start as usize,
+                        end: declaration.span.end as usize,
+                        replacement,
+                    });
+                }
+            }
             Statement::BlockStatement(block) => collect_statement_folds(&block.body, folds),
             Statement::FunctionDeclaration(function) => {
                 if let Some(body) = &function.body {
@@ -243,6 +255,63 @@ fn statement_fold(expression: &Expression<'_>) -> Option<String> {
     };
     let wrapped: String = format!("(function () {{\n{body}\n}})();");
     reparses(&wrapped).then(|| format!("/* dr-fn-folded */\n{wrapped}\n"))
+}
+
+fn declaration_fold(declaration: &VariableDeclaration<'_>) -> Option<String> {
+    if declaration.kind != VariableDeclarationKind::Var {
+        return None;
+    }
+    let [declarator] = declaration.declarations.as_slice() else {
+        return None;
+    };
+    let BindingPatternKind::BindingIdentifier(binding) = &declarator.id.kind else {
+        return None;
+    };
+    let Some(Expression::CallExpression(call)) = declarator
+        .init
+        .as_ref()
+        .map(Expression::without_parentheses)
+    else {
+        return None;
+    };
+    let Expression::Identifier(callee) = call.callee.without_parentheses() else {
+        return None;
+    };
+    if callee.name != "eval" {
+        return None;
+    }
+    let payload: &str = single_string_argument(&call.arguments)?;
+    let (declarations, completion): (&str, &str) = split_completion(payload)?;
+    let name: &str = binding.name.as_str();
+    Some(format!(
+        "/* dr-eval-folded */\n{declarations}\nvar {name} = ({completion});\n"
+    ))
+}
+
+fn split_completion(payload: &str) -> Option<(&str, &str)> {
+    let allocator: Allocator = Allocator::default();
+    let source_type: SourceType = SourceType::from_path("eval-payload.js").unwrap_or_default();
+    let parsed: ParserReturn<'_> = Parser::new(&allocator, payload, source_type).parse();
+    if !parsed.errors.is_empty() || parsed.panicked || !parsed.program.directives.is_empty() {
+        return None;
+    }
+    let body: &[Statement<'_>] = &parsed.program.body;
+    let (last, leading): (&Statement<'_>, &[Statement<'_>]) = body.split_last()?;
+    let is_var = |statement: &Statement<'_>| matches!(statement, Statement::VariableDeclaration(declaration) if declaration.kind == VariableDeclarationKind::Var);
+    if !leading.iter().all(is_var) {
+        return None;
+    }
+    if is_var(last) {
+        return Some((payload, "void 0"));
+    }
+    let Statement::ExpressionStatement(completion) = last else {
+        return None;
+    };
+    let declarations: &str = payload.get(..last.span().start as usize)?;
+    let expression: &str = payload.get(
+        completion.expression.span().start as usize..completion.expression.span().end as usize,
+    )?;
+    Some((declarations, expression))
 }
 
 fn single_string_argument<'a>(arguments: &'a [Argument<'a>]) -> Option<&'a str> {
@@ -301,6 +370,48 @@ mod tests {
             res.rewritten
         );
         assert!(reparses(&res.rewritten), "{}", res.rewritten);
+    }
+
+    #[test]
+    fn a_var_initialized_by_eval_keeps_the_payload_declarations_and_its_completion_value() {
+        let src: &str = r#"var z = eval("var a = 20; a + 22"); log(z, a);"#;
+        let res: EvalIndirectionResult = peel_eval_indirection(src);
+        assert_eq!(res.stats.constant_folded, 1);
+        assert!(
+            res.rewritten
+                .contains("var a = 20; \nvar z = (a + 22);\n log(z, a);"),
+            "{}",
+            res.rewritten
+        );
+        assert!(reparses(&res.rewritten), "{}", res.rewritten);
+    }
+
+    #[test]
+    fn a_var_initialized_by_a_declaration_only_eval_receives_undefined() {
+        let src: &str = r#"var z = eval("var a = 1;");"#;
+        let res: EvalIndirectionResult = peel_eval_indirection(src);
+        assert_eq!(res.stats.constant_folded, 1);
+        assert!(
+            res.rewritten.contains("var a = 1;\nvar z = (void 0);"),
+            "{}",
+            res.rewritten
+        );
+    }
+
+    #[test]
+    fn an_eval_initializer_whose_completion_or_scope_would_change_is_left_alone() {
+        for src in [
+            r#"var z = eval("let a = 1; a");"#,
+            r#"var z = eval("if (x) { 1 } else { 2 }");"#,
+            r#"var z = eval("f(); var a = 1;");"#,
+            r#"let z = eval("var a = 1;");"#,
+            r#"var y = 1, z = eval("var a = 1;");"#,
+            r#"var z = eval("'use strict'; var a = 1;");"#,
+        ] {
+            let res: EvalIndirectionResult = peel_eval_indirection(src);
+            assert_eq!(res.stats.constant_folded, 0, "{src}");
+            assert_eq!(res.rewritten, src);
+        }
     }
 
     #[test]
