@@ -30,7 +30,6 @@ const fn describe_obfuscator(id: Obfuscator) -> SupportedObfuscator {
         Obfuscator::Jawbreaker => ("Jawbreaker", &[]),
         Obfuscator::BlankObf => ("BlankOBF", &["blankobfv2"]),
         Obfuscator::PlusObf => ("PlusOBF", &[]),
-        Obfuscator::Wodx => ("Wodx", &[]),
         Obfuscator::PyobfuscateCom => ("pyobfuscate.com", &["pyobfuscate-online"]),
         Obfuscator::PyobfuscateComXor => (
             "pyobfuscate.com (2026 XOR/lambda)",
@@ -366,13 +365,12 @@ mod tests {
 
     #[test]
     fn published_source_obfuscator_roster_matches_the_registered_passes() {
-        const PUBLISHED: [&str; 20] = [
+        const PUBLISHED: [&str; 19] = [
             "Kramer / Specter",
             "Berserker",
             "Jawbreaker",
             "BlankOBF",
             "PlusOBF",
-            "Wodx",
             "pyobfuscate.com",
             "pyobfuscate.com (2026 XOR/lambda)",
             "PyObfuscator (mauricelambert)",

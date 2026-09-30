@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use disrobe_pass_py_deob::obfuscators::{
     berserker, blankobf, jawbreaker, kramer, manglify, obfuxtreme, online_family, oxyry, plusobf,
-    py_mauricelambert, pyminifier, pyobfuscate_com, python_obfuscator_pypi, wodx,
+    py_mauricelambert, pyminifier, pyobfuscate_com, python_obfuscator_pypi,
 };
 
 type BakeFn = fn(&str) -> String;
@@ -49,7 +49,6 @@ fn main() -> Result<(), String> {
         ("jawbreaker", jawbreaker::bake),
         ("blankobf", blankobf::bake),
         ("plusobf", plusobf::bake),
-        ("wodx", wodx::bake),
         ("pyobfuscate_com", pyobfuscate_com::bake),
         ("pyobfuscator_mauricelambert", py_mauricelambert::bake),
         ("python_obfuscator_pypi", python_obfuscator_pypi::bake),

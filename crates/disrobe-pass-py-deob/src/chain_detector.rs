@@ -315,7 +315,7 @@ const fn quality_of(obf: Obfuscator) -> SupportQuality {
     }
 }
 
-const CATALOG_COUNT: usize = 20;
+const CATALOG_COUNT: usize = 19;
 
 static CATALOG: [PyObfuscatorEntry; CATALOG_COUNT] = [
     entry(
@@ -338,7 +338,6 @@ static CATALOG: [PyObfuscatorEntry; CATALOG_COUNT] = [
         &["blankobfv2"],
     ),
     entry(Obfuscator::PlusObf, "plusobf", "PlusOBF", &[]),
-    entry(Obfuscator::Wodx, "wodx", "Wodx", &[]),
     entry(
         Obfuscator::PyobfuscateCom,
         "pyobfuscate-com",

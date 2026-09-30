@@ -1,23 +1,10 @@
 #![allow(clippy::expect_used, clippy::panic)]
 
-use disrobe_pass_py_deob::obfuscators::{manglify, obfuxtreme, wodx};
-use disrobe_pass_py_deob::{Obfuscator, ObfuscatorQuality, PeelResult, peel};
+use disrobe_pass_py_deob::obfuscators::{manglify, obfuxtreme};
+use disrobe_pass_py_deob::{Obfuscator, PeelResult, peel};
 
 fn run(obf: &str) -> PeelResult {
     peel(obf.as_bytes()).unwrap_or_else(|e| panic!("peel failed: {e:?}"))
-}
-
-#[test]
-fn wodx_wrapper_dispatches_and_recovers() {
-    let original: &str = "def greet(name):\n    return f'hi {name}'\n";
-    let obf: String = wodx::bake(original);
-    let result: PeelResult = run(&obf);
-    assert!(result.recovered, "wodx must report recovered");
-    assert_eq!(result.final_source, original);
-    assert_ne!(result.final_source.as_bytes(), obf.as_bytes());
-    let summary = result.obfuscator.expect("wodx summary present");
-    assert_eq!(summary.obfuscator, Obfuscator::Wodx);
-    assert_eq!(summary.quality, ObfuscatorQuality::Full);
 }
 
 #[test]

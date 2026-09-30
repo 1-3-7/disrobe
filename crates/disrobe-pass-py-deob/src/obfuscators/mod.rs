@@ -57,7 +57,6 @@ pub mod pyobfuscate_com;
 pub mod pyobfuscate_com_xor;
 pub mod pypacker;
 pub mod python_obfuscator_pypi;
-pub mod wodx;
 pub mod xindex;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -74,7 +73,6 @@ pub enum Obfuscator {
     Jawbreaker,
     BlankObf,
     PlusObf,
-    Wodx,
     PyobfuscateCom,
     PyobfuscateComXor,
     PyObfuscatorMauricelambert,
@@ -125,7 +123,6 @@ pub fn iter_passes() -> Vec<&'static dyn ObfuscatorPass> {
         &jawbreaker::JawbreakerPass,
         &blankobf::BlankObfPass,
         &plusobf::PlusObfPass,
-        &wodx::WodxPass,
         &pyobfuscate_com::PyobfuscateComPass,
         &pyobfuscate_com_xor::PyobfuscateComXorPass,
         &py_mauricelambert::PyObfuscatorMauricelambertPass,

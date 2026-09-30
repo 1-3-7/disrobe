@@ -13,7 +13,7 @@ The Python decompiler is implemented in Rust. The command uses this engine; pycd
 | Modern constructs | `match`, walrus, f-strings and PEP 750 t-strings, exception groups, PEP 695/696/709 |
 | Control flow | try/except/else and try/finally structured from the exception-table forest, with-statement folding, multi-exit `while True` and `while COND` loops, conditional (ternary) expressions, and chained comparisons in conditions, each recompile-checked |
 | Freezers | PyInstaller 2.x-6.20+, Nuitka, cx_Freeze, py2exe, shiv, pex, PyOxidizer (experimental, unvalidated), Briefcase, SourceDefender |
-| Protectors | PyArmor v6-v9-pro, and <!-- m:py_source_obfuscators -->20<!-- /m --> catalogued source obfuscators routed to an AST-evaluator backend; per-family depth is in the catalog |
+| Protectors | PyArmor v6-v9-pro, and <!-- m:py_source_obfuscators -->19<!-- /m --> catalogued source obfuscators routed to an AST-evaluator backend; per-family depth is in the catalog |
 
 ## Commands
 
@@ -30,7 +30,7 @@ disrobe py deob obfuscated.py --out clean.py --cleanup
 
 `disasm` writes a faithful per-instruction trace across every supported interpreter dialect. This is the Disasm rung: lossless, offset-preserving, no structural reconstruction.
 
-`deob` peels source-level obfuscator wrappers (Kramer/Specter, Berserker, Jawbreaker, BlankOBF, PlusOBF, Wodx, pyobfuscate.com, PyObfuscator (mauricelambert), python-obfuscator (PyPI), ObfuXtreme, Manglify, Oxyry, pyminifier, online obfuscator family, Xindex, pyobfus, Pypacker, Patchwork) with an AST-evaluator backend. `--cleanup` runs a ruff-AST constant-fold and dead-branch-elimination pass afterward.
+`deob` peels source-level obfuscator wrappers (Kramer/Specter, Berserker, Jawbreaker, BlankOBF, PlusOBF, pyobfuscate.com, PyObfuscator (mauricelambert), python-obfuscator (PyPI), ObfuXtreme, Manglify, Oxyry, pyminifier, online obfuscator family, Xindex, pyobfus, Pypacker, Patchwork) with an AST-evaluator backend. `--cleanup` runs a ruff-AST constant-fold and dead-branch-elimination pass afterward.
 
 ### Freezers and packagers
 

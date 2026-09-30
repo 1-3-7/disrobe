@@ -360,12 +360,12 @@
         },
         {
           "label": "Python source obfuscators",
-          "value": 20,
+          "value": 19,
           "verified_by": {
             "path": "crates/disrobe-pass-py-deob/src/auto_route.rs",
             "function": "published_source_obfuscator_roster_count_matches_the_registered_passes"
           },
-          "source": "crates/disrobe-pass-py-deob/src/auto_route.rs describes 20 registered source-obfuscator passes. This is a routing roster, not an aggregate source-recovery measurement. The named membership test forces this figure to move with the registered passes."
+          "source": "crates/disrobe-pass-py-deob/src/auto_route.rs describes 19 registered source-obfuscator passes. This is a routing roster, not an aggregate source-recovery measurement. The named membership test forces this figure to move with the registered passes."
         },
         {
           "label": "JVM / Android families",
