@@ -10,15 +10,11 @@
     clippy::doc_markdown
 )]
 
-use std::ffi::{OsStr, OsString};
 use std::io::Write;
 use std::path::PathBuf;
 
 use super::band::{find_interpreter, interpreter_hidden};
 use super::stdlib_measure::{BandReach, PublishedBar, bar_disagreements, published_detail};
-
-pub(crate) const REQUIRE_EVERY_BAND_VAR: &str = "DISROBE_REQUIRE_PY_BANDS";
-pub(crate) const OPTIONAL_EVERY_BAND_VAR: &str = "DISROBE_PY_BANDS_OPTIONAL";
 
 pub(crate) const PINNED_MODULE_LIST: &str = "tests/harness/pinned_modules_314.txt";
 pub(crate) const PINNED_MODULE_COUNT: u64 = 200;
@@ -27,72 +23,63 @@ pub(crate) const PINNED_MODULE_COUNT: u64 = 200;
 pub(crate) struct BandToolchain {
     pub alias: &'static str,
     pub release: &'static str,
-    pub require_var: &'static str,
-    pub optional_var: &'static str,
+    pub prerequisite: &'static str,
     pub install_hint: &'static str,
 }
 
 pub(crate) const CPYTHON_38: BandToolchain = BandToolchain {
     alias: "3.8",
     release: "3.8.20",
-    require_var: "DISROBE_REQUIRE_PY_38",
-    optional_var: "DISROBE_PY_38_OPTIONAL",
+    prerequisite: "disrobe-pass-py-decompile::cpython-3.8",
     install_hint: "install it with `uv python install 3.8`",
 };
 
 pub(crate) const CPYTHON_39: BandToolchain = BandToolchain {
     alias: "3.9",
     release: "3.9.25",
-    require_var: "DISROBE_REQUIRE_PY_39",
-    optional_var: "DISROBE_PY_39_OPTIONAL",
+    prerequisite: "disrobe-pass-py-decompile::cpython-3.9",
     install_hint: "install it with `uv python install 3.9`",
 };
 
 pub(crate) const CPYTHON_310: BandToolchain = BandToolchain {
     alias: "3.10",
     release: "3.10.20",
-    require_var: "DISROBE_REQUIRE_PY_310",
-    optional_var: "DISROBE_PY_310_OPTIONAL",
+    prerequisite: "disrobe-pass-py-decompile::cpython-3.10",
     install_hint: "install it with `uv python install 3.10`",
 };
 
 pub(crate) const CPYTHON_311: BandToolchain = BandToolchain {
     alias: "3.11",
     release: "3.11.15",
-    require_var: "DISROBE_REQUIRE_PY_311",
-    optional_var: "DISROBE_PY_311_OPTIONAL",
+    prerequisite: "disrobe-pass-py-decompile::cpython-3.11",
     install_hint: "install it with `uv python install 3.11`",
 };
 
 pub(crate) const CPYTHON_312: BandToolchain = BandToolchain {
     alias: "3.12",
     release: "3.12.13",
-    require_var: "DISROBE_REQUIRE_PY_312",
-    optional_var: "DISROBE_PY_312_OPTIONAL",
+    prerequisite: "disrobe-pass-py-decompile::cpython-3.12",
     install_hint: "install it with `uv python install 3.12`",
 };
 
 pub(crate) const CPYTHON_313: BandToolchain = BandToolchain {
     alias: "3.13",
     release: "3.13.14",
-    require_var: "DISROBE_REQUIRE_PY_313",
-    optional_var: "DISROBE_PY_313_OPTIONAL",
+    prerequisite: "disrobe-pass-py-decompile::cpython-3.13",
     install_hint: "install it with `uv python install 3.13`",
 };
 
 pub(crate) const CPYTHON_314: BandToolchain = BandToolchain {
     alias: "3.14",
     release: "3.14.5",
-    require_var: "DISROBE_REQUIRE_PY_314",
-    optional_var: "DISROBE_PY_314_OPTIONAL",
+    prerequisite: "disrobe-pass-py-decompile::cpython-3.14",
     install_hint: "install it with `uv python install 3.14`",
 };
 
 pub(crate) const CPYTHON_315: BandToolchain = BandToolchain {
     alias: "3.15",
     release: "3.15.0b4",
-    require_var: "DISROBE_REQUIRE_PY_315",
-    optional_var: "DISROBE_PY_315_OPTIONAL",
+    prerequisite: "disrobe-pass-py-decompile::cpython-3.15",
     install_hint: "install it with `uv python install 3.15`",
 };
 
@@ -177,89 +164,10 @@ pub(crate) fn parse_magic(raw: &str) -> Result<u16, String> {
     Ok(low | (high << 8))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum BandRequirement {
-    Optional,
-    Mandatory,
-}
-
-fn demands_it(value: Option<&OsStr>) -> bool {
-    let Some(raw): Option<&OsStr> = value else {
-        return false;
-    };
-    !matches!(
-        raw.to_string_lossy().trim().to_ascii_lowercase().as_str(),
-        "" | "0" | "false" | "no" | "off" | "optional"
-    )
-}
-
-#[must_use]
-pub(crate) fn requirement_from_values(
-    per_band_require: Option<&OsStr>,
-    blanket_require: Option<&OsStr>,
-    per_band_optional: Option<&OsStr>,
-    blanket_optional: Option<&OsStr>,
-) -> BandRequirement {
-    if demands_it(per_band_require) || demands_it(blanket_require) {
-        return BandRequirement::Mandatory;
+pub(crate) fn unmeasured(prerequisite: &str, graded: &str, what: &str) {
+    if let Err(error) = disrobe_testkit::require::<()>(prerequisite, what, None) {
+        panic!("{graded} was measured against nothing and must not report success: {error}");
     }
-    if demands_it(per_band_optional) || demands_it(blanket_optional) {
-        return BandRequirement::Optional;
-    }
-    BandRequirement::Mandatory
-}
-
-#[must_use]
-pub(crate) fn requirement(toolchain: &BandToolchain) -> BandRequirement {
-    let per_band_require: Option<OsString> = std::env::var_os(toolchain.require_var);
-    let blanket_require: Option<OsString> = std::env::var_os(REQUIRE_EVERY_BAND_VAR);
-    let per_band_optional: Option<OsString> = std::env::var_os(toolchain.optional_var);
-    let blanket_optional: Option<OsString> = std::env::var_os(OPTIONAL_EVERY_BAND_VAR);
-    requirement_from_values(
-        per_band_require.as_deref(),
-        blanket_require.as_deref(),
-        per_band_optional.as_deref(),
-        blanket_optional.as_deref(),
-    )
-}
-
-pub(crate) fn enforce_requirement(
-    toolchain: &BandToolchain,
-    graded: &str,
-    defect: &str,
-    requirement: BandRequirement,
-) {
-    assert!(
-        requirement == BandRequirement::Optional,
-        "CPython {alias} is mandatory for this run, so {graded} was measured against nothing and \
-         this case must not report success: {defect}. A band is REQUIRED by default because it is \
-         what backs a published figure, and a run that cannot re-derive it proves nothing about \
-         that figure. To fix it, {hint}. To declare deliberately that this run knows it is \
-         skipping this band, set {opt}=1, or {all_opt}=1 for every band; the run then states that \
-         it graded nothing rather than reporting a success a reader could mistake for a \
-         measurement.",
-        alias = toolchain.alias,
-        hint = toolchain.install_hint,
-        opt = toolchain.optional_var,
-        all_opt = OPTIONAL_EVERY_BAND_VAR,
-    );
-    announce_unmeasured(toolchain, graded, defect);
-}
-
-fn announce_unmeasured(toolchain: &BandToolchain, graded: &str, defect: &str) {
-    let line: String = format!(
-        "\nNOT MEASURED: {graded} compared nothing and graded nothing, because {defect}. The \
-         published counts are still bound to this crate's constants by the checks that need no \
-         interpreter, but nothing on this machine re-derived them from bytecode. This run declared \
-         CPython {alias} optional through {opt} or {all_opt}; clear both and the band is mandatory \
-         again, which is the default.\n",
-        alias = toolchain.alias,
-        opt = toolchain.optional_var,
-        all_opt = OPTIONAL_EVERY_BAND_VAR,
-    );
-    let mut sink: std::io::StdoutLock<'static> = std::io::stdout().lock();
-    drop(sink.write_all(line.as_bytes()));
-    drop(sink.flush());
 }
 
 #[must_use]
@@ -285,7 +193,12 @@ pub(crate) fn resolve_band_interpreter(toolchain: &BandToolchain, graded: &str) 
             alias = toolchain.alias
         )
     };
-    enforce_requirement(toolchain, graded, &defect, requirement(toolchain));
+    let what: String = format!(
+        "CPython {alias}, which backs a published figure ({defect}); {hint}",
+        alias = toolchain.alias,
+        hint = toolchain.install_hint,
+    );
+    unmeasured(toolchain.prerequisite, graded, &what);
     None
 }
 

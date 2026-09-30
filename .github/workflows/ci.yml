@@ -1186,19 +1186,28 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           cache-on-failure: true
+      - name: clear not-measured records a restored build cache may carry
+        shell: bash
+        run: rm -rf "${CARGO_TARGET_DIR:-target}/not-measured"
       - name: export PYO3_PYTHON
         shell: bash
         run: echo "PYO3_PYTHON=${{ steps.setup-python.outputs.python-path }}" >> "$GITHUB_ENV"
       - name: build the disrobe cli the harness drives
         run: cargo build --release -p disrobe-cli --bin disrobe
       - name: per-code-object recompile-equivalence floor (>= 96.67% on the pinned 3.14 corpus)
-        env:
-          DISROBE_REQUIRE_PY_314: "1"
         run: cargo test -p disrobe-pass-py-decompile --test arbitrary_recompile_gate -- --nocapture
       - name: per-code-object recompile-equivalence floor (>= 96.09% on the 3.15 band)
-        env:
-          DISROBE_REQUIRE_PY_315: "1"
         run: cargo test -p disrobe-pass-py-decompile --test arbitrary_recompile_gate_315 -- --nocapture
+      - name: fail when a prerequisite this job provisions was not measured
+        shell: bash
+        run: |
+          set -euo pipefail
+          records="${CARGO_TARGET_DIR:-target}/not-measured"
+          if [ -d "$records" ] && [ -n "$(ls -A "$records")" ]; then
+            echo "this job provisions every interpreter band it grades, yet these prerequisites were recorded as not measured:"
+            ls -1 "$records"
+            exit 1
+          fi
 
   py-band-gate:
     if: github.event_name != 'workflow_dispatch' || (github.event.inputs.scope != 'clippy' && github.event.inputs.scope != 'tests')
@@ -1235,23 +1244,30 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           cache-on-failure: true
+      - name: clear not-measured records a restored build cache may carry
+        shell: bash
+        run: rm -rf "${CARGO_TARGET_DIR:-target}/not-measured"
       - name: export PYO3_PYTHON
         shell: bash
         run: echo "PYO3_PYTHON=${{ steps.setup-python.outputs.python-path }}" >> "$GITHUB_ENV"
       - name: build the disrobe cli the harness drives
         run: cargo build --release -p disrobe-cli -p disrobe-pass-py-decompile --bin disrobe --test arbitrary_recompile_gate_310 --test arbitrary_recompile_gate_312 --test arbitrary_recompile_gate_313
       - name: per-code-object recompile-equivalence floor (>= 95.76% on the 3.10 band)
-        env:
-          DISROBE_REQUIRE_PY_310: "1"
         run: cargo test --release -p disrobe-cli -p disrobe-pass-py-decompile --test arbitrary_recompile_gate_310 -- --nocapture
       - name: per-code-object recompile-equivalence floor (>= 95.77% on the 3.12 band)
-        env:
-          DISROBE_REQUIRE_PY_312: "1"
         run: cargo test --release -p disrobe-cli -p disrobe-pass-py-decompile --test arbitrary_recompile_gate_312 -- --nocapture
       - name: per-code-object recompile-equivalence floor (>= 96.06% on the 3.13 band)
-        env:
-          DISROBE_REQUIRE_PY_313: "1"
         run: cargo test --release -p disrobe-cli -p disrobe-pass-py-decompile --test arbitrary_recompile_gate_313 -- --nocapture
+      - name: fail when a prerequisite this job provisions was not measured
+        shell: bash
+        run: |
+          set -euo pipefail
+          records="${CARGO_TARGET_DIR:-target}/not-measured"
+          if [ -d "$records" ] && [ -n "$(ls -A "$records")" ]; then
+            echo "this job provisions every interpreter band it grades, yet these prerequisites were recorded as not measured:"
+            ls -1 "$records"
+            exit 1
+          fi
 
   execution-differentials:
     if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref_type == 'tag') && (github.event_name != 'workflow_dispatch' || (github.event.inputs.scope != 'clippy' && github.event.inputs.scope != 'tests'))

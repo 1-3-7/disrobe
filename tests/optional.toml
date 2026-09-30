@@ -1,4 +1,12 @@
 [optional]
+"disrobe-pass-py-decompile::cpython-3.8" = "the pinned CPython 3.8 band interpreter is provisioned only by the dedicated interpreter-band jobs, which fail when any band they provision records NOT MEASURED; the workspace test shards do not carry it"
+"disrobe-pass-py-decompile::cpython-3.9" = "the pinned CPython 3.9 band interpreter is provisioned only by the dedicated interpreter-band jobs, which fail when any band they provision records NOT MEASURED; the workspace test shards do not carry it"
+"disrobe-pass-py-decompile::cpython-3.10" = "the pinned CPython 3.10 band interpreter is provisioned only by the dedicated interpreter-band jobs, which fail when any band they provision records NOT MEASURED; the workspace test shards do not carry it"
+"disrobe-pass-py-decompile::cpython-3.11" = "the pinned CPython 3.11 band interpreter is provisioned only by the dedicated interpreter-band jobs, which fail when any band they provision records NOT MEASURED; the workspace test shards do not carry it"
+"disrobe-pass-py-decompile::cpython-3.12" = "the pinned CPython 3.12 band interpreter is provisioned only by the dedicated interpreter-band jobs, which fail when any band they provision records NOT MEASURED; the workspace test shards do not carry it"
+"disrobe-pass-py-decompile::cpython-3.13" = "the pinned CPython 3.13 band interpreter is provisioned only by the dedicated interpreter-band jobs, which fail when any band they provision records NOT MEASURED; the workspace test shards do not carry it"
+"disrobe-pass-py-decompile::cpython-3.14" = "the pinned CPython 3.14 band interpreter is provisioned only by the dedicated interpreter-band jobs, which fail when any band they provision records NOT MEASURED; the workspace test shards do not carry it"
+"disrobe-pass-py-decompile::cpython-3.15" = "the pinned CPython 3.15 band interpreter is provisioned only by the dedicated interpreter-band jobs, which fail when any band they provision records NOT MEASURED; the workspace test shards do not carry it"
 "disrobe-pass-swift-objc::host-sourced" = "the host-sourced Mach-O binaries and IPAs under corpus/mobile and corpus/mac are third-party files the repository does not redistribute, so no CI job has them"
 "disrobe-taint::graded_corpus" = "the pinned NIST SARD Juliet v1.3 corpus (153 MB) is not committed and no CI job downloads it"
 "disrobe-pass-mobile::discord-hermes-bundle" = "the production Discord Hermes bundle is proprietary third-party bytecode the repository has no right to redistribute, so CI never has it"

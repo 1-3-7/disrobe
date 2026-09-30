@@ -9,6 +9,9 @@ const PINNED_TOOLCHAIN_ACTION: &str =
     "dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0";
 const PINNED_NEXTEST_ACTION: &str =
     "taiki-e/install-action@c44f6b046f1c29ae5918b1e0bfdbb2f1813836fd";
+const NOT_MEASURED_CLEAR_STEP: &str = "clear not-measured records a restored build cache may carry";
+const NOT_MEASURED_CHECK_STEP: &str =
+    "fail when a prerequisite this job provisions was not measured";
 fn workspace_root() -> PathBuf {
     let mut root: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     root.pop();
@@ -531,31 +534,21 @@ fn ci_routes_full_coverage_to_scheduled_and_tag_runs() {
         "the Python band gate must build the optimized release CLI and all three grader binaries \
          in one feature resolution, so the grader steps compile nothing"
     );
-    for (name, requirement, target) in [
+    for (name, target) in [
         (
             "per-code-object recompile-equivalence floor (>= 95.76% on the 3.10 band)",
-            "DISROBE_REQUIRE_PY_310",
             "arbitrary_recompile_gate_310",
         ),
         (
             "per-code-object recompile-equivalence floor (>= 95.77% on the 3.12 band)",
-            "DISROBE_REQUIRE_PY_312",
             "arbitrary_recompile_gate_312",
         ),
         (
             "per-code-object recompile-equivalence floor (>= 96.06% on the 3.13 band)",
-            "DISROBE_REQUIRE_PY_313",
             "arbitrary_recompile_gate_313",
         ),
     ] {
         let step: &Value = test_step(py_band_steps, name);
-        assert_eq!(
-            step.get("env")
-                .and_then(|value: &Value| value.get(requirement))
-                .and_then(Value::as_str),
-            Some("1"),
-            "{name} must fail instead of skipping its required interpreter band"
-        );
         let expected_command: String = format!(
             "cargo test --release -p disrobe-cli -p disrobe-pass-py-decompile --test {target} -- --nocapture"
         );
@@ -563,6 +556,39 @@ fn ci_routes_full_coverage_to_scheduled_and_tag_runs() {
             step.get("run").and_then(Value::as_str),
             Some(expected_command.as_str()),
             "{name} must retain its exact independent recovery grader and reuse the release artifacts the CLI build produced"
+        );
+    }
+    for job in ["py-recompile-gate", "py-band-gate"] {
+        let steps: &Vec<Value> = jobs
+            .get(job)
+            .and_then(|value: &Value| value.get("steps"))
+            .and_then(Value::as_sequence)
+            .unwrap_or_else(|| panic!("ci.yml {job} steps"));
+        let names: Vec<&str> = steps
+            .iter()
+            .filter_map(|step: &Value| step.get("name").and_then(Value::as_str))
+            .collect();
+        let clear: Option<usize> = names
+            .iter()
+            .position(|name: &&str| *name == NOT_MEASURED_CLEAR_STEP);
+        let build: Option<usize> = names
+            .iter()
+            .position(|name: &&str| *name == "build the disrobe cli the harness drives");
+        let check: Option<usize> = names
+            .iter()
+            .position(|name: &&str| *name == NOT_MEASURED_CHECK_STEP);
+        assert!(
+            matches!((clear, build), (Some(clear), Some(build)) if clear < build)
+                && check == Some(names.len() - 1),
+            "ci.yml {job} must clear the not-measured records before building and fail in its \
+             last step when any band it provisions was recorded as not measured, so an interpreter \
+             band cannot silently skip there; its steps are {names:?}"
+        );
+        let command: &str = test_step_command(steps, NOT_MEASURED_CHECK_STEP);
+        assert!(
+            command.contains("not-measured") && command.contains("exit 1"),
+            "ci.yml {job} step `{NOT_MEASURED_CHECK_STEP}` must fail on a not-measured record, got \
+             {command:?}"
         );
     }
     let concurrency: &Value = ci.get("concurrency").expect("ci.yml concurrency");

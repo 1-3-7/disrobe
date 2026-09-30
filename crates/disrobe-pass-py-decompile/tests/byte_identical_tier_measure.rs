@@ -10,13 +10,11 @@
 
 mod common;
 
-use std::io::Write;
 use std::path::PathBuf;
 
 use common::band_gate::{
-    BandRelease, BandRequirement, CPYTHON_SERIES, FIRST_CACHED_SERIES, OPTIONAL_EVERY_BAND_VAR,
-    PINNED_MODULE_LIST, REQUIRE_EVERY_BAND_VAR, SeriesMagic, magic_hex, parse_magic,
-    requirement_from_values, resolve_band_interpreter,
+    BandRelease, CPYTHON_SERIES, FIRST_CACHED_SERIES, PINNED_MODULE_LIST, SeriesMagic, magic_hex,
+    parse_magic, resolve_band_interpreter, unmeasured,
 };
 use common::stdlib_measure::{
     HarnessRun, MEASURE_HARNESS, find_disrobe, interpreter_stdlib, interpreter_version,
@@ -144,28 +142,14 @@ fn parse_strict_measurement(stdout: &str) -> StrictMeasurement {
     }
 }
 
+const DISROBE_CLI: &str = "disrobe-pass-py-decompile::disrobe-cli";
+
 fn announce_unmeasurable(defect: &str) {
-    let blanket_require: Option<std::ffi::OsString> = std::env::var_os(REQUIRE_EVERY_BAND_VAR);
-    let blanket_optional: Option<std::ffi::OsString> = std::env::var_os(OPTIONAL_EVERY_BAND_VAR);
-    assert!(
-        requirement_from_values(
-            None,
-            blanket_require.as_deref(),
-            None,
-            blanket_optional.as_deref(),
-        ) == BandRequirement::Optional,
-        "the byte-identical and line-table tiers are mandatory unless this run declares otherwise, \
-         so they measured nothing and this case must not report success: {defect}. Set \
-         {OPTIONAL_EVERY_BAND_VAR}=1 to declare that this run knows it is skipping them."
+    unmeasured(
+        DISROBE_CLI,
+        "the byte-identical and line-table tiers",
+        &format!("a built disrobe CLI ({defect})"),
     );
-    let line: String = format!(
-        "\nNOT MEASURED: the byte-identical and line-table tiers compared nothing, because \
-         {defect}. Set {REQUIRE_EVERY_BAND_VAR}=1 to fail instead of announcing when the tiers \
-         cannot be re-derived on this machine.\n"
-    );
-    let mut sink: std::io::StdoutLock<'static> = std::io::stdout().lock();
-    drop(sink.write_all(line.as_bytes()));
-    drop(sink.flush());
 }
 
 fn required_magic(band: BandRelease) -> Option<String> {
