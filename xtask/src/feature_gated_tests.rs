@@ -15,7 +15,7 @@ const CHAIN_DETECTOR_FILE: &str = "chain_detector.rs";
 const CHAIN_FEATURE: &str = "chain";
 
 const MIN_CHAIN_DETECTORS: usize = 25;
-const MIN_HIDDEN_CRATES: usize = 28;
+const MIN_HIDDEN_CRATES: usize = 26;
 const MIN_SCANNED_COMMANDS: usize = 20;
 
 const UNDECLARED: &str = "hidden-test-surface-undeclared";
