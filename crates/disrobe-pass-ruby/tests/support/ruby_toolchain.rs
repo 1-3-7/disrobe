@@ -1,41 +1,35 @@
-use std::ffi::{OsStr, OsString};
-use std::io::{ErrorKind, Write};
+use std::ffi::OsString;
+use std::io::ErrorKind;
 use std::process::{Command, Output};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Toolchain {
     pub(crate) program: &'static str,
-    pub(crate) require_var: &'static str,
+    pub(crate) prerequisite: &'static str,
     pub(crate) install_hint: &'static str,
 }
 
 pub(crate) const MRI: Toolchain = Toolchain {
     program: "ruby",
-    require_var: "DISROBE_REQUIRE_RUBY",
+    prerequisite: "disrobe-pass-ruby::ruby",
     install_hint: "install ruby 3.4.x and put it on PATH",
 };
 
 pub(crate) const MRBC: Toolchain = Toolchain {
     program: "mrbc",
-    require_var: "DISROBE_REQUIRE_MRUBY",
+    prerequisite: "disrobe-pass-ruby::mrbc",
     install_hint: "build mruby with rake and put build/host/bin on PATH",
 };
 
 pub(crate) const MRUBY: Toolchain = Toolchain {
     program: "mruby",
-    require_var: "DISROBE_REQUIRE_MRUBY",
+    prerequisite: "disrobe-pass-ruby::mruby",
     install_hint: "build mruby with rake and put build/host/bin on PATH",
 };
 
 pub(crate) const MRI_MEASURED_SERIES: &str = "ruby 3.4";
 pub(crate) const MRI_RECOMPILE_VERSION: &str = "ruby 3.4.10 ";
 pub(crate) const MRUBY_MEASURED_SERIES: &[&str] = &["mruby 3.3.", "mruby 3.4."];
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ToolchainRequirement {
-    Optional,
-    Mandatory,
-}
 
 #[derive(Debug, Clone)]
 pub(crate) struct ToolchainBanner {
@@ -44,51 +38,15 @@ pub(crate) struct ToolchainBanner {
     pub(crate) banner: String,
 }
 
-pub(crate) fn requirement_from_value(value: Option<&OsStr>) -> ToolchainRequirement {
-    let Some(raw): Option<&OsStr> = value else {
-        return ToolchainRequirement::Optional;
-    };
-    let text: String = raw.to_string_lossy().trim().to_ascii_lowercase();
-    match text.as_str() {
-        "" | "0" | "false" | "no" | "off" | "optional" => ToolchainRequirement::Optional,
-        _ => ToolchainRequirement::Mandatory,
-    }
-}
-
-pub(crate) fn requirement(toolchain: &Toolchain) -> ToolchainRequirement {
-    let raw: Option<OsString> = std::env::var_os(toolchain.require_var);
-    requirement_from_value(raw.as_deref())
-}
-
-pub(crate) fn enforce_requirement(
-    toolchain: &Toolchain,
-    graded: &str,
-    defect: &str,
-    requirement: ToolchainRequirement,
-) {
-    assert!(
-        requirement == ToolchainRequirement::Optional,
-        "{var} makes the {program} toolchain mandatory for this run, so {graded} cannot be measured \
-         and this case must not report success: {defect}. To fix it, {hint}; to permit a run that \
-         measures nothing here, clear {var}.",
-        var = toolchain.require_var,
+pub(crate) fn unmeasured(toolchain: &Toolchain, graded: &str, defect: &str) {
+    let what: String = format!(
+        "{program} to grade {graded} ({defect}); {hint}",
         program = toolchain.program,
         hint = toolchain.install_hint,
     );
-    announce_unmeasured(toolchain, graded, defect);
-}
-
-fn announce_unmeasured(toolchain: &Toolchain, graded: &str, defect: &str) {
-    let line: String = format!(
-        "\nNOT MEASURED: {graded} was compared against nothing and graded nothing, because the \
-         {program} toolchain is not usable here ({defect}). Set {var}=1 to fail instead of skipping \
-         when {program} cannot be run.\n",
-        program = toolchain.program,
-        var = toolchain.require_var,
-    );
-    let mut sink: std::io::StdoutLock<'static> = std::io::stdout().lock();
-    drop(sink.write_all(line.as_bytes()));
-    drop(sink.flush());
+    if let Err(error) = disrobe_testkit::require::<()>(toolchain.prerequisite, &what, None) {
+        panic!("{error}");
+    }
 }
 
 fn version_output(toolchain: &Toolchain, graded: &str) -> Result<Output, String> {
@@ -113,28 +71,15 @@ fn version_output(toolchain: &Toolchain, graded: &str) -> Result<Output, String>
     }
 }
 
-pub(crate) fn require_with_requirement(
-    toolchain: &Toolchain,
-    version_marker: Option<&str>,
-    graded: &str,
-    requirement: ToolchainRequirement,
-) -> Option<ToolchainBanner> {
-    version_marker.map_or_else(
-        || require_measured_series(toolchain, &[], graded, requirement),
-        |marker: &str| require_measured_series(toolchain, &[marker], graded, requirement),
-    )
-}
-
 pub(crate) fn require_measured_series(
     toolchain: &Toolchain,
     series: &[&str],
     graded: &str,
-    requirement: ToolchainRequirement,
 ) -> Option<ToolchainBanner> {
     let output: Output = match version_output(toolchain, graded) {
         Ok(output) => output,
         Err(defect) => {
-            enforce_requirement(toolchain, graded, &defect, requirement);
+            unmeasured(toolchain, graded, &defect);
             return None;
         }
     };
@@ -145,7 +90,7 @@ pub(crate) fn require_measured_series(
              measured against",
             series.join("`, `")
         );
-        enforce_requirement(toolchain, graded, &defect, requirement);
+        unmeasured(toolchain, graded, &defect);
         return None;
     }
     Some(ToolchainBanner {
@@ -190,7 +135,7 @@ pub(crate) fn require_exact_mri_recompile(graded: &str) -> ToolchainBanner {
 }
 
 pub(crate) fn require(toolchain: &Toolchain, graded: &str) -> Option<ToolchainBanner> {
-    require_with_requirement(toolchain, None, graded, requirement(toolchain))
+    require_measured_series(toolchain, &[], graded)
 }
 
 pub(crate) fn require_version(
@@ -198,12 +143,7 @@ pub(crate) fn require_version(
     version_marker: &str,
     graded: &str,
 ) -> Option<ToolchainBanner> {
-    require_with_requirement(
-        toolchain,
-        Some(version_marker),
-        graded,
-        requirement(toolchain),
-    )
+    require_measured_series(toolchain, &[version_marker], graded)
 }
 
 pub(crate) fn require_mri(graded: &str) -> Option<ToolchainBanner> {

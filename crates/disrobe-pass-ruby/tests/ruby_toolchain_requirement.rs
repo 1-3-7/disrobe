@@ -4,20 +4,22 @@
 #[allow(clippy::redundant_pub_crate, dead_code)]
 mod ruby_toolchain;
 
-use std::ffi::OsStr;
+use std::path::PathBuf;
 
 use ruby_toolchain::{
-    MRI, MRI_MEASURED_SERIES, Toolchain, ToolchainBanner, ToolchainRequirement,
-    require_measured_series, require_with_requirement, requirement_from_value,
+    MRI, MRI_MEASURED_SERIES, MRI_RECOMPILE_VERSION, Toolchain, ToolchainBanner, require,
+    require_measured_series, require_version,
 };
 
 const ABSENT: Toolchain = Toolchain {
     program: "disrobe-ruby-interpreter-that-is-not-installed",
-    require_var: "DISROBE_REQUIRE_RUBY",
+    prerequisite: "disrobe-pass-ruby::interpreter-that-is-not-installed",
     install_hint: "nothing, this name exists only to stand in for an absent interpreter",
 };
 
 const PROOF_SUBJECT: &str = "this requirement proof";
+
+const CI_WORKFLOW: &str = ".github/workflows/ci.yml";
 
 fn panic_message(outcome: &std::thread::Result<Option<ToolchainBanner>>) -> String {
     let Err(payload): &std::thread::Result<Option<ToolchainBanner>> = outcome else {
@@ -28,74 +30,57 @@ fn panic_message(outcome: &std::thread::Result<Option<ToolchainBanner>>) -> Stri
         .map_or_else(String::new, Clone::clone)
 }
 
+fn installed_mri() -> ToolchainBanner {
+    require(&MRI, PROOF_SUBJECT).expect(
+        "tests/optional.toml must not list the MRI prerequisite, because every CI test shard \
+         provisions Ruby",
+    )
+}
+
 #[test]
-fn an_absent_interpreter_fails_the_run_when_the_variable_makes_it_mandatory() {
-    let outcome: std::thread::Result<Option<ToolchainBanner>> = std::panic::catch_unwind(|| {
-        require_with_requirement(
-            &ABSENT,
-            None,
-            PROOF_SUBJECT,
-            ToolchainRequirement::Mandatory,
-        )
-    });
+fn an_absent_interpreter_fails_the_run_by_name() {
+    let outcome: std::thread::Result<Option<ToolchainBanner>> =
+        std::panic::catch_unwind(|| require(&ABSENT, PROOF_SUBJECT));
     assert!(
         outcome.is_err(),
-        "an absent interpreter was tolerated while {} made it mandatory, which is the exact silent \
-         pass this requirement exists to remove",
-        ABSENT.require_var
+        "an absent interpreter was tolerated although tests/optional.toml does not list {}, which \
+         is the exact silent pass this requirement exists to remove",
+        ABSENT.prerequisite
     );
     let message: String = panic_message(&outcome);
-    assert!(
-        message.contains(ABSENT.require_var),
-        "the failure must name the variable that made the interpreter mandatory, got {message:?}"
-    );
-    assert!(
-        message.contains(ABSENT.program),
-        "the failure must name the interpreter it could not run, got {message:?}"
-    );
-    assert!(
-        message.contains("must not report success"),
-        "the failure must state plainly that the case cannot report success, got {message:?}"
-    );
-}
-
-#[test]
-fn an_absent_interpreter_still_skips_when_the_variable_is_unset() {
-    assert!(
-        require_with_requirement(&ABSENT, None, PROOF_SUBJECT, ToolchainRequirement::Optional)
-            .is_none(),
-        "a permitted skip must report the absence, never claim an interpreter it could not run"
-    );
-}
-
-#[test]
-fn a_version_outside_the_measured_series_fails_a_mandatory_run() {
-    let present: Option<ToolchainBanner> =
-        require_with_requirement(&MRI, None, PROOF_SUBJECT, ToolchainRequirement::Optional);
-    let Some(banner): Option<ToolchainBanner> = present else {
-        println!(
-            "NOT MEASURED: the version-series check was not exercised because {} is absent here",
-            MRI.program
+    for named in [ABSENT.prerequisite, ABSENT.program, "tests/optional.toml"] {
+        assert!(
+            message.contains(named),
+            "the failure must name `{named}`, got {message:?}"
         );
-        return;
-    };
+    }
+}
+
+#[test]
+fn an_absent_interpreter_failure_says_how_to_install_it() {
+    let outcome: std::thread::Result<Option<ToolchainBanner>> =
+        std::panic::catch_unwind(|| require(&ABSENT, PROOF_SUBJECT));
+    let message: String = panic_message(&outcome);
+    assert!(
+        message.contains(ABSENT.install_hint) && message.contains(PROOF_SUBJECT),
+        "the failure must say what it grades and how to provide the interpreter, got {message:?}"
+    );
+}
+
+#[test]
+fn a_version_outside_the_measured_series_fails_the_run() {
+    let banner: ToolchainBanner = installed_mri();
     assert!(
         banner.banner.contains(MRI_MEASURED_SERIES),
         "the installed ruby reports `{}`, which is outside the {MRI_MEASURED_SERIES} series every \
          yarv expectation in this crate was measured against",
         banner.banner
     );
-    let outcome: std::thread::Result<Option<ToolchainBanner>> = std::panic::catch_unwind(|| {
-        require_with_requirement(
-            &MRI,
-            Some("ruby 0.0"),
-            PROOF_SUBJECT,
-            ToolchainRequirement::Mandatory,
-        )
-    });
+    let outcome: std::thread::Result<Option<ToolchainBanner>> =
+        std::panic::catch_unwind(|| require_version(&MRI, "ruby 0.0", PROOF_SUBJECT));
     assert!(
         outcome.is_err(),
-        "a ruby whose banner is outside the measured series must not satisfy a mandatory run"
+        "a ruby whose banner is outside the measured series must not satisfy the requirement"
     );
     let message: String = panic_message(&outcome);
     assert!(
@@ -105,48 +90,22 @@ fn a_version_outside_the_measured_series_fails_a_mandatory_run() {
 }
 
 #[test]
-fn a_present_interpreter_satisfies_a_mandatory_run() {
-    let Some(banner): Option<ToolchainBanner> =
-        require_with_requirement(&MRI, None, PROOF_SUBJECT, ToolchainRequirement::Optional)
-    else {
-        println!(
-            "NOT MEASURED: {} is absent here, so a satisfied mandatory run could not be exercised",
-            MRI.program
-        );
-        return;
-    };
-    let mandatory: Option<ToolchainBanner> = require_with_requirement(
-        &MRI,
-        Some(MRI_MEASURED_SERIES),
-        PROOF_SUBJECT,
-        ToolchainRequirement::Mandatory,
-    );
+fn a_present_interpreter_in_the_measured_series_satisfies_the_requirement() {
+    let banner: ToolchainBanner = installed_mri();
+    let measured: Option<ToolchainBanner> =
+        require_version(&MRI, MRI_MEASURED_SERIES, PROOF_SUBJECT);
     assert_eq!(
-        mandatory.map(|found: ToolchainBanner| found.banner),
+        measured.map(|found: ToolchainBanner| found.banner),
         Some(banner.banner),
-        "a present interpreter in the measured series must satisfy a mandatory run"
+        "a present interpreter in the measured series must satisfy the requirement"
     );
 }
 
 #[test]
 fn a_series_allowlist_still_rejects_a_banner_outside_every_entry() {
-    let present: Option<ToolchainBanner> =
-        require_with_requirement(&MRI, None, PROOF_SUBJECT, ToolchainRequirement::Optional);
-    let Some(banner): Option<ToolchainBanner> = present else {
-        println!(
-            "NOT MEASURED: the series-allowlist rejection was not exercised because {} is absent \
-             here",
-            MRI.program
-        );
-        return;
-    };
+    let banner: ToolchainBanner = installed_mri();
     let outcome: std::thread::Result<Option<ToolchainBanner>> = std::panic::catch_unwind(|| {
-        require_measured_series(
-            &MRI,
-            &["ruby 0.0", "ruby 0.1"],
-            PROOF_SUBJECT,
-            ToolchainRequirement::Mandatory,
-        )
+        require_measured_series(&MRI, &["ruby 0.0", "ruby 0.1"], PROOF_SUBJECT)
     });
     assert!(
         outcome.is_err(),
@@ -161,34 +120,44 @@ fn a_series_allowlist_still_rejects_a_banner_outside_every_entry() {
             "the failure must name every series it would have accepted, got {message:?}"
         );
     }
-    let accepted: Option<ToolchainBanner> = require_measured_series(
-        &MRI,
-        &["ruby 0.0", MRI_MEASURED_SERIES],
-        PROOF_SUBJECT,
-        ToolchainRequirement::Mandatory,
-    );
+    let accepted: Option<ToolchainBanner> =
+        require_measured_series(&MRI, &["ruby 0.0", MRI_MEASURED_SERIES], PROOF_SUBJECT);
     assert_eq!(
         accepted.map(|found: ToolchainBanner| found.banner),
         Some(banner.banner),
-        "an allowlist that names the installed series must satisfy a mandatory run"
+        "an allowlist that names the installed series must satisfy the requirement"
     );
 }
 
 #[test]
-fn requirement_spellings_are_read_the_way_they_are_documented() {
-    assert_eq!(requirement_from_value(None), ToolchainRequirement::Optional);
-    for falsey in ["", " ", "0", "false", "FALSE", "no", "off", "optional"] {
-        assert_eq!(
-            requirement_from_value(Some(OsStr::new(falsey))),
-            ToolchainRequirement::Optional,
-            "{falsey:?} must not make a toolchain mandatory"
-        );
-    }
-    for truthy in ["1", "true", "yes", "on", "required", "all"] {
-        assert_eq!(
-            requirement_from_value(Some(OsStr::new(truthy))),
-            ToolchainRequirement::Mandatory,
-            "{truthy:?} must make a toolchain mandatory"
-        );
-    }
+fn the_workflow_provisions_the_ruby_release_the_recompile_oracles_pin() {
+    let path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join(CI_WORKFLOW);
+    let workflow: String = std::fs::read_to_string(&path).unwrap_or_else(|error: std::io::Error| {
+        panic!(
+            "{CI_WORKFLOW} provisions the Ruby every recompile oracle requires, so its absence is \
+             a damaged checkout: {error} ({})",
+            path.display()
+        )
+    });
+    let pinned: &str = MRI_RECOMPILE_VERSION
+        .trim()
+        .strip_prefix("ruby ")
+        .expect("the recompile pin names a ruby release");
+    let provisioned: Vec<&str> = workflow
+        .lines()
+        .filter_map(|line: &str| line.trim().strip_prefix("ruby-version:"))
+        .map(|value: &str| value.trim().trim_matches('"'))
+        .collect();
+    assert!(
+        !provisioned.is_empty(),
+        "{CI_WORKFLOW} no longer sets up Ruby, so every test that requires it would fail in CI"
+    );
+    assert!(
+        provisioned.iter().all(|version: &&str| *version == pinned),
+        "{CI_WORKFLOW} provisions Ruby {provisioned:?} but the recompile oracles are pinned to \
+         {pinned}, so CI would grade against a release the expectations were not measured with"
+    );
 }

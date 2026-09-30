@@ -532,13 +532,11 @@ jobs:
         run: |
           demand() {
             probe="$1"
-            var="$2"
             if ! command -v "$probe" >/dev/null 2>&1; then
-              echo "$probe is expected on $RUNNER_OS but is not callable, so the tests behind $var would grade nothing"
+              echo "$probe is expected on $RUNNER_OS but is not callable, so the tests that require it would fail"
               exit 1
             fi
             ("$probe" --version 2>&1 || true) | head -1
-            echo "$var=1" >> "$GITHUB_ENV"
           }
           if ! command -v perl >/dev/null 2>&1; then
             echo "perl is expected on $RUNNER_OS but is not callable, so the op-tree tests behind DISROBE_REQUIRE_PERL would grade nothing"
@@ -548,7 +546,7 @@ jobs:
             echo "perl is callable on $RUNNER_OS but its B::Concise module is not, so the op-tree differential would grade nothing"
             exit 1
           fi
-          demand ruby DISROBE_REQUIRE_RUBY
+          demand ruby
           if [ "$RUNNER_OS" != "macOS" ]; then
             seven=""
             seven_candidates=(7z 7za 7zz 7zr)
@@ -1410,8 +1408,6 @@ jobs:
           path: ${{ runner.temp }}/yarv-evidence
           retention-days: 14
       - name: mruby 3.3.0 recompile and execution differential
-        env:
-          DISROBE_REQUIRE_MRUBY: "1"
         run: cargo test -p disrobe-pass-ruby --test mruby_recompile_oracle -- --nocapture
       - name: mruby opcode table graded against the installed ops.h
         run: cargo test -p disrobe-pass-ruby --test mruby_isa_coverage -- --nocapture

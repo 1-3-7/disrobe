@@ -10,8 +10,7 @@ use std::process::Command;
 use disrobe_core::scratch::ScratchFile;
 use disrobe_pass_ruby::{MrubyDecompiled, analyze_bytes};
 use ruby_toolchain::{
-    MRBC, MRUBY, MRUBY_MEASURED_SERIES, ToolchainBanner, ToolchainRequirement,
-    require_measured_series,
+    MRBC, MRUBY, MRUBY_MEASURED_SERIES, ToolchainBanner, require_measured_series,
 };
 
 const GRADED: &str = "the mrbc recompile and mruby output comparison over the breadth corpus";
@@ -440,12 +439,8 @@ fn a_keyword_signature_the_lifter_cannot_spell_is_refused_not_guessed() {
 
 #[test]
 fn redo_carries_no_value_in_the_mruby_grammar() {
-    let mrbc: Option<ToolchainBanner> = require_measured_series(
-        &MRBC,
-        MRUBY_MEASURED_SERIES,
-        GRADED,
-        ToolchainRequirement::Mandatory,
-    );
+    let mrbc: Option<ToolchainBanner> =
+        require_measured_series(&MRBC, MRUBY_MEASURED_SERIES, GRADED);
     assert!(mrbc.is_some(), "the pinned mrbc probe must succeed");
 
     let (_bare_scratch, bare_path): (ScratchFile, PathBuf) = write_temp(
@@ -469,12 +464,8 @@ fn redo_carries_no_value_in_the_mruby_grammar() {
 
 #[test]
 fn stdout_comparator_rejects_a_changed_real_mruby_program() {
-    let mruby: Option<ToolchainBanner> = require_measured_series(
-        &MRUBY,
-        MRUBY_MEASURED_SERIES,
-        GRADED,
-        ToolchainRequirement::Mandatory,
-    );
+    let mruby: Option<ToolchainBanner> =
+        require_measured_series(&MRUBY, MRUBY_MEASURED_SERIES, GRADED);
     assert!(mruby.is_some(), "the pinned mruby probe must succeed");
 
     let original_path: PathBuf = corpus_path("strings", "rb");
@@ -503,18 +494,10 @@ fn stdout_comparator_rejects_a_changed_real_mruby_program() {
 
 #[test]
 fn mrbc_recompile_and_semantic_equivalence_oracle() {
-    let mrbc: Option<ToolchainBanner> = require_measured_series(
-        &MRBC,
-        MRUBY_MEASURED_SERIES,
-        GRADED,
-        ToolchainRequirement::Mandatory,
-    );
-    let mruby: Option<ToolchainBanner> = require_measured_series(
-        &MRUBY,
-        MRUBY_MEASURED_SERIES,
-        GRADED,
-        ToolchainRequirement::Mandatory,
-    );
+    let mrbc: Option<ToolchainBanner> =
+        require_measured_series(&MRBC, MRUBY_MEASURED_SERIES, GRADED);
+    let mruby: Option<ToolchainBanner> =
+        require_measured_series(&MRUBY, MRUBY_MEASURED_SERIES, GRADED);
     assert!(
         mrbc.is_some() && mruby.is_some(),
         "the mandatory mrbc and mruby toolchain probes must both succeed"

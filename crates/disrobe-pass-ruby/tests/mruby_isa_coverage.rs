@@ -16,9 +16,7 @@ use disrobe_pass_ruby::{
     IrepRecord, IrepTree, MrubyAnalysis, MrubyInstruction, RubyAnalysis, analyze_bytes,
     disassemble_iseq,
 };
-use ruby_toolchain::{
-    MRBC, MRUBY_MEASURED_SERIES, ToolchainBanner, ToolchainRequirement, require_measured_series,
-};
+use ruby_toolchain::{MRBC, MRUBY_MEASURED_SERIES, ToolchainBanner, require_measured_series};
 
 const GRADED: &str =
     "the mruby instruction-set coverage ledger graded against the installed mruby ops.h";
@@ -395,13 +393,8 @@ fn resolve_printed(
 }
 
 fn require_mrbc() -> ToolchainBanner {
-    require_measured_series(
-        &MRBC,
-        MRUBY_MEASURED_SERIES,
-        GRADED,
-        ToolchainRequirement::Mandatory,
-    )
-    .expect("the mandatory mrbc probe must succeed")
+    require_measured_series(&MRBC, MRUBY_MEASURED_SERIES, GRADED)
+        .expect("the mandatory mrbc probe must succeed")
 }
 
 fn compile(name: &str, source: &str) -> (ScratchFile, ScratchFile, PathBuf, String) {
