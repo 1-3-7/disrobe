@@ -1,0 +1,56 @@
+schema = 1
+generated = "2026-09-29"
+description = "Layered VBScript Execute and ExecuteGlobal samples, each built from a self-authored plain script under plain/. The build keeps the non-blank lines of the source as statements, joins each group of `groups` consecutive statements with \" : \" into one payload, then applies `layers` innermost first, every layer wrapping the payload in a `call` of the named form. Statements past the groups stay verbatim. The disrobe-pass-shell test vbs_expression_oracle rebuilds every layered file from its source and fails when the committed bytes differ, then grades disrobe's unwrapped output against its in-process VBScript reference interpreter."
+
+[layers]
+literal = "call(\"payload\"), quotes in the payload doubled"
+strreverse = "call(StrReverse(\"reversed payload\")), quotes doubled"
+chr = "call(Chr(c1) & Chr(c2) & ...), one Chr per payload character; printable ASCII only"
+
+[samples.execute_strreverse]
+source = "plain/greeting.vbs"
+layered = "layered/execute_strreverse.vbs"
+call = "Execute"
+groups = [5]
+layers = ["strreverse"]
+description = "the whole script behind one Execute(StrReverse(...)); the payload holds doubled quotes and a Chr call"
+
+[samples.execute_chr]
+source = "plain/arithmetic.vbs"
+layered = "layered/execute_chr.vbs"
+call = "Execute"
+groups = [5]
+layers = ["chr"]
+description = "the whole script as one Execute of a Chr(..) & Chr(..) chain"
+
+[samples.nested_two]
+source = "plain/two_deep.vbs"
+layered = "layered/nested_two.vbs"
+call = "Execute"
+groups = [3]
+layers = ["chr", "strreverse"]
+description = "Execute two deep: an Execute(StrReverse(...)) whose body is an Execute of a Chr chain"
+
+[samples.nested_three]
+source = "plain/three_deep.vbs"
+layered = "layered/nested_three.vbs"
+call = "Execute"
+groups = [5]
+layers = ["strreverse", "chr", "literal"]
+description = "Execute three deep: a literal Execute around a Chr chain around an Execute(StrReverse(...)); one layer past the static depth cap"
+
+[samples.executeglobal_defines]
+source = "plain/global_define.vbs"
+layered = "layered/executeglobal_defines.vbs"
+call = "ExecuteGlobal"
+groups = [2]
+layers = ["chr"]
+description = "ExecuteGlobal of a Chr chain declares and assigns a variable that the verbatim statements after it read"
+
+[samples.execute_each_statement]
+source = "plain/siblings.vbs"
+layered = "layered/execute_each_statement.vbs"
+call = "Execute"
+groups = [1, 1, 1]
+layers = ["strreverse"]
+description = "three sibling Execute(StrReverse(...)) statements at depth one sharing one variable"

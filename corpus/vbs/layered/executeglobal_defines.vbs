@@ -1,0 +1,3 @@
+ExecuteGlobal(Chr(68) & Chr(105) & Chr(109) & Chr(32) & Chr(115) & Chr(101) & Chr(99) & Chr(114) & Chr(101) & Chr(116) & Chr(32) & Chr(58) & Chr(32) & Chr(115) & Chr(101) & Chr(99) & Chr(114) & Chr(101) & Chr(116) & Chr(32) & Chr(61) & Chr(32) & Chr(34) & Chr(115) & Chr(34) & Chr(32) & Chr(38) & Chr(32) & Chr(67) & Chr(104) & Chr(114) & Chr(40) & Chr(53) & Chr(49) & Chr(41) & Chr(32) & Chr(38) & Chr(32) & Chr(34) & Chr(99) & Chr(114) & Chr(34) & Chr(32) & Chr(38) & Chr(32) & Chr(67) & Chr(104) & Chr(114) & Chr(40) & Chr(53) & Chr(49) & Chr(41) & Chr(32) & Chr(38) & Chr(32) & Chr(34) & Chr(116) & Chr(34))
+WScript.Echo "secret is " & secret
+MsgBox Len(secret) * 2

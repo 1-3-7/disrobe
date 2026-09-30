@@ -1,6 +1,9 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
-use disrobe_pass_shell::vba::vbs::{VbsReport, deobfuscate_vbs};
+use disrobe_pass_shell::DynamicPolicy;
+use disrobe_pass_shell::vba::vbs::{VbsReport, deobfuscate_vbs, deobfuscate_vbs_with_policy};
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Value {
@@ -19,6 +22,7 @@ enum Token {
 
 const MAX_OUTPUT_CHARS: usize = 1 << 16;
 const MAX_DEPTH: usize = 64;
+const MAX_EXECUTE_DEPTH: usize = 8;
 
 const WINDOWS_1252_HIGH: [u32; 32] = [
     0x20AC, 0, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, 0x02C6, 0x2030, 0x0160, 0x2039,
@@ -33,7 +37,8 @@ fn lex(text: &str) -> Result<Vec<Token>, String> {
     while i < chars.len() {
         let c: char = chars[i];
         match c {
-            ' ' | '\t' => i += 1,
+            ' ' | '\t' | '\r' => i += 1,
+            '\'' => break,
             '"' => {
                 let mut value: String = String::new();
                 i += 1;
@@ -99,7 +104,7 @@ fn lex(text: &str) -> Result<Vec<Token>, String> {
                 tokens.push(Token::IntDiv);
                 i += 1;
             }
-            '&' | '+' | '-' | '*' | '/' | '^' | '(' | ')' | ',' => {
+            '&' | '+' | '-' | '*' | '/' | '^' | '(' | ')' | ',' | '=' | '.' | ':' => {
                 tokens.push(Token::Op(c));
                 i += 1;
             }
@@ -109,13 +114,14 @@ fn lex(text: &str) -> Result<Vec<Token>, String> {
     Ok(tokens)
 }
 
-struct Parser {
+struct Parser<'v> {
     tokens: Vec<Token>,
     at: usize,
     depth: usize,
+    variables: &'v BTreeMap<String, Value>,
 }
 
-impl Parser {
+impl Parser<'_> {
     fn peek(&self) -> Option<&Token> {
         self.tokens.get(self.at)
     }
@@ -253,8 +259,14 @@ impl Parser {
             }
             Some(Token::Ident(name)) => {
                 self.at += 1;
-                let args: Vec<Value> = self.arguments()?;
-                call(&name, &args)
+                if self.peek() == Some(&Token::Op('(')) {
+                    let args: Vec<Value> = self.arguments()?;
+                    return call(&name, &args);
+                }
+                self.variables
+                    .get(&name)
+                    .cloned()
+                    .ok_or_else(|| format!("variable {name} is read before it is assigned"))
             }
             other => Err(format!("unexpected token {other:?}")),
         }
@@ -392,10 +404,12 @@ fn call(name: &str, args: &[Value]) -> Result<Value, String> {
 }
 
 fn evaluate(expression: &str) -> Result<Value, String> {
+    let variables: BTreeMap<String, Value> = BTreeMap::new();
     let mut parser: Parser = Parser {
         tokens: lex(expression)?,
         at: 0,
         depth: 0,
+        variables: &variables,
     };
     let value: Value = parser.concatenation()?;
     if parser.at != parser.tokens.len() {
@@ -548,5 +562,530 @@ fn an_unwrapped_execute_runs_exactly_the_string_its_argument_evaluates_to() {
         let report: VbsReport = deobfuscate_vbs(&format!("Execute({argument})"));
         assert_eq!(report.execute_unwraps, 1, "{argument:?}: {}", report.output);
         assert_eq!(report.output, expected, "{argument:?}");
+    }
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Behaviour {
+    outputs: Vec<Vec<String>>,
+    executes: usize,
+}
+
+#[derive(Debug, Default)]
+struct Interpreter {
+    variables: BTreeMap<String, Value>,
+    declared: BTreeSet<String>,
+    behaviour: Behaviour,
+}
+
+fn describe(token: &Token) -> String {
+    match token {
+        Token::Ident(name) => name.clone(),
+        other => format!("{other:?}"),
+    }
+}
+
+impl Interpreter {
+    fn program(&mut self, text: &str, depth: usize) -> Result<(), String> {
+        for line in text.lines() {
+            let tokens: Vec<Token> = lex(line)?;
+            for statement in tokens.split(|token: &Token| *token == Token::Op(':')) {
+                self.statement(statement, depth)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn parser(&self, tokens: &[Token]) -> Parser<'_> {
+        Parser {
+            tokens: tokens.to_vec(),
+            at: 0,
+            depth: 0,
+            variables: &self.variables,
+        }
+    }
+
+    fn expression(&self, tokens: &[Token]) -> Result<Value, String> {
+        let mut parser: Parser<'_> = self.parser(tokens);
+        let value: Value = parser.concatenation()?;
+        if let Some(token) = parser.peek() {
+            return Err(format!(
+                "{} after an expression is outside the evaluated subset",
+                describe(token)
+            ));
+        }
+        Ok(value)
+    }
+
+    fn arguments(&self, tokens: &[Token]) -> Result<Vec<String>, String> {
+        let mut parser: Parser<'_> = self.parser(tokens);
+        let mut arguments: Vec<String> = Vec::new();
+        if tokens.is_empty() {
+            return Ok(arguments);
+        }
+        loop {
+            arguments.push(as_text(&parser.concatenation()?));
+            match parser.peek() {
+                None => return Ok(arguments),
+                Some(Token::Op(',')) => parser.at += 1,
+                Some(token) => {
+                    return Err(format!(
+                        "{} between arguments is outside the evaluated subset",
+                        describe(token)
+                    ));
+                }
+            }
+        }
+    }
+
+    fn statement(&mut self, tokens: &[Token], depth: usize) -> Result<(), String> {
+        match tokens {
+            [] => Ok(()),
+            [Token::Ident(keyword), names @ ..] if keyword == "dim" => self.declare(names),
+            [
+                Token::Ident(object),
+                Token::Op('.'),
+                Token::Ident(method),
+                arguments @ ..,
+            ] if object == "wscript" && method == "echo" => self.output(arguments),
+            [Token::Ident(keyword), arguments @ ..] if keyword == "msgbox" => {
+                self.output(arguments)
+            }
+            [Token::Ident(keyword), argument @ ..]
+                if keyword == "execute" || keyword == "executeglobal" =>
+            {
+                let body: String = as_text(&self.expression(argument)?);
+                if depth >= MAX_EXECUTE_DEPTH {
+                    return Err(format!("{keyword} nests deeper than {MAX_EXECUTE_DEPTH}"));
+                }
+                self.behaviour.executes += 1;
+                self.program(&body, depth + 1)
+            }
+            [Token::Ident(name), Token::Op('='), expression @ ..] => {
+                let value: Value = self.expression(expression)?;
+                self.variables.insert(name.clone(), value);
+                Ok(())
+            }
+            [first, ..] => Err(format!(
+                "statement starting {} is outside the evaluated subset",
+                describe(first)
+            )),
+        }
+    }
+
+    fn declare(&mut self, names: &[Token]) -> Result<(), String> {
+        if names.len().is_multiple_of(2) {
+            return Err("Dim needs a name after every comma".to_owned());
+        }
+        for (index, token) in names.iter().enumerate() {
+            match (index % 2, token) {
+                (0, Token::Ident(name)) => {
+                    if !self.declared.insert(name.clone()) {
+                        return Err(format!("Dim {name} redefines a declared name"));
+                    }
+                }
+                (1, Token::Op(',')) => {}
+                (_, other) => {
+                    return Err(format!(
+                        "Dim of {} is outside the evaluated subset",
+                        describe(other)
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn output(&mut self, arguments: &[Token]) -> Result<(), String> {
+        let recorded: Vec<String> = self.arguments(arguments)?;
+        self.behaviour.outputs.push(recorded);
+        Ok(())
+    }
+}
+
+fn behaviour(program: &str) -> Result<Behaviour, String> {
+    let mut interpreter: Interpreter = Interpreter::default();
+    interpreter.program(program, 0)?;
+    Ok(interpreter.behaviour)
+}
+
+#[derive(Debug)]
+enum Verdict {
+    Refused {
+        program: &'static str,
+        reason: String,
+    },
+    Differs {
+        original: Vec<Vec<String>>,
+        recovered: Vec<Vec<String>>,
+    },
+}
+
+impl std::fmt::Display for Verdict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Refused { program, reason } => {
+                write!(f, "the reference refuses the {program} program: {reason}")
+            }
+            Self::Differs {
+                original,
+                recovered,
+            } => write!(
+                f,
+                "the recorded outputs differ: original {original:?}, recovered {recovered:?}"
+            ),
+        }
+    }
+}
+
+fn grade(original: &str, recovered: &str) -> Result<Behaviour, Verdict> {
+    let expected: Behaviour = behaviour(original).map_err(|reason: String| Verdict::Refused {
+        program: "original",
+        reason,
+    })?;
+    let actual: Behaviour = behaviour(recovered).map_err(|reason: String| Verdict::Refused {
+        program: "recovered",
+        reason,
+    })?;
+    if actual.outputs != expected.outputs {
+        return Err(Verdict::Differs {
+            original: expected.outputs,
+            recovered: actual.outputs,
+        });
+    }
+    Ok(actual)
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Layer {
+    Literal,
+    StrReverse,
+    Chr,
+}
+
+impl Layer {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Literal => "literal",
+            Self::StrReverse => "strreverse",
+            Self::Chr => "chr",
+        }
+    }
+
+    fn wrap(self, call: &str, payload: &str) -> String {
+        match self {
+            Self::Literal => format!("{call}({})", vbs_literal(payload)),
+            Self::StrReverse => format!(
+                "{call}(StrReverse({}))",
+                vbs_literal(&payload.chars().rev().collect::<String>())
+            ),
+            Self::Chr => {
+                let codes: Vec<String> = payload
+                    .chars()
+                    .map(|c: char| {
+                        assert!(
+                            c == ' ' || c.is_ascii_graphic(),
+                            "the chr layer encodes printable ASCII only, found {c:?}"
+                        );
+                        format!("Chr({})", u32::from(c))
+                    })
+                    .collect();
+                format!("{call}({})", codes.join(" & "))
+            }
+        }
+    }
+}
+
+fn vbs_literal(text: &str) -> String {
+    format!("\"{}\"", text.replace('"', "\"\""))
+}
+
+struct Sample {
+    name: &'static str,
+    source: &'static str,
+    call: &'static str,
+    groups: &'static [usize],
+    layers: &'static [Layer],
+}
+
+const SAMPLES: [Sample; 6] = [
+    Sample {
+        name: "execute_strreverse",
+        source: "greeting.vbs",
+        call: "Execute",
+        groups: &[5],
+        layers: &[Layer::StrReverse],
+    },
+    Sample {
+        name: "execute_chr",
+        source: "arithmetic.vbs",
+        call: "Execute",
+        groups: &[5],
+        layers: &[Layer::Chr],
+    },
+    Sample {
+        name: "nested_two",
+        source: "two_deep.vbs",
+        call: "Execute",
+        groups: &[3],
+        layers: &[Layer::Chr, Layer::StrReverse],
+    },
+    Sample {
+        name: "nested_three",
+        source: "three_deep.vbs",
+        call: "Execute",
+        groups: &[5],
+        layers: &[Layer::StrReverse, Layer::Chr, Layer::Literal],
+    },
+    Sample {
+        name: "executeglobal_defines",
+        source: "global_define.vbs",
+        call: "ExecuteGlobal",
+        groups: &[2],
+        layers: &[Layer::Chr],
+    },
+    Sample {
+        name: "execute_each_statement",
+        source: "siblings.vbs",
+        call: "Execute",
+        groups: &[1, 1, 1],
+        layers: &[Layer::StrReverse],
+    },
+];
+
+fn read_corpus(relative: &str) -> String {
+    let path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../corpus/vbs")
+        .join(relative);
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+        .replace("\r\n", "\n")
+}
+
+fn build(sample: &Sample, source: &str) -> String {
+    let statements: Vec<&str> = source
+        .lines()
+        .filter(|line: &&str| !line.trim().is_empty())
+        .collect();
+    let mut lines: Vec<String> = Vec::new();
+    let mut at: usize = 0;
+    for size in sample.groups {
+        let group: &[&str] = statements.get(at..at + size).unwrap_or_else(|| {
+            panic!("{} groups more statements than its source has", sample.name)
+        });
+        let mut text: String = group.join(" : ");
+        for layer in sample.layers {
+            text = layer.wrap(sample.call, &text);
+        }
+        lines.push(text);
+        at += size;
+    }
+    lines.extend(
+        statements[at..]
+            .iter()
+            .map(|line: &&str| (*line).to_owned()),
+    );
+    lines.join("\n") + "\n"
+}
+
+fn manifest_entry(sample: &Sample) -> String {
+    let groups: Vec<String> = sample.groups.iter().map(usize::to_string).collect();
+    let layers: Vec<String> = sample
+        .layers
+        .iter()
+        .map(|layer: &Layer| format!("\"{}\"", layer.name()))
+        .collect();
+    format!(
+        "[samples.{}]\nsource = \"plain/{}\"\nlayered = \"layered/{}.vbs\"\ncall = \"{}\"\ngroups = [{}]\nlayers = [{}]\n",
+        sample.name,
+        sample.source,
+        sample.name,
+        sample.call,
+        groups.join(", "),
+        layers.join(", ")
+    )
+}
+
+#[test]
+fn the_statement_reference_follows_vbscript_rules() {
+    let cases: [(&str, &str, usize); 5] = [
+        (
+            "Dim a : a = \"x\" : WScript.Echo a, 1 + 2",
+            r#"[["x", "3"]]"#,
+            0,
+        ),
+        (
+            "ExecuteGlobal \"Dim g : g = 5\"\nMsgBox g * 2",
+            r#"[["10"]]"#,
+            1,
+        ),
+        ("Execute(\"MsgBox \"\"a:b\"\" ' tail\")", r#"[["a:b"]]"#, 1),
+        (
+            "wscript.ECHO StrReverse(\"cba\") ' Execute \"x\"\nWScript.Echo",
+            r#"[["abc"], []]"#,
+            0,
+        ),
+        (
+            "x = 1 : Execute \"x = x + 1 : Execute \"\"x = x * 10\"\"\" : MsgBox x",
+            r#"[["20"]]"#,
+            2,
+        ),
+    ];
+    for (program, outputs, executes) in cases {
+        let run: Behaviour =
+            behaviour(program).unwrap_or_else(|e| panic!("reference refuses {program:?}: {e}"));
+        assert_eq!(format!("{:?}", run.outputs), outputs, "{program:?}");
+        assert_eq!(run.executes, executes, "{program:?}");
+    }
+}
+
+#[test]
+fn the_statement_reference_refuses_unknown_constructs_by_name() {
+    let mut too_deep: String = "MsgBox 1".to_owned();
+    for _ in 0..=MAX_EXECUTE_DEPTH {
+        too_deep = Layer::Literal.wrap("Execute", &too_deep);
+    }
+    let cases: [(&str, &str); 8] = [
+        ("If 1 Then MsgBox 1", "statement starting if"),
+        ("Set o = Nothing", "statement starting set"),
+        ("Sub f : End Sub", "statement starting sub"),
+        ("MsgBox missing", "variable missing is read before"),
+        ("Dim a : Dim a", "Dim a redefines"),
+        (
+            "WScript.Echo CreateObject(\"x\")",
+            "createobject is outside the evaluated subset",
+        ),
+        ("x = 1.5", "Op('.') after an expression"),
+        (&too_deep, "execute nests deeper than 8"),
+    ];
+    for (program, reason) in cases {
+        let refusal: String = match behaviour(program) {
+            Ok(accepted) => format!("accepted with {accepted:?}"),
+            Err(reason) => reason,
+        };
+        assert!(
+            refusal.contains(reason),
+            "{program:?} must be refused with {reason:?}, got {refusal:?}"
+        );
+    }
+}
+
+#[test]
+fn layered_samples_rebuild_from_their_plain_scripts() {
+    let manifest: String = read_corpus("MANIFEST.toml");
+    let mut expected: BTreeSet<String> = BTreeSet::new();
+    for sample in &SAMPLES {
+        let source: String = read_corpus(&format!("plain/{}", sample.source));
+        let layered: String = read_corpus(&format!("layered/{}.vbs", sample.name));
+        assert_eq!(
+            build(sample, &source),
+            layered,
+            "layered/{}.vbs is not the recorded build of plain/{}",
+            sample.name,
+            sample.source
+        );
+        let entry: String = manifest_entry(sample);
+        assert!(
+            manifest.contains(&entry),
+            "MANIFEST.toml must record the build:\n{entry}"
+        );
+        expected.insert(format!("{}.vbs", sample.name));
+    }
+    let directory: PathBuf =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../corpus/vbs/layered");
+    let committed: BTreeSet<String> = std::fs::read_dir(&directory)
+        .unwrap_or_else(|e| panic!("{}: {e}", directory.display()))
+        .map(|entry: std::io::Result<std::fs::DirEntry>| {
+            entry
+                .unwrap_or_else(|e| panic!("{}: {e}", directory.display()))
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    assert_eq!(committed, expected, "every layered sample must be graded");
+}
+
+#[test]
+fn unwrapped_execute_bodies_behave_like_the_original() {
+    for sample in &SAMPLES {
+        let source: String = read_corpus(&format!("plain/{}", sample.source));
+        let layered: String = read_corpus(&format!("layered/{}.vbs", sample.name));
+        let plain: Behaviour = behaviour(&source)
+            .unwrap_or_else(|e| panic!("reference refuses plain/{}: {e}", sample.source));
+        assert!(
+            !plain.outputs.is_empty(),
+            "{} records no output",
+            sample.name
+        );
+        assert_eq!(
+            plain.executes, 0,
+            "plain/{} must not Execute",
+            sample.source
+        );
+        let original: Behaviour = grade(&source, &layered)
+            .unwrap_or_else(|v: Verdict| panic!("{} build changed behaviour: {v}", sample.name));
+        let layers: usize = sample.layers.len();
+        let total: usize = sample.groups.len() * layers;
+        assert_eq!(original.executes, total, "{}", sample.name);
+        for policy in [DynamicPolicy::StaticOnly, DynamicPolicy::AllowDynamic] {
+            let report: VbsReport = deobfuscate_vbs_with_policy(&layered, policy);
+            let recovered: Behaviour =
+                grade(&layered, &report.output).unwrap_or_else(|v: Verdict| {
+                    panic!(
+                        "{} under {policy:?}: {v}\nrecovered:\n{}",
+                        sample.name, report.output
+                    )
+                });
+            let remaining: usize =
+                sample.groups.len() * layers.saturating_sub(policy.max_eval_depth());
+            assert_eq!(
+                recovered.executes, remaining,
+                "{} under {policy:?} left the wrong number of Execute layers:\n{}",
+                sample.name, report.output
+            );
+            assert_eq!(
+                report.execute_unwraps,
+                total - remaining,
+                "{} under {policy:?}",
+                sample.name
+            );
+            assert_eq!(
+                report.walls.is_empty(),
+                remaining == 0,
+                "{} under {policy:?}: {:?}",
+                sample.name,
+                report.walls
+            );
+        }
+    }
+}
+
+#[test]
+fn the_grade_rejects_a_fold_that_reverses_the_wrong_segment() {
+    let sample: &Sample = &SAMPLES[0];
+    let layered: String = read_corpus(&format!("layered/{}.vbs", sample.name));
+    let recovered: String = deobfuscate_vbs(&layered).output;
+    let open: usize = recovered
+        .find('"')
+        .expect("the recovered body holds a literal");
+    let close: usize = open
+        + 1
+        + recovered[open + 1..]
+            .find('"')
+            .expect("the literal is terminated");
+    let segment: String = recovered[open + 1..close].chars().rev().collect();
+    let mutated: String = format!("{}{segment}{}", &recovered[..=open], &recovered[close..]);
+    assert_ne!(
+        mutated, recovered,
+        "the mutation must change the recovered text"
+    );
+    assert!(grade(&layered, &recovered).is_ok());
+    match grade(&layered, &mutated) {
+        Err(Verdict::Differs {
+            original: before,
+            recovered: after,
+        }) => assert_ne!(before, after),
+        other => panic!("the grade must reject the wrong segment reversal, got {other:?}"),
     }
 }

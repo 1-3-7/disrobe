@@ -127,74 +127,111 @@ pub fn deobfuscate_vbs(input: &str) -> VbsReport {
 
 #[must_use]
 pub fn deobfuscate_vbs_with_policy(input: &str, policy: DynamicPolicy) -> VbsReport {
-    let mut chr_subs: usize = 0;
-    let spans: Vec<(Range<usize>, Lexeme)> = lexemes(input);
-    let mut current: String = CHR_CALL
-        .replace_all(input, |c: &regex::Captures<'_>| {
-            let whole: Option<regex::Match<'_>> = c.get(0);
-            if !whole.is_some_and(|m: regex::Match<'_>| in_code(&spans, m.start())) {
-                return whole.map_or_else(String::new, |m: regex::Match<'_>| m.as_str().to_owned());
-            }
-            let folded: Option<char> = c
-                .get(2)
-                .and_then(|m: regex::Match<'_>| m.as_str().parse::<u32>().ok())
-                .and_then(|n: u32| chr_value(c.get(1).map(|m: regex::Match<'_>| m.as_str()), n));
-            let Some(ch) = folded else {
-                return whole.map_or_else(String::new, |m: regex::Match<'_>| m.as_str().to_owned());
-            };
-            chr_subs += 1;
-            vbs_literal(&ch.to_string())
-        })
-        .into_owned();
-    current = fold_literal_concatenation(&current);
-    let mut rev_subs: usize = 0;
-    let spans: Vec<(Range<usize>, Lexeme)> = lexemes(&current);
-    current = STRREVERSE
-        .replace_all(&current, |c: &regex::Captures<'_>| {
-            let whole: Option<regex::Match<'_>> = c.get(0);
-            if !whole.is_some_and(|m: regex::Match<'_>| in_code(&spans, m.start())) {
-                return whole.map_or_else(String::new, |m: regex::Match<'_>| m.as_str().to_owned());
-            }
-            rev_subs += 1;
-            let body: &str = c.get(1).map_or("", |m: regex::Match<'_>| m.as_str());
-            vbs_literal(&body.replace("\"\"", "\"").chars().rev().collect::<String>())
-        })
-        .into_owned();
-    let mut exec_subs: usize = 0;
-    let mut eval_depth: usize = 0;
-    let mut walls: Vec<String> = Vec::new();
-    loop {
-        let spans: Vec<(Range<usize>, Lexeme)> = lexemes(&current);
-        let Some((call, body)): Option<(Range<usize>, String)> = EXECUTE
-            .captures_iter(&current)
-            .find_map(|c: regex::Captures<'_>| {
-                let call: regex::Match<'_> = c.get(2)?;
-                let body: regex::Match<'_> = c.get(3)?;
-                in_code(&spans, call.start())
-                    .then(|| (call.range(), body.as_str().replace("\"\"", "\"")))
-            })
-        else {
-            break;
-        };
-        let next_depth: usize = eval_depth + 1;
-        if !policy.permits_depth(next_depth) {
-            walls.push(format!(
-                "Execute depth {next_depth} exceeds static cap {}; re-run with --allow-dynamic to unwrap further",
-                policy.max_eval_depth()
-            ));
-            break;
-        }
-        exec_subs += 1;
-        current.replace_range(call, &body);
-        eval_depth = next_depth;
-    }
+    let mut unwrapping: Unwrapping = Unwrapping {
+        policy,
+        chr_substitutions: 0,
+        strreverse_unwraps: 0,
+        execute_unwraps: 0,
+        eval_depth: 0,
+        walls: Vec::new(),
+    };
+    let output: String = unwrapping.unwrap(input, 0);
     VbsReport {
-        chr_substitutions: chr_subs,
-        strreverse_unwraps: rev_subs,
-        execute_unwraps: exec_subs,
-        eval_depth,
-        walls,
-        output: current,
+        chr_substitutions: unwrapping.chr_substitutions,
+        strreverse_unwraps: unwrapping.strreverse_unwraps,
+        execute_unwraps: unwrapping.execute_unwraps,
+        eval_depth: unwrapping.eval_depth,
+        walls: unwrapping.walls,
+        output,
+    }
+}
+
+struct Unwrapping {
+    policy: DynamicPolicy,
+    chr_substitutions: usize,
+    strreverse_unwraps: usize,
+    execute_unwraps: usize,
+    eval_depth: usize,
+    walls: Vec<String>,
+}
+
+impl Unwrapping {
+    fn fold(&mut self, input: &str) -> String {
+        let spans: Vec<(Range<usize>, Lexeme)> = lexemes(input);
+        let mut chr_subs: usize = 0;
+        let current: String = CHR_CALL
+            .replace_all(input, |c: &regex::Captures<'_>| {
+                let whole: Option<regex::Match<'_>> = c.get(0);
+                if !whole.is_some_and(|m: regex::Match<'_>| in_code(&spans, m.start())) {
+                    return whole
+                        .map_or_else(String::new, |m: regex::Match<'_>| m.as_str().to_owned());
+                }
+                let folded: Option<char> = c
+                    .get(2)
+                    .and_then(|m: regex::Match<'_>| m.as_str().parse::<u32>().ok())
+                    .and_then(|n: u32| {
+                        chr_value(c.get(1).map(|m: regex::Match<'_>| m.as_str()), n)
+                    });
+                let Some(ch) = folded else {
+                    return whole
+                        .map_or_else(String::new, |m: regex::Match<'_>| m.as_str().to_owned());
+                };
+                chr_subs += 1;
+                vbs_literal(&ch.to_string())
+            })
+            .into_owned();
+        let current: String = fold_literal_concatenation(&current);
+        let spans: Vec<(Range<usize>, Lexeme)> = lexemes(&current);
+        let mut rev_subs: usize = 0;
+        let current: String = STRREVERSE
+            .replace_all(&current, |c: &regex::Captures<'_>| {
+                let whole: Option<regex::Match<'_>> = c.get(0);
+                if !whole.is_some_and(|m: regex::Match<'_>| in_code(&spans, m.start())) {
+                    return whole
+                        .map_or_else(String::new, |m: regex::Match<'_>| m.as_str().to_owned());
+                }
+                rev_subs += 1;
+                let body: &str = c.get(1).map_or("", |m: regex::Match<'_>| m.as_str());
+                vbs_literal(&body.replace("\"\"", "\"").chars().rev().collect::<String>())
+            })
+            .into_owned();
+        self.chr_substitutions += chr_subs;
+        self.strreverse_unwraps += rev_subs;
+        current
+    }
+
+    fn unwrap(&mut self, input: &str, depth: usize) -> String {
+        let folded: String = self.fold(input);
+        let spans: Vec<(Range<usize>, Lexeme)> = lexemes(&folded);
+        let mut out: String = String::with_capacity(folded.len());
+        let mut cursor: usize = 0;
+        for c in EXECUTE.captures_iter(&folded) {
+            let (Some(call), Some(body)) = (c.get(2), c.get(3)) else {
+                continue;
+            };
+            if !in_code(&spans, call.start()) {
+                continue;
+            }
+            let next_depth: usize = depth + 1;
+            if !self.policy.permits_depth(next_depth) {
+                let wall: String = format!(
+                    "Execute depth {next_depth} exceeds static cap {}; re-run with --allow-dynamic to unwrap further",
+                    self.policy.max_eval_depth()
+                );
+                if !self.walls.contains(&wall) {
+                    self.walls.push(wall);
+                }
+                continue;
+            }
+            self.execute_unwraps += 1;
+            self.eval_depth = self.eval_depth.max(next_depth);
+            out.push_str(&folded[cursor..call.start()]);
+            let unwrapped: String = self.unwrap(&body.as_str().replace("\"\"", "\""), next_depth);
+            out.push_str(&unwrapped);
+            cursor = call.end();
+        }
+        out.push_str(&folded[cursor..]);
+        out
     }
 }
 
@@ -314,6 +351,33 @@ mod tests {
             r.output.contains("Execute"),
             "layers should remain under static cap; out={}",
             r.output
+        );
+    }
+
+    #[test]
+    fn sibling_executes_do_not_count_as_nesting() {
+        let r: VbsReport =
+            deobfuscate_vbs("Execute(\"a = 1\")\nExecute(\"b = 2\")\nExecute(\"c = 3\")");
+        assert_eq!(r.output, "a = 1\nb = 2\nc = 3");
+        assert_eq!((r.execute_unwraps, r.eval_depth), (3, 1));
+        assert!(r.walls.is_empty(), "{:?}", r.walls);
+    }
+
+    #[test]
+    fn unwrapped_bodies_are_folded_before_the_next_layer() {
+        let r: VbsReport = deobfuscate_vbs(r#"Execute("Execute(StrReverse(""1 ohcE.tpircSW""))")"#);
+        assert_eq!(r.output, "WScript.Echo 1");
+        assert_eq!(
+            (r.strreverse_unwraps, r.execute_unwraps, r.eval_depth),
+            (1, 2, 2)
+        );
+        let r: VbsReport = deobfuscate_vbs(
+            "Execute(\"Execute(Chr(77) & Chr(115) & Chr(103) & Chr(66) & Chr(111) & Chr(120) & Chr(32) & Chr(49))\")",
+        );
+        assert_eq!(r.output, "MsgBox 1");
+        assert_eq!(
+            (r.chr_substitutions, r.execute_unwraps, r.eval_depth),
+            (8, 2, 2)
         );
     }
 
