@@ -1049,7 +1049,7 @@ jobs:
         run: cargo test -p disrobe-cli --test determinism_cross_platform -- --ignored batch_jobs_does_not_change_recovered_output --nocapture
       - name: aarch64 decompiler recompile-execution differential (one leg only)
         if: matrix.os == 'ubuntu-latest' && matrix.shard == 'two'
-        run: cargo test -p disrobe-pass-native --test lifting -- --ignored aarch64_recovery_grade:: --nocapture
+        run: 'cargo test -p disrobe-pass-native --test lifting -- --ignored aarch64_recovery_grade:: --nocapture'
         env:
           DISROBE_REQUIRE_AARCH64_ORACLES: 1
       - name: aarch64 rust recompile-execution differential (one leg only)
