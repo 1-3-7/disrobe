@@ -1,6 +1,6 @@
 use std::process::{Command, Output};
 
-pub const REQUIRE_LUA_TOOLCHAIN_VAR: &str = "DISROBE_REQUIRE_LUA_TOOLCHAIN";
+pub const ANY_LUA: &str = "disrobe-pass-lua::lua";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Dialect {
@@ -11,6 +11,15 @@ pub enum Dialect {
 }
 
 impl Dialect {
+    pub const fn prerequisite(self) -> &'static str {
+        match self {
+            Self::Lua51 => "disrobe-pass-lua::lua-5.1",
+            Self::Lua54 => "disrobe-pass-lua::lua-5.4",
+            Self::Lua55 => "disrobe-pass-lua::lua-5.5",
+            Self::LuaJit => "disrobe-pass-lua::luajit",
+        }
+    }
+
     const fn banner(self) -> &'static str {
         match self {
             Self::Lua51 => "Lua 5.1",
@@ -60,25 +69,20 @@ fn first_reporting(candidates: &[&str], banner: &str) -> Option<String> {
         .map(|program: &&str| (*program).to_owned())
 }
 
-pub fn missing_tool(what: &str) {
-    assert!(
-        std::env::var_os(REQUIRE_LUA_TOOLCHAIN_VAR).is_none(),
-        "{REQUIRE_LUA_TOOLCHAIN_VAR} is set, so this oracle must run: {what}"
-    );
-    eprintln!(
-        "UNGRADED: {what}, so this oracle is not measured; set {REQUIRE_LUA_TOOLCHAIN_VAR}=1 \
-         to fail instead"
-    );
+pub fn missing_tool(prerequisite: &str, what: &str) {
+    if let Err(error) = disrobe_testkit::require::<()>(prerequisite, what, None) {
+        panic!("{error}");
+    }
 }
 
-fn ungraded(what: &str) {
-    missing_tool(&format!("{what} is not on PATH"));
+fn ungraded(dialect: Dialect, what: &str) {
+    missing_tool(dialect.prerequisite(), &format!("{what} on PATH"));
 }
 
 pub fn interpreter(dialect: Dialect) -> Option<String> {
     let found: Option<String> = first_reporting(dialect.interpreters(), dialect.banner());
     if found.is_none() {
-        ungraded(&format!("a `{}` interpreter", dialect.banner()));
+        ungraded(dialect, &format!("a `{}` interpreter", dialect.banner()));
     }
     found
 }
@@ -86,7 +90,7 @@ pub fn interpreter(dialect: Dialect) -> Option<String> {
 pub fn compiler(dialect: Dialect) -> Option<String> {
     let found: Option<String> = first_reporting(dialect.compilers(), dialect.banner());
     if found.is_none() {
-        ungraded(&format!("a `{}` luac", dialect.banner()));
+        ungraded(dialect, &format!("a `{}` luac", dialect.banner()));
     }
     found
 }
@@ -97,6 +101,9 @@ pub fn toolchain(dialect: Dialect) -> Option<(String, String)> {
     if let (Some(luac), Some(lua)) = (luac, lua) {
         return Some((luac, lua));
     }
-    ungraded(&format!("a `{}` luac and interpreter", dialect.banner()));
+    ungraded(
+        dialect,
+        &format!("a `{}` luac and interpreter", dialect.banner()),
+    );
     None
 }

@@ -100,7 +100,6 @@ const CASES: &[(&str, &str)] = &[
 #[test]
 fn boolean_and_or_chain_survives_recompile_and_reexec_lua_5_4() {
     let Some(tc): Option<Toolchain> = toolchain_54() else {
-        common::lua_toolchain::missing_tool("lua 5.4 toolchain (luac+lua) not found on box");
         return;
     };
     let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();

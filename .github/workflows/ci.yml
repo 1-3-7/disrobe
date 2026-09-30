@@ -1391,8 +1391,6 @@ jobs:
       - name: lua interpreter re-execution differential
         run: cargo test -p disrobe-pass-lua --test ironbrew2_real_oracle -- --nocapture
       - name: lua 5.1 to 5.4 and luajit re-execution oracles
-        env:
-          DISROBE_REQUIRE_LUA_TOOLCHAIN: "1"
         run: cargo test -p disrobe-pass-lua --all-features --tests -- --nocapture
       - name: luau decompile re-execution differential
         run: cargo test -p disrobe-pass-lua --test luau_decompile_oracle -- --nocapture

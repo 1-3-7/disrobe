@@ -89,13 +89,11 @@ fn lua54_float_literals_keep_float_type_after_recovery() {
     let Some(luac): Option<String> =
         common::lua_toolchain::compiler(common::lua_toolchain::Dialect::Lua54)
     else {
-        common::lua_toolchain::missing_tool("luac 5.4 not found on box");
         return;
     };
     let Some(interp): Option<String> =
         common::lua_toolchain::interpreter(common::lua_toolchain::Dialect::Lua54)
     else {
-        common::lua_toolchain::missing_tool("lua 5.4 interpreter not found on box");
         return;
     };
     let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();

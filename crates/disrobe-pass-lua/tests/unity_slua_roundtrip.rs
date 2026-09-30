@@ -249,7 +249,10 @@ fn slua_recovered_bytecode_executes_like_original_under_real_lua() {
         decompile_auto(&peel.deobfuscated).expect("decompile recovered bytecode");
 
     let Some(interp): Option<String> = find_lua() else {
-        common::lua_toolchain::missing_tool("no lua interpreter on PATH");
+        common::lua_toolchain::missing_tool(
+            common::lua_toolchain::ANY_LUA,
+            "a Lua interpreter on PATH",
+        );
         return;
     };
     let expected: String = run_lua(&interp, &original_source.source)

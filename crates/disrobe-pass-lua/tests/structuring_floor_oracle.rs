@@ -253,18 +253,14 @@ fn assert_lane(
     let tc: Option<Toolchain> = match dialect_tag {
         "5.1" => toolchain_51(),
         "5.4" => toolchain_54(),
-        _ => None,
+        _ => panic!("no Lua toolchain is known for the dialect tag {dialect_tag:?}"),
     };
     let Some(tc): Option<Toolchain> = tc else {
-        common::lua_toolchain::missing_tool(&format!(
-            "lua {dialect_tag} toolchain (luac+lua) not found on box"
-        ));
         return;
     };
     let goto_capable_runtime: Option<Toolchain> = toolchain_54();
     let run_lua: &str = if force_goto_capable_runtime {
         let Some(rt): Option<&Toolchain> = goto_capable_runtime.as_ref() else {
-            common::lua_toolchain::missing_tool("no goto-capable (5.2+) lua runtime found on box");
             return;
         };
         &rt.lua

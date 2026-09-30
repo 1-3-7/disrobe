@@ -6,7 +6,7 @@ mod lua_toolchain;
 
 use std::path::PathBuf;
 
-use lua_toolchain::{InterpreterRequirement, LuaInterpreter, require_interpreter_with, run_lua};
+use lua_toolchain::{LuaInterpreter, require_interpreter_present, run_lua};
 
 use disrobe_pass_lua::obfuscator::{
     DeobfOptions, LuaObfuscatorKind, ObfuscatorDetection, PeelResult,
@@ -186,11 +186,7 @@ fn prometheus_gauntlet_weak_peel_reports_the_layers_it_actually_undid() {
 #[test]
 fn prometheus_gauntlet_weak_recovery_reexecutes_identically_to_the_original() {
     let graded: &str = "Prometheus gauntlet Weak-preset recovery";
-    let Some(interpreter): Option<LuaInterpreter> =
-        require_interpreter_with(graded, InterpreterRequirement::Mandatory)
-    else {
-        unreachable!("a mandatory interpreter requirement panics rather than returning None")
-    };
+    let interpreter: LuaInterpreter = require_interpreter_present(graded);
 
     let bytes: Vec<u8> = load_fixture("gauntlet_weak_obfuscated.lua");
     let clean: Vec<u8> = load_fixture("gauntlet_clean.lua");

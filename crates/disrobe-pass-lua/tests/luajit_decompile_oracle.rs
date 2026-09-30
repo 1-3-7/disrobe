@@ -89,7 +89,10 @@ fn strip_src_locations(line: &str) -> String {
 
 fn oracle(name: &str, variant: &str) {
     let Some(interp): Option<String> = find_luajit() else {
-        common::lua_toolchain::missing_tool("no luajit on PATH");
+        common::lua_toolchain::missing_tool(
+            common::lua_toolchain::Dialect::LuaJit.prerequisite(),
+            "luajit on PATH",
+        );
         return;
     };
     let dir: PathBuf = samples_dir();
@@ -169,7 +172,10 @@ fn oracle_luajit_20_version_byte() {
 #[test]
 fn megafile_recovers_and_runs_under_luajit() {
     let Some(interp): Option<String> = find_luajit() else {
-        common::lua_toolchain::missing_tool("no luajit on PATH");
+        common::lua_toolchain::missing_tool(
+            common::lua_toolchain::Dialect::LuaJit.prerequisite(),
+            "luajit on PATH",
+        );
         return;
     };
     let mut mega: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));

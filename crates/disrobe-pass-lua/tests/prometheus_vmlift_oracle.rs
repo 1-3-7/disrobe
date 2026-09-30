@@ -20,9 +20,7 @@ use common::lua_toolchain::{Dialect, interpreter};
 use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_lua::obfuscator::{DeobfOptions, PeelResult};
 use disrobe_pass_lua::{prometheus, prometheus_vmlift};
-use lua_toolchain::{
-    InterpreterRequirement, LuaInterpreter, require_interpreter, require_interpreter_with, run_lua,
-};
+use lua_toolchain::{LuaInterpreter, require_interpreter, require_interpreter_present, run_lua};
 use prometheus_residue::assert_no_prometheus_layer;
 
 fn corpus_path(rel: &str) -> PathBuf {
@@ -428,12 +426,8 @@ fn peel_path_applies_fold_and_dispatch_recovery() {
         deob.chars().take(80).collect::<String>(),
     );
     assert_no_prometheus_layer("peeled greeting", deob);
-    let Some(interpreter): Option<LuaInterpreter> = require_interpreter_with(
-        "Prometheus baseline greeting recovery",
-        InterpreterRequirement::Mandatory,
-    ) else {
-        unreachable!("a mandatory interpreter requirement fails when Lua is unavailable")
-    };
+    let interpreter: LuaInterpreter =
+        require_interpreter_present("Prometheus baseline greeting recovery");
     let baseline: String = load("baseline/hello.lua");
     let expected: String = run_lua(&interpreter, "baseline greeting", &baseline);
     assert_eq!(expected, "hello world\n");

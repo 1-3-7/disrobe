@@ -20,6 +20,7 @@
 "disrobe-binfmt::regenerable::snap" = "the snap fixture is a local-only artifact a .gitignore rule keeps out of the tree and no CI job rebuilds it from the corpus/binfmt/MANIFEST.toml recipe"
 "disrobe-binfmt::regenerable::squashfs" = "the squashfs fixture is a local-only artifact a .gitignore rule keeps out of the tree and no CI job rebuilds it from the corpus/binfmt/MANIFEST.toml recipe"
 "disrobe-binfmt::cabextract" = "no CI job installs cabextract"
+"disrobe-pass-lua::luajit" = "the test shard that runs this crate on every OS installs Lua 5.1 to 5.5 and Luau but no LuaJIT; only the Linux execution-differentials job installs luajit, and its provisioning step fails when luajit -v does not run"
 
 [optional.linux]
 "disrobe-pass-swift-objc::swift-demangle" = "CI installs the Swift 6.3.2 toolchain on the macOS runner only"

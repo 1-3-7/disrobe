@@ -66,7 +66,10 @@ fn find_lua_interp() -> Option<String> {
 #[test]
 fn recovered_body_reparses_under_real_lua() {
     let Some(interp): Option<String> = find_lua_interp() else {
-        common::lua_toolchain::missing_tool("no lua interpreter on box");
+        common::lua_toolchain::missing_tool(
+            common::lua_toolchain::Dialect::Lua54.prerequisite(),
+            "a Lua 5.4 interpreter on PATH",
+        );
         return;
     };
     let src: String = recovered_body();

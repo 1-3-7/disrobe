@@ -1116,59 +1116,33 @@ fn a_publication_that_hides_the_weak_leg_is_rejected() {
 }
 
 #[test]
-fn a_missing_interpreter_fails_the_execution_leg_when_ci_marks_it_mandatory() {
-    use lua_toolchain::InterpreterRequirement;
-
+fn a_missing_interpreter_fails_the_execution_leg_by_name() {
     let graded: &str = "a case that must never report success without an interpreter";
     let defect: &str = "no interpreter was found on PATH";
 
-    let mandatory: std::thread::Result<()> = quietly(|| {
-        lua_toolchain::enforce_requirement(graded, defect, InterpreterRequirement::Mandatory);
-    });
-    let optional: std::thread::Result<()> = quietly(|| {
-        lua_toolchain::enforce_requirement(graded, defect, InterpreterRequirement::Optional);
+    let outcome: std::thread::Result<()> = quietly(|| {
+        lua_toolchain::unmeasured(graded, defect);
     });
 
-    let payload: String = match &mandatory {
+    let payload: String = match &outcome {
         Err(payload) => payload
             .downcast_ref::<String>()
             .map_or_else(String::new, Clone::clone),
         Ok(()) => String::new(),
     };
     assert!(
-        mandatory.is_err(),
-        "with {} set, an absent interpreter must fail the run; the gate returned success instead, \
-         which is how an execution differential silently stops grading",
-        lua_toolchain::REQUIRE_VAR
+        outcome.is_err(),
+        "an absent interpreter must fail the run unless tests/optional.toml lists {}; the gate \
+         returned success instead, which is how an execution differential silently stops grading",
+        lua_toolchain::PREREQUISITE
     );
-    assert!(
-        payload.contains(lua_toolchain::REQUIRE_VAR),
-        "the failure must name {} so a CI log says how the run was made mandatory; it read: \
-         {payload}",
-        lua_toolchain::REQUIRE_VAR
-    );
-    assert!(
-        optional.is_ok(),
-        "without the variable set the gate announces that nothing was measured and lets the run \
-         continue, so a developer without Lua installed is not blocked"
-    );
-
-    assert_eq!(
-        lua_toolchain::requirement_from_value(None),
-        InterpreterRequirement::Optional,
-        "an unset variable must leave the interpreter optional"
-    );
-    assert_eq!(
-        lua_toolchain::requirement_from_value(Some(std::ffi::OsStr::new("1"))),
-        InterpreterRequirement::Mandatory,
-        "{}=1 is what CI sets, so it must make the interpreter mandatory",
-        lua_toolchain::REQUIRE_VAR
-    );
-    assert_eq!(
-        lua_toolchain::requirement_from_value(Some(std::ffi::OsStr::new("0"))),
-        InterpreterRequirement::Optional,
-        "an explicit 0 must read as optional rather than as any non-empty value"
-    );
+    for named in [lua_toolchain::PREREQUISITE, graded, defect] {
+        assert!(
+            payload.contains(named),
+            "the failure must name `{named}` so a CI log says what was missing and why; it read: \
+             {payload}"
+        );
+    }
 }
 
 #[test]

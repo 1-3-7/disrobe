@@ -159,7 +159,6 @@ print(fd(-7, 3), fd(7, -3), fd(-7, -3), fd(7, 3))\n";
 #[test]
 fn floor_div_and_modulo_negative_operands_lua_5_4() {
     let Some(tc): Option<Toolchain> = toolchain_54() else {
-        common::lua_toolchain::missing_tool("lua 5.4 toolchain (luac+lua) not found on box");
         return;
     };
     assert_reexec_equivalent(&tc, "floor_div_mod", FLOOR_DIV_MOD_54, &["//", "%", "/"]);
@@ -169,7 +168,6 @@ fn floor_div_and_modulo_negative_operands_lua_5_4() {
 #[test]
 fn float_modulo_sign_negative_operands_lua_5_1() {
     let Some(tc): Option<Toolchain> = toolchain_51() else {
-        common::lua_toolchain::missing_tool("lua 5.1 toolchain (luac+lua) not found on box");
         return;
     };
     assert_reexec_equivalent(&tc, "float_mod", FLOAT_MOD_51, &["%", "/"]);

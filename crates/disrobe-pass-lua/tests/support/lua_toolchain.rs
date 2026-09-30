@@ -1,13 +1,12 @@
-use std::ffi::{OsStr, OsString};
 use std::fs;
-use std::io::{ErrorKind, Write as _};
+use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use disrobe_core::scratch::ScratchFile;
 
-pub(crate) const REQUIRE_VAR: &str = "DISROBE_REQUIRE_LUA_TOOLCHAIN";
+pub(crate) const PREREQUISITE: &str = "disrobe-pass-lua::lua";
 
 pub(crate) const INSTALL_HINT: &str =
     "install lua5.4 (apt-get install lua5.4) or luajit and put it on PATH";
@@ -18,32 +17,10 @@ const BANNER_MARKER: &str = "lua";
 
 static SCRATCH_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum InterpreterRequirement {
-    Optional,
-    Mandatory,
-}
-
 #[derive(Debug, Clone)]
 pub(crate) struct LuaInterpreter {
     pub(crate) program: &'static str,
     pub(crate) banner: String,
-}
-
-pub(crate) fn requirement_from_value(value: Option<&OsStr>) -> InterpreterRequirement {
-    let Some(raw): Option<&OsStr> = value else {
-        return InterpreterRequirement::Optional;
-    };
-    let text: String = raw.to_string_lossy().trim().to_ascii_lowercase();
-    match text.as_str() {
-        "" | "0" | "false" | "no" | "off" | "optional" => InterpreterRequirement::Optional,
-        _ => InterpreterRequirement::Mandatory,
-    }
-}
-
-pub(crate) fn requirement() -> InterpreterRequirement {
-    let raw: Option<OsString> = std::env::var_os(REQUIRE_VAR);
-    requirement_from_value(raw.as_deref())
 }
 
 fn version_probe(program: &'static str, graded: &str) -> Result<String, String> {
@@ -74,31 +51,15 @@ fn version_probe(program: &'static str, graded: &str) -> Result<String, String> 
     Ok(banner)
 }
 
-fn announce_unmeasured(graded: &str, defect: &str) {
-    let line: String = format!(
-        "\nNOT MEASURED: {graded} was compared against nothing and graded nothing, because no real \
-         Lua interpreter is usable here ({defect}). Set {REQUIRE_VAR}=1 to fail instead of skipping \
-         when Lua cannot be run.\n"
-    );
-    let mut sink: std::io::StdoutLock<'static> = std::io::stdout().lock();
-    drop(sink.write_all(line.as_bytes()));
-    drop(sink.flush());
+pub(crate) fn unmeasured(graded: &str, defect: &str) {
+    let what: String =
+        format!("a real Lua interpreter to grade {graded} ({defect}); {INSTALL_HINT}");
+    if let Err(error) = disrobe_testkit::require::<()>(PREREQUISITE, &what, None) {
+        panic!("{error}");
+    }
 }
 
-pub(crate) fn enforce_requirement(graded: &str, defect: &str, requirement: InterpreterRequirement) {
-    assert!(
-        requirement == InterpreterRequirement::Optional,
-        "{REQUIRE_VAR} makes a real Lua interpreter mandatory for this run, so {graded} cannot be \
-         measured and this case must not report success: {defect}. To fix it, {INSTALL_HINT}; to \
-         permit a run that measures nothing here, clear {REQUIRE_VAR}."
-    );
-    announce_unmeasured(graded, defect);
-}
-
-pub(crate) fn require_interpreter_with(
-    graded: &str,
-    requirement: InterpreterRequirement,
-) -> Option<LuaInterpreter> {
+pub(crate) fn require_interpreter(graded: &str) -> Option<LuaInterpreter> {
     let mut defects: Vec<String> = Vec::new();
     for program in CANDIDATES {
         match version_probe(program, graded) {
@@ -106,12 +67,17 @@ pub(crate) fn require_interpreter_with(
             Err(defect) => defects.push(defect),
         }
     }
-    enforce_requirement(graded, &defects.join("; "), requirement);
+    unmeasured(graded, &defects.join("; "));
     None
 }
 
-pub(crate) fn require_interpreter(graded: &str) -> Option<LuaInterpreter> {
-    require_interpreter_with(graded, requirement())
+pub(crate) fn require_interpreter_present(graded: &str) -> LuaInterpreter {
+    require_interpreter(graded).unwrap_or_else(|| {
+        panic!(
+            "tests/optional.toml lists {PREREQUISITE}, but {graded} has no result without a Lua \
+             interpreter, so that entry only hides the gap; remove it"
+        )
+    })
 }
 
 pub(crate) fn run_lua(interpreter: &LuaInterpreter, label: &str, source: &str) -> String {
