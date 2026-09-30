@@ -1716,6 +1716,7 @@ pub struct RecoveredSignature {
     abi: Abi,
     ms_x64_parameter_origin: MsX64ParameterOrigin,
     parameter_bindings: Vec<ParameterBinding>,
+    unconsumed_integer_registers: BTreeSet<Reg>,
 }
 
 impl RecoveredSignature {
@@ -1737,7 +1738,27 @@ impl RecoveredSignature {
             abi,
             ms_x64_parameter_origin,
             parameter_bindings,
+            unconsumed_integer_registers: BTreeSet::new(),
         })
+    }
+
+    fn with_unconsumed_integer_registers(mut self, consumed: &BTreeSet<Reg>) -> Self {
+        let argument_order: &[Reg] = self.abi.arg_order();
+        self.unconsumed_integer_registers = self
+            .parameter_bindings
+            .iter()
+            .filter_map(|binding: &ParameterBinding| match binding {
+                ParameterBinding::Integer { register, .. } => Some(*register),
+                ParameterBinding::UnobservedMsX64 { slot } => {
+                    argument_order.get(usize::from(*slot)).copied()
+                }
+                ParameterBinding::FloatingPoint { .. }
+                | ParameterBinding::StackFloatingPoint { .. }
+                | ParameterBinding::Vector { .. } => None,
+            })
+            .filter(|register: &Reg| !consumed.contains(register))
+            .collect();
+        self
     }
 
     pub(crate) fn from_canonical_bindings(
@@ -1748,6 +1769,7 @@ impl RecoveredSignature {
             abi,
             ms_x64_parameter_origin: MsX64ParameterOrigin::PhysicalSlotZero,
             parameter_bindings,
+            unconsumed_integer_registers: BTreeSet::new(),
         }
     }
 
@@ -5648,6 +5670,7 @@ fn recover_leaf_function_calls_with_tail_proofs(
     if let Some(plan) = &sret_plan {
         params.retain(|r: &Reg| *r != plan.ptr);
     }
+    let consumed_params: BTreeSet<Reg> = consumed_integer_parameters(&structured.body, calls, abi)?;
     let returns_fp: Option<ScalarType> = fp_return.map(scalar_of_fp);
     let ret: FnReturn = fp_return.map_or(FnReturn::Int(return_width), FnReturn::Fp);
     let signature: FnSignature = FnSignature {
@@ -5702,7 +5725,8 @@ fn recover_leaf_function_calls_with_tail_proofs(
             signature.abi,
             ms_x64_parameter_origin,
             signature.parameter_bindings_from(ms_x64_parameter_origin),
-        )?,
+        )?
+        .with_unconsumed_integer_registers(&consumed_params),
         returns_fp,
         lifted_split_return: structured.lifted_split_return,
         lifted_loop: structured.lifted_loop,
@@ -8859,6 +8883,88 @@ fn resolved_call_integer_registers(signature: &RecoveredSignature) -> Result<Vec
         }
     }
     Ok(registers)
+}
+
+fn consumed_call_integer_registers(signature: &RecoveredSignature) -> Result<Vec<Reg>> {
+    let mut registers: Vec<Reg> = resolved_call_integer_registers(signature)?;
+    registers.retain(|register: &Reg| !signature.unconsumed_integer_registers.contains(register));
+    Ok(registers)
+}
+
+fn pass_consumed_call_arguments(
+    body: &mut Block,
+    map: &BTreeMap<u64, &ResolvedCall>,
+) -> Result<()> {
+    for node in body.iter_mut() {
+        match node {
+            Node::Stmt(Stmt::Call {
+                target: CallTarget::Address(address),
+                args,
+                ..
+            }) => {
+                *args = match map.get(address) {
+                    Some(resolved) => consumed_call_integer_registers(&resolved.signature)?,
+                    None => Vec::new(),
+                };
+            }
+            Node::Stmt(_) => {}
+            Node::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                pass_consumed_call_arguments(then_body, map)?;
+                if let Some(else_b) = else_body {
+                    pass_consumed_call_arguments(else_b, map)?;
+                }
+            }
+            Node::DoWhile { body, .. } | Node::While { body, .. } => {
+                pass_consumed_call_arguments(body, map)?;
+            }
+            Node::Switch { cases, default, .. } => {
+                for case in cases.iter_mut() {
+                    pass_consumed_call_arguments(&mut case.body, map)?;
+                }
+                pass_consumed_call_arguments(default, map)?;
+            }
+            Node::CondSnapshot { .. }
+            | Node::Break
+            | Node::Continue
+            | Node::BreakLoop(_)
+            | Node::ContinueLoop(_)
+            | Node::ResumeAt(_)
+            | Node::OuterResume(_)
+            | Node::Return
+            | Node::Label(_)
+            | Node::Goto(_) => {}
+        }
+    }
+    Ok(())
+}
+
+fn consumed_integer_parameters(
+    body: &Block,
+    calls: &[ResolvedCall],
+    abi: Abi,
+) -> Result<BTreeSet<Reg>> {
+    let map: BTreeMap<u64, &ResolvedCall> =
+        calls.iter().map(|c: &ResolvedCall| (c.target, c)).collect();
+    let mut rewritten: Block = body.clone();
+    pass_consumed_call_arguments(&mut rewritten, &map)?;
+    let argument_order: &[Reg] = abi.integer_parameter_order();
+    let mut written: BTreeMap<Reg, Width> = BTreeMap::new();
+    let mut consumed: Vec<Reg> = Vec::new();
+    scan_block_params(
+        &rewritten,
+        &mut written,
+        &mut consumed,
+        &mut |reg: Reg, acc: &mut Vec<Reg>| {
+            if argument_order.contains(&reg) && !acc.contains(&reg) {
+                acc.push(reg);
+            }
+        },
+    )?;
+    Ok(consumed.into_iter().collect())
 }
 
 fn annotate_calls_block(

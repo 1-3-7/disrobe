@@ -7,9 +7,9 @@ use crate::error::{Error, Result};
 
 use super::{
     Abi, CallTarget, ExtSource, Flags, FpOperand, Item, ItemKind, MemRef, PackedOp, Reg, RegRef,
-    ResolvedCall, Source, Stmt, VecStmt, Width, callee_code_by_target, flag_operand_xmms,
-    fp_stmt_result_xmm, iced_register, instruction_access_writes,
-    return_channel::stmt_xmm_data_reads,
+    ResolvedCall, Source, Stmt, VecStmt, Width, callee_code_by_target,
+    consumed_call_integer_registers, flag_operand_xmms, fp_stmt_result_xmm, iced_register,
+    instruction_access_writes, return_channel::stmt_xmm_data_reads,
 };
 
 const SYSV_VOLATILE: [Reg; 9] = [
@@ -635,17 +635,20 @@ fn fp_writes(stmt: &Stmt) -> Option<u8> {
 
 struct Context<'a> {
     abi: Abi,
-    resolved: &'a BTreeSet<u64>,
+    resolved: &'a BTreeMap<u64, &'a ResolvedCall>,
     callees: &'a BTreeMap<u64, CalleeClobbers>,
     location: &'a dyn Fn(u64) -> u64,
 }
 
 impl Context<'_> {
-    fn call_reads_arguments(&self, target: &CallTarget) -> bool {
+    fn call_argument_reads(&self, target: &CallTarget, args: &[Reg]) -> Result<Vec<Reg>> {
         match target {
-            CallTarget::Address(address) => self.resolved.contains(address),
-            CallTarget::NoreturnLibrary(_) | CallTarget::RustPanicBoundsCheck => true,
-            CallTarget::DirectTrap(_) => false,
+            CallTarget::Address(address) => self.resolved.get(address).map_or_else(
+                || Ok(Vec::new()),
+                |call: &&ResolvedCall| consumed_call_integer_registers(&call.signature),
+            ),
+            CallTarget::NoreturnLibrary(_) | CallTarget::RustPanicBoundsCheck => Ok(args.to_vec()),
+            CallTarget::DirectTrap(_) => Ok(Vec::new()),
         }
     }
 
@@ -683,13 +686,13 @@ impl Context<'_> {
         let mut reads: Vec<RegRef> = Vec::new();
         match &item.kind {
             ItemKind::Stmt(Stmt::Call { target, args, .. }) => {
-                if self.call_reads_arguments(target) {
-                    reads.extend(args.iter().map(|reg: &Reg| RegRef {
-                        reg: *reg,
+                reads.extend(self.call_argument_reads(target, args)?.into_iter().map(
+                    |reg: Reg| RegRef {
+                        reg,
                         width: Width::W64,
-                    }));
-                    self.check_gprs(state, &reads, item.address)?;
-                }
+                    },
+                ));
+                self.check_gprs(state, &reads, item.address)?;
                 state.clobber(self.abi, item.address, self.callees.get(&item.address));
             }
             ItemKind::Stmt(stmt) => {
@@ -760,9 +763,9 @@ pub(super) fn refuse_reads_after_calls(
     {
         return Ok(());
     }
-    let resolved: BTreeSet<u64> = calls
+    let resolved: BTreeMap<u64, &ResolvedCall> = calls
         .iter()
-        .map(|call: &ResolvedCall| call.target)
+        .map(|call: &ResolvedCall| (call.target, call))
         .collect();
     let context: Context<'_> = Context {
         abi,
@@ -801,7 +804,22 @@ pub(super) fn refuse_reads_after_calls(
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
-    use super::super::{Abi, LeafRecovery, recover_leaf_function_abi};
+    use super::super::{
+        Abi, LeafRecovery, ResolvedCall, recover_leaf_function_abi,
+        recover_leaf_function_with_calls,
+    };
+
+    const TWO_CALLS: [u8; 22] = [
+        0x53, 0x48, 0x89, 0xcb, 0xe8, 0x00, 0x01, 0x00, 0x00, 0x48, 0x89, 0xc1, 0xe8, 0xf8, 0x00,
+        0x00, 0x00, 0x48, 0x01, 0xd8, 0x5b, 0xc3,
+    ];
+
+    fn callee(arity: usize) -> Vec<ResolvedCall> {
+        vec![
+            ResolvedCall::from_integer_arity(0x4109, Some("callee".to_owned()), Abi::MsX64, arity)
+                .expect("an arity within the four microsoft x64 argument registers"),
+        ]
+    }
 
     const PROLOGUE: [u8; 9] = [0x53, 0x48, 0x89, 0xcb, 0xe8, 0x00, 0x01, 0x00, 0x00];
     const EPILOGUE: [u8; 8] = [0x48, 0x01, 0xd0, 0x48, 0x01, 0xd8, 0x5b, 0xc3];
@@ -849,6 +867,54 @@ mod tests {
             error
                 .contains("caller-saved register `rcx` is read at 0x5002 after the call at 0x5005"),
             "{error}"
+        );
+    }
+
+    #[test]
+    fn a_one_argument_callee_does_not_read_the_argument_registers_it_does_not_take() {
+        let recovery: LeafRecovery =
+            recover_leaf_function_with_calls(&TWO_CALLS, 0x4000, Abi::MsX64, &callee(1))
+                .expect("the second call passes only rcx, which is defined after the first call");
+        assert!(
+            recovery.call_targets.contains(&0x4109),
+            "{}",
+            recovery.source
+        );
+    }
+
+    #[test]
+    fn a_two_argument_callee_reading_the_clobbered_rdx_refuses() {
+        let error: String =
+            recover_leaf_function_with_calls(&TWO_CALLS, 0x4000, Abi::MsX64, &callee(2))
+                .expect_err("the second call passes rdx, which the first call clobbered")
+                .to_string();
+        assert!(
+            error
+                .contains("caller-saved register `rdx` is read at 0x400c after the call at 0x4004"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn registers_a_callee_only_forwards_to_an_unresolved_call_are_not_read_at_its_call_site() {
+        let forwarding: [u8; 14] = [
+            0x53, 0x48, 0x89, 0xcb, 0xe8, 0x00, 0x02, 0x00, 0x00, 0x48, 0x89, 0xd8, 0x5b, 0xc3,
+        ];
+        let callee: LeafRecovery = recover_leaf_function_abi(&forwarding, 0x4109, Abi::MsX64)
+            .expect("the callee keeps rcx and forwards every argument register to an extern");
+        let calls: Vec<ResolvedCall> = vec![ResolvedCall {
+            target: 0x4109,
+            name: Some("forwarding".to_owned()),
+            signature: callee.signature,
+        }];
+        let recovery: LeafRecovery =
+            recover_leaf_function_with_calls(&TWO_CALLS, 0x4000, Abi::MsX64, &calls).expect(
+                "rdx, r8 and r9 reach only the extern call inside the callee, so the stale                  values the lifted second call passes are never consumed",
+            );
+        assert!(
+            recovery.call_targets.contains(&0x4109),
+            "{}",
+            recovery.source
         );
     }
 }
