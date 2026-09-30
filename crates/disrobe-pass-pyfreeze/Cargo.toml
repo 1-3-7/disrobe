@@ -28,10 +28,6 @@ serde_json = { workspace = true }
 miette = { workspace = true }
 thiserror = { workspace = true }
 
-[features]
-default = []
-chain = ["disrobe-core/chain"]
-
 [dev-dependencies]
 disrobe-testkit = { workspace = true }
 jsonschema = "0.28"

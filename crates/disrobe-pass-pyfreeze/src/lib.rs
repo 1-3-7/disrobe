@@ -68,7 +68,6 @@ fn read_file_prefix(path: &Path, max_bytes: u64) -> Result<Vec<u8>> {
 
 pub mod bbfreeze;
 pub mod briefcase;
-#[cfg(feature = "chain")]
 pub mod chain_detector;
 pub mod common;
 pub mod cxfreeze;

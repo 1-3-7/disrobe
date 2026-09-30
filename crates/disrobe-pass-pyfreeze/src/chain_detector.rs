@@ -1,4 +1,3 @@
-#![cfg(feature = "chain")]
 use std::io::Cursor;
 
 use disrobe_core::Artifact;

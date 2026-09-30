@@ -55,7 +55,6 @@ const HIDDEN_TEST_SURFACE: &[(&str, &[&str])] = &[
         &["alt-brython", "alt-ironpython", "alt-jython", "chain"],
     ),
     ("disrobe-pass-pyarmor", &["chain"]),
-    ("disrobe-pass-pyfreeze", &["chain"]),
     ("disrobe-pass-pyinstaller", &["chain"]),
     ("disrobe-pass-ruby", &["chain"]),
     ("disrobe-pass-shell", &["chain"]),
