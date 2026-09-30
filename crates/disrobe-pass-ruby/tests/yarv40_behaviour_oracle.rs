@@ -121,6 +121,64 @@ fn programs_compiled_by_ruby_4_0_recover_to_source_that_prints_what_the_original
     );
 }
 
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    use std::fmt::Write;
+    Sha256::digest(bytes)
+        .iter()
+        .fold(String::new(), |mut hex: String, byte: &u8| {
+            let _ = write!(hex, "{byte:02x}");
+            hex
+        })
+}
+
+fn manifest_field(block: &str, key: &str) -> Option<String> {
+    block.lines().find_map(|line: &str| {
+        let value: &str = line.strip_prefix(key)?.trim_start().strip_prefix('=')?;
+        Some(value.trim().trim_matches('"').to_owned())
+    })
+}
+
+#[test]
+fn every_ruby_4_0_fixture_matches_its_recorded_bytes_and_current_source() {
+    let manifest: String = std::fs::read_to_string(corpus_ruby().join("MANIFEST.toml"))
+        .expect("read the Ruby corpus manifest");
+    let mut checked: usize = 0;
+    for block in manifest.split("[[fixtures]]") {
+        let Some(path): Option<String> = manifest_field(block, "path") else {
+            continue;
+        };
+        let Some(name): Option<&str> = path
+            .strip_prefix("mri/yarv40/")
+            .and_then(|file: &str| file.strip_suffix(".yarvc"))
+        else {
+            continue;
+        };
+        let fixture: Vec<u8> =
+            std::fs::read(corpus_ruby().join(&path)).expect("read the recorded fixture");
+        assert_eq!(
+            Some(sha256_hex(&fixture)),
+            manifest_field(block, "sha256"),
+            "{path} no longer matches the sha256 its build record states"
+        );
+        let source: Vec<u8> =
+            std::fs::read(corpus_ruby().join("behaviour").join(format!("{name}.rb")))
+                .expect("read the behaviour source");
+        assert_eq!(
+            Some(sha256_hex(&source)),
+            manifest_field(block, "source_sha256"),
+            "behaviour/{name}.rb changed after {path} was compiled; rebuild it with Ruby 4.0.7 \
+             through mri/yarv40/compile_relative.rb and update its build record"
+        );
+        checked += 1;
+    }
+    assert_eq!(
+        checked,
+        PROGRAMS.len(),
+        "every graded program has a build record"
+    );
+}
+
 #[test]
 fn a_changed_constant_in_the_recovered_ruby_4_0_program_turns_the_grade_red() {
     let graded: Graded = grade("programs", |source: &str| {

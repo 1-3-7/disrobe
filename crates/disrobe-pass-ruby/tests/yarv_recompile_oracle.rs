@@ -390,9 +390,9 @@ fn a_published_count_that_no_run_reproduces_is_rejected() {
          absent pair is a defect rather than a shape"
     );
 
-    let honest: serde_json::Value = serde_json::json!({"num": num, "den": den, "value": 98.67});
+    let plotted: serde_json::Value = serde_json::json!({"num": num, "den": den, "value": 98.67});
     assert!(
-        published_value_defect(&honest, PUBLISHED_MEGAFILE_BAR).is_none(),
+        published_value_defect(&plotted, PUBLISHED_MEGAFILE_BAR).is_none(),
         "a plotted value equal to its own fraction must be accepted"
     );
     for inconsistent in [
