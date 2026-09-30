@@ -1,12 +1,11 @@
-use std::ffi::{OsStr, OsString};
 use std::fmt::Write as FmtWrite;
 use std::fs;
-use std::io::{ErrorKind, Write as IoWrite};
-use std::path::{Path, PathBuf};
+use std::io::ErrorKind;
+use std::path::PathBuf;
 
 use sha2::{Digest, Sha256};
 
-pub(crate) const REQUIRE_BUNDLE_VAR: &str = "DISROBE_REQUIRE_HERMES_PRODUCTION_BUNDLE";
+pub(crate) const BUNDLE_PREREQUISITE: &str = "disrobe-pass-mobile::discord-hermes-bundle";
 pub(crate) const BUNDLE_REPO_PATH: &str = "corpus/mobile/hermes/discord/index.android.bundle";
 pub(crate) const BUNDLE_MANIFEST_NAME: &str = "discord/index.android.bundle";
 pub(crate) const BUNDLE_SIZE_BYTES: usize = 66_978_165;
@@ -15,28 +14,6 @@ pub(crate) const BUNDLE_SHA256: &str =
 pub(crate) const PUBLISHED_FUNCTION_COUNT: usize = 122_633;
 pub(crate) const PUBLISHED_BAR_HEADING: &str = "Hermes production-bundle parse scale";
 pub(crate) const PUBLISHED_BAR_LABEL: &str = "functions parsed";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum BundleRequirement {
-    Optional,
-    Mandatory,
-}
-
-pub(crate) fn requirement_from_value(value: Option<&OsStr>) -> BundleRequirement {
-    let Some(raw): Option<&OsStr> = value else {
-        return BundleRequirement::Optional;
-    };
-    let text: String = raw.to_string_lossy().trim().to_ascii_lowercase();
-    match text.as_str() {
-        "" | "0" | "false" | "no" | "off" | "optional" => BundleRequirement::Optional,
-        _ => BundleRequirement::Mandatory,
-    }
-}
-
-pub(crate) fn bundle_requirement() -> BundleRequirement {
-    let raw: Option<OsString> = std::env::var_os(REQUIRE_BUNDLE_VAR);
-    requirement_from_value(raw.as_deref())
-}
 
 pub(crate) fn repo_root() -> PathBuf {
     let mut root: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -81,37 +58,6 @@ pub(crate) fn manifest_sample_block<'a>(manifest: &'a str, name: &str) -> Option
     Some(&rest[..end])
 }
 
-pub(crate) fn enforce_bundle_requirement(case: &str, requirement: BundleRequirement) {
-    let path: PathBuf = bundle_path();
-    assert!(
-        requirement == BundleRequirement::Optional,
-        "{REQUIRE_BUNDLE_VAR} makes the production Hermes bundle mandatory for this run, so {case} \
-         cannot be graded and must not report success. The bundle is absent: expected it at \
-         {resolved}, which is {BUNDLE_REPO_PATH} in the repository. That directory is gitignored and \
-         the bundle is never tracked, because it is {BUNDLE_SIZE_BYTES} bytes of proprietary \
-         third-party bytecode that this repository has no right to redistribute, so the published \
-         {PUBLISHED_FUNCTION_COUNT}-function figure does not reproduce from a clean checkout. Supply \
-         the exact sample declared in corpus/mobile/hermes/MANIFEST.toml (sha256 {BUNDLE_SHA256}), \
-         or clear {REQUIRE_BUNDLE_VAR} to permit a run that grades nothing here.",
-        resolved = path.display(),
-    );
-    announce_ungraded(case, &path);
-}
-
-fn announce_ungraded(case: &str, path: &Path) {
-    let line: String = format!(
-        "\nUNGRADED {case}: the production Hermes bundle is absent at {resolved} \
-         ({BUNDLE_REPO_PATH}), so this case measured nothing and graded nothing. The published \
-         {PUBLISHED_FUNCTION_COUNT}-function parse figure is local only and does not reproduce from \
-         a clean checkout, because the bundle is proprietary third-party bytecode that is never \
-         tracked. Set {REQUIRE_BUNDLE_VAR}=1 to fail instead of skipping when it is absent.\n",
-        resolved = path.display(),
-    );
-    let mut sink: std::io::StdoutLock<'static> = std::io::stdout().lock();
-    drop(sink.write_all(line.as_bytes()));
-    drop(sink.flush());
-}
-
 pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
     let mut hasher: Sha256 = Sha256::new();
     hasher.update(bytes);
@@ -148,10 +94,7 @@ fn enforce_declared_bytes(bytes: &[u8]) {
     );
 }
 
-pub(crate) fn load_bundle_with_requirement(
-    case: &str,
-    requirement: BundleRequirement,
-) -> Option<Vec<u8>> {
+pub(crate) fn load_bundle(case: &str) -> Option<Vec<u8>> {
     let path: PathBuf = bundle_path();
     match fs::read(&path) {
         Ok(bytes) => {
@@ -159,8 +102,17 @@ pub(crate) fn load_bundle_with_requirement(
             Some(bytes)
         }
         Err(err) if err.kind() == ErrorKind::NotFound => {
-            enforce_bundle_requirement(case, requirement);
-            None
+            let what: String = format!(
+                "the production Hermes bundle at {} ({BUNDLE_REPO_PATH}, {BUNDLE_SIZE_BYTES} \
+                 bytes, sha256 {BUNDLE_SHA256}), proprietary third-party bytecode the \
+                 repository never tracks; supply the sample corpus/mobile/hermes/MANIFEST.toml \
+                 declares",
+                path.display()
+            );
+            match disrobe_testkit::require::<()>(BUNDLE_PREREQUISITE, &what, None) {
+                Ok(_) => None,
+                Err(error) => panic!("{case}: {error}"),
+            }
         }
         Err(err) => panic!(
             "{case}: the production Hermes bundle at {} exists but could not be read ({err}); an \
@@ -169,10 +121,6 @@ pub(crate) fn load_bundle_with_requirement(
             path.display()
         ),
     }
-}
-
-pub(crate) fn load_bundle(case: &str) -> Option<Vec<u8>> {
-    load_bundle_with_requirement(case, bundle_requirement())
 }
 
 pub(crate) fn published_bar(heading_needle: &str, label: &str) -> serde_json::Value {

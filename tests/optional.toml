@@ -1,2 +1,37 @@
 [optional]
 "disrobe-taint::graded_corpus" = "the pinned NIST SARD Juliet v1.3 corpus (153 MB) is not committed and no CI job downloads it"
+"disrobe-pass-mobile::discord-hermes-bundle" = "the production Discord Hermes bundle is proprietary third-party bytecode the repository has no right to redistribute, so CI never has it"
+"disrobe-pass-mobile::rustdesk-flutter-apk" = "the pinned RustDesk 1.4.9 release APK (27 MB) is not committed and no CI job downloads it"
+"disrobe-pass-native::local-packer-samples" = "the untracked packer samples are third-party binaries packed locally that the repository does not redistribute, so CI never has them; every tracked packer fixture stays required"
+"disrobe-pass-native::local::corpus/mobile/flutter/rustdesk/libflutter.so" = "the RustDesk libflutter.so is an untracked third-party library no CI job downloads"
+"disrobe-pass-native::local::corpus/native/unbind/notepad.pe64.exe" = "the Windows notepad.exe unbind subject is an untracked Microsoft binary the repository cannot redistribute, so CI never has it"
+"disrobe-pass-native::local::corpus/native/unbind/kernel32.pe32.dll" = "the Windows kernel32.dll unbind subject is an untracked Microsoft binary the repository cannot redistribute, so CI never has it"
+"disrobe-pass-native::osslsigncode" = "no CI job installs osslsigncode"
+"disrobe-pass-native::python-lief" = "no CI job installs the lief Python package"
+"disrobe-binfmt::regenerable::appimage" = "the appimage fixture is a local-only artifact a .gitignore rule keeps out of the tree and no CI job rebuilds it from the corpus/binfmt/MANIFEST.toml recipe"
+"disrobe-binfmt::regenerable::cramfs" = "the cramfs fixture is a local-only artifact a .gitignore rule keeps out of the tree and no CI job rebuilds it from the corpus/binfmt/MANIFEST.toml recipe"
+"disrobe-binfmt::regenerable::docker" = "the docker fixture is a local-only artifact a .gitignore rule keeps out of the tree and no CI job rebuilds it from the corpus/binfmt/MANIFEST.toml recipe"
+"disrobe-binfmt::regenerable::ext4" = "the ext4 fixture is a local-only artifact a .gitignore rule keeps out of the tree and no CI job rebuilds it from the corpus/binfmt/MANIFEST.toml recipe"
+"disrobe-binfmt::regenerable::msi" = "the msi fixture is a local-only artifact a .gitignore rule keeps out of the tree and no CI job rebuilds it from the corpus/binfmt/MANIFEST.toml recipe"
+"disrobe-binfmt::regenerable::msix" = "the msix fixture is a local-only artifact a .gitignore rule keeps out of the tree and no CI job rebuilds it from the corpus/binfmt/MANIFEST.toml recipe"
+"disrobe-binfmt::regenerable::nsis" = "the nsis fixture is a local-only artifact a .gitignore rule keeps out of the tree and no CI job rebuilds it from the corpus/binfmt/MANIFEST.toml recipe"
+"disrobe-binfmt::regenerable::oci" = "the oci fixture is a local-only artifact a .gitignore rule keeps out of the tree and no CI job rebuilds it from the corpus/binfmt/MANIFEST.toml recipe"
+"disrobe-binfmt::regenerable::snap" = "the snap fixture is a local-only artifact a .gitignore rule keeps out of the tree and no CI job rebuilds it from the corpus/binfmt/MANIFEST.toml recipe"
+"disrobe-binfmt::regenerable::squashfs" = "the squashfs fixture is a local-only artifact a .gitignore rule keeps out of the tree and no CI job rebuilds it from the corpus/binfmt/MANIFEST.toml recipe"
+"disrobe-binfmt::cabextract" = "no CI job installs cabextract"
+
+[optional.linux]
+"disrobe-binfmt::makecab" = "makecab.exe ships only with Windows, and CI demands it only on the Windows runner"
+"disrobe-binfmt::wix" = "the WiX toolset is Windows-only, and CI installs it only on the Windows runner"
+
+[optional.macos]
+"disrobe-binfmt::makecab" = "makecab.exe ships only with Windows, and CI demands it only on the Windows runner"
+"disrobe-binfmt::wix" = "the WiX toolset is Windows-only, and CI installs it only on the Windows runner"
+"disrobe-binfmt::7z" = "CI provisions 7-Zip on the Linux and Windows runners only"
+"disrobe-binfmt::makensis" = "CI installs NSIS on the Linux and Windows runners only"
+"disrobe-pass-scriptlang::tclsh" = "CI installs Tcl on the Linux runner only"
+
+[optional.windows]
+"disrobe-binfmt::readelf" = "CI provisions and verifies readelf by name on the Linux runner only, and macOS gets llvm-readelf from its llvm@20 install"
+"disrobe-binfmt::llvm-readobj" = "CI provisions and verifies llvm-readobj on the Linux (LLVM 18) and macOS (llvm@20) runners only"
+"disrobe-pass-scriptlang::tclsh" = "CI installs Tcl on the Linux runner only; the Windows runner carries no Tcl package"

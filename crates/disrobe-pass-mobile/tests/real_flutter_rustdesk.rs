@@ -8,11 +8,8 @@
     clippy::single_char_pattern
 )]
 
-use std::any::Any;
-use std::ffi::{OsStr, OsString};
 use std::fmt::Write as FmtWrite;
 use std::io::{Cursor, Read as _};
-use std::panic::UnwindSafe;
 use std::path::PathBuf;
 
 use disrobe_core::scratch::scratch_root;
@@ -33,7 +30,7 @@ const RUSTDESK_APK_SHA256: &str =
     "285b4f0735c000e5155b9a6f087b57744e46c960f4332963f51add1804982102";
 const RUSTDESK_LIBAPP_ENTRY: &str = "lib/arm64-v8a/libapp.so";
 const RUSTDESK_LIBFLUTTER_ENTRY: &str = "lib/arm64-v8a/libflutter.so";
-const REQUIRE_CORPUS_VAR: &str = "DISROBE_REQUIRE_RUSTDESK_FLUTTER";
+const CORPUS_PREREQUISITE: &str = "disrobe-pass-mobile::rustdesk-flutter-apk";
 const CORPUS_MANIFEST_NAME: &str = "rustdesk/rustdesk-1.4.9-aarch64-signed.apk";
 
 const PINNED_FUNCTION_BOUNDARIES: usize = 23_471;
@@ -41,28 +38,6 @@ const PINNED_RAW_CLASS_NAME_STRINGS: usize = 10_351;
 const PINNED_RAW_METHOD_NAME_STRINGS: usize = 28_952;
 const PINNED_RAW_LIBRARY_URIS: usize = 1_489;
 const PINNED_INDEPENDENT_ORACLE_DART_URIS: usize = 1_271;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CorpusRequirement {
-    Optional,
-    Mandatory,
-}
-
-fn requirement_from_value(value: Option<&OsStr>) -> CorpusRequirement {
-    let Some(raw): Option<&OsStr> = value else {
-        return CorpusRequirement::Optional;
-    };
-    let text: String = raw.to_string_lossy().trim().to_ascii_lowercase();
-    match text.as_str() {
-        "" | "0" | "false" | "no" | "off" => CorpusRequirement::Optional,
-        _ => CorpusRequirement::Mandatory,
-    }
-}
-
-fn corpus_requirement() -> CorpusRequirement {
-    let raw: Option<OsString> = std::env::var_os(REQUIRE_CORPUS_VAR);
-    requirement_from_value(raw.as_deref())
-}
 
 fn cache_root() -> PathBuf {
     scratch_root().join("rustdesk-flutter-cache")
@@ -105,32 +80,6 @@ fn fetch_command() -> String {
     )
 }
 
-fn announce_ungraded(case: &str) {
-    println!(
-        "\nUNGRADED {case}: RustDesk {RUSTDESK_RELEASE_TAG} ({RUSTDESK_APK_NAME}, AGPL-3.0, \
-         {url}) is absent from the local cache at {apk}. It is {RUSTDESK_APK_SIZE_BYTES} bytes, \
-         pinned by sha256 {RUSTDESK_APK_SHA256}, and is never fetched automatically or tracked in \
-         this repository because of its size, not its licence. Populate the cache reproducibly \
-         with:\n  {cmd}\nthen re-run this test. Set {REQUIRE_CORPUS_VAR}=1 to fail instead of \
-         skipping when the corpus is absent. This result is [local] only: no CI job populates the \
-         cache, so it never runs there.\n",
-        url = RUSTDESK_APK_URL,
-        apk = cached_apk_path().display(),
-        cmd = fetch_command(),
-    );
-}
-
-fn enforce_requirement(case: &str, requirement: CorpusRequirement) {
-    assert!(
-        requirement == CorpusRequirement::Optional,
-        "{REQUIRE_CORPUS_VAR} makes the RustDesk Flutter sample mandatory for {case}, so it \
-         cannot be graded and must not report success. Populate the cache with:\n  {}\nor clear \
-         {REQUIRE_CORPUS_VAR} to permit a run that grades nothing here.",
-        fetch_command(),
-    );
-    announce_ungraded(case);
-}
-
 fn ensure_rustdesk_apk(case: &str) -> Option<Vec<u8>> {
     let apk_path: PathBuf = cached_apk_path();
     match std::fs::read(&apk_path) {
@@ -147,8 +96,17 @@ fn ensure_rustdesk_apk(case: &str) -> Option<Vec<u8>> {
             Some(bytes)
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            enforce_requirement(case, corpus_requirement());
-            None
+            let what: String = format!(
+                "RustDesk {RUSTDESK_RELEASE_TAG} ({RUSTDESK_APK_NAME}, AGPL-3.0, \
+                 {RUSTDESK_APK_SIZE_BYTES} bytes, sha256 {RUSTDESK_APK_SHA256}) in the local \
+                 cache at {}; populate it with: {}",
+                apk_path.display(),
+                fetch_command()
+            );
+            match disrobe_testkit::require::<()>(CORPUS_PREREQUISITE, &what, None) {
+                Ok(_) => None,
+                Err(error) => panic!("{case}: {error}"),
+            }
         }
         Err(err) => panic!(
             "{case}: {} exists but could not be read ({err}); an unreadable cache entry is never \
@@ -528,59 +486,4 @@ fn corpus_manifest_declares_the_exact_sample_this_file_grades() {
          licence, which is why the fetch-by-url pattern is legitimate here rather than a wall; \
          entry was:\n{block}"
     );
-}
-
-fn message_from_seeded_defect(what: &str, check: impl FnOnce() + UnwindSafe) -> String {
-    eprintln!("seeding a defect ({what}); the failure below is the expected outcome");
-    let outcome: std::thread::Result<()> = std::panic::catch_unwind(check);
-    let payload: Box<dyn Any + Send> = outcome.expect_err(
-        "a seeded defect must make this gate fail; a check that accepts the seeded state pins \
-         nothing",
-    );
-    let owned: Option<String> = payload.downcast_ref::<String>().cloned();
-    owned
-        .or_else(|| {
-            payload
-                .downcast_ref::<&str>()
-                .map(|message: &&str| (*message).to_owned())
-        })
-        .unwrap_or_else(|| panic!("the failure must carry a message naming what regressed"))
-}
-
-#[test]
-fn an_absent_rustdesk_apk_fails_instead_of_skipping_when_the_run_demands_it() {
-    let message: String = message_from_seeded_defect("an absent rustdesk apk cache entry", || {
-        enforce_requirement("a probe case", CorpusRequirement::Mandatory);
-    });
-    assert!(
-        message.contains(REQUIRE_CORPUS_VAR),
-        "the failure must name the variable that made the sample mandatory: {message}"
-    );
-    assert!(
-        message.contains(RUSTDESK_APK_URL) || message.contains(&fetch_command()),
-        "the failure must name the exact fetch command that reproduces the sample: {message}"
-    );
-}
-
-#[test]
-fn the_requirement_variable_reads_every_documented_spelling() {
-    assert_eq!(
-        requirement_from_value(None),
-        CorpusRequirement::Optional,
-        "unset must leave the corpus optional"
-    );
-    for off in ["", "0", "false", "no", "off", "  OFF  "] {
-        assert_eq!(
-            requirement_from_value(Some(OsStr::new(off))),
-            CorpusRequirement::Optional,
-            "`{off}` must leave the corpus optional"
-        );
-    }
-    for on in ["1", "true", "yes", "mandatory", "1 "] {
-        assert_eq!(
-            requirement_from_value(Some(OsStr::new(on))),
-            CorpusRequirement::Mandatory,
-            "`{on}` must make an absent corpus fatal"
-        );
-    }
 }

@@ -12,20 +12,16 @@
 #[allow(clippy::redundant_pub_crate, dead_code, clippy::panic)]
 mod hermes_production_bundle;
 
-use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet};
-use std::ffi::OsStr;
-use std::panic::UnwindSafe;
 
 use disrobe_pass_mobile::{
     DetectedKind, HERMES_MAGIC_LE_BYTES, HermesHeader, HermesModule, HermesStringKind,
     SmallFunctionHeader, detect_kind, parse_hermes_header, parse_hermes_module,
 };
 use hermes_production_bundle::{
-    BUNDLE_MANIFEST_NAME, BUNDLE_REPO_PATH, BUNDLE_SHA256, BUNDLE_SIZE_BYTES, BundleRequirement,
-    PUBLISHED_BAR_HEADING, PUBLISHED_BAR_LABEL, PUBLISHED_FUNCTION_COUNT, REQUIRE_BUNDLE_VAR,
-    corpus_manifest_path, corpus_manifest_text, enforce_bundle_requirement, load_bundle,
-    manifest_sample_block, published_bar, requirement_from_value,
+    BUNDLE_MANIFEST_NAME, BUNDLE_SHA256, BUNDLE_SIZE_BYTES, PUBLISHED_BAR_HEADING,
+    PUBLISHED_BAR_LABEL, PUBLISHED_FUNCTION_COUNT, corpus_manifest_path, corpus_manifest_text,
+    load_bundle, manifest_sample_block, published_bar,
 };
 
 const PINNED_VERSION: u32 = 96;
@@ -357,59 +353,4 @@ fn corpus_manifest_declares_the_exact_bundle_this_file_grades() {
          proprietary, which is the reason it is not tracked and the reason the published figure is \
          local only; entry was:\n{block}"
     );
-}
-
-#[test]
-fn an_absent_bundle_fails_instead_of_skipping_when_the_run_demands_it() {
-    let message: String = message_from_seeded_defect("an absent production bundle", || {
-        enforce_bundle_requirement("a probe case", BundleRequirement::Mandatory);
-    });
-    assert!(
-        message.contains(REQUIRE_BUNDLE_VAR),
-        "the failure must name the variable that made the bundle mandatory: {message}"
-    );
-    assert!(
-        message.contains(BUNDLE_REPO_PATH),
-        "the failure must name the path the bundle was expected at: {message}"
-    );
-    assert!(
-        message.contains(BUNDLE_SHA256),
-        "the failure must name the digest of the sample that would satisfy it: {message}"
-    );
-}
-
-#[test]
-fn the_requirement_variable_reads_every_documented_spelling() {
-    assert_eq!(requirement_from_value(None), BundleRequirement::Optional);
-    for off in ["", "0", "false", "no", "off", "optional", "  OFF  "] {
-        assert_eq!(
-            requirement_from_value(Some(OsStr::new(off))),
-            BundleRequirement::Optional,
-            "`{off}` must leave the bundle optional"
-        );
-    }
-    for on in ["1", "true", "yes", "all", "local", "1 "] {
-        assert_eq!(
-            requirement_from_value(Some(OsStr::new(on))),
-            BundleRequirement::Mandatory,
-            "`{on}` must make an absent bundle fatal"
-        );
-    }
-}
-
-fn message_from_seeded_defect(what: &str, check: impl FnOnce() + UnwindSafe) -> String {
-    eprintln!("seeding a defect ({what}); the failure below is the expected outcome");
-    let outcome: std::thread::Result<()> = std::panic::catch_unwind(check);
-    let payload: Box<dyn Any + Send> = outcome.expect_err(
-        "a seeded defect must make this gate fail; a check that accepts the seeded state pins \
-         nothing",
-    );
-    let owned: Option<String> = payload.downcast_ref::<String>().cloned();
-    owned
-        .or_else(|| {
-            payload
-                .downcast_ref::<&str>()
-                .map(|message: &&str| (*message).to_owned())
-        })
-        .unwrap_or_else(|| panic!("the failure must carry a message naming what regressed"))
 }

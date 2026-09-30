@@ -131,9 +131,9 @@ curl -sSL -o "$TMPDIR/disrobe-scratch/rustdesk-flutter-cache/rustdesk-1.4.9-aarc
 cargo test -p disrobe-pass-mobile --test real_flutter_rustdesk
 ```
 
-This result is `[local]`: no CI job populates the cache, so it never runs there, and
-`DISROBE_REQUIRE_RUSTDESK_FLUTTER=1` fails the run instead of skipping it when the cache
-is absent. On this real build the RAW static path recovers
+This result is `[local]`: no CI job populates the cache, so `tests/optional.toml` lists the
+sample and a run without it writes a not-measured record instead of passing; without that
+entry an absent cache fails the test by name. On this real build the RAW static path recovers
 <!-- m:flutter_rustdesk_function_boundaries -->23,471<!-- /m --> function boundaries,
 10,351 class-name strings, 28,952 method-name strings, and 1,489 library URIs, each
 cross-checked against an independent whole-file `package:*.dart` string scan that finds
