@@ -62,6 +62,7 @@ pub(crate) fn run(root: &Path, full: bool, crate_tests: bool, tests: bool) -> Re
     }
 
     let mut total: Duration = Duration::ZERO;
+    total += gate("workflows", || gate_workflows(root))?;
     total += gate("fmt", || gate_fmt(root, &scope))?;
     total += gate("regen", || gate_regen(root, &scope))?;
     total += gate("health", || {
@@ -125,6 +126,58 @@ fn gate<F: FnOnce() -> Result<GateOutcome>>(name: &str, run_gate: F) -> Result<D
         }
     }
     Ok(elapsed)
+}
+
+const MAX_WORKFLOW_BYTES: u64 = 1024 * 1024;
+
+fn gate_workflows(root: &Path) -> Result<GateOutcome> {
+    let mut files: Vec<std::path::PathBuf> = Vec::new();
+    let workflows: std::path::PathBuf = root.join(".github").join("workflows");
+    for entry in std::fs::read_dir(&workflows)
+        .wrap_err_with(|| format!("listing {}", workflows.display()))?
+    {
+        let path: std::path::PathBuf = entry
+            .wrap_err_with(|| format!("listing {}", workflows.display()))?
+            .path();
+        if path
+            .extension()
+            .is_some_and(|ext: &std::ffi::OsStr| ext == "yml" || ext == "yaml")
+        {
+            files.push(path);
+        }
+    }
+    let actions: std::path::PathBuf = root.join(".github").join("actions");
+    if actions.is_dir() {
+        for entry in std::fs::read_dir(&actions)
+            .wrap_err_with(|| format!("listing {}", actions.display()))?
+        {
+            let action: std::path::PathBuf = entry
+                .wrap_err_with(|| format!("listing {}", actions.display()))?
+                .path()
+                .join("action.yml");
+            if action.is_file() {
+                files.push(action);
+            }
+        }
+    }
+    files.sort();
+    if files.is_empty() {
+        bail!("{} holds no workflow files", workflows.display());
+    }
+    for path in &files {
+        let text: String = crate::fileio::read_text_bounded(path, MAX_WORKFLOW_BYTES)?;
+        parse_workflow(&text).wrap_err_with(|| {
+            format!(
+                "{} is not valid YAML, so GitHub rejects the whole workflow and none of its jobs run",
+                path.display()
+            )
+        })?;
+    }
+    Ok(GateOutcome::Ran)
+}
+
+fn parse_workflow(text: &str) -> Result<serde_yaml_ng::Value> {
+    Ok(serde_yaml_ng::from_str::<serde_yaml_ng::Value>(text)?)
 }
 
 fn gate_fmt(root: &Path, scope: &Scope) -> Result<GateOutcome> {
@@ -979,9 +1032,23 @@ mod tests {
     use super::{
         CrateDir, NextestListing, SELF_CRATE, Scope, ScopedTestCommands, TestTargets,
         binary_test_command, cli_executable, empty_suites, is_shared_build_input, list_command,
-        platform_gated, scoped_test_commands, should_validate_nextest_config, test_targets,
+        parse_workflow, platform_gated, scoped_test_commands, should_validate_nextest_config,
+        test_targets,
     };
     use camino::Utf8PathBuf;
+
+    #[test]
+    fn a_plain_scalar_holding_colon_space_fails_the_workflow_parse() {
+        let quoted: &str =
+            "jobs:\n  t:\n    steps:\n      - run: 'cargo test -- --ignored grade:: --nocapture'\n";
+        let plain: &str =
+            "jobs:\n  t:\n    steps:\n      - run: cargo test -- --ignored grade:: --nocapture\n";
+        assert!(parse_workflow(quoted).is_ok());
+        assert!(
+            parse_workflow(plain).is_err(),
+            "GitHub rejects this line as a mapping inside a plain scalar, so the gate must too"
+        );
+    }
 
     #[test]
     fn list_command_lists_what_the_run_would_run() {

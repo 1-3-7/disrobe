@@ -37,7 +37,7 @@ blake3 = { workspace = true }
 walkdir = "2"
 tempfile = "3"
 roxmltree = { version = "0.21.1", default-features = false, features = ["std"] }
+serde_yaml_ng = "0.10"
 
 [dev-dependencies]
 disrobe-ir = { workspace = true }
-serde_yaml_ng = "0.10"
