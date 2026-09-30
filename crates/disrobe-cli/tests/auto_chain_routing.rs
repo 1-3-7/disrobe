@@ -1,10 +1,5 @@
 #![cfg(feature = "chain")]
-#![allow(
-    clippy::expect_used,
-    clippy::unwrap_used,
-    clippy::print_stderr,
-    clippy::panic
-)]
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};

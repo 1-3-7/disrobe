@@ -1,6 +1,5 @@
 #![forbid(unsafe_code)]
 #![deny(unreachable_pub)]
-#![allow(clippy::needless_pass_by_value)]
 #![allow(clippy::redundant_pub_crate)]
 #![allow(clippy::doc_markdown)]
 #![allow(clippy::elidable_lifetime_names)]

@@ -1,4 +1,3 @@
-#![allow(clippy::needless_pass_by_value)]
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 

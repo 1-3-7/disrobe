@@ -1,4 +1,3 @@
-#![allow(clippy::needless_pass_by_value)]
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -926,12 +925,7 @@ fn write_inventory_report(
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::expect_used,
-    clippy::cast_possible_truncation,
-    clippy::panic,
-    clippy::unwrap_used
-)]
+#[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use disrobe_pass_mobile::parse_flutter_engine_symbol_map;

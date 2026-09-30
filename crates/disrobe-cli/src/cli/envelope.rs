@@ -1,4 +1,3 @@
-#![allow(clippy::needless_pass_by_value)]
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::PathBuf;

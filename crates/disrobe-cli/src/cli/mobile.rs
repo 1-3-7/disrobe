@@ -1,4 +1,3 @@
-#![allow(clippy::needless_pass_by_value)]
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};

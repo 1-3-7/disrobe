@@ -14,7 +14,6 @@ use disrobe_prowl::{
 use super::ProwlFormat;
 use crate::cli::output::OutputFormat;
 
-#[allow(clippy::struct_excessive_bools)]
 pub(crate) struct ProwlArgs {
     pub targets: Vec<String>,
     pub targets_file: Option<PathBuf>,

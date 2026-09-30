@@ -2,7 +2,6 @@
     clippy::expect_used,
     clippy::unwrap_used,
     clippy::panic,
-    clippy::print_stderr,
     clippy::redundant_closure_for_method_calls,
     clippy::uninlined_format_args,
     clippy::option_if_let_else

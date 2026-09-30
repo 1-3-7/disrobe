@@ -1,9 +1,4 @@
-#![allow(
-    clippy::expect_used,
-    clippy::panic,
-    clippy::print_stderr,
-    clippy::unwrap_used
-)]
+#![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;

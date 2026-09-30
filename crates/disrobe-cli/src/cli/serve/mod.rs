@@ -1,8 +1,4 @@
-#![allow(
-    clippy::needless_pass_by_value,
-    clippy::too_many_lines,
-    clippy::too_many_arguments
-)]
+#![allow(clippy::too_many_arguments)]
 
 mod handlers;
 mod lsp;

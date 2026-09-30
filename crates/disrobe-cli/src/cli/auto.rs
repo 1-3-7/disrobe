@@ -1,5 +1,4 @@
 #![cfg(feature = "chain")]
-#![allow(clippy::needless_pass_by_value)]
 use std::path::PathBuf;
 
 use super::backend_export::BackendExportTarget;

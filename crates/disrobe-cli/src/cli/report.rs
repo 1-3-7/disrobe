@@ -1,5 +1,4 @@
 #![cfg(feature = "chain")]
-#![allow(clippy::needless_pass_by_value)]
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::fs::File;

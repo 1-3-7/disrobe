@@ -1,5 +1,4 @@
 #![cfg(feature = "chain")]
-#![allow(clippy::needless_pass_by_value)]
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::Instant;

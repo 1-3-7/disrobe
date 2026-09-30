@@ -1,4 +1,3 @@
-#![allow(clippy::needless_pass_by_value)]
 use std::ffi::OsStr;
 use std::path::PathBuf;
 
@@ -315,7 +314,6 @@ mod tests {
 }
 
 #[cfg(test)]
-#[allow(clippy::cast_possible_truncation)]
 mod tests_support {
     fn u30(mut value: u32, out: &mut Vec<u8>) {
         loop {

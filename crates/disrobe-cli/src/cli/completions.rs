@@ -1,4 +1,3 @@
-#![allow(clippy::needless_pass_by_value)]
 use std::io::Write as _;
 use std::path::PathBuf;
 

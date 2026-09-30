@@ -1,4 +1,3 @@
-#![allow(clippy::print_stdout)]
 use std::io::{Seek as _, Write as _};
 
 use serde::de::{IgnoredAny, MapAccess, SeqAccess, Visitor};

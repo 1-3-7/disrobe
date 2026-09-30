@@ -1,4 +1,3 @@
-#![allow(clippy::needless_pass_by_value)]
 use std::path::{Path, PathBuf};
 
 use disrobe_core::time::WallClock;

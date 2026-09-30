@@ -2,7 +2,6 @@
     clippy::expect_used,
     clippy::unwrap_used,
     clippy::panic,
-    clippy::print_stderr,
     clippy::ptr_arg,
     dead_code,
     unreachable_pub

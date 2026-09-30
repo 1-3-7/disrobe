@@ -1,4 +1,3 @@
-#![allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
 use std::path::PathBuf;
 
 use clap::{Subcommand, ValueEnum};

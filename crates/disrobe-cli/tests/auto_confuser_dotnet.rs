@@ -2,7 +2,6 @@
 #![allow(
     clippy::expect_used,
     clippy::unwrap_used,
-    clippy::print_stderr,
     clippy::panic,
     clippy::unnecessary_debug_formatting
 )]

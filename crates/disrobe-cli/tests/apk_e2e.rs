@@ -3,7 +3,6 @@
     clippy::expect_used,
     clippy::unwrap_used,
     clippy::panic,
-    clippy::print_stderr,
     clippy::unnecessary_debug_formatting
 )]
 

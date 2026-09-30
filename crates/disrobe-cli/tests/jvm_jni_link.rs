@@ -1,10 +1,5 @@
 #![cfg(feature = "jvm")]
-#![allow(
-    clippy::expect_used,
-    clippy::unwrap_used,
-    clippy::panic,
-    clippy::print_stderr
-)]
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod common;
 
 use std::path::{Path, PathBuf};

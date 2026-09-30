@@ -1,15 +1,4 @@
-#![allow(
-    clippy::too_many_lines,
-    clippy::struct_excessive_bools,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_possible_wrap,
-    clippy::cast_lossless,
-    clippy::cast_precision_loss,
-    clippy::needless_pass_by_value,
-    clippy::doc_markdown,
-    clippy::too_long_first_doc_paragraph
-)]
+#![allow(clippy::doc_markdown, clippy::too_long_first_doc_paragraph)]
 
 use std::path::{Path, PathBuf};
 

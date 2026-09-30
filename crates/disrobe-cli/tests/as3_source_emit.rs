@@ -2,7 +2,6 @@
     clippy::expect_used,
     clippy::unwrap_used,
     clippy::panic,
-    clippy::cast_possible_truncation,
     clippy::doc_markdown
 )]
 

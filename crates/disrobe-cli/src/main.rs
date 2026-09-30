@@ -1,12 +1,6 @@
 #![recursion_limit = "256"]
 #![forbid(unsafe_code)]
-#![allow(
-    clippy::print_stdout,
-    clippy::print_stderr,
-    clippy::redundant_pub_crate,
-    clippy::unnecessary_wraps,
-    clippy::too_many_lines
-)]
+#![allow(clippy::redundant_pub_crate, clippy::unnecessary_wraps)]
 
 mod cli;
 

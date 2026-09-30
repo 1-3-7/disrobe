@@ -2,8 +2,7 @@
     clippy::expect_used,
     clippy::unwrap_used,
     clippy::panic,
-    clippy::unreadable_literal,
-    clippy::cast_possible_truncation
+    clippy::unreadable_literal
 )]
 
 use std::path::PathBuf;

@@ -1,4 +1,3 @@
-#![allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;

@@ -1,4 +1,3 @@
-#![allow(clippy::too_many_lines, clippy::needless_pass_by_value)]
 use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
