@@ -2499,6 +2499,7 @@ dependencies = [
  "disrobe-llm-metadata",
  "disrobe-pass-py-disasm",
  "disrobe-py-marshal",
+ "disrobe-testkit",
  "miette",
  "serde",
  "serde_json",
