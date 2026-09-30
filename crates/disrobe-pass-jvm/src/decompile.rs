@@ -17,6 +17,7 @@ use crate::decompile_struct::{
 use crate::descriptor::{self, JavaType, MethodDescriptor};
 use crate::error::{Error, Result};
 use crate::frame_infer::{DeferredAllocationPlan, plan_deferred_allocations};
+use crate::stackmap::VerificationType;
 
 pub const ACC_PUBLIC: u16 = 0x0001;
 pub const ACC_PRIVATE: u16 = 0x0002;
@@ -979,6 +980,14 @@ fn render_method_mode(
     let bool_return: bool = parsed
         .as_ref()
         .is_some_and(|md: &MethodDescriptor| matches!(md.returns, JavaType::Boolean));
+    let entry_locals: Vec<VerificationType> = parsed.as_ref().map_or_else(Vec::new, |md| {
+        crate::stackmap::entry_frame_locals(
+            md,
+            is_static,
+            name == "<init>",
+            cf.this_class_name().unwrap_or("java/lang/Object"),
+        )
+    });
     let body: MethodBody = match lift_method_body(
         cf,
         &code,
@@ -986,6 +995,7 @@ fn render_method_mode(
         &param_types,
         &parameter_value_categories,
         &boolean_params,
+        &entry_locals,
         has_this,
         bool_return,
     ) {
@@ -1771,6 +1781,14 @@ fn coerce_arg(arg: Expr, want: &JavaType) -> Expr {
             value: Box::new(arg),
         };
     }
+    if let Some((ty, _, _)) = narrow_int_param_bounds(want)
+        && matches!(arg, Expr::Local(_))
+    {
+        return Expr::Cast {
+            ty: ty.to_string(),
+            value: Box::new(arg),
+        };
+    }
     if let JavaType::Object(internal) = want
         && internal != "java/lang/Object"
         && matches!(&arg, Expr::Local(name) if local_is_object_typed(name))
@@ -1969,6 +1987,7 @@ fn receiver_is_object_local(receiver: &Expr) -> bool {
     matches!(receiver, Expr::Local(name) if local_is_object_typed(name))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn lift_method_body(
     cf: &ClassFile,
     code: &CodeAttribute,
@@ -1976,6 +1995,7 @@ fn lift_method_body(
     param_types: &BTreeMap<u16, String>,
     parameter_value_categories: &BTreeMap<u16, u8>,
     boolean_params: &BTreeSet<String>,
+    entry_locals: &[VerificationType],
     has_this: bool,
     bool_return: bool,
 ) -> Result<MethodBody> {
@@ -2014,6 +2034,8 @@ fn lift_method_body(
         &exception_table,
         parameter_value_categories,
     );
+    let verified_arrays: BTreeMap<u16, String> =
+        split_reused_reference_ranges(cf, code, &mut insns, entry_locals);
     if insns.is_empty() {
         return Ok(MethodBody {
             text: String::new(),
@@ -2052,6 +2074,8 @@ fn lift_method_body(
             format!("{} region(s): {}", exc_regions.len(), catches.join(", "))
         });
     }
+    let _verified_arrays: ThreadLocalRestore<BTreeMap<u16, String>> =
+        replace_thread_local(&VERIFIED_ARRAY_LOCALS, verified_arrays);
     let exc_conflicted: BTreeSet<u16> = exception_value_conflicted_slots(&insns, &exc_regions);
     let mut object_locals: BTreeSet<String> =
         object_typed_local_names(cf, &insns, params, &exc_conflicted);
@@ -3076,6 +3100,12 @@ fn compute_slot_types(
         if exc_conflicted.contains(&slot) || conflicts_with_seen {
             inferred.insert(slot, "Object".to_string());
         } else {
+            inferred.insert(slot, ty);
+        }
+    }
+    let store_slots: BTreeSet<u16> = insns.iter().filter_map(astore_target_slot).collect();
+    for slot in store_slots {
+        if let Some(ty) = verified_array_local_type(slot) {
             inferred.insert(slot, ty);
         }
     }
@@ -4545,6 +4575,481 @@ fn split_reused_primitive_ranges_with_budget(
         rebind_slot_to_explicit(insn, fresh);
     }
     true
+}
+
+fn split_reused_reference_ranges(
+    cf: &ClassFile,
+    code: &CodeAttribute,
+    insns: &mut [Instruction],
+    entry_locals: &[VerificationType],
+) -> BTreeMap<u16, String> {
+    if insns.is_empty() {
+        return BTreeMap::new();
+    }
+    let Ok(cfg): std::result::Result<Cfg, crate::decompile_struct::StructureError> =
+        build_cfg(insns, code, |idx: u16| {
+            crate::bytecode::class_internal_name_at(cf, idx)
+        })
+    else {
+        return BTreeMap::new();
+    };
+    let Some(store_types): Option<BTreeMap<usize, VerificationType>> =
+        crate::frame_infer::reference_store_types(
+            &cfg,
+            insns,
+            entry_locals.to_vec(),
+            &|idx: u16| crate::bytecode::field_descriptor_at(cf, idx),
+            &|idx: u16| crate::bytecode::method_name_descriptor_at(cf, idx),
+            &|idx: u16| crate::bytecode::class_internal_name_at(cf, idx),
+            &|idx: u16| ldc_verification_type(cf, idx),
+        )
+    else {
+        return BTreeMap::new();
+    };
+    let _completed: bool = split_reference_webs(
+        insns,
+        &code.exception_table,
+        &store_types,
+        entry_locals,
+        code.max_locals,
+        REUSED_LOCAL_SPLIT_WORK_LIMIT,
+    );
+    verified_array_local_types(insns, &store_types)
+}
+
+fn verified_array_local_types(
+    insns: &[Instruction],
+    store_types: &BTreeMap<usize, VerificationType>,
+) -> BTreeMap<u16, String> {
+    let mut classes: BTreeMap<u16, Option<String>> = BTreeMap::new();
+    for (index, stored) in store_types {
+        let Some(slot): Option<u16> = insns.get(*index).and_then(astore_target_slot) else {
+            continue;
+        };
+        let class: Option<String> = match stored {
+            VerificationType::Null => continue,
+            VerificationType::Object(class) if class.starts_with('[') => Some(class.clone()),
+            VerificationType::Object(_)
+            | VerificationType::Top
+            | VerificationType::Integer
+            | VerificationType::Float
+            | VerificationType::Long
+            | VerificationType::Double
+            | VerificationType::UninitializedThis
+            | VerificationType::Uninitialized { .. } => None,
+        };
+        classes
+            .entry(slot)
+            .and_modify(|current: &mut Option<String>| {
+                if *current != class {
+                    *current = None;
+                }
+            })
+            .or_insert(class);
+    }
+    classes
+        .into_iter()
+        .filter_map(|(slot, class): (u16, Option<String>)| {
+            let rendered: String = descriptor::parse_field(&class?)?.render();
+            Some((slot, rendered))
+        })
+        .collect()
+}
+
+fn verified_array_local_type(slot: u16) -> Option<String> {
+    VERIFIED_ARRAY_LOCALS
+        .with(|slot_types: &RefCell<BTreeMap<u16, String>>| slot_types.borrow().get(&slot).cloned())
+}
+
+fn ldc_verification_type(cf: &ClassFile, idx: u16) -> Option<VerificationType> {
+    let object: fn(&str) -> VerificationType =
+        |name: &str| VerificationType::Object(name.to_owned());
+    Some(match cf.constant_pool.get(usize::from(idx))? {
+        ConstantPoolEntry::Integer(_) => VerificationType::Integer,
+        ConstantPoolEntry::Float(_) => VerificationType::Float,
+        ConstantPoolEntry::Long(_) => VerificationType::Long,
+        ConstantPoolEntry::Double(_) => VerificationType::Double,
+        ConstantPoolEntry::String { .. } => object("java/lang/String"),
+        ConstantPoolEntry::Class { .. } => object("java/lang/Class"),
+        ConstantPoolEntry::MethodType { .. } => object("java/lang/invoke/MethodType"),
+        ConstantPoolEntry::MethodHandle { .. } => object("java/lang/invoke/MethodHandle"),
+        ConstantPoolEntry::Dynamic {
+            name_and_type_index,
+            ..
+        } => {
+            let (_, desc): (String, String) = name_and_type_parts(cf, *name_and_type_index)?;
+            crate::stackmap::java_type_to_verification(&descriptor::parse_field(&desc)?)
+        }
+        _ => return None,
+    })
+}
+
+#[derive(Clone, PartialEq, Eq)]
+enum ReferenceWebType {
+    Null,
+    Class(String),
+}
+
+impl ReferenceWebType {
+    fn from_verification(ty: &VerificationType) -> Option<Self> {
+        match ty {
+            VerificationType::Null => Some(Self::Null),
+            VerificationType::Object(class) => Some(Self::Class(class.clone())),
+            VerificationType::Top
+            | VerificationType::Integer
+            | VerificationType::Float
+            | VerificationType::Long
+            | VerificationType::Double
+            | VerificationType::UninitializedThis
+            | VerificationType::Uninitialized { .. } => None,
+        }
+    }
+
+    fn merge(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Null, other) | (other, Self::Null) => other,
+            (Self::Class(left), Self::Class(right)) if left == right => Self::Class(left),
+            (Self::Class(_), Self::Class(_)) => Self::Class("java/lang/Object".to_owned()),
+        }
+    }
+}
+
+struct ReferenceWebs {
+    parents: Vec<usize>,
+    load_defs: Vec<(usize, usize)>,
+}
+
+impl ReferenceWebs {
+    fn root(&mut self, def: usize) -> usize {
+        let mut root: usize = def;
+        while self.parents[root] != root {
+            root = self.parents[root];
+        }
+        let mut cursor: usize = def;
+        while self.parents[cursor] != root {
+            let next: usize = self.parents[cursor];
+            self.parents[cursor] = root;
+            cursor = next;
+        }
+        root
+    }
+
+    fn union(&mut self, left: usize, right: usize) {
+        let left_root: usize = self.root(left);
+        let right_root: usize = self.root(right);
+        if left_root != right_root {
+            self.parents[left_root.max(right_root)] = left_root.min(right_root);
+        }
+    }
+}
+
+enum ReferenceWebOutcome {
+    Webs(ReferenceWebs),
+    Unsplittable,
+    OutOfBudget,
+}
+
+fn split_reference_webs(
+    insns: &mut [Instruction],
+    exception_table: &[bytecode::ExceptionEntry],
+    store_types: &BTreeMap<usize, VerificationType>,
+    entry_locals: &[VerificationType],
+    max_locals: u16,
+    work_limit: usize,
+) -> bool {
+    let mut work: usize = 0;
+    let Some(events_by_slot): Option<BTreeMap<u16, Vec<ReusedLocalEvent>>> =
+        reused_local_events(insns, max_locals, &mut work, work_limit)
+    else {
+        return false;
+    };
+    let Some(successors): Option<Vec<Vec<usize>>> = instruction_successor_indices(insns) else {
+        return false;
+    };
+    let Some(handler_successors): Option<Vec<Vec<usize>>> =
+        exception_successor_indices(insns, exception_table, &mut work, work_limit)
+    else {
+        return false;
+    };
+    let Some(mut next_fresh): Option<u16> = first_unused_local(insns, max_locals) else {
+        return false;
+    };
+    let mut rewrites: Vec<(usize, u16)> = Vec::new();
+    for (slot, events) in &events_by_slot {
+        if events
+            .iter()
+            .any(|event: &ReusedLocalEvent| event.type_index != 4)
+        {
+            continue;
+        }
+        let stores: Vec<usize> = events
+            .iter()
+            .filter(|event: &&ReusedLocalEvent| event.is_store)
+            .map(|event: &ReusedLocalEvent| event.instruction_index)
+            .collect();
+        let entry_type: Option<ReferenceWebType> = match entry_locals.get(usize::from(*slot)) {
+            None => None,
+            Some(ty) => match ReferenceWebType::from_verification(ty) {
+                Some(web_type) => Some(web_type),
+                None => continue,
+            },
+        };
+        if stores.len() + usize::from(entry_type.is_some()) < 2 {
+            continue;
+        }
+        let mut webs: ReferenceWebs = match reference_webs(
+            insns.len(),
+            events,
+            &stores,
+            entry_type.is_some(),
+            &successors,
+            &handler_successors,
+            &mut work,
+            work_limit,
+        ) {
+            ReferenceWebOutcome::Webs(webs) => webs,
+            ReferenceWebOutcome::Unsplittable => continue,
+            ReferenceWebOutcome::OutOfBudget => return false,
+        };
+        let Some(def_types): Option<Vec<ReferenceWebType>> = stores
+            .iter()
+            .map(|index: &usize| {
+                store_types
+                    .get(index)
+                    .and_then(ReferenceWebType::from_verification)
+            })
+            .chain(entry_type.clone().map(Some))
+            .collect()
+        else {
+            continue;
+        };
+        let mut web_types: BTreeMap<usize, ReferenceWebType> = BTreeMap::new();
+        for (def, def_type) in def_types.into_iter().enumerate() {
+            let root: usize = webs.root(def);
+            let merged: ReferenceWebType = match web_types.remove(&root) {
+                Some(current) => current.merge(def_type),
+                None => def_type,
+            };
+            web_types.insert(root, merged);
+        }
+        let original_root: usize = webs.root(if entry_type.is_some() {
+            stores.len()
+        } else {
+            0
+        });
+        let Some(original_type): Option<ReferenceWebType> = web_types.get(&original_root).cloned()
+        else {
+            continue;
+        };
+        let mut fresh_by_class: BTreeMap<String, u16> = BTreeMap::new();
+        let mut fresh_by_root: BTreeMap<usize, u16> = BTreeMap::new();
+        for (root, web_type) in &web_types {
+            let ReferenceWebType::Class(class) = web_type else {
+                continue;
+            };
+            if *root == original_root || *web_type == original_type {
+                continue;
+            }
+            let fresh: u16 = if let Some(&fresh) = fresh_by_class.get(class) {
+                fresh
+            } else {
+                let fresh: u16 = next_fresh;
+                let Some(next): Option<u16> = next_fresh.checked_add(1) else {
+                    return false;
+                };
+                next_fresh = next;
+                fresh_by_class.insert(class.clone(), fresh);
+                fresh
+            };
+            fresh_by_root.insert(*root, fresh);
+        }
+        if fresh_by_root.is_empty() {
+            continue;
+        }
+        for (def, index) in stores.iter().enumerate() {
+            if let Some(&fresh) = fresh_by_root.get(&webs.root(def)) {
+                rewrites.push((*index, fresh));
+            }
+        }
+        let load_defs: Vec<(usize, usize)> = webs.load_defs.clone();
+        for (index, def) in load_defs {
+            if let Some(&fresh) = fresh_by_root.get(&webs.root(def)) {
+                rewrites.push((index, fresh));
+            }
+        }
+    }
+    for (index, fresh) in rewrites {
+        let Some(insn): Option<&mut Instruction> = insns.get_mut(index) else {
+            return false;
+        };
+        rebind_slot_to_explicit(insn, fresh);
+    }
+    true
+}
+
+#[allow(clippy::too_many_arguments)]
+fn reference_webs(
+    instruction_count: usize,
+    events: &[ReusedLocalEvent],
+    stores: &[usize],
+    has_entry: bool,
+    successors: &[Vec<usize>],
+    handler_successors: &[Vec<usize>],
+    work: &mut usize,
+    work_limit: usize,
+) -> ReferenceWebOutcome {
+    let def_count: usize = stores.len() + usize::from(has_entry);
+    let words: usize = def_count.div_ceil(64);
+    let Some(state_words): Option<usize> = instruction_count.checked_mul(words) else {
+        return ReferenceWebOutcome::OutOfBudget;
+    };
+    if claim_reused_local_split_work(work, state_words, work_limit).is_none() {
+        return ReferenceWebOutcome::OutOfBudget;
+    }
+    let mut store_def: Vec<Option<usize>> = vec![None; instruction_count];
+    for (def, index) in stores.iter().enumerate() {
+        let Some(target): Option<&mut Option<usize>> = store_def.get_mut(*index) else {
+            return ReferenceWebOutcome::Unsplittable;
+        };
+        *target = Some(def);
+    }
+    let mut incoming: Vec<Option<Vec<u64>>> = vec![None; instruction_count];
+    let mut entry_state: Vec<u64> = vec![0; words];
+    if has_entry {
+        let entry_def: usize = stores.len();
+        entry_state[entry_def / 64] |= 1 << (entry_def % 64);
+    }
+    incoming[0] = Some(entry_state);
+    let mut pending: Vec<usize> = vec![0];
+    let mut queued: Vec<bool> = vec![false; instruction_count];
+    queued[0] = true;
+    while let Some(index) = pending.pop() {
+        if claim_reused_local_split_work(work, words.saturating_add(1), work_limit).is_none() {
+            return ReferenceWebOutcome::OutOfBudget;
+        }
+        queued[index] = false;
+        let Some(state): Option<Vec<u64>> = incoming[index].clone() else {
+            continue;
+        };
+        let outgoing: Vec<u64> = match store_def[index] {
+            Some(def) => {
+                let mut only: Vec<u64> = vec![0; words];
+                only[def / 64] |= 1 << (def % 64);
+                only
+            }
+            None => state.clone(),
+        };
+        let thrown: Vec<u64> = state
+            .iter()
+            .zip(&outgoing)
+            .map(|(before, after): (&u64, &u64)| before | after)
+            .collect();
+        let flows: Vec<(usize, &Vec<u64>)> = successors[index]
+            .iter()
+            .map(|next: &usize| (*next, &outgoing))
+            .chain(
+                handler_successors[index]
+                    .iter()
+                    .map(|next: &usize| (*next, &thrown)),
+            )
+            .collect();
+        for (next, flowing) in flows {
+            let changed: bool = match &mut incoming[next] {
+                Some(existing) => {
+                    let mut grew: bool = false;
+                    for (word, add) in existing.iter_mut().zip(flowing) {
+                        if *word | add != *word {
+                            *word |= add;
+                            grew = true;
+                        }
+                    }
+                    grew
+                }
+                slot @ None => {
+                    *slot = Some(flowing.clone());
+                    true
+                }
+            };
+            if changed && !queued[next] {
+                queued[next] = true;
+                pending.push(next);
+            }
+        }
+    }
+    let mut webs: ReferenceWebs = ReferenceWebs {
+        parents: (0..def_count).collect(),
+        load_defs: Vec::new(),
+    };
+    for event in events
+        .iter()
+        .filter(|event: &&ReusedLocalEvent| !event.is_store)
+    {
+        if claim_reused_local_split_work(work, def_count, work_limit).is_none() {
+            return ReferenceWebOutcome::OutOfBudget;
+        }
+        let Some(Some(state)): Option<&Option<Vec<u64>>> = incoming.get(event.instruction_index)
+        else {
+            return ReferenceWebOutcome::Unsplittable;
+        };
+        let reaching: Vec<usize> = (0..def_count)
+            .filter(|def: &usize| state[def / 64] & (1 << (def % 64)) != 0)
+            .collect();
+        let Some(&first): Option<&usize> = reaching.first() else {
+            return ReferenceWebOutcome::Unsplittable;
+        };
+        for def in &reaching[1..] {
+            webs.union(first, *def);
+        }
+        webs.load_defs.push((event.instruction_index, first));
+    }
+    ReferenceWebOutcome::Webs(webs)
+}
+
+fn exception_successor_indices(
+    insns: &[Instruction],
+    exception_table: &[bytecode::ExceptionEntry],
+    work: &mut usize,
+    work_limit: usize,
+) -> Option<Vec<Vec<usize>>> {
+    let mut handlers: Vec<Vec<usize>> = vec![Vec::new(); insns.len()];
+    if exception_table.is_empty() {
+        return Some(handlers);
+    }
+    claim_reused_local_split_work(
+        work,
+        insns.len().checked_mul(exception_table.len())?,
+        work_limit,
+    )?;
+    let handler_indices: Vec<usize> = exception_table
+        .iter()
+        .map(|entry: &bytecode::ExceptionEntry| {
+            insns
+                .iter()
+                .position(|insn: &Instruction| insn.pc == u32::from(entry.handler_pc))
+        })
+        .collect::<Option<Vec<usize>>>()?;
+    for (index, insn) in insns.iter().enumerate() {
+        for (entry, handler) in exception_table.iter().zip(&handler_indices) {
+            if u32::from(entry.start_pc) <= insn.pc && insn.pc < u32::from(entry.end_pc) {
+                handlers[index].push(*handler);
+            }
+        }
+        handlers[index].sort_unstable();
+        handlers[index].dedup();
+    }
+    Some(handlers)
+}
+
+fn first_unused_local(insns: &[Instruction], max_locals: u16) -> Option<u16> {
+    let mut first: u16 = max_locals;
+    for insn in insns {
+        let Some(slot): Option<u16> = instruction_local_slot(insn) else {
+            continue;
+        };
+        let width: u16 = slot_instruction_type_index(insn, slot).map_or(1, reused_local_width);
+        first = first.max(slot.checked_add(width)?);
+    }
+    Some(first)
 }
 
 fn reused_local_events(
@@ -9485,7 +9990,12 @@ fn fold_make_concat_arm(
     if argc > stack.len() {
         return None;
     }
-    let args: Vec<Expr> = stack.split_off(stack.len() - argc);
+    let args: Vec<Expr> = stack
+        .split_off(stack.len() - argc)
+        .into_iter()
+        .zip(&parsed.params)
+        .map(|(arg, want): (Expr, &JavaType)| coerce_arg(arg, want))
+        .collect();
     let recipe: Option<String> = (bsm_name == "makeConcatWithConstants")
         .then(|| bsm.arguments.first().copied())
         .flatten()
@@ -9765,6 +10275,11 @@ thread_local! {
 
 thread_local! {
     static OBJECT_LOCAL_ARRAY_CASTS: RefCell<BTreeMap<String, String>> =
+        const { RefCell::new(BTreeMap::new()) };
+}
+
+thread_local! {
+    static VERIFIED_ARRAY_LOCALS: RefCell<BTreeMap<u16, String>> =
         const { RefCell::new(BTreeMap::new()) };
 }
 
@@ -11827,7 +12342,12 @@ fn invoke_dynamic(
             .filter(|_| bsm_name.as_deref() == Some("makeConcatWithConstants"))
             .and_then(|b| b.arguments.first())
             .and_then(|&a| bootstrap_string_arg(cf, a));
-        let folded: Expr = fold_string_concat(recipe.as_deref(), &args);
+        let typed_args: Vec<Expr> = args
+            .into_iter()
+            .zip(&parsed.params[argc - popped..])
+            .map(|(arg, want): (Expr, &JavaType)| coerce_arg(arg, want))
+            .collect();
+        let folded: Expr = fold_string_concat(recipe.as_deref(), &typed_args);
         return push(stack, folded);
     }
 

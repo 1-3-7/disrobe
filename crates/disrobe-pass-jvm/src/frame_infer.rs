@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::bytecode::{Instruction, Operands};
 use crate::decompile_struct::{BlockId, Cfg};
 use crate::descriptor::{JavaType, MethodDescriptor, parse_field, parse_method};
-use crate::stackmap::VerificationType;
+use crate::stackmap::{VerificationType, java_type_to_verification};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FrameState {
@@ -132,22 +132,8 @@ fn merge_frames(into: &mut FrameState, other: &FrameState) -> bool {
 
 fn field_type_from_descriptor(desc: &str) -> VerificationType {
     match parse_field(desc) {
-        Some(ty) => java_type_to_vt(&ty),
+        Some(ty) => java_type_to_verification(&ty),
         None => VerificationType::Top,
-    }
-}
-
-fn java_type_to_vt(ty: &JavaType) -> VerificationType {
-    match ty {
-        JavaType::Byte | JavaType::Char | JavaType::Int | JavaType::Short | JavaType::Boolean => {
-            VerificationType::Integer
-        }
-        JavaType::Float => VerificationType::Float,
-        JavaType::Long => VerificationType::Long,
-        JavaType::Double => VerificationType::Double,
-        JavaType::Object(name) => VerificationType::Object(name.clone()),
-        JavaType::Array(_) => VerificationType::Object("[".to_owned()),
-        JavaType::Void => VerificationType::Top,
     }
 }
 
@@ -233,7 +219,12 @@ fn apply_transfer(
             let idx: usize = usize::from(opcode - 0x2A);
             state.push(state.local(idx));
         }
-        0x2E | 0x30 | 0x32 | 0x33 | 0x34 | 0x35 => {
+        0x32 => {
+            state.pop();
+            let array: VerificationType = state.pop();
+            state.push(reference_array_element(&array));
+        }
+        0x2E | 0x30 | 0x33 | 0x34 | 0x35 => {
             let element: VerificationType = array_element_type(opcode);
             state.pop();
             state.pop();
@@ -502,7 +493,7 @@ fn apply_transfer(
         }
         0xBC | 0xBD => {
             state.pop();
-            state.push(VerificationType::Object("[".to_owned()));
+            state.push(VerificationType::Object(new_array_class(insn, resolver)));
         }
         0xBE => {
             state.pop();
@@ -529,12 +520,16 @@ fn apply_transfer(
             state.pop();
         }
         0xC5 => {
-            if let Operands::MultiANewArray { dimensions, .. } = insn.operands {
-                for _ in 0..dimensions {
-                    state.pop();
+            let class: String = match insn.operands {
+                Operands::MultiANewArray { index, dimensions } => {
+                    for _ in 0..dimensions {
+                        state.pop();
+                    }
+                    (resolver.class_ref)(index).unwrap_or_else(|| "java/lang/Object".to_owned())
                 }
-            }
-            state.push(VerificationType::Object("[".to_owned()));
+                _ => "java/lang/Object".to_owned(),
+            };
+            state.push(VerificationType::Object(class));
         }
         _ => return Err(FrameInferOutcome::UnmodeledOpcode),
     }
@@ -582,12 +577,51 @@ fn local_index(insn: &Instruction) -> usize {
     }
 }
 
-fn array_element_type(opcode: u8) -> VerificationType {
+fn new_array_class(insn: &Instruction, resolver: &OpcodeResolver<'_>) -> String {
+    match insn.operands {
+        Operands::NewArray(atype) => match atype {
+            4 => "[Z",
+            5 => "[C",
+            6 => "[F",
+            7 => "[D",
+            8 => "[B",
+            9 => "[S",
+            10 => "[I",
+            11 => "[J",
+            _ => "java/lang/Object",
+        }
+        .to_owned(),
+        Operands::ConstPool(idx) => match (resolver.class_ref)(idx) {
+            Some(element) if element.starts_with('[') => format!("[{element}"),
+            Some(element) => format!("[L{element};"),
+            None => "java/lang/Object".to_owned(),
+        },
+        _ => "java/lang/Object".to_owned(),
+    }
+}
+
+fn reference_array_element(array: &VerificationType) -> VerificationType {
+    let VerificationType::Object(class) = array else {
+        return VerificationType::Object("java/lang/Object".to_owned());
+    };
+    match class.strip_prefix('[') {
+        Some(element) if element.starts_with('[') => VerificationType::Object(element.to_owned()),
+        Some(element) => element
+            .strip_prefix('L')
+            .and_then(|name: &str| name.strip_suffix(';'))
+            .map_or_else(
+                || VerificationType::Object("java/lang/Object".to_owned()),
+                |name: &str| VerificationType::Object(name.to_owned()),
+            ),
+        None => VerificationType::Object("java/lang/Object".to_owned()),
+    }
+}
+
+const fn array_element_type(opcode: u8) -> VerificationType {
     match opcode {
         0x2F | 0x3F..=0x42 => VerificationType::Long,
         0x30 | 0x43..=0x46 => VerificationType::Float,
         0x31 | 0x47..=0x4A => VerificationType::Double,
-        0x32 => VerificationType::Object("java/lang/Object".to_owned()),
         _ => VerificationType::Integer,
     }
 }
@@ -632,7 +666,7 @@ fn argument_slot_count(descriptor: &MethodDescriptor) -> usize {
     descriptor
         .params
         .iter()
-        .map(|param: &JavaType| usize::from(is_wide(&java_type_to_vt(param))) + 1)
+        .map(|param: &JavaType| usize::from(is_wide(&java_type_to_verification(param))) + 1)
         .sum()
 }
 
@@ -661,7 +695,7 @@ fn invoke_transfer(
         return;
     };
     for param in md.params.iter().rev() {
-        let vt: VerificationType = java_type_to_vt(param);
+        let vt: VerificationType = java_type_to_verification(param);
         if is_wide(&vt) {
             state.pop();
         }
@@ -676,7 +710,7 @@ fn invoke_transfer(
     match md.returns {
         JavaType::Void => {}
         ref other => {
-            let vt: VerificationType = java_type_to_vt(other);
+            let vt: VerificationType = java_type_to_verification(other);
             if is_wide(&vt) {
                 state.push_wide(vt);
             } else {
@@ -837,6 +871,45 @@ pub fn infer_frames(
         total_instructions: solved.total,
         first_unmodeled: solved.first_unmodeled,
     }
+}
+
+pub(crate) fn reference_store_types(
+    cfg: &Cfg,
+    insns: &[Instruction],
+    entry_locals: Vec<VerificationType>,
+    field_ref: &dyn Fn(u16) -> Option<String>,
+    method_ref: &dyn Fn(u16) -> Option<(String, String)>,
+    class_ref: &dyn Fn(u16) -> Option<String>,
+    ldc_type: &dyn Fn(u16) -> Option<VerificationType>,
+) -> Option<BTreeMap<usize, VerificationType>> {
+    let resolver: OpcodeResolver<'_> = OpcodeResolver {
+        field_ref,
+        method_ref,
+        class_ref,
+        ldc_type,
+    };
+    let solved: SolvedFrames = solve_block_entries(cfg, insns, &resolver, entry_locals);
+    if solved.outcome != FrameInferOutcome::Converged {
+        return None;
+    }
+    let mut stored: BTreeMap<usize, VerificationType> = BTreeMap::new();
+    for block in &cfg.blocks {
+        let Some(entry) = solved.block_entry.get(&block.id) else {
+            continue;
+        };
+        let mut state: FrameState = entry.clone();
+        let (lo, hi): (usize, usize) = block.insn_range;
+        for (offset, insn) in insns.get(lo..hi)?.iter().enumerate() {
+            if matches!(insn.opcode, 0x3A | 0x4B..=0x4E) {
+                stored.insert(
+                    lo + offset,
+                    state.stack.last().cloned().unwrap_or(VerificationType::Top),
+                );
+            }
+            apply_transfer(insn, &mut state, &resolver).ok()?;
+        }
+    }
+    Some(stored)
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

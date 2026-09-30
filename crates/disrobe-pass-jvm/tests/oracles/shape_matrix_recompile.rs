@@ -275,6 +275,17 @@ const FINALLY_BRANCH_EXIT: Shape = Shape {
     ),
 };
 
+const SLOT_REUSE: Shape = Shape {
+    probe: (
+        "SlotReuseProbe.java",
+        include_str!("../fixtures/shape_matrix/SlotReuseProbe.java"),
+    ),
+    driver: (
+        "SlotReuseDriver.java",
+        include_str!("../fixtures/shape_matrix/SlotReuseDriver.java"),
+    ),
+};
+
 fn find_on_path(name: &str) -> PathBuf {
     let path_var: std::ffi::OsString = std::env::var_os("PATH").expect("PATH is set");
     let exts: &[&str] = if cfg!(windows) { &["", ".exe"] } else { &[""] };
@@ -612,6 +623,29 @@ fn a_local_holding_null_or_a_string_recompiles_from_ecj() {
         "null_local_ecj",
         &NULL_LOCAL,
         NULL_LOCAL_OUTPUT,
+    );
+}
+
+const SLOT_REUSE_OUTPUT: &str =
+    "0 1 2[],4,a0,c:x:99cx;1 2 3[0],4,b2,c:y:99cy;2 3 4[0, 1],4,c4,c:z:99cz;";
+
+#[test]
+fn a_slot_reused_with_another_reference_type_recompiles_from_javac() {
+    assert_recovered(
+        Compiler::Javac,
+        "slot_reuse_javac",
+        &SLOT_REUSE,
+        SLOT_REUSE_OUTPUT,
+    );
+}
+
+#[test]
+fn a_slot_reused_with_another_reference_type_recompiles_from_ecj() {
+    assert_recovered(
+        Compiler::Ecj16,
+        "slot_reuse_ecj",
+        &SLOT_REUSE,
+        SLOT_REUSE_OUTPUT,
     );
 }
 

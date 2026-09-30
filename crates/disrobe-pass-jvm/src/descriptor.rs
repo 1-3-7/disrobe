@@ -33,6 +33,23 @@ impl JavaType {
         }
     }
 
+    #[must_use]
+    pub fn descriptor(&self) -> String {
+        match self {
+            Self::Byte => "B".to_owned(),
+            Self::Char => "C".to_owned(),
+            Self::Double => "D".to_owned(),
+            Self::Float => "F".to_owned(),
+            Self::Int => "I".to_owned(),
+            Self::Long => "J".to_owned(),
+            Self::Short => "S".to_owned(),
+            Self::Boolean => "Z".to_owned(),
+            Self::Void => "V".to_owned(),
+            Self::Object(internal) => format!("L{internal};"),
+            Self::Array(inner) => format!("[{}", inner.descriptor()),
+        }
+    }
+
     #[inline]
     #[must_use]
     pub const fn category_two(&self) -> bool {

@@ -20,7 +20,7 @@ pub enum VerificationType {
     Object(String),
 }
 
-fn java_type_to_verification(ty: &JavaType) -> VerificationType {
+pub(crate) fn java_type_to_verification(ty: &JavaType) -> VerificationType {
     match ty {
         JavaType::Byte | JavaType::Char | JavaType::Int | JavaType::Short | JavaType::Boolean => {
             VerificationType::Integer
@@ -29,7 +29,7 @@ fn java_type_to_verification(ty: &JavaType) -> VerificationType {
         JavaType::Long => VerificationType::Long,
         JavaType::Double => VerificationType::Double,
         JavaType::Object(internal) => VerificationType::Object(internal.clone()),
-        JavaType::Array(_) => VerificationType::Object("[".to_owned()),
+        JavaType::Array(_) => VerificationType::Object(ty.descriptor()),
         JavaType::Void => VerificationType::Top,
     }
 }
