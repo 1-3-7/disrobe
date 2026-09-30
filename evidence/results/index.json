@@ -7,16 +7,16 @@
       "comparison_basis": "per-tool emitted-region compile yields; no cross-tool ranking",
       "competitors": [
         {
-          "clean": 160,
+          "clean": 197,
           "emitted": 228,
           "is_disrobe": true,
           "leg": "dex",
           "metric": "emitted-region compile yield (clean / emitted)",
           "name": "disrobe (in-house Dalvik, DEX input)",
-          "result": "160 clean / 228 emitted (70.2%)",
+          "result": "197 clean / 228 emitted (86.4%)",
           "role": "disrobe",
           "status": "ok",
-          "value": 70.17543859649123,
+          "value": 86.40350877192982,
           "version": "n/a (in-process)"
         },
         {
@@ -33,16 +33,16 @@
           "version": "1.5.5"
         },
         {
-          "clean": 181,
+          "clean": 180,
           "emitted": 181,
           "is_disrobe": true,
           "leg": "jar",
           "metric": "emitted-region compile yield (clean / emitted)",
           "name": "disrobe (in-house JVM, JAR input)",
-          "result": "181 clean / 181 emitted (100.0%)",
+          "result": "180 clean / 181 emitted (99.4%)",
           "role": "disrobe",
           "status": "ok",
-          "value": 100.0,
+          "value": 99.4475138121547,
           "version": "n/a (in-process)"
         },
         {
@@ -65,7 +65,7 @@
       "floor": null,
       "floor_holds": true,
       "id": "apk-jadx-cfr",
-      "measured": "Android DEX: `disrobe` 160 / 228 (70.2%) vs JADX 281 / 303 (92.7%); JVM classfile: `disrobe` 181 / 181 (100.0%) vs CFR 152 / 166 (91.6%)",
+      "measured": "Android DEX: `disrobe` 197 / 228 (86.4%) vs JADX 281 / 303 (92.7%); JVM classfile: `disrobe` 180 / 181 (99.4%) vs CFR 152 / 166 (91.6%)",
       "oracle_strength": "recompile-only",
       "pairs": [
         {
@@ -81,10 +81,10 @@
           },
           "disrobe": {
             "certified": true,
-            "clean": 160,
+            "clean": 197,
             "emitted": 228,
             "name": "disrobe (in-house Dalvik, DEX input)",
-            "value": 70.17543859649123,
+            "value": 86.40350877192982,
             "version": "n/a (in-process)"
           },
           "id": "dex",
@@ -104,10 +104,10 @@
           },
           "disrobe": {
             "certified": true,
-            "clean": 181,
+            "clean": 180,
             "emitted": 181,
             "name": "disrobe (in-house JVM, JAR input)",
-            "value": 100.0,
+            "value": 99.4475138121547,
             "version": "n/a (in-process)"
           },
           "id": "jar",
