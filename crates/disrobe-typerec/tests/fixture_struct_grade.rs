@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use disrobe_core::scratch::ScratchDir;
+use disrobe_testkit::Available;
 use disrobe_typerec::CellStore;
 use disrobe_typerec::cfg;
 use disrobe_typerec::decode::decode_all;
@@ -333,24 +334,28 @@ fn has_indexed_rbp_memory(text: &[u8], base: u64) -> bool {
     false
 }
 
-const NATIVE_TOOLCHAIN_VAR: &str = "DISROBE_REQUIRE_NATIVE_TOOLCHAIN";
+const INDEXED_GRADED: &str = "the O2 indexed stack fixture graded against its fresh DWARF";
 
-fn missing_prerequisite(what: &str) {
-    assert!(
-        std::env::var_os(NATIVE_TOOLCHAIN_VAR).is_none(),
-        "{NATIVE_TOOLCHAIN_VAR} is set, so {what} must be callable on PATH"
-    );
-    eprintln!(
-        "UNGRADED: {what} is not callable on PATH; set {NATIVE_TOOLCHAIN_VAR}=1 to fail instead"
-    );
+fn require_on_path(tool: &str) {
+    let prerequisite: String = format!("disrobe-typerec::{tool}");
+    let what: String = format!("`{tool}` callable on PATH");
+    match disrobe_testkit::require(&prerequisite, &what, tool_available(tool).then_some(())) {
+        Ok(Available::Present(())) => {}
+        Ok(Available::NotMeasured { record }) => panic!(
+            "tests/optional.toml lists {prerequisite}, but {INDEXED_GRADED} has no result without \
+             it, so that entry only hides the gap recorded in {}; remove it",
+            record.display()
+        ),
+        Err(error) => panic!(
+            "{INDEXED_GRADED} was measured against nothing and must not report success: {error}"
+        ),
+    }
 }
 
 #[test]
 fn o2_indexed_stack_fixture_matches_dwarf_offsets_and_widths() {
-    if !tool_available("clang") || !tool_available("objcopy") {
-        missing_prerequisite("clang and objcopy");
-        return;
-    }
+    require_on_path("clang");
+    require_on_path("objcopy");
     let scratch: ScratchDir = ScratchDir::create("disrobe_typerec_indexed").expect(
         "a scratch directory is not an optional prerequisite; failing to create one is a broken \
          environment rather than a reason to grade nothing",
@@ -470,9 +475,7 @@ fn o2_indexed_stack_fixture_matches_dwarf_offsets_and_widths() {
 #[test]
 fn recompiled_struct_corpus_reproduces_perfect_layout() {
     let graded: &str = "the fresh-build DWARF aggregate reference";
-    let Some(toolchain): Option<cc_toolchain::CcToolchain> = cc_toolchain::require(graded) else {
-        return;
-    };
+    let toolchain: cc_toolchain::CcToolchain = cc_toolchain::require(graded);
     let scratch: ScratchDir = ScratchDir::create("disrobe_typerec_struct")
         .unwrap_or_else(|error| panic!("{graded} needs a working directory: {error}"));
     let work: PathBuf = scratch.path().to_path_buf();

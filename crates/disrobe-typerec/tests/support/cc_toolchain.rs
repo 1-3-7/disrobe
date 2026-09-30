@@ -2,10 +2,10 @@ use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use disrobe_testkit::{CommandSpec, ToolError, ToolOutput, tool_output};
+use disrobe_testkit::{Available, CommandSpec, ToolError, ToolOutput, tool_output};
 use object::{Architecture, BinaryFormat, Object, ObjectKind};
 
-pub(crate) const REQUIREMENT_VAR: &str = "DISROBE_TYPEREC_CC";
+pub(crate) const PREREQUISITE: &str = "disrobe-typerec::gnu-cc";
 pub(crate) const GCC_BIN_VAR: &str = "DISROBE_GCC_BIN";
 pub(crate) const OBJCOPY_BIN_VAR: &str = "DISROBE_OBJCOPY_BIN";
 
@@ -14,12 +14,6 @@ const CAPTURE_CAP: usize = 1 << 20;
 const NEUTRAL_BUILD_DIRECTORY: &str = "/disrobe/typerec";
 const GCC_NAMES: [&str; 3] = ["gcc", "cc", "gcc-14"];
 const OBJCOPY_NAMES: [&str; 2] = ["objcopy", "llvm-objcopy"];
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Requirement {
-    RequirePresent,
-    Optional,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CcTarget {
@@ -84,24 +78,6 @@ pub(crate) enum Probe {
     NotGnu { identity: String },
     Missing { defect: String },
     InvalidTarget { defect: String },
-}
-
-pub(crate) fn requirement() -> Requirement {
-    parse_requirement(
-        std::env::var_os(REQUIREMENT_VAR)
-            .map(|raw: OsString| raw.to_string_lossy().into_owned())
-            .as_deref(),
-    )
-}
-
-pub(crate) fn parse_requirement(raw: Option<&str>) -> Requirement {
-    match raw
-        .map(|value: &str| value.trim().to_ascii_lowercase())
-        .as_deref()
-    {
-        Some("0" | "false" | "no" | "off" | "optional") => Requirement::Optional,
-        _ => Requirement::RequirePresent,
-    }
 }
 
 const fn executable_suffixes() -> &'static [&'static str] {
@@ -264,41 +240,42 @@ pub(crate) fn probe() -> Probe {
     }))
 }
 
+pub(crate) fn require(graded: &str) -> CcToolchain {
+    resolve(graded, probe())
+}
+
 #[allow(clippy::panic)]
-pub(crate) fn require(graded: &str) -> Option<CcToolchain> {
-    match probe() {
-        Probe::Usable(toolchain) => Some(*toolchain),
+pub(crate) fn resolve(graded: &str, probe: Probe) -> CcToolchain {
+    let (found, what): (Option<CcToolchain>, String) = match probe {
+        Probe::Usable(toolchain) => (Some(*toolchain), String::new()),
         Probe::InvalidTarget { defect } => {
             panic!("{graded} cannot use the selected GNU compiler: {defect}");
         }
-        Probe::NotGnu { identity } => {
-            assert!(
-                requirement() == Requirement::Optional,
-                "{graded} reads the debug information GNU cc emits, but the C compiler here \
-                 announces itself as {identity:?}, so the case would be measured against nothing \
-                 and must not report success. Install gcc, or point {GCC_BIN_VAR} at one; to \
-                 permit a run that measures nothing here, set {REQUIREMENT_VAR}=optional."
-            );
-            eprintln!(
-                "\nNOT MEASURED: {graded} graded nothing, because the C compiler on this host \
-                 announces itself as {identity:?} rather than GNU cc. {REQUIREMENT_VAR} is set \
-                 to optional for this run.\n"
-            );
-            None
-        }
-        Probe::Missing { defect } => {
-            assert!(
-                requirement() == Requirement::Optional,
-                "a GNU C compiler is mandatory for this run, so {graded} was measured against \
-                 nothing and this case must not report success: {defect}. Install gcc and \
-                 binutils, or point {GCC_BIN_VAR} and {OBJCOPY_BIN_VAR} at them; to permit a run \
-                 that measures nothing here, set {REQUIREMENT_VAR}=optional."
-            );
-            eprintln!(
-                "\nNOT MEASURED: {graded} graded nothing, because {defect}. {REQUIREMENT_VAR} is \
-                 set to optional for this run.\n"
-            );
-            None
+        Probe::NotGnu { identity } => (
+            None,
+            format!(
+                "a GNU C compiler, because {graded} reads the debug information GNU cc emits and \
+                 the C compiler here announces itself as {identity:?}; install gcc, or point \
+                 {GCC_BIN_VAR} at one"
+            ),
+        ),
+        Probe::Missing { defect } => (
+            None,
+            format!(
+                "a GNU C compiler and binutils ({defect}); install them, or point {GCC_BIN_VAR} \
+                 and {OBJCOPY_BIN_VAR} at them"
+            ),
+        ),
+    };
+    match disrobe_testkit::require(PREREQUISITE, &what, found) {
+        Ok(Available::Present(toolchain)) => toolchain,
+        Ok(Available::NotMeasured { record }) => panic!(
+            "tests/optional.toml lists {PREREQUISITE}, but {graded} has no result without a GNU \
+             C compiler, so that entry only hides the gap recorded in {}; remove it",
+            record.display()
+        ),
+        Err(error) => {
+            panic!("{graded} was measured against nothing and must not report success: {error}")
         }
     }
 }

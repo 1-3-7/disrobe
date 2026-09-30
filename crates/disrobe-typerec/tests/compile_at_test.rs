@@ -204,24 +204,41 @@ fn measure(image: &DebugImage, leg: Leg) -> Measured {
     }
 }
 
+fn resolve_failure(probe: cc_toolchain::Probe) -> String {
+    let outcome: std::thread::Result<CcToolchain> =
+        std::panic::catch_unwind(|| cc_toolchain::resolve(GRADED, probe));
+    let Err(payload): std::thread::Result<CcToolchain> = outcome else {
+        panic!("a compiler probe that found no usable GNU cc still produced a toolchain");
+    };
+    payload
+        .downcast_ref::<String>()
+        .cloned()
+        .unwrap_or_default()
+}
+
 #[test]
-fn an_empty_or_unset_compiler_requirement_keeps_the_compiler_mandatory() {
-    use cc_toolchain::{Requirement, parse_requirement};
-    assert_eq!(parse_requirement(None), Requirement::RequirePresent);
-    assert_eq!(parse_requirement(Some("")), Requirement::RequirePresent);
-    assert_eq!(parse_requirement(Some("  ")), Requirement::RequirePresent);
-    assert_eq!(parse_requirement(Some("optional")), Requirement::Optional);
-    assert_eq!(
-        parse_requirement(Some("Require-GNU")),
-        Requirement::RequirePresent
+fn a_missing_or_foreign_compiler_fails_the_grade_by_name() {
+    let missing: String = resolve_failure(cc_toolchain::Probe::Missing {
+        defect: "no gcc in the probe directory".to_owned(),
+    });
+    assert!(
+        missing.contains(cc_toolchain::PREREQUISITE)
+            && missing.contains("no gcc in the probe directory")
+            && missing.contains(GRADED),
+        "a missing GNU cc must fail and name the prerequisite, the defect and the grade: {missing}"
+    );
+    let foreign: String = resolve_failure(cc_toolchain::Probe::NotGnu {
+        identity: "clang version 19.1.7".to_owned(),
+    });
+    assert!(
+        foreign.contains(cc_toolchain::PREREQUISITE) && foreign.contains("clang version 19.1.7"),
+        "a compiler that is not GNU cc must fail and name what it announced: {foreign}"
     );
 }
 
 #[test]
 fn recompiled_corpus_reproduces_measured_floors() {
-    let Some(toolchain): Option<CcToolchain> = cc_toolchain::require(GRADED) else {
-        return;
-    };
+    let toolchain: CcToolchain = cc_toolchain::require(GRADED);
     let scratch: ScratchDir = ScratchDir::create("disrobe_typerec")
         .unwrap_or_else(|error| panic!("{GRADED} needs a working directory: {error}"));
     let work: PathBuf = scratch.path().to_path_buf();
@@ -331,9 +348,7 @@ fn recompiled_corpus_reproduces_measured_floors() {
 
 #[test]
 fn optimised_build_names_every_location_form_it_cannot_place() {
-    let Some(toolchain): Option<CcToolchain> = cc_toolchain::require(GRADED) else {
-        return;
-    };
+    let toolchain: CcToolchain = cc_toolchain::require(GRADED);
     let scratch: ScratchDir = ScratchDir::create("disrobe_typerec_forms")
         .unwrap_or_else(|error| panic!("{GRADED} needs a working directory: {error}"));
     let work: PathBuf = scratch.path().to_path_buf();
