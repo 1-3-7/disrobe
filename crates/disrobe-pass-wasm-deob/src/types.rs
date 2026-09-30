@@ -323,75 +323,6 @@ impl RecoveredTypes {
     }
 }
 
-#[must_use]
-pub fn classify_aggregates(patterns: &[AccessPattern]) -> Vec<(BaseOrigin, RecoveredType)> {
-    use std::collections::BTreeMap;
-    let mut groups: BTreeMap<BaseOrigin, Vec<&AccessPattern>> = BTreeMap::new();
-    for p in patterns {
-        groups.entry(p.base_origin).or_default().push(p);
-    }
-
-    let mut out: Vec<(BaseOrigin, RecoveredType)> = Vec::with_capacity(groups.len());
-    for (base, members) in groups {
-        if members.is_empty() {
-            continue;
-        }
-        if members.iter().any(|p| p.is_indexed) {
-            let elem_size: u32 = members.first().map_or(4, |p| p.width);
-            out.push((
-                base,
-                RecoveredType::Array {
-                    elem_size,
-                    count: None,
-                },
-            ));
-            continue;
-        }
-        if members.len() == 1 {
-            let p: &AccessPattern = members[0];
-            out.push((base, RecoveredType::Scalar(width_to_valtype(p.width))));
-            continue;
-        }
-        let mut offsets: Vec<i32> = members.iter().map(|p| p.offset_class).collect();
-        offsets.sort_unstable();
-        offsets.dedup();
-        let strided: bool = is_strided(&offsets, members.first().map_or(4, |p| p.width));
-        if strided {
-            let elem_size: u32 = members.first().map_or(4, |p| p.width);
-            let count: u32 = u32::try_from(offsets.len()).unwrap_or(u32::MAX);
-            out.push((
-                base,
-                RecoveredType::Array {
-                    elem_size,
-                    count: Some(count),
-                },
-            ));
-            continue;
-        }
-        let mut fields: Vec<FieldRecord> = members
-            .iter()
-            .map(|p| {
-                let Some(kind): Option<RecoveredStorageType> = access_storage_type(p) else {
-                    return FieldRecord {
-                        offset: p.offset_class,
-                        width: p.width,
-                        kind: width_to_storage_type(p.width),
-                    };
-                };
-                FieldRecord {
-                    offset: p.offset_class,
-                    width: p.width,
-                    kind,
-                }
-            })
-            .collect();
-        fields.sort_by_key(|f| f.offset);
-        fields.dedup_by_key(|f| f.offset);
-        out.push((base, RecoveredType::Struct { fields }));
-    }
-    out
-}
-
 pub(crate) fn classify_aggregates_checked(
     patterns: &[AccessPattern],
 ) -> Result<Vec<(BaseOrigin, RecoveredType)>, TypeRecoveryRefusal> {
@@ -519,33 +450,6 @@ pub(crate) fn classify_aggregates_checked(
         }
     }
     Ok(out)
-}
-
-fn is_strided(offsets: &[i32], stride: u32) -> bool {
-    if offsets.len() < 2 {
-        return false;
-    }
-    let stride_i: i32 = i32::try_from(stride).unwrap_or(i32::MAX);
-    if stride_i == 0 {
-        return false;
-    }
-    let Some(&first): Option<&i32> = offsets.first() else {
-        return false;
-    };
-    offsets.iter().enumerate().all(|(i, off)| {
-        let step: i32 = i32::try_from(i)
-            .unwrap_or(i32::MAX)
-            .saturating_mul(stride_i);
-        *off == first.saturating_add(step)
-    })
-}
-
-const fn width_to_valtype(width: u32) -> WasmValType {
-    match width {
-        8 => WasmValType::I64,
-        16 => WasmValType::V128,
-        _ => WasmValType::I32,
-    }
 }
 
 const fn width_to_storage_type(width: u32) -> RecoveredStorageType {
@@ -1042,6 +946,10 @@ fn recover_pointer_types(
 mod tests {
     use super::*;
 
+    fn checked(patterns: &[AccessPattern]) -> Vec<(BaseOrigin, RecoveredType)> {
+        classify_aggregates_checked(patterns).expect("the authored access patterns are consistent")
+    }
+
     fn pat(base: BaseOrigin, offset: i32, width: u32) -> AccessPattern {
         AccessPattern {
             load_kind: Some(LoadKind::I32),
@@ -1057,7 +965,7 @@ mod tests {
     #[test]
     fn single_access_yields_scalar() {
         let p: AccessPattern = pat(BaseOrigin::Local(LocalId(0)), 0, 4);
-        let out: Vec<(BaseOrigin, RecoveredType)> = classify_aggregates(&[p]);
+        let out: Vec<(BaseOrigin, RecoveredType)> = checked(&[p]);
         assert_eq!(out.len(), 1);
         assert!(matches!(out[0].1, RecoveredType::Scalar(WasmValType::I32)));
     }
@@ -1066,7 +974,7 @@ mod tests {
     fn strided_accesses_yield_array() {
         let base: BaseOrigin = BaseOrigin::Local(LocalId(0));
         let patterns: Vec<AccessPattern> = vec![pat(base, 0, 4), pat(base, 4, 4), pat(base, 8, 4)];
-        let out: Vec<(BaseOrigin, RecoveredType)> = classify_aggregates(&patterns);
+        let out: Vec<(BaseOrigin, RecoveredType)> = checked(&patterns);
         assert_eq!(out.len(), 1);
         assert!(matches!(
             out[0].1,
@@ -1081,7 +989,7 @@ mod tests {
     fn distinct_offsets_yield_struct() {
         let base: BaseOrigin = BaseOrigin::Local(LocalId(0));
         let patterns: Vec<AccessPattern> = vec![pat(base, 0, 4), pat(base, 4, 4), pat(base, 12, 4)];
-        let out: Vec<(BaseOrigin, RecoveredType)> = classify_aggregates(&patterns);
+        let out: Vec<(BaseOrigin, RecoveredType)> = checked(&patterns);
         assert_eq!(out.len(), 1);
         match &out[0].1 {
             RecoveredType::Struct { fields } => {
@@ -1098,8 +1006,14 @@ mod tests {
     fn indexed_access_yields_array_unknown_count() {
         let mut p: AccessPattern = pat(BaseOrigin::Local(LocalId(0)), 0, 4);
         p.is_indexed = true;
-        let out: Vec<(BaseOrigin, RecoveredType)> = classify_aggregates(&[p]);
-        assert!(matches!(out[0].1, RecoveredType::Array { count: None, .. }));
+        let out: Vec<(BaseOrigin, RecoveredType)> = checked(&[p]);
+        assert!(matches!(
+            out[0].1,
+            RecoveredType::TypedArray {
+                elem: RecoveredStorageType::I32,
+                count: None
+            }
+        ));
     }
 
     #[test]
@@ -1108,7 +1022,7 @@ mod tests {
         let mut wide: AccessPattern = pat(base, 12, 8);
         wide.load_kind = Some(LoadKind::I64);
         let patterns: Vec<AccessPattern> = vec![pat(base, 0, 4), pat(base, 4, 4), wide];
-        let aggregates: Vec<(BaseOrigin, RecoveredType)> = classify_aggregates(&patterns);
+        let aggregates: Vec<(BaseOrigin, RecoveredType)> = checked(&patterns);
         let named: Vec<NamedType> = synthesize_named_types(&aggregates);
         assert_eq!(named.len(), 1);
         match &named[0] {
@@ -1132,12 +1046,12 @@ mod tests {
             pat(arr_base, 4, 4),
             pat(arr_base, 8, 4),
         ];
-        let named: Vec<NamedType> = synthesize_named_types(&classify_aggregates(&arr));
+        let named: Vec<NamedType> = synthesize_named_types(&checked(&arr));
         assert_eq!(named[0].type_name(), "Array_global5");
 
         let scalar_base: BaseOrigin = BaseOrigin::Local(LocalId(1));
         let scalar: Vec<AccessPattern> = vec![pat(scalar_base, 0, 4)];
-        let named_scalar: Vec<NamedType> = synthesize_named_types(&classify_aggregates(&scalar));
+        let named_scalar: Vec<NamedType> = synthesize_named_types(&checked(&scalar));
         assert!(matches!(named_scalar[0], NamedType::Scalar { .. }));
         assert_eq!(named_scalar[0].type_name(), "Scalar_local1");
     }

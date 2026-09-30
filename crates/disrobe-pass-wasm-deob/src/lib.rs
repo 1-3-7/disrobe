@@ -155,8 +155,8 @@ pub use threads::{AtomicOpKind, AtomicOpRecord, SharedMemoryRecord, ThreadsRepor
 pub use types::{
     AccessPattern, BaseOrigin, FieldRecord, LoadKind, NamedField, NamedType, PointerType,
     RecoveredStorageType, RecoveredType, RecoveredTypes, ScalarIntType, Signedness,
-    SignednessReport, StoreKind, TypeRecoveryRefusal, WasmValType, classify_aggregates,
-    recover_signedness, synthesize_named_types,
+    SignednessReport, StoreKind, TypeRecoveryRefusal, WasmValType, recover_signedness,
+    synthesize_named_types,
 };
 
 pub use component::{
