@@ -577,7 +577,7 @@ fn prepare_command(
     let (mut application, mut command_line): (Vec<u16>, Vec<u16>) = if is_batch {
         (system_command_prompt()?, batch_command_line(&target, args)?)
     } else {
-        let visible_executable: OsString = child_visible_program_path(executable)?;
+        let visible_executable: OsString = child_visible_path(executable)?;
         (
             nul_terminated(&visible_executable)?,
             executable_command_line(&visible_executable, args)?,
@@ -601,7 +601,7 @@ fn prepare_command(
             Some(environment_block(environment)?)
         },
         current_dir: current_dir
-            .map(|directory: &Path| nul_terminated(directory.as_os_str()))
+            .map(|directory: &Path| nul_terminated(&child_visible_path(directory)?))
             .transpose()?,
     })
 }
@@ -990,7 +990,7 @@ fn is_batch_script(path: &Path) -> bool {
     )
 }
 
-fn child_visible_program_path(path: &Path) -> Result<OsString, LaunchError> {
+fn child_visible_path(path: &Path) -> Result<OsString, LaunchError> {
     let encoded: Vec<u16> = path.as_os_str().encode_wide().collect();
     ensure_units_no_nul(&encoded)?;
     if encoded.len() > MAX_NORMAL_PROGRAM_PATH_UNITS {
@@ -1393,18 +1393,39 @@ mod tests {
     #[test]
     fn short_program_paths_hide_verbatim_prefix_from_the_child() -> Result<(), LaunchError> {
         let local: OsString =
-            child_visible_program_path(Path::new(r"\\?\C:\Users\tester\tools\dotnet.exe"))?;
+            child_visible_path(Path::new(r"\\?\C:\Users\tester\tools\dotnet.exe"))?;
         let unc: OsString =
-            child_visible_program_path(Path::new(r"\\?\UNC\server\share\tools\dotnet.exe"))?;
+            child_visible_path(Path::new(r"\\?\UNC\server\share\tools\dotnet.exe"))?;
         assert_eq!(local, OsString::from(r"C:\Users\tester\tools\dotnet.exe"));
         assert_eq!(unc, OsString::from(r"\\server\share\tools\dotnet.exe"));
         Ok(())
     }
 
     #[test]
+    fn short_working_directories_hide_verbatim_prefix_from_the_child() -> Result<(), LaunchError> {
+        let executable: PathBuf =
+            std::env::current_exe().map_err(|source: std::io::Error| LaunchError::Resolve {
+                path: PathBuf::from("current test executable"),
+                source,
+            })?;
+        let prepared: PreparedCommand = prepare_command(
+            &executable,
+            &[],
+            &[],
+            Some(Path::new(r"\\?\C:\Users\tester\work")),
+        )?;
+        let expected: Vec<u16> = OsStr::new(r"C:\Users\tester\work")
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        assert_eq!(prepared.current_dir, Some(expected));
+        Ok(())
+    }
+
+    #[test]
     fn long_program_paths_keep_the_verbatim_prefix() -> Result<(), LaunchError> {
         let path: OsString = OsString::from(format!(r"\\?\C:\{}\tool.exe", "a".repeat(260)));
-        let visible: OsString = child_visible_program_path(Path::new(&path))?;
+        let visible: OsString = child_visible_path(Path::new(&path))?;
         assert_eq!(visible, path);
         Ok(())
     }
