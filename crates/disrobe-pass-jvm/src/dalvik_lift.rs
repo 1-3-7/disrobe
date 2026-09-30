@@ -583,13 +583,13 @@ fn is_narrow_value(ctx: &MethodContext<'_>, value: &Expr, ty: &LocalType, cast: 
 pub(crate) fn expr_mentions_local(expr: &Expr, name: &str) -> bool {
     match expr {
         Expr::Local(local) => local == name,
-        Expr::Opaque(text) => text_mentions_identifier(text, name),
+        Expr::Opaque(text) => crate::decompile::text_mentions_identifier(text, name),
         Expr::Choice {
             cond,
             then_val,
             else_val,
         } => {
-            text_mentions_identifier(cond, name)
+            crate::decompile::text_mentions_identifier(cond, name)
                 || expr_mentions_local(then_val, name)
                 || expr_mentions_local(else_val, name)
         }
@@ -616,25 +616,6 @@ pub(crate) fn expr_mentions_local(expr: &Expr, name: &str) -> bool {
                 || args.iter().any(|arg: &Expr| expr_mentions_local(arg, name))
         }
     }
-}
-
-const fn is_identifier_byte(byte: u8) -> bool {
-    byte == b'_' || byte == b'$' || byte.is_ascii_alphanumeric()
-}
-
-fn identifier_at(text: &str, start: usize, length: usize) -> bool {
-    let bytes: &[u8] = text.as_bytes();
-    let before: Option<u8> = start
-        .checked_sub(1)
-        .and_then(|at: usize| bytes.get(at).copied());
-    let after: Option<u8> = bytes.get(start + length).copied();
-    !before.is_some_and(|byte: u8| is_identifier_byte(byte) || byte == b'.')
-        && !after.is_some_and(is_identifier_byte)
-}
-
-pub(crate) fn text_mentions_identifier(text: &str, name: &str) -> bool {
-    text.match_indices(name)
-        .any(|(start, _): (usize, &str)| identifier_at(text, start, name.len()))
 }
 
 pub(crate) fn rename_local(expr: &Expr, from: &str, to: &str) -> Expr {
@@ -726,7 +707,7 @@ fn rename_identifier(text: &str, from: &str, to: &str) -> String {
     let mut out: String = String::with_capacity(text.len());
     let mut copied: usize = 0;
     for (start, _) in text.match_indices(from) {
-        if start < copied || !identifier_at(text, start, from.len()) {
+        if start < copied || !crate::decompile::identifier_at(text, start, from.len()) {
             continue;
         }
         out.push_str(text.get(copied..start).unwrap_or_default());
