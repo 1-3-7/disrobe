@@ -1,13 +1,12 @@
 #![allow(clippy::expect_used)]
 
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 use disrobe_core::scratch::ScratchDir;
-use disrobe_core::subprocess::{CapturedOutput, wait_with_output_timeout};
 use disrobe_pass_jvm::dalvik_decompile::{DecompiledDex, decompile_dex};
 use disrobe_pass_jvm::dex::{DexFile, MethodId, parse as parse_dex};
+use disrobe_testkit::{CommandSpec, ToolOutput, tool_output};
 
 const FIXTURE: &[u8] = include_bytes!("../fixtures/d8_date_retarget/DateRetargetProbe-min21.dex");
 const IDENTIFIER: &str = "com.tools.android:desugar_jdk_libs_configuration:2.1.5";
@@ -41,7 +40,11 @@ fn recovered_source() -> String {
     source_from(&dex)
 }
 
-fn compile_and_run(label: &str, source: &str) -> CapturedOutput {
+fn bounded(program: &str) -> CommandSpec {
+    CommandSpec::new(program, PROCESS_TIMEOUT).capture_limits(MAX_CAPTURE_BYTES, MAX_CAPTURE_BYTES)
+}
+
+fn compile_and_run(label: &str, source: &str) -> ToolOutput {
     let scratch: ScratchDir = ScratchDir::create(label).expect("create Java scratch directory");
     let source_root: PathBuf = scratch.path().join("src/fixtures/desugar");
     let classes: PathBuf = scratch.path().join("classes");
@@ -52,34 +55,30 @@ fn compile_and_run(label: &str, source: &str) -> CapturedOutput {
     std::fs::write(&probe_path, source).expect("write Java probe");
     std::fs::write(&harness_path, HARNESS).expect("write Java harness");
     let paths: [&Path; 2] = [probe_path.as_path(), harness_path.as_path()];
-    let compile_child: Child = Command::new("javac")
-        .arg("--release")
-        .arg("11")
-        .arg("-d")
-        .arg(&classes)
-        .args(paths)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("start javac");
-    let compile: CapturedOutput =
-        wait_with_output_timeout(compile_child, PROCESS_TIMEOUT, MAX_CAPTURE_BYTES)
-            .expect("javac completes within the timeout");
+    let compile: ToolOutput = tool_output(
+        bounded("javac")
+            .arg("--release")
+            .arg("11")
+            .arg("-d")
+            .arg(&classes)
+            .args(paths),
+    )
+    .expect("run javac");
+    assert!(!compile.timed_out, "javac completes within the timeout");
     assert!(
         compile.exit_code == Some(0),
         "javac rejected {label}: {}",
         String::from_utf8_lossy(&compile.stderr)
     );
-    let java_child: Child = Command::new("java")
-        .arg("-cp")
-        .arg(classes)
-        .arg("fixtures.desugar.DateRetargetHarness")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("start Java harness");
-    wait_with_output_timeout(java_child, PROCESS_TIMEOUT, MAX_CAPTURE_BYTES)
-        .expect("Java harness completes within the timeout")
+    let run: ToolOutput = tool_output(
+        bounded("java")
+            .arg("-cp")
+            .arg(classes)
+            .arg("fixtures.desugar.DateRetargetHarness"),
+    )
+    .expect("run Java harness");
+    assert!(!run.timed_out, "Java harness completes within the timeout");
+    run
 }
 
 #[test]
@@ -165,9 +164,8 @@ fn exact_date_helpers_require_exact_ownership_but_not_broad_relocation() {
 
 #[test]
 fn recovered_date_retargets_recompile_and_match_the_authored_behavior() {
-    let authored: CapturedOutput = compile_and_run("d8-date-retarget-authored", AUTHORED);
-    let recovered: CapturedOutput =
-        compile_and_run("d8-date-retarget-recovered", &recovered_source());
+    let authored: ToolOutput = compile_and_run("d8-date-retarget-authored", AUTHORED);
+    let recovered: ToolOutput = compile_and_run("d8-date-retarget-recovered", &recovered_source());
     assert_eq!(authored.exit_code, Some(0));
     assert_eq!(recovered.exit_code, Some(0));
     assert_eq!(recovered.stdout, authored.stdout);

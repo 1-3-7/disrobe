@@ -39,6 +39,7 @@ opcode-census = []
 semantic-reach = []
 
 [dev-dependencies]
+disrobe-testkit = { workspace = true }
 object = { workspace = true, features = ["write"] }
 
 [package.metadata.disrobe]
