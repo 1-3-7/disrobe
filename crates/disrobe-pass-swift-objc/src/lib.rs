@@ -42,11 +42,8 @@ pub use dyld_cache::{
     DyldSharedCache, DyldSlideMapping, LocalSymbolsLocation, ReconstructBatch, ReconstructOptions,
     ReconstructedDylib, SegmentLayout, UnresolvedImage, is_dyld_shared_cache,
     open_family as open_dyld_cache_family, parse as parse_dyld_cache,
-    reconstruct_all as reconstruct_dyld_images,
     reconstruct_all_with as reconstruct_dyld_images_with,
-    reconstruct_by_name as reconstruct_dyld_image_by_name,
     reconstruct_family as reconstruct_dyld_cache_family,
-    reconstruct_image as reconstruct_dyld_image,
     reconstruct_image_with as reconstruct_dyld_image_with,
 };
 pub use error::{Error, Result};

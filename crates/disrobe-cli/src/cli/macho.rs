@@ -1,14 +1,16 @@
 #![allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
+use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::path::PathBuf;
 
 use clap::Subcommand;
 
 use disrobe_pass_swift_objc::{
-    ContainerKind, DyldSharedCache, FatArchEntry, MachoKind, ObjcClassDump, ParsedSlice,
-    ReconstructedDylib, SliceReport, SwiftClassDump, SwiftObjcReport, analyze as analyze_macho,
-    detect_magic, is_dyld_shared_cache, objc_class_dump, parse_dyld_cache, parse_slice,
-    reconstruct_dyld_images, slice_bytes, swift_class_dump, walk_fat,
+    ContainerKind, DyldCacheFamily, DyldSharedCache, FatArchEntry, MachoKind, ObjcClassDump,
+    ParsedSlice, ReconstructBatch, ReconstructOptions, SliceReport, SwiftClassDump,
+    SwiftObjcReport, analyze as analyze_macho, detect_magic, is_dyld_shared_cache, objc_class_dump,
+    open_dyld_cache_family, parse_slice, reconstruct_dyld_cache_family, slice_bytes,
+    swift_class_dump, walk_fat,
 };
 
 use super::emit::EmitSpec;
@@ -55,7 +57,9 @@ pub(crate) enum MachoCmd {
         about = "recover the bundled dylibs from a dyld shared cache into standalone Mach-O images"
     )]
     Dyldcache {
-        #[arg(help = "input dyld shared cache file")]
+        #[arg(
+            help = "input dyld shared cache file; split caches read their .01, .02, ... and .symbols subcaches from the same directory"
+        )]
         input: PathBuf,
         #[arg(
             short,
@@ -63,6 +67,12 @@ pub(crate) enum MachoCmd {
             help = "output directory (default: ./out/<stem>-dyld-dylibs)"
         )]
         out: Option<PathBuf>,
+        #[arg(
+            long = "image",
+            value_name = "INSTALL_NAME",
+            help = "extract only the image with this install name (repeatable)"
+        )]
+        images: Vec<String>,
     },
 }
 
@@ -71,7 +81,7 @@ pub(crate) fn run(action: MachoCmd) -> miette::Result<()> {
         MachoCmd::Dump { input, out } => dump(input, out),
         MachoCmd::Classdump { input, out, emit } => classdump(input, out, emit),
         MachoCmd::Fat { input } => fat(input),
-        MachoCmd::Dyldcache { input, out } => dyldcache(input, out),
+        MachoCmd::Dyldcache { input, out, images } => dyldcache(input, out, images),
     }
 }
 
@@ -89,18 +99,37 @@ fn sanitize_dylib_relpath(install_name: &str, index: usize) -> PathBuf {
     rel
 }
 
-fn dyldcache(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
-    let bytes: Vec<u8> = std::fs::read(&input)
+fn dyldcache(input: PathBuf, out: Option<PathBuf>, images: Vec<String>) -> miette::Result<()> {
+    let head: Vec<u8> = read_head(&input, 16)
         .map_err(|e| miette::miette!("DR-CLI-0495: cannot read input: {e}"))?;
-    if !is_dyld_shared_cache(&bytes) {
+    if !is_dyld_shared_cache(&head) {
         return Err(miette::miette!(
             "DR-CLI-0496: input is not a dyld shared cache (missing dyld_v1 magic)"
         ));
     }
-    let parsed: DyldSharedCache = parse_dyld_cache(&bytes)
+    let (family, parsed): (DyldCacheFamily, DyldSharedCache) = open_dyld_cache_family(&input)
         .map_err(|e| miette::miette!("DR-CLI-0497: dyld cache parse: {e}"))?;
-    let dylibs: Vec<ReconstructedDylib> = reconstruct_dyld_images(&bytes, &parsed)
-        .map_err(|e| miette::miette!("DR-CLI-0498: dyld image reconstruct: {e}"))?;
+    let requested: BTreeSet<String> = images.into_iter().collect();
+    let absent: Vec<&str> = requested
+        .iter()
+        .filter(|name: &&String| {
+            !parsed
+                .images
+                .iter()
+                .any(|image| image.install_name.as_str() == name.as_str())
+        })
+        .map(String::as_str)
+        .collect();
+    if !absent.is_empty() {
+        return Err(miette::miette!(
+            "DR-CLI-0502: the cache holds no image named {}",
+            absent.join(", ")
+        ));
+    }
+    let only: Option<&BTreeSet<String>> = (!requested.is_empty()).then_some(&requested);
+    let batch: ReconstructBatch =
+        reconstruct_dyld_cache_family(&family, &parsed, ReconstructOptions::COMPACT, only)
+            .map_err(|e| miette::miette!("DR-CLI-0498: dyld image reconstruct: {e}"))?;
     let stem: String = input
         .file_stem()
         .and_then(OsStr::to_str)
@@ -111,7 +140,7 @@ fn dyldcache(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
     std::fs::create_dir_all(&out_dir)
         .map_err(|e| miette::miette!("DR-CLI-0499: cannot create out dir: {e}"))?;
     let mut written: usize = 0;
-    for (index, dylib) in dylibs.iter().enumerate() {
+    for (index, dylib) in batch.dylibs.iter().enumerate() {
         let rel: PathBuf = sanitize_dylib_relpath(&dylib.install_name, index);
         let target: PathBuf = out_dir.join(&rel);
         if let Some(parent) = target.parent() {
@@ -122,14 +151,45 @@ fn dyldcache(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
             .map_err(|e| miette::miette!("DR-CLI-0501: cannot write dylib: {e}"))?;
         written += 1;
     }
-    println!("dyld shared cache: OK");
+    let complete: bool = batch.unresolved.is_empty() && batch.missing_sub_caches.is_empty();
+    println!(
+        "dyld shared cache: {}",
+        if complete { "OK" } else { "partial" }
+    );
     println!("  input:      {}", input.display());
     println!("  arch:       {}", parsed.arch);
     println!("  mappings:   {}", parsed.mappings.len());
+    println!("  subcaches:  {}", parsed.sub_caches.len());
     println!("  images:     {}", parsed.images.len());
     println!("  recovered:  {written} standalone dylib(s)");
+    for missing in &batch.missing_sub_caches {
+        println!(
+            "  missing subcache {}: {} (looked for {})",
+            missing.index,
+            missing.reason,
+            missing.candidate_names.join(", ")
+        );
+    }
+    if let Some(reason) = &batch.partial_reason {
+        println!("  partial:    {reason}");
+    }
+    for unresolved in &batch.unresolved {
+        println!(
+            "  unresolved: {} at {:#x}: {}",
+            unresolved.install_name, unresolved.image_address, unresolved.reason
+        );
+    }
     println!("  wrote:      {}", out_dir.display());
     Ok(())
+}
+
+fn read_head(path: &std::path::Path, len: u64) -> std::io::Result<Vec<u8>> {
+    use std::io::Read as _;
+    let mut head: Vec<u8> = Vec::new();
+    std::fs::File::open(path)?
+        .take(len)
+        .read_to_end(&mut head)?;
+    Ok(head)
 }
 
 fn dump(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
@@ -431,7 +491,8 @@ mod tests {
         let dir: PathBuf = scratch.path().to_path_buf();
         let bogus: PathBuf = dir.join("not-a-cache.bin");
         std::fs::write(&bogus, b"MZ\x00\x00 definitely not a dyld cache").expect("write");
-        let err: miette::Report = dyldcache(bogus, Some(dir.join("out"))).expect_err("must reject");
+        let err: miette::Report =
+            dyldcache(bogus, Some(dir.join("out")), Vec::new()).expect_err("must reject");
         assert!(format!("{err}").contains("DR-CLI-0496"));
     }
 

@@ -26,6 +26,7 @@ disrobe macho classdump universal.bin --out dump
 disrobe macho dump App.app/App
 disrobe macho fat universal.bin
 disrobe macho dyldcache dyld_shared_cache_arm64e --out ./out/cache-dylibs
+disrobe macho dyldcache dyld_shared_cache_arm64e --image /usr/lib/libobjc.A.dylib
 ```
 
 `classdump` reconstructs the type interface from the two metadata sources the runtime leaves in the binary. Beside the JSON, it writes a `.swift` declaration file with recovered type signatures when reflection metadata yields declarations; source-level function bodies do not survive in this metadata.
@@ -34,7 +35,7 @@ disrobe macho dyldcache dyld_shared_cache_arm64e --out ./out/cache-dylibs
 
 `macho dump` reports the header, load commands, segments, sections, and any `LC_ENCRYPTION_INFO` or `LC_ENCRYPTION_INFO_64` records. `macho fat` walks a fat binary and reports each slice's CPU type, subtype, and offset.
 
-`macho dyldcache` rebuilds every dylib the cache bundles and writes each one under `--out` at a path taken from its install name. It reads the single file you name and writes compact images. Use `disrobe auto` on a cache that is split across sibling files or when you want images with a rebuilt `__LINKEDIT`.
+`macho dyldcache` rebuilds every dylib the cache bundles and writes each one under `--out` at a path taken from its install name. A split cache reads its `.01`, `.02`, ... and `.symbols` subcaches from the directory of the file you name. `--image <install-name>` (repeatable) extracts only the named images and fails, naming each one, when the cache holds no image by that name. An image that cannot be rebuilt is listed by install name with its reason, and a subcache that is missing is listed with the file names it looked for; the summary line then reads `partial` instead of `OK`. The command writes compact images; use `disrobe auto` when you want images with a rebuilt `__LINKEDIT`.
 
 Output shape (illustrative):
 
@@ -96,7 +97,7 @@ The chain refuses a split cache when it has no path to compute sibling names fro
 
 - Swift and Objective-C compile to native machine code. Source-level function bodies are not part of the runtime metadata; native code can still be analyzed by the native pass. This pass recovers the metadata the runtimes need at run time.
 - A dispatch site whose selector or class cannot be traced within the backward-walk window is left unannotated rather than guessed, so a spurious annotation counts as a soundness failure.
-- `disrobe macho dyldcache` reads the one file you name and writes compact images. It does not rebuild `__LINKEDIT`, so a compact image keeps the symbol table offsets the cache gave it. It does not read sibling cache files. It stops at the first image it cannot reach instead of reporting a partial result.
+- `disrobe macho dyldcache` writes compact images. It does not rebuild `__LINKEDIT`, so a compact image keeps the symbol table offsets the cache gave it.
 - The chain handles a cache of at most 256 images. A cache above that count is refused whole, and the error points at `disrobe macho dyldcache`, which carries the limits above.
 - One rebuilt image is capped at 512 MiB, one whole-cache run at 1 GiB, and one cache family at 12 GiB across its files. A cache that needs more than a cap is refused rather than truncated.
 - A recovered image is unsigned. `disrobe` clears the `LC_CODE_SIGNATURE` offset and size whenever it rebuilds `__LINKEDIT`.

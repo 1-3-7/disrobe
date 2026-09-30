@@ -213,10 +213,15 @@ fn reconstruct_cache(bytes: &[u8], path_hint: Option<&str>) -> CoreResult<Recons
         )));
     }
     if let Some(family) = family_for(path_hint, &parsed)? {
-        return dyld_cache::reconstruct_family(&family, &parsed, ReconstructOptions::LOAD_READY)
-            .map_err(|e: crate::error::Error| {
-                CoreError::PassFailure(format!("DR-SWOBJ-0909: dyld cache reconstruct: {e}"))
-            });
+        return dyld_cache::reconstruct_family(
+            &family,
+            &parsed,
+            ReconstructOptions::LOAD_READY,
+            None,
+        )
+        .map_err(|e: crate::error::Error| {
+            CoreError::PassFailure(format!("DR-SWOBJ-0909: dyld cache reconstruct: {e}"))
+        });
     }
     let dylibs: Vec<ReconstructedDylib> =
         dyld_cache::reconstruct_all_with(bytes, &parsed, ReconstructOptions::LOAD_READY).map_err(

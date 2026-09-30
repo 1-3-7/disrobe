@@ -180,9 +180,9 @@ const UNREACHABLE_CEILING: &[(&str, usize, &str)] = &[
     ),
     (
         "disrobe-pass-swift-objc",
-        6,
-        "entitlement, import-thunk, selector-index and dyld-cache-reconstruction helpers proven by \
-         their own oracle but not yet called from the crate's analyze entry point",
+        5,
+        "entitlement, import-thunk and selector-index helpers proven by their own oracle but not \
+         yet called from the crate's analyze entry point",
     ),
     (
         "disrobe-pass-wasm-deob",

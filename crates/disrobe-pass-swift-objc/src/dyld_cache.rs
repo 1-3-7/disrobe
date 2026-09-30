@@ -759,14 +759,6 @@ fn map_vmaddr(mappings: &[DyldMapping], vmaddr: u64) -> Option<usize> {
     None
 }
 
-pub fn reconstruct_image(
-    cache: &[u8],
-    parsed: &DyldSharedCache,
-    index: usize,
-) -> Result<ReconstructedDylib> {
-    reconstruct_image_with(cache, parsed, index, ReconstructOptions::COMPACT)
-}
-
 pub fn reconstruct_image_with(
     cache: &[u8],
     parsed: &DyldSharedCache,
@@ -781,33 +773,6 @@ pub fn reconstruct_image_with(
     })?;
     let space: CacheSpace<'_> = CacheSpace::single(cache, parsed);
     reconstruct(&space, parsed, image, options)
-}
-
-pub fn reconstruct_by_name(
-    cache: &[u8],
-    parsed: &DyldSharedCache,
-    install_name: &str,
-) -> Result<ReconstructedDylib> {
-    reconstruct_by_name_with(cache, parsed, install_name, ReconstructOptions::COMPACT)
-}
-
-pub fn reconstruct_by_name_with(
-    cache: &[u8],
-    parsed: &DyldSharedCache,
-    install_name: &str,
-    options: ReconstructOptions,
-) -> Result<ReconstructedDylib> {
-    let image: &DyldImage = parsed
-        .images
-        .iter()
-        .find(|img: &&DyldImage| img.install_name == install_name)
-        .ok_or_else(|| Error::BadDyldCache(format!("no bundled image named '{install_name}'")))?;
-    let space: CacheSpace<'_> = CacheSpace::single(cache, parsed);
-    reconstruct(&space, parsed, image, options)
-}
-
-pub fn reconstruct_all(cache: &[u8], parsed: &DyldSharedCache) -> Result<Vec<ReconstructedDylib>> {
-    reconstruct_all_with(cache, parsed, ReconstructOptions::COMPACT)
 }
 
 pub fn reconstruct_all_with(
@@ -852,12 +817,18 @@ pub fn reconstruct_family(
     family: &CacheFamily,
     parsed: &DyldSharedCache,
     options: ReconstructOptions,
+    only: Option<&std::collections::BTreeSet<String>>,
 ) -> Result<ReconstructBatch> {
     let space: CacheSpace<'_> = CacheSpace::from_family(family, parsed)?;
     let mut dylibs: Vec<ReconstructedDylib> = Vec::with_capacity(parsed.images.len());
     let mut unresolved: Vec<UnresolvedImage> = Vec::new();
     let mut total: u64 = 0;
-    for image in &parsed.images {
+    let selected = parsed.images.iter().filter(|image: &&DyldImage| {
+        only.is_none_or(|names: &std::collections::BTreeSet<String>| {
+            names.contains(&image.install_name)
+        })
+    });
+    for image in selected {
         match reconstruct(&space, parsed, image, options) {
             Ok(dylib) => {
                 total = total.checked_add(dylib.bytes.len() as u64).ok_or_else(|| {
@@ -1712,7 +1683,8 @@ mod tests {
         let cache: Vec<u8> = build_cache(&dylib);
         let parsed: DyldSharedCache = parse(&cache).expect("cache parses");
         let recovered: ReconstructedDylib =
-            reconstruct_image(&cache, &parsed, 0).expect("image reconstructs");
+            reconstruct_image_with(&cache, &parsed, 0, ReconstructOptions::COMPACT)
+                .expect("image reconstructs");
         assert_eq!(recovered.install_name, INSTALL_NAME);
         assert_eq!(recovered.image_address, TEXT_VMADDR);
         assert_eq!(recovered.header_file_offset, MAP1_FILEOFF as usize);
@@ -1728,22 +1700,13 @@ mod tests {
     }
 
     #[test]
-    fn reconstruct_by_name_matches_index() {
-        let dylib: Vec<u8> = build_standalone_dylib();
-        let cache: Vec<u8> = build_cache(&dylib);
-        let parsed: DyldSharedCache = parse(&cache).expect("cache parses");
-        let by_name: ReconstructedDylib =
-            reconstruct_by_name(&cache, &parsed, INSTALL_NAME).expect("named image reconstructs");
-        assert_eq!(by_name.bytes, dylib);
-    }
-
-    #[test]
     fn reconstruct_all_respects_image_list() {
         let dylib: Vec<u8> = build_standalone_dylib();
         let cache: Vec<u8> = build_cache(&dylib);
         let parsed: DyldSharedCache = parse(&cache).expect("cache parses");
         let all: Vec<ReconstructedDylib> =
-            reconstruct_all(&cache, &parsed).expect("all images reconstruct");
+            reconstruct_all_with(&cache, &parsed, ReconstructOptions::COMPACT)
+                .expect("all images reconstruct");
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].bytes, dylib);
     }
@@ -1802,7 +1765,7 @@ mod tests {
         write_u64(&mut cache, img_off, 0x7F00_0000_0000);
         let parsed: DyldSharedCache = parse(&cache).expect("cache still parses");
         assert!(matches!(
-            reconstruct_image(&cache, &parsed, 0),
+            reconstruct_image_with(&cache, &parsed, 0, ReconstructOptions::COMPACT),
             Err(Error::DyldImageUnsupported { .. })
         ));
     }

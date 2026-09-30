@@ -591,7 +591,7 @@ fn local_symbols_held_in_the_sibling_symbols_file_join_the_synthesized_symbol_ta
     assert!(family.partial_reason().is_none());
 
     let batch: ReconstructBatch =
-        dyld_cache::reconstruct_family(&family, &parsed, ReconstructOptions::LOAD_READY)
+        dyld_cache::reconstruct_family(&family, &parsed, ReconstructOptions::LOAD_READY, None)
             .expect("the family reconstructs");
     assert_eq!(batch.dylibs.len(), 1);
     let recovered: &ReconstructedDylib = &batch.dylibs[0];
@@ -679,7 +679,7 @@ fn a_missing_symbols_file_degrades_to_a_named_partial_result() {
     );
 
     let batch: ReconstructBatch =
-        dyld_cache::reconstruct_family(&family, &parsed, ReconstructOptions::LOAD_READY)
+        dyld_cache::reconstruct_family(&family, &parsed, ReconstructOptions::LOAD_READY, None)
             .expect("the image still reconstructs without its local symbols");
     let recovered: &ReconstructedDylib = &batch.dylibs[0];
     let reparsed: ParsedSlice =
@@ -704,7 +704,7 @@ fn a_split_cache_resolves_the_image_whose_linkedit_lives_in_the_sibling_file() {
     assert!(family.partial_reason().is_none());
 
     let batch: ReconstructBatch =
-        dyld_cache::reconstruct_family(&family, &parsed, ReconstructOptions::LOAD_READY)
+        dyld_cache::reconstruct_family(&family, &parsed, ReconstructOptions::LOAD_READY, None)
             .expect("the family reconstructs");
     assert!(batch.unresolved.is_empty(), "got {:?}", batch.unresolved);
     assert_eq!(batch.dylibs.len(), 1);
@@ -797,7 +797,7 @@ fn a_sub_cache_array_without_a_file_suffix_field_still_finds_its_sibling_by_comp
     assert_eq!(family.sub_caches.len(), 1);
 
     let batch: ReconstructBatch =
-        dyld_cache::reconstruct_family(&family, &parsed, ReconstructOptions::LOAD_READY)
+        dyld_cache::reconstruct_family(&family, &parsed, ReconstructOptions::LOAD_READY, None)
             .expect("the family reconstructs");
     assert!(batch.unresolved.is_empty(), "got {:?}", batch.unresolved);
     let recovered: &ReconstructedDylib = &batch.dylibs[0];
@@ -1013,7 +1013,7 @@ fn a_missing_sibling_degrades_to_a_named_partial_result() {
     );
 
     let batch: ReconstructBatch =
-        dyld_cache::reconstruct_family(&family, &parsed, ReconstructOptions::LOAD_READY)
+        dyld_cache::reconstruct_family(&family, &parsed, ReconstructOptions::LOAD_READY, None)
             .expect("an incomplete family reconstructs what it can");
     assert!(batch.dylibs.is_empty());
     assert_eq!(batch.unresolved.len(), 1);
