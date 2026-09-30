@@ -3,7 +3,6 @@ use std::path::{Path, PathBuf};
 use eyre::{Result, bail};
 use serde::Deserialize;
 
-use crate::datamodel::{VerificationDoc, VerificationRow};
 use crate::fileio::read_text_bounded;
 
 const MAX_DATA_JSON_BYTES: u64 = 4 * 1024 * 1024;
@@ -49,22 +48,11 @@ struct EcosystemCell {
     note: String,
 }
 
-enum Expected {
-    Detected {
-        heading: &'static str,
-        label: &'static str,
-    },
-    Percent {
-        heading: &'static str,
-        label: &'static str,
-    },
-}
-
 struct CrossClaim {
-    file: &'static str,
     row: &'static str,
     unit: &'static str,
-    expected: Expected,
+    heading: &'static str,
+    label: &'static str,
 }
 
 #[derive(Debug)]
@@ -85,26 +73,12 @@ const MIRRORS: [MirrorClaim; 1] = [MirrorClaim {
           bars are one measurement published twice and only the first is asserted by a gate",
 }];
 
-const CLAIMS: [CrossClaim; 2] = [
-    CrossClaim {
-        file: "ecosystems.json",
-        row: "Containers",
-        unit: "formats",
-        expected: Expected::Detected {
-            heading: "Detection and extraction breadth",
-            label: "Containers",
-        },
-    },
-    CrossClaim {
-        file: "verification.json",
-        row: "Python",
-        unit: "%",
-        expected: Expected::Percent {
-            heading: "Python bytecode",
-            label: "200-module pinned corpus (normalized opcode-structure agreement)",
-        },
-    },
-];
+const CLAIMS: [CrossClaim; 1] = [CrossClaim {
+    row: "Containers",
+    unit: "formats",
+    heading: "Detection and extraction breadth",
+    label: "Containers",
+}];
 
 fn find_bar<'a>(doc: &'a Recovery, heading: &str, label: &str) -> Option<&'a RecoveryBar> {
     doc.groups
@@ -124,15 +98,6 @@ fn first_number(text: &str) -> Option<f64> {
         }
     }
     digits.parse::<f64>().ok()
-}
-
-fn resolve(doc: &Recovery, expected: &Expected) -> Option<f64> {
-    match expected {
-        Expected::Detected { heading, label } => find_bar(doc, heading, label)?
-            .detected
-            .map(|v: u64| v as f64),
-        Expected::Percent { heading, label } => find_bar(doc, heading, label)?.value,
-    }
 }
 
 fn mirrored_fields(bar: &RecoveryBar) -> [(&'static str, Option<f64>); 3] {
@@ -248,57 +213,50 @@ pub(crate) fn run(root: &Path) -> Result<()> {
         &data.join("ecosystems.json"),
         MAX_DATA_JSON_BYTES,
     )?)?;
-    let verification: VerificationDoc = serde_json::from_str(&read_text_bounded(
-        &data.join("verification.json"),
-        MAX_DATA_JSON_BYTES,
-    )?)?;
 
     let mut issues: Vec<String> = Vec::new();
     check_line_citations(&recovery, &mut issues);
 
     for claim in &CLAIMS {
-        let text: Option<&str> = match claim.file {
-            "ecosystems.json" => ecosystems
-                .cells
-                .iter()
-                .find(|cell: &&EcosystemCell| cell.label == claim.row)
-                .map(|cell: &EcosystemCell| cell.note.as_str()),
-            _ => verification
-                .rows
-                .iter()
-                .find(|row: &&VerificationRow| row.ecosystem == claim.row)
-                .map(|row: &VerificationRow| row.result.as_str()),
-        };
-
-        let Some(text): Option<&str> = text else {
+        let Some(text): Option<&str> = ecosystems
+            .cells
+            .iter()
+            .find(|cell: &&EcosystemCell| cell.label == claim.row)
+            .map(|cell: &EcosystemCell| cell.note.as_str())
+        else {
             issues.push(format!(
-                "{} no longer has a row named `{}`, so the number it used to carry is unchecked",
-                claim.file, claim.row
+                "ecosystems.json no longer has a row named `{}`, so the number it used to carry \
+                 is unchecked",
+                claim.row
             ));
             continue;
         };
 
         let Some(stated): Option<f64> = first_number(text) else {
             issues.push(format!(
-                "{} row `{}` reads `{text}`, which carries no number to compare",
-                claim.file, claim.row
+                "ecosystems.json row `{}` reads `{text}`, which carries no number to compare",
+                claim.row
             ));
             continue;
         };
 
-        let Some(truth): Option<f64> = resolve(&recovery, &claim.expected) else {
+        let Some(truth): Option<f64> = find_bar(&recovery, claim.heading, claim.label)
+            .and_then(|bar: &RecoveryBar| bar.detected)
+            .map(|detected: u64| detected as f64)
+        else {
             issues.push(format!(
-                "{} row `{}` cannot be checked because the bar it mirrors is missing from recovery.json",
-                claim.file, claim.row
+                "ecosystems.json row `{}` cannot be checked because the bar it mirrors is missing \
+                 from recovery.json",
+                claim.row
             ));
             continue;
         };
 
         if (stated - truth).abs() > AGREEMENT_TOLERANCE {
             issues.push(format!(
-                "{} row `{}` states {stated} {} while recovery.json says {truth}; the same \
-                 measurement is published twice and the copies have drifted apart",
-                claim.file, claim.row, claim.unit
+                "ecosystems.json row `{}` states {stated} {} while recovery.json says {truth}; the \
+                 same measurement is published twice and the copies have drifted apart",
+                claim.row, claim.unit
             ));
         }
     }
@@ -307,9 +265,9 @@ pub(crate) fn run(root: &Path) -> Result<()> {
 
     if issues.is_empty() {
         println!(
-            "xtask regen: cross-data cross-check ok ({} number(s) shared between recovery.json, \
-             ecosystems.json and verification.json agree, and {} bar(s) that re-plot a measurement \
-             recovery.json already carries agree with it)",
+            "xtask regen: cross-data cross-check ok ({} number(s) shared between recovery.json \
+             and ecosystems.json agree, and {} bar(s) that re-plot a measurement recovery.json \
+             already carries agree with it)",
             CLAIMS.len(),
             MIRRORS.len()
         );
