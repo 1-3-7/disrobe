@@ -66,10 +66,10 @@ const UNREACHABLE_CEILING: &[(&str, usize, &str)] = &[
     ),
     (
         "disrobe-pass-js-deob",
-        30,
-        "most are jscrambler per-template deobfuscators and jsconfuser shape detectors exercised \
-         one at a time by their own oracle rather than through a single dispatcher, plus bundler, \
-         source-map and TypeScript-recovery helpers with the same shape",
+        19,
+        "most are jscrambler per-template deobfuscators exercised one at a time by their own \
+         oracle rather than through a single dispatcher, plus bundler and source-map helpers with \
+         the same shape",
     ),
     (
         "disrobe-pass-jvm",
