@@ -3,7 +3,6 @@
 #![allow(clippy::missing_const_for_fn)]
 #![allow(clippy::redundant_pub_crate)]
 pub mod abc;
-#[cfg(feature = "chain")]
 pub mod chain_detector;
 pub(crate) mod debug;
 pub mod decompile;

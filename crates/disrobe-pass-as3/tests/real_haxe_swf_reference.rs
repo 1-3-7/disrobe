@@ -8,11 +8,8 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-#[cfg(feature = "chain")]
 use disrobe_core::chain::Pass;
-#[cfg(feature = "chain")]
 use disrobe_core::{Artifact, Rung};
-#[cfg(feature = "chain")]
 use disrobe_pass_as3::chain_detector::AS3_PASS;
 use disrobe_pass_as3::swf::{DoAbc, Swf, SwfTag, TagCode};
 use disrobe_pass_as3::{AbcFile, abc, decompile, swf};
@@ -38,7 +35,6 @@ fn real_haxe_swf() -> Vec<u8> {
     })
 }
 
-#[cfg(feature = "chain")]
 fn encode_tag(code: TagCode, payload: &[u8]) -> Vec<u8> {
     let payload_length: u32 = u32::try_from(payload.len()).expect("test tag fits in u32");
     let mut encoded: Vec<u8> = Vec::new();
@@ -55,7 +51,6 @@ fn encode_tag(code: TagCode, payload: &[u8]) -> Vec<u8> {
     encoded
 }
 
-#[cfg(feature = "chain")]
 fn real_haxe_do_abc_tag() -> SwfTag {
     let bytes: Vec<u8> = real_haxe_swf();
     let parsed: Swf = swf::parse(&bytes).expect("real Haxe SWF must parse");
@@ -66,7 +61,6 @@ fn real_haxe_do_abc_tag() -> SwfTag {
         .expect("real Haxe SWF must contain an ABC tag")
 }
 
-#[cfg(feature = "chain")]
 fn fws_with_haxe_and_sibling(code: TagCode, payload: &[u8]) -> (Vec<u8>, usize) {
     let valid: SwfTag = real_haxe_do_abc_tag();
     let valid_tag: Vec<u8> = encode_tag(valid.code, &valid.payload);
@@ -94,7 +88,6 @@ fn fws_with_haxe_and_sibling(code: TagCode, payload: &[u8]) -> (Vec<u8>, usize) 
     (bytes, sibling_offset)
 }
 
-#[cfg(feature = "chain")]
 fn doabc_payload(name: &str, abc_bytes: &[u8]) -> Vec<u8> {
     let mut payload: Vec<u8> = Vec::new();
     payload.extend_from_slice(&0u32.to_le_bytes());
@@ -104,7 +97,6 @@ fn doabc_payload(name: &str, abc_bytes: &[u8]) -> Vec<u8> {
     payload
 }
 
-#[cfg(feature = "chain")]
 fn abc_with_unrenderable_instance_name() -> Vec<u8> {
     let mut bytes: Vec<u8> = Vec::new();
     bytes.extend_from_slice(&abc::ABC_MINOR.to_le_bytes());
@@ -117,7 +109,6 @@ fn abc_with_unrenderable_instance_name() -> Vec<u8> {
     bytes
 }
 
-#[cfg(feature = "chain")]
 fn as3_pass_failure(bytes: Vec<u8>) -> String {
     let artifact: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
     let error: disrobe_core::error::CoreError = AS3_PASS
@@ -300,7 +291,6 @@ fn recovery_carries_the_haxe_runtime_classes_the_compiler_linked_in() {
     }
 }
 
-#[cfg(feature = "chain")]
 #[test]
 fn swf_surface_rejects_a_malformed_doabc_after_real_haxe_bytecode() {
     let malformed_payload: Vec<u8> = vec![0, 0, 0, 0, b'n', b'o', b'-', b'n', b'u', b'l'];
@@ -321,7 +311,6 @@ fn swf_surface_rejects_a_malformed_doabc_after_real_haxe_bytecode() {
     );
 }
 
-#[cfg(feature = "chain")]
 #[test]
 fn swf_surface_reports_legacy_abc_parse_failure_after_real_haxe_bytecode() {
     let malformed_abc: [u8; 4] = [0, 0, 0, 0];
@@ -342,7 +331,6 @@ fn swf_surface_reports_legacy_abc_parse_failure_after_real_haxe_bytecode() {
     );
 }
 
-#[cfg(feature = "chain")]
 #[test]
 fn swf_surface_reports_abc_render_failure_after_real_haxe_bytecode() {
     let unrenderable_abc: Vec<u8> = abc_with_unrenderable_instance_name();
@@ -364,7 +352,6 @@ fn swf_surface_reports_abc_render_failure_after_real_haxe_bytecode() {
     );
 }
 
-#[cfg(feature = "chain")]
 #[test]
 fn swf_surface_preserves_valid_doabcdefine_after_real_haxe_bytecode() {
     let valid: SwfTag = real_haxe_do_abc_tag();

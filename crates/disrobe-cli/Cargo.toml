@@ -135,7 +135,6 @@ chain = [
     "disrobe-pass-jvm?/chain",
     "disrobe-pass-dotnet?/chain",
     "disrobe-pass-go?/chain",
-    "disrobe-pass-as3?/chain",
     "disrobe-pass-scriptlang?/chain",
     "disrobe-pass-nativelang?/chain",
 ]
