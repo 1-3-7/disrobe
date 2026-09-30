@@ -237,7 +237,6 @@ fn exercise_file_entrypoints(bytes: &[u8], scratch: &Scratch) {
     let _ = disassemble_module_to_file(MODULE_NAME, bytes, &scratch.disassembly);
 }
 
-#[cfg(feature = "chain")]
 fn exercise_chain_entrypoints(bytes: &[u8]) {
     use disrobe_core::Artifact;
     use disrobe_core::Rung;
@@ -259,7 +258,6 @@ fn exercise_chain_entrypoints(bytes: &[u8]) {
 fn probe(bytes: &[u8], scratch: &Scratch, rng: &mut XorShift64) {
     exercise_byte_entrypoints(bytes, rng);
     exercise_file_entrypoints(bytes, scratch);
-    #[cfg(feature = "chain")]
     exercise_chain_entrypoints(bytes);
 }
 

@@ -6,7 +6,6 @@ mod body;
 mod buildinfo;
 mod bytecode_table;
 mod c_module;
-#[cfg(feature = "chain")]
 pub mod chain_detector;
 mod const_blob;
 mod const_manifest;

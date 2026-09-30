@@ -118,7 +118,6 @@ chain = [
     "disrobe-pass-pyarmor/chain",
     "disrobe-pass-native/chain",
     "disrobe-pass-py-deob/chain",
-    "disrobe-pass-nuitka/chain",
     "disrobe-pass-py-disasm/chain",
     "disrobe-pass-py-decompile/chain",
     "disrobe-pass-pyinstaller/chain",
