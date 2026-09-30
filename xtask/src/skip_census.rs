@@ -99,9 +99,10 @@ impl<'ast> Visit<'ast> for EarlyReturns<'_> {
 
     fn visit_expr_return(&mut self, node: &'ast syn::ExprReturn) {
         if is_successful_return(node.expr.as_deref()) {
+            let span: proc_macro2::Span = node.return_token.span;
             self.found.push(SkipSite {
                 file: self.file.to_owned(),
-                line: node.return_token.span.start().line,
+                line: span.start().line,
                 test: self.test.clone(),
             });
         }
