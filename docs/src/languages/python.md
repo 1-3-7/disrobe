@@ -84,7 +84,7 @@ The benchmark compiles each original module and its recovered source with CPytho
 
 The fixed core population contains <!-- m:py_stdlib_full_modules -->574<!-- /m --> modules and excludes `idlelib` and `turtledemo`: **<!-- m:py_stdlib_full_count -->17396 of 18276<!-- /m -->** code objects agree, or **<!-- m:py_stdlib_full_pct -->95.18%<!-- /m -->**. Its pinned 200-module subset yields **<!-- m:py_stdlib_pinned_count -->6087 of 6286<!-- /m -->** (**<!-- m:py_stdlib_pinned_pct -->96.83%<!-- /m -->**). The committed module lists define both populations.
 
-`full_stdlib_recompile_gate.rs` measures the 574-module population on explicit invocation. CI runs a 115-module subset and runs the 200-module gate on tags and scheduled builds, with a 96.83% regression threshold for the latter.
+`full_stdlib_recompile_gate.rs` measures the 574-module population on explicit invocation. CI runs a 115-module subset and runs the 200-module gate on tags and scheduled builds, with a <!-- m:py_stdlib_pinned_floor_pct -->96.83%<!-- /m --> regression threshold for the latter.
 
 The [recorded run](https://github.com/1-3-7/disrobe/blob/main/evidence/results/captured/python-stdlib-full.json)
 includes the executable and interpreter hashes, comparison rules, exact counts, and reproduction

@@ -74,8 +74,8 @@ pub(crate) struct FigureBudget {
 const DOCUMENT_FIGURE_BUDGET: [FigureBudget; 33] = [
     FigureBudget {
         path: "README.md",
-        figures: 20,
-        digest: "a50c9fd686ceba65",
+        figures: 12,
+        digest: "e58ea20808bc66fe",
     },
     FigureBudget {
         path: "SECURITY.md",
@@ -204,8 +204,8 @@ const DOCUMENT_FIGURE_BUDGET: [FigureBudget; 33] = [
     },
     FigureBudget {
         path: "docs/src/languages/python.md",
-        figures: 3,
-        digest: "a1148478cca3472d",
+        figures: 2,
+        digest: "70fcb18f1a391253",
     },
     FigureBudget {
         path: "docs/src/languages/ruby.md",
@@ -224,8 +224,8 @@ const DOCUMENT_FIGURE_BUDGET: [FigureBudget; 33] = [
     },
     FigureBudget {
         path: "docs/src/python-bindings.md",
-        figures: 7,
-        digest: "f2af109b80804156",
+        figures: 6,
+        digest: "15d8addb2c2c8690",
     },
     FigureBudget {
         path: "evidence/README.md",

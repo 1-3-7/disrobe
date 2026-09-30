@@ -96,8 +96,8 @@ The grades: `strong` means an independent reference could have rejected the outp
 
 | Interpreter | Modules | Matching code objects | Rate | Grade | Runs |
 |---|---|---|---|---|---|
-| CPython 3.8.20 | 154 | 4,571 of 5,088 | 89.83% | `recompile-only` | weekly |
-| CPython 3.9.25 | 157 | 4,989 of 5,233 | 95.33% | `recompile-only` | weekly |
+| CPython <!-- m:py_band_38_interpreter -->3.8.20<!-- /m --> | <!-- m:py_band_38_modules -->154<!-- /m --> | <!-- m:py_band_38_count_grouped -->4,571 of 5,088<!-- /m --> | <!-- m:py_band_38_rate -->89.83%<!-- /m --> | `recompile-only` | weekly |
+| CPython <!-- m:py_band_39_interpreter -->3.9.25<!-- /m --> | <!-- m:py_band_39_modules -->157<!-- /m --> | <!-- m:py_band_39_count_grouped -->4,989 of 5,233<!-- /m --> | <!-- m:py_band_39_rate -->95.33%<!-- /m --> | `recompile-only` | weekly |
 | CPython <!-- m:py_band_310_interpreter -->3.10.20<!-- /m --> | <!-- m:py_band_310_modules -->161<!-- /m --> | <!-- m:py_band_310_frac -->5266 / 5458<!-- /m --> | <!-- m:py_band_310_rate -->96.48%<!-- /m --> | `recompile-only` | push |
 | CPython <!-- m:py_band_311_interpreter -->3.11.15<!-- /m --> | <!-- m:py_band_311_modules -->172<!-- /m --> | <!-- m:py_band_311_frac -->5470 / 5638<!-- /m --> | <!-- m:py_band_311_rate -->97.02%<!-- /m --> | `recompile-only` | weekly |
 | CPython <!-- m:py_band_312_interpreter -->3.12.13<!-- /m --> | <!-- m:py_band_312_modules -->177<!-- /m --> | <!-- m:py_band_312_frac -->5436 / 5659<!-- /m --> | <!-- m:py_band_312_rate -->96.05%<!-- /m --> | `recompile-only` | push |
@@ -114,11 +114,11 @@ A wider CPython 3.14.5 population of <!-- m:py_stdlib_full_modules -->574<!-- /m
 | Java class files to Java | <!-- m:jvm_per_method_count -->131 of 131<!-- /m --> top-level methods of the EdgeCases corpus recompile | Real `javac` | `recompile-only` | weekly |
 | Java behaviour | 117 / 131 of the same methods behave identically; 8 diverge and 6 cannot be driven in isolation | A real JVM | `strong` | weekly |
 | Android DEX to Java | <!-- m:dalvik_verifier_frac -->118 / 118<!-- /m --> verifier-presented classes pass; <!-- m:dalvik_link_skipped_count -->37 of 155<!-- /m --> classes are link-skipped and ungraded | `java -Xverify:all` | `strong` | weekly |
-| .NET assemblies to C# | 18 / 35 EdgeCases types' method bodies recompile inside harness-built type shells | Roslyn `csc` | `recompile-only` | weekly |
+| .NET assemblies to C# | <!-- m:dotnet_whole_type_frac -->18 / 35<!-- /m --> EdgeCases types' method bodies recompile inside harness-built type shells | Roslyn `csc` | `recompile-only` | weekly |
 | WebAssembly | <!-- m:wasm_execution_frac -->57 / 57<!-- /m --> eligible functions return the same values, traps, and first 4,096 bytes of linear memory | wasmtime | `strong` | weekly |
 | Stripped BEAM modules | <!-- m:beam_recompile_frac -->19 / 19<!-- /m --> modules recompile, keep their exports, and print the same `test/0` result | Erlang/OTP 27.3.4 | `strong` | weekly |
 | Go type names, stripped binary | <!-- m:go_typename_count -->838 of 838<!-- /m --> names | None: the names come from the binary's own type data | `coverage-self-reported` | weekly |
-| Go function names, stripped binaries | From 88.78% (darwin/amd64) to 100% (windows/386) on seven platforms; the missing names are assembly entry points and linker symbols that a stripped image does not carry | `go tool nm` on the unstripped builds | `strong` | weekly |
+| Go function names, stripped binaries | From <!-- m:go_funcname_darwin_amd64_pct -->88.78%<!-- /m --> (darwin/amd64) to <!-- m:go_funcname_windows_386_pct -->100%<!-- /m --> (windows/386) on seven platforms; the missing names are assembly entry points and linker symbols that a stripped image does not carry | `go tool nm` on the unstripped builds | `strong` | weekly |
 | Hermes bytecode v96 | <!-- m:hermes_opcoverage_count -->8 of 8<!-- /m --> functions lift with their original names and no fallback operations | A real `hermesc` build and its source | `strong` | weekly |
 | Lua, IronBrew2 2.7.0 | Standard and MAX output recover to programs that run identically | The original programs under Lua | `strong` | weekly |
 | JavaScript, JS-Confuser 2.0.1 | Recovered programs print byte-identical output | The original programs under node 24.16.0 | `strong` | weekly |
@@ -126,7 +126,7 @@ A wider CPython 3.14.5 population of <!-- m:py_stdlib_full_modules -->574<!-- /m
 | Native unpacking | UPX (NRV2B and LZMA), FSG, NSPack, and Petite recover a `.text` section byte-identical to the original on the committed Hash (FSG, NSPack) and hello (UPX, Petite) pairs; a second FSG pair recovers 31,171 of 33,870 `.text` bytes | The original builds committed beside the packed files | `strong` | weekly |
 | Tauri and Wails frontends | Every embedded file of real Tauri 1.8.3, Tauri 2.11.5, and Wails 2.13.0 builds matches its source file | The frontend trees the builds were made from | `strong` | weekly |
 | Pickle reconstruction | <!-- m:pickle_roundtrip_frac -->470 / 470<!-- /m --> reconstructed fixtures pass re-execution equality checks ([Result](evidence/results/pickle-roundtrip.md)) | CPython re-execution | `strong` | weekly |
-| Pickle disassembly and classification | 102 / 102 committed fixtures | CPython `pickletools` | `strong` | weekly |
+| Pickle disassembly and classification | <!-- m:pickle_pickletools_frac -->102 / 102<!-- /m --> committed fixtures | CPython `pickletools` | `strong` | weekly |
 | Ruby YARV, Ruby 3.4.9 | Opcode-name recall after recompiling: greeter <!-- m:ruby_greeter_pct -->100%<!-- /m -->, megafile <!-- m:ruby_megafile_pct -->100%<!-- /m -->; order and operands are ignored | MRI recompilation | `recompile-only` | weekly |
 | PyArmor v8 and v9 | <!-- m:pyarmor_frac -->72 / 72<!-- /m --> default-trial wrappers (PyArmor 8.5.12 and 9.2.5) decrypt and decode a complete root code object | Disrobe's own count; source equivalence is not measured | `coverage-self-reported` | weekly |
 

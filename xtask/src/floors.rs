@@ -54,44 +54,20 @@ const PYTHON_BINDINGS_DOC: &str = "docs/src/python-bindings.md";
 const PACKER_BYTE_GATE: &str =
     "crates/disrobe-pass-native/tests/packers/committed_packer_byte_recovery.rs";
 const EAZVM_GATE: &str = "crates/disrobe-pass-dotnet/tests/real_eazvm.rs";
-const PY_ARBITRARY_GATE: &str =
-    "crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs";
 const VBA_SOURCE_ORACLE_GATE: &str =
     "crates/disrobe-pass-shell/tests/vba_semantic_source_oracle.rs";
 const CATALOG_DOC: &str = "docs/src/catalog.md";
 const NATIVE_DOC: &str = "docs/src/languages/native.md";
 const DOTNET_DOC: &str = "docs/src/languages/dotnet.md";
-const INTRODUCTION_DOC: &str = "docs/src/introduction.md";
 const SHELL_DOC: &str = "docs/src/languages/shell.md";
 const CONTENT_SPAN: &str = "the content span that counts `.rsrc`, not the older whole-image span \
                             measured over `.text`, `.rdata` and `.data` only";
 
-const CLAIMS: [FloorClaim; 9] = [
+const CLAIMS: [FloorClaim; 6] = [
     FloorClaim {
         constant: "CLEAN_BASELINE_INSTRUCTIONS",
         source: EAZVM_GATE,
         sites: &[(DOTNET_DOC, "67 of {} instructions match in sequence")],
-    },
-    FloorClaim {
-        constant: "MODULES_EXACT_FLOOR",
-        source: PY_ARBITRARY_GATE,
-        sites: &[(INTRODUCTION_DOC, "matches: {} of 200 modules")],
-    },
-    FloorClaim {
-        constant: "PINNED_MODULE_COUNT",
-        source: PY_ARBITRARY_GATE,
-        sites: &[(INTRODUCTION_DOC, "matches: 124 of {} modules")],
-    },
-    FloorClaim {
-        constant: "OBJECT_PCT_FLOOR",
-        source: PY_ARBITRARY_GATE,
-        sites: &[
-            (
-                "docs/src/languages/python.md",
-                "with a {}% regression threshold",
-            ),
-            (PYTHON_BINDINGS_DOC, "regression threshold {}%"),
-        ],
     },
     FloorClaim {
         constant: "PER_METHOD_JAVAC_OK_FLOOR",

@@ -6,6 +6,8 @@ use serde::Deserialize;
 use crate::catalog_counts::CatalogTables;
 use crate::fileio::read_text_bounded;
 
+mod gate_constants;
+
 const MAX_RECOVERY_JSON_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_DOC_BYTES: u64 = 8 * 1024 * 1024;
 
@@ -52,6 +54,8 @@ struct Bar {
     delivered: Option<u64>,
     #[serde(default)]
     modules: Option<u64>,
+    #[serde(default)]
+    modules_exact: Option<u64>,
     #[serde(default)]
     floor_pct: Option<f64>,
     #[serde(default)]
@@ -153,6 +157,24 @@ impl Bar {
             .modules
             .ok_or_else(|| eyre!("bar `{}` has no `modules` count", self.label))?;
         Ok(MetricValue::Int(modules))
+    }
+
+    fn exact_module_count(&self) -> Result<MetricValue> {
+        let modules: u64 = self.modules_exact.ok_or_else(|| {
+            eyre!(
+                "bar `{}` has no `modules_exact` count of wholly matching modules",
+                self.label
+            )
+        })?;
+        Ok(MetricValue::Int(modules))
+    }
+
+    fn numerator_count(&self) -> Result<MetricValue> {
+        Ok(MetricValue::Int(self.numerator()?))
+    }
+
+    fn denominator_count(&self) -> Result<MetricValue> {
+        Ok(MetricValue::Int(self.denominator()?))
     }
 
     fn label_module_count(&self) -> Result<MetricValue> {
@@ -338,20 +360,29 @@ struct CatalogKeySpec {
 struct BandKeySpec {
     stem: &'static str,
     label_prefix: &'static str,
+    gate: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Copy)]
 enum BandFacet {
     Frac,
+    CountGrouped,
     Rate,
+    Pct,
+    ObjectsOk,
+    Objects,
     Modules,
     Interpreter,
 }
 
 impl BandFacet {
-    const SUFFIXES: [(&'static str, Self); 4] = [
+    const SUFFIXES: [(&'static str, Self); 8] = [
         ("_frac", Self::Frac),
+        ("_count_grouped", Self::CountGrouped),
         ("_rate", Self::Rate),
+        ("_pct", Self::Pct),
+        ("_objects_ok", Self::ObjectsOk),
+        ("_objects", Self::Objects),
         ("_modules", Self::Modules),
         ("_interpreter", Self::Interpreter),
     ];
@@ -366,8 +397,10 @@ impl BandFacet {
     const fn formatter(self) -> Formatter {
         match self {
             Self::Frac => Formatter::Frac,
+            Self::CountGrouped => Formatter::OfGrouped,
             Self::Rate => Formatter::DerivedPct,
-            Self::Modules => Formatter::Int,
+            Self::Pct => Formatter::Pct,
+            Self::ObjectsOk | Self::Objects | Self::Modules => Formatter::Int,
             Self::Interpreter => Formatter::Text,
         }
     }
@@ -375,13 +408,22 @@ impl BandFacet {
     const fn nouns(self) -> &'static [&'static str] {
         match self {
             Self::Modules => &["modules"],
-            Self::Frac | Self::Rate | Self::Interpreter => &[],
+            Self::Frac
+            | Self::CountGrouped
+            | Self::Rate
+            | Self::Pct
+            | Self::ObjectsOk
+            | Self::Objects
+            | Self::Interpreter => &[],
         }
     }
 
     fn extract(self, bar: &Bar) -> Result<MetricValue> {
         match self {
-            Self::Frac | Self::Rate => bar.count_ratio(),
+            Self::Frac | Self::CountGrouped | Self::Rate => bar.count_ratio(),
+            Self::Pct => bar.percent(),
+            Self::ObjectsOk => bar.numerator_count(),
+            Self::Objects => bar.denominator_count(),
             Self::Modules => bar.label_module_count(),
             Self::Interpreter => bar.interpreter_release(),
         }
@@ -392,34 +434,42 @@ const PY_BANDS: &[BandKeySpec] = &[
     BandKeySpec {
         stem: "py_band_38",
         label_prefix: "CPython 3.8",
+        gate: Some("crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate_38.rs"),
     },
     BandKeySpec {
         stem: "py_band_39",
         label_prefix: "CPython 3.9",
+        gate: Some("crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate_39.rs"),
     },
     BandKeySpec {
         stem: "py_band_310",
         label_prefix: "CPython 3.10",
+        gate: Some("crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate_310.rs"),
     },
     BandKeySpec {
         stem: "py_band_311",
         label_prefix: "CPython 3.11",
+        gate: Some("crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate_311.rs"),
     },
     BandKeySpec {
         stem: "py_band_312",
         label_prefix: "CPython 3.12",
+        gate: Some("crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate_312.rs"),
     },
     BandKeySpec {
         stem: "py_band_313",
         label_prefix: "CPython 3.13",
+        gate: Some("crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate_313.rs"),
     },
     BandKeySpec {
         stem: "py_band_314",
         label_prefix: "CPython 3.14",
+        gate: None,
     },
     BandKeySpec {
         stem: "py_band_315",
         label_prefix: "CPython 3.15",
+        gate: Some("crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate_315.rs"),
     },
 ];
 
@@ -545,6 +595,111 @@ const KEYS: &[KeySpec] = &[
             )?
             .count_ratio()
         },
+    },
+    KeySpec {
+        name: "py_stdlib_full_objects",
+        formatter: Formatter::Int,
+        nouns: &[],
+        extract: |r: &Recovery| {
+            r.bar("Python bytecode", "fixed 574-module core population")?
+                .denominator_count()
+        },
+    },
+    KeySpec {
+        name: "py_stdlib_full_objects_ok",
+        formatter: Formatter::Int,
+        nouns: &[],
+        extract: |r: &Recovery| {
+            r.bar("Python bytecode", "fixed 574-module core population")?
+                .numerator_count()
+        },
+    },
+    KeySpec {
+        name: "py_stdlib_pinned_objects",
+        formatter: Formatter::Int,
+        nouns: &[],
+        extract: |r: &Recovery| {
+            r.bar(
+                "Python bytecode",
+                "200-module pinned corpus (normalized opcode-structure agreement)",
+            )?
+            .denominator_count()
+        },
+    },
+    KeySpec {
+        name: "py_stdlib_pinned_objects_ok",
+        formatter: Formatter::Int,
+        nouns: &[],
+        extract: |r: &Recovery| {
+            r.bar(
+                "Python bytecode",
+                "200-module pinned corpus (normalized opcode-structure agreement)",
+            )?
+            .numerator_count()
+        },
+    },
+    KeySpec {
+        name: "py_stdlib_pinned_floor_pct",
+        formatter: Formatter::Pct,
+        nouns: &[],
+        extract: |r: &Recovery| {
+            r.bar(
+                "Python bytecode",
+                "200-module pinned corpus (normalized opcode-structure agreement)",
+            )?
+            .floor_percent()
+        },
+    },
+    KeySpec {
+        name: "py_stdlib_pinned_modules_exact",
+        formatter: Formatter::Int,
+        nouns: &[],
+        extract: |r: &Recovery| {
+            r.bar(
+                "Python bytecode",
+                "200-module pinned corpus (normalized opcode-structure agreement)",
+            )?
+            .exact_module_count()
+        },
+    },
+    KeySpec {
+        name: "jvm_per_method_frac",
+        formatter: Formatter::Frac,
+        nouns: &[],
+        extract: |r: &Recovery| r.bar("JVM classfile", "per-method")?.count_ratio(),
+    },
+    KeySpec {
+        name: "dotnet_whole_type_frac",
+        formatter: Formatter::Frac,
+        nouns: &[],
+        extract: |r: &Recovery| {
+            r.bar("Dotnet whole-type recompile", "whole-type recompile")?
+                .count_ratio()
+        },
+    },
+    KeySpec {
+        name: "pickle_pickletools_frac",
+        formatter: Formatter::Frac,
+        nouns: &[],
+        extract: |r: &Recovery| {
+            r.bar("Pickle corpus", "pickletools-graded fixtures")?
+                .count_ratio()
+        },
+    },
+    KeySpec {
+        name: "go_funcname_darwin_amd64_pct",
+        formatter: Formatter::Pct,
+        nouns: &[],
+        extract: |r: &Recovery| {
+            r.bar("Go function-name recovery", "darwin/amd64")?
+                .percent()
+        },
+    },
+    KeySpec {
+        name: "go_funcname_windows_386_pct",
+        formatter: Formatter::Pct,
+        nouns: &[],
+        extract: |r: &Recovery| r.bar("Go function-name recovery", "windows/386")?.percent(),
     },
     KeySpec {
         name: "wasm_opcoverage_count",
@@ -1360,6 +1515,7 @@ fn manifest(root: &Path) -> Result<Vec<PathBuf>> {
         flat.push(part);
     }
     files.extend(markdown_in(&flat, false)?);
+    files.push(root.join("xtask").join("data").join("verification.json"));
     files.sort();
     Ok(files)
 }
@@ -1378,31 +1534,35 @@ fn load_sources(root: &Path) -> Result<MetricSources> {
     })
 }
 
+fn write_published(root: &Path, sources: &MetricSources) -> Result<usize> {
+    let mut rewritten: usize = 0;
+    for path in &manifest(root)? {
+        let text: String = read_text_bounded(path, MAX_DOC_BYTES)
+            .wrap_err_with(|| format!("reading {}", path.display()))?;
+        let updated: String = rewrite_text(&text, sources)
+            .wrap_err_with(|| format!("rewriting markers in {}", path.display()))?;
+        if updated != text {
+            std::fs::write(path, &updated)
+                .wrap_err_with(|| format!("writing {}", path.display()))?;
+            rewritten += 1;
+        }
+    }
+    Ok(rewritten + gate_constants::write(root, sources)?)
+}
+
 pub(crate) fn run(root: &Path, mode: Mode) -> Result<()> {
     let sources: MetricSources = load_sources(root)?;
-    let files: Vec<PathBuf> = manifest(root)?;
     match mode {
         Mode::Write => {
-            let mut rewritten: usize = 0;
-            for path in &files {
-                let text: String = read_text_bounded(path, MAX_DOC_BYTES)
-                    .wrap_err_with(|| format!("reading {}", path.display()))?;
-                let updated: String = rewrite_text(&text, &sources)
-                    .wrap_err_with(|| format!("rewriting markers in {}", path.display()))?;
-                if updated != text {
-                    std::fs::write(path, &updated)
-                        .wrap_err_with(|| format!("writing {}", path.display()))?;
-                    rewritten += 1;
-                }
-            }
+            let rewritten: usize = write_published(root, &sources)?;
             println!(
-                "xtask metrics: {rewritten} file(s) rewritten across {} manifest file(s) from \
-                 xtask/data/recovery.json and the catalog tables the binary carries",
-                files.len()
+                "xtask metrics: {rewritten} document(s) and gate constant file(s) rewritten from \
+                 xtask/data/recovery.json and the catalog tables the binary carries"
             );
             Ok(())
         }
         Mode::Check => {
+            let files: Vec<PathBuf> = manifest(root)?;
             let mut issues: Vec<String> = Vec::new();
             for path in &files {
                 let text: String = read_text_bounded(path, MAX_DOC_BYTES)
@@ -1410,9 +1570,10 @@ pub(crate) fn run(root: &Path, mode: Mode) -> Result<()> {
                 let label: String = display_label(root, path);
                 check_text(&text, &sources, &label, &mut issues)?;
             }
+            gate_constants::check(root, &sources, &mut issues)?;
             if issues.is_empty() {
                 println!(
-                    "xtask metrics --check: every marker span and unit-noun number across {} file(s) matches xtask/data/recovery.json and the catalog tables the binary carries",
+                    "xtask metrics --check: every marker span and unit-noun number across {} file(s) and every published gate constant matches xtask/data/recovery.json and the catalog tables the binary carries",
                     files.len()
                 );
                 Ok(())
