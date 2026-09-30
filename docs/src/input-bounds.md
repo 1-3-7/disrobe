@@ -2,7 +2,7 @@
 
 Every parser treats its input as hostile. Counts, sizes, recursion depth, work and output are capped by named constants, and input that exceeds a cap is refused with a typed error instead of exhausting memory or time. `cargo xtask regen` generates this page from every module-level constant in `crates/*/src` whose name starts with `MAX_` or ends with `_LIMIT`, `_BUDGET` or `_CAP`, and `cargo xtask regen --check` fails when it is stale. The kind column is derived from the constant name.
 
-2172 bounds (count 215, other 1018, output 64, recursion 218, size 478, work 179).
+2175 bounds (count 215, other 1020, output 64, recursion 219, size 478, work 179).
 
 | Crate | Constant | Kind | Type | Value | File |
 | --- | --- | --- | --- | --- | --- |
@@ -786,6 +786,9 @@ Every parser treats its input as hostile. Counts, sizes, recursion depth, work a
 | `disrobe-pass-js-deob` | `MAX_LZSTRING_DICT_ENTRIES` | count | `usize` | `1 << 20` | `crates/disrobe-pass-js-deob/src/jsconfuser/string_compression.rs` |
 | `disrobe-pass-js-deob` | `MAX_LZSTRING_INPUT_UNITS` | other | `usize` | `1 << 20` | `crates/disrobe-pass-js-deob/src/jsconfuser/string_compression.rs` |
 | `disrobe-pass-js-deob` | `MAX_LZSTRING_OUTPUT_UNITS` | output | `usize` | `4 << 20` | `crates/disrobe-pass-js-deob/src/jsconfuser/string_compression.rs` |
+| `disrobe-pass-js-deob` | `LOOP_LIMIT` | other | `u64` | `2_000_000` | `crates/disrobe-pass-js-deob/src/jscrambler/strict_dispatch_tests.rs` |
+| `disrobe-pass-js-deob` | `RECURSION_LIMIT` | recursion | `usize` | `1_500` | `crates/disrobe-pass-js-deob/src/jscrambler/strict_dispatch_tests.rs` |
+| `disrobe-pass-js-deob` | `STACK_LIMIT` | other | `usize` | `50_000` | `crates/disrobe-pass-js-deob/src/jscrambler/strict_dispatch_tests.rs` |
 | `disrobe-pass-js-deob` | `MAX_CALL_BYTES` | size | `usize` | `64 * 1024` | `crates/disrobe-pass-js-deob/src/jsobfu/fold_chars.rs` |
 | `disrobe-pass-js-deob` | `MAX_FOLD_PASSES` | other | `usize` | `8` | `crates/disrobe-pass-js-deob/src/jsobfu/fold_chars.rs` |
 | `disrobe-pass-js-deob` | `MAX_IIFE_BYTES` | size | `usize` | `8 * 1024` | `crates/disrobe-pass-js-deob/src/jsobfu/fold_chars.rs` |
