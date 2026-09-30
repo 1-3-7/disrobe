@@ -120,12 +120,6 @@ fn fopo_loader_runtime_equivalent() {
 }
 
 #[test]
-fn better_php_obf_variable_chain_runtime_equivalent() {
-    let blob: Vec<u8> = common::build_better_php_obf(&marker_payload());
-    assert_runtime_equivalent("better-php-obfuscator", &blob, MARKER);
-}
-
-#[test]
 fn str_rot13_base64_loader_runtime_equivalent() {
     let blob: Vec<u8> = common::build_str_rot13_b64(&marker_payload());
     assert_runtime_equivalent("base64(str_rot13)", &blob, MARKER);

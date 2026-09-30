@@ -133,19 +133,6 @@ pub fn build_fopo(payload: &str) -> Vec<u8> {
     out
 }
 
-pub fn build_better_php_obf(payload: &str) -> Vec<u8> {
-    let deflated: Vec<u8> = deflate(payload.as_bytes());
-    let encoded: String = b64(&deflated);
-    let mut out: Vec<u8> = Vec::new();
-    out.extend_from_slice(
-        b"<?php /* Better PHP Obfuscator v2 - by anonymous */ $x = base64_decode('",
-    );
-    out.extend_from_slice(encoded.as_bytes());
-    out.extend_from_slice(b"'); $y = gzinflate($x); ev");
-    out.extend_from_slice(b"al($y);");
-    out
-}
-
 pub fn build_str_rot13(payload: &str) -> Vec<u8> {
     let rotated: String = payload
         .as_bytes()

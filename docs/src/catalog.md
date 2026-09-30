@@ -99,7 +99,7 @@ Full VBA p-code decompile (264-opcode table, VBA5/6/7) with VBA-stomping detecti
 |---|---|---|
 | **Commercial encoders** | <!-- m:php_catalog_entries -->3<!-- /m --> (catalog) | ionCube, SourceGuardian, Zend Guard: envelope detect and wall (the decrypt key is native-loader-resident), with a partial `op_array` skeleton for the legacy statically-keyed cases |
 
-Stacked eval-chain obfuscation (FOPO, Better PHP Obfuscator, and the base64/gzinflate/rot13/XOR layer set) and Phar archives are peeled and walked in the same pass. See the [PHP guide](./languages/php.md).
+Stacked eval-chain obfuscation (FOPO and the base64/gzinflate/rot13/XOR layer set) and Phar archives are peeled and walked in the same pass. See the [PHP guide](./languages/php.md).
 
 ## Other runtimes
 

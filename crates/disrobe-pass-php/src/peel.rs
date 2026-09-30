@@ -40,7 +40,6 @@ pub enum PeelLayer {
     CreateFunction,
     EvalUnwrap,
     Fopo,
-    BetterPhpObfuscator,
     ModernLoader,
 }
 
@@ -158,9 +157,6 @@ pub fn peel(source: &[u8], options: PeelOptions) -> Result<PeelReport> {
 fn try_one_layer(buf: &[u8], depth: u32) -> Result<Option<(PeelLayer, Vec<u8>)>> {
     if let Some(payload) = peel_fopo(buf, depth)? {
         return Ok(Some((PeelLayer::Fopo, payload)));
-    }
-    if let Some(payload) = peel_better_php(buf, depth)? {
-        return Ok(Some((PeelLayer::BetterPhpObfuscator, payload)));
     }
     if let Some(report) = crate::loader::peel_loader(buf, crate::loader::DEFAULT_LOADER_DEPTH) {
         return Ok(Some((PeelLayer::ModernLoader, report.recovered)));
@@ -1019,32 +1015,6 @@ fn peel_fopo(buf: &[u8], depth: u32) -> Result<Option<Vec<u8>>> {
                 reason: e.to_string(),
             })?;
     Ok(Some(decoded))
-}
-
-fn peel_better_php(buf: &[u8], depth: u32) -> Result<Option<Vec<u8>>> {
-    let re: &Regex = bytes_regex!(
-        r#"(?is)<\?php\s*/\*[^*]*Better\s+PHP\s+Obfuscator[^*]*\*/\s*\$\w+\s*=\s*base64_decode\(\s*['"]([A-Za-z0-9+/=]+)['"]\s*\)\s*;\s*\$\w+\s*=\s*gzinflate\(\s*\$\w+\s*\)\s*;\s*eval\s*\(\s*\$\w+\s*\)"#
-    );
-    let Some(caps) = re.captures(buf) else {
-        return Ok(None);
-    };
-    let blob: &[u8] = caps
-        .get(1)
-        .ok_or(Error::FopoPeel("missing payload"))?
-        .as_bytes();
-    let b64_clean: Vec<u8> = blob
-        .iter()
-        .copied()
-        .filter(|b: &u8| !b.is_ascii_whitespace())
-        .collect();
-    let decoded: Vec<u8> = B64_STD
-        .decode(&b64_clean)
-        .map_err(|e: base64::DecodeError| Error::Base64Decode {
-            depth,
-            reason: e.to_string(),
-        })?;
-    let inflated: Vec<u8> = inflate_raw(&decoded, depth)?;
-    Ok(Some(inflated))
 }
 
 #[cfg(test)]
