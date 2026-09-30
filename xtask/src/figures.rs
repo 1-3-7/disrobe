@@ -75,7 +75,7 @@ const DOCUMENT_FIGURE_BUDGET: [FigureBudget; 33] = [
     FigureBudget {
         path: "README.md",
         figures: 12,
-        digest: "e58ea20808bc66fe",
+        digest: "dae9ab7688c74b57",
     },
     FigureBudget {
         path: "SECURITY.md",
