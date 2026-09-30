@@ -50,20 +50,31 @@ fn hoist_branch_locals(
             | StructuredBlock::Label { .. } => {}
         }
         let mut declared: BTreeSet<String> = BTreeSet::new();
-        if_declarations(&blocks[index], &mut declared, depth);
+        nested_declarations(&blocks[index], &mut declared, depth);
         let hoisted: Vec<String> = declared
             .into_iter()
             .filter(|name: &String| {
-                blocks[index + 1..]
-                    .iter()
-                    .any(|later: &StructuredBlock| block_mentions(later, name, 0))
+                let later: &[StructuredBlock] = &blocks[index + 1..];
+                match &blocks[index] {
+                    StructuredBlock::If { .. } => later
+                        .iter()
+                        .any(|block: &StructuredBlock| block_mentions(block, name, 0)),
+                    looped => {
+                        let read_by_while_condition: bool = matches!(
+                            looped,
+                            StructuredBlock::While { cond, .. } if super::contains_ident(cond, name)
+                        );
+                        !block_captures_in_closure(looped, name, 0)
+                            && (read_by_while_condition || read_before_written(later, name))
+                    }
+                }
             })
             .collect();
         if hoisted.is_empty() {
             index += 1;
             continue;
         }
-        undeclare_in_if(&mut blocks[index], &hoisted, depth);
+        undeclare_nested(&mut blocks[index], &hoisted, depth);
         let closure_captures: bool = blocks[index..].iter().any(|block: &StructuredBlock| {
             hoisted
                 .iter()
@@ -83,7 +94,12 @@ fn hoist_branch_locals(
         }
         let fresh: Vec<String> = hoisted
             .into_iter()
-            .filter(|name: &String| !in_scope.contains(name))
+            .filter(|name: &String| {
+                !in_scope.contains(name)
+                    && !blocks[..index]
+                        .iter()
+                        .any(|earlier: &StructuredBlock| block_mentions(earlier, name, 0))
+            })
             .collect();
         if fresh.is_empty() {
             index += 1;
@@ -121,24 +137,73 @@ fn declared_names(text: &str) -> Vec<String> {
         .collect()
 }
 
-fn if_declarations(block: &StructuredBlock, out: &mut BTreeSet<String>, depth: usize) {
-    let StructuredBlock::If {
-        then_body,
-        else_body,
-        ..
-    } = block
+fn read_before_written(blocks: &[StructuredBlock], name: &str) -> bool {
+    let Some(first) = blocks
+        .iter()
+        .find(|block: &&StructuredBlock| block_mentions(block, name, 0))
     else {
-        return;
+        return false;
     };
+    let StructuredBlock::Raw(text) = first else {
+        return true;
+    };
+    let head: &str = text.lines().next().unwrap_or_default();
+    let assignment: &str = head.strip_prefix("local ").unwrap_or(head);
+    match assignment.split_once(" = ") {
+        Some((lhs, rhs)) => lhs.trim() != name || super::contains_ident(rhs, name),
+        None => true,
+    }
+}
+
+fn child_bodies(block: &StructuredBlock) -> Vec<&Vec<StructuredBlock>> {
+    match block {
+        StructuredBlock::If {
+            then_body,
+            else_body,
+            ..
+        } => vec![then_body, else_body],
+        StructuredBlock::While { body, .. }
+        | StructuredBlock::Repeat { body, .. }
+        | StructuredBlock::NumericFor { body, .. }
+        | StructuredBlock::GenericFor { body, .. } => vec![body],
+        StructuredBlock::Raw(_)
+        | StructuredBlock::Break
+        | StructuredBlock::Goto { .. }
+        | StructuredBlock::Label { .. } => Vec::new(),
+    }
+}
+
+fn child_bodies_mut(block: &mut StructuredBlock) -> Vec<&mut Vec<StructuredBlock>> {
+    match block {
+        StructuredBlock::If {
+            then_body,
+            else_body,
+            ..
+        } => vec![then_body, else_body],
+        StructuredBlock::While { body, .. }
+        | StructuredBlock::Repeat { body, .. }
+        | StructuredBlock::NumericFor { body, .. }
+        | StructuredBlock::GenericFor { body, .. } => vec![body],
+        StructuredBlock::Raw(_)
+        | StructuredBlock::Break
+        | StructuredBlock::Goto { .. }
+        | StructuredBlock::Label { .. } => Vec::new(),
+    }
+}
+
+fn nested_declarations(block: &StructuredBlock, out: &mut BTreeSet<String>, depth: usize) {
     if depth >= MAX_SCOPE_DEPTH {
         return;
     }
-    for inner in then_body.iter().chain(else_body.iter()) {
-        if let Some(name) = single_temp_declaration(inner).or_else(|| single_temp_assignment(inner))
-        {
-            out.insert(name);
+    for body in child_bodies(block) {
+        for inner in body {
+            if let Some(name) =
+                single_temp_declaration(inner).or_else(|| single_temp_assignment(inner))
+            {
+                out.insert(name);
+            }
+            nested_declarations(inner, out, depth + 1);
         }
-        if_declarations(inner, out, depth + 1);
     }
 }
 
@@ -189,19 +254,12 @@ fn single_temp_declaration(block: &StructuredBlock) -> Option<String> {
     is_synthetic_temp(name).then(|| name.to_owned())
 }
 
-fn undeclare_in_if(block: &mut StructuredBlock, hoisted: &[String], depth: usize) {
-    let StructuredBlock::If {
-        then_body,
-        else_body,
-        ..
-    } = block
-    else {
-        return;
-    };
+fn undeclare_nested(block: &mut StructuredBlock, hoisted: &[String], depth: usize) {
     if depth >= MAX_SCOPE_DEPTH {
         return;
     }
-    for body in [then_body, else_body] {
+    let repeats: bool = !matches!(block, StructuredBlock::If { .. });
+    for body in child_bodies_mut(block) {
         body.retain_mut(|inner: &mut StructuredBlock| {
             let Some(name) = single_temp_declaration(inner) else {
                 return true;
@@ -217,11 +275,15 @@ fn undeclare_in_if(block: &mut StructuredBlock, hoisted: &[String], depth: usize
                     *text = rest.to_owned();
                     true
                 }
+                _ if repeats => {
+                    *text = format!("{name} = nil");
+                    true
+                }
                 _ => false,
             }
         });
         for inner in body.iter_mut() {
-            undeclare_in_if(inner, hoisted, depth + 1);
+            undeclare_nested(inner, hoisted, depth + 1);
         }
     }
 }

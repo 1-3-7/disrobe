@@ -715,6 +715,8 @@ fn liveness_writes(d: &Decoded, dialect: LuaDialect) -> Vec<u32> {
     };
     if open_results {
         (d.a..d.a + OPEN_RANGE_REGISTERS).collect()
+    } else if d.op == Op::TestSet {
+        Vec::new()
     } else {
         written_registers(d, dialect)
     }
@@ -750,9 +752,10 @@ fn read_registers(d: &Decoded, dialect: LuaDialect) -> Vec<u32> {
                 push_r(&mut out, d.c);
             }
         }
-        Op::SetGlobal | Op::SetUpval | Op::Return1 | Op::Test | Op::TestSet | Op::ErrNNil => {
+        Op::SetGlobal | Op::SetUpval | Op::Return1 | Op::Test | Op::ErrNNil => {
             push_r(&mut out, d.a);
         }
+        Op::TestSet => push_r(&mut out, d.b),
         Op::SetTable if is54 => {
             push_r(&mut out, d.a);
             push_r(&mut out, d.b);
@@ -1634,8 +1637,9 @@ fn define(
         assign_pinned(state, slot, &value);
         return;
     }
-    let overwrites_a_declared_local: bool =
-        state.is_defined(slot) && state.reg(slot) == state.temp(slot);
+    let overwrites_a_declared_local: bool = state.is_defined(slot)
+        && (state.reg(slot) == state.temp(slot)
+            || !state.bound.get(slot as usize).copied().unwrap_or(false));
     let may_declare_here: bool =
         overwrites_a_declared_local || !live.is_skipped_by_a_forward_jump(state.pc);
     let materialize: bool = !state.inline_values
@@ -1883,7 +1887,13 @@ fn emit_testset(
     };
     if !state.bound.get(d.a as usize).copied().unwrap_or(false) {
         let tmp: String = state.temp(d.a);
-        state.push_raw(format!("local {tmp}"));
+        let pending: String = state.regs.get(d.a as usize).cloned().unwrap_or_default();
+        let declared: bool = pending == tmp && state.is_defined(d.a);
+        if pending.is_empty() || (pending == tmp && !declared) {
+            state.push_raw(format!("local {tmp}"));
+        } else if !declared {
+            state.push_raw(format!("local {tmp} = {pending}"));
+        }
         state.bind_reg(d.a, tmp);
     }
     state.pinned.insert(d.a);
@@ -2236,7 +2246,10 @@ fn emit_and_or(
     }
     let second_raw: u32 = *p.code.get(pc + 2)?;
     let second: Decoded = decode(second_raw, dialect);
-    if !is_single_value_op(second.op) || second.a != d.a {
+    if !is_single_value_op(second.op)
+        || second.a != d.a
+        || region_has_external_entry(p, pc, pc + 2, dialect)
+    {
         return None;
     }
     let lhs: String = state.reg(d.b);

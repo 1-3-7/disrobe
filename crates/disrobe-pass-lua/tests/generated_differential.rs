@@ -1,16 +1,14 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
-mod common;
-
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use common::lua_toolchain::{Dialect, toolchain};
 use disrobe_pass_lua::decompile::{DecompiledChunk, decompile_auto};
 use disrobe_testkit::{CommandSpec, ToolOutput, tool_output};
 
-const PROGRAMS_PER_LANE: u64 = 48;
+const PROGRAMS_PER_LANE: u64 = 5000;
+const LANES: [&str; 5] = ["5.1", "5.2", "5.3", "5.4", "5.5"];
 const RUN_TIMEOUT: Duration = Duration::from_secs(8);
 const VARIABLES: [&str; 5] = ["a", "b", "c", "d", "e"];
 const MAX_BLOCK_DEPTH: u32 = 3;
@@ -223,6 +221,47 @@ impl Generator {
     }
 }
 
+fn reports_version(program: &str, version: &str) -> Result<(), String> {
+    let output: ToolOutput = tool_output(CommandSpec::new(program, RUN_TIMEOUT).arg("-v"))
+        .map_err(|error: disrobe_testkit::ToolError| format!("`{program}`: {error}"))?;
+    let banner: String = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if banner.contains(&format!("Lua {version}")) {
+        Ok(())
+    } else {
+        Err(format!("`{program}` reports `{}`", banner.trim()))
+    }
+}
+
+fn find_program(stem: &str, version: &str) -> String {
+    let compact: String = version.replace('.', "");
+    let candidates: [String; 4] = [
+        format!("{stem}{version}"),
+        format!("{stem}{version}.exe"),
+        format!("{stem}{compact}"),
+        stem.to_owned(),
+    ];
+    let mut defects: Vec<String> = Vec::new();
+    for candidate in &candidates {
+        match reports_version(candidate, version) {
+            Ok(()) => return candidate.clone(),
+            Err(defect) => defects.push(defect),
+        }
+    }
+    panic!(
+        "the generated differential needs `{stem}{version}` (Lua {version}) on PATH and cannot \
+         grade without it: {}",
+        defects.join("; ")
+    )
+}
+
+fn toolchain(version: &str) -> (String, String) {
+    (find_program("luac", version), find_program("lua", version))
+}
+
 fn run(lua: &str, script: &Path) -> Result<String, String> {
     let output: ToolOutput = tool_output(CommandSpec::new(lua, RUN_TIMEOUT).arg(script))
         .map_err(|error: disrobe_testkit::ToolError| error.to_string())?;
@@ -256,9 +295,9 @@ fn recovered_source(luac: &str, dir: &Path, name: &str, source: &str) -> String 
     decompiled.source
 }
 
-fn divergences(dialect: Dialect, label: &str) -> (usize, Vec<String>) {
-    let (luac, lua): (String, String) = toolchain(dialect)
-        .unwrap_or_else(|| panic!("the generated differential needs luac and lua for {label}"));
+fn divergences(version: &str) -> (usize, Vec<String>) {
+    let label: String = format!("lua{version}");
+    let (luac, lua): (String, String) = toolchain(version);
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create(&format!("disrobe_lua_generated_{label}"))
             .expect("scratch dir");
@@ -288,12 +327,12 @@ fn divergences(dialect: Dialect, label: &str) -> (usize, Vec<String>) {
     (graded, failures)
 }
 
-fn assert_lane(dialect: Dialect, label: &str) {
-    let (graded, failures): (usize, Vec<String>) = divergences(dialect, label);
+fn assert_lane(version: &str) {
+    let (graded, failures): (usize, Vec<String>) = divergences(version);
     assert_eq!(graded as u64, PROGRAMS_PER_LANE);
     assert!(
         failures.is_empty(),
-        "{} of {graded} generated {label} programs re-executed differently:\n{}",
+        "{} of {graded} generated lua{version} programs re-executed differently:\n{}",
         failures.len(),
         failures.join("\n=====\n")
     );
@@ -301,17 +340,76 @@ fn assert_lane(dialect: Dialect, label: &str) {
 
 #[test]
 fn generated_programs_reexecute_identically_lua_5_1() {
-    assert_lane(Dialect::Lua51, "lua5.1");
+    assert_lane("5.1");
+}
+
+#[test]
+fn generated_programs_reexecute_identically_lua_5_2() {
+    assert_lane("5.2");
+}
+
+#[test]
+fn generated_programs_reexecute_identically_lua_5_3() {
+    assert_lane("5.3");
 }
 
 #[test]
 fn generated_programs_reexecute_identically_lua_5_4() {
-    assert_lane(Dialect::Lua54, "lua5.4");
+    assert_lane("5.4");
 }
 
 #[test]
 fn generated_programs_reexecute_identically_lua_5_5() {
-    assert_lane(Dialect::Lua55, "lua5.5");
+    assert_lane("5.5");
+}
+
+const PINNED_SHAPES: &[(&str, &str)] = &[
+    (
+        "testset_pending",
+        include_str!("../../../corpus/lua/behaviour/testset_pending.lua"),
+    ),
+    (
+        "branch_reassign",
+        include_str!("../../../corpus/lua/behaviour/branch_reassign.lua"),
+    ),
+    (
+        "compare_select",
+        include_str!("../../../corpus/lua/behaviour/compare_select.lua"),
+    ),
+    (
+        "loop_locals",
+        include_str!("../../../corpus/lua/behaviour/loop_locals.lua"),
+    ),
+];
+
+#[test]
+fn pinned_generated_shapes_reexecute_identically() {
+    let mut failures: Vec<String> = Vec::new();
+    for version in LANES {
+        let (luac, lua): (String, String) = toolchain(version);
+        let scratch: disrobe_core::scratch::ScratchDir = disrobe_core::scratch::ScratchDir::create(
+            &format!("disrobe_lua_generated_pinned_lua{version}"),
+        )
+        .expect("scratch dir");
+        let dir: &Path = scratch.path();
+        for (name, source) in PINNED_SHAPES {
+            let original_path: PathBuf = dir.join(format!("{name}.orig.lua"));
+            std::fs::write(&original_path, source).expect("write original");
+            let expected: String = run(&lua, &original_path).unwrap_or_else(|error: String| {
+                panic!("lua{version} {name}: the pinned program must run: {error}")
+            });
+            let recovered: String = recovered_source(&luac, dir, name, source);
+            let recovered_path: PathBuf = dir.join(format!("{name}.dec.lua"));
+            std::fs::write(&recovered_path, &recovered).expect("write recovered");
+            let actual: Result<String, String> = run(&lua, &recovered_path);
+            if actual.as_deref() != Ok(expected.as_str()) {
+                failures.push(format!(
+                    "lua{version} {name}\n--- expected ---\n{expected}--- actual ---\n{actual:?}\n--- recovered ---\n{recovered}"
+                ));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n=====\n"));
 }
 
 #[test]
@@ -338,8 +436,7 @@ fn the_generator_is_deterministic_and_varied() {
 
 #[test]
 fn a_field_read_feeding_a_tail_call_stays_inline() {
-    let (luac, _lua): (String, String) =
-        toolchain(Dialect::Lua54).unwrap_or_else(|| panic!("this check needs Lua 5.4"));
+    let (luac, _lua): (String, String) = toolchain("5.4");
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("disrobe_lua_tail_call_inline").expect("scratch");
     let source: &str =
@@ -353,19 +450,15 @@ fn a_field_read_feeding_a_tail_call_stays_inline() {
 
 #[test]
 fn a_recovery_that_changes_one_operator_is_caught() {
-    assert_mutation_is_caught(Dialect::Lua54, "lua5.4");
+    for version in LANES {
+        assert_mutation_is_caught(version);
+    }
 }
 
-#[test]
-fn a_recovery_that_changes_one_operator_is_caught_lua_5_5() {
-    assert_mutation_is_caught(Dialect::Lua55, "lua5.5");
-}
-
-fn assert_mutation_is_caught(dialect: Dialect, label: &str) {
-    let (luac, lua): (String, String) = toolchain(dialect)
-        .unwrap_or_else(|| panic!("the mutation control needs luac and lua for {label}"));
+fn assert_mutation_is_caught(version: &str) {
+    let (luac, lua): (String, String) = toolchain(version);
     let scratch: disrobe_core::scratch::ScratchDir = disrobe_core::scratch::ScratchDir::create(
-        &format!("disrobe_lua_generated_mutation_{label}"),
+        &format!("disrobe_lua_generated_mutation_lua{version}"),
     )
     .expect("scratch");
     let dir: &Path = scratch.path();

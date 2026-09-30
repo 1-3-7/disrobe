@@ -51,6 +51,30 @@ kind = "lua-source"
 size_bytes = 2249
 notes = "Lua 5.5 only: named vararg parameters read by index (GETVARG) and as a vararg table (length, field n, a store, `...` read back through the table, capture by a closure), global declarations whose initialization checks the name is unset (ERRNNIL) including a redefinition caught by pcall, numeric for with a negative step and a float start, generic for with three variables and a goto continue, SHLI/SHRI in both operand orders, a 55-element constructor with a named field, and <close> locals released at function exit and at every loop iteration including one left by break"
 
+[[behaviour.fixtures]]
+path = "behaviour/testset_pending.lua"
+kind = "lua-source"
+size_bytes = 275
+notes = "portable 5.1-5.5, found by the generated differential: `c = t[k] or (b - c)` where c still holds a value that was never written to a local (the TESTSET destination kept only a fresh nil local), a call result assigned to the same local just before the selection (it was dropped because TESTSET counted as an unconditional overwrite), and an `and`/`or` selection over the old value"
+
+[[behaviour.fixtures]]
+path = "behaviour/branch_reassign.lua"
+kind = "lua-source"
+size_bytes = 236
+notes = "portable 5.1-5.5, found by the generated differential: a local assigned twice inside one branch, the first value dead, then read after the branches merge (the dead store replaced the local's binding, so the second value was inlined into every later read), inside an if/else and inside a loop"
+
+[[behaviour.fixtures]]
+path = "behaviour/compare_select.lua"
+kind = "lua-source"
+size_bytes = 328
+notes = "portable 5.1-5.5, found by the generated differential: `(x ~= b or y == 7) and b or 7` whose comparison operands are loaded into the destination register (globals and fields), which was folded as a plain `b or 7` although the second comparison also jumps to the fallback value"
+
+[[behaviour.fixtures]]
+path = "behaviour/loop_locals.lua"
+kind = "lua-source"
+size_bytes = 294
+notes = "portable 5.1-5.5, found by the generated differential: a local first given a register-level declaration inside a repeat, numeric for or while body and read after the loop (the declaration stayed inside the loop body, so the later read was a global)"
+
 [megafile]
 description = "~1200-LOC fixture exercising 5.1/5.2/5.3/5.4 + LuaJIT feature surface; parses cleanly across all 5 runtimes"
 

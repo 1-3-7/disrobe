@@ -1,7 +1,7 @@
 use super::{
     Decoded, LiveAcrossBranch, LocalNames, LuaDialect, LuaProto, Op, StructState, StructuredLift,
     compare_value_expr, decode, define_at_merge, is_single_value_op, jump_target, lower_span,
-    region_has_external_entry, rk, single_value_text, written_registers,
+    read_registers, region_has_external_entry, rk, single_value_text, written_registers,
 };
 
 const MAX_REGION_INSTRUCTIONS: usize = 256;
@@ -301,6 +301,9 @@ impl Region<'_> {
         if let Some(value) = self.scratch_test_set(pc, depth) {
             return Some(value);
         }
+        if let Some(value) = self.scratch_compare(pc, depth) {
+            return Some(value);
+        }
         if is_segment_op(&d, self.dialect)
             && (self.segment_end(pc) > pc + 1 || written_value_register(&d, self.dialect).is_none())
         {
@@ -400,6 +403,36 @@ impl Region<'_> {
             Op::Test if d.a == self.target => self.test_target(entry, next, text, depth),
             _ => None,
         }
+    }
+
+    fn scratch_compare(&mut self, pc: usize, depth: usize) -> Option<Value> {
+        let end: usize = self.segment_end(pc);
+        let compare: Decoded = self.decoded(end)?;
+        if end <= pc || !is_compare(compare.op) {
+            return None;
+        }
+        let mut written: Vec<u32> = Vec::new();
+        for at in pc..end {
+            written.extend(written_registers(&self.decoded(at)?, self.dialect));
+        }
+        if written.iter().any(|register: &u32| *register < self.target) {
+            return None;
+        }
+        let mut operands: StructState = self.state.clone();
+        for register in read_registers(&compare, self.dialect) {
+            if written.contains(&register) {
+                let text: String = (self.trial)(pc, end, register)?;
+                operands.set_reg(register, text);
+            }
+        }
+        let cond: String = compare_value_expr(&operands, self.p, &compare, self.dialect)?;
+        let taken: usize = self.jump_after(end)?;
+        Some(Value::Choose {
+            entry: pc,
+            cond,
+            taken: Box::new(self.build(taken, depth + 1)?),
+            otherwise: Box::new(self.build(end + 2, depth + 1)?),
+        })
     }
 
     fn scratch_test_set(&mut self, pc: usize, depth: usize) -> Option<Value> {

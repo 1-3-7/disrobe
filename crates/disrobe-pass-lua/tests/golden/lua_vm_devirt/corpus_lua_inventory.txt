@@ -1,8 +1,12 @@
 baseline/hello.lua
+behaviour/branch_reassign.lua
 behaviour/branches.lua
+behaviour/compare_select.lua
+behaviour/loop_locals.lua
 behaviour/loops.lua
 behaviour/lua55.lua
 behaviour/objects.lua
+behaviour/testset_pending.lua
 behaviour/tour.lua
 behaviour/values.lua
 decompile_samples/src/arith_loops.lua
