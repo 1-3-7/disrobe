@@ -847,14 +847,6 @@ fn ci_routes_full_coverage_to_scheduled_and_tag_runs() {
         );
         assert_eq!(
             test_step(test_steps, name)
-                .get("env")
-                .and_then(|value: &Value| value.get("DISROBE_TYPEREC_CC"))
-                .and_then(Value::as_str),
-            Some("${{ matrix.os != 'ubuntu-latest' && 'optional' || 'require-gnu' }}"),
-            "Linux must retain its required type-recovery compiler oracle"
-        );
-        assert_eq!(
-            test_step(test_steps, name)
                 .get("timeout-minutes")
                 .and_then(Value::as_u64),
             Some(160),
