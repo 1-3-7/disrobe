@@ -4,12 +4,11 @@ mod common;
 
 use std::collections::BTreeSet;
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
-use disrobe_core::subprocess::{CapturedOutput, wait_with_output_timeout};
 use disrobe_pass_go::defers::{ControlEdge, ControlEdgeKind};
 use disrobe_pass_go::{DeferCallKind, GoAnalysis, RuntimeDeferCall, analyze};
+use disrobe_testkit::{CommandSpec, ToolError, ToolOutput, tool_output};
 
 #[cfg(feature = "chain")]
 use disrobe_core::chain::Pass;
@@ -134,22 +133,20 @@ fn control_kind(target: &str) -> Option<ControlEdgeKind> {
     }
 }
 
-fn checked_output(command: &mut Command, label: &str) -> CapturedOutput {
-    let command_line: String = format!("{command:?}");
-    let child: Child = command
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap_or_else(|error: std::io::Error| {
-            panic!("{label} could not start: {command_line}: {error}")
-        });
-    let output: CapturedOutput = wait_with_output_timeout(child, TOOL_TIMEOUT, TOOL_CAPTURE_BYTES)
-        .unwrap_or_else(|| {
-            panic!(
-                "{label} timed out after {} seconds: {command_line}; status=<timeout>; stdout=<unavailable>; stderr=<unavailable>",
-                TOOL_TIMEOUT.as_secs()
-            )
-        });
+fn go_command() -> CommandSpec {
+    CommandSpec::new("go", TOOL_TIMEOUT).capture_limits(TOOL_CAPTURE_BYTES, TOOL_CAPTURE_BYTES)
+}
+
+fn checked_output(spec: CommandSpec, label: &str) -> ToolOutput {
+    let command_line: String = format!("{spec:?}");
+    let output: ToolOutput = tool_output(spec).unwrap_or_else(|error: ToolError| {
+        panic!("{label} could not run: {command_line}: {error}")
+    });
+    assert!(
+        !output.timed_out,
+        "{label} timed out after {} seconds: {command_line}; status=<timeout>; stdout=<unavailable>; stderr=<unavailable>",
+        TOOL_TIMEOUT.as_secs()
+    );
     assert_eq!(
         output.exit_code,
         Some(0),
@@ -163,9 +160,8 @@ fn checked_output(command: &mut Command, label: &str) -> CapturedOutput {
 
 fn build_fixture(scratch: &common::GoBuildScratch) -> std::path::PathBuf {
     let binary: std::path::PathBuf = scratch.path().join("panic_edges.exe");
-    let mut command: Command = Command::new("go");
-    command
-        .current_dir(scratch.path())
+    let command: CommandSpec = go_command()
+        .current_dir(scratch.path().to_path_buf())
         .env("GOOS", "windows")
         .env("GOARCH", "amd64")
         .env("CGO_ENABLED", "0")
@@ -173,16 +169,15 @@ fn build_fixture(scratch: &common::GoBuildScratch) -> std::path::PathBuf {
         .args(["build", "-trimpath", "-o"])
         .arg(&binary)
         .arg(".");
-    let _: CapturedOutput = checked_output(&mut command, "go build panic fixture");
+    let _: ToolOutput = checked_output(command, "go build panic fixture");
     binary
 }
 
 fn toolchain_calls(binary: &Path) -> (BTreeSet<ToolchainCall>, BTreeSet<ToolchainDeferCall>) {
-    let mut command: Command = Command::new("go");
-    command
+    let command: CommandSpec = go_command()
         .args(["tool", "objdump", "-s", "^main\\."])
         .arg(binary);
-    let output: CapturedOutput = checked_output(&mut command, "go tool objdump panic fixture");
+    let output: ToolOutput = checked_output(command, "go tool objdump panic fixture");
     let text: String = String::from_utf8(output.stdout).expect("go objdump UTF-8");
     let mut function: Option<String> = None;
     let mut controls: BTreeSet<ToolchainCall> = BTreeSet::new();
