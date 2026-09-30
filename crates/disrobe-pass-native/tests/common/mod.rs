@@ -5,8 +5,6 @@
     clippy::unwrap_used,
     clippy::panic,
     clippy::missing_docs_in_private_items,
-    clippy::print_stdout,
-    clippy::print_stderr,
     clippy::too_many_arguments
 )]
 

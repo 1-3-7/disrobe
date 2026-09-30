@@ -268,7 +268,6 @@ fn put_u32_local(buf: &mut [u8], off: usize, v: u32) {
     }
 }
 
-#[allow(clippy::too_many_lines)]
 fn decode_mew_lzma_image(
     packed_bytes: &[u8],
     structural: &MewUnpackOutput,
@@ -559,11 +558,7 @@ impl<'a> MewAplibChunks<'a> {
         Ok(())
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        clippy::cast_sign_loss,
-        clippy::branches_sharing_code
-    )]
+    #[allow(clippy::branches_sharing_code)]
     fn decode_chunk(
         &mut self,
         dest_va: u32,

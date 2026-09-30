@@ -1,17 +1,11 @@
 #![allow(
     clippy::doc_markdown,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_possible_wrap,
-    clippy::cast_lossless,
     clippy::unused_self,
     clippy::option_if_let_else,
     clippy::branches_sharing_code,
     clippy::useless_let_if_seq,
     clippy::unnested_or_patterns,
     clippy::missing_panics_doc,
-    clippy::too_many_lines,
-    clippy::module_name_repetitions,
     clippy::missing_const_for_fn
 )]
 

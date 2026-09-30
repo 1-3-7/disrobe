@@ -2,13 +2,7 @@
     unsafe_code,
     reason = "a counting global allocator implements the unsafe GlobalAlloc trait"
 )]
-#![allow(
-    clippy::expect_used,
-    clippy::panic,
-    clippy::print_stdout,
-    clippy::print_stderr,
-    clippy::cast_possible_truncation
-)]
+#![allow(clippy::expect_used, clippy::panic)]
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;

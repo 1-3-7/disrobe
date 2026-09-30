@@ -52,7 +52,6 @@ pub struct RecoveredSection {
 
 impl RecoveredSection {
     #[must_use]
-    #[allow(clippy::cast_precision_loss)]
     pub fn plaintext_pct(&self) -> f64 {
         if self.compared_bytes == 0 {
             return 0.0;

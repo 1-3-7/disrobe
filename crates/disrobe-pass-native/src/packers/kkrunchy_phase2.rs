@@ -1,12 +1,5 @@
 #![allow(
     clippy::doc_markdown,
-    clippy::cast_possible_truncation,
-    clippy::cast_lossless,
-    clippy::cast_sign_loss,
-    clippy::cast_possible_wrap,
-    clippy::module_name_repetitions,
-    clippy::similar_names,
-    clippy::missing_errors_doc,
     clippy::missing_panics_doc,
     clippy::unreadable_literal,
     clippy::option_if_let_else,

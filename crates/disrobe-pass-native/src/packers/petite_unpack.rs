@@ -155,7 +155,6 @@ struct PackedPetite<'a> {
     petite_section: usize,
 }
 
-#[allow(clippy::too_many_lines)]
 fn parse_packed_petite(bytes: &[u8]) -> Result<PackedPetite<'_>> {
     if bytes.len() < DOS_HEADER_SIZE {
         return Err(Error::Truncated {
@@ -435,7 +434,6 @@ impl<'a> PetiteBitStream<'a> {
     }
 }
 
-#[allow(clippy::too_many_lines)]
 fn decode_petite_stream_v2(
     compressed: &[u8],
     compressed_start: usize,
@@ -678,7 +676,6 @@ struct Reconstruction {
     original_sections: Vec<PeSection>,
 }
 
-#[allow(clippy::too_many_lines)]
 fn reconstruct_image(
     packed: &PackedPetite<'_>,
     stream: &DecodedStream,
@@ -922,7 +919,6 @@ fn rebuild_iat_from_oft(mem: &mut [u8]) {
     }
 }
 
-#[allow(clippy::too_many_lines)]
 fn reconstruct_from_memory_image(
     packed: &PackedPetite<'_>,
     mem_post: &[u8],

@@ -1,11 +1,4 @@
-#![allow(
-    clippy::expect_used,
-    clippy::unwrap_used,
-    clippy::panic,
-    clippy::print_stdout,
-    clippy::cast_possible_truncation,
-    clippy::cast_precision_loss
-)]
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 #[path = "support/packer_fixture.rs"]
 #[allow(clippy::redundant_pub_crate, dead_code)]

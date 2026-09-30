@@ -1,4 +1,4 @@
-#![allow(clippy::doc_markdown, clippy::module_name_repetitions)]
+#![allow(clippy::doc_markdown)]
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};

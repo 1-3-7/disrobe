@@ -2,8 +2,6 @@
     dead_code,
     clippy::expect_used,
     clippy::panic,
-    clippy::print_stderr,
-    clippy::print_stdout,
     clippy::redundant_pub_crate
 )]
 

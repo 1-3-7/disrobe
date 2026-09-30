@@ -15,7 +15,6 @@ pub struct CarvedSection {
 
 impl CarvedSection {
     #[must_use]
-    #[allow(clippy::cast_precision_loss)]
     pub fn similarity_pct(&self) -> f64 {
         if self.compared_bytes == 0 {
             return 0.0;
@@ -42,7 +41,6 @@ impl YodasProtectorReport {
     }
 
     #[must_use]
-    #[allow(clippy::cast_precision_loss)]
     pub fn mean_section_similarity_pct(&self) -> f64 {
         if self.carved_sections.is_empty() {
             return 0.0;

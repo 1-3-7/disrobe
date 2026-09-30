@@ -1,14 +1,6 @@
 #![allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_lossless,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss,
-    clippy::module_name_repetitions,
-    clippy::missing_errors_doc,
     clippy::missing_panics_doc,
     clippy::doc_markdown,
-    clippy::too_many_lines,
-    clippy::struct_excessive_bools,
     clippy::many_single_char_names
 )]
 

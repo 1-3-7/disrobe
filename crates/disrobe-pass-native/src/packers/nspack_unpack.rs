@@ -898,8 +898,6 @@ fn nspack_decode_lossy(
 
 #[allow(
     clippy::too_many_arguments,
-    clippy::too_many_lines,
-    clippy::cognitive_complexity,
     clippy::branches_sharing_code,
     clippy::assign_op_pattern
 )]
@@ -1075,13 +1073,7 @@ fn decode_one_step(
     Ok(())
 }
 
-#[allow(
-    dead_code,
-    clippy::too_many_lines,
-    clippy::cognitive_complexity,
-    clippy::branches_sharing_code,
-    clippy::assign_op_pattern
-)]
+#[allow(dead_code, clippy::branches_sharing_code, clippy::assign_op_pattern)]
 fn nspack_decode(
     compressed: &[u8],
     output: &mut [u8],
@@ -1501,7 +1493,6 @@ fn dominant_branch_marker(hist: &[u32; 256]) -> Option<u8> {
     best.map(|(value, _): (u8, u32)| value)
 }
 
-#[allow(clippy::cast_precision_loss)]
 fn content_section_recovery_pct(
     original_pe: &[u8],
     decompressed: &[u8],
@@ -1540,7 +1531,6 @@ fn content_section_recovery_pct(
     Ok(100.0 * matching as f64 / total as f64)
 }
 
-#[allow(clippy::cast_precision_loss)]
 fn whole_image_recovery_pct(decompressed: &[u8], baseline: &[u8]) -> f64 {
     let compare_len: usize = decompressed.len().min(baseline.len());
     if compare_len == 0 {
@@ -1597,7 +1587,6 @@ fn build_original_baseline(original_pe: &[u8], nsp0: &NspackSection<'_>) -> Resu
     Ok(buf)
 }
 
-#[allow(clippy::cast_precision_loss)]
 fn compare_byte_diff(decompressed: &[u8], baseline: &[u8]) -> (usize, f64) {
     let common_len: usize = decompressed.len().min(baseline.len());
     let matching_diff: usize = decompressed

@@ -2,7 +2,6 @@
     clippy::expect_used,
     clippy::unwrap_used,
     clippy::panic,
-    clippy::print_stdout,
     clippy::missing_docs_in_private_items
 )]
 

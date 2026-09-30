@@ -1,5 +1,3 @@
-#![allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
-
 use crate::packer_fixture;
 
 use disrobe_pass_native::{

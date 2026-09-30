@@ -1,13 +1,4 @@
-#![allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_lossless,
-    clippy::cast_sign_loss,
-    clippy::module_name_repetitions,
-    clippy::missing_panics_doc,
-    clippy::missing_errors_doc,
-    clippy::doc_markdown,
-    clippy::too_many_lines
-)]
+#![allow(clippy::missing_panics_doc, clippy::doc_markdown)]
 
 const SEC_TABLE_OFFSET: usize = 0x80 + 4 + 20 + 0xE0;
 const FILE_ALIGN: u32 = 0x200;

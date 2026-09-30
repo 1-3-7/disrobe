@@ -1,11 +1,4 @@
-#![allow(
-    clippy::expect_used,
-    clippy::unwrap_used,
-    clippy::panic,
-    clippy::print_stdout,
-    clippy::print_stderr,
-    clippy::too_many_lines
-)]
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use crate::oracle_demand;
 

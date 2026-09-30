@@ -79,7 +79,6 @@ const BIGOBJ_CLASS_ID: [u8; 16] = [
 ];
 const COFF_MACHINES_64: [u16; 2] = [0x8664, 0xAA64];
 
-#[allow(clippy::too_many_lines)]
 pub fn detect(bytes: &[u8]) -> Result<DetectedFormat> {
     if bytes.len() < 4 {
         return Err(Error::Truncated {

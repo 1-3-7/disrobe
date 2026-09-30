@@ -447,7 +447,6 @@ impl Cpu {
         addr >= Self::NULL_GUARD_LIMIT && self.mem.is_mapped(addr)
     }
 
-    #[allow(clippy::too_many_lines)]
     fn execute_one<H: HostCall>(
         &mut self,
         insn: &Instruction,
@@ -1018,7 +1017,6 @@ impl Cpu {
         Ok(true)
     }
 
-    #[allow(clippy::too_many_lines)]
     fn try_data_op(&mut self, insn: &Instruction) -> Result<bool> {
         let mnem: iced_x86::Mnemonic = insn.mnemonic();
         use iced_x86::Mnemonic as M;
@@ -1875,7 +1873,6 @@ impl Cpu {
         u64::from_le_bytes(bytes)
     }
 
-    #[allow(clippy::too_many_lines)]
     fn try_mmx_op(&mut self, insn: &Instruction) -> Result<bool> {
         let code: Code = insn.code();
         match code {

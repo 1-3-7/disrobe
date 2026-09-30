@@ -2,15 +2,7 @@
     unsafe_code,
     reason = "a counting global allocator implements the unsafe GlobalAlloc trait"
 )]
-#![allow(
-    clippy::expect_used,
-    clippy::unwrap_used,
-    clippy::panic,
-    clippy::print_stdout,
-    clippy::cast_possible_truncation,
-    clippy::cast_lossless,
-    clippy::cast_sign_loss
-)]
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use crate::packer_fixture;
 

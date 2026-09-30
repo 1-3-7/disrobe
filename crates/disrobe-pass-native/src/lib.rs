@@ -1,8 +1,6 @@
 #![forbid(unsafe_code)]
 #![deny(unreachable_pub)]
 #![allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_lossless,
     clippy::single_match_else,
     clippy::format_push_string,
     clippy::manual_strip,

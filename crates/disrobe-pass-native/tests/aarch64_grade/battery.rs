@@ -1,4 +1,4 @@
-#![allow(dead_code, clippy::too_many_lines, clippy::redundant_pub_crate)]
+#![allow(dead_code, clippy::redundant_pub_crate)]
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;

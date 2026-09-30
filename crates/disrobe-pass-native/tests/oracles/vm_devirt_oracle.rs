@@ -4,12 +4,6 @@
     clippy::unwrap_used,
     clippy::panic,
     clippy::missing_docs_in_private_items,
-    clippy::print_stdout,
-    clippy::print_stderr,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::too_many_lines,
     clippy::missing_const_for_fn,
     clippy::format_push_string,
     dead_code

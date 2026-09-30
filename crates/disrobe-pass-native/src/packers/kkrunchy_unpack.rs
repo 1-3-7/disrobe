@@ -209,7 +209,6 @@ pub fn looks_like_kkrunchy(bytes: &[u8]) -> bool {
         && &bytes[..KKRUNCHY_DOS_MAGIC.len()] == KKRUNCHY_DOS_MAGIC
 }
 
-#[allow(clippy::too_many_lines)]
 pub fn parse_kkrunchy_header(bytes: &[u8]) -> Result<KkrunchyHeaderInfo> {
     if bytes.len() < KKRUNCHY_MIN_HEADERS {
         return Err(Error::Truncated {
@@ -799,7 +798,6 @@ impl DisFilterCtx {
         if count < 3 { 0 } else { count }
     }
 
-    #[allow(clippy::too_many_lines)]
     fn process_instr(&mut self, instr: &[u8], memory: u32) -> (usize, bool) {
         let n_jump: usize = self.detect_jump_table(instr, memory);
         if n_jump > 0 {
@@ -1130,7 +1128,6 @@ pub fn dis_filter(code: &[u8], origin: u32) -> Result<(Vec<u8>, DisFilterStreamS
     Ok((out, sizes))
 }
 
-#[allow(clippy::too_many_lines)]
 pub fn dis_unfilter(source: &[u8], dest_size: usize, mem_start: u32) -> Result<Vec<u8>> {
     if dest_size > MAX_DECODED_SIZE {
         return Err(Error::SignatureDb(format!(

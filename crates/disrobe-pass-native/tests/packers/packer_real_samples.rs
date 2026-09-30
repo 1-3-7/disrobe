@@ -1,10 +1,4 @@
-#![allow(
-    clippy::expect_used,
-    clippy::unwrap_used,
-    clippy::panic,
-    clippy::print_stdout,
-    clippy::cast_precision_loss
-)]
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use disrobe_pass_native::packers::{
     AspackRecovery, AspackReport, CarvedSection, PecompactRecovery, PecompactReport,

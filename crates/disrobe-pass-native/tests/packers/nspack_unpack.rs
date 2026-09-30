@@ -1,13 +1,4 @@
-#![allow(
-    clippy::expect_used,
-    clippy::unwrap_used,
-    clippy::panic,
-    clippy::print_stdout,
-    clippy::print_stderr,
-    clippy::cast_possible_truncation,
-    clippy::cast_lossless,
-    clippy::cast_sign_loss
-)]
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use crate::packer_fixture;
 

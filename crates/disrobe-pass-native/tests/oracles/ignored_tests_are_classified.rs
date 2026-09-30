@@ -1,4 +1,4 @@
-#![allow(clippy::expect_used, clippy::panic, clippy::print_stderr)]
+#![allow(clippy::expect_used, clippy::panic)]
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

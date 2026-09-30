@@ -1,12 +1,4 @@
-#![allow(
-    clippy::expect_used,
-    clippy::unwrap_used,
-    clippy::panic,
-    clippy::print_stdout,
-    clippy::print_stderr,
-    clippy::cast_precision_loss,
-    clippy::cast_lossless
-)]
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use disrobe_pass_native::packers::{
     GoRuntimeEvidence, UpxGoChainOutput, scan_go_runtime, unpack_upx_go_chain,

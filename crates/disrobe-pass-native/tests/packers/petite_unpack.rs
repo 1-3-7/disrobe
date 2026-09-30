@@ -3,13 +3,6 @@
     clippy::unwrap_used,
     clippy::panic,
     clippy::missing_docs_in_private_items,
-    clippy::print_stdout,
-    clippy::print_stderr,
-    clippy::needless_pass_by_value,
-    clippy::cast_precision_loss,
-    clippy::cast_lossless,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
     clippy::naive_bytecount
 )]
 

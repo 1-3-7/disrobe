@@ -1,4 +1,4 @@
-#![allow(dead_code, unreachable_pub, clippy::print_stderr, clippy::panic)]
+#![allow(dead_code, unreachable_pub, clippy::panic)]
 
 use std::ffi::OsString;
 

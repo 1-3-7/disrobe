@@ -2,8 +2,7 @@
     clippy::expect_used,
     clippy::unwrap_used,
     clippy::panic,
-    clippy::missing_docs_in_private_items,
-    clippy::print_stdout
+    clippy::missing_docs_in_private_items
 )]
 
 use disrobe_pass_native::{Arch, DisasmInsn, disassemble};
