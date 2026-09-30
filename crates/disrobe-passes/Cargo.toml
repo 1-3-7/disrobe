@@ -71,7 +71,7 @@ go = ["dep:disrobe-pass-go", "disrobe-pass-go/chain"]
 beam = ["dep:disrobe-pass-beam"]
 as3 = ["dep:disrobe-pass-as3"]
 scriptlang = ["dep:disrobe-pass-scriptlang"]
-nativelang = ["dep:disrobe-pass-nativelang", "disrobe-pass-nativelang/chain"]
+nativelang = ["dep:disrobe-pass-nativelang"]
 webview = ["dep:disrobe-pass-webview"]
 
 [dependencies]

@@ -1,5 +1,3 @@
-#![cfg(feature = "chain")]
-
 use disrobe_core::chain::Pass;
 use disrobe_core::{Artifact, Rung};
 use disrobe_pass_nativelang::chain_detector::{NATIVELANG_PASS, PASS_ID};

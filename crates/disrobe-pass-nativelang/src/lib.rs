@@ -3,7 +3,6 @@
 #![deny(missing_debug_implementations)]
 #![allow(clippy::redundant_pub_crate)]
 pub mod bodies;
-#[cfg(feature = "chain")]
 pub mod chain_detector;
 pub(crate) mod d_mangle;
 pub(crate) mod debug;
@@ -27,7 +26,6 @@ pub use bodies::{
     MAX_BODY_CODE_BYTES, MAX_BODY_FUNCTIONS, MAX_RETAINED_SOURCE_BYTES, RuntimeRole, RustBody,
     recover_bodies,
 };
-#[cfg(feature = "chain")]
 pub use chain_detector::{NATIVELANG_PASS, NativeLangDetector, NativeLangPassAdapter};
 pub use d_mangle::DDemangleError;
 pub use demangle::{DemangledSymbol, demangle_crystal, demangle_d, demangle_nim, demangle_zig};

@@ -98,7 +98,7 @@ go = ["dep:disrobe-pass-go", "disrobe-passes?/go", "disrobe-mcp?/go"]
 shell = ["dep:disrobe-pass-shell", "disrobe-pass-shell/chain", "disrobe-passes?/shell", "disrobe-mcp?/shell"]
 pickle = ["dep:disrobe-pass-pickle", "disrobe-passes?/pickle"]
 scriptlang = ["dep:disrobe-pass-scriptlang", "disrobe-passes?/scriptlang", "disrobe-mcp?/scriptlang"]
-nativelang = ["dep:disrobe-pass-nativelang", "disrobe-pass-nativelang/chain", "disrobe-passes?/nativelang", "disrobe-mcp?/nativelang"]
+nativelang = ["dep:disrobe-pass-nativelang", "disrobe-passes?/nativelang", "disrobe-mcp?/nativelang"]
 
 chain = [
     "disrobe-core/chain",
@@ -132,7 +132,6 @@ chain = [
     "disrobe-pass-jvm?/chain",
     "disrobe-pass-dotnet?/chain",
     "disrobe-pass-go?/chain",
-    "disrobe-pass-nativelang?/chain",
 ]
 
 [dependencies]
