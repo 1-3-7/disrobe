@@ -1229,7 +1229,7 @@ fn render_unpack(rows: &[UnpackRow]) -> String {
         "- Yoda's Crypter: `.rsrc` recovers byte-identical to the committed original (the \
          byte-identity column) and `.text` decrypts to full plaintext through the stub emulator (the \
          note's plaintext fraction), its entropy dropping from near-random to code-like. This is \
-         asserted in `crates/disrobe-pass-native/tests/packer_real_samples.rs`.\n",
+         asserted in `crates/disrobe-pass-native/tests/packers/packer_real_samples.rs`.\n",
     );
     md.push_str(
         "- Yoda's Protector: the stream key is a runtime value absent from the file. The bounded \
@@ -1249,9 +1249,9 @@ fn render_unpack(rows: &[UnpackRow]) -> String {
     md.push_str(
         "The benchmark's `committed_family_population_is_measured_from_known_originals` test \
          checks the four added families. Related recovery checks live in \
-         `crates/disrobe-pass-native/tests/native_unpack_disasm.rs`, \
-         `crates/disrobe-pass-native/tests/packer_real_samples.rs`, and \
-         `crates/disrobe-pass-native/tests/upx_unpack_all.rs`.\n",
+         `crates/disrobe-pass-native/tests/packers/native_unpack_disasm.rs`, \
+         `crates/disrobe-pass-native/tests/packers/packer_real_samples.rs`, and \
+         `crates/disrobe-pass-native/tests/packers/upx_unpack_all.rs`.\n",
     );
     md
 }

@@ -24,7 +24,7 @@ disrobe_original_path with disrobe_original_provenance. Three values are allowed
 
 A local path may not carry an *_unobtainable_reason and a local-unobtainable path may not omit one,
 so the two cannot drift into each other. Enforced by
-crates/disrobe-pass-native/tests/packer_manifest_paths.rs
+crates/disrobe-pass-native/tests/packers/packer_manifest_paths.rs
 (every_manifest_path_says_whether_its_input_is_committed_or_local).
 """
 
