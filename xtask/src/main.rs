@@ -14,7 +14,6 @@ mod catalog_counts;
 mod codegen;
 mod comments;
 mod crossdata;
-mod datamodel;
 mod denominator_floor;
 mod doc_region;
 mod docs_index;
