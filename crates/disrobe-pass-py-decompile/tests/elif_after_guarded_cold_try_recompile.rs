@@ -97,14 +97,14 @@ fn inner_else_does_not_absorb_following_elif() {
 }
 
 #[test]
-fn genuinely_nested_elif_arm_stays_intact() {
+fn a_nested_if_inside_an_elif_arm_stays_intact() {
     let recovered: String = recover_and_recompile(
         "genuine_nested_elif_after_cold_try",
         GENUINE_NESTED_ELIF_ARM,
     );
     assert!(
         recovered.contains("\n    elif system in (\"win32\", \"win16\"):\n        if release:"),
-        "a genuinely nested if inside the elif arm must be preserved, proving the then-arm cap \
+        "a nested if inside the elif arm must be preserved, proving the then-arm cap \
          does not truncate legitimate sibling-arm content\n--- recovered:\n{recovered}"
     );
     assert!(

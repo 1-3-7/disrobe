@@ -448,7 +448,7 @@ fn megafile_roundtrip_full_matrix() {
     let allowed_syntax_failures: usize = MAX_SYNTAX_FAILURES;
     assert!(
         syntax_failures.len() <= allowed_syntax_failures,
-        "honest gate: {} emitted modules failed to recompile (max allowed {allowed_syntax_failures}); \
+        "{} emitted modules failed to recompile (max allowed {allowed_syntax_failures}); \
          emitted source must be at least syntactically valid Python. Ratchet MAX_SYNTAX_FAILURES \
          DOWN as the engine improves; never up. Failures:\n{}",
         syntax_failures.len(),
@@ -457,7 +457,7 @@ fn megafile_roundtrip_full_matrix() {
     let allowed_semantic_failures: usize = MAX_SEMANTIC_FAILURES;
     assert!(
         semantic_failures.len() <= allowed_semantic_failures,
-        "honest gate: {} emitted cpython modules recompiled to bytecode that is NOT semantically \
+        "{} emitted cpython modules recompiled to bytecode that is NOT semantically \
          equivalent to the original (max allowed {allowed_semantic_failures}); a syntactically valid \
          but semantically wrong recovery must not pass. Ratchet MAX_SEMANTIC_FAILURES DOWN as the \
          engine improves; never up. Failures:\n{}",

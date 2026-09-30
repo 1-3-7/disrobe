@@ -476,7 +476,7 @@ fn construct_roundtrip_per_version() {
     );
     assert!(
         pct >= THRESHOLD_PCT,
-        "real round-trip recovery {pct:.1}% fell below honest floor {THRESHOLD_PCT:.1}%; see {}",
+        "real round-trip recovery {pct:.1}% fell below the floor {THRESHOLD_PCT:.1}%; see {}",
         tsv.display()
     );
 }

@@ -523,7 +523,7 @@ print(compute(2, 3));
 ";
 
 #[test]
-fn jsconfuser_rgf_runtime_derived_body_is_an_honest_wall() {
+fn jsconfuser_rgf_runtime_derived_body_is_refused_by_name() {
     let result: RgfReversalResult = reverse_rgf(RGF_RUNTIME_DERIVED);
     assert_eq!(
         result.call_sites_inlined, 0,
@@ -620,7 +620,7 @@ print(checksum(41));
 ";
 
 #[test]
-fn jscrambler_integrity_loop_strip_is_honest() {
+fn jscrambler_integrity_loop_strip_keeps_behaviour() {
     let want: String = eval_capture(ORIGINAL_JSCRAMBLER_INTEGRITY).expect("orig evaluates");
     let (stripped, stats): (String, _) = strip_integrity_loops(OBF_JSCRAMBLER_INTEGRITY);
     assert!(

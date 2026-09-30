@@ -98,7 +98,7 @@ fn magic_high_16_bits_always_0xc0de() {
 }
 
 #[test]
-fn real_node_jsc_fixtures_emit_honest_snapshot_wall_and_scrape_source_strings() {
+fn real_node_jsc_fixtures_refuse_the_snapshot_and_scrape_source_strings() {
     let cases: [(&str, &str, NodeVersion, u32, HeaderLayout, usize); 4] = [
         (
             "18",
