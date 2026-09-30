@@ -355,10 +355,10 @@ jobs:
             cat "$f" >> SHA256SUMS
           done
           if grep -q $'\r' SHA256SUMS; then
-            echo "::error::SHA256SUMS contains carriage returns, so sha256sum --check cannot read its entries" >&2
+            echo "::error::SHA256SUMS contains carriage returns, so sha256sum -c cannot read its entries" >&2
             exit 1
           fi
-          sha256sum --check --strict SHA256SUMS
+          sha256sum -c --strict SHA256SUMS
           ls -la
 
       - name: compute release metadata

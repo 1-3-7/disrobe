@@ -57,7 +57,7 @@ jobs:
           (
             cd "$MEDIA_DIR"
             awk -v file="$ASSET" '$2 == file {print; found++} END {if (found != 1) exit 1}' SHA256SUMS > walkthrough.sha256
-            sha256sum --check --strict walkthrough.sha256
+            sha256sum -c --strict walkthrough.sha256
             cosign verify-blob --bundle "${ASSET}.cosign.bundle" \
               --certificate-identity-regexp "^https://github[.]com/${GITHUB_REPOSITORY}/[.]github/workflows/release[.]yml@" \
               --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \

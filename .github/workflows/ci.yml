@@ -375,7 +375,7 @@ jobs:
           curl --proto '=https' --tlsv1.2 --retry 5 --retry-connrefused --location --silent \
             --show-error --fail --output "$archive" \
             "https://github.com/upx/upx/releases/download/v${UPX_VERSION}/upx-${UPX_VERSION}-amd64_linux.tar.xz"
-          printf '%s  %s\n' "$UPX_SHA256" "$archive" | sha256sum --check --strict
+          printf '%s  %s\n' "$UPX_SHA256" "$archive" | sha256sum -c --strict
           stage="$RUNNER_TEMP/upx-${UPX_VERSION}"
           mkdir -p "$stage"
           tar -xJf "$archive" -C "$stage"
@@ -604,7 +604,7 @@ jobs:
               mkdir -p "$qpdf_root"
               curl --fail --location --retry 3 --max-time 600 --output "$qpdf_root/qpdf.zip" \
                 https://github.com/qpdf/qpdf/releases/download/v12.4.2/qpdf-12.4.2-msvc64.zip
-              echo "db87077e683630c1217e0e8f9a20a9749d952ab676e881c3689187763a5de25d  $qpdf_root/qpdf.zip" | sha256sum --check
+              echo "db87077e683630c1217e0e8f9a20a9749d952ab676e881c3689187763a5de25d  $qpdf_root/qpdf.zip" | sha256sum -c
               unzip -q "$qpdf_root/qpdf.zip" -d "$qpdf_root"
               qpdf_exe="$qpdf_root/qpdf-12.4.2-msvc64/bin/qpdf.exe"
               "$qpdf_exe" --version
@@ -671,7 +671,7 @@ jobs:
             demand wix
             nsis_root="$(cygpath -u "$RUNNER_TEMP")"
             curl --fail --location --retry 3 --max-time 600 --output "$nsis_root/nsis-3.11.zip"               "https://downloads.sourceforge.net/project/nsis/NSIS%203/3.11/nsis-3.11.zip"
-            echo "c7d27f780ddb6cffb4730138cd1591e841f4b7edb155856901cdf5f214394fa1  $nsis_root/nsis-3.11.zip" | sha256sum --check
+            echo "c7d27f780ddb6cffb4730138cd1591e841f4b7edb155856901cdf5f214394fa1  $nsis_root/nsis-3.11.zip" | sha256sum -c
             unzip -q -o "$nsis_root/nsis-3.11.zip" -d "$nsis_root"
             export PATH="$nsis_root/nsis-3.11:$PATH"
             cygpath -w "$nsis_root/nsis-3.11" >> "$GITHUB_PATH"
@@ -884,9 +884,9 @@ jobs:
           mkdir -p "$root"
           check_sum() {
             if command -v sha256sum >/dev/null 2>&1; then
-              echo "$1  $2" | sha256sum --check
+              echo "$1  $2" | sha256sum -c
             else
-              echo "$1  $2" | shasum -a 256 --check
+              echo "$1  $2" | shasum -a 256 -c
             fi
           }
           for tool in deno denort; do
@@ -1367,7 +1367,7 @@ jobs:
             "https://codeload.github.com/mruby/mruby/tar.gz/${MRUBY_COMMIT}"
 
           printf '%s  %s\n' "$MRUBY_ARCHIVE_SHA256" "$archive" |
-            sha256sum --check --strict -
+            sha256sum -c --strict -
 
           mkdir -p "$source_dir" "$prefix/bin"
           tar \
