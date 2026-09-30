@@ -1,10 +1,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
 use std::time::Duration;
-
-use disrobe_core::subprocess::{CapturedOutput, wait_with_output_timeout};
 
 use disrobe_pass_dotnet::decompile::{DecompiledAssembly, decompile_assembly};
 use disrobe_pass_dotnet::iterator_reverse::is_unlowered_compiler_construct_refusal;
@@ -14,6 +11,7 @@ use disrobe_pass_dotnet::model::{
 };
 use disrobe_pass_dotnet::pe::{ClrHeader, PeImage, parse, parse_clr_header};
 use disrobe_pass_dotnet::structurize::{StructuredMethod, csharp_escape_identifier, field_name};
+use disrobe_testkit::{CommandSpec, ToolError, ToolOutput, tool_output};
 
 const NAMESPACE: &str = "Sample";
 
@@ -200,23 +198,29 @@ fn repository_root() -> PathBuf {
 const TOOL_TIMEOUT: Duration = Duration::from_mins(10);
 const TOOL_CAPTURE_BYTES: usize = 32 * 1024 * 1024;
 
-fn bounded_capture(command: &mut Command, label: &str) -> Result<CapturedOutput, String> {
-    let child: Child = command
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error: std::io::Error| format!("{label} could not start: {error}"))?;
-    wait_with_output_timeout(child, TOOL_TIMEOUT, TOOL_CAPTURE_BYTES).ok_or_else(|| {
-        format!(
+fn tool_command(program: impl Into<PathBuf>) -> CommandSpec {
+    CommandSpec::new(program, TOOL_TIMEOUT)
+        .capture_limits(TOOL_CAPTURE_BYTES, TOOL_CAPTURE_BYTES)
+        .env("MSBUILDDISABLENODEREUSE", "1")
+        .env("DOTNET_CLI_USE_MSBUILD_SERVER", "0")
+        .env("UseSharedCompilation", "false")
+}
+
+fn bounded_capture(command: CommandSpec, label: &str) -> Result<ToolOutput, String> {
+    let output: ToolOutput = tool_output(command)
+        .map_err(|error: ToolError| format!("{label} could not start: {error}"))?;
+    if output.timed_out {
+        return Err(format!(
             "{label} did not finish within {} seconds and was terminated, so no measurement is \
              available from it",
             TOOL_TIMEOUT.as_secs()
-        )
-    })
+        ));
+    }
+    Ok(output)
 }
 
-fn checked_output(command: &mut Command, label: &str) -> Result<CapturedOutput, String> {
-    let output: CapturedOutput = bounded_capture(command, label)?;
+fn checked_output(command: CommandSpec, label: &str) -> Result<ToolOutput, String> {
+    let output: ToolOutput = bounded_capture(command, label)?;
     if output.exit_code == Some(0) {
         return Ok(output);
     }
@@ -228,7 +232,7 @@ fn checked_output(command: &mut Command, label: &str) -> Result<CapturedOutput, 
     ))
 }
 
-fn diagnostics_of(output: &CapturedOutput) -> Vec<String> {
+fn diagnostics_of(output: &ToolOutput) -> Vec<String> {
     String::from_utf8_lossy(&output.stdout)
         .lines()
         .chain(String::from_utf8_lossy(&output.stderr).lines())
@@ -237,28 +241,27 @@ fn diagnostics_of(output: &CapturedOutput) -> Vec<String> {
         .collect()
 }
 
-fn ilspy_command() -> Command {
-    let mut command: Command = Command::new("dotnet");
-    command.current_dir(repository_root()).args([
+fn ilspy_command() -> CommandSpec {
+    tool_command("dotnet").current_dir(repository_root()).args([
         "tool",
         "run",
         "ilspycmd",
         "--allow-roll-forward",
         "--",
-    ]);
-    command
+    ])
 }
 
 fn require_dotnet() -> Result<(), String> {
-    let mut command: Command = Command::new("dotnet");
-    command.arg("--version");
-    checked_output(&mut command, "dotnet --version").map(|_: CapturedOutput| ())
+    checked_output(tool_command("dotnet").arg("--version"), "dotnet --version")
+        .map(|_: ToolOutput| ())
 }
 
 fn require_ilspy() -> Result<(), String> {
-    let mut command: Command = ilspy_command();
-    command.arg("--version");
-    let output: CapturedOutput = checked_output(&mut command, "pinned ilspycmd --version").map_err(
+    let output: ToolOutput = checked_output(
+        ilspy_command().arg("--version"),
+        "pinned ilspycmd --version",
+    )
+    .map_err(
         |error: String| {
             format!(
                 "{error}\nrestore the pinned comparator with: dotnet tool restore --tool-manifest .config/dotnet-tools.json"
@@ -1203,8 +1206,7 @@ fn write_project(dir: &Path, type_name: &str) {
 
 fn compile_whole_type(dir: &Path, src: &str, type_name: &str) -> (Vec<String>, Option<PathBuf>) {
     std::fs::write(dir.join("host.cs"), src).expect("write source");
-    let mut command: Command = Command::new("dotnet");
-    command
+    let command: CommandSpec = tool_command("dotnet")
         .args([
             "build",
             "-c",
@@ -1214,9 +1216,9 @@ fn compile_whole_type(dir: &Path, src: &str, type_name: &str) -> (Vec<String>, O
             "-nologo",
             "-p:Platform=AnyCPU",
         ])
-        .current_dir(dir);
-    let out: CapturedOutput = bounded_capture(&mut command, "dotnet build")
-        .unwrap_or_else(|error: String| panic!("{error}"));
+        .current_dir(dir.to_path_buf());
+    let out: ToolOutput =
+        bounded_capture(command, "dotnet build").unwrap_or_else(|error: String| panic!("{error}"));
     let errors: Vec<String> = diagnostics_of(&out);
     let dll: PathBuf = dir.join(format!("bin/Release/net9.0/{type_name}.dll"));
     let produced: Option<PathBuf> = dll.exists().then_some(dll);
@@ -1224,12 +1226,11 @@ fn compile_whole_type(dir: &Path, src: &str, type_name: &str) -> (Vec<String>, O
 }
 
 fn ilspy_il(dll: &Path, namespace: &str, type_name: &str) -> String {
-    let mut command: Command = ilspy_command();
-    command
+    let command: CommandSpec = ilspy_command()
         .args(["-il", "-t"])
         .arg(format!("{namespace}.{type_name}"))
         .arg(dll);
-    let out: CapturedOutput = checked_output(&mut command, "pinned ilspycmd IL comparison")
+    let out: ToolOutput = checked_output(command, "pinned ilspycmd IL comparison")
         .unwrap_or_else(|error: String| panic!("{error}"));
     assert!(
         !out.stdout.is_empty(),
@@ -2508,13 +2509,12 @@ fn write_collection_runner_project(dir: &Path) {
     std::fs::write(dir.join("oracle.csproj"), project).expect("write runner project");
 }
 
-fn run_field_rva_arrays(dir: &Path, head: &str, tail: &str) -> CapturedOutput {
+fn run_field_rva_arrays(dir: &Path, head: &str, tail: &str) -> ToolOutput {
     let runner: String = format!(
         "{PREAMBLE}public static class Program\n{{\n    public static void Main()\n    {{\n        int[] head = {head};\n        int[] tail = {tail};\n        System.IO.File.WriteAllText(\"collection-output.txt\", string.Join(\",\", head.Concat(tail)));\n    }}\n}}\n"
     );
     std::fs::write(dir.join("host.cs"), runner).expect("write runner source");
-    let mut build_command: Command = Command::new("dotnet");
-    build_command
+    let build_command: CommandSpec = tool_command("dotnet")
         .args([
             "build",
             "-c",
@@ -2524,20 +2524,19 @@ fn run_field_rva_arrays(dir: &Path, head: &str, tail: &str) -> CapturedOutput {
             "-nologo",
             "-p:Platform=AnyCPU",
         ])
-        .current_dir(dir);
-    let build: CapturedOutput = bounded_capture(
-        &mut build_command,
+        .current_dir(dir.to_path_buf());
+    let build: ToolOutput = bounded_capture(
+        build_command,
         "dotnet build for the recovered collection program",
     )
     .unwrap_or_else(|error: String| panic!("{error}"));
     if build.exit_code != Some(0) {
         return build;
     }
-    let mut run_command: Command = Command::new("dotnet");
-    run_command
+    let run_command: CommandSpec = tool_command("dotnet")
         .arg(dir.join("bin/Release/net9.0/oracle.dll"))
-        .current_dir(dir);
-    bounded_capture(&mut run_command, "the recovered collection program")
+        .current_dir(dir.to_path_buf());
+    bounded_capture(run_command, "the recovered collection program")
         .unwrap_or_else(|error: String| panic!("{error}"))
 }
 
@@ -2590,7 +2589,7 @@ fn collection_field_rva_recovery_recompiles_and_preserves_runtime_values() {
         disrobe_core::scratch::ScratchDir::create("disrobe_collection_field_rva").expect("mk tmp");
     let tmp: PathBuf = scratch.path().to_path_buf();
     write_collection_runner_project(&tmp);
-    let clean: CapturedOutput = run_field_rva_arrays(&tmp, &initializers[0], &initializers[1]);
+    let clean: ToolOutput = run_field_rva_arrays(&tmp, &initializers[0], &initializers[1]);
     assert_eq!(
         clean.exit_code,
         Some(0),
@@ -2608,7 +2607,7 @@ fn collection_field_rva_recovery_recompiles_and_preserves_runtime_values() {
         mutated_head, initializers[0],
         "the element mutation must change recovered source"
     );
-    let mutated_run: CapturedOutput = run_field_rva_arrays(&tmp, &mutated_head, &initializers[1]);
+    let mutated_run: ToolOutput = run_field_rva_arrays(&tmp, &mutated_head, &initializers[1]);
     assert_eq!(
         mutated_run.exit_code,
         Some(0),
@@ -3031,9 +3030,7 @@ fn percent(numerator: usize, denominator: usize) -> f64 {
 #[test]
 fn external_command_requirement_rejects_a_missing_command() {
     let missing: String = format!("disrobe_missing_tool_{}", std::process::id());
-    let mut command: Command = Command::new(&missing);
-    command.arg("--version");
-    let error: String = checked_output(&mut command, &missing)
+    let error: String = checked_output(tool_command(&missing).arg("--version"), &missing)
         .expect_err("a missing external command must not satisfy the whole-type prerequisites");
     assert!(
         error.contains(&missing),
