@@ -1,9 +1,4 @@
-#![allow(
-    clippy::expect_used,
-    clippy::unwrap_used,
-    clippy::print_stderr,
-    clippy::panic
-)]
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use std::collections::BTreeSet;
 use std::io::Read as _;

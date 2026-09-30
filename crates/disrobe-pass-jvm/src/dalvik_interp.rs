@@ -883,7 +883,6 @@ impl<'a> Interp<'a> {
         )))
     }
 
-    #[allow(clippy::too_many_lines)]
     fn dispatch_jdk(
         &mut self,
         owner: &str,

@@ -3,8 +3,7 @@
     unreachable_pub,
     clippy::expect_used,
     clippy::missing_panics_doc,
-    clippy::panic,
-    clippy::print_stderr
+    clippy::panic
 )]
 
 use std::fs::File;

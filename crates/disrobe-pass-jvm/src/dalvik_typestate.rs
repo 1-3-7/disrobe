@@ -683,7 +683,6 @@ struct TransferCtx<'a> {
     materialize_new_pcs: &'a BTreeSet<u32>,
 }
 
-#[allow(clippy::too_many_lines)]
 fn transfer(
     dex: &DexFile,
     insn: &DalvikInsn,

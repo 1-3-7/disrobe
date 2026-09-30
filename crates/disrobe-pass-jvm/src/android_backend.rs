@@ -1,10 +1,4 @@
-#![allow(
-    clippy::missing_errors_doc,
-    clippy::missing_panics_doc,
-    clippy::must_use_candidate,
-    clippy::module_name_repetitions,
-    clippy::duration_suboptimal_units
-)]
+#![allow(clippy::missing_panics_doc, clippy::duration_suboptimal_units)]
 
 use std::collections::BTreeMap;
 use std::fs::{File, Metadata, OpenOptions};

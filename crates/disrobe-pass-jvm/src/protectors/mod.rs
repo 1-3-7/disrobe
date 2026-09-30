@@ -1,17 +1,10 @@
 #![allow(
     clippy::needless_range_loop,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss,
     clippy::manual_is_multiple_of,
     clippy::manual_range_contains,
     clippy::map_unwrap_or,
     clippy::unreadable_literal,
-    clippy::module_name_repetitions,
-    clippy::missing_errors_doc,
     clippy::missing_panics_doc,
-    clippy::must_use_candidate,
     clippy::single_match_else,
     clippy::option_if_let_else,
     clippy::redundant_closure_for_method_calls

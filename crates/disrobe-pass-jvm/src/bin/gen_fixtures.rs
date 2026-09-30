@@ -1,10 +1,5 @@
 #![deny(unreachable_pub)]
-#![allow(
-    clippy::print_stdout,
-    clippy::print_stderr,
-    clippy::expect_used,
-    clippy::cast_possible_truncation
-)]
+#![allow(clippy::expect_used)]
 
 use std::fs::File;
 use std::io::Write as _;

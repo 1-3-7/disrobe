@@ -1,7 +1,6 @@
 #![allow(
     clippy::expect_used,
     clippy::unwrap_used,
-    clippy::print_stderr,
     clippy::case_sensitive_file_extension_comparisons,
     clippy::panic
 )]

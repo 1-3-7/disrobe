@@ -1,5 +1,5 @@
 #![cfg(feature = "lifter-diag")]
-#![allow(clippy::expect_used, clippy::unwrap_used, clippy::print_stderr)]
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 

@@ -1,13 +1,8 @@
 #![allow(
     clippy::expect_used,
     clippy::unwrap_used,
-    clippy::print_stderr,
-    clippy::cast_possible_truncation,
-    clippy::cast_lossless,
-    clippy::cast_precision_loss,
     clippy::case_sensitive_file_extension_comparisons,
     clippy::missing_panics_doc,
-    clippy::needless_pass_by_value,
     clippy::ptr_arg
 )]
 

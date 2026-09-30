@@ -2957,7 +2957,6 @@ impl Emitter<'_> {
         index.and_then(|i| self.dex.type_names.get(i as usize).cloned())
     }
 
-    #[allow(clippy::too_many_lines)]
     fn translate(&mut self, insn: &DalvikInsn, parsed: &MethodDescriptor) {
         let op: u8 = insn.op;
         if self.cfg.is_some() {
@@ -5033,7 +5032,6 @@ fn has_width_conflict(
     false
 }
 
-#[allow(clippy::too_many_lines)]
 fn register_effects(
     dex: &DexFile,
     insn: &DalvikInsn,

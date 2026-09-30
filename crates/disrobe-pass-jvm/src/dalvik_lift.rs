@@ -391,7 +391,6 @@ enum DirectInitTarget {
     Invalid,
 }
 
-#[allow(clippy::too_many_lines)]
 pub(crate) fn lift_insn(
     ctx: &MethodContext<'_>,
     file: &mut RegisterFile,

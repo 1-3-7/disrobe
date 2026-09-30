@@ -148,7 +148,6 @@ struct OpcodeResolver<'a> {
     ldc_type: &'a dyn Fn(u16) -> Option<VerificationType>,
 }
 
-#[allow(clippy::too_many_lines)]
 fn apply_transfer(
     insn: &Instruction,
     state: &mut FrameState,

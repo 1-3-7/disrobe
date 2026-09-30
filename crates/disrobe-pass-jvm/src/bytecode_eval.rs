@@ -1793,7 +1793,6 @@ fn is_plausible_plaintext(s: &str) -> bool {
     clippy::expect_used,
     clippy::unwrap_used,
     clippy::panic,
-    clippy::vec_init_then_push,
-    clippy::too_many_lines
+    clippy::vec_init_then_push
 )]
 mod tests;

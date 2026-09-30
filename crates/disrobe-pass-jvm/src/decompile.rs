@@ -11135,7 +11135,6 @@ pub fn drain_unhandled_census() -> std::collections::BTreeMap<u8, u64> {
     UNHANDLED_OPS.with(|m| std::mem::take(&mut *m.borrow_mut()))
 }
 
-#[allow(clippy::too_many_lines)]
 fn lift_one(
     cf: &ClassFile,
     insn: &Instruction,
@@ -11154,7 +11153,6 @@ fn lift_one(
     result
 }
 
-#[allow(clippy::too_many_lines)]
 fn lift_one_inner(
     cf: &ClassFile,
     insn: &Instruction,

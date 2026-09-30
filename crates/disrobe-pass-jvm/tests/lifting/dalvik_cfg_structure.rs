@@ -1,9 +1,4 @@
-#![allow(
-    clippy::expect_used,
-    clippy::unwrap_used,
-    clippy::print_stderr,
-    clippy::panic
-)]
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use disrobe_pass_jvm::{
     CodeItem, DalvikMethodCfg, NaturalLoop, Region, Structurer, build_dalvik_cfg_from_code_item,

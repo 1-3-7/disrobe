@@ -2,8 +2,7 @@
     clippy::absurd_extreme_comparisons,
     clippy::expect_used,
     clippy::unwrap_used,
-    clippy::panic,
-    clippy::print_stderr
+    clippy::panic
 )]
 
 use crate::common;
