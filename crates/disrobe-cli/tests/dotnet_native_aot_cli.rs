@@ -6,10 +6,10 @@
 )]
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use disrobe_core::scratch::ScratchDir;
+use disrobe_testkit::{CommandSpec, ToolError, ToolOutput, tool_output};
 use serde_json::Value as Json;
 
 const AOT_IMAGE: &str = "dotnet/HelloAppAot.exe";
@@ -27,25 +27,28 @@ fn corpus_path(relative: &str) -> PathBuf {
     workspace_root().join("corpus").join(relative)
 }
 
-fn run_native_aot(input: &Path, out: &Path) -> disrobe_core::subprocess::CapturedOutput {
-    let mut command: Command = Command::new(env!("CARGO_BIN_EXE_disrobe"));
-    command
+fn native_aot_command(input: &Path, out: &Path) -> CommandSpec {
+    CommandSpec::new(env!("CARGO_BIN_EXE_disrobe"), Duration::from_secs(90))
         .arg("dotnet")
         .arg("native-aot")
         .arg(input)
         .arg("--out")
         .arg(out)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let child: std::process::Child = command
-        .spawn()
-        .unwrap_or_else(|error: std::io::Error| panic!("failed to spawn disrobe: {error}"));
-    disrobe_core::subprocess::wait_with_direct_process_output_timeout(
-        child,
-        Duration::from_secs(90),
-        MAX_CAPTURE_BYTES,
+        .capture_limits(MAX_CAPTURE_BYTES, MAX_CAPTURE_BYTES)
+}
+
+fn run_bounded(spec: CommandSpec, unfinished: &str) -> ToolOutput {
+    let output: ToolOutput = tool_output(spec)
+        .unwrap_or_else(|error: ToolError| panic!("failed to run disrobe: {error}"));
+    assert!(!output.timed_out, "{unfinished}");
+    output
+}
+
+fn run_native_aot(input: &Path, out: &Path) -> ToolOutput {
+    run_bounded(
+        native_aot_command(input, out),
+        "disrobe dotnet native-aot did not finish within the timeout",
     )
-    .unwrap_or_else(|| panic!("disrobe dotnet native-aot did not finish within the timeout"))
 }
 
 fn recovered_json(image: &str, label: &str) -> (Json, String) {
@@ -58,7 +61,7 @@ fn recovered_json(image: &str, label: &str) -> (Json, String) {
     let dir: ScratchDir =
         ScratchDir::create(&format!("disrobe-native-aot-cli-{label}")).expect("scratch dir");
     let out: PathBuf = dir.path().join("report.json");
-    let captured: disrobe_core::subprocess::CapturedOutput = run_native_aot(&input, &out);
+    let captured: ToolOutput = run_native_aot(&input, &out);
     assert_eq!(
         captured.exit_code,
         Some(0),
@@ -110,26 +113,10 @@ fn the_json_flag_writes_the_report_to_stdout_and_no_file() {
     let dir: ScratchDir = ScratchDir::create("disrobe-native-aot-cli-json").expect("scratch dir");
     let out: PathBuf = dir.path().join("must-not-appear.json");
 
-    let mut command: Command = Command::new(env!("CARGO_BIN_EXE_disrobe"));
-    command
-        .arg("dotnet")
-        .arg("native-aot")
-        .arg(&input)
-        .arg("--out")
-        .arg(&out)
-        .arg("--json")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let child: std::process::Child = command
-        .spawn()
-        .unwrap_or_else(|error: std::io::Error| panic!("failed to spawn disrobe: {error}"));
-    let captured: disrobe_core::subprocess::CapturedOutput =
-        disrobe_core::subprocess::wait_with_direct_process_output_timeout(
-            child,
-            Duration::from_secs(90),
-            MAX_CAPTURE_BYTES,
-        )
-        .unwrap_or_else(|| panic!("disrobe dotnet native-aot --json did not finish"));
+    let captured: ToolOutput = run_bounded(
+        native_aot_command(&input, &out).arg("--json"),
+        "disrobe dotnet native-aot --json did not finish",
+    );
 
     assert_eq!(captured.exit_code, Some(0));
     let stdout: String = String::from_utf8_lossy(&captured.stdout).into_owned();

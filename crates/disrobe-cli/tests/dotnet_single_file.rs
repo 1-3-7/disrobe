@@ -6,8 +6,9 @@
 )]
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::time::Duration;
+
+use disrobe_testkit::{CommandSpec, ToolError, ToolOutput, tool_output};
 
 fn workspace_root() -> PathBuf {
     let mut path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -20,27 +21,24 @@ fn corpus_path(relative: &str) -> PathBuf {
     workspace_root().join("corpus").join(relative)
 }
 
-fn run_dotnet_decompile(input: &Path, out: &Path) -> disrobe_core::subprocess::CapturedOutput {
-    let mut command: Command = Command::new(env!("CARGO_BIN_EXE_disrobe"));
-    command
-        .arg("dotnet")
-        .arg("decompile")
-        .arg(input)
-        .arg("--out")
-        .arg(out)
-        .arg("--backend")
-        .arg("native")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let child: std::process::Child = command
-        .spawn()
-        .unwrap_or_else(|error: std::io::Error| panic!("failed to spawn disrobe: {error}"));
-    disrobe_core::subprocess::wait_with_direct_process_output_timeout(
-        child,
-        Duration::from_secs(30),
-        1 << 20,
+fn run_dotnet_decompile(input: &Path, out: &Path) -> ToolOutput {
+    let output: ToolOutput = tool_output(
+        CommandSpec::new(env!("CARGO_BIN_EXE_disrobe"), Duration::from_secs(30))
+            .arg("dotnet")
+            .arg("decompile")
+            .arg(input)
+            .arg("--out")
+            .arg(out)
+            .arg("--backend")
+            .arg("native")
+            .capture_limits(1 << 20, 1 << 20),
     )
-    .expect("dotnet bundle decompile must complete within 30 seconds with bounded output")
+    .unwrap_or_else(|error: ToolError| panic!("failed to run disrobe: {error}"));
+    assert!(
+        !output.timed_out,
+        "dotnet bundle decompile must complete within 30 seconds with bounded output"
+    );
+    output
 }
 
 #[test]
@@ -52,8 +50,7 @@ fn dotnet_decompile_routes_every_managed_bundle_member() {
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("disrobe-dotnet-bundle-cli")
             .expect("create scratch directory");
-    let output: disrobe_core::subprocess::CapturedOutput =
-        run_dotnet_decompile(&fixture, scratch.path());
+    let output: ToolOutput = run_dotnet_decompile(&fixture, scratch.path());
     assert_eq!(
         output.exit_code,
         Some(0),
@@ -113,8 +110,7 @@ fn dotnet_decompile_accepts_every_defined_bundle_manifest_version() {
         let scratch: disrobe_core::scratch::ScratchDir =
             disrobe_core::scratch::ScratchDir::create("disrobe-dotnet-bundle-version")
                 .expect("create scratch directory");
-        let output: disrobe_core::subprocess::CapturedOutput =
-            run_dotnet_decompile(&fixture, scratch.path());
+        let output: ToolOutput = run_dotnet_decompile(&fixture, scratch.path());
         assert_eq!(
             output.exit_code,
             Some(0),
@@ -139,8 +135,7 @@ fn dotnet_decompile_preserves_direct_assembly_layout() {
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("disrobe-dotnet-direct-cli")
             .expect("create scratch directory");
-    let output: disrobe_core::subprocess::CapturedOutput =
-        run_dotnet_decompile(&fixture, scratch.path());
+    let output: ToolOutput = run_dotnet_decompile(&fixture, scratch.path());
     assert_eq!(
         output.exit_code,
         Some(0),
@@ -163,8 +158,7 @@ fn dotnet_bundle_decompile_does_not_replace_nonempty_output() {
     std::fs::create_dir(&output_dir).expect("create existing output directory");
     let sentinel_path: PathBuf = output_dir.join("sentinel.bin");
     std::fs::write(&sentinel_path, b"preserve-me").expect("write sentinel");
-    let output: disrobe_core::subprocess::CapturedOutput =
-        run_dotnet_decompile(&fixture, &output_dir);
+    let output: ToolOutput = run_dotnet_decompile(&fixture, &output_dir);
     assert_eq!(output.exit_code, Some(1));
     assert!(String::from_utf8_lossy(&output.stderr).contains("DR-CLI-0468"));
     let sentinel: Vec<u8> = std::fs::read(&sentinel_path).expect("sentinel must remain readable");
@@ -190,8 +184,7 @@ fn dotnet_bundle_decompile_refuses_invalid_declared_assembly_transactionally() {
     let input_path: PathBuf = scratch.path().join("invalid-declared-assembly.exe");
     std::fs::write(&input_path, bytes).expect("write malformed bundle");
     let output_dir: PathBuf = scratch.path().join("output");
-    let output: disrobe_core::subprocess::CapturedOutput =
-        run_dotnet_decompile(&input_path, &output_dir);
+    let output: ToolOutput = run_dotnet_decompile(&input_path, &output_dir);
     assert_eq!(output.exit_code, Some(1));
     assert!(String::from_utf8_lossy(&output.stderr).contains("DR-CLI-0483"));
     assert!(!output_dir.exists());

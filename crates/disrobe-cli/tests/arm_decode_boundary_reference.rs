@@ -8,8 +8,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::time::Duration;
+
+use disrobe_testkit::{CommandSpec, ToolError, ToolOutput, tool_output};
 
 const FIXTURES: [&str; 3] = ["thumb_forms", "arm32_mixed_modes", "arm32_forms"];
 
@@ -67,32 +68,26 @@ fn cargo_bin() -> PathBuf {
     dir
 }
 
-#[allow(clippy::disallowed_methods)]
 fn run_disasm(input: &Path, out: &Path) {
     let bin: PathBuf = cargo_bin();
     assert!(
         bin.exists(),
         "disrobe binary missing at {bin:?}; run `cargo build -p disrobe-cli` first"
     );
-    let mut command: Command = Command::new(&bin);
-    command
-        .arg("native")
-        .arg("disasm")
-        .arg(input)
-        .arg("--out")
-        .arg(out)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let child: std::process::Child = command
-        .spawn()
-        .unwrap_or_else(|error: std::io::Error| panic!("failed to spawn disrobe: {error}"));
-    let captured: disrobe_core::subprocess::CapturedOutput =
-        disrobe_core::subprocess::wait_with_direct_process_output_timeout(
-            child,
-            DISASM_TIMEOUT,
-            MAX_CAPTURED_BYTES,
-        )
-        .expect("disrobe native disasm must complete within its bound with bounded output");
+    let captured: ToolOutput = tool_output(
+        CommandSpec::new(&bin, DISASM_TIMEOUT)
+            .arg("native")
+            .arg("disasm")
+            .arg(input)
+            .arg("--out")
+            .arg(out)
+            .capture_limits(MAX_CAPTURED_BYTES, MAX_CAPTURED_BYTES),
+    )
+    .unwrap_or_else(|error: ToolError| panic!("failed to run disrobe: {error}"));
+    assert!(
+        !captured.timed_out,
+        "disrobe native disasm must complete within its bound with bounded output"
+    );
     assert_eq!(
         captured.exit_code,
         Some(0),

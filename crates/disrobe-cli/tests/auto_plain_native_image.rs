@@ -10,7 +10,6 @@
 use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use disrobe_core::chain::{
@@ -19,6 +18,7 @@ use disrobe_core::chain::{
 };
 use disrobe_core::subprocess::{CapturedOutput, run_captured};
 use disrobe_pass_native::chain_detector::NativeImageDetector;
+use disrobe_testkit::{CommandSpec, ToolError, ToolOutput, tool_output};
 use object::{Object as _, ObjectSection as _, ObjectSymbol as _, SymbolKind as ObjSymbolKind};
 
 const NATIVE_IMAGE_PASS_ID: &str = "native.image-classify";
@@ -223,29 +223,26 @@ fn tmp_out(name: &str) -> disrobe_core::scratch::ScratchDir {
     disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory")
 }
 
-fn run_auto(input: &Path, out: &Path) -> disrobe_core::subprocess::CapturedOutput {
+fn run_auto(input: &Path, out: &Path) -> ToolOutput {
     let bin: PathBuf = cargo_bin();
     assert!(
         bin.exists(),
         "disrobe binary missing at {bin:?}; run `cargo build -p disrobe-cli` first"
     );
-    let mut command: Command = Command::new(&bin);
-    command
-        .arg("auto")
-        .arg(input)
-        .arg("--out")
-        .arg(out)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let child: std::process::Child = command
-        .spawn()
-        .unwrap_or_else(|e: std::io::Error| panic!("failed to spawn disrobe: {e}"));
-    disrobe_core::subprocess::wait_with_direct_process_output_timeout(
-        child,
-        Duration::from_secs(30),
-        1 << 20,
+    let output: ToolOutput = tool_output(
+        CommandSpec::new(&bin, Duration::from_secs(30))
+            .arg("auto")
+            .arg(input)
+            .arg("--out")
+            .arg(out)
+            .capture_limits(1 << 20, 1 << 20),
     )
-    .expect("disrobe auto must complete within 30 seconds with bounded output")
+    .unwrap_or_else(|e: ToolError| panic!("failed to run disrobe: {e}"));
+    assert!(
+        !output.timed_out,
+        "disrobe auto must complete within 30 seconds with bounded output"
+    );
+    output
 }
 
 const fn detect_context(bytes: &[u8]) -> DetectContext<'_> {
@@ -480,7 +477,7 @@ fn assert_auto_path_reaches_the_native_image_pass(
     );
     let out_scratch: disrobe_core::scratch::ScratchDir = tmp_out(scratch_name);
     let out: PathBuf = out_scratch.path().to_path_buf();
-    let proc_out: disrobe_core::subprocess::CapturedOutput = run_auto(input, &out);
+    let proc_out: ToolOutput = run_auto(input, &out);
     assert_eq!(
         proc_out.exit_code,
         Some(0),
@@ -570,7 +567,7 @@ fn auto_presents_aarch64_eh_frame_header_starts_through_production_registry() {
 
     let out_scratch: disrobe_core::scratch::ScratchDir = tmp_out("aarch64-eh-frame-header");
     let out: PathBuf = out_scratch.path().to_path_buf();
-    let proc_out: CapturedOutput = run_auto(&stripped_path, &out);
+    let proc_out: ToolOutput = run_auto(&stripped_path, &out);
     assert_eq!(
         proc_out.exit_code,
         Some(0),
@@ -634,7 +631,7 @@ fn auto_presents_pe_arm64_guard_cf_starts_through_production_registry() {
         .join("pe_arm64_guard_cf.exe");
     let out_scratch: disrobe_core::scratch::ScratchDir = tmp_out("pe-arm64-guard-cf");
     let out: PathBuf = out_scratch.path().to_path_buf();
-    let proc_out: CapturedOutput = run_auto(&input, &out);
+    let proc_out: ToolOutput = run_auto(&input, &out);
     assert_eq!(
         proc_out.exit_code,
         Some(0),

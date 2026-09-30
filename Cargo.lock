@@ -1940,6 +1940,7 @@ dependencies = [
  "disrobe-semdiff",
  "disrobe-similarity",
  "disrobe-taint",
+ "disrobe-testkit",
  "disrobe-typerec",
  "disrobe-vulnmatch",
  "iced-x86",

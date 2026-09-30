@@ -234,6 +234,7 @@ tonic-build = { workspace = true, optional = true }
 protoc-bin-vendored = { workspace = true, optional = true }
 
 [dev-dependencies]
+disrobe-testkit = { workspace = true }
 disrobe-playground = { workspace = true, features = ["chain"] }
 iced-x86 = { workspace = true }
 object = { workspace = true, features = ["write"] }

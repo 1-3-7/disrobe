@@ -7,22 +7,25 @@
 )]
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use disrobe_core::scratch::ScratchDir;
-use disrobe_core::subprocess::{CapturedOutput, wait_with_direct_process_output_timeout};
 use disrobe_ir::payload::DisasmPayload;
 use disrobe_pass_native::{Arch, FunctionSpan, build_disasm_payload, function_spans};
+use disrobe_testkit::{CommandSpec, ToolOutput, tool_output};
 use serde_json::Value;
 
 const MAX_CAPTURE_BYTES: usize = 1 << 20;
+const BOUND: Duration = Duration::from_secs(30);
 
-fn run_bounded(command: &mut Command, seconds: u64) -> CapturedOutput {
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let child: std::process::Child = command.spawn().expect("spawn bounded process");
-    wait_with_direct_process_output_timeout(child, Duration::from_secs(seconds), MAX_CAPTURE_BYTES)
-        .expect("bounded process must complete")
+fn bounded(program: &str) -> CommandSpec {
+    CommandSpec::new(program, BOUND).capture_limits(MAX_CAPTURE_BYTES, MAX_CAPTURE_BYTES)
+}
+
+fn run_bounded(spec: CommandSpec) -> ToolOutput {
+    let output: ToolOutput = tool_output(spec).expect("run bounded process");
+    assert!(!output.timed_out, "bounded process must complete");
+    output
 }
 
 fn find_file_named(root: &Path, target: &str) -> Option<PathBuf> {
@@ -51,8 +54,8 @@ fn auto_recovers_an_authored_x86_64_direct_trap_guard() {
         "__attribute__((noinline)) long long direct_trap_guard(long long x){ if (x < 0) __builtin_trap(); return x + 1; }",
     )
     .expect("authored source");
-    let compiled: CapturedOutput = run_bounded(
-        Command::new("clang")
+    let compiled: ToolOutput = run_bounded(
+        bounded("clang")
             .arg("--target=x86_64-linux-gnu")
             .arg("-fuse-ld=lld")
             .arg("-O1")
@@ -64,7 +67,6 @@ fn auto_recovers_an_authored_x86_64_direct_trap_guard() {
             .arg(&source_path)
             .arg("-o")
             .arg(&image_path),
-        30,
     );
     assert_eq!(
         compiled.exit_code,
@@ -86,13 +88,12 @@ fn auto_recovers_an_authored_x86_64_direct_trap_guard() {
         }),
         "authored function must carry decoded UD2 evidence"
     );
-    let auto: CapturedOutput = run_bounded(
-        Command::new(env!("CARGO_BIN_EXE_disrobe"))
+    let auto: ToolOutput = run_bounded(
+        bounded(env!("CARGO_BIN_EXE_disrobe"))
             .arg("auto")
             .arg(&image_path)
             .arg("--out")
             .arg(&out_path),
-        30,
     );
     assert_eq!(
         auto.exit_code,
@@ -117,13 +118,12 @@ fn auto_recovers_an_authored_x86_64_direct_trap_guard() {
         rust_source.contains("std::process::abort();"),
         "{rust_source}"
     );
-    let second_auto: CapturedOutput = run_bounded(
-        Command::new(env!("CARGO_BIN_EXE_disrobe"))
+    let second_auto: ToolOutput = run_bounded(
+        bounded(env!("CARGO_BIN_EXE_disrobe"))
             .arg("auto")
             .arg(&image_path)
             .arg("--out")
             .arg(&second_out_path),
-        30,
     );
     assert_eq!(second_auto.exit_code, Some(0));
     let second_report_path: PathBuf = find_file_named(&second_out_path, "pseudo-source.json")

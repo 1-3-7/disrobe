@@ -4507,16 +4507,19 @@ mod tests {
 
     #[cfg(target_arch = "x86_64")]
     fn find_c_compiler() -> Option<String> {
-        for c in ["clang", "gcc", "cc"] {
-            if std::process::Command::new(c)
-                .arg("--version")
-                .output()
-                .is_ok_and(|o: std::process::Output| o.status.success())
-            {
-                return Some(c.to_owned());
-            }
-        }
-        None
+        ["clang", "gcc", "cc"]
+            .into_iter()
+            .find(|compiler: &&str| {
+                disrobe_testkit::tool_output(
+                    disrobe_testkit::CommandSpec::new(
+                        *compiler,
+                        std::time::Duration::from_secs(30),
+                    )
+                    .arg("--version"),
+                )
+                .is_ok_and(|o: disrobe_testkit::ToolOutput| o.success)
+            })
+            .map(str::to_owned)
     }
 
     #[test]
@@ -4537,17 +4540,18 @@ mod tests {
         )
         .expect("write battery.c");
         let obj: PathBuf = dir.join("battery.o");
-        let compile: std::process::Output = std::process::Command::new(&compiler)
-            .args(["-c", "-O1"])
-            .arg(&c_src)
-            .arg("-o")
-            .arg(&obj)
-            .output()
-            .expect("invoke compiler");
+        let compile: disrobe_testkit::ToolOutput = disrobe_testkit::tool_output(
+            disrobe_testkit::CommandSpec::new(&compiler, std::time::Duration::from_mins(2))
+                .args(["-c", "-O1"])
+                .arg(&c_src)
+                .arg("-o")
+                .arg(&obj),
+        )
+        .expect("invoke compiler");
         assert!(
-            compile.status.success(),
+            compile.success,
             "the object under test failed to compile: {}",
-            String::from_utf8_lossy(&compile.stderr)
+            compile.stderr_text()
         );
         let out_dir: PathBuf = dir.join("out");
         decompile_native(obj, Some(out_dir.clone()), DecompileLang::C, false)
