@@ -587,6 +587,29 @@ fn leave_is_inside_a_loop(leave: usize, targets: &[Option<usize>]) -> bool {
         .any(|(k, target)| target.is_some_and(|t| t <= leave && t < k))
 }
 
+fn loop_exit_is_a_nil_leave(body: &YarvIseqBody, leave: usize, targets: &[Option<usize>]) -> bool {
+    let Some(back_edge): Option<usize> = targets
+        .iter()
+        .enumerate()
+        .skip(leave + 1)
+        .find(|(k, target): &(usize, &Option<usize>)| {
+            target.is_some_and(|t: usize| t <= leave && t < *k)
+        })
+        .map(|(k, _): (usize, &Option<usize>)| k)
+    else {
+        return false;
+    };
+    let exit: Vec<&str> = body
+        .instructions
+        .iter()
+        .skip(back_edge + 1)
+        .filter(|x: &&YarvIbfInstruction| x.mnemonic != "nop")
+        .take(2)
+        .map(|x: &YarvIbfInstruction| x.mnemonic.as_str())
+        .collect();
+    exit == ["putnil", "leave"]
+}
+
 fn region_is_inside_a_loop(body: &YarvIseqBody, start: usize, end: usize) -> bool {
     let targets: Vec<Option<usize>> = resolve_branch_targets(body);
     targets
@@ -908,6 +931,14 @@ fn render_region(
             && leave_is_inside_a_loop(i, targets)
         {
             let value: String = stack.pop().unwrap_or_default();
+            let keyword: &str = if keyword == "next"
+                && (value.is_empty() || value == "nil")
+                && loop_exit_is_a_nil_leave(body, i, targets)
+            {
+                "break"
+            } else {
+                keyword
+            };
             emit_value_flow(stmts, depth, keyword, value);
             i += 1;
             continue;

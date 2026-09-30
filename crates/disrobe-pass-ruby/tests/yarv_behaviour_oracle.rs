@@ -189,6 +189,11 @@ fn a_branch_holding_a_rescue_keeps_its_else_arm() {
 }
 
 #[test]
+fn a_break_out_of_a_while_inside_a_block_stays_a_break() {
+    assert_same_output("block_while_break.rb");
+}
+
+#[test]
 fn a_case_in_the_recogniser_cannot_recover_is_refused_by_name_between_surviving_statements() {
     let scratch: ScratchDir =
         ScratchDir::create("disrobe_ruby_refusal").expect("create scratch directory");
