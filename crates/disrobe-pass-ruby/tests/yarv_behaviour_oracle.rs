@@ -189,6 +189,11 @@ fn a_branch_holding_a_rescue_keeps_its_else_arm() {
 }
 
 #[test]
+fn an_if_without_else_in_a_case_arm_ends_at_the_arm() {
+    assert_same_output("case_arm_if.rb");
+}
+
+#[test]
 fn a_break_out_of_a_while_inside_a_block_stays_a_break() {
     assert_same_output("block_while_break.rb");
 }

@@ -587,6 +587,20 @@ fn leave_is_inside_a_loop(leave: usize, targets: &[Option<usize>]) -> bool {
         .any(|(k, target)| target.is_some_and(|t| t <= leave && t < k))
 }
 
+fn region_exits_to(
+    body: &YarvIseqBody,
+    hi: usize,
+    target: usize,
+    targets: &[Option<usize>],
+) -> bool {
+    hi > 0
+        && body
+            .instructions
+            .get(hi - 1)
+            .is_some_and(|x: &YarvIbfInstruction| x.mnemonic == "jump")
+        && targets.get(hi - 1).copied().flatten() == Some(target)
+}
+
 fn loop_exit_is_a_nil_leave(body: &YarvIseqBody, leave: usize, targets: &[Option<usize>]) -> bool {
     let Some(back_edge): Option<usize> = targets
         .iter()
@@ -975,12 +989,21 @@ fn render_region(
         }
         if matches!(m, "branchunless" | "branchif")
             && let Some(target) = targets[i]
-            && target <= hi
+            && (target <= hi || region_exits_to(body, hi, target, targets))
             && target > i
         {
             let first: String = pop(stack);
             let merged: MergedCondition =
                 merge_condition(body, ctx, depth, i, target, first, targets);
+            let merged: MergedCondition =
+                if merged.target > hi && region_exits_to(body, hi, merged.target, targets) {
+                    MergedCondition {
+                        target: hi,
+                        ..merged
+                    }
+                } else {
+                    merged
+                };
             if let Some(next) = try_guard_return(body, ctx, depth, &merged, hi, targets, stmts) {
                 i = next;
                 stack.clear();
@@ -4048,7 +4071,9 @@ fn render_conditional(
             .instructions
             .get(then_last)
             .is_some_and(|i| i.mnemonic == "jump")
-        && targets[then_last].is_some_and(|t| t > target && t <= hi);
+        && targets[then_last].is_some_and(|t| {
+            t > target && (t <= hi || (target < hi && region_exits_to(body, hi, t, targets)))
+        });
     let then_ends_in_leave: bool = then_last >= branch_idx
         && body
             .instructions
@@ -4056,7 +4081,7 @@ fn render_conditional(
             .is_some_and(|i| matches!(i.mnemonic.as_str(), "leave" | "throw"));
 
     let (then_hi, else_arm): (usize, Option<(usize, usize)>) = if then_ends_in_jump {
-        let end: usize = targets[then_last].unwrap_or(target);
+        let end: usize = targets[then_last].unwrap_or(target).min(hi);
         (then_last, Some((target, end)))
     } else if then_ends_in_leave && target < hi {
         (target, Some((target, hi)))
@@ -4109,9 +4134,9 @@ fn region_end_after_conditional(
         .is_some_and(|i| i.mnemonic == "jump")
         && let Some(end) = targets[then_last]
         && end > target
-        && end <= hi
+        && (end <= hi || (target < hi && region_exits_to(body, hi, end, targets)))
     {
-        end
+        end.min(hi)
     } else if body
         .instructions
         .get(then_last)
