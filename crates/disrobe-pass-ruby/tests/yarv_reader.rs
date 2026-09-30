@@ -75,6 +75,7 @@ fn synthetic_header_version_gate_accepts_supported_and_rejects_future() {
         (3u32, 2u32),
         (3u32, 3u32),
         (3u32, 4u32),
+        (4u32, 0u32),
     ] {
         let body: Vec<u8> = vec![0x00u8, 0x2Eu8];
         let bytes: Vec<u8> = common::synth_yarv(major, minor, &body);
@@ -82,10 +83,10 @@ fn synthetic_header_version_gate_accepts_supported_and_rejects_future() {
             analyze_bytes(&bytes, &format!("x_{major}_{minor}.yarb")).expect("analyze");
         assert_eq!(analysis.flavor, Flavor::YarvBinary);
     }
-    let bytes: Vec<u8> = common::synth_yarv(4, 0, &[]);
+    let bytes: Vec<u8> = common::synth_yarv(4, 1, &[]);
     let err: RubyError = analyze_bytes(&bytes, "x.yarb").expect_err("unsupported");
     assert!(matches!(
         err,
-        RubyError::YarvUnsupportedVersion { major: 4, minor: 0 }
+        RubyError::YarvUnsupportedVersion { major: 4, minor: 1 }
     ));
 }

@@ -17,7 +17,7 @@ pub enum RubyError {
     #[error("DR-RUBY-0010: YARV header magic mismatch (expected 'YARB', got {got:?})")]
     YarvBadMagic { got: [u8; 4] },
 
-    #[error("DR-RUBY-0011: YARV unsupported major version {major}.{minor} (supported 2.6-3.4)")]
+    #[error("DR-RUBY-0011: YARV unsupported major version {major}.{minor} (supported 2.6-4.0)")]
     YarvUnsupportedVersion { major: u32, minor: u32 },
 
     #[error("DR-RUBY-0012: YARV header truncated at field {field}")]
