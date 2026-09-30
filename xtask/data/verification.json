@@ -5,9 +5,9 @@
     {
       "ecosystem": "Python",
       "oracle": "normalized opcode-structure agreement",
-      "result": "<!-- m:py_stdlib_pinned_pct -->96.83%<!-- /m --> of <!-- m:py_stdlib_pinned_objects -->6286<!-- /m --> objects",
+      "result": "<!-- m:py_stdlib_pinned_pct -->96.99%<!-- /m --> of <!-- m:py_stdlib_pinned_objects -->6286<!-- /m --> objects",
       "ci": true,
-      "source": "arbitrary_recompile_gate.rs, code-object floor <!-- m:py_stdlib_pinned_floor_pct -->96.83%<!-- /m -->; normalized comparison omits jump targets and most operands"
+      "source": "arbitrary_recompile_gate.rs, code-object floor <!-- m:py_stdlib_pinned_floor_pct -->96.99%<!-- /m -->; normalized comparison omits jump targets and most operands"
     },
     {
       "ecosystem": "JVM classfile",
