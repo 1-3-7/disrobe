@@ -10,7 +10,7 @@
     "a tool that produces no EdgeCases source at all is a failed measurement, never an excluded sample",
     "tool-specific emitted-region denominators are reported independently and are not compared as recovery counts"
   ],
-  "honest_note": "DEX leg: `disrobe` emitted-region compile yield: 197 clean of 228 emitted (86.4%); `jadx` (1.5.5): 281 clean of 303 emitted (92.7%), beside 1 compiler defect outside any method. The denominators describe different emitted-region populations and do not support a cross-tool ranking. JAR leg: `disrobe` emitted-region compile yield: 180 clean of 181 emitted (99.4%); `cfr` (CFR 0.152): 152 clean of 166 emitted (91.6%). The denominators describe different emitted-region populations and do not support a cross-tool ranking. All rows use the same stubbed real-`javac` procedure. The scorer compiles the complete emitted source set first. If a parse failure prevents attribution, it isolates implicated balanced method, field-initializer, or type regions under a 64-round ceiling, then reruns javac. Regions inside an isolated method or type are unclean; peer regions are scored only after javac reaches attribution. An unmapped or over-budget failure certifies nothing. Each ratio describes only that tool's emitted regions.",
+  "honest_note": "DEX leg: `disrobe` emitted-region compile yield: 197 clean of 228 emitted (86.4%); `jadx` (1.5.5): 281 clean of 303 emitted (92.7%), beside 1 compiler defect outside any method. The denominators describe different emitted-region populations and do not support a cross-tool ranking. JAR leg: `disrobe` emitted-region compile yield: 181 clean of 181 emitted (100.0%); `cfr` (CFR 0.152): 152 clean of 166 emitted (91.6%). The denominators describe different emitted-region populations and do not support a cross-tool ranking. All rows use the same stubbed real-`javac` procedure. The scorer compiles the complete emitted source set first. If a parse failure prevents attribution, it isolates implicated balanced method, field-initializer, or type regions under a 64-round ceiling, then reruns javac. Regions inside an isolated method or type are unclean; peer regions are scored only after javac reaches attribution. An unmapped or over-budget failure certifies nothing. Each ratio describes only that tool's emitted regions.",
   "id": "apk-jadx-cfr",
   "metric": "compile-clean / emitted method regions in each tool's recovered source set. The original main class declares 114 methods, which supplies fixture context only. Each tool emits a different population that may include nested, sibling, synthetic accessor, lambda, and bridge methods. These ratios are per-output compile yields; they do not measure source recovery, semantic equivalence, or a shared fixed method population.",
   "oracle": "javac compiles the complete recovered source set against a stubbed classpath that excludes the original classes. If a parse error prevents attribution, the scorer isolates the implicated balanced method, field-initializer, or type region and reruns javac, up to 64 rounds. Methods in isolated regions fail; remaining methods are graded from compiler diagnostics. Unmapped parse errors leave the result uncertified.",
@@ -54,10 +54,10 @@
     },
     {
       "class_level_defects": 0,
-      "clean": 180,
+      "clean": 181,
       "context_original_main_methods": 114,
-      "detail": "180 of 181 emitted methods compile clean under javac after source-region parse failures are isolated with the same bounded rule for every tool (the original main class declares 114 methods)",
-      "display": "180 clean / 181 emitted (99.4%)",
+      "detail": "181 of 181 emitted methods compile clean under javac after source-region parse failures are isolated with the same bounded rule for every tool (the original main class declares 114 methods)",
+      "display": "181 clean / 181 emitted (100.0%)",
       "emitted": 181,
       "initial_javac_artifact": "apk-jadx-cfr/disrobe-jar/initial-javac/provenance.json",
       "leg": "jar",
@@ -66,7 +66,7 @@
       "role": "disrobe",
       "source_artifact": "apk-jadx-cfr/disrobe-jar/sources",
       "status": "ok",
-      "value": 99.4475138121547,
+      "value": 100.0,
       "version": "n/a (in-process)"
     },
     {

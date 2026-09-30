@@ -6313,12 +6313,21 @@ fn iterator_foreach(
         return None;
     }
     let mut elem_ty: String = ctx.slot_types.get(&elem_slot).cloned()?;
+    let source_element: Option<String> = source_type_for_expr(ctx, receiver)
+        .and_then(|source_type: String| first_type_argument(&source_type));
     if elem_ty == "Object"
-        && let Some(source_type) = source_type_for_expr(ctx, receiver)
-        && let Some(generic_element) = first_type_argument(&source_type)
+        && let Some(generic_element) = source_element.clone()
     {
         elem_ty = generic_element;
     }
+    let rendered_receiver: String = receiver.render();
+    let iterable: String = if elem_ty == "Object" || source_element.is_some() {
+        rendered_receiver
+    } else if matches!(receiver.as_ref(), Expr::Local(_)) {
+        format!("(java.lang.Iterable<{elem_ty}>) {rendered_receiver}")
+    } else {
+        format!("(java.lang.Iterable<{elem_ty}>) ({rendered_receiver})")
+    };
     let mut slots: BTreeSet<u16> = BTreeSet::new();
     slots.insert(it_slot);
     slots.insert(elem_slot);
@@ -6326,7 +6335,7 @@ fn iterator_foreach(
         header,
         elem_ty,
         elem_name: local_name(elem_slot, ctx.params),
-        iterable: receiver.render(),
+        iterable,
         slots,
     })
 }
