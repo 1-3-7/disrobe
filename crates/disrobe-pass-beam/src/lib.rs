@@ -19,7 +19,6 @@
 )]
 
 pub mod body_lift;
-#[cfg(feature = "chain")]
 pub mod chain_detector;
 pub mod chunks;
 pub mod core_erlang;

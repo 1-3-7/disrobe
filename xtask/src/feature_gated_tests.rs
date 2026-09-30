@@ -39,7 +39,6 @@ const HIDDEN_TEST_SURFACE: &[(&str, &[&str])] = &[
         &["as3", "beam", "dotnet", "jvm", "lua", "python", "ruby"],
     ),
     ("disrobe-pass-as3", &["chain"]),
-    ("disrobe-pass-beam", &["chain"]),
     ("disrobe-pass-dotnet", &["chain"]),
     ("disrobe-pass-go", &["chain"]),
     ("disrobe-pass-js-deob", &["chain"]),

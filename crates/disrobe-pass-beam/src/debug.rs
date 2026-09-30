@@ -31,7 +31,6 @@ pub(crate) fn dbg_kv(key: &str, f: impl FnOnce() -> String) {
     }
 }
 
-#[cfg(feature = "chain")]
 pub(crate) fn dbg_hex(label: &str, bytes: &[u8], max: usize) {
     let log: DebugLog = debug_log();
     if log.on() {
