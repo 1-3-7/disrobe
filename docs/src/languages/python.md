@@ -97,10 +97,10 @@ Each band uses the same normalized opcode-structure comparison and pinned module
 
 | Band | Interpreter | Recovered | Rate | Modules | Enforced on |
 |---|---|---|---|---|---|
-| 3.8 | CPython <!-- m:py_band_38_interpreter -->3.8.20<!-- /m --> | <!-- m:py_band_38_frac -->4571 / 5088<!-- /m --> code objects | <!-- m:py_band_38_rate -->89.83%<!-- /m --> | <!-- m:py_band_38_modules -->154<!-- /m --> | tag, schedule |
-| 3.9 | CPython <!-- m:py_band_39_interpreter -->3.9.25<!-- /m --> | <!-- m:py_band_39_frac -->4989 / 5233<!-- /m --> code objects | <!-- m:py_band_39_rate -->95.33%<!-- /m --> | <!-- m:py_band_39_modules -->157<!-- /m --> | tag, schedule |
+| 3.8 | CPython <!-- m:py_band_38_interpreter -->3.8.20<!-- /m --> | <!-- m:py_band_38_frac -->4590 / 5088<!-- /m --> code objects | <!-- m:py_band_38_rate -->90.21%<!-- /m --> | <!-- m:py_band_38_modules -->154<!-- /m --> | tag, schedule |
+| 3.9 | CPython <!-- m:py_band_39_interpreter -->3.9.25<!-- /m --> | <!-- m:py_band_39_frac -->5022 / 5233<!-- /m --> code objects | <!-- m:py_band_39_rate -->95.96%<!-- /m --> | <!-- m:py_band_39_modules -->157<!-- /m --> | tag, schedule |
 | 3.10 | CPython <!-- m:py_band_310_interpreter -->3.10.20<!-- /m --> | <!-- m:py_band_310_frac -->5270 / 5458<!-- /m --> code objects | <!-- m:py_band_310_rate -->96.55%<!-- /m --> | <!-- m:py_band_310_modules -->161<!-- /m --> | push, tag, schedule |
-| 3.11 | CPython <!-- m:py_band_311_interpreter -->3.11.15<!-- /m --> | <!-- m:py_band_311_frac -->5470 / 5638<!-- /m --> code objects | <!-- m:py_band_311_rate -->97.02%<!-- /m --> | <!-- m:py_band_311_modules -->172<!-- /m --> | tag, schedule |
+| 3.11 | CPython <!-- m:py_band_311_interpreter -->3.11.15<!-- /m --> | <!-- m:py_band_311_frac -->5479 / 5638<!-- /m --> code objects | <!-- m:py_band_311_rate -->97.17%<!-- /m --> | <!-- m:py_band_311_modules -->172<!-- /m --> | tag, schedule |
 | 3.12 | CPython <!-- m:py_band_312_interpreter -->3.12.13<!-- /m --> | <!-- m:py_band_312_frac -->5442 / 5659<!-- /m --> code objects | <!-- m:py_band_312_rate -->96.16%<!-- /m --> | <!-- m:py_band_312_modules -->177<!-- /m --> | push, tag, schedule |
 | 3.13 | CPython <!-- m:py_band_313_interpreter -->3.13.14<!-- /m --> | <!-- m:py_band_313_frac -->5756 / 5966<!-- /m --> code objects | <!-- m:py_band_313_rate -->96.48%<!-- /m --> | <!-- m:py_band_313_modules -->190<!-- /m --> | push, tag, schedule |
 | 3.14 | CPython <!-- m:py_band_314_interpreter -->3.14.5<!-- /m --> | <!-- m:py_band_314_frac -->6097 / 6286<!-- /m --> code objects | <!-- m:py_band_314_rate -->96.99%<!-- /m --> | <!-- m:py_band_314_modules -->200<!-- /m --> | no band gate, mirrored |
