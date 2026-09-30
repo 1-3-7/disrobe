@@ -104,7 +104,7 @@ fn conditional_branch_uses_the_zero_flag() {
             });
     assert!(negated.is_some());
     let Some(condition): Option<Varnode> = negated else {
-        return;
+        unreachable!("the assertion on `negated` above has already failed the test");
     };
     assert!(instruction.ops.iter().any(|operation: &PcodeOp| {
         matches!(operation, PcodeOp::CBranch { target, condition: branch_condition } if target.space == Space::Ram && target.offset == 0x5004 && *branch_condition == condition)

@@ -143,7 +143,7 @@ fn mixed_substitution_collapses_opaque_leaf_identity_before_egraph() {
         "the mixed reducer must recover the opaque-leaf identity"
     );
     let Some(mixed): Option<Expr> = mixed else {
-        return;
+        unreachable!("the assertion on `mixed` above has already failed the test");
     };
     assert!(mixed.node_count() < obfuscated.node_count());
 

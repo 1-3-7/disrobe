@@ -416,7 +416,7 @@ fn flag_value_grade_turns_red_when_one_flag_expression_is_negated() {
         "add rax, rdx at 0x18 is missing from the table"
     );
     let Some(record): Option<&ReferenceRecord> = found else {
-        return;
+        unreachable!("the assertion on `found` above has already failed the test");
     };
     let carry: Varnode = Varnode {
         offset: 0x200,
@@ -441,7 +441,7 @@ fn flag_value_grade_turns_red_when_one_flag_expression_is_negated() {
         .position(|operation: &PcodeOp| matches!(operation, PcodeOp::IntCarry { output, .. } if *output == carry));
     assert!(position.is_some(), "the lifted add writes no carry");
     let Some(index): Option<usize> = position else {
-        return;
+        unreachable!("the assertion on `position` above has already failed the test");
     };
     mutated.insert(
         index.saturating_add(1),

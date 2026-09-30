@@ -387,7 +387,7 @@ fn live_cpu_reference_reproduces_the_committed_corpus() {
     let created: std::io::Result<ScratchDir> = ScratchDir::create("disrobe-lift-x86-differential");
     assert!(created.is_ok(), "{created:?}");
     let Ok(scratch): std::io::Result<ScratchDir> = created else {
-        return;
+        unreachable!("the assertion on `created` above has already failed the test");
     };
     let image_path: PathBuf = scratch.path().join("image.bin");
     let cases_path: PathBuf = scratch.path().join("cases.tsv");
