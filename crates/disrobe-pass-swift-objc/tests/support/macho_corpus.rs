@@ -1,11 +1,10 @@
-use std::ffi::{OsStr, OsString};
 use std::fs;
-use std::io::{ErrorKind, Write};
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use disrobe_pass_swift_objc::macho::{self, CpuKind, FatArchEntry, MachoKind, ParsedSlice};
 
-pub(crate) const REQUIRE_CORPUS_VAR: &str = "DISROBE_REQUIRE_MACHO_CORPUS";
+pub(crate) const HOST_SOURCED_PREREQUISITE: &str = "disrobe-pass-swift-objc::host-sourced";
 
 const MACHO_MAC_DIR: &str = "mobile/macho-mac";
 const SWIFTSHIELD_EDGE_DIR: &str = "mobile/macho-mac/swiftshield-edgecases";
@@ -224,28 +223,6 @@ pub(crate) fn corpus_root() -> PathBuf {
     workspace_root.join("corpus")
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CorpusRequirement {
-    Optional,
-    Mandatory,
-}
-
-pub(crate) fn requirement_from_value(value: Option<&OsStr>) -> CorpusRequirement {
-    let Some(raw): Option<&OsStr> = value else {
-        return CorpusRequirement::Optional;
-    };
-    let text: String = raw.to_string_lossy().trim().to_ascii_lowercase();
-    match text.as_str() {
-        "" | "0" | "false" | "no" | "off" | "optional" => CorpusRequirement::Optional,
-        _ => CorpusRequirement::Mandatory,
-    }
-}
-
-pub(crate) fn corpus_requirement() -> CorpusRequirement {
-    let raw: Option<OsString> = std::env::var_os(REQUIRE_CORPUS_VAR);
-    requirement_from_value(raw.as_deref())
-}
-
 pub(crate) fn read_tracked(fixture: CorpusFixture) -> Vec<u8> {
     let Provenance::TrackedInGit(pin): Provenance = fixture.provenance else {
         panic!(
@@ -298,13 +275,6 @@ pub(crate) fn read_tracked_text(fixture: CorpusFixture) -> String {
 }
 
 pub(crate) fn read_host_sourced(fixture: CorpusFixture) -> Option<Vec<u8>> {
-    read_host_sourced_with_requirement(fixture, corpus_requirement())
-}
-
-pub(crate) fn read_host_sourced_with_requirement(
-    fixture: CorpusFixture,
-    requirement: CorpusRequirement,
-) -> Option<Vec<u8>> {
     let Provenance::SourcedOnTheHost { hint, pin }: Provenance = fixture.provenance else {
         panic!(
             "{} is tracked in this repository, so it must be loaded through read_tracked; treating \
@@ -328,7 +298,7 @@ pub(crate) fn read_host_sourced_with_requirement(
             Some(bytes)
         }
         Err(error) if error.kind() == ErrorKind::NotFound => {
-            enforce_absent(&fixture, hint, requirement);
+            absent(&fixture, hint);
             None
         }
         Err(error) => panic!(
@@ -361,29 +331,16 @@ fn enforce_pin(fixture: &CorpusFixture, pin: BytesPin, bytes: &[u8]) {
     );
 }
 
-fn enforce_absent(fixture: &CorpusFixture, hint: &str, requirement: CorpusRequirement) {
-    assert!(
-        requirement == CorpusRequirement::Optional,
-        "{REQUIRE_CORPUS_VAR} makes every corpus fixture mandatory for this run, so {} cannot be \
-         graded and this case must not report success: nothing exists at {}. To fix it, {hint}; to \
-         permit a run that grades nothing here, clear {REQUIRE_CORPUS_VAR}.",
+fn absent(fixture: &CorpusFixture, hint: &str) {
+    let what: String = format!(
+        "{} at {}, which is sourced on the host rather than tracked in this repository; to grade \
+         it, {hint}",
         fixture.relative(),
         fixture.path().display()
     );
-    announce_ungraded(fixture, hint);
-}
-
-fn announce_ungraded(fixture: &CorpusFixture, hint: &str) {
-    let line: String = format!(
-        "\nUNGRADED: {} is absent at {}, so this case measured nothing and graded nothing. It is \
-         sourced on the host rather than tracked in this repository. To grade it, {hint}; set \
-         {REQUIRE_CORPUS_VAR}=1 to fail instead of skipping when it is absent.\n",
-        fixture.relative(),
-        fixture.path().display()
-    );
-    let mut sink: std::io::StdoutLock<'static> = std::io::stdout().lock();
-    drop(sink.write_all(line.as_bytes()));
-    drop(sink.flush());
+    if let Err(error) = disrobe_testkit::require::<()>(HOST_SOURCED_PREREQUISITE, &what, None) {
+        panic!("{error}");
+    }
 }
 
 pub(crate) fn first_slice(fixture: CorpusFixture, bytes: &[u8]) -> (Vec<u8>, ParsedSlice) {

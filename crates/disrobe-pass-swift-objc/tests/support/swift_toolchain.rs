@@ -1,10 +1,10 @@
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 
-pub(crate) const REQUIRE_REFERENCE_VAR: &str = "DISROBE_REQUIRE_SWIFT_DEMANGLE";
-pub(crate) const REQUIRE_SWIFTC_VAR: &str = "DISROBE_REQUIRE_SWIFTC";
+pub(crate) const DEMANGLER_PREREQUISITE: &str = "disrobe-pass-swift-objc::swift-demangle";
+pub(crate) const SWIFTC_PREREQUISITE: &str = "disrobe-pass-swift-objc::swiftc";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct VerifiedToolchain {
@@ -69,32 +69,6 @@ pub(crate) struct ReferenceDemangler {
     pub(crate) identity: ToolchainIdentity,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ReferenceRequirement {
-    Optional,
-    Mandatory,
-}
-
-pub(crate) fn requirement_from_value(value: Option<&OsStr>) -> ReferenceRequirement {
-    let Some(raw): Option<&OsStr> = value else {
-        return ReferenceRequirement::Optional;
-    };
-    let text: String = raw.to_string_lossy().trim().to_ascii_lowercase();
-    match text.as_str() {
-        "" | "0" | "false" | "no" | "off" | "optional" => ReferenceRequirement::Optional,
-        _ => ReferenceRequirement::Mandatory,
-    }
-}
-
-pub(crate) fn requirement_for(var: &str) -> ReferenceRequirement {
-    let raw: Option<OsString> = std::env::var_os(var);
-    requirement_from_value(raw.as_deref())
-}
-
-pub(crate) fn reference_requirement() -> ReferenceRequirement {
-    requirement_for(REQUIRE_REFERENCE_VAR)
-}
-
 fn executable(stem: &str) -> String {
     if cfg!(windows) {
         format!("{stem}.exe")
@@ -112,19 +86,11 @@ pub(crate) fn find_on_path(stem: &str) -> Option<PathBuf> {
 }
 
 pub(crate) fn resolve_reference_demangler(graded: &str) -> Option<ReferenceDemangler> {
-    resolve_with_requirement(graded, reference_requirement())
-}
-
-pub(crate) fn resolve_with_requirement(
-    graded: &str,
-    requirement: ReferenceRequirement,
-) -> Option<ReferenceDemangler> {
     let Some(tool): Option<PathBuf> = find_on_path("swift-demangle") else {
-        enforce_absent(
-            REQUIRE_REFERENCE_VAR,
+        absent(
+            DEMANGLER_PREREQUISITE,
             graded,
             "swift-demangle is not on PATH",
-            requirement,
         );
         return None;
     };
@@ -133,14 +99,8 @@ pub(crate) fn resolve_with_requirement(
 }
 
 pub(crate) fn resolve_swift_compiler(graded: &str) -> Option<PathBuf> {
-    let requirement: ReferenceRequirement = requirement_for(REQUIRE_SWIFTC_VAR);
     let Some(tool): Option<PathBuf> = find_on_path("swiftc") else {
-        enforce_absent(
-            REQUIRE_SWIFTC_VAR,
-            graded,
-            "swiftc is not on PATH",
-            requirement,
-        );
+        absent(SWIFTC_PREREQUISITE, graded, "swiftc is not on PATH");
         return None;
     };
     Some(tool)
@@ -207,30 +167,12 @@ fn version_line(program: &Path, args: &[&str]) -> Result<String, String> {
     })
 }
 
-pub(crate) fn enforce_absent(
-    var: &str,
-    graded: &str,
-    defect: &str,
-    requirement: ReferenceRequirement,
-) {
-    assert!(
-        requirement == ReferenceRequirement::Optional,
-        "{var} makes the Swift toolchain mandatory for this run, so {graded} cannot be compared \
-         against the real tool and this case must not report success: {defect}. To fix it, install \
-         a Swift toolchain and put its bin directory on PATH; to permit a run that grades nothing \
-         here, clear {var}."
-    );
-    announce_ungraded(var, graded, defect);
-}
-
-fn announce_ungraded(var: &str, graded: &str, defect: &str) {
-    let line: String = format!(
-        "\nUNGRADED: {graded} was compared against nothing and graded nothing, because {defect}. \
-         Set {var}=1 to fail instead of skipping when the Swift toolchain cannot be run.\n"
-    );
-    let mut sink: std::io::StdoutLock<'static> = std::io::stdout().lock();
-    drop(sink.write_all(line.as_bytes()));
-    drop(sink.flush());
+pub(crate) fn absent(prerequisite: &str, graded: &str, defect: &str) {
+    let what: String =
+        format!("a Swift toolchain on PATH to compare {graded} against the real tool ({defect})");
+    if let Err(error) = disrobe_testkit::require::<()>(prerequisite, &what, None) {
+        panic!("{error}");
+    }
 }
 
 pub(crate) fn provenance_note(identity: &ToolchainIdentity) -> String {

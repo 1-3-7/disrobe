@@ -1,4 +1,5 @@
 [optional]
+"disrobe-pass-swift-objc::host-sourced" = "the host-sourced Mach-O binaries and IPAs under corpus/mobile and corpus/mac are third-party files the repository does not redistribute, so no CI job has them"
 "disrobe-taint::graded_corpus" = "the pinned NIST SARD Juliet v1.3 corpus (153 MB) is not committed and no CI job downloads it"
 "disrobe-pass-mobile::discord-hermes-bundle" = "the production Discord Hermes bundle is proprietary third-party bytecode the repository has no right to redistribute, so CI never has it"
 "disrobe-pass-mobile::rustdesk-flutter-apk" = "the pinned RustDesk 1.4.9 release APK (27 MB) is not committed and no CI job downloads it"
@@ -21,6 +22,8 @@
 "disrobe-binfmt::cabextract" = "no CI job installs cabextract"
 
 [optional.linux]
+"disrobe-pass-swift-objc::swift-demangle" = "CI installs the Swift 6.3.2 toolchain on the macOS runner only"
+"disrobe-pass-swift-objc::swiftc" = "CI installs the Swift 6.3.2 toolchain on the macOS runner only"
 "disrobe-binfmt::makecab" = "makecab.exe ships only with Windows, and CI demands it only on the Windows runner"
 "disrobe-binfmt::wix" = "the WiX toolset is Windows-only, and CI installs it only on the Windows runner"
 
@@ -35,6 +38,8 @@
 "disrobe-typerec::gnu-cc" = "the macOS runner's cc is Apple clang targeting arm64 Mach-O, and the typerec fixtures are graded against an x86-64 GNU toolchain CI provides on the Linux and Windows runners only"
 
 [optional.windows]
+"disrobe-pass-swift-objc::swift-demangle" = "CI installs the Swift 6.3.2 toolchain on the macOS runner only"
+"disrobe-pass-swift-objc::swiftc" = "CI installs the Swift 6.3.2 toolchain on the macOS runner only"
 "disrobe-binfmt::readelf" = "CI provisions and verifies readelf by name on the Linux runner only, and macOS gets llvm-readelf from its llvm@20 install"
 "disrobe-binfmt::llvm-readobj" = "CI provisions and verifies llvm-readobj on the Linux (LLVM 18) and macOS (llvm@20) runners only"
 "disrobe-pass-scriptlang::tclsh" = "CI installs Tcl on the Linux runner only; the Windows runner carries no Tcl package"

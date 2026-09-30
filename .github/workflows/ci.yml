@@ -711,8 +711,6 @@ jobs:
           swiftc -typecheck - <<< 'import _Differentiation'
           echo "$toolchain" >> "$GITHUB_PATH"
           echo "SDKROOT=$SDKROOT" >> "$GITHUB_ENV"
-          echo "DISROBE_REQUIRE_SWIFTC=1" >> "$GITHUB_ENV"
-          echo "DISROBE_REQUIRE_SWIFT_DEMANGLE=1" >> "$GITHUB_ENV"
       - name: provision LLVM 18 for the aarch64 dense-switch CLI differential and the bigobj reader differential
         if: matrix.os == 'ubuntu-latest'
         shell: bash
