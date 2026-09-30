@@ -1,9 +1,8 @@
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
-use disrobe_core::subprocess::{self, CapturedOutput};
+use disrobe_testkit::{CommandSpec, ToolError, ToolOutput, tool_output};
 use object::{Architecture, BinaryFormat, Object, ObjectKind};
 
 pub(crate) const REQUIREMENT_VAR: &str = "DISROBE_TYPEREC_CC";
@@ -134,16 +133,42 @@ pub(crate) fn find_on_path(names: &[&str], binary_var: &str) -> Option<PathBuf> 
     None
 }
 
-pub(crate) fn run_bounded(mut command: Command) -> Option<CapturedOutput> {
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let child: Child = command.spawn().ok()?;
-    subprocess::wait_with_output_timeout(child, CALL_TIMEOUT, CAPTURE_CAP)
+fn command_line(program: &Path, arguments: &[OsString]) -> String {
+    let mut printed: String = program.display().to_string();
+    for argument in arguments {
+        printed.push(' ');
+        printed.push_str(&argument.to_string_lossy());
+    }
+    printed
 }
 
-fn first_line(output: &CapturedOutput) -> String {
+fn run_bounded(
+    program: &Path,
+    arguments: &[OsString],
+    work: Option<&Path>,
+) -> Result<ToolOutput, String> {
+    let mut spec: CommandSpec = CommandSpec::new(program, CALL_TIMEOUT)
+        .args(arguments)
+        .capture_limits(CAPTURE_CAP, CAPTURE_CAP);
+    if let Some(work) = work {
+        spec = spec.current_dir(work.to_path_buf());
+    }
+    let output: ToolOutput = tool_output(spec).map_err(|error: ToolError| {
+        format!(
+            "`{}` could not run: {error}",
+            command_line(program, arguments)
+        )
+    })?;
+    if output.timed_out {
+        return Err(format!(
+            "`{}` did not exit within {CALL_TIMEOUT:?}",
+            command_line(program, arguments)
+        ));
+    }
+    Ok(output)
+}
+
+fn first_line(output: &ToolOutput) -> String {
     let mut printed: String = String::from_utf8_lossy(&output.stdout).into_owned();
     if printed.trim().is_empty() {
         printed = String::from_utf8_lossy(&output.stderr).into_owned();
@@ -152,14 +177,7 @@ fn first_line(output: &CapturedOutput) -> String {
 }
 
 fn identity_of(program: &Path) -> Result<String, String> {
-    let mut command: Command = Command::new(program);
-    command.arg("--version");
-    let Some(output): Option<CapturedOutput> = run_bounded(command) else {
-        return Err(format!(
-            "`{} --version` did not exit within {CALL_TIMEOUT:?}",
-            program.display()
-        ));
-    };
+    let output: ToolOutput = run_bounded(program, &[OsString::from("--version")], None)?;
     if output.exit_code != Some(0) {
         return Err(format!(
             "`{} --version` exited with {:?}",
@@ -186,20 +204,10 @@ fn announces_gnu(identity: &str) -> bool {
 }
 
 fn target_of(program: &Path) -> Result<(CcTarget, String), String> {
-    let mut command: Command = Command::new(program);
-    command.arg("-dumpmachine");
-    let output: CapturedOutput = run_bounded(command).ok_or_else(|| {
-        format!(
-            "`{} -dumpmachine` did not exit within {CALL_TIMEOUT:?}",
-            program.display()
-        )
-    })?;
+    let arguments: [OsString; 1] = [OsString::from("-dumpmachine")];
+    let output: ToolOutput = run_bounded(program, &arguments, None)?;
     if output.exit_code != Some(0) {
-        return Err(describe(
-            program,
-            &[OsString::from("-dumpmachine")],
-            &output,
-        ));
+        return Err(describe(program, &arguments, &output));
     }
     let triple: &str = std::str::from_utf8(&output.stdout)
         .map_err(|error: std::str::Utf8Error| format!("invalid compiler target: {error}"))?
@@ -295,15 +303,10 @@ pub(crate) fn require(graded: &str) -> Option<CcToolchain> {
     }
 }
 
-fn describe(program: &Path, arguments: &[OsString], output: &CapturedOutput) -> String {
-    let printed: Vec<String> = arguments
-        .iter()
-        .map(|argument: &OsString| argument.to_string_lossy().into_owned())
-        .collect();
+fn describe(program: &Path, arguments: &[OsString], output: &ToolOutput) -> String {
     format!(
-        "`{} {}` exited with {:?} and printed stdout {:?} and stderr {:?}",
-        program.display(),
-        printed.join(" "),
+        "`{}` exited with {:?} and printed stdout {:?} and stderr {:?}",
+        command_line(program, arguments),
         output.exit_code,
         String::from_utf8_lossy(&output.stdout).trim(),
         String::from_utf8_lossy(&output.stderr).trim()
@@ -311,14 +314,7 @@ fn describe(program: &Path, arguments: &[OsString], output: &CapturedOutput) -> 
 }
 
 fn call(program: &Path, arguments: &[OsString], work: &Path) -> Result<(), String> {
-    let mut command: Command = Command::new(program);
-    command.args(arguments).current_dir(work);
-    let Some(output): Option<CapturedOutput> = run_bounded(command) else {
-        return Err(format!(
-            "`{}` did not exit within {CALL_TIMEOUT:?}",
-            program.display()
-        ));
-    };
+    let output: ToolOutput = run_bounded(program, arguments, Some(work))?;
     if output.exit_code == Some(0) {
         return Ok(());
     }

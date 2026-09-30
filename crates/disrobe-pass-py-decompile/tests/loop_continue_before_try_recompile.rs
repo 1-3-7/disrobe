@@ -8,15 +8,14 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
-use disrobe_core::subprocess::{CapturedOutput, wait_with_output_timeout};
 use disrobe_pass_py_decompile::DecompileError;
 use disrobe_pass_py_decompile::bytecode::version::PyVersion;
 use disrobe_pass_py_decompile::engine::{build_real_source, marshal_to_decompile};
 use disrobe_pass_py_decompile::roundtrip::{Verdict, semantic_equiv};
 use disrobe_py_marshal::{CodeObject, Object, PyVersion as MarshalVersion, PycFile, read_pyc};
+use disrobe_testkit::{CommandSpec, ToolError, ToolOutput, tool_output};
 
 const FIXTURE: &str = concat!(
     "def safe_import(self, fromlist, name, caller, level):\n",
@@ -172,14 +171,20 @@ const TARGET_ALIASES: &[&str] = &["3.12", "3.14", "3.15"];
 const TOOL_TIMEOUT: Duration = Duration::from_secs(30);
 const CAPTURE_LIMIT: usize = 1024 * 1024;
 
-fn bounded_output(command: &mut Command, label: &str) -> Result<CapturedOutput, String> {
-    let child: Child = command
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error: std::io::Error| format!("{label} spawn: {error}"))?;
-    wait_with_output_timeout(child, TOOL_TIMEOUT, CAPTURE_LIMIT)
-        .ok_or_else(|| format!("{label} timed out after {} seconds", TOOL_TIMEOUT.as_secs()))
+fn bounded(program: impl Into<PathBuf>) -> CommandSpec {
+    CommandSpec::new(program, TOOL_TIMEOUT).capture_limits(CAPTURE_LIMIT, CAPTURE_LIMIT)
+}
+
+fn bounded_output(spec: CommandSpec, label: &str) -> Result<ToolOutput, String> {
+    let output: ToolOutput =
+        tool_output(spec).map_err(|error: ToolError| format!("{label} run: {error}"))?;
+    if output.timed_out {
+        return Err(format!(
+            "{label} timed out after {} seconds",
+            TOOL_TIMEOUT.as_secs()
+        ));
+    }
+    Ok(output)
 }
 
 fn scratch_path(name: &str) -> PathBuf {
@@ -187,8 +192,8 @@ fn scratch_path(name: &str) -> PathBuf {
 }
 
 fn find_interpreter(alias: &str) -> Option<PathBuf> {
-    let output: CapturedOutput = bounded_output(
-        Command::new("uv").args(["python", "find", alias]),
+    let output: ToolOutput = bounded_output(
+        bounded("uv").args(["python", "find", alias]),
         "uv python find",
     )
     .ok()?;
@@ -203,8 +208,8 @@ fn find_interpreter(alias: &str) -> Option<PathBuf> {
 fn compile_source(interpreter: &Path, source_path: &Path, pyc_path: &Path) -> Result<(), String> {
     let script: &str =
         "import py_compile,sys;py_compile.compile(sys.argv[1],cfile=sys.argv[2],doraise=True)";
-    let output: CapturedOutput = bounded_output(
-        Command::new(interpreter).args([
+    let output: ToolOutput = bounded_output(
+        bounded(interpreter).args([
             "-c",
             script,
             source_path.to_str().unwrap_or(""),
@@ -242,8 +247,8 @@ fn execute_fixture_script(
     source_path: &Path,
     script: &str,
 ) -> Result<String, String> {
-    let output: CapturedOutput = bounded_output(
-        Command::new(interpreter)
+    let output: ToolOutput = bounded_output(
+        bounded(interpreter)
             .args(["-c", script])
             .arg(source_path)
             .env("PYTHONHASHSEED", "0"),

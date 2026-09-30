@@ -3039,6 +3039,7 @@ name = "disrobe-typerec"
 version = "0.10.6"
 dependencies = [
  "disrobe-core",
+ "disrobe-testkit",
  "gimli 0.32.3",
  "iced-x86",
  "object 0.37.3",
