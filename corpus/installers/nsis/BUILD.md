@@ -20,7 +20,7 @@ Each build is one command; makensis changes into the script's directory, so the 
 makensis -V2 -DCOMPRESSOR=lzma -DSOLID -DUNICODE_STRINGS -DOUTFILE=/tmp/setup.exe corpus/installers/nsis/tide_viewer.nsi
 ```
 
-Toolchain: NSIS 3.11 for Windows, `nsis-3.11.zip` from the project's SourceForge release directory (2,361,546 bytes, sha256 `c7d27f780ddb6cffb4730138cd1591e841f4b7edb155856901cdf5f214394fa1`, the sum SourceForge publishes), unpacked without an installer; `makensis /VERSION` prints `v3.11`. The test finds `makensis` on `PATH` or in the standard `Program Files` install directories, and `DISROBE_REQUIRE_MAKENSIS=1` makes a missing compiler fail the run instead of reporting the case as not measured.
+Toolchain: NSIS 3.11 for Windows, `nsis-3.11.zip` from the project's SourceForge release directory (2,361,546 bytes, sha256 `c7d27f780ddb6cffb4730138cd1591e841f4b7edb155856901cdf5f214394fa1`, the sum SourceForge publishes), unpacked without an installer; `makensis /VERSION` prints `v3.11`. The test finds `makensis` on `PATH` or in the standard `Program Files` install directories. A missing compiler fails the run by name unless `tests/optional.toml` lists `disrobe-binfmt::makensis` for the platform, as it does for macOS, where CI installs no NSIS; the case then writes a not-measured record.
 
 | Input | Bytes | sha256 |
 | --- | --- | --- |
