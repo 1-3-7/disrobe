@@ -79,7 +79,20 @@ fn harness_entrypoint() {
         output.status,
         disrobe_pass_pyarmor::StaticDecryptStatus::DetectOnly
     );
-    assert_eq!(det.version, disrobe_pass_pyarmor::PyarmorVersion::V8);
+    assert!(
+        matches!(
+            det.version,
+            disrobe_pass_pyarmor::PyarmorVersion::V8 | disrobe_pass_pyarmor::PyarmorVersion::V9
+        ),
+        "a PyArmor 8.5.12 trial wrapper belongs to the v8/v9 header family, got {:?}",
+        det.version
+    );
+    assert_eq!(
+        det.confidence,
+        disrobe_pass_pyarmor::DetectionConfidence::Medium,
+        "the trial serial 000000 and the header words are the same under 8.x and 9.x, so a \
+         wrapper alone cannot claim which of the two built it"
+    );
 }
 
 #[test]
