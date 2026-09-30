@@ -95,7 +95,7 @@ fn build_and_run(directory: &Path, probe_source: &str) -> Program {
             .current_dir(directory.to_path_buf()),
         "dotnet build",
     );
-    let assembly: PathBuf = directory.join("bin/Release/net8.0/StackSpill.dll");
+    let assembly: PathBuf = directory.join("bin/Release/net9.0/StackSpill.dll");
     let run: Option<ToolOutput> = build.success.then(|| {
         run_tool(
             dotnet()

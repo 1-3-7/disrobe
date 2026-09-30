@@ -1,12 +1,12 @@
 schema = "disrobe.corpus.v1"
 crate = "disrobe-pass-dotnet"
 generated = "2026-09-30"
-toolchain = "dotnet SDK 9.0.318 targeting net8.0"
+toolchain = "dotnet SDK 9.0.318 targeting net9.0"
 license = "self-authored (disrobe regression fixture, freely redistributable)"
 note = "self-authored C# program whose Release IL stores to a local, an argument, a static field and an array element while an operand stack entry that read the same location is still pending: a reused ToString temporary in a string concatenation, a ref argument, an argument reassigned inside a call, a temporary stored after a conditional expression, an assignment inside a conditional arm, and a control with no overlapping store; no binary is committed"
 
 [build]
-command = "dotnet build -c Release in a directory holding only Ledger.cs, Probe.cs and StackSpill.csproj; the program is bin/Release/net8.0/StackSpill.dll, run with dotnet"
+command = "dotnet build -c Release in a directory holding only Ledger.cs, Probe.cs and StackSpill.csproj; the program is bin/Release/net9.0/StackSpill.dll, run with dotnet"
 reproducible = true
 reproducibility_note = "stack_spill_before_store builds the program from these sources at test time with UseSharedCompilation=false, so no compiled output is stored; Deterministic=true, Optimize=true and DebugType=none"
 line_endings = "every hash-pinned file carries -text in this directory's .gitattributes, so no checkout rewrites the bytes the hashes cover"
