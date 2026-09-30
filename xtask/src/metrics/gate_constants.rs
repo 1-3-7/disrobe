@@ -215,14 +215,14 @@ mod tests {
     const MIRROR_LABEL: &str = "CPython 3.14 (all 200 pinned modules)";
 
     const PUBLISHED_COPIES: [(&str, &str); 8] = [
-        ("README.md", "96.83"),
-        ("docs/src/introduction.md", "96.83"),
-        ("docs/src/languages/python.md", "96.83"),
-        ("docs/src/python-bindings.md", "96.83"),
-        ("evidence/edge-comparison.md", "96.83"),
-        ("xtask/data/verification.json", "96.83"),
-        (PINNED_GATE, "96.83"),
-        (FULL_GATE, "6_087"),
+        ("README.md", "96.99"),
+        ("docs/src/introduction.md", "96.99"),
+        ("docs/src/languages/python.md", "96.99"),
+        ("docs/src/python-bindings.md", "96.99"),
+        ("evidence/edge-comparison.md", "96.99"),
+        ("xtask/data/verification.json", "96.99"),
+        (PINNED_GATE, "96.99"),
+        (FULL_GATE, "6_097"),
     ];
 
     const RAISED_SITES: [(&str, &str); 9] = [
