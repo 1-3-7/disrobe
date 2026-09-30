@@ -15,11 +15,12 @@ use disrobe_core::recon::{ReconConfig, ReconReport, report_bytes};
 use indexmap::IndexSet;
 
 use crate::packers::{
-    AspackPhaseTwoOutput, Detection as PackerDetection, DonutModuleType, FsgUnpackOutput,
-    KkrunchyUnpackOutput, LoaderConfig, LoaderFamily, LoaderInspection, LoaderRecovery,
-    MewUnpackOutput, MpressUnpackOutput, NspackEmulatedReport, Packer, PecompactPhaseTwoOutput,
-    PetitePhase2EmulatedOutput, RecoveryField, UnpackerStatus, UpxUnpackOutput, YodasCrypterCarve,
-    detect as detect_packers, recover_loader, recover_yodas_crypter_carve,
+    AspackPhaseTwoOutput, CarvedVmpSection, Detection as PackerDetection, DonutModuleType,
+    FsgUnpackOutput, KkrunchyUnpackOutput, LoaderConfig, LoaderFamily, LoaderInspection,
+    LoaderRecovery, MewUnpackOutput, MpressUnpackOutput, NspackEmulatedReport, Packer,
+    PecompactPhaseTwoOutput, PetitePhase2EmulatedOutput, RecoveryField, ThemidaCarve,
+    UnpackerStatus, UpxUnpackOutput, VmProtectCarve, YodasCrypterCarve, carve_themida,
+    carve_vmprotect, detect as detect_packers, recover_loader, recover_yodas_crypter_carve,
     unpack_aspack_phase2_emulated, unpack_fsg, unpack_kkrunchy, unpack_mew, unpack_mpress,
     unpack_nspack_emulated, unpack_pecompact_phase2_emulated, unpack_petite_phase2_emulated,
     unpack_upx,
@@ -481,6 +482,7 @@ struct PackerRecovery {
     image: RecoveryField<Vec<u8>>,
     oep_va: Option<u64>,
     loader: Option<LoaderInspection>,
+    carved: Vec<CarvedVmpSection>,
 }
 
 fn recover(artifact: &Artifact) -> CoreResult<PackerRecovery> {
@@ -526,6 +528,13 @@ fn build_children(recovery: &PackerRecovery) -> CoreResult<Vec<ChildArtifact>> {
         },
     )?;
     push_terminal(&mut children, "packer-unpack.manifest.json", manifest);
+    for (index, section) in recovery.carved.iter().enumerate() {
+        push_terminal(
+            &mut children,
+            &carved_section_path(index, section),
+            section.blob.clone(),
+        );
+    }
     let Some((image, descriptor)): Option<(&[u8], RecoveredChildDescriptor)> = known_image else {
         return Ok(children);
     };
@@ -688,9 +697,31 @@ fn unpack_manifest(recovery: &PackerRecovery) -> serde_json::Value {
             }),
         ),
     };
+    let carved_sections: Vec<serde_json::Value> = recovery
+        .carved
+        .iter()
+        .enumerate()
+        .map(|(index, section): (usize, &CarvedVmpSection)| {
+            serde_json::json!({
+                "path": carved_section_path(index, section),
+                "name": String::from_utf8_lossy(&section.name),
+                "virtual_address": section.virtual_address,
+                "virtual_size": section.virtual_size,
+                "raw_pointer": section.raw_pointer,
+                "raw_size": section.raw_size,
+                "read": section.perms.read,
+                "write": section.perms.write,
+                "execute": section.perms.execute,
+                "bytes": section.blob.len(),
+                "truncated": section.blob_truncated,
+            })
+        })
+        .collect();
     serde_json::json!({
         "schema": "disrobe.native.packer-unpack/v1",
         "packer": recovery.packer.label(),
+        "recovery_mode": if recovery.carved.is_empty() { "unpack" } else { "detect-and-carve" },
+        "carved_sections": carved_sections,
         "recovered_image": recovered_image,
         "recovered_image_bytes": recovered_image_bytes,
         "recovered_oep_va": recovery.oep_va,
@@ -721,6 +752,9 @@ fn render_manifest(recovery: &PackerRecovery) -> String {
             );
         }
     }
+    if !recovery.carved.is_empty() {
+        let _ = writeln!(s, "carved_sections={}", recovery.carved.len());
+    }
     s
 }
 
@@ -748,12 +782,69 @@ fn dispatch_unpack(packer: Packer, artifact: &Artifact) -> CoreResult<PackerReco
              per the stance in docs/src/legal.md (no unpack)",
             label = packer.label(),
         ))),
-        UnpackerStatus::GreyZoneDetectAndCarve => Err(CoreError::PassFailure(format!(
-            "DR-NAT-0909: native.packer-unpack: {label} is a grey-zone protector; \
-             detect-and-carve only, original code is virtualized and not recoverable by unpacking",
-            label = packer.label(),
-        ))),
+        UnpackerStatus::GreyZoneDetectAndCarve => carve_grey_zone(packer, artifact),
     }
+}
+
+fn grey_zone_refusal(packer: Packer, detail: &str) -> CoreError {
+    CoreError::PassFailure(format!(
+        "DR-NAT-0909: native.packer-unpack: {label} is a grey-zone protector; detect-and-carve \
+         only, original code is virtualized and not recoverable by unpacking; {detail}",
+        label = packer.label(),
+    ))
+}
+
+fn carve_grey_zone(packer: Packer, artifact: &Artifact) -> CoreResult<PackerRecovery> {
+    let packed: &[u8] = &artifact.envelope;
+    let (sections, limitation): (Vec<CarvedVmpSection>, String) = match packer {
+        Packer::VmProtect => {
+            let carve: VmProtectCarve = carve_vmprotect(packed)
+                .map_err(|error| grey_zone_refusal(packer, &format!("carve failed: {error}")))?;
+            (carve.vmp_sections, carve.limitation)
+        }
+        Packer::Themida => {
+            let carve: ThemidaCarve = carve_themida(packed)
+                .map_err(|error| grey_zone_refusal(packer, &format!("carve failed: {error}")))?;
+            (carve.protected_sections, carve.limitation)
+        }
+        _ => {
+            return Err(grey_zone_refusal(
+                packer,
+                "no section carver for this protector",
+            ));
+        }
+    };
+    if sections
+        .iter()
+        .all(|section: &CarvedVmpSection| section.blob.is_empty())
+    {
+        return Err(grey_zone_refusal(
+            packer,
+            "no protected section holds file bytes",
+        ));
+    }
+    Ok(PackerRecovery {
+        packer,
+        image: RecoveryField::Unknown {
+            reason: format!(
+                "{}; {limitation}",
+                UnpackerStatus::GreyZoneDetectAndCarve.wall_reason()
+            ),
+        },
+        oep_va: None,
+        loader: None,
+        carved: sections,
+    })
+}
+
+fn carved_section_path(index: usize, section: &CarvedVmpSection) -> String {
+    let name: String = section
+        .name
+        .iter()
+        .filter(|byte: &&u8| byte.is_ascii_alphanumeric() || **byte == b'_')
+        .map(|byte: &u8| char::from(*byte))
+        .collect();
+    format!("carved/{index:02}-{name}.bin")
 }
 
 fn run_rust_unpacker(packer: Packer, artifact: &Artifact) -> CoreResult<PackerRecovery> {
@@ -837,6 +928,7 @@ fn run_rust_unpacker(packer: Packer, artifact: &Artifact) -> CoreResult<PackerRe
         image: RecoveryField::Known { value: recovered },
         oep_va,
         loader,
+        carved: Vec::new(),
     })
 }
 
@@ -857,6 +949,7 @@ fn loader_packer_recovery(out: LoaderRecovery) -> CoreResult<PackerRecovery> {
         image: module,
         oep_va: None,
         loader: Some(inspection),
+        carved: Vec::new(),
     })
 }
 
@@ -1957,7 +2050,42 @@ mod tests {
     }
 
     #[test]
-    fn grey_zone_protectors_return_honest_carve_error() {
+    fn every_packer_whose_tier_promises_recovery_reaches_a_dispatch_arm() {
+        let artifact: Artifact = Artifact::new(Rung::Raw, pe_with_section(b".text"), [0u8; 32]);
+        let mut carvers: Vec<&'static str> = Vec::new();
+        for packer in Packer::ALL {
+            let status: UnpackerStatus = packer.unpacker_status();
+            let outcome: CoreResult<PackerRecovery> = match status {
+                UnpackerStatus::Implemented => run_rust_unpacker(*packer, &artifact),
+                UnpackerStatus::GreyZoneDetectAndCarve => carve_grey_zone(*packer, &artifact),
+                _ => continue,
+            };
+            let message: String = outcome
+                .err()
+                .map(|error| format!("{error}"))
+                .unwrap_or_default();
+            assert!(
+                !message.contains("DR-NAT-0914"),
+                "{} is {status:?} but no dispatch arm is wired: {message}",
+                packer.label()
+            );
+            if status == UnpackerStatus::GreyZoneDetectAndCarve
+                && !message.contains("no section carver for this protector")
+            {
+                carvers.push(packer.label());
+            }
+        }
+        carvers.sort_unstable();
+        assert_eq!(
+            carvers,
+            vec!["themida", "vmprotect"],
+            "yodas-protector's carve needs the original image beside the packed one, so it is the \
+             one detect-and-carve protector without a single-input carver"
+        );
+    }
+
+    #[test]
+    fn a_grey_zone_protector_without_section_bytes_is_refused_by_name() {
         let buf: Vec<u8> = pe_with_section(b".vmp0");
         let msg: String = err_text(buf);
         assert!(
@@ -1965,6 +2093,56 @@ mod tests {
             "VMProtect must surface the grey-zone detect-and-carve error; got: {msg}",
         );
         assert!(!msg.contains("no Rust unpacker yet"), "got: {msg}");
+    }
+
+    fn pe_with_section_bytes(name: &[u8], body: &[u8]) -> Vec<u8> {
+        let mut buf: Vec<u8> = pe_with_section(name);
+        let sec_table: usize = 0x80 + 4 + 20 + 0xE0;
+        let raw_pointer: u32 = u32::try_from(buf.len()).expect("the header fits in u32");
+        let body_len: u32 = u32::try_from(body.len()).expect("the body fits in u32");
+        buf[sec_table + 8..sec_table + 12].copy_from_slice(&body_len.to_le_bytes());
+        buf[sec_table + 12..sec_table + 16].copy_from_slice(&0x1000u32.to_le_bytes());
+        buf[sec_table + 16..sec_table + 20].copy_from_slice(&body_len.to_le_bytes());
+        buf[sec_table + 20..sec_table + 24].copy_from_slice(&raw_pointer.to_le_bytes());
+        buf[sec_table + 36..sec_table + 40].copy_from_slice(&0x6000_0020u32.to_le_bytes());
+        buf.extend_from_slice(body);
+        buf
+    }
+
+    #[test]
+    fn a_vmprotect_section_is_carved_as_a_labelled_child() {
+        let body: Vec<u8> = (0u8..=127).collect();
+        let packed: Vec<u8> = pe_with_section_bytes(b".vmp0", &body);
+        let artifact: Artifact = Artifact::new(Rung::Raw, packed, [0u8; 32]);
+
+        let children: Vec<ChildArtifact> = PACKER_PASS
+            .extract_children(&artifact)
+            .expect("a VMProtect section with file bytes is carved");
+
+        let carved: &ChildArtifact = children
+            .iter()
+            .find(|child: &&ChildArtifact| child.handle.relative_path == "carved/00-vmp0.bin")
+            .expect("the carved section is a child artifact");
+        assert_eq!(carved.bytes, body);
+        assert!(
+            !children
+                .iter()
+                .any(|child: &ChildArtifact| child.handle.relative_path == "recovered-image.bin"),
+            "a carve must not pose as an unpacked image"
+        );
+        let manifest: &ChildArtifact = children
+            .iter()
+            .find(|child: &&ChildArtifact| {
+                child.handle.relative_path == "packer-unpack.manifest.json"
+            })
+            .expect("the manifest is a child artifact");
+        let json: serde_json::Value =
+            serde_json::from_slice(&manifest.bytes).expect("the manifest is JSON");
+        assert_eq!(json["recovery_mode"], "detect-and-carve");
+        assert_eq!(json["recovery"]["status"], "unknown");
+        assert_eq!(json["carved_sections"][0]["name"], ".vmp0");
+        assert_eq!(json["carved_sections"][0]["bytes"], 128);
+        assert_eq!(json["carved_sections"][0]["execute"], true);
     }
 
     #[test]

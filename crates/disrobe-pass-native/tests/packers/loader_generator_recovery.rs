@@ -1,8 +1,7 @@
 use disrobe_pass_native::packers::{
     ByteRegion, DonutCompression, DonutEntropy, DonutModuleType, LoaderArchitecture, LoaderConfig,
-    LoaderFamily, LoaderFingerprint, LoaderRecovery, LoaderVariant, Packer, RecoveredImage,
-    RecoveryField, WrappedModuleFormat, detect, fingerprint_loader, recover_detected,
-    recover_loader,
+    LoaderFamily, LoaderFingerprint, LoaderRecovery, LoaderVariant, Packer, RecoveryField,
+    WrappedModuleFormat, detect, fingerprint_loader, recover_loader,
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -230,15 +229,6 @@ fn raw_loader_blobs_are_detected_before_native_container_gating() -> TestResult<
             length: 18_944,
         }
     );
-    for (wrapper, packer) in [(KNOWN_SRDI, Packer::Srdi), (KNOWN_DONUT, Packer::Donut)] {
-        let detections: Vec<disrobe_pass_native::PackerDetection> = detect(wrapper);
-        let recovered: Vec<RecoveredImage> = recover_detected(wrapper, &detections);
-        let image: &RecoveredImage = recovered
-            .iter()
-            .find(|item: &&RecoveredImage| item.packer == packer.label())
-            .ok_or_else(|| failure(format!("{} recovery missing", packer.label())))?;
-        assert_eq!(image.image, KNOWN_DLL);
-    }
     Ok(())
 }
 

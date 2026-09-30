@@ -1,3 +1,4 @@
+#![cfg(feature = "chain")]
 #![allow(
     clippy::expect_used,
     clippy::unwrap_used,
@@ -10,11 +11,12 @@
 
 use crate::packer_fixture;
 
+use disrobe_core::chain::{ChildArtifact, Pass};
+use disrobe_core::{Artifact, Rung};
+use disrobe_pass_native::chain_detector::PACKER_PASS;
 use disrobe_pass_native::packers::pe_sections::{PeImage, parse_pe_image};
 use disrobe_pass_native::packers::section_recovery::build_loaded_image;
-use disrobe_pass_native::packers::{
-    Detection, Packer, RecoveredImage, RecoveryOracle, detect, recover_detected,
-};
+use disrobe_pass_native::packers::{Detection, Packer, detect};
 use packer_fixture::{PackerFixture, require_committed};
 
 fn decoder_for(family: &str) -> &'static str {
@@ -72,34 +74,37 @@ fn assert_auto_surface(
         packer.label()
     );
 
-    let surfaced: Vec<RecoveredImage> = recover_detected(&packed, &detections);
-    let recovered: &RecoveredImage = surfaced
+    let artifact: Artifact = Artifact::new(Rung::Raw, packed, [0u8; 32]);
+    let children: Vec<ChildArtifact> = PACKER_PASS
+        .extract_children(&artifact)
+        .unwrap_or_else(|error| panic!("{packed_n}: the auto chain must unpack: {error}"));
+    let recovered: &[u8] = &children
         .iter()
-        .find(|r: &&RecoveredImage| r.packer == packer.label())
+        .find(|child: &&ChildArtifact| child.handle.relative_path == "recovered-image.bin")
         .unwrap_or_else(|| {
             panic!(
-                "{packed_n}: auto path must surface an oracle-gated recovered image for {}",
+                "{packed_n}: the auto chain must surface a recovered image for {}",
                 packer.label()
             )
-        });
+        })
+        .bytes;
 
     assert_eq!(
-        recovered.oracle,
-        RecoveryOracle::NestedPeMagic,
-        "{packed_n}: recovery must be gated by a real nested PE header"
+        recovered.get(..2),
+        Some(&b"MZ"[..]),
+        "{packed_n}: the recovered image must open with a real PE header"
     );
     assert!(
-        recovered.recovered_len > 0x8000,
+        recovered.len() > 0x8000,
         "{packed_n}: surfaced image must be a full memory image, got {} bytes",
-        recovered.recovered_len
+        recovered.len()
     );
 
-    let (matched, total): (usize, usize) = text_recovery_vs_original(&recovered.image, &orig);
+    let (matched, total): (usize, usize) = text_recovery_vs_original(recovered, &orig);
     assert!(total > 0, "{packed_n}: original .text must be locatable");
     println!(
-        "{family} {packed_n}: surfaced .text vs ORIGINAL {matched}/{total} = {:.2}% (note: {})",
-        100.0 * matched as f64 / total as f64,
-        recovered.note
+        "{family} {packed_n}: surfaced .text vs ORIGINAL {matched}/{total} = {:.2}%",
+        100.0 * matched as f64 / total as f64
     );
     assert!(
         (matched as u64) * 100 >= total as u64 * text_floor_pct,

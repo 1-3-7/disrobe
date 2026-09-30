@@ -1124,17 +1124,6 @@ pub(crate) const ENTRY_POINTS: &[Entry] = &[
         },
     },
     Entry {
-        path: "packers::recovered_image::recover_detected",
-        cheap: false,
-        drive: |ctx: &Ctx<'_>| {
-            let detections: Vec<packers::Detection> = packers::detect(ctx.bytes);
-            bounded_len(
-                packers::recovered_image::recover_detected(ctx.bytes, &detections).len(),
-                ctx,
-            )
-        },
-    },
-    Entry {
         path: "packers::section_recovery::build_loaded_image",
         cheap: false,
         drive: |ctx: &Ctx<'_>| {
