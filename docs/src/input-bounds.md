@@ -2,7 +2,7 @@
 
 Every parser treats its input as hostile. Counts, sizes, recursion depth, work and output are capped by named constants, and input that exceeds a cap is refused with a typed error instead of exhausting memory or time. `cargo xtask regen` generates this page from every module-level constant in `crates/*/src` whose name starts with `MAX_` or ends with `_LIMIT`, `_BUDGET` or `_CAP`, and `cargo xtask regen --check` fails when it is stale. The kind column is derived from the constant name.
 
-2157 bounds (count 214, other 1008, output 64, recursion 217, size 478, work 176).
+2157 bounds (count 214, other 1009, output 64, recursion 217, size 477, work 176).
 
 | Crate | Constant | Kind | Type | Value | File |
 | --- | --- | --- | --- | --- | --- |
@@ -1279,8 +1279,6 @@ Every parser treats its input as hostile. Counts, sizes, recursion depth, work a
 | `disrobe-pass-native` | `MAX_RESOURCE_DEPTH` | recursion | `u32` | `8` | `crates/disrobe-pass-native/src/packers/pe_unbind.rs` |
 | `disrobe-pass-native` | `EMU_LAZY_PAGE_BUDGET` | work | `u32` | `65_536` | `crates/disrobe-pass-native/src/packers/pecompact_phase2.rs` |
 | `disrobe-pass-native` | `EMU_LAZY_PAGE_BUDGET` | work | `u32` | `16_384` | `crates/disrobe-pass-native/src/packers/petite_phase2.rs` |
-| `disrobe-pass-native` | `MAX_INPUT_BYTES` | size | `usize` | `256 * 1024 * 1024` | `crates/disrobe-pass-native/src/packers/recovered_image.rs` |
-| `disrobe-pass-native` | `MAX_RECOVERED_BYTES` | size | `usize` | `512 * 1024 * 1024` | `crates/disrobe-pass-native/src/packers/recovered_image.rs` |
 | `disrobe-pass-native` | `EMULATED_IMAGE_EXPANSION_LIMIT` | other | `u64` | `4096` | `crates/disrobe-pass-native/src/packers/section_recovery.rs` |
 | `disrobe-pass-native` | `MAX_BLOCKS` | other | `usize` | `1 << 16` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
 | `disrobe-pass-native` | `MAX_BRUTE_FORCE_OFFSETS` | other | `usize` | `1 << 16` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
@@ -2067,6 +2065,8 @@ Every parser treats its input as hostile. Counts, sizes, recursion depth, work a
 | `disrobe-taint` | `MAX_OUT_ARGUMENTS_PER_SOURCE` | other | `usize` | `32` | `crates/disrobe-taint/src/config.rs` |
 | `disrobe-taint` | `MAX_PATH_STEPS` | work | `usize` | `128` | `crates/disrobe-taint/src/engine.rs` |
 | `disrobe-taint` | `MAX_RECORDED_UNRESOLVED_CALLS` | other | `usize` | `4096` | `crates/disrobe-taint/src/engine.rs` |
+| `disrobe-testkit` | `MAX_OPTIONAL_LIST_BYTES` | size | `u64` | `256 * 1024` | `crates/disrobe-testkit/src/prerequisite.rs` |
+| `disrobe-testkit` | `MAX_RECORD_NAME` | other | `usize` | `160` | `crates/disrobe-testkit/src/prerequisite.rs` |
 | `disrobe-testkit` | `MAX_CORPUS_ENTRY_BYTES` | size | `usize` | `MAX_WIRE_CASE_BYTES / 4` | `crates/disrobe-testkit/src/wire.rs` |
 | `disrobe-testkit` | `MAX_ENTRY_NAME_BYTES` | size | `usize` | `4096` | `crates/disrobe-testkit/src/wire.rs` |
 | `disrobe-testkit` | `MAX_WIRE_CASE_BYTES` | size | `usize` | `8 * 1024 * 1024` | `crates/disrobe-testkit/src/wire.rs` |
