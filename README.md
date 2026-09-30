@@ -102,8 +102,8 @@ The grades: `strong` means an independent reference could have rejected the outp
 | CPython <!-- m:py_band_311_interpreter -->3.11.15<!-- /m --> | <!-- m:py_band_311_modules -->172<!-- /m --> | <!-- m:py_band_311_frac -->5470 / 5638<!-- /m --> | <!-- m:py_band_311_rate -->97.02%<!-- /m --> | `recompile-only` | weekly |
 | CPython <!-- m:py_band_312_interpreter -->3.12.13<!-- /m --> | <!-- m:py_band_312_modules -->177<!-- /m --> | <!-- m:py_band_312_frac -->5442 / 5659<!-- /m --> | <!-- m:py_band_312_rate -->96.16%<!-- /m --> | `recompile-only` | push |
 | CPython <!-- m:py_band_313_interpreter -->3.13.14<!-- /m --> | <!-- m:py_band_313_modules -->190<!-- /m --> | <!-- m:py_band_313_frac -->5756 / 5966<!-- /m --> | <!-- m:py_band_313_rate -->96.48%<!-- /m --> | `recompile-only` | push |
-| CPython <!-- m:py_band_314_interpreter -->3.14.5<!-- /m --> | <!-- m:py_stdlib_pinned_modules -->200<!-- /m --> | <!-- m:py_stdlib_pinned_count -->6097 of 6286<!-- /m --> | <!-- m:py_stdlib_pinned_pct -->96.99%<!-- /m --> | `recompile-only` | weekly |
-| CPython <!-- m:py_band_315_interpreter -->3.15.0b4<!-- /m --> | <!-- m:py_band_315_modules -->199<!-- /m --> | <!-- m:py_band_315_frac -->6240 / 6480<!-- /m --> | <!-- m:py_band_315_rate -->96.29%<!-- /m --> | `recompile-only` | weekly |
+| CPython <!-- m:py_band_314_interpreter -->3.14.5<!-- /m --> | <!-- m:py_stdlib_pinned_modules -->200<!-- /m --> | <!-- m:py_stdlib_pinned_count -->6087 of 6286<!-- /m --> | <!-- m:py_stdlib_pinned_pct -->96.83%<!-- /m --> | `recompile-only` | weekly |
+| CPython <!-- m:py_band_315_interpreter -->3.15.0b4<!-- /m --> | <!-- m:py_band_315_modules -->199<!-- /m --> | <!-- m:py_band_315_frac -->6248 / 6480<!-- /m --> | <!-- m:py_band_315_rate -->96.41%<!-- /m --> | `recompile-only` | weekly |
 
 A wider CPython 3.14.5 population of <!-- m:py_stdlib_full_modules -->574<!-- /m --> core modules gives <!-- m:py_stdlib_full_count -->17396 of 18276<!-- /m --> matching code objects (<!-- m:py_stdlib_full_pct -->95.18%<!-- /m -->, local). [Pinned result](evidence/results/py-stdlib-recompile.md) · [Full-population result](evidence/results/py-stdlib-full.md).
 
