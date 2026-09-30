@@ -24,7 +24,7 @@ mod variable_masking;
 
 use serde::Serialize;
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::scan_utils::ReparseGate;
 
 pub use ast_scrambler::{AstScramblerResult, reverse_ast_scrambler};
@@ -285,6 +285,11 @@ pub fn deobfuscate_all(source: &str, opts: &DeobOptions) -> Result<DeobOutput> {
     }
     if opts.run_flatten {
         let r: FlattenReversalResult = reverse_flatten(&current);
+        if r.edits_refused > 0 {
+            return Err(Error::CorruptedByTransform {
+                transform: "flatten",
+            });
+        }
         out.flatten_dispatches_collapsed += r.dispatches_collapsed;
         if r.dispatches_collapsed > 0 {
             crate::debug::dbg_kv("flatten-dispatches-collapsed", || {

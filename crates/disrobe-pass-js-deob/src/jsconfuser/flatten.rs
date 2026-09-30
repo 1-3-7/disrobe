@@ -9,6 +9,7 @@ use super::scanner::{apply_splice_edits, find_paren_close, scan_balanced_brace, 
 #[derive(Debug, Clone, Serialize)]
 pub struct FlattenReversalResult {
     pub dispatches_collapsed: usize,
+    pub edits_refused: usize,
     pub rewritten_source: String,
 }
 
@@ -69,9 +70,18 @@ pub fn reverse_flatten(source: &str) -> FlattenReversalResult {
             repl.as_ref().is_some_and(|s: &String| !s.is_empty())
         })
         .count();
-    let (rewritten, _): (String, usize) = apply_splice_edits(source, &mut edits);
+    let planned: usize = edits.len();
+    let (rewritten, applied): (String, usize) = apply_splice_edits(source, &mut edits);
+    if applied < planned {
+        return FlattenReversalResult {
+            dispatches_collapsed: 0,
+            edits_refused: planned - applied,
+            rewritten_source: source.to_owned(),
+        };
+    }
     FlattenReversalResult {
         dispatches_collapsed: dispatches,
+        edits_refused: 0,
         rewritten_source: rewritten,
     }
 }
@@ -79,6 +89,7 @@ pub fn reverse_flatten(source: &str) -> FlattenReversalResult {
 fn passthrough(source: &str) -> FlattenReversalResult {
     FlattenReversalResult {
         dispatches_collapsed: 0,
+        edits_refused: 0,
         rewritten_source: source.to_owned(),
     }
 }
@@ -205,6 +216,15 @@ mod tests {
         assert!(pos_a.is_some() && pos_b.is_some() && pos_c.is_some());
         assert!(pos_a < pos_b);
         assert!(pos_b < pos_c);
+    }
+
+    #[test]
+    fn refuses_rather_than_half_applies_a_dispatch_cut_by_a_regex_literal() {
+        let src: &str = r"function f(s){var S=1;while(!![]){switch(S){case 1:s=s+'!';S=2;break;case 2:return s['replace'](/\}}/g,'');}}}";
+        let r: FlattenReversalResult = reverse_flatten(src);
+        assert!(r.edits_refused > 0, "{r:?}");
+        assert_eq!(r.dispatches_collapsed, 0);
+        assert_eq!(r.rewritten_source, src);
     }
 
     #[test]
