@@ -69,8 +69,8 @@ fn require_dotnet() {
     let version: ToolOutput = run_tool(dotnet().arg("--version"), "dotnet --version");
     assert!(
         version.success,
-        "this test builds its fixture and the recovered C# with the dotnet SDK recorded in \
-         .developer/TOOLS.md, so `dotnet --version` must succeed:\n{}",
+        "this test builds its fixture and the recovered C# with the dotnet SDK, so \
+         `dotnet --version` must succeed:\n{}",
         version.stderr_text()
     );
 }
