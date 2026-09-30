@@ -1,5 +1,3 @@
-#![cfg(feature = "chain")]
-
 use disrobe_core::chain::{
     ChildArtifact, ChildHandle, DetectContext, DetectVerdict, Detector, Determinism, Ecosystem,
     FAMILY_PACKER_ARCHIVE, OutputKind, Pass, PassMeta, SafetyClass, SupportQuality,

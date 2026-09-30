@@ -14,10 +14,6 @@ categories.workspace = true
 [lints]
 workspace = true
 
-[features]
-default = []
-chain = ["disrobe-core/chain"]
-
 [dependencies]
 brotli = { workspace = true }
 disrobe-bytes = { workspace = true }

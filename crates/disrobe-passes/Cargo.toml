@@ -72,7 +72,7 @@ beam = ["dep:disrobe-pass-beam"]
 as3 = ["dep:disrobe-pass-as3"]
 scriptlang = ["dep:disrobe-pass-scriptlang"]
 nativelang = ["dep:disrobe-pass-nativelang", "disrobe-pass-nativelang/chain"]
-webview = ["dep:disrobe-pass-webview", "disrobe-pass-webview/chain"]
+webview = ["dep:disrobe-pass-webview"]
 
 [dependencies]
 disrobe-core = { workspace = true, features = ["chain"] }
