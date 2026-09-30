@@ -1330,6 +1330,66 @@ fn platform_launch(stage: LaunchStage) -> LaunchError {
 mod tests {
     use super::*;
 
+    #[expect(
+        unsafe_code,
+        reason = "GetHandleInformation reads the flags of a handle borrowed from a live OwnedHandle"
+    )]
+    fn inheritable(handle: &OwnedHandle) -> Result<bool, io::Error> {
+        let mut flags: u32 = 0;
+        let read: i32 = unsafe {
+            windows_sys::Win32::Foundation::GetHandleInformation(raw_handle(handle), &raw mut flags)
+        };
+        if read == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(flags & HANDLE_FLAG_INHERIT != 0)
+    }
+
+    #[test]
+    fn child_pipe_ends_are_inheritable_only_inside_the_spawn_window()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let pipes: [PipePair; 3] = [create_pipe(true)?, create_pipe(false)?, create_pipe(false)?];
+        for pair in &pipes {
+            assert!(
+                !inheritable(&pair.parent)?,
+                "a parent pipe end starts inheritable"
+            );
+            assert!(
+                !inheritable(&pair.child)?,
+                "a child pipe end starts inheritable"
+            );
+        }
+        let child_handles: [HANDLE; 3] = [
+            raw_handle(&pipes[0].child),
+            raw_handle(&pipes[1].child),
+            raw_handle(&pipes[2].child),
+        ];
+        {
+            let _window: InheritanceWindow<'_> = InheritanceWindow::new(&child_handles)?;
+            for pair in &pipes {
+                assert!(
+                    inheritable(&pair.child)?,
+                    "the spawn window must hand the child its end"
+                );
+                assert!(
+                    !inheritable(&pair.parent)?,
+                    "the parent end leaked into the spawn window"
+                );
+            }
+        }
+        for pair in &pipes {
+            assert!(
+                !inheritable(&pair.child)?,
+                "a child pipe end stayed inheritable after spawn"
+            );
+            assert!(
+                !inheritable(&pair.parent)?,
+                "a parent pipe end became inheritable"
+            );
+        }
+        Ok(())
+    }
+
     #[test]
     fn short_program_paths_hide_verbatim_prefix_from_the_child() -> Result<(), LaunchError> {
         let local: OsString =
