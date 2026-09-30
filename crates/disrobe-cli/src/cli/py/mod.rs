@@ -13,7 +13,7 @@ use super::llm::LlmFlags;
 #[derive(Subcommand, Debug)]
 pub(crate) enum PyCmd {
     #[command(
-        about = "peel a Python obfuscator wrapper (hyperion, kramer, berserker, jawbreaker, blankobf, plusobf, wodx, oxyry, pyminifier, manglify, pyobfuscate.com, ...) & optionally clean up with a ruff-AST pass"
+        about = "peel a Python obfuscator wrapper (hyperion, kramer, berserker, jawbreaker, blankobf, plusobf, oxyry, pyminifier, manglify, pyobfuscate.com, ...) & optionally clean up with a ruff-AST pass"
     )]
     Deob {
         #[arg(
