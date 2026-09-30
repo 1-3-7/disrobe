@@ -871,6 +871,7 @@ const fn lua_dialect_label(format: LuaFormat) -> &'static str {
         LuaFormat::Lua52 => "lua 5.2",
         LuaFormat::Lua53 => "lua 5.3",
         LuaFormat::Lua54 => "lua 5.4",
+        LuaFormat::Lua55 => "lua 5.5",
         LuaFormat::LuaJit => "luajit",
         LuaFormat::Luau => "luau",
         LuaFormat::GLua => "glua",

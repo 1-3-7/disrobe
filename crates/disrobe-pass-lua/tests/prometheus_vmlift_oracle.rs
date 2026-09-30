@@ -362,7 +362,7 @@ fn the_weak_megafile_grade_fails_when_calls_drop_trailing_nil_results() {
         let divergence: Option<String> = first_divergence(&expected, &actual);
         let first_export: &str = match dialect {
             Dialect::Lua51 => "deep_clone",
-            Dialect::Lua54 | Dialect::LuaJit => "math_type_compat",
+            Dialect::Lua54 | Dialect::Lua55 | Dialect::LuaJit => "math_type_compat",
         };
         assert!(
             divergence

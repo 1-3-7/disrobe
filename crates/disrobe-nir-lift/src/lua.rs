@@ -182,7 +182,7 @@ fn const_string(proto: &LuaProto, index: u32) -> Option<String> {
 
 fn jump_target(dialect: LuaDialect, here: u32, decoded: &Decoded) -> Option<u32> {
     let offset: i64 = match dialect {
-        LuaDialect::Lua54 => i64::from(decoded.sj),
+        LuaDialect::Lua54 | LuaDialect::Lua55 => i64::from(decoded.sj),
         _ => i64::from(decoded.sbx),
     };
     let target: i64 = i64::from(here) + 1 + offset;
@@ -191,7 +191,7 @@ fn jump_target(dialect: LuaDialect, here: u32, decoded: &Decoded) -> Option<u32>
 
 fn forloop_target(dialect: LuaDialect, here: u32, decoded: &Decoded) -> Option<u32> {
     match dialect {
-        LuaDialect::Lua54 => {
+        LuaDialect::Lua54 | LuaDialect::Lua55 => {
             let back: i64 = i64::from(here) + 1 - i64::from(decoded.bx);
             u32::try_from(back).ok()
         }
@@ -412,7 +412,7 @@ fn resolve_transfer(
             .map(|t| base.saturating_add(u64::from(t)))
     };
     match (decoded.op, dialect) {
-        (Op::ForPrep, LuaDialect::Lua54) => Transfer::Conditional(located(
+        (Op::ForPrep, LuaDialect::Lua54 | LuaDialect::Lua55) => Transfer::Conditional(located(
             here.checked_add(decoded.bx)
                 .and_then(|past: u32| past.checked_add(2)),
         )),
@@ -435,7 +435,7 @@ fn resolve_transfer(
 
 const fn opcode_byte(raw: u32, dialect: LuaDialect) -> u8 {
     let mask: u32 = match dialect {
-        LuaDialect::Lua54 => 0x7F,
+        LuaDialect::Lua54 | LuaDialect::Lua55 => 0x7F,
         _ => 0x3F,
     };
     (raw & mask) as u8

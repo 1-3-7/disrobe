@@ -224,6 +224,12 @@ labeled_enum!(LuaErrorId {
     PrometheusVmifyRefused => "prometheus_vmify_refused",
     LuauOpcodeMap => "luau_opcode_map",
     LiftBudgetExceeded => "lift_budget_exceeded",
+    VarintOverflow => "varint_overflow",
+    BadStringReference => "bad_string_reference",
+    NullConstantString => "null_constant_string",
+    HeaderSizeMismatch => "header_size_mismatch",
+    HeaderCheckMismatch => "header_check_mismatch",
+    MainUpvalueMismatch => "main_upvalue_mismatch",
 });
 
 labeled_enum!(PartialFlag {
@@ -236,6 +242,7 @@ labeled_enum!(DetectedFormatId {
     Lua52 => "lua52",
     Lua53 => "lua53",
     Lua54 => "lua54",
+    Lua55 => "lua55",
     LuaJit => "luajit",
     Luau => "luau",
     GLua => "glua",
@@ -944,6 +951,12 @@ const fn error_id(error: &Error) -> LuaErrorId {
         Error::PrometheusVmifyRefused(_) => LuaErrorId::PrometheusVmifyRefused,
         Error::LuauOpcodeMap(_) => LuaErrorId::LuauOpcodeMap,
         Error::LiftBudgetExceeded { .. } => LuaErrorId::LiftBudgetExceeded,
+        Error::VarintOverflow { .. } => LuaErrorId::VarintOverflow,
+        Error::BadStringReference { .. } => LuaErrorId::BadStringReference,
+        Error::NullConstantString(_) => LuaErrorId::NullConstantString,
+        Error::HeaderSizeMismatch { .. } => LuaErrorId::HeaderSizeMismatch,
+        Error::HeaderCheckMismatch { .. } => LuaErrorId::HeaderCheckMismatch,
+        Error::MainUpvalueMismatch { .. } => LuaErrorId::MainUpvalueMismatch,
     }
 }
 
@@ -962,6 +975,7 @@ const fn detected_format_id(format: DetectedFormat) -> DetectedFormatId {
         DetectedFormat::Lua52 => DetectedFormatId::Lua52,
         DetectedFormat::Lua53 => DetectedFormatId::Lua53,
         DetectedFormat::Lua54 => DetectedFormatId::Lua54,
+        DetectedFormat::Lua55 => DetectedFormatId::Lua55,
         DetectedFormat::LuaJit => DetectedFormatId::LuaJit,
         DetectedFormat::Luau => DetectedFormatId::Luau,
         DetectedFormat::GLua => DetectedFormatId::GLua,

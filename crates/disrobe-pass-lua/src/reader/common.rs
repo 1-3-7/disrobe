@@ -6,6 +6,7 @@ pub enum LuaDialect {
     Lua52,
     Lua53,
     Lua54,
+    Lua55,
     LuaJit20,
     LuaJit21,
     Luau,
@@ -21,6 +22,7 @@ impl LuaDialect {
             Self::Lua52 => "Lua 5.2",
             Self::Lua53 => "Lua 5.3",
             Self::Lua54 => "Lua 5.4",
+            Self::Lua55 => "Lua 5.5",
             Self::LuaJit20 => "LuaJIT 2.0",
             Self::LuaJit21 => "LuaJIT 2.1",
             Self::Luau => "Roblox Luau",
@@ -36,7 +38,32 @@ impl LuaDialect {
             Self::Lua52 => Some(0x52),
             Self::Lua53 => Some(0x53),
             Self::Lua54 => Some(0x54),
+            Self::Lua55 => Some(0x55),
             _ => None,
+        }
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn uses_lua54_layout(self) -> bool {
+        matches!(self, Self::Lua54 | Self::Lua55)
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn numeric_for_var_offset(self) -> u32 {
+        match self {
+            Self::Lua55 => 2,
+            _ => 3,
+        }
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn generic_for_var_offset(self) -> u32 {
+        match self {
+            Self::Lua54 => 4,
+            _ => 3,
         }
     }
 }

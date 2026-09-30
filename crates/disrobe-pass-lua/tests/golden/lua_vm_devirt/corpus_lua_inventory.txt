@@ -1,5 +1,7 @@
 baseline/hello.lua
+behaviour/branches.lua
 behaviour/loops.lua
+behaviour/lua55.lua
 behaviour/objects.lua
 behaviour/tour.lua
 behaviour/values.lua

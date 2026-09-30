@@ -111,4 +111,34 @@ pub enum Error {
         "DR-LUA-0031: decompile work budget of {limit} operations exhausted; refusing to lift the rest of the chunk"
     )]
     LiftBudgetExceeded { limit: u64 },
+
+    #[error("DR-LUA-0032: Lua 5.5 varint at offset {offset} exceeds {limit}")]
+    VarintOverflow { offset: usize, limit: u64 },
+
+    #[error(
+        "DR-LUA-0033: Lua 5.5 string back-reference {index} at offset {offset} names none of the {saved} strings saved before it"
+    )]
+    BadStringReference {
+        index: u64,
+        offset: usize,
+        saved: usize,
+    },
+
+    #[error("DR-LUA-0034: Lua 5.5 constant string at offset {0} is null")]
+    NullConstantString(usize),
+
+    #[error("DR-LUA-0035: Lua 5.5 header {what} is {got} bytes (expected {expected})")]
+    HeaderSizeMismatch {
+        what: &'static str,
+        got: u8,
+        expected: &'static str,
+    },
+
+    #[error("DR-LUA-0036: Lua 5.5 header {what} check value mismatch")]
+    HeaderCheckMismatch { what: &'static str },
+
+    #[error(
+        "DR-LUA-0037: Lua 5.5 main closure header declares {header} upvalues but the main function has {declared}"
+    )]
+    MainUpvalueMismatch { header: u8, declared: usize },
 }

@@ -68,6 +68,9 @@ fn drive_bytes(bytes: &[u8], desc: &str) {
     guard("reader::lua54::read", desc, || {
         let _ = reader::lua54::read(bytes);
     });
+    guard("reader::lua55::read", desc, || {
+        let _ = reader::lua55::read(bytes);
+    });
     guard("reader::luajit::read", desc, || {
         let _ = reader::luajit::read(bytes);
     });
@@ -167,6 +170,22 @@ fn lua54_header() -> Vec<u8> {
     h
 }
 
+fn lua55_header() -> Vec<u8> {
+    let mut h: Vec<u8> = vec![0x1b, b'L', b'u', b'a', 0x55, 0x00];
+    h.extend_from_slice(&[0x19, 0x93, b'\r', b'\n', 0x1a, b'\n']);
+    h.push(0x04);
+    h.extend_from_slice(&(-0x5678i32).to_le_bytes());
+    h.push(0x04);
+    h.extend_from_slice(&0x1234_5678u32.to_le_bytes());
+    h.push(0x08);
+    h.extend_from_slice(&(-0x5678i64).to_le_bytes());
+    h.push(0x08);
+    h.extend_from_slice(&(-370.5f64).to_le_bytes());
+    h
+}
+
+const LUA55_MEGAFILE: &[u8] = include_bytes!("../../../corpus/lua/luac/edge_cases.5_5.luac");
+
 fn luajit_header() -> Vec<u8> {
     vec![0x1b, b'L', b'J', 0x02, 0x00, 0x00]
 }
@@ -180,6 +199,8 @@ fn seed_corpus() -> Vec<Vec<u8>> {
         lua51_header(),
         lua53_header(),
         lua54_header(),
+        lua55_header(),
+        LUA55_MEGAFILE.to_vec(),
         luajit_header(),
         luau_header(),
         b"./package.lua\0".to_vec(),
@@ -334,11 +355,12 @@ fn synth_proto(rng: &mut XorShift64, depth: usize) -> LuaProto {
 #[test]
 fn synthetic_chunk_lifter_never_panics() {
     let mut rng: XorShift64 = XorShift64::new(0x1337_D00D_CAFE_F00D);
-    let dialects: [LuaDialect; 6] = [
+    let dialects: [LuaDialect; 7] = [
         LuaDialect::Lua51,
         LuaDialect::Lua52,
         LuaDialect::Lua53,
         LuaDialect::Lua54,
+        LuaDialect::Lua55,
         LuaDialect::Luau,
         LuaDialect::GLua,
     ];

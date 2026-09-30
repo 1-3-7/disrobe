@@ -137,6 +137,7 @@ const fn format_label(format: DetectedFormat) -> &'static str {
         DetectedFormat::Lua52 => "lua-5.2",
         DetectedFormat::Lua53 => "lua-5.3",
         DetectedFormat::Lua54 => "lua-5.4",
+        DetectedFormat::Lua55 => "lua-5.5",
         DetectedFormat::LuaJit => "luajit",
         DetectedFormat::Luau => "luau",
         DetectedFormat::GLua => "glua",

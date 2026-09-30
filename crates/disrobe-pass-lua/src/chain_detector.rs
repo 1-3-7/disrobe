@@ -24,6 +24,7 @@ const TAG_LUA51: &str = "lua-5.1";
 const TAG_LUA52: &str = "lua-5.2";
 const TAG_LUA53: &str = "lua-5.3";
 const TAG_LUA54: &str = "lua-5.4";
+const TAG_LUA55: &str = "lua-5.5";
 const TAG_LUAJIT: &str = "luajit";
 const TAG_LUAU: &str = "luau";
 const TAG_GLUA: &str = "glua";
@@ -505,6 +506,7 @@ fn verdict_for_format(fmt: DetectedFormat) -> Option<DetectVerdict> {
         DetectedFormat::Lua52 => (TAG_LUA52, "lua-magic-5.2", 0.96),
         DetectedFormat::Lua53 => (TAG_LUA53, "lua-magic-5.3", 0.96),
         DetectedFormat::Lua54 => (TAG_LUA54, "lua-magic-5.4", 0.96),
+        DetectedFormat::Lua55 => (TAG_LUA55, "lua-magic-5.5", 0.96),
         DetectedFormat::LuaJit => (TAG_LUAJIT, "luajit-signature", 0.95),
         DetectedFormat::Luau => (TAG_LUAU, "luau-chunk-parsed", 0.78),
         DetectedFormat::GLua => (TAG_GLUA, "glua-marker", 0.80),

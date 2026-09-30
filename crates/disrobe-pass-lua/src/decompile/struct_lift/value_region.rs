@@ -172,8 +172,9 @@ fn is_segment_op(d: &Decoded, dialect: LuaDialect) -> bool {
         | Op::Tbc
         | Op::LFalseSkip
         | Op::VarargPrep
+        | Op::ErrNNil
         | Op::Unknown => false,
-        Op::LoadBool => d.c == 0 || matches!(dialect, LuaDialect::Lua54),
+        Op::LoadBool => d.c == 0 || dialect.uses_lua54_layout(),
         Op::Call => d.c == 2,
         _ => true,
     }
@@ -187,7 +188,7 @@ fn is_compare(op: Op) -> bool {
 }
 
 fn jumps_when_truthy(d: &Decoded, dialect: LuaDialect) -> bool {
-    if matches!(dialect, LuaDialect::Lua54) {
+    if dialect.uses_lua54_layout() {
         d.k
     } else {
         d.c != 0
@@ -197,7 +198,7 @@ fn jumps_when_truthy(d: &Decoded, dialect: LuaDialect) -> bool {
 fn written_value_register(d: &Decoded, dialect: LuaDialect) -> Option<u32> {
     match d.op {
         Op::LFalseSkip | Op::TestSet => Some(d.a),
-        Op::LoadBool if !matches!(dialect, LuaDialect::Lua54) => Some(d.a),
+        Op::LoadBool if !dialect.uses_lua54_layout() => Some(d.a),
         op if is_single_value_op(op) => Some(d.a),
         _ => None,
     }
@@ -228,7 +229,7 @@ impl Region<'_> {
     }
 
     fn compare_reads_target(&self, d: &Decoded) -> bool {
-        let is54: bool = matches!(self.dialect, LuaDialect::Lua54);
+        let is54: bool = self.dialect.uses_lua54_layout();
         match d.op {
             Op::Eq | Op::Lt | Op::Le if is54 => d.a == self.target || d.b == self.target,
             Op::Eq | Op::Lt | Op::Le => {

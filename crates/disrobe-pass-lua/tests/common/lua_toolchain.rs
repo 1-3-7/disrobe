@@ -6,6 +6,7 @@ pub const REQUIRE_LUA_TOOLCHAIN_VAR: &str = "DISROBE_REQUIRE_LUA_TOOLCHAIN";
 pub enum Dialect {
     Lua51,
     Lua54,
+    Lua55,
     LuaJit,
 }
 
@@ -14,6 +15,7 @@ impl Dialect {
         match self {
             Self::Lua51 => "Lua 5.1",
             Self::Lua54 => "Lua 5.4",
+            Self::Lua55 => "Lua 5.5",
             Self::LuaJit => "LuaJIT 2.",
         }
     }
@@ -22,6 +24,7 @@ impl Dialect {
         match self {
             Self::Lua51 => &["lua5.1", "lua5.1.exe", "lua51", "lua"],
             Self::Lua54 => &["lua5.4", "lua5.4.exe", "lua54", "lua"],
+            Self::Lua55 => &["lua5.5", "lua5.5.exe", "lua55", "lua"],
             Self::LuaJit => &["luajit"],
         }
     }
@@ -30,6 +33,7 @@ impl Dialect {
         match self {
             Self::Lua51 => &["luac5.1", "luac5.1.exe", "luac51", "luac"],
             Self::Lua54 => &["luac5.4", "luac5.4.exe", "luac54", "luac"],
+            Self::Lua55 => &["luac5.5", "luac5.5.exe", "luac55", "luac"],
             Self::LuaJit => &[],
         }
     }

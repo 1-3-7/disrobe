@@ -57,6 +57,10 @@ fn toolchain(version: &str) -> Toolchain {
             &["luac5.4", "luac5.4.exe", "luac54", "luac"],
             &["lua5.4", "lua5.4.exe", "lua54", "lua"],
         ),
+        "5.5" => (
+            &["luac5.5", "luac5.5.exe", "luac55", "luac"],
+            &["lua5.5", "lua5.5.exe", "lua55", "lua"],
+        ),
         other => panic!("no Lua {other} lane is defined for the re-execution oracle"),
     };
     let found: Result<(String, String), String> = find_program(luac_names, version)
@@ -270,6 +274,11 @@ fn reexec_equivalence_lua_5_4() {
 }
 
 #[test]
+fn reexec_equivalence_lua_5_5() {
+    assert_lane("5.5");
+}
+
+#[test]
 fn vararg_table_constructor_reexecutes_lua_5_1() {
     let tc: Toolchain = toolchain("5.1");
     assert_vararg_table_constructor_reexecutes(&tc);
@@ -278,6 +287,12 @@ fn vararg_table_constructor_reexecutes_lua_5_1() {
 #[test]
 fn vararg_table_constructor_reexecutes_lua_5_4() {
     let tc: Toolchain = toolchain("5.4");
+    assert_vararg_table_constructor_reexecutes(&tc);
+}
+
+#[test]
+fn vararg_table_constructor_reexecutes_lua_5_5() {
+    let tc: Toolchain = toolchain("5.5");
     assert_vararg_table_constructor_reexecutes(&tc);
 }
 
@@ -385,6 +400,11 @@ fn dialect_shapes_reexecute_from_luac_5_4() {
     assert_dialect_shapes_reexecute("5.4");
 }
 
+#[test]
+fn dialect_shapes_reexecute_from_luac_5_5() {
+    assert_dialect_shapes_reexecute("5.5");
+}
+
 const BEHAVIOUR_PROGRAMS_54: &[(&str, &str)] = &[
     (
         "tour",
@@ -425,22 +445,94 @@ const BEHAVIOUR_PROGRAMS_PORTABLE: &[(&str, &str)] = &[
 
 #[test]
 fn stripped_behaviour_programs_reexecute_as_emitted_lua_5_4() {
-    assert_behaviour_programs_reexecute("5.4", BEHAVIOUR_PROGRAMS_54);
+    assert_behaviour_programs_reexecute("5.4", BEHAVIOUR_PROGRAMS_54, Strip::Debug);
 }
 
 #[test]
 fn stripped_portable_behaviour_programs_reexecute_as_emitted_lua_5_1() {
-    assert_behaviour_programs_reexecute("5.1", BEHAVIOUR_PROGRAMS_PORTABLE);
+    assert_behaviour_programs_reexecute("5.1", BEHAVIOUR_PROGRAMS_PORTABLE, Strip::Debug);
 }
 
 #[test]
 fn stripped_portable_behaviour_programs_reexecute_as_emitted_lua_5_3() {
-    assert_behaviour_programs_reexecute("5.3", BEHAVIOUR_PROGRAMS_PORTABLE);
+    assert_behaviour_programs_reexecute("5.3", BEHAVIOUR_PROGRAMS_PORTABLE, Strip::Debug);
+}
+
+#[test]
+fn stripped_portable_behaviour_programs_reexecute_as_emitted_lua_5_5() {
+    assert_behaviour_programs_reexecute("5.5", BEHAVIOUR_PROGRAMS_PORTABLE, Strip::Debug);
+}
+
+const BEHAVIOUR_PROGRAMS_55: &[(&str, &str)] = &[(
+    "lua55",
+    include_str!("../../../corpus/lua/behaviour/lua55.lua"),
+)];
+
+#[test]
+fn lua_5_5_only_shapes_reexecute_as_emitted_stripped() {
+    assert_behaviour_programs_reexecute("5.5", BEHAVIOUR_PROGRAMS_55, Strip::Debug);
+}
+
+#[test]
+fn lua_5_5_only_shapes_reexecute_as_emitted_with_debug_names() {
+    assert_behaviour_programs_reexecute("5.5", BEHAVIOUR_PROGRAMS_55, Strip::Keep);
+}
+
+const MID_BLOCK_CLOSE_PROGRAM: &str = "local log = {}\ndo\n  local g <close> = setmetatable({}, {__close = function() log[#log + 1] = \"closed\" end})\n  log[#log + 1] = \"body\"\nend\nlog[#log + 1] = \"after\"\nprint(table.concat(log, \" \"))\n";
+
+fn assert_mid_block_close_is_not_claimed_lossless(version: &str) {
+    let tc: Toolchain = toolchain(version);
+    let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
+    let src: PathBuf = dir.join("mid_block_close.lua");
+    std::fs::write(&src, MID_BLOCK_CLOSE_PROGRAM).expect("write source");
+    let bc: PathBuf = dir.join("mid_block_close.luac");
+    assert!(
+        compile(&tc.luac, &src, &bc),
+        "luac {version} compiles source"
+    );
+    let bytes: Vec<u8> = std::fs::read(&bc).expect("read bytecode");
+    let decompiled: DecompiledChunk = decompile_auto(&bytes).expect("decompile");
+    assert!(
+        decompiled.source.contains("<close>"),
+        "the to-be-closed local is recovered as a <close> local:\n{}",
+        decompiled.source
+    );
+    assert_ne!(
+        decompiled.fidelity,
+        Fidelity::Lossless,
+        "a <close> local whose do-block scope is not recovered must not be claimed lossless:\n{}",
+        decompiled.source
+    );
+    assert!(
+        decompiled
+            .warnings
+            .iter()
+            .any(|w: &String| w.contains("to-be-closed")),
+        "the scope loss is named in the warnings: {:?}",
+        decompiled.warnings
+    );
+}
+
+#[test]
+fn a_to_be_closed_local_closed_mid_block_is_not_claimed_lossless_lua_5_4() {
+    assert_mid_block_close_is_not_claimed_lossless("5.4");
+}
+
+#[test]
+fn a_to_be_closed_local_closed_mid_block_is_not_claimed_lossless_lua_5_5() {
+    assert_mid_block_close_is_not_claimed_lossless("5.5");
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Strip {
+    Debug,
+    Keep,
 }
 
 const GLOBAL_WATCH: &str = "setmetatable(_G, {__newindex = function(t, k, v) io.write(\"new global \", tostring(k), \"\\n\") rawset(t, k, v) end})\n";
 
-fn assert_behaviour_programs_reexecute(version: &str, programs: &[(&str, &str)]) {
+fn assert_behaviour_programs_reexecute(version: &str, programs: &[(&str, &str)], strip: Strip) {
     let tc: Toolchain = toolchain(version);
     let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
@@ -449,14 +541,17 @@ fn assert_behaviour_programs_reexecute(version: &str, programs: &[(&str, &str)])
         let src: PathBuf = dir.join(format!("{name}.lua"));
         std::fs::write(&src, source).expect("write source");
         let bc: PathBuf = dir.join(format!("{name}.luac"));
-        let stripped: bool = Command::new(&tc.luac)
-            .arg("-s")
+        let mut luac: Command = Command::new(&tc.luac);
+        if strip == Strip::Debug {
+            luac.arg("-s");
+        }
+        let compiled: bool = luac
             .arg("-o")
             .arg(&bc)
             .arg(&src)
             .status()
             .is_ok_and(|s: std::process::ExitStatus| s.success());
-        assert!(stripped, "{name}: luac -s compiles the program");
+        assert!(compiled, "{name}: luac ({strip:?}) compiles the program");
         let bytes: Vec<u8> = std::fs::read(&bc).expect("read bytecode");
         let decompiled: DecompiledChunk = decompile_auto(&bytes).expect("decompile");
         let expected: String = run_source(

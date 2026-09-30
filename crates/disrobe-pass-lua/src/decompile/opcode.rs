@@ -95,6 +95,8 @@ pub enum Op {
     SetList,
     Closure,
     Vararg,
+    GetVarg,
+    ErrNNil,
     VarargPrep,
     ExtraArg,
     Unknown,
@@ -105,18 +107,21 @@ impl Op {
     #[must_use]
     pub const fn mode(self, dialect: LuaDialect) -> OpMode {
         match self {
-            Self::LoadK | Self::LoadKx | Self::GetGlobal | Self::SetGlobal | Self::Closure => {
+            Self::LoadK
+            | Self::LoadKx
+            | Self::GetGlobal
+            | Self::SetGlobal
+            | Self::Closure
+            | Self::ErrNNil => OpMode::Abx,
+            Self::LoadI | Self::LoadF => OpMode::AsBx,
+            Self::Jmp if dialect.uses_lua54_layout() => OpMode::AsJ,
+            Self::Jmp => OpMode::AsBx,
+            Self::ForLoop | Self::ForPrep | Self::TForPrep | Self::TForLoop
+                if dialect.uses_lua54_layout() =>
+            {
                 OpMode::Abx
             }
-            Self::LoadI | Self::LoadF => OpMode::AsBx,
-            Self::Jmp => match dialect {
-                LuaDialect::Lua54 => OpMode::AsJ,
-                _ => OpMode::AsBx,
-            },
-            Self::ForLoop | Self::ForPrep | Self::TForPrep | Self::TForLoop => match dialect {
-                LuaDialect::Lua54 => OpMode::Abx,
-                _ => OpMode::AsBx,
-            },
+            Self::ForLoop | Self::ForPrep | Self::TForPrep | Self::TForLoop => OpMode::AsBx,
             Self::ExtraArg => OpMode::Ax,
             _ => OpMode::Abc,
         }
@@ -210,6 +215,8 @@ impl Op {
             Self::SetList => "SETLIST",
             Self::Closure => "CLOSURE",
             Self::Vararg => "VARARG",
+            Self::GetVarg => "GETVARG",
+            Self::ErrNNil => "ERRNNIL",
             Self::VarargPrep => "VARARGPREP",
             Self::ExtraArg => "EXTRAARG",
             Self::Unknown => "UNKNOWN",
@@ -437,6 +444,94 @@ const LUA54_OPS: [Op; 83] = [
     Op::ExtraArg,
 ];
 
+const LUA55_OPS: [Op; 85] = [
+    Op::Move,
+    Op::LoadI,
+    Op::LoadF,
+    Op::LoadK,
+    Op::LoadKx,
+    Op::LoadFalse,
+    Op::LFalseSkip,
+    Op::LoadTrue,
+    Op::LoadNil,
+    Op::GetUpval,
+    Op::SetUpval,
+    Op::GetTabUp,
+    Op::GetTable,
+    Op::GetI,
+    Op::GetField,
+    Op::SetTabUp,
+    Op::SetTable,
+    Op::SetI,
+    Op::SetField,
+    Op::NewTable,
+    Op::Self_,
+    Op::AddI,
+    Op::AddK,
+    Op::SubK,
+    Op::MulK,
+    Op::ModK,
+    Op::PowK,
+    Op::DivK,
+    Op::IDivK,
+    Op::BAndK,
+    Op::BOrK,
+    Op::BXorK,
+    Op::ShlI,
+    Op::ShrI,
+    Op::Add,
+    Op::Sub,
+    Op::Mul,
+    Op::Mod,
+    Op::Pow,
+    Op::Div,
+    Op::IDiv,
+    Op::BAnd,
+    Op::BOr,
+    Op::BXor,
+    Op::Shl,
+    Op::Shr,
+    Op::MmBin,
+    Op::MmBinI,
+    Op::MmBinK,
+    Op::Unm,
+    Op::BNot,
+    Op::Not,
+    Op::Len,
+    Op::Concat,
+    Op::Close,
+    Op::Tbc,
+    Op::Jmp,
+    Op::Eq,
+    Op::Lt,
+    Op::Le,
+    Op::EqK,
+    Op::EqI,
+    Op::LtI,
+    Op::LeI,
+    Op::GtI,
+    Op::GeI,
+    Op::Test,
+    Op::TestSet,
+    Op::Call,
+    Op::TailCall,
+    Op::Return,
+    Op::Return0,
+    Op::Return1,
+    Op::ForLoop,
+    Op::ForPrep,
+    Op::TForPrep,
+    Op::TForCall,
+    Op::TForLoop,
+    Op::SetList,
+    Op::Closure,
+    Op::Vararg,
+    Op::GetVarg,
+    Op::ErrNNil,
+    Op::VarargPrep,
+    Op::ExtraArg,
+];
+
 #[inline]
 #[must_use]
 pub fn decode_op(raw: u32, dialect: LuaDialect) -> Op {
@@ -444,6 +539,10 @@ pub fn decode_op(raw: u32, dialect: LuaDialect) -> Op {
         LuaDialect::Lua54 => {
             let opcode: usize = (raw & 0x7F) as usize;
             LUA54_OPS.get(opcode).copied().unwrap_or(Op::Unknown)
+        }
+        LuaDialect::Lua55 => {
+            let opcode: usize = (raw & 0x7F) as usize;
+            LUA55_OPS.get(opcode).copied().unwrap_or(Op::Unknown)
         }
         LuaDialect::Lua53 => {
             let opcode: usize = (raw & 0x3F) as usize;
@@ -483,12 +582,17 @@ const SJ_BIAS_54: i32 = 0xFF_FFFF;
 
 #[inline]
 #[must_use]
-fn decode_54(raw: u32) -> Decoded {
-    let op: Op = decode_op(raw, LuaDialect::Lua54);
+fn decode_54(raw: u32, dialect: LuaDialect) -> Decoded {
+    let op: Op = decode_op(raw, dialect);
     let a: u32 = (raw >> 7) & 0xFF;
     let k: bool = (raw >> 15) & 0x1 != 0;
-    let b: u32 = (raw >> 16) & 0xFF;
-    let c: u32 = (raw >> 24) & 0xFF;
+    let variant_operands: bool =
+        matches!(dialect, LuaDialect::Lua55) && matches!(op, Op::NewTable | Op::SetList);
+    let (b, c): (u32, u32) = if variant_operands {
+        ((raw >> 16) & 0x3F, (raw >> 22) & 0x3FF)
+    } else {
+        ((raw >> 16) & 0xFF, (raw >> 24) & 0xFF)
+    };
     let bx: u32 = (raw >> 15) & 0x1FFFF;
     let sbx: i32 = bx as i32 - SBX_BIAS_54;
     let ax: u32 = (raw >> 7) & 0x1FF_FFFF;
@@ -533,7 +637,7 @@ fn decode_51(raw: u32, dialect: LuaDialect) -> Decoded {
 #[must_use]
 pub fn decode(raw: u32, dialect: LuaDialect) -> Decoded {
     match dialect {
-        LuaDialect::Lua54 => decode_54(raw),
+        LuaDialect::Lua54 | LuaDialect::Lua55 => decode_54(raw, dialect),
         _ => decode_51(raw, dialect),
     }
 }

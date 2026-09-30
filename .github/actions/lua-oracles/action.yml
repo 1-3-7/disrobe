@@ -72,6 +72,35 @@ runs:
           $version = & (Join-Path $bin "${tool}5.4$suffix") -v 2>&1
           if ($LASTEXITCODE -ne 0 -or "$version" -notmatch 'Lua 5\.4\.8\b') { throw "Unexpected ${tool} version: $version" }
         }
+    - name: Build and verify the Lua 5.5 interpreter and compiler from the lua.org release
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $archive = Join-Path $env:RUNNER_TEMP 'lua-5.5.1.tar.gz'
+        Invoke-WebRequest -Uri 'https://www.lua.org/ftp/lua-5.5.1.tar.gz' -OutFile $archive -TimeoutSec 60
+        if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ne '1c4b4068d67061f2a2231ad2b5422e77acea1487ea9890f6320af614f4373dce') { throw 'Lua 5.5.1 archive checksum mismatch' }
+        $work = Join-Path $env:RUNNER_TEMP 'lua-5.5.1-src'
+        New-Item -ItemType Directory -Force -Path $work | Out-Null
+        & tar -xzf $archive -C $work --strip-components=1
+        if ($LASTEXITCODE -ne 0) { throw 'Cannot unpack Lua 5.5.1' }
+        $src = Join-Path $work 'src'
+        $bin = Join-Path $env:RUNNER_TEMP 'disrobe-lua-5.5.1'
+        New-Item -ItemType Directory -Force -Path $bin | Out-Null
+        $core = Get-ChildItem -LiteralPath $src -Filter '*.c' | Where-Object { $_.Name -notin @('lua.c', 'luac.c', 'onelua.c') } | ForEach-Object { $_.FullName }
+        $suffix = if ($IsWindows) { '.exe' } else { '' }
+        foreach ($tool in @('lua', 'luac')) {
+          $main = Join-Path $src "$tool.c"
+          $out = Join-Path $bin "${tool}5.5$suffix"
+          if ($IsWindows) {
+            & cl /nologo /O2 "/Fe:$out" "/Fo:$bin\" $main @core
+          } else {
+            & cc -O2 -std=gnu99 -DLUA_USE_POSIX -o $out $main @core -lm
+          }
+          if ($LASTEXITCODE -ne 0) { throw "Cannot build ${tool}5.5" }
+          $version = & $out -v 2>&1
+          if ($LASTEXITCODE -ne 0 -or "$version" -notmatch 'Lua 5\.5\.1\b') { throw "Unexpected ${tool}5.5 version: $version" }
+        }
+        $bin | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
     - name: Install and exercise Luau 0.725
       shell: pwsh
       run: |

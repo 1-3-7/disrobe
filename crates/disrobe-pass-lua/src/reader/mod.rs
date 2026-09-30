@@ -4,6 +4,7 @@ pub mod lua51;
 pub mod lua52;
 pub mod lua53;
 pub mod lua54;
+pub mod lua55;
 pub mod luajit;
 pub mod luau;
 
@@ -21,6 +22,7 @@ pub enum DetectedFormat {
     Lua52,
     Lua53,
     Lua54,
+    Lua55,
     LuaJit,
     Luau,
     GLua,
@@ -55,6 +57,7 @@ pub fn detect(bytes: &[u8]) -> DetectedFormat {
             Some(0x52) => DetectedFormat::Lua52,
             Some(0x53) => DetectedFormat::Lua53,
             Some(0x54) => DetectedFormat::Lua54,
+            Some(0x55) => DetectedFormat::Lua55,
             _ => DetectedFormat::Unknown,
         };
         dbg_kv("classify", || format!("{fmt:?}"));
@@ -81,6 +84,7 @@ pub fn read_auto(bytes: &[u8]) -> Result<LuaChunk> {
         DetectedFormat::Lua52 => lua52::read(bytes),
         DetectedFormat::Lua53 => lua53::read(bytes),
         DetectedFormat::Lua54 => lua54::read(bytes),
+        DetectedFormat::Lua55 => lua55::read(bytes),
         DetectedFormat::LuaJit => luajit::read(bytes),
         DetectedFormat::Luau => luau::read(bytes),
         DetectedFormat::GLua => glua::read(bytes),

@@ -310,6 +310,11 @@ fn generated_programs_reexecute_identically_lua_5_4() {
 }
 
 #[test]
+fn generated_programs_reexecute_identically_lua_5_5() {
+    assert_lane(Dialect::Lua55, "lua5.5");
+}
+
+#[test]
 fn the_generator_is_deterministic_and_varied() {
     let first: String = Generator::new(7).program();
     assert_eq!(first, Generator::new(7).program());
@@ -348,11 +353,21 @@ fn a_field_read_feeding_a_tail_call_stays_inline() {
 
 #[test]
 fn a_recovery_that_changes_one_operator_is_caught() {
-    let (luac, lua): (String, String) =
-        toolchain(Dialect::Lua54).unwrap_or_else(|| panic!("the mutation control needs Lua 5.4"));
-    let scratch: disrobe_core::scratch::ScratchDir =
-        disrobe_core::scratch::ScratchDir::create("disrobe_lua_generated_mutation")
-            .expect("scratch");
+    assert_mutation_is_caught(Dialect::Lua54, "lua5.4");
+}
+
+#[test]
+fn a_recovery_that_changes_one_operator_is_caught_lua_5_5() {
+    assert_mutation_is_caught(Dialect::Lua55, "lua5.5");
+}
+
+fn assert_mutation_is_caught(dialect: Dialect, label: &str) {
+    let (luac, lua): (String, String) = toolchain(dialect)
+        .unwrap_or_else(|| panic!("the mutation control needs luac and lua for {label}"));
+    let scratch: disrobe_core::scratch::ScratchDir = disrobe_core::scratch::ScratchDir::create(
+        &format!("disrobe_lua_generated_mutation_{label}"),
+    )
+    .expect("scratch");
     let dir: &Path = scratch.path();
     let source: &str = "local a, b = 3, 4\nprint(a + b, a * b)\n";
     let recovered: String = recovered_source(&luac, dir, "mutant", source);

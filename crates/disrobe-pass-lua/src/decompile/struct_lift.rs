@@ -4,8 +4,9 @@ mod value_region;
 
 use crate::decompile::budget::LiftBudget;
 use crate::decompile::lift::{
-    ClosureCaptures, LiftedProto, SetListBase, closure_captures, fmt_number, kconst, kstr,
-    loadnil_last, resolve_upvalue_names, setlist_base, upvalue_name,
+    ClosureCaptures, LiftedProto, SetListBase, closure_captures, fmt_number,
+    global_redefinition_message, kconst, kstr, loadnil_last, resolve_upvalue_names, setlist_base,
+    upvalue_name,
 };
 use crate::decompile::luau_lift::{
     LStmt, LiftedStmt, MAX_RENDERED_STRUCTURE_BYTES, RenderedBlocks, render_blocks,
@@ -21,6 +22,7 @@ const NUMERIC_LOOP_NAMES: [&str; 6] = ["i", "j", "k", "l", "m", "n"];
 const KEY_NAMES: [&str; 4] = ["k", "key", "idx", "index"];
 const VALUE_NAMES: [&str; 4] = ["v", "value", "item", "elem"];
 const MAX_STRUCT_NODES: usize = 1 << 20;
+const VARARG_TABLE_FLAG: u8 = 2;
 
 #[derive(Debug, Default, Clone)]
 struct StructState {
@@ -40,6 +42,7 @@ struct StructState {
     pinned: std::collections::BTreeSet<u32>,
     reserved: Option<std::collections::BTreeSet<String>>,
     inline_values: bool,
+    open_to_be_closed: Vec<u32>,
 }
 
 impl StructState {
@@ -62,6 +65,7 @@ impl StructState {
             pinned: std::collections::BTreeSet::new(),
             reserved: None,
             inline_values: false,
+            open_to_be_closed: Vec::new(),
         }
     }
 
@@ -297,6 +301,11 @@ fn lift_structured_captured(
         state.bind_reg(i, name);
         state.pinned.insert(i);
     }
+    if let Some((slot, name)) = vararg_parameter(p, dialect, depth, &state.upvalues) {
+        outer_names.insert(name.clone());
+        state.bind_reg(slot, name);
+        state.pinned.insert(slot);
+    }
     if !names.has_names {
         state.reserved =
             names_referenced_by(p).map(|mut found: std::collections::BTreeSet<String>| {
@@ -434,6 +443,7 @@ impl LiveAcrossBranch {
                         | Op::SetUpval
                         | Op::SetGlobal
                         | Op::SetList
+                        | Op::ErrNNil
                 );
             }
         }
@@ -643,17 +653,14 @@ fn written_registers(d: &Decoded, dialect: LuaDialect) -> Vec<u32> {
                 vec![d.a]
             }
         }
-        Op::ForPrep | Op::ForLoop => (d.a..d.a + 4).collect(),
+        Op::ForPrep | Op::ForLoop => (d.a..=d.a + dialect.numeric_for_var_offset()).collect(),
         Op::TForCall => {
-            let first: u32 = if matches!(dialect, LuaDialect::Lua54) {
-                d.a + 4
-            } else {
-                d.a + 3
-            };
+            let first: u32 = d.a + dialect.generic_for_var_offset();
             (first..first + d.c.max(1)).collect()
         }
         Op::TForLoop if is51 => (d.a + 2..d.a + 3 + d.c.max(1)).collect(),
-        Op::TForLoop if matches!(dialect, LuaDialect::Lua54) => vec![d.a + 2],
+        Op::TForLoop if matches!(dialect, LuaDialect::Lua55) => Vec::new(),
+        Op::TForLoop if dialect.uses_lua54_layout() => vec![d.a + 2],
         Op::TForLoop => vec![d.a],
         Op::TForPrep => Vec::new(),
         Op::SetUpval
@@ -684,6 +691,7 @@ fn written_registers(d: &Decoded, dialect: LuaDialect) -> Vec<u32> {
         | Op::MmBinI
         | Op::MmBinK
         | Op::VarargPrep
+        | Op::ErrNNil
         | Op::ExtraArg
         | Op::Unknown => Vec::new(),
         _ => vec![d.a],
@@ -696,7 +704,7 @@ fn liveness_writes(d: &Decoded, dialect: LuaDialect) -> Vec<u32> {
     let open_results: bool = match d.op {
         Op::Call => d.c == 0,
         Op::Vararg => {
-            let count: u32 = if matches!(dialect, LuaDialect::Lua54) {
+            let count: u32 = if dialect.uses_lua54_layout() {
                 d.c
             } else {
                 d.b
@@ -715,7 +723,7 @@ fn liveness_writes(d: &Decoded, dialect: LuaDialect) -> Vec<u32> {
 #[must_use]
 fn read_registers(d: &Decoded, dialect: LuaDialect) -> Vec<u32> {
     let mut out: Vec<u32> = Vec::new();
-    let is54: bool = matches!(dialect, LuaDialect::Lua54);
+    let is54: bool = dialect.uses_lua54_layout();
     let push_r = |out: &mut Vec<u32>, v: u32| out.push(v);
     let push_rk = |out: &mut Vec<u32>, v: u32| {
         if is54 || !is_k(v) {
@@ -728,6 +736,11 @@ fn read_registers(d: &Decoded, dialect: LuaDialect) -> Vec<u32> {
             push_r(&mut out, d.b);
             push_rk(&mut out, d.c);
         }
+        Op::GetVarg => {
+            push_r(&mut out, d.b);
+            push_r(&mut out, d.c);
+        }
+        Op::Vararg if d.k && matches!(dialect, LuaDialect::Lua55) => push_r(&mut out, d.b),
         Op::GetField | Op::GetI => push_r(&mut out, d.b),
         Op::Self_ => {
             push_r(&mut out, d.b);
@@ -737,7 +750,7 @@ fn read_registers(d: &Decoded, dialect: LuaDialect) -> Vec<u32> {
                 push_r(&mut out, d.c);
             }
         }
-        Op::SetGlobal | Op::SetUpval | Op::Return1 | Op::Test | Op::TestSet => {
+        Op::SetGlobal | Op::SetUpval | Op::Return1 | Op::Test | Op::TestSet | Op::ErrNNil => {
             push_r(&mut out, d.a);
         }
         Op::SetTable if is54 => {
@@ -906,14 +919,14 @@ fn control_successors(p: &LuaProto, pc: usize, d: &Decoded, dialect: LuaDialect)
 fn branch_targets(p: &LuaProto, pc: usize, d: &Decoded, dialect: LuaDialect) -> Vec<i64> {
     let mut out: Vec<i64> = Vec::new();
     match d.op {
-        Op::Jmp => out.push(jump_target(pc, d, dialect)),
-        Op::ForLoop | Op::ForPrep | Op::TForLoop if !matches!(dialect, LuaDialect::Lua54) => {
+        Op::Jmp => out.push(unconditional_jump_target(p, pc, d, dialect)),
+        Op::ForLoop | Op::ForPrep | Op::TForLoop if !dialect.uses_lua54_layout() => {
             out.push(pc as i64 + 1 + i64::from(d.sbx));
         }
-        Op::ForPrep | Op::TForPrep if matches!(dialect, LuaDialect::Lua54) => {
+        Op::ForPrep | Op::TForPrep if dialect.uses_lua54_layout() => {
             out.push(pc as i64 + 1 + i64::from(d.bx));
         }
-        Op::ForLoop | Op::TForLoop if matches!(dialect, LuaDialect::Lua54) => {
+        Op::ForLoop | Op::TForLoop if dialect.uses_lua54_layout() => {
             out.push(pc as i64 + 1 - i64::from(d.bx));
         }
         Op::Eq
@@ -939,9 +952,28 @@ fn branch_targets(p: &LuaProto, pc: usize, d: &Decoded, dialect: LuaDialect) -> 
     out
 }
 
+fn unconditional_jump_target(p: &LuaProto, pc: usize, d: &Decoded, dialect: LuaDialect) -> i64 {
+    let target: i64 = jump_target(pc, d, dialect);
+    let close_at = |at: usize| -> Option<u32> {
+        p.code
+            .get(at)
+            .map(|raw: &u32| decode(*raw, dialect))
+            .filter(|c: &Decoded| c.op == Op::Close)
+            .map(|c: Decoded| c.a)
+    };
+    let closed_before_jump: Option<u32> = pc.checked_sub(1).and_then(close_at);
+    let close_before_target: Option<usize> = usize::try_from(target - 1)
+        .ok()
+        .filter(|before: &usize| *before > pc);
+    match (closed_before_jump, close_before_target) {
+        (Some(level), Some(before)) if close_at(before) == Some(level) => target - 1,
+        _ => target,
+    }
+}
+
 #[inline]
 fn jump_target(pc: usize, d: &Decoded, dialect: LuaDialect) -> i64 {
-    let off: i64 = if matches!(dialect, LuaDialect::Lua54) {
+    let off: i64 = if dialect.uses_lua54_layout() {
         i64::from(d.sj)
     } else {
         i64::from(d.sbx)
@@ -1059,7 +1091,7 @@ fn lower_span(
             Op::GetTable => {
                 let table: String = state.reg(d.b);
                 let raw_key: String = rk(state, p, d.c, dialect);
-                let field: Option<String> = if matches!(dialect, LuaDialect::Lua54) {
+                let field: Option<String> = if dialect.uses_lua54_layout() {
                     None
                 } else {
                     const_str_key(p, d.c, dialect)
@@ -1072,6 +1104,23 @@ fn lower_span(
                     d.a,
                     index_expr(&table, field.as_deref(), &raw_key),
                 );
+            }
+            Op::GetVarg => {
+                let table: String = state.reg(d.b);
+                let key: String = state.reg(d.c);
+                let field: Option<&str> = key
+                    .strip_prefix('"')
+                    .and_then(|inner: &str| inner.strip_suffix('"'))
+                    .filter(|inner: &&str| is_ident(inner));
+                define(state, names, live, p, d.a, index_expr(&table, field, &key));
+            }
+            Op::ErrNNil => {
+                let value: String = state.reg(d.a);
+                let message: String = global_redefinition_message(p, d.bx);
+                state.push_raw(format!(
+                    "if {} ~= nil then error({message}) end",
+                    operand_text(&value)
+                ));
             }
             Op::GetField => {
                 let table: String = state.reg(d.b);
@@ -1093,7 +1142,7 @@ fn lower_span(
             Op::SetTable => {
                 let table: String = state.reg(d.a);
                 let raw_key: String = rk(state, p, d.b, dialect);
-                let field: Option<String> = if matches!(dialect, LuaDialect::Lua54) {
+                let field: Option<String> = if dialect.uses_lua54_layout() {
                     None
                 } else {
                     const_str_key(p, d.b, dialect)
@@ -1120,7 +1169,7 @@ fn lower_span(
                 state.push_raw(format!("{table}[{}] = {val}", d.b));
             }
             Op::NewTable => {
-                if matches!(dialect, LuaDialect::Lua54) {
+                if dialect.uses_lua54_layout() {
                     pc += 1;
                 }
                 define_table(state, names, live, p, &d, pc, dialect);
@@ -1151,12 +1200,12 @@ fn lower_span(
             | Op::BXor
             | Op::Shl
             | Op::Shr => {
-                let lhs: String = if matches!(dialect, LuaDialect::Lua54) {
+                let lhs: String = if dialect.uses_lua54_layout() {
                     state.reg(d.b)
                 } else {
                     rk(state, p, d.b, dialect)
                 };
-                let rhs: String = if matches!(dialect, LuaDialect::Lua54) {
+                let rhs: String = if dialect.uses_lua54_layout() {
                     state.reg(d.c)
                 } else {
                     rk(state, p, d.c, dialect)
@@ -1219,7 +1268,7 @@ fn lower_span(
                 define(state, names, live, p, d.a, format!("(#({v}))"));
             }
             Op::Concat => {
-                let (start, end): (u32, u32) = if matches!(dialect, LuaDialect::Lua54) {
+                let (start, end): (u32, u32) = if dialect.uses_lua54_layout() {
                     (d.a, d.a + d.b.saturating_sub(1))
                 } else {
                     (d.b, d.c)
@@ -1238,7 +1287,7 @@ fn lower_span(
                 if matches!(dialect, LuaDialect::Lua52 | LuaDialect::Lua53) && d.a > 0 {
                     state.pinned.retain(|slot: &u32| *slot < d.a - 1);
                 }
-                let target: i64 = jump_target(pc, &d, dialect);
+                let target: i64 = unconditional_jump_target(p, pc, &d, dialect);
                 if let Some(ctrl) = forin_controller(p, target, dialect)
                     && opens_generic_for(p, pc, &ctrl, dialect)
                 {
@@ -1320,7 +1369,7 @@ fn lower_span(
                     pc = consumed;
                 } else {
                     let v: String = state.reg(d.a);
-                    let jump_on_truthy: bool = if matches!(dialect, LuaDialect::Lua54) {
+                    let jump_on_truthy: bool = if dialect.uses_lua54_layout() {
                         d.k
                     } else {
                         d.c != 0
@@ -1395,7 +1444,7 @@ fn lower_span(
             Op::TForLoop => {
                 if !matches!(
                     dialect,
-                    LuaDialect::Lua52 | LuaDialect::Lua53 | LuaDialect::Lua54
+                    LuaDialect::Lua52 | LuaDialect::Lua53 | LuaDialect::Lua54 | LuaDialect::Lua55
                 ) {
                     state.push_stmt(LStmt::BlockEnd);
                     state.release_scope(d.a);
@@ -1410,8 +1459,21 @@ fn lower_span(
             Op::SetList => emit_setlist(state, p, &d, &mut pc, dialect),
             Op::Close => {
                 state.pinned.retain(|slot: &u32| *slot < d.a);
+                close_to_be_closed(state, p, &d, pc, dialect);
             }
-            Op::Tbc => {}
+            Op::Tbc => {
+                let value: String = state.reg(d.a);
+                let bound_name: bool =
+                    state.bound.get(d.a as usize).copied().unwrap_or(false) && is_ident(&value);
+                let name: String = if bound_name {
+                    value.clone()
+                } else {
+                    state.temp(d.a)
+                };
+                state.push_raw(format!("local {name} <close> = {value}"));
+                state.bind_reg(d.a, name);
+                state.open_to_be_closed.push(d.a);
+            }
             Op::Closure => {
                 let captures: ClosureCaptures = closure_captures(p, &d, pc, dialect);
                 let resume_pc: usize = pc + 1 + captures.pseudo_words;
@@ -1424,7 +1486,7 @@ fn lower_span(
                 pc += captures.pseudo_words;
             }
             Op::Vararg => {
-                let count: u32 = if matches!(dialect, LuaDialect::Lua54) {
+                let count: u32 = if dialect.uses_lua54_layout() {
                     d.c
                 } else {
                     d.b
@@ -1461,6 +1523,45 @@ fn lower_span(
         pc += 1;
     }
     Some(pc)
+}
+
+fn close_to_be_closed(
+    state: &mut StructState,
+    p: &LuaProto,
+    d: &Decoded,
+    pc: usize,
+    dialect: LuaDialect,
+) {
+    if !state
+        .open_to_be_closed
+        .iter()
+        .any(|slot: &u32| *slot >= d.a)
+    {
+        return;
+    }
+    let next: Option<Op> = p
+        .code
+        .iter()
+        .skip(pc + 1)
+        .map(|raw: &u32| decode(*raw, dialect).op)
+        .find(|op: &Op| *op != Op::Close);
+    if next == Some(Op::Jmp) {
+        return;
+    }
+    state.open_to_be_closed.retain(|slot: &u32| *slot < d.a);
+    let block_ends: bool = matches!(
+        next,
+        None | Some(
+            Op::ForLoop | Op::TForCall | Op::Return | Op::Return0 | Op::Return1 | Op::TailCall
+        )
+    );
+    if !block_ends {
+        state.fully_structured = false;
+        state.warnings.push(format!(
+            "to-be-closed variable closed at pc={pc} before its block ends; the recovered <close> \
+             local stays open until the enclosing block ends"
+        ));
+    }
 }
 
 #[inline]
@@ -1652,7 +1753,7 @@ fn define_table(
         state.push_raw(format!("{carried} = {{}}"));
         return;
     }
-    let act_pc: usize = if matches!(dialect, LuaDialect::Lua54) {
+    let act_pc: usize = if dialect.uses_lua54_layout() {
         state.pc + 2
     } else {
         state.pc + 1
@@ -1769,7 +1870,7 @@ fn emit_testset(
     dialect: LuaDialect,
 ) {
     let value: String = state.reg(d.b);
-    let assign_on_truthy: bool = if matches!(dialect, LuaDialect::Lua54) {
+    let assign_on_truthy: bool = if dialect.uses_lua54_layout() {
         d.k
     } else {
         d.c != 0
@@ -1841,12 +1942,12 @@ fn emit_compare(
     pc: usize,
     dialect: LuaDialect,
 ) {
-    let (lhs, rhs): (String, String) = if matches!(dialect, LuaDialect::Lua54) {
+    let (lhs, rhs): (String, String) = if dialect.uses_lua54_layout() {
         (state.reg(d.a), state.reg(d.b))
     } else {
         (rk(state, p, d.b, dialect), rk(state, p, d.c, dialect))
     };
-    let expect_true: bool = if matches!(dialect, LuaDialect::Lua54) {
+    let expect_true: bool = if dialect.uses_lua54_layout() {
         !d.k
     } else {
         d.a == 0
@@ -1879,7 +1980,7 @@ fn bool_materialize_dest(
     }
     let i2: Decoded = decode(*p.code.get(pc + 2)?, dialect);
     let i3: Decoded = decode(*p.code.get(pc + 3)?, dialect);
-    if matches!(dialect, LuaDialect::Lua54) {
+    if dialect.uses_lua54_layout() {
         if i2.op == Op::LFalseSkip && i3.op == Op::LoadTrue && i2.a == i3.a {
             return Some(i2.a);
         }
@@ -1898,7 +1999,7 @@ fn compare_value_expr(
     d: &Decoded,
     dialect: LuaDialect,
 ) -> Option<String> {
-    let is54: bool = matches!(dialect, LuaDialect::Lua54);
+    let is54: bool = dialect.uses_lua54_layout();
     match d.op {
         Op::Eq | Op::Lt | Op::Le => {
             let (lhs, rhs): (String, String) = if is54 {
@@ -1985,8 +2086,7 @@ fn emit_ternary(
     if l1 != pc as i64 + 4 || merge != pc as i64 + 5 {
         return None;
     }
-    let (jumps_on_truthy, assigns_on_truthy): (bool, bool) = if matches!(dialect, LuaDialect::Lua54)
-    {
+    let (jumps_on_truthy, assigns_on_truthy): (bool, bool) = if dialect.uses_lua54_layout() {
         (test.k, ts.k)
     } else {
         (test.c != 0, ts.c != 0)
@@ -2063,7 +2163,7 @@ fn emit_test_or(
         return None;
     }
     let lhs: String = state.reg(d.a);
-    let is_or: bool = if matches!(dialect, LuaDialect::Lua54) {
+    let is_or: bool = if dialect.uses_lua54_layout() {
         d.k
     } else {
         d.c != 0
@@ -2140,7 +2240,7 @@ fn emit_and_or(
         return None;
     }
     let lhs: String = state.reg(d.b);
-    let is_or: bool = if matches!(dialect, LuaDialect::Lua54) {
+    let is_or: bool = if dialect.uses_lua54_layout() {
         d.k
     } else {
         d.c != 0
@@ -2163,7 +2263,7 @@ fn is_chain_compare(op: Op) -> bool {
 #[must_use]
 fn negate_compare(d: &Decoded, dialect: LuaDialect) -> Decoded {
     let mut nd: Decoded = *d;
-    if matches!(dialect, LuaDialect::Lua54) {
+    if dialect.uses_lua54_layout() {
         nd.k = !d.k;
     } else {
         nd.a = u32::from(d.a == 0);
@@ -2175,7 +2275,7 @@ fn negate_compare(d: &Decoded, dialect: LuaDialect) -> Decoded {
 fn bool_load_sink(p: &LuaProto, q: usize, dialect: LuaDialect) -> Option<u32> {
     let i2: Decoded = decode(*p.code.get(q)?, dialect);
     let i3: Decoded = decode(*p.code.get(q + 1)?, dialect);
-    if matches!(dialect, LuaDialect::Lua54) {
+    if dialect.uses_lua54_layout() {
         if i2.op == Op::LFalseSkip && i3.op == Op::LoadTrue && i2.a == i3.a {
             return Some(i2.a);
         }
@@ -2494,13 +2594,14 @@ fn emit_fornum(
     let init: String = state.reg(d.a);
     let limit: String = state.reg(d.a + 1);
     let step: String = state.reg(d.a + 2);
+    let slot: u32 = d.a + dialect.numeric_for_var_offset();
     let var: String = names
-        .name_at(pc + 1, d.a + 3)
+        .name_at(pc + 1, slot)
         .map(str::to_owned)
         .or_else(|| state.readable_name(&NUMERIC_LOOP_NAMES))
         .unwrap_or_else(|| format!("fv_{}", d.a));
-    state.bind_reg(d.a + 3, var.clone());
-    state.suppress_local.push((pc + 1, d.a + 3));
+    state.bind_reg(slot, var.clone());
+    state.suppress_local.push((pc + 1, slot));
     let end: usize = loop_end_from_prep(pc, d, dialect);
     state.push_stmt(LStmt::ForNum {
         var,
@@ -2513,7 +2614,7 @@ fn emit_fornum(
 
 #[inline]
 fn loop_end_from_prep(pc: usize, d: &Decoded, dialect: LuaDialect) -> usize {
-    let off: i64 = if matches!(dialect, LuaDialect::Lua54) {
+    let off: i64 = if dialect.uses_lua54_layout() {
         i64::from(d.bx)
     } else {
         i64::from(d.sbx)
@@ -2539,7 +2640,7 @@ fn forin_controller(p: &LuaProto, target: i64, dialect: LuaDialect) -> Option<Fo
     let d: Decoded = decode(raw, dialect);
     let is51: bool = !matches!(
         dialect,
-        LuaDialect::Lua52 | LuaDialect::Lua53 | LuaDialect::Lua54
+        LuaDialect::Lua52 | LuaDialect::Lua53 | LuaDialect::Lua54 | LuaDialect::Lua55
     );
     match d.op {
         Op::TForCall if !is51 => Some(ForinController {
@@ -2572,7 +2673,7 @@ fn opens_generic_for(
     };
     let body_start: i64 = jmp_pc as i64 + 1;
     match dialect {
-        LuaDialect::Lua54 => false,
+        LuaDialect::Lua54 | LuaDialect::Lua55 => false,
         LuaDialect::Lua52 | LuaDialect::Lua53 => {
             back.op == Op::TForLoop && ctrl.ctrl_pc as i64 + 2 + i64::from(back.sbx) == body_start
         }
@@ -2588,7 +2689,7 @@ fn is_iterator_setup_call(p: &LuaProto, pc: usize, d: &Decoded, dialect: LuaDial
     let nd: Decoded = decode(*raw, dialect);
     let ctrl: Option<ForinController> = match nd.op {
         Op::Jmp => forin_controller(p, jump_target(pc + 1, &nd, dialect), dialect),
-        Op::TForPrep if matches!(dialect, LuaDialect::Lua54) => {
+        Op::TForPrep if dialect.uses_lua54_layout() => {
             forin_controller(p, pc as i64 + 2 + i64::from(nd.bx), dialect)
         }
         _ => None,
@@ -2613,11 +2714,7 @@ fn emit_forin_head(
             format!("{f}, {s}, {c}")
         }
     };
-    let var_base: u32 = if matches!(dialect, LuaDialect::Lua54) {
-        ctrl.base + 4
-    } else {
-        ctrl.base + 3
-    };
+    let var_base: u32 = ctrl.base + dialect.generic_for_var_offset();
     let body_pc: usize = head_pc + 1;
     let mut vars: Vec<String> = Vec::with_capacity(ctrl.nvars as usize);
     for i in 0..ctrl.nvars {
@@ -2968,7 +3065,7 @@ fn is_fresh_vararg_table(p: &LuaProto, d: &Decoded, pc: usize, dialect: LuaDiale
     if p.is_vararg == 0 {
         return false;
     }
-    let is_lua54: bool = matches!(dialect, LuaDialect::Lua54);
+    let is_lua54: bool = dialect.uses_lua54_layout();
     let first_block: bool = if is_lua54 { d.c == 0 && !d.k } else { d.c == 1 };
     if !first_block {
         return false;
@@ -3051,15 +3148,11 @@ fn emit_closure(
                 .map(|i: u32| child_param_name(child, i, &child_upvalues))
                 .collect::<Vec<String>>()
                 .join(", ");
-            let header: String = if child.is_vararg != 0 {
-                if params.is_empty() {
-                    "function(...)".to_owned()
-                } else {
-                    format!("function({params}, ...)")
-                }
-            } else {
-                format!("function({params})")
-            };
+            let header: String = closure_header(
+                child,
+                params,
+                vararg_parameter(child, dialect, depth + 1, &child_upvalues),
+            );
             let mut block: String = format!("{header}\n");
             for ln in inner.source.lines() {
                 block.push_str(ln);
@@ -3105,6 +3198,53 @@ fn emit_closure(
 }
 
 #[must_use]
+pub(crate) fn closure_header(
+    child: &LuaProto,
+    params: String,
+    vararg: Option<(u32, String)>,
+) -> String {
+    if child.is_vararg == 0 {
+        return format!("function({params})");
+    }
+    let dots: String = vararg.map_or_else(
+        || "...".to_owned(),
+        |(_, name): (u32, String)| format!("...{name}"),
+    );
+    if params.is_empty() {
+        format!("function({dots})")
+    } else {
+        format!("function({params}, {dots})")
+    }
+}
+
+#[must_use]
+pub(crate) fn vararg_parameter(
+    p: &LuaProto,
+    dialect: LuaDialect,
+    depth: usize,
+    upvalues: &[String],
+) -> Option<(u32, String)> {
+    if !matches!(dialect, LuaDialect::Lua55) || p.is_vararg == 0 || depth == 0 {
+        return None;
+    }
+    let slot: u32 = u32::from(p.num_params);
+    let read: bool = p.is_vararg & VARARG_TABLE_FLAG != 0
+        || p.code
+            .iter()
+            .any(|raw: &u32| read_registers(&decode(*raw, dialect), dialect).contains(&slot));
+    if !read {
+        return None;
+    }
+    let name: String = p
+        .locals
+        .get(usize::from(p.num_params))
+        .map(|local: &LuaLocal| local.name.clone())
+        .filter(|name: &String| is_ident(name) && !upvalues.contains(name))
+        .unwrap_or_else(|| synthetic_param_name(slot, upvalues));
+    Some((slot, name))
+}
+
+#[must_use]
 fn synthetic_param_name(slot: u32, upvalues: &[String]) -> String {
     let mut name: String = format!("p{slot}");
     while upvalues.contains(&name) {
@@ -3128,7 +3268,7 @@ fn child_param_name(p: &LuaProto, slot: u32, upvalues: &[String]) -> String {
 
 #[inline]
 fn skip_mmbin(p: &LuaProto, pc: &mut usize, dialect: LuaDialect) {
-    if matches!(dialect, LuaDialect::Lua54)
+    if dialect.uses_lua54_layout()
         && p.code
             .get(*pc + 1)
             .map(|raw2: &u32| {
@@ -3219,7 +3359,7 @@ fn is_lua_keyword(s: &str) -> bool {
 
 #[must_use]
 fn const_str_key(p: &LuaProto, field: u32, dialect: LuaDialect) -> Option<String> {
-    if matches!(dialect, LuaDialect::Lua54) {
+    if dialect.uses_lua54_layout() {
         return const_str_key_direct(p, field);
     }
     if !is_k(field) {
@@ -3265,7 +3405,7 @@ fn tabup_key(
     d: &Decoded,
     dialect: LuaDialect,
 ) -> (Option<String>, String) {
-    if matches!(dialect, LuaDialect::Lua54) {
+    if dialect.uses_lua54_layout() {
         (const_str_key_direct(p, d.c), kconst(p, d.c, dialect))
     } else {
         (const_str_key(p, d.c, dialect), rk(state, p, d.c, dialect))
@@ -3279,7 +3419,7 @@ fn settabup_operands(
     d: &Decoded,
     dialect: LuaDialect,
 ) -> (Option<String>, String, String) {
-    if matches!(dialect, LuaDialect::Lua54) {
+    if dialect.uses_lua54_layout() {
         let field: Option<String> = const_str_key_direct(p, d.b);
         let raw_key: String = kconst(p, d.b, dialect);
         let val: String = rk_or_const(state, p, d.c, d.k, dialect);
@@ -3294,7 +3434,7 @@ fn settabup_operands(
 
 #[inline]
 fn setfield_value(state: &StructState, p: &LuaProto, d: &Decoded, dialect: LuaDialect) -> String {
-    if matches!(dialect, LuaDialect::Lua54) {
+    if dialect.uses_lua54_layout() {
         rk_or_const(state, p, d.c, d.k, dialect)
     } else {
         rk(state, p, d.c, dialect)
@@ -3308,7 +3448,7 @@ fn self_key(
     d: &Decoded,
     dialect: LuaDialect,
 ) -> (Option<String>, String) {
-    if matches!(dialect, LuaDialect::Lua54) {
+    if dialect.uses_lua54_layout() {
         (const_str_key_direct(p, d.c), kconst(p, d.c, dialect))
     } else {
         (const_str_key(p, d.c, dialect), rk(state, p, d.c, dialect))

@@ -40,6 +40,7 @@ fn lifter_banner(dialect: LuaDialect) -> &'static str {
         LuaDialect::Lua52 => "-- decompiled by disrobe (lua 5.2 register lifter)\n",
         LuaDialect::Lua53 => "-- decompiled by disrobe (lua 5.3 register lifter)\n",
         LuaDialect::Lua54 => "-- decompiled by disrobe (lua 5.4 register lifter)\n",
+        LuaDialect::Lua55 => "-- decompiled by disrobe (lua 5.5 register lifter)\n",
         _ => "-- decompiled by disrobe (lua register lifter)\n",
     }
 }
