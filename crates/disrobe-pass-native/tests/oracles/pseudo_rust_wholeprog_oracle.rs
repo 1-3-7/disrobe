@@ -26,6 +26,7 @@ use disrobe_pass_native::{PseudoAbi, PseudoParameterBinding, PseudoReg, Recovere
 #[cfg(not(target_os = "macos"))]
 use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
 
+#[cfg(not(target_os = "macos"))]
 use crate::compiler_toolchain;
 
 #[cfg(windows)]
