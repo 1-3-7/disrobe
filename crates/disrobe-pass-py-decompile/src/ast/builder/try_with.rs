@@ -391,10 +391,26 @@ fn gap_is_nested_region(stream: &DecodedStream, lo_off: u32, hi_off: u32, outer:
     lo < hi
         && (lo..hi).all(|k: usize| {
             stream.offsets.get(k).is_some_and(|&off: &u32| {
-                covering_entry_target(stream, off)
-                    .is_some_and(|inner: u32| inner != outer && escapes_to(stream, inner, outer))
+                covering_entry_target(stream, off).map_or_else(
+                    || is_nested_region_jump(&stream.ops[k]),
+                    |inner: u32| inner != outer && escapes_to(stream, inner, outer),
+                )
             })
         })
+}
+
+fn is_nested_region_jump(op: &CanonicalOp) -> bool {
+    matches!(
+        op,
+        CanonicalOp::Nop
+            | CanonicalOp::Cache
+            | CanonicalOp::ExtendedArg(_)
+            | CanonicalOp::JumpForward(_)
+            | CanonicalOp::JumpBackward(_)
+            | CanonicalOp::JumpBackwardNoInterrupt(_)
+            | CanonicalOp::PopJumpIfFalse(_)
+            | CanonicalOp::PopJumpIfTrue(_)
+    )
 }
 
 fn covering_entry_target(stream: &DecodedStream, off: u32) -> Option<u32> {
@@ -5141,6 +5157,16 @@ struct ComboFinally {
     region_end: usize,
 }
 
+pub(super) fn region_end_with_combo_finally(
+    stream: &DecodedStream,
+    region: &TryRegion,
+    hi: usize,
+) -> usize {
+    find_combo_finally(stream, region, hi).map_or(region.region_end, |combo: ComboFinally| {
+        combo.region_end.max(region.region_end)
+    })
+}
+
 fn find_combo_finally(
     stream: &DecodedStream,
     region: &TryRegion,
@@ -5662,14 +5688,31 @@ fn trim_inline_finally_from_handlers(
     handlers
         .into_iter()
         .map(|mut h: ExceptHandler| {
-            strip_trailing_stmts(&mut h.body, finalbody);
-            strip_leading_stmts(&mut h.body, finalbody);
+            if !strip_finally_copy_before_jump(&mut h.body, finalbody) {
+                strip_trailing_stmts(&mut h.body, finalbody);
+                strip_leading_stmts(&mut h.body, finalbody);
+            }
             if h.body.is_empty() {
                 h.body = vec![Stmt::Pass];
             }
             h
         })
         .collect()
+}
+
+fn strip_finally_copy_before_jump(body: &mut Vec<Stmt>, finalbody: &[Stmt]) -> bool {
+    let Some(jump @ (Stmt::Continue | Stmt::Break)): Option<Stmt> = body.last().cloned() else {
+        return false;
+    };
+    let Some(split): Option<usize> = (body.len() - 1).checked_sub(finalbody.len()) else {
+        return false;
+    };
+    if !stmt_sequences_equal_ignoring_lines(&body[split..body.len() - 1], finalbody) {
+        return false;
+    }
+    body.truncate(split);
+    body.push(jump);
+    true
 }
 
 fn stmt_sequences_equal_ignoring_lines(a: &[Stmt], b: &[Stmt]) -> bool {
@@ -11704,7 +11747,8 @@ fn named_handler_teardown_jump(
     let pop_except: usize = (body_start..end)
         .find(|&k: &usize| matches!(stream.ops.get(k), Some(CanonicalOp::PopExcept)))?;
     let after_teardown: usize = skip_except_name_teardown(stream, pop_except + 1, end);
-    let jump: usize = first_significant(stream, after_teardown, end)?;
+    let after_finally: usize = skip_inline_finally_copy(stream, after_teardown, end);
+    let jump: usize = first_significant(stream, after_finally, end)?;
     let jump_op: &CanonicalOp = stream.ops.get(jump)?;
     if !matches!(
         jump_op,
@@ -11734,6 +11778,39 @@ fn named_handler_teardown_jump(
     let exit_is_ambiguous: bool =
         (stream.version.major(), stream.version.minor()) < (3, 10) && jump_is_final_exit;
     (!opens_nested_block && !leaves_before_teardown && !exit_is_ambiguous).then_some(jump)
+}
+
+fn skip_inline_finally_copy(stream: &DecodedStream, from: usize, end: usize) -> usize {
+    let Some(start): Option<usize> = first_significant(stream, from, end) else {
+        return from;
+    };
+    let len: usize = stream.ops.len();
+    let handlers: std::collections::BTreeSet<usize> = stream
+        .exception_table
+        .iter()
+        .filter_map(|entry: &crate::bytecode::flow::ExceptionTableEntry| {
+            stream.index_for_offset(entry.target)
+        })
+        .filter(|&h: &usize| h >= end)
+        .collect();
+    handlers
+        .into_iter()
+        .find_map(|h: usize| {
+            let body_start: usize = if stream.is_pre_311() {
+                first_significant(stream, h, len)?
+            } else {
+                h + 1
+            };
+            let reraise: usize = (body_start..len)
+                .find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::Reraise(_)))?;
+            let copy_len: usize = reraise - body_start;
+            (copy_len > 0
+                && start + copy_len <= end
+                && is_pure_finally_handler_shape(stream, h, reraise + 1, stream.is_pre_311())
+                && finally_run_is_copy(stream, start, body_start, copy_len))
+            .then_some(start + copy_len)
+        })
+        .unwrap_or(from)
 }
 
 fn pre311_construct_continuation(stream: &DecodedStream, handler_start: usize) -> Option<usize> {

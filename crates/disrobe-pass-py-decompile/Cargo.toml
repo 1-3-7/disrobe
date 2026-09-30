@@ -35,6 +35,7 @@ chain = ["disrobe-core/chain"]
 llm-metadata = ["dep:disrobe-llm-metadata"]
 
 [dev-dependencies]
+disrobe-testkit = { workspace = true }
 tempfile = "3"
 
 [package.metadata.disrobe]

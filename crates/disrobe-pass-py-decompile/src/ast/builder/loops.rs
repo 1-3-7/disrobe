@@ -17,8 +17,8 @@ use super::try_with::{
     is_back_edge, is_cond_back_edge, is_cond_jump_with_backward_target, is_forward_cond_jump,
     is_pure_finally_handler_shape, is_shortcircuit_cleanup_pop, is_simple_guard_prelude_stmt,
     is_value_boundary, is_value_form_shortcircuit, leading_guard_prelude_split,
-    offset_is_unprotected, structure_for_bare_except_continue_epilogue,
-    structure_for_typed_except_continue_epilogue,
+    offset_is_unprotected, region_end_with_combo_finally,
+    structure_for_bare_except_continue_epilogue, structure_for_typed_except_continue_epilogue,
     structure_for_typed_except_continue_external_body,
     structure_infinite_while_finally_arm_break_body,
     structure_infinite_while_finally_arm_continue_body,
@@ -1688,6 +1688,16 @@ pub(super) fn for_cold_handler_exit_epilogue(
     let cap: usize = hi.min(stream.ops.len());
     let start: usize = raw_exit.min(cap);
     let first_cold: usize = first_cold_for_handler(stream, body_start, start, cap)?;
+    let first_cold: usize = stream
+        .exception_table
+        .iter()
+        .filter_map(|e: &crate::bytecode::flow::ExceptionTableEntry| {
+            let ts: usize = stream.index_for_offset(e.start)?;
+            let hs: usize = stream.index_for_offset(e.target)?;
+            ((body_start..start).contains(&ts) && (start..first_cold).contains(&hs)).then_some(hs)
+        })
+        .min()
+        .unwrap_or(first_cold);
     let stmt_start: usize = (start..first_cold).find(|&k: &usize| {
         !matches!(
             stream.ops[k],
@@ -1860,7 +1870,47 @@ fn structure_for_body(
         &mut body,
         body_bounded_at_raw_exit,
     )?;
+    if (stream.version.major(), stream.version.minor()) >= (3, 12) {
+        fold_negated_continue_before_break(&mut body);
+    }
     Ok((body, epilogue))
+}
+
+fn fold_negated_continue_before_break(body: &mut Vec<Stmt>) {
+    let [
+        ..,
+        Stmt::If {
+            test:
+                Expr::UnaryOp {
+                    op: crate::bytecode::opcode::UnaryOp::Not,
+                    ..
+                },
+            body: arm,
+            orelse,
+            ..
+        },
+        Stmt::Break,
+    ]: &[Stmt] = body.as_slice()
+    else {
+        return;
+    };
+    if !matches!(arm.as_slice(), [Stmt::Continue]) || !orelse.is_empty() {
+        return;
+    }
+    body.pop();
+    if let Some(Stmt::If {
+        test: Expr::UnaryOp { operand, .. },
+        line,
+        ..
+    }) = body.pop()
+    {
+        body.push(Stmt::If {
+            test: *operand,
+            body: vec![Stmt::Break],
+            orelse: Vec::new(),
+            line,
+        });
+    }
 }
 
 fn for_body_end_absorbing_cold_handlers(
@@ -2055,6 +2105,48 @@ fn legacy_guarded_continue_region(
     None
 }
 
+fn cold_handler_continue_region(
+    stream: &DecodedStream,
+    header: usize,
+    primary_latch: usize,
+    hi: usize,
+) -> Option<LoopRegion> {
+    if stream.is_pre_311() {
+        return None;
+    }
+    let entry: usize = (header..primary_latch).find(|&k: &usize| {
+        is_forward_cond_jump(&stream.ops[k]) && !is_chain_cond_jump(&stream.ops, k)
+    })?;
+    if cond_expr_start(stream, entry, header) != header {
+        return None;
+    }
+    let exit: usize = resolve_jump_target(stream, entry, &stream.ops[entry])
+        .filter(|&t: &usize| t > entry && t < primary_latch && t <= hi)?;
+    let body_start: usize = first_significant(stream, entry + 1, exit)?;
+    let latch: usize = (body_start..exit).rfind(|&k: &usize| {
+        is_back_edge(&stream.ops[k])
+            && resolve_jump_target(stream, k, &stream.ops[k]) == Some(body_start)
+    })?;
+    let bottom: usize = last_significant_back(stream, body_start, latch).filter(|&k: &usize| {
+        is_forward_cond_jump(&stream.ops[k])
+            && resolve_jump_target(stream, k, &stream.ops[k]) == Some(exit)
+    })?;
+    let handler_before_latch: bool =
+        (exit..primary_latch).any(|k: usize| matches!(stream.ops[k], CanonicalOp::PushExcInfo));
+    if !handler_before_latch {
+        return None;
+    }
+    Some(LoopRegion {
+        kind: LoopKind::While,
+        header,
+        body_start: entry + 1,
+        body_end: cond_expr_start(stream, bottom, body_start),
+        back_edge: latch,
+        exit,
+        infinite: false,
+    })
+}
+
 fn rotated_latch_after_continue(
     stream: &DecodedStream,
     header: usize,
@@ -2104,6 +2196,9 @@ pub(super) fn find_loop(stream: &DecodedStream, lo: usize, hi: usize) -> Option<
             && t < j
         {
             let header: usize = t;
+            if cond_back_edge_precedes_latch(stream, j, header, hi) {
+                continue;
+            }
             let back_edge: usize = last_cond_back_edge_in_run(stream, j, header, hi);
             let exit: usize = (back_edge + 1).min(hi);
             let region: LoopRegion = LoopRegion {
@@ -2139,6 +2234,14 @@ pub(super) fn find_loop(stream: &DecodedStream, lo: usize, hi: usize) -> Option<
             let header: usize = t;
             let primary_latch: usize = max_back_edge_to_header(stream, header, lo, hi);
             if primary_latch != j {
+                continue;
+            }
+            if let Some(region) = cold_handler_continue_region(stream, header, primary_latch, hi) {
+                if !active_ownership_conflicts(header, region.back_edge)
+                    && best.is_none_or(|b: LoopRegion| header < b.header)
+                {
+                    best = Some(region);
+                }
                 continue;
             }
             let rotated_latch: Option<usize> = if stream.is_pre_311() {
@@ -2195,6 +2298,11 @@ pub(super) fn find_loop(stream: &DecodedStream, lo: usize, hi: usize) -> Option<
                                         .last()
                                         .copied()
                                         .filter(|&c: &usize| is_bottom_test(stream, c, back_edge))
+                                        .filter(|&c: &usize| {
+                                            !is_unrotated_top_test_break(
+                                                stream, header, back_edge, &conds, c,
+                                            )
+                                        })
                                 })
                                 .flatten();
                             let effective: Vec<usize> = if bottom_cond.is_some() {
@@ -2386,7 +2494,12 @@ pub(super) fn loop_header_owns_test(
         (is_back_edge(&stream.ops[latch])
             || is_cond_back_edge(&stream.ops[latch])
             || is_cond_jump_with_backward_target(stream, latch))
-            && resolve_jump_target(stream, latch, &stream.ops[latch]) == Some(region.header)
+            && resolve_jump_target(stream, latch, &stream.ops[latch]).is_some_and(
+                |target: usize| {
+                    target == region.header
+                        || (region.body_start > region.header && target == region.body_start)
+                },
+            )
     });
     if !owns_header_latch {
         return false;
@@ -2415,7 +2528,6 @@ pub(super) fn try_enclosed_by_loop(
     if !loop_region.infinite {
         if matches!(loop_region.kind, LoopKind::While)
             && !region.is_with()
-            && !region.is_finally()
             && loop_region.header <= region.try_start
             && region.try_start < loop_region.back_edge
             && region.protected_end() <= loop_region.back_edge
@@ -2622,6 +2734,37 @@ fn while_cond_tail_body_end(
     }
 }
 
+fn cond_back_edge_precedes_latch(
+    stream: &DecodedStream,
+    cond: usize,
+    header: usize,
+    hi: usize,
+) -> bool {
+    stream.version.major() == 3
+        && stream.version.minor() < 10
+        && (cond + 1..hi).any(|k: usize| {
+            is_back_edge(&stream.ops[k])
+                && resolve_jump_target(stream, k, &stream.ops[k]) == Some(header)
+        })
+}
+
+fn is_unrotated_top_test_break(
+    stream: &DecodedStream,
+    header: usize,
+    back_edge: usize,
+    conds: &[usize],
+    bottom: usize,
+) -> bool {
+    let Some(&top): Option<&usize> = conds.first() else {
+        return false;
+    };
+    let entry_guarded: bool = last_significant_back(stream, 0, header).is_some_and(|k: usize| {
+        is_forward_cond_jump(&stream.ops[k])
+            && resolve_jump_target(stream, k, &stream.ops[k]).is_some_and(|t: usize| t > back_edge)
+    });
+    top != bottom && cond_expr_start(stream, top, header) == header && !entry_guarded
+}
+
 fn is_bottom_test(stream: &DecodedStream, cond: usize, back_edge: usize) -> bool {
     (cond + 1..back_edge).all(|k: usize| {
         matches!(
@@ -2650,7 +2793,7 @@ pub(super) fn cond_expr_start(stream: &DecodedStream, cond: usize, header: usize
             i = prev - 1;
             continue;
         }
-        if is_value_boundary(&stream.ops[prev]) {
+        if is_value_boundary(&stream.ops[prev]) || jumps_past_latch(stream, prev, cond) {
             break;
         }
         i = prev;
@@ -2730,12 +2873,7 @@ fn while_break_handler_try(
     let inside_body: bool = try_start >= region.body_start && try_start < region.back_edge;
     let protected_within: bool = region_try.protected_end() <= region.back_edge;
     let handler_after_body: bool = region_try.handler_start >= region.back_edge;
-    if region_try.is_with()
-        || region_try.is_finally()
-        || !inside_body
-        || !protected_within
-        || !handler_after_body
-    {
+    if region_try.is_with() || !inside_body || !protected_within || !handler_after_body {
         return None;
     }
     Some(region_try)
@@ -2884,7 +3022,7 @@ fn strip_absorbed_loop_latch(
         .is_some_and(|prev: usize| {
             is_back_edge(&stream.ops[prev])
                 && resolve_jump_target(stream, prev, &stream.ops[prev])
-                    .is_some_and(|target: usize| target <= region.header)
+                    .is_some_and(|target: usize| target <= region.body_start)
         });
     if !latch_before_exit {
         return;
@@ -2897,13 +3035,24 @@ fn strip_absorbed_loop_latch(
     }
     if is_loop_latch_stmt(body.last(), test) {
         body.pop();
-    } else if let Some(Stmt::Try { orelse, .. }) = body.last_mut() {
-        let mut stripped: Vec<Stmt> = orelse.clone();
-        strip_exit_tail_copy(&mut stripped, &exit_tail);
-        if is_loop_latch_stmt(stripped.last(), test) {
-            stripped.pop();
-            *orelse = stripped;
+    } else if let Some(Stmt::Try { orelse, .. } | Stmt::If { orelse, .. }) = body.last_mut() {
+        strip_nested_loop_latch(orelse, &exit_tail, test);
+    }
+}
+
+fn strip_nested_loop_latch(arm: &mut Vec<Stmt>, exit_tail: &[Stmt], test: &Expr) -> bool {
+    let mut stripped: Vec<Stmt> = arm.clone();
+    strip_exit_tail_copy(&mut stripped, exit_tail);
+    if is_loop_latch_stmt(stripped.last(), test) {
+        stripped.pop();
+        *arm = stripped;
+        return true;
+    }
+    match arm.last_mut() {
+        Some(Stmt::Try { orelse, .. } | Stmt::If { orelse, .. }) => {
+            strip_nested_loop_latch(orelse, exit_tail, test)
         }
+        _ => false,
     }
 }
 
@@ -2922,7 +3071,7 @@ fn structure_while_body_absorbing_break_handler(
                 (!stream.is_pre_311()).then(|| StructureHiCapGuard::enter(region.body_end));
             return structure_stmts(code, stream, region.body_start, body_hi);
         }
-        let try_hi: usize = region_try.region_end().min(hi);
+        let try_hi: usize = region_end_with_combo_finally(stream, &region_try, hi).min(hi);
         let mut body: Vec<Stmt> =
             structure_try(code, stream, region.body_start, try_hi, &region_try)?;
         if normalize_handler_break_loop_latch(
@@ -3183,16 +3332,29 @@ pub(super) fn structure_loop(
     let ownership_guard: LoopOwnershipGuard = LoopOwnershipGuard::enter(ownership);
     let mut cold_handler_exit_tail: Vec<Stmt> = Vec::new();
     let mut infinite_tail: Option<InfiniteLoopTail> = None;
+    let mut break_tail: Option<(Vec<Stmt>, usize)> = None;
     let result: Result<Stmt> = (|| -> Result<Stmt> {
         let loop_stmt: Stmt = match region.kind {
             LoopKind::For => {
                 let iter: Expr = recover_for_iter(code, stream, region, lo);
                 let (target, body_start): (Expr, usize) = recover_for_target(code, stream, region)
                     .unwrap_or_else(|| (placeholder_target(), region.body_start));
-                let (body, epilogue): (Vec<Stmt>, Vec<Stmt>) =
+                let (mut body, epilogue): (Vec<Stmt>, Vec<Stmt>) =
                     structure_for_body(code, stream, region, body_start)?;
                 cold_handler_exit_tail = epilogue;
-                let orelse: Vec<Stmt> = loop_orelse(code, stream, region, hi)?;
+                let mut orelse: Vec<Stmt> = loop_orelse(code, stream, region, hi)?;
+                if orelse.is_empty()
+                    && let Some(orphan) = orphan_break_tail(stream, region, hi)
+                {
+                    let tail: Vec<Stmt> =
+                        structure_stmts(code, stream, orphan.run_start, orphan.run_end)?;
+                    let mut rewritten: Vec<Stmt> = body.clone();
+                    if replace_break_tail(&mut rewritten, &tail) == orphan.sites {
+                        body = rewritten;
+                        orelse = structure_stmts(code, stream, orphan.else_start, orphan.else_end)?;
+                        break_tail = Some((tail, orphan.else_end));
+                    }
+                }
                 Stmt::For {
                     target,
                     iter,
@@ -3266,7 +3428,10 @@ pub(super) fn structure_loop(
     let mut out: Vec<Stmt> = head;
     out.push(loop_stmt);
     out.extend(cold_handler_exit_tail);
-    let tail_start: usize = if let Some((tail_start, _)) = infinite_tail {
+    let tail_start: usize = if let Some((tail, else_end)) = break_tail {
+        out.extend(tail);
+        else_end.min(hi)
+    } else if let Some((tail_start, _)) = infinite_tail {
         tail_start.min(hi)
     } else if region.infinite {
         skip_loop_epilogue(stream, infinite_tail_start(stream, region).min(hi), hi)
@@ -4079,6 +4244,163 @@ fn inlined_break_target(stream: &DecodedStream, region: &LoopRegion, hi: usize) 
     target
 }
 
+#[derive(Debug, Clone, Copy)]
+struct OrphanBreakTail {
+    run_start: usize,
+    run_end: usize,
+    else_start: usize,
+    else_end: usize,
+    sites: usize,
+}
+
+#[deny(clippy::indexing_slicing)]
+fn orphan_break_tail(
+    stream: &DecodedStream,
+    region: &LoopRegion,
+    hi: usize,
+) -> Option<OrphanBreakTail> {
+    if !exit_tail_is_inlined_at_break(stream)
+        || !matches!(region.kind, LoopKind::For)
+        || find_break_target(stream, region, hi).is_some()
+    {
+        return None;
+    }
+    let hi: usize = hi.min(stream.ops.len());
+    let body_end: usize = region.body_end.min(hi);
+    let else_start: usize = skip_loop_epilogue(stream, region.exit.min(hi), hi);
+    let else_run: Vec<usize> = straightline_terminator_run(stream, else_start, hi)?;
+    let else_end: usize = else_run.last()? + 1;
+    let else_ops: Vec<&CanonicalOp> = else_run
+        .iter()
+        .filter_map(|&k: &usize| stream.ops.get(k))
+        .collect();
+    let mut found: Option<(Vec<usize>, Vec<&CanonicalOp>)> = None;
+    let mut sites: usize = 0;
+    for pop_at in region.body_start..body_end {
+        if !matches!(stream.ops.get(pop_at), Some(CanonicalOp::Pop))
+            || is_shortcircuit_cleanup_pop(stream, pop_at)
+            || nested_for_encloses(stream, region.body_start, pop_at)
+        {
+            continue;
+        }
+        let follows_unwind: bool = last_significant_back(stream, region.body_start, pop_at)
+            .is_some_and(|prev: usize| {
+                matches!(
+                    stream.ops.get(prev),
+                    Some(
+                        CanonicalOp::RotN(2)
+                            | CanonicalOp::Swap(2)
+                            | CanonicalOp::Pop
+                            | CanonicalOp::PopExcept
+                            | CanonicalOp::PushExcInfo
+                    )
+                )
+            });
+        if follows_unwind {
+            continue;
+        }
+        let Some(run): Option<Vec<usize>> =
+            straightline_terminator_run(stream, pop_at + 1, body_end)
+        else {
+            continue;
+        };
+        let run_ops: Vec<&CanonicalOp> = run
+            .iter()
+            .filter_map(|&k: &usize| stream.ops.get(k))
+            .collect();
+        let returns_constant: bool = matches!(
+            run_ops.as_slice(),
+            [CanonicalOp::ReturnConst(_)]
+                | [
+                    CanonicalOp::LoadConst(_) | CanonicalOp::LoadCommonConst(_),
+                    CanonicalOp::Return
+                ]
+        );
+        let unwinds_further: bool = run_ops.iter().any(|op: &&CanonicalOp| {
+            matches!(
+                op,
+                CanonicalOp::Pop | CanonicalOp::Swap(_) | CanonicalOp::RotN(_)
+            )
+        });
+        if returns_constant
+            || unwinds_further
+            || matches!(run_ops.first(), Some(CanonicalOp::Return) | None)
+            || !matches!(run_ops.last(), Some(CanonicalOp::Return))
+        {
+            continue;
+        }
+        match &found {
+            Some((_, prev_ops)) if *prev_ops != run_ops => return None,
+            Some(_) => {}
+            None => found = Some((run, run_ops)),
+        }
+        sites += 1;
+    }
+    let (run, run_ops): (Vec<usize>, Vec<&CanonicalOp>) = found?;
+    if else_ops
+        .windows(run_ops.len())
+        .any(|window: &[&CanonicalOp]| window == run_ops.as_slice())
+    {
+        return None;
+    }
+    Some(OrphanBreakTail {
+        run_start: *run.first()?,
+        run_end: run.last()? + 1,
+        else_start,
+        else_end,
+        sites,
+    })
+}
+
+fn nested_for_encloses(stream: &DecodedStream, body_start: usize, at: usize) -> bool {
+    (body_start..at).any(|h: usize| {
+        matches!(stream.ops[h], CanonicalOp::ForIter(_))
+            && resolve_jump_target(stream, h, &stream.ops[h]).is_some_and(|exit: usize| exit > at)
+    })
+}
+
+fn replace_break_tail(stmts: &mut Vec<Stmt>, tail: &[Stmt]) -> usize {
+    let mut replaced: usize = 0;
+    for stmt in stmts.iter_mut() {
+        replaced += match stmt {
+            Stmt::If { body, orelse, .. } => {
+                replace_break_tail(body, tail) + replace_break_tail(orelse, tail)
+            }
+            Stmt::With { body, .. } => replace_break_tail(body, tail),
+            Stmt::Try {
+                body,
+                handlers,
+                orelse,
+                finalbody,
+                ..
+            }
+            | Stmt::TryStar {
+                body,
+                handlers,
+                orelse,
+                finalbody,
+                ..
+            } => {
+                replace_break_tail(body, tail)
+                    + handlers
+                        .iter_mut()
+                        .map(|handler: &mut crate::ast::node::ExceptHandler| {
+                            replace_break_tail(&mut handler.body, tail)
+                        })
+                        .sum::<usize>()
+                    + replace_break_tail(orelse, tail)
+                    + replace_break_tail(finalbody, tail)
+            }
+            _ => 0,
+        };
+    }
+    if strip_stmt_suffix(stmts, tail) {
+        stmts.push(Stmt::Break);
+        replaced += 1;
+    }
+    replaced
+}
+
 fn else_block_is_closed(stream: &DecodedStream, start: usize, end: usize) -> bool {
     let (Some(&lo_off), Some(&hi_off)): (Option<&u32>, Option<&u32>) =
         (stream.offsets.get(start), stream.offsets.get(end))
@@ -4581,6 +4903,13 @@ fn is_stmt_terminator(op: &CanonicalOp) -> bool {
     )
 }
 
+fn jumps_past_latch(stream: &DecodedStream, idx: usize, back_edge: usize) -> bool {
+    matches!(
+        stream.ops[idx],
+        CanonicalOp::JumpForward(_) | CanonicalOp::JumpAbsolute(_)
+    ) && resolve_jump_target(stream, idx, &stream.ops[idx]).is_some_and(|t: usize| t > back_edge)
+}
+
 fn terminator_floor(stream: &DecodedStream, floor: usize, back_edge: usize) -> usize {
     (floor..back_edge.min(stream.ops.len()))
         .rev()
@@ -4592,7 +4921,10 @@ fn bottom_test_span_start(stream: &DecodedStream, floor: usize, back_edge: usize
     let mut start: usize = back_edge;
     while start > floor {
         let prev: usize = start - 1;
-        if completes_body_stmt(stream, prev) || is_stmt_terminator(&stream.ops[prev]) {
+        if completes_body_stmt(stream, prev)
+            || is_stmt_terminator(&stream.ops[prev])
+            || jumps_past_latch(stream, prev, back_edge)
+        {
             break;
         }
         start = prev;

@@ -83,14 +83,14 @@ const CASES: &[LoopTryCase] = &[
     LoopTryCase {
         label: "while_try_finally",
         source: "def f(active, nxt, sink):\n    while active():\n        try:\n            sink(nxt())\n        finally:\n            sink(None)\n",
-        equivalent_on: BLOCK_STACK,
-        open_reason: "a finally duplicated along every loop exit is the region duplication class",
+        equivalent_on: &["3.9", "3.10", "3.11", "3.14", "3.15"],
+        open_reason: "on 3.12 and 3.13 the entry test and the loop exit return through separate pads",
     },
     LoopTryCase {
         label: "while_try_except_finally",
         source: "def f(active, nxt, sink):\n    while active():\n        try:\n            sink(nxt())\n        except LookupError:\n            sink(1)\n        finally:\n            sink(2)\n",
-        equivalent_on: BLOCK_STACK,
-        open_reason: "a finally duplicated along every loop exit is the region duplication class",
+        equivalent_on: &["3.9", "3.10", "3.11", "3.14", "3.15"],
+        open_reason: "on 3.12 and 3.13 the entry test and the loop exit return through separate pads",
     },
     LoopTryCase {
         label: "while_try_else",

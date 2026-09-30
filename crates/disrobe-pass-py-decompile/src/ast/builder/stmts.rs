@@ -2362,7 +2362,7 @@ pub(super) fn structure_stmts(
         let block: &[CanonicalOp] = stream.ops.get(lo..hi).unwrap_or_default();
         return Ok(build_linear_stmts(code, block).unwrap_or_default());
     };
-    if let Some(stmts) = try_structure_inline_comprehension(code, stream, lo, hi)? {
+    if let Some(stmts) = try_structure_inline_comprehension(code, stream, lo, hi, Vec::new())? {
         return Ok(stmts);
     }
     if let Some(stmts) = try_structure_inline_comprehension_noclear(code, stream, lo, hi)? {
@@ -4444,6 +4444,7 @@ fn try_structure_inline_comprehension(
     stream: &DecodedStream,
     lo: usize,
     hi: usize,
+    seed: Vec<Expr>,
 ) -> Result<Option<Vec<Stmt>>> {
     let Some(comp): Option<InlineComp> = detect_inline_comprehension(stream, lo, hi) else {
         return Ok(None);
@@ -4472,7 +4473,7 @@ fn try_structure_inline_comprehension(
         .find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::GetIter | CanonicalOp::GetAiter))
         .unwrap_or(comp.clear_idx);
     let (head, mut iter_residual): (Vec<Stmt>, Vec<Expr>) =
-        build_linear_stmts_sim(code, &stream.ops[lo..iter_end])?;
+        build_linear_stmts_sim_seed(code, &stream.ops[lo..iter_end], seed)?;
     let iter: Expr = iter_residual.pop().unwrap_or(Expr::Constant {
         value: ConstValue::None,
         line: None,
@@ -5204,21 +5205,28 @@ fn consume_inline_comp_result(
     }
     let mut seed: Vec<Expr> = pre_residual;
     seed.push(result);
-    let comp_cap: usize = (consumer..hi)
-        .find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::LoadFastAndClear(_)))
-        .map_or(hi, |next_comp: usize| {
-            (consumer..next_comp)
-                .rev()
-                .find(|&k: &usize| {
-                    matches!(stream.ops[k], CanonicalOp::GetIter | CanonicalOp::GetAiter)
-                })
-                .map_or(next_comp, |get_iter: usize| {
-                    inline_comp_consumer_boundary(stream, consumer, get_iter)
-                })
-        });
+    let next_comp: Option<usize> =
+        (consumer..hi).find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::LoadFastAndClear(_)));
+    let comp_cap: usize = next_comp.map_or(hi, |next_comp: usize| {
+        (consumer..next_comp)
+            .rev()
+            .find(|&k: &usize| {
+                matches!(stream.ops[k], CanonicalOp::GetIter | CanonicalOp::GetAiter)
+            })
+            .map_or(next_comp, |get_iter: usize| {
+                inline_comp_consumer_boundary(stream, consumer, get_iter)
+            })
+    });
     let consumer_end: usize = comp_result_consume_end(code, stream, consumer, comp_cap, &seed);
     let (consumed, residual): (Vec<Stmt>, Vec<Expr>) =
-        build_linear_stmts_sim_seed(code, &stream.ops[consumer..consumer_end], seed)?;
+        build_linear_stmts_sim_seed(code, &stream.ops[consumer..consumer_end], seed.clone())?;
+    if next_comp.is_some()
+        && consumer_end == comp_cap
+        && !residual.is_empty()
+        && let Some(stmts) = try_structure_inline_comprehension(code, stream, consumer, hi, seed)?
+    {
+        return Ok(stmts);
+    }
     let mut out: Vec<Stmt> = if consumed.is_empty() {
         residual
             .into_iter()

@@ -177,10 +177,52 @@ fn fix_nested_bodies(body: Vec<Stmt>, parent_kind: BodyKind) -> Vec<Stmt> {
         .map(recover_aug_assign)
         .map(recover_assert_idiom)
         .collect();
-    merge_annotations(recovered)
+    let nested: Vec<Stmt> = merge_annotations(recovered)
         .into_iter()
         .map(|s: Stmt| recurse_postprocess(s, parent_kind))
-        .collect()
+        .collect();
+    fold_returning_elif_ladder(nested)
+}
+
+fn is_returning_ladder(stmt: &Stmt) -> bool {
+    let Stmt::If { body, orelse, .. }: &Stmt = stmt else {
+        return false;
+    };
+    matches!(body.last(), Some(Stmt::Return(_)))
+        && match orelse.as_slice() {
+            [] => true,
+            [only] => is_returning_ladder(only),
+            _ => false,
+        }
+}
+
+fn fold_returning_elif_ladder(body: Vec<Stmt>) -> Vec<Stmt> {
+    let mut folded: Vec<Stmt> = Vec::with_capacity(body.len());
+    for stmt in body.into_iter().rev() {
+        let next_is_ladder: bool = folded.last().is_some_and(is_returning_ladder);
+        match stmt {
+            Stmt::If {
+                test,
+                body,
+                orelse,
+                line,
+            } if next_is_ladder
+                && orelse.is_empty()
+                && matches!(body.last(), Some(Stmt::Return(_))) =>
+            {
+                let next: Vec<Stmt> = folded.pop().into_iter().collect();
+                folded.push(Stmt::If {
+                    test,
+                    body,
+                    orelse: next,
+                    line,
+                });
+            }
+            other => folded.push(other),
+        }
+    }
+    folded.reverse();
+    folded
 }
 
 fn recurse_postprocess(stmt: Stmt, _parent_kind: BodyKind) -> Stmt {

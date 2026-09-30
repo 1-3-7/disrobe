@@ -431,3 +431,184 @@ fn a_loop_inside_a_finally_is_counted_once_across_its_two_copies() {
         &[],
     );
 }
+
+#[test]
+fn a_for_else_returning_none_keeps_its_else_and_the_fall_through_return() {
+    assert_recovers(
+        "for_else_return_none_then_tail",
+        concat!(
+            "def first_even(values):\n",
+            "    for index, value in enumerate(values):\n",
+            "        if value % 2 == 0:\n",
+            "            break\n",
+            "    else:\n",
+            "        return None\n",
+            "    return index, value\n",
+        ),
+        &["else:", "index, value"],
+        &[],
+    );
+}
+
+#[test]
+fn a_while_whose_handler_continues_through_a_finally_keeps_its_try() {
+    assert_recovers(
+        "while_handler_continue_finally",
+        concat!(
+            "def retrying(attempts):\n",
+            "    log = []\n",
+            "    count = 0\n",
+            "    while count < attempts:\n",
+            "        count += 1\n",
+            "        try:\n",
+            "            if count % 2:\n",
+            "                raise ValueError(count)\n",
+            "            log.append((\"ok\", count))\n",
+            "        except ValueError as error:\n",
+            "            log.append((\"retry\", error.args[0]))\n",
+            "            continue\n",
+            "        finally:\n",
+            "            log.append((\"done\", count))\n",
+            "        if count >= 4:\n",
+            "            break\n",
+            "    return log\n",
+        ),
+        &[
+            "while count < attempts:",
+            "except ValueError as error:",
+            "finally:",
+        ],
+        &[],
+    );
+}
+
+#[test]
+fn two_inlined_comprehensions_in_one_call_keep_their_operands() {
+    assert_recovers(
+        "two_inlined_comprehensions_one_call",
+        concat!(
+            "def pairs(values):\n",
+            "    print({k: v for k, v in zip(\"abc\", values) if v}, sorted({x % 3 for x in values}))\n",
+            "    return [k for k in values], [x for x in range(3)]\n",
+        ),
+        &[
+            "print({k: v for (k, v) in zip(\"abc\", values) if v}, sorted({x % 3 for x in values}))",
+            "return ([k for k in values], [x for x in range(3)])",
+        ],
+        &[],
+    );
+}
+
+#[test]
+fn a_ladder_whose_every_branch_returns_keeps_its_elifs() {
+    assert_recovers(
+        "returning_elif_ladder",
+        concat!(
+            "def classify(n):\n",
+            "    if n < 0:\n",
+            "        return \"neg\"\n",
+            "    elif n == 0:\n",
+            "        return \"zero\"\n",
+            "    elif n < 10 and n % 2 == 0:\n",
+            "        return \"small-even\"\n",
+            "    elif n < 10:\n",
+            "        return \"small-odd\"\n",
+            "    return \"big\"\n",
+        ),
+        &[
+            "    elif n == 0:",
+            "    elif n < 10 and n % 2 == 0:",
+            "    elif n < 10:",
+        ],
+        &[],
+    );
+}
+
+#[test]
+fn a_guarded_break_ending_a_while_body_keeps_the_top_test() {
+    assert_recovers(
+        "while_trailing_guarded_break",
+        concat!(
+            "def f(n, g):\n",
+            "    while n < 3:\n",
+            "        n += 1\n",
+            "        g(1)\n",
+            "        if n > 1:\n",
+            "            break\n",
+            "    return n\n",
+        ),
+        &["while n < 3:", "n > 1"],
+        &[],
+    );
+}
+
+#[test]
+fn a_handler_continue_before_the_loop_tail_stays_a_continue() {
+    assert_recovers(
+        "while_handler_continue_before_tail",
+        concat!(
+            "def f(n, g):\n",
+            "    while n < 3:\n",
+            "        n += 1\n",
+            "        try:\n",
+            "            g(1)\n",
+            "        except ValueError:\n",
+            "            g(2)\n",
+            "            continue\n",
+            "        g(4)\n",
+            "    return n\n",
+        ),
+        &["while n < 3:", "except ValueError:", "continue"],
+        &[],
+    );
+}
+
+#[test]
+fn a_trailing_guarded_break_keeps_the_statements_after_the_for_loop_outside_it() {
+    assert_recovers(
+        "for_guarded_break_after_handled_comprehension",
+        concat!(
+            "def main(emit):\n",
+            "    t = []\n",
+            "    a = 8\n",
+            "    b = 9\n",
+            "    c = 3\n",
+            "    e = 7\n",
+            "    for i1 in range(3, 5):\n",
+            "        d = (a + i1) % 1000\n",
+            "        if d == c:\n",
+            "            try:\n",
+            "                b = e // ((b - b) % 3)\n",
+            "                t.append((d * 4) % 97)\n",
+            "                e = len([x for x in t if x > (10 % 5)])\n",
+            "            except ZeroDivisionError:\n",
+            "                emit(\"zero\")\n",
+            "            e = b if (16 + b) < 15 else b\n",
+            "        if 10 in t:\n",
+            "            break\n",
+            "    t.append(c)\n",
+            "    emit(t)\n",
+        ),
+        &["        if 10 in t:\n            break\n    t.append(c)"],
+        &[],
+    );
+}
+
+#[test]
+fn a_comprehension_ending_a_try_body_stays_in_the_try() {
+    assert_recovers(
+        "comprehension_ends_try_body",
+        concat!(
+            "def f(t, b, e, emit):\n",
+            "    try:\n",
+            "        b = e // b\n",
+            "        e = len([x for x in t if x > 0])\n",
+            "    except ZeroDivisionError:\n",
+            "        emit(\"zero\")\n",
+            "    e = b if b < 15 else b\n",
+            "    return e\n",
+        ),
+        &["        e = len([x for x in t if x > 0])\n    except ZeroDivisionError:"],
+        &[],
+    );
+}
