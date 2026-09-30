@@ -183,7 +183,6 @@ fn exercise_byte_entrypoints(bytes: &[u8], rng: &mut XorShift64) {
     }
 }
 
-#[cfg(feature = "chain")]
 fn exercise_chain_entrypoints(bytes: &[u8]) {
     use disrobe_core::Artifact;
     use disrobe_core::Rung;
@@ -207,7 +206,6 @@ fn exercise_chain_entrypoints(bytes: &[u8]) {
 
 fn probe(bytes: &[u8], rng: &mut XorShift64) {
     exercise_byte_entrypoints(bytes, rng);
-    #[cfg(feature = "chain")]
     exercise_chain_entrypoints(bytes);
 }
 

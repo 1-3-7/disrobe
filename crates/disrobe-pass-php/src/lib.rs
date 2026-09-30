@@ -5,10 +5,8 @@
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub mod bcompiler;
-#[cfg(feature = "chain")]
 pub mod chain_detector;
 pub(crate) mod debug;
-#[cfg(feature = "chain")]
 pub use chain_detector::{PhpCatalogEntry, PhpDetectorImpl};
 pub mod declaration;
 pub mod decode_loop;

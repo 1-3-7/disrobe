@@ -1,4 +1,3 @@
-#![cfg(feature = "chain")]
 use std::collections::BTreeSet;
 
 use disrobe_core::Artifact;

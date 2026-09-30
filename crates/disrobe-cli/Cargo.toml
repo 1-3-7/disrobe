@@ -88,7 +88,7 @@ jvm = ["dep:disrobe-pass-jvm", "disrobe-pass-py-disasm/alt-jython", "nir-lift", 
 dotnet = ["dep:disrobe-pass-dotnet", "disrobe-pass-py-disasm/alt-ironpython", "disrobe-pass-dotnet/chain", "nir-lift", "disrobe-passes?/dotnet", "disrobe-mcp?/dotnet", "disrobe-nir-lift/dotnet"]
 mobile = ["dep:disrobe-pass-mobile", "disrobe-pass-mobile/native-image", "disrobe-passes?/mobile", "disrobe-mcp?/mobile"]
 lua = ["dep:disrobe-pass-lua", "disrobe-pass-lua/chain", "nir-lift", "disrobe-passes?/lua", "disrobe-mcp?/lua", "disrobe-nir-lift/lua"]
-php = ["dep:disrobe-pass-php", "disrobe-pass-php/chain", "disrobe-passes?/php", "disrobe-mcp?/php"]
+php = ["dep:disrobe-pass-php", "disrobe-passes?/php", "disrobe-mcp?/php"]
 ruby = ["dep:disrobe-pass-ruby", "nir-lift", "disrobe-passes?/ruby", "disrobe-mcp?/ruby", "disrobe-nir-lift/ruby"]
 beam = ["dep:disrobe-pass-beam", "nir-lift", "disrobe-passes?/beam", "disrobe-mcp?/beam", "disrobe-nir-lift/beam"]
 swift = ["dep:disrobe-pass-swift-objc", "disrobe-passes?/swift", "disrobe-mcp?/swift"]
@@ -122,7 +122,6 @@ chain = [
     "disrobe-pass-pyinstaller/chain",
     "disrobe-pass-js-deob?/chain",
     "disrobe-pass-wasm-deob?/chain",
-    "disrobe-pass-php?/chain",
     "disrobe-pass-ruby?/chain",
     "disrobe-pass-shell?/chain",
     "disrobe-pass-mobile?/chain",

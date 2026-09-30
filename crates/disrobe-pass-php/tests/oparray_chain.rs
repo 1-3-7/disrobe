@@ -1,4 +1,3 @@
-#![cfg(feature = "chain")]
 #![allow(clippy::expect_used, clippy::too_many_arguments)]
 
 #[path = "support/php_toolchain.rs"]
