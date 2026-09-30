@@ -26,7 +26,6 @@ tar = { workspace = true, optional = true }
 [features]
 default = ["ml"]
 ml = ["dep:zip", "dep:tar"]
-chain = ["disrobe-core/chain"]
 
 [dev-dependencies]
 disrobe-testkit = { workspace = true }

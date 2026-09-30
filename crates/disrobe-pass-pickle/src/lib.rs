@@ -10,7 +10,6 @@
     clippy::use_self
 )]
 
-#[cfg(feature = "chain")]
 pub mod chain_detector;
 pub(crate) mod debug;
 pub mod decompile;

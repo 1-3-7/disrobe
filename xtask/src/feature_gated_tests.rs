@@ -50,7 +50,6 @@ const HIDDEN_TEST_SURFACE: &[(&str, &[&str])] = &[
     ("disrobe-pass-nativelang", &["chain"]),
     ("disrobe-pass-nuitka", &["chain"]),
     ("disrobe-pass-php", &["chain"]),
-    ("disrobe-pass-pickle", &["chain"]),
     ("disrobe-pass-py-decompile", &["chain"]),
     ("disrobe-pass-py-deob", &["chain"]),
     (
