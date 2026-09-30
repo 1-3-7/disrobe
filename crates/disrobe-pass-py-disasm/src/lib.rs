@@ -16,7 +16,6 @@ pub(crate) fn push_string_line(out: &mut String, args: std::fmt::Arguments<'_>) 
 
 pub mod alt_runtimes;
 mod cfg;
-#[cfg(feature = "chain")]
 pub mod chain_detector;
 mod const_repr;
 pub use const_repr::is_python_printable;

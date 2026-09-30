@@ -1,15 +1,12 @@
 #![allow(clippy::expect_used)]
 
-#[cfg(feature = "chain")]
 use disrobe_core::chain::Pass;
-#[cfg(feature = "chain")]
 use disrobe_core::{Artifact, Rung};
 use disrobe_pass_py_disasm::alt_runtimes::micropython::{parse as mpy_parse, parse_bytecode};
 use disrobe_pass_py_disasm::alt_runtimes::micropython_native::parse as native_parse;
 use disrobe_pass_py_disasm::alt_runtimes::pypy::parse as pypy_parse;
 use disrobe_pass_py_disasm::alt_runtimes::recover::{recover, recover_detected};
 use disrobe_pass_py_disasm::alt_runtimes::{AltRuntime, detect_runtime};
-#[cfg(feature = "chain")]
 use disrobe_pass_py_disasm::chain_detector::PY_DISASM_PASS;
 use disrobe_testkit::{CorpusEntry, StressCase, StressConfig, XorShift64};
 
@@ -161,14 +158,10 @@ fn probe(bytes: &[u8]) {
     run_pass(bytes);
 }
 
-#[cfg(feature = "chain")]
 fn run_pass(bytes: &[u8]) {
     let input: Artifact = Artifact::new(Rung::Raw, bytes.to_vec(), [0u8; 32]);
     let _ = PY_DISASM_PASS.run(&input);
 }
-
-#[cfg(not(feature = "chain"))]
-const fn run_pass(_bytes: &[u8]) {}
 
 fn check(case: &StressCase<'_>) {
     probe(case.bytes());

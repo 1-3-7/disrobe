@@ -1,4 +1,3 @@
-#![cfg(feature = "chain")]
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 use disrobe_core::Artifact;
 use disrobe_core::Rung;
