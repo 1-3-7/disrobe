@@ -222,7 +222,11 @@ fn erlang_no_dbgi_resugars_single_generator_list_comprehension() {
     );
 
     assert!(
-        src.contains("'-higher_order/2-lc$^0/1-0-'(X1, X0)"),
+        src.contains("f_2dhigher_5forder_2f2_2dlc_24_5e0_2f1_2d0_2d(X1, X0)")
+            && src.contains(
+                "
+f_2dhigher_5forder_2f2_2dlc_24_5e0_2f1_2d0_2d("
+            ),
         "a capture-carrying comprehension keeps its faithful helper recursion"
     );
 
