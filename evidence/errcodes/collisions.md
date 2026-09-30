@@ -4,7 +4,7 @@
 
 | Measure | Count |
 | --- | ---: |
-| Scanned source files | 1965 |
+| Scanned source files | 1964 |
 | Emission sites | 2348 |
 | Sites carrying a message | 2265 |
 | Distinct emitted codes | 1797 |
@@ -2691,8 +2691,8 @@
 - `DR-NATIVELANG-0002`: `crates/disrobe-pass-nativelang/src/error.rs:11`
 - `DR-NATIVELANG-0003`: `crates/disrobe-pass-nativelang/src/error.rs:14`
 - `DR-NATIVELANG-0004`: `crates/disrobe-pass-nativelang/src/error.rs:18`
-- `DR-NLANG-0901`: `crates/disrobe-pass-nativelang/src/chain_detector.rs:74`
-- `DR-NLANG-0902`: `crates/disrobe-pass-nativelang/src/chain_detector.rs:80`
+- `DR-NLANG-0901`: `crates/disrobe-pass-nativelang/src/chain_detector.rs:73`
+- `DR-NLANG-0902`: `crates/disrobe-pass-nativelang/src/chain_detector.rs:79`
 - `DR-NUITKA-0011`: `crates/disrobe-pass-nuitka/src/error.rs:40`
 - `DR-NUITKA-0012`: `crates/disrobe-pass-nuitka/src/error.rs:43`
 - `DR-NUITKA-0013`: `crates/disrobe-pass-nuitka/src/error.rs:47`
@@ -2716,9 +2716,9 @@
 - `DR-NUITKA-0031`: `crates/disrobe-pass-nuitka/src/error.rs:118`
 - `DR-NUITKA-0032`: `crates/disrobe-pass-nuitka/src/error.rs:124`
 - `DR-NUITKA-0033`: `crates/disrobe-pass-nuitka/src/error.rs:131`
-- `DR-NUITKA-0904`: `crates/disrobe-pass-nuitka/src/chain_detector.rs:79`
-- `DR-NUITKA-0906`: `crates/disrobe-pass-nuitka/src/chain_detector.rs:197`
-- `DR-NUITKA-0907`: `crates/disrobe-pass-nuitka/src/chain_detector.rs:301`
+- `DR-NUITKA-0904`: `crates/disrobe-pass-nuitka/src/chain_detector.rs:78`
+- `DR-NUITKA-0906`: `crates/disrobe-pass-nuitka/src/chain_detector.rs:196`
+- `DR-NUITKA-0907`: `crates/disrobe-pass-nuitka/src/chain_detector.rs:300`
 - `DR-PHP-0001`: `crates/disrobe-pass-php/src/error.rs:8`
 - `DR-PHP-0010`: `crates/disrobe-pass-php/src/error.rs:11`
 - `DR-PHP-0011`: `crates/disrobe-pass-php/src/error.rs:14`
@@ -2773,9 +2773,9 @@
 - `DR-PHP-0124`: `crates/disrobe-pass-php/src/error.rs:228`
 - `DR-PHP-0125`: `crates/disrobe-pass-php/src/error.rs:236`
 - `DR-PHP-0126`: `crates/disrobe-pass-php/src/error.rs:240`
-- `DR-PHP-0902`: `crates/disrobe-pass-php/src/chain_detector.rs:113`
-- `DR-PHP-0904`: `crates/disrobe-pass-php/src/chain_detector.rs:123`
-- `DR-PHP-0905`: `crates/disrobe-pass-php/src/chain_detector.rs:191`
+- `DR-PHP-0902`: `crates/disrobe-pass-php/src/chain_detector.rs:112`
+- `DR-PHP-0904`: `crates/disrobe-pass-php/src/chain_detector.rs:122`
+- `DR-PHP-0905`: `crates/disrobe-pass-php/src/chain_detector.rs:190`
 - `DR-PICKLE-0001`: `crates/disrobe-pass-pickle/src/error.rs:8`
 - `DR-PICKLE-0002`: `crates/disrobe-pass-pickle/src/error.rs:11`
 - `DR-PICKLE-0003`: `crates/disrobe-pass-pickle/src/error.rs:15`
@@ -2895,13 +2895,13 @@
 - `DR-PYDEOB-0902`: `crates/disrobe-pass-py-deob/src/chain_detector.rs:248`
 - `DR-PYDEOB-0903`: `crates/disrobe-pass-py-deob/src/chain_detector.rs:236`
 - `DR-PYDEOB-0904`: `crates/disrobe-pass-py-deob/src/chain_detector.rs:242`
-- `DR-PYDIS-0902`: `crates/disrobe-pass-py-disasm/src/chain_detector.rs:99`
-- `DR-PYDIS-0906`: `crates/disrobe-pass-py-disasm/src/chain_detector.rs:222`
-- `DR-PYDIS-0907`: `crates/disrobe-pass-py-disasm/src/chain_detector.rs:229`
-- `DR-PYDIS-0908`: `crates/disrobe-pass-py-disasm/src/chain_detector.rs:240`
-- `DR-PYDIS-0909`: `crates/disrobe-pass-py-disasm/src/chain_detector.rs:249`
-- `DR-PYDIS-0910`: `crates/disrobe-pass-py-disasm/src/chain_detector.rs:152`
-- `DR-PYDIS-0911`: `crates/disrobe-pass-py-disasm/src/chain_detector.rs:287`
+- `DR-PYDIS-0902`: `crates/disrobe-pass-py-disasm/src/chain_detector.rs:98`
+- `DR-PYDIS-0906`: `crates/disrobe-pass-py-disasm/src/chain_detector.rs:221`
+- `DR-PYDIS-0907`: `crates/disrobe-pass-py-disasm/src/chain_detector.rs:228`
+- `DR-PYDIS-0908`: `crates/disrobe-pass-py-disasm/src/chain_detector.rs:239`
+- `DR-PYDIS-0909`: `crates/disrobe-pass-py-disasm/src/chain_detector.rs:248`
+- `DR-PYDIS-0910`: `crates/disrobe-pass-py-disasm/src/chain_detector.rs:151`
+- `DR-PYDIS-0911`: `crates/disrobe-pass-py-disasm/src/chain_detector.rs:286`
 - `DR-PYFRZ-0021`: `crates/disrobe-pass-pyfreeze/src/error.rs:84`
 - `DR-PYFRZ-0022`: `crates/disrobe-pass-pyfreeze/src/error.rs:88`
 - `DR-PYFRZ-0023`: `crates/disrobe-pass-pyfreeze/src/error.rs:92`
@@ -2985,27 +2985,27 @@
 - `DR-SDEF-0012`: `crates/disrobe-pass-sourcedefender/src/error.rs:43`
 - `DR-SDEF-0013`: `crates/disrobe-pass-sourcedefender/src/error.rs:47`
 - `DR-SDEF-0014`: `crates/disrobe-pass-sourcedefender/src/error.rs:56`
-- `DR-SHELL-0902`: `crates/disrobe-pass-shell/src/chain_detector.rs:85`
-- `DR-SHELL-0909`: `crates/disrobe-pass-shell/src/chain_detector.rs:352`, `crates/disrobe-pass-shell/src/chain_detector.rs:361`
-- `DR-SHELL-0910`: `crates/disrobe-pass-shell/src/chain_detector.rs:323`
-- `DR-SHELL-0911`: `crates/disrobe-pass-shell/src/chain_detector.rs:324`
-- `DR-SHELL-0912`: `crates/disrobe-pass-shell/src/chain_detector.rs:325`
-- `DR-SHELL-0913`: `crates/disrobe-pass-shell/src/chain_detector.rs:326`
-- `DR-SHELL-0914`: `crates/disrobe-pass-shell/src/chain_detector.rs:327`
-- `DR-SHELL-0915`: `crates/disrobe-pass-shell/src/chain_detector.rs:328`
-- `DR-SHELL-0916`: `crates/disrobe-pass-shell/src/chain_detector.rs:329`
-- `DR-SHELL-0917`: `crates/disrobe-pass-shell/src/chain_detector.rs:330`
-- `DR-SHELL-0918`: `crates/disrobe-pass-shell/src/chain_detector.rs:331`
-- `DR-SHELL-0919`: `crates/disrobe-pass-shell/src/chain_detector.rs:332`
-- `DR-SHELL-0920`: `crates/disrobe-pass-shell/src/chain_detector.rs:333`
-- `DR-SHELL-0921`: `crates/disrobe-pass-shell/src/chain_detector.rs:337`
-- `DR-SHELL-0922`: `crates/disrobe-pass-shell/src/chain_detector.rs:338`
-- `DR-SHELL-0923`: `crates/disrobe-pass-shell/src/chain_detector.rs:339`
-- `DR-SHELL-0924`: `crates/disrobe-pass-shell/src/chain_detector.rs:233`
-- `DR-SHELL-0925`: `crates/disrobe-pass-shell/src/chain_detector.rs:244`
-- `DR-SHELL-0926`: `crates/disrobe-pass-shell/src/chain_detector.rs:286`
-- `DR-SHELL-0927`: `crates/disrobe-pass-shell/src/chain_detector.rs:222`
-- `DR-SHELL-0928`: `crates/disrobe-pass-shell/src/chain_detector.rs:211`
+- `DR-SHELL-0902`: `crates/disrobe-pass-shell/src/chain_detector.rs:84`
+- `DR-SHELL-0909`: `crates/disrobe-pass-shell/src/chain_detector.rs:351`, `crates/disrobe-pass-shell/src/chain_detector.rs:360`
+- `DR-SHELL-0910`: `crates/disrobe-pass-shell/src/chain_detector.rs:322`
+- `DR-SHELL-0911`: `crates/disrobe-pass-shell/src/chain_detector.rs:323`
+- `DR-SHELL-0912`: `crates/disrobe-pass-shell/src/chain_detector.rs:324`
+- `DR-SHELL-0913`: `crates/disrobe-pass-shell/src/chain_detector.rs:325`
+- `DR-SHELL-0914`: `crates/disrobe-pass-shell/src/chain_detector.rs:326`
+- `DR-SHELL-0915`: `crates/disrobe-pass-shell/src/chain_detector.rs:327`
+- `DR-SHELL-0916`: `crates/disrobe-pass-shell/src/chain_detector.rs:328`
+- `DR-SHELL-0917`: `crates/disrobe-pass-shell/src/chain_detector.rs:329`
+- `DR-SHELL-0918`: `crates/disrobe-pass-shell/src/chain_detector.rs:330`
+- `DR-SHELL-0919`: `crates/disrobe-pass-shell/src/chain_detector.rs:331`
+- `DR-SHELL-0920`: `crates/disrobe-pass-shell/src/chain_detector.rs:332`
+- `DR-SHELL-0921`: `crates/disrobe-pass-shell/src/chain_detector.rs:336`
+- `DR-SHELL-0922`: `crates/disrobe-pass-shell/src/chain_detector.rs:337`
+- `DR-SHELL-0923`: `crates/disrobe-pass-shell/src/chain_detector.rs:338`
+- `DR-SHELL-0924`: `crates/disrobe-pass-shell/src/chain_detector.rs:232`
+- `DR-SHELL-0925`: `crates/disrobe-pass-shell/src/chain_detector.rs:243`
+- `DR-SHELL-0926`: `crates/disrobe-pass-shell/src/chain_detector.rs:285`
+- `DR-SHELL-0927`: `crates/disrobe-pass-shell/src/chain_detector.rs:221`
+- `DR-SHELL-0928`: `crates/disrobe-pass-shell/src/chain_detector.rs:210`
 - `DR-STR-0049`: `crates/disrobe-cli/src/cli/strings.rs:24`
 - `DR-STR-0050`: `crates/disrobe-cli/src/cli/strings.rs:27`
 - `DR-SWOBJ-0902`: `crates/disrobe-pass-swift-objc/src/chain_detector.rs:162`
