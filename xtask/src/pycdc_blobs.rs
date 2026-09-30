@@ -162,6 +162,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_file_that_re_adds_a_listed_blob_is_found_before_it_is_staged() -> Result<()> {
+        let root: tempfile::TempDir = tempfile::tempdir()?;
+        git_stdout(root.path(), &["init", "-q"])?;
+        std::fs::write(root.path().join("planted.py"), b"print('listed')\n")?;
+        std::fs::write(root.path().join("authored.py"), b"print('authored')\n")?;
+        let planted: String =
+            String::from_utf8(git_stdout(root.path(), &["hash-object", "planted.py"])?)?
+                .trim()
+                .to_owned();
+        let listed: BTreeSet<String> = BTreeSet::from([planted.clone()]);
+
+        let blobs: BTreeMap<String, String> = working_tree_blob_ids(root.path())?;
+
+        assert_eq!(
+            listed_files(&blobs, &listed),
+            vec![format!("planted.py ({planted})")]
+        );
+        Ok(())
+    }
+
+    #[test]
     fn a_malformed_or_empty_list_is_refused() {
         assert!(parse_list("").is_err());
         assert!(parse_list("24CC0F2F81A267DFC0A819000EF4F8D51AF39DCD\n").is_err());
