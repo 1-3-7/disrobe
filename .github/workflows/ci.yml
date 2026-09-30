@@ -310,7 +310,7 @@ jobs:
         run: |
           set -euo pipefail
           jar="$RUNNER_TEMP/ecj-3.26.0.jar"
-          curl -fsSL -o "$jar" https://repo1.maven.org/maven2/org/eclipse/jdt/ecj/3.26.0/ecj-3.26.0.jar
+          curl -fsSL --retry 3 -o "$jar" https://repo1.maven.org/maven2/org/eclipse/jdt/ecj/3.26.0/ecj-3.26.0.jar
           echo "ac0ba5876eaf7ebb47749a0d1be179c51f194b9dd0b875d1c09e1b530f5a2db5  $jar" | sha256sum -c -
           echo "DISROBE_ECJ_JAR=$jar" >> "$GITHUB_ENV"
       - name: provision APK reference tools
@@ -602,7 +602,7 @@ jobs:
             Windows)
               qpdf_root="$(cygpath -u "$RUNNER_TEMP")/qpdf-12.4.2"
               mkdir -p "$qpdf_root"
-              curl --fail --location --max-time 600 --output "$qpdf_root/qpdf.zip" \
+              curl --fail --location --retry 3 --max-time 600 --output "$qpdf_root/qpdf.zip" \
                 https://github.com/qpdf/qpdf/releases/download/v12.4.2/qpdf-12.4.2-msvc64.zip
               echo "db87077e683630c1217e0e8f9a20a9749d952ab676e881c3689187763a5de25d  $qpdf_root/qpdf.zip" | sha256sum --check
               unzip -q "$qpdf_root/qpdf.zip" -d "$qpdf_root"
@@ -694,7 +694,7 @@ jobs:
           export SDKROOT="$macos_sdk"
           package="$RUNNER_TEMP/disrobe-swift-6.3.2.pkg"
           trap 'rm -f -- "$package"' EXIT
-          curl --fail --location --max-time 600 --output "$package" \
+          curl --fail --location --retry 3 --max-time 600 --output "$package" \
             https://download.swift.org/swift-6.3.2-release/xcode/swift-6.3.2-RELEASE/swift-6.3.2-RELEASE-osx.pkg
           signature="$(pkgutil --check-signature "$package")"
           printf '%s\n' "$signature"
@@ -890,7 +890,7 @@ jobs:
             fi
           }
           for tool in deno denort; do
-            curl --fail --location --max-time 600 --output "$root/$tool.zip"               "https://github.com/denoland/deno/releases/download/v2.9.7/$tool-$triple.zip"
+            curl --fail --location --retry 3 --max-time 600 --output "$root/$tool.zip"               "https://github.com/denoland/deno/releases/download/v2.9.7/$tool-$triple.zip"
           done
           check_sum "$deno_sum" "$root/deno.zip"
           check_sum "$denort_sum" "$root/denort.zip"
@@ -1330,7 +1330,7 @@ jobs:
           cc --version
       - name: install luau 0.725 (matches the committed decompile fixtures)
         run: |
-          curl -fsSL -o luau-ubuntu.zip \
+          curl -fsSL --retry 3 -o luau-ubuntu.zip \
             https://github.com/luau-lang/luau/releases/download/0.725/luau-ubuntu.zip
           mkdir -p "$HOME/.local/bin"
           unzip -o luau-ubuntu.zip -d "$HOME/.local/bin"
