@@ -243,7 +243,6 @@ fn exercise_text(text: &str) {
     let _ = peel_indirection_with_policy(text, DynamicPolicy::default());
 }
 
-#[cfg(feature = "chain")]
 fn exercise_chain(bytes: &[u8]) {
     use disrobe_core::chain::Pass;
     use disrobe_core::{Artifact, Rung};
@@ -254,9 +253,6 @@ fn exercise_chain(bytes: &[u8]) {
     let _ = pass.run(&artifact);
     let _ = pass.extract_children(&artifact);
 }
-
-#[cfg(not(feature = "chain"))]
-const fn exercise_chain(_bytes: &[u8]) {}
 
 fn run_one(bytes: &[u8]) {
     exercise_binary(bytes);

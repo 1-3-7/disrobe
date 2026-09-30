@@ -33,10 +33,6 @@ aes = { workspace = true }
 cbc = { workspace = true }
 cipher = { version = "0.4", features = ["block-padding"] }
 
-[features]
-default = []
-chain = ["disrobe-core/chain"]
-
 [dev-dependencies]
 disrobe-testkit = { workspace = true }
 base64 = "0.22"

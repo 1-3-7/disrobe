@@ -20,7 +20,6 @@ pub(crate) mod regex_util;
 
 pub mod bash;
 pub mod batch;
-#[cfg(feature = "chain")]
 pub mod chain_detector;
 pub mod detect;
 pub mod error;

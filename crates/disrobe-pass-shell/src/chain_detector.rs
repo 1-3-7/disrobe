@@ -1,4 +1,3 @@
-#![cfg(feature = "chain")]
 use disrobe_core::Artifact;
 use disrobe_core::Capability;
 use disrobe_core::Rung;

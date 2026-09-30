@@ -233,7 +233,6 @@ fn every_stomping_variant_is_recovered_in_every_container_form() {
     );
 }
 
-#[cfg(feature = "chain")]
 #[test]
 fn the_registered_shell_pass_recovers_a_stomped_legacy_container() {
     use disrobe_core::chain::Pass as _;
