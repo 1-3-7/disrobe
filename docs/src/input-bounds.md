@@ -2,7 +2,7 @@
 
 Every parser treats its input as hostile. Counts, sizes, recursion depth, work and output are capped by named constants, and input that exceeds a cap is refused with a typed error instead of exhausting memory or time. `cargo xtask regen` generates this page from every module-level constant in `crates/*/src` whose name starts with `MAX_` or ends with `_LIMIT`, `_BUDGET` or `_CAP`, and `cargo xtask regen --check` fails when it is stale. The kind column is derived from the constant name.
 
-2157 bounds (count 214, other 1009, output 64, recursion 217, size 477, work 176).
+2172 bounds (count 215, other 1018, output 64, recursion 218, size 478, work 179).
 
 | Crate | Constant | Kind | Type | Value | File |
 | --- | --- | --- | --- | --- | --- |
@@ -1518,6 +1518,7 @@ Every parser treats its input as hostile. Counts, sizes, recursion depth, work a
 | `disrobe-pass-php` | `SANE_SWITCH_STATE_WORK_CAP` | work | `usize` | `1 << 20` | `crates/disrobe-pass-php/src/decompile.rs` |
 | `disrobe-pass-php` | `SANE_TRY_CATCH_CAP` | other | `u32` | `1 << 16` | `crates/disrobe-pass-php/src/decompile.rs` |
 | `disrobe-pass-php` | `SANE_VAR_CAP` | other | `u32` | `1 << 20` | `crates/disrobe-pass-php/src/decompile.rs` |
+| `disrobe-pass-php` | `USE_SCAN_BUDGET` | work | `usize` | `256` | `crates/disrobe-pass-php/src/decompile.rs` |
 | `disrobe-pass-php` | `MAX_LABEL_ATTRIBUTIONS_PER_ITEM` | other | `usize` | `64` | `crates/disrobe-pass-php/src/deflatten.rs` |
 | `disrobe-pass-php` | `MAX_LINEARIZE_DEPTH` | recursion | `usize` | `256` | `crates/disrobe-pass-php/src/deflatten.rs` |
 | `disrobe-pass-php` | `MAX_LINEARIZE_STEPS` | work | `usize` | `1 << 20` | `crates/disrobe-pass-php/src/deflatten.rs` |
@@ -1531,6 +1532,20 @@ Every parser treats its input as hostile. Counts, sizes, recursion depth, work a
 | `disrobe-pass-php` | `MAX_PARSE_DEPTH` | recursion | `usize` | `256` | `crates/disrobe-pass-php/src/loader.rs` |
 | `disrobe-pass-php` | `STR_REPEAT_OUTPUT_CAP` | output | `usize` | `256 * 1024 * 1024` | `crates/disrobe-pass-php/src/loader.rs` |
 | `disrobe-pass-php` | `STR_REPLACE_OUTPUT_CAP` | output | `usize` | `EXPR_INFLATE_CAP` | `crates/disrobe-pass-php/src/loader.rs` |
+| `disrobe-pass-php` | `MAX_ARGS` | other | `u32` | `1 << 16` | `crates/disrobe-pass-php/src/opcache.rs` |
+| `disrobe-pass-php` | `MAX_CLASS_NAMES` | other | `u32` | `1 << 12` | `crates/disrobe-pass-php/src/opcache.rs` |
+| `disrobe-pass-php` | `MAX_COPIED_BYTES` | size | `usize` | `1 << 28` | `crates/disrobe-pass-php/src/opcache.rs` |
+| `disrobe-pass-php` | `MAX_DEPTH` | recursion | `u32` | `64` | `crates/disrobe-pass-php/src/opcache.rs` |
+| `disrobe-pass-php` | `MAX_DYNAMIC_DEFS` | other | `u32` | `1 << 16` | `crates/disrobe-pass-php/src/opcache.rs` |
+| `disrobe-pass-php` | `MAX_HASH_ELEMENTS` | other | `u32` | `1 << 20` | `crates/disrobe-pass-php/src/opcache.rs` |
+| `disrobe-pass-php` | `MAX_LITERALS` | work | `u32` | `1 << 20` | `crates/disrobe-pass-php/src/opcache.rs` |
+| `disrobe-pass-php` | `MAX_OPS` | work | `u32` | `1 << 20` | `crates/disrobe-pass-php/src/opcache.rs` |
+| `disrobe-pass-php` | `MAX_OP_ARRAYS` | other | `usize` | `1 << 16` | `crates/disrobe-pass-php/src/opcache.rs` |
+| `disrobe-pass-php` | `MAX_TEMPORARIES` | other | `u32` | `1 << 20` | `crates/disrobe-pass-php/src/opcache.rs` |
+| `disrobe-pass-php` | `MAX_TRY_CATCH` | other | `u32` | `1 << 16` | `crates/disrobe-pass-php/src/opcache.rs` |
+| `disrobe-pass-php` | `MAX_TYPE_LIST` | other | `u32` | `1 << 8` | `crates/disrobe-pass-php/src/opcache.rs` |
+| `disrobe-pass-php` | `MAX_VALUE_NODES` | count | `usize` | `1 << 22` | `crates/disrobe-pass-php/src/opcache.rs` |
+| `disrobe-pass-php` | `MAX_VARS` | other | `u32` | `1 << 16` | `crates/disrobe-pass-php/src/opcache.rs` |
 | `disrobe-pass-php` | `EVAL_CHAIN_INFLATE_OUTPUT_CAP` | output | `usize` | `256 * 1024 * 1024` | `crates/disrobe-pass-php/src/peel.rs` |
 | `disrobe-pass-php` | `EVAL_PROBE_MIN_BUDGET` | work | `usize` | `64 * 1024` | `crates/disrobe-pass-php/src/peel.rs` |
 | `disrobe-pass-php` | `INFLATE_INITIAL_CAP` | other | `usize` | `64 * 1024` | `crates/disrobe-pass-php/src/peel.rs` |
