@@ -5,15 +5,15 @@
 | Measure | Count |
 | --- | ---: |
 | Scanned source files | 1965 |
-| Emission sites | 2354 |
-| Sites carrying a message | 2271 |
+| Emission sites | 2355 |
+| Sites carrying a message | 2272 |
 | Distinct emitted codes | 1803 |
 | Registered codes | 177 |
-| Codes with two or more distinct messages | 254 |
+| Codes with two or more distinct messages | 255 |
 | Emitted codes missing from the registry | 1626 |
 | Registered codes no source emits | 0 |
 
-## Codes with two or more distinct messages (254)
+## Codes with two or more distinct messages (255)
 
 ### `DR-BINFMT-0009`
 
@@ -780,26 +780,26 @@
 ### `DR-CLI-0480`
 
 - `"cannot read DEX input: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:217`, `crates/disrobe-cli/src/cli/jvm.rs:223`
-- `"cannot read input: {}"`: `crates/disrobe-cli/src/cli/macho.rs:137`
+- `"cannot read input: {}"`: `crates/disrobe-cli/src/cli/macho.rs:197`
 - `"invalid .NET bundle member path: {}"`: `crates/disrobe-cli/src/cli/dotnet.rs:493`
 
 ### `DR-CLI-0481`
 
 - `` ".NET bundle member paths collide after sanitization: `{}`" ``: `crates/disrobe-cli/src/cli/dotnet.rs:501`
 - `"DEX input size overflow"`: `crates/disrobe-cli/src/cli/jvm.rs:230`
-- `"macho analyze: {}"`: `crates/disrobe-cli/src/cli/macho.rs:139`
+- `"macho analyze: {}"`: `crates/disrobe-cli/src/cli/macho.rs:199`
 
 ### `DR-CLI-0482`
 
 - `"DEX input exceeds the {}-byte input limit"`: `crates/disrobe-cli/src/cli/jvm.rs:233`
-- `"cannot create dir: {}"`: `crates/disrobe-cli/src/cli/macho.rs:149`
+- `"cannot create dir: {}"`: `crates/disrobe-cli/src/cli/macho.rs:209`
 - `` "extracted .NET bundle member is absent from the manifest: `{}`" ``: `crates/disrobe-cli/src/cli/dotnet.rs:510`
 
 ### `DR-CLI-0483`
 
 - `` "declared managed assembly `{}` is invalid or unsupported: {}" ``: `crates/disrobe-cli/src/cli/dotnet.rs:539`
 - `"dex2jar requires a standalone DEX input"`: `crates/disrobe-cli/src/cli/jvm.rs:330`
-- `"serialize: {}"`: `crates/disrobe-cli/src/cli/macho.rs:152`
+- `"serialize: {}"`: `crates/disrobe-cli/src/cli/macho.rs:212`
 
 ### `DR-CLI-0484`
 
@@ -807,7 +807,7 @@
 - `"DEX-to-JAR output directory appeared before finalization: {}; staging directory: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:312`
 - `"cannot read input: {}"`: `crates/disrobe-cli/src/cli/dotnet.rs:1050`
 - `"cannot stat input: {}"`: `crates/disrobe-cli/src/cli/dotnet.rs:1042`
-- `"cannot write output: {}"`: `crates/disrobe-cli/src/cli/macho.rs:154`
+- `"cannot write output: {}"`: `crates/disrobe-cli/src/cli/macho.rs:214`
 - `"input is {} bytes, above the {} byte cap for a NativeAOT image"`: `crates/disrobe-cli/src/cli/dotnet.rs:1045`
 
 ### `DR-CLI-0486`
@@ -817,12 +817,12 @@
 
 ### `DR-CLI-0490`
 
-- `"cannot read input: {}"`: `crates/disrobe-cli/src/cli/macho.rs:176`
+- `"cannot read input: {}"`: `crates/disrobe-cli/src/cli/macho.rs:236`
 - `"in-house JAR assembly: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:362`
 
 ### `DR-CLI-0491`
 
-- `"cannot create out dir: {}"`: `crates/disrobe-cli/src/cli/macho.rs:191`
+- `"cannot create out dir: {}"`: `crates/disrobe-cli/src/cli/macho.rs:251`
 - `"in-house JAR output reached {} bytes, exceeding the {}-byte output limit"`: `crates/disrobe-cli/src/cli/jvm.rs:365`
 
 ### `DR-CLI-0492`
@@ -830,23 +830,23 @@
 - `"cannot allocate a DEX-to-JAR staging directory"`: `crates/disrobe-cli/src/cli/jvm.rs:270`
 - `"cannot create DEX-to-JAR output parent {} before staging: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:248`
 - `"cannot create DEX-to-JAR staging directory: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:264`
-- `"cannot write objc dump: {}"`: `crates/disrobe-cli/src/cli/macho.rs:204`
+- `"cannot write objc dump: {}"`: `crates/disrobe-cli/src/cli/macho.rs:264`
 
 ### `DR-CLI-0493`
 
 - `"cannot create class output directory: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:376`
-- `"cannot write swift dump: {}"`: `crates/disrobe-cli/src/cli/macho.rs:208`
+- `"cannot write swift dump: {}"`: `crates/disrobe-cli/src/cli/macho.rs:268`
 
 ### `DR-CLI-0494`
 
 - `"cannot exclusively create staged DEX-to-JAR file {}: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:290`
-- `"cannot write manifest: {}"`: `crates/disrobe-cli/src/cli/macho.rs:240`
+- `"cannot write manifest: {}"`: `crates/disrobe-cli/src/cli/macho.rs:300`
 - `"cannot write staged DEX-to-JAR file {}: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:296`
 
 ### `DR-CLI-0495`
 
-- `"cannot read input: {}"`: `crates/disrobe-cli/src/cli/macho.rs:94`
-- `"serialize objc dump: {}"`: `crates/disrobe-cli/src/cli/macho.rs:202`
+- `"cannot read input: {}"`: `crates/disrobe-cli/src/cli/macho.rs:104`
+- `"serialize objc dump: {}"`: `crates/disrobe-cli/src/cli/macho.rs:262`
 
 ### `DR-CLI-0496`
 
@@ -854,34 +854,39 @@
 - `"cannot finalize DEX-to-JAR output: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:397`
 - `"cannot finalize DEX-to-JAR output: {}; {}"`: `crates/disrobe-cli/src/cli/jvm.rs:393`
 - `"cannot finalize DEX-to-JAR staging directory {} as {}: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:319`
-- `"input is not a dyld shared cache (missing dyld_v1 magic)"`: `crates/disrobe-cli/src/cli/macho.rs:97`
-- `"serialize swift dump: {}"`: `crates/disrobe-cli/src/cli/macho.rs:206`
+- `"input is not a dyld shared cache (missing dyld_v1 magic)"`: `crates/disrobe-cli/src/cli/macho.rs:107`
+- `"serialize swift dump: {}"`: `crates/disrobe-cli/src/cli/macho.rs:266`
 
 ### `DR-CLI-0497`
 
 - `"cannot remove DEX-to-JAR staging directory {}: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:277`
-- `"dyld cache parse: {}"`: `crates/disrobe-cli/src/cli/macho.rs:101`
-- `"serialize manifest: {}"`: `crates/disrobe-cli/src/cli/macho.rs:238`
+- `"dyld cache parse: {}"`: `crates/disrobe-cli/src/cli/macho.rs:111`
+- `"serialize manifest: {}"`: `crates/disrobe-cli/src/cli/macho.rs:298`
 
 ### `DR-CLI-0498`
 
-- `"cannot write objc header: {}"`: `crates/disrobe-cli/src/cli/macho.rs:214`
-- `"dyld image reconstruct: {}"`: `crates/disrobe-cli/src/cli/macho.rs:103`
+- `"cannot write objc header: {}"`: `crates/disrobe-cli/src/cli/macho.rs:274`
+- `"dyld image reconstruct: {}"`: `crates/disrobe-cli/src/cli/macho.rs:132`
 
 ### `DR-CLI-0499`
 
-- `"cannot create out dir: {}"`: `crates/disrobe-cli/src/cli/macho.rs:112`
-- `"cannot write swift declarations: {}"`: `crates/disrobe-cli/src/cli/macho.rs:221`
+- `"cannot create out dir: {}"`: `crates/disrobe-cli/src/cli/macho.rs:141`
+- `"cannot write swift declarations: {}"`: `crates/disrobe-cli/src/cli/macho.rs:281`
 
 ### `DR-CLI-0500`
 
-- `"cannot create dir: {}"`: `crates/disrobe-cli/src/cli/macho.rs:119`
-- `"cannot read input: {}"`: `crates/disrobe-cli/src/cli/macho.rs:265`
+- `"cannot create dir: {}"`: `crates/disrobe-cli/src/cli/macho.rs:148`
+- `"cannot read input: {}"`: `crates/disrobe-cli/src/cli/macho.rs:325`
 
 ### `DR-CLI-0501`
 
-- `"cannot write dylib: {}"`: `crates/disrobe-cli/src/cli/macho.rs:122`
-- `"input is not a Mach-O / fat Mach-O binary"`: `crates/disrobe-cli/src/cli/macho.rs:267`
+- `"cannot write dylib: {}"`: `crates/disrobe-cli/src/cli/macho.rs:151`
+- `"input is not a Mach-O / fat Mach-O binary"`: `crates/disrobe-cli/src/cli/macho.rs:327`
+
+### `DR-CLI-0502`
+
+- `` "input is a thin Mach-O ({}); use `disrobe macho dump` instead" ``: `crates/disrobe-cli/src/cli/macho.rs:330`
+- `"the cache holds no image named {}"`: `crates/disrobe-cli/src/cli/macho.rs:125`
 
 ### `DR-CLI-0522`
 
@@ -1839,33 +1844,33 @@
 - `DR-CLI-0477`: `crates/disrobe-cli/src/cli/dotnet.rs:583`
 - `DR-CLI-0478`: `crates/disrobe-cli/src/cli/dotnet.rs:586`
 - `DR-CLI-0479`: `crates/disrobe-cli/src/cli/dotnet.rs:917`, `crates/disrobe-cli/src/cli/dotnet.rs:922`
-- `DR-CLI-0480`: `crates/disrobe-cli/src/cli/dotnet.rs:493`, `crates/disrobe-cli/src/cli/jvm.rs:217`, `crates/disrobe-cli/src/cli/jvm.rs:223`, `crates/disrobe-cli/src/cli/macho.rs:137`
-- `DR-CLI-0481`: `crates/disrobe-cli/src/cli/dotnet.rs:501`, `crates/disrobe-cli/src/cli/jvm.rs:230`, `crates/disrobe-cli/src/cli/macho.rs:139`
-- `DR-CLI-0482`: `crates/disrobe-cli/src/cli/dotnet.rs:510`, `crates/disrobe-cli/src/cli/jvm.rs:233`, `crates/disrobe-cli/src/cli/macho.rs:149`
-- `DR-CLI-0483`: `crates/disrobe-cli/src/cli/dotnet.rs:539`, `crates/disrobe-cli/src/cli/jvm.rs:330`, `crates/disrobe-cli/src/cli/macho.rs:152`
-- `DR-CLI-0484`: `crates/disrobe-cli/src/cli/dotnet.rs:1042`, `crates/disrobe-cli/src/cli/dotnet.rs:1045`, `crates/disrobe-cli/src/cli/dotnet.rs:1050`, `crates/disrobe-cli/src/cli/jvm.rs:312`, `crates/disrobe-cli/src/cli/jvm.rs:347`, `crates/disrobe-cli/src/cli/macho.rs:154`
+- `DR-CLI-0480`: `crates/disrobe-cli/src/cli/dotnet.rs:493`, `crates/disrobe-cli/src/cli/jvm.rs:217`, `crates/disrobe-cli/src/cli/jvm.rs:223`, `crates/disrobe-cli/src/cli/macho.rs:197`
+- `DR-CLI-0481`: `crates/disrobe-cli/src/cli/dotnet.rs:501`, `crates/disrobe-cli/src/cli/jvm.rs:230`, `crates/disrobe-cli/src/cli/macho.rs:199`
+- `DR-CLI-0482`: `crates/disrobe-cli/src/cli/dotnet.rs:510`, `crates/disrobe-cli/src/cli/jvm.rs:233`, `crates/disrobe-cli/src/cli/macho.rs:209`
+- `DR-CLI-0483`: `crates/disrobe-cli/src/cli/dotnet.rs:539`, `crates/disrobe-cli/src/cli/jvm.rs:330`, `crates/disrobe-cli/src/cli/macho.rs:212`
+- `DR-CLI-0484`: `crates/disrobe-cli/src/cli/dotnet.rs:1042`, `crates/disrobe-cli/src/cli/dotnet.rs:1045`, `crates/disrobe-cli/src/cli/dotnet.rs:1050`, `crates/disrobe-cli/src/cli/jvm.rs:312`, `crates/disrobe-cli/src/cli/jvm.rs:347`, `crates/disrobe-cli/src/cli/macho.rs:214`
 - `DR-CLI-0485`: `crates/disrobe-cli/src/cli/dotnet.rs:1067`
 - `DR-CLI-0486`: `crates/disrobe-cli/src/cli/dotnet.rs:1054`, `crates/disrobe-cli/src/cli/dotnet.rs:1070`, `crates/disrobe-cli/src/cli/jvm.rs:360`
 - `DR-CLI-0487`: `crates/disrobe-cli/src/cli/dotnet.rs:1072`
 - `DR-CLI-0489`: `crates/disrobe-cli/src/cli/jvm.rs:358`
-- `DR-CLI-0490`: `crates/disrobe-cli/src/cli/jvm.rs:362`, `crates/disrobe-cli/src/cli/macho.rs:176`
-- `DR-CLI-0491`: `crates/disrobe-cli/src/cli/jvm.rs:365`, `crates/disrobe-cli/src/cli/macho.rs:191`
-- `DR-CLI-0492`: `crates/disrobe-cli/src/cli/jvm.rs:248`, `crates/disrobe-cli/src/cli/jvm.rs:264`, `crates/disrobe-cli/src/cli/jvm.rs:270`, `crates/disrobe-cli/src/cli/macho.rs:204`
-- `DR-CLI-0493`: `crates/disrobe-cli/src/cli/jvm.rs:376`, `crates/disrobe-cli/src/cli/macho.rs:208`
-- `DR-CLI-0494`: `crates/disrobe-cli/src/cli/jvm.rs:290`, `crates/disrobe-cli/src/cli/jvm.rs:296`, `crates/disrobe-cli/src/cli/macho.rs:240`
-- `DR-CLI-0495`: `crates/disrobe-cli/src/cli/macho.rs:94`, `crates/disrobe-cli/src/cli/macho.rs:202`
-- `DR-CLI-0496`: `crates/disrobe-cli/src/cli/jvm.rs:305`, `crates/disrobe-cli/src/cli/jvm.rs:319`, `crates/disrobe-cli/src/cli/jvm.rs:393`, `crates/disrobe-cli/src/cli/jvm.rs:397`, `crates/disrobe-cli/src/cli/macho.rs:97`, `crates/disrobe-cli/src/cli/macho.rs:206`
-- `DR-CLI-0497`: `crates/disrobe-cli/src/cli/jvm.rs:277`, `crates/disrobe-cli/src/cli/macho.rs:101`, `crates/disrobe-cli/src/cli/macho.rs:238`
-- `DR-CLI-0498`: `crates/disrobe-cli/src/cli/macho.rs:103`, `crates/disrobe-cli/src/cli/macho.rs:214`
-- `DR-CLI-0499`: `crates/disrobe-cli/src/cli/macho.rs:112`, `crates/disrobe-cli/src/cli/macho.rs:221`
-- `DR-CLI-0500`: `crates/disrobe-cli/src/cli/macho.rs:119`, `crates/disrobe-cli/src/cli/macho.rs:265`
-- `DR-CLI-0501`: `crates/disrobe-cli/src/cli/macho.rs:122`, `crates/disrobe-cli/src/cli/macho.rs:267`
-- `DR-CLI-0502`: `crates/disrobe-cli/src/cli/macho.rs:270`
-- `DR-CLI-0503`: `crates/disrobe-cli/src/cli/macho.rs:274`
-- `DR-CLI-0510`: `crates/disrobe-cli/src/cli/macho.rs:299`
-- `DR-CLI-0511`: `crates/disrobe-cli/src/cli/macho.rs:303`
-- `DR-CLI-0512`: `crates/disrobe-cli/src/cli/macho.rs:313`
-- `DR-CLI-0513`: `crates/disrobe-cli/src/cli/macho.rs:328`
+- `DR-CLI-0490`: `crates/disrobe-cli/src/cli/jvm.rs:362`, `crates/disrobe-cli/src/cli/macho.rs:236`
+- `DR-CLI-0491`: `crates/disrobe-cli/src/cli/jvm.rs:365`, `crates/disrobe-cli/src/cli/macho.rs:251`
+- `DR-CLI-0492`: `crates/disrobe-cli/src/cli/jvm.rs:248`, `crates/disrobe-cli/src/cli/jvm.rs:264`, `crates/disrobe-cli/src/cli/jvm.rs:270`, `crates/disrobe-cli/src/cli/macho.rs:264`
+- `DR-CLI-0493`: `crates/disrobe-cli/src/cli/jvm.rs:376`, `crates/disrobe-cli/src/cli/macho.rs:268`
+- `DR-CLI-0494`: `crates/disrobe-cli/src/cli/jvm.rs:290`, `crates/disrobe-cli/src/cli/jvm.rs:296`, `crates/disrobe-cli/src/cli/macho.rs:300`
+- `DR-CLI-0495`: `crates/disrobe-cli/src/cli/macho.rs:104`, `crates/disrobe-cli/src/cli/macho.rs:262`
+- `DR-CLI-0496`: `crates/disrobe-cli/src/cli/jvm.rs:305`, `crates/disrobe-cli/src/cli/jvm.rs:319`, `crates/disrobe-cli/src/cli/jvm.rs:393`, `crates/disrobe-cli/src/cli/jvm.rs:397`, `crates/disrobe-cli/src/cli/macho.rs:107`, `crates/disrobe-cli/src/cli/macho.rs:266`
+- `DR-CLI-0497`: `crates/disrobe-cli/src/cli/jvm.rs:277`, `crates/disrobe-cli/src/cli/macho.rs:111`, `crates/disrobe-cli/src/cli/macho.rs:298`
+- `DR-CLI-0498`: `crates/disrobe-cli/src/cli/macho.rs:132`, `crates/disrobe-cli/src/cli/macho.rs:274`
+- `DR-CLI-0499`: `crates/disrobe-cli/src/cli/macho.rs:141`, `crates/disrobe-cli/src/cli/macho.rs:281`
+- `DR-CLI-0500`: `crates/disrobe-cli/src/cli/macho.rs:148`, `crates/disrobe-cli/src/cli/macho.rs:325`
+- `DR-CLI-0501`: `crates/disrobe-cli/src/cli/macho.rs:151`, `crates/disrobe-cli/src/cli/macho.rs:327`
+- `DR-CLI-0502`: `crates/disrobe-cli/src/cli/macho.rs:125`, `crates/disrobe-cli/src/cli/macho.rs:330`
+- `DR-CLI-0503`: `crates/disrobe-cli/src/cli/macho.rs:334`
+- `DR-CLI-0510`: `crates/disrobe-cli/src/cli/macho.rs:359`
+- `DR-CLI-0511`: `crates/disrobe-cli/src/cli/macho.rs:363`
+- `DR-CLI-0512`: `crates/disrobe-cli/src/cli/macho.rs:373`
+- `DR-CLI-0513`: `crates/disrobe-cli/src/cli/macho.rs:388`
 - `DR-CLI-0520`: `crates/disrobe-cli/src/cli/lua.rs:156`
 - `DR-CLI-0522`: `crates/disrobe-cli/src/cli/lua.rs:165`, `crates/disrobe-cli/src/cli/lua.rs:167`, `crates/disrobe-cli/src/cli/lua.rs:169`, `crates/disrobe-cli/src/cli/lua.rs:171`, `crates/disrobe-cli/src/cli/lua.rs:174`, `crates/disrobe-cli/src/cli/lua.rs:177`
 - `DR-CLI-0524`: `crates/disrobe-cli/src/cli/lua.rs:159`
@@ -3021,10 +3026,10 @@
 - `DR-SWOBJ-0906`: `crates/disrobe-pass-swift-objc/src/chain_detector.rs:126`
 - `DR-SWOBJ-0907`: `crates/disrobe-pass-swift-objc/src/chain_detector.rs:207`
 - `DR-SWOBJ-0908`: `crates/disrobe-pass-swift-objc/src/chain_detector.rs:211`
-- `DR-SWOBJ-0909`: `crates/disrobe-pass-swift-objc/src/chain_detector.rs:218`, `crates/disrobe-pass-swift-objc/src/chain_detector.rs:224`
-- `DR-SWOBJ-0910`: `crates/disrobe-pass-swift-objc/src/chain_detector.rs:244`
-- `DR-SWOBJ-0911`: `crates/disrobe-pass-swift-objc/src/chain_detector.rs:251`
-- `DR-SWOBJ-0912`: `crates/disrobe-pass-swift-objc/src/chain_detector.rs:257`
+- `DR-SWOBJ-0909`: `crates/disrobe-pass-swift-objc/src/chain_detector.rs:223`, `crates/disrobe-pass-swift-objc/src/chain_detector.rs:229`
+- `DR-SWOBJ-0910`: `crates/disrobe-pass-swift-objc/src/chain_detector.rs:249`
+- `DR-SWOBJ-0911`: `crates/disrobe-pass-swift-objc/src/chain_detector.rs:256`
+- `DR-SWOBJ-0912`: `crates/disrobe-pass-swift-objc/src/chain_detector.rs:262`
 - `DR-WASM-0902`: `crates/disrobe-pass-wasm-deob/src/chain_detector.rs:109`
 - `DR-WASM-0903`: `crates/disrobe-pass-wasm-deob/src/chain_detector.rs:113`
 - `DR-WASM-0906`: `crates/disrobe-pass-wasm-deob/src/chain_detector.rs:246`

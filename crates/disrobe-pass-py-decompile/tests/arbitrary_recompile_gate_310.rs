@@ -28,7 +28,7 @@ const BAND_LABEL: &str = "CPython 3.10 (161 of the pinned modules)";
 const BAND_POPULATION: &str = "cpython-310-band";
 
 const OBJECT_PCT_FLOOR: f64 = 96.55;
-const BAND_OBJECTS_OK: u64 = 5_266;
+const BAND_OBJECTS_OK: u64 = 5_270;
 const BAND_CODE_OBJECTS: u64 = 5_458;
 const BAND_MODULES: u64 = 161;
 const BAND_MODULES_EXACT_FLOOR: u64 = 90;
