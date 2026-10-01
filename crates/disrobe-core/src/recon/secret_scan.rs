@@ -1239,7 +1239,7 @@ pub fn scan_bytes_with_work(bytes: &[u8], uri: Option<&str>) -> (Vec<Finding>, E
     for rule in REGEX_RULES.iter() {
         for m in rule.pattern.find_iter(&text) {
             let matched: &str = m.as_str();
-            if is_allowlisted(matched) {
+            if is_allowlisted(matched) || std::str::from_utf8(&bytes[m.range()]).is_err() {
                 continue;
             }
             let offset: usize = m.start();
