@@ -11,7 +11,7 @@ $link = "/NODEFAULTLIB /ENTRY:mainCRTStartup /SUBSYSTEM:CONSOLE /FIXED:NO"
 $targets = @(
     @{ src = "writefile.c";  out = "writefile.exe";  libs = "kernel32.lib";            opt = "/O2" },
     @{ src = "connect.c";    out = "connect.exe";    libs = "ws2_32.lib kernel32.lib"; opt = "/O2" },
-    @{ src = "xordecrypt.c"; out = "xordecrypt.exe"; libs = "kernel32.lib";            opt = "/Od" },
+    @{ src = "xordecrypt.c"; out = "xordecrypt.exe"; libs = "kernel32.lib";            opt = "/O2" },
     @{ src = "clean.c";      out = "clean.exe";      libs = "kernel32.lib";            opt = "/O2" }
 )
 
