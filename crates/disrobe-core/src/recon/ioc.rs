@@ -214,7 +214,7 @@ static IPV4_RE: LazyLock<&'static Regex> = LazyLock::new(|| {
 
 static IPV6_RE: LazyLock<&'static Regex> = LazyLock::new(|| {
     regex!(
-        r"(?i)\b(?:[0-9a-f]{1,4}:){2,7}[0-9a-f]{1,4}\b|(?:[0-9a-f]{1,4}:){1,7}:|::(?:[0-9a-f]{1,4}:){0,6}[0-9a-f]{1,4}"
+        r"(?i)\b(?:[0-9a-f]{1,4}:){1,6}(?::[0-9a-f]{1,4}){1,6}\b|\b(?:[0-9a-f]{1,4}:){2,7}[0-9a-f]{1,4}\b|(?:[0-9a-f]{1,4}:){1,7}:|::(?:[0-9a-f]{1,4}:){0,6}[0-9a-f]{1,4}"
     )
 });
 
@@ -721,7 +721,7 @@ fn collect_ipv6(text: &str, encoding: Encoding, layer: &Layer<'_>, out: &mut Vec
             return;
         }
         let value: &str = m.as_str();
-        if value.matches(':').count() < 2 {
+        if !plausible_ipv6(value) {
             continue;
         }
         let (offset, length): (usize, usize) = layer.span(m.start(), m.end());
@@ -734,6 +734,46 @@ fn collect_ipv6(text: &str, encoding: Encoding, layer: &Layer<'_>, out: &mut Vec
             context: None,
         });
     }
+}
+
+fn plausible_ipv6(value: &str) -> bool {
+    value.parse::<std::net::Ipv6Addr>().is_ok()
+        && value
+            .split(':')
+            .filter(|group: &&str| !group.is_empty())
+            .count()
+            >= 2
+}
+
+const IDENTIFIER_WORD_TLDS: [&str; 10] = [
+    "app", "club", "dev", "info", "io", "link", "live", "online", "site", "tech",
+];
+
+fn plausible_domain(text: &[u8], start: usize, end: usize) -> bool {
+    let Some(value): Option<&[u8]> = text.get(start..end) else {
+        return false;
+    };
+    let lower: bool = value.iter().any(u8::is_ascii_lowercase);
+    let upper: bool = value.iter().any(u8::is_ascii_uppercase);
+    if lower && upper {
+        return false;
+    }
+    if start > 0 && text.get(start - 1) == Some(&b'.') {
+        return false;
+    }
+    let after: &[u8] = text.get(end..).unwrap_or_default();
+    if after.first() == Some(&b'.') && after.get(1).is_some_and(u8::is_ascii_alphanumeric) {
+        return false;
+    }
+    let labels: usize = value.split(|b: &u8| *b == b'.').count();
+    let tld: &[u8] = value.rsplit(|b: &u8| *b == b'.').next().unwrap_or_default();
+    let word_tld: bool = IDENTIFIER_WORD_TLDS
+        .iter()
+        .any(|word: &&str| tld.eq_ignore_ascii_case(word.as_bytes()));
+    if labels == 2 && word_tld {
+        return after.first() == Some(&b':') && after.get(1).is_some_and(u8::is_ascii_digit);
+    }
+    true
 }
 
 fn collect_unix_paths(text: &str, encoding: Encoding, layer: &Layer<'_>, out: &mut Vec<Indicator>) {
@@ -792,6 +832,7 @@ fn collect_domains(
         let value: &str = m.as_str();
         if span_encloses(&urls, m.start(), m.end(), &mut work.containment_probes)
             || span_encloses(&emails, m.start(), m.end(), &mut work.containment_probes)
+            || !plausible_domain(text.as_bytes(), m.start(), m.end())
         {
             continue;
         }
@@ -1458,6 +1499,34 @@ mod tests {
             kinds_of(&ind, IocKind::Ipv4).contains(&"9.9.9.9"),
             "{ind:?}"
         );
+    }
+
+    #[test]
+    fn dotted_identifiers_and_byte_noise_are_not_domains() {
+        let ind: Vec<Indicator> = extract(
+            b"*godebugs.Info\x00type:.eq.io/fs.PathError\x00runtime.link *runtime._defer\x00\
+              ext.dart.io.getOpenFiles\x00?zL2.ws\x8c\x00\x15M.wS\xa3\x00",
+        );
+        assert!(kinds_of(&ind, IocKind::Domain).is_empty(), "{ind:?}");
+
+        let ind: Vec<Indicator> =
+            extract(b"beacon evil.link:443 then c2.dart.io then bad-host.ru then CDN.EXAMPLE.COM");
+        let domains: Vec<&str> = kinds_of(&ind, IocKind::Domain);
+        for expected in ["evil.link", "c2.dart.io", "bad-host.ru", "CDN.EXAMPLE.COM"] {
+            assert!(domains.contains(&expected), "{expected}: {ind:?}");
+        }
+    }
+
+    #[test]
+    fn ipv6_needs_a_parseable_address_with_two_groups() {
+        let ind: Vec<Indicator> = extract(b"c:: 9999:: ::F E:D:F:E 01:11:39");
+        assert!(kinds_of(&ind, IocKind::Ipv6).is_empty(), "{ind:?}");
+
+        let ind: Vec<Indicator> = extract(b"peer fe80::1 and 2001:db8::8a2e:7334 seen");
+        let addresses: Vec<&str> = kinds_of(&ind, IocKind::Ipv6);
+        for expected in ["fe80::1", "2001:db8::8a2e:7334"] {
+            assert!(addresses.contains(&expected), "{expected}: {ind:?}");
+        }
     }
 
     #[test]
