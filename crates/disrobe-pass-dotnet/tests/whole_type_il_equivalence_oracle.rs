@@ -2638,7 +2638,6 @@ const IL_RESIDUAL: &[&str] = &[
     "EventSource.remove_Pulse",
     "JsonLite.Escape",
     "JsonLite.Object",
-    "Pipeline.RunSteps",
     "TargetTypedNewPlayground.Build",
 ];
 
