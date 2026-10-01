@@ -723,12 +723,13 @@ fn a_batch_of_only_errors_still_produces_a_valid_document() {
     let scratch: disrobe_core::scratch::ScratchDir = temp_dir("forensic-batch");
     let work: PathBuf = scratch.path().to_path_buf();
     let manifest: &str = r#"{
-      "schema": "disrobe.batch.manifest/v2",
+      "schema": "disrobe.batch.manifest/v3",
       "tool_version": "0.9.0",
       "root": "samples",
       "out_root": "out/samples-batch",
       "chain": "auto:8",
-      "summary": { "processed": 2, "recovered": 0, "detect_only": 0, "errors": 2 },
+      "summary": { "processed": 2, "recovered": 0, "incomplete": 0, "not_applicable": 0,
+                   "errors": 2 },
       "entries": [
         { "input": "samples/a", "relative": "a", "size": 0, "detected_format": null,
           "chain": [], "verdict": null, "recovery_score": null, "output_dir": null,
