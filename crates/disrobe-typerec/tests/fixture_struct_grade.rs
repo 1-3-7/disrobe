@@ -336,11 +336,10 @@ fn has_indexed_rbp_memory(text: &[u8], base: u64) -> bool {
 
 const INDEXED_GRADED: &str = "the O2 indexed stack fixture graded against its fresh DWARF";
 
-fn require_on_path(tool: &str) {
+fn require_tool(tool: &str, what: &str, found: Option<PathBuf>) -> PathBuf {
     let prerequisite: String = format!("disrobe-typerec::{tool}");
-    let what: String = format!("`{tool}` callable on PATH");
-    match disrobe_testkit::require(&prerequisite, &what, tool_available(tool).then_some(())) {
-        Ok(Available::Present(())) => {}
+    match disrobe_testkit::require(&prerequisite, what, found) {
+        Ok(Available::Present(program)) => program,
         Ok(Available::NotMeasured { record }) => panic!(
             "tests/optional.toml lists {prerequisite}, but {INDEXED_GRADED} has no result without \
              it, so that entry only hides the gap recorded in {}; remove it",
@@ -354,8 +353,20 @@ fn require_on_path(tool: &str) {
 
 #[test]
 fn o2_indexed_stack_fixture_matches_dwarf_offsets_and_widths() {
-    require_on_path("clang");
-    require_on_path("objcopy");
+    let clang: PathBuf = require_tool(
+        "clang",
+        "`clang` callable on PATH",
+        tool_available("clang").then(|| PathBuf::from("clang")),
+    );
+    let objcopy: PathBuf = require_tool(
+        "objcopy",
+        &format!(
+            "{} or one of {} callable on PATH",
+            cc_toolchain::OBJCOPY_BIN_VAR,
+            cc_toolchain::OBJCOPY_NAMES.join(", ")
+        ),
+        cc_toolchain::find_on_path(&cc_toolchain::OBJCOPY_NAMES, cc_toolchain::OBJCOPY_BIN_VAR),
+    );
     let scratch: ScratchDir = ScratchDir::create("disrobe_typerec_indexed").expect(
         "a scratch directory is not an optional prerequisite; failing to create one is a broken \
          environment rather than a reason to grade nothing",
@@ -363,7 +374,7 @@ fn o2_indexed_stack_fixture_matches_dwarf_offsets_and_widths() {
     let work: PathBuf = scratch.path().to_path_buf();
     let unstripped: PathBuf = work.join("indexed.unstripped.elf");
     let stripped: PathBuf = work.join("indexed.stripped.elf");
-    let built: bool = run(Command::new("clang")
+    let built: bool = run(Command::new(&clang)
         .args([
             "--target=x86_64-unknown-linux-gnu",
             "-g",
@@ -384,11 +395,11 @@ fn o2_indexed_stack_fixture_matches_dwarf_offsets_and_widths() {
          build is a defect in this probe rather than a reason to grade nothing"
     );
     assert!(
-        run(Command::new("objcopy")
+        run(Command::new(&objcopy)
             .arg("--strip-debug")
             .arg(&unstripped)
             .arg(&stripped)),
-        "objcopy was found on PATH above and clang has just produced the unstripped image, so a \
+        "objcopy was found above and clang has just produced the unstripped image, so a \
          failed strip is a defect in this probe rather than a reason to grade nothing"
     );
     let Some(ground_truth): Option<DebugImage> = std::fs::read(&unstripped)

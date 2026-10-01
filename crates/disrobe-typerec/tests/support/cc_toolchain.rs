@@ -13,7 +13,7 @@ pub(crate) const CALL_TIMEOUT: Duration = Duration::from_mins(2);
 const CAPTURE_CAP: usize = 1 << 20;
 const NEUTRAL_BUILD_DIRECTORY: &str = "/disrobe/typerec";
 const GCC_NAMES: [&str; 3] = ["gcc", "cc", "gcc-14"];
-const OBJCOPY_NAMES: [&str; 2] = ["objcopy", "llvm-objcopy"];
+pub(crate) const OBJCOPY_NAMES: [&str; 2] = ["objcopy", "llvm-objcopy"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CcTarget {
