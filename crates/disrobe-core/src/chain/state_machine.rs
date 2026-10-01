@@ -676,7 +676,11 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
                             let child_count: u32 =
                                 u32::try_from(children.len()).unwrap_or(u32::MAX);
                             let mut child_bytes: Vec<Vec<u8>> = outcome.children;
-                            let fan_out: Verdict = if children.is_empty() {
+                            let fan_out: Verdict = if children.is_empty()
+                                && matches!(
+                                    pick.verdict.family,
+                                    super::FAMILY_CONTAINER | super::FAMILY_PACKER_ARCHIVE
+                                ) {
                                 Verdict::Error {
                                     message: format!(
                                         "{} opened a container that holds no members",
@@ -1223,6 +1227,39 @@ mod tests {
         r
     }
 
+    static DET_CONTAINER: StubDetector = StubDetector {
+        id: "stub.container",
+        family: super::super::FAMILY_CONTAINER,
+        confidence: 0.95,
+        specificity: 10,
+    };
+
+    #[derive(Debug)]
+    struct StubContainerPass;
+    impl Pass for StubContainerPass {
+        fn id(&self) -> PassId {
+            DET_CONTAINER.id
+        }
+        fn detector(&self) -> &'static dyn Detector {
+            &DET_CONTAINER
+        }
+        fn output_kind(&self, _o: &Artifact) -> OutputKind {
+            OutputKind::Mixed {
+                children: Vec::new(),
+            }
+        }
+        fn run(&self, a: &Artifact) -> crate::error::Result<Artifact> {
+            Ok(a.clone())
+        }
+    }
+    static PASS_CONTAINER: StubContainerPass = StubContainerPass;
+
+    fn registry_with_container() -> PassRegistry {
+        let mut r: PassRegistry = PassRegistry::new();
+        r.register(&PASS_CONTAINER);
+        r
+    }
+
     fn fan_out_of(members: &'static [(&'static str, &'static [u8])]) -> RunnerFn {
         Box::new(move |_n: u32, _bytes: &[u8]| {
             Ok(PassRunOutcome {
@@ -1250,14 +1287,35 @@ mod tests {
     }
 
     fn run_fan_out(members: &'static [(&'static str, &'static [u8])]) -> ChainPlan {
-        let r: PassRegistry = registry_with_a();
+        run_fan_out_in(&registry_with_container(), members)
+    }
+
+    fn run_fan_out_in(
+        r: &PassRegistry,
+        members: &'static [(&'static str, &'static [u8])],
+    ) -> ChainPlan {
         let runner: CountingRunner = CountingRunner {
             calls: AtomicU32::new(0),
             produce: fan_out_of(members),
         };
         let d: ChainDriver<'_, CountingRunner> =
-            ChainDriver::new(&r, &runner, ChainConfig::default());
+            ChainDriver::new(r, &runner, ChainConfig::default());
         d.run(b"container".to_vec(), &ChainSpec::Auto { cap: 8 }, None)
+    }
+
+    #[test]
+    fn a_non_container_pass_with_no_members_fans_out_instead_of_failing() {
+        let plan: ChainPlan = run_fan_out_in(&registry_with_a(), &[]);
+        assert!(
+            matches!(plan.nodes[1].verdict, Verdict::FanOut { count: 0 }),
+            "{:?}",
+            plan.nodes[1].verdict
+        );
+        assert!(
+            !matches!(plan.verdict, Verdict::Error { .. }),
+            "{:?}",
+            plan.verdict
+        );
     }
 
     #[test]
