@@ -138,6 +138,7 @@ credentials.json
 *.tar.gz
 *.zip
 !corpus/python/freezers/cxfreeze/extracted/library.zip
+!crates/disrobe-pass-pickle/tests/fixtures/fail_closed/zip_then_pickle.zip
 *.tar.zst.asc
 *.zip.asc
 *.minisig
