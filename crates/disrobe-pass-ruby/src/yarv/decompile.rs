@@ -593,12 +593,13 @@ fn region_exits_to(
     target: usize,
     targets: &[Option<usize>],
 ) -> bool {
-    hi > 0
-        && body
-            .instructions
-            .get(hi - 1)
+    let jumps_to_target = |k: usize| -> bool {
+        body.instructions
+            .get(k)
             .is_some_and(|x: &YarvIbfInstruction| x.mnemonic == "jump")
-        && targets.get(hi - 1).copied().flatten() == Some(target)
+            && targets.get(k).copied().flatten() == Some(target)
+    };
+    (hi > 0 && jumps_to_target(hi - 1)) || jumps_to_target(hi)
 }
 
 fn loop_exit_is_a_nil_leave(body: &YarvIseqBody, leave: usize, targets: &[Option<usize>]) -> bool {

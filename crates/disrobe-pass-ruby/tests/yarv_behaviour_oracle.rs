@@ -189,6 +189,11 @@ fn a_branch_holding_a_rescue_keeps_its_else_arm() {
 }
 
 #[test]
+fn an_elsif_branching_to_the_shared_join_keeps_its_condition() {
+    assert_same_output("elsif_join.rb");
+}
+
+#[test]
 fn an_if_without_else_in_a_case_arm_ends_at_the_arm() {
     assert_same_output("case_arm_if.rb");
 }
