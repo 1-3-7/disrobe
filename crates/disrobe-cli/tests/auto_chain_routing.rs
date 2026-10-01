@@ -207,7 +207,7 @@ fn prometheus_lua_receives_the_original_bytes_and_recovers_the_program() {
 
 #[test]
 fn a_report_is_not_re_fed_until_the_depth_cap() {
-    let input: PathBuf = corpus_path("scriptlang/perl/hello.pl");
+    let input: PathBuf = corpus_path("scriptlang/perl/hello.plc");
     assert!(
         input.is_file(),
         "the committed fixture {} is missing; restore it from git",
@@ -338,7 +338,6 @@ fn selection_gives_obfuscated_windows_scripts_to_shell_deob_and_plain_ones_to_sc
         "shell/powershell/megafile/edge_cases.ps1",
         "shell/powershell/chameleon/rename_original.ps1",
         "shell/batch/baseline/hello.bat",
-        "shell/bash/megafile/edge_cases.sh",
     ] {
         assert_eq!(
             winner_id(rel),
@@ -346,4 +345,9 @@ fn selection_gives_obfuscated_windows_scripts_to_shell_deob_and_plain_ones_to_sc
             "an unobfuscated script must keep the scriptlang.classify report: {rel}"
         );
     }
+    assert_eq!(
+        winner_id("shell/bash/megafile/edge_cases.sh"),
+        "<none>",
+        "a plain bash script is neither a windows script nor obfuscated, so no pass may claim it"
+    );
 }
