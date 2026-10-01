@@ -139,7 +139,7 @@ pub(crate) fn require_php_extensions(
         return Some(base.with_settings(direct));
     }
     if let Some(directory) = base.extension_directory() {
-        let mut located: Vec<String> = vec![format!("extension_dir={}", directory.display())];
+        let mut located: Vec<String> = vec![format!("extension_dir=\"{}\"", directory.display())];
         located.extend(direct);
         if base.provides(extensions, &located) {
             return Some(base.with_settings(located));
@@ -473,7 +473,7 @@ pub(crate) fn compile_opcache_image(
     command
         .arg("-n")
         .arg("-d")
-        .arg(format!("zend_extension={}", opcache.display()))
+        .arg(format!("zend_extension=\"{}\"", opcache.display()))
         .args([
             "-d",
             "opcache.enable_cli=1",
@@ -487,7 +487,7 @@ pub(crate) fn compile_opcache_image(
             "opcache.jit_buffer_size=0",
         ])
         .arg("-d")
-        .arg(format!("opcache.file_cache={}", cache.display()))
+        .arg(format!("opcache.file_cache=\"{}\"", cache.display()))
         .args(["-r", "exit(opcache_compile_file($argv[1]) ? 0 : 3);", "--"])
         .arg(&source_path);
     let output: Output = bounded_output(&mut command, stem, &php.binary, &source_path);
