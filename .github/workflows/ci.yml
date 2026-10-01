@@ -313,6 +313,18 @@ jobs:
           curl -fsSL --retry 3 -o "$jar" https://repo1.maven.org/maven2/org/eclipse/jdt/ecj/3.26.0/ecj-3.26.0.jar
           echo "ac0ba5876eaf7ebb47749a0d1be179c51f194b9dd0b875d1c09e1b530f5a2db5  $jar" | sha256sum -c -
           echo "DISROBE_ECJ_JAR=$jar" >> "$GITHUB_ENV"
+      - name: provision the Kotlin runtime for the Kotlin shape tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          stdlib="$RUNNER_TEMP/kotlin-stdlib-2.4.10.jar"
+          annotations="$RUNNER_TEMP/annotations-13.0.jar"
+          curl -fsSL --retry 3 -o "$stdlib" https://repo1.maven.org/maven2/org/jetbrains/kotlin/kotlin-stdlib/2.4.10/kotlin-stdlib-2.4.10.jar
+          curl -fsSL --retry 3 -o "$annotations" https://repo1.maven.org/maven2/org/jetbrains/annotations/13.0/annotations-13.0.jar
+          echo "4ec0293bc3751423b203f1d8493251c57c42e73eb6377a6b8560d0974ff0a6df  $stdlib" | sha256sum -c -
+          echo "ace2a10dc8e2d5fd34925ecac03e4988b2c0f851650c94b8cef49ba1bd111478  $annotations" | sha256sum -c -
+          echo "DISROBE_KOTLIN_STDLIB_JAR=$stdlib" >> "$GITHUB_ENV"
+          echo "DISROBE_JETBRAINS_ANNOTATIONS_JAR=$annotations" >> "$GITHUB_ENV"
       - name: provision APK reference tools
         if: matrix.shard == 'two'
         shell: pwsh
