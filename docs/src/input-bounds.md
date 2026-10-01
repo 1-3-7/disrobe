@@ -945,8 +945,8 @@ Exceeded: error 884, recorded 185, panic 0, delegated 49, silent 1005, unclassif
 | `disrobe-pass-jvm` | `RECORD_ARITY_PROBE_CAP` | other | silent: `while` condition in `infer_record_arity` | `usize` | `64` | `crates/disrobe-pass-jvm/src/decompile.rs` |
 | `disrobe-pass-jvm` | `REUSED_LOCAL_SPLIT_WORK_LIMIT` | work | silent: `return` in `claim_reused_local_split_work` | `usize` | `1_000_000` | `crates/disrobe-pass-jvm/src/decompile.rs` |
 | `disrobe-pass-jvm` | `MAX_BLOCKS` | other | error: `StructureError::TooManyBlocks` | `usize` | `16_384` | `crates/disrobe-pass-jvm/src/decompile_struct.rs` |
-| `disrobe-pass-jvm` | `MAX_CONDITION_CHAIN` | other | silent: `return` in `structure_condition_chain`; `while` condition in `loop_condition_chain` | `usize` | `64` | `crates/disrobe-pass-jvm/src/decompile_struct.rs` |
-| `disrobe-pass-jvm` | `MAX_JOIN_CHAIN` | other | silent: `break` in `continuation_joins`; `for` range in `handler_join_after`; `while` condition in `trampoline_path` | `usize` | `8` | `crates/disrobe-pass-jvm/src/decompile_struct.rs` |
+| `disrobe-pass-jvm` | `MAX_CONDITION_CHAIN` | other | silent: `return` in `short_circuit_merge`; `return` in `structure_condition_chain`; `while` condition in `loop_condition_chain` | `usize` | `64` | `crates/disrobe-pass-jvm/src/decompile_struct.rs` |
+| `disrobe-pass-jvm` | `MAX_JOIN_CHAIN` | other | silent: `break` in `continuation_joins`; `for` range in `goto_chain_end`; `for` range in `handler_join_after`; 1 more | `usize` | `8` | `crates/disrobe-pass-jvm/src/decompile_struct.rs` |
 | `disrobe-pass-jvm` | `MAX_STRUCTURE_DEPTH` | recursion | recorded: flag `had_irreducible` | `usize` | `256` | `crates/disrobe-pass-jvm/src/decompile_struct.rs` |
 | `disrobe-pass-jvm` | `MAX_STRUCTURE_WORK` | work | recorded: flag `had_irreducible` | `usize` | `200_000` | `crates/disrobe-pass-jvm/src/decompile_struct.rs` |
 | `disrobe-pass-jvm` | `MAX_TAIL_BLOCKS` | other | silent: `return` in `duplicable_tail` | `usize` | `8` | `crates/disrobe-pass-jvm/src/decompile_struct.rs` |
@@ -2572,8 +2572,8 @@ Exceeded: error 884, recorded 185, panic 0, delegated 49, silent 1005, unclassif
 | `disrobe-pass-jvm` | `MAX_RENDER_BYTES` | `return` in `append_inner_output`; `return` in `append_java_replacement`; `return` in `emit_nested_class_stubs`; 2 more | `crates/disrobe-pass-jvm/src/decompile.rs` |
 | `disrobe-pass-jvm` | `RECORD_ARITY_PROBE_CAP` | `while` condition in `infer_record_arity` | `crates/disrobe-pass-jvm/src/decompile.rs` |
 | `disrobe-pass-jvm` | `REUSED_LOCAL_SPLIT_WORK_LIMIT` | `return` in `claim_reused_local_split_work` | `crates/disrobe-pass-jvm/src/decompile.rs` |
-| `disrobe-pass-jvm` | `MAX_CONDITION_CHAIN` | `return` in `structure_condition_chain`; `while` condition in `loop_condition_chain` | `crates/disrobe-pass-jvm/src/decompile_struct.rs` |
-| `disrobe-pass-jvm` | `MAX_JOIN_CHAIN` | `break` in `continuation_joins`; `for` range in `handler_join_after`; `while` condition in `trampoline_path` | `crates/disrobe-pass-jvm/src/decompile_struct.rs` |
+| `disrobe-pass-jvm` | `MAX_CONDITION_CHAIN` | `return` in `short_circuit_merge`; `return` in `structure_condition_chain`; `while` condition in `loop_condition_chain` | `crates/disrobe-pass-jvm/src/decompile_struct.rs` |
+| `disrobe-pass-jvm` | `MAX_JOIN_CHAIN` | `break` in `continuation_joins`; `for` range in `goto_chain_end`; `for` range in `handler_join_after`; 1 more | `crates/disrobe-pass-jvm/src/decompile_struct.rs` |
 | `disrobe-pass-jvm` | `MAX_TAIL_BLOCKS` | `return` in `duplicable_tail` | `crates/disrobe-pass-jvm/src/decompile_struct.rs` |
 | `disrobe-pass-jvm` | `MAX_TAIL_INSTRUCTIONS` | `return` in `duplicable_tail` | `crates/disrobe-pass-jvm/src/decompile_struct.rs` |
 | `disrobe-pass-jvm` | `MAX_ARRAY_DIMENSIONS` | `return` in `parse_one`; `return` in `type_descriptor_end` | `crates/disrobe-pass-jvm/src/descriptor.rs` |
