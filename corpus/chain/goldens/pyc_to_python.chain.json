@@ -75,7 +75,7 @@
   },
   "stats": {
     "branches": 1,
-    "detector_calls": 3,
+    "detector_calls": 2,
     "layers": 1,
     "max_branch_depth": 1,
     "rejected_passes": 0

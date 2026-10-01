@@ -269,16 +269,49 @@ fn assert_synthetic_error_golden(name: &str, doc: &ChainDocument) {
 }
 
 fn upx_packed_pe_fixture() -> Vec<u8> {
-    let mut v: Vec<u8> = Vec::with_capacity(2048);
-    v.extend_from_slice(b"MZ");
-    v.extend(std::iter::repeat_n(0u8, 58));
-    v.extend_from_slice(&0x80u32.to_le_bytes());
-    v.extend(std::iter::repeat_n(0u8, 64));
-    v.extend_from_slice(b"PE\0\0");
-    v.extend(std::iter::repeat_n(0u8, 256));
-    v.extend_from_slice(b"UPX!\x0d\x09\x02\x00");
-    v.extend_from_slice(b"UPX0UPX1UPX2");
-    v.extend(std::iter::repeat_n(0u8, 1536));
+    const PE_HEADER: usize = 0x80;
+    const OPTIONAL_HEADER: usize = PE_HEADER + 24;
+    const OPTIONAL_HEADER_SIZE: usize = 0xE0;
+    const SECTION_TABLE: usize = OPTIONAL_HEADER + OPTIONAL_HEADER_SIZE;
+    const HEADERS_SIZE: usize = 0x400;
+    let mut v: Vec<u8> = vec![0u8; HEADERS_SIZE + 0x200];
+    v[..2].copy_from_slice(b"MZ");
+    v[0x3C..0x40].copy_from_slice(&u32::try_from(PE_HEADER).unwrap().to_le_bytes());
+    v[PE_HEADER..PE_HEADER + 4].copy_from_slice(b"PE\0\0");
+    v[PE_HEADER + 4..PE_HEADER + 6].copy_from_slice(&0x014C_u16.to_le_bytes());
+    v[PE_HEADER + 6..PE_HEADER + 8].copy_from_slice(&2_u16.to_le_bytes());
+    v[PE_HEADER + 20..PE_HEADER + 22]
+        .copy_from_slice(&u16::try_from(OPTIONAL_HEADER_SIZE).unwrap().to_le_bytes());
+    v[PE_HEADER + 22..PE_HEADER + 24].copy_from_slice(&0x0102_u16.to_le_bytes());
+    let optional: &mut [u8] = &mut v[OPTIONAL_HEADER..SECTION_TABLE];
+    optional[..2].copy_from_slice(&0x010B_u16.to_le_bytes());
+    optional[16..20].copy_from_slice(&0x2010_u32.to_le_bytes());
+    optional[28..32].copy_from_slice(&0x0040_0000_u32.to_le_bytes());
+    optional[32..36].copy_from_slice(&0x1000_u32.to_le_bytes());
+    optional[36..40].copy_from_slice(&0x200_u32.to_le_bytes());
+    optional[56..60].copy_from_slice(&0x3000_u32.to_le_bytes());
+    optional[60..64].copy_from_slice(&u32::try_from(HEADERS_SIZE).unwrap().to_le_bytes());
+    optional[92..96].copy_from_slice(&16_u32.to_le_bytes());
+    let sections: [(&[u8; 8], u32, u32, u32); 2] = [
+        (b"UPX0\0\0\0\0", 0x1000, 0, 0),
+        (
+            b"UPX1\0\0\0\0",
+            0x2000,
+            0x200,
+            u32::try_from(HEADERS_SIZE).unwrap(),
+        ),
+    ];
+    for (index, (name, address, raw_size, raw_pointer)) in sections.into_iter().enumerate() {
+        let header: &mut [u8] =
+            &mut v[SECTION_TABLE + index * 40..SECTION_TABLE + (index + 1) * 40];
+        header[..8].copy_from_slice(name);
+        header[8..12].copy_from_slice(&0x1000_u32.to_le_bytes());
+        header[12..16].copy_from_slice(&address.to_le_bytes());
+        header[16..20].copy_from_slice(&raw_size.to_le_bytes());
+        header[20..24].copy_from_slice(&raw_pointer.to_le_bytes());
+        header[36..40].copy_from_slice(&0xE000_0080_u32.to_le_bytes());
+    }
+    v[HEADERS_SIZE - 0x20..HEADERS_SIZE - 0x18].copy_from_slice(b"UPX!\x0d\x09\x02\x00");
     v
 }
 
