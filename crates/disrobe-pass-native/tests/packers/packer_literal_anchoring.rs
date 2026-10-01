@@ -132,3 +132,85 @@ fn vendor_names_in_resource_strings_are_not_verdicts() {
     }
     assert_left_to_image_classify("vendor names in .rsrc", &bytes);
 }
+
+const ELF_PT_LOAD: u32 = 1;
+const ELF_PT_NOTE: u32 = 4;
+const ELF_PT_GNU_STACK: u32 = 0x6474_E551;
+const ELF_BASE: u64 = 0x40_0000;
+
+fn put(bytes: &mut [u8], at: usize, value: &[u8]) {
+    bytes[at..at + value.len()].copy_from_slice(value);
+}
+
+fn upx_elf64_after_note_bodies(note_sizes: &[usize], note_type: u32) -> Vec<u8> {
+    const EHDR: usize = 64;
+    const PHDR: usize = 56;
+    const FILE_LEN: usize = 0x1000;
+    const ENTRY_OFFSET: usize = 0x800;
+    let phnum: usize = 2 + note_sizes.len() + 1;
+    let table_end: usize = EHDR + phnum * PHDR;
+    let mut bytes: Vec<u8> = vec![0xCC; FILE_LEN];
+    bytes[..table_end].fill(0);
+    put(&mut bytes, 0, b"\x7FELF\x02\x01\x01");
+    put(&mut bytes, 16, &2_u16.to_le_bytes());
+    put(&mut bytes, 18, &0x3E_u16.to_le_bytes());
+    put(&mut bytes, 20, &1_u32.to_le_bytes());
+    put(
+        &mut bytes,
+        24,
+        &(ELF_BASE + ENTRY_OFFSET as u64).to_le_bytes(),
+    );
+    put(&mut bytes, 32, &(EHDR as u64).to_le_bytes());
+    put(&mut bytes, 52, &(EHDR as u16).to_le_bytes());
+    put(&mut bytes, 54, &(PHDR as u16).to_le_bytes());
+    put(&mut bytes, 56, &u16::try_from(phnum).unwrap().to_le_bytes());
+    put(&mut bytes, 58, &64_u16.to_le_bytes());
+    let mut body: usize = table_end;
+    let mut headers: Vec<(u32, usize, usize)> =
+        vec![(ELF_PT_LOAD, 0, 0), (ELF_PT_LOAD, 0, FILE_LEN)];
+    for size in note_sizes {
+        headers.push((note_type, body, *size));
+        bytes[body..body + size].fill(0x4E);
+        body = (body + size).next_multiple_of(4);
+    }
+    headers.push((ELF_PT_GNU_STACK, 0, 0));
+    headers[0].2 = body;
+    for (index, (p_type, offset, filesz)) in headers.into_iter().enumerate() {
+        let at: usize = EHDR + index * PHDR;
+        put(&mut bytes, at, &p_type.to_le_bytes());
+        put(&mut bytes, at + 8, &(offset as u64).to_le_bytes());
+        put(
+            &mut bytes,
+            at + 16,
+            &(ELF_BASE + offset as u64).to_le_bytes(),
+        );
+        put(&mut bytes, at + 32, &(filesz as u64).to_le_bytes());
+        put(&mut bytes, at + 40, &(filesz as u64).to_le_bytes());
+        put(&mut bytes, at + 48, &0x1000_u64.to_le_bytes());
+    }
+    put(&mut bytes, body, &[0, 0, 0, 0]);
+    put(&mut bytes, body + 4, b"UPX!");
+    put(&mut bytes, body + 8, &[0, 0, 14, 22]);
+    bytes
+}
+
+#[test]
+fn upx_l_info_after_the_copied_note_bodies_is_a_upx_verdict() {
+    for (label, notes) in [
+        ("gcc property and build-id notes", [0x30, 0x44].as_slice()),
+        ("go build-id note", [0x64].as_slice()),
+    ] {
+        let bytes: Vec<u8> = upx_elf64_after_note_bodies(notes, ELF_PT_NOTE);
+        assert!(
+            packers_of(&bytes).contains(&Packer::Upx),
+            "{label}: UPX writes the PT_NOTE bodies between the program headers and its l_info \
+             record, so the l_info magic is still header evidence"
+        );
+        let unnamed: Vec<u8> = upx_elf64_after_note_bodies(notes, 0);
+        assert!(
+            packers_of(&unnamed).is_empty(),
+            "{label}: the same bytes behind PT_NULL headers are not note bodies, so the magic \
+             past the header tail stays unanchored"
+        );
+    }
+}

@@ -11,6 +11,8 @@ const PE_SIGNATURE_AND_COFF_BYTES: usize = 24;
 const PE_SECTION_HEADER_BYTES: usize = 40;
 const ELF_MAGIC: &[u8; 4] = b"\x7FELF";
 const ELF_PT_LOAD: u64 = 1;
+const ELF_PT_NOTE: u64 = 4;
+const ELF_NOTE_PAD_BYTES: usize = 8;
 const MACHO_THIN_MAGICS: [(u32, usize); 2] = [(0xFEED_FACE, 28), (0xFEED_FACF, 32)];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -168,8 +170,8 @@ fn elf_regions(bytes: &[u8]) -> Option<Vec<Range<usize>>> {
     let mut entry_offset: Option<usize> = None;
     if phnum > 0 && phentsize > 0 {
         let table_end: usize = phoff.checked_add(phnum.checked_mul(phentsize)?)?;
-        regions.push(phoff..table_end.saturating_add(HEADER_TAIL_BYTES));
         content_end = content_end.max(table_end);
+        let mut notes: Vec<Range<usize>> = Vec::new();
         let (offset_at, vaddr_at, filesz_at): (usize, usize, usize) =
             if layout.wide { (8, 16, 32) } else { (4, 8, 16) };
         for index in 0..phnum {
@@ -187,6 +189,12 @@ fn elf_regions(bytes: &[u8]) -> Option<Vec<Range<usize>>> {
             ) else {
                 break;
             };
+            if p_type == ELF_PT_NOTE
+                && let (Some(start), Some(len)) = (to_offset(p_offset), to_offset(p_filesz))
+                && len > 0
+            {
+                notes.push(start..start.saturating_add(len));
+            }
             if p_type != ELF_PT_LOAD {
                 continue;
             }
@@ -195,6 +203,17 @@ fn elf_regions(bytes: &[u8]) -> Option<Vec<Range<usize>>> {
                 entry_offset = p_offset.checked_add(entry - p_vaddr).and_then(to_offset);
             }
         }
+        notes.sort_by_key(|note: &Range<usize>| note.start);
+        let headers_end: usize = notes
+            .iter()
+            .fold(table_end, |end: usize, note: &Range<usize>| {
+                if note.start >= end && note.start - end < ELF_NOTE_PAD_BYTES {
+                    note.end
+                } else {
+                    end
+                }
+            });
+        regions.push(phoff..headers_end.saturating_add(HEADER_TAIL_BYTES));
     }
     if shnum > 0 && shentsize > 0 {
         let table_end: usize = shoff.checked_add(shnum.checked_mul(shentsize)?)?;
