@@ -3,7 +3,7 @@ mod containers;
 
 use disrobe_core::Artifact;
 use disrobe_core::Rung;
-use disrobe_core::chain::detection::TERMINAL_HINT;
+use disrobe_core::chain::detection::{REPORT_HINT, TERMINAL_HINT, recovered_source_hint};
 use disrobe_core::chain::{
     CatalogEntry, ChildArtifact, ChildHandle, DetectContext, DetectVerdict, Detector,
     DetectorOutput, FAMILY_INTERPRETER_BYTECODE, ObfuscatorCatalog, OutputKind, Pass,
@@ -11,6 +11,7 @@ use disrobe_core::chain::{
 };
 use disrobe_core::error::{CoreError, Result as CoreResult};
 use disrobe_core::pass::PassId;
+use disrobe_core::provenance::Language;
 
 use crate::classfile::{CLASS_MAGIC, ClassFile, JavaVersion, parse as parse_classfile};
 use crate::dalvik_decompile::{DecompiledDex, decompile_dex};
@@ -211,16 +212,24 @@ fn decompile_dex_artifact(bytes: &[u8], root_hash: [u8; 32]) -> CoreResult<Artif
     ))
 }
 
-fn terminal_child(relative_path: String, bytes: Vec<u8>) -> ChildArtifact {
+fn hinted_child(relative_path: String, bytes: Vec<u8>, hint: String) -> ChildArtifact {
     ChildArtifact {
         handle: ChildHandle {
             artifact_index: 0,
             relative_path,
-            hint: Some(TERMINAL_HINT.to_string()),
+            hint: Some(hint),
             materialization: disrobe_core::chain::ChildMaterialization::default(),
         },
         bytes,
     }
+}
+
+fn terminal_child(relative_path: String, bytes: Vec<u8>) -> ChildArtifact {
+    hinted_child(relative_path, bytes, TERMINAL_HINT.to_owned())
+}
+
+fn report_child(relative_path: String, bytes: Vec<u8>) -> ChildArtifact {
+    hinted_child(relative_path, bytes, REPORT_HINT.to_owned())
 }
 
 fn reindex(children: &mut [ChildArtifact]) {
@@ -267,13 +276,22 @@ fn classfile_children(bytes: &[u8]) -> CoreResult<Vec<ChildArtifact>> {
         }
     };
     if !source.trim().is_empty() {
-        children.push(terminal_child(format!("{stem}.java"), source.into_bytes()));
+        let relative_path: String = format!("{stem}.java");
+        children.push(if fallback_methods == 0 && decode_error_count == 0 {
+            hinted_child(
+                relative_path,
+                source.into_bytes(),
+                recovered_source_hint(Language::Java),
+            )
+        } else {
+            terminal_child(relative_path, source.into_bytes())
+        });
     }
 
     if let Some(p) = &peeled
         && let Ok(json) = serde_json::to_vec_pretty(&peel_sidecar(&p.report))
     {
-        children.push(terminal_child("jvm-peel.json".to_string(), json));
+        children.push(report_child("jvm-peel.json".to_string(), json));
     }
 
     let manifest_json: Result<Vec<u8>, serde_json::Error> =
@@ -285,7 +303,7 @@ fn classfile_children(bytes: &[u8]) -> CoreResult<Vec<ChildArtifact>> {
             decode_error_count,
         ));
     if let Ok(json) = manifest_json {
-        children.push(terminal_child("jvm-manifest.json".to_string(), json));
+        children.push(report_child("jvm-manifest.json".to_string(), json));
     }
 
     reindex(&mut children);
@@ -315,7 +333,7 @@ fn dex_children(bytes: &[u8]) -> CoreResult<Vec<ChildArtifact>> {
     if (!recovery.recoveries.is_empty() || !recovery.code_scan_complete)
         && let Ok(json) = serde_json::to_vec_pretty(&dex_reflection_sidecar(&recovery))
     {
-        children.push(terminal_child(
+        children.push(report_child(
             "jvm-reflection-strings.json".to_string(),
             json,
         ));
@@ -325,7 +343,7 @@ fn dex_children(bytes: &[u8]) -> CoreResult<Vec<ChildArtifact>> {
         &dex_manifest(&dex, &cff, code_scan_complete, decode_error_count),
     );
     if let Ok(json) = manifest_json {
-        children.push(terminal_child("jvm-manifest.json".to_string(), json));
+        children.push(report_child("jvm-manifest.json".to_string(), json));
     }
 
     reindex(&mut children);
@@ -904,10 +922,15 @@ mod tests {
             .expect("extract_children runs");
 
         for c in &children {
+            assert!(
+                c.handle.is_terminal(),
+                "classify outputs are already-recovered terminal artifacts, not re-chained inputs"
+            );
             assert_eq!(
-                c.handle.hint.as_deref(),
-                Some(TERMINAL_HINT),
-                "classify sidecars are already-recovered terminal artifacts, not re-chained inputs"
+                c.handle.is_report(),
+                c.handle.relative_path.ends_with(".json"),
+                "every json sidecar, and only a sidecar, is a report: {}",
+                c.handle.relative_path
             );
         }
 
