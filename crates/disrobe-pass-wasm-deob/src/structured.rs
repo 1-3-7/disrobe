@@ -4131,8 +4131,6 @@ mod merge_tests {
         let rs: std::path::PathBuf = dir.join("recovered.rs");
         std::fs::write(&rs, &program).expect("write recovered source");
         let bin: std::path::PathBuf = dir.join(if cfg!(windows) { "rec.exe" } else { "rec" });
-        // rustc runs outside the contained launcher: on Windows the MSVC linker can leave a
-        // helper process alive after rustc exits, and the launcher waits for the whole job
         let compiled: std::process::Output = std::process::Command::new(&rustc)
             .args(["--edition", "2021", "-O", "-o"])
             .arg(&bin)
