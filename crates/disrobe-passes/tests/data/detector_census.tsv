@@ -3350,10 +3350,10 @@ corpus/v8/node-24/hello-24.js	-	-	-	-	-	-	-
 corpus/v8/node-24/hello-24.jsc	js.deob	js-bytenode-jsc	obfuscator-wrapper	high	-	-	-
 corpus/vbs/layered/execute_chr.vbs	shell.deob	shell-vbs	source	high	-	-	-
 corpus/vbs/layered/execute_each_statement.vbs	shell.deob	shell-vbs	source	high	scriptlang.classify	source	medium
-corpus/vbs/layered/execute_strreverse.vbs	-	-	-	-	-	-	-
+corpus/vbs/layered/execute_strreverse.vbs	shell.deob	shell-vbs	source	high	-	-	-
 corpus/vbs/layered/executeglobal_defines.vbs	shell.deob	shell-vbs	source	high	scriptlang.classify	source	medium
 corpus/vbs/layered/nested_three.vbs	shell.deob	shell-vbs	source	high	-	-	-
-corpus/vbs/layered/nested_two.vbs	-	-	-	-	-	-	-
+corpus/vbs/layered/nested_two.vbs	shell.deob	shell-vbs	source	high	-	-	-
 corpus/vbs/plain/arithmetic.vbs	shell.deob	shell-vbs	source	high	scriptlang.classify	source	medium
 corpus/vbs/plain/global_define.vbs	shell.deob	shell-vbs	source	high	scriptlang.classify	source	medium
 corpus/vbs/plain/greeting.vbs	shell.deob	shell-vbs	source	high	scriptlang.classify	source	medium

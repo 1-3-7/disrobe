@@ -464,7 +464,7 @@ fn detect_dialect(raw: &[u8], scan: &str, lower: &str, markers: &mut Vec<String>
         || lower.contains("wscript.shell")
         || (lower.contains("createobject(") && !lower.contains("new-object"))
         || ((lower.contains("execute(") || lower.contains("executeglobal"))
-            && lower.matches("chr(").count() >= 2)
+            && (lower.matches("chr(").count() >= 2 || lower.contains("strreverse(")))
     {
         markers.push("vbs-wsh-runtime".to_owned());
         return Dialect::Vbs;
@@ -734,6 +734,7 @@ fn score(
 }
 
 #[cfg(test)]
+#[allow(clippy::panic)]
 mod ticked_command_tests {
     use super::{Dialect, Family, detect};
 
@@ -748,6 +749,23 @@ mod ticked_command_tests {
             detect(b"echo `date`-stamp\n").family,
             Family::InvokeObfuscationToken
         );
+    }
+
+    #[test]
+    fn an_executed_strreverse_layer_is_obfuscated_vbscript() {
+        for relative in [
+            "corpus/vbs/layered/execute_strreverse.vbs",
+            "corpus/vbs/layered/nested_two.vbs",
+        ] {
+            let path: std::path::PathBuf = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../..")
+                .join(relative);
+            let bytes: Vec<u8> = std::fs::read(&path)
+                .unwrap_or_else(|error: std::io::Error| panic!("read {relative}: {error}"));
+            let found = detect(&bytes);
+            assert_eq!(found.dialect, Dialect::Vbs, "{relative}");
+            assert_eq!(found.family, Family::VbsWshObfuscated, "{relative}");
+        }
     }
 
     #[test]
