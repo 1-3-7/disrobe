@@ -240,6 +240,13 @@ jobs:
           enable-cache: true
       - name: provision cpython 3.8-3.15 for the py-decompile construct matrix
         run: uv python install 3.8.20 3.9.25 3.10.20 3.11.15 3.12.13 3.13.14 3.14.5 3.15.0b4
+      - name: put the uv-installed versioned interpreters on PATH
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="$(uv python dir --bin)"
+          test -d "$bin"
+          echo "$bin" >> "$GITHUB_PATH"
       - name: restore the pinned CPython empty package marker
         if: matrix.shard == 'two'
         shell: bash
