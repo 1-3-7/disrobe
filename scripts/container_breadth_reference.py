@@ -27,7 +27,7 @@ TIMEOUT_SECONDS = 120
 MAX_MEMBER_BYTES = 256 * 1024 * 1024
 
 BSDTAR = ["zip", "tar", "tar.gz", "rar", "iso", "pkg", "rpm", "jar", "apk", "pyz", "cpio", "ar", "lzh", "msix", "oci", "docker-image"]
-SEVEN_ZIP = ["arj", "squashfs", "vhd", "vhdx", "wim", "dmg", "uefi-fv", "appimage", "lz", "msi", "ext4", "cramfs", "snap"]
+SEVEN_ZIP = ["arj", "squashfs", "vhd", "vhdx", "wim", "dmg", "uefi-fv", "appimage", "lz", "msi", "ext4", "cramfs", "snap", "7z"]
 STREAMS = {
     "gz": ["gzip", "-dc"],
     "Z": ["gzip", "-dc"],
