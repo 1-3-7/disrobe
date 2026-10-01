@@ -8,7 +8,7 @@ use crate::classfile::ClassFile;
 use crate::descriptor::{JavaType, MethodDescriptor};
 use crate::error::{Error, Result};
 
-const METADATA_ANNOTATION: &str = "Lkotlin/Metadata;";
+pub(crate) const METADATA_ANNOTATION: &str = "Lkotlin/Metadata;";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum KotlinKind {

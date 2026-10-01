@@ -1206,3 +1206,459 @@ fn compare_results_used_as_values_recompile_with_their_nan_bias() {
         "every compare method must be fully lifted; recovered source:\n{source}"
     );
 }
+
+const KOTLIN_PROVENANCE: &str = include_str!("../fixtures/shape_matrix/kotlin/PROVENANCE.txt");
+const KOTLIN_STDLIB_SHA256: &str =
+    "4ec0293bc3751423b203f1d8493251c57c42e73eb6377a6b8560d0974ff0a6df";
+const JETBRAINS_ANNOTATIONS_SHA256: &str =
+    "ace2a10dc8e2d5fd34925ecac03e4988b2c0f851650c94b8cef49ba1bd111478";
+
+struct KotlinShape {
+    name: &'static str,
+    class: &'static [u8],
+    driver: &'static str,
+    output: &'static str,
+}
+
+const KT_FOLD: KotlinShape = KotlinShape {
+    name: "KtFold",
+    class: include_bytes!("../fixtures/shape_matrix/kotlin/KtFold.class"),
+    driver: include_str!("../fixtures/shape_matrix/kotlin/KtFoldDriver.java"),
+    output: "22,2002,6,3004,21021;1022,4003,1010,4005,29027;2022,6004,2014,3004,40033;3022,8005,3018,4005,54039;4022,10006,4022,3004,71045;",
+};
+
+const KT_COUNT_LOOP: KotlinShape = KotlinShape {
+    name: "KtCountLoop",
+    class: include_bytes!("../fixtures/shape_matrix/kotlin/KtCountLoop.class"),
+    driver: include_str!("../fixtures/shape_matrix/kotlin/KtCountLoopDriver.java"),
+    output: "4208,1,4127;3208,202,3127;2202,103,191;3247,204,3127;3208,205,3159;3252,101,191;6223,2,3111;1202,203,2127;2229,204,143;5208,305,3159;3247,1,2175;2234,202,191;",
+};
+
+const KT_WHEN: KotlinShape = KotlinShape {
+    name: "KtWhen",
+    class: include_bytes!("../fixtures/shape_matrix/kotlin/KtWhen.class"),
+    driver: include_str!("../fixtures/shape_matrix/kotlin/KtWhenDriver.java"),
+    output: "-1100,other,3,1,4;-201,other,3,0,4;-105,other,4,0,4;10,other,1,0,1;10,low,1,0,1;40,low,1,0,1;60,mid,1,0,1;80,mid,2,0,4;-5,mid,2,0,4;-94,other,2,0,4;49,other,2,2,4;-92,other,2,0,4;81,other,2,0,4;-90,ten,4,0,4;-89,other,4,0,4;-80,other,2,0,4;-30,other,4,2,4;1,other,3,0,4;600,other,3,2,4;900,other,3,1,4;",
+};
+
+const KT_WHEN_STRING: KotlinShape = KotlinShape {
+    name: "KtWhenString",
+    class: include_bytes!("../fixtures/shape_matrix/kotlin/KtWhenString.class"),
+    driver: include_str!("../fixtures/shape_matrix/kotlin/KtWhenStringDriver.java"),
+    output: "1,3,3,3,1,2,1,3,1,2,1,3,",
+};
+
+const KT_STATE_MACHINE: KotlinShape = KotlinShape {
+    name: "KtStateMachine",
+    class: include_bytes!("../fixtures/shape_matrix/kotlin/KtStateMachine.class"),
+    driver: include_str!("../fixtures/shape_matrix/kotlin/KtStateMachineDriver.java"),
+    output: "ac0dac0d:6,1287;a1c2da1c2d:8,-2;a1c4da1c4d:8,1357;ac6dac6d:6,2169;a1da1d:6,1287;a1da1d:6,1483;ac12dac12d:6,3345;a1da1d:6,1455;a1da1d:6,1651;ac18dac18d:6,601;",
+};
+
+const KT_SYNC_LOOP: KotlinShape = KotlinShape {
+    name: "KtSyncLoop",
+    class: include_bytes!("../fixtures/shape_matrix/kotlin/KtSyncLoop.class"),
+    driver: include_str!("../fixtures/shape_matrix/kotlin/KtSyncLoopDriver.java"),
+    output: "0,0,0;0,0,1;1,2,3;3,6,8;6,6,18;10,6,35;15,6,61;21,6,98;",
+};
+
+const KT_SYNC_CONTINUE: KotlinShape = KotlinShape {
+    name: "KtSyncContinue",
+    class: include_bytes!("../fixtures/shape_matrix/kotlin/KtSyncContinue.class"),
+    driver: include_str!("../fixtures/shape_matrix/kotlin/KtSyncContinueDriver.java"),
+    output: "0,0,2,8,8,24,58,58,",
+};
+
+const KT_LONG_COMPARE: KotlinShape = KotlinShape {
+    name: "KtLongCompare",
+    class: include_bytes!("../fixtures/shape_matrix/kotlin/KtLongCompare.class"),
+    driver: include_str!("../fixtures/shape_matrix/kotlin/KtLongCompareDriver.java"),
+    output: "0 0 110 0,-1 -9 10010 0,-1 -9 10010 1,-1 -9 10010 0,-1 -9 10010 -1,-1 -9 10010 0,-1 -9 10010 1,;1 10 11001 0,0 0 110 0,-1 -9 10010 1,-1 -9 10010 0,-1 -9 10010 -1,-1 -9 10010 0,-1 -9 10010 1,;1 10 11001 -1,1 10 11001 -1,0 0 110 0,-1 -9 10010 -1,-1 -9 10010 -1,-1 -9 10010 -1,-1 -9 10010 0,;1 10 11001 0,1 10 11001 0,1 10 11001 1,0 0 110 0,-1 -9 10010 -1,-1 -9 10010 0,-1 -9 10010 1,;1 10 11001 1,1 10 11001 1,1 10 11001 1,1 10 11001 1,0 0 110 0,-1 -9 10010 1,-1 -9 10010 1,;1 10 11001 0,1 10 11001 0,1 10 11001 1,1 10 11001 0,1 10 11001 -1,0 0 110 0,-1 -9 10010 1,;1 10 11001 -1,1 10 11001 -1,1 10 11001 0,1 10 11001 -1,1 10 11001 -1,1 10 11001 -1,0 0 110 0,;",
+};
+
+const KT_NAN_COMPARE: KotlinShape = KotlinShape {
+    name: "KtNanCompare",
+    class: include_bytes!("../fixtures/shape_matrix/kotlin/KtNanCompare.class"),
+    driver: include_str!("../fixtures/shape_matrix/kotlin/KtNanCompareDriver.java"),
+    output: "224 224 n 0 NaN,224 224 n 1 -Infinity,224 224 n 1 -1.5,224 224 n 1 -0.0,224 224 n 1 0.0,224 224 n 1 2.25,224 224 n 1 Infinity,;224 224 n -1 NaN,90 90 n 0 -Infinity,163 99 y -1 -Infinity,163 99 y -1 -Infinity,163 99 y -1 -Infinity,163 99 y -1 -Infinity,163 99 y -1 -Infinity,;224 224 n -1 NaN,108 172 n 1 -Infinity,90 90 n 0 -1.5,163 99 y -1 -1.5,163 99 y -1 -1.5,163 99 y -1 -1.5,163 99 y -1 -1.5,;224 224 n -1 NaN,108 172 n 1 -Infinity,108 172 n 1 -1.5,90 90 n 0 -0.0,90 90 n -1 0.0,163 99 y -1 -0.0,163 99 y -1 -0.0,;224 224 n -1 NaN,108 172 n 1 -Infinity,108 172 n 1 -1.5,90 90 n 1 -0.0,90 90 n 0 0.0,163 99 y -1 0.0,163 99 y -1 0.0,;224 224 n -1 NaN,108 172 n 1 -Infinity,108 172 n 1 -1.5,108 172 n 1 -0.0,108 172 n 1 0.0,90 90 n 0 2.25,163 99 y -1 2.25,;224 224 n -1 NaN,108 172 n 1 -Infinity,108 172 n 1 -1.5,108 172 n 1 -0.0,108 172 n 1 0.0,108 172 n 1 2.25,90 90 n 0 Infinity,;",
+};
+
+const KT_TEMPLATE: KotlinShape = KotlinShape {
+    name: "KtTemplate",
+    class: include_bytes!("../fixtures/shape_matrix/kotlin/KtTemplate.class"),
+    driver: include_str!("../fixtures/shape_matrix/kotlin/KtTemplateDriver.java"),
+    output: "a=-1 b=-4999999999 c=-0.25 d=o f=false [-2]|<-1><-1>|4|v=null|;a=0 b=1 c=0.0 d=p f=true [0]|<0><0>|3|v=null|;a=1 b=5000000001 c=0.25 d=q f=false [2]|<1><1>|3|v=p1|0,;a=2 b=10000000001 c=0.5 d=r f=true [4]|<2><2>|3|v=p2|0,1,;a=3 b=15000000001 c=0.75 d=s f=false [6]|<3><3>|3|v=p3|0,1,2,;",
+};
+
+const KT_FINALLY: KotlinShape = KotlinShape {
+    name: "KtFinally",
+    class: include_bytes!("../fixtures/shape_matrix/kotlin/KtFinally.class"),
+    driver: include_str!("../fixtures/shape_matrix/kotlin/KtFinallyDriver.java"),
+    output: "-100,11,-1099,-20,12;div,23,div,-2,24;100,35,1101,20,36;50,47,551,10,48;33,59,367,6,60;25,71,276,4,72;20,83,221,4,84;16,95,183,2,96;",
+};
+
+const KT_FINALLY_LOOP: KotlinShape = KotlinShape {
+    name: "KtFinallyLoop",
+    class: include_bytes!("../fixtures/shape_matrix/kotlin/KtFinallyLoop.class"),
+    driver: include_str!("../fixtures/shape_matrix/kotlin/KtFinallyLoopDriver.java"),
+    output: "0,100,201,301,404,508,608,608,",
+};
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest: sha2::digest::Output<sha2::Sha256> = <sha2::Sha256 as sha2::Digest>::digest(bytes);
+    format!("{digest:x}")
+}
+
+fn kotlinc_lib_dir() -> PathBuf {
+    let path_var: std::ffi::OsString = std::env::var_os("PATH").expect("PATH is set");
+    std::env::split_paths(&path_var)
+        .find(|dir: &PathBuf| dir.join("kotlinc").is_file())
+        .and_then(|bin: PathBuf| bin.parent().map(|home: &Path| home.join("lib")))
+        .unwrap_or_else(|| {
+            panic!(
+                "the Kotlin shape tests run the committed classes against kotlin-stdlib 2.4.10 and \
+                 annotations 13.0: set DISROBE_KOTLIN_STDLIB_JAR and DISROBE_JETBRAINS_ANNOTATIONS_JAR \
+                 (Maven Central, see tests/fixtures/shape_matrix/kotlin/PROVENANCE.txt) or put kotlinc \
+                 2.4.10 on PATH"
+            )
+        })
+}
+
+fn kotlin_library(variable: &str, file_name: &str, sha256: &str) -> PathBuf {
+    let path: PathBuf =
+        std::env::var_os(variable).map_or_else(|| kotlinc_lib_dir().join(file_name), PathBuf::from);
+    let bytes: Vec<u8> = std::fs::read(&path).unwrap_or_else(|err: std::io::Error| {
+        panic!(
+            "{variable} or kotlinc 2.4.10 must provide {file_name} at {}: {err}",
+            path.display()
+        )
+    });
+    assert_eq!(
+        sha256_hex(&bytes),
+        sha256,
+        "{} is not the pinned {file_name}",
+        path.display()
+    );
+    path
+}
+
+fn kotlin_runtime() -> Vec<PathBuf> {
+    vec![
+        kotlin_library(
+            "DISROBE_KOTLIN_STDLIB_JAR",
+            "kotlin-stdlib.jar",
+            KOTLIN_STDLIB_SHA256,
+        ),
+        kotlin_library(
+            "DISROBE_JETBRAINS_ANNOTATIONS_JAR",
+            "annotations-13.0.jar",
+            JETBRAINS_ANNOTATIONS_SHA256,
+        ),
+    ]
+}
+
+fn kotlin_classpath(dir: &Path, libraries: &[PathBuf]) -> std::ffi::OsString {
+    std::env::join_paths(std::iter::once(dir.to_path_buf()).chain(libraries.iter().cloned()))
+        .expect("classpath entries hold no separator")
+}
+
+fn javac_against_kotlin(
+    dir: &Path,
+    libraries: &[PathBuf],
+    sources: &[(&str, &str)],
+) -> Result<(), String> {
+    let mut command: Command = Command::new(find_on_path("javac"));
+    command
+        .arg("-nowarn")
+        .arg("-proc:none")
+        .arg("-cp")
+        .arg(kotlin_classpath(dir, libraries))
+        .arg("-d")
+        .arg(dir);
+    for (name, source) in sources {
+        let path: PathBuf = dir.join(name);
+        std::fs::write(&path, source).expect("write source");
+        command.arg(&path);
+    }
+    let out: Output = command.output().expect("start javac");
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "javac failed: {}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        ))
+    }
+}
+
+fn run_against_kotlin(
+    dir: &Path,
+    libraries: &[PathBuf],
+    main_class: &str,
+) -> Result<String, String> {
+    let out: Output = Command::new(find_on_path("java"))
+        .env_remove("FORCE_COLOR")
+        .arg("-cp")
+        .arg(kotlin_classpath(dir, libraries))
+        .arg(main_class)
+        .output()
+        .expect("java");
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+    } else {
+        Err(format!(
+            "running {main_class} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ))
+    }
+}
+
+struct KotlinRecovery {
+    libraries: Vec<PathBuf>,
+    original_output: String,
+    recompiled_output: Result<String, String>,
+    decompiled: DecompiledClass,
+}
+
+fn rerun_recovered_kotlin(
+    shape: &KotlinShape,
+    libraries: &[PathBuf],
+    source: &str,
+    tag: &str,
+) -> Result<String, String> {
+    let dir: ScratchDir = ScratchDir::create(&format!("disrobe_jvm_kotlin_{}_{tag}", shape.name))
+        .expect("scratch dir");
+    let driver_name: String = format!("{}Driver", shape.name);
+    javac_against_kotlin(
+        dir.path(),
+        libraries,
+        &[
+            (&format!("{}.java", shape.name), source),
+            (&format!("{driver_name}.java"), shape.driver),
+        ],
+    )
+    .and_then(|()| run_against_kotlin(dir.path(), libraries, &driver_name))
+}
+
+fn recover_kotlin(shape: &KotlinShape) -> KotlinRecovery {
+    let class_line: String = format!("Class: out/{}.class", shape.name);
+    let recorded: Option<&str> = KOTLIN_PROVENANCE
+        .lines()
+        .skip_while(|line: &&str| *line != class_line)
+        .nth(1)
+        .and_then(|line: &str| line.strip_prefix("Class SHA-256: "));
+    assert_eq!(
+        recorded,
+        Some(sha256_hex(shape.class).as_str()),
+        "{}.class is not the kotlinc 2.4.10 build its PROVENANCE record names",
+        shape.name
+    );
+    let libraries: Vec<PathBuf> = kotlin_runtime();
+    let driver_name: String = format!("{}Driver", shape.name);
+    let original: ScratchDir =
+        ScratchDir::create(&format!("disrobe_jvm_kotlin_{}_orig", shape.name))
+            .expect("scratch dir");
+    std::fs::write(
+        original.path().join(format!("{}.class", shape.name)),
+        shape.class,
+    )
+    .expect("write the kotlinc class");
+    javac_against_kotlin(
+        original.path(),
+        &libraries,
+        &[(&format!("{driver_name}.java"), shape.driver)],
+    )
+    .unwrap_or_else(|err: String| {
+        panic!("the driver must compile against the kotlinc class: {err}")
+    });
+    let original_output: String = run_against_kotlin(original.path(), &libraries, &driver_name)
+        .unwrap_or_else(|err: String| panic!("the kotlinc class must run: {err}"));
+    let decompiled: DecompiledClass = decompile_classfile_bytes(shape.class).expect("decompile");
+    let recompiled_output: Result<String, String> =
+        rerun_recovered_kotlin(shape, &libraries, &decompiled.source, "dec");
+    KotlinRecovery {
+        libraries,
+        original_output,
+        recompiled_output,
+        decompiled,
+    }
+}
+
+fn assert_kotlin_recovered(shape: &KotlinShape, mutation: (&str, &str)) {
+    let recovery: KotlinRecovery = recover_kotlin(shape);
+    let source: &str = &recovery.decompiled.source;
+    assert_eq!(
+        recovery.original_output, shape.output,
+        "the kotlinc 2.4.10 build of {} no longer prints its recorded output",
+        shape.name
+    );
+    match &recovery.recompiled_output {
+        Ok(output) => assert_eq!(
+            output, &recovery.original_output,
+            "the recovered {} source must run like the kotlinc build; recovered source:\n{source}",
+            shape.name
+        ),
+        Err(err) => panic!(
+            "the recovered {} source must recompile and run: {err}\nrecovered source:\n{source}",
+            shape.name
+        ),
+    }
+    assert_eq!(
+        recovery.decompiled.fully_lifted_methods, recovery.decompiled.method_count,
+        "every {} method must be fully lifted; recovered source:\n{source}",
+        shape.name
+    );
+    let (from, to): (&str, &str) = mutation;
+    assert_eq!(
+        source.matches(from).count(),
+        1,
+        "the {} mutation site {from:?} must occur once in the recovered source:\n{source}",
+        shape.name
+    );
+    let mutated_output: String = rerun_recovered_kotlin(
+        shape,
+        &recovery.libraries,
+        &source.replacen(from, to, 1),
+        "mut",
+    )
+    .unwrap_or_else(|err: String| {
+        panic!(
+            "the mutated {} source must still recompile and run: {err}",
+            shape.name
+        )
+    });
+    assert_ne!(
+        mutated_output, shape.output,
+        "replacing {from:?} with {to:?} left the {} output unchanged, so this grade cannot fail",
+        shape.name
+    );
+}
+
+fn names_a_refusal(source: &str) -> bool {
+    REFUSAL_MARKERS
+        .iter()
+        .any(|marker: &&str| source.contains(marker))
+}
+
+fn assert_kotlin_recovered_or_refused(shape: &KotlinShape) {
+    let recovery: KotlinRecovery = recover_kotlin(shape);
+    let source: &str = &recovery.decompiled.source;
+    assert_eq!(
+        recovery.original_output, shape.output,
+        "the kotlinc 2.4.10 build of {} no longer prints its recorded output",
+        shape.name
+    );
+    if recovery.recompiled_output.as_ref() == Ok(&recovery.original_output)
+        && recovery.decompiled.fully_lifted_methods == recovery.decompiled.method_count
+    {
+        return;
+    }
+    assert!(
+        names_a_refusal(source),
+        "a recovered {} source that does not run like the kotlinc build must name its refusal:\n{source}",
+        shape.name
+    );
+    assert!(
+        recovery.decompiled.fully_lifted_methods < recovery.decompiled.method_count,
+        "a refused {} method is not fully lifted:\n{source}",
+        shape.name
+    );
+    let unmarked: String = source
+        .lines()
+        .filter(|line: &&str| !names_a_refusal(line))
+        .collect::<Vec<&str>>()
+        .join("\n");
+    assert!(
+        !names_a_refusal(&unmarked),
+        "the {} refusal check must fail once the markers are gone",
+        shape.name
+    );
+}
+
+#[test]
+fn a_kotlin_fold_across_an_increment_recompiles_and_runs_like_kotlinc() {
+    assert_kotlin_recovered(
+        &KT_FOLD,
+        ("var3 = (var3 + var1++);", "var3 = (var3 + ++var1);"),
+    );
+}
+
+#[test]
+fn kotlin_counting_loops_left_by_return_break_or_throw_recompile() {
+    assert_kotlin_recovered(
+        &KT_COUNT_LOOP,
+        ("if ((var2 & 1) == 1) {", "if ((var2 & 1) == 0) {"),
+    );
+}
+
+#[test]
+fn a_kotlin_when_with_shared_branches_and_ranges_recompiles() {
+    assert_kotlin_recovered(&KT_WHEN, ("return 2;", "return 3;"));
+}
+
+#[test]
+fn a_kotlin_state_machine_reading_its_state_recompiles() {
+    assert_kotlin_recovered(&KT_STATE_MACHINE, ("var2 = 3;", "var2 = 1;"));
+}
+
+#[test]
+fn kotlin_synchronized_blocks_in_loops_recompile() {
+    assert_kotlin_recovered(
+        &KT_SYNC_LOOP,
+        ("var2 = (var2 + (var3 * 2));", "var2 = (var2 + (var3 * 3));"),
+    );
+}
+
+#[test]
+fn kotlin_long_compare_to_recompiles() {
+    assert_kotlin_recovered(
+        &KT_LONG_COMPARE,
+        (
+            "kotlin.jvm.internal.Intrinsics.compare(arg1, arg0) == 0",
+            "kotlin.jvm.internal.Intrinsics.compare(arg1, arg0) >= 0",
+        ),
+    );
+}
+
+#[test]
+fn kotlin_nan_compares_recompile_with_their_bias() {
+    assert_kotlin_recovered(
+        &KT_NAN_COMPARE,
+        ("if (!(arg0 < arg1)) {", "if ((arg0 >= arg1)) {"),
+    );
+}
+
+#[test]
+fn kotlin_string_templates_recompile() {
+    assert_kotlin_recovered(
+        &KT_TEMPLATE,
+        ("\" b=\" + (arg1 + 1L)", "\" b=\" + (arg1 + 2L)"),
+    );
+}
+
+#[test]
+fn a_kotlin_finally_runs_once_on_every_exit() {
+    assert_kotlin_recovered(
+        &KT_FINALLY,
+        (
+            "        var1 = var2;\n",
+            "        counter = (KtFinally.counter + 1);\n        var1 = var2;\n",
+        ),
+    );
+}
+
+#[test]
+fn a_kotlin_string_when_is_recovered_or_refused_by_name() {
+    assert_kotlin_recovered_or_refused(&KT_WHEN_STRING);
+}
+
+#[test]
+fn a_kotlin_continue_out_of_synchronized_is_recovered_or_refused_by_name() {
+    assert_kotlin_recovered_or_refused(&KT_SYNC_CONTINUE);
+}
+
+#[test]
+fn a_kotlin_continue_out_of_try_finally_is_recovered_or_refused_by_name() {
+    assert_kotlin_recovered_or_refused(&KT_FINALLY_LOOP);
+}

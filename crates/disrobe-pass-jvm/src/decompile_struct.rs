@@ -562,6 +562,7 @@ pub struct Structurer<'a> {
     open_monitors: Vec<BTreeSet<BlockId>>,
     exit_breaks: BTreeSet<BlockId>,
     duplicated: BTreeSet<BlockId>,
+    revisited: BTreeSet<BlockId>,
     finally_inline_skips: BTreeMap<BlockId, usize>,
     finally_copy_exits: BTreeMap<BlockId, BlockId>,
     finally_tail_trims: BTreeMap<BlockId, usize>,
@@ -646,6 +647,7 @@ impl<'a> Structurer<'a> {
             open_monitors: Vec::new(),
             exit_breaks: BTreeSet::new(),
             duplicated: BTreeSet::new(),
+            revisited: BTreeSet::new(),
             finally_inline_skips: BTreeMap::new(),
             finally_copy_exits: BTreeMap::new(),
             finally_tail_trims: BTreeMap::new(),
@@ -711,6 +713,11 @@ impl<'a> Structurer<'a> {
     pub fn with_monitor_regions(mut self, regions: BTreeMap<BlockId, MonitorRegion>) -> Self {
         self.monitor_regions = regions;
         self
+    }
+
+    #[must_use]
+    pub fn take_revisited_blocks(&mut self) -> BTreeSet<BlockId> {
+        std::mem::take(&mut self.revisited)
     }
 
     #[must_use]
@@ -1431,11 +1438,14 @@ impl<'a> Structurer<'a> {
                         && !paired_copy_local_slots.contains_key(&copy_slot);
                     let body_uses: usize = identity.body_slot_uses(body_slot);
                     let copy_uses: usize = identity.copy_slot_uses(copy_slot);
+                    let copy_slot_confined: bool = self.slot_total_uses(copy_slot) == copy_uses;
                     if (new_mapping && !matches!(body_operation, FinallyLocalOperation::Store(_)))
                         || body_uses == 0
                         || body_uses != copy_uses
                         || self.slot_total_uses(body_slot) != body_uses
-                        || self.slot_total_uses(copy_slot) != copy_uses
+                        || (!copy_slot_confined
+                            && new_mapping
+                            && self.slot_read_after(copy, copy_slot))
                         || paired_catch_slots.contains_key(&body_slot)
                         || paired_copy_slots.contains_key(&copy_slot)
                         || paired_local_slots
@@ -1449,7 +1459,10 @@ impl<'a> Structurer<'a> {
                     }
                     paired_local_slots.insert(body_slot, copy_slot);
                     paired_copy_local_slots.insert(copy_slot, body_slot);
-                    scoped_local_slots.extend([body_slot, copy_slot]);
+                    scoped_local_slots.insert(body_slot);
+                    if copy_slot_confined {
+                        scoped_local_slots.insert(copy_slot);
+                    }
                     continue;
                 }
                 (None, None) => {}
@@ -1555,6 +1568,81 @@ impl<'a> Structurer<'a> {
             catch_parameter_slots,
             scoped_local_slots,
         })
+    }
+
+    fn slot_read_after(&mut self, sequence: &[Instruction], slot: u16) -> bool {
+        let Some(last): Option<&Instruction> = sequence.last() else {
+            return true;
+        };
+        let Some(&last_block): Option<&BlockId> = self
+            .cfg
+            .pc_to_block
+            .range(..=last.pc)
+            .next_back()
+            .map(|(_, block): (&u32, &BlockId)| block)
+        else {
+            return true;
+        };
+        let Some(last_index): Option<usize> = self
+            .block_instructions(last_block)
+            .iter()
+            .position(|instruction: &Instruction| instruction.pc == last.pc)
+        else {
+            return true;
+        };
+        let mut pending: Vec<(BlockId, usize)> = vec![(last_block, last_index + 1)];
+        for instruction in sequence {
+            for region in &self.cfg.exception_regions {
+                if (region.try_start_pc..region.try_end_pc).contains(&instruction.pc) {
+                    let Some(&handler): Option<&BlockId> =
+                        self.cfg.pc_to_block.get(&region.handler_pc)
+                    else {
+                        return true;
+                    };
+                    pending.push((handler, 0));
+                }
+            }
+        }
+        let mut visited: BTreeSet<BlockId> = BTreeSet::new();
+        while let Some((block, from)) = pending.pop() {
+            if FinallyCopyIndex::claim_work(&mut self.work, MAX_STRUCTURE_WORK).is_none() {
+                return true;
+            }
+            if from == 0 && !visited.insert(block) {
+                continue;
+            }
+            let mut overwritten: bool = false;
+            for instruction in self.block_instructions(block).iter().skip(from) {
+                match finally_local_access(instruction) {
+                    Some((FinallyLocalOperation::Store(_), stored)) if stored == slot => {
+                        overwritten = true;
+                        break;
+                    }
+                    Some((
+                        FinallyLocalOperation::Load(width) | FinallyLocalOperation::Store(width),
+                        accessed,
+                    )) if matches!(width, 1 | 3) && accessed.checked_add(1) == Some(slot) => {
+                        return true;
+                    }
+                    Some((
+                        FinallyLocalOperation::Load(_) | FinallyLocalOperation::Increment(_),
+                        read,
+                    )) if read == slot => {
+                        return true;
+                    }
+                    _ => {}
+                }
+            }
+            if !overwritten {
+                pending.extend(
+                    self.cfg.blocks[block.0 as usize]
+                        .successors
+                        .iter()
+                        .map(|edge: &Edge| (edge.target, 0)),
+                );
+            }
+        }
+        false
     }
 
     fn finally_copy_matches(&mut self, body: &[Instruction], copy: &[Instruction]) -> bool {
@@ -2302,13 +2390,16 @@ impl<'a> Structurer<'a> {
         if n < 3 {
             return None;
         }
-        let monitorenter: &Instruction = &pred_insns[n - 1];
-        let astore: &Instruction = &pred_insns[n - 2];
-        let dup: &Instruction = &pred_insns[n - 3];
-        if monitorenter.opcode != 0xC2 || dup.opcode != 0x59 {
+        if pred_insns[n - 1].opcode != 0xC2 {
             return None;
         }
-        let slot: u16 = astore_slot(astore)?;
+        let slot: u16 = match (&pred_insns[n - 3], &pred_insns[n - 2]) {
+            (dup, astore) if dup.opcode == 0x59 => astore_slot(astore)?,
+            (astore, aload) => {
+                let slot: u16 = astore_slot(astore)?;
+                (aload_slot(aload)? == slot).then_some(slot)?
+            }
+        };
         Some((pred, slot))
     }
 
@@ -2329,6 +2420,13 @@ impl<'a> Structurer<'a> {
                 .last()
                 .is_some_and(|frame: &LoopFrame| frame.header == lock_block);
         opens_loop_body.then_some(false)
+    }
+
+    fn releases_lock_first(&self, block: BlockId, lock_slot: u16) -> bool {
+        matches!(
+            self.block_instructions(block),
+            [load, exit, ..] if aload_slot(load) == Some(lock_slot) && exit.opcode == 0xC3
+        )
     }
 
     fn is_synchronized_finally(&self, chain: &[BlockId], lock_slot: u16) -> bool {
@@ -2704,6 +2802,8 @@ impl<'a> Structurer<'a> {
             if self.visited.contains(&b) {
                 if let Some(tail) = self.duplicable_tail(b, stop) {
                     seq.extend(tail);
+                } else {
+                    self.revisited.insert(b);
                 }
                 break;
             }
@@ -2868,6 +2968,11 @@ impl<'a> Structurer<'a> {
                         }
                         for block in &chain.blocks {
                             self.absorb(*block);
+                        }
+                        if let Some(release) = after_try
+                            && self.releases_lock_first(release, lock_slot)
+                        {
+                            self.finally_inline_skips.entry(release).or_insert(2);
                         }
                         seq.push(Region::Synchronized {
                             lock_block,
@@ -3270,6 +3375,7 @@ impl<'a> Structurer<'a> {
             open_monitors: self.open_monitors.clone(),
             exit_breaks: BTreeSet::new(),
             duplicated: BTreeSet::new(),
+            revisited: BTreeSet::new(),
             finally_inline_skips: BTreeMap::new(),
             finally_copy_exits: self.finally_copy_exits.clone(),
             finally_tail_trims: BTreeMap::new(),
@@ -3359,6 +3465,7 @@ impl<'a> Structurer<'a> {
             .extend(std::mem::take(&mut inner.exit_breaks));
         self.duplicated
             .extend(std::mem::take(&mut inner.duplicated));
+        self.revisited.extend(std::mem::take(&mut inner.revisited));
         self.had_irreducible |= inner.had_irreducible;
         self.absorbed.extend(inner.take_absorbed_blocks());
         self.unmodelled_region = self.unmodelled_region.or(inner.unmodelled_region);
@@ -4096,7 +4203,7 @@ fn handler_continuation(cfg: &Cfg, handler_set: &BTreeSet<BlockId>) -> Option<Bl
     }
 }
 
-fn normal_targets(block: &BasicBlock) -> impl Iterator<Item = BlockId> + '_ {
+pub(crate) fn normal_targets(block: &BasicBlock) -> impl Iterator<Item = BlockId> + '_ {
     block
         .successors
         .iter()

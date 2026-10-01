@@ -1,0 +1,53 @@
+Producer: Kotlin/JVM compiler 2.4.10 on Eclipse Temurin 25.0.4+7-LTS
+Compiler archive: https://github.com/JetBrains/kotlin/releases/download/v2.4.10/kotlin-compiler-2.4.10.zip
+Compiler archive SHA-256: 473dd66c7a3ef4b182065b3da670466c1bf2773a9dbb0ed8b33a39fe9d4f876d
+Command: kotlinc <Name>.kt -jvm-target 17 -d out, run in this directory once per Kotlin source
+Runtime libraries (not committed; the tests verify them): kotlin-stdlib 2.4.10 (https://repo1.maven.org/maven2/org/jetbrains/kotlin/kotlin-stdlib/2.4.10/kotlin-stdlib-2.4.10.jar, SHA-256 4ec0293bc3751423b203f1d8493251c57c42e73eb6377a6b8560d0974ff0a6df) and org.jetbrains annotations 13.0 (https://repo1.maven.org/maven2/org/jetbrains/annotations/13.0/annotations-13.0.jar, SHA-256 ace2a10dc8e2d5fd34925ecac03e4988b2c0f851650c94b8cef49ba1bd111478), the same files kotlinc 2.4.10 ships in lib/
+
+Source: KtCountLoop.kt
+Class: out/KtCountLoop.class
+Class SHA-256: 3d38afee215f94b28bfff97383455b24a8b36a0ad46220e37df837f03f5a414b
+
+Source: KtFinally.kt
+Class: out/KtFinally.class
+Class SHA-256: 451d60e44433b3b0cc756a30d02a790c85a58b3b681f997e00cc8b88f832c781
+
+Source: KtFinallyLoop.kt
+Class: out/KtFinallyLoop.class
+Class SHA-256: 88fb7cafb310f849bfa9d9524d31038bc68317c6cbab5b89f456f62af7349319
+
+Source: KtFold.kt
+Class: out/KtFold.class
+Class SHA-256: a22712f6e5e43591a6313ff3eacb5f1cf46106cf5bcc689313447cf34583b277
+
+Source: KtLongCompare.kt
+Class: out/KtLongCompare.class
+Class SHA-256: 00ab38e8b4c0942ef9ac5c3f683f4458b7bf6a7d6fb13658aa6b92b5be5646c2
+
+Source: KtNanCompare.kt
+Class: out/KtNanCompare.class
+Class SHA-256: 0a0d76a2b1e09acc64caad8d0917db0222eec36ad7aa8dad84df84801a4e90cf
+
+Source: KtStateMachine.kt
+Class: out/KtStateMachine.class
+Class SHA-256: f858f77a1de1cc36570835c3a6767b0609218ea7358d2998946647bce1dc3ba7
+
+Source: KtSyncContinue.kt
+Class: out/KtSyncContinue.class
+Class SHA-256: e3ca7691ddb4fe2e16a04df775632ab456f6460c2361d263c8049adf9c097c68
+
+Source: KtSyncLoop.kt
+Class: out/KtSyncLoop.class
+Class SHA-256: 26b21cf96f3096c84ebcdb1f5ace01d5a57751b77e0be5cfd0b86d82353789a8
+
+Source: KtTemplate.kt
+Class: out/KtTemplate.class
+Class SHA-256: 8d991830469e9698a68cd148d1de3406d11c8b0da875a4cf492c954d7bc33538
+
+Source: KtWhen.kt
+Class: out/KtWhen.class
+Class SHA-256: 48e46318dea3dfa81c195ee192b8d036c0a8da1934152e9885ca7eb306a61219
+
+Source: KtWhenString.kt
+Class: out/KtWhenString.class
+Class SHA-256: 7eb8fcabc2e100bc94c3c8ab6a85deae76254bfd00df17d5a6cdee4e7071098d

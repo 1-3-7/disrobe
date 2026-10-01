@@ -12,7 +12,7 @@ use crate::bytecode::{
 use crate::classfile::{ClassFile, ConstantPoolEntry, FieldInfo, MethodInfo};
 use crate::decompile_struct::{
     BasicBlock, BlockId, Cfg, Dominators, Edge, EdgeKind, ExceptionRegion, NaturalLoop, Region,
-    Structurer, SwitchKey, build_cfg, compute_dominators, find_natural_loops,
+    Structurer, SwitchKey, build_cfg, compute_dominators, find_natural_loops, normal_targets,
 };
 use crate::descriptor::{self, JavaType, MethodDescriptor};
 use crate::error::{Error, Result};
@@ -159,7 +159,25 @@ fn decompile_class_scoped(cf: &ClassFile) -> DecompiledClass {
 
     let mut annotation_renderer: crate::attributes::DeclarationAnnotationRenderer =
         crate::attributes::DeclarationAnnotationRenderer::new(cf);
-    source.push_str(&annotation_renderer.render(cf, &cf.attributes, ""));
+    let class_annotation_placement: crate::attributes::AnnotationPlacement = if matches!(
+        crate::kotlin::recover_metadata(cf),
+        Ok(Some(crate::kotlin::KotlinMetadata {
+            kind: crate::kotlin::KotlinKind::File
+                | crate::kotlin::KotlinKind::MultifileClassFacade
+                | crate::kotlin::KotlinKind::MultifileClassPart,
+            ..
+        }))
+    ) {
+        crate::attributes::AnnotationPlacement::KotlinFileFacade
+    } else {
+        crate::attributes::AnnotationPlacement::Declaration
+    };
+    source.push_str(&annotation_renderer.render_placed(
+        cf,
+        &cf.attributes,
+        "",
+        class_annotation_placement,
+    ));
     let structure: crate::attributes::ClassStructure = crate::attributes::analyze(cf);
     let generic_class: Option<crate::signature::RecoveredClassSignature> =
         crate::signature::recover_class(cf);
@@ -1848,7 +1866,12 @@ impl Expr {
                 cond,
                 then_val,
                 else_val,
-            } => format!("({cond} ? {} : {})", then_val.render(), else_val.render()),
+            } => format!(
+                "({} ? {} : {})",
+                ternary_operand(cond),
+                then_val.render(),
+                else_val.render()
+            ),
             Self::ArrayLength(arr) => format!("{}.length", arr.render()),
             Self::ArrayLoad { array, index } => {
                 format!("{}[{}]", array.render(), index.render())
@@ -2308,11 +2331,17 @@ fn lift_structured(
         structurer.take_finally_catch_parameter_slots();
     let finally_scoped_local_slots: BTreeSet<u16> = structurer.take_finally_scoped_local_slots();
     let absorbed_blocks: BTreeSet<BlockId> = structurer.take_absorbed_blocks();
+    let revisited_blocks: BTreeSet<BlockId> = structurer.take_revisited_blocks();
     let EntryStacks {
         stacks: block_entry_stacks,
         folded_condition_heads,
+        distributed_returns,
     }: EntryStacks =
         compute_block_entry_stacks(cf, &cfg, insns, params, bootstraps, has_this, bool_return);
+    let distributed_returns: BTreeSet<BlockId> = distributed_returns
+        .into_iter()
+        .filter(|join: &BlockId| real_predecessors(&cfg, *join).is_disjoint(&revisited_blocks))
+        .collect();
     let reused_exc_slots: BTreeSet<u16> = reused_exception_slots(insns, &cfg.exception_regions);
     let bool_array_names: BTreeMap<String, u8> =
         boolean_array_names(cf, insns, params, param_types);
@@ -2351,6 +2380,7 @@ fn lift_structured(
         folded_condition_heads,
         folded_members: BTreeSet::new(),
         applied_folds: BTreeSet::new(),
+        distributed_returns,
     };
     let mut out: String = String::new();
     render_region(&mut ctx, &root, &mut out, 2);
@@ -5551,6 +5581,7 @@ struct RenderCtx<'a> {
     folded_condition_heads: BTreeMap<BlockId, FoldedCondition>,
     folded_members: BTreeSet<BlockId>,
     applied_folds: BTreeSet<BlockId>,
+    distributed_returns: BTreeSet<BlockId>,
 }
 
 fn indent_string(level: usize) -> String {
@@ -6602,6 +6633,9 @@ fn render_block_statements(
              around its condition>"
         );
     }
+    if seed.is_empty() && ctx.distributed_returns.contains(&bid) {
+        return Some(Vec::new());
+    }
     let mut stack: Vec<Expr> = if seed.is_empty() {
         ctx.block_entry_stacks.get(&bid).cloned().unwrap_or(seed)
     } else {
@@ -6700,6 +6734,25 @@ fn render_block_statements(
                 ctx.fully_lifted = false;
                 let _ = writeln!(out, "{pad}// {} (stack reset)", ins.mnemonic);
             }
+        }
+    }
+    if stack.len() == 1
+        && let Some(return_index) = distributed_return_of(ctx, bid)
+        && let Some(ins) = ctx.insns.get(return_index)
+    {
+        match lift_one(
+            ctx.cf,
+            ins,
+            &mut stack,
+            ctx.params,
+            ctx.bootstraps,
+            ctx.has_this,
+            ctx.bool_return,
+        ) {
+            LiftResult::Statement(s) => {
+                let _ = writeln!(out, "{pad}{s};");
+            }
+            _ => ctx.fully_lifted = false,
         }
     }
     Some(stack)
@@ -6819,6 +6872,7 @@ const fn branch_pop_count(op: u8) -> usize {
 struct EntryStacks {
     stacks: BTreeMap<BlockId, Vec<Expr>>,
     folded_condition_heads: BTreeMap<BlockId, FoldedCondition>,
+    distributed_returns: BTreeSet<BlockId>,
 }
 
 fn compute_block_entry_stacks(
@@ -6863,11 +6917,13 @@ fn compute_block_entry_stacks(
         folded_condition_heads: BTreeMap::new(),
         folded_members: BTreeSet::new(),
         applied_folds: BTreeSet::new(),
+        distributed_returns: BTreeSet::new(),
     };
     let dom: Dominators = compute_dominators(cfg);
     let mut exit_stacks: BTreeMap<BlockId, Vec<Expr>> = BTreeMap::new();
     let mut exit_clean: BTreeMap<BlockId, bool> = BTreeMap::new();
     let mut folded_condition_heads: BTreeMap<BlockId, FoldedCondition> = BTreeMap::new();
+    let mut distributed_returns: BTreeSet<BlockId> = BTreeSet::new();
     for bid in &dom.order {
         let block: &BasicBlock = &cfg.blocks[bid.0 as usize];
         let real_preds: Vec<BlockId> = block
@@ -6896,7 +6952,12 @@ fn compute_block_entry_stacks(
                     folded_condition_heads.insert(fold.head, fold.folded);
                     Some(fold.entry)
                 })
-                .unwrap_or_default(),
+                .unwrap_or_else(|| {
+                    if returns_each_arm_value(&probe, *bid, preds, &exit_stacks, &exit_clean) {
+                        distributed_returns.insert(*bid);
+                    }
+                    Vec::new()
+                }),
             _ => Vec::new(),
         };
         let (exit, clean): (Vec<Expr>, bool) = simulate_block(&probe, *bid, &entry);
@@ -6909,7 +6970,41 @@ fn compute_block_entry_stacks(
     EntryStacks {
         stacks: probe.block_entry_stacks,
         folded_condition_heads,
+        distributed_returns,
     }
+}
+
+fn returns_each_arm_value(
+    ctx: &RenderCtx<'_>,
+    join: BlockId,
+    preds: &[BlockId],
+    exit_stacks: &BTreeMap<BlockId, Vec<Expr>>,
+    exit_clean: &BTreeMap<BlockId, bool>,
+) -> bool {
+    let (start, end): (usize, usize) = block_insn_range(ctx, join);
+    end == start + 1
+        && ctx
+            .insns
+            .get(start)
+            .is_some_and(|ins: &Instruction| matches!(ins.opcode, 0xAC..=0xB0))
+        && preds.iter().all(|pred: &BlockId| {
+            *pred != join
+                && exit_clean.get(pred).copied().unwrap_or(false)
+                && exit_stacks.get(pred).is_some_and(|stack: &Vec<Expr>| {
+                    matches!(stack.as_slice(), [value] if !expr_has_hole(value))
+                })
+                && normal_targets(&ctx.cfg.blocks[pred.0 as usize])
+                    .all(|target: BlockId| target == join)
+        })
+}
+
+fn distributed_return_of(ctx: &RenderCtx<'_>, bid: BlockId) -> Option<usize> {
+    let mut targets = normal_targets(&ctx.cfg.blocks[bid.0 as usize]);
+    let join: BlockId = targets.next()?;
+    if targets.next().is_some() || !ctx.distributed_returns.contains(&join) {
+        return None;
+    }
+    Some(block_insn_range(ctx, join).0)
 }
 
 fn agreed_join_entry(
@@ -7140,26 +7235,26 @@ fn next_condition_merge(nodes: &BTreeMap<BlockId, ArmNode>) -> Option<(BlockId, 
                 let y: &ArmNode = nodes.get(&inner)?;
                 let merged: ArmNode = match (via_taken, y.taken == other, y.not_taken == other) {
                     (true, false, true) => ArmNode {
-                        holds: format!("({} && {})", x.holds, y.holds),
-                        fails: format!("({} || {})", x.fails, y.fails),
+                        holds: conjunction(&x.holds, &y.holds),
+                        fails: disjunction(&x.fails, &y.fails),
                         taken: y.taken,
                         not_taken: other,
                     },
                     (true, true, false) => ArmNode {
-                        holds: format!("({} && {})", x.holds, y.fails),
-                        fails: format!("({} || {})", x.fails, y.holds),
+                        holds: conjunction(&x.holds, &y.fails),
+                        fails: disjunction(&x.fails, &y.holds),
                         taken: y.not_taken,
                         not_taken: other,
                     },
                     (false, true, false) => ArmNode {
-                        holds: format!("({} || {})", x.holds, y.holds),
-                        fails: format!("({} && {})", x.fails, y.fails),
+                        holds: disjunction(&x.holds, &y.holds),
+                        fails: conjunction(&x.fails, &y.fails),
                         taken: other,
                         not_taken: y.not_taken,
                     },
                     (false, false, true) => ArmNode {
-                        holds: format!("({} || {})", x.holds, y.fails),
-                        fails: format!("({} && {})", x.fails, y.holds),
+                        holds: disjunction(&x.holds, &y.fails),
+                        fails: conjunction(&x.fails, &y.holds),
                         taken: other,
                         not_taken: y.taken,
                     },
@@ -8131,7 +8226,12 @@ fn lift_value_switch_default(
         return None;
     }
     let cond: String = head_condition_to(ctx, *cond_head, then_b)?;
-    let ternary: String = format!("{cond} ? {} : {}", then_val.render(), else_val.render());
+    let ternary: String = format!(
+        "{} ? {} : {}",
+        ternary_operand(&cond),
+        then_val.render(),
+        else_val.render()
+    );
     Some((ternary, vec![*cond_head, then_b, else_b]))
 }
 
@@ -9212,6 +9312,7 @@ const fn pattern_render_ctx<'a>(
         folded_condition_heads: BTreeMap::new(),
         folded_members: BTreeSet::new(),
         applied_folds: BTreeSet::new(),
+        distributed_returns: BTreeSet::new(),
     }
 }
 
@@ -9852,7 +9953,7 @@ fn boolean_view(expr: &Expr) -> Option<String> {
             Some(match (when_true.as_str(), when_false.as_str()) {
                 ("true", "false") => cond.clone(),
                 ("false", "true") => invert(cond),
-                _ => format!("({cond} ? {when_true} : {when_false})"),
+                _ => format!("({} ? {when_true} : {when_false})", ternary_operand(cond)),
             })
         }
         Expr::Binary { op, lhs, rhs } if matches!(*op, "&" | "|" | "^") => Some(format!(
@@ -10044,6 +10145,8 @@ struct TopLevelScan {
     relation: Option<(usize, &'static str, &'static str)>,
     relations: usize,
     logical: bool,
+    ternary: bool,
+    disjunction: bool,
     wrapped: bool,
 }
 
@@ -10053,6 +10156,8 @@ fn scan_top_level(cond: &str) -> Option<TopLevelScan> {
         relation: None,
         relations: 0,
         logical: false,
+        ternary: false,
+        disjunction: false,
         wrapped: bytes.first() == Some(&b'('),
     };
     let mut depth: usize = 0;
@@ -10087,6 +10192,8 @@ fn scan_top_level(cond: &str) -> Option<TopLevelScan> {
                 {
                     scan.logical = true;
                 }
+                scan.ternary |= rest.starts_with(" ? ");
+                scan.disjunction |= rest.starts_with(" || ");
                 if let Some(&(from, to)) = RELATIONAL_COMPLEMENTS
                     .iter()
                     .find(|pair: &&(&str, &str)| rest.starts_with(pair.0))
@@ -10099,6 +10206,34 @@ fn scan_top_level(cond: &str) -> Option<TopLevelScan> {
         }
     }
     (depth == 0 && quote.is_none()).then_some(scan)
+}
+
+fn conjunction(lhs: &str, rhs: &str) -> String {
+    format!(
+        "({} && {})",
+        conjunction_operand(lhs),
+        conjunction_operand(rhs)
+    )
+}
+
+fn disjunction(lhs: &str, rhs: &str) -> String {
+    format!("({} || {})", ternary_operand(lhs), ternary_operand(rhs))
+}
+
+fn ternary_operand(cond: &str) -> String {
+    grouped_when(cond, |scan: &TopLevelScan| scan.ternary)
+}
+
+fn conjunction_operand(cond: &str) -> String {
+    grouped_when(cond, |scan: &TopLevelScan| scan.ternary || scan.disjunction)
+}
+
+fn grouped_when(cond: &str, looser: fn(&TopLevelScan) -> bool) -> String {
+    if scan_top_level(cond).is_some_and(|scan: TopLevelScan| !scan.wrapped && looser(&scan)) {
+        format!("({cond})")
+    } else {
+        cond.to_owned()
+    }
 }
 
 fn simple_relation(cond: &str) -> Option<(usize, &'static str, &'static str)> {

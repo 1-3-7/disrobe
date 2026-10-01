@@ -532,11 +532,25 @@ fn render_annotation(
     budget.push_char(out, ')')
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AnnotationPlacement {
+    Declaration,
+    KotlinFileFacade,
+}
+
+impl AnnotationPlacement {
+    fn comments_out(self, annotation: &Annotation) -> bool {
+        self == Self::KotlinFileFacade
+            && annotation.type_descriptor != crate::kotlin::METADATA_ANNOTATION
+    }
+}
+
 fn render_outcome(
     outcome: &AnnotationOutcome,
     resolver: &AnnotationNameResolver,
     indent: &str,
     budget: &mut AnnotationRenderBudget,
+    placement: AnnotationPlacement,
 ) -> String {
     match outcome {
         AnnotationOutcome::Absent => String::new(),
@@ -558,6 +572,8 @@ fn render_outcome(
             let bytes_before: usize = budget.bytes_remaining;
             for annotation in annotations {
                 if budget.push(&mut scratch, indent).is_none()
+                    || (placement.comments_out(annotation)
+                        && budget.push(&mut scratch, "// ").is_none())
                     || render_annotation(annotation, resolver, 0, &mut scratch, budget).is_none()
                     || budget.push_char(&mut scratch, '\n').is_none()
                 {
@@ -597,12 +613,19 @@ pub(crate) fn render_declaration_annotations(
             usable: true,
         }
     };
-    let mut out: String = render_outcome(&annotations.visible, &resolver, indent, &mut budget);
+    let mut out: String = render_outcome(
+        &annotations.visible,
+        &resolver,
+        indent,
+        &mut budget,
+        AnnotationPlacement::Declaration,
+    );
     out.push_str(&render_outcome(
         &annotations.invisible,
         &resolver,
         indent,
         &mut budget,
+        AnnotationPlacement::Declaration,
     ));
     out
 }
@@ -628,6 +651,16 @@ impl DeclarationAnnotationRenderer {
         attributes: &[Attribute],
         indent: &str,
     ) -> String {
+        self.render_placed(cf, attributes, indent, AnnotationPlacement::Declaration)
+    }
+
+    pub(crate) fn render_placed(
+        &mut self,
+        cf: &ClassFile,
+        attributes: &[Attribute],
+        indent: &str,
+        placement: AnnotationPlacement,
+    ) -> String {
         let annotations: DeclarationAnnotations =
             parse_declaration_annotations_with_budget(cf, attributes, &mut self.parse_budget);
         let mut out: String = render_outcome(
@@ -635,12 +668,14 @@ impl DeclarationAnnotationRenderer {
             &self.resolver,
             indent,
             &mut self.render_budget,
+            placement,
         );
         out.push_str(&render_outcome(
             &annotations.invisible,
             &self.resolver,
             indent,
             &mut self.render_budget,
+            placement,
         ));
         out
     }
