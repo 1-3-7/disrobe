@@ -960,7 +960,14 @@ fn parse_local_table(
         let Some(id_index): Option<u32> = disrobe_bytes::read_u32_le_at(bytes, at).ok() else {
             break;
         };
-        names.push(objects.literal(u64::from(id_index)).map(str::to_owned));
+        names.push(
+            objects
+                .typed_literal(u64::from(id_index))
+                .filter(|(_, kind): &(&str, IbfObjectKind)| {
+                    matches!(kind, IbfObjectKind::Symbol | IbfObjectKind::String)
+                })
+                .map(|(name, _): (&str, IbfObjectKind)| name.to_owned()),
+        );
     }
     names
 }
@@ -1479,6 +1486,22 @@ mod tests {
             offset: 0,
             kind: IbfObjectKind::Fixnum,
             literal: None,
+            element_count: None,
+            elements: Vec::new(),
+        }];
+        let table: ObjectTable<'_> = ObjectTable { objects: &objects };
+        let bytes: [u8; 8] = 0u64.to_le_bytes();
+        let names: Vec<Option<String>> = parse_local_table(&bytes, &table, 0, 1);
+        assert_eq!(names, vec![None]);
+    }
+
+    #[test]
+    fn a_local_slot_pointing_at_a_number_object_has_no_name() {
+        let objects: Vec<IbfObject> = vec![IbfObject {
+            index: 0,
+            offset: 0,
+            kind: IbfObjectKind::Fixnum,
+            literal: Some("68718428175".to_owned()),
             element_count: None,
             elements: Vec::new(),
         }];
