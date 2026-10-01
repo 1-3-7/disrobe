@@ -59,8 +59,13 @@ pub struct ChainRecoveryReport {
 }
 
 fn reports_refusals(node: &Node) -> bool {
-    node.metadata
-        .contains_key(super::metadata_keys::keys::CONTAINER_REFUSALS_KEY.name())
+    !matches!(
+        super::metadata_keys::get_json(
+            &node.metadata,
+            super::metadata_keys::keys::CONTAINER_REFUSALS_KEY
+        ),
+        Ok(None)
+    )
 }
 
 #[inline]
