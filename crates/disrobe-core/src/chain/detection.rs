@@ -110,12 +110,33 @@ pub struct ChildHandle {
 }
 
 pub const TERMINAL_HINT: &str = "disrobe.terminal";
+pub const REPORT_HINT: &str = "disrobe.terminal.report";
+const RECOVERED_SOURCE_HINT_PREFIX: &str = "disrobe.terminal.source:";
+
+#[must_use]
+pub fn recovered_source_hint(language: Language) -> String {
+    format!("{RECOVERED_SOURCE_HINT_PREFIX}{}", language.label())
+}
 
 impl ChildHandle {
     #[must_use]
     pub fn is_terminal(&self) -> bool {
-        self.hint.as_deref() == Some(TERMINAL_HINT)
+        matches!(self.hint.as_deref(), Some(TERMINAL_HINT | REPORT_HINT))
+            || self.recovered_source_format().is_some()
             || matches!(self.materialization, ChildMaterialization::Directory { .. })
+    }
+
+    #[must_use]
+    pub fn is_report(&self) -> bool {
+        self.hint.as_deref() == Some(REPORT_HINT)
+    }
+
+    #[must_use]
+    pub fn recovered_source_format(&self) -> Option<&str> {
+        self.hint
+            .as_deref()?
+            .strip_prefix(RECOVERED_SOURCE_HINT_PREFIX)
+            .filter(|format: &&str| !format.is_empty())
     }
 }
 

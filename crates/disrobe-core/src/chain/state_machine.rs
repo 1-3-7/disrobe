@@ -758,14 +758,29 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
                                 let child_hash: [u8; 32] = blake3_of(&next_bytes);
                                 let child_len: u64 = next_bytes.len() as u64;
                                 if ch.is_terminal() {
+                                    let recovered_format: Option<String> =
+                                        ch.recovered_source_format().map(str::to_owned);
                                     if self.config.persist_children {
+                                        let (relative_path, group): (String, &[ChildHandle]) =
+                                            if recovered_format.is_some() {
+                                                (
+                                                    recovered_child_path(
+                                                        item.path_hint.as_deref(),
+                                                        &ch.relative_path,
+                                                        layer_id,
+                                                    ),
+                                                    &[],
+                                                )
+                                            } else {
+                                                (ch.relative_path.clone(), &children)
+                                            };
                                         let artifact: ExtractedArtifact = ExtractedArtifact {
                                             node_id: layer_id,
-                                            relative_path: ch.relative_path.clone(),
+                                            relative_path,
                                             materialization: ch.materialization,
                                             bytes: next_bytes,
                                         };
-                                        sink(&artifact, &children);
+                                        sink(&artifact, group);
                                         if !self.config.stream_extracted {
                                             extracted.push(artifact);
                                         }
@@ -777,9 +792,22 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
                                         child_branch,
                                         child_hash,
                                         child_len,
-                                        Verdict::Extracted,
+                                        recovered_format.map_or(
+                                            Verdict::Extracted,
+                                            |format: String| Verdict::Complete {
+                                                formats: vec![format],
+                                            },
+                                        ),
                                         Duration::ZERO,
                                     );
+                                    if ch.is_report()
+                                        && let Some(report) = nodes.last_mut()
+                                    {
+                                        report.output_kind = Some(OutputKind::Report {
+                                            format_tag: SIDECAR_REPORT_TAG,
+                                            family: super::FAMILY_UNKNOWN,
+                                        });
+                                    }
                                     continue;
                                 }
                                 let mut child_history: BTreeSet<[u8; 32]> = item.history.clone();
@@ -882,6 +910,25 @@ fn report_artifact_path(node: NodeId, format_tag: &str, bytes: &[u8]) -> String 
 }
 
 const RECOVERED_DIR: &str = "recovered";
+const SIDECAR_REPORT_TAG: &str = "sidecar-report";
+
+fn recovered_child_path(path_hint: Option<&str>, relative_path: &str, node: NodeId) -> String {
+    let components = |path: &str| -> Vec<String> {
+        path.split(['/', '\\'])
+            .filter(|part: &&str| !part.is_empty() && *part != "." && *part != "..")
+            .map(sanitize_component)
+            .collect()
+    };
+    let mut parts: Vec<String> = components(path_hint.unwrap_or_default());
+    parts.pop();
+    let child: Vec<String> = components(relative_path);
+    if child.is_empty() {
+        parts.push(format!("chain-node-{node}"));
+    } else {
+        parts.extend(child);
+    }
+    format!("{RECOVERED_DIR}/{}", parts.join("/"))
+}
 
 fn recovered_source_path(path_hint: Option<&str>, node: NodeId, language: Language) -> String {
     let mut parts: Vec<String> = path_hint
@@ -949,7 +996,10 @@ fn aggregate_verdict(nodes: &[Node]) -> Verdict {
     let mut stalled: bool = false;
     let mut formats: Vec<String> = Vec::new();
     for leaf in &leaves {
-        if matches!(leaf.verdict, Verdict::NotApplicable) {
+        if matches!(leaf.verdict, Verdict::NotApplicable)
+            || (leaf.pass_id.is_none()
+                && matches!(leaf.output_kind, Some(OutputKind::Report { .. })))
+        {
             continue;
         }
         total = total.saturating_add(1);
@@ -1331,6 +1381,64 @@ mod tests {
             "{:?}",
             plan.verdict
         );
+    }
+
+    #[test]
+    fn a_recovered_source_child_completes_the_run_and_a_report_sidecar_does_not_count() {
+        let r: PassRegistry = registry_with_container();
+        let runner: CountingRunner = CountingRunner {
+            calls: AtomicU32::new(0),
+            produce: Box::new(|_n: u32, _bytes: &[u8]| {
+                let child = |index: u32, path: &str, hint: String| ChildHandle {
+                    materialization: ChildMaterialization::default(),
+                    artifact_index: index,
+                    relative_path: path.to_owned(),
+                    hint: Some(hint),
+                };
+                Ok(PassRunOutcome {
+                    output_bytes: Vec::new(),
+                    kind: OutputKind::Mixed {
+                        children: vec![
+                            child(
+                                0,
+                                "Hello.java",
+                                super::super::detection::recovered_source_hint(Language::Java),
+                            ),
+                            child(
+                                1,
+                                "jvm-manifest.json",
+                                super::super::detection::REPORT_HINT.to_owned(),
+                            ),
+                        ],
+                    },
+                    duration: Duration::from_millis(1),
+                    metadata: BTreeMap::new(),
+                    children: vec![b"class Hello {}".to_vec(), b"{}".to_vec()],
+                })
+            }),
+        };
+        let config: ChainConfig = ChainConfig {
+            persist_children: true,
+            ..ChainConfig::default()
+        };
+        let d: ChainDriver<'_, CountingRunner> = ChainDriver::new(&r, &runner, config);
+        let plan: ChainPlan = d.run(
+            b"container".to_vec(),
+            &ChainSpec::Auto { cap: 8 },
+            Some("pkg/Hello.class".to_owned()),
+        );
+        assert!(
+            matches!(&plan.verdict, Verdict::Complete { formats } if formats == &["Java".to_owned()]),
+            "{:?}",
+            plan.verdict
+        );
+        let paths: Vec<&str> = plan
+            .extracted
+            .iter()
+            .map(|artifact: &ExtractedArtifact| artifact.relative_path.as_str())
+            .collect();
+        assert!(paths.contains(&"recovered/pkg/Hello.java"), "{paths:?}");
+        assert!(paths.contains(&"jvm-manifest.json"), "{paths:?}");
     }
 
     #[test]
