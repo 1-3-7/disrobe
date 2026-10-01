@@ -332,6 +332,18 @@ jobs:
           echo "ace2a10dc8e2d5fd34925ecac03e4988b2c0f851650c94b8cef49ba1bd111478  $annotations" | sha256sum -c -
           echo "DISROBE_KOTLIN_STDLIB_JAR=$stdlib" >> "$GITHUB_ENV"
           echo "DISROBE_JETBRAINS_ANNOTATIONS_JAR=$annotations" >> "$GITHUB_ENV"
+      - name: provision kotlinc 2.4.10 for the generated Kotlin differential
+        if: matrix.shard == 'one'
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/kotlinc-2.4.10"
+          mkdir -p "$root"
+          curl -fsSL --retry 3 -o "$root/kotlin-compiler.zip" https://github.com/JetBrains/kotlin/releases/download/v2.4.10/kotlin-compiler-2.4.10.zip
+          echo "473dd66c7a3ef4b182065b3da670466c1bf2773a9dbb0ed8b33a39fe9d4f876d  $root/kotlin-compiler.zip" | sha256sum -c -
+          unzip -q "$root/kotlin-compiler.zip" -d "$root"
+          "$root/kotlinc/bin/kotlinc" -version
+          echo "$root/kotlinc/bin" >> "$GITHUB_PATH"
       - name: provision APK reference tools
         if: matrix.shard == 'two'
         shell: pwsh
