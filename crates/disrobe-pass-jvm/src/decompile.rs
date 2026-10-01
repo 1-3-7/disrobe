@@ -11,8 +11,9 @@ use crate::bytecode::{
 };
 use crate::classfile::{ClassFile, ConstantPoolEntry, FieldInfo, MethodInfo};
 use crate::decompile_struct::{
-    BasicBlock, BlockId, Cfg, Dominators, Edge, EdgeKind, ExceptionRegion, NaturalLoop, Region,
-    Structurer, SwitchKey, build_cfg, compute_dominators, find_natural_loops, normal_targets,
+    BasicBlock, BlockId, BranchCondition, Cfg, Dominators, Edge, EdgeKind, ExceptionRegion,
+    NaturalLoop, Region, Structurer, SwitchKey, build_cfg, collapse_short_circuit_conditions,
+    compute_dominators, find_natural_loops, normal_targets,
 };
 use crate::descriptor::{self, JavaType, MethodDescriptor};
 use crate::error::{Error, Result};
@@ -2311,6 +2312,27 @@ fn lift_structured(
     {
         return StructuredLift::Body(body);
     }
+    let _collapsed: BTreeSet<BlockId> =
+        collapse_short_circuit_conditions(&mut cfg, |outer: &BasicBlock, inner: &BasicBlock| {
+            !insns
+                .get(outer.insn_range.0..outer.insn_range.1)
+                .is_some_and(|body: &[Instruction]| {
+                    body.iter().any(|ins: &Instruction| {
+                        ins.opcode == 0xB2 && is_assertions_disabled_getstatic(cf, ins)
+                    })
+                })
+                && standalone_branch_condition(
+                    cf,
+                    insns,
+                    params,
+                    bootstraps,
+                    has_this,
+                    bool_return,
+                    &BTreeMap::new(),
+                    inner,
+                )
+                .is_some()
+        });
     let dom: Dominators = compute_dominators(&cfg);
     let loops: Vec<NaturalLoop> = find_natural_loops(&cfg, &dom);
     let mut structurer: Structurer<'_> = Structurer::new(&cfg, &dom, &loops, insns).with_class(cf);
@@ -5394,11 +5416,7 @@ fn handler_slot_read_as_value(insns: &[Instruction], handler_pc: u32, slot: u16)
         if read_slot == Some(slot) {
             return true;
         }
-        let overwrites: bool = matches!(
-            (ins.opcode, &ins.operands),
-            (0x3A, Operands::Local(idx)) if *idx == slot
-        ) || matches!(ins.opcode, 0x4B..=0x4E if u16::from(ins.opcode - 0x4B) == slot);
-        if overwrites {
+        if store_target_slot(ins) == Some(slot) {
             return false;
         }
         if matches!(ins.opcode, 0xA7 | 0xC8 | 0xAC..=0xB1 | 0xBF | 0x99..=0xA6 | 0xC6 | 0xC7) {
@@ -7399,11 +7417,101 @@ fn head_condition_to(ctx: &RenderCtx<'_>, head: BlockId, want: BlockId) -> Optio
     if stack.iter().any(expr_has_hole) {
         return None;
     }
-    let taken_cond: String = render_branch_condition(term, &mut stack, &ctx.bool_array_names);
+    let taken_cond: String = compound_condition_text(
+        ctx,
+        head,
+        render_branch_condition(term, &mut stack, &ctx.bool_array_names),
+    );
     if want == taken {
         Some(taken_cond)
     } else {
         Some(invert(&taken_cond))
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn standalone_branch_condition(
+    cf: &ClassFile,
+    insns: &[Instruction],
+    params: &[(u16, String)],
+    bootstraps: &[crate::attributes::BootstrapMethod],
+    has_this: bool,
+    bool_return: bool,
+    bool_arrays: &BTreeMap<String, u8>,
+    block: &BasicBlock,
+) -> Option<String> {
+    let (start, end): (usize, usize) = block.insn_range;
+    let term: &Instruction = insns.get(end.checked_sub(1)?)?;
+    if end <= start || !matches!(term.opcode, 0x99..=0xA6 | 0xC6 | 0xC7) {
+        return None;
+    }
+    let mut stack: Vec<Expr> = Vec::new();
+    for ins in &insns[start..end - 1] {
+        match lift_one(
+            cf,
+            ins,
+            &mut stack,
+            params,
+            bootstraps,
+            has_this,
+            bool_return,
+        ) {
+            LiftResult::Pushed => {}
+            LiftResult::Elided
+            | LiftResult::PushedWithPrelude(_)
+            | LiftResult::Statement(_)
+            | LiftResult::Statements(_)
+            | LiftResult::ControlFlow(_)
+            | LiftResult::Unhandled => return None,
+        }
+        if stack.iter().any(expr_has_hole) {
+            return None;
+        }
+    }
+    let taken: String = render_branch_condition(term, &mut stack, bool_arrays);
+    (stack.is_empty() && !taken.contains(HOLE_RENDER) && taken != "true").then_some(taken)
+}
+
+fn compound_condition_text(ctx: &RenderCtx<'_>, head: BlockId, head_taken: String) -> String {
+    match ctx.cfg.compound_conditions.get(&head) {
+        Some(condition) => branch_condition_text(ctx, condition, head, &head_taken),
+        None => head_taken,
+    }
+}
+
+fn branch_condition_text(
+    ctx: &RenderCtx<'_>,
+    condition: &BranchCondition,
+    head: BlockId,
+    head_taken: &str,
+) -> String {
+    match condition {
+        BranchCondition::Branch { block, taken } => {
+            let text: String = if *block == head {
+                head_taken.to_owned()
+            } else {
+                standalone_branch_condition(
+                    ctx.cf,
+                    ctx.insns,
+                    ctx.params,
+                    ctx.bootstraps,
+                    ctx.has_this,
+                    ctx.bool_return,
+                    &ctx.bool_array_names,
+                    &ctx.cfg.blocks[block.0 as usize],
+                )
+                .unwrap_or_else(|| HOLE_RENDER.to_owned())
+            };
+            if *taken { text } else { invert(&text) }
+        }
+        BranchCondition::All(lhs, rhs) => conjunction(
+            &branch_condition_text(ctx, lhs, head, head_taken),
+            &branch_condition_text(ctx, rhs, head, head_taken),
+        ),
+        BranchCondition::Any(lhs, rhs) => disjunction(
+            &branch_condition_text(ctx, lhs, head, head_taken),
+            &branch_condition_text(ctx, rhs, head, head_taken),
+        ),
     }
 }
 
@@ -7745,7 +7853,8 @@ fn render_head_prefix_and_condition(
         }
     }
     let term: &Instruction = &ctx.insns[body_end];
-    render_branch_condition(term, &mut stack, &ctx.bool_array_names)
+    let taken: String = render_branch_condition(term, &mut stack, &ctx.bool_array_names);
+    compound_condition_text(ctx, head, taken)
 }
 
 fn expr_has_side_effect(expr: &Expr) -> bool {
@@ -7884,7 +7993,8 @@ fn render_if_condition(
         }
     }
     let term: &Instruction = &ctx.insns[body_end];
-    render_branch_condition(term, &mut stack, &ctx.bool_array_names)
+    let taken: String = render_branch_condition(term, &mut stack, &ctx.bool_array_names);
+    compound_condition_text(ctx, head, taken)
 }
 
 fn render_branch_condition(
@@ -7975,7 +8085,11 @@ fn render_switch_subject(
     }
     let body_end: usize = end - 1;
     let pad: String = indent_string(level);
-    let mut stack: Vec<Expr> = Vec::new();
+    let mut stack: Vec<Expr> = ctx
+        .block_entry_stacks
+        .get(&head)
+        .cloned()
+        .unwrap_or_default();
     let already_rendered: bool = !ctx.rendered_blocks.insert(head);
     for ins in &ctx.insns[start..body_end] {
         let lifted: LiftResult = lift_one(
@@ -8780,8 +8894,11 @@ fn assert_condition_via_cfg(
             _ => return None,
         }
     }
-    let raw: String =
-        render_branch_condition(&ctx.insns[end - 1], &mut stack, &ctx.bool_array_names);
+    let raw: String = compound_condition_text(
+        ctx,
+        cond_head,
+        render_branch_condition(&ctx.insns[end - 1], &mut stack, &ctx.bool_array_names),
+    );
     let block: &BasicBlock = &ctx.cfg.blocks[cond_head.0 as usize];
     let (cond_true, cond_false): (Option<BlockId>, Option<BlockId>) = cond_edge_targets(block);
     if cond_true == Some(throw_entry) {
@@ -14109,6 +14226,7 @@ mod tests {
             blocks,
             entry: BlockId(0),
             exception_regions: Vec::new(),
+            compound_conditions: BTreeMap::new(),
         }
     }
 
@@ -14534,6 +14652,7 @@ mod tests {
             pc_to_block: BTreeMap::from([(0, latch)]),
             entry: latch,
             exception_regions: Vec::new(),
+            compound_conditions: BTreeMap::new(),
         };
         let params: Vec<(u16, String)> = Vec::new();
         let bootstraps: Vec<crate::attributes::BootstrapMethod> = Vec::new();

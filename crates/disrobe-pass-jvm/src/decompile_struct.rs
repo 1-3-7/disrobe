@@ -58,6 +58,200 @@ pub struct Cfg {
     pub pc_to_block: BTreeMap<u32, BlockId>,
     pub entry: BlockId,
     pub exception_regions: Vec<ExceptionRegion>,
+    #[serde(default)]
+    pub compound_conditions: BTreeMap<BlockId, BranchCondition>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BranchCondition {
+    Branch { block: BlockId, taken: bool },
+    All(Box<Self>, Box<Self>),
+    Any(Box<Self>, Box<Self>),
+}
+
+impl BranchCondition {
+    #[must_use]
+    pub fn negated(self) -> Self {
+        match self {
+            Self::Branch { block, taken } => Self::Branch {
+                block,
+                taken: !taken,
+            },
+            Self::All(lhs, rhs) => Self::Any(Box::new(lhs.negated()), Box::new(rhs.negated())),
+            Self::Any(lhs, rhs) => Self::All(Box::new(lhs.negated()), Box::new(rhs.negated())),
+        }
+    }
+
+    #[must_use]
+    pub fn branch_count(&self) -> usize {
+        match self {
+            Self::Branch { .. } => 1,
+            Self::All(lhs, rhs) | Self::Any(lhs, rhs) => lhs.branch_count() + rhs.branch_count(),
+        }
+    }
+}
+
+fn conditional_edges(block: &BasicBlock) -> Option<(BlockId, BlockId)> {
+    let target = |kind: EdgeKind| -> Option<BlockId> {
+        block
+            .successors
+            .iter()
+            .find(|edge: &&Edge| edge.kind == kind)
+            .map(|edge: &Edge| edge.target)
+    };
+    let (taken, not_taken): (BlockId, BlockId) =
+        (target(EdgeKind::CondTrue)?, target(EdgeKind::CondFalse)?);
+    (taken != not_taken).then_some((taken, not_taken))
+}
+
+fn exception_targets(block: &BasicBlock) -> BTreeSet<BlockId> {
+    block
+        .successors
+        .iter()
+        .filter(|edge: &&Edge| edge.kind == EdgeKind::Exception)
+        .map(|edge: &Edge| edge.target)
+        .collect()
+}
+
+struct ShortCircuitMerge {
+    inner: BlockId,
+    holds: BranchCondition,
+    taken: BlockId,
+    not_taken: BlockId,
+}
+
+fn short_circuit_merge(
+    cfg: &Cfg,
+    head: BlockId,
+    mergeable: &impl Fn(&BasicBlock, &BasicBlock) -> bool,
+) -> Option<ShortCircuitMerge> {
+    let outer: &BasicBlock = &cfg.blocks[head.0 as usize];
+    let (taken, not_taken): (BlockId, BlockId) = conditional_edges(outer)?;
+    [(taken, not_taken, true), (not_taken, taken, false)]
+        .into_iter()
+        .find_map(|(via, other, via_taken): (BlockId, BlockId, bool)| {
+            let inner: &BasicBlock = &cfg.blocks[via.0 as usize];
+            let (inner_taken, inner_not_taken): (BlockId, BlockId) = conditional_edges(inner)?;
+            if via == head
+                || via == cfg.entry
+                || [inner_taken, inner_not_taken]
+                    .iter()
+                    .any(|target: &BlockId| *target == head || *target == via)
+                || inner
+                    .predecessors
+                    .iter()
+                    .any(|pred: &BlockId| *pred != head)
+                || exception_targets(inner) != exception_targets(outer)
+                || !mergeable(outer, inner)
+            {
+                return None;
+            }
+            let outer_holds: BranchCondition = cfg
+                .compound_conditions
+                .get(&head)
+                .cloned()
+                .unwrap_or(BranchCondition::Branch {
+                    block: head,
+                    taken: true,
+                });
+            let inner_holds: BranchCondition = cfg
+                .compound_conditions
+                .get(&via)
+                .cloned()
+                .unwrap_or(BranchCondition::Branch {
+                    block: via,
+                    taken: true,
+                });
+            if outer_holds.branch_count() + inner_holds.branch_count() > MAX_CONDITION_CHAIN {
+                return None;
+            }
+            let (holds, merged_taken, merged_not_taken): (BranchCondition, BlockId, BlockId) =
+                match (via_taken, inner_taken == other, inner_not_taken == other) {
+                    (true, false, true) => (
+                        BranchCondition::All(Box::new(outer_holds), Box::new(inner_holds)),
+                        inner_taken,
+                        other,
+                    ),
+                    (true, true, false) => (
+                        BranchCondition::All(
+                            Box::new(outer_holds),
+                            Box::new(inner_holds.negated()),
+                        ),
+                        inner_not_taken,
+                        other,
+                    ),
+                    (false, true, false) => (
+                        BranchCondition::Any(Box::new(outer_holds), Box::new(inner_holds)),
+                        other,
+                        inner_not_taken,
+                    ),
+                    (false, false, true) => (
+                        BranchCondition::Any(
+                            Box::new(outer_holds),
+                            Box::new(inner_holds.negated()),
+                        ),
+                        other,
+                        inner_taken,
+                    ),
+                    _ => return None,
+                };
+            (merged_taken != merged_not_taken).then_some(ShortCircuitMerge {
+                inner: via,
+                holds,
+                taken: merged_taken,
+                not_taken: merged_not_taken,
+            })
+        })
+}
+
+fn apply_short_circuit_merge(cfg: &mut Cfg, head: BlockId, merge: ShortCircuitMerge) {
+    let inner_edges: Vec<Edge> = std::mem::take(&mut cfg.blocks[merge.inner.0 as usize].successors);
+    for edge in &inner_edges {
+        cfg.blocks[edge.target.0 as usize]
+            .predecessors
+            .retain(|pred: &BlockId| *pred != merge.inner);
+    }
+    cfg.blocks[merge.inner.0 as usize].predecessors.clear();
+    for edge in &mut cfg.blocks[head.0 as usize].successors {
+        match edge.kind {
+            EdgeKind::CondTrue => edge.target = merge.taken,
+            EdgeKind::CondFalse => edge.target = merge.not_taken,
+            _ => {}
+        }
+    }
+    for target in [merge.taken, merge.not_taken] {
+        let preds: &mut Vec<BlockId> = &mut cfg.blocks[target.0 as usize].predecessors;
+        if !preds.contains(&head) {
+            preds.push(head);
+        }
+    }
+    cfg.compound_conditions.remove(&merge.inner);
+    cfg.compound_conditions.insert(head, merge.holds);
+}
+
+pub fn collapse_short_circuit_conditions(
+    cfg: &mut Cfg,
+    mergeable: impl Fn(&BasicBlock, &BasicBlock) -> bool,
+) -> BTreeSet<BlockId> {
+    let mut absorbed: BTreeSet<BlockId> = BTreeSet::new();
+    let mut changed: bool = true;
+    while changed && absorbed.len() < MAX_BLOCKS {
+        changed = false;
+        for index in 0..cfg.blocks.len() {
+            let head: BlockId = cfg.blocks[index].id;
+            if absorbed.contains(&head) {
+                continue;
+            }
+            while absorbed.len() < MAX_BLOCKS
+                && let Some(merge) = short_circuit_merge(cfg, head, &mergeable)
+            {
+                absorbed.insert(merge.inner);
+                apply_short_circuit_merge(cfg, head, merge);
+                changed = true;
+            }
+        }
+    }
+    absorbed
 }
 
 pub fn build_cfg(
@@ -171,6 +365,7 @@ pub fn build_cfg(
         pc_to_block,
         entry,
         exception_regions,
+        compound_conditions: BTreeMap::new(),
     })
 }
 
@@ -2715,7 +2910,10 @@ impl<'a> Structurer<'a> {
             return None;
         }
         let frame: LoopFrame = *self.loop_stack.last()?;
-        if frame.exit != Some(block) {
+        if !frame
+            .exit
+            .is_some_and(|exit: BlockId| same_goto_destination(self.cfg, block, exit))
+        {
             return None;
         }
         let enclosing: Option<LoopFrame> = self
@@ -2723,8 +2921,10 @@ impl<'a> Structurer<'a> {
             .len()
             .checked_sub(2)
             .and_then(|index: usize| self.loop_stack.get(index).copied());
-        if let Some(outer) = enclosing
-            && let Some(jump) = self.continue_jump_at(block, &outer, Some(outer.label))
+        if frame.exit != Some(block)
+            && let Some(outer) = enclosing
+            && let Some(jump) =
+                self.continue_jump_at(goto_chain_end(self.cfg, block), &outer, Some(outer.label))
         {
             self.labels_used.insert(outer.label);
             return Some(jump);
@@ -3797,7 +3997,8 @@ impl<'a> Structurer<'a> {
     fn structure_if(&mut self, head: BlockId, stop: Option<BlockId>) -> Region {
         let block: &BasicBlock = &self.cfg.blocks[head.0 as usize];
         let (true_t, false_t): (BlockId, BlockId) = if_targets(block);
-        let join: Option<BlockId> = find_if_join(self.cfg, self.dom, head, true_t, false_t);
+        let join: Option<BlockId> =
+            self.join_inside_loop(find_if_join(self.cfg, self.dom, head, true_t, false_t));
         let arm_stop: Option<BlockId> = join.or(stop);
         let then_region: Region = self.structure_at(false_t, arm_stop);
         let has_else: bool = match join {
@@ -3823,7 +4024,7 @@ impl<'a> Structurer<'a> {
         }
     }
 
-    fn structure_switch(&mut self, head: BlockId, _stop: Option<BlockId>) -> Region {
+    fn structure_switch(&mut self, head: BlockId, stop: Option<BlockId>) -> Region {
         if let Some(precomputed) = self.switch_map.get(&head).cloned() {
             let join: Option<BlockId> = self.find_switch_join(head);
             let arms: Vec<(SwitchKey, BlockId)> = precomputed
@@ -3831,7 +4032,7 @@ impl<'a> Structurer<'a> {
                 .into_iter()
                 .filter(|(_, target): &(SwitchKey, BlockId)| Some(*target) != precomputed.default)
                 .collect();
-            return self.structure_switch_arms(head, arms, precomputed.default, join);
+            return self.structure_switch_arms(head, arms, precomputed.default, join, stop);
         }
         let block: &BasicBlock = &self.cfg.blocks[head.0 as usize];
         let last_idx: usize = block.insn_range.1.saturating_sub(1);
@@ -3898,7 +4099,7 @@ impl<'a> Structurer<'a> {
             let values: Vec<i32> = key_pairs.remove(&target).unwrap_or_default();
             arms.push((compact_key(&values), target));
         }
-        self.structure_switch_arms(head, arms, default, join)
+        self.structure_switch_arms(head, arms, default, join, stop)
     }
 
     fn structure_switch_arms(
@@ -3907,7 +4108,9 @@ impl<'a> Structurer<'a> {
         mut arms: Vec<(SwitchKey, BlockId)>,
         default: Option<BlockId>,
         join: Option<BlockId>,
+        stop: Option<BlockId>,
     ) -> Region {
+        let arm_stop: Option<BlockId> = join.or(stop);
         let start_pc = |block: BlockId| -> u32 { self.cfg.blocks[block.0 as usize].start_pc };
         arms.sort_by_key(|(_, target): &(SwitchKey, BlockId)| start_pc(*target));
         let case_count: usize = arms.len();
@@ -3948,7 +4151,7 @@ impl<'a> Structurer<'a> {
                     }
                     jump
                 }
-                None => self.structure_at(target, join),
+                None => self.structure_at(target, arm_stop),
             };
             self.switch_depth -= 1;
             self.handler_stops = saved;
@@ -3991,8 +4194,25 @@ impl<'a> Structurer<'a> {
     }
 
     fn find_switch_join(&self, head: BlockId) -> Option<BlockId> {
-        find_switch_join(self.cfg, self.dom, head, |target: BlockId| {
-            self.continue_arm(target).is_some()
+        self.join_inside_loop(find_switch_join(
+            self.cfg,
+            self.dom,
+            head,
+            |target: BlockId| self.continue_arm(target).is_some(),
+        ))
+    }
+
+    fn join_inside_loop(&self, join: Option<BlockId>) -> Option<BlockId> {
+        let Some(frame) = self.loop_stack.last() else {
+            return join;
+        };
+        let body: Option<&BTreeSet<BlockId>> = self
+            .loops
+            .iter()
+            .find(|candidate: &&NaturalLoop| candidate.header == frame.header)
+            .map(|candidate: &NaturalLoop| &candidate.body);
+        join.filter(|block: &BlockId| {
+            body.is_none_or(|body: &BTreeSet<BlockId>| body.contains(block))
         })
     }
 
@@ -4044,7 +4264,10 @@ fn find_loop_exit(cfg: &Cfg, loop_info: &NaturalLoop) -> Option<BlockId> {
     if switch_header_leaves_only_through_terminal_tails(cfg, loop_info) {
         return None;
     }
-    for &b in std::iter::once(&loop_info.header).chain(&loop_info.body) {
+    for &b in std::iter::once(&loop_info.header)
+        .chain(&loop_info.latches)
+        .chain(&loop_info.body)
+    {
         let block: &BasicBlock = &cfg.blocks[b.0 as usize];
         for edge in &block.successors {
             if !loop_info.body.contains(&edge.target) && !matches!(edge.kind, EdgeKind::Exception) {
@@ -4053,6 +4276,29 @@ fn find_loop_exit(cfg: &Cfg, loop_info: &NaturalLoop) -> Option<BlockId> {
         }
     }
     None
+}
+
+fn same_goto_destination(cfg: &Cfg, block: BlockId, exit: BlockId) -> bool {
+    block == exit || goto_chain_end(cfg, block) == goto_chain_end(cfg, exit)
+}
+
+fn goto_chain_end(cfg: &Cfg, start: BlockId) -> BlockId {
+    let mut current: BlockId = start;
+    for _ in 0..MAX_JOIN_CHAIN {
+        let block: &BasicBlock = &cfg.blocks[current.0 as usize];
+        let [edge]: &[Edge; 1] = match block.successors.as_slice().try_into() {
+            Ok(edges) => edges,
+            Err(_) => break,
+        };
+        if edge.kind != EdgeKind::Jump
+            || block.insn_range.1.saturating_sub(block.insn_range.0) != 1
+            || edge.target == current
+        {
+            break;
+        }
+        current = edge.target;
+    }
+    current
 }
 
 fn is_if(block: &BasicBlock) -> bool {

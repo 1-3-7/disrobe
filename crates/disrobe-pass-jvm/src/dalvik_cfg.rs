@@ -470,6 +470,7 @@ pub fn build_dalvik_cfg(
         pc_to_block,
         entry: BlockId(0),
         exception_regions,
+        compound_conditions: BTreeMap::new(),
     })
 }
 

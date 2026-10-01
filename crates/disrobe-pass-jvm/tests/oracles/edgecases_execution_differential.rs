@@ -14,7 +14,7 @@ const PUBLISHED_RECOMPILE_BAR: &str = "per-method";
 const PUBLISHED_EXECUTION_BAR: &str = "per-method, execution-verified";
 
 const PER_METHOD_TOTAL: usize = 131;
-const EXECUTION_EQUIVALENT_FLOOR: usize = 119;
+const EXECUTION_EQUIVALENT_FLOOR: usize = 120;
 
 const OBSERVATION_TIMEOUT_MS: u64 = 5_000;
 
@@ -45,11 +45,6 @@ const STUB_BLOCKED: &[(&str, &str)] = &[
 ];
 
 const BEHAVIOUR_DIVERGENT: &[(&str, &str)] = &[
-    (
-        "countVowels",
-        "does not terminate: the loop increment var2++ is emitted inside the innermost vowel branch \
-         only, so any non-u character leaves the index unchanged",
-    ),
     (
         "maxOrMin",
         "does not terminate: the loop increment var3++ sits inside the wantMax-and-greater branch \
