@@ -57,7 +57,11 @@ pub(super) fn object_compiler(compiler: &str, abi: PseudoAbi) -> (String, Vec<&'
                 Err(error) => panic!("{variable} must name an x86 GNU compiler: {error}"),
             };
             let abi_flag: &str = if ms_abi { "-mabi=ms" } else { "-mabi=sysv" };
-            (program, vec![abi_flag])
+            if cfg!(target_arch = "x86_64") {
+                (program, vec![abi_flag])
+            } else {
+                (program, vec![abi_flag, "-ffreestanding"])
+            }
         }
         "clang" => {
             let target: &str = if ms_abi {
