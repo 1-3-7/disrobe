@@ -55,7 +55,9 @@ test("unavailable syntax highlighting leaves source editing and analysis usable"
   await page.getByRole(isMobile ? "option" : "button", { name: "Detect & Peel", exact: true }).click();
   const inputPanel = page.locator("section").filter({ has: page.getByRole("heading", { name: "Detect & Peel", exact: true }) });
   await expect(inputPanel.getByRole("status")).toContainText("Syntax highlighting could not load. Reconnect and reload the page.");
-  await page.locator(".cm-content[contenteditable=true]").fill("<?php echo 42;");
+  const input = page.locator(".cm-content[contenteditable=true]");
+  await input.selectText();
+  await input.pressSequentially("<?php echo 42;");
   await expect(page.getByText("Load an artifact or run the current sample to see recovered output here.", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Run analysis", exact: true }).click();
   await expect(page.getByRole("heading", { name: "output", exact: true }).locator("../..").getByText("php_detect", { exact: true })).toBeVisible();

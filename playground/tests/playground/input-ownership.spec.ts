@@ -59,7 +59,8 @@ test("editing the input clears the previous result", async ({ page }): Promise<v
   const completed = outputHeader.getByText("php_detect", { exact: true });
   await expect(completed).toBeVisible();
   const input = page.locator(".cm-content[contenteditable=true]");
-  await input.fill("<?php echo 42;");
+  await input.selectText();
+  await input.pressSequentially("<?php echo 42;");
   await expect(completed).toHaveCount(0);
   await expect(page.getByText("Load an artifact or run the current sample to see recovered output here.", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Run analysis", exact: true }).click();

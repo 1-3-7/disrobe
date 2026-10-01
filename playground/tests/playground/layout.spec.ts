@@ -38,7 +38,8 @@ test("same-page navigation preserves an edited input without starting analysis",
   await expect(page.getByLabel("recovered source", { exact: true })).toBeVisible();
   const input = page.locator(".cm-content[contenteditable=true]");
   const source: string = '<?php echo "navigation preserves input";';
-  await input.fill(source);
+  await input.selectText();
+  await input.pressSequentially(source);
   const idle = page.getByTestId("input-metadata").getByText("idle", { exact: true });
   await expect(idle).toBeVisible();
   await page.evaluate((): Promise<void> => new Promise<void>((resolve): void => {
