@@ -260,10 +260,127 @@ fn powershell_construct_kinds(scan: &str) -> usize {
         .count()
 }
 
+const PS_APPROVED_VERBS: [&str; 100] = [
+    "add",
+    "approve",
+    "assert",
+    "backup",
+    "block",
+    "build",
+    "checkpoint",
+    "clear",
+    "close",
+    "compare",
+    "complete",
+    "compress",
+    "confirm",
+    "connect",
+    "convert",
+    "convertfrom",
+    "convertto",
+    "copy",
+    "debug",
+    "deny",
+    "deploy",
+    "disable",
+    "disconnect",
+    "dismount",
+    "edit",
+    "enable",
+    "enter",
+    "exit",
+    "expand",
+    "export",
+    "find",
+    "format",
+    "get",
+    "grant",
+    "group",
+    "hide",
+    "import",
+    "initialize",
+    "install",
+    "invoke",
+    "join",
+    "limit",
+    "lock",
+    "measure",
+    "merge",
+    "mount",
+    "move",
+    "new",
+    "open",
+    "optimize",
+    "out",
+    "ping",
+    "pop",
+    "protect",
+    "publish",
+    "push",
+    "read",
+    "receive",
+    "redo",
+    "register",
+    "remove",
+    "rename",
+    "repair",
+    "request",
+    "reset",
+    "resize",
+    "resolve",
+    "restart",
+    "restore",
+    "resume",
+    "revoke",
+    "save",
+    "search",
+    "select",
+    "send",
+    "set",
+    "show",
+    "skip",
+    "split",
+    "start",
+    "step",
+    "stop",
+    "submit",
+    "suspend",
+    "switch",
+    "sync",
+    "test",
+    "trace",
+    "unblock",
+    "undo",
+    "uninstall",
+    "unlock",
+    "unprotect",
+    "unpublish",
+    "unregister",
+    "update",
+    "use",
+    "wait",
+    "watch",
+    "write",
+];
+
+fn has_ticked_cmdlet(scan: &str) -> bool {
+    PS_TICKED_COMMAND
+        .find_iter(scan)
+        .any(|found: regex::Match<'_>| {
+            let untick: String = found.as_str().replace('`', "");
+            untick
+                .split_once('-')
+                .is_some_and(|(verb, noun): (&str, &str)| {
+                    !noun.is_empty()
+                        && PS_APPROVED_VERBS.contains(&verb.to_ascii_lowercase().as_str())
+                })
+        })
+}
+
 fn has_powershell_obfuscation_shape(scan: &str) -> bool {
     PS_STRING_FORMAT_OBF.is_match(scan)
         || PS_TOKEN_OBF.is_match(scan)
-        || PS_TICKED_COMMAND.is_match(scan)
+        || has_ticked_cmdlet(scan)
         || PS_LITERAL_SUBEXPRESSION.is_match(scan)
         || PS_AST_REORDER.is_match(scan)
         || PS_GET_COMMAND_CALL.is_match(scan)
@@ -493,7 +610,7 @@ fn detect_ps_family(scan: &str, lower: &str, markers: &mut Vec<String>) -> Famil
         markers.push("ps-char-code-run".to_owned());
         return Family::InvokeObfuscationToken;
     }
-    if PS_TICKED_COMMAND.is_match(scan) {
+    if has_ticked_cmdlet(scan) {
         markers.push("ps-ticked-command".to_owned());
         return Family::InvokeObfuscationToken;
     }
@@ -629,6 +746,17 @@ mod ticked_command_tests {
         }
         assert_ne!(
             detect(b"echo `date`-stamp\n").family,
+            Family::InvokeObfuscationToken
+        );
+    }
+
+    #[test]
+    fn a_ticked_run_without_a_powershell_verb_is_not_a_cmdlet() {
+        let lua: &[u8] =
+            b"return(function(...)local L={\"=&!p?P\",\"=3X-`o?i\"};return L end)(...)\n";
+        assert_ne!(detect(lua).dialect, Dialect::PowerShell);
+        assert_eq!(
+            detect(b"I`nv`oKe-ExpR`es`sIoN 'x'\n").family,
             Family::InvokeObfuscationToken
         );
     }
