@@ -141,8 +141,14 @@ fn planted_decoys_do_not_become_reported_protectors() {
 
 #[test]
 fn decoy_suppression_does_not_hide_a_real_watermark() {
+    const REAL_NAME: &[u8] = b"\0Environment\0";
+    const WATERMARK: &[u8] = b"\0ConfuserEx2\0";
     let mut bytes: Vec<u8> = load(BITMONO_REL);
-    bytes.extend_from_slice(b"ConfuserEx2");
+    let at: usize = bytes
+        .windows(REAL_NAME.len())
+        .position(|window: &[u8]| window == REAL_NAME)
+        .expect("the #Strings heap holds the System.Environment type reference name");
+    bytes[at..at + WATERMARK.len()].copy_from_slice(WATERMARK);
     let report: DetectionReport = detect_all(&bytes);
     assert!(
         report.matches.contains_key(&Protector::ConfuserEx2),
