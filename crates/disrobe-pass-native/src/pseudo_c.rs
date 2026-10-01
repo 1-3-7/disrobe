@@ -30272,23 +30272,28 @@ mod tests {
     }
 
     #[test]
-    fn branchless_cqo_abs_is_sound_rejected() {
+    fn branchless_cqo_abs_recovers_rdx_as_the_sign_of_rax() {
         let absdiff: [u8; 13] = [
             0x48, 0x89, 0xc8, 0x48, 0x29, 0xd0, 0x48, 0x99, 0x48, 0x31, 0xd0, 0x48, 0x29,
         ];
-        let mut absdiff_full: Vec<u8> = absdiff.to_vec();
-        absdiff_full.extend_from_slice(&[0xd0, 0xc3]);
-        assert!(
-            recover_leaf_function(&absdiff_full, 0x9600).is_err(),
-            "gcc 14/15 branchless cqo abs must not be silently mis-recovered with a stale rdx"
-        );
         let abs64: [u8; 10] = [0x48, 0x89, 0xc8, 0x48, 0x99, 0x48, 0x31, 0xd0, 0x48, 0x29];
-        let mut abs64_full: Vec<u8> = abs64.to_vec();
-        abs64_full.extend_from_slice(&[0xd0, 0xc3]);
-        assert!(
-            recover_leaf_function(&abs64_full, 0x9700).is_err(),
-            "gcc 14/15 branchless cqo abs64 must not be silently mis-recovered with a stale rdx"
-        );
+        for (name, body, address) in [
+            ("absdiff", absdiff.as_slice(), 0x9600),
+            ("abs64", abs64.as_slice(), 0x9700),
+        ] {
+            let mut full: Vec<u8> = body.to_vec();
+            full.extend_from_slice(&[0xd0, 0xc3]);
+            let rec: LeafRecovery = recover_leaf_function(&full, address)
+                .unwrap_or_else(|error| panic!("gcc 14/15 branchless cqo {name}: {error}"));
+            let fill: Option<&str> = rec.source.lines().find(|line: &&str| {
+                line.trim_start().starts_with("r_rdx") && line.contains("r_rax")
+            });
+            assert!(
+                fill.is_some() && rec.source.contains("63"),
+                "cqo {name} must rebuild rdx from the sign of rax, never leave it stale: {}",
+                rec.source
+            );
+        }
     }
 
     #[test]
@@ -37086,8 +37091,9 @@ mod structuring_corpus {
                     "-fno-if-conversion2",
                     "-fno-tree-loop-if-convert",
                     "-c",
-                    "-o",
                 ])
+                .args((!cfg!(target_arch = "x86_64")).then_some("-ffreestanding"))
+                .arg("-o")
                 .arg(&obj)
                 .arg(&src),
         )
