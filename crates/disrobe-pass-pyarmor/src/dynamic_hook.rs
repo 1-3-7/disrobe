@@ -535,6 +535,14 @@ mod tests {
         );
     }
 
+    static HELPER_SCRATCH: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn helper_scratch_lock() -> std::sync::MutexGuard<'static, ()> {
+        HELPER_SCRATCH
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     fn helper_scratch_leftovers() -> Vec<PathBuf> {
         let prefix: String = format!("{HELPER_SCRATCH_PURPOSE}-{}-", std::process::id());
         let Ok(entries): std::io::Result<std::fs::ReadDir> =
@@ -567,6 +575,7 @@ mod tests {
 
     #[test]
     fn a_dynamic_hook_that_fails_leaves_the_output_directory_holding_only_the_operators_output() {
+        let _helper_scratch: std::sync::MutexGuard<'static, ()> = helper_scratch_lock();
         let operator_workspace: disrobe_core::scratch::ScratchDir =
             disrobe_core::scratch::ScratchDir::create("pyarmor-hook-operator")
                 .expect("scratch dir");
@@ -619,6 +628,7 @@ mod tests {
 
     #[test]
     fn successful_hotpatch_session_is_uninstalled_and_drained() {
+        let _helper_scratch: std::sync::MutexGuard<'static, ()> = helper_scratch_lock();
         let spec: InterpreterSpec =
             locate_python(Some((3, 12))).expect("Python 3.12 is required for the hotpatch gate");
         let version: (u8, u8, u8) = python_version(&spec).expect("query Python version");
@@ -827,6 +837,7 @@ def drain_into_manifest():
 
     #[test]
     fn dynamic_hook_timeout_is_reported_through_the_contained_launcher() {
+        let _helper_scratch: std::sync::MutexGuard<'static, ()> = helper_scratch_lock();
         let (_scratch, wrapper, out_dir) = dynamic_hook_mock_inputs();
         let spec: InterpreterSpec = InterpreterSpec {
             exe: mock_bin_path(),
@@ -846,6 +857,7 @@ def drain_into_manifest():
 
     #[test]
     fn dynamic_hook_overflow_is_refused_through_the_contained_launcher() {
+        let _helper_scratch: std::sync::MutexGuard<'static, ()> = helper_scratch_lock();
         let (_scratch, wrapper, out_dir) = dynamic_hook_mock_inputs();
         let spec: InterpreterSpec = InterpreterSpec {
             exe: mock_bin_path(),
