@@ -316,7 +316,12 @@ fn verdict_for(kind: DetectedKind) -> Option<DetectVerdict> {
         DetectedKind::AndroidBundle => (TAG_ANDROID_BUNDLE, "android-bundle", 0.93),
         DetectedKind::Unknown => return None,
     };
-    let family: &'static str = if matches!(kind, DetectedKind::HermesRawBytecode) {
+    let family: &'static str = if matches!(
+        kind,
+        DetectedKind::HermesRawBytecode
+            | DetectedKind::FlutterLibAppSo
+            | DetectedKind::FlutterDartKernel
+    ) {
         FAMILY_INTERPRETER_BYTECODE
     } else {
         FAMILY_PACKER_ARCHIVE
@@ -550,6 +555,32 @@ mod tests {
     fn catalog_detect_misses_random_bytes() {
         let bytes: Vec<u8> = vec![0u8; 32];
         assert!(ObfuscatorCatalog::detect(&MobileDetector, &ctx(&bytes)).is_none());
+    }
+
+    #[test]
+    fn flutter_snapshots_are_interpreter_bytecode_not_packers() {
+        for (relative, tag) in [
+            (
+                "mobile/flutter/disrobe_sample/libapp_arm64.so",
+                TAG_FLUTTER_AOT,
+            ),
+            (
+                "mobile/flutter/disrobe_sample/disrobe_aot_sample.app.dill",
+                TAG_FLUTTER_KERNEL,
+            ),
+        ] {
+            let path: PathBuf = corpus_path(relative);
+            let bytes: Vec<u8> = std::fs::read(&path).unwrap_or_else(|error: std::io::Error| {
+                panic!(
+                    "the tracked fixture {} must be readable: {error}",
+                    path.display()
+                )
+            });
+            let v: DetectVerdict =
+                Detector::detect(&MobileDetector, &ctx(&bytes)).expect("flutter must detect");
+            assert_eq!(v.format_tag, tag);
+            assert_eq!(v.family, FAMILY_INTERPRETER_BYTECODE, "{relative}");
+        }
     }
 
     #[test]
