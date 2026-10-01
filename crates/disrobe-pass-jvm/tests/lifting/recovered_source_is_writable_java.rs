@@ -212,10 +212,24 @@ fn a_deferred_constructor_call_is_emitted_as_one_allocation() {
     let main: &String = sources
         .get("Hello.java")
         .expect("the classfile route emits Hello.java");
+    let allocations: Vec<&str> = main
+        .match_indices("= new Hello(")
+        .filter_map(|(at, call): (usize, &str)| {
+            let arguments: &str = &main[at + call.len()..];
+            arguments.find(')').map(|end: usize| &arguments[..end])
+        })
+        .collect();
+    let [argument]: &[&str] = allocations.as_slice() else {
+        panic!(
+            "the allocation and the constructor call it belongs to have to arrive as one \
+             assignment, found {allocations:?}:\n{main}"
+        );
+    };
     assert!(
-        main.contains("= new Hello(arg0)"),
-        "the allocation and the constructor call it belongs to have to arrive as one assignment, \
-         with the arguments the constructor was actually passed:\n{main}"
+        main.contains(&format!("{argument} = arg0["))
+            && main.contains(&format!("{argument} = \"world\"")),
+        "the constructor must receive the name main selected, either the first argument or \
+         \"world\", not {argument:?}:\n{main}"
     );
     assert!(
         !main.contains("new Hello()"),

@@ -49,15 +49,18 @@ const PROBE_SOURCE: &str = r#"public class AnonymousTypeProbe {
 
 const EDGECASES_DEX: &[u8] = include_bytes!("../../../../corpus/jvm/dex/EdgeCases.dex");
 const EDGECASES_METHOD_TOTAL: usize = 215;
-const ANONYMOUS_METHOD_TOTAL: usize = 20;
-const ANONYMOUS_DECLARATION_TOTAL: usize = 21;
+const ANONYMOUS_METHOD_TOTAL: usize = 23;
+const ANONYMOUS_DECLARATION_TOTAL: usize = 28;
 const AFFECTED_METHODS: [&str; ANONYMOUS_METHOD_TOTAL] = [
     "adderFn()",
+    "chain(int)",
     "closureCaptureLoop(int)",
     "constantInt(int)",
     "debugSink()",
     "executeWith(Executor, Supplier)",
     "formatter()",
+    "groupByLength(List)",
+    "joinSquares(int)",
     "synthLambda$chain$2(Integer)",
     "synthLambda$closureCaptureLoop$0(int)",
     "synthLambda$closureCaptureLoop$1(List)",
@@ -73,12 +76,16 @@ const AFFECTED_METHODS: [&str; ANONYMOUS_METHOD_TOTAL] = [
     "totalArea(List)",
     "wordCount(String)",
 ];
-const NEWLY_CLEAN: [&str; 15] = [
+const NEWLY_CLEAN: [&str; 20] = [
     "adderFn()",
+    "chain(int)",
     "closureCaptureLoop(int)",
     "constantInt(int)",
     "debugSink()",
+    "executeWith(Executor, Supplier)",
     "formatter()",
+    "groupByLength(List)",
+    "synthLambda$chain$2(Integer)",
     "synthLambda$closureCaptureLoop$0(int)",
     "synthLambda$closureCaptureLoop$1(List)",
     "listSupplier()",
@@ -89,9 +96,10 @@ const NEWLY_CLEAN: [&str; 15] = [
     "nonNull(Stream)",
     "reducerFn()",
     "squares(int)",
+    "totalArea(List)",
 ];
-const BASELINE_CLEAN: usize = 132;
-const CANDIDATE_CLEAN: usize = 147;
+const BASELINE_CLEAN: usize = 164;
+const CANDIDATE_CLEAN: usize = 184;
 const ATTRIBUTION_PROBE_FILE: &str = "TypeCheckReached.java";
 const ATTRIBUTION_PROBE_SOURCE: &str = "final class TypeCheckReached {\n    static final Object VALUE = typeCheckReachedSymbolThatCannotResolve;\n}\n";
 const JAVAC_TIMEOUT: Duration = Duration::from_secs(30);
@@ -213,13 +221,29 @@ fn a_later_concrete_allocation_prevents_anonymous_slot_normalization() {
         .nth(1)
         .expect("mixed reuse method");
 
-    assert!(!method.contains("AnonymousTypeProbe.Job var1;"), "{source}");
-    assert!(method.contains("Object var1;"), "{source}");
-    assert!(
-        method.contains("new AnonymousTypeProbe.Job() {"),
-        "{source}"
-    );
-    assert!(method.contains("new String("), "{source}");
+    let anonymous: &str = method
+        .lines()
+        .find_map(|line: &str| {
+            line.trim()
+                .strip_suffix(" = new AnonymousTypeProbe.Job() {")
+        })
+        .unwrap_or_else(|| panic!("the anonymous allocation is inlined:\n{source}"));
+    let concrete: &str = method
+        .lines()
+        .find_map(|line: &str| line.trim().strip_suffix(" = new String(\"plain\");"))
+        .unwrap_or_else(|| panic!("the concrete allocation is assigned:\n{source}"));
+    if anonymous == concrete {
+        assert!(
+            method.contains(&format!("Object {anonymous};")),
+            "one slot holding both allocations must keep the common supertype:\n{source}"
+        );
+    } else {
+        assert!(
+            method.contains(&format!("AnonymousTypeProbe.Job {anonymous};"))
+                && method.contains(&format!("String {concrete};")),
+            "separate live ranges take their own allocation types:\n{source}"
+        );
+    }
 }
 
 const MEMBER_PROBE_SOURCE: &str = r#"public class AnonymousMemberProbe {
