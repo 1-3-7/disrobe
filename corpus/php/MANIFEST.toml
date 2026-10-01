@@ -319,3 +319,11 @@ source_tool = "manual (PHP 8.4 strict behaviour program)"
 size_bytes = 1902
 sha256 = "9866192c2224a1ce54e12b857ad6f7cb624b3f905e1b5d5915942da998421c83"
 notes = "Strict behaviour program compiled to an opcache file-cache image by PHP 8.4, decompiled from that image and re-run; stdout must match byte for byte (tests/php_behaviour_strict.rs). Covers switch with fallthrough, default first and last, return inside a case, loose switch comparison over mixed types, match with multiple conditions and default, match(true), UnhandledMatchError."
+
+
+[[sample]]
+name = "behaviour/switch_try.php"
+source_tool = "manual (PHP 8.4 strict behaviour program)"
+size_bytes = 700
+sha256 = "97a938d7b72f964b1b990c753a4d3b7844280305b7b1a7b0c0285bc3a64ed774"
+notes = "Strict behaviour program compiled to an opcache file-cache image by PHP 8.4, decompiled from that image and re-run; stdout must match byte for byte (tests/php_behaviour_strict.rs). Covers try/catch and try/catch/finally inside switch cases followed by break, where the optimizer threads the post-try jump straight to the switch exit."

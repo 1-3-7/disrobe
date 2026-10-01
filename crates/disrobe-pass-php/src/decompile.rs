@@ -2303,12 +2303,35 @@ impl<'a> Lifter<'a> {
     }
 
     fn try_region(&self, row: usize, entry: &TryCatch, end: u32) -> Option<TryRegion> {
+        let mut catch_exit: Option<u32> = None;
         let construct_end: u32 = if let Some(finally_end) = entry.finally_end {
             finally_end.checked_add(1)?
         } else {
             let catch_op: u32 = entry.catch_op?;
-            let skip: &Op = self.ops.get(catch_op.checked_sub(1)? as usize)?;
-            if skip.opcode == op::JMP {
+            let skip_idx: u32 = catch_op.checked_sub(1)?;
+            let skip: &Op = self.ops.get(skip_idx as usize)?;
+            let jumps_to_exit = |index: u32| -> bool {
+                self.ops
+                    .get(index as usize)
+                    .is_some_and(|exit: &Op| exit.opcode == op::JMP && exit.op1 == skip.op1)
+            };
+            let threaded: Option<(u32, Option<u32>)> = (skip.opcode == op::JMP)
+                .then(|| self.catch_region_end(catch_op, end))
+                .flatten()
+                .filter(|&natural_end: &u32| natural_end != skip.op1)
+                .and_then(|natural_end: u32| {
+                    if natural_end.checked_sub(1).is_some_and(jumps_to_exit) {
+                        Some((natural_end, Some(skip_idx)))
+                    } else if natural_end == end && jumps_to_exit(end) {
+                        Some((natural_end, None))
+                    } else {
+                        None
+                    }
+                });
+            if let Some((natural_end, exit)) = threaded {
+                catch_exit = exit;
+                natural_end
+            } else if skip.opcode == op::JMP {
                 skip.op1
             } else if never_falls_through(skip) {
                 self.catch_region_end(catch_op, end)?
@@ -2361,7 +2384,7 @@ impl<'a> Lifter<'a> {
             finally_op: entry.finally_op,
             finally_end: entry.finally_end,
             construct_end,
-            exit_jump,
+            exit_jump: exit_jump.or(catch_exit),
         })
     }
 

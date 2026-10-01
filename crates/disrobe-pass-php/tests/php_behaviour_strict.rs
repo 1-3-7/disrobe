@@ -28,7 +28,7 @@ use php_toolchain::{
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-const PROGRAMS: [&str; 20] = [
+const PROGRAMS: [&str; 21] = [
     "anonymous",
     "arrays",
     "branches",
@@ -49,6 +49,7 @@ const PROGRAMS: [&str; 20] = [
     "statics",
     "strings",
     "switch_match",
+    "switch_try",
 ];
 
 const REFUSED: [(&str, &[&str]); 0] = [];

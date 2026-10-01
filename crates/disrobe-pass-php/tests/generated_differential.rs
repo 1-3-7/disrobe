@@ -32,7 +32,7 @@ const PROGRAMS: u64 = 48;
 const VARIABLES: [&str; 5] = ["$a", "$b", "$c", "$d", "$e"];
 const MAX_BLOCK_DEPTH: u32 = 3;
 const SHOWN_FAILURES: usize = 6;
-const KNOWN_DIVERGENT: [u64; 8] = [0, 2, 7, 9, 25, 34, 40, 41];
+const KNOWN_DIVERGENT: [u64; 6] = [0, 2, 7, 9, 34, 41];
 
 struct Generator {
     state: u64,
