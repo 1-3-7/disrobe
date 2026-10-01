@@ -354,13 +354,24 @@ fn an_ordinary_minified_wasm_module_keeps_its_wat_through_auto() {
         .expect("read captured wasm.deob source");
     let text: &str = std::str::from_utf8(&wat).expect("wasm.deob emits UTF-8 WAT");
     assert!(text.contains("(module"), "{text}");
-    assert!(text.contains("local.get 0"), "{text}");
+    assert!(text.contains("local.get $p0"), "{text}");
 }
 
 #[test]
 fn real_extractor_php_source() {
-    let bytes: Vec<u8> = read_fixture("php/baseline/hello.php");
-    let doc: ChainDocument = run_chain_auto(bytes, "corpus://php/hello.php");
+    use base64::Engine as _;
+
+    let source: String =
+        String::from_utf8(read_fixture("php/baseline/hello.php")).expect("hello.php is utf-8");
+    let body: &str = source
+        .strip_prefix("<?php")
+        .expect("hello.php opens with a php tag")
+        .trim();
+    let wrapped: String = format!(
+        "<?php eval(base64_decode(\"{}\"));\n",
+        base64::engine::general_purpose::STANDARD.encode(body)
+    );
+    let doc: ChainDocument = run_chain_auto(wrapped.into_bytes(), "corpus://php/hello.php");
     assert_pass_id(&doc, "php.peel");
     assert_pass_completes(&doc, "php.peel");
 }
