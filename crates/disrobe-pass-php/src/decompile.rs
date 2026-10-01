@@ -39,6 +39,7 @@ const SANE_CATCH_TYPE_CAP: usize = 256;
 const SANE_CATCH_CLAUSE_CAP: usize = 256;
 const CATCH_LAST: u32 = 1;
 const SANE_LOOP_EXIT_FREE_CAP: u32 = SANE_LIFT_DEPTH;
+const SANE_TERNARY_GUARD_SCAN: u32 = 4096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum OperandType {
@@ -4228,9 +4229,26 @@ impl<'a> Lifter<'a> {
         Some((statements, cursor))
     }
 
+    fn ternary_else(&self, i: u32, end: u32) -> Option<u32> {
+        let scan_end: u32 = end.min(i.saturating_add(SANE_TERNARY_GUARD_SCAN));
+        (i..scan_end).find_map(|k: u32| {
+            let guard: &Op = self.ops.get(k as usize)?;
+            if !matches!(guard.opcode, op::JMPZ | op::JMPNZ) {
+                return None;
+            }
+            let target: u32 = guard.op2;
+            let skip: &Op = self.ops.get(target.checked_sub(1)? as usize)?;
+            (target > k.saturating_add(2)
+                && target <= end
+                && skip.opcode == op::JMP
+                && skip.op1 > target
+                && skip.op1 <= end)
+                .then_some(target)
+        })
+    }
+
     fn structure_ternary(&mut self, i: u32, end: u32) -> Option<(Vec<Stmt>, u32)> {
-        let jmpz: Op = self.ops.get(i as usize)?.clone();
-        let else_addr: u32 = jmpz.op2;
+        let else_addr: u32 = self.ternary_else(i, end)?;
         if else_addr <= i.saturating_add(2) || else_addr > end {
             return None;
         }
@@ -4283,39 +4301,60 @@ impl<'a> Lifter<'a> {
         Some((Vec::new(), join))
     }
 
-    fn ternary_guard(&self, jump: &Op) -> Option<Expr> {
-        let value: Expr = self.defined_operand_expr(jump.op1_type, jump.op1)?;
-        match jump.opcode {
-            op::JMPZ => Some(value),
-            op::JMPNZ => Some(Expr {
-                text: format!("!{}", value.wrapped(PREC_NOT)),
-                prec: PREC_NOT,
-            }),
-            _ => None,
-        }
-    }
-
     fn ternary_condition(&mut self, i: u32, jmp_idx: u32, else_addr: u32) -> Option<(Expr, u32)> {
-        let first: Op = self.ops.get(i as usize)?.clone();
-        let mut cond: Expr = self.ternary_guard(&first)?;
-        let mut start: u32 = i.checked_add(1)?;
-        while let Some(guard) = (start..jmp_idx).find(|&k: &u32| {
+        let last_else_guard: u32 = (i..jmp_idx).rev().find(|&k: &u32| {
             self.ops.get(k as usize).is_some_and(|op: &Op| {
                 matches!(op.opcode, op::JMPZ | op::JMPNZ) && op.op2 == else_addr
             })
-        }) {
+        })?;
+        let then_start: u32 = last_else_guard.checked_add(1)?;
+        let mut guards: Vec<(Expr, bool)> = Vec::new();
+        let mut start: u32 = i;
+        while start < then_start {
+            let guard: u32 = (start..then_start).find(|&k: &u32| {
+                self.ops
+                    .get(k as usize)
+                    .is_some_and(|op: &Op| matches!(op.opcode, op::JMPZ | op::JMPNZ))
+            })?;
             if !self.eval_expression_range(start, guard) {
                 return None;
             }
             let jump: Op = self.ops.get(guard as usize)?.clone();
-            let next: Expr = self.ternary_guard(&jump)?;
-            cond = Expr {
-                text: format!("{} && {}", cond.wrapped(PREC_AND), next.wrapped(PREC_AND)),
-                prec: PREC_AND,
+            let value: Expr = self.defined_operand_expr(jump.op1_type, jump.op1)?;
+            let to_then: bool = match jump.op2 {
+                target if target == else_addr => false,
+                target if target == then_start => true,
+                _ => return None,
             };
+            let taken_when_true: bool = jump.opcode == op::JMPNZ;
+            let operand: Expr = if taken_when_true == to_then {
+                value
+            } else {
+                Expr {
+                    text: format!("!{}", value.wrapped(PREC_NOT)),
+                    prec: PREC_NOT,
+                }
+            };
+            guards.push((operand, to_then));
             start = guard.checked_add(1)?;
         }
-        Some((cond, start))
+        let (mut cond, _): (Expr, bool) = guards.pop()?;
+        while let Some((operand, to_then)) = guards.pop() {
+            let (symbol, precedence): (&str, u8) = if to_then {
+                ("||", PREC_OR)
+            } else {
+                ("&&", PREC_AND)
+            };
+            cond = Expr {
+                text: format!(
+                    "{} {symbol} {}",
+                    operand.wrapped(precedence),
+                    cond.wrapped(precedence)
+                ),
+                prec: precedence,
+            };
+        }
+        Some((cond, then_start))
     }
 
     fn branch_value(
