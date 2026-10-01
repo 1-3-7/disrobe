@@ -10,6 +10,8 @@ use std::process::Command;
 
 use disrobe_pass_native::{ApiHashHit, HashFamily, resolve_imports_by_hash};
 
+use crate::common::{HOST_ABI, assert_x86_artifact, object_compiler};
+
 const REFERENCE_C: &str = r#"
 #include <stdio.h>
 #include <stdint.h>
@@ -172,7 +174,9 @@ int main(void) {{ return resolve_one("x"); }}
     let obj: PathBuf = dir.path().join("resolver.o");
     std::fs::write(&src, &resolver_c).expect("write resolver C");
 
-    let build: std::process::Output = Command::new("gcc")
+    let (gcc, abi_flags): (String, Vec<&'static str>) = object_compiler("gcc", HOST_ABI);
+    let build: std::process::Output = Command::new(&gcc)
+        .args(&abi_flags)
         .arg("-O1")
         .arg("-c")
         .arg("-o")
@@ -187,6 +191,7 @@ int main(void) {{ return resolve_one("x"); }}
     );
 
     let object_bytes: Vec<u8> = std::fs::read(&obj).expect("read resolver object");
+    assert_x86_artifact(&object_bytes);
     let text: Vec<u8> = extract_text_section(&object_bytes)
         .expect("the gcc resolver object must carry a non-empty text section");
 

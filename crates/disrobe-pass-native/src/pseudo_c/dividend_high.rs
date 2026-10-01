@@ -6,8 +6,8 @@ use crate::arch::{DisasmInsn, decode_one_x86};
 use crate::error::{Error, Result};
 
 use super::{
-    Reg, RegRef, Source, Stmt, Width, instruction_access_writes, lift_dividend_extend, lift_one,
-    parse_divide_operand,
+    BinOp, DividendHigh, Reg, RegRef, Source, Stmt, Width, instruction_access_writes,
+    lift_dividend_extend, lift_one, parse_divide_operand,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -18,12 +18,18 @@ struct Step {
     writes_rax: bool,
 }
 
-pub(super) fn refuse_unset_dividend_high_halves(insns: &[DisasmInsn]) -> Result<()> {
+#[derive(Debug)]
+struct Analysis {
+    steps: Vec<Step>,
+    labels: BTreeSet<u64>,
+}
+
+fn analyze(insns: &[DisasmInsn]) -> Result<Option<Analysis>> {
     if !insns
         .iter()
         .any(|insn: &DisasmInsn| matches!(insn.mnemonic.as_str(), "div" | "idiv" | "cqo" | "cdq"))
     {
-        return Ok(());
+        return Ok(None);
     }
     let mut factory: InstructionInfoFactory = InstructionInfoFactory::new();
     let mut steps: Vec<Step> = Vec::with_capacity(insns.len());
@@ -68,14 +74,34 @@ pub(super) fn refuse_unset_dividend_high_halves(insns: &[DisasmInsn]) -> Result<
         }
         steps.push(step);
     }
+    Ok(Some(Analysis { steps, labels }))
+}
+
+pub(super) fn refuse_unset_dividend_high_halves(insns: &[DisasmInsn]) -> Result<()> {
+    let Some(analysis): Option<Analysis> = analyze(insns)? else {
+        return Ok(());
+    };
     for (index, insn) in insns.iter().enumerate() {
         if let Some(divisor) = parse_divide_operand(&insn.mnemonic, &insn.operands) {
-            check_divide(insns, &steps, &labels, index, divisor)?;
-        } else if lift_dividend_extend(&insn.mnemonic, &insn.operands).is_some() {
-            check_sign_extension(insns, &steps, &labels, index)?;
+            check_divide(insns, &analysis, index, divisor)?;
         }
     }
     Ok(())
+}
+
+pub(super) fn division_fed_sign_extensions(insns: &[DisasmInsn]) -> Result<BTreeSet<u64>> {
+    let Some(analysis): Option<Analysis> = analyze(insns)? else {
+        return Ok(BTreeSet::new());
+    };
+    Ok(insns
+        .iter()
+        .enumerate()
+        .filter(|(index, insn): &(usize, &DisasmInsn)| {
+            lift_dividend_extend(&insn.mnemonic, &insn.operands).is_some()
+                && feeds_division(insns, &analysis, *index)
+        })
+        .map(|(_, insn): (usize, &DisasmInsn)| insn.address)
+        .collect())
 }
 
 fn text(insn: &DisasmInsn) -> String {
@@ -103,8 +129,7 @@ fn divide_refusal(at: u64, reason: &str) -> Error {
 
 fn check_divide(
     insns: &[DisasmInsn],
-    steps: &[Step],
-    labels: &BTreeSet<u64>,
+    analysis: &Analysis,
     index: usize,
     divisor: RegRef,
 ) -> Result<()> {
@@ -115,9 +140,10 @@ fn check_divide(
             "it divides by rdx, the high half of its own dividend",
         ));
     }
+    let mut rax_writer: Option<&DisasmInsn> = None;
     for position in (0..index).rev() {
         let next: u64 = insns[position + 1].address;
-        if labels.contains(&next) {
+        if analysis.labels.contains(&next) {
             return Err(divide_refusal(
                 at,
                 &format!(
@@ -126,10 +152,24 @@ fn check_divide(
             ));
         }
         let insn: &DisasmInsn = &insns[position];
-        if lift_dividend_extend(&insn.mnemonic, &insn.operands).is_some() || zeroes_rdx(insn) {
+        if zeroes_rdx(insn) {
             return Ok(());
         }
-        let step: Step = steps[position];
+        if lift_dividend_extend(&insn.mnemonic, &insn.operands).is_some() {
+            return rax_writer.map_or(Ok(()), |writer: &DisasmInsn| {
+                Err(divide_refusal(
+                    at,
+                    &format!(
+                        "`{}` at {:#x} changes rax after `{}` at {:#x} set rdx to the sign of the old value",
+                        text(writer),
+                        writer.address,
+                        insn.mnemonic,
+                        insn.address
+                    ),
+                ))
+            });
+        }
+        let step: Step = analysis.steps[position];
         match step.flow {
             FlowControl::Next | FlowControl::ConditionalBranch => {}
             FlowControl::Call | FlowControl::IndirectCall => {
@@ -158,6 +198,9 @@ fn check_divide(
                 ),
             ));
         }
+        if step.writes_rax {
+            rax_writer = Some(insn);
+        }
     }
     Err(divide_refusal(
         at,
@@ -165,66 +208,41 @@ fn check_divide(
     ))
 }
 
-fn check_sign_extension(
-    insns: &[DisasmInsn],
-    steps: &[Step],
-    labels: &BTreeSet<u64>,
-    index: usize,
-) -> Result<()> {
-    let extension: &DisasmInsn = &insns[index];
-    let refusal = |reason: String| -> Error {
-        Error::LlvmIr(format!(
-            "`{}` at {:#x} sets rdx to the sign of rax for a division, but {reason}",
-            extension.mnemonic, extension.address
-        ))
-    };
-    for (insn, step) in insns.iter().zip(steps).skip(index + 1) {
-        if labels.contains(&insn.address) {
-            return Err(refusal(format!(
-                "a branch joins at {:#x} before the division",
-                insn.address
-            )));
+fn feeds_division(insns: &[DisasmInsn], analysis: &Analysis, index: usize) -> bool {
+    for (insn, step) in insns.iter().zip(&analysis.steps).skip(index + 1) {
+        if analysis.labels.contains(&insn.address) {
+            return false;
         }
         if parse_divide_operand(&insn.mnemonic, &insn.operands).is_some() {
-            return Ok(());
+            return true;
         }
-        match step.flow {
-            FlowControl::Next => {}
-            FlowControl::Call | FlowControl::IndirectCall => {
-                return Err(refusal(format!(
-                    "the call at {:#x} may read or change rdx",
-                    insn.address
-                )));
-            }
-            FlowControl::ConditionalBranch
-            | FlowControl::UnconditionalBranch
-            | FlowControl::IndirectBranch
-            | FlowControl::Return
-            | FlowControl::Interrupt
-            | FlowControl::Exception
-            | FlowControl::XbeginXabortXend => {
-                return Err(refusal(format!(
-                    "rdx leaves the block at {:#x} before the division",
-                    insn.address
-                )));
-            }
-        }
-        let effect: Option<&str> = if step.reads_rdx {
-            Some("reads rdx")
-        } else if step.writes_rdx {
-            Some("overwrites rdx")
-        } else if step.writes_rax {
-            Some("changes rax")
-        } else {
-            None
-        };
-        if let Some(effect) = effect {
-            return Err(refusal(format!(
-                "`{}` at {:#x} {effect} before the division",
-                text(insn),
-                insn.address
-            )));
+        if step.flow != FlowControl::Next || step.reads_rdx || step.writes_rdx || step.writes_rax {
+            return false;
         }
     }
-    Err(refusal("no division follows it".to_owned()))
+    false
+}
+
+pub(super) fn sign_fill(high: DividendHigh) -> Option<[Stmt; 2]> {
+    let DividendHigh::SignExtended { width } = high else {
+        return None;
+    };
+    let rdx: RegRef = RegRef {
+        reg: Reg::Rdx,
+        width,
+    };
+    Some([
+        Stmt::Assign {
+            dest: rdx,
+            src: Source::Reg(RegRef {
+                reg: Reg::Rax,
+                width,
+            }),
+        },
+        Stmt::BinAssign {
+            dest: rdx,
+            op: BinOp::Sar,
+            src: Source::Imm(i64::from(width.bits() - 1)),
+        },
+    ])
 }

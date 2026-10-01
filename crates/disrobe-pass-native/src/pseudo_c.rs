@@ -4861,6 +4861,7 @@ fn build_leaf_items(
     }
     let insns: Vec<DisasmInsn> = disassemble_x86_64_lift_input(base, machine_code)?;
     let pop_moves: BTreeMap<u64, Stmt> = stack_transfer::plan_stack_transfers(&insns, abi, &[])?;
+    let fed_sign_extensions: BTreeSet<u64> = dividend_high::division_fed_sign_extensions(&insns)?;
     let entry_flags: CfgEntryFlags = cfg_entry_flags(&insns, consts)?;
     if let Some(trace) = coverage.as_deref_mut() {
         trace.begin_attempt(&insns);
@@ -4999,6 +5000,14 @@ fn build_leaf_items(
             continue;
         }
         if let Some(high) = lift_dividend_extend(&insn.mnemonic, &insn.operands) {
+            if !fed_sign_extensions.contains(&insn.address)
+                && let Some(fill) = dividend_high::sign_fill(high)
+            {
+                items.extend(fill.into_iter().map(|stmt: Stmt| Item {
+                    address: insn.address,
+                    kind: ItemKind::Stmt(stmt),
+                }));
+            }
             dividend_high = Some(high);
             mark_instruction_modelled(&mut coverage, instruction_index);
             continue;
@@ -8250,11 +8259,14 @@ fn lift_stmt_range_with_coverage(
     mut coverage: Option<&mut LifterCoverageTrace>,
 ) -> Result<Vec<Stmt>> {
     let mut out: Vec<Stmt> = Vec::new();
-    let mut lifter: StraightLifter<'_> = StraightLifter::new(consts, pop_moves);
+    let fed_sign_extensions: BTreeSet<u64> = dividend_high::division_fed_sign_extensions(insns)?;
+    let mut lifter: StraightLifter<'_> =
+        StraightLifter::new(consts, pop_moves, &fed_sign_extensions);
     for (instruction_index, insn) in insns.iter().enumerate().take(hi).skip(lo) {
         match lifter.feed(insn)? {
             StraightOutcome::Ignorable | StraightOutcome::StateOnly => {}
             StraightOutcome::Emit(stmt) => out.push(stmt),
+            StraightOutcome::EmitBoth(stmts) => out.extend(stmts),
         }
         mark_instruction_modelled(&mut coverage, instruction_index);
     }
@@ -8271,6 +8283,7 @@ enum BodyTerm {
 #[derive(Debug)]
 enum StraightOutcome {
     Emit(Stmt),
+    EmitBoth([Stmt; 2]),
     StateOnly,
     Ignorable,
 }
@@ -8281,15 +8294,21 @@ struct StraightLifter<'a> {
     dividend_high: Option<DividendHigh>,
     consts: &'a [FpConstant],
     pop_moves: &'a BTreeMap<u64, Stmt>,
+    fed_sign_extensions: &'a BTreeSet<u64>,
 }
 
 impl<'a> StraightLifter<'a> {
-    const fn new(consts: &'a [FpConstant], pop_moves: &'a BTreeMap<u64, Stmt>) -> Self {
+    const fn new(
+        consts: &'a [FpConstant],
+        pop_moves: &'a BTreeMap<u64, Stmt>,
+        fed_sign_extensions: &'a BTreeSet<u64>,
+    ) -> Self {
         Self {
             flags: None,
             dividend_high: None,
             consts,
             pop_moves,
+            fed_sign_extensions,
         }
     }
 
@@ -8313,7 +8332,11 @@ impl<'a> StraightLifter<'a> {
         }
         if let Some(high) = lift_dividend_extend(&insn.mnemonic, &insn.operands) {
             self.dividend_high = Some(high);
-            return Ok(StraightOutcome::StateOnly);
+            if self.fed_sign_extensions.contains(&insn.address) {
+                return Ok(StraightOutcome::StateOnly);
+            }
+            return Ok(dividend_high::sign_fill(high)
+                .map_or(StraightOutcome::StateOnly, StraightOutcome::EmitBoth));
         }
         if let Some(divisor) = parse_divide_operand(&insn.mnemonic, &insn.operands) {
             let signed: bool = insn.mnemonic == "idiv";
@@ -8489,7 +8512,9 @@ fn lift_switch_body(
         .get(&start_addr)
         .ok_or_else(|| Error::LlvmIr(format!("case target {start_addr:#x} not an instruction")))?;
     let mut stmts: Vec<Stmt> = Vec::new();
-    let mut lifter: StraightLifter<'_> = StraightLifter::new(consts, pop_moves);
+    let fed_sign_extensions: BTreeSet<u64> = dividend_high::division_fed_sign_extensions(insns)?;
+    let mut lifter: StraightLifter<'_> =
+        StraightLifter::new(consts, pop_moves, &fed_sign_extensions);
     let mut fp_return: Option<FpWidth> = None;
     let mut idx: usize = start;
     while idx < insns.len() {
@@ -8508,13 +8533,15 @@ fn lift_switch_body(
             mark_instruction_modelled(&mut coverage, idx);
             return Ok((stmts, BodyTerm::Tail(target), fp_return));
         }
-        match lifter.feed(insn)? {
-            StraightOutcome::Ignorable | StraightOutcome::StateOnly => {}
-            StraightOutcome::Emit(stmt) => {
-                update_return_width(&stmt, return_width);
-                fp_return = fp_return_after(fp_return, &stmt);
-                stmts.push(stmt);
-            }
+        let emitted: Vec<Stmt> = match lifter.feed(insn)? {
+            StraightOutcome::Ignorable | StraightOutcome::StateOnly => Vec::new(),
+            StraightOutcome::Emit(stmt) => vec![stmt],
+            StraightOutcome::EmitBoth(pair) => pair.into(),
+        };
+        for stmt in emitted {
+            update_return_width(&stmt, return_width);
+            fp_return = fp_return_after(fp_return, &stmt);
+            stmts.push(stmt);
         }
         mark_instruction_modelled(&mut coverage, idx);
         idx += 1;
@@ -36467,6 +36494,13 @@ mod structuring_corpus {
     ];
 
     pub(super) fn gcc() -> String {
+        if !cfg!(target_arch = "x86_64") {
+            return std::env::var("DISROBE_GCC_BIN").unwrap_or_else(|error: std::env::VarError| {
+                panic!(
+                    "DISROBE_GCC_BIN must name an x86-64 GNU compiler, because the host compiler of a non-x86 runner emits code these x86 structuring oracles cannot lift: {error}"
+                )
+            });
+        }
         for compiler in ["gcc", "cc", "clang"] {
             if disrobe_testkit::tool_output(
                 disrobe_testkit::CommandSpec::new(compiler, std::time::Duration::from_mins(2))
@@ -37063,7 +37097,15 @@ mod structuring_corpus {
             "{compiler} failed to compile the cf corpus: {}",
             compiled.stderr_text()
         );
-        std::fs::read(&obj).expect("read the compiled cf corpus object")
+        let object: Vec<u8> = std::fs::read(&obj).expect("read the compiled cf corpus object");
+        assert_eq!(
+            object::File::parse(object.as_slice())
+                .expect("parse the compiled cf corpus object")
+                .architecture(),
+            object::Architecture::X86_64,
+            "{compiler} must emit x86-64 code for the x86 structuring oracles"
+        );
+        object
     }
 
     pub(super) fn function_code(object_bytes: &[u8], name: &str) -> Option<(Vec<u8>, u64)> {

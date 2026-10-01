@@ -307,7 +307,25 @@ const STUBS: &[Stub] = &[
     Stub {
         name: "div_cqo_sign_read_on_exit_path",
         body: "mov rax, rdi\nmov rcx, rsi\nor rcx, 1\ncqo\ntest rsi, rsi\nje .Ldiv_cqo_exit\nidiv rcx\nret\n.Ldiv_cqo_exit:\nmov rax, rdx\nret",
-        expect: Expect::Refused("leaves the block"),
+        expect: Expect::Equivalent,
+        abi: StubAbi::SysV,
+    },
+    Stub {
+        name: "abs_cqo_sign_mask",
+        body: "mov rax, rdi\ncqo\nxor rax, rdx\nsub rax, rdx\nret",
+        expect: Expect::Equivalent,
+        abi: StubAbi::SysV,
+    },
+    Stub {
+        name: "abs_cdq_sign_mask32",
+        body: "mov eax, edi\ncdq\nxor eax, edx\nsub eax, edx\nret",
+        expect: Expect::Equivalent,
+        abi: StubAbi::SysV,
+    },
+    Stub {
+        name: "sign_cqo_returned",
+        body: "mov rax, rdi\ncqo\nmov rax, rdx\nret",
+        expect: Expect::Equivalent,
         abi: StubAbi::SysV,
     },
 ];
