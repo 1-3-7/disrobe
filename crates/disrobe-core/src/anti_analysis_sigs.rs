@@ -42,6 +42,7 @@ pub enum SigClass {
 pub enum SignalCorroboration {
     Standalone,
     Corroborated,
+    Supporting,
     ContextOnly,
 }
 
@@ -62,7 +63,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "win32 debugger-presence query",
-        corroboration: SignalCorroboration::Corroborated,
+        corroboration: SignalCorroboration::Supporting,
     },
     StringSig {
         needle: "checkremotedebuggerpresent",
@@ -1401,6 +1402,7 @@ mod tests {
         match role {
             SignalCorroboration::Standalone => "Standalone",
             SignalCorroboration::Corroborated => "Corroborated",
+            SignalCorroboration::Supporting => "Supporting",
             SignalCorroboration::ContextOnly => "ContextOnly",
         }
     }
@@ -1569,7 +1571,6 @@ mod tests {
             "wine_get_unix_file_name",
             "software\\wine",
             "\\\\.\\winex11",
-            "isdebuggerpresent",
             "checkremotedebuggerpresent",
             "/proc/self/status",
             "tracerpid",
@@ -1587,11 +1588,21 @@ mod tests {
             .filter(|sig: &&StringSig| sig.corroboration == SignalCorroboration::Corroborated)
             .map(|sig: &StringSig| sig.needle)
             .collect();
-        assert_eq!(actual_corroborated.len(), 14);
+        assert_eq!(actual_corroborated.len(), 13);
         assert_eq!(actual_corroborated, expected_corroborated);
+        let actual_supporting: std::collections::BTreeSet<&str> = STRING_SIGS
+            .iter()
+            .filter(|sig: &&StringSig| sig.corroboration == SignalCorroboration::Supporting)
+            .map(|sig: &StringSig| sig.needle)
+            .collect();
+        assert_eq!(
+            actual_supporting,
+            std::collections::BTreeSet::from(["isdebuggerpresent"])
+        );
         assert!(STRING_SIGS.iter().all(|sig: &StringSig| {
             expected_context.iter().any(|entry| entry.0 == sig.needle)
                 || expected_corroborated.contains(sig.needle)
+                || actual_supporting.contains(sig.needle)
                 || sig.corroboration == SignalCorroboration::Standalone
         }));
     }

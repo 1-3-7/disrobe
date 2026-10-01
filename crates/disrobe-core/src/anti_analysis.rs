@@ -617,6 +617,14 @@ impl TechniqueAccumulator {
                 continue;
             }
             let evaluation: VerdictEvaluation = evaluate_verdict(technique, &accum.items);
+            if !evaluation.detected
+                && !accum
+                    .items
+                    .iter()
+                    .any(|item: &EvidenceItem| surfaces_alone(item.corroboration))
+            {
+                continue;
+            }
             let confidence_items: Vec<&EvidenceItem> = if evaluation.detected {
                 evaluation
                     .eligible_item_indices
@@ -650,6 +658,13 @@ impl TechniqueAccumulator {
             });
         }
         findings
+    }
+}
+
+const fn surfaces_alone(role: SignalCorroboration) -> bool {
+    match role {
+        SignalCorroboration::Standalone | SignalCorroboration::Corroborated => true,
+        SignalCorroboration::Supporting | SignalCorroboration::ContextOnly => false,
     }
 }
 
@@ -693,7 +708,7 @@ fn evaluate_verdict(technique: Technique, items: &[EvidenceItem]) -> VerdictEval
             };
             match item.corroboration {
                 SignalCorroboration::Standalone => true,
-                SignalCorroboration::Corroborated => strong_kinds
+                SignalCorroboration::Corroborated | SignalCorroboration::Supporting => strong_kinds
                     .iter()
                     .any(|kind: &&'static str| *kind != item.kind),
                 SignalCorroboration::ContextOnly => false,
@@ -961,8 +976,13 @@ fn collect_string_rules(bytes: &[u8], acc: &mut TechniqueAccumulator) {
     let mut resource_hits: Vec<(StringSig, usize)> = Vec::new();
     let mut interaction_hits: Vec<(StringSig, usize)> = Vec::new();
     let mut tool_hits: Vec<(StringSig, usize)> = Vec::new();
+    let mut attach_hits: Vec<(StringSig, usize)> = Vec::new();
+    let mut page_protect_named: bool = false;
     for s in &extracted {
         let lower: String = s.value.to_ascii_lowercase();
+        page_protect_named |= PAGE_PROTECT_APIS
+            .iter()
+            .any(|api: &&str| lower.contains(api));
         for sig in STRING_SIGS {
             let hit: bool = if sig.word_bounded {
                 is_word_bounded(&lower, sig.needle)
@@ -1018,6 +1038,7 @@ fn collect_string_rules(bytes: &[u8], acc: &mut TechniqueAccumulator) {
                 SigClass::ResourceFloor => resource_hits.push((*sig, s.offset)),
                 SigClass::Interaction => interaction_hits.push((*sig, s.offset)),
                 SigClass::AntiTool => tool_hits.push((*sig, s.offset)),
+                SigClass::AntiAttach => attach_hits.push((*sig, s.offset)),
                 _ => acc.add(
                     sig_class_technique(sig.class),
                     sig.confidence,
@@ -1058,6 +1079,34 @@ fn collect_string_rules(bytes: &[u8], acc: &mut TechniqueAccumulator) {
         acc,
     );
     finalize_tool_hits(&tool_hits, acc);
+    finalize_attach_hits(&attach_hits, page_protect_named, acc);
+}
+
+const PAGE_PROTECT_APIS: [&str; 2] = ["virtualprotect", "ntprotectvirtualmemory"];
+
+fn finalize_attach_hits(
+    hits: &[(StringSig, usize)],
+    page_protect_named: bool,
+    acc: &mut TechniqueAccumulator,
+) {
+    for (sig, offset) in hits {
+        let role: SignalCorroboration = if page_protect_named {
+            SignalCorroboration::Corroborated
+        } else {
+            sig.corroboration
+        };
+        acc.add(
+            Technique::AntiAttach,
+            sig.confidence,
+            sig.needle,
+            Some(*offset),
+            format!(
+                "string '{}' ({}) at offset 0x{offset:x}",
+                sig.needle, sig.note
+            ),
+            role,
+        );
+    }
 }
 
 fn distinct_needles(hits: &[(StringSig, usize)]) -> usize {
@@ -1133,6 +1182,7 @@ const fn qualified_number_role(
         SignalCorroboration::Standalone => Some(SignalCorroboration::Standalone),
         SignalCorroboration::Corroborated if corroborated => Some(SignalCorroboration::Standalone),
         SignalCorroboration::Corroborated => None,
+        SignalCorroboration::Supporting => Some(SignalCorroboration::Supporting),
         SignalCorroboration::ContextOnly => Some(SignalCorroboration::ContextOnly),
     }
 }
@@ -1152,7 +1202,9 @@ fn collect_number_sigs(slice: &[u8], base: usize, whole: &[u8], acc: &mut Techni
             }
             let corroborated: bool = match sig.corroboration {
                 SignalCorroboration::Corroborated => number_sig_corroborated(whole, base + i, sig),
-                SignalCorroboration::Standalone | SignalCorroboration::ContextOnly => false,
+                SignalCorroboration::Standalone
+                | SignalCorroboration::Supporting
+                | SignalCorroboration::ContextOnly => false,
             };
             let Some(role): Option<SignalCorroboration> =
                 qualified_number_role(sig.corroboration, corroborated)
@@ -1701,10 +1753,10 @@ fn scan_region_opcodes(
     slice: &[u8],
     base: usize,
     bitness: Option<CodeBitness>,
-    _whole: &[u8],
+    whole: &[u8],
     acc: &mut TechniqueAccumulator,
 ) {
-    decode::scan_exec_region(slice, base, bitness, acc);
+    decode::scan_exec_region(slice, base, bitness, whole, acc);
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1725,13 +1777,17 @@ fn scan_region_opcodes(
 
 #[cfg(not(target_arch = "wasm32"))]
 mod decode {
-    use iced_x86::{Decoder, DecoderOptions, Instruction, Mnemonic, OpKind, Register};
+    use iced_x86::{
+        Decoder, DecoderOptions, FlowControl, Instruction, InstructionInfoFactory, Mnemonic,
+        OpAccess, OpKind, Register, UsedRegister,
+    };
 
     use super::{
         CodeBitness, Confidence, Technique, TechniqueAccumulator, qualified_number_role,
         sig_class_technique,
     };
     use crate::anti_analysis_sigs::{NUMBER_SIGS, SignalCorroboration};
+    use crate::byte_search;
 
     const DECODE_CAP_BYTES: usize = 16 * 1024 * 1024;
     const RDTSC_SANDWICH_SPAN: u64 = 64;
@@ -1743,6 +1799,18 @@ mod decode {
     const VMWARE_VMXH_MAGIC: u64 = 0x564d_5868;
     const CPUID_HYPERVISOR_LEAF: u32 = 0x4000_0000;
     const VMWARE_IO_PORT: u32 = 0x0000_5658;
+    const CPUID_LEAF_FEED_SPAN: u64 = 32;
+    const THREAD_CONTEXT_READERS: [&[u8]; 3] = [
+        b"GetThreadContext",
+        b"NtGetContextThread",
+        b"ZwGetContextThread",
+    ];
+
+    #[derive(Clone, Copy)]
+    struct LeafFeed {
+        value: u64,
+        mov_ip: u64,
+    }
 
     struct PebPending {
         label: &'static str,
@@ -1754,6 +1822,7 @@ mod decode {
         slice: &[u8],
         base: usize,
         bitness: Option<CodeBitness>,
+        whole: &[u8],
         acc: &mut TechniqueAccumulator,
     ) {
         let Some(bitness): Option<CodeBitness> = bitness else {
@@ -1786,13 +1855,23 @@ mod decode {
         let mut io_port_present: bool = false;
         let mut vmxh_present: bool = false;
         let mut peb_pending: Option<PebPending> = None;
+        let mut info_factory: InstructionInfoFactory = InstructionInfoFactory::new();
+        let mut eax_leaf: Option<LeafFeed> = None;
+        let mut fed_leaves: Vec<LeafFeed> = Vec::new();
 
         while decoder.can_decode() {
             decoder.decode_out(&mut insn);
             if insn.is_invalid() {
+                eax_leaf = None;
                 continue;
             }
             let ip: u64 = insn.ip();
+            if insn.mnemonic() == Mnemonic::Cpuid
+                && let Some(feed) = eax_leaf
+            {
+                fed_leaves.push(feed);
+            }
+            eax_leaf = track_eax_leaf(&insn, eax_leaf, &mut info_factory);
             match insn.mnemonic() {
                 Mnemonic::Rdtsc | Mnemonic::Rdtscp => rdtsc_ips.push(ip),
                 Mnemonic::Cpuid => cpuid_ips.push(ip),
@@ -1852,20 +1931,61 @@ mod decode {
 
         let context_flag_present: bool = imm_hits
             .iter()
-            .any(|&(value, _): &(u64, u64)| value == CONTEXT_DEBUG_REGISTERS_FLAG);
+            .any(|&(value, _): &(u64, u64)| value == CONTEXT_DEBUG_REGISTERS_FLAG)
+            && names_thread_context_reader(whole);
 
         emit_sandwich(&rdtsc_ips, &cpuid_ips, acc);
         emit_icebp_clusters(&icebp_ips, &hard_trap_ips, acc);
         emit_constants(
             &imm_hits,
-            !cpuid_ips.is_empty(),
+            &fed_leaves,
             io_port_present,
             vmxh_present,
+            context_flag_present,
             acc,
         );
         if context_flag_present {
             emit_dr7_reads(&dr7_ips, acc);
         }
+    }
+
+    fn names_thread_context_reader(whole: &[u8]) -> bool {
+        THREAD_CONTEXT_READERS
+            .iter()
+            .any(|name: &&[u8]| byte_search::contains(whole, name))
+    }
+
+    fn track_eax_leaf(
+        insn: &Instruction,
+        pending: Option<LeafFeed>,
+        info_factory: &mut InstructionInfoFactory,
+    ) -> Option<LeafFeed> {
+        if insn.mnemonic() == Mnemonic::Mov
+            && insn.op0_kind() == OpKind::Register
+            && insn.op0_register().full_register() == Register::RAX
+        {
+            return immediate_value(insn, 1).map(|value: u64| LeafFeed {
+                value,
+                mov_ip: insn.ip(),
+            });
+        }
+        let feed: LeafFeed = pending?;
+        if insn.mnemonic() == Mnemonic::Cpuid
+            || insn.flow_control() != FlowControl::Next
+            || insn.next_ip().saturating_sub(feed.mov_ip) > CPUID_LEAF_FEED_SPAN
+        {
+            return None;
+        }
+        let writes_rax: bool =
+            info_factory
+                .info(insn)
+                .used_registers()
+                .iter()
+                .any(|used: &UsedRegister| {
+                    used.register().full_register() == Register::RAX
+                        && !matches!(used.access(), OpAccess::Read | OpAccess::CondRead)
+                });
+        (!writes_rax).then_some(feed)
     }
 
     fn emit_dr7_reads(dr7_ips: &[u64], acc: &mut TechniqueAccumulator) {
@@ -2025,13 +2145,14 @@ mod decode {
 
     fn emit_constants(
         imm_hits: &[(u64, u64)],
-        cpuid_present: bool,
+        fed_leaves: &[LeafFeed],
         io_port_present: bool,
         vmxh_present: bool,
+        context_flag_present: bool,
         acc: &mut TechniqueAccumulator,
     ) {
         for &(value, ip) in imm_hits {
-            if value == CONTEXT_DEBUG_REGISTERS_FLAG {
+            if value == CONTEXT_DEBUG_REGISTERS_FLAG && context_flag_present {
                 acc.add(
                     Technique::AntiDebug,
                     Confidence::Low,
@@ -2050,11 +2171,15 @@ mod decode {
                 let corroborated: bool = match sig.corroboration {
                     SignalCorroboration::Corroborated => immediate_corroborated(
                         sig.value,
-                        cpuid_present,
+                        fed_leaves
+                            .iter()
+                            .any(|feed: &LeafFeed| feed.value == value && feed.mov_ip == ip),
                         io_port_present,
                         vmxh_present,
                     ),
-                    SignalCorroboration::Standalone | SignalCorroboration::ContextOnly => false,
+                    SignalCorroboration::Standalone
+                    | SignalCorroboration::Supporting
+                    | SignalCorroboration::ContextOnly => false,
                 };
                 let Some(role): Option<SignalCorroboration> =
                     qualified_number_role(sig.corroboration, corroborated)
@@ -2078,12 +2203,12 @@ mod decode {
 
     const fn immediate_corroborated(
         value: u32,
-        cpuid_present: bool,
+        feeds_cpuid: bool,
         io_port_present: bool,
         vmxh_present: bool,
     ) -> bool {
         match value {
-            CPUID_HYPERVISOR_LEAF => cpuid_present,
+            CPUID_HYPERVISOR_LEAF => feeds_cpuid,
             VMWARE_IO_PORT => io_port_present || vmxh_present,
             _ => false,
         }
@@ -2605,6 +2730,10 @@ mod tests {
         assert_eq!(
             qualified_number_role(SignalCorroboration::Corroborated, true),
             Some(SignalCorroboration::Standalone)
+        );
+        assert_eq!(
+            qualified_number_role(SignalCorroboration::Supporting, false),
+            Some(SignalCorroboration::Supporting)
         );
         assert_eq!(
             qualified_number_role(SignalCorroboration::ContextOnly, false),
@@ -3303,95 +3432,30 @@ mod tests {
         }
     }
 
-    fn evidence_key(detail: &str) -> (String, usize) {
-        let first_quote: usize = detail.find('\'').expect("evidence opening quote");
-        let relative_end: usize = detail[first_quote + 1..]
-            .find('\'')
-            .expect("evidence closing quote");
-        let end_quote: usize = first_quote + 1 + relative_end;
-        let offset_text: &str = detail
-            .get(end_quote + 1..)
-            .and_then(|tail: &str| tail.rsplit_once(" at offset 0x"))
-            .map(|(_, offset): (&str, &str)| offset)
-            .expect("evidence offset");
-        let offset: usize = usize::from_str_radix(offset_text, 16).expect("hex evidence offset");
-        (detail[first_quote + 1..end_quote].to_string(), offset)
-    }
-
-    fn context_fixture(
-        rows: &[ContextRow],
-        split_after: Option<usize>,
-    ) -> (Vec<u8>, Vec<(ContextRow, usize)>) {
+    fn context_fixture(rows: &[ContextRow], split_after: Option<usize>) -> Vec<u8> {
         let mut bytes: Vec<u8> = vec![0u8; 64];
         bytes[0] = b'M';
         bytes[1] = b'Z';
-        let mut expected: Vec<(ContextRow, usize)> = Vec::new();
         for (index, row) in rows.iter().copied().enumerate() {
             if split_after == Some(index) && bytes.len() < 8192 {
                 bytes.resize(8192, 0);
             }
-            let offset: usize = bytes.len();
             bytes.extend_from_slice(row.needle.as_bytes());
             bytes.push(0);
-            expected.push((row, offset));
         }
-        (bytes, expected)
-    }
-
-    fn expected_context_findings(
-        occurrences: &[(ContextRow, usize)],
-    ) -> std::collections::BTreeMap<Technique, (Confidence, Vec<(String, usize)>)> {
-        let mut expected: std::collections::BTreeMap<
-            Technique,
-            (Confidence, Vec<(String, usize)>),
-        > = std::collections::BTreeMap::new();
-        for (row, offset) in occurrences {
-            let technique: Technique = context_technique(row.class);
-            let entry: &mut (Confidence, Vec<(String, usize)>) = expected
-                .entry(technique)
-                .or_insert((row.confidence, Vec::new()));
-            entry.0 = entry.0.max(row.confidence);
-            entry.1.push((row.needle.to_string(), *offset));
-            if row.needle == "dbghelp.dll" {
-                let sandbox: &mut (Confidence, Vec<(String, usize)>) = expected
-                    .entry(Technique::AntiSandbox)
-                    .or_insert((Confidence::Info, Vec::new()));
-                sandbox.0 = sandbox.0.max(Confidence::Info);
-                sandbox.1.push(("dbghelp".to_string(), *offset));
-            }
-        }
-        for (_, evidence) in expected.values_mut() {
-            evidence.sort();
-        }
-        expected
+        bytes
     }
 
     fn assert_context_fixture(rows: &[ContextRow], split_after: Option<usize>) {
-        let (bytes, occurrences): (Vec<u8>, Vec<(ContextRow, usize)>) =
-            context_fixture(rows, split_after);
+        let bytes: Vec<u8> = context_fixture(rows, split_after);
         let report: AntiAnalysisReport = scan(&bytes, None);
-        let expected: std::collections::BTreeMap<Technique, (Confidence, Vec<(String, usize)>)> =
-            expected_context_findings(&occurrences);
-        assert_eq!(
-            report.findings.len(),
-            expected.len(),
-            "{:?}",
+        let needles: Vec<&str> = rows.iter().map(|row: &ContextRow| row.needle).collect();
+        assert!(
+            report.findings.is_empty(),
+            "names that ordinary runtimes link are context, so {needles:?} alone must form no \
+             finding: {:?}",
             report.findings
         );
-        for (technique, (confidence, expected_evidence)) in expected {
-            let finding: &AntiAnalysisFinding =
-                finding(&report, technique).expect("expected context finding");
-            assert!(!finding.detected, "{finding:?}");
-            assert_eq!(finding.severity, FindingSeverity::Informational);
-            assert_eq!(finding.confidence, confidence);
-            let mut actual_evidence: Vec<(String, usize)> = finding
-                .evidence
-                .iter()
-                .map(|detail: &String| evidence_key(detail))
-                .collect();
-            actual_evidence.sort();
-            assert_eq!(actual_evidence, expected_evidence, "{finding:?}");
-        }
     }
 
     fn assert_all_context_techniques_on_both_sides(rows: &[ContextRow], split_after: usize) {
@@ -3444,19 +3508,16 @@ mod tests {
     }
 
     #[test]
-    fn lone_isdebuggerpresent_string_is_informational_not_verdict() {
+    fn lone_isdebuggerpresent_string_is_no_finding() {
         let mut buf: Vec<u8> = b"MZ\x90\x00".to_vec();
         buf.extend_from_slice(b"\x00IsDebuggerPresent\x00padding here for strings\x00");
         let report: AntiAnalysisReport = scan(&buf, None);
-        let f: &AntiAnalysisFinding =
-            finding(&report, Technique::AntiDebug).expect("anti-debug surfaced for triage");
         assert!(
-            !f.detected,
-            "a single import-table-only isdebuggerpresent reference is also how a benign \
-             runtime's own crash/backtrace machinery references the api; it must stay \
-             informational, not a high-confidence verdict: {f:?}"
+            finding(&report, Technique::AntiDebug).is_none(),
+            "the msvc startup code imports isdebuggerpresent into every program it links, so the \
+             name alone is no anti-debug finding: {:?}",
+            report.findings
         );
-        assert_eq!(f.severity, FindingSeverity::Informational);
     }
 
     #[test]
@@ -3718,8 +3779,10 @@ mod tests {
 
     #[test]
     fn report_serializes_with_schema() {
-        let report: AntiAnalysisReport =
-            scan(b"MZ\x90\x00\x00IsDebuggerPresent\x00", Some("a.exe"));
+        let report: AntiAnalysisReport = scan(
+            b"MZ\x90\x00\x00IsDebuggerPresent\x00CheckRemoteDebuggerPresent\x00",
+            Some("a.exe"),
+        );
         let value: serde_json::Value = serde_json::to_value(&report).expect("serialize");
         assert_eq!(
             value["schema"],
@@ -3833,7 +3896,7 @@ mod tests {
     fn planted_debugger_rdtsc_vmware_mac_are_attributed_with_confidence() {
         let mut buf: Vec<u8> = b"MZ\x90\x00".to_vec();
         buf.extend_from_slice(
-            b"\x00IsDebuggerPresent\x00\
+            b"\x00IsDebuggerPresent\x00CheckRemoteDebuggerPresent\x00\
               MAC 00:0c:29:ab:cd:ef belongs to this host\x00\
               rdtsc primitive\x00GetTickCount\x00",
         );
@@ -3842,13 +3905,13 @@ mod tests {
         let debug: &AntiAnalysisFinding =
             finding(&report, Technique::AntiDebug).expect("anti-debug attributed");
         assert_eq!(debug.confidence, Confidence::High);
-        assert!(
-            debug
-                .evidence
-                .iter()
-                .any(|e: &String| e.contains("isdebuggerpresent")),
-            "anti-debug must cite the isdebuggerpresent string: {debug:?}"
-        );
+        assert!(debug.detected, "{debug:?}");
+        for needle in ["isdebuggerpresent", "checkremotedebuggerpresent"] {
+            assert!(
+                debug.evidence.iter().any(|e: &String| e.contains(needle)),
+                "anti-debug must cite the {needle} string: {debug:?}"
+            );
+        }
 
         let vm: &AntiAnalysisFinding =
             finding(&report, Technique::AntiVm).expect("anti-vm attributed from mac oui");
@@ -3858,32 +3921,19 @@ mod tests {
             "anti-vm must cite the vmware mac oui: {vm:?}"
         );
 
-        let timing: &AntiAnalysisFinding =
-            finding(&report, Technique::TimingEvasion).expect("timing attributed");
-        assert_eq!(timing.confidence, Confidence::Low);
-        assert!(!timing.detected);
-        assert_eq!(timing.severity, FindingSeverity::Informational);
-        assert!(timing.evidence.iter().any(|e: &String| e.contains("rdtsc")));
         assert!(
-            timing
-                .evidence
-                .iter()
-                .any(|e: &String| e.contains("gettickcount"))
+            finding(&report, Technique::TimingEvasion).is_none(),
+            "timer names are context and form no timing finding without timing code: {:?}",
+            report.findings
         );
     }
 
     #[test]
-    fn lone_timing_primitive_is_visible_and_informational() {
+    fn lone_timing_primitive_is_no_finding() {
         let mut buf: Vec<u8> = b"MZ\x90\x00".to_vec();
         buf.extend_from_slice(b"\x00GetTickCount only one timing primitive here\x00");
         let report: AntiAnalysisReport = scan(&buf, None);
-        let timing: &AntiAnalysisFinding =
-            finding(&report, Technique::TimingEvasion).expect("timing context surfaced");
-        assert_eq!(timing.confidence, Confidence::Low);
-        assert!(!timing.detected);
-        assert_eq!(timing.severity, FindingSeverity::Informational);
-        assert_eq!(timing.evidence.len(), 1);
-        assert!(timing.evidence[0].contains("gettickcount"));
+        assert!(report.findings.is_empty(), "{:?}", report.findings);
     }
 
     #[test]
@@ -4159,11 +4209,9 @@ mod tests {
             context.detail,
             context.corroboration,
         );
-        let informational: Vec<AntiAnalysisFinding> =
+        let context_findings: Vec<AntiAnalysisFinding> =
             context_acc.finalize(TargetFamily::Pe, &ChainEvidence::default());
-        assert_eq!(informational.len(), 1);
-        assert!(!informational[0].detected);
-        assert_eq!(informational[0].severity, FindingSeverity::Informational);
+        assert!(context_findings.is_empty(), "{context_findings:?}");
 
         let mut mixed_acc: TechniqueAccumulator = TechniqueAccumulator::default();
         mixed_acc.add(
@@ -4428,6 +4476,53 @@ mod tests {
     }
 
     #[test]
+    fn cpuid_hv_leaf_counts_only_when_eax_carries_it_into_cpuid() {
+        let mut overwritten: Vec<u8> = vec![0xB8];
+        overwritten.extend_from_slice(&0x4000_0000u32.to_le_bytes());
+        overwritten.extend_from_slice(&[0x31, 0xC0, 0x0F, 0xA2]);
+        let mut float_store: Vec<u8> = vec![0xC7, 0x44, 0x24, 0x08];
+        float_store.extend_from_slice(&0x4000_0000u32.to_le_bytes());
+        float_store.extend_from_slice(&[0x31, 0xC0, 0x0F, 0xA2]);
+        for payload in [overwritten, float_store] {
+            let report: AntiAnalysisReport = scan(&pe_with_code(&payload, false), None);
+            assert!(
+                finding(&report, Technique::AntiVm).is_none(),
+                "0x40000000 that never reaches cpuid in eax is a float or a flag, not the \
+                 hypervisor leaf: {:?}",
+                report.findings
+            );
+        }
+
+        let mut carried: Vec<u8> = vec![0xB8];
+        carried.extend_from_slice(&0x4000_0000u32.to_le_bytes());
+        carried.extend_from_slice(&[0x89, 0xD9, 0x0F, 0xA2]);
+        let report: AntiAnalysisReport = scan(&pe_with_code(&carried, false), None);
+        assert!(
+            finding(&report, Technique::AntiVm).is_some(),
+            "{:?}",
+            report.findings
+        );
+    }
+
+    #[test]
+    fn context_debug_flag_needs_a_thread_context_reader() {
+        let payload: Vec<u8> = vec![0xB8, 0x10, 0x00, 0x01, 0x00];
+        let report: AntiAnalysisReport = scan(&pe_with_code(&payload, false), None);
+        assert!(
+            report.findings.is_empty(),
+            "the debug-register flag means nothing in an image that cannot read a thread context: \
+             {:?}",
+            report.findings
+        );
+    }
+
+    #[test]
+    fn anti_attach_names_need_a_page_protection_api() {
+        let report: AntiAnalysisReport = scan(&pe(b"\x00DbgUiRemoteBreakin\x00"), None);
+        assert!(report.findings.is_empty(), "{:?}", report.findings);
+    }
+
+    #[test]
     fn vmware_vmxh_magic_is_attributed_standalone() {
         let mut payload: Vec<u8> = vec![0xB8];
         payload.extend_from_slice(&0x564d_5868u32.to_le_bytes());
@@ -4498,33 +4593,15 @@ mod tests {
     }
 
     #[test]
-    fn resource_floor_context_is_visible_but_never_votes() {
+    fn resource_floor_context_never_forms_a_finding() {
         let lone: Vec<u8> = pe(b"\x00GlobalMemoryStatusEx only one floor query\x00");
         let report: AntiAnalysisReport = scan(&lone, None);
-        let lone_finding: &AntiAnalysisFinding =
-            finding(&report, Technique::AntiSandbox).expect("resource context surfaced");
-        assert_eq!(lone_finding.confidence, Confidence::Low);
-        assert!(!lone_finding.detected);
-        assert_eq!(lone_finding.severity, FindingSeverity::Informational);
-        assert_eq!(lone_finding.evidence.len(), 1);
-        assert!(lone_finding.evidence[0].contains("globalmemorystatusex"));
+        assert!(report.findings.is_empty(), "{:?}", report.findings);
 
         let three: Vec<u8> =
             pe(b"\x00GlobalMemoryStatusEx\x00GetDiskFreeSpaceEx\x00GetSystemPowerStatus\x00");
         let report2: AntiAnalysisReport = scan(&three, None);
-        let f: &AntiAnalysisFinding =
-            finding(&report2, Technique::AntiSandbox).expect("resource context surfaced");
-        assert_eq!(f.confidence, Confidence::Low);
-        assert!(!f.detected);
-        assert_eq!(f.severity, FindingSeverity::Informational);
-        assert_eq!(f.evidence.len(), 3);
-        for needle in [
-            "globalmemorystatusex",
-            "getdiskfreespaceex",
-            "getsystempowerstatus",
-        ] {
-            assert!(f.evidence.iter().any(|e: &String| e.contains(needle)));
-        }
+        assert!(report2.findings.is_empty(), "{:?}", report2.findings);
     }
 
     #[test]
@@ -4555,12 +4632,22 @@ mod tests {
             b"\x00GetTickCount64\x00GetTickCount\x00QueryPerformanceCounter\x00dbghelp.dll\x00wine_get_version\x00",
         );
         let report: AntiAnalysisReport = scan(&payload, None);
-        for technique in [Technique::AntiSandbox, Technique::TimingEvasion] {
-            let finding: &AntiAnalysisFinding =
-                finding(&report, technique).expect("context surfaced");
-            assert!(!finding.detected, "{technique:?}: {finding:?}");
-            assert_eq!(finding.severity, FindingSeverity::Informational);
-        }
+        let sandbox: &AntiAnalysisFinding =
+            finding(&report, Technique::AntiSandbox).expect("wine probe surfaced");
+        assert!(!sandbox.detected, "{sandbox:?}");
+        assert_eq!(sandbox.severity, FindingSeverity::Informational);
+        assert!(
+            sandbox
+                .evidence
+                .iter()
+                .any(|e: &String| e.contains("dbghelp")),
+            "context rides along on a surfaced finding: {sandbox:?}"
+        );
+        assert!(
+            finding(&report, Technique::TimingEvasion).is_none(),
+            "{:?}",
+            report.findings
+        );
     }
 
     #[test]
@@ -4576,11 +4663,7 @@ mod tests {
                 payload.push(0);
             }
             let report: AntiAnalysisReport = scan(&payload, None);
-            let finding: &AntiAnalysisFinding =
-                finding(&report, Technique::TimingEvasion).expect("timing context surfaced");
-            assert!(!finding.detected, "{finding:?}");
-            assert_eq!(finding.severity, FindingSeverity::Informational);
-            assert_eq!(finding.confidence, Confidence::Low);
+            assert!(report.findings.is_empty(), "{:?}", report.findings);
         }
     }
 
@@ -4598,9 +4681,11 @@ mod tests {
         ];
         for needle in needles {
             let report: AntiAnalysisReport = scan(&pe(needle.as_bytes()), None);
-            let finding: &AntiAnalysisFinding =
-                finding(&report, Technique::AntiSandbox).expect("sandbox context surfaced");
-            assert!(!finding.detected, "{needle}: {finding:?}");
+            assert!(
+                report.findings.is_empty(),
+                "{needle}: {:?}",
+                report.findings
+            );
         }
         let mut combined: Vec<u8> = pe(b"GetAsyncKeyState\x00GlobalMemoryStatusEx\x00");
         combined.resize(8192, 0);
@@ -4609,10 +4694,7 @@ mod tests {
             combined.push(0);
         }
         let report: AntiAnalysisReport = scan(&combined, None);
-        let finding: &AntiAnalysisFinding =
-            finding(&report, Technique::AntiSandbox).expect("sandbox context surfaced");
-        assert!(!finding.detected, "{finding:?}");
-        assert_eq!(finding.severity, FindingSeverity::Informational);
+        assert!(report.findings.is_empty(), "{:?}", report.findings);
     }
 
     #[test]
@@ -4706,18 +4788,7 @@ mod tests {
             confidence: Confidence::Low,
             word_bounded: false,
         };
-        let (bytes, occurrences): (Vec<u8>, Vec<(ContextRow, usize)>) =
-            context_fixture(std::slice::from_ref(&tick64), None);
-        let report: AntiAnalysisReport = scan(&bytes, None);
-        let timing: &AntiAnalysisFinding =
-            finding(&report, Technique::TimingEvasion).expect("tick64 context surfaced");
-        assert!(!timing.detected);
-        assert_eq!(timing.confidence, Confidence::Low);
-        assert_eq!(timing.evidence.len(), 1);
-        assert_eq!(
-            evidence_key(&timing.evidence[0]),
-            ("gettickcount".to_string(), occurrences[0].1)
-        );
+        assert_context_fixture(std::slice::from_ref(&tick64), None);
     }
 
     #[test]
