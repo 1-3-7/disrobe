@@ -128,7 +128,7 @@ impl Ecosystem {
 pub fn ecosystem_for(pass_id: PassId) -> Ecosystem {
     let family: &str = pass_id.split_once('.').map_or(pass_id, |(head, _)| head);
     match family {
-        "py" | "pyarmor" | "pyinstaller" | "pyfreeze" | "nuitka" | "sourcedefender" => {
+        "py" | "python" | "pyarmor" | "pyinstaller" | "pyfreeze" | "nuitka" | "sourcedefender" => {
             Ecosystem::Python
         }
         "js" => Ecosystem::JavaScript,
