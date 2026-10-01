@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="920" height="2497" viewBox="0 0 920 2497" font-family="'Manrope', sans-serif"><desc>generated from recovery.json sha256:9307823281e045c2b2dfbaf2a49d2150</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="2497" viewBox="0 0 920 2497" font-family="'Manrope', sans-serif"><desc>generated from recovery.json sha256:b26c37a375bb134b4aff520cae5c424b</desc>
   <rect x="0" y="0" width="920" height="2497" rx="10" fill="#111111"/>
   <rect x="0.5" y="0.5" width="919" height="2496" rx="9.5" fill="none" stroke="#404040"/>
   <desc>graded from evidence/descriptors sha256:ccc64e38dd9c1dbb43e6b89199baa140</desc>
@@ -385,12 +385,12 @@
 <path d="M169 18.5L560 18.5A3 3 0 0 1 563 21.5L563 28.5A3 3 0 0 1 560 31.5L169 31.5A3 3 0 0 1 166 28.5L166 21.5A3 3 0 0 1 169 18.5Z" fill="#404040" ecmeta_series_index="0" ecmeta_data_index="0" ecmeta_ssr_type="chart" class="zr1-cls-5"></path>
 <path d="M169 54.5L560 54.5A3 3 0 0 1 563 57.5L563 64.5A3 3 0 0 1 560 67.5L169 67.5A3 3 0 0 1 166 64.5L166 57.5A3 3 0 0 1 169 54.5Z" fill="#404040" ecmeta_series_index="0" ecmeta_data_index="1" ecmeta_ssr_type="chart" class="zr1-cls-5"></path>
 <path d="M169 90.5L560 90.5A3 3 0 0 1 563 93.5L563 100.5A3 3 0 0 1 560 103.5L169 103.5A3 3 0 0 1 166 100.5L166 93.5A3 3 0 0 1 169 90.5Z" fill="#404040" ecmeta_series_index="0" ecmeta_data_index="2" ecmeta_ssr_type="chart" class="zr1-cls-5"></path>
-<path d="M169 18.5L270.9 18.5A3 3 0 0 1 273.9 21.5L273.9 28.5A3 3 0 0 1 270.9 31.5L169 31.5A3 3 0 0 1 166 28.5L166 21.5A3 3 0 0 1 169 18.5Z" fill="#B3B3B3" ecmeta_series_index="1" ecmeta_data_index="0" ecmeta_ssr_type="chart" class="zr1-cls-6"></path>
+<path d="M169 18.5L278.6 18.5A3 3 0 0 1 281.6 21.5L281.6 28.5A3 3 0 0 1 278.6 31.5L169 31.5A3 3 0 0 1 166 28.5L166 21.5A3 3 0 0 1 169 18.5Z" fill="#B3B3B3" ecmeta_series_index="1" ecmeta_data_index="0" ecmeta_ssr_type="chart" class="zr1-cls-6"></path>
 <path d="M169 54.5L560 54.5A3 3 0 0 1 563 57.5L563 64.5A3 3 0 0 1 560 67.5L169 67.5A3 3 0 0 1 166 64.5L166 57.5A3 3 0 0 1 169 54.5Z" fill="#B3B3B3" ecmeta_series_index="1" ecmeta_data_index="1" ecmeta_ssr_type="chart" class="zr1-cls-6"></path>
 <path d="M169 90.5L560 90.5A3 3 0 0 1 563 93.5L563 100.5A3 3 0 0 1 560 103.5L169 103.5A3 3 0 0 1 166 100.5L166 93.5A3 3 0 0 1 169 90.5Z" fill="#B3B3B3" ecmeta_series_index="1" ecmeta_data_index="2" ecmeta_ssr_type="chart" class="zr1-cls-6"></path>
 
 </svg>
-  <text x="601.00" y="2074.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-count-pair-value-0" dominant-baseline="central" xml:space="preserve">28 extracted from a committed input / 103</text>
+  <text x="601.00" y="2074.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-count-pair-value-0" dominant-baseline="central" xml:space="preserve">30 extracted from a committed input / 103</text>
   <text x="601.00" y="2110.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-count-pair-value-1" dominant-baseline="central" xml:space="preserve">72 decoded root CodeObjects / 72</text>
   <text x="601.00" y="2146.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-count-pair-value-2" dominant-baseline="central" xml:space="preserve">9 reached by the recovered program / 9</text>
   <rect x="601.00" y="2086.00" width="8.00" height="8.00" rx="1.50" fill="#B3B3B3"/>

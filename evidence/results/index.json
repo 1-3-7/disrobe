@@ -160,7 +160,7 @@
       "floor": null,
       "floor_holds": null,
       "id": "binfmt-extract",
-      "measured": "28 extracted from a committed input / 103 detected",
+      "measured": "30 extracted from a committed input / 103 detected",
       "oracle_strength": "coverage-self-reported",
       "pairs": [],
       "reproduce": "cargo test -p disrobe-binfmt published_container_counts_match_this_enum"
