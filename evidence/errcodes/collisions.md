@@ -1514,7 +1514,7 @@
 - `DR-BEAM-0908`: `crates/disrobe-pass-beam/src/chain_detector.rs:172`
 - `DR-BEAM-0909`: `crates/disrobe-pass-beam/src/chain_detector.rs:176`
 - `DR-BEH-0050`: `crates/disrobe-cli/src/cli/behavior.rs:230`
-- `DR-BEH-0051`: `crates/disrobe-cli/src/cli/behavior.rs:248`
+- `DR-BEH-0051`: `crates/disrobe-cli/src/cli/behavior.rs:249`
 - `DR-BINFMT-0001`: `crates/disrobe-binfmt/src/error.rs:36`
 - `DR-BINFMT-0002`: `crates/disrobe-binfmt/src/error.rs:39`
 - `DR-BINFMT-0003`: `crates/disrobe-binfmt/src/error.rs:42`

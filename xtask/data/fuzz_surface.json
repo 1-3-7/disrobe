@@ -3,7 +3,7 @@
   "generator": "xtask regen, parse-surface inventory",
   "note": "Derived from the tree. An entry point is a public function taking a byte slice, outside test modules. Declared coverage means fuzz/coverage.toml names the entry point and the target route names its function. Replay-proven semantic reach is narrower: a committed content-addressed seed must produce a complete parser-owned accepted trace for the entry point. The resilience columns count dedicated resilience-shaped test files only; malformed-input assertions in other tests are real coverage this inventory does not see.",
   "totals": {
-    "entry_points": 1466,
+    "entry_points": 1467,
     "parse_shaped": 606,
     "coverage_guided_targets_in_tree": 12,
     "targets_declaring_entry_points": 9,
@@ -11,7 +11,7 @@
     "with_replay_proven_semantic_reach": 18,
     "named_by_a_resilience_suite": 642,
     "named_by_a_suite_recording_seed_reach": 131,
-    "named_by_neither": 788
+    "named_by_neither": 789
   },
   "seed_reach": {
     "satisfied_obligations": 23,
@@ -153,7 +153,7 @@
     },
     {
       "crate": "disrobe-core",
-      "entry_points": 104,
+      "entry_points": 105,
       "parse_shaped": 16,
       "with_declared_coverage_guided_target": 12,
       "with_replay_proven_semantic_reach": 0,
@@ -162,6 +162,7 @@
       "named_by_neither": [
         "disrobe-core/src/anti_analysis.rs::classify_family",
         "disrobe-core/src/anti_analysis.rs::scan_with_chain",
+        "disrobe-core/src/behavior.rs::analyze_with_anti_analysis",
         "disrobe-core/src/behavior.rs::analyze_with_uri",
         "disrobe-core/src/codec/alphabets.rs::base122_decode",
         "disrobe-core/src/codec/alphabets.rs::base45_decode",
