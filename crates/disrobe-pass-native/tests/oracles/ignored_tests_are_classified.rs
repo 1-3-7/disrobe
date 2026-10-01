@@ -5,9 +5,9 @@ use std::path::{Path, PathBuf};
 
 const CLASSES: [&str; 4] = ["toolchain: ", "fixture: ", "cost: ", "environment: "];
 const IGNORE_ATTRIBUTE: &str = "#[ignore";
-const EXPECTED_TOTAL: usize = 76;
+const EXPECTED_TOTAL: usize = 70;
 const EXPECTED_PER_CLASS: [(&str, usize); 4] = [
-    ("toolchain: ", 68),
+    ("toolchain: ", 62),
     ("fixture: ", 5),
     ("cost: ", 1),
     ("environment: ", 2),
