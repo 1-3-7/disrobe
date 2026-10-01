@@ -102,6 +102,18 @@ impl<'a> GoImage<'a> {
         }
     }
 
+    pub(crate) fn unreadable_section_names(&self) -> Vec<String> {
+        let Ok(file): core::result::Result<ObjFile<'_, &'_ [u8]>, object::Error> =
+            ObjFile::parse(self.raw)
+        else {
+            return Vec::new();
+        };
+        file.sections()
+            .filter(|sec: &object::Section<'_, '_, &'_ [u8]>| sec.data().is_err())
+            .map(|sec: object::Section<'_, '_, &'_ [u8]>| sec.name().unwrap_or("").to_owned())
+            .collect()
+    }
+
     pub fn parse(bytes: &'a [u8]) -> Result<Self> {
         if bytes.len() < 64 {
             return Err(Error::InputTooSmall(bytes.len()));

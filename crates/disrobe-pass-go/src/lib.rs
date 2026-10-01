@@ -222,6 +222,13 @@ pub fn analyze(bytes: &[u8]) -> Result<GoAnalysis> {
             )
         }
         Err(Error::PclntabMissing) => {
+            let unreadable: Vec<String> = image.unreadable_section_names();
+            if !unreadable.is_empty() {
+                return Err(Error::ContainerParse(format!(
+                    "no pclntab in the readable sections, and sections {unreadable:?} lie outside \
+                     the file, so the image is truncated rather than stripped"
+                )));
+            }
             dbg_line(|| "pclntab missing: falling back to empty symbols/moduledata".to_owned());
             let empty_syms: GoSymbols = GoSymbols {
                 version_label: "unknown".to_owned(),
