@@ -362,18 +362,74 @@ fn collect_rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
     out.sort();
 }
 
+fn blank(code: &mut String, c: char) {
+    code.extend(std::iter::repeat_n(' ', c.len_utf8()));
+}
+
+fn without_string_literal_contents(source: &str) -> String {
+    let mut code: String = String::with_capacity(source.len());
+    let mut chars: std::iter::Peekable<std::str::Chars<'_>> = source.chars().peekable();
+    let mut in_string: bool = false;
+    while let Some(c) = chars.next() {
+        if in_string {
+            match c {
+                '"' => {
+                    in_string = false;
+                    code.push(c);
+                }
+                '\\' => {
+                    blank(&mut code, c);
+                    if let Some(escaped) = chars.next_if(|next: &char| *next != '\n') {
+                        blank(&mut code, escaped);
+                    }
+                }
+                '\n' => code.push('\n'),
+                _ => blank(&mut code, c),
+            }
+            continue;
+        }
+        if c == '\'' {
+            let rest: String = chars.clone().take(3).collect();
+            let skip: usize = if rest.starts_with('\\') && rest.chars().nth(2) == Some('\'') {
+                3
+            } else if rest.chars().nth(1) == Some('\'') {
+                2
+            } else {
+                0
+            };
+            code.push(c);
+            for _ in 0..skip {
+                if let Some(literal) = chars.next() {
+                    blank(&mut code, literal);
+                }
+            }
+            continue;
+        }
+        in_string = c == '"';
+        code.push(c);
+    }
+    code
+}
+
 fn source_findings(files: &[(String, String)]) -> Vec<SourceFinding> {
     let mut findings: Vec<SourceFinding> = Vec::new();
     for (name, contents) in files {
-        for (index, line) in contents.lines().enumerate() {
+        let code: String = without_string_literal_contents(contents);
+        for (index, (line, original)) in code.lines().zip(contents.lines()).enumerate() {
             for primitive in &EXECUTION_PRIMITIVES {
-                if line.contains(primitive.token) {
+                let token_as_code: String = without_string_literal_contents(primitive.token);
+                if original
+                    .match_indices(primitive.token)
+                    .any(|(at, _): (usize, &str)| {
+                        line.get(at..at + primitive.token.len()) == Some(token_as_code.as_str())
+                    })
+                {
                     findings.push(SourceFinding {
                         file: name.clone(),
                         line: index + 1,
                         token: primitive.token.to_owned(),
                         why: primitive.why.to_owned(),
-                        text: line.trim().to_owned(),
+                        text: original.trim().to_owned(),
                     });
                 }
             }
@@ -827,6 +883,22 @@ fn mutation_control_an_execution_primitive_in_the_pass_source_is_caught() {
         assert_eq!(findings[0].line, 2, "the report must name the line");
         assert_eq!(findings[0].token, primitive.token);
     }
+
+    let deny_list: Vec<(String, String)> = vec![(
+        "src/safety.rs".to_owned(),
+        "const DENY: [(&str, &str); 2] = [\n    (\"_ctypes\", \"dlopen\"),\n    (\"x\\\"\", \"std::process\"),\n];\nconst Q: char = '\"';\nfn f() { dlopen(); }\n"
+            .to_owned(),
+    )];
+    let deny_findings: Vec<SourceFinding> = source_findings(&deny_list);
+    assert_eq!(
+        deny_findings
+            .iter()
+            .map(|finding: &SourceFinding| (finding.line, finding.token.as_str()))
+            .collect::<Vec<(usize, &str)>>(),
+        vec![(6, "dlopen")],
+        "a primitive named inside a string literal is data, the same token as code is a call: \
+         {deny_findings:?}"
+    );
 
     let seeded: Vec<(String, String)> = vec![(
         "src/vm.rs".to_owned(),
