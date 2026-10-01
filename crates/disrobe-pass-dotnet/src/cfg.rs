@@ -63,6 +63,8 @@ pub struct Cfg {
     pub rpo: Vec<BlockId>,
     pub loops: Vec<NaturalLoop>,
     pub entry: BlockId,
+
+    exceptional: BTreeMap<BlockId, Vec<BlockId>>,
 }
 
 impl Cfg {
@@ -80,10 +82,12 @@ impl Cfg {
             rpo: Vec::new(),
             loops: Vec::new(),
             entry: 0,
+            exceptional: BTreeMap::new(),
         };
         if cfg.blocks.is_empty() {
             return cfg;
         }
+        cfg.exceptional = exceptional_edges(body, &cfg.start_to_block);
         cfg.wire_edges(body);
         cfg.compute_postorder();
         cfg.compute_dominators();
@@ -202,7 +206,7 @@ impl Cfg {
         let mut stack: Vec<(BlockId, usize)> = vec![(self.entry, 0)];
         visited[self.entry] = true;
         while let Some(&mut (node, ref mut idx)) = stack.last_mut() {
-            let succs: &[BlockId] = &self.blocks[node].succs;
+            let succs: Vec<BlockId> = self.traversal_successors(node);
             if *idx < succs.len() {
                 let child: BlockId = succs[*idx];
                 *idx += 1;
@@ -223,6 +227,18 @@ impl Cfg {
         rpo.reverse();
         self.postorder_num = postorder_num;
         self.rpo = rpo;
+    }
+
+    fn traversal_successors(&self, node: BlockId) -> Vec<BlockId> {
+        let mut succs: Vec<BlockId> = self.blocks[node].succs.clone();
+        if let Some(handlers) = self.exceptional.get(&node) {
+            for &handler in handlers {
+                if !succs.contains(&handler) {
+                    succs.push(handler);
+                }
+            }
+        }
+        succs
     }
 
     fn compute_dominators(&mut self) {
@@ -321,6 +337,13 @@ impl Cfg {
         self.terminators[from] = Terminator::Goto(to);
     }
 
+    pub(crate) fn ignore_exceptional_flow(&mut self) {
+        if !self.exceptional.is_empty() {
+            self.exceptional.clear();
+            self.recompute_derived();
+        }
+    }
+
     pub(crate) fn recompute_derived(&mut self) {
         self.compute_postorder();
         self.compute_dominators();
@@ -354,6 +377,11 @@ fn block_flow(cfg: &Cfg) -> Option<FlowGraph<BlockId>> {
             for &successor in &block.succs {
                 emit(Flow::To(successor));
             }
+            for &handler in cfg.exceptional.get(&node).into_iter().flatten() {
+                if !block.succs.contains(&handler) {
+                    emit(Flow::To(handler));
+                }
+            }
             if matches!(
                 cfg.terminators.get(node),
                 Some(Terminator::Return | Terminator::Throw | Terminator::EndFinally)
@@ -363,6 +391,28 @@ fn block_flow(cfg: &Cfg) -> Option<FlowGraph<BlockId>> {
         },
     )
     .ok()
+}
+
+fn exceptional_edges(
+    body: &MethodBody,
+    start_to_block: &BTreeMap<u32, BlockId>,
+) -> BTreeMap<BlockId, Vec<BlockId>> {
+    let mut edges: BTreeMap<BlockId, Vec<BlockId>> = BTreeMap::new();
+    for clause in &body.exception_clauses {
+        let Some(&protected) = start_to_block.get(&clause.try_offset) else {
+            continue;
+        };
+        let entries: [Option<u32>; 2] = [Some(clause.handler_offset), clause_filter_offset(clause)];
+        for entry in entries.into_iter().flatten() {
+            if let Some(&handler) = start_to_block.get(&entry) {
+                let targets: &mut Vec<BlockId> = edges.entry(protected).or_default();
+                if !targets.contains(&handler) {
+                    targets.push(handler);
+                }
+            }
+        }
+    }
+    edges
 }
 
 fn fallthrough_or_return(next_block: Option<BlockId>) -> Terminator {
@@ -524,6 +574,7 @@ mod tests {
             rpo: Vec::new(),
             loops: Vec::new(),
             entry: 0,
+            exceptional: BTreeMap::new(),
         };
         cfg.recompute_derived();
         cfg

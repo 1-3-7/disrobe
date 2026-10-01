@@ -67,7 +67,15 @@ struct LoopFrame {
     continue_block: Option<BlockId>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ProtectedRange {
+    start: u32,
+    end: u32,
+    continuation: Option<BlockId>,
+}
+
 const MAX_STRUCTURE_DEPTH: usize = 256;
+const CAUGHT_EXCEPTION: &str = "ex";
 
 struct Structurer<'a, N: TokenNamer> {
     cfg: &'a Cfg,
@@ -84,6 +92,8 @@ struct Structurer<'a, N: TokenNamer> {
     goto_targets: BTreeSet<u32>,
     locals_used: BTreeSet<u32>,
     try_starts: BTreeMap<u32, Vec<&'a ExceptionClause>>,
+    ranges: Vec<ProtectedRange>,
+    bound_protected_regions: bool,
     async_state_machine: bool,
 }
 
@@ -98,16 +108,39 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
     ) -> Self {
         let count: usize = cfg.blocks.len();
         let ipdom: Vec<BlockId> = cfg.immediate_post_dominators();
+        let exception_entries: BTreeSet<BlockId> = body
+            .exception_clauses
+            .iter()
+            .flat_map(|c: &ExceptionClause| match c.kind {
+                ExceptionClauseKind::Catch => vec![c.handler_offset],
+                ExceptionClauseKind::Filter => vec![c.class_token_or_filter, c.handler_offset],
+                ExceptionClauseKind::Finally | ExceptionClauseKind::Fault => Vec::new(),
+            })
+            .filter_map(|offset: u32| cfg.start_to_block.get(&offset).copied())
+            .collect();
         let block_code: Vec<BlockCode> = (0..count)
             .map(|b: usize| {
-                lift_block(
-                    namer,
-                    names,
-                    lang,
-                    &body.instructions,
-                    cfg.blocks[b].first,
-                    cfg.blocks[b].last,
-                )
+                if exception_entries.contains(&b) {
+                    lift_block_with_entry(
+                        namer,
+                        names,
+                        lang,
+                        &body.instructions,
+                        cfg.blocks[b].first,
+                        cfg.blocks[b].last,
+                        vec![Expr::Raw(CAUGHT_EXCEPTION.to_owned())],
+                        CarriedStack::Spillable,
+                    )
+                } else {
+                    lift_block(
+                        namer,
+                        names,
+                        lang,
+                        &body.instructions,
+                        cfg.blocks[b].first,
+                        cfg.blocks[b].last,
+                    )
+                }
             })
             .collect();
         let mut loop_header: Vec<bool> = vec![false; count];
@@ -137,6 +170,8 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
             goto_targets: BTreeSet::new(),
             locals_used,
             try_starts,
+            ranges: Vec::new(),
+            bound_protected_regions: true,
             async_state_machine,
         }
     }
@@ -151,6 +186,9 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
         let mut cur: Option<BlockId> = Some(start);
         while let Some(bid) = cur {
             if Some(bid) == stop || !self.cfg.is_reachable(bid) {
+                break;
+            }
+            if self.leaves_range(bid, &mut seq) {
                 break;
             }
             if self.visited[bid] {
@@ -236,11 +274,31 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
         if Some(next) == stop {
             return None;
         }
+        if self.leaves_range(next, seq) {
+            return None;
+        }
         if self.visited[next] {
             seq.push(self.goto(next));
             return None;
         }
         Some(next)
+    }
+
+    fn leaves_range(&mut self, next: BlockId, seq: &mut Vec<Structured>) -> bool {
+        if !self.bound_protected_regions {
+            return false;
+        }
+        let Some(range): Option<ProtectedRange> = self.ranges.last().copied() else {
+            return false;
+        };
+        let offset: u32 = self.cfg.blocks[next].start;
+        if (range.start..range.end).contains(&offset) {
+            return false;
+        }
+        if Some(next) != range.continuation {
+            seq.push(self.goto(next));
+        }
+        true
     }
 
     fn push_continue_via(&self, cont: BlockId, seq: &mut Vec<Structured>) {
@@ -661,7 +719,18 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
         }
         let try_end: u32 = clauses[0].try_offset.saturating_add(clauses[0].try_length);
         let try_stop: Option<BlockId> = self.cfg.start_to_block.get(&try_end).copied();
+        let max_end: u32 = clauses
+            .iter()
+            .fold(try_end, |end: u32, c: &&ExceptionClause| {
+                end.max(c.handler_offset.saturating_add(c.handler_length))
+            });
+        let continuation: Option<BlockId> = self.cfg.start_to_block.get(&max_end).copied();
         self.visited[bid] = true;
+        self.ranges.push(ProtectedRange {
+            start,
+            end: try_end,
+            continuation,
+        });
         let body: Structured = {
             let mut s: Vec<Structured> = Vec::new();
             self.maybe_label(bid, &mut s);
@@ -670,17 +739,22 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
             self.emit_try_body_tail(bid, &term, try_stop, &mut s);
             finish_seq(s)
         };
+        self.ranges.pop();
         let mut handlers: Vec<Handler> = Vec::new();
-        let mut max_end: u32 = try_end;
         for c in &clauses {
             let h_start: Option<BlockId> = self.cfg.start_to_block.get(&c.handler_offset).copied();
             let h_end: u32 = c.handler_offset.saturating_add(c.handler_length);
-            max_end = max_end.max(h_end);
             let h_stop: Option<BlockId> = self.cfg.start_to_block.get(&h_end).copied();
+            self.ranges.push(ProtectedRange {
+                start: c.handler_offset,
+                end: h_end,
+                continuation,
+            });
             let h_body: Structured = match h_start {
                 Some(hb) if !self.visited[hb] => self.emit_region(hb, h_stop),
                 _ => Structured::Empty,
             };
+            self.ranges.pop();
             let (catch_type, filter): (Option<String>, Option<String>) =
                 if matches!(c.kind, ExceptionClauseKind::Filter) {
                     self.recover_filter(c)
@@ -698,7 +772,7 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
             body: Box::new(body),
             handlers,
         });
-        self.cfg.start_to_block.get(&max_end).copied()
+        continuation
     }
 
     fn recover_filter(&mut self, c: &ExceptionClause) -> (Option<String>, Option<String>) {
@@ -750,8 +824,8 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
                 let _: Option<BlockId> = self.emit_switch(bid, &cases_v, *fallthrough, try_stop, s);
             }
             Terminator::FallThrough(next) | Terminator::Goto(next) => {
-                if Some(*next) != try_stop && !self.visited[*next] {
-                    let region: Structured = self.emit_region(*next, try_stop);
+                if let Some(inside) = self.flow_to(*next, try_stop, s) {
+                    let region: Structured = self.emit_region(inside, try_stop);
                     if !is_empty(&region) {
                         s.push(region);
                     }
@@ -1034,9 +1108,11 @@ fn structure_method_core<N: TokenNamer>(
         return StructuredOutput::default();
     }
     if is_state_machine_move_next {
+        cfg.ignore_exceptional_flow();
         let _ = crate::state_machine_cfg::normalize_move_next(&mut cfg, body);
     }
     let mut st: Structurer<'_, N> = Structurer::new(&cfg, body, namer, names, lang, is_async);
+    st.bound_protected_regions = !is_state_machine_move_next;
     let first: Structured = st.emit_region(cfg.entry, None);
     let had_back_gotos: bool = !st.goto_targets.is_empty();
     let mut tree: Structured = if had_back_gotos {
