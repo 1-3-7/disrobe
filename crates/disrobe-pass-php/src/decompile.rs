@@ -1929,6 +1929,7 @@ struct TryRegion {
     finally_op: Option<u32>,
     finally_end: Option<u32>,
     construct_end: u32,
+    exit_jump: Option<u32>,
 }
 
 struct ListEntry {
@@ -2317,15 +2318,15 @@ impl<'a> Lifter<'a> {
         if construct_end > end || construct_end <= entry.try_op {
             return None;
         }
-        let finally_gate: u32 = match entry.finally_op {
+        let (finally_gate, exit_jump): (u32, Option<u32>) = match entry.finally_op {
             Some(finally_op) => {
                 self.finally_trampoline(finally_op, construct_end)
                     .or_else(|| {
                         let before: &Op = self.ops.get(finally_op.checked_sub(1)? as usize)?;
-                        never_falls_through(before).then_some(finally_op)
+                        never_falls_through(before).then_some((finally_op, None))
                     })?
             }
-            None => construct_end,
+            None => (construct_end, None),
         };
         if let (Some(finally_op), Some(finally_end)) = (entry.finally_op, entry.finally_end)
             && (finally_end < finally_op
@@ -2359,6 +2360,7 @@ impl<'a> Lifter<'a> {
             finally_op: entry.finally_op,
             finally_end: entry.finally_end,
             construct_end,
+            exit_jump,
         })
     }
 
@@ -2388,10 +2390,14 @@ impl<'a> Lifter<'a> {
         Some(join)
     }
 
-    fn finally_trampoline(&self, finally_op: u32, construct_end: u32) -> Option<u32> {
+    fn finally_trampoline(
+        &self,
+        finally_op: u32,
+        construct_end: u32,
+    ) -> Option<(u32, Option<u32>)> {
         let jump_idx: u32 = finally_op.checked_sub(1)?;
         let jump: &Op = self.ops.get(jump_idx as usize)?;
-        if jump.opcode != op::JMP || jump.op1 != construct_end {
+        if jump.opcode != op::JMP {
             return None;
         }
         let call_idx: u32 = jump_idx.checked_sub(1)?;
@@ -2399,7 +2405,8 @@ impl<'a> Lifter<'a> {
         if call.opcode != op::FAST_CALL || call.op1 != finally_op {
             return None;
         }
-        Some(call_idx)
+        let exit_jump: Option<u32> = (jump.op1 != construct_end).then_some(jump_idx);
+        Some((call_idx, exit_jump))
     }
 
     fn structure_try(&mut self, region: TryRegion, depth: u32) -> Option<(Vec<Stmt>, u32)> {
@@ -2428,14 +2435,20 @@ impl<'a> Lifter<'a> {
             self.restore_lift_snapshot(snapshot);
             return None;
         }
-        Some((
-            vec![Stmt::Try {
-                body,
-                catches,
-                finally_body,
-            }],
-            region.construct_end,
-        ))
+        let mut statements: Vec<Stmt> = vec![Stmt::Try {
+            body,
+            catches,
+            finally_body,
+        }];
+        if let Some(exit_jump) = region.exit_jump {
+            let Some((exit, _)): Option<(Vec<Stmt>, u32)> = self.structure_loop_jump(exit_jump)
+            else {
+                self.restore_lift_snapshot(snapshot);
+                return None;
+            };
+            statements.extend(exit);
+        }
+        Some((statements, region.construct_end))
     }
 
     fn lift_catch_arms(
