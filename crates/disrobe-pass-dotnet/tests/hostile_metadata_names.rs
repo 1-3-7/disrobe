@@ -1,5 +1,7 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -157,7 +159,7 @@ fn hostile_image() -> Vec<u8> {
         built.stdout_text(),
         built.stderr_text()
     );
-    let assembly: PathBuf = scratch.path().join("bin/Release/net9.0/Hostile.dll");
+    let assembly: PathBuf = common::built_assembly(scratch.path(), "Hostile", &built.stdout_text());
     let mut image: Vec<u8> = std::fs::read(&assembly).expect("read the built assembly");
     let overrides: usize = replace_marker(&mut image, OVERRIDE_MARKER, RIGHT_TO_LEFT_OVERRIDE);
     let separators: usize = replace_marker(&mut image, SEPARATOR_MARKER, LINE_SEPARATOR);

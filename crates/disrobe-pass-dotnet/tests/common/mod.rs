@@ -85,3 +85,41 @@ pub(crate) fn embed_signature(image: &mut Vec<u8>, signature: &[u8]) {
         image.extend_from_slice(signature);
     }
 }
+
+#[must_use]
+#[allow(clippy::panic)]
+pub(crate) fn built_assembly(
+    project: &std::path::Path,
+    name: &str,
+    build_log: &str,
+) -> std::path::PathBuf {
+    let file: String = format!("{name}.dll");
+    let mut pending: Vec<std::path::PathBuf> = vec![project.join("bin")];
+    let mut found: std::collections::BTreeSet<std::path::PathBuf> =
+        std::collections::BTreeSet::new();
+    let mut seen: Vec<String> = Vec::new();
+    while let Some(directory) = pending.pop() {
+        let Ok(entries): std::io::Result<std::fs::ReadDir> = std::fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path: std::path::PathBuf = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path
+                .file_name()
+                .is_some_and(|f: &std::ffi::OsStr| f == file.as_str())
+            {
+                found.insert(path);
+            } else {
+                seen.push(path.display().to_string());
+            }
+        }
+    }
+    found.into_iter().next().unwrap_or_else(|| {
+        panic!(
+            "dotnet build reported success but wrote no {file} under {}; other files: {seen:?}\nbuild output:\n{build_log}",
+            project.join("bin").display()
+        )
+    })
+}

@@ -1,5 +1,7 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -95,7 +97,11 @@ fn build_and_run(directory: &Path, probe_source: &str) -> Program {
             .current_dir(directory.to_path_buf()),
         "dotnet build",
     );
-    let assembly: PathBuf = directory.join("bin/Release/net9.0/StackSpill.dll");
+    let assembly: PathBuf = if build.success {
+        common::built_assembly(directory, "StackSpill", &build.stdout_text())
+    } else {
+        directory.join("bin")
+    };
     let run: Option<ToolOutput> = build.success.then(|| {
         run_tool(
             dotnet()

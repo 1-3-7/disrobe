@@ -1,5 +1,7 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
+mod common;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
@@ -447,7 +449,11 @@ fn build_and_run(directory: &Path, gen_source: &str) -> Built {
             .current_dir(directory.to_path_buf()),
         "dotnet build",
     );
-    let assembly: PathBuf = directory.join("bin/Release/net9.0/GenDiff.dll");
+    let assembly: PathBuf = if build.success {
+        common::built_assembly(directory, "GenDiff", &build.stdout_text())
+    } else {
+        directory.join("bin")
+    };
     let mut lines: BTreeMap<u64, String> = BTreeMap::new();
     let mut hung: Option<(u64, String)> = None;
     if build.success {
