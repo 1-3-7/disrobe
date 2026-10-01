@@ -224,7 +224,7 @@ fn rerunning_the_chain_on_recovered_output_is_a_stable_fixed_point() {
         "re-feeding fully recovered source must not trigger any further productive pass; got {productive_passes:?}",
     );
     assert!(
-        matches!(second_plan.verdict, Verdict::Stalled),
+        matches!(second_plan.verdict, Verdict::NotApplicable),
         "a fully recovered artifact is a chain fixed point (no detector matches it), got {v:?}",
         v = second_plan.verdict,
     );
@@ -251,6 +251,6 @@ fn chain_history_guard_prevents_self_reentry_on_recovered_artifact() {
     assert_eq!(
         second.nodes.len(),
         2,
-        "the second run is a root plus a single Stalled terminal: no pass ever executes",
+        "the second run is a root plus a single not-applicable terminal: no pass ever executes",
     );
 }
