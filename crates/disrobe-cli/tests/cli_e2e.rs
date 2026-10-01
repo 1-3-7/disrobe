@@ -1285,19 +1285,39 @@ fn pyfreeze_help_lists_detect_and_extract() {
     );
 }
 
+fn pyembed_v3_blob(name: &str, bytecode: &[u8]) -> Vec<u8> {
+    let mut blob_index: Vec<u8> = Vec::new();
+    for (field, len) in [(0x03_u8, name.len()), (0x07_u8, bytecode.len())] {
+        blob_index.extend_from_slice(&[0x01, 0x02, field, 0x03]);
+        blob_index.extend_from_slice(&u64::try_from(len).unwrap().to_le_bytes());
+        blob_index.extend_from_slice(&[0x04, 0x01, 0xff]);
+    }
+    blob_index.push(0x00);
+    let mut resources_index: Vec<u8> = vec![0x01, 0x03];
+    resources_index.extend_from_slice(&u16::try_from(name.len()).unwrap().to_le_bytes());
+    resources_index.extend_from_slice(&[0x16, 0x07]);
+    resources_index.extend_from_slice(&u32::try_from(bytecode.len()).unwrap().to_le_bytes());
+    resources_index.extend_from_slice(&[0xff, 0x00]);
+    let mut blob: Vec<u8> = b"pyembed\x03".to_vec();
+    blob.push(2);
+    blob.extend_from_slice(&u32::try_from(blob_index.len()).unwrap().to_le_bytes());
+    blob.extend_from_slice(&1_u32.to_le_bytes());
+    blob.extend_from_slice(&u32::try_from(resources_index.len()).unwrap().to_le_bytes());
+    blob.extend_from_slice(&blob_index);
+    blob.extend_from_slice(&resources_index);
+    blob.extend_from_slice(name.as_bytes());
+    blob.extend_from_slice(bytecode);
+    blob
+}
+
 #[test]
 fn pyfreeze_extract_qualifies_pyoxidizer_success_output() {
     let (_input_scratch, input): (disrobe_core::scratch::ScratchDir, PathBuf) =
         temp_path("pyoxidizer-output-label", "exe");
     let out_scratch: disrobe_core::scratch::ScratchDir = temp_dir("pyoxidizer-output-label-out");
     let out_dir: PathBuf = out_scratch.path().to_path_buf();
-    let mut container: Vec<u8> = b"MZ\0PyOxidizer\0python312.dll\0pyembed\x03".to_vec();
-    container.push(0);
-    container.extend_from_slice(&1u32.to_le_bytes());
-    container.extend_from_slice(&0u32.to_le_bytes());
-    container.extend_from_slice(&1u32.to_le_bytes());
-    container.push(0);
-    container.push(0);
+    let mut container: Vec<u8> = b"MZ\0PyOxidizer\0python312.dll\0".to_vec();
+    container.extend_from_slice(&pyembed_v3_blob("app", b"app bytecode body"));
     write_bytes(&input, &container);
 
     let r: Run = run_disrobe(&[
