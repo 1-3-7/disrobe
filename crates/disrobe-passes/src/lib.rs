@@ -18,6 +18,7 @@ pub fn build_registry() -> PassRegistry {
     r.register(&disrobe_binfmt::chain_detector::CONTAINER_PASS);
     #[cfg(feature = "container")]
     r.register(&disrobe_binfmt::chain_detector::NE_PASS);
+    #[cfg(feature = "container")]
     r.register(&disrobe_binfmt::chain_detector::CYTHON_PASS);
     #[cfg(feature = "sourcedefender")]
     r.register(&disrobe_pass_sourcedefender::chain_detector::SOURCEDEFENDER_PASS);
@@ -87,6 +88,8 @@ pub fn expected_pass_ids() -> Vec<PassId> {
     ids.push(disrobe_binfmt::chain_detector::PASS_ID);
     #[cfg(feature = "container")]
     ids.push(disrobe_binfmt::chain_detector::NE_PASS_ID);
+    #[cfg(feature = "container")]
+    ids.push(disrobe_binfmt::chain_detector::CYTHON_PASS_ID);
     #[cfg(feature = "sourcedefender")]
     ids.push(disrobe_pass_sourcedefender::chain_detector::PASS_ID);
     #[cfg(feature = "pyfreeze")]
