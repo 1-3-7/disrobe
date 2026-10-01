@@ -544,13 +544,13 @@
 
 ### `DR-CLI-0362`
 
-- `"report serialize"`: `crates/disrobe-cli/src/cli/chain_v1.rs:1034`
-- `"report serialize: {}"`: `crates/disrobe-cli/src/cli/chain_v1.rs:1429`
+- `"report serialize"`: `crates/disrobe-cli/src/cli/chain_v1.rs:1035`
+- `"report serialize: {}"`: `crates/disrobe-cli/src/cli/chain_v1.rs:1430`
 
 ### `DR-CLI-0363`
 
-- `"report redaction"`: `crates/disrobe-cli/src/cli/chain_v1.rs:1047`
-- `"report redaction: {}"`: `crates/disrobe-cli/src/cli/chain_v1.rs:1435`
+- `"report redaction"`: `crates/disrobe-cli/src/cli/chain_v1.rs:1048`
+- `"report redaction: {}"`: `crates/disrobe-cli/src/cli/chain_v1.rs:1436`
 
 ### `DR-CLI-0408`
 
@@ -1142,8 +1142,8 @@
 
 ### `DR-CLI-0912`
 
-- `"cannot clear the earlier run's {}: {}"`: `crates/disrobe-cli/src/cli/chain_v1.rs:1517`
-- `"cannot read output directory {}: {}"`: `crates/disrobe-cli/src/cli/chain_v1.rs:1497`
+- `"cannot clear the earlier run's {}: {}"`: `crates/disrobe-cli/src/cli/chain_v1.rs:1518`
+- `"cannot read output directory {}: {}"`: `crates/disrobe-cli/src/cli/chain_v1.rs:1498`
 
 ### `DR-DOTNET-0039`
 
@@ -1708,29 +1708,29 @@
 - `DR-CLI-0270`: `crates/disrobe-cli/src/cli/install/mod.rs:120`
 - `DR-CLI-0271`: `crates/disrobe-cli/src/main.rs:2197`
 - `DR-CLI-0290`: `crates/disrobe-cli/src/main.rs:2161`
-- `DR-CLI-0291`: `crates/disrobe-cli/src/cli/chain_v1.rs:612`, `crates/disrobe-cli/src/cli/chain_v1.rs:1319`
+- `DR-CLI-0291`: `crates/disrobe-cli/src/cli/chain_v1.rs:612`, `crates/disrobe-cli/src/cli/chain_v1.rs:1320`
 - `DR-CLI-0292`: `crates/disrobe-cli/src/cli/chain_v1.rs:616`, `crates/disrobe-cli/src/cli/chain_v1.rs:628`
-- `DR-CLI-0293`: `crates/disrobe-cli/src/cli/chain_v1.rs:650`, `crates/disrobe-cli/src/cli/chain_v1.rs:757`, `crates/disrobe-cli/src/cli/chain_v1.rs:1378`
-- `DR-CLI-0294`: `crates/disrobe-cli/src/cli/chain_v1.rs:760`, `crates/disrobe-cli/src/cli/chain_v1.rs:1380`
-- `DR-CLI-0295`: `crates/disrobe-cli/src/cli/chain_v1.rs:762`, `crates/disrobe-cli/src/cli/chain_v1.rs:1382`
-- `DR-CLI-0296`: `crates/disrobe-cli/src/cli/chain_v1.rs:1599`
-- `DR-CLI-0297`: `crates/disrobe-cli/src/cli/chain_v1.rs:1603`
-- `DR-CLI-0298`: `crates/disrobe-cli/src/cli/chain_v1.rs:1587`
+- `DR-CLI-0293`: `crates/disrobe-cli/src/cli/chain_v1.rs:651`, `crates/disrobe-cli/src/cli/chain_v1.rs:758`, `crates/disrobe-cli/src/cli/chain_v1.rs:1379`
+- `DR-CLI-0294`: `crates/disrobe-cli/src/cli/chain_v1.rs:761`, `crates/disrobe-cli/src/cli/chain_v1.rs:1381`
+- `DR-CLI-0295`: `crates/disrobe-cli/src/cli/chain_v1.rs:763`, `crates/disrobe-cli/src/cli/chain_v1.rs:1383`
+- `DR-CLI-0296`: `crates/disrobe-cli/src/cli/chain_v1.rs:1600`
+- `DR-CLI-0297`: `crates/disrobe-cli/src/cli/chain_v1.rs:1604`
+- `DR-CLI-0298`: `crates/disrobe-cli/src/cli/chain_v1.rs:1588`
 - `DR-CLI-0299`: `crates/disrobe-cli/src/cli/chain_v1.rs:167`
-- `DR-CLI-0301`: `crates/disrobe-cli/src/cli/chain_v1.rs:1540`
-- `DR-CLI-0302`: `crates/disrobe-cli/src/cli/chain_v1.rs:1547`
-- `DR-CLI-0305`: `crates/disrobe-cli/src/cli/chain_v1.rs:765`, `crates/disrobe-cli/src/cli/chain_v1.rs:1384`
-- `DR-CLI-0306`: `crates/disrobe-cli/src/cli/chain_v1.rs:767`, `crates/disrobe-cli/src/cli/chain_v1.rs:1386`
-- `DR-CLI-0307`: `crates/disrobe-cli/src/cli/chain_v1.rs:771`, `crates/disrobe-cli/src/cli/chain_v1.rs:1388`
-- `DR-CLI-0308`: `crates/disrobe-cli/src/cli/chain_v1.rs:773`, `crates/disrobe-cli/src/cli/chain_v1.rs:1390`
+- `DR-CLI-0301`: `crates/disrobe-cli/src/cli/chain_v1.rs:1541`
+- `DR-CLI-0302`: `crates/disrobe-cli/src/cli/chain_v1.rs:1548`
+- `DR-CLI-0305`: `crates/disrobe-cli/src/cli/chain_v1.rs:766`, `crates/disrobe-cli/src/cli/chain_v1.rs:1385`
+- `DR-CLI-0306`: `crates/disrobe-cli/src/cli/chain_v1.rs:768`, `crates/disrobe-cli/src/cli/chain_v1.rs:1387`
+- `DR-CLI-0307`: `crates/disrobe-cli/src/cli/chain_v1.rs:772`, `crates/disrobe-cli/src/cli/chain_v1.rs:1389`
+- `DR-CLI-0308`: `crates/disrobe-cli/src/cli/chain_v1.rs:774`, `crates/disrobe-cli/src/cli/chain_v1.rs:1391`
 - `DR-CLI-0309`: `crates/disrobe-cli/src/cli/chain_materialization.rs:67`, `crates/disrobe-cli/src/cli/chain_materialization.rs:227`, `crates/disrobe-cli/src/cli/chain_materialization.rs:235`, `crates/disrobe-cli/src/cli/chain_materialization.rs:241`, `crates/disrobe-cli/src/cli/chain_materialization.rs:251`, `crates/disrobe-cli/src/cli/chain_materialization.rs:257`, `crates/disrobe-cli/src/cli/chain_materialization.rs:263`, `crates/disrobe-cli/src/cli/chain_materialization.rs:266`, `crates/disrobe-cli/src/cli/chain_materialization.rs:270`
 - `DR-CLI-0310`: `crates/disrobe-cli/src/cli/chain_compare.rs:37`, `crates/disrobe-cli/src/cli/chain_materialization.rs:55`, `crates/disrobe-cli/src/cli/chain_materialization.rs:75`, `crates/disrobe-cli/src/cli/chain_materialization.rs:82`, `crates/disrobe-cli/src/cli/chain_materialization.rs:149`, `crates/disrobe-cli/src/cli/chain_materialization.rs:186`, `crates/disrobe-cli/src/cli/chain_materialization.rs:198`, `crates/disrobe-cli/src/cli/chain_materialization.rs:210`, `crates/disrobe-cli/src/cli/chain_materialization.rs:285`
 - `DR-CLI-0311`: `crates/disrobe-cli/src/cli/chain_compare.rs:43`
 - `DR-CLI-0313`: `crates/disrobe-cli/src/cli/chain_compare.rs:216`
-- `DR-CLI-0314`: `crates/disrobe-cli/src/cli/chain_v1.rs:780`
-- `DR-CLI-0315`: `crates/disrobe-cli/src/cli/chain_v1.rs:782`
-- `DR-CLI-0316`: `crates/disrobe-cli/src/cli/chain_v1.rs:1297`
-- `DR-CLI-0317`: `crates/disrobe-cli/src/cli/chain_v1.rs:1299`
+- `DR-CLI-0314`: `crates/disrobe-cli/src/cli/chain_v1.rs:781`
+- `DR-CLI-0315`: `crates/disrobe-cli/src/cli/chain_v1.rs:783`
+- `DR-CLI-0316`: `crates/disrobe-cli/src/cli/chain_v1.rs:1298`
+- `DR-CLI-0317`: `crates/disrobe-cli/src/cli/chain_v1.rs:1300`
 - `DR-CLI-0318`: `crates/disrobe-cli/src/cli/util.rs:33`
 - `DR-CLI-0319`: `crates/disrobe-cli/src/cli/context.rs:72`, `crates/disrobe-cli/src/cli/context.rs:81`
 - `DR-CLI-0322`: `crates/disrobe-cli/src/cli/annot.rs:35`, `crates/disrobe-cli/src/cli/context.rs:127`
@@ -1768,11 +1768,11 @@
 - `DR-CLI-0359`: `crates/disrobe-cli/src/cli/report_forensic.rs:1044`
 - `DR-CLI-0360`: `crates/disrobe-cli/src/cli/report.rs:1067`, `crates/disrobe-cli/src/cli/report.rs:1071`
 - `DR-CLI-0361`: `crates/disrobe-cli/src/cli/report.rs:1060`, `crates/disrobe-cli/src/cli/report.rs:1684`, `crates/disrobe-cli/src/cli/report.rs:1741`, `crates/disrobe-cli/src/cli/report.rs:1756`
-- `DR-CLI-0362`: `crates/disrobe-cli/src/cli/chain_v1.rs:1034`, `crates/disrobe-cli/src/cli/chain_v1.rs:1429`
-- `DR-CLI-0363`: `crates/disrobe-cli/src/cli/chain_v1.rs:1047`, `crates/disrobe-cli/src/cli/chain_v1.rs:1435`
-- `DR-CLI-0364`: `crates/disrobe-cli/src/cli/chain_v1.rs:1446`
-- `DR-CLI-0365`: `crates/disrobe-cli/src/cli/chain_v1.rs:1460`
-- `DR-CLI-0366`: `crates/disrobe-cli/src/cli/chain_v1.rs:1193`
+- `DR-CLI-0362`: `crates/disrobe-cli/src/cli/chain_v1.rs:1035`, `crates/disrobe-cli/src/cli/chain_v1.rs:1430`
+- `DR-CLI-0363`: `crates/disrobe-cli/src/cli/chain_v1.rs:1048`, `crates/disrobe-cli/src/cli/chain_v1.rs:1436`
+- `DR-CLI-0364`: `crates/disrobe-cli/src/cli/chain_v1.rs:1447`
+- `DR-CLI-0365`: `crates/disrobe-cli/src/cli/chain_v1.rs:1461`
+- `DR-CLI-0366`: `crates/disrobe-cli/src/cli/chain_v1.rs:1194`
 - `DR-CLI-0400`: `crates/disrobe-cli/src/cli/jvm.rs:1262`
 - `DR-CLI-0401`: `crates/disrobe-cli/src/cli/jvm.rs:1286`
 - `DR-CLI-0402`: `crates/disrobe-cli/src/cli/jvm.rs:1297`
@@ -2116,8 +2116,8 @@
 - `DR-CLI-0875`: `crates/disrobe-cli/src/cli/hermes.rs:190`, `crates/disrobe-cli/src/cli/hermes.rs:201`, `crates/disrobe-cli/src/cli/hermes.rs:219`, `crates/disrobe-cli/src/cli/hermes.rs:223`, `crates/disrobe-cli/src/cli/hermes.rs:285`, `crates/disrobe-cli/src/cli/hermes.rs:289`
 - `DR-CLI-0876`: `crates/disrobe-cli/src/cli/hermes.rs:237`
 - `DR-CLI-0911`: `crates/disrobe-cli/src/cli/pickle.rs:184`, `crates/disrobe-cli/src/cli/pickle.rs:193`
-- `DR-CLI-0912`: `crates/disrobe-cli/src/cli/chain_v1.rs:1497`, `crates/disrobe-cli/src/cli/chain_v1.rs:1517`
-- `DR-CLI-0913`: `crates/disrobe-cli/src/cli/chain_v1.rs:1507`
+- `DR-CLI-0912`: `crates/disrobe-cli/src/cli/chain_v1.rs:1498`, `crates/disrobe-cli/src/cli/chain_v1.rs:1518`
+- `DR-CLI-0913`: `crates/disrobe-cli/src/cli/chain_v1.rs:1508`
 - `DR-CORE-0003`: `crates/disrobe-core/src/error.rs:8`
 - `DR-CORE-0004`: `crates/disrobe-core/src/error.rs:12`
 - `DR-CORE-0101`: `crates/disrobe-core/src/chain/spec.rs:158`
