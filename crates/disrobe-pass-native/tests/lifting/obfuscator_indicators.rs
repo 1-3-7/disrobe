@@ -11,6 +11,8 @@ use disrobe_pass_native::{
 };
 use iced_x86::code_asm::{CodeAssembler, CodeLabel, dword_ptr, eax, rbp};
 
+use crate::prerequisite;
+
 const IMAGE_BASE: u64 = 0x40_0000;
 const CODE_OFFSET: usize = 0x1000;
 
@@ -143,19 +145,27 @@ fn the_same_dispatcher_off_the_entry_path_is_not_claimed() {
 
 #[test]
 fn compiler_output_decoded_from_its_entry_is_not_claimed_flattened() {
-    for relative in [
-        "native/unbind/notepad.pe64.exe",
-        "native/unbind/kernel32.pe32.dll",
-        "native/d/clean_control.exe",
-        "native/formats/hello.pe64.exe",
-        "native/obfuscators/obfuscxx/sample.clean.exe",
-        "native/obfuscators/obfusheader/sample.clean.exe",
-    ] {
-        let path: std::path::PathBuf = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../corpus")
-            .join(relative);
-        let bytes: Vec<u8> = std::fs::read(&path)
-            .unwrap_or_else(|error| panic!("{} is tracked in git: {error}", path.display()));
+    const GRADED: &str = "the no-flattening control on compiler output";
+    let local: [&str; 2] = [
+        "corpus/native/unbind/notepad.pe64.exe",
+        "corpus/native/unbind/kernel32.pe32.dll",
+    ];
+    let committed: [&str; 4] = [
+        "corpus/native/d/clean_control.exe",
+        "corpus/native/formats/hello.pe64.exe",
+        "corpus/native/obfuscators/obfuscxx/sample.clean.exe",
+        "corpus/native/obfuscators/obfusheader/sample.clean.exe",
+    ];
+    let images: Vec<(&str, Vec<u8>)> = local
+        .into_iter()
+        .filter_map(|relative: &str| Some((relative, prerequisite::local_only(relative, GRADED)?)))
+        .chain(
+            committed
+                .into_iter()
+                .map(|relative: &str| (relative, prerequisite::committed(relative))),
+        )
+        .collect();
+    for (relative, bytes) in images {
         let hits: Vec<ObfuscatorHit> = detect_obfuscators(&bytes);
         assert!(
             !families(&hits).contains(&ObfuscatorFamily::OllvmFlattening),

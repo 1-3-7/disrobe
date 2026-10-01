@@ -5,10 +5,10 @@
     clippy::missing_docs_in_private_items
 )]
 
-use std::path::PathBuf;
-
 use disrobe_pass_native::analyze_signatures;
 use disrobe_pass_native::sig_engine::{SigMatch, SigReport, StructFamily, StructFinding};
+
+use crate::prerequisite;
 
 const PE_OFFSET: usize = 0x80;
 const OPTIONAL_HEADER_SIZE: usize = 0xE0;
@@ -207,10 +207,12 @@ fn section_name_signatures_never_fall_back_to_a_byte_search() {
 
 #[test]
 fn mew_does_not_match_mewt_in_a_committed_mingw_build() {
-    let path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../corpus/native/packers/upx/git.original.exe");
-    let bytes: Vec<u8> = std::fs::read(&path)
-        .unwrap_or_else(|error| panic!("{} is tracked in git: {error}", path.display()));
+    let Some(bytes): Option<Vec<u8>> = prerequisite::local_only(
+        "corpus/native/packers/upx/git.original.exe",
+        "the MEW-versus-MEWT section evidence control",
+    ) else {
+        return;
+    };
     assert!(
         bytes.windows(4).any(|w: &[u8]| w == b"MEWT"),
         "the control needs the MEWT byte run this grade is about"

@@ -15,6 +15,8 @@
 "disrobe-pass-native::local::corpus/mobile/flutter/rustdesk/libflutter.so" = "the RustDesk libflutter.so is an untracked third-party library no CI job downloads"
 "disrobe-pass-native::local::corpus/native/unbind/notepad.pe64.exe" = "the Windows notepad.exe unbind subject is an untracked Microsoft binary the repository cannot redistribute, so CI never has it"
 "disrobe-pass-native::local::corpus/native/unbind/kernel32.pe32.dll" = "the Windows kernel32.dll unbind subject is an untracked Microsoft binary the repository cannot redistribute, so CI never has it"
+"disrobe-pass-native::local::corpus/native/packers/upx/hello.unpacked.exe" = "the upx -d output of the hello UPX fixture is a local-only file a .gitignore rule keeps out of the tree, so CI never has it"
+"disrobe-pass-native::local::corpus/native/packers/upx/git.original.exe" = "the Git for Windows git.exe is an untracked third-party binary the repository does not redistribute, so CI never has it"
 "disrobe-pass-native::osslsigncode" = "no CI job installs osslsigncode"
 "disrobe-pass-native::python-lief" = "no CI job installs the lief Python package"
 "disrobe-binfmt::regenerable::appimage" = "the appimage fixture is a local-only artifact a .gitignore rule keeps out of the tree and no CI job rebuilds it from the corpus/binfmt/MANIFEST.toml recipe"

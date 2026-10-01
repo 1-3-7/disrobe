@@ -11,6 +11,9 @@ mod compiler_toolchain;
 mod object_symbol;
 #[path = "../support/oracle_demand.rs"]
 mod oracle_demand;
+#[path = "../support/prerequisite.rs"]
+#[allow(clippy::panic, clippy::redundant_pub_crate, dead_code)]
+mod prerequisite;
 
 mod aarch64_cfg_pseudo_c;
 mod aarch64_entry_fold_back_edge;

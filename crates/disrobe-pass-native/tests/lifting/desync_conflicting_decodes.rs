@@ -5,24 +5,12 @@
     clippy::missing_docs_in_private_items
 )]
 
-use std::path::PathBuf;
-
 use disrobe_pass_native::pass::analyze_deobf_report;
 use disrobe_pass_native::{Bitness, ByteRange, DesyncReport, resolve_desync};
 
-const BASE: u64 = 0x1000;
+use crate::prerequisite;
 
-fn corpus(relative: &str) -> Vec<u8> {
-    let path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../corpus")
-        .join(relative);
-    std::fs::read(&path).unwrap_or_else(|error| {
-        panic!(
-            "{} is tracked in git and this grade needs it: {error}",
-            path.display()
-        )
-    })
-}
+const BASE: u64 = 0x1000;
 
 #[test]
 fn an_entry_ret_section_reports_unreached_bytes_and_no_junk() {
@@ -72,11 +60,14 @@ fn a_jump_over_a_junk_call_opcode_is_a_conflicting_decode() {
 
 #[test]
 fn ordinary_unpacked_pe_images_report_no_anti_disassembly() {
-    for relative in [
-        "native/packers/aspack/AccessEnum.original.exe",
-        "native/packers/upx/hello.unpacked.exe",
-    ] {
-        let bytes: Vec<u8> = corpus(relative);
+    const COMMITTED: &str = "corpus/native/packers/aspack/AccessEnum.original.exe";
+    const LOCAL: &str = "corpus/native/packers/upx/hello.unpacked.exe";
+    let mut images: Vec<(&str, Vec<u8>)> = vec![(COMMITTED, prerequisite::committed(COMMITTED))];
+    images.extend(
+        prerequisite::local_only(LOCAL, "the no-anti-disassembly control on compiler output")
+            .map(|bytes: Vec<u8>| (LOCAL, bytes)),
+    );
+    for (relative, bytes) in images {
         let report = analyze_deobf_report(&bytes)
             .unwrap_or_else(|| panic!("{relative} has a decodable code section"));
         assert!(
