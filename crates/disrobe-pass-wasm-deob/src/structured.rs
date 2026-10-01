@@ -4133,13 +4133,17 @@ mod merge_tests {
         let bin: std::path::PathBuf = dir.join(if cfg!(windows) { "rec.exe" } else { "rec" });
         let compiled: disrobe_testkit::ToolOutput = disrobe_testkit::tool_output(
             disrobe_testkit::CommandSpec::new(&rustc, std::time::Duration::from_mins(5))
-                .args(["--edition", "2021", "-O", "-o"])
+                .args(["--edition", "2021", "-O", "-C", "strip=debuginfo", "-o"])
                 .arg(&bin)
                 .arg(&rs),
         )
         .expect(
             "rustc is required on PATH to compile the recovered loop; every CI leg carries it \
              beside cargo",
+        );
+        assert!(
+            !compiled.timed_out,
+            "rustc did not finish compiling the recovered source ({tag}) within five minutes"
         );
         assert!(
             compiled.success,
