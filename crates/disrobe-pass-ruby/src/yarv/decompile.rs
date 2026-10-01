@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::yarv::ibf::{
     CatchType, IbfImage, IbfObjectKind, YarvCatchEntry, YarvIbfInstruction, YarvIseqBody,
-    YarvOperand, ruby_string_literal,
+    YarvOperand, YarvParamKeyword, ruby_string_literal,
 };
 
 const MAX_STACK: usize = 8192;
@@ -5083,6 +5083,11 @@ fn render_param_signature(body: &YarvIseqBody, ctx: &DecompileContext<'_>) -> St
     let block_idx: Option<usize> = has_block.then_some(body.param_block_start as usize);
     let kwrest_idx: Option<usize> = has_kwrest
         .then(|| block_idx.map_or_else(|| count.saturating_sub(1), |b| b.saturating_sub(1)));
+    let keyword_bits_idx: Option<usize> = body
+        .param_keyword
+        .as_ref()
+        .filter(|_| has_kw)
+        .map(|keyword: &YarvParamKeyword| keyword.bits_start as usize);
     let kw_defaults: Vec<(String, String)> = if has_kw {
         let opt_end: usize = optional_prologue(body).map_or(0, |(_, end)| end);
         let mut defaults: Vec<(String, String)> = keyword_default_prologue(body, ctx, opt_end).0;
@@ -5107,6 +5112,9 @@ fn render_param_signature(body: &YarvIseqBody, ctx: &DecompileContext<'_>) -> St
     let opt_defaults: Vec<Option<String>> = optional_defaults(body, ctx);
     let mut params: Vec<String> = Vec::with_capacity(count);
     for idx in 0..count {
+        if Some(idx) == keyword_bits_idx {
+            continue;
+        }
         let anonymous: String = format!(
             "local{}",
             (body.local_table.len() - 1 - idx) as u64 + VM_ENV_DATA_SIZE
@@ -7292,6 +7300,40 @@ mod tests {
         assert_eq!(
             block_param_list(&no_params, &DecompileContext::from_image(&empty_image())),
             ""
+        );
+    }
+
+    #[test]
+    fn the_keyword_bits_slot_is_never_a_parameter_even_when_its_local_resolves_to_a_name() {
+        let body: YarvIseqBody = YarvIseqBody {
+            index: 0,
+            offset: 0,
+            iseq_size: 0,
+            local_table: vec![
+                Some("entries".to_owned()),
+                Some("currency".to_owned()),
+                Some("68718428143".to_owned()),
+                Some("meta".to_owned()),
+            ],
+            param_lead_num: 0,
+            param_size: 4,
+            param_flags: PARAM_FLAG_HAS_REST | PARAM_FLAG_HAS_KW | PARAM_FLAG_HAS_KWREST,
+            param_opt_num: 0,
+            param_rest_start: 0,
+            param_block_start: 0,
+            catch_entries: Vec::new(),
+            param_opt_table: Vec::new(),
+            param_keyword: Some(YarvParamKeyword {
+                required_num: 0,
+                bits_start: 2,
+                names: vec![Some("currency".to_owned())],
+                defaults: vec![Some(YarvOperand::Literal("EUR".to_owned()))],
+            }),
+            instructions: Vec::new(),
+        };
+        assert_eq!(
+            render_param_signature(&body, &DecompileContext::from_image(&empty_image())),
+            "(*entries, currency: \"EUR\", **meta)"
         );
     }
 

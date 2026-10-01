@@ -171,6 +171,7 @@ pub struct YarvIseqBody {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct YarvParamKeyword {
     pub required_num: u32,
+    pub bits_start: u32,
     pub names: Vec<Option<String>>,
     pub defaults: Vec<Option<YarvOperand>>,
 }
@@ -910,6 +911,7 @@ fn parse_param_keyword(
     let header: Vec<u64> = read_value_array(bytes, offset, 4)?;
     let num: usize = usize::try_from(header[0] & 0xFFFF_FFFF).ok()?;
     let required_num: usize = usize::try_from(header[0] >> 32).ok()?;
+    let bits_start: u32 = u32::try_from(header[1] & 0xFFFF_FFFF).ok()?;
     if num > IBF_MAX_LOCALS || required_num > num {
         return None;
     }
@@ -936,6 +938,7 @@ fn parse_param_keyword(
     };
     Some(YarvParamKeyword {
         required_num: u32::try_from(required_num).ok()?,
+        bits_start,
         names,
         defaults,
     })
