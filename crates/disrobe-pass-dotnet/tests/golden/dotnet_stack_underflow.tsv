@@ -6,7 +6,7 @@ cff/CffPred.x86pred.exe	0x0600000b	public static int Clamp(int value, int lo, in
 cff/CffPred.x86pred.exe	0x0600000c	public static int Classify(char c)
 cff/CffPred.x86pred.exe	0x0600000e	public static string Decode(int id)
 confuserex/gauntlet/GauntletSample.confuserex2.exe	0x06000040	public void .ctor()
-confuserex/gauntlet/GauntletSample.confuserex2.exe	0x06000042	public string \\u{202A}\u{206d}\u{206f}\\u{200E}\\u{202B}\\u{202D}\\u{200D}\\u{200C}\u{206c}\\u{200B}\\u{202A}\\u{202E}\\u{202B}\\u{202C}\\u{200D}\u{206d}\\u{202D}\\u{200E}\\u{200C}\\u{200B}\\u{200B}\\u{200E}\\u{202A}\\u{202A}\u{206b}\u{206a}\u{206b}\\u{200D}\\u{202B}\\u{202D}\\u{200D}\\u{200D}\u{206f}\u{206f}\\u{200D}\u{206d}\u{206a}\\u{202D}\u{206d}\\u{200F}\\u{202E}(string arg1)
+confuserex/gauntlet/GauntletSample.confuserex2.exe	0x06000042	public string _u202A__u206D__u206F__u200E__u202B__u202D__u200D__u200C__u206C__u200B__u202A__u202E__u202B__u202C__u200D__u206D__u202D__u200E__u200C__u200B__u200B__u200E__u202A__u202A__u206B__u206A__u206B__u200D__u202B__u202D__u200D__u200D__u206F__u206F__u200D__u206D__u206A__u202D__u206D__u200F__u202E_(string arg1)
 koivm/KoiVM.Runtime.dll	0x06000016	private void 81f1629c(ulong arg1, uint arg2, 619a237a arg3, void*[] arg4, void* arg5)
 koivm/KoiVM.Runtime.dll	0x0600002e	public void 81f1629c(dfbb767d arg1, ref afc3c0ae arg2)
 koivm/KoiVM.Runtime.dll	0x0600003d	public void 81f1629c(dfbb767d arg1, ref afc3c0ae arg2)
