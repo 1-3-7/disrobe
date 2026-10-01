@@ -31,6 +31,7 @@ pub mod pool_table;
 pub mod snapshot;
 pub mod string_pool;
 pub mod structured;
+pub(crate) mod stub_abi;
 
 pub use aot_lift::{
     AotLiftReport, DartCallKind, DartCallSite, DartCheckKind, DartElidedCheck, DartLiftedFunction,

@@ -14,6 +14,7 @@ use super::arm64_data::{
 };
 use super::disasm::{Arm64FlowKind, Arm64Function, Arm64Instruction};
 use super::pool_table::{DartPoolTable, UNRESOLVED_TOKEN, render_double};
+use super::stub_abi::{DartStubInput, DartStubInputs};
 
 pub(super) const DART_ARGUMENT_REGISTERS: [u8; 6] = [1, 2, 3, 5, 6, 7];
 
@@ -552,6 +553,27 @@ impl DartCallArguments {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TrackedCall {
+    Stub(Vec<Option<DartValue>>),
+    Inferred(Vec<Option<DartValue>>),
+}
+
+impl TrackedCall {
+    fn values(&self) -> &[Option<DartValue>] {
+        match self {
+            Self::Stub(values) | Self::Inferred(values) => values,
+        }
+    }
+
+    fn has_argument_list(&self) -> bool {
+        match self {
+            Self::Stub(_) => true,
+            Self::Inferred(values) => !values.is_empty(),
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone)]
 struct TrackedEffects {
     definitions: BTreeMap<u64, DartValue>,
@@ -816,15 +838,16 @@ pub(super) fn recover_call_arguments(
     pool: Option<&DartPoolTable>,
     parameter_count: Option<u8>,
     resolve: &dyn Fn(u64) -> Option<String>,
+    stubs: &DartStubInputs,
 ) -> DartCallArguments {
     let live: Vec<&NirBlock> = blocks
         .iter()
         .filter(|block: &&NirBlock| reachable.contains(&block.start))
         .collect::<Vec<&NirBlock>>();
-    let (mut sites, effects): (BTreeMap<u64, Vec<Option<DartValue>>>, TrackedEffects) =
-        track_call_sites(func, &live, tail_calls, parameter_count);
+    let (mut sites, effects): (BTreeMap<u64, TrackedCall>, TrackedEffects) =
+        track_call_sites(func, &live, tail_calls, parameter_count, stubs);
     for (address, receiver) in recover_boxed_double_receivers(func, resolve) {
-        let Some(arguments): Option<&mut Vec<Option<DartValue>>> = sites.get_mut(&address) else {
+        let Some(TrackedCall::Inferred(arguments)) = sites.get_mut(&address) else {
             continue;
         };
         if arguments.is_empty() {
@@ -838,8 +861,8 @@ pub(super) fn recover_call_arguments(
     }
     let mut consumed: BTreeSet<u64> = BTreeSet::new();
     let mut max_parameter: Option<usize> = None;
-    for values in sites.values() {
-        for value in values.iter().flatten() {
+    for call in sites.values() {
+        for value in call.values().iter().flatten() {
             collect_dependencies(value, &mut consumed, &mut max_parameter);
         }
     }
@@ -864,11 +887,12 @@ pub(super) fn recover_call_arguments(
 
     let mut rendered: BTreeMap<u64, Vec<String>> = BTreeMap::new();
     let mut recovered_sites: usize = 0;
-    for (address, values) in &sites {
-        if values.is_empty() {
+    for (address, call) in &sites {
+        if !call.has_argument_list() {
             continue;
         }
-        let texts: Vec<String> = values
+        let texts: Vec<String> = call
+            .values()
             .iter()
             .map(|value: &Option<DartValue>| match value {
                 Some(value) => render_value(value, pool, &results, 0),
@@ -1192,11 +1216,12 @@ fn track_call_sites(
     blocks: &[&NirBlock],
     tail_calls: &BTreeSet<u64>,
     parameter_count: Option<u8>,
-) -> (BTreeMap<u64, Vec<Option<DartValue>>>, TrackedEffects) {
+    stubs: &DartStubInputs,
+) -> (BTreeMap<u64, TrackedCall>, TrackedEffects) {
     let insns: &[Arm64Instruction] = &func.instructions;
     let predecessors: BTreeMap<u64, Vec<u64>> = predecessors_of(blocks);
     let mut exits: BTreeMap<u64, TrackState> = BTreeMap::new();
-    let mut sites: BTreeMap<u64, Vec<Option<DartValue>>> = BTreeMap::new();
+    let mut sites: BTreeMap<u64, TrackedCall> = BTreeMap::new();
     let mut effects: TrackedEffects = TrackedEffects::default();
     let entry: Option<u64> = blocks.first().map(|block: &&NirBlock| block.start);
 
@@ -1212,7 +1237,14 @@ fn track_call_sites(
         for insn in insns.iter().filter(|insn: &&Arm64Instruction| {
             insn.address >= block.start && insn.address < block.end
         }) {
-            step(&mut state, insn, tail_calls, &mut sites, &mut effects);
+            step(
+                &mut state,
+                insn,
+                tail_calls,
+                stubs,
+                &mut sites,
+                &mut effects,
+            );
         }
         exits.insert(block.start, state);
     }
@@ -1297,22 +1329,23 @@ fn step(
     state: &mut TrackState,
     insn: &Arm64Instruction,
     tail_calls: &BTreeSet<u64>,
-    sites: &mut BTreeMap<u64, Vec<Option<DartValue>>>,
+    stubs: &DartStubInputs,
+    sites: &mut BTreeMap<u64, TrackedCall>,
     effects: &mut TrackedEffects,
 ) {
     let raw: u32 = insn.bytes;
     match insn.flow {
         Arm64FlowKind::DirectCall | Arm64FlowKind::IndirectCall => {
             let indirect: bool = insn.flow == Arm64FlowKind::IndirectCall;
-            let arguments: Vec<Option<DartValue>> = collect_arguments(state, indirect, raw);
-            sites.insert(insn.address, arguments);
+            let call: TrackedCall = track_call(state, insn, indirect, stubs);
+            sites.insert(insn.address, call);
             state.consume_call(insn.address);
             return;
         }
         Arm64FlowKind::DirectBranch => {
             if tail_calls.contains(&insn.address) {
-                let arguments: Vec<Option<DartValue>> = collect_arguments(state, false, raw);
-                sites.insert(insn.address, arguments);
+                let call: TrackedCall = track_call(state, insn, false, stubs);
+                sites.insert(insn.address, call);
             }
             return;
         }
@@ -2094,6 +2127,30 @@ fn offset_of(state: &TrackState, base: u8, delta: i64) -> Option<DartValue> {
             delta,
         }),
         None => None,
+    }
+}
+
+fn track_call(
+    state: &TrackState,
+    insn: &Arm64Instruction,
+    indirect: bool,
+    stubs: &DartStubInputs,
+) -> TrackedCall {
+    let stub: Option<&[DartStubInput]> = insn
+        .branch_target
+        .filter(|_: &u64| !indirect)
+        .and_then(|target: u64| stubs.inputs(target));
+    match stub {
+        Some(inputs) => TrackedCall::Stub(
+            inputs
+                .iter()
+                .map(|input: &DartStubInput| match input {
+                    DartStubInput::Integer(register) => state.integers.get(register).cloned(),
+                    DartStubInput::Float(register) => state.floats.get(register).cloned(),
+                })
+                .collect::<Vec<Option<DartValue>>>(),
+        ),
+        None => TrackedCall::Inferred(collect_arguments(state, indirect, insn.bytes)),
     }
 }
 

@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
@@ -14,6 +14,7 @@ use super::pool_table::{
     DartPoolTable, DartPoolTableStats, DartPoolUnresolvedSlots, pool_slot_of_offset,
 };
 use super::structured::{DartCallArgumentCounts, DartStructuredBody};
+use super::stub_abi::DartStubInputs;
 use crate::debug::{dbg_kv, dbg_section};
 use crate::error::Result;
 
@@ -361,10 +362,10 @@ pub fn lift_libapp_aot(bytes: &[u8]) -> Result<AotLiftReport> {
     } else {
         &layout.function_symbols
     };
+    let instructions: Vec<u8> = super::isolate_instruction_bytes(bytes)?;
     let disasm: Arm64Disassembly = if symbols.is_empty() {
         super::disassemble_libapp_so(bytes)?
     } else {
-        let instructions: Vec<u8> = super::isolate_instruction_bytes(bytes)?;
         disassemble_symtab_functions(&instructions, symbols)
     };
     dbg_kv("aot.functions", || disasm.function_count.to_string());
@@ -387,6 +388,7 @@ pub fn lift_libapp_aot(bytes: &[u8]) -> Result<AotLiftReport> {
         &recovery.version_hash,
         &disasm,
         symbols,
+        &instructions,
         &isolate_data,
         pool.as_ref(),
     );
@@ -499,11 +501,17 @@ pub fn lift_functions(
     version_hash: &str,
     disasm: &Arm64Disassembly,
     symbols: &[DartFunctionSymbol],
+    instructions: &[u8],
     isolate_data: &[u8],
     pool: Option<&DartPoolTable>,
 ) -> AotLiftReport {
     let abi_resolved: bool = matches_version(version_hash);
     let index: SymbolIndex = SymbolIndex::build(symbols);
+    let stubs: DartStubInputs = if abi_resolved {
+        DartStubInputs::classify(instructions, &direct_call_targets(disasm))
+    } else {
+        DartStubInputs::default()
+    };
 
     let mut call_argument_counts: DartCallArgumentCounts = DartCallArgumentCounts::default();
     let mut functions: Vec<DartLiftedFunction> = Vec::with_capacity(disasm.functions.len());
@@ -511,6 +519,7 @@ pub fn lift_functions(
         functions.push(lift_one(
             func,
             &index,
+            &stubs,
             abi_resolved,
             pool,
             &mut call_argument_counts,
@@ -655,6 +664,7 @@ pub fn lift_functions(
 fn lift_one(
     func: &Arm64Function,
     index: &SymbolIndex,
+    stubs: &DartStubInputs,
     abi_resolved: bool,
     pool: Option<&DartPoolTable>,
     counts: &mut DartCallArgumentCounts,
@@ -733,6 +743,7 @@ fn lift_one(
             arg_registers,
             resolve: &resolve,
             pool,
+            stubs,
         };
         super::structured::structure_dart_function(func, &abi, counts)
     } else {
@@ -859,6 +870,26 @@ fn control_flow_shape(func: &Arm64Function, start: u64, end: u64) -> (usize, boo
         }
     }
     (leaders.len(), has_loop_back_edge)
+}
+
+fn direct_call_targets(disasm: &Arm64Disassembly) -> BTreeSet<u64> {
+    disasm
+        .functions
+        .iter()
+        .flat_map(|func: &Arm64Function| {
+            let (start, end): (u64, u64) = func_range(func);
+            func.instructions
+                .iter()
+                .filter(|insn: &&Arm64Instruction| {
+                    matches!(
+                        insn.flow,
+                        Arm64FlowKind::DirectCall | Arm64FlowKind::DirectBranch
+                    )
+                })
+                .filter_map(|insn: &Arm64Instruction| insn.branch_target)
+                .filter(move |target: &u64| *target < start || *target >= end)
+        })
+        .collect::<BTreeSet<u64>>()
 }
 
 #[must_use]
@@ -1414,6 +1445,7 @@ mod tests {
         let lifted: DartLiftedFunction = lift_one(
             &func,
             &index,
+            &DartStubInputs::default(),
             true,
             None,
             &mut DartCallArgumentCounts::default(),
@@ -1435,6 +1467,7 @@ mod tests {
         let lifted: DartLiftedFunction = lift_one(
             &func,
             &index,
+            &DartStubInputs::default(),
             true,
             None,
             &mut DartCallArgumentCounts::default(),
@@ -1457,6 +1490,7 @@ mod tests {
         let lifted: DartLiftedFunction = lift_one(
             &func,
             &index,
+            &DartStubInputs::default(),
             true,
             None,
             &mut DartCallArgumentCounts::default(),
@@ -1477,6 +1511,7 @@ mod tests {
         let lifted: DartLiftedFunction = lift_one(
             &func,
             &index,
+            &DartStubInputs::default(),
             true,
             None,
             &mut DartCallArgumentCounts::default(),
@@ -1499,6 +1534,7 @@ mod tests {
         let lifted: DartLiftedFunction = lift_one(
             &func,
             &index,
+            &DartStubInputs::default(),
             true,
             None,
             &mut DartCallArgumentCounts::default(),
@@ -1548,6 +1584,7 @@ mod tests {
         let lifted: DartLiftedFunction = lift_one(
             &func,
             &index,
+            &DartStubInputs::default(),
             true,
             None,
             &mut DartCallArgumentCounts::default(),
@@ -1568,6 +1605,7 @@ mod tests {
         let lifted: DartLiftedFunction = lift_one(
             &func,
             &index,
+            &DartStubInputs::default(),
             false,
             None,
             &mut DartCallArgumentCounts::default(),
@@ -1592,6 +1630,7 @@ mod tests {
         let lifted: DartLiftedFunction = lift_one(
             &func,
             &index,
+            &DartStubInputs::default(),
             true,
             None,
             &mut DartCallArgumentCounts::default(),
@@ -1619,6 +1658,7 @@ mod tests {
         let lifted: DartLiftedFunction = lift_one(
             &func,
             &index,
+            &DartStubInputs::default(),
             false,
             None,
             &mut DartCallArgumentCounts::default(),
@@ -1692,6 +1732,7 @@ mod tests {
             super::super::cid_table::DART_3_12_VERSION_HASH,
             &disasm,
             &[symbol(0x100, 0x08, "fib")],
+            &[],
             &[],
             None,
         );

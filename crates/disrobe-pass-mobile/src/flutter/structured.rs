@@ -13,6 +13,7 @@ use super::aot_lift::{
 use super::call_args::{DartCallArguments, recover_boolean_return, recover_call_arguments};
 use super::disasm::{Arm64FlowKind, Arm64Function, Arm64Instruction};
 use super::pool_table::DartPoolTable;
+use super::stub_abi::DartStubInputs;
 
 const ARM64_INSN_BYTES: u64 = 4;
 
@@ -33,6 +34,7 @@ pub(crate) struct DartAbi<'a> {
     pub(crate) arg_registers: u8,
     pub(crate) resolve: &'a dyn Fn(u64) -> Option<String>,
     pub(crate) pool: Option<&'a DartPoolTable>,
+    pub(crate) stubs: &'a DartStubInputs,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -94,6 +96,7 @@ pub(crate) fn structure_dart_function(
         abi.pool,
         parameter_count,
         abi.resolve,
+        abi.stubs,
     );
     let baseline: String = emit_dart(&hir, abi, &reachable, &arguments, parameter_count);
     let text: String = match returned_expression_pass(func, abi, &arguments, &blocks) {
@@ -1167,6 +1170,9 @@ mod tests {
         0x1400_0000 | ((imm as u32) & 0x03FF_FFFF)
     }
 
+    static NO_STUBS: std::sync::LazyLock<DartStubInputs> =
+        std::sync::LazyLock::new(DartStubInputs::default);
+
     fn no_names(_t: u64) -> Option<String> {
         None
     }
@@ -1184,6 +1190,7 @@ mod tests {
             arg_registers: 1,
             resolve,
             pool: None,
+            stubs: &NO_STUBS,
         }
     }
 
