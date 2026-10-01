@@ -10,7 +10,7 @@ pub const fn is_unsafe_in_source(c: char) -> bool {
             | '\u{061C}'
             | '\u{200B}'..='\u{200F}'
             | '\u{2028}'..='\u{202E}'
-            | '\u{2060}'..='\u{2069}'
+            | '\u{2060}'..='\u{206F}'
             | '\u{FEFF}'
     )
 }
@@ -46,6 +46,14 @@ mod tests {
             "a\\u{2028}b\\u{2066}c\\u{000D}"
         );
         assert_eq!(escape_unsafe_chars("\u{FEFF}Program"), "\\u{FEFF}Program");
+    }
+
+    #[test]
+    fn deprecated_format_characters_obfuscators_hide_in_names_become_visible() {
+        for c in '\u{206A}'..='\u{206F}' {
+            assert!(is_unsafe_in_source(c), "U+{:04X}", u32::from(c));
+        }
+        assert_eq!(escape_unsafe_chars("a\u{206D}b"), "a\\u{206D}b");
     }
 
     #[test]
