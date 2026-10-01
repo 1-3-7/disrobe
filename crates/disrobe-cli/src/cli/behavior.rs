@@ -230,8 +230,9 @@ pub(crate) fn run(path: PathBuf, fmt: OutputFormat, effects: bool) -> miette::Re
         .map_err(|e| miette::miette!("DR-BEH-0050: cannot read target: {e}"))?;
     let uri: String = path.display().to_string();
     let imports: Vec<String> = native_import_tokens(&bytes);
-    let report: BehaviorReport = behavior::analyze_with_uri(&bytes, &imports, Some(&uri));
     let anti: AntiAnalysisReport = anti_analysis::scan(&bytes, Some(&uri));
+    let report: BehaviorReport =
+        behavior::analyze_with_anti_analysis(&bytes, &imports, Some(&uri), &anti);
     if !effects {
         let combined: BehaviorWithAntiAnalysis<'_> = BehaviorWithAntiAnalysis {
             behavior: &report,

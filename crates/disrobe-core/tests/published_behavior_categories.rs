@@ -20,7 +20,7 @@ struct PublishedCategory {
     label: &'static str,
     describe: &'static str,
     import_signal: &'static str,
-    attack_id: &'static str,
+    attack_id: Option<&'static str>,
 }
 
 const PUBLISHED: [PublishedCategory; PUBLISHED_COUNT] = [
@@ -29,49 +29,49 @@ const PUBLISHED: [PublishedCategory; PUBLISHED_COUNT] = [
         label: "network",
         describe: "network communication",
         import_signal: "WSAStartup",
-        attack_id: "T1095",
+        attack_id: None,
     },
     PublishedCategory {
         category: BehaviorCategory::Filesystem,
         label: "filesystem",
         describe: "filesystem access",
         import_signal: "FindFirstFileW",
-        attack_id: "T1083",
+        attack_id: None,
     },
     PublishedCategory {
         category: BehaviorCategory::ProcessExec,
         label: "process_exec",
         describe: "process / command execution",
         import_signal: "CreateProcessW",
-        attack_id: "T1106",
+        attack_id: None,
     },
     PublishedCategory {
         category: BehaviorCategory::RegistryPersistence,
         label: "registry_persistence",
         describe: "registry & persistence",
         import_signal: "RegSetValueExW",
-        attack_id: "T1112",
+        attack_id: Some("T1112"),
     },
     PublishedCategory {
         category: BehaviorCategory::Crypto,
         label: "crypto",
         describe: "cryptographic operations",
         import_signal: "CryptEncrypt",
-        attack_id: "T1486",
+        attack_id: None,
     },
     PublishedCategory {
         category: BehaviorCategory::AntiAnalysis,
         label: "anti_analysis",
         describe: "anti-analysis / anti-debug",
         import_signal: "IsDebuggerPresent",
-        attack_id: "T1622",
+        attack_id: None,
     },
     PublishedCategory {
         category: BehaviorCategory::DynamicCode,
         label: "dynamic_code",
         describe: "dynamic code / loader",
         import_signal: "GetProcAddress",
-        attack_id: "T1129",
+        attack_id: None,
     },
 ];
 
@@ -291,20 +291,28 @@ fn every_published_category_is_reached_by_the_signal_its_row_documents() {
                 row.import_signal, row.category
             )
         };
-        assert!(
-            found.attack_ids.contains(&row.attack_id),
-            "{DEPTH_DOC} publishes the ATT&CK mapping for `{}` as {}, but the finding carries \
-             {:?}",
-            row.import_signal,
-            row.attack_id,
-            found.attack_ids
-        );
-        assert!(
-            report.attack_ids.contains(&row.attack_id),
-            "the aggregate `attack_ids` list is published as the union across all categories, but \
-             it omits {} which one of its own findings carries",
-            row.attack_id
-        );
+        match row.attack_id {
+            Some(attack_id) => {
+                assert_eq!(
+                    found.attack_ids,
+                    vec![attack_id],
+                    "{DEPTH_DOC} publishes the ATT&CK mapping for `{}` as {attack_id}",
+                    row.import_signal
+                );
+                assert!(
+                    report.attack_ids.contains(&attack_id),
+                    "the aggregate `attack_ids` list is published as the union across all \
+                     categories, but it omits {attack_id} which one of its own findings carries"
+                );
+            }
+            None => assert!(
+                found.attack_ids.is_empty(),
+                "{DEPTH_DOC} publishes that `{}`, an api ordinary runtimes import, shows the \
+                 capability without claiming a technique, but the finding carries {:?}",
+                row.import_signal,
+                found.attack_ids
+            ),
+        }
         assert!(
             found
                 .evidence

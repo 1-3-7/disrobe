@@ -179,15 +179,32 @@ disrobe behavior sample.exe --json
 | `anti_analysis` | Debugger checks, timing checks, sandbox evasion. |
 | `dynamic_code` | `LoadLibrary`/`GetProcAddress`, `VirtualProtect`, `dlopen`, RWX memory. |
 
-Signals come from three sources, each tagged in the evidence list:
+Signals come from four sources, each tagged in the evidence list:
 
 - `import`: the native import table (PE/ELF/Mach-O), parsed when the input is a binary.
 - `string`: API / symbol names found in the extracted strings (including XOR/base64-recovered ones), so signals survive light obfuscation.
 - `ioc`: network/host/crypto indicators from the [IOC extractor](#ioc-extraction).
+- `anti_analysis`: a detected verdict from the anti-analysis scan reported alongside.
+
+An API name matches only its own family: the exact name, plus the `A`, `W`, `Ex`, `ExA` and `ExW` variants for Win32 APIs. `SystemTimeToTzSpecificLocalTime` is not `system`, and `ConnectEx` is not `connect`.
 
 ### MITRE ATT&CK mapping
 
-Confident matches are tagged with a [MITRE ATT&CK](https://attack.mitre.org/) technique id (for example `LoadLibrary` -> `T1129`, `IsDebuggerPresent` -> `T1622`, a Run key -> `T1547.001`). The mapping is a small, hand-curated static table: only techniques that follow directly from the signal are emitted, never a probabilistic guess. The aggregate `attack_ids` list at the end of the report is the union across all categories, ready to paste into a triage ticket. The library logic lives in `disrobe_core::behavior` and is reusable by `disrobe report`.
+A [MITRE ATT&CK](https://attack.mitre.org/) technique id is attached only when the evidence shows the technique itself, not a capability every runtime links:
+
+| Evidence | Technique |
+|---|---|
+| A `CurrentVersion\Run` or `RunOnce` key path | `T1547.001` |
+| A `schtasks` command | `T1053.005` |
+| The `CreateService` API | `T1543.003` |
+| The `RegSetValue`, `RegCreateKey` or `RegDeleteKey` API | `T1112` |
+| The `URLDownloadToFile` API | `T1105` |
+| The `WriteProcessMemory` and `CreateRemoteThread` pair | `T1055` |
+| An anti-debug or anti-attach verdict | `T1622` |
+| An anti-VM, anti-sandbox or anti-tool verdict | `T1497.001` |
+| A timing-evasion verdict | `T1497.003` |
+
+APIs that ordinary programs import, such as `LoadLibrary`, `GetProcAddress`, `CreateProcess`, `WriteFile`, `Sleep` and `IsDebuggerPresent`, and indicators such as an embedded URL, place the binary in a category without a technique id. The aggregate `attack_ids` list at the end of the report is the union across all categories, ready to paste into a triage ticket. The library logic lives in `disrobe_core::behavior` and is reusable by `disrobe report`.
 
 ### Scope
 

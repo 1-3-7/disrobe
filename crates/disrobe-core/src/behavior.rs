@@ -1,8 +1,9 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::anti_analysis_sigs::{STRING_SIGS, SigClass, StringSig};
+use crate::anti_analysis::{self, AntiAnalysisFinding, AntiAnalysisReport, Technique};
+use crate::anti_analysis_sigs::{STRING_SIGS, SignalCorroboration, StringSig};
 use crate::ioc::{self, Indicator, IocKind};
 use crate::strings::{self, ExtractedString, Options};
 
@@ -76,286 +77,170 @@ pub struct BehaviorReport {
     pub attack_ids: Vec<&'static str>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NameFamily {
+    Exact,
+    Win32,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct ApiRule {
-    needle: &'static str,
+    name: &'static str,
+    family: NameFamily,
     category: Category,
-    attack_id: Option<&'static str>,
+}
+
+const WIN32_SUFFIXES: [&str; 5] = ["a", "w", "ex", "exa", "exw"];
+
+const fn api(name: &'static str, family: NameFamily, category: Category) -> ApiRule {
+    ApiRule {
+        name,
+        family,
+        category,
+    }
 }
 
 static API_RULES: &[ApiRule] = &[
-    ApiRule {
-        needle: "wsastartup",
-        category: Category::Network,
-        attack_id: Some("T1095"),
+    api("wsastartup", NameFamily::Exact, Category::Network),
+    api("connect", NameFamily::Exact, Category::Network),
+    api("socket", NameFamily::Exact, Category::Network),
+    api("send", NameFamily::Exact, Category::Network),
+    api("recv", NameFamily::Exact, Category::Network),
+    api("sendto", NameFamily::Exact, Category::Network),
+    api("recvfrom", NameFamily::Exact, Category::Network),
+    api("internetopen", NameFamily::Win32, Category::Network),
+    api("internetopenurl", NameFamily::Win32, Category::Network),
+    api("internetconnect", NameFamily::Win32, Category::Network),
+    api("httpsendrequest", NameFamily::Win32, Category::Network),
+    api("winhttpopen", NameFamily::Exact, Category::Network),
+    api("winhttpconnect", NameFamily::Exact, Category::Network),
+    api("winhttpopenrequest", NameFamily::Exact, Category::Network),
+    api("winhttpsendrequest", NameFamily::Exact, Category::Network),
+    api("urldownloadtofile", NameFamily::Win32, Category::Network),
+    api("gethostbyname", NameFamily::Exact, Category::Network),
+    api("getaddrinfo", NameFamily::Win32, Category::Network),
+    api("createfile", NameFamily::Win32, Category::Filesystem),
+    api("writefile", NameFamily::Win32, Category::Filesystem),
+    api("readfile", NameFamily::Win32, Category::Filesystem),
+    api("deletefile", NameFamily::Win32, Category::Filesystem),
+    api("movefile", NameFamily::Win32, Category::Filesystem),
+    api("findfirstfile", NameFamily::Win32, Category::Filesystem),
+    api("fopen", NameFamily::Exact, Category::Filesystem),
+    api("unlink", NameFamily::Exact, Category::Filesystem),
+    api("createprocess", NameFamily::Win32, Category::ProcessExec),
+    api("shellexecute", NameFamily::Win32, Category::ProcessExec),
+    api("winexec", NameFamily::Exact, Category::ProcessExec),
+    api("system", NameFamily::Exact, Category::ProcessExec),
+    api("execve", NameFamily::Exact, Category::ProcessExec),
+    api("fork", NameFamily::Exact, Category::ProcessExec),
+    api("popen", NameFamily::Exact, Category::ProcessExec),
+    api(
+        "createremotethread",
+        NameFamily::Win32,
+        Category::ProcessExec,
+    ),
+    api("openprocess", NameFamily::Exact, Category::ProcessExec),
+    api(
+        "writeprocessmemory",
+        NameFamily::Exact,
+        Category::ProcessExec,
+    ),
+    api(
+        "regopenkey",
+        NameFamily::Win32,
+        Category::RegistryPersistence,
+    ),
+    api(
+        "regsetvalue",
+        NameFamily::Win32,
+        Category::RegistryPersistence,
+    ),
+    api(
+        "regcreatekey",
+        NameFamily::Win32,
+        Category::RegistryPersistence,
+    ),
+    api(
+        "regdeletekey",
+        NameFamily::Win32,
+        Category::RegistryPersistence,
+    ),
+    api(
+        "createservice",
+        NameFamily::Win32,
+        Category::RegistryPersistence,
+    ),
+    api("cryptacquirecontext", NameFamily::Win32, Category::Crypto),
+    api("cryptencrypt", NameFamily::Exact, Category::Crypto),
+    api("cryptdecrypt", NameFamily::Exact, Category::Crypto),
+    api("cryptgenkey", NameFamily::Exact, Category::Crypto),
+    api("bcryptencrypt", NameFamily::Exact, Category::Crypto),
+    api("loadlibrary", NameFamily::Win32, Category::DynamicCode),
+    api("getprocaddress", NameFamily::Exact, Category::DynamicCode),
+    api("virtualalloc", NameFamily::Win32, Category::DynamicCode),
+    api("virtualprotect", NameFamily::Win32, Category::DynamicCode),
+    api("mmap", NameFamily::Exact, Category::DynamicCode),
+    api("mprotect", NameFamily::Exact, Category::DynamicCode),
+    api("dlopen", NameFamily::Exact, Category::DynamicCode),
+    api("dlsym", NameFamily::Exact, Category::DynamicCode),
+];
+
+#[derive(Debug, Clone, Copy)]
+struct TechniqueRule {
+    attack_id: &'static str,
+    requires: &'static [&'static [&'static str]],
+}
+
+static TECHNIQUE_RULES: &[TechniqueRule] = &[
+    TechniqueRule {
+        attack_id: "T1055",
+        requires: &[&["writeprocessmemory"], &["createremotethread"]],
     },
-    ApiRule {
-        needle: "connect",
-        category: Category::Network,
-        attack_id: Some("T1071"),
+    TechniqueRule {
+        attack_id: "T1105",
+        requires: &[&["urldownloadtofile"]],
     },
-    ApiRule {
-        needle: "socket",
-        category: Category::Network,
-        attack_id: Some("T1095"),
+    TechniqueRule {
+        attack_id: "T1112",
+        requires: &[&["regsetvalue", "regcreatekey", "regdeletekey"]],
     },
-    ApiRule {
-        needle: "send",
-        category: Category::Network,
-        attack_id: None,
-    },
-    ApiRule {
-        needle: "recv",
-        category: Category::Network,
-        attack_id: None,
-    },
-    ApiRule {
-        needle: "internetopen",
-        category: Category::Network,
-        attack_id: Some("T1071.001"),
-    },
-    ApiRule {
-        needle: "internetconnect",
-        category: Category::Network,
-        attack_id: Some("T1071.001"),
-    },
-    ApiRule {
-        needle: "httpsendrequest",
-        category: Category::Network,
-        attack_id: Some("T1071.001"),
-    },
-    ApiRule {
-        needle: "winhttp",
-        category: Category::Network,
-        attack_id: Some("T1071.001"),
-    },
-    ApiRule {
-        needle: "urldownloadtofile",
-        category: Category::Network,
-        attack_id: Some("T1105"),
-    },
-    ApiRule {
-        needle: "gethostbyname",
-        category: Category::Network,
-        attack_id: Some("T1071"),
-    },
-    ApiRule {
-        needle: "getaddrinfo",
-        category: Category::Network,
-        attack_id: Some("T1071"),
-    },
-    ApiRule {
-        needle: "createfile",
-        category: Category::Filesystem,
-        attack_id: None,
-    },
-    ApiRule {
-        needle: "writefile",
-        category: Category::Filesystem,
-        attack_id: Some("T1105"),
-    },
-    ApiRule {
-        needle: "readfile",
-        category: Category::Filesystem,
-        attack_id: None,
-    },
-    ApiRule {
-        needle: "deletefile",
-        category: Category::Filesystem,
-        attack_id: Some("T1070.004"),
-    },
-    ApiRule {
-        needle: "movefile",
-        category: Category::Filesystem,
-        attack_id: None,
-    },
-    ApiRule {
-        needle: "findfirstfile",
-        category: Category::Filesystem,
-        attack_id: Some("T1083"),
-    },
-    ApiRule {
-        needle: "fopen",
-        category: Category::Filesystem,
-        attack_id: None,
-    },
-    ApiRule {
-        needle: "unlink",
-        category: Category::Filesystem,
-        attack_id: Some("T1070.004"),
-    },
-    ApiRule {
-        needle: "createprocess",
-        category: Category::ProcessExec,
-        attack_id: Some("T1106"),
-    },
-    ApiRule {
-        needle: "shellexecute",
-        category: Category::ProcessExec,
-        attack_id: Some("T1059"),
-    },
-    ApiRule {
-        needle: "winexec",
-        category: Category::ProcessExec,
-        attack_id: Some("T1106"),
-    },
-    ApiRule {
-        needle: "system",
-        category: Category::ProcessExec,
-        attack_id: Some("T1059"),
-    },
-    ApiRule {
-        needle: "execve",
-        category: Category::ProcessExec,
-        attack_id: Some("T1059.004"),
-    },
-    ApiRule {
-        needle: "fork",
-        category: Category::ProcessExec,
-        attack_id: None,
-    },
-    ApiRule {
-        needle: "popen",
-        category: Category::ProcessExec,
-        attack_id: Some("T1059"),
-    },
-    ApiRule {
-        needle: "createremotethread",
-        category: Category::ProcessExec,
-        attack_id: Some("T1055"),
-    },
-    ApiRule {
-        needle: "openprocess",
-        category: Category::ProcessExec,
-        attack_id: None,
-    },
-    ApiRule {
-        needle: "writeprocessmemory",
-        category: Category::ProcessExec,
-        attack_id: Some("T1055"),
-    },
-    ApiRule {
-        needle: "regopenkey",
-        category: Category::RegistryPersistence,
-        attack_id: Some("T1112"),
-    },
-    ApiRule {
-        needle: "regsetvalue",
-        category: Category::RegistryPersistence,
-        attack_id: Some("T1112"),
-    },
-    ApiRule {
-        needle: "regcreatekey",
-        category: Category::RegistryPersistence,
-        attack_id: Some("T1112"),
-    },
-    ApiRule {
-        needle: "regdeletekey",
-        category: Category::RegistryPersistence,
-        attack_id: Some("T1112"),
-    },
-    ApiRule {
-        needle: "currentversion\\run",
-        category: Category::RegistryPersistence,
-        attack_id: Some("T1547.001"),
-    },
-    ApiRule {
-        needle: "schtasks",
-        category: Category::RegistryPersistence,
-        attack_id: Some("T1053.005"),
-    },
-    ApiRule {
-        needle: "createservice",
-        category: Category::RegistryPersistence,
-        attack_id: Some("T1543.003"),
-    },
-    ApiRule {
-        needle: "cryptacquirecontext",
-        category: Category::Crypto,
-        attack_id: Some("T1486"),
-    },
-    ApiRule {
-        needle: "cryptencrypt",
-        category: Category::Crypto,
-        attack_id: Some("T1486"),
-    },
-    ApiRule {
-        needle: "cryptdecrypt",
-        category: Category::Crypto,
-        attack_id: None,
-    },
-    ApiRule {
-        needle: "cryptgenkey",
-        category: Category::Crypto,
-        attack_id: None,
-    },
-    ApiRule {
-        needle: "bcryptencrypt",
-        category: Category::Crypto,
-        attack_id: Some("T1486"),
-    },
-    ApiRule {
-        needle: "sleep",
-        category: Category::AntiAnalysis,
-        attack_id: Some("T1497.003"),
-    },
-    ApiRule {
-        needle: "isprocessorfeaturepresent",
-        category: Category::AntiAnalysis,
-        attack_id: None,
-    },
-    ApiRule {
-        needle: "loadlibrary",
-        category: Category::DynamicCode,
-        attack_id: Some("T1129"),
-    },
-    ApiRule {
-        needle: "getprocaddress",
-        category: Category::DynamicCode,
-        attack_id: Some("T1129"),
-    },
-    ApiRule {
-        needle: "virtualalloc",
-        category: Category::DynamicCode,
-        attack_id: None,
-    },
-    ApiRule {
-        needle: "virtualprotect",
-        category: Category::DynamicCode,
-        attack_id: None,
-    },
-    ApiRule {
-        needle: "mmap",
-        category: Category::DynamicCode,
-        attack_id: None,
-    },
-    ApiRule {
-        needle: "mprotect",
-        category: Category::DynamicCode,
-        attack_id: None,
-    },
-    ApiRule {
-        needle: "dlopen",
-        category: Category::DynamicCode,
-        attack_id: Some("T1129"),
-    },
-    ApiRule {
-        needle: "dlsym",
-        category: Category::DynamicCode,
-        attack_id: Some("T1129"),
+    TechniqueRule {
+        attack_id: "T1543.003",
+        requires: &[&["createservice"]],
     },
 ];
 
-const fn ioc_category(kind: IocKind) -> Option<(Category, Option<&'static str>)> {
+#[derive(Debug, Clone, Copy)]
+struct StringRule {
+    needle: &'static str,
+    category: Category,
+    attack_id: &'static str,
+}
+
+static STRING_RULES: &[StringRule] = &[
+    StringRule {
+        needle: "currentversion\\run",
+        category: Category::RegistryPersistence,
+        attack_id: "T1547.001",
+    },
+    StringRule {
+        needle: "currentversion\\runonce",
+        category: Category::RegistryPersistence,
+        attack_id: "T1547.001",
+    },
+    StringRule {
+        needle: "schtasks",
+        category: Category::RegistryPersistence,
+        attack_id: "T1053.005",
+    },
+];
+
+const fn ioc_category(kind: IocKind) -> Option<Category> {
     match kind {
-        IocKind::Url | IocKind::Domain | IocKind::Ipv4 | IocKind::Ipv6 => {
-            Some((Category::Network, Some("T1071")))
-        }
-        IocKind::WindowsPath | IocKind::UnixPath | IocKind::PdbPath => {
-            Some((Category::Filesystem, None))
-        }
-        IocKind::RegistryKey => Some((Category::RegistryPersistence, Some("T1112"))),
-        IocKind::CryptoConstant => Some((Category::Crypto, None)),
+        IocKind::Url | IocKind::Domain | IocKind::Ipv4 | IocKind::Ipv6 => Some(Category::Network),
+        IocKind::WindowsPath | IocKind::UnixPath | IocKind::PdbPath => Some(Category::Filesystem),
+        IocKind::RegistryKey => Some(Category::RegistryPersistence),
+        IocKind::CryptoConstant => Some(Category::Crypto),
         IocKind::Email
         | IocKind::BitcoinAddress
         | IocKind::EthereumAddress
@@ -365,6 +250,22 @@ const fn ioc_category(kind: IocKind) -> Option<(Category, Option<&'static str>)>
         | IocKind::CreditCard
         | IocKind::MacAddress
         | IocKind::Uuid => None,
+    }
+}
+
+const fn verdict_attack_id(technique: Technique) -> Option<&'static str> {
+    match technique {
+        Technique::AntiDebug | Technique::AntiAttach => Some("T1622"),
+        Technique::AntiVm | Technique::AntiSandbox | Technique::AntiTool => Some("T1497.001"),
+        Technique::TimingEvasion => Some("T1497.003"),
+        Technique::AntiDump
+        | Technique::AntiDisassembly
+        | Technique::OpaquePredicate
+        | Technique::ControlFlowFlattening
+        | Technique::StringEncryption
+        | Technique::Packing
+        | Technique::Rasp
+        | Technique::VmVirtualization => None,
     }
 }
 
@@ -396,13 +297,25 @@ impl Accumulator {
     }
 }
 
-fn match_api_tokens(tokens: &[String], source: &'static str, acc: &mut Accumulator) {
+struct ApiMatch {
+    rule: &'static ApiRule,
+    token: String,
+    source: &'static str,
+}
+
+fn match_api_tokens(tokens: &[String], source: &'static str, matches: &mut Vec<ApiMatch>) {
     for token in tokens {
         let lower: String = token.to_ascii_lowercase();
-        let name: Option<&str> = api_name(&lower);
+        let Some(name): Option<&str> = api_name(&lower) else {
+            continue;
+        };
         for rule in API_RULES {
-            if api_name_matches(name, &lower, rule.needle) {
-                acc.add(rule.category, token.clone(), source, rule.attack_id);
+            if api_name_matches(name, rule) {
+                matches.push(ApiMatch {
+                    rule,
+                    token: token.clone(),
+                    source,
+                });
             }
         }
     }
@@ -417,48 +330,83 @@ fn api_name(token_lower: &str) -> Option<&str> {
     (!name.is_empty() && name.bytes().all(is_ident_byte)).then_some(name)
 }
 
-fn api_name_matches(name: Option<&str>, token_lower: &str, needle: &str) -> bool {
-    if needle.contains('\\') {
-        return token_lower.contains(needle) && is_word_bounded(token_lower, needle);
-    }
-    let Some(rest): Option<&str> = name.and_then(|name: &str| name.strip_prefix(needle)) else {
+fn api_name_matches(name: &str, rule: &ApiRule) -> bool {
+    let Some(rest): Option<&str> = name.strip_prefix(rule.name) else {
         return false;
     };
-    needle.len() > 4
-        || matches!(
-            rest,
-            "" | "a" | "w" | "to" | "from" | "ex" | "exa" | "exw" | "msg"
-        )
-}
-
-const fn sig_class_attack_id(class: SigClass) -> &'static str {
-    match class {
-        SigClass::AntiDebug | SigClass::AntiAttach => "T1622",
-        SigClass::AntiVm
-        | SigClass::Sandbox
-        | SigClass::Hypervisor
-        | SigClass::VmMacOui
-        | SigClass::AntiTool
-        | SigClass::ResourceFloor => "T1497.001",
-        SigClass::Interaction => "T1497.002",
-        SigClass::AntiDump => "T1027.005",
-        SigClass::Timing => "T1497.003",
+    match rule.family {
+        NameFamily::Exact => rest.is_empty(),
+        NameFamily::Win32 => rest.is_empty() || WIN32_SUFFIXES.contains(&rest),
     }
 }
 
-fn match_shared_anti_analysis_sigs(tokens: &[String], source: &'static str, acc: &mut Accumulator) {
+fn technique_for(name: &str, matched: &BTreeSet<&'static str>) -> Option<&'static str> {
+    TECHNIQUE_RULES
+        .iter()
+        .find(|rule: &&TechniqueRule| {
+            rule.requires
+                .iter()
+                .any(|group: &&[&str]| group.contains(&name))
+                && rule.requires.iter().all(|group: &&[&str]| {
+                    group
+                        .iter()
+                        .any(|required: &&str| matched.contains(required))
+                })
+        })
+        .map(|rule: &TechniqueRule| rule.attack_id)
+}
+
+fn add_api_matches(matches: &[ApiMatch], acc: &mut Accumulator) {
+    let matched: BTreeSet<&'static str> = matches.iter().map(|m: &ApiMatch| m.rule.name).collect();
+    for m in matches {
+        acc.add(
+            m.rule.category,
+            m.token.clone(),
+            m.source,
+            technique_for(m.rule.name, &matched),
+        );
+    }
+}
+
+fn match_string_rules(tokens: &[String], acc: &mut Accumulator) {
     for token in tokens {
         let lower: String = token.to_ascii_lowercase();
-        for sig in STRING_SIGS {
-            if shared_sig_matches(&lower, sig) {
-                acc.add(
-                    Category::AntiAnalysis,
-                    token.clone(),
-                    source,
-                    Some(sig_class_attack_id(sig.class)),
-                );
+        for rule in STRING_RULES {
+            if is_word_bounded(&lower, rule.needle) {
+                acc.add(rule.category, token.clone(), "string", Some(rule.attack_id));
             }
         }
+    }
+}
+
+fn match_anti_analysis_names(tokens: &[String], source: &'static str, acc: &mut Accumulator) {
+    for token in tokens {
+        let lower: String = token.to_ascii_lowercase();
+        let named: bool = STRING_SIGS.iter().any(|sig: &StringSig| {
+            sig.corroboration != SignalCorroboration::ContextOnly && shared_sig_matches(&lower, sig)
+        });
+        if named {
+            acc.add(Category::AntiAnalysis, token.clone(), source, None);
+        }
+    }
+}
+
+fn add_anti_analysis_verdicts(anti: &AntiAnalysisReport, acc: &mut Accumulator) {
+    for finding in anti
+        .findings
+        .iter()
+        .filter(|f: &&AntiAnalysisFinding| f.detected)
+    {
+        acc.add(
+            Category::AntiAnalysis,
+            format!(
+                "{} verdict [{}]",
+                finding.technique.label(),
+                finding.confidence.label()
+            ),
+            "anti_analysis",
+            verdict_attack_id(finding.technique),
+        );
     }
 }
 
@@ -499,10 +447,18 @@ pub fn analyze(bytes: &[u8], imports: &[String]) -> BehaviorReport {
 
 #[must_use]
 pub fn analyze_with_uri(bytes: &[u8], imports: &[String], uri: Option<&str>) -> BehaviorReport {
-    let mut acc: Accumulator = Accumulator::default();
+    let anti: AntiAnalysisReport = anti_analysis::scan(bytes, uri);
+    analyze_with_anti_analysis(bytes, imports, uri, &anti)
+}
 
-    match_api_tokens(imports, "import", &mut acc);
-    match_shared_anti_analysis_sigs(imports, "import", &mut acc);
+#[must_use]
+pub fn analyze_with_anti_analysis(
+    bytes: &[u8],
+    imports: &[String],
+    uri: Option<&str>,
+    anti: &AntiAnalysisReport,
+) -> BehaviorReport {
+    let mut acc: Accumulator = Accumulator::default();
 
     let extracted: Vec<ExtractedString> = strings::extract(
         bytes,
@@ -515,17 +471,25 @@ pub fn analyze_with_uri(bytes: &[u8], imports: &[String], uri: Option<&str>) -> 
         .into_iter()
         .map(|s: ExtractedString| s.value)
         .collect();
-    match_api_tokens(&string_tokens, "string", &mut acc);
-    match_shared_anti_analysis_sigs(&string_tokens, "string", &mut acc);
+
+    let mut api_matches: Vec<ApiMatch> = Vec::new();
+    match_api_tokens(imports, "import", &mut api_matches);
+    match_api_tokens(&string_tokens, "string", &mut api_matches);
+    add_api_matches(&api_matches, &mut acc);
+
+    match_string_rules(&string_tokens, &mut acc);
+    match_anti_analysis_names(imports, "import", &mut acc);
+    match_anti_analysis_names(&string_tokens, "string", &mut acc);
+    add_anti_analysis_verdicts(anti, &mut acc);
 
     let indicators: Vec<Indicator> = ioc::extract(bytes);
     for ind in &indicators {
-        if let Some((category, attack)) = ioc_category(ind.kind) {
+        if let Some(category) = ioc_category(ind.kind) {
             acc.add(
                 category,
                 format!("{}:{}", ind.kind.label(), ind.value),
                 "ioc",
-                attack,
+                None,
             );
         }
     }
@@ -593,13 +557,85 @@ mod tests {
     }
 
     #[test]
-    fn anti_debug_import_tagged_with_attack_id() {
+    fn anti_debug_verdict_tagged_with_attack_id() {
         let imports: Vec<String> = vec!["kernel32.dll!IsDebuggerPresent".to_owned()];
-        let report: BehaviorReport = analyze(b"", &imports);
+        let report: BehaviorReport = analyze(
+            b"MZ\x90\x00\x00IsDebuggerPresent\x00CheckRemoteDebuggerPresent\x00",
+            &imports,
+        );
         let anti: &CategoryFinding =
             category(&report, Category::AntiAnalysis).expect("anti-analysis present");
         assert!(anti.attack_ids.contains(&"T1622"), "{anti:?}");
+        assert!(
+            anti.evidence
+                .iter()
+                .any(|e: &Evidence| e.source == "anti_analysis" && e.attack_id == Some("T1622")),
+            "{anti:?}"
+        );
         assert!(report.attack_ids.contains(&"T1622"));
+    }
+
+    #[test]
+    fn lone_runtime_anti_debug_import_claims_no_technique() {
+        let imports: Vec<String> = vec!["kernel32.dll!IsDebuggerPresent".to_owned()];
+        let report: BehaviorReport = analyze(b"", &imports);
+        let anti: &CategoryFinding =
+            category(&report, Category::AntiAnalysis).expect("anti-analysis capability present");
+        assert!(anti.attack_ids.is_empty(), "{anti:?}");
+        assert!(report.attack_ids.is_empty(), "{report:?}");
+    }
+
+    #[test]
+    fn runtime_imports_every_program_links_claim_no_technique() {
+        let imports: Vec<String> = [
+            "WriteFile",
+            "CreateProcessW",
+            "FindFirstFileExW",
+            "DeleteFileW",
+            "GetProcAddress",
+            "LoadLibraryExW",
+            "Sleep",
+            "QueryPerformanceCounter",
+            "IsDebuggerPresent",
+            "GetThreadContext",
+            "SystemTimeToTzSpecificLocalTime",
+        ]
+        .into_iter()
+        .map(|name: &str| format!("kernel32.dll!{name}"))
+        .collect();
+        let report: BehaviorReport = analyze(
+            b"\x00ConnectEx\x00SocketType\x00sleepWhen\x00writeFileCallback\x00\
+              *godebugs.Info\x00runtime.link *runtime._defer\x00",
+            &imports,
+        );
+        assert!(
+            report.attack_ids.is_empty(),
+            "imports every runtime links and symbol names are capabilities, not techniques: \
+             {report:?}"
+        );
+        for absent in [Category::Network, Category::ProcessExec] {
+            let finding: Option<&CategoryFinding> = category(&report, absent);
+            assert!(
+                finding.is_none_or(|f: &CategoryFinding| f
+                    .evidence
+                    .iter()
+                    .all(|e: &Evidence| e.signal.contains("CreateProcessW"))),
+                "{absent:?} must come only from an api of its own name family: {finding:?}"
+            );
+        }
+        assert!(category(&report, Category::DynamicCode).is_some());
+    }
+
+    #[test]
+    fn specific_api_techniques_keep_their_ids() {
+        for (import, id) in [
+            ("advapi32.dll!CreateServiceW", "T1543.003"),
+            ("urlmon.dll!URLDownloadToFileW", "T1105"),
+            ("advapi32.dll!RegSetValueExW", "T1112"),
+        ] {
+            let report: BehaviorReport = analyze(b"", &[import.to_owned()]);
+            assert_eq!(report.attack_ids, vec![id], "{import}: {report:?}");
+        }
     }
 
     #[test]
@@ -621,7 +657,10 @@ mod tests {
             net.evidence.iter().any(|e: &Evidence| e.source == "ioc"),
             "{net:?}"
         );
-        assert!(net.attack_ids.contains(&"T1071"));
+        assert!(
+            net.attack_ids.is_empty(),
+            "an embedded url shows network capability, not command-and-control use: {net:?}"
+        );
     }
 
     #[test]
@@ -642,7 +681,12 @@ mod tests {
         let report: BehaviorReport = analyze(b"", &imports);
         let dynamic: &CategoryFinding =
             category(&report, Category::DynamicCode).expect("dynamic code present");
-        assert!(dynamic.attack_ids.contains(&"T1129"), "{dynamic:?}");
+        assert_eq!(dynamic.evidence.len(), 3, "{dynamic:?}");
+        assert!(
+            dynamic.attack_ids.is_empty(),
+            "every msvc program imports these loader apis, so they show the capability and claim \
+             no shared-module technique: {dynamic:?}"
+        );
     }
 
     #[test]
