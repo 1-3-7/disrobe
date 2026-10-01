@@ -472,6 +472,7 @@ pub mod op {
     pub const JMP_NULL: u8 = 198;
     pub const SWITCH_LONG: u8 = 187;
     pub const SWITCH_STRING: u8 = 188;
+    pub const IN_ARRAY: u8 = 189;
     pub const MATCH: u8 = 195;
     pub const EXIT: u8 = 79;
     pub const CATCH: u8 = 107;
@@ -692,6 +693,7 @@ pub fn opcode_name(opcode: u8) -> &'static str {
         183 => "ZEND_BIND_STATIC",
         187 => "ZEND_SWITCH_LONG",
         188 => "ZEND_SWITCH_STRING",
+        189 => "ZEND_IN_ARRAY",
         195 => "ZEND_MATCH",
         198 => "ZEND_JMP_NULL",
         199 => "ZEND_CHECK_UNDEF_ARGS",
@@ -4753,14 +4755,21 @@ impl<'a> Lifter<'a> {
             }
             _ => return None,
         };
-        let back: &Op = self.ops.get(body_end as usize)?;
-        if back.opcode != op::JMP || back.op1 != fetch_idx {
+        let back: Op = self.ops.get(body_end as usize)?.clone();
+        let conditional_back: bool = matches!(back.opcode, op::JMPZ | op::JMPNZ);
+        let back_target: u32 = if conditional_back { back.op2 } else { back.op1 };
+        if !(back.opcode == op::JMP || conditional_back) || back_target != fetch_idx {
             return None;
         }
-        let (body, _): (Vec<Stmt>, BTreeSet<u32>) = self.lift_breakable_body(
+        let lifted_end: u32 = if conditional_back {
+            self.condition_start(&back, body_start, body_end)
+        } else {
+            body_end
+        };
+        let (mut body, _): (Vec<Stmt>, BTreeSet<u32>) = self.lift_breakable_body(
             BreakableFrame {
                 body_start,
-                body_end,
+                body_end: lifted_end,
                 continue_target: fetch_idx,
                 break_target: after_loop,
                 iterator: Some((reset.result_type, reset.result)),
@@ -4768,6 +4777,19 @@ impl<'a> Lifter<'a> {
             },
             depth,
         );
+        if conditional_back {
+            let cond: Expr = self.lift_condition(lifted_end, body_end, &back)?;
+            let breaks_when: String = if back.opcode == op::JMPNZ {
+                format!("!({})", cond.wrapped(PREC_CALL))
+            } else {
+                cond.text
+            };
+            body.push(Stmt::If {
+                cond: breaks_when,
+                then_body: vec![Stmt::Break(1)],
+                else_body: Vec::new(),
+            });
+        }
         let has_free: bool = self
             .ops
             .get(after_loop as usize)
@@ -5133,6 +5155,7 @@ impl<'a> Lifter<'a> {
             o if (op::FRAMELESS_ICALL_0..=op::FRAMELESS_ICALL_3).contains(&o) => {
                 self.fold_frameless_call(idx, op)
             }
+            o if o == op::IN_ARRAY => self.fold_in_array(idx, op),
             o if o == op::UNSET_DIM => {
                 let Some(target): Option<String> = self.dimension_access(op) else {
                     return Some(self.refuse(idx, o, REASON_EXPRESSION_OPERAND));
@@ -6260,7 +6283,10 @@ impl<'a> Lifter<'a> {
     }
 
     fn fold_binary(&mut self, idx: u32, op: &Op) -> Option<String> {
-        if !matches!(op.result_type, OperandType::TmpVar | OperandType::Var) {
+        if !matches!(
+            op.result_type,
+            OperandType::TmpVar | OperandType::Var | OperandType::Cv
+        ) {
             return Some(self.refuse(idx, op.opcode, REASON_EXPRESSION_OPERAND));
         }
         let Some(lhs): Option<Expr> = self.defined_operand_expr(op.op1_type, op.op1) else {
@@ -6289,6 +6315,38 @@ impl<'a> Lifter<'a> {
                 text,
                 prec: precedence,
             },
+        );
+        None
+    }
+
+    fn fold_in_array(&mut self, idx: u32, op: &Op) -> Option<String> {
+        let Some(needle): Option<Expr> = self.defined_operand_expr(op.op1_type, op.op1) else {
+            return Some(self.refuse(idx, op.opcode, REASON_EXPRESSION_OPERAND));
+        };
+        let haystack: Option<String> = (op.op2_type == OperandType::Const)
+            .then(|| self.literals.get(op.op2 as usize))
+            .flatten()
+            .and_then(|literal: &Literal| match literal {
+                Literal::Values(entries) => Some(
+                    entries
+                        .iter()
+                        .map(|(key, _): &(Literal, Literal)| key.render())
+                        .collect::<Vec<String>>()
+                        .join(", "),
+                ),
+                _ => None,
+            });
+        let Some(haystack): Option<String> = haystack else {
+            return Some(self.refuse(idx, op.opcode, REASON_EXPRESSION_OPERAND));
+        };
+        let strict: &str = if op.extended_value == 0 {
+            "false"
+        } else {
+            "true"
+        };
+        self.store_result(
+            op,
+            Expr::atom(format!("in_array({}, [{haystack}], {strict})", needle.text)),
         );
         None
     }
