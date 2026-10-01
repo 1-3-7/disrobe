@@ -1,5 +1,5 @@
 {
-  "final_format": null,
+  "final_format": "Java",
   "input": {
     "blake3": "aba6e1fb3f827e359cc1fcbd09d041c48ad63cb385655bfb6eca7468c3250e28",
     "detected": [
@@ -58,12 +58,12 @@
         "children": [
           {
             "artifact_index": 0,
-            "hint": "disrobe.terminal",
+            "hint": "disrobe.terminal.source:Java",
             "relative_path": "Hello.java"
           },
           {
             "artifact_index": 1,
-            "hint": "disrobe.terminal",
+            "hint": "disrobe.terminal.report",
             "relative_path": "jvm-manifest.json"
           }
         ],
@@ -92,7 +92,7 @@
       "parent_id": 1,
       "pass": null,
       "rule_pack_id": null,
-      "verdict": "extracted"
+      "verdict": "complete"
     },
     {
       "artifacts": [],
@@ -106,7 +106,11 @@
       "input_size": 347,
       "metadata": {},
       "output_blake3": null,
-      "output_kind": null,
+      "output_kind": {
+        "family": "unknown",
+        "format_tag": "sidecar-report",
+        "kind": "report"
+      },
       "output_size": null,
       "parent_id": 1,
       "pass": null,
@@ -130,5 +134,5 @@
   },
   "tool_version": "0.1.0-golden",
   "topology": "tree",
-  "verdict": "ok"
+  "verdict": "complete"
 }
