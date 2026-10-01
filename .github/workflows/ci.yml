@@ -539,6 +539,18 @@ jobs:
           fi
           echo "xlmmacrodeobfuscator $xlm_version"
           echo "DISROBE_REQUIRE_XLM_REFERENCE=1" >> "$GITHUB_ENV"
+      - name: provision 7-Zip 26.02 on Linux, whose distro 7z 23.01 crashes on RAR3 filter archives
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/7zip-26.02"
+          mkdir -p "$root"
+          curl -fsSL --retry 3 -o "$root/7z.tar.xz" https://github.com/ip7z/7zip/releases/download/26.02/7z2602-linux-x64.tar.xz
+          echo "41aaba7b1235304ab5aa0624530c67ae829496cd29e875925271efdccc28c03e  $root/7z.tar.xz" | sha256sum -c -
+          tar -xJf "$root/7z.tar.xz" -C "$root" 7zz
+          ln -s "$root/7zz" "$root/7z"
+          echo "$root" >> "$GITHUB_PATH"
       - name: require the interpreters and archivers this runner already carries, so an absent one fails instead of skipping
         shell: bash
         run: |
