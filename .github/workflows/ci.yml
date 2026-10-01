@@ -908,9 +908,9 @@ jobs:
           mkdir -p "$root"
           check_sum() {
             if command -v sha256sum >/dev/null 2>&1; then
-              echo "$1  $2" | sha256sum -c
+              echo "$1  $2" | sha256sum -c -
             else
-              echo "$1  $2" | shasum -a 256 -c
+              echo "$1  $2" | shasum -a 256 -c -
             fi
           }
           for tool in deno denort; do
