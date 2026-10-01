@@ -1196,8 +1196,8 @@
 
 ### `DR-JVM-0034`
 
-- `"annotation attribute lookup failed"`: `crates/disrobe-pass-jvm/src/attributes.rs:946`
-- `"malformed declaration annotation attribute: duplicate {} attributes"`: `crates/disrobe-pass-jvm/src/attributes.rs:937`
+- `"annotation attribute lookup failed"`: `crates/disrobe-pass-jvm/src/attributes.rs:981`
+- `"malformed declaration annotation attribute: duplicate {} attributes"`: `crates/disrobe-pass-jvm/src/attributes.rs:972`
 - `"malformed declaration annotation attribute: {}"`: `crates/disrobe-pass-jvm/src/attributes.rs:31`
 - `"not an Android Archive (missing classes.jar entry at the .aar zip root)"`: `crates/disrobe-pass-jvm/src/error.rs:164`
 
@@ -2331,7 +2331,7 @@
 - `DR-JVM-0031`: `crates/disrobe-pass-jvm/src/error.rs:148`
 - `DR-JVM-0032`: `crates/disrobe-pass-jvm/src/error.rs:153`
 - `DR-JVM-0033`: `crates/disrobe-pass-jvm/src/error.rs:161`
-- `DR-JVM-0034`: `crates/disrobe-pass-jvm/src/attributes.rs:31`, `crates/disrobe-pass-jvm/src/attributes.rs:937`, `crates/disrobe-pass-jvm/src/attributes.rs:946`, `crates/disrobe-pass-jvm/src/error.rs:164`
+- `DR-JVM-0034`: `crates/disrobe-pass-jvm/src/attributes.rs:31`, `crates/disrobe-pass-jvm/src/attributes.rs:972`, `crates/disrobe-pass-jvm/src/attributes.rs:981`, `crates/disrobe-pass-jvm/src/error.rs:164`
 - `DR-JVM-0035`: `crates/disrobe-pass-jvm/src/error.rs:167`
 - `DR-JVM-0036`: `crates/disrobe-pass-jvm/src/error.rs:171`
 - `DR-JVM-0090`: `crates/disrobe-pass-jvm/src/error.rs:96`
