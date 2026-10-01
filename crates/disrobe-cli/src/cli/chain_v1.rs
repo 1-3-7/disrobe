@@ -646,6 +646,7 @@ pub(crate) fn run_with_disk(
                 .unwrap_or("chain");
             PathBuf::from(format!("./out/{stem}-chain"))
         });
+        claim_out_dir(&dir, super::globals::current().force)?;
         std::fs::create_dir_all(&dir)
             .map_err(|e| miette::miette!("DR-CLI-0293: cannot create chain out dir: {e}"))?;
         Some(dir)
