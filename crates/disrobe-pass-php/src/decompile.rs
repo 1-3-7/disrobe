@@ -2945,16 +2945,20 @@ impl<'a> Lifter<'a> {
         for (key, target) in &table {
             labels.entry(*target).or_default().push(key.try_render()?);
         }
-        let finished: (Vec<Stmt>, u32) = self.finish_match(
+        let snapshot: LiftSnapshot = self.lift_snapshot();
+        if matches!(dispatch.op1_type, OperandType::TmpVar | OperandType::Var) {
+            self.slots.remove(&(dispatch.op1_type, dispatch.op1));
+        }
+        let Some(finished): Option<(Vec<Stmt>, u32)> = self.finish_match(
             &subject.text,
             labels,
             MatchDefault::Target(dispatch.extended_value),
             i.checked_add(1)?,
             end,
-        )?;
-        if matches!(dispatch.op1_type, OperandType::TmpVar | OperandType::Var) {
-            self.slots.remove(&(dispatch.op1_type, dispatch.op1));
-        }
+        ) else {
+            self.restore_lift_snapshot(snapshot);
+            return None;
+        };
         Some(finished)
     }
 
