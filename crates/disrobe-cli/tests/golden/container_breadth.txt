@@ -1,5 +1,6 @@
 zip	extract	corpus/beam/ez/hello.ez
 tar.gz	extract	corpus/binfmt/carve/nested.tar.gz
+7z	members-unverified	corpus/binfmt/sevenzip/hello.7z
 rar	extract	corpus/binfmt/rar/filter-delta-rar5.rar
 iso	extract	corpus/binfmt/iso/joliet-rockridge.iso
 asar	members-unverified	crates/disrobe-binfmt/tests/fixtures/asar/real_electron.asar
