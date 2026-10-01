@@ -15,9 +15,9 @@ The exceeded column states what happens when input goes past the bound. It comes
 
 The scan does not resolve types or trait dispatch, so an outcome names the construct it found rather than proving the behaviour.
 
-2177 bounds (count 215, other 1021, output 64, recursion 219, size 479, work 179).
+2181 bounds (count 215, other 1024, output 64, recursion 219, size 479, work 180).
 
-Exceeded: error 884, recorded 185, panic 0, delegated 49, silent 1001, unclassified 17, allocation 33, unused 8.
+Exceeded: error 884, recorded 185, panic 0, delegated 49, silent 1005, unclassified 17, allocation 33, unused 8.
 
 | Crate | Constant | Kind | Exceeded | Type | Value | File |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -1127,6 +1127,10 @@ Exceeded: error 884, recorded 185, panic 0, delegated 49, silent 1001, unclassif
 | `disrobe-pass-mobile` | `MAX_DART_IDENTIFIER_COUNT` | count | silent: `break` in `extract_dart_identifiers`; skipped in `flush_identifier` | `usize` | `1 << 16` | `crates/disrobe-pass-mobile/src/flutter/snapshot.rs` |
 | `disrobe-pass-mobile` | `MAX_FUNCTION_BOUNDARIES` | other | silent: `while` condition in `scan_function_boundaries` | `usize` | `1 << 20` | `crates/disrobe-pass-mobile/src/flutter/snapshot.rs` |
 | `disrobe-pass-mobile` | `MAX_STRING_CHARS` | other | silent: `continue` in `scan_one_byte_strings` | `usize` | `1 << 16` | `crates/disrobe-pass-mobile/src/flutter/string_pool.rs` |
+| `disrobe-pass-mobile` | `MAX_ALLOCATOR_WORDS` | other | silent: `for` range in `allocate_object_helper_inputs` | `usize` | `64` | `crates/disrobe-pass-mobile/src/flutter/stub_abi.rs` |
+| `disrobe-pass-mobile` | `MAX_REGISTER_SAVES` | other | silent: `return` in `stub_frame_entry` | `usize` | `32` | `crates/disrobe-pass-mobile/src/flutter/stub_abi.rs` |
+| `disrobe-pass-mobile` | `MAX_STUB_ARGUMENT_STEPS` | work | silent: `for` range in `runtime_call_stub` | `usize` | `16` | `crates/disrobe-pass-mobile/src/flutter/stub_abi.rs` |
+| `disrobe-pass-mobile` | `MAX_TAG_WORDS` | other | silent: `return` in `allocation_stub_for_class` | `usize` | `4` | `crates/disrobe-pass-mobile/src/flutter/stub_abi.rs` |
 | `disrobe-pass-mobile` | `MAX_DECIMAL_BYTES` | size | silent: fallback value in `bigint_literal` | `usize` | `4096` | `crates/disrobe-pass-mobile/src/hermes/bigint.rs` |
 | `disrobe-pass-mobile` | `MAX_DECODED_INSTRUCTIONS` | other | silent: `while` condition in `decode_instructions` | `usize` | `1 << 20` | `crates/disrobe-pass-mobile/src/hermes/decompile.rs` |
 | `disrobe-pass-mobile` | `MAX_INLINE_CLOSURE_BYTES` | size | silent: no action in `closure_expr` | `usize` | `1 << 16` | `crates/disrobe-pass-mobile/src/hermes/decompile.rs` |
@@ -2201,7 +2205,7 @@ Exceeded: error 884, recorded 185, panic 0, delegated 49, silent 1001, unclassif
 
 ## Silent stops
 
-1001 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
+1005 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
 
 | Crate | Constant | Use | File |
 | --- | --- | --- | --- |
@@ -2646,6 +2650,10 @@ Exceeded: error 884, recorded 185, panic 0, delegated 49, silent 1001, unclassif
 | `disrobe-pass-mobile` | `MAX_DART_IDENTIFIER_COUNT` | `break` in `extract_dart_identifiers`; skipped in `flush_identifier` | `crates/disrobe-pass-mobile/src/flutter/snapshot.rs` |
 | `disrobe-pass-mobile` | `MAX_FUNCTION_BOUNDARIES` | `while` condition in `scan_function_boundaries` | `crates/disrobe-pass-mobile/src/flutter/snapshot.rs` |
 | `disrobe-pass-mobile` | `MAX_STRING_CHARS` | `continue` in `scan_one_byte_strings` | `crates/disrobe-pass-mobile/src/flutter/string_pool.rs` |
+| `disrobe-pass-mobile` | `MAX_ALLOCATOR_WORDS` | `for` range in `allocate_object_helper_inputs` | `crates/disrobe-pass-mobile/src/flutter/stub_abi.rs` |
+| `disrobe-pass-mobile` | `MAX_REGISTER_SAVES` | `return` in `stub_frame_entry` | `crates/disrobe-pass-mobile/src/flutter/stub_abi.rs` |
+| `disrobe-pass-mobile` | `MAX_STUB_ARGUMENT_STEPS` | `for` range in `runtime_call_stub` | `crates/disrobe-pass-mobile/src/flutter/stub_abi.rs` |
+| `disrobe-pass-mobile` | `MAX_TAG_WORDS` | `return` in `allocation_stub_for_class` | `crates/disrobe-pass-mobile/src/flutter/stub_abi.rs` |
 | `disrobe-pass-mobile` | `MAX_DECIMAL_BYTES` | fallback value in `bigint_literal` | `crates/disrobe-pass-mobile/src/hermes/bigint.rs` |
 | `disrobe-pass-mobile` | `MAX_DECODED_INSTRUCTIONS` | `while` condition in `decode_instructions` | `crates/disrobe-pass-mobile/src/hermes/decompile.rs` |
 | `disrobe-pass-mobile` | `MAX_INLINE_CLOSURE_BYTES` | no action in `closure_expr` | `crates/disrobe-pass-mobile/src/hermes/decompile.rs` |
