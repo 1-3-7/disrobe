@@ -10,10 +10,9 @@
 )]
 
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
 use std::fmt::Write as _;
 use std::io::Write;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use disrobe_pass_native::{AuditableSbom, Error, parse_auditable_section};
 
@@ -34,13 +33,14 @@ struct TrackingAllocator;
 
 #[global_allocator]
 static ALLOCATOR: TrackingAllocator = TrackingAllocator;
-static TRACK_ALLOCATIONS: AtomicBool = AtomicBool::new(false);
-static LARGEST_ALLOCATION: AtomicUsize = AtomicUsize::new(0);
-static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+thread_local! {
+    static LARGEST_TRACKED: Cell<Option<usize>> = const { Cell::new(None) };
+}
 
 fn record_allocation(size: usize) {
-    if TRACK_ALLOCATIONS.load(Ordering::Relaxed) {
-        LARGEST_ALLOCATION.fetch_max(size, Ordering::Relaxed);
+    if let Ok(Some(largest)) = LARGEST_TRACKED.try_with(Cell::get) {
+        LARGEST_TRACKED.set(Some(largest.max(size)));
     }
 }
 
@@ -92,17 +92,14 @@ fn package_array_json(count: usize, name: &str, source: Option<&str>) -> Vec<u8>
 fn parse_with_largest_allocation(
     bytes: &[u8],
 ) -> (disrobe_pass_native::Result<AuditableSbom>, usize) {
-    LARGEST_ALLOCATION.store(0, Ordering::Relaxed);
-    TRACK_ALLOCATIONS.store(true, Ordering::SeqCst);
+    LARGEST_TRACKED.set(Some(0));
     let result: disrobe_pass_native::Result<AuditableSbom> = parse_auditable_section(bytes);
-    TRACK_ALLOCATIONS.store(false, Ordering::SeqCst);
-    let largest: usize = LARGEST_ALLOCATION.load(Ordering::Relaxed);
+    let largest: usize = LARGEST_TRACKED.take().unwrap_or(0);
     (result, largest)
 }
 
 #[test]
 fn auditable_section_parses_minimal_json_payload() {
-    let _guard: std::sync::MutexGuard<'static, ()> = TEST_LOCK.lock().expect("test lock");
     let blob: &[u8] = br#"{"packages":[{"name":"tokio","version":"1.40.0","source":"crates.io"}]}"#;
     let sbom: AuditableSbom = parse_auditable_section(blob).expect("parse");
     assert_eq!(sbom.crates.len(), 1);
@@ -111,7 +108,6 @@ fn auditable_section_parses_minimal_json_payload() {
 
 #[test]
 fn auditable_format_version_is_typed_when_present() {
-    let _guard: std::sync::MutexGuard<'static, ()> = TEST_LOCK.lock().expect("test lock");
     assert!(matches!(
         parse_auditable_section(br#"{"format":"1","packages":[]}"#),
         Err(Error::SignatureDb(message)) if message.contains("format version")
@@ -120,7 +116,6 @@ fn auditable_format_version_is_typed_when_present() {
 
 #[test]
 fn invalid_format_is_rejected_before_package_conversion() {
-    let _guard: std::sync::MutexGuard<'static, ()> = TEST_LOCK.lock().expect("test lock");
     assert!(matches!(
         parse_auditable_section(br#"{"format":"invalid","packages":[{}]}"#),
         Err(Error::SignatureDb(message)) if message.contains("format version")
@@ -129,7 +124,6 @@ fn invalid_format_is_rejected_before_package_conversion() {
 
 #[test]
 fn duplicate_auditable_fields_are_rejected() {
-    let _guard: std::sync::MutexGuard<'static, ()> = TEST_LOCK.lock().expect("test lock");
     let cases: [(&[u8], &str); 5] = [
         (br#"{"format":0,"format":1,"packages":[]}"#, "format"),
         (br#"{"packages":[],"packages":[]}"#, "packages"),
@@ -157,7 +151,6 @@ fn duplicate_auditable_fields_are_rejected() {
 
 #[test]
 fn raw_json_obeys_the_decompressed_byte_limit() {
-    let _guard: std::sync::MutexGuard<'static, ()> = TEST_LOCK.lock().expect("test lock");
     let oversized: Vec<u8> = vec![b' '; MAX_DECOMPRESSED_BYTES + 1];
     assert!(matches!(
         parse_auditable_section(&oversized),
@@ -167,7 +160,6 @@ fn raw_json_obeys_the_decompressed_byte_limit() {
 
 #[test]
 fn package_count_is_rejected_before_result_allocation() {
-    let _guard: std::sync::MutexGuard<'static, ()> = TEST_LOCK.lock().expect("test lock");
     let json: Vec<u8> = package_array_json(MAX_PACKAGES + 1, "a", None);
     let (result, largest): (disrobe_pass_native::Result<AuditableSbom>, usize) =
         parse_with_largest_allocation(&json);
@@ -183,7 +175,6 @@ fn package_count_is_rejected_before_result_allocation() {
 
 #[test]
 fn aggregate_package_text_is_bounded() {
-    let _guard: std::sync::MutexGuard<'static, ()> = TEST_LOCK.lock().expect("test lock");
     let source: String = "s".repeat(MAX_PACKAGE_TEXT_BYTES + 1);
     let json: Vec<u8> = package_array_json(1, "a", Some(&source));
     let (result, largest): (disrobe_pass_native::Result<AuditableSbom>, usize) =
@@ -200,7 +191,6 @@ fn aggregate_package_text_is_bounded() {
 
 #[test]
 fn deep_unknown_json_is_rejected_at_the_declared_depth() {
-    let _guard: std::sync::MutexGuard<'static, ()> = TEST_LOCK.lock().expect("test lock");
     let mut json: String = String::from(r#"{"unknown":"#);
     json.push_str(&"[".repeat(MAX_JSON_DEPTH));
     json.push('0');
@@ -218,7 +208,6 @@ fn deep_unknown_json_is_rejected_at_the_declared_depth() {
 
 #[test]
 fn irrelevant_array_amplification_is_bounded() {
-    let _guard: std::sync::MutexGuard<'static, ()> = TEST_LOCK.lock().expect("test lock");
     let mut json: String = String::from(r#"{"unknown":["#);
     for index in 0..=MAX_JSON_CONTAINER_ENTRIES {
         if index != 0 {
@@ -239,7 +228,6 @@ fn irrelevant_array_amplification_is_bounded() {
 
 #[test]
 fn irrelevant_object_amplification_is_bounded() {
-    let _guard: std::sync::MutexGuard<'static, ()> = TEST_LOCK.lock().expect("test lock");
     let mut json: String = String::from(r#"{"unknown":{"#);
     for index in 0..=MAX_JSON_CONTAINER_ENTRIES {
         if index != 0 {
@@ -260,7 +248,6 @@ fn irrelevant_object_amplification_is_bounded() {
 
 #[test]
 fn aggregate_unknown_json_work_is_bounded() {
-    let _guard: std::sync::MutexGuard<'static, ()> = TEST_LOCK.lock().expect("test lock");
     let inner: &str = "[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]";
     let mut json: String = String::from(r#"{"unknown":["#);
     for index in 0..MAX_JSON_CONTAINER_ENTRIES {
@@ -282,7 +269,6 @@ fn aggregate_unknown_json_work_is_bounded() {
 
 #[test]
 fn aggregate_work_cap_is_order_independent() {
-    let _guard: std::sync::MutexGuard<'static, ()> = TEST_LOCK.lock().expect("test lock");
     let inner: &str = "[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]";
     let mut json: String = String::from(r#"{"packages":[],"unknown":["#);
     for index in 0..MAX_JSON_CONTAINER_ENTRIES {
@@ -301,7 +287,6 @@ fn aggregate_work_cap_is_order_independent() {
 
 #[test]
 fn aggregate_unknown_json_string_bytes_are_bounded() {
-    let _guard: std::sync::MutexGuard<'static, ()> = TEST_LOCK.lock().expect("test lock");
     let unknown: String = "s".repeat(MAX_JSON_STRING_BYTES + 1 - "unknown".len());
     let json: String = format!(r#"{{"unknown":"{unknown}","packages":[]}}"#);
 
@@ -316,7 +301,6 @@ fn aggregate_unknown_json_string_bytes_are_bounded() {
 
 #[test]
 fn escaped_unknown_json_keys_remain_compatible() {
-    let _guard: std::sync::MutexGuard<'static, ()> = TEST_LOCK.lock().expect("test lock");
     let sbom: AuditableSbom =
         parse_auditable_section(br#"{"unknown":{"escaped\u005fkey":0},"packages":[]}"#)
             .expect("parse escaped unknown key");
@@ -325,7 +309,6 @@ fn escaped_unknown_json_keys_remain_compatible() {
 
 #[test]
 fn escaped_quote_and_backslash_preserve_later_string_boundaries() {
-    let _guard: std::sync::MutexGuard<'static, ()> = TEST_LOCK.lock().expect("test lock");
     let json: &[u8] = br#"{"unknown":[0,true,null,{"text":"quoted: \" and slash: \\\""}],"packages":[{"name":"serde","version":"1"}]}"#;
 
     let sbom: AuditableSbom = parse_auditable_section(json).expect("parse escaped punctuation");
@@ -336,7 +319,6 @@ fn escaped_quote_and_backslash_preserve_later_string_boundaries() {
 
 #[test]
 fn escaped_string_boundary_accepts_exact_decoded_byte_limit() {
-    let _guard: std::sync::MutexGuard<'static, ()> = TEST_LOCK.lock().expect("test lock");
     let prefix: String = "é".repeat((MAX_JSON_ESCAPED_STRING_BYTES - 2) / 2);
     let json: String = format!(r#"{{"unknown":"{prefix}a\n","packages":[]}}"#);
 
@@ -352,7 +334,6 @@ fn escaped_string_boundary_accepts_exact_decoded_byte_limit() {
 
 #[test]
 fn surrogate_pair_boundary_accepts_exact_decoded_byte_limit() {
-    let _guard: std::sync::MutexGuard<'static, ()> = TEST_LOCK.lock().expect("test lock");
     let escaped: String = r"\uD83D\uDE00".repeat(MAX_JSON_ESCAPED_STRING_BYTES / 4);
     let json: String = format!(r#"{{"unknown":"{escaped}","packages":[]}}"#);
 
@@ -368,7 +349,6 @@ fn surrogate_pair_boundary_accepts_exact_decoded_byte_limit() {
 
 #[test]
 fn late_escape_after_oversized_raw_prefix_is_rejected_before_scratch_allocation() {
-    let _guard: std::sync::MutexGuard<'static, ()> = TEST_LOCK.lock().expect("test lock");
     let prefix: String = "a".repeat(MAX_JSON_ESCAPED_STRING_BYTES + 1);
     let json: String = format!(r#"{{"unknown":"{prefix}\n","packages":[]}}"#);
 
@@ -389,7 +369,6 @@ fn late_escape_after_oversized_raw_prefix_is_rejected_before_scratch_allocation(
 
 #[test]
 fn malformed_and_truncated_escapes_are_rejected_by_json_validation() {
-    let _guard: std::sync::MutexGuard<'static, ()> = TEST_LOCK.lock().expect("test lock");
     for json in [
         br#"{"unknown":"\q","packages":[]}"#.as_slice(),
         br#"{"unknown":"\u12","packages":[]}"#.as_slice(),
@@ -405,7 +384,6 @@ fn malformed_and_truncated_escapes_are_rejected_by_json_validation() {
 
 #[test]
 fn oversized_escaped_string_is_rejected_before_scratch_allocation() {
-    let _guard: std::sync::MutexGuard<'static, ()> = TEST_LOCK.lock().expect("test lock");
     let escaped: String = r"\u0061".repeat(MAX_JSON_ESCAPED_STRING_BYTES * 4);
     let json: String = format!(r#"{{"unknown":"{escaped}","packages":[]}}"#);
 
@@ -427,7 +405,6 @@ fn oversized_escaped_string_is_rejected_before_scratch_allocation() {
 
 #[test]
 fn aggregate_unknown_json_key_bytes_are_bounded() {
-    let _guard: std::sync::MutexGuard<'static, ()> = TEST_LOCK.lock().expect("test lock");
     let unknown: String = "k".repeat(MAX_JSON_STRING_BYTES + 1);
     let json: String = format!(r#"{{"{unknown}":0,"packages":[]}}"#);
 
@@ -442,7 +419,6 @@ fn aggregate_unknown_json_key_bytes_are_bounded() {
 
 #[test]
 fn real_auditable_embedded_binary_round_trip() {
-    let _guard: std::sync::MutexGuard<'static, ()> = TEST_LOCK.lock().expect("test lock");
     let sbom: AuditableSbom = parse_auditable_section(REAL_AUDITABLE).expect("parse real PE");
     assert_eq!(sbom.format_version, 1);
     assert_eq!(sbom.crates.len(), 2);
@@ -465,7 +441,6 @@ fn real_auditable_embedded_binary_round_trip() {
 
 #[test]
 fn binary_parser_rejects_missing_or_corrupt_auditable_sections() {
-    let _guard: std::sync::MutexGuard<'static, ()> = TEST_LOCK.lock().expect("test lock");
     let mut missing: Vec<u8> = REAL_AUDITABLE.to_vec();
     let header: usize = dep_section_header_offset(&missing);
     missing[header..header + 7].copy_from_slice(b".absent");
@@ -483,7 +458,6 @@ fn binary_parser_rejects_missing_or_corrupt_auditable_sections() {
 
 #[test]
 fn binary_parser_bounds_compressed_and_decompressed_payloads() {
-    let _guard: std::sync::MutexGuard<'static, ()> = TEST_LOCK.lock().expect("test lock");
     let compressed_too_large: Vec<u8> = vec![0; MAX_COMPRESSED_BYTES + 1];
     let oversized_section: Vec<u8> = replace_dep_section(&compressed_too_large);
     assert!(matches!(
@@ -508,7 +482,6 @@ fn binary_parser_bounds_compressed_and_decompressed_payloads() {
 
 #[test]
 fn decompression_never_requests_an_allocation_above_the_logical_limit() {
-    let _guard: std::sync::MutexGuard<'static, ()> = TEST_LOCK.lock().expect("test lock");
     let decompressed_too_large: Vec<u8> = vec![b' '; MAX_DECOMPRESSED_BYTES + 1];
     let mut encoder: flate2::write::ZlibEncoder<Vec<u8>> =
         flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
