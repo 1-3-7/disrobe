@@ -341,11 +341,12 @@ fn action_out_and_path_pairing_matches_the_built_cli() {
 
 #[test]
 fn every_chain_verdict_grades_to_a_fail_on_rung() {
-    let cases: [(VerdictDoc, VerdictGrade); 10] = [
+    let cases: [(VerdictDoc, VerdictGrade); 11] = [
         (VerdictDoc::Ok, VerdictGrade::Ok),
         (VerdictDoc::Complete, VerdictGrade::Ok),
         (VerdictDoc::FanOut, VerdictGrade::Ok),
         (VerdictDoc::Extracted, VerdictGrade::Ok),
+        (VerdictDoc::NotApplicable, VerdictGrade::Ok),
         (VerdictDoc::FanOutPartial, VerdictGrade::Incomplete),
         (VerdictDoc::Stalled, VerdictGrade::Incomplete),
         (VerdictDoc::Cycle, VerdictGrade::Incomplete),
