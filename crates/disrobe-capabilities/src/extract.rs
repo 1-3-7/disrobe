@@ -907,7 +907,12 @@ mod tests {
 
     #[test]
     fn non_x86_images_emit_no_x86_mnemonic_features() {
-        let mut elf: Vec<u8> = vec![0_u8; 64];
+        const SECTION_HEADERS: usize = 64;
+        const SECTION_HEADER_BYTES: usize = 64;
+        const TEXT: usize = SECTION_HEADERS + 3 * SECTION_HEADER_BYTES;
+        const NAMES: usize = TEXT + 8;
+        let names: &[u8] = b"\0.text\0.shstrtab\0";
+        let mut elf: Vec<u8> = vec![0_u8; NAMES + names.len()];
         elf[..4].copy_from_slice(b"\x7FELF");
         elf[4] = 2;
         elf[5] = 1;
@@ -915,7 +920,25 @@ mod tests {
         elf[0x10..0x12].copy_from_slice(&2_u16.to_le_bytes());
         elf[0x12..0x14].copy_from_slice(&183_u16.to_le_bytes());
         elf[0x14..0x18].copy_from_slice(&1_u32.to_le_bytes());
+        elf[0x28..0x30].copy_from_slice(&(SECTION_HEADERS as u64).to_le_bytes());
         elf[0x34..0x36].copy_from_slice(&64_u16.to_le_bytes());
+        elf[0x3A..0x3C].copy_from_slice(&(SECTION_HEADER_BYTES as u16).to_le_bytes());
+        elf[0x3C..0x3E].copy_from_slice(&3_u16.to_le_bytes());
+        elf[0x3E..0x40].copy_from_slice(&2_u16.to_le_bytes());
+        elf[TEXT..NAMES].copy_from_slice(&[0xE0, 0x07, 0x00, 0xF9, 0xC0, 0x03, 0x5F, 0xD6]);
+        elf[NAMES..].copy_from_slice(names);
+        for (index, name, kind, flags, offset, size) in [
+            (1_usize, 1_u32, 1_u32, 6_u64, TEXT, 8_usize),
+            (2, 7, 3, 0, NAMES, names.len()),
+        ] {
+            let header: usize = SECTION_HEADERS + index * SECTION_HEADER_BYTES;
+            elf[header..header + 4].copy_from_slice(&name.to_le_bytes());
+            elf[header + 4..header + 8].copy_from_slice(&kind.to_le_bytes());
+            elf[header + 8..header + 16].copy_from_slice(&flags.to_le_bytes());
+            elf[header + 24..header + 32].copy_from_slice(&(offset as u64).to_le_bytes());
+            elf[header + 32..header + 40].copy_from_slice(&(size as u64).to_le_bytes());
+            elf[header + 48..header + 56].copy_from_slice(&1_u64.to_le_bytes());
+        }
         assert_eq!(
             parse_native(&elf)
                 .map(|native: NativeFile| native.arch)
