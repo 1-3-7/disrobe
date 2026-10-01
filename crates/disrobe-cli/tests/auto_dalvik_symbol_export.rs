@@ -206,7 +206,7 @@ fn auto_refuses_wrong_nested_and_unwritable_dalvik_export_provenance() {
     std::fs::create_dir_all(&unwritable_out).expect("create unwritable test output");
     std::fs::write(unwritable_out.join("exports"), b"path collision")
         .expect("create exports path collision");
-    let unwritable_run: Run = run_auto(&fixture, &unwritable_out, "ida", &[]);
+    let unwritable_run: Run = run_auto(&fixture, &unwritable_out, "ida", &["--force"]);
     assert_ne!(
         unwritable_run.code, 0,
         "write failure unexpectedly succeeded"
