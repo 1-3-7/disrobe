@@ -30,6 +30,7 @@ impl ContainedProcess {
     pub(crate) const fn wait_until(
         &mut self,
         _deadline: Instant,
+        _reap_on_exit: bool,
     ) -> Result<PlatformCompletion, LifecycleError> {
         Err(LifecycleError::Notification)
     }

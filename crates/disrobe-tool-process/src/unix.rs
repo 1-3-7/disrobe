@@ -144,6 +144,7 @@ impl ContainedProcess {
     pub(crate) fn wait_until(
         &mut self,
         deadline: Instant,
+        reap_on_exit: bool,
     ) -> Result<PlatformCompletion, LifecycleError> {
         loop {
             match self.macos_group_observation()? {
@@ -153,7 +154,17 @@ impl ContainedProcess {
                         return Ok(PlatformCompletion::exited(status));
                     }
                 }
-                MacosGroupObservation::NotEmpty | MacosGroupObservation::Unproven(_) => {}
+                MacosGroupObservation::NotEmpty | MacosGroupObservation::Unproven(_) => {
+                    if reap_on_exit
+                        && self
+                            .child
+                            .try_wait()
+                            .map_err(LifecycleError::Wait)?
+                            .is_some()
+                    {
+                        return self.terminate_and_wait(false);
+                    }
+                }
             }
             if Instant::now() >= deadline {
                 return self.terminate_and_wait(true);
@@ -166,6 +177,7 @@ impl ContainedProcess {
     pub(crate) fn wait_until(
         &mut self,
         deadline: Instant,
+        reap_on_exit: bool,
     ) -> Result<PlatformCompletion, LifecycleError> {
         loop {
             let direct_status: Option<ExitStatus> =
@@ -176,6 +188,9 @@ impl ContainedProcess {
             {
                 self.finished = true;
                 return Ok(PlatformCompletion::exited(status));
+            }
+            if direct_status.is_some() && reap_on_exit {
+                return self.terminate_and_wait(false);
             }
             if Instant::now() >= deadline {
                 return self.terminate_and_wait(true);

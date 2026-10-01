@@ -269,6 +269,7 @@ impl ContainedProcess {
     pub(crate) fn wait_until(
         &mut self,
         deadline: Instant,
+        reap_on_exit: bool,
     ) -> Result<PlatformCompletion, LifecycleError> {
         loop {
             let direct_status: Option<ExitStatus> = self.poll_direct_status()?;
@@ -279,6 +280,9 @@ impl ContainedProcess {
                 self.finished = true;
                 return Ok(PlatformCompletion::exited(status)
                     .with_completion_notification(self.active_zero_seen));
+            }
+            if direct_status.is_some() && reap_on_exit {
+                return self.terminate_and_wait(false);
             }
             if Instant::now() >= deadline {
                 return self.terminate_and_wait(true);

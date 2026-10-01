@@ -45,6 +45,7 @@ pub struct CommandSpec {
     timeout: Duration,
     stdout_limit: usize,
     stderr_limit: usize,
+    reap_on_exit: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -65,6 +66,7 @@ impl CommandSpec {
             timeout,
             stdout_limit: 4 * 1024 * 1024,
             stderr_limit: 4 * 1024 * 1024,
+            reap_on_exit: false,
         }
     }
 
@@ -106,6 +108,12 @@ impl CommandSpec {
     pub const fn capture_limits(mut self, stdout_limit: usize, stderr_limit: usize) -> Self {
         self.stdout_limit = stdout_limit;
         self.stderr_limit = stderr_limit;
+        self
+    }
+
+    #[must_use]
+    pub const fn reap_descendants_on_exit(mut self) -> Self {
+        self.reap_on_exit = true;
         self
     }
 
@@ -194,13 +202,13 @@ impl CommandSpec {
             #[cfg(windows)]
             {
                 match process.start() {
-                    Ok(()) => process.wait_until(deadline),
+                    Ok(()) => process.wait_until(deadline, self.reap_on_exit),
                     Err(failure) => Err(failure),
                 }
             }
             #[cfg(not(windows))]
             {
-                process.wait_until(deadline)
+                process.wait_until(deadline, self.reap_on_exit)
             }
         };
         let completion: Result<PlatformCompletion, LifecycleError> = settle_lifecycle(
@@ -850,6 +858,57 @@ mod tests {
             root.as_path()
         );
         scratch.close()?;
+        Ok(())
+    }
+
+    fn lingering_descendant(reap: bool) -> Result<(Execution, Duration), ExecutionError> {
+        #[cfg(windows)]
+        let spec: CommandSpec = {
+            let shell: PathBuf = std::env::var_os("SystemRoot")
+                .map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from)
+                .join("System32")
+                .join("cmd.exe");
+            CommandSpec::new(shell.clone(), Duration::from_secs(20))
+                .args(["/d", "/c", "start", "/b", "ping", "-n", "4", "127.0.0.1"])
+                .env("COMSPEC", shell.into_os_string())
+        };
+        #[cfg(not(windows))]
+        let spec: CommandSpec =
+            CommandSpec::new("/bin/sh", Duration::from_secs(20)).args(["-c", "sleep 3 & exit 0"]);
+        let spec: CommandSpec = if reap {
+            spec.reap_descendants_on_exit()
+        } else {
+            spec
+        };
+        let started: Instant = Instant::now();
+        let execution: Execution = spec.run()?;
+        Ok((execution, started.elapsed()))
+    }
+
+    #[test]
+    #[cfg(any(windows, unix))]
+    fn a_lingering_descendant_is_awaited_by_default_and_reaped_on_request()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (awaited, awaited_for): (Execution, Duration) = lingering_descendant(false)?;
+        assert!(
+            matches!(awaited.completion, Completion::Exited(_)),
+            "{:?}",
+            awaited.completion
+        );
+        assert!(
+            awaited_for >= Duration::from_secs(2),
+            "the default waits for every contained descendant, returned after {awaited_for:?}"
+        );
+        let (reaped, reaped_for): (Execution, Duration) = lingering_descendant(true)?;
+        assert!(
+            matches!(reaped.completion, Completion::Exited(status) if status.success()),
+            "{:?}",
+            reaped.completion
+        );
+        assert!(
+            reaped_for < Duration::from_secs(2),
+            "reaping ends the run when the direct child exits, returned after {reaped_for:?}"
+        );
         Ok(())
     }
 
