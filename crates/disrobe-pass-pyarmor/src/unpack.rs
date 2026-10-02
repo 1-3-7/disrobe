@@ -886,11 +886,17 @@ fn run_marshal_load(
         }
         inner_cipher_stats = Some(stats);
 
-        let mix_count: usize = if state.mix_str_enabled {
-            crate::mix_string::decrypt_mix_strings(&mut obj, &state.aes_key, &state.mix_str_nonce)
+        let gate: crate::mix_string::MixStrGate = if state.mix_str_enabled {
+            crate::mix_string::MixStrGate::Marked
         } else {
-            0
+            crate::mix_string::MixStrGate::Unmarked
         };
+        let mix_count: usize = crate::mix_string::decrypt_mix_strings(
+            &mut obj,
+            &state.aes_key,
+            &state.mix_str_nonce,
+            gate,
+        );
         if let Some(prov) = provenance.as_deref_mut()
             && mix_count > 0
         {
