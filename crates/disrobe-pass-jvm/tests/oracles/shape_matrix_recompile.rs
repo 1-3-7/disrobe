@@ -1208,10 +1208,6 @@ fn compare_results_used_as_values_recompile_with_their_nan_bias() {
 }
 
 const KOTLIN_PROVENANCE: &str = include_str!("../fixtures/shape_matrix/kotlin/PROVENANCE.txt");
-const KOTLIN_STDLIB_SHA256: &str =
-    "4ec0293bc3751423b203f1d8493251c57c42e73eb6377a6b8560d0974ff0a6df";
-const JETBRAINS_ANNOTATIONS_SHA256: &str =
-    "ace2a10dc8e2d5fd34925ecac03e4988b2c0f851650c94b8cef49ba1bd111478";
 
 struct KotlinShape {
     name: &'static str,
@@ -1307,54 +1303,6 @@ const KT_FINALLY_LOOP: KotlinShape = KotlinShape {
 fn sha256_hex(bytes: &[u8]) -> String {
     let digest: sha2::digest::Output<sha2::Sha256> = <sha2::Sha256 as sha2::Digest>::digest(bytes);
     format!("{digest:x}")
-}
-
-fn kotlinc_lib_dir() -> PathBuf {
-    let path_var: std::ffi::OsString = std::env::var_os("PATH").expect("PATH is set");
-    std::env::split_paths(&path_var)
-        .find(|dir: &PathBuf| dir.join("kotlinc").is_file())
-        .and_then(|bin: PathBuf| bin.parent().map(|home: &Path| home.join("lib")))
-        .unwrap_or_else(|| {
-            panic!(
-                "the Kotlin shape tests run the committed classes against kotlin-stdlib 2.4.10 and \
-                 annotations 13.0: set DISROBE_KOTLIN_STDLIB_JAR and DISROBE_JETBRAINS_ANNOTATIONS_JAR \
-                 (Maven Central, see tests/fixtures/shape_matrix/kotlin/PROVENANCE.txt) or put kotlinc \
-                 2.4.10 on PATH"
-            )
-        })
-}
-
-fn kotlin_library(variable: &str, file_name: &str, sha256: &str) -> PathBuf {
-    let path: PathBuf =
-        std::env::var_os(variable).map_or_else(|| kotlinc_lib_dir().join(file_name), PathBuf::from);
-    let bytes: Vec<u8> = std::fs::read(&path).unwrap_or_else(|err: std::io::Error| {
-        panic!(
-            "{variable} or kotlinc 2.4.10 must provide {file_name} at {}: {err}",
-            path.display()
-        )
-    });
-    assert_eq!(
-        sha256_hex(&bytes),
-        sha256,
-        "{} is not the pinned {file_name}",
-        path.display()
-    );
-    path
-}
-
-fn kotlin_runtime() -> Vec<PathBuf> {
-    vec![
-        kotlin_library(
-            "DISROBE_KOTLIN_STDLIB_JAR",
-            "kotlin-stdlib.jar",
-            KOTLIN_STDLIB_SHA256,
-        ),
-        kotlin_library(
-            "DISROBE_JETBRAINS_ANNOTATIONS_JAR",
-            "annotations-13.0.jar",
-            JETBRAINS_ANNOTATIONS_SHA256,
-        ),
-    ]
 }
 
 fn kotlin_classpath(dir: &Path, libraries: &[PathBuf]) -> std::ffi::OsString {
@@ -1454,7 +1402,7 @@ fn recover_kotlin(shape: &KotlinShape) -> KotlinRecovery {
         "{}.class is not the kotlinc 2.4.10 build its PROVENANCE record names",
         shape.name
     );
-    let libraries: Vec<PathBuf> = kotlin_runtime();
+    let libraries: Vec<PathBuf> = crate::common::kotlin_runtime();
     let driver_name: String = format!("{}Driver", shape.name);
     let original: ScratchDir =
         ScratchDir::create(&format!("disrobe_jvm_kotlin_{}_orig", shape.name))
