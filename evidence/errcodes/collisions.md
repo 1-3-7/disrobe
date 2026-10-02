@@ -2784,9 +2784,9 @@
 - `DR-PHP-0124`: `crates/disrobe-pass-php/src/error.rs:228`
 - `DR-PHP-0125`: `crates/disrobe-pass-php/src/error.rs:236`
 - `DR-PHP-0126`: `crates/disrobe-pass-php/src/error.rs:240`
-- `DR-PHP-0902`: `crates/disrobe-pass-php/src/chain_detector.rs:112`
-- `DR-PHP-0904`: `crates/disrobe-pass-php/src/chain_detector.rs:122`
-- `DR-PHP-0905`: `crates/disrobe-pass-php/src/chain_detector.rs:190`
+- `DR-PHP-0902`: `crates/disrobe-pass-php/src/chain_detector.rs:118`
+- `DR-PHP-0904`: `crates/disrobe-pass-php/src/chain_detector.rs:128`
+- `DR-PHP-0905`: `crates/disrobe-pass-php/src/chain_detector.rs:197`
 - `DR-PICKLE-0001`: `crates/disrobe-pass-pickle/src/error.rs:8`
 - `DR-PICKLE-0002`: `crates/disrobe-pass-pickle/src/error.rs:11`
 - `DR-PICKLE-0003`: `crates/disrobe-pass-pickle/src/error.rs:15`

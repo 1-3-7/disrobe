@@ -15,9 +15,9 @@ The exceeded column states what happens when input goes past the bound. It comes
 
 The scan does not resolve types or trait dispatch, so an outcome names the construct it found rather than proving the behaviour.
 
-2185 bounds (count 215, other 1024, output 65, recursion 220, size 479, work 182).
+2186 bounds (count 215, other 1025, output 65, recursion 220, size 479, work 182).
 
-Exceeded: error 884, recorded 185, panic 0, delegated 49, silent 1009, unclassified 17, allocation 33, unused 8.
+Exceeded: error 884, recorded 185, panic 0, delegated 49, silent 1010, unclassified 17, allocation 33, unused 8.
 
 | Crate | Constant | Kind | Exceeded | Type | Value | File |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -1533,6 +1533,7 @@ Exceeded: error 884, recorded 185, panic 0, delegated 49, silent 1009, unclassif
 | `disrobe-pass-php` | `SANE_CLOSURE_USE_CAP` | other | silent: `return` in `fold_closure` | `usize` | `256` | `crates/disrobe-pass-php/src/decompile.rs` |
 | `disrobe-pass-php` | `SANE_CONDITION_RENDER_CAP` | output | silent: `return` in `fold_test_graph` | `usize` | `1 << 16` | `crates/disrobe-pass-php/src/decompile.rs` |
 | `disrobe-pass-php` | `SANE_FOR_STEP_CAP` | work | silent: `return` in `for_step_start` | `usize` | `16` | `crates/disrobe-pass-php/src/decompile.rs` |
+| `disrobe-pass-php` | `SANE_IF_TEST_CHAIN_CAP` | other | silent: `while` condition in `if_test_chain` | `usize` | `256` | `crates/disrobe-pass-php/src/decompile.rs` |
 | `disrobe-pass-php` | `SANE_LIST_ELEMENT_CAP` | other | silent: `return` in `list_entries` | `usize` | `1 << 16` | `crates/disrobe-pass-php/src/decompile.rs` |
 | `disrobe-pass-php` | `SANE_LIST_RENDER_CAP` | output | silent: `return` in `fold_list_assign`; `return` in `list_entries`; `return` in `push_list_text` | `usize` | `1 << 20` | `crates/disrobe-pass-php/src/decompile.rs` |
 | `disrobe-pass-php` | `SANE_LITERAL_CAP` | work | error: `Error::OpArrayFieldOversize` (DR-PHP-0093) | `u32` | `4_000_000` | `crates/disrobe-pass-php/src/decompile.rs` |
@@ -2209,7 +2210,7 @@ Exceeded: error 884, recorded 185, panic 0, delegated 49, silent 1009, unclassif
 
 ## Silent stops
 
-1009 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
+1010 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
 
 | Crate | Constant | Use | File |
 | --- | --- | --- | --- |
@@ -2912,6 +2913,7 @@ Exceeded: error 884, recorded 185, panic 0, delegated 49, silent 1009, unclassif
 | `disrobe-pass-php` | `SANE_CLOSURE_USE_CAP` | `return` in `fold_closure` | `crates/disrobe-pass-php/src/decompile.rs` |
 | `disrobe-pass-php` | `SANE_CONDITION_RENDER_CAP` | `return` in `fold_test_graph` | `crates/disrobe-pass-php/src/decompile.rs` |
 | `disrobe-pass-php` | `SANE_FOR_STEP_CAP` | `return` in `for_step_start` | `crates/disrobe-pass-php/src/decompile.rs` |
+| `disrobe-pass-php` | `SANE_IF_TEST_CHAIN_CAP` | `while` condition in `if_test_chain` | `crates/disrobe-pass-php/src/decompile.rs` |
 | `disrobe-pass-php` | `SANE_LIST_ELEMENT_CAP` | `return` in `list_entries` | `crates/disrobe-pass-php/src/decompile.rs` |
 | `disrobe-pass-php` | `SANE_LIST_RENDER_CAP` | `return` in `fold_list_assign`; `return` in `list_entries`; `return` in `push_list_text` | `crates/disrobe-pass-php/src/decompile.rs` |
 | `disrobe-pass-php` | `SANE_LOOP_EXIT_FREE_CAP` | `return` in `exit_frees_match` | `crates/disrobe-pass-php/src/decompile.rs` |
