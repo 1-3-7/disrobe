@@ -18,7 +18,8 @@ const MAX_BLOCK_DEPTH: u32 = 3;
 const TOOL_TIMEOUT: Duration = Duration::from_mins(5);
 const TOOL_CAPTURE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_REPAIR_ROUNDS: usize = 16;
-const RUN_TIMEOUT: Duration = Duration::from_secs(30);
+const RUN_TIMEOUT: Duration = Duration::from_mins(1);
+const PROGRAM_MILLIS: u64 = 5_000;
 const SHOWN_FAILURES: usize = 6;
 const KNOWN_DIVERGENT: [u64; 0] = [];
 const KOTLINC_PREREQUISITE: &str = "disrobe-pass-jvm::kotlinc";
@@ -526,21 +527,22 @@ fn kotlin_file(methods: &BTreeMap<u64, String>) -> String {
 }
 
 fn main_class() -> String {
-    let mut out: String =
-        String::from("public final class Main {\n    public static void main(String[] args) {\n");
+    let mut out: String = String::from(
+        "public final class Main {\n    public static void main(String[] args) throws InterruptedException {\n        int from = args.length > 0 ? Integer.parseInt(args[0]) : 0;\n        Runnable[] programs = {\n",
+    );
     for seed in 0..PROGRAMS {
         let call: String = if in_object(seed) {
-            format!("{OBJECT_CLASS}.INSTANCE.prog{seed}()")
+            format!("{OBJECT_CLASS}.INSTANCE::prog{seed}")
         } else {
-            format!("{TOP_LEVEL_CLASS}.prog{seed}()")
+            format!("{TOP_LEVEL_CLASS}::prog{seed}")
         };
-        writeln!(
-            out,
-            "        Sink.reset();\n        try {{ {call}; }} catch (Exception error) {{ Sink.emit(\"threw \" + error.getClass().getSimpleName()); }}\n        System.out.println(\"{seed}: \" + Sink.take());\n        System.out.flush();"
-        )
-        .expect("write to a String");
+        writeln!(out, "            {call},").expect("write to a String");
     }
-    out.push_str("    }\n}\n");
+    write!(
+        out,
+        "        }};\n        for (int seed = from; seed < programs.length; seed++) {{\n            final Runnable program = programs[seed];\n            final String[] line = new String[1];\n            Thread worker = new Thread(() -> {{\n                Sink.reset();\n                try {{ program.run(); }} catch (Throwable error) {{ Sink.emit(\"threw \" + error.getClass().getSimpleName()); }}\n                line[0] = Sink.take();\n            }});\n            worker.setDaemon(true);\n            worker.start();\n            worker.join({PROGRAM_MILLIS});\n            if (worker.isAlive() || line[0] == null) {{\n                System.out.println(seed + \"! does not terminate within {PROGRAM_MILLIS} ms\");\n                System.out.flush();\n                Runtime.getRuntime().halt(3);\n            }}\n            System.out.println(seed + \": \" + line[0]);\n            System.out.flush();\n        }}\n    }}\n}}\n"
+    )
+    .expect("write to a String");
     out
 }
 
@@ -639,45 +641,55 @@ impl Toolchain {
     }
 
     fn run(&self, directory: &Path, classes: &Path) -> Run {
-        let run: ToolOutput = tool_output(
-            CommandSpec::new(self.java.clone(), RUN_TIMEOUT)
-                .capture_limits(TOOL_CAPTURE_BYTES, TOOL_CAPTURE_BYTES)
-                .arg("-cp")
-                .arg(self.classpath(classes))
-                .arg("Main")
-                .current_dir(directory.to_path_buf()),
-        )
-        .unwrap_or_else(|error: ToolError| panic!("the Main program could not start: {error}"));
         let mut lines: BTreeMap<u64, String> = BTreeMap::new();
-        for text in run.stdout_text().lines() {
-            if let Some((seed, rest)) = text.split_once(": ")
-                && let Ok(seed) = seed.trim().parse::<u64>()
-            {
-                lines.insert(seed, rest.trim_end().to_owned());
+        let mut hung: BTreeMap<u64, String> = BTreeMap::new();
+        let mut from: u64 = 0;
+        while from < PROGRAMS {
+            let run: ToolOutput = tool_output(
+                CommandSpec::new(self.java.clone(), RUN_TIMEOUT)
+                    .capture_limits(TOOL_CAPTURE_BYTES, TOOL_CAPTURE_BYTES)
+                    .arg("-Xmx2g")
+                    .arg("-cp")
+                    .arg(self.classpath(classes))
+                    .arg("Main")
+                    .arg(from.to_string())
+                    .current_dir(directory.to_path_buf()),
+            )
+            .unwrap_or_else(|error: ToolError| panic!("the Main program could not start: {error}"));
+            let mut stalled: Option<(u64, String)> = None;
+            for text in run.stdout_text().lines() {
+                if let Some((seed, rest)) = text.split_once(": ")
+                    && let Ok(seed) = seed.trim().parse::<u64>()
+                {
+                    lines.insert(seed, rest.trim_end().to_owned());
+                } else if let Some((seed, rest)) = text.split_once("! ")
+                    && let Ok(seed) = seed.trim().parse::<u64>()
+                {
+                    stalled = Some((seed, rest.trim_end().to_owned()));
+                }
             }
-        }
-        let hung: Option<(u64, String)> = if run.success {
-            None
-        } else {
-            let reason: String = if run.timed_out {
-                format!(
+            let Some(missing) = (from..PROGRAMS).find(|seed: &u64| !lines.contains_key(seed))
+            else {
+                break;
+            };
+            let reason: String = match stalled {
+                Some((seed, why)) if seed == missing => why,
+                _ if run.timed_out => format!(
                     "does not terminate within {} seconds",
                     RUN_TIMEOUT.as_secs()
-                )
-            } else {
-                format!("crashes the process: {}", run.stderr_text().trim())
+                ),
+                _ => format!("crashes the process: {}", run.stderr_text().trim()),
             };
-            (0..PROGRAMS)
-                .find(|seed: &u64| !lines.contains_key(seed))
-                .map(|seed: u64| (seed, reason))
-        };
+            hung.insert(missing, reason);
+            from = missing + 1;
+        }
         Run { lines, hung }
     }
 }
 
 struct Run {
     lines: BTreeMap<u64, String>,
-    hung: Option<(u64, String)>,
+    hung: BTreeMap<u64, String>,
 }
 
 struct Reference {
@@ -703,7 +715,11 @@ fn build_reference(tools: &Toolchain, kotlin: &str) -> Reference {
         &[("Main.java".to_owned(), main_class())],
     ));
     let run: Run = tools.run(directory, &classes);
-    assert_eq!(run.hung, None, "every generated program terminates");
+    assert!(
+        run.hung.is_empty(),
+        "every generated program terminates: {:?}",
+        run.hung
+    );
     assert_eq!(
         run.lines.len() as u64,
         PROGRAMS,
@@ -918,15 +934,14 @@ fn reexecute(
             .collect();
         let built: Built = build_recovered(tools, &units);
         if let Some(run) = built.run {
-            if let Some((seed, reason)) = run.hung {
+            for (seed, reason) in &run.hung {
                 failures.insert(
-                    seed,
+                    *seed,
                     format!(
                         "the recovered body {reason}:\n{}",
-                        excerpt(recovery.methods.get(&seed).map_or("", String::as_str), 3000)
+                        excerpt(recovery.methods.get(seed).map_or("", String::as_str), 3000)
                     ),
                 );
-                continue;
             }
             return run.lines;
         }
