@@ -1175,8 +1175,8 @@ const dir = process.argv[3];
 
 fn terser_package() -> PathBuf {
     let package: PathBuf = std::env::var_os("DISROBE_TERSER").map(PathBuf::from).expect(
-        "DISROBE_TERSER must name the terser 5.51.2 package directory (node_modules/terser); see \
-         .developer/TOOLS.md",
+        "DISROBE_TERSER must name the terser 5.51.2 package directory (node_modules/terser), as \
+         `npm install --ignore-scripts terser@5.51.2` lays it out",
     );
     let manifest: serde_json::Value = serde_json::from_str(
         &fs::read_to_string(package.join("package.json"))
