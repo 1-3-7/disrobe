@@ -10,6 +10,7 @@ on:
         options:
           - hercules
           - pyc-zipper
+          - wasm-name-obfuscator
 
 permissions:
   contents: read

@@ -37,6 +37,11 @@ def main() -> int:
         "workflow_run": f'{os.environ["GITHUB_SERVER_URL"]}/{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{os.environ["GITHUB_RUN_ID"]}',
         "runner_image": f'{os.environ.get("ImageOS", "")} {os.environ.get("ImageVersion", "")}'.strip(),
         "outputs": outputs,
+        "files": {
+            path.relative_to(out).as_posix(): sha256(path)
+            for path in sorted((out / "files").rglob("*"))
+            if path.is_file()
+        },
     }
     (out / "build-record.json").write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     failed = [entry for entry in outputs if entry["behaviour"] != "same"]
