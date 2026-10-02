@@ -1,0 +1,39 @@
+name: real tool fixtures
+
+on:
+  workflow_dispatch:
+    inputs:
+      recipe:
+        description: Recipe under .github/real-tools
+        required: true
+        type: choice
+        options:
+          - hercules
+
+permissions:
+  contents: read
+
+jobs:
+  produce:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      RECIPE: ${{ inputs.recipe }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: run the recipe
+        run: |
+          set -euo pipefail
+          export REPO="$GITHUB_WORKSPACE" OUT="$RUNNER_TEMP/real-tool-out"
+          mkdir -p "$OUT"
+          bash ".github/real-tools/$RECIPE.sh"
+          python3 .github/real-tools/record.py
+          echo "OUT=$OUT" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: real-tool-${{ inputs.recipe }}
+          path: ${{ env.OUT }}
+          if-no-files-found: error
+          retention-days: 30
