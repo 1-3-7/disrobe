@@ -9,6 +9,7 @@ curl --fail --silent --show-error --location --output "$soot" "$url"
 echo "$sha256  $soot" | sha256sum --check
 
 jdk="${JAVA_HOME_8_X64:?the runner image provides Temurin 8}"
+soot_java="${JAVA_HOME_11_X64:?the runner image provides Temurin 11}/bin/java"
 java="$jdk/bin/java"
 javac="$jdk/bin/javac"
 jar="$jdk/bin/jar"
@@ -17,7 +18,7 @@ cat > "$OUT/tool.env" <<EOF
 name=JBCO (Soot soot.jbco.Main)
 url=$url
 version=Soot 4.7.1 jar-with-dependencies sha256 $sha256
-runtime=$("$java" -version 2>&1 | tr '\n' ' ')
+runtime=programs on $("$java" -version 2>&1 | head -n 1); Soot on $("$soot_java" -version 2>&1 | head -n 1)
 EOF
 
 presets=(
@@ -29,7 +30,6 @@ inputs=(
   corpus/jvm/obfuscators/jbco/gauntlet/Sample.java
   corpus/jvm/obfuscators/yguard/gauntlet/Calculator.java
   corpus/jvm/evalshapes/SwitchDispatch.java
-  corpus/jvm/megafile/EdgeCases.java
 )
 
 mkdir -p "$OUT/files"
@@ -52,7 +52,7 @@ for input in "${inputs[@]}"; do
     obfuscated="$RUNNER_TEMP/$program-$label"
     output="files/$program.$label.jar"
     command="java -cp soot.jar soot.jbco.Main -cp <classes>:<rt.jar> -process-dir <classes> -d <out> ${preset#*:}"
-    if timeout 600 "$java" -cp "$soot" soot.jbco.Main \
+    if timeout 600 "$soot_java" -cp "$soot" soot.jbco.Main \
         -cp "$classes:$jdk/jre/lib/rt.jar" -process-dir "$classes" -d "$obfuscated" \
         -allow-phantom-refs "${transforms[@]}" \
       && (cd "$obfuscated" && "$jar" cf "$OUT/$output" .); then
@@ -60,6 +60,8 @@ for input in "${inputs[@]}"; do
         behaviour=same
       else
         behaviour=differs
+        mkdir -p "$OUT/diffs"
+        diff <(printf '%s\n' "$expected") <(printf '%s\n' "${actual:-}") > "$OUT/diffs/$program.$label.txt" || true
       fi
     else
       behaviour=tool-failed

@@ -56,6 +56,8 @@ for input in "${inputs[@]}"; do
         behaviour=same
       else
         behaviour=differs
+        mkdir -p "$OUT/diffs"
+        diff <(printf '%s\n' "$expected") <(printf '%s\n' "${actual:-}") > "$OUT/diffs/$program.$label.txt" || true
       fi
     else
       behaviour=tool-failed
