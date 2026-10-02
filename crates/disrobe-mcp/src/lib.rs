@@ -1931,7 +1931,11 @@ mod tests {
         let Json(out): Json<BehaviorOut> = mcp
             .behavior(Parameters(BehaviorParams {
                 bytes_b64: b64(b"placeholder"),
-                imports: vec!["WSAStartup".to_owned(), "connect".to_owned()],
+                imports: vec![
+                    "WSAStartup".to_owned(),
+                    "connect".to_owned(),
+                    "URLDownloadToFileW".to_owned(),
+                ],
             }))
             .unwrap();
         assert_eq!(out.schema, disrobe_core::behavior::BEHAVIOR_SCHEMA);
@@ -1941,7 +1945,7 @@ mod tests {
             .map(|c: &CategoryFindingOut| c.category.as_str())
             .collect();
         assert!(cats.contains(&"network"), "categories: {cats:?}");
-        assert!(out.attack_ids.iter().any(|a: &String| a.starts_with('T')));
+        assert_eq!(out.attack_ids, vec!["T1105".to_owned()]);
     }
 
     #[test]
