@@ -1253,9 +1253,13 @@ fn terser_minified_programs_keep_their_output_through_unminify() {
             &expected,
             &recovered.text_stage,
         )
-        .and_then(|()| match &recovered.ast_stage {
-            Some(ast_stage) => grade(&format!("seed {seed} ast stage"), &expected, ast_stage),
-            None => Ok(()),
+        .and_then(|()| {
+            recovered
+                .ast_stage
+                .as_ref()
+                .map_or(Ok(()), |ast_stage: &String| {
+                    grade(&format!("seed {seed} ast stage"), &expected, ast_stage)
+                })
         });
         if let Err(failure) = graded {
             divergent.insert(*seed, failure);
