@@ -14,7 +14,7 @@ use disrobe_testkit::{CommandSpec, ToolOutput, tool_output};
 use ruby_toolchain::{ToolchainBanner, require_exact_mri_recompile};
 
 const GRADED: &str = "the generated Ruby program differential";
-const PROGRAMS: u64 = 300;
+const PROGRAMS: u64 = 500;
 const RUN_TIMEOUT: Duration = Duration::from_secs(20);
 const VARIABLES: [&str; 5] = ["a", "b", "c", "d", "e"];
 const MAX_BLOCK_DEPTH: u32 = 3;
