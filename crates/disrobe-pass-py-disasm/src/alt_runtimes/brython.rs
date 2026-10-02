@@ -59,9 +59,9 @@ pub fn detect(bytes: &[u8]) -> bool {
     } else {
         bytes
     };
-    has_marker(head, BRYTHON_RUNTIME_MARKER.as_bytes())
-        || has_marker(head, BRYTHON_MODULE_MARKER.as_bytes())
-        || has_marker(head, BRYTHON_AST_MARKER.as_bytes())
+    has_code_marker(head, BRYTHON_RUNTIME_MARKER.as_bytes())
+        || has_code_marker(head, BRYTHON_MODULE_MARKER.as_bytes())
+        || has_code_marker(head, BRYTHON_AST_MARKER.as_bytes())
 }
 
 fn scan_markers(bytes: &[u8]) -> Vec<String> {
@@ -91,6 +91,47 @@ fn has_marker(haystack: &[u8], needle: &[u8]) -> bool {
     haystack.windows(needle.len()).any(|w: &[u8]| w == needle)
 }
 
+fn has_code_marker(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() || needle.len() > haystack.len() {
+        return false;
+    }
+    haystack
+        .windows(needle.len())
+        .enumerate()
+        .any(|(at, w): (usize, &[u8])| w == needle && in_code_position(&haystack[..at]))
+}
+
+fn in_code_position(before: &[u8]) -> bool {
+    before
+        .iter()
+        .rev()
+        .find(|&&b: &&u8| b != b' ' && b != b'\t')
+        .is_none_or(|&b: &u8| {
+            matches!(
+                b,
+                b'\n'
+                    | b'\r'
+                    | b';'
+                    | b'{'
+                    | b'}'
+                    | b'('
+                    | b'['
+                    | b'='
+                    | b','
+                    | b'!'
+                    | b'&'
+                    | b'|'
+                    | b'?'
+                    | b':'
+                    | b'+'
+                    | b'.'
+                    | b'"'
+                    | b'\''
+                    | b'>'
+            )
+        })
+}
+
 fn scale_confidence(confidence: f32) -> u32 {
     let scaled: f32 = (confidence * 100.0_f32).clamp(0.0_f32, 100.0_f32);
     scaled.round() as u32
@@ -113,6 +154,20 @@ mod tests {
     fn detect_rejects_non_brython_js() {
         let bytes: &[u8] = b"const x = 1; console.log(x);";
         assert!(!detect(bytes));
+    }
+
+    #[test]
+    fn detect_rejects_prose_that_names_the_markers() {
+        let bytes: &[u8] = b"Brython keys its runtime off the global __BRYTHON__ object via \
+            the __BRYTHON__.loadBrythonPackage call; the legacy $B.modules variable is gone.";
+        assert!(!detect(bytes));
+    }
+
+    #[test]
+    fn detect_finds_a_package_script() {
+        let bytes: &[u8] =
+            b"__BRYTHON__.loadBrythonPackage({\"hellopkg\": [\".py\", \"x = 1\n\", [], 1]})";
+        assert!(detect(bytes));
     }
 
     #[test]
