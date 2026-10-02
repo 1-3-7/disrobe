@@ -15,6 +15,9 @@ use ruby_toolchain::{ToolchainBanner, require_exact_mri_recompile};
 
 const GRADED: &str = "the generated Ruby program differential";
 const PROGRAMS: u64 = 500;
+const RICH_FIRST: u64 = 1_000_000;
+const RICH_PROGRAMS: u64 = 200;
+const RICH_KNOWN_DIVERGENT: [u64; 0] = [];
 const RUN_TIMEOUT: Duration = Duration::from_secs(20);
 const VARIABLES: [&str; 5] = ["a", "b", "c", "d", "e"];
 const MAX_BLOCK_DEPTH: u32 = 3;
@@ -22,6 +25,7 @@ const MAX_BLOCK_DEPTH: u32 = 3;
 struct Generator {
     state: u64,
     serial: u32,
+    rich: bool,
 }
 
 impl Generator {
@@ -29,6 +33,7 @@ impl Generator {
         Self {
             state: seed ^ 0x9E37_79B9_7F4A_7C15,
             serial: 0,
+            rich: seed >= RICH_FIRST,
         }
     }
 
@@ -121,6 +126,10 @@ impl Generator {
 
     fn statement(&mut self, depth: u32, indent: usize, out: &mut String) {
         let pad: String = "  ".repeat(indent);
+        if self.rich && self.below(3) == 0 {
+            self.rich_statement(depth, indent, out);
+            return;
+        }
         let choice: u64 = if depth >= MAX_BLOCK_DEPTH {
             self.below(5)
         } else {
@@ -238,6 +247,133 @@ impl Generator {
         }
     }
 
+    fn rich_statement(&mut self, depth: u32, indent: usize, out: &mut String) {
+        let pad: String = "  ".repeat(indent);
+        self.serial += 1;
+        let n: u32 = self.serial;
+        let target: &str = self.variable();
+        let line = |out: &mut String, text: &str| {
+            writeln!(out, "{pad}{text}").expect("write to a String");
+        };
+        match self.below(14) {
+            0 => {
+                let value: String = self.arithmetic(1);
+                line(out, &format!("s << \"#{{{value}}}-\""));
+                line(out, "s = s[-20..] if s.length > 40");
+            }
+            1 => {
+                let key: String = self.arithmetic(1);
+                let value: String = self.arithmetic(1);
+                line(
+                    out,
+                    &format!("h[({key}) % 5] = (h[({key}) % 5] || 0) + {value}"),
+                );
+            }
+            2 => {
+                let factor: &str = self.variable();
+                let argument: String = self.arithmetic(1);
+                line(
+                    out,
+                    &format!("{target} = twice({argument}) {{ |y| (y * {factor}) % 97 }}"),
+                );
+            }
+            3 => {
+                let captured: &str = self.variable();
+                let argument: String = self.arithmetic(1);
+                line(out, &format!("l{n} = ->(x) {{ (x + {captured}) % 97 }}"));
+                line(out, &format!("{target} = l{n}.call({argument})"));
+            }
+            4 => {
+                let first: &str = self.variable();
+                let second: &str = self.variable();
+                line(
+                    out,
+                    &format!("{first}, {second} = {second}, ({first} + 1) % 1000"),
+                );
+            }
+            5 => {
+                let count: u64 = 1 + self.below(4);
+                line(out, &format!("{count}.times do |k{n}|"));
+                line(out, &format!("  {target} = ({target} + k{n} * 3) % 1000"));
+                self.loop_body(depth, indent, out);
+                line(out, "end");
+            }
+            6 => {
+                let last: u64 = 2 + self.below(8);
+                line(
+                    out,
+                    &format!(
+                        "(0..{last}).step(2) {{ |j{n}| {target} = ({target} + j{n}) % 1000 }}"
+                    ),
+                );
+            }
+            7 => {
+                let limit: u64 = 1 + self.below(3);
+                line(out, &format!("tries{n} = 0"));
+                line(out, "begin");
+                line(out, &format!("  tries{n} += 1"));
+                line(
+                    out,
+                    &format!("  raise ArgumentError, \"again\" if tries{n} < {limit}"),
+                );
+                line(out, &format!("  {target} = ({target} + tries{n}) % 1000"));
+                line(out, "rescue ArgumentError");
+                line(out, &format!("  retry if tries{n} < 3"));
+                line(out, "end");
+            }
+            8 => {
+                let first: String = self.arithmetic(1);
+                let second: String = self.arithmetic(1);
+                let (one, two): (String, String) = (self.arithmetic(1), self.arithmetic(1));
+                line(out, &format!("case [({first}) % 3, ({second}) % 2]"));
+                line(out, "in [0, _]");
+                line(out, &format!("  {target} = {one} % 1000"));
+                line(out, "in [1, 1]");
+                line(out, &format!("  emit({two})"));
+                line(out, "else");
+                line(out, "  emit(\"none\")");
+                line(out, "end");
+            }
+            9 => {
+                let fallback: String = self.atom();
+                line(
+                    out,
+                    &format!("{target} = (t.empty? ? nil : t.first)&.+(1) || {fallback}"),
+                );
+                line(out, &format!("{target} %= 1000"));
+            }
+            10 => {
+                let shown: &str = self.variable();
+                line(out, &format!("emit(format(\"%03d\", {shown} % 1000))"));
+            }
+            11 => {
+                let start: String = self.atom();
+                line(
+                    out,
+                    &format!("{target} = t.inject({start}) {{ |acc, x| (acc + x) % 1000 }}"),
+                );
+            }
+            12 => {
+                let cond: String = self.condition();
+                line(out, &format!("t.each_with_index do |x{n}, i{n}|"));
+                line(
+                    out,
+                    &format!("  {target} = ({target} + x{n} * i{n}) % 1000"),
+                );
+                line(out, &format!("  break if {cond}"));
+                line(out, "end");
+            }
+            _ => {
+                let cond: String = self.condition();
+                line(out, "catch(:done) do");
+                line(out, &format!("  {target} = ({target} + 7) % 1000"));
+                line(out, &format!("  throw :done if {cond}"));
+                line(out, &format!("  {target} = ({target} * 3) % 1000"));
+                line(out, "end");
+            }
+        }
+    }
+
     fn loop_body(&mut self, depth: u32, indent: usize, out: &mut String) {
         self.block(depth + 1, indent + 1, out);
         let pad: String = "  ".repeat(indent + 1);
@@ -263,11 +399,20 @@ impl Generator {
             "def f(x)\n  return x - {k} if x > {k}\n  x + {k}\nend\n"
         )
         .expect("write to a String");
+        if self.rich {
+            out.push_str("def twice(x)\n  yield(x) + yield(x + 1)\nend\n\n");
+        }
         out.push_str("def main\n  t = []\n");
+        if self.rich {
+            out.push_str("  s = +\"\"\n  h = {}\n");
+        }
         for name in VARIABLES {
             writeln!(out, "  {name} = {}", self.below(10)).expect("write to a String");
         }
         self.block(0, 1, &mut out);
+        if self.rich {
+            out.push_str("  emit(s)\n  emit(h.sort.inspect)\n");
+        }
         out.push_str(
             "  emit(a)\n  emit(b)\n  emit(c)\n  emit(d)\n  emit(e)\n  emit(t.inspect)\nend\n\nmain\nputs $out.join(\" \")\n",
         );
@@ -312,6 +457,68 @@ fn recover_source(ruby: &Path, dir: &Path, name: &str, source: &str) -> String {
         .unwrap_or_else(|| panic!("{name}: a YARV analysis"))
         .decompiled
         .source
+}
+
+fn divergent_seeds(
+    ruby: &Path,
+    dir: &Path,
+    seeds: std::ops::Range<u64>,
+) -> std::collections::BTreeMap<u64, String> {
+    let mut failures: std::collections::BTreeMap<u64, String> = std::collections::BTreeMap::new();
+    for seed in seeds {
+        let source: String = Generator::new(seed).program();
+        let name: String = format!("gen{seed}");
+        let original_path: PathBuf = dir.join(format!("{name}.orig.rb"));
+        std::fs::write(&original_path, &source).expect("write original");
+        let expected: String = run(ruby, &original_path).unwrap_or_else(|error: String| {
+            panic!("seed {seed}: the generated program must run: {error}\n{source}")
+        });
+        let recovered: String = recover_source(ruby, dir, &name, &source);
+        let recovered_path: PathBuf = dir.join(format!("{name}.dec.rb"));
+        std::fs::write(&recovered_path, &recovered).expect("write recovered");
+        let actual: Result<String, String> = run(ruby, &recovered_path);
+        if actual.as_deref() != Ok(expected.as_str()) {
+            let shown: String = actual.unwrap_or_else(|error: String| format!("<failed: {error}>"));
+            failures.insert(
+                seed,
+                format!(
+                    "seed {seed}\n--- expected ---\n{expected}--- actual ---\n{shown}\n--- source ---\n{source}--- recovered ---\n{recovered}"
+                ),
+            );
+        }
+    }
+    failures
+}
+
+#[test]
+fn generated_rich_programs_reexecute_identically_ruby_3_4() {
+    let toolchain: ToolchainBanner = require_exact_mri_recompile(GRADED);
+    let ruby: PathBuf = PathBuf::from(&toolchain.executable);
+    let scratch: ScratchDir =
+        ScratchDir::create("disrobe_ruby_generated_rich").expect("create scratch directory");
+    let failures: std::collections::BTreeMap<u64, String> = divergent_seeds(
+        &ruby,
+        scratch.path(),
+        RICH_FIRST..RICH_FIRST + RICH_PROGRAMS,
+    );
+    let pinned: std::collections::BTreeSet<u64> = RICH_KNOWN_DIVERGENT.into_iter().collect();
+    let divergent: std::collections::BTreeSet<u64> = failures.keys().copied().collect();
+    let regressed: Vec<u64> = divergent.difference(&pinned).copied().collect();
+    let fixed: Vec<u64> = pinned.difference(&divergent).copied().collect();
+    let shown: Vec<&str> = failures
+        .iter()
+        .filter(|(seed, _): &(&u64, &String)| !pinned.contains(seed))
+        .map(|(_, why): (&u64, &String)| why.as_str())
+        .take(4)
+        .collect();
+    assert!(
+        regressed.is_empty() && fixed.is_empty(),
+        "{} of {RICH_PROGRAMS} rich generated Ruby programs re-executed differently; the divergent \
+         set must equal RICH_KNOWN_DIVERGENT exactly, which only ever shrinks. Newly divergent: \
+         {regressed:?}. Now recovered, remove from RICH_KNOWN_DIVERGENT: {fixed:?}.\n{}",
+        failures.len(),
+        shown.join("\n=====\n")
+    );
 }
 
 #[test]
@@ -372,6 +579,29 @@ fn the_ruby_generator_is_deterministic_and_varied() {
         " ? ",
     ] {
         assert!(all.contains(shape), "the corpus never generates `{shape}`");
+    }
+    let rich: String = (RICH_FIRST..RICH_FIRST + RICH_PROGRAMS)
+        .map(|seed: u64| Generator::new(seed).program())
+        .collect();
+    for shape in [
+        "s << \"#{",
+        "h[(",
+        "twice(",
+        " = ->(x) { ",
+        ".times do |k",
+        ".step(2) { |j",
+        "retry if tries",
+        "in [0, _]",
+        "&.+(1)",
+        "format(\"%03d\"",
+        ".inject(",
+        ".each_with_index do |x",
+        "catch(:done) do",
+    ] {
+        assert!(
+            rich.contains(shape),
+            "the rich corpus never generates `{shape}`"
+        );
     }
 }
 
