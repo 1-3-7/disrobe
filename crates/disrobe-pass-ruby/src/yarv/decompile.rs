@@ -403,15 +403,27 @@ fn try_render_exception_region(
     ctx: &DecompileContext<'_>,
     depth: u32,
 ) -> Option<Vec<String>> {
-    let rescue: Option<&YarvCatchEntry> =
-        body.catch_entries.iter().find(|e| is_user_rescue(e, ctx));
+    let rescue: Option<&YarvCatchEntry> = body
+        .catch_entries
+        .iter()
+        .filter(|e| is_user_rescue(e, ctx))
+        .min_by_key(|e| (e.start_pc, std::cmp::Reverse(e.end_pc)));
     let ensure: Option<&YarvCatchEntry> = body
         .catch_entries
         .iter()
         .find(|e| e.catch_type == CatchType::Ensure && e.handler_iseq.is_some());
-    if rescue.is_none() && ensure.is_none() {
-        return None;
-    }
+    let (rescue, ensure): (Option<&YarvCatchEntry>, Option<&YarvCatchEntry>) =
+        match (rescue, ensure) {
+            (None, None) => return None,
+            (Some(r), Some(e)) if e.start_pc > r.start_pc || e.end_pc < r.end_pc => {
+                if r.start_pc < e.start_pc {
+                    (Some(r), None)
+                } else {
+                    (None, Some(e))
+                }
+            }
+            pair => pair,
+        };
     if body
         .catch_entries
         .iter()

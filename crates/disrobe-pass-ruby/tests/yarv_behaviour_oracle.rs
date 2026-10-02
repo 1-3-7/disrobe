@@ -199,6 +199,11 @@ fn a_rescue_in_a_tail_case_arm_stays_in_its_arm() {
 }
 
 #[test]
+fn a_rescue_and_a_later_ensure_stay_separate_blocks() {
+    assert_same_output("rescue_then_ensure.rb");
+}
+
+#[test]
 fn an_if_without_else_in_a_case_arm_ends_at_the_arm() {
     assert_same_output("case_arm_if.rb");
 }
