@@ -28,7 +28,7 @@ use php_toolchain::{
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-const PROGRAMS: [&str; 21] = [
+const PROGRAMS: [&str; 22] = [
     "anonymous",
     "arrays",
     "branches",
@@ -42,6 +42,7 @@ const PROGRAMS: [&str; 21] = [
     "foreach_forms",
     "generators",
     "juggling",
+    "loop_in_try",
     "loops",
     "operators",
     "references",

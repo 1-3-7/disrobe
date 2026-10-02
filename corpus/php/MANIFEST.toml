@@ -327,3 +327,10 @@ source_tool = "manual (PHP 8.4 strict behaviour program)"
 size_bytes = 700
 sha256 = "97a938d7b72f964b1b990c753a4d3b7844280305b7b1a7b0c0285bc3a64ed774"
 notes = "Strict behaviour program compiled to an opcache file-cache image by PHP 8.4, decompiled from that image and re-run; stdout must match byte for byte (tests/php_behaviour_strict.rs). Covers try/catch and try/catch/finally inside switch cases followed by break, where the optimizer threads the post-try jump straight to the switch exit."
+
+[[sample]]
+name = "behaviour/loop_in_try.php"
+source_tool = "manual (PHP 8.4 strict behaviour program)"
+size_bytes = 808
+sha256 = "d1dc96adb01c2d9ec08c8bfd9d181f0f98f369415025c28f51d1c44caf315e6c"
+notes = "Strict behaviour program compiled to an opcache file-cache image by PHP 8.4, decompiled from that image and re-run; stdout must match byte for byte (tests/php_behaviour_strict.rs). Covers do-while loops with short-circuit conditions as the last statement of a try body with catch and finally, where the optimizer threads the loop exit straight to the finally call."

@@ -1481,8 +1481,9 @@ impl SkeletonEmitter {
 
     fn emit_body(&mut self, node: &OpArray, indent: usize) {
         let classes: Vec<ClassDecl> = std::mem::take(&mut self.classes);
+        let ops: Vec<Op> = unthread_try_exits(&node.ops, &node.try_catch);
         let mut lifter: Lifter<'_> = Lifter::new(
-            &node.ops,
+            &ops,
             &node.literals,
             &node.var_names,
             &node.try_catch,
@@ -3548,6 +3549,13 @@ impl<'a> Lifter<'a> {
 
     fn structure_do_while(&mut self, i: u32, end: u32, depth: u32) -> Option<(Vec<Stmt>, u32)> {
         let jump_idx: u32 = self.find_back_jump(i, end)?;
+        if let Some(tests) = self.do_while_test_chain(i, jump_idx, end) {
+            let snapshot: LiftSnapshot = self.lift_snapshot();
+            if let Some(chained) = self.structure_chained_do_while(i, &tests, depth) {
+                return Some(chained);
+            }
+            self.restore_lift_snapshot(snapshot);
+        }
         if self.entered_from_outside(i, jump_idx.saturating_add(1)) {
             return None;
         }
@@ -3577,6 +3585,145 @@ impl<'a> Lifter<'a> {
                 body,
             }],
             jump_idx + 1,
+        ))
+    }
+
+    fn loop_test(&self, index: u32) -> Option<&Op> {
+        self.ops.get(index as usize).filter(|op: &&Op| {
+            (op.opcode == op::JMPZ || op.opcode == op::JMPNZ)
+                && op.result_type == OperandType::Unused
+        })
+    }
+
+    fn do_while_test_chain(&self, head: u32, first: u32, end: u32) -> Option<Vec<u32>> {
+        let mut last: u32 = first;
+        let mut cursor: u32 = first.checked_add(1)?;
+        while cursor < end {
+            let op: &Op = self.ops.get(cursor as usize)?;
+            if let Some(test) = self.loop_test(cursor) {
+                if test.op2 == head {
+                    last = cursor;
+                } else if test.op2 <= cursor {
+                    break;
+                }
+            } else if !matches!(op.branch_target(), Branch::None)
+                || matches!(
+                    op.opcode,
+                    op::FAST_CALL
+                        | op::CATCH
+                        | op::SWITCH_LONG
+                        | op::SWITCH_STRING
+                        | op::MATCH
+                        | op::FE_FETCH_R
+                        | op::FE_FETCH_RW
+                )
+            {
+                break;
+            }
+            cursor += 1;
+        }
+        let exit: u32 = last.checked_add(1)?;
+        let mut tests: Vec<u32> = (first..=last)
+            .filter(|&k: &u32| self.loop_test(k).is_some())
+            .collect();
+        let mut start: u32 = self.condition_start(self.ops.get(first as usize)?, head, first);
+        while let Some(previous) = start.checked_sub(1).filter(|&p: &u32| p > head) {
+            let Some(test) = self.loop_test(previous) else {
+                break;
+            };
+            if test.op2 != head && test.op2 != exit {
+                break;
+            }
+            tests.insert(0, previous);
+            start = self.condition_start(test, head, previous);
+        }
+        let well_formed: bool = tests.len() > 1
+            && tests.iter().all(|&k: &u32| {
+                self.ops
+                    .get(k as usize)
+                    .is_some_and(|test: &Op| test.op2 == head || test.op2 == exit)
+            })
+            && self
+                .ops
+                .get(last as usize)
+                .is_some_and(|test: &Op| test.op2 == head)
+            && !self
+                .jump_sources
+                .range(start.saturating_add(1)..=last)
+                .any(|(_, sources): (&u32, &Vec<u32>)| !sources.is_empty())
+            && self
+                .jump_sources
+                .get(&start)
+                .is_none_or(|sources: &Vec<u32>| {
+                    sources
+                        .iter()
+                        .all(|&source: &u32| source >= head && source < start)
+                })
+            && !self.entered_from_outside(head, start);
+        well_formed.then_some(tests)
+    }
+
+    fn structure_chained_do_while(
+        &mut self,
+        head: u32,
+        tests: &[u32],
+        depth: u32,
+    ) -> Option<(Vec<Stmt>, u32)> {
+        let (&first, &last): (&u32, &u32) = (tests.first()?, tests.last()?);
+        let exit: u32 = last.checked_add(1)?;
+        let cond_start: u32 = self.condition_start(self.ops.get(first as usize)?, head, first);
+        let (body, _): (Vec<Stmt>, BTreeSet<u32>) = self.lift_breakable_body(
+            BreakableFrame {
+                body_start: head,
+                body_end: cond_start,
+                continue_target: cond_start,
+                break_target: exit,
+                iterator: None,
+                unexplained_targets: BTreeSet::new(),
+            },
+            depth,
+        );
+        let mut conditions: Vec<(Expr, bool, bool)> = Vec::with_capacity(tests.len());
+        let mut start: u32 = cond_start;
+        for &test_idx in tests {
+            let test: Op = self.ops.get(test_idx as usize)?.clone();
+            let condition: Expr = self.lift_condition(start, test_idx, &test)?;
+            conditions.push((condition, test.opcode == op::JMPNZ, test.op2 == head));
+            start = test_idx.checked_add(1)?;
+        }
+        let negated = |condition: &Expr, when_true: bool| -> Expr {
+            if when_true {
+                condition.clone()
+            } else {
+                Expr {
+                    text: format!("!{}", condition.wrapped(PREC_NOT)),
+                    prec: PREC_NOT,
+                }
+            }
+        };
+        let (last_condition, last_when_true, _): (Expr, bool, bool) = conditions.pop()?;
+        let mut folded: Expr = negated(&last_condition, last_when_true);
+        while let Some((condition, when_true, continues)) = conditions.pop() {
+            folded = if continues {
+                let left: Expr = negated(&condition, when_true);
+                Expr {
+                    text: format!("{} || {}", left.wrapped(PREC_OR), folded.wrapped(PREC_OR)),
+                    prec: PREC_OR,
+                }
+            } else {
+                let left: Expr = negated(&condition, !when_true);
+                Expr {
+                    text: format!("{} && {}", left.wrapped(PREC_AND), folded.wrapped(PREC_AND)),
+                    prec: PREC_AND,
+                }
+            };
+        }
+        Some((
+            vec![Stmt::DoWhile {
+                cond: folded.text,
+                body,
+            }],
+            exit,
         ))
     }
 
@@ -3767,8 +3914,9 @@ impl<'a> Lifter<'a> {
         } else {
             format!("{head}({params}) use ({}){returns}", uses.join(", "))
         };
+        let child_ops: Vec<Op> = unthread_try_exits(&child.ops, &child.try_catch);
         let mut inner: Lifter<'_> = Lifter::new(
-            &child.ops,
+            &child_ops,
             &child.literals,
             &child.var_names,
             &child.try_catch,
@@ -7022,6 +7170,39 @@ fn render_parameters(node: &OpArray, signature: &Signature) -> (String, Option<&
         rendered.push(text);
     }
     (rendered.join(", "), refusal)
+}
+
+fn unthread_try_exits(ops: &[Op], try_catch: &[TryCatch]) -> Vec<Op> {
+    let mut unthreaded: Vec<Op> = ops.to_vec();
+    for entry in try_catch {
+        let Some(boundary): Option<u32> = entry.catch_op.and_then(|c: u32| c.checked_sub(1)) else {
+            continue;
+        };
+        let Some(exit): Option<u32> = ops
+            .get(boundary as usize)
+            .filter(|skip: &&Op| skip.opcode == op::JMP && skip.op1 > boundary)
+            .map(|skip: &Op| skip.op1)
+            .filter(|&gate: &u32| {
+                ops.get(gate as usize)
+                    .is_some_and(|call: &Op| call.opcode == op::FAST_CALL)
+            })
+        else {
+            continue;
+        };
+        let body: std::ops::Range<usize> = entry.try_op as usize..boundary as usize;
+        for jump in unthreaded.get_mut(body).into_iter().flatten() {
+            if jump.opcode == op::JMP && jump.op1 == exit {
+                jump.op1 = boundary;
+            } else if matches!(
+                jump.opcode,
+                op::JMPZ | op::JMPNZ | op::JMPZ_EX | op::JMPNZ_EX
+            ) && jump.op2 == exit
+            {
+                jump.op2 = boundary;
+            }
+        }
+    }
+    unthreaded
 }
 
 fn never_falls_through(op: &Op) -> bool {
