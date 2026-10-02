@@ -1301,6 +1301,7 @@ pub(super) struct CompoundIf {
     pub(super) test: Expr,
     pub(super) last_jump: usize,
     pub(super) exit_target: Option<usize>,
+    pub(super) body: usize,
 }
 
 fn body_entry_index(stream: &DecodedStream, from: usize, hi: usize) -> usize {
@@ -1346,6 +1347,7 @@ pub(super) fn try_recover_compound_if(
             test: guard.test,
             last_jump: guard.last_jump,
             exit_target: None,
+            body: guard.body_start,
         }));
     }
     let Some(first_jump): Option<usize> = (lo..hi).find(|&i: &usize| {
@@ -1432,6 +1434,7 @@ pub(super) fn try_recover_compound_if(
         test,
         last_jump,
         exit_target: canonical_exit.filter(|&c: &usize| c < exit),
+        body,
     }))
 }
 

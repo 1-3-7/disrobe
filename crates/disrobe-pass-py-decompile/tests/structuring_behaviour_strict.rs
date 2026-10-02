@@ -28,23 +28,27 @@ struct Lane {
 const LANE_314: Lane = Lane {
     fixtures: "tests/fixtures/structuring_behaviour",
     interpreter: "3.14",
-    min_cases: 25,
+    min_cases: 31,
     behaviour_only: &[
         "elif_and_guard_before_try",
+        "elif_arm_statement_then_try",
         "for_try_break_first",
         "for_try_break_nested_for",
+        "guarded_try_finally_in_while_body",
     ],
 };
 
 const LANE_312: Lane = Lane {
     fixtures: "tests/fixtures/structuring_behaviour_312",
     interpreter: "3.12",
-    min_cases: 8,
+    min_cases: 13,
     behaviour_only: &[
         "bottom_guarded_continue_loop",
         "elif_and_guard_before_try",
+        "elif_arm_statement_then_try",
         "elif_arm_try_in_loop",
         "else_arm_while_in_loop",
+        "guarded_try_finally_in_while_body",
     ],
 };
 

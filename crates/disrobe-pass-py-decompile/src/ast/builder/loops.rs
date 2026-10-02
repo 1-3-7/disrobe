@@ -927,13 +927,22 @@ pub(super) fn loop_is_else_arm_of_leading_if(
             return resolve_jump_target(stream, then_jump, &stream.ops[then_jump])
                 .is_some_and(|t: usize| t >= loop_end && t <= hi);
         }
+        let then_arm_holds_statement: bool = last_significant_back(stream, guard + 1, cond_target)
+            .is_some_and(|k: usize| first_significant(stream, guard + 1, k).is_some())
+            && !(lo..guard).any(|k: usize| {
+                is_back_edge(&stream.ops[k])
+                    && resolve_jump_target(stream, k, &stream.ops[k])
+                        .is_some_and(|t: usize| t >= lo)
+            });
         loop_continue_target().is_some_and(|outer: usize| {
             outer < lo
-                && first_significant(stream, loop_end, hi).is_none_or(|latch: usize| {
-                    is_back_edge(&stream.ops[latch])
-                        && resolve_jump_target(stream, latch, &stream.ops[latch]) == Some(outer)
-                        && first_significant(stream, latch + 1, hi).is_none()
-                })
+                && ((then_arm_holds_statement
+                    && active_loop_body_end().is_some_and(|body_end: usize| hi >= body_end))
+                    || first_significant(stream, loop_end, hi).is_none_or(|latch: usize| {
+                        is_back_edge(&stream.ops[latch])
+                            && resolve_jump_target(stream, latch, &stream.ops[latch]) == Some(outer)
+                            && first_significant(stream, latch + 1, hi).is_none()
+                    }))
                 && last_significant_back(stream, guard + 1, cond_target).is_some_and(|k: usize| {
                     is_back_edge(&stream.ops[k])
                         && resolve_jump_target(stream, k, &stream.ops[k]) == Some(outer)
@@ -2300,6 +2309,23 @@ fn rotated_latch_after_continue(
     })
 }
 
+fn header_inside_try_opened_after(stream: &DecodedStream, lo: usize, header: usize) -> bool {
+    if stream.is_pre_311() {
+        return false;
+    }
+    let (Some(&lo_off), Some(&header_off)): (Option<&u32>, Option<&u32>) =
+        (stream.offsets.get(lo), stream.offsets.get(header))
+    else {
+        return false;
+    };
+    stream
+        .exception_table
+        .iter()
+        .any(|e: &crate::bytecode::flow::ExceptionTableEntry| {
+            !e.lasti && e.start > lo_off && e.start <= header_off && header_off < e.end()
+        })
+}
+
 pub(super) fn find_loop(stream: &DecodedStream, lo: usize, hi: usize) -> Option<LoopRegion> {
     let hi: usize = hi.min(stream.ops.len());
     if lo >= hi {
@@ -2313,9 +2339,11 @@ pub(super) fn find_loop(stream: &DecodedStream, lo: usize, hi: usize) -> Option<
     }
     let comp_envelopes: Vec<(usize, usize)> = inline_comp_envelopes(stream, lo, hi);
     let for_region: Option<LoopRegion> = find_for_loop(stream, lo, hi, &comp_envelopes);
-    if for_region.is_some() {
-        return for_region;
-    }
+    let deferred_for: Option<LoopRegion> = match for_region {
+        Some(region) if header_inside_try_opened_after(stream, lo, region.header) => Some(region),
+        Some(region) => return Some(region),
+        None => None,
+    };
     let mut best: Option<LoopRegion> = None;
     for j in lo..hi {
         if in_any_envelope(&comp_envelopes, j) {
@@ -2531,7 +2559,11 @@ pub(super) fn find_loop(stream: &DecodedStream, lo: usize, hi: usize) -> Option<
             }
         }
     }
-    best
+    match (best, deferred_for) {
+        (Some(earlier), Some(region)) if earlier.header < region.header => Some(earlier),
+        (_, Some(region)) => Some(region),
+        (best, None) => best,
+    }
 }
 
 fn inverted_inner_latch(
@@ -3199,6 +3231,25 @@ fn while_break_handler_try(
         || !handler_after_body
         || try_enclosed_by_leading_guard(stream, region.body_start, hi, &region_try)
         || try_nested_in_inner_loop(stream, region, &region_try)
+        || (region.body_start..try_start).any(|guard: usize| {
+            is_forward_cond_jump(&stream.ops[guard])
+                && !is_chain_cond_jump(&stream.ops, guard)
+                && resolve_jump_target(stream, guard, &stream.ops[guard]).is_some_and(|t: usize| {
+                    t > try_start
+                        && t <= region.back_edge
+                        && last_significant_back(stream, try_start, t).is_some_and(|k: usize| {
+                            !matches!(
+                                stream.ops[k],
+                                CanonicalOp::JumpBackward(_)
+                                    | CanonicalOp::JumpBackwardNoInterrupt(_)
+                                    | CanonicalOp::Return
+                                    | CanonicalOp::ReturnConst(_)
+                                    | CanonicalOp::Raise(_)
+                                    | CanonicalOp::Reraise(_)
+                            )
+                        })
+                })
+        })
     {
         return None;
     }

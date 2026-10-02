@@ -30,8 +30,9 @@ use super::try_with::{
     LoopKind, LoopRegion, TryRegion, cold_section_start, cold_try_encloses,
     extend_window_over_split_handler, find_try_region, foreign_cold_handler_in,
     guard_owns_cold_try, guard_test_expr_start, is_async_send_back_edge, is_back_edge,
-    is_forward_cond_jump, is_shortcircuit_cleanup_pop, is_value_boundary,
-    is_value_form_shortcircuit, leading_guard_prelude_split, loop_inside_unpeeled_pre311_try,
+    is_cond_back_edge, is_cond_jump_with_backward_target, is_forward_cond_jump,
+    is_shortcircuit_cleanup_pop, is_value_boundary, is_value_form_shortcircuit,
+    leading_guard_prelude_split, loop_inside_unpeeled_pre311_try,
     preflight_guarded_finally_raise_mismatch, recover_return_at,
     region_is_handler_exit_scaffolding, region_is_linear, skip_await_poll,
     skip_except_name_teardown, structure_cold_handler_try, structure_try,
@@ -1927,8 +1928,10 @@ fn structure_elif_chain_arm(
     lo: usize,
     hi: usize,
 ) -> Result<Vec<Stmt>> {
-    if let Some(chain) = recover_fallthrough_continue_chain(code, stream, lo, hi)?
-        && let Some(stmts) = split_try_continue_chain(stream, hi, chain)
+    if window_end_opens_try(stream, hi)
+        && !window_end_falls_to_loop_latch(stream, hi)
+        && let Some(chain) = recover_fallthrough_continue_chain(code, stream, lo, hi)?
+        && let Some(stmts) = structure_continue_chain(code, stream, hi, chain)?
     {
         return Ok(stmts);
     }
@@ -1941,9 +1944,13 @@ fn structure_elif_chain_arm(
         return rewrite_trailing_iterator_break(code, stream, arm, lo, hi);
     };
     let first_cond_tests_loop: bool = (first_cond + 1..hi).any(|k: usize| {
-        is_back_edge(&stream.ops[k])
-            && resolve_jump_target(stream, k, &stream.ops[k])
-                .is_some_and(|t: usize| t >= lo && t <= first_cond)
+        (is_back_edge(&stream.ops[k])
+            || is_cond_back_edge(&stream.ops[k])
+            || is_cond_jump_with_backward_target(stream, k))
+            && resolve_jump_target(stream, k, &stream.ops[k]).is_some_and(|t: usize| {
+                (t >= lo && t <= first_cond)
+                    || (t > first_cond && last_significant_back(stream, 0, t) == Some(first_cond))
+            })
     });
     if first_cond_tests_loop {
         return structure_stmts(code, stream, lo, hi);
@@ -2005,7 +2012,14 @@ fn structure_elif_chain_arm(
         })
     };
     let (head, test): (Vec<Stmt>, Expr) = if let Some(c) = compound {
-        (c.head, c.test)
+        let selects_arm: bool =
+            first_significant(stream, c.body, hi) == first_significant(stream, arm_body_start, hi);
+        let test: Expr = if selects_arm {
+            c.test
+        } else {
+            negate_bool_test(c.test)
+        };
+        (c.head, test)
     } else {
         let (head, residual): (Vec<Stmt>, Vec<Expr>) =
             build_linear_stmts_sim(code, &stream.ops[lo..cond_at])?;
@@ -2142,6 +2156,20 @@ fn else_region_rejoins(
         }
     }
     false
+}
+
+fn negate_bool_test(expr: Expr) -> Expr {
+    use crate::ast::node::BoolOpKind;
+    match expr {
+        Expr::BoolOp { op, values } => Expr::BoolOp {
+            op: match op {
+                BoolOpKind::And => BoolOpKind::Or,
+                BoolOpKind::Or => BoolOpKind::And,
+            },
+            values: values.into_iter().map(negate_bool_test).collect(),
+        },
+        other => negate_cond_expr(other),
+    }
 }
 
 fn jumps_to_copy_of_window_exit(stream: &DecodedStream, hi: usize, target: usize) -> bool {
@@ -6402,6 +6430,15 @@ fn structure_fallthrough_continue_and_chain(
     else {
         return Ok(None);
     };
+    structure_continue_chain(code, stream, hi, chain)
+}
+
+fn structure_continue_chain(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    hi: usize,
+    chain: FallthroughContinueChain,
+) -> Result<Option<Vec<Stmt>>> {
     if first_significant(stream, chain.body_start, hi).is_none() {
         return Ok(split_try_continue_chain(stream, hi, chain));
     }
@@ -6409,11 +6446,19 @@ fn structure_fallthrough_continue_and_chain(
     let body_end: usize = trim_body_back_edge(stream, body_start, hi);
     let body: Vec<Stmt> = structure_stmts(code, stream, body_start, body_end)?;
     let body: Vec<Stmt> = rewrite_jump_to_break_continue(code, stream, body, body_start, body_end);
+    let orelse: Vec<Stmt> = if first_significant(stream, body_end, hi).is_none()
+        && window_end_opens_try(stream, hi)
+        && !window_end_falls_to_loop_latch(stream, hi)
+    {
+        vec![Stmt::Continue]
+    } else {
+        Vec::new()
+    };
     let mut out: Vec<Stmt> = chain.head;
     out.push(Stmt::If {
         test: chain.test,
         body: non_empty(body),
-        orelse: Vec::new(),
+        orelse,
         line: None,
     });
     out.extend(structure_stmts(code, stream, body_end, hi)?);

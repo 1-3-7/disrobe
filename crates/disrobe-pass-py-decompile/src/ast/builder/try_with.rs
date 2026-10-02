@@ -9925,12 +9925,12 @@ fn recover_finally_continuation(
     if matches!(body.last(), Some(Stmt::Return(_) | Stmt::Raise { .. })) {
         return Ok(Vec::new());
     }
-    if fin_end <= fin_start {
-        return Ok(Vec::new());
-    }
-    let Some(cont_start): Option<usize> =
+    let cont_start: Option<usize> = if fin_end <= fin_start {
+        Some(copy_start)
+    } else {
         finally_inline_copy_end(stream, copy_start, boundary, fin_start, fin_end)
-    else {
+    };
+    let Some(cont_start): Option<usize> = cont_start else {
         return Ok(Vec::new());
     };
     if cont_start >= boundary || !slice_has_real_stmt(stream, cont_start, boundary) {

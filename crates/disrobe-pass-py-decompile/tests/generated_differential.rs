@@ -19,9 +19,8 @@ use crate::common::band::{
 use disrobe_testkit::{CommandSpec, ToolOutput, tool_output};
 
 const PROGRAMS: u64 = 300;
-const KNOWN_DIVERGENT: [u64; 23] = [
-    48, 73, 81, 100, 101, 112, 124, 157, 161, 164, 182, 192, 201, 213, 244, 255, 256, 259, 261,
-    280, 282, 291, 298,
+const KNOWN_DIVERGENT: [u64; 20] = [
+    48, 73, 81, 100, 101, 112, 124, 161, 164, 182, 201, 213, 244, 255, 256, 259, 280, 282, 291, 298,
 ];
 const RUN_TIMEOUT: Duration = Duration::from_secs(10);
 const VARIABLES: [&str; 5] = ["a", "b", "c", "d", "e"];
