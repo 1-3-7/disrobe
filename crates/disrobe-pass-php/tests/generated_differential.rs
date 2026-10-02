@@ -28,11 +28,14 @@ use php_toolchain::{
 };
 
 const GRADED: &str = "the generated PHP program differential";
-const PROGRAMS: u64 = 48;
+const PROGRAMS: u64 = 300;
 const VARIABLES: [&str; 5] = ["$a", "$b", "$c", "$d", "$e"];
 const MAX_BLOCK_DEPTH: u32 = 3;
 const SHOWN_FAILURES: usize = 6;
-const KNOWN_DIVERGENT: [u64; 6] = [0, 2, 7, 9, 34, 41];
+const KNOWN_DIVERGENT: [u64; 28] = [
+    2, 9, 61, 69, 73, 85, 97, 105, 113, 118, 120, 122, 142, 164, 188, 195, 203, 217, 226, 228, 229,
+    233, 243, 259, 265, 267, 295, 298,
+];
 
 struct Generator {
     state: u64,
