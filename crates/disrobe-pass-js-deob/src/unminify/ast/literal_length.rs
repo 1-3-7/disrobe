@@ -55,19 +55,38 @@ impl<'a> Visit<'a> for Collector {
 
 fn literal_length(object: &Expression<'_>) -> Option<usize> {
     match object {
-        Expression::ArrayExpression(array) => {
-            for element in &array.elements {
-                if matches!(
-                    element,
-                    ArrayExpressionElement::SpreadElement(_) | ArrayExpressionElement::Elision(_)
-                ) {
-                    return None;
-                }
-            }
-            Some(array.elements.len())
-        }
+        Expression::ArrayExpression(array) => array
+            .elements
+            .iter()
+            .all(element_has_no_effect)
+            .then_some(array.elements.len()),
         Expression::StringLiteral(string) => Some(string.value.as_str().encode_utf16().count()),
         _ => None,
+    }
+}
+
+fn element_has_no_effect(element: &ArrayExpressionElement<'_>) -> bool {
+    match element {
+        ArrayExpressionElement::SpreadElement(_) | ArrayExpressionElement::Elision(_) => false,
+        other => other.as_expression().is_some_and(expression_has_no_effect),
+    }
+}
+
+fn expression_has_no_effect(expr: &Expression<'_>) -> bool {
+    match expr.get_inner_expression() {
+        Expression::Identifier(_)
+        | Expression::NumericLiteral(_)
+        | Expression::StringLiteral(_)
+        | Expression::BooleanLiteral(_)
+        | Expression::NullLiteral(_)
+        | Expression::BigIntLiteral(_)
+        | Expression::RegExpLiteral(_)
+        | Expression::ThisExpression(_)
+        | Expression::FunctionExpression(_)
+        | Expression::ArrowFunctionExpression(_) => true,
+        Expression::TemplateLiteral(template) => template.expressions.is_empty(),
+        Expression::ArrayExpression(array) => array.elements.iter().all(element_has_no_effect),
+        _ => false,
     }
 }
 
@@ -122,6 +141,20 @@ mod tests {
         let (outcome, stats): (RuleOutcome, super::LiteralLengthStats) = recover(source);
         assert!(outcome.edits.is_empty());
         assert_eq!(stats.lengths_folded, 0);
+    }
+
+    #[test]
+    fn keeps_an_element_whose_evaluation_has_an_effect() {
+        for source in [
+            "var n = [o, o *= 2, n << 4].length;",
+            "var n = [f()].length;",
+            "var n = [a.b].length;",
+            "var n = [i++].length;",
+        ] {
+            let (outcome, stats): (RuleOutcome, super::LiteralLengthStats) = recover(source);
+            assert!(outcome.edits.is_empty(), "{source}");
+            assert_eq!(stats.lengths_folded, 0, "{source}");
+        }
     }
 
     #[test]
