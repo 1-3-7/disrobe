@@ -167,6 +167,7 @@ jobs:
           mkdir -p "dist/${STAGE}"
           cp "target/${{ matrix.target }}/release/disrobe" "dist/${STAGE}/"
           cp README.md LICENSE NOTICE LICENSING.md RELICENSING-NOTICE.md CONTRIBUTING-LICENSE.md SECURITY.md "dist/${STAGE}/"
+          cp crates/disrobe-sleigh/vendor/aarch64/LICENSE "dist/${STAGE}/LICENSE-APACHE-2.0"
           cd dist
           tar --zstd -cf "${STAGE}.tar.zst" "${STAGE}"
           if command -v sha256sum >/dev/null 2>&1; then
@@ -185,6 +186,7 @@ jobs:
           foreach ($f in @("README.md","LICENSE","NOTICE","LICENSING.md","RELICENSING-NOTICE.md","CONTRIBUTING-LICENSE.md","SECURITY.md")) {
             Copy-Item $f "dist/$stage/" -ErrorAction Stop
           }
+          Copy-Item "crates/disrobe-sleigh/vendor/aarch64/LICENSE" "dist/$stage/LICENSE-APACHE-2.0" -ErrorAction Stop
           Push-Location dist
           Compress-Archive -Path $stage -DestinationPath "$stage.zip" -Force
           $hash = (Get-FileHash -Algorithm SHA256 "$stage.zip").Hash.ToLower()

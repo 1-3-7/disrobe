@@ -67,3 +67,29 @@ CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
 LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT,
 NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
 CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+crates/disrobe-sleigh/vendor/aarch64/
+crates/disrobe-sleigh/vendor/arm/
+crates/disrobe-sleigh/vendor/mips/
+crates/disrobe-sleigh/vendor/powerpc/
+crates/disrobe-sleigh/vendor/riscv/
+
+The SLEIGH processor specifications in these directories, which Disrobe
+embeds in its binaries, are derived from the National Security Agency's
+Ghidra repository (https://github.com/NationalSecurityAgency/ghidra) and
+are used under the Apache License, Version 2.0. The license text is in
+each directory's LICENSE file and ships with Disrobe releases as
+LICENSE-APACHE-2.0. Ghidra's NOTICE reads:
+
+  Ghidra
+
+  This product includes software developed at National Security Agency
+  (https://www.nsa.gov)
+
+  Portions of this product were created by the U.S. Government and not
+  subject to U.S. copyright protections under 17 U.S.C.
+
+  The remaining portions are copyright their respective authors and have
+  been contributed under the terms of one or more open source licenses,
+  and made available to you under the terms of those licenses. (See
+  LICENSE)
