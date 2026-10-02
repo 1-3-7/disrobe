@@ -532,7 +532,7 @@ Exceeded: error 884, recorded 185, panic 0, delegated 49, silent 1005, unclassif
 | `disrobe-pass-as3` | `MAX_SPRITE_NESTING` | recursion | delegated: passed to `Self::accumulate_counts` | `usize` | `256` | `crates/disrobe-pass-as3/src/swf.rs` |
 | `disrobe-pass-as3` | `MAX_SWF_VERSION` | other | error: `Error::SwfUnsupportedVersion` (DR-AS3-0004) | `u8` | `40` | `crates/disrobe-pass-as3/src/swf.rs` |
 | `disrobe-pass-beam` | `MAX_EXPR_NODES` | count | recorded: flag `degraded` | `usize` | `1024` | `crates/disrobe-pass-beam/src/body_lift/expr.rs` |
-| `disrobe-pass-beam` | `MAX_LABEL_VISITS` | other | silent: `return` in `enter_label` | `u32` | `8` | `crates/disrobe-pass-beam/src/body_lift/mod.rs` |
+| `disrobe-pass-beam` | `MAX_LABEL_VISITS` | other | silent: `return` in `enter_label` | `u32` | `32` | `crates/disrobe-pass-beam/src/body_lift/mod.rs` |
 | `disrobe-pass-beam` | `MAX_WALK_CALLS` | other | recorded: flag `degraded` | `u32` | `20_000` | `crates/disrobe-pass-beam/src/body_lift/mod.rs` |
 | `disrobe-pass-beam` | `MAX_ARMS` | other | silent: `return` in `collect`; `return` in `descend`; `return` in `split_receive_arms` | `usize` | `32` | `crates/disrobe-pass-beam/src/body_lift/receive_clauses.rs` |
 | `disrobe-pass-beam` | `MAX_CONJUNCTS` | other | silent: `return` in `split_receive_arms` | `usize` | `24` | `crates/disrobe-pass-beam/src/body_lift/receive_clauses.rs` |
