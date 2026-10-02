@@ -21,7 +21,7 @@
 ## What you must do before the Revocation Effective Time
 
 - **Individuals, students, educators, nonprofits, and journalists** whose use qualifies as Non-Commercial Use under License Section 3.2 may continue that use under Version 1.1, with attribution.
-- **Companies and other for-profit organizations** must stop using every version of Disrobe or obtain a paid commercial license signed by the Licensor. See `COMMERCIAL.md`.
+- **Companies and other for-profit organizations** must stop using every version of Disrobe or obtain a paid commercial license signed by the Licensor. See `LICENSING.md`.
 - **Maintainers of forks, mirrors, packages, container images, and redistributions** must take them down and delete them. A fork on the Official Repository's host may be used only as a contribution workspace under License Section 3.5, apart from any permission that the host's terms of service require the Licensor to give that host's users, which is limited to the acts, and to use within the service, stated in those terms.
 - **Operators of hosted, managed, API, MCP, or SaaS offerings** must shut them down unless they hold expressly negotiated written rights.
 - **Anyone who retains a copy** must replace any earlier license text accompanying it with Version 1.1.

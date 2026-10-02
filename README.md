@@ -14,7 +14,7 @@ The engines are built in. Python bytecode decompiles without a Python installati
 
 It is built for malware analysts, reverse engineers, incident responders, CTF players, and security researchers.
 
-**License:** [Disrobe Source-Available License 1.1](LICENSE). Personal hobby projects and learning, unpaid independent security research, nonprofit education and research, and journalism are free, as the license defines them. Any use by or for a company requires a [paid license](COMMERCIAL.md).
+**License:** [Disrobe Source-Available License 1.1](LICENSE). Personal hobby projects and learning, unpaid independent security research, nonprofit education and research, and journalism are free, as the license defines them. Any use by or for a company requires a [paid license](LICENSING.md#commercial-licensing-for-disrobe).
 
 [Quick start](#quick-start) · [What it recovers](#what-it-recovers) · [Measured results](#measured-results) · [How it works](#how-it-works) · [Safety model](#safety-model) · [Documentation](https://1-3-7.github.io/disrobe/)
 
@@ -247,10 +247,10 @@ Apart from `prowl`, which queries public web archives and threat-intel services,
 
 Disrobe is proprietary, source-available software under the [Disrobe Source-Available License, Version 1.1](LICENSE). The [relicensing notice](RELICENSING-NOTICE.md) explains how it relates to earlier terms.
 
-Personal hobby projects, personal learning, unpaid independent security research by individuals, nonprofit education and research, and bona fide journalism are free, as defined in the license. **Any use by or for a company requires a paid license.** See [commercial licensing](COMMERCIAL.md).
+Personal hobby projects, personal learning, unpaid independent security research by individuals, nonprofit education and research, and bona fide journalism are free, as defined in the license. **Any use by or for a company requires a paid license.** See [commercial licensing](LICENSING.md#commercial-licensing-for-disrobe).
 
 **Required credit:** This work used Disrobe, created by 1-3-7: https://github.com/1-3-7/disrobe
 
-Forks other than contribution forks, reposting, rebranding, resale, hosting, and competing development are prohibited. The software is provided as is, at the user's own risk. See [attribution](ATTRIBUTION.md), [contributor terms](CONTRIBUTING-LICENSE.md), the [license summary](LICENSE-SUMMARY.md), and the [notice](NOTICE).
+Nobody may sell, resell, rent, sublicense, host, repost, redistribute, or rebrand Disrobe or a modified version, fork it except to contribute back, or use it to build a competing product. The software is provided as is, at the user's own risk. See the [license summary](LICENSING.md#disrobe-license-at-a-glance), [attribution](LICENSING.md#crediting-disrobe), [contributor terms](CONTRIBUTING-LICENSE.md), and the [notice](NOTICE).
 
 Copyright (c) 2025-2026 1-3-7. All rights reserved.

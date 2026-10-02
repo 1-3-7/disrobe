@@ -2,7 +2,7 @@
 status=0
 root_garbage=$(git diff --cached --diff-filter=A --name-only -- ':!*/*' | while read -r f; do
   case "$f" in
-    Cargo.toml|Cargo.lock|README.md|NOTICE|LICENSE|CONTRIBUTING.md|clippy.toml|deny.toml|rust-toolchain.toml|rustfmt.toml|typos.toml|committed.toml|justfile|lefthook.yml|.gitignore|.gitattributes) ;;
+    Cargo.toml|Cargo.lock|README.md|NOTICE|LICENSE|LICENSING.md|CONTRIBUTING.md|clippy.toml|deny.toml|rust-toolchain.toml|rustfmt.toml|typos.toml|committed.toml|justfile|lefthook.yml|.gitignore|.gitattributes) ;;
     *) echo "$f" ;;
   esac
 done)

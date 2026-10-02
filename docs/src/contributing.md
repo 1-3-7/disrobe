@@ -115,7 +115,7 @@ module scope, such as `fix(pass-lua): bound constant pool reads`, and use a GitH
 if you want to keep your email private. Preserve existing legal attribution; do not add unrelated
 authorship or co-author credits.
 
-Contributions are accepted only under the [Disrobe Contributor Assignment and License Agreement](https://github.com/1-3-7/disrobe/blob/main/CONTRIBUTING-LICENSE.md), which implements Section 6 of the [LICENSE](https://github.com/1-3-7/disrobe/blob/main/LICENSE). Before a pull request can be merged, post the complete acceptance statement from that agreement as a comment on the pull request, from the account that authored the commits it covers. Opening a pull request grants no rights in Disrobe beyond the LICENSE.
+Contributions are accepted only under the [Disrobe Contributor Assignment and License Agreement](https://github.com/1-3-7/disrobe/blob/main/CONTRIBUTING-LICENSE.md), which implements Section 8 of the [LICENSE](https://github.com/1-3-7/disrobe/blob/main/LICENSE). Before a pull request can be merged, post the complete acceptance statement from that agreement as a comment on the pull request, from the account that authored the commits it covers. Opening a pull request grants no rights in Disrobe beyond the LICENSE.
 
 ## Reporting bugs
 

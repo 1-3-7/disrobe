@@ -8,7 +8,7 @@ change. Keep the pull request focused and describe the fixture, evidence, or use
 that establishes the claim.
 
 Before a pull request can merge, read the [Disrobe Contributor Assignment and License
-Agreement](../CONTRIBUTING-LICENSE.md), which implements Section 6 of the [LICENSE](../LICENSE).
+Agreement](../CONTRIBUTING-LICENSE.md), which implements Section 8 of the [LICENSE](../LICENSE).
 Post its complete acceptance statement as a comment from the account that authored the commits it
 covers. Add a fresh acceptance after substantive new commits.
 
