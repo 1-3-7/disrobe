@@ -64,6 +64,19 @@ const EXCLUDED_TREES: [(&str, &str); 4] = [
     ),
 ];
 
+const EXCLUDED_FILES: [(&str, &str); 2] = [
+    (
+        "benches/decompile-quality/results.md",
+        "rendered from xtask/data/recovery.json by disrobe-bench-native-unpack and byte-compared by \
+         its committed_results_match_regeneration test",
+    ),
+    (
+        "benches/native-unpack/results.md",
+        "rendered from the committed packer corpus by disrobe-bench-native-unpack and byte-compared \
+         by its committed_results_match_regeneration test",
+    ),
+];
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct FigureBudget {
     pub(crate) path: &'static str,
@@ -71,7 +84,7 @@ pub(crate) struct FigureBudget {
     pub(crate) digest: &'static str,
 }
 
-const DOCUMENT_FIGURE_BUDGET: [FigureBudget; 33] = [
+const DOCUMENT_FIGURE_BUDGET: [FigureBudget; 31] = [
     FigureBudget {
         path: "README.md",
         figures: 12,
@@ -83,19 +96,9 @@ const DOCUMENT_FIGURE_BUDGET: [FigureBudget; 33] = [
         digest: "e3b0c44298fc1c14",
     },
     FigureBudget {
-        path: "benches/decompile-quality/results.md",
-        figures: 172,
-        digest: "3c47361ad1a14129",
-    },
-    FigureBudget {
         path: "benches/head-to-head/results.md",
         figures: 14,
         digest: "b6e7fe68e1d17d8b",
-    },
-    FigureBudget {
-        path: "benches/native-unpack/results.md",
-        figures: 19,
-        digest: "be84a9df0dec8b2f",
     },
     FigureBudget {
         path: "corpus/v8/node-18/BUILD.md",
@@ -445,6 +448,11 @@ fn excluded_tree(relative: &str) -> Option<&'static str> {
     EXCLUDED_TREES
         .iter()
         .find(|(prefix, _): &&(&str, &str)| relative.starts_with(&format!("{prefix}/")))
+        .or_else(|| {
+            EXCLUDED_FILES
+                .iter()
+                .find(|(path, _): &&(&str, &str)| relative == *path)
+        })
         .map(|(_, reason): &(&str, &str)| *reason)
 }
 
@@ -737,7 +745,7 @@ mod tests {
 
     #[test]
     fn every_excluded_tree_carries_a_reason() {
-        for (prefix, reason) in EXCLUDED_TREES {
+        for (prefix, reason) in EXCLUDED_TREES.into_iter().chain(EXCLUDED_FILES) {
             assert!(!prefix.is_empty());
             assert!(
                 reason.len() > 40,
@@ -751,6 +759,8 @@ mod tests {
         assert!(excluded_tree("docs/errors/DR-CLI-0001.md").is_some());
         assert!(excluded_tree("docs/src/introduction.md").is_none());
         assert!(excluded_tree("docs/errors-notes.md").is_none());
+        assert!(excluded_tree("benches/decompile-quality/results.md").is_some());
+        assert!(excluded_tree("benches/decompile-quality/README.md").is_none());
     }
 
     #[test]
