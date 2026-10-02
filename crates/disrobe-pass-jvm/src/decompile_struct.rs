@@ -4291,7 +4291,12 @@ fn goto_chain_end(cfg: &Cfg, start: BlockId) -> BlockId {
     let mut current: BlockId = start;
     for _ in 0..MAX_JOIN_CHAIN {
         let block: &BasicBlock = &cfg.blocks[current.0 as usize];
-        let [edge]: &[Edge; 1] = match block.successors.as_slice().try_into() {
+        let normal: Vec<&Edge> = block
+            .successors
+            .iter()
+            .filter(|edge: &&Edge| !matches!(edge.kind, EdgeKind::Exception))
+            .collect();
+        let [edge]: [&Edge; 1] = match normal.try_into() {
             Ok(edges) => edges,
             Err(_) => break,
         };
