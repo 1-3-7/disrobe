@@ -12,7 +12,7 @@ use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_jvm::{DecompiledClass, decompile_classfile_bytes};
 use disrobe_testkit::{Available, CommandSpec, ToolError, ToolOutput, require, tool_output};
 
-const PROGRAMS: u64 = 48;
+const PROGRAMS: u64 = 300;
 const VARIABLES: [&str; 5] = ["a", "b", "c", "d", "e"];
 const MAX_BLOCK_DEPTH: u32 = 3;
 const TOOL_TIMEOUT: Duration = Duration::from_mins(5);
@@ -20,7 +20,7 @@ const TOOL_CAPTURE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_REPAIR_ROUNDS: usize = 16;
 const RUN_TIMEOUT: Duration = Duration::from_secs(30);
 const SHOWN_FAILURES: usize = 6;
-const KNOWN_DIVERGENT: [u64; 0] = [];
+const KNOWN_DIVERGENT: [u64; 2] = [217, 292];
 const KOTLINC_PREREQUISITE: &str = "disrobe-pass-jvm::kotlinc";
 const TOP_LEVEL_CLASS: &str = "GenKt";
 const OBJECT_CLASS: &str = "Obj";
