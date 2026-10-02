@@ -10,7 +10,9 @@
 )]
 mod php_toolchain;
 
-use disrobe_core::chain::{DetectContext, DetectVerdict, Detector, Pass};
+use disrobe_core::chain::{
+    DetectContext, DetectVerdict, Detector, FAMILY_INTERPRETER_BYTECODE, Pass,
+};
 use disrobe_core::error::CoreError;
 use disrobe_core::{Artifact, Rung};
 use disrobe_pass_php::chain_detector::{PHP_PASS, PhpDetectorImpl};
@@ -866,4 +868,15 @@ fn chain_detector_requires_exact_leading_magic_and_keeps_container_precedence() 
         .expect("leading DZOA must take precedence over an embedded PHP tag");
     assert_eq!(verdict.format_tag, "php-oparray");
     assert!(Detector::detect(&PhpDetectorImpl, &context(b"DZOX payload")).is_none());
+}
+
+#[test]
+fn chain_detector_routes_only_the_exact_opcache_magic() {
+    let verdict: DetectVerdict =
+        Detector::detect(&PhpDetectorImpl, &context(b"OPCACHE\08.4.0 payload"))
+            .expect("a leading OPCACHE magic is a definite opcache image");
+    assert_eq!(verdict.format_tag, "php-opcache");
+    assert_eq!(verdict.family, FAMILY_INTERPRETER_BYTECODE);
+    assert!(Detector::detect(&PhpDetectorImpl, &context(b"OPCACHX\08.4.0 payload")).is_none());
+    assert!(Detector::detect(&PhpDetectorImpl, &context(b"OPCACHE")).is_none());
 }

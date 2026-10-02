@@ -5,7 +5,8 @@ use disrobe_core::Rung;
 use disrobe_core::chain::detection::{ChildArtifact, ChildHandle, TERMINAL_HINT};
 use disrobe_core::chain::{
     CatalogEntry, DetectContext, DetectVerdict, Detector, DetectorOutput,
-    FAMILY_OBFUSCATOR_WRAPPER, FAMILY_SOURCE, ObfuscatorCatalog, OutputKind, Pass, SupportQuality,
+    FAMILY_INTERPRETER_BYTECODE, FAMILY_OBFUSCATOR_WRAPPER, FAMILY_SOURCE, ObfuscatorCatalog,
+    OutputKind, Pass, SupportQuality,
 };
 use disrobe_core::debug::DebugLog;
 use disrobe_core::error::{CoreError, Result as CoreResult};
@@ -17,6 +18,7 @@ use regex::bytes::Regex;
 
 use crate::decompile::OPARRAY_MAGIC;
 use crate::detect::{PhpConfidence, PhpDetection, PhpKind, detect as detect_php};
+use crate::opcache::is_opcache_file;
 use crate::peel::{PeelOptions, PeelReport, PeelTrace, peel as peel_php};
 use crate::phar::{PharArchive, PharEntry, extract_entry, parse as parse_phar};
 use crate::pipeline::{RecoveryReport, recover as recover_php};
@@ -32,6 +34,7 @@ const TAG_PHP_SOURCE: &str = "php-source";
 const TAG_PHAR_STUB: &str = "php-phar-stub";
 const TAG_PHAR_ARCHIVE: &str = "php-phar-archive";
 const TAG_OPARRAY: &str = "php-oparray";
+const TAG_OPCACHE: &str = "php-opcache";
 const TAG_BCG: &str = "php-bcg";
 
 const PHAR_MANIFEST_BANNER: &str = "php.phar archive";
@@ -91,16 +94,19 @@ impl Pass for PhpPass {
         let bytes: &[u8] = artifact.envelope.as_slice();
         dbg.kv("input_len", || bytes.len().to_string());
         let is_oparray: bool = bytes.starts_with(OPARRAY_MAGIC);
+        let is_opcache: bool = is_opcache_file(bytes);
         let detection: PhpDetection = detect_php(bytes);
         dbg.kv("detected_kind", || {
             if is_oparray {
                 "OpArray".to_owned()
+            } else if is_opcache {
+                "OpcacheFileCache".to_owned()
             } else {
                 format!("{:?}", detection.kind)
             }
         });
         dbg.kv("confidence", || {
-            if is_oparray {
+            if is_oparray || is_opcache {
                 format!("{:?}", PhpConfidence::Definite)
             } else {
                 format!("{:?}", detection.confidence)
@@ -129,7 +135,7 @@ impl Pass for PhpPass {
                     artifact.root_hash,
                 ))
             }
-            TAG_OPARRAY => {
+            TAG_OPARRAY | TAG_OPCACHE => {
                 let recovery: RecoveryReport =
                     recover_php(bytes, None).map_err(|error: crate::error::Error| {
                         dbg.line(|| format!("op_array recovery failed: {error}"));
@@ -152,6 +158,7 @@ impl Pass for PhpPass {
         let detection: PhpDetection = detect_php(bytes);
         if matches!(detection.kind, PhpKind::PharStub | PhpKind::PharArchive)
             || bytes.starts_with(OPARRAY_MAGIC)
+            || is_opcache_file(bytes)
         {
             return Ok(Vec::new());
         }
@@ -543,6 +550,17 @@ fn verdict_for_bytes(bytes: &[u8]) -> Option<DetectVerdict> {
             30,
             vec!["DZOA-magic"],
             "php kind=php-oparray halt=false".to_owned(),
+        ));
+    }
+    if is_opcache_file(bytes) {
+        return Some(DetectVerdict::new(
+            PASS_ID,
+            TAG_OPCACHE,
+            FAMILY_INTERPRETER_BYTECODE,
+            confidence_to_float(PhpConfidence::Definite),
+            30,
+            vec!["OPCACHE-magic"],
+            "php kind=php-opcache halt=false".to_owned(),
         ));
     }
     verdict_for(bytes, &detect_php(bytes))
