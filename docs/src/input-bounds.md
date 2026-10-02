@@ -15,9 +15,9 @@ The exceeded column states what happens when input goes past the bound. It comes
 
 The scan does not resolve types or trait dispatch, so an outcome names the construct it found rather than proving the behaviour.
 
-2181 bounds (count 215, other 1024, output 64, recursion 219, size 479, work 180).
+2184 bounds (count 215, other 1024, output 64, recursion 220, size 479, work 182).
 
-Exceeded: error 884, recorded 185, panic 0, delegated 49, silent 1005, unclassified 17, allocation 33, unused 8.
+Exceeded: error 884, recorded 185, panic 0, delegated 49, silent 1008, unclassified 17, allocation 33, unused 8.
 
 | Crate | Constant | Kind | Exceeded | Type | Value | File |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -707,7 +707,10 @@ Exceeded: error 884, recorded 185, panic 0, delegated 49, silent 1005, unclassif
 | `disrobe-pass-dotnet` | `MAX_SUPPORTED_R2R_MAJOR_VERSION` | other | error: `Error::TooManyR2rSections` (DR-DOTNET-0040); `Error::UnsupportedR2rVersion` (DR-DOTNET-0016) | `u16` | `27` | `crates/disrobe-pass-dotnet/src/r2r.rs` |
 | `disrobe-pass-dotnet` | `MAX_SIGNATURE_NODES` | count | error: `Error::SignatureTooManyNodes` (DR-DOTNET-0028) | `usize` | `4096` | `crates/disrobe-pass-dotnet/src/signature.rs` |
 | `disrobe-pass-dotnet` | `MAX_SIG_DEPTH` | recursion | error: `Error::SignatureTooDeep` (DR-DOTNET-0026) | `usize` | `256` | `crates/disrobe-pass-dotnet/src/signature.rs` |
+| `disrobe-pass-dotnet` | `MAX_CONDITION_DEPTH` | recursion | silent: `return` in `compound_condition` | `usize` | `64` | `crates/disrobe-pass-dotnet/src/structure_emit.rs` |
+| `disrobe-pass-dotnet` | `MAX_FORWARDING_HOPS` | work | silent: `for` range in `forward_target` | `usize` | `16` | `crates/disrobe-pass-dotnet/src/structure_emit.rs` |
 | `disrobe-pass-dotnet` | `MAX_STRUCTURE_DEPTH` | recursion | silent: `return` in `emit_region` | `usize` | `256` | `crates/disrobe-pass-dotnet/src/structure_emit.rs` |
+| `disrobe-pass-dotnet` | `MAX_TYPE_ROUNDS` | work | silent: `for` range in `plan_stack_slots` | `usize` | `4` | `crates/disrobe-pass-dotnet/src/structure_emit/stack_slots.rs` |
 | `disrobe-pass-dotnet` | `MAX_ARRAY_LITERAL_ELEMENTS` | work | error: `value` | `usize` | `64` | `crates/disrobe-pass-dotnet/src/structurize.rs` |
 | `disrobe-pass-dotnet` | `MAX_EXPR_DEPTH` | recursion | silent: `return` in `expression_depth`; fallback value in `bounded_expression` | `usize` | `256` | `crates/disrobe-pass-dotnet/src/structurize.rs` |
 | `disrobe-pass-dotnet` | `INFERENCE_DEPTH_LIMIT` | recursion | silent: `return` in `infer_bounded`; `return` in `may_convert` | `usize` | `32` | `crates/disrobe-pass-dotnet/src/structurize/operand_kind.rs` |
@@ -935,7 +938,7 @@ Exceeded: error 884, recorded 185, panic 0, delegated 49, silent 1005, unclassif
 | `disrobe-pass-jvm` | `MAX_ARRAY_JOIN_DEPTH` | recursion | silent: `return` in `join_ref` | `usize` | `16` | `crates/disrobe-pass-jvm/src/dalvik_typestate.rs` |
 | `disrobe-pass-jvm` | `MAX_FIXPOINT_ITERS` | work | delegated: passed to `debug::dbg_kv` | `usize` | `50_000` | `crates/disrobe-pass-jvm/src/dalvik_typestate.rs` |
 | `disrobe-pass-jvm` | `MAX_SUPERCLASS_DEPTH` | recursion | silent: `while` condition in `root_first_chain` | `usize` | `256` | `crates/disrobe-pass-jvm/src/dalvik_typestate.rs` |
-| `disrobe-pass-jvm` | `ARM_CONDITION_BLOCK_CAP` | other | silent: `return` in `arm_tree_value`; `return` in `arm_value`; `return` in `ternary_join_entry` | `usize` | `32` | `crates/disrobe-pass-jvm/src/decompile.rs` |
+| `disrobe-pass-jvm` | `ARM_CONDITION_BLOCK_CAP` | other | silent: `return` in `arm_tree_value`; `return` in `arm_value`; `return` in `join_value_entry`; 1 more | `usize` | `32` | `crates/disrobe-pass-jvm/src/decompile.rs` |
 | `disrobe-pass-jvm` | `INT_USE_SCAN_LIMIT` | other | silent: `.take()` in `loaded_int_has_int_use` | `usize` | `32` | `crates/disrobe-pass-jvm/src/decompile.rs` |
 | `disrobe-pass-jvm` | `MAX_BOOL_EXPR_BYTES` | size | silent: `return` in `eval_bool_node_memo` | `usize` | `64 * 1024` | `crates/disrobe-pass-jvm/src/decompile.rs` |
 | `disrobe-pass-jvm` | `MAX_DUP_EXPR_NODES` | count | error: `Error::ArscTruncated` (DR-JVM-0032); `Error::BadBytecode` (DR-JVM-0025); `Error::BadKotlinMetadata` (DR-JVM-0020); 9 more | `usize` | `1024` | `crates/disrobe-pass-jvm/src/decompile.rs` |
@@ -2205,7 +2208,7 @@ Exceeded: error 884, recorded 185, panic 0, delegated 49, silent 1005, unclassif
 
 ## Silent stops
 
-1005 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
+1008 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
 
 | Crate | Constant | Use | File |
 | --- | --- | --- | --- |
@@ -2451,7 +2454,10 @@ Exceeded: error 884, recorded 185, panic 0, delegated 49, silent 1005, unclassif
 | `disrobe-pass-dotnet` | `MAX_PROBE_ARGS` | `for` range in `probe_decoder` | `crates/disrobe-pass-dotnet/src/peel/static_decrypt.rs` |
 | `disrobe-pass-dotnet` | `MAX_DECRYPTOR_INSTRUCTIONS` | `continue` in `collect_from_type` | `crates/disrobe-pass-dotnet/src/peel/string_emu.rs` |
 | `disrobe-pass-dotnet` | `MAX_RECOVERED_STRINGS` | `return` in `recover_emulated_strings` | `crates/disrobe-pass-dotnet/src/peel/string_emu.rs` |
+| `disrobe-pass-dotnet` | `MAX_CONDITION_DEPTH` | `return` in `compound_condition` | `crates/disrobe-pass-dotnet/src/structure_emit.rs` |
+| `disrobe-pass-dotnet` | `MAX_FORWARDING_HOPS` | `for` range in `forward_target` | `crates/disrobe-pass-dotnet/src/structure_emit.rs` |
 | `disrobe-pass-dotnet` | `MAX_STRUCTURE_DEPTH` | `return` in `emit_region` | `crates/disrobe-pass-dotnet/src/structure_emit.rs` |
+| `disrobe-pass-dotnet` | `MAX_TYPE_ROUNDS` | `for` range in `plan_stack_slots` | `crates/disrobe-pass-dotnet/src/structure_emit/stack_slots.rs` |
 | `disrobe-pass-dotnet` | `MAX_EXPR_DEPTH` | `return` in `expression_depth`; fallback value in `bounded_expression` | `crates/disrobe-pass-dotnet/src/structurize.rs` |
 | `disrobe-pass-dotnet` | `INFERENCE_DEPTH_LIMIT` | `return` in `infer_bounded`; `return` in `may_convert` | `crates/disrobe-pass-dotnet/src/structurize/operand_kind.rs` |
 | `disrobe-pass-go` | `MAX_LISTED_FUNCS` | `.take()` in `push_defer_section`; `.take()` in `render_symbol_report`; no action in `push_defer_section`; 1 more | `crates/disrobe-pass-go/src/chain_detector.rs` |
@@ -2564,7 +2570,7 @@ Exceeded: error 884, recorded 185, panic 0, delegated 49, silent 1005, unclassif
 | `disrobe-pass-jvm` | `MAX_REGION_BLOCKS` | `for` range in `nearest_common_dominator`; `return` in `merge_ranges` | `crates/disrobe-pass-jvm/src/dalvik_try_regions.rs` |
 | `disrobe-pass-jvm` | `MAX_ARRAY_JOIN_DEPTH` | `return` in `join_ref` | `crates/disrobe-pass-jvm/src/dalvik_typestate.rs` |
 | `disrobe-pass-jvm` | `MAX_SUPERCLASS_DEPTH` | `while` condition in `root_first_chain` | `crates/disrobe-pass-jvm/src/dalvik_typestate.rs` |
-| `disrobe-pass-jvm` | `ARM_CONDITION_BLOCK_CAP` | `return` in `arm_tree_value`; `return` in `arm_value`; `return` in `ternary_join_entry` | `crates/disrobe-pass-jvm/src/decompile.rs` |
+| `disrobe-pass-jvm` | `ARM_CONDITION_BLOCK_CAP` | `return` in `arm_tree_value`; `return` in `arm_value`; `return` in `join_value_entry`; 1 more | `crates/disrobe-pass-jvm/src/decompile.rs` |
 | `disrobe-pass-jvm` | `INT_USE_SCAN_LIMIT` | `.take()` in `loaded_int_has_int_use` | `crates/disrobe-pass-jvm/src/decompile.rs` |
 | `disrobe-pass-jvm` | `MAX_BOOL_EXPR_BYTES` | `return` in `eval_bool_node_memo` | `crates/disrobe-pass-jvm/src/decompile.rs` |
 | `disrobe-pass-jvm` | `MAX_GENERIC_REPLACEMENTS` | `return` in `replacement_nodes` | `crates/disrobe-pass-jvm/src/decompile.rs` |
