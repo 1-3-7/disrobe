@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use disrobe_pass_nuitka::{
-    ConstantsPool, NativeBodyRecovery, NativeFunctionBody, NuitkaDecompilation, PythonExpr,
-    PythonStmt, SurfaceFunction, SurfaceModule, decode_const_file, decompile_build_dir,
+    ConstantsPool, NativeBodyRecovery, NativeFunctionBody, NuitkaConstants, NuitkaDecompilation,
+    PythonExpr, PythonStmt, SurfaceFunction, SurfaceModule, decode_const_file, decompile_build_dir,
     decompile_bytes, lift_native_bodies, parse_constants,
 };
 use serde_json::{Value, json};
@@ -202,11 +202,30 @@ fn native_body_lift_behavioral_differential_against_cpython() {
     };
 
     let bytes: Vec<u8> = std::fs::read(&pyd).expect("read compiled module");
-    let constants = parse_constants(&bytes);
-    let recovery: NativeBodyRecovery = lift_native_bodies(&bytes, Some(&constants))
+    let constants: NuitkaConstants = parse_constants(&bytes);
+    if bytes.starts_with(b"MZ") {
+        grade_pe_native_bodies(&py, &src, dir.path(), &bytes, &constants);
+    } else {
+        assert!(
+            lift_native_bodies(&bytes, Some(&constants)).is_none(),
+            "the native body lifter reads PE x64 images only, so the {} extension Nuitka built \
+             on this host must be refused rather than lifted",
+            pyd.display()
+        );
+    }
+}
+
+fn grade_pe_native_bodies(
+    py: &Path,
+    src: &Path,
+    dir: &Path,
+    bytes: &[u8],
+    constants: &NuitkaConstants,
+) {
+    let recovery: NativeBodyRecovery = lift_native_bodies(bytes, Some(constants))
         .expect("native body recovery on real release pyd");
 
-    let truth: BTreeMap<String, (u32, Option<usize>)> = probe_source_shapes(&py, &src);
+    let truth: BTreeMap<String, (u32, Option<usize>)> = probe_source_shapes(py, src);
     assert!(
         !truth.is_empty(),
         "ground-truth probe of the source module returned no pass-through functions"
@@ -226,7 +245,7 @@ fn native_body_lift_behavioral_differential_against_cpython() {
     }
 
     let decompilation: NuitkaDecompilation =
-        decompile_bytes(&bytes).expect("decompile the fresh Nuitka extension");
+        decompile_bytes(bytes).expect("decompile the fresh Nuitka extension");
     let surface: &SurfaceModule = decompilation
         .surface
         .as_ref()
@@ -244,11 +263,11 @@ fn native_body_lift_behavioral_differential_against_cpython() {
          body; expected {expected_names:?}, recovered {recovered_names:?}"
     );
 
-    let recovered_src: PathBuf = dir.path().join("gradmod_recovered.py");
+    let recovered_src: PathBuf = dir.join("gradmod_recovered.py");
     std::fs::write(&recovered_src, surface.python_source.as_bytes())
         .expect("write the recovered module");
     let verdicts: BTreeMap<String, String> =
-        compare_with_source(&py, &src, &recovered_src, &recovered_names, None);
+        compare_with_source(py, src, &recovered_src, &recovered_names, None);
     let differing: Vec<(&String, &String)> = verdicts
         .iter()
         .filter(|(_, verdict): &(&String, &String)| verdict.as_str() != "OK")
@@ -274,7 +293,7 @@ fn native_body_lift_behavioral_differential_against_cpython() {
         })
         .expect("the source defines a function of two or more parameters returning a later one");
     let control: BTreeMap<String, String> =
-        compare_with_source(&py, &src, &recovered_src, &recovered_names, Some(mutated));
+        compare_with_source(py, src, &recovered_src, &recovered_names, Some(mutated));
     assert!(
         control
             .get(mutated)
