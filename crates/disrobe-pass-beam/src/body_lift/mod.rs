@@ -5,10 +5,12 @@ mod codegen;
 pub mod comprehension;
 mod control_flow;
 pub mod expr;
+mod join;
 mod receive_clauses;
 pub mod render;
 pub mod resugar;
 pub mod simplify;
+mod types;
 
 use std::collections::BTreeMap;
 
@@ -21,6 +23,9 @@ use crate::body_lift::expr::{
 use crate::chunks::Chunks;
 use crate::disasm::{Instruction, Operand};
 use crate::etf::Term;
+
+use self::join::{JoinFrame, JoinIndex, TryEnd};
+use self::types::OperandTypes;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LiftedBody {
@@ -69,7 +74,7 @@ struct Env {
     bin_ctx: BTreeMap<Reg, BinMatchState>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct BinMatchState {
     source: Reg,
     segments: Vec<BinSegment>,
@@ -108,6 +113,8 @@ struct Lifter<'a> {
     literals: &'a [Term],
     arity: u32,
     exception_names: &'a std::cell::Cell<u32>,
+    joins: &'a JoinIndex,
+    types: &'a OperandTypes,
 }
 
 #[must_use]
@@ -117,45 +124,13 @@ pub fn lift_body(
     chunks: &Chunks,
     label_to_fun: &BTreeMap<u32, (String, u32)>,
 ) -> LiftedBody {
-    let empty: Vec<Term> = Vec::new();
-    let literals: &[Term] = chunks
-        .literals
-        .as_ref()
-        .map_or(empty.as_slice(), |l| l.literals.as_slice());
-    let exception_names: std::cell::Cell<u32> = std::cell::Cell::new(0);
-    let lifter: Lifter<'_> = Lifter {
-        chunks,
+    with_lifter(
         instrs,
-        blocks: index_blocks(instrs),
-        label_to_fun,
-        literals,
         arity,
-        exception_names: &exception_names,
-    };
-    let entry: Option<u32> = lifter.blocks.keys().next().copied();
-    let Some(entry) = entry else {
-        return LiftedBody {
-            stmts: vec![Stmt::Return(Expr::Atom("ok".to_owned()))],
-            lift_complete: false,
-        };
-    };
-    let mut env: Env = Env::default();
-    for i in 0..arity {
-        env.set(Reg::X(i), Reg::X(i).var());
-    }
-    let mut flags: Flags = Flags::default();
-    let stmts: Vec<Stmt> = lifter.walk(entry, &mut env.clone(), &mut flags, 0);
-    let stmts: Vec<Stmt> = if stmts.is_empty() {
-        flags.degraded = true;
-        vec![Stmt::Return(Expr::Atom("ok".to_owned()))]
-    } else {
-        resugar::resugar_body(simplify::simplify_body(resugar::resugar_body(stmts)))
-    };
-    let unresolved: bool = stmts.iter().any(has_unrecovered_marker);
-    LiftedBody {
-        stmts,
-        lift_complete: !flags.degraded && !unresolved,
-    }
+        chunks,
+        label_to_fun,
+        |lifter: &Lifter<'_>| lifter.lift_entry(),
+    )
 }
 
 #[must_use]
@@ -165,44 +140,96 @@ pub fn lift_function(
     chunks: &Chunks,
     label_to_fun: &BTreeMap<u32, (String, u32)>,
 ) -> (Vec<expr::FnClause>, bool) {
+    with_lifter(
+        instrs,
+        arity,
+        chunks,
+        label_to_fun,
+        |lifter: &Lifter<'_>| {
+            let Some(entry): Option<u32> = lifter.blocks.keys().next().copied() else {
+                return (
+                    vec![expr::FnClause {
+                        patterns: var_params(arity),
+                        guard: None,
+                        body: vec![Stmt::Return(Expr::Atom("ok".to_owned()))],
+                    }],
+                    false,
+                );
+            };
+            if let Some((clauses, ok)) = lifter.reconstruct_binary_clauses(entry) {
+                return (clauses, ok);
+            }
+            lifter.exception_names.set(0);
+            let body: LiftedBody = lifter.lift_entry();
+            let clauses: Vec<expr::FnClause> = clause::reconstruct_clauses(arity, &body.stmts)
+                .unwrap_or_else(|| {
+                    vec![expr::FnClause {
+                        patterns: var_params(arity),
+                        guard: None,
+                        body: body.stmts.clone(),
+                    }]
+                });
+            (clauses, body.lift_complete)
+        },
+    )
+}
+
+fn with_lifter<R>(
+    instrs: &[Instruction],
+    arity: u32,
+    chunks: &Chunks,
+    label_to_fun: &BTreeMap<u32, (String, u32)>,
+    run: impl FnOnce(&Lifter<'_>) -> R,
+) -> R {
     let empty: Vec<Term> = Vec::new();
     let literals: &[Term] = chunks
         .literals
         .as_ref()
         .map_or(empty.as_slice(), |l| l.literals.as_slice());
     let exception_names: std::cell::Cell<u32> = std::cell::Cell::new(0);
+    let blocks: BTreeMap<u32, Block> = index_blocks(instrs);
+    let joins: JoinIndex = JoinIndex::build(instrs, &blocks, chunks);
+    let types: OperandTypes = OperandTypes::decode(chunks);
     let lifter: Lifter<'_> = Lifter {
         chunks,
         instrs,
-        blocks: index_blocks(instrs),
+        blocks,
         label_to_fun,
         literals,
         arity,
         exception_names: &exception_names,
+        joins: &joins,
+        types: &types,
     };
-    let Some(entry): Option<u32> = lifter.blocks.keys().next().copied() else {
-        return (
-            vec![expr::FnClause {
-                patterns: var_params(arity),
-                guard: None,
-                body: vec![Stmt::Return(Expr::Atom("ok".to_owned()))],
-            }],
-            false,
-        );
-    };
-    if let Some((clauses, ok)) = lifter.reconstruct_binary_clauses(entry) {
-        return (clauses, ok);
+    run(&lifter)
+}
+
+impl Lifter<'_> {
+    fn lift_entry(&self) -> LiftedBody {
+        let Some(entry): Option<u32> = self.blocks.keys().next().copied() else {
+            return LiftedBody {
+                stmts: vec![Stmt::Return(Expr::Atom("ok".to_owned()))],
+                lift_complete: false,
+            };
+        };
+        let mut env: Env = Env::default();
+        for i in 0..self.arity {
+            env.set(Reg::X(i), Reg::X(i).var());
+        }
+        let mut flags: Flags = Flags::default();
+        let stmts: Vec<Stmt> = self.walk(entry, &mut env, &mut flags, 0);
+        let stmts: Vec<Stmt> = if stmts.is_empty() {
+            flags.degraded = true;
+            vec![Stmt::Return(Expr::Atom("ok".to_owned()))]
+        } else {
+            resugar::resugar_body(simplify::simplify_body(resugar::resugar_body(stmts)))
+        };
+        let unresolved: bool = stmts.iter().any(has_unrecovered_marker);
+        LiftedBody {
+            stmts,
+            lift_complete: !flags.degraded && !unresolved,
+        }
     }
-    let body: LiftedBody = lift_body(instrs, arity, chunks, label_to_fun);
-    let clauses: Vec<expr::FnClause> = clause::reconstruct_clauses(arity, &body.stmts)
-        .unwrap_or_else(|| {
-            vec![expr::FnClause {
-                patterns: var_params(arity),
-                guard: None,
-                body: body.stmts.clone(),
-            }]
-        });
-    (clauses, body.lift_complete)
 }
 
 fn var_params(arity: u32) -> Vec<Expr> {
@@ -268,6 +295,12 @@ struct Flags {
     in_progress: std::collections::BTreeSet<u32>,
     visit_counts: std::collections::BTreeMap<u32, u32>,
     walk_calls: u32,
+    joins: Vec<JoinFrame>,
+    join_serial: u32,
+    join_vars: u32,
+    refused_joins: std::collections::BTreeSet<usize>,
+    refused_splits: std::collections::BTreeSet<usize>,
+    integer_vars: std::collections::BTreeSet<String>,
 }
 
 const SYNTH_LABEL_FLOOR: u32 = u32::MAX - 1;
@@ -392,6 +425,9 @@ impl Lifter<'_> {
             flags.degraded = true;
             return Vec::new();
         }
+        if let Some(arrival) = flags.arrival(label, env) {
+            return arrival;
+        }
         match flags.enter_label(label) {
             WalkEntry::Ok => {}
             WalkEntry::Cyclic => {
@@ -420,17 +456,30 @@ impl Lifter<'_> {
             let ins: &Instruction = &self.instrs[idx];
             let name: &str = ins.name;
             if TEST_OPS.contains(&name) {
-                if let Some(stmt) = self.reconstruct_branch(&block, idx, env, flags, depth) {
-                    out.push(stmt);
+                let here: &Env = env;
+                if let Some(stmts) =
+                    self.lift_branch(idx, None, here, flags, depth, |l: &Self, f: &mut Flags| {
+                        l.reconstruct_branch(&block, idx, here, f, depth)
+                    })
+                {
+                    out.extend(stmts);
                     return out;
                 }
                 idx += 1;
                 continue;
             }
             match name {
+                "label" => {
+                    if let Some(Operand::Literal(v)) = ins.operands.first()
+                        && let Ok(here) = u32::try_from(*v)
+                        && let Some(arrival) = flags.arrival(here, env)
+                    {
+                        out.extend(arrival);
+                        return out;
+                    }
+                }
                 "line"
                 | "func_info"
-                | "label"
                 | "allocate"
                 | "allocate_zero"
                 | "allocate_heap"
@@ -454,7 +503,7 @@ impl Lifter<'_> {
                 "trim" => Self::exec_trim(ins, env),
                 "move" | "swap" | "fmove" | "fconv" => self.exec_move(ins, env),
                 "fadd" | "fsub" | "fmul" | "fdiv" | "fnegate" => {
-                    self.exec_float_arith(ins, env);
+                    self.exec_float_arith(ins, env, &mut out, flags);
                 }
                 "put_list" => self.exec_put_list(ins, env, flags),
                 "put_tuple2" => self.exec_put_tuple2(ins, env, flags),
@@ -467,21 +516,38 @@ impl Lifter<'_> {
                 "get_hd" => self.exec_unary_dest(ins, "hd", env),
                 "get_tl" => self.exec_unary_dest(ins, "tl", env),
                 "get_tuple_element" => self.exec_get_tuple_element(ins, env),
-                "put_map_assoc" | "put_map_exact" => self.exec_put_map(ins, env),
+                "put_map_assoc" | "put_map_exact" => self.exec_put_map(ins, env, &mut out, flags),
                 "update_record" => self.exec_update_record(ins, env),
                 "get_map_elements" => {
                     let fail: u32 = label_of(&ins.operands[0]);
                     if self.fail_leads_to_clause(fail) {
-                        out.push(Stmt::Return(
-                            self.build_map_match_branch(&block, idx, fail, env, flags, depth),
-                        ));
+                        let here: &Env = env;
+                        out.extend(
+                            self.lift_branch(
+                                idx,
+                                None,
+                                here,
+                                flags,
+                                depth,
+                                |l: &Self, f: &mut Flags| {
+                                    Some(
+                                        l.build_map_match_branch(&block, idx, fail, here, f, depth),
+                                    )
+                                },
+                            )
+                            .unwrap_or_default(),
+                        );
                         return out;
                     }
                     if let Some(stmt) = self.exec_get_map_elements(ins, env, flags) {
                         out.push(stmt);
                     }
                 }
-                "bif0" | "bif1" | "bif2" => self.exec_bif(ins, env, &mut out, flags),
+                "bif0" | "bif1" | "bif2" => {
+                    if self.exec_bif(ins, env, &mut out, flags) {
+                        return out;
+                    }
+                }
                 "gc_bif1" | "gc_bif2" | "gc_bif3" => self.exec_gc_bif(ins, env, &mut out, flags),
                 "call" | "call_only" | "call_last" => {
                     if self.exec_call_local(ins, env, &mut out, flags) {
@@ -504,7 +570,7 @@ impl Lifter<'_> {
                     }
                 }
                 "make_fun2" | "make_fun3" | "make_fun" => self.exec_make_fun(ins, env),
-                "bs_create_bin" => self.exec_bs_create_bin(ins, env, flags),
+                "bs_create_bin" => self.exec_bs_create_bin(ins, env, &mut out, flags),
                 "bs_start_match" | "bs_start_match2" | "bs_start_match3" | "bs_start_match4" => {
                     Self::exec_bs_start_match(ins, env);
                 }
@@ -514,9 +580,22 @@ impl Lifter<'_> {
                         && let Some(items) = bs_match_commands(ins)
                         && !is_ensure_exactly_zero(items, self.chunks)
                     {
-                        out.push(Stmt::Return(
-                            self.build_bin_match_branch(&block, idx, fail, env, flags, depth),
-                        ));
+                        let here: &Env = env;
+                        out.extend(
+                            self.lift_branch(
+                                idx,
+                                None,
+                                here,
+                                flags,
+                                depth,
+                                |l: &Self, f: &mut Flags| {
+                                    Some(
+                                        l.build_bin_match_branch(&block, idx, fail, here, f, depth),
+                                    )
+                                },
+                            )
+                            .unwrap_or_default(),
+                        );
                         return out;
                     }
                     if let Some(stmt) = self.exec_bs_match(ins, env, flags) {
@@ -526,14 +605,25 @@ impl Lifter<'_> {
                 "bs_get_tail" => Self::exec_bs_get_tail(ins, env, flags),
                 "bs_get_position" | "bs_set_position" => {}
                 "send" => out.push(exec_send(env)),
-                "select_val" => {
-                    out.push(Stmt::Return(self.build_select_val(ins, env, flags, depth)));
-                    return out;
-                }
-                "select_tuple_arity" => {
-                    out.push(Stmt::Return(
-                        self.build_select_tuple_arity(ins, env, flags, depth),
-                    ));
+                "select_val" | "select_tuple_arity" => {
+                    let here: &Env = env;
+                    out.extend(
+                        self.lift_branch(
+                            idx,
+                            None,
+                            here,
+                            flags,
+                            depth,
+                            |l: &Self, f: &mut Flags| {
+                                Some(if name == "select_val" {
+                                    l.build_select_val(ins, here, f, depth)
+                                } else {
+                                    l.build_select_tuple_arity(ins, here, f, depth)
+                                })
+                            },
+                        )
+                        .unwrap_or_default(),
+                    );
                     return out;
                 }
                 "jump" => {
@@ -552,27 +642,53 @@ impl Lifter<'_> {
                     return out;
                 }
                 "catch" => {
-                    let catch_end: usize =
-                        self.region_end(idx + 1, self.instrs.len(), &["catch_end"]);
-                    let value: Expr = self.build_catch(idx, catch_end, env, flags, depth);
+                    let (value, resume): (Expr, usize) = self.build_catch(idx, env, flags, depth);
                     let var: String = flags.fresh_var();
                     out.push(Stmt::Bind {
                         pattern: Expr::Var(var.clone()),
                         value,
                     });
                     env.set(Reg::X(0), Expr::Var(var));
-                    idx = catch_end + 1;
-                    continue;
+                    let rest: Block = Block {
+                        start: resume,
+                        end: self.next_label_at(resume),
+                    };
+                    out.extend(self.walk_synth(rest, env, flags, depth + 1));
+                    return out;
                 }
                 "try" => {
-                    out.push(Stmt::Return(self.build_try(idx, env, flags, depth)));
+                    let here: &Env = env;
+                    let tag: Option<Reg> = ins.operands.first().and_then(as_reg);
+                    out.extend(
+                        self.lift_branch(
+                            idx,
+                            tag,
+                            here,
+                            flags,
+                            depth,
+                            |l: &Self, f: &mut Flags| Some(l.build_try(idx, here, f, depth)),
+                        )
+                        .unwrap_or_default(),
+                    );
                     return out;
                 }
                 "badmatch" | "case_end" | "if_end" | "badrecord" | "try_case_end" => {
                     out.push(self.runtime_failure(ins, env));
                     return out;
                 }
-                "catch_end" | "try_end" | "try_case" => {}
+                "try_end" | "catch_end" => {
+                    if let Some(reg) = ins.operands.first().and_then(as_reg) {
+                        match flags.try_end(reg, env, idx) {
+                            TryEnd::Arrive(arrival) => {
+                                out.extend(arrival);
+                                return out;
+                            }
+                            TryEnd::Mark(marker) => out.push(marker),
+                            TryEnd::Pass => {}
+                        }
+                    }
+                }
+                "try_case" => {}
                 "build_stacktrace" => {}
                 "raise" | "raw_raise" => {
                     out.push(self.build_raise(ins, env));
@@ -800,6 +916,9 @@ fn inline_segment(seg: binmatch::MatchSegment, env: &mut Env, flags: &mut Flags)
     }
     if seg.binds {
         let var: String = flags.fresh_pat();
+        if segment.kind == "integer" {
+            flags.integer_vars.insert(var.clone());
+        }
         segment.value = Box::new(Expr::Var(var.clone()));
         if let Some(dst) = seg.dst.as_ref().and_then(as_reg) {
             env.set(dst, Expr::Var(var));
@@ -1008,6 +1127,71 @@ fn bounded_set(env: &mut Env, reg: Reg, value: Expr, flags: &mut Flags) {
     }
 }
 
+fn bind_register(env: &mut Env, reg: Reg, value: Expr, out: &mut Vec<Stmt>, flags: &mut Flags) {
+    let var: String = flags.fresh_var();
+    out.push(Stmt::Bind {
+        pattern: Expr::Var(var.clone()),
+        value,
+    });
+    env.set(reg, Expr::Var(var));
+}
+
+const MAX_INTEGER_PROOF_DEPTH: u32 = 32;
+
+fn yields_integer(expr: &Expr, flags: &Flags, depth: u32) -> bool {
+    if depth > MAX_INTEGER_PROOF_DEPTH {
+        return false;
+    }
+    let integer = |inner: &Expr| -> bool { yields_integer(inner, flags, depth + 1) };
+    match expr {
+        Expr::Int(_) | Expr::BigInt { .. } | Expr::CharLit(_) => true,
+        Expr::Var(name) => flags.integer_vars.contains(name),
+        Expr::Guard { name, args } => match name.as_str() {
+            "length" | "byte_size" | "bit_size" | "tuple_size" | "map_size" | "size" | "trunc"
+            | "round" => true,
+            "abs" => args.first().is_some_and(integer),
+            _ => false,
+        },
+        Expr::BinOp { op, lhs, rhs } => match op.as_str() {
+            "rem" | "div" | "band" | "bor" | "bxor" | "bsl" | "bsr" => true,
+            "+" | "-" | "*" => integer(lhs) && integer(rhs),
+            _ => false,
+        },
+        Expr::UnOp { op, operand } => match op.as_str() {
+            "bnot" => true,
+            "-" | "+" => integer(operand),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+fn is_total_bif(module: &str, name: &str, arity: u32) -> bool {
+    module == "erlang"
+        && match arity {
+            0 => matches!(name, "self" | "node"),
+            1 => matches!(
+                name,
+                "is_atom"
+                    | "is_binary"
+                    | "is_bitstring"
+                    | "is_boolean"
+                    | "is_float"
+                    | "is_function"
+                    | "is_integer"
+                    | "is_list"
+                    | "is_map"
+                    | "is_number"
+                    | "is_pid"
+                    | "is_port"
+                    | "is_reference"
+                    | "is_tuple"
+            ),
+            2 => matches!(name, "==" | "/=" | "=:=" | "=/=" | "<" | ">" | "=<" | ">="),
+            _ => false,
+        }
+}
+
 fn as_reg(op: &Operand) -> Option<Reg> {
     match op {
         Operand::XReg(r) => Some(Reg::X(*r)),
@@ -1016,6 +1200,18 @@ fn as_reg(op: &Operand) -> Option<Reg> {
         Operand::TypedReg { reg, .. } => as_reg(reg),
         _ => None,
     }
+}
+
+fn resolve_import(chunks: &Chunks, op: &Operand) -> Option<(String, String, u32)> {
+    let index: u32 = match op {
+        Operand::Literal(v) => u32::try_from(*v).ok()?,
+        Operand::LiteralIndex(v) => *v,
+        _ => return None,
+    };
+    let import: &crate::chunks::ImportEntry = chunks.imports.get(index as usize)?;
+    let module: &str = chunks.atoms.get(import.module_atom_index)?;
+    let name: &str = chunks.atoms.get(import.function_atom_index)?;
+    Some((module.to_owned(), name.to_owned(), import.arity))
 }
 
 fn literal_u32(op: &Operand) -> u32 {

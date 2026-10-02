@@ -4,9 +4,9 @@ use crate::disasm::{Instruction, Operand};
 
 use super::expr::{self, BinSegment, Expr, Stmt};
 use super::{
-    BinMatchState, BinShared, BinaryClause, Block, Env, Flags, Lifter, Reg, as_reg, binmatch,
-    close_pattern, has_unrecovered_marker, inline_segment, is_ensure_exactly_zero, label_of,
-    literal_u32, rebind_prefix, resugar, simplify,
+    BinMatchState, BinShared, BinaryClause, Block, Env, Flags, Lifter, Reg, as_reg, bind_register,
+    binmatch, close_pattern, has_unrecovered_marker, inline_segment, is_ensure_exactly_zero,
+    label_of, literal_u32, rebind_prefix, resugar, simplify,
 };
 
 fn push_fail(fails: &mut Vec<u32>, ins: &Instruction) {
@@ -35,6 +35,9 @@ fn push_match_segment(
         }
     }
     if seg.binds {
+        if segment.kind == "integer" {
+            flags.integer_vars.insert(var.clone());
+        }
         segment.value = Box::new(Expr::Var(var.clone()));
     }
     if *cursor == shared.all_segments.len() {
@@ -302,6 +305,7 @@ impl Lifter<'_> {
                     );
                     let mut sub_flags: Flags = Flags {
                         pat_counter: flags.pat_counter,
+                        integer_vars: flags.integer_vars.clone(),
                         ..Flags::default()
                     };
                     let region: Block = Block {
@@ -481,14 +485,25 @@ impl Lifter<'_> {
         }
     }
 
-    pub(super) fn exec_bs_create_bin(&self, ins: &Instruction, env: &mut Env, flags: &mut Flags) {
+    pub(super) fn exec_bs_create_bin(
+        &self,
+        ins: &Instruction,
+        env: &mut Env,
+        out: &mut Vec<Stmt>,
+        flags: &mut Flags,
+    ) {
         let dst: Option<&Operand> = ins.operands.get(4);
         let Some(Operand::List(items)) = ins.operands.get(5) else {
             flags.degraded = true;
             return;
         };
         let segments: Vec<BinSegment> = self.parse_bin_segments(items, env);
-        if let Some(reg) = dst.and_then(as_reg) {
+        let Some(reg): Option<Reg> = dst.and_then(as_reg) else {
+            return;
+        };
+        if matches!(ins.operands.first(), Some(Operand::Label(0))) {
+            bind_register(env, reg, Expr::BinaryConstruct(segments), out, flags);
+        } else {
             env.set(reg, Expr::BinaryConstruct(segments));
         }
     }

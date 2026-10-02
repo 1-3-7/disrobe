@@ -14,6 +14,7 @@ use common::erlang_toolchain::{Erlang, require_erlang, run_bounded};
 const PROGRAMS: u64 = 400;
 const GRADED: &str = "generated Erlang programs through the stripped core lift";
 const VARIABLES: [&str; 4] = ["A", "B", "C", "D"];
+const EFFECT_VARIABLES: [&str; 3] = ["E", "F", "G"];
 
 struct Generator {
     state: u64,
@@ -147,11 +148,69 @@ impl Generator {
         }
     }
 
+    fn effect(&mut self, bound: usize) -> String {
+        let n: u32 = self.bindings;
+        self.bindings += 1;
+        match self.below(9) {
+            0 => format!(
+                "case {} andalso {} of true -> log(e{n}, {}); false -> {} end",
+                self.guard(bound),
+                self.guard(bound),
+                self.arithmetic(1, bound),
+                self.arithmetic(1, bound)
+            ),
+            1 => format!(
+                "case {} orelse {} of true -> {}; false -> log(e{n}, {}) end",
+                self.guard(bound),
+                self.guard(bound),
+                self.arithmetic(1, bound),
+                self.arithmetic(1, bound)
+            ),
+            2 => format!(
+                "begin W{n} = log(w{n}, {}), case {} of true -> W{n}; false -> 0 end end",
+                self.arithmetic(1, bound),
+                self.guard(bound)
+            ),
+            3 => format!(
+                "begin R{n} = log(r{n}, {}), S{n} = log(s{n}, {}), {{S{n}, R{n}}} end",
+                self.arithmetic(1, bound),
+                self.arithmetic(1, bound)
+            ),
+            4 => format!(
+                "begin O{n} = get(log), log(o{n}, {}), O{n} =:= get(log) end",
+                self.arithmetic(1, bound)
+            ),
+            5 => format!(
+                "try log(x{n}, {} div ({} - {})) catch error:badarith -> log(x{n}, bad) end",
+                self.arithmetic(1, bound),
+                self.atom(bound),
+                self.atom(bound)
+            ),
+            6 => format!(
+                "try begin _ = log(y{n}, {}), {} div ({} - {}) end catch error:badarith -> caught end",
+                self.atom(bound),
+                self.atom(bound),
+                self.atom(bound),
+                self.atom(bound)
+            ),
+            7 => format!(
+                "try begin _ = {} div ({} - {}), log(z{n}, ok) end catch error:badarith -> log(z{n}, raised) end",
+                self.atom(bound),
+                self.atom(bound),
+                self.atom(bound)
+            ),
+            _ => format!(
+                "try element({} rem 5, {{1, 2, 3}}) catch error:badarg -> log(b{n}, badarg) end",
+                self.atom(bound)
+            ),
+        }
+    }
+
     fn module(&mut self, name: &str) -> String {
         let k: u64 = 1 + self.below(5);
         let c: u64 = 1 + self.below(4);
         let mut out: String = format!(
-            "-module({name}).\n-export([test/0]).\n\nf(X) when X > {k} -> X - {k};\nf(X) -> X + {k}.\n\nh(0, Acc) -> Acc;\nh(N, Acc) -> h(N - 1, (Acc + N * {c}) rem 1000).\n\ng({{small, V}}) when V < 10 -> V * 2;\ng({{small, V}}) -> V;\ng({{big, V}}) -> V + 100;\ng({{_, V}}) -> -V.\n\ntest() ->\n"
+            "-module({name}).\n-export([test/0]).\n\nf(X) when X > {k} -> X - {k};\nf(X) -> X + {k}.\n\nh(0, Acc) -> Acc;\nh(N, Acc) -> h(N - 1, (Acc + N * {c}) rem 1000).\n\ng({{small, V}}) when V < 10 -> V * 2;\ng({{small, V}}) -> V;\ng({{big, V}}) -> V + 100;\ng({{_, V}}) -> -V.\n\nlog(T, V) -> put(log, [{{T, V}} | case get(log) of undefined -> []; L -> L end]), V.\n\ntest() ->\n"
         );
         for (index, name) in VARIABLES.iter().enumerate() {
             let value: String = if index == 0 {
@@ -162,7 +221,16 @@ impl Generator {
             writeln!(out, "    {name} = {value},").expect("write to a String");
         }
         let tail: String = self.value(VARIABLES.len());
-        writeln!(out, "    {{A, B, C, D, {tail}}}.").expect("write to a String");
+        let mut extra: Self = Self::new(self.state);
+        for name in EFFECT_VARIABLES {
+            let effect: String = extra.effect(VARIABLES.len());
+            writeln!(out, "    {name} = {effect},").expect("write to a String");
+        }
+        writeln!(
+            out,
+            "    {{A, B, C, D, {tail}, E, F, G, case get(log) of undefined -> []; Log -> lists:reverse(Log) end}}."
+        )
+        .expect("write to a String");
         out
     }
 }
@@ -326,6 +394,14 @@ fn the_generator_is_deterministic_and_varied() {
         "andalso",
         "<<P0:8",
         "lists:duplicate(",
+        " orelse ",
+        "of true -> W",
+        "{S",
+        "=:= get(log)",
+        "try log(x",
+        "_ = log(y",
+        "log(z",
+        "error:badarg",
     ] {
         assert!(all.contains(shape), "the corpus never generates `{shape}`");
     }
@@ -348,5 +424,76 @@ fn a_recovery_that_changes_one_constant_is_caught() {
     assert_ne!(
         recovered_output(&erlang, scratch.path(), "mutant", &mutated).ok(),
         Some(expected)
+    );
+}
+
+#[test]
+fn six_sequential_short_circuit_cases_lift_once_without_tail_duplication() {
+    let erlang: Erlang = require_erlang(GRADED);
+    let scratch: ScratchDir = ScratchDir::create("disrobe_beam_chain6").expect("scratch");
+    let source: &str = "-module(chain6).\n-export([test/0]).\n\
+        step(X) ->\n\
+        A = case X > 1 andalso X < 10 of true -> 1; false -> 2 end,\n\
+        B = case X > 2 orelse X < -5 of true -> 3; false -> 4 end,\n\
+        C = case X > 3 andalso X < 8 of true -> 5; false -> 6 end,\n\
+        D = case X < 0 orelse X > 6 of true -> 7; false -> 8 end,\n\
+        E = case X =/= 5 andalso X =/= 6 of true -> 9; false -> 10 end,\n\
+        F = case X rem 2 =:= 0 orelse X > 4 of true -> 11; false -> 12 end,\n\
+        put(chain_marker, {A, B, C, D, E, F}),\n\
+        A + B + C + D + E + F.\n\
+        test() -> [step(X) || X <- lists:seq(-7, 12)].\n";
+    let (orig_dir, recovered): (PathBuf, String) =
+        recovered_source(&erlang, scratch.path(), "chain6", source);
+    assert!(
+        !recovered.contains("disrobe_unrecovered"),
+        "the chain must lift without a fan-in refusal:\n{recovered}"
+    );
+    assert_eq!(
+        recovered.matches("put(chain_marker").count(),
+        1,
+        "the statement after the six cases must appear once:\n{recovered}"
+    );
+    let expected: String = run_test(&erlang, &orig_dir, "chain6").expect("original runs");
+    assert_eq!(
+        recovered_output(&erlang, scratch.path(), "chain6", &recovered),
+        Ok(expected),
+        "--- recovered ---\n{recovered}"
+    );
+}
+
+#[test]
+fn compiler_typed_integer_operands_stay_inline_while_untyped_ones_are_pinned() {
+    let erlang: Erlang = require_erlang(GRADED);
+    let scratch: ScratchDir = ScratchDir::create("disrobe_beam_typed").expect("scratch");
+    let source: &str = "-module(typed).\n-export([test/0, typed/1, untyped/1]).\n\
+        typed(A) when is_integer(A) -> B = A + 1, if B > 3 -> big; true -> small end.\n\
+        untyped(A) -> B = A + 1, if B > 3 -> big; true -> small end.\n\
+        test() -> {typed(5), typed(1), untyped(5), untyped(1.5),\n\
+        try untyped(x) catch error:badarith -> raised end}.\n";
+    let (orig_dir, recovered): (PathBuf, String) =
+        recovered_source(&erlang, scratch.path(), "typed", source);
+    let function = |name: &str| -> String {
+        recovered
+            .split("\n\n")
+            .find(|chunk: &&str| chunk.contains(&format!("{name}(X0) ->")))
+            .unwrap_or_else(|| panic!("{name}/1 missing:\n{recovered}"))
+            .to_owned()
+    };
+    let typed: String = function("typed");
+    let untyped: String = function("untyped");
+    assert!(
+        typed.contains("X0 + 1") && !typed.contains("= X0 + 1"),
+        "an addition the compiler typed as integer cannot raise and stays in the guard:\n{typed}"
+    );
+    assert!(
+        untyped.contains("= X0 + 1"),
+        "an untyped addition can raise badarith, so it must be bound before the guard:\n{untyped}"
+    );
+    let expected: String = run_test(&erlang, &orig_dir, "typed").expect("original runs");
+    assert_eq!(expected.trim(), "{big,small,big,small,raised}");
+    assert_eq!(
+        recovered_output(&erlang, scratch.path(), "typed", &recovered),
+        Ok(expected),
+        "--- recovered ---\n{recovered}"
     );
 }

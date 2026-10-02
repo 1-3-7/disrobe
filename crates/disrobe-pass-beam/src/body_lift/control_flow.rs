@@ -330,19 +330,50 @@ impl Lifter<'_> {
     pub(super) fn build_catch(
         &self,
         idx: usize,
-        catch_end: usize,
         env: &Env,
         flags: &mut Flags,
         depth: u32,
-    ) -> Expr {
+    ) -> (Expr, usize) {
+        let tag: Option<Reg> = self.instrs[idx].operands.first().and_then(as_reg);
+        let catch_end: usize = self.matching_end(idx + 1, "catch_end", tag);
         let region: Block = Block {
             start: idx + 1,
             end: catch_end,
         };
+        let inclusive: Block = Block {
+            start: idx + 1,
+            end: (catch_end + 1).min(self.instrs.len()),
+        };
+        if let Some((inner, resume)) = self.lift_catch_body(idx, tag, inclusive, env, flags, depth)
+        {
+            return (Expr::Catch(Box::new(inner)), resume);
+        }
         let mut body_env: Env = env.clone();
         let body: Vec<Stmt> = self.walk_synth(region, &mut body_env, flags, depth + 1);
         let inner: Expr = catch_value(body, &body_env);
-        Expr::Catch(Box::new(inner))
+        (Expr::Catch(Box::new(inner)), catch_end + 1)
+    }
+
+    fn matching_end(&self, start: usize, name: &str, tag: Option<Reg>) -> usize {
+        let mut cursor: usize = start;
+        while cursor < self.instrs.len() {
+            let ins: &Instruction = &self.instrs[cursor];
+            if ins.name == name && (tag.is_none() || ins.operands.first().and_then(as_reg) == tag) {
+                return cursor;
+            }
+            cursor += 1;
+        }
+        self.instrs.len()
+    }
+
+    pub(super) fn next_label_at(&self, start: usize) -> usize {
+        self.instrs
+            .get(start..)
+            .and_then(|rest: &[Instruction]| {
+                rest.iter()
+                    .position(|ins: &Instruction| ins.name == "label")
+            })
+            .map_or(self.instrs.len(), |offset: usize| start + offset)
     }
 
     pub(super) fn build_try(&self, idx: usize, env: &Env, flags: &mut Flags, depth: u32) -> Expr {
@@ -352,11 +383,11 @@ impl Lifter<'_> {
             start: idx + 1,
             end: try_case,
         };
-        let mut body_env: Env = env.clone();
-        let body: Vec<Stmt> = self.walk_synth(region, &mut body_env, flags, depth + 1);
+        let (body, of_arms): (Vec<Stmt>, Vec<CaseArm>) =
+            self.lift_try_body(idx, region, env, flags, depth);
         let (cls, rsn, stk): (String, String, String) =
             choose_exc_names(&body, self.exception_names);
-        let (of_arms, catch_arms): (Vec<CaseArm>, Vec<CatchArm>) =
+        let catch_arms: Vec<CatchArm> =
             self.build_try_handlers(catch_label, env, flags, depth, &cls, &rsn, &stk);
         Expr::Try {
             body,
@@ -386,9 +417,9 @@ impl Lifter<'_> {
         cls: &str,
         rsn: &str,
         stk: &str,
-    ) -> (Vec<CaseArm>, Vec<CatchArm>) {
+    ) -> Vec<CatchArm> {
         let Some(block): Option<Block> = self.blocks.get(&label).copied() else {
-            return (Vec::new(), Vec::new());
+            return Vec::new();
         };
         let mut cursor: usize = block.start;
         while cursor < block.end && self.instrs[cursor].name != "try_case" {
@@ -403,7 +434,7 @@ impl Lifter<'_> {
             end: block.end,
         };
         let stmts: Vec<Stmt> = self.walk_synth(synth, &mut catch_env, flags, depth + 1);
-        (Vec::new(), to_catch_arms(stmts, cls, rsn, stk))
+        to_catch_arms(stmts, cls, rsn, stk)
     }
 
     pub(super) fn walk_synth(
@@ -422,6 +453,8 @@ impl Lifter<'_> {
             literals: self.literals,
             arity: self.arity,
             exception_names: self.exception_names,
+            joins: self.joins,
+            types: self.types,
         };
         sub.blocks.insert(synth_label, synth);
         sub.walk(synth_label, env, flags, depth + 1)
@@ -434,9 +467,9 @@ impl Lifter<'_> {
         env: &Env,
         flags: &mut Flags,
         depth: u32,
-    ) -> Option<Stmt> {
+    ) -> Option<Expr> {
         let arms: Vec<IfArm> = self.collect_if_arms(block, idx, env, flags, depth)?;
-        Some(Stmt::Return(Expr::If { arms }))
+        Some(Expr::If { arms })
     }
 
     fn collect_if_arms(
@@ -491,7 +524,8 @@ impl Lifter<'_> {
             flags.degraded = true;
             return Vec::new();
         }
-        if let Some(block) = self.blocks.get(&label).copied()
+        if !flags.is_join_label(label)
+            && let Some(block) = self.blocks.get(&label).copied()
             && self
                 .instrs
                 .get(block.start)
@@ -527,6 +561,8 @@ impl Lifter<'_> {
             literals: self.literals,
             arity: self.arity,
             exception_names: self.exception_names,
+            joins: self.joins,
+            types: self.types,
         };
         sub.blocks.insert(synth_label, synth);
         sub.walk(synth_label, env, flags, depth + 1)
@@ -670,7 +706,16 @@ fn to_catch_arms(stmts: Vec<Stmt>, cls: &str, rsn: &str, stk: &str) -> Vec<Catch
                         && matches!(&*lhs, Expr::Var(v) if v == rsn)
                         && is_literal_reason(&rhs) =>
                 {
-                    (*rhs, arm.body.clone())
+                    let pattern: Expr = if body_uses_var(&arm.body, rsn) {
+                        Expr::BinOp {
+                            op: "=".to_owned(),
+                            lhs: rhs,
+                            rhs: Box::new(Expr::Var(rsn.to_owned())),
+                        }
+                    } else {
+                        *rhs
+                    };
+                    (pattern, arm.body.clone())
                 }
                 Some(rest) => {
                     stacktrace = Some(stk.to_owned());

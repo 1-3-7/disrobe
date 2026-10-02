@@ -33,8 +33,17 @@ fn render_stmt(stmt: &Stmt, indent: usize) -> String {
 fn render_bind_value(expr: &Expr, indent: usize) -> String {
     match expr {
         Expr::Catch(_) => format!("({})", render_expr(expr)),
+        Expr::Block(stmts) => render_begin(stmts, indent),
         _ => render_expr_indented(expr, indent),
     }
+}
+
+fn render_begin(stmts: &[Stmt], indent: usize) -> String {
+    format!(
+        "begin\n{}\n{}end",
+        render_body(stmts, indent + 1),
+        pad(indent)
+    )
 }
 
 fn render_expr_indented(expr: &Expr, indent: usize) -> String {
@@ -260,7 +269,7 @@ pub fn render_expr(expr: &Expr) -> String {
             catch_arms,
             after,
         } => render_try(body, of_arms, catch_arms, after, 0),
-        Expr::Block(stmts) => render_body(stmts, 0),
+        Expr::Block(stmts) => render_begin(stmts, 0),
         Expr::Raw(s) => s.clone(),
     }
 }

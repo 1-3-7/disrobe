@@ -407,19 +407,66 @@ fn reconverging_diamond_cfg_lifts_bounded_not_exponential() {
     instrs.push(ins("label", vec![Operand::Literal(u64::from(1 + depth))]));
     instrs.push(ins("return", Vec::new()));
     let body: LiftedBody = lift_body(&instrs, 1, &chunks, &index);
+    let rendered: String = render_body(&body.stmts, 1);
+    assert!(
+        body.lift_complete,
+        "a reconverging diamond joins at its post-dominator instead of duplicating:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("fan-in capped"),
+        "joined diamonds must not reach the fan-in cap:\n{rendered}"
+    );
+    assert!(
+        rendered.len() < 4 * 1024,
+        "64 joined diamonds must lift in linear size, got {} bytes",
+        rendered.len()
+    );
+}
+
+#[test]
+fn half_open_diamonds_without_a_join_still_hit_the_fan_in_cap() {
+    let chunks: Chunks = minimal_chunks();
+    let index: BTreeMap<u32, (String, u32)> = build_label_index(&chunks);
+    let mut instrs: Vec<Instruction> = vec![ins("label", vec![Operand::Literal(1)])];
+    let depth: u32 = 64;
+    for d in 0..depth {
+        let here: u32 = 1 + 2 * d;
+        let side: u32 = here + 1;
+        let join: u32 = here + 2;
+        if d > 0 {
+            instrs.push(ins("label", vec![Operand::Literal(u64::from(here))]));
+        }
+        instrs.push(ins(
+            "is_eq_exact",
+            vec![Operand::Label(side), Operand::XReg(0), Operand::Atom(0)],
+        ));
+        instrs.push(ins("jump", vec![Operand::Label(join)]));
+        instrs.push(ins("label", vec![Operand::Literal(u64::from(side))]));
+        instrs.push(ins(
+            "is_eq_exact",
+            vec![Operand::Label(join), Operand::XReg(1), Operand::Atom(0)],
+        ));
+        instrs.push(ins("return", Vec::new()));
+    }
+    instrs.push(ins(
+        "label",
+        vec![Operand::Literal(u64::from(1 + 2 * depth))],
+    ));
+    instrs.push(ins("return", Vec::new()));
+    let body: LiftedBody = lift_body(&instrs, 2, &chunks, &index);
     assert!(
         !body.lift_complete,
-        "a 2^64 reconverging diamond must report degraded, not a faithful lift"
+        "fan-in without a post-dominating join must report degraded"
     );
     let rendered: String = render_body(&body.stmts, 1);
     assert!(
         rendered.len() < 16 * 1024 * 1024,
-        "diamond CFG must stay bounded (degraded), got {} bytes",
+        "half-open diamonds must stay bounded, got {} bytes",
         rendered.len()
     );
     assert!(
         rendered.contains("fan-in capped"),
-        "the per-label fan-in cap must engage on a reconverging diamond"
+        "the per-label fan-in cap must engage when no join post-dominates the branch"
     );
 }
 

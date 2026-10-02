@@ -1,19 +1,13 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use crate::body_lift::expr::{AfterClause, CaseArm, CatchArm, Expr, IfArm, Stmt};
+use crate::body_lift::expr::{AfterClause, BinSegment, CaseArm, CatchArm, Expr, IfArm, Stmt};
 
 #[must_use]
 pub fn simplify_body(stmts: Vec<Stmt>) -> Vec<Stmt> {
-    let mut counts: BTreeMap<String, Uses> = BTreeMap::new();
+    let mut counts: BTreeMap<String, u32> = BTreeMap::new();
     count_stmts(&stmts, &mut counts);
     let mut defs: BTreeMap<String, Expr> = BTreeMap::new();
     inline_pass(stmts, &counts, &mut defs)
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-struct Uses {
-    reads: u32,
-    captured: bool,
 }
 
 fn is_temp(name: &str) -> bool {
@@ -21,7 +15,7 @@ fn is_temp(name: &str) -> bool {
         .is_some_and(|rest: &str| !rest.is_empty() && rest.bytes().all(|b: u8| b.is_ascii_digit()))
 }
 
-fn count_stmts(stmts: &[Stmt], counts: &mut BTreeMap<String, Uses>) {
+fn count_stmts(stmts: &[Stmt], counts: &mut BTreeMap<String, u32>) {
     for stmt in stmts {
         match stmt {
             Stmt::Return(e) | Stmt::Expr(e) => count_expr(e, counts),
@@ -35,12 +29,12 @@ fn count_stmts(stmts: &[Stmt], counts: &mut BTreeMap<String, Uses>) {
     }
 }
 
-fn count_expr(expr: &Expr, counts: &mut BTreeMap<String, Uses>) {
+fn count_expr(expr: &Expr, counts: &mut BTreeMap<String, u32>) {
     match expr {
         Expr::Var(name) => {
             if is_temp(name) {
-                let uses: &mut Uses = counts.entry(name.clone()).or_default();
-                uses.reads = uses.reads.saturating_add(1);
+                let reads: &mut u32 = counts.entry(name.clone()).or_default();
+                *reads = reads.saturating_add(1);
             }
         }
         Expr::Atom(_)
@@ -83,16 +77,7 @@ fn count_expr(expr: &Expr, counts: &mut BTreeMap<String, Uses>) {
             count_expr(rhs, counts);
         }
         Expr::UnOp { operand, .. } => count_expr(operand, counts),
-        Expr::MakeFun { env, .. } => {
-            count_each(env, counts);
-            for item in env {
-                if let Expr::Var(name) = item
-                    && is_temp(name)
-                {
-                    counts.entry(name.clone()).or_default().captured = true;
-                }
-            }
-        }
+        Expr::MakeFun { env, .. } => count_each(env, counts),
         Expr::CallFun { fun, args } => {
             count_expr(fun, counts);
             count_each(args, counts);
@@ -147,13 +132,13 @@ fn count_expr(expr: &Expr, counts: &mut BTreeMap<String, Uses>) {
     }
 }
 
-fn count_each(items: &[Expr], counts: &mut BTreeMap<String, Uses>) {
+fn count_each(items: &[Expr], counts: &mut BTreeMap<String, u32>) {
     for e in items {
         count_expr(e, counts);
     }
 }
 
-fn count_arm(arm: &CaseArm, counts: &mut BTreeMap<String, Uses>) {
+fn count_arm(arm: &CaseArm, counts: &mut BTreeMap<String, u32>) {
     if let Some(g) = &arm.guard {
         count_expr(g, counts);
     }
@@ -162,63 +147,141 @@ fn count_arm(arm: &CaseArm, counts: &mut BTreeMap<String, Uses>) {
 
 fn inline_pass(
     stmts: Vec<Stmt>,
-    counts: &BTreeMap<String, Uses>,
+    counts: &BTreeMap<String, u32>,
     defs: &mut BTreeMap<String, Expr>,
 ) -> Vec<Stmt> {
     let mut out: Vec<Stmt> = Vec::with_capacity(stmts.len());
+    let mut pending: Vec<(String, Expr)> = Vec::new();
+    for stmt in flatten(stmts) {
+        let names: BTreeSet<&str> = pending
+            .iter()
+            .map(|(name, _): &(String, Expr)| name.as_str())
+            .collect();
+        let mut uses: Vec<String> = Vec::new();
+        scan_stmt(&stmt, &names, &mut uses);
+        let keep: usize = (0..=pending.len())
+            .find(|&from: &usize| {
+                pending[from..]
+                    .iter()
+                    .zip(uses.iter())
+                    .all(|((name, _), used): (&(String, Expr), &String)| name == used)
+                    && uses.len() >= pending.len() - from
+            })
+            .unwrap_or(pending.len());
+        let consumed: Vec<(String, Expr)> = pending.split_off(keep);
+        let mut scope: BTreeMap<String, Expr> = defs.clone();
+        scope.extend(consumed);
+        if let Some(emitted) = place(stmt, counts, &scope, defs, &mut pending) {
+            flush(&mut pending, &mut out);
+            out.push(emitted);
+        }
+    }
+    flush(&mut pending, &mut out);
+    fold_returned_join(&mut out);
+    out
+}
+
+fn fold_returned_join(out: &mut Vec<Stmt>) {
+    let [
+        ..,
+        Stmt::Bind {
+            pattern: Expr::Var(bound),
+            ..
+        },
+        Stmt::Return(Expr::Var(returned)),
+    ] = out.as_slice()
+    else {
+        return;
+    };
+    if bound != returned || !is_join_var(bound) {
+        return;
+    }
+    out.pop();
+    if let Some(Stmt::Bind { value, .. }) = out.pop() {
+        out.push(Stmt::Return(value));
+    }
+}
+
+fn is_join_var(name: &str) -> bool {
+    name.strip_prefix('J')
+        .is_some_and(|rest: &str| !rest.is_empty() && rest.bytes().all(|b: u8| b.is_ascii_digit()))
+}
+
+fn flatten(stmts: Vec<Stmt>) -> Vec<Stmt> {
+    let mut out: Vec<Stmt> = Vec::with_capacity(stmts.len());
     for stmt in stmts {
         match stmt {
-            Stmt::Bind { pattern, value } => {
-                let value: Expr = subst_expr(value, counts, defs);
-                if let Expr::Var(name) = &pattern
-                    && is_temp(name)
-                {
-                    let uses: Uses = counts.get(name).copied().unwrap_or_default();
-                    match uses.reads {
-                        0 => out.push(Stmt::Expr(value)),
-                        1 if !(uses.captured && calls_a_function(&value)) => {
-                            defs.insert(name.clone(), value);
-                        }
-                        _ => out.push(Stmt::Bind {
-                            pattern: Expr::Var(rename_temp(name)),
-                            value,
-                        }),
-                    }
-                } else {
-                    out.push(Stmt::Bind {
-                        pattern: subst_pattern(pattern),
-                        value,
-                    });
-                }
+            Stmt::Return(Expr::Block(inner)) | Stmt::Expr(Expr::Block(inner))
+                if !inner.is_empty() =>
+            {
+                out.extend(flatten(inner));
             }
-            Stmt::Match { pattern, value } => out.push(Stmt::Match {
-                pattern: subst_pattern(pattern),
-                value: subst_expr(value, counts, defs),
-            }),
-            Stmt::Return(e) => out.push(Stmt::Return(subst_expr(e, counts, defs))),
-            Stmt::Expr(e) => out.push(Stmt::Expr(subst_expr(e, counts, defs))),
-            Stmt::Send { dest, msg } => out.push(Stmt::Send {
-                dest: subst_expr(dest, counts, defs),
-                msg: subst_expr(msg, counts, defs),
-            }),
-            Stmt::Comment(c) => out.push(Stmt::Comment(c)),
+            other => out.push(other),
         }
     }
     out
 }
 
-fn calls_a_function(expr: &Expr) -> bool {
-    match expr {
-        Expr::Call { .. } | Expr::CallFun { .. } | Expr::Receive { .. } | Expr::Try { .. } => true,
-        Expr::Tuple(items) => items.iter().any(calls_a_function),
-        Expr::List { elements, tail } => {
-            elements.iter().any(calls_a_function) || calls_a_function(tail)
+fn flush(pending: &mut Vec<(String, Expr)>, out: &mut Vec<Stmt>) {
+    for (name, value) in pending.drain(..) {
+        out.push(Stmt::Bind {
+            pattern: Expr::Var(rename_temp(&name)),
+            value,
+        });
+    }
+}
+
+fn place(
+    stmt: Stmt,
+    counts: &BTreeMap<String, u32>,
+    scope: &BTreeMap<String, Expr>,
+    defs: &mut BTreeMap<String, Expr>,
+    pending: &mut Vec<(String, Expr)>,
+) -> Option<Stmt> {
+    match stmt {
+        Stmt::Bind { pattern, value } => {
+            let value: Expr = subst_expr(value, counts, scope);
+            let Expr::Var(name) = &pattern else {
+                return Some(Stmt::Bind {
+                    pattern: subst_pattern(pattern),
+                    value,
+                });
+            };
+            if !is_temp(name) {
+                return Some(Stmt::Bind { pattern, value });
+            }
+            match counts.get(name).copied().unwrap_or_default() {
+                0 => Some(Stmt::Expr(value)),
+                1 if is_inert(&value) => {
+                    defs.insert(name.clone(), value);
+                    None
+                }
+                1 => {
+                    pending.push((name.clone(), value));
+                    None
+                }
+                _ => Some(Stmt::Bind {
+                    pattern: Expr::Var(rename_temp(name)),
+                    value,
+                }),
+            }
         }
-        Expr::Cons { head, tail } => calls_a_function(head) || calls_a_function(tail),
-        Expr::BinOp { lhs, rhs, .. } => calls_a_function(lhs) || calls_a_function(rhs),
-        Expr::UnOp { operand, .. } => calls_a_function(operand),
-        Expr::Guard { args, .. } => args.is_empty() || args.iter().any(calls_a_function),
-        Expr::TupleElement { tuple, .. } => calls_a_function(tuple),
+        Stmt::Match { pattern, value } => Some(Stmt::Match {
+            pattern: subst_pattern(pattern),
+            value: subst_expr(value, counts, scope),
+        }),
+        Stmt::Return(e) => Some(Stmt::Return(subst_expr(e, counts, scope))),
+        Stmt::Expr(e) => Some(Stmt::Expr(subst_expr(e, counts, scope))),
+        Stmt::Send { dest, msg } => Some(Stmt::Send {
+            dest: subst_expr(dest, counts, scope),
+            msg: subst_expr(msg, counts, scope),
+        }),
+        Stmt::Comment(c) => Some(Stmt::Comment(c)),
+    }
+}
+
+fn is_inert(expr: &Expr) -> bool {
+    match expr {
         Expr::Var(_)
         | Expr::Atom(_)
         | Expr::Nil
@@ -227,8 +290,106 @@ fn calls_a_function(expr: &Expr) -> bool {
         | Expr::Float(_)
         | Expr::Str(_)
         | Expr::CharLit(_)
-        | Expr::BinaryLit(_) => false,
-        _ => true,
+        | Expr::BinaryLit(_) => true,
+        Expr::Tuple(items) => items.iter().all(is_inert),
+        Expr::List { elements, tail } => elements.iter().all(is_inert) && is_inert(tail),
+        Expr::Cons { head, tail } => is_inert(head) && is_inert(tail),
+        _ => false,
+    }
+}
+
+fn scan_stmt(stmt: &Stmt, pending: &BTreeSet<&str>, uses: &mut Vec<String>) {
+    match stmt {
+        Stmt::Return(e) | Stmt::Expr(e) => {
+            scan(e, pending, uses);
+        }
+        Stmt::Bind { value, .. } | Stmt::Match { value, .. } => {
+            scan(value, pending, uses);
+        }
+        Stmt::Send { dest, msg } => {
+            let _ = scan(dest, pending, uses) && scan(msg, pending, uses);
+        }
+        Stmt::Comment(_) => {}
+    }
+}
+
+fn scan_all(items: &[Expr], pending: &BTreeSet<&str>, uses: &mut Vec<String>) -> bool {
+    items.iter().all(|item: &Expr| scan(item, pending, uses))
+}
+
+fn scan(expr: &Expr, pending: &BTreeSet<&str>, uses: &mut Vec<String>) -> bool {
+    match expr {
+        Expr::Var(name) => {
+            if pending.contains(name.as_str()) {
+                uses.push(name.clone());
+            }
+            true
+        }
+        Expr::Atom(_)
+        | Expr::Nil
+        | Expr::Int(_)
+        | Expr::BigInt { .. }
+        | Expr::Float(_)
+        | Expr::Str(_)
+        | Expr::CharLit(_)
+        | Expr::BinaryLit(_) => true,
+        Expr::Tuple(items) => scan_all(items, pending, uses),
+        Expr::List { elements, tail } => {
+            scan_all(elements, pending, uses) && scan(tail, pending, uses)
+        }
+        Expr::Cons { head, tail } => scan(head, pending, uses) && scan(tail, pending, uses),
+        Expr::Map { pairs } | Expr::MapPattern { pairs } => pairs
+            .iter()
+            .all(|(k, v): &(Expr, Expr)| scan(k, pending, uses) && scan(v, pending, uses)),
+        Expr::MapUpdate { base, pairs, .. } => {
+            scan(base, pending, uses)
+                && pairs
+                    .iter()
+                    .all(|(k, v): &(Expr, Expr)| scan(k, pending, uses) && scan(v, pending, uses))
+        }
+        Expr::TupleElement { tuple, .. } => scan(tuple, pending, uses),
+        Expr::RecordUpdate { base, updates } => {
+            scan(base, pending, uses)
+                && updates
+                    .iter()
+                    .all(|(_, v): &(u32, Expr)| scan(v, pending, uses))
+        }
+        Expr::Call { args, .. } => {
+            scan_all(args, pending, uses);
+            false
+        }
+        Expr::CallFun { fun, args } => {
+            let _ = scan(fun, pending, uses) && scan_all(args, pending, uses);
+            false
+        }
+        Expr::BinOp { op, lhs, rhs } => {
+            let first: bool = scan(lhs, pending, uses);
+            first && !matches!(op.as_str(), "andalso" | "orelse") && scan(rhs, pending, uses)
+        }
+        Expr::UnOp { operand, .. } => scan(operand, pending, uses),
+        Expr::Guard { args, .. } => scan_all(args, pending, uses),
+        Expr::MakeFun { env, .. } => {
+            let mut inner: Vec<String> = Vec::new();
+            scan_all(env, pending, &mut inner);
+            inner.is_empty()
+        }
+        Expr::BinaryConstruct(segments) => segments.iter().all(|segment: &BinSegment| {
+            scan(&segment.value, pending, uses)
+                && segment
+                    .size
+                    .as_deref()
+                    .is_none_or(|size: &Expr| scan(size, pending, uses))
+        }),
+        Expr::Case { subject, .. } => {
+            scan(subject, pending, uses);
+            false
+        }
+        Expr::Catch(_)
+        | Expr::If { .. }
+        | Expr::Receive { .. }
+        | Expr::Try { .. }
+        | Expr::Block(_)
+        | Expr::Raw(_) => false,
     }
 }
 
@@ -245,14 +406,18 @@ fn subst_pattern(pattern: Expr) -> Expr {
 
 fn subst_stmts(
     stmts: Vec<Stmt>,
-    counts: &BTreeMap<String, Uses>,
+    counts: &BTreeMap<String, u32>,
     defs: &BTreeMap<String, Expr>,
 ) -> Vec<Stmt> {
-    let mut scoped: BTreeMap<String, Expr> = defs.clone();
+    let mut scoped: BTreeMap<String, Expr> = defs
+        .iter()
+        .filter(|(_, value): &(&String, &Expr)| is_inert(value))
+        .map(|(name, value): (&String, &Expr)| (name.clone(), value.clone()))
+        .collect();
     inline_pass(stmts, counts, &mut scoped)
 }
 
-fn subst_expr(expr: Expr, counts: &BTreeMap<String, Uses>, defs: &BTreeMap<String, Expr>) -> Expr {
+fn subst_expr(expr: Expr, counts: &BTreeMap<String, u32>, defs: &BTreeMap<String, Expr>) -> Expr {
     match expr {
         Expr::Var(name) => {
             if let Some(replacement) = defs.get(&name) {
@@ -381,14 +546,23 @@ fn subst_expr(expr: Expr, counts: &BTreeMap<String, Uses>, defs: &BTreeMap<Strin
                 .collect(),
             after: subst_stmts(after, counts, defs),
         },
-        Expr::Block(stmts) => Expr::Block(subst_stmts(stmts, counts, defs)),
+        Expr::Block(stmts) => {
+            let mut inner: Vec<Stmt> = subst_stmts(stmts, counts, defs);
+            match inner.as_slice() {
+                [Stmt::Return(_)] => match inner.pop() {
+                    Some(Stmt::Return(value)) => value,
+                    _ => Expr::Block(inner),
+                },
+                _ => Expr::Block(inner),
+            }
+        }
         other => other,
     }
 }
 
 fn subst_arm(
     arm: CaseArm,
-    counts: &BTreeMap<String, Uses>,
+    counts: &BTreeMap<String, u32>,
     defs: &BTreeMap<String, Expr>,
 ) -> CaseArm {
     CaseArm {
@@ -400,7 +574,7 @@ fn subst_arm(
 
 fn map_exprs(
     items: Vec<Expr>,
-    counts: &BTreeMap<String, Uses>,
+    counts: &BTreeMap<String, u32>,
     defs: &BTreeMap<String, Expr>,
 ) -> Vec<Expr> {
     items
@@ -411,7 +585,7 @@ fn map_exprs(
 
 fn map_pairs(
     pairs: Vec<(Expr, Expr)>,
-    counts: &BTreeMap<String, Uses>,
+    counts: &BTreeMap<String, u32>,
     defs: &BTreeMap<String, Expr>,
 ) -> Vec<(Expr, Expr)> {
     pairs

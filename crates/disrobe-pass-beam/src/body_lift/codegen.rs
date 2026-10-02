@@ -3,9 +3,12 @@ use std::collections::BTreeMap;
 use crate::disasm::{Instruction, Operand};
 
 use super::expr::{Expr, Stmt};
+use super::join::is_raising_import;
+use super::types::OperandTypes;
 use super::{
-    Env, Flags, Lifter, Reg, as_reg, bounded_set, build_bif_expr, call_ext_expr, finish_call,
-    guard, literal_u32, make_cons, render,
+    Env, Flags, Lifter, Reg, as_reg, bind_register, bounded_set, build_bif_expr, call_ext_expr,
+    finish_call, guard, is_total_bif, literal_u32, make_cons, render, resolve_import,
+    yields_integer,
 };
 
 impl Lifter<'_> {
@@ -49,7 +52,13 @@ impl Lifter<'_> {
         }
     }
 
-    pub(super) fn exec_float_arith(&self, ins: &Instruction, env: &mut Env) {
+    pub(super) fn exec_float_arith(
+        &self,
+        ins: &Instruction,
+        env: &mut Env,
+        out: &mut Vec<Stmt>,
+        flags: &mut Flags,
+    ) {
         let (expr, dst): (Expr, &Operand) = if ins.name == "fnegate" {
             let (Some(operand), Some(dst)): (Option<&Operand>, Option<&Operand>) =
                 (ins.operands.get(1), ins.operands.get(2))
@@ -92,7 +101,7 @@ impl Lifter<'_> {
             )
         };
         if let Some(reg) = as_reg(dst) {
-            env.set(reg, expr);
+            bind_register(env, reg, expr, out, flags);
         }
     }
 
@@ -175,7 +184,13 @@ impl Lifter<'_> {
         );
     }
 
-    pub(super) fn exec_put_map(&self, ins: &Instruction, env: &mut Env) {
+    pub(super) fn exec_put_map(
+        &self,
+        ins: &Instruction,
+        env: &mut Env,
+        out: &mut Vec<Stmt>,
+        flags: &mut Flags,
+    ) {
         let exact: bool = ins.name == "put_map_exact";
         let base: Expr = self.value(&ins.operands[1], env);
         let dst: &Operand = &ins.operands[2];
@@ -183,15 +198,20 @@ impl Lifter<'_> {
             return;
         };
         let pairs: Vec<(Expr, Expr)> = self.pair_list(items, env);
-        if let Some(reg) = as_reg(dst) {
-            env.set(
-                reg,
-                Expr::MapUpdate {
-                    base: Box::new(base),
-                    exact,
-                    pairs,
-                },
-            );
+        let Some(reg): Option<Reg> = as_reg(dst) else {
+            return;
+        };
+        let can_fail: bool = matches!(ins.operands.first(), Some(Operand::Label(0)))
+            && (exact || !matches!(base, Expr::Map { .. } | Expr::MapUpdate { .. }));
+        let update: Expr = Expr::MapUpdate {
+            base: Box::new(base),
+            exact,
+            pairs,
+        };
+        if can_fail {
+            bind_register(env, reg, update, out, flags);
+        } else {
+            env.set(reg, update);
         }
     }
 
@@ -261,35 +281,49 @@ impl Lifter<'_> {
         env: &mut Env,
         out: &mut Vec<Stmt>,
         flags: &mut Flags,
-    ) {
-        let (import_op, dst, args): (&Operand, &Operand, Vec<Expr>) = match ins.name {
-            "bif0" => (&ins.operands[0], &ins.operands[1], Vec::new()),
-            "bif1" => (
-                &ins.operands[1],
-                &ins.operands[3],
-                vec![self.value(&ins.operands[2], env)],
-            ),
-            "bif2" => (
-                &ins.operands[1],
-                &ins.operands[4],
-                vec![
-                    self.value(&ins.operands[2], env),
-                    self.value(&ins.operands[3], env),
-                ],
-            ),
-            _ => return,
+    ) -> bool {
+        let (fail, import_op, dst, args): (Option<&Operand>, &Operand, &Operand, Vec<Expr>) =
+            match ins.name {
+                "bif0" => (None, &ins.operands[0], &ins.operands[1], Vec::new()),
+                "bif1" => (
+                    ins.operands.first(),
+                    &ins.operands[1],
+                    &ins.operands[3],
+                    vec![self.value(&ins.operands[2], env)],
+                ),
+                "bif2" => (
+                    ins.operands.first(),
+                    &ins.operands[1],
+                    &ins.operands[4],
+                    vec![
+                        self.value(&ins.operands[2], env),
+                        self.value(&ins.operands[3], env),
+                    ],
+                ),
+                _ => return false,
+            };
+        let Some((module, name, arity)): Option<(String, String, u32)> =
+            self.resolve_import(import_op)
+        else {
+            flags.degraded = true;
+            return false;
         };
-        if self.apply_bif(import_op, &args, dst, env, flags)
-            && args.is_empty()
-            && let Some(reg) = as_reg(dst)
-        {
-            let var: String = flags.fresh_var();
-            out.push(Stmt::Bind {
-                pattern: Expr::Var(var.clone()),
-                value: env.get(reg),
-            });
-            env.set(reg, Expr::Var(var));
+        let expr: Expr = build_bif_expr(&module, &name, arity, &args);
+        if is_raising_import(&module, &name, arity) {
+            out.push(Stmt::Return(expr));
+            return true;
         }
+        let Some(reg): Option<Reg> = as_reg(dst) else {
+            return false;
+        };
+        let pinned: bool = args.is_empty()
+            || (matches!(fail, Some(Operand::Label(0))) && !is_total_bif(&module, &name, arity));
+        if pinned {
+            bind_register(env, reg, expr, out, flags);
+        } else {
+            env.set(reg, expr);
+        }
+        false
     }
 
     pub(super) fn exec_gc_bif(
@@ -324,27 +358,55 @@ impl Lifter<'_> {
             ),
             _ => return,
         };
-        let raises_on_a_zero_divisor: bool =
-            matches!(ins.operands.first(), Some(Operand::Label(0)))
-                && !matches!(args.last(), Some(Expr::Int(divisor)) if *divisor != 0)
-                && self.resolve_import(import_op).is_some_and(
-                    |(module, name, arity): (String, String, u32)| {
-                        module == "erlang"
-                            && arity == 2
-                            && matches!(name.as_str(), "div" | "rem" | "/")
-                    },
-                );
+        let in_body: bool = matches!(ins.operands.first(), Some(Operand::Label(0)));
+        let sources: &[Operand] = ins
+            .operands
+            .len()
+            .checked_sub(1)
+            .and_then(|end: usize| ins.operands.get(3..end))
+            .unwrap_or(&[]);
         if self.apply_bif(import_op, &args, dst, env, flags)
-            && raises_on_a_zero_divisor
+            && in_body
+            && !self.gc_bif_is_total(import_op, sources, &args, flags)
             && let Some(reg) = as_reg(dst)
         {
-            let var: String = flags.fresh_var();
-            out.push(Stmt::Bind {
-                pattern: Expr::Var(var.clone()),
-                value: env.get(reg),
-            });
-            env.set(reg, Expr::Var(var));
+            let value: Expr = env.get(reg);
+            let integral: bool = yields_integer(&value, flags, 0);
+            bind_register(env, reg, value, out, flags);
+            if integral && let Some(Expr::Var(name)) = env.bound(reg) {
+                flags.integer_vars.insert(name);
+            }
         }
+    }
+
+    fn gc_bif_is_total(
+        &self,
+        import_op: &Operand,
+        sources: &[Operand],
+        args: &[Expr],
+        flags: &Flags,
+    ) -> bool {
+        let Some((module, name, _)): Option<(String, String, u32)> = self.resolve_import(import_op)
+        else {
+            return false;
+        };
+        let integer = |at: usize| -> bool {
+            sources
+                .get(at)
+                .is_some_and(|op: &Operand| self.types.is_integer(op))
+                || args
+                    .get(at)
+                    .is_some_and(|arg: &Expr| yields_integer(arg, flags, 0))
+        };
+        module == "erlang"
+            && match (name.as_str(), sources) {
+                ("+" | "-" | "*" | "band" | "bor" | "bxor", [_, _]) => integer(0) && integer(1),
+                ("rem" | "div", [_, divisor]) => {
+                    integer(0) && OperandTypes::is_nonzero_integer_literal(divisor)
+                }
+                ("-" | "+" | "bnot" | "abs", [_]) => integer(0),
+                _ => false,
+            }
     }
 
     fn apply_bif(
@@ -398,6 +460,10 @@ impl Lifter<'_> {
         let arity: u32 = literal_u32(&ins.operands[0]).min(crate::chunks::MAX_FUN_ARITY);
         let args: Vec<Expr> = (0..arity).map(|i: u32| env.get(Reg::X(i))).collect();
         let call: Expr = match self.resolve_import(&ins.operands[1]) {
+            Some((module, name, arity)) if is_raising_import(&module, &name, arity) => {
+                out.push(Stmt::Return(call_ext_expr(&module, &name, arity, &args)));
+                return true;
+            }
             Some((module, name, arity)) => call_ext_expr(&module, &name, arity, &args),
             None => Expr::Call {
                 target: "erlang:apply".to_owned(),
@@ -472,15 +538,7 @@ impl Lifter<'_> {
     }
 
     fn resolve_import(&self, op: &Operand) -> Option<(String, String, u32)> {
-        let index: u32 = match op {
-            Operand::Literal(v) => u32::try_from(*v).ok()?,
-            Operand::LiteralIndex(v) => *v,
-            _ => return None,
-        };
-        let import: &crate::chunks::ImportEntry = self.chunks.imports.get(index as usize)?;
-        let module: &str = self.chunks.atoms.get(import.module_atom_index)?;
-        let name: &str = self.chunks.atoms.get(import.function_atom_index)?;
-        Some((module.to_owned(), name.to_owned(), import.arity))
+        resolve_import(self.chunks, op)
     }
 
     pub(super) fn value(&self, op: &Operand, env: &Env) -> Expr {
