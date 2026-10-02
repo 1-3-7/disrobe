@@ -9,6 +9,7 @@ on:
         type: choice
         options:
           - hercules
+          - pyc-zipper
 
 permissions:
   contents: read
