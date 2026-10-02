@@ -134,7 +134,7 @@ A wider CPython 3.14.5 population of <!-- m:py_stdlib_full_modules -->574<!-- /m
 
 | Tool and input | Disrobe | Other tool |
 |---|---|---|
-| <!-- evidence-pair:apk-jadx-cfr:dex:summary -->JADX 1.5.5 · Android DEX | 197 / 228 emitted regions compile clean | 281 / 303 emitted regions compile clean<!-- /evidence-pair --> |
+| <!-- evidence-pair:apk-jadx-cfr:dex:summary -->JADX 1.5.5 · Android DEX | 199 / 228 emitted regions compile clean | 281 / 303 emitted regions compile clean<!-- /evidence-pair --> |
 | <!-- evidence-pair:apk-jadx-cfr:jar:summary -->CFR 0.152 · JVM classfile | 181 / 181 emitted regions compile clean | 152 / 166 emitted regions compile clean<!-- /evidence-pair --> |
 | APKLeaks 2.6.3 · planted-secrets APK | 8 / 8 planted secrets | 5 / 8 planted secrets |
 
@@ -145,7 +145,7 @@ These comparisons are re-measured weekly and on pushes that touch their evidence
 
 | Input | Disrobe emitted regions | Other tool emitted regions | Population boundary | Reproduce |
 |---|---|---|---|---|
-| <!-- evidence-pair:apk-jadx-cfr:dex -->Android DEX | 197 / 228 emitted regions compile clean | JADX 1.5.5: 281 / 303 emitted regions compile clean | no cross-tool ranking: each tool has its own emitted-region population | `cargo run --locked -p disrobe-bench-head-to-head -- --check --only apk-jadx-cfr`<!-- /evidence-pair --> |
+| <!-- evidence-pair:apk-jadx-cfr:dex -->Android DEX | 199 / 228 emitted regions compile clean | JADX 1.5.5: 281 / 303 emitted regions compile clean | no cross-tool ranking: each tool has its own emitted-region population | `cargo run --locked -p disrobe-bench-head-to-head -- --check --only apk-jadx-cfr`<!-- /evidence-pair --> |
 | <!-- evidence-pair:apk-jadx-cfr:jar -->JVM classfile | 181 / 181 emitted regions compile clean | CFR 0.152: 152 / 166 emitted regions compile clean | no cross-tool ranking: each tool has its own emitted-region population | `cargo run --locked -p disrobe-bench-head-to-head -- --check --only apk-jadx-cfr`<!-- /evidence-pair --> |
 
 | Surface | Result | Grade | Runs |
