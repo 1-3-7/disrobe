@@ -4,7 +4,7 @@
 
 | Measure | Count |
 | --- | ---: |
-| Scanned source files | 1972 |
+| Scanned source files | 1973 |
 | Emission sites | 2355 |
 | Sites carrying a message | 2272 |
 | Distinct emitted codes | 1803 |

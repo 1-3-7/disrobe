@@ -15,9 +15,9 @@ The exceeded column states what happens when input goes past the bound. It comes
 
 The scan does not resolve types or trait dispatch, so an outcome names the construct it found rather than proving the behaviour.
 
-2197 bounds (count 217, other 1029, output 65, recursion 223, size 479, work 184).
+2203 bounds (count 217, other 1034, output 65, recursion 224, size 479, work 184).
 
-Exceeded: error 889, recorded 185, panic 0, delegated 49, silent 1016, unclassified 17, allocation 33, unused 8.
+Exceeded: error 889, recorded 190, panic 0, delegated 49, silent 1017, unclassified 17, allocation 33, unused 8.
 
 | Crate | Constant | Kind | Exceeded | Type | Value | File |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -1012,12 +1012,18 @@ Exceeded: error 889, recorded 185, panic 0, delegated 49, silent 1016, unclassif
 | `disrobe-pass-lua` | `MAX_DIRECT_RENDER_NESTING` | recursion | recorded: flag `refused` | `usize` | `256` | `crates/disrobe-pass-lua/src/decompile/luau_lift.rs` |
 | `disrobe-pass-lua` | `MAX_LIFT_DEPTH` | recursion | recorded: `warnings`; flag `fully_structured` | `usize` | `200` | `crates/disrobe-pass-lua/src/decompile/luau_lift.rs` |
 | `disrobe-pass-lua` | `MAX_RENDERED_STRUCTURE_BYTES` | output | recorded: flag `refused` | `usize` | `16 * 1024 * 1024` | `crates/disrobe-pass-lua/src/decompile/luau_lift.rs` |
+| `disrobe-pass-lua` | `MAX_BX` | other | recorded: `refuse()` | `u32` | `(1 << 18) - 1` | `crates/disrobe-pass-lua/src/decompile/luau_lift/translate.rs` |
+| `disrobe-pass-lua` | `MAX_C` | other | recorded: `refuse()` | `u32` | `511` | `crates/disrobe-pass-lua/src/decompile/luau_lift/translate.rs` |
+| `disrobe-pass-lua` | `MAX_JUMP_CHAIN` | other | silent: `for` range in `rethread_loop_exits` | `usize` | `64` | `crates/disrobe-pass-lua/src/decompile/luau_lift/translate.rs` |
+| `disrobe-pass-lua` | `MAX_RK_INDEX` | other | recorded: `refuse()` | `u32` | `255` | `crates/disrobe-pass-lua/src/decompile/luau_lift/translate.rs` |
+| `disrobe-pass-lua` | `MAX_STACK` | other | recorded: `refuse()` | `u32` | `250` | `crates/disrobe-pass-lua/src/decompile/luau_lift/translate.rs` |
+| `disrobe-pass-lua` | `MAX_TRANSLATE_DEPTH` | recursion | recorded: `refuse()` | `usize` | `200` | `crates/disrobe-pass-lua/src/decompile/luau_lift/translate.rs` |
 | `disrobe-pass-lua` | `MAX_STRUCTURE_VISITS_PER_NODE` | other | silent: `.min()` clamp in `for_nodes` | `usize` | `2` | `crates/disrobe-pass-lua/src/decompile/luau_structure.rs` |
 | `disrobe-pass-lua` | `MAX_STRUCTURE_WORK` | work | silent: `.min()` clamp in `for_nodes` | `usize` | `1 << 16` | `crates/disrobe-pass-lua/src/decompile/luau_structure.rs` |
 | `disrobe-pass-lua` | `MAX_RESERVED_NAME_SCAN` | other | silent: `return` in `names_referenced_by` | `usize` | `1 << 20` | `crates/disrobe-pass-lua/src/decompile/struct_lift.rs` |
 | `disrobe-pass-lua` | `MAX_STRUCT_DEPTH` | recursion | silent: `return` in `lift_structured_captured` | `usize` | `200` | `crates/disrobe-pass-lua/src/decompile/struct_lift.rs` |
 | `disrobe-pass-lua` | `MAX_STRUCT_NODES` | count | silent: `return` in `lift_structured_captured` | `usize` | `1 << 20` | `crates/disrobe-pass-lua/src/decompile/struct_lift.rs` |
-| `disrobe-pass-lua` | `READ_SEARCH_STATE_BUDGET` | work | silent: `return` in `read_after_control_flow` | `usize` | `1 << 16` | `crates/disrobe-pass-lua/src/decompile/struct_lift.rs` |
+| `disrobe-pass-lua` | `READ_SEARCH_STATE_BUDGET` | work | silent: `return` in `dominates_its_reads`; `return` in `read_after_control_flow`; `return` in `read_on_another_path` | `usize` | `1 << 16` | `crates/disrobe-pass-lua/src/decompile/struct_lift.rs` |
 | `disrobe-pass-lua` | `MAX_SCOPE_DEPTH` | recursion | silent: `return` in `block_captures_in_closure`; `return` in `block_mentions`; `return` in `declare_in_block`; 3 more | `usize` | `200` | `crates/disrobe-pass-lua/src/decompile/struct_lift/declare.rs` |
 | `disrobe-pass-lua` | `MAX_CONDITION_CHAIN` | other | silent: `while` condition in `recover_short_circuit_chains` | `usize` | `64` | `crates/disrobe-pass-lua/src/decompile/struct_lift/structurer.rs` |
 | `disrobe-pass-lua` | `MAX_EXIT_SCAN` | other | silent: `.take()` in `retarget_exits_through_skip_jumps` | `usize` | `4_096` | `crates/disrobe-pass-lua/src/decompile/struct_lift/structurer.rs` |
@@ -2221,7 +2227,7 @@ Exceeded: error 889, recorded 185, panic 0, delegated 49, silent 1016, unclassif
 
 ## Silent stops
 
-1016 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
+1017 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
 
 | Crate | Constant | Use | File |
 | --- | --- | --- | --- |
@@ -2612,12 +2618,13 @@ Exceeded: error 889, recorded 185, panic 0, delegated 49, silent 1016, unclassif
 | `disrobe-pass-jvm` | `MAX_HIERARCHY_DEPTH` | `return` in `resolve_field_with_inheritance`; `return` in `resolve_method_with_inheritance` | `crates/disrobe-pass-jvm/src/proguard.rs` |
 | `disrobe-pass-jvm` | `MAX_METHOD_INSNS` | `return` in `unflatten_method` | `crates/disrobe-pass-jvm/src/protectors/unflatten.rs` |
 | `disrobe-pass-jvm` | `MAX_DISPATCH_RESOLVE_STEPS` | `break` in `simplify_flattened_cfg` | `crates/disrobe-pass-jvm/src/sccp.rs` |
+| `disrobe-pass-lua` | `MAX_JUMP_CHAIN` | `for` range in `rethread_loop_exits` | `crates/disrobe-pass-lua/src/decompile/luau_lift/translate.rs` |
 | `disrobe-pass-lua` | `MAX_STRUCTURE_VISITS_PER_NODE` | `.min()` clamp in `for_nodes` | `crates/disrobe-pass-lua/src/decompile/luau_structure.rs` |
 | `disrobe-pass-lua` | `MAX_STRUCTURE_WORK` | `.min()` clamp in `for_nodes` | `crates/disrobe-pass-lua/src/decompile/luau_structure.rs` |
 | `disrobe-pass-lua` | `MAX_RESERVED_NAME_SCAN` | `return` in `names_referenced_by` | `crates/disrobe-pass-lua/src/decompile/struct_lift.rs` |
 | `disrobe-pass-lua` | `MAX_STRUCT_DEPTH` | `return` in `lift_structured_captured` | `crates/disrobe-pass-lua/src/decompile/struct_lift.rs` |
 | `disrobe-pass-lua` | `MAX_STRUCT_NODES` | `return` in `lift_structured_captured` | `crates/disrobe-pass-lua/src/decompile/struct_lift.rs` |
-| `disrobe-pass-lua` | `READ_SEARCH_STATE_BUDGET` | `return` in `read_after_control_flow` | `crates/disrobe-pass-lua/src/decompile/struct_lift.rs` |
+| `disrobe-pass-lua` | `READ_SEARCH_STATE_BUDGET` | `return` in `dominates_its_reads`; `return` in `read_after_control_flow`; `return` in `read_on_another_path` | `crates/disrobe-pass-lua/src/decompile/struct_lift.rs` |
 | `disrobe-pass-lua` | `MAX_SCOPE_DEPTH` | `return` in `block_captures_in_closure`; `return` in `block_mentions`; `return` in `declare_in_block`; 3 more | `crates/disrobe-pass-lua/src/decompile/struct_lift/declare.rs` |
 | `disrobe-pass-lua` | `MAX_CONDITION_CHAIN` | `while` condition in `recover_short_circuit_chains` | `crates/disrobe-pass-lua/src/decompile/struct_lift/structurer.rs` |
 | `disrobe-pass-lua` | `MAX_EXIT_SCAN` | `.take()` in `retarget_exits_through_skip_jumps` | `crates/disrobe-pass-lua/src/decompile/struct_lift/structurer.rs` |
