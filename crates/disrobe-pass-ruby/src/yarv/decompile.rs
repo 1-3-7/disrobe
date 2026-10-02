@@ -3981,8 +3981,7 @@ fn try_short_circuit(
         return Some(target);
     }
     let folded: String = if op == "&." {
-        let method: &str = rhs.strip_prefix(&format!("{lhs}.")).unwrap_or(&rhs);
-        format!("{lhs}&.{method}")
+        safe_navigation_call(&lhs, &rhs).unwrap_or_else(|| format!("(({lhs}).nil? ? nil : {rhs})"))
     } else if rhs == lhs || rhs.is_empty() {
         lhs
     } else {
@@ -3990,6 +3989,27 @@ fn try_short_circuit(
     };
     push(stack, folded);
     Some(target)
+}
+
+const SAFE_NAVIGATION_OPERATORS: [&str; 17] = [
+    "+", "-", "*", "/", "%", "**", "==", "!=", "<", "<=", ">", ">=", "<<", ">>", "&", "|", "^",
+];
+
+fn safe_navigation_call(lhs: &str, rhs: &str) -> Option<String> {
+    if let Some(method) = rhs.strip_prefix(&format!("{lhs}.")) {
+        return Some(format!("{lhs}&.{method}"));
+    }
+    let rest: &str = rhs.strip_prefix(lhs)?;
+    if let Some(index) = rest
+        .strip_prefix('[')
+        .and_then(|inner: &str| inner.strip_suffix(']'))
+    {
+        return Some(format!("{lhs}&.[]({index})"));
+    }
+    let (operator, argument): (&str, &str) = rest.strip_prefix(' ')?.split_once(' ')?;
+    SAFE_NAVIGATION_OPERATORS
+        .contains(&operator)
+        .then(|| format!("{lhs}&.{operator}({argument})"))
 }
 
 fn assignment_to_lvalue(sink: &[String], rhs: &str, lhs: &str) -> Option<String> {
@@ -6891,6 +6911,43 @@ mod tests {
         };
         let stmts: Vec<String> = decompile_body(&body);
         assert_eq!(stmts, vec!["x&.size".to_owned()], "stmts: {stmts:?}");
+    }
+
+    #[test]
+    fn safe_navigation_keeps_an_operator_call_on_the_receiver() {
+        let body: YarvIseqBody = YarvIseqBody {
+            index: 0,
+            offset: 0,
+            iseq_size: 0,
+            local_table: vec![Some("x".to_owned())],
+            param_lead_num: 1,
+            param_size: 1,
+            param_flags: 0,
+            param_opt_num: 0,
+            param_rest_start: 0,
+            param_block_start: 0,
+            catch_entries: Vec::new(),
+            param_opt_table: Vec::new(),
+            param_keyword: None,
+            instructions: vec![
+                instr("getlocal_WC_0", vec![YarvOperand::Num(3)]),
+                instr("dup", vec![]),
+                instr("branchnil", vec![YarvOperand::Offset(3)]),
+                instr("putobject_INT2FIX_1_", vec![]),
+                instr(
+                    "opt_plus",
+                    vec![YarvOperand::Call {
+                        method: "+".to_owned(),
+                        argc: 1,
+                        flags: 0,
+                        kwargs: Vec::new(),
+                    }],
+                ),
+                instr("leave", vec![]),
+            ],
+        };
+        let stmts: Vec<String> = decompile_body(&body);
+        assert_eq!(stmts, vec!["x&.+(1)".to_owned()], "stmts: {stmts:?}");
     }
 
     #[test]
