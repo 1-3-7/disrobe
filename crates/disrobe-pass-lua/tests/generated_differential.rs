@@ -4,10 +4,23 @@ use std::fmt::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use disrobe_pass_lua::decompile::{DecompiledChunk, decompile_auto};
+use disrobe_pass_lua::decompile::{DecompiledChunk, decompile_auto, decompile_chunk};
+use disrobe_pass_lua::reader::common::LuaChunk;
+use disrobe_pass_lua::reader::luau;
 use disrobe_testkit::{CommandSpec, ToolOutput, tool_output};
 
 const PROGRAMS_PER_LANE: u64 = 1000;
+const LUAU_PROGRAMS: u64 = 300;
+const LUAU_KNOWN_DIVERGENT: [u64; 155] = [
+    0, 2, 3, 5, 6, 7, 8, 9, 10, 11, 15, 16, 17, 18, 19, 22, 23, 28, 32, 33, 35, 36, 40, 41, 42, 43,
+    45, 49, 52, 54, 62, 63, 66, 68, 69, 70, 71, 72, 73, 74, 75, 77, 79, 80, 81, 82, 85, 87, 90, 92,
+    95, 96, 99, 100, 104, 105, 106, 107, 109, 110, 112, 113, 115, 116, 117, 118, 122, 126, 128,
+    130, 133, 134, 135, 137, 138, 143, 145, 147, 148, 153, 154, 155, 156, 158, 159, 160, 162, 163,
+    169, 170, 171, 172, 173, 174, 175, 177, 179, 180, 181, 182, 184, 189, 190, 195, 197, 201, 203,
+    204, 205, 208, 209, 210, 215, 217, 218, 220, 221, 222, 225, 228, 231, 232, 234, 235, 237, 240,
+    242, 243, 244, 246, 253, 255, 256, 258, 262, 264, 266, 268, 271, 272, 273, 278, 279, 281, 284,
+    285, 286, 288, 289, 290, 291, 292, 295, 296, 298,
+];
 const LANES: [&str; 5] = ["5.1", "5.2", "5.3", "5.4", "5.5"];
 const RUN_TIMEOUT: Duration = Duration::from_secs(8);
 const VARIABLES: [&str; 5] = ["a", "b", "c", "d", "e"];
@@ -361,6 +374,91 @@ fn generated_programs_reexecute_identically_lua_5_4() {
 #[test]
 fn generated_programs_reexecute_identically_lua_5_5() {
     assert_lane("5.5");
+}
+
+fn luau_tool(stem: &str) -> String {
+    let candidates: [String; 2] = [format!("{stem}.exe"), stem.to_owned()];
+    for candidate in &candidates {
+        let probe: Result<ToolOutput, disrobe_testkit::ToolError> =
+            tool_output(CommandSpec::new(candidate.as_str(), RUN_TIMEOUT).arg("--help"));
+        if probe.is_ok() {
+            return candidate.clone();
+        }
+    }
+    panic!(
+        "the generated differential needs Luau 0.725's `{stem}` on PATH and cannot grade the \
+         Luau lane without it"
+    )
+}
+
+fn luau_recovered_source(compiler: &str, dir: &Path, name: &str, source: &str) -> String {
+    let src: PathBuf = dir.join(format!("{name}.lua"));
+    std::fs::write(&src, source).expect("write the generated program");
+    let compiled: ToolOutput = tool_output(
+        CommandSpec::new(compiler, RUN_TIMEOUT)
+            .arg("--binary")
+            .arg(&src),
+    )
+    .expect("luau-compile starts");
+    assert!(
+        compiled.success && !compiled.stdout.is_empty(),
+        "{name}: luau-compile --binary compiles the generated program:\n{}\n{source}",
+        String::from_utf8_lossy(&compiled.stderr)
+    );
+    let chunk: LuaChunk = luau::read(&compiled.stdout).expect("parse luau bytecode");
+    decompile_chunk(&chunk)
+        .expect("decompile luau bytecode")
+        .source
+}
+
+#[test]
+fn generated_programs_reexecute_identically_luau() {
+    let compiler: String = luau_tool("luau-compile");
+    let interpreter: String = luau_tool("luau");
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_lua_generated_luau").expect("scratch");
+    let dir: &Path = scratch.path();
+    let mut failures: std::collections::BTreeMap<u64, String> = std::collections::BTreeMap::new();
+    for seed in 0..LUAU_PROGRAMS {
+        let source: String = Generator::new(seed).program();
+        let name: String = format!("gen{seed}");
+        let original_path: PathBuf = dir.join(format!("{name}.orig.lua"));
+        std::fs::write(&original_path, &source).expect("write original");
+        let expected: String = run(&interpreter, &original_path).unwrap_or_else(|error: String| {
+            panic!("luau seed {seed}: the generated program must run: {error}\n{source}")
+        });
+        let recovered: String = luau_recovered_source(&compiler, dir, &name, &source);
+        let recovered_path: PathBuf = dir.join(format!("{name}.dec.lua"));
+        std::fs::write(&recovered_path, &recovered).expect("write recovered");
+        let actual: Result<String, String> = run(&interpreter, &recovered_path);
+        if actual.as_deref() != Ok(expected.as_str()) {
+            let shown: String = actual.unwrap_or_else(|error: String| format!("<failed: {error}>"));
+            failures.insert(
+                seed,
+                format!(
+                "luau seed {seed}\n--- expected ---\n{expected}--- actual ---\n{shown}\n--- source ---\n{source}--- recovered ---\n{recovered}"
+                ),
+            );
+        }
+    }
+    let pinned: std::collections::BTreeSet<u64> = LUAU_KNOWN_DIVERGENT.into_iter().collect();
+    let divergent: std::collections::BTreeSet<u64> = failures.keys().copied().collect();
+    let regressed: Vec<u64> = divergent.difference(&pinned).copied().collect();
+    let fixed: Vec<u64> = pinned.difference(&divergent).copied().collect();
+    let shown: Vec<&str> = failures
+        .iter()
+        .filter(|(seed, _): &(&u64, &String)| !pinned.contains(seed))
+        .map(|(_, why): (&u64, &String)| why.as_str())
+        .take(6)
+        .collect();
+    assert!(
+        regressed.is_empty() && fixed.is_empty(),
+        "{} of {LUAU_PROGRAMS} generated Luau programs re-executed differently; the divergent set \
+         must equal LUAU_KNOWN_DIVERGENT exactly, which only ever shrinks. Newly divergent: \
+         {regressed:?}. Now recovered, remove from LUAU_KNOWN_DIVERGENT: {fixed:?}.\n{}",
+        failures.len(),
+        shown.join("\n=====\n")
+    );
 }
 
 const PINNED_SHAPES: &[(&str, &str)] = &[
