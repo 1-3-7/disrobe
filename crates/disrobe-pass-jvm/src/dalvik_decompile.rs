@@ -1904,6 +1904,7 @@ fn lift_method(
             fully_lifted: false,
         };
     };
+    crate::dalvik_cfg::drop_silent_try_ranges(&mut built);
     let mut string_switches: BTreeMap<BlockId, crate::dalvik_string_switch::DalvikStringSwitch> =
         crate::dalvik_string_switch::detect_string_switches(
             &built.cfg,
@@ -2164,8 +2165,22 @@ fn nested_structure(
     built: &DalvikMethodCfg,
     loops: &[NaturalLoop],
 ) -> Result<StructuredBody, region_check::Defect> {
-    let mut nested: nested_blocks::NestedBlocks =
-        nested_blocks::nested_blocks(&built.cfg, &built.insns, &built.switch_map, loops)?;
+    nested_structure_with(built, loops, false)
+        .or_else(|_| nested_structure_with(built, loops, true))
+}
+
+fn nested_structure_with(
+    built: &DalvikMethodCfg,
+    loops: &[NaturalLoop],
+    split_shared_handlers: bool,
+) -> Result<StructuredBody, region_check::Defect> {
+    let mut nested: nested_blocks::NestedBlocks = nested_blocks::nested_blocks(
+        &built.cfg,
+        &built.insns,
+        &built.switch_map,
+        loops,
+        split_shared_handlers,
+    )?;
     let silent: std::collections::BTreeSet<BlockId> = built
         .cfg
         .blocks

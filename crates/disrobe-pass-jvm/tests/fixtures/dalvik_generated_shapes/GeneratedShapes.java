@@ -455,4 +455,281 @@ public final class GeneratedShapes {
         Sink.emit(e);
         Sink.emit(t);
     }
+
+    public static void liveAcrossCoveredFixupBlock()
+    {
+        List<Integer> t = new ArrayList<>();
+        int a = 1;
+        int b = 1;
+        int c = 7;
+        int d = 9;
+        int e = 5;
+        try
+        {
+            b = d / ((14 + e) % 3);
+            t.add((12 + 14));
+            t.add(b);
+            for (int i1 = 2; i1 <= 4; i1++)
+            {
+                d = (b + i1) % 1000;
+                switch ((((c + 13)) % 4 + 4) % 4)
+                {
+                    case 0:
+                        {
+                            Sink.emit((t.size() > 0 ? t.get(0) : 15));
+                            t.add((e / 6));
+                            d -= (9 % 9);
+                            d %= 1000;
+                            break;
+                        }
+                    case 1:
+                    case 2:
+                        {
+                            d = (t.size() > 1 ? t.get(1) : d);
+                            break;
+                        }
+                }
+                a -= a;
+                a %= 1000;
+                t.add((c % 5));
+                int n2 = 0;
+                while (n2 < 2 && (!((c - b) != (6 + b)) || n2 == 0))
+                {
+                    n2++;
+                    t.add((1 + d));
+                    t.add(((6 * a) % 97));
+                    t.add((e % 10));
+                }
+            }
+            Sink.emit(((c % 5) / 3));
+        }
+        catch (ArithmeticException error)
+        {
+            Sink.emit("zero");
+        }
+        Sink.emit(a);
+        Sink.emit(b);
+        Sink.emit(c);
+        Sink.emit(d);
+        Sink.emit(e);
+        Sink.emit(t);
+    }
+
+    public static void tryAroundOnlyLiteralRemainders()
+    {
+        List<Integer> t = new ArrayList<>();
+        int a = 6;
+        int b = 0;
+        int c = 4;
+        int d = 2;
+        int e = 2;
+        switch ((((4 - d)) % 4 + 4) % 4)
+        {
+            case 0:
+                {
+                    if ((8 - c) >= ((17 * a) % 97))
+                    {
+                        e += (c % 7);
+                        e %= 1000;
+                        switch ((((19 - a)) % 4 + 4) % 4)
+                        {
+                            case 0:
+                                {
+                                    e = Math.max((e - 8), (c / 5));
+                                    break;
+                                }
+                            case 1:
+                            case 2:
+                                {
+                                    Sink.emit(Sink.f((e % 5), 4));
+                                    e += (c / 5);
+                                    e %= 1000;
+                                    break;
+                                }
+                        }
+                    }
+                    else
+                    {
+                        switch ((((c + 7)) % 4 + 4) % 4)
+                        {
+                            case 0:
+                                {
+                                    b -= 15;
+                                    b %= 1000;
+                                    Sink.emit(((17 == (e + a)) ? (e / 3) : (12 + a)));
+                                    break;
+                                }
+                            case 1:
+                            case 2:
+                                {
+                                    Sink.emit(((t.contains((16 / 6))) ? (e / 5) : (a / 4)));
+                                    Sink.emit((((c % 9) % 8) % 1000));
+                                    a -= ((3 * 18) % 97);
+                                    a %= 1000;
+                                    a = Math.max((b / 1), (e / 6));
+                                    break;
+                                }
+                            default:
+                                {
+                                    Sink.emit((t.size() > 1 ? t.get(1) : (c / 7)));
+                                    break;
+                                }
+                        }
+                        t.add((a + d));
+                        Sink.emit((c % 7));
+                        for (int i1 = 0; i1 <= 2; i1++)
+                        {
+                            e = (e + i1) % 1000;
+                            c = (e % 1000);
+                        }
+                    }
+                    break;
+                }
+            case 1:
+            case 2:
+                {
+                    d = (((b - b) + (b / 3)) % 1000);
+                    break;
+                }
+            default:
+                {
+                    switch (((((10 * 6) % 97)) % 4 + 4) % 4)
+                    {
+                        case 0:
+                            {
+                                t.add(((c * e) % 97));
+                                for (int i2 = 1; i2 <= 1; i2++)
+                                {
+                                    e = (c + i2) % 1000;
+                                    t.add((c / 7));
+                                }
+                                for (int i3 = 3; i3 <= 6; i3++)
+                                {
+                                    b = (c + i3) % 1000;
+                                    b -= (9 + e);
+                                    b %= 1000;
+                                    t.add(a);
+                                    a *= c;
+                                    a %= 1000;
+                                    e = ((c / 2) % 1000);
+                                }
+                                Sink.emit(11);
+                                break;
+                            }
+                        case 1:
+                        case 2:
+                            {
+                                for (int i4 = 3; i4 <= 5; i4++)
+                                {
+                                    a = (e + i4) % 1000;
+                                    c = (((19 + a) % 4) % 1000);
+                                    b = (((12 / 5) - (e / 7)) % 1000);
+                                    e -= e;
+                                    e %= 1000;
+                                    if ((8 - d) == (d % 4)) break;
+                                }
+                                int n5 = 0;
+                                while (n5 < 3 && (((2 + c) > (e % 5)) || d == 7 || n5 == 0))
+                                {
+                                    n5++;
+                                    d = (t.size() > 1 ? t.get(1) : c);
+                                    b = ((((c / 6) >= (d / 5)) && a > 1) ? 6 : a);
+                                    if (t.contains(((d * c) % 97))) break;
+                                }
+                                break;
+                            }
+                    }
+                    if (((d + d) == (e / 4)) || e == 1)
+                    {
+                        e = Sink.f((d - b), 4);
+                        int n6 = 0;
+                        while (n6 < 3 && ((c + a) > c || n6 == 0))
+                        {
+                            n6++;
+                            t.add((e - 2));
+                            c = ((!(18 == b)) ? (c + e) : (b % 7));
+                            t.add((2 + c));
+                        }
+                        t.add((5 % 2));
+                        Sink.emit(((b / 5) / 7));
+                    }
+                    else if ((c >= a) && a > 3)
+                    {
+                        Sink.emit(b);
+                        int n7 = 0;
+                        while (n7 < 5 && (e > 10 || n7 == 0))
+                        {
+                            n7++;
+                            Sink.emit((((b - 7) / 2) % 1000));
+                            c = (3 % 1000);
+                        }
+                        if (t.contains((2 - c)))
+                        {
+                            e = (t.size() > 0 ? t.get(0) : (5 / 2));
+                            Sink.emit(((((8 * c) % 97) / 4) % 1000));
+                        }
+                        else
+                        {
+                            c = (((9 / 4) % 9) % 1000);
+                        }
+                        for (int i8 = 2; i8 <= 6; i8++)
+                        {
+                            e = (c + i8) % 1000;
+                            a = (((6 * ((c * 0) % 97)) % 97) % 1000);
+                            Sink.emit((t.size() > 1 ? t.get(1) : (e % 6)));
+                            Sink.emit(((((4 + d) < ((14 * a) % 97)) && b > 5) ? (3 - a) : (b / 6)));
+                            if ((2 - 13) < c) continue;
+                            Sink.emit(b);
+                        }
+                    }
+                    Sink.emit((((e + a) >= (a / 4)) ? (d % 5) : (13 - b)));
+                    e -= (1 + 12);
+                    e %= 1000;
+                    break;
+                }
+        }
+        for (int i9 = 0; i9 <= 1; i9++)
+        {
+            c = (a + i9) % 1000;
+            Sink.emit(Math.max(((d * b) % 97), ((16 * e) % 97)));
+            if (((a % 6) < 6) || a == 5) break;
+        }
+        if (t.contains(((b * 10) % 97)))
+        {
+            try
+            {
+                a = d / (((16 / 5) + a) % 3);
+                for (int i10 = 1; i10 <= 4; i10++)
+                {
+                    c = (b + i10) % 1000;
+                    a *= ((a * 18) % 97);
+                    a %= 1000;
+                    a = ((((0 % 10) * (19 / 7)) % 97) % 1000);
+                    t.add(6);
+                    d = (((e % 8) / 5) % 1000);
+                    if (!((a / 4) < 15)) break;
+                }
+            }
+            catch (ArithmeticException error)
+            {
+                Sink.emit("zero");
+            }
+            Sink.emit(e);
+            e -= e;
+            e %= 1000;
+        }
+        else
+        {
+            t.add(d);
+            Sink.emit((a % 1000));
+            e += (3 - d);
+            e %= 1000;
+        }
+        Sink.emit(a);
+        Sink.emit(b);
+        Sink.emit(c);
+        Sink.emit(d);
+        Sink.emit(e);
+        Sink.emit(t);
+    }
 }

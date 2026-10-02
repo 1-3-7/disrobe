@@ -59,6 +59,7 @@ pub(super) fn nested_blocks(
     insns: &[DalvikInsn],
     switches: &BTreeMap<BlockId, PrecomputedSwitch>,
     loops: &[NaturalLoop],
+    split_shared_handlers: bool,
 ) -> Result<NestedBlocks, Defect> {
     let flow: FlowGraph<BlockId> = throwing_flow(cfg, insns).ok_or(NO_FLOW)?;
     let order: Vec<BlockId> = flow.reverse_postorder().collect();
@@ -91,8 +92,9 @@ pub(super) fn nested_blocks(
     };
     builder.handler_lists(&order)?;
     builder.canonicalize();
-    builder.canonical_layers()?;
+    builder.canonical_layers(split_shared_handlers)?;
     builder.assign_contexts(&order, 0)?;
+    builder.share_split_handlers()?;
     let canonical_count: usize = builder.layers.len();
     builder.fix_layers()?;
     builder.assign_contexts(&order, canonical_count)?;
@@ -388,7 +390,7 @@ impl Builder<'_> {
         self.canonical.get(clause).copied().unwrap_or(clause.1)
     }
 
-    fn canonical_layers(&mut self) -> Result<(), Defect> {
+    fn canonical_layers(&mut self, split_shared_handlers: bool) -> Result<(), Defect> {
         let mut covered: BTreeMap<HandlerClause, BTreeSet<BlockId>> = BTreeMap::new();
         for (&id, clauses) in &self.original {
             for clause in clauses {
@@ -399,8 +401,11 @@ impl Builder<'_> {
             }
         }
         let mut grouped: BTreeMap<BTreeSet<BlockId>, Vec<HandlerClause>> = BTreeMap::new();
-        for (clause, blocks) in covered {
-            grouped.entry(blocks).or_default().push(clause);
+        for (clause, blocks) in &covered {
+            grouped
+                .entry(blocks.clone())
+                .or_default()
+                .push(clause.clone());
         }
         if grouped.len() > MAX_LAYERS {
             return Err(CROSSING_TRIES);
@@ -432,21 +437,108 @@ impl Builder<'_> {
                     .position(|known: &HandlerClause| known == clause)
             });
             let head: BlockId = self.common_dominator(&blocks)?;
-            layers.push(Layer {
-                clauses: clauses
-                    .into_iter()
-                    .map(|(catch_type, handler): HandlerClause| (catch_type, Some(handler)))
-                    .collect(),
-                covered: blocks,
-                fix: false,
-                head,
-                parent: Context::Root,
-                body: BTreeSet::new(),
-                handlers: Vec::new(),
-            });
+            let pieces: Vec<(BTreeSet<BlockId>, BlockId)> = if split_shared_handlers
+                && self.encloses_foreign_handlers(&blocks, head, &clauses, &covered)
+                && clauses
+                    .iter()
+                    .all(|(_, handler): &HandlerClause| self.handler_is_one_block(*handler))
+            {
+                let mut pieces: Vec<(BTreeSet<BlockId>, BlockId)> = Vec::new();
+                for component in self.components(&blocks)? {
+                    let piece_head: BlockId = self.common_dominator(&component)?;
+                    pieces.push((component, piece_head));
+                }
+                pieces
+            } else {
+                vec![(blocks, head)]
+            };
+            for (piece, piece_head) in pieces {
+                layers.push(Layer {
+                    clauses: clauses
+                        .iter()
+                        .map(|(catch_type, handler): &HandlerClause| {
+                            (catch_type.clone(), Some(*handler))
+                        })
+                        .collect(),
+                    covered: piece,
+                    fix: false,
+                    head: piece_head,
+                    parent: Context::Root,
+                    body: BTreeSet::new(),
+                    handlers: Vec::new(),
+                });
+            }
         }
         self.sort_layers(&mut layers);
         self.layers = layers;
+        Ok(())
+    }
+
+    fn encloses_foreign_handlers(
+        &self,
+        blocks: &BTreeSet<BlockId>,
+        head: BlockId,
+        clauses: &[HandlerClause],
+        covered: &BTreeMap<HandlerClause, BTreeSet<BlockId>>,
+    ) -> bool {
+        let reach: BTreeSet<BlockId> = self.reach_back(blocks, head);
+        reach
+            .iter()
+            .filter(|block: &&BlockId| !blocks.contains(*block))
+            .filter_map(|block: &BlockId| self.original.get(block))
+            .any(|list: &Vec<HandlerClause>| {
+                clauses.iter().any(|(catch_type, _): &HandlerClause| {
+                    list.iter()
+                        .filter(|(known, _): &&HandlerClause| {
+                            known.is_none() || (catch_type.is_some() && known == catch_type)
+                        })
+                        .any(|clause: &HandlerClause| {
+                            let canonical: HandlerClause =
+                                (clause.0.clone(), self.canonical_of(clause));
+                            covered
+                                .get(&canonical)
+                                .and_then(|inner: &BTreeSet<BlockId>| {
+                                    self.common_dominator(inner).ok()
+                                })
+                                .is_some_and(|inner_head: BlockId| {
+                                    !self.flow.dominates(head, inner_head)
+                                })
+                        })
+                })
+            })
+    }
+
+    fn handler_is_one_block(&self, handler: BlockId) -> bool {
+        self.rank
+            .keys()
+            .filter(|block: &&BlockId| self.flow.dominates(handler, **block))
+            .count()
+            == 1
+    }
+
+    fn share_split_handlers(&mut self) -> Result<(), Defect> {
+        let mut uses: BTreeMap<BlockId, Vec<&BTreeSet<BlockId>>> = BTreeMap::new();
+        for layer in &self.layers {
+            for (_, entry, region) in &layer.handlers {
+                if let Some(entry) = entry {
+                    uses.entry(*entry).or_default().push(region);
+                }
+            }
+        }
+        let mut shared: BTreeSet<BlockId> = BTreeSet::new();
+        for (entry, regions) in uses {
+            if regions.len() < 2 {
+                continue;
+            }
+            if regions
+                .iter()
+                .any(|region: &&BTreeSet<BlockId>| region.len() != 1 || !region.contains(&entry))
+            {
+                return Err(HANDLER_PLACE);
+            }
+            shared.insert(entry);
+        }
+        self.duplicated.extend(shared);
         Ok(())
     }
 

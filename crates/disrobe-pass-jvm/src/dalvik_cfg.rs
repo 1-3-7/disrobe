@@ -142,10 +142,15 @@ impl RegisterFlow {
         }
         let mut generated: Vec<RegisterSet> = Vec::with_capacity(blocks);
         let mut killed: Vec<RegisterSet> = Vec::with_capacity(blocks);
+        let mut before_throw: Vec<Option<RegisterSet>> = Vec::with_capacity(blocks);
         for block in &cfg.blocks {
             let mut uses: RegisterSet = RegisterSet::empty(registers);
             let mut defs: RegisterSet = RegisterSet::empty(registers);
+            let mut first_throw: Option<RegisterSet> = None;
             for access in accesses.get(block.insn_range.0..block.insn_range.1)? {
+                if access.throws && first_throw.is_none() {
+                    first_throw = Some(defs.clone());
+                }
                 for &register in &access.uses {
                     if !defs.contains(register) {
                         uses.insert(register);
@@ -157,6 +162,7 @@ impl RegisterFlow {
             }
             generated.push(uses);
             killed.push(defs);
+            before_throw.push(first_throw);
         }
         let mut live_in: Vec<RegisterSet> = vec![RegisterSet::empty(registers); blocks];
         let mut live_out: Vec<RegisterSet> = vec![RegisterSet::empty(registers); blocks];
@@ -180,7 +186,11 @@ impl RegisterFlow {
                 let mut entry: RegisterSet = out.clone();
                 entry.subtract(killed.get(index)?);
                 entry.union_with(generated.get(index)?);
-                entry.union_with(&handlers);
+                if let Some(defined) = before_throw.get(index)? {
+                    let mut thrown: RegisterSet = handlers.clone();
+                    thrown.subtract(defined);
+                    entry.union_with(&thrown);
+                }
                 if live_in.get(index) != Some(&entry) {
                     changed = true;
                     *live_in.get_mut(index)? = entry;
@@ -609,6 +619,44 @@ fn build_exception_regions(tries: &[TryItem]) -> Vec<ExceptionRegion> {
         }
     }
     out
+}
+
+pub(crate) fn drop_silent_try_ranges(built: &mut DalvikMethodCfg) {
+    let insns: &[DalvikInsn] = &built.insns;
+    let before: usize = built.cfg.exception_regions.len();
+    built.cfg.exception_regions.retain(|region| {
+        insns.iter().any(|insn: &DalvikInsn| {
+            insn.pc >= region.try_start_pc
+                && insn.pc < region.try_end_pc
+                && crate::dalvik_decompile::may_throw(insn)
+        })
+    });
+    if built.cfg.exception_regions.len() == before {
+        return;
+    }
+    for block in &mut built.cfg.blocks {
+        block
+            .successors
+            .retain(|edge: &Edge| !matches!(edge.kind, EdgeKind::Exception));
+    }
+    let mut predecessors: Vec<Vec<BlockId>> = vec![Vec::new(); built.cfg.blocks.len()];
+    for block in &built.cfg.blocks {
+        for edge in &block.successors {
+            if let Some(slot) = predecessors.get_mut(edge.target.0 as usize)
+                && !slot.contains(&block.id)
+            {
+                slot.push(block.id);
+            }
+        }
+    }
+    for (block, incoming) in built.cfg.blocks.iter_mut().zip(predecessors) {
+        block.predecessors = incoming;
+    }
+    attach_exception_edges(
+        &mut built.cfg.blocks,
+        &built.cfg.pc_to_block,
+        &built.cfg.exception_regions,
+    );
 }
 
 fn attach_exception_edges(

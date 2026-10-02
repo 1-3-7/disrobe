@@ -1,9 +1,9 @@
 schema = "disrobe.jvm.dalvik-generated-shapes-fixture/v1"
 source = "GeneratedShapes.java"
-source_sha256 = "1fe4de1b89de4fc94744fc1490f67a575a474f66b51f8006d84c4f22ceb45002"
+source_sha256 = "6a8a3abccc2690148cc4b586dc70e55b4b6e0aae8861b7ef8824e65bd9a4525b"
 sink = "Sink.java"
 sink_sha256 = "8d2cfc59185e2e24b4494af332345ae3eea24c11654ecb6e6a81261c29333387"
-origin = "method bodies copied unchanged from the seeded Java generator in tests/generated_differential.rs; D8 emits the same per-method bytecode as in the generated differential's DEX"
+origin = "method bodies copied unchanged from the seeded Java generator in tests/generated_differential.rs"
 
 [javac]
 vendor = "Eclipse Temurin"
@@ -22,6 +22,8 @@ tryFinallyAroundDoWhile = "generator seed 58: a try with catch and finally aroun
 tryInsideCountedLoop = "generator seed 162: a try with catch inside a counted for loop whose handler and body rejoin the loop latch"
 valueAssignedInsideTry = "generator seed 165: a local first assigned inside a try body and read after the catch"
 splitHandlersBesideFinally = "generator seed 231: one source try split by D8 into ranges whose ArithmeticException and catch-all handlers start with register fixups before a shared handler body"
+liveAcrossCoveredFixupBlock = "generator seed 852: a handler-fixup block of moves sits inside an enclosing try range, so the enclosing handler's live registers must not flow through it"
+tryAroundOnlyLiteralRemainders = "generator seed 381: a try range that covers only remainders by non-zero literals, so its handler is unreachable"
 
 [[artifact]]
 path = "GeneratedShapes-release-min26.dex"
@@ -30,5 +32,5 @@ min_api = 26
 mode = "release"
 tool = "D8"
 command = "java -cp r8-9.1.31.jar com.android.tools.r8.D8 --release --no-desugaring --min-api 26 --output dex classes/GeneratedShapes.class"
-sha256 = "e131f2cb7c165750ba7e2413a28d18d15ca6d4fcc8927d8f983c5a406bfd795b"
-bytes = 3360
+sha256 = "0a5c018d169c7c691deea7f30abafdee75f26c08cb0da2cc9010db360ab3b820"
+bytes = 4148

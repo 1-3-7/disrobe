@@ -15,7 +15,7 @@ use disrobe_testkit::{Available, CommandSpec, ToolError, ToolOutput, require, to
 use sha2::{Digest, Sha256};
 
 const PROGRAMS: u64 = 1000;
-const DEX_PROGRAMS: u64 = 300;
+const DEX_PROGRAMS: u64 = 1000;
 const VARIABLES: [&str; 5] = ["a", "b", "c", "d", "e"];
 const MAX_BLOCK_DEPTH: u32 = 3;
 const TOOL_TIMEOUT: Duration = Duration::from_mins(5);
