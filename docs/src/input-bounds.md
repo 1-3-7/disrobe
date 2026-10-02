@@ -15,9 +15,9 @@ The exceeded column states what happens when input goes past the bound. It comes
 
 The scan does not resolve types or trait dispatch, so an outcome names the construct it found rather than proving the behaviour.
 
-2184 bounds (count 215, other 1024, output 64, recursion 220, size 479, work 182).
+2185 bounds (count 215, other 1024, output 65, recursion 220, size 479, work 182).
 
-Exceeded: error 884, recorded 185, panic 0, delegated 49, silent 1008, unclassified 17, allocation 33, unused 8.
+Exceeded: error 884, recorded 185, panic 0, delegated 49, silent 1009, unclassified 17, allocation 33, unused 8.
 
 | Crate | Constant | Kind | Exceeded | Type | Value | File |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -948,7 +948,7 @@ Exceeded: error 884, recorded 185, panic 0, delegated 49, silent 1008, unclassif
 | `disrobe-pass-jvm` | `RECORD_ARITY_PROBE_CAP` | other | silent: `while` condition in `infer_record_arity` | `usize` | `64` | `crates/disrobe-pass-jvm/src/decompile.rs` |
 | `disrobe-pass-jvm` | `REUSED_LOCAL_SPLIT_WORK_LIMIT` | work | silent: `return` in `claim_reused_local_split_work` | `usize` | `1_000_000` | `crates/disrobe-pass-jvm/src/decompile.rs` |
 | `disrobe-pass-jvm` | `MAX_BLOCKS` | other | error: `StructureError::TooManyBlocks` | `usize` | `16_384` | `crates/disrobe-pass-jvm/src/decompile_struct.rs` |
-| `disrobe-pass-jvm` | `MAX_CONDITION_CHAIN` | other | silent: `return` in `short_circuit_merge`; `return` in `structure_condition_chain`; `while` condition in `loop_condition_chain` | `usize` | `64` | `crates/disrobe-pass-jvm/src/decompile_struct.rs` |
+| `disrobe-pass-jvm` | `MAX_CONDITION_CHAIN` | other | silent: `return` in `latch_condition_chain`; `return` in `short_circuit_merge`; `return` in `structure_condition_chain`; 1 more | `usize` | `64` | `crates/disrobe-pass-jvm/src/decompile_struct.rs` |
 | `disrobe-pass-jvm` | `MAX_JOIN_CHAIN` | other | silent: `break` in `continuation_joins`; `for` range in `goto_chain_end`; `for` range in `handler_join_after`; 1 more | `usize` | `8` | `crates/disrobe-pass-jvm/src/decompile_struct.rs` |
 | `disrobe-pass-jvm` | `MAX_STRUCTURE_DEPTH` | recursion | recorded: flag `had_irreducible` | `usize` | `256` | `crates/disrobe-pass-jvm/src/decompile_struct.rs` |
 | `disrobe-pass-jvm` | `MAX_STRUCTURE_WORK` | work | recorded: flag `had_irreducible` | `usize` | `200_000` | `crates/disrobe-pass-jvm/src/decompile_struct.rs` |
@@ -1524,13 +1524,14 @@ Exceeded: error 884, recorded 185, panic 0, delegated 49, silent 1008, unclassif
 | `disrobe-pass-php` | `MAX_STATEMENTS` | other | silent: `return` in `parse_block_body`; `return` in `parse_destructure_targets`; `return` in `parse_program` | `usize` | `4096` | `crates/disrobe-pass-php/src/decode_loop.rs` |
 | `disrobe-pass-php` | `MAX_PREALLOC` | other | allocation: `with_capacity` in `fold_rope`; `with_capacity` in `parse_literals`; `with_capacity` in `parse_one`; 5 more | `usize` | `1 << 16` | `crates/disrobe-pass-php/src/decompile.rs` |
 | `disrobe-pass-php` | `MAX_UNRECOVERED_RECORDS` | count | silent: `break` in `emit_body`; skipped in `limit`; skipped in `record_opaque_literals`; 2 more | `usize` | `4096` | `crates/disrobe-pass-php/src/decompile.rs` |
-| `disrobe-pass-php` | `REASON_ROPE_BUDGET` | work | error: `Error::ContainerBadFraming` (DR-PHP-0100); `Error::OpcacheLayout` (DR-PHP-0125) | `&str` | `"the rope exceeds the bounded php 8 rope folding budget"` | `crates/disrobe-pass-php/src/decompile.rs` |
+| `disrobe-pass-php` | `REASON_ROPE_BUDGET` | work | error: `Error::ContainerBadFraming` (DR-PHP-0100); `Error::OpcacheLayout` (DR-PHP-0125); untyped error | `&str` | `"the rope exceeds the bounded php 8 rope folding budget"` | `crates/disrobe-pass-php/src/decompile.rs` |
 | `disrobe-pass-php` | `SANE_CALL_ARGUMENT_CAP` | other | recorded: `.refuse()` | `usize` | `1 << 16` | `crates/disrobe-pass-php/src/decompile.rs` |
 | `disrobe-pass-php` | `SANE_CALL_RENDER_CAP` | output | recorded: `.refuse()` | `usize` | `1 << 20` | `crates/disrobe-pass-php/src/decompile.rs` |
 | `disrobe-pass-php` | `SANE_CATCH_CLAUSE_CAP` | other | silent: `return` in `catch_region_end`; `return` in `lift_catch_arms` | `usize` | `256` | `crates/disrobe-pass-php/src/decompile.rs` |
 | `disrobe-pass-php` | `SANE_CATCH_TYPE_CAP` | other | silent: `return` in `catch_clause` | `usize` | `256` | `crates/disrobe-pass-php/src/decompile.rs` |
 | `disrobe-pass-php` | `SANE_CHILD_CAP` | other | error: `Error::OpArrayFieldOversize` (DR-PHP-0093) | `u32` | `1 << 16` | `crates/disrobe-pass-php/src/decompile.rs` |
 | `disrobe-pass-php` | `SANE_CLOSURE_USE_CAP` | other | silent: `return` in `fold_closure` | `usize` | `256` | `crates/disrobe-pass-php/src/decompile.rs` |
+| `disrobe-pass-php` | `SANE_CONDITION_RENDER_CAP` | output | silent: `return` in `fold_test_graph` | `usize` | `1 << 16` | `crates/disrobe-pass-php/src/decompile.rs` |
 | `disrobe-pass-php` | `SANE_FOR_STEP_CAP` | work | silent: `return` in `for_step_start` | `usize` | `16` | `crates/disrobe-pass-php/src/decompile.rs` |
 | `disrobe-pass-php` | `SANE_LIST_ELEMENT_CAP` | other | silent: `return` in `list_entries` | `usize` | `1 << 16` | `crates/disrobe-pass-php/src/decompile.rs` |
 | `disrobe-pass-php` | `SANE_LIST_RENDER_CAP` | output | silent: `return` in `fold_list_assign`; `return` in `list_entries`; `return` in `push_list_text` | `usize` | `1 << 20` | `crates/disrobe-pass-php/src/decompile.rs` |
@@ -1545,7 +1546,7 @@ Exceeded: error 884, recorded 185, panic 0, delegated 49, silent 1008, unclassif
 | `disrobe-pass-php` | `SANE_SWITCH_STATE_WORK_CAP` | work | silent: `return` in `structure_linear_match`; `return` in `structure_switch_dispatch` | `usize` | `1 << 20` | `crates/disrobe-pass-php/src/decompile.rs` |
 | `disrobe-pass-php` | `SANE_TRY_CATCH_CAP` | other | error: `Error::OpArrayFieldOversize` (DR-PHP-0093) | `u32` | `1 << 16` | `crates/disrobe-pass-php/src/decompile.rs` |
 | `disrobe-pass-php` | `SANE_VAR_CAP` | other | error: `Error::OpArrayFieldOversize` (DR-PHP-0093) | `u32` | `1 << 20` | `crates/disrobe-pass-php/src/decompile.rs` |
-| `disrobe-pass-php` | `USE_SCAN_BUDGET` | work | silent: `break` in `read_after_jump`; `return` in `free_unconsumed` | `usize` | `256` | `crates/disrobe-pass-php/src/decompile.rs` |
+| `disrobe-pass-php` | `USE_SCAN_BUDGET` | work | silent: `break` in `read_after_jump`; `return` in `free_unconsumed`; `return` in `structure_switch_dispatch` | `usize` | `256` | `crates/disrobe-pass-php/src/decompile.rs` |
 | `disrobe-pass-php` | `MAX_LABEL_ATTRIBUTIONS_PER_ITEM` | other | error: `Error::Deflatten` (DR-PHP-0110) | `usize` | `64` | `crates/disrobe-pass-php/src/deflatten.rs` |
 | `disrobe-pass-php` | `MAX_LINEARIZE_DEPTH` | recursion | silent: `return` in `try_emit_braced` | `usize` | `256` | `crates/disrobe-pass-php/src/deflatten.rs` |
 | `disrobe-pass-php` | `MAX_LINEARIZE_STEPS` | work | error: `Error::Deflatten` (DR-PHP-0110) | `usize` | `1 << 20` | `crates/disrobe-pass-php/src/deflatten.rs` |
@@ -2208,7 +2209,7 @@ Exceeded: error 884, recorded 185, panic 0, delegated 49, silent 1008, unclassif
 
 ## Silent stops
 
-1008 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
+1009 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
 
 | Crate | Constant | Use | File |
 | --- | --- | --- | --- |
@@ -2578,7 +2579,7 @@ Exceeded: error 884, recorded 185, panic 0, delegated 49, silent 1008, unclassif
 | `disrobe-pass-jvm` | `MAX_RENDER_BYTES` | `return` in `append_inner_output`; `return` in `append_java_replacement`; `return` in `emit_nested_class_stubs`; 2 more | `crates/disrobe-pass-jvm/src/decompile.rs` |
 | `disrobe-pass-jvm` | `RECORD_ARITY_PROBE_CAP` | `while` condition in `infer_record_arity` | `crates/disrobe-pass-jvm/src/decompile.rs` |
 | `disrobe-pass-jvm` | `REUSED_LOCAL_SPLIT_WORK_LIMIT` | `return` in `claim_reused_local_split_work` | `crates/disrobe-pass-jvm/src/decompile.rs` |
-| `disrobe-pass-jvm` | `MAX_CONDITION_CHAIN` | `return` in `short_circuit_merge`; `return` in `structure_condition_chain`; `while` condition in `loop_condition_chain` | `crates/disrobe-pass-jvm/src/decompile_struct.rs` |
+| `disrobe-pass-jvm` | `MAX_CONDITION_CHAIN` | `return` in `latch_condition_chain`; `return` in `short_circuit_merge`; `return` in `structure_condition_chain`; 1 more | `crates/disrobe-pass-jvm/src/decompile_struct.rs` |
 | `disrobe-pass-jvm` | `MAX_JOIN_CHAIN` | `break` in `continuation_joins`; `for` range in `goto_chain_end`; `for` range in `handler_join_after`; 1 more | `crates/disrobe-pass-jvm/src/decompile_struct.rs` |
 | `disrobe-pass-jvm` | `MAX_TAIL_BLOCKS` | `return` in `duplicable_tail` | `crates/disrobe-pass-jvm/src/decompile_struct.rs` |
 | `disrobe-pass-jvm` | `MAX_TAIL_INSTRUCTIONS` | `return` in `duplicable_tail` | `crates/disrobe-pass-jvm/src/decompile_struct.rs` |
@@ -2909,13 +2910,14 @@ Exceeded: error 884, recorded 185, panic 0, delegated 49, silent 1008, unclassif
 | `disrobe-pass-php` | `SANE_CATCH_CLAUSE_CAP` | `return` in `catch_region_end`; `return` in `lift_catch_arms` | `crates/disrobe-pass-php/src/decompile.rs` |
 | `disrobe-pass-php` | `SANE_CATCH_TYPE_CAP` | `return` in `catch_clause` | `crates/disrobe-pass-php/src/decompile.rs` |
 | `disrobe-pass-php` | `SANE_CLOSURE_USE_CAP` | `return` in `fold_closure` | `crates/disrobe-pass-php/src/decompile.rs` |
+| `disrobe-pass-php` | `SANE_CONDITION_RENDER_CAP` | `return` in `fold_test_graph` | `crates/disrobe-pass-php/src/decompile.rs` |
 | `disrobe-pass-php` | `SANE_FOR_STEP_CAP` | `return` in `for_step_start` | `crates/disrobe-pass-php/src/decompile.rs` |
 | `disrobe-pass-php` | `SANE_LIST_ELEMENT_CAP` | `return` in `list_entries` | `crates/disrobe-pass-php/src/decompile.rs` |
 | `disrobe-pass-php` | `SANE_LIST_RENDER_CAP` | `return` in `fold_list_assign`; `return` in `list_entries`; `return` in `push_list_text` | `crates/disrobe-pass-php/src/decompile.rs` |
 | `disrobe-pass-php` | `SANE_LOOP_EXIT_FREE_CAP` | `return` in `exit_frees_match` | `crates/disrobe-pass-php/src/decompile.rs` |
 | `disrobe-pass-php` | `SANE_LOOP_RELIFT_WORK_CAP` | `?` on a checked operation in `loop_relift_charge` | `crates/disrobe-pass-php/src/decompile.rs` |
 | `disrobe-pass-php` | `SANE_SWITCH_STATE_WORK_CAP` | `return` in `structure_linear_match`; `return` in `structure_switch_dispatch` | `crates/disrobe-pass-php/src/decompile.rs` |
-| `disrobe-pass-php` | `USE_SCAN_BUDGET` | `break` in `read_after_jump`; `return` in `free_unconsumed` | `crates/disrobe-pass-php/src/decompile.rs` |
+| `disrobe-pass-php` | `USE_SCAN_BUDGET` | `break` in `read_after_jump`; `return` in `free_unconsumed`; `return` in `structure_switch_dispatch` | `crates/disrobe-pass-php/src/decompile.rs` |
 | `disrobe-pass-php` | `MAX_LINEARIZE_DEPTH` | `return` in `try_emit_braced` | `crates/disrobe-pass-php/src/deflatten.rs` |
 | `disrobe-pass-php` | `ZEND_OPTIMIZER_OBF_KEY_CAP` | `return` in `read_zend_optimizer_key` | `crates/disrobe-pass-php/src/encoder/container.rs` |
 | `disrobe-pass-php` | `ZEND_OBFUSCATION_KEY_CAP` | `return` in `recover_zend_optimizer_obfuscation_key` | `crates/disrobe-pass-php/src/key_extractor.rs` |
