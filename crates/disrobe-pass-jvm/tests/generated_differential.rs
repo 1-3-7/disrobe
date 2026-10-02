@@ -8,8 +8,11 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use disrobe_core::scratch::ScratchDir;
-use disrobe_pass_jvm::{DecompiledClass, decompile_classfile_bytes};
-use disrobe_testkit::{CommandSpec, ToolError, ToolOutput, tool_output};
+use disrobe_pass_jvm::{
+    DecompiledClass, DecompiledDex, decompile_classfile_bytes, decompile_dex_from_bytes,
+};
+use disrobe_testkit::{Available, CommandSpec, ToolError, ToolOutput, require, tool_output};
+use sha2::{Digest, Sha256};
 
 const PROGRAMS: u64 = 300;
 const VARIABLES: [&str; 5] = ["a", "b", "c", "d", "e"];
@@ -21,6 +24,16 @@ const RUN_TIMEOUT: Duration = Duration::from_mins(1);
 const PROGRAM_MILLIS: u64 = 5_000;
 const SHOWN_FAILURES: usize = 6;
 const KNOWN_DIVERGENT: [u64; 0] = [];
+const DEX_KNOWN_DIVERGENT: [u64; 105] = [
+    5, 11, 12, 18, 27, 30, 35, 40, 43, 45, 51, 54, 56, 57, 58, 61, 63, 66, 69, 70, 71, 72, 73, 74,
+    79, 82, 86, 87, 89, 92, 94, 100, 105, 107, 110, 111, 116, 119, 124, 125, 126, 127, 131, 134,
+    140, 141, 146, 151, 155, 156, 157, 158, 161, 162, 163, 165, 168, 169, 170, 171, 173, 174, 179,
+    180, 182, 183, 184, 189, 194, 199, 202, 209, 217, 218, 219, 224, 225, 227, 231, 233, 234, 236,
+    240, 241, 242, 243, 248, 251, 256, 258, 264, 267, 270, 273, 274, 275, 280, 281, 283, 286, 288,
+    292, 296, 297, 298,
+];
+const D8_PREREQUISITE: &str = "disrobe-pass-jvm::r8-jar";
+const R8_JAR_SHA256: &str = "3b4de3053885da105e39c15212261d22653d6d1b5eb92323dd04ae913cc8286f";
 
 const SINK: &str = r"import java.util.List;
 
@@ -486,9 +499,9 @@ fn prog_seed(line: &str) -> Option<u64> {
         .and_then(|digits: &str| digits.trim().parse::<u64>().ok())
 }
 
-fn recovered_methods(class: &DecompiledClass) -> BTreeMap<u64, String> {
+fn recovered_methods(source: &str) -> BTreeMap<u64, String> {
     let mut methods: BTreeMap<u64, String> = BTreeMap::new();
-    let mut lines: std::str::Lines<'_> = class.source.lines();
+    let mut lines: std::str::Lines<'_> = source.lines();
     while let Some(line) = lines.next() {
         let Some(seed) = prog_seed(line) else {
             continue;
@@ -581,8 +594,27 @@ fn generated_programs_reexecute_identically_on_the_jvm() {
     let image: Vec<u8> =
         std::fs::read(reference.classes.join("Gen.class")).expect("read the compiled Gen class");
     let decompiled: DecompiledClass = decompile_classfile_bytes(&image).expect("decompile");
-    let recovered: BTreeMap<u64, String> = recovered_methods(&decompiled);
+    let recovered: BTreeMap<u64, String> = recovered_methods(&decompiled.source);
+    grade_recovered(
+        &jdk,
+        &original,
+        &reference,
+        &recovered,
+        &decompiled.source,
+        &KNOWN_DIVERGENT,
+        "class-file",
+    );
+}
 
+fn grade_recovered(
+    jdk: &Jdk,
+    original: &BTreeMap<u64, String>,
+    reference: &Built,
+    recovered: &BTreeMap<u64, String>,
+    decompiled_source: &str,
+    known: &[u64],
+    route: &str,
+) {
     let mut failures: BTreeMap<u64, String> = BTreeMap::new();
     for seed in 0..PROGRAMS {
         if !recovered.contains_key(&seed) {
@@ -590,7 +622,7 @@ fn generated_programs_reexecute_identically_on_the_jvm() {
                 seed,
                 format!(
                     "the decompiler emitted no prog body\n{}",
-                    excerpt(&decompiled.source, 3000)
+                    excerpt(decompiled_source, 3000)
                 ),
             );
         }
@@ -610,7 +642,7 @@ fn generated_programs_reexecute_identically_on_the_jvm() {
         let source: String = gen_class(&candidate);
         let scratch: ScratchDir =
             ScratchDir::create("disrobe_jvm_generated_recovered").expect("create scratch");
-        let built: Built = build_and_run(&jdk, scratch.path(), &source);
+        let built: Built = build_and_run(jdk, scratch.path(), &source);
         for (seed, reason) in &built.hung {
             failures.insert(
                 *seed,
@@ -660,7 +692,7 @@ fn generated_programs_reexecute_identically_on_the_jvm() {
             );
         }
     }
-    let pinned: BTreeSet<u64> = KNOWN_DIVERGENT.into_iter().collect();
+    let pinned: BTreeSet<u64> = known.iter().copied().collect();
     let divergent: BTreeSet<u64> = failures.keys().copied().collect();
     let regressed: Vec<u64> = divergent.difference(&pinned).copied().collect();
     let fixed: Vec<u64> = pinned.difference(&divergent).copied().collect();
@@ -697,12 +729,109 @@ fn generated_programs_reexecute_identically_on_the_jvm() {
         .collect();
     assert!(
         regressed.is_empty() && fixed.is_empty(),
-        "{} of {PROGRAMS} generated Java programs did not recover to the same behaviour; the \
-         divergent set must equal KNOWN_DIVERGENT exactly, which only ever shrinks. Newly \
+        "{} of {PROGRAMS} generated Java programs did not recover to the same behaviour through \
+         the {route} route; the divergent set must equal its known-divergent list exactly, which only ever shrinks. Newly \
          divergent: {regressed:?}. Now recovered, remove from KNOWN_DIVERGENT: {fixed:?}.\n{}\n{}",
         failures.len(),
         summary.join("\n"),
         shown.join("\n=====\n")
+    );
+}
+
+fn r8_jar() -> PathBuf {
+    let located: Option<PathBuf> = std::env::var_os("DISROBE_R8_JAR")
+        .map(PathBuf::from)
+        .filter(|path: &PathBuf| path.is_file());
+    let jar: PathBuf = match require(
+        D8_PREREQUISITE,
+        "the pinned R8/D8 9.1.31 jar (r8-9.1.31.jar from Google Maven, sha256 \
+         3b4de3053885da105e39c15212261d22653d6d1b5eb92323dd04ae913cc8286f) named by \
+         DISROBE_R8_JAR, which lowers the generated programs to DEX for the Dalvik route",
+        located,
+    ) {
+        Ok(Available::Present(path)) => path,
+        Ok(Available::NotMeasured { record }) => panic!(
+            "the DEX generated differential has no measurement without D8, so it cannot be \
+             listed optional (record {})",
+            record.display()
+        ),
+        Err(error) => panic!("{error}"),
+    };
+    let bytes: Vec<u8> = std::fs::read(&jar).expect("read the R8 jar");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(&bytes)),
+        R8_JAR_SHA256,
+        "{} is not the pinned R8 9.1.31 jar, so the DEX it writes would not match the \
+         known-divergent list",
+        jar.display()
+    );
+    jar
+}
+
+#[test]
+fn generated_programs_reexecute_identically_through_dex() {
+    let jdk: Jdk = jdk();
+    let r8: PathBuf = r8_jar();
+    let original: BTreeMap<u64, String> = generated_methods();
+    let scratch: ScratchDir =
+        ScratchDir::create("disrobe_jvm_generated_dex").expect("create scratch");
+    let reference: Built = build_and_run(&jdk, scratch.path(), &gen_class(&original));
+    assert!(
+        reference.build.success,
+        "the generated programs must compile:\n{}{}",
+        reference.build.stdout_text(),
+        reference.build.stderr_text()
+    );
+    assert!(
+        reference.hung.is_empty(),
+        "every generated program terminates: {:?}",
+        reference.hung
+    );
+    let dex_dir: PathBuf = scratch.path().join("dex");
+    std::fs::create_dir_all(&dex_dir).expect("create the dex output directory");
+    let lowered: ToolOutput = tool_output(
+        CommandSpec::new(jdk.java.clone(), TOOL_TIMEOUT)
+            .capture_limits(TOOL_CAPTURE_BYTES, TOOL_CAPTURE_BYTES)
+            .args(["-Xmx2g", "-cp"])
+            .arg(r8)
+            .args([
+                "com.android.tools.r8.D8",
+                "--release",
+                "--no-desugaring",
+                "--min-api",
+                "26",
+                "--output",
+            ])
+            .arg(dex_dir.clone())
+            .arg(reference.classes.join("Gen.class"))
+            .current_dir(scratch.path().to_path_buf()),
+    )
+    .unwrap_or_else(|error: ToolError| panic!("d8 could not start: {error}"));
+    assert!(
+        lowered.success,
+        "d8 must lower Gen.class:\n{}{}",
+        lowered.stdout_text(),
+        lowered.stderr_text()
+    );
+    let dex: Vec<u8> = std::fs::read(dex_dir.join("classes.dex")).expect("read classes.dex");
+    let decompiled: DecompiledDex = decompile_dex_from_bytes(&dex).expect("decompile the DEX");
+    let source: String = decompiled
+        .sources
+        .iter()
+        .find(|(unit, _): &(&String, &String)| unit.ends_with("Gen.java"))
+        .map_or_else(
+            || decompiled.source.clone(),
+            |(_, text): (&String, &String)| text.clone(),
+        );
+    let recovered: BTreeMap<u64, String> = recovered_methods(&source);
+    grade_recovered(
+        &jdk,
+        &original,
+        &reference,
+        &recovered,
+        &source,
+        &DEX_KNOWN_DIVERGENT,
+        "DEX",
     );
 }
 
