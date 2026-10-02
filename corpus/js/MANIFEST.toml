@@ -106,8 +106,7 @@ category = "protector-paid"
 version = "8.5"
 status = "REAL-FIXTURE (free tier) + TOOL-PAID-DEFER (paid templates)"
 free_templates_real = ["default", "advanced_obfuscation", "anti_tampering_debugging", "dead_objects", "light_obfuscation", "minification", "obfuscation", "self_defending"]
-paid_templates_config_only = ["self_healing", "browser_lock", "date_lock", "domain_lock", "os_lock"]
-notes = "7 free tier templates fully captured under corpus/src/javascript/jscrambler-samples/. 5 paid template configs captured under corpus/js/jscrambler/templates/ (without raw obfuscated output - paid subscription gated)."
+notes = "7 free tier templates fully captured under corpus/src/javascript/jscrambler-samples/. The 5 paid template configs were removed: their harvest licence was internal-research-only, which does not permit redistribution."
 
 [[fixtures]]
 tool = "jsdefender"

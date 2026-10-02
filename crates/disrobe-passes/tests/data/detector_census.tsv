@@ -414,11 +414,6 @@ corpus/js/jsconfuser/recovery/src_statesum_strings.js	-	-	-	-	-	-	-
 corpus/js/jsconfuser/recovery/src_stringcompression.js	-	-	-	-	-	-	-
 corpus/js/jsconfuser/recovery/src_tokenizer.js	-	-	-	-	-	-	-
 corpus/js/jscrambler/obfuscated.banner.js	js.deob	js-jscrambler	obfuscator-wrapper	high	-	-	-
-corpus/js/jscrambler/templates/browser_lock.json	-	-	-	-	-	-	-
-corpus/js/jscrambler/templates/date_lock.json	-	-	-	-	-	-	-
-corpus/js/jscrambler/templates/domain_lock.json	-	-	-	-	-	-	-
-corpus/js/jscrambler/templates/os_lock.json	-	-	-	-	-	-	-
-corpus/js/jscrambler/templates/self_healing.json	-	-	-	-	-	-	-
 corpus/js/jsfuck/edge_cases.js	-	-	-	-	-	-	-
 corpus/js/jsfuck/hello.js	-	-	-	-	-	-	-
 corpus/js/jsfuck/obfuscated.js	js.deob	js-jsfuck	obfuscator-wrapper	high	-	-	-
