@@ -315,10 +315,7 @@ fn unflatten_dispatcher(
     let redirected_here: usize = redirects.len();
     for (pred, target, push_idx) in redirects {
         let pred_block: &mut BasicBlock = &mut cfg.blocks[pred.0 as usize];
-        pred_block.successors = vec![Edge {
-            kind: EdgeKind::Jump,
-            target,
-        }];
+        jump_keeping_handlers(pred_block, target);
         pred_block.insn_range.1 = push_idx;
     }
 
@@ -326,6 +323,21 @@ fn unflatten_dispatcher(
     report.dispatchers_unflattened += 1;
     report.changed = true;
     true
+}
+
+fn jump_keeping_handlers(block: &mut BasicBlock, target: BlockId) {
+    let handlers: Vec<Edge> = block
+        .successors
+        .iter()
+        .filter(|edge: &&Edge| matches!(edge.kind, EdgeKind::Exception))
+        .cloned()
+        .collect();
+    block.successors = std::iter::once(Edge {
+        kind: EdgeKind::Jump,
+        target,
+    })
+    .chain(handlers)
+    .collect();
 }
 
 fn fold_dead_conditional_branches(cfg: &mut Cfg, insns: &[Instruction], report: &mut SccpReport) {
@@ -367,10 +379,7 @@ fn fold_dead_conditional_branches(cfg: &mut Cfg, insns: &[Instruction], report: 
 
     for (bid, live_target, first_operand) in folds {
         let block: &mut BasicBlock = &mut cfg.blocks[bid.0 as usize];
-        block.successors = vec![Edge {
-            kind: EdgeKind::Jump,
-            target: live_target,
-        }];
+        jump_keeping_handlers(block, live_target);
         block.insn_range.1 = first_operand;
         report.dead_branches_folded += 1;
         report.changed = true;

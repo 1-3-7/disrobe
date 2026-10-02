@@ -2440,6 +2440,64 @@ impl<'a> Structurer<'a> {
         sites
     }
 
+    fn jump_copy_at_try_end(
+        &mut self,
+        chain: &FinallyChain,
+        group: &GroupedTry,
+        try_end: BlockId,
+    ) -> Option<(usize, BlockId)> {
+        let protected = |pc: u32| -> bool {
+            group
+                .ranges
+                .iter()
+                .any(|&(start, end): &(u32, u32)| (start..end).contains(&pc))
+        };
+        let end_block: &BasicBlock = &self.cfg.blocks[try_end.0 as usize];
+        let jumps_away: bool = matches!(
+            end_block
+                .successors
+                .iter()
+                .filter(|edge: &&Edge| !matches!(edge.kind, EdgeKind::Exception))
+                .collect::<Vec<&Edge>>()
+                .as_slice(),
+            [edge] if edge.kind == EdgeKind::Jump
+        );
+        if !jumps_away
+            || protected(end_block.start_pc)
+            || !end_block.predecessors.iter().all(|predecessor: &BlockId| {
+                protected(self.cfg.blocks[predecessor.0 as usize].start_pc)
+            })
+        {
+            return None;
+        }
+        let chain_blocks: BTreeSet<BlockId> = chain.blocks.iter().copied().collect();
+        let sites: BTreeSet<BlockId> = self
+            .cfg
+            .blocks
+            .iter()
+            .filter(|block: &&BasicBlock| protected(block.start_pc))
+            .flat_map(normal_targets)
+            .filter(|target: &BlockId| {
+                let start: u32 = self.cfg.blocks[target.0 as usize].start_pc;
+                *target != try_end
+                    && start >= group.try_end_pc
+                    && !protected(start)
+                    && !chain_blocks.contains(target)
+            })
+            .collect();
+        let [normal]: [BlockId; 1] = sites
+            .into_iter()
+            .collect::<Vec<BlockId>>()
+            .try_into()
+            .ok()?;
+        let skip: usize = self.finally_inline_prefix(chain, try_end)?;
+        if self.block_instructions(try_end).len() != skip + 1 {
+            return None;
+        }
+        self.finally_inline_prefix(chain, normal)?;
+        Some((skip, normal))
+    }
+
     fn unfolded_branch_exit_copy(
         &mut self,
         chain: &FinallyChain,
@@ -3074,6 +3132,18 @@ impl<'a> Structurer<'a> {
                 if let Some(chain) = finally_chain.as_ref() {
                     self.visited.extend(chain.blocks.iter().copied());
                 }
+                let try_end_block: Option<BlockId> = match (finally_chain.as_ref(), try_end_block) {
+                    (Some(chain), Some(end)) => {
+                        match self.jump_copy_at_try_end(chain, &try_group, end) {
+                            Some((skip, normal)) => {
+                                self.finally_inline_skips.insert(end, skip);
+                                Some(normal)
+                            }
+                            None => Some(end),
+                        }
+                    }
+                    _ => try_end_block,
+                };
                 let redundant_finally: bool = finally_handler
                     .is_some_and(|h| self.active_finally.contains(&h))
                     && handler_block_ids
@@ -4543,17 +4613,29 @@ fn find_loop_exit(cfg: &Cfg, loops: &[NaturalLoop], loop_info: &NaturalLoop) -> 
         })
         .min_by_key(|outer: &&NaturalLoop| outer.body.len())
     else {
-        return Some(first);
+        if normal_targets(&cfg.blocks[loop_info.header.0 as usize])
+            .any(|target: BlockId| !loop_info.body.contains(&target))
+        {
+            return Some(first);
+        }
+        let join: Option<BlockId> = exits.iter().copied().find(|candidate: &BlockId| {
+            exits.iter().all(|other: &BlockId| {
+                other == candidate
+                    || forward_reach(cfg, *other, loop_info.header).contains(candidate)
+            })
+        });
+        return Some(join.unwrap_or(first));
     };
     if !enclosing.body.contains(&first) {
         return Some(first);
     }
     let funnel: Option<BlockId> = exits.iter().copied().find(|candidate: &BlockId| {
         let reach: BTreeSet<BlockId> = forward_reach(cfg, *candidate, enclosing.header);
-        enclosing.body.contains(candidate)
-            && exits
-                .iter()
-                .all(|other: &BlockId| other == candidate || reach.contains(other))
+        *candidate != enclosing.header
+            && enclosing.body.contains(candidate)
+            && exits.iter().all(|other: &BlockId| {
+                other == candidate || *other == enclosing.header || reach.contains(other)
+            })
     });
     Some(funnel.unwrap_or(first))
 }

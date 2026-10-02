@@ -1319,6 +1319,27 @@ const KT_FINALLY_LOOP: KotlinShape = KotlinShape {
     output: "0,100,201,301,404,508,608,608,",
 };
 
+const KT_CONTINUE_FOLLOW: KotlinShape = KotlinShape {
+    name: "KtContinueFollow",
+    class: include_bytes!("../fixtures/shape_matrix/kotlin/KtContinueFollow.class"),
+    driver: include_str!("../fixtures/shape_matrix/kotlin/KtContinueFollowDriver.java"),
+    output: "0;45 -17;-2;30 -7;42 47 -47;56 49 -1;-16;42 47 87 -87;",
+};
+
+const KT_FINALLY_BREAK: KotlinShape = KotlinShape {
+    name: "KtFinallyBreak",
+    class: include_bytes!("../fixtures/shape_matrix/kotlin/KtFinallyBreak.class"),
+    driver: include_str!("../fixtures/shape_matrix/kotlin/KtFinallyBreakDriver.java"),
+    output: "2 5 3;z2 z5 10 z17 3;2 5 6;2 5 3;z2 z5 10 z17 3;2 5 6;",
+};
+
+const KT_FOLDED_TRY: KotlinShape = KotlinShape {
+    name: "KtFoldedTry",
+    class: include_bytes!("../fixtures/shape_matrix/kotlin/KtFoldedTry.class"),
+    driver: include_str!("../fixtures/shape_matrix/kotlin/KtFoldedTryDriver.java"),
+    output: "-14014,7093,-6914,-13928,7179,14193,7200,7307,14321,7328,",
+};
+
 fn sha256_hex(bytes: &[u8]) -> String {
     let digest: sha2::digest::Output<sha2::Sha256> = <sha2::Sha256 as sha2::Digest>::digest(bytes);
     format!("{digest:x}")
@@ -1606,6 +1627,33 @@ fn a_kotlin_finally_runs_once_on_every_exit() {
             "        var1 = var2;\n",
             "        counter = (KtFinally.counter + 1);\n        var1 = var2;\n",
         ),
+    );
+}
+
+#[test]
+fn a_kotlin_continue_out_of_a_stepped_for_keeps_the_statements_after_it() {
+    assert_kotlin_recovered(
+        &KT_CONTINUE_FOLLOW,
+        (
+            "var2 = (((var2 * 7) + var5) % 100);",
+            "var2 = (((var2 * 7) + var5) % 101);",
+        ),
+    );
+}
+
+#[test]
+fn a_kotlin_break_from_a_try_runs_the_finally_once_and_reaches_the_loop_follow() {
+    assert_kotlin_recovered(
+        &KT_FINALLY_BREAK,
+        ("arg1.append(var3);", "arg1.append((var3 + 1));"),
+    );
+}
+
+#[test]
+fn a_kotlin_try_whose_first_branch_folds_keeps_its_handlers() {
+    assert_kotlin_recovered(
+        &KT_FOLDED_TRY,
+        ("(KtFoldedTry.log + 100)", "(KtFoldedTry.log + 101)"),
     );
 }
 

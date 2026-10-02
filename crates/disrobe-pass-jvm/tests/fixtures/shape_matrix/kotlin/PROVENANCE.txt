@@ -4,6 +4,10 @@ Compiler archive SHA-256: 473dd66c7a3ef4b182065b3da670466c1bf2773a9dbb0ed8b33a39
 Command: kotlinc <Name>.kt -jvm-target 17 -d out, run in this directory once per Kotlin source
 Runtime libraries (not committed; the tests verify them): kotlin-stdlib 2.4.10 (https://repo1.maven.org/maven2/org/jetbrains/kotlin/kotlin-stdlib/2.4.10/kotlin-stdlib-2.4.10.jar, SHA-256 4ec0293bc3751423b203f1d8493251c57c42e73eb6377a6b8560d0974ff0a6df) and org.jetbrains annotations 13.0 (https://repo1.maven.org/maven2/org/jetbrains/annotations/13.0/annotations-13.0.jar, SHA-256 ace2a10dc8e2d5fd34925ecac03e4988b2c0f851650c94b8cef49ba1bd111478), the same files kotlinc 2.4.10 ships in lib/
 
+Source: KtContinueFollow.kt
+Class: out/KtContinueFollow.class
+Class SHA-256: e2425fd469bafd635e6c53be9a7d5fe4da7c149d978bf615958e12f0bedf33e3
+
 Source: KtContinueLatch.kt
 Class: out/KtContinueLatch.class
 Class SHA-256: 16bed6bd32a60523b39d38da1ee812fc540394c831bcd678eac7ffc03586bae2
@@ -16,6 +20,10 @@ Source: KtFinally.kt
 Class: out/KtFinally.class
 Class SHA-256: 451d60e44433b3b0cc756a30d02a790c85a58b3b681f997e00cc8b88f832c781
 
+Source: KtFinallyBreak.kt
+Class: out/KtFinallyBreak.class
+Class SHA-256: 641cbd23410a9f0fa1b0eb873d17025a9c5676c5782369eb68ec402022ea1be6
+
 Source: KtFinallyLoop.kt
 Class: out/KtFinallyLoop.class
 Class SHA-256: 88fb7cafb310f849bfa9d9524d31038bc68317c6cbab5b89f456f62af7349319
@@ -23,6 +31,10 @@ Class SHA-256: 88fb7cafb310f849bfa9d9524d31038bc68317c6cbab5b89f456f62af7349319
 Source: KtFold.kt
 Class: out/KtFold.class
 Class SHA-256: a22712f6e5e43591a6313ff3eacb5f1cf46106cf5bcc689313447cf34583b277
+
+Source: KtFoldedTry.kt
+Class: out/KtFoldedTry.class
+Class SHA-256: 8c095bdc7ee757afc7f1ef36241ad4604c35e4277d826ed01e5b0ddb24aa9a24
 
 Source: KtLongCompare.kt
 Class: out/KtLongCompare.class
