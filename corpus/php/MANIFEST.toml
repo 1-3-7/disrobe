@@ -334,3 +334,45 @@ source_tool = "manual (PHP 8.4 strict behaviour program)"
 size_bytes = 808
 sha256 = "d1dc96adb01c2d9ec08c8bfd9d181f0f98f369415025c28f51d1c44caf315e6c"
 notes = "Strict behaviour program compiled to an opcache file-cache image by PHP 8.4, decompiled from that image and re-run; stdout must match byte for byte (tests/php_behaviour_strict.rs). Covers do-while loops with short-circuit conditions as the last statement of a try body with catch and finally, where the optimizer threads the loop exit straight to the finally call."
+
+[[sample]]
+name = "behaviour/finally_branch_join.php"
+source_tool = "manual (PHP 8.4 strict behaviour program)"
+size_bytes = 1068
+sha256 = "c804932a75c28aa1802d1f908822866ca6a26ddf7fcd0fdce08ba966ca66362a"
+notes = "Strict behaviour program compiled to an opcache file-cache image by PHP 8.4, decompiled from that image and re-run; stdout must match byte for byte (tests/php_behaviour_strict.rs). Covers try/catch/finally and try/finally as the last statement of an if branch followed by elseif or else, including a two-test && condition, where the optimizer threads the post-finally jump straight past the else branch."
+
+[[sample]]
+name = "behaviour/foreach_single_pass.php"
+source_tool = "manual (PHP 8.4 strict behaviour program)"
+size_bytes = 595
+sha256 = "6447c962ce39c6c1ffbcebc00492861d427f72b3d2623f12912ebb6f375eed38"
+notes = "Strict behaviour program compiled to an opcache file-cache image by PHP 8.4, decompiled from that image and re-run; stdout must match byte for byte (tests/php_behaviour_strict.rs). Covers foreach loops whose body always ends in break, alone and after a continue and a do-while, so the optimizer drops the back edge to the fetch."
+
+[[sample]]
+name = "behaviour/nested_try_tail.php"
+source_tool = "manual (PHP 8.4 strict behaviour program)"
+size_bytes = 868
+sha256 = "e92f58ad9faffe0aad442b7ff02fb3b872b5d1da5479344570aab346cf6957e9"
+notes = "Strict behaviour program compiled to an opcache file-cache image by PHP 8.4, decompiled from that image and re-run; stdout must match byte for byte (tests/php_behaviour_strict.rs). Covers a try/catch/finally as the last statement of an outer try body with catch, and with catch and finally, where the optimizer threads the inner finally exit past the outer catch skip."
+
+[[sample]]
+name = "behaviour/switch_finally_break.php"
+source_tool = "manual (PHP 8.4 strict behaviour program)"
+size_bytes = 690
+sha256 = "d1921fd61cfc8e943f528952d33658383096a100c5e05fb9ba41e6ecba92fcfd"
+notes = "Strict behaviour program compiled to an opcache file-cache image by PHP 8.4, decompiled from that image and re-run; stdout must match byte for byte (tests/php_behaviour_strict.rs). Covers a switch without default whose first case ends in try/catch/finally followed by break, where the optimizer threads the finally exit straight to the switch end and the last case contains a branch."
+
+[[sample]]
+name = "behaviour/switch_unfreed_subject.php"
+source_tool = "manual (PHP 8.4 strict behaviour program)"
+size_bytes = 650
+sha256 = "fe74feb529fce173fddc718bb969e0e5684e08e5b6869f4b9b43fbcc3b4194f0"
+notes = "Strict behaviour program compiled to an opcache file-cache image by PHP 8.4, decompiled from that image and re-run; stdout must match byte for byte (tests/php_behaviour_strict.rs). Covers a switch on an integer expression with a default arm, where the optimizer removes the FREE of the switch subject at the join."
+
+[[sample]]
+name = "behaviour/while_compound_exit.php"
+source_tool = "manual (PHP 8.4 strict behaviour program)"
+size_bytes = 612
+sha256 = "d789979f9719059727060c101fe15ffe5e02004dd7707b655ba7cf0a16a85e1a"
+notes = "Strict behaviour program compiled to an opcache file-cache image by PHP 8.4, decompiled from that image and re-run; stdout must match byte for byte (tests/php_behaviour_strict.rs). Covers a while loop with a mixed && and || condition as the last statement of an if branch inside try/catch/finally, where the optimizer threads the loop exits to the finally call."

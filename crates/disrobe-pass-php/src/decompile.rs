@@ -40,6 +40,7 @@ const SANE_CATCH_CLAUSE_CAP: usize = 256;
 const CATCH_LAST: u32 = 1;
 const SANE_LOOP_EXIT_FREE_CAP: u32 = SANE_LIFT_DEPTH;
 const SANE_TERNARY_GUARD_SCAN: u32 = 4096;
+const SANE_CONDITION_RENDER_CAP: usize = 1 << 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum OperandType {
@@ -1934,6 +1935,59 @@ struct TryRegion {
     exit_jump: Option<u32>,
 }
 
+#[derive(Clone)]
+enum TestValue {
+    Constant(bool),
+    Computed(Expr),
+}
+
+impl TestValue {
+    fn choose(condition: &Expr, when_true: Self, when_false: Self) -> Self {
+        let negated = || -> String { format!("!{}", condition.wrapped(PREC_NOT)) };
+        let joined = |left: String, operator: &str, right: &Expr, prec: u8| -> Self {
+            Self::Computed(Expr {
+                text: format!("{left} {operator} {}", right.wrapped(prec)),
+                prec,
+            })
+        };
+        match (when_true, when_false) {
+            (Self::Constant(true), Self::Constant(false)) => Self::Computed(condition.clone()),
+            (Self::Constant(false), Self::Constant(true)) => Self::Computed(Expr {
+                text: negated(),
+                prec: PREC_NOT,
+            }),
+            (Self::Constant(true), Self::Computed(other)) => {
+                joined(condition.wrapped(PREC_OR), "||", &other, PREC_OR)
+            }
+            (Self::Constant(false), Self::Computed(other)) => {
+                joined(negated(), "&&", &other, PREC_AND)
+            }
+            (Self::Computed(other), Self::Constant(true)) => {
+                joined(negated(), "||", &other, PREC_OR)
+            }
+            (Self::Computed(other), Self::Constant(false)) => {
+                joined(condition.wrapped(PREC_AND), "&&", &other, PREC_AND)
+            }
+            (when_true, when_false) => Self::Computed(Expr {
+                text: format!(
+                    "{} ? {} : {}",
+                    condition.wrapped(PREC_TERNARY + 1),
+                    when_true.render(),
+                    when_false.render()
+                ),
+                prec: PREC_TERNARY,
+            }),
+        }
+    }
+
+    fn render(&self) -> String {
+        match self {
+            Self::Constant(value) => value.to_string(),
+            Self::Computed(expr) => expr.wrapped(PREC_TERNARY + 1),
+        }
+    }
+}
+
 struct ListEntry {
     key: ListKey,
     value: ListValue,
@@ -1979,6 +2033,8 @@ struct Lifter<'a> {
     jump_sources: BTreeMap<u32, Vec<u32>>,
     match_scan_work: usize,
     operand_failed: std::cell::Cell<bool>,
+    range_joins: Vec<(u32, u32)>,
+    else_entries: BTreeSet<u32>,
 }
 
 impl<'a> Lifter<'a> {
@@ -2075,6 +2131,8 @@ impl<'a> Lifter<'a> {
             jump_sources: jump_sources(ops, literals),
             match_scan_work: 0,
             operand_failed: std::cell::Cell::new(false),
+            range_joins: Vec::new(),
+            else_entries: BTreeSet::new(),
         }
     }
 
@@ -2439,7 +2497,16 @@ impl<'a> Lifter<'a> {
             return None;
         }
         let snapshot: LiftSnapshot = self.lift_snapshot();
-        let body: Vec<Stmt> = self.lift_range(region.try_start, region.try_end, depth + 1);
+        let body: Vec<Stmt> = if region.catch_op == Some(region.try_end) {
+            self.lift_joined_range(
+                region.try_start,
+                region.try_end,
+                region.catch_end,
+                depth + 1,
+            )
+        } else {
+            self.lift_range(region.try_start, region.try_end, depth + 1)
+        };
         let catches: Vec<CatchArm> = if let Some(catch_op) = region.catch_op {
             if let Some(arms) = self.lift_catch_arms(catch_op, region.catch_end, depth) {
                 arms
@@ -2465,7 +2532,9 @@ impl<'a> Lifter<'a> {
             catches,
             finally_body,
         }];
-        if let Some(exit_jump) = region.exit_jump {
+        if let Some(exit_jump) = region.exit_jump
+            && !self.exit_reaches_range_join(exit_jump, region.construct_end)
+        {
             let Some((exit, _)): Option<(Vec<Stmt>, u32)> = self.structure_loop_jump(exit_jump)
             else {
                 self.restore_lift_snapshot(snapshot);
@@ -2474,6 +2543,20 @@ impl<'a> Lifter<'a> {
             statements.extend(exit);
         }
         Some((statements, region.construct_end))
+    }
+
+    fn lift_joined_range(&mut self, start: u32, end: u32, join: u32, depth: u32) -> Vec<Stmt> {
+        self.range_joins.push((end, join));
+        let body: Vec<Stmt> = self.lift_range(start, end, depth);
+        self.range_joins.pop();
+        body
+    }
+
+    fn exit_reaches_range_join(&self, exit_jump: u32, construct_end: u32) -> bool {
+        self.ops
+            .get(exit_jump as usize)
+            .filter(|jump: &&Op| jump.opcode == op::JMP)
+            .is_some_and(|jump: &Op| self.range_joins.contains(&(construct_end, jump.op1)))
     }
 
     fn lift_catch_arms(
@@ -3245,11 +3328,13 @@ impl<'a> Lifter<'a> {
                             .copied()
                             .unwrap_or(default_target);
                         boundary > target
-                            && self.ops.get((boundary - 1) as usize).is_some_and(
+                            && (self.ops.get((boundary - 1) as usize).is_some_and(
                                 |terminator: &Op| {
                                     terminator.opcode == op::JMP && terminator.op1 == default_target
                                 },
-                            )
+                            ) || self
+                                .finally_exit(target, boundary - 1)
+                                .is_some_and(|(_, exit): (u32, u32)| exit == default_target))
                     },
                 )
         });
@@ -3302,7 +3387,8 @@ impl<'a> Lifter<'a> {
                 }
             }
         }
-        if join.is_none() && !default_is_join {
+        let scanned_join: bool = join.is_none() && !default_is_join;
+        if scanned_join {
             let mut scan: u32 = max_target;
             while scan < end {
                 let candidate: &Op = self.ops.get(scan as usize)?;
@@ -3326,16 +3412,21 @@ impl<'a> Lifter<'a> {
         let join: u32 = join?;
         let next: u32 = if matches!(subject_key.0, OperandType::TmpVar | OperandType::Var) {
             let free: &Op = self.ops.get(join as usize)?;
-            if free.opcode != op::FREE
-                || (free.op1_type, free.op1) != subject_key
-                || !matches!(
-                    free.extended_value_provenance(),
-                    ExtendedValueProvenance::Known(2) | ExtendedValueProvenance::Unavailable
-                )
-            {
+            if free.opcode == op::FREE {
+                if (free.op1_type, free.op1) != subject_key
+                    || !matches!(
+                        free.extended_value_provenance(),
+                        ExtendedValueProvenance::Known(2) | ExtendedValueProvenance::Unavailable
+                    )
+                {
+                    return None;
+                }
+                join.checked_add(1)?
+            } else if !scanned_join && self.never_refcounted(dispatch_end, subject_key) {
+                join
+            } else {
                 return None;
             }
-            join.checked_add(1)?
         } else {
             join
         };
@@ -3453,6 +3544,37 @@ impl<'a> Lifter<'a> {
         self.slots = merged_slots;
         self.writable_slots = merged_writable;
         Some((vec![Stmt::Switch { subject, arms }], next))
+    }
+
+    fn never_refcounted(&self, before: u32, key: (OperandType, u32)) -> bool {
+        let lower: u32 = before.saturating_sub(USE_SCAN_BUDGET as u32);
+        (lower..before)
+            .rev()
+            .find_map(|index: u32| {
+                self.ops
+                    .get(index as usize)
+                    .filter(|producer: &&Op| (producer.result_type, producer.result) == key)
+            })
+            .is_some_and(|producer: &Op| {
+                matches!(
+                    producer.opcode,
+                    op::SUB
+                        | op::MUL
+                        | op::DIV
+                        | op::MOD
+                        | op::SL
+                        | op::SR
+                        | op::POW
+                        | op::IS_IDENTICAL
+                        | op::IS_NOT_IDENTICAL
+                        | op::IS_EQUAL
+                        | op::IS_NOT_EQUAL
+                        | op::IS_SMALLER
+                        | op::IS_SMALLER_OR_EQUAL
+                        | op::BOOL
+                        | op::BOOL_NOT
+                )
+            })
     }
 
     fn lift_snapshot(&self) -> LiftSnapshot {
@@ -3683,43 +3805,148 @@ impl<'a> Lifter<'a> {
             },
             depth,
         );
-        let mut conditions: Vec<(Expr, bool, bool)> = Vec::with_capacity(tests.len());
-        let mut start: u32 = cond_start;
+        let folded: Expr = self.fold_test_graph(cond_start, tests, head, exit)?;
+        Some((
+            vec![Stmt::DoWhile {
+                cond: folded.text,
+                body,
+            }],
+            exit,
+        ))
+    }
+
+    fn while_test_chain(&self, entry: u32, cond_block: u32, end: u32) -> Option<(Vec<u32>, u32)> {
+        let head: u32 = entry.checked_add(1)?;
+        let mut last: Option<u32> = None;
+        let mut cursor: u32 = cond_block;
+        while cursor < end {
+            let op: &Op = self.ops.get(cursor as usize)?;
+            if let Some(test) = self.loop_test(cursor) {
+                if test.op2 == head {
+                    last = Some(cursor);
+                } else if test.op2 <= cursor {
+                    break;
+                }
+            } else if op.branch_target() != Branch::None {
+                break;
+            }
+            cursor += 1;
+        }
+        let last: u32 = last?;
+        let exit: u32 = last.checked_add(1)?;
+        let exit_alias: Option<u32> = self
+            .ops
+            .get(exit as usize)
+            .filter(|jump: &&Op| jump.opcode == op::JMP)
+            .map(|jump: &Op| jump.op1);
+        let tests: Vec<u32> = (cond_block..=last)
+            .filter(|&k: &u32| self.loop_test(k).is_some())
+            .collect();
+        let segment_starts: BTreeSet<u32> = tests
+            .iter()
+            .filter(|&&k: &&u32| k != last)
+            .map(|&k: &u32| k.saturating_add(1))
+            .collect();
+        let well_formed: bool = tests.len() > 1
+            && tests.iter().all(|&k: &u32| {
+                self.ops.get(k as usize).is_some_and(|test: &Op| {
+                    test.op2 == head
+                        || test.op2 == exit
+                        || Some(test.op2) == exit_alias
+                        || (test.op2 > k && segment_starts.contains(&test.op2))
+                })
+            })
+            && self
+                .jump_sources
+                .range(cond_block.saturating_add(1)..=last)
+                .all(|(target, sources): (&u32, &Vec<u32>)| {
+                    segment_starts.contains(target)
+                        && sources
+                            .iter()
+                            .all(|source: &u32| source < target && tests.contains(source))
+                })
+            && !self.entered_from_outside(entry, exit);
+        well_formed.then_some((tests, exit))
+    }
+
+    fn fold_test_graph(
+        &mut self,
+        cond_block: u32,
+        tests: &[u32],
+        head: u32,
+        exit: u32,
+    ) -> Option<Expr> {
+        let exit_alias: Option<u32> = self
+            .ops
+            .get(exit as usize)
+            .filter(|jump: &&Op| jump.opcode == op::JMP)
+            .map(|jump: &Op| jump.op1);
+        let mut segments: Vec<(u32, Op, Expr)> = Vec::with_capacity(tests.len());
+        let mut start: u32 = cond_block;
         for &test_idx in tests {
             let test: Op = self.ops.get(test_idx as usize)?.clone();
             let condition: Expr = self.lift_condition(start, test_idx, &test)?;
-            conditions.push((condition, test.opcode == op::JMPNZ, test.op2 == head));
+            segments.push((start, test, condition));
             start = test_idx.checked_add(1)?;
         }
-        let negated = |condition: &Expr, when_true: bool| -> Expr {
-            if when_true {
-                condition.clone()
+        let mut values: BTreeMap<u32, TestValue> = BTreeMap::new();
+        let mut fall: TestValue = TestValue::Constant(false);
+        for (segment_start, test, condition) in segments.into_iter().rev() {
+            let taken: TestValue = if test.op2 == head {
+                TestValue::Constant(true)
+            } else if test.op2 == exit || Some(test.op2) == exit_alias {
+                TestValue::Constant(false)
             } else {
-                Expr {
-                    text: format!("!{}", condition.wrapped(PREC_NOT)),
-                    prec: PREC_NOT,
-                }
-            }
-        };
-        let (last_condition, last_when_true, _): (Expr, bool, bool) = conditions.pop()?;
-        let mut folded: Expr = negated(&last_condition, last_when_true);
-        while let Some((condition, when_true, continues)) = conditions.pop() {
-            folded = if continues {
-                let left: Expr = negated(&condition, when_true);
-                Expr {
-                    text: format!("{} || {}", left.wrapped(PREC_OR), folded.wrapped(PREC_OR)),
-                    prec: PREC_OR,
-                }
-            } else {
-                let left: Expr = negated(&condition, !when_true);
-                Expr {
-                    text: format!("{} && {}", left.wrapped(PREC_AND), folded.wrapped(PREC_AND)),
-                    prec: PREC_AND,
-                }
+                values.get(&test.op2)?.clone()
             };
+            let (when_true, when_false): (TestValue, TestValue) = if test.opcode == op::JMPNZ {
+                (taken, fall)
+            } else {
+                (fall, taken)
+            };
+            let value: TestValue = TestValue::choose(&condition, when_true, when_false);
+            if let TestValue::Computed(expr) = &value
+                && expr.text.len() > SANE_CONDITION_RENDER_CAP
+            {
+                return None;
+            }
+            values.insert(segment_start, value.clone());
+            fall = value;
         }
+        match fall {
+            TestValue::Computed(expr) => Some(expr),
+            TestValue::Constant(_) => None,
+        }
+    }
+
+    fn structure_chained_while(
+        &mut self,
+        i: u32,
+        cond_block: u32,
+        end: u32,
+        depth: u32,
+    ) -> Option<(Vec<Stmt>, u32)> {
+        let head: u32 = i.checked_add(1)?;
+        let (tests, exit): (Vec<u32>, u32) = self.while_test_chain(i, cond_block, end)?;
+        let snapshot: LiftSnapshot = self.lift_snapshot();
+        let (body, _): (Vec<Stmt>, BTreeSet<u32>) = self.lift_breakable_body(
+            BreakableFrame {
+                body_start: head,
+                body_end: cond_block,
+                continue_target: cond_block,
+                break_target: exit,
+                iterator: None,
+                unexplained_targets: BTreeSet::new(),
+            },
+            depth,
+        );
+        let Some(folded): Option<Expr> = self.fold_test_graph(cond_block, &tests, head, exit)
+        else {
+            self.restore_lift_snapshot(snapshot);
+            return None;
+        };
         Some((
-            vec![Stmt::DoWhile {
+            vec![Stmt::While {
                 cond: folded.text,
                 body,
             }],
@@ -4587,7 +4814,7 @@ impl<'a> Lifter<'a> {
     fn structure_if(&mut self, i: u32, end: u32, depth: u32) -> Option<(Vec<Stmt>, u32)> {
         let jmpz: Op = self.ops.get(i as usize)?.clone();
         let target: u32 = jmpz.op2;
-        if target <= i || target > end {
+        if target <= i || target > end || self.else_entries.contains(&target) {
             return None;
         }
         let cond_expr: Expr = self.operand_expr(jmpz.op1_type, jmpz.op1)?;
@@ -4601,34 +4828,48 @@ impl<'a> Lifter<'a> {
                 .is_some_and(|(position, _): (usize, bool)| {
                     self.exit_frees_match(then_last, position)
                 });
-        if then_terminator.opcode == op::JMP && !then_exits_loop {
-            let join: u32 = then_terminator.op1;
-            if join > target && join <= end {
-                self.slots = incoming_slots.clone();
-                self.writable_slots = incoming_writable.clone();
-                let then_body: Vec<Stmt> = self.lift_range(i + 1, then_last, depth + 1);
-                let then_slots: BTreeMap<(OperandType, u32), Expr> =
-                    std::mem::take(&mut self.slots);
-                let then_writable: BTreeMap<(OperandType, u32), u32> =
-                    std::mem::take(&mut self.writable_slots);
-                self.slots = incoming_slots;
-                self.writable_slots = incoming_writable;
-                let else_body: Vec<Stmt> = self.lift_range(target, join, depth + 1);
-                let else_slots: BTreeMap<(OperandType, u32), Expr> =
-                    std::mem::take(&mut self.slots);
-                let else_writable: BTreeMap<(OperandType, u32), u32> =
-                    std::mem::take(&mut self.writable_slots);
-                self.slots = Self::common_slots(&then_slots, &else_slots);
-                self.writable_slots = Self::common_writable_slots(&then_writable, &else_writable);
-                return Some((
-                    vec![Stmt::If {
-                        cond: cond_expr.text,
-                        then_body,
-                        else_body,
-                    }],
-                    join,
-                ));
-            }
+        let joined: Option<(u32, u32, Option<u32>)> =
+            if then_terminator.opcode == op::JMP && !then_exits_loop {
+                Some((then_last, then_terminator.op1, None))
+            } else {
+                self.finally_exit(i + 1, then_last)
+                    .map(|(exit, join): (u32, u32)| (target, join, Some(exit)))
+            };
+        if let Some((then_end, join, finally_exit)) = joined
+            && join > target
+            && join <= end
+        {
+            self.slots = incoming_slots.clone();
+            self.writable_slots = incoming_writable.clone();
+            let then_body: Vec<Stmt> = if finally_exit.is_some() {
+                let guarded: bool = self.else_entries.insert(target);
+                let body: Vec<Stmt> = self.lift_joined_range(i + 1, then_end, join, depth + 1);
+                if guarded {
+                    self.else_entries.remove(&target);
+                }
+                body
+            } else {
+                self.lift_range(i + 1, then_end, depth + 1)
+            };
+            let then_slots: BTreeMap<(OperandType, u32), Expr> = std::mem::take(&mut self.slots);
+            let then_writable: BTreeMap<(OperandType, u32), u32> =
+                std::mem::take(&mut self.writable_slots);
+            self.slots = incoming_slots;
+            self.writable_slots = incoming_writable;
+            let else_body: Vec<Stmt> = self.lift_range(target, join, depth + 1);
+            let else_slots: BTreeMap<(OperandType, u32), Expr> = std::mem::take(&mut self.slots);
+            let else_writable: BTreeMap<(OperandType, u32), u32> =
+                std::mem::take(&mut self.writable_slots);
+            self.slots = Self::common_slots(&then_slots, &else_slots);
+            self.writable_slots = Self::common_writable_slots(&then_writable, &else_writable);
+            return Some((
+                vec![Stmt::If {
+                    cond: cond_expr.text,
+                    then_body,
+                    else_body,
+                }],
+                join,
+            ));
         }
         self.slots = incoming_slots.clone();
         self.writable_slots = incoming_writable.clone();
@@ -4646,6 +4887,22 @@ impl<'a> Lifter<'a> {
             }],
             target,
         ))
+    }
+
+    fn finally_exit(&self, start: u32, last: u32) -> Option<(u32, u32)> {
+        let entry: &TryCatch = self
+            .try_catch
+            .iter()
+            .find(|entry: &&TryCatch| entry.try_op >= start && entry.finally_end == Some(last))?;
+        let finally_op: u32 = entry.finally_op?;
+        let exit: u32 = finally_op.checked_sub(1)?;
+        let jump: &Op = self.ops.get(exit as usize)?;
+        let call: &Op = self.ops.get(exit.checked_sub(1)? as usize)?;
+        let threaded: bool = self.ops.get(last as usize)?.opcode == op::FAST_RET
+            && jump.opcode == op::JMP
+            && call.opcode == op::FAST_CALL
+            && call.op1 == finally_op;
+        threaded.then_some((exit, jump.op1))
     }
 
     fn common_slots(
@@ -4688,7 +4945,7 @@ impl<'a> Lifter<'a> {
                 break;
             }
             if op.branch_target() != Branch::None || op.opcode == op::JMPZ {
-                return None;
+                return self.structure_chained_while(i, cond_block, end, depth);
             }
             tail += 1;
         }
@@ -4985,10 +5242,11 @@ impl<'a> Lifter<'a> {
         let back: Op = self.ops.get(body_end as usize)?.clone();
         let conditional_back: bool = matches!(back.opcode, op::JMPZ | op::JMPNZ);
         let back_target: u32 = if conditional_back { back.op2 } else { back.op1 };
-        if !(back.opcode == op::JMP || conditional_back) || back_target != fetch_idx {
-            return None;
-        }
-        let lifted_end: u32 = if conditional_back {
+        let back_edge: bool =
+            (back.opcode == op::JMP || conditional_back) && back_target == fetch_idx;
+        let lifted_end: u32 = if !back_edge {
+            after_loop
+        } else if conditional_back {
             self.condition_start(&back, body_start, body_end)
         } else {
             body_end
@@ -5004,7 +5262,9 @@ impl<'a> Lifter<'a> {
             },
             depth,
         );
-        if conditional_back {
+        if !back_edge {
+            body.push(Stmt::Break(1));
+        } else if conditional_back {
             let cond: Expr = self.lift_condition(lifted_end, body_end, &back)?;
             let breaks_when: String = if back.opcode == op::JMPNZ {
                 format!("!({})", cond.wrapped(PREC_CALL))

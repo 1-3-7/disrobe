@@ -28,7 +28,7 @@ use php_toolchain::{
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-const PROGRAMS: [&str; 22] = [
+const PROGRAMS: [&str; 28] = [
     "anonymous",
     "arrays",
     "branches",
@@ -39,18 +39,24 @@ const PROGRAMS: [&str; 22] = [
     "destructuring",
     "enums",
     "exceptions",
+    "finally_branch_join",
     "foreach_forms",
+    "foreach_single_pass",
     "generators",
     "juggling",
     "loop_in_try",
     "loops",
+    "nested_try_tail",
     "operators",
     "references",
     "scopes",
     "statics",
     "strings",
+    "switch_finally_break",
     "switch_match",
     "switch_try",
+    "switch_unfreed_subject",
+    "while_compound_exit",
 ];
 
 const REFUSED: [(&str, &[&str]); 0] = [];
