@@ -11,6 +11,7 @@ on:
           - hercules
           - pyc-zipper
           - wasm-name-obfuscator
+          - jbco
 
 permissions:
   contents: read
