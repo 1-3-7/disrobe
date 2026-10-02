@@ -911,6 +911,31 @@ pub(crate) fn reference_store_types(
     Some(stored)
 }
 
+pub(crate) fn block_entry_stack_types(
+    cfg: &Cfg,
+    insns: &[Instruction],
+    entry_locals: Vec<VerificationType>,
+    field_ref: &dyn Fn(u16) -> Option<String>,
+    method_ref: &dyn Fn(u16) -> Option<(String, String)>,
+    class_ref: &dyn Fn(u16) -> Option<String>,
+    ldc_type: &dyn Fn(u16) -> Option<VerificationType>,
+) -> Option<BTreeMap<BlockId, Vec<VerificationType>>> {
+    let resolver: OpcodeResolver<'_> = OpcodeResolver {
+        field_ref,
+        method_ref,
+        class_ref,
+        ldc_type,
+    };
+    let solved: SolvedFrames = solve_block_entries(cfg, insns, &resolver, entry_locals);
+    (solved.outcome == FrameInferOutcome::Converged).then(|| {
+        solved
+            .block_entry
+            .into_iter()
+            .map(|(bid, state): (BlockId, FrameState)| (bid, state.stack))
+            .collect()
+    })
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DeferredAllocationPlan {
     pub elided_stores: BTreeSet<u32>,

@@ -13,7 +13,7 @@ use crate::classfile::{ClassFile, ConstantPoolEntry, FieldInfo, MethodInfo};
 use crate::decompile_struct::{
     BasicBlock, BlockId, BranchCondition, Cfg, Dominators, Edge, EdgeKind, ExceptionRegion,
     NaturalLoop, Region, Structurer, SwitchKey, build_cfg, collapse_short_circuit_conditions,
-    compute_dominators, find_natural_loops, normal_targets,
+    compute_dominators, dominates, find_natural_loops, normal_targets,
 };
 use crate::descriptor::{self, JavaType, MethodDescriptor};
 use crate::error::{Error, Result};
@@ -2058,6 +2058,13 @@ fn lift_method_body(
         &exception_table,
         parameter_value_categories,
     );
+    let _completed: bool = split_mixed_type_slot_webs(
+        &mut insns,
+        &exception_table,
+        entry_locals,
+        code.max_locals,
+        REUSED_LOCAL_SPLIT_WORK_LIMIT,
+    );
     let verified_arrays: BTreeMap<u16, String> =
         split_reused_reference_ranges(cf, code, &mut insns, entry_locals);
     if insns.is_empty() {
@@ -2133,6 +2140,7 @@ fn lift_method_body(
                     params,
                     param_types,
                     &bootstraps,
+                    entry_locals,
                     has_this,
                     bool_return,
                 ) {
@@ -2247,6 +2255,7 @@ enum StructuredLift {
     Unrecovered(&'static str),
 }
 
+#[allow(clippy::too_many_arguments)]
 fn lift_structured(
     cf: &ClassFile,
     code: &CodeAttribute,
@@ -2254,6 +2263,7 @@ fn lift_structured(
     params: &[(u16, String)],
     param_types: &BTreeMap<u16, String>,
     bootstraps: &[crate::attributes::BootstrapMethod],
+    entry_locals: &[VerificationType],
     has_this: bool,
     bool_return: bool,
 ) -> StructuredLift {
@@ -2354,12 +2364,28 @@ fn lift_structured(
     let finally_scoped_local_slots: BTreeSet<u16> = structurer.take_finally_scoped_local_slots();
     let absorbed_blocks: BTreeSet<BlockId> = structurer.take_absorbed_blocks();
     let revisited_blocks: BTreeSet<BlockId> = structurer.take_revisited_blocks();
+    let typer: JoinValueTyper<'_> = JoinValueTyper {
+        cf,
+        cfg: &cfg,
+        insns,
+        entry_locals,
+        stacks: std::cell::OnceCell::new(),
+    };
     let EntryStacks {
         stacks: block_entry_stacks,
         folded_condition_heads,
         distributed_returns,
-    }: EntryStacks =
-        compute_block_entry_stacks(cf, &cfg, insns, params, bootstraps, has_this, bool_return);
+        join_values,
+    }: EntryStacks = compute_block_entry_stacks(
+        cf,
+        &cfg,
+        insns,
+        params,
+        bootstraps,
+        has_this,
+        bool_return,
+        &typer,
+    );
     let distributed_returns: BTreeSet<BlockId> = distributed_returns
         .into_iter()
         .filter(|join: &BlockId| real_predecessors(&cfg, *join).is_disjoint(&revisited_blocks))
@@ -2403,6 +2429,7 @@ fn lift_structured(
         folded_members: BTreeSet::new(),
         applied_folds: BTreeSet::new(),
         distributed_returns,
+        join_values,
     };
     let mut out: String = String::new();
     render_region(&mut ctx, &root, &mut out, 2);
@@ -2414,7 +2441,10 @@ fn lift_structured(
     hidden_slots.extend(ctx.finally_catch_parameter_slots.iter().copied());
     hidden_slots.extend(ctx.finally_scoped_local_slots.iter().copied());
     hidden_slots.extend(ctx.finally_return_stores.values().copied());
-    let decls: String = render_slot_declarations(&ctx.slot_types, &hidden_slots);
+    let mut decls: String = render_slot_declarations(&ctx.slot_types, &hidden_slots);
+    for value in ctx.join_values.values() {
+        let _ = writeln!(decls, "        {} {};", value.ty, value.name);
+    }
     let coverage_gap: Option<&'static str> = coverage_gap(
         ctx.cfg,
         &ctx.rendered_blocks,
@@ -4939,6 +4969,135 @@ fn split_reference_webs(
     true
 }
 
+fn split_mixed_type_slot_webs(
+    insns: &mut [Instruction],
+    exception_table: &[bytecode::ExceptionEntry],
+    entry_locals: &[VerificationType],
+    max_locals: u16,
+    work_limit: usize,
+) -> bool {
+    let mut work: usize = 0;
+    let Some(events_by_slot): Option<BTreeMap<u16, Vec<ReusedLocalEvent>>> =
+        reused_local_events(insns, max_locals, &mut work, work_limit)
+    else {
+        return false;
+    };
+    let wide_slots: BTreeSet<u16> = events_by_slot
+        .iter()
+        .filter(|(_, events): &(&u16, &Vec<ReusedLocalEvent>)| {
+            events
+                .iter()
+                .any(|event: &ReusedLocalEvent| reused_local_width(event.type_index) > 1)
+        })
+        .map(|(slot, _): (&u16, &Vec<ReusedLocalEvent>)| *slot)
+        .collect();
+    let mixed: Vec<&Vec<ReusedLocalEvent>> = events_by_slot
+        .iter()
+        .filter(|(slot, events): &(&u16, &Vec<ReusedLocalEvent>)| {
+            events
+                .iter()
+                .any(|event: &ReusedLocalEvent| event.type_index != events[0].type_index)
+                && entry_locals
+                    .get(usize::from(**slot))
+                    .is_none_or(|entry: &VerificationType| *entry == VerificationType::Top)
+                && !wide_slots.contains(slot)
+                && !slot
+                    .checked_sub(1)
+                    .is_some_and(|below: u16| wide_slots.contains(&below))
+        })
+        .map(|(_, events): (&u16, &Vec<ReusedLocalEvent>)| events)
+        .collect();
+    if mixed.is_empty() {
+        return true;
+    }
+    let Some(successors): Option<Vec<Vec<usize>>> = instruction_successor_indices(insns) else {
+        return false;
+    };
+    let Some(handler_successors): Option<Vec<Vec<usize>>> =
+        exception_successor_indices(insns, exception_table, &mut work, work_limit)
+    else {
+        return false;
+    };
+    let Some(mut next_fresh): Option<u16> = first_unused_local(insns, max_locals) else {
+        return false;
+    };
+    let mut rewrites: Vec<(usize, u16)> = Vec::new();
+    for events in mixed {
+        let stores: Vec<usize> = events
+            .iter()
+            .filter(|event: &&ReusedLocalEvent| event.is_store)
+            .map(|event: &ReusedLocalEvent| event.instruction_index)
+            .collect();
+        let type_at: BTreeMap<usize, u8> = events
+            .iter()
+            .map(|event: &ReusedLocalEvent| (event.instruction_index, event.type_index))
+            .collect();
+        let mut webs: ReferenceWebs = match reference_webs(
+            insns.len(),
+            events,
+            &stores,
+            false,
+            &successors,
+            &handler_successors,
+            &mut work,
+            work_limit,
+        ) {
+            ReferenceWebOutcome::Webs(webs) => webs,
+            ReferenceWebOutcome::Unsplittable => continue,
+            ReferenceWebOutcome::OutOfBudget => return false,
+        };
+        let mut root_types: BTreeMap<usize, u8> = BTreeMap::new();
+        let mut homogeneous: bool = true;
+        let uses: Vec<(usize, usize)> = stores
+            .iter()
+            .enumerate()
+            .map(|(def, index): (usize, &usize)| (*index, def))
+            .chain(webs.load_defs.iter().copied())
+            .collect();
+        for (index, def) in &uses {
+            let root: usize = webs.root(*def);
+            let Some(&ty): Option<&u8> = type_at.get(index) else {
+                homogeneous = false;
+                break;
+            };
+            if *root_types.entry(root).or_insert(ty) != ty {
+                homogeneous = false;
+            }
+        }
+        if !homogeneous {
+            continue;
+        }
+        let kept: u8 = events[0].type_index;
+        let mut fresh_by_type: BTreeMap<u8, u16> = BTreeMap::new();
+        for ty in root_types.values() {
+            if *ty == kept || fresh_by_type.contains_key(ty) {
+                continue;
+            }
+            let fresh: u16 = next_fresh;
+            let Some(next): Option<u16> = next_fresh.checked_add(reused_local_width(*ty)) else {
+                return false;
+            };
+            next_fresh = next;
+            fresh_by_type.insert(*ty, fresh);
+        }
+        for (index, def) in uses {
+            if let Some(&fresh) = root_types
+                .get(&webs.root(def))
+                .and_then(|ty: &u8| fresh_by_type.get(ty))
+            {
+                rewrites.push((index, fresh));
+            }
+        }
+    }
+    for (index, fresh) in rewrites {
+        let Some(insn): Option<&mut Instruction> = insns.get_mut(index) else {
+            return false;
+        };
+        rebind_slot_to_explicit(insn, fresh);
+    }
+    true
+}
+
 #[allow(clippy::too_many_arguments)]
 fn reference_webs(
     instruction_count: usize,
@@ -5600,6 +5759,7 @@ struct RenderCtx<'a> {
     folded_members: BTreeSet<BlockId>,
     applied_folds: BTreeSet<BlockId>,
     distributed_returns: BTreeSet<BlockId>,
+    join_values: BTreeMap<BlockId, JoinValue>,
 }
 
 fn indent_string(level: usize) -> String {
@@ -6754,6 +6914,22 @@ fn render_block_statements(
             }
         }
     }
+    if let Some(join) = single_normal_successor(&ctx.cfg.blocks[bid.0 as usize])
+        && let Some(value) = ctx.join_values.get(&join)
+    {
+        match stack.pop() {
+            Some(top) => {
+                let _ = writeln!(out, "{pad}{} = {};", value.name, top.render());
+            }
+            None => {
+                ctx.fully_lifted = false;
+                let _ = writeln!(
+                    out,
+                    "{pad}// <decompile: incomplete: a value merged at a join has no source here>"
+                );
+            }
+        }
+    }
     if stack.len() == 1
         && let Some(return_index) = distributed_return_of(ctx, bid)
         && let Some(ins) = ctx.insns.get(return_index)
@@ -6776,9 +6952,10 @@ fn render_block_statements(
     Some(stack)
 }
 
-fn lift_block_to_value(ctx: &RenderCtx<'_>, bid: BlockId, seed_count: usize) -> Option<Expr> {
+fn lift_block_to_value(ctx: &RenderCtx<'_>, bid: BlockId) -> Option<Expr> {
     let (start, end): (usize, usize) = block_insn_range(ctx, bid);
-    let mut stack: Vec<Expr> = Vec::new();
+    let entry: &[Expr] = ctx.block_entry_stacks.get(&bid).map_or(&[], Vec::as_slice);
+    let mut stack: Vec<Expr> = entry.to_vec();
     for ins in &ctx.insns[start..end] {
         let op: u8 = ins.opcode;
         if matches!(op, 0xA7 | 0xC8) {
@@ -6807,11 +6984,9 @@ fn lift_block_to_value(ctx: &RenderCtx<'_>, bid: BlockId, seed_count: usize) -> 
             }
         }
     }
-    if stack.len() == seed_count + 1 {
-        stack.pop()
-    } else {
-        None
-    }
+    let value: Expr = stack.pop()?;
+    (stack.len() <= entry.len() && stacks_render_equal(&stack, &entry[..stack.len()]))
+        .then_some(value)
 }
 
 fn simulate_block(ctx: &RenderCtx<'_>, bid: BlockId, entry: &[Expr]) -> (Vec<Expr>, bool) {
@@ -6891,8 +7066,62 @@ struct EntryStacks {
     stacks: BTreeMap<BlockId, Vec<Expr>>,
     folded_condition_heads: BTreeMap<BlockId, FoldedCondition>,
     distributed_returns: BTreeSet<BlockId>,
+    join_values: BTreeMap<BlockId, JoinValue>,
 }
 
+#[derive(Clone)]
+struct JoinValue {
+    name: String,
+    ty: String,
+}
+
+struct JoinValueTyper<'a> {
+    cf: &'a ClassFile,
+    cfg: &'a Cfg,
+    insns: &'a [Instruction],
+    entry_locals: &'a [VerificationType],
+    stacks: std::cell::OnceCell<Option<BTreeMap<BlockId, Vec<VerificationType>>>>,
+}
+
+impl JoinValueTyper<'_> {
+    fn top_type(&self, join: BlockId, tops: &[Expr]) -> Option<String> {
+        let stacks: &BTreeMap<BlockId, Vec<VerificationType>> = self
+            .stacks
+            .get_or_init(|| {
+                crate::frame_infer::block_entry_stack_types(
+                    self.cfg,
+                    self.insns,
+                    self.entry_locals.to_vec(),
+                    &|idx: u16| crate::bytecode::field_descriptor_at(self.cf, idx),
+                    &|idx: u16| crate::bytecode::method_name_descriptor_at(self.cf, idx),
+                    &|idx: u16| crate::bytecode::class_internal_name_at(self.cf, idx),
+                    &|idx: u16| ldc_verification_type(self.cf, idx),
+                )
+            })
+            .as_ref()?;
+        let stack: &[VerificationType] = stacks.get(&join)?;
+        let top: &VerificationType = match stack.last()? {
+            VerificationType::Top => stack.get(stack.len().checked_sub(2)?)?,
+            other => other,
+        };
+        match top {
+            VerificationType::Integer if tops.iter().all(Expr::is_boolean) => {
+                Some("boolean".to_owned())
+            }
+            VerificationType::Integer => Some("int".to_owned()),
+            VerificationType::Float => Some("float".to_owned()),
+            VerificationType::Long => Some("long".to_owned()),
+            VerificationType::Double => Some("double".to_owned()),
+            VerificationType::Null => Some("Object".to_owned()),
+            VerificationType::Object(class) => Some(descriptor::binary_to_source(class)),
+            VerificationType::Top
+            | VerificationType::UninitializedThis
+            | VerificationType::Uninitialized { .. } => None,
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn compute_block_entry_stacks(
     cf: &ClassFile,
     cfg: &Cfg,
@@ -6901,6 +7130,7 @@ fn compute_block_entry_stacks(
     bootstraps: &[crate::attributes::BootstrapMethod],
     has_this: bool,
     bool_return: bool,
+    typer: &JoinValueTyper<'_>,
 ) -> EntryStacks {
     let mut probe: RenderCtx<'_> = RenderCtx {
         cf,
@@ -6936,12 +7166,14 @@ fn compute_block_entry_stacks(
         folded_members: BTreeSet::new(),
         applied_folds: BTreeSet::new(),
         distributed_returns: BTreeSet::new(),
+        join_values: BTreeMap::new(),
     };
     let dom: Dominators = compute_dominators(cfg);
     let mut exit_stacks: BTreeMap<BlockId, Vec<Expr>> = BTreeMap::new();
     let mut exit_clean: BTreeMap<BlockId, bool> = BTreeMap::new();
     let mut folded_condition_heads: BTreeMap<BlockId, FoldedCondition> = BTreeMap::new();
     let mut distributed_returns: BTreeSet<BlockId> = BTreeSet::new();
+    let mut join_values: BTreeMap<BlockId, JoinValue> = BTreeMap::new();
     for bid in &dom.order {
         let block: &BasicBlock = &cfg.blocks[bid.0 as usize];
         let real_preds: Vec<BlockId> = block
@@ -6973,8 +7205,23 @@ fn compute_block_entry_stacks(
                 .unwrap_or_else(|| {
                     if returns_each_arm_value(&probe, *bid, preds, &exit_stacks, &exit_clean) {
                         distributed_returns.insert(*bid);
+                        return Vec::new();
                     }
-                    Vec::new()
+                    match join_value_entry(
+                        &probe,
+                        &dom,
+                        *bid,
+                        preds,
+                        &exit_stacks,
+                        &exit_clean,
+                        typer,
+                    ) {
+                        Some((entry, value)) => {
+                            join_values.insert(*bid, value);
+                            entry
+                        }
+                        None => Vec::new(),
+                    }
                 }),
             _ => Vec::new(),
         };
@@ -6989,6 +7236,73 @@ fn compute_block_entry_stacks(
         stacks: probe.block_entry_stacks,
         folded_condition_heads,
         distributed_returns,
+        join_values,
+    }
+}
+
+fn join_value_entry(
+    ctx: &RenderCtx<'_>,
+    dom: &Dominators,
+    join: BlockId,
+    preds: &[BlockId],
+    exit_stacks: &BTreeMap<BlockId, Vec<Expr>>,
+    exit_clean: &BTreeMap<BlockId, bool>,
+    typer: &JoinValueTyper<'_>,
+) -> Option<(Vec<Expr>, JoinValue)> {
+    if preds.len() > ARM_CONDITION_BLOCK_CAP {
+        return None;
+    }
+    let mut exits: Vec<&Vec<Expr>> = Vec::with_capacity(preds.len());
+    for pred in preds {
+        if *pred == join
+            || dominates(dom, join, *pred)
+            || !exit_clean.get(pred).copied().unwrap_or(false)
+            || !normal_targets(&ctx.cfg.blocks[pred.0 as usize])
+                .all(|target: BlockId| target == join)
+        {
+            return None;
+        }
+        exits.push(exit_stacks.get(pred)?);
+    }
+    let first: &Vec<Expr> = exits.first()?;
+    let prefix_len: usize = first.len().checked_sub(1)?;
+    let prefix: &[Expr] = &first[..prefix_len];
+    if exits.iter().any(|exit: &&Vec<Expr>| {
+        exit.len() != first.len() || !stacks_render_equal(&exit[..prefix_len], prefix)
+    }) || !prefix
+        .iter()
+        .all(|held: &Expr| survives_arm_statements(ctx, held))
+    {
+        return None;
+    }
+    let tops: Vec<Expr> = exits
+        .iter()
+        .map(|exit: &&Vec<Expr>| exit[prefix_len].clone())
+        .collect();
+    if tops.iter().any(expr_has_hole) {
+        return None;
+    }
+    let ty: String = typer.top_type(join, &tops)?;
+    let name: String = format!("value{}", ctx.cfg.blocks[join.0 as usize].start_pc);
+    let mut entry: Vec<Expr> = prefix.to_vec();
+    entry.push(Expr::Local(name.clone()));
+    Some((entry, JoinValue { name, ty }))
+}
+
+fn survives_arm_statements(ctx: &RenderCtx<'_>, held: &Expr) -> bool {
+    match held {
+        Expr::Const(_) | Expr::This => true,
+        Expr::Local(name) => {
+            ctx.insns
+                .iter()
+                .filter(|ins: &&Instruction| {
+                    foreach_suppressed_slot(ins)
+                        .is_some_and(|slot: u16| local_name(slot, ctx.params) == *name)
+                })
+                .count()
+                <= 1
+        }
+        _ => false,
     }
 }
 
@@ -7560,8 +7874,8 @@ fn try_render_conditional_expr(
         return false;
     }
     let (Some(then_val), Some(else_val)): (Option<Expr>, Option<Expr>) = (
-        lift_block_to_value(ctx, then_b, 0),
-        lift_block_to_value(ctx, else_b, 0),
+        lift_block_to_value(ctx, then_b),
+        lift_block_to_value(ctx, else_b),
     ) else {
         return false;
     };
@@ -7725,7 +8039,7 @@ fn lift_nested_conditional_value(
         if bid == join_bid || ctx.rendered_blocks.contains(&bid) || consumed.contains(&bid) {
             return None;
         }
-        let value: Expr = lift_block_to_value(ctx, bid, 0)?;
+        let value: Expr = lift_block_to_value(ctx, bid)?;
         if expr_has_hole(&value) {
             return None;
         }
@@ -7927,6 +8241,51 @@ fn join_consumes_one_value(ctx: &RenderCtx<'_>, bid: BlockId) -> bool {
         first.opcode,
         0xAC..=0xB0 | 0x36..=0x4E | 0xB3 | 0xB5 | 0x57
     )
+}
+
+fn join_places_value_in_first_statement(ctx: &RenderCtx<'_>, bid: BlockId) -> bool {
+    let (start, end): (usize, usize) = block_insn_range(ctx, bid);
+    let sentinel: &str = "\u{0}__SEED__\u{0}";
+    let mut stack: Vec<Expr> = vec![Expr::Opaque(sentinel.to_string())];
+    for ins in &ctx.insns[start..end] {
+        if matches!(
+            ins.opcode,
+            0x99..=0xA6 | 0xC6 | 0xC7 | 0xA7 | 0xC8 | 0xAA | 0xAB | 0xA9
+        ) {
+            return false;
+        }
+        let emitted: Vec<String> = match lift_one(
+            ctx.cf,
+            ins,
+            &mut stack,
+            ctx.params,
+            ctx.bootstraps,
+            ctx.has_this,
+            ctx.bool_return,
+        ) {
+            LiftResult::Pushed | LiftResult::Elided => Vec::new(),
+            LiftResult::Statement(statement) | LiftResult::ControlFlow(statement) => {
+                vec![statement]
+            }
+            LiftResult::Statements(statements) => statements,
+            LiftResult::PushedWithPrelude(_) | LiftResult::Unhandled => return false,
+        };
+        let held: usize = stack
+            .iter()
+            .map(|e: &Expr| e.render().matches(sentinel).count())
+            .sum();
+        if !emitted.is_empty() {
+            let placed: usize = emitted
+                .iter()
+                .map(|statement: &String| statement.matches(sentinel).count())
+                .sum();
+            return held == 0 && placed == 1;
+        }
+        if held != 1 {
+            return false;
+        }
+    }
+    false
 }
 
 fn render_if_condition(
@@ -8304,7 +8663,7 @@ fn lift_value_switch_default(
         if ctx.rendered_blocks.contains(&bid) || block_branches_to_pc(ctx, bid, head_start_pc) {
             return None;
         }
-        let value: Expr = lift_block_to_value(ctx, bid, 0)?;
+        let value: Expr = lift_block_to_value(ctx, bid)?;
         if expr_has_hole(&value) {
             return None;
         }
@@ -8331,8 +8690,8 @@ fn lift_value_switch_default(
         }
     }
     let (Some(then_val), Some(else_val)): (Option<Expr>, Option<Expr>) = (
-        lift_block_to_value(ctx, then_b, 0),
-        lift_block_to_value(ctx, else_b, 0),
+        lift_block_to_value(ctx, then_b),
+        lift_block_to_value(ctx, else_b),
     ) else {
         return None;
     };
@@ -8364,10 +8723,12 @@ fn try_render_value_switch(
     let Some(join_bid): Option<BlockId> = join else {
         return false;
     };
-    if ctx.rendered_blocks.contains(&head) || ctx.rendered_blocks.contains(&join_bid) {
+    if ctx.rendered_blocks.contains(&join_bid) {
         return false;
     }
-    if !join_consumes_one_value(ctx, join_bid) {
+    if !join_consumes_one_value(ctx, join_bid)
+        && !join_places_value_in_first_statement(ctx, join_bid)
+    {
         return false;
     }
     let head_start_pc: u32 = ctx.cfg.blocks[head.0 as usize].start_pc;
@@ -8380,7 +8741,7 @@ fn try_render_value_switch(
         if ctx.rendered_blocks.contains(&bid) || block_branches_to_pc(ctx, bid, head_start_pc) {
             return false;
         }
-        let Some(value): Option<Expr> = lift_block_to_value(ctx, bid, 0) else {
+        let Some(value): Option<Expr> = lift_block_to_value(ctx, bid) else {
             return false;
         };
         if expr_has_hole(&value) {
@@ -8510,10 +8871,12 @@ fn try_render_yield_switch(
     let Some(default_region): Option<&Region> = default else {
         return false;
     };
-    if ctx.rendered_blocks.contains(&head) || ctx.rendered_blocks.contains(&join_bid) {
+    if ctx.rendered_blocks.contains(&join_bid) {
         return false;
     }
-    if !join_consumes_one_value(ctx, join_bid) {
+    if !join_consumes_one_value(ctx, join_bid)
+        && !join_places_value_in_first_statement(ctx, join_bid)
+    {
         return false;
     }
     let head_start_pc: u32 = ctx.cfg.blocks[head.0 as usize].start_pc;
@@ -9430,6 +9793,7 @@ const fn pattern_render_ctx<'a>(
         folded_members: BTreeSet::new(),
         applied_folds: BTreeSet::new(),
         distributed_returns: BTreeSet::new(),
+        join_values: BTreeMap::new(),
     }
 }
 

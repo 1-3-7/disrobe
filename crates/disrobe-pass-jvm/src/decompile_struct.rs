@@ -3089,7 +3089,12 @@ impl<'a> Structurer<'a> {
                 } else {
                     None
                 };
-                let body_stop: Option<BlockId> = handler_join.or(try_end_block);
+                let handler_exit: Option<BlockId> = if end_is_handler {
+                    handler_continuation(self.cfg, &handler_set)
+                } else {
+                    None
+                };
+                let body_stop: Option<BlockId> = handler_join.or(handler_exit).or(try_end_block);
                 let stop_structured_before: bool =
                     body_stop.is_some_and(|stop: BlockId| self.visited.contains(&stop));
                 let mut body_region: Region = self.structure_at(b, body_stop);
@@ -3123,7 +3128,7 @@ impl<'a> Structurer<'a> {
                     body_region = append_region_block(body_region, terminal);
                     None
                 } else if end_is_handler {
-                    handler_continuation(self.cfg, &handler_set)
+                    handler_exit
                 } else {
                     body_stop
                 };
@@ -4491,13 +4496,14 @@ fn find_switch_join(
     let head_block: &BasicBlock = &cfg.blocks[head.0 as usize];
     let mut common: Option<BTreeSet<BlockId>> = None;
     for edge in &head_block.successors {
-        if matches!(edge.kind, EdgeKind::Switch | EdgeKind::SwitchDefault)
-            && continues_loop(edge.target)
+        if matches!(edge.kind, EdgeKind::Exception)
+            || matches!(edge.kind, EdgeKind::Switch | EdgeKind::SwitchDefault)
+                && continues_loop(edge.target)
         {
             continue;
         }
         let reach: BTreeSet<BlockId> = forward_reach(cfg, edge.target, head);
-        if !matches!(edge.kind, EdgeKind::Exception) && arm_owns_its_reach(cfg, head, &reach) {
+        if arm_owns_its_reach(cfg, head, &reach) {
             continue;
         }
         common = Some(match common {

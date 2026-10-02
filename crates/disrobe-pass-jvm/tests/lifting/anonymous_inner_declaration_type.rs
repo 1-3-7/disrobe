@@ -98,8 +98,8 @@ const NEWLY_CLEAN: [&str; 20] = [
     "squares(int)",
     "totalArea(List)",
 ];
-const BASELINE_CLEAN: usize = 164;
-const CANDIDATE_CLEAN: usize = 184;
+const BASELINE_CLEAN: usize = 166;
+const CANDIDATE_CLEAN: usize = 186;
 const ATTRIBUTION_PROBE_FILE: &str = "TypeCheckReached.java";
 const ATTRIBUTION_PROBE_SOURCE: &str = "final class TypeCheckReached {\n    static final Object VALUE = typeCheckReachedSymbolThatCannotResolve;\n}\n";
 const JAVAC_TIMEOUT: Duration = Duration::from_secs(30);
