@@ -46,6 +46,10 @@ pub(crate) struct TranslatedDefaultMethod {
     pub(crate) definition: String,
 }
 
+mod nested_blocks;
+mod region_check;
+mod simplify;
+
 const MAX_RENDER_BYTES: usize = 4 * 1024 * 1024;
 
 #[must_use]
@@ -1971,10 +1975,77 @@ fn lift_method(
     if !try_layout.groups.is_empty() {
         structurer = structurer.with_try_groups(try_layout.groups);
     }
-    let root: Region = structurer.structure();
+    let primary: Region = structurer.structure();
     let duplicated_blocks: std::collections::BTreeSet<BlockId> =
         structurer.take_duplicated_blocks();
     let monitors_lifted: bool = !monitors.unrecovered && !structurer.monitor_regions_pending();
+    let string_switch_heads: BTreeMap<BlockId, BlockId> = string_switches
+        .iter()
+        .map(
+            |(&head, found): (&BlockId, &crate::dalvik_string_switch::DalvikStringSwitch)| {
+                (head, found.index_head)
+            },
+        )
+        .collect();
+    let primary_inputs: region_check::RegionInputs<'_> = region_check::RegionInputs {
+        cfg: &built.cfg,
+        insns: &built.insns,
+        switches: &built.switch_map,
+        duplicated: &duplicated_blocks,
+        split_heads: &try_layout.split_heads,
+        string_switches: &string_switch_heads,
+        rethrows: &std::collections::BTreeSet::new(),
+        headless_loops: false,
+    };
+    let structured: StructuredBody = match region_check::region_defect(&primary_inputs, &primary) {
+        None => StructuredBody {
+            root: primary,
+            duplicated: duplicated_blocks,
+            split_heads: try_layout.split_heads,
+            rethrows: std::collections::BTreeSet::new(),
+            caught: BTreeMap::new(),
+            headless_loops: false,
+            lifted: !structurer.had_irreducible && monitors_lifted,
+        },
+        Some(defect) => {
+            crate::debug::dbg_kv("dex-region-defect", || {
+                format!(
+                    "{}->{}{}: {defect}",
+                    item.class, item.method_name, item.method_descriptor
+                )
+            });
+            let fallback: Result<StructuredBody, region_check::Defect> = if !monitors.unrecovered
+                && monitors.regions.is_empty()
+                && string_switch_heads.is_empty()
+            {
+                nested_structure(&built, &loops)
+            } else {
+                Err(defect)
+            };
+            match fallback {
+                Ok(body) => body,
+                Err(reason) => {
+                    crate::debug::dbg_kv("dex-nested-defect", || {
+                        format!(
+                            "{}->{}{}: {reason}",
+                            item.class, item.method_name, item.method_descriptor
+                        )
+                    });
+                    let refusal: &str = if item.method_name == "<clinit>" {
+                        ""
+                    } else {
+                        "        throw new UnsupportedOperationException(\"region not recovered\");\n"
+                    };
+                    return MethodBody {
+                        text: format!(
+                            "{blackobf_note}        // <decompile: not recovered: {reason}>\n{refusal}"
+                        ),
+                        fully_lifted: false,
+                    };
+                }
+            }
+        }
+    };
 
     let base: MethodContext<'_> = MethodContext::new(
         dex,
@@ -1988,13 +2059,21 @@ fn lift_method(
     .with_parameter_names(parameter_names)
     .with_code(&item.insns);
     let states: Option<TypeStates> = method_type_states(dex, &built, identity, item);
+    let caught_webs: std::collections::BTreeSet<usize> = structured
+        .caught
+        .iter()
+        .filter_map(|(&handler, &register): (&BlockId, &u16)| flow.entry_web(handler, register))
+        .collect();
     let locals: MethodLocals = method_locals(
         &base,
         identity,
         &built,
         &flow,
         states.as_ref(),
-        accesses.threaded,
+        LocalHints {
+            threaded: accesses.threaded,
+            caught_webs,
+        },
         item.method_name != "<clinit>",
     );
     let ctx: MethodContext<'_> = base.with_naming(&locals.naming);
@@ -2006,21 +2085,26 @@ fn lift_method(
         flow: &flow,
         locals: &locals,
         rendered_blocks: std::collections::BTreeSet::new(),
-        fully_lifted: !structurer.had_irreducible && monitors_lifted,
+        fully_lifted: structured.lifted,
         assigned: std::collections::BTreeSet::new(),
+        try_depth: 0,
+        try_assigned: std::collections::BTreeSet::new(),
         temporaries: 0,
         catch_depth: 0,
         catch_names: Vec::new(),
         monitor_subject: None,
-        split_try_heads: try_layout.split_heads,
-        duplicated_blocks,
+        split_try_heads: structured.split_heads,
+        duplicated_blocks: structured.duplicated,
+        rethrows: structured.rethrows,
+        caught_registers: structured.caught,
+        headless_loops: structured.headless_loops,
         string_switches: string_switches
             .into_values()
             .map(|found: crate::dalvik_string_switch::DalvikStringSwitch| (found.index_head, found))
             .collect(),
     };
     let mut out: String = String::new();
-    render_region(&mut render, &root, &mut out, 2);
+    render_region(&mut render, &structured.root, &mut out, 2);
     let mut declarations: String = String::new();
     for &index in &render.assigned {
         let Some(local): Option<&NamedLocal> = locals.naming.locals.get(index) else {
@@ -2030,6 +2114,15 @@ fn lift_method(
             continue;
         }
         match &local.ty {
+            Some(ty) if render.try_assigned.contains(&index) => {
+                let _: std::fmt::Result = writeln!(
+                    declarations,
+                    "        {} {} = {};",
+                    ty.render(),
+                    local.name,
+                    default_value(ty)
+                );
+            }
             Some(ty) => {
                 let _: std::fmt::Result =
                     writeln!(declarations, "        {} {};", ty.render(), local.name);
@@ -2041,6 +2134,75 @@ fn lift_method(
         text: format!("{blackobf_note}{declarations}{out}"),
         fully_lifted: render.fully_lifted,
     }
+}
+
+const fn default_value(ty: &LocalType) -> &'static str {
+    match ty {
+        LocalType::Boolean => "false",
+        LocalType::Reference(_) => "null",
+        LocalType::Byte
+        | LocalType::Char
+        | LocalType::Short
+        | LocalType::Int
+        | LocalType::Long
+        | LocalType::Float
+        | LocalType::Double => "0",
+    }
+}
+
+struct StructuredBody {
+    root: Region,
+    duplicated: std::collections::BTreeSet<BlockId>,
+    split_heads: std::collections::BTreeSet<BlockId>,
+    rethrows: std::collections::BTreeSet<BlockId>,
+    caught: BTreeMap<BlockId, u16>,
+    headless_loops: bool,
+    lifted: bool,
+}
+
+fn nested_structure(
+    built: &DalvikMethodCfg,
+    loops: &[NaturalLoop],
+) -> Result<StructuredBody, region_check::Defect> {
+    let mut nested: nested_blocks::NestedBlocks =
+        nested_blocks::nested_blocks(&built.cfg, &built.insns, &built.switch_map, loops)?;
+    let silent: std::collections::BTreeSet<BlockId> = built
+        .cfg
+        .blocks
+        .iter()
+        .filter(|block: &&BasicBlock| {
+            built
+                .insns
+                .get(block.insn_range.0..block.insn_range.1)
+                .is_some_and(|body: &[DalvikInsn]| {
+                    body.iter().all(DalvikInsn::is_unconditional_goto)
+                })
+        })
+        .map(|block: &BasicBlock| block.id)
+        .collect();
+    nested.root = simplify::simplify(nested.root, &silent);
+    let inputs: region_check::RegionInputs<'_> = region_check::RegionInputs {
+        cfg: &built.cfg,
+        insns: &built.insns,
+        switches: &built.switch_map,
+        duplicated: &nested.duplicated,
+        split_heads: &nested.split_heads,
+        string_switches: &BTreeMap::new(),
+        rethrows: &nested.rethrows,
+        headless_loops: true,
+    };
+    if let Some(defect) = region_check::region_defect(&inputs, &nested.root) {
+        return Err(defect);
+    }
+    Ok(StructuredBody {
+        root: nested.root,
+        duplicated: nested.duplicated,
+        split_heads: nested.split_heads,
+        rethrows: nested.rethrows,
+        caught: nested.caught,
+        headless_loops: true,
+        lifted: true,
+    })
 }
 
 struct MethodAccesses {
@@ -2073,7 +2235,7 @@ fn register_accesses(
                 _ if released_monitors.contains(&index) => RegisterAccess::default(),
                 _ => instruction_access(insn),
             };
-            access.throws = may_throw(insn.op);
+            access.throws = may_throw(insn);
             for &register in &access.defs {
                 if insn.op == 0x22 {
                     allocated.insert(register);
@@ -2191,7 +2353,7 @@ fn method_type_states(
         BTreeMap::new();
     for region in &built.cfg.exception_regions {
         for insn in &built.insns {
-            if insn.pc >= region.try_start_pc && insn.pc < region.try_end_pc {
+            if insn.pc >= region.try_start_pc && insn.pc < region.try_end_pc && may_throw(insn) {
                 let handlers: &mut Vec<u32> = handler_edges.entry(insn.pc).or_default();
                 if !handlers.contains(&region.handler_pc) {
                     handlers.push(region.handler_pc);
@@ -2240,6 +2402,11 @@ fn method_type_states(
 struct MethodLocals {
     naming: RegisterNaming,
     web_local: BTreeMap<usize, usize>,
+}
+
+struct LocalHints {
+    threaded: std::collections::BTreeSet<u32>,
+    caught_webs: std::collections::BTreeSet<usize>,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -2401,6 +2568,10 @@ impl WebEvidence {
                 descriptor::parse_field(&projected)
                     .map(|ty: descriptor::JavaType| LocalType::Reference(ty.render()))
             }
+            RegType::ZeroOrNull if self.integral_def || self.integral_use => {
+                Some(self.refined_int())
+            }
+            RegType::NullRef if self.integral_use => Some(self.refined_int()),
             RegType::NullRef | RegType::ZeroOrNull => {
                 Some(LocalType::Reference("Object".to_owned()))
             }
@@ -2505,7 +2676,7 @@ fn method_locals(
     built: &DalvikMethodCfg,
     flow: &RegisterFlow,
     states: Option<&TypeStates>,
-    threaded: std::collections::BTreeSet<u32>,
+    hints: LocalHints,
     rematerialize_final_statics: bool,
 ) -> MethodLocals {
     let dex: &DexFile = ctx.dex;
@@ -2514,6 +2685,7 @@ fn method_locals(
     let mut evidence: BTreeMap<usize, WebEvidence> = BTreeMap::new();
     let mut web_static_source: BTreeMap<usize, Option<u32>> = BTreeMap::new();
     let mut web_caught: BTreeMap<usize, CaughtWeb> = BTreeMap::new();
+    let mut def_types: BTreeMap<usize, Vec<RegType>> = BTreeMap::new();
     for (node_index, node) in flow.nodes().iter().enumerate() {
         let Some(web): Option<usize> = flow.web_of(node_index) else {
             continue;
@@ -2556,6 +2728,16 @@ fn method_locals(
                     caught.other_def = true;
                 }
                 facts.record_def(dex, &built.insns, *insn);
+                if let Some(states) = states
+                    && let Some(after) = insn.checked_add(1)
+                    && states.reached.get(after).copied().unwrap_or(false)
+                    && let Some(ty) = states
+                        .entry_state
+                        .get(after)
+                        .and_then(|state: &crate::dalvik_typestate::RegState| state.get(&register))
+                {
+                    def_types.entry(web).or_default().push(ty.clone());
+                }
             }
         }
     }
@@ -2574,6 +2756,13 @@ fn method_locals(
             facts.types.push(ty.clone());
         }
     }
+    for (web, types) in def_types {
+        if let Some(facts) = evidence.get_mut(&web)
+            && facts.types.is_empty()
+        {
+            facts.types = types;
+        }
+    }
 
     let lattice: crate::dalvik_typestate::TypeLattice<'_> =
         crate::dalvik_typestate::TypeLattice::new(dex);
@@ -2583,7 +2772,7 @@ fn method_locals(
             .project_type(identity.declaring_class),
     ));
     let mut naming: RegisterNaming = RegisterNaming {
-        threaded_receivers: threaded,
+        threaded_receivers: hints.threaded,
         ..RegisterNaming::default()
     };
     let mut web_local: BTreeMap<usize, usize> = BTreeMap::new();
@@ -2603,9 +2792,9 @@ fn method_locals(
                 .get(&web)
                 .and_then(|facts: &WebEvidence| facts.local_type(&lattice, ctx.desugar));
             let holds_entry: bool = entry_web == Some(web);
-            let catch_parameter: bool = web_caught
-                .get(&web)
-                .is_some_and(|caught: &CaughtWeb| caught.escapes && !caught.other_def);
+            let catch_parameter: bool = web_caught.get(&web).is_some_and(|caught: &CaughtWeb| {
+                !caught.other_def && (caught.escapes || hints.caught_webs.contains(&web))
+            });
             if catch_parameter {
                 let mut ordinal: usize = 0;
                 let name: String = loop {
@@ -2788,12 +2977,17 @@ struct RenderState<'a> {
     rendered_blocks: std::collections::BTreeSet<BlockId>,
     fully_lifted: bool,
     assigned: std::collections::BTreeSet<usize>,
+    try_depth: usize,
+    try_assigned: std::collections::BTreeSet<usize>,
     temporaries: usize,
     catch_depth: usize,
     catch_names: Vec<CatchName>,
     monitor_subject: Option<String>,
     split_try_heads: std::collections::BTreeSet<BlockId>,
     duplicated_blocks: std::collections::BTreeSet<BlockId>,
+    rethrows: std::collections::BTreeSet<BlockId>,
+    caught_registers: BTreeMap<BlockId, u16>,
+    headless_loops: bool,
     string_switches: BTreeMap<BlockId, crate::dalvik_string_switch::DalvikStringSwitch>,
 }
 
@@ -2814,6 +3008,7 @@ struct FlushRequest<'r> {
     effect: bool,
     live: &'r RegisterSet,
     exclude: &'r [u16],
+    operands: &'r [u16],
 }
 
 fn indent_string(level: usize) -> String {
@@ -2832,11 +3027,15 @@ fn render_region(state: &mut RenderState<'_>, region: &Region, out: &mut String,
             }
         }
         Region::IfThen {
-            head, then_body, ..
+            head,
+            then_body,
+            cond_negated,
+            ..
         } => {
             let cond: String = render_head_condition(state, *head, out, level);
             let pad: String = indent_string(level);
-            let _ = writeln!(out, "{pad}if ({}) {{", invert(&cond));
+            let shown: String = if *cond_negated { cond } else { invert(&cond) };
+            let _ = writeln!(out, "{pad}if ({shown}) {{");
             render_region(state, then_body, out, level + 1);
             let _ = writeln!(out, "{pad}}}");
         }
@@ -2876,7 +3075,9 @@ fn render_region(state: &mut RenderState<'_>, region: &Region, out: &mut String,
         Region::DoWhile { header, body, .. } => {
             let pad: String = indent_string(level);
             let _ = writeln!(out, "{pad}do {{");
-            render_block(state, *header, out, level + 1);
+            if !state.headless_loops {
+                render_block(state, *header, out, level + 1);
+            }
             render_loop_body(state, body, out, level + 1);
             let _ = writeln!(out, "{pad}}} while (true);");
         }
@@ -2933,7 +3134,9 @@ fn render_region(state: &mut RenderState<'_>, region: &Region, out: &mut String,
                 }
                 render_region(state, body, out, level + 2);
                 let position: usize = label.map_or(cases.len(), |(index, _)| index);
-                if !fallthrough.contains(&position) && region_completes(state, body) {
+                if !fallthrough.contains(&position)
+                    && region_completes(state.cfg, state.insns, body)
+                {
                     let _ = writeln!(out, "{pad}        break;");
                 }
             }
@@ -2943,9 +3146,12 @@ fn render_region(state: &mut RenderState<'_>, region: &Region, out: &mut String,
             render_split_try_head(state, try_body, out, level);
             let pad: String = indent_string(level);
             let _ = writeln!(out, "{pad}try {{");
+            state.try_depth += 1;
             render_region(state, try_body, out, level + 1);
+            state.try_depth -= 1;
+            let rethrows: bool = region_check::rethrows_caught(&state.rethrows, handlers);
             for (catch_types, handler_region) in handlers {
-                render_catch(state, catch_types, handler_region, out, level);
+                render_catch(state, catch_types, handler_region, rethrows, out, level);
             }
             let _ = writeln!(out, "{pad}}}");
         }
@@ -2960,7 +3166,7 @@ fn render_region(state: &mut RenderState<'_>, region: &Region, out: &mut String,
             let _ = writeln!(out, "{pad}try {{");
             render_region(state, try_body, out, level + 1);
             for (catch_types, handler_region) in handlers {
-                render_catch(state, catch_types, handler_region, out, level);
+                render_catch(state, catch_types, handler_region, false, out, level);
             }
             let _ = writeln!(out, "{pad}}} finally {{");
             render_region(state, finally_body, out, level + 1);
@@ -2992,8 +3198,14 @@ fn render_region(state: &mut RenderState<'_>, region: &Region, out: &mut String,
         }
         Region::LabeledLoop { label, body } => {
             let pad: String = indent_string(level);
-            let _ = writeln!(out, "{pad}L{label}:");
-            render_region(state, body, out, level);
+            if matches!(**body, Region::While { .. } | Region::DoWhile { .. }) {
+                let _ = writeln!(out, "{pad}L{label}:");
+                render_region(state, body, out, level);
+            } else {
+                let _ = writeln!(out, "{pad}L{label}: {{");
+                render_region(state, body, out, level + 1);
+                let _ = writeln!(out, "{pad}}}");
+            }
         }
         Region::Break { label } => {
             let pad: String = indent_string(level);
@@ -3069,6 +3281,12 @@ fn render_split_try_head(
 fn leading_branch_head(region: &Region) -> Option<BlockId> {
     match region {
         Region::Sequence(items) => items.first().and_then(leading_branch_head),
+        Region::LabeledLoop { body, .. }
+            if !matches!(**body, Region::While { .. } | Region::DoWhile { .. }) =>
+        {
+            leading_branch_head(body)
+        }
+        Region::Try { try_body, .. } => leading_branch_head(try_body),
         Region::IfThen { head, .. }
         | Region::IfThenElse { head, .. }
         | Region::Switch { head, .. } => Some(*head),
@@ -3101,6 +3319,11 @@ fn open_block(state: &RenderState<'_>, bid: BlockId, replay: bool) -> Option<Blo
     let mut file: RegisterFile = RegisterFile::new();
     for register in 0..state.ctx.registers_size {
         file.seed(register, entry_value(state, bid, register));
+    }
+    if let Some(&register) = state.caught_registers.get(&bid)
+        && let Some(caught) = state.catch_names.last()
+    {
+        file.seed(register, Expr::Local(caught.name.clone()));
     }
     Some(BlockWalk {
         file,
@@ -3148,6 +3371,9 @@ fn record_assignment(state: &mut RenderState<'_>, walk: &BlockWalk, register: u1
     match index {
         Some(index) => {
             state.assigned.insert(index);
+            if state.try_depth > 0 {
+                state.try_assigned.insert(index);
+            }
         }
         None => state.fully_lifted = false,
     }
@@ -3180,7 +3406,13 @@ fn flush(
     }
     loop {
         let mut grew: bool = false;
-        for register in request.live.iter() {
+        let operand_only: Vec<u16> = request
+            .operands
+            .iter()
+            .copied()
+            .filter(|&register: &u16| !request.live.contains(register))
+            .collect();
+        for register in request.live.iter().chain(operand_only.iter().copied()) {
             if members.contains(&register) || request.exclude.contains(&register) {
                 continue;
             }
@@ -3197,7 +3429,8 @@ fn flush(
             let hazard: bool = assigned_names
                 .iter()
                 .any(|name: &String| expr_mentions_local(&value, name));
-            let ordered: bool = effect && is_effect_ordered(&value);
+            let ordered: bool =
+                effect && request.live.contains(register) && is_effect_ordered(&value);
             if !hazard && !ordered {
                 continue;
             }
@@ -3326,6 +3559,11 @@ fn walk_insn(
     let insn: &DalvikInsn = &insns[index];
     let point: usize = index.saturating_sub(walk.start);
     let after: RegisterSet = live_at(walk, point + 1);
+    let operands: Vec<u16> = state
+        .accesses
+        .get(index)
+        .map(|access: &RegisterAccess| access.uses.clone())
+        .unwrap_or_default();
     let defs: Vec<u16> = state
         .accesses
         .get(index)
@@ -3351,10 +3589,11 @@ fn walk_insn(
             effect: false,
             live: &after,
             exclude: &[dest],
+            operands: &operands,
         };
         flush(state, walk, &request, out, level);
     }
-    if may_throw(insn.op) {
+    if may_throw(insn) {
         let assign: Vec<u16> = walk
             .file
             .pending_registers()
@@ -3367,6 +3606,7 @@ fn walk_insn(
                 effect: false,
                 live: &live_at(walk, point),
                 exclude: &[],
+                operands: &[],
             };
             flush(state, walk, &request, out, level);
         }
@@ -3390,6 +3630,7 @@ fn walk_insn(
             effect: true,
             live: &after,
             exclude: &defs,
+            operands: &operands,
         };
         flush(state, walk, &request, out, level);
     }
@@ -3417,6 +3658,7 @@ fn walk_insn(
             effect: true,
             live: &after,
             exclude: &defs,
+            operands: &[],
         };
         flush(state, walk, &request, out, level);
     }
@@ -3435,6 +3677,7 @@ fn walk_insn(
                 effect: false,
                 live: &after,
                 exclude: &[],
+                operands: &[],
             };
             flush(state, walk, &request, out, level);
         } else {
@@ -3478,6 +3721,7 @@ fn enter_monitor(
         effect: true,
         live: after,
         exclude: &exclude,
+        operands: &[],
     };
     flush(state, walk, &request, out, level);
     state.monitor_subject = Some(walk.file.current(state.ctx, lock).render());
@@ -3535,6 +3779,7 @@ fn order_pending_effects(
             effect: false,
             live: after,
             exclude: &[],
+            operands: &[],
         };
         flush(state, walk, &request, out, level);
     }
@@ -3635,29 +3880,29 @@ fn anchor_filled_array(
         effect: false,
         live: after,
         exclude: &[],
+        operands: &[],
     };
     flush(state, walk, &request, out, level);
 }
 
-pub(crate) const fn may_throw(op: u8) -> bool {
-    matches!(
-        op,
-        0x1C..=0x27
-            | 0x44..=0x72
-            | 0x74..=0x78
-            | 0x93
-            | 0x94
-            | 0x9E
-            | 0x9F
-            | 0xB3
-            | 0xB4
-            | 0xBE
-            | 0xBF
-            | 0xD3
-            | 0xD4
-            | 0xDB
-            | 0xDC
-    )
+pub(crate) fn may_throw(insn: &DalvikInsn) -> bool {
+    match insn.op {
+        0xD3 | 0xD4 | 0xDB | 0xDC => insn.literal.is_none_or(|divisor: i64| divisor == 0),
+        op => matches!(
+            op,
+            0x1C..=0x27
+                | 0x44..=0x72
+                | 0x74..=0x78
+                | 0x93
+                | 0x94
+                | 0x9E
+                | 0x9F
+                | 0xB3
+                | 0xB4
+                | 0xBE
+                | 0xBF
+        ),
+    }
 }
 
 fn predicts_statement(state: &RenderState<'_>, walk: &BlockWalk, insn: &DalvikInsn) -> bool {
@@ -3738,6 +3983,7 @@ fn anchor_effects(
                 effect: true,
                 live: after,
                 exclude: defs,
+                operands: &[],
             };
             flush(state, walk, &request, out, level);
             let _: std::fmt::Result = writeln!(out, "{}{statement};", indent_string(level));
@@ -3751,6 +3997,7 @@ fn anchor_effects(
             effect: false,
             live: after,
             exclude: &[],
+            operands: &[],
         };
         flush(state, walk, &request, out, level);
     }
@@ -3779,6 +4026,7 @@ fn close_block(
                 effect: true,
                 live: &exit,
                 exclude: &[],
+                operands: &[],
             };
             flush(state, walk, &request, out, level);
             let _: std::fmt::Result = writeln!(out, "{}{statement};", indent_string(level));
@@ -3815,6 +4063,7 @@ fn close_block(
         effect: false,
         live: &live,
         exclude: &[],
+        operands: &[],
     };
     flush(state, walk, &request, out, level);
 }
@@ -3913,6 +4162,7 @@ fn render_catch(
     state: &mut RenderState<'_>,
     catch_types: &[String],
     handler_region: &Region,
+    rethrows: bool,
     out: &mut String,
     level: usize,
 ) {
@@ -3932,6 +4182,9 @@ fn render_catch(
     state.catch_depth += 1;
     state.catch_names.push(caught);
     render_region(state, handler_region, out, level + 1);
+    if rethrows && let Some(caught) = state.catch_names.last() {
+        let _ = writeln!(out, "{}throw {};", indent_string(level + 1), caught.name);
+    }
     state.catch_names.pop();
     state.catch_depth -= 1;
 }
@@ -3943,6 +4196,21 @@ struct CatchName {
 
 fn catch_parameter(state: &RenderState<'_>, handler_region: &Region) -> Option<String> {
     let head: BlockId = leading_block(handler_region)?;
+    if let Some(&register) = state.caught_registers.get(&head) {
+        let index: usize = *state
+            .flow
+            .entry_web(head, register)
+            .and_then(|web: usize| state.locals.web_local.get(&web))?;
+        if !state.locals.naming.catch_parameters.contains(&index) {
+            return None;
+        }
+        return state
+            .locals
+            .naming
+            .locals
+            .get(index)
+            .map(|local: &NamedLocal| local.name.clone());
+    }
     let (start, _): (usize, usize) = block_insn_range(state, head);
     let caught: &DalvikInsn = state
         .insns
@@ -4022,28 +4290,31 @@ fn switch_case_labels(key: &SwitchKey, fallback_idx: usize) -> Vec<String> {
     }
 }
 
-fn region_completes(state: &RenderState<'_>, region: &Region) -> bool {
+fn region_completes(cfg: &Cfg, insns: &[DalvikInsn], region: &Region) -> bool {
     match region {
         Region::Block(block) => {
-            let (_, end): (usize, usize) = block_insn_range(state, *block);
+            let end: usize = cfg
+                .blocks
+                .get(block.0 as usize)
+                .map_or(0, |found: &BasicBlock| found.insn_range.1);
             !end.checked_sub(1)
-                .and_then(|last: usize| state.insns.get(last))
+                .and_then(|last: usize| insns.get(last))
                 .is_some_and(|last: &DalvikInsn| last.is_return() || last.is_throw())
         }
         Region::Sequence(items) => items
             .iter()
-            .all(|item: &Region| region_completes(state, item)),
+            .all(|item: &Region| region_completes(cfg, insns, item)),
         Region::IfThenElse {
             then_body,
             else_body,
             ..
-        } => region_completes(state, then_body) || region_completes(state, else_body),
+        } => region_completes(cfg, insns, then_body) || region_completes(cfg, insns, else_body),
         Region::DoWhile { body, .. } => breaks_out(body),
         Region::Try { try_body, handlers } => {
-            region_completes(state, try_body)
-                || handlers
-                    .iter()
-                    .any(|(_, handler): &(Vec<String>, Region)| region_completes(state, handler))
+            region_completes(cfg, insns, try_body)
+                || handlers.iter().any(|(_, handler): &(Vec<String>, Region)| {
+                    region_completes(cfg, insns, handler)
+                })
         }
         Region::TryFinally {
             try_body,
@@ -4051,15 +4322,15 @@ fn region_completes(state: &RenderState<'_>, region: &Region) -> bool {
             finally_body,
             ..
         } => {
-            (region_completes(state, try_body)
-                || handlers
-                    .iter()
-                    .any(|(_, handler): &(Vec<String>, Region)| region_completes(state, handler)))
-                && region_completes(state, finally_body)
+            (region_completes(cfg, insns, try_body)
+                || handlers.iter().any(|(_, handler): &(Vec<String>, Region)| {
+                    region_completes(cfg, insns, handler)
+                }))
+                && region_completes(cfg, insns, finally_body)
         }
         Region::TryWithResources { try_body: body, .. }
         | Region::Synchronized { body, .. }
-        | Region::LabeledLoop { body, .. } => region_completes(state, body),
+        | Region::LabeledLoop { body, .. } => region_completes(cfg, insns, body),
         Region::Break { .. } | Region::Continue { .. } => false,
         Region::IfThen { .. }
         | Region::While { .. }

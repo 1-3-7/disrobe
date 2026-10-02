@@ -12,6 +12,7 @@ mod dalvik_debug_names_execution;
 mod dalvik_decompile_oracle;
 mod dalvik_division_effects;
 mod dalvik_fill_array_data;
+mod dalvik_generated_shapes;
 mod dalvik_large_method_merge_gate;
 mod dalvik_lift_probes_execution;
 mod dalvik_null_constant_frame;

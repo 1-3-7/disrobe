@@ -636,7 +636,15 @@ fn resolve_null_constants(
                 let Some(&hidx): Option<&usize> = pc_to_idx.get(&hpc) else {
                     continue;
                 };
-                link_null_edge(&mut classes, &cur, state_in, reached, idx, hidx);
+                let overwritten: Option<u16> = insns
+                    .get(hidx)
+                    .filter(|handler: &&DalvikInsn| handler.op == 0x0D)
+                    .and_then(|handler: &DalvikInsn| handler.regs.first().copied());
+                let mut carried: RegState = cur.clone();
+                if let Some(register) = overwritten {
+                    carried.remove(&register);
+                }
+                link_null_edge(&mut classes, &carried, state_in, reached, idx, hidx);
             }
         }
         let mut out: RegState = cur;

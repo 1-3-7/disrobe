@@ -550,7 +550,18 @@ pub(crate) fn assignment_value(
     value: &Expr,
     target: Option<&LocalType>,
 ) -> String {
+    let shared_zero: bool = matches!(value, Expr::Const(constant) if constant == "null");
     match target {
+        Some(LocalType::Boolean) if shared_zero => "false".to_owned(),
+        Some(
+            LocalType::Byte
+            | LocalType::Char
+            | LocalType::Short
+            | LocalType::Int
+            | LocalType::Long
+            | LocalType::Float
+            | LocalType::Double,
+        ) if shared_zero => "0".to_owned(),
         Some(LocalType::Boolean) => {
             render_boolean_value(ctx, file, register, value).unwrap_or_else(|| value.render())
         }

@@ -50,7 +50,7 @@ impl RegisterSet {
         }
     }
 
-    fn union_with(&mut self, other: &Self) {
+    pub(crate) fn union_with(&mut self, other: &Self) {
         for (word, extra) in self.words.iter_mut().zip(&other.words) {
             *word |= *extra;
         }
@@ -171,9 +171,10 @@ impl RegisterFlow {
                 let mut handlers: RegisterSet = RegisterSet::empty(registers);
                 for edge in &block.successors {
                     let successor: &RegisterSet = live_in.get(edge.target.0 as usize)?;
-                    out.union_with(successor);
                     if matches!(edge.kind, EdgeKind::Exception) {
                         handlers.union_with(successor);
+                    } else {
+                        out.union_with(successor);
                     }
                 }
                 let mut entry: RegisterSet = out.clone();

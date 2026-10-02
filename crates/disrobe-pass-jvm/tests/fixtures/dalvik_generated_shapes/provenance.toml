@@ -1,0 +1,34 @@
+schema = "disrobe.jvm.dalvik-generated-shapes-fixture/v1"
+source = "GeneratedShapes.java"
+source_sha256 = "1fe4de1b89de4fc94744fc1490f67a575a474f66b51f8006d84c4f22ceb45002"
+sink = "Sink.java"
+sink_sha256 = "8d2cfc59185e2e24b4494af332345ae3eea24c11654ecb6e6a81261c29333387"
+origin = "method bodies copied unchanged from the seeded Java generator in tests/generated_differential.rs; D8 emits the same per-method bytecode as in the generated differential's DEX"
+
+[javac]
+vendor = "Eclipse Temurin"
+version = "25.0.4+7-LTS"
+command = "javac -nowarn -proc:none -d classes GeneratedShapes.java Sink.java"
+
+[d8]
+version = "9.1.31"
+url = "https://dl.google.com/dl/android/maven2/com/android/tools/r8/9.1.31/r8-9.1.31.jar"
+sha256 = "3b4de3053885da105e39c15212261d22653d6d1b5eb92323dd04ae913cc8286f"
+
+[shapes]
+loopWithElseIfChain = "generator seed 119: a while loop whose else-if chain D8 folds into branches that rejoin before the latch"
+doWhileAroundGuardedWhile = "generator seed 236: a do-while whose body guards an inner while, so the outer latch is reached from two arms"
+tryFinallyAroundDoWhile = "generator seed 58: a try with catch and finally around a do-while, with the finally copied onto each exit"
+tryInsideCountedLoop = "generator seed 162: a try with catch inside a counted for loop whose handler and body rejoin the loop latch"
+valueAssignedInsideTry = "generator seed 165: a local first assigned inside a try body and read after the catch"
+splitHandlersBesideFinally = "generator seed 231: one source try split by D8 into ranges whose ArithmeticException and catch-all handlers start with register fixups before a shared handler body"
+
+[[artifact]]
+path = "GeneratedShapes-release-min26.dex"
+format = "DEX 038"
+min_api = 26
+mode = "release"
+tool = "D8"
+command = "java -cp r8-9.1.31.jar com.android.tools.r8.D8 --release --no-desugaring --min-api 26 --output dex classes/GeneratedShapes.class"
+sha256 = "e131f2cb7c165750ba7e2413a28d18d15ca6d4fcc8927d8f983c5a406bfd795b"
+bytes = 3360

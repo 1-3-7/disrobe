@@ -218,7 +218,7 @@ fn block_may_throw(cfg: &Cfg, insns: &[DalvikInsn], block: BlockId) -> bool {
         .and_then(|found: &BasicBlock| insns.get(found.insn_range.0..found.insn_range.1))
         .is_none_or(|body: &[DalvikInsn]| {
             body.iter()
-                .any(|insn: &DalvikInsn| crate::dalvik_decompile::may_throw(insn.op))
+                .any(|insn: &DalvikInsn| crate::dalvik_decompile::may_throw(insn))
         })
 }
 

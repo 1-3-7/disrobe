@@ -305,7 +305,7 @@ fn throws_in(built: &DalvikMethodCfg, block: BlockId) -> bool {
         .is_some_and(|insns: &[DalvikInsn]| {
             insns
                 .iter()
-                .any(|insn: &DalvikInsn| crate::dalvik_decompile::may_throw(insn.op))
+                .any(|insn: &DalvikInsn| crate::dalvik_decompile::may_throw(insn))
         })
 }
 
@@ -322,7 +322,7 @@ fn terminal_tail(built: &DalvikMethodCfg, block: BlockId, exits: &BTreeSet<Block
         && insns.last().is_some_and(DalvikInsn::is_return)
         && !insns
             .iter()
-            .any(|insn: &DalvikInsn| crate::dalvik_decompile::may_throw(insn.op))
+            .any(|insn: &DalvikInsn| crate::dalvik_decompile::may_throw(insn))
         && found
             .predecessors
             .iter()
