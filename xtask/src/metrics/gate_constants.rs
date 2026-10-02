@@ -208,51 +208,51 @@ pub(super) fn check(root: &Path, sources: &MetricSources, issues: &mut Vec<Strin
 mod tests {
     use super::*;
 
-    const RAISED_PCT: f64 = 97.5;
-    const RAISED_OBJECTS_OK: u64 = 6129;
-    const RAISED_MODULES_EXACT: u64 = 130;
+    const RAISED_PCT: f64 = 97.9;
+    const RAISED_OBJECTS_OK: u64 = 6155;
+    const RAISED_MODULES_EXACT: u64 = 131;
     const PINNED_LABEL: &str = "200-module pinned corpus (normalized opcode-structure agreement)";
     const MIRROR_LABEL: &str = "CPython 3.14 (all 200 pinned modules)";
 
     const PUBLISHED_COPIES: [(&str, &str); 8] = [
-        ("README.md", "96.99"),
-        ("docs/src/introduction.md", "96.99"),
-        ("docs/src/languages/python.md", "96.99"),
-        ("docs/src/python-bindings.md", "96.99"),
-        ("evidence/edge-comparison.md", "96.99"),
-        ("xtask/data/verification.json", "96.99"),
-        (PINNED_GATE, "96.99"),
-        (FULL_GATE, "6_097"),
+        ("README.md", "97.64"),
+        ("docs/src/introduction.md", "97.64"),
+        ("docs/src/languages/python.md", "97.64"),
+        ("docs/src/python-bindings.md", "97.64"),
+        ("evidence/edge-comparison.md", "97.64"),
+        ("xtask/data/verification.json", "97.64"),
+        (PINNED_GATE, "97.64"),
+        (FULL_GATE, "6_138"),
     ];
 
     const RAISED_SITES: [(&str, &str); 9] = [
         (
             "docs/src/languages/python.md",
-            "with a <!-- m:py_stdlib_pinned_floor_pct -->97.5%<!-- /m --> regression threshold",
+            "with a <!-- m:py_stdlib_pinned_floor_pct -->97.9%<!-- /m --> regression threshold",
         ),
         (
             "docs/src/python-bindings.md",
-            "regression threshold <!-- m:py_stdlib_pinned_floor_pct -->97.5%<!-- /m -->",
+            "regression threshold <!-- m:py_stdlib_pinned_floor_pct -->97.9%<!-- /m -->",
         ),
         (
             "docs/src/introduction.md",
-            "<!-- m:py_stdlib_pinned_modules_exact -->130<!-- /m --> of",
+            "<!-- m:py_stdlib_pinned_modules_exact -->131<!-- /m --> of",
         ),
         (
             "README.md",
-            "<!-- m:py_stdlib_pinned_count -->6129 of 6286<!-- /m -->",
+            "<!-- m:py_stdlib_pinned_count -->6155 of 6286<!-- /m -->",
         ),
         (
             "xtask/data/verification.json",
-            "<!-- m:py_stdlib_pinned_pct -->97.5%<!-- /m --> of",
+            "<!-- m:py_stdlib_pinned_pct -->97.9%<!-- /m --> of",
         ),
         (
             "xtask/data/verification.json",
-            "code-object floor <!-- m:py_stdlib_pinned_floor_pct -->97.5%<!-- /m -->",
+            "code-object floor <!-- m:py_stdlib_pinned_floor_pct -->97.9%<!-- /m -->",
         ),
-        (PINNED_GATE, "const OBJECT_PCT_FLOOR: f64 = 97.5;"),
-        (PINNED_GATE, "const MODULES_EXACT_FLOOR: u64 = 130;"),
-        (FULL_GATE, "const PINNED_OBJECTS_OK: u64 = 6_129;"),
+        (PINNED_GATE, "const OBJECT_PCT_FLOOR: f64 = 97.9;"),
+        (PINNED_GATE, "const MODULES_EXACT_FLOOR: u64 = 131;"),
+        (FULL_GATE, "const PINNED_OBJECTS_OK: u64 = 6_155;"),
     ];
 
     fn raise(bar: &mut serde_json::Value, fields: &[(&str, serde_json::Value)]) {
