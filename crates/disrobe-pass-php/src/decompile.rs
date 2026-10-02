@@ -1483,7 +1483,7 @@ impl SkeletonEmitter {
 
     fn emit_body(&mut self, node: &OpArray, indent: usize) {
         let classes: Vec<ClassDecl> = std::mem::take(&mut self.classes);
-        let ops: Vec<Op> = unthread_try_exits(&node.ops, &node.try_catch);
+        let ops: Vec<Op> = normalized_ops(&node.ops, &node.literals, &node.try_catch);
         let mut lifter: Lifter<'_> = Lifter::new(
             &ops,
             &node.literals,
@@ -1911,6 +1911,12 @@ struct SwitchDispatch {
     result_keys: BTreeSet<(OperandType, u32)>,
     default_target: u32,
     dispatch_end: u32,
+    label_order: Option<Vec<u32>>,
+}
+
+struct IfTestChain {
+    tests: Vec<u32>,
+    candidates: Vec<(usize, u32)>,
 }
 
 struct DispatchLabels {
@@ -2316,7 +2322,9 @@ impl<'a> Lifter<'a> {
                 self.structure_foreach(i, end, depth)
             }
             o if o == op::JMPZ_EX || o == op::JMPNZ_EX => self.fold_short_circuit(i, end),
-            o if o == op::COALESCE || o == op::JMP_SET => self.fold_default_join(i, end),
+            o if o == op::COALESCE || o == op::JMP_SET => {
+                self.fold_default_join(i, end, Some(depth))
+            }
             o if o == op::JMP_NULL => self.fold_nullsafe_chain(i, end),
             o if o == op::DECLARE_LAMBDA_FUNCTION => self.fold_closure(i, end),
             o if o == op::DECLARE_CLASS || o == op::DECLARE_CLASS_DELAYED => {
@@ -2774,7 +2782,8 @@ impl<'a> Lifter<'a> {
         let mut labels_by_target: BTreeMap<u32, Vec<Option<String>>> = BTreeMap::new();
         let mut result_keys: BTreeSet<(OperandType, u32)> = BTreeSet::new();
         let mut comparison_result: Option<(OperandType, u32)> = None;
-        let mut last_case_target: Option<u32> = None;
+        let mut label_order: Vec<u32> = Vec::new();
+        let mut inverted_default: Option<u32> = None;
         let mut label_slots: BTreeMap<(OperandType, u32), Expr> = self.slots.clone();
         let mut label_work: usize = 0;
         let mut cursor: u32 = i;
@@ -2816,6 +2825,7 @@ impl<'a> Lifter<'a> {
             let jump: &Op = self.ops.get(jump_index as usize)?;
             let discarded: bool =
                 jump.opcode == op::FREE && (jump.op1_type, jump.op1) == result_key;
+            let falls_into_arm: bool = jump.opcode == op::JMPZ;
             let (target, next_cursor): (u32, u32) = if discarded {
                 let shared_index: u32 = jump_index.checked_add(1)?;
                 let shared: &Op = self.ops.get(shared_index as usize)?;
@@ -2824,21 +2834,28 @@ impl<'a> Lifter<'a> {
                 }
                 (shared.op1, shared_index)
             } else {
-                if jump.opcode != op::JMPNZ
+                if !matches!(jump.opcode, op::JMPNZ | op::JMPZ)
                     || (jump.op1_type, jump.op1) != result_key
                     || jump.op2_type != OperandType::Unused
                     || jump.result_type != OperandType::Unused
                 {
                     return None;
                 }
-                (jump.op2, jump_index.checked_add(1)?)
+                let after_jump: u32 = jump_index.checked_add(1)?;
+                if falls_into_arm {
+                    if jump.op2 <= after_jump || jump.op2 > end {
+                        return None;
+                    }
+                    inverted_default = Some(jump.op2);
+                    (after_jump, after_jump)
+                } else {
+                    (jump.op2, after_jump)
+                }
             };
-            if target <= jump_index
-                || target > end
-                || last_case_target.is_some_and(|last: u32| target < last)
-            {
+            if target <= jump_index || target > end {
                 return None;
             }
+            label_order.push(target);
             let label: String = self
                 .switch_operand_expr(comparison.op2_type, comparison.op2, &label_slots)?
                 .text;
@@ -2849,28 +2866,36 @@ impl<'a> Lifter<'a> {
                 .or_default()
                 .push(Some(label));
             result_keys.insert(result_key);
-            last_case_target = Some(target);
             case_count = case_count.checked_add(1)?;
             cursor = next_cursor;
-            if discarded {
+            if discarded || falls_into_arm {
                 break;
             }
         }
         if case_count == 0 {
             return None;
         }
-        let default_jump: &Op = self.ops.get(cursor as usize)?;
-        if default_jump.opcode != op::JMP || default_jump.op1 <= cursor || default_jump.op1 > end {
-            return None;
-        }
-        let default_target: u32 = default_jump.op1;
+        let (default_target, dispatch_end): (u32, u32) =
+            if let Some(default_target) = inverted_default {
+                (default_target, cursor)
+            } else {
+                let default_jump: &Op = self.ops.get(cursor as usize)?;
+                if default_jump.opcode != op::JMP
+                    || default_jump.op1 <= cursor
+                    || default_jump.op1 > end
+                {
+                    return None;
+                }
+                (default_jump.op1, cursor.checked_add(1)?)
+            };
         Some(SwitchDispatch {
             subject_key,
             subject,
             labels_by_target,
             result_keys,
             default_target,
-            dispatch_end: cursor.checked_add(1)?,
+            dispatch_end,
+            label_order: Some(label_order),
         })
     }
 
@@ -2901,6 +2926,7 @@ impl<'a> Lifter<'a> {
             result_keys: BTreeSet::new(),
             default_target,
             dispatch_end: i.checked_add(1)?,
+            label_order: None,
         })
     }
 
@@ -3097,6 +3123,17 @@ impl<'a> Lifter<'a> {
         let table: Vec<(Literal, u32)> = self.match_table(dispatch.op2)?;
         if table.len() > SANE_SWITCH_ARM_CAP {
             return None;
+        }
+        let next: u32 = i.checked_add(1)?;
+        if dispatch.extended_value == next
+            && table
+                .iter()
+                .all(|(_, target): &(Literal, u32)| *target == next)
+        {
+            if matches!(dispatch.op1_type, OperandType::TmpVar | OperandType::Var) {
+                self.slots.remove(&(dispatch.op1_type, dispatch.op1));
+            }
+            return Some((vec![Stmt::Line(format!("{};", subject.text))], next));
         }
         let mut labels: BTreeMap<u32, Vec<String>> = BTreeMap::new();
         for (key, target) in &table {
@@ -3367,6 +3404,7 @@ impl<'a> Lifter<'a> {
             result_keys,
             default_target,
             dispatch_end,
+            label_order,
         }: SwitchDispatch = dispatch;
         let case_targets: Vec<u32> = labels_by_target.keys().copied().collect();
         let explicit_default_join: bool = case_targets.last().is_some_and(|last: &u32| {
@@ -3467,10 +3505,44 @@ impl<'a> Lifter<'a> {
         } else {
             None
         };
-        let mut join: Option<u32> = joined_labels
+        let join_target: Option<u32> = joined_labels
             .as_ref()
-            .map(|(join_target, _): &(u32, Vec<Option<String>>)| *join_target)
-            .or_else(|| default_is_join.then_some(default_target));
+            .map(|(join_target, _): &(u32, Vec<Option<String>>)| *join_target);
+        let joined_arm_first: bool = match &label_order {
+            Some(order) => {
+                let rest: Vec<u32> = order
+                    .iter()
+                    .copied()
+                    .filter(|target: &u32| Some(*target) != join_target)
+                    .collect();
+                if !rest
+                    .windows(2)
+                    .all(|pair: &[u32]| pair.first() <= pair.get(1))
+                {
+                    return None;
+                }
+                let first_other: Option<usize> = order
+                    .iter()
+                    .position(|target: &u32| Some(*target) != join_target);
+                let last_joined: Option<usize> = order
+                    .iter()
+                    .rposition(|target: &u32| Some(*target) == join_target);
+                let first_joined: Option<usize> = order
+                    .iter()
+                    .position(|target: &u32| Some(*target) == join_target);
+                let last_other: Option<usize> = order
+                    .iter()
+                    .rposition(|target: &u32| Some(*target) != join_target);
+                match (first_joined, last_joined, first_other, last_other) {
+                    (Some(_), Some(last), Some(first), _) if last < first => true,
+                    (Some(first), _, _, Some(last)) if first < last => return None,
+                    _ => false,
+                }
+            }
+            None => false,
+        };
+        let mut join: Option<u32> =
+            join_target.or_else(|| default_is_join.then_some(default_target));
         for exit in arm_exits {
             if exit > max_target && exit <= end {
                 match join {
@@ -3480,7 +3552,17 @@ impl<'a> Lifter<'a> {
                 }
             }
         }
-        let scanned_join: bool = join.is_none() && !default_is_join;
+        let last_arm_closed: bool = join.is_none()
+            && !default_is_join
+            && self
+                .jump_sources
+                .range(max_target.saturating_add(1)..end)
+                .all(|(_, sources): (&u32, &Vec<u32>)| {
+                    sources
+                        .iter()
+                        .all(|source: &u32| *source >= max_target && *source < end)
+                });
+        let mut scanned_join: bool = join.is_none() && !default_is_join;
         if scanned_join {
             let mut scan: u32 = max_target;
             while scan < end {
@@ -3497,9 +3579,13 @@ impl<'a> Lifter<'a> {
                     break;
                 }
                 if candidate.branch_target() != Branch::None {
-                    return None;
+                    break;
                 }
                 scan = scan.checked_add(1)?;
+            }
+            if join.is_none() && last_arm_closed {
+                join = Some(end);
+                scanned_join = false;
             }
         }
         let join: u32 = join?;
@@ -3628,11 +3714,16 @@ impl<'a> Lifter<'a> {
         if let Some((_, labels)) = joined_labels {
             exit_slots.push(incoming_slots);
             exit_writable.push(incoming_writable);
-            arms.push(SwitchArm {
+            let empty_arm: SwitchArm = SwitchArm {
                 labels,
                 body: Vec::new(),
                 breaks: true,
-            });
+            };
+            if joined_arm_first {
+                arms.insert(0, empty_arm);
+            } else {
+                arms.push(empty_arm);
+            }
         }
         let mut merged_slots: BTreeMap<(OperandType, u32), Expr> =
             exit_slots.first().cloned().unwrap_or_default();
@@ -4370,7 +4461,7 @@ impl<'a> Lifter<'a> {
         } else {
             format!("{head}({params}) use ({}){returns}", uses.join(", "))
         };
-        let child_ops: Vec<Op> = unthread_try_exits(&child.ops, &child.try_catch);
+        let child_ops: Vec<Op> = normalized_ops(&child.ops, &child.literals, &child.try_catch);
         let mut inner: Lifter<'_> = Lifter::new(
             &child_ops,
             &child.literals,
@@ -4589,7 +4680,12 @@ impl<'a> Lifter<'a> {
         Some((produced, expr))
     }
 
-    fn fold_default_join(&mut self, i: u32, end: u32) -> Option<(Vec<Stmt>, u32)> {
+    fn fold_default_join(
+        &mut self,
+        i: u32,
+        end: u32,
+        statement_depth: Option<u32>,
+    ) -> Option<(Vec<Stmt>, u32)> {
         let gate: Op = self.ops.get(i as usize)?.clone();
         let join: u32 = gate.op2;
         if join <= i || join > end || gate.result_type == OperandType::Unused {
@@ -4601,6 +4697,11 @@ impl<'a> Lifter<'a> {
             && let Some(folded) = self.fold_coalesce_assign(i, join, result_key, &lhs)
         {
             return Some(folded);
+        }
+        if let Some(depth) = statement_depth
+            && !read_after_jump(self.ops, join.checked_sub(1)? as usize, result_key)
+        {
+            return self.structure_discarded_default(i, &lhs, join, depth);
         }
         let incoming_slots: BTreeMap<(OperandType, u32), Expr> = self.slots.clone();
         let incoming_writable: BTreeMap<(OperandType, u32), u32> = self.writable_slots.clone();
@@ -4628,6 +4729,35 @@ impl<'a> Lifter<'a> {
         self.writable_slots.remove(&result_key);
         self.bind_slot(result_key, Expr { text, prec });
         Some((Vec::new(), join))
+    }
+
+    fn structure_discarded_default(
+        &mut self,
+        i: u32,
+        lhs: &Expr,
+        join: u32,
+        depth: u32,
+    ) -> Option<(Vec<Stmt>, u32)> {
+        let gate: &Op = self.ops.get(i as usize)?;
+        let start: u32 = i.checked_add(1)?;
+        let cond: String = if gate.opcode == op::COALESCE {
+            format!("({} ?? null) === null", lhs.wrapped(PREC_COALESCE + 1))
+        } else {
+            format!("!{}", lhs.wrapped(PREC_NOT))
+        };
+        let incoming_slots: BTreeMap<(OperandType, u32), Expr> = self.slots.clone();
+        let incoming_writable: BTreeMap<(OperandType, u32), u32> = self.writable_slots.clone();
+        let then_body: Vec<Stmt> = self.lift_range(start, join, depth + 1);
+        self.slots = Self::common_slots(&incoming_slots, &self.slots);
+        self.writable_slots = Self::common_writable_slots(&incoming_writable, &self.writable_slots);
+        Some((
+            vec![Stmt::If {
+                cond,
+                then_body,
+                else_body: Vec::new(),
+            }],
+            join,
+        ))
     }
 
     fn fold_coalesce_assign(
@@ -5015,7 +5145,7 @@ impl<'a> Lifter<'a> {
             };
             let folded: Option<(Vec<Stmt>, u32)> = match op.opcode {
                 op::JMPZ_EX | op::JMPNZ_EX => self.fold_short_circuit(k, end),
-                op::COALESCE | op::JMP_SET => self.fold_default_join(k, end),
+                op::COALESCE | op::JMP_SET => self.fold_default_join(k, end, None),
                 op::JMPZ | op::JMPNZ => self.structure_ternary(k, end),
                 op::ROPE_INIT => self.fold_rope(k, end),
                 op::JMP_NULL => self.fold_nullsafe_chain(k, end),
@@ -5069,26 +5199,30 @@ impl<'a> Lifter<'a> {
     }
 
     fn structure_compound_if(&mut self, i: u32, end: u32, depth: u32) -> Option<(Vec<Stmt>, u32)> {
-        let (tests, target): (Vec<u32>, u32) = self.if_test_chain(i, end)?;
-        let then_start: u32 = tests.last()?.checked_add(1)?;
-        if self.else_entries.contains(&target) {
-            return None;
+        let IfTestChain { tests, candidates }: IfTestChain = self.if_test_chain(i, end)?;
+        for (length, target) in candidates.into_iter().rev() {
+            let chain: &[u32] = tests.get(..length)?;
+            let then_start: u32 = chain.last()?.checked_add(1)?;
+            if self.else_entries.contains(&target) {
+                continue;
+            }
+            let snapshot: LiftSnapshot = self.lift_snapshot();
+            let Some(cond_expr): Option<Expr> =
+                self.fold_test_graph(i, chain, then_start, target, true)
+            else {
+                self.restore_lift_snapshot(snapshot);
+                continue;
+            };
+            return self.structure_if_branches(cond_expr, then_start, target, end, depth);
         }
-        let snapshot: LiftSnapshot = self.lift_snapshot();
-        let Some(cond_expr): Option<Expr> =
-            self.fold_test_graph(i, &tests, then_start, target, true)
-        else {
-            self.restore_lift_snapshot(snapshot);
-            return None;
-        };
-        self.structure_if_branches(cond_expr, then_start, target, end, depth)
+        None
     }
 
-    fn if_test_chain(&self, first: u32, end: u32) -> Option<(Vec<u32>, u32)> {
+    fn if_test_chain(&self, first: u32, end: u32) -> Option<IfTestChain> {
         self.loop_test(first)?;
         let scan_end: u32 = end.min(first.saturating_add(SANE_TERNARY_GUARD_SCAN));
         let mut tests: Vec<u32> = Vec::new();
-        let mut best: Option<(Vec<u32>, u32)> = None;
+        let mut candidates: Vec<(usize, u32)> = Vec::new();
         let mut cursor: u32 = first;
         while cursor < scan_end && tests.len() < SANE_IF_TEST_CHAIN_CAP {
             if self.loop_test(cursor).is_some() {
@@ -5096,14 +5230,14 @@ impl<'a> Lifter<'a> {
                 if tests.len() > 1
                     && let Some(target) = self.if_chain_else(&tests, end)
                 {
-                    best = Some((tests.clone(), target));
+                    candidates.push((tests.len(), target));
                 }
             } else if self.ops.get(cursor as usize)?.branch_target() != Branch::None {
                 break;
             }
             cursor = cursor.checked_add(1)?;
         }
-        best
+        (!candidates.is_empty()).then_some(IfTestChain { tests, candidates })
     }
 
     fn if_chain_else(&self, tests: &[u32], end: u32) -> Option<u32> {
@@ -7772,6 +7906,122 @@ fn render_parameters(node: &OpArray, signature: &Signature) -> (String, Option<&
     (rendered.join(", "), refusal)
 }
 
+fn normalized_ops(ops: &[Op], literals: &[Literal], try_catch: &[TryCatch]) -> Vec<Op> {
+    unthread_try_exits(&fold_jump_over_jump(ops, literals), try_catch)
+}
+
+fn fold_jump_over_jump(ops: &[Op], literals: &[Literal]) -> Vec<Op> {
+    let mut folded: Vec<Op> = ops.to_vec();
+    let sources: BTreeMap<u32, Vec<u32>> = jump_sources(ops, literals);
+    for (index, test) in folded.iter_mut().enumerate() {
+        let consumes_temporary: bool = matches!(test.opcode, op::JMPZ | op::JMPNZ)
+            && test.result_type == OperandType::Unused
+            && matches!(test.op1_type, OperandType::TmpVar | OperandType::Var)
+            && usize::try_from(test.op2).ok() == index.checked_add(1);
+        if consumes_temporary {
+            *test = Op {
+                opcode: op::FREE,
+                op2_type: OperandType::Unused,
+                op2: 0,
+                extended_value: 0,
+                ..test.clone()
+            };
+        }
+    }
+    for (index, pair) in ops.windows(2).enumerate() {
+        let [test, jump]: &[Op; 2] = match pair.try_into() {
+            Ok(pair) => pair,
+            Err(_) => continue,
+        };
+        let after_jump: Option<u32> = u32::try_from(index)
+            .ok()
+            .and_then(|i: u32| i.checked_add(2));
+        let empty_branch_skip: bool = matches!(test.opcode, op::JMPZ | op::JMPNZ)
+            && test.result_type == OperandType::Unused
+            && Some(test.op2) == after_jump
+            && jump.opcode == op::JMP
+            && Some(jump.op1) == after_jump
+            && ops
+                .get(index + 2)
+                .is_some_and(|landing: &Op| landing.opcode == op::JMP);
+        if empty_branch_skip && let Some(emptied) = folded.get_mut(index + 1) {
+            *emptied = Op {
+                opcode: op::NOP,
+                op1: 0,
+                ..jump.clone()
+            };
+        }
+    }
+    for (index, pair) in ops.windows(2).enumerate() {
+        let [test, skip]: &[Op; 2] = match pair.try_into() {
+            Ok(pair) => pair,
+            Err(_) => continue,
+        };
+        let Ok(position): std::result::Result<u32, std::num::TryFromIntError> =
+            u32::try_from(index)
+        else {
+            break;
+        };
+        let inverted: u8 = match test.opcode {
+            op::JMPZ => op::JMPNZ,
+            op::JMPNZ => op::JMPZ,
+            _ => continue,
+        };
+        let skip_position: u32 = position.saturating_add(1);
+        let after_skip: u32 = position.saturating_add(2);
+        let ternary_value = |offset: u32| -> Option<&Op> {
+            skip.op1
+                .checked_sub(offset)
+                .and_then(|index: u32| ops.get(index as usize))
+        };
+        let jumps_over: bool = test.op2 == after_skip
+            && skip.op1 > after_skip
+            && ternary_value(1).is_some_and(|then_exit: &Op| {
+                then_exit.opcode == op::JMP && then_exit.op1 > skip.op1
+            })
+            && ternary_value(2).is_some_and(|then_value: &Op| {
+                matches!(
+                    then_value.result_type,
+                    OperandType::TmpVar | OperandType::Var
+                )
+            });
+        let loops_back: bool = test.op2 > after_skip && skip.op1 < position;
+        if test.result_type != OperandType::Unused
+            || skip.opcode != op::JMP
+            || !(jumps_over || loops_back)
+            || sources.contains_key(&skip_position)
+        {
+            continue;
+        }
+        let falls_to: u32 = test.op2;
+        if let Some(rewritten) = folded.get_mut(index) {
+            rewritten.opcode = inverted;
+            rewritten.op2 = skip.op1;
+        }
+        if let Some(bridge) = folded.get_mut(index + 1) {
+            *bridge = if falls_to == after_skip {
+                Op {
+                    opcode: op::NOP,
+                    op1_type: OperandType::Unused,
+                    op2_type: OperandType::Unused,
+                    result_type: OperandType::Unused,
+                    op1: 0,
+                    op2: 0,
+                    result: 0,
+                    extended_value: 0,
+                    lineno: skip.lineno,
+                }
+            } else {
+                Op {
+                    op1: falls_to,
+                    ..skip.clone()
+                }
+            };
+        }
+    }
+    folded
+}
+
 fn unthread_try_exits(ops: &[Op], try_catch: &[TryCatch]) -> Vec<Op> {
     let mut unthreaded: Vec<Op> = ops.to_vec();
     let mut innermost_first: Vec<&TryCatch> = try_catch.iter().collect();
@@ -8148,7 +8398,7 @@ fn is_linear_switch_comparison(
     candidate.opcode == comparison_opcode
         && (candidate.op1_type, candidate.op1) == subject_key
         && candidate.result_type == OperandType::TmpVar
-        && (jump.opcode == op::JMPNZ || discarded_before_default)
+        && (matches!(jump.opcode, op::JMPNZ | op::JMPZ) || discarded_before_default)
         && (jump.op1_type, jump.op1) == (candidate.result_type, candidate.result)
 }
 

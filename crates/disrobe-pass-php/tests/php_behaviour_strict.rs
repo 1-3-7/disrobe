@@ -33,15 +33,17 @@ use php_toolchain::{
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-const PROGRAMS: [&str; 33] = [
+const PROGRAMS: [&str; 38] = [
     "anonymous",
     "arrays",
+    "branch_leftovers",
     "branches",
     "calls",
     "classes",
     "closures",
     "coalesce",
     "destructuring",
+    "discarded_default",
     "enums",
     "exceptions",
     "finally_branch_join",
@@ -51,6 +53,7 @@ const PROGRAMS: [&str; 33] = [
     "juggling",
     "loop_in_try",
     "loop_threaded_exit",
+    "loop_try_tail",
     "loops",
     "nested_try_tail",
     "operators",
@@ -58,6 +61,7 @@ const PROGRAMS: [&str; 33] = [
     "scopes",
     "statics",
     "strings",
+    "switch_dispatch_order",
     "switch_empty_arm",
     "switch_finally_arms",
     "switch_finally_break",
@@ -65,6 +69,7 @@ const PROGRAMS: [&str; 33] = [
     "switch_match",
     "switch_try",
     "switch_unfreed_subject",
+    "ternary_folded_or",
     "try_branch_threaded",
     "while_compound_exit",
 ];

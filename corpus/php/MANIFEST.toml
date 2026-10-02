@@ -411,3 +411,38 @@ source_tool = "manual (PHP 8.4 strict behaviour program)"
 size_bytes = 1985
 sha256 = "6e68e92bd20e67be1d09abfaf7ee518fa17ff30fa1c3f72cffbb72c949864d7e"
 notes = "Strict behaviour program compiled to an opcache file-cache image by PHP 8.4, decompiled from that image and re-run; stdout must match byte for byte (tests/php_behaviour_strict.rs). Covers a do-while ending a try/finally body whose test the optimizer inverts into an exit to the finally call plus a backward jump, a do-while with a mixed && and || condition, and a for loop whose break is threaded through the end of an if branch to the finally call."
+
+[[sample]]
+name = "behaviour/discarded_default.php"
+source_tool = "manual (PHP 8.4 strict behaviour program)"
+size_bytes = 818
+sha256 = "23416e9675a934b5f52e72d6dd8c8745de424c8a1650f89e9680421c8ec93330"
+notes = "Strict behaviour program compiled to an opcache file-cache image by PHP 8.4, decompiled from that image and re-run; stdout must match byte for byte (tests/php_behaviour_strict.rs). Covers ?? whose stored result is overwritten before use, so the optimizer keeps only the null test and the side-effecting right side, and match expressions whose result is overwritten, so every arm targets the next op."
+
+[[sample]]
+name = "behaviour/ternary_folded_or.php"
+source_tool = "manual (PHP 8.4 strict behaviour program)"
+size_bytes = 516
+sha256 = "35acac781e6ae61e557f56fbb574a9297b4a5282d1f681635f05e2da216f066b"
+notes = "Strict behaviour program compiled to an opcache file-cache image by PHP 8.4, decompiled from that image and re-run; stdout must match byte for byte (tests/php_behaviour_strict.rs). Covers ternaries whose || condition has a constant-false right operand, which the optimizer compiles as a conditional jump over an unconditional jump to the else value."
+
+[[sample]]
+name = "behaviour/switch_dispatch_order.php"
+source_tool = "manual (PHP 8.4 strict behaviour program)"
+size_bytes = 1289
+sha256 = "34870b0796e35c0595a83255b1588bde024b98780d2220e7a1da9192e4fa0bb7"
+notes = "Strict behaviour program compiled to an opcache file-cache image by PHP 8.4, decompiled from that image and re-run; stdout must match byte for byte (tests/php_behaviour_strict.rs). Covers a switch nested in an outer case whose default arm falls to the outer break target, and a switch whose first case is empty while its last case is compiled as an inverted test that falls into the following arm."
+
+[[sample]]
+name = "behaviour/loop_try_tail.php"
+source_tool = "manual (PHP 8.4 strict behaviour program)"
+size_bytes = 829
+sha256 = "4af0ff0b221bc3b926e1548b5e6f2809a153297bd2f83b0ec9b0ccf1a8f33aa1"
+notes = "Strict behaviour program compiled to an opcache file-cache image by PHP 8.4, decompiled from that image and re-run; stdout must match byte for byte (tests/php_behaviour_strict.rs). Covers a while loop that ends a try body inside an if branch, whose condition the optimizer compiles as an exit threaded past the catch followed by a backward jump."
+
+[[sample]]
+name = "behaviour/branch_leftovers.php"
+source_tool = "manual (PHP 8.4 strict behaviour program)"
+size_bytes = 1775
+sha256 = "d61da986c8203c5ac20ac8ad8b4352f35d50a4ffd113f336860101382c026aaf"
+notes = "Strict behaviour program compiled to an opcache file-cache image by PHP 8.4, decompiled from that image and re-run; stdout must match byte for byte (tests/php_behaviour_strict.rs). Covers a ternary whose result is never read, leaving tests and a jump that all land on the next jump, a break whose && test both jumps to and falls into the next op, and an if with an || condition followed by an inner if that the structurer must not merge into one condition."
