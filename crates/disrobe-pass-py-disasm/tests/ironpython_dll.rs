@@ -14,16 +14,31 @@ fn synth_pe_with_marker(marker: &str) -> Vec<u8> {
     bytes
 }
 
+const GREET_IP: &[u8] =
+    include_bytes!("../../../corpus/python/alt_runtimes/ironpython/greet_ip.dll");
+
 #[test]
 fn detect_finds_ironpython_runtime_marker() {
-    let bytes: Vec<u8> = synth_pe_with_marker("IronPython.Runtime");
-    assert!(detect(&bytes));
+    assert!(detect(GREET_IP));
 }
 
 #[test]
 fn detect_finds_ironpython_modules_marker() {
-    let bytes: Vec<u8> = synth_pe_with_marker("IronPython.Modules");
+    let runtime: &[u8] = b"IronPython.Runtime";
+    let at: usize = GREET_IP
+        .windows(runtime.len())
+        .position(|w: &[u8]| w == runtime)
+        .expect("the fixture references IronPython.Runtime");
+    let mut bytes: Vec<u8> = GREET_IP.to_vec();
+    bytes[at..at + runtime.len()].copy_from_slice(b"IronPython.Modules");
+    assert!(!bytes.windows(runtime.len()).any(|w: &[u8]| w == runtime));
     assert!(detect(&bytes));
+}
+
+#[test]
+fn a_native_pe_naming_the_runtime_is_not_ironpython() {
+    assert!(!detect(&synth_pe_with_marker("IronPython.Runtime")));
+    assert!(!detect(&synth_pe_with_marker("IronPython.Modules")));
 }
 
 #[test]
@@ -66,16 +81,8 @@ fn analyze_on_synthetic_pe_returns_delegation_failure() {
 }
 
 #[test]
-#[ignore = "requires the uncommitted corpus/python/alt_runtimes/ironpython/hello.dll fixture; run with --ignored once present"]
 fn analyze_on_real_dotnet_pe_works() {
-    const CORPUS: &str = "../../corpus/python/alt_runtimes/ironpython/hello.dll";
-    let path: std::path::PathBuf = std::env::current_dir().expect("cwd").join(CORPUS);
-    assert!(
-        path.exists(),
-        "missing ironpython corpus fixture: {}",
-        path.display()
-    );
-    let bytes: Vec<u8> = std::fs::read(&path).expect("read corpus");
-    let analysis: DotnetAnalysis = analyze(&bytes).expect("analyze real dll");
+    let analysis: DotnetAnalysis = analyze(GREET_IP).expect("analyze real dll");
     assert!(analysis.is_ironpython);
+    assert!(analysis.markers.contains(&"IronPython.Runtime".to_owned()));
 }
