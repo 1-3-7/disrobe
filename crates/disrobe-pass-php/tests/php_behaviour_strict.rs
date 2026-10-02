@@ -20,6 +20,11 @@
 )]
 mod php_toolchain;
 
+use disrobe_core::chain::{
+    DetectContext, DetectVerdict, Detector, FAMILY_INTERPRETER_BYTECODE, Pass,
+};
+use disrobe_core::{Artifact, Rung};
+use disrobe_pass_php::chain_detector::{PHP_PASS, PhpDetectorImpl};
 use disrobe_pass_php::{Decompilation, RecoveryReport, RecoveryStage, recover_php};
 use php_toolchain::{
     PHP_OPCACHE, PhpRun, PhpRuntime, compile_opcache_image, opcache_extension, require_php,
@@ -28,7 +33,7 @@ use php_toolchain::{
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-const PROGRAMS: [&str; 28] = [
+const PROGRAMS: [&str; 33] = [
     "anonymous",
     "arrays",
     "branches",
@@ -45,6 +50,7 @@ const PROGRAMS: [&str; 28] = [
     "generators",
     "juggling",
     "loop_in_try",
+    "loop_threaded_exit",
     "loops",
     "nested_try_tail",
     "operators",
@@ -52,10 +58,14 @@ const PROGRAMS: [&str; 28] = [
     "scopes",
     "statics",
     "strings",
+    "switch_empty_arm",
+    "switch_finally_arms",
     "switch_finally_break",
+    "switch_loop_tail",
     "switch_match",
     "switch_try",
     "switch_unfreed_subject",
+    "try_branch_threaded",
     "while_compound_exit",
 ];
 
@@ -124,7 +134,50 @@ fn compile(toolchain: &Toolchain, program: &str, scratch: &Path) -> Result<Decom
     if decompiled.php_skeleton != report.output {
         return Err("the recovery output differs from the decompiled source it reports".to_owned());
     }
+    let routed: Vec<u8> = route_through_chain_pass(image)?;
+    if routed != report.output.as_bytes() {
+        return Err(
+            "the registered php.peel pass recovered a different source from the image".to_owned(),
+        );
+    }
     Ok(decompiled)
+}
+
+fn route_through_chain_pass(image: Vec<u8>) -> Result<Vec<u8>, String> {
+    let context: DetectContext<'_> = DetectContext {
+        bytes: &image,
+        path_hint: None,
+        parent_hint: None,
+        depth: 0,
+    };
+    let verdict: DetectVerdict = Detector::detect(&PhpDetectorImpl, &context)
+        .ok_or_else(|| "the chain detector did not recognize the file-cache image".to_owned())?;
+    if verdict.pass_id != "php.peel"
+        || verdict.format_tag != "php-opcache"
+        || verdict.family != FAMILY_INTERPRETER_BYTECODE
+    {
+        return Err(format!(
+            "the chain detector routed the file-cache image to {} as {} ({})",
+            verdict.pass_id, verdict.format_tag, verdict.family
+        ));
+    }
+    let input: Artifact = Artifact::new(Rung::Raw, image, [0x6f; 32]);
+    let refusals: Vec<String> = PHP_PASS
+        .chain_refusals(&input)
+        .map_err(|err| format!("the chain pass refused to report on the image: {err}"))?;
+    if !refusals.is_empty() {
+        return Err(format!("the chain pass reported refusals: {refusals:?}"));
+    }
+    let output: Artifact = PHP_PASS
+        .run(&input)
+        .map_err(|err| format!("the registered php.peel pass failed on the image: {err}"))?;
+    if output.rung != Rung::Surface || output.root_hash != input.root_hash {
+        return Err(format!(
+            "the registered php.peel pass returned rung {:?} with a changed root",
+            output.rung
+        ));
+    }
+    Ok(output.envelope)
 }
 
 fn original_stdout(php: &PhpRuntime, program: &str) -> Vec<u8> {

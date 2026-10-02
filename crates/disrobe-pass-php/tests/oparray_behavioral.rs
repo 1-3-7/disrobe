@@ -1133,7 +1133,7 @@ fn type_checks_oparray_roundtrips_behaviorally() {
     behavioral_roundtrip("type_checks");
 }
 
-const GOTO_RECOVERED_SITES: [(&str, &str); 2] = [("out_of_loop", "goto "), ("backward", "goto ")];
+const GOTO_RECOVERED_SITES: [(&str, &str); 1] = [("out_of_loop", "goto ")];
 
 #[test]
 fn a_jump_the_structurer_cannot_shape_recovers_as_the_goto_the_source_had() {
@@ -1155,6 +1155,11 @@ fn a_jump_the_structurer_cannot_shape_recovers_as_the_goto_the_source_had() {
         "goto_shapes writes exactly {} gotos the structurer cannot fold, so the recovery must \
          emit that many and no more\n--- recovered ---\n{source}",
         GOTO_RECOVERED_SITES.len()
+    );
+    assert!(
+        source.contains("} while ($i < $limit);"),
+        "the backward goto whose test exits forward is a do-while the structurer folds\n--- \
+         recovered ---\n{source}"
     );
     for line in source.lines() {
         let trimmed: &str = line.trim();

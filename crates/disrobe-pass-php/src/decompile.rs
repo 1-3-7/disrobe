@@ -41,6 +41,7 @@ const CATCH_LAST: u32 = 1;
 const SANE_LOOP_EXIT_FREE_CAP: u32 = SANE_LIFT_DEPTH;
 const SANE_TERNARY_GUARD_SCAN: u32 = 4096;
 const SANE_CONDITION_RENDER_CAP: usize = 1 << 16;
+const SANE_IF_TEST_CHAIN_CAP: usize = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum OperandType {
@@ -1900,6 +1901,7 @@ struct SwitchArmPlan {
     labels: Vec<Option<String>>,
     breaks: bool,
     terminates: bool,
+    finally_breaks: bool,
 }
 
 struct SwitchDispatch {
@@ -2331,10 +2333,13 @@ impl<'a> Lifter<'a> {
             }
             o if o == op::JMPZ => self
                 .structure_ternary(i, end)
+                .or_else(|| self.structure_compound_if(i, end, depth))
                 .or_else(|| self.structure_if(i, end, depth)),
             o if o == op::JMPNZ => self
                 .structure_ternary(i, end)
-                .or_else(|| self.structure_do_while(i, end, depth)),
+                .or_else(|| self.structure_compound_if(i, end, depth))
+                .or_else(|| self.structure_do_while(i, end, depth))
+                .or_else(|| self.structure_negated_if(i, end, depth)),
             o if o == op::IS_IDENTICAL || o == op::CASE_STRICT => self
                 .structure_linear_match(i, end)
                 .or_else(|| self.structure_do_while(i, end, depth)),
@@ -2426,7 +2431,7 @@ impl<'a> Lifter<'a> {
                 let ends_with_skip: bool = self
                     .ops
                     .get(boundary as usize)
-                    .is_some_and(|op: &Op| op.opcode == op::JMP);
+                    .is_some_and(|op: &Op| op.opcode == op::JMP && op.op1 > boundary);
                 (
                     if ends_with_skip { boundary } else { catch_op },
                     finally_gate,
@@ -2556,7 +2561,34 @@ impl<'a> Lifter<'a> {
         self.ops
             .get(exit_jump as usize)
             .filter(|jump: &&Op| jump.opcode == op::JMP)
-            .is_some_and(|jump: &Op| self.range_joins.contains(&(construct_end, jump.op1)))
+            .is_some_and(|jump: &Op| self.reaches_range_join(construct_end, jump.op1))
+    }
+
+    fn range_target(&self, end: u32, target: u32) -> u32 {
+        if target > end && self.reaches_range_join(end, target) {
+            end
+        } else {
+            target
+        }
+    }
+
+    fn reaches_range_join(&self, end: u32, target: u32) -> bool {
+        let mut reached: u32 = end;
+        for _ in 0..=self.range_joins.len() {
+            if self.range_joins.contains(&(reached, target)) {
+                return true;
+            }
+            let Some(&(_, next)): Option<&(u32, u32)> = self
+                .range_joins
+                .iter()
+                .rev()
+                .find(|(range_end, join): &&(u32, u32)| *range_end == reached && *join > reached)
+            else {
+                return false;
+            };
+            reached = next;
+        }
+        false
     }
 
     fn lift_catch_arms(
@@ -2782,13 +2814,28 @@ impl<'a> Lifter<'a> {
             comparison_result = Some(result_key);
             let jump_index: u32 = cursor.checked_add(1)?;
             let jump: &Op = self.ops.get(jump_index as usize)?;
-            if jump.opcode != op::JMPNZ
-                || (jump.op1_type, jump.op1) != (comparison.result_type, comparison.result)
-                || jump.op2_type != OperandType::Unused
-                || jump.result_type != OperandType::Unused
-                || jump.op2 <= jump_index
-                || jump.op2 >= end
-                || last_case_target.is_some_and(|target: u32| jump.op2 < target)
+            let discarded: bool =
+                jump.opcode == op::FREE && (jump.op1_type, jump.op1) == result_key;
+            let (target, next_cursor): (u32, u32) = if discarded {
+                let shared_index: u32 = jump_index.checked_add(1)?;
+                let shared: &Op = self.ops.get(shared_index as usize)?;
+                if shared.opcode != op::JMP {
+                    return None;
+                }
+                (shared.op1, shared_index)
+            } else {
+                if jump.opcode != op::JMPNZ
+                    || (jump.op1_type, jump.op1) != result_key
+                    || jump.op2_type != OperandType::Unused
+                    || jump.result_type != OperandType::Unused
+                {
+                    return None;
+                }
+                (jump.op2, jump_index.checked_add(1)?)
+            };
+            if target <= jump_index
+                || target > end
+                || last_case_target.is_some_and(|last: u32| target < last)
             {
                 return None;
             }
@@ -2798,19 +2845,22 @@ impl<'a> Lifter<'a> {
             let retained_work: usize = label.len().checked_add(1)?;
             label_work = switch_label_work_after(label_work, retained_work)?;
             labels_by_target
-                .entry(jump.op2)
+                .entry(target)
                 .or_default()
                 .push(Some(label));
             result_keys.insert(result_key);
-            last_case_target = Some(jump.op2);
+            last_case_target = Some(target);
             case_count = case_count.checked_add(1)?;
-            cursor = cursor.checked_add(2)?;
+            cursor = next_cursor;
+            if discarded {
+                break;
+            }
         }
         if case_count == 0 {
             return None;
         }
         let default_jump: &Op = self.ops.get(cursor as usize)?;
-        if default_jump.opcode != op::JMP || default_jump.op1 <= cursor || default_jump.op1 >= end {
+        if default_jump.opcode != op::JMP || default_jump.op1 <= cursor || default_jump.op1 > end {
             return None;
         }
         let default_target: u32 = default_jump.op1;
@@ -3369,21 +3419,64 @@ impl<'a> Lifter<'a> {
         {
             return None;
         }
-        let targets: Vec<u32> = labels_by_target.keys().copied().collect();
-        let max_target: u32 = *targets.last()?;
-        let mut join: Option<u32> = default_is_join.then_some(default_target);
-        for target_index in 1..targets.len() {
-            let boundary: u32 = targets.get(target_index)?.checked_sub(1)?;
-            if self.exits_enclosing_loop(boundary) {
-                continue;
-            }
-            let terminator: &Op = self.ops.get(boundary as usize)?;
-            if terminator.opcode == op::JMP && terminator.op1 > max_target && terminator.op1 <= end
-            {
+        let mut targets: Vec<u32> = labels_by_target.keys().copied().collect();
+        let mut max_target: u32 = *targets.last()?;
+        let arm_exits: Vec<u32> = (1..targets.len())
+            .filter_map(|target_index: usize| {
+                let start: u32 = *targets.get(target_index - 1)?;
+                let boundary: u32 = targets.get(target_index)?.checked_sub(1)?;
+                if self.exits_enclosing_loop(boundary) {
+                    return None;
+                }
+                let terminator: &Op = self.ops.get(boundary as usize)?;
+                if terminator.opcode == op::JMP {
+                    return Some(terminator.op1);
+                }
+                self.finally_exit(start, boundary)
+                    .map(|(_, exit): (u32, u32)| exit)
+            })
+            .collect();
+        let frees_subject_at = |index: u32| -> bool {
+            matches!(subject_key.0, OperandType::TmpVar | OperandType::Var)
+                && self.ops.get(index as usize).is_some_and(|free: &Op| {
+                    free.opcode == op::FREE && (free.op1_type, free.op1) == subject_key
+                })
+        };
+        let shared_with_default: bool =
+            labels_by_target
+                .get(&max_target)
+                .is_some_and(|labels: &Vec<Option<String>>| {
+                    labels.contains(&None) && labels.iter().any(Option::is_some)
+                })
+                && targets.iter().rev().nth(1).is_some_and(|before: &u32| {
+                    arm_exits
+                        .iter()
+                        .all(|exit: &u32| *exit <= *before || *exit == max_target || *exit > end)
+                });
+        let joined_labels: Option<(u32, Vec<Option<String>>)> = if !default_is_join
+            && targets.len() > 1
+            && (max_target == end
+                || frees_subject_at(max_target)
+                || arm_exits.contains(&max_target)
+                || shared_with_default)
+        {
+            let join_target: u32 = targets.pop()?;
+            let labels: Vec<Option<String>> = labels_by_target.remove(&join_target)?;
+            max_target = *targets.last()?;
+            Some((join_target, labels))
+        } else {
+            None
+        };
+        let mut join: Option<u32> = joined_labels
+            .as_ref()
+            .map(|(join_target, _): &(u32, Vec<Option<String>>)| *join_target)
+            .or_else(|| default_is_join.then_some(default_target));
+        for exit in arm_exits {
+            if exit > max_target && exit <= end {
                 match join {
-                    Some(existing) if existing != terminator.op1 => return None,
+                    Some(existing) if existing != exit => return None,
                     Some(_) => {}
-                    None => join = Some(terminator.op1),
+                    None => join = Some(exit),
                 }
             }
         }
@@ -3411,21 +3504,24 @@ impl<'a> Lifter<'a> {
         }
         let join: u32 = join?;
         let next: u32 = if matches!(subject_key.0, OperandType::TmpVar | OperandType::Var) {
-            let free: &Op = self.ops.get(join as usize)?;
-            if free.opcode == op::FREE {
-                if (free.op1_type, free.op1) != subject_key
-                    || !matches!(
-                        free.extended_value_provenance(),
-                        ExtendedValueProvenance::Known(2) | ExtendedValueProvenance::Unavailable
-                    )
-                {
-                    return None;
+            let subject_free: Option<&Op> = self.ops.get(join as usize).filter(|free: &&Op| {
+                free.opcode == op::FREE && (free.op1_type, free.op1) == subject_key
+            });
+            match subject_free {
+                Some(free) => {
+                    if join >= end
+                        || !matches!(
+                            free.extended_value_provenance(),
+                            ExtendedValueProvenance::Known(2)
+                                | ExtendedValueProvenance::Unavailable
+                        )
+                    {
+                        return None;
+                    }
+                    join.checked_add(1)?
                 }
-                join.checked_add(1)?
-            } else if !scanned_join && self.never_refcounted(dispatch_end, subject_key) {
-                join
-            } else {
-                return None;
+                None if !scanned_join && self.never_refcounted(dispatch_end, subject_key) => join,
+                None => return None,
             }
         } else {
             join
@@ -3450,6 +3546,11 @@ impl<'a> Lifter<'a> {
             let terminal: &Op = self.ops.get(terminal_index as usize)?;
             let breaks: bool = !exits_loop && terminal.opcode == op::JMP && terminal.op1 == join;
             let terminates: bool = !breaks && (exits_loop || is_switch_terminal(terminal.opcode));
+            let finally_breaks: bool = !breaks
+                && !terminates
+                && self
+                    .finally_exit(target, terminal_index)
+                    .is_some_and(|(_, exit): (u32, u32)| exit == join);
             let body_end: u32 = if breaks { terminal_index } else { boundary };
             arm_plans.push(SwitchArmPlan {
                 target,
@@ -3457,6 +3558,7 @@ impl<'a> Lifter<'a> {
                 labels: labels_by_target.remove(&target)?,
                 breaks,
                 terminates,
+                finally_breaks,
             });
         }
         let snapshot: LiftSnapshot = self.lift_snapshot();
@@ -3501,7 +3603,7 @@ impl<'a> Lifter<'a> {
                 self.restore_lift_snapshot(snapshot);
                 return None;
             }
-            if arm_plan.breaks {
+            if arm_plan.breaks || arm_plan.finally_breaks {
                 exit_slots.push(self.slots.clone());
                 exit_writable.push(self.writable_slots.clone());
                 fallthrough_slots = None;
@@ -3521,6 +3623,15 @@ impl<'a> Lifter<'a> {
                 labels: arm_plan.labels,
                 body,
                 breaks: arm_plan.breaks,
+            });
+        }
+        if let Some((_, labels)) = joined_labels {
+            exit_slots.push(incoming_slots);
+            exit_writable.push(incoming_writable);
+            arms.push(SwitchArm {
+                labels,
+                body: Vec::new(),
+                breaks: true,
             });
         }
         let mut merged_slots: BTreeMap<(OperandType, u32), Expr> =
@@ -3670,10 +3781,13 @@ impl<'a> Lifter<'a> {
     }
 
     fn structure_do_while(&mut self, i: u32, end: u32, depth: u32) -> Option<(Vec<Stmt>, u32)> {
-        let jump_idx: u32 = self.find_back_jump(i, end)?;
+        let Some(jump_idx): Option<u32> = self.find_back_jump(i, end) else {
+            return self.structure_inverted_do_while(i, end, depth);
+        };
         if let Some(tests) = self.do_while_test_chain(i, jump_idx, end) {
             let snapshot: LiftSnapshot = self.lift_snapshot();
-            if let Some(chained) = self.structure_chained_do_while(i, &tests, depth) {
+            let exit: u32 = tests.last()?.checked_add(1)?;
+            if let Some(chained) = self.structure_chained_do_while(i, &tests, exit, false, depth) {
                 return Some(chained);
             }
             self.restore_lift_snapshot(snapshot);
@@ -3749,30 +3863,45 @@ impl<'a> Lifter<'a> {
             .filter(|&k: &u32| self.loop_test(k).is_some())
             .collect();
         let mut start: u32 = self.condition_start(self.ops.get(first as usize)?, head, first);
-        while let Some(previous) = start.checked_sub(1).filter(|&p: &u32| p > head) {
+        while let Some(previous) = self.previous_test(start, head) {
             let Some(test) = self.loop_test(previous) else {
                 break;
             };
-            if test.op2 != head && test.op2 != exit {
+            let reaches_segment: bool = tests
+                .iter()
+                .any(|&k: &u32| k.checked_add(1) == Some(test.op2));
+            if test.op2 != head && !self.reaches_loop_exit(exit, test.op2) && !reaches_segment {
                 break;
             }
             tests.insert(0, previous);
             start = self.condition_start(test, head, previous);
         }
+        let segment_starts: BTreeSet<u32> = tests
+            .iter()
+            .filter(|&&k: &&u32| k != last)
+            .map(|&k: &u32| k.saturating_add(1))
+            .collect();
         let well_formed: bool = tests.len() > 1
             && tests.iter().all(|&k: &u32| {
-                self.ops
-                    .get(k as usize)
-                    .is_some_and(|test: &Op| test.op2 == head || test.op2 == exit)
+                self.ops.get(k as usize).is_some_and(|test: &Op| {
+                    test.op2 == head
+                        || self.reaches_loop_exit(exit, test.op2)
+                        || (test.op2 > k && segment_starts.contains(&test.op2))
+                })
             })
             && self
                 .ops
                 .get(last as usize)
                 .is_some_and(|test: &Op| test.op2 == head)
-            && !self
-                .jump_sources
-                .range(start.saturating_add(1)..=last)
-                .any(|(_, sources): (&u32, &Vec<u32>)| !sources.is_empty())
+            && self.jump_sources.range(start.saturating_add(1)..=last).all(
+                |(target, sources): (&u32, &Vec<u32>)| {
+                    sources.is_empty()
+                        || (segment_starts.contains(target)
+                            && sources
+                                .iter()
+                                .all(|source: &u32| source < target && tests.contains(source)))
+                },
+            )
             && self
                 .jump_sources
                 .get(&start)
@@ -3785,14 +3914,117 @@ impl<'a> Lifter<'a> {
         well_formed.then_some(tests)
     }
 
+    fn structure_inverted_do_while(
+        &mut self,
+        head: u32,
+        end: u32,
+        depth: u32,
+    ) -> Option<(Vec<Stmt>, u32)> {
+        let jump_idx: u32 = self
+            .jump_sources
+            .get(&head)?
+            .iter()
+            .copied()
+            .filter(|&source: &u32| {
+                source > head
+                    && source < end
+                    && self
+                        .ops
+                        .get(source as usize)
+                        .is_some_and(|jump: &Op| jump.opcode == op::JMP)
+            })
+            .min()?;
+        let last: u32 = jump_idx.checked_sub(1)?;
+        let exit: u32 = jump_idx.checked_add(1)?;
+        let last_test: &Op = self.loop_test(last)?;
+        if last <= head || !self.reaches_loop_exit(exit, last_test.op2) {
+            return None;
+        }
+        let mut tests: Vec<u32> = vec![last];
+        let mut start: u32 = self.condition_start(last_test, head, last);
+        while let Some(previous) = self.previous_test(start, head) {
+            let Some(test) = self.loop_test(previous) else {
+                break;
+            };
+            let reaches_segment: bool = tests
+                .iter()
+                .filter(|&&k: &&u32| k != last)
+                .any(|&k: &u32| k.checked_add(1) == Some(test.op2));
+            if test.op2 != head && !self.reaches_loop_exit(exit, test.op2) && !reaches_segment {
+                break;
+            }
+            tests.insert(0, previous);
+            start = self.condition_start(test, head, previous);
+        }
+        let segment_starts: BTreeSet<u32> = tests
+            .iter()
+            .filter(|&&k: &&u32| k != last)
+            .map(|&k: &u32| k.saturating_add(1))
+            .collect();
+        let well_formed: bool = self
+            .jump_sources
+            .range(start.saturating_add(1)..=jump_idx)
+            .all(|(target, sources): (&u32, &Vec<u32>)| {
+                sources.is_empty()
+                    || (segment_starts.contains(target)
+                        && sources
+                            .iter()
+                            .all(|source: &u32| source < target && tests.contains(source)))
+            })
+            && self
+                .jump_sources
+                .get(&start)
+                .is_none_or(|sources: &Vec<u32>| {
+                    sources
+                        .iter()
+                        .all(|&source: &u32| source >= head && source < start)
+                })
+            && !self.entered_from_outside(head, start);
+        if !well_formed {
+            return None;
+        }
+        let snapshot: LiftSnapshot = self.lift_snapshot();
+        let structured: Option<(Vec<Stmt>, u32)> =
+            self.structure_chained_do_while(head, &tests, exit, true, depth);
+        if structured.is_none() {
+            self.restore_lift_snapshot(snapshot);
+        }
+        structured
+    }
+
+    fn previous_test(&self, before: u32, head: u32) -> Option<u32> {
+        let lower: u32 = head.max(before.saturating_sub(SANE_TERNARY_GUARD_SCAN));
+        let mut cursor: u32 = before;
+        while cursor > lower.saturating_add(1) {
+            cursor -= 1;
+            if self.loop_test(cursor).is_some() {
+                return Some(cursor);
+            }
+            if self.ops.get(cursor as usize)?.branch_target() != Branch::None {
+                return None;
+            }
+        }
+        None
+    }
+
+    fn reaches_loop_exit(&self, exit: u32, target: u32) -> bool {
+        target == exit
+            || self
+                .ops
+                .get(exit as usize)
+                .is_some_and(|jump: &Op| jump.opcode == op::JMP && jump.op1 == target)
+            || self.range_target(exit, target) == exit
+    }
+
     fn structure_chained_do_while(
         &mut self,
         head: u32,
         tests: &[u32],
+        exit: u32,
+        fall_through: bool,
         depth: u32,
     ) -> Option<(Vec<Stmt>, u32)> {
-        let (&first, &last): (&u32, &u32) = (tests.first()?, tests.last()?);
-        let exit: u32 = last.checked_add(1)?;
+        let first: u32 = *tests.first()?;
         let cond_start: u32 = self.condition_start(self.ops.get(first as usize)?, head, first);
         let (body, _): (Vec<Stmt>, BTreeSet<u32>) = self.lift_breakable_body(
             BreakableFrame {
@@ -3805,7 +4037,7 @@ impl<'a> Lifter<'a> {
             },
             depth,
         );
-        let folded: Expr = self.fold_test_graph(cond_start, tests, head, exit)?;
+        let folded: Expr = self.fold_test_graph(cond_start, tests, head, exit, fall_through)?;
         Some((
             vec![Stmt::DoWhile {
                 cond: folded.text,
@@ -3875,12 +4107,8 @@ impl<'a> Lifter<'a> {
         tests: &[u32],
         head: u32,
         exit: u32,
+        fall_through: bool,
     ) -> Option<Expr> {
-        let exit_alias: Option<u32> = self
-            .ops
-            .get(exit as usize)
-            .filter(|jump: &&Op| jump.opcode == op::JMP)
-            .map(|jump: &Op| jump.op1);
         let mut segments: Vec<(u32, Op, Expr)> = Vec::with_capacity(tests.len());
         let mut start: u32 = cond_block;
         for &test_idx in tests {
@@ -3890,11 +4118,11 @@ impl<'a> Lifter<'a> {
             start = test_idx.checked_add(1)?;
         }
         let mut values: BTreeMap<u32, TestValue> = BTreeMap::new();
-        let mut fall: TestValue = TestValue::Constant(false);
+        let mut fall: TestValue = TestValue::Constant(fall_through);
         for (segment_start, test, condition) in segments.into_iter().rev() {
             let taken: TestValue = if test.op2 == head {
                 TestValue::Constant(true)
-            } else if test.op2 == exit || Some(test.op2) == exit_alias {
+            } else if self.reaches_loop_exit(exit, test.op2) {
                 TestValue::Constant(false)
             } else {
                 values.get(&test.op2)?.clone()
@@ -3940,7 +4168,8 @@ impl<'a> Lifter<'a> {
             },
             depth,
         );
-        let Some(folded): Option<Expr> = self.fold_test_graph(cond_block, &tests, head, exit)
+        let Some(folded): Option<Expr> =
+            self.fold_test_graph(cond_block, &tests, head, exit, false)
         else {
             self.restore_lift_snapshot(snapshot);
             return None;
@@ -4813,11 +5042,112 @@ impl<'a> Lifter<'a> {
 
     fn structure_if(&mut self, i: u32, end: u32, depth: u32) -> Option<(Vec<Stmt>, u32)> {
         let jmpz: Op = self.ops.get(i as usize)?.clone();
-        let target: u32 = jmpz.op2;
+        let target: u32 = self.range_target(end, jmpz.op2);
         if target <= i || target > end || self.else_entries.contains(&target) {
             return None;
         }
         let cond_expr: Expr = self.operand_expr(jmpz.op1_type, jmpz.op1)?;
+        self.structure_if_branches(cond_expr, i.checked_add(1)?, target, end, depth)
+    }
+
+    fn structure_negated_if(&mut self, i: u32, end: u32, depth: u32) -> Option<(Vec<Stmt>, u32)> {
+        let jmpnz: Op = self.ops.get(i as usize)?.clone();
+        if jmpnz.result_type != OperandType::Unused || self.loop_jump_level(jmpnz.op2, i).is_some()
+        {
+            return None;
+        }
+        let target: u32 = self.range_target(end, jmpnz.op2);
+        if target <= i.checked_add(1)? || target > end || self.else_entries.contains(&target) {
+            return None;
+        }
+        let cond_expr: Expr = self.operand_expr(jmpnz.op1_type, jmpnz.op1)?;
+        let negated: Expr = Expr {
+            text: format!("!{}", cond_expr.wrapped(PREC_NOT)),
+            prec: PREC_NOT,
+        };
+        self.structure_if_branches(negated, i.checked_add(1)?, target, end, depth)
+    }
+
+    fn structure_compound_if(&mut self, i: u32, end: u32, depth: u32) -> Option<(Vec<Stmt>, u32)> {
+        let (tests, target): (Vec<u32>, u32) = self.if_test_chain(i, end)?;
+        let then_start: u32 = tests.last()?.checked_add(1)?;
+        if self.else_entries.contains(&target) {
+            return None;
+        }
+        let snapshot: LiftSnapshot = self.lift_snapshot();
+        let Some(cond_expr): Option<Expr> =
+            self.fold_test_graph(i, &tests, then_start, target, true)
+        else {
+            self.restore_lift_snapshot(snapshot);
+            return None;
+        };
+        self.structure_if_branches(cond_expr, then_start, target, end, depth)
+    }
+
+    fn if_test_chain(&self, first: u32, end: u32) -> Option<(Vec<u32>, u32)> {
+        self.loop_test(first)?;
+        let scan_end: u32 = end.min(first.saturating_add(SANE_TERNARY_GUARD_SCAN));
+        let mut tests: Vec<u32> = Vec::new();
+        let mut best: Option<(Vec<u32>, u32)> = None;
+        let mut cursor: u32 = first;
+        while cursor < scan_end && tests.len() < SANE_IF_TEST_CHAIN_CAP {
+            if self.loop_test(cursor).is_some() {
+                tests.push(cursor);
+                if tests.len() > 1
+                    && let Some(target) = self.if_chain_else(&tests, end)
+                {
+                    best = Some((tests.clone(), target));
+                }
+            } else if self.ops.get(cursor as usize)?.branch_target() != Branch::None {
+                break;
+            }
+            cursor = cursor.checked_add(1)?;
+        }
+        best
+    }
+
+    fn if_chain_else(&self, tests: &[u32], end: u32) -> Option<u32> {
+        let (&first, &last): (&u32, &u32) = (tests.first()?, tests.last()?);
+        let then_start: u32 = last.checked_add(1)?;
+        let segment_starts: BTreeSet<u32> = tests
+            .iter()
+            .filter(|&&k: &&u32| k != last)
+            .map(|&k: &u32| k.saturating_add(1))
+            .collect();
+        let mut else_start: Option<u32> = None;
+        for &k in tests {
+            let target: u32 = self.range_target(end, self.ops.get(k as usize)?.op2);
+            if target == then_start || (target > k && segment_starts.contains(&target)) {
+                continue;
+            }
+            if target <= then_start || target > end || else_start.is_some_and(|e: u32| e != target)
+            {
+                return None;
+            }
+            else_start = Some(target);
+        }
+        let else_start: u32 = else_start?;
+        let entered_only_by_tests: bool = self
+            .jump_sources
+            .range(first.saturating_add(1)..=last)
+            .all(|(target, sources): (&u32, &Vec<u32>)| {
+                segment_starts.contains(target)
+                    && sources
+                        .iter()
+                        .all(|source: &u32| source < target && tests.contains(source))
+            });
+        let last_target: u32 = self.range_target(end, self.ops.get(last as usize)?.op2);
+        (last_target == else_start && entered_only_by_tests).then_some(else_start)
+    }
+
+    fn structure_if_branches(
+        &mut self,
+        cond_expr: Expr,
+        then_start: u32,
+        target: u32,
+        end: u32,
+        depth: u32,
+    ) -> Option<(Vec<Stmt>, u32)> {
         let incoming_slots: BTreeMap<(OperandType, u32), Expr> = self.slots.clone();
         let incoming_writable: BTreeMap<(OperandType, u32), u32> = self.writable_slots.clone();
         let then_last: u32 = target - 1;
@@ -4832,25 +5162,25 @@ impl<'a> Lifter<'a> {
             if then_terminator.opcode == op::JMP && !then_exits_loop {
                 Some((then_last, then_terminator.op1, None))
             } else {
-                self.finally_exit(i + 1, then_last)
+                self.finally_exit(then_start, then_last)
                     .map(|(exit, join): (u32, u32)| (target, join, Some(exit)))
             };
+        let joined: Option<(u32, u32, Option<u32>)> =
+            joined.map(|(then_end, join, finally_exit): (u32, u32, Option<u32>)| {
+                (then_end, self.range_target(end, join), finally_exit)
+            });
         if let Some((then_end, join, finally_exit)) = joined
             && join > target
             && join <= end
         {
             self.slots = incoming_slots.clone();
             self.writable_slots = incoming_writable.clone();
-            let then_body: Vec<Stmt> = if finally_exit.is_some() {
-                let guarded: bool = self.else_entries.insert(target);
-                let body: Vec<Stmt> = self.lift_joined_range(i + 1, then_end, join, depth + 1);
-                if guarded {
-                    self.else_entries.remove(&target);
-                }
-                body
-            } else {
-                self.lift_range(i + 1, then_end, depth + 1)
-            };
+            let guarded: bool = finally_exit.is_some() && self.else_entries.insert(target);
+            let then_body: Vec<Stmt> =
+                self.lift_joined_range(then_start, then_end, join, depth + 1);
+            if guarded {
+                self.else_entries.remove(&target);
+            }
             let then_slots: BTreeMap<(OperandType, u32), Expr> = std::mem::take(&mut self.slots);
             let then_writable: BTreeMap<(OperandType, u32), u32> =
                 std::mem::take(&mut self.writable_slots);
@@ -4873,7 +5203,7 @@ impl<'a> Lifter<'a> {
         }
         self.slots = incoming_slots.clone();
         self.writable_slots = incoming_writable.clone();
-        let then_body: Vec<Stmt> = self.lift_range(i + 1, target, depth + 1);
+        let then_body: Vec<Stmt> = self.lift_range(then_start, target, depth + 1);
         let then_slots: BTreeMap<(OperandType, u32), Expr> = std::mem::take(&mut self.slots);
         let then_writable: BTreeMap<(OperandType, u32), u32> =
             std::mem::take(&mut self.writable_slots);
@@ -5116,17 +5446,27 @@ impl<'a> Lifter<'a> {
     }
 
     fn loop_jump_level(&self, target: u32, index: u32) -> Option<(usize, bool)> {
-        self.breakables.iter().enumerate().rev().find_map(
-            |(position, frame): (usize, &BreakableFrame)| {
-                if index < frame.body_start || index >= frame.body_end {
-                    return None;
-                }
+        let enclosing = || {
+            self.breakables.iter().enumerate().rev().filter(
+                |(_, frame): &(usize, &BreakableFrame)| {
+                    index >= frame.body_start && index < frame.body_end
+                },
+            )
+        };
+        enclosing()
+            .find_map(|(position, frame): (usize, &BreakableFrame)| {
                 if frame.break_target == target {
                     return Some((position, true));
                 }
                 (frame.continue_target == target).then_some((position, false))
-            },
-        )
+            })
+            .or_else(|| {
+                enclosing()
+                    .find(|(_, frame): &(usize, &BreakableFrame)| {
+                        self.reaches_loop_exit(frame.break_target, target)
+                    })
+                    .map(|(position, _): (usize, &BreakableFrame)| (position, true))
+            })
     }
 
     fn exits_enclosing_loop(&self, index: u32) -> bool {
@@ -7434,7 +7774,10 @@ fn render_parameters(node: &OpArray, signature: &Signature) -> (String, Option<&
 
 fn unthread_try_exits(ops: &[Op], try_catch: &[TryCatch]) -> Vec<Op> {
     let mut unthreaded: Vec<Op> = ops.to_vec();
-    for entry in try_catch {
+    let mut innermost_first: Vec<&TryCatch> = try_catch.iter().collect();
+    innermost_first
+        .sort_by_key(|entry: &&TryCatch| (std::cmp::Reverse(entry.try_op), entry.catch_op));
+    for entry in innermost_first {
         let Some(boundary): Option<u32> = entry.catch_op.and_then(|c: u32| c.checked_sub(1)) else {
             continue;
         };
@@ -7442,10 +7785,6 @@ fn unthread_try_exits(ops: &[Op], try_catch: &[TryCatch]) -> Vec<Op> {
             .get(boundary as usize)
             .filter(|skip: &&Op| skip.opcode == op::JMP && skip.op1 > boundary)
             .map(|skip: &Op| skip.op1)
-            .filter(|&gate: &u32| {
-                ops.get(gate as usize)
-                    .is_some_and(|call: &Op| call.opcode == op::FAST_CALL)
-            })
         else {
             continue;
         };
@@ -7801,10 +8140,15 @@ fn is_linear_switch_comparison(
     let Some(jump): Option<&Op> = index.checked_add(1).and_then(|next: usize| ops.get(next)) else {
         return false;
     };
+    let discarded_before_default: bool = jump.opcode == op::FREE
+        && index
+            .checked_add(2)
+            .and_then(|shared: usize| ops.get(shared))
+            .is_some_and(|shared: &Op| shared.opcode == op::JMP);
     candidate.opcode == comparison_opcode
         && (candidate.op1_type, candidate.op1) == subject_key
         && candidate.result_type == OperandType::TmpVar
-        && jump.opcode == op::JMPNZ
+        && (jump.opcode == op::JMPNZ || discarded_before_default)
         && (jump.op1_type, jump.op1) == (candidate.result_type, candidate.result)
 }
 

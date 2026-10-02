@@ -376,3 +376,38 @@ source_tool = "manual (PHP 8.4 strict behaviour program)"
 size_bytes = 612
 sha256 = "d789979f9719059727060c101fe15ffe5e02004dd7707b655ba7cf0a16a85e1a"
 notes = "Strict behaviour program compiled to an opcache file-cache image by PHP 8.4, decompiled from that image and re-run; stdout must match byte for byte (tests/php_behaviour_strict.rs). Covers a while loop with a mixed && and || condition as the last statement of an if branch inside try/catch/finally, where the optimizer threads the loop exits to the finally call."
+
+[[sample]]
+name = "behaviour/switch_loop_tail.php"
+source_tool = "manual (PHP 8.4 strict behaviour program)"
+size_bytes = 1202
+sha256 = "6edd2995a56cbd1606b6bf3402c27db397810bdf162915a44d5fb084ef4c9cf3"
+notes = "Strict behaviour program compiled to an opcache file-cache image by PHP 8.4, decompiled from that image and re-run; stdout must match byte for byte (tests/php_behaviour_strict.rs). Covers a switch that ends a while body, so its breaks and missing default jump straight to the loop condition, and a switch nested in the default arm of another switch whose own subject free the optimizer removed."
+
+[[sample]]
+name = "behaviour/switch_empty_arm.php"
+source_tool = "manual (PHP 8.4 strict behaviour program)"
+size_bytes = 973
+sha256 = "8d5172749f054ef911a54fbb54bbc4dcb9350447d1b0b262ede59d9df2e121b4"
+notes = "Strict behaviour program compiled to an opcache file-cache image by PHP 8.4, decompiled from that image and re-run; stdout must match byte for byte (tests/php_behaviour_strict.rs). Covers case labels whose only statement is break, so the optimizer points them at the switch end, including a last case that shares its target with the implicit default."
+
+[[sample]]
+name = "behaviour/switch_finally_arms.php"
+source_tool = "manual (PHP 8.4 strict behaviour program)"
+size_bytes = 908
+sha256 = "138a43e4bf07e8af6d716a08e8e6f20d1b59e3b8ccf7bbf19173410e143de280"
+notes = "Strict behaviour program compiled to an opcache file-cache image by PHP 8.4, decompiled from that image and re-run; stdout must match byte for byte (tests/php_behaviour_strict.rs). Covers switch arms that end in try/catch/finally followed by break, where every arm leaves through its finally call and the default arm falls to the end."
+
+[[sample]]
+name = "behaviour/try_branch_threaded.php"
+source_tool = "manual (PHP 8.4 strict behaviour program)"
+size_bytes = 1779
+sha256 = "c14517615d18b826cf1f34f56bdc957c10420a225ae49e201e6439e3aeed6ff1"
+notes = "Strict behaviour program compiled to an opcache file-cache image by PHP 8.4, decompiled from that image and re-run; stdout must match byte for byte (tests/php_behaviour_strict.rs). Covers a try nested as the last statement of an if branch inside another try, an elseif without else whose exit is threaded past the outer catch, and if/elseif chains with mixed && and || conditions whose branch exits are threaded to the end of the enclosing chain."
+
+[[sample]]
+name = "behaviour/loop_threaded_exit.php"
+source_tool = "manual (PHP 8.4 strict behaviour program)"
+size_bytes = 1985
+sha256 = "6e68e92bd20e67be1d09abfaf7ee518fa17ff30fa1c3f72cffbb72c949864d7e"
+notes = "Strict behaviour program compiled to an opcache file-cache image by PHP 8.4, decompiled from that image and re-run; stdout must match byte for byte (tests/php_behaviour_strict.rs). Covers a do-while ending a try/finally body whose test the optimizer inverts into an exit to the finally call plus a backward jump, a do-while with a mixed && and || condition, and a for loop whose break is threaded through the end of an if branch to the finally call."
