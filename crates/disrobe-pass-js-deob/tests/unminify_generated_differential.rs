@@ -1150,12 +1150,16 @@ fn generation_is_deterministic_and_the_rules_rewrite_most_programs() {
 const TERSER_VERSION: &str = "5.51.2";
 const TERSER_SEEDS: u64 = 300;
 const TERSER_KNOWN_DIVERGENT: [u64; 0] = [];
+const TERSER_CHANGES_OUTPUT: [u64; 0] = [];
 const TERSER_REWRITTEN_FLOOR: usize = 298;
 const TERSER_BACKSTOP: Duration = Duration::from_mins(5);
 const TERSER_DRIVER: &str = r#"const fs = require("fs");
+const path = require("path");
 const { minify } = require(process.argv[2]);
+const dir = process.argv[3];
 (async () => {
-  for (const file of process.argv.slice(3)) {
+  const names = fs.readdirSync(dir).filter((name) => /^seed[0-9]+[.]js$/.test(name)).sort();
+  for (const file of names.map((name) => path.join(dir, name))) {
     const out = await minify(fs.readFileSync(file, "utf8"), {
       compress: { passes: 2 },
       mangle: { toplevel: true },
@@ -1199,15 +1203,17 @@ fn minify_with_terser(sources: &[(u64, String)]) -> Vec<(u64, String)> {
             .expect("create a terser scratch directory");
     let driver: PathBuf = scratch.path().join("minify.cjs");
     fs::write(&driver, TERSER_DRIVER).expect("write the terser driver");
-    let mut command: CommandSpec = CommandSpec::new("node", TERSER_BACKSTOP)
-        .arg(driver.as_os_str())
-        .arg(package.as_os_str());
     for (seed, source) in sources {
-        let file: PathBuf = scratch.path().join(format!("seed{seed}.js"));
-        fs::write(&file, source).expect("write a generated program");
-        command = command.arg(file.as_os_str());
+        fs::write(scratch.path().join(format!("seed{seed}.js")), source)
+            .expect("write a generated program");
     }
-    let output: ToolOutput = tool_output(command).expect("node runs the terser driver");
+    let output: ToolOutput = tool_output(
+        CommandSpec::new("node", TERSER_BACKSTOP)
+            .arg(driver.as_os_str())
+            .arg(package.as_os_str())
+            .arg(scratch.path().as_os_str()),
+    )
+    .expect("node runs the terser driver");
     assert!(
         output.success,
         "terser {TERSER_VERSION} failed to minify the generated programs:\n{}",
@@ -1232,18 +1238,17 @@ fn terser_minified_programs_keep_their_output_through_unminify() {
     let minified: Vec<(u64, String)> = minify_with_terser(&sources);
     let mut divergent: std::collections::BTreeMap<u64, String> = std::collections::BTreeMap::new();
     let mut rewritten: usize = 0;
+    let mut terser_changed: Vec<u64> = Vec::new();
     for ((seed, source), (_, packed)) in sources.iter().zip(&minified) {
         let expected: Run = run_node(source);
         assert!(
             expected.success,
             "seed {seed}: the generated program fails under node"
         );
-        assert_eq!(
-            run_node(packed),
-            expected,
-            "seed {seed}: terser {TERSER_VERSION} changed the program's output, so the lane \
-             cannot grade unminify on it:\n{packed}"
-        );
+        if run_node(packed) != expected {
+            terser_changed.push(*seed);
+            continue;
+        }
         let recovered: Recovered = recover(packed);
         if recovered.rule_activity > 0 {
             rewritten += 1;
@@ -1265,6 +1270,11 @@ fn terser_minified_programs_keep_their_output_through_unminify() {
             divergent.insert(*seed, failure);
         }
     }
+    assert_eq!(
+        terser_changed, TERSER_CHANGES_OUTPUT,
+        "the seeds whose terser {TERSER_VERSION} output itself runs differently from the generated \
+         program must equal TERSER_CHANGES_OUTPUT exactly; those seeds cannot grade unminify"
+    );
     assert!(
         rewritten >= TERSER_REWRITTEN_FLOOR,
         "unminify rewrote only {rewritten} of {TERSER_SEEDS} terser-minified programs, so the lane \
