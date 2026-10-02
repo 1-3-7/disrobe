@@ -1825,6 +1825,9 @@ impl Expr {
         match self {
             Self::Invoke { .. } => Some(self.render()),
             Self::Cast { value, .. } => value.discarded_side_effect(),
+            Self::Opaque(text) if text.ends_with("++") || text.ends_with("--") => {
+                Some(text.clone())
+            }
             _ => None,
         }
     }
@@ -11864,6 +11867,7 @@ fn lift_one_inner(
             } else {
                 match discarded.discarded_side_effect() {
                     Some(call) => LiftResult::Statement(call),
+                    None if expr_has_post_step(&discarded) => LiftResult::Unhandled,
                     None => LiftResult::Pushed,
                 }
             }
@@ -15512,6 +15516,19 @@ mod tests {
         assert!(case1 < case2, "{source}");
         assert!(!source[case1..case2].contains("break"), "{source}");
         assert!(source[case2..].contains("break"), "{source}");
+    }
+
+    #[test]
+    fn a_discarded_post_increment_keeps_its_step() {
+        let code: Vec<u8> = vec![0x1A, 0x84, 0x00, 0x01, 0x57, 0x1A, 0xAC];
+        let mut class: ClassFile =
+            class_with_method_code(Some(code_info(&code, &[], &[])), ACC_PUBLIC | ACC_STATIC);
+        class.constant_pool[6] = cp_utf8("(I)I");
+        let decompiled: DecompiledClass = decompile_class(&class);
+        let source: &str = &decompiled.source;
+        let step: usize = source.find("++;").expect("the increment is a statement");
+        let ret: usize = source.find("return ").expect("return rendered");
+        assert!(step < ret, "{source}");
     }
 
     #[test]
