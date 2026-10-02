@@ -2364,6 +2364,7 @@ fn lift_structured(
     let finally_scoped_local_slots: BTreeSet<u16> = structurer.take_finally_scoped_local_slots();
     let absorbed_blocks: BTreeSet<BlockId> = structurer.take_absorbed_blocks();
     let revisited_blocks: BTreeSet<BlockId> = structurer.take_revisited_blocks();
+    let duplicated_blocks: BTreeSet<BlockId> = structurer.take_duplicated_blocks();
     let typer: JoinValueTyper<'_> = JoinValueTyper {
         cf,
         cfg: &cfg,
@@ -2402,6 +2403,7 @@ fn lift_structured(
         params,
         bootstraps,
         rendered_blocks: BTreeSet::new(),
+        duplicated_blocks,
         fully_lifted: !structurer.had_irreducible,
         held_locks: Vec::new(),
         unconsumed_monitor: false,
@@ -5732,6 +5734,7 @@ struct RenderCtx<'a> {
     params: &'a [(u16, String)],
     bootstraps: &'a [crate::attributes::BootstrapMethod],
     rendered_blocks: BTreeSet<BlockId>,
+    duplicated_blocks: BTreeSet<BlockId>,
     fully_lifted: bool,
     held_locks: Vec<u16>,
     unconsumed_monitor: bool,
@@ -6771,7 +6774,7 @@ fn render_block_statements(
     seed: Vec<Expr>,
     trailing_skip: usize,
 ) -> Option<Vec<Expr>> {
-    if !ctx.rendered_blocks.insert(bid) {
+    if !ctx.rendered_blocks.insert(bid) && !ctx.duplicated_blocks.contains(&bid) {
         return None;
     }
     let mut seed: Vec<Expr> = seed;
@@ -7139,6 +7142,7 @@ fn compute_block_entry_stacks(
         params,
         bootstraps,
         rendered_blocks: BTreeSet::new(),
+        duplicated_blocks: BTreeSet::new(),
         fully_lifted: true,
         held_locks: Vec::new(),
         unconsumed_monitor: false,
@@ -9766,6 +9770,7 @@ const fn pattern_render_ctx<'a>(
         params,
         bootstraps,
         rendered_blocks: BTreeSet::new(),
+        duplicated_blocks: BTreeSet::new(),
         fully_lifted: true,
         held_locks: Vec::new(),
         unconsumed_monitor: false,

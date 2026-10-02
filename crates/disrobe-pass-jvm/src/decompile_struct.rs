@@ -792,6 +792,8 @@ struct LoopFrame {
     label: u32,
     monitors: usize,
     switches: usize,
+    latch_entry: Option<BlockId>,
+    body_depth: usize,
 }
 
 impl<'a> Structurer<'a> {
@@ -2991,6 +2993,10 @@ impl<'a> Structurer<'a> {
             if Some(b) == stop || self.handler_stops.contains(&b) {
                 break;
             }
+            if let Some(continued) = self.continue_through_latch(b) {
+                seq.extend(continued);
+                break;
+            }
             if let Some(&exit) = self.finally_copy_exits.get(&b) {
                 cur = Some(exit);
                 continue;
@@ -3522,6 +3528,12 @@ impl<'a> Structurer<'a> {
         let label: u32 = self.next_label;
         self.next_label += 1;
         let condition: Option<ConditionChain> = self.loop_condition_chain(loop_info, exit);
+        let latch_entry: Option<BlockId> = match classify_loop_header(self.cfg, loop_info) {
+            LoopKind::DoWhile => self
+                .latch_condition_chain(loop_info, exit)
+                .map(|(entry, _): (BlockId, ConditionChain)| entry),
+            LoopKind::While => None,
+        };
         let body_region: Region = self.structure_loop_body(
             loop_info,
             exit,
@@ -3531,6 +3543,8 @@ impl<'a> Structurer<'a> {
                 label,
                 monitors: self.open_monitors.len(),
                 switches: self.switch_depth,
+                latch_entry,
+                body_depth: self.depth.saturating_add(1),
             },
             condition.as_ref(),
         );
@@ -3756,6 +3770,117 @@ impl<'a> Structurer<'a> {
             }
         }
         accepted
+    }
+
+    fn latch_condition_chain(
+        &self,
+        loop_info: &NaturalLoop,
+        exit: Option<BlockId>,
+    ) -> Option<(BlockId, ConditionChain)> {
+        let exit: BlockId = exit?;
+        let header: BlockId = loop_info.header;
+        let ends_the_iteration = |block: BlockId, chain: &BTreeSet<BlockId>| -> bool {
+            block != header
+                && self.condition_link(loop_info, block, exit)
+                && self.chain_targets(block).iter().all(|target: &BlockId| {
+                    *target == header || *target == exit || chain.contains(target)
+                })
+        };
+        let mut chain: BTreeSet<BlockId> = BTreeSet::new();
+        for &latch in &loop_info.latches {
+            if !ends_the_iteration(latch, &chain) {
+                return None;
+            }
+            chain.insert(latch);
+        }
+        loop {
+            let next: Option<BlockId> = chain
+                .iter()
+                .flat_map(|&block: &BlockId| self.normal_predecessors(block))
+                .find(|candidate: &BlockId| {
+                    !chain.contains(candidate)
+                        && loop_info.body.contains(candidate)
+                        && ends_the_iteration(*candidate, &chain)
+                });
+            let Some(next) = next else {
+                break;
+            };
+            if chain.len() >= MAX_CONDITION_CHAIN {
+                return None;
+            }
+            chain.insert(next);
+        }
+        let entries: Vec<BlockId> = chain
+            .iter()
+            .copied()
+            .filter(|block: &BlockId| {
+                self.normal_predecessors(*block)
+                    .iter()
+                    .any(|predecessor: &BlockId| !chain.contains(predecessor))
+            })
+            .collect();
+        let [entry]: [BlockId; 1] = entries.try_into().ok()?;
+        Some((
+            entry,
+            ConditionChain {
+                blocks: chain,
+                body_entry: header,
+                exit,
+            },
+        ))
+    }
+
+    fn continue_through_latch(&mut self, block: BlockId) -> Option<Vec<Region>> {
+        let innermost: usize = self.loop_stack.len().checked_sub(1)?;
+        let (index, frame): (usize, LoopFrame) = self
+            .loop_stack
+            .iter()
+            .copied()
+            .enumerate()
+            .rev()
+            .find(|(_, frame): &(usize, LoopFrame)| frame.latch_entry == Some(block))?;
+        let nested_in_the_body: bool = self.depth > frame.body_depth;
+        if index == innermost && !nested_in_the_body {
+            return None;
+        }
+        let loop_info: NaturalLoop = self
+            .loops
+            .iter()
+            .find(|candidate: &&NaturalLoop| candidate.header == frame.header)?
+            .clone();
+        let (entry, chain): (BlockId, ConditionChain) =
+            self.latch_condition_chain(&loop_info, frame.exit)?;
+        if entry != block {
+            return None;
+        }
+        let mut placed: BTreeSet<BlockId> = BTreeSet::new();
+        let test: Region =
+            self.structure_condition_chain(&chain, entry, frame.header, &mut placed, 0)?;
+        if placed != chain.blocks {
+            return None;
+        }
+        let continue_label: Option<u32> = (index != innermost).then_some(frame.label);
+        let inside_a_switch: bool = self.switch_depth > frame.switches;
+        let break_label: Option<u32> =
+            (index != innermost || inside_a_switch).then_some(frame.label);
+        let test: Region = match break_label {
+            Some(label) => {
+                self.labels_used.insert(label);
+                label_unlabelled_breaks(test, label)
+            }
+            None => test,
+        };
+        if let Some(label) = continue_label {
+            self.labels_used.insert(label);
+        }
+        self.duplicated.extend(chain.blocks.iter().copied());
+        Some(vec![
+            test,
+            Region::Continue {
+                label: continue_label,
+                latch: None,
+            },
+        ])
     }
 
     fn entered_only_from(&self, block: BlockId, blocks: &BTreeSet<BlockId>) -> bool {
@@ -4002,8 +4127,9 @@ impl<'a> Structurer<'a> {
     fn structure_if(&mut self, head: BlockId, stop: Option<BlockId>) -> Region {
         let block: &BasicBlock = &self.cfg.blocks[head.0 as usize];
         let (true_t, false_t): (BlockId, BlockId) = if_targets(block);
-        let join: Option<BlockId> =
-            self.join_inside_loop(find_if_join(self.cfg, self.dom, head, true_t, false_t));
+        let join: Option<BlockId> = self
+            .join_inside_loop(find_if_join(self.cfg, self.dom, head, true_t, false_t))
+            .or_else(|| self.shared_latch_join(head, true_t, false_t));
         let arm_stop: Option<BlockId> = join.or(stop);
         let then_region: Region = self.structure_at(false_t, arm_stop);
         let has_else: bool = match join {
@@ -4221,6 +4347,27 @@ impl<'a> Structurer<'a> {
         })
     }
 
+    fn shared_latch_join(
+        &self,
+        head: BlockId,
+        true_t: BlockId,
+        false_t: BlockId,
+    ) -> Option<BlockId> {
+        let frame: &LoopFrame = self.loop_stack.last()?;
+        let true_reach: BTreeSet<BlockId> = forward_reach(self.cfg, true_t, frame.header);
+        let false_reach: BTreeSet<BlockId> = forward_reach(self.cfg, false_t, frame.header);
+        if true_reach.contains(&head) || false_reach.contains(&head) {
+            return None;
+        }
+        let first: BlockId = true_reach
+            .intersection(&false_reach)
+            .copied()
+            .min_by_key(|block: &BlockId| (self.cfg.blocks[block.0 as usize].start_pc, block.0))?;
+        let latch: bool = first != frame.header
+            && normal_targets(&self.cfg.blocks[first.0 as usize]).eq(std::iter::once(frame.header));
+        (latch && self.join_inside_loop(Some(first)).is_some()).then_some(first)
+    }
+
     fn continue_arm(&self, target: BlockId) -> Option<(Region, BlockId, Vec<BlockId>)> {
         let frame: &LoopFrame = self.loop_stack.last()?;
         let (resolved, trampolines): (BlockId, Vec<BlockId>) = self.trampoline_path(target);
@@ -4244,6 +4391,43 @@ struct ConditionChain {
 enum LoopKind {
     While,
     DoWhile,
+}
+
+fn label_unlabelled_breaks(region: Region, label: u32) -> Region {
+    match region {
+        Region::Break { label: None } => Region::Break { label: Some(label) },
+        Region::Sequence(items) => Region::Sequence(
+            items
+                .into_iter()
+                .map(|item: Region| label_unlabelled_breaks(item, label))
+                .collect(),
+        ),
+        Region::IfThen {
+            head,
+            cond_negated,
+            then_body,
+            join,
+        } => Region::IfThen {
+            head,
+            cond_negated,
+            then_body: Box::new(label_unlabelled_breaks(*then_body, label)),
+            join,
+        },
+        Region::IfThenElse {
+            head,
+            cond_negated,
+            then_body,
+            else_body,
+            join,
+        } => Region::IfThenElse {
+            head,
+            cond_negated,
+            then_body: Box::new(label_unlabelled_breaks(*then_body, label)),
+            else_body: Box::new(label_unlabelled_breaks(*else_body, label)),
+            join,
+        },
+        other => other,
+    }
 }
 
 fn classify_loop_header(cfg: &Cfg, loop_info: &NaturalLoop) -> LoopKind {
