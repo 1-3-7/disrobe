@@ -5,6 +5,9 @@ use std::process::{Command, Output};
 
 use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_jvm::{DecompiledClass, decompile_classfile_bytes};
+use disrobe_testkit::{CommandSpec, ToolError, ToolOutput, tool_output};
+
+const RUN_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(1);
 
 const OP_JSR: u8 = 0xA8;
 const UNRESOLVED_INDY: &str = "/* unresolved invokedynamic via ";
@@ -354,19 +357,28 @@ fn compile(compiler: Compiler, dir: &Path, sources: &[(&str, &str)]) -> Result<(
 }
 
 fn run(dir: &Path, main_class: &str) -> Result<String, String> {
-    let out: Output = Command::new(find_on_path("java"))
-        .env_remove("FORCE_COLOR")
-        .arg("-cp")
-        .arg(dir)
-        .arg(main_class)
-        .output()
-        .expect("java");
-    if out.status.success() {
-        Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+    run_bounded(dir.as_os_str().to_owned(), main_class)
+}
+
+fn run_bounded(classpath: std::ffi::OsString, main_class: &str) -> Result<String, String> {
+    let out: ToolOutput = tool_output(
+        CommandSpec::new(find_on_path("java"), RUN_TIMEOUT)
+            .arg("-cp")
+            .arg(classpath)
+            .arg(main_class),
+    )
+    .unwrap_or_else(|error: ToolError| panic!("java could not run {main_class}: {error}"));
+    if out.timed_out {
+        Err(format!(
+            "{main_class} did not terminate within {} seconds",
+            RUN_TIMEOUT.as_secs()
+        ))
+    } else if out.success {
+        Ok(out.stdout_text().trim().to_owned())
     } else {
         Err(format!(
             "running {main_class} failed: {}",
-            String::from_utf8_lossy(&out.stderr)
+            out.stderr_text()
         ))
     }
 }
@@ -1258,6 +1270,13 @@ const KT_SYNC_LOOP: KotlinShape = KotlinShape {
     output: "0,0,0;0,0,1;1,2,3;3,6,8;6,6,18;10,6,35;15,6,61;21,6,98;",
 };
 
+const KT_CONTINUE_LATCH: KotlinShape = KotlinShape {
+    name: "KtContinueLatch",
+    class: include_bytes!("../fixtures/shape_matrix/kotlin/KtContinueLatch.class"),
+    driver: include_str!("../fixtures/shape_matrix/kotlin/KtContinueLatchDriver.java"),
+    output: "1 3 5 0;2 4 6 1;3 5 7 2;4 6 8 3;5 7 9 4;6 8 ad10 25;7 9 ad11 36;8 ad10 a401;9 ad11 ad13 96;ad10 aa721;ad11 ad13 ad15 0;ad12 aa881;",
+};
+
 const KT_SYNC_CONTINUE: KotlinShape = KotlinShape {
     name: "KtSyncContinue",
     class: include_bytes!("../fixtures/shape_matrix/kotlin/KtSyncContinue.class"),
@@ -1345,21 +1364,7 @@ fn run_against_kotlin(
     libraries: &[PathBuf],
     main_class: &str,
 ) -> Result<String, String> {
-    let out: Output = Command::new(find_on_path("java"))
-        .env_remove("FORCE_COLOR")
-        .arg("-cp")
-        .arg(kotlin_classpath(dir, libraries))
-        .arg(main_class)
-        .output()
-        .expect("java");
-    if out.status.success() {
-        Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
-    } else {
-        Err(format!(
-            "running {main_class} failed: {}",
-            String::from_utf8_lossy(&out.stderr)
-        ))
-    }
+    run_bounded(kotlin_classpath(dir, libraries), main_class)
 }
 
 struct KotlinRecovery {
@@ -1548,6 +1553,14 @@ fn a_kotlin_when_with_shared_branches_and_ranges_recompiles() {
 #[test]
 fn a_kotlin_state_machine_reading_its_state_recompiles() {
     assert_kotlin_recovered(&KT_STATE_MACHINE, ("var2 = 3;", "var2 = 1;"));
+}
+
+#[test]
+fn a_kotlin_continue_from_a_nested_do_while_into_a_stepped_for_recompiles() {
+    assert_kotlin_recovered(
+        &KT_CONTINUE_LATCH,
+        ("arg1.append(((char) 100));", "arg1.append(((char) 101));"),
+    );
 }
 
 #[test]

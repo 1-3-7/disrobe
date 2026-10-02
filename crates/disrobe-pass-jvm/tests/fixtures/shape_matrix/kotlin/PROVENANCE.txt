@@ -4,6 +4,10 @@ Compiler archive SHA-256: 473dd66c7a3ef4b182065b3da670466c1bf2773a9dbb0ed8b33a39
 Command: kotlinc <Name>.kt -jvm-target 17 -d out, run in this directory once per Kotlin source
 Runtime libraries (not committed; the tests verify them): kotlin-stdlib 2.4.10 (https://repo1.maven.org/maven2/org/jetbrains/kotlin/kotlin-stdlib/2.4.10/kotlin-stdlib-2.4.10.jar, SHA-256 4ec0293bc3751423b203f1d8493251c57c42e73eb6377a6b8560d0974ff0a6df) and org.jetbrains annotations 13.0 (https://repo1.maven.org/maven2/org/jetbrains/annotations/13.0/annotations-13.0.jar, SHA-256 ace2a10dc8e2d5fd34925ecac03e4988b2c0f851650c94b8cef49ba1bd111478), the same files kotlinc 2.4.10 ships in lib/
 
+Source: KtContinueLatch.kt
+Class: out/KtContinueLatch.class
+Class SHA-256: 16bed6bd32a60523b39d38da1ee812fc540394c831bcd678eac7ffc03586bae2
+
 Source: KtCountLoop.kt
 Class: out/KtCountLoop.class
 Class SHA-256: 3d38afee215f94b28bfff97383455b24a8b36a0ad46220e37df837f03f5a414b

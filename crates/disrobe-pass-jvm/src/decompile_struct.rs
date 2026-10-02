@@ -823,7 +823,7 @@ impl<'a> Structurer<'a> {
         }
         let mut loop_exits: BTreeMap<BlockId, BlockId> = BTreeMap::new();
         for l in loops {
-            if let Some(exit) = find_loop_exit(cfg, l) {
+            if let Some(exit) = find_loop_exit(cfg, loops, l) {
                 loop_exits.insert(l.header, exit);
             }
         }
@@ -3528,7 +3528,7 @@ impl<'a> Structurer<'a> {
         let label: u32 = self.next_label;
         self.next_label += 1;
         let condition: Option<ConditionChain> = self.loop_condition_chain(loop_info, exit);
-        let latch_entry: Option<BlockId> = match classify_loop_header(self.cfg, loop_info) {
+        let latch_entry: Option<BlockId> = match classify_loop_header(self.cfg, loop_info, exit) {
             LoopKind::DoWhile => self
                 .latch_condition_chain(loop_info, exit)
                 .map(|(entry, _): (BlockId, ConditionChain)| entry),
@@ -3548,7 +3548,7 @@ impl<'a> Structurer<'a> {
             },
             condition.as_ref(),
         );
-        let header_region: Region = match classify_loop_header(self.cfg, loop_info) {
+        let header_region: Region = match classify_loop_header(self.cfg, loop_info, exit) {
             LoopKind::While => Region::While {
                 header,
                 body: Box::new(body_region),
@@ -3628,6 +3628,7 @@ impl<'a> Structurer<'a> {
             .iter()
             .filter(|e: &&Edge| !matches!(e.kind, EdgeKind::Exception))
             .all(|e: &Edge| loop_info.body.contains(&e.target))
+            || header_leaves_past_the_follow(self.cfg, loop_info, exit)
             || (exit.is_none()
                 && switch_header_leaves_only_through_terminal_tails(self.cfg, loop_info));
         let first_succ: Option<BlockId> = header_block
@@ -4430,7 +4431,7 @@ fn label_unlabelled_breaks(region: Region, label: u32) -> Region {
     }
 }
 
-fn classify_loop_header(cfg: &Cfg, loop_info: &NaturalLoop) -> LoopKind {
+fn classify_loop_header(cfg: &Cfg, loop_info: &NaturalLoop, exit: Option<BlockId>) -> LoopKind {
     let header_block: &BasicBlock = &cfg.blocks[loop_info.header.0 as usize];
     let cond_succs: Vec<&Edge> = header_block
         .successors
@@ -4438,33 +4439,76 @@ fn classify_loop_header(cfg: &Cfg, loop_info: &NaturalLoop) -> LoopKind {
         .filter(|e| matches!(e.kind, EdgeKind::CondTrue | EdgeKind::CondFalse))
         .collect();
     if cond_succs.len() == 2 {
-        let exits: usize = cond_succs
+        let exits: Vec<BlockId> = cond_succs
             .iter()
             .filter(|e| !loop_info.body.contains(&e.target))
-            .count();
-        if exits == 1 {
+            .map(|e: &&Edge| e.target)
+            .collect();
+        if let [only] = exits.as_slice()
+            && exit.is_none_or(|follow: BlockId| follow == *only)
+        {
             return LoopKind::While;
         }
     }
     LoopKind::DoWhile
 }
 
-fn find_loop_exit(cfg: &Cfg, loop_info: &NaturalLoop) -> Option<BlockId> {
+fn header_leaves_past_the_follow(
+    cfg: &Cfg,
+    loop_info: &NaturalLoop,
+    exit: Option<BlockId>,
+) -> bool {
+    let header: &BasicBlock = &cfg.blocks[loop_info.header.0 as usize];
+    is_if(header)
+        && exit.is_some_and(|follow: BlockId| {
+            normal_targets(header)
+                .any(|target: BlockId| !loop_info.body.contains(&target) && target != follow)
+        })
+}
+
+fn find_loop_exit(cfg: &Cfg, loops: &[NaturalLoop], loop_info: &NaturalLoop) -> Option<BlockId> {
     if switch_header_leaves_only_through_terminal_tails(cfg, loop_info) {
         return None;
     }
+    let mut exits: Vec<BlockId> = Vec::new();
     for &b in std::iter::once(&loop_info.header)
         .chain(&loop_info.latches)
         .chain(&loop_info.body)
     {
         let block: &BasicBlock = &cfg.blocks[b.0 as usize];
         for edge in &block.successors {
-            if !loop_info.body.contains(&edge.target) && !matches!(edge.kind, EdgeKind::Exception) {
-                return Some(edge.target);
+            if !loop_info.body.contains(&edge.target)
+                && !matches!(edge.kind, EdgeKind::Exception)
+                && !exits.contains(&edge.target)
+            {
+                exits.push(edge.target);
             }
         }
     }
-    None
+    let first: BlockId = *exits.first()?;
+    if exits.len() == 1 {
+        return Some(first);
+    }
+    let Some(enclosing): Option<&NaturalLoop> = loops
+        .iter()
+        .filter(|outer: &&NaturalLoop| {
+            outer.header != loop_info.header && outer.body.contains(&loop_info.header)
+        })
+        .min_by_key(|outer: &&NaturalLoop| outer.body.len())
+    else {
+        return Some(first);
+    };
+    if !enclosing.body.contains(&first) {
+        return Some(first);
+    }
+    let funnel: Option<BlockId> = exits.iter().copied().find(|candidate: &BlockId| {
+        let reach: BTreeSet<BlockId> = forward_reach(cfg, *candidate, enclosing.header);
+        enclosing.body.contains(candidate)
+            && exits
+                .iter()
+                .all(|other: &BlockId| other == candidate || reach.contains(other))
+    });
+    Some(funnel.unwrap_or(first))
 }
 
 fn same_goto_destination(cfg: &Cfg, block: BlockId, exit: BlockId) -> bool {
