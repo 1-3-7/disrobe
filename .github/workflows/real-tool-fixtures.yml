@@ -13,6 +13,7 @@ on:
           - wasm-name-obfuscator
           - jbco
           - pyobfus
+          - ollvm
 
 permissions:
   contents: read
@@ -20,7 +21,7 @@ permissions:
 jobs:
   produce:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: ${{ inputs.recipe == 'ollvm' && 330 || 60 }}
     env:
       RECIPE: ${{ inputs.recipe }}
     steps:
