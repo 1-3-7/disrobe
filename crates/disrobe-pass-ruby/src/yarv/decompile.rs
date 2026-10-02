@@ -438,6 +438,9 @@ fn try_render_exception_region(
     if targets[..start]
         .iter()
         .any(|target: &Option<usize>| target.is_some_and(|t: usize| t > start))
+        || body.instructions[..start]
+            .iter()
+            .any(|x: &YarvIbfInstruction| matches!(x.mnemonic.as_str(), "leave" | "throw"))
     {
         return None;
     }
