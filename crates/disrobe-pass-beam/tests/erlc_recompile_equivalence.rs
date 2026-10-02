@@ -83,7 +83,7 @@ const PUBLISHED_HEADING: &str = "BEAM stripped Core Erlang";
 const PUBLISHED_BAR: &str = "recompile-execution";
 #[cfg(target_os = "linux")]
 const CI_OTP_VERSION: &str = "27.3.4.15";
-const CORPUS_MODULES: [&str; 19] = [
+const CORPUS_MODULES: [&str; 20] = [
     "arith",
     "bigint",
     "binaries",
@@ -100,6 +100,7 @@ const CORPUS_MODULES: [&str; 19] = [
     "nested_data",
     "records2",
     "recursion",
+    "shortcircuit",
     "strings",
     "trycatch",
     "tuples",
@@ -408,7 +409,7 @@ fn published_bar() -> serde_json::Value {
     found.pop().expect("one published BEAM bar")
 }
 
-const EQUIVALENCE_FLOOR: usize = 19;
+const EQUIVALENCE_FLOOR: usize = 20;
 const PUBLISHED_DENOMINATOR: usize = CORPUS_MODULES.len();
 
 #[test]

@@ -271,7 +271,7 @@ struct Flags {
 }
 
 const SYNTH_LABEL_FLOOR: u32 = u32::MAX - 1;
-const MAX_LABEL_VISITS: u32 = 8;
+const MAX_LABEL_VISITS: u32 = 32;
 const MAX_WALK_CALLS: u32 = 20_000;
 
 impl Flags {

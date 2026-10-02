@@ -219,14 +219,14 @@
         {
           "label": "recompile-execution",
           "value": 100.0,
-          "num": 19,
-          "den": 19,
+          "num": 20,
+          "den": 20,
           "verified_by": {
             "path": "crates/disrobe-pass-beam/tests/erlc_recompile_equivalence.rs",
             "function": "stripped_core_lift_is_recompile_equivalent"
           },
-          "detail": "All 19 committed Erlang modules recover from stripped BEAM to Core Erlang source that recompiles under OTP 27.3.4, preserves the export set, and matches the original module's test/0 exit status and stdout. The gate removes Dbgi and Docs before recovery. The measured behavior covers each module's committed test/0 inputs.",
-          "source": "crates/disrobe-pass-beam/tests/erlc_recompile_equivalence.rs pins the 19 module names and enforces 19 equivalent results. It compares recovered exports against the original BEAM and executes both versions with erl. A separate regression changes the recovered test/0 result and requires the comparison to reject it. The Linux gate checks releases/<major>/OTP_VERSION against the provisioned 27.3.4.15 and requires the measured counts to equal this bar."
+          "detail": "All 20 committed Erlang modules recover from stripped BEAM to Core Erlang source that recompiles under OTP 27.3.4, preserves the export set, and matches the original module's test/0 exit status and stdout. The gate removes Dbgi and Docs before recovery. The measured behavior covers each module's committed test/0 inputs.",
+          "source": "crates/disrobe-pass-beam/tests/erlc_recompile_equivalence.rs pins the 20 module names and enforces 20 equivalent results. It compares recovered exports against the original BEAM and executes both versions with erl. A separate regression changes the recovered test/0 result and requires the comparison to reject it. The Linux gate checks releases/<major>/OTP_VERSION against the provisioned 27.3.4.15 and requires the measured counts to equal this bar."
         }
       ]
     },
