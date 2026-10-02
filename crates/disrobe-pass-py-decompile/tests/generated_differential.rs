@@ -8,6 +8,7 @@
 
 mod common;
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -17,7 +18,11 @@ use crate::common::band::{
 };
 use disrobe_testkit::{CommandSpec, ToolOutput, tool_output};
 
-const PROGRAMS: u64 = 48;
+const PROGRAMS: u64 = 300;
+const KNOWN_DIVERGENT: [u64; 23] = [
+    48, 73, 81, 100, 101, 112, 124, 157, 161, 164, 182, 192, 201, 213, 244, 255, 256, 259, 261,
+    280, 282, 291, 298,
+];
 const RUN_TIMEOUT: Duration = Duration::from_secs(10);
 const VARIABLES: [&str; 5] = ["a", "b", "c", "d", "e"];
 const MAX_BLOCK_DEPTH: u32 = 3;
@@ -311,7 +316,7 @@ fn recover_source(interp: &BandInterpreter, source: &str, name: &str, dir: &Path
 fn generated_programs_reexecute_identically_python_3_14() {
     let interp: BandInterpreter = interpreter();
     let dir: PathBuf = band_scratch("generated_differential");
-    let mut failures: Vec<String> = Vec::new();
+    let mut divergent: BTreeMap<u64, String> = BTreeMap::new();
     for seed in 0..PROGRAMS {
         let source: String = Generator::new(seed).program();
         let name: String = format!("gen{seed}");
@@ -326,16 +331,48 @@ fn generated_programs_reexecute_identically_python_3_14() {
         let actual: Result<String, String> = run(&interp.path, &recovered_path);
         if actual.as_deref() != Ok(expected.as_str()) {
             let shown: String = actual.unwrap_or_else(|error: String| format!("<failed: {error}>"));
-            failures.push(format!(
-                "seed {seed}\n--- expected ---\n{expected}--- actual ---\n{shown}\n--- source ---\n{source}--- recovered ---\n{recovered}"
-            ));
+            divergent.insert(
+                seed,
+                format!(
+                    "seed {seed}\n--- expected ---\n{expected}--- actual ---\n{shown}\n--- source ---\n{source}--- recovered ---\n{recovered}"
+                ),
+            );
         }
     }
+    let known: BTreeSet<u64> = KNOWN_DIVERGENT.into_iter().collect();
+    let regressed: Vec<&str> = divergent
+        .iter()
+        .filter(|(seed, _)| !known.contains(seed))
+        .map(|(_, detail)| detail.as_str())
+        .collect();
+    let recovered_seeds: Vec<u64> = known
+        .iter()
+        .copied()
+        .filter(|seed: &u64| !divergent.contains_key(seed))
+        .collect();
     assert!(
-        failures.is_empty(),
-        "{} of {PROGRAMS} generated Python programs re-executed differently:\n{}",
-        failures.len(),
-        failures.join("\n=====\n")
+        regressed.is_empty(),
+        "{} generated Python programs outside KNOWN_DIVERGENT re-executed differently:\n{}",
+        regressed.len(),
+        regressed.join("\n=====\n")
+    );
+    assert!(
+        recovered_seeds.is_empty(),
+        "seeds {recovered_seeds:?} now re-execute identically; remove them from KNOWN_DIVERGENT"
+    );
+}
+
+#[test]
+fn known_divergent_seeds_are_sorted_unique_and_generated() {
+    assert!(
+        KNOWN_DIVERGENT
+            .windows(2)
+            .all(|pair: &[u64]| pair[0] < pair[1]),
+        "KNOWN_DIVERGENT must be strictly ascending"
+    );
+    assert!(
+        KNOWN_DIVERGENT.iter().all(|&seed: &u64| seed < PROGRAMS),
+        "every KNOWN_DIVERGENT seed must be one of the {PROGRAMS} generated programs"
     );
 }
 

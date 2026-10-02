@@ -5555,7 +5555,13 @@ pub(super) fn structure_try(
     if !region.is_with
         && !region.is_finally
         && let Some(guard) = (lo..region.try_start).rev().find(|&k: &usize| {
-            is_forward_cond_jump(&stream.ops[k]) && !is_chain_cond_jump(&stream.ops, k)
+            is_forward_cond_jump(&stream.ops[k])
+                && !is_chain_cond_jump(&stream.ops, k)
+                && !(k + 1..region.try_start).any(|b: usize| {
+                    is_back_edge(&stream.ops[b])
+                        && resolve_jump_target(stream, b, &stream.ops[b])
+                            .is_some_and(|header: usize| header < k)
+                })
         })
         && guard > lo
         && let Some(false_target) = resolve_jump_target(stream, guard, &stream.ops[guard])

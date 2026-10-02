@@ -28,15 +28,24 @@ struct Lane {
 const LANE_314: Lane = Lane {
     fixtures: "tests/fixtures/structuring_behaviour",
     interpreter: "3.14",
-    min_cases: 18,
-    behaviour_only: &["for_try_break_first", "for_try_break_nested_for"],
+    min_cases: 25,
+    behaviour_only: &[
+        "elif_and_guard_before_try",
+        "for_try_break_first",
+        "for_try_break_nested_for",
+    ],
 };
 
 const LANE_312: Lane = Lane {
     fixtures: "tests/fixtures/structuring_behaviour_312",
     interpreter: "3.12",
-    min_cases: 2,
-    behaviour_only: &["bottom_guarded_continue_loop"],
+    min_cases: 8,
+    behaviour_only: &[
+        "bottom_guarded_continue_loop",
+        "elif_and_guard_before_try",
+        "elif_arm_try_in_loop",
+        "else_arm_while_in_loop",
+    ],
 };
 
 fn interpreter(lane: &Lane) -> BandInterpreter {

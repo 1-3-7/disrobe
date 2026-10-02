@@ -29,8 +29,9 @@ use super::try_with::{
 };
 use super::{
     DecodedStream, ExitProbeKey, LoopFrame, MAX_SYNTH_OPERANDS, PY_CO_FLAG_FUNCTION_SCOPE, ScDesc,
-    StructureHiCapGuard, charge_exit_probe, loop_frame_has_header, memoized_exit_probe,
-    negate_cond_expr, none_jump_test, pop_loop_frame, push_loop_frame, with_boolop_context,
+    StructureHiCapGuard, charge_exit_probe, loop_continue_target, loop_frame_has_header,
+    memoized_exit_probe, negate_cond_expr, none_jump_test, pop_loop_frame, push_loop_frame,
+    with_boolop_context,
 };
 use crate::ast::node::{BoolOpKind, Comprehension, ConstValue, Expr, ExprCtx, Stmt};
 use crate::ast::visitor::{Visitor, walk_comprehension, walk_stmt};
@@ -922,12 +923,22 @@ pub(super) fn loop_is_else_arm_of_leading_if(
         if cond_target <= guard || cond_target > region.header {
             return false;
         }
-        let Some(then_jump): Option<usize> = then_terminating_jump(stream, guard + 1, cond_target)
-        else {
-            return false;
-        };
-        resolve_jump_target(stream, then_jump, &stream.ops[then_jump])
-            .is_some_and(|t: usize| t >= loop_end && t <= hi)
+        if let Some(then_jump) = then_terminating_jump(stream, guard + 1, cond_target) {
+            return resolve_jump_target(stream, then_jump, &stream.ops[then_jump])
+                .is_some_and(|t: usize| t >= loop_end && t <= hi);
+        }
+        loop_continue_target().is_some_and(|outer: usize| {
+            outer < lo
+                && first_significant(stream, loop_end, hi).is_none_or(|latch: usize| {
+                    is_back_edge(&stream.ops[latch])
+                        && resolve_jump_target(stream, latch, &stream.ops[latch]) == Some(outer)
+                        && first_significant(stream, latch + 1, hi).is_none()
+                })
+                && last_significant_back(stream, guard + 1, cond_target).is_some_and(|k: usize| {
+                    is_back_edge(&stream.ops[k])
+                        && resolve_jump_target(stream, k, &stream.ops[k]) == Some(outer)
+                })
+        })
     })
 }
 
@@ -2977,7 +2988,11 @@ fn duplicated_exit_start(
         .unwrap_or(exit)
 }
 
-fn is_duplicated_terminal_block(stream: &DecodedStream, start: usize, copy: usize) -> bool {
+pub(super) fn is_duplicated_terminal_block(
+    stream: &DecodedStream,
+    start: usize,
+    copy: usize,
+) -> bool {
     let Some(ret): Option<usize> = (start..copy).find(|&k: &usize| {
         matches!(
             stream.ops[k],

@@ -17,9 +17,9 @@ use super::exprs::{
 };
 use super::function_meta::prepend_nonlocal_decls;
 use super::loops::{
-    PeeledWhileTestRelation, compound_guard_is_source_outer_while, cond_expr_start,
-    find_legacy_async_for_loop, find_loop, for_cold_handler_exit_epilogue,
-    guard_matches_enclosed_while, guard_peels_enclosed_while,
+    PeeledWhileTestRelation, active_loop_body_end, compound_guard_is_source_outer_while,
+    cond_expr_start, find_legacy_async_for_loop, find_loop, for_cold_handler_exit_epilogue,
+    guard_matches_enclosed_while, guard_peels_enclosed_while, is_duplicated_terminal_block,
     is_post311_two_call_and_try_break_loop, is_walrus_store_shape, leading_cond_arm_holds_loop,
     leading_guard_if_encloses_loop, legacy_async_for_enclosed_by_loop,
     legacy_async_for_enclosed_by_try, loop_enclosed_by_guard, loop_is_else_arm_of_leading_if,
@@ -1927,6 +1927,11 @@ fn structure_elif_chain_arm(
     lo: usize,
     hi: usize,
 ) -> Result<Vec<Stmt>> {
+    if let Some(chain) = recover_fallthrough_continue_chain(code, stream, lo, hi)?
+        && let Some(stmts) = split_try_continue_chain(stream, hi, chain)
+    {
+        return Ok(stmts);
+    }
     let Some(first_cond): Option<usize> = (lo..hi).find(|&i: &usize| {
         is_forward_cond_jump(&stream.ops[i])
             && !is_chain_cond_jump(&stream.ops, i)
@@ -1935,6 +1940,14 @@ fn structure_elif_chain_arm(
         let arm: Vec<Stmt> = structure_stmts(code, stream, lo, hi)?;
         return rewrite_trailing_iterator_break(code, stream, arm, lo, hi);
     };
+    let first_cond_tests_loop: bool = (first_cond + 1..hi).any(|k: usize| {
+        is_back_edge(&stream.ops[k])
+            && resolve_jump_target(stream, k, &stream.ops[k])
+                .is_some_and(|t: usize| t >= lo && t <= first_cond)
+    });
+    if first_cond_tests_loop {
+        return structure_stmts(code, stream, lo, hi);
+    }
     let compound: Option<CompoundIf> = try_recover_compound_if(code, stream, lo, hi)?;
     let cond_at: usize = compound
         .as_ref()
@@ -2007,9 +2020,40 @@ fn structure_elif_chain_arm(
         };
         (head, none_test.unwrap_or(raw_test))
     };
+    let skipped_arm_back: Option<usize> = (!jump_skips_arm
+        && first_significant(stream, jump_target, hi).is_none())
+    .then(|| {
+        (cond_at + 1..jump_target)
+            .rev()
+            .find(|&k: &usize| lands_on_header(k))
+    })
+    .flatten();
+    if let Some(back) = skipped_arm_back {
+        let mut skip_body: Vec<Stmt> = structure_stmts(code, stream, cond_at + 1, back)?;
+        skip_body.retain(|stmt: &Stmt| !matches!(stmt, Stmt::Pass));
+        if !matches!(
+            skip_body.last(),
+            Some(Stmt::Return(_) | Stmt::Raise { .. } | Stmt::Break | Stmt::Continue)
+        ) {
+            skip_body.push(Stmt::Continue);
+        }
+        let mut out: Vec<Stmt> = head;
+        out.push(Stmt::If {
+            test: negate_cond_expr(test),
+            body: skip_body,
+            orelse: Vec::new(),
+            line: None,
+        });
+        return Ok(out);
+    }
     let body: Vec<Stmt> = structure_stmts(code, stream, arm_body_start, arm_end)?;
     let body: Vec<Stmt> =
         rewrite_jump_to_break_continue(code, stream, body, arm_body_start, arm_end);
+    let body: Vec<Stmt> = if arm_end < hi && lands_on_header(arm_end) {
+        continue_before_split_try(stream, hi, body)
+    } else {
+        body
+    };
     let deeper: Vec<Stmt> = if next_arm_start < hi {
         structure_elif_chain_arm(code, stream, next_arm_start, hi)?
     } else {
@@ -2098,6 +2142,59 @@ fn else_region_rejoins(
         }
     }
     false
+}
+
+fn jumps_to_copy_of_window_exit(stream: &DecodedStream, hi: usize, target: usize) -> bool {
+    first_significant(stream, hi, target)
+        .is_some_and(|exit: usize| is_duplicated_terminal_block(stream, exit, target))
+}
+
+fn continue_before_split_try(stream: &DecodedStream, hi: usize, mut arm: Vec<Stmt>) -> Vec<Stmt> {
+    if window_end_opens_try(stream, hi)
+        && !window_end_falls_to_loop_latch(stream, hi)
+        && !matches!(
+            arm.last(),
+            Some(Stmt::Return(_) | Stmt::Raise { .. } | Stmt::Break | Stmt::Continue)
+        )
+    {
+        arm.retain(|stmt: &Stmt| !matches!(stmt, Stmt::Pass));
+        arm.push(Stmt::Continue);
+    }
+    arm
+}
+
+fn window_end_opens_try(stream: &DecodedStream, hi: usize) -> bool {
+    if stream.is_pre_311() {
+        return false;
+    }
+    let (Some(&window_off), Some(entry)): (Option<&u32>, Option<usize>) = (
+        stream.offsets.get(hi),
+        first_significant(stream, hi, stream.ops.len()),
+    ) else {
+        return false;
+    };
+    let Some(&entry_off): Option<&u32> = stream.offsets.get(entry) else {
+        return false;
+    };
+    stream
+        .exception_table
+        .iter()
+        .any(|e: &crate::bytecode::flow::ExceptionTableEntry| {
+            e.start >= window_off && e.start <= entry_off
+        })
+}
+
+fn window_end_falls_to_loop_latch(stream: &DecodedStream, hi: usize) -> bool {
+    let Some(header): Option<usize> = loop_continue_target() else {
+        return true;
+    };
+    if active_loop_body_end().is_some_and(|body_end: usize| hi >= body_end) {
+        return true;
+    }
+    first_significant(stream, hi, stream.ops.len()).is_none_or(|k: usize| {
+        is_back_edge(&stream.ops[k])
+            && resolve_jump_target(stream, k, &stream.ops[k]) == Some(header)
+    })
 }
 
 pub(super) fn then_continues_to_loop(
@@ -2289,8 +2386,15 @@ fn guard_body_completes_statement(ops: &[CanonicalOp], idx: usize) -> bool {
 }
 
 fn value_form_guard_holds_statement(stream: &DecodedStream, idx: usize, hi: usize) -> bool {
-    let Some(target): Option<usize> =
-        resolve_jump_target(stream, idx, &stream.ops[idx]).filter(|t: &usize| *t > idx && *t <= hi)
+    let Some(target): Option<usize> = resolve_jump_target(stream, idx, &stream.ops[idx])
+        .filter(|t: &usize| *t > idx)
+        .and_then(|t: usize| {
+            if t <= hi {
+                Some(t)
+            } else {
+                jumps_to_copy_of_window_exit(stream, hi, t).then_some(hi)
+            }
+        })
     else {
         return false;
     };
@@ -2541,8 +2645,9 @@ pub(super) fn structure_stmts(
             && !is_chain_cond_jump(&stream.ops, i)
             && (!is_value_form_shortcircuit(&stream.ops, i)
                 || value_form_guard_holds_statement(stream, i, hi))
-            && resolve_jump_target(stream, i, &stream.ops[i])
-                .is_some_and(|t: usize| t > i && t <= hi)
+            && resolve_jump_target(stream, i, &stream.ops[i]).is_some_and(|t: usize| {
+                t > i && (t <= hi || jumps_to_copy_of_window_exit(stream, hi, t))
+            })
     });
     if let Some(first) = first_cond {
         let first_target: usize = resolve_jump_target(stream, first, &stream.ops[first])
@@ -2718,7 +2823,7 @@ pub(super) fn structure_stmts(
     });
     let fallthrough: Vec<Stmt> = structure_stmts(code, stream, jump_idx + 1, body_real_end)?;
     let fallthrough: Vec<Stmt> = if else_via_continue {
-        fallthrough
+        continue_before_split_try(stream, hi, fallthrough)
     } else {
         rewrite_jump_to_break_continue(code, stream, fallthrough, jump_idx + 1, body_real_end)
     };
@@ -6238,10 +6343,16 @@ fn collect_fallthrough_continue_chain(
         if back > header {
             return None;
         }
-        let after_edge: usize = first_significant(stream, edge + 1, hi)?;
-        if guard_entry_index(stream, target, hi) != guard_entry_index(stream, after_edge, hi) {
-            return None;
-        }
+        let after_edge: usize = match first_significant(stream, edge + 1, hi) {
+            Some(next) => {
+                if guard_entry_index(stream, target, hi) != guard_entry_index(stream, next, hi) {
+                    return None;
+                }
+                next
+            }
+            None if first_significant(stream, target, hi).is_none() => hi,
+            None => return None,
+        };
         guards.push(FallthroughGuard {
             jump,
             next: after_edge,
@@ -6254,12 +6365,67 @@ fn collect_fallthrough_continue_chain(
     }
 }
 
+struct FallthroughContinueChain {
+    head: Vec<Stmt>,
+    test: Expr,
+    body_start: usize,
+}
+
+fn split_try_continue_chain(
+    stream: &DecodedStream,
+    hi: usize,
+    chain: FallthroughContinueChain,
+) -> Option<Vec<Stmt>> {
+    if first_significant(stream, chain.body_start, hi).is_some()
+        || !window_end_opens_try(stream, hi)
+    {
+        return None;
+    }
+    let mut out: Vec<Stmt> = chain.head;
+    out.push(Stmt::If {
+        test: negate_cond_expr(chain.test),
+        body: vec![Stmt::Continue],
+        orelse: Vec::new(),
+        line: None,
+    });
+    Some(out)
+}
+
 fn structure_fallthrough_continue_and_chain(
     code: &CodeObject,
     stream: &DecodedStream,
     lo: usize,
     hi: usize,
 ) -> Result<Option<Vec<Stmt>>> {
+    let Some(chain): Option<FallthroughContinueChain> =
+        recover_fallthrough_continue_chain(code, stream, lo, hi)?
+    else {
+        return Ok(None);
+    };
+    if first_significant(stream, chain.body_start, hi).is_none() {
+        return Ok(split_try_continue_chain(stream, hi, chain));
+    }
+    let body_start: usize = chain.body_start;
+    let body_end: usize = trim_body_back_edge(stream, body_start, hi);
+    let body: Vec<Stmt> = structure_stmts(code, stream, body_start, body_end)?;
+    let body: Vec<Stmt> = rewrite_jump_to_break_continue(code, stream, body, body_start, body_end);
+    let mut out: Vec<Stmt> = chain.head;
+    out.push(Stmt::If {
+        test: chain.test,
+        body: non_empty(body),
+        orelse: Vec::new(),
+        line: None,
+    });
+    out.extend(structure_stmts(code, stream, body_end, hi)?);
+    Ok(Some(out))
+}
+
+fn recover_fallthrough_continue_chain(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+) -> Result<Option<FallthroughContinueChain>> {
     use crate::ast::node::BoolOpKind;
     let Some(header): Option<usize> = loop_continue_target() else {
         return Ok(None);
@@ -6312,17 +6478,11 @@ fn structure_fallthrough_continue_and_chain(
         op: BoolOpKind::And,
         values: operands,
     };
-    let body_end: usize = trim_body_back_edge(stream, body_start, hi);
-    let body: Vec<Stmt> = structure_stmts(code, stream, body_start, body_end)?;
-    let mut out: Vec<Stmt> = head;
-    out.push(Stmt::If {
+    Ok(Some(FallthroughContinueChain {
+        head,
         test,
-        body: non_empty(body),
-        orelse: Vec::new(),
-        line: None,
-    });
-    out.extend(structure_stmts(code, stream, body_end, hi)?);
-    Ok(Some(out))
+        body_start,
+    }))
 }
 
 fn structure_guarded_continue(
