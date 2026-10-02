@@ -11,7 +11,7 @@ mod common;
 
 use common::erlang_toolchain::{Erlang, require_erlang, run_bounded};
 
-const PROGRAMS: u64 = 40;
+const PROGRAMS: u64 = 400;
 const GRADED: &str = "generated Erlang programs through the stripped core lift";
 const VARIABLES: [&str; 4] = ["A", "B", "C", "D"];
 
