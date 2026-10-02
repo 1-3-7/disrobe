@@ -39,7 +39,7 @@ const FULL_OBJECT_PCT_FLOOR: f64 = 95.18;
 
 const PINNED_MODULES: u64 = 200;
 const PINNED_CODE_OBJECTS: u64 = 6_286;
-const PINNED_OBJECTS_OK: u64 = 6_097;
+const PINNED_OBJECTS_OK: u64 = 6_138;
 
 const PINNED_CPYTHON: &str = "3.14.5";
 const PINNED_MAGIC: &str = "2b0e0d0a";

@@ -31,11 +31,11 @@ const BAND_LABEL: &str = "CPython 3.8 (154 of the pinned modules)";
 const BAND_LABEL_PREFIX: &str = "CPython 3.8 (";
 const BAND_POPULATION: &str = "cpython-38-band";
 
-const OBJECT_PCT_FLOOR: f64 = 90.21;
-const BAND_OBJECTS_OK: u64 = 4_590;
+const OBJECT_PCT_FLOOR: f64 = 90.38;
+const BAND_OBJECTS_OK: u64 = 4_599;
 const BAND_CODE_OBJECTS: u64 = 5_088;
 const BAND_MODULES: u64 = 154;
-const BAND_MODULES_EXACT_FLOOR: u64 = 85;
+const BAND_MODULES_EXACT_FLOOR: u64 = 96;
 const BAND_MISSING_FROM_LIB: u64 = 46;
 const BAND_POSONLY_OBJECTS: u64 = 13;
 const BAND_CPYTHON: &str = CPYTHON_38.release;

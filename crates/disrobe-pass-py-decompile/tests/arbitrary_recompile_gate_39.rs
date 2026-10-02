@@ -31,11 +31,11 @@ const BAND_LABEL: &str = "CPython 3.9 (157 of the pinned modules)";
 const BAND_LABEL_PREFIX: &str = "CPython 3.9 (";
 const BAND_POPULATION: &str = "cpython-39-band";
 
-const OBJECT_PCT_FLOOR: f64 = 95.96;
-const BAND_OBJECTS_OK: u64 = 5_022;
+const OBJECT_PCT_FLOOR: f64 = 96.15;
+const BAND_OBJECTS_OK: u64 = 5_032;
 const BAND_CODE_OBJECTS: u64 = 5_233;
 const BAND_MODULES: u64 = 157;
-const BAND_MODULES_EXACT_FLOOR: u64 = 84;
+const BAND_MODULES_EXACT_FLOOR: u64 = 92;
 const BAND_MISSING_FROM_LIB: u64 = 43;
 const BAND_POSONLY_OBJECTS: u64 = 22;
 const BAND_CPYTHON: &str = CPYTHON_39.release;
