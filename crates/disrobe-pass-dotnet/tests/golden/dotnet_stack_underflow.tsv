@@ -1,8 +1,6 @@
 confuserex/gauntlet/GauntletSample.confuserex2.exe	0x06000040	public void .ctor()
 koivm/KoiVM.Runtime.dll	0x06000016	private void 81f1629c(ulong arg1, uint arg2, 619a237a arg3, void*[] arg4, void* arg5)
-koivm/KoiVM.Runtime.dll	0x06000182	private static b15f023 4cac7d09(System.Type arg1, System.Type arg2)
 koivm/KoiVM.Runtime.dll	0x0600018b	public static b2d72d95 87ee1948(System.Reflection.MethodBase arg1, System.Reflection.Emit.OpCode arg2, System.Type arg3)
-koivm/KoiVM.Runtime.dll	0x0600019a	private static b81f0643 73c4c48a(System.Reflection.FieldInfo arg1)
 megafile/EdgeCases.confuserex2.dll	0x0600028f	public int GetHashCode()
 megafile/EdgeCases.confuserex2.dll	0x0600032f	public EdgeCases.More.Maybe<TNext> Bind<TNext>(System.Func<T, EdgeCases.More.Maybe<TNext>> binder)
 megafile/EdgeCases.obfuscar.dll	0x060000ce	private void MoveNext()

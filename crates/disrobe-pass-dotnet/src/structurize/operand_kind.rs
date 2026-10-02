@@ -157,6 +157,7 @@ fn infer_bounded(expression: &Expr, names: &NameTable, depth: usize) -> StackKin
         Expr::Arg(slot) => StackKind::of_optional_type_name(names.arg_type(*slot)),
         Expr::Const(text) => const_kind(text),
         Expr::Cast(ty, _)
+        | Expr::Temp { ty: Some(ty), .. }
         | Expr::UnboxAny {
             target: Some(ty), ..
         } => StackKind::of_type_name(ty),
@@ -235,6 +236,10 @@ fn integer_literal_value(text: &str) -> Option<i64> {
         return None;
     }
     text.parse::<i64>().ok()
+}
+
+fn is_zero(expression: &Expr) -> bool {
+    matches!(expression, Expr::Const(text) if text == "0")
 }
 
 fn is_integer_const(expression: &Expr) -> bool {
@@ -507,6 +512,16 @@ impl<N: TokenNamer> Lifter<'_, N> {
                 }
                 _ => plain(lhs, rhs),
             },
+            Comparison::Unsigned { .. }
+                if op == ">" && lhs_kind == StackKind::Bool && is_zero(&rhs) =>
+            {
+                (lhs, lhs_depth)
+            }
+            Comparison::Unsigned { .. }
+                if op == "<" && rhs_kind == StackKind::Bool && is_zero(&lhs) =>
+            {
+                (rhs, rhs_depth)
+            }
             Comparison::Unsigned {
                 true_when_unordered,
             } => match (lhs_kind, rhs_kind) {

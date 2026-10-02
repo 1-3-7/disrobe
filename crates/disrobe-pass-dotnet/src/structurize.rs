@@ -438,6 +438,7 @@ pub(crate) enum Expr {
         name: String,
         is_boolean: bool,
         kind: CondKind,
+        ty: Option<String>,
     },
     Raw(String),
 }
@@ -612,10 +613,31 @@ impl Expr {
     }
 
     fn has_effect(&self) -> bool {
+        self.contains_node(|node: &Self| matches!(node, Self::Call { .. } | Self::NewObj { .. }))
+    }
+
+    fn is_order_sensitive(&self) -> bool {
+        self.contains_node(|node: &Self| match node {
+            Self::Call { .. }
+            | Self::NewObj { .. }
+            | Self::Field { .. }
+            | Self::LoadElem(..)
+            | Self::LoadLen(_)
+            | Self::Deref(_)
+            | Self::UnboxAny { .. } => true,
+            Self::Binary("/" | "%", _, divisor) => !is_non_trapping_divisor(divisor),
+            Self::Raw(text) => text.starts_with("checked("),
+            _ => false,
+        })
+    }
+
+    fn contains_node(&self, hit: impl Fn(&Self) -> bool) -> bool {
         let mut pending: Vec<&Self> = vec![self];
         while let Some(expression) = pending.pop() {
+            if hit(expression) {
+                return true;
+            }
             match expression {
-                Self::Call { .. } | Self::NewObj { .. } => return true,
                 Self::Unary(_, child)
                 | Self::Cast(_, child)
                 | Self::IsInst { operand: child, .. }
@@ -644,7 +666,9 @@ impl Expr {
                 }
                 Self::Tuple(items) => pending.extend(items),
                 Self::MethodPtr { receiver, .. } => pending.extend(receiver.as_deref()),
-                Self::Const(_)
+                Self::Call { .. }
+                | Self::NewObj { .. }
+                | Self::Const(_)
                 | Self::Local(_)
                 | Self::Arg(_)
                 | Self::Field { .. }
@@ -1292,6 +1316,10 @@ fn char_literal(text: &str) -> Option<String> {
     Some(format!("'{escaped}'"))
 }
 
+fn is_non_trapping_divisor(divisor: &Expr) -> bool {
+    matches!(divisor, Expr::Const(text) if text.parse::<i64>().is_ok_and(|value: i64| value != 0 && value != -1))
+}
+
 fn is_char_type_name(ty: &str) -> bool {
     matches!(ty.trim(), "char" | "Char" | "System.Char")
 }
@@ -1319,12 +1347,42 @@ fn array_element_type(array: &Expr, names: &NameTable) -> Option<String> {
     declared.strip_suffix("[]").map(str::to_owned)
 }
 
-fn coerce_constant(value: Expr, target_type: Option<&str>, lang: TargetLang) -> Expr {
-    let literal: Option<String> = match (&value, target_type) {
-        (Expr::Const(text), Some(ty)) => coerced_literal(text, ty, lang),
-        _ => None,
+fn coerce_to(value: Expr, target_type: Option<&str>, lang: TargetLang, names: &NameTable) -> Expr {
+    let Some(ty) = target_type else {
+        return value;
     };
-    literal.map_or(value, Expr::Const)
+    if let Expr::Const(text) = &value {
+        return coerced_literal(text, ty, lang).map_or(value, Expr::Const);
+    }
+    if lang == TargetLang::CSharp
+        && accepts_int_implicitly(ty.trim())
+        && value.is_known_boolean(names)
+    {
+        return Expr::Cond {
+            condition: Box::new(value),
+            when_true: Box::new(Expr::Const("1".to_owned())),
+            when_false: Box::new(Expr::Const("0".to_owned())),
+        };
+    }
+    value
+}
+
+fn accepts_int_implicitly(ty: &str) -> bool {
+    matches!(
+        ty,
+        "int"
+            | "long"
+            | "nint"
+            | "float"
+            | "double"
+            | "decimal"
+            | "System.Int32"
+            | "System.Int64"
+            | "System.IntPtr"
+            | "System.Single"
+            | "System.Double"
+            | "System.Decimal"
+    )
 }
 
 fn const_operand_value(expression: &Expr) -> Option<usize> {
@@ -1716,6 +1774,10 @@ fn is_compiler_generated_allocation(expression: &Expr) -> bool {
     }
 }
 
+fn must_precede_effects(expression: &Expr) -> bool {
+    !is_compiler_generated_allocation(expression) && expression.is_order_sensitive()
+}
+
 const fn needs_spill(expression: &Expr, conflicting: bool) -> bool {
     match expression {
         Expr::Local(_) | Expr::Arg(_) => conflicting,
@@ -2059,10 +2121,30 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
     }
 
     fn spill_before_store(&mut self, store: StoreTarget) -> BTreeMap<u64, Expr> {
+        let overwritten: bool = self.pending_overwritten(store);
+        self.spill_entries(|expression: &Expr, reads: &BTreeSet<Location>| {
+            if overwritten {
+                needs_spill(
+                    expression,
+                    reads.iter().any(|read: &Location| store.overwrites(*read)),
+                )
+            } else {
+                must_precede_effects(expression)
+            }
+        })
+    }
+
+    fn spill_before_effect(&mut self) {
+        self.spill_entries(|expression: &Expr, _: &BTreeSet<Location>| {
+            must_precede_effects(expression)
+        });
+    }
+
+    fn spill_entries(
+        &mut self,
+        spills: impl Fn(&Expr, &BTreeSet<Location>) -> bool,
+    ) -> BTreeMap<u64, Expr> {
         let mut shared: BTreeMap<u64, Expr> = BTreeMap::new();
-        if !self.pending_overwritten(store) {
-            return shared;
-        }
         for index in self.spill_floor..self.stack.len() {
             let (Some(expression), Some(facts)): (Option<&Expr>, Option<&EntryFacts>) =
                 (self.stack.get(index), self.stack_facts.get(index))
@@ -2073,11 +2155,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
             let replacement: Expr = if let Some(temp) = shared.get(&origin) {
                 temp.clone()
             } else {
-                let conflicting: bool = facts
-                    .reads
-                    .iter()
-                    .any(|read: &Location| store.overwrites(*read));
-                if !needs_spill(expression, conflicting) {
+                if !spills(expression, &facts.reads) {
                     continue;
                 }
                 let name: String =
@@ -2086,6 +2164,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                     name: name.clone(),
                     is_boolean: expression.is_known_boolean(self.names),
                     kind: classify_cond_kind(expression, self.names),
+                    ty: declared_type(expression, self.names).map(str::to_owned),
                 };
                 self.stmts.push(Stmt::Declare {
                     name,
@@ -2267,9 +2346,9 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
             let lhs_is_boolean: bool = lhs.is_known_boolean(self.names);
             let rhs_is_boolean: bool = rhs.is_known_boolean(self.names);
             if lhs_is_boolean && !rhs_is_boolean {
-                rhs = coerce_constant(rhs, Some("bool"), self.lang);
+                rhs = coerce_to(rhs, Some("bool"), self.lang, self.names);
             } else if rhs_is_boolean && !lhs_is_boolean {
-                lhs = coerce_constant(lhs, Some("bool"), self.lang);
+                lhs = coerce_to(lhs, Some("bool"), self.lang, self.names);
             }
         }
         let depth: usize = lhs_depth.max(rhs_depth).saturating_add(1);
@@ -2418,7 +2497,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
         let spilled: BTreeMap<u64, Expr> =
             self.spill_before_store(StoreTarget::Slot(Location::Local(n)));
         let val: Expr = adopt_spill(&spilled, val);
-        let val: Expr = coerce_constant(val, self.names.local_type(n), self.lang);
+        let val: Expr = coerce_to(val, self.names.local_type(n), self.lang, self.names);
         self.locals_assigned.insert(n);
         self.stmts.push(Stmt::Assign {
             target: NameTable::local_name(n),
@@ -2498,10 +2577,10 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 if idx < recv_off {
                     continue;
                 }
+                let param_index: usize = idx - recv_off;
                 if let Expr::Const(value) = arg
                     && is_bare_integer_literal(value)
                 {
-                    let param_index: usize = idx - recv_off;
                     if let Some(enum_ty) = self.namer.enum_param_type(token, param_index) {
                         *arg = Expr::Cast(enum_ty, Box::new(Expr::Const(value.clone())));
                     } else if let Some(literal) = self
@@ -2511,6 +2590,11 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                     {
                         *arg = Expr::Const(literal);
                     }
+                } else if arg.is_known_boolean(self.names)
+                    && let Some(ty) = self.namer.param_type_name(token, param_index)
+                {
+                    let value: Expr = std::mem::replace(arg, Expr::Null);
+                    *arg = coerce_to(value, Some(&ty), self.lang, self.names);
                 }
             }
         }
@@ -2534,6 +2618,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
             if returns_value {
                 self.push_typed(folded, result_kind);
             } else {
+                self.spill_before_effect();
                 self.stmts.push(Stmt::Expr(render_bounded_expression(
                     folded, self.lang, self.names,
                 )));
@@ -2549,6 +2634,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
             if returns_value {
                 self.push_typed(folded, result_kind);
             } else {
+                self.spill_before_effect();
                 self.stmts.push(Stmt::Expr(render_bounded_expression(
                     folded, self.lang, self.names,
                 )));
@@ -2622,6 +2708,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
         if let Some(prop) = property_setter_name(member)
             && !returns_value
         {
+            self.spill_before_effect();
             if has_this
                 && args.len() > 2
                 && self.lang == TargetLang::CSharp
@@ -2683,6 +2770,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
             }
         };
         if is_ctor || !returns_value {
+            self.spill_before_effect();
             self.stmts.push(Stmt::Expr(render_bounded_expression(
                 call, self.lang, self.names,
             )));
@@ -2769,7 +2857,8 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 let spilled: BTreeMap<u64, Expr> =
                     self.spill_before_store(StoreTarget::Slot(Location::Arg(slot)));
                 let value: Expr = adopt_spill(&spilled, value);
-                let value: Expr = coerce_constant(value, self.names.arg_type(slot), self.lang);
+                let value: Expr =
+                    coerce_to(value, self.names.arg_type(slot), self.lang, self.names);
                 self.stmts.push(Stmt::Assign {
                     target: self.names.arg_name(slot),
                     value: value.render(self.lang, self.names),
@@ -2872,6 +2961,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                         name: name.clone(),
                         is_boolean: e.is_known_boolean(self.names),
                         kind: classify_cond_kind(&e, self.names),
+                        ty: declared_type(&e, self.names).map(str::to_owned),
                     };
                     self.stmts.push(Stmt::Declare {
                         name,
@@ -2891,6 +2981,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
             "pop" => {
                 let e: Expr = self.pop();
                 if matches!(e, Expr::Call { .. } | Expr::NewObj { .. }) {
+                    self.spill_before_effect();
                     self.stmts.push(Stmt::Expr(e.render(self.lang, self.names)));
                 }
             }
@@ -3197,7 +3288,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 let obj: Expr = adopt_spill(&spilled, obj);
                 let fld: String = field_name(&self.token_name(ins));
                 let field_type: Option<String> = self.stored_field_type(ins);
-                let val: Expr = coerce_constant(val, field_type.as_deref(), self.lang);
+                let val: Expr = coerce_to(val, field_type.as_deref(), self.lang, self.names);
                 self.stmts.push(Stmt::Assign {
                     target: format!("{}.{}", paren(&obj, self.lang, self.names), fld),
                     value: val.render(self.lang, self.names),
@@ -3210,7 +3301,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 let val: Expr = adopt_spill(&spilled, val);
                 let fld: String = field_name(&self.token_name(ins));
                 let field_type: Option<String> = self.stored_field_type(ins);
-                let val: Expr = coerce_constant(val, field_type.as_deref(), self.lang);
+                let val: Expr = coerce_to(val, field_type.as_deref(), self.lang, self.names);
                 self.stmts.push(Stmt::Assign {
                     target: fld,
                     value: val.render(self.lang, self.names),
@@ -3242,7 +3333,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 let idx: (Expr, Option<u64>) = self.pop_operand();
                 let arr: (Expr, Option<u64>) = self.pop_operand();
                 let element_type: Option<String> = array_element_type(&arr.0, self.names);
-                let val: Expr = coerce_constant(val, element_type.as_deref(), self.lang);
+                let val: Expr = coerce_to(val, element_type.as_deref(), self.lang, self.names);
                 match self.append_to_duplicated_array_literal(&arr.0, &idx.0, val) {
                     Ok(()) => self.merge_consumed_into_top(),
                     Err(val) => {
@@ -3402,12 +3493,11 @@ pub(crate) struct BlockCode {
     exit_kinds: Vec<StackKind>,
 }
 
-pub(crate) fn stack_slot_type(code: &BlockCode, index: usize, names: &NameTable) -> Option<String> {
-    let expression: &Expr = code.exit_stack.get(index)?;
-    let declared: Option<&str> = match expression {
+fn declared_type<'e>(expression: &'e Expr, names: &'e NameTable) -> Option<&'e str> {
+    match expression {
         Expr::Local(slot) => names.local_type(*slot),
         Expr::Arg(slot) => names.arg_type(*slot),
-        Expr::Cast(ty, _) => Some(ty.as_str()),
+        Expr::Cast(ty, _) | Expr::Temp { ty: Some(ty), .. } => Some(ty.as_str()),
         Expr::StringLit(_) => Some("string"),
         Expr::NewObj {
             ctor,
@@ -3415,8 +3505,12 @@ pub(crate) fn stack_slot_type(code: &BlockCode, index: usize, names: &NameTable)
             ..
         } if !is_compiler_generated_allocation(expression) => Some(ctor.as_str()),
         _ => None,
-    };
-    if let Some(ty) = declared {
+    }
+}
+
+pub(crate) fn stack_slot_type(code: &BlockCode, index: usize, names: &NameTable) -> Option<String> {
+    let expression: &Expr = code.exit_stack.get(index)?;
+    if let Some(ty) = declared_type(expression, names) {
         return Some(ty.to_owned());
     }
     let kind: StackKind = match code.exit_kinds.get(index).copied() {
@@ -3436,18 +3530,18 @@ pub(crate) fn stack_slot_type(code: &BlockCode, index: usize, names: &NameTable)
     }
 }
 
-pub(crate) fn stack_slot(name: String, ty: &str) -> Expr {
-    let kind: CondKind = match StackKind::of_type_name(ty) {
-        StackKind::Bool => CondKind::Bool,
-        StackKind::Int { .. } => CondKind::Integral,
-        StackKind::Float | StackKind::Pointer | StackKind::Reference | StackKind::Unknown => {
-            CondKind::Reference
-        }
+pub(crate) fn stack_slot(name: String, ty: Option<&str>) -> Expr {
+    let kind: CondKind = match ty.map(StackKind::of_type_name) {
+        Some(StackKind::Bool) => CondKind::Bool,
+        Some(StackKind::Int { .. }) => CondKind::Integral,
+        Some(StackKind::Float | StackKind::Pointer | StackKind::Reference | StackKind::Unknown)
+        | None => CondKind::Reference,
     };
     Expr::Temp {
         name,
         is_boolean: kind == CondKind::Bool,
         kind,
+        ty: ty.map(str::to_owned),
     }
 }
 

@@ -344,18 +344,23 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
         self.flow_to(join, stop, seq)
     }
 
-    fn leaves_range(&mut self, next: BlockId, seq: &mut Vec<Structured>) -> bool {
+    fn exited_range(&self, next: BlockId) -> Option<ProtectedRange> {
         if !self.bound_protected_regions {
-            return false;
+            return None;
         }
-        let Some(range): Option<ProtectedRange> = self.ranges.last().copied() else {
+        let range: ProtectedRange = self.ranges.last().copied()?;
+        let offset: u32 = self.cfg.blocks[next].start;
+        (!(range.start..range.end).contains(&offset)).then_some(range)
+    }
+
+    fn leaves_range(&mut self, next: BlockId, seq: &mut Vec<Structured>) -> bool {
+        let Some(range): Option<ProtectedRange> = self.exited_range(next) else {
             return false;
         };
-        let offset: u32 = self.cfg.blocks[next].start;
-        if (range.start..range.end).contains(&offset) {
-            return false;
-        }
-        if Some(next) != range.continuation {
+        let continues: bool = range.continuation.is_some_and(|continuation: BlockId| {
+            continuation == next || self.forward_target(continuation) == self.forward_target(next)
+        });
+        if !continues {
             seq.push(self.goto(next));
         }
         true
@@ -367,6 +372,9 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
             return Some(Structured::Continue);
         }
         if Some(next) == frame.continue_block {
+            if self.exited_range(next).is_some() && !self.block_code[next].stmts.is_empty() {
+                return None;
+            }
             let mut s: Vec<Structured> = Vec::new();
             self.push_continue_via(next, &mut s);
             return Some(finish_seq(s));
@@ -1012,7 +1020,9 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
     }
 
     fn goto(&mut self, bid: BlockId) -> Structured {
-        if let Some(dup) = self.duplicable_terminal(bid) {
+        if let Some(dup) = self.duplicable_terminal(bid)
+            && (self.exited_range(bid).is_none() || is_bare_transfer(&dup))
+        {
             return dup;
         }
         let off: u32 = self.cfg.blocks[bid].start;
@@ -1345,6 +1355,13 @@ fn push_block_stmts(seq: &mut Vec<Structured>, stmts: &[LinearStmt]) {
     if end > 0 {
         seq.push(Structured::Block(stmts[..end].to_vec()));
     }
+}
+
+const fn is_bare_transfer(s: &Structured) -> bool {
+    matches!(
+        s,
+        Structured::Continue | Structured::Break | Structured::Return(None)
+    )
 }
 
 fn finish_seq(mut seq: Vec<Structured>) -> Structured {

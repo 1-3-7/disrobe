@@ -157,12 +157,12 @@ fn probe_methods(assembly: &DecompiledAssembly) -> Vec<&StructuredMethod> {
         .collect()
 }
 
-fn recovered_probe_source(methods: &[&StructuredMethod]) -> String {
+fn recovered_probe_source<'a>(bodies: impl IntoIterator<Item = &'a str>) -> String {
     let mut source: String =
         "using System;\n\nnamespace StackSpill\n{\n    public static partial class Probe\n    {\n"
             .to_owned();
-    for method in methods {
-        for line in method.body.lines() {
+    for body in bodies {
+        for line in body.lines() {
             source.push_str("        ");
             source.push_str(line);
             source.push('\n');
@@ -245,7 +245,11 @@ fn pending_reads_are_spilled_before_a_store_changes_their_location() {
     let image: Vec<u8> = std::fs::read(&original.assembly).expect("read built fixture assembly");
     let assembly: DecompiledAssembly = decompile_assembly(&image).expect("decompile fixture");
     let methods: Vec<&StructuredMethod> = probe_methods(&assembly);
-    let recovered_source: String = recovered_probe_source(&methods);
+    let recovered_source: String = recovered_probe_source(
+        methods
+            .iter()
+            .map(|method: &&StructuredMethod| method.body.as_str()),
+    );
     let recovered_scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("disrobe_stack_spill_recovered")
             .expect("create recovered scratch directory");
@@ -277,7 +281,19 @@ fn pending_reads_are_spilled_before_a_store_changes_their_location() {
         );
     }
 
-    let (mutated_source, inlined): (String, usize) = inline_spills(&recovered_source);
+    let inlined_bodies: Vec<(String, usize)> = methods
+        .iter()
+        .map(|method: &&StructuredMethod| inline_spills(&method.body))
+        .collect();
+    let inlined: usize = inlined_bodies
+        .iter()
+        .map(|(_, count): &(String, usize)| *count)
+        .sum();
+    let mutated_source: String = recovered_probe_source(
+        inlined_bodies
+            .iter()
+            .map(|(body, _): &(String, usize)| body.as_str()),
+    );
     let spilling_probes: usize = PROBES
         .iter()
         .filter(|(_, spills): &&(&str, bool)| *spills)

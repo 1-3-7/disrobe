@@ -10,7 +10,6 @@ use crate::structurize::{
 
 const SLOT_PREFIX: &str = "__disrobe_stack";
 const MAX_TYPE_ROUNDS: usize = 4;
-const PLACEHOLDER_TYPE: &str = "object";
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct StackSlots {
@@ -155,12 +154,7 @@ pub(super) fn plan_stack_slots<N: TokenNamer>(
         for (&b, vars) in &entry_vars {
             let entry: Vec<Expr> = vars
                 .iter()
-                .map(|&v: &usize| {
-                    stack_slot(
-                        names[v].clone(),
-                        types[v].as_deref().unwrap_or(PLACEHOLDER_TYPE),
-                    )
-                })
+                .map(|&v: &usize| stack_slot(names[v].clone(), types[v].as_deref()))
                 .collect();
             let block = &inputs.cfg.blocks[b];
             let code: BlockCode = lift_block_with_entry(
@@ -221,7 +215,7 @@ pub(super) fn plan_stack_slots<N: TokenNamer>(
         let targets: Vec<SlotTarget> = vars
             .iter()
             .map(|&v: &usize| SlotTarget {
-                slot: stack_slot(names[v].clone(), &types[v]),
+                slot: stack_slot(names[v].clone(), Some(&types[v])),
                 ty: types[v].clone(),
             })
             .collect();
