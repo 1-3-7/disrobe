@@ -404,6 +404,7 @@ fn build_and_run(jdk: &Jdk, directory: &Path, gen_source: &str) -> Built {
     let mut javac: CommandSpec = CommandSpec::new(jdk.javac.clone(), TOOL_TIMEOUT)
         .capture_limits(TOOL_CAPTURE_BYTES, TOOL_CAPTURE_BYTES)
         .args([
+            "-J-Xmx3g",
             "-nowarn",
             "-proc:none",
             "-encoding",
@@ -432,6 +433,7 @@ fn build_and_run(jdk: &Jdk, directory: &Path, gen_source: &str) -> Built {
         let run: ToolOutput = tool_output(
             CommandSpec::new(jdk.java.clone(), RUN_TIMEOUT)
                 .capture_limits(TOOL_CAPTURE_BYTES, TOOL_CAPTURE_BYTES)
+                .arg("-Xmx2g")
                 .arg("-cp")
                 .arg(classes.clone())
                 .arg("Main")
