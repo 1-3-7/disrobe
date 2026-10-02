@@ -14,7 +14,7 @@ use crate::signature::ConditionKind;
 
 mod operand_kind;
 
-use operand_kind::{ArithmeticForm, Comparison, Signedness, StackKind, infer_stack_kind};
+use operand_kind::{ArithmeticForm, Comparison, IntWidth, Signedness, StackKind, infer_stack_kind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum TargetLang {
@@ -609,6 +609,59 @@ impl Expr {
             | Self::Temp { .. }
             | Self::Raw(_) => {}
         }
+    }
+
+    fn has_effect(&self) -> bool {
+        let mut pending: Vec<&Self> = vec![self];
+        while let Some(expression) = pending.pop() {
+            match expression {
+                Self::Call { .. } | Self::NewObj { .. } => return true,
+                Self::Unary(_, child)
+                | Self::Cast(_, child)
+                | Self::IsInst { operand: child, .. }
+                | Self::UnboxAny { operand: child, .. }
+                | Self::LoadLen(child)
+                | Self::AddressOf(child)
+                | Self::Deref(child) => pending.push(child),
+                Self::NewArr {
+                    length, elements, ..
+                } => {
+                    pending.push(length);
+                    pending.extend(elements);
+                }
+                Self::Binary(_, lhs, rhs) | Self::Coalesce(lhs, rhs) | Self::LoadElem(lhs, rhs) => {
+                    pending.push(lhs);
+                    pending.push(rhs);
+                }
+                Self::Cond {
+                    condition,
+                    when_true,
+                    when_false,
+                } => {
+                    pending.push(condition);
+                    pending.push(when_true);
+                    pending.push(when_false);
+                }
+                Self::Tuple(items) => pending.extend(items),
+                Self::MethodPtr { receiver, .. } => pending.extend(receiver.as_deref()),
+                Self::Const(_)
+                | Self::Local(_)
+                | Self::Arg(_)
+                | Self::Field { .. }
+                | Self::StringLit(_)
+                | Self::Null
+                | Self::This
+                | Self::TypeHandle(_)
+                | Self::FieldHandle(_)
+                | Self::MethodHandle(_)
+                | Self::OpaqueHandle(_)
+                | Self::TypeOf(_)
+                | Self::Abstain(_)
+                | Self::Temp { .. }
+                | Self::Raw(_) => {}
+            }
+        }
+        false
     }
 
     const fn is_atom(&self) -> bool {
@@ -1650,6 +1703,16 @@ fn forget_reads(pending: &mut BTreeMap<Location, usize>, expression: &Expr, fact
                 pending.remove(read);
             }
         }
+    }
+}
+
+fn is_compiler_generated_allocation(expression: &Expr) -> bool {
+    match expression {
+        Expr::NewArr { .. } => true,
+        Expr::NewObj { ctor, .. } => ctor
+            .find('<')
+            .is_some_and(|at: usize| at == 0 || ctor[..at].ends_with('.')),
+        _ => false,
     }
 }
 
@@ -2802,7 +2865,21 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
             }
             "dup" => {
                 let (e, _, kind): (Expr, usize, StackKind) = self.pop_typed();
-                if e.is_atom() {
+                if e.has_effect() && !is_compiler_generated_allocation(&e) {
+                    let name: String =
+                        self.fresh_name(format!("__disrobe_dup_{:04X}", self.offset));
+                    let temp: Expr = Expr::Temp {
+                        name: name.clone(),
+                        is_boolean: e.is_known_boolean(self.names),
+                        kind: classify_cond_kind(&e, self.names),
+                    };
+                    self.stmts.push(Stmt::Declare {
+                        name,
+                        value: e.render(self.lang, self.names),
+                    });
+                    self.push_typed(temp.clone(), kind);
+                    self.push_typed(temp, kind);
+                } else if e.is_atom() {
                     let r: String = e.render(self.lang, self.names);
                     self.push_typed(e, kind);
                     self.push_typed(Expr::Raw(r), kind);
@@ -3322,6 +3399,56 @@ pub(crate) struct BlockCode {
     pub locals_used: BTreeSet<u32>,
     pub entry_deficit: usize,
     pub exit_stack: Vec<Expr>,
+    exit_kinds: Vec<StackKind>,
+}
+
+pub(crate) fn stack_slot_type(code: &BlockCode, index: usize, names: &NameTable) -> Option<String> {
+    let expression: &Expr = code.exit_stack.get(index)?;
+    let declared: Option<&str> = match expression {
+        Expr::Local(slot) => names.local_type(*slot),
+        Expr::Arg(slot) => names.arg_type(*slot),
+        Expr::Cast(ty, _) => Some(ty.as_str()),
+        Expr::StringLit(_) => Some("string"),
+        Expr::NewObj {
+            ctor,
+            member_names: None,
+            ..
+        } if !is_compiler_generated_allocation(expression) => Some(ctor.as_str()),
+        _ => None,
+    };
+    if let Some(ty) = declared {
+        return Some(ty.to_owned());
+    }
+    let kind: StackKind = match code.exit_kinds.get(index).copied() {
+        Some(StackKind::Unknown) | None => infer_stack_kind(expression, names),
+        Some(kind) => kind,
+    };
+    match kind {
+        StackKind::Bool => Some("bool".to_owned()),
+        StackKind::Int { width, unsigned } if width != IntWidth::Native => {
+            Some(width.keyword(unsigned).to_owned())
+        }
+        StackKind::Int { .. }
+        | StackKind::Float
+        | StackKind::Pointer
+        | StackKind::Reference
+        | StackKind::Unknown => None,
+    }
+}
+
+pub(crate) fn stack_slot(name: String, ty: &str) -> Expr {
+    let kind: CondKind = match StackKind::of_type_name(ty) {
+        StackKind::Bool => CondKind::Bool,
+        StackKind::Int { .. } => CondKind::Integral,
+        StackKind::Float | StackKind::Pointer | StackKind::Reference | StackKind::Unknown => {
+            CondKind::Reference
+        }
+    };
+    Expr::Temp {
+        name,
+        is_boolean: kind == CondKind::Bool,
+        kind,
+    }
 }
 
 fn branch_target(ins: &Instruction) -> Option<u32> {
@@ -3821,6 +3948,7 @@ pub(crate) fn lift_block_with_entry<N: TokenNamer>(
         locals_used: std::mem::take(&mut lifter.locals_used),
         entry_deficit: lifter.entry_deficit,
         exit_stack: std::mem::take(&mut lifter.stack),
+        exit_kinds: std::mem::take(&mut lifter.stack_kinds),
     }
 }
 

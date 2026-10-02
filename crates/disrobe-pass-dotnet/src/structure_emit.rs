@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
+mod stack_slots;
+
 use crate::cfg::{BasicBlock, BlockId, Cfg, NaturalLoop, Terminator};
 use crate::cil::{ExceptionClause, ExceptionClauseKind, Instruction, MethodBody};
 use crate::names::NameTable;
@@ -65,6 +67,15 @@ struct LoopFrame {
     exit: Option<BlockId>,
 
     continue_block: Option<BlockId>,
+    switch_depth: usize,
+}
+
+#[derive(Debug, Clone)]
+struct CompoundCondition {
+    cond: String,
+    taken: BlockId,
+    fallthrough: BlockId,
+    merged: Vec<BlockId>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -75,6 +86,8 @@ struct ProtectedRange {
 }
 
 const MAX_STRUCTURE_DEPTH: usize = 256;
+const MAX_CONDITION_DEPTH: usize = 64;
+const MAX_FORWARDING_HOPS: usize = 16;
 const CAUGHT_EXCEPTION: &str = "ex";
 
 struct Structurer<'a, N: TokenNamer> {
@@ -95,6 +108,9 @@ struct Structurer<'a, N: TokenNamer> {
     ranges: Vec<ProtectedRange>,
     bound_protected_regions: bool,
     async_state_machine: bool,
+    slot_targets: Vec<Vec<stack_slots::SlotTarget>>,
+    switch_depth: usize,
+    slot_declarations: Vec<(String, String)>,
 }
 
 impl<'a, N: TokenNamer> Structurer<'a, N> {
@@ -118,7 +134,7 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
             })
             .filter_map(|offset: u32| cfg.start_to_block.get(&offset).copied())
             .collect();
-        let block_code: Vec<BlockCode> = (0..count)
+        let mut block_code: Vec<BlockCode> = (0..count)
             .map(|b: usize| {
                 if exception_entries.contains(&b) {
                     lift_block_with_entry(
@@ -143,6 +159,18 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
                 }
             })
             .collect();
+        let slots: stack_slots::StackSlots = stack_slots::plan_stack_slots(
+            &stack_slots::SlotInputs {
+                cfg,
+                body,
+                namer,
+                names,
+                lang,
+                exception_entries: &exception_entries,
+            },
+            &mut block_code,
+        )
+        .unwrap_or_default();
         let mut loop_header: Vec<bool> = vec![false; count];
         for lp in &cfg.loops {
             loop_header[lp.header] = true;
@@ -173,6 +201,9 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
             ranges: Vec::new(),
             bound_protected_regions: true,
             async_state_machine,
+            slot_targets: slots.exit_targets,
+            slot_declarations: slots.declarations,
+            switch_depth: 0,
         }
     }
 
@@ -185,7 +216,7 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
         let mut seq: Vec<Structured> = Vec::new();
         let mut cur: Option<BlockId> = Some(start);
         while let Some(bid) = cur {
-            if Some(bid) == stop || !self.cfg.is_reachable(bid) {
+            if self.reaches(bid, stop) || !self.cfg.is_reachable(bid) {
                 break;
             }
             if self.leaves_range(bid, &mut seq) {
@@ -215,12 +246,13 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
                 .iter()
                 .position(|l: &NaturalLoop| l.header == bid)
         {
-            return self.emit_loop(lp_idx, seq);
+            let exit: Option<BlockId> = self.emit_loop(lp_idx, seq);
+            return self.flow_after(exit, stop, seq);
         }
 
         if self.try_starts.contains_key(&self.cfg.blocks[bid].start) {
             let follow: Option<BlockId> = self.emit_try(bid, seq);
-            return follow.filter(|&b: &BlockId| self.cfg.is_reachable(b) && !self.visited[b]);
+            return self.flow_after(follow, stop, seq);
         }
 
         self.visited[bid] = true;
@@ -228,6 +260,16 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
         push_block_stmts(seq, &self.block_code[bid].stmts);
 
         let term: Terminator = self.cfg.terminators[bid].clone();
+        self.emit_terminator(bid, &term, stop, seq)
+    }
+
+    fn emit_terminator(
+        &mut self,
+        bid: BlockId,
+        term: &Terminator,
+        stop: Option<BlockId>,
+        seq: &mut Vec<Structured>,
+    ) -> Option<BlockId> {
         match term {
             Terminator::Return => {
                 seq.push(self.return_stmt(bid));
@@ -238,15 +280,17 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
                 None
             }
             Terminator::EndFinally => None,
-            Terminator::FallThrough(next) | Terminator::Goto(next) => self.flow_to(next, stop, seq),
+            Terminator::FallThrough(next) | Terminator::Goto(next) => {
+                self.flow_to(*next, stop, seq)
+            }
             Terminator::Cond { taken, fallthrough } => {
-                if let Some(join) = self.fold_conditional_expression(bid, taken, fallthrough) {
+                if let Some(join) = self.fold_conditional_expression(bid, *taken, *fallthrough) {
                     return self.flow_to(join, stop, seq);
                 }
-                self.emit_if(bid, taken, fallthrough, stop, seq)
+                self.emit_if(bid, *taken, *fallthrough, stop, seq)
             }
             Terminator::Switch { cases, fallthrough } => {
-                self.emit_switch(bid, &cases, fallthrough, stop, seq)
+                self.emit_switch(bid, cases, *fallthrough, stop, seq)
             }
         }
     }
@@ -257,21 +301,11 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
         stop: Option<BlockId>,
         seq: &mut Vec<Structured>,
     ) -> Option<BlockId> {
-        if let Some(frame) = self.loop_stack.last().copied() {
-            if next == frame.header {
-                seq.push(Structured::Continue);
-                return None;
-            }
-            if Some(next) == frame.continue_block {
-                self.push_continue_via(next, seq);
-                return None;
-            }
-            if Some(next) == frame.exit {
-                seq.push(Structured::Break);
-                return None;
-            }
+        if self.reaches(next, stop) {
+            return None;
         }
-        if Some(next) == stop {
+        if let Some(transfer) = self.loop_transfer(next) {
+            seq.push(transfer);
             return None;
         }
         if self.leaves_range(next, seq) {
@@ -282,6 +316,32 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
             return None;
         }
         Some(next)
+    }
+
+    fn flow_after(
+        &mut self,
+        follow: Option<BlockId>,
+        stop: Option<BlockId>,
+        seq: &mut Vec<Structured>,
+    ) -> Option<BlockId> {
+        let dead_end: bool = seq
+            .last()
+            .is_some_and(|last: &Structured| !completes_normally(last));
+        follow
+            .filter(|&b: &BlockId| self.cfg.is_reachable(b) && !(dead_end && self.visited[b]))
+            .and_then(|b: BlockId| self.flow_to_join(b, stop, seq))
+    }
+
+    fn flow_to_join(
+        &mut self,
+        join: BlockId,
+        stop: Option<BlockId>,
+        seq: &mut Vec<Structured>,
+    ) -> Option<BlockId> {
+        if !self.bound_protected_regions && self.visited[join] {
+            return None;
+        }
+        self.flow_to(join, stop, seq)
     }
 
     fn leaves_range(&mut self, next: BlockId, seq: &mut Vec<Structured>) -> bool {
@@ -299,6 +359,32 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
             seq.push(self.goto(next));
         }
         true
+    }
+
+    fn loop_transfer(&mut self, next: BlockId) -> Option<Structured> {
+        let frame: LoopFrame = self.loop_stack.last().copied()?;
+        if next == frame.header {
+            return Some(Structured::Continue);
+        }
+        if Some(next) == frame.continue_block {
+            let mut s: Vec<Structured> = Vec::new();
+            self.push_continue_via(next, &mut s);
+            return Some(finish_seq(s));
+        }
+        if frame
+            .exit
+            .is_some_and(|exit: BlockId| self.forward_target(next) == exit)
+        {
+            if self.switch_depth > frame.switch_depth {
+                return Some(self.goto(next));
+            }
+            return Some(Structured::Break);
+        }
+        let outer: usize = self.loop_stack.len().saturating_sub(1);
+        self.loop_stack[..outer]
+            .iter()
+            .any(|f: &LoopFrame| f.header == next || f.exit == Some(next))
+            .then(|| self.goto(next))
     }
 
     fn push_continue_via(&self, cont: BlockId, seq: &mut Vec<Structured>) {
@@ -319,57 +405,60 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
             header,
             exit,
             continue_block,
+            switch_depth: self.switch_depth,
         });
 
-        let while_node: Structured = match (&header_term, header_stmts_empty) {
-            (Terminator::Cond { taken, fallthrough }, true)
-                if self.is_loop_guard(lp_idx, *taken, *fallthrough, exit) =>
-            {
-                let (cond, body_start): (String, BlockId) =
-                    self.loop_guard_cond(header, *taken, *fallthrough, exit);
-                let body: Structured = self.emit_region(body_start, Some(header));
-                Structured::While {
-                    cond: Some(cond),
-                    body: Box::new(body),
-                }
+        let guard: Option<CompoundCondition> = match (&header_term, header_stmts_empty) {
+            (Terminator::Cond { taken, fallthrough }, true) => {
+                Some(self.compound_condition(header, *taken, *fallthrough, 0, &mut BTreeMap::new()))
+                    .filter(|c: &CompoundCondition| {
+                        self.is_loop_guard(lp_idx, c.taken, c.fallthrough, exit)
+                    })
             }
-            _ => {
-                let mut body_seq: Vec<Structured> = Vec::new();
-                push_block_stmts(&mut body_seq, &self.block_code[header].stmts);
-                self.emit_loop_header_tail(header, &header_term, &mut body_seq);
-                Structured::While {
-                    cond: None,
-                    body: Box::new(finish_seq(body_seq)),
-                }
+            _ => None,
+        };
+        let while_node: Structured = if let Some(guard) = guard {
+            for &b in &guard.merged {
+                self.visited[b] = true;
+            }
+            let (cond, body_start): (String, BlockId) =
+                if self.cfg.loops[lp_idx].body.contains(&guard.taken) {
+                    (guard.cond, guard.taken)
+                } else {
+                    (negate(&guard.cond, self.lang), guard.fallthrough)
+                };
+            let body: Structured = self.emit_region(body_start, Some(header));
+            Structured::While {
+                cond: Some(cond),
+                body: Box::new(body),
+            }
+        } else {
+            let mut body_seq: Vec<Structured> = Vec::new();
+            push_block_stmts(&mut body_seq, &self.block_code[header].stmts);
+            self.emit_tail(header, &header_term, Some(header), &mut body_seq);
+            Structured::While {
+                cond: None,
+                body: Box::new(finish_seq(body_seq)),
             }
         };
         self.loop_stack.pop();
         seq.push(while_node);
-        exit.filter(|&e: &BlockId| self.cfg.is_reachable(e) && !self.visited[e])
+        exit
     }
 
-    fn emit_loop_header_tail(
+    fn emit_tail(
         &mut self,
-        header: BlockId,
+        bid: BlockId,
         term: &Terminator,
-        body_seq: &mut Vec<Structured>,
+        stop: Option<BlockId>,
+        seq: &mut Vec<Structured>,
     ) {
-        match term {
-            Terminator::Cond { taken, fallthrough } => {
-                let _: Option<BlockId> =
-                    self.emit_if(header, *taken, *fallthrough, Some(header), body_seq);
+        let next: Option<BlockId> = self.emit_terminator(bid, term, stop, seq);
+        if let Some(inside) = next {
+            let region: Structured = self.emit_region(inside, stop);
+            if !is_empty(&region) {
+                seq.push(region);
             }
-            Terminator::Switch { cases, fallthrough } => {
-                let cases_v: Vec<BlockId> = cases.clone();
-                let _: Option<BlockId> =
-                    self.emit_switch(header, &cases_v, *fallthrough, Some(header), body_seq);
-            }
-            Terminator::FallThrough(next) | Terminator::Goto(next) => {
-                let _: Option<BlockId> = self.flow_to(*next, Some(header), body_seq);
-            }
-            Terminator::Return => body_seq.push(self.return_stmt(header)),
-            Terminator::Throw => body_seq.push(self.throw_stmt(header)),
-            Terminator::EndFinally => {}
         }
     }
 
@@ -503,16 +592,132 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
         }
         self.locals_used.extend(rebuilt.locals_used.iter().copied());
         self.block_code[join] = rebuilt;
+        if let Some(targets) = self
+            .slot_targets
+            .get(join)
+            .filter(|t: &&Vec<stack_slots::SlotTarget>| !t.is_empty())
+        {
+            stack_slots::assign_exit_slots(
+                &mut self.block_code[join],
+                targets,
+                join,
+                self.lang,
+                self.names,
+            );
+        }
         Some(join)
     }
 
-    fn is_pure_cond_block(&self, bid: BlockId) -> bool {
-        self.block_code[bid].stmts.is_empty()
-            && self.block_code[bid].condition.is_some()
-            && matches!(self.cfg.terminators[bid], Terminator::Cond { .. })
-            && self.cfg.blocks[bid].preds.len() == 1
-            && !self.loop_header[bid]
-            && !self.visited[bid]
+    fn condition_text(&self, bid: BlockId) -> String {
+        self.block_code[bid]
+            .condition
+            .clone()
+            .unwrap_or_else(|| "true".to_owned())
+    }
+
+    fn mergeable_condition(
+        &self,
+        candidate: BlockId,
+        owner: BlockId,
+        merged: &[BlockId],
+        depth: usize,
+        cache: &mut BTreeMap<BlockId, CompoundCondition>,
+    ) -> Option<CompoundCondition> {
+        let code: &BlockCode = &self.block_code[candidate];
+        let Terminator::Cond { taken, fallthrough } = self.cfg.terminators[candidate] else {
+            return None;
+        };
+        let pure: bool = code.stmts.is_empty()
+            && code.condition.is_some()
+            && code
+                .exit_stack
+                .iter()
+                .all(|e: &Expr| matches!(e, Expr::Temp { .. }))
+            && !self.loop_header[candidate]
+            && !self.visited[candidate]
+            && candidate != owner
+            && !merged.contains(&candidate)
+            && self.cfg.blocks[candidate]
+                .preds
+                .iter()
+                .all(|p: &BlockId| *p == owner || merged.contains(p));
+        if !pure {
+            return None;
+        }
+        if let Some(known) = cache.get(&candidate) {
+            return Some(known.clone());
+        }
+        let folded: CompoundCondition =
+            self.compound_condition(candidate, taken, fallthrough, depth + 1, cache);
+        cache.insert(candidate, folded.clone());
+        Some(folded)
+    }
+
+    fn compound_condition(
+        &self,
+        bid: BlockId,
+        taken: BlockId,
+        fallthrough: BlockId,
+        depth: usize,
+        cache: &mut BTreeMap<BlockId, CompoundCondition>,
+    ) -> CompoundCondition {
+        let mut folded: CompoundCondition = CompoundCondition {
+            cond: self.condition_text(bid),
+            taken,
+            fallthrough,
+            merged: Vec::new(),
+        };
+        if depth >= MAX_CONDITION_DEPTH {
+            return folded;
+        }
+        loop {
+            if let Some(inner) =
+                self.mergeable_condition(folded.fallthrough, bid, &folded.merged, depth, cache)
+            {
+                let operand: Option<String> = if inner.taken == folded.taken {
+                    Some(inner.cond.clone())
+                } else if inner.fallthrough == folded.taken {
+                    Some(negate(&inner.cond, self.lang))
+                } else {
+                    None
+                };
+                if let Some(operand) = operand {
+                    folded.cond = join_or(&folded.cond, &operand, self.lang);
+                    folded.merged.push(folded.fallthrough);
+                    folded.merged.extend(inner.merged);
+                    folded.fallthrough = if inner.taken == folded.taken {
+                        inner.fallthrough
+                    } else {
+                        inner.taken
+                    };
+                    continue;
+                }
+            }
+            if let Some(inner) =
+                self.mergeable_condition(folded.taken, bid, &folded.merged, depth, cache)
+            {
+                let operand: Option<String> = if inner.fallthrough == folded.fallthrough {
+                    Some(inner.cond.clone())
+                } else if inner.taken == folded.fallthrough {
+                    Some(negate(&inner.cond, self.lang))
+                } else {
+                    None
+                };
+                if let Some(operand) = operand {
+                    folded.cond = join_and(&folded.cond, &operand, self.lang);
+                    folded.merged.push(folded.taken);
+                    folded.merged.extend(inner.merged);
+                    folded.taken = if inner.fallthrough == folded.fallthrough {
+                        inner.taken
+                    } else {
+                        inner.fallthrough
+                    };
+                    continue;
+                }
+            }
+            break;
+        }
+        folded
     }
 
     fn fold_condition(
@@ -521,62 +726,12 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
         taken: BlockId,
         fallthrough: BlockId,
     ) -> (String, BlockId, BlockId) {
-        let mut cond: String = self.block_code[bid]
-            .condition
-            .clone()
-            .unwrap_or_else(|| "true".to_owned());
-        let mut cur_taken: BlockId = taken;
-        let mut cur_ft: BlockId = fallthrough;
-        loop {
-            if self.is_pure_cond_block(cur_ft)
-                && let Terminator::Cond {
-                    taken: pt,
-                    fallthrough: pf,
-                } = self.cfg.terminators[cur_ft].clone()
-            {
-                let pcond: String = self.block_code[cur_ft]
-                    .condition
-                    .clone()
-                    .unwrap_or_else(|| "true".to_owned());
-                if pt == cur_taken {
-                    self.visited[cur_ft] = true;
-                    cond = join_or(&cond, &pcond, self.lang);
-                    cur_ft = pf;
-                    continue;
-                }
-                if pf == cur_taken {
-                    self.visited[cur_ft] = true;
-                    cond = join_or(&cond, &negate(&pcond, self.lang), self.lang);
-                    cur_ft = pt;
-                    continue;
-                }
-            }
-            if self.is_pure_cond_block(cur_taken)
-                && let Terminator::Cond {
-                    taken: pt,
-                    fallthrough: pf,
-                } = self.cfg.terminators[cur_taken].clone()
-            {
-                let pcond: String = self.block_code[cur_taken]
-                    .condition
-                    .clone()
-                    .unwrap_or_else(|| "true".to_owned());
-                if pf == cur_ft {
-                    self.visited[cur_taken] = true;
-                    cond = join_and(&cond, &pcond, self.lang);
-                    cur_taken = pt;
-                    continue;
-                }
-                if pt == cur_ft {
-                    self.visited[cur_taken] = true;
-                    cond = join_and(&cond, &negate(&pcond, self.lang), self.lang);
-                    cur_taken = pf;
-                    continue;
-                }
-            }
-            break;
+        let folded: CompoundCondition =
+            self.compound_condition(bid, taken, fallthrough, 0, &mut BTreeMap::new());
+        for &b in &folded.merged {
+            self.visited[b] = true;
         }
-        (cond, cur_taken, cur_ft)
+        (folded.cond, folded.taken, folded.fallthrough)
     }
 
     fn emit_if(
@@ -625,11 +780,7 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
             then: Box::new(then_branch),
             els,
         });
-        match join {
-            Some(j) if Some(j) != stop && self.cfg.is_reachable(j) && !self.visited[j] => Some(j),
-            Some(j) if !self.visited[j] => self.flow_to(j, stop, seq),
-            _ => None,
-        }
+        join.and_then(|j: BlockId| self.flow_to_join(j, stop, seq))
     }
 
     fn branch_region(
@@ -638,23 +789,13 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
         join: Option<BlockId>,
         outer_stop: Option<BlockId>,
     ) -> Structured {
-        if Some(target) == join {
+        if self.reaches(target, join) {
             return Structured::Empty;
         }
-        if let Some(frame) = self.loop_stack.last().copied() {
-            if target == frame.header {
-                return Structured::Continue;
-            }
-            if Some(target) == frame.continue_block {
-                let mut s: Vec<Structured> = Vec::new();
-                self.push_continue_via(target, &mut s);
-                return finish_seq(s);
-            }
-            if Some(target) == frame.exit {
-                return Structured::Break;
-            }
+        if let Some(transfer) = self.loop_transfer(target) {
+            return transfer;
         }
-        if Some(target) == outer_stop {
+        if self.reaches(target, outer_stop) {
             return Structured::Empty;
         }
         if self.visited[target] {
@@ -677,8 +818,9 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
             .unwrap_or_else(|| "selector".to_owned());
         let join: Option<BlockId> = self.switch_join(bid, cases, fallthrough);
         let mut case_nodes: Vec<(Vec<usize>, Structured)> = Vec::new();
+        self.switch_depth += 1;
         for (i, &t) in cases.iter().enumerate() {
-            if Some(t) == join {
+            if self.reaches(t, join) {
                 case_nodes.push((vec![i], Structured::Break));
                 continue;
             }
@@ -686,7 +828,7 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
             case_nodes.push((vec![i], with_trailing_break(region)));
         }
         let default: Option<Box<Structured>> =
-            if Some(fallthrough) == join || Some(fallthrough) == stop {
+            if self.reaches(fallthrough, join) || self.reaches(fallthrough, stop) {
                 None
             } else if self.visited[fallthrough] {
                 Some(Box::new(self.goto(fallthrough)))
@@ -697,17 +839,13 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
                     stop,
                 ))))
             };
+        self.switch_depth -= 1;
         seq.push(Structured::Switch {
             selector,
             cases: case_nodes,
             default,
         });
-        match join {
-            Some(j) if Some(j) != stop && self.cfg.is_reachable(j) && !self.visited[j] => {
-                self.flow_to(j, stop, seq)
-            }
-            _ => None,
-        }
+        join.and_then(|j: BlockId| self.flow_to_join(j, stop, seq))
     }
 
     fn emit_try(&mut self, bid: BlockId, seq: &mut Vec<Structured>) -> Option<BlockId> {
@@ -719,12 +857,7 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
         }
         let try_end: u32 = clauses[0].try_offset.saturating_add(clauses[0].try_length);
         let try_stop: Option<BlockId> = self.cfg.start_to_block.get(&try_end).copied();
-        let max_end: u32 = clauses
-            .iter()
-            .fold(try_end, |end: u32, c: &&ExceptionClause| {
-                end.max(c.handler_offset.saturating_add(c.handler_length))
-            });
-        let continuation: Option<BlockId> = self.cfg.start_to_block.get(&max_end).copied();
+        let continuation: Option<BlockId> = self.protected_continuation(start, try_end, &clauses);
         self.visited[bid] = true;
         self.ranges.push(ProtectedRange {
             start,
@@ -736,7 +869,7 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
             self.maybe_label(bid, &mut s);
             push_block_stmts(&mut s, &self.block_code[bid].stmts);
             let term: Terminator = self.cfg.terminators[bid].clone();
-            self.emit_try_body_tail(bid, &term, try_stop, &mut s);
+            self.emit_tail(bid, &term, try_stop, &mut s);
             finish_seq(s)
         };
         self.ranges.pop();
@@ -775,6 +908,54 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
         continuation
     }
 
+    fn protected_continuation(
+        &self,
+        start: u32,
+        try_end: u32,
+        clauses: &[&ExceptionClause],
+    ) -> Option<BlockId> {
+        let regions: Vec<(u32, u32)> = std::iter::once((start, try_end))
+            .chain(clauses.iter().map(|c: &&ExceptionClause| {
+                (
+                    c.handler_offset,
+                    c.handler_offset.saturating_add(c.handler_length),
+                )
+            }))
+            .collect();
+        let inside = |offset: u32| -> bool {
+            regions
+                .iter()
+                .any(|&(from, to): &(u32, u32)| (from..to).contains(&offset))
+        };
+        let mut exits: BTreeMap<BlockId, usize> = BTreeMap::new();
+        for block in self
+            .cfg
+            .blocks
+            .iter()
+            .filter(|b: &&BasicBlock| inside(b.start))
+        {
+            for &next in &block.succs {
+                if !inside(self.cfg.blocks[next].start) {
+                    *exits.entry(next).or_default() += 1;
+                }
+            }
+        }
+        let textual: Option<BlockId> = regions
+            .iter()
+            .map(|&(_, to): &(u32, u32)| to)
+            .max()
+            .and_then(|end: u32| self.cfg.start_to_block.get(&end).copied());
+        if let Some(next) = textual.filter(|b: &BlockId| exits.contains_key(b)) {
+            return Some(next);
+        }
+        exits
+            .iter()
+            .max_by_key(|&(&b, &count): &(&BlockId, &usize)| {
+                (count, std::cmp::Reverse(self.cfg.blocks[b].start))
+            })
+            .map(|(&b, _): (&BlockId, &usize)| b)
+    }
+
     fn recover_filter(&mut self, c: &ExceptionClause) -> (Option<String>, Option<String>) {
         let filter_start: u32 = c.class_token_or_filter;
         let filter_end: u32 = c.handler_offset;
@@ -805,35 +986,6 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
         match recovered {
             Some((catch_type, cond)) => (catch_type, Some(cond)),
             None => (None, None),
-        }
-    }
-
-    fn emit_try_body_tail(
-        &mut self,
-        bid: BlockId,
-        term: &Terminator,
-        try_stop: Option<BlockId>,
-        s: &mut Vec<Structured>,
-    ) {
-        match term {
-            Terminator::Cond { taken, fallthrough } => {
-                let _: Option<BlockId> = self.emit_if(bid, *taken, *fallthrough, try_stop, s);
-            }
-            Terminator::Switch { cases, fallthrough } => {
-                let cases_v: Vec<BlockId> = cases.clone();
-                let _: Option<BlockId> = self.emit_switch(bid, &cases_v, *fallthrough, try_stop, s);
-            }
-            Terminator::FallThrough(next) | Terminator::Goto(next) => {
-                if let Some(inside) = self.flow_to(*next, try_stop, s) {
-                    let region: Structured = self.emit_region(inside, try_stop);
-                    if !is_empty(&region) {
-                        s.push(region);
-                    }
-                }
-            }
-            Terminator::Return => s.push(self.return_stmt(bid)),
-            Terminator::Throw => s.push(self.throw_stmt(bid)),
-            Terminator::EndFinally => {}
         }
     }
 
@@ -993,30 +1145,39 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
         let taken_in: bool = lp.body.contains(&taken);
         let ft_in: bool = lp.body.contains(&fallthrough);
         exit.map_or(taken_in ^ ft_in, |e: BlockId| {
-            (taken_in && fallthrough == e) || (ft_in && taken == e)
+            (taken_in && self.forward_target(fallthrough) == e)
+                || (ft_in && self.forward_target(taken) == e)
         })
     }
 
-    fn loop_guard_cond(
-        &self,
-        header: BlockId,
-        taken: BlockId,
-        fallthrough: BlockId,
-        exit: Option<BlockId>,
-    ) -> (String, BlockId) {
-        let raw: String = self.block_code[header]
-            .condition
-            .clone()
-            .unwrap_or_else(|| "true".to_owned());
-        let taken_in_loop: bool = self
-            .cfg
-            .loop_at_header(header)
-            .is_some_and(|lp: &NaturalLoop| lp.body.contains(&taken));
-        if taken_in_loop && Some(fallthrough) == exit.or(Some(fallthrough)) {
-            (raw, taken)
-        } else {
-            (negate(&raw, self.lang), fallthrough)
+    fn reaches(&self, bid: BlockId, stop: Option<BlockId>) -> bool {
+        stop.is_some_and(|stop: BlockId| {
+            stop == bid || self.forward_target(stop) == self.forward_target(bid)
+        })
+    }
+
+    fn forward_target(&self, mut bid: BlockId) -> BlockId {
+        for _ in 0..MAX_FORWARDING_HOPS {
+            let code: &BlockCode = &self.block_code[bid];
+            let next: BlockId = match self.cfg.terminators[bid] {
+                Terminator::FallThrough(next) | Terminator::Goto(next) => next,
+                Terminator::Cond { .. }
+                | Terminator::Switch { .. }
+                | Terminator::Return
+                | Terminator::Throw
+                | Terminator::EndFinally => return bid,
+            };
+            if !code.stmts.is_empty()
+                || !code.exit_stack.is_empty()
+                || self.loop_header[bid]
+                || self.try_starts.contains_key(&self.cfg.blocks[bid].start)
+                || next == bid
+            {
+                return bid;
+            }
+            bid = next;
         }
+        bid
     }
 
     fn loop_continue_block(&self, lp_idx: usize) -> Option<BlockId> {
@@ -1050,7 +1211,22 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
         if self.async_state_machine && exits.len() > 1 {
             return self.async_loop_done_exit(&exits);
         }
-        exits
+        let mut forwarded: Vec<(u32, BlockId)> = Vec::new();
+        for (_, exit) in exits {
+            let target: BlockId = self.forward_target(exit);
+            let target: BlockId = if lp.body.contains(&target) {
+                exit
+            } else {
+                target
+            };
+            if !forwarded
+                .iter()
+                .any(|(_, known): &(u32, BlockId)| *known == target)
+            {
+                forwarded.push((self.cfg.blocks[target].start, target));
+            }
+        }
+        forwarded
             .into_iter()
             .min_by_key(|(off, _): &(u32, BlockId)| *off)
             .map(|(_, b): (u32, BlockId)| b)
@@ -1125,6 +1301,20 @@ fn structure_method_core<N: TokenNamer>(
     let residual_gotos: u32 = u32::try_from(st.goto_targets.len()).unwrap_or(u32::MAX);
     let mut text: String = String::with_capacity(256);
     render(&mut text, &tree, 1, lang);
+    let declarations: Vec<LinearStmt> = st
+        .slot_declarations
+        .iter()
+        .filter(|(name, _): &&(String, String)| stack_slots::mentions(&text, name))
+        .map(|(name, ty): &(String, String)| LinearStmt::Declare {
+            name: name.clone(),
+            value: format!("default({ty})"),
+        })
+        .collect();
+    if !declarations.is_empty() {
+        tree = Structured::Seq(vec![Structured::Block(declarations), tree]);
+        text.clear();
+        render(&mut text, &tree, 1, lang);
+    }
     StructuredOutput {
         body: text,
         locals_used,
@@ -1424,6 +1614,37 @@ fn ends_in_control_transfer(s: &Structured) -> bool {
         | Structured::Goto(_) => true,
         Structured::Seq(v) => v.last().is_some_and(ends_in_control_transfer),
         _ => false,
+    }
+}
+
+fn completes_normally(s: &Structured) -> bool {
+    match s {
+        Structured::Return(_)
+        | Structured::Throw(_)
+        | Structured::Break
+        | Structured::Continue
+        | Structured::Goto(_) => false,
+        Structured::Seq(v) => v.last().is_none_or(completes_normally),
+        Structured::If {
+            then,
+            els: Some(els),
+            ..
+        } => completes_normally(then) || completes_normally(els),
+        Structured::Try { body, handlers } => {
+            completes_normally(body)
+                || handlers.iter().any(|h: &Handler| {
+                    !matches!(
+                        h.kind,
+                        ExceptionClauseKind::Finally | ExceptionClauseKind::Fault
+                    ) && completes_normally(&h.body)
+                })
+        }
+        Structured::Block(_)
+        | Structured::While { .. }
+        | Structured::If { els: None, .. }
+        | Structured::Switch { .. }
+        | Structured::Label(_)
+        | Structured::Empty => true,
     }
 }
 

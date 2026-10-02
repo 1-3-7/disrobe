@@ -21,10 +21,7 @@ const TOOL_CAPTURE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_REPAIR_ROUNDS: usize = 12;
 const RUN_TIMEOUT: Duration = Duration::from_mins(1);
 const SHOWN_FAILURES: usize = 6;
-const KNOWN_DIVERGENT: [u64; 36] = [
-    0, 2, 4, 5, 6, 7, 8, 9, 10, 11, 13, 16, 17, 18, 19, 21, 22, 25, 26, 27, 29, 30, 31, 32, 33, 34,
-    35, 36, 37, 39, 40, 41, 42, 43, 45, 46,
-];
+const KNOWN_DIVERGENT: [u64; 0] = [];
 
 const PROJECT: &str = r#"<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>

@@ -2630,14 +2630,10 @@ const GRADED_MEMBER_TOTAL: usize = 123;
 
 const IL_RESIDUAL: &[&str] = &[
     "AsyncDisposableScope.DisposeAsync",
-    "CollectionPlayground.CollectionExpression",
-    "ConfigParser.Parse",
-    "DeconstructPlayground.Stats",
     "DeconstructPlayground.Use",
     "EventSource.add_Pulse",
     "EventSource.remove_Pulse",
     "JsonLite.Escape",
-    "JsonLite.Object",
     "TargetTypedNewPlayground.Build",
 ];
 

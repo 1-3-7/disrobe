@@ -58,6 +58,8 @@ pub struct Cfg {
 
     flow: Option<FlowGraph<BlockId>>,
 
+    normal_flow: Option<FlowGraph<BlockId>>,
+
     pub postorder_num: Vec<usize>,
 
     pub rpo: Vec<BlockId>,
@@ -78,6 +80,7 @@ impl Cfg {
             terminators: Vec::new(),
             start_to_block,
             flow: None,
+            normal_flow: None,
             postorder_num: Vec::new(),
             rpo: Vec::new(),
             loops: Vec::new(),
@@ -242,8 +245,8 @@ impl Cfg {
     }
 
     fn compute_dominators(&mut self) {
-        let flow: Option<FlowGraph<BlockId>> = block_flow(self);
-        self.flow = flow;
+        self.flow = block_flow(self, ExceptionalFlow::Included);
+        self.normal_flow = block_flow(self, ExceptionalFlow::Excluded);
     }
 
     #[must_use]
@@ -354,19 +357,29 @@ impl Cfg {
     #[must_use]
     pub fn immediate_post_dominators(&self) -> Vec<BlockId> {
         let count: usize = self.blocks.len();
-        let Some(flow): Option<&FlowGraph<BlockId>> = self.flow.as_ref() else {
-            return vec![usize::MAX; count];
+        let node = |flow: Option<&FlowGraph<BlockId>>, bid: BlockId| -> Option<BlockId> {
+            match flow?.immediate_post_dominator(bid) {
+                PostDominator::Node(target) => Some(target),
+                PostDominator::FunctionExit | PostDominator::Undefined => None,
+            }
         };
         (0..count)
-            .map(|bid: BlockId| match flow.immediate_post_dominator(bid) {
-                PostDominator::Node(target) => target,
-                PostDominator::FunctionExit | PostDominator::Undefined => usize::MAX,
+            .map(|bid: BlockId| {
+                node(self.normal_flow.as_ref(), bid)
+                    .or_else(|| node(self.flow.as_ref(), bid))
+                    .unwrap_or(usize::MAX)
             })
             .collect()
     }
 }
 
-fn block_flow(cfg: &Cfg) -> Option<FlowGraph<BlockId>> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExceptionalFlow {
+    Included,
+    Excluded,
+}
+
+fn block_flow(cfg: &Cfg, exceptional: ExceptionalFlow) -> Option<FlowGraph<BlockId>> {
     FlowGraph::build(
         0..cfg.blocks.len(),
         cfg.entry,
@@ -377,9 +390,11 @@ fn block_flow(cfg: &Cfg) -> Option<FlowGraph<BlockId>> {
             for &successor in &block.succs {
                 emit(Flow::To(successor));
             }
-            for &handler in cfg.exceptional.get(&node).into_iter().flatten() {
-                if !block.succs.contains(&handler) {
-                    emit(Flow::To(handler));
+            if exceptional == ExceptionalFlow::Included {
+                for &handler in cfg.exceptional.get(&node).into_iter().flatten() {
+                    if !block.succs.contains(&handler) {
+                        emit(Flow::To(handler));
+                    }
                 }
             }
             if matches!(
@@ -570,6 +585,7 @@ mod tests {
             terminators,
             start_to_block,
             flow: None,
+            normal_flow: None,
             postorder_num: Vec::new(),
             rpo: Vec::new(),
             loops: Vec::new(),
@@ -635,6 +651,26 @@ mod tests {
         ]);
         let immediate: Vec<BlockId> = cfg.immediate_post_dominators();
         assert_eq!(immediate, vec![3, 3, 3, usize::MAX]);
+    }
+
+    #[test]
+    fn a_protected_branch_merges_at_its_normal_join_not_past_its_handler() {
+        let mut cfg: Cfg = cfg_from_terminators(vec![
+            Terminator::Cond {
+                taken: 1,
+                fallthrough: 2,
+            },
+            Terminator::Goto(3),
+            Terminator::Goto(3),
+            Terminator::Goto(5),
+            Terminator::Goto(5),
+            Terminator::Return,
+        ]);
+        cfg.exceptional.insert(0, vec![4]);
+        cfg.recompute_derived();
+        let immediate: Vec<BlockId> = cfg.immediate_post_dominators();
+        assert_eq!(immediate[0], 3);
+        assert_eq!(immediate[4], 5);
     }
 
     #[test]

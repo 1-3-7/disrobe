@@ -14,7 +14,7 @@ pub(crate) enum IntWidth {
 }
 
 impl IntWidth {
-    const fn keyword(self, unsigned: bool) -> &'static str {
+    pub(crate) const fn keyword(self, unsigned: bool) -> &'static str {
         match (self, unsigned) {
             (Self::Int32, false) => "int",
             (Self::Int32, true) => "uint",
