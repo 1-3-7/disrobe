@@ -42,6 +42,7 @@ corpus/beam/recompile_oracle/maps2.erl	-	-	-	-	-	-	-
 corpus/beam/recompile_oracle/nested_data.erl	-	-	-	-	-	-	-
 corpus/beam/recompile_oracle/records2.erl	-	-	-	-	-	-	-
 corpus/beam/recompile_oracle/recursion.erl	-	-	-	-	-	-	-
+corpus/beam/recompile_oracle/shortcircuit.erl	-	-	-	-	-	-	-
 corpus/beam/recompile_oracle/strings.erl	-	-	-	-	-	-	-
 corpus/beam/recompile_oracle/trycatch.erl	-	-	-	-	-	-	-
 corpus/beam/recompile_oracle/tuples.erl	-	-	-	-	-	-	-
@@ -940,6 +941,7 @@ corpus/php/behaviour/exceptions.php	php.peel	php-source	source	high	-	-	-
 corpus/php/behaviour/foreach_forms.php	php.peel	php-source	source	high	-	-	-
 corpus/php/behaviour/generators.php	php.peel	php-source	source	high	-	-	-
 corpus/php/behaviour/juggling.php	php.peel	php-source	source	high	-	-	-
+corpus/php/behaviour/loop_in_try.php	php.peel	php-source	source	high	-	-	-
 corpus/php/behaviour/loops.php	php.peel	php-source	source	high	-	-	-
 corpus/php/behaviour/operators.php	php.peel	php-source	source	high	-	-	-
 corpus/php/behaviour/references.php	php.peel	php-source	source	high	-	-	-
@@ -947,6 +949,7 @@ corpus/php/behaviour/scopes.php	php.peel	php-source	source	high	-	-	-
 corpus/php/behaviour/statics.php	php.peel	php-source	source	high	-	-	-
 corpus/php/behaviour/strings.php	php.peel	php-source	source	high	-	-	-
 corpus/php/behaviour/switch_match.php	php.peel	php-source	source	high	-	-	-
+corpus/php/behaviour/switch_try.php	php.peel	php-source	source	high	-	-	-
 corpus/php/better-php-obfuscator/edge_cases.obf.php	php.peel	php-source	obfuscator-wrapper	high	-	-	-
 corpus/php/better-php-obfuscator/hello.obf.php	php.peel	php-source	source	high	-	-	-
 corpus/php/fopo/CAPTURE-MANUAL.md	php.peel	php-source	source	medium	js.deob	obfuscator-wrapper	low
@@ -1103,7 +1106,7 @@ corpus/pickle/structural/oob_buffer.pkl	pickle.classify	python-pickle	interprete
 corpus/pickle/structural/shared_ref.pkl	pickle.classify	python-pickle	interpreter-bytecode	high	-	-	-
 corpus/python/PY_VERSIONS.json	scriptlang.classify	win-script	source	medium	-	-	-
 corpus/python/alt_runtimes/brython/PROVENANCE.txt	-	-	-	-	-	-	-
-corpus/python/alt_runtimes/brython/hello.brython.js	js.deob	js-minified	source	low	-	-	-
+corpus/python/alt_runtimes/brython/hello.brython.js	py.disasm	pyc-brython	interpreter-bytecode	high	js.deob	source	low
 corpus/python/alt_runtimes/brython/hello.py	-	-	-	-	-	-	-
 corpus/python/alt_runtimes/ironpython/GreetModule.cs	-	-	-	-	-	-	-
 corpus/python/alt_runtimes/ironpython/PROVENANCE.txt	-	-	-	-	-	-	-
@@ -2959,9 +2962,11 @@ corpus/registry.json	-	-	-	-	-	-	-
 corpus/ruby/behaviour/block_while_break.rb	-	-	-	-	-	-	-
 corpus/ruby/behaviour/branch_rescue.rb	-	-	-	-	-	-	-
 corpus/ruby/behaviour/case_arm_if.rb	-	-	-	-	-	-	-
+corpus/ruby/behaviour/case_arm_rescue.rb	-	-	-	-	-	-	-
 corpus/ruby/behaviour/case_join.rb	-	-	-	-	-	-	-
 corpus/ruby/behaviour/cases.rb	-	-	-	-	-	-	-
 corpus/ruby/behaviour/control.rb	-	-	-	-	-	-	-
+corpus/ruby/behaviour/elsif_join.rb	-	-	-	-	-	-	-
 corpus/ruby/behaviour/features.rb	-	-	-	-	-	-	-
 corpus/ruby/behaviour/flow.rb	ruby.classify	ruby-mri-source	interpreter-bytecode	medium	-	-	-
 corpus/ruby/behaviour/functional.rb	-	-	-	-	-	-	-
@@ -2973,6 +2978,7 @@ corpus/ruby/behaviour/objects.rb	-	-	-	-	-	-	-
 corpus/ruby/behaviour/operators.rb	-	-	-	-	-	-	-
 corpus/ruby/behaviour/patterns.rb	-	-	-	-	-	-	-
 corpus/ruby/behaviour/programs.rb	-	-	-	-	-	-	-
+corpus/ruby/behaviour/rescue_then_ensure.rb	-	-	-	-	-	-	-
 corpus/ruby/behaviour/text.rb	-	-	-	-	-	-	-
 corpus/ruby/behaviour/values.rb	-	-	-	-	-	-	-
 corpus/ruby/greeter.rb	-	-	-	-	-	-	-
