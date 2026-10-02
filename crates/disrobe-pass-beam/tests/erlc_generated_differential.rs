@@ -12,6 +12,9 @@ mod common;
 use common::erlang_toolchain::{Erlang, require_erlang, run_bounded};
 
 const PROGRAMS: u64 = 400;
+const RICH_FIRST: u64 = 1_000_000;
+const RICH_PROGRAMS: u64 = 100;
+const RICH_KNOWN_DIVERGENT: [u64; 0] = [];
 const GRADED: &str = "generated Erlang programs through the stripped core lift";
 const VARIABLES: [&str; 4] = ["A", "B", "C", "D"];
 const EFFECT_VARIABLES: [&str; 3] = ["E", "F", "G"];
@@ -19,6 +22,7 @@ const EFFECT_VARIABLES: [&str; 3] = ["E", "F", "G"];
 struct Generator {
     state: u64,
     bindings: u32,
+    rich: bool,
 }
 
 impl Generator {
@@ -26,6 +30,7 @@ impl Generator {
         Self {
             state: seed ^ 0xA076_1D64_78BD_642F,
             bindings: 0,
+            rich: seed >= RICH_FIRST,
         }
     }
 
@@ -73,7 +78,61 @@ impl Generator {
         format!("{left} {op} {right}")
     }
 
+    fn rich_value(&mut self, bound: usize) -> String {
+        let n: u32 = self.bindings;
+        self.bindings += 1;
+        let var: &str = VARIABLES[self.below(bound as u64) as usize];
+        match self.below(10) {
+            0 => format!(
+                "(fun(Xf{n}) -> (Xf{n} * {var} + {}) rem 1000 end)({})",
+                self.atom(bound),
+                self.arithmetic(1, bound)
+            ),
+            1 => format!(
+                "try throw({{t{n}, {}}}) catch throw:{{t{n}, Wt{n}}} -> Wt{n} after log(af{n}, {var}) end",
+                self.arithmetic(1, bound)
+            ),
+            2 => format!(
+                "lists:sum(lists:map(fun(Xf{n}) -> Xf{n} + {var} end, lists:seq(1, {})))",
+                self.below(5)
+            ),
+            3 => format!(
+                "maps:fold(fun(_, Vf{n}, Af{n}) -> (Af{n} + Vf{n}) rem 1000 end, 0, (#{{k0 => {}, k1 => 2}})#{{k1 := {}}})",
+                self.arithmetic(1, bound),
+                self.arithmetic(1, bound)
+            ),
+            4 => format!(
+                "begin self() ! {{m{n}, {}}}, receive {{m{n}, Rr{n}}} -> Rr{n} after 0 -> -1 end end",
+                self.arithmetic(1, bound)
+            ),
+            5 => format!(
+                "lists:sum(binary_to_list(<< <<(Bb{n} + {var} rem 7)>> || <<Bb{n}>> <= <<1, 2, {}>> >>))",
+                self.below(9)
+            ),
+            6 => format!(
+                "length(integer_to_list(abs({})) ++ \"x\")",
+                self.arithmetic(1, bound)
+            ),
+            7 => format!(
+                "element(2, setelement(2, {{1, 2, 3}}, {}))",
+                self.arithmetic(1, bound)
+            ),
+            8 => format!(
+                "case {{({}) rem 3, {}}} of {{0, Yc{n}}} when Yc{n} > 2 -> Yc{n}; {{1, Yc{n}}} -> -Yc{n}; {{_, _}} -> 0 end",
+                self.arithmetic(1, bound),
+                self.atom(bound)
+            ),
+            _ => format!(
+                "case catch (100 div ({var} - {})) of {{'EXIT', _}} -> -2; Rr{n} -> Rr{n} end",
+                self.atom(bound)
+            ),
+        }
+    }
+
     fn value(&mut self, bound: usize) -> String {
+        if self.rich && self.below(3) == 0 {
+            return self.rich_value(bound);
+        }
         match self.below(13) {
             8 => format!(
                 "g({{{}, {}}})",
@@ -222,6 +281,7 @@ impl Generator {
         }
         let tail: String = self.value(VARIABLES.len());
         let mut extra: Self = Self::new(self.state);
+        extra.rich = self.rich;
         for name in EFFECT_VARIABLES {
             let effect: String = extra.effect(VARIABLES.len());
             writeln!(out, "    {name} = {effect},").expect("write to a String");
@@ -375,6 +435,52 @@ fn failed_matches_and_generators_still_raise_after_recovery() {
 }
 
 #[test]
+fn generated_rich_programs_recompile_and_run_identically() {
+    let erlang: Erlang = require_erlang(GRADED);
+    let mut failures: std::collections::BTreeMap<u64, String> = std::collections::BTreeMap::new();
+    for seed in RICH_FIRST..RICH_FIRST + RICH_PROGRAMS {
+        let module: String = format!("gen{seed}");
+        let source: String = Generator::new(seed).module(&module);
+        let scratch: ScratchDir =
+            ScratchDir::create(&format!("disrobe_beam_generated_{seed}")).expect("scratch");
+        let (orig_dir, recovered): (PathBuf, String) =
+            recovered_source(&erlang, scratch.path(), &module, &source);
+        let expected: String = run_test(&erlang, &orig_dir, &module)
+            .unwrap_or_else(|| panic!("{module}: the generated test/0 must run:\n{source}"));
+        let why: Option<String> =
+            match recovered_output(&erlang, scratch.path(), &module, &recovered) {
+                Ok(actual) if actual == expected => None,
+                Ok(actual) => Some(format!("expected {expected} got {actual}")),
+                Err(why) => Some(why),
+            };
+        if let Some(why) = why {
+            failures.insert(
+                seed,
+                format!("{module}: {why}\n--- source ---\n{source}--- recovered ---\n{recovered}"),
+            );
+        }
+    }
+    let pinned: std::collections::BTreeSet<u64> = RICH_KNOWN_DIVERGENT.into_iter().collect();
+    let divergent: std::collections::BTreeSet<u64> = failures.keys().copied().collect();
+    let regressed: Vec<u64> = divergent.difference(&pinned).copied().collect();
+    let fixed: Vec<u64> = pinned.difference(&divergent).copied().collect();
+    let shown: Vec<&str> = failures
+        .iter()
+        .filter(|(seed, _): &(&u64, &String)| !pinned.contains(seed))
+        .map(|(_, why): (&u64, &String)| why.as_str())
+        .take(4)
+        .collect();
+    assert!(
+        regressed.is_empty() && fixed.is_empty(),
+        "{} of {RICH_PROGRAMS} rich generated modules diverged; the divergent set must equal \
+         RICH_KNOWN_DIVERGENT exactly, which only ever shrinks. Newly divergent: {regressed:?}. \
+         Now recovered, remove from RICH_KNOWN_DIVERGENT: {fixed:?}.\n{}",
+        failures.len(),
+        shown.join("\n=====\n")
+    );
+}
+
+#[test]
 fn the_generator_is_deterministic_and_varied() {
     assert_eq!(Generator::new(3).module("m"), Generator::new(3).module("m"));
     let all: String = (0..PROGRAMS)
@@ -404,6 +510,26 @@ fn the_generator_is_deterministic_and_varied() {
         "error:badarg",
     ] {
         assert!(all.contains(shape), "the corpus never generates `{shape}`");
+    }
+    let rich: String = (RICH_FIRST..RICH_FIRST + RICH_PROGRAMS)
+        .map(|seed: u64| Generator::new(seed).module("m"))
+        .collect();
+    for shape in [
+        "(fun(Xf",
+        "after log(af",
+        "lists:map(",
+        "maps:fold(",
+        "receive {m",
+        "<<Bb",
+        "integer_to_list(",
+        "setelement(",
+        "when Yc",
+        "case catch (",
+    ] {
+        assert!(
+            rich.contains(shape),
+            "the rich corpus never generates `{shape}`"
+        );
     }
 }
 
