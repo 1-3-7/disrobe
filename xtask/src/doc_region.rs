@@ -28,6 +28,12 @@ pub(crate) struct Region {
     content_end: usize,
 }
 
+impl Region {
+    pub(crate) const fn content_span(&self) -> (usize, usize) {
+        (self.content_start, self.content_end)
+    }
+}
+
 pub(crate) fn parse(syntax: RegionSyntax, text: &str) -> Result<Vec<Region>> {
     let RegionSyntax { open_prefix, close }: RegionSyntax = syntax;
     let mut out: Vec<Region> = Vec::new();

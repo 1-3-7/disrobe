@@ -87,8 +87,8 @@ pub(crate) struct FigureBudget {
 const DOCUMENT_FIGURE_BUDGET: [FigureBudget; 31] = [
     FigureBudget {
         path: "README.md",
-        figures: 12,
-        digest: "750f2adf9bcec712",
+        figures: 3,
+        digest: "e14f7dc933039bd0",
     },
     FigureBudget {
         path: "SECURITY.md",
@@ -444,6 +444,16 @@ const fn is_word_byte(byte: Option<u8>) -> bool {
     }
 }
 
+fn document_coverage(text: &str) -> Result<crate::metrics::MarkerCoverage> {
+    let mut coverage: crate::metrics::MarkerCoverage = crate::metrics::marker_coverage(text)?;
+    let pairs: Vec<crate::doc_region::Region> =
+        crate::doc_region::parse(crate::evidence::README_PAIR_SYNTAX, text)?;
+    coverage
+        .spans
+        .extend(pairs.iter().map(crate::doc_region::Region::content_span));
+    Ok(coverage)
+}
+
 fn excluded_tree(relative: &str) -> Option<&'static str> {
     EXCLUDED_TREES
         .iter()
@@ -538,8 +548,7 @@ pub(crate) fn run(root: &Path) -> Result<()> {
         visited.push(relative.clone());
         let text: String = read_text_bounded(path, MAX_DOC_BYTES)
             .wrap_err_with(|| format!("reading {}", path.display()))?;
-        let coverage: crate::metrics::MarkerCoverage = match crate::metrics::marker_coverage(&text)
-        {
+        let coverage: crate::metrics::MarkerCoverage = match document_coverage(&text) {
             Ok(coverage) => coverage,
             Err(error) => {
                 faults.push(format!(
@@ -655,6 +664,17 @@ mod tests {
     #[test]
     fn a_percentage_wins_over_a_version_reading() {
         assert_eq!(shapes_of("floor 96.60%\n"), [FigureShape::Percent]);
+    }
+
+    #[test]
+    fn a_figure_inside_an_evidence_pair_region_is_marked_covered() {
+        let text: &str =
+            "| <!-- evidence-pair:apk:dex -->199 / 228 clean<!-- /evidence-pair --> | 7 / 9 |\n";
+        let coverage: crate::metrics::MarkerCoverage = document_coverage(text).unwrap();
+        let figures: Vec<Figure> = detect(text, &coverage.spans, &coverage.suppressed_lines);
+        assert_eq!(figures.len(), 2);
+        assert!(figures[0].covered);
+        assert!(!figures[1].covered);
     }
 
     #[test]

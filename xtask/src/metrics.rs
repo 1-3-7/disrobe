@@ -717,6 +717,15 @@ const KEYS: &[KeySpec] = &[
         },
     },
     KeySpec {
+        name: "jvm_execution_frac",
+        formatter: Formatter::Frac,
+        nouns: &[],
+        extract: |r: &Recovery| {
+            r.bar("JVM classfile", "per-method, execution-verified")?
+                .count_ratio()
+        },
+    },
+    KeySpec {
         name: "jvm_per_method_count",
         formatter: Formatter::OfPlain,
         nouns: &[],

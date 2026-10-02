@@ -21,7 +21,7 @@ const KNOWN_STRENGTHS: &[&str] = &["strong", "recompile-only", "coverage-self-re
 const MAX_DESCRIPTOR_BYTES: u64 = 1 << 20;
 const MAX_EVIDENCE_TEXT_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_JAVASCRIPT_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
-const README_PAIR_SYNTAX: RegionSyntax = RegionSyntax {
+pub(crate) const README_PAIR_SYNTAX: RegionSyntax = RegionSyntax {
     open_prefix: "<!-- evidence-pair:",
     close: "<!-- /evidence-pair -->",
 };
