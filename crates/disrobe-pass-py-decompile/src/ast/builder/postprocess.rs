@@ -840,19 +840,6 @@ pub(super) fn is_implicit_none_return(s: &Stmt) -> bool {
     )
 }
 
-fn while_test_is_infinite(test: &Expr) -> bool {
-    matches!(
-        test,
-        Expr::Constant {
-            value: ConstValue::True,
-            ..
-        } | Expr::Constant {
-            value: ConstValue::Int(1..),
-            ..
-        }
-    )
-}
-
 fn prev_is_compound_if_returning(body: &[Stmt]) -> bool {
     let Some(prev): Option<&Stmt> = body.len().checked_sub(2).map(|i: usize| &body[i]) else {
         return false;
@@ -895,10 +882,10 @@ fn strip_trailing_implicit_return(body: &mut Vec<Stmt>) {
                 strip_trailing_implicit_return(orelse);
             }
         }
-        Some(Stmt::While { test, .. }) if while_test_is_infinite(test) => {}
-        Some(
-            Stmt::For { body: b, .. } | Stmt::While { body: b, .. } | Stmt::With { body: b, .. },
-        ) => strip_trailing_implicit_return(b),
+        Some(Stmt::For { orelse, .. } | Stmt::While { orelse, .. }) => {
+            strip_trailing_implicit_return(orelse);
+        }
+        Some(Stmt::With { body: b, .. }) => strip_trailing_implicit_return(b),
         Some(Stmt::Try {
             body: b,
             orelse,

@@ -27,18 +27,21 @@ use super::loops::{
     stmts_equal_ignoring_lines, structure_for_loop_with_iter, structure_loop, try_enclosed_by_loop,
 };
 use super::try_with::{
-    LoopKind, LoopRegion, TryRegion, extend_window_over_split_handler, find_try_region,
-    guard_test_expr_start, is_back_edge, is_forward_cond_jump, is_shortcircuit_cleanup_pop,
-    is_value_boundary, is_value_form_shortcircuit, leading_guard_prelude_split,
-    loop_inside_unpeeled_pre311_try, preflight_guarded_finally_raise_mismatch, recover_return_at,
-    region_is_linear, skip_await_poll, skip_except_name_teardown, structure_try,
+    LoopKind, LoopRegion, TryRegion, cold_section_start, cold_try_encloses,
+    extend_window_over_split_handler, find_try_region, foreign_cold_handler_in,
+    guard_owns_cold_try, guard_test_expr_start, is_async_send_back_edge, is_back_edge,
+    is_forward_cond_jump, is_shortcircuit_cleanup_pop, is_value_boundary,
+    is_value_form_shortcircuit, leading_guard_prelude_split, loop_inside_unpeeled_pre311_try,
+    preflight_guarded_finally_raise_mismatch, recover_return_at,
+    region_is_handler_exit_scaffolding, region_is_linear, skip_await_poll,
+    skip_except_name_teardown, structure_cold_handler_try, structure_try,
     trim_trailing_comp_cleanup, try_enclosed_by_leading_guard, try_structure_cold_sibling_try,
     try_structure_else_try, try_structure_empty_body_try, try_structure_guarded_try,
     try_structure_loop_continue_guard_over_try, try_structure_loop_else_nested_try,
     try_structure_loop_then_nested_try, try_structure_multibranch_guarded_try,
 };
 use super::{
-    ActiveRegionGuard, DecodedStream, FrameDispatch, ScDesc, StructureDepthGuard,
+    ActiveRegionGuard, DecodedStream, FrameDispatch, ScDesc, SimStreamGuard, StructureDepthGuard,
     ThenArmEndCapGuard, WIDE_STEP, active_version, class_docstring, enter_active_region,
     enter_structure_depth, extract_docstring, fallthrough_cond_test, loop_break_target,
     loop_continue_target, loop_exit_return, loop_exit_tail_range, loop_frame_has_header,
@@ -898,7 +901,10 @@ pub(super) fn resolve_jump_target(
         .or_else(|| resolve_fused_extended_arg_target(stream, target_byte))
 }
 
-fn resolve_fused_extended_arg_target(stream: &DecodedStream, target_byte: u32) -> Option<usize> {
+pub(super) fn resolve_fused_extended_arg_target(
+    stream: &DecodedStream,
+    target_byte: u32,
+) -> Option<usize> {
     if stream.instr_unit_jumps && !stream.wordcode {
         return None;
     }
@@ -2334,6 +2340,8 @@ pub(super) fn structure_stmts(
     hi: usize,
 ) -> Result<Vec<Stmt>> {
     let _depth_guard: StructureDepthGuard = enter_structure_depth()?;
+    let _sim_stream: SimStreamGuard = SimStreamGuard::enter(stream);
+    let hi: usize = foreign_cold_handler_in(stream, lo, hi).unwrap_or(hi);
     let len: usize = stream.ops.len();
     if lo > len || hi > len {
         return Err(crate::error::DecompileError::BlockOutOfRange { lo, hi, len });
@@ -2403,77 +2411,83 @@ pub(super) fn structure_stmts(
     {
         return structure_loop(code, stream, lo, hi, &loop_region);
     }
-    if let Some(region) = find_try_region(stream, lo, hi)
-        && let Some(stmts) =
-            try_structure_loop_continue_guard_over_try(code, stream, lo, hi, &region)?
-    {
+    if let Some(stmts) = structure_cold_handler_try(code, stream, lo, hi)? {
         return Ok(stmts);
     }
-    if let Some(stmts) = try_structure_loop_then_nested_try(code, stream, lo, hi)? {
-        return Ok(stmts);
-    }
-    if let Some(loop_region) = find_loop(stream, lo, hi)
-        && is_post311_two_call_and_try_break_loop(code, stream, lo, hi, &loop_region)
-    {
-        return structure_loop(code, stream, lo, hi, &loop_region);
-    }
-    if let Some(stmts) = try_structure_guarded_try(code, stream, lo, hi)? {
-        return Ok(stmts);
-    }
-    if let Some(stmts) = try_structure_multibranch_guarded_try(code, stream, lo, hi)? {
-        return Ok(stmts);
-    }
-    if find_try_region(stream, lo, hi).is_none()
-        && let Some(stmts) = try_structure_cold_sibling_try(code, stream, lo, hi)?
-    {
-        return Ok(stmts);
-    }
-    if find_try_region(stream, lo, hi).is_none()
-        && let Some(stmts) = try_structure_empty_body_try(code, stream, lo, hi)?
-    {
-        return Ok(stmts);
-    }
-    if let Some(stmts) = try_structure_else_try(code, stream, lo, hi)? {
-        return Ok(stmts);
-    }
-    if let Some(stmts) = try_structure_loop_else_nested_try(code, stream, lo, hi)? {
-        return Ok(stmts);
-    }
-    if let Some(stmts) = try_structure_elif_arm_over_try(code, stream, lo, hi)? {
-        return Ok(stmts);
-    }
-    if let Some(stmts) = try_structure_terminating_guard_else(code, stream, lo, hi)? {
-        return Ok(stmts);
-    }
-    if let Some(try_region) = find_try_region(stream, lo, hi)
-        && !try_enclosed_by_loop(stream, lo, hi, &try_region)
-        && !try_enclosed_by_leading_guard(stream, lo, hi, &try_region)
-        && (stream.is_pre_311()
-            || !find_loop(stream, lo, hi).is_some_and(|loop_region: LoopRegion| {
-                matches!(loop_region.kind, LoopKind::While)
-                    && !loop_region.infinite
-                    && loop_region.header <= try_region.try_start
-                    && try_region.try_start < loop_region.back_edge
-                    && try_region.protected_end() <= loop_region.back_edge
-                    && try_region.handler_start >= loop_region.back_edge
-                    && last_significant_back(stream, lo, loop_region.header).is_some_and(
-                        |guard: usize| {
-                            matches!(
-                                peeled_while_test_relation(code, stream, lo, hi, guard),
-                                Some(
-                                    PeeledWhileTestRelation::Mismatched
-                                        | PeeledWhileTestRelation::EnclosingGuard
-                                )
-                            )
-                        },
-                    )
-            }))
-    {
-        if let Some(stmts) = try_structure_loop_guard_before_try(code, stream, lo, hi, &try_region)?
+    if !guard_owns_cold_try(stream, lo, hi) {
+        if let Some(region) = find_try_region(stream, lo, hi)
+            && let Some(stmts) =
+                try_structure_loop_continue_guard_over_try(code, stream, lo, hi, &region)?
         {
             return Ok(stmts);
         }
-        return structure_try(code, stream, lo, hi, &try_region);
+        if let Some(stmts) = try_structure_loop_then_nested_try(code, stream, lo, hi)? {
+            return Ok(stmts);
+        }
+        if let Some(loop_region) = find_loop(stream, lo, hi)
+            && is_post311_two_call_and_try_break_loop(code, stream, lo, hi, &loop_region)
+        {
+            return structure_loop(code, stream, lo, hi, &loop_region);
+        }
+        if let Some(stmts) = try_structure_guarded_try(code, stream, lo, hi)? {
+            return Ok(stmts);
+        }
+        if let Some(stmts) = try_structure_multibranch_guarded_try(code, stream, lo, hi)? {
+            return Ok(stmts);
+        }
+        if find_try_region(stream, lo, hi).is_none()
+            && let Some(stmts) = try_structure_cold_sibling_try(code, stream, lo, hi)?
+        {
+            return Ok(stmts);
+        }
+        if find_try_region(stream, lo, hi).is_none()
+            && let Some(stmts) = try_structure_empty_body_try(code, stream, lo, hi)?
+        {
+            return Ok(stmts);
+        }
+        if let Some(stmts) = try_structure_else_try(code, stream, lo, hi)? {
+            return Ok(stmts);
+        }
+        if let Some(stmts) = try_structure_loop_else_nested_try(code, stream, lo, hi)? {
+            return Ok(stmts);
+        }
+        if let Some(stmts) = try_structure_elif_arm_over_try(code, stream, lo, hi)? {
+            return Ok(stmts);
+        }
+        if let Some(stmts) = try_structure_terminating_guard_else(code, stream, lo, hi)? {
+            return Ok(stmts);
+        }
+        if let Some(try_region) = find_try_region(stream, lo, hi)
+            && !try_enclosed_by_loop(stream, lo, hi, &try_region)
+            && !try_enclosed_by_leading_guard(stream, lo, hi, &try_region)
+            && (stream.is_pre_311()
+                || !find_loop(stream, lo, hi).is_some_and(|loop_region: LoopRegion| {
+                    matches!(loop_region.kind, LoopKind::While)
+                        && !loop_region.infinite
+                        && loop_region.header <= try_region.try_start
+                        && try_region.try_start < loop_region.back_edge
+                        && try_region.protected_end() <= loop_region.back_edge
+                        && try_region.handler_start >= loop_region.back_edge
+                        && last_significant_back(stream, lo, loop_region.header).is_some_and(
+                            |guard: usize| {
+                                matches!(
+                                    peeled_while_test_relation(code, stream, lo, hi, guard),
+                                    Some(
+                                        PeeledWhileTestRelation::Mismatched
+                                            | PeeledWhileTestRelation::EnclosingGuard
+                                    )
+                                )
+                            },
+                        )
+                }))
+        {
+            if let Some(stmts) =
+                try_structure_loop_guard_before_try(code, stream, lo, hi, &try_region)?
+            {
+                return Ok(stmts);
+            }
+            return structure_try(code, stream, lo, hi, &try_region);
+        }
     }
     if let Some(stmts) = loop_structure_guarded_loop(code, stream, lo, hi)? {
         return Ok(stmts);
@@ -2737,6 +2751,27 @@ pub(super) fn structure_stmts(
         Some(_) if else_via_continue => jumped,
         Some(s) => rewrite_jump_to_break_continue(code, stream, jumped, s, join),
         None => jumped,
+    };
+    let fallthrough: Vec<Stmt> = if let Some(back) = bare_continue_back
+        && let Some(pop_except) = (jump_idx + 1..back)
+            .rev()
+            .find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::PopExcept))
+        && region_is_handler_exit_scaffolding(stream, pop_except, back)
+        && jumped
+            .iter()
+            .any(|stmt: &Stmt| matches!(stmt, Stmt::Raise { .. } | Stmt::Return(_)))
+        && !matches!(
+            fallthrough.last(),
+            Some(Stmt::Break | Stmt::Continue | Stmt::Return(_) | Stmt::Raise { .. })
+        ) {
+        let mut arm: Vec<Stmt> = fallthrough
+            .into_iter()
+            .filter(|stmt: &Stmt| !matches!(stmt, Stmt::Pass))
+            .collect();
+        arm.push(Stmt::Continue);
+        arm
+    } else {
+        fallthrough
     };
     let none_jump: bool = stream.none_jump_kind.contains_key(&jump_idx);
     let pre311_guard_absorbs_jumped_arm: bool = stream.is_pre_311();
@@ -3819,7 +3854,11 @@ fn classify_iterator_break(
     if !stmts_equal_ignoring_pass(&before_pop, body) {
         return IteratorBreak::Absent;
     }
+    let len: usize = stream.ops.len();
+    let cold_continues: std::ops::Range<usize> =
+        cold_section_start(stream).map_or(len..len, |cold: usize| cold.max(pop_at).min(len)..len);
     let continue_jumps: usize = (lo..pop_at)
+        .chain(cold_continues)
         .filter(|&k: &usize| {
             stream.ops.get(k).is_some_and(|op: &CanonicalOp| {
                 is_unconditional_jump(op) && resolve_jump_target(stream, k, op) == Some(header)
@@ -3832,7 +3871,24 @@ fn classify_iterator_break(
         .collect();
     let explicit_continues: usize = loop_continue_stmt_count(&out);
     if continue_jumps == explicit_continues {
-        out.push(Stmt::Break);
+        if let Some(Stmt::Try {
+            body: try_body,
+            handlers,
+            orelse,
+            finalbody,
+            ..
+        }) = out.last_mut()
+            && orelse.is_empty()
+            && finalbody.is_empty()
+            && !handlers.is_empty()
+            && handlers
+                .iter()
+                .all(|h: &ExceptHandler| matches!(h.body.last(), Some(Stmt::Continue)))
+        {
+            try_body.push(Stmt::Break);
+        } else {
+            out.push(Stmt::Break);
+        }
         return IteratorBreak::Recovered(out);
     }
     if let Some(Stmt::Try {
@@ -4022,6 +4078,28 @@ fn arm_ends_in_break(stmt: &Stmt) -> bool {
 }
 
 #[deny(clippy::indexing_slicing)]
+fn is_inline_with_exit_stmt(stmt: &Stmt) -> bool {
+    let is_none = |expr: &Expr| -> bool {
+        matches!(
+            expr,
+            Expr::Constant {
+                value: ConstValue::None,
+                ..
+            }
+        )
+    };
+    let call: &Expr = match stmt {
+        Stmt::Expr(Expr::Await(inner)) => inner,
+        Stmt::Expr(expr) => expr,
+        _ => return false,
+    };
+    matches!(
+        call,
+        Expr::Call { func, args, keywords }
+            if is_none(func) && keywords.is_empty() && args.len() == 3 && args.iter().all(is_none)
+    )
+}
+
 fn rewrite_jump_to_break_continue(
     code: &CodeObject,
     stream: &DecodedStream,
@@ -4029,6 +4107,13 @@ fn rewrite_jump_to_break_continue(
     lo: usize,
     hi: usize,
 ) -> Vec<Stmt> {
+    let body: Vec<Stmt> = if body.iter().any(is_inline_with_exit_stmt) {
+        body.into_iter()
+            .filter(|stmt: &Stmt| !is_inline_with_exit_stmt(stmt))
+            .collect()
+    } else {
+        body
+    };
     if let Some(appended) = append_pre311_break_loop(stream, &body, lo, hi) {
         return appended;
     }
@@ -4390,6 +4475,9 @@ fn try_structure_inline_comprehension_noclear(
     {
         return Ok(None);
     }
+    if cold_try_encloses(stream, lo, hi, comp.accumulator) {
+        return Ok(None);
+    }
     let kind: CompKind = match stream.ops[comp.accumulator] {
         CanonicalOp::BuildSet(_) => CompKind::Set,
         CanonicalOp::BuildMap(_) => CompKind::Dict,
@@ -4455,6 +4543,9 @@ fn try_structure_inline_comprehension(
         && comp.clear_idx < region.handler_start
         && !try_enclosed_by_loop(stream, lo, hi, &region)
     {
+        return Ok(None);
+    }
+    if cold_try_encloses(stream, lo, hi, comp.clear_idx) {
         return Ok(None);
     }
     if comp_preceded_by_branch(stream, lo, &comp) {
@@ -5711,6 +5802,27 @@ pub(super) fn region_all_paths_terminate_or_reach(
     hi: usize,
     exit: Option<usize>,
 ) -> bool {
+    all_paths_terminate(stream, lo, hi, exit, &[], false)
+}
+
+pub(super) fn region_all_paths_terminate_skipping(
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+    exit: Option<usize>,
+    skip: &[(usize, usize)],
+) -> bool {
+    all_paths_terminate(stream, lo, hi, exit, skip, true)
+}
+
+fn all_paths_terminate(
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+    exit: Option<usize>,
+    skip: &[(usize, usize)],
+    ignore_send_loops: bool,
+) -> bool {
     if lo >= hi || hi > stream.ops.len() {
         return false;
     }
@@ -5728,6 +5840,16 @@ pub(super) fn region_all_paths_terminate_or_reach(
             states[slot] = 2;
             continue;
         }
+        if let Some(&(_, after)) = skip
+            .iter()
+            .find(|&&(start, end): &&(usize, usize)| idx >= start && idx < end)
+        {
+            if states[slot] == 0 {
+                states[slot] = 2;
+                work.push((after, false));
+            }
+            continue;
+        }
         match states[slot] {
             1 => return false,
             2 => continue,
@@ -5740,6 +5862,8 @@ pub(super) fn region_all_paths_terminate_or_reach(
             | CanonicalOp::ReturnConst(_)
             | CanonicalOp::Raise(_)
             | CanonicalOp::Reraise(_) => {}
+            CanonicalOp::JumpBackwardNoInterrupt(_)
+                if ignore_send_loops && is_async_send_back_edge(stream, idx) => {}
             op @ (CanonicalOp::JumpForward(_)
             | CanonicalOp::JumpAbsolute(_)
             | CanonicalOp::JumpBackward(_)
@@ -6146,6 +6270,14 @@ fn structure_fallthrough_continue_and_chain(
         return Ok(None);
     };
     if guards.len() < 2 {
+        return Ok(None);
+    }
+    let chain_is_loop_test: bool = (body_start..hi).any(|k: usize| {
+        is_back_edge(&stream.ops[k])
+            && resolve_jump_target(stream, k, &stream.ops[k])
+                .is_some_and(|target: usize| target >= lo && target <= guards[0].jump)
+    });
+    if chain_is_loop_test {
         return Ok(None);
     }
     let (head, head_residual): (Vec<Stmt>, Vec<Expr>) =

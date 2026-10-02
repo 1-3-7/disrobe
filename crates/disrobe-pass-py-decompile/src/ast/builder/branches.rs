@@ -113,7 +113,7 @@ fn fold_ternary_expr(
         stream.ops[body_last],
         CanonicalOp::JumpForward(_) | CanonicalOp::JumpAbsolute(_)
     ) {
-        return Ok(None);
+        return fold_compound_ternary(code, stream, lo, hi, jump_idx, seed);
     }
     let orelse_start: usize = body_last + 1;
     let Some(join): Option<usize> = resolve_jump_target(stream, body_last, &stream.ops[body_last])
@@ -122,6 +122,11 @@ fn fold_ternary_expr(
         return Ok(None);
     };
     if last_test_jump + 1 > body_last {
+        return fold_compound_ternary(code, stream, lo, hi, jump_idx, seed);
+    }
+    if region_completes_statement(stream, last_test_jump + 1, body_last)
+        || region_completes_statement(stream, orelse_start, join)
+    {
         return Ok(None);
     }
     let Some((head_stmts, below_stack, test_raw)): Option<TernaryTest> =
@@ -169,6 +174,157 @@ fn fold_ternary_expr(
     }))
 }
 
+fn operand_entry(stream: &DecodedStream, target: usize, starts: &[usize]) -> Option<usize> {
+    starts.iter().copied().find(|&start: &usize| {
+        target == start || first_significant(stream, start, stream.ops.len()) == Some(target)
+    })
+}
+
+fn region_completes_statement(stream: &DecodedStream, lo: usize, hi: usize) -> bool {
+    (lo..hi).any(|k: usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::Pop
+                | CanonicalOp::StoreFast(_)
+                | CanonicalOp::StoreName(_)
+                | CanonicalOp::StoreGlobal(_)
+                | CanonicalOp::StoreAttr(_)
+                | CanonicalOp::StoreSubscr
+                | CanonicalOp::Return
+                | CanonicalOp::ReturnConst(_)
+        ) && !is_shortcircuit_cleanup_pop(stream, k)
+            && !is_walrus_store_shape(&stream.ops, k)
+    })
+}
+
+fn fold_compound_ternary(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+    jump_idx: usize,
+    seed: Vec<Expr>,
+) -> Result<Option<FoldedTernary>> {
+    let mut jumps: Vec<usize> = vec![jump_idx];
+    while let Some(&prev) = jumps.last() {
+        let Some(next): Option<usize> = (prev + 1..hi).find(|&k: &usize| {
+            is_forward_cond_jump(&stream.ops[k]) && !is_chain_cond_jump(&stream.ops, k)
+        }) else {
+            return Ok(None);
+        };
+        if region_completes_statement(stream, prev + 1, next) {
+            return Ok(None);
+        }
+        jumps.push(next);
+        let Some(else_start): Option<usize> =
+            resolve_jump_target(stream, next, &stream.ops[next]).filter(|&t: &usize| t > next + 1)
+        else {
+            continue;
+        };
+        let body_last: usize = ternary_body_jump_before(stream, next + 1, else_start);
+        let Some(join): Option<usize> = matches!(
+            stream.ops[body_last],
+            CanonicalOp::JumpForward(_) | CanonicalOp::JumpAbsolute(_)
+        )
+        .then(|| resolve_jump_target(stream, body_last, &stream.ops[body_last]))
+        .flatten()
+        .filter(|&j: &usize| j > else_start && j <= hi) else {
+            continue;
+        };
+        if region_completes_statement(stream, next + 1, join) {
+            continue;
+        }
+        let starts: Vec<usize> = jumps.iter().map(|&j: &usize| j + 1).collect();
+        let body_start: usize = next + 1;
+        let mut operands: Vec<CondOperand> = Vec::with_capacity(jumps.len());
+        let mut valid: bool = true;
+        for (pos, &jump) in jumps.iter().enumerate() {
+            if !matches!(
+                stream.ops[jump],
+                CanonicalOp::PopJumpIfTrue(_)
+                    | CanonicalOp::PopJumpIfFalse(_)
+                    | CanonicalOp::PopJumpIfTrueRel(_)
+                    | CanonicalOp::PopJumpIfFalseRel(_)
+            ) {
+                valid = false;
+                break;
+            }
+            let Some(raw_target): Option<usize> =
+                resolve_jump_target(stream, jump, &stream.ops[jump])
+            else {
+                valid = false;
+                break;
+            };
+            let target: usize = if raw_target == else_start {
+                else_start
+            } else if let Some(entry) = operand_entry(stream, raw_target, &starts[pos + 1..]) {
+                entry
+            } else {
+                valid = false;
+                break;
+            };
+            let value_lo: usize = if pos == 0 { lo } else { jumps[pos - 1] + 1 };
+            operands.push(CondOperand {
+                expr: Expr::Constant {
+                    value: ConstValue::None,
+                    line: None,
+                },
+                is_jump_if_true: matches!(
+                    stream.ops[jump],
+                    CanonicalOp::PopJumpIfTrue(_) | CanonicalOp::PopJumpIfTrueRel(_)
+                ),
+                target,
+                value_lo,
+            });
+        }
+        if !valid {
+            return Ok(None);
+        }
+        let (head_stmts, mut head_residual): (Vec<Stmt>, Vec<Expr>) =
+            build_linear_stmts_sim_seed(code, &stream.ops[lo..jump_idx], seed)?;
+        let Some(first_operand): Option<Expr> = head_residual.pop() else {
+            return Ok(None);
+        };
+        let mut exprs: Vec<Expr> =
+            vec![none_jump_test(stream, jump_idx, first_operand.clone()).unwrap_or(first_operand)];
+        for pair in jumps.windows(2) {
+            let Some(operand): Option<Expr> =
+                build_region_as_single_expr(code, stream, pair[0] + 1, pair[1])?
+            else {
+                return Ok(None);
+            };
+            exprs.push(none_jump_test(stream, pair[1], operand.clone()).unwrap_or(operand));
+        }
+        for (operand, expr) in operands.iter_mut().zip(exprs) {
+            operand.expr = expr;
+        }
+        let Some(test): Option<Expr> = parse_cond_range(&operands, body_start, else_start) else {
+            return Ok(None);
+        };
+        let Some(body_expr): Option<Expr> =
+            build_region_as_single_expr(code, stream, body_start, body_last)?
+        else {
+            return Ok(None);
+        };
+        let Some(else_expr): Option<Expr> =
+            build_region_as_single_expr(code, stream, body_last + 1, join)?
+        else {
+            return Ok(None);
+        };
+        return Ok(Some(FoldedTernary {
+            head_stmts,
+            below_stack: head_residual,
+            value: Expr::IfExp {
+                test: Box::new(test),
+                body: Box::new(body_expr),
+                orelse: Box::new(else_expr),
+            },
+            join,
+        }));
+    }
+    Ok(None)
+}
+
 fn next_sequential_ternary(
     stream: &DecodedStream,
     join: usize,
@@ -192,9 +348,7 @@ fn ternary_tail_split(stream: &DecodedStream, join: usize, hi: usize) -> Option<
     let has_nested_construct: bool = (consumer_end..hi).any(|i: usize| {
         is_forward_cond_jump(&stream.ops[i])
             && !is_chain_cond_jump(&stream.ops, i)
-            && !is_value_form_shortcircuit(&stream.ops, i)
-            && resolve_jump_target(stream, i, &stream.ops[i])
-                .is_some_and(|t: usize| t > i && t <= hi)
+            && resolve_jump_target(stream, i, &stream.ops[i]).is_some_and(|t: usize| t > i)
     });
     if has_nested_construct {
         Some(consumer_end)

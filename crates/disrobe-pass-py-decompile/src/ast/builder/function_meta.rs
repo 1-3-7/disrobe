@@ -13,7 +13,7 @@ use super::stmts::{
     function_args_from_code, last_significant_back, loads_none, resolve_jump_target,
     structure_stmts,
 };
-use super::try_with::is_forward_cond_jump;
+use super::try_with::{cold_section_start, is_forward_cond_jump};
 use super::{
     CodeObjDepthGuard, DecodedStream, NestedCodeScope, class_docstring, decode_stream,
     decode_stream_with_offsets, enter_codeobj_depth, extract_docstring, future_annotations_active,
@@ -2054,7 +2054,7 @@ pub(super) fn prepend_nonlocal_decls(
 }
 
 fn function_trailing_return_is_explicit(code: &CodeObject, stream: &DecodedStream) -> bool {
-    let len: usize = stream.ops.len();
+    let len: usize = cold_section_start(stream).unwrap_or(stream.ops.len());
     let Some(last): Option<usize> = last_significant_back(stream, 0, len) else {
         return false;
     };

@@ -46,7 +46,7 @@ class_node = next(node for node in tree.body if isinstance(node, ast.ClassDef) a
 method = next(node for node in class_node.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "create_connection")
 branch = next(
     node
-    for node in method.body
+    for node in ast.walk(method)
     if isinstance(node, ast.If)
     and isinstance(node.test, ast.Compare)
     and isinstance(node.test.left, ast.Name)

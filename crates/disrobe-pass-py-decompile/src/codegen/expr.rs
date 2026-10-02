@@ -609,9 +609,28 @@ fn emit_boolop(
         BoolOpKind::And => Precedence::BoolAnd,
         BoolOpKind::Or => Precedence::BoolOr,
     };
+    let keeps_constant_test: bool = (version.major(), version.minor()) >= (3, 14);
     let parts: Vec<String> = values
         .iter()
-        .map(|v: &Expr| emit_expr(em, v, version, prec))
+        .enumerate()
+        .map(|(index, v): (usize, &Expr)| {
+            let rendered: String = emit_expr(em, v, version, prec);
+            let folds_at_codegen: bool = matches!(
+                v,
+                Expr::Constant {
+                    value: ConstValue::Int(0..) | ConstValue::BigInt(_),
+                    ..
+                }
+            ) || matches!(
+                v,
+                Expr::Constant { value: ConstValue::Float(f), .. } if f.is_sign_positive()
+            );
+            if keeps_constant_test && folds_at_codegen && index + 1 < values.len() {
+                format!("+{rendered}")
+            } else {
+                rendered
+            }
+        })
         .collect();
     let sep: &str = match op {
         BoolOpKind::And => " and ",

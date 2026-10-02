@@ -116,7 +116,7 @@ fn a_named_handler_break_ending_the_function_keeps_the_while() {
             "            break\n",
         ),
         &["while active():", "except LookupError as error:", "break"],
-        &["3.12", "3.13"],
+        &[],
     );
 }
 

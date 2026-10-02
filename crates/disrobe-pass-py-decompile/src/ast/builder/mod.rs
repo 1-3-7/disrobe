@@ -1141,6 +1141,8 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
     static BOOLOP_SC: std::cell::RefCell<Option<(BoolopSliceKey, Vec<ScDesc>)>> =
         const { std::cell::RefCell::new(None) };
+    static SIM_STREAMS: std::cell::RefCell<Vec<SimStreamIndex>> =
+        const { std::cell::RefCell::new(Vec::new()) };
     static STRUCTURE_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static STRUCTURE_ACTIVE: std::cell::RefCell<Vec<(usize, usize)>> =
         const { std::cell::RefCell::new(Vec::new()) };
@@ -1482,22 +1484,106 @@ fn with_boolop_merges<T>(ops: &[CanonicalOp], merges: Vec<usize>, f: impl FnOnce
 
 fn boolop_merge_after(ops: &[CanonicalOp], idx: usize) -> usize {
     let key: BoolopSliceKey = boolop_slice_key(ops);
-    BOOLOP_MERGES.with(
+    let context: Option<usize> = BOOLOP_MERGES.with(
         |slot: &std::cell::RefCell<Option<(BoolopSliceKey, Vec<usize>)>>| {
             let guard: std::cell::Ref<'_, Option<(BoolopSliceKey, Vec<usize>)>> = slot.borrow();
-            let Some((stored_key, merges)): &Option<(BoolopSliceKey, Vec<usize>)> = &guard else {
-                return 0;
-            };
-            if *stored_key != key {
-                return 0;
-            }
-            merges
+            let (stored_key, merges): &(BoolopSliceKey, Vec<usize>) = guard.as_ref()?;
+            (*stored_key == key).then(|| {
+                merges
+                    .iter()
+                    .copied()
+                    .find(|&m: &usize| m > idx)
+                    .unwrap_or(0)
+            })
+        },
+    );
+    context.unwrap_or_else(|| {
+        registered_slice(ops, |index: &SimStreamIndex, lo: usize, end: usize| {
+            index
+                .merges
                 .iter()
                 .copied()
-                .find(|&m: &usize| m > idx)
+                .filter(|&(sc, target): &(usize, usize)| sc >= lo && target <= end)
+                .map(|(_, target): (usize, usize)| target - lo)
+                .filter(|&m: &usize| m > idx)
+                .min()
                 .unwrap_or(0)
-        },
-    )
+        })
+        .unwrap_or(0)
+    })
+}
+
+#[derive(Debug)]
+struct SimStreamIndex {
+    base: usize,
+    len: usize,
+    sc: Vec<ScDesc>,
+    merges: Vec<(usize, usize)>,
+}
+
+fn registered_slice<T>(
+    ops: &[CanonicalOp],
+    f: impl FnOnce(&SimStreamIndex, usize, usize) -> T,
+) -> Option<T> {
+    let width: usize = std::mem::size_of::<CanonicalOp>();
+    let start: usize = ops.as_ptr() as usize;
+    SIM_STREAMS.with(|slot: &std::cell::RefCell<Vec<SimStreamIndex>>| {
+        let streams: std::cell::Ref<'_, Vec<SimStreamIndex>> = slot.borrow();
+        let index: &SimStreamIndex = streams.last()?;
+        let delta: usize = start.checked_sub(index.base)?;
+        if width == 0 || !delta.is_multiple_of(width) {
+            return None;
+        }
+        let lo: usize = delta / width;
+        let end: usize = lo.checked_add(ops.len())?;
+        (end <= index.len).then(|| f(index, lo, end))
+    })
+}
+
+struct SimStreamGuard {
+    pushed: bool,
+}
+
+impl SimStreamGuard {
+    fn enter(stream: &DecodedStream) -> Self {
+        let base: usize = stream.ops.as_ptr() as usize;
+        let len: usize = stream.ops.len();
+        let registered: bool =
+            SIM_STREAMS.with(|slot: &std::cell::RefCell<Vec<SimStreamIndex>>| {
+                slot.borrow()
+                    .last()
+                    .is_some_and(|index: &SimStreamIndex| index.base == base && index.len == len)
+            });
+        if registered {
+            return Self { pushed: false };
+        }
+        let sc: Vec<ScDesc> = branches::collect_value_boolop_sc(stream, 0, len);
+        let merge_targets: Vec<usize> = branches::collect_value_boolop_merges(stream, 0, len);
+        let merges: Vec<(usize, usize)> = sc
+            .iter()
+            .filter(|desc: &&ScDesc| merge_targets.contains(&desc.target))
+            .map(|desc: &ScDesc| (desc.sc_idx, desc.target))
+            .collect();
+        SIM_STREAMS.with(|slot: &std::cell::RefCell<Vec<SimStreamIndex>>| {
+            slot.borrow_mut().push(SimStreamIndex {
+                base,
+                len,
+                sc,
+                merges,
+            });
+        });
+        Self { pushed: true }
+    }
+}
+
+impl Drop for SimStreamGuard {
+    fn drop(&mut self) {
+        if self.pushed {
+            SIM_STREAMS.with(|slot: &std::cell::RefCell<Vec<SimStreamIndex>>| {
+                let _: Option<SimStreamIndex> = slot.borrow_mut().pop();
+            });
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1540,7 +1626,7 @@ pub(super) fn with_boolop_context<T>(
 
 pub(super) fn boolop_sc_descriptors(ops: &[CanonicalOp]) -> Option<Vec<ScDesc>> {
     let key: BoolopSliceKey = boolop_slice_key(ops);
-    BOOLOP_SC.with(
+    let context: Option<Vec<ScDesc>> = BOOLOP_SC.with(
         |slot: &std::cell::RefCell<Option<(BoolopSliceKey, Vec<ScDesc>)>>| {
             let guard: std::cell::Ref<'_, Option<(BoolopSliceKey, Vec<ScDesc>)>> = slot.borrow();
             let (stored_key, descriptors): &(BoolopSliceKey, Vec<ScDesc>) = guard.as_ref()?;
@@ -1549,7 +1635,21 @@ pub(super) fn boolop_sc_descriptors(ops: &[CanonicalOp]) -> Option<Vec<ScDesc>> 
             }
             Some(descriptors.clone())
         },
-    )
+    );
+    context.or_else(|| {
+        registered_slice(ops, |index: &SimStreamIndex, lo: usize, end: usize| {
+            index
+                .sc
+                .iter()
+                .filter(|desc: &&ScDesc| desc.sc_idx >= lo && desc.target <= end)
+                .map(|desc: &ScDesc| ScDesc {
+                    sc_idx: desc.sc_idx - lo,
+                    target: desc.target - lo,
+                    kind: desc.kind,
+                })
+                .collect()
+        })
+    })
 }
 
 const CO_FUTURE_ANNOTATIONS: i32 = 0x0100_0000;
