@@ -12,6 +12,7 @@ on:
           - pyc-zipper
           - wasm-name-obfuscator
           - jbco
+          - pyobfus
 
 permissions:
   contents: read
