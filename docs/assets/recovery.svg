@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="920" height="2497" viewBox="0 0 920 2497" font-family="'Manrope', sans-serif"><desc>generated from recovery.json sha256:fbb626764d0fecaac3676bf5c590cb00</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="2497" viewBox="0 0 920 2497" font-family="'Manrope', sans-serif"><desc>generated from recovery.json sha256:68c31c6eaae0df690f929dde86d65f89</desc>
   <rect x="0" y="0" width="920" height="2497" rx="10" fill="#111111"/>
   <rect x="0.5" y="0.5" width="919" height="2496" rx="9.5" fill="none" stroke="#404040"/>
   <desc>graded from evidence/descriptors sha256:ccc64e38dd9c1dbb43e6b89199baa140</desc>
@@ -181,7 +181,7 @@
 <path d="M243 96.5L622.9 96.5A3 3 0 0 1 625.9 99.5L625.9 106.5A3 3 0 0 1 622.9 109.5L243 109.5A3 3 0 0 1 240 106.5L240 99.5A3 3 0 0 1 243 96.5Z" fill="#D4D4D4" ecmeta_series_index="1" ecmeta_data_index="2" ecmeta_ssr_type="chart" class="zr0-cls-2"></path>
 <path d="M243 134.5L647.6 134.5A3 3 0 0 1 650.6 137.5L650.6 144.5A3 3 0 0 1 647.6 147.5L243 147.5A3 3 0 0 1 240 144.5L240 137.5A3 3 0 0 1 243 134.5Z" fill="#D4D4D4" ecmeta_series_index="1" ecmeta_data_index="3" ecmeta_ssr_type="chart" class="zr0-cls-2"></path>
 <path d="M243 172.5L650 172.5A3 3 0 0 1 653 175.5L653 182.5A3 3 0 0 1 650 185.5L243 185.5A3 3 0 0 1 240 182.5L240 175.5A3 3 0 0 1 243 172.5Z" fill="#D4D4D4" ecmeta_series_index="1" ecmeta_data_index="4" ecmeta_ssr_type="chart" class="zr0-cls-2"></path>
-<path d="M243 210.5L653.7 210.5A3 3 0 0 1 656.7 213.5L656.7 220.5A3 3 0 0 1 653.7 223.5L243 223.5A3 3 0 0 1 240 220.5L240 213.5A3 3 0 0 1 243 210.5Z" fill="#D4D4D4" ecmeta_series_index="1" ecmeta_data_index="5" ecmeta_ssr_type="chart" class="zr0-cls-2"></path>
+<path d="M243 210.5L653.8 210.5A3 3 0 0 1 656.8 213.5L656.8 220.5A3 3 0 0 1 653.8 223.5L243 223.5A3 3 0 0 1 240 220.5L240 213.5A3 3 0 0 1 243 210.5Z" fill="#D4D4D4" ecmeta_series_index="1" ecmeta_data_index="5" ecmeta_ssr_type="chart" class="zr0-cls-2"></path>
 <path d="M243 248.5L650.6 248.5A3 3 0 0 1 653.6 251.5L653.6 258.5A3 3 0 0 1 650.6 261.5L243 261.5A3 3 0 0 1 240 258.5L240 251.5A3 3 0 0 1 243 248.5Z" fill="#D4D4D4" ecmeta_series_index="1" ecmeta_data_index="6" ecmeta_ssr_type="chart" class="zr0-cls-2"></path>
 <path d="M243 286.5L651.5 286.5A3 3 0 0 1 654.5 289.5L654.5 296.5A3 3 0 0 1 651.5 299.5L243 299.5A3 3 0 0 1 240 296.5L240 289.5A3 3 0 0 1 243 286.5Z" fill="#D4D4D4" ecmeta_series_index="1" ecmeta_data_index="7" ecmeta_ssr_type="chart" class="zr0-cls-2"></path>
 <path d="M243 324.5L653.9 324.5A3 3 0 0 1 656.9 327.5L656.9 334.5A3 3 0 0 1 653.9 337.5L243 337.5A3 3 0 0 1 240 334.5L240 327.5A3 3 0 0 1 243 324.5Z" fill="#D4D4D4" ecmeta_series_index="1" ecmeta_data_index="8" ecmeta_ssr_type="chart" class="zr0-cls-2"></path>
@@ -232,7 +232,7 @@
   <text x="703.00" y="248.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-2" dominant-baseline="central" xml:space="preserve">90.38%</text>
   <text x="703.00" y="286.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-3" dominant-baseline="central" xml:space="preserve">96.15%</text>
   <text x="703.00" y="324.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-4" dominant-baseline="central" xml:space="preserve">96.72%</text>
-  <text x="703.00" y="362.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-5" dominant-baseline="central" xml:space="preserve">97.58%</text>
+  <text x="703.00" y="362.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-5" dominant-baseline="central" xml:space="preserve">97.62%</text>
   <text x="703.00" y="400.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-6" dominant-baseline="central" xml:space="preserve">96.87%</text>
   <text x="703.00" y="438.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-7" dominant-baseline="central" xml:space="preserve">97.08%</text>
   <text x="703.00" y="476.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-8" dominant-baseline="central" xml:space="preserve">97.64%</text>
