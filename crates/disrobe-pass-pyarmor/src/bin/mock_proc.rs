@@ -14,6 +14,8 @@ fn main() -> ExitCode {
         "sleep" => mock_sleep(&args[1..]),
         "flood" => mock_flood(&args[1..]),
         "echo-args" => mock_echo_args(&args[1..]),
+        "orphan" => mock_orphan(&args[1..]),
+        "late-marker" => mock_late_marker(&args[1..]),
         other => {
             eprintln!("mock_proc: unknown mode `{other}`");
             ExitCode::from(2)
@@ -56,4 +58,42 @@ fn mock_echo_args(rest: &[String]) -> ExitCode {
         println!("{arg}");
     }
     ExitCode::SUCCESS
+}
+
+fn mock_orphan(rest: &[String]) -> ExitCode {
+    let [marker, delay_ms, parent, ..] = rest else {
+        eprintln!("mock_proc: orphan needs a marker path, a delay and exit or sleep");
+        return ExitCode::from(2);
+    };
+    let Ok(exe) = std::env::current_exe() else {
+        return ExitCode::from(3);
+    };
+    if std::process::Command::new(exe)
+        .args(["late-marker", marker.as_str(), delay_ms.as_str()])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .is_err()
+    {
+        return ExitCode::from(4);
+    }
+    match parent.as_str() {
+        "sleep" => std::thread::sleep(Duration::from_mins(1)),
+        "linger" => std::thread::sleep(Duration::from_secs(3)),
+        _ => {}
+    }
+    ExitCode::SUCCESS
+}
+
+fn mock_late_marker(rest: &[String]) -> ExitCode {
+    let [marker, delay_ms, ..] = rest else {
+        return ExitCode::from(2);
+    };
+    let delay: u64 = delay_ms.parse::<u64>().unwrap_or(1_000);
+    std::thread::sleep(Duration::from_millis(delay));
+    match std::fs::write(marker, b"survived") {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(_) => ExitCode::from(5),
+    }
 }

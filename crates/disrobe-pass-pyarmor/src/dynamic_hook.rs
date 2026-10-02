@@ -855,6 +855,72 @@ def drain_into_manifest():
         assert!(matches!(error, Error::DynamicHookTimedOut { secs: 0 }));
     }
 
+    fn orphan_spec(marker: &Path, parent: &str) -> InterpreterSpec {
+        InterpreterSpec {
+            exe: mock_bin_path(),
+            version_args: vec![
+                "orphan".to_owned(),
+                marker.display().to_string(),
+                ORPHAN_DELAY_MS.to_string(),
+                parent.to_owned(),
+            ],
+        }
+    }
+
+    const ORPHAN_DELAY_MS: u64 = 1_500;
+
+    #[test]
+    fn no_grandchild_outlives_the_dynamic_hook_on_timeout_or_on_exit() {
+        let _helper_scratch: std::sync::MutexGuard<'static, ()> = helper_scratch_lock();
+        for parent in ["sleep", "exit"] {
+            let (scratch, wrapper, out_dir) = dynamic_hook_mock_inputs();
+            let marker: PathBuf = scratch.path().join(format!("grandchild-{parent}"));
+            let options: DynamicHookOptions = DynamicHookOptions {
+                allow_dynamic: true,
+                timeout: Duration::from_millis(500),
+                disable_pytrace: true,
+                disable_cextract: true,
+            };
+            let _: Result<DynamicHookResult> = run_dynamic_hook_with_interpreter(
+                &wrapper,
+                &out_dir,
+                options,
+                &orphan_spec(&marker, parent),
+                (3, 12, 0),
+            );
+            std::thread::sleep(Duration::from_millis(ORPHAN_DELAY_MS * 2));
+            assert!(
+                !marker.exists(),
+                "a grandchild of the hooked interpreter survived the hook (parent {parent})"
+            );
+        }
+    }
+
+    #[test]
+    fn a_grandchild_given_time_inside_the_deadline_leaves_its_marker() {
+        let _helper_scratch: std::sync::MutexGuard<'static, ()> = helper_scratch_lock();
+        let (scratch, wrapper, out_dir) = dynamic_hook_mock_inputs();
+        let marker: PathBuf = scratch.path().join("grandchild-linger");
+        let options: DynamicHookOptions = DynamicHookOptions {
+            allow_dynamic: true,
+            timeout: Duration::from_secs(20),
+            disable_pytrace: true,
+            disable_cextract: true,
+        };
+        let _: Result<DynamicHookResult> = run_dynamic_hook_with_interpreter(
+            &wrapper,
+            &out_dir,
+            options,
+            &orphan_spec(&marker, "linger"),
+            (3, 12, 0),
+        );
+        assert!(
+            marker.exists(),
+            "the control grandchild must write its marker while its parent lingers, or the \
+             containment test proves nothing"
+        );
+    }
+
     #[test]
     fn dynamic_hook_overflow_is_refused_through_the_contained_launcher() {
         let _helper_scratch: std::sync::MutexGuard<'static, ()> = helper_scratch_lock();
