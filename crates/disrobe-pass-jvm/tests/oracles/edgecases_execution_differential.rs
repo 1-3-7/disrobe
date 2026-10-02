@@ -14,7 +14,7 @@ const PUBLISHED_RECOMPILE_BAR: &str = "per-method";
 const PUBLISHED_EXECUTION_BAR: &str = "per-method, execution-verified";
 
 const PER_METHOD_TOTAL: usize = 131;
-const EXECUTION_EQUIVALENT_FLOOR: usize = 120;
+const EXECUTION_EQUIVALENT_FLOOR: usize = 121;
 
 const OBSERVATION_TIMEOUT_MS: u64 = 5_000;
 
@@ -45,11 +45,6 @@ const STUB_BLOCKED: &[(&str, &str)] = &[
 ];
 
 const BEHAVIOUR_DIVERGENT: &[(&str, &str)] = &[
-    (
-        "maxOrMin",
-        "does not terminate: the loop increment var3++ sits inside the wantMax-and-greater branch \
-         only, and the wantMax=false arm drops the best=xs[i] assignment entirely",
-    ),
     (
         "dispatchByType",
         "drops the leading if (o == null) return \"null\" guard and emits no case null arm, so a \

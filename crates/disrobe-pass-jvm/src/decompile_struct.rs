@@ -2946,6 +2946,26 @@ impl<'a> Structurer<'a> {
                 .any(|target: BlockId| target == exit)
     }
 
+    fn shared_latch_before_stop(&self, block: BlockId, stop: Option<BlockId>) -> Option<Region> {
+        let stop: BlockId = stop?;
+        let frame: &LoopFrame = self.loop_stack.last()?;
+        if block == frame.header
+            || stop == frame.header
+            || self.normal_predecessors(block).len() < 2
+        {
+            return None;
+        }
+        let body: &BTreeSet<BlockId> = &self
+            .loops
+            .iter()
+            .find(|candidate: &&NaturalLoop| candidate.header == frame.header)?
+            .body;
+        if !body.contains(&stop) {
+            return None;
+        }
+        self.continue_jump_at(block, frame, None)
+    }
+
     fn normal_predecessors(&self, block: BlockId) -> Vec<BlockId> {
         self.cfg.blocks[block.0 as usize]
             .predecessors
@@ -2991,6 +3011,10 @@ impl<'a> Structurer<'a> {
                 break;
             }
             if Some(b) == stop || self.handler_stops.contains(&b) {
+                break;
+            }
+            if let Some(jump) = self.shared_latch_before_stop(b, stop) {
+                seq.push(jump);
                 break;
             }
             if let Some(continued) = self.continue_through_latch(b) {
@@ -4130,7 +4154,10 @@ impl<'a> Structurer<'a> {
         let (true_t, false_t): (BlockId, BlockId) = if_targets(block);
         let join: Option<BlockId> = self
             .join_inside_loop(find_if_join(self.cfg, self.dom, head, true_t, false_t))
-            .or_else(|| self.shared_latch_join(head, true_t, false_t));
+            .or_else(|| {
+                self.shared_latch_join(head, true_t, false_t)
+                    .map(|latch: BlockId| self.stop_before_latch(latch, stop, true_t, false_t))
+            });
         let arm_stop: Option<BlockId> = join.or(stop);
         let then_region: Region = self.structure_at(false_t, arm_stop);
         let has_else: bool = match join {
@@ -4367,6 +4394,26 @@ impl<'a> Structurer<'a> {
         let latch: bool = first != frame.header
             && normal_targets(&self.cfg.blocks[first.0 as usize]).eq(std::iter::once(frame.header));
         (latch && self.join_inside_loop(Some(first)).is_some()).then_some(first)
+    }
+
+    fn stop_before_latch(
+        &self,
+        latch: BlockId,
+        stop: Option<BlockId>,
+        true_t: BlockId,
+        false_t: BlockId,
+    ) -> BlockId {
+        match stop {
+            Some(enclosing)
+                if enclosing != latch
+                    && [true_t, false_t].iter().any(|arm: &BlockId| {
+                        forward_reach(self.cfg, *arm, latch).contains(&enclosing)
+                    }) =>
+            {
+                enclosing
+            }
+            _ => latch,
+        }
     }
 
     fn continue_arm(&self, target: BlockId) -> Option<(Region, BlockId, Vec<BlockId>)> {
