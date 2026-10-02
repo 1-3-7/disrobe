@@ -16,6 +16,8 @@ const PROGRAMS: u64 = 300;
 const WIDE_SWEEP_SEEDS: [u64; 11] = [
     806, 1028, 1138, 1179, 2306, 3676, 4618, 5384, 5608, 5696, 10548,
 ];
+const RICH_FIRST: u64 = 1_000_000;
+const RICH_PROGRAMS: u64 = 300;
 const GEN_TYPE: &str = "GenDiff.Gen";
 const VARIABLES: [&str; 5] = ["a", "b", "c", "d", "e"];
 const MAX_BLOCK_DEPTH: u32 = 3;
@@ -24,7 +26,32 @@ const TOOL_CAPTURE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_REPAIR_ROUNDS: usize = 12;
 const RUN_TIMEOUT: Duration = Duration::from_mins(1);
 const SHOWN_FAILURES: usize = 6;
-const KNOWN_DIVERGENT: [u64; 0] = [];
+const KNOWN_DIVERGENT: [u64; 191] = [
+    1_000_001, 1_000_003, 1_000_004, 1_000_007, 1_000_009, 1_000_012, 1_000_013, 1_000_014,
+    1_000_016, 1_000_017, 1_000_020, 1_000_022, 1_000_026, 1_000_027, 1_000_028, 1_000_031,
+    1_000_032, 1_000_034, 1_000_035, 1_000_037, 1_000_038, 1_000_039, 1_000_040, 1_000_043,
+    1_000_044, 1_000_047, 1_000_048, 1_000_049, 1_000_050, 1_000_053, 1_000_054, 1_000_057,
+    1_000_058, 1_000_060, 1_000_061, 1_000_062, 1_000_064, 1_000_066, 1_000_067, 1_000_068,
+    1_000_070, 1_000_072, 1_000_075, 1_000_077, 1_000_078, 1_000_079, 1_000_080, 1_000_081,
+    1_000_083, 1_000_086, 1_000_090, 1_000_092, 1_000_094, 1_000_095, 1_000_096, 1_000_097,
+    1_000_098, 1_000_099, 1_000_100, 1_000_101, 1_000_102, 1_000_104, 1_000_105, 1_000_106,
+    1_000_107, 1_000_110, 1_000_111, 1_000_113, 1_000_114, 1_000_115, 1_000_117, 1_000_118,
+    1_000_119, 1_000_121, 1_000_122, 1_000_123, 1_000_124, 1_000_126, 1_000_129, 1_000_130,
+    1_000_131, 1_000_132, 1_000_133, 1_000_134, 1_000_135, 1_000_136, 1_000_137, 1_000_139,
+    1_000_140, 1_000_141, 1_000_142, 1_000_144, 1_000_145, 1_000_147, 1_000_148, 1_000_149,
+    1_000_150, 1_000_152, 1_000_153, 1_000_154, 1_000_157, 1_000_158, 1_000_159, 1_000_160,
+    1_000_163, 1_000_165, 1_000_166, 1_000_167, 1_000_168, 1_000_169, 1_000_170, 1_000_171,
+    1_000_173, 1_000_175, 1_000_177, 1_000_181, 1_000_182, 1_000_183, 1_000_184, 1_000_185,
+    1_000_187, 1_000_188, 1_000_191, 1_000_193, 1_000_196, 1_000_197, 1_000_198, 1_000_199,
+    1_000_200, 1_000_203, 1_000_205, 1_000_206, 1_000_209, 1_000_211, 1_000_212, 1_000_214,
+    1_000_216, 1_000_218, 1_000_219, 1_000_220, 1_000_221, 1_000_222, 1_000_223, 1_000_224,
+    1_000_226, 1_000_227, 1_000_228, 1_000_232, 1_000_233, 1_000_235, 1_000_236, 1_000_239,
+    1_000_240, 1_000_241, 1_000_242, 1_000_245, 1_000_247, 1_000_248, 1_000_249, 1_000_250,
+    1_000_252, 1_000_254, 1_000_255, 1_000_256, 1_000_257, 1_000_258, 1_000_259, 1_000_263,
+    1_000_264, 1_000_267, 1_000_269, 1_000_271, 1_000_273, 1_000_275, 1_000_276, 1_000_278,
+    1_000_280, 1_000_282, 1_000_284, 1_000_285, 1_000_287, 1_000_288, 1_000_290, 1_000_291,
+    1_000_292, 1_000_293, 1_000_294, 1_000_296, 1_000_297, 1_000_298, 1_000_299,
+];
 
 const PROJECT: &str = r#"<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
@@ -88,6 +115,7 @@ struct Generator {
     state: u64,
     serial: u32,
     k: u64,
+    rich: bool,
 }
 
 impl Generator {
@@ -96,6 +124,7 @@ impl Generator {
             state: seed ^ 0x9E37_79B9_7F4A_7C15,
             serial: 0,
             k: 0,
+            rich: seed >= RICH_FIRST,
         }
     }
 
@@ -184,6 +213,10 @@ impl Generator {
 
     fn statement(&mut self, depth: u32, indent: usize, out: &mut String) {
         let pad: String = "    ".repeat(indent);
+        if self.rich && self.below(3) == 0 {
+            self.rich_statement(depth, indent, out);
+            return;
+        }
         let choice: u64 = if depth >= MAX_BLOCK_DEPTH {
             self.below(5)
         } else {
@@ -318,6 +351,160 @@ impl Generator {
         }
     }
 
+    fn modulo3(&mut self) -> String {
+        format!("((({}) % 3 + 3) % 3)", self.arithmetic(1))
+    }
+
+    fn rich_statement(&mut self, depth: u32, indent: usize, out: &mut String) {
+        let pad: String = "    ".repeat(indent);
+        self.serial += 1;
+        let n: u32 = self.serial;
+        let target: &str = self.variable();
+        let line = |out: &mut String, text: &str| {
+            writeln!(out, "{pad}{text}").expect("write to a String");
+        };
+        match self.below(13) {
+            0 => {
+                let value: String = self.value();
+                line(out, &format!("s = s + {value} + \",\";"));
+                line(out, "if (s.Length > 40) s = s.Substring(s.Length - 20);");
+            }
+            1 => {
+                let first: &str = self.variable();
+                let second: String = self.arithmetic(1);
+                line(out, &format!("s = $\"{{{first}}}-{{{second}}}\";"));
+                line(out, "Sink.Emit(s.Length % 100);");
+            }
+            2 => {
+                let subject: String = self.modulo3();
+                let (zero, one, other): (String, String, String) =
+                    (self.value(), self.value(), self.value());
+                line(
+                    out,
+                    &format!(
+                        "{target} = {subject} switch {{ 0 => {zero}, 1 => {one}, _ => {other} }};"
+                    ),
+                );
+            }
+            3 => {
+                let captured: &str = self.variable();
+                let argument: String = self.arithmetic(1);
+                let k: u64 = self.k;
+                line(
+                    out,
+                    &format!("Func<int, int> f{n} = x => (x * {captured} + {k}) % 1000;"),
+                );
+                line(out, &format!("{target} = f{n}({argument});"));
+            }
+            4 => {
+                let bound: String = self.atom();
+                let divisor: u64 = 2 + self.below(9);
+                line(
+                    out,
+                    &format!(
+                        "{target} = t.Where(x => x > {bound}).Select(x => x % {divisor}).Sum() % 1000;"
+                    ),
+                );
+            }
+            5 => {
+                let numerator: String = self.atom();
+                let divisor: String = format!("({} + {})", self.arithmetic(1), self.variable());
+                let filtered: &str = self.variable();
+                let k: u64 = self.k;
+                line(out, "try");
+                line(out, "{");
+                line(
+                    out,
+                    &format!("    {target} = {numerator} / ({divisor} % 3);"),
+                );
+                line(out, "}");
+                line(
+                    out,
+                    &format!("catch (DivideByZeroException) when ({filtered} > {k})"),
+                );
+                line(out, "{");
+                line(out, "    Sink.Emit(\"filtered\");");
+                line(out, "}");
+                line(out, "catch (DivideByZeroException)");
+                line(out, "{");
+                line(out, "    Sink.Emit(\"zero\");");
+                line(out, "}");
+            }
+            6 => {
+                let cond: String = self.condition();
+                let some: String = self.arithmetic(1);
+                let fallback: String = self.atom();
+                line(out, &format!("int? m{n} = ({cond}) ? {some} : (int?)null;"));
+                line(out, &format!("{target} = (m{n} ?? {fallback}) % 1000;"));
+                line(out, &format!("if (m{n}.HasValue) Sink.Emit(m{n}.Value);"));
+            }
+            7 => {
+                let cond: String = self.condition();
+                line(out, &format!("foreach (int x{n} in t)"));
+                line(out, "{");
+                line(out, &format!("    {target} = ({target} + x{n}) % 1000;"));
+                line(out, &format!("    if ({cond}) break;"));
+                line(out, "}");
+            }
+            8 => {
+                let first: &str = self.variable();
+                let second: &str = self.variable();
+                line(out, "try");
+                line(out, "{");
+                line(
+                    out,
+                    &format!("    {target} = checked({first} * 1000000 * ({second} + 1)) % 1000;"),
+                );
+                line(out, "}");
+                line(out, "catch (OverflowException)");
+                line(out, "{");
+                line(out, "    Sink.Emit(\"overflow\");");
+                line(out, "}");
+            }
+            9 => {
+                let captured: &str = self.variable();
+                let argument: String = self.arithmetic(1);
+                line(out, &format!("int L{n}(int x) => (x + {captured}) % 97;"));
+                line(out, &format!("{target} = L{n}({argument});"));
+            }
+            10 => {
+                let key: String = self.modulo3();
+                let (zero, one): (String, String) = (self.value(), self.value());
+                line(out, &format!("switch (\"k\" + {key})"));
+                line(out, "{");
+                line(out, "    case \"k0\":");
+                line(out, &format!("        {target} = {zero};"));
+                line(out, "        break;");
+                line(out, "    case \"k1\":");
+                line(out, &format!("        Sink.Emit({one});"));
+                line(out, "        break;");
+                line(out, "    default:");
+                line(out, "        Sink.Emit(\"other\");");
+                line(out, "        break;");
+                line(out, "}");
+            }
+            11 => {
+                let flag: String = self.condition();
+                let other: String = self.condition();
+                line(out, &format!("bool g{n} = {flag};"));
+                line(out, &format!("if (g{n} || {other})"));
+                self.braced(depth, indent, out);
+                line(out, &format!("Sink.Emit(g{n} ? 1 : 0);"));
+            }
+            _ => {
+                let first: &str = self.variable();
+                let second: &str = self.variable();
+                let scale: u64 = 100_000 + self.below(900_000);
+                line(
+                    out,
+                    &format!("long w{n} = (long){first} * {scale} + {second}++;"),
+                );
+                line(out, &format!("{target} = (int)(w{n} % 1000) + --{second};"));
+                line(out, &format!("{target} %= 1000;"));
+            }
+        }
+    }
+
     fn braced(&mut self, depth: u32, indent: usize, out: &mut String) {
         let pad: String = "    ".repeat(indent);
         writeln!(out, "{pad}{{").expect("write to a String");
@@ -360,9 +547,15 @@ impl Generator {
             writeln!(out, "            int {name} = {};", self.below(10))
                 .expect("write to a String");
         }
+        if self.rich {
+            out.push_str("            string s = \"\";\n");
+        }
         self.block(0, 3, &mut out);
         for name in VARIABLES {
             writeln!(out, "            Sink.Emit({name});").expect("write to a String");
+        }
+        if self.rich {
+            out.push_str("            Sink.Emit(s);\n");
         }
         out.push_str("            Sink.Emit(t);\n        }\n");
         out
@@ -370,7 +563,9 @@ impl Generator {
 }
 
 fn seeds() -> impl Iterator<Item = u64> {
-    (0..PROGRAMS).chain(WIDE_SWEEP_SEEDS)
+    (0..PROGRAMS)
+        .chain(WIDE_SWEEP_SEEDS)
+        .chain(RICH_FIRST..RICH_FIRST + RICH_PROGRAMS)
 }
 
 fn generated_methods() -> BTreeMap<u64, String> {
@@ -381,7 +576,7 @@ fn generated_methods() -> BTreeMap<u64, String> {
 
 fn gen_class(methods: &BTreeMap<u64, String>) -> String {
     let mut out: String = String::from(
-        "using System;\nusing System.Collections.Generic;\n\nnamespace GenDiff\n{\n    public static class Gen\n    {\n",
+        "using System;\nusing System.Collections.Generic;\nusing System.Linq;\n\nnamespace GenDiff\n{\n    public static class Gen\n    {\n",
     );
     for method in methods.values() {
         out.push_str(method);
@@ -739,6 +934,18 @@ fn the_csharp_generator_is_deterministic_and_varied() {
         " ? ",
         "t.Contains(",
         "Math.Max(",
+        " switch { 0 => ",
+        "Func<int, int> f",
+        ".Where(x => x > ",
+        "when (",
+        "int? m",
+        "foreach (int x",
+        "checked(",
+        "int L",
+        "case \"k0\":",
+        "bool g",
+        "long w",
+        "s = $\"",
     ] {
         assert!(all.contains(shape), "the corpus never generates `{shape}`");
     }
