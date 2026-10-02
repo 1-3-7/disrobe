@@ -339,7 +339,9 @@ fn fold_dead_conditional_branches(cfg: &mut Cfg, insns: &[Instruction], report: 
         if !is_int_conditional_branch(branch.opcode) {
             continue;
         }
-        let Some(taken): Option<bool> = const_condition_outcome(block, insns) else {
+        let Some((taken, first_operand)): Option<(bool, usize)> =
+            const_condition_outcome(block, insns)
+        else {
             continue;
         };
         let true_target: Option<BlockId> = block
@@ -356,27 +358,27 @@ fn fold_dead_conditional_branches(cfg: &mut Cfg, insns: &[Instruction], report: 
         let Some(live_target): Option<BlockId> = live else {
             continue;
         };
-        folds.push((block.id, live_target, end_idx - 1));
+        folds.push((block.id, live_target, first_operand));
     }
 
     if folds.is_empty() {
         return;
     }
 
-    for (bid, live_target, branch_idx) in folds {
+    for (bid, live_target, first_operand) in folds {
         let block: &mut BasicBlock = &mut cfg.blocks[bid.0 as usize];
         block.successors = vec![Edge {
             kind: EdgeKind::Jump,
             target: live_target,
         }];
-        block.insn_range.1 = branch_idx;
+        block.insn_range.1 = first_operand;
         report.dead_branches_folded += 1;
         report.changed = true;
     }
 }
 
 #[must_use]
-fn const_condition_outcome(block: &BasicBlock, insns: &[Instruction]) -> Option<bool> {
+fn const_condition_outcome(block: &BasicBlock, insns: &[Instruction]) -> Option<(bool, usize)> {
     let (start_idx, end_idx): (usize, usize) = block.insn_range;
     let branch: &Instruction = insns.get(end_idx.checked_sub(1)?)?;
     match branch.opcode {
@@ -386,7 +388,7 @@ fn const_condition_outcome(block: &BasicBlock, insns: &[Instruction]) -> Option<
                 return None;
             }
             let operand: i32 = iconst_value(insns.get(operand_idx)?)?;
-            Some(unary_compare(branch.opcode, operand))
+            Some((unary_compare(branch.opcode, operand), operand_idx))
         }
         0x9F..=0xA4 => {
             let rhs_idx: usize = end_idx.checked_sub(2)?;
@@ -396,7 +398,7 @@ fn const_condition_outcome(block: &BasicBlock, insns: &[Instruction]) -> Option<
             }
             let rhs: i32 = iconst_value(insns.get(rhs_idx)?)?;
             let lhs: i32 = iconst_value(insns.get(lhs_idx)?)?;
-            Some(binary_compare(branch.opcode, lhs, rhs))
+            Some((binary_compare(branch.opcode, lhs, rhs), lhs_idx))
         }
         _ => None,
     }
@@ -794,6 +796,11 @@ mod tests {
             entry_block.successors.len(),
             1,
             "folded branch should leave a single successor"
+        );
+        assert_eq!(
+            entry_block.insn_range,
+            (0, 0),
+            "the folded comparison's operand pushes go with the branch"
         );
     }
 }
