@@ -634,11 +634,13 @@ corpus/jvm/zkmshape/StaticTableCrypt.java	-	-	-	-	-	-	-
 corpus/lua/CAPTURE-MANUAL.md	lua.deob	lua-obf-aztup-brew	obfuscator-wrapper	high	-	-	-
 corpus/lua/baseline/hello.lua	-	-	-	-	-	-	-
 corpus/lua/behaviour/branch_reassign.lua	-	-	-	-	-	-	-
+corpus/lua/behaviour/branch_scope.lua	-	-	-	-	-	-	-
 corpus/lua/behaviour/branches.lua	-	-	-	-	-	-	-
 corpus/lua/behaviour/compare_select.lua	-	-	-	-	-	-	-
 corpus/lua/behaviour/loop_locals.lua	-	-	-	-	-	-	-
 corpus/lua/behaviour/loops.lua	-	-	-	-	-	-	-
 corpus/lua/behaviour/lua55.lua	-	-	-	-	-	-	-
+corpus/lua/behaviour/luau_threading.lua	-	-	-	-	-	-	-
 corpus/lua/behaviour/objects.lua	-	-	-	-	-	-	-
 corpus/lua/behaviour/testset_pending.lua	-	-	-	-	-	-	-
 corpus/lua/behaviour/tour.lua	-	-	-	-	-	-	-
