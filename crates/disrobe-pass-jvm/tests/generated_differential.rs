@@ -14,7 +14,8 @@ use disrobe_pass_jvm::{
 use disrobe_testkit::{Available, CommandSpec, ToolError, ToolOutput, require, tool_output};
 use sha2::{Digest, Sha256};
 
-const PROGRAMS: u64 = 300;
+const PROGRAMS: u64 = 1000;
+const DEX_PROGRAMS: u64 = 300;
 const VARIABLES: [&str; 5] = ["a", "b", "c", "d", "e"];
 const MAX_BLOCK_DEPTH: u32 = 3;
 const TOOL_TIMEOUT: Duration = Duration::from_mins(5);
@@ -349,8 +350,8 @@ impl Generator {
     }
 }
 
-fn generated_methods() -> BTreeMap<u64, String> {
-    (0..PROGRAMS)
+fn generated_methods(programs: u64) -> BTreeMap<u64, String> {
+    (0..programs)
         .map(|seed: u64| (seed, Generator::new(seed).method(seed)))
         .collect()
 }
@@ -367,11 +368,11 @@ fn gen_class(methods: &BTreeMap<u64, String>) -> String {
     out
 }
 
-fn main_class() -> String {
+fn main_class(programs: u64) -> String {
     let mut out: String = String::from(
         "public final class Main {\n    public static void main(String[] args) throws InterruptedException {\n        int from = args.length > 0 ? Integer.parseInt(args[0]) : 0;\n        Runnable[] programs = {\n",
     );
-    for seed in 0..PROGRAMS {
+    for seed in 0..programs {
         writeln!(out, "            Gen::prog{seed},").expect("write to a String");
     }
     write!(
@@ -401,10 +402,10 @@ struct Built {
     classes: PathBuf,
 }
 
-fn build_and_run(jdk: &Jdk, directory: &Path, gen_source: &str) -> Built {
+fn build_and_run(jdk: &Jdk, directory: &Path, gen_source: &str, programs: u64) -> Built {
     let sources: [(&str, String); 3] = [
         ("Sink.java", SINK.to_owned()),
-        ("Main.java", main_class()),
+        ("Main.java", main_class(programs)),
         ("Gen.java", gen_source.to_owned()),
     ];
     let classes: PathBuf = directory.join("classes");
@@ -438,7 +439,7 @@ fn build_and_run(jdk: &Jdk, directory: &Path, gen_source: &str) -> Built {
     let mut lines: BTreeMap<u64, String> = BTreeMap::new();
     let mut hung: BTreeMap<u64, String> = BTreeMap::new();
     let mut from: u64 = 0;
-    while build.success && from < PROGRAMS {
+    while build.success && from < programs {
         let run: ToolOutput = tool_output(
             CommandSpec::new(jdk.java.clone(), RUN_TIMEOUT)
                 .capture_limits(TOOL_CAPTURE_BYTES, TOOL_CAPTURE_BYTES)
@@ -462,7 +463,7 @@ fn build_and_run(jdk: &Jdk, directory: &Path, gen_source: &str) -> Built {
                 stalled = Some((seed, rest.trim_end().to_owned()));
             }
         }
-        let next: Option<u64> = (from..PROGRAMS).find(|seed: &u64| !lines.contains_key(seed));
+        let next: Option<u64> = (from..programs).find(|seed: &u64| !lines.contains_key(seed));
         let Some(missing) = next else {
             break;
         };
@@ -564,10 +565,15 @@ fn excerpt(text: &str, limit: usize) -> String {
 #[test]
 fn generated_programs_reexecute_identically_on_the_jvm() {
     let jdk: Jdk = jdk();
-    let original: BTreeMap<u64, String> = generated_methods();
+    let original: BTreeMap<u64, String> = generated_methods(PROGRAMS);
     let original_scratch: ScratchDir =
         ScratchDir::create("disrobe_jvm_generated_original").expect("create scratch");
-    let reference: Built = build_and_run(&jdk, original_scratch.path(), &gen_class(&original));
+    let reference: Built = build_and_run(
+        &jdk,
+        original_scratch.path(),
+        &gen_class(&original),
+        PROGRAMS,
+    );
     assert!(
         reference.build.success,
         "the generated programs must compile:\n{}{}",
@@ -596,6 +602,7 @@ fn generated_programs_reexecute_identically_on_the_jvm() {
         &decompiled.source,
         &KNOWN_DIVERGENT,
         "class-file",
+        PROGRAMS,
     );
 }
 
@@ -607,9 +614,10 @@ fn grade_recovered(
     decompiled_source: &str,
     known: &[u64],
     route: &str,
+    programs: u64,
 ) {
     let mut failures: BTreeMap<u64, String> = BTreeMap::new();
-    for seed in 0..PROGRAMS {
+    for seed in 0..programs {
         if !recovered.contains_key(&seed) {
             failures.insert(
                 seed,
@@ -622,7 +630,7 @@ fn grade_recovered(
     }
     let mut outputs: BTreeMap<u64, String> = BTreeMap::new();
     for _ in 0..MAX_REPAIR_ROUNDS {
-        let candidate: BTreeMap<u64, String> = (0..PROGRAMS)
+        let candidate: BTreeMap<u64, String> = (0..programs)
             .map(|seed: u64| {
                 let body: &String = if failures.contains_key(&seed) {
                     &original[&seed]
@@ -635,7 +643,7 @@ fn grade_recovered(
         let source: String = gen_class(&candidate);
         let scratch: ScratchDir =
             ScratchDir::create("disrobe_jvm_generated_recovered").expect("create scratch");
-        let built: Built = build_and_run(jdk, scratch.path(), &source);
+        let built: Built = build_and_run(jdk, scratch.path(), &source, programs);
         for (seed, reason) in &built.hung {
             failures.insert(
                 *seed,
@@ -669,7 +677,7 @@ fn grade_recovered(
         !outputs.is_empty(),
         "no recovered build compiled within {MAX_REPAIR_ROUNDS} rounds"
     );
-    for seed in 0..PROGRAMS {
+    for seed in 0..programs {
         if failures.contains_key(&seed) {
             continue;
         }
@@ -722,7 +730,7 @@ fn grade_recovered(
         .collect();
     assert!(
         regressed.is_empty() && fixed.is_empty(),
-        "{} of {PROGRAMS} generated Java programs did not recover to the same behaviour through \
+        "{} of {programs} generated Java programs did not recover to the same behaviour through \
          the {route} route; the divergent set must equal its known-divergent list exactly, which only ever shrinks. Newly \
          divergent: {regressed:?}. Now recovered, remove from KNOWN_DIVERGENT: {fixed:?}.\n{}\n{}",
         failures.len(),
@@ -765,10 +773,10 @@ fn r8_jar() -> PathBuf {
 fn generated_programs_reexecute_identically_through_dex() {
     let jdk: Jdk = jdk();
     let r8: PathBuf = r8_jar();
-    let original: BTreeMap<u64, String> = generated_methods();
+    let original: BTreeMap<u64, String> = generated_methods(DEX_PROGRAMS);
     let scratch: ScratchDir =
         ScratchDir::create("disrobe_jvm_generated_dex").expect("create scratch");
-    let reference: Built = build_and_run(&jdk, scratch.path(), &gen_class(&original));
+    let reference: Built = build_and_run(&jdk, scratch.path(), &gen_class(&original), DEX_PROGRAMS);
     assert!(
         reference.build.success,
         "the generated programs must compile:\n{}{}",
@@ -825,6 +833,7 @@ fn generated_programs_reexecute_identically_through_dex() {
         &source,
         &DEX_KNOWN_DIVERGENT,
         "DEX",
+        DEX_PROGRAMS,
     );
 }
 
@@ -832,7 +841,7 @@ fn generated_programs_reexecute_identically_through_dex() {
 fn the_java_generator_is_deterministic_and_varied() {
     let first: String = Generator::new(7).method(7);
     assert_eq!(first, Generator::new(7).method(7));
-    let methods: BTreeMap<u64, String> = generated_methods();
+    let methods: BTreeMap<u64, String> = generated_methods(PROGRAMS);
     let distinct: BTreeSet<&String> = methods.values().collect();
     assert_eq!(distinct.len() as u64, PROGRAMS);
     let all: String = methods.values().cloned().collect();
@@ -870,10 +879,15 @@ fn a_recovery_that_changes_one_operator_is_caught() {
     mutant.insert(0, mutated);
     let original_scratch: ScratchDir =
         ScratchDir::create("disrobe_jvm_generated_control").expect("create scratch");
-    let original: Built = build_and_run(&jdk, original_scratch.path(), &gen_class(&programs));
+    let original: Built = build_and_run(
+        &jdk,
+        original_scratch.path(),
+        &gen_class(&programs),
+        PROGRAMS,
+    );
     let mutant_scratch: ScratchDir =
         ScratchDir::create("disrobe_jvm_generated_mutant").expect("create scratch");
-    let changed: Built = build_and_run(&jdk, mutant_scratch.path(), &gen_class(&mutant));
+    let changed: Built = build_and_run(&jdk, mutant_scratch.path(), &gen_class(&mutant), PROGRAMS);
     assert!(original.build.success && changed.build.success);
     assert_ne!(original.lines.get(&0), changed.lines.get(&0));
     assert_eq!(original.lines.get(&1), changed.lines.get(&1));
@@ -894,7 +908,7 @@ fn a_program_that_never_returns_is_isolated_and_the_rest_still_run() {
     );
     let scratch: ScratchDir =
         ScratchDir::create("disrobe_jvm_generated_hang").expect("create scratch");
-    let built: Built = build_and_run(&jdk, scratch.path(), &gen_class(&programs));
+    let built: Built = build_and_run(&jdk, scratch.path(), &gen_class(&programs), PROGRAMS);
     assert!(built.build.success);
     assert_eq!(built.hung.keys().copied().collect::<Vec<u64>>(), vec![1]);
     assert_eq!(built.lines.len() as u64, PROGRAMS - 1);
