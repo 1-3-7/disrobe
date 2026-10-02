@@ -7,9 +7,9 @@ use std::time::Duration;
 use disrobe_pass_js_deob::{AstUnminifyStats, UnminifyStats, try_unminify_ast, unminify};
 use disrobe_testkit::{CommandSpec, ToolOutput, XorShift64, tool_output};
 
-const SEED_COUNT: u64 = 48;
-const SEEDS_PER_TEST: u64 = 12;
-const REWRITTEN_FLOOR: usize = 40;
+const SEED_COUNT: u64 = 300;
+const SEEDS_PER_TEST: u64 = 75;
+const REWRITTEN_FLOOR: usize = 300;
 const SEED_DOMAIN: u64 = 0x756E_6D69_6E69_6679;
 const NODE_BACKSTOP: Duration = Duration::from_mins(1);
 const PINNED_DIR: &str = "tests/fixtures/unminify_generated";
@@ -1106,23 +1106,23 @@ fn grade_seeds(first: u64) {
 }
 
 #[test]
-fn generated_programs_keep_their_output_seeds_0_to_11() {
+fn generated_programs_keep_their_output_seeds_0_to_74() {
     grade_seeds(0);
 }
 
 #[test]
-fn generated_programs_keep_their_output_seeds_12_to_23() {
-    grade_seeds(12);
+fn generated_programs_keep_their_output_seeds_75_to_149() {
+    grade_seeds(75);
 }
 
 #[test]
-fn generated_programs_keep_their_output_seeds_24_to_35() {
-    grade_seeds(24);
+fn generated_programs_keep_their_output_seeds_150_to_224() {
+    grade_seeds(150);
 }
 
 #[test]
-fn generated_programs_keep_their_output_seeds_36_to_47() {
-    grade_seeds(36);
+fn generated_programs_keep_their_output_seeds_225_to_299() {
+    grade_seeds(225);
 }
 
 #[test]
