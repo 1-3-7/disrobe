@@ -37,6 +37,7 @@ corpus/beam/recompile_oracle/catchexpr.erl	-	-	-	-	-	-	-
 corpus/beam/recompile_oracle/comprehensions.erl	-	-	-	-	-	-	-
 corpus/beam/recompile_oracle/funs.erl	-	-	-	-	-	-	-
 corpus/beam/recompile_oracle/guards.erl	-	-	-	-	-	-	-
+corpus/beam/recompile_oracle/joins.erl	-	-	-	-	-	-	-
 corpus/beam/recompile_oracle/lists_ops.erl	-	-	-	-	-	-	-
 corpus/beam/recompile_oracle/maps2.erl	-	-	-	-	-	-	-
 corpus/beam/recompile_oracle/nested_data.erl	-	-	-	-	-	-	-
