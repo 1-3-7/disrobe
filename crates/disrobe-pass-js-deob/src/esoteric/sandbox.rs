@@ -38,6 +38,16 @@ delete globalThis.atob;\
 delete globalThis.btoa;\
 ";
 
+const ANNEX_B_BUILTINS: &str = r#"(function(){
+var hex=function(c,w){var h=c.toString(16).toUpperCase();while(h.length<w){h='0'+h;}return h;};
+var keep='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789@*_+-./';
+if(typeof globalThis.escape!=='function'){globalThis.escape=function(s){s=String(s);var o='';for(var i=0;i<s.length;i++){var c=s.charCodeAt(i);if(keep.indexOf(s.charAt(i))>=0){o+=s.charAt(i);}else if(c<256){o+='%'+hex(c,2);}else{o+='%u'+hex(c,4);}}return o;};}
+if(typeof globalThis.unescape!=='function'){globalThis.unescape=function(s){s=String(s);var o='';for(var i=0;i<s.length;i++){var ch=s.charAt(i);if(ch==='%'){var u=s.substring(i+2,i+6);if(s.charAt(i+1)==='u'&&/^[0-9a-fA-F]{4}$/.test(u)){o+=String.fromCharCode(parseInt(u,16));i+=5;continue;}var b=s.substring(i+1,i+3);if(/^[0-9a-fA-F]{2}$/.test(b)){o+=String.fromCharCode(parseInt(b,16));i+=2;continue;}}o+=ch;}return o;};}
+if(typeof String.prototype.substr!=='function'){Object.defineProperty(String.prototype,'substr',{value:function(start,length){var s=String(this);var size=s.length;var from=Math.trunc(Number(start))||0;if(from<0){from=Math.max(size+from,0);}from=Math.min(from,size);var count=length===undefined?size-from:Math.trunc(Number(length))||0;count=Math.min(Math.max(count,0),size-from);return s.substring(from,from+count);},writable:true,configurable:true,enumerable:false});}
+var html=function(name,tag,attr){if(typeof String.prototype[name]==='function'){return;}Object.defineProperty(String.prototype,name,{value:function(v){var open='<'+tag;if(attr){open+=' '+attr+'="'+String(v).split('"').join('&quot;')+'"';}return open+'>'+String(this)+'</'+tag+'>';},writable:true,configurable:true,enumerable:false});};
+html('anchor','a','name');html('big','big');html('blink','blink');html('bold','b');html('fixed','tt');html('fontcolor','font','color');html('fontsize','font','size');html('italics','i');html('link','a','href');html('small','small');html('strike','strike');html('sub','sub');html('sup','sup');
+})();"#;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) struct SandboxLimits {
     pub(super) wall_timeout: Duration,
@@ -66,7 +76,7 @@ var body=args.length?String(args[args.length-1]):'';\
 var built;\
 try{built=__dr_real.apply(null,args);}catch(e){built=null;}\
 return function(){\
-if(built){try{var r=built.apply(this,arguments);if(typeof r==='string'){__dr_capture=r;return r;}}catch(e){}}\
+if(built){try{var r=built.apply(this,arguments);if(typeof r==='string'){__dr_capture=r;return r;}if(r!==undefined){return r;}}catch(e){}}\
 __dr_capture=body;return body;\
 };\
 };\
@@ -168,6 +178,9 @@ fn run_eval(script: &str, limits: SandboxLimits) -> Option<String> {
     if context
         .eval(Source::from_bytes(NEUTERED_GLOBALS_PREAMBLE.as_bytes()))
         .is_err()
+        || context
+            .eval(Source::from_bytes(ANNEX_B_BUILTINS.as_bytes()))
+            .is_err()
     {
         return None;
     }
@@ -193,6 +206,23 @@ mod tests {
                 .repeat(crate::sandbox_guard::MAX_EXPRESSION_DEPTH - 10)
                 .as_str();
         assert_eq!(eval_to_source(&script).as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn the_annex_b_string_builtins_match_the_specification() {
+        for (script, expected) in [
+            ("''.italics()", "<i></i>"),
+            ("'x'.fontcolor('a\"b')", "<font color=\"a&quot;b\">x</font>"),
+            ("'y'.link('u')", "<a href=\"u\">y</a>"),
+            ("escape('a <\\u0101')", "a%20%3C%u0101"),
+            ("unescape('%3C%u0101%zz')", "<\u{101}%zz"),
+        ] {
+            assert_eq!(
+                eval_to_string(script).as_deref(),
+                Some(expected),
+                "{script}"
+            );
+        }
     }
 
     #[test]
