@@ -25,7 +25,7 @@ pub(super) fn recover(source: &str) -> (RuleOutcome, ConditionalStatementStats) 
     let mut edits: Vec<Edit> = Vec::new();
     let mut stats: ConditionalStatementStats = ConditionalStatementStats::default();
     for stmt in &program.body {
-        walk_statement(stmt, source, &mut edits, &mut stats);
+        walk_statement(stmt, false, source, &mut edits, &mut stats);
     }
 
     if edits.is_empty() {
@@ -36,63 +36,81 @@ pub(super) fn recover(source: &str) -> (RuleOutcome, ConditionalStatementStats) 
 
 fn walk_statement(
     stmt: &Statement<'_>,
+    else_follows: bool,
     source: &str,
     edits: &mut Vec<Edit>,
     stats: &mut ConditionalStatementStats,
 ) {
     if let Statement::ExpressionStatement(s) = stmt
-        && let Some(edit) = rewrite_expression_statement(&s.expression, stmt, source, stats)
+        && let Some(mut edit) = rewrite_expression_statement(&s.expression, stmt, source, stats)
     {
+        if else_follows {
+            edit.replacement = format!("{{ {} }}", edit.replacement);
+        }
         edits.push(edit);
         return;
     }
     match stmt {
         Statement::BlockStatement(s) => {
             for inner in &s.body {
-                walk_statement(inner, source, edits, stats);
+                walk_statement(inner, false, source, edits, stats);
             }
         }
         Statement::IfStatement(s) => {
-            walk_statement(&s.consequent, source, edits, stats);
+            walk_statement(
+                &s.consequent,
+                else_follows || s.alternate.is_some(),
+                source,
+                edits,
+                stats,
+            );
             if let Some(alt) = s.alternate.as_ref() {
-                walk_statement(alt, source, edits, stats);
+                walk_statement(alt, else_follows, source, edits, stats);
             }
         }
-        Statement::ForStatement(s) => walk_statement(&s.body, source, edits, stats),
-        Statement::ForInStatement(s) => walk_statement(&s.body, source, edits, stats),
-        Statement::ForOfStatement(s) => walk_statement(&s.body, source, edits, stats),
-        Statement::WhileStatement(s) => walk_statement(&s.body, source, edits, stats),
-        Statement::DoWhileStatement(s) => walk_statement(&s.body, source, edits, stats),
+        Statement::ForStatement(s) => walk_statement(&s.body, else_follows, source, edits, stats),
+        Statement::ForInStatement(s) => {
+            walk_statement(&s.body, else_follows, source, edits, stats);
+        }
+        Statement::ForOfStatement(s) => {
+            walk_statement(&s.body, else_follows, source, edits, stats);
+        }
+        Statement::WhileStatement(s) => {
+            walk_statement(&s.body, else_follows, source, edits, stats);
+        }
+        Statement::DoWhileStatement(s) => walk_statement(&s.body, false, source, edits, stats),
         Statement::FunctionDeclaration(f) => {
             if let Some(body) = f.body.as_ref() {
                 for inner in &body.statements {
-                    walk_statement(inner, source, edits, stats);
+                    walk_statement(inner, false, source, edits, stats);
                 }
             }
         }
         Statement::SwitchStatement(s) => {
             for case in &s.cases {
                 for inner in &case.consequent {
-                    walk_statement(inner, source, edits, stats);
+                    walk_statement(inner, false, source, edits, stats);
                 }
             }
         }
         Statement::TryStatement(s) => {
             for inner in &s.block.body {
-                walk_statement(inner, source, edits, stats);
+                walk_statement(inner, false, source, edits, stats);
             }
             if let Some(handler) = s.handler.as_ref() {
                 for inner in &handler.body.body {
-                    walk_statement(inner, source, edits, stats);
+                    walk_statement(inner, false, source, edits, stats);
                 }
             }
             if let Some(finalizer) = s.finalizer.as_ref() {
                 for inner in &finalizer.body {
-                    walk_statement(inner, source, edits, stats);
+                    walk_statement(inner, false, source, edits, stats);
                 }
             }
         }
-        Statement::LabeledStatement(s) => walk_statement(&s.body, source, edits, stats),
+        Statement::LabeledStatement(s) => {
+            walk_statement(&s.body, else_follows, source, edits, stats);
+        }
         _ => {}
     }
 }

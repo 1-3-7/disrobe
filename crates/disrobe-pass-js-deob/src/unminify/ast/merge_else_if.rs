@@ -50,7 +50,7 @@ fn single_merge(source: &str, stats: &mut MergeElseIfStats) -> Option<String> {
     let mut edits: Vec<Edit> = Vec::new();
     let before: usize = stats.merges;
     for stmt in &program.body {
-        walk_statement(stmt, source, &mut edits, stats);
+        walk_statement(stmt, false, source, &mut edits, stats);
         if !edits.is_empty() {
             break;
         }
@@ -68,6 +68,7 @@ fn apply_local_edits(source: &str, edits: &[Edit]) -> Option<String> {
 
 fn walk_statement(
     stmt: &Statement<'_>,
+    else_follows: bool,
     source: &str,
     edits: &mut Vec<Edit>,
     stats: &mut MergeElseIfStats,
@@ -77,65 +78,80 @@ fn walk_statement(
     }
     match stmt {
         Statement::IfStatement(if_stmt) => {
-            try_merge(if_stmt, source, edits, stats);
+            try_merge(if_stmt, else_follows, source, edits, stats);
             if !edits.is_empty() {
                 return;
             }
-            try_invert(if_stmt, source, edits, stats);
+            try_invert(if_stmt, else_follows, source, edits, stats);
             if !edits.is_empty() {
                 return;
             }
-            walk_statement(&if_stmt.consequent, source, edits, stats);
+            walk_statement(
+                &if_stmt.consequent,
+                else_follows || if_stmt.alternate.is_some(),
+                source,
+                edits,
+                stats,
+            );
             if let Some(alt) = if_stmt.alternate.as_ref() {
-                walk_statement(alt, source, edits, stats);
+                walk_statement(alt, else_follows, source, edits, stats);
             }
         }
         Statement::BlockStatement(s) => {
             for inner in &s.body {
-                walk_statement(inner, source, edits, stats);
+                walk_statement(inner, false, source, edits, stats);
             }
         }
-        Statement::ForStatement(s) => walk_statement(&s.body, source, edits, stats),
-        Statement::ForInStatement(s) => walk_statement(&s.body, source, edits, stats),
-        Statement::ForOfStatement(s) => walk_statement(&s.body, source, edits, stats),
-        Statement::WhileStatement(s) => walk_statement(&s.body, source, edits, stats),
-        Statement::DoWhileStatement(s) => walk_statement(&s.body, source, edits, stats),
+        Statement::ForStatement(s) => walk_statement(&s.body, else_follows, source, edits, stats),
+        Statement::ForInStatement(s) => {
+            walk_statement(&s.body, else_follows, source, edits, stats);
+        }
+        Statement::ForOfStatement(s) => {
+            walk_statement(&s.body, else_follows, source, edits, stats);
+        }
+        Statement::WhileStatement(s) => {
+            walk_statement(&s.body, else_follows, source, edits, stats);
+        }
+        Statement::DoWhileStatement(s) => walk_statement(&s.body, false, source, edits, stats),
         Statement::FunctionDeclaration(f) => {
             if let Some(body) = f.body.as_ref() {
                 for inner in &body.statements {
-                    walk_statement(inner, source, edits, stats);
+                    walk_statement(inner, false, source, edits, stats);
                 }
             }
         }
         Statement::SwitchStatement(s) => {
             for case in &s.cases {
                 for inner in &case.consequent {
-                    walk_statement(inner, source, edits, stats);
+                    walk_statement(inner, false, source, edits, stats);
                 }
             }
         }
         Statement::TryStatement(s) => {
             for inner in &s.block.body {
-                walk_statement(inner, source, edits, stats);
+                walk_statement(inner, false, source, edits, stats);
             }
             if let Some(handler) = s.handler.as_ref() {
                 for inner in &handler.body.body {
-                    walk_statement(inner, source, edits, stats);
+                    walk_statement(inner, false, source, edits, stats);
                 }
             }
             if let Some(finalizer) = s.finalizer.as_ref() {
                 for inner in &finalizer.body {
-                    walk_statement(inner, source, edits, stats);
+                    walk_statement(inner, false, source, edits, stats);
                 }
             }
         }
-        Statement::LabeledStatement(s) => walk_statement(&s.body, source, edits, stats),
+        Statement::LabeledStatement(s) => {
+            walk_statement(&s.body, else_follows, source, edits, stats);
+        }
         _ => {}
     }
 }
 
 fn try_invert(
     if_stmt: &IfStatement<'_>,
+    else_follows: bool,
     source: &str,
     edits: &mut Vec<Edit>,
     stats: &mut MergeElseIfStats,
@@ -158,7 +174,12 @@ fn try_invert(
     } else {
         format!("{{ {alt_src} }}")
     };
-    let rendered: String = format!("if ({condition}) {new_consequent} else {cons_src}");
+    let new_alternate: String = if else_follows && ends_in_open_if(&if_stmt.consequent) {
+        format!("{{ {cons_src} }}")
+    } else {
+        cons_src.to_owned()
+    };
+    let rendered: String = format!("if ({condition}) {new_consequent} else {new_alternate}");
     edits.push(Edit {
         start: if_stmt.span.start as usize,
         end: if_stmt.span.end as usize,
@@ -171,8 +192,21 @@ fn block_text<'a>(stmt: &Statement<'_>, source: &'a str) -> &'a str {
     stmt.span().source_text(source)
 }
 
+fn ends_in_open_if(stmt: &Statement<'_>) -> bool {
+    match stmt {
+        Statement::IfStatement(s) => s.alternate.as_ref().is_none_or(ends_in_open_if),
+        Statement::ForStatement(s) => ends_in_open_if(&s.body),
+        Statement::ForInStatement(s) => ends_in_open_if(&s.body),
+        Statement::ForOfStatement(s) => ends_in_open_if(&s.body),
+        Statement::WhileStatement(s) => ends_in_open_if(&s.body),
+        Statement::LabeledStatement(s) => ends_in_open_if(&s.body),
+        _ => false,
+    }
+}
+
 fn try_merge(
     if_stmt: &IfStatement<'_>,
+    else_follows: bool,
     source: &str,
     edits: &mut Vec<Edit>,
     stats: &mut MergeElseIfStats,
@@ -189,6 +223,9 @@ fn try_merge(
     let Statement::IfStatement(inner): &Statement<'_> = &block.body[0] else {
         return;
     };
+    if else_follows && ends_in_open_if(&block.body[0]) {
+        return;
+    }
     let inner_src: &str = inner.span.source_text(source);
     edits.push(Edit {
         start: alt.span().start as usize,
