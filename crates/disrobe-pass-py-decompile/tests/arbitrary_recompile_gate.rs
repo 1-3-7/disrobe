@@ -27,7 +27,7 @@ const PINNED_MODULES: &str = "tests/harness/pinned_modules_314.txt";
 const BAND_CPYTHON: &str = CPYTHON_314.release;
 const GRADED: &str = "the published pinned-corpus per-code-object figure";
 
-const OBJECT_PCT_FLOOR: f64 = 97.64;
+const OBJECT_PCT_FLOOR: f64 = 97.66;
 const MODULES_EXACT_FLOOR: u64 = 130;
 const MODULES_EXACT_PCT_FLOOR: f64 = 62.0;
 const PINNED_MODULE_COUNT: u64 = 200;
