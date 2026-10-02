@@ -261,7 +261,10 @@ mod tests {
             for objects_ok in self.objects_ok + 1..self.objects {
                 let hundredths: u32 = u32::try_from(objects_ok * 10_000 / self.objects)?;
                 let pct: f64 = f64::from(hundredths) / 100.0;
-                if hundredths % 10 != 0 && pct > self.pct && !pct.to_string().contains(&current) {
+                if !hundredths.is_multiple_of(10)
+                    && pct > self.pct
+                    && !pct.to_string().contains(&current)
+                {
                     return Ok(Self {
                         pct,
                         objects_ok,

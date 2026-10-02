@@ -667,14 +667,15 @@ mod tests {
     }
 
     #[test]
-    fn a_figure_inside_an_evidence_pair_region_is_marked_covered() {
+    fn a_figure_inside_an_evidence_pair_region_is_marked_covered() -> Result<()> {
         let text: &str =
             "| <!-- evidence-pair:apk:dex -->199 / 228 clean<!-- /evidence-pair --> | 7 / 9 |\n";
-        let coverage: crate::metrics::MarkerCoverage = document_coverage(text).unwrap();
+        let coverage: crate::metrics::MarkerCoverage = document_coverage(text)?;
         let figures: Vec<Figure> = detect(text, &coverage.spans, &coverage.suppressed_lines);
         assert_eq!(figures.len(), 2);
         assert!(figures[0].covered);
         assert!(!figures[1].covered);
+        Ok(())
     }
 
     #[test]
