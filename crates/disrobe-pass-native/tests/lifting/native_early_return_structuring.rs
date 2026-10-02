@@ -1841,6 +1841,7 @@ struct AbstentionCase {
     opt: &'static str,
     drops_stack_protector_suppression: bool,
     preconditions: &'static [&'static str],
+    cold_partition: Option<&'static str>,
 }
 
 const DECLARED_ABSTENTIONS: &[AbstentionCase] = &[
@@ -1852,6 +1853,7 @@ const DECLARED_ABSTENTIONS: &[AbstentionCase] = &[
         opt: "-O2",
         drops_stack_protector_suppression: false,
         preconditions: &["unsupported leaf instruction", "[rel"],
+        cold_partition: None,
     },
     AbstentionCase {
         tag: "stack_check_failure_exit",
@@ -1861,6 +1863,7 @@ const DECLARED_ABSTENTIONS: &[AbstentionCase] = &[
         opt: "-O2",
         drops_stack_protector_suppression: true,
         preconditions: &["unsupported leaf instruction"],
+        cold_partition: None,
     },
     AbstentionCase {
         tag: "floating_point_literal_guards",
@@ -1870,6 +1873,7 @@ const DECLARED_ABSTENTIONS: &[AbstentionCase] = &[
         opt: "-O2",
         drops_stack_protector_suppression: false,
         preconditions: &["rip-relative float operand", "no resolved .rodata constant"],
+        cold_partition: None,
     },
     AbstentionCase {
         tag: "hot_cold_partitioned_noreturn",
@@ -1879,6 +1883,7 @@ const DECLARED_ABSTENTIONS: &[AbstentionCase] = &[
         opt: "-O2",
         drops_stack_protector_suppression: false,
         preconditions: &["carries a relocation", "lies outside this function"],
+        cold_partition: Some("er_abort_guard.cold"),
     },
 ];
 
@@ -1974,6 +1979,22 @@ fn each_declared_exit_shape_outside_the_recovered_class_names_its_precondition()
                 panic!("the {} fixture must compile: {reason}", case.tag)
             }
         };
+        if let Some(cold) = case.cold_partition
+            && !object::File::parse(object.as_slice())
+                .expect("abstention object")
+                .symbols()
+                .any(|symbol: object::Symbol<'_, '_>| symbol.name() == Ok(cold))
+        {
+            assert!(
+                matches!(
+                    recover_shape(&object, &shape, PseudoAbi::MsX64),
+                    RecoverOutcome::Ok(_)
+                ),
+                "this compiler kept {} in one piece, so the unpartitioned function must recover",
+                case.entry
+            );
+            continue;
+        }
         match recover_shape(&object, &shape, PseudoAbi::MsX64) {
             RecoverOutcome::Abstained(reason) => {
                 if case.drops_stack_protector_suppression {
