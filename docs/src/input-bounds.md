@@ -15,9 +15,9 @@ The exceeded column states what happens when input goes past the bound. It comes
 
 The scan does not resolve types or trait dispatch, so an outcome names the construct it found rather than proving the behaviour.
 
-2190 bounds (count 216, other 1027, output 65, recursion 221, size 479, work 182).
+2197 bounds (count 217, other 1029, output 65, recursion 223, size 479, work 184).
 
-Exceeded: error 884, recorded 185, panic 0, delegated 49, silent 1014, unclassified 17, allocation 33, unused 8.
+Exceeded: error 889, recorded 185, panic 0, delegated 49, silent 1016, unclassified 17, allocation 33, unused 8.
 
 | Crate | Constant | Kind | Exceeded | Type | Value | File |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -880,7 +880,7 @@ Exceeded: error 884, recorded 185, panic 0, delegated 49, silent 1014, unclassif
 | `disrobe-pass-jvm` | `V1_SIGNATURE_PREALLOC_BYTES_CAP` | size | allocation: `with_capacity` in `read_v1_signature_file` | `u64` | `1024 * 1024` | `crates/disrobe-pass-jvm/src/apk_sig.rs` |
 | `disrobe-pass-jvm` | `MAX_ANNOTATION_DEPTH` | recursion | error: `AnnotationError()` | `usize` | `64` | `crates/disrobe-pass-jvm/src/attributes.rs` |
 | `disrobe-pass-jvm` | `MAX_ANNOTATION_INPUT_BYTES` | size | error: `.to_string()`; `AnnotationError()`; `Error::Dex2JarLimit` (DR-JVM-0094); 11 more | `usize` | `4 * 1024 * 1024` | `crates/disrobe-pass-jvm/src/attributes.rs` |
-| `disrobe-pass-jvm` | `MAX_ANNOTATION_NODES` | count | error: `AnnotationError()`; `SignatureSyntaxError`; untyped error | `usize` | `65_535` | `crates/disrobe-pass-jvm/src/attributes.rs` |
+| `disrobe-pass-jvm` | `MAX_ANNOTATION_NODES` | count | error: `AnnotationError()`; `SWITCH`; `SignatureSyntaxError`; 2 more | `usize` | `65_535` | `crates/disrobe-pass-jvm/src/attributes.rs` |
 | `disrobe-pass-jvm` | `MAX_ANNOTATION_RENDER_BYTES` | output | error: `Error::BadBytecode` (DR-JVM-0025) | `usize` | `4 * 1024 * 1024` | `crates/disrobe-pass-jvm/src/attributes.rs` |
 | `disrobe-pass-jvm` | `MAX_ANNOTATION_TEXT_BYTES` | size | error: `AnnotationError()` | `usize` | `4 * 1024 * 1024` | `crates/disrobe-pass-jvm/src/attributes.rs` |
 | `disrobe-pass-jvm` | `MAX_AXML_ATTRIBUTES` | other | error: `Error::BadAxml` (DR-JVM-0013) | `usize` | `65_536` | `crates/disrobe-pass-jvm/src/axml.rs` |
@@ -909,6 +909,13 @@ Exceeded: error 884, recorded 185, panic 0, delegated 49, silent 1014, unclassif
 | `disrobe-pass-jvm` | `MAX_MARKER_IDENTIFIERS` | other | recorded: flag `marker_conflicts` | `usize` | `16` | `crates/disrobe-pass-jvm/src/dalvik_core_library.rs` |
 | `disrobe-pass-jvm` | `MAX_NESTED_CLASS_DEPTH` | recursion | silent: `for` range in `lexically_encloses`; `for` range in `translated_owner_path`; no action in `compose_rendered_class` | `usize` | `64` | `crates/disrobe-pass-jvm/src/dalvik_decompile.rs` |
 | `disrobe-pass-jvm` | `MAX_RENDER_BYTES` | output | silent: `return` in `render_region` | `usize` | `4 * 1024 * 1024` | `crates/disrobe-pass-jvm/src/dalvik_decompile.rs` |
+| `disrobe-pass-jvm` | `MAX_LAYERS` | other | error: `CROSSING_TRIES` | `usize` | `512` | `crates/disrobe-pass-jvm/src/dalvik_decompile/nested_blocks.rs` |
+| `disrobe-pass-jvm` | `MAX_NEST_DEPTH` | recursion | error: `TOO_DEEP` | `usize` | `384` | `crates/disrobe-pass-jvm/src/dalvik_decompile/nested_blocks.rs` |
+| `disrobe-pass-jvm` | `MAX_TRAMPOLINE_STEPS` | work | silent: `for` range in `fixup_path`; `for` range in `trampoline_end` | `usize` | `16` | `crates/disrobe-pass-jvm/src/dalvik_decompile/nested_blocks.rs` |
+| `disrobe-pass-jvm` | `MAX_REGION_DEPTH` | recursion | error: `TOO_LARGE` | `usize` | `512` | `crates/disrobe-pass-jvm/src/dalvik_decompile/region_check.rs` |
+| `disrobe-pass-jvm` | `MAX_REGION_NODES` | count | error: `TOO_LARGE` | `usize` | `100_000` | `crates/disrobe-pass-jvm/src/dalvik_decompile/region_check.rs` |
+| `disrobe-pass-jvm` | `MAX_SWITCH_VALUES` | other | error: `SWITCH` | `usize` | `65_536` | `crates/disrobe-pass-jvm/src/dalvik_decompile/region_check.rs` |
+| `disrobe-pass-jvm` | `MAX_TRAMPOLINE_STEPS` | work | silent: `for` range in `canonical` | `usize` | `64` | `crates/disrobe-pass-jvm/src/dalvik_decompile/region_check.rs` |
 | `disrobe-pass-jvm` | `MAX_DESUGAR_SCAN_INSNS` | other | silent: `return` in `exclusively_constructed`; `return` in `helper_references`; `return` in `scan_references` | `usize` | `1_048_576` | `crates/disrobe-pass-jvm/src/dalvik_desugar.rs` |
 | `disrobe-pass-jvm` | `MAX_INLINE_BODY_INSNS` | other | silent: `return` in `inlinable_helper_body` | `usize` | `64` | `crates/disrobe-pass-jvm/src/dalvik_desugar.rs` |
 | `disrobe-pass-jvm` | `MAX_REFERENCE_BODY_INSNS` | other | silent: `return` in `match_reference_body` | `usize` | `64` | `crates/disrobe-pass-jvm/src/dalvik_desugar.rs` |
@@ -2214,7 +2221,7 @@ Exceeded: error 884, recorded 185, panic 0, delegated 49, silent 1014, unclassif
 
 ## Silent stops
 
-1014 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
+1016 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
 
 | Crate | Constant | Use | File |
 | --- | --- | --- | --- |
@@ -2563,6 +2570,8 @@ Exceeded: error 884, recorded 185, panic 0, delegated 49, silent 1014, unclassif
 | `disrobe-pass-jvm` | `MAX_MARKER_BYTES` | `return` in `parse_marker` | `crates/disrobe-pass-jvm/src/dalvik_core_library.rs` |
 | `disrobe-pass-jvm` | `MAX_NESTED_CLASS_DEPTH` | `for` range in `lexically_encloses`; `for` range in `translated_owner_path`; no action in `compose_rendered_class` | `crates/disrobe-pass-jvm/src/dalvik_decompile.rs` |
 | `disrobe-pass-jvm` | `MAX_RENDER_BYTES` | `return` in `render_region` | `crates/disrobe-pass-jvm/src/dalvik_decompile.rs` |
+| `disrobe-pass-jvm` | `MAX_TRAMPOLINE_STEPS` | `for` range in `fixup_path`; `for` range in `trampoline_end` | `crates/disrobe-pass-jvm/src/dalvik_decompile/nested_blocks.rs` |
+| `disrobe-pass-jvm` | `MAX_TRAMPOLINE_STEPS` | `for` range in `canonical` | `crates/disrobe-pass-jvm/src/dalvik_decompile/region_check.rs` |
 | `disrobe-pass-jvm` | `MAX_DESUGAR_SCAN_INSNS` | `return` in `exclusively_constructed`; `return` in `helper_references`; `return` in `scan_references` | `crates/disrobe-pass-jvm/src/dalvik_desugar.rs` |
 | `disrobe-pass-jvm` | `MAX_INLINE_BODY_INSNS` | `return` in `inlinable_helper_body` | `crates/disrobe-pass-jvm/src/dalvik_desugar.rs` |
 | `disrobe-pass-jvm` | `MAX_REFERENCE_BODY_INSNS` | `return` in `match_reference_body` | `crates/disrobe-pass-jvm/src/dalvik_desugar.rs` |

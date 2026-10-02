@@ -347,7 +347,7 @@
       "floor": 89.31,
       "floor_holds": true,
       "id": "jvm-execution-differential",
-      "measured": "91.60%",
+      "measured": "92.37%",
       "oracle_strength": "strong",
       "pairs": [],
       "reproduce": "cargo test -p disrobe-pass-jvm --test edgecases_execution_differential"
