@@ -208,52 +208,126 @@ pub(super) fn check(root: &Path, sources: &MetricSources, issues: &mut Vec<Strin
 mod tests {
     use super::*;
 
-    const RAISED_PCT: f64 = 97.9;
-    const RAISED_OBJECTS_OK: u64 = 6155;
-    const RAISED_MODULES_EXACT: u64 = 131;
     const PINNED_LABEL: &str = "200-module pinned corpus (normalized opcode-structure agreement)";
     const MIRROR_LABEL: &str = "CPython 3.14 (all 200 pinned modules)";
 
-    const PUBLISHED_COPIES: [(&str, &str); 8] = [
-        ("README.md", "97.64"),
-        ("docs/src/introduction.md", "97.64"),
-        ("docs/src/languages/python.md", "97.64"),
-        ("docs/src/python-bindings.md", "97.64"),
-        ("evidence/edge-comparison.md", "97.64"),
-        ("xtask/data/verification.json", "97.64"),
-        (PINNED_GATE, "97.64"),
-        (FULL_GATE, "6_138"),
+    const PCT_COPIES: [&str; 7] = [
+        "README.md",
+        "docs/src/introduction.md",
+        "docs/src/languages/python.md",
+        "docs/src/python-bindings.md",
+        "evidence/edge-comparison.md",
+        "xtask/data/verification.json",
+        PINNED_GATE,
     ];
 
-    const RAISED_SITES: [(&str, &str); 9] = [
-        (
-            "docs/src/languages/python.md",
-            "with a <!-- m:py_stdlib_pinned_floor_pct -->97.9%<!-- /m --> regression threshold",
-        ),
-        (
-            "docs/src/python-bindings.md",
-            "regression threshold <!-- m:py_stdlib_pinned_floor_pct -->97.9%<!-- /m -->",
-        ),
-        (
-            "docs/src/introduction.md",
-            "<!-- m:py_stdlib_pinned_modules_exact -->131<!-- /m --> of",
-        ),
-        (
-            "README.md",
-            "<!-- m:py_stdlib_pinned_count -->6155 of 6286<!-- /m -->",
-        ),
-        (
-            "xtask/data/verification.json",
-            "<!-- m:py_stdlib_pinned_pct -->97.9%<!-- /m --> of",
-        ),
-        (
-            "xtask/data/verification.json",
-            "code-object floor <!-- m:py_stdlib_pinned_floor_pct -->97.9%<!-- /m -->",
-        ),
-        (PINNED_GATE, "const OBJECT_PCT_FLOOR: f64 = 97.9;"),
-        (PINNED_GATE, "const MODULES_EXACT_FLOOR: u64 = 131;"),
-        (FULL_GATE, "const PINNED_OBJECTS_OK: u64 = 6_155;"),
-    ];
+    #[derive(Debug, Clone, Copy)]
+    struct PinnedFigure {
+        pct: f64,
+        objects_ok: u64,
+        objects: u64,
+        modules_exact: u64,
+    }
+
+    impl PinnedFigure {
+        fn published(recovery: &Path) -> Result<Self> {
+            let doc: serde_json::Value =
+                serde_json::from_str(&read_text_bounded(recovery, MAX_GATE_BYTES)?)?;
+            let bar: &serde_json::Value = doc["groups"]
+                .as_array()
+                .ok_or_else(|| eyre!("recovery.json carries no groups array"))?
+                .iter()
+                .filter_map(|group: &serde_json::Value| group["bars"].as_array())
+                .flatten()
+                .find(|bar: &&serde_json::Value| bar["label"].as_str() == Some(PINNED_LABEL))
+                .ok_or_else(|| eyre!("recovery.json carries no `{PINNED_LABEL}` bar"))?;
+            let field = |name: &str| -> Result<u64> {
+                bar[name]
+                    .as_u64()
+                    .ok_or_else(|| eyre!("the pinned bar carries no integer `{name}`"))
+            };
+            Ok(Self {
+                pct: bar["value"]
+                    .as_f64()
+                    .ok_or_else(|| eyre!("the pinned bar carries no `value`"))?,
+                objects_ok: field("num")?,
+                objects: field("den")?,
+                modules_exact: field("modules_exact")?,
+            })
+        }
+
+        fn raised(self) -> Result<Self> {
+            let current: String = self.pct.to_string();
+            for objects_ok in self.objects_ok + 1..self.objects {
+                let hundredths: u32 = u32::try_from(objects_ok * 10_000 / self.objects)?;
+                let pct: f64 = f64::from(hundredths) / 100.0;
+                if hundredths % 10 != 0 && pct > self.pct && !pct.to_string().contains(&current) {
+                    return Ok(Self {
+                        pct,
+                        objects_ok,
+                        objects: self.objects,
+                        modules_exact: self.modules_exact + 1,
+                    });
+                }
+            }
+            bail!("no raised figure fits above {current} of {}", self.objects)
+        }
+
+        fn raised_sites(self) -> [(&'static str, String); 9] {
+            let Self {
+                pct,
+                objects_ok,
+                objects,
+                modules_exact,
+            } = self;
+            let grouped: String = group_thousands(objects_ok).replace(',', "_");
+            [
+                (
+                    "docs/src/languages/python.md",
+                    format!(
+                        "with a <!-- m:py_stdlib_pinned_floor_pct -->{pct}%<!-- /m --> regression threshold"
+                    ),
+                ),
+                (
+                    "docs/src/python-bindings.md",
+                    format!(
+                        "regression threshold <!-- m:py_stdlib_pinned_floor_pct -->{pct}%<!-- /m -->"
+                    ),
+                ),
+                (
+                    "docs/src/introduction.md",
+                    format!(
+                        "<!-- m:py_stdlib_pinned_modules_exact -->{modules_exact}<!-- /m --> of"
+                    ),
+                ),
+                (
+                    "README.md",
+                    format!(
+                        "<!-- m:py_stdlib_pinned_count -->{objects_ok} of {objects}<!-- /m -->"
+                    ),
+                ),
+                (
+                    "xtask/data/verification.json",
+                    format!("<!-- m:py_stdlib_pinned_pct -->{pct}%<!-- /m --> of"),
+                ),
+                (
+                    "xtask/data/verification.json",
+                    format!(
+                        "code-object floor <!-- m:py_stdlib_pinned_floor_pct -->{pct}%<!-- /m -->"
+                    ),
+                ),
+                (PINNED_GATE, format!("const OBJECT_PCT_FLOOR: f64 = {pct};")),
+                (
+                    PINNED_GATE,
+                    format!("const MODULES_EXACT_FLOOR: u64 = {modules_exact};"),
+                ),
+                (
+                    FULL_GATE,
+                    format!("const PINNED_OBJECTS_OK: u64 = {grouped};"),
+                ),
+            ]
+        }
+    }
 
     fn raise(bar: &mut serde_json::Value, fields: &[(&str, serde_json::Value)]) {
         for (field, value) in fields {
@@ -261,7 +335,7 @@ mod tests {
         }
     }
 
-    fn raise_pinned_figure(recovery: &Path) -> Result<()> {
+    fn raise_pinned_figure(recovery: &Path, figure: PinnedFigure) -> Result<()> {
         let mut doc: serde_json::Value =
             serde_json::from_str(&read_text_bounded(recovery, MAX_GATE_BYTES)?)?;
         let groups: &mut Vec<serde_json::Value> = doc["groups"]
@@ -278,10 +352,10 @@ mod tests {
                 raise(
                     bar,
                     &[
-                        ("value", serde_json::json!(RAISED_PCT)),
-                        ("num", serde_json::json!(RAISED_OBJECTS_OK)),
-                        ("floor_pct", serde_json::json!(RAISED_PCT)),
-                        ("modules_exact", serde_json::json!(RAISED_MODULES_EXACT)),
+                        ("value", serde_json::json!(figure.pct)),
+                        ("num", serde_json::json!(figure.objects_ok)),
+                        ("floor_pct", serde_json::json!(figure.pct)),
+                        ("modules_exact", serde_json::json!(figure.modules_exact)),
                     ],
                 );
                 raised += 1;
@@ -289,8 +363,8 @@ mod tests {
                 raise(
                     bar,
                     &[
-                        ("value", serde_json::json!(RAISED_PCT)),
-                        ("num", serde_json::json!(RAISED_OBJECTS_OK)),
+                        ("value", serde_json::json!(figure.pct)),
+                        ("num", serde_json::json!(figure.objects_ok)),
                     ],
                 );
                 raised += 1;
@@ -323,7 +397,17 @@ mod tests {
         for (gate, _) in registry() {
             copy_into(&repo, copy, gate)?;
         }
-        for (relative, current) in PUBLISHED_COPIES {
+        let published: PinnedFigure =
+            PinnedFigure::published(&copy.join("xtask/data/recovery.json"))?;
+        let raised: PinnedFigure = published.raised()?;
+        let current_pct: String = published.pct.to_string();
+        let current_objects: String = group_thousands(published.objects_ok).replace(',', "_");
+        let published_copies: Vec<(&str, &str)> = PCT_COPIES
+            .iter()
+            .map(|relative: &&str| (*relative, current_pct.as_str()))
+            .chain(std::iter::once((FULL_GATE, current_objects.as_str())))
+            .collect();
+        for &(relative, current) in &published_copies {
             copy_into(&repo, copy, relative)?;
             let text: String = read_text_bounded(&copy.join(relative), MAX_GATE_BYTES)?;
             assert!(
@@ -332,7 +416,7 @@ mod tests {
                  rendering anything into it"
             );
         }
-        raise_pinned_figure(&copy.join("xtask/data/recovery.json"))?;
+        raise_pinned_figure(&copy.join("xtask/data/recovery.json"), raised)?;
 
         let sources: MetricSources = MetricSources {
             recovery: super::super::load_recovery(copy)?,
@@ -340,7 +424,7 @@ mod tests {
         };
         super::super::write_published(copy, &sources)?;
 
-        for (relative, stale) in PUBLISHED_COPIES {
+        for &(relative, stale) in &published_copies {
             let text: String = read_text_bounded(&copy.join(relative), MAX_GATE_BYTES)?;
             assert!(
                 !text.contains(stale),
@@ -348,10 +432,10 @@ mod tests {
                  it is written by hand or skipped by the generator"
             );
         }
-        for (relative, expected) in RAISED_SITES {
+        for (relative, expected) in raised.raised_sites() {
             let text: String = read_text_bounded(&copy.join(relative), MAX_GATE_BYTES)?;
             assert!(
-                text.contains(expected),
+                text.contains(&expected),
                 "{relative} does not state `{expected}` after the pinned figure moved"
             );
         }
