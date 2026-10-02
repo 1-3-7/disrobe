@@ -49,3 +49,24 @@ runs:
           exit 1
         fi
         echo "DISROBE_BABEL_RUNTIME_ROOT=$runtime_root/node_modules" >> "$GITHUB_ENV"
+    - name: provision terser 5.51.2 for the minify-then-unminify differential
+      shell: bash
+      env:
+        TERSER_VERSION: "5.51.2"
+        TERSER_BUNDLE_SHA256: "379f8758191b03c07745486e785cbf4bed6a7ae368aa40a5a819556743f3ad1c"
+      run: |
+        set -euo pipefail
+        terser_root="$RUNNER_TEMP/disrobe-terser-${TERSER_VERSION}"
+        npm install --prefix "$terser_root" --ignore-scripts --no-audit --no-fund "terser@${TERSER_VERSION}"
+        package="$terser_root/node_modules/terser"
+        actual_version="$(node -e 'process.stdout.write(require(require("node:path").join(process.argv[1], "package.json")).version)' "$package")"
+        if [ "$actual_version" != "$TERSER_VERSION" ]; then
+          echo "npm provisioned terser ${actual_version}, expected ${TERSER_VERSION}"
+          exit 1
+        fi
+        actual_sha256="$(node -e 'const crypto=require("node:crypto"); const fs=require("node:fs"); process.stdout.write(crypto.createHash("sha256").update(fs.readFileSync(process.argv[1])).digest("hex"))' "$package/dist/bundle.min.js")"
+        if [ "$actual_sha256" != "$TERSER_BUNDLE_SHA256" ]; then
+          echo "terser bundle hash ${actual_sha256}, expected ${TERSER_BUNDLE_SHA256}"
+          exit 1
+        fi
+        echo "DISROBE_TERSER=$package" >> "$GITHUB_ENV"
