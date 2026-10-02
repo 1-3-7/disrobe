@@ -10,6 +10,21 @@ use disrobe_pass_lua::reader::luau;
 use disrobe_testkit::{CommandSpec, ToolOutput, tool_output};
 
 const PROGRAMS_PER_LANE: u64 = 1000;
+const RICH_FIRST: u64 = 1_000_000;
+const RICH_PROGRAMS: u64 = 200;
+const RICH_KNOWN_DIVERGENT: [(&str, &[u64]); 5] = [
+    ("5.1", &[1_000_047]),
+    (
+        "5.2",
+        &[1_000_007, 1_000_047, 1_000_088, 1_000_140, 1_000_144],
+    ),
+    (
+        "5.3",
+        &[1_000_007, 1_000_047, 1_000_088, 1_000_140, 1_000_144],
+    ),
+    ("5.4", &[1_000_047]),
+    ("5.5", &[1_000_047]),
+];
 const LUAU_PROGRAMS: u64 = 1500;
 const LUAU_KNOWN_DIVERGENT: [u64; 0] = [];
 const LANES: [&str; 5] = ["5.1", "5.2", "5.3", "5.4", "5.5"];
@@ -20,6 +35,7 @@ const MAX_BLOCK_DEPTH: u32 = 3;
 struct Generator {
     state: u64,
     loop_serial: u32,
+    rich: bool,
 }
 
 impl Generator {
@@ -27,6 +43,7 @@ impl Generator {
         Self {
             state: seed ^ 0x9E37_79B9_7F4A_7C15,
             loop_serial: 0,
+            rich: seed >= RICH_FIRST,
         }
     }
 
@@ -113,6 +130,10 @@ impl Generator {
 
     fn statement(&mut self, depth: u32, indent: usize, out: &mut String) {
         let pad: String = "  ".repeat(indent);
+        if self.rich && self.below(3) == 0 {
+            self.rich_statement(indent, out);
+            return;
+        }
         let choice: u64 = if depth >= MAX_BLOCK_DEPTH {
             self.below(4)
         } else {
@@ -197,6 +218,135 @@ impl Generator {
         }
     }
 
+    fn rich_statement(&mut self, indent: usize, out: &mut String) {
+        let pad: String = "  ".repeat(indent);
+        self.loop_serial += 1;
+        let n: u32 = self.loop_serial;
+        let target: &str = self.variable();
+        let line = |out: &mut String, text: &str| {
+            writeln!(out, "{pad}{text}").expect("write to a String");
+        };
+        match self.below(12) {
+            0 => {
+                let start: &str = self.variable();
+                let argument: String = self.arithmetic(1);
+                line(
+                    out,
+                    &format!(
+                        "local function mk{n}() local c = {start} return function(x) c = c + x return c % 97 end end"
+                    ),
+                );
+                line(out, &format!("local g{n} = mk{n}()"));
+                line(
+                    out,
+                    &format!("{target} = (g{n}({argument}) + g{n}(1)) % 1000"),
+                );
+            }
+            1 => {
+                let argument: String = self.arithmetic(1);
+                line(
+                    out,
+                    &format!(
+                        "local function va{n}(...) local s = 0 for i = 1, select('#', ...) do s = s + select(i, ...) end return s % 1000 end"
+                    ),
+                );
+                line(out, &format!("{target} = va{n}(a, b, {argument})"));
+            }
+            2 => {
+                let key: String = self.arithmetic(1);
+                line(
+                    out,
+                    &format!(
+                        "local o{n} = setmetatable({{}}, {{__index = function(_, k) return k * 2 end}})"
+                    ),
+                );
+                line(out, &format!("{target} = o{n}[({key}) % 5] % 1000"));
+            }
+            3 => {
+                let cond: String = self.condition();
+                let value: String = self.arithmetic(1);
+                line(
+                    out,
+                    &format!(
+                        "local ok{n}, v{n} = pcall(function() if {cond} then error(\"e\") end return {value} end)"
+                    ),
+                );
+                line(
+                    out,
+                    &format!("if ok{n} then {target} = v{n} % 1000 else {target} = -1 end"),
+                );
+            }
+            4 => {
+                let value: String = self.arithmetic(1);
+                line(out, &format!("s = s .. tostring({value}) .. \",\""));
+                line(out, "if #s > 40 then s = s:sub(-20) end");
+            }
+            5 => {
+                let shown: &str = self.variable();
+                line(
+                    out,
+                    &format!("emit(string.format(\"%03d\", {shown} % 1000) .. (\"x\"):rep(2))"),
+                );
+            }
+            6 => {
+                let argument: String = self.arithmetic(1);
+                line(out, &format!("local function mr{n}(x) return x, x + 1 end"));
+                line(out, &format!("local p{n}, q{n} = mr{n}({argument})"));
+                line(out, &format!("{target} = (p{n} * q{n}) % 1000"));
+            }
+            7 => {
+                let top: u64 = 3 + self.below(5);
+                line(out, &format!("for j{n} = {top}, 1, -2 do"));
+                line(out, &format!("  {target} = ({target} + j{n}) % 1000"));
+                line(out, "end");
+            }
+            8 => {
+                let third: String = self.arithmetic(1);
+                line(
+                    out,
+                    &format!("for i{n}, v{n} in ipairs({{a, b, {third}}}) do"),
+                );
+                line(
+                    out,
+                    &format!("  {target} = ({target} + i{n} * v{n}) % 1000"),
+                );
+                line(out, "end");
+            }
+            9 => {
+                let first: String = self.arithmetic(1);
+                let second: &str = self.variable();
+                line(
+                    out,
+                    &format!(
+                        "local co{n} = coroutine.wrap(function() coroutine.yield({first}) coroutine.yield({second}) end)"
+                    ),
+                );
+                line(out, &format!("{target} = (co{n}() + co{n}()) % 1000"));
+            }
+            10 => {
+                line(out, &format!("local arr{n} = {{a, b, c, d, e}}"));
+                line(
+                    out,
+                    &format!("table.sort(arr{n}, function(x, y) return x > y end)"),
+                );
+                line(
+                    out,
+                    &format!("{target} = (arr{n}[1] * 2 + arr{n}[5]) % 1000"),
+                );
+            }
+            _ => {
+                let first: &str = self.variable();
+                let second: &str = self.variable();
+                line(
+                    out,
+                    &format!(
+                        "if tostring({first}) < tostring({second}) then {target} = ({target} + 1) % 1000 end"
+                    ),
+                );
+            }
+        }
+    }
+
     fn loop_body(&mut self, depth: u32, indent: usize, out: &mut String) {
         self.block(depth + 1, indent + 1, out);
         if self.below(3) == 0 {
@@ -219,7 +369,13 @@ impl Generator {
             "local function f(x) if x > {k} then return x - {k} end return x + {k} end"
         )
         .expect("write to a String");
+        if self.rich {
+            out.push_str("local s = \"\"\n");
+        }
         self.block(0, 0, &mut out);
+        if self.rich {
+            out.push_str("emit(s)\n");
+        }
         out.push_str("emit(a) emit(b) emit(c) emit(d) emit(e)\nprint(table.concat(out, \" \"))\n");
         out
     }
@@ -300,15 +456,24 @@ fn recovered_source(luac: &str, dir: &Path, name: &str, source: &str) -> String 
 }
 
 fn divergences(version: &str) -> (usize, Vec<String>) {
+    let (graded, failures): (usize, std::collections::BTreeMap<u64, String>) =
+        divergences_over(version, 0..PROGRAMS_PER_LANE);
+    (graded, failures.into_values().collect())
+}
+
+fn divergences_over(
+    version: &str,
+    seeds: std::ops::Range<u64>,
+) -> (usize, std::collections::BTreeMap<u64, String>) {
     let label: String = format!("lua{version}");
     let (luac, lua): (String, String) = toolchain(version);
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create(&format!("disrobe_lua_generated_{label}"))
             .expect("scratch dir");
     let dir: &Path = scratch.path();
-    let mut failures: Vec<String> = Vec::new();
+    let mut failures: std::collections::BTreeMap<u64, String> = std::collections::BTreeMap::new();
     let mut graded: usize = 0;
-    for seed in 0..PROGRAMS_PER_LANE {
+    for seed in seeds {
         let source: String = Generator::new(seed).program();
         let name: String = format!("gen{seed}");
         let original_path: PathBuf = dir.join(format!("{name}.orig.lua"));
@@ -323,12 +488,68 @@ fn divergences(version: &str) -> (usize, Vec<String>) {
         let actual: Result<String, String> = run(&lua, &recovered_path);
         if actual.as_deref() != Ok(expected.as_str()) {
             let shown: String = actual.unwrap_or_else(|error: String| format!("<failed: {error}>"));
-            failures.push(format!(
-                "{label} seed {seed}\n--- expected ---\n{expected}--- actual ---\n{shown}\n--- source ---\n{source}--- recovered ---\n{recovered}"
-            ));
+            failures.insert(
+                seed,
+                format!(
+                    "{label} seed {seed}\n--- expected ---\n{expected}--- actual ---\n{shown}\n--- source ---\n{source}--- recovered ---\n{recovered}"
+                ),
+            );
         }
     }
     (graded, failures)
+}
+
+fn assert_rich_lane(version: &str) {
+    let (graded, failures): (usize, std::collections::BTreeMap<u64, String>) =
+        divergences_over(version, RICH_FIRST..RICH_FIRST + RICH_PROGRAMS);
+    assert_eq!(graded as u64, RICH_PROGRAMS);
+    let pinned: std::collections::BTreeSet<u64> = RICH_KNOWN_DIVERGENT
+        .iter()
+        .find(|(lane, _): &&(&str, &[u64])| *lane == version)
+        .map(|(_, seeds): &(&str, &[u64])| seeds.iter().copied().collect())
+        .unwrap_or_default();
+    let divergent: std::collections::BTreeSet<u64> = failures.keys().copied().collect();
+    let regressed: Vec<u64> = divergent.difference(&pinned).copied().collect();
+    let fixed: Vec<u64> = pinned.difference(&divergent).copied().collect();
+    let shown: Vec<&str> = failures
+        .iter()
+        .filter(|(seed, _): &(&u64, &String)| !pinned.contains(seed))
+        .map(|(_, why): (&u64, &String)| why.as_str())
+        .take(4)
+        .collect();
+    assert!(
+        regressed.is_empty() && fixed.is_empty(),
+        "{} of {graded} rich generated lua{version} programs re-executed differently; the \
+         divergent set must equal the lane's RICH_KNOWN_DIVERGENT entry exactly, which only ever \
+         shrinks. Newly divergent: {regressed:?}. Now recovered: {fixed:?}.\n{}",
+        failures.len(),
+        shown.join("\n=====\n")
+    );
+}
+
+#[test]
+fn generated_rich_programs_reexecute_identically_lua_5_1() {
+    assert_rich_lane("5.1");
+}
+
+#[test]
+fn generated_rich_programs_reexecute_identically_lua_5_2() {
+    assert_rich_lane("5.2");
+}
+
+#[test]
+fn generated_rich_programs_reexecute_identically_lua_5_3() {
+    assert_rich_lane("5.3");
+}
+
+#[test]
+fn generated_rich_programs_reexecute_identically_lua_5_4() {
+    assert_rich_lane("5.4");
+}
+
+#[test]
+fn generated_rich_programs_reexecute_identically_lua_5_5() {
+    assert_rich_lane("5.5");
 }
 
 fn assert_lane(version: &str) {
@@ -520,6 +741,28 @@ fn the_generator_is_deterministic_and_varied() {
         "f(",
     ] {
         assert!(all.contains(shape), "the corpus never generates `{shape}`");
+    }
+    let rich: String = (RICH_FIRST..RICH_FIRST + RICH_PROGRAMS)
+        .map(|seed: u64| Generator::new(seed).program())
+        .collect();
+    for shape in [
+        "local function mk",
+        "select('#', ...)",
+        "setmetatable(",
+        "pcall(function()",
+        "s = s .. tostring(",
+        "string.format(",
+        "local function mr",
+        ", 1, -2 do",
+        "in ipairs({",
+        "coroutine.wrap(",
+        "table.sort(",
+        "tostring(a) <",
+    ] {
+        assert!(
+            rich.contains(shape),
+            "the rich corpus never generates `{shape}`"
+        );
     }
 }
 
