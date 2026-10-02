@@ -1,6 +1,6 @@
 -module(trycatch).
 
--export([test/0, divide/2, classify_ex/1, of_after/1, chain/1, nested/1]).
+-export([test/0, divide/2, classify_ex/1, of_after/1, chain/1, nested/1, discarded/1]).
 
 divide(A, B) ->
     try A div B of
@@ -50,6 +50,11 @@ nested(X) ->
         throw:T -> {outer_throw, T}
     end.
 
+discarded(X) ->
+    B = X rem 7,
+    C = try (0 * 0) div (B - B) catch error:badarith -> -1 end,
+    {B, C}.
+
 test() ->
     {
         divide(10, 2),
@@ -62,5 +67,6 @@ test() ->
         of_after(-1),
         nested(5),
         nested(-2),
-        nested(0)
+        nested(0),
+        discarded(9)
     }.

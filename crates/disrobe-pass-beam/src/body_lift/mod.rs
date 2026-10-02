@@ -482,7 +482,7 @@ impl Lifter<'_> {
                     }
                 }
                 "bif0" | "bif1" | "bif2" => self.exec_bif(ins, env, &mut out, flags),
-                "gc_bif1" | "gc_bif2" | "gc_bif3" => self.exec_gc_bif(ins, env, flags),
+                "gc_bif1" | "gc_bif2" | "gc_bif3" => self.exec_gc_bif(ins, env, &mut out, flags),
                 "call" | "call_only" | "call_last" => {
                     if self.exec_call_local(ins, env, &mut out, flags) {
                         return out;

@@ -292,7 +292,13 @@ impl Lifter<'_> {
         }
     }
 
-    pub(super) fn exec_gc_bif(&self, ins: &Instruction, env: &mut Env, flags: &mut Flags) {
+    pub(super) fn exec_gc_bif(
+        &self,
+        ins: &Instruction,
+        env: &mut Env,
+        out: &mut Vec<Stmt>,
+        flags: &mut Flags,
+    ) {
         let (import_op, args, dst): (&Operand, Vec<Expr>, &Operand) = match ins.name {
             "gc_bif1" => (
                 &ins.operands[2],
@@ -318,7 +324,27 @@ impl Lifter<'_> {
             ),
             _ => return,
         };
-        self.apply_bif(import_op, &args, dst, env, flags);
+        let raises_on_a_zero_divisor: bool =
+            matches!(ins.operands.first(), Some(Operand::Label(0)))
+                && !matches!(args.last(), Some(Expr::Int(divisor)) if *divisor != 0)
+                && self.resolve_import(import_op).is_some_and(
+                    |(module, name, arity): (String, String, u32)| {
+                        module == "erlang"
+                            && arity == 2
+                            && matches!(name.as_str(), "div" | "rem" | "/")
+                    },
+                );
+        if self.apply_bif(import_op, &args, dst, env, flags)
+            && raises_on_a_zero_divisor
+            && let Some(reg) = as_reg(dst)
+        {
+            let var: String = flags.fresh_var();
+            out.push(Stmt::Bind {
+                pattern: Expr::Var(var.clone()),
+                value: env.get(reg),
+            });
+            env.set(reg, Expr::Var(var));
+        }
     }
 
     fn apply_bif(
