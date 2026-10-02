@@ -1147,13 +1147,24 @@ fn generation_is_deterministic_and_the_rules_rewrite_most_programs() {
     );
 }
 
-const TERSER_VERSION: &str = "5.51.2";
-const TERSER_SEEDS: u64 = 300;
-const TERSER_KNOWN_DIVERGENT: [u64; 0] = [];
-const TERSER_CHANGES_OUTPUT: [u64; 0] = [];
-const TERSER_REWRITTEN_FLOOR: usize = 298;
-const TERSER_BACKSTOP: Duration = Duration::from_mins(5);
-const TERSER_DRIVER: &str = r#"const fs = require("fs");
+const MINIFIER_SEEDS: u64 = 300;
+const MINIFIER_BACKSTOP: Duration = Duration::from_mins(5);
+
+struct Minifier {
+    name: &'static str,
+    env: &'static str,
+    version: &'static str,
+    driver: &'static str,
+    known_divergent: &'static [u64],
+    changes_output: &'static [u64],
+    rewritten_floor: usize,
+}
+
+const TERSER: Minifier = Minifier {
+    name: "terser",
+    env: "DISROBE_TERSER",
+    version: "5.51.2",
+    driver: r#"const fs = require("fs");
 const path = require("path");
 const { minify } = require(process.argv[2]);
 const dir = process.argv[3];
@@ -1171,52 +1182,85 @@ const dir = process.argv[3];
   console.error(error);
   process.exit(1);
 });
-"#;
+"#,
+    known_divergent: &[],
+    changes_output: &[],
+    rewritten_floor: 298,
+};
 
-fn terser_package() -> PathBuf {
-    let package: PathBuf = std::env::var_os("DISROBE_TERSER").map(PathBuf::from).expect(
-        "DISROBE_TERSER must name the terser 5.51.2 package directory (node_modules/terser), as \
-         `npm install --ignore-scripts terser@5.51.2` lays it out",
+const ESBUILD: Minifier = Minifier {
+    name: "esbuild",
+    env: "DISROBE_ESBUILD",
+    version: "0.28.2",
+    driver: r#"const fs = require("fs");
+const path = require("path");
+const { transformSync } = require(process.argv[2]);
+const dir = process.argv[3];
+const names = fs.readdirSync(dir).filter((name) => /^seed[0-9]+[.]js$/.test(name)).sort();
+for (const file of names.map((name) => path.join(dir, name))) {
+  const out = transformSync(fs.readFileSync(file, "utf8"), { minify: true });
+  fs.writeFileSync(file + ".min.js", out.code);
+}
+"#,
+    known_divergent: &[],
+    changes_output: &[],
+    rewritten_floor: 298,
+};
+
+fn minifier_package(minifier: &Minifier) -> PathBuf {
+    let Minifier {
+        name, env, version, ..
+    } = minifier;
+    let package: PathBuf = std::env::var_os(env).map_or_else(
+        || {
+            panic!(
+                "{env} must name the {name} {version} package directory (node_modules/{name}), \
+                 as `npm install --ignore-scripts {name}@{version}` lays it out"
+            )
+        },
+        PathBuf::from,
     );
     let manifest: serde_json::Value = serde_json::from_str(
         &fs::read_to_string(package.join("package.json"))
-            .expect("DISROBE_TERSER must contain terser's package.json"),
+            .unwrap_or_else(|error| panic!("{env} must contain {name}'s package.json: {error}")),
     )
-    .expect("terser's package.json parses");
+    .unwrap_or_else(|error| panic!("{name}'s package.json does not parse: {error}"));
     assert_eq!(
         manifest["name"].as_str(),
-        Some("terser"),
-        "DISROBE_TERSER does not name the terser package"
+        Some(*name),
+        "{env} does not name the {name} package"
     );
     assert_eq!(
         manifest["version"].as_str(),
-        Some(TERSER_VERSION),
-        "DISROBE_TERSER names a terser other than the pinned {TERSER_VERSION}"
+        Some(*version),
+        "{env} names a {name} other than the pinned {version}"
     );
     package
 }
 
-fn minify_with_terser(sources: &[(u64, String)]) -> Vec<(u64, String)> {
-    let package: PathBuf = terser_package();
+fn minify_with(minifier: &Minifier, sources: &[(u64, String)]) -> Vec<(u64, String)> {
+    let package: PathBuf = minifier_package(minifier);
     let scratch: disrobe_core::scratch::ScratchDir =
-        disrobe_core::scratch::ScratchDir::create("disrobe_js_terser_lane")
-            .expect("create a terser scratch directory");
+        disrobe_core::scratch::ScratchDir::create(&format!("disrobe_js_{}_lane", minifier.name))
+            .expect("create a minifier scratch directory");
     let driver: PathBuf = scratch.path().join("minify.cjs");
-    fs::write(&driver, TERSER_DRIVER).expect("write the terser driver");
+    fs::write(&driver, minifier.driver).expect("write the minifier driver");
     for (seed, source) in sources {
         fs::write(scratch.path().join(format!("seed{seed}.js")), source)
             .expect("write a generated program");
     }
     let output: ToolOutput = tool_output(
-        CommandSpec::new("node", TERSER_BACKSTOP)
+        CommandSpec::new("node", MINIFIER_BACKSTOP)
             .arg(driver.as_os_str())
             .arg(package.as_os_str())
             .arg(scratch.path().as_os_str()),
     )
-    .expect("node runs the terser driver");
+    .expect("node runs the minifier driver");
     assert!(
         output.success,
-        "terser {TERSER_VERSION} failed to minify the generated programs:\n{}",
+        "{} {} failed to minify the generated programs:\n{}",
+        minifier.name,
+        minifier.version,
         output.stderr_text()
     );
     sources
@@ -1224,21 +1268,21 @@ fn minify_with_terser(sources: &[(u64, String)]) -> Vec<(u64, String)> {
         .map(|(seed, _): &(u64, String)| {
             let minified: String =
                 fs::read_to_string(scratch.path().join(format!("seed{seed}.js.min.js")))
-                    .expect("terser wrote every minified program");
+                    .expect("the minifier wrote every program");
             (*seed, minified)
         })
         .collect()
 }
 
-#[test]
-fn terser_minified_programs_keep_their_output_through_unminify() {
-    let sources: Vec<(u64, String)> = (0..TERSER_SEEDS)
+fn assert_minifier_lane(minifier: &Minifier) {
+    let Minifier { name, version, .. } = minifier;
+    let sources: Vec<(u64, String)> = (0..MINIFIER_SEEDS)
         .map(|seed: u64| (seed, generate(seed)))
         .collect();
-    let minified: Vec<(u64, String)> = minify_with_terser(&sources);
+    let minified: Vec<(u64, String)> = minify_with(minifier, &sources);
     let mut divergent: std::collections::BTreeMap<u64, String> = std::collections::BTreeMap::new();
     let mut rewritten: usize = 0;
-    let mut terser_changed: Vec<u64> = Vec::new();
+    let mut minifier_changed: Vec<u64> = Vec::new();
     for ((seed, source), (_, packed)) in sources.iter().zip(&minified) {
         let expected: Run = run_node(source);
         assert!(
@@ -1246,7 +1290,7 @@ fn terser_minified_programs_keep_their_output_through_unminify() {
             "seed {seed}: the generated program fails under node"
         );
         if run_node(packed) != expected {
-            terser_changed.push(*seed);
+            minifier_changed.push(*seed);
             continue;
         }
         let recovered: Recovered = recover(packed);
@@ -1271,16 +1315,17 @@ fn terser_minified_programs_keep_their_output_through_unminify() {
         }
     }
     assert_eq!(
-        terser_changed, TERSER_CHANGES_OUTPUT,
-        "the seeds whose terser {TERSER_VERSION} output itself runs differently from the generated \
-         program must equal TERSER_CHANGES_OUTPUT exactly; those seeds cannot grade unminify"
+        minifier_changed, minifier.changes_output,
+        "the seeds whose {name} {version} output itself runs differently from the generated \
+         program must equal its changes_output list exactly; those seeds cannot grade unminify"
     );
     assert!(
-        rewritten >= TERSER_REWRITTEN_FLOOR,
-        "unminify rewrote only {rewritten} of {TERSER_SEEDS} terser-minified programs, so the lane \
-         would grade the identity transform"
+        rewritten >= minifier.rewritten_floor,
+        "unminify rewrote only {rewritten} of {MINIFIER_SEEDS} {name}-minified programs, so the \
+         lane would grade the identity transform"
     );
-    let pinned: std::collections::BTreeSet<u64> = TERSER_KNOWN_DIVERGENT.into_iter().collect();
+    let pinned: std::collections::BTreeSet<u64> =
+        minifier.known_divergent.iter().copied().collect();
     let found: std::collections::BTreeSet<u64> = divergent.keys().copied().collect();
     let regressed: Vec<u64> = found.difference(&pinned).copied().collect();
     let fixed: Vec<u64> = pinned.difference(&found).copied().collect();
@@ -1292,12 +1337,22 @@ fn terser_minified_programs_keep_their_output_through_unminify() {
         .collect();
     assert!(
         regressed.is_empty() && fixed.is_empty(),
-        "{} of {TERSER_SEEDS} terser-minified programs changed behaviour through unminify; the \
-         divergent set must equal TERSER_KNOWN_DIVERGENT exactly, which only ever shrinks. Newly \
-         divergent: {regressed:?}. Now recovered, remove from TERSER_KNOWN_DIVERGENT: {fixed:?}.\n{}",
+        "{} of {MINIFIER_SEEDS} {name}-minified programs changed behaviour through unminify; \
+         the divergent set must equal its known_divergent list exactly, which only ever shrinks. \
+         Newly divergent: {regressed:?}. Now recovered: {fixed:?}. Rewritten: {rewritten}.\n{}",
         divergent.len(),
         shown.join("\n\n")
     );
+}
+
+#[test]
+fn terser_minified_programs_keep_their_output_through_unminify() {
+    assert_minifier_lane(&TERSER);
+}
+
+#[test]
+fn esbuild_minified_programs_keep_their_output_through_unminify() {
+    assert_minifier_lane(&ESBUILD);
 }
 
 struct ChangingMutation {

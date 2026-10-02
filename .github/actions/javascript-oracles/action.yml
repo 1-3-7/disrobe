@@ -70,3 +70,18 @@ runs:
           exit 1
         fi
         echo "DISROBE_TERSER=$package" >> "$GITHUB_ENV"
+    - name: provision esbuild 0.28.2 for the minify-then-unminify differential
+      shell: bash
+      env:
+        ESBUILD_VERSION: "0.28.2"
+      run: |
+        set -euo pipefail
+        esbuild_root="$RUNNER_TEMP/disrobe-esbuild-${ESBUILD_VERSION}"
+        npm install --prefix "$esbuild_root" --ignore-scripts --no-audit --no-fund "esbuild@${ESBUILD_VERSION}"
+        package="$esbuild_root/node_modules/esbuild"
+        actual_version="$(node -e 'process.stdout.write(require(process.argv[1]).version)' "$package")"
+        if [ "$actual_version" != "$ESBUILD_VERSION" ]; then
+          echo "npm provisioned esbuild ${actual_version}, expected ${ESBUILD_VERSION}"
+          exit 1
+        fi
+        echo "DISROBE_ESBUILD=$package" >> "$GITHUB_ENV"
