@@ -75,6 +75,20 @@ kind = "lua-source"
 size_bytes = 294
 notes = "portable 5.1-5.5, found by the generated differential: a local first given a register-level declaration inside a repeat, numeric for or while body and read after the loop (the declaration stayed inside the loop body, so the later read was a global)"
 
+[[behaviour.fixtures]]
+path = "behaviour/luau_threading.lua"
+kind = "lua-source"
+size_bytes = 4335
+sha256 = "58177c36dbc1f46ad79a3f7582ae4cc22ad9a2213dcbf3b0a688dd1f3d6e2d61"
+notes = "portable 5.1-5.5 and Luau 0.725, found by the generated differential over Luau: constant-folded conditions that make the Luau compiler thread loop exits past a following break (an inner while and a numeric for exiting straight to the outer loop's exit), leave dead code after an always-taken break, and branch over an unconditional jump for `x or <constant>`; a value selection moved from a temporary into a local inside one branch and read in the sibling branch; a loop-body local redefined on one branch and read on the other; `t[k] or K` into a reused temporary; a fallback arm holding its own `or`; `(a or f(b)) and c`; a 40-element constructor flushed in batches of 16; an array constructor whose values start two registers above the table; a memoizing closure whose call carries a feedback slot (CALLFB); and three programs reduced from generated failures (an `or` whose first operand folds to false over globals, `x or <constant>` branching over an unconditional jump, and a function whose temporaries are first written inside a branch and read after it, which the Lua 5.1 elided-nil heuristic pinned as whole-function locals)"
+
+[[behaviour.fixtures]]
+path = "behaviour/branch_scope.lua"
+kind = "lua-source"
+size_bytes = 2029
+sha256 = "a63926b1ae6da1582e22dc8107efbf1f571750d53f4366e20694eaf70008cda0"
+notes = "portable 5.1-5.5 and Luau 0.725: a local reassigned from a selection inside one branch and read only in the sibling branch, a loop-body value redefined on one branch and read on the other with no read after the loop, `(a or f(b)) and c`, a selection whose fallback arm holds its own `b or 0` (once over a local, once over a global), and a call whose result goes to a local never read again inside a then-branch at the end of a function; every standard lifter recovered each of these as wrong output or an unstructured goto before"
+
 [megafile]
 description = "~1200-LOC fixture exercising 5.1/5.2/5.3/5.4 + LuaJIT feature surface; parses cleanly across all 5 runtimes"
 

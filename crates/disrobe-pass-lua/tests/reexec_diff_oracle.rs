@@ -426,6 +426,14 @@ const BEHAVIOUR_PROGRAMS_54: &[(&str, &str)] = &[
         "branches",
         include_str!("../../../corpus/lua/behaviour/branches.lua"),
     ),
+    (
+        "branch_scope",
+        include_str!("../../../corpus/lua/behaviour/branch_scope.lua"),
+    ),
+    (
+        "luau_threading",
+        include_str!("../../../corpus/lua/behaviour/luau_threading.lua"),
+    ),
 ];
 
 const BEHAVIOUR_PROGRAMS_PORTABLE: &[(&str, &str)] = &[
@@ -440,6 +448,14 @@ const BEHAVIOUR_PROGRAMS_PORTABLE: &[(&str, &str)] = &[
     (
         "branches",
         include_str!("../../../corpus/lua/behaviour/branches.lua"),
+    ),
+    (
+        "branch_scope",
+        include_str!("../../../corpus/lua/behaviour/branch_scope.lua"),
+    ),
+    (
+        "luau_threading",
+        include_str!("../../../corpus/lua/behaviour/luau_threading.lua"),
     ),
 ];
 

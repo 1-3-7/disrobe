@@ -87,7 +87,12 @@ impl Value {
                 }
                 if !taken.falls_into(otherwise.entry()) {
                     if !otherwise.falls_into(taken.entry()) {
-                        return None;
+                        return match otherwise.as_ref() {
+                            Self::And { first, rest, .. } if rest.entry() == taken.entry() => {
+                                Some(format!("((({cond}) or {first}) and {})", taken.render()?))
+                            }
+                            _ => None,
+                        };
                     }
                     let chosen: String = match otherwise.as_ref() {
                         Self::Or { first, rest, .. } if rest.entry() == taken.entry() => {
@@ -257,14 +262,35 @@ impl Region<'_> {
 
     fn segment_end(&self, pc: usize) -> usize {
         let mut end: usize = pc;
-        while end < self.join
-            && self
+        while end < self.join {
+            if self
                 .decoded(end)
                 .is_some_and(|d: Decoded| is_segment_op(&d, self.dialect))
-        {
-            end += 1;
+            {
+                end += 1;
+                continue;
+            }
+            match self.nested_scratch_selection(end) {
+                Some(inner_join) if end > pc => end = inner_join,
+                _ => break,
+            }
         }
         end
+    }
+
+    fn nested_scratch_selection(&self, pc: usize) -> Option<usize> {
+        let d: Decoded = self.decoded(pc)?;
+        if d.op != Op::Test || d.a < self.target {
+            return None;
+        }
+        let (inner, inner_join, back): (u32, usize, Option<usize>) =
+            region_bounds(self.p, pc, self.dialect)?;
+        let contained: bool = back.is_none()
+            && inner >= self.target
+            && inner_join > pc
+            && inner_join < self.join
+            && !region_has_external_entry(self.p, pc, inner_join - 1, self.dialect);
+        contained.then_some(inner_join)
     }
 
     fn segment_leaf(&mut self, pc: usize, depth: usize) -> Option<Value> {

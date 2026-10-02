@@ -1,10 +1,16 @@
+use crate::debug::dbg_line;
 use crate::decompile::budget::LiftBudget;
+use crate::decompile::lift::LiftedProto;
 use crate::decompile::luau_structure::{
     MAX_STRUCTURE_WORK, StructureResult, StructuredBlock, structure_blocks,
 };
+use crate::decompile::struct_lift::lift_structured_explicit_nils;
 use crate::decompile::{DecompiledChunk, Fidelity};
 use crate::error::Result;
-use crate::reader::common::{LuaChunk, LuaConstant, LuaProto};
+use crate::reader::common::{LuaChunk, LuaConstant, LuaDialect, LuaProto};
+use translate::translate;
+
+mod translate;
 
 const MAX_LIFT_DEPTH: usize = 200;
 const MAX_DIRECT_RENDER_NESTING: usize = 256;
@@ -132,6 +138,19 @@ pub(crate) fn decompile_with_budget(
     let main: &LuaProto = &chunk.main;
     let mut out: String = String::new();
     out.push_str("-- decompiled by disrobe (luau register lifter)\n");
+    if let Some(structured) = lift_through_standard_structurer(main, budget) {
+        budget.settle(())?;
+        out.push_str(&structured.source);
+        return Ok(DecompiledChunk {
+            source: out,
+            fidelity: if structured.warnings.is_empty() {
+                Fidelity::Lossless
+            } else {
+                Fidelity::Lossy
+            },
+            warnings: structured.warnings,
+        });
+    }
     let mut warnings: Vec<String> = Vec::new();
     let mut fully_structured: bool = true;
     let mut ctx: LuauLift<'_> = LuauLift::new(budget);
@@ -162,6 +181,41 @@ pub(crate) fn decompile_with_budget(
         source: out,
         fidelity,
         warnings,
+    })
+}
+
+fn lift_through_standard_structurer(
+    main: &LuaProto,
+    budget: &mut LiftBudget,
+) -> Option<LiftedProto> {
+    let translated: LuaProto = translate(main)?;
+    let lifted: LiftedProto =
+        lift_structured_explicit_nils(&translated, LuaDialect::Lua51, budget)?;
+    if !lifted.fully_structured {
+        dbg_line(|| {
+            format!(
+                "luau: the standard structurer left the function partly unstructured: {}",
+                lifted.warnings.join("; ")
+            )
+        });
+        return None;
+    }
+    let mut source: String = super::main_signature(&translated);
+    source.push('\n');
+    for line in lifted.source.lines() {
+        source.push_str(line);
+        source.push('\n');
+    }
+    source.push_str("end\n");
+    source.push_str(if translated.is_vararg != 0 {
+        "return _main(...)\n"
+    } else {
+        "return _main()\n"
+    });
+    Some(LiftedProto {
+        source,
+        warnings: lifted.warnings,
+        fully_structured: true,
     })
 }
 

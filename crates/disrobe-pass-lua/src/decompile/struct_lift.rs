@@ -251,6 +251,7 @@ impl LocalNames {
 struct StructuredLift<'b> {
     budget: &'b mut LiftBudget,
     children: std::collections::BTreeMap<(*const LuaProto, Vec<String>), Option<LiftedProto>>,
+    compiler_elides_nil_loads: bool,
 }
 
 #[must_use]
@@ -262,6 +263,21 @@ pub fn lift_structured(
     let mut ctx: StructuredLift<'_> = StructuredLift {
         budget,
         children: std::collections::BTreeMap::new(),
+        compiler_elides_nil_loads: true,
+    };
+    lift_structured_captured(p, dialect, 0, &[], &mut ctx)
+}
+
+#[must_use]
+pub(crate) fn lift_structured_explicit_nils(
+    p: &LuaProto,
+    dialect: LuaDialect,
+    budget: &mut LiftBudget,
+) -> Option<LiftedProto> {
+    let mut ctx: StructuredLift<'_> = StructuredLift {
+        budget,
+        children: std::collections::BTreeMap::new(),
+        compiler_elides_nil_loads: false,
     };
     lift_structured_captured(p, dialect, 0, &[], &mut ctx)
 }
@@ -314,7 +330,12 @@ fn lift_structured_captured(
             });
     }
     let live: LiveAcrossBranch = LiveAcrossBranch::compute(p, dialect);
-    for slot in slots_read_through_an_elided_nil(p, dialect, &live) {
+    let elided: Vec<u32> = if ctx.compiler_elides_nil_loads {
+        slots_read_through_an_elided_nil(p, dialect, &live)
+    } else {
+        Vec::new()
+    };
+    for slot in elided {
         if names.name_at(0, slot).is_some() {
             continue;
         }
@@ -522,6 +543,96 @@ impl LiveAcrossBranch {
             }
         }
         false
+    }
+
+    fn dominates_its_reads(&self, def_pc: usize, slot: u32) -> bool {
+        let n: usize = self.reads.len();
+        let mut reached: Vec<bool> = vec![false; n];
+        let mut stack: Vec<usize> = vec![def_pc + 1];
+        let mut budget: usize = READ_SEARCH_STATE_BUDGET;
+        let mut reads: Vec<usize> = Vec::new();
+        while let Some(pc) = stack.pop() {
+            let Some(left) = budget.checked_sub(1) else {
+                return false;
+            };
+            budget = left;
+            let Some(visited) = reached.get_mut(pc) else {
+                continue;
+            };
+            if *visited {
+                continue;
+            }
+            *visited = true;
+            if self.reads[pc].contains(&slot) {
+                reads.push(pc);
+            }
+            if pc == def_pc || self.writes[pc].contains(&slot) {
+                continue;
+            }
+            stack.extend(self.successors[pc].iter().copied());
+        }
+        let mut bypass: Vec<bool> = vec![false; n];
+        let mut stack: Vec<usize> = if def_pc == 0 { Vec::new() } else { vec![0] };
+        while let Some(pc) = stack.pop() {
+            let Some(left) = budget.checked_sub(1) else {
+                return false;
+            };
+            budget = left;
+            if pc == def_pc {
+                continue;
+            }
+            let Some(visited) = bypass.get_mut(pc) else {
+                continue;
+            };
+            if *visited {
+                continue;
+            }
+            *visited = true;
+            stack.extend(self.successors[pc].iter().copied());
+        }
+        reads
+            .iter()
+            .all(|pc: &usize| !bypass.get(*pc).copied().unwrap_or(false))
+    }
+
+    fn read_on_another_path(&self, def_pc: usize, slot: u32) -> bool {
+        let n: usize = self.reads.len();
+        let window_end: usize = (def_pc + 1..n)
+            .find(|pc: &usize| self.writes[*pc].contains(&slot))
+            .unwrap_or(n.saturating_sub(1));
+        let window: Vec<usize> = (def_pc + 1..=window_end)
+            .filter(|pc: &usize| {
+                self.reads
+                    .get(*pc)
+                    .is_some_and(|r: &Vec<u32>| r.contains(&slot))
+            })
+            .collect();
+        if window.is_empty() {
+            return false;
+        }
+        let mut seen: Vec<bool> = vec![false; n];
+        let mut stack: Vec<usize> = vec![def_pc + 1];
+        let mut budget: usize = READ_SEARCH_STATE_BUDGET;
+        while let Some(pc) = stack.pop() {
+            let Some(left) = budget.checked_sub(1) else {
+                return true;
+            };
+            budget = left;
+            let Some(visited) = seen.get_mut(pc) else {
+                continue;
+            };
+            if *visited {
+                continue;
+            }
+            *visited = true;
+            if self.writes[pc].contains(&slot) {
+                continue;
+            }
+            stack.extend(self.successors[pc].iter().copied());
+        }
+        window
+            .iter()
+            .any(|pc: &usize| !seen.get(*pc).copied().unwrap_or(false))
     }
 
     fn side_effect_before_first_read(&self, def_pc: usize, slot: u32) -> bool {
@@ -1640,15 +1751,19 @@ fn define(
     let overwrites_a_declared_local: bool = state.is_defined(slot)
         && (state.reg(slot) == state.temp(slot)
             || !state.bound.get(slot as usize).copied().unwrap_or(false));
-    let may_declare_here: bool =
-        overwrites_a_declared_local || !live.is_skipped_by_a_forward_jump(state.pc);
+    let may_declare_here = || {
+        overwrites_a_declared_local
+            || !live.is_skipped_by_a_forward_jump(state.pc)
+            || live.dominates_its_reads(state.pc, slot)
+    };
     let materialize: bool = !state.inline_values
         && (live.should_materialize(state.pc, slot)
-            || (may_declare_here && live.read_after_control_flow(state.pc, slot))
+            || (live.read_after_control_flow(state.pc, slot) && may_declare_here())
             || contains_ident(&value, &state.temp(slot))
             || (!is_duplicable_expression(&value)
-                && (live.reads_before_redefinition(state.pc, slot) > 1
-                    || live.side_effect_before_first_read(state.pc, slot))));
+                && (live.reads_before_redefinition(state.pc, slot) != 1
+                    || live.side_effect_before_first_read(state.pc, slot)))
+            || (overwrites_a_declared_local && live.read_on_another_path(state.pc, slot)));
     if materialize && !value.is_empty() {
         let tmp: String = state.temp(slot);
         if state.is_defined(slot) {
@@ -2141,6 +2256,10 @@ fn define_at_merge(
         assign_pinned(state, slot, &value);
         return;
     }
+    if state.inline_values {
+        state.set_reg(slot, value);
+        return;
+    }
     let tmp: String = state.temp(slot);
     if state.bound.get(slot as usize).copied().unwrap_or(false) && state.reg(slot) == tmp {
         state.push_raw(format!("{tmp} = {value}"));
@@ -2506,6 +2625,9 @@ fn clear_from(state: &mut StructState, start: u32) {
     while r < state.regs.len() {
         if !state.bound[r] {
             state.regs[r] = String::new();
+            if let Ok(slot) = u32::try_from(r) {
+                state.pinned.remove(&slot);
+            }
         }
         r += 1;
     }
@@ -2513,6 +2635,7 @@ fn clear_from(state: &mut StructState, start: u32) {
 
 #[inline]
 fn clear_scratch_above(state: &mut StructState, start: u32) {
+    state.pinned.retain(|slot: &u32| *slot < start);
     let mut r: usize = start as usize;
     while r < state.regs.len() {
         state.regs[r] = String::new();

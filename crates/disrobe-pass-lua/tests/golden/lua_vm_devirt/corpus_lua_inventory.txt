@@ -1,10 +1,12 @@
 baseline/hello.lua
 behaviour/branch_reassign.lua
+behaviour/branch_scope.lua
 behaviour/branches.lua
 behaviour/compare_select.lua
 behaviour/loop_locals.lua
 behaviour/loops.lua
 behaviour/lua55.lua
+behaviour/luau_threading.lua
 behaviour/objects.lua
 behaviour/testset_pending.lua
 behaviour/tour.lua
