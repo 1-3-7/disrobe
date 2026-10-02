@@ -17,7 +17,8 @@ const MAX_BLOCK_DEPTH: u32 = 3;
 const TOOL_TIMEOUT: Duration = Duration::from_mins(5);
 const TOOL_CAPTURE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_REPAIR_ROUNDS: usize = 16;
-const RUN_TIMEOUT: Duration = Duration::from_secs(30);
+const RUN_TIMEOUT: Duration = Duration::from_secs(60);
+const PROGRAM_MILLIS: u64 = 5_000;
 const SHOWN_FAILURES: usize = 6;
 const KNOWN_DIVERGENT: [u64; 0] = [];
 
@@ -361,16 +362,17 @@ fn gen_class(methods: &BTreeMap<u64, String>) -> String {
 }
 
 fn main_class() -> String {
-    let mut out: String =
-        String::from("public final class Main {\n    public static void main(String[] args) {\n");
+    let mut out: String = String::from(
+        "public final class Main {\n    public static void main(String[] args) throws InterruptedException {\n        int from = args.length > 0 ? Integer.parseInt(args[0]) : 0;\n        Runnable[] programs = {\n",
+    );
     for seed in 0..PROGRAMS {
-        writeln!(
-            out,
-            "        Sink.reset();\n        try {{ Gen.prog{seed}(); }} catch (Exception error) {{ Sink.emit(\"threw \" + error.getClass().getSimpleName()); }}\n        System.out.println(\"{seed}: \" + Sink.take());\n        System.out.flush();"
-        )
-        .expect("write to a String");
+        writeln!(out, "            Gen::prog{seed},").expect("write to a String");
     }
-    out.push_str("    }\n}\n");
+    write!(
+        out,
+        "        }};\n        for (int seed = from; seed < programs.length; seed++) {{\n            final Runnable program = programs[seed];\n            final String[] line = new String[1];\n            Thread worker = new Thread(() -> {{\n                Sink.reset();\n                try {{ program.run(); }} catch (Throwable error) {{ Sink.emit(\"threw \" + error.getClass().getSimpleName()); }}\n                line[0] = Sink.take();\n            }});\n            worker.setDaemon(true);\n            worker.start();\n            worker.join({PROGRAM_MILLIS});\n            if (worker.isAlive() || line[0] == null) {{\n                System.out.println(seed + \"! does not terminate within {PROGRAM_MILLIS} ms\");\n                System.out.flush();\n                Runtime.getRuntime().halt(3);\n            }}\n            System.out.println(seed + \": \" + line[0]);\n            System.out.flush();\n        }}\n    }}\n}}\n"
+    )
+    .expect("write to a String");
     out
 }
 
@@ -389,7 +391,7 @@ fn jdk() -> Jdk {
 struct Built {
     build: ToolOutput,
     lines: BTreeMap<u64, String>,
-    hung: Option<(u64, String)>,
+    hung: BTreeMap<u64, String>,
     classes: PathBuf,
 }
 
@@ -428,8 +430,9 @@ fn build_and_run(jdk: &Jdk, directory: &Path, gen_source: &str) -> Built {
         TOOL_TIMEOUT.as_secs()
     );
     let mut lines: BTreeMap<u64, String> = BTreeMap::new();
-    let mut hung: Option<(u64, String)> = None;
-    if build.success {
+    let mut hung: BTreeMap<u64, String> = BTreeMap::new();
+    let mut from: u64 = 0;
+    while build.success && from < PROGRAMS {
         let run: ToolOutput = tool_output(
             CommandSpec::new(jdk.java.clone(), RUN_TIMEOUT)
                 .capture_limits(TOOL_CAPTURE_BYTES, TOOL_CAPTURE_BYTES)
@@ -437,29 +440,36 @@ fn build_and_run(jdk: &Jdk, directory: &Path, gen_source: &str) -> Built {
                 .arg("-cp")
                 .arg(classes.clone())
                 .arg("Main")
+                .arg(from.to_string())
                 .current_dir(directory.to_path_buf()),
         )
         .unwrap_or_else(|error: ToolError| panic!("the Main program could not start: {error}"));
+        let mut stalled: Option<(u64, String)> = None;
         for line in run.stdout_text().lines() {
             if let Some((seed, rest)) = line.split_once(": ")
                 && let Ok(seed) = seed.trim().parse::<u64>()
             {
                 lines.insert(seed, rest.trim_end().to_owned());
+            } else if let Some((seed, rest)) = line.split_once("! ")
+                && let Ok(seed) = seed.trim().parse::<u64>()
+            {
+                stalled = Some((seed, rest.trim_end().to_owned()));
             }
         }
-        if !run.success {
-            let reason: String = if run.timed_out {
-                format!(
-                    "does not terminate within {} seconds",
-                    RUN_TIMEOUT.as_secs()
-                )
-            } else {
-                format!("crashes the process: {}", run.stderr_text().trim())
-            };
-            hung = (0..PROGRAMS)
-                .find(|seed: &u64| !lines.contains_key(seed))
-                .map(|seed: u64| (seed, reason));
-        }
+        let next: Option<u64> = (from..PROGRAMS).find(|seed: &u64| !lines.contains_key(seed));
+        let Some(missing) = next else {
+            break;
+        };
+        let reason: String = match stalled {
+            Some((seed, why)) if seed == missing => why,
+            _ if run.timed_out => format!(
+                "does not terminate within {} seconds",
+                RUN_TIMEOUT.as_secs()
+            ),
+            _ => format!("crashes the process: {}", run.stderr_text().trim()),
+        };
+        hung.insert(missing, reason);
+        from = missing + 1;
     }
     Built {
         build,
@@ -558,7 +568,11 @@ fn generated_programs_reexecute_identically_on_the_jvm() {
         reference.build.stdout_text(),
         reference.build.stderr_text()
     );
-    assert_eq!(reference.hung, None, "every generated program terminates");
+    assert!(
+        reference.hung.is_empty(),
+        "every generated program terminates: {:?}",
+        reference.hung
+    );
     assert_eq!(
         reference.lines.len() as u64,
         PROGRAMS,
@@ -597,15 +611,14 @@ fn generated_programs_reexecute_identically_on_the_jvm() {
         let scratch: ScratchDir =
             ScratchDir::create("disrobe_jvm_generated_recovered").expect("create scratch");
         let built: Built = build_and_run(&jdk, scratch.path(), &source);
-        if let Some((seed, reason)) = built.hung {
+        for (seed, reason) in &built.hung {
             failures.insert(
-                seed,
+                *seed,
                 format!(
                     "the recovered body {reason}:\n{}",
-                    excerpt(&recovered[&seed], 3000)
+                    excerpt(&recovered[seed], 3000)
                 ),
             );
-            continue;
         }
         if built.build.success {
             outputs = built.lines;
@@ -742,4 +755,26 @@ fn a_recovery_that_changes_one_operator_is_caught() {
     assert!(original.build.success && changed.build.success);
     assert_ne!(original.lines.get(&0), changed.lines.get(&0));
     assert_eq!(original.lines.get(&1), changed.lines.get(&1));
+}
+
+#[test]
+fn a_program_that_never_returns_is_isolated_and_the_rest_still_run() {
+    let jdk: Jdk = jdk();
+    let method: String =
+        "    public static void prog0()\n    {\n        Sink.emit(1);\n    }\n".to_owned();
+    let mut programs: BTreeMap<u64, String> = BTreeMap::new();
+    for seed in 0..PROGRAMS {
+        programs.insert(seed, method.replace("prog0", &format!("prog{seed}")));
+    }
+    programs.insert(
+        1,
+        "    public static void prog1()\n    {\n        int spin = 0;\n        while (spin >= 0) { spin = (spin + 1) % 7; }\n    }\n".to_owned(),
+    );
+    let scratch: ScratchDir =
+        ScratchDir::create("disrobe_jvm_generated_hang").expect("create scratch");
+    let built: Built = build_and_run(&jdk, scratch.path(), &gen_class(&programs));
+    assert!(built.build.success);
+    assert_eq!(built.hung.keys().copied().collect::<Vec<u64>>(), vec![1]);
+    assert_eq!(built.lines.len() as u64, PROGRAMS - 1);
+    assert_eq!(built.lines.get(&2).map(String::as_str), Some("1"));
 }
