@@ -944,6 +944,7 @@ corpus/php/behaviour/foreach_single_pass.php	php.peel	php-source	source	high	-	-
 corpus/php/behaviour/generators.php	php.peel	php-source	source	high	-	-	-
 corpus/php/behaviour/juggling.php	php.peel	php-source	source	high	-	-	-
 corpus/php/behaviour/loop_in_try.php	php.peel	php-source	source	high	-	-	-
+corpus/php/behaviour/loop_threaded_exit.php	php.peel	php-source	source	high	-	-	-
 corpus/php/behaviour/loops.php	php.peel	php-source	source	high	-	-	-
 corpus/php/behaviour/nested_try_tail.php	php.peel	php-source	source	high	-	-	-
 corpus/php/behaviour/operators.php	php.peel	php-source	source	high	-	-	-
@@ -951,10 +952,14 @@ corpus/php/behaviour/references.php	php.peel	php-source	source	high	-	-	-
 corpus/php/behaviour/scopes.php	php.peel	php-source	source	high	-	-	-
 corpus/php/behaviour/statics.php	php.peel	php-source	source	high	-	-	-
 corpus/php/behaviour/strings.php	php.peel	php-source	source	high	-	-	-
+corpus/php/behaviour/switch_empty_arm.php	php.peel	php-source	source	high	-	-	-
+corpus/php/behaviour/switch_finally_arms.php	php.peel	php-source	source	high	-	-	-
 corpus/php/behaviour/switch_finally_break.php	php.peel	php-source	source	high	-	-	-
+corpus/php/behaviour/switch_loop_tail.php	php.peel	php-source	source	high	-	-	-
 corpus/php/behaviour/switch_match.php	php.peel	php-source	source	high	-	-	-
 corpus/php/behaviour/switch_try.php	php.peel	php-source	source	high	-	-	-
 corpus/php/behaviour/switch_unfreed_subject.php	php.peel	php-source	source	high	-	-	-
+corpus/php/behaviour/try_branch_threaded.php	php.peel	php-source	source	high	-	-	-
 corpus/php/behaviour/while_compound_exit.php	php.peel	php-source	source	high	-	-	-
 corpus/php/better-php-obfuscator/edge_cases.obf.php	php.peel	php-source	obfuscator-wrapper	high	-	-	-
 corpus/php/better-php-obfuscator/hello.obf.php	php.peel	php-source	source	high	-	-	-
