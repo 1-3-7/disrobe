@@ -3382,7 +3382,8 @@ fn walk_insn(
         .is_some_and(PendingResult::is_null_check)
         && !matches!(insn.op, 0x0A..=0x0C);
     let predicted: bool = predicts_statement(state, walk, insn);
-    if predicted {
+    let divides: bool = may_divide_by_zero(insn);
+    if predicted || divides {
         let request: FlushRequest<'_> = FlushRequest {
             assign: Vec::new(),
             external: None,
@@ -3422,6 +3423,32 @@ fn walk_insn(
     let pad: String = indent_string(level);
     for statement in statements {
         let _: std::fmt::Result = writeln!(out, "{pad}{statement};");
+    }
+    if divides
+        && let Some(&dest) = insn.regs.first()
+        && walk.file.is_pending(dest)
+    {
+        if after.contains(dest) {
+            let request: FlushRequest<'_> = FlushRequest {
+                assign: vec![dest],
+                external: None,
+                effect: false,
+                live: &after,
+                exclude: &[],
+            };
+            flush(state, walk, &request, out, level);
+        } else {
+            let value: String = walk.file.current(state.ctx, dest).render();
+            let ty: &str = if matches!(insn.op, 0x9E | 0x9F | 0xBE | 0xBF) {
+                "long"
+            } else {
+                "int"
+            };
+            let temporary: String = format!("tmp{}", state.temporaries);
+            state.temporaries += 1;
+            let _: std::fmt::Result = writeln!(out, "{pad}{ty} {temporary} = {value};");
+            walk.file.seed(dest, Expr::Local(temporary));
+        }
     }
     anchor_effects(state, walk, index, &defs, &after, out, level);
     order_pending_effects(state, walk, index, &defs, &after, out, level);
@@ -3510,6 +3537,14 @@ fn order_pending_effects(
             exclude: &[],
         };
         flush(state, walk, &request, out, level);
+    }
+}
+
+fn may_divide_by_zero(insn: &DalvikInsn) -> bool {
+    match insn.op {
+        0x93 | 0x94 | 0x9E | 0x9F | 0xB3 | 0xB4 | 0xBE | 0xBF => true,
+        0xD3 | 0xD4 | 0xDB | 0xDC => insn.literal == Some(0),
+        _ => false,
     }
 }
 

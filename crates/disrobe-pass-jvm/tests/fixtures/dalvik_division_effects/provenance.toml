@@ -1,0 +1,30 @@
+schema = "disrobe.jvm.dalvik-division-effects-fixture/v1"
+source = "Divisions.java"
+source_sha256 = "0568d9eff744805de50854ca09b35c722f791155053b138b267d2fd7b419b020"
+
+[javac]
+vendor = "Eclipse Temurin"
+version = "25.0.4+7-LTS"
+command = "javac -g -Xlint:-options --release 8 -d classes Divisions.java"
+
+[d8]
+version = "9.1.31"
+url = "https://dl.google.com/dl/android/maven2/com/android/tools/r8/9.1.31/r8-9.1.31.jar"
+sha256 = "3b4de3053885da105e39c15212261d22653d6d1b5eb92323dd04ae913cc8286f"
+
+[shapes]
+orderedBeforeAppend = "an int division whose quotient is stored and read later, followed by a call that must not run when the division throws"
+unusedQuotientInTry = "an int division whose quotient D8 leaves dead, so only its ArithmeticException is observable"
+unusedRemainderInTry = "the same dead shape for an int remainder"
+unusedLongQuotientInTry = "the same dead shape for a long division"
+nestedUnusedQuotient = "a dead int division inside a try nested in a try whose own division orders a later call"
+
+[[artifact]]
+path = "Divisions-release-min21.dex"
+format = "DEX 035"
+min_api = 21
+mode = "release"
+tool = "D8"
+command = "java -cp r8-9.1.31.jar com.android.tools.r8.D8 --release --min-api 21 --output dex classes/Divisions.class"
+sha256 = "6c4343c262151e1129c239aaa189f4e877540e6cd497e9bb40dd16c3d853f6be"
+bytes = 1820
