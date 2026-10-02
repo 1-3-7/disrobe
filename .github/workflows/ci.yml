@@ -558,15 +558,22 @@ jobs:
           fi
           echo "xlmmacrodeobfuscator $xlm_version"
           echo "DISROBE_REQUIRE_XLM_REFERENCE=1" >> "$GITHUB_ENV"
-      - name: provision 7-Zip 26.02 on Linux, whose distro 7z 23.01 crashes on RAR3 filter archives
-        if: runner.os == 'Linux'
+      - name: provision 7-Zip 26.02 on Linux and macOS, whose distro 7z 23.01 crashes on RAR3 filter archives and whose Homebrew p7zip 17.05 cannot open RAR
+        if: runner.os == 'Linux' || runner.os == 'macOS'
         shell: bash
         run: |
           set -euo pipefail
           root="$RUNNER_TEMP/7zip-26.02"
           mkdir -p "$root"
-          curl -fsSL --retry 3 -o "$root/7z.tar.xz" https://github.com/ip7z/7zip/releases/download/26.02/7z2602-linux-x64.tar.xz
-          echo "41aaba7b1235304ab5aa0624530c67ae829496cd29e875925271efdccc28c03e  $root/7z.tar.xz" | sha256sum -c -
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            archive=7z2602-mac.tar.xz
+            digest=1cf6760579502f87e591ff5c73a005ec50b3e4d6f507e8b038382d563c3175b9
+          else
+            archive=7z2602-linux-x64.tar.xz
+            digest=41aaba7b1235304ab5aa0624530c67ae829496cd29e875925271efdccc28c03e
+          fi
+          curl -fsSL --retry 3 -o "$root/7z.tar.xz" "https://github.com/ip7z/7zip/releases/download/26.02/$archive"
+          echo "$digest  $root/7z.tar.xz" | shasum -a 256 -c -
           tar -xJf "$root/7z.tar.xz" -C "$root" 7zz
           ln -s "$root/7zz" "$root/7z"
           echo "$root" >> "$GITHUB_PATH"
