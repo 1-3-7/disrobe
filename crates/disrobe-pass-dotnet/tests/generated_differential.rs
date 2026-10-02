@@ -12,7 +12,10 @@ use disrobe_pass_dotnet::decompile::{DecompiledAssembly, decompile_assembly};
 use disrobe_pass_dotnet::structurize::StructuredMethod;
 use disrobe_testkit::{CommandSpec, ToolError, ToolOutput, tool_output};
 
-const PROGRAMS: u64 = 48;
+const PROGRAMS: u64 = 300;
+const WIDE_SWEEP_SEEDS: [u64; 11] = [
+    806, 1028, 1138, 1179, 2306, 3676, 4618, 5384, 5608, 5696, 10548,
+];
 const GEN_TYPE: &str = "GenDiff.Gen";
 const VARIABLES: [&str; 5] = ["a", "b", "c", "d", "e"];
 const MAX_BLOCK_DEPTH: u32 = 3;
@@ -366,8 +369,12 @@ impl Generator {
     }
 }
 
+fn seeds() -> impl Iterator<Item = u64> {
+    (0..PROGRAMS).chain(WIDE_SWEEP_SEEDS)
+}
+
 fn generated_methods() -> BTreeMap<u64, String> {
-    (0..PROGRAMS)
+    seeds()
         .map(|seed: u64| (seed, Generator::new(seed).method(seed)))
         .collect()
 }
@@ -388,7 +395,7 @@ fn program_class() -> String {
     let mut out: String = String::from(
         "using System;\n\nnamespace GenDiff\n{\n    public static class Program\n    {\n        public static void Main()\n        {\n",
     );
-    for seed in 0..PROGRAMS {
+    for seed in seeds() {
         writeln!(
             out,
             "            Sink.Reset();\n            try {{ Gen.Prog{seed}(); }} catch (Exception error) {{ Sink.Emit(\"threw \" + error.GetType().Name); }}\n            Console.WriteLine(\"{seed}: \" + Sink.Take());"
@@ -477,7 +484,7 @@ fn build_and_run(directory: &Path, gen_source: &str) -> Built {
             } else {
                 format!("crashes the process: {}", run.stderr_text().trim())
             };
-            hung = (0..PROGRAMS)
+            hung = seeds()
                 .find(|seed: &u64| !lines.contains_key(seed))
                 .map(|seed: u64| (seed, reason));
         }
@@ -585,8 +592,8 @@ fn generated_programs_reexecute_identically_on_net9() {
     );
     assert_eq!(reference.hung, None, "every generated program terminates");
     assert_eq!(
-        reference.lines.len() as u64,
-        PROGRAMS,
+        reference.lines.len(),
+        original.len(),
         "the reference run prints one line per program"
     );
     let image: Vec<u8> = std::fs::read(&reference.assembly).expect("read the built assembly");
@@ -594,15 +601,16 @@ fn generated_programs_reexecute_identically_on_net9() {
     let recovered: BTreeMap<u64, String> = recovered_methods(&decompiled);
 
     let mut failures: BTreeMap<u64, String> = BTreeMap::new();
-    for seed in 0..PROGRAMS {
+    for &seed in original.keys() {
         if !recovered.contains_key(&seed) {
             failures.insert(seed, "the decompiler emitted no Prog body".to_owned());
         }
     }
     let mut outputs: BTreeMap<u64, String> = BTreeMap::new();
     for _ in 0..MAX_REPAIR_ROUNDS {
-        let candidate: BTreeMap<u64, String> = (0..PROGRAMS)
-            .map(|seed: u64| {
+        let candidate: BTreeMap<u64, String> = original
+            .keys()
+            .map(|&seed: &u64| {
                 let body: &String = if failures.contains_key(&seed) {
                     &original[&seed]
                 } else {
@@ -649,7 +657,7 @@ fn generated_programs_reexecute_identically_on_net9() {
         !outputs.is_empty(),
         "no recovered build compiled within {MAX_REPAIR_ROUNDS} rounds"
     );
-    for seed in 0..PROGRAMS {
+    for &seed in original.keys() {
         if failures.contains_key(&seed) {
             continue;
         }
@@ -698,10 +706,11 @@ fn generated_programs_reexecute_identically_on_net9() {
         .collect();
     assert!(
         regressed.is_empty() && fixed.is_empty(),
-        "{} of {PROGRAMS} generated C# programs did not recover to the same behaviour; the \
+        "{} of {} generated C# programs did not recover to the same behaviour; the \
          divergent set must equal KNOWN_DIVERGENT exactly, which only ever shrinks. Newly \
          divergent: {regressed:?}. Now recovered, remove from KNOWN_DIVERGENT: {fixed:?}.\n{}\n{}",
         failures.len(),
+        original.len(),
         summary.join("\n"),
         shown.join("\n=====\n")
     );
@@ -713,7 +722,7 @@ fn the_csharp_generator_is_deterministic_and_varied() {
     assert_eq!(first, Generator::new(7).method(7));
     let methods: BTreeMap<u64, String> = generated_methods();
     let distinct: BTreeSet<&String> = methods.values().collect();
-    assert_eq!(distinct.len() as u64, PROGRAMS);
+    assert_eq!(distinct.len(), methods.len());
     let all: String = methods.values().cloned().collect();
     for shape in [
         "while (",
@@ -741,7 +750,7 @@ fn a_recovery_that_changes_one_operator_is_caught() {
     let method: String = "        public static void Prog0()\n        {\n            List<int> t = new List<int>();\n            int a = 3;\n            int b = 4;\n            Sink.Emit(a + b);\n            Sink.Emit(t);\n        }\n".to_owned();
     let mutated: String = method.replacen("a + b", "a - b", 1);
     let mut programs: BTreeMap<u64, String> = BTreeMap::new();
-    for seed in 0..PROGRAMS {
+    for seed in seeds() {
         let text: String = method.replace("Prog0", &format!("Prog{seed}"));
         programs.insert(seed, text);
     }
