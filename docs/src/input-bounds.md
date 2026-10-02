@@ -15,9 +15,9 @@ The exceeded column states what happens when input goes past the bound. It comes
 
 The scan does not resolve types or trait dispatch, so an outcome names the construct it found rather than proving the behaviour.
 
-2186 bounds (count 215, other 1025, output 65, recursion 220, size 479, work 182).
+2190 bounds (count 216, other 1027, output 65, recursion 221, size 479, work 182).
 
-Exceeded: error 884, recorded 185, panic 0, delegated 49, silent 1010, unclassified 17, allocation 33, unused 8.
+Exceeded: error 884, recorded 185, panic 0, delegated 49, silent 1014, unclassified 17, allocation 33, unused 8.
 
 | Crate | Constant | Kind | Exceeded | Type | Value | File |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -532,12 +532,16 @@ Exceeded: error 884, recorded 185, panic 0, delegated 49, silent 1010, unclassif
 | `disrobe-pass-as3` | `MAX_SPRITE_NESTING` | recursion | delegated: passed to `Self::accumulate_counts` | `usize` | `256` | `crates/disrobe-pass-as3/src/swf.rs` |
 | `disrobe-pass-as3` | `MAX_SWF_VERSION` | other | error: `Error::SwfUnsupportedVersion` (DR-AS3-0004) | `u8` | `40` | `crates/disrobe-pass-as3/src/swf.rs` |
 | `disrobe-pass-beam` | `MAX_EXPR_NODES` | count | recorded: flag `degraded` | `usize` | `1024` | `crates/disrobe-pass-beam/src/body_lift/expr.rs` |
+| `disrobe-pass-beam` | `MAX_JOIN_INSTRUCTIONS` | other | silent: `return` in `build` | `usize` | `200_000` | `crates/disrobe-pass-beam/src/body_lift/join.rs` |
+| `disrobe-pass-beam` | `MAX_JOIN_PASSES` | other | silent: `for` range in `post_dominators` | `u32` | `64` | `crates/disrobe-pass-beam/src/body_lift/join.rs` |
+| `disrobe-pass-beam` | `MAX_INTEGER_PROOF_DEPTH` | recursion | silent: `return` in `yields_integer` | `u32` | `32` | `crates/disrobe-pass-beam/src/body_lift/mod.rs` |
 | `disrobe-pass-beam` | `MAX_LABEL_VISITS` | other | silent: `return` in `enter_label` | `u32` | `32` | `crates/disrobe-pass-beam/src/body_lift/mod.rs` |
 | `disrobe-pass-beam` | `MAX_WALK_CALLS` | other | recorded: flag `degraded` | `u32` | `20_000` | `crates/disrobe-pass-beam/src/body_lift/mod.rs` |
 | `disrobe-pass-beam` | `MAX_ARMS` | other | silent: `return` in `collect`; `return` in `descend`; `return` in `split_receive_arms` | `usize` | `32` | `crates/disrobe-pass-beam/src/body_lift/receive_clauses.rs` |
 | `disrobe-pass-beam` | `MAX_CONJUNCTS` | other | silent: `return` in `split_receive_arms` | `usize` | `24` | `crates/disrobe-pass-beam/src/body_lift/receive_clauses.rs` |
 | `disrobe-pass-beam` | `MAX_TERM_DEPTH` | recursion | silent: `return` in `cannot_raise`; `return` in `is_guard_safe`; `return` in `is_literal`; 1 more | `u32` | `16` | `crates/disrobe-pass-beam/src/body_lift/receive_clauses.rs` |
 | `disrobe-pass-beam` | `MAX_TREE_DEPTH` | recursion | silent: `return` in `collect` | `u32` | `24` | `crates/disrobe-pass-beam/src/body_lift/receive_clauses.rs` |
+| `disrobe-pass-beam` | `MAX_TYPE_ENTRIES` | count | silent: `return` in `decode_table` | `u32` | `1 << 20` | `crates/disrobe-pass-beam/src/body_lift/types.rs` |
 | `disrobe-pass-beam` | `MAX_FUN_ARITY` | other | error: `CoreError::PassFailure` (DR-CORE-0003); `Error::BadAtomIndex` (DR-BEAM-0009); `Error::EzUnsafePath` (DR-BEAM-0022); 3 more | `u32` | `1024` | `crates/disrobe-pass-beam/src/chunks.rs` |
 | `disrobe-pass-beam` | `MAX_DISASM_DEPTH` | recursion | error: `Error::DepthExceeded` (DR-BEAM-0023) | `usize` | `500` | `crates/disrobe-pass-beam/src/disasm.rs` |
 | `disrobe-pass-beam` | `MAX_SCAN_DEPTH` | recursion | silent: `return` in `enforced_keys_in`; `return` in `find_enforced_keys`; `return` in `find_struct_list`; 1 more | `u32` | `256` | `crates/disrobe-pass-beam/src/elixir.rs` |
@@ -2210,7 +2214,7 @@ Exceeded: error 884, recorded 185, panic 0, delegated 49, silent 1010, unclassif
 
 ## Silent stops
 
-1010 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
+1014 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
 
 | Crate | Constant | Use | File |
 | --- | --- | --- | --- |
@@ -2392,11 +2396,15 @@ Exceeded: error 884, recorded 185, panic 0, delegated 49, silent 1010, unclassif
 | `disrobe-pass-as3` | `MAX_BYTELOADER_LINE_BYTES` | slice in `skip_line` | `crates/disrobe-pass-as3/src/other_langs.rs` |
 | `disrobe-pass-as3` | `MAX_RUNTIME_SYMBOL_SCAN_BYTES` | slice in `detect_with_symbol_scan_limit` | `crates/disrobe-pass-as3/src/other_langs.rs` |
 | `disrobe-pass-as3` | `MAX_SHEBANG_LINE_BYTES` | slice in `skip_line` | `crates/disrobe-pass-as3/src/other_langs.rs` |
+| `disrobe-pass-beam` | `MAX_JOIN_INSTRUCTIONS` | `return` in `build` | `crates/disrobe-pass-beam/src/body_lift/join.rs` |
+| `disrobe-pass-beam` | `MAX_JOIN_PASSES` | `for` range in `post_dominators` | `crates/disrobe-pass-beam/src/body_lift/join.rs` |
+| `disrobe-pass-beam` | `MAX_INTEGER_PROOF_DEPTH` | `return` in `yields_integer` | `crates/disrobe-pass-beam/src/body_lift/mod.rs` |
 | `disrobe-pass-beam` | `MAX_LABEL_VISITS` | `return` in `enter_label` | `crates/disrobe-pass-beam/src/body_lift/mod.rs` |
 | `disrobe-pass-beam` | `MAX_ARMS` | `return` in `collect`; `return` in `descend`; `return` in `split_receive_arms` | `crates/disrobe-pass-beam/src/body_lift/receive_clauses.rs` |
 | `disrobe-pass-beam` | `MAX_CONJUNCTS` | `return` in `split_receive_arms` | `crates/disrobe-pass-beam/src/body_lift/receive_clauses.rs` |
 | `disrobe-pass-beam` | `MAX_TERM_DEPTH` | `return` in `cannot_raise`; `return` in `is_guard_safe`; `return` in `is_literal`; 1 more | `crates/disrobe-pass-beam/src/body_lift/receive_clauses.rs` |
 | `disrobe-pass-beam` | `MAX_TREE_DEPTH` | `return` in `collect` | `crates/disrobe-pass-beam/src/body_lift/receive_clauses.rs` |
+| `disrobe-pass-beam` | `MAX_TYPE_ENTRIES` | `return` in `decode_table` | `crates/disrobe-pass-beam/src/body_lift/types.rs` |
 | `disrobe-pass-beam` | `MAX_SCAN_DEPTH` | `return` in `enforced_keys_in`; `return` in `find_enforced_keys`; `return` in `find_struct_list`; 1 more | `crates/disrobe-pass-beam/src/elixir.rs` |
 | `disrobe-pass-beam` | `MAX_RENDER_DEPTH` | fallback value in `enter` | `crates/disrobe-pass-beam/src/elixir_quoted.rs` |
 | `disrobe-pass-beam` | `MAX_RENDER_DEPTH` | fallback value in `enter` | `crates/disrobe-pass-beam/src/erlang_abstract.rs` |

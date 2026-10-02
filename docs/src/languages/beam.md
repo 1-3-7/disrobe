@@ -60,7 +60,7 @@ beam disasm: OK
 
 When a `Dbgi` chunk is present the original forms are recovered directly and labeled `AbstractCode` (Erlang) or `ElixirDbgiForm` (Elixir). Each lift records where its source came from in `recovered_from`, so a caller can tell a recovered original from a lift.
 
-For stripped BEAM, <!-- m:beam_recompile_frac -->20 / 20<!-- /m --> committed corpus entries recover to Core Erlang source that recompiles under Erlang/OTP 27.3.4, preserves the original export set, and returns the same result from the entry's committed `test/0` battery. Each corpus entry is an Erlang module compiled from committed source; the gate removes both `Dbgi` and `Docs` before recovery so neither source path can participate.
+For stripped BEAM, <!-- m:beam_recompile_frac -->21 / 21<!-- /m --> committed corpus entries recover to Core Erlang source that recompiles under Erlang/OTP 27.3.4, preserves the original export set, and returns the same result from the entry's committed `test/0` battery. Each corpus entry is an Erlang module compiled from committed source; the gate removes both `Dbgi` and `Docs` before recovery so neither source path can participate.
 
 The measurement covers each module's committed `test/0` cases. `erlc` compiles the original and recovered source independently; the harness runs both with `erl` and compares exit status and stdout. A control replaces a recovered `test/0` with one that raises, while preserving compilation and exports, and checks that the runtime comparison rejects it.
 
