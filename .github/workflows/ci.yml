@@ -344,6 +344,15 @@ jobs:
           unzip -q "$root/kotlin-compiler.zip" -d "$root"
           "$root/kotlinc/bin/kotlinc" -version
           echo "$root/kotlinc/bin" >> "$GITHUB_PATH"
+      - name: provision the pinned R8/D8 9.1.31 jar for the DEX generated differential
+        if: matrix.shard == 'one'
+        shell: bash
+        run: |
+          set -euo pipefail
+          jar="$RUNNER_TEMP/r8-9.1.31.jar"
+          curl -fsSL --retry 3 -o "$jar" https://dl.google.com/dl/android/maven2/com/android/tools/r8/9.1.31/r8-9.1.31.jar
+          echo "3b4de3053885da105e39c15212261d22653d6d1b5eb92323dd04ae913cc8286f  $jar" | sha256sum -c -
+          echo "DISROBE_R8_JAR=$jar" >> "$GITHUB_ENV"
       - name: provision APK reference tools
         if: matrix.shard == 'two'
         shell: pwsh
