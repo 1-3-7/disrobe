@@ -301,7 +301,7 @@ wait-timeout = "0.2.1"
 walkdir = "2.5.0"
 walrus = "0.24.5"
 wasmparser = "0.250.0"
-wasmtime = "48.0.3"
+wasmtime = "48.0.5"
 windows-sys = "0.61.2"
 yaxpeax-arch = "0.3.2"
 yaxpeax-arch-avr = { package = "yaxpeax-arch", version = "0.2.8" }
