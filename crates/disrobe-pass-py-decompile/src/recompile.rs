@@ -372,6 +372,42 @@ mod tests {
 
     #[test]
     fn recompiles_an_ordinary_source_in_an_isolated_scratch_directory() {
+        let Some(marker): Option<std::ffi::OsString> =
+            std::env::var_os("DISROBE_ROUNDTRIP_IMPORT_MARKER")
+        else {
+            let workdir: ScratchDir = ScratchDir::create("py-decompile-real-caller-cwd")
+                .expect("create hostile caller working directory");
+            let marker: PathBuf = workdir.path().join("imported.marker");
+            std::fs::write(
+                workdir.path().join("py_compile.py"),
+                format!(
+                    "open({}, 'w').write('imported')\n",
+                    py_path_literal(&marker)
+                ),
+            )
+            .expect("plant authored import marker");
+            let child: CapturedOutput = capture_command(
+                CommandSpec::new(std::env::current_exe().expect("current test executable"), Duration::from_secs(30))
+                    .args(["--exact", "recompile::tests::recompiles_an_ordinary_source_in_an_isolated_scratch_directory", "--nocapture"])
+                    .current_dir(workdir.path().to_path_buf())
+                    .env("DISROBE_ROUNDTRIP_IMPORT_MARKER", marker.clone())
+                    .capture_limits(MAX_PROBE_CAPTURE, MAX_PROBE_CAPTURE)
+                    .reap_descendants_on_exit(),
+            )
+            .expect("launch bounded roundtrip caller")
+            .expect("roundtrip caller finished before its deadline");
+            assert_eq!(
+                child.exit_code,
+                Some(0),
+                "roundtrip caller failed: {}",
+                String::from_utf8_lossy(&child.stderr)
+            );
+            assert!(
+                !marker.exists(),
+                "roundtrip caller imported the planted module"
+            );
+            return;
+        };
         let (interpreter, version): (PathBuf, MarshalVersion) = isolated_interpreter();
         let recompiled: CodeObject =
             recompile_via_interpreter(&interpreter, version, "answer = 42\n")
@@ -389,6 +425,10 @@ mod tests {
                 .iter()
                 .any(|object: &Object| matches!(object, Object::Int(42))),
             "ordinary source lost the authored constant"
+        );
+        assert!(
+            !PathBuf::from(marker).exists(),
+            "actual roundtrip imported the planted module"
         );
     }
 
