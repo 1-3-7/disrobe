@@ -607,8 +607,7 @@ fn deep_compiler_scope_reports_the_reverse_depth_limit() {
         baseline
             .diagnostics
             .get("reverse_depth_limited")
-            .map(String::as_str)
-            .unwrap_or("false"),
+            .map_or("false", String::as_str),
         "false",
         "the unmodified real-tool fixture must not exhaust the nested-code budget"
     );
