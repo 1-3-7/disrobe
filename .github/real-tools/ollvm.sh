@@ -32,18 +32,42 @@ import sys
 from pathlib import Path
 
 source_root: Path = Path(sys.argv[1])
-reference: str = (source_root / "llvm/lib/Transforms/Scalar/Reg2Mem.cpp").read_text()
+reference: str = (source_root / "llvm/lib/Transforms/Scalar/Reg2Mem.cpp").read_text(encoding="utf-8")
 utils_path: Path = source_root / "llvm/lib/Passes/Obfuscation/Utils.cpp"
-utils: str = utils_path.read_text()
+utils: str = utils_path.read_text(encoding="utf-8")
 helper_start: int = reference.index("static bool valueEscapes(const Instruction &Inst) {")
 helper_end: int = reference.index("\n}\n", helper_start) + 3
 license_header: str = reference[:reference.index('#include')]
 anchor: str = "void llvm::fixStack(Function &F) {"
 if utils.count(anchor) != 1 or "static bool valueEscapes(" in utils:
     raise SystemExit("the pinned OLLVM fixStack source changed; review the compatibility patch")
-utils_path.write_text(utils.replace(anchor, license_header + reference[helper_start:helper_end] + "\n" + anchor))
+utils_path.write_text(
+    utils.replace(anchor, license_header + reference[helper_start:helper_end] + "\n" + anchor),
+    encoding="utf-8",
+)
+
+ip_context_path: Path = source_root / "llvm/lib/Passes/Obfuscation/IPObfuscationContext.cpp"
+ip_context: str = ip_context_path.read_text(encoding="utf-8")
+private_splice: str = "NF->getBasicBlockList().splice(NF->begin(), F->getBasicBlockList());"
+public_splice: str = "NF->splice(NF->begin(), F);"
+if ip_context.count(private_splice) != 1 or public_splice in ip_context:
+    raise SystemExit("the pinned OLLVM IPObfuscationContext source changed; review the compatibility patch")
+ip_context_path.write_text(ip_context.replace(private_splice, public_splice), encoding="utf-8")
+
+obfuscation_dir: Path = source_root / "llvm/lib/Passes/Obfuscation"
+private_api_uses: list[Path] = [
+    path
+    for path in obfuscation_dir.rglob("*")
+    if path.suffix in {".cpp", ".h"} and "getBasicBlockList(" in path.read_text(encoding="utf-8")
+]
+if private_api_uses:
+    raise SystemExit(
+        "the pinned OLLVM overlay still uses Function::getBasicBlockList: "
+        + ", ".join(str(path.relative_to(source_root)) for path in private_api_uses)
+    )
 PY
 utils_sha256="$(sha256sum "$src/llvm/lib/Passes/Obfuscation/Utils.cpp" | cut -d' ' -f1)"
+ip_context_sha256="$(sha256sum "$src/llvm/lib/Passes/Obfuscation/IPObfuscationContext.cpp" | cut -d' ' -f1)"
 
 cmake -G Ninja -S "$src/llvm" -B "$work/build" \
   -DCMAKE_BUILD_TYPE=Release \
@@ -53,6 +77,7 @@ cmake -G Ninja -S "$src/llvm" -B "$work/build" \
   -DLLVM_INCLUDE_TESTS=OFF \
   -DLLVM_INCLUDE_BENCHMARKS=OFF \
   -DLLVM_INCLUDE_EXAMPLES=OFF
+timeout 3600 ninja -C "$work/build" LLVMPasses
 ninja -C "$work/build" clang
 clang="$work/build/bin/clang"
 "$clang" --version
@@ -62,7 +87,7 @@ name=OLLVM (ollvm17 passes over LLVM 17.0.6)
 url=$overlay_url
 commit=$overlay_commit
 tree=$(git -C "$overlay" rev-parse 'HEAD^{tree}')
-version=llvm-project-17.0.6.src.tar.xz sha256 $llvm_sha256 from $llvm_url; built Release, X86 target, clang only; valueEscapes copied from pinned LLVM Reg2Mem.cpp; patched Utils.cpp sha256 $utils_sha256
+version=llvm-project-17.0.6.src.tar.xz sha256 $llvm_sha256 from $llvm_url; built Release, X86 target, clang only; valueEscapes copied from pinned LLVM Reg2Mem.cpp; Function::splice compatibility patch checked by LLVMPasses; patched Utils.cpp sha256 $utils_sha256; patched IPObfuscationContext.cpp sha256 $ip_context_sha256
 runtime=$("$clang" --version | head -n 1); runner glibc $(ldd --version | head -n 1)
 EOF
 
