@@ -25,6 +25,26 @@ git -C "$overlay" checkout --quiet --detach FETCH_HEAD
 test "$(git -C "$overlay" rev-parse HEAD)" = "$overlay_commit"
 cp -R "$overlay/llvm-project/." "$src/"
 
+python3 - "$src" <<'PY'
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+source_root: Path = Path(sys.argv[1])
+reference: str = (source_root / "llvm/lib/Transforms/Scalar/Reg2Mem.cpp").read_text()
+utils_path: Path = source_root / "llvm/lib/Passes/Obfuscation/Utils.cpp"
+utils: str = utils_path.read_text()
+helper_start: int = reference.index("static bool valueEscapes(const Instruction &Inst) {")
+helper_end: int = reference.index("\n}\n", helper_start) + 3
+license_header: str = reference[:reference.index('#include')]
+anchor: str = "void llvm::fixStack(Function &F) {"
+if utils.count(anchor) != 1 or "static bool valueEscapes(" in utils:
+    raise SystemExit("the pinned OLLVM fixStack source changed; review the compatibility patch")
+utils_path.write_text(utils.replace(anchor, license_header + reference[helper_start:helper_end] + "\n" + anchor))
+PY
+utils_sha256="$(sha256sum "$src/llvm/lib/Passes/Obfuscation/Utils.cpp" | cut -d' ' -f1)"
+
 cmake -G Ninja -S "$src/llvm" -B "$work/build" \
   -DCMAKE_BUILD_TYPE=Release \
   -DLLVM_ENABLE_PROJECTS=clang \
@@ -42,7 +62,7 @@ name=OLLVM (ollvm17 passes over LLVM 17.0.6)
 url=$overlay_url
 commit=$overlay_commit
 tree=$(git -C "$overlay" rev-parse 'HEAD^{tree}')
-version=llvm-project-17.0.6.src.tar.xz sha256 $llvm_sha256 from $llvm_url; built Release, X86 target, clang only
+version=llvm-project-17.0.6.src.tar.xz sha256 $llvm_sha256 from $llvm_url; built Release, X86 target, clang only; valueEscapes copied from pinned LLVM Reg2Mem.cpp; patched Utils.cpp sha256 $utils_sha256
 runtime=$("$clang" --version | head -n 1); runner glibc $(ldd --version | head -n 1)
 EOF
 
