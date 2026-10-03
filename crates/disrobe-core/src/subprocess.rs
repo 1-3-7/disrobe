@@ -52,7 +52,7 @@ where
     )
 }
 
-fn capture_command(spec: CommandSpec) -> std::io::Result<Option<CapturedOutput>> {
+pub fn capture_command(spec: CommandSpec) -> std::io::Result<Option<CapturedOutput>> {
     let execution: Execution = spec.run().map_err(std::io::Error::other)?;
     let status: ExitStatus = match execution.completion {
         Completion::Exited(status) => status,

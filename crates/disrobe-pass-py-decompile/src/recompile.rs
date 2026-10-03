@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use disrobe_core::scratch::ScratchDir;
+use disrobe_core::subprocess::{CapturedOutput, CommandSpec, capture_command};
 use disrobe_py_marshal::{CodeObject, Object, PyVersion as MarshalVersion, PycFile, read_pyc};
 
 use crate::bytecode::version::PyVersion as DecompileVersion;
@@ -73,7 +74,7 @@ pub fn roundtrip_native(
         };
     };
 
-    match recompile_via_interpreter(&interpreter, recovered_source) {
+    match recompile_via_interpreter(&interpreter, marshal_version, recovered_source) {
         Ok(recompiled) => {
             let verdict: Verdict =
                 roundtrip::semantic_equiv(original_code, &recompiled, marshal_version);
@@ -123,25 +124,22 @@ fn locate_interpreter(target: MarshalVersion) -> Option<(PathBuf, String)> {
 
 fn probe_python(name: &str) -> Option<(PathBuf, MarshalVersion)> {
     let exe: PathBuf = which_on_path(name)?;
-    let captured: disrobe_core::subprocess::CapturedOutput =
-        disrobe_core::subprocess::run_captured(
-            &exe,
-            &[
-                "-E",
-                "-s",
-                "-c",
-                "import sys;print(f'{sys.version_info.major}.{sys.version_info.minor}')",
-            ],
-            Duration::from_secs(PROBE_TIMEOUT_SECS),
-            MAX_PROBE_CAPTURE,
-        )
-        .ok()
-        .flatten()?;
+    let scratch: ScratchDir = ScratchDir::create(PYTHON_PROBE_SCRATCH_PURPOSE).ok()?;
+    let captured: CapturedOutput = capture_command(python_command(
+        &exe,
+        &["-E", "-S", "-c", PYTHON_VERSION_PROBE],
+        scratch.path(),
+        Duration::from_secs(PROBE_TIMEOUT_SECS),
+    ))
+    .ok()
+    .flatten()?;
     if captured.exit_code != Some(0) {
         return None;
     }
     let text: String = String::from_utf8_lossy(&captured.stdout).trim().to_owned();
-    let (maj, min): (&str, &str) = text.split_once('.')?;
+    let mut components: std::str::Split<'_, char> = text.split('.');
+    let maj: &str = components.next()?;
+    let min: &str = components.next()?;
     let major: u8 = maj.parse().ok()?;
     let minor: u8 = min.parse().ok()?;
     Some((exe, MarshalVersion { major, minor }))
@@ -171,8 +169,41 @@ fn py_path_literal(path: &Path) -> String {
 
 const ROUNDTRIP_SCRATCH_PURPOSE: &str = "py-decompile-roundtrip";
 const ROUNDTRIP_SOURCE_STEM: &str = "recovered";
+const PYTHON_PROBE_SCRATCH_PURPOSE: &str = "py-decompile-probe";
+const PYTHON_VERSION_PROBE: &str = "import sys\nsys.path[:] = []\nprint(sys.version.split()[0])\n";
 
-fn recompile_via_interpreter(interpreter: &Path, source: &str) -> Result<CodeObject, String> {
+fn python_command(
+    interpreter: &Path,
+    arguments: &[&str],
+    current_dir: &Path,
+    timeout: Duration,
+) -> CommandSpec {
+    CommandSpec::new(interpreter, timeout)
+        .args(arguments)
+        .current_dir(current_dir.to_path_buf())
+        .env("PYTHONHOME", "")
+        .env("PYTHONPATH", "")
+        .capture_limits(MAX_PROBE_CAPTURE, MAX_PROBE_CAPTURE)
+        .reap_descendants_on_exit()
+}
+
+fn supports_isolated_mode(version: MarshalVersion) -> bool {
+    version.major > 3 || (version.major == 3 && version.minor >= 4)
+}
+
+fn recompile_arguments(version: MarshalVersion, script: &str) -> Vec<&str> {
+    if supports_isolated_mode(version) {
+        vec!["-I", "-c", script]
+    } else {
+        vec!["-E", "-S", "-c", script]
+    }
+}
+
+fn recompile_via_interpreter(
+    interpreter: &Path,
+    version: MarshalVersion,
+    source: &str,
+) -> Result<CodeObject, String> {
     let scratch: ScratchDir = ScratchDir::create(ROUNDTRIP_SCRATCH_PURPOSE)
         .map_err(|e: std::io::Error| format!("create scratch directory: {e}"))?;
     let src_path: PathBuf = scratch.path().join(format!("{ROUNDTRIP_SOURCE_STEM}.py"));
@@ -185,19 +216,19 @@ fn recompile_via_interpreter(interpreter: &Path, source: &str) -> Result<CodeObj
 sys.path[:] = [p for p in sys.path if p not in ('', '.')]\n\
 import py_compile\n\
 try:\n    py_compile.compile({src_lit}, cfile={pyc_lit}, doraise=True)\n\
-except Exception as e:\n    sys.stderr.write(str(e));sys.exit(2)\n"
+except Exception:\n    sys.stderr.write(str(sys.exc_info()[1]));sys.exit(2)\n"
     );
-    let captured: disrobe_core::subprocess::CapturedOutput =
-        disrobe_core::subprocess::run_captured(
-            interpreter,
-            &["-E", "-s", "-c", &script],
-            Duration::from_secs(RECOMPILE_TIMEOUT_SECS),
-            MAX_PROBE_CAPTURE,
-        )
-        .map_err(|e| format!("spawn interpreter: {e}"))?
-        .ok_or_else(|| {
-            format!("interpreter timed out after {RECOMPILE_TIMEOUT_SECS}s and was killed")
-        })?;
+    let arguments: Vec<&str> = recompile_arguments(version, &script);
+    let captured: CapturedOutput = capture_command(python_command(
+        interpreter,
+        &arguments,
+        scratch.path(),
+        Duration::from_secs(RECOMPILE_TIMEOUT_SECS),
+    ))
+    .map_err(|error| format!("spawn interpreter: {error}"))?
+    .ok_or_else(|| {
+        format!("interpreter timed out after {RECOMPILE_TIMEOUT_SECS}s and was killed")
+    })?;
     if captured.exit_code != Some(0) {
         let stderr: String = String::from_utf8_lossy(&captured.stderr).trim().to_owned();
         return Err(if stderr.is_empty() {
@@ -263,34 +294,102 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn a_py_compile_module_in_the_working_directory_is_never_imported() {
-        let interpreter: PathBuf = ["python", "python3"]
+    fn isolated_interpreter() -> (PathBuf, MarshalVersion) {
+        ["python", "python3"]
             .iter()
-            .find_map(|name: &&str| {
-                probe_python(name).map(|(exe, _): (PathBuf, MarshalVersion)| exe)
-            })
-            .expect("a working Python interpreter on PATH is required by this test");
+            .find_map(|name: &&str| probe_python(name))
+            .filter(|(_, version): &(PathBuf, MarshalVersion)| supports_isolated_mode(*version))
+            .expect("a Python 3.4+ interpreter on PATH is required by this test")
+    }
+
+    fn object_text(object: &Object) -> Option<&str> {
+        match object {
+            Object::String { value, .. }
+            | Object::Unicode { value, .. }
+            | Object::ShortAscii { value, .. } => Some(value),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn isolated_interpreter_ignores_hostile_imports_with_legacy_mutation_control() {
+        let (interpreter, version): (PathBuf, MarshalVersion) = isolated_interpreter();
         let workdir: ScratchDir = ScratchDir::create("py-decompile-planted-cwd").expect("scratch");
         let marker: PathBuf = workdir.path().join("imported.marker");
         std::fs::write(
+            workdir.path().join("sitecustomize.py"),
+            format!("open({}, 'w').write('startup')\n", py_path_literal(&marker)),
+        )
+        .expect("plant startup marker");
+        std::fs::write(
             workdir.path().join("py_compile.py"),
             format!(
-                "open({}, 'w').write('imported')\n",
+                "open({}, 'a').write('py_compile')\n",
                 py_path_literal(&marker)
             ),
         )
         .expect("plant py_compile.py");
-        std::env::set_current_dir(workdir.path()).expect("enter the planted directory");
 
-        let recompiled: Result<CodeObject, String> =
-            recompile_via_interpreter(&interpreter, "value = 1\n");
+        let isolated: Option<CapturedOutput> = capture_command(
+            python_command(
+                &interpreter,
+                &recompile_arguments(version, "import py_compile"),
+                workdir.path(),
+                Duration::from_secs(PROBE_TIMEOUT_SECS),
+            )
+            .env("PYTHONPATH", workdir.path()),
+        )
+        .expect("run isolated interpreter");
+        assert!(
+            isolated.is_some_and(|output: CapturedOutput| output.exit_code == Some(0)),
+            "the isolated interpreter did not complete"
+        );
 
         assert!(
             !marker.exists(),
-            "the planted py_compile.py in the working directory was imported"
+            "the isolated interpreter imported a hostile startup or py_compile module"
         );
-        assert!(recompiled.is_ok(), "recompile failed: {recompiled:?}");
+
+        let legacy: Option<CapturedOutput> = capture_command(
+            python_command(
+                &interpreter,
+                &["-E", "-s", "-c", "import py_compile"],
+                workdir.path(),
+                Duration::from_secs(PROBE_TIMEOUT_SECS),
+            )
+            .env("PYTHONPATH", workdir.path()),
+        )
+        .expect("run legacy interpreter control");
+        assert!(
+            legacy.is_some_and(|output: CapturedOutput| output.exit_code == Some(0)),
+            "the legacy interpreter control did not complete"
+        );
+        assert!(
+            marker.exists(),
+            "the legacy control must import the hostile cwd or startup marker"
+        );
+    }
+
+    #[test]
+    fn recompiles_an_ordinary_source_in_an_isolated_scratch_directory() {
+        let (interpreter, version): (PathBuf, MarshalVersion) = isolated_interpreter();
+        let recompiled: CodeObject =
+            recompile_via_interpreter(&interpreter, version, "answer = 42\n")
+                .expect("recompile ordinary source");
+        assert!(
+            recompiled
+                .names
+                .iter()
+                .any(|object: &Object| object_text(object) == Some("answer")),
+            "ordinary source lost the authored assignment name"
+        );
+        assert!(
+            recompiled
+                .consts
+                .iter()
+                .any(|object: &Object| matches!(object, Object::Int(42))),
+            "ordinary source lost the authored constant"
+        );
     }
 
     #[test]
@@ -299,8 +398,9 @@ mod tests {
         let unspawnable: PathBuf = scratch_root().join("py-decompile-absent-interpreter");
         let temp_before: std::collections::BTreeSet<String> = temp_root_names();
 
-        let error: String = recompile_via_interpreter(&unspawnable, recovered)
-            .expect_err("an interpreter path that does not exist cannot be spawned");
+        let error: String =
+            recompile_via_interpreter(&unspawnable, MarshalVersion::PY34, recovered)
+                .expect_err("an interpreter path that does not exist cannot be spawned");
         assert!(
             error.starts_with("spawn interpreter:"),
             "the spawn failure path must be the one exercised, got: {error}"
