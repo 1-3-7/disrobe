@@ -3,7 +3,6 @@
 #![deny(missing_debug_implementations)]
 #![allow(clippy::redundant_pub_crate)]
 pub mod binary;
-#[cfg(feature = "chain")]
 pub mod chain_detector;
 pub(crate) mod debug;
 pub mod defers;

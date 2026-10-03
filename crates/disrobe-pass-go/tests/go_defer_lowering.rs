@@ -10,11 +10,8 @@ use disrobe_pass_go::{
     DeferSupport, GoAnalysis, RuntimeDeferHook, analyze,
 };
 
-#[cfg(feature = "chain")]
 use disrobe_core::chain::{ChildArtifact, Pass};
-#[cfg(feature = "chain")]
 use disrobe_core::{Artifact, Rung};
-#[cfg(feature = "chain")]
 use disrobe_pass_go::chain_detector::GO_PASS;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -381,7 +378,6 @@ fn panic_and_recover_edges_match_every_real_toolchain_disassembly() {
     assert_eq!(graded, 14, "graded an unexpected panic/recover population");
 }
 
-#[cfg(feature = "chain")]
 #[test]
 fn registered_go_pass_emits_arm64_defer_calls() {
     let bytes: Vec<u8> = common::required_fixture(FIXTURES[2].binary);
@@ -414,7 +410,6 @@ fn registered_go_pass_emits_arm64_defer_calls() {
     );
 }
 
-#[cfg(feature = "chain")]
 #[test]
 fn registered_go_pass_labels_panic_and_direct_recover_edges() {
     let bytes: Vec<u8> = common::required_fixture(FIXTURES[1].binary);

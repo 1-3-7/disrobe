@@ -10,11 +10,8 @@ use disrobe_pass_go::defers::{ControlEdge, ControlEdgeKind};
 use disrobe_pass_go::{DeferCallKind, GoAnalysis, RuntimeDeferCall, analyze};
 use disrobe_testkit::{CommandSpec, ToolError, ToolOutput, tool_output};
 
-#[cfg(feature = "chain")]
 use disrobe_core::chain::Pass;
-#[cfg(feature = "chain")]
 use disrobe_core::{Artifact, Rung};
-#[cfg(feature = "chain")]
 use disrobe_pass_go::chain_detector::GO_PASS;
 
 const SOURCE: &str = r#"package main
@@ -321,7 +318,6 @@ fn current_go_runtime_edges_reach_the_registered_report_and_sidecar() {
         .collect();
     assert_eq!(actual_range_defers, expected_range_defers);
 
-    #[cfg(feature = "chain")]
     {
         let artifact: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
         let rendered: Artifact = GO_PASS.run(&artifact).expect("registered Go pass run");

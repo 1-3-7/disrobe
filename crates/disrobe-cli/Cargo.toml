@@ -148,7 +148,6 @@ chain = [
     "disrobe-pass-swift-objc?/chain",
     "disrobe-pass-jvm?/chain",
     "disrobe-pass-dotnet?/chain",
-    "disrobe-pass-go?/chain",
 ]
 
 [dependencies]
