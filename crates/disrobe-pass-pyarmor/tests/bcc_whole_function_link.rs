@@ -9,24 +9,41 @@ use disrobe_pass_pyarmor::{
 #[cfg(target_arch = "x86_64")]
 mod reference_compiler {
     use std::path::{Path, PathBuf};
-    use std::process::Command;
+    use std::time::Duration;
 
     use disrobe_core::scratch::ScratchDir;
     use disrobe_pass_pyarmor::{
         BccArch, FunctionNameSource, PseudoCFunction, lift_bcc_code_region, lift_bcc_native,
     };
+    use disrobe_testkit::{CommandSpec, ToolOutput, tool_output};
     use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
 
     const SIBLING_SOURCE: &str = "static long long sib_callee(long long a, long long b) { return a * 3 + b; }\n\
 static long long sib_caller(long long a, long long b) { return sib_callee(a, b) + 7; }\n\
 long long sib_entry(long long a, long long b) { return sib_caller(a, b); }\n";
+    const VERSION_TIMEOUT: Duration = Duration::from_secs(10);
+    const COMPILER_TIMEOUT: Duration = Duration::from_mins(1);
+    const HARNESS_TIMEOUT: Duration = Duration::from_secs(10);
+    const MAX_CAPTURE_BYTES: usize = 1024 * 1024;
+
+    fn reference_command(
+        program: impl Into<PathBuf>,
+        current_dir: &Path,
+        timeout: Duration,
+    ) -> CommandSpec {
+        CommandSpec::new(program, timeout)
+            .current_dir(current_dir.to_path_buf())
+            .capture_limits(MAX_CAPTURE_BYTES, MAX_CAPTURE_BYTES)
+            .reap_descendants_on_exit()
+    }
 
     fn compiler() -> String {
+        let holder: ScratchDir = scratch();
         for candidate in ["gcc", "clang", "cc"] {
-            if Command::new(candidate)
-                .arg("--version")
-                .output()
-                .is_ok_and(|out: std::process::Output| out.status.success())
+            if tool_output(
+                reference_command(candidate, holder.path(), VERSION_TIMEOUT).arg("--version"),
+            )
+            .is_ok_and(|out: ToolOutput| out.success)
             {
                 return candidate.to_owned();
             }
@@ -52,14 +69,15 @@ long long sib_entry(long long a, long long b) { return sib_caller(a, b); }\n";
         let source: PathBuf = dir.join("siblings.c");
         std::fs::write(&source, SIBLING_SOURCE.as_bytes()).expect("write siblings.c");
         let object: PathBuf = dir.join("siblings.o");
-        let out: std::process::Output = Command::new(cc)
-            .args(["-O1", "-fno-inline", "-fno-stack-protector", "-c", "-o"])
-            .arg(&object)
-            .arg(&source)
-            .output()
-            .expect("invoke the reference compiler");
+        let out: ToolOutput = tool_output(
+            reference_command(cc, dir, COMPILER_TIMEOUT)
+                .args(["-O1", "-fno-inline", "-fno-stack-protector", "-c", "-o"])
+                .arg(&object)
+                .arg(&source),
+        )
+        .expect("invoke the reference compiler");
         assert!(
-            out.status.success(),
+            out.success,
             "reference compile failed: {}",
             String::from_utf8_lossy(&out.stderr)
         );
@@ -258,23 +276,25 @@ long long sib_entry(long long a, long long b) { return sib_caller(a, b); }\n";
         } else {
             "harness"
         });
-        let link: std::process::Output = Command::new(&cc)
-            .args(["-O1", "-o"])
-            .arg(&harness)
-            .arg(&driver)
-            .arg(dir.join("siblings.o"))
-            .output()
-            .expect("invoke the reference compiler to link the differential harness");
+        let link: ToolOutput = tool_output(
+            reference_command(&cc, dir, COMPILER_TIMEOUT)
+                .args(["-O1", "-o"])
+                .arg(&harness)
+                .arg(&driver)
+                .arg(dir.join("siblings.o")),
+        )
+        .expect("invoke the reference compiler to link the differential harness");
         assert!(
-            link.status.success(),
+            link.success,
             "the recovered sibling pair did not recompile against the reference callee prototype: {}\n--- driver.c ---\n{program}",
             String::from_utf8_lossy(&link.stderr)
         );
 
-        let run: std::process::Output = Command::new(&harness).output().expect("run the harness");
+        let run: ToolOutput = tool_output(reference_command(&harness, dir, HARNESS_TIMEOUT))
+            .expect("run the harness");
         let stdout: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&run.stdout);
         assert!(
-            run.status.success() && stdout.contains("OK"),
+            run.success && stdout.contains("OK"),
             "recovered sibling pair diverged from the reference object: {stdout}\nstderr: {}",
             String::from_utf8_lossy(&run.stderr)
         );
