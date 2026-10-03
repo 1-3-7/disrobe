@@ -412,13 +412,13 @@
 
 ### `DR-CLI-0161`
 
-- `"emit payload serialize: {}"`: `crates/disrobe-cli/src/cli/emit.rs:193`
-- `"emit stub serialize: {}"`: `crates/disrobe-cli/src/cli/emit.rs:176`
+- `"emit payload serialize: {}"`: `crates/disrobe-cli/src/cli/emit.rs:223`
+- `"emit stub serialize: {}"`: `crates/disrobe-cli/src/cli/emit.rs:206`
 
 ### `DR-CLI-0162`
 
-- `"cannot write emit payload: {}"`: `crates/disrobe-cli/src/cli/emit.rs:195`
-- `"cannot write emit stub: {}"`: `crates/disrobe-cli/src/cli/emit.rs:178`
+- `"cannot write emit payload: {}"`: `crates/disrobe-cli/src/cli/emit.rs:225`
+- `"cannot write emit stub: {}"`: `crates/disrobe-cli/src/cli/emit.rs:208`
 
 ### `DR-CLI-0231`
 
@@ -1647,10 +1647,10 @@
 - `DR-CLI-0109`: `crates/disrobe-cli/src/cli/js.rs:351`
 - `DR-CLI-0114`: `crates/disrobe-cli/src/cli/init.rs:409`
 - `DR-CLI-0115`: `crates/disrobe-cli/src/cli/init.rs:359`, `crates/disrobe-cli/src/cli/init.rs:371`
-- `DR-CLI-0160`: `crates/disrobe-cli/src/cli/emit.rs:166`, `crates/disrobe-cli/src/cli/emit.rs:190`
-- `DR-CLI-0161`: `crates/disrobe-cli/src/cli/emit.rs:176`, `crates/disrobe-cli/src/cli/emit.rs:193`
-- `DR-CLI-0162`: `crates/disrobe-cli/src/cli/emit.rs:178`, `crates/disrobe-cli/src/cli/emit.rs:195`
-- `DR-CLI-0163`: `crates/disrobe-cli/src/cli/emit.rs:136`
+- `DR-CLI-0160`: `crates/disrobe-cli/src/cli/emit.rs:196`, `crates/disrobe-cli/src/cli/emit.rs:220`
+- `DR-CLI-0161`: `crates/disrobe-cli/src/cli/emit.rs:206`, `crates/disrobe-cli/src/cli/emit.rs:223`
+- `DR-CLI-0162`: `crates/disrobe-cli/src/cli/emit.rs:208`, `crates/disrobe-cli/src/cli/emit.rs:225`
+- `DR-CLI-0163`: `crates/disrobe-cli/src/cli/emit.rs:166`
 - `DR-CLI-0164`: `crates/disrobe-cli/src/cli/auto.rs:58`
 - `DR-CLI-0171`: `crates/disrobe-cli/src/cli/serve/mod.rs:47`
 - `DR-CLI-0172`: `crates/disrobe-cli/src/cli/serve/mod.rs:51`
@@ -2269,28 +2269,28 @@
 - `DR-IOS-0019`: `crates/disrobe-pass-swift-objc/src/error.rs:70`
 - `DR-IOS-0020`: `crates/disrobe-pass-swift-objc/src/error.rs:76`
 - `DR-IOS-0021`: `crates/disrobe-pass-swift-objc/src/error.rs:82`
-- `DR-JS-0901`: `crates/disrobe-pass-js-deob/src/chain_detector.rs:311`
-- `DR-JS-0902`: `crates/disrobe-pass-js-deob/src/chain_detector.rs:699`
-- `DR-JS-0903`: `crates/disrobe-pass-js-deob/src/chain_detector.rs:702`
-- `DR-JS-0904`: `crates/disrobe-pass-js-deob/src/chain_detector.rs:710`
-- `DR-JS-0905`: `crates/disrobe-pass-js-deob/src/chain_detector.rs:723`
-- `DR-JS-0906`: `crates/disrobe-pass-js-deob/src/chain_detector.rs:726`
-- `DR-JS-0907`: `crates/disrobe-pass-js-deob/src/chain_detector.rs:868`
-- `DR-JS-0908`: `crates/disrobe-pass-js-deob/src/chain_detector.rs:871`
-- `DR-JS-0909`: `crates/disrobe-pass-js-deob/src/chain_detector.rs:884`
-- `DR-JS-0910`: `crates/disrobe-pass-js-deob/src/chain_detector.rs:646`
-- `DR-JS-0911`: `crates/disrobe-pass-js-deob/src/chain_detector.rs:648`
-- `DR-JS-0912`: `crates/disrobe-pass-js-deob/src/chain_detector.rs:650`
-- `DR-JS-0913`: `crates/disrobe-pass-js-deob/src/chain_detector.rs:756`
-- `DR-JS-0914`: `crates/disrobe-pass-js-deob/src/chain_detector.rs:764`
-- `DR-JS-0915`: `crates/disrobe-pass-js-deob/src/chain_detector.rs:758`
-- `DR-JS-0916`: `crates/disrobe-pass-js-deob/src/chain_detector.rs:811`
-- `DR-JS-0917`: `crates/disrobe-pass-js-deob/src/chain_detector.rs:898`
-- `DR-JS-0918`: `crates/disrobe-pass-js-deob/src/chain_detector.rs:736`
-- `DR-JS-0919`: `crates/disrobe-pass-js-deob/src/chain_detector.rs:743`
-- `DR-JS-0920`: `crates/disrobe-pass-js-deob/src/chain_detector.rs:635`
-- `DR-JS-0921`: `crates/disrobe-pass-js-deob/src/chain_detector.rs:704`
-- `DR-JS-0922`: `crates/disrobe-pass-js-deob/src/chain_detector.rs:713`
+- `DR-JS-0901`: `crates/disrobe-pass-js-deob/src/chain_detector.rs:310`
+- `DR-JS-0902`: `crates/disrobe-pass-js-deob/src/chain_detector.rs:698`
+- `DR-JS-0903`: `crates/disrobe-pass-js-deob/src/chain_detector.rs:701`
+- `DR-JS-0904`: `crates/disrobe-pass-js-deob/src/chain_detector.rs:709`
+- `DR-JS-0905`: `crates/disrobe-pass-js-deob/src/chain_detector.rs:722`
+- `DR-JS-0906`: `crates/disrobe-pass-js-deob/src/chain_detector.rs:725`
+- `DR-JS-0907`: `crates/disrobe-pass-js-deob/src/chain_detector.rs:867`
+- `DR-JS-0908`: `crates/disrobe-pass-js-deob/src/chain_detector.rs:870`
+- `DR-JS-0909`: `crates/disrobe-pass-js-deob/src/chain_detector.rs:883`
+- `DR-JS-0910`: `crates/disrobe-pass-js-deob/src/chain_detector.rs:645`
+- `DR-JS-0911`: `crates/disrobe-pass-js-deob/src/chain_detector.rs:647`
+- `DR-JS-0912`: `crates/disrobe-pass-js-deob/src/chain_detector.rs:649`
+- `DR-JS-0913`: `crates/disrobe-pass-js-deob/src/chain_detector.rs:755`
+- `DR-JS-0914`: `crates/disrobe-pass-js-deob/src/chain_detector.rs:763`
+- `DR-JS-0915`: `crates/disrobe-pass-js-deob/src/chain_detector.rs:757`
+- `DR-JS-0916`: `crates/disrobe-pass-js-deob/src/chain_detector.rs:810`
+- `DR-JS-0917`: `crates/disrobe-pass-js-deob/src/chain_detector.rs:897`
+- `DR-JS-0918`: `crates/disrobe-pass-js-deob/src/chain_detector.rs:735`
+- `DR-JS-0919`: `crates/disrobe-pass-js-deob/src/chain_detector.rs:742`
+- `DR-JS-0920`: `crates/disrobe-pass-js-deob/src/chain_detector.rs:634`
+- `DR-JS-0921`: `crates/disrobe-pass-js-deob/src/chain_detector.rs:703`
+- `DR-JS-0922`: `crates/disrobe-pass-js-deob/src/chain_detector.rs:712`
 - `DR-JS-0930`: `crates/disrobe-pass-js-deob/src/jscrambler/templates/mod.rs:129`
 - `DR-JS-0940`: `crates/disrobe-pass-js-deob/src/esoteric/jsfuck.rs:35`
 - `DR-JSDEOB-0005`: `crates/disrobe-pass-js-deob/src/error.rs:23`
@@ -2959,9 +2959,9 @@
 - `DR-RUBY-0063`: `crates/disrobe-pass-ruby/src/error.rs:71`
 - `DR-RUBY-0064`: `crates/disrobe-pass-ruby/src/error.rs:74`
 - `DR-RUBY-0099`: `crates/disrobe-pass-ruby/src/error.rs:77`
-- `DR-RUBY-0902`: `crates/disrobe-pass-ruby/src/chain_detector.rs:138`
-- `DR-RUBY-0903`: `crates/disrobe-pass-ruby/src/chain_detector.rs:150`
-- `DR-RUBY-0904`: `crates/disrobe-pass-ruby/src/chain_detector.rs:161`
+- `DR-RUBY-0902`: `crates/disrobe-pass-ruby/src/chain_detector.rs:137`
+- `DR-RUBY-0903`: `crates/disrobe-pass-ruby/src/chain_detector.rs:149`
+- `DR-RUBY-0904`: `crates/disrobe-pass-ruby/src/chain_detector.rs:160`
 - `DR-SCAN-0050`: `crates/disrobe-cli/src/cli/scan.rs:33`
 - `DR-SCRIPT-0001`: `crates/disrobe-pass-scriptlang/src/error.rs:8`
 - `DR-SCRIPT-0100`: `crates/disrobe-pass-scriptlang/src/error.rs:11`
@@ -3034,15 +3034,15 @@
 - `DR-SWOBJ-0910`: `crates/disrobe-pass-swift-objc/src/chain_detector.rs:249`
 - `DR-SWOBJ-0911`: `crates/disrobe-pass-swift-objc/src/chain_detector.rs:256`
 - `DR-SWOBJ-0912`: `crates/disrobe-pass-swift-objc/src/chain_detector.rs:262`
-- `DR-WASM-0902`: `crates/disrobe-pass-wasm-deob/src/chain_detector.rs:109`
-- `DR-WASM-0903`: `crates/disrobe-pass-wasm-deob/src/chain_detector.rs:113`
-- `DR-WASM-0906`: `crates/disrobe-pass-wasm-deob/src/chain_detector.rs:246`
-- `DR-WASM-0908`: `crates/disrobe-pass-wasm-deob/src/chain_detector.rs:203`
-- `DR-WASM-0909`: `crates/disrobe-pass-wasm-deob/src/chain_detector.rs:208`
-- `DR-WASM-0910`: `crates/disrobe-pass-wasm-deob/src/chain_detector.rs:223`
-- `DR-WASM-0911`: `crates/disrobe-pass-wasm-deob/src/chain_detector.rs:138`
-- `DR-WASM-0921`: `crates/disrobe-pass-wasm-deob/src/chain_detector.rs:87`
-- `DR-WASM-0922`: `crates/disrobe-pass-wasm-deob/src/chain_detector.rs:98`
+- `DR-WASM-0902`: `crates/disrobe-pass-wasm-deob/src/chain_detector.rs:108`
+- `DR-WASM-0903`: `crates/disrobe-pass-wasm-deob/src/chain_detector.rs:112`
+- `DR-WASM-0906`: `crates/disrobe-pass-wasm-deob/src/chain_detector.rs:245`
+- `DR-WASM-0908`: `crates/disrobe-pass-wasm-deob/src/chain_detector.rs:202`
+- `DR-WASM-0909`: `crates/disrobe-pass-wasm-deob/src/chain_detector.rs:207`
+- `DR-WASM-0910`: `crates/disrobe-pass-wasm-deob/src/chain_detector.rs:222`
+- `DR-WASM-0911`: `crates/disrobe-pass-wasm-deob/src/chain_detector.rs:137`
+- `DR-WASM-0921`: `crates/disrobe-pass-wasm-deob/src/chain_detector.rs:86`
+- `DR-WASM-0922`: `crates/disrobe-pass-wasm-deob/src/chain_detector.rs:97`
 - `DR-WASMDEOB-0003`: `crates/disrobe-pass-wasm-deob/src/error.rs:105`, `crates/disrobe-python/src/wasm.rs:57`
 - `DR-WEBVIEW-0001`: `crates/disrobe-pass-webview/src/error.rs:11`
 - `DR-WEBVIEW-0002`: `crates/disrobe-pass-webview/src/error.rs:15`
