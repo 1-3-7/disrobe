@@ -140,7 +140,6 @@ chain = [
     "disrobe-passes/py-decompile",
     "disrobe-passes/pyinstaller",
     "disrobe-binfmt/chain",
-    "disrobe-pass-py-deob/chain",
     "disrobe-pass-py-decompile/chain",
     "disrobe-pass-pyinstaller/chain",
     "disrobe-pass-mobile?/chain",

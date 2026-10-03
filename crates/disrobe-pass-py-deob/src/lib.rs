@@ -3,7 +3,6 @@
 #![allow(clippy::redundant_pub_crate)]
 pub mod ast_eval;
 mod auto_route;
-#[cfg(feature = "chain")]
 pub mod chain_detector;
 mod cipher;
 mod codec;

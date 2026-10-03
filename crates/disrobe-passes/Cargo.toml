@@ -48,7 +48,7 @@ full = [
 
 pyarmor = ["dep:disrobe-pass-pyarmor"]
 native = ["dep:disrobe-pass-native", "disrobe-pass-native/chain"]
-py-deob = ["dep:disrobe-pass-py-deob", "disrobe-pass-py-deob/chain"]
+py-deob = ["dep:disrobe-pass-py-deob"]
 container = ["dep:disrobe-binfmt", "disrobe-binfmt/chain"]
 sourcedefender = ["dep:disrobe-pass-sourcedefender"]
 pyfreeze = ["dep:disrobe-pass-pyfreeze"]

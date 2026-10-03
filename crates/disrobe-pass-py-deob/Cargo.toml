@@ -17,7 +17,6 @@ workspace = true
 [features]
 default = []
 llm-metadata = ["dep:disrobe-llm-metadata"]
-chain = ["disrobe-core/chain"]
 
 [dependencies]
 disrobe-core = { workspace = true }
