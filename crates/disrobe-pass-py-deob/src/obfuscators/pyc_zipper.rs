@@ -250,7 +250,15 @@ impl ObfuscatorPass for PycZipperPass {
             .reversal
             .as_ref()
             .map_or(0, |r: &ObfuscationReversal| r.placeholders_left.len());
-        let quality: Quality = if real_source && complete_source && placeholders_left == 0 {
+        let reversal_depth_limited: bool = decoded
+            .reversal
+            .as_ref()
+            .is_some_and(|reversal: &ObfuscationReversal| reversal.depth_limited);
+        let quality: Quality = if real_source
+            && complete_source
+            && placeholders_left == 0
+            && !reversal_depth_limited
+        {
             Quality::Full
         } else {
             Quality::Partial
@@ -295,7 +303,14 @@ impl ObfuscatorPass for PycZipperPass {
                 "placeholder_names_left".to_owned(),
                 placeholders_left.to_string(),
             );
+            diagnostics.insert(
+                "reverse_depth_limited".to_owned(),
+                reversal.depth_limited.to_string(),
+            );
             lossy_notes.push("pyc-zipper obfuscation deleted the line table and the file name; neither is recoverable.".to_owned());
+            if reversal.depth_limited {
+                lossy_notes.push("pyc-zipper reversal stopped at the nested-code depth limit, so deeper scopes were not inspected.".to_owned());
+            }
             if placeholders_left > 0 {
                 let names: Vec<&str> = reversal
                     .placeholders_left

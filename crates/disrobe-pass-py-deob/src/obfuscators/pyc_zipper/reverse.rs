@@ -47,6 +47,7 @@ pub(super) struct ObfuscationReversal {
     pub junk_returns_stripped: usize,
     pub names_restored: BTreeMap<String, String>,
     pub placeholders_left: BTreeSet<String>,
+    pub depth_limited: bool,
 }
 
 pub(super) fn is_obfuscated(code: &CodeObject, version: PyVersion) -> bool {
@@ -95,6 +96,7 @@ fn strip_junk_returns(
     reversal: &mut ObfuscationReversal,
 ) {
     if depth >= MAX_CODE_DEPTH {
+        reversal.depth_limited = true;
         return;
     }
     if let Some(offset) = junk_return_offset(code, version) {

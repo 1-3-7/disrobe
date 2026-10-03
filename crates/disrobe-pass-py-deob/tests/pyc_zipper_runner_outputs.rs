@@ -444,6 +444,33 @@ fn with_mutated_literal(pyc: &[u8]) -> Vec<u8> {
     write_pyc(&file).expect("mutated pyc writes")
 }
 
+fn compiler_generated_deep_scope(python: &Path) -> CodeObject {
+    let scratch: ScratchDir = ScratchDir::create("disrobe_pycz_depth").expect("scratch dir");
+    let source_path: PathBuf = scratch.path().join("deep_scope.py");
+    let pyc_path: PathBuf = scratch.path().join("deep_scope.pyc");
+    let source: String = format!("deep = {}0\n", "lambda: ".repeat(65));
+    std::fs::write(&source_path, source).expect("write authored deep-scope source");
+    let script_path: PathBuf = scratch.path().join("compile.py");
+    std::fs::write(
+        &script_path,
+        "import py_compile, sys\nfrom pathlib import Path\nsource, output = sys.argv[1:]\ncompile(Path(source).read_text(encoding='utf-8'), source, 'exec')\npy_compile.compile(source, cfile=output, doraise=True)\n",
+    )
+    .expect("write compiler oracle");
+    let output: ToolOutput = run_python(python, &script_path, &[&source_path, &pyc_path]);
+    assert!(
+        output.success,
+        "CPython must compile the authored deep-scope fixture: {}\n{}",
+        output.stdout_text(),
+        output.stderr_text()
+    );
+    let file: PycFile = read_pyc(&std::fs::read(&pyc_path).expect("read compiler pyc"))
+        .expect("compiler pyc parses");
+    let Object::Code(code) = file.code else {
+        panic!("compiler pyc holds no code object");
+    };
+    *code
+}
+
 #[test]
 fn records_pin_every_runner_output_and_its_input() {
     let records: Records = load_records();
@@ -564,6 +591,57 @@ fn every_runner_output_is_detected_with_its_layers() {
             );
         }
     }
+}
+
+#[test]
+fn deep_compiler_scope_reports_the_reverse_depth_limit() {
+    let python: PathBuf = python_312();
+    let fixture: Fixture = fixtures()
+        .into_iter()
+        .find(|fixture: &Fixture| fixture.record.path == "sample.obfuscate.pyc")
+        .expect("recorded direct pyc-zipper obfuscation fixture");
+    let baseline: PeelOutcome = PycZipperPass
+        .peel(&fixture.bytes)
+        .unwrap_or_else(|error| panic!("{} peel failed: {error:?}", fixture.record.path));
+    assert_eq!(
+        baseline
+            .diagnostics
+            .get("reverse_depth_limited")
+            .map(String::as_str)
+            .unwrap_or("false"),
+        "false",
+        "the unmodified real-tool fixture must not exhaust the nested-code budget"
+    );
+
+    let mut file: PycFile = read_pyc(&fixture.bytes).expect("recorded pyc parses");
+    let Object::Code(code) = &mut file.code else {
+        panic!("recorded pyc holds no code object");
+    };
+    code.consts
+        .push(Object::Code(Box::new(compiler_generated_deep_scope(
+            &python,
+        ))));
+    let mutated: Vec<u8> = write_pyc(&file).expect("mutated pyc writes");
+    let outcome: PeelOutcome = PycZipperPass
+        .peel(&mutated)
+        .expect("deep-scope mutation must remain a readable pyc-zipper input");
+
+    assert_eq!(outcome.quality, Quality::Partial);
+    assert_eq!(
+        outcome
+            .diagnostics
+            .get("reverse_depth_limited")
+            .map(String::as_str),
+        Some("true")
+    );
+    assert!(
+        outcome
+            .lossy_notes
+            .iter()
+            .any(|note: &String| note.contains("nested-code depth limit")),
+        "depth-limited reversal needs an explicit partial-recovery reason: {:?}",
+        outcome.lossy_notes
+    );
 }
 
 #[test]
