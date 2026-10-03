@@ -571,6 +571,10 @@ fn check_host_paths(root: &Path, report: &mut Report) {
         }
     };
     report.fact("host_home_paths", json!(scan.unexpected.len()));
+    report.fact(
+        "host_install_directory_paths",
+        json!(scan.unexpected_install_directories.len()),
+    );
     if !scan.unexpected.is_empty() {
         report.fail(
             CHECK,
@@ -588,6 +592,26 @@ fn check_host_paths(root: &Path, report: &mut Report) {
                 "{} allowed home path(s) no longer occur; remove them from the allow-list: {}",
                 scan.stale_allowances.len(),
                 scan.stale_allowances.join("; ")
+            ),
+        );
+    }
+    if !scan.unexpected_install_directories.is_empty() {
+        report.fail(
+            CHECK,
+            format!(
+                "{} drive-rooted install-directory path(s) in Rust sources; use PATH or an explicit environment override, or record an exact synthetic fixture allowance: {}",
+                scan.unexpected_install_directories.len(),
+                scan.unexpected_install_directories.join("; ")
+            ),
+        );
+    }
+    if !scan.stale_install_directory_allowances.is_empty() {
+        report.fail(
+            CHECK,
+            format!(
+                "{} allowed drive-rooted install-directory path(s) no longer occur; remove them from the allow-list: {}",
+                scan.stale_install_directory_allowances.len(),
+                scan.stale_install_directory_allowances.join("; ")
             ),
         );
     }

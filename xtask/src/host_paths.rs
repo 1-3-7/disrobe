@@ -7,7 +7,10 @@ use crate::fileio::read_bytes_bounded;
 
 pub(crate) const MAX_SCANNED_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_ACCOUNT_NAME: usize = 64;
+const MAX_INSTALL_PATH_BYTES: usize = 4096;
 const WORKDIR: &[u8] = b"workdir";
+const PROGRAM_FILES: &[u8] = b"program files";
+const PROGRAM_FILES_X86: &[u8] = b"program files (x86)";
 
 pub(crate) const ALLOWED_HOMES: [(&str, &str); 26] = [
     (
@@ -62,15 +65,54 @@ pub(crate) const ALLOWED_HOMES: [(&str, &str); 26] = [
     ("xtask/src/host_paths.rs", "workdir"),
 ];
 
+pub(crate) const ALLOWED_INSTALL_DIRECTORIES: [(&str, &str); 9] = [
+    (
+        "benches/head-to-head/src/frisk.rs",
+        concat!(r"C:", r"\Program Files\jadx\bin"),
+    ),
+    (
+        "crates/disrobe-cli/src/cli/sarif.rs",
+        concat!(r"C:", r"\Program Files\a#b?.dll"),
+    ),
+    (
+        "crates/disrobe-core/src/codec/web_escape.rs",
+        concat!("C:", "/Program Files/a#b?c=%", r"\xff"),
+    ),
+    (
+        "crates/disrobe-pass-dotnet/tests/cha_devirtualization.rs",
+        concat!(r"C:", r"\\Program Files\\dotnet\\sdk]"),
+    ),
+    (
+        "xtask/src/host_paths.rs",
+        concat!(r"C:", r"\Program Files\Tool"),
+    ),
+    (
+        "xtask/src/host_paths.rs",
+        concat!(r"C:", r"\Program Files (x86)\Tool"),
+    ),
+    (
+        "xtask/src/host_paths.rs",
+        concat!(r"c:", r"\\Program Files\\Tool"),
+    ),
+    (
+        "xtask/src/host_paths.rs",
+        concat!(r"C:", r"\Program Files\Tool\tool.exe"),
+    ),
+    ("xtask/src/host_paths.rs", concat!(r"C:", r"\Program Files")),
+];
+
 #[derive(Debug, Default)]
 pub(crate) struct HomeScan {
     pub(crate) unexpected: Vec<String>,
     pub(crate) stale_allowances: Vec<String>,
+    pub(crate) unexpected_install_directories: Vec<String>,
+    pub(crate) stale_install_directory_allowances: Vec<String>,
 }
 
 pub(crate) fn scan_homes(root: &Path, files: &BTreeSet<String>) -> Result<HomeScan> {
     let mut scan: HomeScan = HomeScan::default();
     let mut used: BTreeSet<(&str, String)> = BTreeSet::new();
+    let mut used_install_directories: BTreeSet<(&str, &str)> = BTreeSet::new();
     for file in files {
         let path: std::path::PathBuf = root.join(file);
         if !path.is_file() {
@@ -89,13 +131,89 @@ pub(crate) fn scan_homes(root: &Path, files: &BTreeSet<String>) -> Result<HomeSc
                 None => scan.unexpected.push(format!("{file}: {home}")),
             }
         }
+        if Path::new(file)
+            .extension()
+            .and_then(std::ffi::OsStr::to_str)
+            .is_none_or(|extension: &str| !extension.eq_ignore_ascii_case("rs"))
+        {
+            continue;
+        }
+        for directory in install_directories(&bytes) {
+            match ALLOWED_INSTALL_DIRECTORIES.iter().find(
+                |(allowed_file, allowed_entry): &&(&str, &str)| {
+                    *allowed_file == file && *allowed_entry == directory
+                },
+            ) {
+                Some((allowed_file, allowed_entry)) => {
+                    used_install_directories.insert((allowed_file, allowed_entry));
+                }
+                None => scan
+                    .unexpected_install_directories
+                    .push(format!("{file}: {directory}")),
+            }
+        }
     }
     for (file, home) in ALLOWED_HOMES {
         if !used.contains(&(file, home.to_owned())) {
             scan.stale_allowances.push(format!("{file}: {home}"));
         }
     }
+    for (file, entry) in ALLOWED_INSTALL_DIRECTORIES {
+        if !used_install_directories.contains(&(file, entry)) {
+            scan.stale_install_directory_allowances
+                .push(format!("{file}: {entry}"));
+        }
+    }
     Ok(scan)
+}
+
+pub(crate) fn install_directories(bytes: &[u8]) -> BTreeSet<String> {
+    let mut found: BTreeSet<String> = BTreeSet::new();
+    let mut index: usize = 0;
+    while index < bytes.len() {
+        let byte: u8 = bytes[index];
+        if !byte.is_ascii_alphabetic()
+            || bytes.get(index + 1) != Some(&b':')
+            || index
+                .checked_sub(1)
+                .is_some_and(|before: usize| bytes[before].is_ascii_alphanumeric())
+        {
+            index += 1;
+            continue;
+        }
+        let rest: &[u8] = &bytes[index + 2..];
+        let run: usize = separator_run(rest);
+        if run == 0 {
+            index += 1;
+            continue;
+        }
+        let directory: &[u8] = &rest[run..];
+        let is_install_directory: bool =
+            (starts_with_ignore_ascii_case(directory, PROGRAM_FILES_X86)
+                && follows_directory_name(directory, PROGRAM_FILES_X86.len()))
+                || (starts_with_ignore_ascii_case(directory, PROGRAM_FILES)
+                    && follows_directory_name(directory, PROGRAM_FILES.len()));
+        if is_install_directory {
+            let (entry, length): (String, usize) = install_path_entry(bytes, index);
+            found.insert(entry);
+            index += length;
+            continue;
+        }
+        index += 1;
+    }
+    found
+}
+
+fn install_path_entry(bytes: &[u8], start: usize) -> (String, usize) {
+    let length: usize = bytes[start..]
+        .iter()
+        .take(MAX_INSTALL_PATH_BYTES)
+        .take_while(|byte: &&u8| !is_install_path_terminator(**byte))
+        .count();
+    (
+        String::from_utf8_lossy(&bytes[start..start + length]).into_owned(),
+        length.max(1),
+    )
 }
 
 pub(crate) fn home_directories(bytes: &[u8]) -> BTreeSet<String> {
@@ -175,6 +293,22 @@ fn separator_run(bytes: &[u8]) -> usize {
         .count()
 }
 
+fn follows_directory_name(bytes: &[u8], length: usize) -> bool {
+    bytes
+        .get(length)
+        .is_none_or(|byte: &u8| is_separator(*byte) || is_install_path_terminator(*byte))
+}
+
+fn starts_with_ignore_ascii_case(bytes: &[u8], prefix: &[u8]) -> bool {
+    bytes
+        .get(..prefix.len())
+        .is_some_and(|candidate: &[u8]| candidate.eq_ignore_ascii_case(prefix))
+}
+
+const fn is_install_path_terminator(byte: u8) -> bool {
+    matches!(byte, b'\'' | b'"' | b'\r' | b'\n' | 0)
+}
+
 const fn is_separator(byte: u8) -> bool {
     byte == b'/' || byte == b'\\'
 }
@@ -189,6 +323,10 @@ mod tests {
 
     fn homes(text: &str) -> Vec<String> {
         home_directories(text.as_bytes()).into_iter().collect()
+    }
+
+    fn directories(text: &str) -> Vec<String> {
+        install_directories(text.as_bytes()).into_iter().collect()
     }
 
     #[test]
@@ -213,6 +351,31 @@ mod tests {
     }
 
     #[test]
+    fn drive_rooted_install_directories_are_found() {
+        assert_eq!(
+            directories(r"C:\Program Files\Tool"),
+            vec![r"C:\Program Files\Tool"]
+        );
+        assert_eq!(
+            directories(r"C:\Program Files (x86)\Tool"),
+            vec![r"C:\Program Files (x86)\Tool"]
+        );
+        assert_eq!(
+            directories(r#""c:\\Program Files\\Tool""#),
+            vec![r"c:\\Program Files\\Tool"]
+        );
+        assert_eq!(
+            directories(r#""C:\Program Files""#),
+            vec![r"C:\Program Files"]
+        );
+    }
+
+    #[test]
+    fn neutral_or_non_drive_install_directories_are_not_found() {
+        assert!(directories("Program Files /opt/Program Files AC:/Program Files/tool").is_empty());
+    }
+
+    #[test]
     fn an_added_home_outside_the_allow_list_is_reported() -> Result<()> {
         let root: tempfile::TempDir = tempfile::tempdir()?;
         std::fs::write(
@@ -223,6 +386,40 @@ mod tests {
         assert_eq!(
             scan_homes(root.path(), &files)?.unexpected,
             vec!["probe.txt: home/runner"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_added_install_directory_outside_the_allow_list_is_reported() -> Result<()> {
+        let root: tempfile::TempDir = tempfile::tempdir()?;
+        std::fs::write(
+            root.path().join("probe.rs"),
+            br#"const TOOL: &str = "C:\Program Files\Tool\tool.exe";"#,
+        )?;
+        let files: BTreeSet<String> = BTreeSet::from(["probe.rs".to_owned()]);
+        assert_eq!(
+            scan_homes(root.path(), &files)?.unexpected_install_directories,
+            vec![r"probe.rs: C:\Program Files\Tool\tool.exe"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_different_install_path_in_an_allowed_file_is_reported() -> Result<()> {
+        let root: tempfile::TempDir = tempfile::tempdir()?;
+        let source: std::path::PathBuf = root.path().join("crates/disrobe-cli/src/cli");
+        std::fs::create_dir_all(&source)?;
+        let changed: String = [r"C:", r"\Program Files\other\tool.exe"].concat();
+        std::fs::write(
+            source.join("sarif.rs"),
+            format!(r#"const TOOL: &str = "{changed}";"#),
+        )?;
+        let files: BTreeSet<String> =
+            BTreeSet::from(["crates/disrobe-cli/src/cli/sarif.rs".to_owned()]);
+        assert_eq!(
+            scan_homes(root.path(), &files)?.unexpected_install_directories,
+            vec![format!("crates/disrobe-cli/src/cli/sarif.rs: {changed}")]
         );
         Ok(())
     }
