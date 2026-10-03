@@ -372,9 +372,30 @@ mod tests {
 
     #[test]
     fn recompiles_an_ordinary_source_in_an_isolated_scratch_directory() {
-        let Some(marker): Option<std::ffi::OsString> =
-            std::env::var_os("DISROBE_ROUNDTRIP_IMPORT_MARKER")
-        else {
+        if let Some(marker) = std::env::var_os("DISROBE_ROUNDTRIP_IMPORT_MARKER") {
+            let (interpreter, version): (PathBuf, MarshalVersion) = isolated_interpreter();
+            let recompiled: CodeObject =
+                recompile_via_interpreter(&interpreter, version, "answer = 42\n")
+                    .expect("recompile ordinary source");
+            assert!(
+                recompiled
+                    .names
+                    .iter()
+                    .any(|object: &Object| object_text(object) == Some("answer")),
+                "ordinary source lost the authored assignment name"
+            );
+            assert!(
+                recompiled
+                    .consts
+                    .iter()
+                    .any(|object: &Object| matches!(object, Object::Int(42))),
+                "ordinary source lost the authored constant"
+            );
+            assert!(
+                !PathBuf::from(marker).exists(),
+                "actual roundtrip imported the planted module"
+            );
+        } else {
             let workdir: ScratchDir = ScratchDir::create("py-decompile-real-caller-cwd")
                 .expect("create hostile caller working directory");
             let marker: PathBuf = workdir.path().join("imported.marker");
@@ -406,30 +427,7 @@ mod tests {
                 !marker.exists(),
                 "roundtrip caller imported the planted module"
             );
-            return;
-        };
-        let (interpreter, version): (PathBuf, MarshalVersion) = isolated_interpreter();
-        let recompiled: CodeObject =
-            recompile_via_interpreter(&interpreter, version, "answer = 42\n")
-                .expect("recompile ordinary source");
-        assert!(
-            recompiled
-                .names
-                .iter()
-                .any(|object: &Object| object_text(object) == Some("answer")),
-            "ordinary source lost the authored assignment name"
-        );
-        assert!(
-            recompiled
-                .consts
-                .iter()
-                .any(|object: &Object| matches!(object, Object::Int(42))),
-            "ordinary source lost the authored constant"
-        );
-        assert!(
-            !PathBuf::from(marker).exists(),
-            "actual roundtrip imported the planted module"
-        );
+        }
     }
 
     #[test]
