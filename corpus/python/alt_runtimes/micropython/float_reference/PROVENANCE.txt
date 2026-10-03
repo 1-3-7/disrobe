@@ -1,0 +1,23 @@
+MicroPython float reference fixture
+===================================
+
+float_constant.py is the authored source. float_constant.mpy is the official
+mpy-cross bytecode output for that source.
+
+Toolchain
+---------
+MicroPython v1.27.0 on 2025-12-13; mpy-cross emitting mpy v6.3
+PyPI distribution: mpy-cross 1.27.0.post2
+Compiler executable sha256: 0753702be79fb565168168ba079a99ab592a0343a5cc6f82374cb2fd414f335a
+
+Command
+-------
+Run from the repository root:
+  mpy-cross -o corpus/python/alt_runtimes/micropython/float_reference/float_constant.mpy corpus/python/alt_runtimes/micropython/float_reference/float_constant.py
+
+The relative input path is embedded in the bytecode's source-name entry.
+
+Checksums (sha256)
+------------------
+float_constant.py  80d4784decb64b6ffc3bd05bc51da720314d48487e3ed2db913b35b94d0121fa
+float_constant.mpy 0127f1b3bc632172ac2425a85bdfd52ecfe763ae929c32f71805a1bcfb96ceaf
