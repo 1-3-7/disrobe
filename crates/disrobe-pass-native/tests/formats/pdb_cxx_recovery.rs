@@ -10,12 +10,12 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use disrobe_core::scratch::ScratchDir;
-use disrobe_core::subprocess::{self, CapturedOutput};
 use disrobe_pass_native::{
     CvCallingConvention, EmittedBase, EmittedFunction, EmittedUdt, FunctionRejectReason,
     ModuleStreamCoverage, PdbCxxReconstruction, RejectedFunction, perturb_first_offset,
     reconstruct_pdb_cxx, render_static_assert_tu,
 };
+use disrobe_testkit::{CommandSpec, ToolOutput, tool_output};
 
 #[expect(
     clippy::duration_suboptimal_units,
@@ -23,6 +23,8 @@ use disrobe_pass_native::{
 )]
 const COMPILE_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_CAPTURE: usize = 4 * 1024 * 1024;
+const CL_VAR: &str = "DISROBE_TEST_CL";
+const CLANG_CL_VAR: &str = "DISROBE_TEST_CLANG_CL";
 
 fn fixture_pdb_bytes() -> Vec<u8> {
     let path: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -38,56 +40,43 @@ struct Compiler {
     path: PathBuf,
 }
 
-fn find_cl() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("DISROBE_TEST_CL") {
-        let pb: PathBuf = PathBuf::from(p);
-        if pb.is_file() {
-            return Some(pb);
+fn compiler_path(program: &str, binary_var: &str) -> Result<Option<PathBuf>, String> {
+    if let Some(configured) = std::env::var_os(binary_var) {
+        let path: PathBuf = configured.into();
+        if path.is_file() {
+            return path
+                .canonicalize()
+                .map(Some)
+                .map_err(|error: std::io::Error| {
+                    format!("resolve {binary_var} compiler {}: {error}", path.display())
+                });
         }
+        return Err(format!(
+            "{binary_var} names {}, which is not a file",
+            path.display()
+        ));
     }
-    if let Some(p) = which_on_path("cl.exe") {
-        return Some(p);
-    }
-    let roots: [&str; 2] = [
-        "C:/Program Files (x86)/Microsoft Visual Studio",
-        "C:/Program Files/Microsoft Visual Studio",
-    ];
-    for root in roots {
-        let Ok(years) = std::fs::read_dir(root) else {
-            continue;
-        };
-        for year in years.flatten() {
-            for edition in ["BuildTools", "Community", "Professional", "Enterprise"] {
-                let msvc_root: PathBuf = year.path().join(edition).join("VC/Tools/MSVC");
-                let Ok(versions) = std::fs::read_dir(&msvc_root) else {
-                    continue;
-                };
-                for version in versions.flatten() {
-                    let candidate: PathBuf = version.path().join("bin/Hostx64/x64/cl.exe");
-                    if candidate.is_file() {
-                        return Some(candidate);
-                    }
-                }
-            }
-        }
-    }
-    None
+    which_on_path(program)
+        .map(|path: PathBuf| {
+            path.canonicalize().map_err(|error: std::io::Error| {
+                format!("resolve {program} compiler {}: {error}", path.display())
+            })
+        })
+        .transpose()
 }
 
-fn find_clang_cl() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("DISROBE_TEST_CLANG_CL") {
-        let pb: PathBuf = PathBuf::from(p);
-        if pb.is_file() {
-            return Some(pb);
-        }
-    }
-    which_on_path("clang-cl.exe")
+fn find_cl() -> Result<Option<PathBuf>, String> {
+    compiler_path("cl.exe", CL_VAR)
+}
+
+fn find_clang_cl() -> Result<Option<PathBuf>, String> {
+    compiler_path("clang-cl.exe", CLANG_CL_VAR)
 }
 
 fn which_on_path(name: &str) -> Option<PathBuf> {
-    let path_var: String = std::env::var("PATH").ok()?;
-    for dir in path_var.split(';') {
-        let candidate: PathBuf = PathBuf::from(dir).join(name);
+    let path_var: std::ffi::OsString = std::env::var_os("PATH")?;
+    for directory in std::env::split_paths(&path_var) {
+        let candidate: PathBuf = directory.join(name);
         if candidate.is_file() {
             return Some(candidate);
         }
@@ -97,13 +86,16 @@ fn which_on_path(name: &str) -> Option<PathBuf> {
 
 fn available_compilers() -> Vec<Compiler> {
     let mut out: Vec<Compiler> = Vec::new();
-    if let Some(p) = find_cl() {
+    let cl: Option<PathBuf> = find_cl().unwrap_or_else(|reason: String| panic!("{reason}"));
+    if let Some(p) = cl {
         out.push(Compiler {
             label: "cl",
             path: p,
         });
     }
-    if let Some(p) = find_clang_cl() {
+    let clang_cl: Option<PathBuf> =
+        find_clang_cl().unwrap_or_else(|reason: String| panic!("{reason}"));
+    if let Some(p) = clang_cl {
         out.push(Compiler {
             label: "clang-cl",
             path: p,
@@ -116,7 +108,8 @@ fn msvc_compilers(context: &str) -> Vec<Compiler> {
     let compilers: Vec<Compiler> = available_compilers();
     assert!(
         !compilers.is_empty(),
-        "{context}: no msvc-compatible compiler (cl.exe or clang-cl) is reachable; every Windows CI runner provisions both, and locally VS Build Tools or LLVM provides one"
+        "{context}: no msvc-compatible compiler (cl.exe or clang-cl.exe) is on PATH; set {CL_VAR} \
+         or {CLANG_CL_VAR} to a compiler binary"
     );
     compilers
 }
@@ -127,7 +120,12 @@ struct CompileOutcome {
     stderr: String,
 }
 
-fn compile_tu(compiler: &Compiler, source: &Path, obj_out: &Path) -> CompileOutcome {
+fn compile_tu(
+    compiler: &Compiler,
+    source: &Path,
+    obj_out: &Path,
+    working_dir: &Path,
+) -> CompileOutcome {
     let args: Vec<String> = vec![
         "/c".to_owned(),
         "/nologo".to_owned(),
@@ -136,18 +134,22 @@ fn compile_tu(compiler: &Compiler, source: &Path, obj_out: &Path) -> CompileOutc
         format!("/Fo:{}", obj_out.display()),
         source.display().to_string(),
     ];
-    let captured: Option<CapturedOutput> =
-        subprocess::run_captured(&compiler.path, &args, COMPILE_TIMEOUT, MAX_CAPTURE)
-            .unwrap_or_else(|e| panic!("spawn {} failed: {e}", compiler.label));
-    let Some(captured) = captured else {
-        panic!(
-            "{} timed out compiling {}",
-            compiler.label,
-            source.display()
-        );
-    };
+    let captured: ToolOutput = tool_output(
+        CommandSpec::new(compiler.path.clone(), COMPILE_TIMEOUT)
+            .args(args)
+            .current_dir(working_dir.to_path_buf())
+            .capture_limits(MAX_CAPTURE, MAX_CAPTURE)
+            .reap_descendants_on_exit(),
+    )
+    .unwrap_or_else(|error| panic!("spawn {} failed: {error}", compiler.label));
+    assert!(
+        !captured.timed_out,
+        "{} timed out compiling {}",
+        compiler.label,
+        source.display()
+    );
     CompileOutcome {
-        success: captured.exit_code == Some(0),
+        success: captured.success,
         stdout: String::from_utf8_lossy(&captured.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&captured.stderr).into_owned(),
     }
@@ -542,7 +544,7 @@ fn real_compiler_confirms_size_and_offset_of_every_recovered_udt() {
     let mut compiled: usize = 0;
     for compiler in &compilers {
         let obj: PathBuf = dir.join(format!("validate_{}.obj", compiler.label));
-        let outcome: CompileOutcome = compile_tu(compiler, &tu_path, &obj);
+        let outcome: CompileOutcome = compile_tu(compiler, &tu_path, &obj, &dir);
         eprintln!(
             "[evidence] {} compile: success={} stdout={:?} stderr={:?}",
             compiler.label, outcome.success, outcome.stdout, outcome.stderr
@@ -591,7 +593,7 @@ fn perturbing_one_recovered_offset_makes_the_real_compiler_reject_it() {
 
     let compiler: &Compiler = &compilers[0];
     let obj: PathBuf = dir.join("corrupted.obj");
-    let outcome: CompileOutcome = compile_tu(compiler, &tu_path, &obj);
+    let outcome: CompileOutcome = compile_tu(compiler, &tu_path, &obj, &dir);
     eprintln!(
         "[evidence] perturbation compile via {}: success={} stdout={:?} stderr={:?}",
         compiler.label, outcome.success, outcome.stdout, outcome.stderr
