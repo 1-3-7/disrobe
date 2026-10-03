@@ -86,28 +86,31 @@ fn peel_decrypts_outer_loader_to_lua_bytecode() {
     assert!(
         out.passes_run
             .iter()
-            .any(|p: &String| p.contains("embedded-bytecode-constant-extract")),
-        "loader must decrypt to a parseable Lua bytecode chunk, passes={:?}",
+            .any(|p: &String| p.contains("bytecode-source-field-extract")),
+        "loader must decrypt to a parseable Lua bytecode chunk whose embedded source is taken, passes={:?}",
         out.passes_run
     );
 }
 
 #[test]
-fn peel_extracts_embedded_next_layer_constant() {
+fn peel_emits_the_embedded_source_layer() {
     let bytes: Vec<u8> = load("gauntlet_obfuscated.lua");
     let out: PeelResult = hercules::peel(&bytes, &DeobfOptions::default()).expect("peel");
-
-    let inner: &str = out
-        .recovered_strings
-        .iter()
-        .map(String::as_str)
-        .max_by_key(|s: &&str| s.len())
-        .expect("must recover the embedded bytecode-chunk string constant");
+    let inner: String =
+        String::from_utf8(out.deobfuscated).expect("recovered layer is utf8 source");
 
     assert!(
         inner.len() > 1000,
-        "extracted embedded constant must be a substantial next-layer blob, got {} bytes",
+        "the embedded source layer must be a substantial program, got {} bytes",
         inner.len()
+    );
+    assert!(
+        inner.contains("BcToState") && !inner.contains("tonumber(e:sub(i, i + 1), 16)"),
+        "the output must be the source layer under the loader (the VM interpreter), not the loader"
+    );
+    assert!(
+        !inner.contains("Tamper Detected"),
+        "the anti-tamper block around the VM is a removable layer"
     );
 }
 

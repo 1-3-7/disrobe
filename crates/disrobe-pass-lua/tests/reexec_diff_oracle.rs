@@ -434,6 +434,10 @@ const BEHAVIOUR_PROGRAMS_54: &[(&str, &str)] = &[
         "luau_threading",
         include_str!("../../../corpus/lua/behaviour/luau_threading.lua"),
     ),
+    (
+        "rich_scope",
+        include_str!("../../../corpus/lua/behaviour/rich_scope.lua"),
+    ),
 ];
 
 const BEHAVIOUR_PROGRAMS_PORTABLE: &[(&str, &str)] = &[
@@ -456,6 +460,10 @@ const BEHAVIOUR_PROGRAMS_PORTABLE: &[(&str, &str)] = &[
     (
         "luau_threading",
         include_str!("../../../corpus/lua/behaviour/luau_threading.lua"),
+    ),
+    (
+        "rich_scope",
+        include_str!("../../../corpus/lua/behaviour/rich_scope.lua"),
     ),
 ];
 

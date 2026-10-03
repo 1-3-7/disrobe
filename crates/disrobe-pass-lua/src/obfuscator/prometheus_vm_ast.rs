@@ -86,6 +86,8 @@ pub enum StatKind {
     },
     Return(Vec<Expr>),
     Break,
+    Goto(Span),
+    Label(Span),
 }
 
 #[derive(Debug, Clone)]
@@ -154,6 +156,12 @@ pub enum BinOp {
     Ge,
     And,
     Or,
+    IDiv,
+    BAnd,
+    BOr,
+    BXor,
+    Shl,
+    Shr,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -161,6 +169,7 @@ pub enum UnOp {
     Neg,
     Not,
     Len,
+    BNot,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -193,7 +202,13 @@ enum Tok {
     Minus,
     Star,
     Slash,
+    SlashSlash,
     Percent,
+    Amp,
+    Pipe,
+    Tilde,
+    Shl,
+    Shr,
     Caret,
     Hash,
     EqEq,
@@ -211,6 +226,7 @@ enum Tok {
     RBracket,
     Semi,
     Colon,
+    ColonColon,
     Comma,
     Dot,
     DotDot,
@@ -420,6 +436,10 @@ impl<'a> Lexer<'a> {
             (b'~', Some(b'=')) => (Tok::NotEq, 2),
             (b'<', Some(b'=')) => (Tok::LtEq, 2),
             (b'>', Some(b'=')) => (Tok::GtEq, 2),
+            (b'/', Some(b'/')) => (Tok::SlashSlash, 2),
+            (b'<', Some(b'<')) => (Tok::Shl, 2),
+            (b'>', Some(b'>')) => (Tok::Shr, 2),
+            (b':', Some(b':')) => (Tok::ColonColon, 2),
             (b'.', Some(b'.')) => {
                 if self.byte_at(2) == Some(b'.') {
                     (Tok::Ellipsis, 3)
@@ -433,6 +453,9 @@ impl<'a> Lexer<'a> {
             (b'/', _) => (Tok::Slash, 1),
             (b'%', _) => (Tok::Percent, 1),
             (b'^', _) => (Tok::Caret, 1),
+            (b'&', _) => (Tok::Amp, 1),
+            (b'|', _) => (Tok::Pipe, 1),
+            (b'~', _) => (Tok::Tilde, 1),
             (b'#', _) => (Tok::Hash, 1),
             (b'<', _) => (Tok::Lt, 1),
             (b'>', _) => (Tok::Gt, 1),
@@ -520,6 +543,7 @@ fn tokenize(src: &str) -> Result<Vec<Token>> {
 struct ScopeStack {
     frames: Vec<Vec<(Vec<u8>, LocalId)>>,
     next_id: LocalId,
+    names: Vec<Vec<u8>>,
 }
 
 impl ScopeStack {
@@ -527,6 +551,7 @@ impl ScopeStack {
         Self {
             frames: vec![Vec::new()],
             next_id: 0,
+            names: Vec::new(),
         }
     }
 
@@ -544,6 +569,7 @@ impl ScopeStack {
         }
         let id: LocalId = self.next_id;
         self.next_id += 1;
+        self.names.push(name.to_vec());
         if let Some(top) = self.frames.last_mut() {
             top.push((name.to_vec(), id));
         }
@@ -590,6 +616,11 @@ impl<'a> Parser<'a> {
     #[must_use]
     pub fn local_count(&self) -> u32 {
         self.scope.local_count()
+    }
+
+    #[must_use]
+    pub fn local_name(&self, id: LocalId) -> Option<&[u8]> {
+        self.scope.names.get(id as usize).map(Vec::as_slice)
     }
 
     fn peek(&self) -> Tok {
@@ -656,7 +687,7 @@ impl<'a> Parser<'a> {
                 } else {
                     Vec::new()
                 };
-                let end: Span = self.peek_span();
+                let end: Span = values.last().map_or(start, |value: &Expr| value.span);
                 while self.peek() == Tok::Semi {
                     self.bump();
                 }
@@ -729,6 +760,29 @@ impl<'a> Parser<'a> {
             Tok::KFor => self.parse_for(start),
             Tok::KFunction => self.parse_function_stat(start),
             Tok::KLocal => self.parse_local(start),
+            Tok::ColonColon => {
+                self.bump();
+                let name: Span = self.expect(Tok::Name)?.span;
+                let end: Span = self.expect(Tok::ColonColon)?.span;
+                Ok(Stat {
+                    kind: StatKind::Label(name),
+                    span: start.join(end),
+                })
+            }
+            Tok::Name
+                if start.text(self.src) == "goto"
+                    && self
+                        .tokens
+                        .get(self.idx + 1)
+                        .is_some_and(|t: &Token| t.tok == Tok::Name) =>
+            {
+                self.bump();
+                let name: Span = self.expect(Tok::Name)?.span;
+                Ok(Stat {
+                    kind: StatKind::Goto(name),
+                    span: start.join(name),
+                })
+            }
             _ => self.parse_expr_or_assign_stat(start),
         }
     }
@@ -908,9 +962,12 @@ impl<'a> Parser<'a> {
             });
         }
         let mut names: Vec<Span> = vec![self.expect(Tok::Name)?.span];
+        let mut decl_end: Span = self.skip_local_attrib(names[0])?;
         while self.peek() == Tok::Comma {
             self.bump();
-            names.push(self.expect(Tok::Name)?.span);
+            let name: Span = self.expect(Tok::Name)?.span;
+            names.push(name);
+            decl_end = self.skip_local_attrib(name)?;
         }
         let values: Vec<Expr> = if self.peek() == Tok::Eq {
             self.bump();
@@ -918,9 +975,7 @@ impl<'a> Parser<'a> {
         } else {
             Vec::new()
         };
-        let end: Span = values
-            .last()
-            .map_or(names[names.len() - 1], |e: &Expr| e.span);
+        let end: Span = values.last().map_or(decl_end, |e: &Expr| e.span);
         let mut targets: Vec<LocalId> = Vec::with_capacity(names.len());
         for name in &names {
             targets.push(self.scope.declare(name.text(self.src).as_bytes())?);
@@ -929,6 +984,18 @@ impl<'a> Parser<'a> {
             kind: StatKind::Local { targets, values },
             span: start.join(end),
         })
+    }
+
+    fn skip_local_attrib(&mut self, name: Span) -> Result<Span> {
+        if self.peek() != Tok::Lt {
+            return Ok(name);
+        }
+        self.bump();
+        let attrib: Span = self.expect(Tok::Name)?.span;
+        if !matches!(attrib.text(self.src), "const" | "close") {
+            return Err(Error::DecompileUnsupported("unknown local attribute"));
+        }
+        Ok(self.expect(Tok::Gt)?.span)
     }
 
     fn parse_expr_or_assign_stat(&mut self, start: Span) -> Result<Stat> {
@@ -1016,11 +1083,11 @@ impl<'a> Parser<'a> {
         self.parse_binary_expr(0)
     }
 
-    fn parse_binary_expr(&mut self, min_prec: u8) -> Result<Expr> {
+    fn parse_binary_expr(&mut self, limit: u8) -> Result<Expr> {
         self.enter_nest()?;
         let mut lhs: Expr = self.parse_unary_expr()?;
         while let Some((op, left_prec, right_prec)) = binop_of(self.peek()) {
-            if left_prec < min_prec {
+            if left_prec <= limit {
                 break;
             }
             self.bump();
@@ -1041,6 +1108,7 @@ impl<'a> Parser<'a> {
             Tok::KNot => Some(UnOp::Not),
             Tok::Minus => Some(UnOp::Neg),
             Tok::Hash => Some(UnOp::Len),
+            Tok::Tilde => Some(UnOp::BNot),
             _ => None,
         };
         if let Some(op) = op {
@@ -1052,21 +1120,7 @@ impl<'a> Parser<'a> {
                 span,
             });
         }
-        self.parse_pow_expr()
-    }
-
-    fn parse_pow_expr(&mut self) -> Result<Expr> {
-        let base: Expr = self.parse_suffixed_expr()?;
-        if self.peek() == Tok::Caret {
-            self.bump();
-            let exp: Expr = self.parse_binary_expr(UNARY_PREC)?;
-            let span: Span = base.span.join(exp.span);
-            return Ok(Expr {
-                kind: ExprKind::Binary(BinOp::Pow, Box::new(base), Box::new(exp)),
-                span,
-            });
-        }
-        Ok(base)
+        self.parse_suffixed_expr()
     }
 
     fn parse_suffixed_expr(&mut self) -> Result<Expr> {
@@ -1293,24 +1347,31 @@ fn expr_to_assign_target(expr: Expr) -> Result<AssignTarget> {
     }
 }
 
-const UNARY_PREC: u8 = 8;
+const UNARY_PREC: u8 = 12;
 
 fn binop_of(tok: Tok) -> Option<(BinOp, u8, u8)> {
     Some(match tok {
-        Tok::KOr => (BinOp::Or, 1, 2),
-        Tok::KAnd => (BinOp::And, 2, 3),
-        Tok::Lt => (BinOp::Lt, 3, 4),
-        Tok::Gt => (BinOp::Gt, 3, 4),
-        Tok::LtEq => (BinOp::Le, 3, 4),
-        Tok::GtEq => (BinOp::Ge, 3, 4),
-        Tok::NotEq => (BinOp::Ne, 3, 4),
-        Tok::EqEq => (BinOp::Eq, 3, 4),
-        Tok::DotDot => (BinOp::Concat, 5, 4),
-        Tok::Plus => (BinOp::Add, 6, 7),
-        Tok::Minus => (BinOp::Sub, 6, 7),
-        Tok::Star => (BinOp::Mul, 7, 8),
-        Tok::Slash => (BinOp::Div, 7, 8),
-        Tok::Percent => (BinOp::Mod, 7, 8),
+        Tok::KOr => (BinOp::Or, 1, 1),
+        Tok::KAnd => (BinOp::And, 2, 2),
+        Tok::Lt => (BinOp::Lt, 3, 3),
+        Tok::Gt => (BinOp::Gt, 3, 3),
+        Tok::LtEq => (BinOp::Le, 3, 3),
+        Tok::GtEq => (BinOp::Ge, 3, 3),
+        Tok::NotEq => (BinOp::Ne, 3, 3),
+        Tok::EqEq => (BinOp::Eq, 3, 3),
+        Tok::Pipe => (BinOp::BOr, 4, 4),
+        Tok::Tilde => (BinOp::BXor, 5, 5),
+        Tok::Amp => (BinOp::BAnd, 6, 6),
+        Tok::Shl => (BinOp::Shl, 7, 7),
+        Tok::Shr => (BinOp::Shr, 7, 7),
+        Tok::DotDot => (BinOp::Concat, 9, 8),
+        Tok::Plus => (BinOp::Add, 10, 10),
+        Tok::Minus => (BinOp::Sub, 10, 10),
+        Tok::Star => (BinOp::Mul, 11, 11),
+        Tok::Slash => (BinOp::Div, 11, 11),
+        Tok::SlashSlash => (BinOp::IDiv, 11, 11),
+        Tok::Percent => (BinOp::Mod, 11, 11),
+        Tok::Caret => (BinOp::Pow, 14, 13),
         _ => return None,
     })
 }
@@ -1415,5 +1476,52 @@ mod tests {
             panic!("expected function literal")
         };
         assert_eq!(params.len(), 2);
+    }
+
+    #[test]
+    fn parses_lua_5_4_operators_with_reference_precedence() {
+        let block: Block = parse("local x <const> = a | b ~ c & d << e .. f + g * h ^ i\n");
+        let StatKind::Local { values, .. } = &block.stats[0].kind else {
+            panic!("expected local")
+        };
+        let ExprKind::Binary(BinOp::BOr, _, rest) = &values[0].kind else {
+            panic!("bitwise or binds loosest")
+        };
+        let ExprKind::Binary(BinOp::BXor, _, rest) = &rest.kind else {
+            panic!("xor binds below or")
+        };
+        let ExprKind::Binary(BinOp::BAnd, _, rest) = &rest.kind else {
+            panic!("and binds below xor")
+        };
+        let ExprKind::Binary(BinOp::Shl, _, rest) = &rest.kind else {
+            panic!("shift binds below and")
+        };
+        assert!(matches!(rest.kind, ExprKind::Binary(BinOp::Concat, _, _)));
+
+        let block: Block = parse("local y = -x ^ 2 // ~z\n");
+        let StatKind::Local { values, .. } = &block.stats[0].kind else {
+            panic!("expected local")
+        };
+        let ExprKind::Binary(BinOp::IDiv, left, right) = &values[0].kind else {
+            panic!("floor division is the root")
+        };
+        assert!(matches!(
+            &left.kind,
+            ExprKind::Unary(UnOp::Neg, inner) if matches!(inner.kind, ExprKind::Binary(BinOp::Pow, _, _))
+        ));
+        assert!(matches!(right.kind, ExprKind::Unary(UnOp::BNot, _)));
+    }
+
+    #[test]
+    fn parses_goto_labels_and_contextual_goto_names() {
+        let src: &str = "goto done\nlocal goto = 1\nprint(goto)\n::done::\nreturn 1;\n";
+        let block: Block = parse(src);
+        assert!(matches!(block.stats[0].kind, StatKind::Goto(_)));
+        assert!(matches!(block.stats[1].kind, StatKind::Local { .. }));
+        let StatKind::Label(name) = block.stats[3].kind else {
+            panic!("expected label")
+        };
+        assert_eq!(name.text(src), "done");
+        assert_eq!(block.stats[4].span.text(src), "return 1");
     }
 }

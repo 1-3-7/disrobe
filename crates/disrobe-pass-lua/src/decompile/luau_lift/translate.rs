@@ -108,10 +108,12 @@ struct ProtoTranslation<'p> {
     flipped: BTreeSet<usize>,
     elided: BTreeSet<usize>,
     captures: BTreeMap<usize, usize>,
+    merge_returns: bool,
+    last_returns: BTreeMap<u32, usize>,
 }
 
-pub(crate) fn translate(main: &LuaProto) -> Option<LuaProto> {
-    translate_proto(main, main.upvalues.len(), 0)
+pub(crate) fn translate(main: &LuaProto, merge_returns: bool) -> Option<LuaProto> {
+    translate_proto(main, main.upvalues.len(), 0, merge_returns)
 }
 
 fn refuse<T>(pc: usize, why: &str) -> Option<T> {
@@ -129,7 +131,12 @@ const fn abx(op: u32, a: u32, bx: u32) -> u32 {
     op | (a << 6) | (bx << 14)
 }
 
-fn translate_proto(p: &LuaProto, upvalue_count: usize, depth: usize) -> Option<LuaProto> {
+fn translate_proto(
+    p: &LuaProto,
+    upvalue_count: usize,
+    depth: usize,
+    merge_returns: bool,
+) -> Option<LuaProto> {
     if depth > MAX_TRANSLATE_DEPTH {
         return refuse(0, "prototype nesting too deep");
     }
@@ -159,6 +166,8 @@ fn translate_proto(p: &LuaProto, upvalue_count: usize, depth: usize) -> Option<L
         flipped: BTreeSet::new(),
         elided: BTreeSet::new(),
         captures: BTreeMap::new(),
+        merge_returns,
+        last_returns: BTreeMap::new(),
     };
     let items: Vec<Item> = t.lower_all()?;
     let code: Vec<u32> = resolve(items, p.code.len())?;
@@ -169,7 +178,7 @@ fn translate_proto(p: &LuaProto, upvalue_count: usize, depth: usize) -> Option<L
             .get(&index)
             .copied()
             .unwrap_or(child.upvalues.len());
-        protos.push(translate_proto(child, count, depth + 1)?);
+        protos.push(translate_proto(child, count, depth + 1, merge_returns)?);
     }
     let upvalues: Vec<LuaUpvalueName> = if p.upvalues.len() == upvalue_count {
         p.upvalues.clone()
@@ -265,6 +274,14 @@ impl ProtoTranslation<'_> {
         }
         self.rethread_loop_exits()?;
         self.reachable = self.reachability();
+        if self.merge_returns {
+            for (pc, raw) in code.iter().enumerate() {
+                if self.reachable.get(pc).copied().unwrap_or(false) && decode(*raw).op == LOP_RETURN
+                {
+                    self.last_returns.insert(*raw, pc);
+                }
+            }
+        }
         self.fold_jumps_over_jumps();
         let mut items: Vec<Item> = Vec::new();
         pc = 0;
@@ -559,8 +576,13 @@ impl ProtoTranslation<'_> {
             return refuse(pc, "jump target outside the function");
         };
         let landing: usize = self.rethreaded.get(&pc).copied().unwrap_or(landing);
+        self.jump_to(pc, landing, unconditional, words);
+        Some(())
+    }
+
+    fn jump_to(&self, pc: usize, landing: usize, unconditional: bool, words: &mut Vec<Word>) {
         if unconditional && self.falls_through_to(pc, landing) {
-            return Some(());
+            return;
         }
         words.push(Word::Jump {
             op: JMP,
@@ -570,7 +592,6 @@ impl ProtoTranslation<'_> {
                 offset: 0,
             },
         });
-        Some(())
     }
 
     #[allow(clippy::too_many_lines)]
@@ -673,7 +694,19 @@ impl ProtoTranslation<'_> {
             }
             LOP_NEWCLOSURE | LOP_DUPCLOSURE => return self.closure(pc, inst, words),
             LOP_CALL | LOP_CALLFB => words.push(Word::Ready(abc(CALL, a, b, c))),
-            LOP_RETURN => words.push(Word::Ready(abc(RETURN, a, b, 0))),
+            LOP_RETURN => {
+                let shared: Option<usize> = self
+                    .proto
+                    .code
+                    .get(pc)
+                    .and_then(|raw: &u32| self.last_returns.get(raw))
+                    .copied()
+                    .filter(|exit: &usize| *exit > pc && b != 0);
+                match shared {
+                    Some(exit) => self.jump_to(pc, exit, true, words),
+                    None => words.push(Word::Ready(abc(RETURN, a, b, 0))),
+                }
+            }
             LOP_JUMP | LOP_JUMPBACK => self.jump(pc, inst.d, true, words)?,
             LOP_JUMPX => self.jump(pc, inst.e, true, words)?,
             LOP_JUMPIF | LOP_JUMPIFNOT => {

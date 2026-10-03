@@ -1,7 +1,8 @@
 use crate::error::{Error, Result};
+use crate::obfuscator::hercules_recover::{SourceRecovery, function_literal_count, recover_source};
 use crate::obfuscator::vm_devirt::{devirt_to_peel, extract_embedded_payload};
 use crate::obfuscator::{DeobfOptions, LuaObfuscatorKind, ObfuscatorDetection, PeelResult};
-use crate::reader::{LuaConstant, LuaProto, read_auto};
+use crate::reader::{LuaProto, read_auto};
 
 const WATERMARK_MARKERS: &[&[u8]] = &[
     b"Obfuscated by Hercules",
@@ -11,7 +12,6 @@ const WATERMARK_MARKERS: &[&[u8]] = &[
 
 const MAX_LOADER_DEPTH: usize = 16;
 const MIN_HEX_LOADER_LEN: usize = 16;
-const MIN_INNER_LAYER_LEN: usize = 24;
 
 #[must_use]
 pub fn detect(src: &[u8]) -> Option<ObfuscatorDetection> {
@@ -169,83 +169,87 @@ pub fn peel(src: &[u8], _opts: &DeobfOptions) -> Result<PeelResult> {
         ));
     }
 
-    if layers_decoded == 0 {
-        return Ok(PeelResult::passthrough(
-            src,
-            vec![
-                "hercules: watermark present but no static hex-subtract self-decrypt loader could be parsed from this artifact".to_owned(),
-            ],
-        ));
-    }
-
-    let mut recovered_strings: Vec<String> = Vec::new();
-    let mut residual_markers: Vec<String> = Vec::new();
-    let mut deob: Vec<u8> = current.clone();
-
-    if let Ok(chunk) = read_auto(&current) {
-        let mut pool: Vec<String> = Vec::new();
-        collect_string_constants(&chunk.main, &mut pool);
-        if pool.is_empty() {
-            residual_markers.push(
-                "hercules: loader decrypted to a Lua bytecode chunk with no extractable string constant".to_owned(),
-            );
-        } else {
-            passes_run.push("hercules-embedded-bytecode-constant-extract".to_owned());
-            let inner: Option<String> = pool
-                .iter()
-                .filter(|s: &&String| s.len() >= MIN_INNER_LAYER_LEN)
-                .max_by_key(|s: &&String| s.len())
-                .cloned();
-            if let Some(inner_layer) = inner {
-                deob = render_recovered(&inner_layer);
-                recovered_strings.push(inner_layer);
-            } else {
-                recovered_strings.extend(pool);
-            }
-            residual_markers.push(format!(
-                "hercules: extracted {} string constant(s) ({} bytes largest) from the embedded Lua bytecode chunk after the outer loader decrypt; this constant is the bytecode-encoder/StringToExpressions next layer, not yet cleartext source",
-                recovered_strings.len(),
-                recovered_strings.iter().map(String::len).max().unwrap_or(0)
-            ));
+    let source: String = match next_source_layer(&current, layers_decoded) {
+        Ok((source, pass)) => {
+            passes_run.extend(pass);
+            source
         }
-    } else {
-        residual_markers.push(format!(
-            "hercules: loader decrypted to a {}-byte non-bytecode payload (further source-form layer)",
-            current.len()
-        ));
-    }
+        Err(reason) => {
+            return Ok(PeelResult {
+                deobfuscated: current,
+                passes_run,
+                residual_markers: vec![reason],
+                recovered_strings: Vec::new(),
+                fully_recovered: false,
+            });
+        }
+    };
 
-    residual_markers.push(
-        "hercules: the StringToExpressions arithmetic-string encoding, variable renaming, opaque predicates and the inner bytecode VM (VMGenerator) are not lifted back to original Lua by this pass"
-            .to_owned(),
-    );
-
+    let recovery: SourceRecovery = recover_source(&source);
+    passes_run.extend(recovery.passes);
     Ok(PeelResult {
-        deobfuscated: deob,
+        deobfuscated: recovery.source.into_bytes(),
         passes_run,
-        residual_markers,
-        recovered_strings,
-        fully_recovered: false,
+        fully_recovered: recovery.residual.is_empty(),
+        residual_markers: recovery.residual,
+        recovered_strings: recovery.strings,
     })
 }
 
-fn collect_string_constants(proto: &LuaProto, out: &mut Vec<String>) {
-    for c in &proto.constants {
-        if let LuaConstant::Str(s) = c {
-            out.push(s.clone());
-        }
+fn next_source_layer(
+    current: &[u8],
+    layers_decoded: usize,
+) -> core::result::Result<(String, Option<String>), String> {
+    if layers_decoded == 0 {
+        return String::from_utf8(current.to_vec())
+            .map(|source: String| (source, None))
+            .map_err(|_: std::string::FromUtf8Error| {
+                "hercules: source is not UTF-8, so its string literals cannot be rewritten byte for byte".to_owned()
+            });
     }
-    for sub in &proto.protos {
-        collect_string_constants(sub, out);
+    let Ok(chunk) = read_auto(current) else {
+        return String::from_utf8(current.to_vec())
+            .map(|source: String| (source, Some("hercules-loader-source-layer".to_owned())))
+            .map_err(|_: std::string::FromUtf8Error| {
+                format!(
+                    "hercules: loader decrypted to a {}-byte payload that is neither Lua bytecode nor UTF-8 source",
+                    current.len()
+                )
+            });
+    };
+    let Some(source) = chunk.main.source.as_deref() else {
+        return Err(
+            "hercules: loader decrypted to stripped Lua bytecode with no embedded source; the bytecode is not lifted by this pass"
+                .to_owned(),
+        );
+    };
+    if source.starts_with(['=', '@']) || source.contains(char::REPLACEMENT_CHARACTER) {
+        return Err(
+            "hercules: loader bytecode names its source instead of embedding it; the bytecode is not lifted by this pass"
+                .to_owned(),
+        );
+    }
+    let protos: usize = count_nested_protos(&chunk.main);
+    match function_literal_count(source) {
+        Ok(literals) if literals == protos => Ok((
+            source.to_owned(),
+            Some("hercules-bytecode-source-field-extract".to_owned()),
+        )),
+        Ok(literals) => Err(format!(
+            "hercules: the bytecode's embedded source declares {literals} function(s) but the bytecode carries {protos}, so the source field is not trusted as the compiled program"
+        )),
+        Err(err) => Err(format!(
+            "hercules: the bytecode's embedded source does not parse ({err})"
+        )),
     }
 }
 
-fn render_recovered(inner_layer: &str) -> Vec<u8> {
-    let mut out: String = String::with_capacity(inner_layer.len() + 96);
-    out.push_str("local HERCULES_EMBEDDED_NEXT_LAYER = [==[\n");
-    out.push_str(inner_layer);
-    out.push_str("\n]==]\n");
-    out.into_bytes()
+fn count_nested_protos(proto: &LuaProto) -> usize {
+    proto
+        .protos
+        .iter()
+        .map(|sub: &LuaProto| 1 + count_nested_protos(sub))
+        .sum()
 }
 
 #[cfg(test)]

@@ -853,8 +853,8 @@ mod tests {
         );
         let recovered: &str = std::str::from_utf8(&out.envelope).expect("utf8 recovered source");
         assert!(
-            recovered.contains("HERCULES_EMBEDDED_NEXT_LAYER"),
-            "chain output must expose the extracted Hercules inner layer; got {:?}",
+            recovered.contains("BcToState"),
+            "chain output must expose the Hercules source layer under the loader; got {:?}",
             recovered.chars().take(160).collect::<String>(),
         );
     }

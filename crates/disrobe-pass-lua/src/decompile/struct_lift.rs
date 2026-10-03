@@ -352,7 +352,12 @@ fn lift_structured_captured(
     promote_local_functions(&mut state.stmts);
     let mut structured: structurer::StructureResult =
         structure_standard(&state.stmts, p.code.len());
-    declare::declare_scoped_temps(&mut structured.blocks, outer_names);
+    let persistent_captures: std::collections::BTreeSet<String> = state
+        .pinned
+        .iter()
+        .map(|slot: &u32| state.reg(*slot))
+        .collect();
+    declare::declare_scoped_temps(&mut structured.blocks, outer_names, &persistent_captures);
     let rendered: RenderedBlocks = render_blocks(&structured.blocks, 1);
     if structured.unresolved_jumps > 0 {
         state.fully_structured = false;
@@ -448,6 +453,15 @@ impl LiveAcrossBranch {
             }
             if let Some(slot) = reads.get_mut(pc) {
                 *slot = read_registers(&d, dialect);
+                if d.op == Op::Closure {
+                    slot.extend(
+                        closure_captures(p, &d, pc, dialect)
+                            .ops
+                            .iter()
+                            .filter(|capture: &&Decoded| capture.op == Op::Move)
+                            .map(|capture: &Decoded| capture.b),
+                    );
+                }
             }
             if let Some(slot) = writes.get_mut(pc) {
                 *slot = liveness_writes(&d, dialect);
@@ -1562,12 +1576,12 @@ fn lower_span(
                 ) {
                     state.push_stmt(LStmt::BlockEnd);
                     state.release_scope(d.a);
-                }
-                if matches!(
-                    p.code.get(pc + 1).map(|r: &u32| decode(*r, dialect).op),
-                    Some(Op::Jmp)
-                ) {
-                    pc += 1;
+                    if matches!(
+                        p.code.get(pc + 1).map(|r: &u32| decode(*r, dialect).op),
+                        Some(Op::Jmp)
+                    ) {
+                        pc += 1;
+                    }
                 }
             }
             Op::SetList => emit_setlist(state, p, &d, &mut pc, dialect),
@@ -1842,6 +1856,8 @@ fn capture_name(
         let var: String = state.temp(slot);
         if current.is_empty() || slot == closure.a {
             state.push_raw(format!("local {var}"));
+        } else if state.is_defined(slot) {
+            state.push_raw(format!("{var} = {current}"));
         } else {
             state.push_raw(format!("local {var} = {current}"));
         }

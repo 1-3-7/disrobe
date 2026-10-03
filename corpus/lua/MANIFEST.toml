@@ -89,6 +89,13 @@ size_bytes = 2029
 sha256 = "a63926b1ae6da1582e22dc8107efbf1f571750d53f4366e20694eaf70008cda0"
 notes = "portable 5.1-5.5 and Luau 0.725: a local reassigned from a selection inside one branch and read only in the sibling branch, a loop-body value redefined on one branch and read on the other with no read after the loop, `(a or f(b)) and c`, a selection whose fallback arm holds its own `b or 0` (once over a local, once over a global), and a call whose result goes to a local never read again inside a then-branch at the end of a function; every standard lifter recovered each of these as wrong output or an unstructured goto before"
 
+[[behaviour.fixtures]]
+path = "behaviour/rich_scope.lua"
+kind = "lua-source"
+size_bytes = 2430
+sha256 = "92f88687dd86d95c0be9e5ad876a350a3aac41d8763e1d3920850b9d382efc46"
+notes = "portable branch and loop scope regressions reduced from the rich generated differential: values read after generic loops, coroutine captures inside repeat loops, multi-result calls, closures over reassigned locals, and a break after a threaded conditional"
+
 [megafile]
 description = "~1200-LOC fixture exercising 5.1/5.2/5.3/5.4 + LuaJIT feature surface; parses cleanly across all 5 runtimes"
 
@@ -312,6 +319,141 @@ generator = "wearedevs.net/obfuscator (unmodified wcrddn/Prometheus backend per 
 input = "megafile/edge_cases.lua (first 60 lines, ASCII-safe slice)"
 notes = "Captured 2026-05-26 via Playwright MCP + CodeMirror v5 setValue. Output starts with `--[[ v1.0.0 https://wearedevs.net/obfuscator ]]` then Prometheus-format `\\nnn\\nnn` byte-decoder + VM loop. Confirms the site's claim of using stock Prometheus."
 
+[[obfuscators.fixtures]]
+path = "hercules/real/tour.light.lua"
+kind = "lua-source-obfuscated"
+size_bytes = 3124
+sha256 = "7429b12c73be416510703957e874222d073a814adf8eef60c54031c9a07623fa"
+generator = 'Hercules https://github.com/zeusssz/hercules-obfuscator@ace084c897369faf584dfa3baeea159d7b205213 (tree 84acc94a725d11b7fe9802cf3e7d753e9c0586a8) from its src directory: lua5.4 hercules.lua <input> --light'
+input = "behaviour/tour.lua"
+notes = "Produced on a GitHub-hosted runner (ubuntu24 20260927.320.1, https://github.com/1-3-7/disrobe/actions/runs/37028454195) by .github/real-tools/hercules.sh at repository commit d72ecd27b8572c14aeea8bc8969a0dd478e00864, Lua 5.4.6. input_sha256=1f3d2bc2de034fbbc8c5a7f4a6ff76298ecf6b238d5f149192c8f4c2ef8dffb0; output_sha256=7429b12c73be416510703957e874222d073a814adf8eef60c54031c9a07623fa. The runner ran the input and this output under lua5.4 and both printed the same bytes. Hercules picks random keys and names on every run, so the output is not reproducible byte for byte."
+
+[[obfuscators.fixtures]]
+path = "hercules/real/tour.balanced.lua"
+kind = "lua-source-obfuscated"
+size_bytes = 4591
+sha256 = "224d4a096bde9fbe9e0c82b1ade3d432cf0ec0bc8f6b574296b5ef10c931aeb2"
+generator = 'Hercules https://github.com/zeusssz/hercules-obfuscator@ace084c897369faf584dfa3baeea159d7b205213 (tree 84acc94a725d11b7fe9802cf3e7d753e9c0586a8) from its src directory: lua5.4 hercules.lua <input> --balanced'
+input = "behaviour/tour.lua"
+notes = "Produced on a GitHub-hosted runner (ubuntu24 20260927.320.1, https://github.com/1-3-7/disrobe/actions/runs/37028454195) by .github/real-tools/hercules.sh at repository commit d72ecd27b8572c14aeea8bc8969a0dd478e00864, Lua 5.4.6. input_sha256=1f3d2bc2de034fbbc8c5a7f4a6ff76298ecf6b238d5f149192c8f4c2ef8dffb0; output_sha256=224d4a096bde9fbe9e0c82b1ade3d432cf0ec0bc8f6b574296b5ef10c931aeb2. The runner ran the input and this output under lua5.4 and both printed the same bytes. Hercules picks random keys and names on every run, so the output is not reproducible byte for byte."
+
+[[obfuscators.fixtures]]
+path = "hercules/real/values.light.lua"
+kind = "lua-source-obfuscated"
+size_bytes = 3908
+sha256 = "200248417a1744765c8c8a8ff737a4e5ebcc4757e4aff9e343d1996f50c4a570"
+generator = 'Hercules https://github.com/zeusssz/hercules-obfuscator@ace084c897369faf584dfa3baeea159d7b205213 (tree 84acc94a725d11b7fe9802cf3e7d753e9c0586a8) from its src directory: lua5.4 hercules.lua <input> --light'
+input = "behaviour/values.lua"
+notes = "Produced on a GitHub-hosted runner (ubuntu24 20260927.320.1, https://github.com/1-3-7/disrobe/actions/runs/37028454195) by .github/real-tools/hercules.sh at repository commit d72ecd27b8572c14aeea8bc8969a0dd478e00864, Lua 5.4.6. input_sha256=883ca464a064cdc00abe2517d8c038e57b46e66f0e1b3c5583f3d2e1eb56eef1; output_sha256=200248417a1744765c8c8a8ff737a4e5ebcc4757e4aff9e343d1996f50c4a570. The runner ran the input and this output under lua5.4 and both printed the same bytes. Hercules picks random keys and names on every run, so the output is not reproducible byte for byte."
+
+[[obfuscators.fixtures]]
+path = "hercules/real/values.balanced.lua"
+kind = "lua-source-obfuscated"
+size_bytes = 5864
+sha256 = "dc214161e2bd339af9c6965d436be133b73021b847dc90ff44e91afa413da6a6"
+generator = 'Hercules https://github.com/zeusssz/hercules-obfuscator@ace084c897369faf584dfa3baeea159d7b205213 (tree 84acc94a725d11b7fe9802cf3e7d753e9c0586a8) from its src directory: lua5.4 hercules.lua <input> --balanced'
+input = "behaviour/values.lua"
+notes = "Produced on a GitHub-hosted runner (ubuntu24 20260927.320.1, https://github.com/1-3-7/disrobe/actions/runs/37028454195) by .github/real-tools/hercules.sh at repository commit d72ecd27b8572c14aeea8bc8969a0dd478e00864, Lua 5.4.6. input_sha256=883ca464a064cdc00abe2517d8c038e57b46e66f0e1b3c5583f3d2e1eb56eef1; output_sha256=dc214161e2bd339af9c6965d436be133b73021b847dc90ff44e91afa413da6a6. The runner ran the input and this output under lua5.4 and both printed the same bytes. Hercules picks random keys and names on every run, so the output is not reproducible byte for byte."
+
+[[obfuscators.fixtures]]
+path = "hercules/real/values.heavy.lua"
+kind = "lua-source-obfuscated"
+size_bytes = 33866
+sha256 = "007f7ae76d6cedc04b33be3ef10f7c9a35db96a0e20a49799213e341da6689b8"
+generator = 'Hercules https://github.com/zeusssz/hercules-obfuscator@ace084c897369faf584dfa3baeea159d7b205213 (tree 84acc94a725d11b7fe9802cf3e7d753e9c0586a8) from its src directory: lua5.4 hercules.lua <input> --heavy'
+input = "behaviour/values.lua"
+notes = "Produced on a GitHub-hosted runner (ubuntu24 20260927.320.1, https://github.com/1-3-7/disrobe/actions/runs/37028454195) by .github/real-tools/hercules.sh at repository commit d72ecd27b8572c14aeea8bc8969a0dd478e00864, Lua 5.4.6. input_sha256=883ca464a064cdc00abe2517d8c038e57b46e66f0e1b3c5583f3d2e1eb56eef1; output_sha256=007f7ae76d6cedc04b33be3ef10f7c9a35db96a0e20a49799213e341da6689b8. The runner ran the input and this output under lua5.4 and both printed the same bytes. Hercules picks random keys and names on every run, so the output is not reproducible byte for byte."
+
+[[obfuscators.fixtures]]
+path = "hercules/real/loops.light.lua"
+kind = "lua-source-obfuscated"
+size_bytes = 4882
+sha256 = "8e8971d4c85292a3c8f36a20d3a0587eecdd875e13f0afdaff8e94ade7230ca1"
+generator = 'Hercules https://github.com/zeusssz/hercules-obfuscator@ace084c897369faf584dfa3baeea159d7b205213 (tree 84acc94a725d11b7fe9802cf3e7d753e9c0586a8) from its src directory: lua5.4 hercules.lua <input> --light'
+input = "behaviour/loops.lua"
+notes = "Produced on a GitHub-hosted runner (ubuntu24 20260927.320.1, https://github.com/1-3-7/disrobe/actions/runs/37028454195) by .github/real-tools/hercules.sh at repository commit d72ecd27b8572c14aeea8bc8969a0dd478e00864, Lua 5.4.6. input_sha256=399617080981e32f366a623b2dde9632c6b0707ff2ed4b711bed3448fa9d6510; output_sha256=8e8971d4c85292a3c8f36a20d3a0587eecdd875e13f0afdaff8e94ade7230ca1. The runner ran the input and this output under lua5.4 and both printed the same bytes. Hercules picks random keys and names on every run, so the output is not reproducible byte for byte."
+
+[[obfuscators.fixtures]]
+path = "hercules/real/loops.balanced.lua"
+kind = "lua-source-obfuscated"
+size_bytes = 6518
+sha256 = "91624fd5e8c7b87a1033b00b9e4627831cc2f70463fe6fcef7e9371d5a4a565d"
+generator = 'Hercules https://github.com/zeusssz/hercules-obfuscator@ace084c897369faf584dfa3baeea159d7b205213 (tree 84acc94a725d11b7fe9802cf3e7d753e9c0586a8) from its src directory: lua5.4 hercules.lua <input> --balanced'
+input = "behaviour/loops.lua"
+notes = "Produced on a GitHub-hosted runner (ubuntu24 20260927.320.1, https://github.com/1-3-7/disrobe/actions/runs/37028454195) by .github/real-tools/hercules.sh at repository commit d72ecd27b8572c14aeea8bc8969a0dd478e00864, Lua 5.4.6. input_sha256=399617080981e32f366a623b2dde9632c6b0707ff2ed4b711bed3448fa9d6510; output_sha256=91624fd5e8c7b87a1033b00b9e4627831cc2f70463fe6fcef7e9371d5a4a565d. The runner ran the input and this output under lua5.4 and both printed the same bytes. Hercules picks random keys and names on every run, so the output is not reproducible byte for byte."
+
+[[obfuscators.fixtures]]
+path = "hercules/real/branches.light.lua"
+kind = "lua-source-obfuscated"
+size_bytes = 2256
+sha256 = "36a6021ffe211594f131bfcedba5bbbfb5a24bd524674a8a6ce34fd8abac6454"
+generator = 'Hercules https://github.com/zeusssz/hercules-obfuscator@ace084c897369faf584dfa3baeea159d7b205213 (tree 84acc94a725d11b7fe9802cf3e7d753e9c0586a8) from its src directory: lua5.4 hercules.lua <input> --light'
+input = "behaviour/branches.lua"
+notes = "Produced on a GitHub-hosted runner (ubuntu24 20260927.320.1, https://github.com/1-3-7/disrobe/actions/runs/37028454195) by .github/real-tools/hercules.sh at repository commit d72ecd27b8572c14aeea8bc8969a0dd478e00864, Lua 5.4.6. input_sha256=e55be8b42b9930e233ae0b514fa2b558b29916ba416bc7de33eea4d1717a537c; output_sha256=36a6021ffe211594f131bfcedba5bbbfb5a24bd524674a8a6ce34fd8abac6454. The runner ran the input and this output under lua5.4 and both printed the same bytes. Hercules picks random keys and names on every run, so the output is not reproducible byte for byte."
+
+[[obfuscators.fixtures]]
+path = "hercules/real/branches.balanced.lua"
+kind = "lua-source-obfuscated"
+size_bytes = 3553
+sha256 = "2b5d553b7f07fd627effee843fec6cc737856f996f8c10340bc2c52e7671f866"
+generator = 'Hercules https://github.com/zeusssz/hercules-obfuscator@ace084c897369faf584dfa3baeea159d7b205213 (tree 84acc94a725d11b7fe9802cf3e7d753e9c0586a8) from its src directory: lua5.4 hercules.lua <input> --balanced'
+input = "behaviour/branches.lua"
+notes = "Produced on a GitHub-hosted runner (ubuntu24 20260927.320.1, https://github.com/1-3-7/disrobe/actions/runs/37028454195) by .github/real-tools/hercules.sh at repository commit d72ecd27b8572c14aeea8bc8969a0dd478e00864, Lua 5.4.6. input_sha256=e55be8b42b9930e233ae0b514fa2b558b29916ba416bc7de33eea4d1717a537c; output_sha256=2b5d553b7f07fd627effee843fec6cc737856f996f8c10340bc2c52e7671f866. The runner ran the input and this output under lua5.4 and both printed the same bytes. Hercules picks random keys and names on every run, so the output is not reproducible byte for byte."
+
+[[obfuscators.fixtures]]
+path = "hercules/real/branches.heavy.lua"
+kind = "lua-source-obfuscated"
+size_bytes = 9218
+sha256 = "612f82544261a9afffad1e24e4c44bc53293df09ca96c1ef9020e31ef3706d86"
+generator = 'Hercules https://github.com/zeusssz/hercules-obfuscator@ace084c897369faf584dfa3baeea159d7b205213 (tree 84acc94a725d11b7fe9802cf3e7d753e9c0586a8) from its src directory: lua5.4 hercules.lua <input> --heavy'
+input = "behaviour/branches.lua"
+notes = "Produced on a GitHub-hosted runner (ubuntu24 20260927.320.1, https://github.com/1-3-7/disrobe/actions/runs/37028454195) by .github/real-tools/hercules.sh at repository commit d72ecd27b8572c14aeea8bc8969a0dd478e00864, Lua 5.4.6. input_sha256=e55be8b42b9930e233ae0b514fa2b558b29916ba416bc7de33eea4d1717a537c; output_sha256=612f82544261a9afffad1e24e4c44bc53293df09ca96c1ef9020e31ef3706d86. The runner ran the input and this output under lua5.4 and both printed the same bytes. Hercules picks random keys and names on every run, so the output is not reproducible byte for byte."
+
+[[obfuscators.fixtures]]
+path = "hercules/real/branches.maximum.lua"
+kind = "lua-source-obfuscated"
+size_bytes = 516883
+sha256 = "d29b53e75f934917120bede0d4d36033f950e03891704bae0e2e180d275d9dda"
+generator = 'Hercules https://github.com/zeusssz/hercules-obfuscator@ace084c897369faf584dfa3baeea159d7b205213 (tree 84acc94a725d11b7fe9802cf3e7d753e9c0586a8) from its src directory: lua5.4 hercules.lua <input> --maximum'
+input = "behaviour/branches.lua"
+notes = "Produced on a GitHub-hosted runner (ubuntu24 20260927.320.1, https://github.com/1-3-7/disrobe/actions/runs/37028454195) by .github/real-tools/hercules.sh at repository commit d72ecd27b8572c14aeea8bc8969a0dd478e00864, Lua 5.4.6. input_sha256=e55be8b42b9930e233ae0b514fa2b558b29916ba416bc7de33eea4d1717a537c; output_sha256=d29b53e75f934917120bede0d4d36033f950e03891704bae0e2e180d275d9dda. The runner ran the input and this output under lua5.4 and both printed the same bytes. Hercules picks random keys and names on every run, so the output is not reproducible byte for byte."
+
+[[obfuscators.fixtures]]
+path = "hercules/real/objects.light.lua"
+kind = "lua-source-obfuscated"
+size_bytes = 3358
+sha256 = "e89a185ac85b42c57ef309a84fee6f21da50fc7d16e6a232be423ed22acfab51"
+generator = 'Hercules https://github.com/zeusssz/hercules-obfuscator@ace084c897369faf584dfa3baeea159d7b205213 (tree 84acc94a725d11b7fe9802cf3e7d753e9c0586a8) from its src directory: lua5.4 hercules.lua <input> --light'
+input = "behaviour/objects.lua"
+notes = "Produced on a GitHub-hosted runner (ubuntu24 20260927.320.1, https://github.com/1-3-7/disrobe/actions/runs/37028454195) by .github/real-tools/hercules.sh at repository commit d72ecd27b8572c14aeea8bc8969a0dd478e00864, Lua 5.4.6. input_sha256=e42436b66362b925796f27e9629e9a1957938ceea340f202749b9a8c8f8e47aa; output_sha256=e89a185ac85b42c57ef309a84fee6f21da50fc7d16e6a232be423ed22acfab51. The runner ran the input and this output under lua5.4 and both printed the same bytes. Hercules picks random keys and names on every run, so the output is not reproducible byte for byte."
+
+[[obfuscators.fixtures]]
+path = "hercules/real/objects.balanced.lua"
+kind = "lua-source-obfuscated"
+size_bytes = 4795
+sha256 = "866248d91d0140dab63b968559e1db9f841837bcd08e6eb6ac1223ecc7a1c3f0"
+generator = 'Hercules https://github.com/zeusssz/hercules-obfuscator@ace084c897369faf584dfa3baeea159d7b205213 (tree 84acc94a725d11b7fe9802cf3e7d753e9c0586a8) from its src directory: lua5.4 hercules.lua <input> --balanced'
+input = "behaviour/objects.lua"
+notes = "Produced on a GitHub-hosted runner (ubuntu24 20260927.320.1, https://github.com/1-3-7/disrobe/actions/runs/37028454195) by .github/real-tools/hercules.sh at repository commit d72ecd27b8572c14aeea8bc8969a0dd478e00864, Lua 5.4.6. input_sha256=e42436b66362b925796f27e9629e9a1957938ceea340f202749b9a8c8f8e47aa; output_sha256=866248d91d0140dab63b968559e1db9f841837bcd08e6eb6ac1223ecc7a1c3f0. The runner ran the input and this output under lua5.4 and both printed the same bytes. Hercules picks random keys and names on every run, so the output is not reproducible byte for byte."
+
+[[obfuscators.fixtures]]
+path = "hercules/real/objects.heavy.lua"
+kind = "lua-source-obfuscated"
+size_bytes = 24467
+sha256 = "9b8a1a0ca5d4edc287e0f2735d4b66b862f23f1a20711537d02a956c109beb5c"
+generator = 'Hercules https://github.com/zeusssz/hercules-obfuscator@ace084c897369faf584dfa3baeea159d7b205213 (tree 84acc94a725d11b7fe9802cf3e7d753e9c0586a8) from its src directory: lua5.4 hercules.lua <input> --heavy'
+input = "behaviour/objects.lua"
+notes = "Produced on a GitHub-hosted runner (ubuntu24 20260927.320.1, https://github.com/1-3-7/disrobe/actions/runs/37028454195) by .github/real-tools/hercules.sh at repository commit d72ecd27b8572c14aeea8bc8969a0dd478e00864, Lua 5.4.6. input_sha256=e42436b66362b925796f27e9629e9a1957938ceea340f202749b9a8c8f8e47aa; output_sha256=9b8a1a0ca5d4edc287e0f2735d4b66b862f23f1a20711537d02a956c109beb5c. The runner ran the input and this output under lua5.4 and both printed the same bytes. Hercules picks random keys and names on every run, so the output is not reproducible byte for byte."
+
+[[obfuscators.fixtures]]
+path = "hercules/real/objects.maximum.lua"
+kind = "lua-source-obfuscated"
+size_bytes = 98178
+sha256 = "9d2d5bf5dbbc041b274272add279de99bac37019a67e6c6f30911c3a40e2e758"
+generator = 'Hercules https://github.com/zeusssz/hercules-obfuscator@ace084c897369faf584dfa3baeea159d7b205213 (tree 84acc94a725d11b7fe9802cf3e7d753e9c0586a8) from its src directory: lua5.4 hercules.lua <input> --maximum'
+input = "behaviour/objects.lua"
+notes = "Produced on a GitHub-hosted runner (ubuntu24 20260927.320.1, https://github.com/1-3-7/disrobe/actions/runs/37028454195) by .github/real-tools/hercules.sh at repository commit d72ecd27b8572c14aeea8bc8969a0dd478e00864, Lua 5.4.6. input_sha256=e42436b66362b925796f27e9629e9a1957938ceea340f202749b9a8c8f8e47aa; output_sha256=9d2d5bf5dbbc041b274272add279de99bac37019a67e6c6f30911c3a40e2e758. The runner ran the input and this output under lua5.4 and both printed the same bytes. Hercules picks random keys and names on every run, so the output is not reproducible byte for byte."
+
 [ironbrew2_real]
 description = "real IronBrew2 2.7.0 output built from Trollicus/ironbrew-2 (MIT, C#) and run on the author's own benign Lua; known originals in ironbrew2/original/, obfuscated in ironbrew2/obfuscated/, per-sample detail in ironbrew2/MANIFEST.toml"
 upstream = "github.com/Trollicus/ironbrew-2"
@@ -336,7 +478,7 @@ description = "obfuscators that previously appeared captcha-blocked but were cap
 list = []
 
 [counts]
-real_fixtures = 18
+real_fixtures = 33
 captcha_blocked = 0
 dead_upstream = 9
 new_test_files = 9

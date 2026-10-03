@@ -21,6 +21,10 @@ const PROGRAMS: &[(&str, &str)] = &[
         include_str!("../../../corpus/lua/behaviour/branch_scope.lua"),
     ),
     (
+        "rich_scope",
+        include_str!("../../../corpus/lua/behaviour/rich_scope.lua"),
+    ),
+    (
         "branches",
         include_str!("../../../corpus/lua/behaviour/branches.lua"),
     ),

@@ -188,18 +188,22 @@ fn lift_through_standard_structurer(
     main: &LuaProto,
     budget: &mut LiftBudget,
 ) -> Option<LiftedProto> {
-    let translated: LuaProto = translate(main)?;
-    let lifted: LiftedProto =
-        lift_structured_explicit_nils(&translated, LuaDialect::Lua51, budget)?;
-    if !lifted.fully_structured {
-        dbg_line(|| {
-            format!(
-                "luau: the standard structurer left the function partly unstructured: {}",
-                lifted.warnings.join("; ")
-            )
-        });
-        return None;
-    }
+    let (translated, lifted): (LuaProto, LiftedProto) =
+        [false, true].into_iter().find_map(|merge_returns: bool| {
+            let translated: LuaProto = translate(main, merge_returns)?;
+            let lifted: LiftedProto =
+                lift_structured_explicit_nils(&translated, LuaDialect::Lua51, budget)?;
+            if lifted.fully_structured {
+                return Some((translated, lifted));
+            }
+            dbg_line(|| {
+                format!(
+                    "luau: structuring left jumps unresolved (returns merged: {merge_returns}): {}",
+                    lifted.warnings.join("; ")
+                )
+            });
+            None
+        })?;
     let mut source: String = super::main_signature(&translated);
     source.push('\n');
     for line in lifted.source.lines() {

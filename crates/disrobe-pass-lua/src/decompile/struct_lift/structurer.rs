@@ -454,13 +454,22 @@ fn retarget_exits_through_skip_jumps(nodes: &mut [PcNode]) {
             continue;
         }
         let mut threaded: Option<usize> = None;
+        let mut counted_loops: usize = 0;
         for (offset, later) in nodes[i + 1..].iter().enumerate().take(MAX_EXIT_SCAN) {
             if later.pc >= exit {
                 break;
             }
+            match later.node {
+                Node::ForNum { .. } | Node::ForGen { .. } => counted_loops += 1,
+                Node::BlockEnd => counted_loops = counted_loops.saturating_sub(1),
+                _ => {}
+            }
             let Node::Jump { target } = later.node else {
                 continue;
             };
+            if counted_loops > 0 {
+                continue;
+            }
             if target != exit {
                 continue;
             }

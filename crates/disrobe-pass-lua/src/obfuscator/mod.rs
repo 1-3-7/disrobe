@@ -2,6 +2,8 @@ pub mod aztup_brew;
 pub mod boronide;
 pub mod darksec;
 pub mod hercules;
+mod hercules_recover;
+mod hercules_vm;
 pub mod ironbrew2;
 pub mod ironbrew2_dispatch;
 pub mod ironbrew2_emit;

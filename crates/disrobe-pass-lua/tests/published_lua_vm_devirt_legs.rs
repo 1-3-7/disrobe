@@ -73,7 +73,10 @@ struct InHouseFamily {
     committed_real_samples: &'static [&'static str],
 }
 
-const HERCULES_REAL_SAMPLES: [&str; 1] = ["hercules/gauntlet/gauntlet_obfuscated.lua"];
+const HERCULES_REAL_SAMPLES: [&str; 2] = [
+    "hercules/gauntlet/gauntlet_obfuscated.lua",
+    "hercules/real/branches.maximum.lua",
+];
 const LURAPH_REAL_SAMPLES: [&str; 1] = ["luraph/signature_header.lua"];
 const NO_REAL_SAMPLES: [&str; 0] = [];
 

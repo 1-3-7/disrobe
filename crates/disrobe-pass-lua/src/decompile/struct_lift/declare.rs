@@ -3,8 +3,12 @@ use std::collections::BTreeSet;
 
 const MAX_SCOPE_DEPTH: usize = 200;
 
-pub(super) fn declare_scoped_temps(blocks: &mut Vec<StructuredBlock>, outer: BTreeSet<String>) {
-    hoist_branch_locals(blocks, &outer, 0);
+pub(super) fn declare_scoped_temps(
+    blocks: &mut Vec<StructuredBlock>,
+    outer: BTreeSet<String>,
+    persistent_captures: &BTreeSet<String>,
+) {
+    hoist_branch_locals(blocks, &outer, persistent_captures, 0);
     let mut scopes: Vec<BTreeSet<String>> = Vec::new();
     declare_in_block(blocks, &mut scopes, outer);
 }
@@ -12,6 +16,7 @@ pub(super) fn declare_scoped_temps(blocks: &mut Vec<StructuredBlock>, outer: BTr
 fn hoist_branch_locals(
     blocks: &mut Vec<StructuredBlock>,
     visible: &BTreeSet<String>,
+    persistent_captures: &BTreeSet<String>,
     depth: usize,
 ) {
     if depth >= MAX_SCOPE_DEPTH {
@@ -29,21 +34,21 @@ fn hoist_branch_locals(
                 else_body,
                 ..
             } => {
-                hoist_branch_locals(then_body, &in_scope, depth + 1);
-                hoist_branch_locals(else_body, &in_scope, depth + 1);
+                hoist_branch_locals(then_body, &in_scope, persistent_captures, depth + 1);
+                hoist_branch_locals(else_body, &in_scope, persistent_captures, depth + 1);
             }
             StructuredBlock::While { body, .. } | StructuredBlock::Repeat { body, .. } => {
-                hoist_branch_locals(body, &in_scope, depth + 1);
+                hoist_branch_locals(body, &in_scope, persistent_captures, depth + 1);
             }
             StructuredBlock::NumericFor { var, body, .. } => {
                 let mut inner: BTreeSet<String> = in_scope.clone();
                 inner.insert(var.clone());
-                hoist_branch_locals(body, &inner, depth + 1);
+                hoist_branch_locals(body, &inner, persistent_captures, depth + 1);
             }
             StructuredBlock::GenericFor { vars, body, .. } => {
                 let mut inner: BTreeSet<String> = in_scope.clone();
                 inner.extend(vars.iter().cloned());
-                hoist_branch_locals(body, &inner, depth + 1);
+                hoist_branch_locals(body, &inner, persistent_captures, depth + 1);
             }
             StructuredBlock::Break
             | StructuredBlock::Goto { .. }
@@ -64,8 +69,10 @@ fn hoist_branch_locals(
                             looped,
                             StructuredBlock::While { cond, .. } if super::contains_ident(cond, name)
                         );
-                        !block_captures_in_closure(looped, name, 0)
-                            && (read_by_while_condition || read_before_written(later, name))
+                        (in_scope.contains(name)
+                            || persistent_captures.contains(name)
+                            || !block_captures_in_closure(looped, name, 0))
+                            && (read_before_written(later, name) || read_by_while_condition)
                     }
                 }
             })
@@ -96,9 +103,9 @@ fn hoist_branch_locals(
             .into_iter()
             .filter(|name: &String| {
                 !in_scope.contains(name)
-                    && !blocks[..index]
-                        .iter()
-                        .any(|earlier: &StructuredBlock| block_mentions(earlier, name, 0))
+                    && !blocks[..index].iter().any(|earlier: &StructuredBlock| {
+                        block_mentions_by(earlier, name, 0, mentions_outer_binding)
+                    })
             })
             .collect();
         if fresh.is_empty() {
@@ -289,15 +296,34 @@ fn undeclare_nested(block: &mut StructuredBlock, hoisted: &[String], depth: usiz
 }
 
 fn block_mentions(block: &StructuredBlock, name: &str, depth: usize) -> bool {
+    block_mentions_by(block, name, depth, super::contains_ident)
+}
+
+fn mentions_outer_binding(text: &str, name: &str) -> bool {
+    super::contains_ident(text, name)
+        && !text.lines().skip(1).any(|line: &str| {
+            line.trim_start()
+                .strip_prefix("local ")
+                .and_then(|rest: &str| rest.strip_prefix(name))
+                .is_some_and(|after: &str| after.is_empty() || after.starts_with([' ', ',', '=']))
+        })
+}
+
+fn block_mentions_by(
+    block: &StructuredBlock,
+    name: &str,
+    depth: usize,
+    raw_mentions: fn(&str, &str) -> bool,
+) -> bool {
     if depth >= MAX_SCOPE_DEPTH {
         return true;
     }
     let in_body = |body: &[StructuredBlock]| {
         body.iter()
-            .any(|inner: &StructuredBlock| block_mentions(inner, name, depth + 1))
+            .any(|inner: &StructuredBlock| block_mentions_by(inner, name, depth + 1, raw_mentions))
     };
     match block {
-        StructuredBlock::Raw(text) => super::contains_ident(text, name),
+        StructuredBlock::Raw(text) => raw_mentions(text, name),
         StructuredBlock::If {
             cond,
             then_body,
@@ -460,7 +486,7 @@ mod tests {
             raw("v2 = 0"),
         ];
 
-        declare_scoped_temps(&mut blocks, BTreeSet::new());
+        declare_scoped_temps(&mut blocks, BTreeSet::new(), &BTreeSet::new());
 
         assert_eq!(raw_text(&blocks[1]), "local v3 = 5");
         assert_eq!(
@@ -482,7 +508,7 @@ mod tests {
             raw("print(v4)"),
         ];
 
-        declare_scoped_temps(&mut blocks, BTreeSet::new());
+        declare_scoped_temps(&mut blocks, BTreeSet::new(), &BTreeSet::new());
 
         let StructuredBlock::If {
             then_body,
@@ -504,7 +530,7 @@ mod tests {
             else_body: vec![raw("v16 = #t + 1"), raw("t[v16] = \"IN\"")],
         }];
 
-        declare_scoped_temps(&mut blocks, BTreeSet::new());
+        declare_scoped_temps(&mut blocks, BTreeSet::new(), &BTreeSet::new());
 
         let StructuredBlock::If { else_body, .. } = &blocks[0] else {
             panic!("the if survives");
@@ -525,7 +551,7 @@ mod tests {
             raw("v9 = 4"),
         ];
 
-        declare_scoped_temps(&mut blocks, BTreeSet::new());
+        declare_scoped_temps(&mut blocks, BTreeSet::new(), &BTreeSet::new());
 
         assert_eq!(raw_text(&blocks[0]), "g_counter = 1");
         assert_eq!(raw_text(&blocks[1]), "value = v1");
@@ -546,7 +572,7 @@ mod tests {
             raw("return v1, v5"),
         ];
 
-        declare_scoped_temps(&mut blocks, BTreeSet::new());
+        declare_scoped_temps(&mut blocks, BTreeSet::new(), &BTreeSet::new());
 
         assert_eq!(raw_text(&blocks[0]), "local v5");
         let StructuredBlock::If {
@@ -576,7 +602,7 @@ mod tests {
             raw("print(v6)"),
         ];
 
-        declare_scoped_temps(&mut blocks, BTreeSet::new());
+        declare_scoped_temps(&mut blocks, BTreeSet::new(), &BTreeSet::new());
 
         let StructuredBlock::If { then_body, .. } = &blocks[0] else {
             panic!("the if stays first");
@@ -607,7 +633,7 @@ mod tests {
             raw("print(v9)"),
         ];
 
-        declare_scoped_temps(&mut blocks, BTreeSet::new());
+        declare_scoped_temps(&mut blocks, BTreeSet::new(), &BTreeSet::new());
 
         assert_eq!(blocks.len(), 3, "no second declaration: {blocks:?}");
         let StructuredBlock::If { then_body, .. } = &blocks[1] else {
@@ -635,7 +661,7 @@ mod tests {
             raw("print(v8)"),
         ];
 
-        declare_scoped_temps(&mut blocks, BTreeSet::new());
+        declare_scoped_temps(&mut blocks, BTreeSet::new(), &BTreeSet::new());
 
         assert_eq!(raw_text(&blocks[0]), "local v8");
         assert_eq!(raw_text(&blocks[2]), "v8 = h()");
@@ -651,7 +677,7 @@ mod tests {
             body: vec![raw("v7 = v7 + 1")],
         }];
 
-        declare_scoped_temps(&mut blocks, BTreeSet::new());
+        declare_scoped_temps(&mut blocks, BTreeSet::new(), &BTreeSet::new());
 
         let StructuredBlock::NumericFor { body, .. } = &blocks[0] else {
             panic!("the loop survives");

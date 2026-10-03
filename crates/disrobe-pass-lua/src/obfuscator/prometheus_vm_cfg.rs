@@ -213,7 +213,7 @@ fn walk_exprs_stat<'a>(stat: &'a Stat, out: &mut Vec<&'a Expr>) {
                 walk_exprs_expr(v, out);
             }
         }
-        StatKind::Break => {}
+        StatKind::Break | StatKind::Goto(_) | StatKind::Label(_) => {}
     }
 }
 
@@ -290,7 +290,9 @@ fn collect_block_bound_locals(block: &Block, out: &mut BTreeSet<LocalId>) {
             StatKind::Assign { .. }
             | StatKind::ExprStat(_)
             | StatKind::Return(_)
-            | StatKind::Break => {}
+            | StatKind::Break
+            | StatKind::Goto(_)
+            | StatKind::Label(_) => {}
         }
     }
 }
@@ -454,7 +456,7 @@ fn collect_stat_locals(stat: &Stat, subst: &BTreeMap<u64, String>, out: &mut BTr
                 collect_expr_locals(value, subst, out);
             }
         }
-        StatKind::Break => {}
+        StatKind::Break | StatKind::Goto(_) | StatKind::Label(_) => {}
     }
 }
 
@@ -619,7 +621,9 @@ fn collect_declared_locals(block: &Block, out: &mut BTreeSet<LocalId>) {
             StatKind::Assign { .. }
             | StatKind::ExprStat(_)
             | StatKind::Return(_)
-            | StatKind::Break => {}
+            | StatKind::Break
+            | StatKind::Goto(_)
+            | StatKind::Label(_) => {}
         }
     }
 }
@@ -869,7 +873,12 @@ fn walk_assign_targets_stat<'a>(stat: &'a Stat, out: &mut Vec<&'a AssignTarget>)
                 walk_assign_targets(body, out);
             }
         }
-        StatKind::Local { .. } | StatKind::ExprStat(_) | StatKind::Return(_) | StatKind::Break => {}
+        StatKind::Local { .. }
+        | StatKind::ExprStat(_)
+        | StatKind::Return(_)
+        | StatKind::Break
+        | StatKind::Goto(_)
+        | StatKind::Label(_) => {}
     }
 }
 
@@ -1108,7 +1117,7 @@ fn find_local_binding_stat(stat: &Stat, target_span: Span, found: &mut Option<Lo
                 find_local_binding_expr(v, target_span, found);
             }
         }
-        StatKind::Break => {}
+        StatKind::Break | StatKind::Goto(_) | StatKind::Label(_) => {}
     }
 }
 
@@ -1228,7 +1237,13 @@ impl StaticNumberEvaluator {
                     | BinOp::Gt
                     | BinOp::Ge
                     | BinOp::And
-                    | BinOp::Or => return None,
+                    | BinOp::Or
+                    | BinOp::IDiv
+                    | BinOp::BAnd
+                    | BinOp::BOr
+                    | BinOp::BXor
+                    | BinOp::Shl
+                    | BinOp::Shr => return None,
                 };
                 finite_number(value)
             }
@@ -1514,7 +1529,7 @@ fn stat_contains_local_decl_in_current_function(stat: &Stat) -> bool {
         StatKind::Return(values) => values
             .iter()
             .any(expr_contains_local_decl_in_current_function),
-        StatKind::Break => false,
+        StatKind::Break | StatKind::Goto(_) | StatKind::Label(_) => false,
     }
 }
 
