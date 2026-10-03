@@ -1611,7 +1611,7 @@ fn binary_smi(acc: &mut Accumulator, ins: &DecodedInstruction, op_symbol: &str) 
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
-    use super::super::bytecode_opcodes::OpcodeTable;
+    use super::super::bytecode_opcodes::{AccumulatorUse, OpcodeTable};
     use super::super::flat_bytecode_disasm::{disassemble, encode_instruction};
     use super::*;
 
@@ -1684,6 +1684,36 @@ mod tests {
         let disasm: Disassembly = disassemble(&stream, NodeVersion::Node22);
         let lifted: LiftedFunction = lift_disassembly(&disasm);
         assert_eq!(lifted.opaque_runtime_count, 1usize);
+    }
+
+    #[test]
+    fn unsupported_v8_accumulator_write_is_lossy_and_poisoned() {
+        let table: OpcodeTable = OpcodeTable::for_node(NodeVersion::Node22);
+        let spec = table
+            .iter_specs()
+            .find_map(|(_byte, spec)| (spec.mnemonic == "ForInContinue").then_some(spec))
+            .expect("V8 records ForInContinue");
+        assert_eq!(spec.accumulator_use, AccumulatorUse::Write);
+        let mut stream: Vec<u8> = enc(&table, "ForInContinue", &[1, 2]);
+        stream.extend(enc(&table, "Return", &[]));
+        let lifted: LiftedFunction = lift_disassembly(&disassemble(&stream, NodeVersion::Node22));
+        assert_eq!(lifted.lossy_count, 1usize);
+        assert_eq!(lifted.reversible_count, 1usize);
+        assert_eq!(
+            lifted.lines[0].fidelity,
+            LiftFidelity::Lossy,
+            "an unsupported accumulator write cannot count as a complete lift"
+        );
+        assert!(
+            lifted.lines[0]
+                .ir_comment
+                .as_deref()
+                .is_some_and(|comment: &str| comment.contains("no lift rule")),
+            "the unsupported write needs a named refusal"
+        );
+        let js: String = lifted.render_js("arguments_probe");
+        assert!(js.contains("__DR_UNLIFTED__(\"ForInContinue\")"), "{js}");
+        assert!(!js.contains("return undefined;"), "{js}");
     }
 
     fn lift_node24(stream: &[u8]) -> LiftedFunction {
