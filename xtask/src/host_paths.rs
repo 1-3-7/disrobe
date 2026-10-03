@@ -65,7 +65,7 @@ pub(crate) const ALLOWED_HOMES: [(&str, &str); 26] = [
     ("xtask/src/host_paths.rs", "workdir"),
 ];
 
-pub(crate) const ALLOWED_INSTALL_DIRECTORIES: [(&str, &str); 9] = [
+pub(crate) const ALLOWED_INSTALL_DIRECTORIES: [(&str, &str); 10] = [
     (
         "benches/head-to-head/src/frisk.rs",
         concat!(r"C:", r"\Program Files\jadx\bin"),
@@ -81,6 +81,14 @@ pub(crate) const ALLOWED_INSTALL_DIRECTORIES: [(&str, &str); 9] = [
     (
         "crates/disrobe-pass-dotnet/tests/cha_devirtualization.rs",
         concat!(r"C:", r"\\Program Files\\dotnet\\sdk]"),
+    ),
+    (
+        "crates/disrobe-pass-dotnet/tests/cha_devirtualization.rs",
+        concat!(
+            r"C:",
+            r"\\Program Files\\dotnet\\sdk]\n9.0.314 [C:",
+            r"\\Program Files\\dotnet\\sdk]"
+        ),
     ),
     (
         "xtask/src/host_paths.rs",
@@ -212,7 +220,7 @@ fn install_path_entry(bytes: &[u8], start: usize) -> (String, usize) {
         .count();
     (
         String::from_utf8_lossy(&bytes[start..start + length]).into_owned(),
-        length.max(1),
+        length,
     )
 }
 
