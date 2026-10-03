@@ -91,6 +91,8 @@ The Prometheus `Weak` preset (`Vmify`, `ConstantArray` and `WrapInFunction`) is 
 
 Set `DISROBE_DEBUG=lua` to trace the capture analysis. It emits `prometheus_vmify.box_model`, naming the registers the capture helpers resolved to, and `prometheus_vmify.captured_variables`, the number of captured variables bound in the run.
 
+The [Hercules real-output grader](../../../crates/disrobe-pass-lua/tests/hercules_real.rs) covers 15 pinned outputs from Hercules 2.0.1. Fourteen recover to source that prints the same bytes as the authored programs under Lua 5.4. The remaining `branches.maximum` fixture reports its unrecovered `VMGenerator` layer. Each recovered case also has a changed-literal control that must differ from the original.
+
 ## Limits
 
 - Where `fully peeled` is `false` the report carries the residual marker names and the reason (runtime key, anti-tamper variant, unmodeled VM tier, or a refused Vmify recovery).

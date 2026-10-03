@@ -122,5 +122,7 @@ Recovery is graded against real compiled Cython fixtures (unstripped, stripped, 
 
 ## Limits
 
+- The [pyc-zipper real-output grader](../../../crates/disrobe-pass-py-deob/tests/pyc_zipper_runner_outputs.rs) covers 30 pinned outputs against CPython 3.12. Compressed payloads recover their opcode structure; obfuscation can permanently delete variable names and line information. Twenty-five source recoveries print the same bytes as the authored programs; the five generator cases retain named partial status. Eighteen outputs also have broken loaders in the tool itself, recorded separately from static recovery.
+- The [pyobfus real-output grader](../../../crates/disrobe-pass-py-deob/tests/pyobfus_runner_outputs.rs) covers 15 generated sources. Recovery removes the generator header and preserves the body exactly, including generated names, literals and reflection lookups. All 15 re-execute like the authored inputs. Original identifier names are unavailable, so recovery remains partial; three other requested cases failed in the tool and produced no fixtures.
 - A Cython module's Python source is gone once compiled. Only the import surface described above is recoverable, not the `.pyx` bodies.
 - PyArmor v6/v7 may need the opt-in dynamic-hook fallback, which executes the sample. The manifest-named v8/v9 default-trial result is a pure-static structural decoding check only; it does not establish recovery for other variants.
