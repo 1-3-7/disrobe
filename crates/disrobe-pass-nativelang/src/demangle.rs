@@ -1,4 +1,5 @@
 use crate::d_mangle::DDemangleError;
+use disrobe_pass_native::cxx_recovery::demangle_itanium;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -23,6 +24,10 @@ impl DemangledSymbol {
 
 #[must_use]
 pub fn demangle_nim(mangled: &str) -> Option<DemangledSymbol> {
+    demangle_nim_nested(mangled).or_else(|| demangle_nim_generated_itanium(mangled))
+}
+
+fn demangle_nim_nested(mangled: &str) -> Option<DemangledSymbol> {
     let body: &str = mangled.strip_prefix("_ZN")?;
     let mut rest: &str = body;
     let mut components: Vec<String> = Vec::new();
@@ -63,6 +68,128 @@ pub fn demangle_nim(mangled: &str) -> Option<DemangledSymbol> {
         params,
         instantiation: None,
     })
+}
+
+const MAX_NIM_GENERATED_SYMBOL_BYTES: usize = 4_096;
+const MAX_NIM_GENERATED_UID_DIGITS: usize = 20;
+
+fn demangle_nim_generated_itanium(mangled: &str) -> Option<DemangledSymbol> {
+    let body: &str = mangled.strip_prefix("_Z")?;
+    let body: &str = body.strip_prefix('L').unwrap_or(body);
+    if body.len() > MAX_NIM_GENERATED_SYMBOL_BYTES {
+        return None;
+    }
+    let (identifier, signature): (String, &str) = read_length_prefixed(body)?;
+    let (module, name): (Option<String>, String) = decode_nim_itanium_identifier(&identifier)?;
+    if signature.is_empty() {
+        return None;
+    }
+    let params: Vec<String> = read_itanium_params(mangled, &identifier)?;
+    let qualified: String = module.as_ref().map_or_else(
+        || name.clone(),
+        |module: &String| format!("{module}.{name}"),
+    );
+    let demangled: String = if params.is_empty() {
+        qualified
+    } else {
+        format!("{qualified}({})", params.join(", "))
+    };
+    Some(DemangledSymbol {
+        mangled: mangled.to_owned(),
+        demangled,
+        module,
+        name,
+        params,
+        instantiation: None,
+    })
+}
+
+fn decode_nim_itanium_identifier(identifier: &str) -> Option<(Option<String>, String)> {
+    if !identifier.contains("__") {
+        return is_nim_plain_itanium_identifier(identifier)
+            .then(|| (None, nim_decode_operator(identifier)));
+    }
+    let (encoded_name, module_and_uid): (&str, &str) = identifier.rsplit_once("__")?;
+    let (encoded_module, uid): (&str, &str) = module_and_uid.rsplit_once("_u")?;
+    if encoded_name.is_empty()
+        || encoded_module.is_empty()
+        || uid.is_empty()
+        || uid.len() > MAX_NIM_GENERATED_UID_DIGITS
+        || !uid.bytes().all(|byte: u8| byte.is_ascii_digit())
+        || uid.len() > 1 && uid.starts_with('0')
+        || !encoded_name
+            .bytes()
+            .all(|byte: u8| byte.is_ascii_alphanumeric() || byte == b'_')
+        || !encoded_module
+            .bytes()
+            .all(|byte: u8| byte.is_ascii_alphanumeric() || byte == b'_')
+    {
+        return None;
+    }
+    Some((
+        Some(nim_decode_operator(encoded_module)),
+        nim_decode_operator(encoded_name),
+    ))
+}
+
+fn is_nim_plain_itanium_identifier(identifier: &str) -> bool {
+    identifier
+        .bytes()
+        .next()
+        .is_some_and(|byte: u8| byte.is_ascii_alphabetic() || byte == b'_')
+        && identifier
+            .bytes()
+            .all(|byte: u8| byte.is_ascii_alphanumeric() || byte == b'_')
+}
+
+fn read_itanium_params(mangled: &str, generated: &str) -> Option<Vec<String>> {
+    let demangled: String = demangle_itanium(mangled).ok()?.demangled;
+    let signature: &str = demangled.strip_prefix(generated)?;
+    let params: &str = signature.strip_prefix('(')?.strip_suffix(')')?;
+    if params.is_empty() || params == "void" {
+        return Some(Vec::new());
+    }
+    split_itanium_params(params)
+}
+
+fn split_itanium_params(params: &str) -> Option<Vec<String>> {
+    let mut values: Vec<String> = Vec::new();
+    let mut start: usize = 0;
+    let mut stack: Vec<char> = Vec::new();
+    for (index, character) in params.char_indices() {
+        match character {
+            '<' => stack.push('>'),
+            '(' => stack.push(')'),
+            '[' => stack.push(']'),
+            '{' => stack.push('}'),
+            '>' | ')' | ']' | '}' => {
+                if stack.pop()? != character {
+                    return None;
+                }
+            }
+            ',' if stack.is_empty() => {
+                let value: &str = params[start..index].trim();
+                if value.is_empty() {
+                    return None;
+                }
+                values.push(value.to_owned());
+                start = index + character.len_utf8();
+            }
+            _ => {}
+        }
+        if stack.len() > MAX_NIM_DEPTH {
+            return None;
+        }
+    }
+    if !stack.is_empty() {
+        return None;
+    }
+    let value: &str = params[start..].trim();
+    if value.is_empty() {
+        return None;
+    }
+    values.push(value.to_owned());
+    Some(values)
 }
 
 const NIM_OPERATOR_WORDS: &[(&str, &str)] = &[
@@ -399,6 +526,91 @@ mod tests {
         let d: DemangledSymbol = demangle_nim("_ZN5hello3fibE3int").expect("demangle");
         assert_eq!(d.name, "fib");
         assert_eq!(d.demangled, "hello.fib(int)");
+    }
+
+    #[test]
+    fn nim_decodes_generated_static_itanium_operator() {
+        let d: DemangledSymbol =
+            demangle_nim("_ZL25pluspercent___system_u790ll").expect("demangle");
+        assert_eq!(d.module.as_deref(), Some("system"));
+        assert_eq!(d.name, "+%");
+        assert_eq!(d.params, vec!["long".to_owned(), "long".to_owned()]);
+        assert_eq!(d.demangled, "system.+%(long, long)");
+    }
+
+    #[test]
+    fn nim_decodes_generated_itanium_function() {
+        let d: DemangledSymbol = demangle_nim("_Z13fib__hello_u1l").expect("demangle");
+        assert_eq!(d.module.as_deref(), Some("hello"));
+        assert_eq!(d.name, "fib");
+        assert_eq!(d.params, vec!["long".to_owned()]);
+        assert_eq!(d.demangled, "hello.fib(long)");
+    }
+
+    #[test]
+    fn nim_decodes_generated_itanium_pointer_and_reference() {
+        let d: DemangledSymbol = demangle_nim("_Z13fib__hello_u1PlRl").expect("demangle");
+        assert_eq!(d.params, vec!["long*".to_owned(), "long&".to_owned()]);
+        assert_eq!(d.demangled, "hello.fib(long*, long&)");
+    }
+
+    #[test]
+    fn nim_decodes_generated_itanium_void_pointer() {
+        let d: DemangledSymbol = demangle_nim("_Z13fib__hello_u1Pv").expect("demangle");
+        assert_eq!(d.params, vec!["void*".to_owned()]);
+        assert_eq!(d.demangled, "hello.fib(void*)");
+    }
+
+    #[test]
+    fn nim_decodes_plain_itanium_runtime_symbols() {
+        let raw_dispose: DemangledSymbol = demangle_nim("_Z13nimRawDisposePvl").expect("demangle");
+        assert!(raw_dispose.module.is_none());
+        assert_eq!(raw_dispose.name, "nimRawDispose");
+        assert_eq!(
+            raw_dispose.params,
+            vec!["void*".to_owned(), "long".to_owned()]
+        );
+        assert_eq!(raw_dispose.demangled, "nimRawDispose(void*, long)");
+
+        let destroy: DemangledSymbol =
+            demangle_nim("_Z20nimDestroyAndDisposePv").expect("demangle");
+        assert!(destroy.module.is_none());
+        assert_eq!(destroy.name, "nimDestroyAndDispose");
+        assert_eq!(destroy.params, vec!["void*".to_owned()]);
+        assert_eq!(destroy.demangled, "nimDestroyAndDispose(void*)");
+
+        let main_inner: DemangledSymbol = demangle_nim("_Z12NimMainInnerv").expect("demangle");
+        assert!(main_inner.module.is_none());
+        assert_eq!(main_inner.name, "NimMainInner");
+        assert!(main_inner.params.is_empty());
+        assert_eq!(main_inner.demangled, "NimMainInner");
+
+        let main_module: DemangledSymbol = demangle_nim("_Z13NimMainModulev").expect("demangle");
+        assert!(main_module.module.is_none());
+        assert_eq!(main_module.name, "NimMainModule");
+        assert!(main_module.params.is_empty());
+        assert_eq!(main_module.demangled, "NimMainModule");
+    }
+
+    #[test]
+    fn nim_rejects_malformed_generated_static_itanium_names() {
+        assert!(demangle_nim("_ZL24pluspercent___system_u790ll").is_none());
+        assert!(demangle_nim("_ZL13fib__hello_uxl").is_none());
+        assert!(demangle_nim("_Z11foo__bar_uxv").is_none());
+        assert!(demangle_nim("_ZL14fib__hello_u01l").is_none());
+        assert!(demangle_nim("_ZL1\u{e9}__m_u1v").is_none());
+        assert!(demangle_nim("_ZL13fib__hello_u1Q").is_none());
+        assert!(demangle_nim("_Z8bad-namev").is_none());
+        assert!(demangle_nim("_Z13NimMainModule").is_none());
+        let mut nested: String = String::from("_Z13fib__hello_u1");
+        for _ in 0..=MAX_NIM_DEPTH {
+            nested.push_str("1AI");
+        }
+        nested.push('i');
+        for _ in 0..=MAX_NIM_DEPTH {
+            nested.push('E');
+        }
+        assert!(demangle_nim(&nested).is_none());
     }
 
     #[test]
