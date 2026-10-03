@@ -203,11 +203,18 @@ notes = "Real yGuard 5.0.0 (com.yworks:yguard from Maven Central, sha256 510f3bf
 
 [[protector]]
 name = "jbco"
-status = "DEAD-DOCUMENT"
+status = "REAL-RUNNER-FIXTURE-PARTIAL"
 upstream = "https://www.sable.mcgill.ca/JBCO/"
-last_release = "2010"
-fixtures = []
-notes = "Confirmed via web check: project page exists but last research paper from 2010. McGill Sable group repo (https://github.com/Sable) has no JBCO repository. Project is archived/dead; detection retains heuristic-only path. Replace `unreachable!()` with `panic!('DEAD-DOCUMENT: JBCO upstream archived since 2010, see corpus/jvm/MANIFEST.toml')` in test stub."
+version = "Soot 4.7.1"
+fixtures = [
+    "obfuscators/jbco/real/Sample.names.jar",
+    "obfuscators/jbco/real/Sample.flow.jar",
+    "obfuscators/jbco/real/Calculator.names.jar",
+    "obfuscators/jbco/real/SwitchDispatch.names.jar",
+    "obfuscators/jbco/real/SwitchDispatch.flow.jar",
+    "obfuscators/jbco/real/build-record.json",
+]
+notes = "GitHub Actions runner output from Soot 4.7.1 soot.jbco.Main, recorded in obfuscators/jbco/real/build-record.json (run 37045868043). Five of nine runner invocations preserved authored behaviour: Sample names and flow, Calculator names, and SwitchDispatch names and flow. The all-transform variants for Sample and SwitchDispatch, and the flow and all-transform variants for Calculator, are named tool failures in that record and have no fixture. tests/protectors/jbco_runner_outputs.rs validates exact artifact and authored-source hashes, compiles and executes only authored originals and recovered source with the official JDK, and pins Sample.names.jar as recompiling to identical behaviour, with the other four artifacts named partial."
 
 [[protector]]
 name = "skidsuite2"

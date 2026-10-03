@@ -14,6 +14,7 @@ mod dexguard_reflection_strings;
 mod dexguard_strings;
 mod eval_shapes_real;
 mod jbco_gauntlet;
+mod jbco_runner_outputs;
 mod mapping_apply;
 mod name_keyed_shared_decryptor;
 mod number_fold_jvm_oracle;
