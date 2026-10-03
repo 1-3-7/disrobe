@@ -14,6 +14,7 @@ fn main() -> ExitCode {
         "sleep" => mock_sleep(&args[1..]),
         "flood" => mock_flood(&args[1..]),
         "echo-args" => mock_echo_args(&args[1..]),
+        "record-cwd" => mock_record_cwd(&args[1..]),
         "orphan" => mock_orphan(&args[1..]),
         "late-marker" => mock_late_marker(&args[1..]),
         other => {
@@ -58,6 +59,19 @@ fn mock_echo_args(rest: &[String]) -> ExitCode {
         println!("{arg}");
     }
     ExitCode::SUCCESS
+}
+
+fn mock_record_cwd(rest: &[String]) -> ExitCode {
+    let Some(marker): Option<&String> = rest.first() else {
+        return ExitCode::from(2);
+    };
+    let Ok(directory): Result<std::path::PathBuf, std::io::Error> = std::env::current_dir() else {
+        return ExitCode::from(3);
+    };
+    match std::fs::write(marker, directory.to_string_lossy().as_bytes()) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(_) => ExitCode::from(5),
+    }
 }
 
 fn mock_orphan(rest: &[String]) -> ExitCode {

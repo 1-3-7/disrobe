@@ -185,13 +185,14 @@ fn run_dynamic_hook_with_interpreter(
 
     let wrapper_abs: PathBuf = wrapper.canonicalize()?;
     let out_abs: PathBuf = out_dir.canonicalize()?;
+    let workdir: ScratchDir = ScratchDir::create("pyarmor-dynamic-hook")?;
 
     let command: CommandSpec = CommandSpec::new(&spec.exe, options.timeout)
         .args(spec.version_args.iter().map(String::as_str))
         .arg(helper_abs)
         .arg(wrapper_abs)
         .arg(out_abs.clone())
-        .current_dir(out_abs.clone())
+        .current_dir(workdir.path().to_path_buf())
         .env("PYTHONIOENCODING", "utf-8")
         .env("PYTHONDONTWRITEBYTECODE", "1")
         .env(
@@ -903,6 +904,64 @@ def drain_into_manifest():
         std::fs::write(&wrapper, "value = 1\n").expect("write authored wrapper");
         std::fs::create_dir_all(&out_dir).expect("create dynamic mock output directory");
         (scratch, wrapper, out_dir)
+    }
+
+    #[test]
+    fn dynamic_hook_uses_an_owned_scratch_directory_and_retires_it_on_error() {
+        let _helper_scratch: std::sync::MutexGuard<'static, ()> = helper_scratch_lock();
+        let (scratch, wrapper, out_dir): (ScratchDir, PathBuf, PathBuf) =
+            dynamic_hook_mock_inputs();
+        let marker: PathBuf = scratch.path().join("child-cwd.txt");
+        let spec: InterpreterSpec = InterpreterSpec {
+            exe: mock_bin_path(),
+            version_args: vec![
+                "record-cwd".to_owned(),
+                marker.to_string_lossy().into_owned(),
+            ],
+        };
+        let options: DynamicHookOptions = DynamicHookOptions {
+            allow_dynamic: true,
+            timeout: Duration::from_secs(5),
+            disable_pytrace: true,
+            disable_cextract: true,
+        };
+        let error: Error =
+            run_dynamic_hook_with_interpreter(&wrapper, &out_dir, options, &spec, MIN_PYTHON)
+                .expect_err("the mock records its cwd without creating a capture manifest");
+        assert!(matches!(
+            error,
+            Error::DynamicHookSubprocess {
+                exit_code: Some(0),
+                ..
+            }
+        ));
+        let directory: PathBuf =
+            PathBuf::from(std::fs::read_to_string(&marker).expect("child cwd"));
+        assert_eq!(
+            directory
+                .parent()
+                .expect("child cwd has a parent")
+                .canonicalize()
+                .expect("scratch root"),
+            disrobe_core::scratch::scratch_root()
+                .canonicalize()
+                .expect("scratch root exists")
+        );
+        assert!(
+            directory
+                .file_name()
+                .and_then(std::ffi::OsStr::to_str)
+                .is_some_and(|name: &str| name.starts_with("pyarmor-dynamic-hook-"))
+        );
+        assert_ne!(directory, out_dir.canonicalize().expect("output directory"));
+        assert!(
+            !directory.exists(),
+            "the completed hook left its scratch directory behind"
+        );
+        assert!(
+            out_dir.is_dir(),
+            "the operator's output directory was removed"
+        );
     }
 
     #[test]
