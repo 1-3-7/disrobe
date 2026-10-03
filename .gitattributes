@@ -8,6 +8,8 @@ crates/disrobe-pass-mobile/tests/fixtures/hermes/longtail.js -text
 docs/**/*.md text eol=lf
 docs/errors/*.md text eol=lf
 docs/theme/*.hbs text eol=lf
+benches/decompile-quality/results.md text eol=lf
+benches/native-unpack/results.md text eol=lf
 .github/**/*.yml text eol=lf
 *.jsc binary
 *.pkl binary
