@@ -123,9 +123,19 @@ pub fn require_python() -> PathBuf {
 }
 
 pub fn require_python_314() -> PathBuf {
-    let probe: &str = "import sys;print(sys.version_info[:2]==(3,14))";
+    require_cpython_minor(14, "3.14.5")
+}
+
+pub fn require_python_312() -> PathBuf {
+    require_cpython_minor(12, "3.12.13")
+}
+
+fn require_cpython_minor(minor: u8, ci_pin: &str) -> PathBuf {
+    let probe_text: String = format!("import sys;print(sys.version_info[:2]==(3,{minor}))");
+    let probe: &str = probe_text.as_str();
+    let wanted: String = format!("3.{minor}");
     let from_uv: Option<PathBuf> = std::process::Command::new("uv")
-        .args(["python", "find", "3.14"])
+        .args(["python", "find", wanted.as_str()])
         .output()
         .ok()
         .filter(|out: &std::process::Output| out.status.success())
@@ -141,9 +151,9 @@ pub fn require_python_314() -> PathBuf {
         }
     }
     panic!(
-        "CPython 3.14 is required and neither `uv python find 3.14` nor python/python3 on PATH \
-         resolves it; CI installs it with `uv python install 3.14.5`, so run `uv python install \
-         3.14`"
+        "CPython {wanted} is required and neither `uv python find {wanted}` nor python/python3 on \
+         PATH resolves it; CI installs it with `uv python install {ci_pin}`, so run `uv python \
+         install {wanted}`"
     )
 }
 

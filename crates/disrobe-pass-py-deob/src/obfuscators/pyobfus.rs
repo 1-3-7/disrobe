@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use disrobe_pass_py_disasm::{Instruction, disassemble, render_dis};
 use disrobe_py_marshal::{CodeObject, Object, PyVersion, load as marshal_load};
+use ruff_python_parser::{Mode, ParseOptions, parse};
 
 use crate::codec::{
     b16_decode, b32_decode, b64_decode, decode_python_bytes_literal,
@@ -37,6 +38,8 @@ impl Step {
 
 const MARSHAL_VERSION: PyVersion = PyVersion::PY311;
 const MAX_NESTED_CODE_DEPTH: usize = 32;
+const GENERATED_HEADER: &str = "# pyobfus:generated format=1 edition=community";
+const MAX_GENERATED_SOURCE_BYTES: usize = 8 << 20;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Chain {
@@ -93,6 +96,17 @@ impl ObfuscatorPass for PyobfusPass {
     fn detect(&self, source: &[u8]) -> DetectReport {
         let head: &[u8] = &source[..source.len().min(16 * 1024)];
         let text: &str = std::str::from_utf8(head).unwrap_or("");
+        if is_generated_source(text) {
+            return DetectReport {
+                obfuscator: self.id(),
+                matched: true,
+                confidence: 0.98,
+                markers: vec![
+                    "pyobfus-generated-source".to_owned(),
+                    "identifier-renaming".to_owned(),
+                ],
+            };
+        }
         let lambda_indirection: bool =
             text.contains("lambda") && text.contains("__import__") && text.contains("exec((_)(");
         let chain: Option<Chain> = parse_chain(text);
@@ -119,6 +133,25 @@ impl ObfuscatorPass for PyobfusPass {
 
     fn peel(&self, source: &[u8]) -> Result<PeelOutcome> {
         let text: &str = std::str::from_utf8(source).map_err(Error::from)?;
+        if is_generated_source(text) {
+            let recovered_source: String = generated_source_body(text)?;
+            let mut diagnostics: BTreeMap<String, String> = BTreeMap::new();
+            diagnostics.insert(
+                "identifier_mapping".to_owned(),
+                "tool-generated names retained; the original mapping is absent".to_owned(),
+            );
+            return Ok(PeelOutcome {
+                obfuscator: self.id(),
+                stages_applied: vec!["strip-generator-header".to_owned()],
+                recovered_source,
+                confidence: 0.98,
+                quality: Quality::Partial,
+                lossy_notes: vec![
+                    "pyobfus deletes the original identifier names; the generated names are retained because changing them can alter reflection and string-based lookups.".to_owned(),
+                ],
+                diagnostics,
+            });
+        }
         let chain: Chain = parse_chain(text).ok_or(Error::NoFamilyMatched)?;
         let literal: &str =
             extract_largest_python_bytes_literal(text).ok_or(Error::LiteralNotFound)?;
@@ -169,6 +202,40 @@ impl ObfuscatorPass for PyobfusPass {
             diagnostics,
         })
     }
+}
+
+fn is_generated_source(text: &str) -> bool {
+    text.lines().next() == Some(GENERATED_HEADER)
+        && text.lines().nth(1).is_some_and(|line: &str| {
+            line.starts_with("# Tool: pyobfus 0.5.30 - https://github.com/zhurong2020/pyobfus")
+        })
+        && text
+            .lines()
+            .nth(2)
+            .is_some_and(|line: &str| line.starts_with("# Source: "))
+        && text.lines().nth(3) == Some("# DO NOT EDIT - generated output")
+}
+
+fn generated_source_body(text: &str) -> Result<String> {
+    let body: &str = generated_body(text).ok_or(Error::NoFamilyMatched)?;
+    if body.len() > MAX_GENERATED_SOURCE_BYTES {
+        return Err(Error::AstCleanup(format!(
+            "pyobfus generated source exceeds the {MAX_GENERATED_SOURCE_BYTES} byte parser limit"
+        )));
+    }
+    let _ = parse(body, ParseOptions::from(Mode::Module)).map_err(|error| {
+        Error::AstCleanup(format!("pyobfus generated source is invalid: {error}"))
+    })?;
+    Ok(body.to_owned())
+}
+
+fn generated_body(text: &str) -> Option<&str> {
+    let mut start: usize = 0;
+    for _ in 0..4 {
+        let end: usize = text[start..].find('\n')?;
+        start = start.checked_add(end)?.checked_add(1)?;
+    }
+    text.get(start..)
 }
 
 fn chain_summary(chain: &Chain) -> String {
@@ -457,5 +524,30 @@ mod tests {
             !PyobfusPass.detect(src).matched,
             "non-lambda direct-call form belongs to the pyobfuscate.com pass"
         );
+    }
+
+    #[test]
+    fn generated_source_preserves_names_literals_and_reflection() {
+        let source: String = concat!(
+            "# pyobfus:generated format=1 edition=community\n",
+            "# Tool: pyobfus 0.5.30 - https://github.com/zhurong2020/pyobfus\n",
+            "# Source: token_cases.py\n",
+            "# DO NOT EDIT - generated output\n",
+            "pyobfus_name_0 = 'kept'\n",
+            "I0 = 7\n",
+            "I0\u{00E9} = 8\n",
+            "literal = \"\"\"I0 stays literal\"\"\"\n",
+            "formatted = f\"{I0}\"\n",
+            "value = I0 + I0\u{00E9}\n",
+            "reflected = globals()['I0']\n"
+        )
+        .to_owned();
+        let outcome: PeelOutcome = PyobfusPass.peel(source.as_bytes()).expect("peel");
+        assert_eq!(
+            outcome.recovered_source,
+            generated_body(&source).expect("body")
+        );
+        assert_eq!(outcome.quality, Quality::Partial);
+        assert_eq!(outcome.stages_applied, vec!["strip-generator-header"]);
     }
 }

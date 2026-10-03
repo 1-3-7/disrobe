@@ -4,8 +4,12 @@ use disrobe_py_marshal::{CodeObject, Object, PyVersion, PycFile, read_pyc, write
 
 use crate::codec::{bz2_decompress, lzma_decompress, zlib_decompress};
 use crate::error::{Error, Result};
-use crate::marshal::{decompile_code_object, load_code_from_marshal};
+use crate::marshal::{decompile_code_object_with_status, load_code_from_marshal};
 use crate::obfuscators::{DetectReport, Obfuscator, ObfuscatorPass, PeelOutcome, Quality};
+
+mod reverse;
+
+use reverse::ObfuscationReversal;
 
 #[derive(Debug, Clone, Copy)]
 pub struct PycZipperPass;
@@ -107,33 +111,55 @@ fn select_compressor(declared: Compressor, payload: &[u8]) -> Compressor {
         .unwrap_or(declared)
 }
 
-struct PyczDecode {
+struct LoaderLayer {
     compressor: Compressor,
     payload_len: usize,
     marshal_len: usize,
+}
+
+struct PyczDecode {
+    layer: Option<LoaderLayer>,
+    reversal: Option<ObfuscationReversal>,
     inner: CodeObject,
     inner_version: PyVersion,
     header_version: PyVersion,
     recovered_pyc: Vec<u8>,
 }
 
-fn decode_pyc_zipper(source: &[u8]) -> Result<PyczDecode> {
-    let file: PycFile = read_pyc(source).map_err(|e| Error::Marshal(format!("{e}")))?;
-    let code: &CodeObject = loader_code(&file)
-        .ok_or_else(|| Error::Marshal("pyc top object is not code".to_owned()))?;
-    if !looks_like_loader(code) {
-        return Err(Error::NoFamilyMatched);
-    }
+fn unpack_loader(code: &CodeObject) -> Result<(CodeObject, PyVersion, LoaderLayer)> {
     let names: Vec<&str> = collect_names(code);
     let declared: Compressor = declared_compressor(&names).ok_or(Error::NoFamilyMatched)?;
     let payload: &[u8] = first_bytes_const(code).ok_or(Error::LiteralNotFound)?;
     let compressor: Compressor = select_compressor(declared, payload);
-
     let marshal_bytes: Vec<u8> = compressor.decompress(payload)?;
     let (inner, inner_version): (CodeObject, PyVersion) = load_code_from_marshal(&marshal_bytes)
         .ok_or_else(|| Error::Marshal("decompressed payload held no code object".to_owned()))?;
+    let layer: LoaderLayer = LoaderLayer {
+        compressor,
+        payload_len: payload.len(),
+        marshal_len: marshal_bytes.len(),
+    };
+    Ok((inner, inner_version, layer))
+}
 
+fn decode_pyc_zipper(source: &[u8]) -> Result<PyczDecode> {
+    let file: PycFile = read_pyc(source).map_err(|e| Error::Marshal(format!("{e}")))?;
+    let code: &CodeObject = loader_code(&file)
+        .ok_or_else(|| Error::Marshal("pyc top object is not code".to_owned()))?;
     let header_version: PyVersion = file.header.version;
+    let (mut inner, inner_version, layer): (CodeObject, PyVersion, Option<LoaderLayer>) =
+        if looks_like_loader(code) {
+            let (inner, inner_version, layer): (CodeObject, PyVersion, LoaderLayer) =
+                unpack_loader(code)?;
+            (inner, inner_version, Some(layer))
+        } else if reverse::is_obfuscated(code, header_version) {
+            (code.clone(), header_version, None)
+        } else {
+            return Err(Error::NoFamilyMatched);
+        };
+    let reversal: Option<ObfuscationReversal> = reverse::is_obfuscated(&inner, inner_version)
+        .then(|| reverse::reverse(&mut inner, inner_version));
+
     let rewrapped: PycFile = PycFile {
         header: file.header.clone(),
         code: Object::Code(Box::new(inner.clone())),
@@ -142,9 +168,8 @@ fn decode_pyc_zipper(source: &[u8]) -> Result<PyczDecode> {
         write_pyc(&rewrapped).map_err(|e| Error::Marshal(format!("{e}")))?;
 
     Ok(PyczDecode {
-        compressor,
-        payload_len: payload.len(),
-        marshal_len: marshal_bytes.len(),
+        layer,
+        reversal,
         inner,
         inner_version,
         header_version,
@@ -170,6 +195,19 @@ impl ObfuscatorPass for PycZipperPass {
             return miss(self.id());
         };
         if !looks_like_loader(code) {
+            if reverse::is_obfuscated(code, file.header.version) {
+                return DetectReport {
+                    obfuscator: self.id(),
+                    matched: true,
+                    confidence: 0.9,
+                    markers: vec![
+                        "pyc-obfuscation".to_owned(),
+                        "empty-filename".to_owned(),
+                        "no-line-table".to_owned(),
+                        "dead-trailing-return".to_owned(),
+                    ],
+                };
+            }
             return miss(self.id());
         }
         let names: Vec<&str> = collect_names(code);
@@ -194,17 +232,25 @@ impl ObfuscatorPass for PycZipperPass {
 
     fn peel(&self, source: &[u8]) -> Result<PeelOutcome> {
         let decoded: PyczDecode = decode_pyc_zipper(source)?;
-        let stages: Vec<String> = vec![
-            "pyc-header".to_owned(),
-            "marshal".to_owned(),
-            decoded.compressor.label().to_owned(),
-            "marshal".to_owned(),
-            "decompile".to_owned(),
-        ];
-        let recovered: String = decompile_code_object(&decoded.inner, decoded.inner_version)?;
+        let mut stages: Vec<String> = vec!["pyc-header".to_owned(), "marshal".to_owned()];
+        if let Some(layer) = &decoded.layer {
+            stages.push(layer.compressor.label().to_owned());
+            stages.push("marshal".to_owned());
+        }
+        if decoded.reversal.is_some() {
+            stages.push("strip-dead-return".to_owned());
+            stages.push("restore-def-names".to_owned());
+        }
+        stages.push("decompile".to_owned());
+        let (recovered, complete_source): (String, bool) =
+            decompile_code_object_with_status(&decoded.inner, decoded.inner_version)?;
         let real_source: bool = !recovered.trim().is_empty()
             && !recovered.starts_with("# disrobe: marshal code object");
-        let quality: Quality = if real_source {
+        let placeholders_left: usize = decoded
+            .reversal
+            .as_ref()
+            .map_or(0, |r: &ObfuscationReversal| r.placeholders_left.len());
+        let quality: Quality = if real_source && complete_source && placeholders_left == 0 {
             Quality::Full
         } else {
             Quality::Partial
@@ -212,12 +258,11 @@ impl ObfuscatorPass for PycZipperPass {
         let confidence: f32 = if real_source { 0.95 } else { 0.85 };
 
         let mut diagnostics: BTreeMap<String, String> = BTreeMap::new();
-        diagnostics.insert(
-            "compressor".to_owned(),
-            decoded.compressor.label().to_owned(),
-        );
-        diagnostics.insert("payload_bytes".to_owned(), decoded.payload_len.to_string());
-        diagnostics.insert("marshal_bytes".to_owned(), decoded.marshal_len.to_string());
+        if let Some(layer) = &decoded.layer {
+            diagnostics.insert("compressor".to_owned(), layer.compressor.label().to_owned());
+            diagnostics.insert("payload_bytes".to_owned(), layer.payload_len.to_string());
+            diagnostics.insert("marshal_bytes".to_owned(), layer.marshal_len.to_string());
+        }
         diagnostics.insert(
             "recovered_pyc_bytes".to_owned(),
             decoded.recovered_pyc.len().to_string(),
@@ -230,13 +275,39 @@ impl ObfuscatorPass for PycZipperPass {
             ),
         );
 
-        let lossy_notes: Vec<String> = if real_source {
-            Vec::new()
-        } else {
-            vec![
-                "pyc-zipper wrapper fully stripped (pyc header + loader marshal + compression + inner marshal); inner code object recovered but source-level decompile fell back to disassembly.".to_owned(),
-            ]
-        };
+        let mut lossy_notes: Vec<String> = Vec::new();
+        if !real_source {
+            lossy_notes.push("pyc-zipper wrapper fully stripped (pyc header + loader marshal + compression + inner marshal); inner code object recovered but source-level decompile fell back to disassembly.".to_owned());
+        }
+        if real_source && !complete_source {
+            lossy_notes.push("source-level decompilation contains refused scopes; the recovered bytecode remains available.".to_owned());
+        }
+        if let Some(reversal) = &decoded.reversal {
+            diagnostics.insert(
+                "dead_returns_stripped".to_owned(),
+                reversal.junk_returns_stripped.to_string(),
+            );
+            diagnostics.insert(
+                "names_restored".to_owned(),
+                reversal.names_restored.len().to_string(),
+            );
+            diagnostics.insert(
+                "placeholder_names_left".to_owned(),
+                placeholders_left.to_string(),
+            );
+            lossy_notes.push("pyc-zipper obfuscation deleted the line table and the file name; neither is recoverable.".to_owned());
+            if placeholders_left > 0 {
+                let names: Vec<&str> = reversal
+                    .placeholders_left
+                    .iter()
+                    .map(String::as_str)
+                    .collect();
+                lossy_notes.push(format!(
+                    "{placeholders_left} variable name(s) keep their pyc-zipper placeholder because the bytecode holds no trace of the original: {}",
+                    names.join(", ")
+                ));
+            }
+        }
 
         Ok(PeelOutcome {
             obfuscator: self.id(),

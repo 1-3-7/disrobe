@@ -1,0 +1,184 @@
+{
+  "files": {
+    "files/bank_account_ledger.aggressive.py": "5203dedd9de06d9ff6c779d575b4898eed094d44bbb1034e5ec1138800ab4d14",
+    "files/bank_account_ledger.balanced.py": "5203dedd9de06d9ff6c779d575b4898eed094d44bbb1034e5ec1138800ab4d14",
+    "files/bank_account_ledger.safe.py": "5203dedd9de06d9ff6c779d575b4898eed094d44bbb1034e5ec1138800ab4d14",
+    "files/class_inheritance_super.aggressive.py": "91dc6966bbd1fdea3200f78b1ed4c164ef24289faa44a09f79ff8e802745c3df",
+    "files/class_inheritance_super.balanced.py": "91dc6966bbd1fdea3200f78b1ed4c164ef24289faa44a09f79ff8e802745c3df",
+    "files/class_inheritance_super.safe.py": "91dc6966bbd1fdea3200f78b1ed4c164ef24289faa44a09f79ff8e802745c3df",
+    "files/expression_evaluator.aggressive.py": "adb7fb0bd51c6b8ad84a7f7902cb20e1b49887935eb464163cb7d3a9e8a75330",
+    "files/expression_evaluator.balanced.py": "adb7fb0bd51c6b8ad84a7f7902cb20e1b49887935eb464163cb7d3a9e8a75330",
+    "files/expression_evaluator.safe.py": "adb7fb0bd51c6b8ad84a7f7902cb20e1b49887935eb464163cb7d3a9e8a75330",
+    "files/generators_yield_from.aggressive.py": "57d871bcae6c7bc169b18b7d260255ba325c9b5b5e19988e629039c696952659",
+    "files/generators_yield_from.balanced.py": "57d871bcae6c7bc169b18b7d260255ba325c9b5b5e19988e629039c696952659",
+    "files/generators_yield_from.safe.py": "57d871bcae6c7bc169b18b7d260255ba325c9b5b5e19988e629039c696952659",
+    "files/sample.aggressive.py": "9a72a892ac267304ef05f44f9c5683296c8736b0dcadcc32f5a9bc7ea67bd39b",
+    "files/sample.balanced.py": "7273315984f7c8a1f072e357d2479b90c297a2d3702f8e4c60797d54be91777a",
+    "files/sample.safe.py": "7273315984f7c8a1f072e357d2479b90c297a2d3702f8e4c60797d54be91777a"
+  },
+  "outputs": [
+    {
+      "behaviour": "same",
+      "command": "pyobfus sample.py -o sample.safe.py --preset safe",
+      "input": "corpus/python/pyc_zipper/sample.py",
+      "input_sha256": "730ff7080a5b56ff5ed2f0f563414168a64632702ffb2d24de894fcdd4499c33",
+      "output": "files/sample.safe.py",
+      "output_bytes": 400,
+      "output_sha256": "7273315984f7c8a1f072e357d2479b90c297a2d3702f8e4c60797d54be91777a"
+    },
+    {
+      "behaviour": "same",
+      "command": "pyobfus sample.py -o sample.balanced.py --preset balanced",
+      "input": "corpus/python/pyc_zipper/sample.py",
+      "input_sha256": "730ff7080a5b56ff5ed2f0f563414168a64632702ffb2d24de894fcdd4499c33",
+      "output": "files/sample.balanced.py",
+      "output_bytes": 400,
+      "output_sha256": "7273315984f7c8a1f072e357d2479b90c297a2d3702f8e4c60797d54be91777a"
+    },
+    {
+      "behaviour": "same",
+      "command": "pyobfus sample.py -o sample.aggressive.py --preset aggressive",
+      "input": "corpus/python/pyc_zipper/sample.py",
+      "input_sha256": "730ff7080a5b56ff5ed2f0f563414168a64632702ffb2d24de894fcdd4499c33",
+      "output": "files/sample.aggressive.py",
+      "output_bytes": 396,
+      "output_sha256": "9a72a892ac267304ef05f44f9c5683296c8736b0dcadcc32f5a9bc7ea67bd39b"
+    },
+    {
+      "behaviour": "same",
+      "command": "pyobfus bank_account_ledger.py -o bank_account_ledger.safe.py --preset safe",
+      "input": "corpus/python/decompile/authored/bank_account_ledger.py",
+      "input_sha256": "0700790c1ce4a453fff0af01720a400cbc4c1c934e85d1c035495ec3da0ebf0a",
+      "output": "files/bank_account_ledger.safe.py",
+      "output_bytes": 1497,
+      "output_sha256": "5203dedd9de06d9ff6c779d575b4898eed094d44bbb1034e5ec1138800ab4d14"
+    },
+    {
+      "behaviour": "same",
+      "command": "pyobfus bank_account_ledger.py -o bank_account_ledger.balanced.py --preset balanced",
+      "input": "corpus/python/decompile/authored/bank_account_ledger.py",
+      "input_sha256": "0700790c1ce4a453fff0af01720a400cbc4c1c934e85d1c035495ec3da0ebf0a",
+      "output": "files/bank_account_ledger.balanced.py",
+      "output_bytes": 1497,
+      "output_sha256": "5203dedd9de06d9ff6c779d575b4898eed094d44bbb1034e5ec1138800ab4d14"
+    },
+    {
+      "behaviour": "same",
+      "command": "pyobfus bank_account_ledger.py -o bank_account_ledger.aggressive.py --preset aggressive",
+      "input": "corpus/python/decompile/authored/bank_account_ledger.py",
+      "input_sha256": "0700790c1ce4a453fff0af01720a400cbc4c1c934e85d1c035495ec3da0ebf0a",
+      "output": "files/bank_account_ledger.aggressive.py",
+      "output_bytes": 1497,
+      "output_sha256": "5203dedd9de06d9ff6c779d575b4898eed094d44bbb1034e5ec1138800ab4d14"
+    },
+    {
+      "behaviour": "tool-failed",
+      "command": "pyobfus closures_nonlocal_global.py -o closures_nonlocal_global.safe.py --preset safe",
+      "input": "corpus/python/decompile/authored/closures_nonlocal_global.py",
+      "input_sha256": "b571442d731285fc956cfde288b70e6c279b44970c4edc8efc42a73116dbe32d"
+    },
+    {
+      "behaviour": "tool-failed",
+      "command": "pyobfus closures_nonlocal_global.py -o closures_nonlocal_global.balanced.py --preset balanced",
+      "input": "corpus/python/decompile/authored/closures_nonlocal_global.py",
+      "input_sha256": "b571442d731285fc956cfde288b70e6c279b44970c4edc8efc42a73116dbe32d"
+    },
+    {
+      "behaviour": "tool-failed",
+      "command": "pyobfus closures_nonlocal_global.py -o closures_nonlocal_global.aggressive.py --preset aggressive",
+      "input": "corpus/python/decompile/authored/closures_nonlocal_global.py",
+      "input_sha256": "b571442d731285fc956cfde288b70e6c279b44970c4edc8efc42a73116dbe32d"
+    },
+    {
+      "behaviour": "same",
+      "command": "pyobfus class_inheritance_super.py -o class_inheritance_super.safe.py --preset safe",
+      "input": "corpus/python/decompile/authored/class_inheritance_super.py",
+      "input_sha256": "7065f81b05add84a36cd58dd08eab381d178a4db19875c8eeada0915a23c30a3",
+      "output": "files/class_inheritance_super.safe.py",
+      "output_bytes": 1307,
+      "output_sha256": "91dc6966bbd1fdea3200f78b1ed4c164ef24289faa44a09f79ff8e802745c3df"
+    },
+    {
+      "behaviour": "same",
+      "command": "pyobfus class_inheritance_super.py -o class_inheritance_super.balanced.py --preset balanced",
+      "input": "corpus/python/decompile/authored/class_inheritance_super.py",
+      "input_sha256": "7065f81b05add84a36cd58dd08eab381d178a4db19875c8eeada0915a23c30a3",
+      "output": "files/class_inheritance_super.balanced.py",
+      "output_bytes": 1307,
+      "output_sha256": "91dc6966bbd1fdea3200f78b1ed4c164ef24289faa44a09f79ff8e802745c3df"
+    },
+    {
+      "behaviour": "same",
+      "command": "pyobfus class_inheritance_super.py -o class_inheritance_super.aggressive.py --preset aggressive",
+      "input": "corpus/python/decompile/authored/class_inheritance_super.py",
+      "input_sha256": "7065f81b05add84a36cd58dd08eab381d178a4db19875c8eeada0915a23c30a3",
+      "output": "files/class_inheritance_super.aggressive.py",
+      "output_bytes": 1307,
+      "output_sha256": "91dc6966bbd1fdea3200f78b1ed4c164ef24289faa44a09f79ff8e802745c3df"
+    },
+    {
+      "behaviour": "same",
+      "command": "pyobfus generators_yield_from.py -o generators_yield_from.safe.py --preset safe",
+      "input": "corpus/python/decompile/authored/generators_yield_from.py",
+      "input_sha256": "f97a8d2f027605332c0e6371dfb7020257270bf67222ea136353d70d8ed8be51",
+      "output": "files/generators_yield_from.safe.py",
+      "output_bytes": 1177,
+      "output_sha256": "57d871bcae6c7bc169b18b7d260255ba325c9b5b5e19988e629039c696952659"
+    },
+    {
+      "behaviour": "same",
+      "command": "pyobfus generators_yield_from.py -o generators_yield_from.balanced.py --preset balanced",
+      "input": "corpus/python/decompile/authored/generators_yield_from.py",
+      "input_sha256": "f97a8d2f027605332c0e6371dfb7020257270bf67222ea136353d70d8ed8be51",
+      "output": "files/generators_yield_from.balanced.py",
+      "output_bytes": 1177,
+      "output_sha256": "57d871bcae6c7bc169b18b7d260255ba325c9b5b5e19988e629039c696952659"
+    },
+    {
+      "behaviour": "same",
+      "command": "pyobfus generators_yield_from.py -o generators_yield_from.aggressive.py --preset aggressive",
+      "input": "corpus/python/decompile/authored/generators_yield_from.py",
+      "input_sha256": "f97a8d2f027605332c0e6371dfb7020257270bf67222ea136353d70d8ed8be51",
+      "output": "files/generators_yield_from.aggressive.py",
+      "output_bytes": 1177,
+      "output_sha256": "57d871bcae6c7bc169b18b7d260255ba325c9b5b5e19988e629039c696952659"
+    },
+    {
+      "behaviour": "same",
+      "command": "pyobfus expression_evaluator.py -o expression_evaluator.safe.py --preset safe",
+      "input": "corpus/python/decompile/authored/expression_evaluator.py",
+      "input_sha256": "dec4bded9336237fd14120aae5a85cf066e22ab193cd3e188f04fadb174fa68e",
+      "output": "files/expression_evaluator.safe.py",
+      "output_bytes": 1908,
+      "output_sha256": "adb7fb0bd51c6b8ad84a7f7902cb20e1b49887935eb464163cb7d3a9e8a75330"
+    },
+    {
+      "behaviour": "same",
+      "command": "pyobfus expression_evaluator.py -o expression_evaluator.balanced.py --preset balanced",
+      "input": "corpus/python/decompile/authored/expression_evaluator.py",
+      "input_sha256": "dec4bded9336237fd14120aae5a85cf066e22ab193cd3e188f04fadb174fa68e",
+      "output": "files/expression_evaluator.balanced.py",
+      "output_bytes": 1908,
+      "output_sha256": "adb7fb0bd51c6b8ad84a7f7902cb20e1b49887935eb464163cb7d3a9e8a75330"
+    },
+    {
+      "behaviour": "same",
+      "command": "pyobfus expression_evaluator.py -o expression_evaluator.aggressive.py --preset aggressive",
+      "input": "corpus/python/decompile/authored/expression_evaluator.py",
+      "input_sha256": "dec4bded9336237fd14120aae5a85cf066e22ab193cd3e188f04fadb174fa68e",
+      "output": "files/expression_evaluator.aggressive.py",
+      "output_bytes": 1908,
+      "output_sha256": "adb7fb0bd51c6b8ad84a7f7902cb20e1b49887935eb464163cb7d3a9e8a75330"
+    }
+  ],
+  "recipe": "pyobfus",
+  "repository_commit": "53aa360589cc1a8852fe38e38b19c75691c7b43a",
+  "runner_image": "ubuntu24 20260927.320.1",
+  "tool": {
+    "name": "pyobfus",
+    "runtime": "Python 3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+    "url": "https://pypi.org/project/pyobfus/0.5.30/",
+    "version": "pyobfus 0.5.30 wheel sha256 29d517a2248e4b441d7068a5765307139d52d02597a54a36510b224fa8bc04a0; installed set: c1453022f490d2459a11819d83ad1d586e9ff65a12ac3e705ffebd46d3685dcf cffi-2.1.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl;255bc9599cf7748b4b1a446ccc735421bd08a2ae529a8b88597d3de5664ee360 click-8.5.0-py3-none-any.whl;9dab55f57c74c3cad24c323bacbbd04be4705ba6eb0d92e920b1fc4837ed5079 cryptography-50.0.2-cp311-abi3-manylinux_2_34_x86_64.whl;b727414169a36b7d524c1c3e31839a521725078d7b2ff038656844266160a992 pycparser-3.0-py3-none-any.whl;29d517a2248e4b441d7068a5765307139d52d02597a54a36510b224fa8bc04a0 pyobfus-0.5.30-py3-none-any.whl;989e07d2af4be6cbbace0e4e920b139983e3509b4236cc6fdbf20ee1ebd1425a pyobfus_runtime-0.1.0-py3-none-any.whl;ba1cc08a7ccde2d2ec775841541641e4548226580ab850948cbfda66a1befcdc pyyaml-6.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl;"
+  },
+  "workflow_run": "https://github.com/1-3-7/disrobe/actions/runs/37048456914"
+}

@@ -45,6 +45,7 @@ ruff_text_size = { version = "0.0.0", git = "https://github.com/astral-sh/ruff",
 
 [dev-dependencies]
 disrobe-testkit = { workspace = true }
+toml = { workspace = true }
 base64 = "0.22"
 ruff_python_parser = { version = "0.0.0", git = "https://github.com/astral-sh/ruff", tag = "0.15.14" }
 

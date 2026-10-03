@@ -1,7 +1,9 @@
 use serde::Serialize;
 
 use disrobe_pass_py_decompile::bytecode::version::PyVersion as DecompileVersion;
-use disrobe_pass_py_decompile::engine::{build_real_source, marshal_to_decompile};
+use disrobe_pass_py_decompile::engine::{
+    build_real_source, build_recovered_source, marshal_to_decompile,
+};
 use disrobe_pass_py_disasm::{Instruction, JumpFitness, disassemble, jump_target_fitness};
 use disrobe_py_marshal::{CodeObject, Object, PyVersion, load as marshal_load};
 
@@ -180,8 +182,8 @@ fn decompile_code(
     let decompile_version: DecompileVersion = marshal_to_decompile(version)
         .map_err(|e| Error::Marshal(format!("unsupported version {version:?}: {e}")))?;
     let (source, recovered_directly): (String, bool) =
-        match build_real_source(code, &decompile_version, version) {
-            Ok(src) => (src, true),
+        match build_recovered_source(code, &decompile_version, version) {
+            Ok(recovered) => (recovered.source, recovered.stubbed_scopes == 0),
             Err(err) => (disasm_listing(code, version, &format!("{err}")), false),
         };
     layers.push(MarshalLayer {
@@ -528,6 +530,18 @@ pub(crate) fn load_code_from_marshal(blob: &[u8]) -> Option<(CodeObject, PyVersi
 pub(crate) fn decompile_code_object(code: &CodeObject, version: PyVersion) -> Result<String> {
     let mut layers: Vec<MarshalLayer> = Vec::new();
     decompile_code(code, version, 0, &mut layers)
+}
+
+pub(crate) fn decompile_code_object_with_status(
+    code: &CodeObject,
+    version: PyVersion,
+) -> Result<(String, bool)> {
+    let mut layers: Vec<MarshalLayer> = Vec::new();
+    let source: String = decompile_code(code, version, 0, &mut layers)?;
+    let complete: bool = layers
+        .iter()
+        .all(|layer: &MarshalLayer| layer.recovered_directly);
+    Ok((source, complete))
 }
 
 fn first_code_object(obj: &Object) -> Option<CodeObject> {
