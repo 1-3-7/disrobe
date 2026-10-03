@@ -4,13 +4,13 @@
 
 | Measure | Count |
 | --- | ---: |
-| Scanned source files | 1973 |
-| Emission sites | 2355 |
-| Sites carrying a message | 2272 |
-| Distinct emitted codes | 1803 |
+| Scanned source files | 1979 |
+| Emission sites | 2358 |
+| Sites carrying a message | 2275 |
+| Distinct emitted codes | 1806 |
 | Registered codes | 177 |
 | Codes with two or more distinct messages | 255 |
-| Emitted codes missing from the registry | 1626 |
+| Emitted codes missing from the registry | 1629 |
 | Registered codes no source emits | 0 |
 
 ## Codes with two or more distinct messages (255)
@@ -1452,7 +1452,7 @@
 - `"{}"`: `crates/disrobe-cli/src/cli/wasm.rs:159`
 - no message: `crates/disrobe-python/src/wasm.rs:55`
 
-## Emitted codes missing from the registry (1626)
+## Emitted codes missing from the registry (1629)
 
 - `DR-AS3-0001`: `crates/disrobe-pass-as3/src/error.rs:8`
 - `DR-AS3-0002`: `crates/disrobe-pass-as3/src/error.rs:11`
@@ -2390,6 +2390,9 @@
 - `DR-LUA-0035`: `crates/disrobe-pass-lua/src/error.rs:130`
 - `DR-LUA-0036`: `crates/disrobe-pass-lua/src/error.rs:137`
 - `DR-LUA-0037`: `crates/disrobe-pass-lua/src/error.rs:141`
+- `DR-LUA-0038`: `crates/disrobe-pass-lua/src/error.rs:146`
+- `DR-LUA-0039`: `crates/disrobe-pass-lua/src/error.rs:155`
+- `DR-LUA-0040`: `crates/disrobe-pass-lua/src/error.rs:159`
 - `DR-LUA-0902`: `crates/disrobe-pass-lua/src/chain_detector.rs:128`
 - `DR-LUA-0903`: `crates/disrobe-pass-lua/src/chain_detector.rs:371`
 - `DR-LUA-0904`: `crates/disrobe-pass-lua/src/chain_detector.rs:412`
