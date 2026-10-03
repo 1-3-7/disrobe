@@ -58,7 +58,7 @@ obfuscation_dir: Path = source_root / "llvm/lib/Passes/Obfuscation"
 private_api_uses: list[Path] = [
     path
     for path in obfuscation_dir.rglob("*")
-    if path.suffix in {".cpp", ".h"} and "getBasicBlockList(" in path.read_text(encoding="utf-8")
+    if path.suffix in {".cpp", ".h"} and b"getBasicBlockList(" in path.read_bytes()
 ]
 if private_api_uses:
     raise SystemExit(
