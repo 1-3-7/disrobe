@@ -481,12 +481,12 @@ const ZIG_CASES: &[Case] = &[
 const NIM_CASES: &[Case] = &[
     Case {
         name: "system.+%",
-        address: 0x0100_c590,
+        address: 0x0100_c480,
         anchor: &[
             0x55, 0x48, 0x89, 0xe5, 0x48, 0x89, 0x7d, 0xf8, 0x48, 0x89, 0x75, 0xf0, 0x48, 0x8b,
             0x45, 0xf8, 0x48, 0x03, 0x45, 0xf0,
         ],
-        disassembly: "100c590 _ZN6system12pluspercent_E3int3int: push rbp; mov rbp,rsp; mov \
+        disassembly: "100c480 _ZN6system12pluspercent_E3int3int: push rbp; mov rbp,rsp; mov \
                       [rbp-0x8],rdi; mov [rbp-0x10],rsi; mov rax,[rbp-0x8]; add \
                       rax,[rbp-0x10]",
         reference: Reference::Model(ref_wrapping_add),
@@ -497,12 +497,12 @@ const NIM_CASES: &[Case] = &[
     },
     Case {
         name: "system.-%",
-        address: 0x0100_8140,
+        address: 0x0100_8030,
         anchor: &[
             0x55, 0x48, 0x89, 0xe5, 0x48, 0x89, 0x7d, 0xf8, 0x48, 0x89, 0x75, 0xf0, 0x48, 0x8b,
             0x45, 0xf8, 0x48, 0x2b, 0x45, 0xf0,
         ],
-        disassembly: "1008140 _ZN6system13minuspercent_E3int3int: push rbp; mov rbp,rsp; mov \
+        disassembly: "1008030 _ZN6system13minuspercent_E3int3int: push rbp; mov rbp,rsp; mov \
                       [rbp-0x8],rdi; mov [rbp-0x10],rsi; mov rax,[rbp-0x8]; sub \
                       rax,[rbp-0x10]",
         reference: Reference::Model(ref_wrapping_sub),
@@ -513,12 +513,12 @@ const NIM_CASES: &[Case] = &[
     },
     Case {
         name: "system.-%",
-        address: 0x0100_c5f0,
+        address: 0x0100_c4e0,
         anchor: &[
             0x55, 0x48, 0x89, 0xe5, 0x48, 0x89, 0x7d, 0xf8, 0x48, 0x89, 0x75, 0xf0, 0x48, 0x8b,
             0x45, 0xf8, 0x48, 0x2b, 0x45, 0xf0,
         ],
-        disassembly: "100c5f0 _ZN6system13minuspercent_E3int3int: push rbp; mov rbp,rsp; mov \
+        disassembly: "100c4e0 _ZN6system13minuspercent_E3int3int: push rbp; mov rbp,rsp; mov \
                       [rbp-0x8],rdi; mov [rbp-0x10],rsi; mov rax,[rbp-0x8]; sub \
                       rax,[rbp-0x10]",
         reference: Reference::Model(ref_wrapping_sub),

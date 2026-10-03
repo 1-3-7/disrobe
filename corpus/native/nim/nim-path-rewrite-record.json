@@ -1,0 +1,248 @@
+{
+  "original_sha256": "9a6e6eeaed525e3906955553c626f61caa818ac97af363e47c2c6844167ab629",
+  "neutral_sha256": "b5f4b876815ed58e7ea9b8791c2b2773ee3ef56eff92bd2dd52bc67d2b9648d0",
+  "bytes": 269488,
+  "rewrites": [
+    {
+      "section": ".rodata",
+      "offset": 3910,
+      "bytes": 26,
+      "neutral_prefix": "/nim-2.0.8"
+    },
+    {
+      "section": ".rodata",
+      "offset": 3959,
+      "bytes": 26,
+      "neutral_prefix": "/nim-2.0.8"
+    },
+    {
+      "section": ".rodata",
+      "offset": 4013,
+      "bytes": 26,
+      "neutral_prefix": "/nim-2.0.8"
+    },
+    {
+      "section": ".rodata",
+      "offset": 4059,
+      "bytes": 26,
+      "neutral_prefix": "/nim-2.0.8"
+    },
+    {
+      "section": ".rodata",
+      "offset": 4110,
+      "bytes": 26,
+      "neutral_prefix": "/nim-2.0.8"
+    },
+    {
+      "section": ".rodata",
+      "offset": 4158,
+      "bytes": 26,
+      "neutral_prefix": "/nim-2.0.8"
+    },
+    {
+      "section": ".rodata",
+      "offset": 4233,
+      "bytes": 37,
+      "neutral_prefix": "/src"
+    },
+    {
+      "section": ".rodata",
+      "offset": 4299,
+      "bytes": 26,
+      "neutral_prefix": "/nim-2.0.8"
+    },
+    {
+      "section": ".rodata",
+      "offset": 4351,
+      "bytes": 26,
+      "neutral_prefix": "/nim-2.0.8"
+    },
+    {
+      "section": ".rodata",
+      "offset": 4409,
+      "bytes": 26,
+      "neutral_prefix": "/nim-2.0.8"
+    },
+    {
+      "section": ".rodata",
+      "offset": 4459,
+      "bytes": 26,
+      "neutral_prefix": "/nim-2.0.8"
+    },
+    {
+      "section": ".rodata",
+      "offset": 4520,
+      "bytes": 26,
+      "neutral_prefix": "/nim-2.0.8"
+    },
+    {
+      "section": ".rodata",
+      "offset": 4630,
+      "bytes": 26,
+      "neutral_prefix": "/nim-2.0.8"
+    },
+    {
+      "section": ".rodata",
+      "offset": 4694,
+      "bytes": 26,
+      "neutral_prefix": "/nim-2.0.8"
+    },
+    {
+      "section": ".rodata",
+      "offset": 4761,
+      "bytes": 26,
+      "neutral_prefix": "/nim-2.0.8"
+    },
+    {
+      "section": ".rodata",
+      "offset": 4820,
+      "bytes": 26,
+      "neutral_prefix": "/nim-2.0.8"
+    },
+    {
+      "section": ".rodata",
+      "offset": 4870,
+      "bytes": 27,
+      "neutral_prefix": "/zig-0.13.0"
+    },
+    {
+      "section": ".rodata",
+      "offset": 4938,
+      "bytes": 26,
+      "neutral_prefix": "/nim-2.0.8"
+    },
+    {
+      "section": ".rodata",
+      "offset": 4994,
+      "bytes": 26,
+      "neutral_prefix": "/nim-2.0.8"
+    },
+    {
+      "section": ".rodata",
+      "offset": 5075,
+      "bytes": 26,
+      "neutral_prefix": "/nim-2.0.8"
+    },
+    {
+      "section": ".rodata",
+      "offset": 5123,
+      "bytes": 26,
+      "neutral_prefix": "/nim-2.0.8"
+    },
+    {
+      "section": ".rodata",
+      "offset": 5216,
+      "bytes": 26,
+      "neutral_prefix": "/nim-2.0.8"
+    },
+    {
+      "section": ".rodata",
+      "offset": 5330,
+      "bytes": 27,
+      "neutral_prefix": "/zig-0.13.0"
+    },
+    {
+      "section": ".rodata",
+      "offset": 5397,
+      "bytes": 26,
+      "neutral_prefix": "/nim-2.0.8"
+    },
+    {
+      "section": ".rodata",
+      "offset": 5456,
+      "bytes": 26,
+      "neutral_prefix": "/nim-2.0.8"
+    },
+    {
+      "section": ".rodata",
+      "offset": 5528,
+      "bytes": 26,
+      "neutral_prefix": "/nim-2.0.8"
+    },
+    {
+      "section": ".debug_info",
+      "offset": 148464,
+      "bytes": 31,
+      "neutral_prefix": "/zig-0.13.0"
+    },
+    {
+      "section": ".debug_info",
+      "offset": 148544,
+      "bytes": 37,
+      "neutral_prefix": "/src"
+    },
+    {
+      "section": ".debug_info",
+      "offset": 148733,
+      "bytes": 31,
+      "neutral_prefix": "/zig-0.13.0"
+    },
+    {
+      "section": ".debug_info",
+      "offset": 148807,
+      "bytes": 37,
+      "neutral_prefix": "/src"
+    },
+    {
+      "section": ".debug_info",
+      "offset": 181430,
+      "bytes": 31,
+      "neutral_prefix": "/zig-0.13.0"
+    },
+    {
+      "section": ".debug_info",
+      "offset": 181504,
+      "bytes": 37,
+      "neutral_prefix": "/src"
+    },
+    {
+      "section": ".debug_line",
+      "offset": 184049,
+      "bytes": 31,
+      "neutral_prefix": "/zig-0.13.0"
+    },
+    {
+      "section": ".debug_line",
+      "offset": 184196,
+      "bytes": 31,
+      "neutral_prefix": "/zig-0.13.0"
+    },
+    {
+      "section": ".debug_line",
+      "offset": 184295,
+      "bytes": 31,
+      "neutral_prefix": "/zig-0.13.0"
+    },
+    {
+      "section": ".debug_line",
+      "offset": 227367,
+      "bytes": 27,
+      "neutral_prefix": "/zig-0.13.0"
+    },
+    {
+      "section": ".debug_line",
+      "offset": 227414,
+      "bytes": 27,
+      "neutral_prefix": "/zig-0.13.0"
+    },
+    {
+      "section": ".debug_line",
+      "offset": 227585,
+      "bytes": 31,
+      "neutral_prefix": "/zig-0.13.0"
+    },
+    {
+      "section": ".debug_str",
+      "offset": 234742,
+      "bytes": 27,
+      "neutral_prefix": "/zig-0.13.0"
+    },
+    {
+      "section": ".debug_str",
+      "offset": 243382,
+      "bytes": 37,
+      "neutral_prefix": "/src"
+    }
+  ],
+  "executable_sections_unchanged": true
+}

@@ -6,12 +6,20 @@ toolchains = [
   "Nim 2.0.8",
   "Zig 0.13.0 clang 18.1.6 cross C compiler and linker for x86_64-linux-gnu",
 ]
+toolchain_archives = [
+  "Nim 2.0.8 official nim-lang/nightlies commit 5935c3bfa9fec6505394867b23510eb5cbab3dbf archive sha256 ad073af8fe578edab89a0c71809c7f252a85ba1905f32b5351a92323657e15e1",
+  "Zig 0.13.0 official ziglang.org Windows x64 archive sha256 d859994725ef9402381e557c60bb57497215682e355204d754ee3df75ee3c158",
+]
 target = "x86_64-linux-gnu"
 memory_manager = "orc"
-build_mode = "release with runtime checks"
+backend = "c"
+build_mode = "release with runtime checks, --opt:none, and native debugger information"
 
 [[artifacts]]
 path = "hello.nim.elf"
-sha256 = "d2e33f3d9a9e55211361133d91eda380dce1abdb149896e25d1b8a13e1bb8c4a"
-path_rewrite = 'the seven DWARF paths of the Zig glibc stubs first had the build host home directory replaced in place by the same-length <build-dir>/ (spelled with doubled backslashes in the file); every build path was then neutralised by a same-length in-place rewrite at offsets 3894, 3951, 4004, 4123, 4189, 4250, 4305, 4357, 4414, 4467, 4524, 4592, 4647, 4715, 4834, 4923, 4984, 5076, 5136, 5191, 5257, 5316, 5416, 5563, 5619, 5678, 148839, 149179, 181953, 185018, 185046, 185132, 185170, 185232, 188190, 188228, 188256, 188342, 188404, 188454, 190581, 190667, 190705, 190750, 190800, 191169, 191255, 191293, 191321, 191366, 191458, 191520, 191601, 191643, 227382, 227474, 227560, 227598, 227626, 227688, 229082, 229151, 229724, 230278, 232187, 232937, 234947, 236111, 237361, 148736, 149082, 181856, 184552, 184722, 184844, 229344: the prefixes <build-dir>/ (4); <build-dir>/ (7); <build-dir>/ (10); <build-dir>/ (53); <build-dir>/ (2) were overwritten by /_ followed by / padding, so each relative tail keeps its offset and every length field is unchanged'
-build_command = "nim c -d:release --mm:orc --cpu:amd64 --os:linux --cc:clang --clang.exe:zig --clang.linkerexe:zig --out:hello.nim.elf hello.nim"
+sha256 = "b5f4b876815ed58e7ea9b8791c2b2773ee3ef56eff92bd2dd52bc67d2b9648d0"
+path_rewrite = "40 same-length in-place path-prefix rewrites are recorded with exact offsets and sections in nim-path-rewrite-record.json; the ledger retains neutral /src, /nimcache, /nim-2.0.8, /zig-0.13.0, and /zigcache prefixes, and executable sections are unchanged."
+path_rewrite_record_sha256 = "942f47153f7d83454c7e60c46162f65cadac6a9ece37328b6f1239e8c2d278e7"
+build_command = "nim c -d:release --opt:none --debugger:native --mm:orc --cpu:amd64 --os:linux --cc:clang --parallelBuild:1 --clang.exe:<wrapper> --clang.linkerexe:<wrapper> --nimcache:<nimcache> --out:hello.nim.elf hello.nim"
+compiler_wrapper = "zig cc -target x86_64-linux-gnu with -ffile-prefix-map mappings in this order: <source-root>=/src, <nimcache>=/nimcache, <nim-root>=/nim, and <zig-root>=/zig; each mapping is passed in slash and backslash spellings"
+runtime_license = "copying.txt (MIT)"
