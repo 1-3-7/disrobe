@@ -179,7 +179,7 @@ pub(crate) fn write_not_applicable_stub(
     Ok(path)
 }
 
-#[cfg_attr(not(any(feature = "wasm", test)), allow(dead_code))]
+#[cfg(any(feature = "native", feature = "wasm"))]
 pub(crate) fn write_applicable_payload<T: Serialize>(
     out_dir: &Path,
     stem: &str,
@@ -196,6 +196,16 @@ pub(crate) fn write_applicable_payload<T: Serialize>(
     Ok(path)
 }
 
+#[cfg(any(
+    feature = "as3",
+    feature = "beam",
+    feature = "go",
+    feature = "js",
+    feature = "lua",
+    feature = "native",
+    feature = "py",
+    feature = "ruby"
+))]
 pub(crate) fn apply_not_applicable_stubs(
     emit_kinds: &[String],
     out_dir: &Path,

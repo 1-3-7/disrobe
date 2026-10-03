@@ -7,7 +7,7 @@ use lazy_regex::regex;
 use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "git-history"))]
 pub mod git_history;
 pub mod interop;
 pub mod ioc;

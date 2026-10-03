@@ -830,6 +830,7 @@ fn analyze_native_extension(
         let _: Option<disrobe_pass_nuitka::NativeDisasm> =
             disrobe_pass_nuitka::disassemble_module_to_file(filename, data, &asm_path);
     }
+    #[cfg(feature = "native")]
     if deep && let Ok(report) = disrobe_capabilities::analyze(data) {
         let cap_path: PathBuf = stem.with_extension("capabilities.json");
         let json: Vec<u8> = serde_json::to_vec_pretty(&report)

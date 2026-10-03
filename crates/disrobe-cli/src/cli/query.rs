@@ -4,11 +4,13 @@ use std::path::PathBuf;
 use std::{collections::BTreeSet, fs::File, io::Read};
 
 use disrobe_ir::Envelope;
+#[cfg(feature = "native")]
 use disrobe_ir::payload::DisasmPayload;
 #[cfg(feature = "jvm")]
 use disrobe_pass_jvm::{
     HierarchyKind, HierarchyNode, classfile_hierarchy_node, dex_hierarchy_nodes, parse_classfile,
 };
+#[cfg(feature = "native")]
 use disrobe_pass_native::build_disasm_payload;
 use disrobe_query::{
     CallSiteMatch, CapabilitySiteMatch, DecoderMatch, FunctionMatch, JvmImplementorResult, Module,
@@ -270,13 +272,21 @@ fn load_module(input: &Path) -> miette::Result<Module> {
             )
         });
     }
-    let payload: DisasmPayload = build_disasm_payload(&bytes).map_err(|e| {
-        miette::miette!(
-            "DR-CLI-0833: {} is neither a Disasm- or Mir-rung .dr envelope nor a disassemblable native binary: {e}",
-            input.display()
-        )
-    })?;
-    Ok(Module::from_disasm(&payload))
+    #[cfg(feature = "native")]
+    {
+        let payload: DisasmPayload = build_disasm_payload(&bytes).map_err(|e| {
+            miette::miette!(
+                "DR-CLI-0833: {} is neither a Disasm- or Mir-rung .dr envelope nor a disassemblable native binary: {e}",
+                input.display()
+            )
+        })?;
+        Ok(Module::from_disasm(&payload))
+    }
+
+    #[cfg(not(feature = "native"))]
+    {
+        Err(crate::cli::pass_registry::not_compiled("native", "native"))
+    }
 }
 
 fn render_text(result: &QueryResult) {

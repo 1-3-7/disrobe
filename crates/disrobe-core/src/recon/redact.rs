@@ -6,7 +6,7 @@ use serde_json::{Map, Value};
 use super::secret_scan::{self, SecretScanReport, SecretScrubber, redaction_token};
 use super::{ReconCategory, ReconFinding, ReconReport, bare_credential};
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "git-history"))]
 use super::git_history::{GitFinding, GitHistoryReport};
 
 const MAX_SERIALIZED_DEPTH: usize = 64;
@@ -135,7 +135,7 @@ impl Redactor {
         scrub_json_value(value, &scrubber, 0)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "git-history"))]
     pub fn redact_git_report(self, report: &mut GitHistoryReport) {
         let secrets: BTreeSet<String> = report
             .findings
@@ -357,7 +357,7 @@ fn redact_finding(finding: &mut ReconFinding, scrubber: &SecretScrubber) {
     *severity = scrubber.scrub(severity.as_str());
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "git-history"))]
 fn redact_git_finding(gf: &mut GitFinding, scrubber: &SecretScrubber) {
     let GitFinding {
         commit,

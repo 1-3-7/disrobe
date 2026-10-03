@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
+#[cfg(feature = "git-history")]
 use disrobe_core::recon::git_history::{self, GitFinding, GitHistoryOptions, GitHistoryReport};
 use disrobe_core::recon::redact::Redactor;
 use disrobe_core::recon::{
@@ -77,6 +78,7 @@ fn render_text(report: &ReconReport) {
     );
 }
 
+#[cfg(feature = "git-history")]
 fn render_git_text(report: &GitHistoryReport) {
     if report.findings.is_empty() {
         println!("no findings");
@@ -99,6 +101,7 @@ fn render_git_text(report: &GitHistoryReport) {
     );
 }
 
+#[cfg(feature = "git-history")]
 fn git_to_sarif(report: &GitHistoryReport) -> SarifLog {
     let rule_set: BTreeSet<String> = report
         .findings
@@ -145,6 +148,7 @@ fn git_to_sarif(report: &GitHistoryReport) -> SarifLog {
     SarifLog::new(Driver::disrobe(rules), results)
 }
 
+#[cfg(feature = "git-history")]
 fn run_git(
     path: PathBuf,
     format: FriskFormat,
@@ -292,7 +296,12 @@ pub(crate) fn run(
     };
 
     if git {
+        #[cfg(feature = "git-history")]
         return run_git(path, format, config, fmt, redactor);
+        #[cfg(not(feature = "git-history"))]
+        return Err(miette::miette!(
+            "DR-FRISK-0072: --git requires the git-history feature; rebuild with --features git-history"
+        ));
     }
 
     let label: String = path.display().to_string();
@@ -359,6 +368,25 @@ pub(crate) fn run(
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[cfg(not(feature = "git-history"))]
+    #[test]
+    fn git_history_requires_feature() {
+        let error: miette::Report = run(
+            PathBuf::from("."),
+            FriskFormat::Text,
+            None,
+            Vec::new(),
+            None,
+            false,
+            false,
+            true,
+            false,
+            OutputFormat::Text,
+        )
+        .expect_err("the slim CLI must refuse --git without git-history");
+        assert!(error.to_string().contains("DR-FRISK-0072"));
+    }
 
     #[test]
     fn sarif_maps_findings_with_region() {

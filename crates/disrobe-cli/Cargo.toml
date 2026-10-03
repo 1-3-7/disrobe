@@ -67,15 +67,37 @@ name = "chain_goldens"
 path = "tests/chain_goldens.rs"
 required-features = ["full"]
 
+[[test]]
+name = "cli_e2e"
+path = "tests/cli_e2e.rs"
+required-features = ["full"]
+
+[[test]]
+name = "cyclonedx_emit"
+path = "tests/cyclonedx_emit.rs"
+required-features = ["native"]
+
+[[test]]
+name = "native_delphi"
+path = "tests/native_delphi.rs"
+required-features = ["native"]
+
+[[test]]
+name = "pyarmor_bcc_cli_surface"
+path = "tests/pyarmor_bcc_cli_surface.rs"
+required-features = ["py"]
+
 [features]
 default = ["full"]
-full = ["server", "prowl", "net-fetch", "chain", "py", "native", "binfmt", "js", "wasm", "jvm", "dotnet", "mobile", "lua", "php", "ruby", "beam", "swift", "as3", "flutter", "go", "shell", "pickle", "scriptlang", "nativelang", "nir-lift", "devirt", "irsummary", "plugin"]
+full = ["server", "prowl", "net-fetch", "chain", "py", "native", "binfmt", "js", "wasm", "jvm", "dotnet", "mobile", "lua", "php", "ruby", "beam", "swift", "as3", "flutter", "go", "shell", "pickle", "scriptlang", "nativelang", "nir-lift", "devirt", "irsummary", "plugin", "webview", "git-history"]
 server = ["dep:axum", "dep:tower-http", "dep:utoipa", "dep:lsp-server", "dep:lsp-types", "dep:tokio", "dep:tokio-util", "dep:tonic", "dep:tonic-health", "dep:tonic-reflection", "dep:prost", "dep:tonic-build", "dep:protoc-bin-vendored", "dep:disrobe-mcp"]
 prowl = ["dep:disrobe-prowl", "dep:tokio"]
 net-fetch = ["dep:reqwest"]
+git-history = ["disrobe-core/git-history"]
 
-py = ["disrobe-nir-lift?/python"]
-native = []
+py = ["dep:disrobe-pass-pyarmor", "dep:disrobe-pass-pyinstaller", "dep:disrobe-pass-pyfreeze", "dep:disrobe-pass-nuitka", "dep:disrobe-pass-sourcedefender", "dep:disrobe-pass-py-deob", "dep:disrobe-pass-py-disasm", "dep:disrobe-pass-py-decompile", "disrobe-nir-lift?/python"]
+native = ["dep:disrobe-capabilities", "dep:disrobe-pass-native", "disrobe-pass-native/chain"]
+webview = ["dep:disrobe-pass-webview"]
 binfmt = []
 plugin = ["dep:disrobe-plugin-host", "dep:wasmtime", "dep:thiserror"]
 
@@ -84,7 +106,7 @@ irsummary = ["dep:disrobe-irsummary", "nir-lift"]
 devirt = ["dep:disrobe-mba", "disrobe-mba/smt-solver", "nir-lift"]
 js = ["dep:disrobe-pass-js-deob", "disrobe-pass-py-disasm/alt-brython", "disrobe-pass-js-deob/chain", "disrobe-passes?/js", "disrobe-mcp?/js"]
 wasm = ["dep:disrobe-pass-wasm-deob", "nir-lift", "disrobe-nir-lift/wasm", "disrobe-passes?/wasm", "disrobe-mcp?/wasm"]
-jvm = ["dep:disrobe-pass-jvm", "disrobe-pass-py-disasm/alt-jython", "nir-lift", "disrobe-passes?/jvm", "disrobe-mcp?/jvm", "disrobe-pass-mobile?/jni", "disrobe-nir-lift/jvm"]
+jvm = ["dep:disrobe-pass-jvm", "disrobe-pass-py-disasm/alt-jython", "nir-lift", "native", "disrobe-passes?/jvm", "disrobe-mcp?/jvm", "disrobe-pass-mobile?/jni", "disrobe-nir-lift/jvm"]
 dotnet = ["dep:disrobe-pass-dotnet", "disrobe-pass-py-disasm/alt-ironpython", "disrobe-pass-dotnet/chain", "nir-lift", "disrobe-passes?/dotnet", "disrobe-mcp?/dotnet", "disrobe-nir-lift/dotnet"]
 mobile = ["dep:disrobe-pass-mobile", "disrobe-pass-mobile/native-image", "disrobe-passes?/mobile", "disrobe-mcp?/mobile"]
 lua = ["dep:disrobe-pass-lua", "disrobe-pass-lua/chain", "nir-lift", "disrobe-passes?/lua", "disrobe-mcp?/lua", "disrobe-nir-lift/lua"]
@@ -93,7 +115,7 @@ ruby = ["dep:disrobe-pass-ruby", "nir-lift", "disrobe-passes?/ruby", "disrobe-mc
 beam = ["dep:disrobe-pass-beam", "nir-lift", "disrobe-passes?/beam", "disrobe-mcp?/beam", "disrobe-nir-lift/beam"]
 swift = ["dep:disrobe-pass-swift-objc", "disrobe-passes?/swift", "disrobe-mcp?/swift"]
 as3 = ["dep:disrobe-pass-as3", "nir-lift", "disrobe-passes?/as3", "disrobe-mcp?/as3", "disrobe-nir-lift/as3"]
-flutter = ["dep:disrobe-pass-mobile", "disrobe-pass-mobile/native-image", "disrobe-passes?/mobile"]
+flutter = ["dep:disrobe-pass-mobile", "disrobe-pass-mobile/native-image", "native", "disrobe-passes?/mobile"]
 go = ["dep:disrobe-pass-go", "disrobe-passes?/go", "disrobe-mcp?/go"]
 shell = ["dep:disrobe-pass-shell", "disrobe-passes?/shell", "disrobe-mcp?/shell"]
 pickle = ["dep:disrobe-pass-pickle", "disrobe-passes?/pickle"]
@@ -101,6 +123,9 @@ scriptlang = ["dep:disrobe-pass-scriptlang", "disrobe-passes?/scriptlang", "disr
 nativelang = ["dep:disrobe-pass-nativelang", "disrobe-passes?/nativelang", "disrobe-mcp?/nativelang"]
 
 chain = [
+    "native",
+    "py",
+    "webview",
     "disrobe-core/chain",
     "dep:disrobe-passes",
     "disrobe-passes/pyarmor",
@@ -115,7 +140,6 @@ chain = [
     "disrobe-passes/py-decompile",
     "disrobe-passes/pyinstaller",
     "disrobe-binfmt/chain",
-    "disrobe-pass-native/chain",
     "disrobe-pass-py-deob/chain",
     "disrobe-pass-py-decompile/chain",
     "disrobe-pass-pyinstaller/chain",
@@ -135,18 +159,18 @@ base64 = { workspace = true }
 disrobe-core = { workspace = true, features = ["chain", "cache", "redact"] }
 disrobe-ir = { workspace = true }
 disrobe-binfmt = { workspace = true }
-disrobe-capabilities = { workspace = true }
-disrobe-pass-pyarmor = { workspace = true, features = ["llm-metadata"] }
-disrobe-pass-native = { workspace = true, features = ["llm-metadata", "chain"] }
-disrobe-pass-pyinstaller = { workspace = true }
-disrobe-pass-pyfreeze = { workspace = true }
-disrobe-pass-nuitka = { workspace = true }
-disrobe-pass-sourcedefender = { workspace = true }
-disrobe-pass-py-deob = { workspace = true, features = ["llm-metadata"] }
+disrobe-capabilities = { workspace = true, optional = true }
+disrobe-pass-pyarmor = { workspace = true, features = ["llm-metadata"], optional = true }
+disrobe-pass-native = { workspace = true, features = ["llm-metadata"], optional = true }
+disrobe-pass-pyinstaller = { workspace = true, optional = true }
+disrobe-pass-pyfreeze = { workspace = true, optional = true }
+disrobe-pass-nuitka = { workspace = true, optional = true }
+disrobe-pass-sourcedefender = { workspace = true, optional = true }
+disrobe-pass-py-deob = { workspace = true, features = ["llm-metadata"], optional = true }
 disrobe-pass-js-deob = { workspace = true, optional = true }
 disrobe-pass-wasm-deob = { workspace = true, features = ["llm-metadata"], optional = true }
-disrobe-pass-py-disasm = { workspace = true, features = ["llm-metadata"] }
-disrobe-pass-py-decompile = { workspace = true, features = ["llm-metadata"] }
+disrobe-pass-py-disasm = { workspace = true, features = ["llm-metadata"], optional = true }
+disrobe-pass-py-decompile = { workspace = true, features = ["llm-metadata"], optional = true }
 disrobe-pass-php = { workspace = true, optional = true }
 disrobe-pass-ruby = { workspace = true, optional = true }
 disrobe-pass-shell = { workspace = true, optional = true }
@@ -162,7 +186,7 @@ disrobe-pass-pickle = { workspace = true, optional = true }
 disrobe-pass-scriptlang = { workspace = true, optional = true }
 disrobe-pass-nativelang = { workspace = true, optional = true }
 disrobe-passes = { workspace = true, optional = true }
-disrobe-pass-webview = { workspace = true }
+disrobe-pass-webview = { workspace = true, optional = true }
 disrobe-plugin-host = { workspace = true, optional = true }
 wasmtime = { workspace = true, features = ["component-model", "cranelift", "runtime", "std"], optional = true }
 thiserror = { workspace = true, optional = true }

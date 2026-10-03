@@ -319,7 +319,9 @@ pub(crate) fn blake3_hex(bytes: &[u8]) -> String {
 #[derive(Debug, Clone)]
 pub(crate) struct LlmOutputs {
     pub(crate) bundle: PathBuf,
+    #[cfg(feature = "py")]
     pub(crate) agents_md: Option<PathBuf>,
+    #[cfg(feature = "py")]
     pub(crate) skill_md: Option<PathBuf>,
 }
 
@@ -388,9 +390,14 @@ pub(crate) fn write_llm_bundle(
         (None, None)
     };
 
+    #[cfg(not(feature = "py"))]
+    let _: (Option<PathBuf>, Option<PathBuf>) = (agents_md, skill_md);
+
     Ok(LlmOutputs {
         bundle: out_path,
+        #[cfg(feature = "py")]
         agents_md,
+        #[cfg(feature = "py")]
         skill_md,
     })
 }

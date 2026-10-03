@@ -3,10 +3,16 @@ use std::path::Path;
 use disrobe_core::Rung;
 use disrobe_ir::Envelope;
 use disrobe_ir::payload::{DisasmPayload, decode_disasm};
-use disrobe_nir::{NirModule, SourceLang, decode_nir};
+#[cfg(feature = "native")]
+use disrobe_nir::SourceLang;
+use disrobe_nir::{NirModule, decode_nir};
+#[cfg(feature = "native")]
 use disrobe_pass_native::build_disasm_payload;
-use disrobe_query::{disasm_to_nir, disasm_to_nir_as};
+use disrobe_query::disasm_to_nir;
+#[cfg(feature = "native")]
+use disrobe_query::disasm_to_nir_as;
 
+#[cfg(feature = "native")]
 pub(crate) fn native_source_lang(bytes: &[u8]) -> SourceLang {
     use object::Object as _;
 
@@ -28,13 +34,21 @@ pub(crate) fn lift_module_from_bytes(input: &Path, bytes: &[u8]) -> miette::Resu
     if let Some(module) = lift_front_end(bytes) {
         return Ok(module);
     }
-    let payload: DisasmPayload = build_disasm_payload(bytes).map_err(|e| {
-        miette::miette!(
-            "DR-CLI-0851: {} is not a .dr envelope, a lift-supported source format (wasm/jvm/dex/pyc), nor a disassemblable native binary: {e}",
-            input.display()
-        )
-    })?;
-    Ok(disasm_to_nir_as(&payload, native_source_lang(bytes)))
+    #[cfg(feature = "native")]
+    {
+        let payload: DisasmPayload = build_disasm_payload(bytes).map_err(|e| {
+            miette::miette!(
+                "DR-CLI-0851: {} is not a .dr envelope, a lift-supported source format (wasm/jvm/dex/pyc), nor a disassemblable native binary: {e}",
+                input.display()
+            )
+        })?;
+        Ok(disasm_to_nir_as(&payload, native_source_lang(bytes)))
+    }
+
+    #[cfg(not(feature = "native"))]
+    {
+        Err(crate::cli::pass_registry::not_compiled("native", "native"))
+    }
 }
 
 fn module_from_envelope(env: &Envelope, input: &Path) -> miette::Result<NirModule> {
@@ -158,7 +172,7 @@ fn is_managed_pe(bytes: &[u8]) -> bool {
         .is_some()
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "native"))]
 mod tests {
     use super::*;
 

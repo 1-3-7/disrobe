@@ -5,8 +5,11 @@ use std::path::{Path, PathBuf};
 use disrobe_ir::Envelope;
 use disrobe_ir::payload::{DisasmPayload, decode_disasm};
 use disrobe_nir::{NirModule, decode_nir};
+#[cfg(feature = "native")]
 use disrobe_pass_native::build_disasm_payload;
-use disrobe_query::{CallGraph, Module, disasm_to_nir, disasm_to_nir_as};
+#[cfg(feature = "native")]
+use disrobe_query::disasm_to_nir_as;
+use disrobe_query::{CallGraph, Module, disasm_to_nir};
 use disrobe_taint::{TaintConfig, TaintReport};
 use disrobe_vulnmatch::{
     Budget, Finding, FindingTier, FunctionId, PathWitness, QueryCallGraphView, Report, RuleStore,
@@ -141,17 +144,25 @@ fn load_module(input: &Path) -> miette::Result<LoadedModule> {
     if let Ok(env) = Envelope::decode(&bytes) {
         return module_from_envelope(&env, input, product_sha256);
     }
-    let payload: DisasmPayload = build_disasm_payload(&bytes).map_err(|e| {
-        miette::miette!(
-            "DR-CLI-0856: {} is neither a Disasm- or Mir-rung .dr envelope nor a disassemblable native binary: {e}",
-            input.display()
-        )
-    })?;
-    Ok(LoadedModule {
-        query: Module::from_disasm(&payload),
-        nir: disasm_to_nir_as(&payload, crate::cli::nir_source::native_source_lang(&bytes)),
-        product_sha256,
-    })
+    #[cfg(feature = "native")]
+    {
+        let payload: DisasmPayload = build_disasm_payload(&bytes).map_err(|e| {
+            miette::miette!(
+                "DR-CLI-0856: {} is neither a Disasm- or Mir-rung .dr envelope nor a disassemblable native binary: {e}",
+                input.display()
+            )
+        })?;
+        Ok(LoadedModule {
+            query: Module::from_disasm(&payload),
+            nir: disasm_to_nir_as(&payload, crate::cli::nir_source::native_source_lang(&bytes)),
+            product_sha256,
+        })
+    }
+
+    #[cfg(not(feature = "native"))]
+    {
+        Err(crate::cli::pass_registry::not_compiled("native", "native"))
+    }
 }
 
 fn module_from_envelope(

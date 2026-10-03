@@ -80,8 +80,9 @@ cargo build -p disrobe-cli --release --no-default-features
 cargo build-slim
 ```
 
-Slim excludes optional language passes and their dependencies, including the embedded JavaScript
-and WebAssembly toolchains. It also excludes optional service and collection surfaces. The
+Slim excludes optional language passes and their dependencies, including native, Python, WebView,
+and the embedded JavaScript and WebAssembly toolchains. Core byte inspection and static string
+extraction remain available. It also excludes optional service and collection surfaces. The
 dependency-tree gate enforces the expected crate graph for the selected features.
 
 Binary size and command availability depend on the target, source revision and selected features.
@@ -94,7 +95,11 @@ $ disrobe wasm decompile app.wasm
 Error: the `wasm` pass is not compiled into this binary (slim build); rebuild with default features (feature `wasm`)
 ```
 
-Layer specific passes back onto a slim base with `--features`, for example `--no-default-features --features wasm,jvm`.
+Layer specific passes back onto a slim base with `--features`, for example
+`--no-default-features --features native,py,webview` or `--no-default-features --features wasm,jvm`.
+
+Git history scanning uses the `git-history` feature, which the full build includes. In a slim
+build, `frisk --git` reports that this feature is required; use `--features git-history` to enable it.
 
 ## Verifying the install
 

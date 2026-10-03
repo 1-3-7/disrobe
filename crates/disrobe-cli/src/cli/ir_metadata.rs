@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(feature = "py")]
 use std::path::Path;
 
 use disrobe_llm_metadata::{
@@ -81,7 +82,7 @@ pub(crate) fn summarize(
     unavailable(selection, BUILD_WITHOUT_IR_SUMMARY)
 }
 
-#[cfg(feature = "irsummary")]
+#[cfg(all(feature = "irsummary", feature = "py"))]
 pub(crate) fn pass_for_bytes(
     selection: &MetadataSelection,
     input: &Path,
@@ -94,7 +95,7 @@ pub(crate) fn pass_for_bytes(
     }
 }
 
-#[cfg(not(feature = "irsummary"))]
+#[cfg(all(not(feature = "irsummary"), feature = "py"))]
 pub(crate) fn pass_for_bytes(
     selection: &MetadataSelection,
     _input: &Path,

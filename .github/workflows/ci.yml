@@ -1635,14 +1635,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          tree="$(cargo tree -p disrobe-cli --no-default-features -e normal --prefix none | sort -u)"
-          for crate in walrus wasm-tools wasmtime tokio axum tonic tower-http tokio-util tokio-stream reqwest hyper rustls rmcp keyring boa_engine oxc_parser disrobe-pass-js-deob disrobe-pass-jvm disrobe-pass-dotnet disrobe-pass-ruby disrobe-pass-lua disrobe-pass-beam disrobe-pass-as3 disrobe-pass-wasm-deob; do
+          tree="$(cargo tree -p disrobe-cli --no-default-features --locked -e normal --prefix none | sort -u)"
+          for crate in gix walrus wasm-tools wasmtime tokio axum tonic tower-http tokio-util tokio-stream reqwest hyper rustls rmcp keyring boa_engine oxc_parser disrobe-pass-js-deob disrobe-pass-jvm disrobe-pass-dotnet disrobe-pass-ruby disrobe-pass-lua disrobe-pass-beam disrobe-pass-as3 disrobe-pass-wasm-deob; do
             if printf '%s\n' "$tree" | grep -qE "(^| )${crate} v[0-9]"; then
               echo "structural gate failed: ${crate} is in the slim disrobe-cli dependency tree" >&2
               exit 1
             fi
             echo "ok: ${crate} absent from the slim disrobe-cli dependency tree"
           done
+          if printf '%s\n' "$tree" | grep -E '^(oxc_[^ ]+|disrobe-pass-[^ ]+|disrobe-passes) v[0-9]'; then
+            echo "structural gate failed: a language pass or oxc crate is in the slim disrobe-cli dependency tree" >&2
+            exit 1
+          fi
       - name: slim binary runs an always-on pass
         shell: bash
         run: |

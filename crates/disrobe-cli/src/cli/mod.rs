@@ -13,6 +13,7 @@ pub(crate) mod batch;
 pub(crate) mod beam;
 pub(crate) mod behavior;
 pub(crate) mod bug_report;
+#[cfg(feature = "native")]
 pub(crate) mod capabilities;
 #[cfg(feature = "chain")]
 pub(crate) mod catalog;
@@ -28,12 +29,32 @@ pub(crate) mod completions;
 pub(crate) mod config;
 pub(crate) mod config_merge;
 pub(crate) mod context;
+#[cfg(feature = "native")]
 pub(crate) mod cyclonedx;
 #[cfg(feature = "chain")]
 pub(crate) mod detect;
 pub(crate) mod doctor;
 #[cfg(feature = "dotnet")]
 pub(crate) mod dotnet;
+#[cfg(any(
+    feature = "as3",
+    feature = "beam",
+    feature = "chain",
+    feature = "dotnet",
+    feature = "flutter",
+    feature = "go",
+    feature = "js",
+    feature = "jvm",
+    feature = "lua",
+    feature = "mobile",
+    feature = "native",
+    feature = "php",
+    feature = "py",
+    feature = "ruby",
+    feature = "shell",
+    feature = "swift",
+    feature = "wasm"
+))]
 pub(crate) mod emit;
 pub(crate) mod envelope;
 pub(crate) mod explain;
@@ -52,6 +73,7 @@ pub(crate) mod grpc;
 pub(crate) mod guard;
 #[cfg(feature = "mobile")]
 pub(crate) mod hermes;
+#[cfg(feature = "native")]
 pub(crate) mod identify;
 pub(crate) mod indicators;
 pub(crate) mod init;
@@ -75,9 +97,12 @@ pub(crate) mod man;
 mod metadata_coverage;
 #[cfg(feature = "mobile")]
 pub(crate) mod mobile;
+#[cfg(feature = "native")]
 pub(crate) mod native;
+#[cfg(feature = "native")]
 pub(crate) mod native_match;
 pub(crate) mod nir_source;
+#[cfg(feature = "py")]
 pub(crate) mod nuitka;
 pub(crate) mod openvex;
 pub(crate) mod output;
@@ -92,9 +117,13 @@ pub(crate) mod pickle;
 pub(crate) mod plugin;
 pub(crate) mod progress_ui;
 pub(crate) mod prowl;
+#[cfg(feature = "py")]
 pub(crate) mod py;
+#[cfg(feature = "py")]
 pub(crate) mod pyarmor;
+#[cfg(feature = "py")]
 pub(crate) mod pyfreeze;
+#[cfg(feature = "py")]
 pub(crate) mod pyinstaller;
 pub(crate) mod query;
 pub(crate) mod rename;
@@ -114,6 +143,7 @@ pub(crate) mod semdiff;
 pub(crate) mod serve;
 #[cfg(feature = "shell")]
 pub(crate) mod shell;
+#[cfg(feature = "native")]
 pub(crate) mod spdx;
 pub(crate) mod status;
 pub(crate) mod strings;
@@ -126,5 +156,6 @@ pub(crate) mod vulnmatch;
 #[cfg(feature = "wasm")]
 pub(crate) mod wasm;
 pub(crate) mod wasm_cmd;
+#[cfg(feature = "webview")]
 pub(crate) mod webview;
 pub(crate) mod yara;

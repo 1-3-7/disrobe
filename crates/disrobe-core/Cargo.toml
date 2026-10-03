@@ -19,6 +19,7 @@ default = []
 chain = []
 cache = []
 redact = []
+git-history = ["dep:gix"]
 
 [dependencies]
 disrobe-bytes = { workspace = true }
@@ -53,7 +54,7 @@ tar = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 liblzma = { workspace = true }
-gix = { workspace = true }
+gix = { workspace = true, optional = true }
 iced-x86 = { workspace = true }
 
 [dev-dependencies]

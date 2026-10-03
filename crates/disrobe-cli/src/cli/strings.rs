@@ -1,16 +1,21 @@
 use std::path::PathBuf;
 
-use disrobe_core::strings::{self, ExtractedString, Options, StringsReport};
+#[cfg(any(feature = "native", test))]
+use disrobe_core::strings::ExtractedString;
+use disrobe_core::strings::{self, Options, StringsReport};
+#[cfg(feature = "native")]
 use disrobe_pass_native::{EmulatedString, emulate_string_decoders};
 use serde::Serialize;
 
 use crate::cli::output::{self, OutputFormat};
+#[cfg(feature = "native")]
 use crate::cli::progress_ui::StageSpinner;
 
 #[derive(Debug, Serialize)]
 struct StringsWithEmulation {
     #[serde(flatten)]
     static_report: StringsReport,
+    #[cfg(feature = "native")]
     emulated_decoded: Vec<EmulatedString>,
 }
 
@@ -31,6 +36,7 @@ pub(crate) fn run(
         decode: !no_decode,
     };
     let static_report: StringsReport = strings::report(&bytes, Some(&uri), opts);
+    #[cfg(feature = "native")]
     let emulated_decoded: Vec<EmulatedString> = if no_decode {
         Vec::new()
     } else {
@@ -44,6 +50,7 @@ pub(crate) fn run(
 
     let combined: StringsWithEmulation = StringsWithEmulation {
         static_report,
+        #[cfg(feature = "native")]
         emulated_decoded,
     };
     output::emit(fmt, &combined, || {
@@ -60,6 +67,7 @@ pub(crate) fn run(
             }
             println!("\n{} string(s)", combined.static_report.total);
         }
+        #[cfg(feature = "native")]
         if !combined.emulated_decoded.is_empty() {
             println!("\nemulation-recovered (decoder execution):");
             for e in &combined.emulated_decoded {
@@ -78,6 +86,7 @@ pub(crate) fn run(
     })
 }
 
+#[cfg(feature = "native")]
 fn deduplicate_against_static(
     emulated: Vec<EmulatedString>,
     static_report: &StringsReport,
@@ -132,6 +141,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "native")]
     fn dedup_drops_strings_already_in_static_set() {
         let report: StringsReport = strings::report(
             b"\x00already-present-string\x00",

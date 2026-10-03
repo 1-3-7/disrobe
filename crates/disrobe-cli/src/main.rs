@@ -6,7 +6,9 @@ mod cli;
 
 use std::path::PathBuf;
 
-use clap::{CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
+#[cfg(feature = "native")]
+use clap::ValueEnum;
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
 use cli::annot::{self, AnnotCmd};
 #[cfg(feature = "jvm")]
@@ -21,6 +23,7 @@ use cli::backend_export::BackendExportTarget;
 use cli::beam::{self, BeamCmd};
 use cli::behavior;
 use cli::bug_report;
+#[cfg(feature = "native")]
 use cli::capabilities;
 #[cfg(feature = "chain")]
 use cli::catalog;
@@ -50,6 +53,7 @@ use cli::go::{self, GoCmd};
 use cli::guard;
 #[cfg(feature = "mobile")]
 use cli::hermes::{self, HermesCmd};
+#[cfg(feature = "native")]
 use cli::identify;
 use cli::indicators::{self, IndicatorsFormat};
 use cli::init::{self as init_cmd, IdeFlavor};
@@ -68,8 +72,11 @@ use cli::macho::{self, MachoCmd};
 use cli::man;
 #[cfg(feature = "mobile")]
 use cli::mobile::{self, MobileCmd};
+#[cfg(feature = "native")]
 use cli::native;
+#[cfg(feature = "native")]
 use cli::native_match;
+#[cfg(feature = "py")]
 use cli::nuitka::{self, NuitkaCmd};
 use cli::output::OutputFormat;
 #[cfg(feature = "php")]
@@ -82,9 +89,13 @@ use cli::progress_ui;
 use cli::prowl::ProwlFormat;
 #[cfg(feature = "prowl")]
 use cli::prowl::{self, ProwlArgs};
+#[cfg(feature = "py")]
 use cli::py::{self, PyCmd};
+#[cfg(feature = "py")]
 use cli::pyarmor::{self, PyarmorCmd};
+#[cfg(feature = "py")]
 use cli::pyfreeze::{self, PyfreezeCmd};
+#[cfg(feature = "py")]
 use cli::pyinstaller::{self, PyinstallerCmd};
 use cli::query;
 use cli::rename;
@@ -107,6 +118,7 @@ use cli::taint;
 use cli::util::init_tracing;
 use cli::vulnmatch;
 use cli::wasm_cmd::WasmCmd;
+#[cfg(feature = "webview")]
 use cli::webview;
 use cli::yara::{self, YaraCmd};
 
@@ -195,16 +207,19 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 #[allow(clippy::large_enum_variant)]
 enum Cmd {
+    #[cfg(feature = "py")]
     #[command(about = "unpack a PyArmor-protected wrapper (v6 / v7 / v8 / v9-pro)")]
     Pyarmor {
         #[command(subcommand)]
         action: PyarmorCmd,
     },
+    #[cfg(feature = "py")]
     #[command(about = "detect & extract PyInstaller onefile / onedir executables")]
     Pyinstaller {
         #[command(subcommand)]
         action: PyinstallerCmd,
     },
+    #[cfg(feature = "py")]
     #[command(
         about = "detect & extract cx_Freeze / py2exe / shiv / pex / PyOxidizer (experimental, unvalidated) / Briefcase containers"
     )]
@@ -212,11 +227,13 @@ enum Cmd {
         #[command(subcommand)]
         action: PyfreezeCmd,
     },
+    #[cfg(feature = "py")]
     #[command(about = "detect, extract, & symbol-dump Nuitka --onefile / --standalone builds")]
     Nuitka {
         #[command(subcommand)]
         action: NuitkaCmd,
     },
+    #[cfg(feature = "py")]
     #[command(
         about = "Python source / .pyc deobfuscate, disassemble, decompile, extract, sourcedefender decrypt"
     )]
@@ -515,6 +532,7 @@ enum Cmd {
         )]
         effects: bool,
     },
+    #[cfg(feature = "native")]
     #[command(
         alias = "die",
         about = "identify what built or packed a PE / ELF / Mach-O: compiler, linker, packer, protector, installer, with structural evidence and version, and the disrobe pass that handles each"
@@ -574,6 +592,7 @@ enum Cmd {
         )]
         luks1_raw_volume_key_file: Option<PathBuf>,
     },
+    #[cfg(feature = "webview")]
     #[command(
         about = "static-carve the shipped web frontend (HTML/JS/CSS/assets) from a compiled webview-desktop binary (Electron ASAR byte-exact; Tauri/Wails byte-exact against a compressed embedded asset map)"
     )]
@@ -607,6 +626,7 @@ enum Cmd {
         #[command(subcommand)]
         action: WasmCmd,
     },
+    #[cfg(feature = "native")]
     #[command(
         about = "native PE / ELF / Mach-O: in-tree x86-64 -> C decompile, symbol dump, unpack, disassemble, Ghidra-headless"
     )]
@@ -776,6 +796,7 @@ enum Cmd {
         )]
         query: Vec<String>,
     },
+    #[cfg(feature = "native")]
     #[command(
         about = "match a native binary against a built-in capability rule set (create/write/read file, network connect, http, registry persistence, anti-debug, xor-decrypt, resolve-api-by-hash, ...) and report each capability with its evidence address and MITRE ATT&CK / MBC tags"
     )]
@@ -1229,6 +1250,7 @@ enum GuardCmd {
     },
 }
 
+#[cfg(feature = "native")]
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]
 enum SbomFormat {
     #[default]
@@ -1236,6 +1258,7 @@ enum SbomFormat {
     Spdx,
 }
 
+#[cfg(feature = "native")]
 #[derive(Subcommand, Debug)]
 enum NativeCmd {
     #[command(
@@ -1625,6 +1648,7 @@ enum NativeCmd {
     },
 }
 
+#[cfg(any(feature = "native", feature = "swift"))]
 fn parse_u64_auto(s: &str) -> Result<u64, String> {
     let trimmed: &str = s.trim();
     trimmed
@@ -1749,10 +1773,15 @@ fn main() -> miette::Result<()> {
     let llm_flags: LlmFlags = cli.llm.clone();
 
     match cli.command {
+        #[cfg(feature = "py")]
         Cmd::Pyarmor { action } => pyarmor::run(action),
+        #[cfg(feature = "py")]
         Cmd::Pyinstaller { action } => pyinstaller::run(action),
+        #[cfg(feature = "py")]
         Cmd::Pyfreeze { action } => pyfreeze::run(action),
+        #[cfg(feature = "py")]
         Cmd::Nuitka { action } => nuitka::run(action),
+        #[cfg(feature = "py")]
         Cmd::Py { action } => py::run(action, &llm_flags),
         Cmd::Scan { path, redact } => scan::run(path, fmt, redact || eff.redact),
         Cmd::Ioc {
@@ -1864,6 +1893,7 @@ fn main() -> miette::Result<()> {
             no_decode,
         } => strings_cmd::run(path, min_len, no_decode, fmt),
         Cmd::Behavior { path, effects } => behavior::run(path, fmt, effects),
+        #[cfg(feature = "native")]
         Cmd::Identify { path, coverage } => identify::run(path, fmt, coverage),
         #[cfg(feature = "chain")]
         Cmd::Detect { input } => detect::run(input, fmt),
@@ -1883,6 +1913,7 @@ fn main() -> miette::Result<()> {
             luks1_raw_volume_key_file,
             fmt,
         ),
+        #[cfg(feature = "webview")]
         Cmd::Webview { input, out } => webview::run(input, out, fmt),
         Cmd::Yara { action } => yara::run(action, fmt),
         #[cfg(feature = "js")]
@@ -1891,6 +1922,7 @@ fn main() -> miette::Result<()> {
             || Err(crate::cli::pass_registry::not_compiled("wasm", "wasm")),
             |run| run(action),
         ),
+        #[cfg(feature = "native")]
         Cmd::Native { action } => match action {
             NativeCmd::Decompile {
                 input,
@@ -2009,6 +2041,7 @@ fn main() -> miette::Result<()> {
             let expr: String = query.join(" ");
             query::run(input, expr, fmt)
         }
+        #[cfg(feature = "native")]
         Cmd::Capabilities { input } => capabilities::run(input, fmt),
         Cmd::Taint {
             input,
@@ -2385,6 +2418,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "native")]
     fn every_support_route_is_listed_once() {
         let index = |route: disrobe_pass_native::SupportRoute| -> usize {
             use disrobe_pass_native::SupportRoute as Route;
