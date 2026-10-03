@@ -1,0 +1,175 @@
+{
+  "files": {
+    "files/amice-sample.all.elf": "fffcf26d6845000b17db06de876321ebd2d4734342b60cf4b2c29ad6c2c0b90a",
+    "files/amice-sample.bcf.elf": "1bd7834a3dbe1355c8d90512ad43315784a6a922de3f5080587be6db2c1c6a9d",
+    "files/amice-sample.fla.elf": "a25018a7d3519b2ed735451266c426fd956ebb6fdb3878c98e579a4da782c6e0",
+    "files/amice-sample.plain.elf": "6bc2caeb842325ab7fa11acf6de375a991e9e7acedfbc6b60063815fbfed83f4",
+    "files/amice-sample.split.elf": "63f615d8418d3e74169e32567bfcdd608393c8a027ef208b419114e0e0a1cb70",
+    "files/amice-sample.sub.elf": "eafbbe264480732e0cf06499f95e20801dcfcd93b5cb77bb44e31b1bba1a01e6",
+    "files/obfush-sample.all.elf": "a12b339417e6af23d937a610e5f44fb597235c0841dfa7b2729aba02fb418faf",
+    "files/obfush-sample.bcf.elf": "5dc4b38846e5dbb36865162ce0daaed3813ca8c0ec7b8c827a2272975e11d44e",
+    "files/obfush-sample.plain.elf": "f023f8f049077df56b20c8ccbbb6b5be2906fb10cbbfdaa0c79e38cc36316187",
+    "files/obfush-sample.split.elf": "f2d8ecdf14733067bf42161f8ba55caf2fceaa1bbccfacb84520f222d1f2507e",
+    "files/obfush-sample.sub.elf": "4633fe8bc3da46df95faecda24dff7e1448d986f44f87b59b92045211b432f71",
+    "files/ollvm-probe_src.all.elf": "5d7fd69fce73fc768e1c31d97a19206e93b8eeb84496ee7d1a813277fca9a39f",
+    "files/ollvm-probe_src.bcf.elf": "8e50dd8ff14f7e4bbc4611a70f358bdb025cbbd2e786accd2eb22ebceec9968c",
+    "files/ollvm-probe_src.plain.elf": "8a5c968921f0b29a282998b0a3811d8da1d8a9fccade74d9343747131e4cbfea",
+    "files/ollvm-probe_src.split.elf": "3e0f47ae45718bb33bd4d76d7fffbd28bd65453db6db98def942fe14f2d1ef73",
+    "files/ollvm-probe_src.sub.elf": "07d27021fa18644e7f9f374a4d0394c2536ee44942f504681114efceed03e01a"
+  },
+  "outputs": [
+    {
+      "behaviour": "tool-failed",
+      "command": "clang -O0 -mllvm -fla -o ollvm-probe_src.fla.elf probe_src.c",
+      "input": "corpus/native/ollvm/probe_src.c",
+      "input_sha256": "f90fe3aa7874c44e0a04803b47034738d113f5b393e66a7c437377fde4245813"
+    },
+    {
+      "behaviour": "same",
+      "command": "clang -O0 -mllvm -bcf -mllvm -bcf_prob=100 -o ollvm-probe_src.bcf.elf probe_src.c",
+      "input": "corpus/native/ollvm/probe_src.c",
+      "input_sha256": "f90fe3aa7874c44e0a04803b47034738d113f5b393e66a7c437377fde4245813",
+      "output": "files/ollvm-probe_src.bcf.elf",
+      "output_bytes": 20232,
+      "output_sha256": "8e50dd8ff14f7e4bbc4611a70f358bdb025cbbd2e786accd2eb22ebceec9968c"
+    },
+    {
+      "behaviour": "same",
+      "command": "clang -O0 -mllvm -sub -mllvm -sub_loop=2 -o ollvm-probe_src.sub.elf probe_src.c",
+      "input": "corpus/native/ollvm/probe_src.c",
+      "input_sha256": "f90fe3aa7874c44e0a04803b47034738d113f5b393e66a7c437377fde4245813",
+      "output": "files/ollvm-probe_src.sub.elf",
+      "output_bytes": 15976,
+      "output_sha256": "07d27021fa18644e7f9f374a4d0394c2536ee44942f504681114efceed03e01a"
+    },
+    {
+      "behaviour": "same",
+      "command": "clang -O0 -mllvm -split -mllvm -split_num=3 -o ollvm-probe_src.split.elf probe_src.c",
+      "input": "corpus/native/ollvm/probe_src.c",
+      "input_sha256": "f90fe3aa7874c44e0a04803b47034738d113f5b393e66a7c437377fde4245813",
+      "output": "files/ollvm-probe_src.split.elf",
+      "output_bytes": 15976,
+      "output_sha256": "3e0f47ae45718bb33bd4d76d7fffbd28bd65453db6db98def942fe14f2d1ef73"
+    },
+    {
+      "behaviour": "differs",
+      "command": "clang -O0 -mllvm -fla -mllvm -bcf -mllvm -bcf_prob=80 -mllvm -sub -mllvm -split -mllvm -sobf -o ollvm-probe_src.all.elf probe_src.c",
+      "input": "corpus/native/ollvm/probe_src.c",
+      "input_sha256": "f90fe3aa7874c44e0a04803b47034738d113f5b393e66a7c437377fde4245813",
+      "output": "files/ollvm-probe_src.all.elf",
+      "output_bytes": 44864,
+      "output_sha256": "5d7fd69fce73fc768e1c31d97a19206e93b8eeb84496ee7d1a813277fca9a39f"
+    },
+    {
+      "behaviour": "input-failed",
+      "command": "clang -O0",
+      "input": "corpus/native/ollvm/bcf_src.c",
+      "input_sha256": "1e6c6bf4a4f39e53725abf98dcf84ebd59b431c517f63dce61393d72ef078881"
+    },
+    {
+      "behaviour": "input-failed",
+      "command": "clang -O0",
+      "input": "corpus/native/ollvm/sub_src.c",
+      "input_sha256": "69778b4ce2970a7519936f85edbb61748bf99209b62ee5563cc8d5c57ab83d9f"
+    },
+    {
+      "behaviour": "differs",
+      "command": "clang -O0 -mllvm -fla -o amice-sample.fla.elf sample.c",
+      "input": "corpus/native/obfuscators/amice/sample.c",
+      "input_sha256": "4a88222f323f09f0e35081d15c1988c2943b8d6f8f13c630ef6291639bea3c3b",
+      "output": "files/amice-sample.fla.elf",
+      "output_bytes": 15992,
+      "output_sha256": "a25018a7d3519b2ed735451266c426fd956ebb6fdb3878c98e579a4da782c6e0"
+    },
+    {
+      "behaviour": "differs",
+      "command": "clang -O0 -mllvm -bcf -mllvm -bcf_prob=100 -o amice-sample.bcf.elf sample.c",
+      "input": "corpus/native/obfuscators/amice/sample.c",
+      "input_sha256": "4a88222f323f09f0e35081d15c1988c2943b8d6f8f13c630ef6291639bea3c3b",
+      "output": "files/amice-sample.bcf.elf",
+      "output_bytes": 16048,
+      "output_sha256": "1bd7834a3dbe1355c8d90512ad43315784a6a922de3f5080587be6db2c1c6a9d"
+    },
+    {
+      "behaviour": "differs",
+      "command": "clang -O0 -mllvm -sub -mllvm -sub_loop=2 -o amice-sample.sub.elf sample.c",
+      "input": "corpus/native/obfuscators/amice/sample.c",
+      "input_sha256": "4a88222f323f09f0e35081d15c1988c2943b8d6f8f13c630ef6291639bea3c3b",
+      "output": "files/amice-sample.sub.elf",
+      "output_bytes": 15992,
+      "output_sha256": "eafbbe264480732e0cf06499f95e20801dcfcd93b5cb77bb44e31b1bba1a01e6"
+    },
+    {
+      "behaviour": "differs",
+      "command": "clang -O0 -mllvm -split -mllvm -split_num=3 -o amice-sample.split.elf sample.c",
+      "input": "corpus/native/obfuscators/amice/sample.c",
+      "input_sha256": "4a88222f323f09f0e35081d15c1988c2943b8d6f8f13c630ef6291639bea3c3b",
+      "output": "files/amice-sample.split.elf",
+      "output_bytes": 15992,
+      "output_sha256": "63f615d8418d3e74169e32567bfcdd608393c8a027ef208b419114e0e0a1cb70"
+    },
+    {
+      "behaviour": "differs",
+      "command": "clang -O0 -mllvm -fla -mllvm -bcf -mllvm -bcf_prob=80 -mllvm -sub -mllvm -split -mllvm -sobf -o amice-sample.all.elf sample.c",
+      "input": "corpus/native/obfuscators/amice/sample.c",
+      "input_sha256": "4a88222f323f09f0e35081d15c1988c2943b8d6f8f13c630ef6291639bea3c3b",
+      "output": "files/amice-sample.all.elf",
+      "output_bytes": 32544,
+      "output_sha256": "fffcf26d6845000b17db06de876321ebd2d4734342b60cf4b2c29ad6c2c0b90a"
+    },
+    {
+      "behaviour": "tool-failed",
+      "command": "clang -O0 -mllvm -fla -o obfush-sample.fla.elf sample.c",
+      "input": "corpus/native/obfuscators/obfush/sample.c",
+      "input_sha256": "16c8ebce39cd317dbf1eddf4b0d188784da6fb4c43922761cefb2dc6e88a1d71"
+    },
+    {
+      "behaviour": "same",
+      "command": "clang -O0 -mllvm -bcf -mllvm -bcf_prob=100 -o obfush-sample.bcf.elf sample.c",
+      "input": "corpus/native/obfuscators/obfush/sample.c",
+      "input_sha256": "16c8ebce39cd317dbf1eddf4b0d188784da6fb4c43922761cefb2dc6e88a1d71",
+      "output": "files/obfush-sample.bcf.elf",
+      "output_bytes": 16048,
+      "output_sha256": "5dc4b38846e5dbb36865162ce0daaed3813ca8c0ec7b8c827a2272975e11d44e"
+    },
+    {
+      "behaviour": "same",
+      "command": "clang -O0 -mllvm -sub -mllvm -sub_loop=2 -o obfush-sample.sub.elf sample.c",
+      "input": "corpus/native/obfuscators/obfush/sample.c",
+      "input_sha256": "16c8ebce39cd317dbf1eddf4b0d188784da6fb4c43922761cefb2dc6e88a1d71",
+      "output": "files/obfush-sample.sub.elf",
+      "output_bytes": 15944,
+      "output_sha256": "4633fe8bc3da46df95faecda24dff7e1448d986f44f87b59b92045211b432f71"
+    },
+    {
+      "behaviour": "same",
+      "command": "clang -O0 -mllvm -split -mllvm -split_num=3 -o obfush-sample.split.elf sample.c",
+      "input": "corpus/native/obfuscators/obfush/sample.c",
+      "input_sha256": "16c8ebce39cd317dbf1eddf4b0d188784da6fb4c43922761cefb2dc6e88a1d71",
+      "output": "files/obfush-sample.split.elf",
+      "output_bytes": 15944,
+      "output_sha256": "f2d8ecdf14733067bf42161f8ba55caf2fceaa1bbccfacb84520f222d1f2507e"
+    },
+    {
+      "behaviour": "differs",
+      "command": "clang -O0 -mllvm -fla -mllvm -bcf -mllvm -bcf_prob=80 -mllvm -sub -mllvm -split -mllvm -sobf -o obfush-sample.all.elf sample.c",
+      "input": "corpus/native/obfuscators/obfush/sample.c",
+      "input_sha256": "16c8ebce39cd317dbf1eddf4b0d188784da6fb4c43922761cefb2dc6e88a1d71",
+      "output": "files/obfush-sample.all.elf",
+      "output_bytes": 44888,
+      "output_sha256": "a12b339417e6af23d937a610e5f44fb597235c0841dfa7b2729aba02fb418faf"
+    }
+  ],
+  "recipe": "ollvm",
+  "repository_commit": "594620ab93181d85ea32df2a48a580fe228c609e",
+  "runner_image": "ubuntu24 20260927.320.1",
+  "tool": {
+    "commit": "b58debfd7f62c55f0a83ce975527f378b145ad6a",
+    "name": "OLLVM (ollvm17 passes over LLVM 17.0.6)",
+    "runtime": "clang version 17.0.6; runner glibc ldd (Ubuntu GLIBC 2.39-0ubuntu8.9) 2.39",
+    "tree": "d78891c4b251fcd2d6618dae275be61c4f00c95e",
+    "url": "https://github.com/DreamSoule/ollvm17",
+    "version": "llvm-project-17.0.6.src.tar.xz sha256 58a8818c60e6627064f312dbf46c02d9949956558340938b71cf731ad8bc0813 from https://github.com/llvm/llvm-project/releases/download/llvmorg-17.0.6/llvm-project-17.0.6.src.tar.xz; built Release, X86 target, clang only; valueEscapes copied from pinned LLVM Reg2Mem.cpp; Function::splice compatibility patch checked by LLVMPasses; patched Utils.cpp sha256 edc394317a4ec07682c3552fd6f6d36bf588299fcb5447195ee1106ef979a5d9; patched IPObfuscationContext.cpp sha256 ad63a53dc974564568307c6d4b30591677d37ec08a6c569a649642a465a9ee1d"
+  },
+  "workflow_run": "https://github.com/1-3-7/disrobe/actions/runs/37109535286"
+}
