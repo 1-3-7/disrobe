@@ -1,9 +1,29 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+#[cfg(any(
+    feature = "dotnet",
+    feature = "js",
+    feature = "lua",
+    feature = "native",
+    feature = "php",
+    feature = "py",
+    feature = "shell",
+    feature = "wasm"
+))]
 use disrobe_core::chain::{CatalogEntry, ObfuscatorCatalog, SupportQuality};
 use serde::Serialize;
 
+#[cfg(any(
+    feature = "dotnet",
+    feature = "js",
+    feature = "lua",
+    feature = "native",
+    feature = "php",
+    feature = "py",
+    feature = "shell",
+    feature = "wasm"
+))]
 pub(crate) fn print_obfuscator_catalog(catalog: &dyn ObfuscatorCatalog, example_command: &str) {
     let entries: Vec<&'static dyn CatalogEntry> = catalog.catalog();
     println!(
@@ -30,6 +50,16 @@ pub(crate) fn print_obfuscator_catalog(catalog: &dyn ObfuscatorCatalog, example_
     println!("  {example_command}");
 }
 
+#[cfg(any(
+    feature = "dotnet",
+    feature = "js",
+    feature = "lua",
+    feature = "native",
+    feature = "php",
+    feature = "py",
+    feature = "shell",
+    feature = "wasm"
+))]
 fn quality_legend() -> String {
     format!(
         "{} = recovers output, {} = partial recovery, {} = detection only",
