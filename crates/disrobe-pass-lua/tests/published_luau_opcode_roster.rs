@@ -5,7 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use disrobe_pass_lua::{
-    DecompiledChunk, Fidelity, LuaChunk, LuaDialect, LuaProto,
+    DecompiledChunk, Fidelity, LuaChunk, LuaConstant, LuaDialect, LuaProto,
     decompile::{decompile_chunk, luau_lift::test_op_length},
     reader::luau,
 };
@@ -14,6 +14,7 @@ const DECLARED_OPCODES: usize = 88;
 const HIGHEST_OPCODE: u8 = 87;
 const LIFTED_OPCODES: usize = 86;
 const LOP_BREAK: u8 = 1;
+const LOP_DUPTABLE: u8 = 54;
 
 const DECODED_NOT_LIFTED: [(&str, u8); 2] = [("BREAK", LOP_BREAK), ("NEWCLASSMEMBER", 86)];
 
@@ -154,6 +155,11 @@ fn declared_opcodes(source: &str) -> Vec<(String, u8)> {
 }
 
 fn luau_chunk_carrying(op: u8) -> LuaChunk {
+    let constants: Vec<LuaConstant> = if op == LOP_DUPTABLE {
+        vec![LuaConstant::TableTemplate(std::sync::Arc::from([]))]
+    } else {
+        Vec::new()
+    };
     LuaChunk {
         dialect: LuaDialect::Luau,
         version_byte: 6,
@@ -173,7 +179,7 @@ fn luau_chunk_carrying(op: u8) -> LuaChunk {
             is_vararg: 0,
             max_stack_size: 8,
             code: vec![u32::from(op), 0, 0],
-            constants: Vec::new(),
+            constants,
             protos: Vec::new(),
             source_lines: Vec::new(),
             locals: Vec::new(),
