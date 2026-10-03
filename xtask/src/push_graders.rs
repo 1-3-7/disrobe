@@ -561,6 +561,30 @@ mod tests {
     }
 
     #[test]
+    fn committed_grader_features_are_declared_by_the_packages() {
+        let root: std::path::PathBuf = crate::workspace_root().expect("workspace root");
+        let manifest: Manifest = load().expect("committed push grader manifest");
+        for grader in &manifest.grader {
+            let path: std::path::PathBuf =
+                root.join("crates").join(&grader.package).join("Cargo.toml");
+            let text: String = crate::fileio::read_text_bounded(&path, 256 * 1024)
+                .expect("bounded grader package manifest");
+            let package: toml::Table = toml::from_str(&text).expect("grader package manifest");
+            for feature in &grader.features {
+                assert!(
+                    package
+                        .get("features")
+                        .and_then(toml::Value::as_table)
+                        .is_some_and(|features: &toml::Table| features.contains_key(feature)),
+                    "{}:{} requests undeclared feature {feature:?}",
+                    grader.package,
+                    grader.target,
+                );
+            }
+        }
+    }
+
+    #[test]
     fn duplicate_ecosystem_is_rejected() {
         let manifest: Manifest = Manifest {
             version: 1,

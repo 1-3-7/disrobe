@@ -20,7 +20,7 @@ mutation = { path = "crates/disrobe-pass-js-deob/tests/reeval_oracle.rs", test =
 ecosystem = "wasm"
 package = "disrobe-pass-wasm-deob"
 target = "linear_memory_local_offset"
-features = ["sandbox", "chain"]
+features = ["sandbox"]
 reference = { path = "crates/disrobe-pass-wasm-deob/tests/linear_memory_local_offset.rs", test = "immutable_local_plus_offset_reloops_through_public_callers_under_wasmtime" }
 mutation = { path = "crates/disrobe-pass-wasm-deob/tests/linear_memory_local_offset.rs", test = "wrong_successor_mutation_is_distinguished_under_wasmtime" }
 
