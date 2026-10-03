@@ -1,0 +1,349 @@
+schema = "disrobe.real-tool-outputs/v1"
+tool = "wasm-name-obfuscator"
+tool_url = "https://github.com/abcxff/wasm-name-obfuscator"
+tool_commit = "d752a3ded5638b94d4db4630ade0d1b8d3c01fb1"
+tool_tree = "31c3a6af2b9efe2e59a483881292961647764d25"
+runtime = "node v22.23.3; wasm-tools 1.250.0 (4a72fcd2e 2026-05-21)"
+recipe = ".github/real-tools/wasm-name-obfuscator.sh"
+repository_commit = "d0b3ba6b9e1da1f9502af00e9490c172deed23d6"
+runner_image = "ubuntu24 20260927.320.1"
+workflow_run = "https://github.com/1-3-7/disrobe/actions/runs/37045168802"
+
+[[output]]
+path = "callind_dispatch.hex.wasm"
+sha256 = "70ecb5232e2291c3eaa70fe03b34675c2b35df73bcfb73472f663c9f795a2057"
+bytes = 7360
+input = "corpus/wasm/obf/real/callind_dispatch.clean.wat"
+input_sha256 = "d5de9661efdacd05c1d5abaf8559d9bdf948ab4e35589c9f6c71aabc90261add"
+command = "node run-obfuscator.js obfuscate.js callind_dispatch.clean.wasm hex callind_dispatch.hex.wasm"
+behaviour = "same"
+input_wasm_sha256 = "53d535f6e28b3429e21891760c440653d60bff3d9af4ffd96f0bdb61ac70a66c"
+written_style = "hex"
+
+[[output]]
+path = "callind_dispatch.alphanumeral.wasm"
+sha256 = "1031d12a80ccca3b3b7303e720e90c375b9858cb15bbae2cad4fa72830d3521f"
+bytes = 10504
+input = "corpus/wasm/obf/real/callind_dispatch.clean.wat"
+input_sha256 = "d5de9661efdacd05c1d5abaf8559d9bdf948ab4e35589c9f6c71aabc90261add"
+command = "node run-obfuscator.js obfuscate.js callind_dispatch.clean.wasm alphanumeral callind_dispatch.alphanumeral.wasm"
+behaviour = "same"
+input_wasm_sha256 = "53d535f6e28b3429e21891760c440653d60bff3d9af4ffd96f0bdb61ac70a66c"
+written_style = "alphanumeral"
+
+[[output]]
+path = "callind_dispatch.alternating.wasm"
+sha256 = "eab2aecc1d7a7ec19db7a18929c3c4b1db630bbe9db9c214f87ecb6071675dd4"
+bytes = 24571
+input = "corpus/wasm/obf/real/callind_dispatch.clean.wat"
+input_sha256 = "d5de9661efdacd05c1d5abaf8559d9bdf948ab4e35589c9f6c71aabc90261add"
+command = "node run-obfuscator.js obfuscate.js callind_dispatch.clean.wasm alternating callind_dispatch.alternating.wasm"
+behaviour = "same"
+input_wasm_sha256 = "53d535f6e28b3429e21891760c440653d60bff3d9af4ffd96f0bdb61ac70a66c"
+written_style = "alternating"
+
+[[output]]
+path = "cff_cond_diamond.hex.wasm"
+sha256 = "f5078031a2c7fc57b92bcd0359674184303b6815851dcfeebd2b8fbeb700db2f"
+bytes = 1853
+input = "corpus/wasm/obf/real/cff_cond_diamond.clean.wat"
+input_sha256 = "61f202fd482aff1ae35a81e16972e1fdb7c0d0d5ee3d4132742fd7febc633707"
+command = "node run-obfuscator.js obfuscate.js cff_cond_diamond.clean.wasm hex cff_cond_diamond.hex.wasm"
+behaviour = "same"
+input_wasm_sha256 = "30d07a1b30712e1c0412f04d84bd9c9f09f8e1c4f6e15034aeda2e70ac823575"
+written_style = "hex"
+
+[[output]]
+path = "cff_cond_diamond.alphanumeral.wasm"
+sha256 = "a39c4d5187740b4883bb819355f193bdc5a3e477eebdd7f9708e1a88e5dcac83"
+bytes = 2629
+input = "corpus/wasm/obf/real/cff_cond_diamond.clean.wat"
+input_sha256 = "61f202fd482aff1ae35a81e16972e1fdb7c0d0d5ee3d4132742fd7febc633707"
+command = "node run-obfuscator.js obfuscate.js cff_cond_diamond.clean.wasm alphanumeral cff_cond_diamond.alphanumeral.wasm"
+behaviour = "same"
+input_wasm_sha256 = "30d07a1b30712e1c0412f04d84bd9c9f09f8e1c4f6e15034aeda2e70ac823575"
+written_style = "alphanumeral"
+
+[[output]]
+path = "cff_cond_diamond.alternating.wasm"
+sha256 = "e480b2ac6c471126d84d0b398400593114384bf116daf0234a6c3284d54fe6e8"
+bytes = 6155
+input = "corpus/wasm/obf/real/cff_cond_diamond.clean.wat"
+input_sha256 = "61f202fd482aff1ae35a81e16972e1fdb7c0d0d5ee3d4132742fd7febc633707"
+command = "node run-obfuscator.js obfuscate.js cff_cond_diamond.clean.wasm alternating cff_cond_diamond.alternating.wasm"
+behaviour = "same"
+input_wasm_sha256 = "30d07a1b30712e1c0412f04d84bd9c9f09f8e1c4f6e15034aeda2e70ac823575"
+written_style = "alternating"
+
+[[output]]
+path = "cff_cond_loop.hex.wasm"
+sha256 = "3ac5f4daa181989fae2999cbcddb07d9f3c7dc10a0dd75edbfb0ac412279143f"
+bytes = 2101
+input = "corpus/wasm/obf/real/cff_cond_loop.clean.wat"
+input_sha256 = "4348f36d6748e894112e9606cdf27ea186bf63d9ad024f9adbe570edd198837d"
+command = "node run-obfuscator.js obfuscate.js cff_cond_loop.clean.wasm hex cff_cond_loop.hex.wasm"
+behaviour = "same"
+input_wasm_sha256 = "24d61eb41c6de5a0dc50519c1c1aacc133f84dbbd79796f3005d6b37cb9a25f0"
+written_style = "hex"
+
+[[output]]
+path = "cff_cond_loop.alphanumeral.wasm"
+sha256 = "7b87930efa2d8ade5c749a86fd4bf7268b185bd55a0c2f86685d4b67222cab4b"
+bytes = 2917
+input = "corpus/wasm/obf/real/cff_cond_loop.clean.wat"
+input_sha256 = "4348f36d6748e894112e9606cdf27ea186bf63d9ad024f9adbe570edd198837d"
+command = "node run-obfuscator.js obfuscate.js cff_cond_loop.clean.wasm alphanumeral cff_cond_loop.alphanumeral.wasm"
+behaviour = "same"
+input_wasm_sha256 = "24d61eb41c6de5a0dc50519c1c1aacc133f84dbbd79796f3005d6b37cb9a25f0"
+written_style = "alphanumeral"
+
+[[output]]
+path = "cff_cond_loop.alternating.wasm"
+sha256 = "8df3ce852e0d0f48a18a1b79e9ef6979d10fb724470ecaec51dbfffbfc394014"
+bytes = 6603
+input = "corpus/wasm/obf/real/cff_cond_loop.clean.wat"
+input_sha256 = "4348f36d6748e894112e9606cdf27ea186bf63d9ad024f9adbe570edd198837d"
+command = "node run-obfuscator.js obfuscate.js cff_cond_loop.clean.wasm alternating cff_cond_loop.alternating.wasm"
+behaviour = "same"
+input_wasm_sha256 = "24d61eb41c6de5a0dc50519c1c1aacc133f84dbbd79796f3005d6b37cb9a25f0"
+written_style = "alternating"
+
+[[output]]
+path = "cff_loop.hex.wasm"
+sha256 = "9daffc53d651075d92dd94eafdb115dcf68af448d7cfb2c1d14c48b93cd553e7"
+bytes = 1904
+input = "corpus/wasm/obf/real/cff_loop.clean.wat"
+input_sha256 = "2d0e12dd60517ce21262b5fe1f2de09e631afe3a32d9e352fcde00b2c7ab3cc3"
+command = "node run-obfuscator.js obfuscate.js cff_loop.clean.wasm hex cff_loop.hex.wasm"
+behaviour = "same"
+input_wasm_sha256 = "394691fcd621d5d719ee68c98061bf6a74cde5abcee3c4a9b71f165a812ebb52"
+written_style = "hex"
+
+[[output]]
+path = "cff_loop.alphanumeral.wasm"
+sha256 = "da18efbf6125a7c2738145568c2d5e395c4d50dc6007da80f88881048c85bedb"
+bytes = 2696
+input = "corpus/wasm/obf/real/cff_loop.clean.wat"
+input_sha256 = "2d0e12dd60517ce21262b5fe1f2de09e631afe3a32d9e352fcde00b2c7ab3cc3"
+command = "node run-obfuscator.js obfuscate.js cff_loop.clean.wasm alphanumeral cff_loop.alphanumeral.wasm"
+behaviour = "same"
+input_wasm_sha256 = "394691fcd621d5d719ee68c98061bf6a74cde5abcee3c4a9b71f165a812ebb52"
+written_style = "alphanumeral"
+
+[[output]]
+path = "cff_loop.alternating.wasm"
+sha256 = "24483c44b6b249a71e24cbeaf890bf2ec4610c86f956dbe50757febd2b150785"
+bytes = 6280
+input = "corpus/wasm/obf/real/cff_loop.clean.wat"
+input_sha256 = "2d0e12dd60517ce21262b5fe1f2de09e631afe3a32d9e352fcde00b2c7ab3cc3"
+command = "node run-obfuscator.js obfuscate.js cff_loop.clean.wasm alternating cff_loop.alternating.wasm"
+behaviour = "same"
+input_wasm_sha256 = "394691fcd621d5d719ee68c98061bf6a74cde5abcee3c4a9b71f165a812ebb52"
+written_style = "alternating"
+
+[[output]]
+path = "cff_pipeline.hex.wasm"
+sha256 = "7df271d9da277e8a7a211e1fa06e3ceecc6896f9926b5d66adccb85c55f244ca"
+bytes = 1838
+input = "corpus/wasm/obf/real/cff_pipeline.clean.wat"
+input_sha256 = "673ec62768e05efafb2344d6df692d549f6ad5f5547d55a39aec39512a283e0f"
+command = "node run-obfuscator.js obfuscate.js cff_pipeline.clean.wasm hex cff_pipeline.hex.wasm"
+behaviour = "same"
+input_wasm_sha256 = "edd8c3336bb0eceeab3ba029e3c65204df3cdca72a3ea339b9b3428e85eab51c"
+written_style = "hex"
+
+[[output]]
+path = "cff_pipeline.alphanumeral.wasm"
+sha256 = "06644046e8e6ffe516b99b1e37a4216da0f9bcdcc745316fa3630c056b3dba16"
+bytes = 2614
+input = "corpus/wasm/obf/real/cff_pipeline.clean.wat"
+input_sha256 = "673ec62768e05efafb2344d6df692d549f6ad5f5547d55a39aec39512a283e0f"
+command = "node run-obfuscator.js obfuscate.js cff_pipeline.clean.wasm alphanumeral cff_pipeline.alphanumeral.wasm"
+behaviour = "same"
+input_wasm_sha256 = "edd8c3336bb0eceeab3ba029e3c65204df3cdca72a3ea339b9b3428e85eab51c"
+written_style = "alphanumeral"
+
+[[output]]
+path = "cff_pipeline.alternating.wasm"
+sha256 = "8e754a1ca74cb8fc31c513b526468ffc6b22ea6181d8acb924cc8de369e00c04"
+bytes = 6144
+input = "corpus/wasm/obf/real/cff_pipeline.clean.wat"
+input_sha256 = "673ec62768e05efafb2344d6df692d549f6ad5f5547d55a39aec39512a283e0f"
+command = "node run-obfuscator.js obfuscate.js cff_pipeline.clean.wasm alternating cff_pipeline.alternating.wasm"
+behaviour = "same"
+input_wasm_sha256 = "edd8c3336bb0eceeab3ba029e3c65204df3cdca72a3ea339b9b3428e85eab51c"
+written_style = "alternating"
+
+[[output]]
+path = "jscrambler_guard.hex.wasm"
+sha256 = "6049a0c9161cbfe4bbec8a09a837fca285b3f0c70460eade33d5a1f3f7ed5f76"
+bytes = 1805
+input = "corpus/wasm/obf/real/jscrambler_guard.clean.wat"
+input_sha256 = "df3bced33f3bf50abbb15c90c6249c7aac2c6a9f2b041a8b4217a3de81dcceb4"
+command = "node run-obfuscator.js obfuscate.js jscrambler_guard.clean.wasm hex jscrambler_guard.hex.wasm"
+behaviour = "same"
+input_wasm_sha256 = "a13a2a0a220966cb05de94f3c69e226ea5216b110921db81a5a8d1e5778ce0ea"
+written_style = "hex"
+written_style_note = "the input already carries a name section; obfuscate.js deletes it and calls itself again without the style argument, so every name is written in its default hex style"
+
+[[output]]
+path = "jscrambler_guard.alphanumeral.wasm"
+sha256 = "437a45daf7be54bf79e5d3637ae7c61405ddd8dc059b2550b0d88a41bae77249"
+bytes = 1805
+input = "corpus/wasm/obf/real/jscrambler_guard.clean.wat"
+input_sha256 = "df3bced33f3bf50abbb15c90c6249c7aac2c6a9f2b041a8b4217a3de81dcceb4"
+command = "node run-obfuscator.js obfuscate.js jscrambler_guard.clean.wasm alphanumeral jscrambler_guard.alphanumeral.wasm"
+behaviour = "same"
+input_wasm_sha256 = "a13a2a0a220966cb05de94f3c69e226ea5216b110921db81a5a8d1e5778ce0ea"
+written_style = "hex"
+written_style_note = "the input already carries a name section; obfuscate.js deletes it and calls itself again without the style argument, so every name is written in its default hex style"
+
+[[output]]
+path = "jscrambler_guard.alternating.wasm"
+sha256 = "748ac0d02682c63714f8a407e255d198e1fac7b96061f48eee9d381b2f8acdf4"
+bytes = 1805
+input = "corpus/wasm/obf/real/jscrambler_guard.clean.wat"
+input_sha256 = "df3bced33f3bf50abbb15c90c6249c7aac2c6a9f2b041a8b4217a3de81dcceb4"
+command = "node run-obfuscator.js obfuscate.js jscrambler_guard.clean.wasm alternating jscrambler_guard.alternating.wasm"
+behaviour = "same"
+input_wasm_sha256 = "a13a2a0a220966cb05de94f3c69e226ea5216b110921db81a5a8d1e5778ce0ea"
+written_style = "hex"
+written_style_note = "the input already carries a name section; obfuscate.js deletes it and calls itself again without the style argument, so every name is written in its default hex style"
+
+[[output]]
+path = "mba_checksum.hex.wasm"
+sha256 = "953df03076ddfa38470101c519a0a79dc33f5bc7698c099beb2a8a439559cf42"
+bytes = 4562
+input = "corpus/wasm/obf/real/mba_checksum.clean.wat"
+input_sha256 = "0071d1d01dd6033e26202c8f45946de34d52abc868a528a35f238dd14e3f929b"
+command = "node run-obfuscator.js obfuscate.js mba_checksum.clean.wasm hex mba_checksum.hex.wasm"
+behaviour = "same"
+input_wasm_sha256 = "91e1cb4074bdfd89088b9cff10891b1e59bd637d11fca594f981f9e28ee4535f"
+written_style = "hex"
+
+[[output]]
+path = "mba_checksum.alphanumeral.wasm"
+sha256 = "ed453d5cf1703e12ae4023cbf9e7560eee03a143b0f1673ba3dcd45bff5eedbb"
+bytes = 6434
+input = "corpus/wasm/obf/real/mba_checksum.clean.wat"
+input_sha256 = "0071d1d01dd6033e26202c8f45946de34d52abc868a528a35f238dd14e3f929b"
+command = "node run-obfuscator.js obfuscate.js mba_checksum.clean.wasm alphanumeral mba_checksum.alphanumeral.wasm"
+behaviour = "same"
+input_wasm_sha256 = "91e1cb4074bdfd89088b9cff10891b1e59bd637d11fca594f981f9e28ee4535f"
+written_style = "alphanumeral"
+
+[[output]]
+path = "mba_checksum.alternating.wasm"
+sha256 = "391f6f5e395ad1b7449b24b3d91aaf067d5077f02c6f1805d826b78cb78a948a"
+bytes = 14899
+input = "corpus/wasm/obf/real/mba_checksum.clean.wat"
+input_sha256 = "0071d1d01dd6033e26202c8f45946de34d52abc868a528a35f238dd14e3f929b"
+command = "node run-obfuscator.js obfuscate.js mba_checksum.clean.wasm alternating mba_checksum.alternating.wasm"
+behaviour = "same"
+input_wasm_sha256 = "91e1cb4074bdfd89088b9cff10891b1e59bd637d11fca594f981f9e28ee4535f"
+written_style = "alternating"
+
+[[output]]
+path = "opaque_select.hex.wasm"
+sha256 = "cb591393bd16fe3f35064de4f74d95bc26244993e32dfa905c0d319ab6e0b0d6"
+bytes = 1875
+input = "corpus/wasm/obf/real/opaque_select.clean.wat"
+input_sha256 = "930b25b14d63adb0517bf8c7bf86c345c9718f3fef6295efd740b368bb86fd3c"
+command = "node run-obfuscator.js obfuscate.js opaque_select.clean.wasm hex opaque_select.hex.wasm"
+behaviour = "same"
+input_wasm_sha256 = "4515f1f205af67edb786bb2f8b9be476ba8dfd921ffa7627d65cd4d4a50da86e"
+written_style = "hex"
+
+[[output]]
+path = "opaque_select.alphanumeral.wasm"
+sha256 = "418471bd04177b15002d29c66280052275d3a4445e8bec142e5c15ceceeacb48"
+bytes = 2659
+input = "corpus/wasm/obf/real/opaque_select.clean.wat"
+input_sha256 = "930b25b14d63adb0517bf8c7bf86c345c9718f3fef6295efd740b368bb86fd3c"
+command = "node run-obfuscator.js obfuscate.js opaque_select.clean.wasm alphanumeral opaque_select.alphanumeral.wasm"
+behaviour = "same"
+input_wasm_sha256 = "4515f1f205af67edb786bb2f8b9be476ba8dfd921ffa7627d65cd4d4a50da86e"
+written_style = "alphanumeral"
+
+[[output]]
+path = "opaque_select.alternating.wasm"
+sha256 = "753fc690d3c6982ca913146c9691b3b831d8f3a46243bb8b685f9ba8c8cb27d2"
+bytes = 6196
+input = "corpus/wasm/obf/real/opaque_select.clean.wat"
+input_sha256 = "930b25b14d63adb0517bf8c7bf86c345c9718f3fef6295efd740b368bb86fd3c"
+command = "node run-obfuscator.js obfuscate.js opaque_select.clean.wasm alternating opaque_select.alternating.wasm"
+behaviour = "same"
+input_wasm_sha256 = "4515f1f205af67edb786bb2f8b9be476ba8dfd921ffa7627d65cd4d4a50da86e"
+written_style = "alternating"
+
+[[output]]
+path = "wasmixer_inflate.hex.wasm"
+sha256 = "541b50dfc0fa57b8042dd9936b0649ca9b47a20a18dae6de8f6c721d342576aa"
+bytes = 1810
+input = "corpus/wasm/obf/real/wasmixer_inflate.clean.wat"
+input_sha256 = "395f93231b1c66376942a4f02920405746cff3898a4cbb5ad9192fb1c113fc33"
+command = "node run-obfuscator.js obfuscate.js wasmixer_inflate.clean.wasm hex wasmixer_inflate.hex.wasm"
+behaviour = "same"
+input_wasm_sha256 = "c172df3fc5cec9560f6c144405751f5a9da7524e27021d32d91451b9a2aee0c0"
+written_style = "hex"
+written_style_note = "the input already carries a name section; obfuscate.js deletes it and calls itself again without the style argument, so every name is written in its default hex style"
+
+[[output]]
+path = "wasmixer_inflate.alphanumeral.wasm"
+sha256 = "cbc7b2b8af3ad86a14e60ec4b3fa4c648ffe02137c67ed8c5a8a30f7992f655e"
+bytes = 1810
+input = "corpus/wasm/obf/real/wasmixer_inflate.clean.wat"
+input_sha256 = "395f93231b1c66376942a4f02920405746cff3898a4cbb5ad9192fb1c113fc33"
+command = "node run-obfuscator.js obfuscate.js wasmixer_inflate.clean.wasm alphanumeral wasmixer_inflate.alphanumeral.wasm"
+behaviour = "same"
+input_wasm_sha256 = "c172df3fc5cec9560f6c144405751f5a9da7524e27021d32d91451b9a2aee0c0"
+written_style = "hex"
+written_style_note = "the input already carries a name section; obfuscate.js deletes it and calls itself again without the style argument, so every name is written in its default hex style"
+
+[[output]]
+path = "wasmixer_inflate.alternating.wasm"
+sha256 = "a538e26d2d7fa9210dc973b50dedc90c018d96505f8ef9ebf7e02096fc66b2d0"
+bytes = 1810
+input = "corpus/wasm/obf/real/wasmixer_inflate.clean.wat"
+input_sha256 = "395f93231b1c66376942a4f02920405746cff3898a4cbb5ad9192fb1c113fc33"
+command = "node run-obfuscator.js obfuscate.js wasmixer_inflate.clean.wasm alternating wasmixer_inflate.alternating.wasm"
+behaviour = "same"
+input_wasm_sha256 = "c172df3fc5cec9560f6c144405751f5a9da7524e27021d32d91451b9a2aee0c0"
+written_style = "hex"
+written_style_note = "the input already carries a name section; obfuscate.js deletes it and calls itself again without the style argument, so every name is written in its default hex style"
+
+[[output]]
+path = "wobfuscator_import.hex.wasm"
+sha256 = "ef35d9faa41dfa605e365cbafc39833a956dbd411321b026c3980726c53fd942"
+bytes = 1810
+input = "corpus/wasm/obf/real/wobfuscator_import.clean.wat"
+input_sha256 = "588ab47dfc800891be6c6e3fc9bf34cf932b3d65d2129393c19249c64c9a5707"
+command = "node run-obfuscator.js obfuscate.js wobfuscator_import.clean.wasm hex wobfuscator_import.hex.wasm"
+behaviour = "same"
+input_wasm_sha256 = "96efb984d5191adc24ea848cc8ed0298e029498698e2bef5d6d6ab4a9edd8ad8"
+written_style = "hex"
+written_style_note = "the input already carries a name section; obfuscate.js deletes it and calls itself again without the style argument, so every name is written in its default hex style"
+
+[[output]]
+path = "wobfuscator_import.alphanumeral.wasm"
+sha256 = "63f8e0be2e081668cbe508a6b072b16266b0c2255cc1f12731765e94fb7e5c59"
+bytes = 1810
+input = "corpus/wasm/obf/real/wobfuscator_import.clean.wat"
+input_sha256 = "588ab47dfc800891be6c6e3fc9bf34cf932b3d65d2129393c19249c64c9a5707"
+command = "node run-obfuscator.js obfuscate.js wobfuscator_import.clean.wasm alphanumeral wobfuscator_import.alphanumeral.wasm"
+behaviour = "same"
+input_wasm_sha256 = "96efb984d5191adc24ea848cc8ed0298e029498698e2bef5d6d6ab4a9edd8ad8"
+written_style = "hex"
+written_style_note = "the input already carries a name section; obfuscate.js deletes it and calls itself again without the style argument, so every name is written in its default hex style"
+
+[[output]]
+path = "wobfuscator_import.alternating.wasm"
+sha256 = "970f9477d55dc516ddd8520f3bccb5e73d86bd73277e1eb03616cf9816b43c5a"
+bytes = 1810
+input = "corpus/wasm/obf/real/wobfuscator_import.clean.wat"
+input_sha256 = "588ab47dfc800891be6c6e3fc9bf34cf932b3d65d2129393c19249c64c9a5707"
+command = "node run-obfuscator.js obfuscate.js wobfuscator_import.clean.wasm alternating wobfuscator_import.alternating.wasm"
+behaviour = "same"
+input_wasm_sha256 = "96efb984d5191adc24ea848cc8ed0298e029498698e2bef5d6d6ab4a9edd8ad8"
+written_style = "hex"
+written_style_note = "the input already carries a name section; obfuscate.js deletes it and calls itself again without the style argument, so every name is written in its default hex style"

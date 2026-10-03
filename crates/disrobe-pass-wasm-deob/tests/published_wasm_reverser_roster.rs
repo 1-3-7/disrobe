@@ -29,7 +29,7 @@ const EXPECTED_PIPELINE_DELIVERED: [WasmObfuscator; 3] = [
     WasmObfuscator::WasmMixer,
 ];
 
-const EXCLUDED_FROM_HELPER_AND_PIPELINE: [WasmObfuscator; 1] = [WasmObfuscator::WasmNameObfuscator];
+const METADATA_CLEANUP_OUTSIDE_PIPELINE: [WasmObfuscator; 1] = [WasmObfuscator::WasmNameObfuscator];
 
 const PUBLISHED_FAMILY_TOKENS: [(WasmObfuscator, &str); NAMED_FAMILY_POPULATION] = [
     (WasmObfuscator::JscramblerWasm, "Jscrambler"),
@@ -77,7 +77,7 @@ const FAMILY_EVIDENCE: [FamilyEvidence; NAMED_FAMILY_POPULATION] = [
     FamilyEvidence {
         family: WasmObfuscator::WasmNameObfuscator,
         test_fn: "name_obfuscator_detect_and_classify_strategy",
-        exercised_symbol: "classify_export_strategy",
+        exercised_symbol: "strip_obfuscated_names",
     },
 ];
 
@@ -233,11 +233,11 @@ fn published_wasm_pipeline_family_count_matches_this_crate_roster() {
 
     let direct_helpers: Vec<WasmObfuscator> = transform_helper_families(&roster);
     let pipeline_delivered: Vec<WasmObfuscator> = pipeline_delivered_families(&roster);
-    let excluded: Vec<WasmObfuscator> = roster
+    let metadata_cleanup: Vec<WasmObfuscator> = roster
         .iter()
         .copied()
         .filter(|entry: &RosterEntry| {
-            entry.1.transform == WasmTransformSupport::Unavailable
+            entry.1.transform == WasmTransformSupport::MetadataCleanup
                 && entry.1.pipeline == WasmPipelineSupport::NotDelivered
         })
         .map(|entry: RosterEntry| entry.0)
@@ -263,9 +263,9 @@ fn published_wasm_pipeline_family_count_matches_this_crate_roster() {
          published helper count"
     );
     assert!(
-        same_members(&excluded, &EXCLUDED_FROM_HELPER_AND_PIPELINE),
-        "the direct-helper and pipeline exclusions must be declared together, but the catalog has \
-         {excluded:?}"
+        same_members(&metadata_cleanup, &METADATA_CLEANUP_OUTSIDE_PIPELINE),
+        "metadata cleanup outside the recovery pipeline must be declared explicitly, but the catalog has \
+         {metadata_cleanup:?}"
     );
     assert_eq!(
         published,
@@ -286,7 +286,7 @@ fn published_wasm_pipeline_family_count_matches_this_crate_roster() {
              `{token}` in {source}"
         );
     }
-    for family in excluded {
+    for family in metadata_cleanup {
         let token: &str = published_token(family);
         assert!(
             source.contains(token),
@@ -325,10 +325,10 @@ fn the_excluded_family_is_still_detected_and_classified() {
     assert_eq!(
         detection.obfuscator.support(),
         Some(WasmFamilySupport {
-            transform: WasmTransformSupport::Unavailable,
+            transform: WasmTransformSupport::MetadataCleanup,
             pipeline: WasmPipelineSupport::NotDelivered,
         }),
-        "the excluded family must declare neither a direct helper nor pipeline delivery"
+        "the family may clean generated metadata but must not claim name recovery or pipeline delivery"
     );
     assert!(
         !EXPECTED_DIRECT_HELPERS.contains(&detection.obfuscator),
@@ -364,7 +364,7 @@ fn moving_the_excluded_family_into_the_direct_helper_set_breaks_the_pin() {
     let mutated: Vec<RosterEntry> = crate_roster()
         .into_iter()
         .map(|(family, mut support): RosterEntry| {
-            if support.transform == WasmTransformSupport::Unavailable {
+            if support.transform == WasmTransformSupport::MetadataCleanup {
                 support.transform = WasmTransformSupport::DirectHelper;
             }
             (family, support)

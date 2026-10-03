@@ -3,6 +3,7 @@ use serde::Serialize;
 use wasmparser::{Parser, Payload};
 
 use crate::error::{Error, Result};
+use crate::obfuscators::{NameStrategy, obfuscated_name_style};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum WasmObfuscator {
@@ -18,13 +19,13 @@ pub enum WasmObfuscator {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WasmTransformSupport {
     DirectHelper,
-    Unavailable,
+    MetadataCleanup,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WasmRecovery {
     Reversed,
-    DetectAndClassifyOnly,
+    MetadataCleanupOnly,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,7 +61,7 @@ impl WasmObfuscator {
                 pipeline: WasmPipelineSupport::NotDelivered,
             }),
             Self::WasmNameObfuscator => Some(WasmFamilySupport {
-                transform: WasmTransformSupport::Unavailable,
+                transform: WasmTransformSupport::MetadataCleanup,
                 pipeline: WasmPipelineSupport::NotDelivered,
             }),
         }
@@ -73,9 +74,9 @@ impl WasmObfuscator {
                 ..
             }) => Some(WasmRecovery::Reversed),
             Some(WasmFamilySupport {
-                transform: WasmTransformSupport::Unavailable,
+                transform: WasmTransformSupport::MetadataCleanup,
                 ..
-            }) => Some(WasmRecovery::DetectAndClassifyOnly),
+            }) => Some(WasmRecovery::MetadataCleanupOnly),
             None => None,
         }
     }
@@ -92,6 +93,7 @@ pub struct WasmDetection {
     pub markers: Vec<String>,
     pub has_name_section: bool,
     pub has_dwarf: bool,
+    pub name_strategy: Option<NameStrategy>,
     pub function_count: u32,
     pub export_count: u32,
     pub import_count: u32,
@@ -156,12 +158,15 @@ pub fn detect(bytes: &[u8]) -> Result<WasmDetection> {
         }
     }
 
+    let name_strategy: Option<NameStrategy> = obfuscated_name_style(bytes)?;
+
     let (mut obfuscator, mut confidence): (WasmObfuscator, f32) = classify(
         &export_names,
         &import_modules,
         &import_names,
         has_name_section,
         has_dwarf,
+        name_strategy,
         function_count,
         &mut markers,
     );
@@ -177,7 +182,7 @@ pub fn detect(bytes: &[u8]) -> Result<WasmDetection> {
 
     crate::debug::dbg_kv("detect", || {
         format!(
-            "obfuscator={obfuscator:?} confidence={confidence:.2} markers={markers:?} funcs={function_count} exports={export_count} imports={import_count} name_section={has_name_section} dwarf={has_dwarf}"
+            "obfuscator={obfuscator:?} confidence={confidence:.2} markers={markers:?} funcs={function_count} exports={export_count} imports={import_count} name_section={has_name_section} dwarf={has_dwarf} name_strategy={name_strategy:?}"
         )
     });
 
@@ -187,6 +192,7 @@ pub fn detect(bytes: &[u8]) -> Result<WasmDetection> {
         markers,
         has_name_section,
         has_dwarf,
+        name_strategy,
         function_count,
         export_count,
         import_count,
@@ -262,9 +268,17 @@ fn classify(
     import_names: &[String],
     has_name_section: bool,
     has_dwarf: bool,
+    name_strategy: Option<NameStrategy>,
     function_count: u32,
     markers: &mut Vec<String>,
 ) -> (WasmObfuscator, f32) {
+    if let Some(strategy) = name_strategy {
+        markers.push(format!(
+            "generated-name-section:{}",
+            strategy_label(strategy)
+        ));
+        return (WasmObfuscator::WasmNameObfuscator, 0.98);
+    }
     let has_only_short_exports: bool =
         !export_names.is_empty() && export_names.iter().all(|n: &String| n.len() <= 3);
     let has_hashed_exports: bool = export_names.len() >= 4
@@ -331,6 +345,16 @@ fn classify(
     (WasmObfuscator::Unknown, 0.1)
 }
 
+const fn strategy_label(strategy: NameStrategy) -> &'static str {
+    match strategy {
+        NameStrategy::Clean => "clean",
+        NameStrategy::Hex => "hex",
+        NameStrategy::Alphanum => "alphanumeral",
+        NameStrategy::Homoglyph => "alternating",
+        NameStrategy::FixedLength => "fixed-length",
+    }
+}
+
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
@@ -362,7 +386,7 @@ mod tests {
     #[test]
     fn classifies_no_obfuscator_when_name_section_flag_set() {
         let (kind, conf): (WasmObfuscator, f32) =
-            classify(&[], &[], &[], true, false, 0, &mut Vec::new());
+            classify(&[], &[], &[], true, false, None, 0, &mut Vec::new());
         assert_eq!(kind, WasmObfuscator::None);
         assert_eq!(conf, 0.0);
     }
@@ -370,8 +394,16 @@ mod tests {
     #[test]
     fn classifies_jscrambler_by_import_module() {
         let import_modules: Vec<String> = vec!["jsc".to_owned()];
-        let (kind, conf): (WasmObfuscator, f32) =
-            classify(&[], &import_modules, &[], false, false, 5, &mut Vec::new());
+        let (kind, conf): (WasmObfuscator, f32) = classify(
+            &[],
+            &import_modules,
+            &[],
+            false,
+            false,
+            None,
+            5,
+            &mut Vec::new(),
+        );
         assert_eq!(kind, WasmObfuscator::JscramblerWasm);
         assert!(conf > 0.8);
     }
@@ -386,6 +418,7 @@ mod tests {
             &op_names,
             false,
             false,
+            None,
             20,
             &mut Vec::new(),
         );
@@ -403,6 +436,7 @@ mod tests {
             &wasi_names,
             false,
             false,
+            None,
             20,
             &mut Vec::new(),
         );
@@ -431,7 +465,7 @@ mod tests {
     fn classifies_wasmmixer_by_function_inflation() {
         let exports: Vec<String> = vec!["a".to_owned(), "b".to_owned()];
         let (kind, conf): (WasmObfuscator, f32) =
-            classify(&exports, &[], &[], false, false, 500, &mut Vec::new());
+            classify(&exports, &[], &[], false, false, None, 500, &mut Vec::new());
         assert_eq!(kind, WasmObfuscator::WasmMixer);
         assert!(conf > 0.7);
     }
@@ -467,20 +501,19 @@ mod tests {
     }
 
     #[test]
-    fn only_the_name_obfuscator_has_no_direct_helper() {
-        let unavailable: Vec<WasmObfuscator> = WasmObfuscator::NAMED_FAMILIES
+    fn only_the_name_obfuscator_has_metadata_cleanup_support() {
+        let metadata_cleanup: Vec<WasmObfuscator> = WasmObfuscator::NAMED_FAMILIES
             .into_iter()
             .filter(|f: &WasmObfuscator| {
                 f.support().is_some_and(|support: WasmFamilySupport| {
-                    support.transform == WasmTransformSupport::Unavailable
+                    support.transform == WasmTransformSupport::MetadataCleanup
                 })
             })
             .collect();
         assert_eq!(
-            unavailable,
+            metadata_cleanup,
             vec![WasmObfuscator::WasmNameObfuscator],
-            "hex renames destroy the original names, so wasm-name-obfuscator is the one family \
-             without a direct helper; any other family joining it lowers the published helper count"
+            "wasm-name-obfuscator can remove generated metadata but cannot restore destroyed names"
         );
     }
 
@@ -492,7 +525,7 @@ mod tests {
         );
         assert_eq!(
             WasmObfuscator::WasmNameObfuscator.recovery(),
-            Some(WasmRecovery::DetectAndClassifyOnly)
+            Some(WasmRecovery::MetadataCleanupOnly)
         );
         assert_eq!(WasmObfuscator::Unknown.recovery(), None);
     }

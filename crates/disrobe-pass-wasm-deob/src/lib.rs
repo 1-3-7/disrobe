@@ -120,14 +120,15 @@ pub use name_recovery::{NameRecoveryStats, attach_sourcemap_names};
 pub use obfuscators::{
     CanonicalizeStats, CrypticBytesDetection, CrypticBytesPeel, DataDecryptStats,
     DeadFunctionStats, DefragStats, DemangleStats, DispatcherInfo, HeapRegion, IntegrityCfgStats,
-    IntegrityStripStats, MbaSsaStats, NameStrategy, OpaquePredStats, ProbeSource, ReinlineStats,
-    StubInfo, UnflattenStats, UnresolvedReason, UnresolvedStub, UnwrapReport, UnwrappedSegment,
-    WobfuscatorTable, canonicalize_substitutions, classify_export_strategy, decrypt_data_sections,
-    defragment, demangle_names, demangle_symbol, detect_cryptic_bytes, detect_decrypt_stubs,
-    detect_dispatcher, eliminate_integrity_guards, extract_optable, kill_opaque_predicates,
-    lift_op_to_rust_fn, peel_cryptic_bytes, recover_heap_regions, reinline_imported_ops,
-    simplify_mba, strip_dead_functions, strip_integrity_imports, unflatten,
-    unflatten_to_fixed_point, unwrap_decryption,
+    IntegrityStripStats, MbaSsaStats, NameStrategy, NameStripStats, OpaquePredStats, ProbeSource,
+    ReinlineStats, StubInfo, UnflattenStats, UnresolvedReason, UnresolvedStub, UnwrapReport,
+    UnwrappedSegment, WobfuscatorTable, canonicalize_substitutions, classify_export_strategy,
+    decrypt_data_sections, defragment, demangle_names, demangle_symbol, detect_cryptic_bytes,
+    detect_decrypt_stubs, detect_dispatcher, eliminate_integrity_guards, extract_optable,
+    kill_opaque_predicates, lift_op_to_rust_fn, obfuscated_name_style, peel_cryptic_bytes,
+    recover_heap_regions, reinline_imported_ops, simplify_mba, strip_dead_functions,
+    strip_integrity_imports, strip_obfuscated_names, unflatten, unflatten_to_fixed_point,
+    unwrap_decryption,
 };
 pub use recover::{RecoveredModule, RecoveryReport, recover_module};
 pub use signature::{

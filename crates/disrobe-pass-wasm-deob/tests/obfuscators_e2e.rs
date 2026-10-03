@@ -13,7 +13,7 @@ use disrobe_pass_wasm_deob::{
     UnflattenStats, ValueDef, ValueId, WasmDetection, WasmObfuscator, WobfuscatorTable,
     build_function_cfg, classify_export_strategy, detect, detect_decrypt_stubs, detect_dispatcher,
     extract_optable, kill_opaque_predicates, lift_function_body, lift_op_to_rust_fn,
-    strip_integrity_imports, unflatten,
+    strip_integrity_imports, strip_obfuscated_names, unflatten,
 };
 use smallvec::{SmallVec, smallvec};
 use walrus::ir::{BinaryOp, LoadKind as WLoadKind, MemArg, StoreKind as WStoreKind};
@@ -47,6 +47,18 @@ mod helpers {
             module.exports.add(name, fid);
         }
         module.emit_wasm()
+    }
+
+    pub fn with_generated_name_section(mut module: Vec<u8>) -> Vec<u8> {
+        let mut subsection: Vec<u8> = vec![1, 19, 1, 0, 16];
+        subsection.extend_from_slice(b"602f24b28d315f0a");
+        let mut payload: Vec<u8> = vec![4];
+        payload.extend_from_slice(b"name");
+        payload.extend_from_slice(&subsection);
+        module.push(0);
+        module.push(u8::try_from(payload.len()).expect("short generated name section"));
+        module.extend_from_slice(&payload);
+        module
     }
 
     pub fn module_with_emscripten_mangled_export() -> Vec<u8> {
@@ -329,6 +341,19 @@ fn name_obfuscator_detect_and_classify_strategy() {
         clean_strategy,
         NameStrategy::Clean,
         "low-entropy english names must classify as Clean"
+    );
+
+    let generated: Vec<u8> = helpers::with_generated_name_section(bytes.clone());
+    let generated_detection: WasmDetection = detect(&generated).expect("detect generated names");
+    assert_eq!(
+        generated_detection.name_strategy,
+        Some(NameStrategy::Hex),
+        "generated name sections expose the actual name strategy"
+    );
+    let (stripped, _) = strip_obfuscated_names(&generated).expect("strip generated names");
+    assert_eq!(
+        stripped, bytes,
+        "metadata cleanup preserves the executable module"
     );
 }
 

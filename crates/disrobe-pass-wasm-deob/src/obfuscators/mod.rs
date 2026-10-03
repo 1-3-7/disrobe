@@ -16,7 +16,10 @@ pub use jscrambler::{
     kill_opaque_predicates, strip_integrity_imports,
 };
 pub use mba::{MbaSsaStats, simplify_mba};
-pub use name_obfuscator::{NameStrategy, classify_export_strategy};
+pub use name_obfuscator::{
+    NameStrategy, NameStripStats, classify_export_strategy, obfuscated_name_style,
+    strip_obfuscated_names,
+};
 pub use reverse::{
     CanonicalizeStats, DataDecryptStats, DeadFunctionStats, DemangleStats,
     canonicalize_substitutions, decrypt_data_sections, demangle_names, demangle_symbol,
