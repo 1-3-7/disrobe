@@ -40,7 +40,7 @@ disrobe-pass-swift-objc = { workspace = true, features = ["chain"] }
 disrobe-pass-jvm = { workspace = true, features = ["chain"] }
 disrobe-pass-dotnet = { workspace = true, features = ["chain"] }
 disrobe-pass-wasm-deob = { workspace = true }
-disrobe-pass-js-deob = { workspace = true, features = ["chain"] }
+disrobe-pass-js-deob = { workspace = true }
 disrobe-pass-native = { workspace = true, features = ["chain"] }
 disrobe-pass-beam = { workspace = true }
 disrobe-pass-pickle = { workspace = true }

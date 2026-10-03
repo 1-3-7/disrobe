@@ -29,7 +29,6 @@ const TEMPLATE_COUNT: usize = 12;
 const WITNESS_LITERAL_FLOOR: usize = 30;
 const MIN_WITNESS_LITERAL_LEN: usize = 3;
 const FIRST_BREAKING_STEP: Option<JscramblerTransform> = None;
-#[cfg(feature = "chain")]
 const CATALOG_ENTRY_FOR_REAL_OUTPUT: Option<&str> = Some("js-jscrambler");
 
 const SETTINGS_ADVANCED: &str = include_str!(
@@ -828,7 +827,6 @@ fn static_witness_grade_rejects_removed_literal() {
     );
 }
 
-#[cfg(feature = "chain")]
 #[test]
 fn catalog_quality_matches_the_measured_jscrambler_result() {
     use disrobe_core::chain::{CatalogEntry, DetectContext, ObfuscatorCatalog, SupportQuality};

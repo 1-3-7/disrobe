@@ -4,9 +4,9 @@
 #[cfg(not(target_arch = "wasm32"))]
 pub mod analysis;
 mod bundle;
-#[cfg(all(feature = "chain", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub mod chain_detector;
-#[cfg(all(feature = "chain", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub use chain_detector::{JsCatalogEntry, JsObfDetector};
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod debug;

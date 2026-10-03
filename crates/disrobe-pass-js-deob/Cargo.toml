@@ -34,10 +34,6 @@ oxc_semantic = { workspace = true }
 boa_engine = { workspace = true }
 indexmap = { workspace = true }
 
-[features]
-default = []
-chain = ["disrobe-core/chain"]
-
 [dev-dependencies]
 disrobe-testkit = { workspace = true }
 divan = { workspace = true }

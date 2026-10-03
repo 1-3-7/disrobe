@@ -15,7 +15,7 @@ const CHAIN_DETECTOR_FILE: &str = "chain_detector.rs";
 const CHAIN_FEATURE: &str = "chain";
 
 const MIN_CHAIN_DETECTORS: usize = 25;
-const MIN_HIDDEN_CRATES: usize = 20;
+const MIN_HIDDEN_CRATES: usize = 19;
 const MIN_SCANNED_COMMANDS: usize = 20;
 
 const UNDECLARED: &str = "hidden-test-surface-undeclared";
@@ -40,7 +40,6 @@ const HIDDEN_TEST_SURFACE: &[(&str, &[&str])] = &[
     ),
     ("disrobe-pass-dotnet", &["chain"]),
     ("disrobe-pass-go", &["chain"]),
-    ("disrobe-pass-js-deob", &["chain"]),
     ("disrobe-pass-jvm", &["chain", "lifter-diag"]),
     ("disrobe-pass-lua", &["chain"]),
     ("disrobe-pass-mobile", &["chain", "native-image"]),

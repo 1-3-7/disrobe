@@ -104,7 +104,7 @@ plugin = ["dep:disrobe-plugin-host", "dep:wasmtime", "dep:thiserror"]
 nir-lift = ["dep:disrobe-nir-lift"]
 irsummary = ["dep:disrobe-irsummary", "nir-lift"]
 devirt = ["dep:disrobe-mba", "disrobe-mba/smt-solver", "nir-lift"]
-js = ["dep:disrobe-pass-js-deob", "disrobe-pass-py-disasm/alt-brython", "disrobe-pass-js-deob/chain", "disrobe-passes?/js", "disrobe-mcp?/js"]
+js = ["dep:disrobe-pass-js-deob", "disrobe-pass-py-disasm/alt-brython", "disrobe-passes?/js", "disrobe-mcp?/js"]
 wasm = ["dep:disrobe-pass-wasm-deob", "nir-lift", "disrobe-nir-lift/wasm", "disrobe-passes?/wasm", "disrobe-mcp?/wasm"]
 jvm = ["dep:disrobe-pass-jvm", "disrobe-pass-py-disasm/alt-jython", "nir-lift", "native", "disrobe-passes?/jvm", "disrobe-mcp?/jvm", "disrobe-pass-mobile?/jni", "disrobe-nir-lift/jvm"]
 dotnet = ["dep:disrobe-pass-dotnet", "disrobe-pass-py-disasm/alt-ironpython", "disrobe-pass-dotnet/chain", "nir-lift", "disrobe-passes?/dotnet", "disrobe-mcp?/dotnet", "disrobe-nir-lift/dotnet"]
@@ -143,7 +143,6 @@ chain = [
     "disrobe-pass-py-deob/chain",
     "disrobe-pass-py-decompile/chain",
     "disrobe-pass-pyinstaller/chain",
-    "disrobe-pass-js-deob?/chain",
     "disrobe-pass-mobile?/chain",
     "disrobe-pass-lua?/chain",
     "disrobe-pass-swift-objc?/chain",

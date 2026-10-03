@@ -1,4 +1,3 @@
-#![cfg(feature = "chain")]
 use disrobe_core::Artifact;
 use disrobe_core::Rung;
 use disrobe_core::chain::detection::{ChildArtifact, ChildHandle, TERMINAL_HINT};

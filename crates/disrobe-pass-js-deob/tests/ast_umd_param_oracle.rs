@@ -6,9 +6,7 @@ use std::time::Duration;
 
 use boa_engine::{Context, Source};
 use disrobe_core::subprocess::{CapturedOutput, run_captured};
-#[cfg(feature = "chain")]
 use disrobe_core::{Artifact, Rung, chain::Pass};
-#[cfg(feature = "chain")]
 use disrobe_pass_js_deob::chain_detector::JS_OBF_PASS;
 use disrobe_pass_js_deob::{AstUnminifyStats, unminify_ast};
 
@@ -254,7 +252,6 @@ print(module.exports || __root.output);"#;
     assert_runtime_parity(source, &recovered);
 }
 
-#[cfg(feature = "chain")]
 #[test]
 fn registered_chain_pass_recovers_minified_commonjs_umd_parameters() {
     let source: &str = r#"(function(factory){if(typeof module==="object"&&module.exports){module.exports=factory(require("./math-utils"),require("./text-format"));}else{__root.output=factory(__root.mathUtils,__root.textFormat);}})(function(a,b){var result=a.sum(10,11);return b(result);});print(module.exports||__root.output);"#;
