@@ -1160,6 +1160,9 @@ corpus/python/alt_runtimes/micropython/control_flow.mpy	py.decompile	pyc-micropy
 corpus/python/alt_runtimes/micropython/control_flow.py	-	-	-	-	-	-	-
 corpus/python/alt_runtimes/micropython/exceptions.mpy	py.decompile	pyc-micropython	interpreter-bytecode	high	py.disasm	interpreter-bytecode	high
 corpus/python/alt_runtimes/micropython/exceptions.py	-	-	-	-	-	-	-
+corpus/python/alt_runtimes/micropython/float_reference/PROVENANCE.txt	-	-	-	-	-	-	-
+corpus/python/alt_runtimes/micropython/float_reference/float_constant.mpy	py.decompile	pyc-micropython	interpreter-bytecode	high	py.disasm	interpreter-bytecode	high
+corpus/python/alt_runtimes/micropython/float_reference/float_constant.py	-	-	-	-	-	-	-
 corpus/python/alt_runtimes/micropython/generators.mpy	py.decompile	pyc-micropython	interpreter-bytecode	high	py.disasm	interpreter-bytecode	high
 corpus/python/alt_runtimes/micropython/generators.py	-	-	-	-	-	-	-
 corpus/python/alt_runtimes/micropython/hello.mpy	py.decompile	pyc-micropython	interpreter-bytecode	high	py.disasm	interpreter-bytecode	high
