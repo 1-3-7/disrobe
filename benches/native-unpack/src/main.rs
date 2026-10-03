@@ -2113,18 +2113,23 @@ mod tests {
         let unpack_rows: Vec<UnpackRow> = measure_unpack(&corpus_root);
         require_committed_family_measurements(&unpack_rows).unwrap();
         let unpack_md: String = render_unpack(&unpack_rows);
+        let unpack_disk: String = fs::read_to_string(bench_dir.join("results.md")).unwrap();
+        assert_regenerated("benches/native-unpack/results.md", &unpack_disk, &unpack_md);
+    }
+
+    #[test]
+    fn committed_quality_results_match_regeneration() {
+        let bench_dir: PathBuf = manifest_dir();
+        let root: PathBuf = workspace_root(&bench_dir).unwrap();
         let recovery: RecoveryDoc =
             load_recovery(&root.join("xtask").join("data").join("recovery.json")).unwrap();
         let quality_md: String = render_quality(&recovery).unwrap();
-
-        let unpack_disk: String = fs::read_to_string(bench_dir.join("results.md")).unwrap();
         let quality_disk: String = fs::read_to_string(
             root.join("benches")
                 .join("decompile-quality")
                 .join("results.md"),
         )
         .unwrap();
-        assert_regenerated("benches/native-unpack/results.md", &unpack_disk, &unpack_md);
         assert_regenerated(
             "benches/decompile-quality/results.md",
             &quality_disk,
