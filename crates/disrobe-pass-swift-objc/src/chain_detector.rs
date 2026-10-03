@@ -1,4 +1,3 @@
-#![cfg(feature = "chain")]
 use std::path::{Path, PathBuf};
 
 use disrobe_core::Artifact;

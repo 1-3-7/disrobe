@@ -36,7 +36,7 @@ disrobe-pass-pyarmor = { workspace = true, features = ["llm-metadata"] }
 disrobe-pass-pyinstaller = { workspace = true, features = ["chain"] }
 disrobe-pass-nuitka = { workspace = true }
 disrobe-pass-mobile = { workspace = true, features = ["chain", "native-image"] }
-disrobe-pass-swift-objc = { workspace = true, features = ["chain"] }
+disrobe-pass-swift-objc = { workspace = true }
 disrobe-pass-jvm = { workspace = true, features = ["chain"] }
 disrobe-pass-dotnet = { workspace = true, features = ["chain"] }
 disrobe-pass-wasm-deob = { workspace = true }

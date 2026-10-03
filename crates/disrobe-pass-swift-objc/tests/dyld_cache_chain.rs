@@ -1,4 +1,3 @@
-#![cfg(feature = "chain")]
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 #[path = "support/macho_corpus.rs"]

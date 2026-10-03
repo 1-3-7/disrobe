@@ -145,7 +145,6 @@ chain = [
     "disrobe-pass-pyinstaller/chain",
     "disrobe-pass-mobile?/chain",
     "disrobe-pass-lua?/chain",
-    "disrobe-pass-swift-objc?/chain",
     "disrobe-pass-jvm?/chain",
     "disrobe-pass-dotnet?/chain",
 ]
