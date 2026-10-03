@@ -102,29 +102,70 @@ fn body_carries_unlowered_construct(body: &str) -> bool {
         })
 }
 
-fn code_outside_string_literals(line: &str) -> String {
+pub(crate) fn code_outside_string_literals(line: &str) -> String {
     let mut out: String = String::with_capacity(line.len());
-    let mut in_string: bool = false;
+    let mut quote: Option<char> = None;
     let mut escaped: bool = false;
     for ch in line.chars() {
-        if in_string {
+        if let Some(delimiter) = quote {
             if escaped {
                 escaped = false;
             } else if ch == '\\' {
                 escaped = true;
-            } else if ch == '"' {
-                in_string = false;
+            } else if ch == delimiter {
+                quote = None;
             }
             continue;
         }
-        if ch == '"' {
-            in_string = true;
+        if matches!(ch, '"' | '\'') {
+            quote = Some(ch);
             out.push(' ');
             continue;
         }
         out.push(ch);
     }
     out
+}
+
+pub(crate) fn rewrite_code_outside_string_literals(
+    text: &str,
+    mut rewrite: impl FnMut(&str) -> Option<String>,
+) -> Option<String> {
+    let mut out: String = String::with_capacity(text.len());
+    let mut code_start: usize = 0;
+    let mut index: usize = 0;
+    let bytes: &[u8] = text.as_bytes();
+    while index < bytes.len() {
+        let quote: u8 = *bytes.get(index)?;
+        if quote != b'"' && quote != b'\'' {
+            index += 1;
+            continue;
+        }
+        out.push_str(&rewrite(text.get(code_start..index)?)?);
+        let literal_start: usize = index;
+        index += 1;
+        let mut escaped: bool = false;
+        let mut closed: bool = false;
+        while index < bytes.len() {
+            let current: u8 = *bytes.get(index)?;
+            index += 1;
+            if escaped {
+                escaped = false;
+            } else if current == b'\\' {
+                escaped = true;
+            } else if current == quote {
+                closed = true;
+                break;
+            }
+        }
+        if !closed {
+            return None;
+        }
+        out.push_str(text.get(literal_start..index)?);
+        code_start = index;
+    }
+    out.push_str(&rewrite(text.get(code_start..)?)?);
+    Some(out)
 }
 
 fn unlowered_construct_refusal(body: &str) -> Option<String> {
@@ -689,5 +730,32 @@ mod tests {
             "    local2 = await local3;"
         );
         assert_eq!(drop_unused_local_decls(body), body);
+    }
+
+    #[test]
+    fn code_rewrites_preserve_strings_and_characters() {
+        let input: &str = "local0 = this.field; string local1 = \"local0 this.field <Run>b__0\"; char local2 = 'l';";
+        let rewritten: Option<String> =
+            rewrite_code_outside_string_literals(input, |code: &str| {
+                Some(
+                    code.replace("local0", "scope1_local0")
+                        .replace("this.field", "field"),
+                )
+            });
+        assert_eq!(
+            rewritten.as_deref(),
+            Some(
+                "scope1_local0 = field; string local1 = \"local0 this.field <Run>b__0\"; char local2 = 'l';"
+            )
+        );
+    }
+
+    #[test]
+    fn code_rewrites_refuse_an_unterminated_escaped_literal() {
+        let input: &str = "local0 = \"this.field\\\"";
+        assert_eq!(
+            rewrite_code_outside_string_literals(input, |code: &str| Some(code.to_owned())),
+            None
+        );
     }
 }

@@ -167,6 +167,10 @@ pub fn decompile_assembly_in(image: &[u8], lang: TargetLang) -> Result<Decompile
     let mut bodyless: u32 = 0;
     let mut failed: Vec<FailedMethod> = Vec::new();
     let mut move_next_tokens: BTreeSet<u32> = BTreeSet::new();
+    let mut closure_allocations: std::collections::BTreeMap<
+        u32,
+        std::collections::BTreeMap<String, crate::display_class_lowering::Allocation>,
+    > = std::collections::BTreeMap::new();
     for ty in &model.types {
         let state_machine: Option<crate::state_machine::StateMachine> =
             crate::state_machine::classify(ty);
@@ -192,11 +196,21 @@ pub fn decompile_assembly_in(image: &[u8], lang: TargetLang) -> Result<Decompile
                 &mut methods,
                 &mut bodyless,
                 &mut failed,
+                &mut closure_allocations,
             );
         }
     }
     if lang == TargetLang::CSharp {
         let _ = crate::lambda_reverse::inline_lambdas(&mut methods);
+        let _ = crate::display_class_lowering::lower_display_classes(
+            &mut methods,
+            &closure_types(&model, &resolver, lang),
+            &closure_allocations,
+            &method_scopes(&model, &resolver),
+        );
+        for method in &mut methods {
+            method.body = crate::interpolation_reverse::lower_interpolated_strings(&method.body);
+        }
         let hoisted_types: std::collections::BTreeMap<
             String,
             std::collections::BTreeMap<String, String>,
@@ -258,6 +272,10 @@ fn decompile_one(
     methods: &mut Vec<StructuredMethod>,
     bodyless: &mut u32,
     failed: &mut Vec<FailedMethod>,
+    closure_allocations: &mut std::collections::BTreeMap<
+        u32,
+        std::collections::BTreeMap<String, crate::display_class_lowering::Allocation>,
+    >,
 ) {
     if m.rva == 0 {
         *bodyless = bodyless.saturating_add(1);
@@ -343,6 +361,15 @@ fn decompile_one(
             } else {
                 devirtualized_body
             };
+            if lang == TargetLang::CSharp {
+                let sites: std::collections::BTreeMap<
+                    String,
+                    crate::display_class_lowering::Allocation,
+                > = crate::display_class_lowering::closure_allocations(&folded_body, &namer);
+                if !sites.is_empty() {
+                    closure_allocations.insert(m.token, sites);
+                }
+            }
             let is_sm_move_next: bool = lang == TargetLang::CSharp
                 && state_machine.is_some()
                 && crate::state_machine::is_move_next(m);
@@ -529,6 +556,8 @@ fn fold_cached_delegate_init(body: &crate::cil::MethodBody, resolver: &Resolver)
     for i in 0..instrs.len() {
         if let Some(end) = cached_delegate_init_span(instrs, i, resolver) {
             nop_targets.extend((i + 1)..=end);
+        } else if let Some(span) = cached_instance_delegate_span(instrs, i, resolver) {
+            nop_targets.extend(span);
         }
     }
     if nop_targets.is_empty() {
@@ -579,10 +608,136 @@ fn cached_delegate_init_span(
     (i64::from(after_store.offset) == branch_target).then_some(store)
 }
 
+fn cached_instance_delegate_span(
+    instrs: &[Instruction],
+    i: usize,
+    resolver: &Resolver,
+) -> Option<Vec<usize>> {
+    let receiver: &Instruction = instrs.get(i)?;
+    if !receiver.name.starts_with("ldloc") {
+        return None;
+    }
+    let load: &Instruction = instrs.get(i + 1)?;
+    let OperandValue::Token(field_tok): OperandValue = load.operand else {
+        return None;
+    };
+    if load.name != "ldfld" || !is_cached_delegate_field(field_tok, resolver) {
+        return None;
+    }
+    let branch: &Instruction = instrs.get(i + 3)?;
+    if instrs.get(i + 2)?.name != "dup"
+        || !matches!(branch.name.as_str(), "brtrue" | "brtrue.s")
+        || instrs.get(i + 4)?.name != "pop"
+    {
+        return None;
+    }
+    let OperandValue::BrTarget(rel): OperandValue = branch.operand else {
+        return None;
+    };
+    let target: i64 = i64::from(instrs.get(i + 4)?.offset) + i64::from(rel);
+    let same_receiver =
+        |ins: &Instruction| ins.name == receiver.name && ins.operand == receiver.operand;
+    if !same_receiver(instrs.get(i + 5)?) {
+        return None;
+    }
+    let store: usize = (i + 6..instrs.len()).find(|&j: &usize| {
+        instrs[j].name == "stfld" && instrs[j].operand == OperandValue::Token(field_tok)
+    })?;
+    let duplicate: usize = store.checked_sub(2)?;
+    let spill: &Instruction = instrs.get(store - 1)?;
+    let reload: &Instruction = instrs.get(store + 1)?;
+    let after: &Instruction = instrs.get(store + 2)?;
+    let spilled_to: Option<u16> = crate::cil::slot_index_of(spill, crate::cil::SlotOp::StoreLocal);
+    let reloaded_from: Option<u16> =
+        crate::cil::slot_index_of(reload, crate::cil::SlotOp::LoadLocal);
+    if duplicate <= i + 5
+        || instrs[duplicate].name != "dup"
+        || spilled_to.is_none()
+        || spilled_to != reloaded_from
+        || i64::from(after.offset) != target
+        || instrs[i + 6..duplicate]
+            .iter()
+            .any(|ins: &Instruction| !matches!(ins.flow, FlowControl::Next | FlowControl::Call))
+    {
+        return None;
+    }
+    let mut span: Vec<usize> = (i..=i + 5).collect();
+    span.extend(duplicate..=store + 1);
+    Some(span)
+}
+
 fn is_cached_delegate_field(token: u32, resolver: &Resolver) -> bool {
     let name: String = resolver.resolve_token(token);
     let short: &str = name.rsplit("::").next().unwrap_or(&name);
     short.starts_with("<>9__") || short == "<>9"
+}
+
+fn closure_scope(
+    ty: &TypeModel,
+    resolver: &Resolver,
+    model: &crate::model::AssemblyModel,
+) -> String {
+    resolver
+        .enclosing_type_token(ty.token)
+        .and_then(|enclosing: u32| {
+            model
+                .types
+                .iter()
+                .find(|t: &&TypeModel| t.token == enclosing)
+        })
+        .map_or_else(|| ty.full_name.clone(), |t: &TypeModel| t.full_name.clone())
+}
+
+fn method_scopes(
+    model: &crate::model::AssemblyModel,
+    resolver: &Resolver,
+) -> std::collections::BTreeMap<u32, String> {
+    let mut out: std::collections::BTreeMap<u32, String> = std::collections::BTreeMap::new();
+    for ty in &model.types {
+        let scope: String = closure_scope(ty, resolver, model);
+        for m in &ty.methods {
+            out.insert(m.token, scope.clone());
+        }
+    }
+    out
+}
+
+fn closure_types(
+    model: &crate::model::AssemblyModel,
+    resolver: &Resolver,
+    lang: TargetLang,
+) -> std::collections::BTreeMap<
+    String,
+    std::collections::BTreeMap<String, crate::display_class_lowering::ClosureType>,
+> {
+    let mut out: std::collections::BTreeMap<
+        String,
+        std::collections::BTreeMap<String, crate::display_class_lowering::ClosureType>,
+    > = std::collections::BTreeMap::new();
+    for ty in &model.types {
+        let short: &str = ty.name.rsplit(['.', '/', '+']).next().unwrap_or(&ty.name);
+        if !crate::display_class_lowering::is_display_class_name(short) {
+            continue;
+        }
+        let closure: crate::display_class_lowering::ClosureType =
+            crate::display_class_lowering::ClosureType {
+                fields: ty
+                    .fields
+                    .iter()
+                    .map(|f: &crate::model::FieldModel| {
+                        (
+                            f.name.clone(),
+                            resolver.resolve_type_tokens(&f.field_type.render_in(lang)),
+                        )
+                    })
+                    .collect(),
+                is_struct: ty.base_type.as_deref() == Some("System.ValueType"),
+            };
+        out.entry(closure_scope(ty, resolver, model))
+            .or_default()
+            .insert(short.to_owned(), closure);
+    }
+    out
 }
 
 fn hoisted_field_types(

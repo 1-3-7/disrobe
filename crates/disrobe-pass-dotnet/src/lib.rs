@@ -16,8 +16,10 @@ pub(crate) mod debug;
 pub mod decompile;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod devirt;
+pub(crate) mod display_class_lowering;
 pub mod error;
 pub(crate) mod field_rva;
+pub(crate) mod interpolation_reverse;
 pub mod iterator_reverse;
 pub mod lambda_reverse;
 pub(crate) mod list_switch_reverse;

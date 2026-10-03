@@ -217,16 +217,19 @@ impl TokenNamer for Resolver {
     }
 
     fn call_returns_boolean(&self, token: u32) -> bool {
-        self.callee_signature(token).is_some_and(|sig| {
-            matches!(
-                sig.return_type,
-                crate::signature::TypeSigOrVoid::Type(crate::signature::TypeSig::Boolean)
-            )
-        })
+        matches!(
+            self.callee_instantiated_return(token),
+            Some(crate::signature::TypeSigOrVoid::Type(
+                crate::signature::TypeSig::Boolean
+            ))
+        )
     }
 
     fn call_return_condition_kind(&self, token: u32) -> ConditionKind {
-        match self.callee_signature(token).map(|sig| sig.return_type) {
+        match self
+            .callee_instantiated_return(token)
+            .or_else(|| self.callee_signature(token).map(|sig| sig.return_type))
+        {
             Some(crate::signature::TypeSigOrVoid::Type(ty)) => ty.condition_kind(),
             _ => ConditionKind::Unknown,
         }
@@ -249,7 +252,10 @@ impl TokenNamer for Resolver {
     }
 
     fn call_return_type_name(&self, token: u32) -> Option<String> {
-        match self.callee_signature(token)?.return_type {
+        let return_type: crate::signature::TypeSigOrVoid =
+            self.callee_instantiated_return(token)
+                .or_else(|| self.callee_signature(token).map(|sig| sig.return_type))?;
+        match return_type {
             crate::signature::TypeSigOrVoid::Type(ty) => {
                 let rendered: String = self.render_type(&ty, TargetLang::CSharp);
                 (!rendered.is_empty()).then_some(rendered)
@@ -386,6 +392,7 @@ pub(crate) enum Expr {
         args: Vec<Self>,
         returns_boolean: bool,
         return_kind: ConditionKind,
+        return_type: Option<String>,
     },
     NewObj {
         ctor: String,
@@ -711,7 +718,7 @@ impl Expr {
         )
     }
 
-    fn is_known_boolean(&self, names: &NameTable) -> bool {
+    pub(crate) fn is_known_boolean(&self, names: &NameTable) -> bool {
         match self {
             Self::Const(value) => matches!(value.as_str(), "true" | "false"),
             Self::Local(slot) => names.local_type(*slot).is_some_and(is_bool_type_name),
@@ -1347,12 +1354,44 @@ fn array_element_type(array: &Expr, names: &NameTable) -> Option<String> {
     declared.strip_suffix("[]").map(str::to_owned)
 }
 
+pub(crate) fn coerced_constant_text(value: &Expr, ty: &str, lang: TargetLang) -> Option<String> {
+    match value {
+        Expr::Const(text) => coerced_literal(text, ty, lang),
+        _ => None,
+    }
+}
+
 fn coerce_to(value: Expr, target_type: Option<&str>, lang: TargetLang, names: &NameTable) -> Expr {
+    coerce_bounded(value, target_type, lang, names, 0)
+}
+
+fn coerce_bounded(
+    value: Expr,
+    target_type: Option<&str>,
+    lang: TargetLang,
+    names: &NameTable,
+    depth: usize,
+) -> Expr {
     let Some(ty) = target_type else {
         return value;
     };
     if let Expr::Const(text) = &value {
         return coerced_literal(text, ty, lang).map_or(value, Expr::Const);
+    }
+    let mut value: Expr = value;
+    if depth < MAX_COERCION_DEPTH
+        && let Expr::Cond {
+            when_true,
+            when_false,
+            ..
+        } = &mut value
+    {
+        let next: usize = depth.saturating_add(1);
+        for arm in [when_true, when_false] {
+            let taken: Expr = std::mem::replace(arm.as_mut(), Expr::Null);
+            **arm = coerce_bounded(taken, target_type, lang, names, next);
+        }
+        return value;
     }
     if lang == TargetLang::CSharp
         && accepts_int_implicitly(ty.trim())
@@ -1366,6 +1405,8 @@ fn coerce_to(value: Expr, target_type: Option<&str>, lang: TargetLang, names: &N
     }
     value
 }
+
+const MAX_COERCION_DEPTH: usize = 32;
 
 fn accepts_int_implicitly(ty: &str) -> bool {
     matches!(
@@ -2164,7 +2205,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                     name: name.clone(),
                     is_boolean: expression.is_known_boolean(self.names),
                     kind: classify_cond_kind(expression, self.names),
-                    ty: declared_type(expression, self.names).map(str::to_owned),
+                    ty: temp_type(expression, self.names),
                 };
                 self.stmts.push(Stmt::Declare {
                     name,
@@ -2547,6 +2588,26 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
             .collect()
     }
 
+    fn construct_in_place(&mut self, raw: &str, mut args: Vec<Expr>) {
+        let address: Expr = args.remove(0);
+        let store: StoreTarget = StoreTarget::Indirect(address_slot(&address));
+        let _: BTreeMap<u64, Expr> = self.spill_before_store(store);
+        let target: String = match &address {
+            Expr::AddressOf(pointee) => pointee.render(self.lang, self.names),
+            other => format!("*{}", paren(other, self.lang, self.names)),
+        };
+        let declared: String = raw.replace("::.ctor", "");
+        let value: Expr = Expr::NewObj {
+            ctor: qualified_type_name(&declared, self.lang),
+            args,
+            member_names: None,
+        };
+        self.stmts.push(Stmt::Assign {
+            target,
+            value: value.render(self.lang, self.names),
+        });
+    }
+
     fn emit_call(&mut self, ins: &Instruction) {
         let null_cond: bool = std::mem::take(&mut self.pending_null_cond);
         let raw: String = self.token_name(ins);
@@ -2562,6 +2623,10 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
         let returns_boolean: bool = self.namer.call_returns_boolean(token);
         let return_kind: ConditionKind = self.namer.call_return_condition_kind(token);
         let result_kind: StackKind = self.call_result_kind(token);
+        let return_type: Option<String> = self
+            .namer
+            .call_return_type_name(token)
+            .filter(|ty: &String| !ty.contains('!'));
         let has_this: bool = info.map_or_else(|| raw.contains("::"), |c: CallInfo| c.has_this);
         let base_call: bool = self.lang == TargetLang::CSharp
             && ins.name == "call"
@@ -2571,6 +2636,15 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
             && self.is_inherited_call(&raw);
 
         let mut args: Vec<Expr> = self.pop_n(arg_count);
+        if member == ".ctor"
+            && ins.name == "call"
+            && has_this
+            && self.lang == TargetLang::CSharp
+            && matches!(args.first(), Some(Expr::AddressOf(_)))
+        {
+            self.construct_in_place(&raw, args);
+            return;
+        }
         if token != 0 {
             let recv_off: usize = usize::from(has_this);
             for (idx, arg) in args.iter_mut().enumerate() {
@@ -2760,6 +2834,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 args: rendered_args,
                 returns_boolean,
                 return_kind,
+                return_type,
             }
         } else {
             Expr::Call {
@@ -2767,6 +2842,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 args: rendered_args,
                 returns_boolean,
                 return_kind,
+                return_type,
             }
         };
         if is_ctor || !returns_value {
@@ -2961,7 +3037,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                         name: name.clone(),
                         is_boolean: e.is_known_boolean(self.names),
                         kind: classify_cond_kind(&e, self.names),
-                        ty: declared_type(&e, self.names).map(str::to_owned),
+                        ty: temp_type(&e, self.names),
                     };
                     self.stmts.push(Stmt::Declare {
                         name,
@@ -3503,8 +3579,19 @@ fn declared_type<'e>(expression: &'e Expr, names: &'e NameTable) -> Option<&'e s
             ctor,
             member_names: None,
             ..
-        } if !is_compiler_generated_allocation(expression) => Some(ctor.as_str()),
+        } if !is_compiler_generated_allocation(expression)
+            || crate::display_class_lowering::is_display_class_name(ctor) =>
+        {
+            Some(ctor.as_str())
+        }
         _ => None,
+    }
+}
+
+fn temp_type(expression: &Expr, names: &NameTable) -> Option<String> {
+    match expression {
+        Expr::Call { return_type, .. } => return_type.clone(),
+        _ => declared_type(expression, names).map(str::to_owned),
     }
 }
 
@@ -3828,6 +3915,7 @@ fn classify_cond_kind(e: &Expr, names: &NameTable) -> CondKind {
             }
         }
         Expr::LoadLen(_) => CondKind::Integral,
+        Expr::Raw(c) if is_bare_integer_literal(c) => CondKind::Integral,
         Expr::Const(c) => {
             if is_bare_integer_literal(c) {
                 CondKind::Integral

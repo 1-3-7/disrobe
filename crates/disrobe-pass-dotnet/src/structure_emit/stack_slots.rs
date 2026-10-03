@@ -4,8 +4,8 @@ use crate::cfg::{BlockId, Cfg};
 use crate::cil::{ExceptionClause, ExceptionClauseKind, MethodBody};
 use crate::names::NameTable;
 use crate::structurize::{
-    BlockCode, CarriedStack, Expr, LinearStmt, TargetLang, TokenNamer, lift_block_with_entry,
-    rendered_expression, stack_slot, stack_slot_type,
+    BlockCode, CarriedStack, Expr, LinearStmt, TargetLang, TokenNamer, coerced_constant_text,
+    lift_block_with_entry, rendered_expression, stack_slot, stack_slot_type,
 };
 
 const SLOT_PREFIX: &str = "__disrobe_stack";
@@ -86,9 +86,24 @@ pub(super) fn plan_stack_slots<N: TokenNamer>(
         return None;
     }
     let depths: Depths = stack_depths(inputs, codes)?;
+    let filters: Vec<(u32, u32)> = inputs
+        .body
+        .exception_clauses
+        .iter()
+        .filter(|c: &&ExceptionClause| matches!(c.kind, ExceptionClauseKind::Filter))
+        .map(|c: &ExceptionClause| (c.class_token_or_filter, c.handler_offset))
+        .collect();
+    let in_filter = |b: BlockId| -> bool {
+        let start: u32 = inputs.cfg.blocks[b].start;
+        filters
+            .iter()
+            .any(|&(from, to): &(u32, u32)| (from..to).contains(&start))
+    };
     let carried: Vec<BlockId> = (0..codes.len())
         .filter(|&b: &BlockId| {
-            !inputs.exception_entries.contains(&b) && depths.entry[b].is_some_and(|d| d > 0)
+            !inputs.exception_entries.contains(&b)
+                && !in_filter(b)
+                && depths.entry[b].is_some_and(|d| d > 0)
         })
         .collect();
     if carried.is_empty() {
@@ -99,7 +114,9 @@ pub(super) fn plan_stack_slots<N: TokenNamer>(
         index: BTreeMap::new(),
     };
     let flows: Vec<BlockId> = (0..codes.len())
-        .filter(|&b: &BlockId| depths.exit[b] > 0 && !leaves_protected_region(inputs, b))
+        .filter(|&b: &BlockId| {
+            depths.exit[b] > 0 && !leaves_protected_region(inputs, b) && !in_filter(b)
+        })
         .collect();
     for &b in &flows {
         for &s in &inputs.cfg.blocks[b].succs {
@@ -145,6 +162,7 @@ pub(super) fn plan_stack_slots<N: TokenNamer>(
     let names: Vec<String> = (0..variables.len())
         .map(|v: usize| format!("{SLOT_PREFIX}{v}"))
         .collect();
+    let stable: Vec<Option<Expr>> = stable_values(&exit_vars, &depths, codes, names.len(), inputs);
 
     let mut types: Vec<Option<String>> = vec![None; names.len()];
     let mut relifted: BTreeMap<BlockId, BlockCode> = BTreeMap::new();
@@ -154,7 +172,11 @@ pub(super) fn plan_stack_slots<N: TokenNamer>(
         for (&b, vars) in &entry_vars {
             let entry: Vec<Expr> = vars
                 .iter()
-                .map(|&v: &usize| stack_slot(names[v].clone(), types[v].as_deref()))
+                .map(|&v: &usize| {
+                    stable[v]
+                        .clone()
+                        .unwrap_or_else(|| stack_slot(names[v].clone(), types[v].as_deref()))
+                })
                 .collect();
             let block = &inputs.cfg.blocks[b];
             let code: BlockCode = lift_block_with_entry(
@@ -173,12 +195,16 @@ pub(super) fn plan_stack_slots<N: TokenNamer>(
             relifted.insert(b, code);
         }
         let mut found: Vec<Option<String>> = vec![None; names.len()];
+        let mut flag_literal: Vec<bool> = vec![false; names.len()];
         for (&b, vars) in &exit_vars {
             let code: &BlockCode = relifted.get(&b).unwrap_or(&codes[b]);
             if code.exit_stack.len() != vars.len() {
                 return None;
             }
             for (i, &v) in vars.iter().enumerate() {
+                if stable[v].is_some() {
+                    continue;
+                }
                 let ty: Option<String> = match &code.exit_stack[i] {
                     Expr::Temp { name, .. } if name.starts_with(SLOT_PREFIX) => {
                         let source: usize = names.iter().position(|n: &String| n == name)?;
@@ -186,6 +212,10 @@ pub(super) fn plan_stack_slots<N: TokenNamer>(
                             continue;
                         }
                         types[source].clone()
+                    }
+                    Expr::Const(text) if matches!(text.as_str(), "0" | "1") => {
+                        flag_literal[v] = true;
+                        continue;
                     }
                     _ => stack_slot_type(code, i, inputs.names),
                 };
@@ -197,16 +227,29 @@ pub(super) fn plan_stack_slots<N: TokenNamer>(
                 }
             }
         }
+        for (slot, literal) in found.iter_mut().zip(&flag_literal) {
+            if *literal && slot.is_none() {
+                *slot = Some("int".to_owned());
+            }
+        }
         if found == types {
             converged = true;
             break;
         }
         types = found;
     }
-    if !converged || types.iter().any(Option::is_none) {
+    if !converged
+        || types
+            .iter()
+            .zip(&stable)
+            .any(|(ty, value): (&Option<String>, &Option<Expr>)| ty.is_none() && value.is_none())
+    {
         return None;
     }
-    let types: Vec<String> = types.into_iter().flatten().collect();
+    let types: Vec<String> = types
+        .into_iter()
+        .map(|ty: Option<String>| ty.unwrap_or_default())
+        .collect();
     for (b, code) in relifted {
         codes[b] = code;
     }
@@ -215,7 +258,9 @@ pub(super) fn plan_stack_slots<N: TokenNamer>(
         let targets: Vec<SlotTarget> = vars
             .iter()
             .map(|&v: &usize| SlotTarget {
-                slot: stack_slot(names[v].clone(), Some(&types[v])),
+                slot: stable[v]
+                    .clone()
+                    .unwrap_or_else(|| stack_slot(names[v].clone(), Some(&types[v]))),
                 ty: types[v].clone(),
             })
             .collect();
@@ -224,17 +269,70 @@ pub(super) fn plan_stack_slots<N: TokenNamer>(
     }
     Some(StackSlots {
         exit_targets,
-        declarations: names.into_iter().zip(types).collect(),
+        declarations: names
+            .into_iter()
+            .zip(types)
+            .zip(&stable)
+            .filter(|(_, value): &((String, String), &Option<Expr>)| value.is_none())
+            .map(|(declaration, _): ((String, String), &Option<Expr>)| declaration)
+            .collect(),
     })
+}
+
+fn stable_values<N: TokenNamer>(
+    exit_vars: &BTreeMap<BlockId, Vec<usize>>,
+    depths: &Depths,
+    codes: &[BlockCode],
+    count: usize,
+    inputs: &SlotInputs<'_, N>,
+) -> Vec<Option<Expr>> {
+    let mut seen: Vec<Option<Option<(String, Expr)>>> = vec![None; count];
+    for (&b, vars) in exit_vars {
+        let produced: &[Expr] = &codes[b].exit_stack;
+        let kept: usize = depths.kept[b];
+        let consistent: bool = produced.len() == depths.exit[b].saturating_sub(kept);
+        for (i, &v) in vars.iter().enumerate() {
+            if i < kept {
+                continue;
+            }
+            let value: Option<(String, Expr)> = consistent
+                .then(|| produced.get(i - kept))
+                .flatten()
+                .filter(|e: &&Expr| is_stable_atom(e))
+                .map(|e: &Expr| (rendered_expression(e, inputs.lang, inputs.names), e.clone()));
+            seen[v] = match (seen[v].take(), value) {
+                (None, value) => Some(value),
+                (Some(Some(known)), Some(value)) if known.0 == value.0 => Some(Some(known)),
+                _ => Some(None),
+            };
+        }
+    }
+    seen.into_iter()
+        .map(|value: Option<Option<(String, Expr)>>| {
+            value.flatten().map(|(_, e): (String, Expr)| e)
+        })
+        .collect()
+}
+
+pub(super) fn is_stable_atom(expression: &Expr) -> bool {
+    matches!(expression, Expr::AddressOf(inner) if matches!(inner.as_ref(), Expr::Local(_) | Expr::Arg(_)))
 }
 
 fn merged_slot_type(known: &str, found: &str) -> Option<String> {
     match (known, found) {
         _ if known == found => Some(known.to_owned()),
+        _ if qualifies(known, found) => Some(known.to_owned()),
+        _ if qualifies(found, known) => Some(found.to_owned()),
         ("int" | "uint", "int" | "uint") => Some("int".to_owned()),
         ("long" | "ulong", "long" | "ulong") => Some("long".to_owned()),
         _ => None,
     }
+}
+
+fn qualifies(qualified: &str, short: &str) -> bool {
+    qualified
+        .strip_suffix(short)
+        .is_some_and(|namespace: &str| namespace.ends_with('.'))
 }
 
 fn exit_key(depths: &Depths, b: BlockId, i: usize) -> SlotKey {
@@ -333,11 +431,14 @@ pub(super) fn assign_exit_slots(
             continue;
         }
         let rendered: String = rendered_expression(value, lang, names);
-        let converted: String = if needs_conversion(value, code, i, &target.ty, names) {
-            format!("unchecked(({})({rendered}))", target.ty)
-        } else {
-            rendered
-        };
+        let converted: String =
+            coerced_constant_text(value, &target.ty, lang).unwrap_or_else(|| {
+                if needs_conversion(value, code, i, &target.ty, names) {
+                    format!("unchecked(({})({rendered}))", target.ty)
+                } else {
+                    rendered
+                }
+            });
         assignments.push((name.clone(), converted));
     }
     let overlapping: bool = assignments.len() > 1
@@ -385,7 +486,9 @@ fn needs_conversion(
         Expr::Unary(..) | Expr::Binary(..) | Expr::Cond { .. } => {
             matches!(slot_type, "int" | "uint" | "long" | "ulong")
         }
-        _ => stack_slot_type(code, index, names).is_some_and(|ty: String| ty != slot_type),
+        _ => stack_slot_type(code, index, names).is_some_and(|ty: String| {
+            ty != slot_type && !qualifies(&ty, slot_type) && !qualifies(slot_type, &ty)
+        }),
     }
 }
 

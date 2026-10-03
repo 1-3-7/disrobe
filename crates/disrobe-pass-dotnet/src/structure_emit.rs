@@ -571,11 +571,11 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
         {
             return None;
         }
-        let folded: Expr = Expr::Cond {
-            condition: Box::new(Expr::Raw(condition)),
-            when_true: Box::new(when_true.get(split)?.clone()),
-            when_false: Box::new(when_false.get(split)?.clone()),
-        };
+        let folded: Expr = self.conditional_value(
+            condition,
+            when_true.get(split)?.clone(),
+            when_false.get(split)?.clone(),
+        );
         let (first, last): (usize, usize) = (join_block.first, join_block.last);
         let mut entry_stack: Vec<Expr> = when_true[..split].to_vec();
         entry_stack.push(folded);
@@ -616,6 +616,57 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
         Some(join)
     }
 
+    fn conditional_value(&self, condition: String, when_true: Expr, when_false: Expr) -> Expr {
+        let flag = |e: &Expr| -> Option<bool> {
+            match e {
+                Expr::Const(text) if text == "0" => Some(false),
+                Expr::Const(text) if text == "1" => Some(true),
+                _ => None,
+            }
+        };
+        let shape: Option<(&'static str, bool, bool)> = if self.lang == TargetLang::CSharp {
+            match (flag(&when_true), flag(&when_false)) {
+                (Some(true), None) if when_false.is_known_boolean(self.names) => {
+                    Some(("||", false, false))
+                }
+                (Some(false), None) if when_false.is_known_boolean(self.names) => {
+                    Some(("&&", true, false))
+                }
+                (None, Some(false)) if when_true.is_known_boolean(self.names) => {
+                    Some(("&&", false, true))
+                }
+                (None, Some(true)) if when_true.is_known_boolean(self.names) => {
+                    Some(("||", true, true))
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let Some((op, negated, keeps_true_arm)) = shape else {
+            return Expr::Cond {
+                condition: Box::new(Expr::Raw(condition)),
+                when_true: Box::new(when_true),
+                when_false: Box::new(when_false),
+            };
+        };
+        let test: String = if negated {
+            negate(&condition, self.lang)
+        } else {
+            condition
+        };
+        let other: Expr = if keeps_true_arm {
+            when_true
+        } else {
+            when_false
+        };
+        Expr::Binary(
+            op,
+            Box::new(Expr::Raw(format!("({test})"))),
+            Box::new(other),
+        )
+    }
+
     fn condition_text(&self, bid: BlockId) -> String {
         self.block_code[bid]
             .condition
@@ -640,7 +691,7 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
             && code
                 .exit_stack
                 .iter()
-                .all(|e: &Expr| matches!(e, Expr::Temp { .. }))
+                .all(|e: &Expr| matches!(e, Expr::Temp { .. }) || stack_slots::is_stable_atom(e))
             && !self.loop_header[candidate]
             && !self.visited[candidate]
             && candidate != owner

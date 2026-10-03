@@ -2460,6 +2460,62 @@ impl Resolver {
     }
 
     #[must_use]
+    pub fn enclosing_type_token(&self, type_token: u32) -> Option<u32> {
+        let rid: u32 = token_rid(type_token)?;
+        self.tables
+            .nested_classes
+            .iter()
+            .find(|nested: &&crate::tables::NestedClassRow| nested.nested_class == rid)
+            .map(|nested: &crate::tables::NestedClassRow| 0x0200_0000 | nested.enclosing_class)
+    }
+
+    #[must_use]
+    pub fn callee_instantiated_return(&self, token: u32) -> Option<TypeSigOrVoid> {
+        let sig: MethodSig = self.callee_signature(token)?;
+        let generic: TypeSig = match sig.return_type {
+            TypeSigOrVoid::Type(TypeSig::Var(index)) => {
+                let method: u32 = match token_table(token)? {
+                    TableId::MethodSpec => {
+                        let row: &MethodSpecRow = self
+                            .tables
+                            .method_specs
+                            .get(token_rid(token)?.checked_sub(1)? as usize)?;
+                        row_ref_token(row.method?)
+                    }
+                    _ => token,
+                };
+                (token_table(method)? == TableId::MemberRef).then_some(())?;
+                let member: &MemberRefRow = self
+                    .tables
+                    .member_refs
+                    .get(token_rid(method)?.checked_sub(1)? as usize)?;
+                let parent: RowRef = member.parent?;
+                (parent.table == TableId::TypeSpec).then_some(())?;
+                let TypeSig::GenericInst { args, .. } =
+                    self.type_spec_signature_strict(parent.row)?
+                else {
+                    return None;
+                };
+                args.get(usize::try_from(index).ok()?)?.clone()
+            }
+            TypeSigOrVoid::Type(TypeSig::MVar(index)) => {
+                (token_table(token)? == TableId::MethodSpec).then_some(())?;
+                let row: &MethodSpecRow = self
+                    .tables
+                    .method_specs
+                    .get(token_rid(token)?.checked_sub(1)? as usize)?;
+                let args: Vec<TypeSig> = self
+                    .blob(row.instantiation)
+                    .and_then(|blob: &[u8]| crate::signature::parse_method_spec_sig(blob).ok())?;
+                args.get(usize::try_from(index).ok()?)?.clone()
+            }
+            other => return Some(other),
+        };
+        (!matches!(generic, TypeSig::Var(_) | TypeSig::MVar(_)))
+            .then_some(TypeSigOrVoid::Type(generic))
+    }
+
+    #[must_use]
     pub fn csharp_anonymous_object_member_names(&self, token: u32) -> Option<Vec<String>> {
         let member_ref_rid: u32 = token_rid(token)?;
         (token_table(token) == Some(TableId::MemberRef)).then_some(())?;
