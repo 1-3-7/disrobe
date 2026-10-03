@@ -4,9 +4,10 @@
 #[allow(clippy::redundant_pub_crate, dead_code)]
 mod pyarmor_corpus_manifest;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::OnceLock;
 
+use disrobe_bytes::{ByteReadError, read_u32_le_at};
 use disrobe_pass_pyarmor::{
     PyarmorVersion, SerialKind, StaticDecryptStatus, StaticRuntimeInfoSummary, StaticUnpackConfig,
     StaticUnpackOutput, WrapperMagic, classify_serial, detect_from_wrapper, marshal_stream_start,
@@ -97,33 +98,35 @@ fn detect_only_v9_bcc_without_runtime() {
 }
 
 #[test]
-fn corpus_pyc_smoke_does_not_panic() {
-    let corpus_dir: PathBuf = workspace_root().join("corpus/python/pyarmor");
-    assert!(
-        corpus_dir.is_dir(),
-        "the pyarmor corpus is tracked in git and is what this case sweeps, so its absence is a damaged checkout rather than an optional dependency: {}",
-        corpus_dir.display()
-    );
-    let mut swept: usize = 0;
-    walk_files(&corpus_dir, &mut |path: &Path| {
-        if path.extension().and_then(std::ffi::OsStr::to_str) != Some("pyc") {
-            return;
-        }
-        let bytes: Vec<u8> = std::fs::read(path).unwrap_or_else(|error: std::io::Error| {
-            panic!("{} is unreadable: {error}", path.display())
-        });
+fn named_wrapper_payloads_without_runtime_are_detect_only() {
+    let fixtures: &Vec<ResolvedFixture> = verified_corpus();
+    assert_eq!(fixtures.len(), STRUCTURAL_CODE_OBJECT_FLOOR);
+    for fixture in fixtures {
+        let text: &str = std::str::from_utf8(&fixture.wrapper.bytes)
+            .expect("manifest-verified wrapper must be UTF-8");
+        let (_detection, payload): (_, Vec<u8>) = detect_from_wrapper(text)
+            .unwrap_or_else(|error| panic!("{} payload extraction: {error}", fixture.relative_id));
         let cfg: StaticUnpackConfig = StaticUnpackConfig {
             emit_llm_metadata: true,
             ..StaticUnpackConfig::default()
         };
-        let _ = unpack_static_with_config(&bytes, &cfg);
-        swept += 1;
-    });
-    assert!(
-        swept > 0,
-        "{} carries no .pyc, so this case swept nothing and would report success without running the unpacker over a single sample",
-        corpus_dir.display()
-    );
+        let output: StaticUnpackOutput = unpack_static_with_config(&payload, &cfg)
+            .unwrap_or_else(|error| panic!("{} static detection: {error}", fixture.relative_id));
+        assert_eq!(
+            output.status,
+            StaticDecryptStatus::DetectOnly,
+            "{}",
+            fixture.relative_id
+        );
+        assert_eq!(
+            output.header_metadata.magic,
+            WrapperMagic::Py8Or9,
+            "{}",
+            fixture.relative_id
+        );
+        assert!(output.runtime_info.is_none(), "{}", fixture.relative_id);
+        assert!(output.plaintext.is_empty(), "{}", fixture.relative_id);
+    }
 }
 
 #[test]
@@ -308,10 +311,16 @@ fn python_version(output: &StaticUnpackOutput, fixture: &ResolvedFixture) -> PyV
 }
 
 fn declared_marshaled_start(plaintext: &[u8]) -> Result<usize, String> {
-    let code_object_offset: usize = usize::try_from(read_u32_le(plaintext, 0)?)
-        .map_err(|error| format!("code-object offset does not fit usize: {error}"))?;
-    let xor_procedure_len: usize = usize::try_from(read_u32_le(plaintext, 4)?)
-        .map_err(|error| format!("xor procedure length does not fit usize: {error}"))?;
+    let code_object_offset: usize = usize::try_from(
+        read_u32_le_at(plaintext, 0).map_err(|error: ByteReadError| {
+            format!("plaintext code-object offset field: {error}")
+        })?,
+    )
+    .map_err(|error| format!("code-object offset does not fit usize: {error}"))?;
+    let xor_procedure_len: usize = usize::try_from(read_u32_le_at(plaintext, 4).map_err(
+        |error: ByteReadError| format!("plaintext xor procedure length field: {error}"),
+    )?)
+    .map_err(|error| format!("xor procedure length does not fit usize: {error}"))?;
     let start: usize = code_object_offset
         .checked_add(xor_procedure_len)
         .ok_or_else(|| "plaintext header marshal offset overflows usize".to_owned())?;
@@ -322,19 +331,6 @@ fn declared_marshaled_start(plaintext: &[u8]) -> Result<usize, String> {
         ));
     }
     Ok(start)
-}
-
-fn read_u32_le(plaintext: &[u8], offset: usize) -> Result<u32, String> {
-    let end: usize = offset
-        .checked_add(4)
-        .ok_or_else(|| "plaintext header field end overflows usize".to_owned())?;
-    let bytes: &[u8] = plaintext
-        .get(offset..end)
-        .ok_or_else(|| format!("plaintext header omits bytes {offset}..{end}"))?;
-    let array: [u8; 4] = bytes
-        .try_into()
-        .map_err(|_| format!("plaintext header field {offset}..{end} is not four bytes"))?;
-    Ok(u32::from_le_bytes(array))
 }
 
 fn grade_anchored_marshaled_code_object(
@@ -373,18 +369,4 @@ fn workspace_root() -> PathBuf {
     path.pop();
     path.pop();
     path
-}
-
-fn walk_files(dir: &Path, visitor: &mut dyn FnMut(&Path)) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path: PathBuf = entry.path();
-        if path.is_dir() {
-            walk_files(&path, visitor);
-        } else {
-            visitor(&path);
-        }
-    }
 }
