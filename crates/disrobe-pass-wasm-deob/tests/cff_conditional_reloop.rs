@@ -5,13 +5,10 @@ use std::path::PathBuf;
 use std::process::{Command, Output};
 
 #[cfg(feature = "sandbox")]
-#[cfg(feature = "chain")]
 use disrobe_core::chain::Pass;
 #[cfg(feature = "sandbox")]
-#[cfg(feature = "chain")]
 use disrobe_core::{Artifact, Rung};
 #[cfg(feature = "sandbox")]
-#[cfg(feature = "chain")]
 use disrobe_pass_wasm_deob::chain_detector::WASM_DEOB_PASS;
 #[cfg(feature = "sandbox")]
 use disrobe_pass_wasm_deob::{RecoveredModule, recover_module};
@@ -158,7 +155,6 @@ fn conditional_cff_reloops_to_clean_behavior_under_wasmtime() {
 
 #[cfg(feature = "sandbox")]
 #[test]
-#[cfg(feature = "chain")]
 fn nested_dispatch_loops_reloop_inner_first_under_wasmtime() {
     let clean_bytes: Vec<u8> = assemble_fixture("cff_nested_dispatch.clean.wat");
     let obf_bytes: Vec<u8> = assemble_fixture("cff_nested_dispatch.obf.wat");
@@ -1382,7 +1378,6 @@ fn every_wall_names_the_reason_it_refused() {
 
 #[cfg(feature = "sandbox")]
 #[test]
-#[cfg(feature = "chain")]
 fn a_real_rustc_next_state_temporary_reloops_through_the_registered_pass() {
     let bytes: &[u8] = &recorded_bytes(RecordSet::Fixtures, "cff_rustc_temp_state.obf.wasm");
     let recovered: RecoveredModule =

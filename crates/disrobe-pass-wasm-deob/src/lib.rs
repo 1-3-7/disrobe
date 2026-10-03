@@ -26,7 +26,6 @@ mod analyze;
 pub mod boundary_links;
 mod boundary_name_propagation;
 mod cfg;
-#[cfg(feature = "chain")]
 pub mod chain_detector;
 mod component;
 mod component_lift;

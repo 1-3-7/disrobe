@@ -1,4 +1,4 @@
-#![cfg(all(feature = "sandbox", feature = "chain"))]
+#![cfg(feature = "sandbox")]
 #![allow(clippy::expect_used, clippy::panic)]
 
 #[path = "common/bounded_wasmtime.rs"]

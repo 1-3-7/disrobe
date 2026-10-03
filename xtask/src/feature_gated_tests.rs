@@ -54,7 +54,7 @@ const HIDDEN_TEST_SURFACE: &[(&str, &[&str])] = &[
     ("disrobe-pass-pyinstaller", &["chain"]),
     ("disrobe-pass-ruby", &["chain"]),
     ("disrobe-pass-swift-objc", &["chain"]),
-    ("disrobe-pass-wasm-deob", &["chain", "sandbox"]),
+    ("disrobe-pass-wasm-deob", &["sandbox"]),
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]

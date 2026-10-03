@@ -18,7 +18,6 @@ workspace = true
 sandbox = ["wasmtime"]
 dwarf = ["dep:gimli"]
 llm-metadata = ["dep:disrobe-llm-metadata"]
-chain = ["disrobe-core/chain"]
 
 [dependencies]
 disrobe-bytes = { workspace = true }

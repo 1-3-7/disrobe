@@ -144,7 +144,6 @@ chain = [
     "disrobe-pass-py-decompile/chain",
     "disrobe-pass-pyinstaller/chain",
     "disrobe-pass-js-deob?/chain",
-    "disrobe-pass-wasm-deob?/chain",
     "disrobe-pass-ruby?/chain",
     "disrobe-pass-mobile?/chain",
     "disrobe-pass-lua?/chain",
