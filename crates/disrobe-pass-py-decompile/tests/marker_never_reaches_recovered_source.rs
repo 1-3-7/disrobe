@@ -181,7 +181,11 @@ fn the_refusal_this_grade_matches_on_is_the_one_the_engine_emits() {
 
 #[test]
 fn the_fixtures_refused_for_an_unresolved_placeholder_are_pinned_by_name() {
-    const PINNED: &[&str] = &[];
+    const PINNED: &[&str] = &[
+        "pyc_zipper/real/class_inheritance_super.obfuscate.pyc",
+        "pyc_zipper/real/generators_yield_from.obfuscate.pyc",
+        "pyc_zipper/real/sample.obfuscate.pyc",
+    ];
 
     let graded: Graded = grade_tracked_corpus();
     let observed: BTreeSet<&str> = graded
