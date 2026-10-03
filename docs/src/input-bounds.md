@@ -15,9 +15,9 @@ The exceeded column states what happens when input goes past the bound. It comes
 
 The scan does not resolve types or trait dispatch, so an outcome names the construct it found rather than proving the behaviour.
 
-2219 bounds (count 217, other 1038, output 66, recursion 228, size 485, work 185).
+2223 bounds (count 217, other 1039, output 67, recursion 228, size 486, work 186).
 
-Exceeded: error 897, recorded 191, panic 0, delegated 49, silent 1024, unclassified 17, allocation 33, unused 8.
+Exceeded: error 899, recorded 191, panic 0, delegated 49, silent 1026, unclassified 17, allocation 33, unused 8.
 
 | Crate | Constant | Kind | Exceeded | Type | Value | File |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -1282,6 +1282,8 @@ Exceeded: error 897, recorded 191, panic 0, delegated 49, silent 1024, unclassif
 | `disrobe-pass-native` | `MAX_POINTER_SLOTS` | other | silent: `break` in `collect_data_pointers`; `return` in `collect_initializer_tables` | `usize` | `1 << 21` | `crates/disrobe-pass-native/src/disasm_ir/aarch64_seeds.rs` |
 | `disrobe-pass-native` | `MAX_SEEDS` | other | silent: `break` in `aarch64_boundary_prologue_seeds`; `break` in `aarch64_gap_boundary_prologue_seeds`; `return` in `aarch64_boundary_prologue_seeds`; 3 more | `usize` | `1 << 17` | `crates/disrobe-pass-native/src/disasm_ir/aarch64_seeds.rs` |
 | `disrobe-pass-native` | `MAX_UNWIND_ENTRIES` | count | error: `CompactUnwindError::Index`; `CompactUnwindError::Limit` | `usize` | `1 << 17` | `crates/disrobe-pass-native/src/disasm_ir/aarch64_seeds.rs` |
+| `disrobe-pass-native` | `MAX_RENDERED_TYPE_NAME_BYTES` | output | error: `Error::Dwarf` (DR-NATIVE-0006) | `usize` | `64 * 1024` | `crates/disrobe-pass-native/src/dwarf_sourcemap.rs` |
+| `disrobe-pass-native` | `MAX_RENDERED_TYPE_WORK_BYTES` | work | error: `Error::Dwarf` (DR-NATIVE-0006) | `usize` | `16 * 1024 * 1024` | `crates/disrobe-pass-native/src/dwarf_sourcemap.rs` |
 | `disrobe-pass-native` | `MAX_DYNAMIC_ENTRIES` | count | silent: `while` condition in `read_dynamic_entries` | `usize` | `16 * 1024` | `crates/disrobe-pass-native/src/elf.rs` |
 | `disrobe-pass-native` | `MAX_ELF_PROGRAM_HEADERS` | other | silent: `return` in `is_well_formed_elf_executable`; `return` in `validate_section_table` | `usize` | `1_000_000` | `crates/disrobe-pass-native/src/elf.rs` |
 | `disrobe-pass-native` | `MAX_GNU_HASH_BUCKETS` | other | silent: `return` in `gnu_hash_symbol_count` | `usize` | `1 << 20` | `crates/disrobe-pass-native/src/elf.rs` |
@@ -1441,7 +1443,9 @@ Exceeded: error 897, recorded 191, panic 0, delegated 49, silent 1024, unclassif
 | `disrobe-pass-nativelang` | `MAX_DEPTH` | recursion | silent: fallback value in `enter` | `usize` | `256` | `crates/disrobe-pass-nativelang/src/d_mangle.rs` |
 | `disrobe-pass-nativelang` | `MAX_OUTPUT` | output | recorded: flag `output_exhausted` | `usize` | `1 << 16` | `crates/disrobe-pass-nativelang/src/d_mangle.rs` |
 | `disrobe-pass-nativelang` | `MAX_STEPS` | work | error: `DDemangleError::StepBudget` | `usize` | `200_000` | `crates/disrobe-pass-nativelang/src/d_mangle.rs` |
-| `disrobe-pass-nativelang` | `MAX_NIM_DEPTH` | recursion | silent: `return` in `read_nim_type` | `usize` | `256` | `crates/disrobe-pass-nativelang/src/demangle.rs` |
+| `disrobe-pass-nativelang` | `MAX_NIM_DEPTH` | recursion | silent: `return` in `read_nim_type`; `return` in `split_itanium_params` | `usize` | `256` | `crates/disrobe-pass-nativelang/src/demangle.rs` |
+| `disrobe-pass-nativelang` | `MAX_NIM_GENERATED_SYMBOL_BYTES` | size | silent: `return` in `demangle_nim_generated_itanium` | `usize` | `4_096` | `crates/disrobe-pass-nativelang/src/demangle.rs` |
+| `disrobe-pass-nativelang` | `MAX_NIM_GENERATED_UID_DIGITS` | other | silent: `return` in `decode_nim_itanium_identifier` | `usize` | `20` | `crates/disrobe-pass-nativelang/src/demangle.rs` |
 | `disrobe-pass-nativelang` | `MAX_INSTRUCTIONS_PER_FUNCTION` | other | recorded: flag `truncated` | `usize` | `8192` | `crates/disrobe-pass-nativelang/src/disasm.rs` |
 | `disrobe-pass-nativelang` | `MAX_LISTED_FUNCTIONS` | other | recorded: `BodySkip::FunctionBudgetExhausted` | `usize` | `4096` | `crates/disrobe-pass-nativelang/src/disasm.rs` |
 | `disrobe-pass-nativelang` | `INITIAL_INFLATE_CAP` | other | allocation: `with_capacity` in `inflate_up_to` | `usize` | `64 * 1024` | `crates/disrobe-pass-nativelang/src/dwarf.rs` |
@@ -2243,7 +2247,7 @@ Exceeded: error 897, recorded 191, panic 0, delegated 49, silent 1024, unclassif
 
 ## Silent stops
 
-1024 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
+1026 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
 
 | Crate | Constant | Use | File |
 | --- | --- | --- | --- |
@@ -2886,7 +2890,9 @@ Exceeded: error 897, recorded 191, panic 0, delegated 49, silent 1024, unclassif
 | `disrobe-pass-native` | `MAX_HANDLERS` | `return` in `read_pointer_table`; `return` in `recover_via_codescan`; `return` in `recover_via_exports`; 1 more | `crates/disrobe-pass-native/src/vm_devirt/mod.rs` |
 | `disrobe-pass-nativelang` | `MAX_EMITTED_NAME_CHARS` | `.take()` in `emitted_identifier` | `crates/disrobe-pass-nativelang/src/bodies.rs` |
 | `disrobe-pass-nativelang` | `MAX_DEPTH` | fallback value in `enter` | `crates/disrobe-pass-nativelang/src/d_mangle.rs` |
-| `disrobe-pass-nativelang` | `MAX_NIM_DEPTH` | `return` in `read_nim_type` | `crates/disrobe-pass-nativelang/src/demangle.rs` |
+| `disrobe-pass-nativelang` | `MAX_NIM_DEPTH` | `return` in `read_nim_type`; `return` in `split_itanium_params` | `crates/disrobe-pass-nativelang/src/demangle.rs` |
+| `disrobe-pass-nativelang` | `MAX_NIM_GENERATED_SYMBOL_BYTES` | `return` in `demangle_nim_generated_itanium` | `crates/disrobe-pass-nativelang/src/demangle.rs` |
+| `disrobe-pass-nativelang` | `MAX_NIM_GENERATED_UID_DIGITS` | `return` in `decode_nim_itanium_identifier` | `crates/disrobe-pass-nativelang/src/demangle.rs` |
 | `disrobe-pass-nativelang` | `MAX_ARRAY_DIMENSIONS` | `while` condition in `array_dimensions` | `crates/disrobe-pass-nativelang/src/dwarf.rs` |
 | `disrobe-pass-nativelang` | `MAX_DWARF_AGGREGATES` | `break` in `walk_dwarf`; skipped in `collect_aggregates`; skipped in `push_aggregate` | `crates/disrobe-pass-nativelang/src/dwarf.rs` |
 | `disrobe-pass-nativelang` | `MAX_DWARF_AGGREGATE_DEPTH` | skipped in `collect_aggregates` | `crates/disrobe-pass-nativelang/src/dwarf.rs` |
