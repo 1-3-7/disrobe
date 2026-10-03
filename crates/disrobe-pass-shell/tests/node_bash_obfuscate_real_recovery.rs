@@ -8,12 +8,16 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use disrobe_core::scratch::ScratchDir;
 use disrobe_testkit::{CommandSpec, ToolOutput, tool_output};
 
 use disrobe_pass_shell::{
     Detection, Dialect, Family, NodeBashObfuscateReport, detect, is_node_bash_obfuscate,
     reverse_node_bash_obfuscate,
 };
+
+const BASH_BIN_VAR: &str = "DISROBE_BASH_BIN";
+const DASH_BIN_VAR: &str = "DISROBE_DASH_BIN";
 
 fn corpus_path(relative: &str) -> PathBuf {
     let manifest_dir: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -30,44 +34,41 @@ fn read_corpus(relative: &str) -> String {
         .unwrap_or_else(|e: std::io::Error| panic!("read {} failed: {e}", p.display()))
 }
 
-fn shell_path(names: &[&str], absolute: &[&str]) -> Option<String> {
-    for candidate in absolute {
-        if std::path::Path::new(candidate).exists() {
-            return Some((*candidate).to_owned());
+fn shell_path(program: &str, binary_var: &str) -> Result<String, String> {
+    if let Some(configured) = std::env::var_os(binary_var) {
+        let path: PathBuf = configured.into();
+        if !path.is_file() {
+            return Err(format!(
+                "{binary_var} names {}, which is not a file",
+                path.display()
+            ));
         }
+        let selected: String = path
+            .canonicalize()
+            .map_err(|error: std::io::Error| format!("resolve {binary_var}: {error}"))?
+            .to_string_lossy()
+            .into_owned();
+        return match run_shell(&selected, "exit 0") {
+            Ok(output) if output.success => Ok(selected),
+            Ok(_) | Err(_) => Err(format!(
+                "{binary_var} names a {program} that cannot run `-c exit 0`"
+            )),
+        };
     }
-    names
-        .iter()
-        .find(|name: &&&str| {
-            tool_output(CommandSpec::new(**name, Duration::from_secs(30)).args(["-c", "exit 0"]))
-                .is_ok_and(|o: ToolOutput| o.success)
-        })
-        .map(|name: &&str| (*name).to_owned())
+    match run_shell(program, "exit 0") {
+        Ok(output) if output.success => Ok(program.to_owned()),
+        Ok(_) | Err(_) => Err(format!(
+            "`{program}` is not runnable on PATH and {binary_var} is unset"
+        )),
+    }
 }
 
-fn bash_path() -> Option<String> {
-    shell_path(
-        &["bash"],
-        &[
-            "/usr/bin/bash",
-            "/bin/bash",
-            "C:/Program Files/Git/usr/bin/bash.exe",
-            "C:/cygwin64/bin/bash.exe",
-        ],
-    )
+fn bash_path() -> Result<String, String> {
+    shell_path("bash", BASH_BIN_VAR)
 }
 
-fn dash_path() -> Option<String> {
-    shell_path(
-        &["dash"],
-        &[
-            "/usr/bin/dash",
-            "/bin/dash",
-            "C:/Program Files/Git/usr/bin/dash.exe",
-            "C:/msys64/usr/bin/dash.exe",
-            "C:/cygwin64/bin/dash.exe",
-        ],
-    )
+fn dash_path() -> Result<String, String> {
+    shell_path("dash", DASH_BIN_VAR)
 }
 
 struct Observed {
@@ -75,13 +76,20 @@ struct Observed {
     code: Option<i32>,
 }
 
-fn run_script(shell: &str, script: &str) -> Observed {
-    let out: ToolOutput = tool_output(
+fn run_shell(shell: &str, script: &str) -> Result<ToolOutput, String> {
+    let scratch: ScratchDir =
+        ScratchDir::create("shell-reference").map_err(|error| error.to_string())?;
+    tool_output(
         CommandSpec::new(shell, Duration::from_secs(30))
-            .arg("-c")
-            .arg(script),
+            .args(["-c", script])
+            .current_dir(scratch.path().to_path_buf())
+            .reap_descendants_on_exit(),
     )
-    .expect("spawn sandboxed shell");
+    .map_err(|error| error.to_string())
+}
+
+fn run_script(shell: &str, script: &str) -> Observed {
+    let out: ToolOutput = run_shell(shell, script).expect("spawn bounded reference shell");
     assert!(!out.timed_out, "{shell} did not finish the script in 30 s");
     Observed {
         stdout: out.stdout,
@@ -125,13 +133,12 @@ fn clean_script_is_not_misdetected() {
 
 #[test]
 fn recovery_matches_original_behavior_under_bash() {
-    let Some(bash): Option<String> = bash_path() else {
+    let bash: String = bash_path().unwrap_or_else(|reason: String| {
         panic!(
-            "bash is required for the non-circular exec-diff grading; tried /usr/bin/bash, \
-             /bin/bash, C:/Program Files/Git/usr/bin/bash.exe, C:/cygwin64/bin/bash.exe and \
-             `bash` on PATH"
-        );
-    };
+            "bash is required for the non-circular exec-diff grading: {reason}; set \
+             {BASH_BIN_VAR} or put bash on PATH"
+        )
+    });
     for (obf_rel, label) in [
         ("bash/node-bash-obfuscate/obfuscated_chunk4.sh", "chunk4"),
         ("bash/node-bash-obfuscate/obfuscated_chunk8.sh", "chunk8"),
@@ -151,13 +158,12 @@ fn recovery_matches_original_behavior_under_bash() {
 
 #[test]
 fn recovery_matches_original_behavior_under_dash() {
-    let Some(dash): Option<String> = dash_path() else {
+    let dash: String = dash_path().unwrap_or_else(|reason: String| {
         panic!(
-            "dash is required for the non-circular exec-diff grading; tried /usr/bin/dash, \
-             /bin/dash, C:/Program Files/Git/usr/bin/dash.exe, C:/msys64/usr/bin/dash.exe, \
-             C:/cygwin64/bin/dash.exe and `dash` on PATH"
-        );
-    };
+            "dash is required for the non-circular exec-diff grading: {reason}; set \
+             {DASH_BIN_VAR} or put dash on PATH"
+        )
+    });
     let original: String = read_corpus("bash/node-bash-obfuscate/clean_original.sh");
     let obf: String = read_corpus("bash/node-bash-obfuscate/obfuscated_chunk4.sh");
     let report: NodeBashObfuscateReport =

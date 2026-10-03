@@ -21,7 +21,7 @@ pub struct Toolchain {
 pub const MAKECAB: Toolchain = Toolchain {
     program: "makecab",
     programs: &["makecab"],
-    install_paths: &[r"C:\Windows\System32\makecab.exe"],
+    install_paths: &[],
     identity: None,
     probe_arguments: &[],
     prerequisite: "disrobe-binfmt::makecab",
@@ -31,10 +31,7 @@ pub const MAKECAB: Toolchain = Toolchain {
 pub const SEVEN_ZIP: Toolchain = Toolchain {
     program: "7z",
     programs: &["7z", "7za", "7zz", "7zr"],
-    install_paths: &[
-        r"C:\Program Files\7-Zip\7z.exe",
-        r"C:\Program Files (x86)\7-Zip\7z.exe",
-    ],
+    install_paths: &[],
     identity: Some("7-Zip"),
     probe_arguments: &[],
     prerequisite: "disrobe-binfmt::7z",
@@ -44,11 +41,7 @@ pub const SEVEN_ZIP: Toolchain = Toolchain {
 pub const WIX: Toolchain = Toolchain {
     program: "wix",
     programs: &["wix"],
-    install_paths: &[
-        r"C:\Program Files\WiX Toolset v7.0\bin\wix.exe",
-        r"C:\Program Files\WiX Toolset v6.0\bin\wix.exe",
-        r"C:\Program Files (x86)\WiX Toolset v7.0\bin\wix.exe",
-    ],
+    install_paths: &[],
     identity: None,
     probe_arguments: &[],
     prerequisite: "disrobe-binfmt::wix",
@@ -58,10 +51,7 @@ pub const WIX: Toolchain = Toolchain {
 pub const MAKENSIS: Toolchain = Toolchain {
     program: "makensis",
     programs: &["makensis"],
-    install_paths: &[
-        r"C:\Program Files (x86)\NSIS\makensis.exe",
-        r"C:\Program Files\NSIS\makensis.exe",
-    ],
+    install_paths: &[],
     identity: None,
     probe_arguments: &[],
     prerequisite: "disrobe-binfmt::makensis",
@@ -219,7 +209,7 @@ fn resolve(
     let candidates: Vec<PathBuf> = candidates(toolchain, directories, install_paths);
     if candidates.is_empty() {
         return Err(format!(
-            "no {names} file exists on PATH or in the standard install directories",
+            "no {names} file exists on PATH",
             names = toolchain.programs.join(", ")
         ));
     }

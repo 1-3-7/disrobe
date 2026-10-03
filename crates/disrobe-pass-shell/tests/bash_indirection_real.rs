@@ -5,39 +5,45 @@
     clippy::missing_panics_doc
 )]
 
-use std::process::Command;
+use std::time::Duration;
+
+use disrobe_core::scratch::ScratchDir;
+use disrobe_testkit::{CommandSpec, ToolOutput, tool_output};
 
 use disrobe_pass_shell::{IndirectionReport, peel_indirection};
 
+const BASH_BIN_VAR: &str = "DISROBE_BASH_BIN";
+
 fn bash_path() -> String {
-    for candidate in [
-        "/usr/bin/bash",
-        "/bin/bash",
-        "C:/Program Files/Git/usr/bin/bash.exe",
-        "C:/cygwin64/bin/bash.exe",
-    ] {
-        if std::path::Path::new(candidate).exists() {
-            return candidate.to_owned();
-        }
+    if let Some(configured) = std::env::var_os(BASH_BIN_VAR) {
+        let path: std::path::PathBuf = configured.into();
+        assert!(
+            path.is_file(),
+            "required tool missing: {BASH_BIN_VAR} names {}, which is not a file; bash is the \
+             independent decoder these recoveries are graded against",
+            path.display()
+        );
+        return path
+            .canonicalize()
+            .expect("resolve configured bash")
+            .to_string_lossy()
+            .into_owned();
     }
-    let probe: std::io::Result<std::process::Output> =
-        Command::new("bash").arg("--version").output();
-    match probe {
-        Ok(out) if out.status.success() => "bash".to_owned(),
-        Ok(out) => panic!(
-            "required tool missing: `bash --version` exited with {}, and bash is the independent \
-             decoder these recoveries are graded against",
-            out.status
-        ),
-        Err(error) => panic!(
-            "required tool missing: bash is not at a known path or on PATH ({error}), and it is \
-             the independent decoder these recoveries are graded against"
-        ),
-    }
+    let out: ToolOutput = run_bash("bash", &["--version"]);
+    assert!(
+        out.success,
+        "required tool missing: bash is not runnable on PATH; set {BASH_BIN_VAR} to the independent decoder"
+    );
+    "bash".to_owned()
 }
 
-fn bash_command(bash: &str) -> Command {
-    let mut command: Command = Command::new(bash);
+fn run_bash(bash: &str, args: &[&str]) -> ToolOutput {
+    let scratch: ScratchDir =
+        ScratchDir::create("shell-reference").expect("create shell scratch directory");
+    let mut command: CommandSpec = CommandSpec::new(bash, Duration::from_secs(30))
+        .args(args.iter().copied())
+        .current_dir(scratch.path().to_path_buf())
+        .reap_descendants_on_exit();
     if let Some(dir) = std::path::Path::new(bash)
         .parent()
         .filter(|dir: &&std::path::Path| !dir.as_os_str().is_empty())
@@ -47,19 +53,15 @@ fn bash_command(bash: &str) -> Command {
             std::iter::once(dir.to_path_buf()).chain(std::env::split_paths(&inherited)),
         )
         .expect("the bash directory and PATH entries join into a PATH value");
-        command.env("PATH", joined);
+        command = command.env("PATH", joined);
     }
-    command
+    tool_output(command).expect("run required bash decoder")
 }
 
 fn run_decoder_only(bash: &str, decoder_snippet: &str) -> String {
-    let out: std::process::Output = bash_command(bash)
-        .arg("-c")
-        .arg(decoder_snippet)
-        .output()
-        .expect("spawn bash decoder");
+    let out: ToolOutput = run_bash(bash, &["-c", decoder_snippet]);
     assert!(
-        out.status.success(),
+        out.success,
         "decoder snippet failed: {snippet}\nstderr: {err}",
         snippet = decoder_snippet,
         err = String::from_utf8_lossy(&out.stderr)
@@ -69,11 +71,11 @@ fn run_decoder_only(bash: &str, decoder_snippet: &str) -> String {
 
 fn require_commands(bash: &str, commands: &[&str]) {
     for command in commands {
-        let found: bool = bash_command(bash)
-            .arg("-c")
-            .arg(format!("command -v {command} >/dev/null 2>&1"))
-            .output()
-            .is_ok_and(|o: std::process::Output| o.status.success());
+        let found: bool = run_bash(
+            bash,
+            &["-c", &format!("command -v {command} >/dev/null 2>&1")],
+        )
+        .success;
         assert!(
             found,
             "required tool missing: `{command}` is not callable from {bash}, and it is the \
