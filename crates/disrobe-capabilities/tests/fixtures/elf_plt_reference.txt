@@ -12,19 +12,19 @@
 # The test that reads this file fails when the file or a fixture is missing.
 
 [corpus/native/nim/hello.nim.elf]
-0x1025020 __stack_chk_fail
-0x1025030 memcpy
-0x1025040 exit
-0x1025050 fwrite
-0x1025060 fflush
-0x1025070 mmap
-0x1025080 munmap
-0x1025090 strlen
-0x10250a0 signal
-0x10250b0 raise
-0x10250c0 flockfile
-0x10250d0 funlockfile
-0x10250e0 memset
+0x1024f10 __stack_chk_fail
+0x1024f20 memcpy
+0x1024f30 exit
+0x1024f40 fwrite
+0x1024f50 fflush
+0x1024f60 mmap
+0x1024f70 munmap
+0x1024f80 strlen
+0x1024f90 signal
+0x1024fa0 raise
+0x1024fb0 flockfile
+0x1024fc0 funlockfile
+0x1024fd0 memset
 
 [corpus/python/pyarmor/v9/platform_linux/pyarmor_runtime_000000/pyarmor_runtime.so]
 0x9700 __ctype_toupper_loc

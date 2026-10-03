@@ -164,6 +164,27 @@ fn every_reference_stub_resolves_to_its_reference_symbol() {
 }
 
 #[test]
+fn an_altered_nim_reference_address_fails_the_independent_symbol_match() {
+    let reference: Reference = load_reference();
+    let entries: &Vec<(u64, String)> = reference
+        .get(NIM)
+        .expect("the reference covers the Nim ELF");
+    let (address, symbol): &(u64, String) = entries
+        .first()
+        .expect("the Nim ELF has at least one reference stub");
+    let altered: u64 = address
+        .checked_add(PLT_ENTRY_SIZE)
+        .expect("the altered reference address remains representable");
+    let bytes: Vec<u8> = read_required(NIM);
+    let map: ImportMap = ImportMap::from_bytes(&bytes);
+    assert_ne!(
+        map.name_at_thunk(altered),
+        Some(symbol.as_str()),
+        "altering the Nim reference address must no longer resolve to {symbol}"
+    );
+}
+
+#[test]
 fn resolution_stops_at_the_edges_of_the_table() {
     let reference: Reference = load_reference();
     for (fixture, entries) in &reference {
