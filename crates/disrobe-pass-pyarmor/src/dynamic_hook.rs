@@ -2,7 +2,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use disrobe_core::scratch::ScratchFile;
+use disrobe_core::scratch::{ScratchDir, ScratchFile};
 use disrobe_core::subprocess::{CaptureOutcome, CommandSpec, Completion};
 use serde::{Deserialize, Serialize};
 
@@ -311,27 +311,19 @@ fn versioned_python(major: u8, minor: u8) -> PathBuf {
 fn probe(spec: &InterpreterSpec, searched: &mut Vec<String>) -> bool {
     let label: String = spec.display_label();
     searched.push(label);
-    let mut args: Vec<String> = spec.version_args.clone();
-    args.extend(["-c".to_owned(), "print(0)".to_owned()]);
-    run_probe_capped(&spec.exe, &args, Duration::from_secs(PROBE_TIMEOUT_SECS))
+    run_probe_capped(spec, "print(0)")
         .is_some_and(|(success, _stdout, _stderr): (bool, Vec<u8>, Vec<u8>)| success)
 }
 
 fn python_version(spec: &InterpreterSpec) -> Result<(u8, u8, u8)> {
-    let mut args: Vec<String> = spec.version_args.clone();
-    args.extend([
-        "-c".to_owned(),
-        "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}.{sys.version_info[2]}')"
-            .to_owned(),
-    ]);
-    let (success, stdout, _stderr): (bool, Vec<u8>, Vec<u8>) =
-        run_probe_capped(&spec.exe, &args, Duration::from_secs(PROBE_TIMEOUT_SECS)).ok_or_else(
-            || {
-                Error::KeyExtraction(format!(
-                    "python version probe timed out after {PROBE_TIMEOUT_SECS}s"
-                ))
-            },
-        )?;
+    let script: &str =
+        "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}.{sys.version_info[2]}')";
+    let (success, stdout, _stderr): (bool, Vec<u8>, Vec<u8>) = run_probe_capped(spec, script)
+        .ok_or_else(|| {
+            Error::KeyExtraction(format!(
+                "python version probe timed out after {PROBE_TIMEOUT_SECS}s"
+            ))
+        })?;
     if !success {
         return Err(Error::KeyExtraction(
             "could not query python version".to_owned(),
@@ -342,20 +334,18 @@ fn python_version(spec: &InterpreterSpec) -> Result<(u8, u8, u8)> {
         .ok_or_else(|| Error::KeyExtraction(format!("could not parse python version: {text:?}")))
 }
 
-fn run_probe_capped(
-    program: &Path,
-    args: &[String],
-    timeout: Duration,
-) -> Option<(bool, Vec<u8>, Vec<u8>)> {
-    let captured: disrobe_core::subprocess::CapturedOutput =
-        disrobe_core::subprocess::run_captured(program, args, timeout, MAX_DYNAMIC_CAPTURE)
-            .ok()
-            .flatten()?;
-    Some((
-        captured.exit_code == Some(0),
-        captured.stdout,
-        captured.stderr,
-    ))
+fn probe_command(spec: &InterpreterSpec, script: &str, workdir: &Path) -> CommandSpec {
+    CommandSpec::new(&spec.exe, Duration::from_secs(PROBE_TIMEOUT_SECS))
+        .args(spec.version_args.iter().map(String::as_str))
+        .args(["-I", "-c", script])
+        .current_dir(workdir.to_path_buf())
+        .reap_descendants_on_exit()
+        .capture_limits(MAX_DYNAMIC_CAPTURE, MAX_DYNAMIC_CAPTURE)
+}
+
+fn run_probe_capped(spec: &InterpreterSpec, script: &str) -> Option<(bool, Vec<u8>, Vec<u8>)> {
+    let scratch: ScratchDir = ScratchDir::create("pyarmor-interpreter-probe").ok()?;
+    run_command_spec_capped(probe_command(spec, script, scratch.path()))
 }
 
 fn capture_complete(outcome: CaptureOutcome, stream: &'static str) -> Result<Vec<u8>> {
@@ -379,15 +369,16 @@ fn capture_complete(outcome: CaptureOutcome, stream: &'static str) -> Result<Vec
     }
 }
 
-#[cfg(test)]
 fn run_command_spec_capped(command: CommandSpec) -> Option<(bool, Vec<u8>, Vec<u8>)> {
-    let execution = command.run().ok()?;
-    let Completion::Exited(status) = execution.completion else {
-        return None;
-    };
-    let stdout: Vec<u8> = capture_complete(execution.stdout, "stdout").ok()?;
-    let stderr: Vec<u8> = capture_complete(execution.stderr, "stderr").ok()?;
-    Some((status.success(), stdout, stderr))
+    let captured: disrobe_core::subprocess::CapturedOutput =
+        disrobe_core::subprocess::capture_command(command)
+            .ok()
+            .flatten()?;
+    Some((
+        captured.exit_code == Some(0),
+        captured.stdout,
+        captured.stderr,
+    ))
 }
 
 fn parse_version(s: &str) -> Option<(u8, u8, u8)> {
@@ -474,11 +465,83 @@ mod tests {
     }
 
     #[test]
+    fn interpreter_probe_ignores_pythonpath_startup_code_and_uses_its_scratch_directory() {
+        let spec: InterpreterSpec = locate_python(None).expect("a supported Python interpreter");
+        let hostile: ScratchDir =
+            ScratchDir::create("pyarmor-probe-hostile-path").expect("scratch");
+        let workdir: ScratchDir = ScratchDir::create("pyarmor-probe-working-dir").expect("scratch");
+        let marker: PathBuf = hostile.path().join("startup.marker");
+        std::fs::write(
+            hostile.path().join("sitecustomize.py"),
+            format!(
+                "open({:?}, 'w').write('startup')\n",
+                marker.to_string_lossy()
+            ),
+        )
+        .expect("write harmless startup marker");
+
+        let (success, stdout, stderr): (bool, Vec<u8>, Vec<u8>) = run_command_spec_capped(
+            probe_command(
+                &spec,
+                "import os; print(os.getcwd()); print(0)",
+                workdir.path(),
+            )
+            .env("PYTHONPATH", hostile.path())
+            .env("PYTHONHOME", hostile.path()),
+        )
+        .expect("contained interpreter probe must finish");
+        assert!(
+            success,
+            "probe failed: {}",
+            String::from_utf8_lossy(&stderr)
+        );
+        let output: String = String::from_utf8(stdout).expect("probe output is UTF-8");
+        let lines: Vec<&str> = output.lines().collect();
+        assert_eq!(lines.len(), 2, "unexpected probe output: {output:?}");
+        assert_eq!(lines[1], "0");
+        assert_eq!(
+            Path::new(lines[0])
+                .canonicalize()
+                .expect("child cwd exists"),
+            workdir.path().canonicalize().expect("scratch cwd exists")
+        );
+        assert!(!marker.exists(), "probe imported PYTHONPATH startup code");
+
+        let (success, stdout, stderr): (bool, Vec<u8>, Vec<u8>) = run_command_spec_capped(
+            CommandSpec::new(&spec.exe, Duration::from_secs(PROBE_TIMEOUT_SECS))
+                .args(spec.version_args.iter().map(String::as_str))
+                .args(["-c", "print(0)"])
+                .current_dir(workdir.path().to_path_buf())
+                .env("PYTHONPATH", hostile.path())
+                .env("PYTHONHOME", "")
+                .reap_descendants_on_exit()
+                .capture_limits(MAX_DYNAMIC_CAPTURE, MAX_DYNAMIC_CAPTURE),
+        )
+        .expect("unisolated mutation control must finish");
+        assert!(
+            success,
+            "control failed: {}",
+            String::from_utf8_lossy(&stderr)
+        );
+        assert_eq!(
+            String::from_utf8(stdout).expect("control UTF-8").trim(),
+            "0"
+        );
+        assert!(
+            marker.exists(),
+            "unisolated control never imported the planted startup code"
+        );
+    }
+
+    #[test]
     fn probe_capped_timeout_actually_kills_a_sleeping_child() {
         let args: Vec<String> = mock_args(&["sleep", "5"]);
         let start: Instant = Instant::now();
-        let result: Option<(bool, Vec<u8>, Vec<u8>)> =
-            run_probe_capped(&mock_bin_path(), &args, Duration::from_millis(300));
+        let result: Option<(bool, Vec<u8>, Vec<u8>)> = run_command_spec_capped(
+            CommandSpec::new(mock_bin_path(), Duration::from_millis(300))
+                .args(&args)
+                .capture_limits(MAX_DYNAMIC_CAPTURE, MAX_DYNAMIC_CAPTURE),
+        );
         let elapsed: Duration = start.elapsed();
         eprintln!(
             "[evidence] pyarmor timeout test: elapsed={elapsed:?} deadline=300ms sleep_requested=5s killed={}",
@@ -498,8 +561,11 @@ mod tests {
     fn probe_capped_output_cap_refuses_a_flooding_child() {
         let flood_bytes: usize = MAX_DYNAMIC_CAPTURE * 2;
         let args: Vec<String> = mock_args(&["flood", &flood_bytes.to_string()]);
-        let result: Option<(bool, Vec<u8>, Vec<u8>)> =
-            run_probe_capped(&mock_bin_path(), &args, Duration::from_secs(20));
+        let result: Option<(bool, Vec<u8>, Vec<u8>)> = run_command_spec_capped(
+            CommandSpec::new(mock_bin_path(), Duration::from_secs(20))
+                .args(&args)
+                .capture_limits(MAX_DYNAMIC_CAPTURE, MAX_DYNAMIC_CAPTURE),
+        );
         eprintln!(
             "[evidence] pyarmor cap test: child_wrote={flood_bytes} cap={MAX_DYNAMIC_CAPTURE} refused={}",
             result.is_none()
@@ -519,9 +585,13 @@ mod tests {
         std::fs::write(&weird_path, b"payload").expect("write metachar file");
 
         let args: Vec<String> = mock_args(&["echo-args", &weird_path.to_string_lossy()]);
-        let (success, stdout, _stderr): (bool, Vec<u8>, Vec<u8>) =
-            run_probe_capped(&mock_bin_path(), &args, Duration::from_secs(5))
-                .expect("echo-args child must complete");
+        let (success, stdout, _stderr): (bool, Vec<u8>, Vec<u8>) = run_command_spec_capped(
+            CommandSpec::new(mock_bin_path(), Duration::from_secs(5))
+                .args(&args)
+                .current_dir(scratch.path().to_path_buf())
+                .capture_limits(MAX_DYNAMIC_CAPTURE, MAX_DYNAMIC_CAPTURE),
+        )
+        .expect("echo-args child must complete");
         assert!(success);
         let reported: String = String::from_utf8_lossy(&stdout).trim_end().to_owned();
         eprintln!(
