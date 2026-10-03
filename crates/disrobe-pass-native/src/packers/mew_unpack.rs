@@ -524,20 +524,9 @@ impl<'a> MewAplibChunks<'a> {
     }
 
     fn read_u32_le(&mut self) -> Result<u32> {
-        if self.pos + 4 > self.src.len() {
-            return Err(Error::Truncated {
-                needed: self.pos + 4,
-                had: self.src.len(),
-            });
-        }
-        let v: u32 = u32::from_le_bytes([
-            self.src[self.pos],
-            self.src[self.pos + 1],
-            self.src[self.pos + 2],
-            self.src[self.pos + 3],
-        ]);
+        let value: u32 = read_u32_le(self.src, self.pos)?;
         self.pos += 4;
-        Ok(v)
+        Ok(value)
     }
 
     fn ensure_writable(&self, dpos: usize, window: MewChunkWindow<'_>, what: &str) -> Result<()> {

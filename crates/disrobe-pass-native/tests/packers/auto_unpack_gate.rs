@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
+use disrobe_bytes::read_u32_le_at;
 use disrobe_core::Artifact;
 use disrobe_core::Rung;
 use disrobe_core::chain::{ChildArtifact, Pass};
@@ -510,11 +511,6 @@ struct ElfTailHeader {
     uncompressed_len: usize,
 }
 
-fn read_u32_le(bytes: &[u8], offset: usize) -> Option<u32> {
-    let raw: &[u8] = bytes.get(offset..offset.checked_add(4)?)?;
-    Some(u32::from_le_bytes(raw.try_into().ok()?))
-}
-
 fn elf_tail_header(packed: &[u8]) -> Option<ElfTailHeader> {
     let last: usize = packed.len().checked_sub(32)?;
     let first: usize = last.saturating_sub(4096);
@@ -527,9 +523,9 @@ fn elf_tail_header(packed: &[u8]) -> Option<ElfTailHeader> {
         if header[4] == 0 || header[4] > 16 || !matches!(method, 2 | 5 | 8 | 14) {
             continue;
         }
-        let uncompressed_len: usize = usize::try_from(read_u32_le(header, 16)?).ok()?;
-        let compressed_len: usize = usize::try_from(read_u32_le(header, 20)?).ok()?;
-        let file_size: usize = usize::try_from(read_u32_le(header, 24)?).ok()?;
+        let uncompressed_len: usize = usize::try_from(read_u32_le_at(header, 16).ok()?).ok()?;
+        let compressed_len: usize = usize::try_from(read_u32_le_at(header, 20).ok()?).ok()?;
+        let file_size: usize = usize::try_from(read_u32_le_at(header, 24).ok()?).ok()?;
         if uncompressed_len == 0
             || compressed_len == 0
             || compressed_len > packed.len()
@@ -553,9 +549,11 @@ fn elf_first_block(packed: &[u8], uncompressed_len: usize) -> Option<usize> {
         .enumerate()
         .find_map(|(offset, bytes)| {
             (bytes == b"UPX!")
-                .then(|| read_u32_le(packed, offset.checked_add(12)?))
+                .then(|| read_u32_le_at(packed, offset.checked_add(12)?).ok())
                 .flatten()
-                .is_some_and(|value: u32| value as usize == uncompressed_len)
+                .is_some_and(|value: u32| {
+                    usize::try_from(value).is_ok_and(|length: usize| length == uncompressed_len)
+                })
                 .then(|| offset.checked_add(20))
                 .flatten()
         })
@@ -570,8 +568,8 @@ fn compressed_elf_extent(packed: &[u8]) -> Option<std::ops::Range<usize>> {
     let mut block: usize = elf_first_block(packed, remaining)?;
     while remaining != 0 {
         let info: &[u8] = packed.get(block..block.checked_add(12)?)?;
-        let uncompressed_len: usize = usize::try_from(read_u32_le(info, 0)?).ok()?;
-        let compressed_len: usize = usize::try_from(read_u32_le(info, 4)?).ok()?;
+        let uncompressed_len: usize = usize::try_from(read_u32_le_at(info, 0).ok()?).ok()?;
+        let compressed_len: usize = usize::try_from(read_u32_le_at(info, 4).ok()?).ok()?;
         if uncompressed_len == 0
             || uncompressed_len > remaining
             || compressed_len == 0

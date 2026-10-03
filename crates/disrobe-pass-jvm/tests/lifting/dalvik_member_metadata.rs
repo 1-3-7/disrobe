@@ -4,6 +4,7 @@
     clippy::panic
 )]
 
+use disrobe_bytes::read_u32_le_at;
 use disrobe_pass_jvm::dex::{
     DexClassMetadata, DexInnerClass, DexSystemMetadata, DexSystemMetadataReport,
     parse_system_metadata,
@@ -324,14 +325,6 @@ fn read_u16(bytes: &[u8], offset: usize) -> u16 {
     )
 }
 
-fn read_u32_le(bytes: &[u8], offset: usize) -> u32 {
-    u32::from_le_bytes(
-        bytes[offset..offset + 4]
-            .try_into()
-            .expect("four DEX bytes"),
-    )
-}
-
 fn read_uleb(bytes: &[u8], mut offset: usize) -> (u32, usize) {
     let mut value: u32 = 0;
     for shift in (0..35).step_by(7) {
@@ -348,18 +341,30 @@ fn read_uleb(bytes: &[u8], mut offset: usize) -> (u32, usize) {
 fn first_relevant_annotation(dex: &DexFile, bytes: &[u8]) -> (usize, usize, usize) {
     for class_index in 0..dex.header.class_defs_size as usize {
         let class_offset: usize = dex.header.class_defs_off as usize + class_index * 32;
-        let directory_offset: usize = read_u32_le(bytes, class_offset + 20) as usize;
+        let directory_offset: usize = usize::try_from(
+            read_u32_le_at(bytes, class_offset + 20)
+                .expect("class definition annotation directory offset"),
+        )
+        .expect("u32 directory offset fits usize");
         if directory_offset == 0 {
             continue;
         }
-        let set_offset: usize = read_u32_le(bytes, directory_offset) as usize;
+        let set_offset: usize = usize::try_from(
+            read_u32_le_at(bytes, directory_offset).expect("annotation directory set offset"),
+        )
+        .expect("u32 set offset fits usize");
         if set_offset == 0 {
             continue;
         }
-        let count: usize = read_u32_le(bytes, set_offset) as usize;
+        let count: usize =
+            usize::try_from(read_u32_le_at(bytes, set_offset).expect("annotation set entry count"))
+                .expect("u32 annotation entry count fits usize");
         for entry_index in 0..count {
             let entry_offset: usize = set_offset + 4 + entry_index * 4;
-            let annotation_offset: usize = read_u32_le(bytes, entry_offset) as usize;
+            let annotation_offset: usize = usize::try_from(
+                read_u32_le_at(bytes, entry_offset).expect("annotation set entry offset"),
+            )
+            .expect("u32 annotation offset fits usize");
             let (type_index, body_offset): (u32, usize) = read_uleb(bytes, annotation_offset + 1);
             let descriptor: &str = dex
                 .type_names
