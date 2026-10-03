@@ -86,12 +86,12 @@ const MAX_REPORTED_TYPES: usize = 1 << 16;
 #[must_use]
 pub fn recover_types(bytes: &[u8], has_symbol_table: bool) -> TypeReport {
     debug::dbg_section("dwarf-types");
-    let Ok(rec): Result<TypeReconstruction, _> = reconstruct_dwarf_types(bytes) else {
-        debug::dbg_line(|| {
-            "dwarf-types wall: object carries no .debug_info; falling back to symbol grade"
-                .to_owned()
-        });
-        return TypeReport::absent(has_symbol_table);
+    let rec: TypeReconstruction = match reconstruct_dwarf_types(bytes) {
+        Ok(rec) => rec,
+        Err(error) => {
+            debug::dbg_line(|| format!("dwarf-types wall: {error}; falling back to symbol grade"));
+            return TypeReport::absent(has_symbol_table);
+        }
     };
     let coverage: CoverageScore = rec.coverage;
     let line_coverage_pct: f64 = coverage.pct();

@@ -10,6 +10,8 @@ use crate::error::{Error, Result};
 const SOURCEMAP_SCHEMA_VERSION: u32 = 1;
 
 const TYPE_RESOLVE_MAX_DEPTH: u32 = 32;
+const MAX_RENDERED_TYPE_NAME_BYTES: usize = 64 * 1024;
+const MAX_RENDERED_TYPE_WORK_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CompileUnit {
@@ -231,6 +233,7 @@ pub fn reconstruct_dwarf_types(bytes: &[u8]) -> Result<TypeReconstruction> {
 
     let mut types: Vec<ReconstructedType> = Vec::new();
     let mut dwo_names: Vec<String> = Vec::new();
+    let mut render_budget: TypeRenderBudget = TypeRenderBudget::default();
 
     let mut unit_headers: gimli::DebugInfoUnitHeadersIter<EndianSlice<'_, RunTimeEndian>> =
         dwarf.units();
@@ -247,7 +250,8 @@ pub fn reconstruct_dwarf_types(bytes: &[u8]) -> Result<TypeReconstruction> {
             if !entry.is_renderable_root() {
                 continue;
             }
-            let rendered: ReconstructedType = render_named_type(&index, *offset);
+            let rendered: ReconstructedType =
+                render_named_type(&index, *offset, &mut render_budget)?;
             types.push(rendered);
         }
     }
@@ -535,114 +539,198 @@ fn attr_unit_ref(attr: &gimli::Attribute<EndianSlice<'_, RunTimeEndian>>) -> Opt
     }
 }
 
-fn render_named_type(index: &TypeDieIndex, offset: UnitOffset) -> ReconstructedType {
+#[derive(Default)]
+struct TypeRenderBudget {
+    rendered_bytes: usize,
+}
+
+impl TypeRenderBudget {
+    fn append(&mut self, output: &mut String, fragment: &str) -> Result<()> {
+        let name_bytes: usize = output
+            .len()
+            .checked_add(fragment.len())
+            .ok_or_else(|| Error::Dwarf("DWARF type rendering name length overflow".to_owned()))?;
+        if name_bytes > MAX_RENDERED_TYPE_NAME_BYTES {
+            return Err(Error::Dwarf(format!(
+                "DWARF type rendering refused: one rendered name exceeds the {MAX_RENDERED_TYPE_NAME_BYTES}-byte bound"
+            )));
+        }
+        let work_units: usize = fragment.len().max(1);
+        let work_bytes: usize = self
+            .rendered_bytes
+            .checked_add(work_units)
+            .ok_or_else(|| Error::Dwarf("DWARF type rendering work length overflow".to_owned()))?;
+        if work_bytes > MAX_RENDERED_TYPE_WORK_BYTES {
+            return Err(Error::Dwarf(format!(
+                "DWARF type rendering refused: aggregate rendering work exceeds the {MAX_RENDERED_TYPE_WORK_BYTES}-byte bound"
+            )));
+        }
+        self.rendered_bytes = work_bytes;
+        output.try_reserve(fragment.len()).map_err(|error| {
+            Error::Dwarf(format!("DWARF type rendering allocation failed: {error}"))
+        })?;
+        output.push_str(fragment);
+        Ok(())
+    }
+}
+
+fn render_text(budget: &mut TypeRenderBudget, text: &str) -> Result<String> {
+    let mut rendered: String = String::new();
+    budget.append(&mut rendered, text)?;
+    Ok(rendered)
+}
+
+fn render_pair(budget: &mut TypeRenderBudget, first: &str, second: &str) -> Result<String> {
+    let mut rendered: String = String::new();
+    budget.append(&mut rendered, first)?;
+    budget.append(&mut rendered, second)?;
+    Ok(rendered)
+}
+
+fn render_named_type(
+    index: &TypeDieIndex,
+    offset: UnitOffset,
+    budget: &mut TypeRenderBudget,
+) -> Result<ReconstructedType> {
     let Some(die): Option<&TypeDie> = index.entries.get(&offset) else {
-        return ReconstructedType {
-            name: "<unresolved>".to_owned(),
+        return Ok(ReconstructedType {
+            name: render_text(budget, "<unresolved>")?,
             kind: TypeKind::Unspecified,
             byte_size: None,
             members: Vec::new(),
             template_params: Vec::new(),
-        };
+        });
     };
     let kind: TypeKind = tag_to_kind(die.tag);
-    let name: String = render_type_ref(index, Some(offset), 0);
+    let name: String = render_type_ref(index, Some(offset), 0, budget)?;
     let members: Vec<TypeMember> = die
         .members
         .iter()
-        .map(|m: &MemberDie| TypeMember {
-            name: m.name.clone().unwrap_or_else(|| "<anon>".to_owned()),
-            type_name: render_type_ref(index, m.type_ref, 0),
-            offset: m.offset,
+        .map(|member: &MemberDie| -> Result<TypeMember> {
+            let member_name: String =
+                render_text(budget, member.name.as_deref().unwrap_or("<anon>"))?;
+            let type_name: String = render_type_ref(index, member.type_ref, 0, budget)?;
+            Ok(TypeMember {
+                name: member_name,
+                type_name,
+                offset: member.offset,
+            })
         })
-        .collect();
+        .collect::<Result<Vec<TypeMember>>>()?;
     let template_params: Vec<String> = die
         .template_params
         .iter()
-        .map(|p: &TemplateParamDie| render_template_param(index, p, 0))
-        .collect();
-    ReconstructedType {
+        .map(|param: &TemplateParamDie| render_template_param(index, param, 0, budget))
+        .collect::<Result<Vec<String>>>()?;
+    Ok(ReconstructedType {
         name,
         kind,
         byte_size: die.byte_size,
         members,
         template_params,
-    }
+    })
 }
 
-fn render_type_ref(index: &TypeDieIndex, type_ref: Option<UnitOffset>, depth: u32) -> String {
+fn render_type_ref(
+    index: &TypeDieIndex,
+    type_ref: Option<UnitOffset>,
+    depth: u32,
+    budget: &mut TypeRenderBudget,
+) -> Result<String> {
     if depth >= TYPE_RESOLVE_MAX_DEPTH {
-        return "<recursion-limit>".to_owned();
+        return render_text(budget, "<recursion-limit>");
     }
     let Some(off): Option<UnitOffset> = type_ref else {
-        return "void".to_owned();
+        return render_text(budget, "void");
     };
     let Some(die): Option<&TypeDie> = index.entries.get(&off) else {
-        return "<unresolved>".to_owned();
+        return render_text(budget, "<unresolved>");
     };
     match die.tag {
-        gimli::DW_TAG_base_type => die.name.clone().unwrap_or_else(|| "<anon>".to_owned()),
+        gimli::DW_TAG_base_type => render_text(budget, die.name.as_deref().unwrap_or("<anon>")),
         gimli::DW_TAG_pointer_type => {
-            format!("{} *", render_type_ref(index, die.type_ref, depth + 1))
+            let referenced: String = render_type_ref(index, die.type_ref, depth + 1, budget)?;
+            render_pair(budget, &referenced, " *")
         }
         gimli::DW_TAG_reference_type => {
-            format!("{} &", render_type_ref(index, die.type_ref, depth + 1))
+            let referenced: String = render_type_ref(index, die.type_ref, depth + 1, budget)?;
+            render_pair(budget, &referenced, " &")
         }
         gimli::DW_TAG_rvalue_reference_type => {
-            format!("{} &&", render_type_ref(index, die.type_ref, depth + 1))
+            let referenced: String = render_type_ref(index, die.type_ref, depth + 1, budget)?;
+            render_pair(budget, &referenced, " &&")
         }
         gimli::DW_TAG_const_type => {
-            format!("const {}", render_type_ref(index, die.type_ref, depth + 1))
+            let referenced: String = render_type_ref(index, die.type_ref, depth + 1, budget)?;
+            render_pair(budget, "const ", &referenced)
         }
         gimli::DW_TAG_volatile_type => {
-            format!(
-                "volatile {}",
-                render_type_ref(index, die.type_ref, depth + 1)
-            )
+            let referenced: String = render_type_ref(index, die.type_ref, depth + 1, budget)?;
+            render_pair(budget, "volatile ", &referenced)
         }
-        gimli::DW_TAG_restrict_type => render_type_ref(index, die.type_ref, depth + 1),
+        gimli::DW_TAG_restrict_type => render_type_ref(index, die.type_ref, depth + 1, budget),
         gimli::DW_TAG_array_type => {
-            let elem: String = render_type_ref(index, die.type_ref, depth + 1);
-            die.count
-                .map_or_else(|| format!("{elem} []"), |n: u64| format!("{elem} [{n}]"))
+            let element: String = render_type_ref(index, die.type_ref, depth + 1, budget)?;
+            let mut rendered: String = render_pair(budget, &element, " [")?;
+            if let Some(count) = die.count {
+                let count: String = count.to_string();
+                budget.append(&mut rendered, &count)?;
+            }
+            budget.append(&mut rendered, "]")?;
+            Ok(rendered)
         }
-        gimli::DW_TAG_typedef => die
-            .name
-            .clone()
-            .unwrap_or_else(|| render_type_ref(index, die.type_ref, depth + 1)),
+        gimli::DW_TAG_typedef => match die.name.as_deref() {
+            Some(name) => render_text(budget, name),
+            None => render_type_ref(index, die.type_ref, depth + 1, budget),
+        },
         gimli::DW_TAG_structure_type | gimli::DW_TAG_class_type => {
-            render_composite(index, die, "struct", depth)
+            render_composite(index, die, "struct", depth, budget)
         }
-        gimli::DW_TAG_union_type => render_composite(index, die, "union", depth),
-        gimli::DW_TAG_enumeration_type => die.name.as_ref().map_or_else(
-            || "enum <anon>".to_owned(),
-            |n: &String| format!("enum {n}"),
-        ),
-        gimli::DW_TAG_subroutine_type => "fn(...)".to_owned(),
-        _ => die.name.clone().unwrap_or_else(|| "<anon>".to_owned()),
+        gimli::DW_TAG_union_type => render_composite(index, die, "union", depth, budget),
+        gimli::DW_TAG_enumeration_type => match die.name.as_deref() {
+            Some(name) => render_pair(budget, "enum ", name),
+            None => render_text(budget, "enum <anon>"),
+        },
+        gimli::DW_TAG_subroutine_type => render_text(budget, "fn(...)"),
+        _ => render_text(budget, die.name.as_deref().unwrap_or("<anon>")),
     }
 }
 
-fn render_composite(index: &TypeDieIndex, die: &TypeDie, keyword: &str, depth: u32) -> String {
-    let base: String = die.name.as_ref().map_or_else(
-        || format!("{keyword} <anon>"),
-        |n: &String| format!("{keyword} {n}"),
-    );
+fn render_composite(
+    index: &TypeDieIndex,
+    die: &TypeDie,
+    keyword: &str,
+    depth: u32,
+    budget: &mut TypeRenderBudget,
+) -> Result<String> {
+    let mut rendered: String = String::new();
+    budget.append(&mut rendered, keyword)?;
+    budget.append(&mut rendered, " ")?;
+    budget.append(&mut rendered, die.name.as_deref().unwrap_or("<anon>"))?;
     if die.template_params.is_empty() {
-        return base;
+        return Ok(rendered);
     }
-    let params: Vec<String> = die
-        .template_params
-        .iter()
-        .map(|p: &TemplateParamDie| render_template_param(index, p, depth + 1))
-        .collect();
-    format!("{base}<{}>", params.join(", "))
+    budget.append(&mut rendered, "<")?;
+    for (position, param) in die.template_params.iter().enumerate() {
+        if position > 0 {
+            budget.append(&mut rendered, ", ")?;
+        }
+        let parameter: String = render_template_param(index, param, depth + 1, budget)?;
+        budget.append(&mut rendered, &parameter)?;
+    }
+    budget.append(&mut rendered, ">")?;
+    Ok(rendered)
 }
 
-fn render_template_param(index: &TypeDieIndex, param: &TemplateParamDie, depth: u32) -> String {
+fn render_template_param(
+    index: &TypeDieIndex,
+    param: &TemplateParamDie,
+    depth: u32,
+    budget: &mut TypeRenderBudget,
+) -> Result<String> {
     match param.type_ref {
-        Some(_) => render_type_ref(index, param.type_ref, depth),
-        None => param.name.clone().unwrap_or_else(|| "<param>".to_owned()),
+        Some(_) => render_type_ref(index, param.type_ref, depth, budget),
+        None => render_text(budget, param.name.as_deref().unwrap_or("<param>")),
     }
 }
 
@@ -878,6 +966,45 @@ mod tests {
         }
     }
 
+    fn render_for_test(index: &TypeDieIndex, type_ref: Option<UnitOffset>) -> Result<String> {
+        let mut budget: TypeRenderBudget = TypeRenderBudget::default();
+        render_type_ref(index, type_ref, 0, &mut budget)
+    }
+
+    #[test]
+    fn empty_fragment_consumes_render_work_budget() {
+        let mut budget: TypeRenderBudget = TypeRenderBudget {
+            rendered_bytes: MAX_RENDERED_TYPE_WORK_BYTES - 1,
+        };
+        let mut rendered: String = String::new();
+        budget
+            .append(&mut rendered, "")
+            .expect("first empty fragment reaches the work bound");
+        let err: Error = budget.append(&mut rendered, "").unwrap_err();
+
+        assert!(
+            matches!(&err, Error::Dwarf(message) if message.contains("aggregate rendering work exceeds")),
+            "empty fragments must exhaust aggregate rendering work: {err}"
+        );
+        assert!(rendered.is_empty());
+        assert_eq!(budget.rendered_bytes, MAX_RENDERED_TYPE_WORK_BYTES);
+    }
+
+    #[test]
+    fn aggregate_refusal_preserves_existing_rendered_output() {
+        let mut budget: TypeRenderBudget = TypeRenderBudget {
+            rendered_bytes: MAX_RENDERED_TYPE_WORK_BYTES - 1,
+        };
+        let mut rendered: String = "kept".to_owned();
+        let err: Error = budget.append(&mut rendered, "xx").unwrap_err();
+
+        assert!(
+            matches!(&err, Error::Dwarf(message) if message.contains("aggregate rendering work exceeds")),
+            "aggregate limit must refuse before changing rendered output: {err}"
+        );
+        assert_eq!(rendered, "kept");
+    }
+
     #[test]
     fn renders_pointer_and_const_and_array_chains() {
         let mut entries: BTreeMap<UnitOffset, TypeDie> = BTreeMap::new();
@@ -895,10 +1022,19 @@ mod tests {
             derived(gimli::DW_TAG_array_type, Some(off(1)), Some(16)),
         );
         let index: TypeDieIndex = TypeDieIndex { entries };
-        assert_eq!(render_type_ref(&index, Some(off(2)), 0), "int *");
-        assert_eq!(render_type_ref(&index, Some(off(3)), 0), "const int");
-        assert_eq!(render_type_ref(&index, Some(off(4)), 0), "int [16]");
-        assert_eq!(render_type_ref(&index, None, 0), "void");
+        assert_eq!(
+            render_for_test(&index, Some(off(2))).expect("pointer renders"),
+            "int *"
+        );
+        assert_eq!(
+            render_for_test(&index, Some(off(3))).expect("const renders"),
+            "const int"
+        );
+        assert_eq!(
+            render_for_test(&index, Some(off(4))).expect("array renders"),
+            "int [16]"
+        );
+        assert_eq!(render_for_test(&index, None).expect("void renders"), "void");
     }
 
     #[test]
@@ -920,12 +1056,18 @@ mod tests {
         let off2: UnitOffset = off(2);
         entries.insert(off2, composite.clone());
         let index: TypeDieIndex = TypeDieIndex { entries };
-        assert_eq!(render_type_ref(&index, Some(off2), 0), "struct Vec<u8>");
+        assert_eq!(
+            render_for_test(&index, Some(off2)).expect("generic renders"),
+            "struct Vec<u8>"
+        );
         composite.template_params[0].type_ref = None;
         let mut e2: BTreeMap<UnitOffset, TypeDie> = BTreeMap::new();
         e2.insert(off2, composite);
         let i2: TypeDieIndex = TypeDieIndex { entries: e2 };
-        assert_eq!(render_type_ref(&i2, Some(off2), 0), "struct Vec<T>");
+        assert_eq!(
+            render_for_test(&i2, Some(off2)).expect("named generic renders"),
+            "struct Vec<T>"
+        );
     }
 
     #[test]
@@ -940,10 +1082,46 @@ mod tests {
             derived(gimli::DW_TAG_pointer_type, Some(off(1)), None),
         );
         let index: TypeDieIndex = TypeDieIndex { entries };
-        let rendered: String = render_type_ref(&index, Some(off(1)), 0);
+        let rendered: String = render_for_test(&index, Some(off(1))).expect("cycle renders");
         assert!(
             rendered.contains("<recursion-limit>"),
             "a self-referential pointer cycle must hit the depth guard, got {rendered}",
+        );
+    }
+
+    #[test]
+    fn rejects_branching_template_name_before_large_allocation() {
+        let mut entries: BTreeMap<UnitOffset, TypeDie> = BTreeMap::new();
+        entries.insert(off(0), base("u8"));
+        for level in 1..=12 {
+            let previous: UnitOffset = off(level - 1);
+            entries.insert(
+                off(level),
+                TypeDie {
+                    tag: gimli::DW_TAG_structure_type,
+                    name: Some("Branch".to_owned()),
+                    byte_size: None,
+                    type_ref: None,
+                    count: None,
+                    members: Vec::new(),
+                    template_params: vec![
+                        TemplateParamDie {
+                            name: None,
+                            type_ref: Some(previous),
+                        },
+                        TemplateParamDie {
+                            name: None,
+                            type_ref: Some(previous),
+                        },
+                    ],
+                },
+            );
+        }
+        let index: TypeDieIndex = TypeDieIndex { entries };
+        let err: Error = render_for_test(&index, Some(off(12))).unwrap_err();
+        assert!(
+            matches!(&err, Error::Dwarf(message) if message.contains("one rendered name exceeds")),
+            "branching template expansion must refuse at the per-name bound: {err}"
         );
     }
 
