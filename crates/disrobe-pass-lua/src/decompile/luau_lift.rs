@@ -211,10 +211,33 @@ fn preflight_template_render(main: &LuaProto) -> Result<()> {
         let mut pc: usize = 0;
         while let Some(raw) = proto.code.get(pc) {
             let inst: Insn = decode(*raw);
-            if inst.op == LOP_DUPTABLE
-                && let Ok(index) = usize::try_from(inst.d)
-                && let Some(LuaConstant::TableTemplate(fields)) = proto.constants.get(index)
-            {
+            let loaded: Option<usize> = match inst.op {
+                LOP_LOADK => usize::try_from(inst.d).ok(),
+                LOP_LOADKX => proto
+                    .code
+                    .get(pc.saturating_add(1))
+                    .and_then(|index: &u32| usize::try_from(*index).ok()),
+                _ => None,
+            };
+            if loaded.is_some_and(|index: usize| {
+                matches!(
+                    proto.constants.get(index),
+                    Some(LuaConstant::TableTemplate(_))
+                )
+            }) {
+                return Err(Error::DecompileUnsupported(
+                    "Luau table template loads without duplication cannot be recovered",
+                ));
+            }
+            if inst.op == LOP_DUPTABLE {
+                let index: usize = usize::try_from(inst.d).map_err(|_| {
+                    Error::DecompileUnsupported("Luau DUPTABLE index is not a table template")
+                })?;
+                let Some(LuaConstant::TableTemplate(fields)) = proto.constants.get(index) else {
+                    return Err(Error::DecompileUnsupported(
+                        "Luau DUPTABLE constant is not a table template",
+                    ));
+                };
                 let rendered: usize = match sizes.get(&index) {
                     Some(size) => *size,
                     None => {
