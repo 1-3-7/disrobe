@@ -186,12 +186,14 @@ const UNREACHABLE_CEILING: &[(&str, usize, &str)] = &[
     ),
     (
         "disrobe-pass-wasm-deob",
-        28,
+        29,
         "the second-largest group in this sweep: per-obfuscator reverse, detect and lift helpers \
          (wasmixer, wobfuscator, jscrambler, tigress) and per-feature scanners (SIMD, threads, \
          tail calls, GC externals, custom page sizes) each proven by their own oracle but driven \
          one at a time rather than from a single dispatcher, and `lift_module_to_wat`, the stub-import module printer the per-function graders still \
-         drive after every product WAT output moved to `lift_module_faithful_wat`",
+         drive after every product WAT output moved to `lift_module_faithful_wat`; \
+         strip_obfuscated_names is a separately graded metadata cleanup API that cannot restore \
+         original names and is intentionally outside the wasm deob pipeline",
     ),
 ];
 
