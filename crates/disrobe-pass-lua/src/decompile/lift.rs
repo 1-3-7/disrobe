@@ -182,6 +182,9 @@ fn const_repr(k: &LuaConstant, dialect: LuaDialect) -> String {
         LuaConstant::Import(_) | LuaConstant::ClosureRef(_) | LuaConstant::Vector(_) => {
             "nil".to_owned()
         }
+        LuaConstant::TableTemplate(_) => {
+            "error(\"disrobe: table template is only valid for Luau DUPTABLE\")".to_owned()
+        }
     }
 }
 
@@ -231,7 +234,7 @@ pub(crate) fn global_redefinition_message(p: &LuaProto, bx: u32) -> String {
 }
 
 #[must_use]
-pub(crate) fn quote_lua_string(s: &str) -> String {
+pub fn quote_lua_string(s: &str) -> String {
     let mut out: String = String::with_capacity(s.len() + 2);
     out.push('"');
     let mut chars: core::iter::Peekable<core::str::Chars<'_>> = s.chars().peekable();

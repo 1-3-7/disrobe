@@ -15,7 +15,11 @@ use super::{
     LOP_SETTABLEKS, LOP_SETTABLEN, LOP_SETUPVAL, LOP_SUB, LOP_SUBK, LOP_SUBRK, decode, op_length,
 };
 use crate::debug::dbg_line;
-use crate::reader::common::{LuaConstant, LuaProto, LuaUpvalueName};
+use crate::reader::common::{
+    LuaConstant, LuaProto, LuaTableTemplateField, LuaTemplateScalar, LuaTemplateValue,
+    LuaUpvalueName,
+};
+use std::sync::Arc;
 
 const MAX_TRANSLATE_DEPTH: usize = 200;
 const MAX_STACK: u32 = 250;
@@ -31,6 +35,7 @@ const FOR_BODY_OFFSET: usize = 4;
 const CAPTURE_UPVAL: u8 = 2;
 const IMPORT_PATH_MAX: u32 = 3;
 const MAX_JUMP_CHAIN: usize = 64;
+const MAX_TEMPLATE_WORDS: usize = 1 << 20;
 
 const MOVE: u32 = 0;
 const LOADK: u32 = 1;
@@ -95,10 +100,13 @@ struct Item {
     skip_bool: Option<(u32, u32, usize)>,
 }
 
-struct ProtoTranslation<'p> {
+struct ProtoTranslation<'p, 'w> {
     proto: &'p LuaProto,
     constants: Vec<LuaConstant>,
     known: BTreeMap<ConstKey, u32>,
+    template_integers: BTreeMap<i64, u32>,
+    template_strings: BTreeMap<&'p str, u32>,
+    template_words: &'w mut usize,
     scratch: u32,
     next_loop_base: u32,
     open_loops: BTreeMap<usize, (u32, usize)>,
@@ -113,7 +121,14 @@ struct ProtoTranslation<'p> {
 }
 
 pub(crate) fn translate(main: &LuaProto, merge_returns: bool) -> Option<LuaProto> {
-    translate_proto(main, main.upvalues.len(), 0, merge_returns)
+    let mut template_words: usize = 0;
+    translate_proto(
+        main,
+        main.upvalues.len(),
+        0,
+        merge_returns,
+        &mut template_words,
+    )
 }
 
 fn refuse<T>(pc: usize, why: &str) -> Option<T> {
@@ -136,11 +151,14 @@ fn translate_proto(
     upvalue_count: usize,
     depth: usize,
     merge_returns: bool,
+    template_words: &mut usize,
 ) -> Option<LuaProto> {
     if depth > MAX_TRANSLATE_DEPTH {
         return refuse(0, "prototype nesting too deep");
     }
     let mut known: BTreeMap<ConstKey, u32> = BTreeMap::new();
+    let mut template_integers: BTreeMap<i64, u32> = BTreeMap::new();
+    let mut template_strings: BTreeMap<&str, u32> = BTreeMap::new();
     for (index, constant) in p.constants.iter().enumerate() {
         let key: Option<ConstKey> = match constant {
             LuaConstant::Nil => Some(ConstKey::Nil),
@@ -151,14 +169,28 @@ fn translate_proto(
         if let (Some(key), Ok(index)) = (key, u32::try_from(index)) {
             known.entry(key).or_insert(index);
         }
+        if let Ok(index) = u32::try_from(index) {
+            match constant {
+                LuaConstant::Integer(value) => {
+                    template_integers.entry(*value).or_insert(index);
+                }
+                LuaConstant::Str(value) => {
+                    template_strings.entry(value).or_insert(index);
+                }
+                _ => {}
+            }
+        }
     }
     let base: u32 = u32::from(p.max_stack_size);
-    let mut t: ProtoTranslation<'_> = ProtoTranslation {
+    let mut t: ProtoTranslation<'_, '_> = ProtoTranslation {
         proto: p,
         constants: p.constants.clone(),
         known,
+        template_integers,
+        template_strings,
+        template_words,
         scratch: base,
-        next_loop_base: base + 1,
+        next_loop_base: base + 2,
         open_loops: BTreeMap::new(),
         loop_ends: BTreeMap::new(),
         rethreaded: BTreeMap::new(),
@@ -171,14 +203,22 @@ fn translate_proto(
     };
     let items: Vec<Item> = t.lower_all()?;
     let code: Vec<u32> = resolve(items, p.code.len())?;
+    let constants: Vec<LuaConstant> = std::mem::take(&mut t.constants);
+    let captures: BTreeMap<usize, usize> = std::mem::take(&mut t.captures);
+    let next_loop_base: u32 = t.next_loop_base;
     let mut protos: Vec<LuaProto> = Vec::with_capacity(p.protos.len());
     for (index, child) in p.protos.iter().enumerate() {
-        let count: usize = t
-            .captures
+        let count: usize = captures
             .get(&index)
             .copied()
             .unwrap_or(child.upvalues.len());
-        protos.push(translate_proto(child, count, depth + 1, merge_returns)?);
+        protos.push(translate_proto(
+            child,
+            count,
+            depth + 1,
+            merge_returns,
+            template_words,
+        )?);
     }
     let upvalues: Vec<LuaUpvalueName> = if p.upvalues.len() == upvalue_count {
         p.upvalues.clone()
@@ -190,7 +230,7 @@ fn translate_proto(
             })
             .collect()
     };
-    let max_stack_size: u8 = u8::try_from(t.next_loop_base).ok()?;
+    let max_stack_size: u8 = u8::try_from(next_loop_base).ok()?;
     Some(LuaProto {
         source: p.source.clone(),
         line_defined: p.line_defined,
@@ -199,7 +239,7 @@ fn translate_proto(
         is_vararg: if p.is_vararg != 0 { VARARG_ISVARARG } else { 0 },
         max_stack_size,
         code,
-        constants: t.constants,
+        constants,
         protos,
         source_lines: Vec::new(),
         locals: Vec::new(),
@@ -258,7 +298,7 @@ fn resolve(mut items: Vec<Item>, code_len: usize) -> Option<Vec<u32>> {
     Some(code)
 }
 
-impl ProtoTranslation<'_> {
+impl ProtoTranslation<'_, '_> {
     fn lower_all(&mut self) -> Option<Vec<Item>> {
         let code: &[u32] = &self.proto.code;
         let mut pc: usize = 0;
@@ -555,6 +595,84 @@ impl ProtoTranslation<'_> {
         Some(self.scratch)
     }
 
+    fn template_constant(&mut self, value: &LuaTemplateScalar) -> Option<u32> {
+        match value {
+            LuaTemplateScalar::Bool(value) => self.known.get(&ConstKey::Bool(*value)).copied(),
+            LuaTemplateScalar::Integer(value) => self.template_integers.get(value).copied(),
+            LuaTemplateScalar::Number(value) => self.template_number(*value),
+            LuaTemplateScalar::Str(value) => self.template_strings.get(value.as_str()).copied(),
+        }
+    }
+
+    fn template_number(&mut self, value: f64) -> Option<u32> {
+        let key: ConstKey = ConstKey::Number(value.to_bits());
+        if let Some(index) = self.known.get(&key) {
+            return Some(*index);
+        }
+        let index: u32 = u32::try_from(self.constants.len()).ok()?;
+        if index > MAX_BX {
+            return None;
+        }
+        self.constants.push(LuaConstant::Number(value));
+        self.known.insert(key, index);
+        Some(index)
+    }
+
+    fn template_operand(index: u32, scratch: u32, words: &mut Vec<Word>) -> Option<u32> {
+        if index <= MAX_RK_INDEX {
+            return Some(RK_CONSTANT | index);
+        }
+        if index > MAX_BX {
+            return None;
+        }
+        words.push(Word::Ready(abx(LOADK, scratch, index)));
+        Some(scratch)
+    }
+
+    fn table_template(&mut self, a: u32, index: u32, words: &mut Vec<Word>) -> Option<()> {
+        let fields: Arc<[LuaTableTemplateField]> = match self.proto.constants.get(index as usize) {
+            Some(LuaConstant::TableTemplate(fields)) => fields.clone(),
+            _ => return refuse(0, "DUPTABLE constant is not a table template"),
+        };
+        let Some(template_words): Option<usize> =
+            template_word_total(*self.template_words, fields.len())
+        else {
+            return refuse(0, "DUPTABLE template lowering exceeds the word limit");
+        };
+        *self.template_words = template_words;
+        words.push(Word::Ready(abc(NEWTABLE, a, 0, 0)));
+        for field in fields
+            .iter()
+            .filter(|field: &&_| matches!(&field.value, LuaTemplateValue::Scalar(_)))
+        {
+            self.table_template_field(a, field, words)?;
+        }
+        for field in fields
+            .iter()
+            .filter(|field: &&_| matches!(&field.value, LuaTemplateValue::Nil))
+        {
+            self.table_template_field(a, field, words)?;
+        }
+        Some(())
+    }
+
+    fn table_template_field(
+        &mut self,
+        a: u32,
+        field: &LuaTableTemplateField,
+        words: &mut Vec<Word>,
+    ) -> Option<()> {
+        let key_index: u32 = self.template_constant(&field.key)?;
+        let value_index: u32 = match &field.value {
+            LuaTemplateValue::Nil => self.known.get(&ConstKey::Nil).copied()?,
+            LuaTemplateValue::Scalar(value) => self.template_constant(value)?,
+        };
+        let key: u32 = Self::template_operand(key_index, self.scratch, words)?;
+        let value: u32 = Self::template_operand(value_index, self.scratch + 1, words)?;
+        words.push(Word::Ready(abc(SETTABLE, a, key, value)));
+        Some(())
+    }
+
     fn constant_is(&self, index: u32, accept: fn(&LuaConstant) -> bool) -> bool {
         self.proto.constants.get(index as usize).is_some_and(accept)
     }
@@ -805,7 +923,8 @@ impl ProtoTranslation<'_> {
             LOP_NOT => words.push(Word::Ready(abc(NOT, a, b, 0))),
             LOP_MINUS => words.push(Word::Ready(abc(UNM, a, b, 0))),
             LOP_LENGTH => words.push(Word::Ready(abc(LEN, a, b, 0))),
-            LOP_NEWTABLE | LOP_DUPTABLE => words.push(Word::Ready(abc(NEWTABLE, a, 0, 0))),
+            LOP_NEWTABLE => words.push(Word::Ready(abc(NEWTABLE, a, 0, 0))),
+            LOP_DUPTABLE => self.table_template(a, inst.d as u32, words)?,
             LOP_SETLIST => self.set_list(pc, a, b, c, aux, words)?,
             LOP_GETVARARGS => words.push(Word::Ready(abc(VARARG, a, b, 0))),
             LOP_FORNPREP => self.numeric_prep(pc, inst, words)?,
@@ -999,4 +1118,63 @@ const fn is_string(constant: &LuaConstant) -> bool {
 
 const fn is_number(constant: &LuaConstant) -> bool {
     matches!(constant, LuaConstant::Number(_))
+}
+
+fn template_word_total(current: usize, fields: usize) -> Option<usize> {
+    let added: usize = fields.checked_mul(3)?.checked_add(1)?;
+    let total: usize = current.checked_add(added)?;
+    (total <= MAX_TEMPLATE_WORDS).then_some(total)
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn template_lowering_clears_nil_keys_after_scalar_writes() {
+        let fields: Arc<[LuaTableTemplateField]> = Arc::from([
+            LuaTableTemplateField {
+                key: LuaTemplateScalar::Str("value".to_owned()),
+                value: LuaTemplateValue::Nil,
+            },
+            LuaTableTemplateField {
+                key: LuaTemplateScalar::Str("value".to_owned()),
+                value: LuaTemplateValue::Scalar(LuaTemplateScalar::Number(7.0)),
+            },
+        ]);
+        let proto: LuaProto = LuaProto {
+            source: None,
+            line_defined: 0,
+            last_line_defined: 0,
+            num_params: 0,
+            is_vararg: 0,
+            max_stack_size: 2,
+            code: vec![u32::from(LOP_DUPTABLE) | (3 << 16), u32::from(LOP_RETURN)],
+            constants: vec![
+                LuaConstant::Nil,
+                LuaConstant::Str("value".to_owned()),
+                LuaConstant::Number(7.0),
+                LuaConstant::TableTemplate(fields),
+            ],
+            protos: Vec::new(),
+            source_lines: Vec::new(),
+            locals: Vec::new(),
+            upvalues: Vec::new(),
+        };
+        let translated: LuaProto = translate(&proto, false).expect("template translates");
+        let settable_values: Vec<u32> = translated
+            .code
+            .iter()
+            .copied()
+            .filter(|word: &u32| word & 0x3F == SETTABLE)
+            .map(|word: u32| (word >> 14) & 0x1FF)
+            .collect();
+        assert_eq!(settable_values, vec![RK_CONSTANT | 2, RK_CONSTANT]);
+    }
+
+    #[test]
+    fn template_word_limit_rejects_expansion_before_emission() {
+        assert_eq!(template_word_total(0, MAX_TEMPLATE_WORDS / 3 + 1), None);
+    }
 }

@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum LuaDialect {
@@ -78,6 +79,27 @@ pub enum LuaConstant {
     ClosureRef(u32),
     Import(Vec<String>),
     Vector([f32; 4]),
+    TableTemplate(Arc<[LuaTableTemplateField]>),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LuaTableTemplateField {
+    pub key: LuaTemplateScalar,
+    pub value: LuaTemplateValue,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum LuaTemplateScalar {
+    Bool(bool),
+    Integer(i64),
+    Number(f64),
+    Str(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum LuaTemplateValue {
+    Nil,
+    Scalar(LuaTemplateScalar),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

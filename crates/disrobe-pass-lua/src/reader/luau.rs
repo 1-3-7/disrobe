@@ -1,18 +1,21 @@
 use crate::cursor::ByteCursor;
 use crate::error::{Error, Result};
 use crate::reader::common::{
-    LuaChunk, LuaConstant, LuaDialect, LuaLocal, LuaProto, LuaUpvalueName, capped_u32,
+    LuaChunk, LuaConstant, LuaDialect, LuaLocal, LuaProto, LuaTableTemplateField,
+    LuaTemplateScalar, LuaTemplateValue, LuaUpvalueName, capped_u32,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
+use std::sync::Arc;
 
 const LUAU_SUPPORTED_MIN: u8 = 1;
 const LUAU_SUPPORTED_MAX: u8 = 11;
 const MAX_OPCODE_MAP_BYTES: u64 = 64 << 10;
 const MAX_BUILD_ID_BYTES: usize = 128;
 const LUAU_DECLARED_OPCODE_MAX: u8 = 87;
+const MAX_TEMPLATE_STORAGE_BYTES: usize = 16 << 20;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OpcodeMap {
@@ -401,8 +404,15 @@ fn read_raw(bytes: &[u8]) -> Result<(u8, Vec<RawProto>, usize)> {
     let proto_count: u64 = read_varint(&mut c)?;
     let proto_count: usize = c.checked_count::<RawProto>("luau proto", proto_count, 1)?;
     let mut raw_protos: Vec<RawProto> = Vec::with_capacity(proto_count);
+    let mut template_budget: TemplateBudget = TemplateBudget::default();
     for _ in 0..proto_count {
-        raw_protos.push(read_proto(&mut c, &strings, version, types_version)?);
+        raw_protos.push(read_proto(
+            &mut c,
+            &strings,
+            version,
+            types_version,
+            &mut template_budget,
+        )?);
     }
     let main_proto_id: u64 = read_varint(&mut c)?;
     let main_idx: usize = usize::try_from(main_proto_id)
@@ -413,6 +423,47 @@ fn read_raw(bytes: &[u8]) -> Result<(u8, Vec<RawProto>, usize)> {
             count: raw_protos.len(),
         })?;
     Ok((version, raw_protos, main_idx))
+}
+
+#[derive(Default)]
+struct TemplateBudget {
+    used: usize,
+}
+
+impl TemplateBudget {
+    fn reserve_fields(&mut self, count: usize) -> Result<()> {
+        self.reserve(
+            count
+                .checked_mul(std::mem::size_of::<LuaTableTemplateField>())
+                .and_then(|bytes: usize| bytes.checked_mul(2))
+                .ok_or(Error::LuauTableTemplateStorageLimit {
+                    actual: usize::MAX,
+                    limit: MAX_TEMPLATE_STORAGE_BYTES,
+                })?,
+        )
+    }
+
+    fn reserve_string(&mut self, length: usize) -> Result<()> {
+        self.reserve(length)
+    }
+
+    fn reserve(&mut self, requested: usize) -> Result<()> {
+        let actual: usize =
+            self.used
+                .checked_add(requested)
+                .ok_or(Error::LuauTableTemplateStorageLimit {
+                    actual: usize::MAX,
+                    limit: MAX_TEMPLATE_STORAGE_BYTES,
+                })?;
+        if actual > MAX_TEMPLATE_STORAGE_BYTES {
+            return Err(Error::LuauTableTemplateStorageLimit {
+                actual,
+                limit: MAX_TEMPLATE_STORAGE_BYTES,
+            });
+        }
+        self.used = actual;
+        Ok(())
+    }
 }
 
 const MAX_ASSEMBLED_NODES: usize = 1 << 16;
@@ -571,6 +622,7 @@ fn read_proto(
     strings: &[String],
     version: u8,
     types_version: u8,
+    template_budget: &mut TemplateBudget,
 ) -> Result<RawProto> {
     let max_stack_size: u8 = c.read_u8()?;
     let num_params: u8 = c.read_u8()?;
@@ -614,11 +666,20 @@ fn read_proto(
             }
             LUAU_K_TABLE => {
                 let key_count: u64 = read_varint(c)?;
-                let key_count: usize = c.checked_count::<u8>("luau table key", key_count, 1)?;
+                let key_count: usize =
+                    c.checked_count::<LuaTableTemplateField>("luau table key", key_count, 1)?;
+                template_budget.reserve_fields(key_count)?;
+                let mut fields: Vec<LuaTableTemplateField> = Vec::with_capacity(key_count);
                 for _ in 0..key_count {
-                    let _k: u64 = read_varint(c)?;
+                    let index: u64 = read_varint(c)?;
+                    let key: LuaTemplateScalar =
+                        template_scalar(&constants, index, "key", template_budget)?;
+                    fields.push(LuaTableTemplateField {
+                        key,
+                        value: LuaTemplateValue::Scalar(LuaTemplateScalar::Number(0.0)),
+                    });
                 }
-                LuaConstant::Nil
+                LuaConstant::TableTemplate(Arc::from(fields))
             }
             LUAU_K_CLOSURE => {
                 let fid: u64 = read_varint(c)?;
@@ -634,13 +695,48 @@ fn read_proto(
             }
             LUAU_K_TABLE_WITH_CONSTANTS => {
                 let key_count: u64 = read_varint(c)?;
-                let key_count: usize =
-                    c.checked_count::<u32>("luau table constant key", key_count, 5)?;
+                let key_count: usize = c.checked_count::<LuaTableTemplateField>(
+                    "luau table constant key",
+                    key_count,
+                    5,
+                )?;
+                template_budget.reserve_fields(key_count)?;
+                let mut fields: Vec<LuaTableTemplateField> = Vec::with_capacity(key_count);
                 for _ in 0..key_count {
-                    let _k: u64 = read_varint(c)?;
-                    let _v: u32 = c.read_u32()?;
+                    let key_index: u64 = read_varint(c)?;
+                    let key: LuaTemplateScalar =
+                        template_scalar(&constants, key_index, "key", template_budget)?;
+                    let value_index: i32 = i32::from_le_bytes(c.read_u32()?.to_le_bytes());
+                    let value: LuaTemplateValue = if value_index < 0 {
+                        LuaTemplateValue::Scalar(LuaTemplateScalar::Number(0.0))
+                    } else {
+                        let value_index: u64 = value_index as u64;
+                        let Some(index): Option<usize> = usize::try_from(value_index).ok() else {
+                            return Err(Error::LuauTableTemplateConstantOutOfRange {
+                                field: "value",
+                                index: value_index,
+                                constants: constants.len(),
+                            });
+                        };
+                        match constants.get(index) {
+                            Some(LuaConstant::Nil) => LuaTemplateValue::Nil,
+                            Some(constant) => LuaTemplateValue::Scalar(template_scalar_constant(
+                                constant,
+                                "value",
+                                template_budget,
+                            )?),
+                            None => {
+                                return Err(Error::LuauTableTemplateConstantOutOfRange {
+                                    field: "value",
+                                    index: value_index,
+                                    constants: constants.len(),
+                                });
+                            }
+                        }
+                    };
+                    fields.push(LuaTableTemplateField { key, value });
                 }
-                LuaConstant::Nil
+                LuaConstant::TableTemplate(Arc::from(fields))
             }
             LUAU_K_INTEGER => {
                 let neg: u8 = c.read_u8()?;
@@ -755,6 +851,51 @@ fn read_proto(
     })
 }
 
+fn template_scalar(
+    constants: &[LuaConstant],
+    index: u64,
+    field: &'static str,
+    template_budget: &mut TemplateBudget,
+) -> Result<LuaTemplateScalar> {
+    let constant: &LuaConstant = usize::try_from(index)
+        .ok()
+        .and_then(|index: usize| constants.get(index))
+        .ok_or(Error::LuauTableTemplateConstantOutOfRange {
+            field,
+            index,
+            constants: constants.len(),
+        })?;
+    let value: LuaTemplateScalar = template_scalar_constant(constant, field, template_budget)?;
+    if field == "key" && matches!(value, LuaTemplateScalar::Number(number) if number.is_nan()) {
+        return Err(Error::LuauTableTemplateNaNKey { index });
+    }
+    Ok(value)
+}
+
+fn template_scalar_constant(
+    constant: &LuaConstant,
+    field: &'static str,
+    template_budget: &mut TemplateBudget,
+) -> Result<LuaTemplateScalar> {
+    match constant {
+        LuaConstant::Bool(value) => Ok(LuaTemplateScalar::Bool(*value)),
+        LuaConstant::Integer(value) => Ok(LuaTemplateScalar::Integer(*value)),
+        LuaConstant::Number(value) => Ok(LuaTemplateScalar::Number(*value)),
+        LuaConstant::Str(value) => {
+            template_budget.reserve_string(value.len())?;
+            Ok(LuaTemplateScalar::Str(value.clone()))
+        }
+        LuaConstant::Nil
+        | LuaConstant::ClosureRef(_)
+        | LuaConstant::Import(_)
+        | LuaConstant::Vector(_)
+        | LuaConstant::TableTemplate(_) => Err(Error::DecompileUnsupported(match field {
+            "key" => "Luau table template key is not a scalar constant",
+            _ => "Luau table template value is not a scalar constant",
+        })),
+    }
+}
+
 #[must_use]
 fn resolve_import_path(id: u32, constants: &[LuaConstant]) -> Vec<String> {
     let count: u32 = id >> 30;
@@ -779,5 +920,51 @@ mod tests {
         let mut cursor: ByteCursor<'_> = ByteCursor::new(&bytes);
         let result: Result<u64> = read_varint(&mut cursor);
         assert!(matches!(result, Err(Error::BadUleb128(0))));
+    }
+
+    #[test]
+    fn template_storage_budget_rejects_hostile_field_counts() {
+        let mut budget: TemplateBudget = TemplateBudget::default();
+        let fields: usize =
+            MAX_TEMPLATE_STORAGE_BYTES / std::mem::size_of::<LuaTableTemplateField>() + 1;
+        assert!(matches!(
+            budget.reserve_fields(fields),
+            Err(Error::LuauTableTemplateStorageLimit { .. })
+        ));
+    }
+
+    #[test]
+    fn template_reader_rejects_invalid_and_nan_keys() {
+        let mut budget: TemplateBudget = TemplateBudget::default();
+        assert!(matches!(
+            template_scalar(&[], 7, "key", &mut budget),
+            Err(Error::LuauTableTemplateConstantOutOfRange {
+                field: "key",
+                index: 7,
+                constants: 0,
+            })
+        ));
+        let constants: [LuaConstant; 1] = [LuaConstant::Bool(true)];
+        assert!(matches!(
+            template_scalar(&constants, 0, "key", &mut budget),
+            Ok(LuaTemplateScalar::Bool(true))
+        ));
+        let constants: [LuaConstant; 1] = [LuaConstant::Number(f64::NAN)];
+        assert!(matches!(
+            template_scalar(&constants, 0, "key", &mut budget),
+            Err(Error::LuauTableTemplateNaNKey { index: 0 })
+        ));
+    }
+
+    #[test]
+    fn template_reader_bounds_repeated_string_copies() {
+        let value: String = "a".repeat(MAX_TEMPLATE_STORAGE_BYTES / 2 + 1);
+        let constants: [LuaConstant; 1] = [LuaConstant::Str(value)];
+        let mut budget: TemplateBudget = TemplateBudget::default();
+        assert!(template_scalar(&constants, 0, "key", &mut budget).is_ok());
+        assert!(matches!(
+            template_scalar(&constants, 0, "value", &mut budget),
+            Err(Error::LuauTableTemplateStorageLimit { .. })
+        ));
     }
 }

@@ -230,6 +230,9 @@ labeled_enum!(LuaErrorId {
     HeaderSizeMismatch => "header_size_mismatch",
     HeaderCheckMismatch => "header_check_mismatch",
     MainUpvalueMismatch => "main_upvalue_mismatch",
+    LuauTableTemplateConstantOutOfRange => "luau_table_template_constant_out_of_range",
+    LuauTableTemplateStorageLimit => "luau_table_template_storage_limit",
+    LuauTableTemplateNaNKey => "luau_table_template_nan_key",
 });
 
 labeled_enum!(PartialFlag {
@@ -957,6 +960,11 @@ const fn error_id(error: &Error) -> LuaErrorId {
         Error::HeaderSizeMismatch { .. } => LuaErrorId::HeaderSizeMismatch,
         Error::HeaderCheckMismatch { .. } => LuaErrorId::HeaderCheckMismatch,
         Error::MainUpvalueMismatch { .. } => LuaErrorId::MainUpvalueMismatch,
+        Error::LuauTableTemplateConstantOutOfRange { .. } => {
+            LuaErrorId::LuauTableTemplateConstantOutOfRange
+        }
+        Error::LuauTableTemplateStorageLimit { .. } => LuaErrorId::LuauTableTemplateStorageLimit,
+        Error::LuauTableTemplateNaNKey { .. } => LuaErrorId::LuauTableTemplateNaNKey,
     }
 }
 

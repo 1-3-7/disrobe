@@ -141,4 +141,21 @@ pub enum Error {
         "DR-LUA-0037: Lua 5.5 main closure header declares {header} upvalues but the main function has {declared}"
     )]
     MainUpvalueMismatch { header: u8, declared: usize },
+
+    #[error(
+        "DR-LUA-0038: Luau table template {field} constant index {index} is outside the {constants} constants already read"
+    )]
+    LuauTableTemplateConstantOutOfRange {
+        field: &'static str,
+        index: u64,
+        constants: usize,
+    },
+
+    #[error(
+        "DR-LUA-0039: Luau table templates require {actual} bytes, exceeding the {limit}-byte storage limit"
+    )]
+    LuauTableTemplateStorageLimit { actual: usize, limit: usize },
+
+    #[error("DR-LUA-0040: Luau table template key constant {index} is NaN")]
+    LuauTableTemplateNaNKey { index: u64 },
 }

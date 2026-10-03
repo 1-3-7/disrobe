@@ -6,8 +6,11 @@ use crate::decompile::luau_structure::{
 };
 use crate::decompile::struct_lift::lift_structured_explicit_nils;
 use crate::decompile::{DecompiledChunk, Fidelity};
-use crate::error::Result;
-use crate::reader::common::{LuaChunk, LuaConstant, LuaDialect, LuaProto};
+use crate::error::{Error, Result};
+use crate::reader::common::{
+    LuaChunk, LuaConstant, LuaDialect, LuaProto, LuaTableTemplateField, LuaTemplateScalar,
+    LuaTemplateValue,
+};
 use translate::translate;
 
 mod translate;
@@ -16,6 +19,8 @@ const MAX_LIFT_DEPTH: usize = 200;
 const MAX_DIRECT_RENDER_NESTING: usize = 256;
 pub(crate) const MAX_RENDERED_STRUCTURE_BYTES: usize = 16 * 1024 * 1024;
 const RENDER_LIMIT_MARKER: &str = "error(\"disrobe: rendered structure exceeds output limit\")";
+const TEMPLATE_OCCURRENCE_OVERHEAD: usize = 64;
+const MAX_RENDERED_NUMBER_BYTES: usize = 330;
 
 const LOP_NOP: u8 = 0;
 const LOP_BREAK: u8 = 1;
@@ -136,6 +141,7 @@ pub(crate) fn decompile_with_budget(
     budget: &mut LiftBudget,
 ) -> Result<DecompiledChunk> {
     let main: &LuaProto = &chunk.main;
+    preflight_template_render(main)?;
     let mut out: String = String::new();
     out.push_str("-- decompiled by disrobe (luau register lifter)\n");
     if let Some(structured) = lift_through_standard_structurer(main, budget) {
@@ -182,6 +188,121 @@ pub(crate) fn decompile_with_budget(
         fidelity,
         warnings,
     })
+}
+
+fn preflight_template_render(main: &LuaProto) -> Result<()> {
+    let mut total: usize = 0;
+    let mut work: u64 = 0;
+    let mut pending: Vec<(&LuaProto, usize)> = vec![(main, 0)];
+    while let Some((proto, depth)) = pending.pop() {
+        if depth > MAX_LIFT_DEPTH {
+            continue;
+        }
+        let proto_work: u64 = u64::try_from(proto.code.len())
+            .unwrap_or(u64::MAX)
+            .saturating_add(1);
+        work = work.saturating_add(proto_work);
+        if work > crate::decompile::budget::MAX_LIFT_WORK {
+            return Err(Error::DecompileUnsupported(
+                "Luau template render preflight exceeds the lift work limit",
+            ));
+        }
+        let mut sizes: std::collections::BTreeMap<usize, usize> = std::collections::BTreeMap::new();
+        let mut pc: usize = 0;
+        while let Some(raw) = proto.code.get(pc) {
+            let inst: Insn = decode(*raw);
+            if inst.op == LOP_DUPTABLE
+                && let Ok(index) = usize::try_from(inst.d)
+                && let Some(LuaConstant::TableTemplate(fields)) = proto.constants.get(index)
+            {
+                let rendered: usize = match sizes.get(&index) {
+                    Some(size) => *size,
+                    None => {
+                        let size: usize =
+                            template_rendered_bytes(fields).ok_or(Error::DecompileUnsupported(
+                                "Luau table template render size exceeds the output limit",
+                            ))?;
+                        sizes.insert(index, size);
+                        size
+                    }
+                };
+                let occurrence: usize = rendered.checked_add(TEMPLATE_OCCURRENCE_OVERHEAD).ok_or(
+                    Error::DecompileUnsupported(
+                        "Luau table template render size exceeds the output limit",
+                    ),
+                )?;
+                total = total
+                    .checked_add(occurrence)
+                    .ok_or(Error::DecompileUnsupported(
+                        "Luau table template render size exceeds the output limit",
+                    ))?;
+                if total > MAX_RENDERED_STRUCTURE_BYTES {
+                    return Err(Error::DecompileUnsupported(
+                        "Luau table template render size exceeds the output limit",
+                    ));
+                }
+            }
+            pc = pc.saturating_add(op_length(inst.op).max(1));
+        }
+        if depth < MAX_LIFT_DEPTH {
+            pending.extend(
+                proto
+                    .protos
+                    .iter()
+                    .map(|child: &LuaProto| (child, depth + 1)),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn template_rendered_bytes(fields: &[LuaTableTemplateField]) -> Option<usize> {
+    let mut bytes: usize = 4;
+    for (index, field) in fields.iter().enumerate() {
+        if index > 0 {
+            bytes = bytes.checked_add(2)?;
+        }
+        let key: usize = template_scalar_rendered_bytes(&field.key)?;
+        let value: usize = match &field.value {
+            LuaTemplateValue::Nil => 3,
+            LuaTemplateValue::Scalar(value) => template_scalar_rendered_bytes(value)?,
+        };
+        bytes = bytes
+            .checked_add(64)?
+            .checked_add(key.checked_mul(2)?)?
+            .checked_add(value.checked_mul(2)?)?;
+        if bytes > MAX_RENDERED_STRUCTURE_BYTES {
+            return None;
+        }
+    }
+    Some(bytes)
+}
+
+fn template_scalar_rendered_bytes(value: &LuaTemplateScalar) -> Option<usize> {
+    match value {
+        LuaTemplateScalar::Bool(true) => Some(4),
+        LuaTemplateScalar::Bool(false) => Some(5),
+        LuaTemplateScalar::Integer(_) => Some(20),
+        LuaTemplateScalar::Number(_) => Some(MAX_RENDERED_NUMBER_BYTES),
+        LuaTemplateScalar::Str(value) => quoted_lua_bytes(value),
+    }
+}
+
+fn quoted_lua_bytes(value: &str) -> Option<usize> {
+    let bytes: &[u8] = value.as_bytes();
+    let mut rendered: usize = 2;
+    for byte in bytes {
+        let width: usize = match *byte {
+            b'"' | b'\\' | b'\n' | b'\r' | b'\t' => 2,
+            0x20..=0x7e => 1,
+            _ => 4,
+        };
+        rendered = rendered.checked_add(width)?;
+        if rendered > MAX_RENDERED_STRUCTURE_BYTES {
+            return None;
+        }
+    }
+    Some(rendered)
 }
 
 fn lift_through_standard_structurer(
@@ -433,6 +554,9 @@ fn const_str(c: &LuaConstant) -> String {
         LuaConstant::Import(_) => "nil".to_owned(),
         LuaConstant::ClosureRef(_) => "function() end".to_owned(),
         LuaConstant::Vector([vx, vy, vz, vw]) => format!("Vector3.new({vx}, {vy}, {vz}, {vw})"),
+        LuaConstant::TableTemplate(_) => {
+            "error(\"disrobe: template table is only valid for DUPTABLE\")".to_owned()
+        }
     }
 }
 
@@ -1499,8 +1623,38 @@ fn resolve_import(proto: &LuaProto, d: u32, aux: u32) -> String {
 #[must_use]
 fn render_template_table(proto: &LuaProto, idx: u32) -> String {
     match proto.constants.get(idx as usize) {
-        Some(LuaConstant::Str(_)) | None => "{}".to_owned(),
-        Some(_) => "{}".to_owned(),
+        Some(LuaConstant::TableTemplate(fields)) => {
+            let entries: Vec<String> = fields
+                .iter()
+                .filter(|field: &&LuaTableTemplateField| {
+                    matches!(&field.value, LuaTemplateValue::Scalar(_))
+                })
+                .chain(fields.iter().filter(|field: &&LuaTableTemplateField| {
+                    matches!(&field.value, LuaTemplateValue::Nil)
+                }))
+                .map(render_template_field)
+                .collect();
+            format!("{{ {} }}", entries.join(", "))
+        }
+        _ => "error(\"disrobe: DUPTABLE does not reference a table template\")".to_owned(),
+    }
+}
+
+fn render_template_field(field: &LuaTableTemplateField) -> String {
+    let key: String = render_template_scalar(&field.key);
+    let value: String = match &field.value {
+        LuaTemplateValue::Nil => "nil".to_owned(),
+        LuaTemplateValue::Scalar(value) => render_template_scalar(value),
+    };
+    format!("[{key}] = {value}")
+}
+
+fn render_template_scalar(value: &LuaTemplateScalar) -> String {
+    match value {
+        LuaTemplateScalar::Bool(value) => value.to_string(),
+        LuaTemplateScalar::Integer(value) => value.to_string(),
+        LuaTemplateScalar::Number(value) => format_num(*value),
+        LuaTemplateScalar::Str(value) => crate::decompile::luajit_lift::quote_lua(value),
     }
 }
 
@@ -2045,6 +2199,51 @@ mod tests {
             "{}",
             rendered.source.len()
         );
+    }
+
+    #[test]
+    fn repeated_duptable_template_refuses_before_rendering_the_expansion() {
+        let field: LuaTableTemplateField = LuaTableTemplateField {
+            key: LuaTemplateScalar::Integer(0),
+            value: LuaTemplateValue::Scalar(LuaTemplateScalar::Str("x".repeat(512 * 1024))),
+        };
+        let fields: Vec<LuaTableTemplateField> = vec![field];
+        let template: LuaConstant = LuaConstant::TableTemplate(std::sync::Arc::from(fields));
+        let mut code: Vec<u32> = vec![u32::from(LOP_DUPTABLE); 32];
+        code.push(u32::from(LOP_RETURN));
+        let chunk: LuaChunk = LuaChunk {
+            dialect: LuaDialect::Luau,
+            version_byte: 11,
+            format: 0,
+            little_endian: true,
+            size_of_int: 4,
+            size_of_size_t: 8,
+            size_of_instruction: 4,
+            size_of_lua_integer: 8,
+            size_of_lua_number: 8,
+            integral_number: false,
+            main: LuaProto {
+                source: None,
+                line_defined: 0,
+                last_line_defined: 0,
+                num_params: 0,
+                is_vararg: 0,
+                max_stack_size: 2,
+                code,
+                constants: vec![template],
+                protos: Vec::new(),
+                source_lines: Vec::new(),
+                locals: Vec::new(),
+                upvalues: Vec::new(),
+            },
+        };
+
+        assert!(matches!(
+            decompile(&chunk),
+            Err(Error::DecompileUnsupported(
+                "Luau table template render size exceeds the output limit"
+            ))
+        ));
     }
 
     #[test]

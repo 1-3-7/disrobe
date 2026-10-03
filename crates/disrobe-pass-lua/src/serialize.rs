@@ -348,7 +348,10 @@ fn write_constant_53(w: &mut ByteWriter, constant: &LuaConstant, chunk: &LuaChun
             w.push(tag);
             write_string(w, Some(text), chunk.size_of_size_t)?;
         }
-        LuaConstant::ClosureRef(_) | LuaConstant::Import(_) | LuaConstant::Vector(_) => {
+        LuaConstant::ClosureRef(_)
+        | LuaConstant::Import(_)
+        | LuaConstant::Vector(_)
+        | LuaConstant::TableTemplate(_) => {
             return Err(Error::DecompileUnsupported(
                 "lua 5.3 serializer: non-5.3 constant kind in chunk",
             ));
@@ -384,7 +387,10 @@ fn write_constant_5152(w: &mut ByteWriter, constant: &LuaConstant, chunk: &LuaCh
             w.push(TAG_SHORT_STR);
             write_string_5152(w, Some(text), chunk.size_of_size_t)?;
         }
-        LuaConstant::ClosureRef(_) | LuaConstant::Import(_) | LuaConstant::Vector(_) => {
+        LuaConstant::ClosureRef(_)
+        | LuaConstant::Import(_)
+        | LuaConstant::Vector(_)
+        | LuaConstant::TableTemplate(_) => {
             return Err(Error::DecompileUnsupported(
                 "lua 5.1/5.2 serializer: unsupported constant kind in chunk",
             ));

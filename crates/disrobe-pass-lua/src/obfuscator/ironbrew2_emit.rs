@@ -318,7 +318,12 @@ fn const_repr(k: &LuaConstant) -> String {
         LuaConstant::Integer(i) => i.to_string(),
         LuaConstant::Number(n) => format_number(*n),
         LuaConstant::Str(s) => crate::decompile::lift::quote_lua_string(s),
-        _ => "nil".to_owned(),
+        LuaConstant::ClosureRef(_) | LuaConstant::Import(_) | LuaConstant::Vector(_) => {
+            "nil".to_owned()
+        }
+        LuaConstant::TableTemplate(_) => {
+            "error(\"disrobe: Ironbrew emitter cannot encode a Luau table template\")".to_owned()
+        }
     }
 }
 

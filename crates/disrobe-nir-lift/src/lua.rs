@@ -3,9 +3,13 @@ use std::collections::BTreeMap;
 use disrobe_nir::{
     BinaryOp, NirFunction, NirInstr, NirModule, NirOp, NirSymbol, SourceLang, SourceRef, SymbolKind,
 };
+use disrobe_pass_lua::decompile::lift::{fmt_number, quote_lua_string};
 use disrobe_pass_lua::decompile::opcode::{Decoded, Op, decode};
 use disrobe_pass_lua::read_auto;
-use disrobe_pass_lua::reader::common::{LuaChunk, LuaConstant, LuaDialect, LuaProto};
+use disrobe_pass_lua::reader::common::{
+    LuaChunk, LuaConstant, LuaDialect, LuaProto, LuaTableTemplateField, LuaTemplateScalar,
+    LuaTemplateValue,
+};
 
 use crate::error::{LiftError, Result};
 use crate::{usize_to_u32_saturating, usize_to_u64_saturating};
@@ -552,6 +556,37 @@ fn render_constant(constant: &LuaConstant) -> String {
         LuaConstant::ClosureRef(i) => format!("closure[{i}]"),
         LuaConstant::Import(parts) => parts.join("."),
         LuaConstant::Vector(v) => format!("vector{v:?}"),
+        LuaConstant::TableTemplate(fields) => render_template_table(fields),
+    }
+}
+
+fn render_template_table(fields: &[LuaTableTemplateField]) -> String {
+    let entries: Vec<String> =
+        fields
+            .iter()
+            .filter(|field: &&LuaTableTemplateField| {
+                matches!(&field.value, LuaTemplateValue::Scalar(_))
+            })
+            .chain(fields.iter().filter(|field: &&LuaTableTemplateField| {
+                matches!(&field.value, LuaTemplateValue::Nil)
+            }))
+            .map(|field: &LuaTableTemplateField| {
+                let value: String = match &field.value {
+                    LuaTemplateValue::Nil => "nil".to_owned(),
+                    LuaTemplateValue::Scalar(value) => render_template_scalar(value),
+                };
+                format!("[{}] = {value}", render_template_scalar(&field.key))
+            })
+            .collect();
+    format!("{{ {} }}", entries.join(", "))
+}
+
+fn render_template_scalar(value: &LuaTemplateScalar) -> String {
+    match value {
+        LuaTemplateScalar::Bool(value) => value.to_string(),
+        LuaTemplateScalar::Integer(value) => value.to_string(),
+        LuaTemplateScalar::Number(value) => fmt_number(*value, false),
+        LuaTemplateScalar::Str(value) => quote_lua_string(value),
     }
 }
 

@@ -457,7 +457,7 @@ fn obf_write_proto(
 
     w.write_size_plain(proto.constants.len() as u64, chunk.size_of_int);
     for constant in &proto.constants {
-        obf_write_constant(w, constant, chunk, params);
+        obf_write_constant(w, constant, chunk, params)?;
     }
 
     w.write_size_plain(proto.upvalues.len() as u64, chunk.size_of_int);
@@ -495,7 +495,7 @@ fn obf_write_constant(
     constant: &LuaConstant,
     chunk: &LuaChunk,
     params: &SluaParams,
-) {
+) -> Result<()> {
     match constant {
         LuaConstant::Nil => w.push(params.tag_mask()),
         LuaConstant::Bool(value) => {
@@ -529,7 +529,13 @@ fn obf_write_constant(
         LuaConstant::ClosureRef(_) | LuaConstant::Import(_) | LuaConstant::Vector(_) => {
             w.push(params.tag_mask());
         }
+        LuaConstant::TableTemplate(_) => {
+            return Err(Error::DecompileUnsupported(
+                "slua: Luau table templates cannot be encoded",
+            ));
+        }
     }
+    Ok(())
 }
 
 struct ObfReader<'a> {

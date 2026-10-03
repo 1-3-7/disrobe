@@ -409,7 +409,8 @@ fn names_referenced_by(p: &LuaProto) -> Option<std::collections::BTreeSet<String
                 | LuaConstant::Integer(_)
                 | LuaConstant::Number(_)
                 | LuaConstant::ClosureRef(_)
-                | LuaConstant::Vector(_) => {}
+                | LuaConstant::Vector(_)
+                | LuaConstant::TableTemplate(_) => {}
             }
         }
         pending.extend(proto.protos.iter());
