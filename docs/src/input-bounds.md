@@ -1645,7 +1645,7 @@ Exceeded: error 897, recorded 191, panic 0, delegated 49, silent 1024, unclassif
 | `disrobe-pass-py-decompile` | `MAX_SCANNED_STRINGS` | other | silent: `return` in `collect_code`; `return` in `collect_object` | `usize` | `1 << 16` | `crates/disrobe-pass-py-decompile/src/emit/marker_guard.rs` |
 | `disrobe-pass-py-decompile` | `MAX_SCAN_DEPTH` | recursion | silent: `return` in `collect_code`; `return` in `collect_object` | `usize` | `64` | `crates/disrobe-pass-py-decompile/src/emit/marker_guard.rs` |
 | `disrobe-pass-py-decompile` | `MAX_FRAME_NEST_DEPTH` | recursion | silent: no action in `attach_into` | `usize` | `256` | `crates/disrobe-pass-py-decompile/src/frame_tree/builder.rs` |
-| `disrobe-pass-py-decompile` | `MAX_PROBE_CAPTURE` | other | delegated: `subprocess::run_captured()?` | `usize` | `1024 * 1024` | `crates/disrobe-pass-py-decompile/src/recompile.rs` |
+| `disrobe-pass-py-decompile` | `MAX_PROBE_CAPTURE` | other | delegated: `capture_command()?` | `usize` | `1024 * 1024` | `crates/disrobe-pass-py-decompile/src/recompile.rs` |
 | `disrobe-pass-py-decompile` | `MAX_CANDIDATES` | other | silent: `.take()` in `accept_reordering_core` | `usize` | `48` | `crates/disrobe-pass-py-decompile/src/selfcheck/opcontent.rs` |
 | `disrobe-pass-py-decompile` | `MAX_DEPTH` | recursion | silent: `return` in `lower_seq`; `return` in `lower_try` | `u32` | `96` | `crates/disrobe-pass-py-decompile/src/selfcheck/relower.rs` |
 | `disrobe-pass-py-decompile` | `MAX_HOIST_CANDIDATES` | other | silent: `.take()` in `repair_else_tail` | `usize` | `64` | `crates/disrobe-pass-py-decompile/src/selfcheck/repair.rs` |
