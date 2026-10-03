@@ -46,7 +46,7 @@ disrobe-pass-beam = { workspace = true }
 disrobe-pass-pickle = { workspace = true }
 disrobe-pass-lua = { workspace = true, features = ["chain"] }
 disrobe-pass-go = { workspace = true, features = ["chain"] }
-disrobe-pass-ruby = { workspace = true, features = ["chain"] }
+disrobe-pass-ruby = { workspace = true }
 disrobe-pass-php = { workspace = true }
 disrobe-pass-shell = { workspace = true }
 disrobe-passes = { workspace = true, features = [
