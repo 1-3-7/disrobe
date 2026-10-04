@@ -524,7 +524,6 @@ fn test_mew_clockres_byte_recovery() {
     run_byte_recovery_test("Clockres.packed.mew.exe", 94.0);
 }
 
-#[cfg(feature = "stub-emulation")]
 #[test]
 fn test_mew_byte_identical_recovery_via_lzma_rebuilder() {
     use disrobe_pass_native::packers::unpack_mew_emulated;
@@ -574,7 +573,6 @@ fn test_mew_byte_identical_recovery_via_lzma_rebuilder() {
     );
 }
 
-#[cfg(feature = "stub-emulation")]
 fn scan_alignment(rec: &[u8], orig: &[u8]) -> (usize, usize) {
     let n: usize = rec.len().min(0x2000);
     if orig.len() < n {

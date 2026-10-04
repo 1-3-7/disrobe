@@ -60,7 +60,6 @@ disrobe-llm-metadata = { workspace = true, optional = true }
 [features]
 default = ["smt-solver"]
 llm-metadata = ["dep:disrobe-llm-metadata"]
-stub-emulation = []
 smt-solver = ["disrobe-mba/smt-solver"]
 benchmarks = []
 
