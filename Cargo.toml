@@ -206,7 +206,7 @@ disrobe-pass-scriptlang = { path = "crates/disrobe-pass-scriptlang", version = "
 disrobe-pass-shell = { path = "crates/disrobe-pass-shell", version = "0.10.6" }
 disrobe-pass-sourcedefender = { path = "crates/disrobe-pass-sourcedefender", version = "0.10.6" }
 disrobe-pass-swift-objc = { path = "crates/disrobe-pass-swift-objc", version = "0.10.6" }
-disrobe-pass-wasm-deob = { path = "crates/disrobe-pass-wasm-deob", version = "0.10.6" }
+disrobe-pass-wasm-deob = { path = "crates/disrobe-pass-wasm-deob", version = "0.10.6", default-features = false }
 disrobe-pass-webview = { path = "crates/disrobe-pass-webview", version = "0.10.6" }
 disrobe-playground = { path = "crates/disrobe-playground", version = "0.10.6" }
 disrobe-plugin-loader = { path = "crates/disrobe-plugin-loader", version = "0.10.6" }

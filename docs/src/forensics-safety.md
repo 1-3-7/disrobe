@@ -2,9 +2,11 @@
 
 Analysts run `disrobe` against hostile input that must not detonate. Everything below states what executes and what does not, so you can decide what to run inside a sandbox.
 
-## The default is static analysis, no sample execution
+## No native or host-interpreter sample execution by default
 
-By default, `disrobe` does not execute the sample. Every default path is pure static analysis: it parses bytes, decodes bytecode, walks structures, and emits derived artifacts. It does not unpickle, does not call `__reduce__`, does not run a packed binary, does not invoke a sample's entry point.
+By default, `disrobe` does not execute a sample natively or through a host interpreter. Default paths parse bytes, decode bytecode, walk structures, and emit derived artifacts. They do not unpickle, call `__reduce__`, run a packed binary, or invoke a sample's entry point.
+
+The native CLI's `wasm` feature also enables a bounded in-process Wasmtime probe for recognized wasm-mixer decryptors. The probe has 100,000,000 fuel, a 2-second epoch deadline, a 64 MiB linear-memory cap, one instance, a bounded table, and no host functions; unknown imports trap. The browser facade and analysis-only consumers do not include this probe.
 
 This holds for the entire pickle suite in particular. `disrobe pickle trace` runs a **symbolic** VM: it walks the opcode stream and builds the object graph without instantiating a single real object or resolving a single real global. `disrobe pickle safety` grades danger statically. You can audit a downloaded `.pt` or `.pkl` for what it *would* do on load without ever letting it load.
 

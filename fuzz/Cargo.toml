@@ -27,7 +27,7 @@ disrobe-ir = { path = "../crates/disrobe-ir" }
 disrobe-nir-lift = { path = "../crates/disrobe-nir-lift", default-features = false, features = ["dotnet", "jvm", "wasm"] }
 disrobe-pass-dotnet = { path = "../crates/disrobe-pass-dotnet", features = ["semantic-reach"] }
 disrobe-pass-jvm = { path = "../crates/disrobe-pass-jvm", features = ["semantic-reach"] }
-disrobe-pass-wasm-deob = { path = "../crates/disrobe-pass-wasm-deob", features = ["dwarf"] }
+disrobe-pass-wasm-deob = { path = "../crates/disrobe-pass-wasm-deob", default-features = false, features = ["dwarf"] }
 disrobe-py-marshal = { path = "../crates/disrobe-py-marshal", features = ["semantic-reach"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

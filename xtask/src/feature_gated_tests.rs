@@ -15,7 +15,7 @@ const CHAIN_DETECTOR_FILE: &str = "chain_detector.rs";
 const CHAIN_FEATURE: &str = "chain";
 
 const MIN_CHAIN_DETECTORS: usize = 25;
-const MIN_HIDDEN_CRATES: usize = 2;
+const MIN_HIDDEN_CRATES: usize = 1;
 const MIN_SCANNED_COMMANDS: usize = 20;
 
 const UNDECLARED: &str = "hidden-test-surface-undeclared";
@@ -30,7 +30,6 @@ const HIDDEN_TEST_SURFACE: &[(&str, &[&str])] = &[
         &["!(prowl & net-fetch & server)", "!jvm", "!wasm"],
     ),
     ("disrobe-pass-native", &["chain"]),
-    ("disrobe-pass-wasm-deob", &["sandbox"]),
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
