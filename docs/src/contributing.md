@@ -35,25 +35,18 @@ selected test locally. It fails if any test is skipped or the listed, run, and p
 
 ### Name the features a crate hides its tests behind
 
-Some crates keep whole modules behind a feature that is off by default. Every pass crate keeps its
-chain detector behind a non-default `chain` feature so the slim build can leave the chain runtime
-out. The file starts with `#![cfg(feature = "chain")]`, so a per-crate run that names no feature
-builds none of the chain detector's tests and still prints a passing result for the tests it did
-build. Name the feature to run them:
+Some crates keep test-bearing modules behind a non-default feature. A per-crate run must name
+the feature that exposes its selected test target:
 
 ```sh
-cargo test -p disrobe-pass-lua --features chain
-cargo test -p disrobe-cli --no-default-features --features chain --test auto_dalvik_feature_gate
+cargo test -p disrobe-cli --no-default-features --features auto --test auto_dalvik_feature_gate
 cargo test -p disrobe-pass-mobile --features native-image --test flutter_engine_fallback_identity
-cargo test -p disrobe-pass-wasm-deob --features chain,sandbox --test linear_memory_local_offset
 cargo test -p disrobe-nir-lift --features as3,beam,dotnet,jvm,lua,python,ruby
 cargo test -p disrobe-pass-py-disasm --features alt-runtimes-native
 ```
 
-The second form covers a refusal that exists only when `chain` is enabled and `jvm` is disabled.
-The Flutter engine identity test requires `native-image` for ELF parsing. The WebAssembly
-differential requires `sandbox` for Wasmtime execution and `chain` for the registered-pass
-assertion.
+The CLI form covers a refusal that exists only when `auto` is enabled and `jvm` is disabled.
+The Flutter engine identity test requires `native-image` for ELF parsing.
 
 `cargo run -p xtask -- health` enforces this. It reads every crate's default feature set, finds
 every test-bearing file the default set removes, and fails when a crate hides tests that no entry in

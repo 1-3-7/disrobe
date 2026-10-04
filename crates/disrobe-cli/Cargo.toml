@@ -89,7 +89,7 @@ required-features = ["py"]
 
 [features]
 default = ["full"]
-full = ["server", "prowl", "net-fetch", "chain", "auto", "py", "native", "binfmt", "js", "wasm", "jvm", "dotnet", "mobile", "lua", "php", "ruby", "beam", "swift", "as3", "flutter", "go", "shell", "pickle", "scriptlang", "nativelang", "nir-lift", "devirt", "irsummary", "plugin", "webview", "git-history"]
+full = ["server", "prowl", "net-fetch", "auto", "py", "native", "binfmt", "js", "wasm", "jvm", "dotnet", "mobile", "lua", "php", "ruby", "beam", "swift", "as3", "flutter", "go", "shell", "pickle", "scriptlang", "nativelang", "nir-lift", "devirt", "irsummary", "plugin", "webview", "git-history"]
 server = ["dep:axum", "dep:tower-http", "dep:utoipa", "dep:lsp-server", "dep:lsp-types", "dep:tokio", "dep:tokio-util", "dep:tonic", "dep:tonic-health", "dep:tonic-reflection", "dep:prost", "dep:tonic-build", "dep:protoc-bin-vendored", "dep:disrobe-mcp"]
 prowl = ["dep:disrobe-prowl", "dep:tokio"]
 net-fetch = ["dep:reqwest"]
@@ -140,7 +140,6 @@ auto = [
     "disrobe-passes/py-decompile",
     "disrobe-passes/pyinstaller",
 ]
-chain = ["auto"]
 
 [dependencies]
 base64 = { workspace = true }
@@ -191,7 +190,7 @@ disrobe-semdiff = { workspace = true }
 disrobe-vulnmatch = { workspace = true }
 disrobe-query = { workspace = true }
 disrobe-llm-metadata = { workspace = true }
-disrobe-mcp = { workspace = true, features = ["chain"], optional = true }
+disrobe-mcp = { workspace = true, features = ["auto"], optional = true }
 blake3 = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 clap_complete = { workspace = true }
