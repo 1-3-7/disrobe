@@ -26,7 +26,7 @@ sha1 = { workspace = true }
 disrobe-llm-metadata = { workspace = true, optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-disrobe-mba = { workspace = true }
+disrobe-mba = { workspace = true, features = ["smt-verify"] }
 disrobe-binfmt = { workspace = true }
 disrobe-pass-native = { workspace = true }
 object = { workspace = true }

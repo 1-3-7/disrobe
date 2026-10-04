@@ -168,7 +168,7 @@ disrobe-emit = { path = "crates/disrobe-emit", version = "0.10.6" }
 disrobe-ir = { path = "crates/disrobe-ir", version = "0.10.6" }
 disrobe-llm-metadata = { path = "crates/disrobe-llm-metadata", version = "0.10.6" }
 disrobe-lift-x86 = { path = "crates/disrobe-lift-x86", version = "0.10.6" }
-disrobe-mba = { path = "crates/disrobe-mba", version = "0.10.6" }
+disrobe-mba = { path = "crates/disrobe-mba", version = "0.10.6", default-features = false }
 disrobe-mcp = { path = "crates/disrobe-mcp", version = "0.10.6", default-features = false }
 disrobe-nir = { path = "crates/disrobe-nir", version = "0.10.6" }
 disrobe-nir-lift = { path = "crates/disrobe-nir-lift", version = "0.10.6" }
@@ -189,7 +189,7 @@ disrobe-pass-js-deob = { path = "crates/disrobe-pass-js-deob", version = "0.10.6
 disrobe-pass-jvm = { path = "crates/disrobe-pass-jvm", version = "0.10.6" }
 disrobe-pass-lua = { path = "crates/disrobe-pass-lua", version = "0.10.6" }
 disrobe-pass-mobile = { path = "crates/disrobe-pass-mobile", version = "0.10.6", default-features = false }
-disrobe-pass-native = { path = "crates/disrobe-pass-native", version = "0.10.6" }
+disrobe-pass-native = { path = "crates/disrobe-pass-native", version = "0.10.6", default-features = false }
 disrobe-pass-nativelang = { path = "crates/disrobe-pass-nativelang", version = "0.10.6" }
 disrobe-pass-nuitka = { path = "crates/disrobe-pass-nuitka", version = "0.10.6" }
 disrobe-pass-php = { path = "crates/disrobe-pass-php", version = "0.10.6" }

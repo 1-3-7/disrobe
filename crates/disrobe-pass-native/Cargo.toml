@@ -20,7 +20,7 @@ disrobe-cfg = { workspace = true }
 disrobe-core = { workspace = true }
 disrobe-ir = { workspace = true }
 disrobe-binfmt = { workspace = true }
-disrobe-mba = { workspace = true, features = ["cfg-recovery"] }
+disrobe-mba = { workspace = true, features = ["smt-verify", "cfg-recovery"] }
 disrobe-similarity = { workspace = true }
 disrobe-emit = { workspace = true }
 disrobe-typerec = { workspace = true }
@@ -58,7 +58,7 @@ sha2 = { version = "0.10", features = ["oid"] }
 disrobe-llm-metadata = { workspace = true, optional = true }
 
 [features]
-default = []
+default = ["smt-solver"]
 chain = ["disrobe-core/chain"]
 llm-metadata = ["dep:disrobe-llm-metadata"]
 stub-emulation = []

@@ -23,7 +23,7 @@ llm-metadata = ["dep:disrobe-llm-metadata"]
 disrobe-bytes = { workspace = true }
 disrobe-cfg = { workspace = true }
 disrobe-core = { workspace = true }
-disrobe-mba = { workspace = true }
+disrobe-mba = { workspace = true, features = ["smt-verify"] }
 blake3 = { workspace = true }
 disrobe-llm-metadata = { workspace = true, optional = true }
 indexmap = { workspace = true }
