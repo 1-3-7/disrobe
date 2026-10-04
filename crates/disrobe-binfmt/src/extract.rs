@@ -6360,7 +6360,6 @@ mod tests {
         assert_eq!(paths, BTreeSet::from(["existing.bin".to_owned()]));
     }
 
-    #[cfg(feature = "chain")]
     #[test]
     fn uefi_member_named_like_the_generated_summary_survives_direct_and_chain_extraction() {
         use disrobe_core::pass::Pass as _;

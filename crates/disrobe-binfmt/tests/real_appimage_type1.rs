@@ -8,7 +8,6 @@ use disrobe_binfmt::containers::{
 use disrobe_binfmt::{ExtractionResult, extract_to};
 use sha2::{Digest as _, Sha256};
 
-#[cfg(feature = "chain")]
 use disrobe_core::chain::Pass as _;
 
 const FIXTURE: &str = "AppImageAssistant.AppImage";
@@ -95,7 +94,6 @@ fn official_type1_regular_files_match_the_libarchive_manifest() {
     assert!(result.integrity_violations.is_empty());
 }
 
-#[cfg(feature = "chain")]
 #[test]
 fn official_type1_members_reach_the_registered_container_pass() {
     use disrobe_core::chain::detection::ChildMaterialization;

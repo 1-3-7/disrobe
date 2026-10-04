@@ -20,7 +20,6 @@ default = ["full"]
 full = ["chain", "js", "wasm", "php", "ruby", "shell", "mobile", "lua", "swift", "jvm", "dotnet", "go", "beam", "as3", "nativelang", "scriptlang"]
 chain = [
     "disrobe-core/chain",
-    "disrobe-binfmt/chain",
     "disrobe-pass-native/chain",
     "dep:disrobe-passes",
     "disrobe-passes/pyarmor",

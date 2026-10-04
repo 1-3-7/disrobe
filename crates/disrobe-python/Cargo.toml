@@ -27,7 +27,7 @@ disrobe-core = { workspace = true }
 disrobe-ir = { workspace = true }
 disrobe-capabilities = { workspace = true }
 disrobe-llm-metadata = { workspace = true }
-disrobe-binfmt = { workspace = true, features = ["chain"] }
+disrobe-binfmt = { workspace = true }
 disrobe-pass-py-decompile = { workspace = true, features = ["chain", "llm-metadata"] }
 disrobe-pass-py-deob = { workspace = true, features = ["llm-metadata"] }
 disrobe-pass-py-disasm = { workspace = true, features = ["llm-metadata"] }

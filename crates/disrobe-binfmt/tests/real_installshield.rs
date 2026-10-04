@@ -358,7 +358,6 @@ fn every_truncation_of_a_real_cabinet_refuses_without_panicking() {
     );
 }
 
-#[cfg(feature = "chain")]
 mod chain {
     use std::collections::BTreeMap;
 

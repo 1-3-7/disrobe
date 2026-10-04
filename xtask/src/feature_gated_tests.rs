@@ -15,7 +15,7 @@ const CHAIN_DETECTOR_FILE: &str = "chain_detector.rs";
 const CHAIN_FEATURE: &str = "chain";
 
 const MIN_CHAIN_DETECTORS: usize = 25;
-const MIN_HIDDEN_CRATES: usize = 15;
+const MIN_HIDDEN_CRATES: usize = 14;
 const MIN_SCANNED_COMMANDS: usize = 20;
 
 const UNDECLARED: &str = "hidden-test-surface-undeclared";
@@ -25,7 +25,6 @@ const SKIPPING_COMMAND: &str = "verification-command-skips-tests";
 const UNKNOWN_PACKAGE: &str = "verification-command-unknown-package";
 
 const HIDDEN_TEST_SURFACE: &[(&str, &[&str])] = &[
-    ("disrobe-binfmt", &["chain"]),
     ("disrobe-capabilities", &["yaml_rules"]),
     (
         "disrobe-cli",

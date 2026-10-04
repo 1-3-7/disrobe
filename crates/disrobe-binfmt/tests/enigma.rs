@@ -469,7 +469,6 @@ fn pe32_plus_variant_is_not_claimed() {
     assert!(parse_enigma_virtual_box(&pe32_plus, ExtractionQuota::default_safe()).is_err());
 }
 
-#[cfg(feature = "chain")]
 #[test]
 fn real_evb_10_70_member_reaches_the_automatic_container_pass() {
     use disrobe_core::chain::{ChildArtifact, DetectContext, Detector as _, Pass as _};

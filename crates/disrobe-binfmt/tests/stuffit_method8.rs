@@ -1,4 +1,3 @@
-#![cfg(feature = "chain")]
 #![allow(clippy::expect_used)]
 
 use std::collections::BTreeMap;

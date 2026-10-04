@@ -1,4 +1,3 @@
-#![cfg(feature = "chain")]
 #![allow(clippy::expect_used, clippy::panic)]
 
 use std::io::Write as _;

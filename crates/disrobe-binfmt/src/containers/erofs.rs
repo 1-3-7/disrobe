@@ -137,7 +137,6 @@ pub fn detect_erofs(bytes: &[u8]) -> Option<ErofsSuperblock> {
     })
 }
 
-#[cfg(feature = "chain")]
 pub(crate) fn validate_erofs_image(bytes: &[u8]) -> bool {
     let Some(sb): Option<ErofsSuperblock> = detect_erofs(bytes) else {
         return false;

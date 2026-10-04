@@ -5,7 +5,6 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub mod asar;
 pub mod carve;
-#[cfg(feature = "chain")]
 pub mod chain_detector;
 pub mod classify;
 pub mod container;
