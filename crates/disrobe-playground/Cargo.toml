@@ -15,13 +15,14 @@ categories = ["development-tools::testing"]
 workspace = true
 
 [features]
-default = ["chain"]
-chain = [
+default = ["chain", "auto"]
+auto = [
     "disrobe-core/chain",
     "disrobe-pass-native/chain",
     "dep:disrobe-passes",
     "disrobe-passes/full",
 ]
+chain = ["auto"]
 
 [dependencies]
 disrobe-core = { workspace = true, features = ["chain"] }

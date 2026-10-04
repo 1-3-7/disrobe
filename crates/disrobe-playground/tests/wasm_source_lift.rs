@@ -1,4 +1,4 @@
-#![cfg(feature = "chain")]
+#![cfg(feature = "auto")]
 #![allow(clippy::expect_used)]
 
 use disrobe_playground::{WasmSourceTarget, lift_wasm_source};

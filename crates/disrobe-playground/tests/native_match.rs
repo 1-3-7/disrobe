@@ -1,4 +1,4 @@
-#![cfg(feature = "chain")]
+#![cfg(feature = "auto")]
 #![allow(clippy::expect_used)]
 
 use disrobe_pass_native::{NativeMatchOptions, match_native_images};

@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 #![deny(unreachable_pub)]
-#![cfg(feature = "chain")]
+#![cfg(feature = "auto")]
 pub mod circular;
 pub mod manifest;
 pub mod native_match;

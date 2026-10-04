@@ -1,4 +1,4 @@
-#![cfg(feature = "chain")]
+#![cfg(feature = "auto")]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use std::io::Write as _;
 use std::path::PathBuf;
