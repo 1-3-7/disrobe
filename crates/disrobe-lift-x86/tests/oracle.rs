@@ -19,6 +19,7 @@ use disrobe_core::scratch::ScratchDir;
 use disrobe_lift_x86::decode_block_x86;
 use disrobe_sleigh::lifter::DecodedBlock;
 use disrobe_sleigh::pcode::{DecodeStatus, PcodeInstr, PcodeOp, Space, Varnode};
+use disrobe_testkit::authorized_authored_source;
 
 #[allow(clippy::redundant_pub_crate)]
 #[path = "oracle/differential.rs"]
@@ -256,7 +257,19 @@ fn live_pypcode_reproduces_committed_effects() {
     let (scratch, directory): (ScratchDir, PathBuf) = temporary_directory();
     let create_result: std::io::Result<()> = fs::create_dir(&directory);
     assert!(create_result.is_ok(), "{create_result:?}");
-    let script: PathBuf = fixture_path("../pypcode_oracle.py");
+    let workspace_root: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let authorized: Result<PathBuf, disrobe_testkit::AuthoredSourceError> =
+        authorized_authored_source(
+            &workspace_root,
+            "crates/disrobe-lift-x86/tests/pypcode_oracle.py",
+        );
+    assert!(
+        authorized.is_ok(),
+        "pypcode oracle authorization failed: {authorized:?}"
+    );
+    let Ok(script): Result<PathBuf, disrobe_testkit::AuthoredSourceError> = authorized else {
+        unreachable!("the authorization assertion above has already failed the test");
+    };
     let corpus: PathBuf = corpus_path("");
     let mut verifier: Command = Command::new(python);
     verifier.args([

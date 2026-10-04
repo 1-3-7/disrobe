@@ -13,6 +13,7 @@ use disrobe_core::subprocess::{CapturedOutput, run_captured};
 use disrobe_lift_x86::decode_block_x86;
 use disrobe_sleigh::lifter::DecodedBlock;
 use disrobe_sleigh::pcode::{DecodeStatus, PcodeInstr};
+use disrobe_testkit::authorized_authored_source;
 use iced_x86::{Code, Decoder, DecoderOptions, Instruction, Mnemonic, OpKind, RflagsBits};
 use sha2::{Digest as _, Sha256};
 
@@ -396,9 +397,19 @@ fn live_cpu_reference_reproduces_the_committed_corpus() {
     assert!(write_image.is_ok(), "{write_image:?}");
     let write_cases: std::io::Result<()> = fs::write(&cases_path, request.as_bytes());
     assert!(write_cases.is_ok(), "{write_cases:?}");
-    let script: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("unicorn_oracle.py");
+    let workspace_root: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let authorized: Result<PathBuf, disrobe_testkit::AuthoredSourceError> =
+        authorized_authored_source(
+            &workspace_root,
+            "crates/disrobe-lift-x86/tests/unicorn_oracle.py",
+        );
+    assert!(
+        authorized.is_ok(),
+        "unicorn oracle authorization failed: {authorized:?}"
+    );
+    let Ok(script): Result<PathBuf, disrobe_testkit::AuthoredSourceError> = authorized else {
+        unreachable!("the authorization assertion above has already failed the test");
+    };
     let arguments: [OsString; 4] = [
         script.as_os_str().to_owned(),
         image_path.as_os_str().to_owned(),
