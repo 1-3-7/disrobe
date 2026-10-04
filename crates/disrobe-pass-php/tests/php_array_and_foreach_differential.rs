@@ -18,6 +18,7 @@
 mod php_toolchain;
 
 use disrobe_pass_php::{Decompilation, OpArray, decompile_oparray, parse_oparray};
+use disrobe_testkit::authorized_authored_source;
 use php_toolchain::{
     PHP, PHP_OPCACHE, PhpRun, PhpRuntime, fixture_path, require_toolchain, required_fixture,
     write_opcache_source,
@@ -374,13 +375,11 @@ fn opcache_dll(php: &PhpRuntime) -> Option<PathBuf> {
 }
 
 fn emitter() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("corpus")
-        .join("php")
-        .join("oparray")
-        .join("emit_dzoa.php")
+    let mut workspace_root: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    workspace_root.pop();
+    workspace_root.pop();
+    authorized_authored_source(&workspace_root, "corpus/php/oparray/emit_dzoa.php")
+        .expect("authorize the tracked PHP opcache emitter")
 }
 
 #[test]

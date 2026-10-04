@@ -27,6 +27,7 @@ use disrobe_pass_php::{
     Decompilation, Error, Literal, OPARRAY_MAX_VERSION, OPARRAY_MIN_VERSION, Op, OpArray,
     UnrecoveredOp, decompile_oparray, opcode_name, parse_oparray,
 };
+use disrobe_testkit::authorized_authored_source;
 use php_toolchain::{PHP_OPCACHE, PhpRuntime, require_php, unmeasured, write_opcache_source};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
@@ -120,7 +121,8 @@ const OPCODE_NAMING_SAMPLES: [&str; 25] = [
 ];
 
 fn required_sample(sample: &str) -> PathBuf {
-    let path: PathBuf = oparray_dir().join("src").join(format!("{sample}.php"));
+    let relative: String = format!("corpus/php/oparray/src/{sample}.php");
+    let path: PathBuf = authored_source(&relative);
     assert!(
         path.is_file(),
         "corpus/php/oparray/src/{sample}.php is tracked in this repository and graded here, so a \
@@ -130,11 +132,20 @@ fn required_sample(sample: &str) -> PathBuf {
     path
 }
 
+fn workspace_root() -> PathBuf {
+    let mut root: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    root.pop();
+    root.pop();
+    root
+}
+
+fn authored_source(relative: &str) -> PathBuf {
+    authorized_authored_source(&workspace_root(), relative)
+        .unwrap_or_else(|error| panic!("authorize {relative}: {error}"))
+}
+
 fn oparray_dir() -> PathBuf {
-    let manifest: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let mut root: PathBuf = manifest;
-    root.pop();
-    root.pop();
+    let mut root: PathBuf = workspace_root();
     root.push("corpus");
     root.push("php");
     root.push("oparray");
@@ -266,7 +277,7 @@ fn emit_dzoa_versioned(
     force_version: Option<u8>,
     dump: Option<&Path>,
 ) -> Result<(), String> {
-    let emitter: PathBuf = oparray_dir().join("emit_dzoa.php");
+    let emitter: PathBuf = authored_source("corpus/php/oparray/emit_dzoa.php");
     let mut command: Command = Command::new(php);
     command.env("DZOA_OPCACHE_DLL", dll);
     if let Some(v) = force_version {
@@ -593,11 +604,8 @@ fn fetch_is_recovers_local_coalesce_reads_under_php_84() {
         "expected PHP 8.4, found {banner}"
     );
     let dll: String = required_opcache(&php, graded);
-    let fixture: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("fixtures")
-        .join("oparray_fetch_is");
-    let source: PathBuf = fixture.join("fetch_is.php");
+    let source: PathBuf =
+        authored_source("crates/disrobe-pass-php/tests/fixtures/oparray_fetch_is/fetch_is.php");
     let original: String =
         run_php(&php, &source).expect("the tracked FETCH_IS source must execute");
     assert_eq!(original, "present\nmissing\n");
@@ -659,11 +667,9 @@ fn callable_convert_recovers_php_84_first_class_callables() {
         "expected PHP 8.4, found {banner}"
     );
     let dll: String = required_opcache(&php, graded);
-    let fixture: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("fixtures")
-        .join("oparray_callable");
-    let source: PathBuf = fixture.join("callable_convert.php");
+    let source: PathBuf = authored_source(
+        "crates/disrobe-pass-php/tests/fixtures/oparray_callable/callable_convert.php",
+    );
     let original: String =
         run_php(&php, &source).expect("the tracked callable source must execute");
     assert_eq!(original, "MIXED:desserts:2025:02:03:04");

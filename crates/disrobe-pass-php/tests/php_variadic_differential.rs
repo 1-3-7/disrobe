@@ -15,6 +15,7 @@ use disrobe_pass_php::{
     Decompilation, Literal, Op, OpArray, OperandType, RecoveryReport, RecoveryStage,
     decompile_oparray, parse_oparray, recover_php,
 };
+use disrobe_testkit::authorized_authored_source;
 use php_toolchain::{PHP, PhpRun, require_toolchain};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
@@ -98,18 +99,14 @@ fn tracked_variadic_op_array_reproduces_from_php_84() {
     let repository: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..");
-    let emitter: PathBuf = repository
-        .join("corpus")
-        .join("php")
-        .join("oparray")
-        .join("emit_dzoa.php");
-    let source: PathBuf = repository
-        .join("crates")
-        .join("disrobe-pass-php")
-        .join("tests")
-        .join("fixtures")
-        .join("oparray_variadic")
-        .join("variadic.php");
+    let emitter: PathBuf =
+        authorized_authored_source(&repository, "corpus/php/oparray/emit_dzoa.php")
+            .expect("authorize the tracked PHP opcache emitter");
+    let source: PathBuf = authorized_authored_source(
+        &repository,
+        "crates/disrobe-pass-php/tests/fixtures/oparray_variadic/variadic.php",
+    )
+    .expect("authorize the tracked PHP variadic source");
     let output: Output = bounded_command_output(
         Command::new(&runtime.binary)
             .env("DZOA_OPCACHE_DLL", &dll)

@@ -24,6 +24,7 @@ use disrobe_pass_php::decompile::op;
 use disrobe_pass_php::{
     Error, Literal, Op, OpArray, OpArrayKind, OperandType, parse_oparray, parse_opcache_file,
 };
+use disrobe_testkit::authorized_authored_source;
 use php_toolchain::{
     PHP_OPCACHE, PhpRuntime, compile_opcache_image, corpus_path, opcache_extension, require_php,
     unmeasured, write_opcache_source,
@@ -59,6 +60,13 @@ const SAMPLES: [&str; 25] = [
     "versioned",
 ];
 
+fn workspace_root() -> PathBuf {
+    let mut root: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    root.pop();
+    root.pop();
+    root
+}
+
 struct Toolchain {
     php: PhpRuntime,
     opcache: PathBuf,
@@ -78,7 +86,9 @@ fn toolchain(graded: &str) -> Option<Toolchain> {
 }
 
 fn emit_dzoa(toolchain: &Toolchain, source: &Path, out: &Path) -> OpArray {
-    let emitter: PathBuf = corpus_path("oparray/emit_dzoa.php");
+    let emitter: PathBuf =
+        authorized_authored_source(&workspace_root(), "corpus/php/oparray/emit_dzoa.php")
+            .expect("authorize the tracked PHP opcache emitter");
     let output: Output = Command::new(&toolchain.php.binary)
         .env("DZOA_OPCACHE_DLL", &toolchain.opcache)
         .env("DZOA_AFTER_OPTIMIZER", "1")

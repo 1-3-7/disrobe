@@ -18,6 +18,7 @@ use disrobe_core::{Artifact, Rung};
 use disrobe_pass_php::chain_detector::{PHP_PASS, PhpDetectorImpl};
 use disrobe_pass_php::decompile::op;
 use disrobe_pass_php::{Error, PhpKind, detect_php, parse_oparray};
+use disrobe_testkit::authorized_authored_source;
 use php_toolchain::{PHP_OPCACHE, PhpRuntime, require_php, unmeasured, write_opcache_source};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -30,6 +31,18 @@ const T_UNUSED: u8 = 0;
 const T_CONST: u8 = 1;
 const T_TMP: u8 = 2;
 const T_CV: u8 = 8;
+
+fn workspace_root() -> PathBuf {
+    let mut root: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    root.pop();
+    root.pop();
+    root
+}
+
+fn authored_source(relative: &str) -> PathBuf {
+    authorized_authored_source(&workspace_root(), relative)
+        .expect("authorize the tracked PHP source")
+}
 
 enum TableKey<'a> {
     Long(i64),
@@ -369,13 +382,7 @@ fn compiler_dump(php: &PhpRuntime, source: &str) -> Option<String> {
     let dzoa_path: PathBuf = scratch.path().join("switch.dzoa");
     let dump_path: PathBuf = scratch.path().join("switch.dump");
     write_opcache_source(&source_path, source.as_bytes()).expect("write compiler source");
-    let emitter: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("corpus")
-        .join("php")
-        .join("oparray")
-        .join("emit_dzoa.php");
+    let emitter: PathBuf = authored_source("corpus/php/oparray/emit_dzoa.php");
     let output: Output = Command::new(&php.binary)
         .env("DZOA_OPCACHE_DLL", &dll)
         .arg(&emitter)
@@ -666,11 +673,7 @@ fn real_php_emitter_reaches_registered_pass_for_optimized_match() {
         .join("oparray")
         .join("src")
         .join("match_optimized.php");
-    let emitter: PathBuf = root
-        .join("corpus")
-        .join("php")
-        .join("oparray")
-        .join("emit_dzoa.php");
+    let emitter: PathBuf = authored_source("corpus/php/oparray/emit_dzoa.php");
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("disrobe_php_match_registered")
             .expect("create registered match scratch directory");
