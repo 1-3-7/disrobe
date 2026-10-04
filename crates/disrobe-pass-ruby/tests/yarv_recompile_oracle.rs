@@ -12,6 +12,7 @@ use std::process::Command;
 
 use disrobe_core::scratch::ScratchFile;
 use disrobe_pass_ruby::analyze_bytes;
+use disrobe_testkit::authorized_authored_source;
 use ruby_toolchain::{ToolchainBanner, require_exact_mri_recompile};
 use sha2::{Digest, Sha256};
 
@@ -93,12 +94,22 @@ const FIXTURES: [Fixture; 3] = [
 ];
 
 fn corpus_dir() -> PathBuf {
-    let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    p.pop();
-    p.pop();
+    let mut p: PathBuf = workspace_root();
     p.push("corpus");
     p.push("ruby");
     p
+}
+
+fn workspace_root() -> PathBuf {
+    let mut root: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    root.pop();
+    root.pop();
+    root
+}
+
+fn authored_source(relative: &str) -> PathBuf {
+    authorized_authored_source(&workspace_root(), relative)
+        .unwrap_or_else(|error| panic!("authorize {relative}: {error}"))
 }
 
 fn corpus_path(rel: &str) -> PathBuf {
@@ -973,8 +984,9 @@ fn measure(fixture: &Fixture, run_dir: &Path, toolchain: &ToolchainBanner) -> Me
     std::fs::write(&recovered_path, &recovered)
         .unwrap_or_else(|e: std::io::Error| panic!("write recovered {}: {e}", fixture.label));
 
-    let oracle: PathBuf = corpus_path("mri/yarv/recompile_oracle.rb");
-    let original: PathBuf = corpus_path(fixture.original_rel);
+    let oracle: PathBuf = authored_source("corpus/ruby/mri/yarv/recompile_oracle.rb");
+    let original_relative: String = format!("corpus/ruby/{}", fixture.original_rel);
+    let original: PathBuf = authored_source(&original_relative);
     let fixture_path: PathBuf = corpus_path(fixture.yarvc_rel);
     let rust_harness: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")

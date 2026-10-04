@@ -9,18 +9,29 @@ use std::process::Command;
 
 use disrobe_core::scratch::{ScratchDir, ScratchFile};
 use disrobe_pass_ruby::analyze_bytes;
+use disrobe_testkit::authorized_authored_source;
 use ruby_toolchain::require_mri;
 
 const OPASSIGN_YARVC: &str = "mri/yarv/opassign.rb.yarvc";
 const GRADED: &str = "the compound-assignment recompile comparison against real ruby";
 
 fn corpus_dir() -> PathBuf {
-    let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    p.pop();
-    p.pop();
+    let mut p: PathBuf = workspace_root();
     p.push("corpus");
     p.push("ruby");
     p
+}
+
+fn workspace_root() -> PathBuf {
+    let mut root: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    root.pop();
+    root.pop();
+    root
+}
+
+fn authored_source(relative: &str) -> PathBuf {
+    authorized_authored_source(&workspace_root(), relative)
+        .unwrap_or_else(|error| panic!("authorize {relative}: {error}"))
 }
 
 fn corpus_path(rel: &str) -> PathBuf {
@@ -86,8 +97,8 @@ fn op_assign_recompiles_to_matching_opcode_multiset() {
     let rec_path: PathBuf = scratch.path().to_path_buf();
     std::fs::write(&rec_path, recovered).expect("write recovered source");
 
-    let oracle: PathBuf = corpus_path("mri/yarv/recompile_oracle.rb");
-    let original: PathBuf = corpus_path("mri/yarv/opassign.rb");
+    let oracle: PathBuf = authored_source("corpus/ruby/mri/yarv/recompile_oracle.rb");
+    let original: PathBuf = authored_source("corpus/ruby/mri/yarv/opassign.rb");
     let evidence: ScratchDir =
         ScratchDir::create("disrobe_yarv_reference").expect("create reference evidence directory");
     let rust_harness: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

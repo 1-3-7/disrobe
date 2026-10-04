@@ -18,6 +18,7 @@ use disrobe_pass_scriptlang::lang::r_rds::{
     RdsObject, RdsRawVector, RdsS4Object,
 };
 use disrobe_pass_scriptlang::lang::{ScriptArtifact, ScriptLang, analyze, classify};
+use disrobe_testkit::authorized_authored_source;
 
 #[path = "support/r_toolchain.rs"]
 #[allow(
@@ -583,7 +584,8 @@ fn recovered_objects_match_what_real_r_reports() {
     };
     let root: PathBuf = workspace_root();
     let corpus: PathBuf = root.join("corpus").join("r").join("objects");
-    let describe: PathBuf = root.join("corpus").join("r").join("describe.R");
+    let describe: PathBuf = authorized_authored_source(&root, "corpus/r/describe.R")
+        .unwrap_or_else(|error| panic!("R reference authorization failed: {error}"));
     assert!(
         corpus.is_dir(),
         "the committed R corpus is missing at {}, so this run would grade nothing",
