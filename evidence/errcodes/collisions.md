@@ -1242,8 +1242,8 @@
 
 ### `DR-NAT-0944`
 
-- `"native.image-classify: build {} function inventory: {}"`: `crates/disrobe-pass-native/src/chain_detector.rs:253`
-- `"native.image-classify: child count is not representable: {}"`: `crates/disrobe-pass-native/src/chain_detector.rs:653`
+- `"native.image-classify: build {} function inventory: {}"`: `crates/disrobe-pass-native/src/chain_detector.rs:252`
+- `"native.image-classify: child count is not representable: {}"`: `crates/disrobe-pass-native/src/chain_detector.rs:652`
 
 ### `DR-NATIVE-0001`
 
@@ -2530,32 +2530,32 @@
 - `DR-MOB-0902`: `crates/disrobe-pass-mobile/src/chain_detector.rs:93`
 - `DR-MOB-0905`: `crates/disrobe-pass-mobile/src/chain_detector.rs:114`
 - `DR-MOB-0906`: `crates/disrobe-pass-mobile/src/chain_detector.rs:125`
-- `DR-NAT-0901`: `crates/disrobe-pass-native/src/chain_detector.rs:494`
-- `DR-NAT-0902`: `crates/disrobe-pass-native/src/chain_detector.rs:764`
-- `DR-NAT-0907`: `crates/disrobe-pass-native/src/chain_detector.rs:775`
-- `DR-NAT-0908`: `crates/disrobe-pass-native/src/chain_detector.rs:780`
-- `DR-NAT-0909`: `crates/disrobe-pass-native/src/chain_detector.rs:790`
-- `DR-NAT-0910`: `crates/disrobe-pass-native/src/chain_detector.rs:865`
-- `DR-NAT-0911`: `crates/disrobe-pass-native/src/chain_detector.rs:871`
-- `DR-NAT-0912`: `crates/disrobe-pass-native/src/chain_detector.rs:876`
-- `DR-NAT-0913`: `crates/disrobe-pass-native/src/chain_detector.rs:881`
-- `DR-NAT-0914`: `crates/disrobe-pass-native/src/chain_detector.rs:913`
-- `DR-NAT-0915`: `crates/disrobe-pass-native/src/chain_detector.rs:921`, `crates/disrobe-pass-native/src/chain_detector.rs:942`
-- `DR-NAT-0916`: `crates/disrobe-pass-native/src/chain_detector.rs:886`
-- `DR-NAT-0917`: `crates/disrobe-pass-native/src/chain_detector.rs:860`
-- `DR-NAT-0918`: `crates/disrobe-pass-native/src/chain_detector.rs:891`
-- `DR-NAT-0919`: `crates/disrobe-pass-native/src/chain_detector.rs:896`
-- `DR-NAT-0920`: `crates/disrobe-pass-native/src/chain_detector.rs:902`
-- `DR-NAT-0921`: `crates/disrobe-pass-native/src/chain_detector.rs:908`
-- `DR-NAT-0928`: `crates/disrobe-pass-native/src/chain_detector.rs:960`
-- `DR-NAT-0930`: `crates/disrobe-pass-native/src/chain_detector.rs:770`
-- `DR-NAT-0931`: `crates/disrobe-pass-native/src/chain_detector.rs:853`
-- `DR-NAT-0933`: `crates/disrobe-pass-native/src/chain_detector.rs:525`
-- `DR-NAT-0940`: `crates/disrobe-pass-native/src/chain_detector.rs:133`
-- `DR-NAT-0941`: `crates/disrobe-pass-native/src/chain_detector.rs:365`
-- `DR-NAT-0942`: `crates/disrobe-pass-native/src/chain_detector.rs:173`
-- `DR-NAT-0943`: `crates/disrobe-pass-native/src/chain_detector.rs:180`
-- `DR-NAT-0944`: `crates/disrobe-pass-native/src/chain_detector.rs:253`, `crates/disrobe-pass-native/src/chain_detector.rs:653`
+- `DR-NAT-0901`: `crates/disrobe-pass-native/src/chain_detector.rs:493`
+- `DR-NAT-0902`: `crates/disrobe-pass-native/src/chain_detector.rs:763`
+- `DR-NAT-0907`: `crates/disrobe-pass-native/src/chain_detector.rs:774`
+- `DR-NAT-0908`: `crates/disrobe-pass-native/src/chain_detector.rs:779`
+- `DR-NAT-0909`: `crates/disrobe-pass-native/src/chain_detector.rs:789`
+- `DR-NAT-0910`: `crates/disrobe-pass-native/src/chain_detector.rs:864`
+- `DR-NAT-0911`: `crates/disrobe-pass-native/src/chain_detector.rs:870`
+- `DR-NAT-0912`: `crates/disrobe-pass-native/src/chain_detector.rs:875`
+- `DR-NAT-0913`: `crates/disrobe-pass-native/src/chain_detector.rs:880`
+- `DR-NAT-0914`: `crates/disrobe-pass-native/src/chain_detector.rs:912`
+- `DR-NAT-0915`: `crates/disrobe-pass-native/src/chain_detector.rs:920`, `crates/disrobe-pass-native/src/chain_detector.rs:941`
+- `DR-NAT-0916`: `crates/disrobe-pass-native/src/chain_detector.rs:885`
+- `DR-NAT-0917`: `crates/disrobe-pass-native/src/chain_detector.rs:859`
+- `DR-NAT-0918`: `crates/disrobe-pass-native/src/chain_detector.rs:890`
+- `DR-NAT-0919`: `crates/disrobe-pass-native/src/chain_detector.rs:895`
+- `DR-NAT-0920`: `crates/disrobe-pass-native/src/chain_detector.rs:901`
+- `DR-NAT-0921`: `crates/disrobe-pass-native/src/chain_detector.rs:907`
+- `DR-NAT-0928`: `crates/disrobe-pass-native/src/chain_detector.rs:959`
+- `DR-NAT-0930`: `crates/disrobe-pass-native/src/chain_detector.rs:769`
+- `DR-NAT-0931`: `crates/disrobe-pass-native/src/chain_detector.rs:852`
+- `DR-NAT-0933`: `crates/disrobe-pass-native/src/chain_detector.rs:524`
+- `DR-NAT-0940`: `crates/disrobe-pass-native/src/chain_detector.rs:132`
+- `DR-NAT-0941`: `crates/disrobe-pass-native/src/chain_detector.rs:364`
+- `DR-NAT-0942`: `crates/disrobe-pass-native/src/chain_detector.rs:172`
+- `DR-NAT-0943`: `crates/disrobe-pass-native/src/chain_detector.rs:179`
+- `DR-NAT-0944`: `crates/disrobe-pass-native/src/chain_detector.rs:252`, `crates/disrobe-pass-native/src/chain_detector.rs:652`
 - `DR-NATIVE-0001`: `crates/disrobe-cli/src/cli/native.rs:1335`, `crates/disrobe-pass-native/src/error.rs:9`
 - `DR-NATIVE-0002`: `crates/disrobe-cli/src/cli/native.rs:1346`, `crates/disrobe-pass-native/src/error.rs:12`
 - `DR-NATIVE-0003`: `crates/disrobe-cli/src/cli/native.rs:1349`, `crates/disrobe-cli/src/cli/native.rs:1353`, `crates/disrobe-pass-native/src/error.rs:16`
