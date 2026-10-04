@@ -48,7 +48,6 @@ pub(crate) fn take_bail_op() -> i32 {
     LAST_BAIL_OP.with(|c: &std::cell::Cell<i32>| c.get())
 }
 
-#[cfg(any(test, feature = "lifter-diag"))]
 pub(crate) fn diag_is_synthetic_class(descriptor: &str) -> bool {
     is_synthetic_class(descriptor)
 }
@@ -4263,7 +4262,6 @@ const fn is_shift(op: u8) -> bool {
     matches!(op, 0x98 | 0x99 | 0x9A | 0xA3 | 0xA4 | 0xA5)
 }
 
-#[cfg(any(test, feature = "lifter-diag"))]
 fn is_synthetic_class(descriptor: &str) -> bool {
     let inner: &str = crate::descriptor::descriptor_to_binary_name(descriptor);
     inner

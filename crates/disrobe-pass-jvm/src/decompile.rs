@@ -10884,12 +10884,6 @@ pub(crate) fn expr_node_count_capped(e: &Expr, cap: usize) -> usize {
     acc
 }
 
-#[cfg(feature = "opcode-census")]
-thread_local! {
-    pub(crate) static UNHANDLED_OPS: std::cell::RefCell<std::collections::BTreeMap<u8, u64>> =
-        const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
-}
-
 thread_local! {
 
 
@@ -11756,18 +11750,6 @@ fn object_local_array_casts(
     casts
 }
 
-#[cfg(feature = "opcode-census")]
-#[inline]
-fn census_unhandled(op: u8) {
-    UNHANDLED_OPS.with(|m| *m.borrow_mut().entry(op).or_default() += 1);
-}
-
-#[cfg(feature = "opcode-census")]
-#[must_use]
-pub fn drain_unhandled_census() -> std::collections::BTreeMap<u8, u64> {
-    UNHANDLED_OPS.with(|m| std::mem::take(&mut *m.borrow_mut()))
-}
-
 fn lift_one(
     cf: &ClassFile,
     insn: &Instruction,
@@ -11779,10 +11761,6 @@ fn lift_one(
 ) -> LiftResult {
     let result: LiftResult =
         lift_one_inner(cf, insn, stack, params, bootstraps, has_this, bool_return);
-    #[cfg(feature = "opcode-census")]
-    if matches!(result, LiftResult::Unhandled) {
-        census_unhandled(insn.opcode);
-    }
     result
 }
 

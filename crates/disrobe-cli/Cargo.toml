@@ -140,7 +140,6 @@ chain = [
     "disrobe-passes/py-decompile",
     "disrobe-passes/pyinstaller",
     "disrobe-pass-mobile?/chain",
-    "disrobe-pass-jvm?/chain",
     "disrobe-pass-dotnet?/chain",
 ]
 

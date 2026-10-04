@@ -32,10 +32,6 @@ object = { workspace = true }
 encoding_rs = "0.8"
 
 [features]
-default = []
-chain = ["disrobe-core/chain"]
-lifter-diag = []
-opcode-census = []
 semantic-reach = []
 
 [dev-dependencies]

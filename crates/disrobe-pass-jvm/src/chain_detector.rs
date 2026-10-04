@@ -1,4 +1,3 @@
-#![cfg(feature = "chain")]
 mod containers;
 
 use disrobe_core::Artifact;

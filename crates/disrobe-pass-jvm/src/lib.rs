@@ -32,7 +32,6 @@ pub mod backends;
 pub mod bytecode;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod bytecode_eval;
-#[cfg(feature = "chain")]
 #[cfg(not(target_arch = "wasm32"))]
 pub mod chain_detector;
 pub mod classfile;
@@ -218,8 +217,6 @@ pub use dalvik_strdec_generic::{
     CallSiteOutcome, CallSiteRecovery, GenericStringRecovery, SkipReason as DexInterpSkipReason,
     recover as recover_dex_strings_generic,
 };
-#[cfg(feature = "opcode-census")]
-pub use decompile::drain_unhandled_census;
 pub use decompile::{
     DecompiledClass, class_access_keywords, decompile_class, decompile_class_named,
     decompile_class_with_inners, decompile_classfile_bytes, member_access_keywords,

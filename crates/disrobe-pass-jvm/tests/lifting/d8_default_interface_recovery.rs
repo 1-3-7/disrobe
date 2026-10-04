@@ -4,12 +4,9 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-#[cfg(feature = "chain")]
 use disrobe_core::chain::Pass;
 use disrobe_core::scratch::ScratchDir;
-#[cfg(feature = "chain")]
 use disrobe_core::{Artifact, Rung};
-#[cfg(feature = "chain")]
 use disrobe_pass_jvm::chain_detector::JVM_PASS;
 use disrobe_pass_jvm::dalvik::{DalvikInsn, decode_method};
 use disrobe_pass_jvm::{
@@ -300,20 +297,17 @@ fn real_d8_static_interface_methods_return_to_source_shape() {
         no_companion_source(&recovered, "Repository$_u002D_CC"),
         "a fully recovered static/default companion must be elided and every exact invoke-static call must target the authored interface"
     );
-    #[cfg(feature = "chain")]
-    {
-        let input: Artifact = Artifact::new(Rung::Raw, EDGECASES_DEX.to_vec(), [0u8; 32]);
-        let surfaced: Artifact = JVM_PASS
-            .run(&input)
-            .expect("registered JVM pass decompiles DEX");
-        let surfaced_source: &str =
-            std::str::from_utf8(&surfaced.envelope).expect("registered pass emits UTF-8 source");
-        assert!(
-            surfaced_source.contains("public static EdgeCases.Repository inMemory("),
-            "{surfaced_source}"
-        );
-        assert!(!surfaced_source.contains("Repository$_u002D_CC"));
-    }
+    let input: Artifact = Artifact::new(Rung::Raw, EDGECASES_DEX.to_vec(), [0u8; 32]);
+    let surfaced: Artifact = JVM_PASS
+        .run(&input)
+        .expect("registered JVM pass decompiles DEX");
+    let surfaced_source: &str =
+        std::str::from_utf8(&surfaced.envelope).expect("registered pass emits UTF-8 source");
+    assert!(
+        surfaced_source.contains("public static EdgeCases.Repository inMemory("),
+        "{surfaced_source}"
+    );
+    assert!(!surfaced_source.contains("Repository$_u002D_CC"));
 
     let recovered_implementation: &str = member_source(
         unit,

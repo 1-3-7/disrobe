@@ -2403,7 +2403,6 @@ fn portable_component(part: &str) -> bool {
             && matches!(base.as_bytes()[3], b'1'..=b'9'))
 }
 
-#[cfg(any(test, feature = "lifter-diag"))]
 pub fn diagnose_dex_bytes(dex_bytes: &[u8]) -> Result<BTreeMap<String, usize>> {
     use crate::dalvik::decode_method;
     use crate::dalvik_to_jvm::{
@@ -2458,7 +2457,6 @@ pub fn diagnose_dex_bytes(dex_bytes: &[u8]) -> Result<BTreeMap<String, usize>> {
     Ok(buckets)
 }
 
-#[cfg(any(test, feature = "lifter-diag"))]
 pub fn diagnose_dex_methods(dex_bytes: &[u8]) -> Result<Vec<(String, String, String, String)>> {
     use crate::dalvik::decode_method;
     use crate::dalvik_to_jvm::{
@@ -2521,7 +2519,6 @@ pub fn diagnose_dex_methods(dex_bytes: &[u8]) -> Result<Vec<(String, String, Str
     Ok(out)
 }
 
-#[cfg(any(test, feature = "lifter-diag"))]
 fn classify_stub(
     item: &CodeItem,
     bail_op: i32,
