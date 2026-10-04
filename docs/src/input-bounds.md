@@ -15,9 +15,9 @@ The exceeded column states what happens when input goes past the bound. It comes
 
 The scan does not resolve types or trait dispatch, so an outcome names the construct it found rather than proving the behaviour.
 
-2223 bounds (count 217, other 1039, output 67, recursion 228, size 486, work 186).
+2225 bounds (count 217, other 1039, output 67, recursion 228, size 488, work 186).
 
-Exceeded: error 899, recorded 191, panic 0, delegated 49, silent 1026, unclassified 17, allocation 33, unused 8.
+Exceeded: error 900, recorded 191, panic 0, delegated 49, silent 1026, unclassified 18, allocation 33, unused 8.
 
 | Crate | Constant | Kind | Exceeded | Type | Value | File |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -820,6 +820,7 @@ Exceeded: error 899, recorded 191, panic 0, delegated 49, silent 1026, unclassif
 | `disrobe-pass-js-deob` | `MAX_RECOVER_PASSES` | other | silent: `for` range in `try_recover` | `usize` | `6` | `crates/disrobe-pass-js-deob/src/jsobfu/mod.rs` |
 | `disrobe-pass-js-deob` | `MAX_PRIOR_CONFIDENCE` | other | error: `Error::AuthorizationRequired` (DR-JSDEOB-0010); `Error::NoFamilyMatched` (DR-JSDEOB-0001) | `u8` | `Confidence::LOW.0` | `crates/disrobe-pass-js-deob/src/mangled_names/corpus_source.rs` |
 | `disrobe-pass-js-deob` | `MAX_PASS_CEILING` | other | recorded: flag `hit_pass_ceiling` | `u32` | `32` | `crates/disrobe-pass-js-deob/src/obfuscator_io/dispatch.rs` |
+| `disrobe-pass-js-deob` | `MAX_ARRAY_BUFFER_BYTES` | size | unclassified: stored in `max_buffer_size()` with no read found | `u64` | `64 * 1_024 * 1_024` | `crates/disrobe-pass-js-deob/src/sandbox_guard.rs` |
 | `disrobe-pass-js-deob` | `MAX_EXPRESSION_DEPTH` | recursion | error: `ProbeRefusal::UnsafeNesting` | `usize` | `28_000` | `crates/disrobe-pass-js-deob/src/sandbox_guard.rs` |
 | `disrobe-pass-js-deob` | `MAX_OPERATOR_CHAIN` | other | error: `Error::SyntaxLimit` (DR-JSDEOB-0005); `ProbeRefusal::UnsafeNesting` | `usize` | `600` | `crates/disrobe-pass-js-deob/src/sandbox_guard.rs` |
 | `disrobe-pass-js-deob` | `MAX_SYNTACTIC_NESTING_DEPTH` | recursion | error: `Error::SyntaxLimit` (DR-JSDEOB-0005); `ProbeRefusal::UnsafeNesting` | `usize` | `600` | `crates/disrobe-pass-js-deob/src/sandbox_guard.rs` |
@@ -2146,6 +2147,7 @@ Exceeded: error 899, recorded 191, panic 0, delegated 49, silent 1026, unclassif
 | `disrobe-taint` | `MAX_OUT_ARGUMENTS_PER_SOURCE` | other | silent: skipped in `insert_out_argument` | `usize` | `32` | `crates/disrobe-taint/src/config.rs` |
 | `disrobe-taint` | `MAX_PATH_STEPS` | work | silent: `.truncate()` in `append_step`; no action in `append_step` | `usize` | `128` | `crates/disrobe-taint/src/engine.rs` |
 | `disrobe-taint` | `MAX_RECORDED_UNRESOLVED_CALLS` | other | silent: skipped in `collect_unresolved_calls` | `usize` | `4096` | `crates/disrobe-taint/src/engine.rs` |
+| `disrobe-testkit` | `MAX_SOURCE_BYTES` | size | error: `AuthoredSourceError::TooLarge` | `u64` | `8 * 1024 * 1024` | `crates/disrobe-testkit/src/authored_source.rs` |
 | `disrobe-testkit` | `MAX_OPTIONAL_LIST_BYTES` | size | error: `PrerequisiteError::OptionalListTooLarge` | `u64` | `256 * 1024` | `crates/disrobe-testkit/src/prerequisite.rs` |
 | `disrobe-testkit` | `MAX_RECORD_NAME` | other | silent: `.take()` in `record_name` | `usize` | `160` | `crates/disrobe-testkit/src/prerequisite.rs` |
 | `disrobe-testkit` | `MAX_CORPUS_ENTRY_BYTES` | size | error: `StressError::CorpusEntryTooLarge` | `usize` | `MAX_WIRE_CASE_BYTES / 4` | `crates/disrobe-testkit/src/wire.rs` |
