@@ -15,9 +15,9 @@ use cli::annot::{self, AnnotCmd};
 use cli::apk;
 #[cfg(feature = "as3")]
 use cli::as3::{self, As3Cmd};
-#[cfg(feature = "chain")]
+#[cfg(feature = "auto")]
 use cli::auto;
-#[cfg(feature = "chain")]
+#[cfg(feature = "auto")]
 use cli::backend_export::BackendExportTarget;
 #[cfg(feature = "beam")]
 use cli::beam::{self, BeamCmd};
@@ -25,17 +25,17 @@ use cli::behavior;
 use cli::bug_report;
 #[cfg(feature = "native")]
 use cli::capabilities;
-#[cfg(feature = "chain")]
+#[cfg(feature = "auto")]
 use cli::catalog;
-#[cfg(feature = "chain")]
+#[cfg(feature = "auto")]
 use cli::chain_compare;
-#[cfg(feature = "chain")]
+#[cfg(feature = "auto")]
 use cli::chain_v1;
 use cli::completions as completions_cmd;
 use cli::config::{self, ConfigCmd};
 use cli::config_merge::{self, CliGlobalsSnapshot, EffectiveGlobals};
 use cli::context;
-#[cfg(feature = "chain")]
+#[cfg(feature = "auto")]
 use cli::detect;
 use cli::doctor;
 #[cfg(feature = "dotnet")]
@@ -49,7 +49,7 @@ use cli::frisk::{self, FriskFormat};
 use cli::globals::{self, Globals, ProgressMode};
 #[cfg(feature = "go")]
 use cli::go::{self, GoCmd};
-#[cfg(feature = "chain")]
+#[cfg(feature = "auto")]
 use cli::guard;
 #[cfg(feature = "mobile")]
 use cli::hermes::{self, HermesCmd};
@@ -99,7 +99,7 @@ use cli::pyfreeze::{self, PyfreezeCmd};
 use cli::pyinstaller::{self, PyinstallerCmd};
 use cli::query;
 use cli::rename;
-#[cfg(feature = "chain")]
+#[cfg(feature = "auto")]
 use cli::report::{self, ReportFormat};
 #[cfg(feature = "ruby")]
 use cli::ruby::{self, RubyCmd};
@@ -546,7 +546,7 @@ enum Cmd {
         )]
         coverage: bool,
     },
-    #[cfg(feature = "chain")]
+    #[cfg(feature = "auto")]
     #[command(
         about = "detect parsed New Executable structure and run every obfuscator/packer catalog detector against a file"
     )]
@@ -554,7 +554,7 @@ enum Cmd {
         #[arg(value_name = "PATH", help = "input file to fingerprint")]
         input: PathBuf,
     },
-    #[cfg(feature = "chain")]
+    #[cfg(feature = "auto")]
     #[command(
         about = "list every obfuscator/packer/protector family disrobe supports, grouped by ecosystem with each one's recovery level; pass an ecosystem (python, js, jvm, dotnet, native, go, wasm, ruby, lua, php, beam, as3, mobile, swift, shell) to filter"
     )]
@@ -889,7 +889,7 @@ enum Cmd {
         )]
         timestamp: Option<String>,
     },
-    #[cfg(feature = "chain")]
+    #[cfg(feature = "auto")]
     #[command(
         about = "auto-detect the input format & chain the right pass pipeline end-to-end; pass a directory to batch-process it recursively"
     )]
@@ -968,7 +968,7 @@ enum Cmd {
         )]
         timings: bool,
     },
-    #[cfg(feature = "chain")]
+    #[cfg(feature = "auto")]
     #[command(
         about = "explicit pass pipeline orchestrator backed by the registry-driven chain engine"
     )]
@@ -996,7 +996,7 @@ enum Cmd {
         )]
         timings: bool,
     },
-    #[cfg(feature = "chain")]
+    #[cfg(feature = "auto")]
     #[command(
         about = "structurally diff two chain.json documents (passes, stage blake3 hashes, sizes, verdicts)"
     )]
@@ -1006,7 +1006,7 @@ enum Cmd {
         #[arg(help = "right chain.json")]
         right: PathBuf,
     },
-    #[cfg(feature = "chain")]
+    #[cfg(feature = "auto")]
     #[command(
         about = "ground-truth guards: verify chain.json hashes, or deny edits to stage outputs"
     )]
@@ -1065,7 +1065,7 @@ enum Cmd {
     },
     #[command(about = "list every registered pass with a one-line capability summary")]
     Passes,
-    #[cfg(feature = "chain")]
+    #[cfg(feature = "auto")]
     #[command(hide = true, about = "print every clap subcommand path, one per line")]
     SubcommandTree,
     #[command(
@@ -1179,7 +1179,7 @@ enum Cmd {
         #[command(subcommand)]
         action: Option<ConfigCmd>,
     },
-    #[cfg(feature = "chain")]
+    #[cfg(feature = "auto")]
     #[command(
         about = "consolidate a completed run (out dir or batch manifest) into a forensic summary; runs `auto` first if given a raw input"
     )]
@@ -1222,7 +1222,7 @@ enum Cmd {
     },
 }
 
-#[cfg(feature = "chain")]
+#[cfg(feature = "auto")]
 #[derive(Subcommand, Debug)]
 enum GuardCmd {
     #[command(about = "verify a chain.json's per-stage output hashes match a committed reference")]
@@ -1672,7 +1672,7 @@ fn parse_u8_auto(s: &str) -> Result<u8, String> {
     u8::try_from(value).map_err(|e: std::num::TryFromIntError| e.to_string())
 }
 
-#[cfg(feature = "chain")]
+#[cfg(feature = "auto")]
 pub(crate) fn subcommand_names() -> std::collections::BTreeSet<String> {
     <Cli as clap::CommandFactory>::command()
         .get_subcommands()
@@ -1680,7 +1680,7 @@ pub(crate) fn subcommand_names() -> std::collections::BTreeSet<String> {
         .collect()
 }
 
-#[cfg(feature = "chain")]
+#[cfg(feature = "auto")]
 pub(crate) fn subcommand_paths() -> std::collections::BTreeSet<String> {
     let mut paths: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for top in <Cli as clap::CommandFactory>::command().get_subcommands() {
@@ -1761,13 +1761,13 @@ fn main() -> miette::Result<()> {
     progress_ui::install_rayon_pool(eff.threads);
     let global_dry_run: bool = eff.dry_run;
     let config_explicit: Option<PathBuf> = cli.config.clone();
-    #[cfg(feature = "chain")]
+    #[cfg(feature = "auto")]
     let auto_default_out: Option<PathBuf> = resolved.config.output.dir;
-    #[cfg(feature = "chain")]
+    #[cfg(feature = "auto")]
     let auto_default_depth: Option<u8> = resolved.config.execution.max_depth;
-    #[cfg(feature = "chain")]
+    #[cfg(feature = "auto")]
     let auto_default_emit: Option<Vec<String>> = resolved.config.output.emit;
-    #[cfg(feature = "chain")]
+    #[cfg(feature = "auto")]
     let auto_default_engine_symbol_map: Option<PathBuf> =
         resolved.config.execution.engine_symbol_map;
     let llm_flags: LlmFlags = cli.llm.clone();
@@ -1895,9 +1895,9 @@ fn main() -> miette::Result<()> {
         Cmd::Behavior { path, effects } => behavior::run(path, fmt, effects),
         #[cfg(feature = "native")]
         Cmd::Identify { path, coverage } => identify::run(path, fmt, coverage),
-        #[cfg(feature = "chain")]
+        #[cfg(feature = "auto")]
         Cmd::Detect { input } => detect::run(input, fmt),
-        #[cfg(feature = "chain")]
+        #[cfg(feature = "auto")]
         Cmd::Catalog { ecosystem } => catalog::run(ecosystem, fmt),
         Cmd::Extract {
             input,
@@ -2061,7 +2061,7 @@ fn main() -> miette::Result<()> {
             author,
             timestamp,
         } => vulnmatch::run(input, osv_db, fmt, openvex, author, timestamp),
-        #[cfg(feature = "chain")]
+        #[cfg(feature = "auto")]
         Cmd::Auto {
             input,
             out,
@@ -2130,7 +2130,7 @@ fn main() -> miette::Result<()> {
                 },
             )
         }
-        #[cfg(feature = "chain")]
+        #[cfg(feature = "auto")]
         Cmd::Chain {
             input,
             out,
@@ -2155,9 +2155,9 @@ fn main() -> miette::Result<()> {
                 timings,
             },
         ),
-        #[cfg(feature = "chain")]
+        #[cfg(feature = "auto")]
         Cmd::Diff { left, right } => chain_compare::run_diff(left, right, fmt),
-        #[cfg(feature = "chain")]
+        #[cfg(feature = "auto")]
         Cmd::Guard { action } => match action {
             GuardCmd::Verify { subject, reference } => {
                 chain_compare::run_guard(subject, reference, fmt)
@@ -2209,7 +2209,7 @@ fn main() -> miette::Result<()> {
         ),
         Cmd::Explain { code } => explain::run(code, fmt),
         Cmd::Passes => print_passes(),
-        #[cfg(feature = "chain")]
+        #[cfg(feature = "auto")]
         Cmd::SubcommandTree => {
             for path in subcommand_paths() {
                 println!("{path}");
@@ -2236,7 +2236,7 @@ fn main() -> miette::Result<()> {
         Cmd::Init { ide, force } => init_cmd::run(ide, force, fmt),
         Cmd::Context { out, fail_on } => context::run(out, fail_on, fmt),
         Cmd::Config { action } => config::run(action, config_explicit.as_deref(), fmt),
-        #[cfg(feature = "chain")]
+        #[cfg(feature = "auto")]
         Cmd::Report {
             target,
             format,
@@ -2319,16 +2319,16 @@ fn print_passes() -> miette::Result<()> {
     Ok(())
 }
 
-#[cfg(not(feature = "chain"))]
+#[cfg(not(feature = "auto"))]
 fn print_chain_registry() {
     println!();
     println!(
         "chain passes reachable from `disrobe auto` in this build: none, because this binary was \
-         built without the chain feature"
+         built without the auto feature"
     );
 }
 
-#[cfg(feature = "chain")]
+#[cfg(feature = "auto")]
 fn print_chain_registry() {
     let registry: disrobe_core::chain::PassRegistry = disrobe_passes::build_registry();
     println!();

@@ -1,4 +1,4 @@
-#![cfg(feature = "chain")]
+#![cfg(feature = "auto")]
 use std::path::PathBuf;
 
 use super::backend_export::BackendExportTarget;

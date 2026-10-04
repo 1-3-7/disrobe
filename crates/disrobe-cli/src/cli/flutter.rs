@@ -23,7 +23,7 @@ use disrobe_pass_native::{
     SymbolOrigin, render_ghidra_postscript, render_idapython, render_symbol_map_json,
 };
 
-#[cfg(feature = "chain")]
+#[cfg(feature = "auto")]
 use super::backend_export::{BackendExportTarget, SupplementalOutput};
 use super::emit::{EmitKind, EmitSpec};
 use super::globals;
@@ -575,7 +575,7 @@ fn flutter_engine_symbol_cache() -> Option<FlutterEngineSymbolCache> {
     ))
 }
 
-#[cfg(feature = "chain")]
+#[cfg(feature = "auto")]
 pub(crate) fn prepare_flutter_symbol_export(
     input: &Path,
     layout: &LibAppLayout,

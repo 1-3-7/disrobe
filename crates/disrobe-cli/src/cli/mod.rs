@@ -3,11 +3,11 @@ pub(crate) mod annot;
 pub(crate) mod apk;
 #[cfg(feature = "as3")]
 pub(crate) mod as3;
-#[cfg(feature = "chain")]
+#[cfg(feature = "auto")]
 pub(crate) mod auto;
-#[cfg(any(feature = "chain", feature = "jvm"))]
+#[cfg(any(feature = "auto", feature = "jvm"))]
 pub(crate) mod backend_export;
-#[cfg(feature = "chain")]
+#[cfg(feature = "auto")]
 pub(crate) mod batch;
 #[cfg(feature = "beam")]
 pub(crate) mod beam;
@@ -15,15 +15,15 @@ pub(crate) mod behavior;
 pub(crate) mod bug_report;
 #[cfg(feature = "native")]
 pub(crate) mod capabilities;
-#[cfg(feature = "chain")]
+#[cfg(feature = "auto")]
 pub(crate) mod catalog;
-#[cfg(feature = "chain")]
+#[cfg(feature = "auto")]
 pub(crate) mod catalog_registry;
-#[cfg(feature = "chain")]
+#[cfg(feature = "auto")]
 pub(crate) mod chain_compare;
-#[cfg(feature = "chain")]
+#[cfg(feature = "auto")]
 mod chain_materialization;
-#[cfg(feature = "chain")]
+#[cfg(feature = "auto")]
 pub(crate) mod chain_v1;
 pub(crate) mod completions;
 pub(crate) mod config;
@@ -31,7 +31,7 @@ pub(crate) mod config_merge;
 pub(crate) mod context;
 #[cfg(feature = "native")]
 pub(crate) mod cyclonedx;
-#[cfg(feature = "chain")]
+#[cfg(feature = "auto")]
 pub(crate) mod detect;
 pub(crate) mod doctor;
 #[cfg(feature = "dotnet")]
@@ -39,7 +39,7 @@ pub(crate) mod dotnet;
 #[cfg(any(
     feature = "as3",
     feature = "beam",
-    feature = "chain",
+    feature = "auto",
     feature = "dotnet",
     feature = "flutter",
     feature = "go",
@@ -62,14 +62,14 @@ pub(crate) mod extract;
 #[cfg(feature = "flutter")]
 pub(crate) mod flutter;
 pub(crate) mod frisk;
-#[cfg(feature = "chain")]
+#[cfg(feature = "auto")]
 pub(crate) mod glob;
 pub(crate) mod globals;
 #[cfg(feature = "go")]
 pub(crate) mod go;
 #[cfg(feature = "server")]
 pub(crate) mod grpc;
-#[cfg(feature = "chain")]
+#[cfg(feature = "auto")]
 pub(crate) mod guard;
 #[cfg(feature = "mobile")]
 pub(crate) mod hermes;
@@ -107,7 +107,7 @@ pub(crate) mod nuitka;
 pub(crate) mod openvex;
 pub(crate) mod output;
 pub(crate) mod pass_registry;
-#[cfg(feature = "chain")]
+#[cfg(feature = "auto")]
 pub(crate) mod path_ops;
 #[cfg(feature = "php")]
 pub(crate) mod php;
@@ -127,11 +127,11 @@ pub(crate) mod pyfreeze;
 pub(crate) mod pyinstaller;
 pub(crate) mod query;
 pub(crate) mod rename;
-#[cfg(feature = "chain")]
+#[cfg(feature = "auto")]
 pub(crate) mod report;
-#[cfg(feature = "chain")]
+#[cfg(feature = "auto")]
 pub(crate) mod report_forensic;
-#[cfg(feature = "chain")]
+#[cfg(feature = "auto")]
 pub(crate) mod report_html;
 #[cfg(feature = "ruby")]
 pub(crate) mod ruby;

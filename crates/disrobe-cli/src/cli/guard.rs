@@ -1,4 +1,4 @@
-#![cfg(feature = "chain")]
+#![cfg(feature = "auto")]
 use std::path::{Component, Path, PathBuf};
 
 use serde::Serialize;

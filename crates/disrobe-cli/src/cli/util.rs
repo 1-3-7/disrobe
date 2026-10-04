@@ -41,7 +41,7 @@ pub(crate) fn push_format(out: &mut String, args: std::fmt::Arguments<'_>) {
 }
 
 #[inline]
-#[cfg(any(feature = "chain", feature = "py"))]
+#[cfg(any(feature = "auto", feature = "py"))]
 pub(crate) fn hex_bytes(bytes: [u8; 16]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut s: String = String::with_capacity(32);

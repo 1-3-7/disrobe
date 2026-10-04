@@ -1,4 +1,4 @@
-#![cfg(feature = "chain")]
+#![cfg(feature = "auto")]
 #[derive(Clone, Debug, Default)]
 pub(crate) struct GlobMatcher {
     patterns: Vec<String>,

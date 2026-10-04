@@ -30,7 +30,7 @@ impl BackendExportTarget {
     }
 
     #[cfg(feature = "jvm")]
-    #[cfg(feature = "chain")]
+    #[cfg(feature = "auto")]
     pub(crate) fn auto_path(self) -> PathBuf {
         let filename: &str = match self {
             Self::Ghidra => "symbols.ghidra.java",

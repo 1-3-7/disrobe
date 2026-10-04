@@ -1,4 +1,4 @@
-#![cfg(feature = "chain")]
+#![cfg(feature = "auto")]
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::fs::File;

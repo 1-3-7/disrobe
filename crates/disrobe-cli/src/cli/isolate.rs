@@ -1,11 +1,11 @@
-#[cfg(feature = "chain")]
+#[cfg(feature = "auto")]
 use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::panic::PanicHookInfo;
-#[cfg(feature = "chain")]
+#[cfg(feature = "auto")]
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-#[cfg(feature = "chain")]
+#[cfg(feature = "auto")]
 pub(crate) const PANIC_CODE: &str = "DR-CLI-0877";
 
 thread_local! {
@@ -24,7 +24,7 @@ pub(crate) fn record_location(info: &PanicHookInfo<'_>) {
     LOCATION.with(|slot: &RefCell<Option<String>>| *slot.borrow_mut() = location);
 }
 
-#[cfg(feature = "chain")]
+#[cfg(feature = "auto")]
 fn payload_message(payload: &(dyn Any + Send)) -> String {
     payload
         .downcast_ref::<&str>()
@@ -33,7 +33,7 @@ fn payload_message(payload: &(dyn Any + Send)) -> String {
         .unwrap_or_else(|| "a panic with a non-text payload".to_owned())
 }
 
-#[cfg(feature = "chain")]
+#[cfg(feature = "auto")]
 pub(crate) fn isolate<T>(what: &str, work: impl FnOnce() -> T) -> Result<T, String> {
     let previous: bool = ISOLATED.with(|flag: &Cell<bool>| flag.replace(true));
     let outcome: std::thread::Result<T> = catch_unwind(AssertUnwindSafe(work));
@@ -49,7 +49,7 @@ pub(crate) fn isolate<T>(what: &str, work: impl FnOnce() -> T) -> Result<T, Stri
     })
 }
 
-#[cfg(all(test, feature = "chain"))]
+#[cfg(all(test, feature = "auto"))]
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::{PANIC_CODE, inside_isolation, isolate};

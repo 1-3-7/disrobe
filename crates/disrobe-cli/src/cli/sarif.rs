@@ -87,11 +87,11 @@ pub(crate) struct SarifArtifact {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum ArtifactRole {
-    #[cfg(feature = "chain")]
+    #[cfg(feature = "auto")]
     AnalysisTarget,
-    #[cfg(feature = "chain")]
+    #[cfg(feature = "auto")]
     ResultFile,
-    #[cfg(feature = "chain")]
+    #[cfg(feature = "auto")]
     Unmodified,
 }
 
@@ -132,7 +132,7 @@ pub(crate) struct MultiformatMessageString {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum SarifLevel {
-    #[cfg(feature = "chain")]
+    #[cfg(feature = "auto")]
     None,
     Note,
     Warning,
@@ -142,11 +142,11 @@ pub(crate) enum SarifLevel {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum ResultKind {
-    #[cfg(feature = "chain")]
+    #[cfg(feature = "auto")]
     Fail,
-    #[cfg(feature = "chain")]
+    #[cfg(feature = "auto")]
     Review,
-    #[cfg(feature = "chain")]
+    #[cfg(feature = "auto")]
     Informational,
 }
 
@@ -197,7 +197,7 @@ impl ArtifactLocation {
         Self { uri, index: None }
     }
 
-    #[cfg(feature = "chain")]
+    #[cfg(feature = "auto")]
     pub(crate) const fn indexed(uri: String, index: usize) -> Self {
         Self {
             uri,
@@ -246,7 +246,7 @@ impl Region {
         }
     }
 
-    #[cfg(feature = "chain")]
+    #[cfg(feature = "auto")]
     pub(crate) const fn byte_span(offset: u64, length: u64) -> Self {
         Self {
             start_line: None,
@@ -282,7 +282,7 @@ impl SarifLog {
         }
     }
 
-    #[cfg(feature = "chain")]
+    #[cfg(feature = "auto")]
     #[inline]
     pub(crate) fn from_run(run: Run) -> Self {
         Self {

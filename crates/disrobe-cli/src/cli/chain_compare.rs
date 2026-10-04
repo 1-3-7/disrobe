@@ -1,4 +1,4 @@
-#![cfg(feature = "chain")]
+#![cfg(feature = "auto")]
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
