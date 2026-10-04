@@ -15,7 +15,7 @@ categories.workspace = true
 workspace = true
 
 [features]
-default = []
+default = ["alt-runtimes-native"]
 alt-runtimes-native = ["alt-jython", "alt-ironpython", "alt-brython"]
 alt-jython = ["dep:disrobe-pass-jvm"]
 alt-ironpython = ["dep:disrobe-pass-dotnet"]

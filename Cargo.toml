@@ -197,7 +197,7 @@ disrobe-pass-pickle = { path = "crates/disrobe-pass-pickle", version = "0.10.6" 
 disrobe-passes = { path = "crates/disrobe-passes", version = "0.10.6", default-features = false }
 disrobe-pass-py-decompile = { path = "crates/disrobe-pass-py-decompile", version = "0.10.6" }
 disrobe-pass-py-deob = { path = "crates/disrobe-pass-py-deob", version = "0.10.6" }
-disrobe-pass-py-disasm = { path = "crates/disrobe-pass-py-disasm", version = "0.10.6" }
+disrobe-pass-py-disasm = { path = "crates/disrobe-pass-py-disasm", version = "0.10.6", default-features = false }
 disrobe-pass-pyarmor = { path = "crates/disrobe-pass-pyarmor", version = "0.10.6" }
 disrobe-pass-pyfreeze = { path = "crates/disrobe-pass-pyfreeze", version = "0.10.6" }
 disrobe-pass-pyinstaller = { path = "crates/disrobe-pass-pyinstaller", version = "0.10.6" }
