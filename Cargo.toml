@@ -171,7 +171,7 @@ disrobe-lift-x86 = { path = "crates/disrobe-lift-x86", version = "0.10.6" }
 disrobe-mba = { path = "crates/disrobe-mba", version = "0.10.6", default-features = false }
 disrobe-mcp = { path = "crates/disrobe-mcp", version = "0.10.6", default-features = false }
 disrobe-nir = { path = "crates/disrobe-nir", version = "0.10.6" }
-disrobe-nir-lift = { path = "crates/disrobe-nir-lift", version = "0.10.6" }
+disrobe-nir-lift = { path = "crates/disrobe-nir-lift", version = "0.10.6", default-features = false }
 disrobe-semdiff = { path = "crates/disrobe-semdiff", version = "0.10.6" }
 disrobe-similarity = { path = "crates/disrobe-similarity", version = "0.10.6" }
 disrobe-sleigh = { path = "crates/disrobe-sleigh", version = "0.10.6" }

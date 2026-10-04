@@ -32,7 +32,7 @@ thiserror = { workspace = true }
 wasmparser = { workspace = true, optional = true }
 
 [features]
-default = []
+default = ["as3", "beam", "dotnet", "jvm", "lua", "python", "ruby", "wasm"]
 as3 = ["dep:disrobe-pass-as3"]
 beam = ["dep:disrobe-pass-beam"]
 dotnet = ["dep:disrobe-pass-dotnet"]
