@@ -15,7 +15,6 @@ categories.workspace = true
 workspace = true
 
 [dependencies]
-disrobe-core = { workspace = true }
 disrobe-nir = { workspace = true }
 disrobe-query = { workspace = true }
 disrobe-taint = { workspace = true }
@@ -24,6 +23,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+disrobe-core = { workspace = true }
 
 [package.metadata.disrobe]
 level = 7
