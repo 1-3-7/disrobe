@@ -16,6 +16,7 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
 use super::band::find_interpreter;
+use disrobe_testkit::authorized_authored_source;
 
 pub(crate) const MEASURE_HARNESS: &str = "tests/harness/py_arbitrary_measure.py";
 pub(crate) const FAMILY_HARNESS: &str = "tests/harness/py_failure_families.py";
@@ -81,6 +82,20 @@ pub(crate) struct PublishedBar {
 #[must_use]
 pub(crate) fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+#[must_use]
+pub(crate) fn authorized_harness(crate_relative: &str) -> PathBuf {
+    let manifest: PathBuf = manifest_dir();
+    let workspace: &Path = manifest
+        .parent()
+        .and_then(Path::parent)
+        .expect("workspace root");
+    authorized_authored_source(
+        workspace,
+        &format!("crates/disrobe-pass-py-decompile/{crate_relative}"),
+    )
+    .unwrap_or_else(|error| panic!("authorize {crate_relative}: {error}"))
 }
 
 #[must_use]
@@ -197,7 +212,7 @@ pub(crate) fn run_measure_with_ledger(
     modules: &Path,
     ledger: Option<&Path>,
 ) -> HarnessRun {
-    let harness: PathBuf = manifest_dir().join(MEASURE_HARNESS);
+    let harness: PathBuf = authorized_harness(MEASURE_HARNESS);
     let mut command: Command = Command::new(python);
     command
         .arg(&harness)
@@ -239,7 +254,7 @@ pub(crate) fn run_measure_with_evidence(
     modules: &Path,
     request: &EvidenceRequest<'_>,
 ) -> HarnessRun {
-    let harness: PathBuf = manifest_dir().join(MEASURE_HARNESS);
+    let harness: PathBuf = authorized_harness(MEASURE_HARNESS);
     let mut command: Command = Command::new(python);
     command
         .arg(&harness)
@@ -284,7 +299,7 @@ pub(crate) fn run_strict_measure(
     require_version: &str,
     require_magic: Option<&str>,
 ) -> HarnessRun {
-    let harness: PathBuf = manifest_dir().join(MEASURE_HARNESS);
+    let harness: PathBuf = authorized_harness(MEASURE_HARNESS);
     let mut command: Command = Command::new(python);
     command
         .arg(&harness)
@@ -323,7 +338,7 @@ pub(crate) fn run_measure_bounded(
 ) -> HarnessRun {
     const POLL: Duration = Duration::from_millis(250);
 
-    let harness: PathBuf = manifest_dir().join(MEASURE_HARNESS);
+    let harness: PathBuf = authorized_harness(MEASURE_HARNESS);
     let capture: PathBuf = workspace_target().join("py-band-measure");
     std::fs::create_dir_all(&capture)
         .unwrap_or_else(|e: std::io::Error| panic!("create {}: {e}", capture.display()));
@@ -400,7 +415,7 @@ pub(crate) struct BandReach {
 
 #[must_use]
 pub(crate) fn run_reach(python: &Path, lib: &Path, modules: &Path) -> HarnessRun {
-    let harness: PathBuf = manifest_dir().join(REACH_HARNESS);
+    let harness: PathBuf = authorized_harness(REACH_HARNESS);
     let output: std::process::Output = Command::new(python)
         .arg(&harness)
         .arg("--lib")
@@ -458,7 +473,7 @@ pub(crate) fn parse_reach(stdout: &str) -> Result<BandReach, String> {
 
 #[must_use]
 pub(crate) fn run_family(python: &Path, disrobe: &Path, lib: &Path, modules: &Path) -> HarnessRun {
-    let harness: PathBuf = manifest_dir().join(FAMILY_HARNESS);
+    let harness: PathBuf = authorized_harness(FAMILY_HARNESS);
     let output: std::process::Output = Command::new(python)
         .arg(&harness)
         .arg("--disrobe")

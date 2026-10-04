@@ -92,7 +92,7 @@ fn the_310_band_shortfall_is_named_cluster_by_cluster() {
         );
     };
 
-    let harness: PathBuf = manifest_dir().join(FAMILY_HARNESS);
+    let harness: PathBuf = common::stdlib_measure::authorized_harness(FAMILY_HARNESS);
     let modules: PathBuf = manifest_dir().join(PINNED_MODULE_LIST);
     assert!(
         harness.is_file(),

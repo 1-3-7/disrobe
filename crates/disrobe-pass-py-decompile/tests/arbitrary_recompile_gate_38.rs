@@ -272,7 +272,7 @@ fn the_38_band_population_carries_the_bytecode_only_3_8_emits() {
             python.display()
         );
     };
-    let harness: PathBuf = manifest_dir().join(REACH_HARNESS);
+    let harness: PathBuf = common::stdlib_measure::authorized_harness(REACH_HARNESS);
     let modules: PathBuf = manifest_dir().join(PINNED_MODULE_LIST);
     assert!(
         harness.is_file(),
@@ -402,7 +402,7 @@ fn arbitrary_recompile_equivalence_gate_38() {
         );
     };
 
-    let harness: PathBuf = manifest_dir().join(MEASURE_HARNESS);
+    let harness: PathBuf = common::stdlib_measure::authorized_harness(MEASURE_HARNESS);
     let modules: PathBuf = manifest_dir().join(PINNED_MODULE_LIST);
     assert!(
         harness.is_file(),

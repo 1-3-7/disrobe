@@ -17,7 +17,7 @@ use common::band_gate::{
     BandRelease, CPYTHON_SERIES, FIRST_CACHED_SERIES, SeriesMagic, parse_magic,
     resolve_band_interpreter,
 };
-use common::stdlib_measure::{MEASURE_HARNESS, interpreter_version, manifest_dir};
+use common::stdlib_measure::{MEASURE_HARNESS, interpreter_version};
 
 const DIFFERENTIAL_HARNESS: &str = "tests/harness/py_tier_differential.py";
 const OPTIMIZE_LEVELS: [u8; 3] = [0, 1, 2];
@@ -420,7 +420,7 @@ fn parse_report(stdout: &str) -> Report {
 }
 
 fn run_differential(python: &Path) -> Output {
-    let harness: PathBuf = manifest_dir().join(DIFFERENTIAL_HARNESS);
+    let harness: PathBuf = common::stdlib_measure::authorized_harness(DIFFERENTIAL_HARNESS);
     assert!(
         harness.is_file(),
         "differential harness missing at {}",
@@ -848,8 +848,8 @@ fn a_harness_handed_the_wrong_interpreter_refuses_instead_of_measuring() {
         python.display()
     );
 
-    let differential: PathBuf = manifest_dir().join(DIFFERENTIAL_HARNESS);
-    let corpus: PathBuf = manifest_dir().join(MEASURE_HARNESS);
+    let differential: PathBuf = common::stdlib_measure::authorized_harness(DIFFERENTIAL_HARNESS);
+    let corpus: PathBuf = common::stdlib_measure::authorized_harness(MEASURE_HARNESS);
     let absent_version: &str = "2.7";
     let absent_release: &str = "3.14.999";
     let absent_magic: &str = "deadbeef";

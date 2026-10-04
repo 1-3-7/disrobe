@@ -379,7 +379,7 @@ fn byte_identical_tier_over_every_measured_band() {
         return;
     };
 
-    let harness: PathBuf = manifest_dir().join(MEASURE_HARNESS);
+    let harness: PathBuf = common::stdlib_measure::authorized_harness(MEASURE_HARNESS);
     let modules: PathBuf = manifest_dir().join(PINNED_MODULE_LIST);
     assert!(
         harness.is_file(),

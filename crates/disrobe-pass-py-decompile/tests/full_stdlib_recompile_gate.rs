@@ -717,7 +717,7 @@ fn sampled_stdlib_recompile_equivalence_gate() {
         );
     };
 
-    let harness: PathBuf = manifest_dir().join(MEASURE_HARNESS);
+    let harness: PathBuf = common::stdlib_measure::authorized_harness(MEASURE_HARNESS);
     assert!(
         harness.is_file(),
         "harness missing at {}",
@@ -888,7 +888,7 @@ fn full_stdlib_recompile_equivalence_gate() {
         );
     };
 
-    let harness: PathBuf = manifest_dir().join(MEASURE_HARNESS);
+    let harness: PathBuf = common::stdlib_measure::authorized_harness(MEASURE_HARNESS);
     let modules: PathBuf = manifest_dir().join(FULL_MODULE_LIST);
     assert!(
         harness.is_file(),
