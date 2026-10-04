@@ -128,7 +128,6 @@ fn body(report: &AotLiftReport, name: &str) -> String {
         .best_pseudo_dart()
 }
 
-#[cfg(feature = "chain")]
 fn mobile_pass_body(bytes: Vec<u8>, name: &str) -> String {
     use disrobe_core::chain::Pass as _;
     use disrobe_core::{Artifact, Rung};
@@ -394,7 +393,6 @@ fn stream_drain_keeps_unknown_register_inference_distinct_from_declared_arity() 
         "the rendered signature must preserve the declared arity, got:\n{dart}"
     );
 
-    #[cfg(feature = "chain")]
     {
         let bytes: Vec<u8> = read_sample("disrobe_sample/libapp_arm64.so");
         let structured: String = mobile_pass_body(bytes, "Stream.drain");
@@ -642,7 +640,6 @@ fn pool_statistics_are_reported_with_the_lift() {
     assert!(stats.tagged_objects + stats.raw_immediates <= stats.slots);
 }
 
-#[cfg(feature = "chain")]
 #[test]
 fn mobile_pass_renders_the_same_pseudocode_as_the_library() {
     let bytes: Vec<u8> = read_sample("disrobe_sample/libapp_arm64.so");
@@ -656,7 +653,6 @@ fn mobile_pass_renders_the_same_pseudocode_as_the_library() {
     assert!(structured.contains("fibonacciStep(arg0 - 1);"));
 }
 
-#[cfg(feature = "chain")]
 #[test]
 fn compressed_pointer_receiver_survives_the_registered_mobile_pass() {
     let bytes: Vec<u8> = read_sample("disrobe_sample/libapp_arm64.so");

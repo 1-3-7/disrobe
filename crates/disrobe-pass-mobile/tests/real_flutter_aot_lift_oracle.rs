@@ -379,7 +379,6 @@ fn real_aot_bodies_retain_exact_unlifted_arm64_residue() {
     );
 }
 
-#[cfg(feature = "chain")]
 #[test]
 fn mobile_chain_pass_exposes_unlifted_arm64_residue() {
     use disrobe_core::chain::Pass as _;

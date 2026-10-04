@@ -20,7 +20,6 @@ pub mod apk_recon;
 pub mod apk_signing;
 pub mod arsc;
 pub mod axml;
-#[cfg(feature = "chain")]
 pub mod chain_detector;
 pub mod cordova;
 pub(crate) mod debug;

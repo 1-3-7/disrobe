@@ -286,7 +286,6 @@ fn real_hermes_discord_function_spans_and_name_ids_stay_in_range() {
 }
 
 #[test]
-#[cfg(feature = "chain")]
 fn discord_hermes_full_module_parse_dispatch() {
     use disrobe_core::chain::Pass as _;
     use disrobe_core::{Artifact, Rung};

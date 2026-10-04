@@ -84,7 +84,6 @@ fn real_dart_symbol_literal_reaches_the_public_aot_lift() {
     );
 }
 
-#[cfg(feature = "chain")]
 #[test]
 fn registered_mobile_pass_emits_the_typed_symbol_literal() {
     use disrobe_core::chain::Pass as _;

@@ -1,4 +1,3 @@
-#![cfg(feature = "chain")]
 #[cfg(feature = "jni")]
 use disrobe_core::chain::detection::TERMINAL_HINT;
 use disrobe_core::chain::{
