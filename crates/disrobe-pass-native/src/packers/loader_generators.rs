@@ -1550,7 +1550,7 @@ fn bytes(input: [u32; 4]) -> [u8; 16] {
     output
 }
 
-#[cfg(all(test, feature = "chain"))]
+#[cfg(test)]
 pub(crate) fn test_go_donut_wrapper(
     template: &[u8],
     module: &[u8],

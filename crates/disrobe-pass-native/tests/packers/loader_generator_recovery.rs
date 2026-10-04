@@ -311,7 +311,6 @@ fn truncation_and_oversized_declarations_are_bounded() -> TestResult<()> {
     Ok(())
 }
 
-#[cfg(feature = "chain")]
 mod chain {
     use std::collections::BTreeMap;
     use std::time::Instant;

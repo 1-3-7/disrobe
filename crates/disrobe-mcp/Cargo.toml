@@ -19,8 +19,6 @@ workspace = true
 default = ["full"]
 full = ["auto", "js", "wasm", "php", "ruby", "shell", "mobile", "lua", "swift", "jvm", "dotnet", "go", "beam", "as3", "nativelang", "scriptlang"]
 auto = [
-    "disrobe-core/chain",
-    "disrobe-pass-native/chain",
     "dep:disrobe-passes",
     "disrobe-passes/pyarmor",
     "disrobe-passes/native",
@@ -52,7 +50,7 @@ nativelang = ["auto", "disrobe-passes/nativelang"]
 scriptlang = ["auto", "disrobe-passes/scriptlang"]
 
 [dependencies]
-disrobe-core = { workspace = true, features = ["chain"] }
+disrobe-core = { workspace = true }
 disrobe-ir = { workspace = true }
 disrobe-llm-metadata = { workspace = true }
 disrobe-binfmt = { workspace = true }

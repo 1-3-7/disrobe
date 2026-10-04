@@ -22,7 +22,7 @@ arbitrary = { version = "1", features = ["derive"] }
 libfuzzer-sys = { version = "0.4", features = ["arbitrary-derive"] }
 disrobe-binfmt = { path = "../crates/disrobe-binfmt" }
 disrobe-bytes = { path = "../crates/disrobe-bytes" }
-disrobe-core = { path = "../crates/disrobe-core", features = ["chain"] }
+disrobe-core = { path = "../crates/disrobe-core" }
 disrobe-ir = { path = "../crates/disrobe-ir" }
 disrobe-nir-lift = { path = "../crates/disrobe-nir-lift", default-features = false, features = ["dotnet", "jvm", "wasm"] }
 disrobe-pass-dotnet = { path = "../crates/disrobe-pass-dotnet", features = ["semantic-reach"] }

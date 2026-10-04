@@ -96,7 +96,7 @@ net-fetch = ["dep:reqwest"]
 git-history = ["disrobe-core/git-history"]
 
 py = ["dep:disrobe-pass-pyarmor", "dep:disrobe-pass-pyinstaller", "dep:disrobe-pass-pyfreeze", "dep:disrobe-pass-nuitka", "dep:disrobe-pass-sourcedefender", "dep:disrobe-pass-py-deob", "dep:disrobe-pass-py-disasm", "dep:disrobe-pass-py-decompile", "disrobe-nir-lift?/python"]
-native = ["dep:disrobe-capabilities", "dep:disrobe-pass-native", "disrobe-pass-native/chain"]
+native = ["dep:disrobe-capabilities", "dep:disrobe-pass-native"]
 webview = ["dep:disrobe-pass-webview"]
 binfmt = []
 plugin = ["dep:disrobe-plugin-host", "dep:wasmtime", "dep:thiserror"]
@@ -126,7 +126,6 @@ auto = [
     "native",
     "py",
     "webview",
-    "disrobe-core/chain",
     "dep:disrobe-passes",
     "disrobe-passes/pyarmor",
     "disrobe-passes/native",
@@ -143,7 +142,7 @@ auto = [
 
 [dependencies]
 base64 = { workspace = true }
-disrobe-core = { workspace = true, features = ["chain", "cache", "redact"] }
+disrobe-core = { workspace = true, features = ["cache", "redact"] }
 disrobe-ir = { workspace = true }
 disrobe-binfmt = { workspace = true }
 disrobe-capabilities = { workspace = true, optional = true }

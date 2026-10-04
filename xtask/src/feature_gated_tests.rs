@@ -14,7 +14,6 @@ const MAX_DOC_BYTES: u64 = 8 * 1024 * 1024;
 const CHAIN_DETECTOR_FILE: &str = "chain_detector.rs";
 
 const MIN_CHAIN_DETECTORS: usize = 25;
-const MIN_HIDDEN_CRATES: usize = 1;
 const MIN_SCANNED_COMMANDS: usize = 20;
 
 const UNDECLARED: &str = "hidden-test-surface-undeclared";
@@ -22,8 +21,6 @@ const STALE: &str = "hidden-test-surface-stale";
 const EMPTY_CHAIN_DETECTOR: &str = "chain-detector-without-tests";
 const SKIPPING_COMMAND: &str = "verification-command-skips-tests";
 const UNKNOWN_PACKAGE: &str = "verification-command-unknown-package";
-
-const HIDDEN_TEST_SURFACE: &[(&str, &[&str])] = &[("disrobe-pass-native", &["chain"])];
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum Requirement {
@@ -214,12 +211,65 @@ impl Audit {
     }
 }
 
+const fn required_hidden_test_surface() -> &'static [(&'static str, &'static [&'static str])] {
+    &[]
+}
+
+fn record_hidden_surface(
+    report: &mut Audit,
+    facts: &CrateFacts,
+    actual: &BTreeSet<String>,
+    expected: Option<&BTreeSet<String>>,
+) {
+    match (actual.is_empty(), expected) {
+        (false, None) => report.fail(
+            UNDECLARED,
+            format!(
+                "{} hides test-bearing code behind [{}], which its default feature set does \
+                 not enable, so `cargo test -p {}` compiles those tests away and still prints \
+                 a passing result; make the tests default-reachable and add or repair the exact \
+                 per-crate verification command",
+                facts.package,
+                render_labels(actual),
+                facts.package,
+            ),
+        ),
+        (true, Some(_)) => report.fail(
+            STALE,
+            format!(
+                "HIDDEN_TEST_SURFACE lists {} but it now hides no test behind a non-default \
+                 feature; either a gate was lifted or the tests behind it were deleted, so \
+                 drop the entry in xtask/src/feature_gated_tests.rs and confirm the tests \
+                 still exist",
+                facts.package
+            ),
+        ),
+        (false, Some(want)) if want != actual => report.fail(
+            UNDECLARED,
+            format!(
+                "{} hides test-bearing code behind [{}] but HIDDEN_TEST_SURFACE declares [{}]; \
+                 update the entry in xtask/src/feature_gated_tests.rs and state the flag in \
+                 docs/src/contributing.md",
+                facts.package,
+                render_labels(actual),
+                render_labels(want)
+            ),
+        ),
+        (true, None) | (false, Some(_)) => {}
+    }
+}
+
 pub(crate) fn audit(root: &Path) -> Result<Audit> {
     let crates: Vec<CrateFacts> = load_crates(root)?;
     let mut report: Audit = Audit::default();
+    let hidden_test_surface: &[(&str, &[&str])] = required_hidden_test_surface();
+
+    if !hidden_test_surface.is_empty() {
+        bail!("HIDDEN_TEST_SURFACE must stay empty; make every gated test default-reachable");
+    }
 
     let mut declared: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
-    for (package, labels) in HIDDEN_TEST_SURFACE {
+    for (package, labels) in hidden_test_surface {
         let entry: BTreeSet<String> = labels.iter().map(|l: &&str| (*l).to_owned()).collect();
         if declared.insert(package, entry).is_some() {
             bail!("HIDDEN_TEST_SURFACE names {package} twice");
@@ -259,47 +309,11 @@ pub(crate) fn audit(root: &Path) -> Result<Audit> {
             hidden_crates += 1;
         }
         let expected: Option<&BTreeSet<String>> = declared.get(facts.package.as_str());
-        match (actual.is_empty(), expected) {
-            (false, None) => report.fail(
-                UNDECLARED,
-                format!(
-                    "{} hides test-bearing code behind [{}], which its default feature set does \
-                     not enable, so `cargo test -p {}` compiles those tests away and still prints \
-                     a passing result; run `{}` and add the entry to HIDDEN_TEST_SURFACE in \
-                     xtask/src/feature_gated_tests.rs",
-                    facts.package,
-                    render_labels(&actual),
-                    facts.package,
-                    render_command(&facts.package, &actual)
-                ),
-            ),
-            (true, Some(_)) => report.fail(
-                STALE,
-                format!(
-                    "HIDDEN_TEST_SURFACE lists {} but it now hides no test behind a non-default \
-                     feature; either a gate was lifted or the tests behind it were deleted, so \
-                     drop the entry in xtask/src/feature_gated_tests.rs and confirm the tests \
-                     still exist",
-                    facts.package
-                ),
-            ),
-            (false, Some(want)) if want != &actual => report.fail(
-                UNDECLARED,
-                format!(
-                    "{} hides test-bearing code behind [{}] but HIDDEN_TEST_SURFACE declares [{}]; \
-                     update the entry in xtask/src/feature_gated_tests.rs and state the flag in \
-                     docs/src/contributing.md",
-                    facts.package,
-                    render_labels(&actual),
-                    render_labels(want)
-                ),
-            ),
-            (true, None) | (false, Some(_)) => {}
-        }
+        record_hidden_surface(&mut report, facts, &actual, expected);
     }
     report.hidden_crates = hidden_crates;
 
-    for (package, _) in HIDDEN_TEST_SURFACE {
+    for (package, _) in hidden_test_surface {
         if !crates
             .iter()
             .any(|facts: &CrateFacts| facts.package == *package)
@@ -322,15 +336,6 @@ pub(crate) fn audit(root: &Path) -> Result<Audit> {
             report.chain_detectors
         );
     }
-    if hidden_crates < MIN_HIDDEN_CRATES {
-        bail!(
-            "this sweep resolved {hidden_crates} crate(s) hiding test-bearing code behind a \
-             non-default feature, fewer than the {MIN_HIDDEN_CRATES} it requires; the inner \
-             attribute reader or the feature-closure walk broke, and an empty population would \
-             report every command safe"
-        );
-    }
-
     if report.commands_scanned < MIN_SCANNED_COMMANDS {
         bail!(
             "this sweep read {} per-crate `cargo test -p` invocation(s) out of the repository's \
@@ -1123,6 +1128,31 @@ mod tests {
             found.requirements,
             vec![Requirement::Enabled("smt-solver".to_owned())]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn the_empty_hidden_surface_rejects_a_parsed_non_default_test() -> Result<()> {
+        let root: tempfile::TempDir = tempfile::tempdir()?;
+        let source: PathBuf = root.path().join("crates/example/src");
+        std::fs::create_dir_all(&source)?;
+        std::fs::write(
+            source.join(CHAIN_DETECTOR_FILE),
+            "#![cfg(feature = \"chain\")]\n#[test]\nfn detects() {}\n",
+        )?;
+
+        let (gated, chain_detector_tests): (Vec<GatedFile>, Option<usize>) =
+            scan_crate_sources(root.path(), "crates/example")?;
+        let mut facts: CrateFacts = crate_facts(&[("default", &[]), ("chain", &[])], gated);
+        facts.chain_detector_tests = chain_detector_tests;
+        let actual: BTreeSet<String> =
+            facts.hidden_labels_with_configuration_coverage(&ConfigurationCoverage::default());
+        let mut report: Audit = Audit::default();
+
+        record_hidden_surface(&mut report, &facts, &actual, None);
+
+        assert_eq!(report.findings.len(), 1);
+        assert_eq!(report.findings[0].check, UNDECLARED);
         Ok(())
     }
 

@@ -2846,7 +2846,6 @@ fn entropy_profile(bytes: &[u8]) -> Option<EntropyProfile> {
     })
 }
 
-#[cfg(feature = "chain")]
 mod chain_impl {
     use super::{SigMatch, SigReport, StructFinding, Target, analyze};
     use disrobe_core::chain::{
@@ -3044,7 +3043,6 @@ mod chain_impl {
     }
 }
 
-#[cfg(feature = "chain")]
 pub use chain_impl::{PASS_ID, SigEngineDetector};
 
 #[cfg(test)]
@@ -3534,7 +3532,7 @@ mod tests {
     }
 }
 
-#[cfg(all(test, feature = "chain"))]
+#[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod chain_tests {
     use super::*;

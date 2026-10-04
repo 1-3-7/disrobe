@@ -1,4 +1,3 @@
-#[cfg(feature = "chain")]
 use super::LifterInstructionCoverage;
 use super::return_channel;
 use super::{
@@ -446,7 +445,6 @@ pub(super) fn recover_with_calls(
     )
 }
 
-#[cfg(feature = "chain")]
 pub(super) fn recover_with_coverage(
     machine_code: &[u8],
     base: u64,

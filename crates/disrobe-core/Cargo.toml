@@ -16,7 +16,6 @@ workspace = true
 
 [features]
 default = []
-chain = []
 cache = []
 redact = []
 git-history = ["dep:gix"]

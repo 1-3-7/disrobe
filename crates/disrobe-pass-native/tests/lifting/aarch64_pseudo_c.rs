@@ -15,10 +15,8 @@ use std::time::Duration;
 
 use disrobe_core::subprocess::{CapturedOutput, run_captured};
 
-#[cfg(feature = "chain")]
 use disrobe_core::chain::Pass as _;
 
-#[cfg(feature = "chain")]
 use disrobe_core::{Artifact, Rung};
 
 fn find_program(name: &str) -> Option<PathBuf> {
@@ -178,7 +176,6 @@ fn compiled_frame_remainder_fixture() -> Vec<u8> {
     std::fs::read(object_path).expect("read frame remainder fixture object")
 }
 
-#[cfg(feature = "chain")]
 fn linked_extended_register_fixture() -> Vec<u8> {
     let clang: PathBuf =
         find_program("clang").expect("clang is required for the extended-register fixture");
@@ -694,7 +691,6 @@ fn clang_assembled_extended_register_forms_recover_and_execute() {
     }
 }
 
-#[cfg(feature = "chain")]
 #[test]
 fn auto_native_pass_surfaces_aarch64_pseudo_source_and_typed_refusals() {
     let image_bytes: Vec<u8> = linked_extended_register_fixture();

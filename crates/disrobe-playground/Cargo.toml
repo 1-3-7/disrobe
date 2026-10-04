@@ -17,14 +17,12 @@ workspace = true
 [features]
 default = ["auto"]
 auto = [
-    "disrobe-core/chain",
-    "disrobe-pass-native/chain",
     "dep:disrobe-passes",
     "disrobe-passes/full",
 ]
 
 [dependencies]
-disrobe-core = { workspace = true, features = ["chain"] }
+disrobe-core = { workspace = true }
 disrobe-pass-native = { workspace = true }
 disrobe-similarity = { workspace = true }
 disrobe-pass-wasm-deob = { workspace = true }

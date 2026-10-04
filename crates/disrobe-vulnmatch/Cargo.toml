@@ -23,10 +23,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 
-[features]
-default = []
-chain = ["disrobe-core/chain"]
-
 [dev-dependencies]
 
 [package.metadata.disrobe]

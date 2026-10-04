@@ -41,7 +41,7 @@ disrobe-pass-jvm = { workspace = true }
 disrobe-pass-dotnet = { workspace = true }
 disrobe-pass-wasm-deob = { workspace = true }
 disrobe-pass-js-deob = { workspace = true }
-disrobe-pass-native = { workspace = true, features = ["chain"] }
+disrobe-pass-native = { workspace = true }
 disrobe-pass-beam = { workspace = true }
 disrobe-pass-pickle = { workspace = true }
 disrobe-pass-lua = { workspace = true }

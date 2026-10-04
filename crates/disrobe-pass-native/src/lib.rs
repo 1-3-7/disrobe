@@ -21,7 +21,6 @@ pub mod backend_export;
 #[allow(clippy::redundant_pub_crate)]
 mod basic_blocks;
 pub mod bindiff;
-#[cfg(feature = "chain")]
 pub mod chain_detector;
 #[allow(clippy::redundant_pub_crate)]
 mod code_symbol;
@@ -289,7 +288,6 @@ pub use sig_engine::{
     analyze as analyze_signatures, detect_format as sig_detect_format,
     struct_findings as native_struct_findings,
 };
-#[cfg(feature = "chain")]
 pub use sig_engine::{PASS_ID as SIG_ENGINE_PASS_ID, SigEngineDetector};
 pub use sigmaker::{SigmakerOptions, Signature, SignatureByte, make_signature};
 pub use similarity::extract_function_features;

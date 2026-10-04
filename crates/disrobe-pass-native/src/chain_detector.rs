@@ -1,4 +1,3 @@
-#![cfg(feature = "chain")]
 use disrobe_binfmt::{StructuralFormat, identify_by_structure};
 use disrobe_core::Artifact;
 use disrobe_core::Rung;

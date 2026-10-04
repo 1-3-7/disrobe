@@ -2186,7 +2186,6 @@ pub struct LeafRecovery {
     pub call_site_signature: Option<CallSiteSignatureProof>,
 }
 
-#[cfg(feature = "chain")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LifterInstructionCoverage {
     pub(crate) span_instructions: usize,
@@ -2226,7 +2225,6 @@ impl LifterCoverageTrace {
         self.states.fill(InstructionCoverageState::Modelled);
     }
 
-    #[cfg(feature = "chain")]
     pub(super) fn finish(self) -> LifterInstructionCoverage {
         let modelled_instructions: usize = self
             .states
@@ -2260,7 +2258,6 @@ pub(super) fn mark_instruction_modelled(
     }
 }
 
-#[cfg(feature = "chain")]
 pub(crate) fn recover_aarch64_function_with_coverage(
     machine_code: &[u8],
     base: u64,
@@ -2416,7 +2413,6 @@ pub fn recover_leaf_function_in_object(
     )
 }
 
-#[cfg(feature = "chain")]
 pub(crate) fn recover_leaf_function_in_object_with_coverage(
     object: &[u8],
     machine_code: &[u8],
@@ -38351,7 +38347,6 @@ mod structuring_corpus {
         assert_eq!(refused, 68);
     }
 
-    #[cfg(feature = "chain")]
     #[test]
     fn x86_object_coverage_uses_the_production_dispatch_and_preserves_verdicts() {
         let object: Vec<u8> = compile_elf_assembly(
@@ -39787,7 +39782,6 @@ mod forward_join_scope {
         );
     }
 
-    #[cfg(feature = "chain")]
     #[test]
     fn instruction_coverage_keeps_zero_full_and_refused_populations_distinct() {
         let (_, empty): (

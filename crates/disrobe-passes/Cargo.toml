@@ -47,7 +47,7 @@ full = [
 ]
 
 pyarmor = ["dep:disrobe-pass-pyarmor"]
-native = ["dep:disrobe-pass-native", "disrobe-pass-native/chain"]
+native = ["dep:disrobe-pass-native"]
 py-deob = ["dep:disrobe-pass-py-deob"]
 container = ["dep:disrobe-binfmt"]
 sourcedefender = ["dep:disrobe-pass-sourcedefender"]
@@ -75,7 +75,7 @@ nativelang = ["dep:disrobe-pass-nativelang"]
 webview = ["dep:disrobe-pass-webview"]
 
 [dependencies]
-disrobe-core = { workspace = true, features = ["chain"] }
+disrobe-core = { workspace = true }
 disrobe-pass-pyarmor = { workspace = true, optional = true }
 disrobe-pass-native = { workspace = true, optional = true }
 disrobe-pass-py-deob = { workspace = true, optional = true }
