@@ -44,7 +44,7 @@ disrobe-pass-js-deob = { workspace = true }
 disrobe-pass-native = { workspace = true, features = ["chain"] }
 disrobe-pass-beam = { workspace = true }
 disrobe-pass-pickle = { workspace = true }
-disrobe-pass-lua = { workspace = true, features = ["chain"] }
+disrobe-pass-lua = { workspace = true }
 disrobe-pass-go = { workspace = true }
 disrobe-pass-ruby = { workspace = true }
 disrobe-pass-php = { workspace = true }

@@ -22,9 +22,7 @@
     clippy::struct_field_names
 )]
 
-#[cfg(feature = "chain")]
 pub mod chain_detector;
-#[cfg(feature = "chain")]
 pub use chain_detector::{LuaCatalogEntry, LuaDetector};
 pub mod cursor;
 pub(crate) mod debug;

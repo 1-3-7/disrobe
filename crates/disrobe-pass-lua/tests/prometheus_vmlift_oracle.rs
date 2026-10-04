@@ -432,7 +432,6 @@ fn peel_path_applies_fold_and_dispatch_recovery() {
     let expected: String = run_lua(&interpreter, "baseline greeting", &baseline);
     assert_eq!(expected, "hello world\n");
     assert_eq!(run_lua(&interpreter, "recovered greeting", deob), expected);
-    #[cfg(feature = "chain")]
     {
         use disrobe_core::chain::Pass;
         use disrobe_core::{Artifact, Rung};

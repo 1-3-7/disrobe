@@ -109,7 +109,7 @@ wasm = ["dep:disrobe-pass-wasm-deob", "nir-lift", "disrobe-nir-lift/wasm", "disr
 jvm = ["dep:disrobe-pass-jvm", "disrobe-pass-py-disasm/alt-jython", "nir-lift", "native", "disrobe-passes?/jvm", "disrobe-mcp?/jvm", "disrobe-pass-mobile?/jni", "disrobe-nir-lift/jvm"]
 dotnet = ["dep:disrobe-pass-dotnet", "disrobe-pass-py-disasm/alt-ironpython", "disrobe-pass-dotnet/chain", "nir-lift", "disrobe-passes?/dotnet", "disrobe-mcp?/dotnet", "disrobe-nir-lift/dotnet"]
 mobile = ["dep:disrobe-pass-mobile", "disrobe-pass-mobile/native-image", "disrobe-passes?/mobile", "disrobe-mcp?/mobile"]
-lua = ["dep:disrobe-pass-lua", "disrobe-pass-lua/chain", "nir-lift", "disrobe-passes?/lua", "disrobe-mcp?/lua", "disrobe-nir-lift/lua"]
+lua = ["dep:disrobe-pass-lua", "nir-lift", "disrobe-passes?/lua", "disrobe-mcp?/lua", "disrobe-nir-lift/lua"]
 php = ["dep:disrobe-pass-php", "disrobe-passes?/php", "disrobe-mcp?/php"]
 ruby = ["dep:disrobe-pass-ruby", "nir-lift", "disrobe-passes?/ruby", "disrobe-mcp?/ruby", "disrobe-nir-lift/ruby"]
 beam = ["dep:disrobe-pass-beam", "nir-lift", "disrobe-passes?/beam", "disrobe-mcp?/beam", "disrobe-nir-lift/beam"]
@@ -140,7 +140,6 @@ chain = [
     "disrobe-passes/py-decompile",
     "disrobe-passes/pyinstaller",
     "disrobe-pass-mobile?/chain",
-    "disrobe-pass-lua?/chain",
     "disrobe-pass-jvm?/chain",
     "disrobe-pass-dotnet?/chain",
 ]
