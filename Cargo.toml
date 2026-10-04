@@ -161,7 +161,7 @@ delharc = { version = "0.6.1", features = ["lhx"] }
 des = "0.8.1"
 disrobe-binfmt = { path = "crates/disrobe-binfmt", version = "0.10.6" }
 disrobe-bytes = { path = "crates/disrobe-bytes", version = "0.10.6" }
-disrobe-capabilities = { path = "crates/disrobe-capabilities", version = "0.10.6" }
+disrobe-capabilities = { path = "crates/disrobe-capabilities", version = "0.10.6", default-features = false }
 disrobe-cfg = { path = "crates/disrobe-cfg", version = "0.10.6" }
 disrobe-core = { path = "crates/disrobe-core", version = "0.10.6" }
 disrobe-emit = { path = "crates/disrobe-emit", version = "0.10.6" }
