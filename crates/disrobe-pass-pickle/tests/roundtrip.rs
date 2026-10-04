@@ -5,6 +5,7 @@ use std::process::Command;
 
 use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_pickle::{PickleValue, Session, disassemble, execute_full, reconstruct};
+use disrobe_testkit::authorized_authored_source;
 use serde_json::{Map, Value, json};
 
 const MIN_SUPPORTED: usize = 120;
@@ -155,9 +156,16 @@ fn a_located_interpreter_is_handed_back_unchanged() {
 }
 
 fn harness_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("roundtrip_harness.py")
+    let crate_dir: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let workspace_root: &std::path::Path = crate_dir
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("the crate is under the workspace crates directory");
+    authorized_authored_source(
+        workspace_root,
+        "crates/disrobe-pass-pickle/tests/roundtrip_harness.py",
+    )
+    .expect("the pickle harness is an authorized authored source")
 }
 
 fn reconstruct_source(bytes: &[u8]) -> Value {

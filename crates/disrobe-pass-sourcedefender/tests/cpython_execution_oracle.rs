@@ -11,6 +11,7 @@ use disrobe_pass_sourcedefender::{
     recover_layered_with_modern_key,
 };
 use disrobe_py_marshal::PyVersion;
+use disrobe_testkit::authorized_authored_source;
 use regex::Regex;
 
 const REAL_HELLO_PYE: &[u8] = include_bytes!("../../../corpus/python/sourcedefender/hello.pye");
@@ -45,9 +46,10 @@ fn workspace_root() -> PathBuf {
 }
 
 fn ground_truth_source(rel: &str) -> PathBuf {
-    workspace_root()
-        .join("corpus/python/sourcedefender")
-        .join(rel)
+    let root: PathBuf = workspace_root();
+    let relative: String = format!("corpus/python/sourcedefender/{rel}");
+    authorized_authored_source(&root, &relative)
+        .expect("the SourceDefender reference is an authorized authored source")
 }
 
 fn make_tmp(name: &str) -> (ScratchDir, PathBuf) {

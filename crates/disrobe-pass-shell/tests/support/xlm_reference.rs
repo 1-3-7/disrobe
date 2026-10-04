@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use disrobe_core::subprocess::{CapturedOutput, run_captured};
+use disrobe_testkit::authorized_authored_source;
 use flate2::read::GzDecoder;
 use serde::Deserialize;
 
@@ -27,9 +28,16 @@ pub(crate) fn golden_dir() -> PathBuf {
 }
 
 pub(crate) fn driver_path() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("xlm_reference_driver.py")
+    let crate_dir: &Path = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let workspace_root: &Path = crate_dir
+        .parent()
+        .and_then(Path::parent)
+        .expect("the crate is under the workspace crates directory");
+    authorized_authored_source(
+        workspace_root,
+        "crates/disrobe-pass-shell/tests/xlm_reference_driver.py",
+    )
+    .expect("the XLM reference driver is an authorized authored source")
 }
 
 pub(crate) fn fixture_bytes(name: &str) -> Vec<u8> {
