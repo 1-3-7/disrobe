@@ -1,0 +1,179 @@
+[[source]]
+path = "crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py"
+sha256 = "d9b0837635c2378ded96b0d27526db6b15dd9588d9435ae1741b84683794d5fd"
+
+[[source]]
+path = "crates/disrobe-pass-py-decompile/tests/harness/py_failure_families.py"
+sha256 = "7ca1b5a800df5da4d80effb2f64e8a3773d5695390204f138e1c491a1bcbaa93"
+
+[[source]]
+path = "crates/disrobe-pass-py-decompile/tests/harness/py_band_bytecode_reach.py"
+sha256 = "ad49ba2644bd5c241b8f25654778049b8fbd6671d7caa6260ad6ab048182e120"
+
+[[source]]
+path = "crates/disrobe-pass-py-decompile/tests/harness/py_tier_differential.py"
+sha256 = "0011cb7db38e714b381d7056d6e7b25c64f4c9954a940d168d7aa144ea0eff28"
+
+[[source]]
+path = "crates/disrobe-pass-pickle/tests/roundtrip_harness.py"
+sha256 = "57d3ad8654b2b50ae98e5dfaad7267b1f499c9e0b1af47bfd8f89d705428febb"
+
+[[source]]
+path = "crates/disrobe-lift-x86/tests/pypcode_oracle.py"
+sha256 = "86c8caf0f381d6779f87e925fb975c1f8ea11dbf0733d702a43238b84d093938"
+
+[[source]]
+path = "crates/disrobe-lift-x86/tests/unicorn_oracle.py"
+sha256 = "1ff3d26526efd0c6f64dc23993b96254914f0ee1d34f6f72cf57f33c82918ede"
+
+[[source]]
+path = "crates/disrobe-pass-shell/tests/xlm_reference_driver.py"
+sha256 = "a99b3489c615f778664b4068180b06f25deebfefdd60dbdec708869f167c377c"
+
+[[source]]
+path = "corpus/r/describe.R"
+sha256 = "f93e160071eed1c248a59e590698c77c5a1856593c0ee5b1d00d0abf622ad76e"
+
+[[source]]
+path = "corpus/python/sourcedefender/legacy_bytecode.py"
+sha256 = "b22a65f02c43cb5d042cdc77c6a6f46a1f8b4bf115dc6e0e62a9e47cff07e45f"
+
+[[source]]
+path = "corpus/php/oparray/emit_dzoa.php"
+sha256 = "29f2337d610bc2c83a0da78e2799f1976e24cd3aaaf6c8d99a2bf2f1914171db"
+
+[[source]]
+path = "corpus/php/oparray/src/arithmetic.php"
+sha256 = "4c990b7e338c0a2405c2b6aa642de392c6df4b51d3c1afdb22546cefe5130e6e"
+
+[[source]]
+path = "corpus/php/oparray/src/closure_bodies.php"
+sha256 = "b2649e6984a30d49f2d8e2a922193ec62083c5e8114b668ca113d233d01e83b1"
+
+[[source]]
+path = "corpus/php/oparray/src/closures.php"
+sha256 = "458fee0cb21c900f08de709dd0ebbc708f8ca35096ac0b65623370d285d5eeea"
+
+[[source]]
+path = "corpus/php/oparray/src/control_flow.php"
+sha256 = "f6d707d22c78dc6e9d285ed4dc5790aa1e6248d46d73eca9ea1247db698bcf27"
+
+[[source]]
+path = "corpus/php/oparray/src/do_while.php"
+sha256 = "e5a422deaf2d4ee12f75bfea080aa80412fae14b72cae3ad0969df36419d1f77"
+
+[[source]]
+path = "corpus/php/oparray/src/dynamic_members.php"
+sha256 = "1e82e76f432d634e5f9f7e55bf91c7cba8321c194134733c20acbe9ee3a618df"
+
+[[source]]
+path = "corpus/php/oparray/src/functions.php"
+sha256 = "614f25abad0c2556af007ee0ff5983763eac8a748838e437d9ed740c4d74e62a"
+
+[[source]]
+path = "corpus/php/oparray/src/generators.php"
+sha256 = "4a604c004b994c9811c5eecedfdc334ac65ad428d5565f9c0f470335f95445ad"
+
+[[source]]
+path = "corpus/php/oparray/src/goto_forward.php"
+sha256 = "7db1f5ab0baaaab016b335fbff20f96d3fa3a6d7016a23fe4dd2fb7874f43007"
+
+[[source]]
+path = "corpus/php/oparray/src/goto_shapes.php"
+sha256 = "872f584ed308b43dc94ea6d4caa742fd5f41e59afbe20366cde5d54a1ccbcc91"
+
+[[source]]
+path = "corpus/php/oparray/src/interpolation.php"
+sha256 = "1244d5088e652923f3dd3e2937ad6abb86ef2170d60f789770fd3ec089f2c866"
+
+[[source]]
+path = "corpus/php/oparray/src/keyed_foreach.php"
+sha256 = "a4ee57d177f54f3b07de2ab34970f212e5cf11b3d4e8cee78d3623459761a3de"
+
+[[source]]
+path = "corpus/php/oparray/src/match_optimized.php"
+sha256 = "b7a0f4799a3a3a320c7e7bdc8f502712f7d7cdc4ff7ceda761f74031b9259f4c"
+
+[[source]]
+path = "corpus/php/oparray/src/members.php"
+sha256 = "7656f92f4f6c7b778fab7965c49c9e15cd2e84c6347d664595f3e1c344a7ac69"
+
+[[source]]
+path = "corpus/php/oparray/src/nullsafe.php"
+sha256 = "37a725772a223757d2908023e7f8307808bf01b9a0ec547acdae00851142cfeb"
+
+[[source]]
+path = "corpus/php/oparray/src/nullsafe_calls.php"
+sha256 = "410a61078a297fdfda046d8ab70953dde32e23ef7a7b3f4bf3213314c9efb453"
+
+[[source]]
+path = "corpus/php/oparray/src/objects.php"
+sha256 = "13bbdcba0a22a86b3095b35d2f5f00fce201c418fbb802a5e28519caa1e96c53"
+
+[[source]]
+path = "corpus/php/oparray/src/references.php"
+sha256 = "16f99b896c573dac65564ff82bbfe71886daedc8fc7d596599f5e465a0b72355"
+
+[[source]]
+path = "corpus/php/oparray/src/spaceship.php"
+sha256 = "112c77b079c88b333cb5b8c2c244098eede81f9cde8f94217394f368459bced8"
+
+[[source]]
+path = "corpus/php/oparray/src/switch_linear.php"
+sha256 = "4467ea0d893c568b2b432c8da31971e21080f8a978a27e5a303628392637f123"
+
+[[source]]
+path = "corpus/php/oparray/src/switch_optimized.php"
+sha256 = "19dd65b1217841eb272ab3f80b4400187fbba4a5d1722591aa6c78d416221ada"
+
+[[source]]
+path = "corpus/php/oparray/src/type_checks.php"
+sha256 = "e203a98a1c93b6e39281aeab94e3b3855f547df5e9c5acec5fb1d6db3f298f87"
+
+[[source]]
+path = "corpus/php/oparray/src/unset_cv.php"
+sha256 = "564f2e48eeb189dc54083ddff7fbb8637f1c414b053dfd3111b17313e6d20f6d"
+
+[[source]]
+path = "corpus/php/oparray/src/variable_variable.php"
+sha256 = "dfcff0cf83d5e86ac349c13ce8567409d1e4a9c4b0d8df15593baf254412b2a5"
+
+[[source]]
+path = "corpus/php/oparray/src/versioned.php"
+sha256 = "4a90965d9c8084bb069efbf610163ed09eb82a90b36f95c8d175a57576af44c8"
+
+[[source]]
+path = "crates/disrobe-pass-php/tests/fixtures/oparray_fetch_is/fetch_is.php"
+sha256 = "d520b7f0ea2259f05de2bc2eee74ca4bd17c91b77af43abda9758b18aa21ce0c"
+
+[[source]]
+path = "crates/disrobe-pass-php/tests/fixtures/oparray_callable/callable_convert.php"
+sha256 = "101a6386574a6aa38eeb2a083974a28d967523ef82114bed2762cfc17c03bb89"
+
+[[source]]
+path = "crates/disrobe-pass-php/tests/fixtures/oparray_variadic/variadic.php"
+sha256 = "9f6bd3230fd93947d7e41eab584ccfe324386dccc4c4433d2c0683af98037d3f"
+
+[[source]]
+path = "corpus/ruby/mri/yarv/recompile_oracle.rb"
+sha256 = "4509cd782c6dc4517feeb81038d3ef218ceb93482b9233875d25c7fc57d601bc"
+
+[[source]]
+path = "corpus/ruby/hello.rb"
+sha256 = "33e179d4bd8864ed55df2996d5d98df0a8c475f3d857981432d4585752e663f4"
+
+[[source]]
+path = "corpus/ruby/greeter.rb"
+sha256 = "0a4d532c1c9e9bb8882221edf15f062e20e20eb284ca51620b2ae248093fa390"
+
+[[source]]
+path = "corpus/ruby/megafile/edge_cases.rb"
+sha256 = "00260956188b1046e0c123ab5b77894c3530172091e6892cf66b23909652a5f7"
+
+[[source]]
+path = "corpus/ruby/mri/yarv/literals.rb"
+sha256 = "c151e3f96dc0db3166051a340c7b342d50b481291a9ab13e7aa95933dc060fa9"
+
+[[source]]
+path = "corpus/ruby/mri/yarv/opassign.rb"
+sha256 = "2c2775066ad86c6fd0e70db08b58beeff26917d1d25ce1558d15b025d3958b05"

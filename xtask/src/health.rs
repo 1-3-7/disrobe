@@ -6,9 +6,12 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::fileio::{read_bytes_bounded, read_text_bounded, tracked_or_nonignored_files};
+use crate::fileio::{
+    read_bytes_bounded, read_text_bounded, tracked_files, tracked_or_nonignored_files,
+};
 
 const MAX_MANIFEST_BYTES: u64 = 256 * 1024;
+const MAX_AUTHORED_SOURCE_BYTES: u64 = 8 * 1024 * 1024;
 
 const NON_MEMBER_CRATE_ALLOWLIST: &[(&str, &str)] = &[(
     "fuzz",
@@ -131,6 +134,7 @@ pub(crate) fn run(root: &Path, as_json: bool) -> Result<()> {
     check_pycdc_blobs(root, &mut report);
     check_prose_tells(root, &mut report);
     check_readme_family_evidence(root, &mut report);
+    check_authored_sources(root, &mut report);
 
     report.fact("workspace_members", json!(members.len()));
     report.fact("crate_directories", json!(crate_dirs.len()));
@@ -181,6 +185,118 @@ pub(crate) fn run(root: &Path, as_json: bool) -> Result<()> {
         "xtask health: {} coherence failure(s):\n  {rendered}",
         report.findings.len()
     )
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuthoredSources {
+    source: Vec<AuthoredSource>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuthoredSource {
+    path: String,
+    sha256: String,
+}
+
+fn check_authored_sources(root: &Path, report: &mut Report) {
+    const CHECK: &str = "authored-sources";
+    let manifest: PathBuf = root.join("crates/disrobe-testkit/data/authored_sources.toml");
+    let text: String = match read_text_bounded(&manifest, MAX_MANIFEST_BYTES) {
+        Ok(text) => text,
+        Err(error) => {
+            report.fail(
+                CHECK,
+                format!("cannot read authored-source manifest: {error:#}"),
+            );
+            return;
+        }
+    };
+    let entries: AuthoredSources = match toml::from_str(&text) {
+        Ok(entries) => entries,
+        Err(error) => {
+            report.fail(
+                CHECK,
+                format!("cannot parse authored-source manifest: {error}"),
+            );
+            return;
+        }
+    };
+    let tracked: BTreeSet<String> = match tracked_files(root) {
+        Ok(files) => files,
+        Err(error) => {
+            report.fail(CHECK, format!("cannot list tracked files: {error:#}"));
+            return;
+        }
+    };
+    let (count, problems): (usize, Vec<String>) =
+        audit_authored_sources(root, entries.source, &tracked);
+    for problem in problems {
+        report.fail(CHECK, problem);
+    }
+    report.fact("authored_sources", json!(count));
+}
+
+fn audit_authored_sources(
+    root: &Path,
+    entries: Vec<AuthoredSource>,
+    tracked: &BTreeSet<String>,
+) -> (usize, Vec<String>) {
+    let canonical_root: Option<PathBuf> = root.canonicalize().ok();
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut problems: Vec<String> = Vec::new();
+    for entry in entries {
+        let path: &str = &entry.path;
+        let invalid: bool = path.is_empty()
+            || path.contains(':')
+            || Path::new(path).is_absolute()
+            || path.contains('\\')
+            || path
+                .split('/')
+                .any(|part| part.is_empty() || part == "." || part == "..");
+        if invalid || !seen.insert(path.to_owned()) {
+            problems.push(format!("invalid or duplicate authored source path: {path}"));
+            continue;
+        }
+        if !is_sha256_hex(&entry.sha256) {
+            problems.push(format!("{path} has invalid sha256"));
+            continue;
+        }
+        if !tracked.contains(path) {
+            problems.push(format!("{path} is not tracked"));
+            continue;
+        }
+        let candidate: PathBuf = root.join(path);
+        if !candidate.is_file() {
+            problems.push(format!("{path} is missing or not a file"));
+            continue;
+        }
+        let resolved: PathBuf = match candidate.canonicalize() {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                problems.push(format!("cannot resolve {path}: {error}"));
+                continue;
+            }
+        };
+        if canonical_root
+            .as_ref()
+            .is_none_or(|canonical_root| !resolved.starts_with(canonical_root))
+        {
+            problems.push(format!("{path} resolves outside the workspace"));
+            continue;
+        }
+        match read_bytes_bounded(&resolved, MAX_AUTHORED_SOURCE_BYTES) {
+            Ok(bytes) => {
+                let digest: String = format!("{:x}", Sha256::digest(&bytes));
+                if digest != entry.sha256 {
+                    problems.push(format!("{path} sha256 drift"));
+                }
+            }
+            Err(error) => problems.push(format!("cannot read {path}: {error:#}")),
+        }
+    }
+    (seen.len(), problems)
 }
 
 fn check_feature_hidden_tests(root: &Path, report: &mut Report) {
@@ -1729,6 +1845,53 @@ fn collect_workspace_refs(section: Option<&toml::Value>, out: &mut BTreeSet<Stri
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    fn authored_source(path: &str, bytes: &[u8]) -> AuthoredSource {
+        AuthoredSource {
+            path: path.to_owned(),
+            sha256: format!("{:x}", Sha256::digest(bytes)),
+        }
+    }
+
+    #[test]
+    fn authored_source_audit_rejects_duplicate_missing_untracked_and_drifted_entries() -> Result<()>
+    {
+        let root: tempfile::TempDir = tempfile::tempdir()?;
+        std::fs::create_dir(root.path().join("scripts"))?;
+        std::fs::write(root.path().join("scripts/ok.py"), b"print('ok')\n")?;
+        std::fs::write(root.path().join("scripts/drift.py"), b"print('changed')\n")?;
+        let tracked: BTreeSet<String> = BTreeSet::from([
+            "scripts/ok.py".to_owned(),
+            "scripts/drift.py".to_owned(),
+            "scripts/missing.py".to_owned(),
+        ]);
+        let entries: Vec<AuthoredSource> = vec![
+            authored_source("scripts/ok.py", b"print('ok')\n"),
+            authored_source("scripts/ok.py", b"print('ok')\n"),
+            authored_source("scripts/missing.py", b"print('missing')\n"),
+            authored_source("scripts/untracked.py", b"print('untracked')\n"),
+            authored_source("scripts/drift.py", b"print('original')\n"),
+            authored_source("C:/outside.py", b"print('outside')\n"),
+        ];
+        let (count, problems): (usize, Vec<String>) =
+            audit_authored_sources(root.path(), entries, &tracked);
+        assert_eq!(count, 4);
+        assert!(problems.iter().any(|problem| problem.contains("duplicate")));
+        assert!(problems.iter().any(|problem| problem.contains("invalid")));
+        assert!(problems.iter().any(|problem| problem.contains("missing")));
+        assert!(
+            problems
+                .iter()
+                .any(|problem| problem.contains("not tracked"))
+        );
+        assert!(
+            problems
+                .iter()
+                .any(|problem| problem.contains("sha256 drift")),
+            "{problems:#?}"
+        );
+        Ok(())
+    }
 
     #[test]
     fn a_file_with_a_listed_pycdc_blob_fails_health() {

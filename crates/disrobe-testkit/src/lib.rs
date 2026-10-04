@@ -2,6 +2,7 @@
 #![deny(unreachable_pub)]
 #![allow(clippy::redundant_pub_crate)]
 
+mod authored_source;
 mod config;
 mod corpus;
 mod error;
@@ -16,6 +17,7 @@ mod tool;
 mod wire;
 mod workspace;
 
+pub use authored_source::{AuthoredSourceError, authorized_authored_source};
 pub use config::{
     DEFAULT_BATCH_SIZE, DEFAULT_CASES_PER_INPUT, DEFAULT_MASTER_SEED, DEFAULT_STALL_BACKSTOP,
     SEED_ENV, StressConfig,

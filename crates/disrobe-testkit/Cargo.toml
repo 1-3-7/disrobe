@@ -17,6 +17,8 @@ workspace = true
 
 [dependencies]
 disrobe-tool-process = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+sha2 = { workspace = true }
 tempfile = "3"
 thiserror = { workspace = true }
 toml = { workspace = true }

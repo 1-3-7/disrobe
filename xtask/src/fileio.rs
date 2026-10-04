@@ -30,6 +30,28 @@ pub(crate) fn tracked_or_nonignored_files(root: &Path) -> Result<BTreeSet<String
         .collect())
 }
 
+pub(crate) fn tracked_files(root: &Path) -> Result<BTreeSet<String>> {
+    let output: std::process::Output = Command::new("git")
+        .args(["ls-files", "-z"])
+        .current_dir(root)
+        .output()
+        .wrap_err("listing tracked files with git")?;
+    if !output.status.success() {
+        bail!(
+            "git ls-files exited with {} in {}",
+            output.status,
+            root.display()
+        );
+    }
+    let listing: String =
+        String::from_utf8(output.stdout).wrap_err("git ls-files output is not utf-8")?;
+    Ok(listing
+        .split('\0')
+        .filter(|path: &&str| !path.is_empty())
+        .map(str::to_owned)
+        .collect())
+}
+
 pub(crate) fn read_bytes_bounded(path: &Path, max_bytes: u64) -> Result<Vec<u8>> {
     let metadata: fs::Metadata =
         fs::metadata(path).wrap_err_with(|| format!("stat {}", path.display()))?;
