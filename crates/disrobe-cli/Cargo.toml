@@ -89,7 +89,7 @@ required-features = ["py"]
 
 [features]
 default = ["full"]
-full = ["server", "prowl", "net-fetch", "chain", "py", "native", "binfmt", "js", "wasm", "jvm", "dotnet", "mobile", "lua", "php", "ruby", "beam", "swift", "as3", "flutter", "go", "shell", "pickle", "scriptlang", "nativelang", "nir-lift", "devirt", "irsummary", "plugin", "webview", "git-history"]
+full = ["server", "prowl", "net-fetch", "chain", "auto", "py", "native", "binfmt", "js", "wasm", "jvm", "dotnet", "mobile", "lua", "php", "ruby", "beam", "swift", "as3", "flutter", "go", "shell", "pickle", "scriptlang", "nativelang", "nir-lift", "devirt", "irsummary", "plugin", "webview", "git-history"]
 server = ["dep:axum", "dep:tower-http", "dep:utoipa", "dep:lsp-server", "dep:lsp-types", "dep:tokio", "dep:tokio-util", "dep:tonic", "dep:tonic-health", "dep:tonic-reflection", "dep:prost", "dep:tonic-build", "dep:protoc-bin-vendored", "dep:disrobe-mcp"]
 prowl = ["dep:disrobe-prowl", "dep:tokio"]
 net-fetch = ["dep:reqwest"]
@@ -122,7 +122,7 @@ pickle = ["dep:disrobe-pass-pickle", "disrobe-passes?/pickle"]
 scriptlang = ["dep:disrobe-pass-scriptlang", "disrobe-passes?/scriptlang", "disrobe-mcp?/scriptlang"]
 nativelang = ["dep:disrobe-pass-nativelang", "disrobe-passes?/nativelang", "disrobe-mcp?/nativelang"]
 
-chain = [
+auto = [
     "native",
     "py",
     "webview",
@@ -140,6 +140,7 @@ chain = [
     "disrobe-passes/py-decompile",
     "disrobe-passes/pyinstaller",
 ]
+chain = ["auto"]
 
 [dependencies]
 base64 = { workspace = true }
