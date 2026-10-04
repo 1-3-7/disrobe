@@ -1590,14 +1590,14 @@
 - `DR-BINFMT-0084`: `crates/disrobe-binfmt/src/error.rs:26`
 - `DR-BINFMT-0085`: `crates/disrobe-binfmt/src/error.rs:29`
 - `DR-BINFMT-0086`: `crates/disrobe-binfmt/src/error.rs:33`
-- `DR-BINFMT-0901`: `crates/disrobe-binfmt/src/chain_detector.rs:394`, `crates/disrobe-binfmt/src/chain_detector.rs:399`
-- `DR-BINFMT-0903`: `crates/disrobe-binfmt/src/chain_detector.rs:365`
-- `DR-BINFMT-0904`: `crates/disrobe-binfmt/src/chain_detector.rs:89`
-- `DR-BINFMT-0905`: `crates/disrobe-binfmt/src/chain_detector.rs:96`
-- `DR-BINFMT-0906`: `crates/disrobe-binfmt/src/chain_detector.rs:100`
-- `DR-BINFMT-0907`: `crates/disrobe-binfmt/src/chain_detector.rs:211`
-- `DR-BINFMT-0908`: `crates/disrobe-binfmt/src/chain_detector.rs:182`
-- `DR-BINFMT-0960`: `crates/disrobe-binfmt/src/chain_detector.rs:768`
+- `DR-BINFMT-0901`: `crates/disrobe-binfmt/src/chain_detector.rs:393`, `crates/disrobe-binfmt/src/chain_detector.rs:398`
+- `DR-BINFMT-0903`: `crates/disrobe-binfmt/src/chain_detector.rs:364`
+- `DR-BINFMT-0904`: `crates/disrobe-binfmt/src/chain_detector.rs:88`
+- `DR-BINFMT-0905`: `crates/disrobe-binfmt/src/chain_detector.rs:95`
+- `DR-BINFMT-0906`: `crates/disrobe-binfmt/src/chain_detector.rs:99`
+- `DR-BINFMT-0907`: `crates/disrobe-binfmt/src/chain_detector.rs:210`
+- `DR-BINFMT-0908`: `crates/disrobe-binfmt/src/chain_detector.rs:181`
+- `DR-BINFMT-0960`: `crates/disrobe-binfmt/src/chain_detector.rs:767`
 - `DR-CATALOG-0001`: `crates/disrobe-cli/src/cli/catalog.rs:40`
 - `DR-CATALOG-0002`: `crates/disrobe-cli/src/cli/catalog.rs:52`
 - `DR-CLI-0023`: `crates/disrobe-cli/src/cli/nuitka.rs:139`, `crates/disrobe-cli/src/cli/pyarmor.rs:443`
@@ -2345,12 +2345,12 @@
 - `DR-JVM-0097`: `crates/disrobe-pass-jvm/src/error.rs:120`
 - `DR-JVM-0098`: `crates/disrobe-pass-jvm/src/error.rs:177`
 - `DR-JVM-0099`: `crates/disrobe-pass-jvm/src/error.rs:180`
-- `DR-JVM-0902`: `crates/disrobe-pass-jvm/src/chain_detector.rs:106`
-- `DR-JVM-0906`: `crates/disrobe-pass-jvm/src/chain_detector.rs:174`
-- `DR-JVM-0907`: `crates/disrobe-pass-jvm/src/chain_detector.rs:181`, `crates/disrobe-pass-jvm/src/chain_detector.rs:243`
-- `DR-JVM-0908`: `crates/disrobe-pass-jvm/src/chain_detector.rs:200`, `crates/disrobe-pass-jvm/src/chain_detector.rs:315`
-- `DR-JVM-0910`: `crates/disrobe-pass-jvm/src/chain_detector.rs:192`
-- `DR-JVM-0911`: `crates/disrobe-pass-jvm/src/chain_detector.rs:205`
+- `DR-JVM-0902`: `crates/disrobe-pass-jvm/src/chain_detector.rs:105`
+- `DR-JVM-0906`: `crates/disrobe-pass-jvm/src/chain_detector.rs:173`
+- `DR-JVM-0907`: `crates/disrobe-pass-jvm/src/chain_detector.rs:180`, `crates/disrobe-pass-jvm/src/chain_detector.rs:242`
+- `DR-JVM-0908`: `crates/disrobe-pass-jvm/src/chain_detector.rs:199`, `crates/disrobe-pass-jvm/src/chain_detector.rs:314`
+- `DR-JVM-0910`: `crates/disrobe-pass-jvm/src/chain_detector.rs:191`
+- `DR-JVM-0911`: `crates/disrobe-pass-jvm/src/chain_detector.rs:204`
 - `DR-JVM-0912`: `crates/disrobe-pass-jvm/src/chain_detector/containers.rs:135`
 - `DR-JVM-0913`: `crates/disrobe-pass-jvm/src/chain_detector/containers.rs:146`
 - `DR-JVM-0914`: `crates/disrobe-pass-jvm/src/chain_detector/containers.rs:300`
@@ -2394,11 +2394,11 @@
 - `DR-LUA-0038`: `crates/disrobe-pass-lua/src/error.rs:146`
 - `DR-LUA-0039`: `crates/disrobe-pass-lua/src/error.rs:155`
 - `DR-LUA-0040`: `crates/disrobe-pass-lua/src/error.rs:159`
-- `DR-LUA-0902`: `crates/disrobe-pass-lua/src/chain_detector.rs:128`
-- `DR-LUA-0903`: `crates/disrobe-pass-lua/src/chain_detector.rs:371`
-- `DR-LUA-0904`: `crates/disrobe-pass-lua/src/chain_detector.rs:412`
-- `DR-LUA-0905`: `crates/disrobe-pass-lua/src/chain_detector.rs:382`
-- `DR-LUA-0906`: `crates/disrobe-pass-lua/src/chain_detector.rs:92`
+- `DR-LUA-0902`: `crates/disrobe-pass-lua/src/chain_detector.rs:127`
+- `DR-LUA-0903`: `crates/disrobe-pass-lua/src/chain_detector.rs:370`
+- `DR-LUA-0904`: `crates/disrobe-pass-lua/src/chain_detector.rs:411`
+- `DR-LUA-0905`: `crates/disrobe-pass-lua/src/chain_detector.rs:381`
+- `DR-LUA-0906`: `crates/disrobe-pass-lua/src/chain_detector.rs:91`
 - `DR-MARSHAL-0013`: `crates/disrobe-py-marshal/src/error.rs:69`
 - `DR-MARSHAL-0014`: `crates/disrobe-py-marshal/src/error.rs:74`
 - `DR-MARSHAL-0015`: `crates/disrobe-py-marshal/src/error.rs:79`
@@ -2896,10 +2896,10 @@
 - `DR-PYDEC-0014`: `crates/disrobe-pass-py-decompile/src/error.rs:59`
 - `DR-PYDEC-0015`: `crates/disrobe-pass-py-decompile/src/error.rs:39`
 - `DR-PYDEC-0016`: `crates/disrobe-pass-py-decompile/src/error.rs:66`
-- `DR-PYDEC-0902`: `crates/disrobe-pass-py-decompile/src/chain_detector.rs:105`
-- `DR-PYDEC-0908`: `crates/disrobe-pass-py-decompile/src/chain_detector.rs:119`
-- `DR-PYDEC-0911`: `crates/disrobe-pass-py-decompile/src/chain_detector.rs:111`
-- `DR-PYDEC-0912`: `crates/disrobe-pass-py-decompile/src/chain_detector.rs:115`
+- `DR-PYDEC-0902`: `crates/disrobe-pass-py-decompile/src/chain_detector.rs:104`
+- `DR-PYDEC-0908`: `crates/disrobe-pass-py-decompile/src/chain_detector.rs:118`
+- `DR-PYDEC-0911`: `crates/disrobe-pass-py-decompile/src/chain_detector.rs:110`
+- `DR-PYDEC-0912`: `crates/disrobe-pass-py-decompile/src/chain_detector.rs:114`
 - `DR-PYDEC-0913`: `crates/disrobe-pass-py-decompile/src/engine.rs:46`
 - `DR-PYDEOB-0010`: `crates/disrobe-pass-py-deob/src/error.rs:37`
 - `DR-PYDEOB-0011`: `crates/disrobe-pass-py-deob/src/error.rs:40`
@@ -2927,9 +2927,9 @@
 - `DR-PYFRZ-0902`: `crates/disrobe-pass-pyfreeze/src/chain_detector.rs:76`
 - `DR-PYFRZ-0903`: `crates/disrobe-pass-pyfreeze/src/chain_detector.rs:82`
 - `DR-PYFRZ-0904`: `crates/disrobe-pass-pyfreeze/src/chain_detector.rs:168`
-- `DR-PYINS-0902`: `crates/disrobe-pass-pyinstaller/src/chain_detector.rs:71`
-- `DR-PYINS-0903`: `crates/disrobe-pass-pyinstaller/src/chain_detector.rs:75`
-- `DR-PYINS-0904`: `crates/disrobe-pass-pyinstaller/src/chain_detector.rs:90`
+- `DR-PYINS-0902`: `crates/disrobe-pass-pyinstaller/src/chain_detector.rs:70`
+- `DR-PYINS-0903`: `crates/disrobe-pass-pyinstaller/src/chain_detector.rs:74`
+- `DR-PYINS-0904`: `crates/disrobe-pass-pyinstaller/src/chain_detector.rs:89`
 - `DR-PYINST-0011`: `crates/disrobe-pass-pyinstaller/src/error.rs:45`
 - `DR-PYINST-0012`: `crates/disrobe-pass-pyinstaller/src/error.rs:50`
 - `DR-PYINST-0013`: `crates/disrobe-pass-pyinstaller/src/error.rs:54`
