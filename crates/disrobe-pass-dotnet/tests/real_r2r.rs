@@ -7,11 +7,11 @@
 
 use std::path::PathBuf;
 
-#[cfg(feature = "chain")]
+#[cfg(not(target_arch = "wasm32"))]
 use disrobe_core::chain::Pass;
-#[cfg(feature = "chain")]
+#[cfg(not(target_arch = "wasm32"))]
 use disrobe_core::{Artifact, Rung};
-#[cfg(feature = "chain")]
+#[cfg(not(target_arch = "wasm32"))]
 use disrobe_pass_dotnet::chain_detector::DOTNET_PASS;
 use disrobe_pass_dotnet::pe::{ClrHeader, PeImage, parse, parse_clr_header};
 use disrobe_pass_dotnet::r2r::{
@@ -77,7 +77,7 @@ fn assert_fixup_unsupported(bytes: &[u8]) {
     );
 }
 
-#[cfg(feature = "chain")]
+#[cfg(not(target_arch = "wasm32"))]
 fn automatic_runtime_functions(bytes: Vec<u8>) -> serde_json::Value {
     let input: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
     let children: Vec<disrobe_core::chain::ChildArtifact> = DOTNET_PASS
@@ -307,7 +307,7 @@ fn trailing_decodable_constructor_body_byte_is_boundary_ambiguous() {
     );
 }
 
-#[cfg(feature = "chain")]
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn automatic_r2r_analysis_preserves_method_body_refusals() {
     let mut malformed: Vec<u8> = load(HELLOAPP_R2R_DLL_REL);
@@ -919,7 +919,7 @@ fn the_platform_neutral_source_flag_does_not_block_the_method_join() {
     );
 }
 
-#[cfg(feature = "chain")]
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn auto_emits_real_r2r_unwind_and_gc_bounds() {
     let bytes: Vec<u8> = load(HELLOAPP_R2R_DLL_REL);
@@ -1032,7 +1032,7 @@ fn amd64_runtime_function_payload_requires_complete_entries() {
     let analysis_error: disrobe_pass_dotnet::Error = disrobe_pass_dotnet::analyze(&bytes)
         .expect_err("public analysis must refuse the malformed runtime-function table");
     assert!(analysis_error.to_string().starts_with("DR-DOTNET-0042:"));
-    #[cfg(feature = "chain")]
+    #[cfg(not(target_arch = "wasm32"))]
     {
         let input: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
         let chain_error: disrobe_core::error::CoreError = DOTNET_PASS

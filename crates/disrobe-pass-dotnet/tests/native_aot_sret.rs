@@ -1,4 +1,4 @@
-#![cfg(feature = "chain")]
+#![cfg(not(target_arch = "wasm32"))]
 
 use disrobe_core::chain::Pass;
 use disrobe_core::{Artifact, Rung};

@@ -40,7 +40,6 @@ lzma-rs = "0.3.0"
 
 [features]
 default = []
-chain = ["disrobe-core/chain"]
 llm-metadata = ["dep:disrobe-llm-metadata"]
 semantic-reach = []
 

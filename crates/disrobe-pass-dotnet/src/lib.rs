@@ -6,7 +6,7 @@ pub mod aot;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod backends;
 pub mod cfg;
-#[cfg(all(feature = "chain", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub mod chain_detector;
 pub mod cil;
 #[cfg(not(target_arch = "wasm32"))]

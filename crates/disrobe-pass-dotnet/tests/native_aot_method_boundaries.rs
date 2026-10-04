@@ -1,4 +1,4 @@
-#![cfg(feature = "chain")]
+#![cfg(not(target_arch = "wasm32"))]
 #![allow(clippy::expect_used, clippy::panic)]
 
 use disrobe_bytes::{read_u16_le_at, read_u32_le_at};

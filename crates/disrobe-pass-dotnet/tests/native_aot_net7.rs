@@ -1,4 +1,4 @@
-#![cfg(feature = "chain")]
+#![cfg(not(target_arch = "wasm32"))]
 #![allow(clippy::panic)]
 
 use disrobe_core::chain::{ChildArtifact, Pass};

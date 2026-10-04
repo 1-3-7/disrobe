@@ -9,11 +9,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
-#[cfg(feature = "chain")]
+#[cfg(not(target_arch = "wasm32"))]
 use disrobe_core::chain::{ChildArtifact, Pass};
-#[cfg(feature = "chain")]
+#[cfg(not(target_arch = "wasm32"))]
 use disrobe_core::{Artifact, Rung};
-#[cfg(feature = "chain")]
+#[cfg(not(target_arch = "wasm32"))]
 use disrobe_pass_dotnet::chain_detector::DOTNET_PASS;
 use disrobe_pass_dotnet::cil::{MethodBody, ONE_BYTE_OPCODES, OpcodeDef, parse_method_body};
 use disrobe_pass_dotnet::cil_emulator::{EmulationError, StubInput, StubOutput, emulate_stub};
@@ -426,7 +426,7 @@ fn mixed_differential_rejects_a_deliberate_operator_mutation() {
     }
 }
 
-#[cfg(feature = "chain")]
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn auto_chain_emits_width_preserving_eazvm_cil() {
     let image: Vec<u8> = corpus("EazSample.eazvm.dll");

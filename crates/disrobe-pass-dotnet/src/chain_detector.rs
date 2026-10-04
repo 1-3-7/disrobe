@@ -1,4 +1,4 @@
-#![cfg(feature = "chain")]
+#![cfg(not(target_arch = "wasm32"))]
 use std::io::Write;
 
 use disrobe_core::Artifact;
