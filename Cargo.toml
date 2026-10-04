@@ -180,7 +180,7 @@ disrobe-testkit = { path = "crates/disrobe-testkit", version = "0.10.6" }
 disrobe-tool-process = { path = "crates/disrobe-tool-process", version = "0.10.6" }
 disrobe-typerec = { path = "crates/disrobe-typerec", version = "0.10.6" }
 disrobe-vulnmatch = { path = "crates/disrobe-vulnmatch", version = "0.10.6" }
-disrobe-irsummary = { path = "crates/disrobe-irsummary", version = "0.10.6" }
+disrobe-irsummary = { path = "crates/disrobe-irsummary", version = "0.10.6", default-features = false }
 disrobe-pass-as3 = { path = "crates/disrobe-pass-as3", version = "0.10.6" }
 disrobe-pass-beam = { path = "crates/disrobe-pass-beam", version = "0.10.6" }
 disrobe-pass-dotnet = { path = "crates/disrobe-pass-dotnet", version = "0.10.6" }
