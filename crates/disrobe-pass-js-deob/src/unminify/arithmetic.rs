@@ -407,7 +407,8 @@ mod tests {
     }
 
     fn evaluate(program: &str) -> String {
-        let mut context: boa_engine::Context = boa_engine::Context::default();
+        let mut context: boa_engine::Context =
+            crate::sandbox_guard::bounded_boa_context().expect("bounded Boa context builds");
         let value: boa_engine::JsValue = context
             .eval(boa_engine::Source::from_bytes(program.as_bytes()))
             .expect("authored program evaluates");

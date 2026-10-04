@@ -2085,7 +2085,8 @@ mod tests {
         );
     }
     fn run_in_boa(program: &str) -> String {
-        let mut context: boa_engine::Context = boa_engine::Context::default();
+        let mut context: boa_engine::Context =
+            crate::sandbox_guard::bounded_boa_context().expect("bounded Boa context builds");
         context
             .runtime_limits_mut()
             .set_loop_iteration_limit(100_000);

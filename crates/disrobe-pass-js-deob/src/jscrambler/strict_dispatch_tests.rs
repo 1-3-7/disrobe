@@ -10,7 +10,7 @@ const RECURSION_LIMIT: usize = 1_500;
 const STACK_LIMIT: usize = 50_000;
 
 fn eval_capture(program: &str) -> Option<String> {
-    let mut context: Context = Context::default();
+    let mut context: Context = crate::sandbox_guard::bounded_boa_context().ok()?;
     {
         let runtime: &mut boa_engine::vm::RuntimeLimits = context.runtime_limits_mut();
         runtime.set_loop_iteration_limit(LOOP_LIMIT);
