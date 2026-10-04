@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use boa_engine::{Context, Source};
 
-use crate::sandbox_guard::{nesting_is_safe, nesting_is_safe_for_capture};
+use crate::sandbox_guard::{bounded_boa_context, nesting_is_safe, nesting_is_safe_for_capture};
 
 pub(super) const MAX_SCRIPT_BYTES: usize = 256 * 1024;
 pub(super) const MAX_CAPTURE_SCRIPT_BYTES: usize = 8 * 1024 * 1024;
@@ -168,7 +168,7 @@ pub(super) fn eval_to_string_with_limits(script: &str, limits: SandboxLimits) ->
 }
 
 fn run_eval(script: &str, limits: SandboxLimits) -> Option<String> {
-    let mut context: Context = Context::default();
+    let mut context: Context = bounded_boa_context().ok()?;
     {
         let runtime: &mut boa_engine::vm::RuntimeLimits = context.runtime_limits_mut();
         runtime.set_loop_iteration_limit(limits.loop_iteration_limit);
@@ -262,6 +262,19 @@ mod tests {
     fn capture_rejects_oversized_script() {
         let big: String = "1".repeat(MAX_CAPTURE_SCRIPT_BYTES + 1);
         assert!(eval_to_source(&big).is_none());
+    }
+
+    #[test]
+    fn evaluation_rejects_an_array_buffer_above_the_cap() {
+        let oversized: String = format!(
+            "new ArrayBuffer({}); 'unreachable'",
+            crate::sandbox_guard::MAX_ARRAY_BUFFER_BYTES + 1
+        );
+        assert!(eval_to_string(&oversized).is_none());
+        assert_eq!(
+            eval_to_string("new ArrayBuffer(1024); 'bounded'").as_deref(),
+            Some("bounded")
+        );
     }
 
     #[test]

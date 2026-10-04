@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use boa_engine::{Context, JsError, Script, Source};
 use serde::Serialize;
 
-use crate::sandbox_guard::nesting_is_safe;
+use crate::sandbox_guard::{bounded_boa_context, nesting_is_safe};
 
 type ExprResults = Vec<Option<String>>;
 type EnvironmentRun<T> = Result<EnvironmentResult<T>, ProbeRefusal>;
@@ -645,7 +645,7 @@ fn run_rotation_search_once(
     environment: ProbeEnvironment,
     backstop: ProbeDeadline,
 ) -> Result<EnvironmentResult<RotationSearchOutcome>, ProbeRefusal> {
-    let mut context: Context = probe_context(limits);
+    let mut context: Context = probe_context(limits)?;
     let mut meter: ProbeMeter = ProbeMeter::new(limits.fuel_slices, backstop);
     let mut output_budget: OutputBudget = OutputBudget::new();
     let first_runtime_preamble: String = runtime_preamble(environment);
@@ -693,7 +693,7 @@ fn run_rotation_search_once(
         return Err(ProbeRefusal::RotationNotFound);
     }
     let search_calls: [u64; 3] = environment_calls(&mut context, &mut meter)?;
-    let mut fresh: Context = probe_context(limits);
+    let mut fresh: Context = probe_context(limits)?;
     let fresh_runtime_preamble: String = runtime_preamble(environment);
     evaluate(&mut fresh, &fresh_runtime_preamble, &mut meter)?;
     evaluate(&mut fresh, prelude, &mut meter)?;
@@ -850,7 +850,7 @@ fn run_rotation_to_match_once(
         .collect();
     let sample_exprs: Vec<&String> = sample_indices.iter().map(|&i| &expressions[i]).collect();
     let batch_script: String = build_batch_decode_script(&sample_exprs)?;
-    let mut context: Context = probe_context(limits);
+    let mut context: Context = probe_context(limits)?;
     let mut meter: ProbeMeter = ProbeMeter::new(limits.fuel_slices, backstop);
     let mut output_budget: OutputBudget = OutputBudget::new();
     let runtime_preamble: String = runtime_preamble(environment);
@@ -1182,7 +1182,7 @@ fn run_expressions_once(
     environment: ProbeEnvironment,
     backstop: ProbeDeadline,
 ) -> Result<EnvironmentResult<ExpressionRun>, ProbeRefusal> {
-    let mut context: Context = probe_context(limits);
+    let mut context: Context = probe_context(limits)?;
     let mut meter: ProbeMeter = ProbeMeter::new(limits.fuel_slices, backstop);
     let mut output_budget: OutputBudget = OutputBudget::new();
     let runtime_preamble: String = runtime_preamble(environment);
@@ -1444,7 +1444,7 @@ fn run_probe_once(
     environment: ProbeEnvironment,
     backstop: ProbeDeadline,
 ) -> Result<EnvironmentResult<DecoderRun>, ProbeRefusal> {
-    let mut context: Context = probe_context(limits);
+    let mut context: Context = probe_context(limits)?;
     let mut meter: ProbeMeter = ProbeMeter::new(limits.fuel_slices, backstop);
     let mut output_budget: OutputBudget = OutputBudget::new();
     let preamble: String = runtime_preamble(environment);
@@ -1573,13 +1573,13 @@ fn evaluate(
     outcome.map_err(|error: JsError| refusal_from_error(&error, context))
 }
 
-fn probe_context(limits: ProbeLimits) -> Context {
-    let mut context: Context = Context::default();
+fn probe_context(limits: ProbeLimits) -> Result<Context, ProbeRefusal> {
+    let mut context: Context = bounded_boa_context().map_err(|_| ProbeRefusal::EvaluationFailed)?;
     let runtime: &mut boa_engine::vm::RuntimeLimits = context.runtime_limits_mut();
     runtime.set_loop_iteration_limit(limits.loop_iteration_limit);
     runtime.set_recursion_limit(limits.recursion_limit);
     runtime.set_stack_size_limit(limits.stack_size_limit);
-    context
+    Ok(context)
 }
 
 fn refusal_from_error(error: &JsError, context: &mut Context) -> ProbeRefusal {
@@ -1827,6 +1827,25 @@ for (var _i = _arr.length - 1; _i > 0; _i--) {
         assert_eq!(
             decoded[0].as_ref().map(String::len),
             Some(MAX_DECODED_VALUE_BYTES)
+        );
+    }
+
+    #[test]
+    fn expression_probe_rejects_an_array_buffer_above_the_cap() {
+        let oversized: String = format!(
+            "(function(){{new ArrayBuffer({}); return 'unreachable';}})()",
+            crate::sandbox_guard::MAX_ARRAY_BUFFER_BYTES + 1
+        );
+        assert_eq!(
+            probe_expressions("", &[oversized]),
+            Err(ProbeRefusal::EvaluationFailed)
+        );
+        assert_eq!(
+            probe_expressions(
+                "",
+                &["(function(){new ArrayBuffer(1024); return 'bounded';})()".to_owned()]
+            ),
+            Ok(vec![Some("bounded".to_owned())])
         );
     }
 

@@ -1,5 +1,29 @@
 use std::ops::ControlFlow;
 
+use boa_engine::{
+    Context, JsError,
+    context::{ContextBuilder, HostHooks},
+};
+
+pub(crate) const MAX_ARRAY_BUFFER_BYTES: u64 = 64 * 1_024 * 1_024;
+
+#[derive(Debug)]
+struct BoundedHostHooks;
+
+impl HostHooks for BoundedHostHooks {
+    fn max_buffer_size(&self, _context: &mut Context) -> u64 {
+        MAX_ARRAY_BUFFER_BYTES
+    }
+}
+
+static BOUNDED_HOST_HOOKS: BoundedHostHooks = BoundedHostHooks;
+
+pub(crate) fn bounded_boa_context() -> Result<Context, JsError> {
+    ContextBuilder::new()
+        .host_hooks(&BOUNDED_HOST_HOOKS)
+        .build()
+}
+
 pub(crate) const MAX_SYNTACTIC_NESTING_DEPTH: usize = 600;
 
 pub(crate) const MAX_OPERATOR_CHAIN: usize = 600;
@@ -241,7 +265,29 @@ pub(crate) fn nesting_is_safe_for_capture(script: &str) -> bool {
 #[cfg(test)]
 #[allow(clippy::panic)]
 mod tests {
+    use boa_engine::Source;
+
     use super::*;
+
+    #[test]
+    fn boa_context_rejects_an_array_buffer_above_the_cap() {
+        let built: Result<Context, JsError> = bounded_boa_context();
+        assert!(built.is_ok(), "bounded Boa context failed: {built:?}");
+        let Ok(mut context): Result<Context, JsError> = built else {
+            unreachable!("the context assertion above has already failed the test");
+        };
+        let oversized: String = format!("new ArrayBuffer({});", MAX_ARRAY_BUFFER_BYTES + 1);
+        assert!(
+            context
+                .eval(Source::from_bytes(oversized.as_bytes()))
+                .is_err()
+        );
+        assert!(
+            context
+                .eval(Source::from_bytes(b"new ArrayBuffer(1024);"))
+                .is_ok()
+        );
+    }
 
     #[test]
     fn flat_code_has_low_depth() {

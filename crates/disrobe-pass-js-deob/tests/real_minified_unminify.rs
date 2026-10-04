@@ -1,11 +1,26 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
-use boa_engine::{Context, Source};
+use boa_engine::{
+    Context, Source,
+    context::{ContextBuilder, HostHooks},
+};
 use disrobe_pass_js_deob::{AstUnminifyStats, unminify_ast};
 use sha2::{Digest, Sha256};
 
 const LOOP_LIMIT: u64 = 2_000_000;
 const RECURSION_LIMIT: usize = 1_500;
 const STACK_LIMIT: usize = 50_000;
+const ARRAY_BUFFER_LIMIT: u64 = 64 * 1_024 * 1_024;
+
+#[derive(Debug)]
+struct OracleHostHooks;
+
+impl HostHooks for OracleHostHooks {
+    fn max_buffer_size(&self, _context: &mut Context) -> u64 {
+        ARRAY_BUFFER_LIMIT
+    }
+}
+
+static ORACLE_HOST_HOOKS: OracleHostHooks = OracleHostHooks;
 
 const PARITY_FIXTURE: &str = include_str!("../corpus/unminify/parity/min.js");
 const PARITY_FIXTURE_SHA256: &str =
@@ -30,7 +45,10 @@ function greet(user, count) {
 const TERSER_REFERENCE_OUTPUT: &str = "user ann has 3 items\u{1}inactive\u{1}undefined";
 
 fn eval_capture(program: &str, tail: &str) -> Option<String> {
-    let mut context: Context = Context::default();
+    let mut context: Context = ContextBuilder::new()
+        .host_hooks(&ORACLE_HOST_HOOKS)
+        .build()
+        .ok()?;
     {
         let runtime: &mut boa_engine::vm::RuntimeLimits = context.runtime_limits_mut();
         runtime.set_loop_iteration_limit(LOOP_LIMIT);
@@ -42,6 +60,16 @@ fn eval_capture(program: &str, tail: &str) -> Option<String> {
     value
         .as_string()
         .map(boa_engine::JsString::to_std_string_escaped)
+}
+
+#[test]
+fn the_oracle_rejects_an_array_buffer_above_the_cap() {
+    let program: String = format!("new ArrayBuffer({});", ARRAY_BUFFER_LIMIT + 1);
+    assert_eq!(eval_capture(&program, "'unreachable';"), None);
+    assert_eq!(
+        eval_capture("new ArrayBuffer(1024);", "'bounded';"),
+        Some("bounded".to_owned())
+    );
 }
 
 const PROBE: &str = r#"
