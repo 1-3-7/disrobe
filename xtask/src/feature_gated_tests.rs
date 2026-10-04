@@ -12,7 +12,6 @@ const MAX_MANIFEST_BYTES: u64 = 256 * 1024;
 const MAX_DOC_BYTES: u64 = 8 * 1024 * 1024;
 
 const CHAIN_DETECTOR_FILE: &str = "chain_detector.rs";
-const CHAIN_FEATURE: &str = "chain";
 
 const MIN_CHAIN_DETECTORS: usize = 25;
 const MIN_HIDDEN_CRATES: usize = 1;
@@ -24,13 +23,7 @@ const EMPTY_CHAIN_DETECTOR: &str = "chain-detector-without-tests";
 const SKIPPING_COMMAND: &str = "verification-command-skips-tests";
 const UNKNOWN_PACKAGE: &str = "verification-command-unknown-package";
 
-const HIDDEN_TEST_SURFACE: &[(&str, &[&str])] = &[
-    (
-        "disrobe-cli",
-        &["!(prowl & net-fetch & server)", "!jvm", "!wasm"],
-    ),
-    ("disrobe-pass-native", &["chain"]),
-];
+const HIDDEN_TEST_SURFACE: &[(&str, &[&str])] = &[("disrobe-pass-native", &["chain"])];
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum Requirement {
@@ -126,6 +119,78 @@ impl CrateFacts {
             .filter(|file: &&GatedFile| file.tests > 0 && !selection.satisfies(&file.requirements))
             .collect()
     }
+
+    fn hidden_labels_with_configuration_coverage(
+        &self,
+        coverage: &ConfigurationCoverage,
+    ) -> BTreeSet<String> {
+        let mut out: BTreeSet<String> = BTreeSet::new();
+        for file in &self.gated {
+            if file.tests == 0 || self.default_selection.satisfies(&file.requirements) {
+                continue;
+            }
+            if file_is_negative_only_for_default(file, &self.default_selection)
+                && coverage.covers(self, file)
+            {
+                continue;
+            }
+            for requirement in &file.requirements {
+                if !requirement.holds(&self.default_selection) {
+                    out.insert(requirement.label());
+                }
+            }
+        }
+        out
+    }
+}
+
+fn file_is_negative_only_for_default(file: &GatedFile, default: &Selection) -> bool {
+    let unsatisfied: Vec<&Requirement> = file
+        .requirements
+        .iter()
+        .filter(|requirement: &&Requirement| !requirement.holds(default))
+        .collect();
+    !unsatisfied.is_empty()
+        && unsatisfied.iter().all(|requirement: &&Requirement| {
+            matches!(
+                requirement,
+                Requirement::Disabled(_) | Requirement::NotAll(_)
+            )
+        })
+}
+
+#[derive(Debug, Default)]
+struct ConfigurationCoverage {
+    targets: BTreeSet<(String, String)>,
+    commands_scanned: usize,
+}
+
+impl ConfigurationCoverage {
+    fn record(&mut self, facts: &CrateFacts, invocation: &Invocation, selection: &Selection) {
+        if invocation.runner_narrowed {
+            return;
+        }
+        for wanted in &invocation.tests {
+            let Some(file) = facts
+                .gated
+                .iter()
+                .find(|file: &&GatedFile| file.target == TestTarget::Integration(wanted.clone()))
+            else {
+                continue;
+            };
+            if selection.satisfies(&file.requirements)
+                && filter_can_select(invocation.filter.as_deref(), wanted, &file.relative)
+            {
+                self.targets
+                    .insert((facts.package.clone(), file.relative.clone()));
+            }
+        }
+    }
+
+    fn covers(&self, facts: &CrateFacts, file: &GatedFile) -> bool {
+        self.targets
+            .contains(&(facts.package.clone(), file.relative.clone()))
+    }
 }
 
 #[derive(Debug)]
@@ -161,6 +226,14 @@ pub(crate) fn audit(root: &Path) -> Result<Audit> {
         }
     }
 
+    let by_package: BTreeMap<&str, &CrateFacts> = crates
+        .iter()
+        .map(|facts: &CrateFacts| (facts.package.as_str(), facts))
+        .collect();
+    let configuration_coverage: ConfigurationCoverage =
+        scan_commands(root, &by_package, &mut report.findings)?;
+    report.commands_scanned = configuration_coverage.commands_scanned;
+
     let mut hidden_crates: usize = 0;
     for facts in &crates {
         if let Some(tests) = facts.chain_detector_tests {
@@ -175,12 +248,13 @@ pub(crate) fn audit(root: &Path) -> Result<Audit> {
                     ),
                 );
             }
-            if !facts.default_selection.enables(CHAIN_FEATURE) {
+            if chain_detector_tests_hidden_by_default(facts) {
                 report.chain_tests_hidden_by_default += tests;
             }
         }
 
-        let actual: BTreeSet<String> = facts.hidden_labels();
+        let actual: BTreeSet<String> =
+            facts.hidden_labels_with_configuration_coverage(&configuration_coverage);
         if !actual.is_empty() {
             hidden_crates += 1;
         }
@@ -257,11 +331,6 @@ pub(crate) fn audit(root: &Path) -> Result<Audit> {
         );
     }
 
-    let by_package: BTreeMap<&str, &CrateFacts> = crates
-        .iter()
-        .map(|facts: &CrateFacts| (facts.package.as_str(), facts))
-        .collect();
-    report.commands_scanned = scan_commands(root, &by_package, &mut report.findings)?;
     if report.commands_scanned < MIN_SCANNED_COMMANDS {
         bail!(
             "this sweep read {} per-crate `cargo test -p` invocation(s) out of the repository's \
@@ -275,6 +344,13 @@ pub(crate) fn audit(root: &Path) -> Result<Audit> {
         .findings
         .sort_by(|a: &Finding, b: &Finding| (a.check, &a.detail).cmp(&(b.check, &b.detail)));
     Ok(report)
+}
+
+fn chain_detector_tests_hidden_by_default(facts: &CrateFacts) -> bool {
+    facts.gated.iter().any(|file: &GatedFile| {
+        file.relative == format!("src/{CHAIN_DETECTOR_FILE}")
+            && !facts.default_selection.satisfies(&file.requirements)
+    })
 }
 
 fn render_labels(labels: &BTreeSet<String>) -> String {
@@ -667,6 +743,7 @@ struct Invocation {
     all_targets: bool,
     placeholder: bool,
     filter: Option<String>,
+    runner_narrowed: bool,
 }
 
 fn trim_delimiters(token: &str, extra: &[char]) -> String {
@@ -694,18 +771,25 @@ fn flag_value<'a>(flag: &str, token: &'a str) -> Option<&'a str> {
 fn parse_invocation(line: &str) -> Invocation {
     let mut out: Invocation = Invocation::default();
     let mut raw_package: Option<String> = None;
+    let mut seen_test_subcommand: bool = false;
     let mut tokens: std::str::SplitWhitespace<'_> = line.split_whitespace();
     while let Some(token) = tokens.next() {
         let token: &str = token.trim_end_matches('`');
         if token == "--" {
-            out.filter = tokens
+            let runner_args: Vec<&str> = tokens
                 .by_ref()
                 .map(|rest: &str| rest.trim_end_matches('`'))
+                .collect();
+            out.filter = runner_args
+                .iter()
+                .copied()
                 .find(|rest: &&str| !rest.starts_with('-'))
                 .map(str::to_owned);
+            out.runner_narrowed = runner_args.iter().any(|arg: &&str| *arg != "--nocapture");
             break;
         }
         match token {
+            "test" => seen_test_subcommand = true,
             "-p" | "--package" => raw_package = tokens.next().map(str::to_owned),
             "--test" => out.tests.extend(tokens.next().map(name_token)),
             "--features" | "-F" => out.features.extend(tokens.next().map(feature_token)),
@@ -721,6 +805,9 @@ fn parse_invocation(line: &str) -> Invocation {
                     out.tests.push(name_token(value));
                 } else if let Some(value) = flag_value("--features", token) {
                     out.features.push(feature_token(value));
+                } else if seen_test_subcommand && !token.starts_with('-') {
+                    out.filter.get_or_insert_with(|| token.to_owned());
+                    out.runner_narrowed = true;
                 }
             }
         }
@@ -818,8 +905,9 @@ fn scan_commands(
     root: &Path,
     by_package: &BTreeMap<&str, &CrateFacts>,
     findings: &mut Vec<Finding>,
-) -> Result<usize> {
-    let mut scanned: usize = 0;
+) -> Result<ConfigurationCoverage> {
+    let mut coverage: ConfigurationCoverage = ConfigurationCoverage::default();
+    let workflows: PathBuf = root.join(".github").join("workflows");
     for path in command_sources(root)? {
         let label: String = relative_label(root, &path);
         let text: String =
@@ -838,7 +926,7 @@ fn scan_commands(
             if invocation.placeholder {
                 continue;
             }
-            scanned += 1;
+            coverage.commands_scanned += 1;
             let whence: String = format!("{label}:{}", number + 1);
             let Some(facts) = by_package.get(package.as_str()) else {
                 findings.push(Finding {
@@ -852,9 +940,30 @@ fn scan_commands(
             };
             let selection: Selection = invocation_selection(facts, &invocation);
             report_skipped_tests(facts, &invocation, &selection, &whence, findings);
+            record_workflow_coverage(
+                &mut coverage,
+                &workflows,
+                &path,
+                facts,
+                &invocation,
+                &selection,
+            );
         }
     }
-    Ok(scanned)
+    Ok(coverage)
+}
+
+fn record_workflow_coverage(
+    coverage: &mut ConfigurationCoverage,
+    workflows: &Path,
+    source: &Path,
+    facts: &CrateFacts,
+    invocation: &Invocation,
+    selection: &Selection,
+) {
+    if source.starts_with(workflows) {
+        coverage.record(facts, invocation, selection);
+    }
 }
 
 fn report_skipped_tests(
@@ -954,6 +1063,26 @@ mod tests {
             gated,
             chain_detector_tests: Some(3),
         }
+    }
+
+    #[test]
+    fn detector_without_cfg_is_not_hidden_by_default() {
+        let facts: CrateFacts = crate_facts(&[("default", &[])], Vec::new());
+        assert!(!chain_detector_tests_hidden_by_default(&facts));
+    }
+
+    #[test]
+    fn detector_cfg_unsatisfied_by_default_is_hidden() {
+        let facts: CrateFacts = crate_facts(
+            &[("default", &[]), ("chain", &[])],
+            vec![GatedFile {
+                relative: "src/chain_detector.rs".to_owned(),
+                target: TestTarget::Unit,
+                requirements: vec![Requirement::Enabled("chain".to_owned())],
+                tests: 3,
+            }],
+        );
+        assert!(chain_detector_tests_hidden_by_default(&facts));
     }
 
     fn chain_detector(tests: usize) -> GatedFile {
@@ -1352,5 +1481,202 @@ mod tests {
         );
         assert!(invocation.features.is_empty());
         assert_eq!(invocation.tests, vec!["x".to_owned()]);
+        assert!(invocation.runner_narrowed);
+    }
+
+    fn negative_target(requirements: Vec<Requirement>) -> GatedFile {
+        GatedFile {
+            relative: "tests/slim_bail.rs".to_owned(),
+            target: TestTarget::Integration("slim_bail".to_owned()),
+            requirements,
+            tests: 1,
+        }
+    }
+
+    #[test]
+    fn workflow_named_target_with_satisfying_negative_selection_is_covered() {
+        let facts: CrateFacts = crate_facts(
+            &[("default", &["wasm"]), ("wasm", &[])],
+            vec![negative_target(vec![Requirement::Disabled(
+                "wasm".to_owned(),
+            )])],
+        );
+        let invocation: Invocation = parse_invocation(
+            "cargo test -p disrobe-pass-example --no-default-features --test slim_bail",
+        );
+        let selection: Selection = invocation_selection(&facts, &invocation);
+        let mut coverage: ConfigurationCoverage = ConfigurationCoverage::default();
+        coverage.record(&facts, &invocation, &selection);
+        assert!(
+            facts
+                .hidden_labels_with_configuration_coverage(&coverage)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn missing_negative_configuration_workflow_coverage_remains_hidden() {
+        let facts: CrateFacts = crate_facts(
+            &[("default", &["wasm"]), ("wasm", &[])],
+            vec![negative_target(vec![Requirement::Disabled(
+                "wasm".to_owned(),
+            )])],
+        );
+        assert_eq!(
+            facts.hidden_labels_with_configuration_coverage(&ConfigurationCoverage::default()),
+            BTreeSet::from(["!wasm".to_owned()])
+        );
+    }
+
+    #[test]
+    fn filtered_negative_target_does_not_count_as_configuration_coverage() {
+        let facts: CrateFacts = crate_facts(
+            &[("default", &["wasm"]), ("wasm", &[])],
+            vec![negative_target(vec![Requirement::Disabled(
+                "wasm".to_owned(),
+            )])],
+        );
+        let invocation: Invocation = parse_invocation(
+            "cargo test -p disrobe-pass-example --no-default-features --test slim_bail -- definitely_missing",
+        );
+        let selection: Selection = invocation_selection(&facts, &invocation);
+        let mut coverage: ConfigurationCoverage = ConfigurationCoverage::default();
+        coverage.record(&facts, &invocation, &selection);
+        assert_eq!(
+            facts.hidden_labels_with_configuration_coverage(&coverage),
+            BTreeSet::from(["!wasm".to_owned()])
+        );
+    }
+
+    #[test]
+    fn pre_separator_filter_does_not_count_as_configuration_coverage() {
+        let facts: CrateFacts = crate_facts(
+            &[("default", &["wasm"]), ("wasm", &[])],
+            vec![negative_target(vec![Requirement::Disabled(
+                "wasm".to_owned(),
+            )])],
+        );
+        let invocation: Invocation = parse_invocation(
+            "cargo test -p disrobe-pass-example --no-default-features --test slim_bail definitely_missing",
+        );
+        let selection: Selection = invocation_selection(&facts, &invocation);
+        let mut coverage: ConfigurationCoverage = ConfigurationCoverage::default();
+        coverage.record(&facts, &invocation, &selection);
+        assert_eq!(
+            facts.hidden_labels_with_configuration_coverage(&coverage),
+            BTreeSet::from(["!wasm".to_owned()])
+        );
+    }
+
+    #[test]
+    fn ignored_only_target_does_not_count_as_configuration_coverage() {
+        let facts: CrateFacts = crate_facts(
+            &[("default", &["wasm"]), ("wasm", &[])],
+            vec![negative_target(vec![Requirement::Disabled(
+                "wasm".to_owned(),
+            )])],
+        );
+        let invocation: Invocation = parse_invocation(
+            "cargo test -p disrobe-pass-example --no-default-features --test slim_bail -- --ignored",
+        );
+        let selection: Selection = invocation_selection(&facts, &invocation);
+        let mut coverage: ConfigurationCoverage = ConfigurationCoverage::default();
+        coverage.record(&facts, &invocation, &selection);
+        assert_eq!(
+            facts.hidden_labels_with_configuration_coverage(&coverage),
+            BTreeSet::from(["!wasm".to_owned()])
+        );
+    }
+
+    #[test]
+    fn help_only_target_does_not_count_as_configuration_coverage() {
+        let facts: CrateFacts = crate_facts(
+            &[("default", &["wasm"]), ("wasm", &[])],
+            vec![negative_target(vec![Requirement::Disabled(
+                "wasm".to_owned(),
+            )])],
+        );
+        let invocation: Invocation = parse_invocation(
+            "cargo test -p disrobe-pass-example --no-default-features --test slim_bail -- --help",
+        );
+        let selection: Selection = invocation_selection(&facts, &invocation);
+        let mut coverage: ConfigurationCoverage = ConfigurationCoverage::default();
+        coverage.record(&facts, &invocation, &selection);
+        assert_eq!(
+            facts.hidden_labels_with_configuration_coverage(&coverage),
+            BTreeSet::from(["!wasm".to_owned()])
+        );
+    }
+
+    #[test]
+    fn documentation_only_negative_configuration_does_not_count_as_coverage() {
+        let facts: CrateFacts = crate_facts(
+            &[("default", &["wasm"]), ("wasm", &[])],
+            vec![negative_target(vec![Requirement::Disabled(
+                "wasm".to_owned(),
+            )])],
+        );
+        let invocation: Invocation = parse_invocation(
+            "cargo test -p disrobe-pass-example --no-default-features --test slim_bail",
+        );
+        let selection: Selection = invocation_selection(&facts, &invocation);
+        let root: PathBuf = PathBuf::from("workspace");
+        let workflows: PathBuf = root.join(".github").join("workflows");
+        let document: PathBuf = root.join("docs").join("contributing.md");
+        let mut coverage: ConfigurationCoverage = ConfigurationCoverage::default();
+        record_workflow_coverage(
+            &mut coverage,
+            &workflows,
+            &document,
+            &facts,
+            &invocation,
+            &selection,
+        );
+        assert_eq!(
+            facts.hidden_labels_with_configuration_coverage(&coverage),
+            BTreeSet::from(["!wasm".to_owned()])
+        );
+    }
+
+    #[test]
+    fn mixed_positive_and_negative_gate_needs_only_the_negative_configuration_covered() {
+        let facts: CrateFacts = crate_facts(
+            &[("default", &["chain", "jvm"]), ("chain", &[]), ("jvm", &[])],
+            vec![negative_target(vec![
+                Requirement::Enabled("chain".to_owned()),
+                Requirement::Disabled("jvm".to_owned()),
+            ])],
+        );
+        let invocation: Invocation = parse_invocation(
+            "cargo test -p disrobe-pass-example --no-default-features --features chain --test slim_bail",
+        );
+        let selection: Selection = invocation_selection(&facts, &invocation);
+        let mut coverage: ConfigurationCoverage = ConfigurationCoverage::default();
+        coverage.record(&facts, &invocation, &selection);
+        assert!(
+            facts
+                .hidden_labels_with_configuration_coverage(&coverage)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_positive_gate_remains_hidden_even_with_a_named_workflow_target() {
+        let facts: CrateFacts = crate_facts(
+            &[("default", &[]), ("chain", &[])],
+            vec![negative_target(vec![Requirement::Enabled(
+                "chain".to_owned(),
+            )])],
+        );
+        let invocation: Invocation = parse_invocation(
+            "cargo test -p disrobe-pass-example --features chain --test slim_bail",
+        );
+        let selection: Selection = invocation_selection(&facts, &invocation);
+        let mut coverage: ConfigurationCoverage = ConfigurationCoverage::default();
+        coverage.record(&facts, &invocation, &selection);
+        assert_eq!(
+            facts.hidden_labels_with_configuration_coverage(&coverage),
+            BTreeSet::from(["chain".to_owned()])
+        );
     }
 }

@@ -1615,6 +1615,8 @@ jobs:
         run: cargo test -p disrobe-cli --no-default-features --test slim_wasm_bail -- --nocapture
       - name: the network and async surfaces bail when they are compiled out
         run: cargo test -p disrobe-cli --no-default-features --test slim_network_bail -- --nocapture
+      - name: the chain-only build refuses Dalvik before input processing
+        run: cargo test -p disrobe-cli --no-default-features --features chain --test auto_dalvik_feature_gate -- --nocapture
       - name: build the slim release binary with the release path remap
         shell: bash
         run: |
