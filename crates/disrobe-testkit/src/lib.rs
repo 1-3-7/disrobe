@@ -23,7 +23,7 @@ pub use config::{
     SEED_ENV, StressConfig,
 };
 pub use corpus::{CheckFn, CorpusEntry, CorpusSource, StressCase};
-pub use disrobe_tool_process::CommandSpec;
+pub use disrobe_tool_process::{CommandSpec, ProcessMemoryLimit};
 pub use error::{BatchFailure, BatchFailureReason, CulpritCase, StressError};
 pub use isolate::{BATCH_ENV, WorkerTest, run_isolated, worker_main};
 pub use mutate::{MutationKind, mutate};

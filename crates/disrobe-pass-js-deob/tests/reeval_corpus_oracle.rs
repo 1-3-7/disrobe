@@ -3,6 +3,8 @@ mod common;
 
 use std::collections::BTreeSet;
 use std::fs;
+use std::io::Read;
+use std::num::NonZeroUsize;
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
@@ -16,7 +18,7 @@ use disrobe_pass_js_deob::{
     ObfuscatorIoControl, ObfuscatorIoOptions, ObfuscatorIoOutput, deobfuscate_all, detect,
     obfuscator_io_deobfuscate,
 };
-use disrobe_testkit::{CommandSpec, ToolOutput, tool_output};
+use disrobe_testkit::{CommandSpec, ProcessMemoryLimit, ToolOutput, tool_output};
 use sha2::{Digest, Sha256};
 
 const DIFFERENTIAL_FLOOR: usize = 37;
@@ -27,6 +29,8 @@ const REQUESTED_ROOTS: &[&str] = &["js/javascript-obfuscator", "js/jsconfuser"];
 const WORKER_REQUEST_ENV: &str = "DISROBE_JS_BOA_ORACLE_REQUEST";
 const WORKER_RESPONSE_ENV: &str = "DISROBE_JS_BOA_ORACLE_RESPONSE";
 const WORKER_CAPTURE_LIMIT: usize = 256 * 1024;
+const WORKER_MEMORY_LIMIT_BYTES: usize = 512 * 1024 * 1024;
+const WORKER_REQUEST_LIMIT: u64 = 32 * 1024 * 1024;
 const WORKER_RESPONSE_LIMIT: u64 = 32 * 1024 * 1024;
 const BROWSER_SOURCE_SHA256: &str =
     "01f077df59472afab8a2662fa6d972d39daa2ddf376e973f69a7a517d1a080e5";
@@ -1558,8 +1562,8 @@ fn boa_eval_subprocess_worker() {
     let response_path: PathBuf = std::env::var_os(WORKER_RESPONSE_ENV)
         .map(PathBuf::from)
         .expect("Boa evaluation worker response path must be set");
-    let request_bytes: Vec<u8> =
-        fs::read(&request_path).expect("Boa evaluation worker must read its request");
+    let request_bytes: Vec<u8> = read_worker_request(&request_path)
+        .expect("Boa evaluation worker must read its bounded request");
     let request: EvalBatchRequest =
         serde_json::from_slice(&request_bytes).expect("Boa evaluation worker request must decode");
     let mut evaluations: Vec<Result<EvalOutcome, String>> =
@@ -1593,15 +1597,35 @@ fn worker_diagnostics(output: &ToolOutput) -> String {
 }
 
 fn read_worker_response(path: &Path) -> Result<Vec<u8>, String> {
-    let metadata: fs::Metadata = fs::metadata(path)
-        .map_err(|error: std::io::Error| format!("inspect Boa worker response: {error}"))?;
-    if metadata.len() > WORKER_RESPONSE_LIMIT {
+    read_bounded_worker_file(path, WORKER_RESPONSE_LIMIT, "Boa worker response")
+}
+
+fn read_worker_request(path: &Path) -> Result<Vec<u8>, String> {
+    read_bounded_worker_file(path, WORKER_REQUEST_LIMIT, "Boa worker request")
+}
+
+fn read_bounded_worker_file(path: &Path, limit: u64, label: &str) -> Result<Vec<u8>, String> {
+    let metadata: fs::Metadata =
+        fs::metadata(path).map_err(|error: std::io::Error| format!("inspect {label}: {error}"))?;
+    if metadata.len() > limit {
         return Err(format!(
-            "Boa worker response is {} bytes, above the {WORKER_RESPONSE_LIMIT}-byte limit",
-            metadata.len()
+            "{label} is {} bytes, above the {limit}-byte limit",
+            metadata.len(),
         ));
     }
-    fs::read(path).map_err(|error: std::io::Error| format!("read Boa worker response: {error}"))
+    let file: fs::File =
+        fs::File::open(path).map_err(|error: std::io::Error| format!("open {label}: {error}"))?;
+    let mut reader: std::io::Take<fs::File> = file.take(limit.saturating_add(1));
+    let mut bytes: Vec<u8> = Vec::new();
+    reader
+        .read_to_end(&mut bytes)
+        .map_err(|error: std::io::Error| format!("read {label}: {error}"))?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > limit {
+        return Err(format!(
+            "{label} grew above the {limit}-byte limit while it was read"
+        ));
+    }
+    Ok(bytes)
 }
 
 #[test]
@@ -1619,6 +1643,24 @@ fn oversized_worker_response_is_rejected_before_read() {
     assert!(
         error.contains("above the"),
         "response limit diagnostic missing: {error}"
+    );
+}
+
+#[test]
+fn oversized_worker_request_is_rejected_before_read() {
+    let scratch: ScratchDir =
+        ScratchDir::create("disrobe-js-boa-request-limit").expect("scratch directory must open");
+    let request_path: PathBuf = scratch.path().join("request.json");
+    let request: fs::File =
+        fs::File::create(&request_path).expect("request fixture must be created");
+    request
+        .set_len(WORKER_REQUEST_LIMIT + 1)
+        .expect("request fixture length must be set");
+    let error: String =
+        read_worker_request(&request_path).expect_err("oversized request must be rejected");
+    assert!(
+        error.contains("above the"),
+        "request limit diagnostic missing: {error}"
     );
 }
 
@@ -1670,6 +1712,10 @@ fn eval_batch_guarded(program: &str, argv_battery: &[&[&str]]) -> GuardedBatch {
         ])
         .env(WORKER_REQUEST_ENV, &request_path)
         .env(WORKER_RESPONSE_ENV, &response_path)
+        .memory_limit(ProcessMemoryLimit::new(
+            NonZeroUsize::new(WORKER_MEMORY_LIMIT_BYTES)
+                .expect("Boa worker memory limit must be nonzero"),
+        ))
         .capture_limits(WORKER_CAPTURE_LIMIT, WORKER_CAPTURE_LIMIT);
     let output: ToolOutput = match tool_output(spec) {
         Ok(output) => output,
