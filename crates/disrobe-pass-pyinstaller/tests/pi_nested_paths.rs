@@ -305,7 +305,6 @@ fn no_hostile_toc_name_can_produce_a_path_that_leaves_an_output_root() {
     }
 }
 
-#[cfg(feature = "chain")]
 mod chain_surface {
     use disrobe_core::chain::Pass as _;
     use disrobe_core::{Artifact, Rung};

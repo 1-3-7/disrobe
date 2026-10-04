@@ -2,7 +2,6 @@
 #![deny(unreachable_pub)]
 #![allow(clippy::redundant_pub_crate)]
 mod base_library;
-#[cfg(feature = "chain")]
 pub mod chain_detector;
 mod cookie;
 pub(crate) mod crypto;
@@ -11,7 +10,6 @@ mod deptree;
 mod error;
 mod extract;
 mod manifest;
-#[cfg(feature = "chain")]
 pub mod native_surface;
 mod onedir;
 mod pyc_zipper;

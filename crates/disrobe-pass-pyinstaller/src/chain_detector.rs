@@ -1,4 +1,3 @@
-#![cfg(feature = "chain")]
 use std::fmt::Write as _;
 
 use disrobe_core::Artifact;

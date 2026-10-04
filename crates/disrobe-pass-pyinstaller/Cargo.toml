@@ -18,8 +18,8 @@ workspace = true
 [dependencies]
 disrobe-bytes = { workspace = true }
 disrobe-core = { workspace = true }
-disrobe-pass-native = { workspace = true, optional = true }
-disrobe-capabilities = { workspace = true, optional = true }
+disrobe-pass-native = { workspace = true }
+disrobe-capabilities = { workspace = true }
 disrobe-py-marshal = { workspace = true }
 aes = { workspace = true }
 ctr = { workspace = true }
@@ -32,10 +32,6 @@ thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 indexmap = { workspace = true }
-
-[features]
-default = []
-chain = ["disrobe-core/chain", "dep:disrobe-pass-native", "dep:disrobe-capabilities"]
 
 [dev-dependencies]
 disrobe-testkit = { workspace = true }
