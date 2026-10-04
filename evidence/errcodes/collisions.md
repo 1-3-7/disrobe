@@ -1211,13 +1211,13 @@
 
 ### `DR-MCP-0330`
 
-- `"cannot read {}: {}"`: `crates/disrobe-mcp/src/lib.rs:1341`
-- `"{} is not a valid disrobe.renames/v1 file: {}"`: `crates/disrobe-mcp/src/lib.rs:1351`
+- `"cannot read {}: {}"`: `crates/disrobe-mcp/src/lib.rs:1348`
+- `"{} is not a valid disrobe.renames/v1 file: {}"`: `crates/disrobe-mcp/src/lib.rs:1358`
 
 ### `DR-MCP-0340`
 
-- `"renames file already has {} records"`: `crates/disrobe-mcp/src/lib.rs:721`
-- `"renames file exceeds {} records"`: `crates/disrobe-mcp/src/lib.rs:1359`
+- `"renames file already has {} records"`: `crates/disrobe-mcp/src/lib.rs:725`
+- `"renames file exceeds {} records"`: `crates/disrobe-mcp/src/lib.rs:1366`
 
 ### `DR-MCP-0656`
 
@@ -1227,7 +1227,7 @@
 ### `DR-MCP-0660`
 
 - `"bounded navigation response needs {} bytes but budget is {}"`: `crates/disrobe-mcp/src/navigation.rs:813`
-- `"cannot account for the bytes of this input: {}"`: `crates/disrobe-mcp/src/lib.rs:944`
+- `"cannot account for the bytes of this input: {}"`: `crates/disrobe-mcp/src/lib.rs:866`
 - `"navigation response serialize: {}"`: `crates/disrobe-mcp/src/navigation.rs:47`, `crates/disrobe-mcp/src/navigation.rs:53`, `crates/disrobe-mcp/src/navigation.rs:803`
 
 ### `DR-MCP-0661`
@@ -1237,8 +1237,8 @@
 
 ### `DR-MCP-0680`
 
-- `"native match report serialization failed: {}"`: `crates/disrobe-mcp/src/lib.rs:670`
-- `"native match report serialization produced a non-object value"`: `crates/disrobe-mcp/src/lib.rs:666`
+- `"native match report serialization failed: {}"`: `crates/disrobe-mcp/src/lib.rs:674`
+- `"native match report serialization produced a non-object value"`: `crates/disrobe-mcp/src/lib.rs:670`
 
 ### `DR-NAT-0944`
 
@@ -2409,45 +2409,45 @@
 - `DR-MARSHAL-0020`: `crates/disrobe-py-marshal/src/error.rs:116`
 - `DR-MARSHAL-0021`: `crates/disrobe-py-marshal/src/error.rs:19`
 - `DR-MARSHAL-0022`: `crates/disrobe-py-marshal/src/error.rs:9`
-- `DR-MCP-0001`: `crates/disrobe-mcp/src/lib.rs:1425`
-- `DR-MCP-0002`: `crates/disrobe-mcp/src/lib.rs:1431`
-- `DR-MCP-0003`: `crates/disrobe-mcp/src/lib.rs:1435`
-- `DR-MCP-0181`: `crates/disrobe-mcp/src/lib.rs:1114`
-- `DR-MCP-0182`: `crates/disrobe-mcp/src/lib.rs:1091`
-- `DR-MCP-0183`: `crates/disrobe-mcp/src/lib.rs:1099`
-- `DR-MCP-0184`: `crates/disrobe-mcp/src/lib.rs:687`
-- `DR-MCP-0185`: `crates/disrobe-mcp/src/lib.rs:1121`
-- `DR-MCP-0322`: `crates/disrobe-mcp/src/lib.rs:1198`
-- `DR-MCP-0323`: `crates/disrobe-mcp/src/lib.rs:1203`
-- `DR-MCP-0324`: `crates/disrobe-mcp/src/lib.rs:1295`
-- `DR-MCP-0325`: `crates/disrobe-mcp/src/lib.rs:1278`
-- `DR-MCP-0326`: `crates/disrobe-mcp/src/lib.rs:1284`
-- `DR-MCP-0327`: `crates/disrobe-mcp/src/lib.rs:1288`
-- `DR-MCP-0329`: `crates/disrobe-mcp/src/lib.rs:1330`
-- `DR-MCP-0330`: `crates/disrobe-mcp/src/lib.rs:1341`, `crates/disrobe-mcp/src/lib.rs:1351`
-- `DR-MCP-0331`: `crates/disrobe-mcp/src/lib.rs:1260`
-- `DR-MCP-0333`: `crates/disrobe-mcp/src/lib.rs:713`
-- `DR-MCP-0334`: `crates/disrobe-mcp/src/lib.rs:733`
-- `DR-MCP-0335`: `crates/disrobe-mcp/src/lib.rs:737`
-- `DR-MCP-0336`: `crates/disrobe-mcp/src/lib.rs:1243`
-- `DR-MCP-0337`: `crates/disrobe-mcp/src/lib.rs:1225`
-- `DR-MCP-0338`: `crates/disrobe-mcp/src/lib.rs:1152`, `crates/disrobe-mcp/src/lib.rs:1153`, `crates/disrobe-mcp/src/lib.rs:1155`
-- `DR-MCP-0339`: `crates/disrobe-mcp/src/lib.rs:1234`
-- `DR-MCP-0340`: `crates/disrobe-mcp/src/lib.rs:721`, `crates/disrobe-mcp/src/lib.rs:1359`
-- `DR-MCP-0341`: `crates/disrobe-mcp/src/lib.rs:1346`
-- `DR-MCP-0342`: `crates/disrobe-mcp/src/lib.rs:1370`
-- `DR-MCP-0343`: `crates/disrobe-mcp/src/lib.rs:1375`, `crates/disrobe-mcp/src/lib.rs:1376`, `crates/disrobe-mcp/src/lib.rs:1378`
-- `DR-MCP-0530`: `crates/disrobe-mcp/src/lib.rs:787`
-- `DR-MCP-0531`: `crates/disrobe-mcp/src/lib.rs:782`
-- `DR-MCP-0532`: `crates/disrobe-mcp/src/lib.rs:794`
-- `DR-MCP-0610`: `crates/disrobe-mcp/src/lib.rs:820`
-- `DR-MCP-0611`: `crates/disrobe-mcp/src/lib.rs:818`
-- `DR-MCP-0612`: `crates/disrobe-mcp/src/lib.rs:833`
-- `DR-MCP-0620`: `crates/disrobe-mcp/src/lib.rs:873`
-- `DR-MCP-0621`: `crates/disrobe-mcp/src/lib.rs:871`
-- `DR-MCP-0640`: `crates/disrobe-mcp/src/lib.rs:964`
-- `DR-MCP-0641`: `crates/disrobe-mcp/src/lib.rs:1161`
-- `DR-MCP-0642`: `crates/disrobe-mcp/src/lib.rs:1163`
+- `DR-MCP-0001`: `crates/disrobe-mcp/src/lib.rs:1432`
+- `DR-MCP-0002`: `crates/disrobe-mcp/src/lib.rs:1438`
+- `DR-MCP-0003`: `crates/disrobe-mcp/src/lib.rs:1442`
+- `DR-MCP-0181`: `crates/disrobe-mcp/src/lib.rs:1120`
+- `DR-MCP-0182`: `crates/disrobe-mcp/src/lib.rs:1097`
+- `DR-MCP-0183`: `crates/disrobe-mcp/src/lib.rs:1105`
+- `DR-MCP-0184`: `crates/disrobe-mcp/src/lib.rs:691`
+- `DR-MCP-0185`: `crates/disrobe-mcp/src/lib.rs:1127`
+- `DR-MCP-0322`: `crates/disrobe-mcp/src/lib.rs:1205`
+- `DR-MCP-0323`: `crates/disrobe-mcp/src/lib.rs:1210`
+- `DR-MCP-0324`: `crates/disrobe-mcp/src/lib.rs:1302`
+- `DR-MCP-0325`: `crates/disrobe-mcp/src/lib.rs:1285`
+- `DR-MCP-0326`: `crates/disrobe-mcp/src/lib.rs:1291`
+- `DR-MCP-0327`: `crates/disrobe-mcp/src/lib.rs:1295`
+- `DR-MCP-0329`: `crates/disrobe-mcp/src/lib.rs:1337`
+- `DR-MCP-0330`: `crates/disrobe-mcp/src/lib.rs:1348`, `crates/disrobe-mcp/src/lib.rs:1358`
+- `DR-MCP-0331`: `crates/disrobe-mcp/src/lib.rs:1267`
+- `DR-MCP-0333`: `crates/disrobe-mcp/src/lib.rs:717`
+- `DR-MCP-0334`: `crates/disrobe-mcp/src/lib.rs:737`
+- `DR-MCP-0335`: `crates/disrobe-mcp/src/lib.rs:741`
+- `DR-MCP-0336`: `crates/disrobe-mcp/src/lib.rs:1250`
+- `DR-MCP-0337`: `crates/disrobe-mcp/src/lib.rs:1232`
+- `DR-MCP-0338`: `crates/disrobe-mcp/src/lib.rs:1158`, `crates/disrobe-mcp/src/lib.rs:1159`, `crates/disrobe-mcp/src/lib.rs:1161`
+- `DR-MCP-0339`: `crates/disrobe-mcp/src/lib.rs:1241`
+- `DR-MCP-0340`: `crates/disrobe-mcp/src/lib.rs:725`, `crates/disrobe-mcp/src/lib.rs:1366`
+- `DR-MCP-0341`: `crates/disrobe-mcp/src/lib.rs:1353`
+- `DR-MCP-0342`: `crates/disrobe-mcp/src/lib.rs:1377`
+- `DR-MCP-0343`: `crates/disrobe-mcp/src/lib.rs:1382`, `crates/disrobe-mcp/src/lib.rs:1383`, `crates/disrobe-mcp/src/lib.rs:1385`
+- `DR-MCP-0530`: `crates/disrobe-mcp/src/lib.rs:791`
+- `DR-MCP-0531`: `crates/disrobe-mcp/src/lib.rs:786`
+- `DR-MCP-0532`: `crates/disrobe-mcp/src/lib.rs:798`
+- `DR-MCP-0610`: `crates/disrobe-mcp/src/lib.rs:954`
+- `DR-MCP-0611`: `crates/disrobe-mcp/src/lib.rs:952`
+- `DR-MCP-0612`: `crates/disrobe-mcp/src/lib.rs:967`
+- `DR-MCP-0620`: `crates/disrobe-mcp/src/lib.rs:1006`
+- `DR-MCP-0621`: `crates/disrobe-mcp/src/lib.rs:1004`
+- `DR-MCP-0640`: `crates/disrobe-mcp/src/lib.rs:886`
+- `DR-MCP-0641`: `crates/disrobe-mcp/src/lib.rs:1167`
+- `DR-MCP-0642`: `crates/disrobe-mcp/src/lib.rs:1169`
 - `DR-MCP-0650`: `crates/disrobe-mcp/src/navigation.rs:597`
 - `DR-MCP-0651`: `crates/disrobe-mcp/src/navigation.rs:607`
 - `DR-MCP-0652`: `crates/disrobe-mcp/src/navigation.rs:733`, `crates/disrobe-mcp/src/navigation.rs:778`
@@ -2458,11 +2458,11 @@
 - `DR-MCP-0657`: `crates/disrobe-mcp/src/navigation.rs:466`
 - `DR-MCP-0658`: `crates/disrobe-mcp/src/navigation.rs:460`
 - `DR-MCP-0659`: `crates/disrobe-mcp/src/navigation.rs:718`
-- `DR-MCP-0660`: `crates/disrobe-mcp/src/lib.rs:944`, `crates/disrobe-mcp/src/navigation.rs:47`, `crates/disrobe-mcp/src/navigation.rs:53`, `crates/disrobe-mcp/src/navigation.rs:803`, `crates/disrobe-mcp/src/navigation.rs:813`
+- `DR-MCP-0660`: `crates/disrobe-mcp/src/lib.rs:866`, `crates/disrobe-mcp/src/navigation.rs:47`, `crates/disrobe-mcp/src/navigation.rs:53`, `crates/disrobe-mcp/src/navigation.rs:803`, `crates/disrobe-mcp/src/navigation.rs:813`
 - `DR-MCP-0661`: `crates/disrobe-mcp/src/navigation.rs:507`, `crates/disrobe-mcp/src/navigation.rs:626`
 - `DR-MCP-0662`: `crates/disrobe-mcp/src/navigation.rs:641`
-- `DR-MCP-0670`: `crates/disrobe-mcp/src/lib.rs:1037`
-- `DR-MCP-0680`: `crates/disrobe-mcp/src/lib.rs:666`, `crates/disrobe-mcp/src/lib.rs:670`
+- `DR-MCP-0670`: `crates/disrobe-mcp/src/lib.rs:1044`
+- `DR-MCP-0680`: `crates/disrobe-mcp/src/lib.rs:670`, `crates/disrobe-mcp/src/lib.rs:674`
 - `DR-MOB-0001`: `crates/disrobe-pass-mobile/src/error.rs:8`
 - `DR-MOB-0002`: `crates/disrobe-pass-mobile/src/error.rs:11`
 - `DR-MOB-0003`: `crates/disrobe-pass-mobile/src/error.rs:14`
