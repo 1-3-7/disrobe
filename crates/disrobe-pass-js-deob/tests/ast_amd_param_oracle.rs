@@ -1,12 +1,10 @@
 #![allow(clippy::expect_used, clippy::panic)]
 
-use boa_engine::{Context, Source};
 use disrobe_pass_js_deob::{AstPipeline, AstRuleId, AstUnminifyStats, unminify_ast};
 use sha2::{Digest, Sha256};
 
-const LOOP_LIMIT: u64 = 2_000_000;
-const RECURSION_LIMIT: usize = 1_500;
-const STACK_LIMIT: usize = 50_000;
+mod common;
+
 const REAL_AMD_DEFINE: &str = include_str!("../corpus/bundlers/amd/define/bundle.js");
 const REAL_AMD_DEFINE_SHA256: &str =
     "abd2be41a8ea4db96bcc7c89c03f129c39f85d70e75abf614b69dbc7e15b5d78";
@@ -15,16 +13,18 @@ define("my/lib/core", ["jquery"], function (jquery) {
     return { init: function () { return jquery.fn ? "ok" : "fail"; } };
 });
 "#;
-const REAL_AMD_REFERENCE_OUTPUT: &str = "ok";
+
+struct AuthoredReference {
+    source_sha256: &'static str,
+    output: &'static str,
+}
+
+const REAL_AMD_REFERENCE: AuthoredReference = AuthoredReference {
+    source_sha256: "6dfa3f3d2c800e2de9b5c253bc426e5ad8c807acc57a11634d8eb78505f1c5d2",
+    output: "ok",
+};
 
 fn eval_capture(program: &str) -> String {
-    let mut context: Context = Context::default();
-    {
-        let runtime: &mut boa_engine::vm::RuntimeLimits = context.runtime_limits_mut();
-        runtime.set_loop_iteration_limit(LOOP_LIMIT);
-        runtime.set_recursion_limit(RECURSION_LIMIT);
-        runtime.set_stack_size_limit(STACK_LIMIT);
-    }
     let harness: String = format!(
         r#"
 var __out = [];
@@ -46,12 +46,18 @@ var define = function(first, second, third) {{
 __out.join("\u0001");
 "#
     );
-    context
-        .eval(Source::from_bytes(harness.as_bytes()))
-        .expect("the bounded AMD fixture must execute")
-        .as_string()
-        .expect("the bounded AMD fixture must return a string")
-        .to_std_string_escaped()
+    let worker: common::BoaWorker = common::BoaWorker::new(
+        std::env::current_exe().expect("the AMD grader executable must resolve"),
+    )
+    .expect("the AMD grader worker must initialize");
+    let outcome: common::EvalOutcome = worker
+        .evaluate(&harness, &[])
+        .expect("the bounded AMD worker must execute");
+    let common::Terminal::Completed(value) = outcome.terminal else {
+        panic!("the bounded AMD worker must complete: {outcome:?}");
+    };
+    assert_eq!(value.kind, "string", "the AMD worker must return a string");
+    value.value
 }
 
 fn assert_behavior_preserved(original: &str, recovered: &str) {
@@ -194,8 +200,9 @@ fn tracked_amd_bundle_uses_its_dependency_names() {
         "the AMD bundle changed without revalidating its reference"
     );
     assert_eq!(
-        eval_capture(REAL_AMD_REFERENCE_SOURCE),
-        REAL_AMD_REFERENCE_OUTPUT
+        format!("{:x}", Sha256::digest(REAL_AMD_REFERENCE_SOURCE.as_bytes())),
+        REAL_AMD_REFERENCE.source_sha256,
+        "the authored AMD reference changed without revalidating its output"
     );
     let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(REAL_AMD_DEFINE);
     assert_eq!(stats.amd_parameters_renamed, 2);
@@ -207,7 +214,7 @@ fn tracked_amd_bundle_uses_its_dependency_names() {
         recovered.contains("return jquery.fn ? \"ok\" : \"fail\";"),
         "the tracked factory reference must follow the positional rename:\n{recovered}"
     );
-    assert_eq!(eval_capture(&recovered), REAL_AMD_REFERENCE_OUTPUT);
+    assert_eq!(eval_capture(&recovered), REAL_AMD_REFERENCE.output);
     let mutated: String = recovered.replacen("\"ok\"", "\"wrong\"", 1);
     assert_ne!(
         mutated, recovered,
@@ -215,7 +222,7 @@ fn tracked_amd_bundle_uses_its_dependency_names() {
     );
     assert_ne!(
         eval_capture(&mutated),
-        REAL_AMD_REFERENCE_OUTPUT,
+        REAL_AMD_REFERENCE.output,
         "the reference grade must detect a changed recovered init result"
     );
 }

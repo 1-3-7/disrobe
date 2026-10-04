@@ -3,37 +3,27 @@ mod common;
 
 use std::collections::BTreeSet;
 use std::fs;
-use std::io::Read;
-use std::num::NonZeroUsize;
 use std::path::{Component, Path, PathBuf};
-use std::time::Duration;
 
 use common::{
-    EvalOutcome, ObservedValue, Terminal, TraceEvent, eval_capture, eval_outcome,
-    eval_outcome_bare, outcomes_equivalent, try_eval_outcome_with_argv,
+    BoaWorker, BoaWorkerError, EvalOutcome, ObservedValue, Terminal, TraceEvent, eval_capture,
+    eval_outcome, outcomes_equivalent,
 };
-use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_js_deob::{
     DeobOptions, DeobOutput, Detection, JsObfuscator, OBFUSCATOR_IO_MAX_PASS_CEILING,
     ObfuscatorIoControl, ObfuscatorIoOptions, ObfuscatorIoOutput, deobfuscate_all, detect,
     obfuscator_io_deobfuscate,
 };
-use disrobe_testkit::{CommandSpec, ProcessMemoryLimit, ToolOutput, tool_output};
 use sha2::{Digest, Sha256};
 
 const DIFFERENTIAL_FLOOR: usize = 37;
 const SAMPLE_COUNT: usize = 41;
-const EVAL_BACKSTOP: Duration = Duration::from_mins(5);
+const EVAL_BACKSTOP_DESCRIPTION: &str = "5-minute process backstop";
 const HIGH_CLEAN: &str = "src/javascript/obfuscator-io-high.js";
 const REQUESTED_ROOTS: &[&str] = &["js/javascript-obfuscator", "js/jsconfuser"];
-const WORKER_REQUEST_ENV: &str = "DISROBE_JS_BOA_ORACLE_REQUEST";
-const WORKER_RESPONSE_ENV: &str = "DISROBE_JS_BOA_ORACLE_RESPONSE";
-const WORKER_CAPTURE_LIMIT: usize = 256 * 1024;
-const WORKER_MEMORY_LIMIT_BYTES: usize = 512 * 1024 * 1024;
-const WORKER_REQUEST_LIMIT: u64 = 32 * 1024 * 1024;
-const WORKER_RESPONSE_LIMIT: u64 = 32 * 1024 * 1024;
 const BROWSER_SOURCE_SHA256: &str =
     "01f077df59472afab8a2662fa6d972d39daa2ddf376e973f69a7a517d1a080e5";
+const REFERENCE_OUTCOMES_JSON: &str = include_str!("fixtures/reeval_reference_outcomes.json");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum RewriterFamily {
@@ -970,14 +960,74 @@ const SAMPLES: &[Sample] = &[
 ];
 
 #[derive(serde::Serialize, serde::Deserialize)]
-struct EvalBatchRequest {
-    program: String,
-    argv_battery: Vec<Vec<String>>,
+struct ReferenceOutcomeFile {
+    schema: u32,
+    records: Vec<ReferenceOutcomeRecord>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
-struct EvalBatchResponse {
-    evaluations: Vec<Result<EvalOutcome, String>>,
+struct ReferenceOutcomeRecord {
+    name: String,
+    source_sha256: String,
+    argv_battery: Vec<Vec<String>>,
+    outcomes: Vec<EvalOutcome>,
+}
+
+fn committed_reference_outcomes(sample: &Sample, source: &str) -> Result<Vec<EvalOutcome>, String> {
+    let artifact: ReferenceOutcomeFile =
+        serde_json::from_str(REFERENCE_OUTCOMES_JSON).map_err(|error: serde_json::Error| {
+            format!("decode committed reference outcomes: {error}")
+        })?;
+    if artifact.schema != 1 {
+        return Err(format!(
+            "unsupported reference outcome schema {}",
+            artifact.schema
+        ));
+    }
+    let mut matches = artifact
+        .records
+        .into_iter()
+        .filter(|record: &ReferenceOutcomeRecord| record.name == sample.name);
+    let record: ReferenceOutcomeRecord = matches
+        .next()
+        .ok_or_else(|| format!("{}: committed reference outcome is missing", sample.name))?;
+    if matches.next().is_some() {
+        return Err(format!(
+            "{}: committed reference outcome is duplicated",
+            sample.name
+        ));
+    }
+    let source_sha256: String = format!("{:x}", Sha256::digest(source.as_bytes()));
+    if record.source_sha256 != source_sha256 {
+        return Err(format!(
+            "{}: authored source SHA-256 changed; expected {}, got {}",
+            sample.name, record.source_sha256, source_sha256
+        ));
+    }
+    let argv_battery: Vec<Vec<String>> = sample
+        .argv_battery
+        .iter()
+        .map(|argv: &&[&str]| {
+            argv.iter()
+                .map(|value: &&str| (*value).to_owned())
+                .collect()
+        })
+        .collect();
+    if record.argv_battery != argv_battery {
+        return Err(format!(
+            "{}: argument battery changed without revalidating the committed reference",
+            sample.name
+        ));
+    }
+    if record.outcomes.len() != sample.argv_battery.len() {
+        return Err(format!(
+            "{}: committed reference has {} outcomes for {} argument cases",
+            sample.name,
+            record.outcomes.len(),
+            sample.argv_battery.len()
+        ));
+    }
+    Ok(record.outcomes)
 }
 
 enum GuardedBatch {
@@ -1552,205 +1602,29 @@ fn legacy_capture_preserves_primitive_javascript_rendering() {
     );
 }
 
-#[test]
-#[ignore = "invoked only as bounded corpus subprocess worker"]
-fn boa_eval_subprocess_worker() {
-    let request_path: PathBuf = std::env::var_os(WORKER_REQUEST_ENV).map_or_else(
-        || panic!("the Boa evaluation worker needs {WORKER_REQUEST_ENV} naming its request file"),
-        PathBuf::from,
-    );
-    let response_path: PathBuf = std::env::var_os(WORKER_RESPONSE_ENV)
-        .map(PathBuf::from)
-        .expect("Boa evaluation worker response path must be set");
-    let request_bytes: Vec<u8> = read_worker_request(&request_path)
-        .expect("Boa evaluation worker must read its bounded request");
-    let request: EvalBatchRequest =
-        serde_json::from_slice(&request_bytes).expect("Boa evaluation worker request must decode");
-    let mut evaluations: Vec<Result<EvalOutcome, String>> =
-        Vec::with_capacity(request.argv_battery.len());
-    for argv in &request.argv_battery {
-        let argv_refs: Vec<&str> = argv.iter().map(String::as_str).collect();
-        let evaluation: Result<EvalOutcome, String> =
-            try_eval_outcome_with_argv(&request.program, &argv_refs);
-        evaluations.push(evaluation);
-    }
-    let response: EvalBatchResponse = EvalBatchResponse { evaluations };
-    let response_bytes: Vec<u8> =
-        serde_json::to_vec(&response).expect("Boa evaluation worker response must encode");
-    let response_limit: usize =
-        usize::try_from(WORKER_RESPONSE_LIMIT).expect("worker response limit must fit usize");
-    assert!(
-        response_bytes.len() <= response_limit,
-        "Boa evaluation worker response exceeds {WORKER_RESPONSE_LIMIT} bytes"
-    );
-    fs::write(&response_path, response_bytes)
-        .expect("Boa evaluation worker must write its response");
-}
-
-fn worker_diagnostics(output: &ToolOutput) -> String {
-    let stdout: String = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    let stderr: String = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-    format!(
-        "exit={:?}; stdout={stdout:?}; stderr={stderr:?}",
-        output.exit_code
-    )
-}
-
-fn read_worker_response(path: &Path) -> Result<Vec<u8>, String> {
-    read_bounded_worker_file(path, WORKER_RESPONSE_LIMIT, "Boa worker response")
-}
-
-fn read_worker_request(path: &Path) -> Result<Vec<u8>, String> {
-    read_bounded_worker_file(path, WORKER_REQUEST_LIMIT, "Boa worker request")
-}
-
-fn read_bounded_worker_file(path: &Path, limit: u64, label: &str) -> Result<Vec<u8>, String> {
-    let metadata: fs::Metadata =
-        fs::metadata(path).map_err(|error: std::io::Error| format!("inspect {label}: {error}"))?;
-    if metadata.len() > limit {
-        return Err(format!(
-            "{label} is {} bytes, above the {limit}-byte limit",
-            metadata.len(),
-        ));
-    }
-    let file: fs::File =
-        fs::File::open(path).map_err(|error: std::io::Error| format!("open {label}: {error}"))?;
-    let mut reader: std::io::Take<fs::File> = file.take(limit.saturating_add(1));
-    let mut bytes: Vec<u8> = Vec::new();
-    reader
-        .read_to_end(&mut bytes)
-        .map_err(|error: std::io::Error| format!("read {label}: {error}"))?;
-    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > limit {
-        return Err(format!(
-            "{label} grew above the {limit}-byte limit while it was read"
-        ));
-    }
-    Ok(bytes)
-}
-
-#[test]
-fn oversized_worker_response_is_rejected_before_read() {
-    let scratch: ScratchDir =
-        ScratchDir::create("disrobe-js-boa-response-limit").expect("scratch directory must open");
-    let response_path: PathBuf = scratch.path().join("response.json");
-    let response: fs::File =
-        fs::File::create(&response_path).expect("response fixture must be created");
-    response
-        .set_len(WORKER_RESPONSE_LIMIT + 1)
-        .expect("response fixture length must be set");
-    let error: String =
-        read_worker_response(&response_path).expect_err("oversized response must be rejected");
-    assert!(
-        error.contains("above the"),
-        "response limit diagnostic missing: {error}"
-    );
-}
-
-#[test]
-fn oversized_worker_request_is_rejected_before_read() {
-    let scratch: ScratchDir =
-        ScratchDir::create("disrobe-js-boa-request-limit").expect("scratch directory must open");
-    let request_path: PathBuf = scratch.path().join("request.json");
-    let request: fs::File =
-        fs::File::create(&request_path).expect("request fixture must be created");
-    request
-        .set_len(WORKER_REQUEST_LIMIT + 1)
-        .expect("request fixture length must be set");
-    let error: String =
-        read_worker_request(&request_path).expect_err("oversized request must be rejected");
-    assert!(
-        error.contains("above the"),
-        "request limit diagnostic missing: {error}"
-    );
-}
-
 fn eval_batch_guarded(program: &str, argv_battery: &[&[&str]]) -> GuardedBatch {
-    let scratch: ScratchDir = match ScratchDir::create("disrobe-js-boa-oracle") {
-        Ok(scratch) => scratch,
-        Err(error) => {
-            return GuardedBatch::HarnessFailure(format!(
-                "create Boa worker scratch directory: {error}"
-            ));
-        }
-    };
-    let request_path: PathBuf = scratch.path().join("request.json");
-    let response_path: PathBuf = scratch.path().join("response.json");
-    let argv_owned: Vec<Vec<String>> = argv_battery
-        .iter()
-        .map(|argv: &&[&str]| {
-            argv.iter()
-                .map(|argument: &&str| (*argument).to_owned())
-                .collect()
-        })
-        .collect();
-    let request: EvalBatchRequest = EvalBatchRequest {
-        program: program.to_owned(),
-        argv_battery: argv_owned,
-    };
-    let request_bytes: Vec<u8> = match serde_json::to_vec(&request) {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            return GuardedBatch::HarnessFailure(format!("encode Boa worker request: {error}"));
-        }
-    };
-    if let Err(error) = fs::write(&request_path, request_bytes) {
-        return GuardedBatch::HarnessFailure(format!("write Boa worker request: {error}"));
-    }
     let executable: PathBuf = match std::env::current_exe() {
         Ok(path) => path,
         Err(error) => {
             return GuardedBatch::HarnessFailure(format!("resolve Boa worker executable: {error}"));
         }
     };
-    let spec: CommandSpec = CommandSpec::new(executable, EVAL_BACKSTOP)
-        .args([
-            "--ignored",
-            "--exact",
-            "boa_eval_subprocess_worker",
-            "--nocapture",
-            "--test-threads=1",
-        ])
-        .env(WORKER_REQUEST_ENV, &request_path)
-        .env(WORKER_RESPONSE_ENV, &response_path)
-        .memory_limit(ProcessMemoryLimit::new(
-            NonZeroUsize::new(WORKER_MEMORY_LIMIT_BYTES)
-                .expect("Boa worker memory limit must be nonzero"),
-        ))
-        .capture_limits(WORKER_CAPTURE_LIMIT, WORKER_CAPTURE_LIMIT);
-    let output: ToolOutput = match tool_output(spec) {
-        Ok(output) => output,
-        Err(error) => {
-            return GuardedBatch::HarnessFailure(format!("run Boa worker: {error}"));
-        }
+    let worker: BoaWorker = match BoaWorker::new(executable) {
+        Ok(worker) => worker,
+        Err(error) => return GuardedBatch::HarnessFailure(format!("{error:?}")),
     };
-    if output.timed_out {
-        return GuardedBatch::BackstopExceeded;
+    match worker.evaluate_batch(program, argv_battery) {
+        Ok(evaluations) => GuardedBatch::Completed(evaluations),
+        Err(BoaWorkerError::BackstopExceeded) => GuardedBatch::BackstopExceeded,
+        Err(BoaWorkerError::AllocationLimitRefusal { evidence, detail }) => {
+            GuardedBatch::HarnessFailure(format!(
+                "Boa worker allocation-limit refusal ({evidence:?}): {detail}"
+            ))
+        }
+        Err(
+            BoaWorkerError::ProviderUnavailable(reason) | BoaWorkerError::HarnessFailure(reason),
+        ) => GuardedBatch::HarnessFailure(reason),
     }
-    if output.exit_code != Some(0) {
-        return GuardedBatch::HarnessFailure(format!(
-            "Boa worker failed: {}",
-            worker_diagnostics(&output)
-        ));
-    }
-    let response_bytes: Vec<u8> = match read_worker_response(&response_path) {
-        Ok(bytes) => bytes,
-        Err(reason) => {
-            return GuardedBatch::HarnessFailure(format!(
-                "{reason}; {}",
-                worker_diagnostics(&output)
-            ));
-        }
-    };
-    let response: EvalBatchResponse = match serde_json::from_slice(&response_bytes) {
-        Ok(response) => response,
-        Err(error) => {
-            return GuardedBatch::HarnessFailure(format!(
-                "decode Boa worker response: {error}; {}",
-                worker_diagnostics(&output)
-            ));
-        }
-    };
-    GuardedBatch::Completed(response.evaluations)
 }
 
 fn assert_engine_limit(program: &str, label: &str) {
@@ -1954,50 +1828,11 @@ fn truncation_reason(outcome: &EvalOutcome) -> Option<String> {
     None
 }
 
-fn collect_reference_outcomes(
-    name: &str,
-    argv_battery: &[&[&str]],
-    reference_kind: &str,
-    evaluations: Vec<Result<EvalOutcome, String>>,
-) -> Result<Vec<EvalOutcome>, Box<Outcome>> {
-    if evaluations.len() != argv_battery.len() {
-        return Err(Box::new(Outcome::HarnessFailure(format!(
-            "{name}: Boa worker returned {} {reference_kind} evaluations for {} argument cases",
-            evaluations.len(),
-            argv_battery.len()
-        ))));
-    }
-    let mut outcomes: Vec<EvalOutcome> = Vec::with_capacity(evaluations.len());
-    for (index, evaluation) in evaluations.into_iter().enumerate() {
-        let argv: &[&str] = argv_battery[index];
-        let outcome: EvalOutcome = match evaluation {
-            Ok(outcome) => outcome,
-            Err(reason) => {
-                return Err(Box::new(Outcome::HarnessFailure(format!(
-                    "{name}: {reference_kind} evaluation harness failed for argv {argv:?}: {reason}",
-                ))));
-            }
-        };
-        if let Some(reason) = truncation_reason(&outcome) {
-            return Err(Box::new(Outcome::Truncated(format!(
-                "{name}: {reference_kind} observation truncated for argv {argv:?}: {reason}"
-            ))));
-        }
-        if let Some(reason) = unsupported_reference_reason(&outcome) {
-            return Err(Box::new(Outcome::CannotExecute(format!(
-                "{name} for argv {argv:?}: {reason}"
-            ))));
-        }
-        outcomes.push(outcome);
-    }
-    Ok(outcomes)
-}
-
 struct DifferentialCase<'a> {
     name: &'a str,
     pipeline: Pipeline,
     reference_kind: &'a str,
-    reference_src: &'a str,
+    reference_outcomes: &'a [EvalOutcome],
     obf_src: &'a str,
     argv_battery: &'a [&'a [&'a str]],
 }
@@ -2005,29 +1840,6 @@ struct DifferentialCase<'a> {
 fn run_differential(case: &DifferentialCase<'_>) -> Outcome {
     let name: &str = case.name;
     let reference_kind: &str = case.reference_kind;
-    let reference_evaluations: Vec<Result<EvalOutcome, String>> = match eval_batch_guarded(
-        case.reference_src,
-        case.argv_battery,
-    ) {
-        GuardedBatch::Completed(evaluations) => evaluations,
-        GuardedBatch::BackstopExceeded => {
-            return Outcome::TimedOut(format!(
-                "{name}: {reference_kind} source did not exit within the {EVAL_BACKSTOP:?} process backstop"
-            ));
-        }
-        GuardedBatch::HarnessFailure(reason) => {
-            return Outcome::HarnessFailure(format!("{name}: {reason}"));
-        }
-    };
-    let want: Vec<EvalOutcome> = match collect_reference_outcomes(
-        name,
-        case.argv_battery,
-        reference_kind,
-        reference_evaluations,
-    ) {
-        Ok(outcomes) => outcomes,
-        Err(outcome) => return *outcome,
-    };
     let recovery: Recovery = match recover_with(case.pipeline, case.obf_src) {
         Ok(recovery) => recovery,
         Err(reason) => {
@@ -2036,20 +1848,18 @@ fn run_differential(case: &DifferentialCase<'_>) -> Outcome {
             ));
         }
     };
-    let recovered_evaluations: Vec<Result<EvalOutcome, String>> = match eval_batch_guarded(
-        &recovery.source,
-        case.argv_battery,
-    ) {
-        GuardedBatch::Completed(evaluations) => evaluations,
-        GuardedBatch::BackstopExceeded => {
-            return Outcome::TimedOut(format!(
-                "{name}: recovered source did not exit within the {EVAL_BACKSTOP:?} process backstop"
-            ));
-        }
-        GuardedBatch::HarnessFailure(reason) => {
-            return Outcome::HarnessFailure(format!("{name}: {reason}"));
-        }
-    };
+    let recovered_evaluations: Vec<Result<EvalOutcome, String>> =
+        match eval_batch_guarded(&recovery.source, case.argv_battery) {
+            GuardedBatch::Completed(evaluations) => evaluations,
+            GuardedBatch::BackstopExceeded => {
+                return Outcome::TimedOut(format!(
+                    "{name}: recovered source did not exit within the {EVAL_BACKSTOP_DESCRIPTION}"
+                ));
+            }
+            GuardedBatch::HarnessFailure(reason) => {
+                return Outcome::HarnessFailure(format!("{name}: {reason}"));
+            }
+        };
     if recovered_evaluations.len() != case.argv_battery.len() {
         return Outcome::HarnessFailure(format!(
             "{name}: Boa worker returned {} recovered evaluations for {} argument cases",
@@ -2072,7 +1882,7 @@ fn run_differential(case: &DifferentialCase<'_>) -> Outcome {
                 "{name}: recovered observation truncated for argv {argv:?}: {reason}"
             ));
         }
-        let expected: &EvalOutcome = &want[index];
+        let expected: &EvalOutcome = &case.reference_outcomes[index];
         if !outcomes_equivalent(expected, &got) {
             return Outcome::Diverged(format!(
                 "{name}: recovered behavior diverged from {reference_kind} source for argv {argv:?}\n--reference--\n{expected:?}\n--recovered--\n{got:?}"
@@ -2085,7 +1895,10 @@ fn run_differential(case: &DifferentialCase<'_>) -> Outcome {
 fn comparison_description(sample: &Sample) -> String {
     match sample.reference {
         Reference::Clean(path) | Reference::PinnedClean { path, .. } => {
-            format!("clean {path} vs recovered from {}", sample.obf)
+            format!(
+                "committed behavior for clean {path} vs recovered from {}",
+                sample.obf
+            )
         }
     }
 }
@@ -2109,11 +1922,28 @@ fn check_sample(sample: &Sample) -> Outcome {
             ));
         }
     };
+    let reference_outcomes: Vec<EvalOutcome> =
+        match committed_reference_outcomes(sample, &clean_src) {
+            Ok(outcomes) => outcomes,
+            Err(reason) => return Outcome::HarnessFailure(reason),
+        };
+    for (index, outcome) in reference_outcomes.iter().enumerate() {
+        let argv: &[&str] = sample.argv_battery[index];
+        if let Some(reason) = truncation_reason(outcome) {
+            return Outcome::Truncated(format!(
+                "{}: committed reference is truncated for argv {argv:?}: {reason}",
+                sample.name
+            ));
+        }
+        if let Some(reason) = unsupported_reference_reason(outcome) {
+            return Outcome::CannotExecute(format!("{} for argv {argv:?}: {reason}", sample.name));
+        }
+    }
     run_differential(&DifferentialCase {
         name: sample.name,
         pipeline: Pipeline::for_path(sample.obf),
         reference_kind: "clean",
-        reference_src: &clean_src,
+        reference_outcomes: &reference_outcomes,
         obf_src: &obf_src,
         argv_battery: sample.argv_battery,
     })
@@ -2301,7 +2131,7 @@ fn browser_base64_uses_pinned_authored_reference() {
     };
     assert_eq!(
         comparison_description(&sample),
-        "clean js/javascript-obfuscator/browser/source.js vs recovered from js/javascript-obfuscator/browser/obf_base64.js"
+        "committed behavior for clean js/javascript-obfuscator/browser/source.js vs recovered from js/javascript-obfuscator/browser/obf_base64.js"
     );
     assert_verified(check_sample(&sample));
 }
@@ -2329,6 +2159,72 @@ fn pinned_browser_reference_rejects_source_mutation() {
     assert!(
         error.contains("clean reference SHA-256"),
         "the failed pin must identify the reference checksum: {error}"
+    );
+}
+
+#[test]
+fn committed_reference_rejects_source_drift() {
+    let sample: &Sample = SAMPLES
+        .iter()
+        .find(|sample: &&Sample| sample.name == "javascript-obfuscator/browser-base64")
+        .expect("the browser sample must be present");
+    let source: String = load_reference(sample.reference).expect("the authored source must load");
+    committed_reference_outcomes(sample, &source)
+        .expect("the authored source must match its committed reference");
+    let mutated: String = format!("{source}\n");
+    let error: String = committed_reference_outcomes(sample, &mutated)
+        .expect_err("source drift must invalidate the committed reference");
+    assert!(
+        error.contains("SHA-256 changed"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn committed_reference_manifest_matches_the_corpus_samples() {
+    let artifact: ReferenceOutcomeFile = serde_json::from_str(REFERENCE_OUTCOMES_JSON)
+        .expect("the committed reference artifact must decode");
+    assert_eq!(artifact.schema, 1);
+    let names: BTreeSet<String> = artifact
+        .records
+        .iter()
+        .map(|record: &ReferenceOutcomeRecord| record.name.clone())
+        .collect();
+    let sample_names: BTreeSet<String> = SAMPLES
+        .iter()
+        .map(|sample: &Sample| sample.name.to_owned())
+        .collect();
+    assert_eq!(
+        artifact.records.len(),
+        names.len(),
+        "reference names must be unique"
+    );
+    assert_eq!(
+        names, sample_names,
+        "every sample needs exactly one reference"
+    );
+}
+
+#[test]
+fn committed_reference_outcome_mutation_turns_the_grade_red() {
+    let sample: &Sample = SAMPLES
+        .iter()
+        .find(|sample: &&Sample| sample.name == "javascript-obfuscator/browser-base64")
+        .expect("the browser sample must be present");
+    let source: String = load_reference(sample.reference).expect("the authored source must load");
+    let outcomes: Vec<EvalOutcome> =
+        committed_reference_outcomes(sample, &source).expect("the committed reference must load");
+    let expected: &EvalOutcome = outcomes
+        .first()
+        .expect("the committed reference must contain an outcome");
+    let mut mutated: EvalOutcome = expected.clone();
+    mutated.terminal = Terminal::Completed(ObservedValue {
+        kind: "string".to_owned(),
+        value: "mutation".to_owned(),
+    });
+    assert!(
+        !outcomes_equivalent(expected, &mutated),
+        "the behavior predicate must reject a changed committed outcome"
     );
 }
 
@@ -2398,8 +2294,8 @@ const BROWSER_SAMPLES: &[&str] = &[
 ];
 
 #[test]
-fn browser_host_samples_move_from_skipped_to_verified() {
-    let mut moved: usize = 0;
+fn browser_host_samples_use_committed_authored_references() {
+    let mut verified: usize = 0;
     for name in BROWSER_SAMPLES {
         let sample: &Sample = SAMPLES
             .iter()
@@ -2409,35 +2305,22 @@ fn browser_host_samples_move_from_skipped_to_verified() {
             load_reference(sample.reference).unwrap_or_else(|reason: String| {
                 panic!("{name}: clean reference unavailable: {reason}")
             });
-
-        let bare: Option<EvalOutcome> = eval_outcome_bare(&clean_src);
+        let outcomes: Vec<EvalOutcome> = committed_reference_outcomes(sample, &clean_src)
+            .unwrap_or_else(|reason: String| panic!("{name}: {reason}"));
         assert!(
-            !matches!(
-                bare,
-                Some(EvalOutcome {
-                    terminal: Terminal::Completed(_),
-                    ..
-                })
-            ),
-            "{name}: the clean source reads browser globals absent from the bare boa preamble, so the pre-shim oracle would SKIP it; bare outcome was {bare:?}"
+            outcomes
+                .iter()
+                .all(|outcome: &EvalOutcome| matches!(outcome.terminal, Terminal::Completed(_))),
+            "{name}: every committed browser reference must complete"
         );
-
-        let hosted: EvalOutcome = eval_outcome(&clean_src).unwrap_or_else(|| {
-            panic!("{name}: clean source must evaluate under the browser-host shim")
-        });
-        assert!(
-            matches!(hosted.terminal, Terminal::Completed(_)),
-            "{name}: the browser-host shim must let the clean source run to completion; got {hosted:?}"
-        );
-
         assert_verified(check_sample(sample));
-        moved += 1;
+        verified += 1;
     }
-    eprintln!("browser-host shim moved {moved} sample(s) from skipped to differential-verified");
+    eprintln!("verified {verified} browser sample(s) against committed authored references");
     assert_eq!(
-        moved,
+        verified,
         BROWSER_SAMPLES.len(),
-        "every browser-targeted sample must move from skipped to differentially verified once the host shim is present"
+        "every browser-targeted sample must use its committed reference"
     );
 }
 
@@ -4297,7 +4180,7 @@ fn single_outcome(program: &str, label: &str) -> EvalOutcome {
             evaluation.unwrap_or_else(|reason: String| panic!("{label}: {reason}"))
         }
         GuardedBatch::BackstopExceeded => {
-            panic!("{label}: did not exit within the {EVAL_BACKSTOP:?} process backstop")
+            panic!("{label}: did not exit within the {EVAL_BACKSTOP_DESCRIPTION}")
         }
         GuardedBatch::HarnessFailure(reason) => panic!("{label}: {reason}"),
     }

@@ -1,0 +1,3083 @@
+{
+  "schema": 1,
+  "records": [
+    {
+      "name": "javascript-obfuscator/gauntlet",
+      "source_sha256": "d366e47423f287dc979762277f8c54d3cb5d2db06f629d42b6acfac6ef67bd38",
+      "argv_battery": [
+        []
+      ],
+      "outcomes": [
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "histogram => the:2, quick:1, brown:1, fox:1, jumps:1"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "histogram => pack:1, my:1, box:1, with:1, five:1"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "histogram => how:1, vexingly:1, quick:1, daft:1, zebras:1"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "jsconfuser/gauntlet",
+      "source_sha256": "523cc2fda05d99b483ebf554eaad77a6fa1ce4c324c86d8b1856bb8cc9838790",
+      "argv_battery": [
+        []
+      ],
+      "outcomes": [
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "the quick brown fox jumps over the lazy dog"
+                },
+                {
+                  "kind": "number",
+                  "value": "43"
+                },
+                {
+                  "kind": "number",
+                  "value": "0.2558139534883721"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "pack my box with five dozen liquor jugs"
+                },
+                {
+                  "kind": "number",
+                  "value": "39"
+                },
+                {
+                  "kind": "number",
+                  "value": "0.28205128205128205"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "how vexingly quick daft zebras jump"
+                },
+                {
+                  "kind": "number",
+                  "value": "35"
+                },
+                {
+                  "kind": "number",
+                  "value": "0.2571428571428571"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "jsconfuser/megafile-low",
+      "source_sha256": "ce600dfa7d278a9b3dec98c7df965516cad5ec9929c10770b98af0f7b9058e4f",
+      "argv_battery": [
+        []
+      ],
+      "outcomes": [
+        {
+          "trace": [],
+          "terminal": {
+            "Threw": {
+              "kind": "ReferenceError",
+              "message": "FinalizationRegistry is not defined"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "jsconfuser/megafile-medium",
+      "source_sha256": "ce600dfa7d278a9b3dec98c7df965516cad5ec9929c10770b98af0f7b9058e4f",
+      "argv_battery": [
+        []
+      ],
+      "outcomes": [
+        {
+          "trace": [],
+          "terminal": {
+            "Threw": {
+              "kind": "ReferenceError",
+              "message": "FinalizationRegistry is not defined"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "jsconfuser/megafile-high",
+      "source_sha256": "ce600dfa7d278a9b3dec98c7df965516cad5ec9929c10770b98af0f7b9058e4f",
+      "argv_battery": [
+        []
+      ],
+      "outcomes": [
+        {
+          "trace": [],
+          "terminal": {
+            "Threw": {
+              "kind": "ReferenceError",
+              "message": "FinalizationRegistry is not defined"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "jsconfuser/string-conceal",
+      "source_sha256": "8e291b9fb894f66b0bf0006843270c2606a62be7691badddeb011e5998aa27fb",
+      "argv_battery": [
+        []
+      ],
+      "outcomes": [
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "alpha=102433287:medium|forensic=254542682:medium|deobfuscate=453182598:medium|z=8061051:small"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "jsconfuser/string-compression",
+      "source_sha256": "89598dab4ceef777c64648a447c940469f6909c621219428858d78d6aaf2d406",
+      "argv_battery": [
+        []
+      ],
+      "outcomes": [
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "lz=forensic marker lzstring|FORENSIC MARKER LZSTRING|803897"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "jsconfuser/rgf-eval",
+      "source_sha256": "751cd3223488a3af095da1f973302d66c009e2b0cdd7c48d0f923fd190cfeff4",
+      "argv_battery": [
+        []
+      ],
+      "outcomes": [
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "12 + 30 - 2 => NUM(12),OP(+),NUM(30),OP(-),NUM(2) = 40\n4 * 5 + 100 => NUM(4),OP(*),NUM(5),OP(+),NUM(100) = 120\n9 / 3 => NUM(9),OP(/),NUM(3) = 3"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "jsconfuser/statesum-real",
+      "source_sha256": "2259f5d79410ca21af692f2dba274cbe34eb3630d15e9071f8a3ddeb4eb53868",
+      "argv_battery": [
+        []
+      ],
+      "outcomes": [
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "43:220,13:200,34:214,88:250"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "jsconfuser/statesum-spec",
+      "source_sha256": "2259f5d79410ca21af692f2dba274cbe34eb3630d15e9071f8a3ddeb4eb53868",
+      "argv_battery": [
+        []
+      ],
+      "outcomes": [
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "43:220,13:200,34:214,88:250"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "jsconfuser/deadcode",
+      "source_sha256": "3ddd33483ff321fe125a2856c97cb8e25d57a613c900d70cb141102fa52fb367",
+      "argv_battery": [
+        [
+          "150"
+        ],
+        [
+          "101"
+        ],
+        [
+          "100"
+        ],
+        [
+          "50"
+        ],
+        [
+          "11"
+        ],
+        [
+          "10"
+        ],
+        [
+          "5"
+        ],
+        [
+          "0"
+        ]
+      ],
+      "outcomes": [
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "big"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        },
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "big"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        },
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "medium"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        },
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "medium"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        },
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "medium"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        },
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "small"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        },
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "small"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        },
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "small"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "jsconfuser/deadcode-cff",
+      "source_sha256": "3ddd33483ff321fe125a2856c97cb8e25d57a613c900d70cb141102fa52fb367",
+      "argv_battery": [
+        [
+          "150"
+        ],
+        [
+          "101"
+        ],
+        [
+          "100"
+        ],
+        [
+          "50"
+        ],
+        [
+          "11"
+        ],
+        [
+          "10"
+        ],
+        [
+          "5"
+        ],
+        [
+          "0"
+        ]
+      ],
+      "outcomes": [
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "big"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        },
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "big"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        },
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "medium"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        },
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "medium"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        },
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "medium"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        },
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "small"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        },
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "small"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        },
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "small"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "jsconfuser/integrity",
+      "source_sha256": "467f9c046ca3a737e6aedb68be1d8dc420aab0e8235da27b9442d029cdd021b0",
+      "argv_battery": [
+        [
+          "2",
+          "3"
+        ],
+        [
+          "10",
+          "20"
+        ],
+        [
+          "0",
+          "0"
+        ],
+        [
+          "-5",
+          "7"
+        ],
+        [
+          "7",
+          "6"
+        ]
+      ],
+      "outcomes": [
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "number",
+                  "value": "5"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "number",
+                  "value": "6"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        },
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "number",
+                  "value": "30"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "number",
+                  "value": "200"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        },
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "number",
+                  "value": "0"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "number",
+                  "value": "0"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        },
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "number",
+                  "value": "2"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "number",
+                  "value": "-35"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        },
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "number",
+                  "value": "13"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "number",
+                  "value": "42"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "jsconfuser/statesum-runtime",
+      "source_sha256": "0b245f1b0b74dc2b8115e941928f4aadf5bac715f0c8f95f61c113450309a9bd",
+      "argv_battery": [
+        [
+          "10"
+        ],
+        [
+          "100"
+        ],
+        [
+          "0"
+        ],
+        [
+          "-7"
+        ],
+        [
+          "42"
+        ],
+        [
+          "1"
+        ],
+        [
+          "999"
+        ]
+      ],
+      "outcomes": [
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "number",
+                  "value": "43"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        },
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "number",
+                  "value": "313"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        },
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "number",
+                  "value": "13"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        },
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "number",
+                  "value": "-8"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        },
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "number",
+                  "value": "139"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        },
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "number",
+                  "value": "16"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        },
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "number",
+                  "value": "3010"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "jsconfuser/statesum-branch",
+      "source_sha256": "3ddd33483ff321fe125a2856c97cb8e25d57a613c900d70cb141102fa52fb367",
+      "argv_battery": [
+        [
+          "150"
+        ],
+        [
+          "101"
+        ],
+        [
+          "100"
+        ],
+        [
+          "50"
+        ],
+        [
+          "11"
+        ],
+        [
+          "10"
+        ],
+        [
+          "5"
+        ],
+        [
+          "0"
+        ]
+      ],
+      "outcomes": [
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "big"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        },
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "big"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        },
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "medium"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        },
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "medium"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        },
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "medium"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        },
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "small"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        },
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "small"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        },
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "small"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "jsconfuser/statesum-strings",
+      "source_sha256": "15fa12082b7dadb1247234d3e52ab90122a5b972f514584bb0da3259c478c88b",
+      "argv_battery": [
+        [
+          "world"
+        ],
+        [
+          "planet"
+        ],
+        [
+          "sun"
+        ],
+        [
+          "a"
+        ]
+      ],
+      "outcomes": [
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "hello world! hello world! hello world!"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "hello world! hello world!"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        },
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "hello world! hello world! hello world!"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "hello planet! hello planet!"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        },
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "hello world! hello world! hello world!"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "hello sun! hello sun!"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        },
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "hello world! hello world! hello world!"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "hello a! hello a!"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "jsconfuser/statesum-loop",
+      "source_sha256": "9341d75c35be1c008502539bd4b3449f13aa6e736ac09311ee80b29fdee78607",
+      "argv_battery": [
+        [
+          "10"
+        ],
+        [
+          "1"
+        ],
+        [
+          "0"
+        ],
+        [
+          "7"
+        ],
+        [
+          "100"
+        ],
+        [
+          "3"
+        ],
+        [
+          "25"
+        ],
+        [
+          "50"
+        ]
+      ],
+      "outcomes": [
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "number",
+                  "value": "55"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        },
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "number",
+                  "value": "1"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        },
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "number",
+                  "value": "0"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        },
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "number",
+                  "value": "28"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        },
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "number",
+                  "value": "5050"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        },
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "number",
+                  "value": "6"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        },
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "number",
+                  "value": "325"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        },
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "number",
+                  "value": "1275"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "javascript-obfuscator/browser-cff",
+      "source_sha256": "01f077df59472afab8a2662fa6d972d39daa2ddf376e973f69a7a517d1a080e5",
+      "argv_battery": [
+        []
+      ],
+      "outcomes": [
+        {
+          "trace": [
+            {
+              "call": "host.get",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "window.location"
+                }
+              ]
+            },
+            {
+              "call": "host.get",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "location.pathname"
+                }
+              ]
+            },
+            {
+              "call": "host.get",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "navigator.userAgent"
+                }
+              ]
+            },
+            {
+              "call": "host.get",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "document.querySelector"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "win|qs|ualen=11"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "score=91;class=high"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "loc=/fixture;empty=false"
+                }
+              ]
+            },
+            {
+              "call": "host.get",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "screen.width"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "screen=1280"
+                }
+              ]
+            },
+            {
+              "call": "host.set",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "document.title"
+                },
+                {
+                  "kind": "string",
+                  "value": "ready"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "done"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "javascript-obfuscator/browser-base64",
+      "source_sha256": "01f077df59472afab8a2662fa6d972d39daa2ddf376e973f69a7a517d1a080e5",
+      "argv_battery": [
+        []
+      ],
+      "outcomes": [
+        {
+          "trace": [
+            {
+              "call": "host.get",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "window.location"
+                }
+              ]
+            },
+            {
+              "call": "host.get",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "location.pathname"
+                }
+              ]
+            },
+            {
+              "call": "host.get",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "navigator.userAgent"
+                }
+              ]
+            },
+            {
+              "call": "host.get",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "document.querySelector"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "win|qs|ualen=11"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "score=91;class=high"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "loc=/fixture;empty=false"
+                }
+              ]
+            },
+            {
+              "call": "host.get",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "screen.width"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "screen=1280"
+                }
+              ]
+            },
+            {
+              "call": "host.set",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "document.title"
+                },
+                {
+                  "kind": "string",
+                  "value": "ready"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "done"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "obfuscator.io/hello",
+      "source_sha256": "e5029dc6892e475bb80c1c267a68cbde6b5a5c8f0d4a545f180f6e8f6c45804e",
+      "argv_battery": [
+        []
+      ],
+      "outcomes": [
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "hello world"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "javascript-obfuscator/megafile",
+      "source_sha256": "ce600dfa7d278a9b3dec98c7df965516cad5ec9929c10770b98af0f7b9058e4f",
+      "argv_battery": [
+        []
+      ],
+      "outcomes": [
+        {
+          "trace": [],
+          "terminal": {
+            "Threw": {
+              "kind": "ReferenceError",
+              "message": "FinalizationRegistry is not defined"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "obfuscator.io/preset/low",
+      "source_sha256": "e29f6f162e5297b68f8dca7037e9b1cb343f2fec65a0e436ca27905f2d049887",
+      "argv_battery": [
+        []
+      ],
+      "outcomes": [
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "calculator ready :: hello, disrobe"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "add(10,5) = 15"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "sub(10,5) = 5"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "mul(10,5) = 50"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "div(10,5) = 2"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "obfuscator.io/preset/medium",
+      "source_sha256": "e29f6f162e5297b68f8dca7037e9b1cb343f2fec65a0e436ca27905f2d049887",
+      "argv_battery": [
+        []
+      ],
+      "outcomes": [
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "calculator ready :: hello, disrobe"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "add(10,5) = 15"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "sub(10,5) = 5"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "mul(10,5) = 50"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "div(10,5) = 2"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "obfuscator.io/preset/high",
+      "source_sha256": "e29f6f162e5297b68f8dca7037e9b1cb343f2fec65a0e436ca27905f2d049887",
+      "argv_battery": [
+        []
+      ],
+      "outcomes": [
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "calculator ready :: hello, disrobe"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "add(10,5) = 15"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "sub(10,5) = 5"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "mul(10,5) = 50"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "div(10,5) = 2"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "obfuscator.io/control/booleans",
+      "source_sha256": "e29f6f162e5297b68f8dca7037e9b1cb343f2fec65a0e436ca27905f2d049887",
+      "argv_battery": [
+        []
+      ],
+      "outcomes": [
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "calculator ready :: hello, disrobe"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "add(10,5) = 15"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "sub(10,5) = 5"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "mul(10,5) = 50"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "div(10,5) = 2"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "obfuscator.io/control/compact",
+      "source_sha256": "e29f6f162e5297b68f8dca7037e9b1cb343f2fec65a0e436ca27905f2d049887",
+      "argv_battery": [
+        []
+      ],
+      "outcomes": [
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "calculator ready :: hello, disrobe"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "add(10,5) = 15"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "sub(10,5) = 5"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "mul(10,5) = 50"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "div(10,5) = 2"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "obfuscator.io/control/controlFlowFlattening",
+      "source_sha256": "e29f6f162e5297b68f8dca7037e9b1cb343f2fec65a0e436ca27905f2d049887",
+      "argv_battery": [
+        []
+      ],
+      "outcomes": [
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "calculator ready :: hello, disrobe"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "add(10,5) = 15"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "sub(10,5) = 5"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "mul(10,5) = 50"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "div(10,5) = 2"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "obfuscator.io/control/deadCodeInjection",
+      "source_sha256": "e29f6f162e5297b68f8dca7037e9b1cb343f2fec65a0e436ca27905f2d049887",
+      "argv_battery": [
+        []
+      ],
+      "outcomes": [
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "calculator ready :: hello, disrobe"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "add(10,5) = 15"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "sub(10,5) = 5"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "mul(10,5) = 50"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "div(10,5) = 2"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "obfuscator.io/control/debugProtection",
+      "source_sha256": "e29f6f162e5297b68f8dca7037e9b1cb343f2fec65a0e436ca27905f2d049887",
+      "argv_battery": [
+        []
+      ],
+      "outcomes": [
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "calculator ready :: hello, disrobe"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "add(10,5) = 15"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "sub(10,5) = 5"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "mul(10,5) = 50"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "div(10,5) = 2"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "obfuscator.io/control/identifiersHexadecimal",
+      "source_sha256": "e29f6f162e5297b68f8dca7037e9b1cb343f2fec65a0e436ca27905f2d049887",
+      "argv_battery": [
+        []
+      ],
+      "outcomes": [
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "calculator ready :: hello, disrobe"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "add(10,5) = 15"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "sub(10,5) = 5"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "mul(10,5) = 50"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "div(10,5) = 2"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "obfuscator.io/control/identifiersMangled",
+      "source_sha256": "e29f6f162e5297b68f8dca7037e9b1cb343f2fec65a0e436ca27905f2d049887",
+      "argv_battery": [
+        []
+      ],
+      "outcomes": [
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "calculator ready :: hello, disrobe"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "add(10,5) = 15"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "sub(10,5) = 5"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "mul(10,5) = 50"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "div(10,5) = 2"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "obfuscator.io/control/numbersToExpressions",
+      "source_sha256": "e29f6f162e5297b68f8dca7037e9b1cb343f2fec65a0e436ca27905f2d049887",
+      "argv_battery": [
+        []
+      ],
+      "outcomes": [
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "calculator ready :: hello, disrobe"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "add(10,5) = 15"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "sub(10,5) = 5"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "mul(10,5) = 50"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "div(10,5) = 2"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "obfuscator.io/control/objectTransform",
+      "source_sha256": "e29f6f162e5297b68f8dca7037e9b1cb343f2fec65a0e436ca27905f2d049887",
+      "argv_battery": [
+        []
+      ],
+      "outcomes": [
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "calculator ready :: hello, disrobe"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "add(10,5) = 15"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "sub(10,5) = 5"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "mul(10,5) = 50"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "div(10,5) = 2"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "obfuscator.io/control/renameProperties",
+      "source_sha256": "e29f6f162e5297b68f8dca7037e9b1cb343f2fec65a0e436ca27905f2d049887",
+      "argv_battery": [
+        []
+      ],
+      "outcomes": [
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "calculator ready :: hello, disrobe"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "add(10,5) = 15"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "sub(10,5) = 5"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "mul(10,5) = 50"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "div(10,5) = 2"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "obfuscator.io/control/selfDefending",
+      "source_sha256": "e29f6f162e5297b68f8dca7037e9b1cb343f2fec65a0e436ca27905f2d049887",
+      "argv_battery": [
+        []
+      ],
+      "outcomes": [
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "calculator ready :: hello, disrobe"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "add(10,5) = 15"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "sub(10,5) = 5"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "mul(10,5) = 50"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "div(10,5) = 2"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "obfuscator.io/control/splitStrings",
+      "source_sha256": "e29f6f162e5297b68f8dca7037e9b1cb343f2fec65a0e436ca27905f2d049887",
+      "argv_battery": [
+        []
+      ],
+      "outcomes": [
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "calculator ready :: hello, disrobe"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "add(10,5) = 15"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "sub(10,5) = 5"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "mul(10,5) = 50"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "div(10,5) = 2"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "obfuscator.io/control/stringArrayBase64",
+      "source_sha256": "e29f6f162e5297b68f8dca7037e9b1cb343f2fec65a0e436ca27905f2d049887",
+      "argv_battery": [
+        []
+      ],
+      "outcomes": [
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "calculator ready :: hello, disrobe"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "add(10,5) = 15"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "sub(10,5) = 5"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "mul(10,5) = 50"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "div(10,5) = 2"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "obfuscator.io/control/stringArrayRc4",
+      "source_sha256": "e29f6f162e5297b68f8dca7037e9b1cb343f2fec65a0e436ca27905f2d049887",
+      "argv_battery": [
+        []
+      ],
+      "outcomes": [
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "calculator ready :: hello, disrobe"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "add(10,5) = 15"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "sub(10,5) = 5"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "mul(10,5) = 50"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "div(10,5) = 2"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "obfuscator.io/control/stringArrayRotate",
+      "source_sha256": "e29f6f162e5297b68f8dca7037e9b1cb343f2fec65a0e436ca27905f2d049887",
+      "argv_battery": [
+        []
+      ],
+      "outcomes": [
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "calculator ready :: hello, disrobe"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "add(10,5) = 15"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "sub(10,5) = 5"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "mul(10,5) = 50"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "div(10,5) = 2"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "obfuscator.io/control/stringArrayShuffle",
+      "source_sha256": "e29f6f162e5297b68f8dca7037e9b1cb343f2fec65a0e436ca27905f2d049887",
+      "argv_battery": [
+        []
+      ],
+      "outcomes": [
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "calculator ready :: hello, disrobe"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "add(10,5) = 15"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "sub(10,5) = 5"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "mul(10,5) = 50"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "div(10,5) = 2"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "obfuscator.io/control/unicodeEscape",
+      "source_sha256": "e29f6f162e5297b68f8dca7037e9b1cb343f2fec65a0e436ca27905f2d049887",
+      "argv_battery": [
+        []
+      ],
+      "outcomes": [
+        {
+          "trace": [
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "calculator ready :: hello, disrobe"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "add(10,5) = 15"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "sub(10,5) = 5"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "mul(10,5) = 50"
+                }
+              ]
+            },
+            {
+              "call": "console.log",
+              "arguments": [
+                {
+                  "kind": "string",
+                  "value": "div(10,5) = 2"
+                }
+              ]
+            }
+          ],
+          "terminal": {
+            "Completed": {
+              "kind": "undefined",
+              "value": ""
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

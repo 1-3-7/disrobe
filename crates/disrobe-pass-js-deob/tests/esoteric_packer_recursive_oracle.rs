@@ -1,12 +1,20 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
-use boa_engine::{Context, Source};
 use disrobe_pass_js_deob::{PackerDecode, PackerDetection, detect_packer, unpack_packer};
 use sha2::{Digest, Sha256};
 
-const AUTHORED_REFERENCE: &str = include_str!("../../../corpus/js/packer/real/ground-truth.js");
-const AUTHORED_REFERENCE_SHA256: &str =
-    "737c57e181b1d1c0171b5d600411e919944ca8554cc1a82e528cbb6e7a0725e6";
-const REFERENCE_OUTPUT: &str = "Hello, Alice! Welcome aboard.\u{1}Sum is 68";
+mod common;
+
+const AUTHORED_SOURCE: &str = include_str!("../../../corpus/js/packer/real/ground-truth.js");
+
+struct AuthoredReference {
+    source_sha256: &'static str,
+    output: &'static str,
+}
+
+const AUTHORED_REFERENCE: AuthoredReference = AuthoredReference {
+    source_sha256: "737c57e181b1d1c0171b5d600411e919944ca8554cc1a82e528cbb6e7a0725e6",
+    output: "Hello, Alice! Welcome aboard.\u{1}Sum is 68",
+};
 const SINGLE: &str = include_str!("../../../corpus/js/packer/real/single-layer.packed.js");
 const SINGLE_SHA256: &str = "7c27aaa178e1c159a55d04fbda2582a99a301c7bba2138f61330d82f22492a72";
 const DOUBLE: &str = include_str!("../../../corpus/js/packer/real/double-layer.packed.js");
@@ -14,25 +22,11 @@ const DOUBLE_SHA256: &str = "1261b6f7ca909afcc6cd27de3491f7bb2976ced6c8a2c4b5a8a
 const TRIPLE: &str = include_str!("../../../corpus/js/packer/real/triple-layer.packed.js");
 const TRIPLE_SHA256: &str = "ce182be3bd2a80d7c4713e9671a0a0d890bf0cdb64edeb3c00735c18d2eacf80";
 
-const LOOP_LIMIT: u64 = 2_000_000;
-const RECURSION_LIMIT: usize = 1_500;
-const STACK_LIMIT: usize = 200_000;
-
 fn eval_console(program: &str) -> Option<String> {
-    let mut context: Context = Context::default();
-    {
-        let runtime: &mut boa_engine::vm::RuntimeLimits = context.runtime_limits_mut();
-        runtime.set_loop_iteration_limit(LOOP_LIMIT);
-        runtime.set_recursion_limit(RECURSION_LIMIT);
-        runtime.set_stack_size_limit(STACK_LIMIT);
-    }
-    let harness: String = format!(
-        "var __out = []; var console = {{ log: function() {{ var parts = []; for (var i = 0; i < arguments.length; i++) {{ parts.push(String(arguments[i])); }} __out.push(parts.join(' ')); }} }};\n{program}\n__out.join('\\u0001');"
-    );
-    let value: boa_engine::JsValue = context.eval(Source::from_bytes(harness.as_bytes())).ok()?;
-    value
-        .as_string()
-        .map(boa_engine::JsString::to_std_string_escaped)
+    common::BoaWorker::new(std::env::current_exe().ok()?)
+        .ok()?
+        .eval_capture(program, &[])
+        .ok()
 }
 
 fn assert_fixture_identity(label: &str, fixture: &str, expected_sha256: &str) {
@@ -46,16 +40,10 @@ fn assert_fixture_identity(label: &str, fixture: &str, expected_sha256: &str) {
 fn authored_reference_output() -> String {
     assert_fixture_identity(
         "authored reference",
-        AUTHORED_REFERENCE,
-        AUTHORED_REFERENCE_SHA256,
+        AUTHORED_SOURCE,
+        AUTHORED_REFERENCE.source_sha256,
     );
-    let output: String = eval_console(AUTHORED_REFERENCE)
-        .expect("the bounded authored reference evaluation must finish");
-    assert_eq!(
-        output, REFERENCE_OUTPUT,
-        "the authored reference must produce its pinned output"
-    );
-    output
+    AUTHORED_REFERENCE.output.to_owned()
 }
 
 fn assert_recovered_behavior(label: &str, recovered: &str) {
@@ -84,7 +72,7 @@ fn packed_samples_are_pinned_to_the_authored_reference() {
     assert_fixture_identity("single-layer packed input", SINGLE, SINGLE_SHA256);
     assert_fixture_identity("double-layer packed input", DOUBLE, DOUBLE_SHA256);
     assert_fixture_identity("triple-layer packed input", TRIPLE, TRIPLE_SHA256);
-    assert_eq!(output, REFERENCE_OUTPUT);
+    assert_eq!(output, AUTHORED_REFERENCE.output);
 }
 
 #[test]

@@ -2,13 +2,22 @@
 use std::fs;
 use std::path::PathBuf;
 
-use boa_engine::{Context, Source};
 use disrobe_pass_js_deob::{Detection, JsObfuRecovery, JsObfuscator, detect, recover_jsobfu};
 use sha2::{Digest, Sha256};
 
-const INPUT_SHA256: &str = "7576a69b3e0dd823087c56f5705d8b5c28d0c30a5a90a306e1b9ccca574aedfe";
+mod common;
+
 const OBFUSCATED_SHA256: &str = "fb8a0fa445ef48d791834b971a7621c1e23a2f64480c8ee9aa07c4d33380e329";
-const AUTHORED_OUTPUT: &str = "{\"greeting\":\"hi world!\",\"sum\":3,\"product\":12,\"fib10\":55,\"factorial5\":120,\"count\":5,\"registered\":\"greet,add,mul,fib,factorial\"}";
+
+struct AuthoredReference {
+    source_sha256: &'static str,
+    output: &'static str,
+}
+
+const AUTHORED_REFERENCE: AuthoredReference = AuthoredReference {
+    source_sha256: "7576a69b3e0dd823087c56f5705d8b5c28d0c30a5a90a306e1b9ccca574aedfe",
+    output: "{\"greeting\":\"hi world!\",\"sum\":3,\"product\":12,\"fib10\":55,\"factorial5\":120,\"count\":5,\"registered\":\"greet,add,mul,fib,factorial\"}",
+};
 
 fn corpus(rel: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -30,28 +39,11 @@ fn assert_sha256(label: &str, source: &str, expected: &str) {
     assert_eq!(actual, expected, "{label} fixture hash changed");
 }
 
-const CAPTURE_HARNESS: &str = "\
-var __dr_out=[];\
-var console={log:function(){var a=Array.prototype.slice.call(arguments);__dr_out.push(a.join(' '));}};\
-var window={console:console,JSON:JSON};\
-";
-
-fn eval_console_output(script: &str) -> Option<String> {
-    let mut wrapped: String = String::with_capacity(script.len() + CAPTURE_HARNESS.len() + 64);
-    wrapped.push_str(CAPTURE_HARNESS);
-    wrapped.push_str("try{\n");
-    wrapped.push_str(script);
-    wrapped.push_str("\n}catch(e){}\n__dr_out.join('\\u0001');");
-    let mut ctx: Context = Context::default();
-    {
-        let limits: &mut boa_engine::vm::RuntimeLimits = ctx.runtime_limits_mut();
-        limits.set_recursion_limit(20_000);
-        limits.set_loop_iteration_limit(50_000_000);
-        limits.set_stack_size_limit(16 * 1024 * 1024);
-    }
-    let v: boa_engine::JsValue = ctx.eval(Source::from_bytes(wrapped.as_bytes())).ok()?;
-    v.as_string()
-        .map(boa_engine::JsString::to_std_string_escaped)
+fn eval_console_output(script: &str) -> Result<String, common::BoaWorkerError> {
+    let executable: PathBuf = std::env::current_exe().map_err(|error: std::io::Error| {
+        common::BoaWorkerError::HarnessFailure(error.to_string())
+    })?;
+    common::BoaWorker::new(executable)?.eval_capture(script, &[])
 }
 
 #[test]
@@ -98,12 +90,10 @@ fn recovered_jsobfu_is_behaviorally_identical_to_ground_truth() {
     let obf: String = load("jsobfu/obfuscated.js");
     let original: String = load("jsobfu/input.js");
     assert_sha256("obfuscated", &obf, OBFUSCATED_SHA256);
-    assert_sha256("authored input", &original, INPUT_SHA256);
-    let ground_truth: String =
-        eval_console_output(&original).expect("ground-truth source must run under boa");
-    assert_eq!(
-        ground_truth, AUTHORED_OUTPUT,
-        "authored source output changed"
+    assert_sha256(
+        "authored input",
+        &original,
+        AUTHORED_REFERENCE.source_sha256,
     );
 
     let out: JsObfuRecovery = recover_jsobfu(&obf);
@@ -111,8 +101,8 @@ fn recovered_jsobfu_is_behaviorally_identical_to_ground_truth() {
         eval_console_output(&out.source).expect("recovered jsobfu must re-parse and run under boa");
 
     assert_eq!(
-        recovered_output, AUTHORED_OUTPUT,
-        "recovered jsobfu must produce the same program output as the original source"
+        recovered_output, AUTHORED_REFERENCE.output,
+        "recovered jsobfu must produce the pinned reference output"
     );
 }
 
@@ -121,24 +111,22 @@ fn recovered_jsobfu_output_mutation_is_rejected() {
     let obf: String = load("jsobfu/obfuscated.js");
     let authored: String = load("jsobfu/input.js");
     assert_sha256("obfuscated", &obf, OBFUSCATED_SHA256);
-    assert_sha256("authored input", &authored, INPUT_SHA256);
-    let authored_output: String =
-        eval_console_output(&authored).expect("ground-truth source must run under boa");
-    assert_eq!(
-        authored_output, AUTHORED_OUTPUT,
-        "authored source output changed"
+    assert_sha256(
+        "authored input",
+        &authored,
+        AUTHORED_REFERENCE.source_sha256,
     );
 
     let out: JsObfuRecovery = recover_jsobfu(&obf);
     let recovered_output: String =
         eval_console_output(&out.source).expect("recovered jsobfu must re-parse and run under boa");
-    assert_eq!(recovered_output, AUTHORED_OUTPUT);
+    assert_eq!(recovered_output, AUTHORED_REFERENCE.output);
 
     let mutated: String = format!("{}\nconsole.log('mutation');", out.source);
     let mutated_output: String =
         eval_console_output(&mutated).expect("mutated recovered code must produce console output");
     assert_ne!(
-        mutated_output, AUTHORED_OUTPUT,
+        mutated_output, AUTHORED_REFERENCE.output,
         "mutation control must turn the grade red"
     );
 }

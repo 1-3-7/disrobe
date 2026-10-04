@@ -9,11 +9,18 @@ const CFF: &str = include_str!(
 );
 const CFF_SHA256: &str = "7efcf2ec6c1ac802cb329b76e9a0ba48d69569aab9f5dcaf70f609c95e913963";
 const AUTHORED_SOURCE: &str = include_str!("../../../corpus/src/javascript/obfuscator-io-high.js");
-const AUTHORED_SOURCE_SHA256: &str =
-    "e29f6f162e5297b68f8dca7037e9b1cb343f2fec65a0e436ca27905f2d049887";
+
+struct AuthoredReference {
+    source_sha256: &'static str,
+    stdout: &'static str,
+}
+
+const AUTHORED_REFERENCE: AuthoredReference = AuthoredReference {
+    source_sha256: "e29f6f162e5297b68f8dca7037e9b1cb343f2fec65a0e436ca27905f2d049887",
+    stdout: "calculator ready :: hello, disrobe\nadd(10,5) = 15\nsub(10,5) = 5\nmul(10,5) = 50\ndiv(10,5) = 2\nprobe:15;5;50;2;calculator ready :: hello, disrobe;add(10,5) = 15|sub(10,5) = 5|mul(10,5) = 50|div(10,5) = 2\n",
+};
 
 const PROBE: &str = "console.log('probe:' + [calculate('add', 10, 5), calculate('sub', 10, 5), calculate('mul', 10, 5), calculate('div', 10, 5), greet('disrobe'), runSamples().join('|')].join(';'));";
-const AUTHORED_REFERENCE_STDOUT: &str = "calculator ready :: hello, disrobe\nadd(10,5) = 15\nsub(10,5) = 5\nmul(10,5) = 50\ndiv(10,5) = 2\nprobe:15;5;50;2;calculator ready :: hello, disrobe;add(10,5) = 15|sub(10,5) = 5|mul(10,5) = 50|div(10,5) = 2\n";
 
 fn reparses(source: &str) -> bool {
     use oxc_allocator::Allocator;
@@ -51,10 +58,10 @@ fn control_flow_object_proxy_declaration_is_removed_after_full_inline() {
     );
     assert_eq!(
         sha256(AUTHORED_SOURCE),
-        AUTHORED_SOURCE_SHA256,
+        AUTHORED_REFERENCE.source_sha256,
         "authored obfuscator.io reference drifted"
     );
-    let want: &str = AUTHORED_REFERENCE_STDOUT;
+    let want: &str = AUTHORED_REFERENCE.stdout;
 
     let opts: ObfuscatorIoOptions = ObfuscatorIoOptions::all();
     let out: ObfuscatorIoOutput = obfuscator_io_deobfuscate(CFF, &opts).expect("deob ok");
@@ -87,8 +94,15 @@ fn control_flow_object_proxy_declaration_is_removed_after_full_inline() {
     );
 
     let recovered_program: String = format!("{}\n{PROBE}", out.source);
-    let got: String = common::eval_stdout_with_argv(&recovered_program, &[])
-        .unwrap_or_else(|| panic!("recovered source must evaluate:\n{}", out.source));
+    let worker: common::BoaWorker = common::BoaWorker::new(
+        std::env::current_exe().expect("the behavior grader executable must resolve"),
+    )
+    .expect("the behavior grader worker must initialize");
+    let got: String = worker
+        .eval_stdout(&recovered_program, &[])
+        .unwrap_or_else(|error| {
+            panic!("recovered source must evaluate: {error:?}\n{}", out.source)
+        });
     assert_eq!(
         want, got,
         "recovered behavior diverged from the authored obfuscator.io source\n--want--\n{want}\n--got--\n{got}\n--src--\n{}",
@@ -97,8 +111,9 @@ fn control_flow_object_proxy_declaration_is_removed_after_full_inline() {
 
     let mutated: String = mutate_add_case(&out.source);
     let mutated_program: String = format!("{mutated}\n{PROBE}");
-    let mutated_output: String = common::eval_stdout_with_argv(&mutated_program, &[])
-        .unwrap_or_else(|| panic!("behavior mutant must evaluate:\n{mutated}"));
+    let mutated_output: String = worker
+        .eval_stdout(&mutated_program, &[])
+        .unwrap_or_else(|error| panic!("behavior mutant must evaluate: {error:?}\n{mutated}"));
     assert_ne!(
         want, mutated_output,
         "changing the recovered add dispatch must make the behavior predicate fail"
