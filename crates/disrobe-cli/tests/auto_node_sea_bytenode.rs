@@ -1,4 +1,4 @@
-#![cfg(feature = "chain")]
+#![cfg(feature = "auto")]
 #![allow(
     clippy::expect_used,
     clippy::unwrap_used,
@@ -54,7 +54,7 @@ fn run_chain_cli(input: &Path, out: &Path, chain_arg: &str) -> std::process::Out
     let bin: PathBuf = cargo_bin();
     assert!(
         bin.exists(),
-        "disrobe binary missing at {bin:?}; run `cargo build -p disrobe-cli --features chain` first"
+        "disrobe binary missing at {bin:?}; run `cargo build -p disrobe-cli --features auto` first"
     );
     Command::new(&bin)
         .arg("chain")

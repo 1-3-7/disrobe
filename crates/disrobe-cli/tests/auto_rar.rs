@@ -1,4 +1,4 @@
-#![cfg(feature = "chain")]
+#![cfg(feature = "auto")]
 #![allow(clippy::expect_used, clippy::panic)]
 
 use std::collections::BTreeMap;

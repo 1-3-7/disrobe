@@ -116,7 +116,7 @@ fn run_disrobe(args: &[&str]) -> Run {
 }
 
 #[test]
-#[cfg(feature = "chain")]
+#[cfg(feature = "auto")]
 fn detect_machine_formats_preserve_real_packer_findings() {
     let (scratch, input): (disrobe_core::scratch::ScratchDir, PathBuf) =
         temp_path("detect formats ü", "exe");
@@ -180,7 +180,7 @@ fn detect_machine_formats_preserve_real_packer_findings() {
 }
 
 #[test]
-#[cfg(feature = "chain")]
+#[cfg(feature = "auto")]
 fn detect_machine_formats_report_no_findings_for_plain_text() {
     let (_scratch, input): (disrobe_core::scratch::ScratchDir, PathBuf) =
         temp_path("detect-empty", "txt");

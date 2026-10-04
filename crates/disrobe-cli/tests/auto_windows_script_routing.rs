@@ -1,4 +1,4 @@
-#![cfg(all(feature = "chain", feature = "shell"))]
+#![cfg(all(feature = "auto", feature = "shell"))]
 #![allow(
     clippy::expect_used,
     clippy::unwrap_used,

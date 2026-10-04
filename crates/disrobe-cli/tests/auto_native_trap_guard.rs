@@ -1,4 +1,4 @@
-#![cfg(feature = "chain")]
+#![cfg(feature = "auto")]
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
 use std::path::{Path, PathBuf};
