@@ -2527,9 +2527,9 @@
 - `DR-MOB-0062`: `crates/disrobe-pass-mobile/src/error.rs:295`
 - `DR-MOB-0063`: `crates/disrobe-pass-mobile/src/error.rs:50`
 - `DR-MOB-0064`: `crates/disrobe-pass-mobile/src/error.rs:181`
-- `DR-MOB-0902`: `crates/disrobe-pass-mobile/src/chain_detector.rs:94`
-- `DR-MOB-0905`: `crates/disrobe-pass-mobile/src/chain_detector.rs:115`
-- `DR-MOB-0906`: `crates/disrobe-pass-mobile/src/chain_detector.rs:126`
+- `DR-MOB-0902`: `crates/disrobe-pass-mobile/src/chain_detector.rs:93`
+- `DR-MOB-0905`: `crates/disrobe-pass-mobile/src/chain_detector.rs:114`
+- `DR-MOB-0906`: `crates/disrobe-pass-mobile/src/chain_detector.rs:125`
 - `DR-NAT-0901`: `crates/disrobe-pass-native/src/chain_detector.rs:494`
 - `DR-NAT-0902`: `crates/disrobe-pass-native/src/chain_detector.rs:764`
 - `DR-NAT-0907`: `crates/disrobe-pass-native/src/chain_detector.rs:775`
