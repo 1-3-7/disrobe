@@ -194,7 +194,7 @@ fn dry_run_withholds_the_out_file() {
 }
 
 #[test]
-#[cfg(feature = "chain")]
+#[cfg(feature = "auto")]
 fn auto_attaches_the_delphi_report_only_when_detection_fires() {
     let (_marked_scratch, marked): (disrobe_core::scratch::ScratchDir, PathBuf) =
         temp_path("auto-delphi-marked", "exe");

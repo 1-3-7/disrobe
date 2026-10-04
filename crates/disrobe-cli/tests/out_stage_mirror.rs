@@ -1,4 +1,4 @@
-#![cfg(all(feature = "chain", feature = "shell"))]
+#![cfg(all(feature = "auto", feature = "shell"))]
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 use std::path::{Path, PathBuf};
 
@@ -51,7 +51,7 @@ fn capture_stages_writes_flat_numbered_step_dirs_with_real_content() {
     let bin: PathBuf = cli_binary();
     assert!(
         bin.exists(),
-        "disrobe binary not built at {} -- run `cargo build -p disrobe-cli --features chain,shell` first",
+        "disrobe binary not built at {} -- run `cargo build -p disrobe-cli --features auto,shell` first",
         bin.display()
     );
 

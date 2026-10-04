@@ -1,4 +1,4 @@
-#![cfg(all(feature = "mobile", feature = "chain"))]
+#![cfg(all(feature = "mobile", feature = "auto"))]
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod common;
 

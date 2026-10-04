@@ -5,7 +5,7 @@ mod common;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-#[cfg(feature = "chain")]
+#[cfg(feature = "auto")]
 use std::collections::BTreeMap;
 
 use common::{run_disrobe, temp_dir, temp_path, write_bytes};
@@ -151,7 +151,7 @@ fn webview_rejects_input_with_no_recognized_frontend() {
     );
 }
 
-#[cfg(feature = "chain")]
+#[cfg(feature = "auto")]
 #[test]
 fn normal_cli_dependency_graph_includes_webview_recovery() {
     let output: std::process::Output = std::process::Command::new(env!("CARGO"))
@@ -190,7 +190,7 @@ fn normal_cli_dependency_graph_includes_webview_recovery() {
     );
 }
 
-#[cfg(feature = "chain")]
+#[cfg(feature = "auto")]
 #[test]
 fn auto_recovers_every_electron_asset_with_one_or_four_jobs() {
     let (_input_scratch, input): (disrobe_core::scratch::ScratchDir, PathBuf) =
@@ -239,7 +239,7 @@ fn auto_recovers_every_electron_asset_with_one_or_four_jobs() {
     }
 }
 
-#[cfg(feature = "chain")]
+#[cfg(feature = "auto")]
 fn source_assets(root: &Path, prefix: &str) -> BTreeMap<String, Vec<u8>> {
     let mut assets: BTreeMap<String, Vec<u8>> = BTreeMap::new();
     let mut directories: Vec<PathBuf> = vec![root.to_path_buf()];
@@ -263,7 +263,7 @@ fn source_assets(root: &Path, prefix: &str) -> BTreeMap<String, Vec<u8>> {
     assets
 }
 
-#[cfg(feature = "chain")]
+#[cfg(feature = "auto")]
 #[test]
 fn auto_recovers_complete_real_desktop_frontends() {
     let root: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../corpus/webview");
