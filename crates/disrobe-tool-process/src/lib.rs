@@ -5,6 +5,7 @@ use std::ffi::OsString;
 use std::fmt::{self, Display, Formatter};
 use std::fs::File;
 use std::io::{self, Read, Write};
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::thread::JoinHandle;
@@ -35,6 +36,21 @@ const CAPTURE_CHUNK: usize = 8192;
 const WORKER_COLLECTION_GRACE: Duration = Duration::from_secs(5);
 const WORKER_POLL_INTERVAL: Duration = Duration::from_millis(2);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProcessMemoryLimit(NonZeroUsize);
+
+impl ProcessMemoryLimit {
+    #[must_use]
+    pub const fn new(bytes: NonZeroUsize) -> Self {
+        Self(bytes)
+    }
+
+    #[must_use]
+    pub const fn bytes(self) -> NonZeroUsize {
+        self.0
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CommandSpec {
     program: PathBuf,
@@ -45,6 +61,7 @@ pub struct CommandSpec {
     timeout: Duration,
     stdout_limit: usize,
     stderr_limit: usize,
+    memory_limit: Option<ProcessMemoryLimit>,
     reap_on_exit: bool,
 }
 
@@ -66,6 +83,7 @@ impl CommandSpec {
             timeout,
             stdout_limit: 4 * 1024 * 1024,
             stderr_limit: 4 * 1024 * 1024,
+            memory_limit: None,
             reap_on_exit: false,
         }
     }
@@ -108,6 +126,12 @@ impl CommandSpec {
     pub const fn capture_limits(mut self, stdout_limit: usize, stderr_limit: usize) -> Self {
         self.stdout_limit = stdout_limit;
         self.stderr_limit = stderr_limit;
+        self
+    }
+
+    #[must_use]
+    pub const fn memory_limit(mut self, memory_limit: ProcessMemoryLimit) -> Self {
+        self.memory_limit = Some(memory_limit);
         self
     }
 
@@ -338,6 +362,7 @@ pub enum LaunchError {
 pub enum LaunchStage {
     Pipe,
     Job,
+    MemoryLimit,
     CompletionPort,
     AttributeList,
     Spawn,
@@ -671,6 +696,11 @@ pub(crate) fn environment(spec: &CommandSpec) -> &[(OsString, OsString)] {
     &spec.environment
 }
 
+#[cfg(any(unix, windows))]
+pub(crate) const fn memory_limit(spec: &CommandSpec) -> Option<ProcessMemoryLimit> {
+    spec.memory_limit
+}
+
 pub(crate) fn program(spec: &CommandSpec) -> &Path {
     &spec.program
 }
@@ -780,6 +810,62 @@ mod tests {
         let rendered: String = failure.to_string();
         assert!(rendered.contains("primary wait failure"));
         assert!(rendered.contains("cleanup termination failure"));
+    }
+
+    const CHILD_ALLOCATION_BYTES: usize = 64 * 1024 * 1024;
+
+    #[test]
+    #[cfg(any(unix, windows))]
+    fn memory_limit_allows_a_reasonable_allocation_and_refuses_a_tiny_one()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let permitted: Execution = memory_limited_allocation_child(512 * 1024 * 1024)?;
+        assert!(
+            matches!(&permitted.completion, Completion::Exited(status) if status.success()),
+            "a 512 MiB limit must permit the 64 MiB allocation: {:?}",
+            permitted.completion
+        );
+        let denied: Result<Execution, ExecutionError> =
+            memory_limited_allocation_child(16 * 1024 * 1024);
+        assert!(
+            !matches!(&denied, Ok(Execution { completion: Completion::Exited(status), .. }) if status.success()),
+            "a 16 MiB limit must refuse the 64 MiB allocation: {denied:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "spawned by the memory-limit parent test"]
+    fn memory_limit_allocation_child() {
+        assert!(
+            std::env::var_os("DISROBE_TOOL_PROCESS_MEMORY_LIMIT_CHILD").is_some(),
+            "the allocation child is only valid under the memory-limit parent test"
+        );
+        let mut bytes: Vec<u8> = vec![0; CHILD_ALLOCATION_BYTES];
+        bytes.fill(0xa5);
+        let bytes: Vec<u8> = std::hint::black_box(bytes);
+        assert_eq!(bytes.len(), CHILD_ALLOCATION_BYTES);
+    }
+
+    #[cfg(any(unix, windows))]
+    fn memory_limited_allocation_child(limit: usize) -> Result<Execution, ExecutionError> {
+        let bytes: std::num::NonZeroUsize = std::num::NonZeroUsize::new(limit).ok_or(
+            LaunchError::InvalidInput("memory limit test requires a nonzero limit"),
+        )?;
+        let executable: std::path::PathBuf =
+            std::env::current_exe().map_err(|source| LaunchError::Platform {
+                stage: LaunchStage::Spawn,
+                source,
+            })?;
+        CommandSpec::new(executable, Duration::from_secs(15))
+            .args([
+                "--exact",
+                "tests::memory_limit_allocation_child",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("DISROBE_TOOL_PROCESS_MEMORY_LIMIT_CHILD", "1")
+            .memory_limit(ProcessMemoryLimit::new(bytes))
+            .run()
     }
 
     #[test]

@@ -11,8 +11,9 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use crate::{
-    CommandSpec, LaunchError, LaunchStage, LifecycleError, PipeSet, PlatformCompletion, arguments,
-    current_dir, environment, program, resolve_program,
+    CommandSpec, LaunchError, LaunchStage, LifecycleError, PipeSet, PlatformCompletion,
+    ProcessMemoryLimit, arguments, current_dir, environment, memory_limit, program,
+    resolve_program,
 };
 
 pub(crate) const PROVES_EMPTY_PROCESS_SET: bool = false;
@@ -83,6 +84,9 @@ pub(crate) fn spawn(spec: &CommandSpec) -> Result<(ContainedProcess, PipeSet), L
     if let Some(current_dir) = current_dir(spec) {
         command.current_dir(current_dir);
     }
+    if let Some(memory_limit) = memory_limit(spec) {
+        apply_memory_limit(&mut command, memory_limit)?;
+    }
     let mut child: Child = command
         .spawn()
         .map_err(|source: io::Error| LaunchError::Platform {
@@ -116,6 +120,35 @@ pub(crate) fn spawn(spec: &CommandSpec) -> Result<(ContainedProcess, PipeSet), L
         },
         PipeSet::new(Box::new(stdin), Box::new(stdout), Box::new(stderr)),
     ))
+}
+
+fn apply_memory_limit(
+    command: &mut Command,
+    memory_limit: ProcessMemoryLimit,
+) -> Result<(), LaunchError> {
+    let bytes: libc::rlim_t =
+        memory_limit.bytes().get().try_into().map_err(|_| {
+            LaunchError::InvalidInput("process memory limit exceeds platform range")
+        })?;
+    #[expect(
+        unsafe_code,
+        reason = "pre_exec and setrlimit run only in the child after fork and before exec, and the rlimit value is fully initialized for the call"
+    )]
+    unsafe {
+        command.pre_exec(move || {
+            let limit: libc::rlimit = libc::rlimit {
+                rlim_cur: bytes,
+                rlim_max: bytes,
+            };
+            let result: libc::c_int = libc::setrlimit(libc::RLIMIT_AS, &raw const limit);
+            if result == 0 {
+                Ok(())
+            } else {
+                Err(io::Error::last_os_error())
+            }
+        });
+    }
+    Ok(())
 }
 
 fn pipe_failure(child: &mut Child, message: &'static str) -> LaunchError {

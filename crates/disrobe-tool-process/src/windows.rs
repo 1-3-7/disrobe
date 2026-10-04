@@ -21,10 +21,11 @@ use windows_sys::Win32::Storage::FileSystem::{
 use windows_sys::Win32::System::IO::{CreateIoCompletionPort, GetQueuedCompletionStatus};
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-    JOBOBJECT_ASSOCIATE_COMPLETION_PORT, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
-    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectAssociateCompletionPortInformation,
-    JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation,
-    QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
+    JOB_OBJECT_LIMIT_PROCESS_MEMORY, JOBOBJECT_ASSOCIATE_COMPLETION_PORT,
+    JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    JobObjectAssociateCompletionPortInformation, JobObjectBasicAccountingInformation,
+    JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
+    TerminateJobObject,
 };
 use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
 use windows_sys::Win32::System::SystemServices::JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO;
@@ -37,8 +38,9 @@ use windows_sys::Win32::System::Threading::{
 };
 
 use crate::{
-    CommandSpec, LaunchError, LaunchStage, LifecycleError, PipeSet, PlatformCompletion, arguments,
-    current_dir, environment, program, resolve_program,
+    CommandSpec, LaunchError, LaunchStage, LifecycleError, PipeSet, PlatformCompletion,
+    ProcessMemoryLimit, arguments, current_dir, environment, memory_limit, program,
+    resolve_program,
 };
 
 pub(crate) const PROVES_EMPTY_PROCESS_SET: bool = true;
@@ -147,7 +149,7 @@ pub(crate) fn spawn(spec: &CommandSpec) -> Result<(ContainedProcess, PipeSet), L
         environment(spec),
         current_dir(spec),
     )?;
-    let job: OwnedHandle = create_job()?;
+    let job: OwnedHandle = create_job(memory_limit(spec))?;
     let completion_port: OwnedHandle = create_completion_port()?;
     let completion_key: usize = job.as_raw_handle() as usize;
     associate_completion_port(&job, &completion_port)?;
@@ -1172,12 +1174,16 @@ fn system_command_prompt() -> Result<Vec<u16>, LaunchError> {
     reason = "CreateJobObjectW takes null attributes and name, and SetInformationJobObject reads a \
               live local limit structure with its exact size on the job handle created here"
 )]
-fn create_job() -> Result<OwnedHandle, LaunchError> {
+fn create_job(memory_limit: Option<ProcessMemoryLimit>) -> Result<OwnedHandle, LaunchError> {
     let raw: HANDLE = unsafe { CreateJobObjectW(null(), null()) };
     let job: OwnedHandle = owned_handle(raw, LaunchStage::Job)?;
     let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION =
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
     limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if let Some(memory_limit) = memory_limit {
+        limits.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_PROCESS_MEMORY;
+        limits.ProcessMemoryLimit = memory_limit.bytes().get();
+    }
     let configured: i32 = unsafe {
         SetInformationJobObject(
             raw_handle(&job),
@@ -1187,7 +1193,11 @@ fn create_job() -> Result<OwnedHandle, LaunchError> {
         )
     };
     if configured == 0 {
-        return Err(platform_launch(LaunchStage::Job));
+        return Err(platform_launch(if memory_limit.is_some() {
+            LaunchStage::MemoryLimit
+        } else {
+            LaunchStage::Job
+        }));
     }
     Ok(job)
 }
