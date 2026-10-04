@@ -15,7 +15,7 @@ const CHAIN_DETECTOR_FILE: &str = "chain_detector.rs";
 const CHAIN_FEATURE: &str = "chain";
 
 const MIN_CHAIN_DETECTORS: usize = 25;
-const MIN_HIDDEN_CRATES: usize = 9;
+const MIN_HIDDEN_CRATES: usize = 8;
 const MIN_SCANNED_COMMANDS: usize = 20;
 
 const UNDECLARED: &str = "hidden-test-surface-undeclared";
@@ -37,7 +37,6 @@ const HIDDEN_TEST_SURFACE: &[(&str, &[&str])] = &[
         &["as3", "beam", "dotnet", "jvm", "lua", "python", "ruby"],
     ),
     ("disrobe-pass-dotnet", &["chain"]),
-    ("disrobe-pass-mobile", &["native-image"]),
     ("disrobe-pass-native", &["chain", "smt-solver"]),
     (
         "disrobe-pass-py-disasm",

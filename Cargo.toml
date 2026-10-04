@@ -188,7 +188,7 @@ disrobe-pass-go = { path = "crates/disrobe-pass-go", version = "0.10.6" }
 disrobe-pass-js-deob = { path = "crates/disrobe-pass-js-deob", version = "0.10.6" }
 disrobe-pass-jvm = { path = "crates/disrobe-pass-jvm", version = "0.10.6" }
 disrobe-pass-lua = { path = "crates/disrobe-pass-lua", version = "0.10.6" }
-disrobe-pass-mobile = { path = "crates/disrobe-pass-mobile", version = "0.10.6" }
+disrobe-pass-mobile = { path = "crates/disrobe-pass-mobile", version = "0.10.6", default-features = false }
 disrobe-pass-native = { path = "crates/disrobe-pass-native", version = "0.10.6" }
 disrobe-pass-nativelang = { path = "crates/disrobe-pass-nativelang", version = "0.10.6" }
 disrobe-pass-nuitka = { path = "crates/disrobe-pass-nuitka", version = "0.10.6" }
