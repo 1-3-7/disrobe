@@ -23,7 +23,7 @@ path = "src/main.rs"
 [dependencies]
 disrobe-core = { workspace = true }
 disrobe-tool-process = { workspace = true }
-disrobe-playground = { workspace = true, features = ["chain"], optional = true }
+disrobe-playground = { workspace = true, features = ["auto"], optional = true }
 clap = { workspace = true, features = ["derive"] }
 eyre = { workspace = true }
 camino = { workspace = true }

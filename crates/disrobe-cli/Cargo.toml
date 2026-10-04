@@ -245,7 +245,7 @@ protoc-bin-vendored = { workspace = true, optional = true }
 
 [dev-dependencies]
 disrobe-testkit = { workspace = true }
-disrobe-playground = { workspace = true, features = ["chain"] }
+disrobe-playground = { workspace = true, features = ["auto"] }
 iced-x86 = { workspace = true }
 object = { workspace = true, features = ["write"] }
 indicatif = { workspace = true, features = ["in_memory"] }
