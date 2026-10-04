@@ -1,4 +1,4 @@
-#![cfg(all(feature = "chain", feature = "mobile"))]
+#![cfg(all(feature = "auto", feature = "mobile"))]
 #![allow(clippy::expect_used, clippy::panic)]
 
 use std::ffi::OsString;

@@ -1,4 +1,4 @@
-#![cfg(all(feature = "chain", feature = "flutter"))]
+#![cfg(all(feature = "auto", feature = "flutter"))]
 #![allow(
     clippy::disallowed_methods,
     clippy::expect_used,

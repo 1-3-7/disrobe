@@ -1,4 +1,4 @@
-#![cfg(all(feature = "chain", feature = "jvm"))]
+#![cfg(all(feature = "auto", feature = "jvm"))]
 #![allow(
     clippy::disallowed_methods,
     clippy::expect_used,

@@ -1,4 +1,4 @@
-#![cfg(feature = "chain")]
+#![cfg(feature = "auto")]
 #![cfg(not(feature = "jvm"))]
 #![allow(clippy::disallowed_methods, clippy::expect_used, clippy::unwrap_used)]
 
