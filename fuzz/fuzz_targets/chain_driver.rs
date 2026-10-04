@@ -1,5 +1,4 @@
 #![no_main]
-#![cfg(feature = "chain")]
 use libfuzzer_sys::fuzz_target;
 
 use disrobe_core::chain::detection::{DetectContext, DetectVerdict, OutputKind, PassRunOutcome};

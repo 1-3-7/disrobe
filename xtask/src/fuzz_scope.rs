@@ -201,7 +201,7 @@ mod tests {
 
     #[test]
     fn backtick_rs_filenames_extracts_only_dot_rs_tokens() {
-        let section: &str = "via `cargo-fuzz` / libFuzzer, defined in `fuzz/Cargo.toml`: `chain_driver.rs` and `chain_spec_parser.rs`. Both drive `disrobe-core` (the `chain` feature).";
+        let section: &str = "via `cargo-fuzz` / libFuzzer, defined in `fuzz/Cargo.toml`: `chain_driver.rs` and `chain_spec_parser.rs`. Both drive disrobe-core chain-routing surfaces.";
         let found: BTreeSet<String> = backtick_rs_filenames(section);
         assert_eq!(found, set(&["chain_driver.rs", "chain_spec_parser.rs"]));
     }

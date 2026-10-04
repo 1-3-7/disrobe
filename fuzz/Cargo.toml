@@ -7,10 +7,6 @@ edition = "2024"
 [package.metadata]
 cargo-fuzz = true
 
-[features]
-default = ["chain"]
-chain = []
-
 [lib]
 path = "src/lib.rs"
 test = false
