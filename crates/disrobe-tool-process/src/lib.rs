@@ -812,23 +812,38 @@ mod tests {
         assert!(rendered.contains("cleanup termination failure"));
     }
 
-    const CHILD_ALLOCATION_BYTES: usize = 64 * 1024 * 1024;
+    const CHILD_ALLOCATION_BYTES: usize = 256 * 1024 * 1024;
+    const CHILD_ALLOCATION_MARKER: &[u8] = b"allocation-starting\n";
 
     #[test]
     #[cfg(any(unix, windows))]
     fn memory_limit_allows_a_reasonable_allocation_and_refuses_a_tiny_one()
     -> Result<(), Box<dyn std::error::Error>> {
-        let permitted: Execution = memory_limited_allocation_child(512 * 1024 * 1024)?;
+        let permitted: Execution = memory_limited_allocation_child(1024 * 1024 * 1024)?;
         assert!(
             matches!(&permitted.completion, Completion::Exited(status) if status.success()),
-            "a 512 MiB limit must permit the 64 MiB allocation: {:?}",
+            "a 1 GiB limit must permit the 256 MiB allocation: {:?}",
             permitted.completion
         );
-        let denied: Result<Execution, ExecutionError> =
-            memory_limited_allocation_child(16 * 1024 * 1024);
+        let denied: Execution = memory_limited_allocation_child(128 * 1024 * 1024)?;
+        let denied_stdout: Option<&[u8]> = denied
+            .stdout
+            .captured()
+            .map(|captured: &CapturedStream| captured.bytes.as_slice());
         assert!(
-            !matches!(&denied, Ok(Execution { completion: Completion::Exited(status), .. }) if status.success()),
-            "a 16 MiB limit must refuse the 64 MiB allocation: {denied:?}"
+            matches!(
+                denied_stdout,
+                Some(bytes)
+                    if bytes
+                        .windows(CHILD_ALLOCATION_MARKER.len())
+                        .any(|window: &[u8]| window == CHILD_ALLOCATION_MARKER)
+            ),
+            "the memory-limited child must reach the allocation before it fails: {denied:?}"
+        );
+        assert!(
+            !matches!(&denied.completion, Completion::Exited(status) if status.success()),
+            "a 128 MiB limit must refuse the 256 MiB allocation: {:?}",
+            denied.completion
         );
         Ok(())
     }
@@ -840,6 +855,12 @@ mod tests {
             std::env::var_os("DISROBE_TOOL_PROCESS_MEMORY_LIMIT_CHILD").is_some(),
             "the allocation child is only valid under the memory-limit parent test"
         );
+        std::io::stdout()
+            .write_all(CHILD_ALLOCATION_MARKER)
+            .and_then(|()| std::io::stdout().flush())
+            .unwrap_or_else(|error: io::Error| {
+                panic!("failed to write allocation marker: {error}")
+            });
         let mut bytes: Vec<u8> = vec![0; CHILD_ALLOCATION_BYTES];
         bytes.fill(0xa5);
         let bytes: Vec<u8> = std::hint::black_box(bytes);
