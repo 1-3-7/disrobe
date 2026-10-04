@@ -17,7 +17,7 @@ workspace = true
 
 [features]
 default = ["full"]
-full = ["chain", "auto", "js", "wasm", "php", "ruby", "shell", "mobile", "lua", "swift", "jvm", "dotnet", "go", "beam", "as3", "nativelang", "scriptlang"]
+full = ["auto", "js", "wasm", "php", "ruby", "shell", "mobile", "lua", "swift", "jvm", "dotnet", "go", "beam", "as3", "nativelang", "scriptlang"]
 auto = [
     "disrobe-core/chain",
     "disrobe-pass-native/chain",
@@ -34,7 +34,6 @@ auto = [
     "disrobe-passes/pyinstaller",
     "disrobe-passes/pickle",
 ]
-chain = ["auto"]
 
 js = ["auto", "disrobe-passes/js"]
 wasm = ["auto", "disrobe-passes/wasm", "dep:disrobe-pass-wasm-deob"]
