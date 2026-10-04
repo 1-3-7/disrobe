@@ -9,18 +9,12 @@ mod common;
 
 use std::path::PathBuf;
 
-#[cfg(feature = "chain")]
 use std::fs;
-#[cfg(feature = "chain")]
 use std::path::Path;
-#[cfg(feature = "chain")]
 use std::process::{Command, Stdio};
 
-#[cfg(feature = "chain")]
 use disrobe_core::chain::Pass;
-#[cfg(feature = "chain")]
 use disrobe_core::{Artifact, Rung};
-#[cfg(feature = "chain")]
 use disrobe_pass_py_decompile::chain_detector::PY_DECOMPILE_PASS;
 
 use crate::common::band::{
@@ -150,7 +144,6 @@ def retain_mixed_handler_flow(active, next_item, sink):
         sink(item)
 ";
 
-#[cfg(feature = "chain")]
 const WHILE_TRY_SHARED_RETEST: &str = r"
 def consume(active, next_item, sink):
     while active():
@@ -161,7 +154,6 @@ def consume(active, next_item, sink):
     sink('done')
 ";
 
-#[cfg(feature = "chain")]
 const WHILE_TRY_SHARED_RETEST_DRIVER: &str = r"
 def values(items):
     iterator = iter(items)
@@ -181,7 +173,6 @@ consume(active_after([True, True, False]), values(['one']), events.append)
 print(events)
 ";
 
-#[cfg(feature = "chain")]
 const WHILE_TRY_PRELUDE_SIDE_EFFECT: &str = r"
 def consume(active, next_item, sink, marker):
     while active():
@@ -193,7 +184,6 @@ def consume(active, next_item, sink, marker):
     sink('done')
 ";
 
-#[cfg(feature = "chain")]
 const WHILE_TRY_PRELUDE_SIDE_EFFECT_DRIVER: &str = r"
 events = []
 active_values = iter([True, False])
@@ -204,7 +194,6 @@ consume(lambda: False, lambda: 'unused', idle.append, lambda: idle.append('marke
 print(idle)
 ";
 
-#[cfg(feature = "chain")]
 const WHILE_AND_TRY_BREAK: &str = r"
 def consume(primary, secondary, next_item, sink):
     while primary() and secondary():
@@ -215,7 +204,6 @@ def consume(primary, secondary, next_item, sink):
     sink('done')
 ";
 
-#[cfg(feature = "chain")]
 const WHILE_OR_TRY_BREAK: &str = r"
 def consume(primary, secondary, next_item, sink):
     while primary() or secondary():
@@ -226,7 +214,6 @@ def consume(primary, secondary, next_item, sink):
     sink('done')
 ";
 
-#[cfg(feature = "chain")]
 const WHILE_THREE_CALL_AND_TRY_BREAK: &str = r"
 def consume(primary, secondary, tertiary, next_item, sink):
     while primary() and secondary() and tertiary():
@@ -237,7 +224,6 @@ def consume(primary, secondary, tertiary, next_item, sink):
     sink('done')
 ";
 
-#[cfg(feature = "chain")]
 const WHILE_AND_TRY_BREAK_DRIVER: &str = r"
 def values(items, name, calls):
     iterator = iter(items)
@@ -303,7 +289,6 @@ fn required_post311_interpreters() -> Vec<BandInterpreter> {
     interpreters
 }
 
-#[cfg(feature = "chain")]
 fn compile_source(interpreter: &Path, source: &Path, pyc: &Path) -> Result<(), String> {
     let output: std::process::Output = Command::new(interpreter)
         .args([
@@ -323,7 +308,6 @@ fn compile_source(interpreter: &Path, source: &Path, pyc: &Path) -> Result<(), S
     }
 }
 
-#[cfg(feature = "chain")]
 fn execute_source(interpreter: &Path, source: &Path) -> Result<String, String> {
     let output: std::process::Output = Command::new(interpreter)
         .arg(source)
@@ -338,7 +322,6 @@ fn execute_source(interpreter: &Path, source: &Path) -> Result<String, String> {
     }
 }
 
-#[cfg(feature = "chain")]
 fn recover_registered_source(interpreter: &BandInterpreter, source: &str, label: &str) -> String {
     let scratch: PathBuf = band_scratch(label);
     let source_path: PathBuf = scratch.join(format!("{label}.src.py"));
@@ -361,7 +344,6 @@ fn recover_registered_source(interpreter: &BandInterpreter, source: &str, label:
         .unwrap_or_else(|error: std::string::FromUtf8Error| panic!("{label} UTF-8: {error}"))
 }
 
-#[cfg(feature = "chain")]
 fn assert_break_is_recompile_equivalent(
     interpreter: &BandInterpreter,
     fixture: &str,
@@ -381,7 +363,6 @@ fn assert_break_is_recompile_equivalent(
     );
 }
 
-#[cfg(feature = "chain")]
 #[test]
 fn post311_two_call_and_dispatch_excludes_or_and_longer_chains() {
     for interpreter in required_post311_interpreters() {
@@ -421,7 +402,6 @@ fn post311_two_call_and_dispatch_excludes_or_and_longer_chains() {
     }
 }
 
-#[cfg(feature = "chain")]
 #[test]
 fn post311_while_and_try_break_reaches_registered_pass_and_runs_equivalently() {
     for interpreter in required_post311_interpreters() {
@@ -504,7 +484,6 @@ fn post311_while_and_try_break_reaches_registered_pass_and_runs_equivalently() {
     }
 }
 
-#[cfg(feature = "chain")]
 #[test]
 fn table_era_plain_try_handler_fallthrough_reaches_registered_pass_and_runs_equivalently() {
     for interpreter in
@@ -581,7 +560,6 @@ fn table_era_plain_try_handler_fallthrough_reaches_registered_pass_and_runs_equi
     }
 }
 
-#[cfg(feature = "chain")]
 #[test]
 fn table_era_plain_try_refuses_to_drop_a_pre_try_side_effect() {
     for interpreter in

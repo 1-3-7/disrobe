@@ -19,7 +19,6 @@ default = ["chain"]
 chain = [
     "disrobe-core/chain",
     "disrobe-pass-native/chain",
-    "disrobe-pass-py-decompile/chain",
     "dep:disrobe-passes",
     "disrobe-passes/full",
 ]

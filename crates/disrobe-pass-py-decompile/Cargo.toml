@@ -31,7 +31,6 @@ disrobe-pass-py-disasm = { path = "../disrobe-pass-py-disasm", version = "0.10.6
 
 [features]
 default = []
-chain = ["disrobe-core/chain"]
 llm-metadata = ["dep:disrobe-llm-metadata"]
 
 [dev-dependencies]

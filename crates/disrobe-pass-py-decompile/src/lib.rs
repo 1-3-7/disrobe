@@ -13,7 +13,6 @@
 pub mod alt_lift;
 pub mod ast;
 pub mod bytecode;
-#[cfg(feature = "chain")]
 pub mod chain_detector;
 pub mod codegen;
 pub mod emit;
