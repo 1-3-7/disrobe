@@ -29,7 +29,7 @@ fn tools_list_exposes_real_tools_with_object_schemas() {
     ] {
         assert!(names.contains(&expected), "missing tool {expected}");
     }
-    #[cfg(feature = "chain")]
+    #[cfg(feature = "auto")]
     for expected in ["auto", "decompile"] {
         assert!(names.contains(&expected), "missing chain tool {expected}");
     }
@@ -39,7 +39,7 @@ fn tools_list_exposes_real_tools_with_object_schemas() {
         "missing WebAssembly lift tool"
     );
     let expected_count: usize =
-        14 + usize::from(cfg!(feature = "chain")) * 2 + usize::from(cfg!(feature = "wasm"));
+        14 + usize::from(cfg!(feature = "auto")) * 2 + usize::from(cfg!(feature = "wasm"));
     assert_eq!(
         tools.len(),
         expected_count,
@@ -145,7 +145,7 @@ fn tools_list_exposes_real_tools_with_object_schemas() {
         );
     }
 
-    #[cfg(feature = "chain")]
+    #[cfg(feature = "auto")]
     for name in ["auto", "decompile"] {
         let t: &rmcp::model::Tool = tools
             .iter()

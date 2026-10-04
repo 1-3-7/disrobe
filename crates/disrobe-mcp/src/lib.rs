@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 #![deny(unreachable_pub)]
-#[cfg(feature = "chain")]
+#[cfg(feature = "auto")]
 mod chain;
 #[allow(
     clippy::redundant_pub_crate,
@@ -17,7 +17,9 @@ use std::path::{Path, PathBuf};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use disrobe_binfmt::{ByteCoverage, CoverageRegion, file_byte_coverage};
-use disrobe_core::chain::{ChainPassRecovery, ChainRecoveryReport};
+#[cfg(feature = "auto")]
+use disrobe_core::chain::ChainPassRecovery;
+use disrobe_core::chain::ChainRecoveryReport;
 use disrobe_core::provenance_map::{LineProvenance, ProvenanceMap};
 use disrobe_core::recovery::ConfidenceTier;
 use disrobe_core::secret_scan::{
@@ -35,7 +37,9 @@ use rmcp::handler::server::wrapper::Parameters;
 use serde::{Deserialize, Serialize};
 
 const RENAMES_SCHEMA: &str = "disrobe.renames/v1";
+#[cfg(feature = "auto")]
 const DEFAULT_CHAIN_DEPTH: u8 = 8;
+#[cfg(feature = "auto")]
 const MAX_CHAIN_DEPTH: u8 = 64;
 const MAX_IMPORTS: usize = 4096;
 const MAX_IMPORT_BYTES: usize = 4096;
@@ -189,7 +193,7 @@ pub struct ProvenanceLookupOut {
     pub entry: Option<LineProvenanceOut>,
 }
 
-#[cfg(feature = "chain")]
+#[cfg(feature = "auto")]
 #[derive(Debug, Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(crate = "rmcp::schemars")]
@@ -199,7 +203,7 @@ pub struct AutoParams {
     pub max_depth: Option<u8>,
 }
 
-#[cfg(feature = "chain")]
+#[cfg(feature = "auto")]
 #[derive(Debug, Serialize, rmcp::schemars::JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 pub struct ChainPassOut {
@@ -212,7 +216,7 @@ pub struct ChainPassOut {
     pub format_out: Option<String>,
 }
 
-#[cfg(feature = "chain")]
+#[cfg(feature = "auto")]
 #[derive(Debug, Serialize, rmcp::schemars::JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 pub struct AutoOut {
@@ -225,7 +229,7 @@ pub struct AutoOut {
     pub passes: Vec<ChainPassOut>,
 }
 
-#[cfg(feature = "chain")]
+#[cfg(feature = "auto")]
 #[derive(Debug, Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(crate = "rmcp::schemars")]
@@ -235,7 +239,7 @@ pub struct DecompileParams {
     pub max_depth: Option<u8>,
 }
 
-#[cfg(feature = "chain")]
+#[cfg(feature = "auto")]
 #[derive(Debug, Serialize, rmcp::schemars::JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 pub struct RecoveredSourceOut {
@@ -245,7 +249,7 @@ pub struct RecoveredSourceOut {
     pub source: String,
 }
 
-#[cfg(feature = "chain")]
+#[cfg(feature = "auto")]
 #[derive(Debug, Serialize, rmcp::schemars::JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 pub struct DecompileOut {
@@ -808,88 +812,6 @@ impl DisrobeMcp {
         }))
     }
 
-    #[cfg(feature = "chain")]
-    #[rmcp::tool(
-        name = "auto",
-        description = "Auto-detect and chain disrobe's Python + native-packer passes over inline base64 bytes; returns the chain verdict, detected formats, and per-pass recovery summary. Never reads disk."
-    )]
-    fn auto(&self, Parameters(p): Parameters<AutoParams>) -> Result<Json<AutoOut>, ErrorData> {
-        let bytes: Vec<u8> = decode_inline_bytes(&p.bytes_b64)?;
-        let cap: u8 = chain_depth(p.max_depth, "DR-MCP-0611")?;
-        let run: chain::ChainRun = chain::run_auto(bytes, cap).map_err(|e: String| {
-            ErrorData::internal_error(format!("DR-MCP-0610: auto chain failed: {e}"), None)
-        })?;
-        let doc: disrobe_core::chain::ChainDocument =
-            disrobe_core::chain::ChainDocument::from_plan(
-                &run.plan,
-                &run.spec,
-                &run.spec_raw,
-                env!("CARGO_PKG_VERSION"),
-                None,
-            )
-            .map_err(
-                |error: disrobe_core::chain::metadata_keys::MetadataValueError| {
-                    ErrorData::internal_error(
-                        format!("DR-MCP-0612: invalid chain metadata: {error}"),
-                        None,
-                    )
-                },
-            )?;
-        let report: ChainRecoveryReport =
-            ChainRecoveryReport::from_plan(&run.plan, env!("CARGO_PKG_VERSION"), None);
-        let passes: Vec<ChainPassOut> = report
-            .passes
-            .into_iter()
-            .map(|r: ChainPassRecovery| ChainPassOut {
-                name: r.name,
-                status: r.status.as_str().to_owned(),
-                confidence: r.confidence.as_str().to_owned(),
-                format_in: r.format_in,
-                format_out: r.format_out,
-            })
-            .collect();
-        Ok(Json(AutoOut {
-            schema: doc.schema,
-            verdict: verdict_label(&doc.verdict),
-            final_format: doc.final_format,
-            detected: doc.input.detected,
-            layers: doc.stats.layers,
-            passes,
-        }))
-    }
-
-    #[cfg(feature = "chain")]
-    #[rmcp::tool(
-        name = "decompile",
-        description = "Auto-chain inline base64 bytes and return every terminal recovered-source artifact (language-keyed text), e.g. a .pyc decompiled to Python. Never reads disk."
-    )]
-    fn decompile(
-        &self,
-        Parameters(p): Parameters<DecompileParams>,
-    ) -> Result<Json<DecompileOut>, ErrorData> {
-        let bytes: Vec<u8> = decode_inline_bytes(&p.bytes_b64)?;
-        let cap: u8 = chain_depth(p.max_depth, "DR-MCP-0621")?;
-        let run: chain::ChainRun = chain::run_auto(bytes, cap).map_err(|e: String| {
-            ErrorData::internal_error(format!("DR-MCP-0620: decompile chain failed: {e}"), None)
-        })?;
-        let recovered: Vec<RecoveredSourceOut> = chain::recovered_sources(&run.plan)
-            .into_iter()
-            .map(|r: chain::RecoveredSource| RecoveredSourceOut {
-                pass: r.pass,
-                language: r.language,
-                formatted: r.formatted,
-                source: r.source,
-            })
-            .collect();
-        let verdict: disrobe_core::chain::VerdictDoc =
-            disrobe_core::chain::VerdictDoc::from(&run.plan.verdict);
-        Ok(Json(DecompileOut {
-            schema: "disrobe.decompile/v1".to_owned(),
-            verdict: verdict_label(&verdict),
-            recovered,
-        }))
-    }
-
     #[rmcp::tool(
         name = "ioc",
         description = "Extract indicators of compromise (URLs, domains, IPs, emails, paths, registry keys, wallet addresses, crypto constants) from inline base64 bytes, decoding one layer of base64/hex. Never reads disk."
@@ -1017,6 +939,91 @@ impl DisrobeMcp {
     }
 }
 
+#[cfg(feature = "auto")]
+#[rmcp::tool_router(router = auto_tool_router)]
+#[allow(clippy::unused_self)]
+impl DisrobeMcp {
+    #[rmcp::tool(
+        name = "auto",
+        description = "Auto-detect and chain disrobe's Python + native-packer passes over inline base64 bytes; returns the chain verdict, detected formats, and per-pass recovery summary. Never reads disk."
+    )]
+    fn auto(&self, Parameters(p): Parameters<AutoParams>) -> Result<Json<AutoOut>, ErrorData> {
+        let bytes: Vec<u8> = decode_inline_bytes(&p.bytes_b64)?;
+        let cap: u8 = chain_depth(p.max_depth, "DR-MCP-0611")?;
+        let run: chain::ChainRun = chain::run_auto(bytes, cap).map_err(|e: String| {
+            ErrorData::internal_error(format!("DR-MCP-0610: auto chain failed: {e}"), None)
+        })?;
+        let doc: disrobe_core::chain::ChainDocument =
+            disrobe_core::chain::ChainDocument::from_plan(
+                &run.plan,
+                &run.spec,
+                &run.spec_raw,
+                env!("CARGO_PKG_VERSION"),
+                None,
+            )
+            .map_err(
+                |error: disrobe_core::chain::metadata_keys::MetadataValueError| {
+                    ErrorData::internal_error(
+                        format!("DR-MCP-0612: invalid chain metadata: {error}"),
+                        None,
+                    )
+                },
+            )?;
+        let report: ChainRecoveryReport =
+            ChainRecoveryReport::from_plan(&run.plan, env!("CARGO_PKG_VERSION"), None);
+        let passes: Vec<ChainPassOut> = report
+            .passes
+            .into_iter()
+            .map(|r: ChainPassRecovery| ChainPassOut {
+                name: r.name,
+                status: r.status.as_str().to_owned(),
+                confidence: r.confidence.as_str().to_owned(),
+                format_in: r.format_in,
+                format_out: r.format_out,
+            })
+            .collect();
+        Ok(Json(AutoOut {
+            schema: doc.schema,
+            verdict: verdict_label(&doc.verdict),
+            final_format: doc.final_format,
+            detected: doc.input.detected,
+            layers: doc.stats.layers,
+            passes,
+        }))
+    }
+
+    #[rmcp::tool(
+        name = "decompile",
+        description = "Auto-chain inline base64 bytes and return every terminal recovered-source artifact (language-keyed text), e.g. a .pyc decompiled to Python. Never reads disk."
+    )]
+    fn decompile(
+        &self,
+        Parameters(p): Parameters<DecompileParams>,
+    ) -> Result<Json<DecompileOut>, ErrorData> {
+        let bytes: Vec<u8> = decode_inline_bytes(&p.bytes_b64)?;
+        let cap: u8 = chain_depth(p.max_depth, "DR-MCP-0621")?;
+        let run: chain::ChainRun = chain::run_auto(bytes, cap).map_err(|e: String| {
+            ErrorData::internal_error(format!("DR-MCP-0620: decompile chain failed: {e}"), None)
+        })?;
+        let recovered: Vec<RecoveredSourceOut> = chain::recovered_sources(&run.plan)
+            .into_iter()
+            .map(|r: chain::RecoveredSource| RecoveredSourceOut {
+                pass: r.pass,
+                language: r.language,
+                formatted: r.formatted,
+                source: r.source,
+            })
+            .collect();
+        let verdict: disrobe_core::chain::VerdictDoc =
+            disrobe_core::chain::VerdictDoc::from(&run.plan.verdict);
+        Ok(Json(DecompileOut {
+            schema: "disrobe.decompile/v1".to_owned(),
+            verdict: verdict_label(&verdict),
+            recovered,
+        }))
+    }
+}
+
 #[cfg(feature = "wasm")]
 #[rmcp::tool_router(router = wasm_tool_router)]
 #[allow(clippy::unused_self)]
@@ -1045,14 +1052,13 @@ impl DisrobeMcp {
     pub fn tool_router() -> rmcp::handler::server::router::tool::ToolRouter<Self> {
         let router: rmcp::handler::server::router::tool::ToolRouter<Self> =
             Self::base_tool_router();
+        #[cfg(feature = "auto")]
+        let router: rmcp::handler::server::router::tool::ToolRouter<Self> =
+            router + Self::auto_tool_router();
         #[cfg(feature = "wasm")]
-        {
-            router + Self::wasm_tool_router()
-        }
-        #[cfg(not(feature = "wasm"))]
-        {
-            router
-        }
+        let router: rmcp::handler::server::router::tool::ToolRouter<Self> =
+            router + Self::wasm_tool_router();
+        router
     }
 }
 
@@ -1067,9 +1073,9 @@ impl rmcp::ServerHandler for DisrobeMcp {
             .build();
         #[cfg(feature = "wasm")]
         let analysis_tools: &str = "auto-detect and chain (auto), decompile to source (decompile), match functions across two native images (native_match), lift WebAssembly to Rust, TypeScript, C, or WAT (wasm_lift), extract IOCs (ioc), summarize behavior and ATT&CK (behavior), and pull strings (strings)";
-        #[cfg(all(feature = "chain", not(feature = "wasm")))]
+        #[cfg(all(feature = "auto", not(feature = "wasm")))]
         let analysis_tools: &str = "auto-detect and chain (auto), decompile to source (decompile), match functions across two native images (native_match), extract IOCs (ioc), summarize behavior and ATT&CK (behavior), and pull strings (strings)";
-        #[cfg(not(feature = "chain"))]
+        #[cfg(not(feature = "auto"))]
         let analysis_tools: &str = "match functions across two native images (native_match), extract IOCs (ioc), summarize behavior and ATT&CK (behavior), and pull strings (strings)";
         info.instructions = Some(format!(
             "disrobe MCP companion: {analysis_tools}, verify .dr envelopes, look up provenance-map lines, and navigate call graphs, cross-references, function summaries, and cycle-safe neighborhoods. Analysis tools take inline base64 or inline JSON and never read a filesystem path. The workspace tools (rename, annot) read and write only inside the `.disrobe/` workspace under the current directory; annot's target must resolve within that workspace root."
@@ -1165,6 +1171,7 @@ fn validate_imports(imports: &[String]) -> Result<(), ErrorData> {
     Ok(())
 }
 
+#[cfg(feature = "auto")]
 fn chain_depth(value: Option<u8>, code: &str) -> Result<u8, ErrorData> {
     let cap: u8 = value.unwrap_or(DEFAULT_CHAIN_DEPTH);
     if cap == 0 || cap > MAX_CHAIN_DEPTH {
@@ -1188,7 +1195,7 @@ fn hex32(bytes: &[u8; 32]) -> String {
     s
 }
 
-#[cfg(feature = "chain")]
+#[cfg(feature = "auto")]
 fn verdict_label(v: &disrobe_core::chain::VerdictDoc) -> String {
     v.as_str().to_owned()
 }
@@ -1478,7 +1485,7 @@ mod tests {
         ] {
             assert!(names.contains(&expected), "missing tool {expected}");
         }
-        #[cfg(feature = "chain")]
+        #[cfg(feature = "auto")]
         for expected in ["auto", "decompile"] {
             assert!(names.contains(&expected), "missing chain tool {expected}");
         }
@@ -1488,7 +1495,7 @@ mod tests {
             "missing WebAssembly lift tool"
         );
         let expected_count: usize =
-            14 + usize::from(cfg!(feature = "chain")) * 2 + usize::from(cfg!(feature = "wasm"));
+            14 + usize::from(cfg!(feature = "auto")) * 2 + usize::from(cfg!(feature = "wasm"));
         assert_eq!(tools.len(), expected_count);
         for t in &tools {
             let schema: &serde_json::Map<String, serde_json::Value> = t.input_schema.as_ref();
@@ -1997,11 +2004,11 @@ mod tests {
         assert!(bad.message.contains("DR-MCP-0640"));
     }
 
-    #[cfg(feature = "chain")]
+    #[cfg(feature = "auto")]
     const BINARY_OPS_PYC: &[u8] =
         include_bytes!("../../../corpus/python/decompile/authored/compiled/binary_ops.3.11.pyc");
 
-    #[cfg(feature = "chain")]
+    #[cfg(feature = "auto")]
     #[test]
     fn auto_chains_pyc_to_python_source() {
         let mcp: DisrobeMcp = DisrobeMcp::new();
@@ -2023,7 +2030,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "chain")]
+    #[cfg(feature = "auto")]
     #[test]
     fn decompile_recovers_python_text() {
         let mcp: DisrobeMcp = DisrobeMcp::new();
@@ -2046,7 +2053,7 @@ mod tests {
         assert!(!py.source.is_empty());
     }
 
-    #[cfg(feature = "chain")]
+    #[cfg(feature = "auto")]
     #[test]
     fn auto_rejects_empty_and_garbage_without_touching_disk() {
         let mcp: DisrobeMcp = DisrobeMcp::new();
@@ -2062,7 +2069,7 @@ mod tests {
         assert!(garbage.message.contains("DR-MCP-0181"));
     }
 
-    #[cfg(feature = "chain")]
+    #[cfg(feature = "auto")]
     #[test]
     fn auto_rejects_invalid_depth() {
         let mcp: DisrobeMcp = DisrobeMcp::new();

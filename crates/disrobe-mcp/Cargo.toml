@@ -17,8 +17,8 @@ workspace = true
 
 [features]
 default = ["full"]
-full = ["chain", "js", "wasm", "php", "ruby", "shell", "mobile", "lua", "swift", "jvm", "dotnet", "go", "beam", "as3", "nativelang", "scriptlang"]
-chain = [
+full = ["chain", "auto", "js", "wasm", "php", "ruby", "shell", "mobile", "lua", "swift", "jvm", "dotnet", "go", "beam", "as3", "nativelang", "scriptlang"]
+auto = [
     "disrobe-core/chain",
     "disrobe-pass-native/chain",
     "dep:disrobe-passes",
@@ -34,22 +34,23 @@ chain = [
     "disrobe-passes/pyinstaller",
     "disrobe-passes/pickle",
 ]
+chain = ["auto"]
 
-js = ["chain", "disrobe-passes/js"]
-wasm = ["chain", "disrobe-passes/wasm", "dep:disrobe-pass-wasm-deob"]
-php = ["chain", "disrobe-passes/php"]
-ruby = ["chain", "disrobe-passes/ruby"]
-shell = ["chain", "disrobe-passes/shell"]
-mobile = ["chain", "disrobe-passes/mobile"]
-lua = ["chain", "disrobe-passes/lua"]
-swift = ["chain", "disrobe-passes/swift"]
-jvm = ["chain", "disrobe-passes/jvm"]
-dotnet = ["chain", "disrobe-passes/dotnet"]
-go = ["chain", "disrobe-passes/go"]
-beam = ["chain", "disrobe-passes/beam"]
-as3 = ["chain", "disrobe-passes/as3"]
-nativelang = ["chain", "disrobe-passes/nativelang"]
-scriptlang = ["chain", "disrobe-passes/scriptlang"]
+js = ["auto", "disrobe-passes/js"]
+wasm = ["auto", "disrobe-passes/wasm", "dep:disrobe-pass-wasm-deob"]
+php = ["auto", "disrobe-passes/php"]
+ruby = ["auto", "disrobe-passes/ruby"]
+shell = ["auto", "disrobe-passes/shell"]
+mobile = ["auto", "disrobe-passes/mobile"]
+lua = ["auto", "disrobe-passes/lua"]
+swift = ["auto", "disrobe-passes/swift"]
+jvm = ["auto", "disrobe-passes/jvm"]
+dotnet = ["auto", "disrobe-passes/dotnet"]
+go = ["auto", "disrobe-passes/go"]
+beam = ["auto", "disrobe-passes/beam"]
+as3 = ["auto", "disrobe-passes/as3"]
+nativelang = ["auto", "disrobe-passes/nativelang"]
+scriptlang = ["auto", "disrobe-passes/scriptlang"]
 
 [dependencies]
 disrobe-core = { workspace = true, features = ["chain"] }
