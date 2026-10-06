@@ -18,6 +18,6 @@
   },
   "oracle_strength": "recompile-only",
   "pairs": [],
-  "reproduce": "cargo test -p disrobe-pass-jvm --test decompile_recompile_rate",
+  "reproduce": "cargo test -p disrobe-pass-jvm --test it oracles::decompile_recompile_rate::",
   "title": "JVM classfile decompilation, per-method javac recompile"
 }

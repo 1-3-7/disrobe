@@ -1,6 +1,3 @@
-#[path = "../common/mod.rs"]
-mod common;
-
 mod boolean_array_recompile;
 mod compound_loop_condition_recompile;
 mod conversion_cast_recompile;

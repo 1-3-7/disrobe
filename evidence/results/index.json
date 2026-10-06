@@ -179,7 +179,7 @@
       "measured": "99.70%",
       "oracle_strength": "coverage-self-reported",
       "pairs": [],
-      "reproduce": "DISROBE_RUN_REAL_APK_TESTS=1 cargo test -p disrobe-pass-jvm --test dalvik_realworld_body_attest --test dex2jar_realworld_apks (local-only: the apks are gitignored)"
+      "reproduce": "DISROBE_RUN_REAL_APK_TESTS=1 cargo test -p disrobe-pass-jvm --test it realworld (local-only: the apks are gitignored; tests: crates/disrobe-pass-jvm/tests/oracles/dalvik_realworld_body_attest.rs and crates/disrobe-pass-jvm/tests/oracles/dex2jar_realworld_apks.rs; fixture loader: crates/disrobe-pass-jvm/tests/common/mod.rs)"
     },
     {
       "ci_attested": true,
@@ -195,7 +195,7 @@
       "measured": "100.00%",
       "oracle_strength": "strong",
       "pairs": [],
-      "reproduce": "cargo test -p disrobe-pass-jvm --test dalvik_verifier_gate"
+      "reproduce": "cargo test -p disrobe-pass-jvm --test it oracles::dalvik_verifier_gate::"
     },
     {
       "ci_attested": true,
@@ -350,7 +350,7 @@
       "measured": "92.37%",
       "oracle_strength": "strong",
       "pairs": [],
-      "reproduce": "cargo test -p disrobe-pass-jvm --test edgecases_execution_differential"
+      "reproduce": "cargo test -p disrobe-pass-jvm --test it oracles::edgecases_execution_differential::"
     },
     {
       "ci_attested": true,
@@ -366,7 +366,7 @@
       "measured": "100.00%",
       "oracle_strength": "recompile-only",
       "pairs": [],
-      "reproduce": "cargo test -p disrobe-pass-jvm --test decompile_recompile_rate"
+      "reproduce": "cargo test -p disrobe-pass-jvm --test it oracles::decompile_recompile_rate::"
     },
     {
       "ci_attested": true,

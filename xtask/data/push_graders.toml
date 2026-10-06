@@ -28,7 +28,8 @@ mutation = { path = "crates/disrobe-pass-wasm-deob/tests/linear_memory_local_off
 [[grader]]
 ecosystem = "jvm"
 package = "disrobe-pass-jvm"
-target = "apk_signature_verify"
+target = "it"
+module = "apk_signature_verify"
 features = []
 reference = { path = "crates/disrobe-pass-jvm/tests/apk_signature_verify.rs", test = "v2v3_signed_apk_integrity_verifies" }
 mutation = { path = "crates/disrobe-pass-jvm/tests/apk_signature_verify.rs", test = "tampered_apk_integrity_fails" }

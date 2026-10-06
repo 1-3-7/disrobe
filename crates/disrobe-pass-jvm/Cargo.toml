@@ -10,6 +10,7 @@ authors.workspace = true
 rust-version.workspace = true
 keywords = ["jvm", "java", "kotlin", "android", "deobfuscation"]
 categories.workspace = true
+autotests = false
 
 [lints]
 workspace = true
@@ -40,3 +41,7 @@ object = { workspace = true, features = ["write"] }
 
 [package.metadata.disrobe]
 level = 6
+
+[[test]]
+name = "it"
+path = "tests/it/main.rs"

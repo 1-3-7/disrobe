@@ -18,6 +18,6 @@
   },
   "oracle_strength": "strong",
   "pairs": [],
-  "reproduce": "cargo test -p disrobe-pass-jvm --test edgecases_execution_differential",
+  "reproduce": "cargo test -p disrobe-pass-jvm --test it oracles::edgecases_execution_differential::",
   "title": "JVM classfile decompilation, per-method execution differential"
 }

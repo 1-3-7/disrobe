@@ -317,7 +317,7 @@ fn the_behavior_gate_fails_when_jdk_tools_are_unavailable() {
     let test_binary: PathBuf = std::env::current_exe().expect("current test binary");
     let output: std::process::Output = Command::new(test_binary)
         .arg("--exact")
-        .arg("try_catch_finally_behavior::try_catch_finally_recovers_with_the_same_observable_behavior")
+        .arg("oracles::try_catch_finally_behavior::try_catch_finally_recovers_with_the_same_observable_behavior")
         .arg("--test-threads=1")
         .env("PATH", "")
         .output()

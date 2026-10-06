@@ -52,5 +52,5 @@ filter = 'package(disrobe-mba) | package(disrobe-cli) | package(disrobe-binfmt)'
 slow-timeout = { period = "120s", terminate-after = 5, grace-period = "10s" }
 
 [[profile.default.overrides]]
-filter = 'package(disrobe-pass-jvm) & (binary(oracles) | binary(lifting) | binary(protectors))'
+filter = 'package(disrobe-pass-jvm) & binary(it) & (test(/^oracles::/) | test(/^lifting::/) | test(/^protectors::/))'
 test-group = 'jvm-toolchain'

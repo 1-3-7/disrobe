@@ -1,6 +1,3 @@
-#[path = "../common/mod.rs"]
-mod common;
-
 mod allatori;
 mod allatori_real_sample;
 mod blackobf_real_sample;

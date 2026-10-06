@@ -8,7 +8,7 @@ ci = true
 [oracle]
 kind = "recovery-import"
 external = "real JVM verifier (-Xverify:all over the assembled jar; the JVM rejects malformed bytecode)"
-reproduce = "cargo test -p disrobe-pass-jvm --test dalvik_verifier_gate"
+reproduce = "cargo test -p disrobe-pass-jvm --test it oracles::dalvik_verifier_gate::"
 
 [source]
 recovery_group = "Dalvik recovered bodies (committed dex corpus, real JVM verifier)"

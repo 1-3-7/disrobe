@@ -1,6 +1,3 @@
-#[path = "../common/mod.rs"]
-mod common;
-
 mod anonymous_inner_declaration_type;
 mod anonymous_inner_recursion;
 mod d8_api_outline_projection;

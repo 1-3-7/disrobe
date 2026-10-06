@@ -18,6 +18,6 @@
   },
   "oracle_strength": "strong",
   "pairs": [],
-  "reproduce": "cargo test -p disrobe-pass-jvm --test dalvik_verifier_gate",
+  "reproduce": "cargo test -p disrobe-pass-jvm --test it oracles::dalvik_verifier_gate::",
   "title": "Dalvik recovered bodies, real JVM verifier"
 }

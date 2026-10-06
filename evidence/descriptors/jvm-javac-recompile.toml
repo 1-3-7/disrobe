@@ -8,7 +8,7 @@ ci = true
 [oracle]
 kind = "recovery-import"
 external = "real javac (JDK 25): recovered Java must recompile error-free per method"
-reproduce = "cargo test -p disrobe-pass-jvm --test decompile_recompile_rate"
+reproduce = "cargo test -p disrobe-pass-jvm --test it oracles::decompile_recompile_rate::"
 note = "Oracle strength is recompile-only: the recovered source compiling is necessary but not sufficient for equivalence (a dropped branch can still compile). The .pyc gate is the stronger standard (recompile-equivalent). Upgrade to bytecode-equivalence is tracked for a later phase."
 
 [source]

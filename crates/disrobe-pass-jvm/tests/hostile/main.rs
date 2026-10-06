@@ -1,6 +1,3 @@
-#[path = "../common/mod.rs"]
-mod common;
-
 mod adversarial;
 mod anti_decompiler_resilience;
 mod dalvik_class_file_limits;

@@ -423,7 +423,7 @@ fn the_edge_case_gate_fails_when_javac_is_unavailable() {
     let test_binary: PathBuf = std::env::current_exe().expect("current test binary");
     let output: std::process::Output = Command::new(test_binary)
         .arg("--exact")
-        .arg("exception_table_edge_cases::a_malformed_exception_table_is_refused_and_never_panics")
+        .arg("hostile::exception_table_edge_cases::a_malformed_exception_table_is_refused_and_never_panics")
         .arg("--test-threads=1")
         .env("PATH", "")
         .output()

@@ -403,7 +403,7 @@ fn boolean_array_gate_fails_when_javac_is_unavailable() {
     let test_binary: PathBuf = std::env::current_exe().expect("current test binary");
     let output: std::process::Output = Command::new(test_binary)
         .arg("--exact")
-        .arg("boolean_array_recompile::boolean_array_elements_recompile_to_equivalent_bytecode")
+        .arg("oracles::boolean_array_recompile::boolean_array_elements_recompile_to_equivalent_bytecode")
         .arg("--test-threads=1")
         .env("PATH", "")
         .output()

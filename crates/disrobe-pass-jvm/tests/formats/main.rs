@@ -1,6 +1,3 @@
-#[path = "../common/mod.rs"]
-mod common;
-
 mod aab_extract;
 mod apk_extract;
 mod apk_resources_oracle;
