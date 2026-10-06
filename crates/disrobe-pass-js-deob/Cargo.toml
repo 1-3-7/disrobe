@@ -10,6 +10,7 @@ authors.workspace = true
 rust-version.workspace = true
 keywords = ["javascript", "typescript", "deobfuscator", "oxc", "webcrack"]
 categories.workspace = true
+autotests = false
 
 [lints]
 workspace = true
@@ -39,6 +40,10 @@ disrobe-testkit = { workspace = true }
 divan = { workspace = true }
 sha2 = { workspace = true }
 toml = { workspace = true }
+
+[[test]]
+name = "it"
+path = "tests/it/main.rs"
 
 [[bench]]
 name = "full_pipeline"

@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use disrobe_pass_js_deob::{Detection, JsObfuRecovery, JsObfuscator, detect, recover_jsobfu};
 use sha2::{Digest, Sha256};
 
+#[path = "common/mod.rs"]
 mod common;
 
 const OBFUSCATED_SHA256: &str = "fb8a0fa445ef48d791834b971a7621c1e23a2f64480c8ee9aa07c4d33380e329";

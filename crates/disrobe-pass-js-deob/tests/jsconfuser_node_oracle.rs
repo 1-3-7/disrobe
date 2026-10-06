@@ -8,6 +8,7 @@ use regex::Regex;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
+#[path = "common/mod.rs"]
 mod common;
 
 const OBFUSCATED_SHA256: [(&str, &str); 12] = [

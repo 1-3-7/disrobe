@@ -2,6 +2,7 @@
 use disrobe_pass_js_deob::{AstUnminifyStats, unminify_ast};
 use sha2::{Digest, Sha256};
 
+#[path = "common/mod.rs"]
 mod common;
 
 const ARRAY_BUFFER_LIMIT: u64 = 64 * 1_024 * 1_024;

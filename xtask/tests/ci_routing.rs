@@ -173,6 +173,14 @@ fn integration_targets(package: &str) -> BTreeSet<String> {
         toml::from_str(&manifest_source).unwrap_or_else(|error: toml::de::Error| {
             panic!("parse {}: {error}", manifest_path.display())
         });
+    if manifest
+        .get("package")
+        .and_then(|package: &toml::Value| package.get("autotests"))
+        .and_then(toml::Value::as_bool)
+        == Some(false)
+    {
+        targets.clear();
+    }
     for test in manifest
         .get("test")
         .and_then(toml::Value::as_array)
@@ -214,9 +222,9 @@ fn javascript_profiles_keep_the_complete_integration_inventory() {
     assert_eq!(steps.len(), 1);
     let step: &Value = &steps[0];
     assert_eq!(step["shell"].as_str(), Some("pwsh"));
-    let release: &str = step["env"]["RELEASE_TEST_TARGETS"]
+    let release: &str = step["env"]["RELEASE_TEST_MODULES"]
         .as_str()
-        .expect("high-preset corpus recovery targets");
+        .expect("high-preset corpus recovery modules");
     let release_names: Vec<&str> = release.split_whitespace().collect();
     let release_targets: BTreeSet<&str> = release_names.iter().copied().collect();
     assert_eq!(release_names.len(), release_targets.len());
@@ -228,27 +236,42 @@ fn javascript_profiles_keep_the_complete_integration_inventory() {
             "reeval_corpus_oracle",
         ])
     );
-    let mut debug_targets: BTreeSet<String> = integration_targets("disrobe-pass-js-deob");
-    for target in release_targets {
-        assert!(
-            debug_targets.remove(target),
-            "release recovery oracle {target} must exist in the integration inventory"
+    assert_eq!(
+        integration_targets("disrobe-pass-js-deob"),
+        BTreeSet::from(["it".to_owned()])
+    );
+    let integration_source: String = std::fs::read_to_string(
+        workspace_root().join("crates/disrobe-pass-js-deob/tests/it/main.rs"),
+    )
+    .expect("consolidated JavaScript integration source");
+    for module in release_targets {
+        let declaration: String = format!("mod {module};");
+        assert_eq!(
+            integration_source
+                .lines()
+                .filter(|line: &&str| *line == declaration.as_str())
+                .count(),
+            1,
+            "release recovery oracle {module} must exist once in the integration inventory"
         );
     }
     for retained in ["sandbox_overflow_resilience", "source_map_limits"] {
         assert!(
-            debug_targets.contains(retained),
+            integration_source.contains(&format!("mod {retained};")),
             "debug coverage lost {retained}"
         );
     }
     let command: &str = step["run"].as_str().expect("JavaScript test command");
-    for forbidden in [
-        "--skip",
-        "--exclude",
-        "--ignored",
-        "CARGO_PROFILE_",
-        "RUSTFLAGS",
-    ] {
+    assert!(command.contains("@('--lib', '--test', 'it', '--', '--nocapture')"));
+    let name: &str = "module";
+    let module_variable: String = format!("${{{name}}}");
+    assert!(command.contains(&format!(
+        "$debugArguments += @('--skip', \"{module_variable}::\")"
+    )));
+    assert!(command.contains(&format!(
+        "@('--release', '--test', 'it', \"{module_variable}::\", '--', '--nocapture')"
+    )));
+    for forbidden in ["--exclude", "--ignored", "CARGO_PROFILE_", "RUSTFLAGS"] {
         assert!(
             !command.contains(forbidden),
             "JavaScript coverage override: {forbidden}"

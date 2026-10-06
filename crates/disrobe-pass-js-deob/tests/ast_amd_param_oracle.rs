@@ -3,6 +3,7 @@
 use disrobe_pass_js_deob::{AstPipeline, AstRuleId, AstUnminifyStats, unminify_ast};
 use sha2::{Digest, Sha256};
 
+#[path = "common/mod.rs"]
 mod common;
 
 const REAL_AMD_DEFINE: &str = include_str!("../corpus/bundlers/amd/define/bundle.js");

@@ -2,6 +2,7 @@
 use disrobe_pass_js_deob::{PackerDecode, PackerDetection, detect_packer, unpack_packer};
 use sha2::{Digest, Sha256};
 
+#[path = "common/mod.rs"]
 mod common;
 
 const AUTHORED_SOURCE: &str = include_str!("../../../corpus/js/packer/real/ground-truth.js");

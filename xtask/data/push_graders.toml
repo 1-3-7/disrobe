@@ -11,7 +11,8 @@ mutation = { path = "crates/disrobe-pass-sourcedefender/tests/real_modern_trial.
 [[grader]]
 ecosystem = "javascript"
 package = "disrobe-pass-js-deob"
-target = "reeval_oracle"
+target = "it"
+module = "reeval_oracle"
 features = []
 reference = { path = "crates/disrobe-pass-js-deob/tests/reeval_oracle.rs", test = "obfuscator_io_string_array_reeval_equivalent" }
 mutation = { path = "crates/disrobe-pass-js-deob/tests/reeval_oracle.rs", test = "obfuscator_io_wrong_rotation_is_not_silently_accepted" }

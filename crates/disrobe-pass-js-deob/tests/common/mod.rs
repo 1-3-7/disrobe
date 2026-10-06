@@ -379,13 +379,14 @@ impl BoaWorker {
         fs::write(&request_path, request_bytes).map_err(|error: std::io::Error| {
             BoaWorkerError::HarnessFailure(format!("write Boa worker request: {error}"))
         })?;
+        let worker_filter: String = worker_test_filter(module_path!());
         let spec: CommandSpec = CommandSpec::new(&self.executable, WORKER_BACKSTOP)
             .args([
-                "--ignored",
-                "--exact",
-                "common::boa_eval_subprocess_worker",
-                "--nocapture",
-                "--test-threads=1",
+                "--ignored".to_owned(),
+                "--exact".to_owned(),
+                worker_filter,
+                "--nocapture".to_owned(),
+                "--test-threads=1".to_owned(),
             ])
             .env(WORKER_REQUEST_ENV, &request_path)
             .env(WORKER_RESPONSE_ENV, &response_path)
@@ -482,6 +483,11 @@ impl BoaWorker {
         }
         Ok(stdout)
     }
+}
+
+fn worker_test_filter(module: &str) -> String {
+    let (_, test_module): (&str, &str) = module.split_once("::").unwrap_or(("", module));
+    format!("{test_module}::boa_eval_subprocess_worker")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

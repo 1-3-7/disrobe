@@ -1,5 +1,6 @@
 #![allow(clippy::expect_used, clippy::panic)]
 
+#[path = "common/mod.rs"]
 mod common;
 
 use disrobe_core::{Artifact, Rung, chain::Pass};

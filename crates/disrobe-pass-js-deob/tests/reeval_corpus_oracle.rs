@@ -1,4 +1,5 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+#[path = "common/mod.rs"]
 mod common;
 
 use std::collections::BTreeSet;
@@ -2121,7 +2122,7 @@ fn assert_sample_verified(name: &str) {
 #[test]
 fn browser_base64_uses_pinned_authored_reference() {
     let sample: Sample = Sample {
-        name: "javascript-obfuscator/browser-base64-pinned-reference",
+        name: "javascript-obfuscator/browser-base64",
         obf: "js/javascript-obfuscator/browser/obf_base64.js",
         reference: Reference::PinnedClean {
             path: "js/javascript-obfuscator/browser/source.js",

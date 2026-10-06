@@ -1518,11 +1518,15 @@ jobs:
       - name: php loader re-execution differential
         run: cargo test -p disrobe-pass-php --test loader_behavioral -- --nocapture
       - name: node re-execution differential for the js deobfuscator
-        run: cargo test -p disrobe-pass-js-deob --test jsconfuser_node_oracle -- --nocapture
+        run: >
+          cargo test -p disrobe-pass-js-deob --test it jsconfuser_node_oracle:: -- --nocapture
       - name: node packager carve checks
-        run: cargo test -p disrobe-pass-js-deob --test node_sea_pkg_nexe --test real_node_packagers -- --nocapture
+        run: |
+          cargo test -p disrobe-pass-js-deob --test it node_sea_pkg_nexe:: -- --nocapture
+          cargo test -p disrobe-pass-js-deob --test it real_node_packagers:: -- --nocapture
       - name: v8 code-serializer fixture differential
-        run: cargo test -p disrobe-pass-js-deob --test v8_codeserializer_real -- --nocapture
+        run: >
+          cargo test -p disrobe-pass-js-deob --test it v8_codeserializer_real:: -- --nocapture
 
   deny:
     if: github.event_name != 'workflow_dispatch' || (github.event.inputs.scope != 'clippy' && github.event.inputs.scope != 'tests')

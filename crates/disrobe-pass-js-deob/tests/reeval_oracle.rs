@@ -1,4 +1,5 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+#[path = "common/mod.rs"]
 mod common;
 
 use common::{assert_equivalent, eval_capture};

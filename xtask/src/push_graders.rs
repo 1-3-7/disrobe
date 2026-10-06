@@ -30,6 +30,7 @@ struct Grader {
     ecosystem: EcosystemName,
     package: String,
     target: String,
+    module: Option<String>,
     features: Vec<String>,
     reference: TestCitation,
     mutation: TestCitation,
@@ -151,12 +152,17 @@ fn validate(manifest: &Manifest) -> Result<()> {
         );
     }
     let mut coverage: BTreeMap<Ecosystem, &'static str> = BTreeMap::new();
-    let mut targets: BTreeSet<(String, String, Vec<String>)> = BTreeSet::new();
+    let mut targets: BTreeSet<(String, String, Option<String>, Vec<String>)> = BTreeSet::new();
     for grader in &manifest.grader {
         validate_grader(grader)?;
         let mut features: Vec<String> = grader.features.clone();
         features.sort();
-        if !targets.insert((grader.package.clone(), grader.target.clone(), features)) {
+        if !targets.insert((
+            grader.package.clone(),
+            grader.target.clone(),
+            grader.module.clone(),
+            features,
+        )) {
             bail!(
                 "{}:{} with these features is listed by more than one ecosystem",
                 grader.package,
@@ -193,6 +199,9 @@ fn validate(manifest: &Manifest) -> Result<()> {
 fn validate_grader(grader: &Grader) -> Result<()> {
     validate_selector("package", &grader.package)?;
     validate_selector("test target", &grader.target)?;
+    if let Some(module) = &grader.module {
+        validate_test_module(module)?;
+    }
     validate_citation("reference", &grader.reference)?;
     validate_citation("mutation control", &grader.mutation)?;
     if grader.reference.path == grader.mutation.path
@@ -245,6 +254,17 @@ fn validate_selector(label: &str, value: &str) -> Result<()> {
             .all(|byte: u8| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
     {
         bail!("push grader {label} must be a non-option Cargo identifier: {value:?}");
+    }
+    Ok(())
+}
+
+fn validate_test_module(value: &str) -> Result<()> {
+    let mut bytes = value.bytes();
+    let valid_start: bool = bytes
+        .next()
+        .is_some_and(|byte: u8| byte.is_ascii_alphabetic() || byte == b'_');
+    if !valid_start || !bytes.all(|byte: u8| byte.is_ascii_alphanumeric() || byte == b'_') {
+        bail!("push grader test module must be a Rust identifier: {value:?}");
     }
     Ok(())
 }
@@ -441,7 +461,12 @@ fn require_citations(grader: &Grader, identities: &BTreeSet<String>, phase: &str
         ("reference", &grader.reference),
         ("mutation control", &grader.mutation),
     ] {
-        if !identities.contains(&citation.test) {
+        let test: &str = &citation.test;
+        let identity: String = grader.module.as_ref().map_or_else(
+            || test.to_owned(),
+            |module: &String| format!("{module}::{test}"),
+        );
+        if !identities.contains(&identity) {
             bail!(
                 "{}:{} cited {kind} test {:?} was not {phase}",
                 grader.package,
@@ -481,6 +506,9 @@ fn nextest(root: &Path, grader: &Grader, mode: &str, json: bool) -> Result<Captu
     ]);
     if !grader.features.is_empty() {
         arguments.extend(["--features".to_owned(), grader.features.join(",")]);
+    }
+    if let Some(module) = &grader.module {
+        arguments.extend(["-E".to_owned(), format!("test(/^{module}::/)")]);
     }
     let execution: Execution = CommandSpec::new("cargo-nextest", GRADER_TIMEOUT)
         .args(arguments)
@@ -607,6 +635,15 @@ mod tests {
     }
 
     #[test]
+    fn invalid_module_selector_is_rejected() {
+        let mut grader: Grader = grader(Ecosystem::JavaScript);
+        grader.module = Some("reeval-oracle".to_owned());
+        let error: eyre::Report =
+            validate_grader(&grader).expect_err("a non-identifier module must fail");
+        assert!(error.to_string().contains("Rust identifier"));
+    }
+
+    #[test]
     fn ignored_or_filtered_test_is_rejected() {
         let value: Value = serde_json::json!({
             "test-count": 1,
@@ -650,6 +687,18 @@ mod tests {
                 .to_string()
                 .contains("mutation control test \"mutation\" was not listed")
         );
+    }
+
+    #[test]
+    fn consolidated_module_qualifies_citation_identities() {
+        let mut grader: Grader = grader(Ecosystem::JavaScript);
+        grader.module = Some("reeval_oracle".to_owned());
+        let identities: BTreeSet<String> = BTreeSet::from([
+            "reeval_oracle::reference".to_owned(),
+            "reeval_oracle::mutation".to_owned(),
+        ]);
+        require_citations(&grader, &identities, "listed")
+            .expect("module-qualified citations must match the consolidated target");
     }
 
     #[test]
@@ -749,6 +798,7 @@ mod tests {
             ecosystem: EcosystemName(ecosystem),
             package: "disrobe-pass-example".to_owned(),
             target: "example".to_owned(),
+            module: None,
             features: Vec::new(),
             reference: citation("reference"),
             mutation: citation("mutation"),

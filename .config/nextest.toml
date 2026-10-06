@@ -10,9 +10,9 @@ not (
   | binary_id(=disrobe-pass-nativelang::body_equivalence)
   | binary_id(=disrobe-pass-nativelang::oracle)
   | binary_id(=disrobe-pass-nativelang::dwarf_dewall)
-  | binary_id(=disrobe-pass-js-deob::obfuscator_io_e2e)
-  | binary_id(=disrobe-pass-js-deob::obfuscator_io_differential_oracle)
-  | binary_id(=disrobe-pass-js-deob::reeval_corpus_oracle)
+  | (package(disrobe-pass-js-deob) & binary(it) & test(/^obfuscator_io_e2e::/))
+  | (package(disrobe-pass-js-deob) & binary(it) & test(/^obfuscator_io_differential_oracle::/))
+  | (package(disrobe-pass-js-deob) & binary(it) & test(/^reeval_corpus_oracle::/))
 )
 '''
 retries = 0

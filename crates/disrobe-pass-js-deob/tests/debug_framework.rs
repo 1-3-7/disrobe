@@ -21,6 +21,10 @@ fn corpus_fixture() -> PathBuf {
 
 fn run_harness(debug: Option<&str>, json: bool) -> Output {
     let exe: PathBuf = std::env::current_exe().expect("test executable path");
+    let harness_test: String = module_path!().split_once("::").map_or_else(
+        || "harness_entrypoint".to_owned(),
+        |(_, module)| format!("{module}::harness_entrypoint"),
+    );
     let mut cmd: Command = Command::new(exe);
     cmd.env(HARNESS_ENV, "1");
     cmd.env_remove("DISROBE_DEBUG");
@@ -36,7 +40,7 @@ fn run_harness(debug: Option<&str>, json: bool) -> Output {
     cmd.arg("--exact");
     cmd.arg("--nocapture");
     cmd.arg("--test-threads=1");
-    cmd.arg("harness_entrypoint");
+    cmd.arg(harness_test);
     let out: Output = cmd.output().expect("spawn harness child");
     let stdout: String = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(
