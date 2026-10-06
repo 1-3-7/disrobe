@@ -4,8 +4,10 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
-const FIXTURE: &[u8] =
-    include_bytes!("../../disrobe-binfmt/tests/fixtures/luks1/aes128-cbc-plain.luks1");
+use disrobe_testkit::load_fixture;
+
+const FIXTURE_PATH: &str = "crates/disrobe-binfmt/tests/fixtures/luks1/aes128-cbc-plain.luks1";
+const FIXTURE_MAX_BYTES: u64 = 3 * 1024 * 1024;
 const RAW_VOLUME_KEY: [u8; 16] = [
     0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
 ];
@@ -14,6 +16,10 @@ const KEY_HEX: &str = "000102030405060708090a0b0c0d0e0f";
 fn fixture_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../disrobe-binfmt/tests/fixtures/luks1/aes128-cbc-plain.luks1")
+}
+
+fn fixture() -> Vec<u8> {
+    load_fixture(FIXTURE_PATH, FIXTURE_MAX_BYTES).expect("load LUKS1 fixture")
 }
 
 fn binary() -> PathBuf {
@@ -165,7 +171,7 @@ fn unsupported_mode_names_the_exact_header_mode() {
         disrobe_core::scratch::ScratchDir::create("cli-luks1-mode").expect("scratch");
     let input_path: PathBuf = scratch.path().join("xts.luks1");
     let missing_key_path: PathBuf = scratch.path().join("missing-volume.key");
-    let mut image: Vec<u8> = FIXTURE.to_vec();
+    let mut image: Vec<u8> = fixture();
     image[40..72].fill(0);
     image[40..52].copy_from_slice(b"xts-plain64\0");
     std::fs::write(&input_path, image).expect("write XTS fixture");
@@ -196,7 +202,7 @@ fn keyless_unknown_hash_is_a_typed_error_instead_of_a_wall() {
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("cli-luks1-hash").expect("scratch");
     let input_path: PathBuf = scratch.path().join("unknown-hash.luks1");
-    let mut image: Vec<u8> = FIXTURE.to_vec();
+    let mut image: Vec<u8> = fixture();
     image[72..104].fill(0);
     image[72..82].copy_from_slice(b"ripemd160\0");
     std::fs::write(&input_path, image).expect("write unknown-hash fixture");
@@ -216,7 +222,7 @@ fn keyless_luks2_is_a_typed_unsupported_version() {
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("cli-luks2-version").expect("scratch");
     let input_path: PathBuf = scratch.path().join("version2.luks");
-    let mut image: Vec<u8> = FIXTURE.to_vec();
+    let mut image: Vec<u8> = fixture();
     image[6..8].copy_from_slice(&2_u16.to_be_bytes());
     std::fs::write(&input_path, image).expect("write LUKS2-shaped input");
     let output: Output = Command::new(binary())
@@ -241,7 +247,7 @@ fn over_cap_sparse_luks1_is_refused_from_metadata_before_key_io() {
     let input_path: PathBuf = scratch.path().join("oversized.luks1");
     let missing_key_path: PathBuf = scratch.path().join("missing-volume.key");
     let mut file: std::fs::File = std::fs::File::create(&input_path).expect("create sparse input");
-    file.write_all(&FIXTURE[..4096])
+    file.write_all(&fixture()[..4096])
         .expect("write bounded header");
     file.set_len(4096 + disrobe_binfmt::containers::luks1::MAX_LUKS1_PAYLOAD_BYTES as u64 + 512)
         .expect("extend sparse input");

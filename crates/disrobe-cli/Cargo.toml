@@ -10,6 +10,7 @@ authors.workspace = true
 rust-version.workspace = true
 keywords = ["decompiler", "deobfuscator", "unpacker", "python", "javascript"]
 categories = ["command-line-utilities", "development-tools", "parser-implementations"]
+autotests = false
 
 [lints]
 workspace = true
@@ -19,73 +20,8 @@ name = "disrobe"
 path = "src/main.rs"
 
 [[test]]
-name = "self_refresh_check_only"
-path = "tests/self_update_check_only.rs"
-
-[[test]]
-name = "plugin_e2e"
-path = "tests/plugin_e2e.rs"
-required-features = ["plugin"]
-
-[[test]]
-name = "cli_wasm_target_wat"
-path = "tests/cli_wasm_target_wat.rs"
-required-features = ["wasm"]
-
-[[test]]
-name = "cli_wasm_boundary_links"
-path = "tests/cli_wasm_boundary_links.rs"
-required-features = ["wasm"]
-
-[[test]]
-name = "cli_wasm_target_rust"
-path = "tests/cli_wasm_target_rust.rs"
-required-features = ["wasm"]
-
-[[test]]
-name = "cli_wasm_target_ts"
-path = "tests/cli_wasm_target_ts.rs"
-required-features = ["wasm"]
-
-[[test]]
-name = "cli_wasm_target_c"
-path = "tests/cli_wasm_target_c.rs"
-required-features = ["wasm"]
-
-[[test]]
-name = "discord_e2e"
-path = "tests/discord_e2e.rs"
-required-features = ["mobile"]
-
-[[test]]
-name = "chain_real_extractors"
-path = "tests/chain_real_extractors.rs"
-required-features = ["full"]
-
-[[test]]
-name = "chain_goldens"
-path = "tests/chain_goldens.rs"
-required-features = ["full"]
-
-[[test]]
-name = "cli_e2e"
-path = "tests/cli_e2e.rs"
-required-features = ["full"]
-
-[[test]]
-name = "cyclonedx_emit"
-path = "tests/cyclonedx_emit.rs"
-required-features = ["native"]
-
-[[test]]
-name = "native_delphi"
-path = "tests/native_delphi.rs"
-required-features = ["native"]
-
-[[test]]
-name = "pyarmor_bcc_cli_surface"
-path = "tests/pyarmor_bcc_cli_surface.rs"
-required-features = ["py"]
+name = "it"
+path = "tests/it/main.rs"
 
 [features]
 default = ["full"]
@@ -222,21 +158,6 @@ zip = { workspace = true }
 tar = { workspace = true }
 sha2 = { workspace = true }
 zeroize = { workspace = true }
-
-[[test]]
-name = "grpc_e2e"
-path = "tests/grpc_e2e.rs"
-required-features = ["server"]
-
-[[test]]
-name = "serve_http_e2e"
-path = "tests/serve_http_e2e.rs"
-required-features = ["server"]
-
-[[test]]
-name = "serve_stdio_protocol_e2e"
-path = "tests/serve_stdio_protocol_e2e.rs"
-required-features = ["server"]
 
 [build-dependencies]
 tonic-build = { workspace = true, optional = true }

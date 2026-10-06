@@ -4,8 +4,14 @@
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
-const FIXTURE: &[u8] =
-    include_bytes!("../../disrobe-binfmt/tests/fixtures/innosetup/innosetup-6.3.3.exe");
+use disrobe_testkit::load_fixture;
+
+const FIXTURE_PATH: &str = "crates/disrobe-binfmt/tests/fixtures/innosetup/innosetup-6.3.3.exe";
+const FIXTURE_MAX_BYTES: u64 = 6 * 1024 * 1024;
+
+fn fixture() -> Vec<u8> {
+    load_fixture(FIXTURE_PATH, FIXTURE_MAX_BYTES).expect("load Inno Setup fixture")
+}
 
 fn recovered_compilers(root: &Path, compilers: &mut Vec<Vec<u8>>) {
     let entries: std::fs::ReadDir = std::fs::read_dir(root).expect("read batch output");
@@ -20,9 +26,10 @@ fn recovered_compilers(root: &Path, compilers: &mut Vec<Vec<u8>>) {
 }
 
 fn batch_compilers(jobs: u32) -> Vec<Vec<u8>> {
+    let fixture: Vec<u8> = fixture();
     let input: tempfile::TempDir = tempfile::tempdir().expect("batch input tempdir");
     for name in ["inno-a.exe", "inno-b.exe"] {
-        std::fs::write(input.path().join(name), FIXTURE).expect("stage Inno Setup fixture");
+        std::fs::write(input.path().join(name), &fixture).expect("stage Inno Setup fixture");
     }
     let output: tempfile::TempDir = tempfile::tempdir().expect("batch output tempdir");
     let process: Output = Command::new(env!("CARGO_BIN_EXE_disrobe"))
@@ -51,9 +58,10 @@ fn batch_compilers(jobs: u32) -> Vec<Vec<u8>> {
 
 #[test]
 fn auto_extracts_and_refeeds_a_real_inno_setup_member() {
+    let fixture: Vec<u8> = fixture();
     let input_dir: tempfile::TempDir = tempfile::tempdir().expect("input tempdir");
     let input: std::path::PathBuf = input_dir.path().join("innosetup-6.3.3.exe");
-    std::fs::write(&input, FIXTURE).expect("write Inno Setup fixture");
+    std::fs::write(&input, &fixture).expect("write Inno Setup fixture");
     let out: tempfile::TempDir = tempfile::tempdir().expect("output tempdir");
 
     let output: Output = Command::new(env!("CARGO_BIN_EXE_disrobe"))

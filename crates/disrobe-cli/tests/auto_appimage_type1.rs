@@ -8,10 +8,11 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use disrobe_core::subprocess::{CapturedOutput, run_captured};
+use disrobe_testkit::load_fixture;
 use sha2::{Digest as _, Sha256};
 
-const FIXTURE: &[u8] =
-    include_bytes!("../../../corpus/binfmt/appimage-type1/AppImageAssistant.AppImage");
+const FIXTURE_PATH: &str = "corpus/binfmt/appimage-type1/AppImageAssistant.AppImage";
+const FIXTURE_MAX_BYTES: u64 = 2 * 1024 * 1024;
 const MANIFEST: &str = include_str!("../../../corpus/binfmt/appimage-type1/MANIFEST.tsv");
 const CLI_BACKSTOP: Duration = Duration::from_mins(5);
 const CLI_CAPTURE: usize = 1usize << 20;
@@ -39,6 +40,10 @@ struct MaterializedEntry {
 }
 
 type MaterializedTree = BTreeMap<String, MaterializedEntry>;
+
+fn fixture() -> Vec<u8> {
+    load_fixture(FIXTURE_PATH, FIXTURE_MAX_BYTES).expect("load AppImage fixture")
+}
 
 struct BatchRecovery {
     complete: MaterializedTree,
@@ -207,11 +212,12 @@ fn materialized_member_tree(root: &Path) -> MaterializedTree {
 }
 
 fn recover_batch(jobs: u32) -> Vec<BatchRecovery> {
+    let fixture: Vec<u8> = fixture();
     let input: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("auto-appimage-type1-input")
             .expect("create AppImage input directory");
     for name in ["first.AppImage", "second.AppImage"] {
-        std::fs::write(input.path().join(name), FIXTURE).expect("stage AppImage fixture");
+        std::fs::write(input.path().join(name), &fixture).expect("stage AppImage fixture");
     }
     let output: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("auto-appimage-type1-output")
@@ -245,11 +251,12 @@ fn recover_batch(jobs: u32) -> Vec<BatchRecovery> {
 
 #[test]
 fn extract_and_auto_recover_type1_appimage_members_deterministically() {
+    let fixture: Vec<u8> = fixture();
     let input: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("extract-appimage-type1-input")
             .expect("create AppImage input directory");
     let image: PathBuf = input.path().join("AppImageAssistant.AppImage");
-    std::fs::write(&image, FIXTURE).expect("stage AppImage fixture");
+    std::fs::write(&image, &fixture).expect("stage AppImage fixture");
     let output: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("extract-appimage-type1-output")
             .expect("create AppImage output directory");
@@ -292,6 +299,7 @@ fn extract_and_auto_recover_type1_appimage_members_deterministically() {
 
 #[test]
 fn nested_appimage_collision_keeps_the_complete_member_tree_together() {
+    let fixture: Vec<u8> = fixture();
     let input: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("nested-appimage-input").expect("input scratch");
     let archive_path: PathBuf = input.path().join("outer.zip");
@@ -302,7 +310,7 @@ fn nested_appimage_collision_keeps_the_complete_member_tree_together() {
     archive
         .start_file("bundle.AppImage", options)
         .expect("AppImage entry");
-    archive.write_all(FIXTURE).expect("nested AppImage bytes");
+    archive.write_all(&fixture).expect("nested AppImage bytes");
     archive
         .start_file("AppRun", options)
         .expect("colliding outer member");
@@ -311,7 +319,7 @@ fn nested_appimage_collision_keeps_the_complete_member_tree_together() {
         .expect("outer member bytes");
     archive.finish().expect("finish outer archive");
     let image_path: PathBuf = input.path().join("reference.AppImage");
-    std::fs::write(&image_path, FIXTURE).expect("reference image");
+    std::fs::write(&image_path, &fixture).expect("reference image");
     let reference: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("nested-appimage-reference").expect("reference");
     let extracted: CapturedOutput = run_disrobe(&[

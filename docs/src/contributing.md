@@ -39,7 +39,7 @@ Some crates keep test-bearing modules behind a non-default feature. A per-crate 
 the feature that exposes its selected test target:
 
 ```sh
-cargo test -p disrobe-cli --no-default-features --features auto --test auto_dalvik_feature_gate
+cargo test -p disrobe-cli --no-default-features --features auto --test it -- auto_dalvik_feature_gate::
 cargo test -p disrobe-pass-mobile --features native-image --test flutter_engine_fallback_identity
 cargo test -p disrobe-nir-lift --features as3,beam,dotnet,jvm,lua,python,ruby
 cargo test -p disrobe-pass-py-disasm --features alt-runtimes-native

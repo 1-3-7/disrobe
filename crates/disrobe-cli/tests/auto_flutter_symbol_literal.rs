@@ -6,15 +6,18 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use disrobe_core::subprocess::{CapturedOutput, run_captured};
+use disrobe_testkit::load_fixture;
 
-const SYMBOL_FIXTURE: &[u8] = include_bytes!(
-    "../../disrobe-pass-mobile/tests/fixtures/flutter_symbol_dart_3_12_2/symbol_probe_arm64.so"
-);
+const SYMBOL_FIXTURE_PATH: &str =
+    "crates/disrobe-pass-mobile/tests/fixtures/flutter_symbol_dart_3_12_2/symbol_probe_arm64.so";
+const SYMBOL_FIXTURE_MAX_BYTES: u64 = 2 * 1024 * 1024;
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(30);
 const PROCESS_CAPTURE_LIMIT: usize = 1_048_576;
 
 #[test]
 fn auto_routes_a_real_flutter_symbol_literal_to_mobile_recovery() {
+    let symbol_fixture: Vec<u8> = load_fixture(SYMBOL_FIXTURE_PATH, SYMBOL_FIXTURE_MAX_BYTES)
+        .expect("load Flutter Symbol fixture");
     let input: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("auto_flutter_symbol_input")
             .expect("create Flutter Symbol input");
@@ -22,7 +25,7 @@ fn auto_routes_a_real_flutter_symbol_literal_to_mobile_recovery() {
         disrobe_core::scratch::ScratchDir::create("auto_flutter_symbol_output")
             .expect("create Flutter Symbol output");
     let input_path: PathBuf = input.path().join("libapp.so");
-    std::fs::write(&input_path, SYMBOL_FIXTURE).expect("write Flutter Symbol fixture");
+    std::fs::write(&input_path, symbol_fixture).expect("write Flutter Symbol fixture");
     let executable: PathBuf = PathBuf::from(env!("CARGO_BIN_EXE_disrobe"));
     let args: [OsString; 7] = [
         OsString::from("auto"),

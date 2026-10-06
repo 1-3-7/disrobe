@@ -1089,7 +1089,7 @@ jobs:
           path: target/determinism-hashes-${{ matrix.os }}.txt
       - name: batch worker-pool determinism (--jobs 1 vs --jobs 4, same fixtures, one leg only)
         if: matrix.os == 'ubuntu-latest' && matrix.shard == 'one'
-        run: cargo test -p disrobe-cli --test determinism_cross_platform -- --ignored batch_jobs_does_not_change_recovered_output --nocapture
+        run: cargo test -p disrobe-cli --test it -- --ignored determinism_cross_platform::batch_jobs_does_not_change_recovered_output --nocapture
       - name: aarch64 decompiler recompile-execution differential (one leg only)
         if: matrix.os == 'ubuntu-latest' && matrix.shard == 'two'
         run: 'cargo test -p disrobe-pass-native --test it -- --ignored lifting::aarch64_recovery_grade:: --nocapture'
@@ -1115,7 +1115,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo test -p disrobe-cli --test native_aarch64_dense_switch -- --nocapture
+          cargo test -p disrobe-cli --test it -- native_aarch64_dense_switch:: --nocapture
 
   beam-otp28-long-atu8:
     if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref_type == 'tag') && (github.event_name != 'workflow_dispatch' || (github.event.inputs.scope != 'clippy' && github.event.inputs.scope != 'tests'))
@@ -1616,11 +1616,11 @@ jobs:
       - name: slim is clippy-clean
         run: cargo clippy -p disrobe-cli --no-default-features --all-targets --keep-going -- -D warnings -W unreachable_pub -W missing_debug_implementations -W unused
       - name: the graceful-bail seam fires when a pass is compiled out
-        run: cargo test -p disrobe-cli --no-default-features --test slim_wasm_bail -- --nocapture
+        run: cargo test -p disrobe-cli --no-default-features --test it -- slim_wasm_bail:: --nocapture
       - name: the network and async surfaces bail when they are compiled out
-        run: cargo test -p disrobe-cli --no-default-features --test slim_network_bail -- --nocapture
+        run: cargo test -p disrobe-cli --no-default-features --test it -- slim_network_bail:: --nocapture
       - name: the chain-only build refuses Dalvik before input processing
-        run: cargo test -p disrobe-cli --no-default-features --features auto --test auto_dalvik_feature_gate -- --nocapture
+        run: cargo test -p disrobe-cli --no-default-features --features auto --test it -- auto_dalvik_feature_gate:: --nocapture
       - name: build the slim release binary with the release path remap
         shell: bash
         run: |
