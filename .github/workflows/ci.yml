@@ -1616,11 +1616,11 @@ jobs:
       - name: slim is clippy-clean
         run: cargo clippy -p disrobe-cli --no-default-features --all-targets --keep-going -- -D warnings -W unreachable_pub -W missing_debug_implementations -W unused
       - name: the graceful-bail seam fires when a pass is compiled out
-        run: cargo test -p disrobe-cli --no-default-features --test it -- slim_wasm_bail:: --nocapture
+        run: 'cargo test -p disrobe-cli --no-default-features --test it -- slim_wasm_bail:: --nocapture'
       - name: the network and async surfaces bail when they are compiled out
-        run: cargo test -p disrobe-cli --no-default-features --test it -- slim_network_bail:: --nocapture
+        run: 'cargo test -p disrobe-cli --no-default-features --test it -- slim_network_bail:: --nocapture'
       - name: the chain-only build refuses Dalvik before input processing
-        run: cargo test -p disrobe-cli --no-default-features --features auto --test it -- auto_dalvik_feature_gate:: --nocapture
+        run: 'cargo test -p disrobe-cli --no-default-features --features auto --test it -- auto_dalvik_feature_gate:: --nocapture'
       - name: build the slim release binary with the release path remap
         shell: bash
         run: |
