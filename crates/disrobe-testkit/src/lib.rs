@@ -6,6 +6,7 @@ mod authored_source;
 mod config;
 mod corpus;
 mod error;
+mod fixture;
 mod isolate;
 mod macros;
 mod mutate;
@@ -25,6 +26,7 @@ pub use config::{
 pub use corpus::{CheckFn, CorpusEntry, CorpusSource, StressCase};
 pub use disrobe_tool_process::{CommandSpec, ProcessMemoryLimit};
 pub use error::{BatchFailure, BatchFailureReason, CulpritCase, StressError};
+pub use fixture::{FixtureError, load_fixture};
 pub use isolate::{BATCH_ENV, WorkerTest, run_isolated, worker_main};
 pub use mutate::{MutationKind, mutate};
 pub use prerequisite::{Available, NOT_MEASURED_DIR, OPTIONAL_LIST, PrerequisiteError, require};
