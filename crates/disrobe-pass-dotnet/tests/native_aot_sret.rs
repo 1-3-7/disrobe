@@ -1,11 +1,22 @@
 #![cfg(not(target_arch = "wasm32"))]
+#![allow(clippy::expect_used)]
 
 use disrobe_core::chain::Pass;
 use disrobe_core::{Artifact, Rung};
 use disrobe_pass_dotnet::chain_detector::DOTNET_PASS;
 use disrobe_pass_dotnet::pe::{PeBitness, PeImage, parse};
+use std::sync::OnceLock;
 
-const IMAGE: &[u8] = include_bytes!("fixtures/native_aot/managed_abi_sret_net9_x86_64.exe");
+fn image() -> &'static [u8] {
+    static IMAGE: OnceLock<Vec<u8>> = OnceLock::new();
+    IMAGE.get_or_init(|| {
+        disrobe_testkit::load_fixture(
+            "crates/disrobe-pass-dotnet/tests/fixtures/native_aot/managed_abi_sret_net9_x86_64.exe",
+            2 * 1024 * 1024,
+        )
+        .expect("load the NativeAOT struct-return image")
+    })
+}
 const SOURCE: &str = include_str!("fixtures/native_aot/managed_abi_sret_net9_x86_64.cs");
 const PROJECT: &str = include_str!("fixtures/native_aot/managed_abi_sret_net9_x86_64.csproj.txt");
 const BUILD: &str = include_str!("fixtures/native_aot/managed_abi_sret_net9_x86_64.build.txt");
@@ -300,7 +311,7 @@ fn evidence_bytes(method: &str) -> Result<Vec<u8>, &'static str> {
 }
 
 fn document() -> Result<serde_json::Value, &'static str> {
-    let input: Artifact = Artifact::new(Rung::Raw, IMAGE.to_vec(), [0u8; 32]);
+    let input: Artifact = Artifact::new(Rung::Raw, image().to_vec(), [0u8; 32]);
     let output: Artifact = DOTNET_PASS.run(&input).map_err(
         |_error: disrobe_core::error::CoreError| "the auto route refused the NativeAOT image",
     )?;
@@ -337,7 +348,7 @@ fn recovered_pseudo_c<'document>(
 
 #[test]
 fn the_fixture_carries_the_compiler_evidence_it_is_graded_against() -> Result<(), &'static str> {
-    let pe: PeImage = parse(IMAGE)
+    let pe: PeImage = parse(image())
         .map_err(|_error: disrobe_pass_dotnet::Error| "the fixture is not a PE image")?;
     assert_eq!(pe.machine, AMD64_MACHINE);
     assert_eq!(pe.bitness, PeBitness::Pe32Plus);
@@ -375,7 +386,7 @@ fn the_fixture_carries_the_compiler_evidence_it_is_graded_against() -> Result<()
             "the disassembly evidence for {method} does not cover its unwind range"
         );
         let actual: &[u8] = pe
-            .slice_exact_file_backed_rva(IMAGE, begin, length)
+            .slice_exact_file_backed_rva(image(), begin, length)
             .ok_or("the graded range is not file backed in the committed image")?;
         assert_eq!(
             actual, expected,

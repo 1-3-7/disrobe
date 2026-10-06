@@ -1,6 +1,7 @@
 #![allow(clippy::expect_used, clippy::panic)]
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 use disrobe_pass_dotnet::Error;
 use disrobe_pass_dotnet::aot::{
@@ -10,15 +11,31 @@ use disrobe_pass_dotnet::aot::{
 use object::Object as _;
 use object::ObjectSection as _;
 
-const TRACKED_NATIVE_AOT_IMAGE: &[u8] =
-    include_bytes!("../../../corpus/dotnet/megafile/EdgeCases.nativeaot.exe");
+fn tracked_native_aot_image() -> &'static [u8] {
+    static IMAGE: OnceLock<Vec<u8>> = OnceLock::new();
+    IMAGE.get_or_init(|| {
+        disrobe_testkit::load_fixture(
+            "corpus/dotnet/megafile/EdgeCases.nativeaot.exe",
+            2 * 1024 * 1024,
+        )
+        .expect("load the tracked NativeAOT image")
+    })
+}
 
-const TRACKED_PROBE_IMAGE: &[u8] =
-    include_bytes!("fixtures/native_aot/names_probe_net9_x86_64.exe");
+fn tracked_probe_image() -> &'static [u8] {
+    static IMAGE: OnceLock<Vec<u8>> = OnceLock::new();
+    IMAGE.get_or_init(|| {
+        disrobe_testkit::load_fixture(
+            "crates/disrobe-pass-dotnet/tests/fixtures/native_aot/names_probe_net9_x86_64.exe",
+            2 * 1024 * 1024,
+        )
+        .expect("load the tracked NativeAOT probe image")
+    })
+}
 
 fn probe_app_image() -> Vec<u8> {
     let Some(path): Option<PathBuf> = std::env::var_os(SAMPLE_ENV).map(PathBuf::from) else {
-        return TRACKED_PROBE_IMAGE.to_vec();
+        return tracked_probe_image().to_vec();
     };
     std::fs::read(path).expect("the image named by DISROBE_AOT_SAMPLE must be readable")
 }
@@ -27,7 +44,7 @@ const SAMPLE_ENV: &str = "DISROBE_AOT_SAMPLE";
 
 fn any_native_aot_image() -> Vec<u8> {
     let Some(path): Option<PathBuf> = std::env::var_os(SAMPLE_ENV).map(PathBuf::from) else {
-        return TRACKED_NATIVE_AOT_IMAGE.to_vec();
+        return tracked_native_aot_image().to_vec();
     };
     std::fs::read(path).expect("the image named by DISROBE_AOT_SAMPLE must be readable")
 }
@@ -166,7 +183,7 @@ fn a_real_native_aot_image_yields_type_names_the_source_declared() {
 
 #[test]
 fn a_real_native_aot_image_attributes_every_reachable_type_and_method_record() {
-    let report: AotReport = detect(TRACKED_PROBE_IMAGE);
+    let report: AotReport = detect(tracked_probe_image());
     assert_eq!(
         report.metadata_attribution.status,
         AotMetadataStatus::Recovered
@@ -285,7 +302,7 @@ fn a_real_native_aot_image_attributes_every_reachable_type_and_method_record() {
 
 #[test]
 fn tracked_native_aot_image_decodes_a_complete_attribution_graph() {
-    let report: AotReport = detect(TRACKED_NATIVE_AOT_IMAGE);
+    let report: AotReport = detect(tracked_native_aot_image());
     assert_eq!(
         report.metadata_attribution.status,
         AotMetadataStatus::Recovered

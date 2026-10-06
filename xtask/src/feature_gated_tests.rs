@@ -132,9 +132,7 @@ impl CrateFacts {
             if file.tests == 0 || self.default_selection.satisfies(&file.requirements) {
                 continue;
             }
-            if file_is_negative_only_for_default(file, &self.default_selection)
-                && coverage.covers(self, file)
-            {
+            if coverage.covers(self, file) {
                 continue;
             }
             for requirement in &file.requirements {
@@ -145,21 +143,6 @@ impl CrateFacts {
         }
         out
     }
-}
-
-fn file_is_negative_only_for_default(file: &GatedFile, default: &Selection) -> bool {
-    let unsatisfied: Vec<&Requirement> = file
-        .requirements
-        .iter()
-        .filter(|requirement: &&Requirement| !requirement.holds(default))
-        .collect();
-    !unsatisfied.is_empty()
-        && unsatisfied.iter().all(|requirement: &&Requirement| {
-            matches!(
-                requirement,
-                Requirement::Disabled(_) | Requirement::NotAll(_)
-            )
-        })
 }
 
 #[derive(Debug, Default)]
@@ -1859,6 +1842,29 @@ mod tests {
         let facts: CrateFacts = crate_facts(&[("default", &["wasm"]), ("wasm", &[])], vec![gated]);
         let invocation: Invocation = parse_invocation(
             "cargo test -p disrobe-pass-example --no-default-features --test it -- slim_wasm_bail::",
+        );
+        let selection: Selection = invocation_selection(&facts, &invocation);
+        let mut coverage: ConfigurationCoverage = ConfigurationCoverage::default();
+        coverage.record(&facts, &invocation, &selection);
+        assert!(
+            facts
+                .hidden_labels_with_configuration_coverage(&coverage)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn module_wide_filter_covers_a_positive_feature_module() {
+        let gated: GatedFile = GatedFile {
+            relative: "tests/seed_reach.rs".to_owned(),
+            target: TestTarget::Integration("it".to_owned()),
+            requirements: vec![Requirement::Enabled("semantic-reach".to_owned())],
+            tests: 1,
+        };
+        let facts: CrateFacts =
+            crate_facts(&[("default", &[]), ("semantic-reach", &[])], vec![gated]);
+        let invocation: Invocation = parse_invocation(
+            "cargo test -p disrobe-pass-example --all-features --test it seed_reach::",
         );
         let selection: Selection = invocation_selection(&facts, &invocation);
         let mut coverage: ConfigurationCoverage = ConfigurationCoverage::default();

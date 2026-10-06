@@ -8,7 +8,7 @@
   "ecosystem": "dotnet",
   "floor": 51.42857142857143,
   "floor_holds": true,
-  "gate_source": "crates/disrobe-pass-dotnet/tests/whole_type_il_equivalence_oracle.rs (EDGECASES_RECOMPILE_MEMBERS pins the 18 names against EDGECASES_TYPES's 35 members; edgecases_whole_type_recompile_fraction_is_published_as_measured fails if any named member stops recompiling without a stated refusal); measured locally with dotnet SDK 9.0.316 (Roslyn csc bundled with that SDK, MSBuild 17.14.43.7001) via `cargo test -p disrobe-pass-dotnet --test whole_type_il_equivalence_oracle edgecases_whole_type_recompile_fraction_is_published_as_measured -- --nocapture`; CI asserts only the named-member floor, not the percentage, so re-measure locally before quoting a moved figure",
+  "gate_source": "crates/disrobe-pass-dotnet/tests/whole_type_il_equivalence_oracle.rs (EDGECASES_RECOMPILE_MEMBERS pins the 18 names against EDGECASES_TYPES's 35 members; edgecases_whole_type_recompile_fraction_is_published_as_measured fails if any named member stops recompiling without a stated refusal); measured locally with dotnet SDK 9.0.316 (Roslyn csc bundled with that SDK, MSBuild 17.14.43.7001) via `cargo test -p disrobe-pass-dotnet --test it whole_type_il_equivalence_oracle::edgecases_whole_type_recompile_fraction_is_published_as_measured -- --nocapture`; CI asserts only the named-member floor, not the percentage, so re-measure locally before quoting a moved figure",
   "id": "dotnet-whole-type-recompile",
   "measured": "51.43%",
   "oracle": {
@@ -18,6 +18,6 @@
   },
   "oracle_strength": "recompile-only",
   "pairs": [],
-  "reproduce": "cargo test -p disrobe-pass-dotnet --test whole_type_il_equivalence_oracle edgecases_whole_type_recompile_fraction_is_published_as_measured -- --nocapture",
+  "reproduce": "cargo test -p disrobe-pass-dotnet --test it whole_type_il_equivalence_oracle::edgecases_whole_type_recompile_fraction_is_published_as_measured -- --nocapture",
   "title": ".NET CIL decompilation, whole-type recompile over the EdgeCases corpus"
 }

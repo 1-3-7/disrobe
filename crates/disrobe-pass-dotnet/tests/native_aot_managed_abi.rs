@@ -1,4 +1,5 @@
 #![cfg(not(target_arch = "wasm32"))]
+#![allow(clippy::expect_used)]
 
 use disrobe_core::chain::Pass;
 use disrobe_core::{Artifact, Rung};
@@ -8,8 +9,18 @@ use disrobe_pass_dotnet::aot::{
 };
 use disrobe_pass_dotnet::chain_detector::DOTNET_PASS;
 use disrobe_pass_dotnet::pe::{PeBitness, PeImage, parse};
+use std::sync::OnceLock;
 
-const IMAGE: &[u8] = include_bytes!("fixtures/native_aot/managed_abi_net9_x86_64.exe");
+fn image() -> &'static [u8] {
+    static IMAGE: OnceLock<Vec<u8>> = OnceLock::new();
+    IMAGE.get_or_init(|| {
+        disrobe_testkit::load_fixture(
+            "crates/disrobe-pass-dotnet/tests/fixtures/native_aot/managed_abi_net9_x86_64.exe",
+            2 * 1024 * 1024,
+        )
+        .expect("load the NativeAOT managed ABI image")
+    })
+}
 const SOURCE: &str = include_str!("fixtures/native_aot/managed_abi_net9_x86_64.cs");
 const PROJECT: &str = include_str!("fixtures/native_aot/managed_abi_net9_x86_64.csproj.txt");
 const BUILD: &str = include_str!("fixtures/native_aot/managed_abi_net9_x86_64.build.txt");
@@ -17,7 +28,16 @@ const LINK_MAP: &str = include_str!("fixtures/native_aot/managed_abi_net9_x86_64
 const UNWIND: &str = include_str!("fixtures/native_aot/managed_abi_net9_x86_64.unwind.txt");
 const DISASM: &str = include_str!("fixtures/native_aot/managed_abi_net9_x86_64.disasm.txt");
 
-const FP_IMAGE: &[u8] = include_bytes!("fixtures/native_aot/managed_abi_fp_net9_x86_64.exe");
+fn fp_image() -> &'static [u8] {
+    static IMAGE: OnceLock<Vec<u8>> = OnceLock::new();
+    IMAGE.get_or_init(|| {
+        disrobe_testkit::load_fixture(
+            "crates/disrobe-pass-dotnet/tests/fixtures/native_aot/managed_abi_fp_net9_x86_64.exe",
+            2 * 1024 * 1024,
+        )
+        .expect("load the NativeAOT floating-point ABI image")
+    })
+}
 const FP_SOURCE: &str = include_str!("fixtures/native_aot/managed_abi_fp_net9_x86_64.cs");
 const FP_PROJECT: &str = include_str!("fixtures/native_aot/managed_abi_fp_net9_x86_64.csproj.txt");
 const FP_BUILD: &str = include_str!("fixtures/native_aot/managed_abi_fp_net9_x86_64.build.txt");
@@ -78,7 +98,7 @@ const MANAGED_FLOATING_POINT: [&str; 2] = ["System.Single", "System.Double"];
 const COINCIDENT_FLOATING_POINT_METHODS: [&str; 3] = ["AddDouble", "ScaleFloat", "Promote"];
 
 struct Evidence {
-    image: &'static [u8],
+    image: fn() -> &'static [u8],
     build: &'static str,
     link_map: &'static str,
     unwind: &'static str,
@@ -88,7 +108,7 @@ struct Evidence {
 }
 
 const BASELINE: Evidence = Evidence {
-    image: IMAGE,
+    image,
     build: BUILD,
     link_map: LINK_MAP,
     unwind: UNWIND,
@@ -97,7 +117,7 @@ const BASELINE: Evidence = Evidence {
     declaring_type: "ManagedAbiProbe",
 };
 const FLOATING_POINT: Evidence = Evidence {
-    image: FP_IMAGE,
+    image: fp_image,
     build: FP_BUILD,
     link_map: FP_LINK_MAP,
     unwind: FP_UNWIND,
@@ -457,7 +477,7 @@ impl Evidence {
     }
 
     fn document(&self) -> Result<serde_json::Value, &'static str> {
-        let input: Artifact = Artifact::new(Rung::Raw, self.image.to_vec(), [0u8; 32]);
+        let input: Artifact = Artifact::new(Rung::Raw, (self.image)().to_vec(), [0u8; 32]);
         let output: Artifact = DOTNET_PASS.run(&input).map_err(
             |_: disrobe_core::error::CoreError| "the auto route refused the NativeAOT image",
         )?;
@@ -495,7 +515,7 @@ fn verify_compiler_evidence(
     evidence: &Evidence,
     methods: &[(&str, &str)],
 ) -> Result<(), &'static str> {
-    let pe: PeImage = parse(evidence.image)
+    let pe: PeImage = parse((evidence.image)())
         .map_err(|_: disrobe_pass_dotnet::Error| "the fixture is not a PE image")?;
     assert_eq!(
         (pe.bitness, pe.machine),
@@ -521,7 +541,7 @@ fn verify_compiler_evidence(
             .checked_add(bytes.len())
             .ok_or("the compiler method body end overflowed")?;
         assert_eq!(
-            evidence.image.get(offset..end_offset),
+            (evidence.image)().get(offset..end_offset),
             Some(bytes.as_slice()),
             "{key}"
         );
@@ -775,7 +795,7 @@ fn system_object_parameter_methods_reattach_to_managed_bodies() -> Result<(), &'
 #[test]
 fn the_runtime_label_comes_from_the_metadata_version_not_a_build_path() -> Result<(), &'static str>
 {
-    for image in [IMAGE, FP_IMAGE] {
+    for image in [image(), fp_image()] {
         assert!(
             !image.windows(6).any(|window: &[u8]| window == b"net9.0"),
             "this fixture must not carry a target-framework marker string"
@@ -789,7 +809,7 @@ fn the_runtime_label_comes_from_the_metadata_version_not_a_build_path() -> Resul
         assert_eq!(report.runtime_label, AotRuntime::Net9);
     }
 
-    let report: AotReport = detect(IMAGE);
+    let report: AotReport = detect(image());
     let header: ReadyToRunHeader = report
         .ready_to_run
         .ok_or("the NativeAOT header is absent")?;
@@ -800,7 +820,7 @@ fn the_runtime_label_comes_from_the_metadata_version_not_a_build_path() -> Resul
     let major_end: usize = major_offset
         .checked_add(2)
         .ok_or("the header major-version end overflowed")?;
-    let mut unlisted: Vec<u8> = IMAGE.to_vec();
+    let mut unlisted: Vec<u8> = image().to_vec();
     unlisted
         .get_mut(major_offset..major_end)
         .ok_or("the header major-version field is truncated")?

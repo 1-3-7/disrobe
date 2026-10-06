@@ -38,7 +38,7 @@ fn run_harness(debug: Option<&str>, json: bool) -> Output {
     cmd.arg("--exact");
     cmd.arg("--nocapture");
     cmd.arg("--test-threads=1");
-    cmd.arg("harness_entrypoint");
+    cmd.arg("debug_framework::harness_entrypoint");
     let out: Output = cmd.output().expect("spawn harness child");
     let stdout: String = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(

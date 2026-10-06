@@ -280,6 +280,16 @@ fn javascript_profiles_keep_the_complete_integration_inventory() {
 }
 
 #[test]
+fn dotnet_default_feature_test_stays_out_of_the_pre_push_profile() {
+    let config: String = std::fs::read_to_string(workspace_root().join(".config/nextest.toml"))
+        .expect("nextest configuration");
+    assert!(config.contains(
+        "package(disrobe-pass-dotnet) & binary(it) & test(/^default_feature_boundary::/)"
+    ));
+    assert!(!config.contains("binary_id(=disrobe-pass-dotnet::default_feature_boundary)"));
+}
+
+#[test]
 fn ci_routes_full_coverage_to_scheduled_and_tag_runs() {
     let ci: Value = workflow("ci.yml");
     let on: &Value = ci
@@ -798,6 +808,17 @@ fn ci_routes_full_coverage_to_scheduled_and_tag_runs() {
         command_packages(complement_command, "--exclude"),
         selected,
         "the complement shard must exclude every package owned by an explicit or dedicated command"
+    );
+    let dotnet_seed_reach: &str = ".NET semantic-reach coverage";
+    assert_eq!(
+        test_step(test_steps, dotnet_seed_reach)
+            .get("if")
+            .and_then(Value::as_str),
+        Some("matrix.shard == 'three'")
+    );
+    assert_eq!(
+        test_step_command(test_steps, dotnet_seed_reach),
+        "cargo test -p disrobe-pass-dotnet --all-features --test it seed_reach::"
     );
     let singleton_condition: &str = "matrix.shard == 'one'";
     assert_eq!(

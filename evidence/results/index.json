@@ -211,7 +211,7 @@
       "measured": "51.43%",
       "oracle_strength": "recompile-only",
       "pairs": [],
-      "reproduce": "cargo test -p disrobe-pass-dotnet --test whole_type_il_equivalence_oracle edgecases_whole_type_recompile_fraction_is_published_as_measured -- --nocapture"
+      "reproduce": "cargo test -p disrobe-pass-dotnet --test it whole_type_il_equivalence_oracle::edgecases_whole_type_recompile_fraction_is_published_as_measured -- --nocapture"
     },
     {
       "ci_attested": true,

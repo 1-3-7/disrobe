@@ -6,8 +6,18 @@ use disrobe_core::{Artifact, Rung};
 use disrobe_pass_dotnet::aot::{AotMetadataStatus, AotReport, detect};
 use disrobe_pass_dotnet::chain_detector::DOTNET_PASS;
 use object::{Object as _, ObjectSection as _};
+use std::sync::OnceLock;
 
-const IMAGE: &[u8] = include_bytes!("fixtures/native_aot/invoke_map_net9_x86_64.exe");
+fn image() -> &'static [u8] {
+    static IMAGE: OnceLock<Vec<u8>> = OnceLock::new();
+    IMAGE.get_or_init(|| {
+        disrobe_testkit::load_fixture(
+            "crates/disrobe-pass-dotnet/tests/fixtures/native_aot/invoke_map_net9_x86_64.exe",
+            2 * 1024 * 1024,
+        )
+        .expect("load the NativeAOT invoke-map image")
+    })
+}
 const LINK_MAP: &str = include_str!("fixtures/native_aot/invoke_map_net9_x86_64.link.map.txt");
 
 fn compiler_method_rva(symbol: &str) -> Result<u32, &'static str> {
@@ -73,12 +83,12 @@ fn auto_attaches_compiler_mapped_entrypoint_to_name_and_signature() -> Result<()
         compiler_method_rva("feat_017_nativeaot_manifest_probe_ManifestProbe__Add")?;
     assert_eq!(expected_rva, 0x0008_83b0);
 
-    let report: AotReport = detect(IMAGE);
+    let report: AotReport = detect(image());
     assert_eq!(
         report.metadata_attribution.status,
         AotMetadataStatus::Recovered
     );
-    let input: Artifact = Artifact::new(Rung::Raw, IMAGE.to_vec(), [0u8; 32]);
+    let input: Artifact = Artifact::new(Rung::Raw, image().to_vec(), [0u8; 32]);
     let output: Artifact = DOTNET_PASS
         .run(&input)
         .map_err(|_: disrobe_core::error::CoreError| "NativeAOT auto route failed")?;
@@ -101,14 +111,14 @@ fn auto_attaches_compiler_mapped_entrypoint_to_name_and_signature() -> Result<()
 #[test]
 fn malformed_invoke_map_refuses_all_metadata_attribution_transactionally()
 -> Result<(), &'static str> {
-    let original: AotReport = detect(IMAGE);
+    let original: AotReport = detect(image());
     let invoke_section: &disrobe_pass_dotnet::aot::AotSection = original
         .ready_to_run
         .as_ref()
         .and_then(|header| header.section(306))
         .ok_or("compiler-emitted invoke map is absent")?;
-    let invoke_offset: usize = section_file_offset(IMAGE, invoke_section)?;
-    let mut malformed: Vec<u8> = IMAGE.to_vec();
+    let invoke_offset: usize = section_file_offset(image(), invoke_section)?;
+    let mut malformed: Vec<u8> = image().to_vec();
     *malformed
         .get_mut(invoke_offset)
         .ok_or("compiler-emitted invoke map is not file backed")? = u8::MAX;
@@ -137,13 +147,13 @@ fn malformed_invoke_map_refuses_all_metadata_attribution_transactionally()
 
 #[test]
 fn absent_invoke_map_retains_names_and_signatures_without_addresses() -> Result<(), &'static str> {
-    let original: AotReport = detect(IMAGE);
+    let original: AotReport = detect(image());
     let mut header: disrobe_pass_dotnet::aot::ReadyToRunHeader = original
         .ready_to_run
         .ok_or("compiler-emitted NativeAOT header is absent")?;
     header.sections.retain(|section| section.id != 306);
     let attribution: disrobe_pass_dotnet::aot::AotMetadataAttribution =
-        disrobe_pass_dotnet::aot::recover_metadata_attribution(IMAGE, &header).map_err(
+        disrobe_pass_dotnet::aot::recover_metadata_attribution(image(), &header).map_err(
             |_: disrobe_pass_dotnet::Error| "metadata recovery without invoke map failed",
         )?;
     assert_eq!(attribution.status, AotMetadataStatus::Recovered);

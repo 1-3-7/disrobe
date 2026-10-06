@@ -1,12 +1,13 @@
 #![cfg(not(target_arch = "wasm32"))]
-#![allow(clippy::panic)]
+#![allow(clippy::expect_used, clippy::panic)]
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use disrobe_core::chain::Pass;
-use disrobe_core::subprocess::{CapturedOutput, run_captured};
+use disrobe_core::subprocess::{CapturedOutput, CommandSpec, capture_command};
 use disrobe_core::{Artifact, Rung};
 use disrobe_pass_dotnet::aot::{AotMetadataStatus, AotReport, AotRuntime, detect};
 use disrobe_pass_dotnet::chain_detector::DOTNET_PASS;
@@ -14,8 +15,27 @@ use disrobe_pass_dotnet::pe::{PeBitness, PeImage, parse};
 use object::{Object as _, ObjectSection as _};
 use sha2::{Digest as _, Sha256};
 
-const IMAGE: &[u8] = include_bytes!("fixtures/native_aot/invoke_map_net10_x86_64.exe");
-const LEGACY_IMAGE: &[u8] = include_bytes!("fixtures/native_aot/invoke_map_net9_x86_64.exe");
+fn image() -> &'static [u8] {
+    static IMAGE: OnceLock<Vec<u8>> = OnceLock::new();
+    IMAGE.get_or_init(|| {
+        disrobe_testkit::load_fixture(
+            "crates/disrobe-pass-dotnet/tests/fixtures/native_aot/invoke_map_net10_x86_64.exe",
+            2 * 1024 * 1024,
+        )
+        .expect("load the .NET 10 NativeAOT image")
+    })
+}
+
+fn legacy_image() -> &'static [u8] {
+    static IMAGE: OnceLock<Vec<u8>> = OnceLock::new();
+    IMAGE.get_or_init(|| {
+        disrobe_testkit::load_fixture(
+            "crates/disrobe-pass-dotnet/tests/fixtures/native_aot/invoke_map_net9_x86_64.exe",
+            2 * 1024 * 1024,
+        )
+        .expect("load the .NET 9 NativeAOT image")
+    })
+}
 const LINK_MAP: &str = include_str!("fixtures/native_aot/invoke_map_net10_x86_64.link.map.txt");
 const UNWIND: &str = include_str!("fixtures/native_aot/invoke_map_net10_x86_64.unwind.txt");
 const SOURCE: &str = include_str!("fixtures/native_aot/invoke_map_net10_x86_64.cs");
@@ -150,9 +170,14 @@ fn checked_tool(
     arguments: &[OsString],
     label: &str,
 ) -> Result<CapturedOutput, String> {
-    let output: CapturedOutput = run_captured(program, arguments, TOOL_TIMEOUT, TOOL_CAPTURE_BYTES)
-        .map_err(|error: std::io::Error| format!("{label} could not start: {error}"))?
-        .ok_or_else(|| format!("{label} exceeded {} seconds", TOOL_TIMEOUT.as_secs()))?;
+    let output: CapturedOutput = capture_command(
+        CommandSpec::new(program, TOOL_TIMEOUT)
+            .args(arguments.iter().cloned())
+            .capture_limits(TOOL_CAPTURE_BYTES, TOOL_CAPTURE_BYTES)
+            .reap_descendants_on_exit(),
+    )
+    .map_err(|error: std::io::Error| format!("{label} could not start: {error}"))?
+    .ok_or_else(|| format!("{label} exceeded {} seconds", TOOL_TIMEOUT.as_secs()))?;
     if output.exit_code == Some(0) {
         return Ok(output);
     }
@@ -207,7 +232,7 @@ fn fixture_provenance_pins_source_project_compiler_and_runtime() {
         "e734c0b344bcd5646acf28b334297e431165912590c360c441889560cc626ae5"
     );
     assert_eq!(
-        sha256_hex(IMAGE),
+        sha256_hex(image()),
         "88d89791f9811730f4423b2edb5c3aab70a12cc66369f4f59c8e6e9029e4a1d8"
     );
     assert!(SOURCE.contains("public static int Add(int left, int right) => left + right;"));
@@ -221,7 +246,7 @@ fn fixture_provenance_pins_source_project_compiler_and_runtime() {
 fn net10_auto_emits_compiler_name_signature_range_and_body() -> Result<(), String> {
     let expected_range: (u32, u32) = compiler_method_range()?;
     assert_eq!(expected_range, (0x0008_2520, 0x0008_2524));
-    let pe: PeImage = parse(IMAGE)
+    let pe: PeImage = parse(image())
         .map_err(|_: disrobe_pass_dotnet::Error| "NativeAOT fixture is not a PE image")?;
     assert_eq!(
         (pe.bitness, pe.machine),
@@ -231,11 +256,11 @@ fn net10_auto_emits_compiler_name_signature_range_and_body() -> Result<(), Strin
         .rva_to_offset(expected_range.0)
         .ok_or("compiler method body is not file backed")?;
     assert_eq!(
-        IMAGE.get(code_offset..code_offset + 4),
+        image().get(code_offset..code_offset + 4),
         Some([0x8d, 0x04, 0x11, 0xc3].as_slice())
     );
 
-    let report: AotReport = detect(IMAGE);
+    let report: AotReport = detect(image());
     let header: &disrobe_pass_dotnet::aot::ReadyToRunHeader = report
         .ready_to_run
         .as_ref()
@@ -247,7 +272,7 @@ fn net10_auto_emits_compiler_name_signature_range_and_body() -> Result<(), Strin
         AotMetadataStatus::Recovered
     );
 
-    let input: Artifact = Artifact::new(Rung::Raw, IMAGE.to_vec(), [0u8; 32]);
+    let input: Artifact = Artifact::new(Rung::Raw, image().to_vec(), [0u8; 32]);
     let first: Artifact = match DOTNET_PASS.run(&input) {
         Ok(output) => output,
         Err(error) => panic!("{error}"),
@@ -311,7 +336,7 @@ fn net10_auto_emits_compiler_name_signature_range_and_body() -> Result<(), Strin
 
 #[test]
 fn net9_flagged_metadata_invoke_map_remains_compatible() -> Result<(), &'static str> {
-    let report: AotReport = detect(LEGACY_IMAGE);
+    let report: AotReport = detect(legacy_image());
     assert_eq!(
         report.metadata_attribution.status,
         AotMetadataStatus::Recovered
@@ -330,12 +355,12 @@ fn net9_flagged_metadata_invoke_map_remains_compatible() -> Result<(), &'static 
 
 #[test]
 fn unknown_nativeformat_version_refuses_without_partial_attribution() -> Result<(), &'static str> {
-    let mut header: disrobe_pass_dotnet::aot::ReadyToRunHeader = detect(IMAGE)
+    let mut header: disrobe_pass_dotnet::aot::ReadyToRunHeader = detect(image())
         .ready_to_run
         .ok_or("ReadyToRun header is absent")?;
     header.minor_version = 1;
     let attribution: disrobe_pass_dotnet::aot::AotMetadataAttribution =
-        disrobe_pass_dotnet::aot::recover_metadata_attribution(IMAGE, &header)
+        disrobe_pass_dotnet::aot::recover_metadata_attribution(image(), &header)
             .map_err(|_: disrobe_pass_dotnet::Error| "unknown version recovery failed")?;
     assert_eq!(
         attribution.status,
@@ -351,7 +376,7 @@ fn unknown_nativeformat_version_refuses_without_partial_attribution() -> Result<
 
 #[test]
 fn net10_handle_discriminator_mutation_rejects_all_attribution() -> Result<(), &'static str> {
-    let original: AotReport = detect(IMAGE);
+    let original: AotReport = detect(image());
     assert_eq!(
         original.metadata_attribution.status,
         AotMetadataStatus::Recovered
@@ -363,7 +388,7 @@ fn net10_handle_discriminator_mutation_rejects_all_attribution() -> Result<(), &
     let metadata: &disrobe_pass_dotnet::aot::AotSection = header
         .section(313)
         .ok_or("NativeFormat metadata section is absent")?;
-    let metadata_at: usize = metadata_file_offset(IMAGE, metadata)?;
+    let metadata_at: usize = metadata_file_offset(image(), metadata)?;
     let signature: &disrobe_pass_dotnet::aot::AotMethodSignature = original
         .metadata_attribution
         .methods
@@ -380,19 +405,19 @@ fn net10_handle_discriminator_mutation_rejects_all_attribution() -> Result<(), &
         )
         .ok_or("signature file offset overflowed")?;
     let (_, convention_width): (u32, usize) =
-        disrobe_pass_dotnet::aot::decode_metadata_unsigned(IMAGE, signature_at)
+        disrobe_pass_dotnet::aot::decode_metadata_unsigned(image(), signature_at)
             .ok_or("signature convention is malformed")?;
     let generic_at: usize = signature_at
         .checked_add(convention_width)
         .ok_or("generic count offset overflowed")?;
     let (_, generic_width): (u32, usize) =
-        disrobe_pass_dotnet::aot::decode_metadata_unsigned(IMAGE, generic_at)
+        disrobe_pass_dotnet::aot::decode_metadata_unsigned(image(), generic_at)
             .ok_or("generic count is malformed")?;
     let return_at: usize = generic_at
         .checked_add(generic_width)
         .ok_or("return handle offset overflowed")?;
     let (raw, raw_width): (u32, usize) =
-        disrobe_pass_dotnet::aot::decode_metadata_unsigned(IMAGE, return_at)
+        disrobe_pass_dotnet::aot::decode_metadata_unsigned(image(), return_at)
             .ok_or("return handle is malformed")?;
     let mutated_raw: u32 = raw ^ 0x80;
     assert_eq!(raw & 0x7f, 0x3a);
@@ -406,7 +431,7 @@ fn net10_handle_discriminator_mutation_rejects_all_attribution() -> Result<(), &
     let return_end: usize = return_at
         .checked_add(raw_width)
         .ok_or("return handle end overflowed")?;
-    let mut malformed: Vec<u8> = IMAGE.to_vec();
+    let mut malformed: Vec<u8> = image().to_vec();
     malformed
         .get_mut(return_at..return_end)
         .ok_or("return handle is truncated")?

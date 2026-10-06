@@ -5,7 +5,7 @@ default-filter = '''
 not (
   binary_id(=xtask::python_bindings_e2e)
   | binary_id(=disrobe-taint::graded_corpus)
-  | binary_id(=disrobe-pass-dotnet::default_feature_boundary)
+  | (package(disrobe-pass-dotnet) & binary(it) & test(/^default_feature_boundary::/))
   | binary_id(=disrobe-pass-nativelang::body_recovery_oracle)
   | binary_id(=disrobe-pass-nativelang::body_equivalence)
   | binary_id(=disrobe-pass-nativelang::oracle)

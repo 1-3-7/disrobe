@@ -7,11 +7,30 @@ use disrobe_core::{Artifact, Rung};
 use disrobe_pass_dotnet::aot::{AotMetadataStatus, AotReport, detect};
 use disrobe_pass_dotnet::chain_detector::DOTNET_PASS;
 use disrobe_pass_dotnet::pe::{PeBitness, PeImage, parse};
+use std::sync::OnceLock;
 
-const IMAGE: &[u8] = include_bytes!("fixtures/native_aot/invoke_map_net9_x86_64.exe");
+fn image() -> &'static [u8] {
+    static IMAGE: OnceLock<Vec<u8>> = OnceLock::new();
+    IMAGE.get_or_init(|| {
+        disrobe_testkit::load_fixture(
+            "crates/disrobe-pass-dotnet/tests/fixtures/native_aot/invoke_map_net9_x86_64.exe",
+            2 * 1024 * 1024,
+        )
+        .expect("load the NativeAOT invoke-map image")
+    })
+}
 const LINK_MAP: &str = include_str!("fixtures/native_aot/invoke_map_net9_x86_64.link.map.txt");
 const UNWIND: &str = include_str!("fixtures/native_aot/invoke_map_net9_x86_64.unwind.txt");
-const NET8_IMAGE: &[u8] = include_bytes!("fixtures/native_aot/invoke_map_net8_x86_64.exe");
+fn net8_image() -> &'static [u8] {
+    static IMAGE: OnceLock<Vec<u8>> = OnceLock::new();
+    IMAGE.get_or_init(|| {
+        disrobe_testkit::load_fixture(
+            "crates/disrobe-pass-dotnet/tests/fixtures/native_aot/invoke_map_net8_x86_64.exe",
+            3 * 1024 * 1024,
+        )
+        .expect("load the .NET 8 NativeAOT invoke-map image")
+    })
+}
 const NET8_LINK_MAP: &str = include_str!("fixtures/native_aot/invoke_map_net8_x86_64.link.map.txt");
 const NET8_UNWIND: &str = include_str!("fixtures/native_aot/invoke_map_net8_x86_64.unwind.txt");
 const EXCEPTION_DIRECTORY_INDEX: usize = 3;
@@ -79,7 +98,7 @@ fn net8_auto_emits_the_compiler_method_with_signature_range_and_body() -> Result
         compiler_method_rva_from(NET8_LINK_MAP, "feat017_ManifestProbe__Add")?;
     let expected_range: (u32, u32) = evidence_range_from(NET8_UNWIND)?;
     assert_eq!(expected_range, (expected_start, 0x0011_b6a4));
-    let pe: PeImage = parse(NET8_IMAGE)
+    let pe: PeImage = parse(net8_image())
         .map_err(|_: disrobe_pass_dotnet::Error| "NativeAOT fixture is not a PE image")?;
     assert_eq!(
         (pe.bitness, pe.machine),
@@ -89,11 +108,11 @@ fn net8_auto_emits_the_compiler_method_with_signature_range_and_body() -> Result
         .rva_to_offset(expected_start)
         .ok_or("compiler method body is not file backed")?;
     assert_eq!(
-        NET8_IMAGE.get(code_offset..code_offset + 4),
+        net8_image().get(code_offset..code_offset + 4),
         Some([0x8d, 0x04, 0x11, 0xc3].as_slice())
     );
 
-    let input: Artifact = Artifact::new(Rung::Raw, NET8_IMAGE.to_vec(), [0u8; 32]);
+    let input: Artifact = Artifact::new(Rung::Raw, net8_image().to_vec(), [0u8; 32]);
     let output: Artifact = match DOTNET_PASS.run(&input) {
         Ok(output) => output,
         Err(error) => panic!("{error}"),
@@ -140,7 +159,7 @@ fn net8_auto_emits_the_compiler_method_with_signature_range_and_body() -> Result
         "#include <stdint.h>\nint32_t recovered(int32_t a0, int32_t a1) {\n    uint64_t r_rcx = (uint32_t)a0;\n    uint64_t r_rdx = (uint32_t)a1;\n    uint64_t r_rax = 0;\n    r_rax = (r_rcx + r_rdx * 1ULL) & 0xffffffffULL;\n    return (int32_t)(uint32_t)((r_rax) & 0xffffffffULL);\n}\n"
     );
 
-    let mut unknown_header: disrobe_pass_dotnet::aot::ReadyToRunHeader = detect(NET8_IMAGE)
+    let mut unknown_header: disrobe_pass_dotnet::aot::ReadyToRunHeader = detect(net8_image())
         .ready_to_run
         .ok_or("compiler-emitted NativeAOT header is absent")?;
     assert_eq!(
@@ -149,7 +168,7 @@ fn net8_auto_emits_the_compiler_method_with_signature_range_and_body() -> Result
     );
     unknown_header.minor_version = 2;
     let attribution: disrobe_pass_dotnet::aot::AotMetadataAttribution =
-        disrobe_pass_dotnet::aot::recover_metadata_attribution(NET8_IMAGE, &unknown_header)
+        disrobe_pass_dotnet::aot::recover_metadata_attribution(net8_image(), &unknown_header)
             .map_err(|_: disrobe_pass_dotnet::Error| "unknown metadata version recovery failed")?;
     assert_eq!(
         attribution.status,
@@ -265,17 +284,17 @@ fn auto_emits_the_compiler_method_boundary_with_name_and_signature() -> Result<(
         compiler_method_rva("feat_017_nativeaot_manifest_probe_ManifestProbe__Add")?;
     let expected_range: (u32, u32) = evidence_range()?;
     assert_eq!(expected_range, (expected_start, 0x0008_83b4));
-    let pe: PeImage = parse(IMAGE)
+    let pe: PeImage = parse(image())
         .map_err(|_: disrobe_pass_dotnet::Error| "NativeAOT fixture is not a PE image")?;
     let code_offset: usize = pe
         .rva_to_offset(expected_start)
         .ok_or("compiler method body is not file backed")?;
     assert_eq!(
-        IMAGE.get(code_offset..code_offset + 4),
+        image().get(code_offset..code_offset + 4),
         Some([0x8d, 0x04, 0x11, 0xc3].as_slice())
     );
 
-    let input: Artifact = Artifact::new(Rung::Raw, IMAGE.to_vec(), [0u8; 32]);
+    let input: Artifact = Artifact::new(Rung::Raw, image().to_vec(), [0u8; 32]);
     let output: Artifact = DOTNET_PASS
         .run(&input)
         .map_err(|_: disrobe_core::error::CoreError| "NativeAOT auto route failed")?;
@@ -308,12 +327,12 @@ fn auto_emits_the_compiler_method_boundary_with_name_and_signature() -> Result<(
 fn unsupported_native_body_is_a_per_method_auto_refusal() -> Result<(), &'static str> {
     let start_rva: u32 =
         compiler_method_rva("feat_017_nativeaot_manifest_probe_ManifestProbe__Add")?;
-    let pe: PeImage = parse(IMAGE)
+    let pe: PeImage = parse(image())
         .map_err(|_: disrobe_pass_dotnet::Error| "NativeAOT fixture is not a PE image")?;
     let code_offset: usize = pe
         .rva_to_offset(start_rva)
         .ok_or("compiler method body is not file backed")?;
-    let mut unsupported: Vec<u8> = IMAGE.to_vec();
+    let mut unsupported: Vec<u8> = image().to_vec();
     *unsupported
         .get_mut(code_offset)
         .ok_or("compiler method body is truncated")? = 0xcc;
@@ -357,11 +376,11 @@ fn unsupported_native_body_is_a_per_method_auto_refusal() -> Result<(), &'static
 
 #[test]
 fn partial_runtime_function_record_rejects_all_attribution() -> Result<(), &'static str> {
-    let (_pe, _offset, size): (PeImage, usize, usize) = exception_directory(IMAGE)?;
-    let header: usize = directory_header_offset(IMAGE)?;
+    let (_pe, _offset, size): (PeImage, usize, usize) = exception_directory(image())?;
+    let header: usize = directory_header_offset(image())?;
     let reduced: u32 = u32::try_from(size.saturating_sub(1))
         .map_err(|_: std::num::TryFromIntError| "reduced directory size does not fit u32")?;
-    let mut malformed: Vec<u8> = IMAGE.to_vec();
+    let mut malformed: Vec<u8> = image().to_vec();
     malformed
         .get_mut(header + 4..header + 8)
         .ok_or("exception-directory size field is truncated")?
@@ -373,8 +392,8 @@ fn partial_runtime_function_record_rejects_all_attribution() -> Result<(), &'sta
 #[test]
 fn reversed_runtime_function_rejects_all_attribution() -> Result<(), &'static str> {
     let expected_start: u32 = evidence_range()?.0;
-    let record: usize = runtime_function_offset(IMAGE, expected_start)?;
-    let mut malformed: Vec<u8> = IMAGE.to_vec();
+    let record: usize = runtime_function_offset(image(), expected_start)?;
+    let mut malformed: Vec<u8> = image().to_vec();
     malformed
         .get_mut(record + 4..record + 8)
         .ok_or("runtime-function end field is truncated")?
@@ -386,11 +405,11 @@ fn reversed_runtime_function_rejects_all_attribution() -> Result<(), &'static st
 #[test]
 fn duplicate_runtime_function_begin_rejects_all_attribution() -> Result<(), &'static str> {
     let expected_start: u32 = evidence_range()?.0;
-    let record: usize = runtime_function_offset(IMAGE, expected_start)?;
+    let record: usize = runtime_function_offset(image(), expected_start)?;
     let next: usize = record
         .checked_add(RUNTIME_FUNCTION_SIZE)
         .ok_or("next runtime-function offset overflowed")?;
-    let mut malformed: Vec<u8> = IMAGE.to_vec();
+    let mut malformed: Vec<u8> = image().to_vec();
     malformed
         .get_mut(next..next + 4)
         .ok_or("next runtime-function begin field is truncated")?
@@ -402,16 +421,16 @@ fn duplicate_runtime_function_begin_rejects_all_attribution() -> Result<(), &'st
 #[test]
 fn overlapping_runtime_functions_reject_all_attribution() -> Result<(), &'static str> {
     let expected_start: u32 = evidence_range()?.0;
-    let record: usize = runtime_function_offset(IMAGE, expected_start)?;
+    let record: usize = runtime_function_offset(image(), expected_start)?;
     let previous: usize = record
         .checked_sub(RUNTIME_FUNCTION_SIZE)
         .ok_or("previous runtime-function offset underflowed")?;
-    let previous_end: u32 = read_u32_le_at(IMAGE, previous + 4)
+    let previous_end: u32 = read_u32_le_at(image(), previous + 4)
         .map_err(|_: disrobe_bytes::ByteReadError| "previous runtime-function end is truncated")?;
     let overlapping_start: u32 = previous_end
         .checked_sub(1)
         .ok_or("overlapping begin RVA underflowed")?;
-    let mut malformed: Vec<u8> = IMAGE.to_vec();
+    let mut malformed: Vec<u8> = image().to_vec();
     malformed
         .get_mut(record..record + 4)
         .ok_or("runtime-function begin field is truncated")?
@@ -423,17 +442,17 @@ fn overlapping_runtime_functions_reject_all_attribution() -> Result<(), &'static
 #[test]
 fn unsorted_runtime_functions_reject_all_attribution() -> Result<(), &'static str> {
     let expected_start: u32 = evidence_range()?.0;
-    let record: usize = runtime_function_offset(IMAGE, expected_start)?;
+    let record: usize = runtime_function_offset(image(), expected_start)?;
     let previous: usize = record
         .checked_sub(RUNTIME_FUNCTION_SIZE)
         .ok_or("previous runtime-function offset underflowed")?;
-    let previous_start: u32 = read_u32_le_at(IMAGE, previous).map_err(
+    let previous_start: u32 = read_u32_le_at(image(), previous).map_err(
         |_: disrobe_bytes::ByteReadError| "previous runtime-function start is truncated",
     )?;
     let unsorted_start: u32 = previous_start
         .checked_sub(1)
         .ok_or("unsorted begin RVA underflowed")?;
-    let mut malformed: Vec<u8> = IMAGE.to_vec();
+    let mut malformed: Vec<u8> = image().to_vec();
     malformed
         .get_mut(record..record + 4)
         .ok_or("runtime-function begin field is truncated")?
@@ -444,8 +463,8 @@ fn unsorted_runtime_functions_reject_all_attribution() -> Result<(), &'static st
 
 #[test]
 fn non_file_backed_exception_directory_rejects_all_attribution() -> Result<(), &'static str> {
-    let header: usize = directory_header_offset(IMAGE)?;
-    let mut malformed: Vec<u8> = IMAGE.to_vec();
+    let header: usize = directory_header_offset(image())?;
+    let mut malformed: Vec<u8> = image().to_vec();
     malformed
         .get_mut(header..header + 4)
         .ok_or("exception-directory RVA field is truncated")?
@@ -457,8 +476,8 @@ fn non_file_backed_exception_directory_rejects_all_attribution() -> Result<(), &
 #[test]
 fn non_file_backed_unwind_record_rejects_all_attribution() -> Result<(), &'static str> {
     let expected_start: u32 = evidence_range()?.0;
-    let record: usize = runtime_function_offset(IMAGE, expected_start)?;
-    let mut malformed: Vec<u8> = IMAGE.to_vec();
+    let record: usize = runtime_function_offset(image(), expected_start)?;
+    let mut malformed: Vec<u8> = image().to_vec();
     malformed
         .get_mut(record + 8..record + 12)
         .ok_or("runtime-function unwind field is truncated")?
@@ -470,13 +489,13 @@ fn non_file_backed_unwind_record_rejects_all_attribution() -> Result<(), &'stati
 #[test]
 fn non_executable_runtime_function_rejects_all_attribution() -> Result<(), &'static str> {
     let expected_start: u32 = evidence_range()?.0;
-    let section_header: usize = code_section_header_offset(IMAGE, expected_start)?;
+    let section_header: usize = code_section_header_offset(image(), expected_start)?;
     let characteristics_at: usize = section_header
         .checked_add(36)
         .ok_or("section characteristics offset overflowed")?;
-    let characteristics: u32 = read_u32_le_at(IMAGE, characteristics_at)
+    let characteristics: u32 = read_u32_le_at(image(), characteristics_at)
         .map_err(|_: disrobe_bytes::ByteReadError| "section characteristics are truncated")?;
-    let mut malformed: Vec<u8> = IMAGE.to_vec();
+    let mut malformed: Vec<u8> = image().to_vec();
     malformed
         .get_mut(characteristics_at..characteristics_at + 4)
         .ok_or("section characteristics field is truncated")?
@@ -488,8 +507,8 @@ fn non_executable_runtime_function_rejects_all_attribution() -> Result<(), &'sta
 #[test]
 fn out_of_image_runtime_function_end_rejects_all_attribution() -> Result<(), &'static str> {
     let expected_start: u32 = evidence_range()?.0;
-    let record: usize = runtime_function_offset(IMAGE, expected_start)?;
-    let mut malformed: Vec<u8> = IMAGE.to_vec();
+    let record: usize = runtime_function_offset(image(), expected_start)?;
+    let mut malformed: Vec<u8> = image().to_vec();
     malformed
         .get_mut(record + 4..record + 8)
         .ok_or("runtime-function end field is truncated")?
@@ -501,11 +520,11 @@ fn out_of_image_runtime_function_end_rejects_all_attribution() -> Result<(), &'s
 #[test]
 fn interior_entrypoint_match_is_not_inferred() -> Result<(), &'static str> {
     let expected_start: u32 = evidence_range()?.0;
-    let record: usize = runtime_function_offset(IMAGE, expected_start)?;
+    let record: usize = runtime_function_offset(image(), expected_start)?;
     let expanded_start: u32 = expected_start
         .checked_sub(1)
         .ok_or("expanded begin RVA underflowed")?;
-    let mut shifted: Vec<u8> = IMAGE.to_vec();
+    let mut shifted: Vec<u8> = image().to_vec();
     shifted
         .get_mut(record..record + 4)
         .ok_or("runtime-function begin field is truncated")?
@@ -529,8 +548,8 @@ fn interior_entrypoint_match_is_not_inferred() -> Result<(), &'static str> {
 
 #[test]
 fn absent_exception_directory_keeps_methods_without_code_ranges() -> Result<(), &'static str> {
-    let header: usize = directory_header_offset(IMAGE)?;
-    let mut absent: Vec<u8> = IMAGE.to_vec();
+    let header: usize = directory_header_offset(image())?;
+    let mut absent: Vec<u8> = image().to_vec();
     absent
         .get_mut(header..header + 8)
         .ok_or("exception-directory entry is truncated")?

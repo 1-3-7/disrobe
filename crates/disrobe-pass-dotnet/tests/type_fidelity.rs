@@ -33,7 +33,7 @@ const CORPUS_IMAGES: usize = 48;
 const CORPUS_ASSEMBLIES: usize = 45;
 const CORPUS_METHOD_FLOOR: usize = 3120;
 const BUILD_OUTPUT_DIRS: [&str; 2] = ["bin", "obj"];
-const REFRESH_COMMAND: &str = "DISROBE_UPDATE_STACK_UNDERFLOW_GOLDEN=1 cargo test -p disrobe-pass-dotnet --test type_fidelity";
+const REFRESH_COMMAND: &str = "DISROBE_UPDATE_STACK_UNDERFLOW_GOLDEN=1 cargo test -p disrobe-pass-dotnet --test it type_fidelity::";
 
 #[test]
 fn sentinel_plus_return_is_not_an_unlowered_compiler_construct_refusal() {

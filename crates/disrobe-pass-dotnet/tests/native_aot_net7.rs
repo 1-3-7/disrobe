@@ -1,13 +1,23 @@
 #![cfg(not(target_arch = "wasm32"))]
-#![allow(clippy::panic)]
+#![allow(clippy::expect_used, clippy::panic)]
 
 use disrobe_core::chain::{ChildArtifact, Pass};
 use disrobe_core::{Artifact, Rung};
 use disrobe_pass_dotnet::aot::{AotMetadataStatus, detect};
 use disrobe_pass_dotnet::chain_detector::DOTNET_PASS;
 use disrobe_pass_dotnet::pe::{PeBitness, PeImage, parse};
+use std::sync::OnceLock;
 
-const IMAGE: &[u8] = include_bytes!("fixtures/native_aot/invoke_map_net7_x86_64.exe");
+fn image() -> &'static [u8] {
+    static IMAGE: OnceLock<Vec<u8>> = OnceLock::new();
+    IMAGE.get_or_init(|| {
+        disrobe_testkit::load_fixture(
+            "crates/disrobe-pass-dotnet/tests/fixtures/native_aot/invoke_map_net7_x86_64.exe",
+            3 * 1024 * 1024,
+        )
+        .expect("load the .NET 7 NativeAOT image")
+    })
+}
 const SOURCE: &str = include_str!("fixtures/native_aot/invoke_map_net7_x86_64.cs");
 const PROJECT: &str = include_str!("fixtures/native_aot/invoke_map_net7_x86_64.csproj.txt");
 const SDK_PIN: &str = include_str!("fixtures/native_aot/invoke_map_net7_x86_64.global.json.txt");
@@ -95,7 +105,7 @@ fn net7_auto_emits_the_compiler_method_and_unknown_minor_refuses() -> Result<(),
     assert_eq!(evidence_rva("StartAddress: ")?, expected_start);
     assert_eq!((expected_start, expected_end), (0x0014_18e0, 0x0014_18e4));
 
-    let pe: PeImage = parse(IMAGE)
+    let pe: PeImage = parse(image())
         .map_err(|_: disrobe_pass_dotnet::Error| "NativeAOT fixture is not a PE image")?;
     assert_eq!(
         (pe.bitness, pe.machine),
@@ -105,11 +115,11 @@ fn net7_auto_emits_the_compiler_method_and_unknown_minor_refuses() -> Result<(),
         .rva_to_offset(expected_start)
         .ok_or("compiler method body is not file backed")?;
     assert_eq!(
-        IMAGE.get(code_offset..code_offset + 4),
+        image().get(code_offset..code_offset + 4),
         Some([0x8d, 0x04, 0x11, 0xc3].as_slice())
     );
 
-    let input: Artifact = Artifact::new(Rung::Raw, IMAGE.to_vec(), [0u8; 32]);
+    let input: Artifact = Artifact::new(Rung::Raw, image().to_vec(), [0u8; 32]);
     let output: Artifact = match DOTNET_PASS.run(&input) {
         Ok(output) => output,
         Err(error) => panic!("{error}"),
@@ -170,7 +180,7 @@ fn net7_auto_emits_the_compiler_method_and_unknown_minor_refuses() -> Result<(),
         "#include <stdint.h>\nint32_t recovered(int32_t a0, int32_t a1) {\n    uint64_t r_rcx = (uint32_t)a0;\n    uint64_t r_rdx = (uint32_t)a1;\n    uint64_t r_rax = 0;\n    r_rax = (r_rcx + r_rdx * 1ULL) & 0xffffffffULL;\n    return (int32_t)(uint32_t)((r_rax) & 0xffffffffULL);\n}\n"
     );
 
-    let header: disrobe_pass_dotnet::aot::ReadyToRunHeader = detect(IMAGE)
+    let header: disrobe_pass_dotnet::aot::ReadyToRunHeader = detect(image())
         .ready_to_run
         .ok_or("compiler-emitted NativeAOT header is absent")?;
     assert_eq!((header.major_version, header.minor_version), (8, 0));
@@ -181,7 +191,7 @@ fn net7_auto_emits_the_compiler_method_and_unknown_minor_refuses() -> Result<(),
     let minor_end: usize = minor_offset
         .checked_add(2)
         .ok_or("NativeAOT minor-version end overflowed")?;
-    let mut unknown: Vec<u8> = IMAGE.to_vec();
+    let mut unknown: Vec<u8> = image().to_vec();
     unknown
         .get_mut(minor_offset..minor_end)
         .ok_or("NativeAOT minor-version field is truncated")?

@@ -1,16 +1,25 @@
 #![allow(clippy::expect_used, clippy::panic)]
 
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 use disrobe_pass_dotnet::aot::{AotReport, detect};
 
-const TRACKED_PROBE_IMAGE: &[u8] =
-    include_bytes!("fixtures/native_aot/names_probe_net9_x86_64.exe");
+fn tracked_probe_image() -> &'static [u8] {
+    static IMAGE: OnceLock<Vec<u8>> = OnceLock::new();
+    IMAGE.get_or_init(|| {
+        disrobe_testkit::load_fixture(
+            "crates/disrobe-pass-dotnet/tests/fixtures/native_aot/names_probe_net9_x86_64.exe",
+            2 * 1024 * 1024,
+        )
+        .expect("load the tracked NativeAOT probe image")
+    })
+}
 
 fn probe_app_image() -> Vec<u8> {
     let Some(path): Option<PathBuf> = std::env::var_os("DISROBE_AOT_SAMPLE").map(PathBuf::from)
     else {
-        return TRACKED_PROBE_IMAGE.to_vec();
+        return tracked_probe_image().to_vec();
     };
     std::fs::read(path).expect("the image named by DISROBE_AOT_SAMPLE must be readable")
 }

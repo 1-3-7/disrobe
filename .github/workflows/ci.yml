@@ -1067,6 +1067,11 @@ jobs:
           --exclude disrobe-pass-scriptlang --exclude disrobe-pass-shell
           --exclude disrobe-pass-js-deob
         timeout-minutes: 160
+      - name: .NET semantic-reach coverage
+        if: matrix.shard == 'three'
+        run: >-
+          cargo test -p disrobe-pass-dotnet --all-features --test it seed_reach::
+        timeout-minutes: 160
       - name: retain Ruby opcode measurement
         if: always() && (matrix.shard == 'one')
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

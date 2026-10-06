@@ -8,9 +8,18 @@ use disrobe_pass_dotnet::aot::{
 };
 use disrobe_pass_dotnet::chain_detector::DOTNET_PASS;
 use object::{Object as _, ObjectSection as _};
+use std::sync::OnceLock;
 
-const TRACKED_NATIVE_AOT_IMAGE: &[u8] =
-    include_bytes!("../../../corpus/dotnet/megafile/EdgeCases.nativeaot.exe");
+fn tracked_native_aot_image() -> &'static [u8] {
+    static IMAGE: OnceLock<Vec<u8>> = OnceLock::new();
+    IMAGE.get_or_init(|| {
+        disrobe_testkit::load_fixture(
+            "corpus/dotnet/megafile/EdgeCases.nativeaot.exe",
+            2 * 1024 * 1024,
+        )
+        .expect("load the tracked NativeAOT image")
+    })
+}
 const FUNCTION_POINTER_SIGNATURE_KIND: u8 = 0x25;
 
 fn section_file_offset(image: &[u8], section: &AotSection) -> Result<usize, &'static str> {
@@ -139,7 +148,7 @@ fn assert_transactional_signature_cycle_refusal(image: Vec<u8>) {
 #[test]
 fn auto_emits_recovered_native_aot_names_and_signatures() {
     let context: DetectContext<'_> = DetectContext {
-        bytes: TRACKED_NATIVE_AOT_IMAGE,
+        bytes: tracked_native_aot_image(),
         path_hint: Some("EdgeCases.nativeaot.exe"),
         parent_hint: None,
         depth: 0,
@@ -151,7 +160,7 @@ fn auto_emits_recovered_native_aot_names_and_signatures() {
     assert_eq!(verdict.pass_id, DOTNET_PASS.id());
     assert_eq!(verdict.format_tag, "dotnet-native-aot");
 
-    let input: Artifact = Artifact::new(Rung::Raw, TRACKED_NATIVE_AOT_IMAGE.to_vec(), [0u8; 32]);
+    let input: Artifact = Artifact::new(Rung::Raw, tracked_native_aot_image().to_vec(), [0u8; 32]);
     let output: Artifact = DOTNET_PASS
         .run(&input)
         .expect("the registered pass must recover the real NativeAOT PE");
@@ -213,7 +222,7 @@ fn auto_emits_recovered_native_aot_names_and_signatures() {
 
 #[test]
 fn unsupported_nativeformat_version_is_a_typed_auto_refusal() {
-    let mut image: Vec<u8> = TRACKED_NATIVE_AOT_IMAGE.to_vec();
+    let mut image: Vec<u8> = tracked_native_aot_image().to_vec();
     let original: AotReport = detect(&image);
     let header_offset: usize = usize::try_from(
         original
@@ -250,7 +259,7 @@ fn unsupported_nativeformat_version_is_a_typed_auto_refusal() {
 
 #[test]
 fn absent_nativeformat_metadata_is_a_typed_auto_success() {
-    let mut image: Vec<u8> = TRACKED_NATIVE_AOT_IMAGE.to_vec();
+    let mut image: Vec<u8> = tracked_native_aot_image().to_vec();
     let original: AotReport = detect(&image);
     let header = original
         .ready_to_run
@@ -298,7 +307,7 @@ fn absent_nativeformat_metadata_is_a_typed_auto_success() {
 
 #[test]
 fn arbitrary_in_bounds_signature_type_offset_is_a_transactional_auto_refusal() {
-    let mut image: Vec<u8> = TRACKED_NATIVE_AOT_IMAGE.to_vec();
+    let mut image: Vec<u8> = tracked_native_aot_image().to_vec();
     let original: AotReport = detect(&image);
     let metadata_section: &AotSection = original
         .ready_to_run
@@ -348,7 +357,7 @@ fn arbitrary_in_bounds_signature_type_offset_is_a_transactional_auto_refusal() {
 
 #[test]
 fn root_method_signature_self_cycle_is_a_transactional_auto_refusal() {
-    let mut image: Vec<u8> = TRACKED_NATIVE_AOT_IMAGE.to_vec();
+    let mut image: Vec<u8> = tracked_native_aot_image().to_vec();
     let metadata_offset: usize = metadata_file_offset(&image);
     rewrite_type_specification_as_function_pointer(&mut image, metadata_offset, 7376, 2915);
     assert_transactional_signature_cycle_refusal(image);
@@ -356,7 +365,7 @@ fn root_method_signature_self_cycle_is_a_transactional_auto_refusal() {
 
 #[test]
 fn root_method_signature_mutual_cycle_is_a_transactional_auto_refusal() {
-    let mut image: Vec<u8> = TRACKED_NATIVE_AOT_IMAGE.to_vec();
+    let mut image: Vec<u8> = tracked_native_aot_image().to_vec();
     let metadata_offset: usize = metadata_file_offset(&image);
     rewrite_type_specification_as_function_pointer(&mut image, metadata_offset, 29194, 27455);
     rewrite_type_specification_as_function_pointer(&mut image, metadata_offset, 29706, 25765);
@@ -365,7 +374,7 @@ fn root_method_signature_mutual_cycle_is_a_transactional_auto_refusal() {
 
 #[test]
 fn shared_acyclic_root_method_signature_is_reused_by_auto() {
-    let mut image: Vec<u8> = TRACKED_NATIVE_AOT_IMAGE.to_vec();
+    let mut image: Vec<u8> = tracked_native_aot_image().to_vec();
     let metadata_offset: usize = metadata_file_offset(&image);
     rewrite_type_specification_as_function_pointer(&mut image, metadata_offset, 29194, 7427);
     rewrite_type_specification_as_function_pointer(&mut image, metadata_offset, 29706, 7427);
@@ -385,7 +394,7 @@ fn shared_acyclic_root_method_signature_is_reused_by_auto() {
 
 #[test]
 fn malformed_signature_refuses_the_entire_attribution_graph() {
-    let mut image: Vec<u8> = TRACKED_NATIVE_AOT_IMAGE.to_vec();
+    let mut image: Vec<u8> = tracked_native_aot_image().to_vec();
     let original: AotReport = detect(&image);
     let header = original
         .ready_to_run

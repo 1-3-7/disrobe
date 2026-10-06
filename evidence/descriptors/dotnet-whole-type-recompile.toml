@@ -8,7 +8,7 @@ ci = true
 [oracle]
 kind = "recovery-import"
 external = "real csc (dotnet SDK 9.0.316): recovered method bodies, wrapped in type and field declarations the harness builds from metadata, must recompile as one single-file compilation unit per type"
-reproduce = "cargo test -p disrobe-pass-dotnet --test whole_type_il_equivalence_oracle edgecases_whole_type_recompile_fraction_is_published_as_measured -- --nocapture"
+reproduce = "cargo test -p disrobe-pass-dotnet --test it whole_type_il_equivalence_oracle::edgecases_whole_type_recompile_fraction_is_published_as_measured -- --nocapture"
 note = "Oracle strength is recompile-only: the recovered source compiling proves it is legal C#, not that it means what the original IL meant. A member that states a refusal (an unreconstructed state machine or an unlowered compiler-generated construct) does not count as recovered even when the type compiles. Measured locally; CI does not assert the percentage, only that the named members in EDGECASES_RECOMPILE_MEMBERS keep recompiling."
 
 [source]
