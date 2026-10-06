@@ -85,6 +85,12 @@ struct GatedFile {
 }
 
 #[derive(Debug)]
+struct ExplicitTestTarget {
+    name: String,
+    path: PathBuf,
+}
+
+#[derive(Debug)]
 struct CrateFacts {
     package: String,
     dir: String,
@@ -514,39 +520,29 @@ fn scan_crate_sources(root: &Path, member: &str) -> Result<(Vec<GatedFile>, Opti
                 }
             }
         }
-        let binary_dirs: Vec<PathBuf> = if automatic {
+        let targets: Vec<ExplicitTestTarget> = if automatic {
             test_binary_dirs(&tests_dir)?
+                .into_iter()
+                .filter_map(|directory: PathBuf| {
+                    let name: String = directory.file_name()?.to_str()?.to_owned();
+                    Some(ExplicitTestTarget {
+                        name,
+                        path: directory.join("main.rs"),
+                    })
+                })
+                .collect()
         } else {
-            explicit_test_binary_dirs(&crate_root)?
+            explicit_test_targets(&crate_root)?
         };
-        for binary_dir in binary_dirs {
-            let Some(binary) = binary_dir
-                .file_name()
-                .and_then(|n: &std::ffi::OsStr| n.to_str())
-                .map(str::to_owned)
-            else {
-                continue;
-            };
-            for path in rust_files_recursive(&binary_dir)? {
-                let relative: String = relative_label(&crate_root, &path);
-                let text: String = read_text_bounded(&path, MAX_SOURCE_BYTES)
-                    .wrap_err_with(|| format!("reading {member}/{relative}"))?;
-                if let Some(requirements) =
-                    file_requirements(&text, &format!("{member}/{relative}"))?
-                {
-                    gated.push(GatedFile {
-                        relative,
-                        target: TestTarget::Integration(binary.clone()),
-                        requirements,
-                        tests: count_tests(&text),
-                    });
-                }
-            }
+        let resolved_root: PathBuf = std::fs::canonicalize(&crate_root)
+            .wrap_err_with(|| format!("resolving {}", crate_root.display()))?;
+        for target in targets {
             let mut visited: BTreeSet<PathBuf> = BTreeSet::new();
-            scan_path_modules(
-                &crate_root,
-                &binary_dir.join("main.rs"),
-                &binary,
+            scan_path_module(
+                &resolved_root,
+                &target.path,
+                &target.name,
+                &[],
                 &mut gated,
                 &mut visited,
             )?;
@@ -576,7 +572,7 @@ fn automatic_test_targets(crate_root: &Path) -> Result<bool> {
     }
 }
 
-fn explicit_test_binary_dirs(crate_root: &Path) -> Result<Vec<PathBuf>> {
+fn explicit_test_targets(crate_root: &Path) -> Result<Vec<ExplicitTestTarget>> {
     let manifest: PathBuf = crate_root.join("Cargo.toml");
     let text: String = read_text_bounded(&manifest, MAX_MANIFEST_BYTES)
         .wrap_err_with(|| format!("reading {}", manifest.display()))?;
@@ -585,68 +581,29 @@ fn explicit_test_binary_dirs(crate_root: &Path) -> Result<Vec<PathBuf>> {
     let Some(tests) = doc.get("test").and_then(toml::Value::as_array) else {
         return Ok(Vec::new());
     };
-    let mut out: Vec<PathBuf> = Vec::new();
+    let mut out: Vec<ExplicitTestTarget> = Vec::new();
     for test in tests {
-        let Some(path) = test.get("path").and_then(toml::Value::as_str) else {
+        let Some(name) = test.get("name").and_then(toml::Value::as_str) else {
             continue;
         };
-        let source: PathBuf = crate_root.join(path);
-        if source
-            .file_name()
-            .and_then(|name: &std::ffi::OsStr| name.to_str())
-            == Some("main.rs")
-        {
-            if let Some(parent) = source.parent() {
-                out.push(parent.to_path_buf());
-            }
-        }
+        let source: PathBuf = test.get("path").and_then(toml::Value::as_str).map_or_else(
+            || crate_root.join("tests").join(format!("{name}.rs")),
+            |path| crate_root.join(path),
+        );
+        out.push(ExplicitTestTarget {
+            name: name.to_owned(),
+            path: source,
+        });
     }
-    out.sort();
-    out.dedup();
+    out.sort_by(|left: &ExplicitTestTarget, right: &ExplicitTestTarget| {
+        (&left.name, &left.path).cmp(&(&right.name, &right.path))
+    });
+    out.dedup_by(
+        |left: &mut ExplicitTestTarget, right: &mut ExplicitTestTarget| {
+            left.name == right.name && left.path == right.path
+        },
+    );
     Ok(out)
-}
-
-fn scan_path_modules(
-    crate_root: &Path,
-    root: &Path,
-    target: &str,
-    gated: &mut Vec<GatedFile>,
-    visited: &mut BTreeSet<PathBuf>,
-) -> Result<()> {
-    let resolved_root: PathBuf = std::fs::canonicalize(crate_root)
-        .wrap_err_with(|| format!("resolving {}", crate_root.display()))?;
-    let text: String = read_text_bounded(root, MAX_SOURCE_BYTES)
-        .wrap_err_with(|| format!("reading {}", root.display()))?;
-    let mut pending_requirements: Vec<Requirement> = Vec::new();
-    let mut pending_path: Option<PathBuf> = None;
-    for line in text.lines() {
-        let trimmed: &str = line.trim();
-        if let Some(requirements) = outer_cfg_requirements(trimmed, &root.display().to_string())? {
-            pending_requirements.extend(requirements);
-            continue;
-        }
-        if let Some(path) = path_attribute(trimmed) {
-            pending_path = Some(root.parent().unwrap_or(crate_root).join(path));
-            continue;
-        }
-        if !is_module_declaration(trimmed) {
-            continue;
-        }
-        let Some(path) = pending_path.take() else {
-            pending_requirements.clear();
-            continue;
-        };
-        scan_path_module(
-            &resolved_root,
-            &path,
-            target,
-            &pending_requirements,
-            gated,
-            visited,
-        )?;
-        pending_requirements.clear();
-    }
-    Ok(())
 }
 
 fn scan_path_module(
@@ -680,33 +637,33 @@ fn scan_path_module(
         });
     }
 
-    let mut pending_requirements: Vec<Requirement> = Vec::new();
-    let mut pending_path: Option<PathBuf> = None;
+    let mut pending_attributes: Vec<&str> = Vec::new();
     for line in text.lines() {
         let trimmed: &str = line.trim();
-        if let Some(outer) = outer_cfg_requirements(trimmed, &resolved.display().to_string())? {
-            pending_requirements.extend(outer);
-            continue;
-        }
-        if let Some(module_path) = path_attribute(trimmed) {
-            pending_path = Some(resolved.parent().unwrap_or(crate_root).join(module_path));
+        if is_outer_attribute(trimmed) {
+            pending_attributes.push(trimmed);
             continue;
         }
         let Some(module) = module_name(trimmed) else {
+            clear_pending_attributes(trimmed, &mut pending_attributes);
             continue;
         };
-        let nested: PathBuf = pending_path.take().unwrap_or_else(|| {
-            let directory: &Path = resolved.parent().unwrap_or(crate_root);
-            let direct: PathBuf = directory.join(format!("{module}.rs"));
-            if direct.is_file() {
-                direct
-            } else {
-                directory.join(module).join("mod.rs")
-            }
-        });
+        let (outer, declared_path): (Vec<Requirement>, Option<String>) =
+            module_attributes(&pending_attributes, &resolved.display().to_string())?;
+        pending_attributes.clear();
+        let nested: PathBuf = declared_path
+            .map(|module_path: String| resolved.parent().unwrap_or(crate_root).join(module_path))
+            .unwrap_or_else(|| {
+                let directory: &Path = resolved.parent().unwrap_or(crate_root);
+                let direct: PathBuf = directory.join(format!("{module}.rs"));
+                if direct.is_file() {
+                    direct
+                } else {
+                    directory.join(module).join("mod.rs")
+                }
+            });
         let mut nested_requirements: Vec<Requirement> = requirements.clone();
-        nested_requirements.extend(pending_requirements.iter().cloned());
-        pending_requirements.clear();
+        nested_requirements.extend(outer);
         if nested.is_file() {
             scan_path_module(
                 crate_root,
@@ -740,8 +697,33 @@ fn path_attribute(attribute: &str) -> Option<&str> {
         .and_then(|rest: &str| rest.strip_suffix("\"]"))
 }
 
-fn is_module_declaration(line: &str) -> bool {
-    module_name(line).is_some()
+fn is_outer_attribute(line: &str) -> bool {
+    line.starts_with("#[") && line.ends_with(']')
+}
+
+fn clear_pending_attributes(line: &str, pending: &mut Vec<&str>) {
+    if !line.is_empty() && !line.starts_with("//") {
+        pending.clear();
+    }
+}
+
+fn module_attributes(
+    attributes: &[&str],
+    whence: &str,
+) -> Result<(Vec<Requirement>, Option<String>)> {
+    let mut requirements: Vec<Requirement> = Vec::new();
+    let mut path: Option<String> = None;
+    for attribute in attributes {
+        if let Some(cfg) = outer_cfg_requirements(attribute, whence)? {
+            requirements.extend(cfg);
+        }
+        if let Some(value) = path_attribute(attribute) {
+            path = Some(value.to_owned());
+        }
+    }
+    requirements.sort();
+    requirements.dedup();
+    Ok((requirements, path))
 }
 
 fn module_name(line: &str) -> Option<&str> {
@@ -1376,15 +1358,23 @@ mod tests {
                 .and_then(Path::parent)
                 .expect("crate root")
                 .join("Cargo.toml"),
-            "[package]\nname = \"example\"\nautotests = false\n\n[[test]]\nname = \"it\"\npath = \"tests/it/main.rs\"\n",
+            "[package]\nname = \"example\"\nautotests = false\n\n[[test]]\nname = \"whole\"\npath = \"tests/it/main.rs\"\n\n[[test]]\nname = \"omitted\"\n",
         )?;
         std::fs::write(
             binary.join("main.rs"),
-            "#[cfg(feature = \"semantic-reach\")]\n#[path = \"../seed_reach.rs\"]\nmod seed_reach;\n",
+            "#[cfg(all(feature = \"nir-lift\", not(feature = \"devirt\")))]\nfn ignored() {}\n\n#[cfg(feature = \"semantic-reach\")]\n#[allow(dead_code)]\n#[path = \"../seed_reach.rs\"]\nmod seed_reach;\n\nmod local;\n",
         )?;
         std::fs::write(
             binary.parent().expect("tests parent").join("seed_reach.rs"),
             "#[test]\nfn reaches() {}\n",
+        )?;
+        std::fs::write(
+            binary.parent().expect("tests parent").join("omitted.rs"),
+            "#![cfg(feature = \"omitted\")]\n#[test]\nfn runs() {}\n",
+        )?;
+        std::fs::write(
+            binary.join("local.rs"),
+            "#![cfg(feature = \"local\")]\n#[test]\nfn runs() {}\n",
         )?;
 
         let (gated, _): (Vec<GatedFile>, Option<usize>) =
@@ -1392,12 +1382,26 @@ mod tests {
 
         assert_eq!(
             gated,
-            vec![GatedFile {
-                relative: "tests/seed_reach.rs".to_owned(),
-                target: TestTarget::Integration("it".to_owned()),
-                requirements: vec![Requirement::Enabled("semantic-reach".to_owned())],
-                tests: 1,
-            }]
+            vec![
+                GatedFile {
+                    relative: "tests/omitted.rs".to_owned(),
+                    target: TestTarget::Integration("omitted".to_owned()),
+                    requirements: vec![Requirement::Enabled("omitted".to_owned())],
+                    tests: 1,
+                },
+                GatedFile {
+                    relative: "tests/seed_reach.rs".to_owned(),
+                    target: TestTarget::Integration("whole".to_owned()),
+                    requirements: vec![Requirement::Enabled("semantic-reach".to_owned())],
+                    tests: 1,
+                },
+                GatedFile {
+                    relative: "tests/it/local.rs".to_owned(),
+                    target: TestTarget::Integration("whole".to_owned()),
+                    requirements: vec![Requirement::Enabled("local".to_owned())],
+                    tests: 1,
+                },
+            ]
         );
         Ok(())
     }
