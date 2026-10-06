@@ -564,12 +564,14 @@ fn automatic_test_targets(crate_root: &Path) -> Result<bool> {
     let Some(package) = doc.get("package").and_then(toml::Value::as_table) else {
         return Ok(true);
     };
-    match package.get("autotests") {
-        None => Ok(true),
-        Some(value) => value
-            .as_bool()
-            .ok_or_else(|| eyre!("{}/[package].autotests is not boolean", manifest.display())),
-    }
+    package.get("autotests").map_or_else(
+        || Ok(true),
+        |value| {
+            value
+                .as_bool()
+                .ok_or_else(|| eyre!("{}/[package].autotests is not boolean", manifest.display()))
+        },
+    )
 }
 
 fn explicit_test_targets(crate_root: &Path) -> Result<Vec<ExplicitTestTarget>> {
@@ -651,17 +653,18 @@ fn scan_path_module(
         let (outer, declared_path): (Vec<Requirement>, Option<String>) =
             module_attributes(&pending_attributes, &resolved.display().to_string())?;
         pending_attributes.clear();
-        let nested: PathBuf = declared_path
-            .map(|module_path: String| resolved.parent().unwrap_or(crate_root).join(module_path))
-            .unwrap_or_else(|| {
-                let directory: &Path = resolved.parent().unwrap_or(crate_root);
+        let directory: &Path = resolved.parent().unwrap_or(crate_root);
+        let nested: PathBuf = declared_path.map_or_else(
+            || {
                 let direct: PathBuf = directory.join(format!("{module}.rs"));
                 if direct.is_file() {
                     direct
                 } else {
                     directory.join(module).join("mod.rs")
                 }
-            });
+            },
+            |module_path: String| directory.join(module_path),
+        );
         let mut nested_requirements: Vec<Requirement> = requirements.clone();
         nested_requirements.extend(outer);
         if nested.is_file() {
@@ -1363,26 +1366,21 @@ mod tests {
     #[test]
     fn a_path_module_cfg_is_attributed_to_the_consolidated_target() -> Result<()> {
         let root: tempfile::TempDir = tempfile::tempdir()?;
-        let binary: PathBuf = root.path().join("crates/example/tests/it");
+        let crate_root: PathBuf = root.path().join("crates/example");
+        let tests: PathBuf = crate_root.join("tests");
+        let binary: PathBuf = tests.join("it");
         std::fs::create_dir_all(&binary)?;
         std::fs::write(
-            binary
-                .parent()
-                .and_then(Path::parent)
-                .expect("crate root")
-                .join("Cargo.toml"),
+            crate_root.join("Cargo.toml"),
             "[package]\nname = \"example\"\nautotests = false\n\n[[test]]\nname = \"whole\"\npath = \"tests/it/main.rs\"\n\n[[test]]\nname = \"omitted\"\n",
         )?;
         std::fs::write(
             binary.join("main.rs"),
             "#[cfg(all(feature = \"nir-lift\", not(feature = \"devirt\")))]\nfn ignored() {}\n\n#[cfg(feature = \"semantic-reach\")]\n#[allow(dead_code)]\n#[path = \"../seed_reach.rs\"]\nmod seed_reach;\n\nmod local;\n",
         )?;
+        std::fs::write(tests.join("seed_reach.rs"), "#[test]\nfn reaches() {}\n")?;
         std::fs::write(
-            binary.parent().expect("tests parent").join("seed_reach.rs"),
-            "#[test]\nfn reaches() {}\n",
-        )?;
-        std::fs::write(
-            binary.parent().expect("tests parent").join("omitted.rs"),
+            tests.join("omitted.rs"),
             "#![cfg(feature = \"omitted\")]\n#[test]\nfn runs() {}\n",
         )?;
         std::fs::write(
