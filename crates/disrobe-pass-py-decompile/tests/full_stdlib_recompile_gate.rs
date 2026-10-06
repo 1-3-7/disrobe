@@ -852,8 +852,9 @@ fn sampled_stdlib_recompile_equivalence_gate() {
             minutes against a debug CLI and less against a release one. No workflow runs it today, \
             so the published full-stdlib figure is re-derived in CI only through the \
             115-module slice in `sampled_stdlib_recompile_equivalence_gate`. Drive the whole \
-            population with `cargo test -p disrobe-pass-py-decompile --test \
-            full_stdlib_recompile_gate -- --ignored --nocapture`"]
+            population with `cargo test -p disrobe-pass-py-decompile --test it \
+            full_stdlib_recompile_gate::full_stdlib_recompile_equivalence_gate -- --ignored \
+            --exact --nocapture`"]
 fn full_stdlib_recompile_equivalence_gate() {
     let disrobe: PathBuf = supplied_measurement_executable();
     let candidate_source_identity: String = supplied_candidate_source_identity();

@@ -18,6 +18,6 @@
   },
   "oracle_strength": "recompile-only",
   "pairs": [],
-  "reproduce": "Set DISROBE_MEASUREMENT_EXECUTABLE to the candidate binary, DISROBE_CANDIDATE_SOURCE_IDENTITY to its recorded source identity, and DISROBE_FULL_EVIDENCE_DIR to an unused absolute directory outside the Cargo target. Run cargo test -p disrobe-pass-py-decompile --test full_stdlib_recompile_gate -- --ignored --nocapture. The gate requires CPython 3.14.5, pyc magic 2b0e0d0a, optimize 0, and module-list SHA256 cab2ea10ce57441d29f1117aa40e324fca805abf8ae80c2342cbd1ddcede028d. CI does not run this ignored 574-module measurement.",
+  "reproduce": "Set DISROBE_MEASUREMENT_EXECUTABLE to the candidate binary, DISROBE_CANDIDATE_SOURCE_IDENTITY to its recorded source identity, and DISROBE_FULL_EVIDENCE_DIR to an unused absolute directory outside the Cargo target. Run cargo test -p disrobe-pass-py-decompile --test it -- --ignored full_stdlib_recompile_gate:: --nocapture. The gate is crates/disrobe-pass-py-decompile/tests/full_stdlib_recompile_gate.rs and its measurement harness is crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py. It requires CPython 3.14.5, pyc magic 2b0e0d0a, optimize 0, and module-list SHA256 cab2ea10ce57441d29f1117aa40e324fca805abf8ae80c2342cbd1ddcede028d. CI does not run this ignored 574-module measurement.",
   "title": "Python .pyc decompilation, fixed CPython 3.14.5 574-module core population"
 }

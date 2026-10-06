@@ -553,9 +553,10 @@ fn ci_routes_full_coverage_to_scheduled_and_tag_runs() {
         .expect("ci.yml py-band-gate steps");
     assert_eq!(
         test_step_command(py_band_steps, "build the disrobe cli the harness drives"),
-        "cargo build --release -p disrobe-cli -p disrobe-pass-py-decompile --bin disrobe --test arbitrary_recompile_gate_310 --test arbitrary_recompile_gate_312 --test arbitrary_recompile_gate_313",
-        "the Python band gate must build the optimized release CLI and all three grader binaries \
-         in one feature resolution, so the grader steps compile nothing"
+        "cargo build --release -p disrobe-cli --bin disrobe\ncargo build --release -p \
+         disrobe-pass-py-decompile --test it\n",
+        "the Python band gate must build the optimized release CLI and consolidated grader binary \
+         before the grader steps run"
     );
     for (name, target) in [
         (
@@ -573,12 +574,12 @@ fn ci_routes_full_coverage_to_scheduled_and_tag_runs() {
     ] {
         let step: &Value = test_step(py_band_steps, name);
         let expected_command: String = format!(
-            "cargo test --release -p disrobe-cli -p disrobe-pass-py-decompile --test {target} -- --nocapture"
+            "cargo test --release -p disrobe-pass-py-decompile --test it {target}:: -- --nocapture"
         );
         assert_eq!(
             step.get("run").and_then(Value::as_str),
             Some(expected_command.as_str()),
-            "{name} must retain its exact independent recovery grader and reuse the release artifacts the CLI build produced"
+            "{name} must retain its exact independent recovery grader and reuse the release artifacts the build step produced"
         );
     }
     for job in ["py-recompile-gate", "py-band-gate"] {

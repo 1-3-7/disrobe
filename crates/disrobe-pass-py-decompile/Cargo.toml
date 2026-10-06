@@ -1,5 +1,6 @@
 [package]
 name = "disrobe-pass-py-decompile"
+autotests = false
 description = "Python bytecode decompiler covering CPython 3.8 through 3.15 and PyPy. Reconstructs typed source from CodeObject via an exception-table-driven frame-tree pre-pass, per-version opcode dispatch, and a round-trip metric that distinguishes real reconstruction bugs from inert compiler-version codegen choices."
 version.workspace = true
 readme.workspace = true
@@ -39,3 +40,7 @@ tempfile = "3"
 
 [package.metadata.disrobe]
 level = 6
+
+[[test]]
+name = "it"
+path = "tests/it/main.rs"

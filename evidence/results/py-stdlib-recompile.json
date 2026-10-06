@@ -18,6 +18,6 @@
   },
   "oracle_strength": "recompile-only",
   "pairs": [],
-  "reproduce": "cargo test -p disrobe-pass-py-decompile --test arbitrary_recompile_gate",
+  "reproduce": "cargo test -p disrobe-pass-py-decompile --test it arbitrary_recompile_gate::",
   "title": "Python .pyc decompilation, normalized opcode-structure agreement"
 }
