@@ -1027,8 +1027,14 @@ fn filter_can_select(filter: Option<&str>, binary: &str, relative: &str) -> bool
     let Some(filter) = filter else {
         return true;
     };
+    if is_target_root(binary, relative) {
+        return true;
+    }
     let prefix: String = format!("tests/{binary}/");
-    let Some(module_file) = relative.strip_prefix(prefix.as_str()) else {
+    let Some(module_file) = relative
+        .strip_prefix(prefix.as_str())
+        .or_else(|| relative.strip_prefix("tests/"))
+    else {
         return true;
     };
     let module: String = module_file
@@ -1044,6 +1050,9 @@ fn module_wide_filter_can_select(filter: Option<&str>, binary: &str, relative: &
     let Some(prefix) = filter.and_then(|value: &str| value.strip_suffix("::")) else {
         return false;
     };
+    if is_target_root(binary, relative) {
+        return false;
+    }
     let module_prefix: String = format!("tests/{binary}/");
     let Some(module_file) = relative
         .strip_prefix(module_prefix.as_str())
@@ -1056,6 +1065,10 @@ fn module_wide_filter_can_select(filter: Option<&str>, binary: &str, relative: &
         .trim_end_matches("/mod")
         .replace('/', "::");
     module == prefix
+}
+
+fn is_target_root(binary: &str, relative: &str) -> bool {
+    relative == format!("tests/{binary}.rs") || relative == format!("tests/{binary}/main.rs")
 }
 
 fn invocation_selection(facts: &CrateFacts, invocation: &Invocation) -> Selection {
@@ -1449,6 +1462,21 @@ mod tests {
             Some("anything"),
             "opaque_predicate_ground_truth",
             "tests/opaque_predicate_ground_truth.rs"
+        ));
+        assert!(!filter_can_select(
+            Some("aarch64_fp_semantics::helpers_agree"),
+            "it",
+            "tests/opaque_predicate_ground_truth.rs"
+        ));
+        assert!(filter_can_select(
+            Some("opaque_predicate_ground_truth::solves"),
+            "it",
+            "tests/opaque_predicate_ground_truth.rs"
+        ));
+        assert!(!module_wide_filter_can_select(
+            Some("it::"),
+            "it",
+            "tests/it/main.rs"
         ));
     }
 
