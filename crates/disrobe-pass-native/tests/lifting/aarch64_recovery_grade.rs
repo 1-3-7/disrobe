@@ -92,6 +92,13 @@ const UNGRADED_SCALAR_FP_MNEMONICS: &[(&str, &str)] = &[
     ),
 ];
 
+fn exact_test_name(module: &str, test: &str) -> String {
+    match module.split_once("::") {
+        Some((_, test_module)) => format!("{test_module}::{test}"),
+        None => test.to_owned(),
+    }
+}
+
 fn is_stack_fp(name: &str) -> bool {
     STACK_FP_FUNCTIONS.contains(&name)
 }
@@ -1780,12 +1787,13 @@ fn nested_sum_optimized_loops_reach_the_complete_cfg_fallback() {
 #[test]
 fn corpus_grade_fails_when_host_compiler_is_unavailable() {
     let test_binary: PathBuf = std::env::current_exe().expect("current test binary");
+    let worker_test: String = exact_test_name(module_path!(), "corpus_grade_report");
     let output: std::process::Output = Command::new(test_binary)
         .args([
-            "--ignored",
-            "--exact",
-            "aarch64_recovery_grade::corpus_grade_report",
-            "--test-threads=1",
+            "--ignored".to_owned(),
+            "--exact".to_owned(),
+            worker_test,
+            "--test-threads=1".to_owned(),
         ])
         .env("PATH", "")
         .output()

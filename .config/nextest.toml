@@ -38,7 +38,7 @@ jvm-toolchain = { max-threads = 6 }
 process-global = { max-threads = 1 }
 
 [[profile.pre-push.overrides]]
-filter = 'package(disrobe-pass-native) & binary(formats) & test(/^rust_auditable_sbom::/)'
+filter = 'package(disrobe-pass-native) & binary(it) & test(/^formats::rust_auditable_sbom::/)'
 test-group = 'process-global'
 slow-timeout = { period = "120s", terminate-after = 5, grace-period = "10s" }
 

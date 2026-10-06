@@ -26,6 +26,14 @@ const WIDE_PLAINTEXT: &str = "wide0secret0url0payload0token0DDDD";
 #[cfg(windows)]
 const TEST_GCC_ENV: &str = "DISROBE_TEST_GCC";
 
+#[cfg(windows)]
+fn exact_test_name(module: &str, test: &str) -> String {
+    match module.split_once("::") {
+        Some((_, test_module)) => format!("{test_module}::{test}"),
+        None => test.to_owned(),
+    }
+}
+
 fn has_tool(cmd: &str) -> bool {
     Command::new(cmd)
         .arg("--version")
@@ -230,12 +238,12 @@ fn gcc_dll_decoders_recovered_from_written_memory() {
 #[cfg(windows)]
 fn gcc_failure_is_identified_as_host_toolchain_error() {
     let current_exe: PathBuf = std::env::current_exe().expect("resolve current test executable");
+    let worker_test: String = exact_test_name(
+        module_path!(),
+        "gcc_dll_decoders_recovered_from_written_memory",
+    );
     let child: std::process::Output = Command::new(&current_exe)
-        .args([
-            "--exact",
-            "emu_strings_memdelta_oracle::gcc_dll_decoders_recovered_from_written_memory",
-            "--nocapture",
-        ])
+        .args(["--exact".to_owned(), worker_test, "--nocapture".to_owned()])
         .env(TEST_GCC_ENV, &current_exe)
         .output()
         .expect("run gcc oracle with failing compiler process");

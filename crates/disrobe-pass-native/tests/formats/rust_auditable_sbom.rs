@@ -1,7 +1,3 @@
-#![expect(
-    unsafe_code,
-    reason = "a counting global allocator implements the unsafe GlobalAlloc trait"
-)]
 #![allow(
     clippy::expect_used,
     clippy::unwrap_used,
@@ -9,12 +5,14 @@
     clippy::missing_docs_in_private_items
 )]
 
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::cell::Cell;
 use std::fmt::Write as _;
 use std::io::Write;
 
 use disrobe_pass_native::{AuditableSbom, Error, parse_auditable_section};
+
+use crate::tracking_allocator::{
+    finish_successful_allocation_tracking, start_successful_allocation_tracking,
+};
 
 const REAL_AUDITABLE: &[u8] =
     include_bytes!("../../../../corpus/native/formats/hello.auditable.exe");
@@ -28,51 +26,6 @@ const MAX_JSON_WORK_ITEMS: usize = 1_048_576;
 const MAX_JSON_STRING_BYTES: usize = 9 * 1024 * 1024;
 const MAX_JSON_ESCAPED_STRING_BYTES: usize = 64 * 1024;
 const MAX_PREFLIGHT_ALLOCATION: usize = 128 * 1024;
-
-struct TrackingAllocator;
-
-#[global_allocator]
-static ALLOCATOR: TrackingAllocator = TrackingAllocator;
-
-thread_local! {
-    static LARGEST_TRACKED: Cell<Option<usize>> = const { Cell::new(None) };
-}
-
-fn record_allocation(size: usize) {
-    if let Ok(Some(largest)) = LARGEST_TRACKED.try_with(Cell::get) {
-        LARGEST_TRACKED.set(Some(largest.max(size)));
-    }
-}
-
-unsafe impl GlobalAlloc for TrackingAllocator {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let pointer: *mut u8 = unsafe { System.alloc(layout) };
-        if !pointer.is_null() {
-            record_allocation(layout.size());
-        }
-        pointer
-    }
-
-    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        let pointer: *mut u8 = unsafe { System.alloc_zeroed(layout) };
-        if !pointer.is_null() {
-            record_allocation(layout.size());
-        }
-        pointer
-    }
-
-    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
-        unsafe { System.dealloc(pointer, layout) };
-    }
-
-    unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        let replacement: *mut u8 = unsafe { System.realloc(pointer, layout, new_size) };
-        if !replacement.is_null() {
-            record_allocation(new_size);
-        }
-        replacement
-    }
-}
 
 fn package_array_json(count: usize, name: &str, source: Option<&str>) -> Vec<u8> {
     let source_field: String =
@@ -92,9 +45,9 @@ fn package_array_json(count: usize, name: &str, source: Option<&str>) -> Vec<u8>
 fn parse_with_largest_allocation(
     bytes: &[u8],
 ) -> (disrobe_pass_native::Result<AuditableSbom>, usize) {
-    LARGEST_TRACKED.set(Some(0));
+    start_successful_allocation_tracking();
     let result: disrobe_pass_native::Result<AuditableSbom> = parse_auditable_section(bytes);
-    let largest: usize = LARGEST_TRACKED.take().unwrap_or(0);
+    let largest: usize = finish_successful_allocation_tracking();
     (result, largest)
 }
 

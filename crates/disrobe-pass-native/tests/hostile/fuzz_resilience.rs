@@ -1,11 +1,5 @@
-#![expect(
-    unsafe_code,
-    reason = "a counting global allocator implements the unsafe GlobalAlloc trait"
-)]
 #![allow(clippy::expect_used, clippy::panic)]
 
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::cell::Cell;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -23,48 +17,13 @@ use crate::hostile_inputs;
 
 use crate::native_entry_points;
 
+use crate::tracking_allocator::{attempted_allocation_peak, reset_attempted_allocation_peak};
 use hostile_inputs::{
     COMPILED_VM_PROBE, HostileInput, SAMPLING_RULE, committed_image, compiled_vm_probe,
     crafted_elf, crafted_flat_image, crafted_macho_fat, crafted_macho_thin, crafted_pe32,
     crafted_pe32_plus, structural_variants_of, variants_of,
 };
 use native_entry_points::{Ctx, ENTRY_POINTS, Entry, PRECONDITION_GATED, Verdict};
-
-struct PeakTrackingAlloc;
-
-thread_local! {
-    static PEAK_SINGLE_ALLOC: Cell<usize> = const { Cell::new(0) };
-}
-
-fn record_allocation(size: usize) {
-    let _ = PEAK_SINGLE_ALLOC.try_with(|peak: &Cell<usize>| {
-        if size > peak.get() {
-            peak.set(size);
-        }
-    });
-}
-
-fn reset_peak_allocation() {
-    let _ = PEAK_SINGLE_ALLOC.try_with(|peak: &Cell<usize>| peak.set(0));
-}
-
-fn peak_allocation() -> usize {
-    PEAK_SINGLE_ALLOC.try_with(Cell::get).unwrap_or_default()
-}
-
-unsafe impl GlobalAlloc for PeakTrackingAlloc {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        record_allocation(layout.size());
-        unsafe { System.alloc(layout) }
-    }
-
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        unsafe { System.dealloc(ptr, layout) }
-    }
-}
-
-#[global_allocator]
-static ALLOC: PeakTrackingAlloc = PeakTrackingAlloc;
 
 const CASE_WALL_CLOCK_BUDGET: Duration = Duration::from_mins(1);
 const DEEP_ANALYSIS_INPUT_CAP: usize = 8192;
@@ -286,7 +245,7 @@ fn drive(inputs: &[HostileInput], scratch_dir: &Path, only_cheap: bool) -> Findi
                 scratch: scratch_dir,
                 label: &label,
             };
-            reset_peak_allocation();
+            reset_attempted_allocation_peak();
             enter(&label);
             let started: Instant = Instant::now();
             let verdict: Verdict = (entry.drive)(&ctx);
@@ -295,7 +254,7 @@ fn drive(inputs: &[HostileInput], scratch_dir: &Path, only_cheap: bool) -> Findi
             if elapsed > SLOW_CASE_REPORT {
                 findings.slowest.push((elapsed, label.clone()));
             }
-            let peak: usize = peak_allocation();
+            let peak: usize = attempted_allocation_peak();
             assert!(
                 peak < CASE_ALLOC_CEILING,
                 "{label} forced a {peak}-byte single allocation; a size field inside hostile input \
@@ -669,11 +628,11 @@ fn a_precondition_gated_entry_point_is_reached_on_the_fixture_that_satisfies_it(
                 scratch: scratch_dir.path(),
                 label: &label,
             };
-            reset_peak_allocation();
+            reset_attempted_allocation_peak();
             enter(&label);
             let verdict: Verdict = (entry.drive)(&ctx);
             leave();
-            let peak: usize = peak_allocation();
+            let peak: usize = attempted_allocation_peak();
             assert!(
                 peak < CASE_ALLOC_CEILING,
                 "{label} forced a {peak}-byte single allocation"
@@ -801,13 +760,13 @@ fn the_stub_emulator_bounds_a_hostile_stub_rather_than_hanging_or_faulting_the_h
     start_watchdog();
     for stub in HOSTILE_STUBS {
         let label: String = format!("stub_emu on a stub that {}", stub.label);
-        reset_peak_allocation();
+        reset_attempted_allocation_peak();
         enter(&label);
         let started: Instant = Instant::now();
         let outcome: core::result::Result<ExitReason, String> = run_hostile_stub(stub.code);
         leave();
         let elapsed: Duration = started.elapsed();
-        let peak: usize = peak_allocation();
+        let peak: usize = attempted_allocation_peak();
         assert!(
             peak < CASE_ALLOC_CEILING,
             "{label} forced a {peak}-byte single allocation"
@@ -841,7 +800,7 @@ fn the_stub_emulator_bounds_a_hostile_stub_rather_than_hanging_or_faulting_the_h
 #[test]
 fn the_emulator_memory_refuses_a_hostile_size_rather_than_reserving_it() {
     let mut mem: Memory = Memory::new();
-    reset_peak_allocation();
+    reset_attempted_allocation_peak();
     assert!(mem.map(STUB_CODE_BASE, u64::MAX, Perm::RW).is_err());
     assert!(
         mem.map(STUB_CODE_BASE, MAX_MAP_BYTES + 1, Perm::RW)
@@ -859,7 +818,7 @@ fn the_emulator_memory_refuses_a_hostile_size_rather_than_reserving_it() {
     assert!(mem.read(STUB_CODE_BASE, usize::MAX).is_err());
     assert!(mem.read(u64::MAX, 1).is_err());
 
-    let peak: usize = peak_allocation();
+    let peak: usize = attempted_allocation_peak();
     assert!(
         peak < CASE_ALLOC_CEILING,
         "a hostile map or read reserved {peak} bytes"
@@ -930,9 +889,9 @@ fn pdb_with_argument_count(count: u32) -> Vec<u8> {
 #[test]
 fn pdb_argument_list_count_is_bounded_before_dependency_allocation() {
     let bytes: Vec<u8> = pdb_with_argument_count(u32::MAX);
-    reset_peak_allocation();
+    reset_attempted_allocation_peak();
     let result = reconstruct_pdb_cxx(&bytes);
-    let peak: usize = peak_allocation();
+    let peak: usize = attempted_allocation_peak();
     let message: String = result
         .expect_err("oversized LF_ARGLIST count must refuse")
         .to_string();

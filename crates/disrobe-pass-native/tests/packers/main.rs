@@ -1,7 +1,3 @@
-#[path = "../support/packer_fixture.rs"]
-#[allow(clippy::panic, clippy::redundant_pub_crate, dead_code)]
-mod packer_fixture;
-
 mod aspack_pecompact_auto_surface;
 mod aspack_pecompact_phase2;
 mod asprotect_morphine_scaffold;

@@ -1,17 +1,3 @@
-#[path = "../common/mod.rs"]
-mod common;
-#[path = "../support/compiler_toolchain.rs"]
-#[allow(clippy::panic, clippy::redundant_pub_crate)]
-mod compiler_toolchain;
-#[path = "../support/object_symbol.rs"]
-#[allow(clippy::redundant_pub_crate)]
-mod object_symbol;
-#[path = "../support/prerequisite.rs"]
-#[allow(clippy::panic, clippy::redundant_pub_crate, dead_code)]
-mod prerequisite;
-#[path = "../support/vm_layout_generator.rs"]
-mod vm_layout_generator;
-
 mod aarch64_const_division_oracle;
 mod abi_inference_oracle;
 mod api_hash_oracle;

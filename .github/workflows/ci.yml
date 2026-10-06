@@ -1092,22 +1092,22 @@ jobs:
         run: cargo test -p disrobe-cli --test determinism_cross_platform -- --ignored batch_jobs_does_not_change_recovered_output --nocapture
       - name: aarch64 decompiler recompile-execution differential (one leg only)
         if: matrix.os == 'ubuntu-latest' && matrix.shard == 'two'
-        run: 'cargo test -p disrobe-pass-native --test lifting -- --ignored aarch64_recovery_grade:: --nocapture'
+        run: 'cargo test -p disrobe-pass-native --test it -- --ignored lifting::aarch64_recovery_grade:: --nocapture'
         env:
           DISROBE_REQUIRE_AARCH64_ORACLES: 1
       - name: aarch64 rust recompile-execution differential (one leg only)
         if: matrix.os == 'ubuntu-latest' && matrix.shard == 'two'
-        run: cargo test -p disrobe-pass-native --test lifting -- --ignored aarch64_rust_recovery_grade::corpus_rust_grade_report --nocapture
+        run: cargo test -p disrobe-pass-native --test it -- --ignored lifting::aarch64_rust_recovery_grade::corpus_rust_grade_report --nocapture
         env:
           DISROBE_REQUIRE_AARCH64_ORACLES: 1
       - name: aarch64 c against rust rendering cross-check (one leg only)
         if: matrix.os == 'ubuntu-latest' && matrix.shard == 'two'
-        run: cargo test -p disrobe-pass-native --test lifting -- --ignored aarch64_render_cross_check::c_and_rust_renderings_agree_bit_for_bit --nocapture
+        run: cargo test -p disrobe-pass-native --test it -- --ignored lifting::aarch64_render_cross_check::c_and_rust_renderings_agree_bit_for_bit --nocapture
         env:
           DISROBE_REQUIRE_AARCH64_ORACLES: 1
       - name: aarch64 floating-point helper semantics on directed vectors (one leg only)
         if: matrix.os == 'ubuntu-latest' && matrix.shard == 'two'
-        run: cargo test -p disrobe-pass-native --test lifting -- --ignored aarch64_fp_semantics::helpers_agree_with_the_integer_model_on_directed_vectors --nocapture
+        run: cargo test -p disrobe-pass-native --test it -- --ignored lifting::aarch64_fp_semantics::helpers_agree_with_the_integer_model_on_directed_vectors --nocapture
         env:
           DISROBE_REQUIRE_AARCH64_ORACLES: 1
       - name: aarch64 dense-switch CLI differential (one explicitly provisioned leg)

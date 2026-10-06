@@ -1,53 +1,20 @@
-#![expect(
-    unsafe_code,
-    reason = "a counting global allocator implements the unsafe GlobalAlloc trait"
-)]
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use crate::packer_fixture;
 
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{RecvTimeoutError, channel};
 use std::thread;
 use std::time::Duration;
 
+use crate::tracking_allocator::{
+    process_allocation_peak, reset_process_allocation_peak, start_process_allocation_tracking,
+};
 use disrobe_pass_native::packers::section_recovery::{GranuleRecovery, SectionRole};
 use disrobe_pass_native::packers::yodas_protector_phase2::{
     ForcedRc4Replay, HashInputSource, StubProgress, YodasProtectorPhase2,
     unpack_yodas_protector_phase2,
 };
 use packer_fixture::{PackerFixture, require_committed};
-
-struct PeakTrackingAlloc;
-
-static PEAK_SINGLE_ALLOC: AtomicUsize = AtomicUsize::new(0);
-
-unsafe impl GlobalAlloc for PeakTrackingAlloc {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let size: usize = layout.size();
-        let mut observed: usize = PEAK_SINGLE_ALLOC.load(Ordering::Relaxed);
-        while size > observed {
-            match PEAK_SINGLE_ALLOC.compare_exchange_weak(
-                observed,
-                size,
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => break,
-                Err(current) => observed = current,
-            }
-        }
-        unsafe { System.alloc(layout) }
-    }
-
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        unsafe { System.dealloc(ptr, layout) }
-    }
-}
-
-#[global_allocator]
-static ALLOC: PeakTrackingAlloc = PeakTrackingAlloc;
 
 const STUB_WALL_CLOCK_BUDGET: Duration = Duration::from_mins(2);
 const STUB_ALLOC_CEILING: usize = 16 * 1024 * 1024;
@@ -270,9 +237,10 @@ fn yp_stub_emulation_terminates_under_a_wall_clock_and_allocation_bound() {
     let mut tested: usize = 0;
     for (packed_n, orig_n, _f) in CASES {
         let (packed, orig): (Vec<u8>, Vec<u8>) = (corpus(packed_n), corpus(orig_n));
-        PEAK_SINGLE_ALLOC.store(0, Ordering::Relaxed);
+        reset_process_allocation_peak();
         let (sender, receiver) = channel::<StubProgress>();
         let worker: thread::JoinHandle<()> = thread::spawn(move || {
+            start_process_allocation_tracking();
             if let Ok(out) = unpack_yodas_protector_phase2(&packed, Some(&orig)) {
                 let _ = sender.send(out.stub_progress);
             }
@@ -288,7 +256,7 @@ fn yp_stub_emulation_terminates_under_a_wall_clock_and_allocation_bound() {
                 panic!("{packed_n}: the stub emulation ended without reporting progress")
             }
         };
-        let peak: usize = PEAK_SINGLE_ALLOC.load(Ordering::Relaxed);
+        let peak: usize = process_allocation_peak();
         let _ = worker.join();
         println!("YP-BOUND {packed_n}: {progress:?} peak_single_alloc={peak}");
         assert!(

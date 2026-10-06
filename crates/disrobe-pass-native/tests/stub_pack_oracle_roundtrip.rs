@@ -1,12 +1,9 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
-#[path = "support/packer_fixture.rs"]
-#[allow(clippy::redundant_pub_crate, dead_code)]
-mod packer_fixture;
-
 use std::fs;
 use std::path::PathBuf;
 
+use crate::packer_fixture::{CommittedFixture, PackerFixture, declared_byte_defect, load_fixture};
 use disrobe_pass_native::packers::emulated_unpack::{
     EmulatedUnpack, EmulationConfig, emulate_unpack_stub,
 };
@@ -17,7 +14,6 @@ use disrobe_pass_native::packers::section_recovery::{
 use disrobe_pass_native::packers::stub_pack_oracle::{
     PackedImage, SectionSpec, StubKind, build_packed,
 };
-use packer_fixture::{CommittedFixture, PackerFixture, declared_byte_defect, load_fixture};
 
 #[derive(Debug, Clone, Copy)]
 struct ContentFloor {

@@ -44,7 +44,8 @@ mutation = { path = "crates/disrobe-pass-dotnet/tests/bitmono_string_recovery.rs
 [[grader]]
 ecosystem = "native"
 package = "disrobe-pass-native"
-target = "stub_pack_oracle_roundtrip"
+target = "it"
+module = "stub_pack_oracle_roundtrip"
 features = []
 reference = { path = "crates/disrobe-pass-native/tests/stub_pack_oracle_roundtrip.rs", test = "committed_lz_pair_recovers_every_content_section_against_the_committed_original" }
 mutation = { path = "crates/disrobe-pass-native/tests/stub_pack_oracle_roundtrip.rs", test = "one_corrupted_byte_is_named_by_offset_and_drops_the_pinned_figure" }

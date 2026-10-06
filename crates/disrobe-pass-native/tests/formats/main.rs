@@ -1,10 +1,3 @@
-#[path = "../support/object_symbol.rs"]
-#[allow(clippy::redundant_pub_crate)]
-mod object_symbol;
-#[path = "../support/prerequisite.rs"]
-#[allow(clippy::panic, clippy::redundant_pub_crate, dead_code)]
-mod prerequisite;
-
 mod authenticode_oracle;
 mod coff_parse;
 mod crypto_const_sigs;

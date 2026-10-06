@@ -1,20 +1,3 @@
-#[path = "../aarch64_grade/battery.rs"]
-#[allow(clippy::expect_used)]
-mod battery;
-#[path = "../common/mod.rs"]
-mod common;
-#[path = "../support/compiler_toolchain.rs"]
-#[allow(clippy::panic, clippy::redundant_pub_crate)]
-mod compiler_toolchain;
-#[path = "../support/object_symbol.rs"]
-#[allow(clippy::redundant_pub_crate)]
-mod object_symbol;
-#[path = "../support/oracle_demand.rs"]
-mod oracle_demand;
-#[path = "../support/prerequisite.rs"]
-#[allow(clippy::panic, clippy::redundant_pub_crate, dead_code)]
-mod prerequisite;
-
 mod aarch64_cfg_pseudo_c;
 mod aarch64_entry_fold_back_edge;
 mod aarch64_exit_structuring_census;

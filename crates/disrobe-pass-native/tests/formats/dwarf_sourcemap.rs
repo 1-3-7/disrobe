@@ -9,14 +9,22 @@ use disrobe_pass_native::{
     CompileUnit, DwarfSourcemap, Error, LineRow, ReconstructedType, TypeKind, TypeReconstruction,
     reconstruct_dwarf_types, synthesize_dwarf_sourcemap,
 };
+use disrobe_testkit::load_fixture;
 
-const ZIG_ELF: &[u8] = include_bytes!("../../../../corpus/native/zig/hello.zig.elf");
-const NIM_ELF: &[u8] = include_bytes!("../../../../corpus/native/nim/hello.nim.elf");
+const DWARF_FIXTURE_LIMIT: u64 = 3 * 1024 * 1024;
+const ZIG_ELF: &str = "corpus/native/zig/hello.zig.elf";
+const NIM_ELF: &str = "corpus/native/nim/hello.nim.elf";
+
+fn dwarf_fixture(relative_path: &str) -> Vec<u8> {
+    load_fixture(relative_path, DWARF_FIXTURE_LIMIT)
+        .unwrap_or_else(|error| panic!("load DWARF fixture {relative_path}: {error}"))
+}
 
 #[test]
 fn synthesizes_real_dwarf_sourcemap_from_zig_elf() {
+    let zig: Vec<u8> = dwarf_fixture(ZIG_ELF);
     let map: DwarfSourcemap =
-        synthesize_dwarf_sourcemap(ZIG_ELF).expect("zig ELF carries real .debug_* sections");
+        synthesize_dwarf_sourcemap(&zig).expect("zig ELF carries real .debug_* sections");
     assert!(
         !map.is_empty(),
         "the zig binary is compiled with DWARF; recovery must not be empty",
@@ -69,7 +77,8 @@ fn synthesizes_real_dwarf_sourcemap_from_zig_elf() {
 
 #[test]
 fn zig_sourcemap_json_is_v3_compatible() {
-    let map: DwarfSourcemap = synthesize_dwarf_sourcemap(ZIG_ELF).expect("zig sourcemap");
+    let zig: Vec<u8> = dwarf_fixture(ZIG_ELF);
+    let map: DwarfSourcemap = synthesize_dwarf_sourcemap(&zig).expect("zig sourcemap");
     let json: serde_json::Value = map.to_sourcemap_json();
     assert_eq!(json["version"], 1, "v3-compatible schema version tag");
     assert_eq!(
@@ -86,8 +95,9 @@ fn zig_sourcemap_json_is_v3_compatible() {
 
 #[test]
 fn synthesizes_dwarf_sourcemap_from_nim_elf() {
+    let nim: Vec<u8> = dwarf_fixture(NIM_ELF);
     let map: DwarfSourcemap =
-        synthesize_dwarf_sourcemap(NIM_ELF).expect("nim ELF carries real .debug_* sections");
+        synthesize_dwarf_sourcemap(&nim).expect("nim ELF carries real .debug_* sections");
     assert!(
         !map.is_empty(),
         "nim binary ships DWARF; recovery non-empty"
@@ -105,8 +115,9 @@ fn synthesizes_dwarf_sourcemap_from_nim_elf() {
 
 #[test]
 fn reconstructs_real_dwarf_types_from_zig_elf() {
+    let zig: Vec<u8> = dwarf_fixture(ZIG_ELF);
     let rec: TypeReconstruction =
-        reconstruct_dwarf_types(ZIG_ELF).expect("zig ELF carries real type DIEs");
+        reconstruct_dwarf_types(&zig).expect("zig ELF carries real type DIEs");
     assert!(
         !rec.types.is_empty(),
         "the zig binary embeds base/pointer/struct/array type DIEs; reconstruction must be non-empty",
@@ -160,8 +171,9 @@ fn reconstructs_real_dwarf_types_from_zig_elf() {
 
 #[test]
 fn reconstructs_real_dwarf_types_from_nim_elf() {
+    let nim: Vec<u8> = dwarf_fixture(NIM_ELF);
     let rec: TypeReconstruction =
-        reconstruct_dwarf_types(NIM_ELF).expect("nim ELF carries real type DIEs");
+        reconstruct_dwarf_types(&nim).expect("nim ELF carries real type DIEs");
     assert!(!rec.types.is_empty(), "nim binary embeds type DIEs");
     let has_typedef: bool = rec
         .types
@@ -184,7 +196,8 @@ fn reconstructs_real_dwarf_types_from_nim_elf() {
 
 #[test]
 fn split_dwarf_info_reports_single_file_dwarf() {
-    let rec: TypeReconstruction = reconstruct_dwarf_types(ZIG_ELF).expect("zig reconstruct");
+    let zig: Vec<u8> = dwarf_fixture(ZIG_ELF);
+    let rec: TypeReconstruction = reconstruct_dwarf_types(&zig).expect("zig reconstruct");
     assert!(
         !rec.split_dwarf.has_skeleton_units,
         "the zig fixture is single-file DWARF (no DW_AT_dwo_name); the resolver must report \
@@ -198,8 +211,10 @@ fn split_dwarf_info_reports_single_file_dwarf() {
 
 #[test]
 fn split_dwarf_resolver_detects_companion_sections_when_present() {
-    let nim: TypeReconstruction = reconstruct_dwarf_types(NIM_ELF).expect("nim reconstruct");
-    let zig: TypeReconstruction = reconstruct_dwarf_types(ZIG_ELF).expect("zig reconstruct");
+    let nim_elf: Vec<u8> = dwarf_fixture(NIM_ELF);
+    let zig_elf: Vec<u8> = dwarf_fixture(ZIG_ELF);
+    let nim: TypeReconstruction = reconstruct_dwarf_types(&nim_elf).expect("nim reconstruct");
+    let zig: TypeReconstruction = reconstruct_dwarf_types(&zig_elf).expect("zig reconstruct");
     assert!(
         !nim.split_dwarf.has_skeleton_units && !zig.split_dwarf.has_skeleton_units,
         "neither fixture is a split-DWARF skeleton; the resolver must report that",

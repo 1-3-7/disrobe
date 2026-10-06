@@ -56,7 +56,7 @@ jobs:
           $clangBin = Split-Path -Parent $env:DISROBE_MS_X64_CLANG
           $env:Path = "$clangBin;$env:Path"
           $log = Join-Path $env:RUNNER_TEMP "native-ms-x64-fp-oracle.log"
-          & cargo test -p disrobe-pass-native --test oracles --all-features -- --exact pseudo_c_leaf_oracle::ms_x64_four_double_parameters_recompile_with_mutation_control --nocapture 2>&1 | Tee-Object -FilePath $log
+          & cargo test -p disrobe-pass-native --test it --all-features -- --exact oracles::pseudo_c_leaf_oracle::ms_x64_four_double_parameters_recompile_with_mutation_control --nocapture 2>&1 | Tee-Object -FilePath $log
           $testExitCode = $LASTEXITCODE
           $ErrorActionPreference = "Stop"
           if ($testExitCode -ne 0) { exit $testExitCode }

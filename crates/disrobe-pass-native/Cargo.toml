@@ -10,6 +10,7 @@ authors.workspace = true
 rust-version.workspace = true
 keywords = ["pe", "elf", "macho", "upx", "deobfuscation"]
 categories.workspace = true
+autotests = false
 
 [lints]
 workspace = true
@@ -81,6 +82,10 @@ tempfile = "3"
 rbpf = "0.4"
 toml = { workspace = true }
 divan = { workspace = true }
+
+[[test]]
+name = "it"
+path = "tests/it/main.rs"
 
 [[bench]]
 name = "snapshot_declarations"

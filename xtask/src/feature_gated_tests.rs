@@ -1180,10 +1180,13 @@ mod tests {
     #[test]
     fn the_filter_after_the_separator_is_read_past_its_flags() {
         let invocation: Invocation = parse_invocation(
-            "cargo test -p disrobe-pass-native --test lifting -- --ignored aarch64_fp::case --nocapture",
+            "cargo test -p disrobe-pass-native --test it -- --ignored lifting::aarch64_fp::case --nocapture",
         );
-        assert_eq!(invocation.filter.as_deref(), Some("aarch64_fp::case"));
-        assert_eq!(invocation.tests, vec!["lifting".to_owned()]);
+        assert_eq!(
+            invocation.filter.as_deref(),
+            Some("lifting::aarch64_fp::case")
+        );
+        assert_eq!(invocation.tests, vec!["it".to_owned()]);
     }
 
     #[test]
