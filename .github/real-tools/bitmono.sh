@@ -16,7 +16,7 @@ version=BitMono.GlobalTool $version nupkg sha512 (base64) ${package_hash:-unreco
 runtime=$(dotnet --version) SDK; outputs executed with the same runtime
 EOF
 
-runtime_dir="$(dotnet --list-runtimes | awk '/^Microsoft\.NETCore\.App 8\./ { version = $2; dir = $3 } END { gsub(/[\[\]]/, "", dir); print dir "/" version }')"
+runtime_dir="$(dotnet --list-runtimes | awk '/^Microsoft\.NETCore\.App 9\./ { version = $2; dir = $3 } END { gsub(/[\[\]]/, "", dir); print dir "/" version }')"
 test -d "$runtime_dir"
 programs=(
   "GauntletBitMono:corpus/dotnet/obfuscators/bitmono/gauntlet/clean_original.cs"
@@ -54,7 +54,7 @@ for entry in "${programs[@]}"; do
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net9.0</TargetFramework>
     <LangVersion>latest</LangVersion>
     <Nullable>disable</Nullable>
     <Optimize>true</Optimize>
@@ -66,10 +66,10 @@ for entry in "${programs[@]}"; do
 </Project>
 EOF
   if ! (cd "$project" && dotnet build -c Release -nologo -v q); then
-    printf '%s\t%s\t%s\t%s\n' - "$source" "dotnet build -c Release (net8.0)" input-failed >> "$OUT/outputs.tsv"
+    printf '%s\t%s\t%s\t%s\n' - "$source" "dotnet build -c Release (net9.0)" input-failed >> "$OUT/outputs.tsv"
     continue
   fi
-  build="$project/bin/Release/net8.0"
+  build="$project/bin/Release/net9.0"
   cp "$build/$program.dll" "$OUT/files/$program.clean.dll"
   expected="$(cd "$build" && timeout 60 dotnet "$program.dll" 2>&1)" || true
   for preset in "${presets[@]}"; do
