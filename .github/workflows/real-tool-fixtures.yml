@@ -14,13 +14,16 @@ on:
           - jbco
           - pyobfus
           - ollvm
+          - confuserex
+          - skidfuscator
+          - bitmono
 
 permissions:
   contents: read
 
 jobs:
   produce:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ inputs.recipe == 'confuserex' && 'windows-2025' || 'ubuntu-24.04' }}
     timeout-minutes: ${{ inputs.recipe == 'ollvm' && 330 || 60 }}
     env:
       RECIPE: ${{ inputs.recipe }}
@@ -29,6 +32,7 @@ jobs:
         with:
           persist-credentials: false
       - name: run the recipe
+        shell: bash
         run: |
           set -euo pipefail
           export REPO="$GITHUB_WORKSPACE" OUT="$RUNNER_TEMP/real-tool-out"
