@@ -366,15 +366,18 @@ fn listed_count(value: &Value, grader: &Grader) -> Result<ListedTests> {
             .and_then(Value::as_object)
             .ok_or_else(|| eyre::eyre!("listed suite has no testcases"))?;
         for (identity, testcase) in testcases {
+            let filter_status: Option<&str> = testcase
+                .get("filter-match")
+                .and_then(|filter: &Value| filter.get("status"))
+                .and_then(Value::as_str);
+            if filter_status == Some("mismatch") && grader.module.is_some() {
+                continue;
+            }
             if testcase.get("ignored").and_then(Value::as_bool) != Some(false)
-                || testcase
-                    .get("filter-match")
-                    .and_then(|filter: &Value| filter.get("status"))
-                    .and_then(Value::as_str)
-                    != Some("matches")
+                || filter_status != Some("matches")
             {
                 bail!(
-                    "{}:{} has an ignored, filtered, or malformed listed test",
+                    "{}:{} has an ignored, filtered, or malformed listed test: {identity}",
                     grader.package,
                     grader.target
                 );
