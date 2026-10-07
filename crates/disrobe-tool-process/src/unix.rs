@@ -122,6 +122,21 @@ pub(crate) fn spawn(spec: &CommandSpec) -> Result<(ContainedProcess, PipeSet), L
     ))
 }
 
+#[cfg(target_os = "macos")]
+fn apply_memory_limit(
+    _command: &mut Command,
+    _memory_limit: ProcessMemoryLimit,
+) -> Result<(), LaunchError> {
+    Err(LaunchError::Platform {
+        stage: LaunchStage::MemoryLimit,
+        source: io::Error::new(
+            io::ErrorKind::Unsupported,
+            "macOS does not enforce RLIMIT_AS, so a process memory limit cannot be applied",
+        ),
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
 fn apply_memory_limit(
     command: &mut Command,
     memory_limit: ProcessMemoryLimit,

@@ -816,7 +816,24 @@ mod tests {
     const CHILD_ALLOCATION_MARKER: &[u8] = b"allocation-starting\n";
 
     #[test]
-    #[cfg(any(unix, windows))]
+    #[cfg(target_os = "macos")]
+    fn memory_limit_is_refused_by_name_where_the_platform_cannot_enforce_it() {
+        let refused: Result<Execution, ExecutionError> =
+            memory_limited_allocation_child(1024 * 1024 * 1024);
+        assert!(
+            matches!(
+                &refused,
+                Err(ExecutionError::Launch(LaunchError::Platform {
+                    stage: LaunchStage::MemoryLimit,
+                    source
+                })) if source.kind() == io::ErrorKind::Unsupported
+            ),
+            "macOS cannot enforce RLIMIT_AS, so the launch must refuse the limit: {refused:?}"
+        );
+    }
+
+    #[test]
+    #[cfg(any(all(unix, not(target_os = "macos")), windows))]
     fn memory_limit_allows_a_reasonable_allocation_and_refuses_a_tiny_one()
     -> Result<(), Box<dyn std::error::Error>> {
         let permitted: Execution = memory_limited_allocation_child(1024 * 1024 * 1024)?;
