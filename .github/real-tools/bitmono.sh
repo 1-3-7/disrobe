@@ -22,7 +22,7 @@ programs=(
   "GauntletBitMono:corpus/dotnet/obfuscators/bitmono/gauntlet/clean_original.cs"
   "BehaviourSuite:crates/disrobe-pass-dotnet/tests/fixtures/behaviour"
 )
-presets=(Minimum Normal Maximum)
+presets=(Minimal Balanced Maximum)
 
 mkdir -p "$OUT/files"
 : > "$OUT/outputs.tsv"

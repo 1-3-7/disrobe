@@ -8,7 +8,7 @@ expected_sha256="${CONFUSEREX_SHA256:-}"
 tool="$RUNNER_TEMP/confuserex"
 mkdir -p "$tool"
 curl --fail --silent --show-error --location --output "$tool/ConfuserEx_bin.zip" "$url"
-zip_sha256="$(sha256sum "$tool/ConfuserEx_bin.zip" | cut -d' ' -f1)"
+zip_sha256="$(sha256sum "$tool/ConfuserEx_bin.zip" | cut -d' ' -f1 | tr -d '\')"
 if [ -n "$expected_sha256" ] && [ "$zip_sha256" != "$expected_sha256" ]; then
   echo "ConfuserEx_bin.zip sha256 $zip_sha256 does not match the pinned $expected_sha256" >&2
   exit 1
@@ -20,7 +20,7 @@ test -n "$cli"
 cat > "$OUT/tool.env" <<EOF
 name=ConfuserEx (yck1509 original)
 url=$url
-version=ConfuserEx 1.0.0 ConfuserEx_bin.zip sha256 $zip_sha256; Confuser.CLI.exe sha256 $(sha256sum "$cli" | cut -d' ' -f1)
+version=ConfuserEx 1.0.0 ConfuserEx_bin.zip sha256 $zip_sha256; Confuser.CLI.exe sha256 $(sha256sum "$cli" | cut -d' ' -f1 | tr -d '\')
 runtime=$(dotnet --version) SDK building net48; outputs executed on the Windows runner's .NET Framework
 EOF
 
