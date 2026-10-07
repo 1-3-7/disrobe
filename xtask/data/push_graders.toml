@@ -37,7 +37,8 @@ mutation = { path = "crates/disrobe-pass-jvm/tests/apk_signature_verify.rs", tes
 [[grader]]
 ecosystem = "dotnet"
 package = "disrobe-pass-dotnet"
-target = "bitmono_string_recovery"
+target = "it"
+module = "bitmono_string_recovery"
 features = []
 reference = { path = "crates/disrobe-pass-dotnet/tests/bitmono_string_recovery.rs", test = "recovered_plaintext_matches_the_clean_assembly_literal_set" }
 mutation = { path = "crates/disrobe-pass-dotnet/tests/bitmono_string_recovery.rs", test = "recovery_reads_every_carrier_and_not_a_baked_in_table" }
