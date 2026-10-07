@@ -19,6 +19,7 @@ on:
           - bitmono
           - proguard
           - yguard
+          - jsobfu
 
 permissions:
   contents: read
