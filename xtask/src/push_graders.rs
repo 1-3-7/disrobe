@@ -388,13 +388,15 @@ fn listed_count(value: &Value, grader: &Grader) -> Result<ListedTests> {
             identities.insert(identity.clone());
         }
     }
-    if observed != count {
+    let module_filtered: bool = grader.module.is_some();
+    if (!module_filtered && observed != count) || (module_filtered && observed > count) {
         bail!(
             "{}:{} reports {count} listed tests but exposes {observed} runnable testcases",
             grader.package,
             grader.target
         );
     }
+    let count: usize = if module_filtered { observed } else { count };
     Ok(ListedTests { count, identities })
 }
 
@@ -664,6 +666,44 @@ mod tests {
         });
         let error: eyre::Report =
             listed_count(&value, &grader(Ecosystem::Python)).expect_err("ignored test must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("ignored, filtered, or malformed")
+        );
+    }
+
+    #[test]
+    fn module_filtered_list_counts_only_the_matching_tests() {
+        let value: Value = serde_json::json!({
+            "test-count": 3,
+            "rust-suites": {
+                "example": {
+                    "status": "listed",
+                    "testcases": {
+                        "reeval_oracle::reference": {
+                            "ignored": false,
+                            "filter-match": {"status": "matches"}
+                        },
+                        "reeval_oracle::mutation": {
+                            "ignored": false,
+                            "filter-match": {"status": "matches"}
+                        },
+                        "other::ignored_elsewhere": {
+                            "ignored": true,
+                            "filter-match": {"status": "mismatch", "reason": "expression"}
+                        }
+                    }
+                }
+            }
+        });
+        let mut filtered: Grader = grader(Ecosystem::JavaScript);
+        filtered.module = Some("reeval_oracle".to_owned());
+        let listed: ListedTests = listed_count(&value, &filtered).expect("filtered list");
+        assert_eq!(listed.count, 2);
+        assert_eq!(listed.identities.len(), 2);
+        let error: eyre::Report = listed_count(&value, &grader(Ecosystem::JavaScript))
+            .expect_err("without a module filter the mismatch is malformed");
         assert!(
             error
                 .to_string()
