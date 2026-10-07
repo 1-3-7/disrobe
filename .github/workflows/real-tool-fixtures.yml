@@ -17,6 +17,8 @@ on:
           - confuserex
           - skidfuscator
           - bitmono
+          - proguard
+          - yguard
 
 permissions:
   contents: read
