@@ -24,7 +24,6 @@ version=ConfuserEx 1.0.0 ConfuserEx_bin.zip sha256 $zip_sha256; Confuser.CLI.exe
 runtime=$(dotnet --version) SDK building net48; outputs executed on the Windows runner's .NET Framework
 EOF
 
-behaviour="$REPO/crates/disrobe-pass-dotnet/tests/fixtures/behaviour"
 programs=(
   "GauntletSample:corpus/dotnet/confuserex/gauntlet/GauntletSample.cs"
   "BehaviourSuite:crates/disrobe-pass-dotnet/tests/fixtures/behaviour"

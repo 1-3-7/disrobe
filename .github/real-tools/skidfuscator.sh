@@ -40,8 +40,10 @@ for input in "${inputs[@]}"; do
   class_name="$(sed -n 's/^public \(final \)\?class \([A-Za-z0-9_]*\).*/\2/p' "$REPO/$input" | head -n 1)"
   main="${package:+$package.}${class_name:-$program}"
   classes="$RUNNER_TEMP/$program-classes"
-  mkdir -p "$classes"
-  if ! "$javac" -source 8 -target 8 -d "$classes" "$REPO/$input"; then
+  sources="$RUNNER_TEMP/$program-src"
+  mkdir -p "$classes" "$sources"
+  cp "$REPO/$input" "$sources/${class_name:-$program}.java"
+  if ! "$javac" -source 8 -target 8 -d "$classes" "$sources/${class_name:-$program}.java"; then
     printf '%s\t%s\t%s\t%s\n' - "$input" "javac -source 8 -target 8" input-failed >> "$OUT/outputs.tsv"
     continue
   fi

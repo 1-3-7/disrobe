@@ -16,7 +16,8 @@ version=BitMono.GlobalTool $version nupkg sha512 (base64) ${package_hash:-unreco
 runtime=$(dotnet --version) SDK; outputs executed with the same runtime
 EOF
 
-behaviour="$REPO/crates/disrobe-pass-dotnet/tests/fixtures/behaviour"
+runtime_dir="$(dotnet --list-runtimes | awk '/^Microsoft\.NETCore\.App 8\./ { version = $2; dir = $3 } END { gsub(/[\[\]]/, "", dir); print dir "/" version }')"
+test -d "$runtime_dir"
 programs=(
   "GauntletBitMono:corpus/dotnet/obfuscators/bitmono/gauntlet/clean_original.cs"
   "BehaviourSuite:crates/disrobe-pass-dotnet/tests/fixtures/behaviour"
@@ -77,8 +78,8 @@ EOF
     mkdir -p "$work"
     cp "$build"/* "$work/"
     output="files/$program.$preset.dll"
-    command="bitmono.console -f $program.dll -l . -o out --preset $preset --no-watermark"
-    if (cd "$work" && timeout 900 "$bitmono" -f "$program.dll" -l . -o out --preset "$preset" --no-watermark) \
+    command="bitmono.console -f $program.dll -l <net8 shared runtime dir> -o out --preset $preset --no-watermark"
+    if (cd "$work" && timeout 900 "$bitmono" -f "$program.dll" -l "$runtime_dir" -o out --preset "$preset" --no-watermark) \
       && produced="$(find "$work/out" -name "$program*.dll" | head -n 1)" && test -n "$produced"; then
       cp "$produced" "$OUT/$output"
       cp "$produced" "$work/$program.dll"

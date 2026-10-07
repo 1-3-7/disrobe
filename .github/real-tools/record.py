@@ -6,6 +6,13 @@ import sys
 
 
 def sha256(path: pathlib.Path) -> str:
+    if path.is_dir():
+        digest = hashlib.sha256()
+        for file in sorted(p for p in path.rglob("*") if p.is_file()):
+            digest.update(file.relative_to(path).as_posix().encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(hashlib.sha256(file.read_bytes()).digest())
+        return digest.hexdigest()
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
