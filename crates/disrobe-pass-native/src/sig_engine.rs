@@ -2544,10 +2544,20 @@ fn inno_finding(bytes: &[u8], out: &mut Vec<StructFinding>) {
     });
 }
 
-fn installshield_finding(bytes: &[u8], out: &mut Vec<StructFinding>) {
+fn installshield_finding(image: &PeImage, bytes: &[u8], out: &mut Vec<StructFinding>) {
+    let overlay_start: usize = image
+        .sections
+        .iter()
+        .filter_map(|section: &PeSection| section.raw_range(bytes.len()))
+        .map(|(_, end): (usize, usize)| end)
+        .max()
+        .unwrap_or(image.size_of_headers as usize);
+    let cabinet_at_overlay: bool = bytes
+        .get(overlay_start..)
+        .is_some_and(|tail: &[u8]| tail.starts_with(b"ISc("));
     let present: bool = byte_find(bytes, b"InstallShield").is_some()
         || byte_find(bytes, b"ISSetupStream").is_some()
-        || byte_find(bytes, b"ISc(").is_some();
+        || cabinet_at_overlay;
     if present {
         out.push(StructFinding {
             class: StructClass::Installer,
@@ -2791,7 +2801,7 @@ pub fn struct_findings(bytes: &[u8]) -> Vec<StructFinding> {
         dotnet_bsjb_finding(&image, bytes, &mut out);
         nsis_finding(bytes, &mut out);
         inno_finding(bytes, &mut out);
-        installshield_finding(bytes, &mut out);
+        installshield_finding(&image, bytes, &mut out);
         wise_finding(bytes, &mut out);
         autoit_finding(bytes, &mut out);
         inject2pe_finding(&image, bytes, &mut out);
@@ -3398,6 +3408,26 @@ mod tests {
             buf[at..end].copy_from_slice(&bp.rsrc_payload[..end - at]);
         }
         buf
+    }
+
+    #[test]
+    fn installshield_cabinet_magic_counts_only_at_the_overlay_start() {
+        let mut inside: Vec<u8> = build_pe(&PeBlueprint::default());
+        inside[0x210..0x214].copy_from_slice(b"ISc(");
+        assert!(
+            !struct_findings(&inside)
+                .iter()
+                .any(|f: &StructFinding| f.family == StructFamily::InstallShield),
+            "the cabinet magic inside a section's bytes is not an installer"
+        );
+        let mut overlay: Vec<u8> = build_pe(&PeBlueprint::default());
+        overlay[0x500..0x504].copy_from_slice(b"ISc(");
+        assert!(
+            struct_findings(&overlay)
+                .iter()
+                .any(|f: &StructFinding| f.family == StructFamily::InstallShield),
+            "the cabinet magic at the overlay start is an InstallShield setup"
+        );
     }
 
     #[test]
