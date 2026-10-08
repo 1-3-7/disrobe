@@ -127,7 +127,12 @@ fn appimage_seed() -> Vec<u8> {
 }
 
 fn luks1_seed() -> Vec<u8> {
-    include_bytes!("fixtures/luks1/aes128-cbc-plain.luks1")[..592].to_vec()
+    disrobe_testkit::load_fixture(
+        "crates/disrobe-binfmt/tests/fixtures/luks1/aes128-cbc-plain.luks1",
+        3 * 1024 * 1024,
+    )
+    .expect("load LUKS1 seed")[..592]
+        .to_vec()
 }
 
 fn mutate(seed: &[u8], rng: &mut Xorshift64) -> Vec<u8> {

@@ -161,7 +161,7 @@ fn macho_zero_fill_section_has_no_file_backing() {
 fn elf_nobits_section_has_no_file_backing() {
     let image: NativeImage<'_> =
         parse_native_image(ELF_BSS_IMAGE).expect("real nim elf image should parse");
-    let address: u64 = 0x102_74e0;
+    let address: u64 = 0x102_73e0;
     let section: &NativeImageSection = image
         .section_at(address)
         .expect("nobits address should have a section");
@@ -171,7 +171,7 @@ fn elf_nobits_section_has_no_file_backing() {
     assert!(!section.executable);
     assert!(image.file_offset(address).is_none());
     assert!(image.bytes_at(address).is_none());
-    assert!(image.section_at(0x102_50f0).is_none());
+    assert!(image.section_at(0x102_7500).is_none());
 }
 
 #[test]

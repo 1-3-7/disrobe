@@ -14,13 +14,25 @@ const ARJ_STORED: &[u8] = include_bytes!("../../../corpus/binfmt/arj/method0.arj
 const ARJ_REFUSED: &[u8] = include_bytes!("../../../corpus/binfmt/arj/garbled.arj");
 const LZH_PARTIAL: &[u8] = include_bytes!("../../../corpus/binfmt/lzh/pmarc/generated_pm1.pma");
 const ARC_METHODS: &[u8] = include_bytes!("../../../corpus/binfmt/arc/methods.arc");
-const INNOSETUP: &[u8] = include_bytes!("fixtures/innosetup/innosetup-6.3.3.exe");
 const EROFS: &[u8] = include_bytes!("fixtures/erofs/lzma-compact-mixed.erofs");
 const STUFFIT: &[u8] = include_bytes!("fixtures/stuffit/stuffit45-method13.sit");
 const RPM: &[u8] = include_bytes!("fixtures/rpm/hello-v4-gzip.rpm");
 const UEFI: &[u8] = include_bytes!("fixtures/uefi_fv/edk2_brotli_guided.fv");
-const APPIMAGE: &[u8] =
-    include_bytes!("../../../corpus/binfmt/appimage-type1/AppImageAssistant.AppImage");
+fn innosetup() -> Vec<u8> {
+    disrobe_testkit::load_fixture(
+        "crates/disrobe-binfmt/tests/fixtures/innosetup/innosetup-6.3.3.exe",
+        6 * 1024 * 1024,
+    )
+    .expect("load Inno Setup fixture")
+}
+
+fn appimage() -> Vec<u8> {
+    disrobe_testkit::load_fixture(
+        "corpus/binfmt/appimage-type1/AppImageAssistant.AppImage",
+        2 * 1024 * 1024,
+    )
+    .expect("load AppImage fixture")
+}
 const DOTNET: &[u8] =
     include_bytes!("../../../corpus/binfmt/dotnet-single-file/probe.v6.win-x64.exe");
 const INSTALLSHIELD: &[u8] =
@@ -225,7 +237,7 @@ fn direct_and_automatic_archive_extraction_publish_the_same_partial_recovery() {
         (ContainerKind::Rar, rar_with_refused_member(), true),
         (ContainerKind::Arj, arj_with_refused_member(), true),
         (ContainerKind::Lzh, LZH_PARTIAL.to_vec(), true),
-        (ContainerKind::InnoSetup, INNOSETUP.to_vec(), false),
+        (ContainerKind::InnoSetup, innosetup(), false),
         (ContainerKind::InstallShield, INSTALLSHIELD.to_vec(), true),
         (ContainerKind::Zip, zip_with_refused_path(), true),
         (ContainerKind::Zip, zip_with_refused_quota(), true),
@@ -235,7 +247,7 @@ fn direct_and_automatic_archive_extraction_publish_the_same_partial_recovery() {
         (ContainerKind::Erofs, EROFS.to_vec(), false),
         (ContainerKind::StuffIt, stuffit_with_refused_fork(), true),
         (ContainerKind::Rpm, RPM.to_vec(), false),
-        (ContainerKind::AppImage, APPIMAGE.to_vec(), false),
+        (ContainerKind::AppImage, appimage(), false),
         (ContainerKind::UefiFv, UEFI.to_vec(), false),
     ] {
         assert_archive_parity(kind, bytes, partial);

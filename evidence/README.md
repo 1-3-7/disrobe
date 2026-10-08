@@ -103,7 +103,7 @@ self-referential offsets, expansion-ratio lies, counts near the type maximum, a 
 match its body, and a version the reader does not implement. Every member carries a label
 naming its correct outcome, drawn from a closed typed vocabulary, and the harness fails when a
 member that must refuse instead returns a recovery. See `evidence/negative-corpus.md`, and run it
-with `cargo test -p disrobe-binfmt --test negative_corpus`.
+with `cargo test -p disrobe-binfmt --test it negative_corpus::`.
 
 ## Dependencies
 

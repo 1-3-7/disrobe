@@ -79,7 +79,7 @@ pub fn parse_xar(bytes: &[u8]) -> Result<XarArchive> {
         .ok_or_else(|| Error::Decompression("xar toc out of bounds".to_owned()))?;
 
     let mut toc_xml_bytes: Vec<u8> =
-        Vec::with_capacity(toc_uncompressed.min(MAX_TOC_BYTES) as usize);
+        Vec::with_capacity(crate::quota::bounded_prealloc(toc_uncompressed));
     let mut decoder: flate2::read::ZlibDecoder<&[u8]> =
         flate2::read::ZlibDecoder::new(toc_compressed_bytes);
     decoder

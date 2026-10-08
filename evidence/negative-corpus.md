@@ -18,7 +18,7 @@ No member is graded as "did not crash".
 Run it with:
 
 ```sh
-cargo test -p disrobe-binfmt --test negative_corpus
+cargo test -p disrobe-binfmt --test it negative_corpus::
 ```
 
 ## The manifest

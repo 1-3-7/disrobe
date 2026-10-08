@@ -10,6 +10,7 @@ authors.workspace = true
 rust-version.workspace = true
 keywords = ["binary-format", "extract", "archive", "container", "disrobe"]
 categories = ["parser-implementations", "filesystem", "compression"]
+autotests = false
 
 [lints]
 workspace = true
@@ -76,3 +77,11 @@ rpm = { workspace = true }
 
 [package.metadata.disrobe]
 level = 2
+
+[[test]]
+name = "it"
+path = "tests/it/main.rs"
+
+[[test]]
+name = "it_bounded"
+path = "tests/it_bounded/main.rs"

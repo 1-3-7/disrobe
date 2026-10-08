@@ -87,7 +87,8 @@ mutation = { path = "crates/disrobe-pass-shell/tests/vba_pcodedmp_oracle.rs", te
 [[grader]]
 ecosystem = "container"
 package = "disrobe-binfmt"
-target = "real_lzh_pmarc"
+target = "it"
+module = "real_lzh_pmarc"
 features = []
 reference = { path = "crates/disrobe-binfmt/tests/real_lzh_pmarc.rs", test = "pmarc124_pm1_member_matches_the_reference_extraction" }
 mutation = { path = "crates/disrobe-binfmt/tests/real_lzh_pmarc.rs", test = "a_single_flipped_bit_in_a_pm1_or_pm2_body_fails_the_stored_crc16" }

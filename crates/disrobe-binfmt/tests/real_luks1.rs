@@ -1,6 +1,7 @@
 #![allow(clippy::expect_used, clippy::panic)]
 
 use std::path::Path;
+use std::sync::LazyLock;
 
 use aes::cipher::{BlockEncryptMut, KeyIvInit, block_padding::NoPadding};
 use disrobe_binfmt::container::ContainerKind;
@@ -15,8 +16,17 @@ use pbkdf2::pbkdf2_hmac;
 use sha1::Sha1;
 use sha2::{Sha256, Sha512};
 
-const FIXTURE: &[u8] = include_bytes!("fixtures/luks1/aes128-cbc-plain.luks1");
-const PLAINTEXT: &[u8] = include_bytes!("../../../corpus/binfmt/disk/fat-dynamic.vhd");
+static FIXTURE: LazyLock<Vec<u8>> = LazyLock::new(|| {
+    disrobe_testkit::load_fixture(
+        "crates/disrobe-binfmt/tests/fixtures/luks1/aes128-cbc-plain.luks1",
+        3 * 1024 * 1024,
+    )
+    .expect("load LUKS1 fixture")
+});
+static PLAINTEXT: LazyLock<Vec<u8>> = LazyLock::new(|| {
+    disrobe_testkit::load_fixture("corpus/binfmt/disk/fat-dynamic.vhd", 3 * 1024 * 1024)
+        .expect("load VHD plaintext")
+});
 const RAW_VOLUME_KEY: [u8; 16] = [
     0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
 ];
@@ -28,18 +38,18 @@ const DIGEST_SALT: [u8; 32] = [
 #[test]
 fn reference_luks1_volume_decrypts_byte_exact_and_enters_vhd_extraction() {
     assert_eq!(
-        disrobe_binfmt::detect_container(FIXTURE),
+        disrobe_binfmt::detect_container(FIXTURE.as_slice()),
         Some(ContainerKind::Luks1)
     );
     let decrypted: Vec<u8> =
-        decrypt_luks1_aes_cbc_plain_with_raw_volume_key(FIXTURE, &RAW_VOLUME_KEY)
+        decrypt_luks1_aes_cbc_plain_with_raw_volume_key(FIXTURE.as_slice(), &RAW_VOLUME_KEY)
             .expect("reference raw volume key");
-    assert_eq!(decrypted, PLAINTEXT);
+    assert_eq!(decrypted.as_slice(), PLAINTEXT.as_slice());
 
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("real-luks1-extract").expect("scratch");
     let result: ExtractionResult = extract_luks1_aes_cbc_plain_with_raw_volume_key(
-        FIXTURE,
+        FIXTURE.as_slice(),
         &RAW_VOLUME_KEY,
         scratch.path(),
         ExtractionQuota::default_safe(),
@@ -57,7 +67,7 @@ fn reference_luks1_volume_decrypts_byte_exact_and_enters_vhd_extraction() {
 #[test]
 fn keyless_luks1_is_a_raw_volume_key_wall_with_header_metadata() {
     let wall: disrobe_core::CryptoWall =
-        luks1_raw_volume_key_wall(FIXTURE).expect("valid LUKS1 header");
+        luks1_raw_volume_key_wall(FIXTURE.as_slice()).expect("valid LUKS1 header");
     assert_eq!(wall.kind, CryptoWallKind::Luks1RawVolumeKey);
     assert!(wall.runtime_key_absent);
     assert!(wall.evidence.contains("raw volume key"));
@@ -72,7 +82,7 @@ fn wrong_raw_volume_key_is_rejected_before_any_output_is_written() {
         disrobe_core::scratch::ScratchDir::create("real-luks1-wrong-key").expect("scratch");
     let wrong: [u8; 16] = [0x41; 16];
     let error: Error = extract_luks1_aes_cbc_plain_with_raw_volume_key(
-        FIXTURE,
+        FIXTURE.as_slice(),
         &wrong,
         scratch.path(),
         ExtractionQuota::default_safe(),
