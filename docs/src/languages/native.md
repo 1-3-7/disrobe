@@ -39,6 +39,8 @@ disrobe native sigmaker app.exe --at 0x1400                                     
 disrobe native diff old.exe new.exe                                             # match functions across builds
 
 disrobe native identify app.exe --out identity.json           # compiler, packer, protector, signature verdict
+disrobe native decompile app.exe --neutralize skip --out out/ # also write the anti-debug patch plan (neutralization.json)
+disrobe native decompile app.exe --neutralize apply --out out/ # write out/app.neutralized.exe with every planned patch
 
 disrobe query app.exe functions                         # discovered functions, complexity, exports
 disrobe query app.exe calls-to malloc                   # call sites to a target
@@ -107,6 +109,10 @@ An in-house multi-signal signature engine fingerprints what built and protected 
 The residuals have specific causes worth knowing when reading a recovered image. FSG's `.rdata` gap is the import descriptor region: the stub's block-destination table names one aPLib stream per original section, all four are decoded, and the descriptor block is decoded then deliberately withheld from the recovered image because the stub writes it over original `.rdata` content at run time. NSPack's `.rdata` reaches byte identity instead, because its import lookup and address tables are rebuilt from the module record the stub carries rather than left for the loader to resolve. The `.rsrc` gap is shared across families, at 1552 / 4672 for FSG and 2333 / 4672 for NSPack, and it narrowed once the original resource-directory tree is placed at its own RVA rather than wherever the decompressed image left it; what remains is the part each stub reconstructs at run time. Larger uncommitted vendor samples score lower on the whole-image measure for the same two reasons, and no figure is published for them because those samples are not committed and nothing pins them. kkrunchy and kkrunchy classic recover their payload byte-exactly against committed fixtures.
 
 An absent fixture is never a silent pass. A missing committed fixture always fails the test and names its path. A missing uncommitted vendor sample fails the same way unless `tests/optional.toml` lists the local packer samples, which it does because CI never has them; the run then writes a not-measured record naming the absent file. A fixture that is present but unreadable is a hard failure in every mode, because that is how a quarantined or truncated sample would otherwise stop grading unnoticed (`committed_packer_byte_recovery.rs`, `fsg_unpack.rs`, `nspack_byte_recovery.rs`, `petite_unpack.rs`, `kkrunchy_unpack.rs`).
+
+### Runtime anti-analysis checks
+
+`disrobe native decompile --neutralize ask|apply|skip` plans same-length patches for the runtime checks it finds in a PE: `IsDebuggerPresent` and `CheckRemoteDebuggerPresent` call results, PEB `BeingDebugged` and `NtGlobalFlag` reads, `NtQueryInformationProcess` debug-class queries, `rdtsc`, `GetTickCount` and `QueryPerformanceCounter` delta compares, `int 2d` and `icebp` traps, and `cpuid` hypervisor-bit tests. `ask` confirms each patch on the terminal and is the default there; `skip` writes the plan and applies nothing, and without the flag a run whose stdin is not a terminal skips without writing a plan; `apply` takes every patch. The input is never modified. Accepted patches go to `<stem>.neutralized.<ext>` beside `neutralization.json` in the output directory, and a declined patch leaves its check reported as detected. Vectored-handler control flow and TLS callbacks are named as refusals and never patched. The packer-stub emulator answers the same checks with pinned values and names each one it answered; the [anti-analysis page](../anti-analysis.md) lists the answers, bounds, and grading.
 
 ### Authenticode verification
 

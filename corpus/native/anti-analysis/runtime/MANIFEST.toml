@@ -1,0 +1,79 @@
+schema_version = 1
+description = "Self-authored C programs that each perform one runtime anti-analysis check and print `check=<name> result=debugged|clean`. They are the positive fixtures for the native runtime-check detector, the neutralization-plan producers and the stub-emulator sandbox. No third-party evasion suite is reproduced here; each check is re-authored from its documented Windows mechanism. The programs are compiled at test time by the host gcc named in .developer/TOOLS.md (x86-64 PE, -O0, and with -DARMED where the file supports it) by crates/disrobe-pass-native/tests/oracles/anti_runtime_oracle.rs; no binary is committed."
+provenance = "authored for disrobe on 2026-10-08; every program is benign, prints one line and exits"
+license = "Disrobe Source-Available License 1.1 (repository licence)"
+
+[[programs]]
+path = "common.h"
+role = "shared helpers: report() and the PEB base read (gs:[0x60] on x86-64, fs:[0x30] on x86)"
+
+[[programs]]
+path = "clean_control.c"
+check = "none"
+role = "negative control: benign use of GetTickCount, QueryPerformanceCounter and GetModuleFileNameA without a debugger or hypervisor decision; the plan must stay empty"
+
+[[programs]]
+path = "is_debugger_present.c"
+check = "is-debugger-present"
+armed = "writes PEB.BeingDebugged = 1 so kernel32!IsDebuggerPresent answers TRUE without a debugger"
+
+[[programs]]
+path = "check_remote_debugger_present.c"
+check = "check-remote-debugger-present"
+armed = "not armable from user mode: the flag comes from the kernel debug port"
+
+[[programs]]
+path = "peb_being_debugged.c"
+check = "peb-being-debugged"
+armed = "writes PEB.BeingDebugged = 1 before the read"
+
+[[programs]]
+path = "peb_nt_global_flag.c"
+check = "peb-nt-global-flag"
+armed = "writes FLG_HEAP_* (0x70) into PEB.NtGlobalFlag before the read"
+
+[[programs]]
+path = "nt_query_information_process.c"
+check = "nt-query-information-process-debug-port"
+link = "-lntdll so the call goes through the import table"
+armed = "not armable from user mode: the port comes from the kernel"
+
+[[programs]]
+path = "rdtsc_delta.c"
+check = "rdtsc-delta"
+armed = "threshold 0 so any elapsed cycles read as a debugger"
+
+[[programs]]
+path = "tick_count_delta.c"
+check = "tick-count-delta"
+armed = "Sleep(40) between the two GetTickCount reads against a 10 ms threshold"
+
+[[programs]]
+path = "qpc_delta.c"
+check = "performance-counter-delta"
+armed = "Sleep(40) between the two QueryPerformanceCounter reads against a 50000-tick threshold"
+
+[[programs]]
+path = "cpuid_hypervisor_bit.c"
+check = "cpuid-hypervisor-bit"
+armed = "not armable: the bit is what the host CPU reports"
+
+[[programs]]
+path = "int2d_trap.c"
+check = "int2d-trap"
+armed = "the vectored handler leaves the debugged flag set, which is what a debugger swallowing the trap produces"
+
+[[programs]]
+path = "veh_control_flow.c"
+check = "vectored-exception-handler"
+role = "detect-only fixture: a divide-by-zero routed through AddVectoredExceptionHandler drives the result"
+
+[[programs]]
+path = "tls_callback.c"
+check = "tls-callback"
+role = "detect-only fixture: a .CRT$XLB TLS callback reads PEB.BeingDebugged before main runs"
+
+[[programs]]
+path = "anti_dump.c"
+check = "anti-dump"
+role = "positive for the core anti-dump signature family: PEB Ldr SizeOfImage overwrite and a VirtualProtect-backed header erase"
