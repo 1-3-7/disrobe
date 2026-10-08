@@ -157,6 +157,8 @@ mod native_aot_sret;
 mod native_not_applicable_corpus;
 #[path = "../native_stub_surface.rs"]
 mod native_stub_surface;
+#[path = "../neutralization_plan.rs"]
+mod neutralization_plan;
 #[path = "../null_conditional_direct_instance_call.rs"]
 mod null_conditional_direct_instance_call;
 #[path = "../null_conditional_early_return.rs"]
@@ -173,6 +175,8 @@ mod param_indirection;
 mod pe_parse_resilience;
 #[path = "../property_and_typeof_rendering.rs"]
 mod property_and_typeof_rendering;
+#[path = "../protector_reexec_strict.rs"]
+mod protector_reexec_strict;
 #[path = "../real_baseline.rs"]
 mod real_baseline;
 #[path = "../real_confuserex2.rs"]
@@ -232,6 +236,8 @@ mod themida_dotnet;
 mod tuple_literal_rendering;
 #[path = "../type_fidelity.rs"]
 mod type_fidelity;
+#[path = "../unprotect_hostile.rs"]
+mod unprotect_hostile;
 #[path = "../unsigned_overflow_fixture.rs"]
 mod unsigned_overflow_fixture;
 #[path = "../value_type_isinst_rendering.rs"]

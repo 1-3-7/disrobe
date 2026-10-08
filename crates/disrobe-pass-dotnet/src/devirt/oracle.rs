@@ -385,6 +385,7 @@ fn skip_cause(error: EmulationError) -> SkipCause {
         | EmulationError::OutOfBounds
         | EmulationError::DivideByZero
         | EmulationError::NoResult => SkipCause::ReferenceUnavailable,
+        EmulationError::FaultAt { fault, .. } => skip_cause(*fault),
     }
 }
 

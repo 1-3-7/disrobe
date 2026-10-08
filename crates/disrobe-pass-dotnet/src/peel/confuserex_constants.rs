@@ -59,7 +59,17 @@ struct DecoderMutation {
     xor: u32,
 }
 
-pub fn peel_confuserex_constants(image: &[u8]) -> Result<Option<ConfuserConstantsRecovery>> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConstantsPool {
+    pub seed: u32,
+    pub blob_rva: u32,
+    pub blob_size: u32,
+    pub blob_sha256: [u8; 32],
+    pub seeds_tried: Vec<u32>,
+    pub pool: Vec<u8>,
+}
+
+pub fn recover_constants_pool(image: &[u8]) -> Result<Option<ConstantsPool>> {
     let pe: PeImage = parse(image)?;
     let clr: ClrHeader = parse_clr_header(image, &pe)?;
     let root: crate::metadata::MetadataRoot = parse_metadata_root(image, &pe, &clr)?;
@@ -71,22 +81,19 @@ pub fn peel_confuserex_constants(image: &[u8]) -> Result<Option<ConfuserConstant
     };
     let tables: Tables = parse_tables(metadata_slice, *table_header)?;
 
-    let Some(locator): Option<BlobLocator> = locate_constants_blob(&tables) else {
+    let blob_heap: &[u8] = root
+        .streams
+        .get("#Blob")
+        .and_then(|header: &StreamHeader| {
+            let start: usize = usize::try_from(header.offset).ok()?;
+            let end: usize = start.checked_add(usize::try_from(header.size).ok()?)?;
+            metadata_slice.get(start..end)
+        })
+        .unwrap_or(&[]);
+    let candidates: Vec<BlobLocator> = locate_constants_blobs(&tables, blob_heap);
+    if candidates.is_empty() {
         return Ok(None);
-    };
-    let blob: Vec<u8> = match pe.slice_at_rva(image, locator.rva, locator.size as usize) {
-        Ok(slice) => slice.to_vec(),
-        Err(_) => return Ok(None),
-    };
-    let blob_sha256: [u8; 32] = sha256(&blob);
-    dbg_kv("confuserex-constants", || {
-        format!(
-            "blob@rva=0x{:x} size={} (encrypted constants pool located)",
-            locator.rva, locator.size
-        )
-    });
-    dbg_hex("confuserex-blob-head", &blob, 32);
-
+    }
     let mut seeds: Vec<u32> = collect_ldc_i4_immediates(image, &pe, &tables.methods);
     for emulated in
         crate::peel::confuserex_seed::recover_seeds_by_emulation(image, &pe, &tables.methods)
@@ -95,14 +102,65 @@ pub fn peel_confuserex_constants(image: &[u8]) -> Result<Option<ConfuserConstant
             seeds.push(emulated);
         }
     }
-    let Some((seed, pool)): Option<(u32, Vec<u8>)> = recover_pool(&blob, &seeds) else {
+    for locator in candidates {
+        let blob: Vec<u8> = match pe.slice_at_rva(image, locator.rva, locator.size as usize) {
+            Ok(slice) => slice.to_vec(),
+            Err(_) => continue,
+        };
+        let blob_sha256: [u8; 32] = sha256(&blob);
         dbg_kv("confuserex-constants", || {
             format!(
-                "decrypt bail: no seed in {} candidate(s) decrypts the constants blob to a valid lzma pool",
-                seeds.len()
+                "blob@rva=0x{:x} size={} (encrypted constants pool candidate)",
+                locator.rva, locator.size
             )
         });
+        dbg_hex("confuserex-blob-head", &blob, 32);
+        let Some((seed, pool)): Option<(u32, Vec<u8>)> = recover_pool(&blob, &seeds) else {
+            dbg_kv("confuserex-constants", || {
+                format!(
+                    "candidate skipped: no seed in {} candidate(s) decrypts it to a valid lzma pool",
+                    seeds.len()
+                )
+            });
+            continue;
+        };
+        return Ok(Some(ConstantsPool {
+            seed,
+            blob_rva: locator.rva,
+            blob_size: locator.size,
+            blob_sha256,
+            seeds_tried: seeds,
+            pool,
+        }));
+    }
+    Ok(None)
+}
+
+pub fn peel_confuserex_constants(image: &[u8]) -> Result<Option<ConfuserConstantsRecovery>> {
+    let Some(recovered): Option<ConstantsPool> = recover_constants_pool(image)? else {
         return Ok(None);
+    };
+    let ConstantsPool {
+        seed,
+        blob_rva,
+        blob_size,
+        blob_sha256,
+        seeds_tried: seeds,
+        pool,
+    } = recovered;
+    let pe: PeImage = parse(image)?;
+    let clr: ClrHeader = parse_clr_header(image, &pe)?;
+    let root: crate::metadata::MetadataRoot = parse_metadata_root(image, &pe, &clr)?;
+    let metadata_slice: &[u8] = crate::metadata::metadata_slice(image, &pe, &clr, &root)?;
+    let Some(table_header): Option<&StreamHeader> =
+        root.streams.get("#~").or_else(|| root.streams.get("#-"))
+    else {
+        return Ok(None);
+    };
+    let tables: Tables = parse_tables(metadata_slice, *table_header)?;
+    let locator: BlobLocator = BlobLocator {
+        rva: blob_rva,
+        size: blob_size,
     };
     let pool_sha256: [u8; 32] = sha256(&pool);
 
@@ -210,8 +268,53 @@ pub fn decode_pool_string(pool: &[u8], byte_offset: u32) -> Option<String> {
         .map(str::to_owned)
 }
 
-fn locate_constants_blob(tables: &Tables) -> Option<BlobLocator> {
-    let mut best: Option<BlobLocator> = None;
+fn layout_size(tables: &Tables, type_rid: u32) -> Option<u32> {
+    tables
+        .class_layouts
+        .iter()
+        .find(|layout: &&ClassLayoutRow| layout.parent == type_rid)
+        .map(|layout: &ClassLayoutRow| layout.class_size)
+        .filter(|size: &u32| {
+            *size != 0
+                && (*size as usize).is_multiple_of(CONSTANTS_BLOCK_BYTES)
+                && (*size as usize) <= MAX_CONSTANTS_BLOB_BYTES
+        })
+}
+
+fn field_layout_type(tables: &Tables, blob_heap: &[u8], field_rid: u32) -> Option<u32> {
+    let row: &FieldRow = tables
+        .fields
+        .get(usize::try_from(field_rid).ok()?.checked_sub(1)?)?;
+    let start: usize = usize::try_from(row.signature).ok()?;
+    let tail: &[u8] = blob_heap.get(start..)?;
+    let (length, consumed): (u32, usize) = crate::metadata::decompress_uint(tail)?;
+    let end: usize = consumed.checked_add(usize::try_from(length).ok()?)?;
+    let signature: &[u8] = tail.get(consumed..end)?;
+    match crate::signature::parse_field_sig(signature).ok()? {
+        crate::signature::TypeSig::NamedType { token, .. } if token >> 24 == 0x02 => {
+            Some(token & 0x00FF_FFFF)
+        }
+        _ => None,
+    }
+}
+
+fn locate_constants_blobs(tables: &Tables, blob_heap: &[u8]) -> Vec<BlobLocator> {
+    let mut found: Vec<BlobLocator> = Vec::new();
+    for field_rva in &tables.field_rvas {
+        let Some(type_rid): Option<u32> = field_layout_type(tables, blob_heap, field_rva.field)
+        else {
+            continue;
+        };
+        let Some(size): Option<u32> = layout_size(tables, type_rid) else {
+            continue;
+        };
+        if found.iter().all(|b: &BlobLocator| b.rva != field_rva.rva) {
+            found.push(BlobLocator {
+                rva: field_rva.rva,
+                size,
+            });
+        }
+    }
     for layout in &tables.class_layouts {
         let layout: &ClassLayoutRow = layout;
         let size: usize = layout.class_size as usize;
@@ -232,23 +335,26 @@ fn locate_constants_blob(tables: &Tables) -> Option<BlobLocator> {
         }) else {
             continue;
         };
-        let candidate: BlobLocator = BlobLocator {
-            rva,
-            size: layout.class_size,
-        };
-        if best.is_none_or(|b: BlobLocator| candidate.size > b.size) {
-            best = Some(candidate);
+        if found.iter().all(|b: &BlobLocator| b.rva != rva) {
+            found.push(BlobLocator {
+                rva,
+                size: layout.class_size,
+            });
         }
     }
-    if best.is_some() {
-        return best;
+    if !found.is_empty() {
+        found.sort_by_key(|b: &BlobLocator| std::cmp::Reverse(b.size));
+        return found;
     }
-    let max_rva: u32 = tables
+    let Some(max_rva): Option<u32> = tables
         .field_rvas
         .iter()
         .max_by_key(|fr: &&FieldRvaRow| fr.rva)
-        .map(|fr: &FieldRvaRow| fr.rva)?;
-    let size: u32 = tables
+        .map(|fr: &FieldRvaRow| fr.rva)
+    else {
+        return Vec::new();
+    };
+    tables
         .class_layouts
         .iter()
         .map(|cl: &ClassLayoutRow| cl.class_size)
@@ -257,8 +363,10 @@ fn locate_constants_blob(tables: &Tables) -> Option<BlobLocator> {
                 && (*s as usize).is_multiple_of(CONSTANTS_BLOCK_BYTES)
                 && (*s as usize) <= MAX_CONSTANTS_BLOB_BYTES
         })
-        .max()?;
-    Some(BlobLocator { rva: max_rva, size })
+        .max()
+        .map_or_else(Vec::new, |size: u32| {
+            vec![BlobLocator { rva: max_rva, size }]
+        })
 }
 
 fn field_range_for_typedef(tables: &Tables, parent_typedef: u32) -> Option<(u32, u32)> {

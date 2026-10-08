@@ -31,6 +31,7 @@ pub mod agile_net_bodies;
 pub mod armdot;
 pub mod babel_net;
 pub mod bitmono_strings;
+pub mod confuserex_anti_tamper;
 pub mod confuserex_constants;
 pub mod confuserex_resources;
 pub mod confuserex_seed;

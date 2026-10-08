@@ -15,15 +15,21 @@ struct LambdaBody {
     return_expr: String,
 }
 
-pub fn inline_lambdas(methods: &mut [StructuredMethod]) -> u32 {
-    let bodies: BTreeMap<String, LambdaBody> = collect_lambda_bodies(methods);
+pub fn inline_lambdas(methods: &mut [StructuredMethod], scopes: &BTreeMap<u32, String>) -> u32 {
+    let scoped: BTreeMap<&str, BTreeMap<String, LambdaBody>> =
+        collect_lambda_bodies(methods, scopes);
+    let no_bodies: BTreeMap<String, LambdaBody> = BTreeMap::new();
     let mut inlined: u32 = 0;
     for m in methods.iter_mut() {
         if is_lambda_method(&m.signature) {
             continue;
         }
+        let bodies: &BTreeMap<String, LambdaBody> = scopes
+            .get(&m.token)
+            .and_then(|scope: &String| scoped.get(scope.as_str()))
+            .unwrap_or(&no_bodies);
         if !bodies.is_empty()
-            && let Some(rewritten) = rewrite_capturing_factory(&m.body, &bodies)
+            && let Some(rewritten) = rewrite_capturing_factory(&m.body, bodies)
         {
             m.body = chain_extension_calls(&rewritten);
             inlined = inlined.saturating_add(1);
@@ -31,7 +37,7 @@ pub fn inline_lambdas(methods: &mut [StructuredMethod]) -> u32 {
         }
         if !bodies.is_empty()
             && let Some(enclosing) = declared_method_name(&m.signature)
-            && let Some(rewritten) = inline_cached_lambda_args(&m.body, &enclosing, &bodies)
+            && let Some(rewritten) = inline_cached_lambda_args(&m.body, &enclosing, bodies)
         {
             m.body = chain_extension_calls(&rewritten);
             inlined = inlined.saturating_add(1);
@@ -215,9 +221,15 @@ fn declared_method_name(signature: &str) -> Option<String> {
     is_identifier(ident).then(|| ident.to_owned())
 }
 
-fn collect_lambda_bodies(methods: &[StructuredMethod]) -> BTreeMap<String, LambdaBody> {
-    let mut map: BTreeMap<String, LambdaBody> = BTreeMap::new();
+fn collect_lambda_bodies<'a>(
+    methods: &[StructuredMethod],
+    scopes: &'a BTreeMap<u32, String>,
+) -> BTreeMap<&'a str, BTreeMap<String, LambdaBody>> {
+    let mut map: BTreeMap<&'a str, BTreeMap<String, LambdaBody>> = BTreeMap::new();
     for m in methods {
+        let Some(scope): Option<&'a String> = scopes.get(&m.token) else {
+            continue;
+        };
         let Some(name): Option<&str> = lambda_method_name(&m.signature) else {
             continue;
         };
@@ -227,7 +239,7 @@ fn collect_lambda_bodies(methods: &[StructuredMethod]) -> BTreeMap<String, Lambd
         let Some(return_expr): Option<String> = single_return_expr(&m.body) else {
             continue;
         };
-        map.insert(
+        map.entry(scope.as_str()).or_default().insert(
             name.to_owned(),
             LambdaBody {
                 params,

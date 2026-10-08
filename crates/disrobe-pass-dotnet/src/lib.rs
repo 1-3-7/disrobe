@@ -12,6 +12,8 @@ pub mod cil;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod cil_emulator;
 pub mod closure_reverse;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod csharp_project;
 pub(crate) mod debug;
 pub mod decompile;
 #[cfg(not(target_arch = "wasm32"))]
@@ -52,6 +54,7 @@ pub mod structurize;
 pub mod switch_expr_reverse;
 pub mod tables;
 pub(crate) mod tuple_switch_reverse;
+pub mod unprotect;
 pub(crate) mod with_reverse;
 
 #[cfg(not(target_arch = "wasm32"))]

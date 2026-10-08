@@ -15,6 +15,7 @@ pub enum EmulationError {
     OutOfBounds,
     DivideByZero,
     NoResult,
+    FaultAt { offset: u32, fault: Box<Self> },
 }
 
 const STEP_LIMIT: u64 = 4_000_000;
@@ -32,6 +33,8 @@ pub enum Value {
     Array(Option<usize>),
 
     String(Option<usize>),
+
+    ElementRef(usize, usize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,7 +72,9 @@ impl Value {
         match self {
             Self::I32(v) => Ok(v as i64),
             Self::I64(v) => Ok(v),
-            Self::Array(_) | Self::String(_) => Err(EmulationError::BadShape),
+            Self::Array(_) | Self::String(_) | Self::ElementRef(..) => {
+                Err(EmulationError::BadShape)
+            }
         }
     }
 
@@ -77,7 +82,9 @@ impl Value {
         match self {
             Self::Array(Some(r)) => Ok(r),
             Self::Array(None) => Err(EmulationError::OutOfBounds),
-            Self::I32(_) | Self::I64(_) | Self::String(_) => Err(EmulationError::BadShape),
+            Self::I32(_) | Self::I64(_) | Self::String(_) | Self::ElementRef(..) => {
+                Err(EmulationError::BadShape)
+            }
         }
     }
 }
@@ -180,6 +187,9 @@ struct Vm<'a> {
     heap_bytes: usize,
     steps: u64,
     env: FieldInitEnv,
+    stop_call: Option<(u32, usize)>,
+    captured: Option<Vec<Vec<u8>>>,
+    last_offset: u32,
 }
 
 impl<'a> Vm<'a> {
@@ -205,7 +215,42 @@ impl<'a> Vm<'a> {
             heap_bytes,
             steps: 0,
             env,
+            stop_call: None,
+            captured: None,
+            last_offset: 0,
         }
+    }
+
+    const fn is_stop_call(&self, ins: &Instruction) -> bool {
+        match (self.stop_call, &ins.operand) {
+            (Some((token, _)), OperandValue::Token(t)) => *t == token,
+            _ => false,
+        }
+    }
+
+    fn capture_stop_call(&mut self) -> Result<(), EmulationError> {
+        let arity: usize = self.stop_call.map_or(0, |(_, arity): (u32, usize)| arity);
+        let mut arrays: Vec<Vec<u8>> = Vec::new();
+        for _ in 0..arity {
+            if let Value::Array(Some(r)) = self.pop()? {
+                let arr: &HeapArray = self.heap.get(r).ok_or(EmulationError::OutOfBounds)?;
+                arrays.push(arr.bytes.clone());
+            }
+        }
+        arrays.reverse();
+        self.captured = Some(arrays);
+        Ok(())
+    }
+
+    fn element_ref(&mut self) -> Result<(usize, usize), EmulationError> {
+        let idx: i64 = self.pop()?.as_i64()?;
+        let r: usize = self.pop()?.as_array()?;
+        let index: usize = usize::try_from(idx).map_err(|_| EmulationError::OutOfBounds)?;
+        let arr: &HeapArray = self.heap.get(r).ok_or(EmulationError::OutOfBounds)?;
+        if index >= arr.len() {
+            return Err(EmulationError::OutOfBounds);
+        }
+        Ok((r, index))
     }
 
     fn pop(&mut self) -> Result<Value, EmulationError> {
@@ -324,6 +369,7 @@ impl<'a> Vm<'a> {
                 .instructions
                 .get(ip)
                 .ok_or(EmulationError::NoResult)?;
+            self.last_offset = ins.offset;
             let mut next: usize = ip + 1;
             if let Some((unsigned, holds)) = comparison(ins.name.as_str()) {
                 if ins.name.starts_with('b') {
@@ -411,7 +457,7 @@ impl<'a> Vm<'a> {
                     let r: usize = self.alloc(len as usize, elem, kind)?;
                     self.stack.push(Value::Array(Some(r)));
                 }
-                n if n.starts_with("ldelem") => {
+                n if n.starts_with("ldelem") && n != "ldelema" => {
                     let elem: usize = ldelem_size(n);
                     let idx: i64 = self.pop()?.as_i64()?;
                     let r: usize = self.pop()?.as_array()?;
@@ -474,6 +520,38 @@ impl<'a> Vm<'a> {
                     }
                 }
                 "ret" => return self.finish(),
+                "ldelema" => {
+                    let (r, index): (usize, usize) = self.element_ref()?;
+                    self.stack.push(Value::ElementRef(r, index));
+                }
+                "ldobj" | "ldind.i4" | "ldind.u4" | "ldind.i8" | "ldind.i" | "ldind.u1"
+                | "ldind.i1" | "ldind.u2" | "ldind.i2" => {
+                    let Value::ElementRef(r, index) = self.pop()? else {
+                        return Err(EmulationError::BadShape);
+                    };
+                    let arr: &HeapArray = self.heap.get(r).ok_or(EmulationError::OutOfBounds)?;
+                    let elem: usize = arr.elem_size.max(1);
+                    let v: i64 = arr.load(index, elem)?;
+                    self.stack.push(if elem == 8 {
+                        Value::I64(v)
+                    } else {
+                        Value::I32(v as i32)
+                    });
+                }
+                "stobj" | "stind.i4" | "stind.i8" | "stind.i" | "stind.i1" | "stind.i2" => {
+                    let v: i64 = self.pop()?.as_i64()?;
+                    let Value::ElementRef(r, index) = self.pop()? else {
+                        return Err(EmulationError::BadShape);
+                    };
+                    let arr: &mut HeapArray =
+                        self.heap.get_mut(r).ok_or(EmulationError::OutOfBounds)?;
+                    let elem: usize = arr.elem_size.max(1);
+                    arr.store(index, elem, v)?;
+                }
+                "call" if self.is_stop_call(ins) => {
+                    self.capture_stop_call()?;
+                    return Ok(StubOutput::Int(0));
+                }
                 "ldtoken" => {
                     let tok: u32 = match ins.operand {
                         OperandValue::Token(t) => t,
@@ -517,7 +595,9 @@ impl<'a> Vm<'a> {
                     Ok(StubOutput::Bytes(arr.bytes.clone()))
                 }
             }
-            Value::Array(None) | Value::String(None) => Err(EmulationError::NoResult),
+            Value::Array(None) | Value::String(None) | Value::ElementRef(..) => {
+                Err(EmulationError::NoResult)
+            }
             Value::String(Some(r)) => {
                 let string: &HeapArray = self.heap.get(r).ok_or(EmulationError::OutOfBounds)?;
                 if string.kind != HeapKind::String || string.elem_size != 2 {
@@ -735,6 +815,7 @@ const fn truthy(v: Value) -> bool {
         Value::I32(i) => i != 0,
         Value::I64(i) => i != 0,
         Value::Array(opt) | Value::String(opt) => opt.is_some(),
+        Value::ElementRef(..) => true,
     }
 }
 
@@ -762,7 +843,7 @@ fn zero_extend_word(v: Value) -> i64 {
     match v {
         Value::I32(x) => i64::from(x.cast_unsigned()),
         Value::I64(x) => x,
-        Value::Array(_) | Value::String(_) => 0,
+        Value::Array(_) | Value::String(_) | Value::ElementRef(..) => 0,
     }
 }
 
@@ -999,8 +1080,26 @@ fn captured_local(value: Value) -> i64 {
     match value {
         Value::I32(value) => i64::from(value),
         Value::I64(value) => value,
-        Value::Array(_) | Value::String(_) => 0,
+        Value::Array(_) | Value::String(_) | Value::ElementRef(..) => 0,
     }
+}
+
+pub(crate) fn emulate_until_call(
+    body: &MethodBody,
+    env: &FieldInitEnv,
+    stop_token: u32,
+    arity: usize,
+) -> Result<Vec<Vec<u8>>, EmulationError> {
+    validate_stub_body(body)?;
+    let mut vm: Vm<'_> = Vm::with_env(body, Vec::new(), Vec::new(), 0, env.clone());
+    vm.stop_call = Some((stop_token, arity));
+    if let Err(fault) = vm.run() {
+        return Err(EmulationError::FaultAt {
+            offset: vm.last_offset,
+            fault: Box::new(fault),
+        });
+    }
+    vm.captured.ok_or(EmulationError::NoResult)
 }
 
 #[cfg(test)]

@@ -27,6 +27,11 @@ pub(crate) fn is_display_class_name(short: &str) -> bool {
 }
 
 #[must_use]
+pub(crate) fn is_closure_helper_name(name: &str) -> bool {
+    mangled_kind(name).is_some()
+}
+
+#[must_use]
 pub(crate) fn closure_allocations<N: TokenNamer>(
     body: &MethodBody,
     namer: &N,

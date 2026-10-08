@@ -58,6 +58,22 @@ const fn is_integral(sig: &TypeSig) -> bool {
     )
 }
 
+pub(crate) fn initializer_env(
+    image: &[u8],
+    pe: &PeImage,
+    resolver: &Resolver,
+    model: &AssemblyModel,
+    blob: &[u8],
+) -> FieldInitEnv {
+    let mut env: FieldInitEnv = build_field_env(image, pe, resolver);
+    env.init_array_tokens = init_array_tokens(resolver, blob);
+    let array_types: ArrayTypeEnv = array_type_env(image, pe, resolver, model, blob);
+    env.array_elem_sizes = array_types.elem_sizes;
+    env.char_array_tokens = array_types.char_tokens;
+    env.string_char_ctor_tokens = string_char_ctor_tokens(resolver, blob);
+    env
+}
+
 fn build_field_env(image: &[u8], pe: &PeImage, resolver: &Resolver) -> FieldInitEnv {
     let mut env: FieldInitEnv = FieldInitEnv::default();
     for row in &resolver.tables().field_rvas {

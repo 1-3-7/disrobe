@@ -1,11 +1,18 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
+use std::io::{BufRead as _, IsTerminal as _};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use clap::{Subcommand, ValueEnum};
 
 use disrobe_pass_dotnet::aot::{AotMethod, AotMethodBody, AotReport, detect as detect_native_aot};
+use disrobe_pass_dotnet::decompile::{Decompiled, decompile_assembly_detailed};
+use disrobe_pass_dotnet::unprotect::neutralize::{
+    Applied, NeutralizationPlan, NeutralizationReport, Patch, RefusedPatch, Selection, Technique,
+    apply as apply_plan, neutralized_path,
+};
+use disrobe_pass_dotnet::unprotect::{LayerOutcome, Residual, UnprotectReport, Unprotected};
 use disrobe_pass_dotnet::{
     Backend, BackendInvocation, DecompiledAssembly, PassSummary, analyze as analyze_dotnet,
     backends::{invoke_decompile, probe},
@@ -22,11 +29,317 @@ use super::globals;
 
 const MAX_BUNDLE_ASSEMBLIES: usize = 512;
 const NATIVE_AOT_INPUT_MAX_BYTES: u64 = 1 << 29;
+const MAX_PRINTED_RESIDUALS: usize = 12;
+const MAX_PROMPT_RETRIES: u32 = 3;
+const PATCH_BYTES_SHOWN: usize = 16;
+const NEUTRALIZATION_FILE: &str = "neutralization.json";
 
 struct DecompileMode {
     require_native_success: bool,
     logical_input: Option<String>,
     quiet: bool,
+    neutralize: NeutralizeMode,
+}
+
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NeutralizeMode {
+    Ask,
+    Apply,
+    Skip,
+}
+
+impl NeutralizeMode {
+    fn resolve(explicit: Option<Self>) -> Self {
+        explicit.unwrap_or_else(|| {
+            if std::io::stdin().is_terminal() {
+                Self::Ask
+            } else {
+                Self::Skip
+            }
+        })
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Ask => "ask",
+            Self::Apply => "apply",
+            Self::Skip => "skip",
+        }
+    }
+}
+
+struct Neutralization {
+    mode: NeutralizeMode,
+    offered: usize,
+    techniques: BTreeMap<Technique, usize>,
+    report: NeutralizationReport,
+    declined: Vec<(String, Technique)>,
+    output: Option<PathBuf>,
+    plan_path: PathBuf,
+}
+
+impl Neutralization {
+    fn summary_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "mode": self.mode.label(),
+            "offered": self.offered,
+            "applied": self.report.applied,
+            "declined": self.report.declined,
+            "refused": self.report.refused,
+            "output": self.output.as_ref().map(|p: &PathBuf| p.display().to_string()),
+            "plan": self.plan_path.display().to_string(),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Answer {
+    Yes,
+    No,
+    All,
+    None,
+}
+
+fn hex_prefix(bytes: &[u8]) -> String {
+    let shown: String = bytes
+        .iter()
+        .take(PATCH_BYTES_SHOWN)
+        .map(|b: &u8| format!("{b:02x}"))
+        .collect::<Vec<String>>()
+        .join(" ");
+    if bytes.len() > PATCH_BYTES_SHOWN {
+        format!("{shown} .. ({} bytes)", bytes.len())
+    } else {
+        shown
+    }
+}
+
+fn print_patch(patch: &Patch) {
+    println!("  patch {}", patch.id);
+    println!("    technique: {}", patch.technique.label());
+    match (patch.evidence.method_token, patch.evidence.il_offset) {
+        (Some(token), Some(il)) => println!(
+            "    evidence:  method {token:#010x} at IL {il:#x}: {}",
+            patch.evidence.detail
+        ),
+        (Some(token), None) => {
+            println!(
+                "    evidence:  method {token:#010x}: {}",
+                patch.evidence.detail
+            );
+        }
+        _ => println!("    evidence:  {}", patch.evidence.detail),
+    }
+    println!(
+        "    file:      offset {:#x}, {} byte(s)",
+        patch.file_offset, patch.length
+    );
+    println!("    original:  {}", hex_prefix(&patch.original));
+    println!("    patched:   {}", hex_prefix(&patch.replacement));
+    println!("    risk:      {}", patch.risk);
+}
+
+fn read_answer(lines: &mut std::io::Lines<std::io::StdinLock<'_>>) -> miette::Result<Answer> {
+    let mut strikes: u32 = 0;
+    loop {
+        print!("  apply this patch? [y/n/all/none] ");
+        std::io::Write::flush(&mut std::io::stdout())
+            .map_err(|e| miette::miette!("DR-CLI-0914: cannot flush the prompt: {e}"))?;
+        let Some(line): Option<Result<String, std::io::Error>> = lines.next() else {
+            println!("none (end of input)");
+            return Ok(Answer::None);
+        };
+        let line: String =
+            line.map_err(|e| miette::miette!("DR-CLI-0914: cannot read the answer: {e}"))?;
+        if !std::io::stdin().is_terminal() {
+            println!("{}", line.trim());
+        }
+        match line.trim().to_ascii_lowercase().as_str() {
+            "y" | "yes" => return Ok(Answer::Yes),
+            "n" | "no" => return Ok(Answer::No),
+            "a" | "all" => return Ok(Answer::All),
+            "none" | "q" | "quit" => return Ok(Answer::None),
+            other => {
+                strikes = strikes.saturating_add(1);
+                if strikes >= MAX_PROMPT_RETRIES {
+                    println!("  `{other}` not understood {MAX_PROMPT_RETRIES} times; declining");
+                    return Ok(Answer::No);
+                }
+                println!("  `{other}` not understood; answer y, n, all or none");
+            }
+        }
+    }
+}
+
+fn ask_each_patch(plan: &NeutralizationPlan) -> miette::Result<Selection> {
+    println!(
+        "neutralization plan: {} patch(es); the input file is never modified, accepted patches go to a copy beside the outputs",
+        plan.patches.len()
+    );
+    let stdin: std::io::Stdin = std::io::stdin();
+    let mut lines: std::io::Lines<std::io::StdinLock<'_>> = stdin.lock().lines();
+    let mut chosen: BTreeSet<String> = BTreeSet::new();
+    let mut index: usize = 0;
+    while let Some(patch) = plan.patches.get(index) {
+        print_patch(patch);
+        match read_answer(&mut lines)? {
+            Answer::Yes => {
+                chosen.insert(patch.id.clone());
+            }
+            Answer::No => {}
+            Answer::All => {
+                for rest in &plan.patches[index..] {
+                    chosen.insert(rest.id.clone());
+                }
+                break;
+            }
+            Answer::None => break,
+        }
+        index = index.saturating_add(1);
+    }
+    Ok(Selection::Only(chosen))
+}
+
+fn neutralize_input(
+    original: &[u8],
+    input: &Path,
+    input_label: &str,
+    out_dir: &Path,
+    report: &UnprotectReport,
+    mode: NeutralizeMode,
+) -> miette::Result<Neutralization> {
+    let plan: &NeutralizationPlan = &report.plan;
+    let selection: Selection = match mode {
+        NeutralizeMode::Apply => Selection::All,
+        NeutralizeMode::Skip => Selection::Only(BTreeSet::new()),
+        NeutralizeMode::Ask => ask_each_patch(plan)?,
+    };
+    let applied: Applied = apply_plan(original, plan, &selection).map_err(|e| {
+        miette::miette!("DR-CLI-0488: neutralization of `{input_label}` applied nothing: {e}")
+    })?;
+    let output: Option<PathBuf> = if applied.report.applied.is_empty() {
+        None
+    } else {
+        let name: &OsStr = input.file_name().ok_or_else(|| {
+            miette::miette!("DR-CLI-0915: the input `{input_label}` has no file name to derive the neutralized copy from")
+        })?;
+        let path: PathBuf = neutralized_path(&out_dir.join(name));
+        std::fs::write(&path, &applied.bytes).map_err(|e| {
+            miette::miette!(
+                "DR-CLI-0915: cannot write the neutralized copy {}: {e}",
+                path.display()
+            )
+        })?;
+        Some(path)
+    };
+    let mut techniques: BTreeMap<Technique, usize> = BTreeMap::new();
+    for patch in &plan.patches {
+        *techniques.entry(patch.technique).or_insert(0) += 1;
+    }
+    let declined: Vec<(String, Technique)> = applied
+        .report
+        .declined
+        .iter()
+        .filter_map(|id: &String| {
+            plan.patches
+                .iter()
+                .find(|p: &&Patch| p.id == *id)
+                .map(|p: &Patch| (id.clone(), p.technique))
+        })
+        .collect();
+    let plan_path: PathBuf = out_dir.join(NEUTRALIZATION_FILE);
+    let json: serde_json::Value = serde_json::json!({
+        "schema": "disrobe.dotnet.neutralization/v1",
+        "input": input_label,
+        "protector": report.protector,
+        "mode": mode.label(),
+        "plan": plan,
+        "applied": applied.report.applied,
+        "declined": applied.report.declined,
+        "refused": applied.report.refused,
+        "output": output.as_ref().map(|p: &PathBuf| p.display().to_string()),
+    });
+    let json_bytes: Vec<u8> = serde_json::to_vec_pretty(&json)
+        .map_err(|e| miette::miette!("DR-CLI-0916: serialize neutralization plan: {e}"))?;
+    std::fs::write(&plan_path, json_bytes)
+        .map_err(|e| miette::miette!("DR-CLI-0916: cannot write {}: {e}", plan_path.display()))?;
+    Ok(Neutralization {
+        mode,
+        offered: plan.patches.len(),
+        techniques,
+        report: applied.report,
+        declined,
+        output,
+        plan_path,
+    })
+}
+
+fn print_unprotect_report(report: &UnprotectReport) {
+    let state: String = if report.fully_recovered {
+        "fully recovered".to_owned()
+    } else {
+        format!("{} named residual(s)", report.residuals.len())
+    };
+    println!(
+        "  unprotect:    {} {state}; {} method(s) rewritten, {} injected method(s) and {} type(s) omitted",
+        report.protector, report.rewritten_methods, report.omitted_methods, report.omitted_types
+    );
+    for layer in &report.neutralised {
+        let LayerOutcome {
+            layer,
+            sites,
+            detail,
+        } = layer;
+        println!("    layer {layer}: {sites} site(s); {detail}");
+    }
+    for residual in report.residuals.iter().take(MAX_PRINTED_RESIDUALS) {
+        let Residual {
+            layer,
+            method_token,
+            reason,
+        } = residual;
+        match method_token {
+            Some(token) => println!("    residual {layer} (method {token:#010x}): {reason}"),
+            None => println!("    residual {layer}: {reason}"),
+        }
+    }
+    if report.residuals.len() > MAX_PRINTED_RESIDUALS {
+        println!(
+            "    and {} more residual(s)",
+            report.residuals.len() - MAX_PRINTED_RESIDUALS
+        );
+    }
+}
+
+fn print_neutralization(neutralization: &Neutralization) {
+    let techniques: String = neutralization
+        .techniques
+        .iter()
+        .map(|(technique, count): (&Technique, &usize)| format!("{} {count}", technique.label()))
+        .collect::<Vec<String>>()
+        .join(", ");
+    println!(
+        "  neutralize:   {}: {} patch(es) offered ({techniques}); applied {}, declined {}, refused {}",
+        neutralization.mode.label(),
+        neutralization.offered,
+        neutralization.report.applied.len(),
+        neutralization.report.declined.len(),
+        neutralization.report.refused.len()
+    );
+    for (id, technique) in &neutralization.declined {
+        println!(
+            "    declined {id}: {} stays in the input and is reported as detected",
+            technique.label()
+        );
+    }
+    for refused in &neutralization.report.refused {
+        let RefusedPatch { id, reason } = refused;
+        println!("    refused {id}: {reason}");
+    }
+    if let Some(output) = neutralization.output.as_ref() {
+        println!("    wrote {}", output.display());
+    }
+    println!("    plan  {}", neutralization.plan_path.display());
 }
 
 struct BundleStage {
@@ -150,6 +463,12 @@ pub(crate) enum DotnetCmd {
             help = "with --recover-iterators, emit the recovered MoveNext bodies as machine-clean JSON to stdout (no human-readable summary, no file output)"
         )]
         json: bool,
+        #[arg(
+            long,
+            value_enum,
+            help = "what to do with the anti-analysis patch plan of a protected input: ask = confirm each patch on the terminal (default when stdin is a terminal), apply = write every patch, skip = report the plan only (default otherwise); the input is never modified, accepted patches go to <stem>.neutralized.<ext> beside the outputs with neutralization.json"
+        )]
+        neutralize: Option<NeutralizeMode>,
     },
     #[command(
         visible_alias = "peel",
@@ -261,6 +580,7 @@ pub(crate) fn run(action: DotnetCmd) -> miette::Result<()> {
             language,
             recover_iterators,
             json,
+            neutralize,
         } => {
             if recover_iterators {
                 return recover_iterators_cmd(input, language, json);
@@ -277,6 +597,7 @@ pub(crate) fn run(action: DotnetCmd) -> miette::Result<()> {
                     require_native_success: false,
                     logical_input: None,
                     quiet: false,
+                    neutralize: NeutralizeMode::resolve(neutralize),
                 },
             )
         }
@@ -340,6 +661,7 @@ fn decompile(
             timeout_secs,
             &emit_kinds,
             language,
+            mode.neutralize,
         );
     }
     let summary: PassSummary =
@@ -355,6 +677,20 @@ fn decompile(
                 Err(e) => (None, Some(e.to_string())),
             }
         });
+
+    let (native, unprotected): (NativeDecompileOutcome, Option<Unprotected>) =
+        emit_native_decompilation(&bytes, &out_dir, &stem, language)?;
+    let neutralization: Option<Neutralization> = match unprotected.as_ref() {
+        Some(u) if !u.report.plan.is_empty() => Some(neutralize_input(
+            &bytes,
+            &input,
+            &input_label,
+            &out_dir,
+            &u.report,
+            mode.neutralize,
+        )?),
+        _ => None,
+    };
 
     let manifest_path: PathBuf = out_dir.join("manifest.json");
     let manifest: serde_json::Value = serde_json::json!({
@@ -372,14 +708,13 @@ fn decompile(
         "backend_invoked": backend.map(|b| format!("{b:?}")),
         "backend_exit_code": invocation.as_ref().map(|i| i.status),
         "backend_error": backend_error,
+        "unprotect": unprotected.as_ref().map(|u: &Unprotected| &u.report),
+        "neutralization": neutralization.as_ref().map(Neutralization::summary_json),
     });
     let manifest_bytes: Vec<u8> = serde_json::to_vec_pretty(&manifest)
         .map_err(|e| miette::miette!("DR-CLI-0436: serialize manifest: {e}"))?;
     std::fs::write(&manifest_path, manifest_bytes)
         .map_err(|e| miette::miette!("DR-CLI-0434: cannot write manifest: {e}"))?;
-
-    let native: NativeDecompileOutcome =
-        emit_native_decompilation(&bytes, &out_dir, &stem, language)?;
 
     if mode.require_native_success {
         ensure_native_decompile_complete(&native, &input_label)?;
@@ -402,6 +737,13 @@ fn decompile(
         );
         if let Some(p) = summary.primary_protector.as_ref() {
             println!("  protector:    {p:?}");
+        }
+        if let Some(u) = unprotected.as_ref() {
+            print_unprotect_report(&u.report);
+            match neutralization.as_ref() {
+                Some(n) => print_neutralization(n),
+                None => println!("  neutralize:   no file-level patch offered"),
+            }
         }
         match (backend, &backend_error) {
             (Some(b), None) => println!(
@@ -449,6 +791,7 @@ fn decompile_bundle(
     timeout_secs: u64,
     emit_kinds: &[String],
     language: DotnetLang,
+    neutralize: NeutralizeMode,
 ) -> miette::Result<()> {
     let bundle: disrobe_binfmt::containers::dotnet_bundle::DotnetBundle =
         disrobe_binfmt::containers::dotnet_bundle::parse_dotnet_bundle(bytes).map_err(
@@ -564,6 +907,7 @@ fn decompile_bundle(
                 require_native_success: true,
                 logical_input: Some(format!("members/{relative_path}")),
                 quiet: true,
+                neutralize,
             },
         )?;
     }
@@ -928,7 +1272,7 @@ fn emit_native_decompilation(
     out_dir: &std::path::Path,
     stem: &str,
     language: DotnetLang,
-) -> miette::Result<NativeDecompileOutcome> {
+) -> miette::Result<(NativeDecompileOutcome, Option<Unprotected>)> {
     use std::fmt::Write as _;
 
     let cm: &str = if language == DotnetLang::Vbnet {
@@ -936,8 +1280,11 @@ fn emit_native_decompilation(
     } else {
         "//"
     };
-    let asm: DecompiledAssembly = match decompile_assembly_in(bytes, language.to_target()) {
-        Ok(asm) => asm,
+    let Decompiled {
+        assembly: asm,
+        unprotected,
+    }: Decompiled = match decompile_assembly_detailed(bytes, language.to_target()) {
+        Ok(detailed) => detailed,
         Err(e) => {
             let reason: String = e.to_string();
             let path: PathBuf = out_dir.join(format!("{stem}.native.{}", language.ext()));
@@ -948,7 +1295,7 @@ fn emit_native_decompilation(
             std::fs::write(&path, text).map_err(|w| {
                 miette::miette!("DR-CLI-0437: cannot write native decompile failure note: {w}")
             })?;
-            return Ok(NativeDecompileOutcome::Failed(reason));
+            return Ok((NativeDecompileOutcome::Failed(reason), None));
         }
     };
     let mut text: String = String::with_capacity(asm.methods.len() * 128);
@@ -965,7 +1312,7 @@ fn emit_native_decompilation(
     let path: PathBuf = out_dir.join(format!("{stem}.native.{}", language.ext()));
     std::fs::write(&path, text)
         .map_err(|e| miette::miette!("DR-CLI-0435: cannot write native decompilation: {e}"))?;
-    Ok(NativeDecompileOutcome::Decompiled(asm))
+    Ok((NativeDecompileOutcome::Decompiled(asm), unprotected))
 }
 
 fn analyze(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {

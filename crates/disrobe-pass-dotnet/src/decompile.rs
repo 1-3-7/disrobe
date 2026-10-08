@@ -20,6 +20,7 @@ struct AssemblyNamer<'a> {
     method: MethodNamer<'a>,
     field_rvas: &'a crate::field_rva::FieldRvaData<'a>,
     initialize_array_tokens: &'a BTreeSet<u32>,
+    literals: Option<&'a crate::unprotect::Literals>,
 }
 
 impl TokenNamer for AssemblyNamer<'_> {
@@ -28,6 +29,12 @@ impl TokenNamer for AssemblyNamer<'_> {
     }
 
     fn user_string_units(&self, token: u32) -> crate::structurize::UserStringLookup {
+        if let Some(units) = self
+            .literals
+            .and_then(|literals: &crate::unprotect::Literals| literals.units(token))
+        {
+            return crate::structurize::UserStringLookup::Units(units.to_vec());
+        }
         self.method.user_string_units(token)
     }
 
@@ -141,11 +148,51 @@ pub fn decompile_assembly(image: &[u8]) -> Result<DecompiledAssembly> {
     decompile_assembly_in(image, TargetLang::CSharp)
 }
 
+#[derive(Debug)]
+pub struct Decompiled {
+    pub assembly: DecompiledAssembly,
+    pub unprotected: Option<crate::unprotect::Unprotected>,
+}
+
+impl Decompiled {
+    #[must_use]
+    pub fn image<'a>(&'a self, original: &'a [u8]) -> &'a [u8] {
+        self.unprotected
+            .as_ref()
+            .map_or(original, |u: &crate::unprotect::Unprotected| {
+                u.image.as_slice()
+            })
+    }
+}
+
 pub fn decompile_assembly_in(image: &[u8], lang: TargetLang) -> Result<DecompiledAssembly> {
+    decompile_assembly_detailed(image, lang).map(|d: Decompiled| d.assembly)
+}
+
+pub fn decompile_assembly_detailed(original: &[u8], lang: TargetLang) -> Result<Decompiled> {
+    let unprotected: Option<crate::unprotect::Unprotected> = crate::unprotect::unprotect(original)?;
+    let image: &[u8] = unprotected
+        .as_ref()
+        .map_or(original, |u: &crate::unprotect::Unprotected| {
+            u.image.as_slice()
+        });
     let pe: PeImage = parse(image)?;
     let clr: ClrHeader = parse_clr_header(image, &pe)?;
     let root: MetadataRoot = parse_metadata_root(image, &pe, &clr)?;
-    let resolver: Resolver = Resolver::build(image, &pe, &clr, &root)?;
+    let resolver: Resolver = Resolver::build(image, &pe, &clr, &root)?.with_renames(
+        unprotected
+            .as_ref()
+            .map(|u: &crate::unprotect::Unprotected| u.member_renames.clone())
+            .unwrap_or_default(),
+        unprotected
+            .as_ref()
+            .map(|u: &crate::unprotect::Unprotected| u.type_renames.clone())
+            .unwrap_or_default(),
+        unprotected
+            .as_ref()
+            .map(|u: &crate::unprotect::Unprotected| u.namespace_renames.clone())
+            .unwrap_or_default(),
+    );
     let field_rvas: crate::field_rva::FieldRvaData<'_> =
         crate::field_rva::FieldRvaData::build(image, &pe, &resolver);
     let metadata: &[u8] = metadata_slice(image, &pe, &clr, &root)?;
@@ -172,10 +219,22 @@ pub fn decompile_assembly_in(image: &[u8], lang: TargetLang) -> Result<Decompile
         std::collections::BTreeMap<String, crate::display_class_lowering::Allocation>,
     > = std::collections::BTreeMap::new();
     for ty in &model.types {
+        if unprotected
+            .as_ref()
+            .is_some_and(|u: &crate::unprotect::Unprotected| u.omits_type(ty.token))
+        {
+            continue;
+        }
         let state_machine: Option<crate::state_machine::StateMachine> =
             crate::state_machine::classify(ty);
         let is_record: bool = crate::records::is_record_type(ty);
         for m in &ty.methods {
+            if unprotected
+                .as_ref()
+                .is_some_and(|u: &crate::unprotect::Unprotected| u.omits_method(m.token))
+            {
+                continue;
+            }
             if lang == TargetLang::CSharp
                 && state_machine.is_some()
                 && crate::state_machine::is_move_next(m)
@@ -188,6 +247,7 @@ pub fn decompile_assembly_in(image: &[u8], lang: TargetLang) -> Result<Decompile
                 &resolver,
                 &field_rvas,
                 &initialize_array_tokens,
+                unprotected.as_ref(),
                 ty,
                 m,
                 state_machine.as_ref(),
@@ -201,12 +261,13 @@ pub fn decompile_assembly_in(image: &[u8], lang: TargetLang) -> Result<Decompile
         }
     }
     if lang == TargetLang::CSharp {
-        let _ = crate::lambda_reverse::inline_lambdas(&mut methods);
+        let scopes: std::collections::BTreeMap<u32, String> = method_scopes(&model, &resolver);
+        let _ = crate::lambda_reverse::inline_lambdas(&mut methods, &scopes);
         let _ = crate::display_class_lowering::lower_display_classes(
             &mut methods,
             &closure_types(&model, &resolver, lang),
             &closure_allocations,
-            &method_scopes(&model, &resolver),
+            &scopes,
         );
         for method in &mut methods {
             method.body = crate::interpolation_reverse::lower_interpolated_strings(&method.body);
@@ -247,13 +308,16 @@ pub fn decompile_assembly_in(image: &[u8], lang: TargetLang) -> Result<Decompile
         }
     }
     let decompiled: u32 = u32::try_from(methods.len()).unwrap_or(u32::MAX);
-    Ok(DecompiledAssembly {
-        module_name: model.module_name,
-        methods,
-        methods_decompiled: decompiled,
-        methods_bodyless: bodyless,
-        methods_failed: u32::try_from(failed.len()).unwrap_or(u32::MAX),
-        failed_methods: failed,
+    Ok(Decompiled {
+        assembly: DecompiledAssembly {
+            module_name: model.module_name,
+            methods,
+            methods_decompiled: decompiled,
+            methods_bodyless: bodyless,
+            methods_failed: u32::try_from(failed.len()).unwrap_or(u32::MAX),
+            failed_methods: failed,
+        },
+        unprotected,
     })
 }
 
@@ -264,6 +328,7 @@ fn decompile_one(
     resolver: &Resolver,
     field_rvas: &crate::field_rva::FieldRvaData<'_>,
     initialize_array_tokens: &BTreeSet<u32>,
+    unprotected: Option<&crate::unprotect::Unprotected>,
     ty: &TypeModel,
     m: &MethodModel,
     state_machine: Option<&crate::state_machine::StateMachine>,
@@ -300,7 +365,13 @@ fn decompile_one(
         );
         return;
     }
-    match parse_method_body(&image[off..]) {
+    let parsed: Result<MethodBody> = unprotected
+        .and_then(|u: &crate::unprotect::Unprotected| u.rewritten(m.token))
+        .map_or_else(
+            || parse_method_body(&image[off..]),
+            |rewritten: &MethodBody| Ok(rewritten.clone()),
+        );
+    match parsed {
         Ok(body) => {
             let devirtualized_body: MethodBody = resolver.devirtualize_callvirt(&body);
             let provenance: &str = if crate::state_machine::is_closure_display_type(ty) {
@@ -349,6 +420,7 @@ fn decompile_one(
                 },
                 field_rvas,
                 initialize_array_tokens,
+                literals: unprotected.map(|u: &crate::unprotect::Unprotected| &u.literals),
             };
             let names: NameTable = build_name_table(resolver, m, &devirtualized_body, lang);
             let header_sig: String = if lang == TargetLang::CSharp {

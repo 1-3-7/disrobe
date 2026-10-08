@@ -962,6 +962,11 @@ pub(crate) struct MethodBodyExtent {
     pub consumed_bytes: usize,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn method_header_size(bytes: &[u8]) -> Result<usize> {
+    parse_method_header(bytes).map(|header: MethodHeader| header.header_size)
+}
+
 fn parse_method_header(bytes: &[u8]) -> Result<MethodHeader> {
     if bytes.is_empty() {
         return Err(Error::CilTruncated(0));
@@ -1156,18 +1161,33 @@ fn exception_sections(bytes: &[u8], code_end: usize) -> Result<ExceptionSections
         let section_end: usize = pos
             .checked_add(data_size)
             .ok_or(Error::CilTruncated(usize::MAX))?;
+        let is_eh: bool = kind_byte & SECT_EH_TABLE != 0;
+        // the runtime counts clauses as DataSize / clause size, so a writer that omits the
+        // four header bytes from DataSize still gets every clause it wrote; follow the runtime
+        let clause_size: usize = if is_fat { 24 } else { 12 };
+        let data_end: usize = if is_eh {
+            let clauses: usize = data_size / clause_size;
+            header_end
+                .checked_add(clauses.saturating_mul(clause_size))
+                .ok_or(Error::CilTruncated(usize::MAX))?
+        } else {
+            section_end
+        };
+        if bytes.len() < section_end {
+            return Err(Error::CilTruncated(section_end));
+        }
         let data: &[u8] = bytes
-            .get(header_end..section_end)
-            .ok_or(Error::CilTruncated(section_end))?;
+            .get(header_end..data_end)
+            .ok_or(Error::CilTruncated(data_end))?;
         sections.push(ExceptionSection {
             data,
             is_fat,
-            is_eh: kind_byte & SECT_EH_TABLE != 0,
+            is_eh,
         });
         if !more {
             return Ok(ExceptionSections {
                 sections,
-                end: section_end,
+                end: section_end.max(data_end),
             });
         }
         pos = section_end
@@ -2056,6 +2076,36 @@ mod tests {
         let body: MethodBody = parse_method_body(&bytes).expect("fat eh");
         assert_eq!(body.exception_clauses.len(), 1);
         assert_eq!(body.exception_clauses[0].kind, ExceptionClauseKind::Finally);
+    }
+
+    #[test]
+    fn small_eh_section_sized_without_its_header_still_yields_every_clause() {
+        let mut bytes: Vec<u8> = Vec::new();
+        let flags_size: u16 = (3u16 << 12) | 0x03 | super::COR_IL_METHOD_MORE_SECTS;
+        bytes.extend_from_slice(&flags_size.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&2u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.push(0x00);
+        bytes.push(0x2A);
+        while !bytes.len().is_multiple_of(4) {
+            bytes.push(0);
+        }
+        bytes.push(super::SECT_EH_TABLE);
+        bytes.push(24);
+        bytes.push(0);
+        bytes.push(0);
+        for class_token in [0x0100_000Au32, 0x0100_000B] {
+            bytes.extend_from_slice(&0x0000u16.to_le_bytes());
+            bytes.extend_from_slice(&0u16.to_le_bytes());
+            bytes.push(1);
+            bytes.extend_from_slice(&1u16.to_le_bytes());
+            bytes.push(1);
+            bytes.extend_from_slice(&class_token.to_le_bytes());
+        }
+        let body: MethodBody = parse_method_body(&bytes).expect("runtime-sized small eh");
+        assert_eq!(body.exception_clauses.len(), 2);
+        assert_eq!(body.exception_clauses[1].class_token_or_filter, 0x0100_000B);
     }
 
     #[test]

@@ -445,7 +445,38 @@ fn augment_with_bitmono_structural(image: &[u8], matches: &mut BTreeMap<Protecto
             Protector::BitMono,
             vec![u32::from(antiildasm), u32::from(clr_size_zeroed)],
         );
+        return;
     }
+    let spaced_names: u32 = match crate::peel::read_heaps(image) {
+        Ok(heaps) => bitmono_renamer_names(&heaps.strings),
+        Err(_) => return,
+    };
+    if spaced_names >= BITMONO_RENAMER_MIN_NAMES {
+        matches.insert(Protector::BitMono, vec![spaced_names]);
+    }
+}
+
+const BITMONO_RENAMER_MIN_NAMES: u32 = 3;
+
+fn bitmono_renamer_names(strings: &BTreeMap<u32, String>) -> u32 {
+    let mut count: u32 = 0;
+    for name in strings.values() {
+        let words: Vec<&str> = name.split(' ').collect();
+        if words.len() < 3 {
+            continue;
+        }
+        let realistic: bool = words.iter().all(|word: &&str| {
+            let head: &str = word.split('.').next().unwrap_or(word);
+            !head.is_empty()
+                && head
+                    .chars()
+                    .all(|c: char| c.is_ascii_alphanumeric() || c == '_' || c == '<' || c == '>')
+        });
+        if realistic {
+            count = count.saturating_add(1);
+        }
+    }
+    count
 }
 
 fn augment_with_obfuscar_heuristic(image: &[u8], matches: &mut BTreeMap<Protector, Vec<u32>>) {

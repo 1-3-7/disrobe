@@ -1341,7 +1341,30 @@ fn coerced_literal(value: &str, target_type: &str, lang: TargetLang) -> Option<S
     if is_char_type_name(target_type) {
         return char_literal(value);
     }
-    None
+    let parsed: i64 = value.parse::<i64>().ok()?;
+    match target_type.trim() {
+        "uint" | "System.UInt32" if parsed < 0 => Some(format!(
+            "{}u",
+            u32::try_from(parsed.wrapping_add(1 << 32)).ok()?
+        )),
+        "ushort" | "System.UInt16" if !(0..=i64::from(u16::MAX)).contains(&parsed) => {
+            Some(format!("unchecked((ushort){parsed})"))
+        }
+        "byte" | "System.Byte" if !(0..=i64::from(u8::MAX)).contains(&parsed) => {
+            Some(format!("unchecked((byte){parsed})"))
+        }
+        "sbyte" | "System.SByte"
+            if !(i64::from(i8::MIN)..=i64::from(i8::MAX)).contains(&parsed) =>
+        {
+            Some(format!("unchecked((sbyte){parsed})"))
+        }
+        "short" | "System.Int16"
+            if !(i64::from(i16::MIN)..=i64::from(i16::MAX)).contains(&parsed) =>
+        {
+            Some(format!("unchecked((short){parsed})"))
+        }
+        _ => None,
+    }
 }
 
 fn array_element_type(array: &Expr, names: &NameTable) -> Option<String> {
@@ -1403,7 +1426,38 @@ fn coerce_bounded(
             when_false: Box::new(Expr::Const("0".to_owned())),
         };
     }
+    if lang == TargetLang::CSharp
+        && needs_explicit_narrowing(ty.trim())
+        && matches!(&value, Expr::Binary(op, ..) if is_integer_arithmetic(op))
+    {
+        return Expr::Cast(ty.trim().to_owned(), Box::new(value));
+    }
     value
+}
+
+fn needs_explicit_narrowing(ty: &str) -> bool {
+    matches!(
+        ty,
+        "uint"
+            | "ulong"
+            | "ushort"
+            | "byte"
+            | "sbyte"
+            | "short"
+            | "System.UInt32"
+            | "System.UInt64"
+            | "System.UInt16"
+            | "System.Byte"
+            | "System.SByte"
+            | "System.Int16"
+    )
+}
+
+fn is_integer_arithmetic(op: &str) -> bool {
+    matches!(
+        op,
+        "^" | "&" | "|" | "+" | "-" | "*" | "/" | "%" | "<<" | ">>"
+    )
 }
 
 const MAX_COERCION_DEPTH: usize = 32;
@@ -5191,6 +5245,23 @@ mod tests {
             out.body
         );
         assert_eq!(out.recovered_branches, 0, "no residual gotos");
+    }
+
+    #[test]
+    fn an_inner_arm_leaving_for_the_outer_follow_keeps_its_transfer() {
+        let body: MethodBody = body_from(&[
+            0x02, 0x2C, 0x0D, 0x16, 0x0A, 0x03, 0x2C, 0x08, 0x04, 0x19, 0x30, 0x02, 0x17, 0x0A,
+            0x06, 0x2A, 0x18, 0x2A,
+        ]);
+        let out: StructuredMethod =
+            decompile_method("int M(bool arg1, bool arg2, int arg3)", &body, &HexNamer);
+        let early_returns: usize = out.body.matches("return 2;").count();
+        assert!(
+            early_returns >= 2 || out.body.contains("goto IL_"),
+            "the inner guard's exit to the shared return must survive as a duplicate or a goto; got:
+{}",
+            out.body
+        );
     }
 
     #[test]

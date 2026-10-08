@@ -337,6 +337,9 @@ pub struct Resolver {
     strings_heap: Vec<u8>,
     blob: Vec<u8>,
     us: Vec<u8>,
+    member_renames: BTreeMap<u32, String>,
+    type_renames: BTreeMap<u32, String>,
+    namespace_renames: BTreeMap<String, String>,
 }
 
 impl Resolver {
@@ -396,7 +399,42 @@ impl Resolver {
             strings_heap,
             blob,
             us,
+            member_renames: BTreeMap::new(),
+            type_renames: BTreeMap::new(),
+            namespace_renames: BTreeMap::new(),
         })
+    }
+
+    #[must_use]
+    pub fn with_renames(
+        mut self,
+        members: BTreeMap<u32, String>,
+        types: BTreeMap<u32, String>,
+        namespaces: BTreeMap<String, String>,
+    ) -> Self {
+        self.member_renames = members;
+        self.type_renames = types;
+        self.namespace_renames = namespaces;
+        self
+    }
+
+    fn namespace_of(&self, heap_index: u32) -> String {
+        let raw: String = self.string(heap_index);
+        self.namespace_renames.get(&raw).cloned().unwrap_or(raw)
+    }
+
+    fn type_name_of(&self, rid: u32, heap_index: u32) -> String {
+        self.type_renames
+            .get(&(0x0200_0000 | rid))
+            .cloned()
+            .unwrap_or_else(|| self.string(heap_index))
+    }
+
+    fn member_name(&self, token: u32, heap_index: u32) -> String {
+        self.member_renames
+            .get(&token)
+            .cloned()
+            .unwrap_or_else(|| self.string(heap_index))
     }
 
     #[must_use]
@@ -1215,6 +1253,15 @@ impl Resolver {
         false
     }
 
+    pub(crate) fn type_implements_any_interface(&self, type_token: u32) -> bool {
+        token_rid(type_token).is_some_and(|rid: u32| {
+            self.tables
+                .interface_impls
+                .iter()
+                .any(|row: &InterfaceImplRow| row.class_type == rid)
+        })
+    }
+
     fn type_directly_implements_interface(&self, type_rid: u32, interface_type: u32) -> bool {
         self.tables
             .interface_impls
@@ -1946,8 +1993,8 @@ impl Resolver {
     fn type_def_name(&self, rid: u32) -> Option<String> {
         let row: &TypeDefRow = self.tables.type_defs.get(rid.checked_sub(1)? as usize)?;
         Some(Self::qualify(
-            self.string(row.namespace),
-            self.string(row.name),
+            self.namespace_of(row.namespace),
+            self.type_name_of(rid, row.name),
         ))
     }
 
@@ -1968,7 +2015,7 @@ impl Resolver {
     fn method_name(&self, rid: u32) -> Option<String> {
         let row: &MethodDefRow = self.tables.methods.get(rid.checked_sub(1)? as usize)?;
         let owner: Option<String> = self.method_owner_name(rid);
-        let m: String = self.string(row.name);
+        let m: String = self.member_name(0x0600_0000 | rid, row.name);
         Some(match owner {
             Some(o) => format!("{o}::{m}"),
             None => m,
@@ -1978,7 +2025,7 @@ impl Resolver {
     #[must_use]
     fn field_name(&self, rid: u32) -> Option<String> {
         let row: &FieldRow = self.tables.fields.get(rid.checked_sub(1)? as usize)?;
-        Some(self.string(row.name))
+        Some(self.member_name(0x0400_0000 | rid, row.name))
     }
 
     #[must_use]
@@ -2036,6 +2083,22 @@ impl Resolver {
         crate::signature::parse_type_spec_sig(blob).ok()
     }
 
+    #[must_use]
+    pub(crate) fn type_spec_sig(&self, rid: u32) -> Option<TypeSig> {
+        self.type_spec_signature(rid)
+    }
+
+    #[must_use]
+    pub(crate) fn local_type_sigs(&self, local_var_sig_tok: u32) -> Option<Vec<TypeSig>> {
+        (local_var_sig_tok != 0).then(|| self.local_signatures(local_var_sig_tok))
+    }
+
+    #[must_use]
+    pub(crate) fn method_spec_args(&self, instantiation_blob: u32) -> Option<Vec<TypeSig>> {
+        let blob: &[u8] = self.blob(instantiation_blob)?;
+        crate::signature::parse_method_spec_sig(blob).ok()
+    }
+
     fn type_spec_signature_strict(&self, rid: u32) -> Option<TypeSig> {
         let index: usize = rid
             .checked_sub(1)
@@ -2087,7 +2150,11 @@ impl Resolver {
                 .get(idx + 1)
                 .map_or(self.tables.methods.len() as u32 + 1, |n| n.method_list);
             if method_rid >= start && method_rid < next {
-                return Some(Self::qualify(self.string(t.namespace), self.string(t.name)));
+                let rid: u32 = u32::try_from(idx + 1).unwrap_or(u32::MAX);
+                return Some(Self::qualify(
+                    self.namespace_of(t.namespace),
+                    self.type_name_of(rid, t.name),
+                ));
             }
         }
         None
@@ -2150,8 +2217,8 @@ impl Resolver {
             let methods: Vec<MethodModel> =
                 self.materialize_methods(method_start, method_end, method_total);
 
-            let namespace: String = self.string(t.namespace);
-            let name: String = self.string(t.name);
+            let namespace: String = self.namespace_of(t.namespace);
+            let name: String = self.type_name_of(type_rid, t.name);
             let full_name: String = Self::qualify(namespace.clone(), name.clone());
             let metadata_name: String = Self::qualify_metadata(&namespace, &name);
             let base_type: Option<String> = t.extends.map(|e: RowRef| self.row_ref_name(e));
@@ -2228,7 +2295,7 @@ impl Resolver {
             });
             out.push(FieldModel {
                 token: (u32::from(TableId::Field.index()) << 24) | rid,
-                name: self.string(row.name),
+                name: self.member_name((u32::from(TableId::Field.index()) << 24) | rid, row.name),
                 flags: row.flags,
                 field_type: signature.field_type,
                 is_volatile,
@@ -2259,7 +2326,10 @@ impl Resolver {
             let parameters: Vec<ParamModel> = self.materialize_params(rid);
             out.push(MethodModel {
                 token: (u32::from(TableId::MethodDef.index()) << 24) | rid,
-                name: self.string(row.name),
+                name: self.member_name(
+                    (u32::from(TableId::MethodDef.index()) << 24) | rid,
+                    row.name,
+                ),
                 flags: row.flags,
                 impl_flags: row.impl_flags,
                 rva: row.rva,
@@ -2752,6 +2822,28 @@ impl Resolver {
                 },
             ))
         .then_some(())
+    }
+
+    pub(crate) fn has_compiler_generated_attribute(&self, token: u32) -> bool {
+        let (Some(table), Some(rid)): (Option<TableId>, Option<u32>) =
+            (token_table(token), token_rid(token))
+        else {
+            return false;
+        };
+        self.tables
+            .custom_attributes
+            .iter()
+            .filter(|attribute: &&crate::tables::CustomAttributeRow| {
+                attribute
+                    .parent
+                    .is_some_and(|parent: RowRef| parent.table == table && parent.row == rid)
+            })
+            .any(|attribute: &crate::tables::CustomAttributeRow| {
+                self.blob(attribute.value) == Some([0x01, 0x00, 0x00, 0x00].as_slice())
+                    && attribute.attr_type.is_some_and(|constructor: RowRef| {
+                        self.is_compiler_generated_attribute_constructor(constructor)
+                    })
+            })
     }
 
     fn type_has_compiler_generated_attribute(&self, type_rid: u32) -> bool {
@@ -3736,6 +3828,9 @@ mod tests {
             strings_heap: Vec::new(),
             blob: Vec::new(),
             us,
+            member_renames: BTreeMap::new(),
+            type_renames: BTreeMap::new(),
+            namespace_renames: BTreeMap::new(),
         };
         assert_eq!(
             resolver(vec![0, 3, 0x41, 0, 0]).user_string_strict(1),
@@ -4127,6 +4222,9 @@ mod tests {
             strings_heap: Vec::new(),
             blob: Vec::new(),
             us: Vec::new(),
+            member_renames: BTreeMap::new(),
+            type_renames: BTreeMap::new(),
+            namespace_renames: BTreeMap::new(),
         };
 
         assert_eq!(resolver.method_impl_indices_for_type(7), &[0, 2]);
@@ -4610,6 +4708,9 @@ mod tests {
                 0, 8, 0x7C, 0xEC, 0x85, 0xD7, 0xBE, 0xA7, 0x79, 0x8E, 8, 0, 0, 0, 0, 0, 0, 0, 0,
             ],
             us: Vec::new(),
+            member_renames: BTreeMap::new(),
+            type_renames: BTreeMap::new(),
+            namespace_renames: BTreeMap::new(),
         };
         let type_def_token: u32 = u32::from(TableId::TypeDef as u8) << 24;
         assert_eq!(
@@ -4710,6 +4811,9 @@ mod tests {
             strings_heap,
             blob: vec![0, 16, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0],
             us: Vec::new(),
+            member_renames: BTreeMap::new(),
+            type_renames: BTreeMap::new(),
+            namespace_renames: BTreeMap::new(),
         };
         let type_def_token: u32 = u32::from(TableId::TypeDef as u8) << 24;
         assert_eq!(
@@ -4793,6 +4897,9 @@ mod tests {
                 0x0E,
             ],
             us: Vec::new(),
+            member_renames: BTreeMap::new(),
+            type_renames: BTreeMap::new(),
+            namespace_renames: BTreeMap::new(),
         };
         let type_spec_token: u32 = u32::from(TableId::TypeSpec as u8) << 24;
         assert_eq!(

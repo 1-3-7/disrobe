@@ -237,7 +237,50 @@ pub fn lzma_decompress(plaintext: &[u8]) -> Result<Vec<u8>> {
     if plaintext.len() > 9 {
         padded.extend_from_slice(&plaintext[9..]);
     }
-    let mut reader: Cursor<&[u8]> = Cursor::new(padded.as_slice());
+    decompress_standard_stream(&padded, uncompressed_size_usize)
+}
+
+pub fn lzma_decompress_standard(stream: &[u8]) -> Result<Vec<u8>> {
+    if stream.len() < 13 {
+        return Err(Error::Truncated {
+            offset: 0,
+            needed: 13,
+            had: stream.len(),
+        });
+    }
+    let dictionary_size: usize =
+        u32::from_le_bytes([stream[1], stream[2], stream[3], stream[4]]) as usize;
+    if dictionary_size > MAX_DECRYPTED_RESOURCE_BYTES {
+        return Err(Error::Truncated {
+            offset: 1,
+            needed: dictionary_size,
+            had: MAX_DECRYPTED_RESOURCE_BYTES,
+        });
+    }
+    let uncompressed_size: u64 = u64::from_le_bytes([
+        stream[5], stream[6], stream[7], stream[8], stream[9], stream[10], stream[11], stream[12],
+    ]);
+    let Ok(uncompressed_size_usize): std::result::Result<usize, _> =
+        usize::try_from(uncompressed_size)
+    else {
+        return Err(Error::Truncated {
+            offset: 5,
+            needed: usize::MAX,
+            had: MAX_DECRYPTED_RESOURCE_BYTES,
+        });
+    };
+    if uncompressed_size_usize > MAX_DECRYPTED_RESOURCE_BYTES {
+        return Err(Error::Truncated {
+            offset: 5,
+            needed: uncompressed_size_usize,
+            had: MAX_DECRYPTED_RESOURCE_BYTES,
+        });
+    }
+    decompress_standard_stream(stream, uncompressed_size_usize)
+}
+
+fn decompress_standard_stream(stream: &[u8], uncompressed_size_usize: usize) -> Result<Vec<u8>> {
+    let mut reader: Cursor<&[u8]> = Cursor::new(stream);
     let mut out: Vec<u8> = Vec::with_capacity(uncompressed_size_usize.min(1 << 20));
     let options: lzma_rs::decompress::Options = lzma_rs::decompress::Options {
         memlimit: Some(MAX_DECRYPTED_RESOURCE_BYTES),
