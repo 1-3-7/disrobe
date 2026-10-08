@@ -1299,6 +1299,13 @@ enum NativeCmd {
             help = "disable the symbolic devirtualizer (on by default in a full build): folds proven-dead conditional arms in the aarch64 nir decompile path before structuring"
         )]
         no_devirt: bool,
+        #[arg(
+            long,
+            value_enum,
+            value_name = "ask|apply|skip",
+            help = "offer runtime anti-analysis neutralization patches (IsDebuggerPresent, PEB flags, NtQueryInformationProcess, timing deltas, int 2d traps, cpuid hypervisor bit): ask prompts per patch on a terminal (default there), apply takes them all, skip leaves the checks reported as detected (default without a terminal); the input is never modified, a patched copy and neutralization.json land beside the other outputs"
+        )]
+        neutralize: Option<native::NeutralizeMode>,
     },
     #[command(
         about = "dump symbols, sections, segments, imports, & debug info from a native binary"
@@ -1931,7 +1938,8 @@ fn main() -> miette::Result<()> {
                 format,
                 emit,
                 no_devirt,
-            } => native::decompile(input, out, emit, backend, format, !no_devirt),
+                neutralize,
+            } => native::decompile(input, out, emit, backend, format, !no_devirt, neutralize),
             NativeCmd::Symbols { input, out } => native::symbols(input, out),
             NativeCmd::Identify { input, out } => native::identify(input, out),
             NativeCmd::Unpack { input, out, list } => native::unpack(input, out, list),

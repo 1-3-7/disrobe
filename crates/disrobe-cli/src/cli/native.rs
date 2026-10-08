@@ -87,6 +87,228 @@ impl DecompileLang {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum NeutralizeMode {
+    Ask,
+    Apply,
+    Skip,
+}
+
+impl NeutralizeMode {
+    pub(crate) fn resolve(explicit: Option<Self>) -> Self {
+        use std::io::IsTerminal as _;
+        explicit.unwrap_or_else(|| {
+            if std::io::stdin().is_terminal() {
+                Self::Ask
+            } else {
+                Self::Skip
+            }
+        })
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Ask => "ask",
+            Self::Apply => "apply",
+            Self::Skip => "skip",
+        }
+    }
+}
+
+const NEUTRALIZATION_REPORT_FILE: &str = "neutralization.json";
+
+fn hex_bytes(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|b: &u8| format!("{b:02x}"))
+        .collect::<Vec<String>>()
+        .join(" ")
+}
+
+fn print_neutralization_patch(index: usize, total: usize, patch: &disrobe_core::neutralize::Patch) {
+    println!(
+        "[{}/{}] {} ({}): {}",
+        index + 1,
+        total,
+        patch.id,
+        patch.check.technique().label(),
+        patch.check.describe()
+    );
+    println!(
+        "    at {:#x}: {}  <- {}",
+        patch.anchor.address, patch.anchor.instruction, patch.anchor.pattern
+    );
+    println!(
+        "    file offset {:#x}, {} byte(s): {} -> {}",
+        patch.file_offset,
+        patch.original.len(),
+        hex_bytes(&patch.original),
+        hex_bytes(&patch.replacement)
+    );
+    println!("    risk: {}", patch.risk);
+}
+
+enum PatchAnswer {
+    Yes,
+    No,
+    All,
+    None,
+}
+
+fn read_patch_answer(lines: &mut std::io::Lines<std::io::StdinLock<'_>>) -> PatchAnswer {
+    loop {
+        print!("    apply this patch? [y]es / [n]o / [a]ll / [q] none: ");
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+        let Some(Ok(line)) = lines.next() else {
+            println!();
+            return PatchAnswer::None;
+        };
+        match line.trim().to_ascii_lowercase().as_str() {
+            "y" | "yes" => return PatchAnswer::Yes,
+            "n" | "no" => return PatchAnswer::No,
+            "a" | "all" => return PatchAnswer::All,
+            "q" | "none" | "quit" => return PatchAnswer::None,
+            _ => println!("    answer y, n, a or q"),
+        }
+    }
+}
+
+fn ask_each_patch(
+    plan: &disrobe_core::neutralize::NeutralizationPlan,
+) -> disrobe_core::neutralize::Selection {
+    use std::io::BufRead as _;
+    println!(
+        "neutralization plan: {} patch(es); the input file is never modified, accepted patches go to a copy beside the other outputs",
+        plan.patches.len()
+    );
+    let stdin: std::io::Stdin = std::io::stdin();
+    let mut lines: std::io::Lines<std::io::StdinLock<'_>> = stdin.lock().lines();
+    let mut chosen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let total: usize = plan.patches.len();
+    let mut index: usize = 0;
+    while let Some(patch) = plan.patches.get(index) {
+        print_neutralization_patch(index, total, patch);
+        match read_patch_answer(&mut lines) {
+            PatchAnswer::Yes => {
+                chosen.insert(patch.id.clone());
+            }
+            PatchAnswer::No => {}
+            PatchAnswer::All => {
+                for rest in &plan.patches[index..] {
+                    chosen.insert(rest.id.clone());
+                }
+                break;
+            }
+            PatchAnswer::None => break,
+        }
+        index = index.saturating_add(1);
+    }
+    disrobe_core::neutralize::Selection::Only(chosen)
+}
+
+fn neutralize_native_input(
+    input: &Path,
+    bytes: &[u8],
+    out_dir: &Path,
+    mode: NeutralizeMode,
+) -> miette::Result<()> {
+    use disrobe_core::neutralize::{
+        Applied, NeutralizationPlan, NeutralizationReport, Selection, apply, neutralized_path,
+    };
+    use disrobe_pass_native::{RuntimeCheckScan, plan_runtime_check_neutralization};
+
+    let scan: RuntimeCheckScan = plan_runtime_check_neutralization(bytes).map_err(|e| {
+        miette::miette!("DR-NATIVE-0219: cannot plan runtime-check neutralization: {e}")
+    })?;
+    let plan: &NeutralizationPlan = &scan.plan;
+    std::fs::create_dir_all(out_dir)
+        .map_err(|e| miette::miette!("DR-NATIVE-0163: cannot create out dir: {e}"))?;
+    let selection: Selection = match mode {
+        NeutralizeMode::Apply => Selection::All,
+        NeutralizeMode::Skip => Selection::Skip,
+        NeutralizeMode::Ask if plan.is_empty() => Selection::Skip,
+        NeutralizeMode::Ask => ask_each_patch(plan),
+    };
+    let applied: Applied = apply(bytes, plan, &selection)
+        .map_err(|e| miette::miette!("DR-NATIVE-0220: neutralization refused: {e}"))?;
+    let report: &NeutralizationReport = &applied.report;
+    let output: Option<PathBuf> = if report.applied.is_empty() {
+        None
+    } else {
+        let name: &OsStr = input
+            .file_name()
+            .ok_or_else(|| miette::miette!("DR-NATIVE-0221: the input has no file name"))?;
+        let path: PathBuf = neutralized_path(&out_dir.join(name));
+        std::fs::write(&path, &applied.bytes)
+            .map_err(|e| miette::miette!("DR-NATIVE-0222: cannot write {}: {e}", path.display()))?;
+        Some(path)
+    };
+    let document: serde_json::Value = serde_json::json!({
+        "schema": "disrobe.native.neutralization/v1",
+        "input": input.display().to_string(),
+        "mode": mode.label(),
+        "decoded_instructions": scan.decoded_instructions,
+        "plan": plan,
+        "report": report,
+        "output": output.as_ref().map(|p: &PathBuf| p.display().to_string()),
+    });
+    let report_path: PathBuf = out_dir.join(NEUTRALIZATION_REPORT_FILE);
+    std::fs::write(
+        &report_path,
+        serde_json::to_vec_pretty(&document)
+            .map_err(|e| miette::miette!("DR-NATIVE-0223: serialize neutralization report: {e}"))?,
+    )
+    .map_err(|e| {
+        miette::miette!(
+            "DR-NATIVE-0224: cannot write {}: {e}",
+            report_path.display()
+        )
+    })?;
+
+    let checks: Vec<&str> = plan
+        .checks()
+        .into_iter()
+        .map(disrobe_core::neutralize::RuntimeCheck::label)
+        .collect();
+    println!(
+        "native neutralize ({}): {} patch(es) offered [{}]; applied {}, declined {}, skipped {}, refused {}",
+        mode.label(),
+        plan.patches.len(),
+        checks.join(", "),
+        report.applied.len(),
+        report.declined.len(),
+        report.skipped.len(),
+        report.refusals.len()
+    );
+    for declined in &report.declined {
+        println!(
+            "  declined {}: {} stays reported as detected",
+            declined.id,
+            declined.check.label()
+        );
+    }
+    for skipped in &report.skipped {
+        println!(
+            "  skipped {}: {} stays reported as detected",
+            skipped.id,
+            skipped.check.label()
+        );
+    }
+    for refusal in &report.refusals {
+        println!(
+            "  refused {} at {:#x}: {}",
+            refusal.check.label(),
+            refusal.anchor.address,
+            refusal.reason
+        );
+    }
+    if let Some(path) = output.as_ref() {
+        println!("  wrote neutralized copy: {}", path.display());
+    }
+    println!("  report: {}", report_path.display());
+    Ok(())
+}
+
 pub(crate) fn decompile(
     input: PathBuf,
     out: Option<PathBuf>,
@@ -94,7 +316,22 @@ pub(crate) fn decompile(
     backend: DecompileBackend,
     format: DecompileLang,
     devirt: bool,
+    neutralize: Option<NeutralizeMode>,
 ) -> miette::Result<()> {
+    let mode: NeutralizeMode = NeutralizeMode::resolve(neutralize);
+    if neutralize.is_some() || mode == NeutralizeMode::Ask {
+        let bytes: Vec<u8> = std::fs::read(&input)
+            .map_err(|e| miette::miette!("DR-NATIVE-0160: cannot read input: {e}"))?;
+        let stem: String = input
+            .file_stem()
+            .and_then(OsStr::to_str)
+            .unwrap_or("native")
+            .to_owned();
+        let out_dir: PathBuf = out
+            .clone()
+            .unwrap_or_else(|| PathBuf::from(format!("./out/{stem}-native-decompiled")));
+        neutralize_native_input(&input, &bytes, &out_dir, mode)?;
+    }
     match backend {
         DecompileBackend::Native => decompile_native(input, out, format, devirt),
         DecompileBackend::Ghidra => decompile_ghidra(input, out, emit),

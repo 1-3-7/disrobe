@@ -369,6 +369,9 @@ mod native_export_ghidra;
 #[path = "../native_match_e2e.rs"]
 mod native_match_e2e;
 
+#[path = "../native_neutralize.rs"]
+mod native_neutralize;
+
 #[path = "../native_pdb_cxx_headers.rs"]
 mod native_pdb_cxx_headers;
 
