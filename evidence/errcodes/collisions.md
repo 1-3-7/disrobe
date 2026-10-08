@@ -4,13 +4,13 @@
 
 | Measure | Count |
 | --- | ---: |
-| Scanned source files | 2003 |
-| Emission sites | 2376 |
-| Sites carrying a message | 2293 |
-| Distinct emitted codes | 1821 |
+| Scanned source files | 1992 |
+| Emission sites | 2366 |
+| Sites carrying a message | 2283 |
+| Distinct emitted codes | 1811 |
 | Registered codes | 177 |
 | Codes with two or more distinct messages | 258 |
-| Emitted codes missing from the registry | 1644 |
+| Emitted codes missing from the registry | 1634 |
 | Registered codes no source emits | 0 |
 
 ## Codes with two or more distinct messages (258)
@@ -1167,25 +1167,25 @@
 
 ### `DR-DOTNET-0920`
 
-- `"NativeAOT type nesting depth overflowed"`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:554`
-- `"NativeAOT type nesting exceeds {} levels"`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:559`
+- `"NativeAOT type nesting depth overflowed"`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:562`
+- `"NativeAOT type nesting exceeds {} levels"`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:567`
 
 ### `DR-DOTNET-0921`
 
-- `"NativeAOT method owner count overflowed"`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:811`
-- `"NativeAOT symbol work count overflowed"`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:496`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:604`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:618`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:624`
-- `"NativeAOT symbol work exceeds {} items"`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:501`
+- `"NativeAOT method owner count overflowed"`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:819`
+- `"NativeAOT symbol work count overflowed"`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:504`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:612`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:626`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:632`
+- `"NativeAOT symbol work exceeds {} items"`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:509`
 
 ### `DR-DOTNET-0922`
 
-- `"NativeAOT qualified name size overflowed"`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:513`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:544`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:573`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:665`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:678`
-- `"NativeAOT qualified names exceed {} bytes"`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:518`
+- `"NativeAOT qualified name size overflowed"`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:521`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:552`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:581`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:673`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:686`
+- `"NativeAOT qualified names exceed {} bytes"`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:526`
 
 ### `DR-DOTNET-0924`
 
-- `"NativeAOT method owner index is absent"`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:805`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:847`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:893`
-- `"NativeAOT method owner record 0x{} is absent"`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:798`
-- `"NativeAOT method owner storage for record 0x{} is absent"`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:840`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:884`
+- `"NativeAOT method owner index is absent"`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:813`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:855`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:901`
+- `"NativeAOT method owner record 0x{} is absent"`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:806`
+- `"NativeAOT method owner storage for record 0x{} is absent"`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:848`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:892`
 
 ### `DR-EXTRACT-0063`
 
@@ -1467,7 +1467,7 @@
 - `"{}"`: `crates/disrobe-cli/src/cli/wasm.rs:159`
 - no message: `crates/disrobe-python/src/wasm.rs:55`
 
-## Emitted codes missing from the registry (1644)
+## Emitted codes missing from the registry (1634)
 
 - `DR-AS3-0001`: `crates/disrobe-pass-as3/src/error.rs:8`
 - `DR-AS3-0002`: `crates/disrobe-pass-as3/src/error.rs:11`
@@ -2139,15 +2139,6 @@
 - `DR-CLI-0916`: `crates/disrobe-cli/src/cli/dotnet.rs:263`, `crates/disrobe-cli/src/cli/dotnet.rs:265`
 - `DR-CORE-0003`: `crates/disrobe-core/src/error.rs:8`
 - `DR-CORE-0004`: `crates/disrobe-core/src/error.rs:12`
-- `DR-CORE-0040`: `crates/disrobe-core/src/neutralize.rs:314`
-- `DR-CORE-0041`: `crates/disrobe-core/src/neutralize.rs:317`
-- `DR-CORE-0042`: `crates/disrobe-core/src/neutralize.rs:325`
-- `DR-CORE-0043`: `crates/disrobe-core/src/neutralize.rs:333`
-- `DR-CORE-0044`: `crates/disrobe-core/src/neutralize.rs:336`
-- `DR-CORE-0045`: `crates/disrobe-core/src/neutralize.rs:340`
-- `DR-CORE-0046`: `crates/disrobe-core/src/neutralize.rs:350`
-- `DR-CORE-0047`: `crates/disrobe-core/src/neutralize.rs:359`
-- `DR-CORE-0048`: `crates/disrobe-core/src/neutralize.rs:363`
 - `DR-CORE-0101`: `crates/disrobe-core/src/chain/spec.rs:158`
 - `DR-CORE-0102`: `crates/disrobe-core/src/chain/spec.rs:160`
 - `DR-CORE-0103`: `crates/disrobe-core/src/chain/spec.rs:162`
@@ -2199,25 +2190,25 @@
 - `DR-DOTNET-0040`: `crates/disrobe-pass-dotnet/src/error.rs:148`
 - `DR-DOTNET-0041`: `crates/disrobe-pass-dotnet/src/error.rs:151`
 - `DR-DOTNET-0042`: `crates/disrobe-pass-dotnet/src/error.rs:154`
-- `DR-DOTNET-0902`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:115`
+- `DR-DOTNET-0902`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:114`
 - `DR-DOTNET-0903`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:122`
 - `DR-DOTNET-0905`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:140`
 - `DR-DOTNET-0906`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:154`
 - `DR-DOTNET-0907`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:131`
 - `DR-DOTNET-0908`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:135`
-- `DR-DOTNET-0910`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:983`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:1000`
-- `DR-DOTNET-0913`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:565`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:651`
-- `DR-DOTNET-0914`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:965`
-- `DR-DOTNET-0916`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:970`
-- `DR-DOTNET-0917`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:831`
-- `DR-DOTNET-0918`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:862`
-- `DR-DOTNET-0919`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:988`
-- `DR-DOTNET-0920`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:554`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:559`
-- `DR-DOTNET-0921`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:496`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:501`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:604`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:618`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:624`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:811`
-- `DR-DOTNET-0922`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:513`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:518`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:544`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:573`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:665`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:678`
-- `DR-DOTNET-0923`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:527`
-- `DR-DOTNET-0924`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:798`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:805`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:840`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:847`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:884`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:893`
-- `DR-DOTNET-0925`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:1005`
+- `DR-DOTNET-0910`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:991`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:1008`
+- `DR-DOTNET-0913`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:573`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:659`
+- `DR-DOTNET-0914`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:973`
+- `DR-DOTNET-0916`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:978`
+- `DR-DOTNET-0917`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:839`
+- `DR-DOTNET-0918`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:870`
+- `DR-DOTNET-0919`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:996`
+- `DR-DOTNET-0920`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:562`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:567`
+- `DR-DOTNET-0921`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:504`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:509`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:612`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:626`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:632`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:819`
+- `DR-DOTNET-0922`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:521`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:526`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:552`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:581`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:673`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:686`
+- `DR-DOTNET-0923`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:535`
+- `DR-DOTNET-0924`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:806`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:813`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:848`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:855`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:892`, `crates/disrobe-pass-dotnet/src/chain_detector.rs:901`
+- `DR-DOTNET-0925`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:1013`
 - `DR-DOTNET-0930`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:423`
 - `DR-EXTRACT-0050`: `crates/disrobe-cli/src/cli/extract.rs:36`, `crates/disrobe-cli/src/cli/extract.rs:54`
 - `DR-EXTRACT-0051`: `crates/disrobe-cli/src/cli/extract.rs:347`
@@ -2421,8 +2412,7 @@
 - `DR-LUA-0037`: `crates/disrobe-pass-lua/src/error.rs:141`
 - `DR-LUA-0038`: `crates/disrobe-pass-lua/src/error.rs:146`
 - `DR-LUA-0039`: `crates/disrobe-pass-lua/src/error.rs:155`
-- `DR-LUA-0040`: `crates/disrobe-pass-lua/src/error.rs:162`
-- `DR-LUA-0041`: `crates/disrobe-pass-lua/src/error.rs:159`
+- `DR-LUA-0040`: `crates/disrobe-pass-lua/src/error.rs:159`
 - `DR-LUA-0902`: `crates/disrobe-pass-lua/src/chain_detector.rs:127`
 - `DR-LUA-0903`: `crates/disrobe-pass-lua/src/chain_detector.rs:370`
 - `DR-LUA-0904`: `crates/disrobe-pass-lua/src/chain_detector.rs:411`

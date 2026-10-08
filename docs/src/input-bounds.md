@@ -15,9 +15,9 @@ The exceeded column states what happens when input goes past the bound. It comes
 
 The scan does not resolve types or trait dispatch, so an outcome names the construct it found rather than proving the behaviour.
 
-2225 bounds (count 217, other 1039, output 67, recursion 228, size 488, work 186).
+2243 bounds (count 217, other 1051, output 67, recursion 228, size 493, work 187).
 
-Exceeded: error 900, recorded 191, panic 0, delegated 49, silent 1026, unclassified 18, allocation 33, unused 8.
+Exceeded: error 907, recorded 190, panic 0, delegated 49, silent 1038, unclassified 18, allocation 33, unused 8.
 
 | Crate | Constant | Kind | Exceeded | Type | Value | File |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -236,6 +236,8 @@ Exceeded: error 900, recorded 191, panic 0, delegated 49, silent 1026, unclassif
 | `disrobe-cli` | `MAX_CYCLONEDX_OUTPUT_BYTES` | output | error: `CycloneDxError::OutputTooLong`; `Error::other()` | `usize` | `24 * 1024 * 1024` | `crates/disrobe-cli/src/cli/cyclonedx.rs` |
 | `disrobe-cli` | `MAX_CYCLONEDX_PACKAGES` | other | error: `CycloneDxError::TooManyComponents`; `CycloneDxError::TooManyPackages` | `usize` | `16_384` | `crates/disrobe-cli/src/cli/cyclonedx.rs` |
 | `disrobe-cli` | `MAX_BUNDLE_ASSEMBLIES` | other | error: untyped `miette!` | `usize` | `512` | `crates/disrobe-cli/src/cli/dotnet.rs` |
+| `disrobe-cli` | `MAX_PRINTED_RESIDUALS` | other | silent: `.take()` in `print_unprotect_report`; no action in `print_unprotect_report` | `usize` | `12` | `crates/disrobe-cli/src/cli/dotnet.rs` |
+| `disrobe-cli` | `MAX_PROMPT_RETRIES` | other | silent: `return` in `read_answer` | `u32` | `3` | `crates/disrobe-cli/src/cli/dotnet.rs` |
 | `disrobe-cli` | `MAX_INSTALL_LOG_ENTRIES` | count | silent: no action in `trim_install_log`; slice in `trim_install_log` | `usize` | `500` | `crates/disrobe-cli/src/cli/install/mod.rs` |
 | `disrobe-cli` | `MAX_GHIDRA_ARCHIVE_ENTRIES` | count | error: untyped `miette!` | `usize` | `200_000` | `crates/disrobe-cli/src/cli/install_deps.rs` |
 | `disrobe-cli` | `MAX_GHIDRA_DOWNLOAD_BYTES` | size | error: untyped `miette!` | `u64` | `2 * 1024 * 1024 * 1024` | `crates/disrobe-cli/src/cli/install_deps.rs` |
@@ -581,7 +583,7 @@ Exceeded: error 900, recorded 191, panic 0, delegated 49, silent 1026, unclassif
 | `disrobe-pass-dotnet` | `MAX_RUNTIME_FUNCTIONS` | other | error: `invalid()` | `usize` | `1_048_576` | `crates/disrobe-pass-dotnet/src/aot/method_boundaries.rs` |
 | `disrobe-pass-dotnet` | `MAX_BACKEND_CAPTURE` | other | delegated: `subprocess::run_captured()?` | `usize` | `4 * 1024 * 1024` | `crates/disrobe-pass-dotnet/src/backends.rs` |
 | `disrobe-pass-dotnet` | `MAX_NATIVE_AOT_QUALIFIED_NAME_BYTES` | size | error: `CoreError::PassFailure` (DR-CORE-0003) | `usize` | `MAX_NATIVE_AOT_SYMBOL_ARTIFACT_BYTES` | `crates/disrobe-pass-dotnet/src/chain_detector.rs` |
-| `disrobe-pass-dotnet` | `MAX_NATIVE_AOT_SYMBOL_ARTIFACT_BYTES` | size | error: `.to_owned()`; `.to_string()`; `AotSignatureAbstention::ArgumentPositionsExceeded`; 36 more | `usize` | `16 * 1024 * 1024` | `crates/disrobe-pass-dotnet/src/chain_detector.rs` |
+| `disrobe-pass-dotnet` | `MAX_NATIVE_AOT_SYMBOL_ARTIFACT_BYTES` | size | error: `.to_owned()`; `.to_string()`; `AotSignatureAbstention::ArgumentPositionsExceeded`; 43 more | `usize` | `16 * 1024 * 1024` | `crates/disrobe-pass-dotnet/src/chain_detector.rs` |
 | `disrobe-pass-dotnet` | `MAX_NATIVE_AOT_SYMBOL_WORK_ITEMS` | work | error: `CoreError::PassFailure` (DR-CORE-0003) | `usize` | `1_048_576` | `crates/disrobe-pass-dotnet/src/chain_detector.rs` |
 | `disrobe-pass-dotnet` | `MAX_NATIVE_AOT_TYPE_NESTING_DEPTH` | recursion | error: `CoreError::PassFailure` (DR-CORE-0003) | `usize` | `256` | `crates/disrobe-pass-dotnet/src/chain_detector.rs` |
 | `disrobe-pass-dotnet` | `MAX_CIL_INSTRUCTIONS` | other | error: `Error::CilInstructionCountExceeded` (DR-DOTNET-0030) | `usize` | `65_536` | `crates/disrobe-pass-dotnet/src/cil.rs` |
@@ -591,6 +593,7 @@ Exceeded: error 900, recorded 191, panic 0, delegated 49, silent 1026, unclassif
 | `disrobe-pass-dotnet` | `MAX_HEAP_BYTES` | size | error: `EmulationError::OutOfBounds` | `usize` | `64 * 1024 * 1024` | `crates/disrobe-pass-dotnet/src/cil_emulator.rs` |
 | `disrobe-pass-dotnet` | `MAX_SWITCH_TARGETS` | other | error: `EmulationError::OutOfBounds` | `usize` | `65_536` | `crates/disrobe-pass-dotnet/src/cil_emulator.rs` |
 | `disrobe-pass-dotnet` | `STEP_LIMIT` | work | error: `EmulationError::StepLimitExceeded` | `u64` | `4_000_000` | `crates/disrobe-pass-dotnet/src/cil_emulator.rs` |
+| `disrobe-pass-dotnet` | `MAX_FILE_STEM` | other | silent: `.take()` in `file_name`; fallback value in `file_name` | `usize` | `48` | `crates/disrobe-pass-dotnet/src/csharp_project.rs` |
 | `disrobe-pass-dotnet` | `MAX_CIL_EVALUATION_STACK` | other | error: `Reject::new()` | `usize` | `64` | `crates/disrobe-pass-dotnet/src/devirt/cil_handler.rs` |
 | `disrobe-pass-dotnet` | `MAX_CIL_EXPRESSION_DEPTH` | recursion | silent: `return` in `append_output_expression`; `return` in `binary`; `return` in `expression_contains_stack_input` | `u8` | `32` | `crates/disrobe-pass-dotnet/src/devirt/cil_handler.rs` |
 | `disrobe-pass-dotnet` | `MAX_CIL_EXPRESSION_NODES` | count | silent: `return` in `binary` | `u8` | `64` | `crates/disrobe-pass-dotnet/src/devirt/cil_handler.rs` |
@@ -619,7 +622,12 @@ Exceeded: error 900, recorded 191, panic 0, delegated 49, silent 1026, unclassif
 | `disrobe-pass-dotnet` | `MAX_DECRYPTOR_INSTRUCTIONS` | other | silent: `continue` in `method_bodies` | `usize` | `4096` | `crates/disrobe-pass-dotnet/src/peel/bitmono_strings.rs` |
 | `disrobe-pass-dotnet` | `MAX_DERIVATIONS` | other | silent: `return` in `decrypt_site` | `usize` | `32` | `crates/disrobe-pass-dotnet/src/peel/bitmono_strings.rs` |
 | `disrobe-pass-dotnet` | `MAX_PBKDF2_ITERATIONS` | work | silent: `continue` in `locate_decryptor` | `u32` | `1_000_000` | `crates/disrobe-pass-dotnet/src/peel/bitmono_strings.rs` |
-| `disrobe-pass-dotnet` | `MAX_CONSTANTS_BLOB_BYTES` | size | recorded: flag `size` | `usize` | `16 * 1024 * 1024` | `crates/disrobe-pass-dotnet/src/peel/confuserex_constants.rs` |
+| `disrobe-pass-dotnet` | `MAX_ARRAYS` | other | error: `Fault::BadArray` | `usize` | `256` | `crates/disrobe-pass-dotnet/src/peel/confuserex_anti_tamper.rs` |
+| `disrobe-pass-dotnet` | `MAX_ARRAY_ELEMENTS` | other | error: `Fault::BadArray` | `usize` | `1 << 20` | `crates/disrobe-pass-dotnet/src/peel/confuserex_anti_tamper.rs` |
+| `disrobe-pass-dotnet` | `MAX_MAPPED_BYTES` | size | silent: `return` in `map_image` | `usize` | `256 * 1024 * 1024` | `crates/disrobe-pass-dotnet/src/peel/confuserex_anti_tamper.rs` |
+| `disrobe-pass-dotnet` | `MAX_STACK` | other | error: `Fault::StackOverflow` | `usize` | `4096` | `crates/disrobe-pass-dotnet/src/peel/confuserex_anti_tamper.rs` |
+| `disrobe-pass-dotnet` | `MAX_STEPS` | work | error: `Fault::StepLimit` | `u64` | `64_000_000` | `crates/disrobe-pass-dotnet/src/peel/confuserex_anti_tamper.rs` |
+| `disrobe-pass-dotnet` | `MAX_CONSTANTS_BLOB_BYTES` | size | silent: `continue` in `locate_constants_blobs`; `continue` in `recover_constants_pool`; `for` range in `recover_constants_pool` | `usize` | `16 * 1024 * 1024` | `crates/disrobe-pass-dotnet/src/peel/confuserex_constants.rs` |
 | `disrobe-pass-dotnet` | `MAX_CONSTANTS_POOL_BYTES` | size | silent: `continue` in `recover_pool` | `usize` | `64 * 1024 * 1024` | `crates/disrobe-pass-dotnet/src/peel/confuserex_constants.rs` |
 | `disrobe-pass-dotnet` | `MAX_DECODE_ATTEMPTS` | other | silent: `return` in `recover_strings` | `usize` | `1_000_000` | `crates/disrobe-pass-dotnet/src/peel/confuserex_constants.rs` |
 | `disrobe-pass-dotnet` | `MAX_SEED_CANDIDATES` | other | silent: `break` in `collect_ldc_i4_immediates`; `break` in `recover_pool` | `usize` | `65_536` | `crates/disrobe-pass-dotnet/src/peel/confuserex_constants.rs` |
@@ -721,6 +729,16 @@ Exceeded: error 900, recorded 191, panic 0, delegated 49, silent 1026, unclassif
 | `disrobe-pass-dotnet` | `MAX_EXPR_DEPTH` | recursion | silent: `return` in `expression_depth`; fallback value in `bounded_expression` | `usize` | `256` | `crates/disrobe-pass-dotnet/src/structurize.rs` |
 | `disrobe-pass-dotnet` | `INFERENCE_DEPTH_LIMIT` | recursion | silent: `return` in `infer_bounded`; `return` in `may_convert` | `usize` | `32` | `crates/disrobe-pass-dotnet/src/structurize/operand_kind.rs` |
 | `disrobe-pass-dotnet` | `MAX_TABLE_ROWS` | other | error: `Error::TableRowCountTooLarge` (DR-DOTNET-0029) | `u64` | `1_000_000` | `crates/disrobe-pass-dotnet/src/tables.rs` |
+| `disrobe-pass-dotnet` | `MAX_PRE_WRITE_MODULE_METHODS` | other | silent: `for` range in `resolve_hooks` | `u32` | `4` | `crates/disrobe-pass-dotnet/src/unprotect/bitmono.rs` |
+| `disrobe-pass-dotnet` | `MAX_REBUILT_INSTRUCTIONS` | other | error: `AssembleError::TooManyInstructions` | `usize` | `65_536` | `crates/disrobe-pass-dotnet/src/unprotect/body.rs` |
+| `disrobe-pass-dotnet` | `MAX_STORE_DISTANCE` | other | silent: `.take()` in `delegate_cache_pairs` | `usize` | `4` | `crates/disrobe-pass-dotnet/src/unprotect/closures.rs` |
+| `disrobe-pass-dotnet` | `MAX_EMULATED_POOL_BYTES` | size | silent: `continue` in `emulated_pool` | `usize` | `64 * 1024 * 1024` | `crates/disrobe-pass-dotnet/src/unprotect/confuserex.rs` |
+| `disrobe-pass-dotnet` | `MAX_POOL_STRING_BYTES` | size | error: untyped `format!` | `usize` | `1 << 20` | `crates/disrobe-pass-dotnet/src/unprotect/confuserex.rs` |
+| `disrobe-pass-dotnet` | `MAX_SITES_PER_BODY` | other | error: `NeutralizeError::NothingApplied`; `StructureError::new()`; untyped `format!` | `usize` | `8192` | `crates/disrobe-pass-dotnet/src/unprotect/confuserex.rs` |
+| `disrobe-pass-dotnet` | `MAX_SYNTHETIC_STRINGS` | other | silent: `return` in `intern` | `u32` | `0x000F_FFFF` | `crates/disrobe-pass-dotnet/src/unprotect/mod.rs` |
+| `disrobe-pass-dotnet` | `MAX_NAME_BYTES` | size | silent: `return` in `repaired` | `usize` | `4096` | `crates/disrobe-pass-dotnet/src/unprotect/names.rs` |
+| `disrobe-pass-dotnet` | `MAX_PATCHES` | other | silent: `return` in `push` | `usize` | `65_536` | `crates/disrobe-pass-dotnet/src/unprotect/neutralize.rs` |
+| `disrobe-pass-dotnet` | `MAX_PATCH_BYTES` | size | silent: `return` in `push` | `usize` | `64 * 1024 * 1024` | `crates/disrobe-pass-dotnet/src/unprotect/neutralize.rs` |
 | `disrobe-pass-go` | `FLAT_32_ADDRESS_LIMIT` | other | unused: no use in the crate | `u64` | `1 << 32` | `crates/disrobe-pass-go/src/binary.rs` |
 | `disrobe-pass-go` | `MD_WORD_FTAB_CAP` | other | unused: no use in the crate | `usize` | `18` | `crates/disrobe-pass-go/src/binary.rs` |
 | `disrobe-pass-go` | `MD_WORD_FUNCNAMETAB_CAP` | other | unused: no use in the crate | `usize` | `3` | `crates/disrobe-pass-go/src/binary.rs` |
@@ -2249,7 +2267,7 @@ Exceeded: error 900, recorded 191, panic 0, delegated 49, silent 1026, unclassif
 
 ## Silent stops
 
-1026 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
+1038 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
 
 | Crate | Constant | Use | File |
 | --- | --- | --- | --- |
@@ -2318,6 +2336,8 @@ Exceeded: error 900, recorded 191, panic 0, delegated 49, silent 1026, unclassif
 | `disrobe-cli` | `MAX_SIDECAR_REDACTION_BYTES` | `return` in `sidecar_shape` | `crates/disrobe-cli/src/cli/chain_v1.rs` |
 | `disrobe-cli` | `MAX_REPORTS_GRADED` | `break` in `find_reports` | `crates/disrobe-cli/src/cli/context.rs` |
 | `disrobe-cli` | `MAX_REPORT_SEARCH_DEPTH` | `for` range in `find_reports` | `crates/disrobe-cli/src/cli/context.rs` |
+| `disrobe-cli` | `MAX_PRINTED_RESIDUALS` | `.take()` in `print_unprotect_report`; no action in `print_unprotect_report` | `crates/disrobe-cli/src/cli/dotnet.rs` |
+| `disrobe-cli` | `MAX_PROMPT_RETRIES` | `return` in `read_answer` | `crates/disrobe-cli/src/cli/dotnet.rs` |
 | `disrobe-cli` | `MAX_INSTALL_LOG_ENTRIES` | no action in `trim_install_log`; slice in `trim_install_log` | `crates/disrobe-cli/src/cli/install/mod.rs` |
 | `disrobe-cli` | `DELPHI_LIST_LIMIT` | `.take()` in `render_delphi_classes`; `.take()` in `render_delphi_forms`; `.take()` in `render_delphi_types`; 3 more | `crates/disrobe-cli/src/cli/native.rs` |
 | `disrobe-cli` | `LOWEST_COVERED_CAP` | `.truncate()` in `lowest_covered` | `crates/disrobe-cli/src/cli/native.rs` |
@@ -2448,6 +2468,7 @@ Exceeded: error 900, recorded 191, panic 0, delegated 49, silent 1026, unclassif
 | `disrobe-pass-dotnet` | `MAX_PROFILE_MAJOR` | `continue` in `declared_profile` | `crates/disrobe-pass-dotnet/src/aot.rs` |
 | `disrobe-pass-dotnet` | `MAX_READY_TO_RUN_SECTIONS` | `return` in `read_ready_to_run_header` | `crates/disrobe-pass-dotnet/src/aot.rs` |
 | `disrobe-pass-dotnet` | `MAX_RECOVERED_NAMES` | `break` in `recover_names_at_threshold`; `while` condition in `recover_names_at_threshold` | `crates/disrobe-pass-dotnet/src/aot.rs` |
+| `disrobe-pass-dotnet` | `MAX_FILE_STEM` | `.take()` in `file_name`; fallback value in `file_name` | `crates/disrobe-pass-dotnet/src/csharp_project.rs` |
 | `disrobe-pass-dotnet` | `MAX_CIL_EXPRESSION_DEPTH` | `return` in `append_output_expression`; `return` in `binary`; `return` in `expression_contains_stack_input` | `crates/disrobe-pass-dotnet/src/devirt/cil_handler.rs` |
 | `disrobe-pass-dotnet` | `MAX_CIL_EXPRESSION_NODES` | `return` in `binary` | `crates/disrobe-pass-dotnet/src/devirt/cil_handler.rs` |
 | `disrobe-pass-dotnet` | `MAX_CIL_HANDLER_INSTRUCTIONS` | `return` in `summarize_cil_handler` | `crates/disrobe-pass-dotnet/src/devirt/cil_handler.rs` |
@@ -2462,6 +2483,8 @@ Exceeded: error 900, recorded 191, panic 0, delegated 49, silent 1026, unclassif
 | `disrobe-pass-dotnet` | `MAX_DECRYPTOR_INSTRUCTIONS` | `continue` in `method_bodies` | `crates/disrobe-pass-dotnet/src/peel/bitmono_strings.rs` |
 | `disrobe-pass-dotnet` | `MAX_DERIVATIONS` | `return` in `decrypt_site` | `crates/disrobe-pass-dotnet/src/peel/bitmono_strings.rs` |
 | `disrobe-pass-dotnet` | `MAX_PBKDF2_ITERATIONS` | `continue` in `locate_decryptor` | `crates/disrobe-pass-dotnet/src/peel/bitmono_strings.rs` |
+| `disrobe-pass-dotnet` | `MAX_MAPPED_BYTES` | `return` in `map_image` | `crates/disrobe-pass-dotnet/src/peel/confuserex_anti_tamper.rs` |
+| `disrobe-pass-dotnet` | `MAX_CONSTANTS_BLOB_BYTES` | `continue` in `locate_constants_blobs`; `continue` in `recover_constants_pool`; `for` range in `recover_constants_pool` | `crates/disrobe-pass-dotnet/src/peel/confuserex_constants.rs` |
 | `disrobe-pass-dotnet` | `MAX_CONSTANTS_POOL_BYTES` | `continue` in `recover_pool` | `crates/disrobe-pass-dotnet/src/peel/confuserex_constants.rs` |
 | `disrobe-pass-dotnet` | `MAX_DECODE_ATTEMPTS` | `return` in `recover_strings` | `crates/disrobe-pass-dotnet/src/peel/confuserex_constants.rs` |
 | `disrobe-pass-dotnet` | `MAX_SEED_CANDIDATES` | `break` in `collect_ldc_i4_immediates`; `break` in `recover_pool` | `crates/disrobe-pass-dotnet/src/peel/confuserex_constants.rs` |
@@ -2507,6 +2530,13 @@ Exceeded: error 900, recorded 191, panic 0, delegated 49, silent 1026, unclassif
 | `disrobe-pass-dotnet` | `MAX_COERCION_DEPTH` | `return` in `coerce_bounded` | `crates/disrobe-pass-dotnet/src/structurize.rs` |
 | `disrobe-pass-dotnet` | `MAX_EXPR_DEPTH` | `return` in `expression_depth`; fallback value in `bounded_expression` | `crates/disrobe-pass-dotnet/src/structurize.rs` |
 | `disrobe-pass-dotnet` | `INFERENCE_DEPTH_LIMIT` | `return` in `infer_bounded`; `return` in `may_convert` | `crates/disrobe-pass-dotnet/src/structurize/operand_kind.rs` |
+| `disrobe-pass-dotnet` | `MAX_PRE_WRITE_MODULE_METHODS` | `for` range in `resolve_hooks` | `crates/disrobe-pass-dotnet/src/unprotect/bitmono.rs` |
+| `disrobe-pass-dotnet` | `MAX_STORE_DISTANCE` | `.take()` in `delegate_cache_pairs` | `crates/disrobe-pass-dotnet/src/unprotect/closures.rs` |
+| `disrobe-pass-dotnet` | `MAX_EMULATED_POOL_BYTES` | `continue` in `emulated_pool` | `crates/disrobe-pass-dotnet/src/unprotect/confuserex.rs` |
+| `disrobe-pass-dotnet` | `MAX_SYNTHETIC_STRINGS` | `return` in `intern` | `crates/disrobe-pass-dotnet/src/unprotect/mod.rs` |
+| `disrobe-pass-dotnet` | `MAX_NAME_BYTES` | `return` in `repaired` | `crates/disrobe-pass-dotnet/src/unprotect/names.rs` |
+| `disrobe-pass-dotnet` | `MAX_PATCHES` | `return` in `push` | `crates/disrobe-pass-dotnet/src/unprotect/neutralize.rs` |
+| `disrobe-pass-dotnet` | `MAX_PATCH_BYTES` | `return` in `push` | `crates/disrobe-pass-dotnet/src/unprotect/neutralize.rs` |
 | `disrobe-pass-go` | `MAX_LISTED_FUNCS` | `.take()` in `push_defer_section`; `.take()` in `render_symbol_report`; no action in `push_defer_section`; 1 more | `crates/disrobe-pass-go/src/chain_detector.rs` |
 | `disrobe-pass-go` | `MAX_PCDATA_ENTRIES` | `return` in `read_func_defer_view` | `crates/disrobe-pass-go/src/defers.rs` |
 | `disrobe-pass-go` | `MAX_DECOMPRESSED_LEN` | `.take()` in `inflate_raw`; `return` in `decompress_zdebug`; fallback value in `inflate_raw` | `crates/disrobe-pass-go/src/dwarf.rs` |
